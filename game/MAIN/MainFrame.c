@@ -411,7 +411,7 @@ void MainFrame_GameLogic(struct GameTracker *gGT, struct GamepadSystem *gGamepad
 
 #if defined(CTR_NATIVE)
 	// Window minimised or focus lost (native_platform.c,
-	// Platform_WishFocusPause): the same path as a press on Start, below in the
+	// Platform_TakeFocusPauseWish): the same path as a press on Start, below in the
 	// condition next to BTN_START - with all locks of this branch and of
 	// MainFreeze_IfPressStart, no pause logic of its own. Collected every frame,
 	// so that a request from a menu or loading screen does not linger and strike
