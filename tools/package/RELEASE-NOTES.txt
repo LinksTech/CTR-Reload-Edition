@@ -62,7 +62,7 @@ NEW IN THIS VERSION
 KNOWN ISSUES
 ------------
 - Custom tracks: Race, Crystal Challenge and CTR Challenge. Time Trial and
-  Battle come in Beta 2. Best times on custom tracks are not saved.
+  Battle are planned. Best times on custom tracks are not saved.
 - A track that offers both Race and Crystal Challenge is not tested yet: no
   test track has both restart points and crystals.
 - A track with only Crystal Challenge cannot get a preview; the preview is

@@ -37,6 +37,8 @@
 BIGFILE.BIG
 KART.HWL
 assets/
+# The one exception: the README banner (own SVG drawings, nothing from the game).
+!/docs/assets/
 
 # --- Tracks, characters, music, previews (often made by other authors) ---
 *.rldtrack

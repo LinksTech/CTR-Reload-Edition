@@ -66,7 +66,11 @@ while read local_ref local_sha remote_ref remote_sha; do
 		if (base ~ /\.(mcr|mcd|gme|srm|sav|ctrstates|state)$/) print "BAD\t" path "\tmemory card or save state"
 		if (base ~ /\.(log|dmp|tga|ppm|bmp)$/) print "BAD\t" path "\tlog, dump or raw picture"
 		if (base ~ /^(bigfile\.big|kart\.hwl|ctr-settings\.cfg|ctr-data\.cfg|ctr-view\.cfg|alphamaker\.ini|track-ids\.tsv|cups\.txt)$/) print "BAD\t" path "\tgame file or user settings"
-		if (!sdl) {
+		# docs/assets holds the README banner and nothing else: SVG drawings
+		# only, never a picture, sound or anything from the game.
+		banner = (lower ~ /^docs\/assets\/[^\/]+\.svg$/)
+		if (lower ~ /^docs\/assets\// && !banner) print "BAD\t" path "\tonly .svg drawings belong in docs/assets"
+		if (!sdl && !banner) {
 			p = "/" lower
 			if (p ~ /\/(assets|tracks|tracks_archiv|testdaten|memcards|debug|logs|dist|concept|characters|vorschau)\//) print "BAD\t" path "\tforbidden folder"
 			if (p ~ /\/(messung-|baseline-)/ || p ~ /\/(test-bats|build|out)\// || p ~ /\/build-[^\/]*\//) print "BAD\t" path "\tmeasurement, reference or build folder"

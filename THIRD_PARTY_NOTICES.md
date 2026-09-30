@@ -66,6 +66,15 @@ The vendored header files retain their original copyright and license notices.
 A copy of the MPL 2.0 license can be obtained at:
 <https://mozilla.org/MPL/2.0/>
 
+## Russo One (README banner)
+
+The lettering in `docs/assets/banner-dark.svg` and `banner-light.svg` is the
+font Russo One, converted to outlines. The font itself is not included.
+
+Copyright (c) 2011-2012, Jovanny Lemonad (jovanny.ru), with Reserved Font Name
+"Russo". License: SIL Open Font License, Version 1.1
+<https://openfontlicense.org>
+
 ## SDL3
 
 Path: `externals/SDL`

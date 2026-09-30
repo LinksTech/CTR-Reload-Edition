@@ -189,8 +189,8 @@ for the game (and for cups).
   Race              restart points (the checkpoints that count the laps)
   Crystal Challenge at least one crystal on the track
   CTR Challenge     each of the letters C, T and R exactly once
-  Time Trial        Beta 2 (greyed out)
-  Battle            Beta 2 (greyed out)
+  Time Trial        not available yet (greyed out)
+  Battle            not available yet (greyed out)
 
 Also good to know:
 - Bots need nav paths. Without them you race alone, auto drive is off, and
@@ -243,7 +243,7 @@ In the game
 ---------------
 Modes and menus
 - Custom tracks play Race, Crystal Challenge and CTR Challenge. Time Trial
-  and Battle come in Beta 2. Best times on custom tracks are not saved.
+  and Battle are planned. Best times on custom tracks are not saved.
 - Multiplayer (VS., BATTLE, 2 players) is locked.
 - A track that offers both Race and Crystal Challenge is not tested yet: no
   test track has both restart points and crystals.
