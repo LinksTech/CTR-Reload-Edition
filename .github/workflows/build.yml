@@ -3,9 +3,11 @@
 # Every push to main or dev: build (32-bit, MSVC), run the self-tests, package,
 # and attach the package to the run as a download.
 # Every version tag (v*, e.g. v0.1.0-beta1): the same, plus a GitHub release
-# with exactly two files, ctr_native.exe and alphamaker.exe; GitHub adds the
-# source code archives of the tag by itself. The release text comes from
-# .github/release-body.txt.
+# with exactly four files: the programs ctr_native.exe and alphamaker.exe,
+# and LICENSE and THIRD_PARTY_NOTICES.md, because the licenses must travel
+# with the programs (GPL-3.0, and the notices of the bundled third-party
+# code). GitHub adds the source code archives of the tag by itself. The
+# release text comes from .github/release-body.txt.
 # Every pull request into main or dev: build, self-tests and package check
 # only. No package download, no release, no cache writes, read-only token.
 #
@@ -76,13 +78,16 @@ jobs:
           name: ${{ needs.build.outputs.artifact }}
           path: dist
 
-      # Every release carries exactly these two files, both from this one
+      # Every release carries exactly these four files, all from this one
       # run: they are taken out of the package that the build job checked,
-      # so they are the programs it tested and paired. The exe names stay
-      # fixed (the Alpha-Maker looks for the game as ctr_native.exe); the
-      # version is in the release title and in the programs, not in the file
-      # names. No package zip, no README: GitHub attaches the source code of
-      # the tag to every release by itself.
+      # so the programs are the ones it tested and paired, and the license
+      # texts are the ones packaged with them. LICENSE (GPL-3.0) and
+      # THIRD_PARTY_NOTICES.md (the notices of the bundled third-party code)
+      # must travel with the programs. The exe names stay fixed (the
+      # Alpha-Maker looks for the game as ctr_native.exe); the version is in
+      # the release title and in the programs, not in the file names. No
+      # package zip, no README: GitHub attaches the source code of the tag to
+      # every release by itself.
       - name: Collect release files
         id: files
         shell: bash
@@ -96,7 +101,11 @@ jobs:
           case "$id" in *[!0-9a-f]*|'') echo "unexpected build id: $id"; exit 1 ;; esac
           [ ${#id} = 12 ] || { echo "unexpected build id: $id"; exit 1; }
           mkdir -p out
-          unzip -j -o "$zip" "$name/ctr_native.exe" "$name/alphamaker.exe" -d out
+          unzip -j -o "$zip" "$name/ctr_native.exe" "$name/alphamaker.exe" \
+            "$name/LICENSE" "$name/THIRD_PARTY_NOTICES.md" -d out
+          for f in ctr_native.exe alphamaker.exe LICENSE THIRD_PARTY_NOTICES.md; do
+            [ -s "out/$f" ] || { echo "missing or empty in the package: $f"; exit 1; }
+          done
           [ -s src/.github/release-body.txt ] || { echo "release text missing"; exit 1; }
           ls -l out
           echo "build_id=$id" >> "$GITHUB_OUTPUT"
@@ -109,6 +118,8 @@ jobs:
           files: |
             out/ctr_native.exe
             out/alphamaker.exe
+            out/LICENSE
+            out/THIRD_PARTY_NOTICES.md
           fail_on_unmatched_files: true
           prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
           generate_release_notes: false

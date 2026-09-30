@@ -146,10 +146,11 @@ base = os.path.basename(root)
 with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
     for f in sorted(os.listdir(root)):
         z.write(os.path.join(root, f), base + '/' + f)
-# The release job takes these two out of the zip by exactly these paths.
+# The release jobs take these four out of the zip by exactly these paths.
 with zipfile.ZipFile(out) as z:
     names = z.namelist()
-missing = [base + '/' + f for f in ('ctr_native.exe', 'alphamaker.exe') if base + '/' + f not in names]
+missing = [base + '/' + f for f in ('ctr_native.exe', 'alphamaker.exe', 'LICENSE', 'THIRD_PARTY_NOTICES.md')
+           if base + '/' + f not in names]
 if missing:
     print('  missing in the zip:', ' '.join(missing))
     os.remove(out)
