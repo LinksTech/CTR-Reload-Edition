@@ -320,8 +320,8 @@ int NativeMenuHighScore_RestBox(const int *box, int *outRest, int *outOffset)
 
 // MULTIPLAYER IS LOCKED.
 //
-// Multiplayer is not part of the scope of the project (decided on
-// 2026-09-26). Every path of the player menu to more than one player is
+// Multiplayer is not part of the scope of the project. Every path of the
+// player menu to more than one player is
 // therefore locked: VS. and BATTLE in the main menu, 2P in the player count of
 // arcade and arcade cup, and 2P, 3P, 4P behind VS. and BATTLE.
 //
@@ -337,7 +337,7 @@ int NativeMenuHighScore_RestBox(const int *box, int *outRest, int *outOffset)
 //   of MM_MenuProc_Main the bit of the player count rows and sets it only where
 //   pads are missing. With two pads it unlocks 2P. MM_MenuProc_Main runs in
 //   every frame before input and drawing (RECTMENU.c:1139, 1150, 1194).
-// - OVR230_ResetRuntimeState (D230.c:916-926) resets all of D230 to the
+// - OVR230_ResetRuntimeState (D230.c:859-869) resets all of D230 to the
 //   initial state, including the procs - on every return from a race.
 // The main menu box therefore gets, instead of MM_MenuProc_Main, a proc that
 // calls MM_MenuProc_Main and locks AFTERWARDS. It is hooked in anew every frame,
@@ -356,8 +356,7 @@ int NativeMenuHighScore_RestBox(const int *box, int *outRest, int *outOffset)
 // The menu files stay untouched. Command line and debug menu go past
 // these boxes and stay as they are.
 
-// THE RACE TYPE BOX UNDER ARCADE: SINGLE / CUP / VS. / BATTLE / NITRO-PIT
-// (2026-09-29, plan change).
+// THE RACE TYPE BOX UNDER ARCADE: SINGLE / CUP / VS. / BATTLE / NITRO-PIT.
 //
 // Retail has two rows (D230.c:105-110), and their meaning lies in the index:
 // MM_MenuProc_SingleCup only takes row < MM_RACE_TYPE_SELECTABLE_ROWS (2)
@@ -366,7 +365,7 @@ int NativeMenuHighScore_RestBox(const int *box, int *outRest, int *outOffset)
 // the retail proc never sees the new ones - they are answered by
 // NativeMenuLock_ProcRaceType.
 //
-// VS. AND BATTLE are locked like all of multiplayer (2026-09-26). If
+// VS. AND BATTLE are locked like all of multiplayer. If
 // they are unlocked, their chain becomes one level deeper each than from the old main menu:
 // VS. then needs a SINGLE/CUP box of its own WITH title (main menu
 // -> RACE TYPE -> SINGLE/CUP -> 2P/3P/4P, 14..209 like the arcade path today;
@@ -385,8 +384,8 @@ int NativeMenuHighScore_RestBox(const int *box, int *outRest, int *outOffset)
 //
 // LOCKED, grey with lock sound: NITRO RACE, as long as no container offers a race;
 // NITRO CUP, as long as cups.txt carries no readable cup (why is said by
-// the log); CRYSTAL, as long as no container offers Crystal (playable since 2026-09-29,
-// MM_NativeCrystal.c); CTR likewise with CTR (MM_NativeCtr.c); TIME
+// the log); CRYSTAL, as long as no container offers Crystal
+// (MM_NativeCrystal.c); CTR likewise with CTR (MM_NativeCtr.c); TIME
 // TRIAL (Beta 2) always. If the cursor stands
 // on a grey row, a line below the box says the reason
 // (NativeMenuReason_NoteDrawn). NITRO-PIT itself is never grey in the arcade path.
@@ -442,7 +441,7 @@ enum
 global_variable int s_nativePitRequest = NATIVE_PIT_REQUEST_NONE;
 
 // The reason for a grey row, or NULL. English like all game texts;
-// cups.txt appears only in the log (2026-09-29).
+// cups.txt appears only in the log.
 internal const char *NativeMenuRaceType_Reason(int row)
 {
 	if (!s_nativePitOpen)
@@ -458,10 +457,10 @@ internal const char *NativeMenuRaceType_Reason(int row)
 		return (NativeCup_Count() <= 0) ? "NO CUSTOM CUPS" : NULL;
 	case NATIVE_PIT_ROW_CRYSTAL:
 		return (NativeTrack_CountOffered(NATIVE_TRACK_MODE_CRYSTAL) <= 0) ? "NO CRYSTAL TRACKS" : NULL;
-	// 2026-09-29: TIME TRIAL comes in Beta 2.
+	// TIME TRIAL comes in Beta 2.
 	case NATIVE_PIT_ROW_TIME_TRIAL:
 		return "COMING IN BETA 2";
-	// 2026-09-29: CTR is released for Beta 0 - white as soon as a
+	// CTR is released for Beta 0 - white as soon as a
 	// container offers CTR (MM_NativeCtr.c).
 	case NATIVE_PIT_ROW_CTR:
 		return (NativeTrack_CountOffered(NATIVE_TRACK_MODE_CTR) <= 0) ? "NO CTR TRACKS" : NULL;
@@ -521,8 +520,8 @@ internal void NativeMenuRaceType_Apply(void)
 	s_nativeRaceTypeRows[NATIVE_RACE_TYPE_ROW_BATTLE].stringIndex |= MENU_ROW_LOCKED;
 	s_nativeRaceTypeRows[NATIVE_RACE_TYPE_ROW_NITRO_PIT].stringIndex = MM_NATIVE_LNG_NITRO_PIT;
 
-	// The box now only comes through ARCADE; another path (--menu-reload)
-	// does not get NITRO-PIT.
+	// The box now only comes through ARCADE; another path (a menu
+	// declaration loaded by the menu reload) does not get NITRO-PIT.
 	if (!arcade)
 	{
 		s_nativeRaceTypeRows[NATIVE_RACE_TYPE_ROW_NITRO_PIT].stringIndex |= MENU_ROW_LOCKED;
@@ -583,7 +582,7 @@ int NativeMenuReason_OnScreen(void)
 	return s_nativeMenuReasonDrawn;
 }
 
-// THE MAIN MENU: SIX ROWS (2026-09-29, plan change).
+// THE MAIN MENU: SIX ROWS.
 //
 // ADVENTURE, TIME TRIAL, ARCADE, HIGH SCORE, OPTIONS, EXIT GAME - always exactly
 // these six, also with SCRAPBOOK unlocked. VS. and BATTLE stand under
@@ -605,7 +604,7 @@ int NativeMenuReason_OnScreen(void)
 // would then find no branch. NativeMenuMain_Answer answers both, and
 // MM_MenuProc_Main never sees them.
 //
-// With --menu-reload the list can come from the menu file; that one stays.
+// With the menu reload on the list can come from the menu file; that one stays.
 global_variable struct MenuRow s_nativeMainRows[] = {
     {LNG_ADVENTURE, 0, 1, 0, 0},
     {LNG_TIME_TRIAL, 0, 2, 1, 1},
@@ -649,15 +648,15 @@ internal void NativeMenuMain_ProcQuit(struct RectMenu *menu)
 // Further below, in the block MULTIPLAYER IS LOCKED.
 internal int NativeMenuLock_ChoiceIsLocked(const struct RectMenu *menu);
 
-// THE OPTIONS BOX (2026-09-29, plan change): CHEATS /
+// THE OPTIONS BOX: CHEATS /
 // GRAPHICS, plus SCRAPBOOK when unlocked. It hangs below the
 // main menu like NEW/LOAD below ADVENTURE (D230.c:121-135) and returns in
 // the same way (MM_MenuFlow.c:486-490). Two or three rows below
 // the collapsed main box: far below 216.
 //
 // No row for the options screen of the pause (MainFreeze_MenuPtrOptions): it
-// is built for the pause and does not belong in the main menu (decided
-// on the evening of 2026-09-29). Sound settings will later get a page of their own
+// is built for the pause and does not belong in the main menu. Sound settings
+// will later get a page of their own
 // next to GRAPHICS.
 global_variable struct MenuRow s_nativeOptionsRows[] = {
     {MM_NATIVE_LNG_CHEATS, 0, 1, 0, 0},
@@ -851,7 +850,7 @@ internal void NativeMenuOptions_Proc(struct RectMenu *menu)
 	}
 }
 
-// THE CHEATS BOX (2026-09-29, plan change).
+// THE CHEATS BOX.
 //
 // The twelve cheats that only apply for the session: bits in gGT->gameMode2
 // (namespace_Main.h:199-217) that never go onto the memory card (RaceConfig.c:23-35
@@ -1102,8 +1101,8 @@ internal void NativeMenuLock_Apply(void)
 	NativeMenuLock_RowsWithString(&D230.rowsMainMenuWithScrapbook[0], LNG_VS);
 	NativeMenuLock_RowsWithString(&D230.rowsMainMenuWithScrapbook[0], LNG_BATTLE);
 
-	// The list the box is currently showing - with --menu-reload that can be one
-	// from the menu file.
+	// The list the box is currently showing - with the menu reload on that can
+	// be one from the menu file.
 	NativeMenuLock_RowsWithString(D230.menuMainMenu.rows, LNG_VS);
 	NativeMenuLock_RowsWithString(D230.menuMainMenu.rows, LNG_BATTLE);
 
@@ -1188,7 +1187,7 @@ internal void NativeMenuLock_ProcRaceType(struct RectMenu *menu)
 	{
 		if (s_nativePitOpen)
 		{
-			// CTR (2026-09-29) goes the same way as NITRO RACE - a
+			// CTR goes the same way as NITRO RACE - a
 			// single race with opponents, so with DIFFICULTY -, only with the
 			// CTR list (MM_NativeCtr.c).
 			if ((row == NATIVE_PIT_ROW_RACE) || (row == NATIVE_PIT_ROW_CUP) || (row == NATIVE_PIT_ROW_CTR))
@@ -1207,7 +1206,7 @@ internal void NativeMenuLock_ProcRaceType(struct RectMenu *menu)
 				return;
 			}
 
-			// CRYSTAL (2026-09-29): one player, without opponents, so without
+			// CRYSTAL: one player, without opponents, so without
 			// DIFFICULTY - the retail proc gets, as with NITRO RACE, the row
 			// of SINGLE (cup off), then the box goes out to the driver select,
 			// as MM_MenuProc_Difficulty does it (MM_MenuFlow.c). After that the
@@ -1254,12 +1253,10 @@ internal void NativeMenuLock_ProcRaceType(struct RectMenu *menu)
 	MM_MenuProc_SingleCup(menu);
 }
 
-// From RECTMENU_ProcessState through NativeMenuDecl_Tick, in every frame before the
-// proc of the active box.
 // All drivers unlocked, without changing the save data (native_memcard_adapter.c).
 void NativeUnlock_ApplyToGame(void);
 
-// THE SPYRO 2 CODE (L1+R1, down circle triangle right; D230.c:266). On the
+// THE SPYRO 2 CODE (L1+R1, down circle triangle right; D230.c:241). On the
 // PS1 it started the Spyro 2 demo from the same disc; on the PC it does not
 // exist, and MainKillGame_LaunchSpyro2 natively ended in an endless loop
 // (MainKillGame.c:43-45), after it had already torn down music, sound and graphics
@@ -1284,7 +1281,7 @@ internal void NativeMenuCheats_HookSpyro2(void)
 	}
 }
 
-// THE WAY BACK TO NITRO-PIT (2026-09-29): the NITRO-PIT row in the end box
+// THE WAY BACK TO NITRO-PIT: the NITRO-PIT row in the end box
 // of a container challenge (MM_NativeCrystal.c) loads the menu like QUIT and
 // requests this. In the first menu frame the chain then stands as it stood after
 // ARCADE -> NITRO-PIT: ARCADE chosen in the main menu - the same thing that
@@ -1344,6 +1341,8 @@ internal void NativeMenuPit_Return(void)
 	Platform_Log("[CTR Menu] back to NITRO-PIT - ARCADE -> NITRO-PIT, cursor on %s\n", (chosen == MM_NATIVE_CHOSEN_CTR) ? "CTR" : "CRYSTAL");
 }
 
+// From RECTMENU_ProcessState through NativeMenuDecl_Tick, in every frame before the
+// proc of the active box.
 void NativeMenuLock_Tick(void)
 {
 	s_nativeMenuReasonDrawn = 0;

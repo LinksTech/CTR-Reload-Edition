@@ -45,9 +45,10 @@
 
 // RELOAD AT RUN TIME, DEFAULT OFF.
 //
-// In normal operation the disk is not looked at all the time. The switch
-// --menu-reload turns this into the loop "change, see": text editor on
-// one screen, game on the other.
+// In normal operation the disk is not looked at all the time. When this flag
+// is on, the menu turns into the loop "change, see": text editor on one
+// screen, game on the other. No command-line switch sets it at present (the
+// former --menu-reload is gone), so the file is not read at run time.
 int g_cfg_menuReload = 0;
 
 // WHY A CHECKSUM AND NOT THE FILE TIME.
@@ -81,7 +82,6 @@ int NativeRenderer_ReadMainTarget(void *dst, int dstBytes, int *outWidth, int *o
 #define NATIVE_MENU_DECL_ERROR_CHARS 39
 
 global_variable char s_lastError[NATIVE_MENU_DECL_ERROR_CHARS + 1];
-global_variable int s_lastErrorCount;
 
 // What was last really drawn, per box. Filled by
 // RECTMENU_DrawSelf - width and height are computed there, not declared.
@@ -100,7 +100,7 @@ global_variable struct NativeMenuDeclDrawn s_drawn[NATIVE_MENU_DECL_BOXES];
 //  The three verb tables.
 //
 //  The functions stand where their data stands - the Nitro-Pit verbs in
-//  MM_NativeMenu.c, next to s_mmSelectScreen and the containers. Here stand only
+//  MM_NativeMenu.c, next to the containers. Here stand only
 //  the names. A verb that is missing here is a load error with a line number
 //  and not a silent nothing.
 // ---------------------------------------------------------------------------
@@ -144,9 +144,9 @@ global_variable const struct NativeMenuDeclActionRow s_actions[] = {
     {"vs-cup", MM_NativeMode_ActVsCup},
 };
 
-// Still empty, and that is stated here explicitly. A dynamic list - the
-// containers, later the profiles - hooks in here. The table already
-// exists so that the next list costs one row and no decision.
+// Still empty, and that is stated here explicitly: nothing reads this table
+// yet. A dynamic list (the containers, later the profiles) would hook in here.
+// tools/menued reads the names from this table.
 global_variable const struct NativeMenuDeclSourceRow s_sources[] = {
     {NULL, NULL},
 };
@@ -239,7 +239,7 @@ global_variable const struct NativeMenuDeclSlot s_slots[] = {
     {"abenteuer", &D230.menuAdventure, 0, 0, 0, 1},
 
     // TWO PAGES THAT REPLACE INSTEAD OF STACKING, and are therefore roots of their own.
-    // A root gets its own style (RECTMENU.c:1072) and its own
+    // A root gets its own style (RECTMENU_ProcessState) and its own
     // middle - that is why its position here carries a place in the reference space and
     // not an offset in the cascade.
     {"renn-modus", &s_pool[1], 1, 1, 0, 0},
@@ -342,8 +342,9 @@ global_variable u32 s_styleMask[NATIVE_MENU_DECL_POOL];
 // ---------------------------------------------------------------------------
 //  The fields a "stil" block may set.
 //
-//  Only the distances. Scale and minimum width hang on --menu-scale, and
-//  a switch and a file that set the same number drift apart.
+//  Only the distances. Scale and minimum width belong to the style the code
+//  keeps (scalePercent, minWidthChars), and two places that set the same
+//  number drift apart.
 // ---------------------------------------------------------------------------
 
 struct NativeMenuDeclStyleField
@@ -1013,8 +1014,8 @@ internal void NativeMenuDecl_ParseBoxKey(struct NativeMenuDeclParse *ps, char **
 	//
 	// The drawer computes it in RECTMENU_ProcessState from the font width
 	// and the scale: N * FP_Mult(charPixWidth[FONT_BIG], scale) + 1. The
-	// point count therefore hangs on --menu-scale, and a number in points in the
-	// file would miss as soon as the switch is set.
+	// point count therefore hangs on the menu scale, and a number in points in the
+	// file would miss as soon as the scale is not 100.
 	//
 	// "breite mindestens N" and not "mindestbreite N": the word in between
 	// leaves room for "breite fest N", should it ever be needed, without
@@ -1222,8 +1223,7 @@ internal void NativeMenuDecl_ParseLine(struct NativeMenuDeclParse *ps, char *lin
 // ---------------------------------------------------------------------------
 
 // Text and lock bit of a row, from the condition. Separate, because it is needed at
-// loading AND at opening a box - just as
-// MM_NativeTracks_Open used to rebuild its one row on every opening.
+// loading AND at opening a box.
 internal void NativeMenuDecl_BuildRows(int slot)
 {
 	const struct NativeMenuDeclBox *box = &s_boxes[slot];
@@ -1348,7 +1348,7 @@ internal void NativeMenuDecl_Commit(void)
 		// locking would then silently no longer happen.
 		//
 		// A pure format box has no rows of its own, there the empty
-		// declaration is a load error (see NativeMenuDecl_ParseLine).
+		// declaration is a load error (see NativeMenuDecl_ParseBuffer).
 		if (s_boxes[i].rowCount > 0)
 		{
 			box->rows = &s_rows[i][0];
@@ -1516,14 +1516,11 @@ void NativeMenuDecl_Load(void)
 	}
 
 	s_lastError[0] = '\0';
-	s_lastErrorCount = 0;
 
 	errors = NativeMenuDecl_ParseBuffer(source, text);
 
 	if ((errors != 0) && (fileText != NULL))
 	{
-		s_lastErrorCount = errors;
-
 		if (s_haveCommitted)
 		{
 			// RELOAD WITH ERRORS: take nothing over. The state that stands on the
@@ -1561,9 +1558,9 @@ void NativeMenuDecl_Load(void)
 		// draws is only settled once it is drawn. The request
 		// is remembered and redeemed at the next finished frame.
 		//
-		// Only with --menu-reload. The file belongs to the loop "change,
-		// see"; without it an ordinary run writes nothing to the
-		// disk that it does not have to.
+		// Only with the menu reload on (g_cfg_menuReload). The file belongs
+		// to the loop "change, see"; without it an ordinary run writes nothing
+		// to the disk that it does not have to.
 		s_reloadPending = (g_cfg_menuReload != 0);
 		s_picturePending = (g_cfg_menuReload != 0);
 
@@ -1646,17 +1643,6 @@ internal int NativeMenuDecl_SlotOfBox(const struct RectMenu *box)
 	return -1;
 }
 
-// LAY THE DECLARED DEVIATIONS ONTO A FINISHED STYLE.
-//
-// This function used to return a whole style, and MM_NativeMenu_StyleFor
-// passed it on blindly. With that the main menu lost the two fields in
-// which it differs from retail - scale and minimum width -, as soon as
-// it said "nimmt-stil": the lines that set them stood BEHIND the return
-// and were never reached. Measured on a box with short content: 93 instead of
-// 229 points wide.
-//
-// Now the caller says what it is laid onto, and here only what
-// the file really named is laid on. 1 if something was laid on.
 // THE DECLARED MINIMUM WIDTH OF THIS BOX, or -1.
 int NativeMenuDecl_MinWidthChars(const struct RectMenu *box)
 {
@@ -1721,6 +1707,17 @@ int NativeMenuDecl_ChildMinWidthChars(const struct RectMenu *box)
 	return best;
 }
 
+// LAY THE DECLARED DEVIATIONS ONTO A FINISHED STYLE.
+//
+// This function used to return a whole style, and MM_NativeMenu_StyleFor
+// passed it on blindly. With that the main menu lost the two fields in
+// which it differs from retail - scale and minimum width -, as soon as
+// it said "nimmt-stil": the lines that set them stood BEHIND the return
+// and were never reached. Measured on a box with short content: 93 instead of
+// 229 points wide.
+//
+// Now the caller says what it is laid onto, and here only what
+// the file really named is laid on. 1 if something was laid on.
 int NativeMenuDecl_OverlayStyle(struct RectMenuStyle *dst, const struct RectMenu *box)
 {
 	const int slot = NativeMenuDecl_SlotOfBox(box);
@@ -1756,15 +1753,12 @@ int NativeMenuDecl_OverlayStyle(struct RectMenuStyle *dst, const struct RectMenu
 	return getan;
 }
 
-// A child is opened: its rows are evaluated afresh, and a
-// format box gets its declared state bits back. Both used to be done
-// by MM_NativeTracks_Open by hand, on every opening.
 // A CHILD THAT FRESHLY OPENS MUST NOT BRING AN OLD CHAIN ALONG.
 //
 // Retail clears its boxes on re-entry into the title screen:
-// MM_ResetAllMenus clears ONLY_DRAW_TITLE and DRAW_NEXT_MENU_IN_HIERARCHY and
-// sets ptrNextBox to 0 (MM_MenuFlow.c:548). It reaches its boxes in
-// two ways - through the list D230.arrayMenuPtrs (nine entries, D230.c:213)
+// MM_ResetAllMenus (MM_MenuFlow.c) clears ONLY_DRAW_TITLE and
+// DRAW_NEXT_MENU_IN_HIERARCHY and sets ptrNextBox to 0. It reaches its boxes in
+// two ways - through the list D230.arrayMenuPtrs (nine entries, D230.c)
 // and through the CHAIN from every list entry.
 //
 // A REPLACED PAGE STANDS ON NEITHER OF THE TWO WAYS. It is not in the list,
@@ -1772,14 +1766,14 @@ int NativeMenuDecl_OverlayStyle(struct RectMenuStyle *dst, const struct RectMenu
 // not even set its ptrNextBox. So it keeps its chain from the last
 // visit.
 //
-// WHAT THAT CAUSES, measured on 2026-09-17: on the SECOND entry into RACE MODE
+// WHAT THAT CAUSES (measured): on the SECOND entry into RACE MODE
 // renn-modus, spieler-1p2p and schwierigkeit are all still collapsed. A
 // collapsed box accepts no input (RECTMENU_ProcessInput checks
 // ONLY_DRAW_TITLE twice, even), so NONE accepts it - the picture shows
 // SINGLE RACE / 1P / EASY and no longer reacts to anything. The first visit
 // runs through flawlessly, which is why the fault only appears "now and then".
-// Cross-check with --stock-menu, the same key sequence: the second visit gets
-// as far as the track choice.
+// Cross-check with the retail menu and the same key sequence: the second
+// visit gets as far as the track choice.
 //
 // So on opening we give the child the same fresh state that
 // MM_ResetAllMenus would give it - and its old chain along with it.
@@ -1801,6 +1795,8 @@ internal void NativeMenuDecl_FreshChain(struct RectMenu *box)
 	}
 }
 
+// A child is opened: its rows are evaluated afresh, and a
+// format box gets its declared state bits back.
 internal void NativeMenuDecl_OpenChild(int slot)
 {
 	struct RectMenu *box = s_slots[slot].box;
@@ -1917,8 +1913,8 @@ void NativeMenuDecl_Proc(struct RectMenu *box)
 	const s16 row = box->rowSelected;
 
 	// THE FRAME TICK OF THE REPLACED PAGE, and only of it. RECTMENU sets funcState
-	// to UPDATE before the frame tick (RECTMENU.c:1046) and to INPUT before a key press
-	// (:929, :955). A STACKED box never arrives here with UPDATE
+	// to UPDATE before the frame tick (RECTMENU_ProcessState) and to INPUT before a
+	// key press (RECTMENU_ProcessInput). A STACKED box never arrives here with UPDATE
 	// - it is never ptrActiveMenu, and without EXECUTE_FUNCPTR it is not
 	// ticked anyway.
 	if (box->funcState == RECTMENU_FUNC_STATE_UPDATE)
@@ -1941,7 +1937,7 @@ void NativeMenuDecl_Proc(struct RectMenu *box)
 			// Both cases clear the same two bits. For the REPLACED
 			// box that is not cleaning up after a child but a
 			// repair: MM_MenuProc_Main set ONLY_DRAW_TITLE BEFORE
-			// the row was answered at all (MM_MenuFlow.c:160), and
+			// the row was answered at all (MM_MenuFlow.c), and
 			// nobody has taken it back since.
 			parent->state &= ~(ONLY_DRAW_TITLE | DRAW_NEXT_MENU_IN_HIERARCHY);
 
@@ -1983,7 +1979,7 @@ void NativeMenuDecl_Tick(void)
 
 	// The multiplayer lock hangs here, because this is the first place of every
 	// menu frame, before the proc of the active box - and it always applies,
-	// not only with --menu-reload.
+	// not only with the menu reload on.
 	NativeMenuLock_Tick();
 
 	if (!g_cfg_menuReload)
@@ -2023,11 +2019,6 @@ void NativeMenuDecl_Tick(void)
 const char *NativeMenuDecl_LastError(void)
 {
 	return (s_lastError[0] != '\0') ? &s_lastError[0] : NULL;
-}
-
-int NativeMenuDecl_LastErrorCount(void)
-{
-	return s_lastErrorCount;
 }
 
 // ---------------------------------------------------------------------------

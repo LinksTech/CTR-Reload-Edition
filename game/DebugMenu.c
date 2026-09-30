@@ -16,17 +16,17 @@ const char *NativeMenuCheats_Describe(void);
 // snapshot that replay and quick state install as well.
 #include <platform/native_input.h>
 
-// The in-game debug menu, two pages of it.
+// The in-game debug menu.
 //
 // SELECT+START opens it wherever the game logic runs. While it is open the game
 // underneath sees no input at all, which is also what keeps the pause menu from
 // answering the same START.
 //
-// Three things: CHEATS, which calls the game's own cheat functions, LEVEL
-// SELECT, which loads a track directly, and VIDEO. The reference build has more
-// pages here - system, dev tools - and they did not come across. They are their
-// own step, and a page that ruins the picture on purpose has no business one row
-// below a page that loads a level.
+// CHEATS calls the game's own cheat functions, LEVEL SELECT loads a track
+// directly, VIDEO and VIEW hold the picture settings. Other debug pages of the
+// reference build - system, dev tools - were not carried over: a page that
+// ruins the picture on purpose has no business one row below a page that loads
+// a level.
 //
 // And TRACKS, which is a different kind of row: it lists what is in tracks/ and
 // shows what the packer wrote into each container. That page is behind
@@ -221,35 +221,23 @@ enum
 	DBG_VIEW_ROW_COUNT,
 };
 
-// The TRACK page: everything the packer wrote into one container, and the three
+// The TRACK page: what the packer wrote into one container, and the three
 // rows that do something with it.
 //
-// Every field of META is on this page, including the ones that are empty. An
-// author who left out the licence should see an empty LICENSE row rather than no
-// row - a field that is simply not printed cannot be told apart from a field
-// that does not exist.
+// A META field on this page is shown even when it is empty. An author who left
+// out a field should see an empty row rather than no row - a field that is
+// simply not printed cannot be told apart from a field that does not exist.
 //
-// KEY is the first eight bytes of the signing key. That is the identity of the
-// author; the name beside AUTHOR is a piece of text anybody can type. The UUID
-// takes two rows because thirty-two hex digits do not fit on one at this width,
-// and it is printed whole rather than shortened: it is what tells two revisions
-// of the same track apart from two different tracks.
-// The rows that ACT come first, and SIGN comes right after the key.
-//
-// They were at the bottom, under everything they act on, which reads well and
-// does not work: fourteen rows, twelve of them on screen, so LOAD AND RACE sat
-// below the fold. A page that can only be read looks exactly like a page whose
-// track cannot be started - and that is what it was reported as.
-//
-// What scrolls off now is BUILT and FILE, the two nobody needs in order to
-// decide. Everything is in the log either way.
+// The rows that ACT come first: LOAD, SLOT and CRYSTAL. At the bottom, under
+// everything they act on, they read well and do not work once the page has
+// more rows than the twelve on screen: LOAD AND RACE would sit below the fold,
+// and a page that can only be read looks exactly like a page whose track cannot
+// be started. Everything is in the log either way.
 //
 // CRYSTAL sits with LOAD and SLOT because it acts: it changes what LOAD does,
 // the same way SLOT does.
 //
-// KEY and SIGN were dropped on 2026-09-19 together with the signature: there is
-// no author key in META any more. Nine rows now, twelve fit, so nothing moved
-// below the fold.
+// Nine rows, twelve fit, so nothing is below the fold.
 enum
 {
 	DBG_TRACK_LOAD = 0,
@@ -411,15 +399,15 @@ global_variable int s_driver = 0;
 // Which container the TRACK page is showing, and which level it would sit in.
 //
 // The donor is an index into s_levels, the same table LEVEL SELECT uses. A
-// container track has no levID of its own; it borrows a seat. That is the trap
-// from 2026-08-26 - two custom tracks both called "level 4" and every
+// container track has no levID of its own; it borrows a seat. That was an early
+// trap - two custom tracks both called "level 4" and every
 // measurement taken under that name worth nothing - so the seat is on the page
 // and in the log beside the name out of META, and the name is what identifies
 // the track.
 global_variable int s_trackSelected = 0;
 global_variable int s_trackDonor = 0;
 
-// MEASURING INSTRUMENT, NOT THE INTENDED PATH. Created on 2026-09-01.
+// MEASURING INSTRUMENT, NOT THE INTENDED PATH.
 //
 // There is no path by which a container track gets into crystal mode.
 // CRYSTAL_CHALLENGE is set in ONE place in the whole tree, in
@@ -438,7 +426,7 @@ global_variable int s_trackDonor = 0;
 // REACHABLE ON TWO PAGES, AND IT IS THE SAME SWITCH. The probe hangs
 // on the debug jump, not on a page, so it also belongs where
 // disc tracks are jumped to. That is not an extra but the purpose of the
-// extension of 2026-09-01 evening: the two observed faults - a
+// second row: the two observed faults - a
 // collected crystal comes back, the counter jumps - can only
 // be attributed to a container LEV when a RETAIL arena is held next to it under the same
 // probe. Hence one value and two rows, not two
@@ -650,15 +638,15 @@ internal void DebugMenu_JumpToLevel(struct GameTracker *gGT, int levelID, int dr
 	data.characterIDs[0] = (s16)driverID;
 
 	// MEASURING INSTRUMENT, see s_crystalProbe. Off is the default, and then
-	// the same two masks as before 2026-09-01 stand below, bit for bit.
+	// the same two masks as without the probe stand below, bit for bit.
 	//
 	// The bit must come OUT OF THE CLEAR MASK and not only go into the set
 	// mask: MainMain.c:247 computes (old | add) & ~rem, so clearing beats
 	// setting. If it were in both, the row would have no effect - a probe
 	// that silently measures nothing while looking as if it did something.
 	//
-	// Since 2026-09-29 in ONE place with NITRO-PIT -> CRYSTAL
-	// (MM_NativeCrystal_ModeBits): both paths set the bit the same way.
+	// In ONE place with NITRO-PIT -> CRYSTAL (MM_NativeCrystal_ModeBits):
+	// both paths set the bit the same way.
 	if (s_crystalProbe)
 	{
 		MM_NativeCrystal_ModeBits(&addBits, &remBits);
@@ -730,7 +718,7 @@ internal void DebugMenu_StepViewSetting(int direction)
 
 // Everything from META, unabridged, into the log in one go.
 //
-// The page itself shows every field, but a 256 px wide panel cuts
+// The page itself shows every field, but the panel cuts
 // long texts off. Cut off does not mean lost: what does not fit on the page
 // is here in full, at the moment someone opens the
 // track.
@@ -1056,7 +1044,7 @@ internal void DebugMenu_Activate(struct GameTracker *gGT)
 		// only a container that offers a race (offer rule of container format 4.1).
 		{
 			// With the crystal probe by the rule for Crystal, like NITRO-PIT
-			// -> CRYSTAL (2026-09-29) - otherwise no crystal container would get in.
+			// -> CRYSTAL - otherwise no crystal container would get in.
 			const char *whyNot = NativeTrack_WhyNotOffered(s_trackSelected, s_crystalProbe ? NATIVE_TRACK_MODE_CRYSTAL : NATIVE_TRACK_MODE_RACE, NULL);
 
 			if (whyNot != NULL)
@@ -1097,14 +1085,14 @@ internal void DebugMenu_Activate(struct GameTracker *gGT)
 //  WHY AT ALL. The cascade behind ARCADE - race type, player count,
 //  difficulty - is only reachable through key presses. A screen that
 //  no run can open is a screen about which no report can prove
-//  anything: a measurement on 09-17 had to compute half its geometry
+//  anything: an earlier measurement had to compute half its geometry
 //  instead of measuring it, because no screenshot came about.
 //
 //  WHY NOT THROUGH THE WINDOW. Sending keys into the window from outside
 //  depends on the foreground, the keyboard layout and on which seat the
 //  keyboard currently sits - F4 rotates it, and if a pad is on slot
 //  0, it starts at slot 1, where the main menu does not read it at all
-//  (RECTMENU.c:862 only reads P1). Measured: the same command gave three
+//  (RECTMENU_ProcessInput only reads P1). Measured: the same command gave three
 //  different seats in three runs.
 //
 //  WHAT HAPPENS HERE INSTEAD. The sequence is installed as PSX pad bytes on slot 0,
@@ -1119,7 +1107,7 @@ internal void DebugMenu_Activate(struct GameTracker *gGT)
 //  ID, state, analog values - as the host sees it.
 // ---------------------------------------------------------------------------
 
-// 256 since 2026-09-19, 64 before. With 64 steps a kart can be driven
+// 256, not the earlier 64. With 64 steps a kart can be driven
 // for about three seconds - too little to reach a particular spot on the track.
 // The sequence costs two bytes per step.
 #define DBG_MENU_KEYS_MAX 256
@@ -1136,7 +1124,7 @@ int g_cfg_menuKeysQuit = 120;
 // The multiplayer paths cannot be measured otherwise: MM_ToggleRows_PlayerCount
 // locks 2P, 3P and 4P as long as not that many pads are PLUGGED IN
 // (MainFrame_HaveAllPads, MainFrame.c:574), and a locked entry does not
-// accept Cross. On 09-17 a controller switched itself off after idling in the middle
+// accept Cross. Once a controller switched itself off after idling in the middle
 // of a measurement series - the same run went through before and not afterwards.
 // What the test bench measures must not depend on what happens to be lying on
 // the desk.
@@ -1222,9 +1210,9 @@ internal void DebugMenu_MenuKeysTick(void)
 
 	memcpy(pads, base, sizeof(pads));
 
-	// ALL FOUR SLOTS, not just the first. The menu reads P1 (RECTMENU.c:862),
+	// ALL FOUR SLOTS, not just the first. The menu reads P1 (RECTMENU_ProcessInput),
 	// but character select in VS waits for EVERY connected player: driven with only
-	// slot 1, the run on 09-17 stopped at two open frames,
+	// slot 1, a run stopped at two open frames,
 	// and so the mode could not be verified up to the loading screen. Where a slot
 	// has no pad, the word goes nowhere.
 	for (slot = 0; slot < 4; slot++)
@@ -1347,7 +1335,7 @@ void DebugMenu_Frame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 	//
 	// The menu says what it has set ([CTR Menu] CUSTOM start). Whether it also
 	// arrives only the race can say: laps, driver and player count can be
-	// overwritten by a load path (DebugMenu_JumpToLevel does it, :665-667). The
+	// overwritten by a load path (DebugMenu_JumpToLevel does it). The
 	// moment is the same as for --exit-after-frames: main menu off, no
 	// load pending.
 	{
@@ -1521,7 +1509,7 @@ void DebugMenu_Frame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 				}
 			}
 
-			// MEASUREMENT 09-17: --autoload-demo so far only applied to containers
+			// --autoload-demo used to apply only to containers
 			// (the branch above), so --level never drove. Seeing a disc track
 			// in motion was not possible at all - and a still at the start
 			// does not show a picture error that comes about while driving. The same
@@ -2000,7 +1988,7 @@ void DebugMenu_Frame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 			{
 				const struct NativeTrackEntry *entry = NativeTrack_Get(s_trackSelected);
 
-				// Every value is cut to what a 256 px panel holds. The whole of
+				// Every value is cut to what the panel holds. The whole of
 				// it went into the log when this page was opened - see
 				// DebugMenu_LogTrack.
 				if (entry == NULL)

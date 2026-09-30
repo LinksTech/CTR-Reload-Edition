@@ -476,7 +476,7 @@ void MM_Title_ThTick(struct Thread *title)
 		D230.menuMainMenu.state &= ~(DISABLE_INPUT_ALLOW_FUNCPTRS);
 		D230.menuMainMenu.state |= EXECUTE_FUNCPTR;
 
-		// dont increment index
+		// don't increment index
 		timer = D230.titleIntroFrame;
 	}
 

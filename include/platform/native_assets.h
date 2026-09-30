@@ -34,9 +34,9 @@ int NativeAssets_Validate(void);
 
 // --- Track containers -------------------------------------------------------
 //
-// The read path for .rldtrack, behind --tracks, off by default. See the long
-// section in native_assets.c: nothing is unpacked, and the list does not
-// touch LEVD and VRMD.
+// The read path for .rldtrack, on by default (--no-tracks turns it off). See
+// the long section in native_assets.c: nothing is unpacked, and the list does
+// not touch LEVD and VRMD.
 
 struct NativeTrackEntry
 {
@@ -64,13 +64,10 @@ struct NativeTrackEntry
 	u32 formatMinor;
 	u32 unknownFlags;
 
-	// What META holds - and since 2026-08-29 META only carries what the
-	// reader really needs. License, description, tool version and
-	// UUID were dropped; they were displayed and nothing else.
+	// What META holds - only what the reader really needs.
 	//
-	// `fingerprintHex` stood here and was dropped on 2026-09-19 together with
-	// the signature. The name in META is display, not identity: the game tells
-	// two containers apart by their FILE NAME (track-ids.tsv).
+	// The name in META is display, not identity: the game tells two
+	// containers apart by their FILE NAME (track-ids.tsv).
 	char name[513];
 	char author[513];
 	u32 trackVersion;
@@ -101,29 +98,11 @@ struct NativeTrackEntry
 // translation unit that pulls in the format.
 const char *NativeTrack_ModesText(u32 modes);
 
-// The same information as abbreviations, e.g. "ARC / TT". For lines that are 16
-// characters wide - the long version alone needs that many.
-const char *NativeTrack_ModesShort(u32 modes);
-
-// Whether the track claims crystal mode for itself - bit 8 of the
-// modes field of META, named instead of counted.
-//
-// For the same reason here and not as a constant on the game side like
-// NativeTrack_ModesText: RLD_MODE_CRYSTAL_CHALLENGE lives in rldtrack.inc, and
-// native_assets.c is the only translation unit that pulls in the
-// format. A second 8 in a menu file would be the same fact in
-// two places, and one of the two falls behind.
-//
-// WHAT THIS QUESTION IS NOT: a statement that the track runs in
-// crystal mode. It is the author's promise, nothing else. Whoever
-// asks it chooses a slot afterwards - not a mode.
-int NativeTrack_ClaimsCrystal(const struct NativeTrackEntry *entry);
-
 // THE OFFER RULE (format 4.1): the game offers a container only the modes
 // it DECLARES and that are BUILT for containers
 // (RLD_MODES_PLAYABLE in rldtrack.inc) - never an undeclared one.
-// Today only Race is built, as CUSTOM and in CUSTOM CUP; that is why the
-// game side asks exactly that.
+// Built today: Race (custom track and cup in NITRO-PIT), Crystal Challenge
+// and CTR Challenge.
 //
 // NULL means: this row offers a race. Otherwise the reason as log text,
 // and in text the keyword (at most 12 characters, for the wheel and the cup)
@@ -155,10 +134,11 @@ int NativeTrack_OffersRace(int index);
 // 1: valid, but without Race - not in the RACE list (only in the log).
 int NativeTrack_HiddenFromRace(int index);
 
-// How many rows offer a race. 0 means: CUSTOM stays locked.
+// How many rows offer a race. 0 means: the custom track row in NITRO-PIT
+// stays locked.
 int NativeTrack_CountRaceOffered(void);
 
-// THE SAME RULE FOR EVERY MODE (2026-09-29, CRYSTAL in NITRO-PIT). The
+// THE SAME RULE FOR EVERY MODE (CRYSTAL and CTR in NITRO-PIT). The
 // game side names the mode by name; which bit from rldtrack.inc that is,
 // only native_assets.c knows (see NativeTrack_ModesText). The three
 // Race functions above are these with NATIVE_TRACK_MODE_RACE.
@@ -206,7 +186,7 @@ int NativeTrack_PreviewPath(int index, char *path, int pathSize, char *dirPath, 
 int NativeTrack_Load(int index, int donorLevelID);
 int NativeTrack_LoadedIndex(void);
 
-// --- Run-time level IDs (2026-09-28) -------------------------------------
+// --- Run-time level IDs --------------------------------------------------
 //
 // Every track in the list gets its own level ID at scan time from the band
 // 65..99: after SCRAPBOOK (64), before the synthetic adventure cup base
@@ -237,7 +217,7 @@ int NativeTrack_LevelForIndex(int index);
 // and that is exactly what nobody should do (see the funnel).
 int NativeTrack_IndexForLevel(int levelID);
 
-// --- Custom cups: cups.txt (2026-09-28) -----------------------------------
+// --- Custom cups: cups.txt -----------------------------------------------
 //
 // NATIVE_CUP_FILE in the scanned track folder, next to track-ids.tsv. A cup
 // is a name and four containers, named by their FILE NAME - the same
@@ -246,8 +226,8 @@ int NativeTrack_IndexForLevel(int levelID);
 // of rldpack make:
 //
 //   # comment
-//   cup   = Saphi Cup
-//   track = Baby_T_Park_POC.rldtrack
+//   cup   = My Cup
+//   track = Baby_T_Park.rldtrack
 //   track = Ice_Rink.rldtrack
 //   track = Inferno_Island.rldtrack
 //   track = Sids_House.rldtrack
@@ -256,8 +236,9 @@ int NativeTrack_IndexForLevel(int levelID);
 // broken line (unknown key, no "=", empty value, too long, too
 // many or too few tracks) is reported with its line number, the cup it
 // belongs to is dropped, the rest stays valid. A container that is missing,
-// that the reader rejected or that got no ID makes its cup GRAY: it
-// is shown on screen, cannot be selected, and the log says why.
+// that the reader rejected, that got no ID or that does not declare Race
+// makes its cup GRAY: it is shown on screen, cannot be selected, and the log
+// says why.
 //
 // It is read under --settings-defaults too: the file is content of the
 // folder like the containers, not a setting. It is never written.
@@ -286,12 +267,13 @@ struct NativeCup
 };
 
 // How many cups cups.txt holds (gray ones included), 0 if no file, an
-// empty one or only broken ones. 0 means: CUSTOM CUP stays locked.
+// empty one or only broken ones. 0 means: the cup row in NITRO-PIT stays
+// locked.
 int NativeCup_Count(void);
 const struct NativeCup *NativeCup_Get(int index);
 
 // THE MINIMAP OF A CONTAINER, without loading it (track screen of
-// ARCADE -> CUSTOM). half[0] is icon 3 (upper half), half[1] icon 4
+// NITRO-PIT). half[0] is icon 3 (upper half), half[1] icon 4
 // (lower), like gGT->ptrIcons[3]/[4] in the race.
 struct NativeTrackMinimapHalf
 {
@@ -335,7 +317,6 @@ int NativeTrack_ReadMinimap(int index, struct NativeTrackMinimap *out, const cha
 void NativeTrack_FreeMinimap(struct NativeTrackMinimap *map);
 
 int NativeTrack_LoadedDonorLevel(void);
-int NativeTrack_DonorLevel(void);
 u32 NativeTrack_SkyPrimBytes(void);
 int NativeTrack_ActiveForLevel(int levelID);
 const char *NativeTrack_LoadedName(void);

@@ -4,7 +4,7 @@
 
 #include "platform/native_assets.h"
 
-// NITRO-PIT -> CRYSTAL: THE CRYSTAL CHALLENGE FOR CONTAINERS (2026-09-29).
+// NITRO-PIT -> CRYSTAL: THE CRYSTAL CHALLENGE FOR CONTAINERS.
 //
 // THE SAME PATH AS THE DEBUG JUMP. The debug menu has no crystal mode of its
 // own, just the probe s_crystalProbe in DebugMenu_JumpToLevel
@@ -62,7 +62,7 @@ int MM_NativeCrystal_IsCustom(void)
 	const struct GameTracker *gGT = sdata->gGT;
 
 	// Only on a container track: a debug jump to a disc track would otherwise
-	// keep a stale marker (reviewer, 2026-09-29).
+	// keep a stale marker.
 	return s_nativeCrystalCustom && ((gGT->gameMode1 & CRYSTAL_CHALLENGE) != 0) && ((gGT->gameMode1 & ADVENTURE_MODE) == 0) &&
 	       NativeTrack_ActiveForLevel(gGT->levelID);
 }
@@ -94,8 +94,8 @@ void MM_NativeCrystal_Arm(void)
 //
 // ONLY IN THE MENU LEVEL (MAIN_MENU). NativeMenuLock_Tick runs for EVERY
 // active box, including the end box in the race; without the bit the
-// next frame there picked the arcade end screen (222.c) instead of 221.c - crash in
-// the first measurement run, 2026-09-29.
+// next frame there picked the arcade end screen (222.c) instead of 221.c - and
+// that crashed.
 void MM_NativeCrystal_MenuTick(void)
 {
 	struct GameTracker *gGT = sdata->gGT;
@@ -124,7 +124,7 @@ void MM_NativeCrystal_MenuTick(void)
 // From DebugMenu.c: the crystal probe on the TRACK page with a container.
 // The debug jump sets the bits itself (MM_NativeCrystal_ModeBits); here only
 // the marker, otherwise the end screen would take the retail path with token and
-// save data on the donor slot (reviewer, 2026-09-29).
+// save data on the donor slot.
 void MM_NativeCrystal_MarkDebug(void)
 {
 	s_nativeCrystalCustom = 1;

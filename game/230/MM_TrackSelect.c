@@ -465,7 +465,7 @@ void MM_TrackSelect_MenuProc(struct RectMenu *menu)
 
 					memset(sdata->ptrGhostTapePlaying, 0, MM_TRACK_SELECT_GHOST_TAPE_CLEAR_SIZE);
 
-					// by default, dont show ghost in race
+					// by default, don't show ghost in race
 					sdata->boolReplayHumanGhost = 0;
 
 					SelectProfile_ToggleMode(SELECT_PROFILE_SCREEN_GHOST);

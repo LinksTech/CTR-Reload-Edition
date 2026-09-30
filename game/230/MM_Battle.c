@@ -388,19 +388,19 @@ void MM_Battle_MenuProc(struct RectMenu *unused)
 		{
 			int buttonTapP1 = sdata->buttonTapPerPlayer[0];
 
-			// If you dont press Up
+			// If you don't press Up
 			if ((buttonTapP1 & BTN_UP) == 0)
 			{
-				// If you dont press Down
+				// If you don't press Down
 				if ((buttonTapP1 & BTN_DOWN) == 0)
 				{
-					// If you dont press Left
+					// If you don't press Left
 					if ((buttonTapP1 & BTN_LEFT) == 0)
 					{
-						// If you dont press Right
+						// If you don't press Right
 						if ((buttonTapP1 & BTN_RIGHT) == 0)
 						{
-							// If you dont press Cross or Circle
+							// If you don't press Cross or Circle
 							if ((buttonTapP1 & BATTLE_CONFIRM_INPUT) == 0)
 							{
 								// If you press Square or Trianlge
@@ -409,7 +409,7 @@ void MM_Battle_MenuProc(struct RectMenu *unused)
 									// Play "Go Back" sound
 									OtherFX_Play(2, 1);
 
-									// go back when transition is done, dont start race
+									// go back when transition is done, don't start race
 									D230.battleTransition.startAfterExit = 0;
 
 									// start transition out

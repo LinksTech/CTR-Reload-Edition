@@ -43,7 +43,7 @@ enum MenuFlags
 	INVISIBLE = 0x2000,
 
 	// title will use big text
-	// to be used in conjunction with "USE_SMALL_FONT_IN_ROWS"
+	// to be used in conjunction with USE_SMALL_FONT
 	BIG_TEXT_IN_TITLE = 0x4000,
 
 	ALL_PLAYERS_USE_MENU = 0x8000,
@@ -122,7 +122,7 @@ struct RectMenuStyle
 	//
 	// Why four fields and not two: RM_S rounds BEFORE the sum. Below
 	// scale 100, RM_S(6) is not the same as 2*RM_S(3), and this
-	// restructuring must not move a pixel with --menu-scale either.
+	// restructuring must not move a pixel at any other scale either.
 	s16 borderX;
 	s16 borderY;
 	s16 borderInsetW;

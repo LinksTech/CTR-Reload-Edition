@@ -2,10 +2,9 @@
 
 #include <macros.h>
 
-// The .rldtrack format: crypto, obfuscation, reader. tools/rldpack.c pulls in
-// the same file - there with RLDTRACK_WITH_BUILDER and
-// RLDTRACK_WITH_SIGNING, here without either. The game reads and checks, it
-// does not write and it does not sign.
+// The .rldtrack format: SHA-256, reader. tools/rldpack.c pulls in the same
+// file - there with RLDTRACK_WITH_BUILDER, here without it. The game reads
+// and checks, it does not write.
 #include <rldtrack.inc>
 
 #include <platform/native_disc_image.h>
@@ -657,9 +656,9 @@ internal int NativeAssets_ReadExact(FILE *file, void *dst, size_t size)
 	return fread(dst, 1, size, file) == size;
 }
 
-internal u32 NativeAssets_ReadLE32(const u8 *data)
+internal u32 NativeAssets_ReadLE32(const u8 *bytes)
 {
-	return ((u32)data[0]) | ((u32)data[1] << 8) | ((u32)data[2] << 16) | ((u32)data[3] << 24);
+	return ((u32)bytes[0]) | ((u32)bytes[1] << 8) | ((u32)bytes[2] << 16) | ((u32)bytes[3] << 24);
 }
 
 internal int NativeAssets_ReadHostBytes(const char *path, struct NativeAssetsByteBuffer *bytes)
@@ -889,7 +888,7 @@ int NativeAssets_Validate(void)
 // TRACK CONTAINERS
 //========================================================================================
 //
-// The read path for .rldtrack. CONCEPT BUILD, behind --tracks, off by default.
+// The read path for .rldtrack. On by default, --no-tracks turns it off.
 //
 // What happens here and what does not:
 //
@@ -901,27 +900,19 @@ int NativeAssets_Validate(void)
 //   The list reads only header, directory and META per file. LEVD and VRMD
 //   are only touched when a track is really loaded.
 //
-//   There used to be a justified DEVIATION from that rule here: SIGN was
-//   read too, 64 bytes, because the list showed the author's fingerprint and
-//   an unchecked "by" would have been a false all-clear. With the removal of the
-//   signature on 2026-09-19 the deviation is gone - the list again reads
-//   exactly what the rule names.
-//
 //   Every reference is checked against the real file size before jumping
 //   to it. The reader in include/rldtrack.inc does that, and it does it the
 //   same way for both sides.
 //
-// THE DONOR SLOT, AND WHAT THE RUN-TIME IDS CHANGE ABOUT IT (2026-09-28).
+// THE DONOR SLOT, AND WHAT THE RUN-TIME IDS CHANGE ABOUT IT.
 //
-// In the ENGINE a container track still runs on the slot of an
-// existing one - the run-time IDs changed nothing about that, and every proof that
-// exists for it still holds. NEW is that every track of the list carries its own
-// level ID from 65..99 ABOVE the loader (assigned below in
-// NativeTrackID_Assign): the menu computes with it, and only the funnel
-// MainRaceTrack_RequestLoad turns it into the donor slot. Two tracks are
-// thus two different levels for menu and log - the trap of
-// 2026-08-26, when custom1 and custom2 were both called "Level 4", is thereby
-// closed above the loader and worked around inside the loader as before.
+// In the ENGINE a container track runs on the slot of an existing one.
+// Above the loader every track of the list carries its own level ID from
+// 65..99 (assigned below in NativeTrackID_Assign): the menu computes with it,
+// and only the funnel MainRaceTrack_RequestLoad turns it into the donor slot.
+// Two tracks are thus two different levels for menu and log - they can no
+// longer both show up as the same "Level 4" above the loader, and inside the
+// loader the slot check (NativeTrack_ArmSubfiles) keeps them apart.
 
 void Platform_Log(const char *format, ...);
 int Platform_SettingsLocked(void);
@@ -932,10 +923,9 @@ int Platform_SettingsLocked(void);
 
 // Default ON: the folder is read at every start.
 //
-// Until 2026-08-29 this depended on --tracks. That worked as long as the containers
-// were only reachable through the debug menu. Since the list sits in the main menu
-// behind NITRO-PIT, a menu entry that is empty depending on the command line
-// would be a broken menu entry.
+// The list sits in the main menu behind NITRO-PIT, and a menu entry that is
+// empty depending on the command line would be a broken menu entry. --tracks
+// is still accepted but has no effect.
 //
 // --no-tracks leaves the folder closed. The way back exists because reading now
 // places memory behind the pack's window, and a measurement without this
@@ -948,7 +938,7 @@ int g_cfg_tracksFixedMemory = 0;
 
 // THE FOLDER, empty means tracks/ under the base.
 //
-// For the menu reference (2026-09-27): the carousel
+// For the menu reference: the carousel
 // shows nine rows, i.e. the neighbors of the selected track and their count.
 // An image is only repeatable if the whole list is fixed, not just
 // the selected row. The reference runs therefore point to a separate
@@ -986,10 +976,6 @@ global_variable int s_nativeTrackVrmSubfile = -1;
 // -1 means: no slot occupied.
 global_variable int s_nativeTrackDonorLevel = -1;
 
-// NativeTrack_HexToText stood here. It had exactly one user, the
-// fingerprint of the author key in the list, and was dropped together with it on
-// 2026-09-19.
-
 internal void NativeTrack_CopyText(char *dst, size_t dstSize, const char *src)
 {
 	size_t length = strlen(src);
@@ -1005,14 +991,13 @@ internal void NativeTrack_CopyText(char *dst, size_t dstSize, const char *src)
 
 // Tables that every disc track has and a foreign one may or may not have.
 //
-// MEASURED on 2026-08-28: all 18 arcade tracks and all 5 battle arenas of the
+// MEASURED: all 18 arcade tracks and all 5 battle arenas of the
 // NTSC-U image have every one of these nine fields set. Not a single one is
 // null in any of the 23. The test data has NONE of them.
 //
-// THAT IS A FINDING AND NOT A CAUSE, and the difference cost one
-// attempt. At first there was a block here: a track without these
-// tables was not loaded, on the grounds that levTexLookup feeds
-// pointers that are dereferenced unchecked.
+// THAT IS A FINDING AND NOT A CAUSE. An earlier version blocked here: a
+// track without these tables was not loaded, on the grounds that
+// levTexLookup feeds pointers that are dereferenced unchecked.
 //
 // Counted again, that is not true. Of the nine, exactly three are read through a
 // level pointer anywhere in the tree:
@@ -1193,21 +1178,6 @@ const char *NativeTrack_ModesText(u32 modes)
 	return Rld_ModesText(modes);
 }
 
-const char *NativeTrack_ModesShort(u32 modes)
-{
-	return Rld_ModesShort(modes);
-}
-
-int NativeTrack_ClaimsCrystal(const struct NativeTrackEntry *entry)
-{
-	if ((entry == NULL) || (entry->ok == 0))
-	{
-		return 0;
-	}
-
-	return ((entry->modes & RLD_MODE_CRYSTAL_CHALLENGE) != 0u) ? 1 : 0;
-}
-
 // THE OFFER RULE (format 4.1).
 //
 // One place for the wheel, the cup and every developer path. The keywords
@@ -1314,7 +1284,7 @@ int NativeTrack_OffersRace(int index)
 	return NativeTrack_WhyNoRace(index, NULL) == NULL;
 }
 
-// NOT IN THE RACE LIST (2026-09-29): a valid
+// NOT IN THE RACE LIST: a valid
 // container that does not declare Race - a crystal track belongs under
 // CRYSTAL, not grayed out in the RACE list. A container with a real error
 // (NEEDS NEWER, OLD FORMAT, MEMORY INFO, DAMAGED, NO ID) stays visible, gray
@@ -1322,7 +1292,7 @@ int NativeTrack_OffersRace(int index)
 // the reason NO RACE MODE (NativeCup_Finish), because there someone
 // entered the track explicitly.
 //
-// The same for CRYSTAL (2026-09-29): only containers that declare Crystal are
+// The same for CRYSTAL: only containers that declare Crystal are
 // listed there; a valid container without the bit is not in the list.
 int NativeTrack_HiddenFromRace(int index)
 {
@@ -1514,7 +1484,7 @@ internal void NativeTrack_AddFile(const char *dirPath, const char *fileName)
 }
 
 //----------------------------------------------------------------------------------------
-// THE ORDER OF THE LIST - defined instead of inherited (2026-09-28).
+// THE ORDER OF THE LIST - defined instead of inherited.
 //
 // FindFirstFileA returns the names already sorted on NTFS, but that is
 // a property of the file system and not a promise: FAT and exFAT return
@@ -1557,7 +1527,7 @@ internal int NativeTrack_CompareEntries(const void *a, const void *b)
 }
 
 //----------------------------------------------------------------------------------------
-// THE LEVEL ID REGISTRY (2026-09-28).
+// THE LEVEL ID REGISTRY.
 //
 // File name -> level ID (65..99), maintained by the game, persistent in
 // NATIVE_TRACK_ID_FILE IN THE TRACK FOLDER. There and not with the
@@ -1567,7 +1537,7 @@ internal int NativeTrack_CompareEntries(const void *a, const void *b)
 // deleted folder takes its registry with it. The scan skips the
 // file by itself - it does not end in .rldtrack.
 //
-// THE RULES, as decided on 2026-09-28:
+// THE RULES:
 //
 //   known file        keeps its ID (matched by file name,
 //                     case-insensitive - repacking under the same
@@ -2000,7 +1970,7 @@ int NativeTrack_IndexForLevel(int levelID)
 }
 
 //----------------------------------------------------------------------------------------
-// THE CUSTOM CUPS: cups.txt (2026-09-28).
+// THE CUSTOM CUPS: cups.txt.
 //
 // Format and rules are in native_assets.h at NATIVE_CUP_FILE. It is read
 // once per scan, AFTER the IDs are assigned: a cup names file names, and only
@@ -3035,7 +3005,7 @@ int NativeTrack_Load(int index, int donorLevelID)
 		if ((need.total > entry->memTotal) || (need.primBytes > entry->primBytes))
 		{
 			snprintf(entry->note, sizeof(entry->note),
-			         "META understates the memory need - the LEV needs %u bytes (draw %u), META says %u (draw %u); pack it again with rldpack",
+			         "META understates the memory need - the LEV needs %u bytes (draw %u), META says %u (draw %u); pack it again with the Alpha-Maker",
 			         need.total, need.primBytes, entry->memTotal, entry->primBytes);
 			error = entry->note;
 			memoryRefused = 1;
@@ -3158,9 +3128,9 @@ int NativeTrack_Load(int index, int donorLevelID)
 }
 
 // The slot the loaded container got - the stored one, not
-// computed a second time. -1 if none is loaded. Used by
-// --autoload-track, which after MM_NativeTracks_LoadRow must know which level
-// to start, without copying the slot rule from MM_NativeMenu.c.
+// computed a second time. -1 if none is loaded. Used by the level funnel in
+// MM_NativeMenu.c and by --autoload-track, which after MM_NativeTracks_LoadRow
+// must know which level to start, without copying the slot rule.
 int NativeTrack_LoadedDonorLevel(void)
 {
 	return (s_nativeTrackLoaded >= 0) ? s_nativeTrackDonorLevel : -1;
@@ -3172,8 +3142,8 @@ int NativeTrack_LoadedIndex(void)
 }
 
 // ---------------------------------------------------------------------------
-//  THE MINIMAP OF A CONTAINER, for the track screen of ARCADE ->
-//  CUSTOM (game/230/MM_NativeTrackSelect.c).
+//  THE MINIMAP OF A CONTAINER, for the track screen of NITRO-PIT
+//  (game/230/MM_NativeTrackSelect.c).
 //
 //  In the race the map comes from gGT->ptrIcons[3] and [4] (UI_RenderFrame.c,
 //  UI_Map_DrawMap), and they are there because DecalGlobal_Store sorts the icons of
@@ -3186,8 +3156,7 @@ int NativeTrack_LoadedIndex(void)
 //  strip of the menu (32 rows, Rld_MapWhyNotMenu), Rld_ScaleMap scales it
 //  down here, the first time the row is shown - measured 0.68 ms (Inferno Island)
 //  and 0.87 ms (Sunset Vista), byte-identical to the MMAP that rldpack put into
-//  the container from 2026-09-28 until 4.1. An MMAP in old containers is
-//  skipped. Whether the map fits in the end is decided by
+//  containers before 4.1. An MMAP in old containers is skipped. Whether the map fits in the end is decided by
 //  MM_NativeTrackSelect_MapPlace. The race reads the LEV's map as it is.
 //
 //  Reading and scaling live in include/rldtrack.inc (Rld_LevMap,
@@ -3311,11 +3280,6 @@ int NativeTrack_ReadMinimap(int index, struct NativeTrackMinimap *out, const cha
 	return 1;
 }
 
-int NativeTrack_DonorLevel(void)
-{
-	return s_nativeTrackDonorLevel;
-}
-
 // How much primitive memory the sky of this track needs.
 //
 // The primitive memory is allocated BEFORE the LEV is loaded - stage 5 versus
@@ -3406,8 +3370,8 @@ const char *NativeTrack_LoadedName(void)
 // would otherwise put them into the queue - nothing is guessed here.
 //
 // And the slot is checked. Without this line every further track would get
-// the container data as soon as a container has been loaded once. That is exactly
-// what the trap of 2026-08-26 looked like, when two tracks were both called "Level 4".
+// the container data as soon as a container has been loaded once - two tracks
+// would then both load as the same "Level 4".
 void NativeTrack_ArmSubfiles(int levelID, int levSubfile, int vramSubfile)
 {
 	if ((s_nativeTrackLoaded < 0) || (levelID != s_nativeTrackDonorLevel))

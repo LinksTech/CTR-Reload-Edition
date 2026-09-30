@@ -131,151 +131,30 @@ enum MainMenuFlowConstants
 
 #ifdef CTR_NATIVE
 
-// THE REDIVIDED MAIN MENU. See game/230/MM_NativeMenu.c.
+// Text indices of the native menu rows. See game/230/MM_NativeMenu.c.
 enum MainMenuNativeConstants
 {
-	// THE TRACK SCREEN IN TWO HALVES, EACH AROUND ITS OWN MIDDLE.
-	//
-	// The canvas is 512 wide, so 0..256 and 256..512, middles at 128 and
-	// 384. On the left the list, on the right title and info panel, and both groups sit
-	// symmetrically around the middle of their half instead of somewhere in between.
-	//
-	// Here and not in MM_NativeMenu.c, because MM_TrackSelect.c sets the rectangles
-	// and MM_NativeMenu.c fills them - two translation units, one
-	// number.
-	MM_NATIVE_HALF_W = 256,
-	MM_NATIVE_LEFT_MID = MM_NATIVE_HALF_W / 2,
-	MM_NATIVE_RIGHT_MID = MM_NATIVE_HALF_W + (MM_NATIVE_HALF_W / 2),
-
-	// The rows: 216 wide around 128, so x 20..236.
-	//
-	// Previously 240. A row carries three to six characters and was three
-	// quarters empty - what looked big was the empty box and not the
-	// font.
-	//
-	// The offset is NOT the left edge. The row wheel adds
-	// Cos(angle) * 25 >> 9, and at angle 0 that is exactly 200 - the swing
-	// with which the outer rows move out to the left. The offset has to
-	// subtract it: 8 - 200 = -192. Without that the middle row would sit 200 px too
-	// far right and the swing would be gone.
-	MM_NATIVE_ROW_W = 216,
-	MM_NATIVE_ROW_SWING_AT_ZERO = 200,
-	MM_NATIVE_ROW_X_OFFSET = MM_NATIVE_LEFT_MID - (MM_NATIVE_ROW_W / 2) - MM_NATIVE_ROW_SWING_AT_ZERO,
-
-	// The box on the right: 220 wide around 384, so x 274..494.
-	//
-	// AND 220 IS THE FLOOR, not a choice. The key has 16 characters,
-	// FONT_SMALL is 13 px wide, that is 208 px, plus 6 px indent on each
-	// side. At a box width of 208 it only carries 15 and is cut off
-	// again - exactly what had been fixed just before.
-	//
-	// At the top it stays at 92: CUSTOM and TRACK stand at y 58 and 74 and end
-	// at 91. The height falls from 118 to 104: the text ends 94 px below the
-	// top edge, so there were 24 px of empty black below it.
-	// THE SIZE LINE OF THIS SCREEN, in points of the reference space.
-	//
-	// Box height = 46 + (N x 24) + 10, row pitch 24, minimum margin 16.
-	// The same line as the
-	// menu boxes, although this screen does not go through RECTMENU_DrawSelf
-	// - a second line would be a second look.
-	//
-	//   List   N = 5  ->  46 + 120 + 10 = 176, y 20 .. 196
-	//   Info   N = 2  ->  46 +  48 + 10 = 104, y 92 .. 196, flush at the bottom
-	//
-	// The 46 are the title block, the 10 the margin below the last row.
-	MM_NATIVE_ROW_PITCH = 24,
-	MM_NATIVE_TITLE_BLOCK = 46,
-	MM_NATIVE_BOX_BOTTOM_PAD = 10,
-
-	MM_NATIVE_LIST_ROWS = 5,
-	MM_NATIVE_LIST_Y = 20,
-	MM_NATIVE_LIST_H = MM_NATIVE_TITLE_BLOCK + (MM_NATIVE_LIST_ROWS * MM_NATIVE_ROW_PITCH) + MM_NATIVE_BOX_BOTTOM_PAD,
-	MM_NATIVE_LIST_X = MM_NATIVE_LEFT_MID - (MM_NATIVE_ROW_W / 2),
-
-	// The position counter, bottom right INSIDE the list box.
-	//
-	// NOT in the title row, although it looks empty on the right: the title is
-	// centered and is 9 characters in FONT_BIG, so 153 points wide - it runs from
-	// 51 to 205, and the right-aligned counter starts at 176. Measured on the
-	// screenshot: the two stood on top of each other.
-	//
-	// Below there is room that is there anyway: the last row ends 159 points
-	// below the box edge, the box is 176 high. A small row at 162
-	// ends at 170 and leaves 6 points of margin.
-	MM_NATIVE_COUNTER_INSET_X = 8,
-	MM_NATIVE_COUNTER_Y = 162,
-
-	// THE PREVIEW SLOT, taken over from the retail screen.
-	//
-	// There, top right, is a window of 0xb0 x 0x4b (176 x 75), in which
-	// first a still image (selectMenu->videoThumbnail, an icon from the
-	// VRAM icon set) and after 21 frames the preview video runs
-	// (previewVideoFileIndex, a BIGFILE entry, MDEC stream). Below it
-	// it draws the track map in six layers.
-	//
-	// We take over the TWO-WAY SPLIT, not the dimensions: our right column
-	// is 220 wide like the info box, so that both share an edge, and the
-	// preview takes the space from 20 to 84. That it is flatter than the
-	// retail window costs nothing - we generate the preview images ourselves
-	// (decided 2026-09-17), so we choose their format.
-	// THE WHEEL, and the only number on it that is not the one of the arcade screen.
-	// The derivation is at the assignment in MM_TrackSelect.c.
-	MM_NATIVE_WHEEL_ROWS = 5,
-	MM_NATIVE_WHEEL_CENTER_ROW = MM_NATIVE_WHEEL_ROWS / 2,
-
-	MM_NATIVE_INFO_ROWS = 2,
-	MM_NATIVE_INFO_Y = 92,
-
-	// THE WIDTH IS A LOWER BOUND AND NOT A CHOICE: 220 carry 208 points of text
-	// at 6 points of indent, and FONT_SMALL is 13 wide - so 16 characters.
-	// Narrower means fewer characters, not more air.
-	MM_NATIVE_INFO_W = 220,
-
-	// AGAINST THE RIGHT EDGE INSTEAD OF ON THE MIDDLE OF THE HALF.
-	//
-	// Centered around 384 the box would stand at 274..494. The middle row of the wheel
-	// is its widest and ends at 276: rowX is currX + 20 (MATH_Cos(0) times
-	// 25 >> 9 minus 180) and the row is 256 wide. Four points of air do not
-	// look intentional but accidental - and they were.
-	//
-	// Right-aligned with 8 points of margin it is 284..504: 8 to the row, 8 to the
-	// screen edge. The same air on both sides, and the 16 characters stay.
-	MM_NATIVE_INFO_EDGE_PAD = 8,
-	MM_NATIVE_INFO_X = (MM_NATIVE_HALF_W * 2) - MM_NATIVE_INFO_EDGE_PAD - MM_NATIVE_INFO_W,
-	MM_NATIVE_INFO_H = MM_NATIVE_TITLE_BLOCK + (MM_NATIVE_INFO_ROWS * MM_NATIVE_ROW_PITCH) + MM_NATIVE_BOX_BOTTOM_PAD,
-
-
-	// When the lap choice is open, the split no longer applies: the list
-	// is hidden, and the lap box stands alone on the middle of the
-	// whole screen instead of on the middle of one half.
-	MM_NATIVE_SCREEN_MID_X = MM_NATIVE_HALF_W,
-
-	// The title CUSTOM / TRACK is centered, so on the same middle as
-	// the box below it. Stock it stands at 0x18c = 396, which belongs to the
-	// video window of a disc track.
-	MM_NATIVE_INFO_TITLE_X = MM_NATIVE_RIGHT_MID,
-
 	// Text indices above the language file. The highest index there is
 	// LNG_TURBOS = 0x24b; 0x8000 would be the lock bit in struct MenuRow.
-	// Which index is which text is, since step 1, NO LONGER stated here:
-	// the menu declaration assigns them in the order in which the texts
+	// Which index is which text is NOT stated here for the declaration's
+	// range: the menu declaration assigns them in the order in which the texts
 	// stand in the file. A name next to it would state the same fact a second time
 	// and would only be right until someone inserts a row.
 	MM_NATIVE_LNG_BASE = 0x2000,
 
-	// The visible rows of the track list, each with its own text buffer.
+	// No longer used for text; kept as the upper end of the declaration's
+	// range (namespace_MenuDecl.h).
 	MM_NATIVE_LNG_TRACK0 = MM_NATIVE_LNG_BASE + 0x40,
 
 	// THE OWN ROWS OF THE PLAYER MENUS, fixed in the code.
 	//
 	// The menu declaration assigns its indices from MM_NATIVE_LNG_BASE, but
 	// menus/nitro-pit.menu is no longer loaded. These lie behind the declaration's range
-	// (32 entries) and behind
-	// the old list rows. They are read in MM_NativeMenu_String.
-	// 0x80 and 0x81 were CUSTOM and CUSTOM CUP (until 2026-09-29).
+	// (32 entries) and behind MM_NATIVE_LNG_TRACK0. They are read in
+	// MM_NativeMenu_String. 0x80 and 0x81 are unused.
 	//
-	// The main menu (2026-09-29): EXIT GAME has no retail text. OPTIONS,
-	// QUIT, YES and NO come from the language file.
+	// The main menu: EXIT GAME has no retail text. OPTIONS, QUIT, YES and NO
+	// come from the language file.
 	MM_NATIVE_LNG_EXIT_GAME = MM_NATIVE_LNG_BASE + 0x82,
 
 	// The race type box under ARCADE and the NITRO-PIT box.
@@ -285,8 +164,7 @@ enum MainMenuNativeConstants
 	MM_NATIVE_LNG_CRYSTAL = MM_NATIVE_LNG_BASE + 0x86,
 	MM_NATIVE_LNG_CTR = MM_NATIVE_LNG_BASE + 0x87,
 
-	// The OPTIONS box under the main menu. 0x88 was GAME, the
-	// options screen of the pause (until the evening of 2026-09-29).
+	// The OPTIONS box under the main menu. 0x88 is unused.
 	MM_NATIVE_LNG_CHEATS = MM_NATIVE_LNG_BASE + 0x89,
 	MM_NATIVE_LNG_GRAPHICS = MM_NATIVE_LNG_BASE + 0x8a,
 
@@ -299,7 +177,7 @@ enum MainMenuNativeConstants
 char *MM_NativeMenu_String(s16 index);
 
 // The row of the NITRO-PIT wheel -> scan index of the container, -1 outside.
-// Containers without Race are not in the wheel (MM_NativeMenu.c).
+// Containers without the mode of the list are not in the wheel (MM_NativeMenu.c).
 int MM_NativeTracks_RowIndex(int row);
 
 // The verbs under which the menu declaration calls the Nitro-Pit path. The
@@ -323,37 +201,24 @@ int MM_NativeMode_ActBattle(struct RectMenu *box);
 int MM_NativeMode_ActVsSingle(struct RectMenu *box);
 int MM_NativeMode_ActVsCup(struct RectMenu *box);
 
-// The style with which RECTMENU draws this box. For every box except the
-// main menu chain g_rectMenuStyleRetail, so pixel for pixel what it was before.
+// The style with which RECTMENU draws this box: g_rectMenuStyleRetail plus
+// what a loaded menu declaration names (none is loaded at run time).
 const struct RectMenuStyle *MM_NativeMenu_StyleFor(const struct RectMenu *menu);
 
-void MM_NativeTracks_MenuProc(struct RectMenu *menu);
 void MM_NativeTracks_Disarm(void);
 
 // What the select screen (MM_TrackSelect) needs when it shows the containers
 // from tracks/ instead of the tracks of the disc.
-int MM_NativeTracks_ScreenActive(void);
 struct MainMenu_LevelRow *MM_NativeTracks_Rows(void);
 int MM_NativeTracks_Count(void);
-void MM_NativeTracks_FollowCursor(int selected);
-int MM_NativeTracks_Window(void);
-int MM_NativeTracks_WindowRows(void);
-void MM_NativeTracks_DrawCounter(RECT *listBox, int selected);
-char *MM_NativeTracks_RowName(int index, int maxChars);
-int MM_NativeTracks_RowOk(int index);
+char *MM_NativeTracks_RowName(int row, int maxChars);
+int MM_NativeTracks_RowOk(int row);
 
 // Builds the rows from the containers in tracks/ and returns their count.
 int MM_NativeTracks_BuildRows(void);
-void MM_NativeTracks_DrawInfo(RECT *r, int index);
 
-// The whole right column of the track screen for custom tracks:
-// preview slot on top, info field below. The counterpart to title + map +
-// video window of the retail screen, and the ONLY difference between
-// the two versions - see the block above the call in MM_TrackSelect.c.
-void MM_NativeTracks_DrawRightColumn(int slideX, int slideY, int index, int lapBoxClosed);
-
-// Loads the container of a row onto the donor slot. 0 if it has meanwhile
-// gone or become unusable.
+// Loads the container with this scan index onto the donor slot, by the rule
+// for Race. 0 if it has meanwhile gone or become unusable.
 int MM_NativeTracks_LoadRow(int index);
 
 // The funnel step of the run-time IDs: a container ID (65..99) becomes the
@@ -371,16 +236,16 @@ void MM_NativeTracks_StartLoad(s16 levelID);
 // which otherwise show the name of the donor slot.
 const char *MM_NativeTracks_NameForLevel(int levelID);
 
-// ARCADE -> CUSTOM CUP (game/230/MM_NativeCupSelect.c, 2026-09-28).
+// NITRO-PIT -> NITRO CUP (game/230/MM_NativeCupSelect.c).
 //
-// As with CUSTOM: the choice in the race type box sets the marker, the hook
+// As with NITRO RACE: the choice in the race type box sets the marker, the hook
 // swaps the proc of the cup screen every frame. The cups come from cups.txt
 // (NativeCup_*, native_assets.h).
 void MM_NativeCupSelect_SetChosen(int chosen);
 void MM_NativeCupSelect_Hook(void);
 void MM_NativeCupSelect_MenuProc(struct RectMenu *menu);
 
-// Lifts the cup lock of the difficulty levels while CUSTOM CUP is chosen:
+// Lifts the cup lock of the difficulty levels while NITRO CUP is chosen:
 // the lock reads retail win bits, and custom cups write none.
 void MM_NativeCup_OpenDifficulty(void);
 
@@ -395,13 +260,13 @@ void MM_NativeCup_LogPoints(void);
 void MM_NativeCup_LogFinal(void);
 void MM_NativeCup_Stop(const char *why);
 
-// ARCADE -> CUSTOM (game/230/MM_NativeTrackSelect.c).
+// NITRO-PIT -> NITRO RACE, CRYSTAL, CTR (game/230/MM_NativeTrackSelect.c).
 //
 // The choice in the race type box sets the marker, and the hook swaps every frame
-// the proc of the track screen: the copy while CUSTOM applies, otherwise the
+// the proc of the track screen: the copy while a NITRO-PIT row applies, otherwise the
 // original. Called from NativeMenuLock_Tick (game/native_menuscreen.c).
-// chosen: 0 off, MM_NATIVE_CHOSEN_RACE (NITRO RACE) or MM_NATIVE_CHOSEN_CRYSTAL
-// (NITRO-PIT -> CRYSTAL, 2026-09-29) - the same copy with a different list.
+// chosen: 0 off, MM_NATIVE_CHOSEN_RACE (NITRO RACE), MM_NATIVE_CHOSEN_CRYSTAL
+// or MM_NATIVE_CHOSEN_CTR - the same copy with a different list.
 enum
 {
 	MM_NATIVE_CHOSEN_RACE = 1,
@@ -412,8 +277,8 @@ void MM_NativeTrackSelect_SetChosen(int chosen);
 void MM_NativeTrackSelect_Hook(void);
 void MM_NativeTrackSelect_MenuProc(struct RectMenu *menu);
 
-// Which mode the list of the track screen provides (NATIVE_TRACK_MODE_RACE
-// or NATIVE_TRACK_MODE_CRYSTAL, native_assets.h): who is in it, what can be chosen,
+// Which mode the list of the track screen provides (NATIVE_TRACK_MODE_RACE,
+// _CRYSTAL or _CTR, native_assets.h): who is in it, what can be chosen,
 // what is loaded. Set by MM_NativeTrackSelect_SetChosen.
 void MM_NativeTracks_SetListMode(int mode);
 int MM_NativeTracks_ListMode(void);
@@ -435,7 +300,7 @@ void MM_NativeCrystal_ProbeFrame(void);
 // MM_NATIVE_CHOSEN_CRYSTAL or _CTR, the row the cursor is on.
 void MM_NativeChallenge_RequestPitReturn(int chosen);
 
-// NITRO-PIT -> CTR (game/230/MM_NativeCtr.c, 2026-09-29): arcade race with
+// NITRO-PIT -> CTR (game/230/MM_NativeCtr.c): arcade race with
 // TOKEN_RACE, letters and win rule from retail, without token and save data.
 int MM_NativeCtr_IsCustom(void);
 void MM_NativeCtr_Arm(void);
@@ -443,13 +308,6 @@ void MM_NativeCtr_MenuTick(void);
 void MM_NativeCtr_LogEnd(int won);
 struct RectMenu *MM_NativeCtr_EndMenu(void);
 void MM_NativeCtr_ProbeFrame(void);
-
-// Scale of the menu boxes in percent, default 100. Switch --menu-scale.
-extern int g_cfg_menuScalePercent;
-
-
-// 0 = new main menu (default), 1 = original. Switch --stock-menu.
-extern int g_cfg_stockMenu;
 
 // Set as soon as NITRO-PIT was chosen, cleared on every other row.
 extern int g_mmNitroPit;

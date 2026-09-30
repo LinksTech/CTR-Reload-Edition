@@ -28,7 +28,7 @@ enum
 	NATIVE_MENU_DECL_BOXES = 16,
 
 	// Rows per box. Four boxes stacked leave no room for more at
-	// scale 100 - see the cascade calculation in MM_NativeMenu.c.
+	// scale 100.
 	NATIVE_MENU_DECL_ROWS = 12,
 
 	// Own strings. They lie above all language indices and
@@ -62,9 +62,9 @@ typedef int (*NativeMenuDeclCondition)(struct RectMenu *box);
 // became empty between the lock check and the confirmation.
 typedef int (*NativeMenuDeclAction)(struct RectMenu *box);
 
-// A source fills the rows of a box at run time. For step 1
-// not used by anyone yet - the table exists so that the next list
-// costs one row and no decision.
+// A source fills the rows of a box at run time. Not used by anyone
+// yet - the table exists so that the next list costs one row and no
+// decision.
 typedef int (*NativeMenuDeclSource)(struct RectMenu *box, int index, char **textOut);
 
 // Reads the declarations. Two phases: first parse and resolve all names,
@@ -88,7 +88,10 @@ void NativeMenuDecl_Proc(struct RectMenu *box);
 // ours - then sdata->lngStrings applies as before.
 char *NativeMenuDecl_String(s16 index);
 
-// The style of a box, or NULL if the file names none.
+// Lays the style fields the file named for this box onto *dst; 1 if
+// anything was laid on, 0 if the file names no style for it. The minimum
+// width in characters of a box, and the largest one among its drawn
+// children, or -1 each.
 int NativeMenuDecl_OverlayStyle(struct RectMenuStyle *dst, const struct RectMenu *box);
 int NativeMenuDecl_MinWidthChars(const struct RectMenu *box);
 int NativeMenuDecl_ChildMinWidthChars(const struct RectMenu *box);
@@ -96,18 +99,17 @@ int NativeMenuDecl_ChildMinWidthChars(const struct RectMenu *box);
 // RELOAD AT RUN TIME.
 //
 // Called once per frame from RECTMENU_ProcessState, so in step with the tick and never
-// in the middle of drawing. Only looks when --menu-reload is on, and even then
-// only once per second. If the file changes, the same two-phase
-// load path as at startup runs: on errors the old state stays.
+// in the middle of drawing. Only looks when g_cfg_menuReload is on, and even
+// then only once per second. If the file changes (or on the first poll), the
+// two-phase load path runs: on errors the old state stays.
 void NativeMenuDecl_Tick(void);
 
-// The switch behind it, --menu-reload. Default off.
+// The flag behind it. Default off; no command-line switch sets it at present.
 extern int g_cfg_menuReload;
 
 // The last load error, or NULL. So that while editing you see that the
 // file is broken without looking into the log.
 const char *NativeMenuDecl_LastError(void);
-int NativeMenuDecl_LastErrorCount(void);
 
 // What a box really drew. RECTMENU_DrawSelf reports its
 // finished rectangle here - width and height are computed and not declared,
@@ -122,8 +124,8 @@ void NativeMenuDecl_NoteDrawn(const struct RectMenu *box, const RECT *frame);
 //
 // Called at the end of the frame, not at reload: the reload happens in the tick
 // of RECTMENU_ProcessState, and at that point the picture of this frame is not
-// drawn yet. Without --menu-reload the call does nothing and never looks at
-// the disk.
+// drawn yet. Without the menu reload on the call does nothing and never
+// looks at the disk.
 void NativeMenuDecl_PictureIfDue(void);
 
 // THE ANCHOR OF A FORMAT BOX, OR -1.

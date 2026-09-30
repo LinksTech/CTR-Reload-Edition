@@ -134,31 +134,6 @@ struct OverlayDATA_230 D230 =
                 .funcPtr = MM_MenuProc_NewLoad,
             },
 
-#if 0
-	.langIndex = {2,3,4,5,6,7},
-
-	.rowsLanguage =
-	{
-		{0x85, 0,1,0,0},
-		{0x86, 0,2,1,1},
-		{0x87, 1,3,2,2},
-		{0x88, 2,4,3,3},
-		{0x89, 3,5,4,4},
-		{0x8a, 4,5,5,5},
-		{RECTMENU_STRING_NONE}
-	},
-
-	.menuLanguage =
-	{
-		.stringIndexTitle = RECTMENU_STRING_NONE,
-
-		.state = 0x400001,
-		.rows = &D230.rowsLngBoot,
-		.funcPtr = MM_MenuProc_Language
-	},
-
-#endif
-
         .menuCharacterSelect =
             {
                 .stringIndexTitle = RECTMENU_STRING_NONE,
@@ -787,35 +762,6 @@ struct OverlayDATA_230 D230 =
                 .currentRow = 0,
             },
 
-#if 0
-
-	.fileIndexLngBoot = {2,3,4,5,6,7},
-
-	.rowsLngBoot =
-	{
-		{0x85, 0,1,0,0},
-		{0x86, 0,2,1,1},
-		{0x87, 1,3,2,2},
-		{0x88, 2,4,3,3},
-		{0x89, 3,5,4,4},
-		{0x8a, 4,5,5,5},
-		{RECTMENU_STRING_NONE}
-	}
-
-	.menuLngBoot =
-	{
-		.stringIndexTitle = RECTMENU_STRING_NONE,
-
-		.posX_curr = 256,
-		.posY_curr = 118,
-
-		.state = RECTMENU_STATE_EXEC_CENTERED,
-		.rows = &D230.rowsLngBoot,
-		.funcPtr = MM_MenuProc_LanguageBoot
-	}
-
-#endif
-
         .titleObj = 0,
 
         // TRACK SELECT DYN
@@ -891,9 +837,6 @@ struct OverlayDATA_230 D230 =
         .characterSelectMenuState = ENTERING_MENU,
 
         .characterSelectModelMoveTimer = {0, 0, 0, 0},
-#if 0
-	.langMenuTimer = 0,
-#endif
         .characterSelectRosterExpanded = 0,
         .characterSelectWindowWidth = 0,
         .titleIntroCameraPath = 0,

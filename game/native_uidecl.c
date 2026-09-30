@@ -5,11 +5,6 @@
 // Defined in game/DebugMenu.c, which the unity build includes after this file.
 int DebugMenu_IsOpen(void);
 
-// Is the arcade/adventure results screen in the picture? Two facts that the
-// code sets itself: MainGameEnd_Initialize raises END_OF_RACE, and
-// LOAD_TenStages picks for ARCADE_MODE as for ADVENTURE_MODE the
-// end overlay 1, whose drawer is AA_EndEvent_DrawMenu (222.c). No shape,
-// no threshold.
 // Is the error banner of the menu reload in the picture? Only then may this
 // row claim anything - otherwise its rectangle would lie, in every frame, top left
 // over whatever else stands there.
@@ -50,16 +45,21 @@ internal int NativeUiDecl_TrackSelect(void)
 	return NativeUiDecl_ActiveMenuIs(&D230.menuTrackSelect);
 }
 
-// The track screen of ARCADE -> CUSTOM: the same box as retail, but with
-// the copy of the proc (MM_NativeTrackSelect.c) on the pointer.
 // Is there a reason under a box of the chain in this frame? (native_menuscreen.c)
 int NativeMenuReason_OnScreen(void);
 
+// The track screen of ARCADE -> CUSTOM: the same box as retail, but with
+// the copy of the proc (MM_NativeTrackSelect.c) on the pointer.
 internal int NativeUiDecl_CustomTrackSelect(void)
 {
 	return NativeUiDecl_ActiveMenuIs(&D230.menuTrackSelect) && (D230.menuTrackSelect.funcPtr == MM_NativeTrackSelect_MenuProc);
 }
 
+// Is the arcade/adventure results screen in the picture? Two facts that the
+// code sets itself: MainGameEnd_Initialize raises END_OF_RACE, and
+// LOAD_TenStages picks for ARCADE_MODE as for ADVENTURE_MODE the
+// end overlay 1, whose drawer is AA_EndEvent_DrawMenu (222.c). No shape,
+// no threshold.
 internal int NativeUiDecl_ArcadeResultsOnScreen(void)
 {
 	if ((sdata == NULL) || (sdata->gGT == NULL))
@@ -146,8 +146,8 @@ internal int NativeUiDecl_ArcadeResultsOnScreen(void)
 // "authored >= authored" at 4:3 for every element, so the floor PROVABLY cannot
 // fire there, and 4:3 byte-equality cannot break on it.
 //
-// The two numbers below are the one thing in this step carried over from the
-// reference tree rather than re-derived here: they came out of a 4:3 census as
+// The two numbers below are carried over from an earlier version rather than
+// re-derived here: they came out of a 4:3 census as
 // the smallest margin and the smallest gap the stock data authors. They cannot
 // be re-derived without driving, so they are made visible instead - every frame
 // reports how many elements the floor moved and by how much. A wrong value shows
@@ -278,7 +278,7 @@ global_variable const struct NativeUiDecl g_nativeUiDecls[] = {
     // THE DEBUG MENU PANEL. The left half of the canvas, and it must STAY the
     // left half at every ratio.
     //
-    // The numbers are this tree own: NATIVE_DEBUG_MENU_W is 256 and
+    // The numbers are this tree's own: NATIVE_DEBUG_MENU_W is 256 and
     // NATIVE_DEBUG_MENU_H is 216 in game/DebugMenu.c, and the panel is drawn at
     // the origin. The derived rule reads its box centre at 128, calls it
     // left-anchored, and squeezes it by the factor - 256 px would become 143 at
@@ -357,7 +357,7 @@ global_variable const struct NativeUiDecl g_nativeUiDecls[] = {
      NATIVE_UI_DECL_INSIDE, NULL, 1},
 
     // THE DRIVER ROW OF THE ARCADE RESULTS SCREEN, and it is the case for
-    // which "declare per row" was decided (2026-09-05): a row of
+    // which "declare per row" was decided: a row of
     // up to eight icons that the producer means as ONE row and that the
     // derived anchor tears into three parts.
     //
@@ -393,7 +393,7 @@ global_variable const struct NativeUiDecl g_nativeUiDecls[] = {
 
     // THE ERROR BANNER OF THE MENU RELOAD.
     //
-    // Two lines of text top left, as soon as --menu-reload is on and the file
+    // Two lines of text top left, as soon as the menu reload is on and the file
     // could not be loaded. Without this row the text falls apart into
     // groups that get three different anchors depending on the third, and at
     // 43:18 the right half flies out of the picture - the same class as the
@@ -415,7 +415,7 @@ global_variable const struct NativeUiDecl g_nativeUiDecls[] = {
     // block title + grid (26..288) it holds the left edge together with it.
     //
     // The rectangle is the path of the title, not only its resting place: it flies
-    // out to the left by 512 with the grid (D230.c:515-517). To the right it reaches
+    // out to the left by 512 with the grid (D230.c:490-492). To the right it reaches
     // only to 300, so never the windows (from 293, but 160 wide), and
     // down only to 56, so never the grid (from 68).
     {"menu-charselect-3p-title", 0, 0, 0, -1, 0, -540, 18, 300, 56, (int)CTR_UI_ANCHOR_LEFT, NATIVE_UI_DECL_INSIDE,
@@ -434,7 +434,7 @@ global_variable const struct NativeUiDecl g_nativeUiDecls[] = {
     //
     // Right-anchored like the block in retail. The rectangle is the path of the
     // map, not only its resting place: it flies in with the lap choice from +512
-    // (trackSelect_lapMenuTransition, D230.c:613). At the top it begins
+    // (trackSelect_lapMenuTransition, D230.c:588). At the top it begins
     // below the window including shadow (to 120), so that window and title never
     // fall into it. Precondition: the copy is the active track screen -
     // the retail screen stays as it is. At 4:3 every anchor is the
@@ -457,10 +457,10 @@ global_variable const struct NativeUiDecl g_nativeUiDecls[] = {
     // columns left of its 16:9 position (108 instead of 118 at 918). This row takes
     // it out of the edge rule: LEFT, without transit, exactly as in 16:9. In exchange,
     // at 918 columns the 28 points of row ends lie visibly left of the zone
-    // (90..118). Whether they disturb is left to a check of the screenshot (2026-09-28).
+    // (90..118). Whether they disturb is left to a check of the screenshot.
     //
     // The rectangle is the path of the list, not its resting place: it flies in by 512
-    // from the left (transitionMeta_trackSel, D230.c:613), so from -540. When
+    // from the left (transitionMeta_trackSel, D230.c:588), so from -540. When
     // scrolling the arc turns one step further, y then reaches about -58..280.
     // On the right it ends before the right column (MM_TRACK_SELECT_PREVIEW_X = 308);
     // stars and ghost hint in time trial hang on the row and lie
@@ -473,7 +473,7 @@ global_variable const struct NativeUiDecl g_nativeUiDecls[] = {
      NativeUiDecl_TrackSelect, 0},
 
     // THE REASON UNDER A BOX OF THE CHAIN HOLDS THE RIGHT EDGE LIKE THE
-    // BOX (2026-09-29). One line of FONT_SMALL, centred under the open
+    // BOX. One line of FONT_SMALL, centred under the open
     // box, when the cursor is on a grey row
     // (NativeMenuReason_NoteDrawn, native_menuscreen.c) - under the
     // NITRO-PIT box at 207..214, under the OPTIONS box higher. The
@@ -509,8 +509,8 @@ global_variable const struct NativeUiDecl g_nativeUiDecls[] = {
 //
 // Every element of this screen gets the one anchor, and because the parts
 // fly in and out on a change - the cup boxes by 256 points diagonally
-// (D230.c:642), the battle rows by 400 to the right and 200 to the left
-// (D230.c:661-671) - in addition the shift for the flight over the edge
+// (D230.c:617), the battle rows by 400 to the right and 200 to the left
+// (D230.c:636-646) - in addition the shift for the flight over the edge
 // (CTR_UI_TransitShift): what is outside in 4:3 stays outside on the
 // canvas.
 struct NativeUiMenuPolicy

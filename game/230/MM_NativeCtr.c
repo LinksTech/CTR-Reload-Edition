@@ -4,8 +4,8 @@
 
 #include "platform/native_assets.h"
 
-// NITRO-PIT -> CTR: THE CTR CHALLENGE FOR CONTAINERS, released for Beta 0
-// (2026-09-29): the CTR row is white as soon as a container offers CTR,
+// NITRO-PIT -> CTR: THE CTR CHALLENGE FOR CONTAINERS. The CTR row is white
+// as soon as a container offers CTR,
 // otherwise grey with "NO CTR TRACKS" (native_menuscreen.c).
 //
 // An ordinary arcade race with bots (NITRO RACE) plus TOKEN_RACE in gameMode2
@@ -33,7 +33,7 @@ int MM_NativeCtr_IsCustom(void)
 	const struct GameTracker *gGT = sdata->gGT;
 
 	// Only on a container track: a debug jump out of the race keeps
-	// TOKEN_RACE and the marker (review, 2026-09-29).
+	// TOKEN_RACE and the marker.
 	return s_nativeCtrCustom && ((gGT->gameMode2 & TOKEN_RACE) != 0) && ((gGT->gameMode1 & ARCADE_MODE) != 0) &&
 	       ((gGT->gameMode1 & ADVENTURE_MODE) == 0) && NativeTrack_ActiveForLevel(gGT->levelID);
 }

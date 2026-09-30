@@ -146,7 +146,7 @@ void MM_MenuProc_Main(struct RectMenu *mainMenu)
 
 	// Default to 3,
 	// this intentionally disables the 1-lap cheat
-	// in Time Trial and Adventure, DONT change it
+	// in Time Trial and Adventure, DON'T change it
 	gGT->numLaps = MM_DEFAULT_LAP_COUNT;
 
 	// get LNG index of row selected
@@ -185,7 +185,7 @@ void MM_MenuProc_Main(struct RectMenu *mainMenu)
 	// Arcade Mode
 	if (choose == LNG_ARCADE)
 	{
-		// DONT change, should only work in Arcade, and VS
+		// DON'T change, should only work in Arcade, and VS
 		if ((gGT->gameMode2 & CHEAT_ONELAP) != 0)
 		{
 			gGT->numLaps = MM_ONE_LAP_CHEAT_COUNT;
@@ -203,7 +203,7 @@ void MM_MenuProc_Main(struct RectMenu *mainMenu)
 	// Versus
 	if (choose == LNG_VS)
 	{
-		// DONT change, should only work in Arcade, and VS
+		// DON'T change, should only work in Arcade, and VS
 		if ((gGT->gameMode2 & CHEAT_ONELAP) != 0)
 		{
 			gGT->numLaps = MM_ONE_LAP_CHEAT_COUNT;

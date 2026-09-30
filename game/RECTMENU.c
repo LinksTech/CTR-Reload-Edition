@@ -103,7 +103,7 @@ const struct RectMenuStyle g_rectMenuStyleRetail = {
 //
 // Set and restored in RECTMENU_ProcessState, in the same bracket
 // in which g_decalFontScale already was. Whoever calls RECTMENU_DrawInnerRect or
-// RECTMENU_DrawQuip from outside - MM_NativeTracks_DrawInfo, MM_TrackSelect,
+// RECTMENU_DrawQuip from outside - MM_TrackSelect,
 // MainFreeze - thus sees the style of the active box; today that is retail
 // in each of these cases, i.e. pixel for pixel what was there before.
 static const struct RectMenuStyle *s_style = &g_rectMenuStyleRetail;
@@ -377,47 +377,6 @@ void RECTMENU_DrawQuip(char *comment, s16 startX, int startY, u32 sizeX, s16 fon
 	r.w = sizeX;
 	r.h = sizeY;
 	RECTMENU_DrawInnerRect(&r, boxFlag, sdata->gGT->backBuffer->otMem.uiOT);
-}
-
-
-// A BOX WITH A TITLE FOR A SCREEN THAT DRAWS ITS ROWS ITSELF.
-//
-// The track selection is NOT a cascading box. It runs under
-// DISABLE_INPUT_ALLOW_FUNCPTRS, i.e. without RECTMENU_ProcessInput and without
-// RECTMENU_DrawSelf (RECTMENU.c:1054), and sets its rectangles itself in
-// MM_TrackSelect.c. It is supposed to look like the menu all the same.
-//
-// That is why it is here and not there: frame thickness, title rule and its spacing
-// are in the style, and the style belongs to this file. The same three numbers a
-// second time in MM_TrackSelect.c would be the same fact in two places.
-//
-// s_style is the retail style here: RECTMENU_ProcessState restores it after
-// drawing the chain, and the track selection is an active box of its own
-// (comment at RECTMENU.c:1077).
-void RECTMENU_DrawTitledBox(RECT *r, char *title, int drawStyle)
-{
-	struct GameTracker *gGT = sdata->gGT;
-
-	if (title != NULL)
-	{
-		const u32 *rgb = s_style->frameColor[((drawStyle & 0x10) != 0) ? 1 : 0];
-		RECT rule;
-		Color color;
-
-		// Title centred above the box, rule below it - the same computation as
-		// in RECTMENU_DrawFullRect for a chain with large row font.
-		DecalFont_DrawLine(title, r->x + (r->w / 2), r->y + RM_S(s_style->titleRuleYBig), FONT_BIG, (JUSTIFY_CENTER | ORANGE));
-
-		rule.x = (s16)(r->x + RM_S(s_style->borderX));
-		rule.y = (s16)(r->y + RM_S(s_style->titleRuleYBig + data.font_charPixHeight[FONT_BIG]));
-		rule.w = (s16)(r->w - RM_S(s_style->borderInsetW));
-		rule.h = RM_S(s_style->titleRuleH);
-
-		ColorCode_SetPacked(&color, *rgb);
-		RECTMENU_DrawOuterRect_Edge(&rule, color, (u32)(drawStyle | 0x20), gGT->backBuffer->otMem.uiOT);
-	}
-
-	RECTMENU_DrawInnerRect(r, drawStyle, gGT->backBuffer->otMem.uiOT);
 }
 
 void RECTMENU_DrawInnerRect(RECT *r, int type, u32 *ot)
@@ -1096,8 +1055,9 @@ void RECTMENU_ProcessState()
 	//
 	// Up here, before anything about the boxes is read: a reload
 	// swaps rows and pointers, and that must not happen between two rows
-	// of the same frame. Without --menu-reload the call returns at once
-	// and never looks at the disk.
+	// of the same frame. Without the menu reload on (g_cfg_menuReload) the
+	// call only runs the menu hooks (NativeMenuLock_Tick) and never looks at
+	// the disk.
 	NativeMenuDecl_Tick();
 
 	// check for curr box
@@ -1202,8 +1162,8 @@ void RECTMENU_ProcessState()
 			// THE ERROR IS SHOWN IN THE PICTURE, NOT ONLY IN THE LOG.
 			//
 			// Whoever edits the file would otherwise see a menu that does not
-			// change, and take that for a bug in the game. Only with
-			// --menu-reload: without the switch there is no reload, hence
+			// change, and take that for a bug in the game. Only with the
+			// menu reload on: without it there is no reload, hence
 			// no load error either, and the picture stays untouched.
 			if (g_cfg_menuReload)
 			{

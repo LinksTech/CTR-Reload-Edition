@@ -76,7 +76,7 @@ void MM_Scrapbook_PlayMovie(struct RectMenu *menu)
 		// if not fully off screen
 		if (!RaceFlag_IsFullyOffScreen())
 		{
-			// quit, dont start video yet
+			// quit, don't start video yet
 			return;
 		}
 

@@ -1,7 +1,7 @@
 #include <common.h>
 
 // ===========================================================================
-// GRAPHICS PAGE IN THE OPTIONS BOX (2026-09-30, Beta 0).
+// GRAPHICS PAGE IN THE OPTIONS BOX (Beta 0).
 //
 // Exactly four rows, in English:
 //   DISPLAY MODE   FULLSCREEN / WINDOWED          at once (between two frames)

@@ -5,18 +5,18 @@
 #include "platform/native_assets.h"
 #include "platform/native_preview.h"
 
-// ARCADE -> CUSTOM: THE TRACK SCREEN FOR THE CONTAINERS FROM tracks/.
+// NITRO-PIT -> NITRO RACE / CRYSTAL / CTR: THE TRACK SCREEN FOR THE
+// CONTAINERS FROM tracks/.
 //
 // A COPY of MM_TrackSelect_MenuProc (MM_TrackSelect.c:392-941), no
-// change to it. The four menu files are word-for-word
-// vanilla; a hook in the original would break that (2026-09-27:
-// "as a copy in its own file, hooked in through the proc pointer, vanilla file
-// untouched").
+// change to it. The retail menu files stay word-for-word vanilla; a hook
+// in the original would break that, so the copy lives in its own file and is
+// hooked in through the proc pointer.
 //
 // HOOKED IN through D230.menuTrackSelect.funcPtr, every frame in
 // MM_NativeTrackSelect_Hook (from NativeMenuLock_Tick, at the very top of
 // RECTMENU_ProcessState). The box carries DISABLE_INPUT_ALLOW_FUNCPTRS
-// (D230.c:170-176): the proc IS the whole screen. MM_TrackSelect_Init
+// (D230.c:145-151): the proc IS the whole screen. MM_TrackSelect_Init
 // and everything before it stays retail - the driver select calls it as always
 // (MM_Characters.c:666-667).
 //
@@ -27,7 +27,7 @@
 // lap box D230.menuLapSel and the rows and names of the containers from
 // MM_NativeMenu.c.
 //
-// WHAT IS DIFFERENT, and only that (marked [K1] to [K6] in the code):
+// WHAT IS DIFFERENT, and only that (marked [K1] to [K8] in the code):
 //
 //   [K1] The rows come from tracks/. A marker of its own remembers the
 //        position; sdata->trackSelBackup stays the one of the disc.
@@ -42,18 +42,18 @@
 //        and 4 of its LEV, texels from its VRM) and lies in a measured
 //        free VRAM strip (block THE MINIMAP). In the window
 //        the recorded preview from tracks/vorschau/ runs, otherwise it shows
-//        NO PREVIEW (2026-09-30; MM_NativeTrackSelect_Preview).
+//        NO PREVIEW (MM_NativeTrackSelect_Preview).
 //   [K6] The start: MM_NativeTracks_LoadRow, then QueueLoadTrack like the
 //        original - that is how the old NITRO-PIT screen worked. Laps,
 //        difficulty, driver and player count are set by the menu, and
-//        QueueLoadTrack_MenuProc (QueueLoadTrack.c:4-33) leaves them alone.
+//        QueueLoadTrack_MenuProc (QueueLoadTrack.c) leaves them alone.
 //        NOT through DebugMenu_JumpToLevel: that fixes laps at 3 and
-//        the player count at 1 (DebugMenu.c:665-667).
-//   [K7] CRYSTAL (2026-09-29): the same copy with the list of the containers
+//        the player count at 1.
+//   [K7] CRYSTAL: the same copy with the list of the containers
 //        that declare Crystal (MM_NativeTracks_ListMode). A cross starts
 //        without the lap box, and at the start MM_NativeCrystal_Arm sets the
 //        bit the way the debug jump does (MM_NativeCrystal.c).
-//   [K8] CTR (2026-09-29): the same copy with the list of the containers that declare
+//   [K8] CTR: the same copy with the list of the containers that declare
 //        CTR. Three laps fixed, no lap box; at the start
 //        MM_NativeCtr_Arm sets TOKEN_RACE (MM_NativeCtr.c).
 
@@ -69,12 +69,12 @@
 #define MM_NATIVE_REFUSAL_TOP   12
 #define MM_NATIVE_REFUSAL_PITCH 12
 
-// Whether CUSTOM is chosen in the race type box. Set and cleared only there
-// (NativeMenuLock_ProcRaceType): CUSTOM sets it, SINGLE, CUP and the way back
-// clear it.
+// Which NITRO-PIT row is chosen (MM_NATIVE_CHOSEN_*, 0 = none). Set and
+// cleared only in the race type box (NativeMenuLock_ProcRaceType): NITRO RACE,
+// CRYSTAL and CTR set it; NITRO CUP, SINGLE, CUP and the way back clear it.
 //
 // The release at the title screen (MM_NativeTracks_Disarm) leaves it standing,
-// on purpose: after a CUSTOM race CHANGE LEVEL leads back here
+// on purpose: after a NITRO-PIT race CHANGE LEVEL leads back here
 // and not to the disc. The container is released then, and the
 // start loads it again [K6].
 global_variable int s_nativeTrackSelectChosen = 0;
@@ -109,7 +109,7 @@ internal int MM_NativeTrackSelect_Ctr(void)
 	return s_nativeTrackSelectChosen == MM_NATIVE_CHOSEN_CTR;
 }
 
-// The hook condition [K3]: CUSTOM chosen, arcade, no cup, no other
+// The hook condition [K3]: a NITRO-PIT row chosen, arcade, no cup, no other
 // mode. Adventure, time trial and battle come through the main menu, and
 // MM_MenuProc_Main clears ARCADE_MODE on every choice there (MM_MenuFlow.c:140).
 internal int MM_NativeTrackSelect_Applies(void)
@@ -139,7 +139,7 @@ void MM_NativeTrackSelect_Hook(void)
 }
 
 // ===========================================================================
-//  [K5] THE MINIMAP (2026-09-27).
+//  [K5] THE MINIMAP.
 // ===========================================================================
 //
 //  Retail draws the map from two icons of the menu icon set
@@ -167,9 +167,9 @@ void MM_NativeTrackSelect_Hook(void)
 //  page is 64 halfwords wide (256 texels), at 8 bit 128.
 //
 //  WHAT DOES NOT FIT IS NOT DRAWN, and the log says so once with the
-//  numbers. No placeholder: a frame with "NO MAP" would say it again at every
-//  glance (the same rule as for the preview window,
-//  MM_NativeMenu.c "NO PREVIEW BOX").
+//  numbers.
+//  No placeholder: a frame with "NO MAP" would say it again at every
+//  glance.
 #define MM_NATIVE_MAP_STRIP_Y 264
 #define MM_NATIVE_MAP_STRIP_H 32
 #define MM_NATIVE_MAP_PAGE_Y 256
@@ -415,7 +415,7 @@ internal void MM_NativeTrackSelect_LogStart(int row)
 	             (int)gGT->arcadeDifficulty, (int)gGT->numLaps, (int)gGT->numPlyrNextGame);
 }
 
-// [K5] PREVIEW (2026-09-30). The same timing as the STR video of the
+// [K5] PREVIEW. The same timing as the STR video of the
 // disc: MM_TrackSelect_Video_State waits 21 frames after every row change,
 // then START_STREAM. The frames come from
 // tracks/vorschau/<container>.rldprev (platform/native_preview.c), to the
@@ -487,7 +487,7 @@ void MM_NativeTrackSelect_MenuProc(struct RectMenu *menu)
 	}
 
 	// WITHOUT CONTAINERS THERE IS NO WHEEL. The search for the next open
-	// row would run forever. The CUSTOM row is already locked then
+	// row would run forever. The NITRO-PIT row is already locked then
 	// (NativeMenuLock_Apply); this only catches what gets here anyway.
 	if (MM_NativeTracks_Count() <= 0)
 	{

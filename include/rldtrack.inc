@@ -393,11 +393,9 @@ static u64 Rld_ChunkLimit(const u8 *type)
 // ONE LIST, THREE USES: the bit, the word an author types, and the
 // name a player reads. The packer parses --modes with it, both sides
 // display with it. Two lists would be a switch the display does not know.
-// The fourth column is the abbreviation for a line that has 16 characters.
-// "Race, Time Trial" is 16 characters alone - with "MODES: " in front no
-// second entry fits next to it any more. The abbreviation is HERE and not in the menu, for
-// the same reason as the other three columns: a second list would be a
-// mode the display does not know.
+// The fourth column is a short tag for narrow displays. Nothing reads it at
+// the moment; it stays because every X macro over this list takes four
+// arguments.
 #define RLD_MODE_LIST(X)                                                   \
 	X(RLD_MODE_RACE, "race", "Race", "ARC")                                    \
 	X(RLD_MODE_CTR_CHALLENGE, "ctr", "CTR Challenge", "CTR")                   \
@@ -431,34 +429,6 @@ static const char *Rld_ModesText(u32 modes)
 #undef RLD_MODE_APPEND
 
 	return (at != 0u) ? text : "(none declared)";
-}
-
-// The same list in short, for the info box of the track selection: "ARC / TT".
-// The separator is " / " and not ", ", because three abbreviations with commas look like ONE
-// word.
-static const char *Rld_ModesShort(u32 modes)
-{
-	static char text[32];
-	size_t at = 0;
-
-	text[0] = '\0';
-
-#define RLD_MODE_APPEND_SHORT(bit, word, label, tag)                        \
-	if ((modes & (bit)) != 0u)                                                 \
-	{                                                                          \
-		if (at != 0u)                                                            \
-		{                                                                        \
-			memcpy(&text[at], " / ", 3);                                           \
-			at += 3u;                                                              \
-		}                                                                        \
-		memcpy(&text[at], (tag), strlen(tag));                                   \
-		at += strlen(tag);                                                       \
-		text[at] = '\0';                                                         \
-	}
-	RLD_MODE_LIST(RLD_MODE_APPEND_SHORT)
-#undef RLD_MODE_APPEND_SHORT
-
-	return (at != 0u) ? text : "NONE";
 }
 
 // HOW MUCH MEMORY THIS TRACK NEEDS - and why that is a number in the container
@@ -553,8 +523,7 @@ static u32 Rld_ClipBytesForPrimBytes(u32 primBytes)
 // has not run here yet, so all references are file offsets.
 // Forward, because the three readers are further below. Without these lines
 // the compiler assumed "extern int Rld_ReadLE32" - C4013 - and the computation ran
-// through a wrong return type. Noticed on 2026-08-29 during the ABR pass,
-// it came in early the same day with Rld_MemNeed.
+// through a wrong return type.
 static u32 Rld_ReadLE16(const u8 *at);
 static u32 Rld_ReadLE32(const u8 *at);
 
@@ -761,7 +730,7 @@ static int Rld_ReadAt(struct RldReader *reader, u64 offset, void *dst, size_t si
 	return (size == 0u) || (fread(dst, 1, size, reader->file) == size);
 }
 
-/// Closes, records the kind of refusal and returns the text. Every text
+// Closes, records the kind of refusal and returns the text. Every text
 // is fixed - whoever keeps it (NativeTrackEntry.problem) keeps a pointer
 // that stays valid across every further scan.
 static const char *Rld_Refuse(struct RldReader *reader, enum RldRefusal refusal, const char *text)
@@ -777,7 +746,7 @@ static const char *Rld_Refuse(struct RldReader *reader, enum RldRefusal refusal,
 // Since 4.1 Rld_Open enforces the format's rules itself,
 // the same for game and packer: position, overlap, duplicate, compression and
 // limit per known type, and the three required chunks. The track list thereby
-// refuses what until 4.0 only failed at the cross.
+// refuses what until 4.0 only failed when the track was picked.
 static const char *Rld_Open(struct RldReader *reader, const char *path)
 {
 	u8 header[RLD_HEADER_SIZE];
@@ -828,7 +797,7 @@ static const char *Rld_Open(struct RldReader *reader, const char *path)
 	}
 	if (reader->major < RLD_VERSION_MAJOR)
 	{
-		return Rld_Refuse(reader, RLD_REFUSAL_OLDER, "old format - pack it again with rldpack");
+		return Rld_Refuse(reader, RLD_REFUSAL_OLDER, "old format - pack it again with the Alpha-Maker");
 	}
 
 	// Since 4.1 the header flags are required features: a bit this build does not
@@ -927,7 +896,7 @@ static const char *Rld_Open(struct RldReader *reader, const char *path)
 	}
 
 	// The required chunks, already here: until 4.0 a line without LEVD looked
-	// healthy in the list and only failed at the cross.
+	// healthy in the list and only failed when it was picked.
 	{
 		static const char *const required[3] = {"META", "LEVD", "VRMD"};
 		static const char *const missing[3] = {"META is missing - required chunk", "LEVD is missing - required chunk",
@@ -1188,7 +1157,7 @@ static const char *Rld_ParseMeta(struct RldMeta *out, const u8 *bytes, size_t si
 //
 // ONLY FOR THE NITRO LOADER, AND BINDINGLY SO. This extension applies
 // exclusively to container tracks. The disc loading path must not notice it
-// anywhere, not today and not in the later loader round. In the format
+// anywhere, not today and not in any later loader. In the format
 // this is already honored here, and without a single line of special case:
 //
 //   * SNDB is OPTIONAL. Rld_Open requires three chunks as the lower bound and up
@@ -2355,7 +2324,7 @@ static const char *Rld_ScaleMap(const struct RldMapHalf in[2], struct RldMapHalf
 // CLUT entries from x=800 runs past the right edge of the VRAM - but if
 // its texels use only indices 0..63, all used entries lie
 // in the image. First read the texels, then their entries. Without this step
-// 2664 of 8244 faces on warppad4 remained undecided; with it,
+// 2664 of 8244 faces on one test track remained undecided; with it,
 // zero.
 //----------------------------------------------------------------------------------------
 

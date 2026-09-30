@@ -4,13 +4,13 @@
 
 #include "platform/native_assets.h"
 
-// ARCADE -> CUSTOM CUP: THE CUP SCREEN FOR THE CUPS FROM cups.txt
-// (dynamic IDs, 2026-09-28).
+// NITRO-PIT -> NITRO CUP: THE CUP SCREEN FOR THE CUPS FROM cups.txt
+// (run-time level IDs).
 //
 // A COPY of MM_CupSelect_MenuProc (MM_CupSelect.c:15-177), no change
-// to it - like the track screen of CUSTOM (MM_NativeTrackSelect.c): "the
-// retail cup screen as the model, a copy in its own file, retail stays
-// bit-identical".
+// to it - like the NITRO-PIT track screen (MM_NativeTrackSelect.c): the
+// retail cup screen is the model, the copy lives in its own file, and the
+// retail file stays bit-identical.
 //
 // HOOKED IN through D230.menuCupSelect.funcPtr and .rows, every frame in
 // MM_NativeCupSelect_Hook (from NativeMenuLock_Tick, at the very top of
@@ -31,7 +31,7 @@
 //        writes none (the switch in UI_CupStandings.c).
 //   [C5] A grey cup (container missing, rejected or without ID) stands grey,
 //        its row carries the lock bit: RECTMENU accepts no cross and
-//        plays the lock sound (RECTMENU.c:1036-1066). Where the track is missing,
+//        plays the lock sound (RECTMENU_ProcessInput). Where the track is missing,
 //        the keyword stands in red (MISSING, NEEDS NEWER, DAMAGED, NO ID, NO RACE
 //        MODE ...) - the log gives the full reason.
 //   [C6] The start: cup.cupID is the index in cups.txt (0..3, never 4 - the
@@ -49,12 +49,12 @@
 // is 8 high. The box reaches from -4 to +74.
 static const s16 s_nativeCupTrackLineY[NATIVE_CUP_TRACKS] = {1, 12, 50, 61};
 
-// Whether CUSTOM CUP is chosen in the race type box. Set and cleared only there
-// (NativeMenuLock_ProcRaceType), like the marker of CUSTOM.
+// Whether NITRO CUP is chosen in the race type box. Set and cleared only there
+// (NativeMenuLock_ProcRaceType), like the marker of the track screen.
 global_variable int s_nativeCupChosen = 0;
 
 // [C1] The rows: stringIndex (0 or the lock bit), up, down, left,
-// right - like D230.rowsCupSelect (D230.c:178).
+// right - like D230.rowsCupSelect (D230.c:153).
 global_variable struct MenuRow s_nativeCupRows[NATIVE_CUP_MAX + 1];
 
 // The running cup: set at the start [C6], cleared at the title screen
@@ -77,7 +77,7 @@ void MM_NativeCupSelect_SetChosen(int chosen)
 	s_nativeCupChosen = chosen;
 }
 
-// The hook condition: CUSTOM CUP chosen, arcade, cup, no other mode.
+// The hook condition: NITRO CUP chosen, arcade, cup, no other mode.
 internal int MM_NativeCupSelect_Applies(void)
 {
 	const struct GameTracker *gGT = sdata->gGT;
@@ -162,8 +162,8 @@ void MM_NativeCupSelect_Hook(void)
 }
 
 // After MM_ToggleRows_Difficulty, which sets the cup lock anew every frame
-// (from NativeMenuLock_Apply and MM_NativeMode_PageTick). By design (2026-09-28):
-// in the custom cup all three are open, as in the CUSTOM single race.
+// (from NativeMenuLock_Apply and MM_NativeMode_PageTick). By design: in a
+// custom cup all three are open, as in the NITRO RACE single race.
 void MM_NativeCup_OpenDifficulty(void)
 {
 	int i;
@@ -375,7 +375,7 @@ void MM_NativeCupSelect_MenuProc(struct RectMenu *menu)
 	if (menu->funcState == RECTMENU_FUNC_STATE_INPUT)
 	{
 		// [C5] Direction and cross in the same frame: RECTMENU checked the lock bit
-		// on the old row (RECTMENU.c:1040-1052). A grey cup
+		// on the old row (RECTMENU_ProcessInput). A grey cup
 		// does not start this way either.
 		if ((menu->rowSelected >= 0) && (menu->rowSelected < count) && ((s_nativeCupRows[menu->rowSelected].stringIndex & MENU_ROW_LOCKED) != 0))
 		{
