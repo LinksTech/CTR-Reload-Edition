@@ -19,6 +19,8 @@
 # Security notes:
 # - The token is read-only everywhere; only the release job may write
 #   (contents: write), and it never runs for pull requests.
+# - The release job runs only in LinksTech/CTR-Reload-Edition itself: a fork
+#   that pushes a version tag builds, but makes no release.
 # - There is no pull_request_target trigger: code from a pull request never
 #   runs with a writable token or with secrets.
 # - Third-party actions are pinned to full commit SHAs (version in the
@@ -53,9 +55,11 @@ jobs:
       contents: read
 
   release:
-    # Only a version tag, pushed or run by hand - never a pull request.
+    # Only a version tag in this repository, pushed or run by hand - never a
+    # pull request, never a fork.
     if: >-
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      github.repository == 'LinksTech/CTR-Reload-Edition'
+      && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
       && startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: ubuntu-24.04

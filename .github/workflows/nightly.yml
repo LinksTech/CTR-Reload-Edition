@@ -21,6 +21,9 @@
 #   (contents: write).
 # - No secrets, no pull request triggers. The release job uses the gh command
 #   of the runner and one pinned action (download-artifact).
+# - It runs only in LinksTech/CTR-Reload-Edition itself and only from main:
+#   in a fork with Actions switched on, or by hand from another branch,
+#   every job is skipped.
 # - The build is build-job.yml, the same job as for every push. No game data.
 
 name: Nightly
@@ -39,6 +42,14 @@ concurrency:
 
 jobs:
   check:
+    # Only in this repository, only from main (a run by hand from another
+    # branch is skipped; scheduled runs are always on main), and only by
+    # schedule or by hand. The build and release jobs need this one, so
+    # they are skipped with it.
+    if: >-
+      github.repository == 'LinksTech/CTR-Reload-Edition'
+      && github.ref == 'refs/heads/main'
+      && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -90,7 +101,10 @@ jobs:
 
   release:
     needs: [check, build]
-    if: needs.check.outputs.build == 'true'
+    # The one job that writes: the repository test once more, on its own.
+    if: >-
+      github.repository == 'LinksTech/CTR-Reload-Edition'
+      && needs.check.outputs.build == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
