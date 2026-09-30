@@ -1085,6 +1085,19 @@ struct RldMeta
 // from 0x38 the strings.
 #define RLD_META_FIXED_SIZE 0x38
 
+// THE UPPER BOUND OF THE TWO MEMORY NUMBERS: the most Rld_MemNeed can ever
+// compute from a LEVD inside RLD_LIMIT_LEVD. primBytes: every quadblock the
+// LEV has room for; the sky: the four largest of eight u16 segment counts;
+// memTotal: the LEV itself plus both draw buffers. A META above these is not a
+// generous estimate but a number no LEV can need - and a memTotal near 4 GiB
+// wrapped the reserve before MEMPACK_Init (NativeTrack_MempackExtraNeeded)
+// down to a few bytes. The largest real container at hand declares 8,588,108.
+// With both at their bound, memTotal plus four clip buffers stays far below
+// 4 GiB (about 282 MB), so no sum of them wraps in 32 bits.
+#define RLD_META_PRIM_MAX  ((RLD_LIMIT_LEVD / RLD_QUADBLOCK_BYTES) * RLD_QUADS_PER_BLOCK * RLD_POLY_GT4_BYTES)
+#define RLD_META_SKY_MAX   (4u * 0xffffu * RLD_SKY_POLY_BYTES)
+#define RLD_META_TOTAL_MAX (RLD_LIMIT_LEVD + 2u * (RLD_META_PRIM_MAX + RLD_META_SKY_MAX))
+
 static const char *Rld_ParseMeta(struct RldMeta *out, const u8 *bytes, size_t size)
 {
 	size_t at;
@@ -1104,6 +1117,16 @@ static const char *Rld_ParseMeta(struct RldMeta *out, const u8 *bytes, size_t si
 	out->primBytes = Rld_ReadLE32(&bytes[0x2c]);
 	out->memTotal = Rld_ReadLE32(&bytes[0x30]);
 	out->stringCount = Rld_ReadLE32(&bytes[0x34]);
+
+	if (out->primBytes > RLD_META_PRIM_MAX)
+	{
+		return "META declares more draw memory (primBytes) than any LEVD can need";
+	}
+
+	if (out->memTotal > RLD_META_TOTAL_MAX)
+	{
+		return "META declares more memory (memTotal) than any LEVD can need";
+	}
 
 	at = RLD_META_FIXED_SIZE;
 	for (i = 0; i < out->stringCount; i++)

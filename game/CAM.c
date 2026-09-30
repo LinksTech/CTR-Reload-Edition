@@ -1932,6 +1932,22 @@ void CAM_ThTick(struct Thread *t)
 			// respawnPoint
 			uVar16 = (u32)*psVar20;
 
+#if defined(CTR_NATIVE)
+			// THE MODE COMES FROM THE LEVEL and indexes EndOfRace_Camera_Size,
+			// whose entry is the stride to the next camera - unbounded in
+			// retail. A mode outside the table, or one the table marks as
+			// missing (-1), ends the search here: the cameras found so far
+			// stay, the rest of the table is not walked. A track container
+			// with such a mode - or with a respawn point past the restart
+			// points - is refused at load (NativeTrack_CheckLevRace); on valid
+			// tables this never triggers.
+			if ((iVar7 >= (s32)(sizeof(data.EndOfRace_Camera_Size) / sizeof(data.EndOfRace_Camera_Size[0]))) ||
+			    (data.EndOfRace_Camera_Size[iVar7] < 0))
+			{
+				break;
+			}
+#endif
+
 			// +2 to include respawnPoint and modeID
 			psVar20 = (s16 *)((s32)psVar19 + data.EndOfRace_Camera_Size[iVar7] + 2);
 

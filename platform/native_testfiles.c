@@ -58,6 +58,18 @@ int NativeTestFiles_MakeDisc(const char *dir);
 //   c5   the LEV pointer map LOAD_RunPtrMap relocates (repeats, ranges)
 //   c6   Model.id, the index into gGT->modelPtr[0xe3] (LibraryOfModels.c)
 //   c7   the spawn table CAM.c reads without a check
+//   c10  META memTotal / primBytes past what any LEVD can need - the sum in
+//        NativeTrack_MempackExtraNeeded wrapped (MEMPACK red screen)
+//   c12  the end-of-race cameras (spawn slot 2): a mode outside
+//        data.EndOfRace_Camera_Size (CAM.c steps by it), a respawn point or
+//        path start past the restart points, a count past the body
+//   c13  the map table (spawn slot 0) with a width or height of 0 -
+//        UI_Map_GetIconPos divides by it
+//   c14  the restart points: a quadblock checkpointIndex or a node link past
+//        them (VehStuckProc, VehLap, RB_Warpball index with them), a count
+//        outside 0..255, a table past the body
+//   c15  distToFinish 0 on restart point 0 - VehLap and RB_Warpball take the
+//        remainder by it
 // and for the envelope: hdr (header), cnt (counts), off (offsets), len
 // (lengths), dir (directory), hash, meta, mem (memory need), trunc / truncfix
 // (the good file cut short, file_size left as it was / patched to the cut).
@@ -113,14 +125,19 @@ int NativeTestFiles_MakeDisc(const char *dir);
 //   0x3d0  SpawnType1: count 3, room for four slots
 //            slot 0 -> 0x3f0 map metadata (UIMapSpawnMetadata)  mapped (0x3d4)
 //            slot 1 -> 0x410 driver spawn (SpawnPosRot)         mapped (0x3d8)
-//            slot 2 -> 0x420 end-of-race cameras, count 0       mapped (0x3dc)
+//            slot 2 -> 0x420 end-of-race cameras, count 1       mapped (0x3dc)
 //            slot 3    0 (unused at count 3; bad-c7-count4-* raises the count)
 //   0x3f0  UIMapSpawnMetadata: world -2000..2000 in X and Y (non-zero ranges -
 //          UI_Map_GetIconPos divides by them), mode 0
 //   0x410  SpawnPosRot
-//   0x420  s16 0 - no end-of-race camera
-//   0x430  CheckpointNode (restart point 0)
+//   0x420  end-of-race cameras: s16 count 1, then one camera - s16 respawn
+//          point 0, s16 mode 4 (look at, EndOfRace_Camera_Size 6), 6 bytes
+//          of position; ends at 0x42c
+//   0x430  CheckpointNode (restart point 0): distToFinish 1000 (the lap
+//          divides by it), forward to itself, no branches (0xff)
 //   0x440  end of the body = ptrMapOffset
+//
+// The quadblock's checkpointIndex is 0, restart point 0.
 //
 // Pointer map: the 14 mapped words above, ascending, no repeats.
 // LEV size 4 + 0x440 + 4 + 14 * 4 = 0x480 (1152) bytes.
@@ -163,6 +180,19 @@ int NativeTestFiles_MakeDisc(const char *dir);
 #define NTC_LVL_SPAWN1 0x134u
 #define NTC_LVL_NUM_RESTART 0x148u
 #define NTC_LVL_RESTART 0x14cu
+
+// The race tables (c12..c15)
+#define NTC_NODE_BYTES 12u        // struct CheckpointNode
+#define NTC_NODE_DISTANCE 6u      // distToFinish, u16
+#define NTC_NODE_FORWARD 8u       // nextIndex_forward, then _left, _backward, _right
+#define NTC_NODE_NONE 0xffu
+#define NTC_NODE_GOOD_DISTANCE 1000u
+#define NTC_QUAD_CHECKPOINT 0x3eu // QuadBlock.checkpointIndex, u8
+#define NTC_EOR_RESPAWN (NTC_EORCAM + 2u)
+#define NTC_EOR_MODE (NTC_EORCAM + 4u)
+#define NTC_EOR_DATA (NTC_EORCAM + 6u)
+#define NTC_EOR_MODE_LOOKAT 4u    // EndOfRace_Camera_Size[4] = 6
+#define NTC_UIMAP_BYTES 0x14u     // struct UIMapSpawnMetadata
 
 #define NTC_MODEL_ID_OFFSET 0x10u
 #define NTC_MODEL_ID 0x57u       // STATIC_PIPE1
@@ -516,6 +546,21 @@ internal void NativeTestLev_Build(struct NativeTestBlob *lev)
 	// SpawnPosRot and the restart point: at the first start spot
 	NativeTestLev_Set16(lev, NTC_SPAWNPOS, 100u);
 	NativeTestLev_Set16(lev, NTC_RESTART, 100u);
+
+	// The restart point: a track length, forward to itself, no branches.
+	NativeTestLev_Set16(lev, NTC_RESTART + NTC_NODE_DISTANCE, NTC_NODE_GOOD_DISTANCE);
+	lev->data[NTC_LEV_BODY + NTC_RESTART + NTC_NODE_FORWARD + 0u] = 0u;
+	lev->data[NTC_LEV_BODY + NTC_RESTART + NTC_NODE_FORWARD + 1u] = (u8)NTC_NODE_NONE;
+	lev->data[NTC_LEV_BODY + NTC_RESTART + NTC_NODE_FORWARD + 2u] = (u8)NTC_NODE_NONE;
+	lev->data[NTC_LEV_BODY + NTC_RESTART + NTC_NODE_FORWARD + 3u] = (u8)NTC_NODE_NONE;
+
+	// One end-of-race camera: respawn point 0, mode 4, a position.
+	NativeTestLev_Set16(lev, NTC_EORCAM, 1u);
+	NativeTestLev_Set16(lev, NTC_EOR_RESPAWN, 0u);
+	NativeTestLev_Set16(lev, NTC_EOR_MODE, NTC_EOR_MODE_LOOKAT);
+	NativeTestLev_Set16(lev, NTC_EOR_DATA + 0u, 100u);
+	NativeTestLev_Set16(lev, NTC_EOR_DATA + 2u, 200u);
+	NativeTestLev_Set16(lev, NTC_EOR_DATA + 4u, 0u);
 
 	// The pointer map
 	NativeTestBlob_Put32(lev, NTC_MAP_AT, NTC_MAP_COUNT * 4u);
@@ -1033,6 +1078,148 @@ internal const char *NativeTestModel_LevContent(const u8 *lev, u32 body, const u
 	return NULL;
 }
 
+// c12..c15 on a LEV that passed NativeTestModel_LevContent: the numbers the
+// race uses as indices and divisors. The spawn table is known to be inside.
+internal const char *NativeTestModel_LevRace(const u8 *lev, u32 body, const u32 *sites, u32 siteCount)
+{
+	const u64 end = (u64)body;
+	const int nodes = (int)NativeTestModel_Get32(lev, NTC_LEV_BODY + NTC_LVL_NUM_RESTART);
+	const u32 spawn = NativeTestModel_Get32(lev, NTC_LEV_BODY + NTC_LVL_SPAWN1);
+	const u32 spawnCount = NativeTestModel_Get32(lev, (u64)NTC_LEV_BODY + spawn);
+	const u32 mesh = NativeTestModel_Get32(lev, NTC_LEV_BODY + NTC_LVL_MESH);
+	int i;
+
+	// c14: the restart points, c15: the track length.
+	if ((nodes < 0) || (nodes > 255))
+	{
+		return NativeTestModel_Why("c14 cnt_restart_points 0x%x is outside 0..255%.0u", (u32)nodes, 0u);
+	}
+	if (nodes > 0)
+	{
+		const u32 table = NativeTestModel_Get32(lev, NTC_LEV_BODY + NTC_LVL_RESTART);
+
+		if (!NativeTestModel_Mapped(sites, siteCount, NTC_LVL_RESTART) || (((u64)table + (u64)nodes * NTC_NODE_BYTES) > end))
+		{
+			return NativeTestModel_Why("c14 %u restart points at 0x%x do not lie inside the body", (u32)nodes, table);
+		}
+		for (i = 0; i < nodes; i++)
+		{
+			const u64 node = (u64)NTC_LEV_BODY + table + (u64)i * NTC_NODE_BYTES;
+			int k;
+
+			for (k = 0; k < 4; k++)
+			{
+				const u32 next = lev[(size_t)node + NTC_NODE_FORWARD + (u32)k];
+
+				if (((k == 0) || (next != NTC_NODE_NONE)) && (next >= (u32)nodes))
+				{
+					return NativeTestModel_Why("c14 restart point %u links to %u, past the table", (u32)i, next);
+				}
+			}
+		}
+		if (Rld_ReadLE16(&lev[(size_t)NTC_LEV_BODY + table + NTC_NODE_DISTANCE]) == 0u)
+		{
+			return "c15 restart point 0 has distToFinish 0";
+		}
+	}
+
+	// c14: the checkpoint of every quadblock.
+	if ((mesh != 0u) && (((u64)mesh + 0x20u) <= end))
+	{
+		const int quads = (int)NativeTestModel_Get32(lev, (u64)NTC_LEV_BODY + mesh);
+		const u32 array = NativeTestModel_Get32(lev, (u64)NTC_LEV_BODY + mesh + 0x0cu);
+
+		if ((quads > 0) && (!NativeTestModel_Mapped(sites, siteCount, mesh + 0x0cu) || (((u64)array + (u64)quads * RLD_QUADBLOCK_BYTES) > end)))
+		{
+			return NativeTestModel_Why("c14 %u quadblocks at 0x%x do not lie inside the body", (u32)quads, array);
+		}
+		for (i = 0; i < quads; i++)
+		{
+			const u32 checkpoint = lev[(size_t)NTC_LEV_BODY + array + (size_t)i * RLD_QUADBLOCK_BYTES + NTC_QUAD_CHECKPOINT];
+
+			if ((checkpoint != NTC_NODE_NONE) && (checkpoint >= (u32)nodes))
+			{
+				return NativeTestModel_Why("c14 quadblock %u names restart point %u, past the table", (u32)i, checkpoint);
+			}
+		}
+	}
+
+	// c13: the map table.
+	if (spawnCount > 0u)
+	{
+		const u32 map = NativeTestModel_Get32(lev, (u64)NTC_LEV_BODY + spawn + 4u);
+
+		if (map != 0u)
+		{
+			if (((u64)map + NTC_UIMAP_BYTES) > end)
+			{
+				return NativeTestModel_Why("c13 the map table at 0x%x runs past the body (%u)", map, body);
+			}
+			if ((NativeTestModel_Get16s(lev, (u64)NTC_LEV_BODY + map + 0u) == NativeTestModel_Get16s(lev, (u64)NTC_LEV_BODY + map + 4u)) ||
+			    (NativeTestModel_Get16s(lev, (u64)NTC_LEV_BODY + map + 2u) == NativeTestModel_Get16s(lev, (u64)NTC_LEV_BODY + map + 6u)))
+			{
+				return NativeTestModel_Why("c13 the map table at 0x%x has a width or height of 0%.0u", map, 0u);
+			}
+		}
+	}
+
+	// c12: the end-of-race cameras.
+	if (spawnCount > 2u)
+	{
+		const int sizes = (int)(sizeof(data.EndOfRace_Camera_Size) / sizeof(data.EndOfRace_Camera_Size[0]));
+		const u32 cameras = NativeTestModel_Get32(lev, (u64)NTC_LEV_BODY + spawn + 12u);
+		u64 at = (u64)cameras + 2u;
+		int count;
+
+		if (at > end)
+		{
+			return NativeTestModel_Why("c12 the camera table at 0x%x runs past the body (%u)", cameras, body);
+		}
+		count = NativeTestModel_Get16s(lev, (u64)NTC_LEV_BODY + cameras);
+		if (count < 0)
+		{
+			return NativeTestModel_Why("c12 the camera count 0x%x is negative%.0u", (u32)count & 0xffffu, 0u);
+		}
+		for (i = 0; i < count; i++)
+		{
+			int respawn;
+			int mode;
+
+			if ((at + 4u) > end)
+			{
+				return NativeTestModel_Why("c12 camera %u of %u runs past the body", (u32)i, (u32)count);
+			}
+			respawn = NativeTestModel_Get16s(lev, (u64)NTC_LEV_BODY + at);
+			mode = NativeTestModel_Get16s(lev, (u64)NTC_LEV_BODY + at + 2u);
+			mode = (mode < 0) ? -mode : mode;
+			if ((mode >= sizes) || (data.EndOfRace_Camera_Size[mode] < 0))
+			{
+				return NativeTestModel_Why("c12 camera %u has mode 0x%x, not in EndOfRace_Camera_Size", (u32)i, (u32)mode);
+			}
+			if ((at + 4u + (u64)data.EndOfRace_Camera_Size[mode]) > end)
+			{
+				return NativeTestModel_Why("c12 camera %u of %u runs past the body", (u32)i, (u32)count);
+			}
+			if ((respawn < 0) || (respawn >= nodes))
+			{
+				return NativeTestModel_Why("c12 camera %u names restart point 0x%x, past the table", (u32)i, (u32)respawn & 0xffffu);
+			}
+			if ((mode == 9) || (mode == 13))
+			{
+				const int path = NativeTestModel_Get16s(lev, (u64)NTC_LEV_BODY + at + 4u);
+
+				if ((path < 0) || (path >= nodes))
+				{
+					return NativeTestModel_Why("c12 camera %u follows the path from restart point 0x%x, past the table", (u32)i, (u32)path & 0xffffu);
+				}
+			}
+			at += 4u + (u64)data.EndOfRace_Camera_Size[mode];
+		}
+	}
+
+	return NULL;
+}
+
 // c3: the VRM as LOAD_VramFileCallback walks it.
 internal const char *NativeTestModel_Vrm(const u8 *vrm, size_t vrmSize)
 {
@@ -1211,6 +1398,11 @@ internal const char *NativeTestModel_File(const char *path)
 	if (error == NULL)
 	{
 		error = NativeTestModel_LevContent(chunk[NTC_PART_LEVD], body, sites, siteCount);
+	}
+
+	if (error == NULL)
+	{
+		error = NativeTestModel_LevRace(chunk[NTC_PART_LEVD], body, sites, siteCount);
 	}
 
 	// The memory need - safe to compute now that both offsets are inside.
@@ -1502,6 +1694,18 @@ internal void NativeTestCont_Goods(void)
 	NativeTestBlob_Free(&p.vrm);
 	NativeTestVrm_BuildSingle(&p.vrm);
 	NativeTestCont_EmitParts("good-vrm-single", &p, 1);
+
+	// A race track without restart points, like the arenas some real
+	// containers declare Race for: no table, every quadblock checkpoint 0xff,
+	// no end-of-race camera. Accepted - the race handles it (VehLap,
+	// VehStuckProc, the warpball in VehPickupItem).
+	NativeTestParts_Copy(&p, &s_testGood);
+	NativeTestLev_Set32(&p.lev, NTC_LVL_NUM_RESTART, 0u);
+	NativeTestLev_Set32(&p.lev, NTC_LVL_RESTART, 0u);
+	NativeTestLev_MapRemove(&p.lev, NTC_LVL_RESTART);
+	p.lev.data[NTC_LEV_BODY + NTC_QUAD + NTC_QUAD_CHECKPOINT] = (u8)NTC_NODE_NONE;
+	NativeTestLev_Set16(&p.lev, NTC_EORCAM, 0u);
+	NativeTestCont_EmitParts("good-race-no-restart-points", &p, 1);
 }
 
 // s1 - Bank_AssignSpuAddrs uses numSamples and spuIndexArr[] of the bank
@@ -1772,6 +1976,153 @@ internal void NativeTestCont_C7(void)
 	NativeTestCont_EmitParts("bad-c7-count-negative", &p, 1);
 }
 
+// c10 - NativeTrack_MempackExtraNeeded added memTotal and four clip buffers
+// in 32 bits: 0xffffff00 wrapped to a few hundred bytes of reserve.
+internal void NativeTestCont_C10(void)
+{
+	static const struct
+	{
+		const char *name;
+		u32 at;
+		u32 value;
+	} edits[] = {
+	    {"bad-c10-meta-total-ffffff00", NTC_META_TOTAL, 0xffffff00u},
+	    {"bad-c10-meta-total-one-past-bound", NTC_META_TOTAL, RLD_META_TOTAL_MAX + 1u},
+	    {"bad-c10-meta-prim-one-past-bound", NTC_META_PRIM, RLD_META_PRIM_MAX + 1u},
+	    {"bad-c10-meta-prim-ffffffff", NTC_META_PRIM, 0xffffffffu},
+	};
+	struct NativeTestParts p;
+	size_t i;
+
+	for (i = 0; i < sizeof(edits) / sizeof(edits[0]); i++)
+	{
+		NativeTestParts_Copy(&p, &s_testGood);
+		NativeTestBlob_Put32(&p.meta, edits[i].at, edits[i].value);
+		NativeTestCont_EmitParts(edits[i].name, &p, 1);
+	}
+}
+
+// c12 - CAM.c walks the end-of-race cameras by data.EndOfRace_Camera_Size[mode]
+// and indexes the restart points with each camera's respawn point.
+internal void NativeTestCont_C12(void)
+{
+	static const struct
+	{
+		const char *name;
+		u32 at;
+		u32 value;
+	} edits[] = {
+	    // Mode 1 is marked missing (-1): a stride of one byte.
+	    {"bad-c12-eorcam-mode-missing", NTC_EOR_MODE, 1u},
+	    {"bad-c12-eorcam-mode-past-table", NTC_EOR_MODE, 0x12u},
+	    {"bad-c12-eorcam-mode-7fff", NTC_EOR_MODE, 0x7fffu},
+	    // -32768: its absolute value is 32768 again.
+	    {"bad-c12-eorcam-mode-8000", NTC_EOR_MODE, 0x8000u},
+	    {"bad-c12-eorcam-respawn-past-points", NTC_EOR_RESPAWN, 1u},
+	    {"bad-c12-eorcam-respawn-negative", NTC_EOR_RESPAWN, 0xffffu},
+	    // The second camera starts where the first ends, and what follows is
+	    // no camera: refused somewhere along the walk, never read past it.
+	    {"bad-c12-eorcam-count-7fff", NTC_EORCAM, 0x7fffu},
+	    {"bad-c12-eorcam-count-negative", NTC_EORCAM, 0xffffu},
+	};
+	struct NativeTestParts p;
+	size_t i;
+
+	for (i = 0; i < sizeof(edits) / sizeof(edits[0]); i++)
+	{
+		NativeTestParts_Copy(&p, &s_testGood);
+		NativeTestLev_Set16(&p.lev, edits[i].at, edits[i].value);
+		NativeTestCont_EmitParts(edits[i].name, &p, 1);
+	}
+
+	// Mode 9 follows the track path from the restart point in its first data
+	// word; 16 bytes of data still end inside the body (0x436 of 0x440).
+	NativeTestParts_Copy(&p, &s_testGood);
+	NativeTestLev_Set16(&p.lev, NTC_EOR_MODE, 9u);
+	NativeTestLev_Set16(&p.lev, NTC_EOR_DATA, 5u);
+	NativeTestCont_EmitParts("bad-c12-eorcam-path-past-points", &p, 1);
+
+	// The table moved to the last halfword of the body: its count says one
+	// camera, and the camera would start at the end of the body.
+	NativeTestParts_Copy(&p, &s_testGood);
+	NativeTestLev_Set32(&p.lev, NTC_SPAWN_SLOT(2), NTC_BODY_SIZE - 2u);
+	NativeTestLev_Set16(&p.lev, NTC_BODY_SIZE - 2u, 1u);
+	NativeTestCont_EmitParts("bad-c12-eorcam-table-at-body-end", &p, 1);
+}
+
+// c13 - UI_Map_GetIconPos divides by worldEnd - worldStart.
+internal void NativeTestCont_C13(void)
+{
+	struct NativeTestParts p;
+
+	NativeTestParts_Copy(&p, &s_testGood);
+	NativeTestLev_Set16(&p.lev, NTC_UIMAP + 0x0u, 0x10000u - 2000u);
+	NativeTestCont_EmitParts("bad-c13-map-width-0", &p, 1);
+
+	NativeTestParts_Copy(&p, &s_testGood);
+	NativeTestLev_Set16(&p.lev, NTC_UIMAP + 0x2u, 0x10000u - 2000u);
+	NativeTestCont_EmitParts("bad-c13-map-height-0", &p, 1);
+}
+
+// c14 - the restart points: VehStuckProc, VehLap and RB_Warpball index
+// them with a quadblock's checkpointIndex and with the links of the nodes.
+internal void NativeTestCont_C14(void)
+{
+	static const struct
+	{
+		const char *name;
+		u32 at;    // body offset
+		u32 value; // one byte
+	} bytes[] = {
+	    {"bad-c14-quad-checkpoint-past-points", NTC_QUAD + NTC_QUAD_CHECKPOINT, 1u},
+	    {"bad-c14-quad-checkpoint-fe", NTC_QUAD + NTC_QUAD_CHECKPOINT, 0xfeu},
+	    {"bad-c14-restart-forward-past-points", NTC_RESTART + NTC_NODE_FORWARD, 1u},
+	    // Forward has no "none": every point leads on.
+	    {"bad-c14-restart-forward-none", NTC_RESTART + NTC_NODE_FORWARD, NTC_NODE_NONE},
+	    {"bad-c14-restart-left-past-points", NTC_RESTART + NTC_NODE_FORWARD + 1u, 5u},
+	    {"bad-c14-restart-right-past-points", NTC_RESTART + NTC_NODE_FORWARD + 3u, 0xfeu},
+	};
+	struct NativeTestParts p;
+	size_t i;
+
+	for (i = 0; i < sizeof(bytes) / sizeof(bytes[0]); i++)
+	{
+		NativeTestParts_Copy(&p, &s_testGood);
+		p.lev.data[NTC_LEV_BODY + bytes[i].at] = (u8)bytes[i].value;
+		NativeTestCont_EmitParts(bytes[i].name, &p, 1);
+	}
+
+	// Two points where the body has room for one.
+	NativeTestParts_Copy(&p, &s_testGood);
+	NativeTestLev_Set32(&p.lev, NTC_LVL_NUM_RESTART, 2u);
+	NativeTestCont_EmitParts("bad-c14-restart-count-past-body", &p, 1);
+
+	NativeTestParts_Copy(&p, &s_testGood);
+	NativeTestLev_Set32(&p.lev, NTC_LVL_NUM_RESTART, 256u);
+	NativeTestCont_EmitParts("bad-c14-restart-count-256", &p, 1);
+
+	NativeTestParts_Copy(&p, &s_testGood);
+	NativeTestLev_Set32(&p.lev, NTC_LVL_NUM_RESTART, 0xffffffffu);
+	NativeTestCont_EmitParts("bad-c14-restart-count-negative", &p, 1);
+
+	// No restart points, but the quadblock still names point 0.
+	NativeTestParts_Copy(&p, &s_testGood);
+	NativeTestLev_Set32(&p.lev, NTC_LVL_NUM_RESTART, 0u);
+	NativeTestLev_Set16(&p.lev, NTC_EORCAM, 0u);
+	NativeTestCont_EmitParts("bad-c14-quad-checkpoint-without-points", &p, 1);
+}
+
+// c15 - VehLap and RB_Warpball take the remainder by the track length,
+// distToFinish of restart point 0.
+internal void NativeTestCont_C15(void)
+{
+	struct NativeTestParts p;
+
+	NativeTestParts_Copy(&p, &s_testGood);
+	NativeTestLev_Set16(&p.lev, NTC_RESTART + NTC_NODE_DISTANCE, 0u);
+	NativeTestCont_EmitParts("bad-c15-restart-disttofinish-0", &p, 1);
+}
+
 // META and the memory need.
 internal void NativeTestCont_Meta(void)
 {
@@ -1998,6 +2349,11 @@ int NativeTestFiles_MakeContainers(const char *dir)
 	NativeTestCont_C5();
 	NativeTestCont_C6();
 	NativeTestCont_C7();
+	NativeTestCont_C10();
+	NativeTestCont_C12();
+	NativeTestCont_C13();
+	NativeTestCont_C14();
+	NativeTestCont_C15();
 	NativeTestCont_Meta();
 	NativeTestCont_Envelope();
 	NativeTestCont_Truncations();

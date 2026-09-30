@@ -8,6 +8,18 @@ static const s32 s_warpballFadeY[6] = {
     -64, -256, -87, 57, 167, 228,
 };
 
+#if defined(CTR_NATIVE)
+// NO ENDLESS PATH WALK. The walks below step from restart point to restart
+// point through RB_Warpball_NewPathNode, which depends only on the point and
+// on the target (constant during one walk). The indices are bytes, so there
+// are at most 256 points: a walk that has not ended after 256 steps has come
+// back to a point and circles forever - a hang in retail too, reachable only
+// with a broken path (a track container is checked at load,
+// NativeTrack_CheckLevRace). A walk that ends at all ends before this, so the
+// bound never changes where a warpball goes.
+#define WARPBALL_PATH_STEPS_MAX 256
+#endif
+
 // NOTE(aalhendi): Native uses retail fade scale/Y table bytes from 0x800b2c88 and 0x800b2cac.
 void RB_Warpball_FadeAway(struct Thread *t)
 {
@@ -175,7 +187,18 @@ struct Driver *RB_Warpball_GetDriverTarget(struct TrackerWeapon *tw, struct Inst
 	// NOTE(aalhendi): Retail uses GTE MVMVA MAC1; this is the same row0 dot product.
 	projectedDistance = ((s32)pathVector.x * orbVector.x) + ((s32)pathVector.y * orbVector.y) + ((s32)pathVector.z * orbVector.z);
 
+#if defined(CTR_NATIVE)
+	// A track length of 0 (distToFinish of node 0) is a division by zero - a
+	// crash on the PC. Refused at load for a track container; every real
+	// track has a length, so the remainder is never skipped there.
+	projectedDistance = (node1->distToFinish << 3) + (projectedDistance >> 12) + 0x200;
+	if (trackDistance != 0)
+	{
+		projectedDistance %= trackDistance;
+	}
+#else
 	projectedDistance = ((node1->distToFinish << 3) + (projectedDistance >> 12) + 0x200) % trackDistance;
+#endif
 
 	for (int i = 0; i < 8; i++)
 	{
@@ -216,9 +239,18 @@ void RB_Warpball_SetTargetDriver(struct TrackerWeapon *tw)
 	struct CheckpointNode *targetNode = &nodes[target->checkpoint.currentIndex];
 	struct CheckpointNode *prevNode = targetNode;
 	int targetDistance = target->distanceToFinish_curr;
+#if defined(CTR_NATIVE)
+	int steps = 0;
+#endif
 
 	while ((((int)targetNode->distToFinish << 3) >= targetDistance) && (targetNode != nodes))
 	{
+#if defined(CTR_NATIVE)
+		if (++steps > WARPBALL_PATH_STEPS_MAX)
+		{
+			break;
+		}
+#endif
 		prevNode = targetNode;
 		targetNode = RB_Warpball_NewPathNode(targetNode, tw->driverTarget);
 	}
@@ -292,12 +324,21 @@ void RB_Warpball_SeekDriver(struct TrackerWeapon *tw, u32 checkpointIndex, struc
 
 	// pointer to path node
 	struct CheckpointNode *cn = &first[checkpointIndex];
+#if defined(CTR_NATIVE)
+	int steps = 0;
+#endif
 
 	while ((d->distanceToFinish_curr <= (u32)(cn->distToFinish << 3)) &&
 
 	       // node is not first node
 	       (cn != first))
 	{
+#if defined(CTR_NATIVE)
+		if (++steps > WARPBALL_PATH_STEPS_MAX)
+		{
+			break;
+		}
+#endif
 		cn = RB_Warpball_NewPathNode(cn, tw->driverTarget);
 	}
 
@@ -400,6 +441,17 @@ static int RB_Warpball_NodeDeltaLength(struct CheckpointNode *curr, struct Check
 
 static void RB_Warpball_SetQuadblockIndex(struct TrackerWeapon *tw, struct ScratchpadStruct *sps)
 {
+#if defined(CTR_NATIVE)
+	// The quadblock's byte against the real node count, as in VehLap: only
+	// 0xff means "none" in retail, any other value became an index into
+	// ptr_restart_points. Returns early only for 0xff (no change, as before)
+	// and for an index past the table.
+	if ((int)sps->hit.ptrQuadblock->checkpointIndex >= sdata->gGT->level1->cnt_restart_points)
+	{
+		return;
+	}
+#endif
+
 	if (sps->hit.ptrQuadblock->checkpointIndex != 0xff)
 	{
 		tw->nodeNextIndex = sps->hit.ptrQuadblock->checkpointIndex;
@@ -562,6 +614,13 @@ void RB_Warpball_ThTick(struct Thread *t)
 
 			if (segmentLength <= progress)
 			{
+#if defined(CTR_NATIVE)
+				// Only steps of length 0 can circle: every other step uses up
+				// progress. Consecutive 0-length steps leave the progress as it
+				// is, so after 256 of them the walk repeats itself forever.
+				int zeroSteps = 0;
+#endif
+
 				progress -= segmentLength;
 
 				do
@@ -571,6 +630,13 @@ void RB_Warpball_ThTick(struct Thread *t)
 					curr = next;
 					next = RB_Warpball_NewPathNode(curr, tw->driverTarget);
 					segmentLength = RB_Warpball_NodeDeltaLength(curr, next, &distX, &distY, &distZ);
+#if defined(CTR_NATIVE)
+					zeroSteps = (segmentLength == 0) ? (zeroSteps + 1) : 0;
+					if (zeroSteps > WARPBALL_PATH_STEPS_MAX)
+					{
+						break;
+					}
+#endif
 					keepAdvancing = segmentLength <= progress;
 					progress -= segmentLength;
 

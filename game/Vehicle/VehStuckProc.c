@@ -5,6 +5,7 @@ enum
 	VEH_STUCK_MASK_BSP_PROBE_HEIGHT = 0x100,
 	VEH_STUCK_RESPAWN_Y_OFFSET = 0x80,
 	VEH_STUCK_RESPAWN_PLAYER_CLEARANCE_XZ = 0x2000,
+	VEH_STUCK_RESPAWN_VISITS_MAX = 256,
 	VEH_STUCK_MASK_HEAD_Y_OFFSET = 0x140,
 	VEH_STUCK_REV_MASK_RELEASE_HEIGHT = 0x4000,
 	VEH_STUCK_REV_MASK_GRAB_HEIGHT_TRIGGER = 0x1000,
@@ -109,21 +110,41 @@ static void VehStuckProc_MaskGrab_SearchBsp(struct Driver *d, struct ScratchpadS
 	COLL_SearchBSP_CallbackPARAM(sps->ptr_mesh_info->bspRoot, &sps->bbox, COLL_FIXED_BSPLEAF_TestQuadblocks, sps);
 }
 
+// The quadblock itself as the destination: the middle of vertices 0 and 3.
+internal void VehStuckProc_MaskGrab_QuadCenter(struct Driver *d, struct mesh_info *mesh, struct QuadBlock *quad)
+{
+	struct LevVertex *verts = mesh->ptrVertexArray;
+	struct LevVertex *v0 = &verts[quad->index[0]];
+	struct LevVertex *v3 = &verts[quad->index[3]];
+
+	d->posCurr.x = CTR_MipsSll(CTR_MipsAddLo(v0->pos.x, v3->pos.x), 7);
+	d->posCurr.y = CTR_MipsSll(CTR_MipsAddLo(CTR_MipsAddLo(v0->pos.y, v3->pos.y), VEH_STUCK_RESPAWN_Y_OFFSET), 7);
+	d->posCurr.z = CTR_MipsSll(CTR_MipsAddLo(v0->pos.z, v3->pos.z), 7);
+}
+
 void VehStuckProc_MaskGrab_FindDestPos(struct Driver *d, struct QuadBlock *quad)
 {
 	struct GameTracker *gGT = sdata->gGT;
 	struct Level *level = gGT->level1;
 	struct mesh_info *mesh = level->ptr_mesh_info;
+	int useQuad = (level->cnt_restart_points < 1) || (level->ptr_restart_points == NULL) || (quad->checkpointIndex == 0xff);
 
-	if ((level->cnt_restart_points < 1) || (level->ptr_restart_points == NULL) || (quad->checkpointIndex == 0xff))
+#if defined(CTR_NATIVE)
+	// THE INDEX AGAINST THE REAL NODE COUNT, as in VehLap_UpdateProgress:
+	// retail only knows 0xff as "no restart point" and took any other byte of
+	// the quadblock as an index into ptr_restart_points. A track container is
+	// refused at load if a quadblock names a point it does not have
+	// (NativeTrack_CheckLevRace); this is the second layer. Never true where
+	// every index lies inside the table.
+	if (!useQuad && ((int)quad->checkpointIndex >= level->cnt_restart_points))
 	{
-		struct LevVertex *verts = mesh->ptrVertexArray;
-		struct LevVertex *v0 = &verts[quad->index[0]];
-		struct LevVertex *v3 = &verts[quad->index[3]];
+		useQuad = 1;
+	}
+#endif
 
-		d->posCurr.x = CTR_MipsSll(CTR_MipsAddLo(v0->pos.x, v3->pos.x), 7);
-		d->posCurr.y = CTR_MipsSll(CTR_MipsAddLo(CTR_MipsAddLo(v0->pos.y, v3->pos.y), VEH_STUCK_RESPAWN_Y_OFFSET), 7);
-		d->posCurr.z = CTR_MipsSll(CTR_MipsAddLo(v0->pos.z, v3->pos.z), 7);
+	if (useQuad)
+	{
+		VehStuckProc_MaskGrab_QuadCenter(d, mesh, quad);
 	}
 	else
 	{
@@ -141,10 +162,31 @@ void VehStuckProc_MaskGrab_FindDestPos(struct Driver *d, struct QuadBlock *quad)
 		sps->Union.QuadBlockColl.quadFlagsWanted = QUADBLOCK_FLAG_GROUND;
 		d->distanceDrivenBackwards = 0;
 
+#if defined(CTR_NATIVE)
+		// NO ENDLESS WALK. Both loops below step forward one restart point per
+		// pass, and whether a point is taken depends on nothing but that point
+		// (the ground under it, the other karts, which do not move meanwhile).
+		// The indices are bytes, so there are at most 256 points: after 256
+		// visits the walk has come back to a point it already refused and
+		// would circle forever - retail hangs there. Then the quadblock itself
+		// is the destination. A walk that ends at all ends before that, so
+		// this never changes where a kart lands.
+		int visits = 0;
+		int gaveUp = 0;
+#endif
+
 		do
 		{
 			do
 			{
+#if defined(CTR_NATIVE)
+				if (++visits > VEH_STUCK_RESPAWN_VISITS_MAX)
+				{
+					gaveUp = 1;
+					break;
+				}
+#endif
+
 				nextRespawn = &level->ptr_restart_points[respawn->nextIndex_forward];
 
 				d->posCurr.x = CTR_MipsSll(respawn->pos.x, FRACTIONAL_BITS_8);
@@ -158,6 +200,13 @@ void VehStuckProc_MaskGrab_FindDestPos(struct Driver *d, struct QuadBlock *quad)
 				VehStuckProc_MaskGrab_SearchBsp(d, sps);
 				respawn = nextRespawn;
 			} while ((sps->boolDidTouchQuadblock == 0) || ((sps->collision.stepFlags & COLL_STEP_FLAG_KILL_PLANE) != 0));
+
+#if defined(CTR_NATIVE)
+			if (gaveUp)
+			{
+				break;
+			}
+#endif
 
 			struct Thread *playerThread = gGT->threadBuckets[PLAYER].thread;
 			while (playerThread != NULL)
@@ -198,6 +247,13 @@ void VehStuckProc_MaskGrab_FindDestPos(struct Driver *d, struct QuadBlock *quad)
 				break;
 			}
 		} while (1);
+
+#if defined(CTR_NATIVE)
+		if (gaveUp)
+		{
+			VehStuckProc_MaskGrab_QuadCenter(d, mesh, quad);
+		}
+#endif
 	}
 
 	gGT->cameraDC[d->driverID].flags |= 1;

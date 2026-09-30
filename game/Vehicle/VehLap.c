@@ -167,8 +167,17 @@ void VehLap_UpdateProgress(struct Driver *driver)
 	s32 trackLength = (s32)nodes[0].distToFinish << VEH_LAP_TRACK_DISTANCE_SCALE_SHIFT;
 
 	driver->distanceToFinish_curr = progress;
-	// NOTE(aalhendi): Retail uses signed div/mfhi for this remainder.
-	driver->distanceToFinish_curr = progress % trackLength;
+#if defined(CTR_NATIVE)
+	// A track length of 0 (distToFinish of node 0) is a division by zero - a
+	// crash on the PC. A track container with it is refused at load
+	// (NativeTrack_CheckLevRace); every real track has a length, so this never
+	// skips a remainder there.
+	if (trackLength != 0)
+#endif
+	{
+		// NOTE(aalhendi): Retail uses signed div/mfhi for this remainder.
+		driver->distanceToFinish_curr = progress % trackLength;
+	}
 
 	if (wrongWayTest < VEH_LAP_WRONG_WAY_DOT_LIMIT)
 	{

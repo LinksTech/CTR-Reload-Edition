@@ -162,6 +162,20 @@ void UI_Map_GetIconPos(struct UIMap *map, int *posX, int *posY)
 	worldRangeX = map->worldEndX - map->worldStartX;
 	worldRangeY = map->worldEndY - map->worldStartY;
 
+#if defined(CTR_NATIVE)
+	// The traps are gone, and on the PC a width or height of 0 is a division
+	// by zero - a crash. Such a map table comes only from a broken level (a
+	// track container with one is refused at load, NativeTrack_CheckLevRace);
+	// the icon then sits at the map's origin instead. Every real map has both
+	// ranges, so this never moves an icon there.
+	if ((worldRangeX == 0) || (worldRangeY == 0))
+	{
+		*posX = map->iconStartX;
+		*posY = map->iconStartY - UI_MAP_ICON_Y_OFFSET;
+		return;
+	}
+#endif
+
 	if (mode == UI_MAP_MODE_0_DEGREES)
 	{
 		// 0 degrees

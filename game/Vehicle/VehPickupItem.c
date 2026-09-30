@@ -1081,6 +1081,21 @@ void VehPickupItem_ShootNow(struct Driver *d, s32 weaponID, s32 flags)
 	// Warpball
 	case WEAPON_ID_WARPBALL:
 
+#if defined(CTR_NATIVE)
+		// The warpball flies along the restart points and divides by the
+		// length of node 0. A level without them - five real track
+		// containers declare Race with none - read garbage past the table
+		// and could divide by 0. No path, no warpball: the shot is used up,
+		// and WARPBALL_HELD is released so the next one can be picked up.
+		// Every disc race track has restart points.
+		if ((gGT->level1->cnt_restart_points < 1) || (gGT->level1->ptr_restart_points == NULL))
+		{
+			gGT->gameMode1 &= ~(WARPBALL_HELD);
+			Platform_Log("[CTR Weapon] warpball of driver %d skipped - this level has no restart points to follow\n", (int)d->driverID);
+			break;
+		}
+#endif
+
 		dInst = d->instSelf;
 		GAMEPAD_ShockFreq(d, WEAPON_GAMEPAD_RUMBLE_FRAMES, 0);
 		GAMEPAD_ShockForce1(d, WEAPON_GAMEPAD_RUMBLE_FRAMES, WEAPON_GAMEPAD_RUMBLE_FORCE);

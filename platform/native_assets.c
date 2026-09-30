@@ -1245,7 +1245,10 @@ const char *NativeTrack_WhyNotOffered(int index, int mode, struct NativeTrackRef
 			NativeTrack_RefusalLines(text, "NEEDS NEWER", "NEEDS A", "NEWER", "VERSION OF", "CTR RELOAD");
 			break;
 		case NATIVE_TRACK_REFUSAL_OLDER:
-			NativeTrack_RefusalLines(text, "OLD FORMAT", "OLD FORMAT", "PACK AGAIN", "WITH RLDPACK", NULL);
+			// Players pack with the Alpha-Maker, not with rldpack. "IN
+			// ALPHA-MAKER" would be 14 characters, so it takes two lines; the
+			// menu font has '-'.
+			NativeTrack_RefusalLines(text, "OLD FORMAT", "OLD FORMAT", "PACK AGAIN", "IN THE", "ALPHA-MAKER");
 			break;
 		case NATIVE_TRACK_REFUSAL_MEMORY:
 			NativeTrack_RefusalLines(text, "MEMORY INFO", "MEMORY INFO", "TOO LOW", "PACK AGAIN", NULL);
@@ -1345,9 +1348,18 @@ int NativeTrack_CountOffered(int mode)
 // MEMPACK_Init. Only containers that are usable: a file whose META cannot
 // be read cannot be loaded, so nothing is reserved
 // for it either.
+//
+// IN 64 BITS, AND SATURATING. Rld_ParseMeta already refuses a memTotal or
+// primBytes that no LEV can need, so a listed entry cannot wrap this sum. The
+// wide sum is the second layer: a memTotal of 0xffffff00 once wrapped to a few
+// hundred bytes, the reserve came out too small and the load ran into the
+// MEMPACK red screen. Saturated at 2 GiB, not at 4: the caller adds the clip
+// surcharge (main.c), and Platform_SetMempackExtra clamps loudly anyway.
+#define NATIVE_TRACK_MEMPACK_NEED_MAX 0x80000000u
+
 u32 NativeTrack_MempackExtraNeeded(void)
 {
-	u32 most = 0;
+	u64 most = 0;
 	int i;
 
 	for (i = 0; i < s_nativeTrackCount; i++)
@@ -1357,8 +1369,11 @@ u32 NativeTrack_MempackExtraNeeded(void)
 		// memTotal from META plus the clip buffers that MainInit creates per player
 		// (data.PtrClipBuffer has four slots, so four times). META
 		// does not carry clipBytes - the number comes from primBytes via the same
-		// rule that Rld_MemNeed uses to compute it from the LEV at load time.
-		const u32 need = entry->memTotal + (NATIVE_TRACK_CLIP_BUFFERS * Rld_ClipBytesForPrimBytes(entry->primBytes));
+		// rule that Rld_MemNeed uses to compute it from the LEV at load time
+		// (Rld_ClipBytesForPrimBytes, written out here in 64 bits - its u32
+		// product wraps for a primBytes above about 3.7 GB).
+		const u64 clipBytes = (u64)(entry->primBytes / RLD_POLY_GT4_BYTES) * RLD_CLIP_RECORD_GT4_BYTES;
+		const u64 need = (u64)entry->memTotal + ((u64)NATIVE_TRACK_CLIP_BUFFERS * clipBytes);
 
 		if (entry->ok && (need > most))
 		{
@@ -1366,7 +1381,7 @@ u32 NativeTrack_MempackExtraNeeded(void)
 		}
 	}
 
-	return most;
+	return (most > (u64)NATIVE_TRACK_MEMPACK_NEED_MAX) ? NATIVE_TRACK_MEMPACK_NEED_MAX : (u32)most;
 }
 
 // The primitive memory of the loaded track, computed from ITS LEV and not
@@ -2935,6 +2950,247 @@ struct NativeTrackRead
 	int memoryRefused;
 };
 
+// ---------------------------------------------------------------------------
+// THE RACE TABLES OF THE LEV, held against what the race reads without a check.
+//
+// Runs after Rld_CheckLev, which has proven the body, the pointer map, every
+// pointer field of struct Level (NULL or mapped, pointing into the body) and
+// the spawn table (count 0..16, slots 2 and 3 set where CAM.c needs them).
+// What it did not look at are the numbers INSIDE those tables that the race
+// uses as indices or divisors:
+//
+//   restart points  (struct CheckpointNode, 12 bytes; Level 0x148 count, 0x14c
+//                   table) - VehLap, the mask grab (VehStuckProc) and the
+//                   warpball index the table with nextIndex_* of the nodes and
+//                   with the checkpointIndex of the quadblocks, and divide by
+//                   distToFinish of node 0 (VehLap, RB_Warpball: % length).
+//   end-of-race cameras  (spawn slot 2) - CAM.c steps through the entries by
+//                   data.EndOfRace_Camera_Size[mode] and indexes the restart
+//                   points with each entry's respawn point (and, in modes 9
+//                   and 13, with the first data word).
+//   the map table   (spawn slot 0, struct UIMapSpawnMetadata) -
+//                   UI_Map_GetIconPos divides by worldEnd - worldStart.
+//
+// Measured on 2026-09-30 on the 20 real containers at hand: 0 to 159 restart
+// points, every nextIndex_forward inside, every other link inside or 0xff,
+// node 0 with a distance of 5,440 or more, every quadblock checkpoint 0xff or
+// inside, no end-of-race camera table at all, map ranges of 4,133 and more.
+// NOT a rule: a race track without restart points. Five real arena
+// containers declare Race with 0 points, so that case is handled in the race
+// instead (VehLap and VehStuckProc already skip the table, VehPickupItem
+// skips the warpball).
+// ---------------------------------------------------------------------------
+#define NATIVE_LEV_RESTART_COUNT   0x148u
+#define NATIVE_LEV_RESTART_TABLE   0x14cu
+#define NATIVE_LEV_RESTART_MAX     0xffu // u8 indices, 0xff means "none"
+#define NATIVE_LEV_NODE_BYTES      12u   // struct CheckpointNode
+#define NATIVE_LEV_NODE_DISTANCE   6u    // CheckpointNode.distToFinish, u16
+#define NATIVE_LEV_NODE_FORWARD    8u    // nextIndex_forward, _left, _backward, _right
+#define NATIVE_LEV_MESH_QUADS      0x0cu // mesh_info.ptrQuadBlockArray
+#define NATIVE_LEV_QUAD_CHECKPOINT 0x3eu // QuadBlock.checkpointIndex, u8
+#define NATIVE_LEV_SPAWN_TABLE     0x134u
+#define NATIVE_LEV_UIMAP_BYTES     0x14u // struct UIMapSpawnMetadata
+
+// Whether the pointer map lists this body offset. Rld_CheckLev has proven the
+// map lies inside the LEV.
+internal int NativeTrack_LevMapped(const u8 *lev, u32 site)
+{
+	const size_t mapAt = NATIVE_TRACK_LEV_BODY + (size_t)Rld_ReadLE32(&lev[0]);
+	const u32 count = Rld_ReadLE32(&lev[mapAt]) / 4u;
+	u32 i;
+
+	for (i = 0; i < count; i++)
+	{
+		if ((Rld_ReadLE32(&lev[mapAt + 4u + ((size_t)i * 4u)]) & ~3u) == site)
+		{
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+internal int NativeTrack_LevS16(const u8 *lev, u32 offset)
+{
+	const u32 raw = Rld_ReadLE16(&lev[NATIVE_TRACK_LEV_BODY + (size_t)offset]);
+
+	return (raw >= 0x8000u) ? ((int)raw - 0x10000) : (int)raw;
+}
+
+internal const char *NativeTrack_CheckLevRace(const u8 *lev)
+{
+	const u32 body = Rld_ReadLE32(&lev[0]);
+	const u32 mesh = NativeTrack_LevField(lev, 0x00u);
+	const u32 spawn = NativeTrack_LevField(lev, NATIVE_LEV_SPAWN_TABLE);
+	const int nodes = (int)NativeTrack_LevField(lev, NATIVE_LEV_RESTART_COUNT);
+	u32 table = 0;
+	u32 spawnCount;
+	int i;
+
+	// The restart points.
+	if ((nodes < 0) || (nodes > (int)NATIVE_LEV_RESTART_MAX))
+	{
+		return "the LEV restart point count (cnt_restart_points) is outside 0..255";
+	}
+
+	if (nodes > 0)
+	{
+		int link;
+
+		table = NativeTrack_LevField(lev, NATIVE_LEV_RESTART_TABLE);
+		if (!NativeTrack_LevMapped(lev, NATIVE_LEV_RESTART_TABLE) || (((u64)table + ((u64)nodes * NATIVE_LEV_NODE_BYTES)) > (u64)body))
+		{
+			return "the LEV restart points (ptr_restart_points) do not lie inside the level body";
+		}
+
+		for (i = 0; i < nodes; i++)
+		{
+			const u8 *node = &lev[NATIVE_TRACK_LEV_BODY + (size_t)table + ((size_t)i * NATIVE_LEV_NODE_BYTES)];
+
+			if (node[NATIVE_LEV_NODE_FORWARD] >= (u32)nodes)
+			{
+				return "a LEV restart point leads forward to a restart point that does not exist";
+			}
+
+			for (link = 1; link < 4; link++)
+			{
+				const u32 next = node[NATIVE_LEV_NODE_FORWARD + (u32)link];
+
+				if ((next != NATIVE_LEV_RESTART_MAX) && (next >= (u32)nodes))
+				{
+					return "a LEV restart point branches to a restart point that does not exist";
+				}
+			}
+		}
+
+		if (Rld_ReadLE16(&lev[NATIVE_TRACK_LEV_BODY + (size_t)table + NATIVE_LEV_NODE_DISTANCE]) == 0u)
+		{
+			return "the LEV restart point 0 has distToFinish 0 - the lap and the warpball divide by it";
+		}
+	}
+
+	// The checkpoint of every quadblock: 0xff or a restart point.
+	if ((mesh != 0u) && (((u64)mesh + 0x20u) <= (u64)body))
+	{
+		const int quads = (int)NativeTrack_LevField(lev, mesh);
+
+		if (quads > 0)
+		{
+			const u32 array = NativeTrack_LevField(lev, mesh + NATIVE_LEV_MESH_QUADS);
+
+			if (!NativeTrack_LevMapped(lev, mesh + NATIVE_LEV_MESH_QUADS) || (((u64)array + ((u64)quads * RLD_QUADBLOCK_BYTES)) > (u64)body))
+			{
+				return "the LEV quadblocks (ptrQuadBlockArray) do not lie inside the level body";
+			}
+
+			for (i = 0; i < quads; i++)
+			{
+				const u32 checkpoint = lev[NATIVE_TRACK_LEV_BODY + (size_t)array + ((size_t)i * RLD_QUADBLOCK_BYTES) + NATIVE_LEV_QUAD_CHECKPOINT];
+
+				if ((checkpoint != NATIVE_LEV_RESTART_MAX) && (checkpoint >= (u32)nodes))
+				{
+					return "a LEV quadblock names a restart point (checkpointIndex) that does not exist";
+				}
+			}
+		}
+	}
+
+	// The spawn table: Rld_CheckLev has proven it is mapped, inside the body,
+	// with count 0..16 and every slot NULL or a pointer into the body.
+	spawnCount = NativeTrack_LevField(lev, spawn);
+
+	// Slot 0, the map table.
+	if (spawnCount > 0u)
+	{
+		const u32 map = NativeTrack_LevField(lev, spawn + 4u);
+
+		if (map != 0u)
+		{
+			if (((u64)map + NATIVE_LEV_UIMAP_BYTES) > (u64)body)
+			{
+				return "the LEV map table (spawn slot 0) runs past the level body";
+			}
+
+			// worldEndX/Y at 0x0 / 0x2, worldStartX/Y at 0x4 / 0x6.
+			if ((NativeTrack_LevS16(lev, map + 0u) == NativeTrack_LevS16(lev, map + 4u)) ||
+			    (NativeTrack_LevS16(lev, map + 2u) == NativeTrack_LevS16(lev, map + 6u)))
+			{
+				return "the LEV map table (spawn slot 0) has a width or height of 0 - the map divides by it";
+			}
+		}
+	}
+
+	// Slot 2, the end-of-race cameras: s16 count, then per camera s16 respawn
+	// point, s16 mode, and data.EndOfRace_Camera_Size[|mode|] bytes of data.
+	if (spawnCount > 2u)
+	{
+		const int sizeCount = (int)(sizeof(data.EndOfRace_Camera_Size) / sizeof(data.EndOfRace_Camera_Size[0]));
+		const u32 cameras = NativeTrack_LevField(lev, spawn + 4u + 8u);
+		int count;
+		u64 at;
+
+		if (((u64)cameras + 2u) > (u64)body)
+		{
+			return "the LEV end-of-race camera table runs past the level body";
+		}
+
+		count = NativeTrack_LevS16(lev, cameras);
+		if (count < 0)
+		{
+			return "the LEV end-of-race camera count is negative";
+		}
+
+		at = (u64)cameras + 2u;
+		for (i = 0; i < count; i++)
+		{
+			int respawn;
+			int mode;
+			int size;
+
+			if ((at + 4u) > (u64)body)
+			{
+				return "the LEV end-of-race camera table runs past the level body";
+			}
+
+			respawn = NativeTrack_LevS16(lev, (u32)at);
+			mode = NativeTrack_LevS16(lev, (u32)at + 2u);
+			mode = (mode < 0) ? -mode : mode;
+
+			if ((mode >= sizeCount) || (data.EndOfRace_Camera_Size[mode] < 0))
+			{
+				return "a LEV end-of-race camera has a mode the game does not know";
+			}
+
+			size = data.EndOfRace_Camera_Size[mode];
+			if ((at + 4u + (u64)size) > (u64)body)
+			{
+				return "the LEV end-of-race camera table runs past the level body";
+			}
+
+			if ((respawn < 0) || (respawn >= nodes))
+			{
+				return "a LEV end-of-race camera names a restart point that does not exist";
+			}
+
+			// Modes 9 and 13 follow the track path from the restart point in
+			// their first data word (CAM.c, trackPathNode).
+			if (((mode == 9) || (mode == 13)) && (size >= 2))
+			{
+				const int path = NativeTrack_LevS16(lev, (u32)at + 4u);
+
+				if ((path < 0) || (path >= nodes))
+				{
+					return "a LEV end-of-race camera follows the path from a restart point that does not exist";
+				}
+			}
+
+			at += 4u + (u64)size;
+		}
+	}
+
+	return NULL;
+}
+
 internal void NativeTrack_FreeRead(struct NativeTrackRead *read)
 {
 	free(read->lev);
@@ -2958,8 +3214,9 @@ internal void NativeTrack_FreeRead(struct NativeTrackRead *read)
 // And the hash is not the end of it (2026-09-30): it carries no key, anyone
 // can recompute it for broken bytes. So LEVD, VRMD and the bank headers in
 // SNDB are held against what the load path relies on (Rld_CheckLev,
-// Rld_CheckVrm, Rld_CheckSndbBanks in rldtrack.inc) before any of them
-// reaches it. A refusal there is DAMAGED, like a hash mismatch.
+// Rld_CheckVrm, Rld_CheckSndbBanks in rldtrack.inc, and the race tables in
+// NativeTrack_CheckLevRace above) before any of them reaches it. A refusal
+// there is DAMAGED, like a hash mismatch.
 //
 // NULL = everything read and accepted; the caller owns what is in `read`.
 // Otherwise the reason, and `read` holds no memory. entry->note may carry the
@@ -3021,6 +3278,11 @@ internal const char *NativeTrack_ReadAll(struct NativeTrackEntry *entry, struct 
 	{
 		memcpy(read->levdSha, &reader.directory[(levIndex * RLD_DIR_ENTRY_SIZE) + RLD_DIR_HASH_OFFSET], sizeof(read->levdSha));
 		error = Rld_CheckLev(read->lev, read->levSize);
+	}
+
+	if (error == NULL)
+	{
+		error = NativeTrack_CheckLevRace(read->lev);
 	}
 
 	if (error == NULL)
