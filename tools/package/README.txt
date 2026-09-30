@@ -266,7 +266,7 @@ Previews
 Tracks and sound
 - Very large tracks: flickering holes near the camera are possible when a
   track has very coarse BSP leaves. The log then contains "rendered list
-  full" - please report it with the track.
+  full" - please report it, with the track's file name and SHA-256.
 - Tracks exported with Saphi: a hit may be missed where hitboxes are
   duplicated, and some floors may be black. Always build with "Build
   container"; it fixes wrong model ids.
@@ -284,22 +284,19 @@ Programs
 
 8. REPORTING A BUG
 ------------------
-Open an issue on GitHub:
+Open an issue on GitHub and choose "Bug report":
 
-  https://github.com/LinksTech/CTR-Reload-Edition/issues
+  https://github.com/LinksTech/CTR-Reload-Edition/issues/new/choose
 
-One issue per problem, with this template (issues are public - see the end
-of this section for what not to attach):
-
-  **Version:** CTR Reload @VERSION@ (@BUILD@)
-  **Logs:** (attach the files, see below)
-  **What happened:**
-  **What you expected:**
-  **Container:** file name, and the SHA-256 the Alpha-Maker shows
-  **Steps to reproduce:**
-  1.
-  2.
-  **Windows version, graphics card, driver:**
+One issue per problem (issues are public - see the end of this section for
+what not to attach). The form asks for:
+- the version: type cmd into the Explorer address bar of this folder, press
+  Enter, run "ctr_native.exe --version" and paste the line it prints
+  ("CTR Reload @VERSION@ (@BUILD@)")
+- what happened, what you expected, and the steps to reproduce it
+- for a custom track: its file name and the SHA-256 the Alpha-Maker shows
+- the log and screenshots (see below)
+- your Windows version, graphics card and driver version
 
 Which files to attach:
 - The game log: the newest file in the "logs" folder next to the game,
@@ -309,15 +306,14 @@ Which files to attach:
   "game-test <date>.log" or "game-preview <date>.log" in
   %TEMP%\CTR Reload Alpha-Maker (paste that path into the Explorer address
   bar).
-- Your .rldtrack container, if you are fine with sharing it. Your source
-  files (.lev/.vrm/.sca) only if you want to.
 - A screenshot (F12 in the game) if it is about the picture; a screenshot of
   the Alpha-Maker if it is about a message there.
 - If the error shows before the game window (the disc image screen), a
   screenshot of that screen - nothing is logged at that point.
 
 Please do NOT attach: the "assets" folder, disc images, memory cards
-("memcards" folder), or anything else from the game data. Logs contain folder
+("memcards" folder), track containers (.rldtrack) or their source files
+(.lev/.vrm/.sca), or anything else from the game data. Logs contain folder
 paths with your Windows user name - edit them out if you mind.
 
 

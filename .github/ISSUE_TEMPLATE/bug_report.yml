@@ -1,0 +1,118 @@
+name: Bug report
+description: Something in the game or the Alpha-Maker does not work
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! One issue per problem, please.
+
+        **Issues are public.** Never attach disc images, the `assets` folder,
+        memory cards or any other files from the game. Screenshots are fine.
+        Logs contain folder paths with your Windows user name - edit them out
+        if you mind.
+
+        A security problem? Please do not open an issue; see the
+        [security policy](https://github.com/LinksTech/CTR-Reload-Edition/security/policy).
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: >-
+        The output of `ctr_native.exe --version`, also for an Alpha-Maker
+        problem. Open the game folder, type `cmd` into the Explorer address
+        bar, press Enter, run `ctr_native.exe --version` and paste the line
+        it prints.
+      placeholder: CTR Reload Beta 0 (a1b2c3d4e5f6)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: program
+    attributes:
+      label: Where does it happen?
+      options:
+        - In the game (ctr_native.exe)
+        - In the Alpha-Maker (alphamaker.exe)
+        - In both, or not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: From starting the program to the problem. Mode, track and menu path help a lot.
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: input
+    id: track
+    attributes:
+      label: Custom track
+      description: >-
+        If a custom track is involved: its file name and the SHA-256 the
+        Alpha-Maker shows. Leave empty for the original tracks.
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log and screenshots
+      description: >-
+        Drag the newest log from the `logs` folder next to the game into this
+        box. If the Alpha-Maker started the game, add the newest `game-test`
+        or `game-preview` log from `%TEMP%\CTR Reload Alpha-Maker` too. If it
+        is about the picture, add a screenshot (F12 in the game). Issues are
+        public: do not attach disc images or any files from the game.
+
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2
+    validations:
+      required: true
+
+  - type: input
+    id: gpu
+    attributes:
+      label: Graphics card and driver version
+      placeholder: AMD Radeon RX 6600, driver 24.9.1
+
+  - type: textarea
+    id: graphics
+    attributes:
+      label: Graphics settings
+      description: >-
+        If it is about the picture: your choices in OPTIONS → GRAPHICS
+        (display mode, aspect ratio, resolution, anti-aliasing) and your
+        screen size. The game draws with Vulkan only, so there is no renderer
+        to choose.
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Before you send it
+      options:
+        - label: I searched the open issues, and this is one problem.
+        - label: I attached no disc images, `assets` files, memory cards or other game data.
+          required: true

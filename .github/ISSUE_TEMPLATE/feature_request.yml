@@ -1,0 +1,55 @@
+name: Feature request
+description: An idea for the game, custom tracks or the Alpha-Maker
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the idea! Please check
+        [What's next](https://github.com/LinksTech/CTR-Reload-Edition#whats-next)
+        first - some things are already planned. Development happens in
+        batches and without fixed dates, so a request is welcome, but not a
+        promise.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - The game
+        - Custom tracks and the Alpha-Maker
+        - Building and development
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What is missing or in the way?
+      description: The situation where you miss it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: Your idea
+      description: What should happen instead? Sketches and screenshots are welcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Other ways you thought of, or how you work around it today.
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Before you send it
+      options:
+        - label: I checked What's next and the open issues.
+        - label: I attached no disc images, `assets` files, memory cards or other game data.
+          required: true

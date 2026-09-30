@@ -9,9 +9,9 @@ DECISIONS
 ---------
 - Windows only. There is no Linux version, and none is planned. Linux build
   files in the source code are not maintained.
-- Bug reports go to GitHub issues
-  (https://github.com/LinksTech/CTR-Reload-Edition/issues), with the template from
-  README.txt.
+- Bug reports go to GitHub issues with the "Bug report" form, see section 8
+  of README.txt:
+  https://github.com/LinksTech/CTR-Reload-Edition/issues/new/choose
 - The package ships the game and the Alpha-Maker. The track packer rldpack is
   built into the Alpha-Maker and is not a separate program in the package.
 
@@ -76,7 +76,8 @@ KNOWN ISSUES
 - Multiplayer (VS., BATTLE, 2 players) is locked.
 - Very large tracks: flickering holes near the camera are possible when a
   track has very coarse BSP leaves. The log then contains
-  "rendered list full" - please report it with the track.
+  "rendered list full" - please report it, with the track's file name and
+  SHA-256.
 - Track previews: the invisible kart still hits crates and fruit, so they
   break in the preview. If it falls off, the mask carries it back.
 - Track previews without nav paths: the camera does not avoid walls and

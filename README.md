@@ -184,6 +184,8 @@ or other game data, and edit your Windows user name out of the log if you mind.
   together with Claude Code (Anthropic), decide what gets built, review every
   change and test it - with measured reference runs, automated checks and
   hands-on play testing.
+- Development happens openly, in batches and without fixed dates; how to
+  contribute is described in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Credits
 
