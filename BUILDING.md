@@ -16,6 +16,12 @@ The game itself needs your own disc image at run time (see [README.md](README.md
 - **Git** (optional for building; without it the build ID is `unknown`). The
   package script needs Git Bash, Git and Python.
 
+MSVC is the only supported toolchain: the 32-bit preset `windows-msvc-x86`,
+which `build-msvc.bat` uses. `CMakeLists.txt` and `CMakePresets.json` still
+have MinGW branches and presets, but MinGW is untested: no MinGW build is made
+or tested, and the automatic builds use MSVC only. A MinGW build would also
+leave out the Alpha-Maker, which is built under MSVC only.
+
 ## Build
 
 From a command prompt in the repository root:
@@ -69,9 +75,13 @@ tracked files differ from it.
   extract the good ones and refuse the bad ones without writing anything
   outside the output folder
 - `lang_check`: everything in this repository is English -
-  `tools/lang_check.py` fails on German words, umlauts, person names,
-  internal references, local paths and day.month.year dates; older German
-  names that stay for now are listed in `tools/lang_check_allow.txt`
+  `tools/lang_check.py` checks the contents and the file and folder names and
+  fails on German words, umlauts, internal references, local paths and
+  day.month.year dates; older German names that stay for now are listed in
+  `tools/lang_check_allow.txt`. It also refuses the person names and the local
+  checkout folders (lines `path <folder>`) listed in the local, untracked file
+  `tools/lang_check_names.local.txt`; without that file (as in the automatic
+  builds) these two checks are skipped
 
 None of them needs game data, a window or a GPU; every test file is made up
 by the game itself (`platform/native_testfiles.c`).
@@ -106,11 +116,12 @@ data.
 
 - `.github/workflows/build.yml`: every push to `main` or `dev` and every pull
   request builds and runs the self-tests; a version tag (`v*`) also makes the
-  release with `ctr_native.exe` and `alphamaker.exe`.
+  release with `ctr_native.exe`, `alphamaker.exe`, `LICENSE` and
+  `THIRD_PARTY_NOTICES.md`.
 - `.github/workflows/nightly.yml`: every day at 21:00 UTC (and by hand) the
-  pre-release `nightly-builds` is replaced with a build of `dev` - only when
-  `dev` has changed since the last one. The tag `nightly-builds` always points
-  at the commit it was built from.
+  pre-release `nightly-builds` is replaced with a build of `dev` that carries
+  the same four files - only when `dev` has changed since the last one. The
+  tag `nightly-builds` always points at the commit it was built from.
 - Both use the same build job, `.github/workflows/build-job.yml`.
 
 ## Before you commit and push
@@ -120,6 +131,9 @@ Enable the hooks once per clone:
     git config core.hooksPath tools/git-hooks
 
 - `pre-commit` and `commit-msg` run `tools/lang_check.py` on the staged files
-  and on the commit message: everything in this repository is English.
+  and on the commit message: everything in this repository is English. For
+  the person-name and local-folder checks, list the names (one per line) and
+  your checkout folder (`path <folder>`) in `tools/lang_check_names.local.txt`
+  (untracked, it stays on your machine).
 - `pre-push` refuses pushes that contain game data, third-party content or
   files larger than 5 MB.
