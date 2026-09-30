@@ -1,13 +1,14 @@
 @echo off
 setlocal
 
-:: CTR Native MSVC Build Script (Windows x86)
-:: Requires Visual Studio 2022 or Build Tools with the Desktop C++ workload.
+:: CTR Reload Edition - MSVC build (Windows, 32-bit): configure, build, self-tests.
+:: Requires Visual Studio 2022 or Build Tools 2022 with the Desktop C++ workload,
+:: CMake 3.21 or newer, the Vulkan SDK and Python 3. See BUILDING.md.
 
 where cmake >nul 2>&1
 if %ERRORLEVEL% neq 0 (
     echo ERROR: cmake not found in PATH
-    echo Install CMake 3.20 or newer, or the Visual Studio C++ CMake tools component.
+    echo Install CMake 3.21 or newer, or the Visual Studio C++ CMake tools component.
     exit /b 1
 )
 
@@ -25,7 +26,7 @@ if %ERRORLEVEL% neq 0 (
 
 ctest --preset windows-msvc-x86-release
 if %ERRORLEVEL% neq 0 (
-    echo ERROR: Smoke test failed
+    echo ERROR: Self-tests failed
     exit /b 1
 )
 

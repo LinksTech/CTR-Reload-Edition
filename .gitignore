@@ -101,6 +101,7 @@ menus/*.ergebnis
 /cmake-build-*/
 /out/
 /dist/
+/dist-build.log
 /tools/menued/build/
 /tools/menued/dist/
 *.exe

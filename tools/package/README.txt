@@ -1,17 +1,19 @@
-CTR Reload Beta 0 - README for testers
-======================================
+CTR Reload @VERSION@ - README for testers
+==========================================
 Build: @BUILD@
 
 CTR Reload runs Crash Team Racing natively on Windows and loads custom tracks.
-Beta 0 is a closed test of two things: the game (CTR Reload Beta 0) and the
-Alpha-Maker, the tool that turns your exported track into a track the game
-can load. Play, build your tracks, race them, and tell us what breaks.
-When everything is clean, Beta 1 goes public on GitHub.
+This version is a test of two things: the game (CTR Reload @VERSION@) and
+the Alpha-Maker, the tool that turns your exported track into a track the
+game can load. Play, build your tracks, race them, and tell us what breaks.
 
-You get three files: ctr_native.exe (the game), alphamaker.exe (the track
-tool) and this README.txt. They contain no game data. You need your own
-copy of Crash Team Racing (NTSC-U, SCUS-94426) as a disc image (.cue/.bin).
-Nothing is downloaded.
+The package holds the game (ctr_native.exe, with its debug symbols
+ctr_native.pdb), the Alpha-Maker (alphamaker.exe), this README.txt, the
+RELEASE-NOTES.txt, the licenses (LICENSE, THIRD_PARTY_NOTICES.md) and the
+source code of exactly this build:
+  @NAME@-source.zip
+It contains no game data. You need your own copy of Crash Team Racing
+(NTSC-U, SCUS-94426) as a disc image (.cue/.bin). Nothing is downloaded.
 CTR Reload is not affiliated with or endorsed by Activision or Naughty Dog.
 
 Contents
@@ -30,19 +32,19 @@ Contents
 
 0. QUICK START
 --------------
-1. Put ctr_native.exe and alphamaker.exe together into their own folder,
-   for example C:\Games\CTR Reload. Always keep the two together, and
-   always from the same delivery.
+1. Unpack the package folder to a place of its own, for example
+   C:\Games\CTR Reload. Always keep ctr_native.exe, ctr_native.pdb and
+   alphamaker.exe together, and always from the same package.
 2. Start ctr_native.exe and drag your disc image onto the window (once).
 3. Start alphamaker.exe from the same folder. On the "Test in game" page the
-   game must show "Found: CTR Reload Beta 0 (@BUILD@)".
+   game must show "Found: CTR Reload @VERSION@ (@BUILD@)".
 4. On the "Track" page pick your exported track folder, set "Output" to the
    game's "tracks" folder, press "Build container". Wait until the headline
    turns green: "Container built, preview written".
 5. Start the game: ARCADE -> NITRO-PIT -> RACE (or CRYSTAL, or CTR).
 
 Always check the version first. The Alpha-Maker shows it in its title bar,
-the game writes it at the top of its log ("Version: CTR Reload Beta 0 (...)").
+the game writes it at the top of its log ("Version: CTR Reload @VERSION@ (...)").
 Both must show @BUILD@. When you get a new build, replace BOTH files. An
 older game or Alpha-Maker from another folder behaves differently - most
 "it is still broken" reports so far came from an old copy.
@@ -278,15 +280,14 @@ Programs
   move them to quarantine; then allow them in your scanner.
 - Retail cheat codes that unlock drivers are not saved to the memory card;
   all drivers are available from the start anyway.
-- Some messages on the command line (--help) are in German.
 
 
 8. REPORTING A BUG
 ------------------
-Post in the CTR Reload Beta 0 channel on Discord (the link is in your
+Post in the CTR Reload @VERSION@ channel on Discord (the link is in your
 invitation). One post per problem, with this template:
 
-  **Version:** CTR Reload Beta 0 (@BUILD@)
+  **Version:** CTR Reload @VERSION@ (@BUILD@)
   **Logs:** (attach the files, see below)
   **What happened:**
   **What you expected:**
@@ -319,9 +320,17 @@ paths with your Windows user name - edit them out if you mind.
 9. FILES AND FOLDERS
 --------------------
   ctr_native.exe      the game
+  ctr_native.pdb      debug symbols of the game: with them a crash report
+                      names the function, keep it next to ctr_native.exe
   alphamaker.exe      the Alpha-Maker (track containers, cups, test); the
-                      track checker/packer is built into it
+                      track checker/packer (rldpack) is built into it
   README.txt          this file
+  RELEASE-NOTES.txt   what is new, decisions, known issues
+  LICENSE             the GNU General Public License version 3
+  THIRD_PARTY_NOTICES.md
+                      licenses of the components the programs contain
+  <package name>-source.zip
+                      the source code of exactly this build
 
 Created by the game next to ctr_native.exe:
   assets\             game data from your disc image (do not share)
@@ -333,13 +342,15 @@ Created by the game next to ctr_native.exe:
   ctr-settings.cfg    your settings
 
 The Alpha-Maker remembers its settings in %APPDATA%\CTR Reload\alphamaker.ini.
-To update, replace ctr_native.exe and alphamaker.exe; keep the rest.
+To update, replace ctr_native.exe, ctr_native.pdb and alphamaker.exe; keep
+the rest.
 
 
 10. LICENSE
 -----------
 CTR Reload is free software under the GNU General Public License version 3
-(https://www.gnu.org/licenses/gpl-3.0.html). Beta 0 is a closed test.
-Beta 1 will be published on GitHub with its source code and automatic
-builds. Until then you can ask for the source code of exactly this build
-(@BUILD@) in the Beta 0 channel on Discord.
+(https://www.gnu.org/licenses/gpl-3.0.html). The source code of exactly
+this build (@BUILD@) is in this package:
+  @NAME@-source.zip
+BUILDING.md in it says how to build it. The licenses of the third-party
+components are in THIRD_PARTY_NOTICES.md.

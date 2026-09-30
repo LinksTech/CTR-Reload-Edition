@@ -10,7 +10,7 @@
 # valid Vulkan GLSL should not be discoverable only at runtime.
 
 if(NOT VALIDATOR OR VALIDATOR MATCHES "NOTFOUND")
-    message(FATAL_ERROR "glslangValidator not found. Install the Vulkan SDK, set VULKAN_SDK, or configure with -DCTR_NATIVE_VULKAN=OFF.")
+    message(FATAL_ERROR "glslangValidator not found. Install the Vulkan SDK or set VULKAN_SDK.")
 endif()
 
 file(REMOVE_RECURSE "${OUTDIR}")

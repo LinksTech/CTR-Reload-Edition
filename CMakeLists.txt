@@ -2,9 +2,10 @@ cmake_minimum_required(VERSION 3.20)
 project(CTR-Native C)
 include(CheckCCompilerFlag)
 
-# Beta 0 (2026-09-30): what players see is called "CTR Reload Beta 0" plus
-# the commit ID - start screen, --version, Alpha-Maker, log. The upstream number
-# 0.1.0-beta.7.1 no longer appears anywhere a player reads it.
+# The version players see: "CTR Reload <version> (<build id>)" on the start
+# screen, in --version, in the Alpha-Maker and in the log. The upstream
+# ctr-native version number is not shown to players.
+# tools/package/package.sh reads this line to name the package.
 set(CTR_NATIVE_VERSION "Beta 0")
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
@@ -25,9 +26,9 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE NEVER)
 
-# Build ID CTR_NATIVE_BUILD_ID (manual test 2026-09-29): created on EVERY
-# build, no longer at configure time - otherwise a build after new commits carried
-# the old ID, and the pairing check took two states as one pair.
+# Build ID CTR_NATIVE_BUILD_ID: created on EVERY build, not only at configure
+# time - otherwise a build after new commits would carry the old ID, and the
+# pairing check in tools/package/package.sh would take two states as one pair.
 # The target ctr_build_id always runs (no OUTPUT, so never up to date) and
 # writes generated/ctr_build_id.h only when the content is new; every consumer
 # depends on it and pulls in the header via #include. Format and cases are in the
@@ -109,9 +110,9 @@ set(SDL_GPU OFF CACHE BOOL "" FORCE)
 #
 # A disabled SDL subsystem only shows up at RUN TIME: it compiles
 # and links, and then SDL_CreateWindowAndRenderer says "SDL not built with
-# rendering support". That is exactly what happened on 2026-08-28 on a test
-# machine - no window, only a console line. SDL_ShowOpenFileDialog would have
-# done the same, just one key press later.
+# rendering support". That happened on a test machine: no window, only a
+# console line. SDL_ShowOpenFileDialog would have done the same, just one key
+# press later.
 set(SDL_RENDER ON CACHE BOOL "" FORCE)
 set(SDL_DIALOG ON CACHE BOOL "" FORCE)
 
@@ -119,9 +120,9 @@ set(SDL_CAMERA OFF CACHE BOOL "" FORCE)
 set(SDL_SENSOR OFF CACHE BOOL "" FORCE)
 set(SDL_TRAY OFF CACHE BOOL "" FORCE)
 set(SDL_POWER OFF CACHE BOOL "" FORCE)
-# Follows the option rather than being pinned off. A disabled SDL subsystem
-# fails at run time and quietly: SDL_Vulkan_GetVkGetInstanceProcAddr would
-# simply return nothing, and the search would start in the wrong place.
+# Pinned on: Vulkan is the only backend. A disabled SDL subsystem fails at
+# run time and quietly: SDL_Vulkan_GetVkGetInstanceProcAddr would simply
+# return nothing, and the search would start in the wrong place.
 set(SDL_VULKAN ON CACHE BOOL "" FORCE)
 set(SDL_OPENGLES OFF CACHE BOOL "" FORCE)
 set(SDL_OFFSCREEN OFF CACHE BOOL "" FORCE)
@@ -134,8 +135,8 @@ add_subdirectory(externals/SDL)
 # CTR Native
 add_executable(ctr_native main.c)
 
-# Beta 0 (2026-09-30): UTF-8 as the ANSI code page, so that paths with
-# umlauts get through argv and fopen. See platform/ctr_native.manifest.
+# UTF-8 as the ANSI code page, so that paths with non-ASCII characters get
+# through argv and fopen. See platform/ctr_native.manifest.
 if(MSVC)
     target_sources(ctr_native PRIVATE platform/ctr_native.manifest)
 endif()
@@ -148,14 +149,15 @@ set_target_properties(ctr_native PROPERTIES
 target_include_directories(ctr_native PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
 # The packer for .rldtrack containers. A PROGRAM OF ITS OWN, not part of the game -
-# a track author builds his container with it and signs it with his
-# own key. The game gets nothing of it, and `unpack` is not even
-# shipped.
+# a track author builds their container with it; the game uses nothing of it.
+# The Alpha-Maker carries the same code (see below), and the release package
+# ships only the Alpha-Maker. rldpack.exe is built for the self-test and for
+# use on the command line.
 #
 # The version resource is only attached under MSVC. It gives the binary a
-# name, an origin and a version - see the header of tools/rldpack.rc:
-# on 2026-08-28 the antivirus judged along the axis "who is this file",
-# not on the code. Under MinGW it stays out, because windres needs a tool chain
+# name, an origin and a version - see the header of tools/rldpack.rc: an
+# antivirus scanner once judged the file by "who is this file", not by its
+# code. Under MinGW it stays out, because windres needs a tool chain
 # of its own and the packer is only built along there.
 #
 # platform/native_disc_image.c is the game's image reader. rldpack make
@@ -209,8 +211,9 @@ if(MSVC)
         tools/alphamaker/alphamaker.rc
         tools/alphamaker/alphamaker.manifest
     )
-    # Beta 0: the same ID as the game, for the title and the pairing check -
-    # from generated/ctr_build_id.h, new on every build (target ctr_build_id).
+    # The same version and build ID as the game, for the title and the pairing
+    # check - from generated/ctr_build_id.h, new on every build (target
+    # ctr_build_id).
     target_compile_definitions(alphamaker PRIVATE CTR_NATIVE
         CTR_NATIVE_VERSION=\"${CTR_NATIVE_VERSION}\")
     target_include_directories(alphamaker PRIVATE ${CMAKE_SOURCE_DIR}/include ${CTR_BUILD_ID_DIR})
@@ -224,8 +227,8 @@ if(MSVC)
 endif()
 
 # Assembles the shader sources exactly as the renderer does. Used twice: to
-# generate SPIR-V for the Vulkan build, and by the ctest that checks the shared
-# dialect still holds when Vulkan is off.
+# generate the SPIR-V the renderer links in, and by the ctest
+# shader_spirv_dialect, which names the shader that broke.
 add_executable(shader_spirv_probe tools/shader_spirv_probe.c)
 set_target_properties(shader_spirv_probe PROPERTIES
     C_STANDARD 17
@@ -352,10 +355,10 @@ include(CTest)
 if(BUILD_TESTING)
     add_test(NAME ctr_native_version COMMAND $<TARGET_FILE:ctr_native> --version)
 
-    # SHA-256, SHA-512, ChaCha20 and Ed25519 against RFC 6234, 8439 and 8032, plus
-    # the determinism the container concept requires: built twice from
-    # the same inputs, compared byte for byte. The crypto is
-    # self-written in this tree, so it has to prove itself.
+    # SHA-256 against RFC 6234, the determinism the container format requires
+    # (built twice from the same inputs, compared byte for byte) and the make
+    # step against fixed cases. The hashing is self-written in this tree, so it
+    # has to prove itself.
     add_test(NAME rldpack_selftest COMMAND $<TARGET_FILE:rldpack> selftest)
     # The same self-test through the rldpack inside the Alpha-Maker: proves that the
     # built-in version is the same one and talks over the pipe.

@@ -1,19 +1,22 @@
-CTR Reload Beta 0 (@BUILD@) - Release notes
-===========================================
+CTR Reload @VERSION@ (@BUILD@) - Release notes
+==============================================
 
-Beta 0 is for track authors who test their own tracks with the Alpha-Maker.
+This version is for track authors who test their own tracks with the
+Alpha-Maker.
 
 
 DECISIONS
 ---------
 - Windows only. There is no Linux version, and none is planned. Linux build
   files in the source code are not maintained.
-- Bug reports go to the Beta 0 channel on Discord, with the template from
-  README.txt.
+- Bug reports go to the CTR Reload @VERSION@ channel on Discord, with the
+  template from README.txt.
+- The package ships the game and the Alpha-Maker. The track packer rldpack is
+  built into the Alpha-Maker and is not a separate program in the package.
 
 
-NEW IN BETA 0
--------------
+NEW IN THIS VERSION
+-------------------
 - A track with a broken minimap table no longer crashes the race; it shows no
   minimap. The Alpha-Maker warns about it.
 - Object limit: the Alpha-Maker refuses tracks with more than 110 placed
@@ -88,4 +91,3 @@ KNOWN ISSUES
 - The executables are not signed. Some virus scanners may warn about them.
 - Retail cheat codes that unlock drivers are not saved to the memory card any
   more; all drivers are available from the start anyway.
-- Some messages on the command line (--help) are in German.

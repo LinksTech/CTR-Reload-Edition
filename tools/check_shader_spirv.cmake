@@ -4,9 +4,10 @@
 # command line.
 #
 # With no validator it prints SPIRV_CHECK_SKIPPED and stops. The test's
-# SKIP_REGULAR_EXPRESSION picks that up, because the Vulkan SDK is not a build
-# requirement yet and a missing one is not a failure. A script run with cmake -P
-# cannot choose its own exit code, so the signal has to be in the output.
+# SKIP_REGULAR_EXPRESSION picks that up. In a normal build this cannot happen:
+# the build itself needs glslangValidator (tools/build_shaders.cmake). A script
+# run with cmake -P cannot choose its own exit code, so the signal has to be in
+# the output.
 
 if(NOT VALIDATOR OR VALIDATOR MATCHES "NOTFOUND")
     message(STATUS "SPIRV_CHECK_SKIPPED - glslangValidator not found")

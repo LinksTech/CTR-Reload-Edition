@@ -31,10 +31,19 @@ an `assets` folder next to the executable.
 - **Alpha-Maker** (`alphamaker.exe`): a small Windows tool for track authors that
   checks and packs a track folder into an `.rldtrack` container and starts it
   in the game
-- `rldpack`: the command line packer behind the Alpha-Maker
+- `rldpack`: the command line packer behind the Alpha-Maker; it is built into
+  `alphamaker.exe` and can also be built as a program of its own
 
 Custom tracks are made and distributed by their authors. They are not part of
 this repository.
+
+## Download
+
+A release carries `ctr_native.exe` (the game), `alphamaker.exe` and the package
+`CTR-Reload-<version>-<build id>.zip`. The package holds both programs,
+`ctr_native.pdb`, a README and release notes for testers, the license files
+and the source code of exactly that build. It needs Windows 10 (1903 or newer)
+or Windows 11 and a graphics driver with Vulkan 1.0.
 
 ## Building
 

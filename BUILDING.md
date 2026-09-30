@@ -13,8 +13,8 @@ The game itself needs your own disc image at run time (see [README.md](README.md
   The automatic builds use version 1.3.296.0.
 - **Python 3.10 or newer** on `PATH` (needed by the test suite; CMake looks
   for it when configuring)
-- **Git** (optional; without it the build ID is `unknown`, and the package
-  script refuses to run)
+- **Git** (optional for building; without it the build ID is `unknown`). The
+  package script needs Git Bash, Git and Python.
 
 ## Build
 
@@ -37,8 +37,16 @@ The same steps with CMake presets:
 In `build-msvc-x86\Release\`:
 
 - `ctr_native.exe` (and `ctr_native.pdb`): the game
-- `alphamaker.exe`: the track authoring tool
-- `rldpack.exe`: the command line track container packer
+- `alphamaker.exe`: the track authoring tool; it carries the track container
+  packer built in (`alphamaker.exe --rldpack <command>`)
+- `rldpack.exe`: the same packer as a command line program of its own (used by
+  the self-tests; not part of the package)
+- `shader_spirv_probe.exe`: a build helper that writes the shader sources
+
+`ctr_native.exe --version` reports the version and the build ID, for example
+`CTR Reload Beta 0 (a1b2c3d4e5f6)`; the Alpha-Maker shows the same in its
+title bar. The build ID is the commit, with `-dirty-<hash>` appended when
+tracked files differ from it.
 
 ## Tests
 
@@ -49,13 +57,26 @@ data, a window or a GPU.
 
 ## Package
 
-In Git Bash, from a clean working tree, after `build-msvc.bat`:
+In Git Bash, from a clean working tree (all changes committed), after
+`build-msvc.bat`:
 
-    BAU=build-msvc-x86 bash tools/paket/paket-beta0.sh
+    BUILD_DIR=build-msvc-x86 bash tools/package/package.sh
 
-This writes `dist\CTR-Reload-Beta0-<build id>.zip` (game, Alpha-Maker,
-rldpack, license files, README) and a zip with the matching source code. The
-script refuses to package anything that looks like game data.
+`BUILD_DIR` is the build folder (default `build-msvc-x86`). The script builds
+`ctr_native` and `alphamaker` there again (output in `dist-build.log`), checks
+that both carry the same build ID, and writes
+`dist\CTR-Reload-<version>-<build id>.zip`, for example
+`CTR-Reload-Beta0-a1b2c3d4e5f6.zip`. The version is `CTR_NATIVE_VERSION` from
+`CMakeLists.txt` without spaces. The zip holds one folder of the same name with:
+
+- `ctr_native.exe`, `ctr_native.pdb`, `alphamaker.exe`
+- `README.txt` and `RELEASE-NOTES.txt` (from `tools/package/`)
+- `LICENSE` and `THIRD_PARTY_NOTICES.md`
+- `<name>-source.zip`: the source code of the packaged commit
+
+The script refuses a tree with uncommitted changes (`--allow-dirty` makes a
+trial package anyway) and refuses to package anything that looks like game
+data.
 
 ## Before you push
 

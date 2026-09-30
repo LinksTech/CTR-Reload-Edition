@@ -1,20 +1,20 @@
-# Build ID at BUILD TIME (Beta 0, manual test 2026-09-29).
+# Build ID at BUILD TIME.
 #
 #   cmake -DOUT=<path/ctr_build_id.h> [-DSRC=<tree root>] [-DGIT=<git.exe>]
 #         -P cmake/CtrBuildId.cmake
 #
-# Before, CTR_NATIVE_BUILD_ID was only created at configure time. A build after new
-# commits kept carrying the old ID: the Alpha-Maker showed "Beta 0
-# (<old id>)" although its code was newer - and the
-# pairing check (Alpha-Maker <-> ctr_native.exe, paket-beta0.sh "pair ok")
-# took two different states with the same old ID as a pair.
+# Created only at configure time, CTR_NATIVE_BUILD_ID would go stale: a build
+# after new commits would keep carrying the old ID, the Alpha-Maker would show
+# "<version> (<old id>)" although its code is newer, and the pairing check
+# (Alpha-Maker <-> ctr_native.exe in tools/package/package.sh) would take two
+# different states with the same old ID as a pair.
 #
-# Now this script runs on every build (target ctr_build_id in
+# So this script runs on every build (target ctr_build_id in
 # CMakeLists.txt) and writes the header only when its content changes.
 # Same state = file untouched = nothing is recompiled.
 #
 # The ID:
-#   <12 hex>                  clean tree, exactly as before (paket-beta0.sh)
+#   <12 hex>                  clean tree (package.sh needs this one)
 #   <12 hex>-dirty-<6 hex>    tracked files differ from HEAD (staged
 #                             changes too); the 6 hex are SHA-1 over
 #                             "git diff HEAD --binary" - two different
@@ -92,8 +92,6 @@ if(EXISTS "${OUT}")
     file(READ "${OUT}" ctr_old)
 endif()
 if(NOT ctr_old STREQUAL ctr_text)
-    get_filename_component(ctr_dir "${OUT}" DIRECTORY)
-    file(MAKE_DIRECTORY "${ctr_dir}")
     file(WRITE "${OUT}" "${ctr_text}")
     message(STATUS "Build ID: ${ctr_id}")
 endif()
