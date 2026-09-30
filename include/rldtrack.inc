@@ -542,8 +542,12 @@ static void Rld_MemNeed(struct RldMemNeed *out, const u8 *lev, size_t size)
 	out->levBytes = (u32)size;
 
 	// mesh_info is at struct Level + 0x00, numQuadBlock at mesh_info + 0x00.
+	//
+	// Every sum with a number from the file in u64: size_t is 32 bits in the x86
+	// build, and body + at + 8 wrapped for at near 4 GiB - the check passed and
+	// the read landed before the buffer.
 	at = Rld_ReadLE32(&lev[body + 0x00]);
-	if ((at != 0u) && ((body + at + 8u) <= size))
+	if ((at != 0u) && (((u64)body + at + 8u) <= (u64)size))
 	{
 		const u32 blocks = Rld_ReadLE32(&lev[body + at + 0x00]);
 
@@ -559,7 +563,7 @@ static void Rld_MemNeed(struct RldMemNeed *out, const u8 *lev, size_t size)
 	// The sky: the four largest of the eight segments, because DrawSky_Full
 	// draws four per frame.
 	at = Rld_ReadLE32(&lev[body + 0x04]);
-	if ((at != 0u) && ((body + at + 56u) <= size))
+	if ((at != 0u) && (((u64)body + at + 56u) <= (u64)size))
 	{
 		u32 sorted[8];
 		int a;
@@ -1473,6 +1477,110 @@ static const char *Rld_ParseSndb(struct RldSndb *out, const u8 *bytes, size_t si
 	return NULL;
 }
 
+// THE BANK HEADERS INSIDE SNDB (2026-09-30).
+//
+// Rld_ParseSndb proves the envelope: tables, entries, payload. What a bank
+// entry CARRIES it does not look at, and the game trusts it: the first sector
+// of a bank is a SampleBlockHeader (include/namespace_Howl.h) - s16
+// numSamples, then numSamples s16 row numbers into the SpuAddrEntry table of
+// KART.HWL. Bank_AssignSpuAddrs (game/HOWL/HOWL_Bank.c) runs over them
+// without a check: a numSamples above what the sector holds reads past the
+// 0x800 bytes it was loaded into, and a row outside the table is an index
+// into sdata->howl_spuAddrs - read in stage 1, WRITTEN by Howl_SetSpuAddr.
+// The SHA-256 of the chunk does not help: anyone can recompute it.
+//
+// Checked per bank entry:
+//   * 0 <= numSamples <= RLD_HOWL_BANK_SAMPLES_MAX (what one sector holds);
+//   * every row 0 <= row < the host table (RLD_HOWL_SPUADDR_COUNT, or the
+//     real table when the caller passes a smaller one);
+//   * the samples fit the entry: the game reads 1 header sector plus
+//     ceil(sum(spuSize) * 8 / 2048) sectors, and all of them must come from the
+//     container. spuSize is the SNDB correction for a row it corrects, else
+//     the host's value (hostRows, two u16 per row: spuAddr, spuSize, as
+//     NativeSound_SetHowlLayout receives it). Without hostRows (the self-test,
+//     the packer without KART.HWL) an uncorrected row counts 0 - a lower
+//     bound, so what fails there fails in the game as well.
+//
+// Measured on 2026-09-30 against the 14 real containers at hand with the NTSC-U
+// KART.HWL: the sum fits exactly (Baby T Park 177 of 177 sectors, Inferno
+// Island 150/138/137/138, Sunset Vista 177) - the check refuses nothing
+// that loads today. The caller must have had Rld_ParseSndb accept the chunk.
+#define RLD_HOWL_BANK_SAMPLES_MAX ((RLD_HOWL_SECTOR - 2u) / 2u)
+
+static const char *Rld_CheckSndbBanks(const struct RldSndb *sndb, const unsigned short *hostRows, u32 hostRowCount)
+{
+	const u32 rowLimit = ((hostRows != NULL) && (hostRowCount < RLD_HOWL_SPUADDR_COUNT)) ? hostRowCount : RLD_HOWL_SPUADDR_COUNT;
+	u32 rowSize[RLD_HOWL_SPUADDR_COUNT];
+	u32 i;
+
+	// The size of every row as the game will see it while the track is armed:
+	// the host's, then the SNDB corrections in their order
+	// (NativeSound_ApplySpuSizes) - once, not per sample.
+	for (i = 0; i < RLD_HOWL_SPUADDR_COUNT; i++)
+	{
+		rowSize[i] = ((hostRows != NULL) && (i < rowLimit)) ? hostRows[(i * 2u) + 1u] : 0u;
+	}
+
+	for (i = 0; i < sndb->spuFixupCount; i++)
+	{
+		struct RldSndbSpuFixup fixup;
+
+		Rld_SndbSpuFixup(sndb, i, &fixup);
+
+		if (fixup.index < RLD_HOWL_SPUADDR_COUNT)
+		{
+			rowSize[fixup.index] = fixup.spuSize;
+		}
+	}
+
+	for (i = 0; i < sndb->entryCount; i++)
+	{
+		struct RldSndbEntry entry;
+		const u8 *header;
+		u32 samples;
+		u64 bytes = 0;
+		u32 s;
+
+		Rld_SndbEntry(sndb, i, &entry);
+
+		if (entry.kind != RLD_SNDB_KIND_BANK)
+		{
+			continue;
+		}
+
+		// Rld_ParseSndb: size is a non-zero multiple of a sector and lies in
+		// the payload, so the whole header sector is there.
+		header = &sndb->payload[entry.offset];
+		samples = Rld_ReadLE16(&header[0]);
+
+		// s16 in the game: 0x8000 and above is a negative count.
+		if (samples > RLD_HOWL_BANK_SAMPLES_MAX)
+		{
+			return "an SNDB bank header names more samples than its sector holds, or a negative count";
+		}
+
+		for (s = 0; s < samples; s++)
+		{
+			const u32 row = Rld_ReadLE16(&header[2u + (s * 2u)]);
+
+			// s16 in the game as well: 0x8000 and above are negative rows.
+			if (row >= rowLimit)
+			{
+				return "an SNDB bank header names an SPU row outside the host table";
+			}
+
+			bytes += (u64)rowSize[row] * 8u;
+		}
+
+		if ((1u + ((bytes + (RLD_HOWL_SECTOR - 1u)) / RLD_HOWL_SECTOR)) > (u64)(entry.size / RLD_HOWL_SECTOR))
+		{
+			return "the samples of an SNDB bank are larger than its entry - the game would read past it";
+		}
+	}
+
+	return NULL;
+}
+
 //----------------------------------------------------------------------------------------
 // PARM - THE VALUES OF A TRACK (4.1, 2026-09-28)
 //----------------------------------------------------------------------------------------
@@ -1755,7 +1863,10 @@ static int Rld_MapVrmBlocks(const u8 *vrm, size_t size, struct RldMapVrmBlock *o
 			const u32 blockSize = Rld_ReadLE32(&vrm[at]);
 			const size_t head = at + 4u;
 
-			if ((blockSize == 0u) || ((head + 0x14u) > size))
+			// The step to the next block against what is left, not as a sum: with a
+			// 32-bit size_t, head + blockSize wrapped to just below 4 GiB, at + 4
+			// wrapped to a small number and the next read left the buffer.
+			if ((blockSize == 0u) || ((head + 0x14u) > size) || ((u64)(blockSize & ~3u) > (u64)(size - head)))
 			{
 				break;
 			}
@@ -1792,17 +1903,17 @@ static int Rld_MapCopyRect(const u8 *vrm, size_t size, const struct RldMapVrmBlo
 
 			if ((blk->x <= x) && ((x + w) <= (blk->x + blk->w)) && (blk->y <= (y + row)) && ((y + row) < (blk->y + blk->h)))
 			{
-				const size_t from = blk->pixels + (((size_t)(y + row - blk->y) * (size_t)blk->w) + (size_t)(x - blk->x)) * 2u;
+				const u64 from = (u64)blk->pixels + (((u64)(y + row - blk->y) * (u64)blk->w) + (u64)(x - blk->x)) * 2u;
 				int col;
 
-				if ((from + ((size_t)w * 2u)) > size)
+				if ((from + ((u64)w * 2u)) > (u64)size)
 				{
 					return 0;
 				}
 
 				for (col = 0; col < w; col++)
 				{
-					dst[(row * w) + col] = (unsigned short)Rld_ReadLE16(&vrm[from + ((size_t)col * 2u)]);
+					dst[(row * w) + col] = (unsigned short)Rld_ReadLE16(&vrm[(size_t)from + ((size_t)col * 2u)]);
 				}
 
 				found = 1;
@@ -1850,7 +1961,10 @@ static const char *Rld_LevMap(const u8 *lev, size_t levSize, const u8 *vrm, size
 		return "no icon table in the LEV (levTexLookup is 0)";
 	}
 
-	if ((body + (size_t)lookup + 8u) > levSize)
+	// Both bounds in u64. This runs when the track wheel shows the row, and with
+	// a 32-bit size_t a levTexLookup or firstIcon near 4 GiB wrapped the sum:
+	// the check passed and the reads landed before the LEV buffer.
+	if (((u64)body + lookup + 8u) > (u64)levSize)
 	{
 		return "levTexLookup points outside the LEV";
 	}
@@ -1858,7 +1972,7 @@ static const char *Rld_LevMap(const u8 *lev, size_t levSize, const u8 *vrm, size
 	numIcon = Rld_ReadLE32(&lev[body + lookup + 0u]);
 	firstIcon = Rld_ReadLE32(&lev[body + lookup + 4u]);
 
-	if ((numIcon > 4096u) || ((body + (size_t)firstIcon + ((size_t)numIcon * RLD_MAP_ICON_SIZE)) > levSize))
+	if ((numIcon > 4096u) || (((u64)body + firstIcon + ((u64)numIcon * RLD_MAP_ICON_SIZE)) > (u64)levSize))
 	{
 		return "the icon table lies outside the LEV";
 	}
@@ -2262,6 +2376,475 @@ static const char *Rld_ScaleMap(const struct RldMapHalf in[2], struct RldMapHalf
 	return NULL;
 }
 
+//========================================================================================
+// CONTENT CHECKS - WHAT THE CHUNK HASH CANNOT PROMISE (2026-09-30)
+//========================================================================================
+//
+// The SHA-256 in the directory proves that a chunk arrived as it was packed,
+// not that it was packed sensibly: it carries no key, anyone can recompute it
+// for any bytes. So LEVD and VRMD are held against the rules the load path
+// relies on BEFORE they reach it - here, at the container boundary, so the
+// disc path stays byte for byte what it was. The game runs these at load
+// (NativeTrack_Load); the packer can run the same functions.
+//
+// Every text is fixed: the game keeps the pointer (NativeTrackEntry.problem)
+// across every further scan.
+
+// VRMD, the way LOAD_VramFileCallback (game/LOAD/LOAD_File.c) walks it.
+//
+// A single TIM when word 0 is not 0x20: RECT at +0x0c, pixels from +0x14.
+// Otherwise a chain from offset 4: a size word, then a block of that size
+// (rounded down to a word) with its own header; a size word of 0 ends it.
+// The callback runs on until that 0 and hands every RECT with its pixels to
+// LoadImage, which copies w * h halfwords out of them - it clamps the
+// destination to the VRAM, not the source. So: every size word and every
+// header inside the chunk, w * h * 2 inside its block, the closing 0 inside the
+// chunk, and no empty VRMD. Measured on the 14 real containers at hand: two blocks,
+// the closing 0 at 458,804 of 458,808.
+#define RLD_VRM_CHAIN_MAGIC 0x20u
+#define RLD_VRM_TIM_HEADER  0x14u
+
+static const char *Rld_CheckVrmBlock(const u8 *head, u64 room)
+{
+	u32 w;
+	u32 h;
+
+	if (room < RLD_VRM_TIM_HEADER)
+	{
+		return "a VRMD block is shorter than its TIM header";
+	}
+
+	// s16 in the game: 0x8000 and above are negative.
+	w = Rld_ReadLE16(&head[0x10]);
+	h = Rld_ReadLE16(&head[0x12]);
+
+	if ((w >= 0x8000u) || (h >= 0x8000u))
+	{
+		return "a VRMD block has a negative width or height";
+	}
+
+	if (((u64)w * (u64)h * 2u) > (room - RLD_VRM_TIM_HEADER))
+	{
+		return "a VRMD block names more pixels than it carries - LoadImage would read past it";
+	}
+
+	return NULL;
+}
+
+static const char *Rld_CheckVrm(const u8 *vrm, size_t size)
+{
+	u64 at = 4u;
+
+	if (size == 0u)
+	{
+		return "VRMD is empty";
+	}
+
+	if (size < 4u)
+	{
+		return "VRMD is shorter than a TIM header";
+	}
+
+	if (Rld_ReadLE32(&vrm[0]) != RLD_VRM_CHAIN_MAGIC)
+	{
+		return Rld_CheckVrmBlock(vrm, (u64)size);
+	}
+
+	// Every block is at least a header long (Rld_CheckVrmBlock), so the
+	// walk moves on by at least 0x18 bytes per turn and ends.
+	for (;;)
+	{
+		u32 blockSize;
+		u64 block;
+		const char *why;
+
+		if ((at + 4u) > (u64)size)
+		{
+			return "the VRMD block chain runs past the end without its closing 0";
+		}
+
+		blockSize = Rld_ReadLE32(&vrm[(size_t)at]);
+		if (blockSize == 0u)
+		{
+			return NULL;
+		}
+
+		block = (u64)(blockSize & ~3u);
+		if (block > ((u64)size - at - 4u))
+		{
+			return "a VRMD block runs past the end of the chunk";
+		}
+
+		why = Rld_CheckVrmBlock(&vrm[(size_t)at + 4u], block);
+		if (why != NULL)
+		{
+			return why;
+		}
+
+		at += 4u + block;
+	}
+}
+
+// LEVD, the way the load path takes it. Word 0 is ptrMapOffset: the body
+// (struct Level and everything it points to) is the next ptrMapOffset bytes,
+// the pointer map follows it - numBytes, then numBytes / 4 body offsets
+// (LOAD_DramFileCallback in game/LOAD/LOAD_File.c, LOAD_RunPtrMap in
+// game/LOAD/LOAD_Assets.c). A field is a pointer exactly when the map lists
+// it; the map turns the body offset into an address.
+//
+//   C4  the body holds a whole struct Level. Before, a shorter LEVD was a
+//       line in the log and was loaded anyway.
+//   C5  every map entry is a word inside the body, the word there points
+//       into the body (0 .. body, the end marker allowed - the rule of
+//       LOAD_RunPtrMap, which at run time only says "nothing patched" and lets
+//       the race run on offsets), and NO PLACE IS LISTED TWICE: LOAD_RunPtrMap
+//       adds the base once per entry, a repeated place becomes base * 2 +
+//       offset.
+//   C6  LibraryOfModels_Store files every model of ptrModelsPtrArray (up to the
+//       first NULL) under gGT->modelPtr[m->id] - an s16 from the file into a
+//       table of 0xe3. Every model must be a pointer and its id -1 (no slot)
+//       or 0..0xe2. The models of the instances as well: INSTANCE_LevInitAll
+//       reads the id of every one without a NULL test.
+//   C7  ptrSpawnType1 is read unguarded by every race (CAM_EndOfRace reads
+//       ->count): it must be a pointer, its table inside the body, count
+//       0..16, every slot a pointer or NULL, and at count >= 3 slot 2 (the
+//       end-of-race camera, CAM_ThTick), at count >= 4 slot 3 (the camera
+//       path) set. The same rule as Rld_SpawnCheck in tools/rldpack.c.
+//   and every pointer field of the level header NULL or mapped, and the icon
+//       table behind levTexLookup inside the body - the track wheel reads it
+//       for the map (C1), DecalGlobal_Store right after the load.
+//
+// Measured on 2026-09-30 on the 14 real containers at hand: no repeated place, no
+// entry outside, model ids -1 and 0..0xa6, every instance with a mapped model,
+// spawn counts 0 to 2, no unmapped header pointer - the check refuses nothing
+// that loads today.
+#define RLD_LEVEL_BYTES         0x1f4u // sizeof(struct Level), include/namespace_Level.h
+#define RLD_LEVEL_NUM_INSTANCES 0x0cu
+#define RLD_LEVEL_PTR_INSTDEFS  0x10u
+#define RLD_LEVEL_NUM_MODELS    0x14u
+#define RLD_LEVEL_PTR_MODELS    0x18u
+#define RLD_LEVEL_PTR_SPAWN1    0x134u
+#define RLD_LEVEL_INSTDEF_BYTES 0x40u  // struct InstDef
+#define RLD_LEVEL_INSTDEF_MODEL 0x10u  // InstDef.model
+#define RLD_LEVEL_MODEL_ID      0x10u  // Model.id, s16
+#define RLD_LEVEL_MODEL_SLOTS   0xe3u  // gGT->modelPtr[0xe3], include/namespace_Main.h
+#define RLD_LEVEL_SPAWN1_MAX    16u
+#define RLD_LEVEL_SPAWN1_EOR    2u     // ST1_CAMERA_EOR
+#define RLD_LEVEL_SPAWN1_PATH   3u     // ST1_CAMERA_PATH
+#define RLD_LEVEL_PTR_TEXLOOKUP 0x3cu  // struct LevTexLookup: numIcon, firstIcon, numIconGroup, firstIconGroupPtr
+#define RLD_LEVEL_ICON_BYTES    0x20u  // struct Icon
+#define RLD_LEVEL_ICONGROUP_ID  0x10u  // IconGroup.groupID, s16
+
+// The pointer fields of struct Level (include/namespace_Level.h), from
+// mesh_info to visMem. Measured on 2026-09-30: in the 14 real containers at hand
+// each of them is either 0 or listed in the pointer map.
+static const u32 s_rldLevelPointerFields[] = {
+    0x00u, 0x04u, 0x08u, 0x10u, 0x18u, 0x1cu, 0x20u, 0x24u, 0x28u, 0x2cu, 0x30u, 0x38u, 0x3cu, 0x40u, 0x44u,
+    0xccu, 0xd0u, 0xd4u, 0xe0u, 0xe4u, 0xe8u, 0x134u, 0x13cu, 0x144u, 0x14cu, 0x170u, 0x178u, 0x188u, 0x190u,
+};
+
+struct RldLevView
+{
+	const u8 *body;  // the LEV from byte 4
+	u32 bodyBytes;   // word 0, ptrMapOffset
+	u8 *pointer;     // one bit per body word: listed in the pointer map
+};
+
+// 1 = a pointer (the map relocates it; *target is its body offset, already
+// held to 0..bodyBytes), 0 = NULL (0 and not in the map), -1 = a number the
+// game would use as an address without relocating it. The caller keeps
+// field + 4 inside the body.
+static int Rld_LevPointer(const struct RldLevView *view, u32 field, u32 *target)
+{
+	const u32 value = Rld_ReadLE32(&view->body[field]);
+
+	if (((field & 3u) == 0u) && ((view->pointer[field >> 5] & (1u << ((field >> 2) & 7u))) != 0u))
+	{
+		*target = value;
+		return 1;
+	}
+
+	*target = 0;
+	return (value == 0u) ? 0 : -1;
+}
+
+static const char *Rld_CheckLevModel(const struct RldLevView *view, u32 model)
+{
+	u32 id;
+
+	if (((u64)model + RLD_LEVEL_MODEL_ID + 2u) > (u64)view->bodyBytes)
+	{
+		return "a LEV model lies outside the level body";
+	}
+
+	id = Rld_ReadLE16(&view->body[model + RLD_LEVEL_MODEL_ID]);
+
+	if ((id != 0xffffu) && (id >= RLD_LEVEL_MODEL_SLOTS))
+	{
+		return "a LEV model has an id outside -1 and 0..0xe2 - LibraryOfModels_Store would write past gGT->modelPtr";
+	}
+
+	return NULL;
+}
+
+static const char *Rld_CheckLevTables(const struct RldLevView *view)
+{
+	const u32 numModels = Rld_ReadLE32(&view->body[RLD_LEVEL_NUM_MODELS]);
+	const u32 numInstances = Rld_ReadLE32(&view->body[RLD_LEVEL_NUM_INSTANCES]);
+	const char *why;
+	u32 table;
+	u32 target;
+	u32 count;
+	u32 i;
+	int present[RLD_LEVEL_SPAWN1_MAX] = {0};
+
+	// Every pointer field of struct Level: NULL, or listed in the map. A
+	// non-zero word the map does not list reaches the game as a raw number
+	// it dereferences (DecalGlobal_Store takes levTexLookup, the renderer
+	// mesh_info, ...) - there is no legitimate case of it.
+	for (i = 0; i < (u32)(sizeof(s_rldLevelPointerFields) / sizeof(s_rldLevelPointerFields[0])); i++)
+	{
+		if (Rld_LevPointer(view, s_rldLevelPointerFields[i], &target) < 0)
+		{
+			return "a pointer field of the level header is neither NULL nor in the pointer map";
+		}
+	}
+
+	// The icon table (levTexLookup): the track wheel reads it for the map
+	// (Rld_LevMap), DecalGlobal_Store right after the load - both icons and
+	// icon groups, without a check.
+	if (Rld_LevPointer(view, RLD_LEVEL_PTR_TEXLOOKUP, &table) == 1)
+	{
+		u32 icons;
+		u32 groups;
+
+		if (((u64)table + 16u) > (u64)view->bodyBytes)
+		{
+			return "the LEV icon table (levTexLookup) lies outside the level body";
+		}
+
+		icons = Rld_ReadLE32(&view->body[table + 0u]);
+		groups = Rld_ReadLE32(&view->body[table + 8u]);
+
+		if ((icons >= 0x80000000u) || (groups >= 0x80000000u))
+		{
+			return "the LEV icon table has a negative count";
+		}
+
+		if ((icons != 0u) && ((Rld_LevPointer(view, table + 4u, &target) != 1) ||
+		                      (((u64)target + ((u64)icons * RLD_LEVEL_ICON_BYTES)) > (u64)view->bodyBytes)))
+		{
+			return "the LEV icons of levTexLookup lie outside the level body";
+		}
+
+		if (groups != 0u)
+		{
+			u32 first;
+
+			if ((Rld_LevPointer(view, table + 12u, &first) != 1) || (((u64)first + ((u64)groups * 4u)) > (u64)view->bodyBytes))
+			{
+				return "the LEV icon groups of levTexLookup lie outside the level body";
+			}
+
+			for (i = 0; i < groups; i++)
+			{
+				if ((Rld_LevPointer(view, first + (i * 4u), &target) != 1) || (((u64)target + RLD_LEVEL_ICONGROUP_ID + 2u) > (u64)view->bodyBytes))
+				{
+					return "a LEV icon group of levTexLookup is not a pointer into the level body";
+				}
+			}
+		}
+	}
+
+	// C6: the model table, up to the first NULL or numModels.
+	if (numModels != 0u)
+	{
+		if (Rld_LevPointer(view, RLD_LEVEL_PTR_MODELS, &table) != 1)
+		{
+			return "the LEV names models, but ptrModelsPtrArray is not a pointer";
+		}
+
+		for (i = 0; i < numModels; i++)
+		{
+			const u64 slot = (u64)table + ((u64)i * 4u);
+			int kind;
+
+			if ((slot + 4u) > (u64)view->bodyBytes)
+			{
+				return "the LEV model table runs past the level body";
+			}
+
+			kind = Rld_LevPointer(view, (u32)slot, &target);
+			if (kind == 0)
+			{
+				break;
+			}
+
+			if (kind < 0)
+			{
+				return "a LEV model table entry is not a pointer";
+			}
+
+			why = Rld_CheckLevModel(view, target);
+			if (why != NULL)
+			{
+				return why;
+			}
+		}
+	}
+
+	// C6: the models of the instances.
+	if (numInstances != 0u)
+	{
+		if (Rld_LevPointer(view, RLD_LEVEL_PTR_INSTDEFS, &table) != 1)
+		{
+			return "the LEV names instances, but ptrInstDefs is not a pointer";
+		}
+
+		if (((u64)table + ((u64)numInstances * RLD_LEVEL_INSTDEF_BYTES)) > (u64)view->bodyBytes)
+		{
+			return "the LEV instance table runs past the level body";
+		}
+
+		for (i = 0; i < numInstances; i++)
+		{
+			if (Rld_LevPointer(view, table + (i * RLD_LEVEL_INSTDEF_BYTES) + RLD_LEVEL_INSTDEF_MODEL, &target) != 1)
+			{
+				return "a LEV instance has no model pointer - INSTANCE_LevInitAll reads its id";
+			}
+
+			why = Rld_CheckLevModel(view, target);
+			if (why != NULL)
+			{
+				return why;
+			}
+		}
+	}
+
+	// C7: the spawn table.
+	if (Rld_LevPointer(view, RLD_LEVEL_PTR_SPAWN1, &table) != 1)
+	{
+		return "the LEV has no spawn table (ptrSpawnType1) - every race reads it";
+	}
+
+	if (((u64)table + 4u) > (u64)view->bodyBytes)
+	{
+		return "the LEV spawn table lies outside the level body";
+	}
+
+	count = Rld_ReadLE32(&view->body[table]);
+	if ((count > RLD_LEVEL_SPAWN1_MAX) || (((u64)table + 4u + ((u64)count * 4u)) > (u64)view->bodyBytes))
+	{
+		return "the LEV spawn table count is outside 0..16 or runs past the level body";
+	}
+
+	for (i = 0; i < count; i++)
+	{
+		const int kind = Rld_LevPointer(view, table + 4u + (i * 4u), &target);
+
+		if (kind < 0)
+		{
+			return "a LEV spawn table slot is not a pointer";
+		}
+
+		present[i] = (kind == 1);
+	}
+
+	if ((count > RLD_LEVEL_SPAWN1_EOR) && !present[RLD_LEVEL_SPAWN1_EOR])
+	{
+		return "the LEV spawn table has count 3 or more but no end-of-race camera in slot 2 - the finish would crash";
+	}
+
+	if ((count > RLD_LEVEL_SPAWN1_PATH) && !present[RLD_LEVEL_SPAWN1_PATH])
+	{
+		return "the LEV spawn table has count 4 or more but no camera path in slot 3 - the camera would crash";
+	}
+
+	return NULL;
+}
+
+static const char *Rld_CheckLev(const u8 *lev, size_t size)
+{
+	struct RldLevView view;
+	const char *why = NULL;
+	u64 mapAt;
+	u32 mapBytes;
+	u32 count;
+	u32 i;
+
+	if ((lev == NULL) || (size < (4u + RLD_LEVEL_BYTES)))
+	{
+		return "LEVD is shorter than a level header (struct Level)";
+	}
+
+	view.body = &lev[4];
+	view.bodyBytes = Rld_ReadLE32(&lev[0]);
+
+	// A negative ptrMapOffset loads without any relocation at all
+	// (LOAD_DramFileCallback) - as u32 it is far above the 16 MiB limit.
+	if (view.bodyBytes < RLD_LEVEL_BYTES)
+	{
+		return "the LEV body is shorter than a level header (struct Level)";
+	}
+
+	mapAt = 4u + (u64)view.bodyBytes;
+	if ((mapAt + 4u) > (u64)size)
+	{
+		return "the LEV pointer map lies outside LEVD";
+	}
+
+	mapBytes = Rld_ReadLE32(&lev[(size_t)mapAt]);
+	if (((mapBytes & 3u) != 0u) || ((u64)mapBytes > ((u64)size - mapAt - 4u)))
+	{
+		return "the LEV pointer map runs past the end of LEVD";
+	}
+
+	count = mapBytes / 4u;
+	view.pointer = (u8 *)calloc(((size_t)view.bodyBytes >> 5) + 1u, 1);
+	if (view.pointer == NULL)
+	{
+		return "out of memory";
+	}
+
+	for (i = 0; i < count; i++)
+	{
+		const u32 raw = Rld_ReadLE32(&lev[(size_t)mapAt + 4u + ((size_t)i * 4u)]);
+		const u32 site = raw & ~3u;
+		u32 value;
+
+		// The game rounds with (raw >> 2) << 2 on an int: a negative entry
+		// stays negative and is refused there too.
+		if ((raw >= 0x80000000u) || (site > (view.bodyBytes - 4u)))
+		{
+			why = "a LEV pointer map entry lies outside the level body";
+			break;
+		}
+
+		value = Rld_ReadLE32(&view.body[site]);
+		if (value > view.bodyBytes)
+		{
+			why = "a LEV pointer points outside the level body";
+			break;
+		}
+
+		if ((view.pointer[site >> 5] & (1u << ((site >> 2) & 7u))) != 0u)
+		{
+			why = "the LEV pointer map lists the same place twice - it would be relocated twice";
+			break;
+		}
+
+		view.pointer[site >> 5] |= (u8)(1u << ((site >> 2) & 7u));
+	}
+
+	if (why == NULL)
+	{
+		why = Rld_CheckLevTables(&view);
+	}
+
+	free(view.pointer);
+	return why;
+}
+
 
 #if defined(RLDTRACK_WITH_BUILDER)
 
@@ -2614,13 +3197,13 @@ static u32 Rld_AbrResolveGroups(const u8 *lev, size_t size, u32 pointer, u32 *ou
 		u32 frames;
 		u32 i;
 
-		if ((body + anim + 12u) > size)
+		if (((u64)body + anim + 12u) > (u64)size)
 		{
 			return 0;
 		}
 
 		frames = Rld_ReadLE16(&lev[body + anim + 4u]);
-		if ((frames == 0u) || (frames > 4096u) || ((body + anim + 12u + frames * 4u) > size))
+		if ((frames == 0u) || (frames > 4096u) || (((u64)body + anim + 12u + (u64)frames * 4u) > (u64)size))
 		{
 			return 0;
 		}
@@ -2629,7 +3212,7 @@ static u32 Rld_AbrResolveGroups(const u8 *lev, size_t size, u32 pointer, u32 *ou
 		{
 			const u32 group = Rld_ReadLE32(&lev[body + anim + 12u + i * 4u]);
 
-			if ((group != 0u) && ((body + group + RLD_ICONGROUP4) <= size))
+			if ((group != 0u) && (((u64)body + group + RLD_ICONGROUP4) <= (u64)size))
 			{
 				out[count++] = group;
 			}
@@ -2638,7 +3221,7 @@ static u32 Rld_AbrResolveGroups(const u8 *lev, size_t size, u32 pointer, u32 *ou
 		return count;
 	}
 
-	if ((body + pointer + RLD_ICONGROUP4) > size)
+	if (((u64)body + pointer + RLD_ICONGROUP4) > (u64)size)
 	{
 		return 0;
 	}
@@ -2669,7 +3252,7 @@ static int Rld_FixAbr(u8 *lev, size_t levSize, const u8 *vrm, size_t vrmSize, st
 	}
 
 	mesh = Rld_ReadLE32(&lev[body + 0x00]);
-	if ((mesh == 0u) || ((body + mesh + 0x20u) > levSize))
+	if ((mesh == 0u) || (((u64)body + mesh + 0x20u) > (u64)levSize))
 	{
 		return 0;
 	}
@@ -2677,7 +3260,7 @@ static int Rld_FixAbr(u8 *lev, size_t levSize, const u8 *vrm, size_t vrmSize, st
 	blocks = Rld_ReadLE32(&lev[body + mesh + 0x00]);
 	quadArray = Rld_ReadLE32(&lev[body + mesh + 0x0cu]);
 
-	if ((blocks == 0u) || (blocks > (levSize / RLD_QUADBLOCK_BYTES)) || ((body + quadArray + blocks * RLD_QUADBLOCK_BYTES) > levSize))
+	if ((blocks == 0u) || (blocks > (levSize / RLD_QUADBLOCK_BYTES)) || (((u64)body + quadArray + (u64)blocks * RLD_QUADBLOCK_BYTES) > (u64)levSize))
 	{
 		return 0;
 	}

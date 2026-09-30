@@ -309,6 +309,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--ui-anchor-legacy", "", "old UI anchors"},
     {"--selftest-disc", "<dir>", "unpack the test images in <dir> (good-*/bad-*.bin), then end"},
     {"--gte-selftest", "", "both GTE paths against each other, then end"},
+    {"--selftest-containers", "<dir>", "every check the game runs on a container, on every *.rldtrack in dir (good-* must load, bad-* must be refused), then end; no window, no data needed"},
     {"--gte-alt", "", "alternative GTE arithmetic"},
     {"--gte-near-div", "", "GTE division route that does not saturate (acts only with --gte-alt)"},
     {"--near-plane", "[n]", "near plane n (clip threshold 2n); without a number or with 0 the stock values"},
@@ -1920,6 +1921,14 @@ int main(int argc, char *argv[])
 		if (strcmp(argv[argIndex], "--gte-selftest") == 0)
 		{
 			return NativeGteCheck_Run();
+		}
+
+		// The container self-test, up here for the same reason: it only reads
+		// files - no platform, window, audio or asset folder, no disc image,
+		// no GPU - so it runs on CI (ctest selftest_bad_containers).
+		if ((strcmp(argv[argIndex], "--selftest-containers") == 0) && ((argIndex + 1) < argc))
+		{
+			return NativeTrack_SelfTestFolder(argv[argIndex + 1]);
 		}
 
 		// Which GTE computes. Up here and not in the big loop

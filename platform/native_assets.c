@@ -976,6 +976,12 @@ global_variable int s_nativeTrackVrmSubfile = -1;
 // -1 means: no slot occupied.
 global_variable int s_nativeTrackDonorLevel = -1;
 
+// The SHA-256 of the loaded LEVD, as Rld_ReadChunk proved it at load, and the
+// level LOAD_TenStages armed last (NativeSound_ArmForLevel) - together the
+// answer of NativeTrack_ActiveLevdSha256.
+global_variable u8 s_nativeTrackLevdSha[32];
+global_variable int s_nativeTrackLevelNow = -1;
+
 internal void NativeTrack_CopyText(char *dst, size_t dstSize, const char *src)
 {
 	size_t length = strlen(src);
@@ -2789,6 +2795,10 @@ void NativeSound_ArmForLevel(int levelID)
 {
 	const int want = (s_nativeSoundOk != 0) && NativeTrack_ActiveForLevel(levelID);
 
+	// Which level is loading, for NativeTrack_ActiveLevdSha256 - every load
+	// passes here, disc track or container, with or without sound.
+	s_nativeTrackLevelNow = levelID;
+
 	if (want == s_nativeSoundArmed)
 	{
 		return;
@@ -2901,6 +2911,40 @@ void NativeTrack_Release(void)
 	s_nativeTrackDonorLevel = -1;
 }
 
+// Everything the load takes out of the file, before any of it becomes game
+// state. NativeTrack_Load and NativeTrack_SelfTestFile read through the same
+// function, so the self-test checks exactly what the game checks.
+struct NativeTrackRead
+{
+	struct RldMeta meta;
+	u8 *lev;
+	size_t levSize;
+	u8 *vrm;
+	size_t vrmSize;
+	u8 levdSha[32];
+
+	struct RldSndb sound;
+	u8 *sndb;
+	size_t sndbSize;
+	const char *soundProblem;
+
+	struct RldParm parm;
+	int parmFound;
+	const char *parmProblem;
+
+	int memoryRefused;
+};
+
+internal void NativeTrack_FreeRead(struct NativeTrackRead *read)
+{
+	free(read->lev);
+	free(read->vrm);
+	free(read->sndb);
+	read->lev = NULL;
+	read->vrm = NULL;
+	read->sndb = NULL;
+}
+
 // Takes out LEVD and VRMD. Only here - nobody touched them before.
 //
 // There used to be a second signature check here, on the grounds that any
@@ -2910,45 +2954,31 @@ void NativeTrack_Release(void)
 // exactly at the moment it is fetched. That was already the check that
 // would have caught a swapped LEVD - the signature only covered the
 // declaration.
-int NativeTrack_Load(int index, int donorLevelID)
+//
+// And the hash is not the end of it (2026-09-30): it carries no key, anyone
+// can recompute it for broken bytes. So LEVD, VRMD and the bank headers in
+// SNDB are held against what the load path relies on (Rld_CheckLev,
+// Rld_CheckVrm, Rld_CheckSndbBanks in rldtrack.inc) before any of them
+// reaches it. A refusal there is DAMAGED, like a hash mismatch.
+//
+// NULL = everything read and accepted; the caller owns what is in `read`.
+// Otherwise the reason, and `read` holds no memory. entry->note may carry the
+// text (the memory refusal names numbers).
+internal const char *NativeTrack_ReadAll(struct NativeTrackEntry *entry, struct NativeTrackRead *read)
 {
-	struct NativeTrackEntry *entry;
 	struct RldReader reader;
-	struct RldMeta meta;
 	const char *error;
 	u8 *metaData;
-	u8 *lev = NULL;
-	u8 *vrm = NULL;
 	size_t metaSize;
-	size_t levSize = 0;
-	size_t vrmSize = 0;
 	int metaIndex = -1;
 	int levIndex = -1;
 	int vrmIndex = -1;
-	struct RldSndb sound;
-	u8 *sndb = NULL;
-	size_t sndbSize = 0;
-	const char *soundProblem = NULL;
-	struct RldParm parm;
-	int parmFound = 0;
-	const char *parmProblem = NULL;
-	int memoryRefused = 0;
 
 	// Zeroed before any branch can fill them. The flow below leaves
 	// `meta` unread only if `error` is set - but that depends on
 	// four interlocking branches, and whoever has to read up on that to
 	// know whether there is garbage here reads one line too many.
-	memset(&meta, 0, sizeof(meta));
-	memset(&sound, 0, sizeof(sound));
-	memset(&parm, 0, sizeof(parm));
-
-	if ((index < 0) || (index >= s_nativeTrackCount))
-	{
-		return 0;
-	}
-
-	entry = &s_nativeTracks[index];
-	NativeTrack_Release();
+	memset(read, 0, sizeof(*read));
 
 	error = Rld_Open(&reader, entry->path);
 	if (error == NULL)
@@ -2964,7 +2994,7 @@ int NativeTrack_Load(int index, int donorLevelID)
 		metaData = Rld_ReadChunk(&reader, metaIndex, &metaSize, &error);
 		if (metaData != NULL)
 		{
-			error = Rld_ParseMeta(&meta, metaData, metaSize);
+			error = Rld_ParseMeta(&read->meta, metaData, metaSize);
 			free(metaData);
 		}
 	}
@@ -2981,12 +3011,26 @@ int NativeTrack_Load(int index, int donorLevelID)
 
 	if (error == NULL)
 	{
-		lev = Rld_ReadChunk(&reader, levIndex, &levSize, &error);
+		read->lev = Rld_ReadChunk(&reader, levIndex, &read->levSize, &error);
+	}
+
+	// The hash Rld_ReadChunk has just proven for these bytes - the stamp of the
+	// track that is raced (NativeTrack_ActiveLevdSha256). From this open of the
+	// file, not from the scan: the file may have been swapped in between.
+	if (error == NULL)
+	{
+		memcpy(read->levdSha, &reader.directory[(levIndex * RLD_DIR_ENTRY_SIZE) + RLD_DIR_HASH_OFFSET], sizeof(read->levdSha));
+		error = Rld_CheckLev(read->lev, read->levSize);
 	}
 
 	if (error == NULL)
 	{
-		vrm = Rld_ReadChunk(&reader, vrmIndex, &vrmSize, &error);
+		read->vrm = Rld_ReadChunk(&reader, vrmIndex, &read->vrmSize, &error);
+	}
+
+	if (error == NULL)
+	{
+		error = Rld_CheckVrm(read->vrm, read->vrmSize);
 	}
 
 	// THE MEMORY NUMBERS ARE BINDING (format 4.1).
@@ -3000,7 +3044,7 @@ int NativeTrack_Load(int index, int donorLevelID)
 	{
 		struct RldMemNeed need;
 
-		Rld_MemNeed(&need, lev, levSize);
+		Rld_MemNeed(&need, read->lev, read->levSize);
 
 		if ((need.total > entry->memTotal) || (need.primBytes > entry->primBytes))
 		{
@@ -3008,7 +3052,7 @@ int NativeTrack_Load(int index, int donorLevelID)
 			         "META understates the memory need - the LEV needs %u bytes (draw %u), META says %u (draw %u); pack it again with the Alpha-Maker",
 			         need.total, need.primBytes, entry->memTotal, entry->primBytes);
 			error = entry->note;
-			memoryRefused = 1;
+			read->memoryRefused = 1;
 		}
 	}
 
@@ -3021,26 +3065,38 @@ int NativeTrack_Load(int index, int donorLevelID)
 	// For the same reason, an SNDB that Rld_ParseSndb rejects only costs the
 	// sound. The reason is reported - a silent track without explanation
 	// would be a question nobody can answer.
+	//
+	// NOT SO for the bank headers inside an accepted SNDB (Rld_CheckSndbBanks):
+	// the game would index the SPU table with them and write there. That is
+	// damage to the file, not a missing sound - the container is refused.
+	// The host's SPU sizes come from KART.HWL; NativeTrack_Release has put
+	// them back to the retail values before this runs.
 	if (error == NULL)
 	{
 		int sndbIndex = -1;
 
 		if (Rld_FindEntry(&reader, "SNDB", &sndbIndex) != NULL)
 		{
-			u8 *sndbData = Rld_ReadChunk(&reader, sndbIndex, &sndbSize, &soundProblem);
+			u8 *sndbData = Rld_ReadChunk(&reader, sndbIndex, &read->sndbSize, &read->soundProblem);
 
 			if (sndbData != NULL)
 			{
-				soundProblem = Rld_ParseSndb(&sound, sndbData, sndbSize);
+				read->soundProblem = Rld_ParseSndb(&read->sound, sndbData, read->sndbSize);
 			}
 
-			if (soundProblem == NULL)
+			if ((sndbData != NULL) && (read->soundProblem == NULL))
 			{
-				sndb = sndbData;
+				error = Rld_CheckSndbBanks(&read->sound, (const unsigned short *)s_howlSpuRows, (s_howlSpuCount > 0) ? (u32)s_howlSpuCount : 0u);
+			}
+
+			if ((error == NULL) && (read->soundProblem == NULL))
+			{
+				read->sndb = sndbData;
 			}
 			else
 			{
 				free(sndbData);
+				memset(&read->sound, 0, sizeof(read->sound));
 			}
 		}
 	}
@@ -3054,12 +3110,12 @@ int NativeTrack_Load(int index, int donorLevelID)
 		if (Rld_FindEntry(&reader, "PARM", &parmIndex) != NULL)
 		{
 			size_t parmSize = 0;
-			u8 *parmData = Rld_ReadChunk(&reader, parmIndex, &parmSize, &parmProblem);
+			u8 *parmData = Rld_ReadChunk(&reader, parmIndex, &parmSize, &read->parmProblem);
 
-			parmFound = 1;
+			read->parmFound = 1;
 			if (parmData != NULL)
 			{
-				parmProblem = Rld_ParseParm(&parm, parmData, parmSize);
+				read->parmProblem = Rld_ParseParm(&read->parm, parmData, parmSize);
 				free(parmData);
 			}
 		}
@@ -3069,11 +3125,32 @@ int NativeTrack_Load(int index, int donorLevelID)
 
 	if (error != NULL)
 	{
-		free(lev);
-		free(vrm);
-		free(sndb);
+		NativeTrack_FreeRead(read);
+	}
+
+	return error;
+}
+
+int NativeTrack_Load(int index, int donorLevelID)
+{
+	struct NativeTrackEntry *entry;
+	struct NativeTrackRead read;
+	const char *error;
+
+	if ((index < 0) || (index >= s_nativeTrackCount))
+	{
+		return 0;
+	}
+
+	entry = &s_nativeTracks[index];
+	NativeTrack_Release();
+
+	error = NativeTrack_ReadAll(entry, &read);
+
+	if (error != NULL)
+	{
 		entry->ok = 0;
-		entry->refusal = memoryRefused ? NATIVE_TRACK_REFUSAL_MEMORY : NATIVE_TRACK_REFUSAL_DAMAGED;
+		entry->refusal = read.memoryRefused ? NATIVE_TRACK_REFUSAL_MEMORY : NATIVE_TRACK_REFUSAL_DAMAGED;
 		entry->problem = error;
 		Platform_LogError("[CTR Tracks] %s: NOT LOADED - %s\n", entry->file, error);
 		return 0;
@@ -3084,7 +3161,7 @@ int NativeTrack_Load(int index, int donorLevelID)
 	//
 	// Reported, not refused. See above for why.
 	{
-		const int missing = NativeTrack_MissingLevTables(entry, lev, levSize);
+		const int missing = NativeTrack_MissingLevTables(entry, read.lev, read.levSize);
 
 		if (missing != 0)
 		{
@@ -3097,29 +3174,30 @@ int NativeTrack_Load(int index, int donorLevelID)
 		}
 	}
 
-	s_nativeTrackLev = lev;
-	s_nativeTrackLevSize = (u32)levSize;
-	s_nativeTrackVrm = vrm;
-	s_nativeTrackVrmSize = (u32)vrmSize;
+	s_nativeTrackLev = read.lev;
+	s_nativeTrackLevSize = (u32)read.levSize;
+	s_nativeTrackVrm = read.vrm;
+	s_nativeTrackVrmSize = (u32)read.vrmSize;
+	memcpy(s_nativeTrackLevdSha, read.levdSha, sizeof(s_nativeTrackLevdSha));
 	s_nativeTrackLoaded = index;
 	s_nativeTrackDonorLevel = donorLevelID;
 
 	// The sound, if there was one. NativeTrack_Release already cleaned up
 	// above; here we only take what came along this time.
-	if (sndb != NULL)
+	if (read.sndb != NULL)
 	{
-		s_nativeSoundChunk = sndb;
-		s_nativeSound = sound;
+		s_nativeSoundChunk = read.sndb;
+		s_nativeSound = read.sound;
 		s_nativeSoundOk = 1;
-		Platform_Log("[CTR Sound] %s: SNDB %u bytes, %u entries, plays bank %u and sequence %u\n", entry->file, (u32)sndbSize,
+		Platform_Log("[CTR Sound] %s: SNDB %u bytes, %u entries, plays bank %u and sequence %u\n", entry->file, (u32)read.sndbSize,
 		             s_nativeSound.entryCount, s_nativeSound.playBank, s_nativeSound.playSong);
 	}
-	else if (soundProblem != NULL)
+	else if (read.soundProblem != NULL)
 	{
-		Platform_LogWarn("[CTR Sound] %s: no sound from the container - %s\n", entry->file, soundProblem);
+		Platform_LogWarn("[CTR Sound] %s: no sound from the container - %s\n", entry->file, read.soundProblem);
 	}
 
-	NativeParm_Take(entry, parmFound ? &parm : NULL, parmProblem);
+	NativeParm_Take(entry, read.parmFound ? &read.parm : NULL, read.parmProblem);
 
 	Platform_Log("[CTR Tracks] %s: LEVD %u bytes, VRMD %u bytes, in memory - nothing written to disk\n", entry->file, s_nativeTrackLevSize,
 	             s_nativeTrackVrmSize);
@@ -3205,11 +3283,13 @@ internal void NativeMinimap_Take(struct NativeTrackMinimap *out, struct RldMapHa
 	out->scaled = scaled;
 }
 
-int NativeTrack_ReadMinimap(int index, struct NativeTrackMinimap *out, const char **why)
+// The map of one file: LEV and VRM out of the container, Rld_LevMap, and
+// Rld_ScaleMap if it is too tall. The track wheel and the self-test read it
+// through here. NULL = out holds both halves.
+internal const char *NativeMinimap_ReadPath(const char *path, struct NativeTrackMinimap *out)
 {
 	struct RldMapHalf half[2];
 	struct RldReader reader;
-	const struct NativeTrackEntry *entry = NativeTrack_Get(index);
 	const char *error = NULL;
 	u8 *lev = NULL;
 	u8 *vrm = NULL;
@@ -3218,18 +3298,8 @@ int NativeTrack_ReadMinimap(int index, struct NativeTrackMinimap *out, const cha
 	int levIndex = -1;
 	int vrmIndex = -1;
 	int scaled = 0;
-	const u64 started = SDL_GetPerformanceCounter();
 
-	memset(out, 0, sizeof(*out));
-	*why = NULL;
-
-	if ((entry == NULL) || !entry->ok)
-	{
-		*why = "the container is not usable";
-		return 0;
-	}
-
-	error = Rld_Open(&reader, entry->path);
+	error = Rld_Open(&reader, path);
 
 	// Rld_Open already required LEVD and VRMD; so FindEntry finds them.
 	if (error == NULL)
@@ -3256,8 +3326,7 @@ int NativeTrack_ReadMinimap(int index, struct NativeTrackMinimap *out, const cha
 
 	if (error != NULL)
 	{
-		*why = error;
-		return 0;
+		return error;
 	}
 
 	// Too tall for the strip: scale it down. If it cannot be
@@ -3276,6 +3345,31 @@ int NativeTrack_ReadMinimap(int index, struct NativeTrackMinimap *out, const cha
 	}
 
 	NativeMinimap_Take(out, half, scaled);
+	return NULL;
+}
+
+int NativeTrack_ReadMinimap(int index, struct NativeTrackMinimap *out, const char **why)
+{
+	const struct NativeTrackEntry *entry = NativeTrack_Get(index);
+	const char *error;
+	const u64 started = SDL_GetPerformanceCounter();
+
+	memset(out, 0, sizeof(*out));
+	*why = NULL;
+
+	if ((entry == NULL) || !entry->ok)
+	{
+		*why = "the container is not usable";
+		return 0;
+	}
+
+	error = NativeMinimap_ReadPath(entry->path, out);
+	if (error != NULL)
+	{
+		*why = error;
+		return 0;
+	}
+
 	out->microseconds = (u32)(((SDL_GetPerformanceCounter() - started) * 1000000u) / SDL_GetPerformanceFrequency());
 	return 1;
 }
@@ -3292,10 +3386,8 @@ int NativeTrack_ReadMinimap(int index, struct NativeTrackMinimap *out, const cha
 //
 // 0 means "nothing extra" - no container, no sky, or one that fits into the
 // budget of the host track.
-u32 NativeTrack_SkyPrimBytes(void)
+internal u32 NativeTrack_SkyPrimBytesFor(const u8 *lev, size_t levSize)
 {
-	const u8 *lev = s_nativeTrackLev;
-	const size_t levSize = (size_t)s_nativeTrackLevSize;
 	const size_t body = 4;
 	u32 skyOffset;
 	u32 counts[8];
@@ -3310,8 +3402,10 @@ u32 NativeTrack_SkyPrimBytes(void)
 		return 0;
 	}
 
+	// In u64: with a 32-bit size_t, body + skyOffset + 56 wrapped for an
+	// offset near 4 GiB, and the reads below landed before the LEV.
 	skyOffset = NativeTrack_LevField(lev, 0x04);
-	if ((skyOffset == 0) || ((body + skyOffset + 56u) > levSize))
+	if ((skyOffset == 0) || (((u64)body + skyOffset + 56u) > (u64)levSize))
 	{
 		return 0;
 	}
@@ -3341,6 +3435,251 @@ u32 NativeTrack_SkyPrimBytes(void)
 	drawn = sorted[0] + sorted[1] + sorted[2] + sorted[3];
 
 	return drawn * 28u;
+}
+
+u32 NativeTrack_SkyPrimBytes(void)
+{
+	return NativeTrack_SkyPrimBytesFor(s_nativeTrackLev, (size_t)s_nativeTrackLevSize);
+}
+
+// THE CONTAINER SELF-TEST - see native_assets.h.
+//
+// The game's own order: the scan (NativeTrack_ReadForList, which also reads
+// the META numbers the reserve before MEMPACK_Init is computed from), the track
+// wheel (the map), the load (NativeTrack_ReadAll),
+// and what reads the loaded LEV afterwards (missing tables, sky, draw and
+// clip memory). Only the scan and the load can refuse - the map and the
+// numbers after the load cannot in the game either; here they run so that
+// whatever they would trip over trips here. Nothing lands in s_nativeTracks,
+// nothing is logged: the caller prints the line.
+int NativeTrack_SelfTestFile(const char *path, char *why, int whyBytes)
+{
+	struct NativeTrackEntry *entry;
+	struct NativeTrackRead read;
+	const char *error;
+	const char *name;
+	int accepted = 0;
+
+	if ((why != NULL) && (whyBytes > 0))
+	{
+		why[0] = '\0';
+	}
+
+	entry = (struct NativeTrackEntry *)calloc(1, sizeof(*entry));
+	if (entry == NULL)
+	{
+		error = "out of memory";
+	}
+	else if ((path == NULL) || (strlen(path) >= sizeof(entry->path)))
+	{
+		error = "the path is too long";
+	}
+	else
+	{
+		NativeTrack_CopyText(entry->path, sizeof(entry->path), path);
+
+		name = path + strlen(path);
+		while ((name > path) && (name[-1] != '/') && (name[-1] != '\\'))
+		{
+			name--;
+		}
+		NativeTrack_CopyText(entry->file, sizeof(entry->file), name);
+
+		// The scan.
+		NativeTrack_ReadForList(entry);
+		error = entry->ok ? NULL : ((entry->problem != NULL) ? entry->problem : "rejected");
+	}
+
+	// The track wheel: the map. A map that cannot be read only leaves the
+	// preview without it - no refusal, in the game neither.
+	if (error == NULL)
+	{
+		struct NativeTrackMinimap map;
+
+		memset(&map, 0, sizeof(map));
+		if (NativeMinimap_ReadPath(entry->path, &map) == NULL)
+		{
+			NativeTrack_FreeMinimap(&map);
+		}
+
+	}
+
+	// The load.
+	if (error == NULL)
+	{
+		error = NativeTrack_ReadAll(entry, &read);
+
+		if (error == NULL)
+		{
+			struct RldMemNeed need;
+
+			(void)NativeTrack_MissingLevTables(entry, read.lev, read.levSize);
+			(void)NativeTrack_SkyPrimBytesFor(read.lev, read.levSize);
+			Rld_MemNeed(&need, read.lev, read.levSize);
+			NativeTrack_FreeRead(&read);
+			accepted = 1;
+		}
+	}
+
+	if ((error != NULL) && (why != NULL) && (whyBytes > 0))
+	{
+		NativeTrack_CopyText(why, (size_t)whyBytes, error);
+	}
+
+	free(entry);
+	return accepted;
+}
+
+int NativeTrack_ActiveLevdSha256(unsigned char out[32])
+{
+	if ((s_nativeTrackLoaded < 0) || (s_nativeTrackLev == NULL) || !NativeTrack_ActiveForLevel(s_nativeTrackLevelNow))
+	{
+		return 0;
+	}
+
+	memcpy(out, s_nativeTrackLevdSha, sizeof(s_nativeTrackLevdSha));
+	return 1;
+}
+
+// --selftest-containers <dir> (main.c): every *.rldtrack of the folder through
+// NativeTrack_SelfTestFile, sorted like the track list. good-* must be
+// accepted, bad-* refused; one line per file. 0 only if every file is as
+// expected and there is at least one of each kind.
+#define NATIVE_SELFTEST_MAX_FILES 1024
+
+internal int NativeTrack_SelfTestCompare(const void *a, const void *b)
+{
+	return NativeTrack_CompareNames(*(const char *const *)a, *(const char *const *)b);
+}
+
+int NativeTrack_SelfTestFolder(const char *dir)
+{
+	char **names = (char **)calloc(NATIVE_SELFTEST_MAX_FILES, sizeof(char *));
+	int count = 0;
+	int good = 0;
+	int bad = 0;
+	int unexpected = 0;
+	int listed = 1;
+	int i;
+
+	if (names == NULL)
+	{
+		printf("[selftest] out of memory\n");
+		return 1;
+	}
+
+#if defined(_WIN32)
+	{
+		char searchPath[NATIVE_ASSETS_PATH_MAX];
+		WIN32_FIND_DATAA findData;
+		HANDLE findHandle = INVALID_HANDLE_VALUE;
+
+		memset(&findData, 0, sizeof(findData));
+		if (NativePath_Join(searchPath, sizeof(searchPath), NativeStr8_FromCString(dir), NATIVE_STR8_LIT("*")))
+		{
+			findHandle = FindFirstFileA(searchPath, &findData);
+		}
+
+		if (findHandle == INVALID_HANDLE_VALUE)
+		{
+			listed = 0;
+		}
+		else
+		{
+			do
+			{
+				if (((findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) && NativeTrack_HasExtension(findData.cFileName) &&
+				    (count < NATIVE_SELFTEST_MAX_FILES))
+				{
+					names[count] = NativeAssets_CopyCString(findData.cFileName);
+					count += (names[count] != NULL) ? 1 : 0;
+				}
+			} while (FindNextFileA(findHandle, &findData) != 0);
+
+			FindClose(findHandle);
+		}
+	}
+#else
+	{
+		struct dirent *dirEntry;
+		DIR *folder = opendir(dir);
+
+		if (folder == NULL)
+		{
+			listed = 0;
+		}
+		else
+		{
+			while ((dirEntry = readdir(folder)) != NULL)
+			{
+				if (NativeTrack_HasExtension(dirEntry->d_name) && (count < NATIVE_SELFTEST_MAX_FILES))
+				{
+					names[count] = NativeAssets_CopyCString(dirEntry->d_name);
+					count += (names[count] != NULL) ? 1 : 0;
+				}
+			}
+
+			closedir(folder);
+		}
+	}
+#endif
+
+	if (!listed)
+	{
+		printf("[selftest] %s: the folder cannot be read\n", dir);
+		free(names);
+		return 1;
+	}
+
+	if (count > 1)
+	{
+		qsort(names, (size_t)count, sizeof(names[0]), NativeTrack_SelfTestCompare);
+	}
+
+	for (i = 0; i < count; i++)
+	{
+		char path[NATIVE_ASSETS_PATH_MAX];
+		char why[512];
+		const int wantGood = (strncmp(names[i], "good-", 5) == 0);
+		const int wantBad = (strncmp(names[i], "bad-", 4) == 0);
+		int accepted = 0;
+		int ok;
+
+		why[0] = '\0';
+
+		if (NativePath_Join(path, sizeof(path), NativeStr8_FromCString(dir), NativeStr8_FromCString(names[i])))
+		{
+			accepted = NativeTrack_SelfTestFile(path, why, (int)sizeof(why));
+		}
+		else
+		{
+			snprintf(why, sizeof(why), "the path is too long");
+		}
+
+		good += wantGood ? 1 : 0;
+		bad += wantBad ? 1 : 0;
+		ok = (wantGood && accepted) || (wantBad && !accepted);
+		unexpected += ok ? 0 : 1;
+
+		if (accepted)
+		{
+			printf("[selftest] %s: accepted - %s\n", names[i], ok ? "OK" : "UNEXPECTED");
+		}
+		else
+		{
+			printf("[selftest] %s: refused (%s) - %s\n", names[i], why, ok ? "OK" : "UNEXPECTED");
+		}
+
+		free(names[i]);
+	}
+
+	free(names);
+
+	printf("[selftest] %d container(s): %d good-, %d bad-, %d unexpected%s\n", count, good, bad, unexpected,
+	       ((good == 0) || (bad == 0)) ? " - needs at least one good- and one bad- file" : "");
+	fflush(stdout);
+
+	return ((unexpected == 0) && (good > 0) && (bad > 0)) ? 0 : 1;
 }
 
 // Whether this load comes from the container at all.

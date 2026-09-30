@@ -324,6 +324,31 @@ void NativeTrack_Release(void);
 void NativeTrack_ArmSubfiles(int levelID, int levSubfile, int vramSubfile);
 const u8 *NativeTrack_SubfileData(int subfileIndex, u32 *sizeOut);
 
+// THE CONTAINER SELF-TEST (--selftest-containers, main.c).
+//
+// Runs on one file every check the game runs on a container - at scan time
+// (header, directory, META, the map for the track wheel, the memory numbers)
+// and at load time (every chunk read, the LEVD/VRMD/SNDB content checks, PARM,
+// the memory need) - without touching game memory: no MEMPACK, no engine, no
+// GPU, no window, nothing in the track list. 1 = the game would list and load
+// it, 0 = refused; why receives the reason, the same text the game logs after
+// "REJECTED - " or "NOT LOADED - ". Never crashes and leaks nothing, whatever
+// the file holds. The SNDB bank sums use the host's SPU sizes only once
+// KART.HWL has been read (never in the self-test); without them a row the
+// container does not correct counts 0.
+int NativeTrack_SelfTestFile(const char *path, char *why, int whyBytes);
+
+// Every *.rldtrack in dir, sorted like the track list: good-* expected
+// accepted, bad-* expected refused, one "[selftest] ..." line per file on
+// stdout. Returns the exit code: 0 only if every file is as expected and there
+// is at least one good- and one bad- file.
+int NativeTrack_SelfTestFolder(const char *dir);
+
+// 1 and the SHA-256 of the LEVD chunk of the loaded container track, if the
+// level LOAD_TenStages last armed (the one loading or running) is its seat;
+// 0 when that level is not a container track.
+int NativeTrack_ActiveLevdSha256(unsigned char out[32]);
+
 // THE VALUES OF A CONTAINER TRACK (PARM, format 4.1).
 //
 // For each question -1 if this level is not the slot of a loaded container -
