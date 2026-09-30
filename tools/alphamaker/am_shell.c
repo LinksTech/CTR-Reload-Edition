@@ -98,8 +98,8 @@ enum AmTheme { AM_THEME_SYSTEM = 0, AM_THEME_LIGHT, AM_THEME_DARK };
 static int g_themeMode = AM_THEME_SYSTEM;
 static int g_dark;
 
-// The palettes, in the order of enum AmPalSlot. Light: the values from before,
-// unchanged. Dark: no pure black; the status colours lighter, so that
+// The palettes, in the order of enum AmPalSlot. Light: white cards on a light
+// grey page. Dark: no pure black; the status colours lighter, so that
 // they are readable on a dark background. Within a palette every value
 // occurs only once, and no value of the one stands in the other in a
 // different slot - Am_SetTextColor finds the slot by the value.
@@ -776,9 +776,9 @@ static void Am_FillRound(HDC dc, const RECT *rc, int radius, COLORREF fill, COLO
 // In the dark scheme the standard controls get the dark themes of
 // Windows 10/11 (DarkMode_Explorer, DarkMode_CFD for input fields and
 // combo boxes, DarkMode_ItemsView for the header of a list) and their
-// colours via WM_CTLCOLOR*. In the light scheme they get what they had
-// before: no own theme, the list "Explorer". At start in the light
-// scheme the shell calls nothing here - the picture stays as before.
+// colours via WM_CTLCOLOR*. In the light scheme they keep Windows'
+// defaults: no own theme, the list "Explorer". At start in the light
+// scheme the shell calls nothing here.
 // ---------------------------------------------------------------------------
 
 // How a control keeps its text colour (property "AmColor"):
@@ -942,7 +942,8 @@ static void Am_ThemeControl(HWND h)
     InvalidateRect(h, NULL, TRUE);
 }
 
-// On creation: only in the dark scheme, so that the light picture stays as before.
+// On creation: only in the dark scheme; in the light scheme the controls keep
+// Windows' defaults.
 static HWND Am_Themed(HWND h)
 {
     if (h && g_dark)
@@ -1297,12 +1298,6 @@ HWND Am_ListView(HWND page, int id, DWORD extraStyle)
         SetWindowSubclass(h, Am_ListViewSub, 1, 0);
     }
     return Am_Themed(h);
-}
-
-void Am_SetFont(HWND control, int font)
-{
-    SetPropW(control, L"AmFont", (HANDLE)(INT_PTR)(font + 1));
-    SendMessageW(control, WM_SETFONT, (WPARAM)Am_Font(font), TRUE);
 }
 
 void Am_SetTextColor(HWND control, COLORREF color)
@@ -2029,7 +2024,7 @@ static LRESULT CALLBACK Am_PageProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     case WM_CTLCOLOREDIT:
     case WM_CTLCOLORLISTBOX:
         // Input fields, lists, the dropped-down combo list. In the light
-        // scheme Windows' colours as before.
+        // scheme Windows' default colours.
         if (g_dark) {
             HDC dc = (HDC)wParam;
             SetTextColor(dc, AM_COL_TEXT);
@@ -2686,8 +2681,7 @@ static int Am_RunAsRldpack(int argc, wchar_t **wargv)
     // The runtime's narrow program path (_pgmptr) is only set by a program
     // with a narrow main. rldpack asks for it via _get_pgmptr to find the game data
     // for the music next to itself (Rld_ExeDir); unset, _get_pgmptr aborts
-    // the program (0xC0000409, found while repacking
-    // Baby T Park on 2026-09-29). Here it is set as for rldpack.exe,
+    // the program (0xC0000409). Here it is set as in the standalone rldpack,
     // under the manifest's UTF-8 code page.
     _configure_narrow_argv(_crt_argv_unexpanded_arguments);
     argv[n++] = Am_ToUtf8(wargv[0]);

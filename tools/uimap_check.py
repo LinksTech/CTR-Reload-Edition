@@ -4,7 +4,7 @@ A replica of CTR_UI_MapX and NativeUiDecl_Floor (game/native_view.c,
 game/native_uidecl.c) in the same integer arithmetic, run over every coordinate
 the 512x216 authoring canvas can produce.
 
-Since step 3 the mapper SHIFTS instead of scaling: the HUD is authored in 512
+The mapper SHIFTS instead of scaling: the HUD is authored in 512
 columns and drawn into 512, 682 or 918, and the anchor says which point of the
 one falls on which point of the other. That changes what there is to check:
 

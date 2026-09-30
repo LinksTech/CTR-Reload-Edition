@@ -44,11 +44,6 @@ class Text:
             return "lng 0x%x" % self.wert
         return '"%s"' % self.wert
 
-    def anzeige(self) -> str:
-        if self.art == LNG:
-            return "lng 0x%x" % self.wert
-        return str(self.wert)
-
 
 class MenuFormatFehler(Exception):
     def __init__(self, zeile: int, was: str, detail: str) -> None:

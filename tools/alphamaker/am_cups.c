@@ -1,7 +1,7 @@
 // am_cups.c - page "Cups" of the Alpha-Maker
 //
 // Four containers make a cup, at most four cups are in cups.txt in the
-// game's track folder (ARCADE -> CUSTOM CUP). The rules for the file
+// game's track folder (ARCADE -> NITRO-PIT -> CUP). The rules for the file
 // are the game's: NativeCup_Read in platform/native_assets.c and the
 // comment at NATIVE_CUP_FILE in include/platform/native_assets.h.
 //
@@ -1235,8 +1235,8 @@ static void Cups_Evaluate(struct CupsState *s)
                      L"Track page and put the container here.");
         if (s->cupCount == 0)
             Cups_Add(AM_SEV_INFO, NULL,
-                     L"There are no cups yet. Press New cup to make one. Without a cup, CUSTOM CUP "
-                     L"stays locked in the game.");
+                     L"There are no cups yet. Press New cup to make one. Without a cup, CUP in "
+                     L"NITRO-PIT stays locked in the game.");
         for (i = 0; i < s->cupCount; i++)
             Cups_CheckCup(s, i);
     }
@@ -1506,8 +1506,9 @@ static void Cups_CleanPath(const wchar_t *in, wchar_t *out, int cap)
         out[--n] = 0;
 }
 
-// The game's track folder: the base is the first of (folder of the exe,
-// its parent, its grandparent) with assets\BIGFILE.BIG or assets\ctr-u.bin.
+// The game's track folder: the folder saved in the ini, otherwise "tracks" in the
+// first of (folder of ctr_native.exe, its parent, its grandparent) with
+// assets\BIGFILE.BIG or assets\ctr-u.bin - if that "tracks" folder exists.
 static void Cups_DefaultFolder(wchar_t *out, int cap)
 {
     wchar_t exe[MAX_PATH], dir[MAX_PATH], up[MAX_PATH], big[MAX_PATH], bin[MAX_PATH];
@@ -1642,7 +1643,7 @@ static wchar_t *Cups_BuildFile(const struct CupsState *s)
     wchar_t nm[CUPS_TEXT_CAP];
     int i, k;
 
-    Cups_Cat(t, cap, L"# cups.txt - custom cups for ARCADE -> CUSTOM CUP\r\n");
+    Cups_Cat(t, cap, L"# cups.txt - custom cups for ARCADE -> NITRO-PIT -> CUP\r\n");
     Cups_Cat(t, cap, L"# Written by the CTR Reload Alpha-Maker.\r\n");
     Cups_Cat(t, cap, L"# One cup: a line \"cup = <name>\", then exactly four lines \"track = <file>\".\r\n");
     Cups_Cat(t, cap, L"# Track files are looked up in this folder; upper/lower case does not matter.\r\n");

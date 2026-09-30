@@ -49,7 +49,7 @@
 // CMakeLists.txt sets the version, the build ID comes from ctr_build_id.h,
 // generated on every build (cmake/CtrBuildId.cmake) - both as for the
 // game (narrow strings). The game answers --version with
-// "CTR Reload Beta 0 (<build id>)"; the
+// "CTR Reload <version> (<build id>)"; the
 // test page demands the same ID as here, otherwise game and
 // Alpha-Maker do not belong together. "unknown" (build without git) does not check.
 // ---------------------------------------------------------------------------
@@ -63,7 +63,7 @@
 #define AM_WIDEN2(x) L##x
 #define AM_WIDEN(x)  AM_WIDEN2(x)
 #define AM_VERSION_W  AM_WIDEN(CTR_NATIVE_VERSION)     // L"Beta 0"
-#define AM_BUILD_ID_W AM_WIDEN(CTR_NATIVE_BUILD_ID)    // L"8d9e64b3b0f1" or L"...-dirty-<6 hex>"
+#define AM_BUILD_ID_W AM_WIDEN(CTR_NATIVE_BUILD_ID)    // L"<12 hex>" or L"<12 hex>-dirty-<6 hex>"
 
 // Message when there is no game data next to the game (pages Track and Test).
 #define AM_TEXT_NO_GAME_DATA \
@@ -103,7 +103,8 @@
 //             nav_points ("103,93,84", -1 = no path), start_spots (distinct
 //             start positions out of 8, without 0,0,0), spawn_count, model_ids_fixed,
 //             ambient_place_1 / ambient_place_2 ("yes" | "no"),
-//             map ("fits" | "scaled" | "none")
+//             crystals, letters ("<C>,<T>,<R>" model counts),
+//             map ("fits" | "scaled" | "none"), instances
 //   @msg      <severity> <id> <text> <technical>
 //             severity: error | warning | note | info
 //             text: English, understandable without knowing the code
@@ -119,8 +120,9 @@
 //   info --machine <file> [<file> ...]           per file one block from @container:
 //                                                @value name, author,
 //                                                track_version, modes, format;
-//                                                @mode x5; @lev restart_points,
-//                                                nav_paths
+//                                                @mode x5; @lev as for make,
+//                                                without model_ids_fixed, map
+//                                                and instances
 // Switches of make that the front end sets: --name --author --track-version
 // --modes --reverb --bots --ambient --no-music --out. For reverb, bots and
 // ambient the value "default" means: do not set, even if track.txt has one.
@@ -218,7 +220,7 @@ enum AmFont {
     AM_FONT_SMALL,      // Segoe UI 9 pt - reasons and notes below fields
     AM_FONT_SECTION,    // Segoe UI Semibold 12 pt - card titles
     AM_FONT_TITLE,      // Segoe UI Semibold 20 pt - page titles (painted by the shell)
-    AM_FONT_MONO,       // Cascadia Mono / Consolas 9 pt - paths, raw output
+    AM_FONT_MONO,       // Consolas 9 pt - paths, raw output
     AM_FONT_COUNT
 };
 HFONT Am_Font(int font);
@@ -292,9 +294,6 @@ HWND Am_Check(HWND page, int id, const wchar_t *text);
 HWND Am_Combo(HWND page, int id);                               // CBS_DROPDOWNLIST
 HWND Am_ListBox(HWND page, int id, DWORD extraStyle);           // LBS_NOTIFY
 HWND Am_ListView(HWND page, int id, DWORD extraStyle);          // LVS_REPORT, full row
-
-// Font of a control; stays even after a DPI change.
-void Am_SetFont(HWND control, int font);
 
 // Text colour of a label (default AM_COL_TEXT). Check boxes ignore it
 // in the light scheme. The shell remembers a palette colour (AM_COL_*) as a

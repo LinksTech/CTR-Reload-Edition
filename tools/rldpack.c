@@ -1,17 +1,19 @@
 // rldpack - the packer for .rldtrack containers
 //
 // A program of its own, not part of the game. A track author uses it to build
-// their container and passes on one file.
+// their container and passes on one file. The same source also runs inside the
+// Alpha-Maker as `alphamaker.exe --rldpack <command> ...`
+// (tools/alphamaker/am_rldpack.c).
 //
-// NO SIGNING PATH ANY MORE, SINCE 2026-09-19.
+// NO SIGNING PATH ANY MORE.
 //
 // This is where `keygen`, reading and writing author.key/author.pub, the
 // SIGN chunk and the signature check in `verify` used to be. All gone; the reason
 // is in the head of include/rldtrack.inc.
 //
-// VERSION 4.1 (2026-09-28): a container
-// consists of META, LEVD, VRMD and optionally SNDB and PARM. The packer no longer
-// writes MMAP, the game shrinks the menu map itself.
+// VERSION 4.1: a container consists of META, LEVD, VRMD and optionally SNDB
+// and PARM. The packer no longer writes MMAP, the game shrinks the menu map
+// itself.
 //
 // ALL WRITTEN IN-HOUSE, AND HERE THAT IS A DECISION, NOT A NECESSITY.
 //
@@ -81,7 +83,7 @@ void Platform_Log(const char *format, ...)
 }
 
 //========================================================================================
-// THE MACHINE LINES (--machine, 2026-09-29)
+// THE MACHINE LINES (--machine)
 //========================================================================================
 //
 // For the Alpha-Maker (tools/alphamaker). With --machine, rldpack writes, next to
@@ -437,7 +439,7 @@ static void Rld_AddChunk(struct RldContainer *container, const char type[4], con
 	chunk->type[4] = '\0';
 	chunk->flags = compression;
 	chunk->sizeRaw = (u64)rawSize;
-	chunk->sizeStored = (u64)rawSize; // compression method 0, see report
+	chunk->sizeStored = (u64)rawSize; // compression method 0: the format compresses nothing
 	chunk->offset = 0;
 
 	Sha256(raw, rawSize, chunk->hash);
@@ -605,7 +607,7 @@ static void Rld_Usage(void);
 //========================================================================================
 // CHECK WHAT IS INSIDE - BEFORE IT IS WRITTEN
 //
-// Noticed on 2026-08-28 with the first real track data: --lev and --vrm
+// Noticed with the first real track data: --lev and --vrm
 // built SWAPPED gave a flawless container. `verify`
 // waved it through, all hashes matched. Only the game would have
 // stumbled over it, and there it looks like a broken container.
@@ -729,18 +731,13 @@ static int Rld_LooksLikeVram(const u8 *data, size_t size)
 	}
 }
 
-// For LEV there is no header record with an identifier - the file starts with a
-// table of pointers. So this does NOT claim "this is a LEV",
-// it only excludes what is certainly not one: a VRM, something tiny,
-// and a first pointer that points out of the file. That is enough for the case
-// at hand, and it rejects no real track.
 // The tables every disc track has in its LEV.
 //
-// MEASURED on 2026-08-28 against the NTSC-U image: all 18 arcade tracks and
+// MEASURED against the NTSC-U image: all 18 arcade tracks and
 // all 5 battle arenas have every one of these nine fields set. Not one of
 // the 23 has even one of them at zero.
 //
-// The early test data has NONE of them.
+// Early exported test tracks had NONE of them.
 //
 // This is a WARNING and not an abort, and that matters more than it looks:
 // six of the nine fields are read NOWHERE in the game, the other three
@@ -824,7 +821,7 @@ static int Rld_WarnAboutLevTables(const u8 *lev, size_t size)
 // Ovr226_800a0f34_ConsumeFullDynamicVisibilityBit asks the second, for every
 // single quad block in a visible leaf.
 //
-// MEASURED on 2026-08-29 over all 25 disc tracks and all 21 test files:
+// MEASURED over all 25 disc tracks and 21 exported test tracks:
 //
 //   quad block mask, share visible     disc 40 to 55 %     test data 93 to 100 %
 //   different masks per track          disc 136 to 738     test data 1
@@ -1003,8 +1000,8 @@ static int Rld_WarnAboutVisibility(const u8 *lev, size_t size)
 //
 // AND THE EIGHT SEGMENTS. On the disc they are eight different pieces of a
 // dome. If they are all the same, the same sky is drawn four times on top of each other
-// - four times the cost for the same picture. That is exactly what the
-// test data of 2026-08-28 had.
+// - four times the cost for the same picture. That is exactly what early
+// exported test tracks had.
 //
 // This too is a WARNING. The container is built.
 
@@ -1163,6 +1160,11 @@ static int Rld_WarnAboutSky(const u8 *lev, size_t size)
 	return 0;
 }
 
+// For LEV there is no header record with an identifier - the file starts with a
+// table of pointers. So this does NOT claim "this is a LEV",
+// it only excludes what is certainly not one: a VRM, something tiny,
+// and a first pointer that points out of the file. That is enough for the case
+// at hand, and it rejects no real track.
 static const char *Rld_WhyNotLev(const u8 *data, size_t size)
 {
 	u32 first;
@@ -1216,15 +1218,14 @@ static const char *Rld_WhyNotVram(const u8 *data, size_t size)
 // including the five line filters.
 //
 // A different image format would be a commitment authors get used to
-// before we know whether we want it at all. So none at all - decided
-// on 2026-08-28.
+// before we know whether we want it at all. So none at all.
 //
 // The FourCC "THMB" stays reserved. Unknown chunks are skipped like any
 // unknown type, that costs nothing, and if we do want it later
 // after all, the name is still free.
 
 //========================================================================================
-// READING THE LEV WITHOUT INTERPRETING IT (2026-09-28, for make)
+// READING THE LEV WITHOUT INTERPRETING IT (for make)
 //========================================================================================
 //
 // Word 0 of the LEV is ptrMapOffset, the body starts at 4 (LOAD_File.c:123).
@@ -1235,8 +1236,8 @@ static const char *Rld_WhyNotVram(const u8 *data, size_t size)
 #define RLD_LEV_BODY          4u
 #define RLD_LEV_NUM_INSTANCES 0x0cu  // Level.numInstances
 
-// Instance limit in a race (Beta 0): 128 pool - 10 drivers/HUD = 118 hard, of which 8
-// are kept free for wake; from 90 on fewer than 28 remain for the race.
+// Instance limit in a race: 128 pool - 10 drivers/HUD = 118 hard, of which 8
+// are kept free for the wake (110); from 90 on fewer than 28 remain for the race.
 #define RLD_INSTANCES_MAX  110u
 #define RLD_INSTANCES_WARN 90u
 #define RLD_LEV_PTR_INSTDEFS  0x10u  // Level.ptrInstDefs
@@ -1326,8 +1327,8 @@ struct RldModelIdFix
 	int after;
 };
 
-// THE ID OF THE LETTERS (2026-09-29). The HUD
-// shows the letters by Model.id; "CTR Test" carried 0x95 on model "t" and
+// THE ID OF THE LETTERS. The HUD shows the letters by Model.id; the test
+// track "CTR Test" carried 0x95 on model "t" and
 // 0x94 on "r", the HUD read C R T. The game is right (retail), the data
 // is not. Only the three names and only IDs 0x93..0x95 - nothing else.
 struct RldLetterFix
@@ -1610,7 +1611,7 @@ static void Rld_LetterReport(const struct RldModelIds *ids, int applied)
 //                          NULL+0x354.
 //
 // Both are in the track data, so it is detected BEFORE packing and
-// aborts (2026-09-28). Since 4.1 also slot 2: the camera at the
+// aborts. Since 4.1 also slot 2: the camera at the
 // race end reads it at count >= 3 without a check (CAM.c:1901-1910). Slot 1
 // is not checked: in the retail image it is often 0, and that is
 // correct there. Since 4.1 build checks the same as make.
@@ -1884,7 +1885,7 @@ static const char *Rld_ModeCheck(u32 modes, const struct RldLevModes *data, cons
 		}
 
 		// Each letter exactly once: the game counts pickups and wins
-		// at three (222.c) - C, C, T would give YOU WIN without R (2026-09-29).
+		// at three (222.c) - C, C, T would give YOU WIN without R.
 		if (((modes & RLD_MODE_CTR_CHALLENGE) != 0u) && ((ids->letters[0] != 1u) || (ids->letters[1] != 1u) || (ids->letters[2] != 1u)))
 		{
 			snprintf(why, whySize, "--modes ctr: the LEV must carry each letter exactly once (C %u, T %u, R %u by Model.id 0x93..0x95)",
@@ -2021,7 +2022,7 @@ static void Rld_EmitModes(u32 declared, const struct RldSpawn *spawn, const stru
 }
 
 // A finished container that declares ctr or crystal without carrying the data for it
-// (2026-09-29: Ice_Rink and Inferno_Island, letters 0,0,0). The
+// (seen with containers of Ice Rink and Inferno Island: letters 0,0,0). The
 // track list reads only META, so the declaration must be right - make and build
 // reject such a thing today, old containers get a warning here. Nothing
 // is changed. file NULL: the line for humans (verify), otherwise the
@@ -2153,7 +2154,7 @@ static const char *Rld_ParseParmValues(const char *reverb, const char *bots, con
 // THE SHARED PACKING PATH OF build AND make
 //========================================================================================
 //
-// Until 2026-09-28 all of this was in Cmd_Build. make needs the same path -
+// All of this used to be in Cmd_Build. make needs the same path -
 // reading, checking, ABR, menu map, build, writing, report -, and a second
 // path next to it would be the place where the two drift apart. Since 4.1
 // both check the same: spawn table, data per mode, PARM. make additionally switches on
@@ -2289,7 +2290,7 @@ static int Rld_Pack(const struct RldPackJob *job)
 		}
 	}
 
-	// --track-version took whatever atoi returned. "0" went through, and "-5"
+	// --track-version used to take whatever atoi returned. "0" went through, and "-5"
 	// silently became 4,294,967,291 - a track that can never be
 	// updated again, because no version can be greater. The field
 	// serves update detection, so it starts at 1.
@@ -2335,7 +2336,7 @@ static int Rld_Pack(const struct RldPackJob *job)
 
 	// THE SPAWN TABLE, build and make, on the raw LEV: before any correction.
 	// ABR and model ID do not touch it anyway (tpage in the
-	// TextureLayouts, InstDef+0x3c). Since 2026-09-29 it is only checked
+	// TextureLayouts, InstDef+0x3c). It is only checked
 	// together with the modes further down, so that --machine can report all five
 	// modes; nothing is written before that.
 	Rld_SpawnRead(lev, levSize, &spawn);
@@ -2344,7 +2345,7 @@ static int Rld_Pack(const struct RldPackJob *job)
 	//
 	// It is checked with THE SAME function the game will run when loading
 	// - not with a second opinion about what an SNDB is. That
-	// is exactly the trap that swapped --lev/--vrm set on 2026-08-28:
+	// is exactly the trap that swapped --lev/--vrm set:
 	// a packer that accepts everything moves the error to where it
 	// looks like a broken container instead of like a typo.
 	if (job->sndbPath != NULL)
@@ -2450,7 +2451,7 @@ static int Rld_Pack(const struct RldPackJob *job)
 		}
 	}
 
-	// THE INSTANCE LIMIT (Beta 0, 2026-09-30). Every InstDef of the LEV takes a
+	// THE INSTANCE LIMIT. Every InstDef of the LEV takes a
 	// slot in the game's instance pool in a race (128, MainInit.c:342), including
 	// hidden ones like time crates and letters. 10 slots are taken beforehand by the 8
 	// drivers and 2 HUD instances, 8 more by the wake if the LEV
@@ -2501,9 +2502,9 @@ static int Rld_Pack(const struct RldPackJob *job)
 		{
 			snprintf(mapLine, sizeof(mapLine), "none - %s", why);
 
-			// Beta 0: a map table (SpawnType1 slot 0) without a
-			// map picture made the race crash (UI_Map.c). Since 2026-09-30 the game
-			// then draws no map; it is said here.
+			// A map table (SpawnType1 slot 0) without a map picture used to
+			// make the race crash (UI_Map.c). The game now draws no map
+			// then; it is said here.
 			if (spawn.present && (spawn.count > 0) && spawn.nonNull[0])
 			{
 				Rld_Say("warning", "map-icons", why,
@@ -2733,7 +2734,7 @@ static int Rld_Pack(const struct RldPackJob *job)
 	printf("  format        %d.%d, meta_version %d (frozen)\n", RLD_VERSION_MAJOR, RLD_VERSION_MINOR, RLD_META_VERSION);
 
 	Rld_Emit("lev", "map", mapKind, (const char *)NULL);
-	// Without a map this is not an error (2026-09-29): a note, not an abort.
+	// Without a map this is not an error: a note, not an abort.
 	if (strcmp(mapKind, "none") == 0)
 	{
 		Rld_Say("note", "no-map", mapLine,
@@ -2758,7 +2759,7 @@ static int Rld_Pack(const struct RldPackJob *job)
 		printf("\nNOTE: %u texture layouts carried a tpage whose ABR field was not 3.\n", abrReport.layoutsFixed);
 		printf("  CTR reads ABR != 3 as semi-transparent. Such a face gets its own draw\n");
 		printf("  split and is drawn TWICE, and no face around it can be batched with it.\n");
-		printf("  Measured on 2026-08-29: that was 35.5 ms of a 48.4 ms frame.\n");
+		printf("  Measured on one exported track: that was 35.5 ms of a 48.4 ms frame.\n");
 		printf("  On the disc 0.0 to 8.3 percent of faces are semi-transparent - a few\n");
 		printf("  really are, and those are meant to be. Here it was %u percent, and a\n", (abrReport.faces != 0u) ? ((abrReport.facesChanged * 100u) / abrReport.faces) : 0u);
 		printf("  number near a hundred means the exporter never writes the field at all.\n");
@@ -2773,12 +2774,12 @@ static int Rld_Pack(const struct RldPackJob *job)
 	{
 		printf("\nWARNING: --modes race, but the LEV carries no nav paths (LevNavTable) - bots will not drive.\n");
 		// Without a path with more than one point BOTS_Driver_Init creates no bot at all
-		// (BOTS.c:3116-3134, confirmed 2026-09-29: [CTR Race] ... bots 0).
+		// (BOTS.c:3116-3134; the game log then shows "[CTR Race] ... bots 0").
 		Rld_Say("warning", "no-nav", "--modes race, but the LEV carries no nav paths (LevNavTable) - bots will not drive.",
 				"The track has no nav paths (the lines the bots follow), so the game starts the race without bots - the player drives alone. Export the track with its nav paths to race against bots.");
 	}
 
-	// The eight start spots (2026-09-29, only as a machine line, the report
+	// The eight start spots (only as a machine line, the report
 	// stays the same): if drivers sit on the same point, they start inside each other.
 	if (((in.modes & RLD_MODE_RACE) != 0u) && (levModes.startSpots < RLD_DRIVER_SPAWNS))
 	{
@@ -2887,7 +2888,7 @@ static int Cmd_Build(int argc, char *argv[])
 		else if (strcmp(arg, "--key") == 0)
 		{
 			fprintf(stderr, "rldpack: --key is gone. Containers are not signed any more - the\n");
-			fprintf(stderr, "         SIGN chunk was taken out of the format on 2026-09-19.\n");
+			fprintf(stderr, "         SIGN chunk was taken out of the format.\n");
 			fprintf(stderr, "         See the head of include/rldtrack.inc.\n");
 			return 2;
 		}
@@ -2913,21 +2914,22 @@ static int Cmd_Build(int argc, char *argv[])
 }
 
 //========================================================================================
-// MAKE - A FOLDER BECOMES A CONTAINER (2026-09-28)
+// MAKE - A FOLDER BECOMES A CONTAINER
 //========================================================================================
 //
-// rldpack make <folder>: LEV and VRM required, music (.sca) optional, plus
-// optionally track.txt. The shared packing path derives the menu map.
+// rldpack make <folder>: LEV and VRM required, music (a .sca or a finished
+// .sndb) optional, plus optionally track.txt. The shared packing path derives
+// the menu map.
 //
 // THE MAKER WRITES NO LEVEL ID INTO THE CONTAINER. The game assigns it itself
-// during the scan (track-ids.tsv in the tracks folder, 2026-09-28). No field,
+// during the scan (track-ids.tsv in the tracks folder). No field,
 // no placeholder, no format change - make builds the same container that
 // build builds, only with less manual work.
 
-// --- The music: Project Saphi .sca, port of tools/sca2sndb.py -----------------------
+// --- The music: Project Saphi .sca ----------------------------------------------------
 //
-// sca2sndb.py was deleted on 2026-09-28: music from a .sca
-// exists only here now. The references "sca2sndb.py:NN" refer to the last version of that script.
+// Ported from an earlier Python converter that no longer exists: turning a
+// .sca into an SNDB is done only here.
 //
 // 'SCA' + version byte 1, then chunks [4CC, u32 size, body, padded to 4]:
 //   BANK  HOWL bank: 0x800 header (s16 n, s16 spuIndex[n]), then SPU ADPCM
@@ -2935,9 +2937,9 @@ static int Cmd_Build(int argc, char *argv[])
 //   SIZE  u16 SPU size per sample, in 8-byte units, order as in the header
 //   META  JSON (name, author) - for Baby T Park the MUSIC author, so only a hint
 //
-// PADDED SCA (2026-09-29, a test track): newer exports pad
+// PADDED SCA: newer exports pad
 // BANK and CSEQ to whole sectors (2048), like the banks in KART.HWL. The
-// BANK then carries up to 2047 bytes behind the last sample (in the test track: 32
+// BANK then carries up to 2047 bytes behind the last sample (in one test track: 32
 // bytes, not zero), CSEQ zeros behind the song. This is accepted only if
 // the chunk is padded EXACTLY to the next sector; the lengths then come
 // from SIZE and the song header, the rest is not taken over. Rld_BuildSndb
@@ -3107,7 +3109,7 @@ static int Rld_ScaMetaString(const u8 *meta, size_t metaSize, const char *key, c
 // At 0x10 there are 5 x u32 nSpu, nOther, nEngine, nBanks, nSeq. At 0x28 follow
 // nSpu x (u16 addr, u16 size), then 8 * nOther + 8 * nEngine bytes, then
 // nBanks x u16 bank offsets in sectors. A bank starts at off * 2048 with
-// s16 n and n x s16 sample IDs (sca2sndb.py:40-50).
+// s16 n and n x s16 sample IDs.
 struct RldHwl
 {
 	const u8 *data;
@@ -3187,7 +3189,7 @@ static int Rld_HwlBankReserved(u32 bank)
 	return (bank == 0u) || ((bank >= 54u) && (bank <= 70u));
 }
 
-// THE SNDB, byte-exact like sca2sndb.py:87-93.
+// THE SNDB, byte-exact like the earlier Python converter wrote it.
 //
 // SPU rows only for samples whose size differs from the retail table, in
 // the order of the bank header; spuAddr stays 0. Bank and song are padded to whole
@@ -3265,8 +3267,7 @@ static u8 *Rld_BuildSndb(const struct RldSca *sca, const struct RldHwl *hwl, u32
 // retail banks carry the same sample ID: during the track they get
 // the same new size, but carry their old samples. If a reserved one
 // is among them, make aborts (reason in why); otherwise the list comes as text in
-// others, the way sca2sndb.py prints it ("5 in [3, 4], 7 in [9]"), samples
-// ascending.
+// others ("5 in [3, 4], 7 in [9]"), samples ascending.
 static const char *Rld_MusicCheck(const struct RldSca *sca, const struct RldHwl *hwl, u32 bank, u32 song, char *why, size_t whySize, char *others,
                                   size_t othersSize)
 {
@@ -3679,7 +3680,8 @@ static int Rld_EndsWithNoCase(const char *name, const char *suffix)
 	return 1;
 }
 
-// The folder rldpack lies in - not the one it was called from.
+// The folder the running exe lies in (rldpack.exe, or alphamaker.exe with
+// --rldpack) - not the one it was called from.
 static int Rld_ExeDir(const char *argv0, char *dst, size_t dstSize)
 {
 	char self[RLD_PATH_MAX];
@@ -3720,7 +3722,7 @@ static int Rld_ExeDir(const char *argv0, char *dst, size_t dstSize)
 }
 
 // THE RETAIL KART.HWL - searched the way the game searches its data
-// (NativeAssets_Init): the folder of rldpack, its parent and
+// (NativeAssets_Init): the folder of the running exe, its parent and
 // grandparent folder. One counts if assets\ in it carries BIGFILE.BIG or ctr-u.bin.
 // There, first a loose SOUNDS\KART.HWL, otherwise the same file from
 // ctr-u.bin, read with the game's image reader. An author usually has only
@@ -3734,7 +3736,7 @@ static u8 *Rld_FindHwl(const char *argv0, size_t *sizeOut, char *source, size_t 
 
 	if (!Rld_ExeDir(argv0, dir, sizeof(dir)))
 	{
-		snprintf(why, whySize, "cannot tell where rldpack lies - give KART.HWL with --hwl <file>, or leave the music out with --no-music");
+		snprintf(why, whySize, "cannot tell where this program lies - give KART.HWL with --hwl <file>, or leave the music out with --no-music");
 		return NULL;
 	}
 
@@ -3789,7 +3791,7 @@ static u8 *Rld_FindHwl(const char *argv0, size_t *sizeOut, char *source, size_t 
 	}
 
 	snprintf(why, whySize,
-	         "no assets folder with BIGFILE.BIG or ctr-u.bin next to rldpack or up to two folders above it, the way the game\n"
+	         "no assets folder with BIGFILE.BIG or ctr-u.bin next to this program or up to two folders above it, the way the game\n"
 	         "         looks for its data - give KART.HWL with --hwl <file>, or leave the music out with --no-music");
 	return NULL;
 }
@@ -3797,8 +3799,8 @@ static u8 *Rld_FindHwl(const char *argv0, size_t *sizeOut, char *source, size_t 
 // --- The folder ---------------------------------------------------------------------
 //
 // Only the top level, extensions without regard to upper and lower case.
-// Exactly one .lev and one .vrm, at most one .sca, plus optionally track.txt.
-// Everything else is not used, and the report says so. The Saphi names
+// Exactly one .lev and one .vrm, at most one music file (.sca or .sndb), plus
+// optionally track.txt. Everything else is not used, and the report says so. The Saphi names
 // carry UUIDs (309fa756-..._v1.0.2.lev) - the search goes by the extension.
 #define RLD_FOLDER_KEEP 8
 #define RLD_NAME_MAX    260
@@ -4124,7 +4126,7 @@ static int Cmd_Make(int argc, char *argv[], const char *argv0)
 
 	Rld_EmitFolderList("lev", &folder.lev, folderPath, 0);
 	Rld_EmitFolderList("vrm", &folder.vrm, folderPath, 0);
-	// Music from a .sca OR a finished .sndb (2026-09-29).
+	// Music from a .sca OR a finished .sndb.
 	// The line @file sndb only comes if a .sndb lies in the folder; so
 	// an older Alpha-Maker still sees exactly one music line.
 	if ((folder.sca.count > 0) || (folder.sndb.count == 0))
@@ -4368,8 +4370,8 @@ static int Cmd_Make(int argc, char *argv[], const char *argv0)
 	printf("  bots          %s (%s)\n", (value[RLD_TXT_BOTS] != NULL) ? value[RLD_TXT_BOTS] : "not set, the game uses row 0", source[RLD_TXT_BOTS]);
 	printf("  ambient       %s (%s)\n", (value[RLD_TXT_AMBIENT] != NULL) ? value[RLD_TXT_AMBIENT] : "not set, no ambient sound", source[RLD_TXT_AMBIENT]);
 
-	// THE MUSIC. Only with a .sca and without --no-music; otherwise no SNDB is created, and
-	// the track plays the music of its slot.
+	// THE MUSIC. Only with a .sca or .sndb and without --no-music; otherwise the
+	// container gets no SNDB, and the track plays the music of its slot.
 	//
 	// With --check an error here does not end the run: make keeps checking without music,
 	// so that the Alpha-Maker can still show every mode, and
@@ -4533,7 +4535,7 @@ static int Cmd_Make(int argc, char *argv[], const char *argv0)
 	}
 	else
 	{
-		printf("  music         none - no .sca in the folder, the track plays its seat's music\n");
+		printf("  music         none - no .sca or .sndb in the folder, the track plays its seat's music\n");
 		Rld_Emit("music", "none", "No music file in the folder; the track plays the music of its seat.", (const char *)NULL);
 	}
 
@@ -4848,7 +4850,7 @@ static int Rld_Check(const char *what, const u8 *got, const u8 *want, size_t siz
 	return 1;
 }
 
-// --- Self-test for make (2026-09-28) ---------------------------------------------
+// --- Self-test for make -------------------------------------------------------------
 //
 // All synthetic, no real track data: a LEV in miniature, a
 // mini SCA against a mini KART.HWL, and a few track.txt lines.
@@ -5220,8 +5222,8 @@ static int Rld_SelftestMake(void)
 			}
 		}
 
-		// The same SCA, BANK and CSEQ padded to whole sectors (a test track,
-		// 2026-09-29): the same SNDB. One sector more than needed is refused.
+		// The same SCA, BANK and CSEQ padded to whole sectors (as newer
+		// exports write it): the same SNDB. One sector more than needed is refused.
 		{
 			const size_t tail = at - 0x834u;
 			size_t bankChunk;
@@ -5392,7 +5394,7 @@ static int Cmd_Selftest(void)
 		// writer and reader would otherwise only have been noticed by an author whose
 		// track carries the wrong name in the menu.
 		//
-		// On 2026-09-19 publicKey dropped out of the list of checked fields,
+		// When signing was removed, publicKey dropped out of the list of checked fields,
 		// but its 32 bytes at 0x04 did NOT drop out of the layout. That is exactly
 		// why this test matters more now than before: it is the place
 		// where it would show that someone closes the gap and so shifts every field
@@ -5435,7 +5437,7 @@ static int Cmd_Selftest(void)
 			}
 		}
 
-		// THE CHUNK SET, since 2026-09-19.
+		// THE CHUNK SET, since signing was removed.
 		//
 		// Three without sound, four with - and in NO case a SIGN. That is the
 		// one promise a build has to keep after this rework, and it is
@@ -5560,7 +5562,7 @@ static int Cmd_Selftest(void)
 
 	// THE ABR PASS, on constructed cases.
 	//
-	// The rule of the task was "when in doubt, do not set", and exactly that can
+	// The rule is "when in doubt, do not set", and exactly that can
 	// be nailed down here: an STP bit in an entry the face does NOT
 	// touch must not stop it - one in an entry it
 	// touches must stop it. And whatever lies outside what was written
@@ -5613,7 +5615,7 @@ static int Cmd_Selftest(void)
 			// 2. If it moves to entry 1, the face must stay.
 			pixels[1 * RLD_VRAM_W + 256 + 1] |= 0x8000u;
 			step |= (Rld_AbrVerdict(layout, pixels, written) == RLD_ABR_STP) ? 0 : 2;
-			pixels[1 * RLD_VRAM_W + 256 + 1] &= (unsigned short)~0x8000u;
+			pixels[1 * RLD_VRAM_W + 256 + 1] &= 0x7FFFu;
 
 			// 3. If the entry is not written, the answer is unknown -
 			//    and not "no zero, so free".
@@ -5700,7 +5702,7 @@ static int Cmd_Selftest(void)
 		free(written);
 	}
 
-	// THE MENU MAP (2026-09-28, shrunk in the game since 4.1): shrink it,
+	// THE MENU MAP (shrunk in the game since 4.1): shrink it,
 	// and shrunk twice must give the same byte for byte.
 	//
 	// An 8-bit map, drawn 95x43 texels like Inferno Island, both
@@ -5979,7 +5981,7 @@ static int Cmd_Selftest(void)
 		}
 	}
 
-	// MAKE (2026-09-28): model ID, spawn table, SCA -> SNDB, track.txt.
+	// MAKE: model ID, spawn table, SCA -> SNDB, track.txt.
 	failed |= Rld_SelftestMake();
 
 	printf(failed ? "\nSelf-test FAILED.\n" : "\nSelf-test passed.\n");
@@ -5988,13 +5990,10 @@ static int Cmd_Selftest(void)
 
 //========================================================================================
 
-// The help names EVERY argument build knows.
-//
-// Previously it only said "--lev --vrm --key --name --out". --author, --desc,
-// --license, --thumb, --uuid and --track-version existed, but an author could
-// only learn about them from the source. An argument nobody knows about is
-// no argument - and the first track built consequently had an empty
-// author field.
+// The help names EVERY argument build and make know. An argument an author
+// can only learn about from the source is no argument - an early version of
+// this help left out --author, and the first track built consequently had an
+// empty author field.
 static void Rld_Usage(void)
 {
 #ifndef CTR_NATIVE_VERSION
@@ -6003,23 +6002,30 @@ static void Rld_Usage(void)
 #ifndef CTR_NATIVE_BUILD_ID
 #define CTR_NATIVE_BUILD_ID "unknown"
 #endif
-	// Beta 0: the same version as the game and the Alpha-Maker (the packaging script checks it here).
+	// The same version and build ID as the game and the Alpha-Maker (the packaging script checks it here).
 	printf("rldpack - packer for .rldtrack track containers, format 4.1 - CTR Reload %s (%s)\n\n", CTR_NATIVE_VERSION, CTR_NATIVE_BUILD_ID);
+
+	printf("  The same program runs inside the Alpha-Maker: where this help says\n");
+	printf("  \"rldpack <command>\", \"alphamaker.exe --rldpack <command>\" works the same.\n\n");
 
 	printf("COMMANDS\n");
 	printf("  make     <folder>           build a container from a track folder, see below\n");
 	printf("  build    ...                build a container from single files, see below\n");
 	printf("  info     <file>             show the format, META and PARM, leaves LEVD/VRMD untouched\n");
-	printf("  verify   <file>             check every chunk against its hash, and SNDB and PARM\n");
-	printf("                              with the game's own reader\n");
+	printf("  verify   <file>             check every chunk against its hash, SNDB and PARM\n");
+	printf("                              with the game's own reader, and warn if the track\n");
+	printf("                              lacks the data of a declared ctr or crystal mode\n");
 	printf("  selftest                    check SHA-256 and the build against fixed cases\n\n");
 	printf("  --machine                   with any command: also print lines for a program\n");
-	printf("                              (the Alpha-Maker), see tools/alphamaker/alphamaker.h\n\n");
+	printf("                              (the Alpha-Maker), see tools/alphamaker/alphamaker.h.\n");
+	printf("                              info --machine takes several files and also reads\n");
+	printf("                              the LEVD of each\n\n");
 
 	printf("MAKE\n");
 	printf("  rldpack make <folder> [switches]\n");
-	printf("  The folder holds exactly one .lev and one .vrm, at most one .sca (the\n");
-	printf("  music, optional) and optionally track.txt. Everything else is left alone.\n");
+	printf("  The folder holds exactly one .lev and one .vrm, at most one music file\n");
+	printf("  (a .sca, or a finished .sndb that goes in unchanged; optional) and\n");
+	printf("  optionally track.txt. Everything else is left alone.\n");
 	printf("  The container lands NEXT TO the folder as <folder>.rldtrack. make fixes\n");
 	printf("  the model ids of the instances; everything else it checks as build does.\n");
 	printf("  It writes no level id: the game gives every track its id itself.\n");
@@ -6027,11 +6033,13 @@ static void Rld_Usage(void)
 	printf("  --name, --author, --modes, --track-version, --reverb, --bots, --ambient\n");
 	printf("                              as with build; they win over track.txt, which\n");
 	printf("                              wins over the defaults (name: the folder name)\n");
-	printf("  --bank <n> --song <n>       where the music plays (default 14 and 13)\n");
-	printf("  --no-music                  leave a .sca in the folder out\n");
-	printf("  --hwl <file>                the retail KART.HWL; without it make looks for\n");
-	printf("                              assets with BIGFILE.BIG or ctr-u.bin next to\n");
-	printf("                              rldpack and up to two folders above, like the game\n");
+	printf("  --bank <n> --song <n>       where the music of a .sca plays (default 14 and\n");
+	printf("                              13); banks 0 and 54..70 are refused\n");
+	printf("  --no-music                  leave the music file in the folder out\n");
+	printf("  --hwl <file>                the retail KART.HWL, needed for a .sca; without\n");
+	printf("                              it make looks for assets with BIGFILE.BIG or\n");
+	printf("                              ctr-u.bin next to the program and up to two\n");
+	printf("                              folders above, like the game\n");
 	printf("  --out <file>                somewhere else than next to the folder\n");
 	printf("  --keep-model-ids            leave InstDef.modelID as the exporter wrote it\n");
 	printf("                              (and the ids of the letter models c, t, r)\n");
@@ -6040,7 +6048,9 @@ static void Rld_Usage(void)
 	printf("  --reverb/--bots/--ambient default\n");
 	printf("                              not set, even if track.txt sets it\n");
 	printf("\n");
-	printf("  track.txt, one key per line, the switch names without --:\n");
+	printf("  track.txt, one key = value per line, the switch names without --\n");
+	printf("  (name, author, modes, track-version, bank, song, reverb, bots, ambient);\n");
+	printf("  a line starting with # is a comment:\n");
 	printf("    name = My Track\n");
 	printf("    author = Your Name\n");
 	printf("    modes = race\n");
@@ -6067,7 +6077,8 @@ static void Rld_Usage(void)
 	printf("  --bots <0..17>              the bots drive as on this retail track\n");
 	printf("                              (0 Dingo Canyon .. 17 Turbo Track, default 0)\n");
 	printf("  --ambient <n>[,<n>]         ambient sound numbers at the LEV's SpawnType2\n");
-	printf("                              slots 5 and 6, 0 = none (default: none)\n");
+	printf("                              slots 5 and 6, decimal or 0x..., up to 0xffff,\n");
+	printf("                              0 = none (default: none)\n");
 	printf("  --abr-keep                  leave the tpage ABR field as the exporter wrote it\n\n");
 
 	printf("MODES\n");
@@ -6085,9 +6096,11 @@ static void Rld_Usage(void)
 
 	printf("MENU MAP\n");
 	printf("  The menu has a strip of 32 rows for the track map. If the map halves of\n");
-	printf("  the LEV (icons 3 and 4) are higher, the game scales them down itself when\n");
-	printf("  the row is first shown; build and make report what it will show. The\n");
-	printf("  race keeps drawing the map of the LEV.\n\n");
+	printf("  the LEV (icons 3 and 4) are higher, or wider than their texture page slot,\n");
+	printf("  the game scales them down itself when the row is first shown; build and\n");
+	printf("  make report what it will show. The race keeps drawing the map of the LEV.\n\n");
+
+	printf("METADATA\n");
 	printf("  Name and author are all the metadata there is. License, description,\n");
 	printf("  tool version and the track UUID were dropped: the reader never needed\n");
 	printf("  one of them. All text is UTF-8. Nothing in a container is compressed.\n\n");
@@ -6096,12 +6109,13 @@ static void Rld_Usage(void)
 	printf("  rldpack build --lev track.lev --vrm track.vrm \\\n");
 	printf("                --name \"Warp Pad 1\" --author \"Your Name\" \\\n");
 	printf("                --modes race --reverb 1 --out warppad1.rldtrack\n");
-	printf("  rldpack verify warppad1.rldtrack\n\n");
+	printf("  rldpack verify warppad1.rldtrack\n");
+	printf("  rldpack make MyTrack --author \"Your Name\"\n\n");
 
 	printf("Drop the finished file into tracks/. That is all - no installing.\n\n");
 
 	printf("Containers are NOT signed. The SIGN chunk, Ed25519 and the key files\n");
-	printf("were taken out of the format on 2026-09-19 - see include/rldtrack.inc.\n");
+	printf("were taken out of the format - see include/rldtrack.inc.\n");
 	printf("Older containers that still carry a SIGN or MMAP chunk keep\n");
 	printf("loading; the game skips both. A container says who its author is, it does\n");
 	printf("not prove it.\n");
@@ -6253,13 +6267,13 @@ static int Rld_MainCommand(int argc, char *argv[])
 		return 2;
 	}
 
-	// `keygen` was here until 2026-09-19. It gets its own message
+	// `keygen` was here while containers were signed. It gets its own message
 	// instead of the general help: whoever types it has old instructions
 	// in front of them and would otherwise look for a typo.
 	if (strcmp(argv[1], "keygen") == 0)
 	{
 		fprintf(stderr, "rldpack: keygen is gone. Containers are not signed any more -\n");
-		fprintf(stderr, "         the SIGN chunk was taken out of the format on 2026-09-19.\n");
+		fprintf(stderr, "         the SIGN chunk was taken out of the format.\n");
 		fprintf(stderr, "         See the head of include/rldtrack.inc. You need no key.\n");
 		return 2;
 	}

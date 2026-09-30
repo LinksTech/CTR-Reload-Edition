@@ -2,32 +2,30 @@
 //
 // WHY THIS IS HERE, AND WHAT IT DOES NOT ACHIEVE
 //
-// On 2026-08-28 the antivirus on the development machine (McAfee WPS,
-// not Defender) quarantined three freshly built rldpack.exe files on
-// start. The log names "rp-s" (Real Protect Static) as the source and as
-// detection name "ti!" plus the first twelve hex digits of the SHA-256 of the
-// file itself - so NO malware family, but a reputation verdict on an
-// unknown file. Next to it stood "cert_rep": [] - empty.
+// A reputation-based antivirus scanner (McAfee Real Protect Static, not
+// Defender) has quarantined freshly built rldpack.exe files on start. The
+// detection named NO malware family: its name was derived from the SHA-256 of
+// the file itself, and the certificate reputation was empty - a verdict on an
+// unknown file.
 //
-// A bisection over eight build stages (empty console program, file writing,
-// rand_s, ChaCha20 including key splitting, SHA-256/512, Ed25519, full
-// source) found NO code feature that triggers the detection. The
-// trigger is not in the code but on the axis "who is this file".
+// Bisecting the source (from an empty console program up to the full tool)
+// found NO code feature that triggers the detection. The trigger is not in
+// the code but on the axis "who is this file".
 //
 // This resource fills the free half of that axis: the program says what it
 // is called, where it comes from and which version it is. A file without any
 // information is an anonymous binary, and an anonymous binary is exactly the
 // profile.
 //
-// THE PAID HALF IS STILL MISSING: a code signature. As long as "cert_rep" stays
-// empty, rldpack cannot build a reputation across versions - every build
-// has a new hash and is completely unknown again. A signed binary
-// carries its reputation through the certificate.
+// THE PAID HALF IS STILL MISSING: a code signature. Without one, rldpack
+// cannot build a reputation across versions - every build has a new hash and
+// is completely unknown again. A signed binary carries its reputation through
+// the certificate.
 //
-// AND THIS IS NOT PROVEN. The same day, the detection could no longer be
-// reproduced over fourteen further builds, so the effect of this resource
-// could not be measured. It is here because a tool handed to strangers
-// should carry its name - not because it has been proven to calm a scanner.
+// AND THIS IS NOT PROVEN. The detection could not be reproduced later, so the
+// effect of this resource could not be measured. It is here because a tool
+// handed to strangers should carry its name - not because it has been proven
+// to calm a scanner.
 
 #include <winver.h>
 
@@ -49,7 +47,7 @@ FILESUBTYPE    VFT2_UNKNOWN
 BEGIN
 	BLOCK "StringFileInfo"
 	BEGIN
-		BLOCK "040704b0"
+		BLOCK "040904b0"
 		BEGIN
 			VALUE "CompanyName",      "CTR Reload"
 			VALUE "FileDescription",  "rldpack - packer for .rldtrack track containers"
@@ -64,7 +62,8 @@ BEGIN
 	END
 	BLOCK "VarFileInfo"
 	BEGIN
-		// 0x0407 = German, 0x04b0 = Unicode. Matches the StringFileInfo block above.
-		VALUE "Translation", 0x0407, 0x04b0
+		// 0x0409 = English (United States), 0x04b0 = code page 1200 (Unicode).
+		// Matches the StringFileInfo block above.
+		VALUE "Translation", 0x0409, 0x04b0
 	END
 END

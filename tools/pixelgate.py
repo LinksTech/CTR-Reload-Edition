@@ -3,8 +3,8 @@
 
     python tools/pixelgate.py BEFORE AFTER [--tolerance 1]
 
-Since 2026-09-13 the picture of textured semi-transparency
-in PSX mode 0 is no longer bit-identical to the version before: the factor 0.5 arrives
+The picture of textured semi-transparency in PSX mode 0 is not
+bit-identical to the older two-pass form: the factor 0.5 arrives
 as an 8-bit fragment output (second blend source) instead of as a floating-point
 blend constant, and 0.3 % of the pixels deviate by exactly 1/255 in one
 channel. Both are approximations of the console's computation (B + F) / 2, neither
@@ -16,8 +16,8 @@ So that the picture gate still holds, it counts two things separately:
     finding. Return value 0 if there is none, otherwise 1.
 
 The hard gate (0 pixels) stays reachable: the run with --semi-two-pass
-draws the two-pass form, bit-identical to the earlier version; against it
-tolerance 0 is the default. Two screenshots can only be paired if both runs
+draws the two-pass form, bit-identical to the earlier version; compare
+against it with --tolerance 0 (the default is 1). Two screenshots can only be paired if both runs
 have the same line 'jumps to ... at vblank N' in the log (measurement anchor).
 """
 import sys

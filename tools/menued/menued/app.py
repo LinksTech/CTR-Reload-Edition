@@ -21,8 +21,8 @@ WHAT ONE CAN RELY ON IN THE SKETCH:
                    Its SIZES are those of the measurement, not those of the rows
                    currently in the file.
 
-The format has known the three keys anker, schrift and ausrichtung since
-2026-09-06 and this window sets them. If anker is missing in the file, it is
+The format knows the three keys anker, schrift and ausrichtung, and this
+window sets them. If anker is missing in the file, it is
 guessed from the position as before - the third lines in the sketch show where the
 answer flips.
 """

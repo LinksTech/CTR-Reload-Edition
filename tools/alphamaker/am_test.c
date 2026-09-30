@@ -3,7 +3,7 @@
 // Starts ctr_native.exe with --dev --autoload-track <file>. The game loads
 // the container like the NITRO-PIT row and jumps straight into the race (Arcade,
 // 1 player, 3 laps). After the end the page reads the run's log (--log
-// in %TEMP%) and says whether the race started.
+// in %TEMP%\CTR Reload Alpha-Maker) and says whether the race started.
 //
 // If the container is not in <game folder>/tracks, the game gets
 // --tracks-dir <folder> --settings-defaults: it then reads only this folder,
@@ -107,7 +107,7 @@ struct TestState {
     int exeMismatch;                // --version: other build or old version "CTR Native"
     wchar_t versionText[256];
     // Switch to the game next to the Alpha-Maker when the entered one comes from
-    // another package (2026-09-29: an old test.exe in the ini).
+    // another package (e.g. an old test.exe in the ini).
     int exeSwitchUsed;              // at most once per session, never back
     int exeStartup;                 // the check applies to the game from the ini at start
     int exeSwitchNote;              // the running check is the one after the switch
@@ -828,7 +828,7 @@ static int Test_SetContainer(HWND page, const wchar_t *path, int refill, int for
     return Test_EnsureInfo(page, force);
 }
 
-// Nav paths (2026-09-29): without them the game creates no opponent
+// Nav paths: without them the game creates no opponent
 // (BOTS_Driver_Init, BOTS.c:3112-3135), and --autopilot cannot convert the
 // seat. Both are stated before the start; "Auto drive" is then locked.
 static void Test_ApplyNav(void)
@@ -1036,8 +1036,7 @@ static int Test_VersionMatches(const wchar_t *line)
 // The entered game comes from another package: if there is another
 // ctr_native.exe next to the Alpha-Maker, switch to it once per session -
 // only for the game from the ini at start (Test_ExeApply otherwise sets
-// exeSwitchUsed)
-// and check again. Loop-free: exeSwitchUsed is set before the switch
+// exeSwitchUsed) - and check again. Loop-free: exeSwitchUsed is set before the switch
 // and never reset; if the neighbouring game does not fit either, the
 // current message stays. 1 = switched.
 static int Test_SwitchToNeighbour(HWND page)
@@ -1446,7 +1445,7 @@ static void Test_Analyze(DWORD code)
             Test_Between(race, L" container '", L"'", part, 512);
         swprintf(text, 768, L"The race started on '%ls'.", part);
         Test_AddMsg(AM_SEV_OK, text, race);
-        // ", bots N" since 2026-09-29; older games do not write it.
+        // ", bots N": older games do not write it.
         {
             const wchar_t *b = wcsstr(race, L", bots ");
             if (b) {

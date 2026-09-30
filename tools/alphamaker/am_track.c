@@ -81,7 +81,7 @@ enum { TRACK_PREVIEW_NONE = 0, TRACK_PREVIEW_WRITTEN, TRACK_PREVIEW_FAILED, TRAC
 enum {
     TRACK_STAGE_STARTED = 0,    // game running, track not chosen yet
     TRACK_STAGE_LOADING,        // "--autoload-track '<file>' jumps to level"
-    TRACK_STAGE_CAMERA,         // "<name>: recording one lap from ..."
+    TRACK_STAGE_CAMERA,         // "<name>: recording with the AI driver ..." / "... with the path camera ..."
     TRACK_STAGE_RECORDING       // "recording from a ..." / "<n> of <m> frames recorded"
 };
 #define TRACK_PREVIEW_FRAMES 150    // NATIVE_PREVIEW_FRAMES in the game
@@ -174,7 +174,7 @@ static const int g_trackChoiceCount[TRACK_C_COUNT] = {
     (int)(sizeof(g_trackAmbient) / sizeof(g_trackAmbient[0])),
 };
 static const wchar_t *const g_trackComboLabels[TRACK_C_COUNT] = { L"Reverb", L"Bots drive", L"Ambient sound" };
-// One sentence per field under "Advanced" (2026-09-29).
+// One sentence per field under "Advanced".
 static const wchar_t *const g_trackComboHelp[TRACK_C_COUNT] = {
     L"How much sounds echo on this track (caves echo more).",
     L"Opponent speed, taken from an original track.",
@@ -786,7 +786,7 @@ static void Track_ApplyMap(void)
         Track_SetLabel(g_track.mapValue, L"no - the menu and the race show no map (see the note)", AM_COL_NOTE, &g_track.mapColor);
 }
 
-// Row "Bot data" (2026-09-29) from @lev nav_paths, nav_points and
+// Row "Bot data" from @lev nav_paths, nav_points and
 // start_spots. Without a nav path the game creates no opponent; start positions
 // on the same point make karts start inside each other.
 static void Track_ApplyBots(void)
@@ -986,7 +986,7 @@ static int Track_ApplyLev(void)
     return changed;
 }
 
-// TIME TRIAL and BATTLE (2026-09-29): always grey in the Alpha-Maker, whatever
+// TIME TRIAL and BATTLE: always grey in the Alpha-Maker, whatever
 // data the track has, and never in the container - neither through track.txt
 // nor through a switch from the front end: Track_MakeArgs only takes
 // free, ticked boxes. rldpack on the command line stays as it is.
@@ -997,9 +997,8 @@ static int Track_ModeComingSoon(int mode)
     return wcscmp(g_trackModeWords[mode], L"time") == 0 || wcscmp(g_trackModeWords[mode], L"battle") == 0;
 }
 
-// The text for a mode with data: Race, Crystal and CTR are playable in Beta 0
-// (CTR since the decision of 2026-09-29 evening; until then
-// "Playable from Beta 1"). One text for all three; mode stays for later.
+// The text for a mode with data: Race, Crystal and CTR are playable in Beta 0.
+// One text for all three; mode stays for later.
 static const wchar_t *Track_ModeReady(int mode, int playable)
 {
     (void)mode;
@@ -1032,7 +1031,7 @@ static int Track_ApplyModes(void)
             note = m->reason[0] ? m->reason : L"This track has no data for this mode.";
         } else {
             // No colour of its own for "not playable yet" - blue read
-            // like an error (2026-09-29).
+            // like an error.
             enable = 1;
             note = Track_ModeReady(i, m->playable);
         }
@@ -1071,9 +1070,8 @@ static void Track_AddAdjustment(int mode)
 // Take over the modes from the run. The first time after loading, set the ticks from
 // track.txt; modes without data stay off and go into the notes.
 // If neither track.txt nor a switch names the modes (@value modes ... default),
-// the maker ticks every mode for which the track has the data
-// (2026-09-29: "detect correctly ... and set the mode flags correctly"); the
-// rldpack default "race" alone left a pure crystal track without a mode.
+// the maker ticks every mode for which the track has the data; the
+// rldpack default "race" alone would leave a pure crystal track without a mode.
 // Returns 1 if a tick had to be dropped.
 static int Track_TakeModes(void)
 {
@@ -1184,7 +1182,8 @@ static int Track_AddRunProblems(int exitCode, int ok)
         swprintf(t, 256, L"rldpack reports in format %d, but this Alpha-Maker reads format %d.",
                  j->protocol, AM_PROTOCOL);
         Am_MsgListAdd(g_track.msgs, AM_SEV_WARNING, t,
-                      L"Some results may be missing. rldpack and the Alpha-Maker should come from the same release.");
+                      L"Some results may be missing. rldpack is built into this Alpha-Maker, so both should always "
+                      L"match - this build looks inconsistent.");
     }
     if (!j->resultSeen) {
         swprintf(t, 256, L"rldpack stopped without a result (exit code %d).", exitCode);
@@ -1300,7 +1299,7 @@ static int Track_MakeArgs(struct TrackArgs *a, int check, const wchar_t *out)
     if (check)
         Track_ArgsAdd(a, L"--check");
     // Build only with known modes: without --modes rldpack would take those from
-    // track.txt, Time Trial and Battle included (review, 2026-09-29).
+    // track.txt, Time Trial and Battle included.
     if (!check && (!g_track.valuesKnown || !g_track.modesKnown))
         return 0;
     if (!g_track.valuesKnown) {
@@ -1888,7 +1887,7 @@ static int Track_Preview(HWND page, int afterBuild)
 //   "[CTR Preview] <name>: recording with the AI driver"  AI starts driving
 //   "[CTR Preview] <name>: no nav path - ... recording with the path camera"
 //                                                      path camera stands
-//   (until 2026-09-29 at night: "<name>: recording one lap from")
+//   (older games: "<name>: recording one lap from")
 //   "[CTR Preview] recording from a <w>x<h> main target"  first frame
 //   "[CTR Preview] <n> of <m> frames recorded"         progress
 static void Track_PreviewLine(const wchar_t *line)
@@ -2345,7 +2344,7 @@ static int Track_AutoMusic(HWND page, const wchar_t *arg)
         return AM_AUTO_FAIL;
     }
     if (!IsWindowEnabled(g_track.music)) {
-        Am_AutoLog(L"  music: cannot be changed - no music file (.sca) in the folder");
+        Am_AutoLog(L"  music: cannot be changed - no music file (.sca or .sndb) in the folder");
         return AM_AUTO_FAIL;
     }
     Track_SetCheck(g_track.music, on);
@@ -2498,7 +2497,7 @@ static void Track_Layout(HWND page, int w, int h)
     Am_CardAdd(page, &card, L"Track");
 
     // Bottom left: music, below it "Advanced" (reverb, bots, ambient sound),
-    // collapsed by default (2026-09-29). Per field the label,
+    // collapsed by default. Per field the label,
     // an explaining sentence, then the field.
     card.top = card.bottom + gap;
     card.bottom = bottom;

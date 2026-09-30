@@ -79,12 +79,6 @@ def _namen(block: str) -> list:
     return re.findall(r'\{\s*"([^"]+)"', block)
 
 
-# The search itself is in ort.py: a packed exe does not find the tree
-# through __file__, and where it lies is a question of its own.
-def suche_wurzel(start: Path):
-    return ort.suche_aufwaerts(start)
-
-
 def lade(wurzel: Path = None) -> Tabellen:
     t = Tabellen()
 

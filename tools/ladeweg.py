@@ -524,24 +524,6 @@ def mem_need(lev):
     return out
 
 
-def model_pages(lev, written):
-    """Which texture pages the MODELS of the LEV name - the rest of the VRM
-    does not automatically belong to nobody."""
-    n = len(lev)
-    pages = {}
-    total = 0
-    if n < BODY + 0x200:
-        return pages, 0, 0
-    numModels = u32(lev, BODY + 0x14)
-    arr = u32(lev, BODY + 0x18)
-    if numModels == 0 or numModels > 4096 or BODY + arr + numModels * 4 > n:
-        return pages, 0, 0
-    # The path from a model to its TextureLayouts is deeper than the
-    # quadblock side; here only the LEV's IconGroup table is read,
-    # which lists EVERY texture of the track - levTexLookup at 0x3c.
-    return pages, numModels, arr
-
-
 def texlookup_pages(lev, written):
     """levTexLookup at Level+0x3c: numIcon, firstIcon, numIconGroup,
     firstIconGroupPtr. That is the complete texture list of the LEV -
