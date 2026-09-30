@@ -1,8 +1,9 @@
 #!/bin/sh
 # CTR Reload Edition - pre-commit: everything in this repository is English.
 #
-# Checks the staged files with tools/lang_check.py (German words, umlauts,
-# person names, internal references, local paths, day.month.year dates).
+# Checks the staged files and their names, renames included, with
+# tools/lang_check.py (German words, umlauts, person names, internal
+# references, local paths, day.month.year dates).
 # Install once per clone:  git config core.hooksPath tools/git-hooks
 
 root=$(git rev-parse --show-toplevel) || exit 1

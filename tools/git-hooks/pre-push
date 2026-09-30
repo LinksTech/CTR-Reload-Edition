@@ -72,7 +72,7 @@ while read local_ref local_sha remote_ref remote_sha; do
 		if (lower ~ /^docs\/assets\// && !banner) print "BAD\t" path "\tonly .svg drawings belong in docs/assets"
 		if (!sdl && !banner) {
 			p = "/" lower
-			if (p ~ /\/(assets|tracks|tracks_archiv|testdaten|memcards|debug|logs|dist|concept|characters|vorschau)\//) print "BAD\t" path "\tforbidden folder"
+			if (p ~ /\/(assets|tracks|tracks_archive|testdata|memcards|debug|logs|dist|concept|characters|vorschau)\//) print "BAD\t" path "\tforbidden folder"
 			if (p ~ /\/(messung-|baseline-)/ || p ~ /\/(test-bats|build|out)\// || p ~ /\/build-[^\/]*\//) print "BAD\t" path "\tmeasurement, reference or build folder"
 			if (base ~ /\.(png|jpg|jpeg|gif|webp|ico|icns|wav|ogg|mp3|flac|mp4|avi)$/) print "BAD\t" path "\tpicture/sound outside externals/SDL"
 		}

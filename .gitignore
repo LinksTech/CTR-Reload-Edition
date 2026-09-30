@@ -48,13 +48,13 @@ assets/
 *.sndb
 *.cseq
 tracks/
-tracks_archiv/
+tracks_archive/
 tracks-*/
 characters/
 vorschau/
 track-ids.tsv
 cups.txt
-testdaten/
+testdata/
 
 # --- Patches of the game ----------------------------------------------------
 *.xdelta
@@ -128,3 +128,6 @@ __pycache__/
 .cache/
 *.swp
 *~
+# Person names and local folders that tools/lang_check.py refuses:
+# a local list, never committed.
+/tools/lang_check_names.local.txt
