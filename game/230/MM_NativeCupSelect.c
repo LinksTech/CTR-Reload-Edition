@@ -162,7 +162,7 @@ void MM_NativeCupSelect_Hook(void)
 }
 
 // After MM_ToggleRows_Difficulty, which sets the cup lock anew every frame
-// (from NativeMenuLock_Apply and MM_NativeMode_PageTick). By design: in a
+// (from NativeMenuLock_Apply). By design: in a
 // custom cup all three are open, as in the NITRO RACE single race.
 void MM_NativeCup_OpenDifficulty(void)
 {

@@ -272,7 +272,6 @@
 #include "230/R230.c"
 #include "230/D230.c"
 #include "230/MM_NativeMenu.c"
-#include "native_menudecl.c"
 #include "230/MM_Battle.c"
 #include "230/MM_MenuFlow.c"
 #include "230/MM_Title.c"

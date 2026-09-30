@@ -15,6 +15,11 @@ static char *RECTMENU_String(s16 index)
 
 	return (native != NULL) ? native : sdata->lngStrings[index];
 }
+
+// Defined in game/native_menuscreen.c, which comes later in the unity build:
+// the reason line below a grey row, and the menu hooks of every menu frame.
+void NativeMenuReason_NoteDrawn(const struct RectMenu *box, const RECT *frame);
+void NativeMenuLock_Tick(void);
 #else
 #define RECTMENU_String(index) (sdata->lngStrings[index])
 #endif
@@ -825,14 +830,12 @@ LAB_80045e94:
 	borders.x = local_40 + posX + posX_prev - RM_S(s_style->frameOffsetX);
 	RECTMENU_DrawFullRect(menu, &borders);
 
-	// WHAT THIS BOX REALLY DREW.
-	//
-	// Here and nowhere else: borders is the finished rectangle, with the
-	// width from RECTMENU_GetWidth and the height from RECTMENU_GetHeight. Both
-	// are computed and appear in no declaration - and exactly those are what an
-	// editor must see. For every box the format does not know, the
-	// call does nothing.
-	NativeMenuDecl_NoteDrawn(menu, &borders);
+#ifdef CTR_NATIVE
+	// WHAT THIS BOX REALLY DREW. borders is the finished rectangle, with the
+	// width from RECTMENU_GetWidth and the height from RECTMENU_GetHeight; the
+	// reason line below a grey row is placed against it.
+	NativeMenuReason_NoteDrawn(menu, &borders);
+#endif
 }
 
 
@@ -1051,14 +1054,11 @@ void RECTMENU_ProcessState()
 	s16 width;
 	int state;
 
-	// ON THE TICK, NEVER IN THE MIDDLE OF DRAWING.
-	//
-	// Up here, before anything about the boxes is read: a reload
-	// swaps rows and pointers, and that must not happen between two rows
-	// of the same frame. Without the menu reload on (g_cfg_menuReload) the
-	// call only runs the menu hooks (NativeMenuLock_Tick) and never looks at
-	// the disk.
-	NativeMenuDecl_Tick();
+#ifdef CTR_NATIVE
+	// THE MENU HOOKS, first in every menu frame and before the proc of the
+	// active box - up here, before anything about the boxes is read.
+	NativeMenuLock_Tick();
+#endif
 
 	// check for curr box
 	currMenu = sdata->ptrDesiredMenu;
@@ -1156,25 +1156,6 @@ void RECTMENU_ProcessState()
 #ifdef CTR_NATIVE
 			g_decalFontScale = savedScale;
 			s_style = savedStyle;
-#endif
-
-#ifdef CTR_NATIVE
-			// THE ERROR IS SHOWN IN THE PICTURE, NOT ONLY IN THE LOG.
-			//
-			// Whoever edits the file would otherwise see a menu that does not
-			// change, and take that for a bug in the game. Only with the
-			// menu reload on: without it there is no reload, hence
-			// no load error either, and the picture stays untouched.
-			if (g_cfg_menuReload)
-			{
-				const char *failure = NativeMenuDecl_LastError();
-
-				if (failure != NULL)
-				{
-					DecalFont_DrawLine("MENU NOT LOADED", 8, 8, FONT_SMALL, ORANGE_RED);
-					DecalFont_DrawLine((char *)failure, 8, 22, FONT_SMALL, ORANGE_RED);
-				}
-			}
 #endif
 		}
 	}

@@ -341,7 +341,7 @@ int NativeMenuHighScore_RestBox(const int *box, int *outRest, int *outOffset)
 //   initial state, including the procs - on every return from a race.
 // The main menu box therefore gets, instead of MM_MenuProc_Main, a proc that
 // calls MM_MenuProc_Main and locks AFTERWARDS. It is hooked in anew every frame,
-// at the very top of RECTMENU_ProcessState (above NativeMenuDecl_Tick), so before the
+// at the very top of RECTMENU_ProcessState (NativeMenuLock_Tick), so before the
 // first call after every reset.
 //
 // THE SECOND WAY PAST THE LOCK. RECTMENU_ProcessInput checks the bit on
@@ -520,8 +520,8 @@ internal void NativeMenuRaceType_Apply(void)
 	s_nativeRaceTypeRows[NATIVE_RACE_TYPE_ROW_BATTLE].stringIndex |= MENU_ROW_LOCKED;
 	s_nativeRaceTypeRows[NATIVE_RACE_TYPE_ROW_NITRO_PIT].stringIndex = MM_NATIVE_LNG_NITRO_PIT;
 
-	// The box now only comes through ARCADE; another path (a menu
-	// declaration loaded by the menu reload) does not get NITRO-PIT.
+	// The box now only comes through ARCADE; any other path does not get
+	// NITRO-PIT.
 	if (!arcade)
 	{
 		s_nativeRaceTypeRows[NATIVE_RACE_TYPE_ROW_NITRO_PIT].stringIndex |= MENU_ROW_LOCKED;
@@ -531,11 +531,10 @@ internal void NativeMenuRaceType_Apply(void)
 	menu->rows = &s_nativeRaceTypeRows[0];
 }
 
-// THE REASON BELOW THE BOX. From RECTMENU_DrawSelf through
-// NativeMenuDecl_NoteDrawn (RECTMENU.c:876), with the finished frame: one line of
-// FONT_SMALL, centred below the frame and its shadow (6), in the lock style of the
-// grey rows (0x17, RECTMENU.c:96). Only for the open box on whose
-// row the cursor stands. Below the open NITRO-PIT box (frame to 199,
+// THE REASON BELOW THE BOX. From the end of RECTMENU_DrawSelf (RECTMENU.c),
+// with the finished frame: one line of FONT_SMALL, centred below the frame and
+// its shadow (6), in the lock style of the grey rows (0x17, RECTMENU.c:96).
+// Only for the open box on whose row the cursor stands. Below the open NITRO-PIT box (frame to 199,
 // shadow to 205) it lies at 207..214. In widescreen it holds the right
 // edge like the box (native_uidecl.c, "menu-reason-line").
 #define NATIVE_MENU_REASON_GAP 8
@@ -603,8 +602,6 @@ int NativeMenuReason_OnScreen(void)
 // choice it clears the mode bits, sets ONLY_DRAW_TITLE (MM_MenuFlow.c:139-145) and
 // would then find no branch. NativeMenuMain_Answer answers both, and
 // MM_MenuProc_Main never sees them.
-//
-// With the menu reload on the list can come from the menu file; that one stays.
 global_variable struct MenuRow s_nativeMainRows[] = {
     {LNG_ADVENTURE, 0, 1, 0, 0},
     {LNG_TIME_TRIAL, 0, 2, 1, 1},
@@ -1101,8 +1098,7 @@ internal void NativeMenuLock_Apply(void)
 	NativeMenuLock_RowsWithString(&D230.rowsMainMenuWithScrapbook[0], LNG_VS);
 	NativeMenuLock_RowsWithString(&D230.rowsMainMenuWithScrapbook[0], LNG_BATTLE);
 
-	// The list the box is currently showing - with the menu reload on that can
-	// be one from the menu file.
+	// The list the box is currently showing.
 	NativeMenuLock_RowsWithString(D230.menuMainMenu.rows, LNG_VS);
 	NativeMenuLock_RowsWithString(D230.menuMainMenu.rows, LNG_BATTLE);
 
@@ -1341,8 +1337,8 @@ internal void NativeMenuPit_Return(void)
 	Platform_Log("[CTR Menu] back to NITRO-PIT - ARCADE -> NITRO-PIT, cursor on %s\n", (chosen == MM_NATIVE_CHOSEN_CTR) ? "CTR" : "CRYSTAL");
 }
 
-// From RECTMENU_ProcessState through NativeMenuDecl_Tick, in every frame before the
-// proc of the active box.
+// From the top of RECTMENU_ProcessState, in every frame before the proc of the
+// active box.
 void NativeMenuLock_Tick(void)
 {
 	s_nativeMenuReasonDrawn = 0;

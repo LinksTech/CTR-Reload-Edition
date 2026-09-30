@@ -5,14 +5,6 @@
 // Defined in game/DebugMenu.c, which the unity build includes after this file.
 int DebugMenu_IsOpen(void);
 
-// Is the error banner of the menu reload in the picture? Only then may this
-// row claim anything - otherwise its rectangle would lie, in every frame, top left
-// over whatever else stands there.
-internal int NativeUiDecl_MenuReloadFailed(void)
-{
-	return g_cfg_menuReload && (NativeMenuDecl_LastError() != NULL);
-}
-
 // Which player menu screen is the active menu? The game says it itself:
 // sdata->ptrActiveMenu points at the box whose procedure draws the screen
 // (MM_TrackSelect.c:453, MM_Characters.c:660/666). In addition a
@@ -260,14 +252,6 @@ int g_uiDeclHits = 0;
 // element has changed what it does, and one number for both would hide that.
 int g_uiDeclPrimHits = 0;
 
-// Counted apart from g_uiDeclHits, because it is a different statement. The
-// table above describes the fixed inventory of a screen; a
-// menu declaration describes a box that a text file places and the
-// next version of the same file places differently again. One number for both
-// would hide that a file has just taken over what the
-// thirds rule used to guess.
-int g_uiDeclMenuHits = 0;
-
 int g_uiDeclMisses = 0;
 int g_uiDeclCollisions = 0;
 int g_uiFloorClamps = 0;
@@ -390,20 +374,6 @@ global_variable const struct NativeUiDecl g_nativeUiDecls[] = {
     // picture, otherwise the rectangle would lie across the standings of the race HUD.
     {"arcade-results-driver-row", 0, 0, 0, -1, 0, -100, 93, 580, 123, (int)CTR_UI_ANCHOR_CENTRE, NATIVE_UI_DECL_INSIDE,
      NativeUiDecl_ArcadeResultsOnScreen, 0},
-
-    // THE ERROR BANNER OF THE MENU RELOAD.
-    //
-    // Two lines of text top left, as soon as the menu reload is on and the file
-    // could not be loaded. Without this row the text falls apart into
-    // groups that get three different anchors depending on the third, and at
-    // 43:18 the right half flies out of the picture - the same class as the
-    // driver row of the results screen.
-    //
-    // Left-anchored, because an error message sticks to the screen edge and
-    // does not wander along. The rectangle covers the two lines at y 8 and 22, with
-    // air below for the descenders.
-    {"menu-reload-error", -1, 0, 0, -1, 0, 0, 0, 512, 40, (int)CTR_UI_ANCHOR_LEFT, NATIVE_UI_DECL_INSIDE,
-     NativeUiDecl_MenuReloadFailed, 0},
 
     // THE TITLE OF THE DRIVER SELECT FOR THREE PLAYERS BELONGS TO ITS GRID.
     //

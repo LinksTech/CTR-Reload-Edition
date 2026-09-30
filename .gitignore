@@ -93,7 +93,6 @@ messung-*/
 baseline-*/
 test-bats/
 perf-*/
-menus/*.ergebnis
 
 # --- Build output --------------------------------------------------------
 /build/
@@ -102,8 +101,6 @@ menus/*.ergebnis
 /out/
 /dist/
 /dist-build.log
-/tools/menued/build/
-/tools/menued/dist/
 *.exe
 *.dll
 *.o

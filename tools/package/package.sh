@@ -104,7 +104,7 @@ echo "== Source code (GPL) by allow list"
 git archive --format=zip --prefix="$NAME-source/" -o "$OUT/$NAME-source.zip" HEAD -- \
 	CMakeLists.txt CMakePresets.json build-msvc.bat main.c LICENSE THIRD_PARTY_NOTICES.md README.md BUILDING.md \
 	.gitignore .clang-format .clang-tidy .clangd \
-	cmake game include platform tools menus metadata externals/SDL
+	cmake game include platform tools metadata externals/SDL
 
 echo "== Check for forbidden content"
 python - "$OUT" <<'PY' || { echo "ABORT: forbidden content, no package"; exit 5; }

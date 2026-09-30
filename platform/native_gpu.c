@@ -2727,43 +2727,20 @@ internal const char *NativeGpu_UiAnchorName(int anchor)
 // Elements come first, then the primitives a row claimed on its own - those are
 // no longer elements at all and would otherwise be missing from a table that
 // claims to list the frame.
-// ONE LINE, TWO SINKS.
-//
-// The log is read by a human, the result file by the editor. Both get
-// the same line from the same hand - a second printer would be a second
-// place where the same fact stands, and one of the two falls behind.
-internal void NativeGpu_EmitUILine(FILE *out, const char *line)
+internal void NativeGpu_EmitUILine(const char *line)
 {
-	if (out != NULL)
-	{
-		fputs(line, out);
-		fputc('\n', out);
-		return;
-	}
-
 	Platform_Log("%s\n", line);
 }
 
 #define NATIVE_GPU_UI_LINE 256
 
-// The name of a group. First the declaration table of the UI, then the
-// menu declaration - a menu box stands there with its own name, instead of
-// as a nameless rectangle that has to be recalculated.
-internal const char *NativeGpu_UiGroupName(const struct NativeUiDecl *d, const int *authoredBox)
+// The name of a group: its row in the declaration table of the UI, or "-".
+internal const char *NativeGpu_UiGroupName(const struct NativeUiDecl *d)
 {
-	const char *name;
-
-	if (d != NULL)
-	{
-		return d->name;
-	}
-
-	name = NativeMenuDecl_NameForDrawnBox(authoredBox);
-
-	return (name != NULL) ? name : "-";
+	return (d != NULL) ? d->name : "-";
 }
 
-internal void NativeGpu_PrintUIDecisions(const char *why, FILE *out)
+internal void NativeGpu_PrintUIDecisions(const char *why)
 {
 	char line[NATIVE_GPU_UI_LINE];
 	int aspectW = 4;
@@ -2778,15 +2755,14 @@ internal void NativeGpu_PrintUIDecisions(const char *why, FILE *out)
 	snprintf(line, sizeof(line), "[CTR UIElem] %s vblank=%d aspect=%d:%d canvas=%dx%d wide=%d shift=%d touchgap=%d", why,
 	         Platform_GetVBlankCount(), aspectW, aspectH, s_gpu.uiView.virtualWidth, s_gpu.uiView.virtualHeight,
 	         s_gpu.uiView.canvasWidth, s_gpu.uiView.canvasWidth - s_gpu.uiView.virtualWidth, NATIVE_UI_TOUCH_GAP);
-	NativeGpu_EmitUILine(out, line);
+	NativeGpu_EmitUILine(line);
 
 	snprintf(line, sizeof(line),
-	         "[CTR UIElem] elements=%d prims=%d declPrim=%d declElem=%d/%d declMenu=%d collisions=%d floor=%d/%dpx unsettled=%d "
+	         "[CTR UIElem] elements=%d prims=%d declPrim=%d declElem=%d/%d collisions=%d floor=%d/%dpx unsettled=%d "
 	         "dropped=%d/%d",
-	         s_gpu.uiGroupCount, s_gpu.uiPrimCount, g_uiDeclPrimHits, g_uiDeclHits,
-	         g_uiDeclHits + g_uiDeclMenuHits + g_uiDeclMisses, g_uiDeclMenuHits, g_uiDeclCollisions, g_uiFloorClamps,
-	         g_uiFloorMaxShift, g_uiFloorUnsettled, g_uiPrimsDropped, g_uiGroupsDropped);
-	NativeGpu_EmitUILine(out, line);
+	         s_gpu.uiGroupCount, s_gpu.uiPrimCount, g_uiDeclPrimHits, g_uiDeclHits, g_uiDeclHits + g_uiDeclMisses,
+	         g_uiDeclCollisions, g_uiFloorClamps, g_uiFloorMaxShift, g_uiFloorUnsettled, g_uiPrimsDropped, g_uiGroupsDropped);
+	NativeGpu_EmitUILine(line);
 
 	// The menu branch: which screen anchor applied and where each
 	// driver window went. Only in the menu, so that a race table looks as before.
@@ -2796,7 +2772,7 @@ internal void NativeGpu_PrintUIDecisions(const char *why, FILE *out)
 
 		snprintf(line, sizeof(line), "[CTR UIElem] menu rule=edge screen=%s zone=%d..%d", (s_uiMenu.policyName != NULL) ? s_uiMenu.policyName : "-",
 		         s_gpu.uiView.zoneLeft, s_gpu.uiView.zoneLeft + s_gpu.uiView.zoneWidth - 1);
-		NativeGpu_EmitUILine(out, line);
+		NativeGpu_EmitUILine(line);
 
 		for (w = 0; w < 4; w++)
 		{
@@ -2808,7 +2784,7 @@ internal void NativeGpu_PrintUIDecisions(const char *why, FILE *out)
 			snprintf(line, sizeof(line), "[CTR UIElem] wn %d frame=%4d,%3d..%4d,%3d name=%s%4d..%4d shift=%+d", w, s_uiMenu.winRegion[w][0],
 			         s_uiMenu.winRegion[w][1], s_uiMenu.winRegion[w][2], s_uiMenu.winRegion[w][3], s_uiMenu.winHasBand[w] ? "" : "-",
 			         s_uiMenu.winHasBand[w] ? s_uiMenu.winBand[w][0] : 0, s_uiMenu.winHasBand[w] ? s_uiMenu.winBand[w][2] : 0, s_uiMenu.winShift[w]);
-			NativeGpu_EmitUILine(out, line);
+			NativeGpu_EmitUILine(line);
 		}
 	}
 
@@ -2819,11 +2795,11 @@ internal void NativeGpu_PrintUIDecisions(const char *why, FILE *out)
 
 		snprintf(line, sizeof(line),
 		         "[CTR UIElem] el %3d slot=%2d anchor=%-6s decl=%-22s before=%4d,%3d..%4d,%3d shift=%+3d after=%4d,%3d..%4d,%3d", g,
-		         s_gpu.uiGroupSlot[g], NativeGpu_UiAnchorName(anchor), NativeGpu_UiGroupName(d, s_gpu.uiGroups[g]),
+		         s_gpu.uiGroupSlot[g], NativeGpu_UiAnchorName(anchor), NativeGpu_UiGroupName(d),
 		         s_gpu.uiGroups[g][0], s_gpu.uiGroups[g][1], s_gpu.uiGroups[g][2], s_gpu.uiGroups[g][3], s_gpu.uiGroupShift[g],
 		         s_gpu.uiGroupMapped[g][0] + s_gpu.uiGroupShift[g], s_gpu.uiGroupMapped[g][1],
 		         s_gpu.uiGroupMapped[g][2] + s_gpu.uiGroupShift[g], s_gpu.uiGroupMapped[g][3]);
-		NativeGpu_EmitUILine(out, line);
+		NativeGpu_EmitUILine(line);
 	}
 
 	// The union of what each row claimed, and how many primitives that was. The
@@ -2870,40 +2846,19 @@ internal void NativeGpu_PrintUIDecisions(const char *why, FILE *out)
 		         "[CTR UIElem] pr %3d prims=%-3d anchor=%-6s decl=%-22s before=%4d,%3d..%4d,%3d shift=%+3d after=%4d,%3d..%4d,%3d", row,
 		         claimed, NativeGpu_UiAnchorName(d->anchor), d->name, box[0], box[1], box[2], box[3], 0,
 		         CTR_UI_MapX(&s_gpu.uiView, box[0], d->anchor), box[1], CTR_UI_MapX(&s_gpu.uiView, box[2], d->anchor), box[3]);
-		NativeGpu_EmitUILine(out, line);
+		NativeGpu_EmitUILine(line);
 	}
 }
 
 internal void NativeGpu_ReportUIElements(void)
 {
-	// THE RESULT FILE, ONCE PER RELOAD.
-	//
-	// Here and not in the load path: what a box REALLY drew is only
-	// fixed when the frame is finished. The same table that --ui-elements
-	// writes into the log, with the same names - the editor reads what the human
-	// reads.
-	if (NativeMenuDecl_TakeResultRequest())
-	{
-		FILE *out = fopen(NativeMenuDecl_ResultPath(), "w");
-
-		if (out != NULL)
-		{
-			NativeGpu_PrintUIDecisions("reloaded", out);
-			fclose(out);
-		}
-		else
-		{
-			Platform_LogWarn("[CTR Menu] '%s' cannot be written\n", NativeMenuDecl_ResultPath());
-		}
-	}
-
 	if ((g_cfg_uiElementsAt <= 0) || s_uiElementsPrinted || (Platform_GetVBlankCount() < g_cfg_uiElementsAt))
 	{
 		return;
 	}
 
 	s_uiElementsPrinted = 1;
-	NativeGpu_PrintUIDecisions("once", NULL);
+	NativeGpu_PrintUIDecisions("once");
 }
 
 // How many tables the watch may print before it stops.
@@ -3037,12 +2992,12 @@ internal void NativeGpu_WatchUIDecisions(void)
 
 	if (s_printed == NATIVE_UI_WATCH_MAX)
 	{
-		NativeGpu_PrintUIDecisions("changed (last)", NULL);
+		NativeGpu_PrintUIDecisions("changed (last)");
 		Platform_Log("[CTR UIElem] watch stops here - %d changes seen. Anything after this is not reported.\n", NATIVE_UI_WATCH_MAX);
 		return;
 	}
 
-	NativeGpu_PrintUIDecisions(s_printed == 1 ? "first" : "changed", NULL);
+	NativeGpu_PrintUIDecisions(s_printed == 1 ? "first" : "changed");
 }
 
 // WHAT AN ELEMENT IS IN A MENU.
@@ -3197,9 +3152,6 @@ void NativeGpu_ApplyUIMapping(void)
 
 	if (s_gpu.uiPrimCount == 0)
 	{
-		// This exit also consumes the frame: otherwise the report of the
-		// drawer would stay and would apply in the next pass.
-		NativeMenuDecl_FrameConsumed();
 		return;
 	}
 
@@ -3208,7 +3160,6 @@ void NativeGpu_ApplyUIMapping(void)
 	g_uiDeclMisses = 0;
 	g_uiDeclCollisions = 0;
 	g_uiDeclPrimHits = 0;
-	g_uiDeclMenuHits = 0;
 
 	// ---- the player menus: what applies to the whole pass ----
 	//
@@ -3550,82 +3501,58 @@ void NativeGpu_ApplyUIMapping(void)
 			}
 			else
 			{
-				// THE SECOND SOURCE OF A DECLARATION, AND IT REPLACES THE GUESSING.
-				//
-				// A menu box cannot stand in g_nativeUiDecls: a
-				// line there carries a fixed rectangle or a HUD slot,
-				// and the rectangle of a box is computed from font, line count
-				// and style - it changes with every line
-				// somebody writes into the text file, and during the
-				// fade-in in every frame. So it is asked for instead of
-				// copied.
-				//
-				// After the table and before the thirds rule: a hand-set
-				// line may override a menu, but a declared anchor
-				// stands above a guessed one. If the table hits, nothing is
-				// asked here at all.
-				const int fromMenu = NativeMenuDecl_AnchorForBox(s_gpu.uiGroups[g]);
+				g_uiDeclMisses++;
 
-				if (fromMenu >= 0)
+				if (s_uiMenu.active && (s_uiMenu.policy >= 0))
 				{
-					anchor = fromMenu;
-					g_uiDeclMenuHits++;
+					// The screen dictates the anchor (native_uidecl.c,
+					// g_nativeUiMenuPolicies), and the flight over the edge
+					// is added.
+					anchor = s_uiMenu.policy;
+					transit = CTR_UI_TransitShift(&s_gpu.uiView, CTR_UI_AnchorShift(&s_gpu.uiView, anchor), s_gpu.uiGroups[g][0],
+					                              s_gpu.uiGroups[g][2]) -
+					          CTR_UI_AnchorShift(&s_gpu.uiView, anchor);
+					g_uiMenuPolicyGroups++;
 				}
-				else
+				else if (s_uiMenu.active)
 				{
-					g_uiDeclMisses++;
+					// The edge rule of the menus (native_view.c) - on the
+					// rest position when the high score is paging
+					// (native_menuscreen.c), and then the page glides
+					// by its offset times W/512; otherwise on the position in
+					// this frame.
+					//
+					// In both cases plus the transition over the
+					// 4:3 edge that the zone makes necessary
+					// (CTR_UI_MenuEdgeTransit): what is outside in 4:3
+					// stays outside on the canvas. While paging computed on
+					// the rest position, so that the band ends of a
+					// page glide with it. Without a zone it is 0.
+					int rest[4];
+					int pageOffset = 0;
+					int edge;
 
-					if (s_uiMenu.active && (s_uiMenu.policy >= 0))
+					if (NativeMenuHighScore_RestBox(s_gpu.uiGroups[g], rest, &pageOffset))
 					{
-						// The screen dictates the anchor (native_uidecl.c,
-						// g_nativeUiMenuPolicies), and the flight over the edge
-						// is added.
-						anchor = s_uiMenu.policy;
-						transit = CTR_UI_TransitShift(&s_gpu.uiView, CTR_UI_AnchorShift(&s_gpu.uiView, anchor), s_gpu.uiGroups[g][0],
-						                              s_gpu.uiGroups[g][2]) -
-						          CTR_UI_AnchorShift(&s_gpu.uiView, anchor);
-						g_uiMenuPolicyGroups++;
+						anchor = CTR_UI_AnchorForBoxEdge(rest[0], rest[2], s_gpu.uiView.virtualWidth);
+						edge = CTR_UI_MenuEdgeTransit(&s_gpu.uiView, anchor, rest[0], rest[2]);
+						transit = (int)(((s64)pageOffset * (s_gpu.uiView.canvasWidth - s_gpu.uiView.virtualWidth)) / s_gpu.uiView.virtualWidth) + edge;
 					}
-					else if (s_uiMenu.active)
+					else
 					{
-						// The edge rule of the menus (native_view.c) - on the
-						// rest position when the high score is paging
-						// (native_menuscreen.c), and then the page glides
-						// by its offset times W/512; otherwise on the position in
-						// this frame.
-						//
-						// In both cases plus the transition over the
-						// 4:3 edge that the zone makes necessary
-						// (CTR_UI_MenuEdgeTransit): what is outside in 4:3
-						// stays outside on the canvas. While paging computed on
-						// the rest position, so that the band ends of a
-						// page glide with it. Without a zone it is 0.
-						int rest[4];
-						int pageOffset = 0;
-						int edge;
+						anchor = CTR_UI_AnchorForBoxEdge(s_gpu.uiGroups[g][0], s_gpu.uiGroups[g][2], s_gpu.uiView.virtualWidth);
+						edge = CTR_UI_MenuEdgeTransit(&s_gpu.uiView, anchor, s_gpu.uiGroups[g][0], s_gpu.uiGroups[g][2]);
+						transit = edge;
+					}
 
-						if (NativeMenuHighScore_RestBox(s_gpu.uiGroups[g], rest, &pageOffset))
-						{
-							anchor = CTR_UI_AnchorForBoxEdge(rest[0], rest[2], s_gpu.uiView.virtualWidth);
-							edge = CTR_UI_MenuEdgeTransit(&s_gpu.uiView, anchor, rest[0], rest[2]);
-							transit = (int)(((s64)pageOffset * (s_gpu.uiView.canvasWidth - s_gpu.uiView.virtualWidth)) / s_gpu.uiView.virtualWidth) + edge;
-						}
-						else
-						{
-							anchor = CTR_UI_AnchorForBoxEdge(s_gpu.uiGroups[g][0], s_gpu.uiGroups[g][2], s_gpu.uiView.virtualWidth);
-							edge = CTR_UI_MenuEdgeTransit(&s_gpu.uiView, anchor, s_gpu.uiGroups[g][0], s_gpu.uiGroups[g][2]);
-							transit = edge;
-						}
-
-						if (edge != 0)
-						{
-							g_uiMenuEdgeTransits++;
-						}
-					}
-					else if (!g_cfg_uiAnchorLegacy)
+					if (edge != 0)
 					{
-						anchor = CTR_UI_AnchorForBox(s_gpu.uiGroups[g][0], s_gpu.uiGroups[g][2], s_gpu.uiView.virtualWidth);
+						g_uiMenuEdgeTransits++;
 					}
+				}
+				else if (!g_cfg_uiAnchorLegacy)
+				{
+					anchor = CTR_UI_AnchorForBox(s_gpu.uiGroups[g][0], s_gpu.uiGroups[g][2], s_gpu.uiView.virtualWidth);
 				}
 			}
 		}
@@ -3743,11 +3670,6 @@ void NativeGpu_ApplyUIMapping(void)
 
 	NativeGpu_ReportUIElements();
 	NativeGpu_WatchUIDecisions();
-
-	// The reported menu rectangles drop out together with the primitives. They
-	// apply to exactly one pass - a box that is no longer drawn
-	// may claim nothing in the next frame.
-	NativeMenuDecl_FrameConsumed();
 
 	s_gpu.uiPrimCount = 0;
 	s_gpu.uiGroupCount = 0;

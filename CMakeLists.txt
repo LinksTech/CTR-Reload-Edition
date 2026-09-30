@@ -262,28 +262,6 @@ add_custom_command(
 add_custom_target(ctr_native_shaders DEPENDS ${CTR_SPV_HEADER})
 add_dependencies(ctr_native ctr_native_shaders)
 
-# The built-in stock of the menu declaration, generated from menus/nitro-pit.menu.
-# That way the declaration exists exactly once: the game reads the file if it
-# exists, and otherwise falls back to the same text.
-set(CTR_MENU_SOURCE ${CMAKE_CURRENT_SOURCE_DIR}/menus/nitro-pit.menu)
-set(CTR_MENU_HEADER ${CMAKE_BINARY_DIR}/generated/native_menudefault.h)
-
-add_custom_command(
-    OUTPUT ${CTR_MENU_HEADER}
-    COMMAND ${CMAKE_COMMAND}
-        -DMENU=${CTR_MENU_SOURCE}
-        -DHEADER=${CTR_MENU_HEADER}
-        -P ${CMAKE_CURRENT_SOURCE_DIR}/tools/build_menudefault.cmake
-    DEPENDS
-        ${CTR_MENU_SOURCE}
-        ${CMAKE_CURRENT_SOURCE_DIR}/tools/build_menudefault.cmake
-    COMMENT "Menu declaration into the built-in stock"
-    VERBATIM
-)
-
-add_custom_target(ctr_native_menudefault DEPENDS ${CTR_MENU_HEADER})
-add_dependencies(ctr_native ctr_native_menudefault)
-
 # Build ID: generated/ctr_build_id.h lies in the same folder as the headers
 # above it (CTR_BUILD_ID_DIR), the include path below already carries it.
 add_dependencies(ctr_native ctr_build_id)

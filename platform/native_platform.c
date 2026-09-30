@@ -1032,8 +1032,8 @@ internal void Platform_TakeScreenshot(const char *path)
 	// BMP standard correctly, it was just given an already mirrored buffer. That is why
 	// it is turned back here before writing.
 	//
-	// Measured again and not assumed: in the picture next to the result file, which
-	// uses the same read routine, the dark rows of the menu box began
+	// Measured again and not assumed: in a picture taken with the same read
+	// routine, the dark rows of the menu box began
 	// at y 58 instead of at the reported 64 - and 216 minus 158 is 58. A
 	// reasoning that stood here earlier blamed SDL; that was wrong, the
 	// code was right by accident.
@@ -1947,17 +1947,6 @@ internal void Platform_MsaaSwitchIfDue(void)
 	s_msaaAtNext++;
 }
 
-// The frame for the menu editor, at the same point as the capture: here
-// the frame is finished drawing. The prototype is here and not from
-// namespace_MenuDecl.h, because this file does not see the game headers - the same
-// solution as with g_cfg_uiAnchorLegacy in main.c.
-void NativeMenuDecl_PictureIfDue(void);
-
-internal void Platform_MenuPictureIfDue(void)
-{
-	NativeMenuDecl_PictureIfDue();
-}
-
 internal void Platform_DumpIfDue(void)
 {
 	// The request is served by NativeSaveState_BeginFrame at the top of the next
@@ -2068,7 +2057,6 @@ void Platform_EndFrame(void)
 	Platform_ShotIfDue();
 	NativePreview_EndFrame(); // --record-preview (platform/native_preview.c)
 	Platform_MsaaSwitchIfDue();
-	Platform_MenuPictureIfDue();
 	Platform_DumpIfDue();
 #endif
 	// Behind everything a frame still costs: the disturbance delay and the

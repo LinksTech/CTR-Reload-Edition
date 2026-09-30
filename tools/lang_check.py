@@ -13,9 +13,9 @@ It reports:
   ref       a person name, an internal round, report or handover, R2/R3, a local path
   date      a date written as day.month.year (use 2026-09-30)
 
-Existing German names that stay for now (menu file keywords, menued modules,
---frame-log columns ...) are listed in tools/lang_check_allow.txt. New entries
-there need the maintainers' approval.
+Existing German names that stay for now (--frame-log columns, the
+tracks/vorschau folder ...) are listed in tools/lang_check_allow.txt. New
+entries there need the maintainers' approval.
 
 Exit code 0 = clean, 1 = findings, 2 = usage error.
 """

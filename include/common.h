@@ -12,7 +12,6 @@
 #include <prim.h>
 
 #include <game_layouts.h>
-#include <namespace_MenuDecl.h>
 
 #if defined(CTR_NATIVE)
 #include <platform.h>

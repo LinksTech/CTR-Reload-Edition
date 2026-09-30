@@ -136,22 +136,10 @@ enum MainMenuNativeConstants
 {
 	// Text indices above the language file. The highest index there is
 	// LNG_TURBOS = 0x24b; 0x8000 would be the lock bit in struct MenuRow.
-	// Which index is which text is NOT stated here for the declaration's
-	// range: the menu declaration assigns them in the order in which the texts
-	// stand in the file. A name next to it would state the same fact a second time
-	// and would only be right until someone inserts a row.
 	MM_NATIVE_LNG_BASE = 0x2000,
 
-	// No longer used for text; kept as the upper end of the declaration's
-	// range (namespace_MenuDecl.h).
-	MM_NATIVE_LNG_TRACK0 = MM_NATIVE_LNG_BASE + 0x40,
-
-	// THE OWN ROWS OF THE PLAYER MENUS, fixed in the code.
-	//
-	// The menu declaration assigns its indices from MM_NATIVE_LNG_BASE, but
-	// menus/nitro-pit.menu is no longer loaded. These lie behind the declaration's range
-	// (32 entries) and behind MM_NATIVE_LNG_TRACK0. They are read in
-	// MM_NativeMenu_String. 0x80 and 0x81 are unused.
+	// THE OWN ROWS OF THE PLAYER MENUS, fixed in the code. They are read in
+	// MM_NativeMenu_String. 0x00..0x81 are unused.
 	//
 	// The main menu: EXIT GAME has no retail text. OPTIONS, QUIT, YES and NO
 	// come from the language file.
@@ -180,29 +168,7 @@ char *MM_NativeMenu_String(s16 index);
 // Containers without the mode of the list are not in the wheel (MM_NativeMenu.c).
 int MM_NativeTracks_RowIndex(int row);
 
-// The verbs under which the menu declaration calls the Nitro-Pit path. The
-// names are in the tables in game/native_menudecl.c.
-int MM_NativeTracks_CondPresent(struct RectMenu *box);
-int MM_NativeMenu_CondAlways(struct RectMenu *box);
-int MM_NativeTracks_ActNitroPit(struct RectMenu *box);
-int MM_NativeTracks_ActOpenSelect(struct RectMenu *box);
-int MM_NativeTracks_ActCloseSelect(struct RectMenu *box);
-int MM_NativeMenu_ActQuit(struct RectMenu *box);
-
-// The mode choice of the arcade path. Every verb first clears the whole mode
-// mask and then sets exactly its own bit; ActTimeTrial returns 0,
-// because it leaves the chain instead of opening a child.
-void MM_NativeMode_PageTick(struct RectMenu *box);
-int MM_NativeMode_ActSingle(struct RectMenu *box);
-int MM_NativeMode_ActCup(struct RectMenu *box);
-int MM_NativeMode_ActTimeTrial(struct RectMenu *box);
-int MM_NativeMode_ActVs(struct RectMenu *box);
-int MM_NativeMode_ActBattle(struct RectMenu *box);
-int MM_NativeMode_ActVsSingle(struct RectMenu *box);
-int MM_NativeMode_ActVsCup(struct RectMenu *box);
-
-// The style with which RECTMENU draws this box: g_rectMenuStyleRetail plus
-// what a loaded menu declaration names (none is loaded at run time).
+// The style with which RECTMENU draws this box: g_rectMenuStyleRetail.
 const struct RectMenuStyle *MM_NativeMenu_StyleFor(const struct RectMenu *menu);
 
 void MM_NativeTracks_Disarm(void);
