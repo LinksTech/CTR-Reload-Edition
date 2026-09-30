@@ -46,6 +46,7 @@ void Platform_AtExitReport(void (*report)(void));
 // file pulls nothing else from the host side.
 int NativeTrack_ActiveForLevel(int levelID);
 const char *NativeTrack_LoadedName(void);
+int NativeTrack_ActiveLevdSha256(unsigned char out[32]);
 
 // ---------------------------------------------------------------------------
 // THE WANDERING DOOR.
@@ -126,6 +127,8 @@ global_variable s64 s_modResets;         // how often Reset was called
 global_variable s64 s_modReleases;       // how often Release was called
 global_variable s64 s_modDetected;       // of those: track recognised
 global_variable s64 s_modDeclined;       // of those: track declined
+global_variable s64 s_modUnknownBuild;   // of the declined: models found, LEVD hash not a known build
+global_variable int s_modRestartPending; // Release ran - the next Reset is a restart, not a new load
 global_variable s64 s_modResetWhileLive; // Reset hit a scaffold that was still alive
 global_variable s64 s_modBirths;         // instances created
 global_variable s64 s_modBirthFails;     // births that failed
@@ -222,6 +225,10 @@ internal void TrackMod_Report(void)
 	Platform_Log("[CTR TrackMod] at exit: %lld reset(s), %lld release(s) - %lld track(s) recognised, %lld declined, %lld reset(s) hit a live "
 	             "scaffold\n",
 	             s_modResets, s_modReleases, s_modDetected, s_modDeclined, s_modResetWhileLive);
+	if (s_modUnknownBuild > 0)
+	{
+		Platform_Log("[CTR TrackMod] at exit: %lld reset(s) declined because the container is not a known Sunset Vista build\n", s_modUnknownBuild);
+	}
 	Platform_Log("[CTR TrackMod] at exit: %lld instance(s) born, %lld birth(s) failed, %d alive now\n", s_modBirths, s_modBirthFails,
 	             TrackMod_CountLiveWallInstances());
 	Platform_Log("[CTR TrackMod] at exit: %lld pre-logic tick(s), %lld post-logic tick(s); %lld skipped for pause, %lld for loading, %lld with no "
@@ -265,41 +272,86 @@ internal void TrackMod_ArmReport(void)
 // ---------------------------------------------------------------------------
 // TRACK DETECTION.
 //
-// Two questions, both must say yes.
+// Three questions, all must say yes.
 //
 //   1. Is this load one from a container at all?
 //      NativeTrack_ActiveForLevel. That is the question the load path and
 //      the sound path ask too - not the host slot. Whoever checks for "level 0"
 //      hits Dingo Canyon as well.
 //
-//   2. Does the loaded LEV carry the model this actor needs?
-//      "wallstone_test". No disc level has it, and of 15 containers tested
-//      exactly the two Sunset Vista versions have it (13 without, 2 with).
+//   2. Is the container a known Sunset Vista build?
+//      The SHA-256 of its LEVD chunk (NativeTrack_ActiveLevdSha256) must be
+//      in s_trackModKnownLevd below. The actors of this layer work with fixed
+//      coordinates and fixed quad indices of Sunset Vista - they hide faces
+//      and rewrite quadFlags. On any other LEV that damages the track.
 //
-// WHAT THIS DOES NOT RELY ON, AND WHY NOT:
+//   3. Does the loaded LEV carry the model this actor needs?
+//      "wallstone_test", "sunset_plat", "sunset_bat". Each actor checks its
+//      own, so a build without one of them still runs the others.
 //
-//   * On a fingerprint. An earlier version took one from the container
-//     signature; it went away together with the signature.
-//   * On the name from META. That is the author's promise and nothing more -
-//     two containers may carry the same one today.
-//   * On the LEVD hash from the directory. It is stored in the container and checked
-//     on reading (rldtrack.inc), but it does not survive loading:
-//     Rld_Close clears the reader away (native_assets.c), and nothing copies
-//     the 32 bytes out. It would have to be retrofitted - and even then it would
-//     be the wrong measure here, because it changes with EVERY repack. The
-//     two Sunset Vista containers at hand already have two different ones:
-//     838e59a0... and c4aed959... A table of known hashes would have to be
-//     updated for every new version from the author.
+// WHY THE LEVD HASH AND NOT THE MODEL NAMES ALONE. A model name is not an
+// identity: another author may reuse "wallstone_test" or "sunset_plat" in a
+// track of their own, and that track would get Sunset Vista's door and its
+// hidden faces at Sunset Vista's coordinates. The name from META is only the
+// author's promise. The LEVD hash is proven by Rld_ReadChunk at load time
+// for exactly the bytes that are raced.
 //
-// THE WEAKNESS OF THIS, written down openly: the model name is not an
-// identity but a capability. Whoever builds a track of their own and puts a
-// model "wallstone_test" into it gets this door - at the coordinates
-// of Sunset Vista, where their track probably has nothing. That is chosen
-// deliberately: the question the actor really has to ask is "can I run
-// here", and the model name answers that correctly. The question "am I on
-// exactly this track" has no reliable answer today, and inventing one
-// would be a separate piece of work.
+// THE PRICE: the hash changes with every repack of the level data. A new
+// Sunset Vista build runs without its track code until its hash is added to
+// the table. The log says so in one line per load, with the hash to add.
+//
+// All paths that can switch the layer on pass through TrackMod_TrackReleased:
+// NativeTrackMod_Reset (wall, platforms, surfaces, flames, crates) and
+// NativeTrackMod_LevInstanceBorn (bats, which are taken over during loading,
+// before Reset). Every other entry point asks s_trackModActive, which only
+// Reset sets.
 // ---------------------------------------------------------------------------
+
+// Sunset Vista builds known to work with this layer: SHA-256 of the LEVD chunk.
+global_variable const unsigned char s_trackModKnownLevd[][32] = {
+    {0x83, 0x8e, 0x59, 0xa0, 0xe6, 0xd0, 0xaa, 0x1f, 0x2a, 0x80, 0xe5, 0xfb, 0x2f, 0x2a, 0x5e, 0xce,
+     0xc4, 0x5b, 0x6a, 0x04, 0x90, 0xf4, 0x1b, 0xe0, 0x2d, 0xe5, 0x8a, 0x72, 0xbe, 0xab, 0xe2, 0x2f},
+    {0xc4, 0xae, 0xd9, 0x59, 0x75, 0x3b, 0x71, 0x1a, 0xdb, 0xe3, 0x67, 0x23, 0xf1, 0x8c, 0x12, 0xbb,
+     0x41, 0x6f, 0x4c, 0x2b, 0x48, 0x42, 0xda, 0xd4, 0x54, 0xbc, 0xe9, 0x3b, 0xd0, 0x96, 0x31, 0xae},
+};
+
+// 1 when the active container's LEVD hash is in s_trackModKnownLevd. levd
+// receives the hash (all zero when there is none), for the log.
+internal int TrackMod_KnownBuild(unsigned char levd[32])
+{
+	u32 i;
+
+	memset(levd, 0, 32);
+	if (!NativeTrack_ActiveLevdSha256(levd))
+	{
+		return 0;
+	}
+
+	for (i = 0; i < (u32)(sizeof(s_trackModKnownLevd) / sizeof(s_trackModKnownLevd[0])); i++)
+	{
+		if (memcmp(levd, s_trackModKnownLevd[i], 32) == 0)
+		{
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+// THE ONE GATE. Questions 1 and 2 from above; question 3 stays with each
+// actor. Disc tracks answer no at question 1 and are never looked at further.
+internal int TrackMod_TrackReleased(void)
+{
+	struct GameTracker *gGT = sdata->gGT;
+	unsigned char levd[32];
+
+	if ((gGT == NULL) || !NativeTrack_ActiveForLevel(gGT->levelID))
+	{
+		return 0;
+	}
+
+	return TrackMod_KnownBuild(levd);
+}
 
 internal struct Model *TrackMod_FindModel(const char *name)
 {
@@ -1471,9 +1523,7 @@ global_variable int s_batAudioLogged;
 
 internal int TrackMod_BatIsTrackActive(void)
 {
-	struct GameTracker *gGT = sdata->gGT;
-
-	return (gGT != NULL) && NativeTrack_ActiveForLevel(gGT->levelID);
+	return TrackMod_TrackReleased();
 }
 
 internal int TrackMod_InstanceHasModel(const struct Instance *inst, const char *name)
@@ -1685,8 +1735,9 @@ void NativeTrackMod_LevInstanceBorn(struct Instance *inst, int modelID)
 		return;
 	}
 
-	// TWO QUESTIONS, BOTH MUST SAY YES - the same rule as when setting up the
-	// scaffold. The host releases the track, and the model releases the actor.
+	// THE SAME QUESTIONS AS WHEN SETTING UP THE SCAFFOLD. The host and the
+	// LEVD hash release the track (TrackMod_TrackReleased), and the model
+	// releases the actor.
 	// The model name is needed because a container track may also bring
 	// a real seal.
 	//
@@ -3838,6 +3889,7 @@ void NativeTrackMod_Release(void)
 
 	s_trackModActive = 0;
 	s_modWasPaused = 0;
+	s_modRestartPending = 1;
 	TrackMod_WallForget();
 	TrackMod_BatForget();
 	TrackMod_FlameForget();
@@ -3869,9 +3921,11 @@ void NativeTrackMod_Release(void)
 void NativeTrackMod_Reset(void)
 {
 	struct GameTracker *gGT = sdata->gGT;
+	int isRestart = s_modRestartPending;
 
 	TrackMod_ArmReport();
 	s_modResets++;
+	s_modRestartPending = 0;
 
 	if (s_trackModActive)
 	{
@@ -3897,14 +3951,44 @@ void NativeTrackMod_Reset(void)
 	// separately. Before that the wall model alone decided whether any track code
 	// runs at all; that would no longer work, because a track may have platforms without a door.
 	// The rule has stayed the same, only one step finer: the host releases the
-	// track (NativeTrack_ActiveForLevel), and each actor checks its
-	// own model. Whoever finds none stays away - the others run anyway.
+	// track (NativeTrack_ActiveForLevel), the LEVD hash confirms it is Sunset
+	// Vista (below), and each actor checks its own model. Whoever finds none
+	// stays away - the others run anyway.
 	if ((TrackMod_FindModel(s_trackModWallModel) == NULL) && (TrackMod_FindModel(s_trackModPlatModel) == NULL) &&
 	    (TrackMod_FindModel(s_trackModBatModel) == NULL))
 	{
 		s_modDeclined++;
 		Platform_Log("[CTR TrackMod] level %d carries a container ('%s') but none of '%s', '%s', '%s' - no track code runs here\n",
 		             gGT->levelID, NativeTrack_LoadedName(), s_trackModWallModel, s_trackModPlatModel, s_trackModBatModel);
+		return;
+	}
+
+	// The models alone are not enough: the actors below use Sunset Vista's
+	// fixed coordinates and quad indices. Only a known build gets them
+	// (TrackMod_TrackReleased, the same gate the bats passed during loading).
+	// One line per load - a restart of the same load stays silent.
+	if (!TrackMod_TrackReleased())
+	{
+		s_modDeclined++;
+		s_modUnknownBuild++;
+		if (!isRestart)
+		{
+			local_persist const char digits[] = "0123456789abcdef";
+			unsigned char levd[32];
+			char hex[65];
+			int i;
+
+			TrackMod_KnownBuild(levd);
+			for (i = 0; i < 32; i++)
+			{
+				hex[i * 2] = digits[levd[i] >> 4];
+				hex[(i * 2) + 1] = digits[levd[i] & 0x0f];
+			}
+			hex[64] = '\0';
+			Platform_Log("[CTR TrackMod] level %d: models of Sunset Vista found, but this container ('%s', LEVD sha256 %s) is not a known Sunset "
+			             "Vista build - track code stays off\n",
+			             gGT->levelID, NativeTrack_LoadedName(), hex);
+		}
 		return;
 	}
 
