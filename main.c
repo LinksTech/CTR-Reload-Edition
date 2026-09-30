@@ -76,6 +76,7 @@
 #include "platform/native_state.c"
 #include "platform/native_str.c"
 #include "platform/native_preview.c"
+#include "platform/native_testfiles.c"
 
 #ifndef CC
 #if defined(__GNUC__)
@@ -310,6 +311,8 @@ static const NativeSwitch s_devSwitches[] = {
     {"--selftest-disc", "<dir>", "unpack the test images in <dir> (good-*/bad-*.bin), then end"},
     {"--gte-selftest", "", "both GTE paths against each other, then end"},
     {"--selftest-containers", "<dir>", "every check the game runs on a container, on every *.rldtrack in dir (good-* must load, bad-* must be refused), then end; no window, no data needed"},
+    {"--make-test-containers", "<dir>", "write the synthetic good-*/bad-* containers of the container self-test into dir, then end"},
+    {"--make-test-disc", "<dir>", "write the synthetic good-*/bad-* disc images of the disc self-test into dir, then end"},
     {"--gte-alt", "", "alternative GTE arithmetic"},
     {"--gte-near-div", "", "GTE division route that does not saturate (acts only with --gte-alt)"},
     {"--near-plane", "[n]", "near plane n (clip threshold 2n); without a number or with 0 the stock values"},
@@ -1929,6 +1932,20 @@ int main(int argc, char *argv[])
 		if ((strcmp(argv[argIndex], "--selftest-containers") == 0) && ((argIndex + 1) < argc))
 		{
 			return NativeTrack_SelfTestFolder(argv[argIndex + 1]);
+		}
+
+		// The made-up input of the two self-tests above (platform/native_testfiles.c),
+		// written by the game itself and not by a small tool of its own: a
+		// reputation-based scanner quarantined such a tool on its first start. Up
+		// here for the same reason: no window, no assets folder, no GPU.
+		if ((strcmp(argv[argIndex], "--make-test-containers") == 0) && ((argIndex + 1) < argc))
+		{
+			return NativeTestFiles_MakeContainers(argv[argIndex + 1]);
+		}
+
+		if ((strcmp(argv[argIndex], "--make-test-disc") == 0) && ((argIndex + 1) < argc))
+		{
+			return NativeTestFiles_MakeDisc(argv[argIndex + 1]);
 		}
 
 		// Which GTE computes. Up here and not in the big loop

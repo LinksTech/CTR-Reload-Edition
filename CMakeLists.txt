@@ -395,6 +395,37 @@ if(BUILD_TESTING)
         PASS_REGULAR_EXPRESSION "selftest passed: [0-9]+ operations, 0 differences"
     )
 
+    # FOREIGN INPUT, REFUSED CLEANLY. A container (.rldtrack) and a disc image
+    # come from strangers: every length, offset and index in them is checked
+    # before it is used. These two tests feed the game made-up files - good-*
+    # must be accepted, bad-* refused, and nothing may crash, hang or write
+    # outside its folder. cmake/run_selftest.cmake empties the folder, lets the
+    # game write the test files into it (--make-test-containers /
+    # --make-test-disc, platform/native_testfiles.c) and then runs the game's
+    # self-test switch on it. Both switches run before any window, audio or
+    # asset initialisation: no GPU, no disc image, no game data.
+    add_test(NAME selftest_bad_containers
+        COMMAND ${CMAKE_COMMAND}
+            -DGAME=$<TARGET_FILE:ctr_native>
+            -DDIR=${CMAKE_BINARY_DIR}/selftest/containers
+            -DMAKE_SWITCH=--make-test-containers
+            -DTEST_SWITCH=--selftest-containers
+            -P ${CMAKE_SOURCE_DIR}/cmake/run_selftest.cmake
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+    add_test(NAME selftest_bad_disc
+        COMMAND ${CMAKE_COMMAND}
+            -DGAME=$<TARGET_FILE:ctr_native>
+            -DDIR=${CMAKE_BINARY_DIR}/selftest/disc
+            -DMAKE_SWITCH=--make-test-disc
+            -DTEST_SWITCH=--selftest-disc
+            -P ${CMAKE_SOURCE_DIR}/cmake/run_selftest.cmake
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+    # A directory that points back at the root must not hang the reader; if it
+    # does, the timeout ends the test instead of the build.
+    set_tests_properties(selftest_bad_containers selftest_bad_disc PROPERTIES TIMEOUT 300)
+
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_test(
         NAME ctr_match_unit

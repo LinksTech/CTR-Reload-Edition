@@ -50,10 +50,30 @@ tracked files differ from it.
 
 ## Tests
 
-`build-msvc.bat` runs six self-tests: version string, the rldpack self-test
-(directly and through the Alpha-Maker), the shader SPIR-V check, the GTE
-self-test and the unit tests of the matching tools. None of them needs game
-data, a window or a GPU.
+`build-msvc.bat` runs eight self-tests:
+
+- `ctr_native_version`: the version string
+- `rldpack_selftest` and `alphamaker_rldpack_selftest`: the rldpack self-test,
+  directly and through the Alpha-Maker
+- `shader_spirv_dialect`: the shader SPIR-V check
+- `gte_paths_identical`: the GTE self-test
+- `ctr_match_unit`: the unit tests of the matching tools
+- `selftest_bad_containers`: `ctr_native --dev --make-test-containers` writes
+  made-up track containers into `build-msvc-x86\selftest\containers` (valid
+  `good-*` ones and `bad-*` ones that each break one thing: a length, an
+  offset, a count, a table), and `ctr_native --dev --selftest-containers` must
+  accept every good one and refuse every bad one
+- `selftest_bad_disc`: the same for disc images - `ctr_native --dev
+  --make-test-disc` writes tiny made-up images into
+  `build-msvc-x86\selftest\disc`, and `ctr_native --dev --selftest-disc` must
+  extract the good ones and refuse the bad ones without writing anything
+  outside the output folder
+
+None of them needs game data, a window or a GPU; every test file is made up
+by the game itself (`platform/native_testfiles.c`).
+
+Quick states and replays (developer switches behind `--dev`) are raw memory
+snapshots of the game: load only files you made yourself.
 
 ## Package
 

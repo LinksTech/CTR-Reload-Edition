@@ -1949,7 +1949,7 @@ void NativeDiscImage_PrintReport(void)
 // THE SELF-TEST (--selftest-disc)
 //
 // A disc image is foreign input, and the first start writes what it says. So
-// the unpacker is run against small made-up images (tools/tests/make_bad_disc.c)
+// the unpacker is run against small made-up images (ctr_native --make-test-disc, platform/native_testfiles.c)
 // whose directory records name "..", "C:x", "a/..", point back at the root and
 // so on, and the test checks from the outside - by listing folders - that
 // nothing lands anywhere but the assets folder it was given.
