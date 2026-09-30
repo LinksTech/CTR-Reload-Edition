@@ -6,9 +6,10 @@ derivatives. Keep this file with source and binary distributions of CTR Reload E
 
 The release downloads contain two programs. `ctr_native.exe` carries SDL3
 (with the components compiled into it), the PsyCross-derived platform layer
-with the code that came in through PsyCross (TOMB5, MAME, PCSX and one
-PSn00bSDK table), and the Sunset Vista compatibility layer. `alphamaker.exe`
-carries only this project's own code and the Microsoft C runtime.
+with the code that came in through PsyCross (TOMB5, MAME, PCSX, one PSn00bSDK
+table and material from Sony's Psy-Q SDK), and the Sunset Vista compatibility
+layer. `alphamaker.exe` carries only this project's own code and the Microsoft
+C runtime.
 
 ## PsyCross / Psy-X
 
@@ -37,18 +38,15 @@ Files derived from PsyCross:
 Where these files carry a provenance header, it names the original as
 `externals/PsyCross/<path>`; `<path>` is relative to the PsyCross repository.
 
-Some of these headers reproduce constants, structure layouts and comments from
-the PlayStation Psy-Q run-time library headers by Sony Computer Entertainment
-(and, in `include/psx/r3000.h`, MIPS R3000 definitions those headers carried),
-as PsyCross does. They are kept for interoperability with the original game
-code and are not covered by the MIT license below.
+Several of these headers and one of the GTE tables contain material from Sony's
+Psy-Q SDK; see [Psy-Q SDK material](#psy-q-sdk-material).
 
 The GTE tables:
 
 - `platform/native_gte_ratan_tbl.h` comes from CTR Native, which took it from
   PsyCross `src/gte/ratan_tbl.h` (MIT, (c) 2020 REDRIVER2 Project) with only
-  formatting changes. Its 1025 values are identical to the `ratan_tbl` data of
-  Sony's Psy-Q LIBGTE library (module RATAN).
+  formatting changes. It is a Psy-Q table (see
+  [Psy-Q SDK material](#psy-q-sdk-material)).
 - `platform/native_gte_rcossin_tbl.h` comes from CTR Native, which took it
   from PsyCross `src/gte/rcossin_tbl.h` (MIT, (c) 2020 REDRIVER2 Project).
   PsyCross got the table via REDRIVER2 from the TOMB5 project
@@ -179,6 +177,62 @@ Copyright (C) 2007 Ryan Schultz, PCSX-df Team, PCSX team
 License: GNU General Public License, version 2 or (at your option) any later
 version. CTR Reload Edition uses this code under version 3, like the rest of
 the program; the full text is in `LICENSE`.
+
+## Psy-Q SDK material
+
+The Psy-Q SDK is the software development kit for the original PlayStation,
+with the run-time libraries of Sony Computer Entertainment (LIBGTE, LIBGPU,
+LIBCD, LIBSPU, LIBAPI, LIBETC, LIBPAD and others) and their headers. The files
+below contain material from it. The MIT license of PsyCross above does not
+cover the Psy-Q material in the PsyCross-derived files.
+
+### Headers in `include/psx/`
+
+The 14 PsyCross-derived headers in `include/psx/` (listed under
+[PsyCross / Psy-X](#psycross--psy-x)) came to this project from PsyCross (MIT)
+through CTR Native; the provenance header of each names its PsyCross original.
+They mirror the Psy-Q run-time library headers, so that the game code, which
+was written for Psy-Q, builds against them. What they contain from those
+headers, by file:
+
+- `gtemac.h`, `inline_c.h`, `kernel.h`, `libapi.h`, `libcd.h`, `libgpu.h`,
+  `libgte.h`, `libspu.h`: names of macros, constants, types and functions,
+  structure layouts, and comments of the corresponding Psy-Q headers.
+- `libetc.h`, `libpad.h`: names of constants, macros and functions of the
+  corresponding Psy-Q headers, with no Psy-Q comment text.
+- `r3000.h`: MIPS R3000 definitions with their comments, as the Psy-Q headers
+  carried them.
+
+`asm.h` and `strings.h` contain only a few declarations and no Psy-Q comment
+text; the content of `gtereg.h` comes from MAME and PCSX (see above) and
+contains no Psy-Q comment text either. `psx_prelude.h` and `psn00b_prelude.h`
+in the same folder are not derived from PsyCross.
+
+### `platform/native_gte_ratan_tbl.h`
+
+This file holds `ratan_tbl`, the arctangent table of 1025 values that the
+`ratan2` function of Psy-Q LIBGTE uses. Its provenance header names only its
+PsyCross original, `src/gte/ratan_tbl.h` (see
+[PsyCross / Psy-X](#psycross--psy-x)). In the NTSC-U retail executable, which
+links LIBGTE, the table lies at address `0x8008A480`, at the start of the data
+that `include/regionsEXE.h` marks as Psy-Q data.
+
+### `game/MEMCARD/MEMCARD_Card.c`
+
+This file is decompiled retail code (see
+[Origin of game data, texts and decompiled tables](#origin-of-game-data-texts-and-decompiled-tables))
+and is compiled into `ctr_native.exe`. Its comments mark two parts as
+"copy/pasted by Naughty Dog" from the memory card sample of the Psy-Q SDK,
+`psx\sample\memcard\CARD\CARD.C`:
+
+- in `MEMCARD_InitCard`, the block that opens and enables the eight memory
+  card events (`SwCARD` and `HwCARD`, each with `EvSpIOE`, `EvSpERROR`,
+  `EvSpTIMOUT` and `EvSpNEW`) from `EnterCriticalSection` to
+  `ExitCriticalSection`, marked as lines 84 to 101 of the sample;
+- the body of `MEMCARD_CloseCard` (`StopCARD`, then closing the same eight
+  events), marked as lines 355 to 365 of the sample.
+
+The comments mark no other part of the file.
 
 ## PSn00bSDK
 
@@ -599,10 +653,9 @@ Decompiled tables: `game/DrawTires.c`, `game/DrawConfetti.c`,
 `game/231/RB_Minecart.c`, `game/231/RB_Spider.c`, `game/233/CS_ScriptCmd.c`,
 `game/Vehicle/VehGroundShadow.c`, `game/UI/UI_VsQuip.c`.
 
-Some of the retail code carries Psy-Q sample code that the original
-developers copied into the game: `game/MEMCARD/MEMCARD_Card.c` notes parts
-that were "copy/pasted by Naughty Dog" from the Psy-Q memory card sample. It
-is part of the decompiled retail code, not a separate component.
+The comments in `game/MEMCARD/MEMCARD_Card.c` mark two parts as Psy-Q sample
+code that the original developers copied into the game; see
+[Psy-Q SDK material](#psy-q-sdk-material).
 
 The PS1 hardware tables in `platform/native_audio.c`, `platform/native_str.c`
 and `platform/native_gte_core.c` also come from ctr-native. The tables in
