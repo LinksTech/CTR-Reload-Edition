@@ -33,11 +33,14 @@ tmp=$(mktemp 2>/dev/null || echo "${TMPDIR:-/tmp}/ctr-pre-push.$$")
 
 while read local_ref local_sha remote_ref remote_sha; do
 	[ "$local_sha" = "$zero" ] && continue
-	# The commits this push sends.
+	# The commits this push sends. A ref that is new on the remote gets its
+	# whole history checked: the remote-tracking refs may be stale (a remote
+	# that was deleted and created again still has them locally), and fail
+	# closed means not trusting them.
 	if [ "$remote_sha" != "$zero" ] && git cat-file -e "$remote_sha" 2>/dev/null; then
 		git rev-list "$local_sha" "^$remote_sha" > "$tmp.list" || exit 1
 	else
-		git rev-list "$local_sha" --not --remotes="$remote" > "$tmp.list" || exit 1
+		git rev-list "$local_sha" > "$tmp.list" || exit 1
 	fi
 	# Every path in every one of those commits, not only new objects: a
 	# forbidden path must be caught even if its content already exists
