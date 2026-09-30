@@ -1,0 +1,174 @@
+# CTR Reload Edition - nightly build of the development branch.
+#
+# Every day at 21:00 UTC, and by hand (Actions -> Nightly -> Run workflow):
+# builds dev and replaces the one pre-release "nightly-builds" with exactly
+# two files, ctr_native.exe and alphamaker.exe. If dev has not changed since
+# the last nightly, the run ends after the check and nothing is built or
+# replaced.
+#
+# The last built commit is the tag nightly-builds itself: it always points at
+# the dev commit the nightly was built from.
+#
+# GitHub starts scheduled runs only from the default branch, so this file has
+# to be on main; what it builds is dev. After 60 days without activity in the
+# repository GitHub switches the schedule off; it is switched on again in the
+# Actions tab.
+#
+# Security notes (as in build.yml):
+# - The token is read-only everywhere; only the release job may write
+#   (contents: write).
+# - No secrets, no pull request triggers. The release job uses the gh command
+#   of the runner and one pinned action (download-artifact).
+# - The build is build-job.yml, the same job as for every push. No game data.
+
+name: Nightly
+
+on:
+  schedule:
+    - cron: '0 21 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      build: ${{ steps.compare.outputs.build }}
+      sha: ${{ steps.compare.outputs.sha }}
+      last: ${{ steps.compare.outputs.last }}
+    steps:
+      - name: Has dev changed since the last nightly?
+        id: compare
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/dev" -q .sha)
+          case "$sha" in *[!0-9a-f]*|'') echo "unexpected dev commit: $sha"; exit 1 ;; esac
+          [ ${#sha} = 40 ] || { echo "unexpected dev commit: $sha"; exit 1; }
+          if ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly-builds" -q '.object.type + " " + .object.sha' 2> err.txt); then
+            type=${ref%% *}
+            last=${ref#* }
+            [ "$type" = commit ] || { echo "tag nightly-builds is not a plain commit tag: $ref"; exit 1; }
+          elif grep -q 'HTTP 404' err.txt; then
+            last=''
+          else
+            cat err.txt
+            exit 1
+          fi
+          echo "dev:            $sha"
+          echo "last nightly:   ${last:-none}"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "last=$last" >> "$GITHUB_OUTPUT"
+          if [ "$sha" = "$last" ]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "dev is unchanged since the last nightly - nothing to build." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    uses: ./.github/workflows/build-job.yml
+    with:
+      # The exact commit the check saw, not the branch: a push to dev during
+      # the run does not change what this nightly is.
+      ref: ${{ needs.check.outputs.sha }}
+    permissions:
+      contents: read
+
+  release:
+    needs: [check, build]
+    if: needs.check.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Download package
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: dist
+
+      # The same two files as every release, taken out of the package the
+      # build job checked. The build ID must be the dev commit, clean.
+      - name: Collect nightly files
+        id: files
+        shell: bash
+        env:
+          SHA: ${{ needs.check.outputs.sha }}
+        run: |
+          set -e
+          zip=$(ls dist/*.zip)
+          [ "$(echo "$zip" | wc -l)" = 1 ] || { echo "expected exactly one package zip"; exit 1; }
+          name=$(basename "$zip" .zip)
+          id=${name##*-}
+          case "$name" in CTR-Reload-?*-?*) ;; *) echo "unexpected package name: $name"; exit 1 ;; esac
+          [ "$id" = "${SHA:0:12}" ] || { echo "build id $id is not the dev commit ${SHA:0:12}"; exit 1; }
+          mkdir -p out
+          unzip -j -o "$zip" "$name/ctr_native.exe" "$name/alphamaker.exe" -d out
+          ls -l out
+          echo "build_id=$id" >> "$GITHUB_OUTPUT"
+
+      - name: Write the description
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.check.outputs.sha }}
+          LAST: ${{ needs.check.outputs.last }}
+        run: |
+          set -e
+          base=$LAST
+          since='the last nightly build'
+          if [ -z "$base" ]; then
+            # The first nightly: everything since the newest version tag.
+            base=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" -q '.[].ref' | sed 's|^refs/tags/||' | sort -V | tail -n 1)
+            since=${base:-the start}
+          fi
+          {
+            echo '> [!WARNING]'
+            echo '> Untested build, straight from the development branch (dev): it may be broken. For a tested version use the newest release that is not a nightly.'
+            echo
+            echo "Changes since $since:"
+            echo
+            if [ -n "$base" ]; then
+              gh api "repos/$GITHUB_REPOSITORY/compare/$base...$SHA" \
+                -q '.commits | reverse | .[] | "- " + (.commit.message | split("\n")[0]) + " (" + .sha[0:7] + ")"'
+            fi
+          } > body.md
+          cat body.md
+
+      - name: Replace the nightly release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.check.outputs.sha }}
+          ID: ${{ steps.files.outputs.build_id }}
+        run: |
+          set -e
+          repo=$GITHUB_REPOSITORY
+          if gh release view nightly-builds -R "$repo" > /dev/null 2>&1; then
+            gh release delete nightly-builds -R "$repo" --cleanup-tag --yes
+          fi
+          # A tag left without its release would keep the old commit.
+          if gh api "repos/$repo/git/ref/tags/nightly-builds" > /dev/null 2>&1; then
+            gh api -X DELETE "repos/$repo/git/refs/tags/nightly-builds"
+          fi
+          gh release create nightly-builds out/ctr_native.exe out/alphamaker.exe -R "$repo" \
+            --target "$SHA" \
+            --title "Nightly build — $(date -u +%Y-%m-%d) ($ID)" \
+            --notes-file body.md \
+            --prerelease \
+            --latest=false
+          gh release view nightly-builds -R "$repo" --json name,isPrerelease,assets \
+            -q '"\(.name) prerelease=\(.isPrerelease) " + ([.assets[].name] | join(" "))'

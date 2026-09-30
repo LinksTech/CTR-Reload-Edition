@@ -12,12 +12,15 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/LinksTech/CTR-Reload-Edition/releases"><img alt="Download the latest release" src="https://img.shields.io/badge/Download-latest%20release-2f9bff?style=for-the-badge&logo=github&logoColor=white"></a>
+  <!-- Points at the current version on purpose: the nightly build is newer and would come first in the release list. Update with every version tag. -->
+  <a href="https://github.com/LinksTech/CTR-Reload-Edition/releases/tag/v0.0-beta0"><img alt="Download the latest release" src="https://img.shields.io/badge/Download-latest%20release-2f9bff?style=for-the-badge&logo=github&logoColor=white"></a>
+  <br>
+  <sub>Want the newest state? The <a href="https://github.com/LinksTech/CTR-Reload-Edition/releases/tag/nightly-builds">nightly build</a> is made from the development branch every night - untested, no guarantees.</sub>
 </p>
 
 <p align="center">
   <a href="https://github.com/LinksTech/CTR-Reload-Edition/actions/workflows/build.yml"><img alt="Build" src="https://img.shields.io/github/actions/workflow/status/LinksTech/CTR-Reload-Edition/build.yml?branch=main&label=build"></a>
-  <a href="https://github.com/LinksTech/CTR-Reload-Edition/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/LinksTech/CTR-Reload-Edition?include_prereleases&label=release"></a>
+  <a href="https://github.com/LinksTech/CTR-Reload-Edition/releases"><img alt="Latest release" src="https://img.shields.io/github/v/tag/LinksTech/CTR-Reload-Edition?filter=v*&label=release"></a>
   <a href="LICENSE"><img alt="License: GPL-3.0" src="https://img.shields.io/badge/license-GPL--3.0-blue"></a>
   <img alt="Platform: Windows" src="https://img.shields.io/badge/platform-Windows-0078D6">
 </p>
@@ -85,7 +88,7 @@ without an emulator, and plays custom tracks next to the original ones.
 ## Getting started
 
 1. Download **`ctr_native.exe`** (the game) and **`alphamaker.exe`** (the track
-   tool) from the [latest release](https://github.com/LinksTech/CTR-Reload-Edition/releases)
+   tool) from the [latest release](https://github.com/LinksTech/CTR-Reload-Edition/releases/tag/v0.0-beta0)
    into one folder you can write to, for example `C:\Games\CTR Reload` (not
    `C:\Program Files`).
 2. Start `ctr_native.exe` and drag your disc image (the `.bin` file) onto the

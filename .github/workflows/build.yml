@@ -9,6 +9,8 @@
 # Every pull request into main or dev: build, self-tests and package check
 # only. No package download, no release, no cache writes, read-only token.
 #
+# The build job is in build-job.yml (shared with nightly.yml).
+#
 # This workflow never downloads or uses game data. It only builds and runs
 # self-tests that need no disc image, no window and no GPU.
 #
@@ -41,96 +43,12 @@ concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
-env:
-  VULKAN_SDK_VERSION: 1.3.296.0
-  # Published by LunarG: https://sdk.lunarg.com/sdk/sha/<version>/windows/VulkanSDK-<version>-Installer.exe.txt
-  VULKAN_SDK_SHA256: acb4ae0786fd3e558f8b3c36cc3eba91638984217ba8a6795ec64d2f9ffd8c4b
-
 jobs:
+  # The build itself lives in build-job.yml, shared with the nightly build.
   build:
-    runs-on: windows-2022   # the CMake preset requires "Visual Studio 17 2022"
-    timeout-minutes: 60
-    steps:
-      - name: Keep line endings as committed
-        run: git config --global core.autocrlf false
-
-      - name: Check out
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Set up Python (test suite)
-        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
-        with:
-          python-version: '3.12'
-
-      # The cache holds only the installed SDK. It is written only by runs
-      # on main, dev, tags and manual runs, never by pull requests.
-      - name: Restore Vulkan SDK from cache
-        id: vulkan-cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: C:\VulkanSDK\${{ env.VULKAN_SDK_VERSION }}
-          key: vulkan-sdk-${{ env.VULKAN_SDK_VERSION }}-${{ env.VULKAN_SDK_SHA256 }}
-
-      - name: Install Vulkan SDK (headers and glslangValidator)
-        if: steps.vulkan-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: |
-          $v = $env:VULKAN_SDK_VERSION
-          $exe = "$env:RUNNER_TEMP\VulkanSDK.exe"
-          $url = "https://sdk.lunarg.com/sdk/download/$v/windows/VulkanSDK-$v-Installer.exe"
-          Invoke-WebRequest -Uri $url -OutFile $exe
-          $hash = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant()
-          if ($hash -ne $env:VULKAN_SDK_SHA256) { throw "Vulkan SDK installer SHA-256 mismatch: $hash" }
-          & $exe --root "C:\VulkanSDK\$v" --accept-licenses --default-answer --confirm-command install
-          if ($LASTEXITCODE -ne 0) { throw "Vulkan SDK installer failed ($LASTEXITCODE)" }
-
-      - name: Save Vulkan SDK to cache
-        if: steps.vulkan-cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: C:\VulkanSDK\${{ env.VULKAN_SDK_VERSION }}
-          key: vulkan-sdk-${{ env.VULKAN_SDK_VERSION }}-${{ env.VULKAN_SDK_SHA256 }}
-
-      - name: Point the build at the Vulkan SDK
-        shell: pwsh
-        run: |
-          $sdk = "C:\VulkanSDK\$env:VULKAN_SDK_VERSION"
-          "VULKAN_SDK=$sdk" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "$sdk\Bin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-          & "$sdk\Bin\glslangValidator.exe" --version
-
-      - name: Build and self-tests (same command as a local build)
-        shell: cmd
-        run: build-msvc.bat
-
-      # Output: dist/CTR-Reload-<version without spaces>-<build id>.zip; its
-      # top folder has the same name and holds ctr_native.exe and alphamaker.exe.
-      - name: Package
-        shell: bash
-        env:
-          BUILD_DIR: build-msvc-x86
-        run: bash tools/package/package.sh
-
-      - name: Upload package
-        if: github.event_name != 'pull_request'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: ctr-reload-edition-${{ github.sha }}
-          path: dist/*.zip
-          if-no-files-found: error
-
-      - name: Upload logs on failure
-        if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
-        with:
-          name: logs-${{ github.sha }}
-          path: |
-            build-msvc-x86/Testing/Temporary/LastTest.log
-            dist-build.log
-          if-no-files-found: ignore
+    uses: ./.github/workflows/build-job.yml
+    permissions:
+      contents: read
 
   release:
     # Only a version tag, pushed or run by hand - never a pull request.
@@ -155,7 +73,7 @@ jobs:
       - name: Download package
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: ctr-reload-edition-${{ github.sha }}
+          name: ${{ needs.build.outputs.artifact }}
           path: dist
 
       # Every release carries exactly these two files, both from this one
