@@ -157,7 +157,7 @@ u32 main(void)
 			// Track preview (--record-preview,
 			// game/native_flyin.c), before the build. Disc tracks start like
 			// retail; container tracks never with a fly-in, even with their own
-			// camera path (CAM.c, CAM_FollowDriver_Normal; 2026-09-29).
+			// camera path (CAM.c, CAM_FollowDriver_Normal).
 			NativeFlyIn_Prepare();
 
 			MainInit_FinalizeInit(gGT);
@@ -464,7 +464,7 @@ u32 main(void)
 				NativePerf_BeginScope(NATIVE_PERF_BUCKET_GAME_LOGIC);
 #endif
 				// AROUND THE GAME LOGIC, in this order, because the track's
-				// integration notes (INTEGRATION.md section 2) prescribe it: what must
+				// integration notes prescribe it: what must
 				// have its position set before the driving physics computes against it runs
 				// before - what needs the moved drivers runs after. The moving door
 				// is the second case.

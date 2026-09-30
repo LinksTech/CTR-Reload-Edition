@@ -42,7 +42,7 @@ void Platform_LogWarn(const char *format, ...);
 void Platform_AtExitReport(void (*report)(void));
 
 // From platform/native_assets.c. Declared locally here instead of pulled in
-// through a header - DrawSky.c:282 and MainInit.c:170 do the same, and this
+// through a header - DrawSky.c and MainInit.c do the same, and this
 // file pulls nothing else from the host side.
 int NativeTrack_ActiveForLevel(int levelID);
 const char *NativeTrack_LoadedName(void);
@@ -162,7 +162,7 @@ global_variable int s_modResumeStepMS;
 global_variable int s_modReportArmed;
 
 // The live instances with our name, from the same list the renderer takes
-// its own from (MainFrame_RenderFrame.c:696 takes
+// its own from (MainFrame_RenderFrame.c takes
 // gGT->JitPools.instance.taken.first). A counter of our own would count what
 // we BELIEVE we create; this list counts what is really there.
 internal int TrackMod_CountLiveInstances(const char *name)
@@ -274,18 +274,17 @@ internal void TrackMod_ArmReport(void)
 //
 //   2. Does the loaded LEV carry the model this actor needs?
 //      "wallstone_test". No disc level has it, and of 15 containers tested
-//      exactly the two Sunset Vista versions have it (measured on
-//      2026-09-19: 13 times no hit, twice a hit).
+//      exactly the two Sunset Vista versions have it (13 without, 2 with).
 //
 // WHAT THIS DOES NOT RELY ON, AND WHY NOT:
 //
-//   * On the fingerprint. It existed until 2026-09-19, taken from the signature;
-//     it went away together with the signature.
+//   * On a fingerprint. An earlier version took one from the container
+//     signature; it went away together with the signature.
 //   * On the name from META. That is the author's promise and nothing more -
 //     two containers may carry the same one today.
 //   * On the LEVD hash from the directory. It is stored in the container and checked
-//     on reading (rldtrack.inc:863), but it does not survive loading:
-//     Rld_Close clears the reader away (native_assets.c:1810), and nothing copies
+//     on reading (rldtrack.inc), but it does not survive loading:
+//     Rld_Close clears the reader away (native_assets.c), and nothing copies
 //     the 32 bytes out. It would have to be retrofitted - and even then it would
 //     be the wrong measure here, because it changes with EVERY repack. The
 //     two Sunset Vista containers at hand already have two different ones:
@@ -453,9 +452,8 @@ internal void TrackMod_WallPushDriver(struct Driver *driver)
 	//
 	// THE FIELD NAMES ARE THOSE OF THIS TREE, not those of the PS1 source. There
 	// they appear as botData.unk5bc.ai_speedLinear; here they are called
-	// botData.aiPhysics.speedLinear (namespace_Vehicle.h:771 in struct
-	// BotPhysics, hooked in at :816) and botData.ai_progress_cooldown
-	// (:826). Same place, name as read.
+	// botData.aiPhysics.speedLinear (namespace_Vehicle.h, struct BotPhysics)
+	// and botData.ai_progress_cooldown. Same place, name as read.
 	if ((driver->actionsFlagSet & ACTION_BOT) != 0)
 	{
 		s_wallPushesBot++;
@@ -683,11 +681,10 @@ internal void TrackMod_WallForget(void)
 // grid-stepped collision would be exactly the bug you notice while driving as
 // "I am standing next to the platform".
 //
-// THE FRAMES ARE INVISIBLE, BUT NOT EMPTY. Unlike the 99 faces examined
-// earlier, all 123 carry a real texture assignment (measured on 2026-09-19:
-// 0 of 5 references zeroed, for all 123). So the zero rule does not apply
-// here. They are kept invisible by the route that was recommended earlier as
-// route 1: the visibility bit per quadblock, cleared after the
+// THE FRAMES ARE INVISIBLE, BUT NOT EMPTY. Unlike the 99 faces of the zero
+// rule, all 123 carry a real texture assignment (0 of 5 references zeroed,
+// for all 123). So the zero rule does not apply here. They are kept
+// invisible by route 1: the visibility bit per quadblock, cleared after the
 // rebuild of the field. See NativeTrackMod_HideLevelFaces at the end of this file.
 // ---------------------------------------------------------------------------
 
@@ -712,24 +709,24 @@ enum
 //
 // The source writes 0x4001 and 0x1801 as raw numbers. Here they appear
 // as what they mean - otherwise every reader has to lay the bit list from
-// namespace_Level.h:170 next to them:
+// namespace_Level.h next to them:
 //
 //   parked   0x4001 = NO_CAMERA_RESPAWN_PROBE | REFLECT_SPLIT_LINE_1
 //            No GROUND, no COLLISION_SURFACE. So the frame falls through
-//            every filter of the collision search (COLL.c:1070, :2121), because all
+//            every filter of the collision search (COLL.c), because all
 //            searchers there want at least one of the two. In addition
-//            NO_CAMERA_RESPAWN_PROBE tells the stuck recovery (VehStuckProc.c:140,
+//            NO_CAMERA_RESPAWN_PROBE tells the stuck recovery (VehStuckProc.c,
 //            which explicitly ignores this bit) that it should not set anyone
 //            down here.
 //
 //   carrying 0x1801 = GROUND | CAMERA_SEARCH | REFLECT_SPLIT_LINE_1
-//            GROUND makes it ground - for drivers (COLL.c:1257), for bots
-//            (BOTS.c:1987) and for items resting on it (VehPickupItem.c:734).
-//            CAMERA_SEARCH lets the camera find it (CAM.c:646).
+//            GROUND makes it ground - for drivers (COLL.c), for bots
+//            (BOTS.c) and for items resting on it (VehPickupItem.c).
+//            CAMERA_SEARCH lets the camera find it (CAM.c).
 //
 // REFLECT_SPLIT_LINE_1 is in BOTH and never changes. It picks the
-// diagonal along which the quad splits into two triangles (COLL.c:1456,
-// :2474) - a property of the geometry, not of the state.
+// diagonal along which the quad splits into two triangles (COLL.c) - a
+// property of the geometry, not of the state.
 enum
 {
 	PLATFORM_FLAGS_PARKED = QUADBLOCK_FLAG_NO_CAMERA_RESPAWN_PROBE | QUADBLOCK_FLAG_REFLECT_SPLIT_LINE_1,
@@ -807,7 +804,7 @@ global_variable int s_platHaveFrameSeen;
 global_variable int s_platStepMaxMS;
 
 // --- BEHIND THE QUEUEING -----------------------------------------------------
-// A measurement showed: the platforms get queued (DRAW_SUCCESSFUL,
+// The platforms were seen to get queued (DRAW_SUCCESSFUL,
 // projected near the centre of the screen) and leave zero pixels. Between
 // queueing and draw function RenderBucket_QueueExecute.c has six
 // exits that discard without a word; here we count which one it was.
@@ -815,15 +812,13 @@ global_variable int s_platStepMaxMS;
 // LEV and are demonstrably not affected. Reason 0 means: a
 // draw function was reached. If there is a number there and the picture stays empty,
 // the cause is in the draw function itself, not before it.
-// Since 2026-09-21 (a test run: ALL 5,649 visits reached the
-// draw handler) the counting goes one level deeper, into DrawFunc_Normal per
-// primitive: 13 DrawFunc_Normal entered (detail: first command word,
+// Because all visits reached the draw handler, the counting also goes one
+// level deeper, into DrawFunc_Normal per primitive: 13 DrawFunc_Normal entered (detail: first command word,
 // 0xffffffff = empty list), 8 projection rejected (detail: GTE flag), 9
 // texture table null, 10 primitive writer not ported (detail:
 // funcPtr[1]), 11 primitive memory full, 12 primitive written (detail:
 // projected corner 0 as x | y << 16 - tells WHERE the last one lay).
-// A later test run (173,595 written, 1,307,557 rejected, empty
-// picture): 14/15/16 split the rejection into GTE flag, NCLIP/cull and
+// Further: 14/15/16 split the rejection into GTE flag, NCLIP/cull and
 // screen window; 17 OT range null; 18/19 depth slot below/above the
 // window depthOffset[0..1] of the instance (the writer does NOT clamp - a
 // slot outside lies in foreign OT memory, written, never drawn);
@@ -1394,7 +1389,7 @@ internal void TrackMod_PlatForget(void)
 // 0x8008141C swaps the LInB constructor of the seal model (slot 0x4C,
 // DYNAMIC_SEAL, otherwise Polar Pass) for one of its own - an address in
 // a fixed table, overwritten for as long as the game runs. Reload has
-// this table too (zGlobal_DATA.c:1321), but it is the same for ALL tracks.
+// this table too (zGlobal_DATA.c), but it is the same for ALL tracks.
 // Whoever bends it bends it for Polar Pass as well and has to put it
 // back afterwards; whoever forgets that has a bug that only shows up two
 // tracks later.
@@ -1411,10 +1406,9 @@ internal void TrackMod_PlatForget(void)
 //
 // THE NAME CASE seal#: AND seal#; NEEDS NOTHING HERE. The author encodes 10
 // and 11 as ':' and ';', because retail reads ONE character at name[5]. Reload
-// reads the LAST character (RB_Seal.c:272, inst->name[strlen(inst->name) - 1]).
+// reads the LAST character (RB_Seal.c, inst->name[strlen(inst->name) - 1]).
 // For seal#0..seal#9 that is the same character, for seal#: and seal#; the result
-// is 10 and 11. Checked on 2026-09-20: all twelve names in the container
-// give 0..11.
+// is 10 and 11. All twelve names in the container give 0..11.
 // ---------------------------------------------------------------------------
 
 enum
@@ -1494,10 +1488,9 @@ internal int TrackMod_InstanceHasModel(const struct Instance *inst, const char *
 
 // THE PATH COMES FROM THE LEV, NOT FROM THE CODE. Eight points per bat,
 // seven segments, in ptrSpawnType2 - the same table from which the
-// retail constructor reads the seal route (RB_Seal.c:276). The author names
+// retail constructor reads the seal route (RB_Seal.c). The author names
 // reference/bat-paths.json as the source and adds that it was pulled from the finished
-// LEV; re-measured on 2026-09-20 it holds twelve entries of
-// eight points each.
+// LEV; the table holds twelve entries of eight points each.
 internal const s16 *TrackMod_BatPath(int sealID)
 {
 	struct GameTracker *gGT = sdata->gGT;
@@ -1742,8 +1735,8 @@ void NativeTrackMod_LevInstanceBorn(struct Instance *inst, int modelID)
 // WHAT LIES DIFFERENTLY IN Reload THAN IN THE SOURCE. sunset_bat_audio.c takes the
 // instances by their place in the list: index 0 the decoration bat, 1..6 the
 // first group. In the container at hand that is not true - there TWO
-// decoration bats sit at 0 and 1, and seal#0..seal#; follow at 2..13 (measured
-// on 2026-09-20). Whoever takes over the indices makes the sound follow a decoration
+// decoration bats sit at 0 and 1, and seal#0..seal#; follow at 2..13.
+// Whoever takes over the indices makes the sound follow a decoration
 // bat that never sets its visibility bit.
 //
 // So here we search for what was meant: the model decides,
@@ -1810,7 +1803,7 @@ internal void TrackMod_BatCollect(void)
 // The track's README and integration notes (INTEGRATION.md:91) say explicitly:
 // check, do not assume. The number 0x7F is a slot in a table built from the
 // HEADER OF THE RETAIL FILE KART.HWL (howl_ParseHeader), not from the container.
-// The container replaces exactly one bank and one sequence (native_assets.c:1441);
+// The container replaces exactly one bank and one sequence (native_assets.c);
 // whether the bank holding the bat sample is among them is decided by
 // whoever packs it - not by this code. So here we only report what
 // is there: whether the number lies in the table at all, which
@@ -1887,7 +1880,7 @@ internal void TrackMod_BatPostLogic(void)
 
 	// THE DECORATION BATS. The whole loop once, then 2.5 seconds of the
 	// calm pose 0. The source keeps a counter for this in Instance+0x50;
-	// in Reload that is depthBiasNormal (namespace_Instance.h:583), i.e. a
+	// in Reload that is depthBiasNormal (namespace_Instance.h), i.e. a
 	// field in use. That is why the counter lives here in the module.
 	for (i = 0; i < BAT_IDLE_COUNT; i++)
 	{
@@ -1969,7 +1962,7 @@ internal void TrackMod_BatReport(void)
 //
 // 227 ticks in total, so at 30 ticks per second a good seven and a half
 // seconds. The source wraps every number in FPS_DOUBLE, for a build with 60
-// ticks per second; Reload computes with 30 (MainFrame.c:222 sets 32 ms per
+// ticks per second; Reload computes with 30 (MainFrame.c sets 32 ms per
 // tick), so the numbers here are not doubled.
 //
 // WHERE THE IMAGES COME FROM. The flame is not in the LEV as a finished billboard,
@@ -1977,17 +1970,17 @@ internal void TrackMod_BatReport(void)
 // AnimTex chain, ten frames each. Each face is one quarter of the image. Whoever
 // takes one of them alone gets a quarter flame. So for each
 // frame ONE layout is built from the common hull of all four: smallest u, largest
-// u, likewise v, plus CLUT and page of the first. Measured on 2026-09-20 this gives
+// u, likewise v, plus CLUT and page of the first. For this track that gives
 // exactly 32 x 32 texels ten times, with a changing CLUT per frame (0x6635..0x6672)
 // and two pages (0x7f for frames 0..3, 0x78 for 4..9).
 //
 // WHERE THEY GO. Into gGT->iconGroup[0xA] - the same slot from which
-// RB_FlameJet_Particles (231/RB_FlameJet.c:234) gets its flames. The old
+// RB_FlameJet_Particles (231/RB_FlameJet.c) gets its flames. The old
 // pointer is remembered and put back on leaving.
 //
 // THE EMITTER. The track's PATCH_MAP lists 0x800B6C20 as "not a PC API". That is
-// emSet_fjFire, and Reload has it: 231/RB_FlameJet.c:131. It is used here just
-// as at :234 - the same set, the same icon slot. Nothing rebuilt.
+// emSet_fjFire, and Reload has it in 231/RB_FlameJet.c. It is used here just
+// as in RB_FlameJet_Particles - the same set, the same icon slot. Nothing rebuilt.
 // ---------------------------------------------------------------------------
 
 // From game/231/RB_FlameJet.c, which comes further down in this translation
@@ -2064,7 +2057,7 @@ struct TrackModFlameIcons
 };
 
 // The pointer list must lie directly behind the group - ICONGROUP_GETICONS
-// (namespace_Decal.h:172) computes exactly that way.
+// (namespace_Decal.h) computes exactly that way.
 CTR_STATIC_ASSERT(offsetof(struct TrackModFlameIcons, iconPtrs) == sizeof(struct IconGroup));
 
 global_variable struct TrackModFlameIcons s_flameIcons;
@@ -2237,8 +2230,8 @@ internal void TrackMod_FlameBuildIcons(void)
 // Give the icon slot back. Must run before another track
 // needs it - the track's integration notes (INTEGRATION.md section 6): "Scope
 // its replacement icon group to this level."
-// COUNTED SINCE 2026-09-20. The restore was built in earlier
-// without ever proving that it fires. Three counters answer that: how often the
+// COUNTED. A restore alone does not prove that it fires. Three counters
+// answer that: how often the
 // slot was taken, how often it was really put back, and how often
 // a FOREIGN pointer sat in it on release - the last case would be the
 // interesting one, because then someone else would have written in between and the
@@ -2460,7 +2453,7 @@ internal void TrackMod_FlameReport(void)
 //
 // WHAT IS NEWLY BUILT HERE is exactly one thing: the 25 remaining invisible
 // carriers. They are the only case covered neither by the zero rule nor by the
-// platform actor - they carry REAL texture assignments (measured on 2026-09-20: 0 of 25 are
+// platform actor - they carry REAL texture assignments (0 of 25 are
 // zeroed), so the zero rule does not apply, and they are not in the index list of the
 // platforms. They all lie at the same place: 25
 // horizontal slabs of 64 x 64 units, stacked on top of each other at
@@ -2468,7 +2461,7 @@ internal void TrackMod_FlameReport(void)
 // wandering door, at about 26 % of the lap. The author lists them as "neither
 // rendered nor solid". They are not solid by themselves: 0x4001 has neither GROUND
 // nor COLLISION_SURFACE, and so every quadblock falls through the filter of
-// every searcher (COLL.c:1110, :2169). They are kept from being drawn by
+// every searcher (COLL.c). They are kept from being drawn by
 // the same route as the platform frames - the visibility bit, cleared
 // after the rebuild of the field.
 //
@@ -2630,7 +2623,7 @@ global_variable const u16 s_surfTurboIndex[72] = {
 };
 
 // THE TABLE. Terrain 5 is TERRAIN_STONE, 10 is TERRAIN_NONE, 0 is
-// TERRAIN_ASPHALT, 1 and 2 are DIRT and GRASS (namespace_Level.h:80). All
+// TERRAIN_ASPHALT, 1 and 2 are DIRT and GRASS (namespace_Level.h). All
 // seven groups carry checkpoint 255 - that is what the track's integration notes
 // require (INTEGRATION.md section 7: "All listed protections and platform helpers
 // have checkpoint 255"), and that is what is in the container.
@@ -3045,13 +3038,13 @@ internal void TrackMod_SurfReset(void)
 //
 // Three notifications, three places in the host:
 //
-//   armed   COLL.c:2516 - a face with KILL_PLANE was touched and has
+//   armed   COLL.c - a face with KILL_PLANE was touched and has
 //           set DRIVER_COLL_FLAG_MASK_GRAB_REQUEST. Here the face is
 //           still known, so it is assigned to its group.
-//   start   COLL.c:1783 - the capture. That is the one funnel through which
+//   start   COLL.c - the capture. That is the one funnel through which
 //           EVERY recovery goes, no matter which of the five places set the
 //           bit.
-//   done    VehStuckProc.c:268 - the completed respawn: target search,
+//   done    VehStuckProc.c - the completed respawn: target search,
 //           set-down, engine on. After that the driver drives again.
 //
 // Counting only happens on our track. On a disc track all
@@ -3205,7 +3198,7 @@ internal void TrackMod_SurfReport(void)
 // already has.
 //
 // 1. THE BOT CRATES. The game's crate callback already treats bots
-//    correctly - RB_Crate.c:334 lets the crate burst and afterwards hands out
+//    correctly - RB_Crate.c lets the crate burst and afterwards hands out
 //    NO item when ACTION_BOT is set, and
 //    RB_CrateAny_GetDriver returns 1 for DYNAMIC_ROBOT_CAR, to which
 //    the callback answers with "done, without reward". What is missing is the
@@ -3216,14 +3209,13 @@ internal void TrackMod_SurfReport(void)
 // 2. THE ROUTE BIT. The author's patch changes, at PS1 address 0x80013924,
 //    a load constant from 0xFFB0 to 0xFFF0 - that is exactly bit 0x40,
 //    BOT_FLAG_BOSS_PATH_REQUESTED, which the MaskGrab recovery otherwise wipes
-//    away as well. In Reload the same mask is a list of names in BOTS.c:681.
+//    away as well. In Reload the same mask is a list of names in BOTS.c.
 //    "It matters at platform branches" (INTEGRATION.md section 7): a bot
 //    that has requested the branch and gets recovered on the way there
 //    otherwise forgets the wish and keeps driving the old route.
 //
 //    TRACK-LOCAL, NOT GLOBAL. The bit is not dead in Reload: PickupBots.c
-//    sets it (:312, :317, :328, :335) for the boss in adventure, and BOTS.c:
-//    1053 reads it. A global change would thus also alter boss races on 25
+//    sets it for the boss in adventure, and BOTS.c reads it. A global change would thus also alter boss races on 25
 //    disc tracks - for a gain that only arises on the three bot routes of
 //    Sunset Vista. So the recovery asks, and outside
 //    our track the answer is the same as before: keep nothing.
@@ -3251,7 +3243,7 @@ enum
 	CRATE_DRIVER_SLOTS = 8,
 
 	// The scratchpad slot the source writes as the raw address 0x1f800108.
-	// VehStuckProc.c:126 uses the same place for the same
+	// VehStuckProc.c uses the same place for the same
 	// kind of call.
 	CRATE_SPS_OFFSET = 0x108,
 };
@@ -3277,7 +3269,7 @@ global_variable s64 s_crateHitsWeapon;   // of those, on a question mark crate
 global_variable s64 s_crateHitsFruit;    // of those, on a fruit crate
 global_variable int s_crateCount;        // crates the setup found
 
-// A SNAPSHOT VALUE IS NOT ENOUGH HERE. Measured on 2026-09-20: over 2599 ticks
+// A SNAPSHOT VALUE IS NOT ENOUGH HERE. In one run, over 2599 ticks
 // 5203 crates were skipped because of a thread, and still at
 // two individually sampled moments the value was zero. A crate thread lives only briefly -
 // it is created on contact and goes away again when the crate is done.
@@ -3303,14 +3295,13 @@ global_variable int s_sprayWorstWeather; // highest weather_intensity seen
 // The source takes the last 28 of the 42 instances
 // (crate_runtime_layout.h: SUNSET_LEV_INSTANCE_COUNT 42,
 // SUNSET_CRATE_INSTANCE_COUNT 28) and reads them from ptrInstDefPtrArray, which
-// after LevInstDef_UnPack carries instance pointers instead of InstDef pointers
-// (LevInstDef.c:70).
+// after LevInstDef_UnPack carries instance pointers instead of InstDef pointers.
 //
 // Here we go over the InstDef list itself instead and select by
 // MODEL. Two reasons: the list is never rewritten, so there is
 // no pointer whose kind one has to guess - and "the last 28" is an
 // assumption about the order in the container, while "model 7 or 8" is a
-// statement about the thing itself. Measured on 2026-09-20 both give the same
+// statement about the thing itself. For this track both give the same
 // 28: instances 14..41, of which 24 wcrate#00..#23 on crate_question (model ID 8 =
 // PU_RANDOM_CRATE) and 4 fcrate#24..#27 on crate_fruit (ID 7 =
 // PU_FRUIT_CRATE).
@@ -3501,8 +3492,8 @@ internal void TrackMod_SprayUpdate(void)
 	// out: they would empty the particle pool that the limit below
 	// is meant to protect.
 	//
-	// Side finding from 2026-09-20: in a demo run gGT->drivers[0] is a
-	// bot, and bots have no currBlockTouching (COLL.c:1539 sets it only in the
+	// Side finding: in a demo run gGT->drivers[0] is a
+	// bot, and bots have no currBlockTouching (COLL.c sets it only in the
 	// player searcher). A demo run therefore never shows spray, no matter how many
 	// faces carry weather.
 	playerCount = gGT->numPlyrCurrGame;
@@ -3671,7 +3662,7 @@ internal int TrackMod_BudgetCountByModel(const char *modelName)
 	}
 
 	// AND THE SECOND LIST. The 42 instances of the LEV do NOT hang on
-	// pool.taken: INSTANCE.c:258 takes them out of the free list with
+	// pool.taken: INSTANCE_LevInitAll takes them out of the free list with
 	// LIST_RemoveFront and does not link them in anywhere again. They can only be
 	// found through their InstDefs - bats and crates would otherwise be invisible to
 	// this count.
@@ -3835,7 +3826,7 @@ void NativeTrackMod_BudgetStatic(void)
 
 // THROW AWAY, DO NOT CLEAN UP.
 //
-// Called at MainMain.c:191, i.e. in the restart branch right after
+// Called from MainMain.c, in the restart branch right after
 // MEMPACK_PopState. At this point the memory the instance lived in
 // has already been given back - cleaning up on it would be an access to
 // foreign ground. So the pointers are only forgotten; the host has already
@@ -3854,7 +3845,7 @@ void NativeTrackMod_Release(void)
 	TrackMod_LastThreeForget();
 
 	// The frames are NOT restored here. They lie in the LEV, which
-	// survives the PopState (MainMain.c:200 repacks the InstDefs of the
+	// survives the PopState (MainMain.c repacks the InstDefs of the
 	// same mesh_info right after) - but the restore still belongs in the
 	// setup, not in the teardown: only there is it certain that the track is
 	// ours again afterwards. Whoever restores here and then loads another track
@@ -3864,10 +3855,10 @@ void NativeTrackMod_Release(void)
 
 // SET UP.
 //
-// Called at MainMain.c:156, in state 1 - the first frame after loading
+// Called from MainMain.c, in state 1 - the first frame after loading
 // is done. This state is reached on BOTH paths: after a
 // fresh load and after a restart (state 2 sets
-// mainGameState = 1 at its end, MainMain.c:193). One place, two paths - that is why
+// mainGameState = 1 at its end). One place, two paths - that is why
 // the setup lives here and not the same code twice.
 //
 // FORGETTING ALWAYS COMES FIRST. Even if Release already ran. The case where
@@ -3926,8 +3917,8 @@ void NativeTrackMod_Reset(void)
 	// The check describes the container as it was loaded. If it stood
 	// further down, TrackMod_PlatBirth would already have switched three of the 123 frames from
 	// 0x4001 to 0x1801, and the flag distribution of the track would
-	// no longer be that of the container - measured on 2026-09-20, that was the first
-	// version of this code: one reported deviation, 145 instead of 148 at 0x4001.
+	// no longer be that of the container - an earlier version of this code did
+	// that and reported one deviation: 145 instead of 148 at 0x4001.
 	// The surfaces create nothing, so moving them forward costs nothing either.
 	TrackMod_SurfReset();
 
@@ -3969,7 +3960,7 @@ void NativeTrackMod_Reset(void)
 // The exit via CHANGE LEVEL does NOT go through the restart branch - no
 // MEMPACK_PopState, hence no Release either. Until the next level is loaded
 // and Reset runs again, the scaffold would still be "active", and its
-// pointers point to a LEV that is going away. Measured on 2026-09-19
+// pointers point to a LEV that is going away. In practice
 // this window is closed, because no game logic runs during loading -
 // but that is a property of the host's state machine and not a promise
 // to this module. The level number is cheap and turns it into one.
@@ -4005,7 +3996,7 @@ internal int TrackMod_LevelStillOurs(void)
 // reason is solid: whoever switches only after the physics leaves a driver standing for one
 // frame on a frame that no longer carries.
 //
-// THE PAUSE IS MEASURED SEPARATELY HERE, not via TrackMod_TickAllowed, for
+// THE PAUSE IS MEASURED SEPARATELY HERE, not via a plain early return, for
 // the same reason as with the door: what must be proven is not only "nothing was
 // done", but that the platforms really stand still DURING the pause -
 // model and carrying frame.
@@ -4114,10 +4105,10 @@ void NativeTrackMod_PostLogic(void)
 
 	// THE PAUSE, MEASURED SEPARATELY.
 	//
-	// Not via TrackMod_TickAllowed, because there is more to prove here than "nothing
+	// Not via a plain early return, because there is more to prove here than "nothing
 	// was done": that the door stands still DURING the pause, and that no jump
 	// occurs on resume. gGT->elapsedTimeMS keeps running during pause,
-	// you see - MainFrame.c:222 sets it to a fixed 32 ms there. Whoever does not
+	// you see - MainFrame.c sets it to a fixed 32 ms there. Whoever does not
 	// gate it moves the door right through the whole pause.
 	paused = ((gGT->gameMode1 & PAUSE_ALL) != 0);
 
@@ -4191,8 +4182,7 @@ void NativeTrackMod_PostLogic(void)
 // ---------------------------------------------------------------------------
 // ROUTE 1: MAKE A FACE INVISIBLE WITHOUT TAKING IT OUT OF THE COLLISION.
 //
-// Of the four routes that were listed earlier, this one was
-// chosen. In short, why:
+// Of the possible routes, this one was chosen. In short, why:
 //
 //   * It cannot narrow the collision. COLL.c reads the visibility field
 //     nowhere - not even by accident, because it is never even passed
@@ -4204,21 +4194,21 @@ void NativeTrackMod_PostLogic(void)
 //     modified container - an index list in the track code, nothing else.
 //
 // WHERE THE BIT IS READ: Ovr226_800a0f0c_SeedFullDynamicVisibilityScratch
-// (226_00_DrawLevelOvr1P.c:8636) fetches the word via
-// visFaceList + ((blockID >> 3) & ~3) (until 2026-09-22 & 0x1fc, see there). All four draw paths go
-// through there - full-dynamic (:8694), split-ground (:8803), the BSP list by role
-// (:9060) and the water list (:9742) - and the two-player path uses
-// the same functions (227_00_DrawLevelOvr2P.c:145..159). A cleared bit
+// (226_00_DrawLevelOvr1P.c) fetches the word via
+// visFaceList + ((blockID >> 3) & ~3) (retail masks with 0x1fc, see there). All four
+// draw paths go through there - full-dynamic, split-ground, the BSP list by role
+// and the water list - and the two-player path uses the same functions
+// (227_00_DrawLevelOvr2P.c). A cleared bit
 // means at all four places: not into the draw list.
 //
 // WHY THE PASS COMES AFTER THE if ON RENDER_FLAG_VISMEM_REFRESH_MASK.
 // The field is not rewritten every frame, and it is also not touched the same way
 // every frame:
 //
-//   * MainFrame_ReplacePackedVisList (MainFrame.c:724) OVERWRITES the whole
+//   * MainFrame_ReplacePackedVisList (MainFrame.c) OVERWRITES the whole
 //     field - but only when the source has changed (visFaceSrc != camDC).
 //     After that all bits are back the way the track ships them.
-//   * MainFrame_VisMemAddDriverPVS (MainFrame.c:664) ORs the view of the
+//   * MainFrame_VisMemAddDriverPVS (MainFrame.c) ORs the view of the
 //     driver into it - that can happen in any frame and can set a cleared
 //     bit again.
 //   * And when RENDER_FLAG_VISMEM_REFRESH_MASK is not set, neither
@@ -4227,7 +4217,7 @@ void NativeTrackMod_PostLogic(void)
 // A clearing pass INSIDE the if would thus not cover exactly the third case.
 // That nothing goes wrong there today, because RENDER_FLAG_DRAW_LEVEL
 // is itself part of the mask - a frame without rebuild does not draw a level either -,
-// is a property of today's mask (namespace_Main.h:109) and not a
+// is a property of today's mask (namespace_Main.h) and not a
 // promise. So the pass comes after the if and runs in EVERY frame.
 // It costs nothing there: whatever is already cleared is read and
 // skipped (s_platBitsAlreadyClear counts exactly that).

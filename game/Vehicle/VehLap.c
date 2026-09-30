@@ -85,8 +85,8 @@ void VehLap_UpdateProgress(struct Driver *driver)
 	//
 	// WHERE THE TOO-LARGE INDEX COMES FROM. A bot takes its checkpoint from the
 	// quadblock under the kart as soon as it drives beside the navigation line
-	// (BOTS.c:1997, applies with BOT_FLAG_ESTIMATE_NAV or BOT_FLAG_FREE_PHYSICS);
-	// otherwise from goBackCount of the navigation data (BOTS.c:1960). The first path
+	// (BOTS_ThTick_Drive, applies with BOT_FLAG_ESTIMATE_NAV or BOT_FLAG_FREE_PHYSICS);
+	// otherwise from goBackCount of the navigation data (same function). The first path
 	// delivers what the track author wrote onto the face, and that
 	// is 255 on everything that is not road.
 	//

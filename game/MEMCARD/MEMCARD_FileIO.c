@@ -20,7 +20,7 @@ void MEMCARD_CloseFile(void)
 
 	if (fd != -1)
 	{
-		close(fd);
+		_close(fd);
 		sdata->memcard_fd = -1;
 	}
 
@@ -29,7 +29,7 @@ void MEMCARD_CloseFile(void)
 
 int MEMCARD_ReadFile(int start_offset, int size)
 {
-	if ((lseek(sdata->memcard_fd, start_offset, 0) >= 0) && (read(sdata->memcard_fd, sdata->memcard_ptrStart, size) >= 0))
+	if ((_lseek(sdata->memcard_fd, start_offset, 0) >= 0) && (_read(sdata->memcard_fd, sdata->memcard_ptrStart, size) >= 0))
 	{
 		// The read has started, the result will be found
 		// the next time we wait for an event result
@@ -40,9 +40,9 @@ int MEMCARD_ReadFile(int start_offset, int size)
 	return MC_RETURN_TIMEOUT;
 }
 
-u8 MEMCARD_WriteFile(int start_offset, const u8 *data, int size)
+u8 MEMCARD_WriteFile(int start_offset, const u8 *ptrData, int size)
 {
-	if ((lseek(sdata->memcard_fd, start_offset, 0) >= 0) && (write(sdata->memcard_fd, data, size) >= 0))
+	if ((_lseek(sdata->memcard_fd, start_offset, 0) >= 0) && (_write(sdata->memcard_fd, ptrData, size) >= 0))
 	{
 		// The write has started, the result will be found
 		// the next time we wait for an event result

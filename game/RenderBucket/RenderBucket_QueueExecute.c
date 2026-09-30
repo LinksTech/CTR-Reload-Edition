@@ -527,7 +527,7 @@ static inline void RenderBucket_SplitInterpolateVertex(struct RenderBucketSplitV
 	// NOTE(aalhendi): Source-backs helper 0x8006b82c. Callers prefill dst->z,
 	// matching retail scratchpad 0xdc/0xf4.
 	//
-	// +0xe IS NOT WRITTEN HERE (2026-09-18). `dst->splitDist = 0;` used to stand
+	// +0xe IS NOT WRITTEN HERE. `dst->splitDist = 0;` used to stand
 	// here, with the reasoning that an intersection point lies on the plane and
 	// therefore has distance zero. The sentence is true - but it was written down and
 	// not copied from retail: retail writes the halfword neither in 0x8006b82c nor
@@ -1405,7 +1405,7 @@ static struct ModelHeader *RenderBucket_SelectModelHeader(struct Instance *inst,
 			// two are worth reading together. The rule is: a detail switch may
 			// only move a header that nobody selected on purpose.
 			//
-			// AND THERE IS A THIRD ONE, MEASURED 2026-08-29. READ THIS BEFORE
+			// AND THERE IS A THIRD ONE, MEASURED. READ THIS BEFORE
 			// TRYING TO MAKE THE ANIMATION GUARD BELOW LET MORE THROUGH.
 			//
 			// The obvious improvement is to narrow that guard: take the fine

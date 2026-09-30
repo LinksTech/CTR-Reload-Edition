@@ -59,7 +59,7 @@ enum RaceFlagConstants
 
 // THE LETTERING COMPUTES IN THE 512 SPACE, NOT IN THE CANVAS.
 //
-// Until 2026-09-26 these two positions followed the canvas: fly-in from W+60,
+// In an earlier version these two positions followed the canvas: fly-in from W+60,
 // rest at W/2. The idle offset RaceFlag_Transition, however, pushes the whole
 // lettering left by a fixed 40 columns per frame (down to -1000), and a
 // letter that was still flying in then stood W-512 further right than in 4:3 -
@@ -605,7 +605,7 @@ SKIP_LOADING_TEXT:
 	//
 	// THE FLAG IS ENLARGED, NOT STRETCHED.
 	//
-	// Until 2026-09-26 the X row of the matrix was stretched by W/512 here:
+	// In an earlier version the X row of the matrix was stretched by W/512 here:
 	// the flag filled the wide canvas, but at 43:18 every check became
 	// 1.79 times as wide as it is high. The flag is the background of all menus
 	// and of the loading screen, and a full-screen background may fill the width,

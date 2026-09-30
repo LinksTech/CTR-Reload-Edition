@@ -8,6 +8,7 @@ int NativeTrack_ActiveForLevel(int levelID);
 void NativeSound_ArmForLevel(int levelID);
 const char *NativeTrack_LoadedName(void);
 void Platform_Log(const char *format, ...);
+void Platform_ApplyPendingAspect(void);
 
 // What of the loaded LEV is in memory after the pointer map
 // has run.
@@ -39,7 +40,7 @@ internal void LOAD_NativeReportContainerLevel(struct Level *lev)
 	// pieces of one dome: Dingo Canyon has 43, 46, 77, 108, 37, 62, 64 and 32
 	// faces in them.
 	//
-	// The test data from 2026-08-28 has the same in all eight: 1536 faces,
+	// Early container test data had the same in all eight: 1536 faces,
 	// byte-identical. Drawing four of them means layering the same sky four times
 	// on top of each other. That is not visible in the frame, only in memory, and
 	// that is why it is said here.
@@ -205,14 +206,10 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 	case 0:
 	{
 #if defined(CTR_NATIVE)
-		// Beta 0: an aspect ratio chosen on the GRAPHICS page takes effect from
+		// An aspect ratio chosen on the GRAPHICS page takes effect from
 		// here - before MainInit_PrimMem and MainInit_FinalizeInit, which size the
 		// draw memory and the world view by the canvas.
-		{
-			void Platform_ApplyPendingAspect(void);
-
-			Platform_ApplyPendingAspect();
-		}
+		Platform_ApplyPendingAspect();
 #endif
 		if (!boolPlayMusicDuringLoading)
 		{

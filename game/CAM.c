@@ -328,7 +328,7 @@ void CAM_ClearScreen(struct GameTracker *gGT)
 		// colour directly into the 512 columns wide frame buffer. Since the widescreen rework
 		// pb->rect is the canvas (918 at 43:18): with rect.w here, every frame
 		// 406 columns of texture memory to the right of the frame buffer were overwritten, in
-		// both rows (0..215 and 296..511) - measured on 2026-09-05 in the VRAM dump
+		// both rows (0..215 and 296..511) - measured in the VRAM dump
 		// at 43:18, Crash Cove VBlank 1500: at the top the sky colour, at the bottom the
 		// ground colour, the texture pages underneath gone. On the picture this was
 		// the same class of stripes as with the clock and the missile.
@@ -1625,12 +1625,12 @@ LAB_8001ab04:
 
 			// No camera + No ghosts (battle maps)
 #if defined(CTR_NATIVE)
-			// CONTAINER TRACKS START WITHOUT A FLY-IN (by design, 2026-09-29), even
+			// CONTAINER TRACKS START WITHOUT A FLY-IN (by design), even
 			// when the LEV carries a camera path of its own (slot 3, count >= 4).
 			// They take the same path as a retail track without a camera path:
-			// on the first camera run (MainInit.c:794) the fly-in is over,
+			// on the first camera run (end of MainInit_FinalizeInit) the fly-in is over,
 			// START_OF_RACE drops, the HUD comes, the traffic light counts from 0xf00
-			// (MainMain.c:361). The table itself stays untouched, the
+			// (MainMain.c). The table itself stays untouched, the
 			// finish camera (slot 2, CAM_EndOfRace and CAM_ThTick) keeps reading it.
 			// Disc tracks: NativeTrack_ActiveForLevel is 0 without a loaded
 			// container, the retail path stays the same. The preview

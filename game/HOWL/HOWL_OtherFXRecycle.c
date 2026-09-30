@@ -9,7 +9,7 @@ void OtherFX_RecycleNew(u32 *soundID_Count, u32 newSoundID, u32 modifyFlags)
 	    (local != 0) &&
 
 	    // if soundID doesn't match new ID
-	    ((local & 0xffff) != newSoundID))
+	    ((u32)(local & 0xffff) != newSoundID))
 	{
 		OtherFX_Stop1(local);
 

@@ -69,10 +69,9 @@ void LOAD_InitCD()
 	// -> LOAD_InitCDvol. Native skips CdInit (no disc), so call the volume
 	// hook explicitly to preserve the same init ordering.
 	LOAD_InitCDvol();
-	return;
-#endif
-
+#else
 	CDSYS_Init(1);
+#endif
 }
 
 void *LOAD_ReadDirectory(char *filename)

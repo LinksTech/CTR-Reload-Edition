@@ -391,8 +391,8 @@ static struct TextureLayout *DrawLevelOvr1P_ResolveMidTexture(const struct QuadB
 // happens after that is not here but at the callers of
 // WriteProjectedUv: a NULL from the resolver SKIPS the UV assignment, and
 // the scratch memory keeps tpage, CLUT and UV of the PREVIOUS quad. The face
-// is drawn anyway - with a foreign texture, silently, and until
-// 2026-09-21 without a counter.
+// is drawn anyway - with a foreign texture, silently, and an earlier
+// version did not count it.
 //
 // On the disc the sieve is dead: no tpage word of a disc track carries
 // bits from 9 up. A community tool can set them - bit 9 (dithering),
@@ -795,7 +795,7 @@ static int DrawLevelOvr1P_MaxOfFour(int a, int b, int c, int d)
 // on a road that looks as if its texture were missing - and on a
 // track whose four levels are byte-identical, nothing shows.
 //
-// Sunset Vista, 2026-09-21: the texture layout sieve has ZERO rejections, the
+// Sunset Vista (measured): the texture layout sieve has ZERO rejections, the
 // road under the kart is still flat and smeared, and 84 of the 5,695
 // layout groups differ per level. Whether the chain lies
 // reversed there only a run can tell. So here, ONLY on container tracks
@@ -2740,10 +2740,10 @@ static u32 DrawLevelOvr1P_GetPreparedProjectedMaxDepthCount(const struct DrawLev
 int CTR_Canvas_FromReferenceWidth(int width);
 int g_cfg_clipWindow512 = 0; // --clip-window-512: old window (for comparison in the same build)
 int g_cfg_clipTrace = 0;     // --clip-trace: per frame, records consumed / polygons drawn
-static int s_zRecordsConsumed;
-static int s_zPolysEmitted;
-static int s_zRecordsConsumedTotal;
-static int s_zPolysEmittedTotal;
+static int s_clipRecordsConsumed;
+static int s_clipPolysEmitted;
+static int s_clipRecordsConsumedTotal;
+static int s_clipPolysEmittedTotal;
 
 static int DrawLevelOvr1P_SourceInsideClipRecordWindow(const struct DrawLevelOvr1PScratchVertex *src)
 {
@@ -2770,7 +2770,7 @@ static int DrawLevelOvr1P_SourceInsideClipRecordWindow(const struct DrawLevelOvr
 	// NOTE(aalhendi): Retail 0x800a4f38/0x800a3640 use the sign bit of these
 	// extent checks ANDed together; negative means the source point is inside.
 	//
-	// 2026-09-14: THE HORIZONTAL BOUND IN REFERENCE WIDTH. 0x100 is
+	// THE HORIZONTAL BOUND IN REFERENCE WIDTH. 0x100 is
 	// half the width of the 512 canvas; the world canvas is 918 columns wide
 	// at 43:18, and a vertex between 256 and 459 columns from the centre
 	// lies in the picture but fell out of the window - the record was not
@@ -2786,51 +2786,53 @@ static int DrawLevelOvr1P_SourceInsideClipRecordWindow(const struct DrawLevelOvr
 	return (s32)insideBits < 0;
 }
 
-// MEASUREMENT (2026-09-14), two counters for two open findings.
+// MEASUREMENT, two counters for two findings that are fixed by now.
 //
-// The clip record window above (retail 0x800a4f38) is 0x100 wide around the
+// The retail clip record window (0x800a4f38) is 0x100 wide around the
 // projected centre - half the picture width at 4:3. At 43:18 the
 // world canvas is 918 columns wide; a vertex between 256 and 459 columns
-// from the centre lies in the picture and yet outside the window. Counted is
+// from the centre lies in the picture and yet outside the 0x100 window. Counted is
 // how often ShouldWriteRenderedClippedRecord returns 0 ALTHOUGH a vertex
 // lies in the window vertically and in depth and horizontally between 0x100 and
-// half the canvas - i.e. fails only because of the width. At 4:3 this
+// half the canvas - i.e. fails only because of the width. With the widened
+// window above that stays zero; with --clip-window-512 (the old window) it
+// counts what the widening recovers. At 4:3 this
 // number is zero by construction (half canvas = 0x100); as a check that the counter
 // fires, the same count runs alongside with a fixed upper bound of 459.
 // How many quadblocks per run go through the full-dynamic helper for slot 0
-// (retail 0x800a15d4) - that is where the matching bug sits that upstream
-// b37cd1b7e fixes. First the number, then the fix.
+// (retail 0x800a15d4) - that is where the matching bug sat that upstream
+// b37cd1b7e fixes (fixed here, see Ovr226_800a15d4_FullDynamicHelperSlot0).
 void Platform_Log(const char *format, ...);
 void Platform_AtExitReport(void (*report)(void));
 int CTR_Canvas_ActiveWidth(void);
 int Platform_GetVBlankCount(void);
 
-static int s_y3ClipRecordSaid;               // the first 20 cases with VBlank, so that a screenshot can be taken there
+static int s_clipWindowSaid;               // the first 20 cases with VBlank, so that a screenshot can be taken there
 
-static int s_y3ClipRecordCalls;
-static int s_y3ClipRecordZero;
-static int s_y3ClipRecordZeroOnlyWidth;      // returned 0, a vertex failed only because of the width (|x| in 0x100..half canvas)
-static int s_y3ClipRecordZeroOnlyWidth459;   // the same with the fixed bound 459 (check at 4:3)
-static int s_y2HelperSlot0Quads;
-static int s_y2FullDynamicDispatches;        // check: all calls of the full-dynamic helper chain, every slot
-static int s_yReportRegistered;
+static int s_clipWindowCalls;
+static int s_clipWindowZero;
+static int s_clipWindowZeroOnlyWidth;      // returned 0, a vertex failed only because of the width (|x| in 0x100..half canvas)
+static int s_clipWindowZeroOnlyWidth459;   // the same with the fixed bound 459 (check at 4:3)
+static int s_fullDynSlot0Quads;
+static int s_fullDynDispatches;        // check: all calls of the full-dynamic helper chain, every slot
+static int s_clipCountersRegistered;
 
-static void DrawLevelOvr1P_ReportRoundY(void)
+static void DrawLevelOvr1P_ReportClipCounters(void)
 {
 	Platform_Log("[CTR 226] at exit: clip record window: %d call(s), %d returned 0, %d of those only because a vertex sat beyond 0x100 but inside the half canvas (%d columns), %d with the fixed bound 459\n",
-	             s_y3ClipRecordCalls, s_y3ClipRecordZero, s_y3ClipRecordZeroOnlyWidth, CTR_Canvas_ActiveWidth() / 2, s_y3ClipRecordZeroOnlyWidth459);
+	             s_clipWindowCalls, s_clipWindowZero, s_clipWindowZeroOnlyWidth, CTR_Canvas_ActiveWidth() / 2, s_clipWindowZeroOnlyWidth459);
 	Platform_Log("[CTR 226] at exit: %d quadblock(s) went through the full-dynamic helper for slot 0, out of %d full-dynamic helper dispatch(es) over all slots\n",
-	             s_y2HelperSlot0Quads, s_y2FullDynamicDispatches);
+	             s_fullDynSlot0Quads, s_fullDynDispatches);
 	Platform_Log("[CTR 226] at exit: clip records consumed %d, polygons emitted from them %d (clip window %s)\n",
-	             s_zRecordsConsumedTotal + s_zRecordsConsumed, s_zPolysEmittedTotal + s_zPolysEmitted, g_cfg_clipWindow512 ? "0x100 fixed" : "reference width");
+	             s_clipRecordsConsumedTotal + s_clipRecordsConsumed, s_clipPolysEmittedTotal + s_clipPolysEmitted, g_cfg_clipWindow512 ? "0x100 fixed" : "reference width");
 }
 
-static void DrawLevelOvr1P_RegisterRoundYReport(void)
+static void DrawLevelOvr1P_RegisterClipCountersReport(void)
 {
-	if (!s_yReportRegistered)
+	if (!s_clipCountersRegistered)
 	{
-		s_yReportRegistered = 1;
-		Platform_AtExitReport(DrawLevelOvr1P_ReportRoundY);
+		s_clipCountersRegistered = 1;
+		Platform_AtExitReport(DrawLevelOvr1P_ReportClipCounters);
 	}
 }
 
@@ -2863,7 +2865,7 @@ static void DrawLevelOvr1P_RegisterRoundYReport(void)
 // question sits where it is decided WHETHER a quadblock is visible at all:
 // at the four places that evaluate the visibility bit.
 //
-// MEASURED ON THE DATA, 2026-09-19: in all 15 containers tested there is
+// MEASURED ON THE DATA: in all 15 containers tested there is
 // NO icon group whose first level is zero and whose remaining levels are not -
 // and no quadblock where only some of its five references are zeroed.
 // That is why the question may be asked about the first level and yet
@@ -2903,7 +2905,7 @@ static int DrawLevelOvr1P_IsBlankTextureLayout(const struct TextureLayout *textu
 	{
 		// A NULL POINTER IS NOT THE SAME as a zeroed assignment, and it
 		// is not treated that way here either. It occurs in none of the 15 containers
-		// (measured, 2026-09-19); whatever the draw path did with it so far stays
+		// measured; whatever the draw path did with it so far stays
 		// as it was.
 		return 0;
 	}
@@ -2936,8 +2938,8 @@ static int DrawLevelOvr1P_IsBlankTexturePointer(u32 texturePtr)
 // the rule applies. A branch that is never executed is not
 // tested - the same rule as for the bounds check in VehLap.c.
 //
-// The question itself is kept apart from the counting, because since
-// 2026-09-20 it has a second asker: the surface check in native_trackmod.c
+// The question itself is kept apart from the counting, because it has a
+// second asker: the surface check in native_trackmod.c
 // asks it once per surface group at track start, to prove that
 // exactly those groups are without texture that the author lists as invisible - and
 // no other. That is a check, not a draw operation; it must not drive up the
@@ -3011,8 +3013,8 @@ static int DrawLevelOvr1P_SourceFailsClipWindowOnlyByWidth(const struct DrawLeve
 
 static int DrawLevelOvr1P_ShouldWriteRenderedClippedRecord(const struct DrawLevelOvr1PScratchVertex *projected, const int *indices, int count)
 {
-	DrawLevelOvr1P_RegisterRoundYReport();
-	s_y3ClipRecordCalls++;
+	DrawLevelOvr1P_RegisterClipCountersReport();
+	s_clipWindowCalls++;
 
 	for (s32 vertexIndex = 0; vertexIndex < count; vertexIndex++)
 	{
@@ -3022,7 +3024,7 @@ static int DrawLevelOvr1P_ShouldWriteRenderedClippedRecord(const struct DrawLeve
 		}
 	}
 
-	s_y3ClipRecordZero++;
+	s_clipWindowZero++;
 	{
 		const int halfCanvas = CTR_Canvas_ActiveWidth() / 2;
 		int onlyWidth = 0;
@@ -3035,15 +3037,15 @@ static int DrawLevelOvr1P_ShouldWriteRenderedClippedRecord(const struct DrawLeve
 			onlyWidth |= DrawLevelOvr1P_SourceFailsClipWindowOnlyByWidth(src, halfCanvas);
 			onlyWidth459 |= DrawLevelOvr1P_SourceFailsClipWindowOnlyByWidth(src, 460);
 		}
-		s_y3ClipRecordZeroOnlyWidth += onlyWidth;
-		s_y3ClipRecordZeroOnlyWidth459 += onlyWidth459;
+		s_clipWindowZeroOnlyWidth += onlyWidth;
+		s_clipWindowZeroOnlyWidth459 += onlyWidth459;
 
-		if (onlyWidth && (s_y3ClipRecordSaid < 20))
+		if (onlyWidth && (s_clipWindowSaid < 20))
 		{
 			const s16 *center = CTR_VECTOR_DATA(&(DrawLevelOvr1P_Scratch()->projectedCenter));
 			const struct DrawLevelOvr1PScratchVertex *v0 = &projected[indices[0]];
 
-			s_y3ClipRecordSaid++;
+			s_clipWindowSaid++;
 			Platform_Log("[CTR 226] vblank %d: clip record suppressed only by width, %d vertices, vertex 0 at (%d,%d,%d) from centre, half canvas %d\n",
 			             Platform_GetVBlankCount(), count, (int)v0->pos[0] - center[0], (int)v0->pos[1] - center[1], (int)v0->pos[2] - center[2], halfCanvas);
 		}
@@ -3086,7 +3088,7 @@ static u32 DrawLevelOvr1P_GetRenderedClipRecordHeader(const struct QuadBlock *bl
 	return header;
 }
 
-// MISSING GROUND (2026-09-21, a test run): the box rejection of the
+// MISSING GROUND: the box rejection of the
 // static writer, per face with quadblock and axis. The box around the
 // camera position (+-half canvas / +-0x180 / +-0x100) is an economy measure for the
 // PS1 clip buffer; a face at the near plane whose vertices all lie
@@ -3441,7 +3443,7 @@ static void DrawLevelOvr1P_WriteClipRecordGT3(POLY_GT3 *poly, const struct DrawL
 static void DrawLevelOvr1P_WriteClipRecordGT4(POLY_GT4 *poly, const struct DrawLevelOvr1PScratchVertex *emit, u32 code, u32 uv0, u32 uv1, u32 uv2)
 {
 	DrawLevelOvr1P_WriteClipRecordGT3((POLY_GT3 *)poly, emit, code, uv0, uv1, uv2);
-	s_zPolysEmitted++;
+	s_clipPolysEmitted++;
 	CtrGpu_WriteColorCode(&poly->r3, DrawLevelOvr1P_GetClipRecordColorCode(&emit[3], 0));
 	CtrGpu_WritePackedXY(&poly->x3, DrawLevelOvr1P_PackProjectedSxy(&emit[3]));
 	NativeSubpixel_Forward(&poly->x3, &emit[3].posScreen[0]);
@@ -3553,7 +3555,7 @@ static int Ovr226_800aad44_EmitClipRecordGT4(struct PushBuffer *pb, struct PrimM
 	u32 code = DrawLevelOvr1P_SelectRawPrimitiveCode(uv1, 0x3e, 0x3c);
 
 	DrawLevelOvr1P_WriteClipRecordGT4(prim, emit, code, uv0, uv1, uv2);
-	s_zPolysEmitted++;
+	s_clipPolysEmitted++;
 	DrawLevelOvr1P_AddRawPrimToOt(primMem, prim, 12, otEntry);
 	primMem->cursor = nextPrim;
 	return 1;
@@ -3586,7 +3588,7 @@ static int Ovr226_800aac00_EmitClipRecordGT3(struct PushBuffer *pb, struct PrimM
 	u32 code = DrawLevelOvr1P_SelectRawPrimitiveCode(uv1, 0x36, 0x34);
 
 	DrawLevelOvr1P_WriteClipRecordGT3(prim, emit, code, uv0, uv1, uv2);
-	s_zPolysEmitted++;
+	s_clipPolysEmitted++;
 	DrawLevelOvr1P_AddRawPrimToOt(primMem, prim, 9, otEntry);
 	primMem->cursor = nextPrim;
 	return 1;
@@ -4082,13 +4084,13 @@ static int DrawLevelOvr1P_HasClipRecordConsumerPrimReserve(const struct PrimMem 
 
 #if defined(CTR_NATIVE)
 // ===========================================================================
-// THE ABORT SPEAKS UP (2026-09-28).
+// THE ABORT SPEAKS UP.
 //
 // If a bucket's share no longer fits into the primitive memory, the
 // walk gives up, and Ovr226_800a0e10_DispatchBucketTable aborts ALL
 // following buckets including the clip record decomposition. That stays retail.
 // The only new thing is that it no longer happens silently: the black wedges in
-// widescreen (found 2026-09-18, cause 2026-09-28: the primitive memory was sized
+// widescreen (cause: the primitive memory was sized
 // for 4:3, MainInit_PrimMem) showed up as picture glitches because this place
 // said nothing. The same rule as for the sound memory (HOWL_Bank.c): silent
 // is worse than loud.
@@ -4284,7 +4286,7 @@ static int DrawLevelOvr1P_HasBucketPrimReserve(const struct PrimMem *primMem, u3
 	// allocation; when a bucket cannot reserve its share the walk returns, and
 	// the dispatch drops every bucket after it and the near-plane cuts - a hole
 	// in the picture. Counted here so that "the track flickers" arrives as a
-	// number instead of as an impression, and said in the log since 2026-09-28
+	// number instead of as an impression, and said in the log
 	// (DrawLevelOvr1P_NoteBucketGaveUp above).
 	const int fits = (curr <= end) && ((u32)(reserve + sDrawLevelOvr1P_PrimReserveBias) <= (u32)(end - curr));
 
@@ -4318,12 +4320,12 @@ static int DrawLevelOvr1P_ConsumeClipRecords(struct PushBuffer *pb, struct PrimM
 
 	if (g_cfg_clipTrace)
 	{
-		Platform_Log("[CTR 226] vblank %d: clip records consumed %d, polygons emitted %d\n", Platform_GetVBlankCount(), s_zRecordsConsumed, s_zPolysEmitted);
+		Platform_Log("[CTR 226] vblank %d: clip records consumed %d, polygons emitted %d\n", Platform_GetVBlankCount(), s_clipRecordsConsumed, s_clipPolysEmitted);
 	}
-	s_zRecordsConsumedTotal += s_zRecordsConsumed;
-	s_zPolysEmittedTotal += s_zPolysEmitted;
-	s_zRecordsConsumed = 0;
-	s_zPolysEmitted = 0;
+	s_clipRecordsConsumedTotal += s_clipRecordsConsumed;
+	s_clipPolysEmittedTotal += s_clipPolysEmitted;
+	s_clipRecordsConsumed = 0;
+	s_clipPolysEmitted = 0;
 	return result;
 }
 
@@ -4370,7 +4372,7 @@ static int DrawLevelOvr1P_ConsumeClipRecordsBody(struct PushBuffer *pb, struct P
 			break;
 		}
 
-		s_zRecordsConsumed++;
+		s_clipRecordsConsumed++;
 		if (!Ovr226_800aa848_ProjectFirstThreeClipRecordsAndDispatch(pb, primMem, record))
 		{
 			// The consumer has no primitive space left (0xd68 per record)
@@ -4429,7 +4431,7 @@ static int DrawLevelOvr1P_SelectDirectBit(s32 nclipResult, u32 tableWord, u32 dr
 	return 0;
 }
 
-// MISSING GROUND, second counter (2026-09-21): the cull decision per
+// MISSING GROUND, second counter: the cull decision per
 // quadblock. SelectDirectMask is the only place where a face in the
 // picture (the callers check "outside" beforehand) is rejected wholly or
 // half by its winding. Counted per ground quadblock (QUADBLOCK_FLAG_GROUND):
@@ -4437,7 +4439,7 @@ static int DrawLevelOvr1P_SelectDirectBit(s32 nclipResult, u32 tableWord, u32 dr
 // blocks that were wholly rejected in EVERY call - those are the holes that
 // the offline check of the LEV (88 wound the other way, 3 triangles, 14 half)
 // predicts. No switch; one array access per call.
-// MEASURED 2026-09-21 (600 frames demo): 514 blocks rejected in EVERY call -
+// MEASURED on one container track (600 frames demo): 514 blocks rejected in EVERY call -
 // that is the flip side of this track's visibility lists (93 to 100 % marked):
 // faces BEHIND the camera pass the mirrored screen test and
 // count here as rejected. The counter does not tell these apart; whoever needs it
@@ -7787,13 +7789,12 @@ static int Ovr226_800a898c_WriteDynamicRenderedClippedRecordAtOtEntry(struct Pus
 	}
 
 	// This writer never had a space test; the box was the only
-	// brake. Since 2026-09-15 it checks the space for EVERY record, in both
+	// brake. It now checks the space for EVERY record, in both
 	// switch positions (see the water version Ovr226_800a34d4 further up):
 	// with --near-box-keep a kept record can fill the buffer so far
 	// that the next regular one would write past the end - and the consumer
 	// then threw away the whole frame (end > bufferEnd). One test, one exit; only
-	// the --near-report counter stays reserved for the keep path. Until
-	// 2026-09-16 there were two if blocks here that together did exactly that.
+	// the --near-report counter stays reserved for the keep path.
 	if (!DrawLevelOvr1P_HasClipRecordSpace(recordSize))
 	{
 		if (CTR_NearClip_BoxKeep())
@@ -8685,7 +8686,7 @@ static struct QuadBlock **DrawLevelOvr1P_GetRenderedListCursor(void)
 
 #if defined(CTR_NATIVE)
 // ===========================================================================
-// THE LIST HAS AN END (2026-09-28).
+// THE LIST HAS AN END.
 //
 // Every list walk passes the blocks whose vertices made the GTE
 // overflow (too near, behind the camera, far beside the picture) via
@@ -9164,16 +9165,17 @@ static int Ovr226_800a15c0_EmitFullDynamicExtraFace3(struct PushBuffer *pb, stru
 static int Ovr226_800a15d4_FullDynamicHelperSlot0(struct PushBuffer *pb, struct PrimMem *primMem, struct QuadBlock *block,
                                                   struct DrawLevelOvr1PScratchVertex *projected, struct TextureLayout *texture, int depth)
 {
-	DrawLevelOvr1P_RegisterRoundYReport();
-	s_y2HelperSlot0Quads++;
+	DrawLevelOvr1P_RegisterClipCountersReport();
+	s_fullDynSlot0Quads++;
 
-	// 2026-09-14: slot 0 is the mirror image of slot 7 (below)
+	// Slot 0 is the mirror image of slot 7 (below)
 	// and of case 0 of the projected grid chain (switch (slot) in this file):
 	// first the two MIXED faces 0 and 1 with face number 0, then the
-	// grid face 0. Until then the grid faces 1 and 2 ran here with their
+	// grid face 0. An earlier version ran the grid faces 1 and 2 here with their
 	// own face numbers - a matching bug of the retail reimplementation
 	// (0x800a15d4) that upstream fixed as b37cd1b7e; the concept is written
-	// here in a version of its own. Counted before the fix: see the log line at exit.
+	// here in a version of its own. The number of quadblocks through this
+	// helper is in the log line at exit.
 	if (!DrawLevelOvr1P_EmitFullDynamicTerminalFacePreserveSlot(pb, primMem, block, projected, sDrawLevelOvr1PGridMixedFaceIndices[0], 0, texture, depth,
 	                                                            DRAW_LEVEL_OVR1P_DIRECT_QUAD))
 	{
@@ -9342,8 +9344,8 @@ static int DrawLevelOvr1P_DispatchFullDynamicHelperSequence(struct PushBuffer *p
                                                             struct DrawLevelOvr1PScratchVertex *projected, DrawLevelOvrRetailLabel handlerAddress,
                                                             struct TextureLayout *texture, int depth)
 {
-	DrawLevelOvr1P_RegisterRoundYReport();
-	s_y2FullDynamicDispatches++;
+	DrawLevelOvr1P_RegisterClipCountersReport();
+	s_fullDynDispatches++;
 
 	switch (handlerAddress)
 	{
@@ -9474,7 +9476,7 @@ static int Ovr226_800a0f78_EmitFullDynamicQuadBlock(struct PushBuffer *pb, struc
 	return Ovr226_800a1128_DispatchFullDynamicTransitionGrid(pb, primMem, block, vertices, projected, nearMask, texture);
 }
 
-// THE VISIBILITY WORD WITHOUT MODULO 4096, 2026-09-22.
+// THE VISIBILITY WORD WITHOUT MODULO 4096.
 //
 // Retail fetches the word via ((blockID >> 3) & 0x1fc): 512 bytes, i.e. 4,096
 // blocks - every disc track stays below that. Sunset Vista has 13,134
@@ -11125,12 +11127,12 @@ static void *DrawLevelOvr1P_GetRenderListBucketValue(struct DrawLevelOvr1PRender
 {
 	int renderListOffset = bucket->renderListOffset;
 
-	if (renderListOffset == offsetof(struct DrawLevelOvr1PRenderList, bspListStart_FullDynamic))
+	if ((size_t)renderListOffset == offsetof(struct DrawLevelOvr1PRenderList, bspListStart_FullDynamic))
 	{
 		return renderList->bspListStart_FullDynamic;
 	}
 
-	if (renderListOffset == offsetof(struct DrawLevelOvr1PRenderList, ptrQuadBlocksRendered_FullDynamic))
+	if ((size_t)renderListOffset == offsetof(struct DrawLevelOvr1PRenderList, ptrQuadBlocksRendered_FullDynamic))
 	{
 		return renderList->ptrQuadBlocksRendered_FullDynamic;
 	}

@@ -2,18 +2,18 @@
 
 u32 UI_VsQuipReadDriver(struct Driver *d, int offset, int size)
 {
-	char *data = (char *)d + offset;
+	char *fieldPtr = (char *)d + offset;
 
 	if (size == 2)
 	{
-		return *(s16 *)data;
+		return *(s16 *)fieldPtr;
 	}
 
 	if (size < 3)
 	{
 		if (size == 1)
 		{
-			return *(u8 *)data;
+			return *(u8 *)fieldPtr;
 		}
 
 		return 0;
@@ -21,7 +21,7 @@ u32 UI_VsQuipReadDriver(struct Driver *d, int offset, int size)
 
 	if (size == 4)
 	{
-		return *(u32 *)data;
+		return *(u32 *)fieldPtr;
 	}
 
 	return 0;

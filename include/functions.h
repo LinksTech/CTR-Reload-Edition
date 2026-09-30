@@ -166,7 +166,7 @@ int Bank_Alloc(int bankID, struct Bank *ptrBank);
 int Bank_AssignSpuAddrs(void);
 void Bank_Destroy(struct Bank *ptrLastBank);
 void Bank_ClearInRange(u32 min, u32 max);
-// 1 MB sound memory (HOWL_Bank.c, 2026-09-29): 32-bit addresses next to SpuAddrEntry.
+// 1 MB sound memory (HOWL_Bank.c): 32-bit addresses next to SpuAddrEntry.
 u32 Howl_SpuAddr(int row);
 void Howl_SpuAddrReset(int rows);
 int Howl_SpuState_GetSize(void);
@@ -565,7 +565,6 @@ void MEMPACK_PopToState(int id);
 
 void RECTMENU_DrawQuip(char *comment, s16 startX, int startY, u32 sizeX, s16 fontType, int textFlag, s16 boxFlag);
 void RECTMENU_DrawInnerRect(RECT *r, int x, u32 *ot);
-void RECTMENU_DrawTitledBox(RECT *r, char *title, int drawStyle);
 void RECTMENU_DrawSelf(struct RectMenu *menu, int param_2, s16 param_3, s16 width);
 void RECTMENU_DrawPolyGT4(struct Icon *icon, s16 posX, s16 posY, struct PrimMem *primMem, u32 *ot, u32 color0, u32 color1, u32 color2, u32 color3,
                           char transparency, s16 scale);
@@ -1099,7 +1098,6 @@ void CS_LoadBossCallback(struct LoadQueueSlot *lqs);
 void CS_Camera_ThTick_Boss(struct Thread *t);
 b32 CS_Camera_BoolGotoBoss(void);
 void CS_Camera_ThTick_Podium(struct Thread *th);
-void CS_OVR233_InitData(void);
 char *CS_OVR233_TranslateRetailOpcodePointer(char *opCodeAt);
 void CS_ScriptCmd_OpcodeNext(struct CutsceneObj *cs);
 void CS_ScriptCmd_OpcodeAt(struct CutsceneObj *cs, char *opCodeAt);

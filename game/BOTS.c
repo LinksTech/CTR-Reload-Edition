@@ -875,11 +875,6 @@ void BOTS_ThTick_Drive(struct Thread *botThread)
 
 	// local_34 = gGT->elapsedTimeMS;
 
-#if 0
-	if(botDriver->driverID != 0)
-		return;
-#endif
-
 	botDriver->turbo_MeterRoomLeft = 0;
 	botDriver->forwardDir = 0;
 
@@ -2096,21 +2091,21 @@ UpdateTireColorTimer:
 
 						OtherFX_Play_LowLevel(7, 1, flags);
 					}
-					int iVar3 = navFrameCurr->distToNextNavXZ;
-					if (iVar3 != 0)
+					int navSegDist = navFrameCurr->distToNextNavXZ;
+					if (navSegDist != 0)
 					{
 #if 0
-						if (iVar3 == 0)
+						if (navSegDist == 0)
 						{
 							trap(0x1c00);
 						}
-						if ((iVar3 == -1) && (deltaPosThisFrame * navFrameCurr->distToNextNavXYZ == -0x80000000))
+						if ((navSegDist == -1) && (deltaPosThisFrame * navFrameCurr->distToNextNavXYZ == -0x80000000))
 						{
 							trap(0x1800);
 						}
 #endif
 						botDriver->botData.navProgressRemainder =
-						    CTR_MipsSll(CTR_MipsDiv(CTR_MipsMulLo(deltaPosThisFrame, navFrameCurr->distToNextNavXYZ), iVar3), 8);
+						    CTR_MipsSll(CTR_MipsDiv(CTR_MipsMulLo(deltaPosThisFrame, navFrameCurr->distToNextNavXYZ), navSegDist), 8);
 					}
 					s16 sVar7 = botDriver->jump_LandingBoost;
 
@@ -2184,21 +2179,21 @@ UpdateTireColorTimer:
 			{
 				if (((botDriver->actionsFlagSet & ACTION_TOUCH_GROUND) == 0))
 				{
-					int iVar3 = navFrameCurr->distToNextNavXZ;
-					if (iVar3 != 0)
+					int navSegDist = navFrameCurr->distToNextNavXZ;
+					if (navSegDist != 0)
 					{
 #if 0
-						if (iVar3 == 0)
+						if (navSegDist == 0)
 						{
 							trap(0x1c00);
 						}
-						if ((iVar3 == -1) && (deltaPosThisFrame * navFrameCurr->distToNextNavXYZ == -0x80000000))
+						if ((navSegDist == -1) && (deltaPosThisFrame * navFrameCurr->distToNextNavXYZ == -0x80000000))
 						{
 							trap(0x1800);
 						}
 #endif
 						botDriver->botData.navProgressRemainder =
-						    CTR_MipsSll(CTR_MipsDiv(CTR_MipsMulLo(deltaPosThisFrame, navFrameCurr->distToNextNavXYZ), iVar3), 8);
+						    CTR_MipsSll(CTR_MipsDiv(CTR_MipsMulLo(deltaPosThisFrame, navFrameCurr->distToNextNavXYZ), navSegDist), 8);
 					}
 				}
 				deltaPosThisFrame = CTR_MipsSra(CTR_MipsNegLo(botDriver->botData.aiPhysics.speedY), 1);
@@ -2242,20 +2237,20 @@ UpdateTireColorTimer:
 	{
 		if (!useGroundedNavDistance && ((botDriver->actionsFlagSet & ACTION_TOUCH_GROUND) != 0))
 		{
-			int iVar3 = navFrameCurr->distToNextNavXYZ;
-			if (iVar3 != 0)
+			int navSegDist = navFrameCurr->distToNextNavXYZ;
+			if (navSegDist != 0)
 			{
 #if 0
-				if (iVar3 == 0)
+				if (navSegDist == 0)
 				{
 					trap(0x1c00);
 				}
-				if ((iVar3 == -1) && (deltaPosThisFrame * navFrameCurr->distToNextNavXZ == -0x80000000))
+				if ((navSegDist == -1) && (deltaPosThisFrame * navFrameCurr->distToNextNavXZ == -0x80000000))
 				{
 					trap(0x1800);
 				}
 #endif
-				botDriver->botData.navProgressRemainder = CTR_MipsSll(CTR_MipsDiv(CTR_MipsMulLo(deltaPosThisFrame, navFrameCurr->distToNextNavXZ), iVar3), 8);
+				botDriver->botData.navProgressRemainder = CTR_MipsSll(CTR_MipsDiv(CTR_MipsMulLo(deltaPosThisFrame, navFrameCurr->distToNextNavXZ), navSegDist), 8);
 			}
 		}
 
@@ -2328,10 +2323,10 @@ UpdateTireColorTimer:
 			{
 				if (sVar7 == BOTS_DAMAGE_STATE_SQUISH)
 				{
-					u16 sVar7 = (u16)botDriver->botData.aiPhysics.squishCooldown;
+					u16 squishCooldownU16 = (u16)botDriver->botData.aiPhysics.squishCooldown;
 					int iVar4 = CTR_MipsSubLo(botDriver->botData.aiPhysics.squishCooldown, 0xc);
 					botDriver->botData.aiPhysics.squishCooldown = iVar4;
-					botDriver->botData.aiPhysics.mulDrift = (s16)CTR_MipsAddLo((u16)botDriver->botData.aiPhysics.mulDrift, sVar7);
+					botDriver->botData.aiPhysics.mulDrift = (s16)CTR_MipsAddLo((u16)botDriver->botData.aiPhysics.mulDrift, squishCooldownU16);
 					if (iVar4 < 0x200)
 					{
 						botDriver->botData.aiPhysics.squishCooldown = 0;
@@ -2672,10 +2667,10 @@ UpdateTireColorTimer:
 				botDriver->hazardTimer = (s16)CTR_MipsSubLo((u16)botDriver->hazardTimer, elapsedMilliseconds);
 			}
 
-			u16 uVar11 = (u16)botDriver->hazardTimer & 0xfffe;
-			botDriver->hazardTimer = (s16)uVar11;
+			u16 hazardTimerEven = (u16)botDriver->hazardTimer & 0xfffe;
+			botDriver->hazardTimer = (s16)hazardTimerEven;
 
-			if ((s16)uVar11 >= 0)
+			if ((s16)hazardTimerEven >= 0)
 			{
 				botDriver->hazardTimer = -2;
 			}

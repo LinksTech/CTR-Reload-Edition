@@ -86,9 +86,9 @@ void *MEMPACK_AllocMem(int allocSize)
 		// then an empty endless loop. From the outside that looks like a
 		// crash, but it is a stall, and it says nothing.
 		//
-		// Investigated on 2026-08-28, because a container track may be larger
-		// than the one whose slot it occupies, and nobody could tell whether it
-		// had crashed or stalled. The loop stays - that is the game's
+		// This matters because a container track may be larger than the one
+		// whose slot it occupies, and from the outside nobody could tell
+		// whether it had crashed or stalled. The loop stays - that is the game's
 		// logic - but it is no longer silent.
 		void Platform_Log(const char *format, ...);
 

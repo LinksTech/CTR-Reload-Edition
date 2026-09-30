@@ -20,9 +20,9 @@
 // in the frame loop that always runs.
 //
 // HOW FULL A POOL IS STANDS IN THE FREE LIST, NOT IN THE TAKEN ONE.
-// Measured on 2026-09-20: only INSTANCE_Birth puts its instance on
-// pool.taken (INSTANCE.c:76). The LEV instances (INSTANCE.c:258) and the
-// particles (Particle.c:1483) take their item from the free list with
+// Measured: only INSTANCE_Birth3D puts its instance on
+// pool.taken (JitPool_Add). The LEV instances (INSTANCE.c) and the
+// particles (Particle.c) take their item from the free list with
 // LIST_RemoveFront and never hook it in anywhere - their taken.count stays
 // zero although the pool is full. Hence this measurement counts
 // maxItems - free.count. The taken.count is also in the
@@ -30,7 +30,7 @@
 // number of items that no owner finds through the list any more.
 //
 // THE EIGHT POOLS LIE ONE AFTER ANOTHER. gGT->JitPools is an unnamed
-// aggregate of eight struct JitPool of 0x28 bytes each (namespace_Main.h:413).
+// aggregate of eight struct JitPool of 0x28 bytes each (namespace_Main.h).
 // Hence a pointer to the first one walks through all eight - that is no
 // assumption about the layout but the firm guarantee of the C standard for
 // aggregates of the same type, and the static assertion below pins it down.
@@ -38,13 +38,11 @@
 // THE TRIGGER FOR RESTART AND SWITCH. Neither is reachable from
 // outside: the restart hangs on the pause menu, the switch as well. So that
 // both can be measured, this module does on request exactly what
-// MainFreeze.c does at these two places - lines 947..961 for "RESTART",
-// lines 1015..1103 for the load request. No shortcut, no path of its own:
+// MainFreeze.c does at these two places - the "RESTART"/"RETRY" case, and
+// MainRaceTrack_RequestLoad for the load request. No shortcut, no path of its own:
 // the same two fields, the same call.
 //
-// Controlled through the environment, not through a program option: main.c was
-// carrying another, unfinished change at the time, and a measurement is no reason
-// to write into it.
+// Controlled through the environment, not through a program option:
 //
 //   CTR_BUDGET_MARK_EVERY=N     a snapshot every N frames
 //   CTR_BUDGET_RETRY_AT=a,b,c   trigger a restart at these frames

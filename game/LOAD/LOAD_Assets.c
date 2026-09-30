@@ -26,15 +26,14 @@
 // half pointers, half offsets - and that is worse than not at all, because it
 // shows up later somewhere else. Check first, then apply.
 //
-// MEASURED BEFORE IT WAS ARMED (2026-08-29). From the NTSC-U image all 608
+// MEASURED BEFORE IT WAS ARMED. From the NTSC-U image all 608
 // subfiles of the BIGFILE were read: 408 carry a pointer map, together
 // 1,951,955 pointers. Plus the 25 LEVs of the arcade tracks and arenas one by one,
 // 421,747 pointers. And the 21 foreign test files, 507,916 pointers.
 // **Not a single violation.** The rule rejects nothing that loads today.
 //
-// Still behind a switch: --ptr-map-unchecked restores the old path.
-// A check that cannot be switched off is a check that, when in
-// doubt, costs a whole evening.
+// Still behind a switch: --ptr-map-unchecked restores the old path,
+// so a suspected false refusal can be ruled out without a rebuild.
 int g_cfg_ptrMapChecked = 1;
 
 global_variable int s_ptrMapFiles = 0;

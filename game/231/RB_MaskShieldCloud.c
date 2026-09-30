@@ -567,7 +567,7 @@ void RB_ShieldDark_ThTick_Grow(struct Thread *th)
 	struct Instance *bombInst = INSTANCE_BirthWithThread(model, 0, MEDIUM, OTHER, RB_MovingExplosive_ThTick, sizeof(struct TrackerWeapon), playerTh);
 
 #if defined(CTR_NATIVE)
-	// Beta 0 (30.09.2026)
+	// Pool full: no bomb.
 	if (bombInst == NULL)
 	{
 		INSTANCE_NativeBirthSkipped("shield bomb");
@@ -801,7 +801,7 @@ void RB_RainCloud_Init(struct Driver *d)
 		cloudInst = INSTANCE_BirthWithThread(STATIC_CLOUD, s_cloud1, SMALL, OTHER, RB_RainCloud_ThTick, sizeof(struct RainCloud), d->instSelf->thread);
 
 #if defined(CTR_NATIVE)
-		// Beta 0 (30.09.2026): keine Wolke.
+		// Pool full: no cloud.
 		if (cloudInst == NULL)
 		{
 			INSTANCE_NativeBirthSkipped("rain cloud");

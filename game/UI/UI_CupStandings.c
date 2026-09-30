@@ -253,7 +253,7 @@ void UI_CupStandings_InputAndDraw(void)
 	int cupID = gGT->cup.cupID;
 
 #ifdef CTR_NATIVE
-	// THE SWITCHES OF THE CUSTOM CUP (2026-09-28): a name from the
+	// THE SWITCHES OF THE CUSTOM CUP: a name from the
 	// container or from cups.txt instead of from a retail table. NULL means
 	// retail, as it was.
 	const char *titleText = NULL;

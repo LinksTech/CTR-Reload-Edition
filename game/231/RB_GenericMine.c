@@ -354,7 +354,7 @@ void RB_GenericMine_ThTick(struct Thread *t)
 				instCrate = INSTANCE_BirthWithThread(STATIC_CRATE_TNT, sdata->s_tnt1, SMALL, MINE, RB_GenericMine_ThTick, sizeof(struct MineWeapon), 0);
 
 #if defined(CTR_NATIVE)
-				// Beta 0 (2026-09-30): no room for the carried TNT - the
+				// Pool full: no room for the carried TNT - the
 				// track's TNT stays where it is, as before the hit.
 				if (instCrate == NULL)
 				{

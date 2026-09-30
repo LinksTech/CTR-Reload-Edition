@@ -125,12 +125,12 @@
 #include "MAIN/MainLoadVLC.c"
 
 // Before MainMain.c, which calls its four entry points. The module holds the
-// track-specific code of a container track - today the moving door of
-// Sunset Vista.
+// track-specific code of a container track - today the actors of Sunset Vista
+// (door, platforms, bats, fire bowls, surfaces).
 #include "native_trackmod.c"
 #include "native_budget.c"
 
-// Camera fly-in before the traffic light for container tracks without their own camera path.
+// Track preview recording (--record-preview); container tracks never fly in.
 #include "native_flyin.c"
 
 #include "MAIN/MainMain.c"
@@ -286,17 +286,17 @@
 // Behind the original for the same reason: the copy for ARCADE -> CUSTOM CUP
 // reads its MM_CUP_SELECT_* constants and MM_NativeMenu.c's name shortening.
 #include "230/MM_NativeCupSelect.c"
-// NITRO-PIT -> CRYSTAL (2026-09-29): bits, end box and way back for containers.
+// NITRO-PIT -> CRYSTAL: bits, end box and way back for containers.
 #include "230/MM_NativeCrystal.c"
-// NITRO-PIT -> CTR (2026-09-29): the same for the CTR Challenge.
+// NITRO-PIT -> CTR: the same for the CTR Challenge.
 #include "230/MM_NativeCtr.c"
 #include "230/MM_HighScore.c"
 #include "230/MM_Scrapbook.c"
 #include "230/MM_Video.c"
-// Behind the menu overlay on purpose: the menu screens that move on their own in
-// a wide picture - character select windows, high score pages - read the
-// overlay's own constants (see the file).
-// Beta 0: the GRAPHICS page in the OPTIONS box, before the menu screen that opens it.
+// The GRAPHICS page in the OPTIONS box, before the menu screen that opens it.
+// Both behind the menu overlay on purpose: the menu screens that move on their
+// own in a wide picture - character select windows, high score pages - read the
+// overlay's own constants (see native_menuscreen.c).
 #include "native_graphics.c"
 #include "native_menuscreen.c"
 

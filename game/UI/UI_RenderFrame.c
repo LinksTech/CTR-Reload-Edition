@@ -116,7 +116,7 @@ void UI_RenderFrame_Racing()
 	}
 
 #ifdef CTR_NATIVE
-	// Beta 0 (2026-09-30): a map table without a map picture. The
+	// A map table without a map picture. The
 	// halves are icons 3 and 4 of the LEV; DecalGlobal_Clear sets them to NULL
 	// on load, and UI_Map_DrawMap reads them without a check. No picture, no
 	// map, instead of a crash. rldpack warns when packing ("map-icons").
@@ -327,7 +327,7 @@ void UI_RenderFrame_Racing()
 
 					// make visible
 #if defined(CTR_NATIVE)
-					// NITRO-PIT -> CTR (2026-09-29): without the letter's HUD model
+					// NITRO-PIT -> CTR: without the letter's HUD model
 					// curr is NULL; the counter runs down anyway.
 					if (curr != NULL)
 #endif

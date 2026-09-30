@@ -422,7 +422,7 @@ void PROC_PerBspLeaf_CheckInstances(struct BSP *bspLeaf, struct ScratchpadStruct
 
 		instDef = bspHitbox->data.hitbox.instDef;
 #if defined(CTR_NATIVE)
-		// Beta 0 (30.09.2026): beim Laden abgeschnittene Instanz, siehe COLL.c.
+		// Instance cut off during loading (pool full), see COLL.c.
 		if ((instDef != NULL) && (instDef->ptrInstance == NULL))
 		{
 			continue;

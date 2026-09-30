@@ -200,7 +200,7 @@ void MainFrame_GameLogic(struct GameTracker *gGT, struct GamepadSystem *gGamepad
 			else
 			{
 #if defined(CTR_NATIVE)
-				DISPLAY_Blur_Main(pushBuffer, -uVar3);
+				DISPLAY_Blur_Main(pushBuffer, -(int)uVar3);
 #endif
 				psVar9->clockFlash--;
 			}

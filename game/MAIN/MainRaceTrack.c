@@ -22,7 +22,7 @@ void MainRaceTrack_StartLoad(s16 levelID)
 
 void MainRaceTrack_RequestLoad(s16 levelID)
 {
-	// THE ONE FUNNEL for runtime IDs (2026-09-28): a container track
+	// THE ONE FUNNEL for runtime IDs: a container track
 	// arrives here with its own ID (65..99) and leaves as the donor slot
 	// - Lev_ID_To_Load, the loader and every retail table never see
 	// a number outside the retail band. Every other ID passes through

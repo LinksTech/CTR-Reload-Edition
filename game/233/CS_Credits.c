@@ -434,7 +434,7 @@ void CS_Credits_DrawNames(struct CreditsObj *co)
 
 		if (nextStr == 0)
 		{
-			strLen = strlen(str);
+			strLen = (s16)strlen(str);
 		}
 		else
 		{

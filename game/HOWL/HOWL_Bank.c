@@ -3,32 +3,27 @@
 
 void Platform_Log(const char *format, ...);
 
-// UPPER LIMIT FOR BANKS IN SOUND RAM: 0x80000 INSTEAD OF RETAIL 0x7e000
-// (2026-09-27). Retail stopped 8 KB before the end of the 512 KB. On the PS1
-// the reverb work area sat at the top: libspu puts it at the end, as large as
-// the mode requires - for Studio A 0x1F40 from 0x7E0C0, which fits 0x7e000;
-// Room, Pipe and Studio B, which CTR also uses, reach down to 0x7B7C0
-// (sizes in native_audio.c s_reverbPresets). Our emulation computes the
-// reverb in its own buffer (native_audio.c:138,
+// UPPER LIMIT FOR BANKS IN SOUND RAM. Retail stopped 8 KB before the end of
+// the 512 KB (0x7e000). On the PS1 the reverb work area sat at the top: libspu
+// puts it at the end, as large as the mode requires - for Studio A 0x1F40 from
+// 0x7E0C0, which fits 0x7e000; Room, Pipe and Studio B, which CTR also uses,
+// reach down to 0x7B7C0 (sizes in native_audio.c s_reverbPresets). The
+// emulation computes the reverb in its own buffer (native_audio.c,
 // NativeAudioReverbState.buffer) and does not evaluate any reverb start address;
 // memory[] is written only by SpuWrite, read only by the ADPCM decoder and the
-// snapshot. So the 8 KB belong to the samples: Baby T Park with its own bank
-// 14 and an unlockable driver (bank 66 up to 519,104) fits this way.
-// The check stays strictly '<': then every transferred bank ends at
-// most at 0x7FFF8, i.e. unit 0xFFFF, and min + max fits into the u16 of
-// struct Bank (Bank_ClearInRange). With '<=' a bank reaching exactly
-// 0x80000 would give end = 0 there. More than 512 KB is a redesign.
+// snapshot. So the whole sound RAM belongs to the samples.
 //
-// SOUND RAM 1 MB (2026-09-29). A test track brings a music bank
-// of 380,896 bytes; after that, bank 54 of the driver select no longer fit (end
-// 533,424). The retail fields stay as they are - SpuAddrEntry.spuAddr in the
+// SOUND RAM 1 MB. Container tracks can bring larger banks: a music bank of
+// 380,896 bytes left no room below 512 KB for bank 54 of the driver select
+// (end 533,424). The emulated sound RAM is therefore 1 MB
+// (NATIVE_AUDIO_SPU_MEMSIZE in native_audio.h), and a bank may end exactly at
+// that limit. The retail fields stay as they are - SpuAddrEntry.spuAddr in the
 // KART.HWL header and struct Bank min/max in sData.bank[8] are u16 in 8-byte
 // units (ceiling 0x7FFF8), their layout is fixed. Alongside, this file keeps
 // the same values in 32 bits (s_spuAddr32, s_bankMin32, s_bankMax32); reads
-// happen only there. The retail fields keep getting the same value, truncated
-// - up to 512 KB it is identical, above that nobody reads it any more. The pointer
-// sdata->audioAllocPtr is already int. The emulation computes in bytes
-// (native_audio.c, NATIVE_AUDIO_SPU_MEMSIZE, also 1 MB).
+// happen only there. The retail fields keep getting the same value, saturated
+// (Howl_Retail16) - up to 512 KB it is identical, above that nobody reads it
+// any more. The pointer sdata->audioAllocPtr is already int.
 #define HOWL_SPU_BANK_LIMIT NATIVE_AUDIO_SPU_MEMSIZE
 #define HOWL_SPU_RETAIL_LIMIT 0x80000
 #define HOWL_SPU_ROWS_CAP 1024
@@ -274,11 +269,6 @@ int Bank_AssignSpuAddrs()
 
 		struct SpuAddrEntry *sae;
 
-#if 0
-		printf("New\n");
-		printf("%08x\n", sdata->audioAllocPtr);
-#endif
-
 		for (i = 0; i < sdata->ptrSampleBlock1->numSamples; i++)
 		{
 			s16 *spuIndexArr = SBHEADER_GETARR(sdata->ptrSampleBlock1);
@@ -289,10 +279,6 @@ int Bank_AssignSpuAddrs()
 				Howl_SetSpuAddr(spuIndexArr[i], (u32)audioAllocPtr);
 			}
 			audioAllocPtr += sae->spuSize;
-
-#if 0
-			printf("%08x\n", audioAllocPtr);
-#endif
 		}
 
 		sdata->bankLoadStage++;
@@ -332,12 +318,10 @@ int Bank_AssignSpuAddrs()
 		// THE OVERFLOW WAS SILENT. If a bank no longer fits below the limit,
 		// retail does not transfer it - and says nothing. Its samples got
 		// their addresses anyway (Stage 1) and then play whatever lies there
-		// in sound RAM. Found on 2026-09-27: Baby T Park with its
-		// own bank 14 and an unlockable driver, bank 66 ended at
-		// 519,104, above the retail limit 0x7e000. What happens to a bank above the
-		// limit stays retail; only this line is new. The check
-		// is strict: a bank that ends exactly at the limit is not
-		// transferred either.
+		// in sound RAM. Example: a container track with its own bank 14 and an
+		// unlockable driver, where bank 66 ended at 519,104, above the retail
+		// limit 0x7e000. What happens to a bank above the limit stays retail;
+		// only this line is new.
 		else
 		{
 			Platform_Log("[CTR Sound] bank %d does not fit the sound memory: %d byte(s) from %d end at %d, %d byte(s) over the limit of %d - "

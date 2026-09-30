@@ -6,7 +6,7 @@ void Platform_Log(const char *format, ...);
 // A PVS list slot carries either an InstDef* (that is how it comes from the LEV)
 // or an Instance* (that is how the draw path needs it). The two structures
 // lie in separate memories: InstDefs are in the level file, Instances
-// come without exception from the instance pool (INSTANCE.c:246-251 takes them from
+// come without exception from the instance pool (INSTANCE_LevInitAll takes them from
 // gGT->JitPools.instance.free, and JitPool_Clear carves that list out of
 // ptrPoolData). So whether a slot is already converted is told by the address.
 static int LevInstDef_IsInstance(const struct JitPool *pool, const void *ptr)

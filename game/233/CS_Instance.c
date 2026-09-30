@@ -262,17 +262,17 @@ void CS_Instance_InitMatrix(void)
 
 	for (int i = 0; i < 4; i++)
 	{
-		struct CsInitMatrixEntry *data = D233.cs_initMatrixTable[i].data;
+		struct CsInitMatrixEntry *entries = D233.cs_initMatrixTable[i].data;
 		int count = D233.cs_initMatrixTable[i].count;
 
-		if (data == NULL || count <= 0)
+		if (entries == NULL || count <= 0)
 		{
 			continue;
 		}
 
 		for (int j = 0; j < count; j++)
 		{
-			struct CsInitMatrixEntry *entry = &data[j];
+			struct CsInitMatrixEntry *entry = &entries[j];
 
 			ConvertRotToMatrix(&mat, &entry->matrix.fields.rot);
 

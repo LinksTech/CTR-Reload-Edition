@@ -215,7 +215,7 @@ void VehEmitter_Sparks_Ground(struct Driver *d, struct ParticleEmitter *emSet)
 
 		if ((rng & 1) != 0)
 		{
-			rng = -rng;
+			rng = 0u - rng;
 		}
 
 		for (int j = 0; j < VEH_EMITTER_AXIS_COUNT; j++)

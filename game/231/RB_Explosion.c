@@ -54,7 +54,7 @@ void RB_Explosion_InitPotion(struct Instance *inst)
 	shatterInst = INSTANCE_BirthWithThread(shatterColor, 0, SMALL, OTHER, RB_Explosion_ThTick, 0, 0);
 
 #if defined(CTR_NATIVE)
-	// Beta 0 (2026-09-30): without the image of the shards, the effect stays.
+	// Pool full: without the image of the shards, the effect stays.
 	if (shatterInst == NULL)
 	{
 		INSTANCE_NativeBirthSkipped("potion shatter");
@@ -126,7 +126,7 @@ void RB_Explosion_InitGeneric(struct Instance *inst)
 	explosion = INSTANCE_BirthWithThread(STATIC_CRATE_EXPLOSION, s_explosion1, SMALL, OTHER, RB_Explosion_ThTick, 0, 0);
 
 #if defined(CTR_NATIVE)
-	// Beta 0 (2026-09-30): only an image.
+	// Pool full: only an image is dropped.
 	if (explosion == NULL)
 	{
 		INSTANCE_NativeBirthSkipped("explosion");

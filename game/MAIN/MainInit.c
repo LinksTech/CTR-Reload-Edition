@@ -1,6 +1,8 @@
 #include <common.h>
 
 #ifdef CTR_NATIVE
+int NativeFlyIn_PreviewAlone(void); // game/native_flyin.c
+
 static void MainInit_InitVisMemBspListNodes(struct VisMem *visMem, struct mesh_info *mesh)
 {
 	if (mesh == NULL || mesh->bspRoot == NULL)
@@ -166,20 +168,20 @@ void MainInit_PrimMem(struct GameTracker *gGT)
 	}
 
 #if defined(CTR_NATIVE)
-	// THE DRAW MEMORY GROWS WITH THE CANVAS (2026-09-28).
+	// THE DRAW MEMORY GROWS WITH THE CANVAS.
 	//
 	// The table above is sized for the PS1's 4:3 picture. A widescreen picture
 	// draws more world with the same camera (43:18 in the demo's hole window,
 	// Crash Cove: 1368 instead of 1152 track primitives per frame), and in expensive
 	// frames the memory ran full. Then the bucket pass gives up in
-	// DrawLevelOvr1P_HasBucketPrimReserve, Ovr226_800a0e10 aborts ALL
+	// DrawLevelOvr1P_HasBucketPrimReserve, Ovr226_800a0e10_DispatchBucketTable aborts ALL
 	// following buckets including the clip record split, and the near ground
 	// is missing as a black wedge - measured 12 give-ups in 30 frames at 43:18,
 	// 0 at 4:3, congruent with the hole (up to 29 percent of the lower
 	// third, VBlank 1910..2004).
 	//
-	// The same rule as for the clip window and for the clip buffer
-	// (09-15): scale the 4:3 number by reference width. At 4:3 the factor is
+	// The same rule as for the clip window and for the clip buffer:
+	// scale the 4:3 number by reference width. At 4:3 the factor is
 	// one and every byte as before; the additions below (sky, track)
 	// are self-computed worst cases per face and do not scale.
 	{
@@ -192,17 +194,17 @@ void MainInit_PrimMem(struct GameTracker *gGT)
 	//
 	// The number in the table above belongs to the track whose slot it
 	// occupies: Dingo Canyon gets 97,280 bytes for a whole frame. A foreign
-	// track may be bigger, and the test data of 2026-08-28 is -
-	// its sky alone wants 172,032.
+	// track may be bigger, and one test track was -
+	// its sky alone wanted 172,032.
 	//
 	// The addition is not guessed, it is computed: the four segments that
 	// a frame draws, times 28 bytes per triangle. That way the rest of the
 	// frame stays at exactly the budget the host track has, and the sky
 	// gets its own on top.
 	//
-	// The memory pack's window only carries this when --tracks is set -
-	// see platform/native_memory.c. Without the switch nothing is loaded here
-	// and the addition is zero.
+	// The memory pack's window only carries this when the tracks folder is
+	// read (the default; off with --no-tracks) - see platform/native_memory.c.
+	// Without it nothing is loaded here and the addition is zero.
 	{
 		int NativeTrack_ActiveForLevel(int levelID);
 		void Platform_Log(const char *format, ...);
@@ -211,7 +213,7 @@ void MainInit_PrimMem(struct GameTracker *gGT)
 		{
 			// AND THE TRACK ITS OWN BUDGET, not the host's.
 			//
-			// Until 2026-08-29 a container track only got the addition
+			// An earlier version gave a container track only the addition
 			// for its sky; the rest of the frame ran on the number of the
 			// track whose slot it occupies. Measured on the test data, exactly
 			// that was the cause of the picture errors: not the LEV was too big
@@ -341,7 +343,7 @@ void MainInit_JitPoolsNew(struct GameTracker *gGT)
 	JitPool_Init(&gGT->JitPools.thread, (renderBucketSize * 3) >> 7, sizeof(struct Thread), rdata.s_ThreadPool);
 #if defined(CTR_NATIVE)
 	{
-		// --instance-pool <n> (only with --dev, Beta 0): probe for a full
+		// --instance-pool <n> (only with --dev): probe for a full
 		// instance pool in a race. Never bigger than the retail number.
 		extern int g_cfg_instancePool;
 		void Platform_Log(const char *format, ...);
@@ -396,11 +398,11 @@ void MainInit_JitPoolsNew(struct GameTracker *gGT)
 #if defined(CTR_NATIVE)
 	// THE NEAR-PLANE CLIP BUFFER, AND WHY IT GROWS WITH THE TRACK.
 	//
-	// Until 2026-09-15 its size came solely from MainDB_GetClipSize by
+	// In an earlier version its size came solely from MainDB_GetClipSize by
 	// level ID - for a container, therefore, from the table of its seat
 	// (seat 0: 3000 words, 12,000 bytes, 200 GT4 records per frame). The
-	// draw memory above had got the track's addition since 08-29,
-	// this buffer had not. Whatever found no room fell away in the track renderer
+	// draw memory above already got the track's addition,
+	// this buffer did not. Whatever found no room fell away in the track renderer
 	// without a trace, and those were exactly the faces that cut the near
 	// plane: the road under the kart. On Crash Cove at 43:18 that was
 	// already 1,470 records in 700 frames.
@@ -422,7 +424,7 @@ void MainInit_JitPoolsNew(struct GameTracker *gGT)
 			data.PtrClipBuffer[i] = MEMPACK_AllocMem(bytes);
 		}
 
-		// For every level, not only for containers: since 09-16 a disc track
+		// For every level, not only for containers: a disc track
 		// carries the factor as well (CTR_CLIP_STOCK_FACTOR in native_view.c),
 		// and the factor in the line is computed from the result of the rule,
 		// not copied - the line cannot say anything other than
@@ -521,13 +523,9 @@ void MainInit_Drivers(struct GameTracker *gGT)
 #if defined(CTR_NATIVE)
 		// Track preview (--record-preview, game/native_flyin.c): the AI
 		// drives the invisible player seat alone, without opponents.
+		if (NativeFlyIn_PreviewAlone())
 		{
-			int NativeFlyIn_PreviewAlone(void);
-
-			if (NativeFlyIn_PreviewAlone())
-			{
-				numDrivers = numPlyrCurrGame;
-			}
+			numDrivers = numPlyrCurrGame;
 		}
 #endif
 
@@ -748,7 +746,7 @@ void MainInit_FinalizeInit(struct GameTracker *gGT)
 				// BOTS_Driver_Convert freezes the clock first thing
 				// (UI_RaceEnd_GetDriverClock sets ACTION_RACE_TIMER_FROZEN, the
 				// retail routine for the finish). At the start that is wrong: the clock
-				// stood at 0:00:00 (2026-09-29). The clock runs again; because a bot
+				// would stand at 0:00:00. The clock runs again; because a bot
 				// never goes through VehPhysProc, DebugMenu_Frame updates the time every
 				// frame, up to the finish.
 				seat->actionsFlagSet &= ~ACTION_RACE_TIMER_FROZEN;
@@ -761,7 +759,7 @@ void MainInit_FinalizeInit(struct GameTracker *gGT)
 				else
 				{
 					// Without a nav path with more than one point Convert aborts
-					// (BOTS.c:3176-3197): the seat stays a human without input.
+					// (nav path check in BOTS_Driver_Convert): the seat stays a human without input.
 					Platform_Log("[CTR Debug] --autopilot: level %d - OFF, the track has no nav path - the player's seat stays a player\n",
 					             (int)gGT->levelID);
 				}

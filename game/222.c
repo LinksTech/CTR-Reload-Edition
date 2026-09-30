@@ -76,7 +76,7 @@ extern struct RectMenu menu222_2P;
 #endif
 
 #if defined(CTR_NATIVE)
-// NITRO-PIT -> CTR (2026-09-29, MM_NativeCtr.c): the letter drop of the
+// NITRO-PIT -> CTR (MM_NativeCtr.c): the letter drop of the
 // adventure branch (below, "lost or incomplete token run") for the
 // container CTR challenge, but NULL-safe: HUD instance, thread and object
 // are checked. As in retail, the sideways movement of T and R acts on C.
@@ -389,7 +389,7 @@ void AA_EndEvent_DrawMenu(void)
 	}
 
 #if defined(CTR_NATIVE)
-	// NITRO-PIT -> CTR (2026-09-29, MM_NativeCtr.c): container CTR challenge
+	// NITRO-PIT -> CTR (MM_NativeCtr.c): container CTR challenge
 	// (ARCADE_MODE with TOKEN_RACE, never ADVENTURE_MODE). Won as in retail
 	// (1st place and three letters). No token, no advProgress, no prevLEV,
 	// no trophy. The result line sits at y 0x8C: below the

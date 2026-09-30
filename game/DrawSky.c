@@ -32,7 +32,7 @@ struct DrawSkyContext
 
 	// Rejected by a flag bit although at least one corner lies in the picture:
 	// that is the face whose absence the eye sees as a hole in the sky
-	// (2026-09-22, Sunset Vista - 22 to 164 faces per segment, one face
+	// (Sunset Vista - 22 to 164 faces per segment, one face
 	// spans up to a quarter circle there, and one corner behind the camera
 	// takes the whole face with it). On the disc the rejected faces are
 	// small and lie behind; here we count how often that is not the case.
@@ -194,14 +194,14 @@ static u32 *DrawSky_Piece(struct Skybox *skybox, struct DrawSkyContext *ctx, int
 #if defined(CTR_NATIVE)
 			// Does the next triangle still fit into the sky's share?
 			//
-			// Up to here the sky wrote into the primitive memory without any
+			// Retail writes the sky into the primitive memory without any
 			// bound. With the disc's data this cannot fire -
-			// the largest sky there has 700 faces - and custom tracks
-			// bring their own. The test data from 2026-08-28 has
+			// the largest sky there has 700 faces - but custom tracks
+			// bring their own. One test track had
 			// 12,288, i.e. 344,064 bytes of primitives for a memory of
 			// 97,280.
 			//
-			// What happened then: the pointer ran through the two
+			// What happened without the bound: the pointer ran through the two
 			// primitive memories, across both ordering tables, through the
 			// swapchain tables and 24 bytes past their end out of the
 			// registered range. There the GPU bridge gave up -
@@ -240,7 +240,7 @@ void DrawSky_Full(void *skybox, struct PushBuffer *pb, struct PrimMem *primMem)
 	//
 	// A measurement switch, not a setting. When a picture shows glitches and the
 	// suspicion falls on the sky, a run without it answers the question,
-	// and no amount of reasoning does. Built on 2026-08-28, when large flat
+	// and no amount of reasoning does. Built when large flat
 	// triangles lay across the picture and "that is the sky" was a guess.
 	{
 		extern int g_cfg_noSky;
@@ -364,8 +364,8 @@ void DrawSky_Full(void *skybox, struct PushBuffer *pb, struct PrimMem *primMem)
 #if defined(CTR_NATIVE)
 		// THE REPORT, EVERY 300 FRAMES - and explicitly NOT a one-shot.
 		//
-		// Four probes of the driver selection and the line table of the page memory
-		// made the same mistake on 2026-08-29: a one-shot fires
+		// Earlier probes of the driver selection and the line table of the page memory
+		// made the same mistake: a one-shot fires
 		// at the first moment it can, and the first moment is the
 		// fade-in, the title screen, the wrong player. So a window as
 		// for the page memory: sum up, report every 300 frames, reset to zero.
@@ -421,11 +421,10 @@ void DrawSky_Full(void *skybox, struct PushBuffer *pb, struct PrimMem *primMem)
 
 		// Once, and then never again.
 		//
-		// Here it used to say "once per track" and it was a flood: the number of
+		// "Once per track" was a flood: the number of
 		// dropped faces depends on the view angle, so it was different in almost
 		// every frame and the message fired 51 times in one run.
-		// A counter that changes is not a state one may compare
-		// - measured on our own log from 2026-08-28, 85 KB.
+		// A counter that changes is not a state one may compare.
 		if (ctx.dropped != 0)
 		{
 			local_persist int alreadySaid = 0;

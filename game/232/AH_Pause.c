@@ -323,9 +323,9 @@ void AH_Pause_Draw(s32 pageID, s32 posX)
 
 			u32 *starColor = data.ptrColor[bossStarColor];
 
-			struct Icon **iconPtrArray = ICONGROUP_GETICONS(gGT->iconGroup[AH_PAUSE_ICON_GROUP_MISC]);
+			struct Icon **miscIconPtrArray = ICONGROUP_GETICONS(gGT->iconGroup[AH_PAUSE_ICON_GROUP_MISC]);
 
-			DecalHUD_DrawPolyGT4(iconPtrArray[AH_PAUSE_HUD_ICON_BOSS_STAR],
+			DecalHUD_DrawPolyGT4(miscIconPtrArray[AH_PAUSE_HUD_ICON_BOSS_STAR],
 
 			                     posX + iconX + AH_PAUSE_BOSS_STAR_X_OFFSET, bossRowY + AH_PAUSE_BOSS_STAR_Y_OFFSET,
 

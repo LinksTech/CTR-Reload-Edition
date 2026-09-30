@@ -24,12 +24,11 @@ void PushBuffer_Init(struct PushBuffer *pb, int id, int total)
 
 	// THE SEVEN VIEWPORT CASES, COMPUTED INSTEAD OF COPIED.
 	//
-	// Before, twenty-eight assignments from literals stood here: 0x200 and
+	// Retail has twenty-eight assignments from literals here: 0x200 and
 	// 0xd8, 0x6a for half a height, 0x6e and 0x103 as second start points,
-	// 0xfd for half a width. Now they come from the canvas description
+	// 0xfd for half a width. Here they come from the canvas description
 	// in game/native_view.c, and it carries the width ONCE instead of seven times.
-	// The first step was only a move; since the second step
-	// the canvas carries the width of the format: 512 at 4:3,
+	// The canvas carries the width of the format: 512 at 4:3,
 	// 682 at 16:9, 918 at 43:18. The HUD pushbuffer keeps the reference width -
 	// which one gets which is decided by CTR_Canvas_PushBufferWidth, and that is
 	// also where the reason is given.

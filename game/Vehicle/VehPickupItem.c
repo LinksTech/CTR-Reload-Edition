@@ -217,8 +217,9 @@ struct MaskHeadWeapon *VehPickupItem_MaskUseWeapon(struct Driver *driver, b32 bo
 	s32 modelID = STATIC_UKAUKA - boolGoodGuy;
 
 #if defined(CTR_NATIVE)
-	// Beta 0 (2026-09-30): mask and beam, the beam without a check of its own.
-	// All callers handle NULL (BOTS.c:762, VehStuckProc.c:249/422/567/820/885):
+	// Mask and beam are born together, the beam without a check of its own.
+	// All callers and all users of the stored mask pointer handle NULL
+	// (BOTS_MaskGrab, the VehStuckProc MaskGrab and RevEngine states):
 	// then there is no mask.
 	if (gGT->JitPools.instance.free.count < 2)
 	{
@@ -461,7 +462,7 @@ void Platform_Log(const char *format, ...);
 // Weapon fix from upstream (bf2ed389c, 2026-09-22): retail assumes that a
 // weapon is always born, and writes into the instance right away. Natively
 // INSTANCE_BirthWithThread returns NULL when the thread, instance or stack pool is full
-// (INSTANCE.c:180-210) - then the shot is dropped instead of crashing.
+// - then the shot is dropped instead of crashing.
 static void VehPickupItem_BirthFailed(struct Driver *d, const char *weapon)
 {
 	Platform_Log("[CTR Weapon] %s of driver %d not born (pool full) - shot skipped\n", weapon, (int)d->driverID);
@@ -1054,25 +1055,25 @@ void VehPickupItem_ShootNow(struct Driver *d, s32 weaponID, s32 flags)
 
 		for (dptr = &gGT->drivers[0]; dptr < &gGT->drivers[CLOCK_DRIVER_COUNT]; dptr++)
 		{
-			struct Driver *victim = *dptr;
+			struct Driver *clockVictim = *dptr;
 
-			if (victim == 0)
+			if (clockVictim == 0)
 			{
 				continue;
 			}
 
-			victim->clockFlash = CLOCK_FLASH_FRAMES;
+			clockVictim->clockFlash = CLOCK_FLASH_FRAMES;
 
-			if (victim == d)
+			if (clockVictim == d)
 			{
 				d->clockSend = CLOCK_SELF_SEND_FRAMES;
 				continue;
 			}
 
 			// if spin out driver
-			if (RB_Hazard_HurtDriver(victim, CLOCK_HURT_REASON, 0, 0) != 0)
+			if (RB_Hazard_HurtDriver(clockVictim, CLOCK_HURT_REASON, 0, 0) != 0)
 			{
-				victim->clockReceive = hurtVal;
+				clockVictim->clockReceive = hurtVal;
 			}
 		}
 		break;

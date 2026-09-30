@@ -2,8 +2,8 @@
 #include <math.h>
 
 // ===========================================================================
-// TRACK PREVIEW (2026-09-30; rebuilt 2026-09-29 at night:
-// "from the air looks odd").
+// TRACK PREVIEW (an earlier version flew a camera over the track, which
+// looked odd from the air).
 //
 // With --record-preview (only with --dev, together with --autoload-track)
 // the preview shows the track from the normal driver camera. The player seat
@@ -26,14 +26,14 @@
 // MainFrame_RenderFrame.c:420). If the restart points are missing as well, there
 // is no preview.
 //
-// NO BUILT FLY-IN BEFORE THE TRAFFIC LIGHT (2026-09-29: "let the levels start
-// normally, without a camera flight - we only use that for the preview").
-// Until then the same path also produced the fly-in for
+// NO BUILT FLY-IN BEFORE THE TRAFFIC LIGHT: the levels start normally,
+// without a camera flight - the path camera is only used for the preview.
+// An earlier version also produced the fly-in for
 // container tracks without their own camera path (its own
 // SpawnType1 table with slot 3, swapped back after the fly-in). That
 // path has been removed.
 //
-// CONTAINER TRACKS ALWAYS START WITHOUT A FLY-IN (2026-09-29), even
+// CONTAINER TRACKS ALWAYS START WITHOUT A FLY-IN, even
 // with their own camera path in the LEV (SpawnType1 slot 3, count >= 4): directly
 // with the driver camera and the traffic light, in single races, Custom Cup, Crystal
 // and CTR. That is decided by CAM_FollowDriver_Normal (CAM.c, check
@@ -63,7 +63,7 @@ extern int g_cfg_autopilot;
 #define FLYIN_SMOOTH_TAPS 8
 
 // Warm-up before the first frame, in ticks (30 per second). The checkered flag of
-// the load is gone after about 50 (probe 09-30: race from VBlank 104, flag until
+// the load is gone after about 50 (measured: race from VBlank 104, flag until
 // about 200). The AI still stands at the traffic light in the first tick (BOTS.c:1069),
 // drives from the second one and is up to speed after 3 s. The path camera stands at
 // the start line for that long.
@@ -338,10 +338,11 @@ internal int FlyIn_AiStart(void)
 	char bots[24];
 	int path;
 
+	// NativePreview_RecordFail ends the game (Platform_QuitGame, exit) and
+	// does not return, so nothing below runs without a bot in the seat.
 	if ((d == NULL) || ((d->actionsFlagSet & ACTION_BOT) == 0))
 	{
 		NativePreview_RecordFail("the AI did not take over the player's seat - see the [CTR Debug] --autopilot line");
-		return 0;
 	}
 
 	// MainInit_Drivers leaves out opponents; if some were there after all, the

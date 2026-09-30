@@ -173,7 +173,7 @@ void VehFire_Increment(struct Driver *driver, int reserves, u32 type, int fireLe
 
 
 #if defined(CTR_NATIVE)
-		// Beta 0 (2026-09-30): the second flame (INSTANCE_Birth3D below) has
+		// Pool full: the second flame (INSTANCE_Birth3D below) has
 		// no check of its own - only born when there is room for both.
 		turboInst1 = 0;
 		if (gGT->JitPools.instance.free.count >= 2)

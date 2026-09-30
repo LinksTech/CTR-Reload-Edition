@@ -369,7 +369,7 @@ void RB_Spider_LInB(struct Instance *inst)
 	spider->shadowInst = shadowInst;
 
 #if defined(CTR_NATIVE)
-	// Beta 0 (2026-09-30): spider without shadow, the sequence checks for that.
+	// Pool full: spider without shadow, the sequence checks for that.
 	if (shadowInst == NULL)
 	{
 		INSTANCE_NativeBirthSkipped("spider shadow");

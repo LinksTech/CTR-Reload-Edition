@@ -172,6 +172,10 @@ void UI_DrawRankedDrivers(void)
 				// placeholder
 				Point pos;
 				pos.x = UI_RANK_ICON_OFFSCREEN_X;
+				// Every path to the draw below writes y: the on-screen branch
+				// sets it, and pos.x left at OFFSCREEN_X takes the transition
+				// branch, which overwrites x and y. This store is never read.
+				pos.y = 0;
 
 				// icon not transitioning
 				if (*transitionTimer == 0)
@@ -196,7 +200,6 @@ void UI_DrawRankedDrivers(void)
 					}
 				}
 
-				SVec2 iconPos = {.x = pos.x, .y = pos.y};
 				s16 iconScale = UI_RANK_ICON_SCALE;
 
 				int isTransitioning = (pos.x == UI_RANK_ICON_OFFSCREEN_X);
@@ -204,6 +207,8 @@ void UI_DrawRankedDrivers(void)
 				// === Icon Transitioning ===
 				if (isTransitioning)
 				{
+					// UI_Lerp2D_Angular writes both x and y
+					SVec2 iconPos;
 					UI_Lerp2D_Angular(&iconPos, *curr, *des, *transitionTimer);
 					pos.x = iconPos.x;
 					pos.y = iconPos.y;

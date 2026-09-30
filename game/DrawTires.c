@@ -21,7 +21,7 @@ struct DrawTiresSolidProjectedWheel
 };
 
 #if defined(CTR_NATIVE)
-// THE VALIDITY CHECK ON THE WHEEL THAT STOCK NEVER NEEDED (2026-09-15).
+// THE VALIDITY CHECK ON THE WHEEL THAT STOCK NEVER NEEDED.
 //
 // Stock draws a kart's wheels only as long as its header index does not
 // exceed the threshold (two with one or two players, zero
@@ -35,10 +35,10 @@ struct DrawTiresSolidProjectedWheel
 // opposite side. That one corner lands clamped at +-0x3ff, the quad becomes
 // a line across the screen - the "black bars": a count found
 // 3,998 of 4,001 oversized polygons to be FT4 semi 0 = tyre quads,
-// a test log from 2026-09-15 shows the corners (-1024,-7) (904,84) (-1024,-11)
+// a test log shows the corners (-1024,-7) (904,84) (-1024,-11)
 // (904,84), two clamped, two identical.
 //
-// The fix sits, as required on 2026-09-05, with the code that knows it is a
+// The fix sits with the code that knows it is a
 // forced wheel. Only a wheel that stock would not have drawn is dropped
 // when its centre is saturated, a corner does not fit into s16,
 // a length before a division is zero or the projection has clamped.

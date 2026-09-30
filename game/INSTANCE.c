@@ -1,8 +1,8 @@
 #include <common.h>
 
 // From game/native_trackmod.c, which only comes further down in the translation unit.
-// Declared locally instead of pulled in through a header - DrawSky.c:282
-// and MainInit.c:170 do the same.
+// Declared locally instead of pulled in through a header - DrawSky.c
+// and MainInit.c do the same.
 //
 // WHAT FOR. A container track may occupy a retail model slot with behaviour
 // of its own: Sunset Vista runs twelve bats on the seal slot
@@ -138,8 +138,8 @@ static void INSTANCE_RollbackThreadBirth(struct Thread *t, struct Thread *relati
 #endif
 
 #if defined(CTR_NATIVE)
-// Beta 0 (2026-09-30): a birth during the race failed because a pool is full
-// (instances 128, threads 96, small stacks 100 - MainInit.c:311-352). The effect
+// A birth during the race failed because a pool is full
+// (instances 128, threads 96, small stacks 100 - MainInit_JitPoolsNew). The effect
 // is dropped instead of crashing. The first 8 cases of a run are in the log.
 void INSTANCE_NativeBirthSkipped(const char *what)
 {
@@ -270,7 +270,7 @@ void INSTANCE_LevInitAll(struct InstDef *levInstDef, int numInst)
 	struct GameTracker *gGT = sdata->gGT;
 
 #if defined(CTR_NATIVE)
-	// WHICH LETTERS THE COLLISION SEES (2026-09-28).
+	// WHICH LETTERS THE COLLISION SEES.
 	//
 	// The ID of an instance is stored twice: InstDef.modelID is read by the
 	// collision (COLL.c, VehPickupItem.c), Model.id by the creation further down.
@@ -325,10 +325,10 @@ void INSTANCE_LevInitAll(struct InstDef *levInstDef, int numInst)
 		if (inst == NULL)
 		{
 #if defined(CTR_NATIVE)
-			// Beta 0 (2026-09-30): loud instead of silent. Retail stops here; all
+			// Native: loud instead of silent. Retail stops here; all
 			// following InstDefs stay without an instance. Their ptrInstance becomes NULL,
-			// so that collision and visibility lists recognise them (COLL.c, PROC.c).
-			// Since the same day rldpack rejects LEVs with more than 110 instances.
+			// so that the collision searches skip them (COLL.c, PROC.c).
+			// rldpack rejects LEVs with more than 110 instances.
 			Platform_Log("[CTR Inst] level %d: INSTANCE POOL FULL - %d of %d LEV instance(s) placed, %d cut off (pool %d) - those objects are missing on this track\n",
 			             (int)gGT->levelID, i, numInst, numInst - i, (int)gGT->JitPools.instance.maxItems);
 
@@ -464,7 +464,7 @@ void INSTANCE_LevInitAll(struct InstDef *levInstDef, int numInst)
 		}
 
 #if defined(CTR_NATIVE)
-		// NITRO-PIT -> CTR (2026-09-29, MM_NativeCtr.c): a container CTR
+		// NITRO-PIT -> CTR (MM_NativeCtr.c): a container CTR
 		// challenge runs as ARCADE_MODE with TOKEN_RACE, without ADVENTURE_MODE.
 		// The letters then keep their draw and collision bits.
 		if (MM_NativeCtr_IsCustom())

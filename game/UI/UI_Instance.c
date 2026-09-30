@@ -394,7 +394,7 @@ void UI_INSTANCE_InitAll(void)
 
 	// If you're not in Adventure Mode
 #if defined(CTR_NATIVE)
-	// NITRO-PIT -> CTR (2026-09-29, MM_NativeCtr.c): the container CTR
+	// NITRO-PIT -> CTR (MM_NativeCtr.c): the container CTR
 	// challenge (ARCADE_MODE, TOKEN_RACE) needs the HUD letters too.
 	if (((gameMode1 & ADVENTURE_MODE) == 0) && !MM_NativeCtr_IsCustom())
 #else

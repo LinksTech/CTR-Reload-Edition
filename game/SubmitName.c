@@ -76,7 +76,7 @@ s16 SubmitName_DrawMenu(u16 string)
 	s16 selectionResult = 0;
 	s16 nameLength = 0;
 	u16 stringCopy = string;
-	s16 currNameLength = strlen(gGT->currNameEntered);
+	s16 currNameLength = (s16)strlen(gGT->currNameEntered);
 	char *currNameEntered = gGT->currNameEntered;
 
 	while (currNameEntered[0] != 0)
@@ -375,21 +375,21 @@ s16 SubmitName_DrawMenu(u16 string)
 	}
 	else
 	{
-		int tap = sdata->buttonTapPerPlayer[0];
+		int dirTap = sdata->buttonTapPerPlayer[0];
 
-		if (tap & BTN_UP)
+		if (dirTap & BTN_UP)
 		{
 			cursorPosition -= SUBMIT_NAME_KEYBOARD_COLS;
 		}
-		if (tap & BTN_DOWN)
+		if (dirTap & BTN_DOWN)
 		{
 			cursorPosition += SUBMIT_NAME_KEYBOARD_COLS;
 		}
-		if (tap & BTN_LEFT)
+		if (dirTap & BTN_LEFT)
 		{
 			cursorPosition--;
 		}
-		if (tap & BTN_RIGHT)
+		if (dirTap & BTN_RIGHT)
 		{
 			cursorPosition++;
 		}

@@ -149,7 +149,7 @@ void UI_RaceStart_IntroText1P(void)
 					textID = LNG_ARCADE;
 
 #if defined(CTR_NATIVE)
-					// NITRO-PIT -> CTR (2026-09-29, MM_NativeCtr.c): the container
+					// NITRO-PIT -> CTR (MM_NativeCtr.c): the container
 					// CTR challenge runs as ARCADE_MODE; title as in retail
 					// "CTR CHALLENGE". The track name comes further down from
 					// MM_NativeTracks_NameForLevel.
@@ -331,7 +331,7 @@ LAB_80055930:
 		    // Level ID
 #ifdef CTR_NATIVE
 		    // For a container, levelID is the donor slot: its name, not
-		    // DINGO CANYON (2026-09-28).
+		    // DINGO CANYON.
 		    (MM_NativeTracks_NameForLevel(gGT->levelID) != NULL) ? (char *)MM_NativeTracks_NameForLevel(gGT->levelID) :
 #endif
 		    sdata->lngStrings[data.metaDataLEV[gGT->levelID].name_LNG],

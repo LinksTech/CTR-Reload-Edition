@@ -257,7 +257,7 @@ void RB_Burst_Init(struct Instance *weaponInst)
 	int *burst;
 
 #if defined(CTR_NATIVE)
-	// Beta 0 (2026-09-30): three instances, the second and third without a check
+	// Pool full: three instances, the second and third without a check
 	// of their own. If three are not free, only the image is dropped - the hit
 	// (collisions below) still counts.
 	if (gGT->JitPools.instance.free.count < 3)

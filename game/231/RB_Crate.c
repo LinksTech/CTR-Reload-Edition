@@ -105,7 +105,7 @@ static void RB_CrateAny_ExplodeInit(struct Instance *crateInst, int color, b32 r
 	    0, 0);
 
 #if defined(CTR_NATIVE)
-	// Beta 0 (2026-09-30): only the image of the explosion is dropped, the crate is
+	// Pool full: only the image of the explosion is dropped, the crate is
 	// already hidden and comes back via its own sequence.
 	if (explosionInst == NULL)
 	{

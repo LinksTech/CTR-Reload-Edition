@@ -134,7 +134,7 @@ void PlayLevel_UpdateLapStats(void)
 			currDriver->distanceToFinish_checkpoint = distToFinish_curr;
 
 #if defined(CTR_NATIVE)
-			// NITRO-PIT -> CRYSTAL ON A TRACK WITH A DRIVING PATH (2026-09-29).
+			// NITRO-PIT -> CRYSTAL ON A TRACK WITH A DRIVING PATH.
 			//
 			// Retail arenas have no restart points, so a
 			// crystal challenge never gets here (MainFrame_RenderFrame.c calls this
@@ -545,17 +545,17 @@ void PlayLevel_UpdateLapStats(void)
 			continue;
 		}
 
-		int currRank = currDriver->driverRank;
+		int driverRank = currDriver->driverRank;
 
-		if ((PLAYLEVEL_UNSORTED_RANK < currRank) && (PLAYLEVEL_PASS_VOICELINE_DELAY < gGT->elapsedEventTime) &&
-		    ((s8)gGT->humanPlayerPositions[driverIndex] < currRank))
+		if ((PLAYLEVEL_UNSORTED_RANK < driverRank) && (PLAYLEVEL_PASS_VOICELINE_DELAY < gGT->elapsedEventTime) &&
+		    ((s8)gGT->humanPlayerPositions[driverIndex] < driverRank))
 		{
-			int characterID = data.characterIDs[gGT->driversInRaceOrder[currRank - 1]->driverID];
+			int characterID = data.characterIDs[gGT->driversInRaceOrder[driverRank - 1]->driverID];
 
 			// Make driver talk
 			Voiceline_RequestPlay(PLAYLEVEL_PASS_VOICELINE, characterID, PLAYLEVEL_VOICELINE_FLAGS);
 		}
-		gGT->humanPlayerPositions[driverIndex] = currRank;
+		gGT->humanPlayerPositions[driverIndex] = driverRank;
 	}
 
 	// If already finished race

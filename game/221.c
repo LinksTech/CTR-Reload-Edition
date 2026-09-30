@@ -251,7 +251,7 @@ void CC_EndEvent_DrawMenu()
 
 		canAward = didWin;
 #if defined(CTR_NATIVE)
-		// NITRO-PIT -> CRYSTAL (2026-09-29, MM_NativeCrystal.c): a container
+		// NITRO-PIT -> CRYSTAL (MM_NativeCrystal.c): a container
 		// gets no purple token, writes nothing into advProgress and does not jump
 		// to prevLEV. YOU WIN or TRY AGAIN is already shown; it continues
 		// with the box below.

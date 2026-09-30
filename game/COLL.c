@@ -1,14 +1,10 @@
 #include <common.h>
-
-#if defined(CTR_NATIVE)
-void INSTANCE_NativeBirthSkipped(const char *what);
-#endif
 #include <ctr_scratchpad.h>
 
 // ===========================================================================
 // THE CROSS-CHECK FOR THE ZERO RULE, only counted.
 //
-// Since 2026-09-19 the level draw path no longer draws a face without texture
+// The level draw path no longer draws a face without texture
 // (226_00_DrawLevelOvr1P.c). The claim that comes with it is: the collision
 // stays. Claims about a path one does not see are worthless -
 // so this path counts how often exactly the two affected groups
@@ -21,7 +17,7 @@ void INSTANCE_NativeBirthSkipped(const char *what);
 //           NO_COLLISION_RESPONSE and take the normal path up to
 //           sps->hit.ptrQuadblock - they really stop.
 //
-// Since 2026-09-20 two more groups are counted, for the same reason.
+// Two more groups are counted, for the same reason.
 // The three moving platforms of Sunset Vista are 123 pre-baked
 // collision frames, of which exactly three carry at any time at runtime. They are
 // taken out of the visibility list so that they are not seen - and the
@@ -30,7 +26,7 @@ void INSTANCE_NativeBirthSkipped(const char *what);
 //   0x1801  a carrying frame. GROUND | CAMERA_SEARCH | REFLECT_SPLIT_LINE_1.
 //   0x4001  a parked one. NO_CAMERA_RESPAWN_PROBE | REFLECT_SPLIT_LINE_1 -
 //           neither GROUND nor COLLISION_SURFACE, so it falls through the
-//           filter of every searcher (:1070, :2121). An accepted hit on
+//           filter of every searcher (quadFlagsWanted of both player searches). An accepted hit on
 //           a parked frame would be a bug; that is why this is also
 //           counted, and not only the expected case.
 //
@@ -657,7 +653,7 @@ void COLL_FIXED_BSPLEAF_TestInstance(struct BSP *node, struct ScratchpadStruct *
 		}
 
 #if defined(CTR_NATIVE)
-		// Beta 0 (2026-09-30): an instance cut off during loading (pool full,
+		// An instance cut off during loading (pool full,
 		// INSTANCE_LevInitAll) has no instance; its hitbox does not count.
 		if (((bspArray->flag & BSP_HITBOX_COLLIDABLE) != 0) && (bspArray->data.hitbox.instDef != NULL) &&
 		    (bspArray->data.hitbox.instDef->ptrInstance == NULL))

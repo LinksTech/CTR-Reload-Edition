@@ -2,17 +2,12 @@
 
 #ifdef CTR_NATIVE
 
-// The world aspect, and nothing else.
+// The world aspect, the canvas it implies, and what hangs on both: the UI
+// anchor mapping (CTR_UI_BuildSafeArea, CTR_UI_MapX), the per-shape view
+// settings, the near-plane counters and switches, the clip buffer size and
+// the level-of-detail switches.
 //
-// Taken from the reference build's game/native_view.c, which is 676 lines. What
-// came across is the aspect itself and the one arithmetic operation it implies.
-// What did not: the UI safe-area module (CTR_UI_BuildSafeArea, the anchor
-// mapping, the full-canvas pointer ranges), the view-parameter struct with its
-// frustum corners, and the reference-4:3 builder for UI push buffers. Those
-// exist to keep a 4:3-authored HUD anchored inside a wider picture, which is its
-// own step and needs the UI call sites with it.
-//
-// Hor+, not Hor-. The reference build's own note is worth keeping: raising the
+// Hor+, not Hor-. An earlier port's note is worth keeping: raising the
 // Y squash constant from 0x360 to 0x480 also produces a 16:9 picture, but it
 // leaves the horizontal field of view where it was and cuts the top and bottom
 // off instead. That is a vertical crop. Scaling the X row of the view-projection
@@ -92,7 +87,7 @@ void CTR_View_GetWorldAspect(int *outWidth, int *outHeight)
 // the debug menu's ASPECT row, and from here on anything that wants a setting
 // per shape - walks this one. It used to be two lists: this idea lived in
 // DebugMenu.c as s_aspects and the detection would have made a second copy of
-// it, which is the shape of the three bugs found on 2026-08-27.
+// it, which is the shape of several earlier bugs.
 //
 // There is no fourth entry and no "whatever the monitor happens to be". A shape
 // costs a world projection, a UI safe area and a set of view settings that
@@ -127,14 +122,14 @@ global_variable const struct CTR_AspectModeEntry s_aspectModes[CTR_ASPECT_MODE_C
 //----------------------------------------------------------------------------------------
 // THE CANVAS AS A DESCRIPTION INSTEAD OF AS LITERALS
 //
-// Up to step 1 the dimensions of the picture area stood as numbers in
+// Retail keeps the dimensions of the picture area as numbers in
 // PushBuffer_Init: 0x200 wide, 0xd8 high, 0x6a for half a height, 0x6e as
 // second start point, 0xfd for half a width, 0x103 as second column.
 // Seven viewport cases, twenty-eight assignments, every number one of its own.
 //
 // Here they stand once, and the seven cases are computed.
 //
-// SINCE STEP 2 THE WIDTH IS REALLY WIDE. 4:3 keeps 512, 16:9 gets
+// THE WIDTH IS REALLY WIDE. 4:3 keeps 512, 16:9 gets
 // 682 and 43:18 gets 918 columns - and that is the difference between
 // this rework and what used to be called widescreen. Before, the world was drawn in
 // 512 columns and pulled apart by the display; from one
@@ -180,8 +175,7 @@ global_variable const struct CTR_AspectModeEntry s_aspectModes[CTR_ASPECT_MODE_C
 // The projection distance, and why it does NOT follow the width.
 //
 // It is the H register of the GTE and determines the field of view; a full picture
-// gets 0x100, one half as wide 0x80. In step 1 it said here that it was open
-// whether it should follow the width in step 2. It does not follow it, and that
+// gets 0x100, one half as wide 0x80. It does not follow the width, and that
 // is the core of the method: if the ratio of width and distance stayed
 // the same, a wider picture would show the same world stretched wider. With a fixed
 // distance it shows MORE world at the same size - which is what Hor+ means.
@@ -244,7 +238,7 @@ int CTR_View_SettingsMode(void);
 //
 // The nearest even number, in integers: 2 * round(num / (2*den)), and round(a/b)
 // is (a + b/2) / b - so here (num + den) / (2*den). For 512/1 the result is 512,
-// without a single bit differing from before step 2.
+// without a single bit differing from retail.
 int CTR_Canvas_Width(int mode)
 {
 	int num;
@@ -279,7 +273,7 @@ int CTR_Canvas_Height(int mode)
 // The row the render path reads. Through CTR_View_SettingsMode and not
 // through CTR_View_ActiveMode, because the second may return -1: --aspect takes
 // any W:H, and a custom aspect ratio gets the canvas of the
-// nearest of the three shapes. Since step 2 that is no longer without consequence
+// nearest of the three shapes. That is not without consequence
 // - a ratio between two rows gets a canvas that does not fit it exactly,
 // and is shown with a bar instead of stretched. See
 // CTR_Canvas_PresentAspect.
@@ -296,7 +290,7 @@ int CTR_Canvas_ActiveHeight(void)
 // THE REFERENCE WIDTH, for the one reader that takes rect.w as a SCALE and
 // not as the picture edge.
 //
-// Step 0 sorted 93 readers of pb->rect: 88 mean the picture edge and
+// Of 93 readers of pb->rect, 88 mean the picture edge and
 // follow the canvas by themselves, exactly one is a scale - the
 // LOD distance in RenderBucket_QueueExecute.c. It computes from half the
 // viewport width how far away a model may stand before it loses a detail
@@ -429,7 +423,7 @@ int CTR_Canvas_Viewport(int canvasW, int canvasH, int id, int total, RECT *outRe
 // WHAT THAT MEANS FOR A CUSTOM --aspect. The canvas comes from the table
 // of the three shapes. --aspect 21:9 therefore gets the canvas of 43:18 and is
 // shown with bars instead of stretched - before, every ratio was filled
-// exactly. That is a change and is recorded as such for step 2;
+// exactly. That is a deliberate change;
 // a canvas of its own for any ratio would be a decision of its own
 // and not a derivation.
 void CTR_Canvas_PresentAspect(int *outWidth, int *outHeight)
@@ -547,32 +541,14 @@ int CTR_View_NearestMode(int pixelWidth, int pixelHeight)
 	return best;
 }
 
-// The one question every caller below actually asks. At 4:3 the scale is 12/12,
-// which is exact for every input, but the callers still branch on this: an
-// identity that is arrived at by multiplying and dividing is not the same
-// promise as an untouched value, and 4:3 has to stay untouched.
-int CTR_View_IsReferenceAspect(void)
-{
-	return (s_worldAspectWidth == CTR_VIEW_REFERENCE_ASPECT_WIDTH) && (s_worldAspectHeight == CTR_VIEW_REFERENCE_ASPECT_HEIGHT);
-}
-
-// HERE STOOD THE FRACTION AND ITS TWO SCALERS.
+// NO ASPECT FRACTION.
 //
-// CTR_View_GetAspectFraction returned referenceAspect/targetAspect - 36/48 at 16:9,
-// 72/129 at 43:18 - and three consumers used it to undo the same thing:
-// ScaleProjectionX squashed the X row of the projection, UnscaleProjectionX
-// unsquashed the cull frustum, and CTR_UI_BuildSafeArea pulled the HUD in. All
-// three cancelled the same stretch that the display applied when a 512
-// column wide picture was shown in a wider box.
-//
-// The display no longer stretches. The canvas is as wide as the format, the
-// GTE projects at 43:18 as at 4:3 and thereby shows more world instead of
-// the same narrower - so the fraction is 1/1 and there is nothing left
-// to cancel. Step 2 of the format description rework.
-//
-// CTR_View_IsReferenceAspect still stands above; after this step it has
-// no reader any more. It is not removed here - that would be a second
-// change, and it is the same treatment as for aspectX/aspectY.
+// An earlier version drew the world in 512 columns and let the display stretch
+// the picture; a fraction referenceAspect/targetAspect then squashed the X row
+// of the projection, unsquashed the cull frustum and pulled the HUD in, all to
+// cancel that stretch. The display no longer stretches. The canvas is as wide
+// as the format, the GTE projects at 43:18 as at 4:3 and thereby shows more
+// world instead of the same narrower - so there is nothing left to cancel.
 
 // The HUD's push buffer is authored in 4:3 and must not be widened with the
 // world. Two ways to be it, because the game reaches it by both: the member in
@@ -602,10 +578,9 @@ int CTR_View_IsUIPushBuffer(const struct PushBuffer *pb)
 // picture but a wrong reference - a right-anchored element computes
 // virtualWidth - x and would lie 406 columns off.
 //
-// CONSEQUENCE AS LONG AS STEP 3 IS MISSING: at 16:9 and 43:18 the HUD lies on the left in the
-// wide canvas instead of centred. Step 3 lets it migrate in through the anchors
-// - left stays x, centre becomes x + (W-512)/2, right x + (W-512).
-// At 4:3 both widths are 512 and this shift is 0, so here there is
+// The HUD is brought onto the wide canvas by the anchors of the UI mapper
+// (CTR_UI_MapX below) - left stays x, centre becomes x + (W-512)/2, right
+// x + (W-512). At 4:3 both widths are 512 and this shift is 0, so here there is
 // no difference for the reference format.
 int CTR_Canvas_PushBufferWidth(const struct PushBuffer *pb)
 {
@@ -642,33 +617,26 @@ int CTR_Canvas_PushBufferToReferenceWidth(const struct PushBuffer *pb, int width
 }
 
 //----------------------------------------------------------------------------------------
-// THE UI SIDE OF THE SAME FRACTION
+// THE UI SIDE
 //
-// The world opens Hor+ and the presentation shows the 512-column picture in a
-// wider box. Those two together are the world at its right proportions with more
-// of it visible - and they are also, for anything NOT drawn through the world
-// projection, a horizontal stretch by exactly the fraction above. The HUD is
-// authored in a 512x216 canvas and drawn straight into that buffer, so at 16:9
-// every sprite in it comes out 4/3 too wide.
-//
-// So the UI is pulled in by the same fraction before it is drawn, and the
-// presentation stretch puts it back at its authored proportions. Square pixels,
-// no distortion, and the same sprite at all three ratios. What DOES change is
-// how much room there is around it, which is the whole point of a wider picture.
+// The world opens Hor+ on a canvas that is really wider. The HUD is authored
+// in a 512x216 canvas and keeps it; the mapper below moves each element onto
+// the drawn canvas by its anchor. Square pixels, no distortion, and the same
+// sprite at all three ratios. What DOES change is how much room there is
+// around it, which is the whole point of a wider picture.
 //
 // Y is untouched. The vertical field of view does not change under Hor+ and the
 // presentation does not stretch vertically, so there is nothing to undo.
 
 // Where an element keeps still while the canvas gets wider.
 //
-// One factor, four fixed points. The factor is the same in all four, which is
-// what makes this a move rather than a stretch; only the point that does not
-// move differs:
+// Three anchors are pure shifts, the fourth is the one stretch (see
+// CTR_UI_MapX):
 //
-//   left    x' = 0      + x * s
-//   right   x' = width  - (width - x) * s
-//   centre  x' = centre + (x - centre) * s
-//   canvas  x' = x                              (not mapped at all)
+//   left    x' = x                     the left edge stays the left edge
+//   right   x' = x + (W - 512)         the right edge stays the right edge
+//   centre  x' = x + (W - 512)/2       the centre stays the centre
+//   canvas  x' = x * W / 512           stretched over the whole canvas
 //
 // CENTRE is what a world object does. Hor+ keeps pixels per radian and only
 // shows more at the sides, so a point in the world stays where it was relative
@@ -699,7 +667,7 @@ struct CTR_UIViewParameters
 	// between the two is the whole task of this mapper.
 	int canvasWidth;
 
-	// THE COMPOSITION ZONE OF THE MENUS (design rule, 2026-09-28): "What belongs together
+	// THE COMPOSITION ZONE OF THE MENUS (design rule): "What belongs together
 	// stays together. Additional width is background, never distance."
 	//
 	// The strip of the canvas at whose edges LEFT and RIGHT hold on.
@@ -714,13 +682,16 @@ struct CTR_UIViewParameters
 // Defined with the player-menu rule further down; the safe area asks it.
 int CTR_UI_MenuMode(void);
 
-// HERE STOOD THE ROUNDED SCALING.
+// Defined further down; CTR_UI_MapAuthoredX uses both before that.
+int CTR_UI_MapX(const struct CTR_UIViewParameters *view, int x, int anchor);
+int CTR_UI_AnchorForBox(int x0, int x1, int virtualWidth);
+
+// NO ROUNDED SCALING.
 //
-// It multiplied a distance from the anchor point by the aspect fraction and
-// rounded symmetrically, so that two elements at the two picture edges do not
-// drift apart by a pixel that no rule asked for. The mapper
-// no longer scales - it shifts, and a shift by a whole number
-// has no rounding error that would have to be argued away.
+// An earlier version multiplied a distance from the anchor point by the aspect
+// fraction and rounded symmetrically. The mapper no longer scales - it shifts,
+// and a shift by a whole number has no rounding error that would have to be
+// argued away.
 
 int CTR_UI_BuildSafeArea(struct CTR_UIViewParameters *view, int virtualWidth, int virtualHeight)
 {
@@ -729,7 +700,7 @@ int CTR_UI_BuildSafeArea(struct CTR_UIViewParameters *view, int virtualWidth, in
 		return 0;
 	}
 
-	// TWO WIDTHS, AND THAT IS ALL OF STEP 3.
+	// TWO WIDTHS.
 	//
 	// virtualWidth comes from the caller and is the width of the HUD push buffer,
 	// so the canvas in which the elements are authored - 512, unchanged
@@ -827,8 +798,8 @@ int CTR_UI_MapAuthoredX(int x)
 // anchor exists: a fade, a dimming, a separator bar between
 // picture areas. It is LAID over the canvas and has nothing it
 // could hold on to; shifted, it would let the picture show through on one side.
-// Up to step 2 the display stretched it, because it stretched the whole
-// 512 picture. The display no longer stretches, so it has to
+// An earlier version let the display stretch the whole 512 picture, and this
+// layer with it. The display no longer stretches, so it has to
 // happen here - in ONE place, not per element.
 //
 // All four cases are the identity at 4:3, for every input value: the
@@ -919,8 +890,8 @@ enum CTR_ViewSetting
 	CTR_VIEW_SETTING_NEAR,
 
 	// The distance past which a BSP leaf is put in the melting bucket, as the
-	// multiplier of the projection distance that produces it. This is the old
-	// tree's DIST: detail, not a far plane. Stock 0x1a00 is 0x1a at 1/256, so
+	// multiplier of the projection distance that produces it. This is the DIST
+	// of an earlier port: detail, not a far plane. Stock 0x1a00 is 0x1a at 1/256, so
 	// the render path shifts by eight and lands on the same product.
 	CTR_VIEW_SETTING_TRACK_DIST,
 
@@ -998,10 +969,6 @@ struct CTR_ViewSettingDesc
 // step - so the bound the table names is exactly the bound a row steps onto.
 #define CTR_VIEW_RAW_AT(stock, percent) ((((stock) * (percent)) + 50) / 100)
 
-// The four numbers the render path used before any of this existed, spelled
-// once. The descriptor table below and the three sets further down both read
-// them from here, so "all three sets are stock today" is a property of the
-// source and not something that has to be checked.
 // The numbers the render path used before any of this existed, spelled once.
 // The descriptor table below and the three sets further down both read them from
 // here, so "all three sets are stock today" is a property of the source.
@@ -1038,11 +1005,11 @@ struct CTR_ViewSettingDesc
 //
 // WHAT EACH ROW REACHES, AND WHERE ITS RANGE STOPS MEANING ANYTHING
 //
-// Measured out of the code on 2026-08-28, because a row that can be turned
-// through a range where nothing happens is worse than a row that is not there:
-// it gets turned, nothing changes, and the next hour goes to looking for the
-// reason somewhere else. The limits are set where the effect ends, not where the
-// arithmetic ends.
+// Measured out of the code, because a row that can be turned
+// through a range where nothing happens is easily misread: it gets turned,
+// nothing changes, and the reason is looked for somewhere else. The table's
+// bounds are the 5 % to 200 % grid above; this says where inside it each
+// row's effect ends.
 //
 //   FOV        live over its whole range and, since it is applied at the read
 //              sites, live everywhere - the title screen, the garage, cutscenes
@@ -1056,7 +1023,7 @@ struct CTR_ViewSettingDesc
 //              BELOW 100 % the cull frustum is wider than the picture and
 //              nothing new appears - the whole lower half of the first range was
 //              dead. Above 100 % it cuts scenery off at the top and bottom.
-//              Minimum is stock, and the name no longer says field of view.
+//              The name therefore does not say field of view.
 //
 //   NEAR       the near clip, and it can only ever cull MORE. The GTE's divide
 //              gives up once the projected depth reaches half the projection
@@ -1068,7 +1035,7 @@ struct CTR_ViewSettingDesc
 //              projected correctly, which is the safe direction and the only
 //              one there is.
 //
-//   TRACK DIST the old tree's DIST. Past this distance a BSP leaf goes in the
+//   TRACK DIST the DIST of an earlier port. Past this distance a BSP leaf goes in the
 //              melting bucket, where the midpoints of its 3x3 grid walk toward
 //              the straight line between their neighbours - a quadblock going
 //              flat, and the edge glitch that gets turned away by pushing the
@@ -1084,7 +1051,7 @@ struct CTR_ViewSettingDesc
 //              4:3 for a world 65536 across, so it leaves the box and the clip
 //              puts it back on the boundary, which depends on the direction and
 //              not on the length. Above roughly 55 % the box is bit-identical
-//              whatever this says. Maximum is stock, so 100 % means "does not
+//              whatever this says. So 100 % and above mean "does not
 //              cut" and every step down is a real cut. The wider the picture,
 //              the longer the ray, so it starts to bite LOWER at 16:9 and lower
 //              again at 43:18.
@@ -1602,10 +1569,10 @@ void CTR_NearClip_NoteDropNoSpace(void)
 // The box in DrawLevelOvr1P_ShouldWriteRenderedClippedRecord is a
 // saving measure on the clip buffer of the PS1, not a geometric criterion. At
 // site 8 it discards 86-93 % of the faces that go there - those are the
-// holes in the lower corners. Drawing raw was no answer (built on 2026-09-04
-// as --near-box-fallback, measured and removed on 2026-09-05): the vertices
+// holes in the lower corners. Drawing raw was no answer (an earlier
+// --near-box-fallback, measured and removed): the vertices
 // of these faces are unprojectable by construction, 96 % stand at SZ3 == 0
-// (measured 2026-09-04, Crash Cove).
+// (measured on Crash Cove).
 //
 // --near-box-keep lets the face into the clip record anyway. The
 // consumer splits it in view space and projects the intersection points anew -
@@ -1618,10 +1585,9 @@ void CTR_NearClip_NoteDropNoSpace(void)
 // What the space test throws away and what the consumer leaves lying is
 // counted. Either would be the next hole.
 //
-// DEFAULT ON, since the evening of 2026-09-05. Measured: the switch is the only
+// DEFAULT ON. Measured: the switch is the only
 // fix for the open corners bottom left and right, and those are open in every
-// format; every verdict of the day ("almost perfect", runs 11 to 18) was
-// driven with it; the space test discards 1.1 % (4:3, 896 of 81,915) to
+// format; the space test discards 1.1 % (4:3, 896 of 81,915) to
 // 1.7 % (43:18, 1,470 of 85,251) of the records, the consumer never stalled in
 // 1,800 VBlanks, the vertex peak per frame is the same (8,844 at
 // 43:18 with and without). What changes at 4:3 against the previous code is exactly the
@@ -1686,10 +1652,10 @@ void CTR_NearClip_KeepReport(void)
 //
 // The existing counter NoteDropBox does not see that: it sits in
 // DrawLevelOvr1P_WriteRenderedClippedRecordAtOt, a different writer that
-// nothing calls at the 2026-09-04 anchor (NoteTouched reports 0).
+// nothing called in the measured scene (NoteTouched reported 0).
 //
-// The first exit is unreachable from the code - both callers, line 6759
-// and 6782, check inheritedOtEntry beforehand and return. It is
+// The first exit is unreachable from the code - both callers (the Dynamic
+// GT3 and GT4 sites) check inheritedOtEntry beforehand and return. It is
 // counted anyway: an exit that one only BELIEVES is never taken
 // is not a measured exit.
 //
@@ -1764,23 +1730,23 @@ void CTR_NearClip_Report(void)
 // rldtrack.inc. --tracks-fixed-memory and --no-tracks take both back,
 // as with the draw memory: then the buffer is stock, byte for byte.
 //
-// Until 2026-09-15 the number came solely from MainDB_GetClipSize by the
+// Retail takes the number solely from MainDB_GetClipSize by the
 // level ID, so for every container from the table of the slot: 12,000
 // bytes, 200 GT4 records per frame. On Crash Cove at 43:18 the space was already
 // missing 1,470 times in 700 frames, on a track with
 // coarser BSP correspondingly more often - and what found no room was a
 // face that cuts the near plane: the road under the kart.
 //
-// THE FACTOR FOR THE DISC TRACKS (2026-09-16). The surcharge of 2026-09-15 applied
-// only to containers. A test run the same evening on Papu's Pyramid (disc,
-// 43:18, 5,213 frames) says in the exit line: "clip records peak 12000 of
+// THE FACTOR FOR THE DISC TRACKS. The track surcharge applies
+// only to containers. A test run on Papu's Pyramid (disc,
+// 43:18, 5,213 frames) without the factor said in the exit line: "clip records peak 12000 of
 // 12000 bytes in a frame (200 of 200 GT4 records); 0 GT3 + 1034 GT4 record(s)
 // found no room in 32 frame(s)". The table of the slot is sized for 4:3;
 // at 43:18 the camera sees 918 instead of 512 columns and cuts correspondingly
 // more faces at the near plane. Four instead of one: 800 GT4 records for the
 // 3000-word table. The factor is CHOSEN, not measured - the true
 // peak value stood behind the cap at 200 and was not in the log; the
-// [CTR Clip] exit line names it from now on. Not sized by the format,
+// [CTR Clip] exit line names it. Not sized by the format,
 // because the format can be switched at run time (debug menu, VIDEO -> ASPECT),
 // but the buffer is only allocated in MainInit: the allocation has to carry the widest
 // format. The memory for it lies BEHIND the window of the pack
@@ -1789,7 +1755,7 @@ void CTR_NearClip_Report(void)
 //
 // COMPUTED ONCE, NOT PER RECORD. DrawLevelOvr1P_HasClipRecordSpace calls this
 // function at each of the seven writers, so per clip record (Vista: 1,890 per
-// frame, acceptance test 2026-09-15), and NativeTrack_ClipBytes re-read the
+// frame), and NativeTrack_ClipBytes would re-read the
 // LEV header each time for it (Rld_MemNeed: quadblock count, plus eight sky segments
 // sorted). The value only changes with level, player count or loaded
 // container - exactly that is the key of the cache. The rule
@@ -1897,8 +1863,8 @@ void CTR_Clip_NoteDropNoSpace(int count)
 }
 
 // The frame is over at the consumer - whether it split or discarded the records.
-// Until 2026-09-16 the frame mark was only reset in the split path, and
-// a discarded frame would have attached its drop to the next frame.
+// Both paths reset the frame mark, so a discarded frame does not attach its
+// drop to the next frame.
 internal void CTR_Clip_FrameEnded(void)
 {
 	if (s_clipFrameHadDrop)
@@ -1982,7 +1948,7 @@ int CTR_NearClip_DetailForcesQuad(int stockNear)
 // drawn as it was projected. The detail decision stays
 // untouched, the threshold stays untouched.
 //
-// At the 2026-09-02 anchor ZERO of 572,439 marked faces reached the
+// In one measured scene ZERO of 572,439 marked faces reached the
 // counted clip record writer. If that also holds in the driving scene,
 // this switch must change nothing there - and exactly that is the measurement.
 //
@@ -1991,8 +1957,8 @@ int g_cfg_nearCutOff = 0;
 
 // THE THIRTEEN INDIVIDUALLY.
 //
-// --near-cut-off takes the branch from all thirteen at once, and at the
-// 2026-09-04 anchor that fills the two undrawn patches in the lower corners
+// --near-cut-off takes the branch from all thirteen at once, and in one
+// measured scene that fills the two undrawn patches in the lower corners
 // - 3,365 points, left 627 at y 751..769, right 2738 at y 784..832. Which
 // of the thirteen does that, the collective switch does not say. It also costs the
 // bottom twelve rows, which it clears over the full width.
@@ -2019,8 +1985,9 @@ unsigned int g_cfg_nearCutMask = (1u << CTR_NEAR_CUT_SITES) - 1u;
 global_variable long long s_nearCutWould[CTR_NEAR_CUT_SITES];
 global_variable long long s_nearCutTook[CTR_NEAR_CUT_SITES];
 
-// The name is the line in 226_00_DrawLevelOvr1P.c and the function it
-// stands in. Six groups: water direct, Ground4x1, Ground4x2, Dynamic,
+// The name is the line in 226_00_DrawLevelOvr1P.c (as it was when the list
+// was made - the code has moved since, the group names still hold) and the
+// function it stands in. Six groups: water direct, Ground4x1, Ground4x2, Dynamic,
 // Quad4x4, water - once each for triangles (GT3) and once for quads
 // (GT4), except for the first three.
 local_persist const char *const s_nearCutSiteName[CTR_NEAR_CUT_SITES] = {
@@ -2203,8 +2170,7 @@ int CTR_UI_AnchorForBox(int x0, int x1, int virtualWidth)
 //----------------------------------------------------------------------------------------
 // THE PLAYER MENUS: ANCHOR BY THE EDGE RULE
 //
-// The menus have a rule of their own, and it is fixed (decided on
-// 2026-09-25): an element that lies at most a tenth of the width away from an
+// The menus have a rule of their own, and it is fixed: an element that lies at most a tenth of the width away from an
 // edge in the 4:3 picture holds that edge. If it lies at both
 // edges, it does not fit the rule and stays centred. Everything else is
 // centred. The thirds rule above, by contrast, pulls everything in the left or right
@@ -2333,7 +2299,7 @@ int CTR_UI_TransitShift(const struct CTR_UIViewParameters *view, int anchorShift
 // Without a zone the edge rule needed none: LEFT was the left picture edge and
 // RIGHT the right one, what lay outside in 4:3 lay outside on the canvas.
 // With the zone both hold its edges, and at 918 columns those lie 118
-// before the picture edge. Measured on the captures of 2026-09-28:
+// before the picture edge. Measured on captures:
 // the band ends of the high score (-20..-17 and 529..544, outside in 4:3) would stand
 // visibly in the background at 98 and 817, and a box that flies over the 4:3 edge
 // would vanish at the zone edge instead of at the picture edge.
@@ -2483,8 +2449,7 @@ global_variable int s_lodMask = CTR_LOD_MASK_DEFAULT;
 // is what broke: TRACK moved out of the mask and into the VIEW page's TRACK DIST
 // row, which is PER SHAPE. From then on "melting is off" was three values, and
 // a shape whose value was not turned kept melting while the other two did not.
-// One fact in three places, and one of them fell behind - for the third time in
-// this tree.
+// One fact in three places, and one of them fell behind.
 //
 // So this is not a fifth bit and not a better default. It is one boolean that
 // says the whole mechanism is out, and it is read at every site that chooses by
@@ -2505,8 +2470,8 @@ global_variable int s_lodMask = CTR_LOD_MASK_DEFAULT;
 //            stays reachable by name through the mask.
 //
 //   The animation guard in the model walk, and the UI push buffer. Both are
-//   places where a header index is a CHOICE and not a level of detail, and both
-//   cost a day each to find. See RenderBucket_QueueExecute.c.
+//   places where a header index is a CHOICE and not a level of detail. See
+//   RenderBucket_QueueExecute.c.
 global_variable int s_lodNone = 1;
 
 int CTR_Lod_NoneMode(void)
@@ -2547,21 +2512,6 @@ internal int CTR_Lod_StageCoveredByNoneMode(int stage)
 int CTR_Lod_TiresForced(void)
 {
 	return s_lodNone;
-}
-
-int CTR_Lod_StageCount(void)
-{
-	return (int)CTR_LOD_STAGE_COUNT;
-}
-
-const char *CTR_Lod_StageKey(int stage)
-{
-	if ((stage < 0) || (stage >= (int)CTR_LOD_STAGE_COUNT))
-	{
-		return "?";
-	}
-
-	return s_lodStageDescs[stage].key;
 }
 
 const char *CTR_Lod_StageLabel(int stage)
@@ -2642,7 +2592,7 @@ int CTR_Lod_StageForced(int stage)
 	return (s_lodMask & CTR_LOD_STAGE_BIT(stage)) != 0;
 }
 
-// "stock", "alle", or a comma-separated list of stage keys. Returns 0 and
+// "stock", "all" (also accepted: "alle"), or a comma-separated list of stage keys. Returns 0 and
 // touches nothing when a name is not a stage - a flag that silently accepts a
 // typo is a run that measured something else than it says it did.
 int CTR_Lod_ParseMask(const char *text, int *outMask)
@@ -2833,7 +2783,7 @@ internal void CTR_Lod_ZeroCounters(void)
 // read like an outcome. It is not an outcome - it is the request, and while a
 // stage is forced the two differ on every single face. A report that shows only
 // the request looks identical whether the forcing works or does nothing at all,
-// which is exactly the reading that cost a night: the eye saw coarse detail, the
+// which is exactly the misreading this avoids: the eye saw coarse detail, the
 // numbers looked unchanged, and neither could contradict the other because they
 // were not answering the same question.
 //
@@ -2941,8 +2891,7 @@ void CTR_Lod_NoteTextureExtent(int level, int texels)
 // header's animation would have wrapped the instance's animation word somewhere
 // else. That word is game state, so this number is the price of leaving game
 // state alone - and if it is zero, the rule cost nothing on this track.
-// AND WHY EACH REFUSAL HAPPENED - the question that was open until 2026-08-29
-// and is now answered. It came out `more:0` in every window, which is the reason
+// AND WHY EACH REFUSAL HAPPENED. It came out `more:0` in every measured window, which is the reason
 // the animation guard was left exactly as it is. The reading of that result, and
 // what it says the headers actually are, is written where somebody editing the
 // model path will stand: RenderBucket_QueueExecute.c, at the forcing block.

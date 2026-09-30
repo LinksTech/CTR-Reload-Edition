@@ -81,8 +81,6 @@ u32 CDSYS_GetFilePosInt(char *fileString, int *filePos)
 
 void CDSYS_SetMode_StreamData()
 {
-	u8 buf[8];
-
 #if defined(CTR_NATIVE)
 	// NOTE(aalhendi): Native has no disc-mode switch, but retail force-stops
 	// XA on every data-mode entry via CDSYS_XAPauseForce when XNF is loaded.
@@ -95,7 +93,8 @@ void CDSYS_SetMode_StreamData()
 		CDSYS_XAPauseForce();
 	}
 	return;
-#endif
+#else
+	u8 buf[8];
 
 	// quit if using parallel
 	if (sdata->boolUseDisc == 0)
@@ -133,6 +132,7 @@ void CDSYS_SetMode_StreamData()
 		CdSyncCallback(0);
 		CdReadyCallback(0);
 	}
+#endif
 }
 
 
@@ -315,7 +315,7 @@ void CDSYS_XaCallbackCdReady(u8 result, u8 *unk) //+unk to adhere to *CdlCB
 }
 
 
-void CDSYS_SpuCallbackIRQ()
+void CDSYS_SpuCallbackIRQ(void)
 {
 	// disable IRQ, now that it's finished
 	SpuSetIRQ(0);
@@ -359,7 +359,7 @@ half.
 }
 
 
-void CDSYS_SpuCallbackTransfer()
+void CDSYS_SpuCallbackTransfer(void)
 {
 	if (sdata->irqAddr == 0)
 	{
@@ -630,8 +630,9 @@ int CDSYS_XAGetTrackLength(int categoryID, int xaID)
 	{
 #if defined(CTR_NATIVE)
 		return NativeAudio_GetXATrackLength(categoryID, xaID);
-#endif
+#else
 		return 0;
+#endif
 	}
 
 	if (sdata->bool_XnfLoaded == 0)
@@ -688,8 +689,9 @@ int CDSYS_XAPlay(int categoryID, int xaID)
 		sdata->XA_MaxSampleVal = 0;
 		sdata->XA_MaxSampleValInArr = 0;
 		return 1;
-#endif
+#else
 		return 1;
+#endif
 	}
 
 	if (sdata->bool_XnfLoaded == 0)
