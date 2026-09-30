@@ -637,7 +637,9 @@ internal void NativeGpu_VertexDump(int firstVertex, const P_TAG *polyTag)
 
 	if (wantedCount < 0)
 	{
-		const char *env = getenv("CTR_VERTEX_DUMP");
+		// A developer tool: only with --dev.
+		extern int g_cfg_dev;
+		const char *env = g_cfg_dev ? getenv("CTR_VERTEX_DUMP") : NULL;
 
 		wantedCount = 0;
 		while ((env != NULL) && (*env != '\0') && (wantedCount < 8))

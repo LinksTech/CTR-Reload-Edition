@@ -47,6 +47,15 @@ newer) or Windows 11 and a graphics driver with Vulkan 1.0.
 Quick states and replays exist only behind the developer switch `--dev`. They
 are raw memory snapshots of the game: load only files you made yourself.
 
+## Reporting bugs
+
+Open an issue on GitHub: <https://github.com/LinksTech/CTR-Reload-Edition/issues>. One issue per
+problem, with the version (`ctr_native.exe --version`), what happened, what you
+expected, the steps to get there and the game log (the newest file in the
+`logs` folder next to the game). Issues are public: never attach disc images,
+the `assets` folder, memory cards or other game data, and edit your Windows
+user name out of the log if you mind.
+
 ## Building
 
 See [BUILDING.md](BUILDING.md).

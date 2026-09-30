@@ -105,9 +105,12 @@ internal void NativeBudget_Arm(void)
 #if defined(CTR_NATIVE)
 internal void NativeBudget_ReadConfig(void)
 {
-	const char *every = getenv("CTR_BUDGET_MARK_EVERY");
-	const char *retry = getenv("CTR_BUDGET_RETRY_AT");
-	const char *level = getenv("CTR_BUDGET_LEVEL_AT");
+	// Developer tools like the switches: only with --dev. CTR_BUDGET_LEVEL_AT
+	// loads any level ID, so a normal game never reads these variables.
+	extern int g_cfg_dev;
+	const char *every = g_cfg_dev ? getenv("CTR_BUDGET_MARK_EVERY") : NULL;
+	const char *retry = g_cfg_dev ? getenv("CTR_BUDGET_RETRY_AT") : NULL;
+	const char *level = g_cfg_dev ? getenv("CTR_BUDGET_LEVEL_AT") : NULL;
 
 	s_budgetConfigRead = 1;
 

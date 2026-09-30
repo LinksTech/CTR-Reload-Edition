@@ -9,8 +9,9 @@ DECISIONS
 ---------
 - Windows only. There is no Linux version, and none is planned. Linux build
   files in the source code are not maintained.
-- Bug reports go to the CTR Reload @VERSION@ channel on Discord, with the
-  template from README.txt.
+- Bug reports go to GitHub issues
+  (https://github.com/LinksTech/CTR-Reload-Edition/issues), with the template from
+  README.txt.
 - The package ships the game and the Alpha-Maker. The track packer rldpack is
   built into the Alpha-Maker and is not a separate program in the package.
 

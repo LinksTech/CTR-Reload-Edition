@@ -284,8 +284,12 @@ Programs
 
 8. REPORTING A BUG
 ------------------
-Post in the CTR Reload @VERSION@ channel on Discord (the link is in your
-invitation). One post per problem, with this template:
+Open an issue on GitHub:
+
+  https://github.com/LinksTech/CTR-Reload-Edition/issues
+
+One issue per problem, with this template (issues are public - see the end
+of this section for what not to attach):
 
   **Version:** CTR Reload @VERSION@ (@BUILD@)
   **Logs:** (attach the files, see below)

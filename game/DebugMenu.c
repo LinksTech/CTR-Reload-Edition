@@ -1292,8 +1292,18 @@ void DebugMenu_Frame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 
 		if (!saidAlive)
 		{
+			extern int g_cfg_dev;
+
 			saidAlive = 1;
-			Platform_Log("[CTR Debug] menu hook alive at vblank %d - SELECT+START opens it (keyboard: SPACE+ENTER)\n", Platform_GetVBlankCount());
+
+			if (g_cfg_dev)
+			{
+				Platform_Log("[CTR Debug] menu hook alive at vblank %d - SELECT+START opens it (keyboard: SPACE+ENTER)\n", Platform_GetVBlankCount());
+			}
+			else
+			{
+				Platform_Log("[CTR Debug] menu hook alive at vblank %d - the debug menu needs --dev\n", Platform_GetVBlankCount());
+			}
 		}
 
 		for (pad = 0; (pad < DBG_PAD_COUNT) && !saidButtons; pad++)
@@ -1320,15 +1330,15 @@ void DebugMenu_Frame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 	// the title screen stands: --autoload-track loads the container on the title screen
 	// and only starts it afterwards.
 	{
-		local_persist int warImTitel = 1;
-		const int imTitel = ((gGT->gameMode1 & MAIN_MENU) != 0);
+		local_persist int wasInTitle = 1;
+		const int inTitle = ((gGT->gameMode1 & MAIN_MENU) != 0);
 
-		if (imTitel && !warImTitel)
+		if (inTitle && !wasInTitle)
 		{
 			MM_NativeTracks_Disarm();
 		}
 
-		warImTitel = imTitel;
+		wasInTitle = inTitle;
 	}
 
 	// WHAT ARRIVES IN THE RACE, one line per race.
@@ -1568,6 +1578,20 @@ void DebugMenu_Frame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 	if ((gGT->gameMode1 & LOADING) != 0)
 	{
 		return;
+	}
+
+	// ONLY WITH --dev. The debug menu jumps to any level, reloads the track
+	// folder and reaches the developer tools, so a normal game never opens it:
+	// without --dev the chord is not even looked at, and SELECT+START reaches
+	// the game untouched. s_debugMenuOpen is set nowhere else, so everything
+	// below the chord stays shut as well.
+	{
+		extern int g_cfg_dev;
+
+		if (!g_cfg_dev)
+		{
+			return;
+		}
 	}
 
 	// Every pad, not pad 0: the keyboard feeds one input slot and a controller
