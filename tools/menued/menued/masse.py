@@ -108,10 +108,9 @@ def lade(wurzel) -> Regeln:
         r.stil[name] = int(wert, 0)
 
     ntext = nativ.read_text(encoding="utf-8", errors="replace")
-    m = re.search(r"#define\s+MM_NATIVE_WIDTH_CHARS\s+(\d+)", ntext)
-    r.breite_zeichen = int(m.group(1)) if m else 0
-    m = re.search(r"int\s+g_cfg_menuScalePercent\s*=\s*(\d+)", ntext)
-    r.massstab = int(m.group(1)) if m else 100
+    # The game has no menu width or menu scale setting any more: fixed values.
+    r.breite_zeichen = 0
+    r.massstab = 100
 
     fehlend = [k for k in ("rowTopBig", "rowExtraBig", "titleAdvance", "titleHeightBig",
                            "onlyTitleShrink", "frameOffsetX", "frameOffsetY", "frameExtraW",

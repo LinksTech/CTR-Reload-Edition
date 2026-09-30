@@ -1,7 +1,8 @@
 """Tkinter front end: edit menus/*.menu while the game is running.
 
-The workflow this window is built for: the game with --menu-reload on one
-screen, this window on the other. Save - the game rereads within
+The workflow this window was built for: the game with menu reload on one
+screen, this window on the other (this build of the game has no switch
+that turns menu reload on). Save - the game rereads within
 one second and writes menus/nitro-pit.ergebnis; this window reads
 the file and shows next to it what came out.
 
@@ -1091,7 +1092,7 @@ class Fenster(ttk.Frame):
                 foreground="#c80" if veraltet else "#888",
             )
         else:
-            self.l_messung.configure(text="no result file - start the game with --menu-reload", foreground="#888")
+            self.l_messung.configure(text="no result file - the game writes it only with menu reload", foreground="#888")
 
         if block is None or block.art != "kasten":
             return

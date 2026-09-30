@@ -1605,14 +1605,14 @@ static void Rld_LetterReport(const struct RldModelIds *ids, int applied)
 //
 //   GhostReplay.c:356-360  time trial takes pointer 4 or 5 as the ghost
 //                          without looking at count;
-//   CAM.c:1644             the fly-in takes pointer 3 as the camera path
+//   CAM_FollowDriver_Normal the fly-in takes pointer 3 as the camera path
 //                          at count >= 4 - in an older container of Baby T
 //                          Park count 7 with NULL at slot 3, crash at
 //                          NULL+0x354.
 //
 // Both are in the track data, so it is detected BEFORE packing and
 // aborts. Since 4.1 also slot 2: the camera at the
-// race end reads it at count >= 3 without a check (CAM.c:1901-1910). Slot 1
+// race end reads it at count >= 3 without a check (CAM_FollowDriver_Normal, end-of-race camera). Slot 1
 // is not checked: in the retail image it is often 0, and that is
 // correct there. Since 4.1 build checks the same as make.
 #define RLD_SPAWN_SLOTS 16
@@ -1688,7 +1688,7 @@ static const char *Rld_SpawnCheck(const struct RldSpawn *spawn, u32 modes, char 
 	if (spawn->present && (spawn->count >= 3) && !spawn->nonNull[2])
 	{
 		snprintf(why, whySize,
-		         "this LEV's spawn table has count %d but no end-of-race camera at slot 2 - the race end would crash (CAM.c:1901-1910).\n"
+		         "this LEV's spawn table has count %d but no end-of-race camera at slot 2 - the race end would crash (CAM_FollowDriver_Normal, end-of-race camera).\n"
 		         "         This is in the track data; the exporter must write the camera or a count below 3.",
 		         spawn->count);
 		return why;
@@ -1697,7 +1697,7 @@ static const char *Rld_SpawnCheck(const struct RldSpawn *spawn, u32 modes, char 
 	if (spawn->present && (spawn->count >= 4) && !spawn->nonNull[3])
 	{
 		snprintf(why, whySize,
-		         "this LEV's spawn table has count %d but no camera path at slot 3 - the start line fly-in would crash (CAM.c:1644).\n"
+		         "this LEV's spawn table has count %d but no camera path at slot 3 - the start line fly-in would crash (CAM_FollowDriver_Normal, start-line fly-in).\n"
 		         "         This is in the track data; the exporter must write the camera path or a count below 4.",
 		         spawn->count);
 		return why;
@@ -1735,8 +1735,8 @@ static const char *Rld_SpawnCheck(const struct RldSpawn *spawn, u32 modes, char 
 // check the same, and a missing piece aborts before a file is created.
 // The Alpha-Maker later shows the same texts next to a grey checkbox.
 //
-//   all         SpawnType1: at count >= 3 slot 2 (finish camera, CAM.c:1901-1910),
-//               at count >= 4 slot 3 (fly-in, CAM.c:1644-1654) - Rld_SpawnCheck
+//   all         SpawnType1: at count >= 3 slot 2 (finish camera, CAM_FollowDriver_Normal),
+//               at count >= 4 slot 3 (fly-in, CAM_FollowDriver_Normal) - Rld_SpawnCheck
 //   race        at least one restart point (otherwise VehLap.c:73 counts
 //               no lap, the race never ends). Nav paths: only a
 //               warning, without them the bots do not drive off (BOTS.c:118-151)
