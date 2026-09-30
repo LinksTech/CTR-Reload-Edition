@@ -72,4 +72,23 @@ int NativeDiscImage_EnsureDirectory(const char *path);
 void NativeDiscImage_SetReport(int enabled);
 void NativeDiscImage_PrintReport(void);
 
+// THE SELF-TEST OF THE UNPACKER.
+//
+// NativeDiscImage_SelfTestExtract runs the first-start screen's calls in its
+// order - open, boot serial (must be SCUS-94426), measure, extract - with the
+// same walk and the same writer, into outDir. 1 = extracted, 0 = refused; why
+// gets the reason (on success: files and bytes). Every entry name is checked
+// to be one plain path component and every host path to lie strictly inside
+// outDir before anything is created, so nothing is ever written outside it.
+// The image is closed again afterwards.
+int NativeDiscImage_SelfTestExtract(const char *imagePath, const char *outDir, char *why, int whyBytes);
+
+// --selftest-disc <dir>: every *.bin in dir, sorted, extracted into a fresh
+// dir/out-<name>/assets. good-* must be extracted, bad-* refused, and in both
+// cases out-<name> may hold nothing but the assets folder and dir nothing new
+// but the out-* folders (checked by listing). Prints one [selftest] line per
+// image; returns the exit code: 0 only if everything is as expected and at
+// least one good- and one bad- image exist.
+int NativeDiscImage_SelfTestDir(const char *dir);
+
 #endif

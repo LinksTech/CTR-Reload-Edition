@@ -307,6 +307,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--ui-floor-off", "", "UI floor off"},
     {"--ui-anchor-per-group", "", "UI anchor per group"},
     {"--ui-anchor-legacy", "", "old UI anchors"},
+    {"--selftest-disc", "<dir>", "unpack the test images in <dir> (good-*/bad-*.bin), then end"},
     {"--gte-selftest", "", "both GTE paths against each other, then end"},
     {"--gte-alt", "", "alternative GTE arithmetic"},
     {"--gte-near-div", "", "GTE division route that does not saturate (acts only with --gte-alt)"},
@@ -1902,6 +1903,14 @@ int main(int argc, char *argv[])
 			}
 
 			return 0;
+		}
+
+		// The unpacker against made-up images, see NativeDiscImage_SelfTestDir.
+		// Up here for the same reason as --gte-selftest below: no window, no
+		// assets folder, no disc image, no graphics card.
+		if ((strcmp(argv[argIndex], "--selftest-disc") == 0) && ((argIndex + 1) < argc))
+		{
+			return NativeDiscImage_SelfTestDir(argv[argIndex + 1]);
 		}
 
 		// Runs both GTE paths against each other and leaves again. Up here, because

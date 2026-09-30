@@ -1,5 +1,6 @@
 #include "platform/native_disc_image.h"
 
+#include <platform/native_log.h>
 #include <platform/native_path.h>
 
 #include <limits.h>
@@ -10,6 +11,7 @@
 #include <errno.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <unistd.h>
 #endif
 #include <stdio.h>
 #include <stdlib.h>
@@ -613,6 +615,29 @@ int NativeDiscImage_ReadFileBytes(const char *path, int rawSectors, u8 **dataOut
 #define NATIVE_DISC_IMAGE_SELF_RECORD    0x00u
 #define NATIVE_DISC_IMAGE_PARENT_RECORD  0x01u
 
+// THE IMAGE IS FOREIGN INPUT, AND THE WALK BELOW WRITES WHERE IT SAYS.
+//
+// A directory record is a name, a start sector and a size, all of them the
+// image's word. Nothing stops an image from naming an entry "..", "C:x" or
+// "..\..\x", or from pointing a directory record back at the root or at one of
+// its own parents. The limits below turn each of those into a refusal with the
+// reason in the log - never a write outside the assets folder, never a walk
+// that does not end.
+//
+// Every limit is far above what a real disc holds: the retail disc unpacks 36
+// files from a shallow tree whose directories fit in a few sectors each, and
+// it passes the walk exactly as before (same 36 files, same byte count). A CD
+// cannot hold more than about 360 000 sectors, so no real directory tree comes
+// near 1024 directories or 65 536 entries.
+#define NATIVE_DISC_IMAGE_DIRS_MAX      1024
+#define NATIVE_DISC_IMAGE_ENTRIES_MAX   65536u
+#define NATIVE_DISC_IMAGE_DIR_BYTES_MAX (512u * NATIVE_DISC_IMAGE_FORM1_DATA_SIZE)
+#define NATIVE_DISC_IMAGE_WHY_MAX       320
+
+// The reason of the last refusal of the walk, for the self-test. The same text
+// goes to the log.
+global_variable char s_nativeDiscImageWhy[NATIVE_DISC_IMAGE_WHY_MAX];
+
 // WHAT STAYS ON THE DISC WHEN EXTRACTING
 //
 // Exactly one item, and it is measured, not estimated. The read counter
@@ -682,7 +707,336 @@ struct NativeDiscImageWalk
 
 	int result;
 	char failedPath[NATIVE_DISC_IMAGE_PATH_MAX];
+
+	// The loop guard: the start sector of every directory entered in this
+	// pass. A second entry into the same sector is a record pointing back at
+	// the root or at a parent, and refused - a depth limit alone would still
+	// let a directory with many such records fan out into billions of paths.
+	u32 visited[NATIVE_DISC_IMAGE_DIRS_MAX];
+	int visitedCount;
+	u32 entryCount;
+
+	char why[NATIVE_DISC_IMAGE_WHY_MAX];
 };
+
+// Says why, once, in the log's refusal form, and keeps the text for the
+// self-test. Only the first reason of a walk counts; whatever breaks after it
+// is a consequence.
+internal void NativeDiscImage_WalkRefuse(struct NativeDiscImageWalk *walk, const char *reason)
+{
+	if (walk->why[0] != '\0')
+	{
+		return;
+	}
+
+	NativeStr8_CopyToCString(walk->why, sizeof(walk->why), NativeStr8_FromCString(reason));
+	NativeStr8_CopyToCString(s_nativeDiscImageWhy, sizeof(s_nativeDiscImageWhy), NativeStr8_FromCString(reason));
+	Platform_Log("[CTR Disc] image REJECTED - %s\n", reason);
+}
+
+// A name as it can be printed: the bytes that make a name dangerous are exactly
+// the ones that make it unreadable in a log line.
+internal void NativeDiscImage_PrintableName(char *dst, size_t dstSize, const char *parentPath, const u8 *name, size_t nameLength)
+{
+	size_t at = 0;
+	size_t i;
+
+	if (dstSize == 0)
+	{
+		return;
+	}
+
+	for (i = 0; (parentPath[i] != '\0') && ((at + 1u) < dstSize); i++)
+	{
+		dst[at++] = parentPath[i];
+	}
+
+	if ((at != 0) && ((at + 1u) < dstSize))
+	{
+		dst[at++] = '/';
+	}
+
+	for (i = 0; (i < nameLength) && ((at + 5u) < dstSize); i++)
+	{
+		u8 byte = name[i];
+
+		if ((byte < 0x20u) || (byte >= 0x7fu))
+		{
+			static const char hex[] = "0123456789abcdef";
+
+			dst[at++] = '\\';
+			dst[at++] = 'x';
+			dst[at++] = hex[byte >> 4];
+			dst[at++] = hex[byte & 0x0fu];
+		}
+		else
+		{
+			dst[at++] = (char)byte;
+		}
+	}
+
+	dst[at] = '\0';
+}
+
+// WHAT A NAME ON THE DISC MAY BE: ONE PLAIN PATH COMPONENT.
+//
+// Checked after the version suffix and the padding are gone, i.e. on exactly
+// the bytes that end up in the host path. Every character that could turn one
+// component into several, into a parent, into a drive, a stream or a device is
+// refused - the retail disc uses capital letters, digits, '_' and '.', nothing
+// else. NULL means the name is fine.
+internal const char *NativeDiscImage_EntryNameProblem(const u8 *name, size_t nameLength)
+{
+	static const char *const devices[] = {"CON", "PRN", "AUX", "NUL"};
+	NativeStr8 firstThree;
+	size_t stem;
+	size_t i;
+	int onlyDots = 1;
+
+	if (nameLength == 0)
+	{
+		return "empty name";
+	}
+
+	for (i = 0; i < nameLength; i++)
+	{
+		u8 byte = name[i];
+
+		if (byte == 0x00u)
+		{
+			return "NUL byte in the name";
+		}
+		if ((byte == '/') || (byte == '\\'))
+		{
+			return "path separator in the name";
+		}
+		if (byte == ':')
+		{
+			return "':' in the name (drive letter or stream)";
+		}
+		if ((byte < 0x20u) || (byte == 0x7fu))
+		{
+			return "control character in the name";
+		}
+		if ((byte == '<') || (byte == '>') || (byte == '"') || (byte == '|') || (byte == '?') || (byte == '*'))
+		{
+			return "character Windows does not allow in a name";
+		}
+		if ((byte != '.') && (byte != ' '))
+		{
+			onlyDots = 0;
+		}
+	}
+
+	// ".", "..", and everything Windows folds into them ("...", ". .").
+	if (onlyDots)
+	{
+		return "name is only dots (\".\" or \"..\")";
+	}
+
+	// CON, NUL, COM1 ... are devices in every folder, with any extension.
+	for (stem = 0; (stem < nameLength) && (name[stem] != '.'); stem++)
+	{
+	}
+	while ((stem > 0) && (name[stem - 1u] == ' '))
+	{
+		stem--;
+	}
+
+	firstThree.ptr = name;
+	firstThree.len = 3;
+
+	for (i = 0; i < (sizeof(devices) / sizeof(devices[0])); i++)
+	{
+		if ((stem == 3) && NativeStr8_EqualsIgnoreCaseAscii(firstThree, NativeStr8_FromCString(devices[i])))
+		{
+			return "Windows device name";
+		}
+	}
+
+	if ((stem == 4) && (name[3] >= '0') && (name[3] <= '9') &&
+	    (NativeStr8_EqualsIgnoreCaseAscii(firstThree, NATIVE_STR8_LIT("COM")) || NativeStr8_EqualsIgnoreCaseAscii(firstThree, NATIVE_STR8_LIT("LPT"))))
+	{
+		return "Windows device name";
+	}
+
+	return NULL;
+}
+
+#if !defined(_WIN32)
+// "." and ".." resolved by text, for the prefix check below. The path does not
+// exist yet, so realpath() cannot be asked.
+internal int NativeDiscImage_LexicalPath(char *dst, size_t dstSize, const char *src)
+{
+	char work[NATIVE_DISC_IMAGE_PATH_MAX];
+	size_t out = 1;
+	const char *at;
+
+	if (src[0] == '/')
+	{
+		NativeStr8_CopyToCString(work, sizeof(work), NativeStr8_FromCString(src));
+	}
+	else
+	{
+		char cwd[NATIVE_DISC_IMAGE_PATH_MAX];
+
+		if ((getcwd(cwd, sizeof(cwd)) == NULL) || (snprintf(work, sizeof(work), "%s/%s", cwd, src) >= (int)sizeof(work)))
+		{
+			return 0;
+		}
+	}
+
+	if (dstSize < 2)
+	{
+		return 0;
+	}
+
+	dst[0] = '/';
+	at = work;
+
+	while (*at != '\0')
+	{
+		const char *start;
+		size_t length;
+
+		while (*at == '/')
+		{
+			at++;
+		}
+
+		start = at;
+		while ((*at != '\0') && (*at != '/'))
+		{
+			at++;
+		}
+
+		length = (size_t)(at - start);
+
+		if ((length == 0) || ((length == 1) && (start[0] == '.')))
+		{
+			continue;
+		}
+
+		if ((length == 2) && (start[0] == '.') && (start[1] == '.'))
+		{
+			while ((out > 1) && (dst[out - 1u] != '/'))
+			{
+				out--;
+			}
+			if (out > 1)
+			{
+				out--;
+			}
+			continue;
+		}
+
+		if ((out + length + 2u) > dstSize)
+		{
+			return 0;
+		}
+
+		if (out > 1)
+		{
+			dst[out++] = '/';
+		}
+
+		memcpy(&dst[out], start, length);
+		out += length;
+	}
+
+	dst[out] = '\0';
+	return 1;
+}
+#endif
+
+// THE LAST WORD BEFORE ANYTHING IS CREATED: IS THIS PATH INSIDE THE FOLDER?
+//
+// The name check above already refuses every component that could leave the
+// folder. This compares the finished host path against the folder itself, both
+// normalized by the same rules the file system applies, so a way out that the
+// name check did not think of still ends here. 1 = strictly below root.
+internal int NativeDiscImage_PathInside(const char *root, const char *path)
+{
+	char rootFull[NATIVE_DISC_IMAGE_PATH_MAX];
+	char pathFull[NATIVE_DISC_IMAGE_PATH_MAX];
+	size_t rootLength;
+	size_t i;
+
+	if ((root == NULL) || (path == NULL) || (root[0] == '\0') || (path[0] == '\0'))
+	{
+		return 0;
+	}
+
+#if defined(_WIN32)
+	{
+		DWORD length = GetFullPathNameA(root, (DWORD)sizeof(rootFull), rootFull, NULL);
+
+		if ((length == 0) || (length >= sizeof(rootFull)))
+		{
+			return 0;
+		}
+
+		length = GetFullPathNameA(path, (DWORD)sizeof(pathFull), pathFull, NULL);
+
+		if ((length == 0) || (length >= sizeof(pathFull)))
+		{
+			return 0;
+		}
+	}
+#else
+	if (!NativeDiscImage_LexicalPath(rootFull, sizeof(rootFull), root) || !NativeDiscImage_LexicalPath(pathFull, sizeof(pathFull), path))
+	{
+		return 0;
+	}
+#endif
+
+	rootLength = strlen(rootFull);
+	while ((rootLength > 0) && NativePath_IsSeparator((u8)rootFull[rootLength - 1u]))
+	{
+		rootLength--;
+	}
+
+	if ((rootLength == 0) || (strlen(pathFull) <= rootLength))
+	{
+		return 0;
+	}
+
+	for (i = 0; i < rootLength; i++)
+	{
+#if defined(_WIN32)
+		u8 left = NativeStr8_ToUpperAscii((u8)rootFull[i]);
+		u8 right = NativeStr8_ToUpperAscii((u8)pathFull[i]);
+#else
+		u8 left = (u8)rootFull[i];
+		u8 right = (u8)pathFull[i];
+#endif
+
+		if (NativePath_IsSeparator(left) && NativePath_IsSeparator(right))
+		{
+			continue;
+		}
+
+		if (left != right)
+		{
+			return 0;
+		}
+	}
+
+	if (!NativePath_IsSeparator((u8)pathFull[rootLength]))
+	{
+		return 0;
+	}
+
+	for (i = rootLength; pathFull[i] != '\0'; i++)
+	{
+		if (!NativePath_IsSeparator((u8)pathFull[i]))
+		{
+			return 1;
+		}
+	}
+
+	return 0;
+}
 
 internal int NativeDiscImage_MakeDirectory(const char *path)
 {
@@ -789,6 +1143,19 @@ internal int NativeDiscImage_WriteFile(struct NativeDiscImageWalk *walk, const s
 		return 0;
 	}
 
+	// Before the first directory or file is created. The walk refused every
+	// dangerous name already; this is the check that does not depend on having
+	// thought of every one.
+	if (!NativeDiscImage_PathInside(walk->destDir, hostPath))
+	{
+		char reason[NATIVE_DISC_IMAGE_WHY_MAX];
+
+		snprintf(reason, sizeof(reason), "entry \"%s\" would be written outside the assets folder", relativePath);
+		NativeDiscImage_WalkRefuse(walk, reason);
+		walk->result = NATIVE_DISC_IMAGE_ERR_READ;
+		return 0;
+	}
+
 	if (!NativeDiscImage_FileIsForm2(file, &isForm2))
 	{
 		walk->result = NATIVE_DISC_IMAGE_ERR_READ;
@@ -878,16 +1245,59 @@ internal int NativeDiscImage_WalkDirectory(struct NativeDiscImageWalk *walk, con
 	int size;
 	int offset = 0;
 	int ok = 1;
+	int i;
+	char reason[NATIVE_DISC_IMAGE_WHY_MAX];
 
+	// This directory's own path for the reasons below; pathBuffer holds it up
+	// to pathLength for the whole call.
+	const char *dirName = (pathBuffer[0] != '\0') ? pathBuffer : "(root)";
+
+	// Refused rather than cut off. Cutting off silently was the old loop
+	// guard, and it still let a directory full of records pointing at the root
+	// fan out into more paths than the walk could ever finish.
 	if (depth > NATIVE_DISC_IMAGE_DIR_DEPTH_MAX)
 	{
-		// Not a limit anybody should reach - it is the loop guard for a
-		// directory record that points back at itself.
-		return 1;
+		snprintf(reason, sizeof(reason), "directory \"%s\" is nested deeper than %d levels", dirName, NATIVE_DISC_IMAGE_DIR_DEPTH_MAX);
+		NativeDiscImage_WalkRefuse(walk, reason);
+		walk->result = NATIVE_DISC_IMAGE_ERR_READ;
+		return 0;
+	}
+
+	for (i = 0; i < walk->visitedCount; i++)
+	{
+		if (walk->visited[i] == dir->lba)
+		{
+			snprintf(reason, sizeof(reason), "directory \"%s\" points back at sector %u, a directory already walked (a loop to the root or a parent)",
+			         dirName, (unsigned int)dir->lba);
+			NativeDiscImage_WalkRefuse(walk, reason);
+			walk->result = NATIVE_DISC_IMAGE_ERR_READ;
+			return 0;
+		}
+	}
+
+	if (walk->visitedCount >= NATIVE_DISC_IMAGE_DIRS_MAX)
+	{
+		snprintf(reason, sizeof(reason), "more than %d directories", NATIVE_DISC_IMAGE_DIRS_MAX);
+		NativeDiscImage_WalkRefuse(walk, reason);
+		walk->result = NATIVE_DISC_IMAGE_ERR_READ;
+		return 0;
+	}
+
+	walk->visited[walk->visitedCount++] = dir->lba;
+
+	if (dir->size > NATIVE_DISC_IMAGE_DIR_BYTES_MAX)
+	{
+		snprintf(reason, sizeof(reason), "directory \"%s\" claims %u bytes (at most %u)", dirName, (unsigned int)dir->size,
+		         (unsigned int)NATIVE_DISC_IMAGE_DIR_BYTES_MAX);
+		NativeDiscImage_WalkRefuse(walk, reason);
+		walk->result = NATIVE_DISC_IMAGE_ERR_READ;
+		return 0;
 	}
 
 	if (!NativeDiscImage_ReadDirectoryBytes(dir, &buf, &size))
 	{
+		snprintf(reason, sizeof(reason), "directory \"%s\" at sector %u cannot be read", dirName, (unsigned int)dir->lba);
+		NativeDiscImage_WalkRefuse(walk, reason);
 		walk->result = NATIVE_DISC_IMAGE_ERR_READ;
 		return 0;
 	}
@@ -896,9 +1306,10 @@ internal int NativeDiscImage_WalkDirectory(struct NativeDiscImageWalk *walk, con
 	{
 		struct NativeDiscImageDirRecord record;
 		struct NativeDiscImageFile entry;
+		const char *problem;
 		size_t nameLength;
 		size_t writeAt;
-		size_t i;
+		size_t n;
 		u8 length = buf[offset];
 
 		if (length == 0)
@@ -910,6 +1321,17 @@ internal int NativeDiscImage_WalkDirectory(struct NativeDiscImageWalk *walk, con
 
 		if (!NativeDiscImage_ParseDirRecord(&buf[offset], (size_t)(size - offset), &record))
 		{
+			snprintf(reason, sizeof(reason), "directory \"%s\" has a broken record at byte %d", dirName, offset);
+			NativeDiscImage_WalkRefuse(walk, reason);
+			walk->result = NATIVE_DISC_IMAGE_ERR_READ;
+			ok = 0;
+			break;
+		}
+
+		if (++walk->entryCount > NATIVE_DISC_IMAGE_ENTRIES_MAX)
+		{
+			snprintf(reason, sizeof(reason), "more than %u directory entries", (unsigned int)NATIVE_DISC_IMAGE_ENTRIES_MAX);
+			NativeDiscImage_WalkRefuse(walk, reason);
 			walk->result = NATIVE_DISC_IMAGE_ERR_READ;
 			ok = 0;
 			break;
@@ -934,8 +1356,25 @@ internal int NativeDiscImage_WalkDirectory(struct NativeDiscImageWalk *walk, con
 			nameLength -= 2;
 		}
 
+		// In both passes, so the counting pass - the one the first-start
+		// screen runs before it removes anything - already refuses the image.
+		problem = NativeDiscImage_EntryNameProblem(record.name, nameLength);
+		if (problem != NULL)
+		{
+			char printable[NATIVE_DISC_IMAGE_PATH_MAX];
+
+			NativeDiscImage_PrintableName(printable, sizeof(printable), pathBuffer, record.name, record.nameLen);
+			snprintf(reason, sizeof(reason), "entry \"%s\": %s", printable, problem);
+			NativeDiscImage_WalkRefuse(walk, reason);
+			walk->result = NATIVE_DISC_IMAGE_ERR_READ;
+			ok = 0;
+			break;
+		}
+
 		if ((pathLength + nameLength + 2u) >= pathCapacity)
 		{
+			snprintf(reason, sizeof(reason), "a path below \"%s\" is longer than %u bytes", dirName, (unsigned int)pathCapacity);
+			NativeDiscImage_WalkRefuse(walk, reason);
 			walk->result = NATIVE_DISC_IMAGE_ERR_READ;
 			ok = 0;
 			break;
@@ -948,9 +1387,9 @@ internal int NativeDiscImage_WalkDirectory(struct NativeDiscImageWalk *walk, con
 
 		writeAt = pathLength + ((pathLength != 0) ? 1u : 0u);
 
-		for (i = 0; i < nameLength; i++)
+		for (n = 0; n < nameLength; n++)
 		{
-			pathBuffer[writeAt + i] = (char)record.name[i];
+			pathBuffer[writeAt + n] = (char)record.name[n];
 		}
 
 		pathBuffer[writeAt + nameLength] = '\0';
@@ -1154,6 +1593,8 @@ int NativeDiscImage_Measure(u32 *fileCountOut, u64 *byteCountOut)
 	struct NativeDiscImageWalk walk;
 	char pathBuffer[NATIVE_DISC_IMAGE_PATH_MAX];
 
+	s_nativeDiscImageWhy[0] = '\0';
+
 	if (!s_nativeDiscImageAvailable)
 	{
 		return 0;
@@ -1201,6 +1642,8 @@ int NativeDiscImage_Extract(const char *destDir, NativeDiscImageProgressFn progr
 		failedPath[0] = '\0';
 	}
 
+	s_nativeDiscImageWhy[0] = '\0';
+
 	if (!s_nativeDiscImageAvailable || (destDir == NULL))
 	{
 		return 0;
@@ -1227,6 +1670,9 @@ int NativeDiscImage_Extract(const char *destDir, NativeDiscImageProgressFn progr
 		return 0;
 	}
 
+	// The second pass walks the same tree again, so the loop guard starts over.
+	walk.visitedCount = 0;
+	walk.entryCount = 0;
 	walk.writing = 1;
 	walk.destDir = destDir;
 	walk.progress = progress;
@@ -1354,14 +1800,25 @@ internal const struct NativeDiscImageReadSlot *NativeDiscImage_FindReadSlot(u32 
 // so the untouched files list themselves. A list built from what WAS read leaves
 // the reader to do the subtraction, and the whole point of the exercise is the
 // files nobody thought of.
+//
+// dirBudget bounds the directories this walk enters. The depth limit alone does
+// not: a directory holding many records that point back at the root would fan
+// out into more paths than the report could ever print.
 internal void NativeDiscImage_ReportDirectory(const struct NativeDiscImageFile *dir, char *pathBuffer, size_t pathLength, size_t pathCapacity, int depth,
-                                              u64 *unusedBytes, int *unusedFiles)
+                                              u64 *unusedBytes, int *unusedFiles, int *dirBudget)
 {
 	u8 *buf;
 	int size;
 	int offset = 0;
 
-	if ((depth > NATIVE_DISC_IMAGE_DIR_DEPTH_MAX) || !NativeDiscImage_ReadDirectoryBytes(dir, &buf, &size))
+	if ((depth > NATIVE_DISC_IMAGE_DIR_DEPTH_MAX) || (*dirBudget <= 0) || (dir->size > NATIVE_DISC_IMAGE_DIR_BYTES_MAX))
+	{
+		return;
+	}
+
+	(*dirBudget)--;
+
+	if (!NativeDiscImage_ReadDirectoryBytes(dir, &buf, &size))
 	{
 		return;
 	}
@@ -1425,7 +1882,7 @@ internal void NativeDiscImage_ReportDirectory(const struct NativeDiscImageFile *
 
 		if ((record.flags & NATIVE_DISC_IMAGE_DIRECTORY_FLAG) != 0)
 		{
-			NativeDiscImage_ReportDirectory(&entry, pathBuffer, writeAt + nameLength, pathCapacity, depth + 1, unusedBytes, unusedFiles);
+			NativeDiscImage_ReportDirectory(&entry, pathBuffer, writeAt + nameLength, pathCapacity, depth + 1, unusedBytes, unusedFiles, dirBudget);
 		}
 		else
 		{
@@ -1457,6 +1914,7 @@ void NativeDiscImage_PrintReport(void)
 	char pathBuffer[NATIVE_DISC_IMAGE_PATH_MAX];
 	u64 unusedBytes = 0;
 	int unusedFiles = 0;
+	int dirBudget = NATIVE_DISC_IMAGE_DIRS_MAX;
 
 	// Once, no matter by how many paths someone ends up here. The report is a
 	// list by which something gets dropped from the unpacker - printed twice it
@@ -1473,7 +1931,7 @@ void NativeDiscImage_PrintReport(void)
 	Platform_Log("[CTR Disc] ---- what was read from the image ----\n");
 
 	pathBuffer[0] = '\0';
-	NativeDiscImage_ReportDirectory(&s_nativeDiscImageRoot, pathBuffer, 0, sizeof(pathBuffer), 0, &unusedBytes, &unusedFiles);
+	NativeDiscImage_ReportDirectory(&s_nativeDiscImageRoot, pathBuffer, 0, sizeof(pathBuffer), 0, &unusedBytes, &unusedFiles, &dirBudget);
 
 	Platform_Log("[CTR Disc]   %d file(s) touched, %llu byte(s) read\n", s_nativeDiscImageReadCount, (unsigned long long)s_nativeDiscImageReadBytes);
 	Platform_Log("[CTR Disc]   %d file(s) unused, %llu byte(s) on the disc (%llu MB)\n", unusedFiles, (unsigned long long)unusedBytes,
@@ -1485,4 +1943,536 @@ void NativeDiscImage_PrintReport(void)
 	}
 
 	Platform_Log("[CTR Disc]   ONE run is not a measurement - unused here only means: not read in THIS run.\n");
+}
+
+//----------------------------------------------------------------------------------------
+// THE SELF-TEST (--selftest-disc)
+//
+// A disc image is foreign input, and the first start writes what it says. So
+// the unpacker is run against small made-up images (tools/tests/make_bad_disc.c)
+// whose directory records name "..", "C:x", "a/..", point back at the root and
+// so on, and the test checks from the outside - by listing folders - that
+// nothing lands anywhere but the assets folder it was given.
+//
+// THE SAME PATH AS THE FIRST-START SCREEN, CALL FOR CALL.
+//
+// NativeSetup_TryImage in main.c does: open, boot serial, serial == SCUS-94426,
+// measure (the counting walk), extract (counting walk + writing walk). This
+// does the same calls in the same order, with the same walk and the same
+// WriteFile - no copy of any of it. The identity check is not skipped either:
+// the made-up images carry a SYSTEM.CNF that names SCUS_944.26, and the reader
+// knows no other check of identity (no whole-image hash, no size table).
+// Left out are only the parts of the screen that are not about the image: the
+// progress callback (NULL here, the walk allows it) and the "unpacked" marker
+// main.c writes into the game folder afterwards.
+
+#define NATIVE_DISC_IMAGE_SERIAL_NTSC_U "SCUS-94426" // the same as NATIVE_SETUP_SERIAL_NTSC_U in main.c
+
+// Everything the self-test opened is closed again, so the game's own image
+// (none, this early) is not left pointing at a test file.
+internal void NativeDiscImage_CloseImage(void)
+{
+	if (s_nativeDiscImageFile != NULL)
+	{
+		fclose(s_nativeDiscImageFile);
+		s_nativeDiscImageFile = NULL;
+	}
+
+	s_nativeDiscImageAvailable = 0;
+	s_nativeDiscImagePath[0] = '\0';
+	memset(&s_nativeDiscImageRoot, 0, sizeof(s_nativeDiscImageRoot));
+}
+
+int NativeDiscImage_SelfTestExtract(const char *imagePath, const char *outDir, char *why, int whyBytes)
+{
+	char local[NATIVE_DISC_IMAGE_WHY_MAX + NATIVE_DISC_IMAGE_PATH_MAX];
+	char serial[32];
+	char failedPath[NATIVE_DISC_IMAGE_PATH_MAX];
+	u32 files = 0;
+	u64 bytes = 0;
+	u32 filesWritten = 0;
+	u64 bytesWritten = 0;
+	int result = NATIVE_DISC_IMAGE_OK;
+	int ok = 0;
+
+	local[0] = '\0';
+	failedPath[0] = '\0';
+
+	if ((imagePath == NULL) || (outDir == NULL) || (outDir[0] == '\0'))
+	{
+		snprintf(local, sizeof(local), "no image or no output folder given");
+	}
+	else if (!NativeDiscImage_OpenImagePath(imagePath))
+	{
+		snprintf(local, sizeof(local), "not a readable PlayStation disc image (no MODE2/2352 ISO 9660 volume at sector 16)");
+	}
+	else if (!NativeDiscImage_ReadBootSerial(serial, sizeof(serial)))
+	{
+		snprintf(local, sizeof(local), "no boot record (SYSTEM.CNF missing or it names no serial)");
+	}
+	else if (strcmp(serial, NATIVE_DISC_IMAGE_SERIAL_NTSC_U) != 0)
+	{
+		snprintf(local, sizeof(local), "serial %s, not %s", serial, NATIVE_DISC_IMAGE_SERIAL_NTSC_U);
+	}
+	else if (!NativeDiscImage_Measure(&files, &bytes))
+	{
+		snprintf(local, sizeof(local), "file table refused: %s", (s_nativeDiscImageWhy[0] != '\0') ? s_nativeDiscImageWhy : "cannot be read");
+	}
+	else if (files == 0)
+	{
+		snprintf(local, sizeof(local), "the image holds no files");
+	}
+	else if (!NativeDiscImage_Extract(outDir, NULL, NULL, &result, failedPath, sizeof(failedPath), &filesWritten, &bytesWritten))
+	{
+		snprintf(local, sizeof(local), "extraction stopped (result %d) at \"%s\": %s", result, failedPath,
+		         (s_nativeDiscImageWhy[0] != '\0') ? s_nativeDiscImageWhy : "read or write failed");
+	}
+	else if (filesWritten != files)
+	{
+		snprintf(local, sizeof(local), "wrote %u of %u files", (unsigned int)filesWritten, (unsigned int)files);
+	}
+	else
+	{
+		snprintf(local, sizeof(local), "%u file(s), %llu byte(s)", (unsigned int)filesWritten, (unsigned long long)bytesWritten);
+		ok = 1;
+	}
+
+	NativeDiscImage_CloseImage();
+
+	if ((why != NULL) && (whyBytes > 0))
+	{
+		NativeStr8_CopyToCString(why, (size_t)whyBytes, NativeStr8_FromCString(local));
+	}
+
+	return ok;
+}
+
+// A folder's entries, "." and ".." left out, sorted by name.
+struct NativeDiscImageNameList
+{
+	char **names;
+	int count;
+	int capacity;
+};
+
+internal int NativeDiscImage_NameListAdd(struct NativeDiscImageNameList *list, const char *name)
+{
+	size_t length = strlen(name);
+	char *copy;
+
+	if (list->count == list->capacity)
+	{
+		int capacity = (list->capacity == 0) ? 32 : (list->capacity * 2);
+		char **grown = (char **)realloc(list->names, (size_t)capacity * sizeof(char *));
+
+		if (grown == NULL)
+		{
+			return 0;
+		}
+
+		list->names = grown;
+		list->capacity = capacity;
+	}
+
+	copy = (char *)malloc(length + 1u);
+	if (copy == NULL)
+	{
+		return 0;
+	}
+
+	memcpy(copy, name, length + 1u);
+	list->names[list->count++] = copy;
+	return 1;
+}
+
+internal void NativeDiscImage_NameListFree(struct NativeDiscImageNameList *list)
+{
+	int i;
+
+	for (i = 0; i < list->count; i++)
+	{
+		free(list->names[i]);
+	}
+
+	free(list->names);
+	list->names = NULL;
+	list->count = 0;
+	list->capacity = 0;
+}
+
+internal int NativeDiscImage_NameCompare(const void *left, const void *right)
+{
+	return strcmp(*(const char *const *)left, *(const char *const *)right);
+}
+
+internal int NativeDiscImage_NameListHas(const struct NativeDiscImageNameList *list, const char *name)
+{
+	int i;
+
+	for (i = 0; i < list->count; i++)
+	{
+		if (strcmp(list->names[i], name) == 0)
+		{
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+// 1 = listed (an empty or missing folder lists as empty), 0 = out of memory.
+internal int NativeDiscImage_ListFolder(const char *path, struct NativeDiscImageNameList *list)
+{
+#if defined(_WIN32)
+	char pattern[NATIVE_DISC_IMAGE_PATH_MAX];
+	WIN32_FIND_DATAA found;
+	HANDLE handle;
+	int ok = 1;
+
+	if (snprintf(pattern, sizeof(pattern), "%s/*", path) >= (int)sizeof(pattern))
+	{
+		return 0;
+	}
+
+	handle = FindFirstFileA(pattern, &found);
+	if (handle == INVALID_HANDLE_VALUE)
+	{
+		return 1;
+	}
+
+	do
+	{
+		if ((strcmp(found.cFileName, ".") == 0) || (strcmp(found.cFileName, "..") == 0))
+		{
+			continue;
+		}
+
+		if (!NativeDiscImage_NameListAdd(list, found.cFileName))
+		{
+			ok = 0;
+			break;
+		}
+	} while (FindNextFileA(handle, &found));
+
+	FindClose(handle);
+#else
+	DIR *dir = opendir(path);
+	struct dirent *entry;
+	int ok = 1;
+
+	if (dir == NULL)
+	{
+		return 1;
+	}
+
+	while ((entry = readdir(dir)) != NULL)
+	{
+		if ((strcmp(entry->d_name, ".") == 0) || (strcmp(entry->d_name, "..") == 0))
+		{
+			continue;
+		}
+
+		if (!NativeDiscImage_NameListAdd(list, entry->d_name))
+		{
+			ok = 0;
+			break;
+		}
+	}
+
+	closedir(dir);
+#endif
+
+	if (list->count > 1)
+	{
+		qsort(list->names, (size_t)list->count, sizeof(char *), NativeDiscImage_NameCompare);
+	}
+
+	return ok;
+}
+
+// Removes an earlier run's out-<name> folder. Links are removed as links,
+// never followed: this deletes inside the test folder and nowhere else.
+internal int NativeDiscImage_RemoveTree(const char *path, int depth)
+{
+	struct NativeDiscImageNameList list = {0};
+	char child[NATIVE_DISC_IMAGE_PATH_MAX];
+	int ok = 1;
+	int i;
+
+#if defined(_WIN32)
+	DWORD attributes = GetFileAttributesA(path);
+
+	if (attributes == INVALID_FILE_ATTRIBUTES)
+	{
+		return 1;
+	}
+
+	if ((attributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+	{
+		SetFileAttributesA(path, FILE_ATTRIBUTE_NORMAL);
+		return DeleteFileA(path) != 0;
+	}
+
+	if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+	{
+		return RemoveDirectoryA(path) != 0;
+	}
+#else
+	struct stat info;
+
+	if (lstat(path, &info) != 0)
+	{
+		return 1;
+	}
+
+	if (!S_ISDIR(info.st_mode))
+	{
+		return unlink(path) == 0;
+	}
+#endif
+
+	if ((depth > 16) || !NativeDiscImage_ListFolder(path, &list))
+	{
+		NativeDiscImage_NameListFree(&list);
+		return 0;
+	}
+
+	for (i = 0; (i < list.count) && ok; i++)
+	{
+		if (snprintf(child, sizeof(child), "%s/%s", path, list.names[i]) >= (int)sizeof(child))
+		{
+			ok = 0;
+			break;
+		}
+
+		ok = NativeDiscImage_RemoveTree(child, depth + 1);
+	}
+
+	NativeDiscImage_NameListFree(&list);
+
+	if (!ok)
+	{
+		return 0;
+	}
+
+#if defined(_WIN32)
+	return RemoveDirectoryA(path) != 0;
+#else
+	return rmdir(path) == 0;
+#endif
+}
+
+internal int NativeDiscImage_FileExists(const char *path)
+{
+	FILE *file = fopen(path, "rb");
+
+	if (file == NULL)
+	{
+		return 0;
+	}
+
+	fclose(file);
+	return 1;
+}
+
+// The prefix check on its own, with paths the name check would never let
+// through - so the second line of defence is tested too, not only the first.
+internal int NativeDiscImage_SelfTestPathInside(void)
+{
+	static const struct
+	{
+		const char *path;
+		int inside;
+	} cases[] = {
+	    {"selftest-root/assets/A", 1},
+	    {"selftest-root/assets/A/B.TXT", 1},
+	    {"selftest-root/assets/A/../B", 1},
+	    {"selftest-root/assets", 0},
+	    {"selftest-root/assets/", 0},
+	    {"selftest-root/assets/..", 0},
+	    {"selftest-root/assets/../x", 0},
+	    {"selftest-root/assets/A/../../x", 0},
+	    {"selftest-root/assetsEVIL/x", 0},
+	    {"selftest-root/x", 0},
+	    {"/x", 0},
+	};
+	int failed = 0;
+	int i;
+
+	for (i = 0; i < (int)(sizeof(cases) / sizeof(cases[0])); i++)
+	{
+		if (NativeDiscImage_PathInside("selftest-root/assets", cases[i].path) != cases[i].inside)
+		{
+			printf("[selftest] path check \"%s\": expected %s - UNEXPECTED\n", cases[i].path, cases[i].inside ? "inside" : "outside");
+			failed++;
+		}
+	}
+
+	if (failed == 0)
+	{
+		printf("[selftest] path check: %d case(s) - OK\n", i);
+	}
+
+	return failed;
+}
+
+int NativeDiscImage_SelfTestDir(const char *dir)
+{
+	struct NativeDiscImageNameList before = {0};
+	struct NativeDiscImageNameList after = {0};
+	struct NativeDiscImageNameList images = {0};
+	int unexpected = 0;
+	int good = 0;
+	int bad = 0;
+	int i;
+
+	if ((dir == NULL) || (dir[0] == '\0') || !NativeDiscImage_ListFolder(dir, &before))
+	{
+		printf("[selftest] disc: cannot list the folder\n");
+		return 1;
+	}
+
+	for (i = 0; i < before.count; i++)
+	{
+		const char *name = before.names[i];
+		size_t length = strlen(name);
+
+		if ((length > 4) && NativeStr8_EqualsIgnoreCaseAscii(NativeStr8_FromCString(&name[length - 4u]), NATIVE_STR8_LIT(".bin")))
+		{
+			if (!NativeDiscImage_NameListAdd(&images, name))
+			{
+				unexpected++;
+			}
+		}
+	}
+
+	unexpected += NativeDiscImage_SelfTestPathInside();
+
+	for (i = 0; i < images.count; i++)
+	{
+		struct NativeDiscImageNameList outList = {0};
+		const char *name = images.names[i];
+		char base[NATIVE_DISC_IMAGE_PATH_MAX];
+		char imagePath[NATIVE_DISC_IMAGE_PATH_MAX];
+		char outRoot[NATIVE_DISC_IMAGE_PATH_MAX];
+		char outAssets[NATIVE_DISC_IMAGE_PATH_MAX];
+		char probe[NATIVE_DISC_IMAGE_PATH_MAX];
+		char why[NATIVE_DISC_IMAGE_WHY_MAX + NATIVE_DISC_IMAGE_PATH_MAX];
+		int expectGood = (strncmp(name, "good-", 5) == 0);
+		int expectBad = (strncmp(name, "bad-", 4) == 0);
+		int extracted;
+		int asExpected;
+		int j;
+
+		NativeStr8_CopyToCString(base, sizeof(base), NativeStr8_FromCString(name));
+		base[strlen(base) - 4u] = '\0';
+
+		if ((snprintf(imagePath, sizeof(imagePath), "%s/%s", dir, name) >= (int)sizeof(imagePath)) ||
+		    (snprintf(outRoot, sizeof(outRoot), "%s/out-%s", dir, base) >= (int)sizeof(outRoot)) ||
+		    (snprintf(outAssets, sizeof(outAssets), "%s/assets", outRoot) >= (int)sizeof(outAssets)) ||
+		    (snprintf(probe, sizeof(probe), "%s/SYSTEM.CNF", outAssets) >= (int)sizeof(probe)))
+		{
+			printf("[selftest] %s: path too long - UNEXPECTED\n", name);
+			unexpected++;
+			continue;
+		}
+
+		// A fresh folder per image: whatever an earlier run left there would
+		// otherwise count as written by this one.
+		if (!NativeDiscImage_RemoveTree(outRoot, 0) || !NativeDiscImage_EnsureDirectory(outRoot))
+		{
+			printf("[selftest] %s: cannot prepare %s - UNEXPECTED\n", name, outRoot);
+			unexpected++;
+			continue;
+		}
+
+		why[0] = '\0';
+		extracted = NativeDiscImage_SelfTestExtract(imagePath, outAssets, why, (int)sizeof(why));
+
+		if (expectGood)
+		{
+			// Extracted, and extracted INTO the folder: the boot record has to be
+			// there where the game will look for it.
+			asExpected = extracted && NativeDiscImage_FileExists(probe);
+			good++;
+		}
+		else
+		{
+			asExpected = expectBad && !extracted;
+			bad += expectBad;
+		}
+
+		printf("[selftest] %s: %s (%s) - %s\n", name, extracted ? "extracted" : "refused", why, asExpected ? "OK" : "UNEXPECTED");
+
+		if (!asExpected)
+		{
+			unexpected++;
+		}
+
+		// In BOTH cases: out-<name> may hold the assets folder and nothing else.
+		if (!NativeDiscImage_ListFolder(outRoot, &outList))
+		{
+			printf("[selftest] %s: cannot list %s - UNEXPECTED\n", name, outRoot);
+			unexpected++;
+		}
+
+		for (j = 0; j < outList.count; j++)
+		{
+			if (strcmp(outList.names[j], "assets") != 0)
+			{
+				printf("[selftest] %s: \"%s\" written beside the assets folder - UNEXPECTED\n", name, outList.names[j]);
+				unexpected++;
+			}
+		}
+
+		NativeDiscImage_NameListFree(&outList);
+	}
+
+	// And one level further out: the test folder may have gained the out-*
+	// folders and nothing else.
+	if (!NativeDiscImage_ListFolder(dir, &after))
+	{
+		printf("[selftest] disc: cannot list the folder again - UNEXPECTED\n");
+		unexpected++;
+	}
+
+	for (i = 0; i < after.count; i++)
+	{
+		const char *name = after.names[i];
+		char expected[NATIVE_DISC_IMAGE_PATH_MAX];
+		int known = NativeDiscImage_NameListHas(&before, name);
+		int j;
+
+		for (j = 0; (j < images.count) && !known; j++)
+		{
+			NativeStr8_CopyToCString(expected, sizeof(expected), NativeStr8_FromCString(images.names[j]));
+			expected[strlen(expected) - 4u] = '\0';
+
+			if ((strncmp(name, "out-", 4) == 0) && (strcmp(&name[4], expected) == 0))
+			{
+				known = 1;
+			}
+		}
+
+		if (!known)
+		{
+			printf("[selftest] disc: \"%s\" appeared in the test folder - UNEXPECTED\n", name);
+			unexpected++;
+		}
+	}
+
+	if ((good == 0) || (bad == 0))
+	{
+		printf("[selftest] disc: needs at least one good-*.bin and one bad-*.bin, found %d and %d - UNEXPECTED\n", good, bad);
+		unexpected++;
+	}
+
+	printf("[selftest] disc: %d image(s), %d good, %d bad, %d unexpected\n", images.count, good, bad, unexpected);
+	fflush(stdout);
+
+	NativeDiscImage_NameListFree(&before);
+	NativeDiscImage_NameListFree(&after);
+	NativeDiscImage_NameListFree(&images);
+
+	return (unexpected == 0) ? 0 : 1;
 }
