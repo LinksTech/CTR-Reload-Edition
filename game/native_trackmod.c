@@ -6,6 +6,7 @@
 // Sunset Vista is a custom track by Tramadoll. The track and its extras are
 // his work; this module is only the compatibility layer that lets them run in
 // the native port. The track itself is not part of this repository.
+// Sunset Vista compatibility data used with permission of Tramadoll.
 //
 // Sunset Vista brings things no disc track has: a wandering door,
 // three moving platforms, twelve bats, five fire bowls. On the

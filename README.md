@@ -194,6 +194,7 @@ or other game data, and edit your Windows user name out of the log if you mind.
 - **Sunset Vista by Tramadoll**: the track and its extras are his work. This
   repository only contains a compatibility layer (`game/native_trackmod.c`) so
   that the track runs natively in CTR Reload. The track itself is not included.
+  Sunset Vista compatibility data used with permission of Tramadoll.
 
 Other components (PsyCross, SDL3 and more), the banner font and their licenses
 are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
