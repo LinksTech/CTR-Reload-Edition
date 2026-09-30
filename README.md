@@ -99,6 +99,9 @@ Planned, in no particular order and without a date:
 
 - Time Trial and Battle on custom tracks
 - Best times on custom tracks
+- Custom characters
+- Skin support for the drivers
+- ...and more
 
 We build continuously; a new version comes out when enough has come together.
 Until then, fixes and additions land here first.
