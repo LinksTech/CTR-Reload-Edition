@@ -1,3 +1,9 @@
+/*
+ * Derived from REDRIVER2/PsyCross MIT source:
+ * externals/PsyCross/src/gte/rcossin_tbl.h
+ * See THIRD_PARTY_NOTICES.md for copyright and license details.
+ */
+
 #ifdef _MSC_VER
 #pragma warning(disable : 4309)
 #pragma warning(disable : 4838)
