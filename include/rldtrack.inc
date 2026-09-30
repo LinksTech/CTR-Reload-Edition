@@ -23,7 +23,7 @@
 // VERSION 4.1, FIXED ON 2026-09-28.
 // A container consists of META, LEVD and VRMD, optionally SNDB (sound) and
 // PARM (reverb, bot strength, ambient sound). MMAP, the scaled-down
-// menu map from 09-28, has been dropped again: the game scales down itself
+// menu map from 2026-09-28, has been dropped again: the game scales down itself
 // (Rld_ScaleMap, below at the map), an MMAP in old containers is
 // skipped like SIGN.
 //
@@ -1056,7 +1056,7 @@ static u8 *Rld_ReadChunk(struct RldReader *reader, int index, size_t *sizeOut, c
 // metaVersion: 0 means draft (DRAFT), 1 means frozen (4.1, 2026-09-28;
 // that question is closed: META stays small, new things go into optional
 // chunks). Both load. The layout here never changes again - the numeric part
-// has no length field, every new number would be a major bump (3 -> 4 on 08-29).
+// has no length field, every new number would be a major bump (3 -> 4 on 2026-08-29).
 //
 // primBytes and memTotal are BINDING: the game recomputes from the
 // LEV when loading (Rld_MemNeed) and refuses a container that declares too little.
@@ -1231,7 +1231,7 @@ static const char *Rld_ParseMeta(struct RldMeta *out, const u8 *bytes, size_t si
 // mod's mapping is in its rebuilt SCUS_944.26, and this port does
 // not run that; the level-indexed tables are demonstrably unchanged in the
 // patch. Which of the three sequences is Inferno Island's music no
-// tool can decide - the packer's user says it, and this is where what he said is stored.
+// tool can decide - the packer's user says it, and this is where what they said is stored.
 //
 // WHY A BUMP AND NOT A FREE FIELD. At 0x0a there are two unused
 // bytes that could have carried the two numbers without lengthening the header.
@@ -2515,6 +2515,9 @@ static const char *Rld_CheckVrm(const u8 *vrm, size_t size)
 // game/LOAD/LOAD_Assets.c). A field is a pointer exactly when the map lists
 // it; the map turns the body offset into an address.
 //
+// The labels are the case names of the container self-test
+// (platform/native_testfiles.c, bad-c<N>-*.rldtrack).
+//
 //   C4  the body holds a whole struct Level. Before, a shorter LEVD was a
 //       line in the log and was loaded anyway.
 //   C5  every map entry is a word inside the body, the word there points
@@ -2535,7 +2538,7 @@ static const char *Rld_CheckVrm(const u8 *vrm, size_t size)
 //       path) set. The same rule as Rld_SpawnCheck in tools/rldpack.c.
 //   and every pointer field of the level header NULL or mapped, and the icon
 //       table behind levTexLookup inside the body - the track wheel reads it
-//       for the map (C1), DecalGlobal_Store right after the load.
+//       for the map (Rld_LevMap, case C1), DecalGlobal_Store right after the load.
 //
 // Measured on 2026-09-30 on the 14 real containers at hand: no repeated place, no
 // entry outside, model ids -1 and 0..0xa6, every instance with a mapped model,
@@ -3336,7 +3339,7 @@ static int Rld_FixAbr(u8 *lev, size_t levSize, const u8 *vrm, size_t vrmSize, st
 				u32 d;
 
 				// An IconGroup4 is shared by many quadblocks, and on the SECOND
-				// visit its ABR is already 3 - set by us. Without a memory
+				// visit its ABR is already 3 - set by this pass. Without a memory
 				// the counter would then have read that as "was already opaque" and cheated the
 				// pass out of its own work.
 				for (d = 0; d < doneCount; d++)
