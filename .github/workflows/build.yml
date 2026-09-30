@@ -4,9 +4,20 @@
 # and attach the package to the run as a download.
 # Every version tag (v*, e.g. v0.1.0-beta1): the same, plus a GitHub release
 # with ctr_native.exe, alphamaker.exe, README.md and the package zip.
+# Every pull request into main or dev: build, self-tests and package check
+# only. No package download, no release, no cache writes, read-only token.
 #
 # This workflow never downloads or uses game data. It only builds and runs
 # self-tests that need no disc image, no window and no GPU.
+#
+# Security notes:
+# - The token is read-only everywhere; only the release job may write
+#   (contents: write), and it never runs for pull requests.
+# - There is no pull_request_target trigger: code from a pull request never
+#   runs with a writable token or with secrets.
+# - Third-party actions are pinned to full commit SHAs (version in the
+#   comment); Dependabot (.github/dependabot.yml) proposes updates.
+# - The Vulkan SDK installer is pinned by version and SHA-256.
 
 name: Build
 
@@ -14,13 +25,24 @@ on:
   push:
     branches: [main, dev]
     tags: ['v*']
+  pull_request:
+    branches: [main, dev]
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# One run per ref at a time. A newer push to the same pull request cancels
+# the older run; branch and tag runs are never cancelled (each tag is its
+# own ref, so tag runs never wait on each other).
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   VULKAN_SDK_VERSION: 1.3.296.0
+  # Published by LunarG: https://sdk.lunarg.com/sdk/sha/<version>/windows/VulkanSDK-<version>-Installer.exe.txt
+  VULKAN_SDK_SHA256: acb4ae0786fd3e558f8b3c36cc3eba91638984217ba8a6795ec64d2f9ffd8c4b
 
 jobs:
   build:
@@ -31,31 +53,44 @@ jobs:
         run: git config --global core.autocrlf false
 
       - name: Check out
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Set up Python (test suite)
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
         with:
           python-version: '3.12'
 
-      - name: Cache Vulkan SDK
+      # The cache holds only the installed SDK. It is written only by runs
+      # on main, dev, tags and manual runs, never by pull requests.
+      - name: Restore Vulkan SDK from cache
         id: vulkan-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: C:\VulkanSDK\${{ env.VULKAN_SDK_VERSION }}
-          key: vulkan-sdk-${{ env.VULKAN_SDK_VERSION }}
+          key: vulkan-sdk-${{ env.VULKAN_SDK_VERSION }}-${{ env.VULKAN_SDK_SHA256 }}
 
       - name: Install Vulkan SDK (headers and glslangValidator)
         if: steps.vulkan-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           $v = $env:VULKAN_SDK_VERSION
+          $exe = "$env:RUNNER_TEMP\VulkanSDK.exe"
           $url = "https://sdk.lunarg.com/sdk/download/$v/windows/VulkanSDK-$v-Installer.exe"
-          Invoke-WebRequest -Uri $url -OutFile "$env:RUNNER_TEMP\VulkanSDK.exe"
-          & "$env:RUNNER_TEMP\VulkanSDK.exe" --root "C:\VulkanSDK\$v" --accept-licenses --default-answer --confirm-command install
+          Invoke-WebRequest -Uri $url -OutFile $exe
+          $hash = (Get-FileHash -Algorithm SHA256 $exe).Hash.ToLowerInvariant()
+          if ($hash -ne $env:VULKAN_SDK_SHA256) { throw "Vulkan SDK installer SHA-256 mismatch: $hash" }
+          & $exe --root "C:\VulkanSDK\$v" --accept-licenses --default-answer --confirm-command install
           if ($LASTEXITCODE -ne 0) { throw "Vulkan SDK installer failed ($LASTEXITCODE)" }
+
+      - name: Save Vulkan SDK to cache
+        if: steps.vulkan-cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: C:\VulkanSDK\${{ env.VULKAN_SDK_VERSION }}
+          key: vulkan-sdk-${{ env.VULKAN_SDK_VERSION }}-${{ env.VULKAN_SDK_SHA256 }}
 
       - name: Point the build at the Vulkan SDK
         shell: pwsh
@@ -69,14 +104,17 @@ jobs:
         shell: cmd
         run: build-msvc.bat
 
+      # Output: dist/CTR-Reload-<version without spaces>-<build id>.zip; its
+      # top folder has the same name and holds ctr_native.exe and alphamaker.exe.
       - name: Package
         shell: bash
         env:
-          BAU: build-msvc-x86
-        run: bash tools/paket/paket-beta0.sh
+          BUILD_DIR: build-msvc-x86
+        run: bash tools/package/package.sh
 
       - name: Upload package
-        uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ctr-reload-edition-${{ github.sha }}
           path: dist/*.zip
@@ -84,31 +122,36 @@ jobs:
 
       - name: Upload logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: logs-${{ github.sha }}
           path: |
             build-msvc-x86/Testing/Temporary/LastTest.log
-            dist-bau.log
+            dist-build.log
           if-no-files-found: ignore
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    # Only a version tag, pushed or run by hand - never a pull request.
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+      && startsWith(github.ref, 'refs/tags/v')
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     permissions:
       contents: write
     steps:
       - name: Check out README.md
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 1
+          persist-credentials: false
           sparse-checkout: README.md
           sparse-checkout-cone-mode: false
           path: src
 
       - name: Download package
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ctr-reload-edition-${{ github.sha }}
           path: dist
@@ -127,6 +170,9 @@ jobs:
           [ "$(echo "$zip" | wc -l)" = 1 ] || { echo "expected exactly one package zip"; exit 1; }
           name=$(basename "$zip" .zip)
           id=${name##*-}
+          case "$name" in CTR-Reload-?*-?*) ;; *) echo "unexpected package name: $name"; exit 1 ;; esac
+          case "$id" in *[!0-9a-f]*|'') echo "unexpected build id: $id"; exit 1 ;; esac
+          [ ${#id} = 12 ] || { echo "unexpected build id: $id"; exit 1; }
           mkdir -p out
           unzip -j -o "$zip" "$name/ctr_native.exe" "$name/alphamaker.exe" -d out
           cp src/README.md out/README.md
@@ -135,7 +181,7 @@ jobs:
           echo "build_id=$id" >> "$GITHUB_OUTPUT"
 
       - name: Create release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           name: CTR Reload Edition ${{ github.ref_name }} (${{ steps.files.outputs.build_id }})
           files: |
