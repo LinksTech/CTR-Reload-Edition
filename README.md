@@ -37,8 +37,8 @@ CTR Reload Edition runs *Crash Team Racing* (PS1, 1999) natively on Windows,
 without an emulator, and plays custom tracks next to the original ones.
 
 > [!IMPORTANT]
-> You need **your own disc image** of the game, NTSC-U (SCUS-94426), as
-> `.cue`/`.bin`. This repository and its releases contain **no game data**: no
+> You need **your own disc image** of the game, NTSC-U (SCUS-94426), as a
+> raw `.bin`. This repository and its releases contain **no game data**: no
 > disc image, no extracted files, no models, textures, music or tracks.
 
 > [!WARNING]
@@ -47,12 +47,40 @@ without an emulator, and plays custom tracks next to the original ones.
 
 ## Features
 
-| 🎨 Graphics | 🏁 Custom tracks | ✨ Quality of life |
-| --- | --- | --- |
-| Native Vulkan renderer, fullscreen or windowed (F11 or Alt+Enter) | Tracks as single `.rldtrack` files in a `tracks` folder | Drag the disc image onto the window once - that is the whole setup |
-| Aspect ratio 4:3, 16:9 or 21:9, or Auto for your screen | ARCADE → NITRO-PIT: single race, custom cups, Crystal Challenge and CTR Challenge | All drivers available from the start |
-| Internal resolution up to 8x, anti-aliasing 2x or 4x | Bots on every track that has nav paths, a preview of each track in the track selection | The race pauses when the window loses focus or is minimized |
-| All of it in OPTIONS → GRAPHICS, saved for the next start | The **Alpha-Maker** builds containers and cups and starts the game on your track | The game keeps its last 5 logs, ready for a bug report |
+### 🎨 Graphics
+- New Vulkan renderer
+- Internal resolution up to 8x, MSAA anti-aliasing
+- Real widescreen: 4:3, 16:9 and 21:9 — the view gets wider, nothing
+  is stretched
+- Menus stay nicely centered on ultrawide screens
+
+### 🏁 Custom tracks — our main focus
+- Drop a .rldtrack file into the tracks folder and it shows up in game
+- New NITRO-PIT mode under Arcade: race custom tracks or build your own
+  custom cups
+- Tracks bring their own music and their own minimap, scaled
+  automatically for the track screen
+- Fixes for crashes found in community tracks, and broken track data
+  gets caught before you race, not mid-race
+- Alpha-Maker: turns your track data into a ready-to-play file — no
+  command line, no scripts, no patching, just a window
+
+### ⚙️ Under the hood
+- Custom memory budget: big custom tracks get extra room (up to 32 MB),
+  and buffers are sized per track. Original tracks keep their original
+  tables, with larger draw and clip buffers
+- New VRAM handling: palette textures go through a GPU atlas instead of
+  being decoded from emulated PS1 VRAM for every pixel — groundwork for
+  higher-res textures later
+- Less emulation where it doesn't matter: several PS1 rendering steps
+  now run natively, like transparency in a single pass
+
+### ✨ Quality of life
+- First-start window: just drag in your disc image
+- Settings are remembered, faster boot
+- Race pauses when you alt-tab or minimize
+- New main menu with Options (cheats, scrapbook) and Exit
+- All characters unlocked from the start — your save stays untouched
 
 ## Getting started
 
@@ -60,7 +88,7 @@ without an emulator, and plays custom tracks next to the original ones.
    tool) from the [latest release](https://github.com/LinksTech/CTR-Reload-Edition/releases)
    into one folder you can write to, for example `C:\Games\CTR Reload` (not
    `C:\Program Files`).
-2. Start `ctr_native.exe` and drag your disc image (`.cue` or `.bin`) onto the
+2. Start `ctr_native.exe` and drag your disc image (the `.bin` file) onto the
    window. The game unpacks what it needs into an `assets` folder next to it,
    once (about 520 MB).
 3. Set up the picture in OPTIONS → GRAPHICS.
