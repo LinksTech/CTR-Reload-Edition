@@ -507,9 +507,10 @@ internal int GteAlt_RotTransPers(int idx, int lm)
 			// anything the old path ever delivered, so IR0 runs into
 			// its 0x1000 clamp - the fog is at the stop. That is
 			// correct: nearer than the near plane there is no fog any more.
-			// The value is returned as int as before; it cannot go beyond 2^31,
-			// because H is at most 0xffff and SZ3 at least
-			// one, so wide is at most 0xffff0000.
+			// The value is returned as int as before. wide is H/SZ3 in 16.16,
+			// so it stays below 2^31 only while H < 0x8000 (CTR sets H to a
+			// few hundred); an H of 0x8000 or more with SZ3 == 1 would wrap
+			// negative here.
 			return (int)wide;
 		}
 

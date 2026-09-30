@@ -28,14 +28,14 @@
 // the parser collects (s_gpu.vertexBuffer) before it draws. The ring per
 // frame is something else: ALL batches of a frame land there one after another,
 // because the draws only run at submission and nothing may be overwritten
-// that a recorded draw still needs. Until 2026-09-13 that was
+// that a recorded draw still needs. That used to be
 // one number - and a frame with more vertices than one batch (Sunset Vista:
 // 67,659 to 75,500) had no room in the ring for its second batch.
-// Two batches per frame fitted from 2026-09-13, the third wrapped and was
+// Then two batches per frame fitted, the third wrapped and was
 // counted.
 //
-// FOUR since 2026-09-17. The acceptance run of 2026-09-15 (Inferno + Vista, 43:18)
-// says "vertex ring on, peak 125259 of 131072 vertices in a frame, 6
+// Now FOUR. A measured run (Inferno + Vista, 43:18)
+// said "vertex ring on, peak 125259 of 131072 vertices in a frame, 6
 // upload(s) in a frame at most" - 4.4 percent of headroom, and a wrap is not a
 // counted error but a draw that draws geometry that another
 // draw is overwriting right now. A ring is 20 bytes per vertex, so 5 MiB per
@@ -77,7 +77,7 @@ typedef enum
 	// their numbering.
 	BM_ALPHA,
 
-	// TEXEL-WEIGHTED VERSIONS OF THE PSX MODES 0, 1 AND 3 (2026-09-13).
+	// TEXEL-WEIGHTED VERSIONS OF THE PSX MODES 0, 1 AND 3.
 	//
 	// The PS1 blends a textured primitive only where the texel carries the
 	// STP bit; the other texels are opaque. Before this change that was one

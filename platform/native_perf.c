@@ -121,9 +121,8 @@ global_variable s32 s_worstFrameCount;
 internal f64 NativePerf_CounterToMs(u64 counterDelta)
 {
 	// The frequency never changes; asked once instead of per scope end
-	// (2026-09-17 - with --perf about 1,000 calls per frame for the
-	// draw scopes alone on Vista, each one an SDL call that lengthens the measurement
-	// itself).
+	// (with --perf about 1,000 calls per frame for the draw scopes alone on
+	// Sunset Vista, each one an SDL call that lengthens the measurement itself).
 	local_persist u64 s_freq = 0;
 
 	if (s_freq == 0)

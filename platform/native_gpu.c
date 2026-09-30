@@ -72,7 +72,7 @@ internal short GetTPageBase(int tpage)
 	return (s16)((page & 0xf) | ((page & 0x10) ? 0x10 : 0));
 }
 
-// THE FORMAT TRAVELS IN THE VERTEX (2026-09-13).
+// THE FORMAT TRAVELS IN THE VERTEX.
 //
 // GrVertex.page is an s16 and carried the page base 0..31 - five bits, ten
 // free. Bits 5-6 now carry the texture format (0 = 4 bit, 1 = 8 bit, 2 = 16
@@ -81,8 +81,8 @@ internal short GetTPageBase(int tpage)
 // split may carry all three, and the one fragment shader branches per
 // triangle. Vertex size unchanged, ring and batches too.
 //
-// Counted per primitive, because the acceptance demands it: a zero for one format would be
-// a silent failure of the route, not a track without such textures.
+// Counted per primitive: a zero for one format would be a silent failure of
+// the route, not a track without such textures.
 global_variable unsigned long long s_gpuPrimsByFormatWindow[3];
 
 // MEASUREMENT: which PS1 blend mode the textured semi-transparent
@@ -97,7 +97,7 @@ extern int g_gfx_dualSourceBlend;
 // (main.c). Default off.
 int g_cfg_semiTwoPass = 0;
 
-// ANTI-ALIASING (2026-09-22): whether textured draws get sample shading.
+// ANTI-ALIASING: whether textured draws get sample shading.
 // Set by native_gfx_vk.c with the level - 1 as long as the main target has more
 // than one sample and the device can do sampleRateShading, otherwise 0. With "Off"
 // the flag is false in every split, and DrawSplit calls nothing new.
@@ -164,9 +164,9 @@ typedef struct
 // last 18 slots of the buffer are a guard zone: that is where the one
 // primitive writes that the check has just rejected, and none of it is
 // drawn. A split therefore never begins behind 65,518 - startVertex is
-// u16 and 65,536 does not fit into it. Until 2026-09-13 Sunset
-// Vista ran with up to 5,222 vertices per batch over the end into the
-// split table - the "offscreen rectangles" were vertex bytes.
+// u16 and 65,536 does not fit into it. Before this check Sunset Vista
+// wrote up to 5,222 vertices per batch past the end into the split
+// table - the stray "offscreen rectangles" were vertex bytes.
 #define NATIVE_GPU_MAX_VERTS_PER_PRIM 18
 #define NATIVE_GPU_VERTEX_LIMIT       ((int)MAX_VERTEX_BUFFER_SIZE - NATIVE_GPU_MAX_VERTS_PER_PRIM)
 
@@ -285,7 +285,7 @@ struct NativeGpuSnapshot
 };
 
 
-// MEASUREMENT (2026-09-13): WHY DOES AddSplit CREATE A NEW SPLIT?
+// MEASUREMENT: WHY DOES AddSplit CREATE A NEW SPLIT?
 //
 // Sunset Vista runs with 4,094 splits in every batch, Inferno with a few
 // hundred. Every split is a vkCmdDraw. Before anybody sorts, there is
@@ -297,7 +297,7 @@ struct NativeGpuSnapshot
 // Only counters and log lines every 300 frames, no intervention in the drawing.
 enum
 {
-	NGPU_SR_FORCED_SEMI = 0, // texturiert + halbdurchsichtig: eigener Split je Primitiv
+	NGPU_SR_FORCED_SEMI = 0, // textured + semi-transparent: a split of its own per primitive
 	NGPU_SR_BLEND,
 	NGPU_SR_TEXFMT, // since the format travels in the vertex: format change WITHIN a split, no longer a reason
 	NGPU_SR_TEXID,
@@ -342,12 +342,12 @@ global_variable unsigned long long s_auditBlockedByOpaque = 0;
 global_variable int s_auditFrameCounter = 0;
 global_variable int s_auditThisFrame = 0;
 
-// THE BOX CHECK IS A SWITCH (2026-09-17). It had run without
-// one since it was added, in every 30th frame over every batch: read all vertices of the batch once
-// more (Vista up to 65,523 x 20 bytes = 1.3 MB) and up to 512
-// box comparisons per split (Vista 972 splits per batch) - a spike in
-// every 30th frame, whose answer ("sorting problem, 64 percent could
-// move up") has been known since 2026-09-13. --split-audit switches it on.
+// THE BOX CHECK IS A SWITCH. Unswitched it runs in every 30th frame over
+// every batch: read all vertices of the batch once more (Sunset Vista up to
+// 65,523 x 20 bytes = 1.3 MB) and up to 512 box comparisons per split
+// (Vista 972 splits per batch) - a spike in every 30th frame, for an answer
+// that is already known ("sorting problem, 64 percent could move up").
+// --split-audit switches it on.
 int g_cfg_splitAudit = 0;
 
 // Per batch: table of the states seen (open addressing over
@@ -489,8 +489,7 @@ internal int NativeGpu_BoxOverlap(const NativeGpuBox *a, const NativeGpuBox *b)
 
 global_variable NativeGpuBox s_auditBox[MAX_DRAW_SPLITS];
 
-// MERGE NEIGHBOURING SEMI-TRANSPARENT ONES WHERE THEY DO NOT OVERLAP
-// (2026-09-13).
+// MERGE NEIGHBOURING SEMI-TRANSPARENT ONES WHERE THEY DO NOT OVERLAP.
 //
 // A textured semi-transparent primitive is drawn in two passes
 // (DrawSplit: pass 1 the texels without STP bit, opaque; pass
@@ -517,30 +516,30 @@ global_variable unsigned long long s_semiKeptNoTwin = 0;
 global_variable unsigned long long s_semiKeptState = 0;
 global_variable unsigned long long s_semiKeptOverlap = 0;
 
-// MEASUREMENT (2026-09-13): OVERSIZED AND BLACK AREAS.
+// MEASUREMENT: OVERSIZED AND BLACK AREAS.
 //
-// An acceptance run shows texture holes; two screenshots show
-// flat black areas at the track edge and at the arch. Its log counts
-// 308 G3 opaque triangles above the PS1 size, 264 of them with a clamped
-// vertex. Here every primitive is looked at AFTER its vertices are written:
+// Texture holes and flat black areas at the track edge and at the arch were
+// traced to G3 opaque triangles above the PS1 size (308 in one run, 264 of
+// them with a clamped vertex). Here every primitive is looked at AFTER its
+// vertices are written:
 // box in pixels, colour, page, format, CLUT, blend mode.
 // Oversized (wider than 1023 or higher than 511 - the PS1 does not draw that)
 // and large-and-black (box above 20,000 pixels, all colours
 // below 9) are counted and the first 300 per class are logged with VBlank,
 // so that a snapshot at exactly this point shows the area. No intervention.
-// THE SIZE LIMIT OF THE PS1, NOW AS A RULE (2026-09-13).
+//
+// THE SIZE LIMIT OF THE PS1, AS A RULE.
 //
 // psx-spx, GPU Rendering Attributes: "The maximum distance between two
 // vertices is 1023 horizontally, and 511 vertically. Polygons and lines that
 // are exceeding that dimensions are NOT rendered." To the GPU a quad is
 // two triangles, (x0,x1,x2) and (x1,x2,x3), each on its own - exactly the two
 // that TriangulateQuad puts into slots 0..2 and 3..5 here, and exactly the
-// two that NativeGpu_NotePolySize has measured since 2026-09-05. The measurement
-// becomes the rule: NotePolySize leaves a mask of which of the two
-// triangles is too large, and ParsePrimitive takes it back out of the buffer
-// after writing. Until today this port drew such triangles - as a wedge
-// across the screen when a vertex clamps at +-0x3ff (sky of
-// Sunset Vista: 308 in a test run; tyre quads on 2026-09-05).
+// two that NativeGpu_NotePolySize measures. The measurement is the rule:
+// NotePolySize leaves a mask of which of the two triangles is too large, and
+// ParsePrimitive takes it back out of the buffer after writing. Without the
+// rule this port drew such triangles - as a wedge across the screen when a
+// vertex clamps at +-0x3ff (sky of Sunset Vista: 308 in one run; tyre quads).
 //
 // Lines (0x40..0x5f) stay out of this: this port draws them as quads without
 // knowing the raw end points here, and CTR draws none in a race.
@@ -614,7 +613,7 @@ internal void NativeGpu_HoleProbe(int firstVertex, const P_TAG *polyTag)
 	}
 }
 
-// THE VERTEX DUMP OF A FRAME (2026-09-22, gaps in walls).
+// THE VERTEX DUMP OF A FRAME (for gaps in walls).
 //
 // CTR_VERTEX_DUMP=<vblank>[,<vblank>...] in the environment: every polygon that
 // arrives at the parser in one of these VBlanks goes with all corners to
@@ -1241,15 +1240,16 @@ void MakeLineArray(GrVertex *vertex, VERTTYPE *p0, VERTTYPE *p1)
 
 // THE FRACTIONAL DIGITS FROM THE MIRROR TO THE VERTEX.
 //
-// _p0/_p1 are the two free bytes in GrVertex. They have long been bound as a
-// vertex attribute (a_extra.zw, in platform/native_shaders.inc listed as
-// "unused" until today), so the route there costs no new binding and no
-// second pipeline. x/y stay integers - so the UI mapper,
-// the size count and the clip windows go on computing as before, and the
-// dither point in the shader still sits on the PSX pixel, where it belongs.
+// _p0/_p1 are the two free bytes in GrVertex. They were already bound as a
+// vertex attribute (a_extra.zw in platform/native_shaders.inc), so the route
+// there costs no new binding and no second pipeline. x/y stay integers - so
+// the UI mapper, the size count and the clip windows go on computing as
+// before, and the dither point in the shader still sits on the PSX pixel,
+// where it belongs.
 //
 // If there is no fractional part, the two bytes stay zero - the memset in the
 // builder has already cleared them - and the shader adds a zero.
+
 // The type of the primitive being built right now - NotePolySize sees it before
 // every builder. Only for the subpixel count.
 internal int s_subpixelPrimType = -1;
@@ -1456,21 +1456,6 @@ void MakeTexcoordQuad(GrVertex *vertex, u8 *uv0, u8 *uv1, u8 *uv2, u8 *uv3, s16 
 	vertex[3].clut = clut;
 
 	NativeGpu_NoteTexcoordRows(page, NativeGpu_RowLo(uv0[1], uv1[1], uv2[1], uv3[1]), NativeGpu_RowHi(uv0[1], uv1[1], uv2[1], uv3[1]));
-	/*
-	if (g_cfg_bilinearFiltering)
-	{
-	    vertex[0].tcx = -1;
-	    vertex[0].tcy = -1;
-
-	    vertex[1].tcx = -1;
-	    vertex[1].tcy = -1;
-
-	    vertex[2].tcx = -1;
-	    vertex[2].tcy = -1;
-
-	    vertex[3].tcx = -1;
-	    vertex[3].tcy = -1;
-	}*/
 }
 
 void MakeTexcoordTriangle(GrVertex *vertex, u8 *uv0, u8 *uv1, u8 *uv2, s16 page, s16 clut, u8 dither)
@@ -1504,21 +1489,6 @@ void MakeTexcoordTriangle(GrVertex *vertex, u8 *uv0, u8 *uv1, u8 *uv2, s16 page,
 	vertex[2].clut = clut;
 
 	NativeGpu_NoteTexcoordRows(page, NativeGpu_RowLo(uv0[1], uv1[1], uv2[1], uv2[1]), NativeGpu_RowHi(uv0[1], uv1[1], uv2[1], uv2[1]));
-	/*
-	if (g_cfg_bilinearFiltering)
-	{
-	    vertex[0].tcx = -1;
-	    vertex[0].tcy = -1;
-
-	    vertex[1].tcx = -1;
-	    vertex[1].tcy = -1;
-
-	    vertex[2].tcx = -1;
-	    vertex[2].tcy = -1;
-
-	    vertex[3].tcx = -1;
-	    vertex[3].tcy = -1;
-	}*/
 }
 
 void MakeTexcoordRect(GrVertex *vertex, u8 *uv, s16 page, s16 clut, s16 w, s16 h)
@@ -1795,7 +1765,7 @@ void TriangulateQuad()
 	| /  |
 	v2--v3
 
-	NOTE: v2 swapped with v3 during primitive parsing but it not shown here
+	NOTE: v2 is swapped with v3 during primitive parsing, which is not shown here
 	*/
 
 	s_gpu.vertexBuffer[s_gpu.vertexIndex + 4] = s_gpu.vertexBuffer[s_gpu.vertexIndex + 3];
@@ -1912,11 +1882,10 @@ internal void AddSplit(bool semiTrans, bool textured, bool framebufferFeedback)
 		// four weight with a CONSTANT - that is what the hardware
 		// could do. An RGBA picture brings its weight per texel along itself, and
 		// BM_ALPHA is the mode that exists exactly for that
-		// (native_renderer_types.h:74, built in native_gfx_vk.c:5137).
+		// (native_renderer_types.h, blend state in native_gfx_vk.c).
 		//
-		// Up to here nobody chose it, and so it was unreachable:
-		// the blend mode was set exclusively from the tpage bits, and
-		// those do not know BM_ALPHA.
+		// Nothing else chooses it: the blend mode is otherwise set
+		// exclusively from the tpage bits, and those do not know BM_ALPHA.
 		//
 		// Without transparency it stays BM_NONE - an opaque picture is meant to stay
 		// opaque, even if its texture has an alpha channel.
@@ -1956,7 +1925,7 @@ internal void AddSplit(bool semiTrans, bool textured, bool framebufferFeedback)
 		psxTexturedSemiTrans = false;
 	}
 
-	// ANTI-ALIASING (2026-09-22): sample shading for every textured
+	// ANTI-ALIASING: sample shading for every textured
 	// draw, host textures included. Every sample is then shaded
 	// individually, and the discard of a transparent texel only hits its
 	// sample - that way the edges of cut-out textures are smoothed too,
@@ -1972,10 +1941,9 @@ internal void AddSplit(bool semiTrans, bool textured, bool framebufferFeedback)
 	}
 	int splitReason = -1;
 	int splitForcedSame = 0;
-	// ONE comparison for measurement and decision (2026-09-17). Until then
-	// the same chain of twelve fields stood twice per primitive: once here for
-	// the split counters, once below as the decision. Now
-	// the measured value decides - the same fields, the same order.
+	// ONE comparison for measurement and decision: the chain of twelve fields
+	// is evaluated once per primitive, and the measured value decides - the
+	// same fields, the same order.
 	const int sameState = curSplit->blendMode == blendMode && curSplit->textureId == textureId &&
 	                      curSplit->drawPrimMode == s_gpu.drawPrimMode && curSplit->psxTexturedSemiTrans == psxTexturedSemiTrans &&
 	                      curSplit->psxTextureOutputSTP == psxTextureOutputSTP && curSplit->psxDrawMaskSet == s_gpu.psxDrawMaskSet &&
@@ -2062,17 +2030,15 @@ internal void AddSplit(bool semiTrans, bool textured, bool framebufferFeedback)
 	{
 		// REPORT ONCE, THEN COUNT.
 		//
-		// Here stood one line per overflowed split, in the middle of the
-		// OT walk. On the container track Test 2 that was on
-		// 2026-08-29 29,224 formatted lines in one run - about 37 per
-		// frame, into a 4.2 MB file. draw_otag_parse rose from
-		// 0.053 ms to 1.633 ms, thirty-one times as much, while the
+		// One log line per overflowed split, in the middle of the OT walk,
+		// was measured on a heavy custom track at 29,224 formatted lines in
+		// one run - about 37 per frame, into a 4.2 MB file. draw_otag_parse
+		// rose from 0.053 ms to 1.633 ms, thirty-one times as much, while the
 		// primitives only quadrupled.
 		//
 		// A counter that floods exactly when things are going badly anyway
-		// measures itself. The same mistake as with [CTR Sky] on
-		// 2026-08-28, and the same answer: say it once, then count and
-		// name the total at the end.
+		// measures itself. So: say it once, then count and name the total at
+		// the end.
 		s_gpuSplitOverflows++;
 
 		if (!s_gpu.splitOverflowActive)
@@ -2728,7 +2694,7 @@ internal void NativeGpu_UiGrowGroup(int *box, const int *other)
 
 // One frame of elements, printed as a list of boxes in pixels.
 //
-// This is the only way the acceptance can be stated as numbers rather than as
+// This is the only way a UI layout can be checked as numbers rather than as
 // an impression. For each element it prints the authored box, the anchor, which
 // row of the declaration table claimed it (or none), what the floor did to it,
 // and the box it ended up with. The mapped box can then be recomputed OUTSIDE
@@ -3710,11 +3676,11 @@ void NativeGpu_ApplyUIMapping(void)
 		else if (prim->win >= 0)
 		{
 			// Frame or name of a driver window: exactly the shift of the
-			// window, over the left anchor as a surcharge. LEFT has not been the identity since the
-			// composition zone - in a menu at 918
-			// columns it is +118 -, so its own shift is
-			// subtracted. Otherwise the frame would stand 118 columns beside its
-			// 3D picture (measured, character select 43:18, first build b82b7751d).
+			// window, over the left anchor as a surcharge. With the composition
+			// zone LEFT is not the identity - in a menu at 918 columns it is
+			// +118 -, so its own shift is subtracted. Otherwise the frame would
+			// stand 118 columns beside its 3D picture (measured, character
+			// select 43:18).
 			anchor = (int)CTR_UI_ANCHOR_LEFT;
 			floorShift = s_uiMenu.winShift[prim->win] - CTR_UI_AnchorShift(&s_gpu.uiView, (int)CTR_UI_ANCHOR_LEFT);
 		}
@@ -3839,22 +3805,21 @@ void ParsePrimitivesLinkedList(u32 *p, int singlePrimitive)
 			// table". It is the split between world and UI, not a second guess
 			// at it.
 			//
-			// THE UI TABLE IS NOT THE END OF THE CHAIN. Here stood: "it stays
-			// set for the rest of the walk: the UI table is the last thing the
-			// linked list reaches." That is not true. ClearOTagR links entry
+			// THE UI TABLE IS NOT THE END OF THE CHAIN, so the flag must not
+			// stay set for the rest of the walk. ClearOTagR links entry
 			// i after i-1, and the table lies on indices 1..5 - after it
 			// comes index 0, the swapchain root (MainFrame.c: ptrOT_UI = root
 			// + 4). Three producers hang on the root on purpose, to be drawn
 			// LAST: the loading flag and its letters
 			// (RaceFlag.c, RaceFlag_GetOT gives the root as "otDrawLast"), the
-			// blur and the fade (Display.c:129/160). None of them is
+			// blur and the fade (Display.c). None of them is
 			// authored in 512 columns; they compute in canvas or VRAM columns.
 			//
-			// With the sticky flag they were recorded as UI anyway.
+			// With a sticky flag they would be recorded as UI anyway.
 			// Measured at 43:18: 455 quads of the flag in one
 			// group, edge authored 973, stretched as FULL_CANVAS to 1744 -
 			// 1.79 times as wide as the picture. At 4:3 the stretch is the
-			// identity, which is why nobody ever saw it there.
+			// identity, which is why it never shows there.
 			//
 			// So the UI ends exactly where the root is visited. That is
 			// an address equality, not a threshold: index 0 lies one word before
@@ -4134,32 +4099,31 @@ internal int ProcessGouraudLines(P_TAG *polyTag)
 	return 0;
 }
 
-// THE SIZE LIMIT THAT THE PS1 HAS AND THIS PORT DOES NOT.
+// THE SIZE LIMIT OF THE PS1 GPU - THE CENSUS.
 //
 // The GPU of the PS1 draws no triangle whose vertices lie more than
 // 1023 pixels apart horizontally or more than 511 vertically. To it a quad
 // is two triangles, (0,1,2) and (1,2,3), each decided on its own.
-// This port does not know the limit: MakeVertexTriangle and MakeVertexQuad take
-// every coordinate as it comes, and a grep for 1023 and 511 over platform/
-// only hits the masks of the clip rectangle.
+// MakeVertexTriangle and MakeVertexQuad take every coordinate as it comes;
+// the limit is applied afterwards, through the mask NotePolySize leaves for
+// ParsePrimitive (see "THE SIZE LIMIT OF THE PS1, AS A RULE" further up).
 //
-// Why that is a picture fault and not merely a deviation: the vertex
-// that the GTE delivers from a clamped division stands at +-0x3ff
-// (native_gte_core.c:246). A polygon with such a vertex is invisible on the PS1,
-// because it is too wide - here it is pulled across the screen. A
-// subtractive shadow quad (VehGroundShadow.c, FT4, blend mode 2) thus becomes
-// a black bar, a textured area a "wrong texture" that
-// is gone again with the next movement. That is the suspicion of
-// 2026-09-04, and it is a suspicion.
+// Why an oversized triangle is a picture fault and not merely a deviation:
+// the vertex that the GTE delivers from a clamped division stands at +-0x3ff
+// (the screen-coordinate clamp in native_gte_core.c). A polygon with such a
+// vertex is invisible on the PS1, because it is too wide - drawn anyway it
+// is pulled across the screen. A subtractive shadow quad (VehGroundShadow.c,
+// FT4, blend mode 2) would become a black bar, a textured area a "wrong
+// texture" that is gone again with the next movement.
 //
-// COUNTED HERE, NOT DROPPED. Measured on 2026-09-05 over one drive:
-// 4001 polygons over the limit, 4001 of them with a vertex at +-0x3ff,
-// 3998 of them tyre quads (FT4, blend mode 0, DrawTires.c) - not the
-// shadows, those were 0. The cause is NO LOD: this port draws the wheels of distant
-// karts that retail drops behind the header threshold; with stock LOD
-// it is 0 of 2,290,860. A drop in the drawer (--drop-pinned, built on
-// 2026-09-05 and removed again) also hit 389 track faces with a
-// vertex in the picture. A fix belongs at the LOD choice, not here.
+// What the census found over one drive: 4001 polygons over the limit, 4001
+// of them with a vertex at +-0x3ff, 3998 of them tyre quads (FT4, blend mode
+// 0, DrawTires.c) - not the shadows, those were 0. The cause is NO LOD: this
+// port draws the wheels of distant karts that retail drops behind the header
+// threshold; with stock LOD it is 0 of 2,290,860. The real fix for the tyres
+// belongs at the LOD choice. Dropping every polygon with a clamped vertex was
+// tried and also hit 389 track faces with a vertex in the picture, which is
+// why the rule looks at the size and not at the clamp.
 //
 // Broken down by primitive type and blend mode, because the question is
 // WHICH polygons these are - and whether they carry the signature of the clamped division,
@@ -4209,26 +4173,25 @@ global_variable const char *const s_sizeTypeName[NATIVE_GPU_SIZE_TYPES] = {"F3",
 global_variable const char *const s_sizeBlendName[NATIVE_GPU_SIZE_BLENDS] = {"opaque", "semi 0 average", "semi 1 add", "semi 2 subtract",
                                                                             "semi 3 add-quarter"};
 
-// THE LIMIT APPLIES IN REFERENCE WIDTH, NOT IN CANVAS PIXELS (2026-09-14).
+// THE LIMIT APPLIES IN REFERENCE WIDTH, NOT IN CANVAS PIXELS.
 //
 // At 43:18 the world canvas is 918 columns wide (game/native_view.c), the
 // vertices arrive in these columns. 1023 canvas pixels are only 1.11
-// picture widths there - at 4:3 they are two. Measured: disc 0 drops at
-// 43:18 85 polygons, at 4:3 zero; Inferno 283 instead of 169, Vista 594 instead of 62
-// triangles. That was a regression from making the limit a rule, which no check could see,
-// because all checks ran in 4:3. That is why the horizontal extent is converted
+// picture widths there - at 4:3 they are two. Measured in canvas pixels:
+// disc 0 drops at 43:18 85 polygons, at 4:3 zero; Inferno 283 instead of
+// 169, Vista 594 instead of 62 triangles - a widescreen-only regression that
+// no 4:3 check can see. That is why the horizontal extent is converted
 // to the reference width 512 before the comparison (x * 512 / canvas) -
 // at 4:3 the identity, so not one bit different there. The UI table is authored in 512
 // and stays unconverted. The height is 216
 // rows in both formats and needs no conversion.
 //
 // CTR_Canvas_ToReferenceWidth is in game/native_view.c and has no
-// header; native_renderer.c and native_platform.c call the sister function
-// without a prototype to this day. It is declared here, so that the call has a type.
+// header. It is declared here, so that the call has a type.
 int CTR_Canvas_ToReferenceWidth(int width);
 
-// --size-rule-canvas restores the rule in canvas pixels
-// (the earlier state), so that both rules can be compared in the same build on the same pictures.
+// --size-rule-canvas applies the rule in canvas pixels instead, so that both
+// rules can be compared in the same build on the same pictures.
 // Default 0 = reference width.
 int g_cfg_sizeRuleCanvas = 0;
 
@@ -4793,7 +4756,7 @@ internal int ProcessDrawEnv(P_TAG *polyTag)
 	const u32 *codePtr = (u32 *)&polyTag->pad0;
 	int processedLongs = 0;
 	bool fullDrawEnvPacket = false;
-	for (int i = 0; i < polyTag->len; ++i)
+	for (int i = 0; i < (int)polyTag->len; ++i)
 	{
 		const u32 code = codePtr[i];
 		const int primType = code >> 24 & 0xF0;
@@ -4869,7 +4832,7 @@ internal int ProcessDrawEnv(P_TAG *polyTag)
 			// word can be terminal draw-env padding, or the tag word for the
 			// next primitive packed into the same OT entry.
 			// return processedLongs;
-			if (i + 1 != polyTag->len)
+			if (i + 1 != (int)polyTag->len)
 			{
 				return processedLongs;
 			}

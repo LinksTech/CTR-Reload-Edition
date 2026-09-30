@@ -6,21 +6,14 @@
 
 #include <platform/native_gfx_dispatch.h>
 // One backend, so the pointer never moves. It is still a pointer and the calls
-// still go through the table: with two backends the table was what let either be
-// selected, and with one it is the seam a second one goes back into. That "the
-// initialiser shows a forgotten entry" was the table's old claim and it was
-// false - see the header. NativeGfx_CheckDispatch is what makes it true.
+// still go through the table: it is the seam a second backend would go back
+// into. The initialiser alone does not show a forgotten entry - see the
+// header; NativeGfx_CheckDispatch does.
 global_variable const struct NativeGfxDispatch *s_gfx = &s_gfxVK;
-
-const char *NativeGfx_BackendName(void)
-{
-	return s_gfx->name;
-}
 
 // Every entry the backend did not fill in, by name, before the first frame.
 //
-// This is the check the table's own comment used to claim it did not need. A
-// designated initialiser zero-fills what it does not name, so a forgotten entry
+// A designated initialiser zero-fills what it does not name, so a forgotten entry
 // is a null that waits until something calls through it - which on this table
 // means a crash somewhere in a race, with a stack that points at a forwarder and
 // says nothing about which entry was missing.
@@ -56,10 +49,8 @@ int NativeGfx_CheckDispatch(void)
 
 // --- Frame counters ---------------------------------------------------------
 //
-// Counted here rather than inside a backend. That began as a way to put two
-// backends' numbers side by side through literally the same lines; what it is
-// worth now is that the count cannot drift into backend-specific bookkeeping,
-// and that it stays where a second backend would find it.
+// Counted here rather than inside a backend, so the count cannot drift into
+// backend-specific bookkeeping and stays where a second backend would find it.
 //
 // Vertex upload bytes are in here because they answer the actual question:
 // geometry the renderer never hands down cannot be missing further along.
@@ -80,8 +71,8 @@ struct NativeGfxFrameCounters
 // Counting says how much a frame does; it says nothing about the order, and the
 // order is what render passes are decided by. One frame is traced in full so
 // that the sequence the renderer actually produces can be read instead of
-// guessed at. A steady-state frame, not a boot frame - those turned out to look
-// nothing alike, which is how a earlier reading of this went wrong.
+// guessed at. A steady-state frame, not a boot frame - the two look nothing
+// alike.
 // Set to a frame number to write that frame's calls out in order; 0 is off.
 // Kept off by default now that the picture is up - a hundred lines a run is
 // noise when nothing is wrong. It is the first thing to switch back on when
@@ -100,22 +91,11 @@ global_variable unsigned int s_gfxFrameIndex = 0;
 #define NATIVE_GFX_FRAME_REPORT_FIRST 4
 #define NATIVE_GFX_FRAME_REPORT_EVERY 120
 
-// What the frame just finished asked for. Kept past the reset so an overlay can
-// show it beside a frame time - a draw count is what turns "slow here" into
-// "slow because of this much work".
-global_variable unsigned int s_gfxLastFrameDraws = 0;
-
-unsigned int NativeGfx_LastFrameDraws(void)
-{
-	return s_gfxLastFrameDraws;
-}
-
 // --- Frame timing -----------------------------------------------------------
 //
-// Measured here rather than in the overlay, so the log carries it too. A run
-// that has to be reported by photographing the screen is a run whose numbers
-// cannot be compared afterwards, and this project has already lost a round to
-// exactly that.
+// Measured here, so the log carries it. A run that has to be reported by
+// photographing the screen is a run whose numbers cannot be compared
+// afterwards.
 //
 // An average alone answers the wrong question. A 40 ms frame once a second is
 // felt plainly and moves a 120-frame average by a third of a millisecond, so
@@ -133,16 +113,6 @@ global_variable double s_gfxFrameAverageMs = 0.0;
 global_variable double s_gfxFrameWorstShownMs = 0.0;
 global_variable double s_gfxFrameWorstPendingMs = 0.0;
 global_variable double s_gfxFrameWorstElapsedMs = 0.0;
-
-double NativeGfx_FrameAverageMs(void)
-{
-	return s_gfxFrameAverageMs;
-}
-
-double NativeGfx_FrameWorstMs(void)
-{
-	return s_gfxFrameWorstShownMs;
-}
 
 internal void NativeGfx_SampleFrameTime(void)
 {
@@ -206,9 +176,9 @@ internal int NativeGfx_Tracing(void)
 }
 
 // Reads part of the bound target back and says whether anything was drawn into
-// it. Rules have been checked to exhaustion - validation has nothing left to
-// say - so the question is no longer whether the calls are legal but whether
-// the images hold pixels, and which one first does not.
+// it. When validation has nothing left to say, the question is no longer
+// whether the calls are legal but whether the images hold pixels, and which
+// one first does not.
 //
 // Sits above the backend rather than inside it, so it asks the same question of
 // whatever is underneath.
@@ -218,10 +188,9 @@ internal int NativeGfx_Tracing(void)
 // submitted. What comes back is therefore the previous frame's result. Since
 // every frame draws the same thing that answers the question all the same.
 //
-// Off by default now that it has done its job. It reads with a one-shot command
-// buffer while the frame's own commands are still recording, which
-// synchronization validation rightly reports - sixty times in the run that found
-// the missing vertex buffer bind. Leaving that noise on would bury the next real
+// Off by default. It reads with a one-shot command buffer while the frame's
+// own commands are still recording, which synchronization validation rightly
+// reports on every probe. Leaving that noise on would bury the next real
 // report. Set it to 1 to ask "is there anything in this target at all" again; it
 // is the fastest way to cut the chain in half and it should not have to be
 // written a second time to be asked a second time.
@@ -301,8 +270,6 @@ void NativeGfx_ReportFrame(void)
 		             s_gfxFrame.vertexUploads, s_gfxFrame.vertexUploadBytes, s_gfxFrame.textureUploads);
 	}
 
-	s_gfxLastFrameDraws = s_gfxFrame.draws;
-
 	{
 		const struct NativeGfxFrameCounters cleared = {0};
 
@@ -310,11 +277,6 @@ void NativeGfx_ReportFrame(void)
 	}
 
 	s_gfxFrameIndex++;
-
-	// The reference build feeds s_gfxFrameIndex on to g_texCensusFrame here, to
-	// give its texture census a clock. That census is not part of this
-	// transfer, so there is nothing to feed and the counter stops at the frame
-	// report above.
 }
 
 // --- Forwarders -------------------------------------------------------------

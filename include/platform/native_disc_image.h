@@ -18,7 +18,7 @@ int NativeDiscImage_ReadRawSectors(const struct NativeDiscImageFile *file, u32 s
 int NativeDiscImage_ReadFileBytes(const char *path, int rawSectors, u8 **dataOut, int *sizeOut);
 
 //----------------------------------------------------------------------------------------
-// DER ERSTSTART
+// THE FIRST START
 //
 // Everything below exists for one moment: the first time somebody runs this who
 // has a disc image and nothing else. It reads the image, works out whether it is
@@ -60,17 +60,16 @@ int NativeDiscImage_Measure(u32 *fileCountOut, u64 *byteCountOut);
 int NativeDiscImage_Extract(const char *destDir, NativeDiscImageProgressFn progress, void *user, int *resultOut, char *failedPath, size_t failedPathSize,
                             u32 *filesWrittenOut, u64 *bytesWrittenOut);
 
-// --disc-report. Counts bytes actually READ per file, so the asset validator's
-// existence probes do not count as use, and prints both sides of the ledger at
-// exit: what was read, and what was never touched.
 // Creates a directory and every directory on the way to it. It lives here
 // because the unpacker is what needed it first; everything else borrows this one
 // rather than growing a second copy, which is how two answers to one question
 // get into a tree.
 int NativeDiscImage_EnsureDirectory(const char *path);
 
+// --disc-report. Counts bytes actually READ per file, so the asset validator's
+// existence probes do not count as use, and prints both sides of the ledger at
+// exit: what was read, and what was never touched.
 void NativeDiscImage_SetReport(int enabled);
-int NativeDiscImage_ReportEnabled(void);
 void NativeDiscImage_PrintReport(void);
 
 #endif

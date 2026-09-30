@@ -12,8 +12,8 @@ struct NativeCheckpointFileRecordInfo
 	u32 payloadSize;
 	u32 checksum;
 
-	// Beta 0: id of the build that wrote the record (record.reserved[0]);
-	// 0 for replays and for states from before 2026-09-30.
+	// Id of the build that wrote the record (record.reserved[0]);
+	// 0 for replays and for states written by older builds.
 	u32 buildTag;
 };
 

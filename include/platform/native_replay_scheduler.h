@@ -37,7 +37,7 @@ void NativeReplayScheduler_RecordVSyncPacket(int emittedVBlanks);
 
 // 1 while a replay is prepared, recording or playing. Then
 // nothing outside the input may change the game flow - such as the pause on
-// minimise or focus loss (native_platform.c, Platform_WishFocusPause).
+// minimise or focus loss (native_platform.c, Platform_TakeFocusPauseWish).
 int NativeReplayScheduler_IsActive(void);
 #endif
 

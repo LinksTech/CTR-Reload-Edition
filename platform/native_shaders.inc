@@ -14,6 +14,7 @@
 // Included, not compiled on its own: these are C string literals that the
 // including file uses directly, and the unity build has no place for another
 // translation unit.
+
 // Sampling out of the page store instead of out of VRAM.
 //
 // The store holds one index per pixel, so this reads an index and looks it up
@@ -104,10 +105,9 @@
 // this route was for.
 //
 // The two roads were shown to arrive at the same bytes before one of them was
-// taken out. The one that was removed is
-// in git at f710a36a7 and its parent, which is where to look if this ever has
-// to be argued again.
-// ONE SHADER FOR THREE FORMATS (2026-09-13).
+// taken out.
+
+// ONE SHADER FOR THREE FORMATS.
 //
 // Until here there were three fragment shaders, one each for 4, 8 and 16 bit, and
 // every change of the texture format in the ordering table was a new split,
@@ -207,9 +207,8 @@
 // minification: a native pixel covering several texels, no single right texel to
 // walk to. Rounding is a magnification idea and cannot reach the other half.
 //
-// The whole attempt is in git at 0296203ed and d3441e5a6. Neither is a place to
-// start from again without a new argument for why the answer would be
-// different.
+// The attempt is not kept, and it is not a place to start from again without
+// a new argument for why the answer would be different.
 
 // WHAT IS FILTERED, AND IN WHICH ORDER
 //
@@ -238,9 +237,9 @@
 // A smoothTextureSample stood beside these for a day: constant inside the texel,
 // crossing over only at the boundary, over a width taken from the coordinate's
 // own derivative. The idea is sound and the build was bounded; driven, it made
-// no difference worth the four lookups it costs. Out again by decision. It
-// is in git at 334406967 with its own report, and that is not a place to start
-// from again without a new argument for why the answer would come out otherwise.
+// no difference worth the four lookups it costs. Out again by decision, and
+// not a place to start from again without a new argument for why the answer
+// would come out otherwise.
 //
 // What it found on the way in stays, because both of those were real:
 //
@@ -334,14 +333,16 @@
 
 // Everything both PSX stages have to agree on. This text is included in the
 // vertex and the fragment source alike, which is what makes the uniform block
-// safe to put here: GL links one interface block across stages only when the
-// declarations match, and they cannot fail to match when they are the same
-// string. The vertex stage reads Projection, the fragment stage the rest.
-// ANTI-ALIASING (2026-09-22): PSX_EDGE_INTERP stands before UV and
+// safe to put here: both stages have to declare the block identically, and
+// they cannot fail to match when they are the same string. The vertex stage
+// reads Projection, the fragment stage the rest.
+//
+// ANTI-ALIASING: PSX_EDGE_INTERP stands before UV and
 // vertex colour and is set per module by tools/shader_spirv_probe.c - empty
 // for the modules that always existed (identical SPIR-V with one sample),
 // `centroid` for draws into a multisampled image, `sample` for the
-// sample shading variant. Without one of the two, with MSAA interpolation happens at the pixel centre,
+// sample shading variant. Without one of the two, with MSAA interpolation
+// happens at the pixel centre,
 // even if that lies outside the triangle - then an
 // edge pixel reads UV beyond the edge, that is neighbouring texels or a foreign CLUT.
 // v_page_clut and v_ditherCoord do not get it: the one is constant per primitive,
@@ -407,16 +408,16 @@ const char *gte_shader_32_rgba = "	SAMPLER_SLOT0 uniform sampler2D s_texture;\n"
                                  // with real alpha would not exist. Both in one channel does not work.
                                  //
                                  // WHO ELSE THIS AFFECTS: nobody. This program only runs for
-                                 // TF_32_BIT_RGBA (native_renderer.c:2242), and that format is set only by
-                                 // AddSplit for a set host texture (native_gpu.c:1781). Until
-                                 // 2026-09-19 no package set one, so this branch has never
+                                 // TF_32_BIT_RGBA (NativeRenderer_SetTexture), and that format is set only by
+                                 // AddSplit for a set host texture (native_gpu.c). When this
+                                 // was written no track set one, so this branch had never
                                  // run. The mask bit of a 32-bit drawing is therefore open and
                                  // belongs to the feature that builds on this proof, not here.
                                  "		fragColor.a = color.a;\n"
                                  "	}\n";
 
 // THE FRACTIONAL DIGITS OF THE PROJECTION. a_extra.zw are the two bytes that
-// stood here as "unused" until today; they now carry four bits each of
+// used to stand here as "unused"; they now carry four bits each of
 // sixteenth pixels from the mirror of the prim arena (include/ctr_subpixel.h).
 // If --subpixel is off, they are zero and the addition adds a zero - that is why
 // no second pipeline is needed.
@@ -454,23 +455,18 @@ const char *gte_shader_32_rgba = "	SAMPLER_SLOT0 uniform sampler2D s_texture;\n"
 	"		v_page_clut.zw += c_UVFudge;\n" GTE_PERSPECTIVE_CORRECTION \
 	"	}\n"
 
-// The reference build also carries a mod-menu overlay shader here. Its menu is
-// not part of this transfer, so the shader is not either - an unused body would
-// still be compiled by the SPIR-V check and would have to keep working for
-// nobody.
+// The build this renderer was ported from also carries a mod-menu overlay
+// shader here. Its menu is not part of this port, so the shader is not either -
+// an unused body would still be compiled by the SPIR-V check and would have to
+// keep working for nobody.
 
 // NOTE(aalhendi): GPU VRAM pack. Samples an RGBA render texture and writes PS1
 // 5:5:5:1 pixels into RG8 VRAM, low byte in R and high byte in G. NEAREST
 // sampling and integer channel shifts preserve the packed PS1 pixel value.
-// First shader converted to the shared dialect. The body below is what a
-// Vulkan build would compile too - byte for byte. Only the preamble differs,
-// and only in the three qualifier macros plus the #version line. Verified with
-// glslangValidator: this body produces valid SPIR-V under the Vulkan preamble
-// and validates as GLSL 330 under the GL one.
-//
-// Explicit locations and a named uniform block are not GL habits - they are
-// what Vulkan requires, and GL 3.3 happens to accept them. That direction is
-// deliberate: the GL path is the one that goes away.
+// Written in the shared dialect: explicit locations and a named uniform block,
+// which is what Vulkan requires. The qualifier macros and the #version line
+// come from the preamble in tools/shader_spirv_probe.c.
+
 // HOW MANY SAMPLES ONE OUTPUT PIXEL AVERAGES, at most.
 //
 // One number, used in four places: the loop bound in each of the two shaders
@@ -498,7 +494,7 @@ const char *gte_shader_32_rgba = "	SAMPLER_SLOT0 uniform sampler2D s_texture;\n"
 // That matters beyond tidiness: this VRAM copy is what the GAME reads. Screen
 // copy effects sample it, the next frame loads from it when the draw environment
 // does not clear, and every VRAM dump is taken from it. A decimated framebuffer
-// there is a decimated input to the game own effects.
+// there is a decimated input to the game's own effects.
 //
 // So it takes the same box as the presentation resolve, from the same block, with
 // the same proof behind it: uniform weights, centred on the destination texel, and
@@ -664,12 +660,10 @@ global_variable const char *ctr_present_target_shader =
 // holds - not the VRAM size, not the tile size, not the atlas size.
 //
 // WHICH WAY UP. None: the write and the read agree without a flip, and that is
-// derived, not measured. Under GL, glViewport(x, y, w, h) puts NDC y = -1 at
-// window y = x_y, and an FBO's window row y is texture row y. Under Vulkan a
-// target pass takes its viewport unflipped (native_gfx_vk.c:4206 - the flip is
-// only for the swapchain), and framebuffer row y is image row y. Both therefore
-// put NDC y = -1 at texture row viewportY, so v_uv.y rising is the atlas row
-// rising in both. samplePages reads the atlas with v rising as the VRAM row
+// derived, not measured. A target pass takes its viewport unflipped
+// (native_gfx_vk.c, NativeGfxVK_Draw - the flip is only for the swapchain),
+// and framebuffer row y is image row y. That puts NDC y = -1 at texture row
+// viewportY, so v_uv.y rising is the atlas row rising. samplePages reads the atlas with v rising as the VRAM row
 // rises, and this writes it the same way. If that is wrong the failure is loud:
 // every 4-bit and 8-bit texture appears mirrored within its 256-row page.
 //
@@ -729,7 +723,9 @@ global_variable const char *ctr_pack_pages_shader =
 // cannot be half-updated.
 //
 // The PSX shaders are not in here: they are assembled from several parts and
-// have a bilinear variant each, so their table lives with the assembly.
+// built in three interpolation variants each, so their table lives with the
+// assembly (tools/shader_spirv_probe.c, NativeRenderer_Shader_CompileWithUniforms).
+//
 // A function rather than a table, for two reasons. The bodies are pointer
 // variables and not compile-time constants, so a table of them will not
 // initialise at file scope in C. And a function that answers "is there an entry
@@ -774,8 +770,8 @@ internal int CtrBlitShader_Get(int index, const char **outName, const char **out
 	return 1;
 }
 
-// The reference build's present-pass shader (CRT filter, scanline mask) sits
-// here too. That is presentation, not rendering, and not part of this
-// transfer - the base presents its render target without a shader pass.
+// The build this renderer was ported from also has a present-pass shader (CRT
+// filter, scanline mask) here. That is presentation, not rendering, and not
+// part of this port - the base presents its render target without a shader pass.
 
 

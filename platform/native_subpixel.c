@@ -105,8 +105,8 @@ struct NativeSubpixelCensus
 	s64 emptyConsumed[2]; // already passed on and consumed in the process
 	s64 emptyOkZero[2];   // usable, but fraction exactly (0,0)
 	s64 carriedBy[2];     // carried, by origin
-	s64 emptyCopied[2];   // scratch vertex was a copy (DrawLevelOvr1P:1134)
-	s64 emptyHand[2];     // scratch vertex by hand from the IR vector (DrawLevelOvr1P:2948)
+	s64 emptyCopied[2];   // scratch vertex was a copy (DrawLevelOvr1P_CopyProjectedScreenDepth)
+	s64 emptyHand[2];     // scratch vertex by hand from the IR vector (Ovr226_800aaad0_PrepareClipRecordDepthScratch)
 	s64 forwardSrcMark[NATIVE_SUBPIXEL_MARKS];  // passing on without a source, by source reason
 	s64 forwardReread;    // passing on from a source that had already been read once
 	s64 emptyNoneKind[2][NATIVE_SUBPIXEL_KINDS]; // "never GTE" by primitive type
@@ -211,7 +211,7 @@ void NativeSubpixel_PushExternal(void)
 	s_fracClamped[2] = 0;
 }
 
-// --- Die Spiegelung ---------------------------------------------------------
+// --- The mirror ---------------------------------------------------------------
 
 void NativeSubpixel_RegisterRegion(const void *base, u32 bytes, const char *what)
 {
@@ -220,9 +220,8 @@ void NativeSubpixel_RegisterRegion(const void *base, u32 bytes, const char *what
 
 	// If the switch is off, nothing at all is allocated. That is not only
 	// economical: it also keeps the off state from allocating half a megabyte of
-	// host memory differently from the build before, and so the
-	// only unconditional remnant of this change is the one addition in the shader -
-	// and that adds an exact zero.
+	// host memory, so the only unconditional remnant of this feature is the one
+	// addition in the shader - and that adds an exact zero.
 	if (!g_cfg_subpixel)
 	{
 		return;

@@ -1,5 +1,5 @@
 // ===========================================================================
-// TRACK PREVIEW FOR CONTAINER TRACKS (2026-09-30).
+// TRACK PREVIEW FOR CONTAINER TRACKS.
 //
 // The menu is itself a level and cannot load a track. The preview is
 // therefore recorded beforehand - 10 s from the driver camera behind an
@@ -8,7 +8,7 @@
 // track screen as a sequence of frames into the preview window, at the
 // place where retail puts its STR video (MM_TrackSelect.c:186-203).
 //
-// STORAGE (decided 2026-09-17: not in the container):
+// STORAGE (not in the container; "vorschau" is the folder name on disk):
 //   tracks\vorschau\<container without .rldtrack>.rldprev
 //   0x00  "RLDPREV1"
 //   0x08  u32 version 1
@@ -25,13 +25,13 @@
 // BLACK. 0x0000 is transparent in a 16-bit texture; a black
 // preview pixel therefore becomes 0x0421 (1/31 per channel).
 //
-// ALWAYS A FINAL LINE (2026-09-29). The Alpha-Maker (recording by itself
-// after "Build container") reads exactly one line:
+// ALWAYS A FINAL LINE. The Alpha-Maker (recording by itself after "Build
+// container") reads exactly one line:
 // "[CTR Preview] written <path> (<n> frames)" or
-// "[CTR Preview] FAILED: <reason>". A manual test on 2026-09-29 ended twice
+// "[CTR Preview] FAILED: <reason>". A manual test once ended twice
 // without either: the window was closed (SDL_EVENT_WINDOW_CLOSE_REQUESTED,
 // exit(0) in native_platform.c, without a log line of its own), once after about 130
-// of 150 frames. Since then:
+// of 150 frames. Therefore:
 //   - a final report (Platform_AtExitReport) writes the FAILED line with the state
 //     of the recording when the game ends without a result;
 //   - a watchdog ends the recording with FAILED if it has not begun after 60 s
@@ -39,7 +39,7 @@
 //     for 30 s (pause);
 //   - every 30 frames a progress line, and the window title says that
 //     the window closes by itself.
-// Since the evening of 2026-09-29 the game window is hidden with --record-preview
+// The game window is hidden with --record-preview
 // (g_cfg_windowHidden, native_renderer.c): nobody can
 // close it any more. An end before the result then comes from outside (process
 // killed, crash); that is why the final report no longer says "keep the window

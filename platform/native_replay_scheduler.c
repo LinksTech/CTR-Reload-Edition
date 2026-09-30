@@ -147,9 +147,9 @@ internal void NativeReplayScheduler_ResetSessionState(void)
 	NativeReplayScheduler_ResetVSyncPackets();
 }
 
-internal u32 NativeReplayScheduler_Fnv1a(const void *data, u32 size)
+internal u32 NativeReplayScheduler_Fnv1a(const void *src, u32 size)
 {
-	const u8 *bytes = (const u8 *)data;
+	const u8 *bytes = (const u8 *)src;
 	u32 hash = NATIVE_REPLAY_FNV_OFFSET;
 
 	for (u32 i = 0; i < size; i++)
@@ -161,9 +161,9 @@ internal u32 NativeReplayScheduler_Fnv1a(const void *data, u32 size)
 	return hash;
 }
 
-internal u32 NativeReplayScheduler_Fnv1aStep(u32 hash, const void *data, u32 size)
+internal u32 NativeReplayScheduler_Fnv1aStep(u32 hash, const void *src, u32 size)
 {
-	const u8 *bytes = (const u8 *)data;
+	const u8 *bytes = (const u8 *)src;
 
 	for (u32 i = 0; i < size; i++)
 	{

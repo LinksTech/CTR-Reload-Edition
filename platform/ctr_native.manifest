@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!--
-  Manifest of ctr_native.exe (Beta 0, 2026-09-30).
+  Manifest of ctr_native.exe.
   activeCodePage UTF-8: the program takes paths as char* (argv, fopen,
   FindFirstFileA). With UTF-8 as the ANSI code page, umlauts and other
   scripts pass through, such as a user name in the Alpha-Maker's temp path

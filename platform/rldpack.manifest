@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!--
-  Manifest of rldpack.exe (Beta 0, 2026-09-30).
+  Manifest of rldpack.exe.
   activeCodePage UTF-8: the program takes paths as char* (argv, fopen,
   FindFirstFileA). With UTF-8 as the ANSI code page, umlauts and other
   scripts get through, e.g. a user name in the Alpha-Maker's temp path
   (Windows 10 1903 and newer; older Windows skip the entry).
-  Deliberately without dpiAware: that would change SDL's window scaling.
+  No dpiAware entry: rldpack is a console tool without a window.
 -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <application xmlns="urn:schemas-microsoft-com:asm.v3">

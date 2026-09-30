@@ -63,10 +63,6 @@ typedef struct
 	int h;
 } NativeGfxRect;
 
-// Which device is underneath, for the log. There is one, and the selection that
-// used to sit here went with the other one.
-const char *NativeGfx_BackendName(void);
-
 // --- Textures --------------------------------------------------------------
 //
 // RG8 is here as a plain two-channel 8-bit format, which every API has. That
@@ -207,7 +203,7 @@ TextureID NativeGfx_TargetTexture(NativeGfxTarget target);
 int NativeGfx_TargetWidth(NativeGfxTarget target);
 int NativeGfx_TargetHeight(NativeGfxTarget target);
 
-// ANTI-ALIASING (2026-09-22). A target is multisampled: every
+// ANTI-ALIASING. A target is multisampled: every
 // pass then draws into a multisampled image, and the texture of the target
 // (TargetTexture) only comes into being as its resolve at the end of the pass. The readers
 // of the texture - pack, present, readPixels - notice nothing of it.
@@ -275,9 +271,8 @@ typedef struct
 	int samplerCount;
 
 	// Layout of the uniform block this program is fed. Declaring it once means
-	// updates can hand over plain bytes: GL unpacks them into individual
-	// uniform writes using these offsets, Vulkan copies the block wholesale
-	// into a buffer. Neither needs to know what any field means, which is how
+	// updates can hand over plain bytes and the backend places them using these
+	// offsets. It never needs to know what any field means, which is how
 	// PSX state crosses the seam without PSX vocabulary crossing with it.
 	NativeGfxUniformField uniforms[NATIVE_GFX_MAX_PROGRAM_SLOTS];
 	int uniformCount;
@@ -337,27 +332,17 @@ void NativeGfx_ReadPixels(int x, int y, int width, int height, NativeGfxTextureF
 
 // --- Diagnostics -----------------------------------------------------------
 //
-// The GL debug channel has paid for itself several times over, so it stays
-// exactly as it is - it just becomes a backend responsibility, installed by
-// whichever backend is active.
+// Debug labels are a backend responsibility, installed by whichever backend
+// is active.
 
 void NativeGfx_PushDebugLabel(const char *label);
 void NativeGfx_PopDebugLabel(void);
 
 // Counts what a frame asked the device for, above the backend and therefore
-// identically for all of them. Called once per frame from the swap, so the same
-// numbers can be read off a GL run and a Vulkan run and compared.
+// identically for any of them. Called once per frame from the swap.
+// It also samples the frame time (average and worst frame of the last second)
+// and writes it into the log with the counts.
 void NativeGfx_ReportFrame(void);
-
-// Draws the previous frame asked for. Survives the per-frame reset so an
-// overlay can put it next to a frame time.
-unsigned int NativeGfx_LastFrameDraws(void);
-
-// Frame time, sampled once per frame by NativeGfx_ReportFrame and reported into
-// the log as well as read by the overlay. One source, so a log and a screen
-// never disagree - and so a run never has to be reported by photographing it.
-double NativeGfx_FrameAverageMs(void);
-double NativeGfx_FrameWorstMs(void);
 
 // GPU timing. Whether it can be measured at all is a device property, so the
 // backend answers it rather than the caller sniffing extensions. One timer is

@@ -5,10 +5,10 @@
 // colour steps sit at 4:3 on the 4-pixel grid of the 2048-wide target. The GTE
 // would have more: GTE_RotTransPers computes the screen position as 16.16 and
 // throws away exactly sixteen fractional bits with `>> 16`
-// (platform/native_gte_core.c:317-322).
+// (platform/native_gte_core.c, GTE_RotTransPers).
 //
 // MAC0 DOES NOT CARRY THIS VALUE. After RTPS it holds the fog interpolation
-// DQB + DQA*h (platform/native_gte_core.c:346), written in the same operator
+// DQB + DQA*h (platform/native_gte_core.c, GTE_operator), written in the same operator
 // before a caller can see it. The exact screen value
 // exists only inside GTE_RotTransPers, between the sum and the
 // shift. That is why it is tapped there - in both GTE paths, otherwise
@@ -25,8 +25,8 @@
 // by which it could tell them apart. A mirror next to the arena leaves
 // all 305 writers alone.
 //
-// This is NOT the scatter store of --persp. That one was address-keyed with
-// collisions and reached 43.6 % coverage. This one is addressed directly:
+// This is NOT an address-keyed scatter store with collisions (an earlier
+// approach of that kind reached 43.6 % coverage). This one is addressed directly:
 // one slot per four-byte word of a registered region, collision-free,
 // complete on its paths.
 //
@@ -52,9 +52,9 @@
 // explicitly (NativeSubpixel_Forward).
 //
 // A scratch vertex is read SEVERAL times - four neighbouring quads share
-// one corner. Until 2026-09-08 passing it on consumed the
-// source slot, and only the first quad got the fraction: 14.8 % of all
-// drawn vertices. The consumption protected against exactly one thing: that a
+// one corner. When passing it on consumed the source slot, only the first
+// quad got the fraction: 14.8 % of all drawn vertices. The consumption
+// protected against exactly one thing: that a
 // fraction keeps acting after the slot was written by someone other than the GTE.
 // 37 files share the scratchpad; posScreen, however,
 // is written by only three paths - the GTE store (sets the fraction), the copy
@@ -156,8 +156,6 @@ void NativeSubpixel_InvalidateHand(const void *dst);
 // for counting - the answer does not depend on it.
 // kind: the primitive type from native_gpu.c (NATIVE_GPU_SIZE_*), counting only.
 int NativeSubpixel_Lookup(const void *xy, int *fx, int *fy, int ui, int kind);
-
-
 
 // --- The counting -----------------------------------------------------------
 

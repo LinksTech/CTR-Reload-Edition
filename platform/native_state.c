@@ -13,7 +13,7 @@
 // NOTE(aalhendi): Snapshot tags are stored as little-endian four-character IDs
 // in native replay/state blobs. `CTRS` means CTR native State bundle.
 #define NATIVE_STATE_MAGIC              NATIVE_STATE_FOURCC('C', 'T', 'R', 'S')
-// 2 (2026-09-29): region HSPU, the 32-bit SPU addresses of the game logic
+// Version 2 added region HSPU, the 32-bit SPU addresses of the game logic
 // (HOWL_Bank.c, 1 MB sound memory). States only load in the same build anyway.
 #define NATIVE_STATE_VERSION            2u
 

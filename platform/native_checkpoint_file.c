@@ -158,8 +158,8 @@ internal int NativeCheckpointFile_ChecksumStream(FILE *file, u32 payloadSize, u3
 	return 1;
 }
 
-// Beta 0 (2026-09-30): only WriteSingle (quick state) sets it for the duration
-// of one write; replays write 0.
+// Build tag stored in record.reserved[0]. Only WriteSingle (quick state) sets it
+// for the duration of one write; replays write 0.
 global_variable u32 s_nativeCheckpointFileBuildTag = 0;
 
 int NativeCheckpointFile_BeginWrite(struct NativeCheckpointFileWriter *writer, const char *path)

@@ -1,11 +1,10 @@
-// Build-time proof that the shader bodies still compile as Vulkan GLSL.
+// Build-time assembly of the shader sources that become the SPIR-V modules.
 //
-// The renderer assembles each shader from a preamble plus a body at runtime.
-// This tool assembles the same bodies under the same preamble at build time and
-// writes them out, and the build then runs glslangValidator over the lot - so a
-// body that no longer compiles is caught by the build rather than by a black
-// picture. The preamble here and the one in native_renderer.c are the same
-// shader seen twice; keeping them in step is the point.
+// The renderer cannot compile GLSL at runtime; it links prebuilt SPIR-V and
+// finds each module by name. This tool assembles every shader from the Vulkan
+// preamble below plus its body and writes them out, and the build then runs
+// glslangValidator over the lot - so a body that no longer compiles is caught
+// by the build rather than by a black picture. The preamble lives only here.
 //
 // It writes files rather than validating itself, so a failure names the shader
 // and leaves it on disk to look at.
@@ -23,14 +22,12 @@
 
 #include "../platform/native_shaders.inc"
 
-// The preamble, which has to match GLSL_HEADER_VERT / GLSL_HEADER_FRAG in
-// native_renderer.c - same macro names, same expansions, same #version. When it
-// had a GL counterpart the two differed on purpose; now they must not differ at
-// all, and a difference shows up here as a shader that validates in one place
-// and not the other.
+// The preamble. There used to be a GL counterpart in native_renderer.c; with
+// the GL backend gone this is the only one.
 //
-// Bindings follow what native_renderer.c documents: the uniform block is 0 and
-// SAMPLER_SLOTn is binding n + 1.
+// Bindings are what native_gfx_vk.c builds its descriptor set layouts for
+// (NativeGfxVK_CreateProgram): the uniform block is 0 and SAMPLER_SLOTn is
+// binding n + 1.
 static const char *VK_HEADER_VERT =
     "#version 450\n"
     "precision lowp  int;\n"
@@ -94,8 +91,8 @@ static int WriteParts(const char *name, const char *const *parts, int count)
 	return 1;
 }
 
-// Mirrors vs_list_src / fs_list_src in NativeRenderer_Shader_CompileWithUniforms
-// for a shader that is not a PSX one: preamble, stage define, body.
+// A shader that is not a PSX one: preamble, stage define, body - one file per
+// stage.
 static int WriteBlit(const char *name, const char *body)
 {
 	char path[1024];
@@ -121,7 +118,7 @@ int main(int argc, char **argv)
 		s_outputDirectory = argv[1];
 	}
 
-	// Mirrors vs_list_psx. One vertex stage serves both fragment programs.
+	// The PSX vertex stage. One vertex stage serves both fragment programs.
 	//
 	// Also for the centroid and sample fragment variants: when matching the stages
 	// Vulkan demands equal decorations EXCEPT the
@@ -135,22 +132,22 @@ int main(int argc, char **argv)
 		}
 	}
 
-	// Mirrors fs_list_psx. BILINEAR_FILTER is a runtime toggle, so both
-	// settings are real shaders and both get checked.
+	// The PSX fragment programs. Bilinear filtering is a runtime uniform
+	// (bilinearFilter), so one module per program covers both settings.
 	{
 		const struct
 		{
 			const char *name;
 			const char *body;
 		} variants[] = {
-		    // One program for 4, 8 and 16 bit since 2026-09-13: the
+		    // One program for 4, 8 and 16 bit: the
 		    // format rides in the vertex. The 32-bit override texture keeps
 		    // its own program - it samples a native RGBA texture, not VRAM.
 		    {"psx", gte_shader_psx},
 		    {"psx32", gte_shader_32_rgba},
 		};
 
-		// ANTI-ALIASING (2026-09-22): three versions per program, which
+		// ANTI-ALIASING: three versions per program, which
 		// differ only in PSX_EDGE_INTERP (native_shaders.inc at
 		// gpu_shader_common). Empty is the module that always existed - so the route
 		// with one sample stays the old SPIR-V -, `centroid` for
@@ -186,10 +183,8 @@ int main(int argc, char **argv)
 		}
 	}
 
-	// The reference build also checks its present-pass and debug-menu shaders
-	// here. Neither is part of this transfer, so neither is in
-	// native_shaders.inc and neither can be checked.
-	// From the shared list in native_shaders.inc, not from a copy of it here.
+	// The blit shaders, from the shared list in native_shaders.inc, not from a
+	// copy of it here.
 	// A shader the renderer knows about and this tool does not is a module that
 	// is never built, and under Vulkan that is a draw that never happens.
 	{

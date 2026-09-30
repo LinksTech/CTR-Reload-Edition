@@ -32,18 +32,10 @@
 // counting costs one branch on a global zero per operation and nothing
 // else.
 //
-// The report additionally hangs on atexit. Without that it would be lost: Ctrl+Q,
-// the window close button and SDL_EVENT_QUIT all go via exit(0), and exactly
-// that killed a whole evening of measurements on 2026-08-28.
-//
-// ONE LIMITATION, MEASURED AND NOT ASSUMED: on the --dump-exit path
-// the sum is only on the console, not in the log file. This path calls
-// Platform_Shutdown explicitly and after that exit(0)
-// (platform/native_platform.c), so the log is already closed when atexit gets its
-// turn - in the run of 2026-09-02 "---- LOG CLOSED ----" stood two lines before
-// the sum. Nothing is lost, Platform_Log always writes to
-// stdout as well; whoever needs the sum from a dump run captures the console. The
-// window lines are in both.
+// The report is registered through Platform_AtExitReport (see
+// NativeGteFlags_Frame), which runs in Platform_Shutdown before the log is
+// closed - on every way out, including Ctrl+Q, the window close button and
+// SDL_EVENT_QUIT, which all go via exit(0).
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -181,12 +173,8 @@ void NativeGteFlags_Frame(void)
 		return;
 	}
 
-	// Registered via Platform_AtExitReport, which runs in Platform_Shutdown before
-	// the log is closed. Before, this hung on atexit and had to be HERE
-	// instead of where the switch is read, because atexit calls in reverse
-	// order and Platform_Shutdown would otherwise have had its turn earlier - which is why the
-	// first measurement was only on the console. There is now one door,
-	// and the order does not matter to it; registering once stays correct.
+	// Registered once via Platform_AtExitReport, which runs in Platform_Shutdown
+	// before the log is closed.
 	if (!s_gteReportArmed)
 	{
 		s_gteReportArmed = 1;

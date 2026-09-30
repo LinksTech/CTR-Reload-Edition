@@ -3,7 +3,7 @@
 
 static u8 s_memcardNativeInfoSeen[2];
 
-// ALL DRIVERS ARE UNLOCKED, THE SAVE STAYS (2026-09-29).
+// ALL DRIVERS ARE UNLOCKED, THE SAVE STAYS.
 //
 // The seven drivers that the original only unlocks later - N. Tropy, Penta,
 // Roo, Papu, Joe, Pinstripe, Fake Crash (UNLOCK_CHARACTERS,
@@ -25,7 +25,7 @@ static u8 s_memcardNativeInfoSeen[2];
 //   adventure save, just as UI_CupStandings.c:699-707 sets both together;
 //   N. Tropy with TT_NTROPY_BEATEN on all 18 tracks (224.c:50-54,
 //   GAMEPROG.c:157-179). Penta cannot be earned in the NTSC-U code, only by
-//   retail code.
+//   the retail cheat code.
 // A save that is loaded and saved thus stays byte-identical. What
 // is lost: a retail unlock code for a driver is no longer
 // saved - the driver is unlocked anyway.

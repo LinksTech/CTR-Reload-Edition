@@ -17,17 +17,20 @@ void Platform_Init(const char *title, int width, int height, int fullscreen);
 
 // Which of the three shapes the picture is driven in, decided from the display
 // the window is on. Called once at startup and again whenever that display or
-// its mode changes; does nothing while a command line flag holds the aspect.
-// `why` goes into the log line, so a later detection says what woke it.
+// its mode changes; does nothing while an override (--aspect or a saved
+// GRAPHICS setting) holds the aspect. `why` goes into the log line, so a later
+// detection says what woke it.
 void Platform_DetectDisplayAspect(const char *why);
 
-// The aspect, set from the command line and held there. Detection steps aside
-// for it: driving 16:9 on a 21:9 monitor has to stay possible, and a setting
-// that a later re-detection quietly overwrites is not a setting.
+// The aspect, set from the command line (or the saved GRAPHICS setting) and
+// held there. Detection steps aside for it: driving 16:9 on a 21:9 monitor
+// has to stay possible, and a setting that a later re-detection quietly
+// overwrites is not a setting.
 void Platform_SetAspectOverride(int width, int height);
 
 // The settings that survive a restart, on disk. Loaded once at startup and
-// before the command line, written every time the debug menu changes one.
+// before the command line, written every time the debug menu or the GRAPHICS
+// page changes one.
 // Locked means neither: a measuring run must not read a file somebody left
 // tuned, nor write one.
 void Platform_SettingsLoad(void);
@@ -113,7 +116,7 @@ int Platform_GetVBlankCount(void);
 void Platform_WaitUntilVBlank(int targetVBlank);
 void Platform_PollHostEvents(void);
 
-// Pause on minimise or focus loss (native_platform.c, 2026-09-28). The
+// Pause on minimise or focus loss (native_platform.c). The
 // game fetches the wish per frame (MainFrame_GameLogic) and takes it on the
 // BTN_START route; afterwards it says what came of it.
 #define PLATFORM_FOCUS_PAUSE_REFUSED 0

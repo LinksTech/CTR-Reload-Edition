@@ -1,10 +1,9 @@
 // THE PROOF THAT BOTH GTE PATHS COMPUTE THE SAME.
 //
 // platform/native_gte_alt.c is a copy of platform/native_gte_core.c today.
-// That is a claim as long as nobody recomputes it - and "it is just
-// the same file with other names" is exactly the kind of claim this
-// tree has already paid dearly for twice. So it is recomputed, and
-// not on one example but on millions.
+// That is a claim as long as nobody recomputes it - "it is just the same
+// file with other names" is easy to believe and easy to break. So it is
+// recomputed, and not on one example but on millions.
 //
 // WHAT IS COMPARED: ALL 64 REGISTERS, not the result.
 //
@@ -241,9 +240,9 @@ global_variable const int s_gteCheckGameOps[] = {
     // second phase anyway; they are here so that the
     // CHAINS also run through them, and because a list called "what the game
     // issues" must be complete.
-    0x0406012,  // COLL.c:240
-    0x04C6012,  // RenderBucket_QueueExecute.c:711, :1557
-    0x04BE012,  // llir, RenderBucket_QueueExecute.c:1243
+    0x0406012,  // COLL.c
+    0x04C6012,  // RenderBucket_QueueExecute.c
+    0x04BE012,  // llir, RenderBucket_QueueExecute.c
 };
 
 // Every function number the core knows, plus four it does not know.

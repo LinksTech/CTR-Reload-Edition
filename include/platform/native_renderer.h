@@ -147,7 +147,7 @@ int NativeRenderer_GetVRAMCopyClippedCount(void);
 #endif
 void NativeRenderer_SetPSXTextureOutputSTP(int enabled);
 void NativeRenderer_SetPSXDrawMaskSet(int maskSet);
-// ANTI-ALIASING (2026-09-22): sample shading for the following draws, only effective in
+// ANTI-ALIASING: sample shading for the following draws, only effective in
 // a pass with more than one sample.
 void NativeRenderer_SetSampleShading(int enable);
 // The first vertex of the last upload inside the vertex buffer. A batch no

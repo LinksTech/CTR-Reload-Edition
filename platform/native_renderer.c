@@ -337,7 +337,7 @@ struct NativeBlitPagesUniforms
 // No NativeGfxUniformField list for either of these on purpose.
 //
 // Both shader bodies were converted to the shared dialect and declare a block -
-// "UBO_QUALIFIER uniform PackBlock" and "VramBlock" in native_shaders.inc - but
+// "UBO_QUALIFIER uniform ResolveBlock" and "VramBlock" in native_shaders.inc - but
 // their compile calls kept handing over a by-name field list, which is the other
 // path and the two never combine. Under GL the field walk asks
 // a block member's location, got nothing back, and skipped it in silence;
@@ -463,7 +463,8 @@ internal void NativeRenderer_NotePsxDraw(int formatIndex, TextureID texture)
 // this existed, and every step below is written so that one is not merely equal
 // to the old behaviour but is literally the old code path.
 //
-// It is a setting and never a derivation. The reference build derives its factor
+// It is a setting and never a derivation. The build this renderer was ported
+// from derives its factor
 // from the window height and had to fix that twice: a window that changed size
 // kept the old factor, and starting fullscreen produced a different picture than
 // starting windowed and then going fullscreen. Nothing here reads the window, so
@@ -577,7 +578,7 @@ int g_cfg_autopilot = 0;
 int g_cfg_weaponPoolEmpty = 0;
 
 // --instance-pool <n>: the race instance pool gets n items instead of 128
-// (probe for a full pool, Beta 0). Read by game/MAIN/MainInit.c.
+// (probe for a full pool). Read by game/MAIN/MainInit.c.
 int g_cfg_instancePool = 0;
 
 // --- The VRAM copy window ---------------------------------------------------
@@ -614,7 +615,7 @@ global_variable NativeGfxBuffer s_vramQuadBuffer = NATIVE_GFX_INVALID;
 // written into VRAM, and the game uses it as geometry - CAM_ClearScreen puts
 // two of them in the last ordering-table slot as the sky, split at a horizon
 // line that moves with the camera. The parser hands them to ClearImage
-// (native_gpu.c:1887), which is why they end up here.
+// (native_gpu.c, ParsePrimitiveBody), which is why they end up here.
 //
 // Routing them through a clear costs us twice. A clear has a whole-attachment
 // failure mode that a draw does not have, and its rectangle is computed a
@@ -689,7 +690,7 @@ global_variable int s_boundVertexBuffer = -1;
 // owning one - VRAM is sampled from everywhere else.
 global_variable NativeGfxTarget s_vramTarget = NATIVE_GFX_INVALID;
 
-// Invisible game window (2026-09-29): only with --record-preview, set in
+// Invisible game window: only with --record-preview, set in
 // main.c (NativeArgs_ReadDisplayFlags), because the window comes into being in Platform_Init,
 // before the big loop. The Alpha-Maker records the preview after
 // "Build container" without a window appearing that somebody could
@@ -821,9 +822,9 @@ void NativeRenderer_Shutdown(void)
 	NativeGfx_DestroyProgram(s_packPagesShader);
 	NativeGfx_DestroyVertexBuffer(s_vramQuadBuffer);
 
-	// Last, after every object above has been handed back. Init cleans up after
-	// itself on every failure path, and this is not reached in that case anyway,
-	// because the renderer never finished starting.
+	// Last, after every object above has been handed back. This also runs when
+	// NativeRenderer_InitialiseRender failed: Platform_Init then calls
+	// Platform_Shutdown, so the calls above may see objects that were never made.
 	NativeGfxVK_Shutdown();
 }
 
@@ -1656,8 +1657,7 @@ typedef struct
 	ShaderID shader;
 } GTEShader;
 
-internal ShaderID NativeRenderer_Shader_Compile(const char *source, bool isPsxShader);
-internal ShaderID NativeRenderer_Shader_CompileWithUniforms(const char *source, bool isPsxShader, const NativeGfxUniformField *uniforms, int uniformCount,
+internal ShaderID NativeRenderer_Shader_CompileWithUniforms(const char *source, const NativeGfxUniformField *uniforms, int uniformCount,
                                                             const char *blockName, int blockBytes, int blockBinding);
 internal void NativeRenderer_GenerateCommonTextures(void);
 internal void NativeRenderer_CompilePSXShader(GTEShader *sh, const char *source);
@@ -1681,9 +1681,10 @@ global_variable GTEShader s_gteShader32Rgba;
 // too and share it, so the spelling says what it is.
 #define NATIVE_UNIFORM_BLOCK_BINDING 0
 
-// std140. The four ints follow a vec2, which lands them on 8 and then every 4
-// after; the trailing pad keeps the block a multiple of 16. Get this wrong and
-// fields land on each other without a word from anyone.
+// std140. The mat4 takes 0..63, the vec2 64..71, and the four ints land on 72
+// and then every 4 after; the two floats behind them fill up to 96, where the
+// first vec4 starts. Get this wrong and fields land on each other without a
+// word from anyone.
 struct NativePSXUniforms
 {
 	float projection[16];
@@ -1717,17 +1718,19 @@ struct NativePSXUniforms
 	//
 	// One means: the vertex shader reads the CLUT value of the primitive as the
 	// window origin in the texture and adds it to the uv. Zero means: as
-	// before, uv 0..255 are the texels 0..255 and nothing else.
+	// before, uv 0..255 are the texels 0..255 and nothing else. No code path
+	// sets it any more, so it stays zero; the field is kept because the shader
+	// block declares it.
 	//
 	// Appended and not inserted: std140 puts a vec4 on 16 bytes,
 	// psxPageLayout ends at 128, and 128 is itself a multiple of 16.
-	// No field above moves, and the three assertions below
-	// stand unchanged.
+	// No field above moves, and the offset assertions below for the
+	// fields before it stand unchanged.
 	float psxUvOrigin[4];
 };
 
 // std140 puts a vec4 on a 16-byte boundary, which lands psxPageGrid at 96,
-// psxPageLayout at 112 and makes the block 128. The compiler agrees by accident
+// psxPageLayout at 112, psxUvOrigin at 128 and makes the block 144. The compiler agrees by accident
 // of ordering rather than by instruction, so it is asserted rather than trusted:
 // a field added above psxPageScale without a matching change in
 // gpu_shader_common would move every field after it and nothing would say a
@@ -1753,12 +1756,7 @@ internal void NativeRenderer_MarkPSXUniformsDirty(void)
 }
 
 #include "native_shaders.inc"
-internal ShaderID NativeRenderer_Shader_Compile(const char *source, bool isPsxShader)
-{
-	return NativeRenderer_Shader_CompileWithUniforms(source, isPsxShader, NULL, 0, NULL, 0, 0);
-}
-
-internal ShaderID NativeRenderer_Shader_CompileWithUniforms(const char *source, bool isPsxShader, const NativeGfxUniformField *uniforms, int uniformCount,
+internal ShaderID NativeRenderer_Shader_CompileWithUniforms(const char *source, const NativeGfxUniformField *uniforms, int uniformCount,
                                                             const char *blockName, int blockBytes, int blockBinding)
 {
 	// No preamble, no source assembly. Vulkan cannot compile GLSL at runtime and
@@ -1773,17 +1771,10 @@ internal ShaderID NativeRenderer_Shader_CompileWithUniforms(const char *source, 
 	// What they are used for HERE is identity: the pointer the caller passed is
 	// compared against the very objects in that file to work out which module it
 	// means. Comparing pointers is exact where comparing text would not be.
-
-
-	// Which shader this is, by name. GL only ever prints this in an error
-	// message, so naming it precisely costs nothing there - but Vulkan cannot
-	// compile GLSL at runtime and has to find a prebuilt SPIR-V module by name.
 	//
 	// The identification happens here rather than in the backend: the bodies
 	// are declared by native_shaders.inc, which this file includes, and the
 	// device layer sits earlier in the unity build where they are not visible.
-	// Comparing pointers is exact - these are the very objects the caller
-	// passed - where comparing text would not be.
 	//
 	// The names are the ones tools/shader_spirv_probe.c writes.
 	const char *moduleName = "blit";
@@ -1927,7 +1918,7 @@ internal void NativeRenderer_GenerateCommonTextures(void)
 
 internal void NativeRenderer_CompilePSXShader(GTEShader *sh, const char *source)
 {
-	sh->shader = NativeRenderer_Shader_CompileWithUniforms(source, true, NULL, 0, "PsxBlock", (int)sizeof(struct NativePSXUniforms),
+	sh->shader = NativeRenderer_Shader_CompileWithUniforms(source, NULL, 0, "PsxBlock", (int)sizeof(struct NativePSXUniforms),
 	                                                       NATIVE_UNIFORM_BLOCK_BINDING);
 }
 
@@ -1943,17 +1934,17 @@ internal void NativeRenderer_InitVRAMPipelines(void)
 
 	// s_src arrives through the sampler list at creation now, like every other
 	// sampler, instead of through its own glUniform1i here.
-	s_packShader = NativeRenderer_Shader_CompileWithUniforms(ctr_pack_shader, false, NULL, 0, "ResolveBlock", (int)sizeof(struct NativeBlitResolveUniforms),
+	s_packShader = NativeRenderer_Shader_CompileWithUniforms(ctr_pack_shader, NULL, 0, "ResolveBlock", (int)sizeof(struct NativeBlitResolveUniforms),
 	                                                        NATIVE_UNIFORM_BLOCK_BINDING);
 
-	s_presentVramShader = NativeRenderer_Shader_CompileWithUniforms(ctr_present_vram_shader, false, NULL, 0, "VramBlock",
+	s_presentVramShader = NativeRenderer_Shader_CompileWithUniforms(ctr_present_vram_shader, NULL, 0, "VramBlock",
 	                                                               (int)sizeof(struct NativeBlitVramUniforms), NATIVE_UNIFORM_BLOCK_BINDING);
 
 	// Same block as the pack shader, and deliberately so - see the shader.
-	s_presentTargetShader = NativeRenderer_Shader_CompileWithUniforms(ctr_present_target_shader, false, NULL, 0, "ResolveBlock",
+	s_presentTargetShader = NativeRenderer_Shader_CompileWithUniforms(ctr_present_target_shader, NULL, 0, "ResolveBlock",
 	                                                                 (int)sizeof(struct NativeBlitResolveUniforms), NATIVE_UNIFORM_BLOCK_BINDING);
 
-	s_packPagesShader = NativeRenderer_Shader_CompileWithUniforms(ctr_pack_pages_shader, false, NULL, 0, "PagesBlock",
+	s_packPagesShader = NativeRenderer_Shader_CompileWithUniforms(ctr_pack_pages_shader, NULL, 0, "PagesBlock",
 	                                                             (int)sizeof(struct NativeBlitPagesUniforms), NATIVE_UNIFORM_BLOCK_BINDING);
 
 	const NativeGfxVertexBufferDesc quadDesc = {
@@ -2092,12 +2083,13 @@ int NativeRenderer_InitialisePSX(void)
 #endif
 
 	// Main and offscreen draws share one explicit render-target contract. The
-	// main target stays at CTR's logical display size; host scaling is deferred
-	// to presentation.
+	// main target's size comes from NativeRenderer_GetMainTargetSize (canvas
+	// times the internal factor, or the window at NATIVE); the rest of the
+	// scaling to the window happens at presentation.
 	NativeRenderer_InitRenderTarget(&s_mainRenderTarget);
 	NativeRenderer_InitRenderTarget(&s_offscreenRenderTarget);
 
-	// ANTI-ALIASING (2026-09-22): only the main target. The offscreen target
+	// ANTI-ALIASING: only the main target. The offscreen target
 	// (dfe=0, multiplayer) stays at one sample, the VRAM target is borrowed
 	// and would not get one anyway. The level is already fixed here - file and
 	// --msaa have been read -, and it is applied like every later one.
@@ -2106,8 +2098,8 @@ int NativeRenderer_InitialisePSX(void)
 	// gen VRAM texture (single, persistent - mirrors PS1's single 1MB VRAM)
 	{
 		// RG8 storage: two bytes per texel, which is the real PS1's 1MB of
-		// VRAM exactly. See the VRAM_INTERNAL_FORMAT note at the top of this
-		// file for why that matters to the shader.
+		// VRAM exactly. See the note "WHY THE VRAM TEXTURE IS RG8" at the top of
+		// this file for why that matters to the shader.
 		const NativeGfxTextureDesc vramDesc = {
 		    .width = VRAM_WIDTH,
 		    .height = VRAM_HEIGHT,
@@ -2127,7 +2119,7 @@ int NativeRenderer_InitialisePSX(void)
 		s_vramTarget = NativeGfx_CreateTarget(&vramTargetDesc);
 	}
 
-	// gen vertex buffer and index buffer
+	// gen the vertex buffers (no index buffer: every draw is a plain triangle list)
 	{
 		// The GrVertex layout, declared once instead of issued four times.
 		// a_color is the only normalised attribute: it is the only one the
@@ -2175,7 +2167,7 @@ internal void NativeRenderer_Ortho2D(float left, float right, float bottom, floa
 	// (DrawSplit -> NativeRenderer_SetProjection), 989 to 2,284 times per frame
 	// on Vista, almost always with the same canvas and the same height - and
 	// every time the block got a new slot in the uniform ring ("2284
-	// draw(s) ... 2284 uniform update(s)", acceptance run 2026-09-15). A block that has
+	// draw(s) ... 2284 uniform update(s)" in a measured run). A block that has
 	// not changed does not need one.
 	if (memcmp(s_psxUniforms.projection, ortho, sizeof(ortho)) == 0)
 	{
@@ -2304,38 +2296,21 @@ void NativeRenderer_SetTexture(TextureID texture, TexFormat texFormat)
 		break;
 	}
 
-	// THE WINDOW, PER DRAWING.
-	//
-	// Here and nowhere else, because the format is known here. The three
-	// PSX formats get zero, and zero is the state in which the two
-	// lines in the vertex shader add nothing - so the VRAM route cannot see this switch,
-	// whichever way it stands.
-	{
-		extern int g_cfg_psyxUvOrigin;
-		const float uvOrigin = ((texFormat == TF_32_BIT_RGBA) && g_cfg_psyxUvOrigin) ? 1.0f : 0.0f;
-
-		if (s_psxUniforms.psxUvOrigin[0] != uvOrigin)
-		{
-			s_psxUniforms.psxUvOrigin[0] = uvOrigin;
-			NativeRenderer_MarkPSXUniformsDirty();
-		}
-	}
-
 	if (g_dbg_texturelessMode)
 	{
 		texture = s_whiteTexture;
 	}
 
 	// NOTE(penta3): s_texture (unit 0) and s_rgLut (unit 1) sampler bindings are baked
-	// into each program at compile time (NativeRenderer_Shader_Compile) and uniform
+	// into each program at creation (NativeRenderer_Shader_CompileWithUniforms) and uniform
 	// values persist per-program, so re-setting them on every split was redundant GL
 	// churn. bilinearFilter stays here because it toggles at runtime (debug key).
 	//
-	// Both values are first computed and then COMPARED (2026-09-16): until
-	// then every call marked the block as changed, that is every split,
+	// Both values are first computed and then COMPARED: an earlier version
+	// marked the block as changed on every call, that is every split,
 	// and the ring got a new block per draw, although between two
 	// splits mostly nothing had changed ("2284 draw(s) ... 2284 uniform
-	// update(s)", acceptance run 2026-09-15). What changes still marks.
+	// update(s)" in a measured run). What changes still marks.
 	const int bilinearFilter = g_cfg_bilinearFiltering;
 	float psxDitherAmount;
 
@@ -2349,7 +2324,7 @@ void NativeRenderer_SetTexture(TextureID texture, TexFormat texFormat)
 	// only while the target is the display times a whole number. At NATIVE the
 	// factor is not a number at all, and a comparison against 1 would have said
 	// yes to a 3440-wide target - dithering a picture that never gets truncated,
-	// which is the exact bug found on 28.08 in the other direction.
+	// which is the exact bug once found in the other direction.
 	{
 		int ditherW = 0;
 		int ditherH = 0;
@@ -2387,8 +2362,8 @@ void NativeRenderer_SetTexture(TextureID texture, TexFormat texFormat)
 	// A LINEAR filter on either would blend two CLUT entries, or two packed
 	// 5:5:5 words, and produce a colour that is in neither. Nothing in the tree
 	// binds VRAM LINEAR today - every bind of it is enumerated and both say
-	// NEAREST - but "nothing does yet" is not a property, and this month has
-	// cost two nights to filters that were inherited rather than chosen.
+	// NEAREST - but "nothing does yet" is not a property, and filters that were
+	// inherited rather than chosen have cost long debugging sessions before.
 	//
 	// Override textures keep KEEP: those are real RGBA images, a linear filter
 	// on them is a colour filter and means what it says, and forcing NEAREST
@@ -2402,7 +2377,7 @@ void NativeRenderer_SetTexture(TextureID texture, TexFormat texFormat)
 // a location lookup failing on the other three; the block carries the field for
 // all of them, and the one caller only calls this for TF_32_BIT_RGBA anyway.
 // The four setters below only mark the block when the value changes
-// (2026-09-16) - they run per split, and the same value twice is not a new
+// - they run per split, and the same value twice is not a new
 // block. The program change, which needs an upload even without a value change,
 // is covered in NativeRenderer_SetTexture.
 void NativeRenderer_SetOverrideTextureSize(int width, int height)
@@ -2579,7 +2554,7 @@ internal void NativeRenderer_AppendCpuDirtyRect(const RECT16 *rect)
 	}
 }
 
-// ANTI-ALIASING (2026-09-22): sample shading for the draws that DrawSplit
+// ANTI-ALIASING: sample shading for the draws that DrawSplit
 // is about to make (native_gpu.c), passed through to the gfx layer. It only takes
 // effect there in a pass with more than one sample.
 void NativeRenderer_SetSampleShading(int enable)
@@ -2587,7 +2562,7 @@ void NativeRenderer_SetSampleShading(int enable)
 	NativeGfx_SetSampleShading(enable);
 }
 
-// --- ANTI-ALIASING: THE LEVEL (2026-09-23) ------------------------------------
+// --- ANTI-ALIASING: THE LEVEL ------------------------------------------------
 //
 // Off, 2x or 4x: the samples of the main target. Three numbers as with the factor of the
 // internal resolution, and they are not the same:
@@ -2911,7 +2886,7 @@ internal int NativeRenderer_EnsurePageAtlas(int rowsNeeded)
 	// cannot happen in practice: the smallest atlas that holds every tile is
 	// 2048x2048 of one byte each - four megabytes, and under every device's
 	// limit. Said out loud anyway, because a limit that takes effect without a
-	// word is the shape of bug this month has been full of.
+	// word is a shape of bug this renderer has met often enough.
 	Platform_LogError("[CTR Pages] no atlas could be built - indexed textures cannot be drawn\n");
 	s_pages.scale = 1;
 	s_pages.tileRows = 0;
@@ -2938,7 +2913,7 @@ internal void NativeRenderer_ClearPageRows(void)
 // It removes the atlas GROWTH: the store began at nothing, reached four tile
 // rows, and later eight, and each of those destroys a texture of several
 // megabytes and writes every tile again, in the middle of a race. Two of them
-// in the run of the 28th.
+// in one measured race.
 //
 // Here and not at renderer init, because the flags that decide this are read
 // after the renderer is up. Once, and it says so.
@@ -3298,14 +3273,13 @@ internal void NativeRenderer_ReportPageStore(void)
 		// count is exactly the kind of reasoning this line replaces.
 		// AS LONG AS NEW TILES ARE ADDED, IT IS PRINTED AGAIN.
 		//
-		// Here stood a one-shot, and on 2026-08-29 it made itself useless in the log of
-		// Test 3: the first report falls on the title screen, where
+		// Here stood a one-shot, and it made itself useless in the first log it
+		// was read in: the first report falls on the title screen, where
 		// EXACTLY ONE tile is named. The table named page 15 and nothing
 		// else, and for the race with 25 tiles it stood nowhere - so
 		// exactly not for the case it was built for.
 		//
-		// It is the same mistake as with the four probes of the character select: a
-		// one-shot fires at the first moment it can, and the first
+		// A one-shot fires at the first moment it can, and the first
 		// moment is almost never the one meant. The condition is now not
 		// "never before", but "tiles have been added since". That is
 		// true at most 64 times and cannot flood.
@@ -3468,7 +3442,7 @@ void NativeRenderer_ClearVRAM(int x, int y, int w, int h, u8 r, u8 g, u8 b)
 	RECT16 clipped;
 
 	// The same rectangle as the dirty rectangle below, with the same
-	// scissor (2026-09-17). Before, the pointer was computed BEFORE the check
+	// scissor. An earlier version computed the pointer BEFORE the check
 	// and only the right and the bottom edge were cut: a negative x or
 	// y wrote before the start of the row or before cpuPixels, while MarkVRAMDirty
 	// cut the same rectangle cleanly - CPU mirror and dirty list had
@@ -3524,7 +3498,7 @@ void NativeRenderer_SetFillRectAsDraw(int enable)
 //
 // No new shader. An untextured surface already has a path here: the 32-bit
 // program samples a texture and multiplies by the vertex colour, so the 1x1
-// white texture the parser already uses for flat polygons (native_gpu.c:815)
+// white texture the parser already uses for flat polygons (native_gpu.c, AddSplit)
 // turns it into a flat fill. bright 1 leaves the colour alone, dither 0 keeps
 // the fill flat the way a clear is flat, and the mask bit is written as zero
 // because that is what the scissored clear wrote before it.
@@ -3758,19 +3732,19 @@ void NativeRenderer_Clear(int x, int y, int w, int h, u8 r, u8 g, u8 b)
 	{
 		int clearTargetW = 0;
 		int clearTargetH = 0;
-		int displayW = 0;
-		int displayH = 0;
+		int mapFromW = 0;
+		int mapFromH = 0;
 		int mappedX;
 		int mappedY;
 
 		NativeRenderer_ActiveViewportSize(&clearTargetW, &clearTargetH);
-		NativeRenderer_GetDisplaySize(&displayW, &displayH);
+		NativeRenderer_GetDisplaySize(&mapFromW, &mapFromH);
 
-		mappedX = NativeRenderer_MapAxis(scissorX, displayW, clearTargetW);
-		mappedY = NativeRenderer_MapAxis(scissorY, displayH, clearTargetH);
+		mappedX = NativeRenderer_MapAxis(scissorX, mapFromW, clearTargetW);
+		mappedY = NativeRenderer_MapAxis(scissorY, mapFromH, clearTargetH);
 
-		scissorW = NativeRenderer_MapAxis(scissorX + scissorW, displayW, clearTargetW) - mappedX;
-		scissorH = NativeRenderer_MapAxis(scissorY + scissorH, displayH, clearTargetH) - mappedY;
+		scissorW = NativeRenderer_MapAxis(scissorX + scissorW, mapFromW, clearTargetW) - mappedX;
+		scissorH = NativeRenderer_MapAxis(scissorY + scissorH, mapFromH, clearTargetH) - mappedY;
 		scissorX = mappedX;
 		scissorY = mappedY;
 	}
@@ -4297,7 +4271,7 @@ void NativeRenderer_ReadVRAM(u16 *dst, int x, int y, int dst_w, int dst_h)
 {
 	NativeRenderer_ResolveVRAMRead(x, y, dst_w, dst_h);
 
-	// A rectangle that reaches beyond VRAM read until 2026-09-17
+	// A rectangle that reaches beyond VRAM used to read
 	// behind cpuPixels (cpuDirtyRects and gpuNewerTiles lie there). The PS1
 	// folds the address: x modulo 1024, y modulo 512. That is how it is read here
 	// as soon as the rectangle touches the edge; the normal case (fully inside) stays
@@ -4539,7 +4513,7 @@ void NativeRenderer_ReportPresentPath(int vblank)
 		int canvasH = 0;
 
 		NativeRenderer_GetCanvasSize(&canvasW, &canvasH);
-		Platform_Log("[CTR Res]   canvas        %dx%d   (Bildpuffer %dx%d)\n", canvasW, canvasH, displayW, displayH);
+		Platform_Log("[CTR Res]   canvas        %dx%d   (frame buffer %dx%d)\n", canvasW, canvasH, displayW, displayH);
 	}
 	Platform_Log("[CTR Res]   main target   %dx%d   (display %dx%d)\n", targetW, targetH, displayW, displayH);
 	Platform_Log("[CTR Res]   window        viewport %dx%d at %d,%d of %dx%d\n", s_presentViewport.w, s_presentViewport.h, s_presentViewport.x,
@@ -4691,8 +4665,8 @@ void NativeRenderer_EndPresentReportFrame(void)
 {
 	int i;
 
-	// The array has TWO slots (s_psxDrawsByFormatFrame[2]); until 2026-09-17
-	// the loop ran to 4 and wrote two ints per frame behind the
+	// The array has TWO slots (s_psxDrawsByFormatFrame[2]); an earlier
+	// version's loop ran to 4 and wrote two ints per frame behind the
 	// end of the array - into the neighbours in declaration order, that is into counters
 	// that were thereby zeroed every frame. Computed from the array, not
 	// copied.
@@ -4865,7 +4839,7 @@ void NativeRenderer_SwapWindow(void)
 // THE PSX MASK BIT, AND WHY NOTHING STANDS HERE ANY MORE.
 //
 // NativeRenderer_EnableDepth and NativeRenderer_SetStencilMode stood at
-// this place. Both were removed on 2026-08-29, because it was
+// this place. Both were removed, because it was
 // measured that both never did anything. Whoever wants the mask function later
 // starts here and not from zero.
 //
@@ -4892,16 +4866,15 @@ void NativeRenderer_SwapWindow(void)
 //
 // The second reason is the harder one: it applies independently of the back end.
 //
-// WHERE THE ATTEMPT LIES. Commit f81f1bd81 of 2026-08-27 built the attachment,
-// b20899938 followed it up, 002aa168d added two test states - and 007b701b2
-// took everything back on the same day, because there was the suspicion that the attachment had
-// broken the skybox. That suspicion later turned out to be wrong: the
-// skybox was due to the fill rectangles (737184e0e). So the attachment was
-// probably fine and was taken back for a reason that
-// was not true.
+// WHAT HAPPENED TO THE ATTEMPT. An earlier version built the attachment and
+// added two test states - and took everything back on the same day, because
+// there was the suspicion that the attachment had broken the skybox. That
+// suspicion later turned out to be wrong: the skybox was due to the fill
+// rectangles. So the attachment was probably fine and was taken back for a
+// reason that was not true.
 //
-// Whoever needs the mask function takes f81f1bd81 as a template and must IN ADDITION
-// make sure that anybody asks for the stamp mode at all.
+// Whoever needs the mask function has to build the attachment again and must
+// IN ADDITION make sure that anybody asks for the stamp mode at all.
 //
 // THE DEPTH is the same case in short: EnableDepth computed per blend change a
 // flag that forced the back end to 0 and that would have been ignored without an attachment

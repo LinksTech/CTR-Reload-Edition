@@ -138,7 +138,7 @@ internal void Platform_HandleFullscreenToggle(void)
 // frames, so the request is simply handed to the same place.
 global_variable int s_fullscreenTogglePending = 0;
 
-// Beta 0: the state the GRAPHICS page wants, or -1.
+// The display mode the GRAPHICS page wants, or -1.
 global_variable int s_fullscreenWanted = -1;
 
 void Platform_ToggleFullscreen(void)
@@ -347,11 +347,8 @@ struct NativeVideoSetting
 	int (*get)(void);
 };
 
-// The SETTING getter, not the effective one: what is written to disk has to be
-// what was asked for, or a factor that was clamped on one machine comes back
-// as the clamped value on the next.
-// THE GRAPHICS PAGE (Beta 0, 2026-09-30): Display mode, Aspect ratio,
-// Resolution, Anti-aliasing in the OPTIONS box (game/native_graphics.c).
+// THE GRAPHICS PAGE: Display mode, Aspect ratio, Resolution, Anti-aliasing
+// in the OPTIONS box (game/native_graphics.c).
 //
 // What is in the file is always the choice from the menu or from the file -
 // never a command-line switch. --fullscreen/--windowed, --aspect, --res-scale
@@ -406,6 +403,9 @@ void Platform_NoteResolutionScaleFlag(void)
 	}
 }
 
+// The SETTING getter, not the effective one: what is written to disk has to be
+// what was asked for, or a factor that was clamped on one machine comes back
+// as the clamped value on the next.
 global_variable const struct NativeVideoSetting s_videoSettings[] = {
     {"resscale", Platform_SetResolutionScale, Platform_GetResolutionScaleForFile},
     {"fullscreen", Platform_StoreFullscreenSetting, Platform_GetFullscreenSetting},
@@ -426,8 +426,8 @@ global_variable const struct NativeVideoSetting s_videoSettings[] = {
 #define NATIVE_VIDEO_SETTING_COUNT ((int)(sizeof(s_videoSettings) / sizeof(s_videoSettings[0])))
 
 // The lock. A measuring run must not read a file somebody left tuned, and must
-// not write one either - the last two nights both cost a comparison to a tool
-// that changed what it was measuring.
+// not write one either - a tool that changes what it is measuring costs the
+// comparison.
 global_variable int s_settingsLocked = 0;
 
 void Platform_SetSettingsLocked(int locked)
@@ -1122,9 +1122,9 @@ internal void Platform_HandleKey(int key, char down)
 #ifdef CTR_INTERNAL
 	if (!down)
 	{
-		// Beta 0 (2026-09-30): the debug keys - quick states F5/F8,
-		// replay F9/F10, VRAM F7, display F1-F3, polygon choice - only with
-		// --dev. F12 (screenshot) stays: testers need it for reports.
+		// The debug keys - quick states F5/F8, replay F9/F10, VRAM F7,
+		// display F1-F3, polygon choice - only with --dev. F12 (screenshot)
+		// stays: testers need it for reports.
 		extern int g_cfg_dev;
 
 		if ((key != SDL_SCANCODE_F12) && !g_cfg_dev)
@@ -1187,21 +1187,19 @@ internal void Platform_HandleKey(int key, char down)
 // WHEN IT CRASHES, IT SHOULD SAY WHERE
 //========================================================================================
 //
-// Until now a crash in this tree was one line in the chat: "it just crashes".
-// Rounds of guessing followed, and each one costs a run.
-//
-// Built on 2026-08-28, while the container loader was being hunted. The
-// load path had been shown to be clean after three attempts, the race afterwards dies
-// before frame 120, and there was no means of naming the place. This here is
-// the means, and it is not limited to containers: every crash of the
-// game writes its stack into the log from now on.
+// Without this a crash is only "it just crashes", and every guess at the place
+// costs a run. It was built while the container loader was being hunted: the
+// load path had been shown to be clean, the race afterwards died before frame
+// 120, and there was no means of naming the place. This here is the means, and
+// it is not limited to containers: every crash of the game writes its stack
+// into the log.
 //
 // SetUnhandledExceptionFilter and not AddVectoredExceptionHandler: the
 // vectored handler sees EVERY exception, also the ones that somebody further up catches and
 // expects. What is of interest here is the one that nobody catches.
 //
-// The symbol names come from the .pdb that the release build has written
-// along since the same day (/Zi and /DEBUG in CMakeLists.txt). If it is missing, the
+// The symbol names come from the .pdb that the release build writes along
+// (/Zi and /DEBUG in CMakeLists.txt). If it is missing, the
 // addresses remain - and an address with module and offset is still more than
 // nothing.
 
@@ -1384,8 +1382,8 @@ internal LONG WINAPI Platform_CrashHandler(EXCEPTION_POINTERS *info)
 //
 // SetUnhandledExceptionFilter only fires when nobody catches the exception. A
 // driver or a library with its own __try swallows it before, and then
-// the log says nothing - exactly that happened on 2026-08-28: a crash without
-// a single report line.
+// the log says nothing - that has been seen: a crash without a single report
+// line.
 //
 // This handler sees it FIRST and passes it on unchanged. It
 // changes nothing about the flow, it only writes along. Limited to four messages,
@@ -1507,8 +1505,8 @@ void Platform_Init(const char *title, int width, int height, int fullscreen)
 	// shape and the shape has to be known first. There is no window yet, so this
 	// reads the primary display - which is where SDL puts a window it was given
 	// no position for.
-	// Beta 0: fullscreen and aspect ratio from the file, before the window
-	// comes into being - afterwards they visibly jumped.
+	// Fullscreen and aspect ratio from the file, before the window comes into
+	// being - applied afterwards they visibly jumped.
 	Platform_SettingsPreloadDisplay(&fullscreen);
 
 	Platform_DetectDisplayAspect("start");
@@ -1591,8 +1589,8 @@ void Platform_Init(const char *title, int width, int height, int fullscreen)
 // reverse order of registration. Platform_Shutdown is hooked in in Platform_Init,
 // that is AFTER the switches in main, and therefore ran BEFORE the
 // reports registered there - it closes the log, and what comes afterwards
-// is only on the console. Three logs with --near-report from
-// 2026-09-04 carried not a single [CTR Near] line. The disc report and
+// is only on the console. Logs with --near-report carried not a single
+// [CTR Near] line. The disc report and
 // --gte-near-div had the same hole; the split report and the GTE flags
 // only did not because they happened to be registered later.
 //
@@ -1786,7 +1784,6 @@ void Platform_EndScene(void)
 	NativePerf_EndScope(NATIVE_PERF_BUCKET_PLATFORM_END_SCENE);
 }
 
-// NOTE(aalhendi): Frame timing is handled by VSync() in the platform layer,
 #if defined(CTR_INTERNAL)
 // Writes the emulated VRAM at fixed VBlank counts, and can end the run after the
 // last one. A measuring trigger, nothing else: off unless --dump-vram says
@@ -2025,22 +2022,27 @@ internal void Platform_DumpIfDue(void)
 
 // ENDING THE GAME - ONE EXIT INSTEAD OF FOUR.
 //
-// Ctrl+Q, the window closer, SDL_EVENT_QUIT and now the QUIT row in the
-// main menu go through here. exit(0) and not a cleanup by hand: on
-// atexit hang Platform_Shutdown, the disc read counter and the report
-// on the draw command overflows. Whoever ends past that loses all
-// three - exactly that happened on 2026-08-28 for a whole evening of measuring.
+// Ctrl+Q, the QUIT row in the main menu and the measuring exits go through
+// here; the window closer and SDL_EVENT_QUIT call the same exit(0) directly.
+// exit(0) and not a cleanup by hand: atexit runs Platform_Shutdown, and that
+// runs the exit reports (Platform_AtExitReport - disc read counter, draw
+// command overflows and the rest) while the log is still open. Whoever ends
+// past that loses all of them - and with them a whole evening of measuring,
+// as has happened.
 void Platform_QuitGame(const char *why)
 {
-	Platform_Log("[CTR Native] %s - beenden\n", (why != NULL) ? why : "beenden");
+	Platform_Log("[CTR Native] %s - quitting\n", (why != NULL) ? why : "quit");
 	Platform_LogFlush();
 	exit(0);
 }
 
-internal void Platform_FrameEndTakt(void); // at the VBlank clock, below
+internal void Platform_FrameEndClock(void); // at the VBlank clock, below
 void NativePreview_EndFrame(void); // platform/native_preview.c, later in the same build
 
-// matching PS1 hardware behavior. Platform_EndFrame only does buffer swap + FPS.
+// NOTE(aalhendi): Frame timing is handled by VSync() in the platform layer,
+// matching PS1 hardware behavior. Platform_EndFrame does no pacing: it ends
+// the scene (present and swap), counts FPS, closes the per-frame counters and
+// runs the per-frame measuring hooks.
 void Platform_EndFrame(void)
 {
 	NativePerf_BeginScope(NATIVE_PERF_BUCKET_PLATFORM_END_FRAME);
@@ -2071,7 +2073,7 @@ void Platform_EndFrame(void)
 #endif
 	// Behind everything a frame still costs: the disturbance delay and the
 	// line of the frame log (--inject-delay, --frame-log; at the VBlank clock).
-	Platform_FrameEndTakt();
+	Platform_FrameEndClock();
 	NativePerf_EndScope(NATIVE_PERF_BUCKET_PLATFORM_END_FRAME);
 }
 
@@ -2106,7 +2108,7 @@ void Platform_PinVRAMDisplayRect(int x, int y, int w, int h, int frameCount)
 	s_pinnedVramDisplayCustomRect = 1;
 }
 
-// PAUSE ON MINIMISE OR FOCUS LOSS (2026-09-28). The window only reports
+// PAUSE ON MINIMISE OR FOCUS LOSS. The window only reports
 // here that it is gone. The pause opens the game on its own
 // Start route (MainFrame_GameLogic, same condition as BTN_START, then
 // MainFreeze_IfPressStart) - with all retail locks: not in the menu, not while
@@ -2116,7 +2118,7 @@ void Platform_PinVRAMDisplayRect(int x, int y, int w, int h, int frameCount)
 // the wish offered anew in every frame, until it pauses once. Redeemed in
 // the one frame of the event would be too little: in the countdown the
 // finish flag is still in the picture, the Start route refuses, and the race drove on
-// minimised (proof run). At most one pause per absence; once
+// minimised. At most one pause per absence; once
 // the window is back (focus there, not minimised), the wish expires. In the menu
 // and while loading the Start route refuses in every frame - nothing happens there.
 //
@@ -2124,9 +2126,9 @@ void Platform_PinVRAMDisplayRect(int x, int y, int w, int h, int frameCount)
 // 0) no longer arrives, the kart would drive on without a hand. A window that never had
 // focus (started in the background) reports no loss and is not gone.
 //
-// Only when a human plays. Off with --dev - every measuring, diagnostic and
-// replay call carries --dev (working rule), and there no window event may
-// change the game flow; --focus-pause switches it on anyway for the proof.
+// Only when a human plays. Off with --dev - measuring, diagnostic and replay
+// calls carry --dev, and there no window event may change the game flow;
+// --focus-pause switches it on anyway to test it.
 // Off as long as a replay is prepared, recording or playing: a
 // pause that does not come from the input would make the playback diverge.
 int g_cfg_focusPause = 0;
@@ -2240,7 +2242,7 @@ void Platform_PollHostEvents(void)
 		Platform_HandleFullscreenToggle();
 	}
 
-	// GRAPHICS page (Beta 0): a target state instead of a toggle, so that
+	// GRAPHICS page: a target state instead of a toggle, so that
 	// left/right twice before this point does not toggle twice.
 	if (s_fullscreenWanted >= 0)
 	{
@@ -2288,8 +2290,8 @@ void Platform_PollHostEvents(void)
 		case SDL_EVENT_WINDOW_HIDDEN:
 		case SDL_EVENT_WINDOW_SHOWN:
 		{
-			// Only into the log (2026-09-28): in unattended measuring runs
-			// the window three times had area 0 without anybody touching it.
+			// Only into the log: in unattended measuring runs the window
+			// had area 0 several times without anybody touching it.
 			// This line says next time whether SDL saw a minimise at that moment.
 			// What the renderer makes of it is at NativeVk_BuildSwapchainOrPause.
 			int pixelW = 0;
@@ -2440,7 +2442,7 @@ global_variable u64 s_nextVBlankCounter = 0;
 global_variable u64 s_vblankRemainder = 0;
 global_variable int s_nativeVBlankCount = 0;
 
-// MEASURING MODE (--deterministic, main.c; 2026-09-26). Without the switch
+// MEASURING MODE (--deterministic, main.c). Without the switch
 // every path below stays as it was. With it VSync does not catch up VBlanks
 // that are due by wall clock (Native_CatchUpDueVBlanks is not called): every
 // call emits exactly the requested VBlanks, from the first call at
@@ -2456,7 +2458,10 @@ int g_cfg_deterministic = 0;
 // Platform_EndFrame and one line "[CTR Frame] boot ..." per VSync call before
 // the first frame. The columns are in the header line, which is written at the
 // start of the VBlank clock. The counters always run, they cost
-// nothing; written only with the switch.
+// nothing; written only with the switch. The column names are German words,
+// kept so that old and new logs stay comparable: bild = frame, emittiert =
+// emitted, nachgeholt = caught up, neu = clock restarted, verfallen = dropped
+// lateness.
 int g_cfg_frameLog = 0;
 
 // DISTURBING SWITCH (--inject-delay <seed>, only for measurements): holds
@@ -2487,8 +2492,8 @@ internal u32 Native_InjectHash(u32 n, u32 salt)
 	return h;
 }
 
-// was: "bild" (salt 0) or "boot vsync" (salt 0x9e3779b9), n: the number.
-internal void Native_InjectDelayIfDue(const char *was, int n, u32 salt)
+// what: "bild" (frame, salt 0) or "boot vsync" (salt 0x9e3779b9), n: the number.
+internal void Native_InjectDelayIfDue(const char *what, int n, u32 salt)
 {
 	if (g_cfg_injectDelaySeed == 0)
 	{
@@ -2506,7 +2511,7 @@ internal void Native_InjectDelayIfDue(const char *was, int n, u32 salt)
 		{
 			const int ms = 20 + (int)((h & 0xffffu) % 61u);
 
-			Platform_Log("[CTR Delay] %s %d: %d ms\n", was, n, ms);
+			Platform_Log("[CTR Delay] %s %d: %d ms\n", what, n, ms);
 			SDL_DelayPrecise((u64)ms * 1000000ull);
 		}
 	}
@@ -2527,7 +2532,7 @@ internal double Native_MsSince(u64 since)
 
 // From Platform_EndFrame, after present, snapshot and dump: the disturbance delay
 // of this frame, then its line. dt includes the delay.
-internal void Platform_FrameEndTakt(void)
+internal void Platform_FrameEndClock(void)
 {
 	s_frameNumber++;
 	Native_InjectDelayIfDue("bild", s_frameNumber, 0u);

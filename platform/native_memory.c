@@ -29,27 +29,26 @@ CTR_STATIC_ASSERT(CTR_NATIVE_MEMPACK_START_OFFSET + CTR_NATIVE_MEMPACK_SIZE + ME
 // of this.
 //
 // A foreign track is not a PSX-faithful measurement. It may be larger than
-// the one whose slot it occupies, and on 2026-08-28 it was: the sky of the
-// test data needs 172,032 bytes of draw memory, where Dingo Canyon gets 97,280 for
+// the one whose slot it occupies, and the first test track was: its sky
+// needs 172,032 bytes of draw memory, where Dingo Canyon gets 97,280 for
 // the whole frame.
 //
 // The buffer carries the room from the start - an array costs nothing as long as
-// nobody writes into it. The WINDOW grows only when --tracks asks for it,
-// and then the number is in the log. Without the switch every pointer and every
-// limit is the same as before.
-// 16 MiB. Before, this said one megabyte, and that was a fixed number that
-// clamped SILENTLY.
+// nobody writes into it. The WINDOW grows only by what the scan of tracks/ at
+// start asks for (main.c, Platform_SetMempackExtra), and then the number is in
+// the log. With --no-tracks every pointer and every limit is the console's.
+// Before, the reserve was one megabyte, a fixed number that clamped SILENTLY.
 //
-// We are not a port. The PSX had 2 MB, this machine has 32 GB. A
-// limit that only exists because hardware from 1999 could not do more is
-// no yardstick here - the window above is, and that stays byte for byte
-// the console, so that a memory bug shows up as it does there.
+// The PSX had 2 MB, a PC has gigabytes. A limit that only exists because
+// hardware from 1999 could not do more is no yardstick here - the window
+// above is, and that stays byte for byte the console, so that a memory bug
+// shows up as it does there.
 //
 // What lies BEHIND it depends on the track. The largest test file
-// asks for 5,991,028 bytes; 16 MiB is two and a half times that.
+// asks for 5,991,028 bytes.
 //
-// 32 MiB since 2026-09-15: the reserve now also carries the
-// near-plane clip buffers, four per track (NativeTrack_MempackExtraNeeded).
+// 32 MiB: the reserve also carries the near-plane clip buffers, four per
+// track (NativeTrack_MempackExtraNeeded).
 // Sunset Vista asked for 8,582,284 bytes before (log 'tracks/: ... wanted');
 // 13,120 quadblocks x 4 sets x 0x3c bytes x 4 buffers add 12,595,200,
 // together 21,177,484 - over 16 MiB, under 32.
@@ -122,7 +121,7 @@ void Platform_ConfigureMempackArena(void)
 	// Before, this said &s_mempackMemory[CTR_NATIVE_MEMPACK_BUFFER_SIZE], which
 	// was the same - the assertion above says so. But as soon as the buffer carries
 	// room for the extra, it would no longer be the same, and the limit would
-	// slide back by a megabyte even without --tracks. Exactly the mistake
+	// slide back by the whole reserve even without container tracks. Exactly the mistake
 	// this tree keeps making: the same number in two places.
 	s_mempackArena.endOfMemory = &s_mempackMemory[CTR_NATIVE_MEMPACK_START_OFFSET + size + MEMPACK_PS1_END_GUARD_SIZE];
 	s_mempackArena.size = (int)size;
@@ -134,9 +133,8 @@ const struct PlatformMempackArena *Platform_InitMempackArena(void)
 	// First the layout, then zeroing - and only as far as the pack reaches.
 	//
 	// Before, the memset ran over the WHOLE array. As long as that carried one
-	// megabyte of reserve it did not matter; with sixteen it would be sixteen
-	// megabytes touched on every level change, only for nobody to
-	// use them.
+	// megabyte of reserve it did not matter; with 32 it would be 32 megabytes
+	// touched on every level change, only for nobody to use them.
 	Platform_ConfigureMempackArena();
 	memset(s_mempackMemory, 0, (size_t)s_mempackArena.backingSize);
 #if defined(CTR_INTERNAL)
@@ -162,8 +160,8 @@ int Platform_GetMempackBackingSize(void)
 	//
 	// This used to say sizeof(s_mempackMemory), and that was the same as long as the
 	// array was exactly the window. Since it carries room for the extra, it
-	// no longer is - and a checkpoint would suddenly have saved one megabyte
-	// more than before, even without --tracks. The same mistake as with endOfMemory,
+	// no longer is - and a checkpoint would suddenly have saved the whole
+	// reserve as well, even without container tracks. The same mistake as with endOfMemory,
 	// two functions further up.
 	return s_mempackArena.backingSize;
 }

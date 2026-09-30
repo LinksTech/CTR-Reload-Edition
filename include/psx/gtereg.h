@@ -8,7 +8,7 @@
 #define GTEREG_H
 
 #ifdef Status
-// Fix for stupid GLES headers in RPI or MESA, whatever... just get rid of this dumb shit
+// Some platform headers (X11, GLES on Mesa or the Raspberry Pi) define Status as a macro.
 #undef Status
 #endif
 

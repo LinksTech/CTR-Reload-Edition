@@ -13,7 +13,7 @@
 #define NATIVE_AUDIO_SAMPLE_RATE             44100
 #define NATIVE_AUDIO_CHANNELS                2
 #define NATIVE_AUDIO_SPU_VOICE_COUNT         24
-// NATIVE_AUDIO_SPU_MEMSIZE lives in include/platform/native_audio.h since 2026-09-29
+// NATIVE_AUDIO_SPU_MEMSIZE lives in include/platform/native_audio.h
 // (1 MB, shared with HOWL_Bank.c).
 // streaming ADPCM decode like the real SPU: 16-byte blocks decoded on the fly
 // per voice, reading SPU RAM live (psx-spx "SPU ADPCM Samples/Pitch") -penta3
@@ -43,7 +43,7 @@
 // NOTE(aalhendi): Little-endian tag `CTRA` = CTR native Audio snapshot.
 #define NATIVE_AUDIO_STATE_MAGIC             0x41525443
 // v2: voices snapshot streaming decode state, not decoded-PCM indices -penta3
-// v3 (2026-09-29): sound RAM 1 MB, spuSampleMem twice as large.
+// v3: sound RAM 1 MB, spuSampleMem twice as large.
 #define NATIVE_AUDIO_STATE_VERSION           3
 #define NATIVE_AUDIO_ADSR_MIN                (-0x8000)
 #define NATIVE_AUDIO_ADSR_MAX                0x7fff
@@ -1384,7 +1384,7 @@ internal int NativeAudio_DecodeAdpcmNibble(u8 soundParameter, int nibble, int *o
 internal u32 NativeAudio_WrapSpuAddr(u32 addr)
 {
 	// SPU addresses wrap within the 512KB like hardware -penta3
-	// (since 2026-09-29 within 1 MB, NATIVE_AUDIO_SPU_MEMSIZE)
+	// (here within 1 MB, NATIVE_AUDIO_SPU_MEMSIZE)
 	return addr & (u32)(NATIVE_AUDIO_SPU_MEMSIZE - 1);
 }
 
@@ -2366,15 +2366,6 @@ internal void SDLCALL NativeAudio_StreamCallback(void *userdata, SDL_AudioStream
 	}
 }
 
-void NativeAudio_ClearOutputQueue(void)
-{
-	NativeAudio_LockOutput();
-
-	NativeAudio_ClearOutputQueueNoLock();
-
-	NativeAudio_UnlockOutput();
-}
-
 void NativeAudio_SetDeterministicRenderMode(int enabled)
 {
 	NativeAudio_LockOutput();
@@ -2397,31 +2388,6 @@ int NativeAudio_IsDeterministicRenderMode(void)
 	NativeAudio_UnlockOutput();
 
 	return enabled;
-}
-
-int NativeAudio_QueueRenderedFrames(const s16 *frames, int frameCount)
-{
-	int framesQueued;
-
-	if (frameCount <= 0)
-	{
-		return 0;
-	}
-
-	NativeAudio_LockOutput();
-
-	if (s_audio.output.deterministicRenderMode)
-	{
-		framesQueued = NativeAudio_QueueRenderedFramesNoLock(frames, frameCount);
-	}
-	else
-	{
-		framesQueued = 0;
-	}
-
-	NativeAudio_UnlockOutput();
-
-	return framesQueued;
 }
 
 #ifdef CTR_INTERNAL
@@ -2772,22 +2738,6 @@ internal int NativeAudio_RenderFramesNoLock(s16 *out, int frameCount)
 	return frameCount;
 }
 
-int NativeAudio_RenderFrames(s16 *out, int frameCount)
-{
-	if ((out == NULL) || (frameCount <= 0))
-	{
-		return 0;
-	}
-
-	NativeAudio_LockOutput();
-
-	int framesRendered = NativeAudio_RenderFramesNoLock(out, frameCount);
-
-	NativeAudio_UnlockOutput();
-
-	return framesRendered;
-}
-
 void NativeAudio_StepVBlank(void)
 {
 #ifdef CTR_INTERNAL
@@ -3079,7 +3029,7 @@ void NativeAudio_SpuSetVoiceAttr(SpuVoiceAttr *psxAttrib)
 void NativeAudio_SpuSetKey(s32 on_off, u32 voice_bit)
 {
 	// Once per session: the first voice that starts above 512 KB (sound RAM
-	// 1 MB, 2026-09-29). Proves that such samples are really played; on
+	// 1 MB). Proves that such samples are really played; on
 	// retail tracks this line never appears. Logged after unlocking.
 	local_persist int loggedAbove512 = 0;
 	int logVoice = -1;

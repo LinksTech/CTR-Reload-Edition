@@ -318,7 +318,7 @@ internal int GTE_RotTransPers(int idx, int lm)
 	// HERE THE PRECISION IS LOST, AND ONLY HERE. The sum is 16.16 -
 	// OFX/OFY are 16.16, h_over_sz3 is 1.16 - and `>> 16` throws away sixteen
 	// fractional bits. After that they are NOWHERE any more: on return MAC0 carries
-	// the fog interpolation DQB + DQA*h (line 341 below), not
+	// the fog interpolation DQB + DQA*h (RTPS/RTPT in GTE_operator), not
 	// this value.
 	//
 	// The two intermediate values change nothing in the computation - F() and Lm_G1/G2

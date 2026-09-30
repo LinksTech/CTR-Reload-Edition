@@ -4,7 +4,7 @@
 #include <macros.h>
 #include <psx/libspu.h>
 
-// The emulated sound RAM: 1 MB instead of the PS1's 512 KB (2026-09-29).
+// The emulated sound RAM: 1 MB instead of the PS1's 512 KB.
 // Power of two, because the ADPCM reader masks addresses with MEMSIZE-1.
 // Defined here and not in native_audio.c so that the game logic uses the
 // same limit (HOWL_Bank.c, HOWL_SPU_BANK_LIMIT): if that were higher,
@@ -36,11 +36,8 @@ int NativeAudio_GetXAMaxSampleAtOffset(int xaCurrOffset);
 void NativeAudio_SetXAVolume(int volumeLeft, int volumeRight);
 void NativeAudio_StopXA(void);
 void NativeAudio_StepVBlank(void);
-int NativeAudio_RenderFrames(s16 *out, int frameCount);
 void NativeAudio_SetDeterministicRenderMode(int enabled);
 int NativeAudio_IsDeterministicRenderMode(void);
-int NativeAudio_QueueRenderedFrames(const s16 *frames, int frameCount);
-void NativeAudio_ClearOutputQueue(void);
 void NativeAudio_Shutdown(void);
 #ifdef CTR_INTERNAL
 void NativeAudio_GetOutputStats(int *underrunFrames, int *overflowFrames, int *queuedFrames);

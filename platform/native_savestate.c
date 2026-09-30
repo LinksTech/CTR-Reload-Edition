@@ -23,9 +23,9 @@
 #define NATIVE_SAVESTATE_DIR        "debug/states"
 #define NATIVE_SAVESTATE_QUICK_PATH "debug/states/quick.ctrstates"
 
-// Beta 0 (2026-09-30): a quick state can only be loaded in the build that
-// wrote it. It depends on code addresses (native_checkpoint.c:485-500); loaded from
-// another build, the game crashed. The id is FNV-1a over
+// A quick state can only be loaded in the build that wrote it. It depends on
+// code addresses (NativeCheckpoint_RelocateImagePointerSlot in
+// native_checkpoint.c); loaded from another build, the game crashes. The id is FNV-1a over
 // CTR_NATIVE_BUILD_ID and the link timestamp of the exe - that changes with
 // every link, even if only game code was recompiled.
 internal u32 NativeSaveState_BuildTag(void)

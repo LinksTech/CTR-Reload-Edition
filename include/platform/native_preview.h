@@ -2,7 +2,8 @@
 #define NATIVE_PREVIEW_H
 
 // Track preview for container tracks (platform/native_preview.c).
-// File tracks\vorschau\<container without .rldtrack>.rldprev, see there.
+// File tracks\vorschau\<container without .rldtrack>.rldprev ("vorschau" is
+// the folder name on disk), see there.
 
 #define NATIVE_PREVIEW_WIDTH 170
 #define NATIVE_PREVIEW_HEIGHT 71

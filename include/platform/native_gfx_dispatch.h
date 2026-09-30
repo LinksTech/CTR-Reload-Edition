@@ -34,8 +34,8 @@
 //
 // The entries are written once, below, and expanded into the struct fields and
 // into the check. Two lists - a struct here and a list of names in the checker -
-// would be the same fact in two places, which is the shape this tree has been
-// caught by five times. Add an entry here and the struct grows, the check covers
+// would be the same fact in two places, which is a shape this tree has been
+// caught by more than once. Add an entry here and the struct grows, the check covers
 // it, and neither can be forgotten.
 //
 // X takes the return type, the field name, and the parameter list in brackets.

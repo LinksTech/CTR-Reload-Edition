@@ -321,13 +321,11 @@ void AddPrim(void *ot, void *p)
 }
 
 
-// THE TWO PSY-X PACKETS THAT UNTIL TODAY WERE ONLY DECLARED.
+// THE PSY-X TEXTURE PACKET.
 //
-// include/psx/libgpu.h:813 has always declared SetPsyXTexture, and
-// ProcessPsyXPrims (native_gpu.c:4293) also reads the packet - but nobody
-// defined the function. The whole route "own RGBA texture instead of VRAM" was
-// therefore not reachable from the game side: there was no packet that
-// switches it on.
+// include/psx/libgpu.h declares SetPsyXTexture, and ProcessPsyXPrims
+// (native_gpu.c) reads the packet. This is the definition: the packet that
+// switches the route "own RGBA texture instead of VRAM" on from the game side.
 //
 // The packet carries two command words, exactly as many as the parser
 // returns:
@@ -342,17 +340,17 @@ void AddPrim(void *ot, void *p)
 // and NEVER resets it by itself - neither per frame nor per split. Whoever
 // sets it must also set it back to 0, otherwise every further
 // textured primitive of the frame draws from the same host texture.
-// THE ORDER OF THE THREE ASSIGNMENTS IS NOT FREE, and that cost a day
-// on which the route silently ended up in the old path.
+// THE ORDER OF THE THREE ASSIGNMENTS IS NOT FREE - in the wrong order the
+// route silently ends up in the old path.
 //
 // P_TAG is four bytes of tag plus "pad0, pad1, pad2, code" - the code of a
-// primitive therefore lies on BYTE 7, and CTR_GPU_WriteTagCode writes exactly
-// there (libgpu.h:147). DR_PSYX_TEX however carries code[0] directly behind the
+// primitive therefore lies on BYTE 7, and CTR_GPU_WriteTagCode (libgpu.h)
+// writes exactly there. DR_PSYX_TEX however carries code[0] directly behind the
 // tag, and its top byte IS byte 7. Code and texture number
 // share one word.
 //
 // That is why the parser does it this way: it reads code[0] & 0xFFFFFF and cuts
-// off the top byte (native_gpu.c:4302) - the code lives there too. Whoever first
+// off the top byte (ProcessPsyXPrims) - the code lives there too. Whoever first
 // calls setcode and then writes code[0] erases it again, the packet drops
 // out of the dispatcher and every quad behind it keeps drawing from VRAM,
 // without anything reporting an error.

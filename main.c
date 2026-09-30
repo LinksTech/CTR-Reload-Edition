@@ -6,10 +6,14 @@
 #include <string.h>
 
 #if defined(_WIN32)
+#include <direct.h>
 #include <io.h>
 #include "platform/native_win32.h"
+// _chdir is what the POSIX name chdir maps to in the MSVC runtime (oldnames).
+#define NATIVE_CHDIR _chdir
 #else
 #include <unistd.h>
+#define NATIVE_CHDIR chdir
 #endif
 
 #include <SDL3/SDL.h>
@@ -68,8 +72,6 @@
 #include "platform/native_gfx_vk.c"
 #include "platform/native_gfx.c"
 #include "platform/native_renderer.c"
-// After native_renderer.c, because the check needs NativeGfx_CreateTexture.
-#include "platform/native_psyxtest.c"
 #include "platform/native_savestate.c"
 #include "platform/native_state.c"
 #include "platform/native_str.c"
@@ -148,7 +150,7 @@ static int NativeArg_IsVersion(const char *arg)
 }
 
 //----------------------------------------------------------------------------------------
-// DEVELOPER SWITCHES ONLY WITH --dev (2026-09-26, table 2026-09-27)
+// DEVELOPER SWITCHES ONLY WITH --dev
 //
 // Two classes of switches. PLAYER switches are the display and graphics
 // settings somebody needs to play (window, fullscreen, resolution, aspect
@@ -165,7 +167,7 @@ static int NativeArg_IsVersion(const char *arg)
 // evaluation itself is spread over seven places (NativeArgs_ReadDisplayFlags,
 // NativeSetup_EnsureData, three loops in main, NativePerf_ConfigureFromArgs,
 // NativeReplayScheduler_*FromArgs), and each of them acts while reading -
-// --log opens the file, --crash-test arms the crash. A check "after parsing"
+// --log fixes the log file, --crash-test arms the crash. A check "after parsing"
 // would therefore be one after the effect.
 //
 // Both classes are in the tables below. Anything that starts with "--" and is
@@ -174,7 +176,8 @@ static int NativeArg_IsVersion(const char *arg)
 // a measuring call that runs through anyway gives a result that is not one.
 // Whoever adds a switch enters it here, otherwise the exe rejects it even with
 // --dev: a switch without a row is an undocumented switch. --dev --help prints
-// s_devSwitches.
+// s_devSwitches; --help prints the player switches from NativeArgs_PrintHelp,
+// which has to be kept in step with s_playerSwitches by hand.
 //
 // VALUES. The value form says whether the reader always takes the next word
 // ("<...>", required value, argv[++argIndex]) or only when it does not start
@@ -217,44 +220,44 @@ static const NativeSwitch s_playerSwitches[] = {
 };
 
 static const NativeSwitch s_devSwitches[] = {
-    {"--deterministic", "", "measuring mode: clock without wall time, every game frame two VBlanks (audio drifts)"},
-    {"--inject-delay", "<seed>", "disturbs the clock: every 8th frame 20..80 ms delay, purely from the seed"},
+    {"--deterministic", "", "measuring mode: VSync emits only the VBlanks the game asks for and never catches up by wall clock, lateness is dropped; audio is rendered per VBlank"},
+    {"--inject-delay", "<seed>", "disturbs the clock: about every 8th frame and boot VSync call is held 20..80 ms, which ones purely from the seed (0 = off)"},
     {"--frame-log", "", "frame log, one line per frame"},
-    {"--shot", "<vblanks>", "snapshot of the canvas at these VBlanks (one or a list 131,133,140)"},
-    {"--shot-name", "<file>", "file name of the snapshots, per snapshot <name>-<vblank>.bmp"},
-    {"--menu-keys", "<sequence>", "scripted keys, e.g. down,cross"},
-    {"--menu-keys-quit", "<vblanks>", "end this many VBlanks after the last key"},
-    {"--menu-keys-every", "<vblanks>", "spacing of two keys of the sequence"},
-    {"--menu-keys-from", "<vblank>", "first key of the sequence at this VBlank"},
-    {"--menu-pads", "<n>", "report this many occupied pad slots"},
+    {"--shot", "<vblanks>", "snapshot of the internal frame at this VBlank, or an ascending list 131,133,140 (up to 128)"},
+    {"--shot-name", "<file>", "file name of the snapshot (default SCREENSHOT.BMP); with a list, <name>-<vblank>.bmp per snapshot"},
+    {"--menu-keys", "<sequence>", "scripted pad steps, e.g. down,cross or l1+r1+down (up to 256; keys up down left right cross circle square triangle start select l1 r1 l2 r2 none)"},
+    {"--menu-keys-quit", "<vblanks>", "end this many VBlanks after the last step (default 120, 0 = do not end)"},
+    {"--menu-keys-every", "<vblanks>", "length of one step of the sequence (default 24)"},
+    {"--menu-keys-from", "<vblank>", "first step of the sequence at this VBlank (default 300)"},
+    {"--menu-pads", "<n>", "the key sequence reports this many connected pads, 1 to 4 (default 1)"},
     {"--vk-validation", "", "Vulkan validation layer on"},
-    {"--dump-vram", "<vblanks>", "VRAM dumps at these VBlanks"},
-    {"--dump-prefix", "<name>", "file prefix of the VRAM dumps"},
+    {"--dump-vram", "<vblanks>", "VRAM dumps <prefix>-<vblank>.tga at these VBlanks (comma list, up to 8)"},
+    {"--dump-prefix", "<name>", "file prefix of the VRAM dumps (default dump)"},
     {"--dump-exit", "", "end after the last VRAM dump"},
-    {"--perf", "", "perf recording per frame"},
+    {"--perf", "", "perf recording per frame into debug/perf/perf-latest"},
     {"--perf-dir", "<folder>", "target folder of the perf recording, switches it on"},
-    {"--autoload-demo", "", "demo race, the bots drive every seat"},
+    {"--autoload-demo", "", "with --autoload-track or --level: demo race, the bots drive every seat (HUD off, no time limit)"},
     {"--autopilot", "", "the player's seat drives as a bot, in a real race with HUD, finish and points"},
     {"--record-preview", "", "with --autoload-track records the track preview (10 s from the driver camera, the AI drives invisibly, 150 frames, game window hidden) and writes tracks/vorschau/<container>.rldprev"},
     {"--weapon-pool-empty", "", "empties the pool for missiles, bombs, shields and warpballs at race start (crash probe for the weapon fix)"},
     {"--unlock-scrapbook", "", "unlocks the Scrapbook for this session; a save made meanwhile keeps it"},
-    {"--focus-pause", "", "pause on minimise/focus loss even with --dev (proof)"},
-    {"--autoload-track", "<file>", "load a track container directly"},
+    {"--focus-pause", "", "pause on minimise/focus loss even with --dev (test of that pause)"},
+    {"--autoload-track", "<file>", "load this track container (file name in tracks/) as soon as the main menu is up"},
     {"--exit-after-frames", "<n>", "end after n frames in the race"},
-    {"--instance-pool", "<n>", "instance pool in a race at n slots (probe for full pools, Beta 0)"},
-    {"--crystal-grab", "<n>", "NITRO-PIT -> CRYSTAL: collects n crystals through their collision path (probe for acceptance)"},
-    {"--ctr-grab", "<n>", "NITRO-PIT -> CTR: collects n letters through their collision path (probe for acceptance, sets no place)"},
-    {"--settings-defaults", "", "built-in defaults, ctr-settings.cfg neither read nor written"},
-    {"--msaa-at", "<V:L,V:L,...>", "switch anti-aliasing to level L at VBlank V"},
-    {"--sample-shading", "<off|textured>", "sample shading of the anti-aliasing for comparison"},
-    {"--level", "<n>", "jump straight into track n at start"},
-    {"--driver", "<n>", "driver for the jump with --level"},
+    {"--instance-pool", "<n>", "instance pool in a race at n slots, only below the retail size (probe for a full pool)"},
+    {"--crystal-grab", "<n>", "NITRO-PIT -> CRYSTAL: collects n crystals through their collision path (test probe)"},
+    {"--ctr-grab", "<n>", "NITRO-PIT -> CTR: collects n letters through their collision path (test probe, sets no place)"},
+    {"--settings-defaults", "", "built-in defaults, ctr-settings.cfg and track-ids.tsv neither read nor written"},
+    {"--msaa-at", "<V:L,V:L,...>", "switch anti-aliasing to level L (1, 2 or 4) at VBlank V, for this run only (up to 32 pairs)"},
+    {"--sample-shading", "<off|textured>", "sample shading of the anti-aliasing for comparison (default textured)"},
+    {"--level", "<n>", "jump straight into level id n as soon as the main menu is up"},
+    {"--driver", "<n>", "driver for the jump with --level or --autoload-track (default 0, Crash)"},
     {"--setup", "", "first-start screen even when data is there"},
-    {"--record", "", "record a replay report"},
+    {"--record", "", "record a replay report under debug/reports/ from boot (the log goes there too)"},
     {"--replay", "<file>", "play a replay"},
-    {"--replay-bypass-header", "", "play a replay without checking the header"},
-    {"--toggle", "", "replay recording: toggle report"},
-    {"--detailed", "", "replay recording: detailed report"},
+    {"--replay-bypass-header", "", "with --replay: play it without checking the header"},
+    {"--toggle", "", "with --record: only arm the report, F9 starts and F10 stops it"},
+    {"--detailed", "", "with --record: rolling checkpoints instead of only the first one"},
     {"--crash-test", "", "deliberate crash before SDL_Init (self-test of the crash report)"},
     {"--slow-boot", "", "whole boot with announcer, logos, copyright, crates and title"},
     {"--legacy-copyright-hold", "", "old hold of the copyright picture (comparison)"},
@@ -271,19 +274,19 @@ static const NativeSwitch s_devSwitches[] = {
     {"--split-audit", "", "check of the split table in every 30th frame"},
     {"--clip-trace", "", "trace of the clip buffers"},
     {"--ui-watch", "", "UI watch"},
-    {"--ui-watch-from", "<vblank>", "start of the UI watch"},
+    {"--ui-watch-from", "<vblank>", "UI watch from this VBlank on (switches the watch on)"},
     {"--ui-elements", "<vblank>", "print the UI elements of the frame at this VBlank"},
-    {"--hole-probe", "<V,X,Y>", "log primitives at pixel X,Y from VBlank V (up to four times)"},
+    {"--hole-probe", "<V,X,Y>", "log primitives covering pixel X,Y at VBlanks V to V+4 (repeat for up to four points)"},
     {"--show-platform-frames", "", "make platform frames visible"},
     {"--texture-filter", "", "bilinear filtering for an A/B run (in game F3)"},
     {"--dither", "<off|packed|always>", "dither method for this run"},
-    {"--lod", "<mask>", "force detail stages"},
+    {"--lod", "<stock|all|tex,track,model,subdiv>", "force these detail stages to their highest level"},
     {"--lod-keep", "", "distance mechanism on (comparison run)"},
-    {"--lod-none", "", "distance mechanism off (comparison run)"},
+    {"--lod-none", "", "distance mechanism off (the default)"},
     {"--no-sky", "", "sky gone (measuring switch)"},
-    {"--fill-rect-as-draw", "", "fill rectangles as draw"},
-    {"--fill-rect-as-clear", "", "fill rectangles as clear"},
-    {"--page-scale", "<n>", "page scaling"},
+    {"--fill-rect-as-draw", "", "fill rectangles as draw (the default)"},
+    {"--fill-rect-as-clear", "", "fill rectangles as clear (the old path)"},
+    {"--page-scale", "<n>", "atlas texels per VRAM texel, 1 to 4"},
     {"--vram-copy-unclamped", "", "VRAM copy without clamp"},
     {"--clip-window-512", "", "clip window 512"},
     {"--size-rule-canvas", "", "PS1 size rule on the canvas"},
@@ -295,7 +298,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--skip-null-tex", "", "do not draw polygons with an empty texture reference"},
     {"--whole-attachment-clears", "", "clear the whole attachment, old path (measuring switch)"},
     {"--ptr-map-unchecked", "", "pointer map without check"},
-    {"--tracks-fixed-memory", "", "fixed memory behind the pack window"},
+    {"--tracks-fixed-memory", "", "a fixed 1 MiB behind the mempack window instead of what the containers need"},
     {"--tracks", "", "no effect, only accepted for old measuring command lines"},
     {"--no-tracks", "", "do not open tracks/"},
     {"--tracks-dir", "<folder>", "containers from this folder instead of tracks/ (reference runs)"},
@@ -306,16 +309,16 @@ static const NativeSwitch s_devSwitches[] = {
     {"--ui-anchor-legacy", "", "old UI anchors"},
     {"--gte-selftest", "", "both GTE paths against each other, then end"},
     {"--gte-alt", "", "alternative GTE arithmetic"},
-    {"--gte-near-div", "", "GTE near division"},
-    {"--near-plane", "[n]", "near plane n (clip threshold 2n)"},
+    {"--gte-near-div", "", "GTE division route that does not saturate (acts only with --gte-alt)"},
+    {"--near-plane", "[n]", "near plane n (clip threshold 2n); without a number or with 0 the stock values"},
     {"--near-detail-off", "", "near detail off"},
     {"--near-cut-off", "", "near cut off"},
-    {"--near-cut-sites", "<mask>", "choose near cut sites"},
+    {"--near-cut-sites", "<mask>", "bit mask of the 13 near cut sites that keep their clip record (default 0x1fff, all)"},
     {"--near-box-drop", "", "drop the near box"},
-    {"--near-box-keep", "", "keep the near box"},
+    {"--near-box-keep", "", "keep the near box (the default)"},
     {"--subpixel", "", "subpixel shadow in the GTE"},
-    {"--save-state-at", "<vblank>", "save a state at this VBlank"},
-    {"--load-state-at", "<vblank>", "load a state at this VBlank"},
+    {"--save-state-at", "<vblank>", "save a quick state at this VBlank"},
+    {"--load-state-at", "<vblank>", "load the quick state at this VBlank"},
 };
 
 // Looks a word up in both tables; NULL if this exe does not know it.
@@ -356,15 +359,21 @@ static void NativeArgs_PrintHelp(void)
 	printf("Player switches:\n");
 	printf("  --windowed [WxH]          window instead of fullscreen, optionally with a fixed size (e.g. 1280x720);\n");
 	printf("                            in game, F11 and Alt+Enter toggle it\n");
-	printf("  --fullscreen              fullscreen (default)\n");
-	printf("  --res-scale <1..%d|native> internal resolution as a multiple of the PS1 resolution; default 4\n", Platform_GetResolutionScaleMax());
-	printf("  --aspect <W:H>            aspect ratio of the canvas, e.g. 4:3, 16:9, 43:18\n");
-	printf("  --msaa <1|2|4>            anti-aliasing for this run (1 = off); otherwise the choice in the debug menu applies\n");
-	printf("  --log <file>              log file of this run\n");
+	printf("  --fullscreen              fullscreen (the default, unless the GRAPHICS page saved windowed)\n");
+	printf("  --res-scale <1..%d|native> internal resolution as a multiple of the PS1 resolution, native = the\n", Platform_GetResolutionScaleMax());
+	printf("                            window's own pixels; default: the saved setting, otherwise 4\n");
+	printf("  --aspect <W:H>            aspect ratio of the canvas, e.g. 4:3, 16:9, 43:18; default: the saved\n");
+	printf("                            setting, otherwise detected from the display\n");
+	printf("  --msaa <1|2|4>            anti-aliasing for this run (1 = off); otherwise the saved setting applies\n");
+	printf("                            (GRAPHICS page, default 4)\n");
+	printf("  --log <file>              log file of this run; default: a new file in logs/, the last 5 are kept\n");
 	printf("  --image <path>            unpack the game data from this disc image without asking\n");
 	printf("  --version, -v             version and build\n");
 	printf("  --help                    this overview\n");
+	printf("  --dev                     unlock the developer switches\n");
 	printf("\n");
+	printf("--windowed, --fullscreen, --res-scale, --aspect and --msaa apply to this run and are not saved.\n");
+	printf("Relative paths (--log, --image) are taken relative to the game folder, not the current directory.\n");
 	printf("All other switches (measuring, diagnostics, script control) need --dev, otherwise\n");
 	printf("the start aborts with exit code %d. --dev --help shows them.\n", NATIVE_EXIT_DEV_REQUIRED);
 }
@@ -385,6 +394,8 @@ static void NativeArgs_PrintDevHelp(void)
 	}
 
 	printf("<value> always takes the next word, [value] only if it does not start with -.\n");
+	printf("The player switches (--help) work with --dev as well. Relative paths are taken relative to the\n");
+	printf("game folder, not the current directory.\n");
 }
 
 // 0 = go on. Otherwise the exit code with which main ends at once; the message
@@ -483,9 +494,10 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 // The flags that have to be read BEFORE anything exists, and why they are not
 // down in the big loop with the rest.
 //
-// Every other flag acts on something that is already there. These three decide
-// what comes into being: where the log is written, what shape the picture is
-// driven in, and whether the window comes up fullscreen. Read after the fact
+// Every other flag acts on something that is already there. These decide what
+// comes into being: where the log is written, what shape the picture is driven
+// in, whether the window comes up fullscreen (or hidden), and what the Vulkan
+// instance and the main target are created with. Read after the fact
 // they would be second answers to questions already answered - and --log was
 // exactly that. It sat in the loop below, which runs after Platform_Init has
 // already opened the default log file, and Platform_LogSetPath refuses a path
@@ -495,8 +507,8 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 //
 // --aspect is deliberately outside the CTR_INTERNAL block the other flags live
 // in. It is a setting somebody drives with, not a measuring tool.
-// Beta 0: --windowed/--fullscreen apply to the session and beat
-// "video fullscreen" from ctr-settings.cfg (Platform_SettingsPreloadDisplay).
+// --windowed/--fullscreen apply to the session and beat "video fullscreen"
+// from ctr-settings.cfg (Platform_SettingsPreloadDisplay).
 int g_cfg_fullscreenFromFlag = 0;
 
 static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, int *outHeight)
@@ -522,21 +534,21 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 		}
 		else if (strcmp(argv[argIndex], "--vk-validation") == 0)
 		{
-			// UP HERE, NOT ONLY IN THE BIG LOOP (2026-09-22).
+			// UP HERE, NOT ONLY IN THE BIG LOOP.
 			// The instance comes into being in Platform_Init (NativeVk_CreateInstance),
-			// the big loop runs afterwards - set there, the switch always came
-			// too late: every log since 2026-09-16 says "validation layer off",
-			// even with --vk-validation. The late place stays and sets
-			// the same value once more.
+			// the big loop runs afterwards - set only there, the switch came
+			// too late and every log said "validation layer off", even with
+			// --vk-validation. The late place stays and sets the same value
+			// once more.
 			extern int g_cfg_vkValidation;
 
 			g_cfg_vkValidation = 1;
 		}
 		else if ((strcmp(argv[argIndex], "--msaa") == 0) && ((argIndex + 1) < argc))
 		{
-			// ANTI-ALIASING (2026-09-22): samples of the main target, 1 2 4 -
-			// off, 2x, 4x. Beats the saved level for this run and
-			// is never written back; a choice in the debug menu cancels it
+			// ANTI-ALIASING: samples of the main target, 1 2 4 - off, 2x, 4x.
+			// Beats the saved level for this run and is never written back; a
+			// choice in the menu (GRAPHICS page or debug menu) cancels it
 			// (native_renderer.c, NativeRenderer_GetMsaaRequested). Up
 			// here, because the main target comes into being in Platform_Init and
 			// the level is meant to be fixed there already.
@@ -678,9 +690,7 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 // be relied on at this moment.
 //
 // The text is English. The game is English, the disc is English, and the person
-// reading this screen is somebody who has just downloaded the build - the
-// project's German is in the commits and the reports, not on the screen a
-// stranger sees.
+// reading this screen is somebody who has just downloaded the build.
 
 #define NATIVE_SETUP_MARKER_PATH  "ctr-data.cfg"
 #define NATIVE_SETUP_MARKER_MAGIC "# CTR Reload - what was unpacked from the disc image"
@@ -721,7 +731,7 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 #define NATIVE_SETUP_MESSAGE_MAX  512
 #define NATIVE_SETUP_PATH_MAX     1024
 
-// THE ONLY DISC BETA 1 ACCEPTS, AND THE TWO IT NAMES BY NAME.
+// THE ONLY DISC THIS BUILD ACCEPTS, AND THE TWO IT NAMES BY NAME.
 //
 // Region is not a preference here. The overlays, the string table offsets and
 // the memory card names in this tree are all NTSC-U; a PAL disc has the same
@@ -781,8 +791,8 @@ struct NativeSetupState
 
 	// Opened only for this screen and closed again before
 	// returning. The game opens its pads itself later, and two
-	// open handles on the same device are exactly the bug that on 2026-08-28
-	// gave one pad two slots.
+	// open handles on the same device are exactly the bug that once gave one
+	// pad two slots (native_input.c, NativeInput_SlotForInstance).
 	SDL_Gamepad *pads[4];
 	int padCount;
 
@@ -923,19 +933,18 @@ static const struct NativeSetupColor s_setupErrBack = {58, 24, 20};     // backg
 
 // THE BUILD ON THE SCREEN.
 //
-// A version number already exists: CTR_NATIVE_VERSION comes from
-// CMakeLists.txt line 5 and is in the log at start. It was never on
-// the screen - and the screen is the only thing a second
-// developer is sure to get to see.
+// CTR_NATIVE_VERSION comes from CMakeLists.txt and is in the log at start;
+// the screen is the only thing somebody else is sure to get to see, so the
+// build is named here too.
 //
-// TWO ITEMS, BECAUSE THEY ANSWER TWO QUESTIONS: the warning says how
-// reliable this build is; the version number says WHICH build it is.
-// The number is not repeated here but taken from the build.
+// TWO ITEMS, BECAUSE THEY ANSWER TWO QUESTIONS: the status line under the
+// subtitle says how reliable this build is; the build id in the footer
+// (CTR_NATIVE_BUILD_ID, generated per build) says WHICH build it is.
 //
-// DECIDED (2026-09-30): "CTR Reload Beta 0" plus commit id,
-// the same everywhere - start screen, --version, Alpha-Maker, log. CTR_NATIVE_VERSION
-// is "Beta 0" (CMakeLists.txt), the id CTR_NATIVE_BUILD_ID is down
-// in the footer. The upstream number 0.1.0-beta.7.1 is gone.
+// The same name everywhere - start screen, --version, Alpha-Maker, log:
+// "CTR Reload <version>" plus the build id. CTR_RELOAD_VERSION is the
+// upper-case form of CTR_NATIVE_VERSION for the debug font and is NOT taken
+// from the build - it has to be changed together with CMakeLists.txt.
 #define CTR_RELOAD_VERSION "BETA 0"
 
 // One line, horizontally centred, at the largest integer scale up to
@@ -1173,8 +1182,8 @@ static void NativeSetup_Draw(void)
 			(void)NativeSetup_DrawCentered(footer - 30.0f, NATIVE_SETUP_SCALE_TEXT, s_setupSub, "ESC / (B) TO QUIT");
 		}
 
-		// Which build this is, small and at the very bottom. From CTR_NATIVE_VERSION, that is
-		// from CMakeLists.txt - the number is not written here a second time.
+		// Which build this is, small and at the bottom. CTR_NATIVE_BUILD_ID is
+		// generated per build (cmake/CtrBuildId.cmake) - not written here by hand.
 		fy = NativeSetup_DrawCentered(fy, NATIVE_SETUP_SCALE_FINE, s_setupDim, "BUILD " CTR_NATIVE_BUILD_ID) +
 		     (float)NATIVE_SETUP_FOOTER_LEAD;
 
@@ -1430,8 +1439,8 @@ static void NativeSetup_Pick(const char *path)
 // Pads only for this screen. SDL delivers button events exclusively
 // for opened gamepads, so they have to be opened here - and closed again
 // before returning. The game opens its own in Platform_InputInit, and two
-// handles on the same device are the bug that on 2026-08-28 gave one pad two
-// slots.
+// handles on the same device are the bug that once gave one pad two slots
+// (native_input.c, NativeInput_SlotForInstance).
 static void NativeSetup_OpenPads(void)
 {
 	int count = 0;
@@ -1661,17 +1670,17 @@ static int NativeSetup_RunWindow(void)
 //
 // A decision, not a detail: what track authors get used to cannot be changed
 // later without breaking every package already in circulation. The short
-// version of the reasoning is below, because the next person to want a fifth
+// version of the reasoning is below, because the next person to want a second
 // folder will read this.
 //
 // ONE FOLDER, AND THE COUNT IS THE POINT.
 //
 //   tracks/       every .rldtrack, flat, next to track-ids.tsv and cups.txt
 //
-// characters/ for .rldchar stood here until format 4.1 (2026-09-28). .rldchar
-// was never specified and is not planned, and a folder whose README promises
-// "Beta 2 reads them" promises something nobody is building - so it is no longer
-// created. An existing one is left alone.
+// characters/ for .rldchar stood here until container format 4.1. .rldchar was
+// never specified, and a folder whose README promises a format nobody is
+// building promises too much - so it is no longer created. An existing one is
+// left alone.
 //
 // NOT one folder per game mode. "Time Trial" and "Adventure" are modes a track
 // is PLAYED in, not kinds of file: the same container is a race, a time trial
@@ -1814,7 +1823,7 @@ static int NativeSetup_DataPresent(void)
 // to test it more than once.
 //
 // --image <path> unpacks without asking. It is what a scripted run needs, and
-// what the .bat files in this tree can use.
+// the route the setup window names when it cannot open.
 static int NativeSetup_EnsureData(int argc, char *argv[])
 {
 	const char *imageArg = NULL;
@@ -1944,8 +1953,6 @@ int main(int argc, char *argv[])
 			printf("[CTR Near] near plane %d (clip threshold %d)\n", plane, plane * 2);
 		}
 
-		// The count of near losses. Changes NOTHING in the picture - it may
-		// therefore run along in the comparison run as well.
 		// ONE OF THE TWO EFFECTS OF THE NEAR PLANE, ALONE.
 		//
 		// A probe with near threshold 1 made the picture fault in the lower
@@ -1989,13 +1996,12 @@ int main(int argc, char *argv[])
 			printf("[CTR Near] cut site mask 0x%04x (--near-cut-sites)\n", g_cfg_nearCutMask);
 		}
 
-		// The box no longer drops, it only slows down: a face that
-		// it rejects goes into the clip record anyway with this switch, and
-		// the writer gets the space test for it instead. Default off, and off is
-		// bit-identical - without the switch nothing changes on the route.
-		// Default on since 2026-09-05; --near-box-keep stays accepted, because
-		// the measuring runs have it in their command line. --near-box-drop is the
-		// way back for an A/B: the box drops again as in stock.
+		// Box keep: the clip record box no longer drops, it only slows down - a
+		// face that it rejects goes into the clip record anyway, and the writer
+		// gets the space test for it instead. This is the default (g_cfg_nearBoxKeep
+		// in game/native_view.c); --near-box-keep stays accepted because older
+		// measuring command lines carry it. --near-box-drop is the way back for an
+		// A/B: the box drops again as in stock.
 		if (strcmp(argv[argIndex], "--near-box-drop") == 0)
 		{
 			g_cfg_nearBoxKeep = 0;
@@ -2008,6 +2014,8 @@ int main(int argc, char *argv[])
 			printf("[CTR Near] box keep on (--near-box-keep, the default): a face the clip record box rejects is clipped anyway, space permitting\n");
 		}
 
+		// The count of near losses. Changes NOTHING in the picture - it may
+		// therefore run along in the comparison run as well.
 		if (strcmp(argv[argIndex], "--near-report") == 0)
 		{
 			g_cfg_nearReport = 1;
@@ -2031,11 +2039,6 @@ int main(int argc, char *argv[])
 			NativeGteFlags_Arm(everyFrames);
 		}
 
-		// Counts how many vertices could carry a fractional part from the
-		// projection AT ALL, and how many the drawer sends
-		// in total. Up here for the same reason as --gte-alt: a
-		// count that only starts after start-up has not seen the
-		// intro. --subpixel-report [every N frames].
 		// The fractional digits of the projection travel on to the vertex. Up
 		// here for the same reason as --gte-alt: the shadow stack in the GTE
 		// has to run along from the FIRST operation, not from the first one after
@@ -2046,6 +2049,11 @@ int main(int argc, char *argv[])
 			printf("[CTR Sub] subpixel on (--subpixel)\n");
 		}
 
+		// Counts how many vertices could carry a fractional part from the
+		// projection AT ALL, and how many the drawer sends
+		// in total. Up here for the same reason as --gte-alt: a
+		// count that only starts after start-up has not seen the
+		// intro. --subpixel-report [every N frames].
 		if (strcmp(argv[argIndex], "--subpixel-report") == 0)
 		{
 			int everyFrames = 0;
@@ -2078,7 +2086,7 @@ int main(int argc, char *argv[])
 	printf("[CTR Native] Assets: %s\n", NativeAssets_GetAssetDir());
 	fflush(stdout);
 
-	if (chdir(NativeAssets_GetBaseDir()) != 0)
+	if (NATIVE_CHDIR(NativeAssets_GetBaseDir()) != 0)
 	{
 		fprintf(stderr, "[CTR Native] Failed to enter base directory: %s\n", NativeAssets_GetBaseDir());
 		return NativeConsole_Return(1);
@@ -2154,8 +2162,8 @@ int main(int argc, char *argv[])
 
 		Platform_Init("Crash Team Racing", windowWidth, windowHeight, fullscreen);
 
-		// Beta 0: the version in the log too - so far it was only on stdout, and
-		// a tester sends the log, not the console.
+		// The version in the log too - on stdout alone it would be lost, and a
+		// tester sends the log, not the console.
 		Platform_Log("[CTR Native] Version: CTR Reload %s (%s)\n", CTR_NATIVE_VERSION, CTR_NATIVE_BUILD_ID);
 	}
 
@@ -2176,7 +2184,7 @@ int main(int argc, char *argv[])
 	// And the clip buffer of the near plane: peak per frame, records without
 	// space, whole frames dropped. Unconditionally, for the same reason as
 	// the split report - a hole in the road that is only counted under --near-report
-	// is not counted (2026-09-15).
+	// is not counted.
 	{
 		void CTR_Clip_PrintReport(void);
 		void CTR_Tires_PrintReport(void);
@@ -2185,7 +2193,7 @@ int main(int argc, char *argv[])
 
 		// And the wheels of distant karts that NO LOD forces behind the header
 		// threshold: how many records, how many of them left out as a line,
-		// and whether a stock wheel would ever have triggered the same test (2026-09-15).
+		// and whether a stock wheel would ever have triggered the same test.
 		Platform_AtExitReport(CTR_Tires_PrintReport);
 	}
 
@@ -2279,7 +2287,7 @@ int main(int argc, char *argv[])
 			}
 			else if (strcmp(argv[argIndex], "--ui-floor-off") == 0)
 			{
-				// No clamp. Margins and gaps come out at whatever the mapping
+				// No clamp. Margins and gaps come out at whatever the mapping's
 				// own arithmetic makes of them.
 				extern int g_cfg_uiFloorOff;
 
@@ -2332,7 +2340,7 @@ int main(int argc, char *argv[])
 			{
 				// Print one frame worth of UI elements at that VBlank: authored
 				// box, anchor, declaration, floor shift, mapped box. The numbers
-				// the acceptance is stated in.
+				// UI placement is checked against.
 				extern int g_cfg_uiElementsAt;
 
 				g_cfg_uiElementsAt = atoi(argv[++argIndex]);
@@ -2350,15 +2358,18 @@ int main(int argc, char *argv[])
 			}
 			else if ((strcmp(argv[argIndex], "--shot") == 0) && ((argIndex + 1) < argc))
 			{
-				// A picture of the WINDOW at that VBlank. The VRAM dumps cannot answer a
-				// question about the last step - VRAM is 512x216 and the question is
-				// what happens between that and the window.
+				// A picture of the frame at that VBlank - the main render target at
+				// its full internal size, because the window (swapchain) cannot be
+				// read back (native_platform.c, Platform_TakeScreenshot). The VRAM
+				// dumps cannot answer a question about the upscaled picture - the
+				// displayed VRAM area is 512x216 at factor one.
 				extern int g_cfg_shotAt;
 				extern int g_cfg_shotList[128];
 				extern int g_cfg_shotCount;
 
 				// Also a list "131,133,140" - one run, many snapshots, each
-				// as <name>-<vblank>.bmp. A single value behaves as before.
+				// as <name>-<vblank>.bmp. A single value writes <name> as given.
+				// The list is taken in the order given, so it has to ascend.
 				{
 					const char *spec = argv[++argIndex];
 					char buffer[512];
@@ -2391,7 +2402,7 @@ int main(int argc, char *argv[])
 				extern int g_cfg_clipWindow512;
 
 				g_cfg_clipWindow512 = 1;
-				printf("[CTR Native] --clip-window-512: clip record window 0x100 wide regardless of the canvas (pre-Z)\n");
+				printf("[CTR Native] --clip-window-512: clip record window 0x100 wide regardless of the canvas (old path)\n");
 			}
 			else if (strcmp(argv[argIndex], "--clip-trace") == 0)
 			{
@@ -2411,7 +2422,7 @@ int main(int argc, char *argv[])
 				extern int g_cfg_sizeRuleCanvas;
 
 				g_cfg_sizeRuleCanvas = 1;
-				printf("[CTR Native] --size-rule-canvas: PS1 size rule in canvas pixels (pre-Y.1)\n");
+				printf("[CTR Native] --size-rule-canvas: PS1 size rule in canvas pixels (old path)\n");
 			}
 			else if ((strcmp(argv[argIndex], "--shot-name") == 0) && ((argIndex + 1) < argc))
 			{
@@ -2462,12 +2473,10 @@ int main(int argc, char *argv[])
 			{
 				// The Khronos validation layer including synchronization validation,
 				// if the SDK has it (native_gfx_vk.c, NativeVk_CreateInstance).
-				// Until 2026-09-16 it was ON as soon as it was installed - on
-				// the development machine that meant in EVERY run, test drives and all
-				// perf measurements included (every log of that time carries the line
-				// "validation layer enabled, with synchronization validation").
-				// It checks every command and every submit; that is a tool for
-				// hunting renderer bugs, not a game state. Default off.
+				// It used to be ON as soon as it was installed - on a development
+				// machine that meant in EVERY run, test drives and perf measurements
+				// included. It checks every command and every submit; that is a tool
+				// for hunting renderer bugs, not a game state. Default off.
 				extern int g_cfg_vkValidation;
 
 				g_cfg_vkValidation = 1;
@@ -2477,8 +2486,8 @@ int main(int argc, char *argv[])
 			{
 				// The box check (native_gpu.c, NativeGpu_SplitAuditBatch):
 				// in every 30th frame read all vertices of every batch once more and
-				// compare up to 512 boxes per split. Ran without a switch until 2026-09-17;
-				// its question has been answered since 2026-09-13.
+				// compare up to 512 boxes per split. It used to run without a switch;
+				// its question has been answered, so it is opt-in now.
 				extern int g_cfg_splitAudit;
 
 				g_cfg_splitAudit = 1;
@@ -2528,8 +2537,9 @@ int main(int argc, char *argv[])
 			else if ((strcmp(argv[argIndex], "--lod") == 0) && ((argIndex + 1) < argc))
 			{
 				// Which of the four detail stages are forced to their highest
-				// level. "stock" is the game as it shipped, "alle" is all four,
-				// and a comma list names them: tex,track,model,subdiv.
+				// level. "stock" is the game as it shipped, "all" (also accepted:
+				// "alle") is all four, and a comma list names them:
+				// tex,track,model,subdiv.
 				//
 				// A name that is not a stage aborts rather than being ignored.
 				// An unreadable switch that runs anyway is a measuring run that
@@ -2695,9 +2705,9 @@ int main(int argc, char *argv[])
 				const char *requested = argv[++argIndex];
 				void Platform_NoteResolutionScaleFlag(void);
 
-				// Beta 0: that it is not written back was not true until
-				// here - every save from a menu wrote the number. Now
-				// the file keeps the value from before (native_platform.c).
+				// Not written back: the file keeps the value from before the flag
+				// (native_platform.c, Platform_NoteResolutionScaleFlag), even when a
+				// menu saves the other settings.
 				Platform_NoteResolutionScaleFlag();
 
 				if (strcmp(requested, "native") == 0)
@@ -2727,7 +2737,7 @@ int main(int argc, char *argv[])
 			}
 			else if (strcmp(argv[argIndex], "--deterministic") == 0)
 			{
-				// MEASURING MODE (2026-09-26): the game flow depends only on the number
+				// MEASURING MODE: the game flow depends only on the number
 				// of frames, not on their duration. VSync does not catch up VBlanks that
 				// are due by wall clock, from the first call at boot on
 				// (native_platform.c, g_cfg_deterministic). Audio renders as in a
@@ -2776,7 +2786,8 @@ int main(int argc, char *argv[])
 			else if (strcmp(argv[argIndex], "--tracks-fixed-memory") == 0)
 			{
 				// The old route: a fixed megabyte behind the window, instead of the
-				// number that is in the containers. Must come BEFORE --tracks.
+				// number that is in the containers. Read by the tracks/ scan after
+				// this loop.
 				extern int g_cfg_tracksFixedMemory;
 
 				g_cfg_tracksFixedMemory = 1;
@@ -2814,7 +2825,7 @@ int main(int argc, char *argv[])
 				{
 					const char *name;
 					u16 bit;
-				} tasten[] = {
+				} keyTable[] = {
 				    {"up", 0x0010},   {"down", 0x0040},  {"left", 0x0080},     {"right", 0x0020}, {"cross", 0x4000},
 				    {"circle", 0x2000}, {"square", 0x8000}, {"triangle", 0x1000}, {"start", 0x0008}, {"select", 0x0001},
 				    {"l1", 0x0400},   {"r1", 0x0800},    {"l2", 0x0100},       {"r2", 0x0200},    {"none", 0x0000},
@@ -2824,17 +2835,17 @@ int main(int argc, char *argv[])
 				// 256 times 9 characters is 2304. At 1024 a long sequence ended in
 				// a cut-off name, and the run aborted with "is not a
 				// key" instead of running shorter.
-				char liste[4096];
-				char *teil;
-				int schlecht = 0;
+				char keyList[4096];
+				char *stepText;
+				int badKey = 0;
 
-				snprintf(liste, sizeof(liste), "%s", argv[++argIndex]);
+				snprintf(keyList, sizeof(keyList), "%s", argv[++argIndex]);
 				g_cfg_menuKeysCount = 0;
 
-				for (teil = strtok(liste, ","); teil != NULL; teil = strtok(NULL, ","))
+				for (stepText = strtok(keyList, ","); stepText != NULL; stepText = strtok(NULL, ","))
 				{
 					size_t i;
-					int gefunden = 0;
+					int keyFound = 0;
 
 					if (g_cfg_menuKeysCount >= 256)
 					{
@@ -2845,8 +2856,8 @@ int main(int argc, char *argv[])
 					// Several keys at once with "+", e.g. "l1+r1+down" for the
 					// retail cheat codes (L1 and R1 held, MM_CheatCodes.c:134).
 					{
-						u16 gedrueckt = 0;
-						char *rest = teil;
+						u16 pressedBits = 0;
+						char *rest = stepText;
 
 						while (rest != NULL)
 						{
@@ -2857,33 +2868,33 @@ int main(int argc, char *argv[])
 								*plus = 0;
 							}
 
-							gefunden = 0;
+							keyFound = 0;
 
-							for (i = 0; i < (sizeof(tasten) / sizeof(tasten[0])); i++)
+							for (i = 0; i < (sizeof(keyTable) / sizeof(keyTable[0])); i++)
 							{
-								if (strcmp(rest, tasten[i].name) == 0)
+								if (strcmp(rest, keyTable[i].name) == 0)
 								{
-									gedrueckt |= tasten[i].bit;
-									gefunden = 1;
+									pressedBits |= keyTable[i].bit;
+									keyFound = 1;
 									break;
 								}
 							}
 
-							if (!gefunden)
+							if (!keyFound)
 							{
 								printf("[CTR Native] --menu-keys: '%s' is not a key\n", rest);
-								schlecht = 1;
+								badKey = 1;
 							}
 
 							rest = (plus != NULL) ? (plus + 1) : NULL;
 						}
 
 						// Active low: a pressed bit is a ZERO.
-						g_cfg_menuKeys[g_cfg_menuKeysCount++] = (u16)(0xffff & ~gedrueckt);
+						g_cfg_menuKeys[g_cfg_menuKeysCount++] = (u16)(0xffff & ~pressedBits);
 					}
 				}
 
-				if (schlecht)
+				if (badKey)
 				{
 					printf("[CTR Native] --menu-keys knows: up down left right cross circle square triangle start select l1 r1 l2 r2 none, together with +\n");
 					return 1;
@@ -2907,11 +2918,10 @@ int main(int argc, char *argv[])
 			{
 				// How many VBlanks one step of the sequence lasts. Default 24.
 				//
-				// Needed since 2026-09-19: measuring a pause of 25 seconds
-				// means waiting 1500 VBlanks between two Start presses, and
-				// with 24 per step that would be 62 steps "none" out of
-				// at most 64. The waiting time belongs in the step length, not
-				// in the number of steps.
+				// Measuring a pause of 25 seconds means waiting 1500 VBlanks between
+				// two Start presses, and with 24 per step that would be 62 steps
+				// "none". The waiting time belongs in the step length, not in the
+				// number of steps.
 				extern int g_cfg_menuKeysEvery;
 
 				g_cfg_menuKeysEvery = atoi(argv[++argIndex]);
@@ -3035,7 +3045,7 @@ int main(int argc, char *argv[])
 			}
 			else if (strcmp(argv[argIndex], "--autopilot") == 0)
 			{
-				// Custom Cup (2026-09-28): a cup run without a hand.
+				// Custom Cup: a cup run without a hand.
 				// Unlike --autoload-demo NOT a demo mode - that switches off HUD and
 				// score. Here only the player's seat becomes a bot at race start,
 				// as retail does after the finish (PlayLevel.c,
@@ -3049,23 +3059,23 @@ int main(int argc, char *argv[])
 			}
 			else if (strcmp(argv[argIndex], "--record-preview") == 0)
 			{
-				// Track preview (2026-09-30; rebuilt the night of
-				// 2026-09-29): the AI drives the invisible player seat alone, without
+				// Track preview: the AI drives the invisible player seat alone, without
 				// opponents, filmed from the driver camera; without a driving path the
 				// path camera drives from the respawn points. platform/native_preview.c
 				// records every second frame and ends the game. Read in
 				// game/native_flyin.c, which also switches on --autopilot for it. Without
 				// sound and without a visible window: the recording runs alongside
-				// work (Alpha-Maker, by itself after "Build container"). The
-				// window is already hidden by NativeArgs_ReadDisplayFlags, because it comes into being before
-				// this loop.
+				// other work (the Alpha-Maker starts it by itself after "Build
+				// container"). The window is already hidden by
+				// NativeArgs_ReadDisplayFlags, because it comes into being before this
+				// loop.
 				g_cfg_recordPreview = 1;
 				SDL_SetHint(SDL_HINT_AUDIO_DRIVER, "dummy");
 				printf("[CTR Native] record-preview: the AI drives the track with an invisible kart, the preview is written, then the game ends\n");
 			}
 			else if (strcmp(argv[argIndex], "--weapon-pool-empty") == 0)
 			{
-				// Weapon fix from upstream (bf2ed389c, 2026-09-30): missiles, bombs,
+				// Weapon fix from upstream bf2ed389c: missiles, bombs,
 				// shields and warpballs come from the medium stack pool (32 in
 				// a race, MainInit.c). Empty at race start, every one of these
 				// births fails - the route the fix protects. Read in
@@ -3077,7 +3087,7 @@ int main(int argc, char *argv[])
 			}
 			else if (strcmp(argv[argIndex], "--unlock-scrapbook") == 0)
 			{
-				// Menu rework (2026-09-29): SCRAPBOOK only appears in the
+				// SCRAPBOOK only appears in the
 				// OPTIONS box once it is unlocked - for testing without a
 				// save. The bit is set in the game progress, in every
 				// menu frame (game/native_menuscreen.c), because loading the memory card rewrites the
@@ -3092,8 +3102,8 @@ int main(int argc, char *argv[])
 			{
 				// The pause on minimise or focus loss is off with --dev, so that
 				// no window event changes a measuring or replay run
-				// (native_platform.c, Platform_WishFocusPause). This switch
-				// switches it on anyway - for the proof that it works.
+				// (native_platform.c, Platform_TakeFocusPauseWish). This switch
+				// switches it on anyway - to test that it works.
 				extern int g_cfg_focusPause;
 
 				g_cfg_focusPause = 1;
@@ -3103,7 +3113,8 @@ int main(int argc, char *argv[])
 			{
 				// MEASUREMENT: "V,X,Y" - at VBlank V (to V+4) log every primitive
 				// whose box covers the pixel (X,Y) in
-				// PSX coordinates. Up to four points, repeat the switch.
+				// PSX coordinates. Up to four points, repeat the switch; a value
+				// that is not three numbers is skipped without a message.
 				extern int g_cfg_holeProbeCount;
 				extern int g_cfg_holeProbe[4][3];
 
@@ -3162,11 +3173,11 @@ int main(int argc, char *argv[])
 				extern int g_cfg_semiTwoPass;
 
 				g_cfg_semiTwoPass = 1;
-				printf("[CTR Native] textured semi-transparency: two passes per primitive (the pre-Q, pixel-identical form)\n");
+				printf("[CTR Native] textured semi-transparency: two passes per primitive (the older, pixel-identical form)\n");
 			}
 			else if ((strcmp(argv[argIndex], "--ctr-grab") == 0) && ((argIndex + 1) < argc))
 			{
-				// NITRO-PIT -> CTR (2026-09-29): like --crystal-grab for C, T, R through
+				// NITRO-PIT -> CTR: like --crystal-grab for C, T, R through
 				// RB_CtrLetter_LInC. The place is driven by the race (MM_NativeCtr.c).
 				extern int g_cfg_ctrGrab;
 
@@ -3175,7 +3186,7 @@ int main(int argc, char *argv[])
 			}
 			else if ((strcmp(argv[argIndex], "--crystal-grab") == 0) && ((argIndex + 1) < argc))
 			{
-				// NITRO-PIT -> CRYSTAL (2026-09-29): without driving paths no
+				// NITRO-PIT -> CRYSTAL: without driving paths no
 				// autopilot drives. The probe takes n crystals through RB_Crystal_LInC,
 				// counting and the end screen stay game code (MM_NativeCrystal.c).
 				extern int g_cfg_crystalGrab;
@@ -3185,9 +3196,9 @@ int main(int argc, char *argv[])
 			}
 			else if ((strcmp(argv[argIndex], "--instance-pool") == 0) && ((argIndex + 1) < argc))
 			{
-				// Beta 0 (2026-09-30): the instance pool in a race (128,
-				// MainInit_JitPoolsNew) at n slots - that way a full
-				// pool can be triggered on purpose while loading and in a race. Only with --dev.
+				// The instance pool in a race (128, MainInit_JitPoolsNew) at n
+				// slots, only ever smaller - that way a full pool can be triggered
+				// on purpose while loading and in a race.
 				extern int g_cfg_instancePool;
 
 				g_cfg_instancePool = atoi(argv[++argIndex]);
@@ -3241,7 +3252,7 @@ int main(int argc, char *argv[])
 	}
 #endif
 
-	// THE FOLDER IS READ ON EVERY START.
+	// THE FOLDER IS READ ON EVERY START (unless --no-tracks).
 	//
 	// This used to hang on --tracks. That worked as long as the containers could only be reached
 	// through the debug menu - whoever found their way there had set the
@@ -3262,8 +3273,8 @@ int main(int argc, char *argv[])
 			extern int g_cfg_tracksFixedMemory;
 			u32 CTR_ClipStockSurchargeBytes(void);
 			const int found = NativeTrack_Scan();
-			// The containers plus the factor of the clip buffers that every level has got
-			// since 2026-09-16 (CTR_ClipBufferBytes in game/native_view.c) - both
+			// The containers plus the factor of the clip buffers that every level
+			// gets (CTR_ClipBufferBytes in game/native_view.c) - both
 			// lie behind the window, both drop out with --tracks-fixed-memory.
 			const u32 needed = g_cfg_tracksFixedMemory ? 0x100000u : (NativeTrack_MempackExtraNeeded() + CTR_ClipStockSurchargeBytes());
 

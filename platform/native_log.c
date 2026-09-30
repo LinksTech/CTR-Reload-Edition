@@ -27,9 +27,9 @@ internal void Platform_LogWrite(FILE *consoleStream, const char *text)
 	FILE *stream = (consoleStream != NULL) ? consoleStream : stdout;
 
 #ifdef _WIN32
-	// Only when somebody is listening (2026-09-17). OutputDebugStringA without a debugger
-	// is a system call per line that reaches nobody; a test run on
-	// 2026-09-15 carried 4,875 lines "submitted ... mid-frame" - one per race frame.
+	// Only when somebody is listening. OutputDebugStringA without a debugger
+	// is a system call per line that reaches nobody; one measured test run
+	// carried 4,875 lines "submitted ... mid-frame" - one per race frame.
 	// IsDebuggerPresent reads a flag in the process block.
 	if (IsDebuggerPresent())
 	{
@@ -89,10 +89,10 @@ const char *Platform_LogGetPath(void)
 	return s_logPath;
 }
 
-// Beta 0 (2026-09-30): the standard log is no longer overwritten at every
-// start. Every start writes logs/<name> YYYY-MM-DD HH-MM-SS.log,
-// the last NATIVE_LOG_KEEP remain. An explicit path (--log,
-// --record) stays exactly as it is given - measuring runs depend on it.
+// The standard log is not overwritten at every start. Every start writes
+// logs/<name> YYYY-MM-DD HH-MM-SS.log, the last NATIVE_LOG_KEEP remain. An
+// explicit path (--log, --record) stays exactly as it is given - measuring
+// runs depend on it.
 #define NATIVE_LOG_DIR  "logs"
 #define NATIVE_LOG_KEEP 5
 

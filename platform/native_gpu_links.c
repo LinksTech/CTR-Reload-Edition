@@ -1,11 +1,10 @@
 #include <platform/native_gpu_links.h>
 
-// The two give-up points below said their reason to stderr and then died with
-// abort(). NOTHING of that was in the log - neither the reason nor a stack, because
-// abort() is not an exception and goes past the top-level filter.
-//
-// Measured on 2026-08-28: a container track loads cleanly, the race
-// dies at VBlank 382, and the only trace was the line "abort()".
+// The two give-up points below write their reason and a stack to the log
+// before abort(). abort() is not an exception and goes past the top-level
+// filter, so without that nothing would be in the log - a container track
+// that loads cleanly and then dies in the race would leave only the line
+// "abort()" as its trace.
 void Platform_Log(const char *format, ...);
 void Platform_CrashLogStack(const char *why);
 
@@ -34,10 +33,10 @@ global_variable uint32_t s_nativeGpuLinkNextToken = NATIVE_GPU_LINK_FIRST_DYNAMI
 // in the common case. Pure hint - falls back to the full scan, so behaviour is
 // unchanged. Index (not pointer) so it stays valid if the range array is reset.
 global_variable int s_lastHostRangeHit = 0;
-// The same for the token direction (2026-09-17): nextPrim asks per OT node
+// The same for the token direction: nextPrim asks per OT node
 // (1,030 per frame with one player) through NativeGpuLinks_ToHostPointer for the
-// range of a token, and that ran linearly over all ranges, while
-// the host direction already knew the hit from last time.
+// range of a token, and without the cache that runs linearly over all
+// ranges.
 global_variable int s_lastTokenRangeHit = 0;
 
 static int NativeGpuLinks_AlignTokenSize(size_t size, uint32_t *tokenSizeOut)
