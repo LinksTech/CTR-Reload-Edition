@@ -11,7 +11,7 @@ Rebuilt line by line is what the tree does:
   Rld_AbrResolveGroups   quadblock -> IconGroup4, across AnimTex
   Rld_AbrVerdict         TextureLayout -> tpage, CLUT, UV rectangle
 
-Usage:  python ladeweg.py <file.rldtrack> [...]
+Usage:  python container_load_path.py <file.rldtrack> [...]
 """
 
 import hashlib

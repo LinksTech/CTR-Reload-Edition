@@ -1349,10 +1349,10 @@ void DebugMenu_Frame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 	// moment is the same as for --exit-after-frames: main menu off, no
 	// load pending.
 	{
-		local_persist int warImRennen = 0;
-		const int imRennen = ((gGT->gameMode1 & MAIN_MENU) == 0) && (sdata->load_inProgress == 0);
+		local_persist int wasInRace = 0;
+		const int inRace = ((gGT->gameMode1 & MAIN_MENU) == 0) && (sdata->load_inProgress == 0);
 
-		if (imRennen && !warImRennen)
+		if (inRace && !wasInRace)
 		{
 			const int container = (NativeTrack_LoadedIndex() >= 0) && NativeTrack_ActiveForLevel(gGT->levelID);
 
@@ -1371,14 +1371,14 @@ void DebugMenu_Frame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 			extern int g_cfg_autopilot;
 			struct Driver *seat = gGT->drivers[0];
 
-			if (g_cfg_autopilot && imRennen && (seat != NULL) && ((seat->actionsFlagSet & ACTION_BOT) != 0) &&
+			if (g_cfg_autopilot && inRace && (seat != NULL) && ((seat->actionsFlagSet & ACTION_BOT) != 0) &&
 			    ((seat->actionsFlagSet & (ACTION_RACE_TIMER_FROZEN | ACTION_RACE_FINISHED)) == 0))
 			{
 				seat->timeElapsedInRace = gGT->elapsedEventTime;
 			}
 		}
 
-		warImRennen = imRennen;
+		wasInRace = inRace;
 	}
 
 	// --level N, once, without anyone touching a button.
