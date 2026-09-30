@@ -8,9 +8,9 @@
 #
 # Format: <file glob> word|ref <text>     (* as text allows every hit of that kind)
 
-# The checker itself and this list name German words and forbidden references.
+# The checker and this list spell out the German words they look for, so
+# both may contain German words - but no reference (person name, local path ...).
 tools/lang_check.py word *
-tools/lang_check.py ref *
 tools/lang_check_allow.txt word *
 
 .gitignore word messung
