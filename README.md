@@ -40,8 +40,8 @@ CTR Reload Edition runs *Crash Team Racing* (PS1, 1999) natively on Windows,
 without an emulator, and plays custom tracks next to the original ones.
 
 > [!IMPORTANT]
-> You need **your own disc image** of the game, NTSC-U (SCUS-94426), as a
-> raw `.bin`. This repository and its releases contain **no game data**: no
+> You need **your own disc image** of the game, NTSC-U (SCUS-94426), as
+> `.cue`/`.bin`. This repository and its releases contain **no game data**: no
 > disc image, no extracted files, no models, textures, music or tracks.
 
 > [!WARNING]
@@ -91,7 +91,7 @@ without an emulator, and plays custom tracks next to the original ones.
    tool) from the [latest release](https://github.com/LinksTech/CTR-Reload-Edition/releases/tag/v0.0-beta0)
    into one folder you can write to, for example `C:\Games\CTR Reload` (not
    `C:\Program Files`).
-2. Start `ctr_native.exe` and drag your disc image (the `.bin` file) onto the
+2. Start `ctr_native.exe` and drag your disc image (`.cue` or `.bin`) onto the
    window. The game unpacks what it needs into an `assets` folder next to it,
    once (about 520 MB).
 3. Set up the picture in OPTIONS → GRAPHICS.

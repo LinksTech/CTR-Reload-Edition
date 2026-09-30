@@ -1274,6 +1274,17 @@ static void SDLCALL NativeSetup_DialogCallback(void *userdata, const char *const
 
 	SDL_strlcpy(s_setup.pickedPath, filelist[0], sizeof(s_setup.pickedPath));
 	s_setup.hasPicked = 1;
+
+	// The setup loop sleeps in SDL_WaitEvent. The dialog answers from its own
+	// thread, so without an event of its own the pick would wait for the next
+	// mouse move or window event. SDL_PushEvent is safe from any thread.
+	{
+		SDL_Event wake;
+
+		SDL_zero(wake);
+		wake.type = SDL_EVENT_USER;
+		SDL_PushEvent(&wake);
+	}
 }
 
 static const char *NativeSetup_RegionForSerial(const char *serial)
@@ -1301,15 +1312,61 @@ static int NativeSetup_TryImage(const char *path)
 {
 	char serial[32];
 	char failedPath[NATIVE_SETUP_PATH_MAX];
+	char cueImage[NATIVE_SETUP_PATH_MAX];
+	char cueName[256];
 	const char *region;
 	u32 files = 0;
 	u64 bytes = 0;
 	int result = NATIVE_DISC_IMAGE_OK;
+	int fromCue = 0;
 
 	NativeSetup_SetMessage("", "");
 
+	// A .cue is read for the image it names; from there on everything is the
+	// same as for an image handed over directly.
+	if (NativeDiscImage_IsCuePath(path))
+	{
+		switch (NativeDiscImage_CueImagePath(path, cueImage, sizeof(cueImage), cueName, sizeof(cueName)))
+		{
+		case NATIVE_DISC_IMAGE_CUE_OK:
+			printf("[CTR Setup] %s names the image %s\n", path, cueImage);
+			fflush(stdout);
+			path = cueImage;
+			fromCue = 1;
+			break;
+
+		case NATIVE_DISC_IMAGE_CUE_UNREADABLE:
+			NativeSetup_SetMessage("That .cue file cannot be read.", "Check that it still exists and that no other program holds it open.");
+			return 0;
+
+		case NATIVE_DISC_IMAGE_CUE_NO_FILE:
+			NativeSetup_SetMessage("That .cue file names no disc image: it has no FILE line.",
+			                       "Drag the .bin itself onto this window, or use a complete .cue.");
+			return 0;
+
+		case NATIVE_DISC_IMAGE_CUE_MISSING:
+			SDL_snprintf(s_setup.message, sizeof(s_setup.message), "The .cue names \"%s\", but that file is not next to it.", cueName);
+			SDL_snprintf(s_setup.hint, sizeof(s_setup.hint), "Keep the .cue and its .bin in one folder, under the name the .cue gives.");
+			NativeSetup_SetMessage(s_setup.message, s_setup.hint);
+			return 0;
+
+		default:
+			NativeSetup_SetMessage("The path of the image that the .cue names is too long.", "Move the .cue and its .bin to a folder with a shorter path.");
+			return 0;
+		}
+	}
+
 	if (!NativeDiscImage_OpenImagePath(path))
 	{
+		if (fromCue)
+		{
+			SDL_snprintf(s_setup.message, sizeof(s_setup.message), "The .cue names \"%s\", but that is not a readable PlayStation disc image.",
+			             cueName);
+			SDL_snprintf(s_setup.hint, sizeof(s_setup.hint), "CTR Reload reads BIN tracks in MODE2/2352 form.");
+			NativeSetup_SetMessage(s_setup.message, s_setup.hint);
+			return 0;
+		}
+
 		NativeSetup_SetMessage("That file is not a readable PlayStation disc image.",
 		                       "CTR Reload reads BIN/CUE and ISO tracks in MODE2/2352 form.");
 		return 0;

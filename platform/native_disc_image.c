@@ -1452,6 +1452,173 @@ const char *NativeDiscImage_GetPath(void)
 	return s_nativeDiscImagePath;
 }
 
+// Ends in .cue, in any case.
+int NativeDiscImage_IsCuePath(const char *path)
+{
+	const size_t length = (path != NULL) ? strlen(path) : 0u;
+
+	return (length > 4u) && NativeStr8_EqualsIgnoreCaseAscii(NativeStr8_FromCString(&path[length - 4u]), NATIVE_STR8_LIT(".cue"));
+}
+
+// A real .cue sheet is a few hundred bytes. Whatever is behind this is not read.
+#define NATIVE_DISC_IMAGE_CUE_MAX_BYTES (64u * 1024u)
+
+internal int NativeDiscImage_CueIsSpace(char c)
+{
+	return (c == ' ') || (c == '\t');
+}
+
+int NativeDiscImage_CueImagePath(const char *cuePath, char *imagePath, size_t imagePathSize, char *fileName, size_t fileNameSize)
+{
+	FILE *file;
+	char *text;
+	const char *line;
+	const char *name = NULL;
+	const char *nameEnd = NULL;
+	size_t length;
+	size_t nameLength;
+	size_t folderLength = 0u;
+	size_t i;
+	int absolute;
+
+	if ((imagePath == NULL) || (imagePathSize == 0u) || (fileName == NULL) || (fileNameSize == 0u))
+	{
+		return NATIVE_DISC_IMAGE_CUE_TOO_LONG;
+	}
+
+	imagePath[0] = '\0';
+	fileName[0] = '\0';
+
+	file = (cuePath != NULL) ? fopen(cuePath, "rb") : NULL;
+
+	if (file == NULL)
+	{
+		return NATIVE_DISC_IMAGE_CUE_UNREADABLE;
+	}
+
+	text = (char *)malloc(NATIVE_DISC_IMAGE_CUE_MAX_BYTES + 1u);
+
+	if (text == NULL)
+	{
+		fclose(file);
+		return NATIVE_DISC_IMAGE_CUE_UNREADABLE;
+	}
+
+	length = fread(text, 1, NATIVE_DISC_IMAGE_CUE_MAX_BYTES, file);
+	fclose(file);
+	text[length] = '\0';
+
+	// A UTF-8 byte order mark in front of the first line.
+	line = text;
+	if ((length >= 3u) && ((u8)text[0] == 0xEFu) && ((u8)text[1] == 0xBBu) && ((u8)text[2] == 0xBFu))
+	{
+		line += 3;
+	}
+
+	// The first FILE line decides: FILE "name with spaces.bin" BINARY, or
+	// FILE name.bin BINARY. The keyword in any case.
+	while (*line != '\0')
+	{
+		const char *p = line;
+
+		while (NativeDiscImage_CueIsSpace(*p))
+		{
+			p++;
+		}
+
+		if (((p[0] == 'F') || (p[0] == 'f')) && ((p[1] == 'I') || (p[1] == 'i')) && ((p[2] == 'L') || (p[2] == 'l')) &&
+		    ((p[3] == 'E') || (p[3] == 'e')) && NativeDiscImage_CueIsSpace(p[4]))
+		{
+			p += 4;
+
+			while (NativeDiscImage_CueIsSpace(*p))
+			{
+				p++;
+			}
+
+			if (*p == '"')
+			{
+				name = ++p;
+				while ((*p != '\0') && (*p != '"') && (*p != '\r') && (*p != '\n'))
+				{
+					p++;
+				}
+			}
+			else
+			{
+				name = p;
+				while ((*p != '\0') && !NativeDiscImage_CueIsSpace(*p) && (*p != '\r') && (*p != '\n'))
+				{
+					p++;
+				}
+			}
+
+			nameEnd = p;
+			break;
+		}
+
+		while ((*line != '\0') && (*line != '\n'))
+		{
+			line++;
+		}
+
+		if (*line == '\n')
+		{
+			line++;
+		}
+	}
+
+	if ((name == NULL) || (nameEnd <= name))
+	{
+		free(text);
+		return NATIVE_DISC_IMAGE_CUE_NO_FILE;
+	}
+
+	nameLength = (size_t)(nameEnd - name);
+
+	// The name as written, cut to the buffer - it is only for the message.
+	for (i = 0; (i < nameLength) && (i + 1u < fileNameSize); i++)
+	{
+		fileName[i] = name[i];
+	}
+	fileName[i] = '\0';
+
+	absolute = (name[0] == '/') || (name[0] == '\\') ||
+	           ((nameLength >= 2u) && (((name[0] >= 'A') && (name[0] <= 'Z')) || ((name[0] >= 'a') && (name[0] <= 'z'))) && (name[1] == ':'));
+
+	if (!absolute)
+	{
+		for (i = 0; cuePath[i] != '\0'; i++)
+		{
+			if ((cuePath[i] == '/') || (cuePath[i] == '\\'))
+			{
+				folderLength = i + 1u;
+			}
+		}
+	}
+
+	if ((folderLength + nameLength + 1u) > imagePathSize)
+	{
+		free(text);
+		return NATIVE_DISC_IMAGE_CUE_TOO_LONG;
+	}
+
+	memcpy(imagePath, cuePath, folderLength);
+	memcpy(imagePath + folderLength, name, nameLength);
+	imagePath[folderLength + nameLength] = '\0';
+	free(text);
+
+	file = fopen(imagePath, "rb");
+
+	if (file == NULL)
+	{
+		return NATIVE_DISC_IMAGE_CUE_MISSING;
+	}
+
+	fclose(file);
+	return NATIVE_DISC_IMAGE_CUE_OK;
+}
+
 // The same open the boot path does, but from a path the user handed over rather
 // than from the assets directory. Whatever was open is closed first, so a
 // rejected image cannot stay half-mounted behind the next attempt.

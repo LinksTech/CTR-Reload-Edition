@@ -53,6 +53,26 @@ enum NativeDiscImageResult
 typedef int (*NativeDiscImageProgressFn)(void *user, const char *path, u32 fileIndex, u32 fileCount, u64 bytesDone, u64 bytesTotal);
 
 int NativeDiscImage_OpenImagePath(const char *path);
+
+// A .cue sheet is a text file that names the image it belongs to.
+// NativeDiscImage_CueImagePath reads the first FILE line of the sheet and gives
+// the path of the file it names, relative to the folder of the .cue (a name
+// that is already an absolute path stays as it is). It only finds the image;
+// opening it is the same NativeDiscImage_OpenImagePath as for an image handed
+// over directly. There is no guessing: no FILE line, or a named file that is
+// not there, is an answer of its own. fileName receives the name as the .cue
+// writes it, for the message.
+enum NativeDiscImageCueResult
+{
+	NATIVE_DISC_IMAGE_CUE_OK = 0,
+	NATIVE_DISC_IMAGE_CUE_UNREADABLE, // the .cue itself cannot be read
+	NATIVE_DISC_IMAGE_CUE_NO_FILE,    // no FILE line, or one without a name
+	NATIVE_DISC_IMAGE_CUE_MISSING,    // the file it names does not exist
+	NATIVE_DISC_IMAGE_CUE_TOO_LONG,   // the path of that file does not fit
+};
+
+int NativeDiscImage_IsCuePath(const char *path);
+int NativeDiscImage_CueImagePath(const char *cuePath, char *imagePath, size_t imagePathSize, char *fileName, size_t fileNameSize);
 int NativeDiscImage_IsAvailable(void);
 const char *NativeDiscImage_GetPath(void);
 int NativeDiscImage_ReadBootSerial(char *dst, size_t dstSize);
