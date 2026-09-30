@@ -7,7 +7,8 @@
 </p>
 
 <p align="center">
-  <b>A mod of <a href="https://github.com/CTR-tools/ctr-native">ctr-native</a> focused on custom tracks</b>
+  <b>A PC edition of Crash Team Racing built for custom content — custom tracks today, custom characters Soon™.<br>
+  Built on <a href="https://github.com/CTR-tools/ctr-native">ctr-native</a>.</b>
 </p>
 
 <p align="center">
