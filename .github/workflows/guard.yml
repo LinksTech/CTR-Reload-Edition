@@ -1,0 +1,54 @@
+# CTR Reload Edition - content guard.
+#
+# Every push (any branch or tag) and every pull request: tools/content_guard.py
+# checks the whole history of the checked-out commit - the pushed commit, or
+# for a pull request the merge commit into its base - and fails on game data
+# file types and on binary files larger than 1 MB in any commit. The rules are
+# in the script.
+#
+# One check name, content-guard, for push and pull request: both check the
+# whole history, so a later commit that deletes a file never makes it pass,
+# and a direct push gets the same check as a pull request.
+#
+# This check comes after the fact: the commits are already on GitHub when it
+# runs. tools/git-hooks/pre-push stops game data before it leaves the machine.
+#
+# Security notes (as in build.yml):
+# - Read-only token, no secrets, no pull_request_target trigger.
+# - The checkout keeps no credentials. The script only reads git objects; it
+#   builds and runs nothing from the checked commits.
+# - A pull request runs this file and the script as the pull request has
+#   them, so a pull request that changes either needs a careful review.
+# - No concurrency group: a cancelled run would leave commits unchecked.
+# - The one action is pinned to its full commit SHA (as in build.yml).
+
+name: Guard
+
+on:
+  push:
+  pull_request:
+    # "edited" too: a pull request moved to another base branch is checked
+    # again against its new base.
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+
+jobs:
+  content-guard:
+    name: content-guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      # A push that deletes a branch or tag has no commit: both steps are
+      # skipped and the job passes.
+      - name: Check out with the whole history
+        if: github.event.deleted != true
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check every commit in the history
+        if: github.event.deleted != true
+        run: python3 tools/content_guard.py --github

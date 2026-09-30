@@ -123,6 +123,11 @@ data.
   the same four files - only when `dev` has changed since the last one. The
   tag `nightly-builds` always points at the commit it was built from.
 - Both use the same build job, `.github/workflows/build-job.yml`.
+- `.github/workflows/guard.yml` (check `content-guard`): every push and every
+  pull request runs `tools/content_guard.py`, which checks every commit in the
+  history of the checked-out commit, the whole tree of each: it fails on game
+  data file types and on binary files larger than 1 MB. The same check by
+  hand: `python tools/content_guard.py --history HEAD`.
 
 ## Before you commit and push
 
