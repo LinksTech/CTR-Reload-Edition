@@ -3,7 +3,9 @@
 # Every push to main or dev: build (32-bit, MSVC), run the self-tests, package,
 # and attach the package to the run as a download.
 # Every version tag (v*, e.g. v0.1.0-beta1): the same, plus a GitHub release
-# with ctr_native.exe, alphamaker.exe, README.md and the package zip.
+# with exactly two files, ctr_native.exe and alphamaker.exe; GitHub adds the
+# source code archives of the tag by itself. The release text comes from
+# .github/release-body.txt.
 # Every pull request into main or dev: build, self-tests and package check
 # only. No package download, no release, no cache writes, read-only token.
 #
@@ -16,7 +18,7 @@
 # - There is no pull_request_target trigger: code from a pull request never
 #   runs with a writable token or with secrets.
 # - Third-party actions are pinned to full commit SHAs (version in the
-#   comment); Dependabot (.github/dependabot.yml) proposes updates.
+#   comment); updates are made by hand.
 # - The Vulkan SDK installer is pinned by version and SHA-256.
 
 name: Build
@@ -141,12 +143,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Check out README.md
+      - name: Check out the release text
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 1
           persist-credentials: false
-          sparse-checkout: README.md
+          sparse-checkout: .github/release-body.txt
           sparse-checkout-cone-mode: false
           path: src
 
@@ -156,11 +158,13 @@ jobs:
           name: ctr-reload-edition-${{ github.sha }}
           path: dist
 
-      # Every release carries the same four files, all from this one run:
-      # the two programs are taken out of the package itself, so they are
-      # byte-identical to the ones in the zip. The exe names stay fixed
-      # (the Alpha-Maker looks for the game as ctr_native.exe); the version
-      # is in the release title and in the programs, not in the file names.
+      # Every release carries exactly these two files, both from this one
+      # run: they are taken out of the package that the build job checked,
+      # so they are the programs it tested and paired. The exe names stay
+      # fixed (the Alpha-Maker looks for the game as ctr_native.exe); the
+      # version is in the release title and in the programs, not in the file
+      # names. No package zip, no README: GitHub attaches the source code of
+      # the tag to every release by itself.
       - name: Collect release files
         id: files
         shell: bash
@@ -175,8 +179,7 @@ jobs:
           [ ${#id} = 12 ] || { echo "unexpected build id: $id"; exit 1; }
           mkdir -p out
           unzip -j -o "$zip" "$name/ctr_native.exe" "$name/alphamaker.exe" -d out
-          cp src/README.md out/README.md
-          cp "$zip" out/
+          [ -s src/.github/release-body.txt ] || { echo "release text missing"; exit 1; }
           ls -l out
           echo "build_id=$id" >> "$GITHUB_OUTPUT"
 
@@ -184,11 +187,10 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           name: CTR Reload Edition ${{ github.ref_name }} (${{ steps.files.outputs.build_id }})
+          body_path: src/.github/release-body.txt
           files: |
             out/ctr_native.exe
             out/alphamaker.exe
-            out/README.md
-            out/*.zip
           fail_on_unmatched_files: true
           prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
-          generate_release_notes: true
+          generate_release_notes: false

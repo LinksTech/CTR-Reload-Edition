@@ -39,15 +39,23 @@ this repository.
 
 ## Download
 
-A release carries `ctr_native.exe` (the game), `alphamaker.exe` and the package
-`CTR-Reload-<version>-<build id>.zip`. The package holds both programs,
-`ctr_native.pdb`, a README and release notes for testers, the license files
-and the source code of exactly that build. It needs Windows 10 (1903 or newer)
-or Windows 11 and a graphics driver with Vulkan 1.0.
+A release carries exactly two programs, `ctr_native.exe` (the game) and
+`alphamaker.exe`, plus the source code archives that GitHub attaches to every
+release. Put both programs into one folder. They need Windows 10 (1903 or
+newer) or Windows 11 and a graphics driver with Vulkan 1.0.
 
 ## Building
 
 See [BUILDING.md](BUILDING.md).
+
+## How this project is made
+
+- Built on human-written foundations: ctr-native and the CTR-ModSDK
+  decompilation.
+- CTR Reload Edition is developed by two people. We write code ourselves and
+  together with Claude Code (Anthropic), decide what gets built, review every
+  change and test it - with measured reference runs, automated checks and
+  hands-on play testing.
 
 ## License
 
