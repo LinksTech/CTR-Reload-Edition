@@ -102,6 +102,17 @@ The script refuses a tree with uncommitted changes (`--allow-dirty` makes a
 trial package anyway) and refuses to package anything that looks like game
 data.
 
+## Automatic builds
+
+- `.github/workflows/build.yml`: every push to `main` or `dev` and every pull
+  request builds and runs the self-tests; a version tag (`v*`) also makes the
+  release with `ctr_native.exe` and `alphamaker.exe`.
+- `.github/workflows/nightly.yml`: every day at 21:00 UTC (and by hand) the
+  pre-release `nightly-builds` is replaced with a build of `dev` - only when
+  `dev` has changed since the last one. The tag `nightly-builds` always points
+  at the commit it was built from.
+- Both use the same build job, `.github/workflows/build-job.yml`.
+
 ## Before you commit and push
 
 Enable the hooks once per clone:
