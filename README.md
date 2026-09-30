@@ -44,6 +44,9 @@ A release carries exactly two programs, `ctr_native.exe` (the game) and
 release. Put both programs into one folder. They need Windows 10 (1903 or
 newer) or Windows 11 and a graphics driver with Vulkan 1.0.
 
+Quick states and replays exist only behind the developer switch `--dev`. They
+are raw memory snapshots of the game: load only files you made yourself.
+
 ## Building
 
 See [BUILDING.md](BUILDING.md).
