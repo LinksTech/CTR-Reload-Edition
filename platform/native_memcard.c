@@ -2,6 +2,7 @@
 
 #include <macros.h>
 
+#include "platform/native_log.h"
 #include "platform/native_path.h"
 
 #include <errno.h>
@@ -21,6 +22,10 @@
 #define NATIVE_MEMCARD_COPY_BUFFER     8192
 #define NATIVE_MEMCARD_DEFAULT_ROOT    "memcards"
 #define NATIVE_MEMCARD_SLOT_COUNT      2
+// A save is written as "~<name>.tmp" first (NativeMemcard_WriteFileReplacing).
+// The "~" keeps such a leftover out of every "BASCUS-94426*" search.
+#define NATIVE_MEMCARD_TMP_PREFIX      "~"
+#define NATIVE_MEMCARD_TMP_SUFFIX      ".tmp"
 
 struct NativeMemcardFindState
 {
@@ -461,11 +466,22 @@ internal int NativeMemcard_CompareNames(const char *left, const char *right)
 	return strcmp(left, right) > 0;
 }
 
+// A temp file left by an interrupted save (see NativeMemcard_WriteFileReplacing).
+internal int NativeMemcard_IsTempName(const char *name)
+{
+	size_t prefix = strlen(NATIVE_MEMCARD_TMP_PREFIX);
+	size_t suffix = strlen(NATIVE_MEMCARD_TMP_SUFFIX);
+	size_t len = strlen(name);
+
+	return (len >= prefix + suffix) && (strncmp(name, NATIVE_MEMCARD_TMP_PREFIX, prefix) == 0) &&
+	       (strcmp(name + len - suffix, NATIVE_MEMCARD_TMP_SUFFIX) == 0);
+}
+
 internal void NativeMemcard_AddFoundName(const char *name)
 {
 	int i;
 
-	if (s_memcardFind.count >= NATIVE_MEMCARD_MAX_FOUND_FILES)
+	if ((s_memcardFind.count >= NATIVE_MEMCARD_MAX_FOUND_FILES) || NativeMemcard_IsTempName(name))
 	{
 		return;
 	}
@@ -803,24 +819,137 @@ enum NativeMemcardResult NativeMemcard_ReadSaveData(const char *save_name, unsig
 	return read_bytes == (size_t)byte_count ? NATIVE_MEMCARD_OK : NATIVE_MEMCARD_IO_ERROR;
 }
 
+// Writes the two parts (icon, data) as one file at path without ever leaving a
+// half-written save behind: the bytes go to "~<name>.tmp" next to it, are
+// flushed to the disk and only then replace the save in one step. On any
+// failure the old save stays as it was, the temp file is removed and the
+// reason is logged. The bytes of the save are exactly icon followed by data,
+// as before.
+internal enum NativeMemcardResult NativeMemcard_WriteFileReplacing(const char *path, const void *first, size_t first_bytes, const void *second, size_t second_bytes)
+{
+	char tmp_path[NATIVE_MEMCARD_MAX_PATH];
+	const char *name;
+	const char *p;
+	int written;
+
+	if ((path == NULL) || (path[0] == '\0'))
+	{
+		Platform_LogWarn("[CTR Memcard] cannot save: no path for the save file\n");
+		return NATIVE_MEMCARD_OPEN_FAILED;
+	}
+	name = path;
+	for (p = path; *p != '\0'; p++)
+	{
+		if ((*p == '/') || (*p == '\\'))
+		{
+			name = p + 1;
+		}
+	}
+	written = snprintf(tmp_path, sizeof(tmp_path), "%.*s%s%s%s", (int)(name - path), path, NATIVE_MEMCARD_TMP_PREFIX, name, NATIVE_MEMCARD_TMP_SUFFIX);
+	if ((written < 0) || ((size_t)written >= sizeof(tmp_path)))
+	{
+		Platform_LogWarn("[CTR Memcard] cannot save %s: the path is too long for the temp file - the old save is kept\n", path);
+		return NATIVE_MEMCARD_OPEN_FAILED;
+	}
+
+#if defined(_WIN32)
+	{
+		HANDLE file;
+		const unsigned char *parts[2];
+		size_t sizes[2];
+		DWORD error = 0;
+		const char *step = NULL;
+		int i;
+
+		parts[0] = (const unsigned char *)first;
+		parts[1] = (const unsigned char *)second;
+		sizes[0] = first_bytes;
+		sizes[1] = second_bytes;
+
+		file = CreateFileA(tmp_path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+		if (file == INVALID_HANDLE_VALUE)
+		{
+			error = GetLastError();
+			Platform_LogWarn("[CTR Memcard] cannot save %s: creating the temp file failed (Windows error %lu) - the old save is kept\n", path,
+			                 (unsigned long)error);
+			return NATIVE_MEMCARD_OPEN_FAILED;
+		}
+		for (i = 0; (i < 2) && (step == NULL); i++)
+		{
+			size_t done = 0;
+
+			while ((done < sizes[i]) && (step == NULL))
+			{
+				size_t left = sizes[i] - done;
+				DWORD chunk = (left > 0x40000000u) ? 0x40000000u : (DWORD)left;
+				DWORD put = 0;
+
+				if ((WriteFile(file, parts[i] + done, chunk, &put, NULL) == 0) || (put == 0))
+				{
+					error = GetLastError();
+					step = "writing";
+				}
+				done += put;
+			}
+		}
+		if ((step == NULL) && (FlushFileBuffers(file) == 0))
+		{
+			error = GetLastError();
+			step = "flushing";
+		}
+		if ((CloseHandle(file) == 0) && (step == NULL))
+		{
+			error = GetLastError();
+			step = "closing";
+		}
+		if ((step == NULL) && (MoveFileExA(tmp_path, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == 0))
+		{
+			error = GetLastError();
+			step = "replacing the save with";
+		}
+		if (step != NULL)
+		{
+			DeleteFileA(tmp_path);
+			Platform_LogWarn("[CTR Memcard] cannot save %s: %s the temp file failed (Windows error %lu) - the old save is kept\n", path, step,
+			                 (unsigned long)error);
+			return NATIVE_MEMCARD_IO_ERROR;
+		}
+	}
+#else
+	{
+		FILE *file = fopen(tmp_path, "wb");
+		int ok;
+
+		if (file == NULL)
+		{
+			Platform_LogWarn("[CTR Memcard] cannot save %s: creating the temp file failed (%s) - the old save is kept\n", path, strerror(errno));
+			return NATIVE_MEMCARD_OPEN_FAILED;
+		}
+		ok = (fwrite(first, 1, first_bytes, file) == first_bytes);
+		ok = ok && (fwrite(second, 1, second_bytes, file) == second_bytes);
+		ok = ok && (fflush(file) == 0) && (fsync(fileno(file)) == 0);
+		ok = (fclose(file) == 0) && ok;
+		if (!ok || (rename(tmp_path, path) != 0))
+		{
+			Platform_LogWarn("[CTR Memcard] cannot save %s: writing or replacing via the temp file failed (%s) - the old save is kept\n", path,
+			                 strerror(errno));
+			remove(tmp_path);
+			return NATIVE_MEMCARD_IO_ERROR;
+		}
+	}
+#endif
+
+	return NATIVE_MEMCARD_OK;
+}
+
 enum NativeMemcardResult NativeMemcard_WriteSaveData(const char *save_name, const void *icon, int icon_byte_count, const unsigned char *src, int byte_count)
 {
 	const char *path = NativeMemcard_PathFromDeviceName(save_name, 1);
 
-	FILE *file = fopen(path, "wb");
-	if (file == NULL)
-	{
-		return NATIVE_MEMCARD_OPEN_FAILED;
-	}
-
-	size_t wrote_icon = fwrite(icon, 1, icon_byte_count, file);
-	size_t wrote_data = fwrite(src, 1, byte_count, file);
-	fclose(file);
-
-	if ((wrote_icon != (size_t)icon_byte_count) || (wrote_data != (size_t)byte_count))
+	if ((icon_byte_count < 0) || (byte_count < 0))
 	{
 		return NATIVE_MEMCARD_IO_ERROR;
 	}
 
-	return NATIVE_MEMCARD_OK;
+	return NativeMemcard_WriteFileReplacing(path, icon, (size_t)icon_byte_count, src, (size_t)byte_count);
 }

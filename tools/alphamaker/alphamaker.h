@@ -360,6 +360,11 @@ int Am_BrowseSaveFile(HWND owner, const wchar_t *title, const wchar_t *filter,
 
 // Yes/no question. In automation the answer is always yes, without a dialog.
 int  Am_AskYesNo(HWND owner, const wchar_t *title, const wchar_t *text);
+// Question with count (2..4) buttons labelled buttons[0..]; returns the index of
+// the button pressed, the last one (meant as Cancel) when the dialog is closed.
+// In automation the answer is autoAnswer, without a dialog, logged.
+int  Am_AskChoice(HWND owner, const wchar_t *title, const wchar_t *text,
+                  const wchar_t *const *buttons, int count, int autoAnswer);
 // Notice with OK. In automation only into the automation log.
 void Am_Tell(HWND owner, const wchar_t *title, const wchar_t *text);
 int  Am_Automating(void);
@@ -406,9 +411,39 @@ wchar_t *Am_Dup(const wchar_t *s);
 wchar_t *Am_FromUtf8(const char *s, int bytes);   // bytes < 0: up to NUL
 char    *Am_ToUtf8(const wchar_t *s);
 
-// Reads a text file (UTF-8, with or without BOM) as UTF-16. NULL if not there.
+// Which content of a file was read: size, last write time and a hash
+// (64-bit FNV-1a) of its bytes. exists = 0: the file was not there.
+struct AmFileStamp {
+    int exists;
+    unsigned long long size;
+    FILETIME writeTime;
+    unsigned long long hash;
+};
+
+// What Am_ReadTextFileEx found besides the text.
+struct AmTextRead {
+    struct AmFileStamp stamp;
+    DWORD error;        // Windows error if the file is there but could not be read, else 0
+    int badUtf8;        // the bytes are not valid UTF-8; the text has U+FFFD for the bad ones
+};
+
+// Reads a text file (UTF-8, with or without BOM) as UTF-16. NULL if it is not
+// there or could not be read completely (read error, short read, over 16 MB) -
+// never a partial text. Invalid UTF-8 comes back with U+FFFD in its place.
 wchar_t *Am_ReadTextFile(const wchar_t *path);
-// Writes UTF-16 text as UTF-8 without BOM, line ends as passed. 1 = ok.
+// The same, and says in info (may be NULL) whether the file exists, why reading
+// failed, whether the UTF-8 was invalid, and the stamp of what was read.
+wchar_t *Am_ReadTextFileEx(const wchar_t *path, struct AmTextRead *info);
+// The stamp of the file as it is on disk now (reads it). 1 = known (also
+// "not there"), 0 = there but could not be read (then *out is unknown).
+int      Am_FileStampNow(const wchar_t *path, struct AmFileStamp *out);
+// 1 if both stamps describe the same content (or both "not there").
+int      Am_FileStampSame(const struct AmFileStamp *a, const struct AmFileStamp *b);
+// Writes UTF-16 text as UTF-8 without BOM, line ends as passed. Atomically:
+// the bytes go to "<path>.tmp", are flushed to disk and only then replace the
+// file (ReplaceFileW, or MoveFileExW if it was not there). On failure the old
+// file is unchanged, the temp file is removed, and GetLastError() says why.
+// 1 = ok.
 int      Am_WriteTextFile(const wchar_t *path, const wchar_t *text);
 
 // Automation log: one line to the automation's stdout (--log <file>).

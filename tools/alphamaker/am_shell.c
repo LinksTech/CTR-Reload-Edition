@@ -230,52 +230,195 @@ char *Am_ToUtf8(const wchar_t *s)
     return d;
 }
 
-wchar_t *Am_ReadTextFile(const wchar_t *path)
+#define AM_TEXT_FILE_MAX (16 * 1024 * 1024)
+
+static unsigned long long Am_HashBytes(const unsigned char *p, size_t n)
+{
+    unsigned long long h = 14695981039346656037ull;
+    size_t i;
+    for (i = 0; i < n; i++)
+        h = (h ^ p[i]) * 1099511628211ull;
+    return h;
+}
+
+// Reads the whole file. 1 = read (*buf with a NUL after *got bytes), 0 = not
+// there, -1 = there but not read completely (*error says why).
+static int Am_ReadWholeFile(const wchar_t *path, char **buf, DWORD *got,
+                            struct AmFileStamp *stamp, DWORD *error)
 {
     HANDLE f;
     LARGE_INTEGER size;
-    char *buf;
-    DWORD got = 0;
-    wchar_t *text;
-    int skip = 0;
+    FILETIME wt;
+    DWORD want, done = 0;
 
+    *buf = NULL;
+    *got = 0;
+    *error = 0;
+    memset(stamp, 0, sizeof(*stamp));
     f = CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
                     OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (f == INVALID_HANDLE_VALUE)
-        return NULL;
-    if (!GetFileSizeEx(f, &size) || size.QuadPart > 16 * 1024 * 1024) {
-        CloseHandle(f);
-        return NULL;
+    if (f == INVALID_HANDLE_VALUE) {
+        DWORD e = GetLastError();
+        if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND)
+            return 0;
+        *error = e ? e : ERROR_OPEN_FAILED;
+        stamp->exists = 1;
+        return -1;
     }
-    buf = Am_Alloc((size_t)size.QuadPart + 1);
-    if (size.QuadPart > 0 && !ReadFile(f, buf, (DWORD)size.QuadPart, &got, NULL))
-        got = 0;
+    stamp->exists = 1;
+    if (!GetFileSizeEx(f, &size) || !GetFileTime(f, NULL, NULL, &wt)) {
+        *error = GetLastError();
+        if (!*error)
+            *error = ERROR_READ_FAULT;
+        CloseHandle(f);
+        return -1;
+    }
+    if (size.QuadPart < 0 || size.QuadPart > AM_TEXT_FILE_MAX) {
+        *error = ERROR_FILE_TOO_LARGE;
+        CloseHandle(f);
+        return -1;
+    }
+    want = (DWORD)size.QuadPart;
+    *buf = Am_Alloc((size_t)want + 1);
+    while (done < want) {
+        DWORD part = 0;
+        if (!ReadFile(f, *buf + done, want - done, &part, NULL)) {
+            *error = GetLastError();
+            break;
+        }
+        if (part == 0) {
+            *error = ERROR_HANDLE_EOF;   // shorter than its size said
+            break;
+        }
+        done += part;
+    }
     CloseHandle(f);
+    if (done < want) {
+        if (!*error)
+            *error = ERROR_READ_FAULT;
+        Am_Free(*buf);
+        *buf = NULL;
+        return -1;
+    }
+    *got = done;
+    stamp->size = (unsigned long long)size.QuadPart;
+    stamp->writeTime = wt;
+    stamp->hash = Am_HashBytes((const unsigned char *)*buf, done);
+    return 1;
+}
+
+wchar_t *Am_ReadTextFileEx(const wchar_t *path, struct AmTextRead *info)
+{
+    struct AmTextRead dummy;
+    char *buf;
+    DWORD got;
+    wchar_t *text;
+    int skip = 0, r;
+
+    if (!info)
+        info = &dummy;
+    memset(info, 0, sizeof(*info));
+    r = Am_ReadWholeFile(path, &buf, &got, &info->stamp, &info->error);
+    if (r <= 0)
+        return NULL;
     if (got >= 3 && (unsigned char)buf[0] == 0xEF && (unsigned char)buf[1] == 0xBB &&
         (unsigned char)buf[2] == 0xBF)
         skip = 3;
+    if (got > (DWORD)skip &&
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, buf + skip, (int)got - skip, NULL, 0) <= 0)
+        info->badUtf8 = 1;
     text = Am_FromUtf8(buf + skip, (int)got - skip);
     Am_Free(buf);
     return text;
 }
 
+wchar_t *Am_ReadTextFile(const wchar_t *path)
+{
+    return Am_ReadTextFileEx(path, NULL);
+}
+
+int Am_FileStampNow(const wchar_t *path, struct AmFileStamp *out)
+{
+    char *buf;
+    DWORD got, error;
+    int r = Am_ReadWholeFile(path, &buf, &got, out, &error);
+    if (buf)
+        Am_Free(buf);
+    return r >= 0;
+}
+
+int Am_FileStampSame(const struct AmFileStamp *a, const struct AmFileStamp *b)
+{
+    if (!a->exists || !b->exists)
+        return a->exists == b->exists;
+    return a->size == b->size && a->hash == b->hash &&
+           CompareFileTime(&a->writeTime, &b->writeTime) == 0;
+}
+
 int Am_WriteTextFile(const wchar_t *path, const wchar_t *text)
 {
     char *utf8 = Am_ToUtf8(text);
+    size_t len = strlen(utf8), done = 0, n = wcslen(path);
+    wchar_t *tmp = Am_Alloc((n + 16) * sizeof(wchar_t));
+    wchar_t *old = Am_Alloc((n + 16) * sizeof(wchar_t));
+    DWORD error = 0;
     HANDLE f;
-    DWORD put = 0;
-    BOOL ok;
-    size_t len = strlen(utf8);
 
-    f = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    memcpy(tmp, path, n * sizeof(wchar_t));
+    wcscpy(tmp + n, L".tmp");
+    memcpy(old, path, n * sizeof(wchar_t));
+    wcscpy(old + n, L".old.tmp");
+
+    f = CreateFileW(tmp, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (f == INVALID_HANDLE_VALUE) {
-        Am_Free(utf8);
+        error = GetLastError();
+        goto out;
+    }
+    while (done < len && !error) {
+        DWORD put = 0, part = (DWORD)(len - done > 0x40000000u ? 0x40000000u : len - done);
+        if (!WriteFile(f, utf8 + done, part, &put, NULL) || put == 0)
+            error = GetLastError() ? GetLastError() : ERROR_WRITE_FAULT;
+        done += put;
+    }
+    if (!error && !FlushFileBuffers(f))
+        error = GetLastError();
+    if (!CloseHandle(f) && !error)
+        error = GetLastError();
+    if (error)
+        goto out;
+
+    if (Am_FileExists(path)) {
+        // Keeps attributes and permissions of the old file. Its old content goes
+        // to "<path>.old.tmp" for the moment of the swap and is then removed.
+        DeleteFileW(old);
+        if (ReplaceFileW(path, tmp, old, REPLACEFILE_IGNORE_MERGE_ERRORS, NULL, NULL)) {
+            DeleteFileW(old);
+            goto out;
+        }
+        error = GetLastError();
+        if (error == ERROR_UNABLE_TO_MOVE_REPLACEMENT_2) {
+            // The old file was already moved to its backup name: put it back.
+            MoveFileExW(old, path, MOVEFILE_WRITE_THROUGH);
+            goto out;
+        }
+        // ReplaceFileW left both files as they were; try the plain rename
+        // (e.g. on drives without ReplaceFileW support).
+        error = 0;
+    }
+    if (!MoveFileExW(tmp, path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+        error = GetLastError();
+
+out:
+    if (error)
+        DeleteFileW(tmp);
+    Am_Free(tmp);
+    Am_Free(old);
+    Am_Free(utf8);
+    if (error) {
+        SetLastError(error);
         return 0;
     }
-    ok = len == 0 || WriteFile(f, utf8, (DWORD)len, &put, NULL);
-    CloseHandle(f);
-    Am_Free(utf8);
-    return ok && put == (DWORD)len;
+    return 1;
 }
 
 int Am_FileExists(const wchar_t *path)
@@ -586,6 +729,68 @@ int Am_AskYesNo(HWND owner, const wchar_t *title, const wchar_t *text)
         return 1;
     }
     return MessageBoxW(owner ? owner : g_main, text, title, MB_YESNO | MB_ICONQUESTION) == IDYES;
+}
+
+int Am_AskChoice(HWND owner, const wchar_t *title, const wchar_t *text,
+                 const wchar_t *const *buttons, int count, int autoAnswer)
+{
+    TASKDIALOG_BUTTON b[4];
+    TASKDIALOGCONFIG cfg;
+    int pressed = 0, i;
+
+    if (count < 2)
+        count = 2;
+    if (count > 4)
+        count = 4;
+    if (autoAnswer < 0 || autoAnswer >= count)
+        autoAnswer = count - 1;
+    if (g_automating) {
+        Am_AutoLog(L"  ask: %ls - answered %ls", text, buttons[autoAnswer]);
+        return autoAnswer;
+    }
+    memset(&cfg, 0, sizeof(cfg));
+    for (i = 0; i < count; i++) {
+        b[i].nButtonID = 100 + i;
+        b[i].pszButtonText = buttons[i];
+    }
+    cfg.cbSize = sizeof(cfg);
+    cfg.hwndParent = owner ? owner : g_main;
+    cfg.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
+    cfg.pszWindowTitle = title;
+    cfg.pszMainIcon = TD_WARNING_ICON;
+    cfg.pszContent = text;
+    cfg.cButtons = (UINT)count;
+    cfg.pButtons = b;
+    cfg.nDefaultButton = 100 + count - 1;
+    if (SUCCEEDED(TaskDialogIndirect(&cfg, &pressed, NULL, NULL))) {
+        if (pressed >= 100 && pressed < 100 + count)
+            return pressed - 100;
+        return count - 1;
+    }
+    // Without the task dialog: Yes / No (/ Cancel) with the meanings in the text.
+    {
+        size_t cap = wcslen(text) + 400;
+        wchar_t *t = Am_Alloc(cap * sizeof(wchar_t));
+        static const wchar_t *const names[3] = { L"Yes", L"No", L"Cancel" };
+        int r;
+        wcscpy(t, text);
+        wcscat(t, L"\n");
+        for (i = 0; i < count && i < 3; i++) {
+            wcscat(t, L"\n");
+            wcscat(t, names[i]);
+            wcscat(t, L" = ");
+            wcsncat(t, buttons[i], 100);
+        }
+        r = MessageBoxW(owner ? owner : g_main, t, title,
+                        (count >= 3 ? MB_YESNOCANCEL | MB_DEFBUTTON3 : MB_YESNO | MB_DEFBUTTON2) |
+                            MB_ICONWARNING);
+        Am_Free(t);
+        if (r == IDYES)
+            return 0;
+        if (r == IDNO && count >= 3)
+            return 1;
+        return count - 1;
+    }
 }
 
 void Am_Tell(HWND owner, const wchar_t *title, const wchar_t *text)

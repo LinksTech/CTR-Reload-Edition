@@ -138,7 +138,12 @@ struct CupsState {
 
     // What came from cups.txt on loading.
     int fileExists;
-    int fileUnreadable;
+    int fileUnreadable;     // there but not read: Save stays off, the file is never overwritten
+    DWORD fileError;        // why (Windows error)
+    int fileBadUtf8;        // not valid UTF-8: U+FFFD in the texts, Save asks before writing them
+    struct AmFileStamp fileStamp;   // what was read (or written) - to notice changes from outside
+    int fileStampKnown;
+    int fileChangeNoted;    // the message "changed outside" is already shown
     int fileCups;
     struct CupsUnkept unkept[CUPS_MAX_UNKEPT];
     int unkeptCount;        // stored
@@ -418,6 +423,21 @@ static void Cups_LoadMsg(struct CupsState *s, int sev, const wchar_t *detail, co
     Cups_Copy(m->detail, CUPS_MSG_CAP, detail);
 }
 
+// Windows' text for an error code, one line.
+static void Cups_ErrorText(DWORD error, wchar_t *out, int cap)
+{
+    DWORD n;
+    out[0] = 0;
+    n = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS, NULL, error, 0, out,
+                       (DWORD)cap, NULL);
+    while (n > 0 && (out[n - 1] == L'\r' || out[n - 1] == L'\n' || out[n - 1] == L' ' || out[n - 1] == L'.'))
+        out[--n] = 0;
+    if (n == 0)
+        swprintf(out, (size_t)cap, L"error %lu", (unsigned long)error);
+    else
+        swprintf(out + n, (size_t)cap - n, L" (error %lu)", (unsigned long)error);
+}
+
 static void Cups_Unkept(struct CupsState *s, int line, int kind, const wchar_t *text, const wchar_t *why)
 {
     struct CupsUnkept *u;
@@ -668,7 +688,9 @@ static void Cups_ReadCupsFile(struct CupsState *s)
 {
     wchar_t path[MAX_PATH], shown[CUPS_UNKEPT_TEXT], detail[CUPS_MSG_CAP];
     wchar_t nm[CUPS_TEXT_CAP], who[64], one[200];
+    wchar_t why[256];
     wchar_t *text, *p;
+    struct AmTextRead info;
     int lineNo = 0, cur = -1, extraCups = 0, other = 0, listed = 0, i;
     int extraTracks[CUPS_MAX_CUPS];
 
@@ -680,22 +702,44 @@ static void Cups_ReadCupsFile(struct CupsState *s)
     s->loadMsgCount = 0;
     s->fileExists = 0;
     s->fileUnreadable = 0;
+    s->fileError = 0;
+    s->fileBadUtf8 = 0;
+    s->fileStampKnown = 0;
+    s->fileChangeNoted = 0;
+    memset(&s->fileStamp, 0, sizeof(s->fileStamp));
     s->fileCups = 0;
 
     Am_PathJoin(path, MAX_PATH, s->folder, L"cups.txt");
-    text = Am_ReadTextFile(path);
+    text = Am_ReadTextFileEx(path, &info);
     if (!text) {
-        if (Am_FileExists(path)) {
+        if (info.stamp.exists) {
             s->fileExists = 1;
             s->fileUnreadable = 1;
-            Cups_LoadMsg(s, AM_SEV_WARNING, NULL,
-                         L"cups.txt is in this folder but could not be read. Saving replaces it.");
+            s->fileError = info.error;
+            Cups_ErrorText(info.error, why, 256);
+            swprintf(detail, CUPS_MSG_CAP, L"Windows says: %ls", why);
+            Cups_LoadMsg(s, AM_SEV_ERROR, detail,
+                         L"cups.txt is in this folder but could not be read completely. Save is off so "
+                         L"that the file is not overwritten - fix the cause (e.g. close the program that "
+                         L"holds it) and press Reload.");
         } else {
+            s->fileStamp = info.stamp;
+            s->fileStampKnown = 1;
             Cups_LoadMsg(s, AM_SEV_INFO, NULL, L"There is no cups.txt in this folder yet. Save creates it.");
         }
         return;
     }
     s->fileExists = 1;
+    s->fileStamp = info.stamp;
+    s->fileStampKnown = 1;
+    if (info.badUtf8) {
+        s->fileBadUtf8 = 1;
+        Cups_LoadMsg(s, AM_SEV_WARNING, NULL,
+                     L"cups.txt is not valid UTF-8 (it was perhaps saved in another encoding). The "
+                     L"characters that could not be read show as replacement marks. Retype them, or "
+                     L"save the file as UTF-8 in a text editor and press Reload. Save asks before it "
+                     L"writes such characters.");
+    }
 
     p = text;
     while (*p) {
@@ -1004,7 +1048,7 @@ static void Cups_UpdateButtons(struct CupsState *s)
     Cups_Enable(s->removeBtn, t >= 0, s->trackList);
     Cups_Enable(s->trackUpBtn, t > 0, s->trackList);
     Cups_Enable(s->trackDownBtn, t >= 0 && t < tracks - 1, s->trackList);
-    Cups_Enable(s->saveBtn, s->loaded, s->folderEdit);
+    Cups_Enable(s->saveBtn, s->loaded && !s->fileUnreadable, s->folderEdit);
 
     if (!s->loaded)
         hint = L"";
@@ -1024,7 +1068,10 @@ static void Cups_UpdateStatus(struct CupsState *s)
     if (!s->loaded) {
         Cups_Copy(text, 128, L"Choose the tracks folder of the game.");
     } else if (s->fileUnreadable) {
-        Cups_Copy(text, 128, L"cups.txt could not be read");
+        Cups_Copy(text, 128, L"cups.txt could not be read - Save is off");
+        col = AM_COL_ERROR;
+    } else if (s->fileBadUtf8) {
+        swprintf(text, 128, L"cups.txt found - %d cup%ls, not valid UTF-8", s->fileCups, Cups_S(s->fileCups));
         col = AM_COL_ERROR;
     } else if (s->fileExists) {
         swprintf(text, 128, L"cups.txt found - %d cup%ls", s->fileCups, Cups_S(s->fileCups));
@@ -1051,8 +1098,8 @@ static void Cups_UpdateHeadline(struct CupsState *s)
         text = L"Saved - the game reads it at its next start";
         col = AM_COL_OK;
     } else if (s->fileUnreadable) {
-        text = L"cups.txt could not be read";
-        col = AM_COL_WARNING;
+        text = L"cups.txt could not be read - Save is off";
+        col = AM_COL_ERROR;
     } else if (!s->fileExists) {
         text = L"No cups.txt yet";
     } else {
@@ -1613,6 +1660,37 @@ static void Cups_Rescan(struct CupsState *s)
     Cups_Relayout(s);
 }
 
+// 1 if cups.txt on disk is no longer what the page read or wrote (also when
+// it cannot be read now).
+static int Cups_FileChanged(const struct CupsState *s)
+{
+    wchar_t path[MAX_PATH];
+    struct AmFileStamp now;
+
+    if (!s->loaded || !s->fileStampKnown)
+        return 0;
+    Am_PathJoin(path, MAX_PATH, s->folder, L"cups.txt");
+    if (!Am_FileStampNow(path, &now))
+        return 1;
+    return !Am_FileStampSame(&s->fileStamp, &now);
+}
+
+// Reads cups.txt again; the cups on the page are replaced, the containers stay.
+static void Cups_ReloadCups(struct CupsState *s, const wchar_t *note)
+{
+    s->dirty = 0;
+    s->savedNow = 0;
+    Cups_ReadCupsFile(s);
+    if (note)
+        Cups_LoadMsg(s, AM_SEV_INFO, NULL, L"%ls", note);
+    s->selCup = s->cupCount > 0 ? 0 : -1;
+    Cups_UpdateStatus(s);
+    Cups_RefreshAll(s, -1);
+    Cups_Relayout(s);
+    if (Am_Automating())
+        Am_AutoLog(L"  cups: cups.txt read again - %d cup(s)", s->cupCount);
+}
+
 static void Cups_Shown(struct CupsState *s)
 {
     wchar_t dir[MAX_PATH];
@@ -1620,6 +1698,20 @@ static void Cups_Shown(struct CupsState *s)
         // Back on the page: reread only if a container has changed.
         if (s->loaded && !s->infoJob && Cups_FolderStamp(s->folder) != s->folderStamp)
             Cups_Rescan(s);
+        // cups.txt itself: without own changes simply read it again, with own
+        // changes only say so - Save then asks.
+        if (s->loaded && (s->fileUnreadable || Cups_FileChanged(s))) {
+            if (!s->dirty) {
+                Cups_ReloadCups(s, s->fileUnreadable ? NULL
+                                                     : L"cups.txt was changed outside the Alpha-Maker and has been read again.");
+            } else if (!s->fileUnreadable && !s->fileChangeNoted) {
+                s->fileChangeNoted = 1;
+                Cups_LoadMsg(s, AM_SEV_WARNING, NULL,
+                             L"cups.txt was changed outside the Alpha-Maker after this page read it. Save "
+                             L"asks whether to overwrite those changes or to read the file again.");
+                Cups_Evaluate(s);
+            }
+        }
         return;
     }
     s->shown = 1;
@@ -1668,10 +1760,6 @@ static int Cups_AskOverwrite(const struct CupsState *s)
     wchar_t text[1400], one[200];
     int i;
 
-    if (s->fileUnreadable && s->unkeptTotal == 0)
-        return Am_AskYesNo(Am_MainWindow(), L"Replace cups.txt?",
-                           L"cups.txt could not be read, so this page cannot keep what is in it. "
-                           L"Saving replaces the whole file. Save anyway?");
     Cups_Copy(text, 1400, L"cups.txt has lines this page does not keep:\n\n");
     for (i = 0; i < s->unkeptCount && i < 3; i++) {
         swprintf(one, 200, L"Line %d: %ls (%ls)\n", s->unkept[i].line, s->unkept[i].text, s->unkept[i].why);
@@ -1687,32 +1775,70 @@ static int Cups_AskOverwrite(const struct CupsState *s)
 
 static int Cups_Save(struct CupsState *s)
 {
-    wchar_t path[MAX_PATH], msg[MAX_PATH + 300];
+    static const wchar_t *const changedButtons[3] = { L"Overwrite", L"Reload", L"Cancel" };
+    static const wchar_t *const badButtons[2] = { L"Save anyway", L"Cancel" };
+    wchar_t path[MAX_PATH], msg[MAX_PATH + 600], why[256];
     wchar_t *text;
+    DWORD error;
     int ok;
 
     if (!s->loaded) {
         Am_Tell(Am_MainWindow(), L"No folder", L"Choose the tracks folder of the game first.");
         return 0;
     }
+    if (s->fileUnreadable) {
+        // Never over a file whose content the page does not know.
+        Am_Tell(Am_MainWindow(), L"cups.txt could not be read",
+                L"cups.txt is in this folder but could not be read, so Save would overwrite cups "
+                L"this page has never seen. Fix the cause (e.g. close the program that holds the file) "
+                L"and press Reload.");
+        return 0;
+    }
+    if (Cups_FileChanged(s)) {
+        int answer = Am_AskChoice(Am_MainWindow(), L"cups.txt was changed outside",
+                                  L"cups.txt was changed on disk after this page read it (by another "
+                                  L"program or another Alpha-Maker).\n\nOverwrite: save the cups on this "
+                                  L"page and lose those changes.\nReload: read cups.txt again and lose the "
+                                  L"changes on this page.\nCancel: keep both as they are.",
+                                  changedButtons, 3, 2);
+        if (answer == 1)
+            Cups_ReloadCups(s, L"cups.txt was read again; the changes on this page were dropped.");
+        if (answer != 0)
+            return 0;
+    }
     Cups_Evaluate(s);
     if (s->errorCount > 0 &&
         !Am_AskYesNo(Am_MainWindow(), L"Save with problems?",
                      L"Some cups have problems (see Check). The game leaves such cups out. Save anyway?"))
         return 0;
-    if ((s->unkeptTotal > 0 || s->fileUnreadable) && !Cups_AskOverwrite(s))
+    if (s->unkeptTotal > 0 && !Cups_AskOverwrite(s))
         return 0;
 
     text = Cups_BuildFile(s);
+    if (wcschr(text, 0xFFFD) &&
+        Am_AskChoice(Am_MainWindow(), L"Save replacement characters?",
+                     L"Some cup names or file names contain the replacement mark \xFFFD - characters "
+                     L"that could not be read because cups.txt was not valid UTF-8. Saving writes the "
+                     L"mark itself; the original characters are lost, and a file name with it will not "
+                     L"be found.\n\nRetype those characters first, or save anyway?",
+                     badButtons, 2, 1) != 0) {
+        Am_Free(text);
+        return 0;
+    }
     Am_PathJoin(path, MAX_PATH, s->folder, L"cups.txt");
     ok = Am_WriteTextFile(path, text);
+    error = ok ? 0 : GetLastError();
     Am_Free(text);
     if (!ok) {
-        swprintf(msg, MAX_PATH + 300,
-                 L"cups.txt could not be written to\n%ls\n\nThe folder may be write-protected, or another "
-                 L"program has cups.txt open. Your cups are still here - fix the cause and press Save again.",
-                 s->folder);
+        Cups_ErrorText(error, why, 256);
+        swprintf(msg, MAX_PATH + 600,
+                 L"cups.txt could not be written to\n%ls\n\nWindows says: %ls\n\nThe old cups.txt was not "
+                 L"changed. The folder may be write-protected, or another program has cups.txt open. Your "
+                 L"cups are still here - fix the cause and press Save again.",
+                 s->folder, why);
         Am_Tell(Am_MainWindow(), L"Could not save cups.txt", msg);
+        if (Am_Automating())
+            Am_AutoLog(L"  cups: could not save %ls - %ls", path, why);
         return 0;
     }
 
@@ -1720,6 +1846,10 @@ static int Cups_Save(struct CupsState *s)
     s->savedNow = 1;
     s->fileExists = 1;
     s->fileUnreadable = 0;
+    s->fileError = 0;
+    s->fileBadUtf8 = 0;
+    s->fileChangeNoted = 0;
+    s->fileStampKnown = Am_FileStampNow(path, &s->fileStamp);
     s->fileCups = s->cupCount;
     s->unkeptCount = 0;
     s->unkeptTotal = 0;
