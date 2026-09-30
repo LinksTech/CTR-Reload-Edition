@@ -1,0 +1,368 @@
+/*
+ * Derived from REDRIVER2/PsyCross MIT source:
+ * externals/PsyCross/src/psx/LIBGPU.C
+ * See THIRD_PARTY_NOTICES.md for copyright and license details.
+ */
+
+#include <psx/libgte.h>
+#include <psx/libetc.h>
+#include <psx/libgpu.h>
+
+#include <platform/native_renderer.h>
+#include <platform/native_gpu.h>
+#include <platform/native_perf.h>
+#include <gpu.h>
+#include <platform.h>
+
+#include <string.h>
+
+// NOTE(aalhendi): Native libgpu preserves the retail-shaped PsyQ GPU facade
+// while keeping the game-facing GPU symbols under ctr-native ownership. The
+// primitive parser and the graphics backend live behind this native platform
+// boundary.
+
+int g_dbg_emulatorPaused = 0;
+void (*drawsync_callback)(void) = NULL;
+
+int ClearImage(RECT16 *rect, uint8_t r, uint8_t g, uint8_t b)
+{
+	NativeRenderer_ClearVRAM(rect->x, rect->y, rect->w, rect->h, r, g, b);
+	NativeRenderer_Clear(rect->x, rect->y, rect->w, rect->h, r, g, b);
+	return 0;
+}
+
+int ClearImage2(RECT16 *rect, uint8_t r, uint8_t g, uint8_t b)
+{
+	return ClearImage(rect, r, g, b);
+}
+
+int DrawSync(int mode)
+{
+	(void)mode;
+
+	NativeRenderer_UpdateVRAM();
+	if (NativeGpu_HasPendingSplits())
+	{
+		DrawAllSplits();
+	}
+	// NOTE(penta3): Real PS1 DrawSync only waits for the GPU; it never copies the
+	// framebuffer back into VRAM. We do the same: no per-frame readback here. The
+	// on-demand consumers that actually sample the framebuffer pull it when needed
+	// (StoreImage/ElimBG pause grab, MoveImage, save-state capture).
+
+	if (drawsync_callback != NULL)
+	{
+		drawsync_callback();
+	}
+
+	return 0;
+}
+
+int LoadImage(RECT16 *rect, void *p)
+{
+	NativeRenderer_CopyVRAM((unsigned short *)p, 0, 0, rect->w, rect->h, rect->x, rect->y);
+	return 0;
+}
+
+int LoadImage2(RECT16 *rect, void *p)
+{
+	LoadImage(rect, p);
+	NativeRenderer_UpdateVRAM();
+	return 0;
+}
+
+int MoveImage(RECT16 *rect, int x, int y)
+{
+	NativeRenderer_CopyVRAM(NULL, rect->x, rect->y, rect->w, rect->h, x, y);
+	return 0;
+}
+
+int StoreImage(RECT16 *rect, uint32_t *p)
+{
+	NativeRenderer_ReadVRAM((unsigned short *)p, rect->x, rect->y, rect->w, rect->h);
+	return 0;
+}
+
+int StoreImage2(RECT16 *rect, uint32_t *p)
+{
+	return StoreImage(rect, p);
+}
+
+int ResetGraph(int mode)
+{
+	if (mode == 0)
+	{
+		g_GPUDisabledState = 0;
+		ClearImage(&activeDrawEnv.clip, 0, 0, 0);
+		ClearSplits();
+		Platform_EndScene();
+	}
+	else if (mode == 1)
+	{
+		ClearSplits();
+		Platform_EndScene();
+	}
+
+	return 0;
+}
+
+int SetGraphDebug(int level)
+{
+	(void)level;
+	return 0;
+}
+
+uint32_t *ClearOTag(uint32_t *ot, int n)
+{
+	OT_TAG *ptag_list;
+
+	if (n == 0)
+	{
+		return NULL;
+	}
+
+	ptag_list = (OT_TAG *)ot;
+
+	termPrim(&ptag_list[n - 1]);
+	setlen(&ptag_list[n - 1], 0);
+
+	for (int i = n - 2; i >= 0; --i)
+	{
+		setaddr(&ptag_list[i], &ptag_list[i + 1]);
+		setlen(&ptag_list[i], 0);
+	}
+
+	return NULL;
+}
+
+uint32_t *ClearOTagR(uint32_t *ot, int n)
+{
+	OT_TAG *ptag_list;
+
+	if (n == 0)
+	{
+		return NULL;
+	}
+
+	ptag_list = (OT_TAG *)ot;
+
+	termPrim(ptag_list);
+	setlen(ptag_list, 0);
+
+	for (int i = 1; i < n; ++i)
+	{
+		setaddr(&ptag_list[i], &ptag_list[i - 1]);
+		setlen(&ptag_list[i], 0);
+	}
+
+	return NULL;
+}
+
+void SetDispMask(int mask)
+{
+	g_GPUDisabledState = (mask == 0);
+}
+
+DISPENV *GetDispEnv(DISPENV *env)
+{
+	memcpy(env, &activeDispEnv, sizeof(DISPENV));
+	return env;
+}
+
+DISPENV *PutDispEnv(DISPENV *env)
+{
+	memcpy(&activeDispEnv, env, sizeof(DISPENV));
+	return 0;
+}
+
+DISPENV *SetDefDispEnv(DISPENV *env, int x, int y, int w, int h)
+{
+	env->disp.x = x;
+	env->disp.y = y;
+	env->disp.w = w;
+	env->disp.h = h;
+
+	env->screen.x = 0;
+	env->screen.y = 0;
+	env->screen.w = 0;
+	env->screen.h = 0;
+
+	env->isrgb24 = 0;
+	env->isinter = 0;
+	env->pad1 = 0;
+	env->pad0 = 0;
+
+	return 0;
+}
+
+DRAWENV *PutDrawEnv(DRAWENV *env)
+{
+	memcpy(&activeDrawEnv, env, sizeof(DRAWENV));
+	return 0;
+}
+
+DRAWENV *SetDefDrawEnv(DRAWENV *env, int x, int y, int w, int h)
+{
+	env->clip.x = x;
+	env->clip.y = y;
+	env->clip.w = w;
+	env->clip.h = h;
+
+	env->tw.x = 0;
+	env->tw.y = 0;
+	env->tw.w = 0;
+	env->tw.h = 0;
+	env->r0 = 0;
+	env->g0 = 0;
+	env->b0 = 0;
+	env->dtd = 1;
+
+	if (GetVideoMode() == MODE_NTSC)
+	{
+		env->dfe = h < 289 ? 1 : 0;
+	}
+	else
+	{
+		env->dfe = h < 257 ? 1 : 0;
+	}
+
+	env->ofs[0] = x;
+	env->ofs[1] = y;
+	env->tpage = 10;
+	env->isbg = 0;
+
+	return env;
+}
+
+void SetDrawEnv(DR_ENV *dr_env, DRAWENV *env)
+{
+	dr_env->code[0] = ((env->clip.y & 0x3FF) << 10) | (env->clip.x & 0x3FF) | 0xE3000000;
+	dr_env->code[1] = (((env->clip.y + env->clip.h - 1) & 0x3FF) << 10) | ((env->clip.x + env->clip.w - 1) & 0x3FF) | 0xE4000000;
+	dr_env->code[2] = ((env->ofs[1] & 0x7FF) << 11) | (env->ofs[0] & 0x7FF) | 0xE5000000;
+	dr_env->code[3] = 32 * (((256 - env->tw.h) >> 3) & 0x1F) | (((256 - env->tw.w) >> 3) & 0x1F) | (((env->tw.y >> 3) & 0x1F) << 15) |
+	                  (((env->tw.x >> 3) & 0x1F) << 10) | 0xE2000000;
+	dr_env->code[4] = ((env->dtd != 0) << 9) | ((env->dfe != 0) << 10) | (env->tpage & 0x1FF) | 0xE1000000;
+
+	setlen(dr_env, 5);
+}
+
+void SetDrawMove(DR_MOVE *p, RECT16 *rect, int x, int y)
+{
+	char len = 5;
+
+	if (rect->w == 0 || rect->h == 0)
+	{
+		len = 0;
+	}
+
+	p->code[0] = 0x1000000;
+	p->code[1] = 0x80000000;
+	p->code[2] = ((u32)(u16)rect->x) | ((u32)(u16)rect->y << 16);
+	p->code[3] = (y << 0x10) | (x & 0xffffU);
+	p->code[4] = ((u32)(u16)rect->w) | ((u32)(u16)rect->h << 16);
+
+	setlen(p, len);
+}
+
+uint32_t DrawSyncCallback(void (*func)(void))
+{
+	uint32_t old = (uint32_t)(uintptr_t)drawsync_callback;
+
+	drawsync_callback = func;
+	return old;
+}
+
+void DrawOTag(void *p)
+{
+	NativePerf_BeginScope(NATIVE_PERF_BUCKET_DRAW_OTAG);
+	do
+	{
+		if (g_GPUDisabledState)
+		{
+			ClearSplits();
+			NativePerf_EndScope(NATIVE_PERF_BUCKET_DRAW_OTAG);
+			return;
+		}
+
+		if (Platform_BeginScene())
+		{
+			ClearSplits();
+		}
+
+		ParsePrimitivesLinkedList((uint32_t *)p, 0);
+		DrawAllSplits();
+	} while (g_dbg_emulatorPaused);
+	NativePerf_EndScope(NATIVE_PERF_BUCKET_DRAW_OTAG);
+}
+
+void DrawPrim(void *p)
+{
+	if (g_GPUDisabledState)
+	{
+		ClearSplits();
+		return;
+	}
+
+	if (Platform_BeginScene())
+	{
+		ClearSplits();
+	}
+
+	ParsePrimitivesLinkedList((uint32_t *)p, 1);
+}
+
+void AddPrim(void *ot, void *p)
+{
+	u32 otTag = CTR_GPU_ReadTagWord(ot);
+	u32 primTag = CTR_GPU_ReadTagWord(p);
+
+	CTR_GPU_WriteTagWord(p, CtrGpu_PackOTTag(otTag, primTag & 0xff000000u));
+	CTR_GPU_WriteTagWord(ot, CtrGpu_PrimToOTLink24(p));
+}
+
+
+// THE TWO PSY-X PACKETS THAT UNTIL TODAY WERE ONLY DECLARED.
+//
+// include/psx/libgpu.h:813 has always declared SetPsyXTexture, and
+// ProcessPsyXPrims (native_gpu.c:4293) also reads the packet - but nobody
+// defined the function. The whole route "own RGBA texture instead of VRAM" was
+// therefore not reachable from the game side: there was no packet that
+// switches it on.
+//
+// The packet carries two command words, exactly as many as the parser
+// returns:
+//
+//   code[0]  id of the host texture, 24 bits  (0 switches back to VRAM)
+//   code[1]  width in bits 0..11, height in bits 16..27
+//
+// 0xB1 is the id: the dispatcher takes code & 0xF0 as the base form (0xB0 =
+// Psy-X) and code & 0x0F as the sub-form (1 = texture, 2 = debug mark).
+//
+// WHAT IT DOES NOT DO, AND WHY THAT MATTERS. The parser sets the id
+// and NEVER resets it by itself - neither per frame nor per split. Whoever
+// sets it must also set it back to 0, otherwise every further
+// textured primitive of the frame draws from the same host texture.
+// THE ORDER OF THE THREE ASSIGNMENTS IS NOT FREE, and that cost a day
+// on which the route silently ended up in the old path.
+//
+// P_TAG is four bytes of tag plus "pad0, pad1, pad2, code" - the code of a
+// primitive therefore lies on BYTE 7, and CTR_GPU_WriteTagCode writes exactly
+// there (libgpu.h:147). DR_PSYX_TEX however carries code[0] directly behind the
+// tag, and its top byte IS byte 7. Code and texture number
+// share one word.
+//
+// That is why the parser does it this way: it reads code[0] & 0xFFFFFF and cuts
+// off the top byte (native_gpu.c:4302) - the code lives there too. Whoever first
+// calls setcode and then writes code[0] erases it again, the packet drops
+// out of the dispatcher and every quad behind it keeps drawing from VRAM,
+// without anything reporting an error.
+//
+// So: payload first, tag and code last.
+void SetPsyXTexture(DR_PSYX_TEX *p, u32 grTextureId, int width, int height)
+{
+	p->code[0] = grTextureId & 0x00ffffffu;
+	p->code[1] = ((u32)width & 0xfffu) | (((u32)height & 0xfffu) << 16);
+
+	setlen(p, 2);
+	setcode(p, 0xB1);
+}

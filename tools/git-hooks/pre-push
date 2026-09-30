@@ -1,0 +1,93 @@
+#!/bin/sh
+# CTR Reload Edition - pre-push guard.
+#
+# Refuses a push that would publish game data, third-party track content or
+# anything else that must never leave the machine. Once something is public
+# it cannot be taken back, so this hook fails closed.
+#
+# Install (once per clone):
+#   git config core.hooksPath tools/git-hooks
+#
+# It checks every blob that the push would send (all objects reachable from
+# the pushed commits and not yet on the remote):
+#   - forbidden file types (disc images, game formats, containers, patches,
+#     memory cards, logs, save states, raw pictures)
+#   - forbidden folders (assets, tracks, test data, measurement and
+#     reference folders, build output)
+#   - pictures and sounds outside externals/SDL
+#   - any file larger than 5 MB
+#   - the SHA-256 of known game files (compared by size first, then hashed)
+
+remote="$1"
+zero=0000000000000000000000000000000000000000
+limit=5242880
+
+# size sha256 name - known game files that must never be pushed
+known="605698800 f780bf2331476aabfc00772fa758b12dd95ebfbc907968132cbd3cdd4e2c07c0 disc-image(ctr-u.bin)
+270360576 98779a7990f395fe3620481a1b5478149c88ff17fffa64905369f3e46368fce7 BIGFILE.BIG
+12248724 d63447845881c65bc081672a01762f7cd9461dd5992b12acdb79e402be5948c2 KART.HWL"
+sizes=$(echo "$known" | cut -d' ' -f1 | tr '\n' ' ')
+
+tmp=$(mktemp 2>/dev/null || echo "${TMPDIR:-/tmp}/ctr-pre-push.$$")
+: > "$tmp.found"
+
+while read local_ref local_sha remote_ref remote_sha; do
+	[ "$local_sha" = "$zero" ] && continue
+	# The commits this push sends.
+	if [ "$remote_sha" != "$zero" ] && git cat-file -e "$remote_sha" 2>/dev/null; then
+		git rev-list "$local_sha" "^$remote_sha" > "$tmp.list" || exit 1
+	else
+		git rev-list "$local_sha" --not --remotes="$remote" > "$tmp.list" || exit 1
+	fi
+	# Every path in every one of those commits, not only new objects: a
+	# forbidden path must be caught even if its content already exists
+	# elsewhere (same blob under an allowed name, or already on the remote).
+	while read commit; do
+		git ls-tree -r -l -z --full-tree "$commit" || exit 1
+	done < "$tmp.list" |
+	awk -v RS='\0' '{ t = index($0, "\t"); split(substr($0, 1, t - 1), f, " "); print f[2] " " f[3] " " f[4] " " substr($0, t + 1) }' |
+	sort -u |
+	awk -v limit="$limit" -v sizes="$sizes" '
+	BEGIN { n = split(sizes, s, " "); for (i = 1; i <= n; i++) known[s[i]] = 1 }
+	$1 == "blob" {
+		sha = $2; size = $3 + 0
+		path = $0; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", path)
+		lower = tolower(path)
+		k = split(lower, part, "/"); base = part[k]
+		sdl = (lower ~ /^externals\/sdl\//)
+
+		if (base ~ /\.(bin|cue|iso|img|chd|ecm|pbp|mdf|mds|nrg|ccd|sub|toc)$/) print "BAD\t" path "\tdisc image type"
+		if (base ~ /\.(big|hwl|xa|str|xnf|vag|vab|vh|vb|lev|vrm|ctr|mpk|tim|lng)$/) print "BAD\t" path "\tgame data type"
+		if (base ~ /\.(rldtrack|rldchar|rldprev|sca|sndb|cseq)$/) print "BAD\t" path "\ttrack/character container or music data"
+		if (base ~ /\.(xdelta|ppf|ips|bps|vcdiff)$/) print "BAD\t" path "\tpatch file"
+		if (base ~ /\.(mcr|mcd|gme|srm|sav|ctrstates|state)$/) print "BAD\t" path "\tmemory card or save state"
+		if (base ~ /\.(log|dmp|tga|ppm|bmp)$/) print "BAD\t" path "\tlog, dump or raw picture"
+		if (base ~ /^(bigfile\.big|kart\.hwl|ctr-settings\.cfg|ctr-data\.cfg|ctr-view\.cfg|alphamaker\.ini|track-ids\.tsv|cups\.txt)$/) print "BAD\t" path "\tgame file or user settings"
+		if (!sdl) {
+			p = "/" lower
+			if (p ~ /\/(assets|tracks|tracks_archiv|testdaten|memcards|debug|logs|dist|concept|characters|vorschau)\//) print "BAD\t" path "\tforbidden folder"
+			if (p ~ /\/(messung-|baseline-)/ || p ~ /\/(test-bats|build|out)\// || p ~ /\/build-[^\/]*\//) print "BAD\t" path "\tmeasurement, reference or build folder"
+			if (base ~ /\.(png|jpg|jpeg|gif|webp|ico|icns|wav|ogg|mp3|flac|mp4|avi)$/) print "BAD\t" path "\tpicture/sound outside externals/SDL"
+		}
+		if (size > limit) print "BAD\t" path "\tlarger than 5 MB (" size " bytes)"
+		if ((size "") in known) print "HASH\t" path "\t" sha
+	}' >> "$tmp.found"
+done
+
+# Hash only the blobs whose size matches a known game file.
+grep '^HASH' "$tmp.found" | while IFS='	' read tag path sha; do
+	h=$(git cat-file blob "$sha" | sha256sum | cut -d' ' -f1)
+	name=$(echo "$known" | awk -v h="$h" '$2 == h { print $3 }')
+	[ -n "$name" ] && printf 'BAD\t%s\tSHA-256 matches %s\n' "$path" "$name"
+done >> "$tmp.found"
+
+if grep -q '^BAD' "$tmp.found"; then
+	echo "pre-push: PUSH REFUSED - forbidden content:" >&2
+	grep '^BAD' "$tmp.found" | cut -f2- | sed 's/\t/: /; s/^/  /' >&2
+	echo "pre-push: nothing was sent. Remove the files from history before pushing." >&2
+	rm -f "$tmp" "$tmp.list" "$tmp.found"
+	exit 1
+fi
+rm -f "$tmp" "$tmp.list" "$tmp.found"
+echo "pre-push: content check passed" >&2
+exit 0

@@ -1,0 +1,307 @@
+# ===========================================================================
+#  NITRO-PIT - the native main menu and the box behind it, as data.
+# ===========================================================================
+#
+#  This file is the source. At build time it is taken into the built-in stock
+#  (cmake, native_menudefault.h), so that the game also starts without it
+#  - it therefore exists exactly once and not twice.
+#
+#  What is NOT here and why:
+#
+#    The scale and the minimum width of the main menu. Both depend on
+#    --menu-scale, and a switch and a file that set the same number
+#    drift apart. They stay in the style the code keeps.
+#
+#    ADVENTURE and ARCADE carry no "wirkung" (action). Their action is a
+#    text index comparison in MM_MenuProc_Main, together with the retail rows -
+#    that is the old coupling, and taking it apart means touching retail
+#    code. Without "wirkung" and without "weiter" a row falls through to there.
+#
+#  Blocks: "kasten <name>" (box) and "stil <name>" (style). The order does not
+#  matter, names may point forward. An unknown key or an
+#  unknown name is an error with a line number - then the stock applies.
+
+# ---------------------------------------------------------------------------
+#  The main menu.
+#
+#  It sits in the middle column of a 25/50/25 grid over 512 columns:
+#  x 256 is the middle of 128..383, not the middle of anything else.
+#  "bezug mitte" (anchor centre) means that x and y are the centre point and not the corner.
+#
+#  This box keeps MM_MenuProc_Main. It is not a format box that
+#  gets a proc - it is the box of the title screen, to which the
+#  fade-in, the demo counter and the cheat codes are attached. The file sets
+#  its rows and its position, not its behaviour.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+#  The style of the main menu chain.
+#
+#  IT COMES BEFORE THE BOX THAT NAMES IT. "nimmt-stil" (takes style) is resolved
+#  immediately when the row is read (native_menudecl.c:1023), unlike "weiter" - the
+#  sentence "names may point forward" in the header applies to boxes, not to
+#  styles.
+#
+#  EVERY KEY HERE REPLACES THE RETAIL VALUE, it does not add. That is why
+#  24 stands below and not 16: rahmen-zuschlag-h 4 would mean frame 4 and not
+#  frame 8+4. Measured on the screenshot of 09-17: r.h was 94 = 90 + 4.
+#
+#  THE SIZE LINE, IN POINTS OF THE 512 x 216 REFERENCE SPACE. The reference height
+#  216 applies in all three formats, only the width changes (512/682/918) -
+#  a point count for the height is therefore format-independent, one for the
+#  width would not be.
+#
+#    row spacing     24   = font_charPixHeight[FONT_BIG] 17 + zuschlag 7
+#    title -> row 1  32   = row spacing 24 + titel-vorschub 8
+#    box height     176   = GetHeight 152 + rahmen-zuschlag-h 24
+#    top edge        20   = y 108 - GetHeight/2 76 - rahmen-versatz-y 12
+#    bottom edge    196   = 20 + 176, i.e. 20 points of air at the top as at the bottom
+#
+#  GetHeight is 6 x 24 + 8 = 152: five rows, plus the title with one
+#  row height and its advance (RECTMENU.c:486).
+#
+#  RULES FOR LATER SCREENS - noted here because they are written down nowhere
+#  else, and built nowhere:
+#
+#  THREE VALUES FOR THE DEPTH, AND ALL THREE ARE NEEDED.
+#
+#  The chain stacks: every ancestor collapses to its chosen row
+#  (ONLY_DRAW_TITLE) and stays. Three things decide whether that fits into the
+#  picture, and they act at three different places:
+#
+#    rahmen-zuschlag-h-eingeklappt  the HEIGHT of a collapsed box
+#                                   (row spacing + this value = 28)
+#    kind-abstand                   the ADVANCE per level, and together with
+#                                   the previous one the air: 12 - 4 = 8
+#    nur-titel-abzug                the CENTRING. For a collapsed box
+#                                   RECTMENU_GetHeight counts
+#                                   row spacing - nur-titel-abzug plus a
+#                                   whole title, although it draws neither all rows
+#                                   nor the title (RECTMENU.c:470).
+#                                   This sum centres the chain, not the
+#                                   drawn picture - the deeper the chain,
+#                                   the further it slides up.
+#
+#  THAT IS WHY TWO VALUES ARE NOT ENOUGH. The top edge of the root is
+#  96 - GetHeight/2, and GetHeight knows neither frame nor spacing: turning
+#  height and air only moves the bottom edge. With three levels
+#  the top edge stood at 6 - below the minimum margin 16 - and stayed there, whatever
+#  the other two values said. nur-titel-abzug 16 lifts it to 16.
+#
+#  nur-titel-abzug ONLY acts on collapsed boxes. The main menu at rest
+#  does not carry ONLY_DRAW_TITLE and notices nothing of it.
+#
+#  Computed, then measured (rows in the report of 09-17):
+#    three levels  16..44 / 52..80 / 88..192, shadow to 198
+#    two levels    36..64 / 72..176,          shadow to 182
+#
+#  THE DISTANCE TO THE CHILD DEPENDS ON THE FRAME HEIGHT, and that is no free
+#  choice. RECTMENU_DrawSelf sets the top edge of the child to
+#  parent position + row spacing + kind-abstand, the bottom edge of the parent
+#  to parent position + row spacing + rahmen-zuschlag-h (RECTMENU.c:757, :762).
+#  The air in between is therefore EXACTLY
+#
+#      kind-abstand - rahmen-zuschlag-h
+#
+#  and nothing else - position, centring and box height cancel out.
+#  Retail 12 - 8 = 4. With rahmen-zuschlag-h 24 it would be 12 - 24 = -12, the
+#  child would lie twelve points INSIDE the parent frame. 32 - 24 = 8 restores the air,
+#  and 8 is the same value as between two rows (24 - 17).
+#
+#    row spacing always 24 points, never squeeze
+#    box height = 46 + (N x 24) + 10        (N = 5 gives the 176 from above)
+#    minimum height 100, maximum height 184 points
+#    minimum distance to the picture edge 16 points
+# ---------------------------------------------------------------------------
+
+# THE LIGHT EDGE, in percent.
+#
+# The frame is four separate strips; until now all four carried
+# the same tone 0x405000 (measured on 09-19: all four strips rgb 0,80,64).
+# 35 spreads them by a third: top and left 0,108,86, bottom and right
+# 0,52,41. The set tone stays the middle.
+#
+# WHY NOT MORE. The frame is drawn additively, so it adds onto
+# the background. Downwards, 100 is the end - there the dark
+# edge adds nothing any more and disappears instead of getting darker.
+#
+# With --menu-reload the number can be changed without a rebuild.
+stil hauptmenue-fuenf
+  rahmen-lichtkante 35
+  zeile-zuschlag-gross 7
+  titel-vorschub 8
+  titel-linie-y-gross 20
+  hervorhebung-abzug-gross 7
+  rahmen-versatz-y 12
+  rahmen-zuschlag-h 24
+  rahmen-zuschlag-h-eingeklappt 4
+  kind-abstand 12
+  nur-titel-abzug 16
+
+# ---------------------------------------------------------------------------
+#  The five rows.
+#
+#  ADVENTURE and ARCADE still carry no "wirkung" - their target is a
+#  text index comparison in MM_MenuProc_Main (MM_MenuFlow.c:148 and :178), and
+#  without "wirkung" the row falls through exactly to there.
+#
+#  OPTIONS has NO target today: MM_MenuProc_Main does not know LNG_OPTIONS, and
+#  the game's options screen hangs on the pause menu (MainFreeze.c:610),
+#  not on the main menu. The row stands and does nothing until a target exists.
+# ---------------------------------------------------------------------------
+
+kasten hauptmenue
+  x 249
+  y 108
+  bezug mitte
+  layout spalte
+  nimmt-stil hauptmenue-fuenf
+  titel "- MAIN MENU -"
+
+  zeile adventure  text lng 0x4c
+  zeile arcade     text lng 0x4e  weiter renn-modus  oeffnen ersetzen
+  zeile nitro-pit  text "NITRO-PIT"  wirkung nitro-pit  weiter custom-track  oeffnen gestapelt
+  # OPTIONS IS LOCKED, BECAUSE THERE IS NOTHING BEHIND IT.
+  #
+  # The row stood here and did nothing: MM_MenuProc_Main does not know LNG_OPTIONS,
+  # the options screen hangs on the pause menu. A press on it was therefore
+  # a press into nothing - and that is the only thing on the open list that
+  # a player notices immediately.
+  #
+  # Locked instead of deleted: that way the menu and this file say that
+  # OPTIONS is meant to exist. When the screen is there, 'gesperrt-wenn immer'
+  # goes away and nothing else.
+  zeile options    text lng 0x0e  gesperrt-wenn immer
+  zeile exit-game  text "EXIT GAME"  wirkung quit
+
+# ---------------------------------------------------------------------------
+#  The box behind NITRO-PIT.
+#
+#  One row. The track is not chosen here but on the
+#  selection screen further down the flow - four boxes on top of each other
+#  leave room for four rows, and four rows are no track list.
+#
+#  Without containers in tracks/ the row is locked and has a different name. A
+#  menu item that leads into an empty picture is worse than one that
+#  says no.
+#
+#  "zurueck" (back) names the action of the way back. The way back itself - the
+#  parent box shows its rows again - is done by the generic proc, once
+#  for all format boxes instead of once more in every proc.
+# ---------------------------------------------------------------------------
+
+kasten custom-track
+  bezug mitte-x
+  layout spalte
+  zurueck nitro-auswahl-zu
+
+  zeile custom-track  text "CUSTOM TRACK"  text-gesperrt "NO TRACKS"  gesperrt-wenn-nicht tracks-vorhanden  wirkung nitro-auswahl-auf  weiter spieler-1p2p  oeffnen gestapelt
+
+# ---------------------------------------------------------------------------
+#  The box behind ARCADE - and behind VS, because both open the same one.
+#
+#  IT BELONGS TO RETAIL. Its two rows SINGLE and CUP are in D230.c:105,
+#  their meaning lies in the INDEX: MM_MenuProc_SingleCup asks "rowSelected != 0"
+#  and sets CUP_ANY_KIND from it (MM_MenuFlow.c:489). The file does not touch the
+#  rows - only the presentation is declared.
+#
+#  WHAT IS MISSING HERE ON PURPOSE, AND WHY:
+#
+#    x and y. The position of this box does NOT lie in it. MM_Title_MenuUpdate
+#    rewrites posX_curr/posY_curr in EVERY frame from D230.titleRaceTypeMenuPos
+#    plus the fade-in (MM_Title.c:251). The position in the slot entry carries
+#    posInTitleAnchor = 0 (native_menudecl.c:215), so the file would write into
+#    exactly the two fields that are overwritten one frame later. A
+#    number that does nothing is worse than none.
+#
+#    The height. It is computed and not set: RECTMENU_GetHeight plus
+#    rahmen-zuschlag-h, i.e. (2 x 24) + (24 + 8) + 24 = 104. That is exactly
+#    46 + (2 x 24) + 10 - the formula holds here without any help.
+#
+#    The width. The whole cascade is drawn with ONE width, which
+#    RECTMENU_ProcessState computes once for the root and passes on to every child
+#    (RECTMENU.c:1098). The child is therefore always as wide as the
+#    main menu. An own "breite mindestens" (minimum width) could only RAISE it -
+#    and for the root at the same time.
+#
+#    A style of its own. There would be none: RECTMENU_ProcessState sets s_style
+#    once from the ROOT of the chain (RECTMENU.c:1072). This box therefore runs
+#    under hauptmenue-fuenf anyway - row spacing 24 included.
+# ---------------------------------------------------------------------------
+
+kasten renntyp
+  bezug mitte-x
+  titel lng 0x15d
+
+# ---------------------------------------------------------------------------
+#  RACE MODE - the arcade path, as a page of its own.
+#
+#  "oeffnen ersetzen" (open replacing) instead of "gestapelt" (stacked), and that is
+#  no matter of taste here. Stacked, every ancestor stays as a collapsed box and
+#  costs row spacing + kind-abstand = 36 points. The VS path would be four
+#  levels deep - main menu, mode, cup, player count - and would need 296
+#  points on a canvas 216 points high. Replaced, it costs zero.
+#
+#  A REPLACED PAGE IS A ROOT. It gets its own style
+#  (RECTMENU_ProcessState sets s_style from the root, RECTMENU.c:1072) -
+#  that is why "nimmt-stil" stands here and takes effect, unlike on a child.
+#  And its position is a location in the reference space, not an offset in the cascade.
+#
+#  The title is 13 characters long like "- MAIN MENU -", so that all pages
+#  get the same frame width of 228 points - the width comes from the
+#  longest member, and here that is the title.
+#
+#  BATTLE IS NOT HERE. Battle mode is currently broken, and a row
+#  that leads into a broken mode is worse than a missing one
+#  (09-17). The action modus-battle and the box spieler-2p3p4p stay
+#  - only the row that calls them is missing.
+#
+#  Height: 4 rows + title = 5 x 24 + 8 = 128, plus rahmen-zuschlag-h 24
+#  = 152 points, i.e. 46 + (4 x 24) + 10. At y 108 the box runs from
+#  32 to 184, margins 32 and 32.
+#
+#  THE ROWS CARRY VERBS, NOT TEXT INDICES. What a row does is in
+#  its "wirkung"; its text is only text again. TIME TRIAL has no "weiter",
+#  because its verb returns 0 and leaves the chain.
+# ---------------------------------------------------------------------------
+
+kasten renn-modus
+  x 249
+  y 108
+  bezug mitte
+  layout spalte
+  nimmt-stil hauptmenue-fuenf
+  titel "- RACE MODE -"
+
+  zeile einzel     text "SINGLE RACE"  wirkung modus-einzel      weiter spieler-1p2p    oeffnen gestapelt
+  zeile cup        text "CUP RACE"     wirkung modus-cup         weiter spieler-1p2p    oeffnen gestapelt
+  zeile zeitfahren text lng 0x4d       wirkung modus-zeitfahren
+  zeile vs         text lng 0x4f       wirkung modus-vs          weiter vs-renntyp      oeffnen ersetzen
+
+# ---------------------------------------------------------------------------
+#  The cup choice under VS - a page of its own, not a child.
+#
+#  WHY NOT SIMPLY VS RACE AND VS CUP IN THE MODE LIST: because that again
+#  mixes mode and property in one list, and because six rows would need
+#  46 + 6 x 24 + 10 = 200 points, above the maximum height 184.
+#
+#  This page replaces too, so the path to the player count below is again
+#  only TWO levels deep: 24 .. 52 for the collapsed box, 60 .. 188
+#  for the three rows 2P/3P/4P. Margins 24 and 22 - stacked they would have been 4
+#  and 6.
+#
+#  Both rows carry a verb, although "on entering, the cup is cleared
+#  anyway" is true - but only the first time. VS -> CUP -> back -> VS
+#  -> SINGLE would come out with the cup bit set without vs-einzel.
+# ---------------------------------------------------------------------------
+
+kasten vs-renntyp
+  x 249
+  y 108
+  bezug mitte
+  layout spalte
+  nimmt-stil hauptmenue-fuenf
+  titel "- RACE TYPE -"
+
+  zeile vs-einzel text lng 0x15e  wirkung vs-einzel  weiter spieler-2p3p4p  oeffnen gestapelt
+  zeile vs-cup    text lng 0x15f  wirkung vs-cup     weiter spieler-2p3p4p  oeffnen gestapelt

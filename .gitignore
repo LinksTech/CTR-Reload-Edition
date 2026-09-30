@@ -1,0 +1,130 @@
+# CTR Reload Edition - what must never be committed.
+#
+# This repository contains source code only. It never contains data from the
+# game (disc images, extracted files, models, textures, sounds, tracks) or
+# content made by other people (custom tracks, music, characters).
+# tools/git-hooks/pre-push enforces the same rules at push time:
+#   git config core.hooksPath tools/git-hooks
+
+# --- Game data: disc images and extracted files --------------------------
+*.bin
+*.cue
+*.iso
+*.img
+*.chd
+*.ecm
+*.pbp
+*.mdf
+*.mds
+*.nrg
+*.ccd
+*.sub
+*.big
+*.hwl
+*.xa
+*.str
+*.xnf
+*.vag
+*.vab
+*.vh
+*.vb
+*.lev
+*.vrm
+*.ctr
+*.mpk
+*.tim
+*.lng
+BIGFILE.BIG
+KART.HWL
+assets/
+
+# --- Tracks, characters, music, previews (often made by other authors) ---
+*.rldtrack
+*.rldchar
+*.rldprev
+*.sca
+*.sndb
+*.cseq
+tracks/
+tracks_archiv/
+tracks-*/
+characters/
+vorschau/
+track-ids.tsv
+cups.txt
+testdaten/
+
+# --- Patches of the game ----------------------------------------------------
+*.xdelta
+*.ppf
+*.ips
+*.bps
+*.vcdiff
+
+# --- Player and machine state -------------------------------------------
+memcards/
+*.mcr
+*.mcd
+*.gme
+*.srm
+*.sav
+*.ctrstates
+*.state
+debug/
+logs/
+*.log
+*.dmp
+ctr-settings.cfg
+ctr-data.cfg
+ctr-view.cfg
+alphamaker.ini
+
+# --- Screenshots and dumps (show game content) ---------------------------
+*.tga
+*.ppm
+*.bmp
+VRAM.TGA
+SCREENSHOT.BMP
+/*.png
+/*.jpg
+
+# --- Measurement and reference runs (screenshots of the game) ------------
+messung-*/
+baseline-*/
+test-bats/
+perf-*/
+menus/*.ergebnis
+
+# --- Build output --------------------------------------------------------
+/build/
+/build-*/
+/cmake-build-*/
+/out/
+/dist/
+/tools/menued/build/
+/tools/menued/dist/
+*.exe
+*.dll
+*.o
+*.obj
+*.a
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.gch
+*.d
+*.depend
+*.map
+compile_commands.json
+
+# --- Editors and tools ---------------------------------------------------
+.venv/
+__pycache__/
+*.py[cod]
+.vs/
+.vscode/
+.idea/
+.cache/
+*.swp
+*~

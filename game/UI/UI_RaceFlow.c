@@ -1,0 +1,565 @@
+#include <common.h>
+
+enum UIRaceEndMenuOption
+{
+	UI_RACE_END_OPTION_QUIT = 3,
+	UI_RACE_END_OPTION_RETRY = 4,
+	UI_RACE_END_OPTION_CHANGE_CHARACTER = 5,
+	UI_RACE_END_OPTION_CHANGE_LEVEL = 6,
+	UI_RACE_END_OPTION_SAVE_GHOST = 9,
+	UI_RACE_END_OPTION_CHANGE_SETUP = 10,
+	UI_RACE_END_OPTION_EXIT_TO_MAP = 0xd,
+	UI_RACE_END_OPTION_PRESS_TO_CONTINUE = 0xc9,
+};
+
+enum UIRaceFlowConstants
+{
+	UI_RACE_START_TITLE_EXIT_FRAME = 0x1f,
+	UI_RACE_START_TITLE_EXIT_BASE_FRAME = 0x1e,
+	// Half of the AUTHORED canvas, not half of the drawn one. The
+	// UI mapper places every row of the UI ordering table from 512 columns onto
+	// the canvas of the format; whoever already writes 459 here is shifted a second
+	// time. 0x100 is therefore correct as it stands - and the
+	// neighbours below had to follow.
+	UI_RACE_START_TITLE_CENTER_X = 0x100,
+	UI_RACE_START_TITLE_TOP_Y_BIAS = 7,
+	UI_RACE_START_CUP_TITLE_Y_OFFSET = -6,
+	UI_RACE_START_CUP_TRACK_Y_OFFSET = 0xb,
+	UI_RACE_START_LEVEL_TITLE_Y_OFFSET = -0x17,
+	UI_RACE_START_DIVIDER_TOP_Y_OFFSET = 0x1c,
+	UI_RACE_START_DIVIDER_BOTTOM_Y_OFFSET = -0x1e,
+	UI_RACE_START_DIVIDER_HEIGHT = 2,
+	UI_RACE_START_BAR_HEIGHT = 0x1e,
+	UI_RACE_START_BAR_ALPHA_MASK = 0xff000000,
+	UI_RACE_END_DRIVER_COUNT = 8,
+	UI_RACE_END_AVG_SPEED_SCALE = 100,
+	UI_RACE_END_MIN_MISSILES_FOR_RATIO = 4,
+	UI_RACE_END_ATTACK_RATIO_SHIFT = 0xc,
+	UI_RACE_END_ATTACK_RATIO_INVALID = -1,
+	UI_RACE_END_FIRST_PLACE_RANK = 0,
+	UI_RACE_END_MIN_SPLITSCREEN_MENU_PLAYERS = 3,
+	UI_RACE_END_INITIAL_ICON_COUNT = 1,
+	UI_RACE_END_SAVE_GHOST_FRAME = 0x3f9,
+};
+
+
+void UI_RaceEnd_GetDriverClock(struct Driver *driver)
+{
+	u8 missilesLaunched;
+	int scaledDistance;
+	int timeElapsed;
+	int attacksReceived;
+
+	if ((driver->actionsFlagSet & ACTION_RACE_TIMER_FROZEN) == 0)
+	{
+		timeElapsed = driver->timeElapsedInRace;
+		driver->actionsFlagSet |= ACTION_RACE_TIMER_FROZEN;
+
+		if (timeElapsed != 0)
+		{
+			// get average speed over time
+			scaledDistance = driver->distanceDriven * UI_RACE_END_AVG_SPEED_SCALE;
+			driver->distanceDriven = scaledDistance / timeElapsed;
+		}
+
+		// if missiles launched is less than 4
+		if (driver->numTimesMissileLaunched < UI_RACE_END_MIN_MISSILES_FOR_RATIO)
+		{
+			driver->NumMissilesComparedToNumAttacks = UI_RACE_END_ATTACK_RATIO_INVALID;
+		}
+
+		// if missiles launched is more than 4
+		else
+		{
+			// number of missiles launched
+			missilesLaunched = driver->numTimesMissileLaunched;
+
+			// compare number of missiles to number of attacks
+			driver->NumMissilesComparedToNumAttacks = (int)((driver->numTimesAttacking << UI_RACE_END_ATTACK_RATIO_SHIFT) / missilesLaunched);
+		}
+
+		attacksReceived = 0;
+
+		// count number of times you were attacked in race
+		for (int i = 0; i < UI_RACE_END_DRIVER_COUNT; i++)
+		{
+			attacksReceived += driver->numTimesAttackedByPlayer[i];
+		}
+
+		driver->numTimesAttacked = attacksReceived;
+
+		// if driver is in first place
+		if (driver->driverRank == UI_RACE_END_FIRST_PLACE_RANK)
+		{
+			// duplicate amount of time spent in last place
+			driver->TimeWinningDriverSpentLastPlace = driver->timeSpentInLastPlace;
+		}
+	}
+}
+
+
+// You see this in 1P mode, right before traffic lights count down
+void UI_RaceStart_IntroText1P(void)
+{
+	s16 barTransition;
+	struct GameTracker *gGT;
+	int textArrayIndex;
+	int gameMode;
+	int posX;
+	s16 *txtArray;
+	char *titleText;
+	s16 titleY;
+	s16 font;
+	int textID;
+	int titleTransition;
+	char trackText[24];
+	RECT rect;
+	int colors[2];
+
+#ifdef CTR_NATIVE
+	// Custom Cup: the name from cups.txt instead of from
+	// data.arcadeVsCupStringIndex. NULL means retail.
+	const char *nativeCupTitle = NULL;
+#endif
+
+	gGT = sdata->gGT;
+
+	// by default, do not transition
+	// title bars to off-screen
+	titleTransition = 0;
+
+	gameMode = gGT->gameMode1;
+
+	// If you are not in a relic race
+	if ((gameMode & RELIC_RACE) == 0)
+	{
+		// BONUS ROUND
+		textID = LNG_BONUS_ROUND;
+
+		// If you are not in Crystal challenge
+		if ((gameMode & CRYSTAL_CHALLENGE) == 0)
+		{
+			// If you are not in Adventure Cup
+			if ((gameMode & ADVENTURE_CUP) == 0)
+			{
+				// If you are not in Arcade or VS cup
+				if ((gGT->gameMode2 & CUP_ANY_KIND) == 0)
+				{
+					// ARCADE
+					textID = LNG_ARCADE;
+
+#if defined(CTR_NATIVE)
+					// NITRO-PIT -> CTR (2026-09-29, MM_NativeCtr.c): the container
+					// CTR challenge runs as ARCADE_MODE; title as in retail
+					// "CTR CHALLENGE". The track name comes further down from
+					// MM_NativeTracks_NameForLevel.
+					if (MM_NativeCtr_IsCustom())
+					{
+						textID = LNG_CTR_CHALLENGE_TITLE;
+						goto LAB_80055930;
+					}
+#endif
+
+					if (
+					    // If you're in Arcade Mode
+					    ((gameMode & ARCADE_MODE) != 0) ||
+
+					    (
+					        // TIME TRIAL
+					        textID = LNG_TIME_TRIAL,
+
+					        // if you are in time trial mode
+					        (gameMode & TIME_TRIAL) != 0))
+					{
+						goto LAB_80055930;
+					}
+
+					if (-1 < gameMode)
+					{
+						// TROPHY RACE
+						textID = LNG_TROPHY_RACE;
+
+						// If you're in a CTR Token Race
+						if ((gGT->gameMode2 & TOKEN_RACE) != 0)
+						{
+							// CTR CHALLENGE
+							textID = LNG_CTR_CHALLENGE_TITLE;
+						}
+						goto LAB_80055930;
+					}
+					textArrayIndex = gGT->bossID;
+					txtArray = &data.lng_challenge[0];
+				}
+
+				// If you are in Arcade or VS cup
+				else
+				{
+#ifdef CTR_NATIVE
+					// A Custom Cup never arrives in arcadeVsCupStringIndex.
+					if (MM_NativeCup_Running())
+					{
+						nativeCupTitle = MM_NativeCup_Name();
+						goto LAB_80055930;
+					}
+#endif
+
+					// Get Cup ID
+					textArrayIndex = gGT->cup.cupID;
+					txtArray = &data.arcadeVsCupStringIndex[0];
+				}
+			}
+
+			// If you are in Adventure Cup
+			else
+			{
+				// Get Cup ID
+				textArrayIndex = gGT->cup.cupID;
+				txtArray = &data.advCupStringIndex[0];
+			}
+
+			// Get the name of the cup
+			// Wumpa, Nitro, Crystal
+			// Red, Green, Purple, etc
+			textID = txtArray[textArrayIndex];
+		}
+	}
+
+	// If you are in Relic Race
+	else
+	{
+		// RELIC RACE
+		textID = LNG_RELIC_RACE;
+	}
+LAB_80055930:
+
+	// if fly-in animation is one second away from finishing
+	if (gGT->cameraDC->transitionFrame < UI_RACE_START_TITLE_EXIT_FRAME)
+	{
+		// use this to transition title bars to off-screen
+		titleTransition = UI_RACE_START_TITLE_EXIT_BASE_FRAME - gGT->cameraDC->transitionFrame;
+	}
+
+	// RaceFlag_IsFullyOnScreen
+	int raceFlagFullyOnScreen = RaceFlag_IsFullyOnScreen();
+
+	// if not
+	if (raceFlagFullyOnScreen == 0)
+	{
+		// Draw big string
+		font = FONT_BIG;
+
+		// used for transitioning bars to off-screen
+		barTransition = titleTransition;
+
+		if (
+
+		    // If you are not in Adventure cup
+		    ((gameMode & ADVENTURE_CUP) == 0) &&
+
+		    // If you are not in Arcade or VS cup
+		    (((gGT->gameMode2 & CUP_ANY_KIND) == 0)))
+		{
+			// X-value, X + W/2, converted back to the authored canvas.
+			//
+			// The expression yields the middle of the PICTURE AREA, on the wide canvas
+			// that is 459 instead of 256. The UI mapper takes every row of this
+			// table as authored in 512 columns and shifts it; a
+			// box around 459 lands in the right third by its thirds rule,
+			// gets +406 and stands at 865 - half out of the picture. Measured with
+			// --ui-elements: before 459..559, after 865..965.
+			//
+			// Converted back, this is 256 again, the mapper turns it into
+			// 459, and both say the same thing. At 4:3 the conversion is the
+			// identity.
+			posX = CTR_Canvas_ToReferenceWidth(gGT->pushBuffer[0].rect.x + ((gGT->pushBuffer[0].rect.w << 0x10) >> 0x11));
+
+			// string of top title bar
+			titleText = sdata->lngStrings[textID];
+
+			// Y-value that transitions title text to off-screen
+			titleY = gGT->pushBuffer[0].rect.y - (barTransition - UI_RACE_START_TITLE_TOP_Y_BIAS);
+		}
+
+		// If you are in any cup of any kind
+		else
+		{
+			// Name of Cup
+
+			// uVar9 * 4
+#ifdef CTR_NATIVE
+			DecalFont_DrawLine((nativeCupTitle != NULL) ? (char *)nativeCupTitle : sdata->lngStrings[textID],
+#else
+			DecalFont_DrawLine(sdata->lngStrings[textID],
+#endif
+
+			                   CTR_Canvas_ToReferenceWidth(gGT->pushBuffer[0].rect.x + ((gGT->pushBuffer[0].rect.w << 0x10) >> 0x11)),
+
+			                   ((gGT->pushBuffer[0].rect.y - (titleTransition - UI_RACE_START_TITLE_TOP_Y_BIAS)) + UI_RACE_START_CUP_TITLE_Y_OFFSET), FONT_BIG,
+			                   (JUSTIFY_CENTER | ORANGE));
+
+			// Track 1/4, 2/4, 3/4, 4/4 in cup
+			sprintf(trackText, "%s %ld/4",
+
+			        sdata->lngStrings[LNG_TRACK],
+
+			        // Track Index (0, 1, 2, 3) + 1
+			        CTR_PRINTF_PSX_LONG((gGT->cup.trackIndex) + 1));
+
+			// string of top title bar
+			titleText = trackText;
+
+			// X-value, centered
+			posX = UI_RACE_START_TITLE_CENTER_X;
+
+			// Draw small string
+			font = FONT_SMALL;
+
+			// Y-value that transitions title text to off-screen
+			titleY = (gGT->pushBuffer[0].rect.y - (titleTransition - UI_RACE_START_TITLE_TOP_Y_BIAS)) + UI_RACE_START_CUP_TRACK_Y_OFFSET;
+		}
+
+		// Print top title text "Arcade, Time Trial, etc"
+		DecalFont_DrawLine(titleText, posX, titleY, font, (JUSTIFY_CENTER | ORANGE));
+
+		// Print the name of the level
+		// Crash Cove, Roos Tubes, etc
+		DecalFont_DrawLine(
+
+		    // 83a88 = 110
+		    // 8d878 + 110*4 -> Dingo Canyon
+
+		    // Level ID
+#ifdef CTR_NATIVE
+		    // For a container, levelID is the donor slot: its name, not
+		    // DINGO CANYON (2026-09-28).
+		    (MM_NativeTracks_NameForLevel(gGT->levelID) != NULL) ? (char *)MM_NativeTracks_NameForLevel(gGT->levelID) :
+#endif
+		    sdata->lngStrings[data.metaDataLEV[gGT->levelID].name_LNG],
+
+		    CTR_Canvas_ToReferenceWidth(gGT->pushBuffer[0].rect.x + ((gGT->pushBuffer[0].rect.w << 0x10) >> 0x11)),
+
+		    (gGT->pushBuffer[0].rect.y + gGT->pushBuffer[0].rect.h + titleTransition + UI_RACE_START_LEVEL_TITLE_Y_OFFSET), FONT_BIG,
+		    (JUSTIFY_CENTER | ORANGE));
+
+		// same for all - also in authored columns.
+		//
+		// 0..918 becomes 0..512 again, and because that goes from edge to edge,
+		// the mapper recognises the bars as a layer over the whole picture and
+		// stretches them back to 0..918. Without the conversion it would have read 0..918
+		// as authored and stretched it to 0..1646 - it would still have
+		// covered, but half of it would have landed beside the picture.
+		rect.x = (s16)CTR_Canvas_ToReferenceWidth(gGT->pushBuffer[0].rect.x);
+		rect.w = (s16)CTR_Canvas_ToReferenceWidth(gGT->pushBuffer[0].rect.w);
+
+		// 2-pixel height
+		// random generic color
+		colors[0] = sdata->battleSetup_Color_UI_1;
+		rect.h = UI_RACE_START_DIVIDER_HEIGHT;
+
+		// Draw tiny rectangle near big black title bar (first)
+		rect.y = gGT->pushBuffer[0].rect.y - (barTransition - UI_RACE_START_DIVIDER_TOP_Y_OFFSET);
+
+		Color color;
+		ColorCode_SetPacked(&color, colors[0]);
+
+		u32 *ot = gGT->backBuffer->otMem.uiOT;
+
+		CTR_Box_DrawSolidBox(&rect, color, ot);
+
+		// Draw tiny rectangle near big black title bar (second)
+		rect.y = gGT->pushBuffer[0].rect.y + gGT->pushBuffer[0].rect.h + barTransition + UI_RACE_START_DIVIDER_BOTTOM_Y_OFFSET;
+		CTR_Box_DrawSolidBox(&rect, color, ot);
+
+		// 30-pixel height
+		// clear RGB, keep alpha (which is zero anyway)
+		colors[0] = colors[0] & UI_RACE_START_BAR_ALPHA_MASK;
+		ColorCode_SetPacked(&color, colors[0]);
+		rect.h = UI_RACE_START_BAR_HEIGHT;
+
+		// draw big black title bar (first)
+		rect.y = gGT->pushBuffer[0].rect.y - barTransition;
+		CTR_Box_DrawSolidBox(&rect, color, ot);
+
+		// draw big black title bar (second)
+		rect.y = gGT->pushBuffer[0].rect.y + gGT->pushBuffer[0].rect.h + barTransition + UI_RACE_START_DIVIDER_BOTTOM_Y_OFFSET;
+		CTR_Box_DrawSolidBox(&rect, color, ot);
+	}
+	return;
+}
+
+void UI_RaceEnd_MenuProc(struct RectMenu *menu)
+{
+	s16 option;
+	struct GameTracker *gGT;
+
+	gGT = sdata->gGT;
+
+	if (menu->funcState != RECTMENU_FUNC_STATE_INPUT)
+	{
+		menu->drawStyle &= ~RECTMENU_DRAW_STYLE_3P4P_LAYOUT;
+
+		// if more than 2 screens
+		if (UI_RACE_END_MIN_SPLITSCREEN_MENU_PLAYERS <= gGT->numPlyrCurrGame)
+		{
+			menu->drawStyle |= RECTMENU_DRAW_STYLE_3P4P_LAYOUT;
+		}
+
+		return;
+	}
+
+	int row = menu->rowSelected;
+	if (row < 0)
+	{
+		return;
+	}
+
+	option = menu->rows[row].stringIndex;
+
+	// if not SAVE GHOST
+	if (option != UI_RACE_END_OPTION_SAVE_GHOST)
+	{
+		// make Menu invisible
+		RECTMENU_Hide(menu);
+	}
+
+	sdata->framesSinceRaceEnded = 0;
+	sdata->numIconsEOR = UI_RACE_END_INITIAL_ICON_COUNT;
+
+	// Press * To Continue
+	// do not put this in the switch,
+	// switch needs to be a "small" jump table,
+	// and an offest this large could bloat table
+	if (option == UI_RACE_END_OPTION_PRESS_TO_CONTINUE)
+	{
+		sdata->menuReadyToPass |= 1;
+		return;
+	}
+
+	switch (option)
+	{
+	// Quit
+	case UI_RACE_END_OPTION_QUIT:
+	{
+		// Erase ghost of previous race from RAM
+		GhostTape_Destroy();
+
+		// go back to main menu
+		sdata->mainMenuState = MAIN_MENU_TITLE;
+
+		// load LEV of main menu
+		MainRaceTrack_RequestLoad(MAIN_MENU_LEVEL);
+		break;
+	}
+
+	case UI_RACE_END_OPTION_RETRY:
+	{
+		// Turn off HUD
+		gGT->hudFlags &= HUD_FLAG_CLEAR_RACE_HUD_MASK;
+
+		if (RaceFlag_IsFullyOffScreen())
+		{
+			RaceFlag_BeginTransition(1);
+		}
+
+		sdata->Loading.stage = LOAD_RESTART;
+
+		// clear backup,
+		// keep music,
+		// destroy "most" fx, let menu fx play to end
+		howl_StopAudio(1, 0, 0);
+
+		// if did not improve time, then dont
+		// overwrite old ghost with new ghost
+		if ((gGT->gameModeEnd & PLAYER_GHOST_BEAT) == 0)
+		{
+			break;
+		}
+
+		sdata->boolReplayHumanGhost = 1;
+
+		// slower than ND's copy, I know, we'll
+		// come up with a modern-gcc friendly way
+		// to sort the LWs and SWs later
+		memcpy(sdata->ptrGhostTapePlaying, sdata->GhostRecording.ptrGhost, GHOST_RECORD_BUFFER_SIZE);
+
+		// Make P2 the character that is saved in the
+		// header of the ghost that you will see in the race
+		data.characterIDs[1] = sdata->ptrGhostTapePlaying->characterID;
+
+		// no ghosts are drawing
+		sdata->boolGhostsDrawing = 0;
+
+		break;
+	}
+
+	// Change Character, or Change Level
+	case UI_RACE_END_OPTION_CHANGE_CHARACTER:
+	case UI_RACE_END_OPTION_CHANGE_LEVEL:
+	{
+		// Erase ghost of previous race from RAM
+		GhostTape_Destroy();
+
+		// MAIN_MENU_CHARACTERS or MAIN_MENU_TRACK_SELECT
+		sdata->mainMenuState = (MainMenuState)(option - 4);
+
+		// when loading is done
+		// add flag for "in menus"
+		sdata->Loading.OnBegin.AddBitsConfig0 |= MAIN_MENU;
+
+		// load LEV of main menu
+		MainRaceTrack_RequestLoad(MAIN_MENU_LEVEL);
+		break;
+	}
+
+	// Save Ghost
+	case UI_RACE_END_OPTION_SAVE_GHOST:
+	{
+		sdata->framesSinceRaceEnded = UI_RACE_END_SAVE_GHOST_FRAME;
+
+		// Set Load/Save to Ghost mode
+		SelectProfile_ToggleMode(SELECT_PROFILE_MODE_GHOST_SAVE);
+
+		// Change active Menu to GhostSelection
+		sdata->ptrDesiredMenu = &data.menuGhostSelection;
+		break;
+	}
+
+	// Change Setup
+	case UI_RACE_END_OPTION_CHANGE_SETUP:
+	{
+		// go to battle setup screen
+		sdata->mainMenuState = MAIN_MENU_BATTLE_SETUP;
+
+		sdata->Loading.OnBegin.AddBitsConfig0 |= MAIN_MENU;
+
+		// load LEV of main menu
+		MainRaceTrack_RequestLoad(MAIN_MENU_LEVEL);
+		break;
+	}
+
+	// Exit To Map
+	case UI_RACE_END_OPTION_EXIT_TO_MAP:
+	{
+		sdata->Loading.OnBegin.AddBitsConfig0 |= ADVENTURE_ARENA;
+		sdata->Loading.OnBegin.RemBitsConfig8 |= TOKEN_RACE;
+
+		sdata->Loading.OnBegin.RemBitsConfig0 |= (CRYSTAL_CHALLENGE | RELIC_RACE);
+
+		if ((gGT->gameMode1 & ADVENTURE_CUP) != 0)
+		{
+			sdata->Loading.OnBegin.RemBitsConfig0 |= ADVENTURE_CUP;
+			MainRaceTrack_RequestLoad(GEM_STONE_VALLEY);
+			break;
+		}
+
+		if (IS_BOSS_RACE(gGT->gameMode1))
+		{
+			sdata->Loading.OnBegin.RemBitsConfig0 |= ADVENTURE_BOSS;
+			sdata->Loading.OnBegin.AddBitsConfig8 |= SPAWN_AT_BOSS;
+		}
+
+		MainRaceTrack_RequestLoad(gGT->prevLEV);
+		break;
+	}
+	}
+}

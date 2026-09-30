@@ -1,0 +1,70 @@
+// Version resource for rldpack.
+//
+// WHY THIS IS HERE, AND WHAT IT DOES NOT ACHIEVE
+//
+// On 2026-08-28 the antivirus on the development machine (McAfee WPS,
+// not Defender) quarantined three freshly built rldpack.exe files on
+// start. The log names "rp-s" (Real Protect Static) as the source and as
+// detection name "ti!" plus the first twelve hex digits of the SHA-256 of the
+// file itself - so NO malware family, but a reputation verdict on an
+// unknown file. Next to it stood "cert_rep": [] - empty.
+//
+// A bisection over eight build stages (empty console program, file writing,
+// rand_s, ChaCha20 including key splitting, SHA-256/512, Ed25519, full
+// source) found NO code feature that triggers the detection. The
+// trigger is not in the code but on the axis "who is this file".
+//
+// This resource fills the free half of that axis: the program says what it
+// is called, where it comes from and which version it is. A file without any
+// information is an anonymous binary, and an anonymous binary is exactly the
+// profile.
+//
+// THE PAID HALF IS STILL MISSING: a code signature. As long as "cert_rep" stays
+// empty, rldpack cannot build a reputation across versions - every build
+// has a new hash and is completely unknown again. A signed binary
+// carries its reputation through the certificate.
+//
+// AND THIS IS NOT PROVEN. The same day, the detection could no longer be
+// reproduced over fourteen further builds, so the effect of this resource
+// could not be measured. It is here because a tool handed to strangers
+// should carry its name - not because it has been proven to calm a scanner.
+
+#include <winver.h>
+
+// The version of the TOOL, not of the format (that is in rldtrack.inc as
+// RLD_VERSION_MAJOR/MINOR) - separate names, so that a search keeps them apart.
+#define RLDPACK_VERSION_MAJOR 0
+#define RLDPACK_VERSION_MINOR 1
+#define RLDPACK_VERSION_PATCH 0
+#define RLDPACK_VERSION_BUILD 0
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION    RLDPACK_VERSION_MAJOR, RLDPACK_VERSION_MINOR, RLDPACK_VERSION_PATCH, RLDPACK_VERSION_BUILD
+PRODUCTVERSION RLDPACK_VERSION_MAJOR, RLDPACK_VERSION_MINOR, RLDPACK_VERSION_PATCH, RLDPACK_VERSION_BUILD
+FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+FILEFLAGS      0x0L
+FILEOS         VOS_NT_WINDOWS32
+FILETYPE       VFT_APP
+FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+	BLOCK "StringFileInfo"
+	BEGIN
+		BLOCK "040704b0"
+		BEGIN
+			VALUE "CompanyName",      "CTR Reload"
+			VALUE "FileDescription",  "rldpack - packer for .rldtrack track containers"
+			VALUE "FileVersion",      "0.1.0.0"
+			VALUE "InternalName",     "rldpack"
+			VALUE "LegalCopyright",   "CTR Reload"
+			VALUE "OriginalFilename", "rldpack.exe"
+			VALUE "ProductName",      "CTR Reload"
+			VALUE "ProductVersion",   "0.1.0.0"
+			VALUE "Comments",         "Builds and checks .rldtrack containers, format 4.1."
+		END
+	END
+	BLOCK "VarFileInfo"
+	BEGIN
+		// 0x0407 = German, 0x04b0 = Unicode. Matches the StringFileInfo block above.
+		VALUE "Translation", 0x0407, 0x04b0
+	END
+END

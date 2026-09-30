@@ -1,0 +1,91 @@
+CTR Reload Beta 0 (@BUILD@) - Release notes
+===========================================
+
+Beta 0 is for track authors who test their own tracks with the Alpha-Maker.
+
+
+DECISIONS
+---------
+- Windows only. There is no Linux version, and none is planned. Linux build
+  files in the source code are not maintained.
+- Bug reports go to the Beta 0 channel on Discord, with the template from
+  README.txt.
+
+
+NEW IN BETA 0
+-------------
+- A track with a broken minimap table no longer crashes the race; it shows no
+  minimap. The Alpha-Maker warns about it.
+- Object limit: the Alpha-Maker refuses tracks with more than 110 placed
+  objects and warns above 90. If the game ever runs out of room, it says so
+  in the log and leaves out an effect (an explosion, a flame) instead of
+  crashing.
+- Folder and file names with any characters work (for example a Windows user
+  name with accents or Cyrillic letters).
+- Logs are kept: every start writes a new log with date and time in the
+  "logs" folder, the last 5 stay. The Alpha-Maker keeps its last 5 test and
+  preview logs the same way.
+- OPTIONS -> GRAPHICS: display mode, aspect ratio, resolution, anti-aliasing.
+  Saved and restored at the next start.
+- Track previews in the track selection screen. "Build container" in the
+  Alpha-Maker records the preview by itself, in the background (about 20
+  seconds, no game window). The preview shows a drive along your track from
+  the driver's view (needs bot data / nav paths; without them a camera flies
+  along the restart points). If the preview cannot be recorded, the
+  container is still built, and the Alpha-Maker says why ("preview skipped"
+  or "preview failed"). A preview game that has not finished after 2 minutes
+  is stopped.
+- The Alpha-Maker checks that the game next to it is from the same package.
+  If the game it remembered from an earlier session is from another package,
+  it switches once to ctr_native.exe in its own folder and says so.
+- Crystal Challenge for custom tracks: ARCADE -> NITRO-PIT -> CRYSTAL. Collect
+  every crystal before the time runs out. Win or lose, you get RETRY or back
+  to NITRO-PIT; nothing is written to your adventure save. The Alpha-Maker
+  ticks every mode your track has the data for.
+- CTR Challenge for custom tracks: ARCADE -> NITRO-PIT -> CTR. Win with 1st
+  place and all three letters C, T and R. Win or lose, you get RETRY or back
+  to NITRO-PIT; nothing is written to your adventure save. The track needs
+  each of the letters C, T and R exactly once; bots need nav paths.
+- A track that offers several modes is listed under each of them (RACE,
+  CRYSTAL, CTR). Cups are race only.
+- Custom tracks start without the camera fly-in before the countdown, even
+  if the track has its own camera path. Disc tracks keep their fly-in.
+- "Build container" sets the ids of the letter models c, t and r by their
+  names, so the HUD shows C T R in that order. When it changes one, it says
+  so in its messages.
+
+
+KNOWN ISSUES
+------------
+- Custom tracks: Race, Crystal Challenge and CTR Challenge. Time Trial and
+  Battle come in Beta 2. Best times on custom tracks are not saved.
+- A track that offers both Race and Crystal Challenge is not tested yet: no
+  test track has both restart points and crystals.
+- A track with only Crystal Challenge cannot get a preview; the preview is
+  recorded in a race.
+- CTR Challenge: letters that the exporter wrote without a collision hitbox
+  cannot be collected, so the challenge cannot be won. The Alpha-Maker does
+  not check this yet.
+- Crystal Challenge: the time limit is fixed at 3:00 for every track for now.
+- No bots and no auto drive on tracks without nav paths. In a CTR Challenge
+  1st place is then easy.
+- Multiplayer (VS., BATTLE, 2 players) is locked.
+- Very large tracks: flickering holes near the camera are possible when a
+  track has very coarse BSP leaves. The log then contains
+  "rendered list full" - please report it with the track.
+- Track previews: the invisible kart still hits crates and fruit, so they
+  break in the preview. If it falls off, the mask carries it back.
+- Track previews without nav paths: the camera does not avoid walls and
+  ceilings; it may pass through a tunnel roof.
+- Tracks exported with Saphi: a hit may be missed where hitboxes are
+  duplicated, and some floors may be black. Always build with "Build
+  container" (make); it fixes wrong model ids.
+- Music banks above 512 KB load, but their playback is not fully tested yet.
+  The ambient sound set in the track options is not tested either.
+- The Alpha-Maker starts the game in developer mode for "Test in game" and
+  for the preview recording. The "extra arguments" field accepts developer
+  switches; you do not need it.
+- The executables are not signed. Some virus scanners may warn about them.
+- Retail cheat codes that unlock drivers are not saved to the memory card any
+  more; all drivers are available from the start anyway.
+- Some messages on the command line (--help) are in German.
