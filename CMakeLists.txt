@@ -433,4 +433,12 @@ if(BUILD_TESTING)
             -s ${CMAKE_SOURCE_DIR}/tools/matching
             -p test_*.py
     )
+
+    # Everything in this repository is English: comments, messages, names.
+    # Exceptions for older German names: tools/lang_check_allow.txt.
+    add_test(
+        NAME lang_check
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/lang_check.py
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    )
 endif()

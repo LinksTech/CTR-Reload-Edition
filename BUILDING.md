@@ -50,7 +50,7 @@ tracked files differ from it.
 
 ## Tests
 
-`build-msvc.bat` runs eight self-tests:
+`build-msvc.bat` runs nine self-tests:
 
 - `ctr_native_version`: the version string
 - `rldpack_selftest` and `alphamaker_rldpack_selftest`: the rldpack self-test,
@@ -68,6 +68,10 @@ tracked files differ from it.
   `build-msvc-x86\selftest\disc`, and `ctr_native --dev --selftest-disc` must
   extract the good ones and refuse the bad ones without writing anything
   outside the output folder
+- `lang_check`: everything in this repository is English -
+  `tools/lang_check.py` fails on German words, umlauts, person names,
+  internal references, local paths and day.month.year dates; older German
+  names that stay for now are listed in `tools/lang_check_allow.txt`
 
 None of them needs game data, a window or a GPU; every test file is made up
 by the game itself (`platform/native_testfiles.c`).
@@ -98,9 +102,13 @@ The script refuses a tree with uncommitted changes (`--allow-dirty` makes a
 trial package anyway) and refuses to package anything that looks like game
 data.
 
-## Before you push
+## Before you commit and push
 
-Enable the push guard once per clone. It refuses pushes that contain game
-data, third-party content or files larger than 5 MB:
+Enable the hooks once per clone:
 
     git config core.hooksPath tools/git-hooks
+
+- `pre-commit` and `commit-msg` run `tools/lang_check.py` on the staged files
+  and on the commit message: everything in this repository is English.
+- `pre-push` refuses pushes that contain game data, third-party content or
+  files larger than 5 MB.

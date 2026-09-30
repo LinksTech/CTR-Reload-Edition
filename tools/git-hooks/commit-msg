@@ -1,0 +1,11 @@
+#!/bin/sh
+# CTR Reload Edition - commit-msg: commit messages are English too.
+# Install once per clone:  git config core.hooksPath tools/git-hooks
+
+root=$(git rev-parse --show-toplevel) || exit 1
+py=python
+command -v "$py" >/dev/null 2>&1 || py=python3
+"$py" "$root/tools/lang_check.py" --message "$1" || {
+	echo "commit-msg: COMMIT REFUSED - write the message in English." >&2
+	exit 1
+}
