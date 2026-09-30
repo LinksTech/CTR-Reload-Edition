@@ -2480,7 +2480,7 @@ internal u32 Native_InjectHash(u32 n, u32 salt)
 	return h;
 }
 
-// what: "bild" (frame, salt 0) or "boot vsync" (salt 0x9e3779b9), n: the number.
+// what: "frame" (salt 0) or "boot vsync" (salt 0x9e3779b9), n: the number.
 internal void Native_InjectDelayIfDue(const char *what, int n, u32 salt)
 {
 	if (g_cfg_injectDelaySeed == 0)
@@ -2523,7 +2523,7 @@ internal double Native_MsSince(u64 since)
 internal void Platform_FrameEndClock(void)
 {
 	s_frameNumber++;
-	Native_InjectDelayIfDue("bild", s_frameNumber, 0u);
+	Native_InjectDelayIfDue("frame", s_frameNumber, 0u);
 
 	if (g_cfg_frameLog)
 	{
