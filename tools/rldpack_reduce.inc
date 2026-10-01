@@ -5,14 +5,23 @@
 // of tools/rldpack.c, so it can be included anywhere after those.
 //
 // WHAT IT DOES. A model with more triangles than the draw memory of a driver
-// allows is reduced to a target per group (kart, driver, steering wheel) by
-// half-edge collapses: a position u is moved onto a neighbor v that already
-// exists, every triangle on the edge (u, v) disappears and every other
-// triangle of u now uses v. No new position is ever made, so the hull of the
-// model can only shrink, and every kept triangle continues one input triangle
-// with its corners in the same order: corner k of a kept triangle carries the
-// attributes (color, uv) of input corner 3 * sourceTriangle + k, and its
-// position is either that corner's own or the corner's position was removed.
+// allows is reduced to a target per group (kart, driver, steering wheel), or
+// to one budget the groups share, by half-edge collapses: a position u is
+// moved onto a neighbor v that already exists, every triangle on the edge
+// (u, v) disappears and every other triangle of u now uses v. No new position
+// is ever made, so the hull of the model can only shrink, and every kept
+// triangle continues one input triangle (sourceTriangle) with its corners in
+// the same order; its position is either that corner's own or the corner's
+// position was removed.
+//
+// COLORS (and any other corner attribute) are never mixed: each kept corner
+// carries the attributes of one input corner at the SAME position
+// (sourceCorner). A corner that a collapse moves from u to v takes those of a
+// corner at v - of the colors there the one nearest to its own, so that on
+// either side of a color seam each side keeps its color (RldRed_PickCorner).
+// Taking the color of the input corner of the same slot instead, at a
+// position the corner has left, paints a wedge of a foreign color across the
+// moved triangle.
 //
 // WHICH COLLAPSE FIRST. The error measure is the quadric of Garland and
 // Heckbert: each position holds the sum of the squared distance functions to
@@ -20,7 +29,7 @@
 // onto v costs the sum of both quadrics measured at v. All collapses wait in
 // one heap ordered by cost, ties by (u, v); the cheapest valid one is done,
 // the quadric of u is added to v, and the edges around v are measured again.
-// Three additions to the plain measure:
+// Additions to the plain measure:
 //   - OPEN EDGES get an extra plane through the edge, perpendicular to its
 //     triangle, so that the outline of an open surface keeps its shape. An
 //     edge is open when all its triangles lie on the same side of it: their
@@ -39,12 +48,35 @@
 //     value on each axis (the lowest index on a tie) is never moved, so a
 //     reduced model keeps its length, width and height - the size make-char
 //     fits it to.
+//   - COLOR SEAMS (edges whose triangles carry different colors at one of its
+//     positions) and CREASES (edges between triangles more than 60 degrees
+//     apart) get the same kind of plane as open edges, from each of their
+//     triangles: they may slide along themselves but cost when they move off
+//     their line (RLDRED_SEAM_WEIGHT, RLDRED_CREASE_WEIGHT). Only such sharp
+//     creases are guarded; the outline of a smooth curved part (where the
+//     surface turns away from the viewer gradually) has no edge of its own
+//     and keeps only what the face planes give it.
+//   - THE COLOR COST: a collapse also costs the color it changes - the moved
+//     corners that take another color and the colors of the dying triangles
+//     that their positions do not keep, each times its share of the area
+//     (RLDRED_COLOR_WEIGHT).
+//   These last two only steer the order; the rules below are the same with
+//   and without them. When the guarded order ends above a target, the
+//   reduction runs again with the color cost only, then without both
+//   (RldRed_Reduce; RldRedResult.stage says which run it took).
+//   Colors come first, the outline second: on a driver of 1082 triangles
+//   reduced to 796 (seen from 7 sides, 240 pixels each), the pixels whose
+//   color is off by more than 60 fell from 3833 to 3525 against the plain
+//   measure, the pixels where the outline differs rose from 105 to 201; on
+//   two other drivers both fell (4557 to 2555 and 1574 to 1409; 172 to 32
+//   and 9 to 7).
 //
 // WHAT IS REFUSED. A collapse is not done when
 //   - u and v are not in the same group, or a triangle of either is in another
 //     group (positions shared between groups are never moved and never a goal),
 //     or u is one of the box positions above,
-//   - the group is already at or below its target,
+//   - the group is already at or below its target (with a shared budget: all
+//     groups together are at or below it, or this group is at its floor),
 //   - an edge would get more triangles than it or its partner had: for a third
 //     corner w of a triangle on (u, v), the edges (u, w) and (v, w) become one
 //     and may not end up with more triangles than the larger of them had
@@ -73,9 +105,10 @@
 //   - the normal of a moved triangle turns by more than 60 degrees against
 //     the normal of its input triangle (no slow turning over many collapses).
 //     When this first phase runs dry above a target, every edge is measured
-//     again and a second phase goes on with 134 degrees instead, so that
+//     again and a second phase goes on with 84 degrees instead, so that
 //     fine detail that cannot be kept (a comb of 0.1-unit teeth, say) can
-//     still melt together,
+//     still melt together - but no triangle ever turns to face away from its
+//     input triangle, in no pose (RLDRED_SOURCE_COS_LATE),
 //   - a moved triangle becomes a needle (RLDRED_QUALITY_MIN, a tip below about
 //     5 degrees) worse than the worst triangle around u was before. So the
 //     worst shape of the whole mesh never drops below the needle limit or
@@ -88,7 +121,12 @@
 // recognized by a version per position: any change around a position raises
 // its version, the edges around it are measured and pushed again, and an
 // entry whose versions are not the current ones is skipped (and dropped when
-// the heap is compacted). The square root is written out instead of taken
+// the heap is compacted). One cost can be older than its versions: the color
+// cost of u -> v also looks at the colors a third corner w of the edge keeps,
+// and a collapse elsewhere at w raises the versions of w and its partner,
+// not always those of u and v. Such an entry keeps its cost from when it was
+// measured; measuring it again would change the order and so the results,
+// for a small gain - it stays as it is. The square root is written out instead of taken
 // from the C library, like the arithmetic of tools/rldpack_char.inc, so the
 // result does not depend on the runtime library. Bit-exact results across
 // builds also need IEEE double arithmetic without excess precision and
@@ -110,16 +148,28 @@ typedef struct RldRedMesh
 	const u32 *triangle;      // 3 position indices per triangle
 	const u8 *triangleGroup;  // per triangle: group 0..groupCount-1
 	u32 groupCount;           // <= 8
-	const u32 *groupTarget;   // per group: keep at most this many triangles
+	const u32 *groupTarget;   // per group: keep at most this many triangles (with totalTarget: at least)
+	const u32 *cornerColor;   // 3 per triangle: the color of input corner 3*t+k as 0xRRGGBB; NULL = no
+	                          // colors (no color seams, no color cost)
+	u32 totalTarget;          // 0 = every group down to its own groupTarget; else the groups share this
+	                          // budget: the cheapest collapse of any group goes first until all groups
+	                          // together keep at most totalTarget, and groupTarget is each group's floor:
+	                          // a group stops there - its last collapse may take it below by up to the
+	                          // triangles on that edge less one (1 on a closed surface, up to 3 on the
+	                          // edge of a two-sided sheet). Callers set every field (cornerColor NULL, 0).
 } RldRedMesh;
 
 typedef struct RldRedResult
 {
 	u32 triangleCount;
 	u32 *triangle;        // 3 position indices per kept triangle; only positions of the input, no new ones
-	u32 *sourceTriangle;  // per kept triangle: the input triangle it continues; corner k carries the
-	                      // attributes (color, uv) of input corner 3*sourceTriangle+k
+	u32 *sourceTriangle;  // per kept triangle: the input triangle it continues (same facing, same group)
+	u32 *sourceCorner;    // per kept corner (3 per triangle): the input corner 3*t+k whose attributes
+	                      // (color, uv) it carries; that input corner always sits at the same position
+	                      // as the kept corner (triangle[i] == input triangle[sourceCorner[i]])
 	double maxError;      // largest accepted collapse cost
+	u32 stage;            // the run that reached the target: 0 guarded (seams, creases, color cost),
+	                      // 1 color cost only, 2 unguarded (see RldRed_Reduce)
 } RldRedResult;
 
 //========================================================================================
@@ -149,9 +199,52 @@ typedef struct RldRedResult
 #define RLDRED_SOURCE_COS 0.5
 
 // In the second phase the limit against the input triangle is looser:
-// acos(-0.7) = 134 degrees, enough for fine detail (comb teeth) to melt
-// together, but no triangle turns all the way round.
-#define RLDRED_SOURCE_COS_LATE (-0.7)
+// acos(0.1) = 84 degrees, enough for fine detail (comb teeth) to melt
+// together, but no triangle ever faces away from its input triangle - not
+// in the neutral pose and not in any pose make-char makes: the poses turn a
+// group as one block (the angle between two triangles of it stays) and
+// stretch its height by 0.93 to 1.05, which changes that angle by less than
+// 5 degrees.
+#define RLDRED_SOURCE_COS_LATE 0.1
+
+// COLOR SEAMS. An edge whose triangles carry different colors at one of its
+// two positions (squared RGB distance above RLDRED_SEAM_COLOR2: a distance
+// of 40, about what a 64 color palette moves a color anyway; in exported
+// models such colors differ mostly either by a few steps or by far more) is
+// a seam. Each triangle on it adds the plane through the edge,
+// perpendicular to itself, with RLDRED_SEAM_WEIGHT times the squared edge
+// length - two sides together as much as one open edge. A seam may slide
+// along itself but moving it off its line costs like moving an outline.
+// A seam between near colors holds less: below a distance of 100
+// (RLDRED_SEAM_FULL2) the weight falls with the squared distance, so a step
+// of 40 to 100 does not take the triangles a shape needs (never below the
+// crease weight where the seam is a crease as well).
+#define RLDRED_SEAM_COLOR2 1600u
+#define RLDRED_SEAM_WEIGHT 5.0
+#define RLDRED_SEAM_FULL2 10000u
+
+// CREASES (sharp edges - the outline of angular parts; the outline of a
+// smooth curved part has no such edge and is not guarded): an edge that is
+// not open, whose two triangles' normals differ by more than acos(0.5) = 60
+// degrees (and do not face away from each other as front and back of a
+// sheet), gets the same planes with
+// RLDRED_CREASE_WEIGHT - about twice the area of a triangle beside it, on
+// top of the face planes, so a crease line keeps its place more firmly than
+// a flat area. Sharper edges (thin fins) count as open edges already.
+#define RLDRED_CREASE_COS 0.5
+#define RLDRED_CREASE_WEIGHT 1.0
+
+// THE COLOR COST of a collapse (RldRed_ColorCost): every moved corner takes
+// the color of a corner at v (the nearest color there, RldRed_PickCorner),
+// every triangle on the edge dies. A color that changes or that its position
+// no longer has costs RLDRED_COLOR_WEIGHT x (a third of the area of its
+// triangle) x (squared RGB distance / 195075, the squared distance from
+// black to white). With 162 a step of 60 - a clearly visible wedge of
+// another color - costs as much as moving the same area by one unit (about
+// one step of the vertex grid of a frame); black to white as much as about
+// 7 units, the length of a typical edge of a reduced model.
+#define RLDRED_COLOR_WEIGHT 162.0
+#define RLDRED_COLOR_FULL2 195075.0
 
 // Two triangles on one edge lie on the same side of it when their third
 // corners, seen along the edge, point within acos(0.9) = 25.8 degrees.
@@ -343,6 +436,8 @@ struct RldRedState
 	double *quadric;       // RLDRED_QUADRIC per position
 	double *sourceNormal;  // 3 per triangle: the normal of the input triangle (not unit length)
 	u32 *corner;           // 3 per triangle: the position each corner uses now
+	u32 *attribute;        // 3 per triangle: the input corner whose attributes the corner carries; it
+	                       // sits at the position the corner uses now
 	u8 *triangleAlive;     // per triangle
 	u32 *head;             // per position: its first corner (list of corners at that position)
 	u32 *next;             // per corner: the next corner at the same position
@@ -380,6 +475,8 @@ struct RldRedState
 	size_t heapCompactAt;
 
 	int strict;            // first phase: the normal limit against the input triangle holds
+	int guard;             // 2 seams, creases and the color cost; 1 the color cost only; 0 none (see RldRed_Reduce)
+	u32 total;             // live triangles of all groups
 	double maxError;
 };
 
@@ -389,6 +486,7 @@ static void RldRed_FreeState(struct RldRedState *s)
 	free(s->quadric);
 	free(s->sourceNormal);
 	free(s->corner);
+	free(s->attribute);
 	free(s->triangleAlive);
 	free(s->head);
 	free(s->next);
@@ -441,6 +539,16 @@ static void RldRed_MarkGuard(struct RldRedState *s)
 static int RldRed_HasCorner(const u32 *t, u32 x)
 {
 	return (t[0] == x) || (t[1] == x) || (t[2] == x);
+}
+
+// The squared RGB distance of two colors 0xRRGGBB (integers: exact).
+static u32 RldRed_ColorDistance2(u32 a, u32 b)
+{
+	const int dr = (int)((a >> 16) & 0xFFu) - (int)((b >> 16) & 0xFFu);
+	const int dg = (int)((a >> 8) & 0xFFu) - (int)((b >> 8) & 0xFFu);
+	const int db = (int)(a & 0xFFu) - (int)(b & 0xFFu);
+
+	return (u32)(dr * dr + dg * dg + db * db);
 }
 
 // The normal of triangle t as it is now (not unit length).
@@ -565,6 +673,10 @@ static void RldRed_HeapPop(struct RldRedState *s, struct RldRedCandidate *out)
 
 static int RldRed_GroupAbove(const struct RldRedState *s, u32 group)
 {
+	if ((s->mesh->totalTarget != 0u) && (s->total <= s->mesh->totalTarget))
+	{
+		return 0;
+	}
 	return s->groupCount[group] > s->mesh->groupTarget[group];
 }
 
@@ -742,6 +854,159 @@ static int RldRed_OnOpenEdge(struct RldRedState *s, u32 x, const u32 *triangles,
 // CANDIDATES
 //========================================================================================
 
+// The corner at v whose attributes corner `slot` of triangle tu takes when
+// u -> v moves it there: of the corners at v now (the live triangles of v in
+// listV, count nv, the triangles on the edge included), the one whose color
+// is nearest to the corner's own; on a tie one of a triangle beside tu (it
+// has one of tu's other two positions), then the first in list order.
+// Colors are taken, never mixed: on one side of a seam a moved corner keeps
+// that side's color, and without colors it takes a neighbor's. Returns the
+// input corner (RldRedResult.sourceCorner).
+static u32 RldRed_PickCorner(const struct RldRedState *s, u32 tu, u32 slot, u32 v, const u32 *listV, u32 nv)
+{
+	const u32 *color = s->mesh->cornerColor;
+	const u32 a = s->corner[3u * tu + (slot + 1u) % 3u];
+	const u32 b = s->corner[3u * tu + (slot + 2u) % 3u];
+	const u32 own = (color != NULL) ? color[s->attribute[3u * tu + slot]] : 0u;
+	u32 best = RLDRED_NONE;
+	u32 bestDistance = 0;
+	int bestBeside = 0;
+	u32 j;
+	u32 k;
+
+	for (j = 0; j < nv; j++)
+	{
+		const u32 *w = &s->corner[3u * listV[j]];
+		const int beside = RldRed_HasCorner(w, a) || RldRed_HasCorner(w, b);
+
+		for (k = 0; k < 3u; k++)
+		{
+			if (w[k] == v)
+			{
+				const u32 candidate = s->attribute[3u * listV[j] + k];
+				const u32 distance = (color != NULL) ? RldRed_ColorDistance2(own, color[candidate]) : 0u;
+
+				if ((best == RLDRED_NONE) || (distance < bestDistance) || ((distance == bestDistance) && beside && !bestBeside))
+				{
+					best = candidate;
+					bestDistance = distance;
+					bestBeside = beside;
+				}
+			}
+		}
+	}
+
+	return best;
+}
+
+// The nearest color to `own` that position q still has after u -> v (q is v
+// or a third corner of the edge): the corners at q of the triangles that do
+// not die and, at v, the colors the moved corners take. The squared
+// distance; 0 when q keeps no corner. listU (count nu) and listV (count nv)
+// hold the triangles of u and v; uses listX.
+static u32 RldRed_NearestAfter(struct RldRedState *s, u32 u, u32 v, u32 q, u32 own, u32 nu, u32 nv)
+{
+	const u32 *color = s->mesh->cornerColor;
+	const u32 count = (q == v) ? nv : RldRed_Triangles(s, q, s->listX);
+	const u32 *list = (q == v) ? s->listV : s->listX;
+	u32 best = 0;
+	int any = 0;
+	u32 i;
+	u32 k;
+
+	for (i = 0; i < count; i++)
+	{
+		const u32 *t = &s->corner[3u * list[i]];
+
+		if (RldRed_HasCorner(t, u) && RldRed_HasCorner(t, v))
+		{
+			continue;  // dies
+		}
+		for (k = 0; k < 3u; k++)
+		{
+			if (t[k] == q)
+			{
+				const u32 distance = RldRed_ColorDistance2(own, color[s->attribute[3u * list[i] + k]]);
+
+				best = (!any || (distance < best)) ? distance : best;
+				any = 1;
+			}
+		}
+	}
+	for (i = 0; (i < nu) && (q == v); i++)
+	{
+		const u32 *t = &s->corner[3u * s->listU[i]];
+
+		for (k = 0; (k < 3u) && !RldRed_HasCorner(t, v); k++)
+		{
+			if (t[k] == u)
+			{
+				const u32 distance = RldRed_ColorDistance2(own, color[RldRed_PickCorner(s, s->listU[i], k, v, s->listV, nv)]);
+
+				best = (!any || (distance < best)) ? distance : best;
+				any = 1;
+			}
+		}
+	}
+
+	return best;
+}
+
+// The color cost of u -> v (see RLDRED_COLOR_WEIGHT). Every triangle of u
+// that is not on the edge moves: its corner at u takes the color of
+// RldRed_PickCorner. Every triangle on the edge dies: each of its colors
+// counts with the distance to the nearest color its position (v for the
+// corner at u) still has afterwards - zero where the color goes on in a
+// neighbor, the full step where the last triangle of a small patch (the
+// highlight of an eye) would vanish. 0 without colors. Uses listU, listV
+// and listX.
+static double RldRed_ColorCost(struct RldRedState *s, u32 u, u32 v)
+{
+	const u32 *color = s->mesh->cornerColor;
+	double sum = 0.0;
+	u32 nu;
+	u32 nv;
+	u32 i;
+	u32 k;
+
+	if ((color == NULL) || !s->guard)
+	{
+		return 0.0;
+	}
+
+	nu = RldRed_Triangles(s, u, s->listU);
+	nv = RldRed_Triangles(s, v, s->listV);
+	for (i = 0; i < nu; i++)
+	{
+		const u32 tu = s->listU[i];
+		const u32 *t = &s->corner[3u * tu];
+		const int dies = RldRed_HasCorner(t, v);
+		u32 distance = 0;
+		double normal[3];
+
+		for (k = 0; k < 3u; k++)
+		{
+			const u32 own = color[s->attribute[3u * tu + k]];
+
+			if (dies)
+			{
+				distance += RldRed_NearestAfter(s, u, v, (t[k] == u) ? v : t[k], own, nu, nv);
+			}
+			else if (t[k] == u)
+			{
+				distance += RldRed_ColorDistance2(own, color[RldRed_PickCorner(s, tu, k, v, s->listV, nv)]);
+			}
+		}
+		if (distance != 0u)
+		{
+			RldRed_Normal(s, tu, normal);
+			sum += (0.5 * RldRed_Sqrt(RldRed_Dot(normal, normal)) / 3.0) * ((double)distance / RLDRED_COLOR_FULL2);
+		}
+	}
+
+	return RLDRED_COLOR_WEIGHT * sum;
+}
+
 // Measures the collapse u -> v and puts it into the heap; collapses that can
 // never be done (positions not live, u pinned, other groups, a group already
 // at its target) are left out. 0 = out of memory.
@@ -755,7 +1020,7 @@ static int RldRed_Push(struct RldRedState *s, u32 u, u32 v)
 		return 1;
 	}
 
-	c.cost = RldRed_QuadricError(&s->quadric[RLDRED_QUADRIC * u], &s->quadric[RLDRED_QUADRIC * v], &s->position[3u * v]);
+	c.cost = RldRed_QuadricError(&s->quadric[RLDRED_QUADRIC * u], &s->quadric[RLDRED_QUADRIC * v], &s->position[3u * v]) + RldRed_ColorCost(s, u, v);
 	c.u = u;
 	c.v = v;
 	c.stampU = s->stamp[u];
@@ -1023,8 +1288,30 @@ static int RldRed_Collapse(struct RldRedState *s, u32 u, u32 v, u32 nu, double c
 	u32 moved = 0;
 	u32 mark;
 	u32 tail;
+	u32 nv;
 	u32 i;
 	u32 k;
+
+	// The moved corners take the attributes of a corner at v first, while the
+	// triangles of v are still the ones before the collapse (as measured by
+	// RldRed_ColorCost); the moved triangles are not among them.
+	nv = RldRed_Triangles(s, v, s->listV);
+	for (i = 0; i < nu; i++)
+	{
+		const u32 t = s->listU[i];
+		const u32 *c = &s->corner[3u * t];
+
+		if (!RldRed_HasCorner(c, v))
+		{
+			for (k = 0; k < 3u; k++)
+			{
+				if (c[k] == u)
+				{
+					s->attribute[3u * t + k] = RldRed_PickCorner(s, t, k, v, s->listV, nv);
+				}
+			}
+		}
+	}
 
 	// The triangles on the edge die; the others of u now use v. Their third
 	// corners are remembered: they lost a triangle and are measured again.
@@ -1040,6 +1327,7 @@ static int RldRed_Collapse(struct RldRedState *s, u32 u, u32 v, u32 nu, double c
 		{
 			s->triangleAlive[t] = 0u;
 			s->groupCount[group]--;
+			s->total--;
 			for (k = 0; k < 3u; k++)
 			{
 				s->valence[c[k]]--;
@@ -1201,6 +1489,14 @@ static int RldRed_CheckInput(const RldRedMesh *mesh, char *why, size_t whySize)
 			snprintf(why, whySize, "reduce: triangle %u is in group %u of %u.", t, (u32)mesh->triangleGroup[t], mesh->groupCount);
 			return 0;
 		}
+		for (k = 0; (k < 3u) && (mesh->cornerColor != NULL); k++)
+		{
+			if (mesh->cornerColor[3u * t + k] > 0x00FFFFFFu)
+			{
+				snprintf(why, whySize, "reduce: corner %u has the color 0x%08X; 0xRRGGBB expected.", 3u * t + k, mesh->cornerColor[3u * t + k]);
+				return 0;
+			}
+		}
 	}
 
 	return 1;
@@ -1208,7 +1504,7 @@ static int RldRed_CheckInput(const RldRedMesh *mesh, char *why, size_t whySize)
 
 // Allocates the state, builds the corner lists, the groups of the positions,
 // the box positions and the quadrics. 0 = out of memory.
-static int RldRed_Setup(struct RldRedState *s, const RldRedMesh *mesh)
+static int RldRed_Setup(struct RldRedState *s, const RldRedMesh *mesh, int guard)
 {
 	const u32 n = mesh->positionCount;
 	const u32 m = mesh->triangleCount;
@@ -1229,10 +1525,13 @@ static int RldRed_Setup(struct RldRedState *s, const RldRedMesh *mesh)
 	s->m = m;
 	s->heapCompactAt = RLDRED_HEAP_COMPACT_MIN;
 	s->strict = 1;
+	s->guard = guard;
+	s->total = m;
 	s->position = (double *)malloc(np * 3u * sizeof(double));
 	s->quadric = (double *)calloc(np * RLDRED_QUADRIC, sizeof(double));
 	s->sourceNormal = (double *)malloc(mp * 3u * sizeof(double));
 	s->corner = (u32 *)malloc(mp * 3u * sizeof(u32));
+	s->attribute = (u32 *)malloc(mp * 3u * sizeof(u32));
 	s->triangleAlive = (u8 *)malloc(mp);
 	s->head = (u32 *)malloc(np * sizeof(u32));
 	s->next = (u32 *)malloc(mp * 3u * sizeof(u32));
@@ -1256,7 +1555,7 @@ static int RldRed_Setup(struct RldRedState *s, const RldRedMesh *mesh)
 	s->listX = (u32 *)malloc(mp * sizeof(u32));
 	s->ring = (u32 *)malloc(np * sizeof(u32));
 	s->touched = (u32 *)malloc(np * sizeof(u32));
-	if ((s->position == NULL) || (s->quadric == NULL) || (s->sourceNormal == NULL) || (s->corner == NULL) || (s->triangleAlive == NULL) ||
+	if ((s->position == NULL) || (s->quadric == NULL) || (s->sourceNormal == NULL) || (s->corner == NULL) || (s->attribute == NULL) || (s->triangleAlive == NULL) ||
 	    (s->head == NULL) || (s->next == NULL) || (s->stamp == NULL) || (s->valence == NULL) || (s->positionState == NULL) ||
 	    (s->positionGroup == NULL) || (s->pinned == NULL) || (s->markA == NULL) || (s->markB == NULL) || (s->markC == NULL) || (s->markD == NULL) ||
 	    (s->countU == NULL) || (s->countV == NULL) || (s->countUV == NULL) || (s->edgeOpen == NULL) || (s->edgeCount == NULL) || (s->wing == NULL) ||
@@ -1306,6 +1605,7 @@ static int RldRed_Setup(struct RldRedState *s, const RldRedMesh *mesh)
 			const u32 x = mesh->triangle[c];
 
 			s->corner[c] = x;
+			s->attribute[c] = c;
 			s->next[c] = s->head[x];
 			s->head[x] = c;
 			s->valence[x]++;
@@ -1406,12 +1706,15 @@ static int RldRed_Setup(struct RldRedState *s, const RldRedMesh *mesh)
 		}
 	}
 
-	// Open edges. A plane through the edge, perpendicular to the triangle, for
+	// Open edges: a plane through the edge, perpendicular to the triangle, for
 	// both ends - once per edge: from its triangle with the lowest index.
+	// Seams and creases (edges that are not open): the same plane from every
+	// triangle on the edge, each perpendicular to itself.
 	for (t = 0; t < m; t++)
 	{
 		const u32 *c = &mesh->triangle[3u * t];
 		const double *normal = &s->sourceNormal[3u * t];
+		const int flat = !(RldRed_Dot(normal, normal) > 0.0);
 
 		for (k = 0; k < 3u; k++)
 		{
@@ -1419,33 +1722,61 @@ static int RldRed_Setup(struct RldRedState *s, const RldRedMesh *mesh)
 			const u32 b = c[(k + 1u) % 3u];
 			const u32 count = RldRed_Triangles(s, a, s->listX);
 			double wing[3];
-			int open = 1;
+			int sameSide = 1;
+			int lowest = 1;
+			int seam = 0;
+			int crease = 0;
+			u32 seamDistance = 0;
 			u32 i;
 
 			RldRed_Wing(s, a, b, c[(k + 2u) % 3u], wing);
-			for (i = 0; (i < count) && open; i++)
+			for (i = 0; i < count; i++)
 			{
 				const u32 o = s->listX[i];
 				const u32 *oc = &s->corner[3u * o];
+				const double *otherNormal = &s->sourceNormal[3u * o];
 				double other[3];
+				u32 j;
 
 				if ((o == t) || !RldRed_HasCorner(oc, b))
 				{
 					continue;
 				}
 				RldRed_Wing(s, a, b, oc[0] ^ oc[1] ^ oc[2] ^ a ^ b, other);
-				if ((o < t) || !RldRed_Within(wing, other, RLDRED_OPEN_COS))
+				sameSide &= RldRed_Within(wing, other, RLDRED_OPEN_COS);
+				lowest &= (o > t);
+
+				// A seam: the colors of t and o differ at a or at b.
+				for (j = 0; (j < 3u) && (mesh->cornerColor != NULL) && (guard >= 2); j++)
 				{
-					open = 0;  // not open, or open but its plane comes from triangle o
+					if ((oc[j] == a) || (oc[j] == b))
+					{
+						const u32 here = (c[0] == oc[j]) ? 0u : ((c[1] == oc[j]) ? 1u : 2u);
+						const u32 distance = RldRed_ColorDistance2(mesh->cornerColor[3u * t + here], mesh->cornerColor[3u * o + j]);
+
+						seam |= (distance > RLDRED_SEAM_COLOR2);
+						seamDistance = (distance > seamDistance) ? distance : seamDistance;
+					}
+				}
+
+				// A crease: the normals differ by more than 60 degrees, but the
+				// two are not front and back of a sheet.
+				if ((guard >= 2) && !flat && (RldRed_Dot(otherNormal, otherNormal) > 0.0) && !RldRed_Within(normal, otherNormal, RLDRED_CREASE_COS) &&
+				    !RldRed_Opposite(normal, otherNormal, RLDRED_FACING_COS))
+				{
+					crease = 1;
 				}
 			}
 
-			if (open)
+			if ((sameSide && lowest) || (!sameSide && (seam || crease)))
 			{
 				const double *pa = &s->position[3u * a];
 				const double *pb = &s->position[3u * b];
 				const double edge[3] = {pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]};
 				const double e2 = RldRed_Dot(edge, edge);
+				const double seamWeight = (seamDistance < RLDRED_SEAM_FULL2) ? (RLDRED_SEAM_WEIGHT * (double)seamDistance / (double)RLDRED_SEAM_FULL2) : RLDRED_SEAM_WEIGHT;
+				const double creaseWeight = crease ? RLDRED_CREASE_WEIGHT : 0.0;
+				const double weight = sameSide ? RLDRED_BOUNDARY_WEIGHT : ((seam && (seamWeight > creaseWeight)) ? seamWeight : creaseWeight);
 				double side[3];
 				double length;
 
@@ -1460,8 +1791,8 @@ static int RldRed_Setup(struct RldRedState *s, const RldRedMesh *mesh)
 					const double sc = side[2] / length;
 					const double d = -(sa * pa[0] + sb * pa[1] + sc * pa[2]);
 
-					RldRed_AddPlane(&s->quadric[RLDRED_QUADRIC * a], sa, sb, sc, d, RLDRED_BOUNDARY_WEIGHT * e2);
-					RldRed_AddPlane(&s->quadric[RLDRED_QUADRIC * b], sa, sb, sc, d, RLDRED_BOUNDARY_WEIGHT * e2);
+					RldRed_AddPlane(&s->quadric[RLDRED_QUADRIC * a], sa, sb, sc, d, weight * e2);
+					RldRed_AddPlane(&s->quadric[RLDRED_QUADRIC * b], sa, sb, sc, d, weight * e2);
 				}
 			}
 		}
@@ -1487,16 +1818,16 @@ void RldRed_Free(RldRedResult *result)
 	}
 	free(result->triangle);
 	free(result->sourceTriangle);
+	free(result->sourceCorner);
 	memset(result, 0, sizeof(*result));
 }
 
-// 1 = every group is at or below its target; out holds the kept triangles in
-// the order of the input (free with RldRed_Free). 0 = not reached or the input
-// is invalid: out is empty and why (may be NULL) says which group or triangle.
-int RldRed_Reduce(const RldRedMesh *mesh, RldRedResult *out, char *why, size_t whySize)
+// One reduction of the checked input; guard 2: seams, creases and color
+// cost, 1: color cost only, 0: none. 1 = reached, out filled; 0 = not reached, -1 = out of memory: out
+// empty, why says it.
+static int RldRed_Run(const RldRedMesh *mesh, RldRedResult *out, char *why, size_t whySize, int guard)
 {
 	struct RldRedState s;
-	char spare[4];
 	u32 above = 0;
 	u32 kept = 0;
 	u32 phase;
@@ -1505,28 +1836,11 @@ int RldRed_Reduce(const RldRedMesh *mesh, RldRedResult *out, char *why, size_t w
 	u32 t;
 	u32 i;
 
-	if ((why == NULL) || (whySize == 0u))
-	{
-		why = spare;
-		whySize = sizeof(spare);
-	}
-	why[0] = '\0';
-	if (out == NULL)
-	{
-		snprintf(why, whySize, "reduce: no result to fill.");
-		return 0;
-	}
-	memset(out, 0, sizeof(*out));
-	if (!RldRed_CheckInput(mesh, why, whySize))
-	{
-		return 0;
-	}
-
-	if (!RldRed_Setup(&s, mesh))
+	if (!RldRed_Setup(&s, mesh, guard))
 	{
 		RldRed_FreeState(&s);
 		snprintf(why, whySize, "reduce: out of memory (%u positions, %u triangles).", mesh->positionCount, mesh->triangleCount);
-		return 0;
+		return -1;
 	}
 
 	for (g = 0; g < mesh->groupCount; g++)
@@ -1553,7 +1867,7 @@ int RldRed_Reduce(const RldRedMesh *mesh, RldRedResult *out, char *why, size_t w
 				{
 					RldRed_FreeState(&s);
 					snprintf(why, whySize, "reduce: out of memory (%u positions, %u triangles).", mesh->positionCount, mesh->triangleCount);
-					return 0;
+					return -1;
 				}
 			}
 		}
@@ -1576,11 +1890,12 @@ int RldRed_Reduce(const RldRedMesh *mesh, RldRedResult *out, char *why, size_t w
 			{
 				RldRed_FreeState(&s);
 				snprintf(why, whySize, "reduce: out of memory (%u positions, %u triangles).", mesh->positionCount, mesh->triangleCount);
-				return 0;
+				return -1;
 			}
-			if (!RldRed_GroupAbove(&s, g))
+			above = 0;
+			for (g = 0; g < mesh->groupCount; g++)
 			{
-				above--;
+				above += RldRed_GroupAbove(&s, g) ? 1u : 0u;
 			}
 			if (s.heapCount >= s.heapCompactAt)
 			{
@@ -1589,6 +1904,12 @@ int RldRed_Reduce(const RldRedMesh *mesh, RldRedResult *out, char *why, size_t w
 		}
 	}
 
+	if ((mesh->totalTarget != 0u) && (s.total > mesh->totalTarget))
+	{
+		snprintf(why, whySize, "reduce: %u triangles kept, the target is %u; no further collapse keeps the mesh valid.", s.total, mesh->totalTarget);
+		RldRed_FreeState(&s);
+		return 0;
+	}
 	for (g = 0; g < mesh->groupCount; g++)
 	{
 		if (RldRed_GroupAbove(&s, g))
@@ -1606,12 +1927,13 @@ int RldRed_Reduce(const RldRedMesh *mesh, RldRedResult *out, char *why, size_t w
 	}
 	out->triangle = (u32 *)malloc(((size_t)kept + 1u) * 3u * sizeof(u32));
 	out->sourceTriangle = (u32 *)malloc(((size_t)kept + 1u) * sizeof(u32));
-	if ((out->triangle == NULL) || (out->sourceTriangle == NULL))
+	out->sourceCorner = (u32 *)malloc(((size_t)kept + 1u) * 3u * sizeof(u32));
+	if ((out->triangle == NULL) || (out->sourceTriangle == NULL) || (out->sourceCorner == NULL))
 	{
 		RldRed_Free(out);
 		RldRed_FreeState(&s);
 		snprintf(why, whySize, "reduce: out of memory (%u positions, %u triangles).", mesh->positionCount, mesh->triangleCount);
-		return 0;
+		return -1;
 	}
 
 	for (t = 0; t < s.m; t++)
@@ -1621,6 +1943,9 @@ int RldRed_Reduce(const RldRedMesh *mesh, RldRedResult *out, char *why, size_t w
 			out->triangle[3u * out->triangleCount + 0u] = s.corner[3u * t + 0u];
 			out->triangle[3u * out->triangleCount + 1u] = s.corner[3u * t + 1u];
 			out->triangle[3u * out->triangleCount + 2u] = s.corner[3u * t + 2u];
+			out->sourceCorner[3u * out->triangleCount + 0u] = s.attribute[3u * t + 0u];
+			out->sourceCorner[3u * out->triangleCount + 1u] = s.attribute[3u * t + 1u];
+			out->sourceCorner[3u * out->triangleCount + 2u] = s.attribute[3u * t + 2u];
 			out->sourceTriangle[out->triangleCount] = t;
 			out->triangleCount++;
 		}
@@ -1629,6 +1954,63 @@ int RldRed_Reduce(const RldRedMesh *mesh, RldRedResult *out, char *why, size_t w
 
 	RldRed_FreeState(&s);
 	return 1;
+}
+
+// 1 = the target is reached (every group at or below its target, or with
+// totalTarget all groups together at or below it); out holds the kept
+// triangles in the order of the input (free with RldRed_Free). 0 = not
+// reached or the input is invalid: out is empty and why (may be NULL) says
+// which group or triangle.
+//
+// The reduction runs in up to three stages (RldRedResult.stage): 0 guarded,
+// with the seam and crease planes and the color cost; 1 with the color cost
+// only; 2 unguarded, in the order of the plain measure (open edges, shape
+// term, box). The guards change which collapse comes first, and the order
+// decides how far the rules let a mesh go - a comb of very fine teeth, for
+// one, ends above its target in stage 0. Each later stage gives up less:
+// stage 1 still keeps colors from running into wedges along gradients.
+// Stage 2 reaches what the plain measure reaches under the rules of this
+// file; since the second phase allows 84 degrees against the input
+// triangle (it allowed 134 before), fine detail that only melts by turning
+// further can stay above its target where it once did not. All stages keep
+// the same rules and pick the colors of the moved corners the same way.
+int RldRed_Reduce(const RldRedMesh *mesh, RldRedResult *out, char *why, size_t whySize)
+{
+	char spare[4];
+	int done = 0;
+	u32 stage;
+
+	if ((why == NULL) || (whySize == 0u))
+	{
+		why = spare;
+		whySize = sizeof(spare);
+	}
+	why[0] = '\0';
+	if (out == NULL)
+	{
+		snprintf(why, whySize, "reduce: no result to fill.");
+		return 0;
+	}
+	memset(out, 0, sizeof(*out));
+	if (!RldRed_CheckInput(mesh, why, whySize))
+	{
+		return 0;
+	}
+
+	for (stage = 0; stage < 3u; stage++)
+	{
+		done = RldRed_Run(mesh, out, why, whySize, 2 - (int)stage);
+		if (done != 0)
+		{
+			break;
+		}
+	}
+	if (done == 1)
+	{
+		why[0] = '\0';
+		out->stage = stage;
+	}
+	return done == 1;
 }
 
 //========================================================================================
@@ -1644,14 +2026,19 @@ int RldRed_Reduce(const RldRedMesh *mesh, RldRedResult *out, char *why, size_t w
 // comb only reducible in the second phase),
 // groups side by side, groups that share positions and a group whose
 // positions are all shared, parts that cannot be reduced, invalid input.
+// Colored meshes (a two-colored sphere, a cube with a colored side and a
+// stripe, a two-colored grid) and a shared budget follow (RldRed_TestColors,
+// RldRed_TestShared).
 // Every result is checked (RldRed_TestValid) for: targets reached, only input
 // positions of the same group, sourceTriangle valid and rising, each corner
-// at its input corner's position or that position gone, no repeated corner,
+// at its input corner's position or that position gone, each source corner
+// at the position of its corner and in the same group, no repeated corner,
 // area above zero, the normal within 60 degrees of the input triangle's
-// (within 134 where the second phase was needed), no shape worse than the
+// (within 84 where the second phase was needed), no shape worse than the
 // needle limit or the worst input triangle, the box of every group the same,
 // no new doubled triangle, no more edges with more than two triangles than
-// the input had, and the same bytes from a second run.
+// the input had, and the same bytes (triangles, sourceTriangle,
+// sourceCorner) from a second run.
 
 struct RldRedTestMesh
 {
@@ -1662,6 +2049,7 @@ struct RldRedTestMesh
 	u32 triangleCapacity;
 	u32 *triangle;
 	u8 *group;
+	u32 *color;   // 3 per triangle, 0xRRGGBB (0 until a case paints them)
 	int failed;   // out of memory while building
 };
 
@@ -1702,6 +2090,7 @@ static void RldRed_TestFree(struct RldRedTestMesh *t)
 	free(t->position);
 	free(t->triangle);
 	free(t->group);
+	free(t->color);
 	memset(t, 0, sizeof(*t));
 }
 
@@ -1738,6 +2127,7 @@ static void RldRed_TestTriangle(struct RldRedTestMesh *t, u32 a, u32 b, u32 c, u
 		const u32 capacity = (t->triangleCapacity < 64u) ? 64u : (2u * t->triangleCapacity);
 		u32 *grown = (u32 *)realloc(t->triangle, (size_t)capacity * 3u * sizeof(u32));
 		u8 *grownGroup;
+		u32 *grownColor;
 
 		if (grown == NULL)
 		{
@@ -1752,6 +2142,13 @@ static void RldRed_TestTriangle(struct RldRedTestMesh *t, u32 a, u32 b, u32 c, u
 			return;
 		}
 		t->group = grownGroup;
+		grownColor = (u32 *)realloc(t->color, (size_t)capacity * 3u * sizeof(u32));
+		if (grownColor == NULL)
+		{
+			t->failed = 1;
+			return;
+		}
+		t->color = grownColor;
 		t->triangleCapacity = capacity;
 	}
 
@@ -1759,6 +2156,9 @@ static void RldRed_TestTriangle(struct RldRedTestMesh *t, u32 a, u32 b, u32 c, u
 	t->triangle[3u * t->triangleCount + 1u] = b;
 	t->triangle[3u * t->triangleCount + 2u] = c;
 	t->group[t->triangleCount] = group;
+	t->color[3u * t->triangleCount + 0u] = 0u;
+	t->color[3u * t->triangleCount + 1u] = 0u;
+	t->color[3u * t->triangleCount + 2u] = 0u;
 	t->triangleCount++;
 }
 
@@ -1908,6 +2308,8 @@ static RldRedMesh RldRed_TestView(const struct RldRedTestMesh *t, u32 groupCount
 	mesh.triangleGroup = t->group;
 	mesh.groupCount = groupCount;
 	mesh.groupTarget = targets;
+	mesh.cornerColor = NULL;
+	mesh.totalTarget = 0u;
 	return mesh;
 }
 
@@ -2039,6 +2441,15 @@ static int RldRed_TestValid(const RldRedMesh *mesh, const RldRedResult *r, int s
 				return 0;
 			}
 
+			// The attributes come from an input corner of the same group at the
+			// same position.
+			if ((r->sourceCorner[3u * i + k] >= 3u * mesh->triangleCount) || (mesh->triangle[r->sourceCorner[3u * i + k]] != c[k]) ||
+			    (mesh->triangleGroup[r->sourceCorner[3u * i + k] / 3u] != mesh->triangleGroup[source]))
+			{
+				snprintf(detail, detailSize, "triangle %u corner %u: source corner %u is not at position %u in the same group", i, k, r->sourceCorner[3u * i + k], c[k]);
+				return 0;
+			}
+
 			// The corner must be a position some input triangle of the same group uses.
 			for (j = 0; (j < 3u * mesh->triangleCount) && !used; j++)
 			{
@@ -2058,7 +2469,7 @@ static int RldRed_TestValid(const RldRedMesh *mesh, const RldRedResult *r, int s
 		RldRed_Cross(&mesh->position[3u * in[0]], &mesh->position[3u * in[1]], &mesh->position[3u * in[2]], was);
 		if (!(RldRed_Dot(now, now) > 0.0) || !RldRed_TurnBelow(was, now, (sourceTurn ? RLDRED_SOURCE_COS : RLDRED_SOURCE_COS_LATE) - 0.001))
 		{
-			snprintf(detail, detailSize, "triangle %u: no area, or turned by more than 60 degrees from input triangle %u", i, source);
+			snprintf(detail, detailSize, "triangle %u: no area, or turned too far from input triangle %u", i, source);
 			return 0;
 		}
 
@@ -2097,11 +2508,16 @@ static int RldRed_TestValid(const RldRedMesh *mesh, const RldRedResult *r, int s
 
 	for (g = 0; g < mesh->groupCount; g++)
 	{
-		if (counts[g] > mesh->groupTarget[g])
+		if ((mesh->totalTarget == 0u) && (counts[g] > mesh->groupTarget[g]))
 		{
 			snprintf(detail, detailSize, "group %u keeps %u, target %u", g, counts[g], mesh->groupTarget[g]);
 			return 0;
 		}
+	}
+	if ((mesh->totalTarget != 0u) && (r->triangleCount > mesh->totalTarget))
+	{
+		snprintf(detail, detailSize, "%u triangles kept, target %u", r->triangleCount, mesh->totalTarget);
+		return 0;
 	}
 
 	// The box of every group stays.
@@ -2274,9 +2690,10 @@ static int RldRed_TestRun(struct RldRedTest *test, const char *name, const RldRe
 		return 0;
 	}
 
-	if ((again.triangleCount != r->triangleCount) || (memcmp(&again.maxError, &r->maxError, sizeof(double)) != 0) ||
+	if ((again.triangleCount != r->triangleCount) || (again.stage != r->stage) || (memcmp(&again.maxError, &r->maxError, sizeof(double)) != 0) ||
 	    (memcmp(again.triangle, r->triangle, (size_t)r->triangleCount * 3u * sizeof(u32)) != 0) ||
-	    (memcmp(again.sourceTriangle, r->sourceTriangle, (size_t)r->triangleCount * sizeof(u32)) != 0))
+	    (memcmp(again.sourceTriangle, r->sourceTriangle, (size_t)r->triangleCount * sizeof(u32)) != 0) ||
+	    (memcmp(again.sourceCorner, r->sourceCorner, (size_t)r->triangleCount * 3u * sizeof(u32)) != 0))
 	{
 		RldRed_TestLine(test, 0, name, "two runs differ (%u and %u triangles)", r->triangleCount, again.triangleCount);
 		RldRed_Free(&again);
@@ -2632,9 +3049,10 @@ static void RldRed_TestDisc(struct RldRedTest *test, u32 n, u32 target, const ch
 // fan of needles from its lower left corner, each tooth a quad - 4104
 // triangles. Teeth this fine cannot all be kept; at about 400 triangles the
 // walls of the gaps must turn as the teeth melt together, which the first
-// phase forbids (it stops at 410): reached only by the second. Checked:
-// target reached, closed, the second phase did collapses, the box kept, no
-// new needle (RldRed_TestValid, with the 134 degrees of the second phase).
+// phase forbids: reached only by the second. The guarded order (creases)
+// ends above 400; a later stage (RldRedResult.stage) reaches it. Checked: target reached,
+// closed, the second phase did collapses, the box kept, no new needle
+// (RldRed_TestValid, with the 84 degrees of the second phase).
 static void RldRed_TestComb(struct RldRedTest *test, u32 teeth, u32 target, const char *name)
 {
 	struct RldRedTestMesh t;
@@ -2739,8 +3157,8 @@ static void RldRed_TestComb(struct RldRedTest *test, u32 teeth, u32 target, cons
 		if (done)
 		{
 			ok = (r.triangleCount <= target) && (r.triangleCount + 2u >= target) && RldRed_TestClosed(&r) && (s_rldRedLateCollapses != 0u);
-			RldRed_TestLine(test, ok, name, "%u triangles, closed %d, %u collapses in the second phase", r.triangleCount, RldRed_TestClosed(&r),
-			                s_rldRedLateCollapses);
+			RldRed_TestLine(test, ok, name, "%u triangles, closed %d, %u collapses in the second phase, stage %u", r.triangleCount,
+			                RldRed_TestClosed(&r), s_rldRedLateCollapses, r.stage);
 		}
 	}
 
@@ -3310,6 +3728,224 @@ static void RldRed_SelfTestLimits(struct RldRedTest *test)
 	RldRed_TestFree(&bad);
 }
 
+// Colored meshes. kind 0: the sphere of 16 x 16 squares per side (3072
+// triangles), the half z >= 32 white, the other blue - a seam along the
+// equator, on a smooth surface. kind 1: the cube of 8 x 8 squares per side
+// (768), the side x = 64 red, on the side z = 64 a green stripe 16 < x < 32,
+// the rest grey - seams on creases and across a flat side. kind 2: the flat
+// open grid of 16 x 16 squares (512), the half x < 16 one color, the other
+// half another - a seam and nothing else. Every triangle has one color at
+// all three corners. Reduced to target, checked: no kept triangle mixes two
+// colors (its three source corners have one color), each color stays on its
+// side (the corners of a white triangle at z >= 32, a red one at x = 64, a
+// green one at z = 64 between x = 16 and 32, ...), and on the cube and the
+// grid, whose seams are straight, every color keeps its area exactly.
+// Plus RldRed_TestValid: every source corner at the position of its corner.
+#define RLDRED_TEST_WHITE 0xE0E0E0u
+#define RLDRED_TEST_BLUE 0x2040C0u
+#define RLDRED_TEST_RED 0xC02020u
+#define RLDRED_TEST_GREEN 0x20A040u
+#define RLDRED_TEST_GREY 0x808080u
+
+// The color of triangle i of a colored test mesh (kind as above), from the
+// positions of its corners.
+static u32 RldRed_TestPaint(const struct RldRedTestMesh *t, int kind, const u32 *c)
+{
+	const double *a = &t->position[3u * c[0]];
+	const double *b = &t->position[3u * c[1]];
+	const double *d = &t->position[3u * c[2]];
+
+	if (kind == 0)
+	{
+		return ((a[2] + b[2] + d[2]) >= 96.0) ? RLDRED_TEST_WHITE : RLDRED_TEST_BLUE;
+	}
+	if (kind == 1)
+	{
+		const double x = (a[0] + b[0] + d[0]) / 3.0;
+
+		if ((a[0] == 64.0) && (b[0] == 64.0) && (d[0] == 64.0))
+		{
+			return RLDRED_TEST_RED;
+		}
+		if ((a[2] == 64.0) && (b[2] == 64.0) && (d[2] == 64.0) && (x > 16.0) && (x < 32.0))
+		{
+			return RLDRED_TEST_GREEN;
+		}
+		return RLDRED_TEST_GREY;
+	}
+	return ((a[0] + b[0] + d[0]) < 48.0) ? RLDRED_TEST_RED : RLDRED_TEST_BLUE;
+}
+
+// 1 when the corner at x lies where color may be (kind as above).
+static int RldRed_TestColorPlace(int kind, u32 color, const double *x)
+{
+	if (kind == 0)
+	{
+		return (color == RLDRED_TEST_WHITE) ? (x[2] >= 32.0) : (x[2] <= 32.0);
+	}
+	if (kind == 1)
+	{
+		if (color == RLDRED_TEST_RED)
+		{
+			return x[0] == 64.0;
+		}
+		if (color == RLDRED_TEST_GREEN)
+		{
+			return (x[2] == 64.0) && (x[0] >= 16.0) && (x[0] <= 32.0);
+		}
+		return 1;
+	}
+	return (color == RLDRED_TEST_RED) ? (x[0] <= 16.0) : (x[0] >= 16.0);
+}
+
+static void RldRed_TestColors(struct RldRedTest *test, int kind, u32 target, const char *name)
+{
+	struct RldRedTestMesh t;
+	RldRedResult r;
+	RldRedMesh mesh;
+	u32 i;
+
+	memset(&t, 0, sizeof(t));
+	memset(&r, 0, sizeof(r));
+	if (kind == 2)
+	{
+		RldRed_TestGrid(&t, 16u, 32.0, 0.0, 0u, 0u, RLDRED_TEST_ONE_SIDED);
+	}
+	else
+	{
+		RldRed_TestCube(&t, (kind == 0) ? 16u : 8u, 64.0, kind == 0, 0.0, 0u);
+	}
+	if (t.failed)
+	{
+		RldRed_TestLine(test, 0, name, "out of memory");
+		RldRed_TestFree(&t);
+		return;
+	}
+	for (i = 0; i < t.triangleCount; i++)
+	{
+		const u32 color = RldRed_TestPaint(&t, kind, &t.triangle[3u * i]);
+
+		t.color[3u * i + 0u] = color;
+		t.color[3u * i + 1u] = color;
+		t.color[3u * i + 2u] = color;
+	}
+
+	mesh = RldRed_TestView(&t, 1u, &target);
+	mesh.cornerColor = t.color;
+	if (RldRed_TestRun(test, name, &mesh, &r))
+	{
+		// Twice the area of each color before and after: red, green, the
+		// others (compared on the cube and the grid).
+		double area[2][3];
+		u32 mixed = 0;
+		u32 misplaced = 0;
+		u32 pass;
+		int ok;
+
+		memset(area, 0, sizeof(area));
+		for (pass = 0; pass < 2u; pass++)
+		{
+			const u32 count = (pass == 0u) ? t.triangleCount : r.triangleCount;
+
+			for (i = 0; i < count; i++)
+			{
+				const u32 *c = (pass == 0u) ? &t.triangle[3u * i] : &r.triangle[3u * i];
+				const u32 color = (pass == 0u) ? t.color[3u * i] : t.color[r.sourceCorner[3u * i]];
+				double normal[3];
+				u32 k;
+
+				RldRed_Cross(&t.position[3u * c[0]], &t.position[3u * c[1]], &t.position[3u * c[2]], normal);
+				area[pass][(color == RLDRED_TEST_RED) ? 0 : ((color == RLDRED_TEST_GREEN) ? 1 : 2)] += RldRed_Sqrt(RldRed_Dot(normal, normal));
+				if (pass == 0u)
+				{
+					continue;
+				}
+				for (k = 0; k < 3u; k++)
+				{
+					const u32 corner = t.color[r.sourceCorner[3u * i + k]];
+
+					mixed += ((k != 0u) && (corner != color)) ? 1u : 0u;
+					misplaced += RldRed_TestColorPlace(kind, corner, &t.position[3u * c[k]]) ? 0u : 1u;
+				}
+			}
+		}
+
+		ok = (r.triangleCount <= target) && (r.triangleCount + 4u >= target) && (mixed == 0u) && (misplaced == 0u) && (r.stage == 0u);
+		if (kind != 2)
+		{
+			ok = ok && RldRed_TestClosed(&r);
+		}
+		if (kind != 0)
+		{
+			ok = ok && RldRed_TestNear(area[1][0], area[0][0]) && RldRed_TestNear(area[1][1], area[0][1]) && RldRed_TestNear(area[1][2], area[0][2]);
+		}
+		RldRed_TestLine(test, ok, name, "%u triangles, %u mixed corners, %u corners on the wrong side, area red %.6f of %.6f, green %.6f of %.6f, stage %u",
+		                r.triangleCount, mixed, misplaced, 0.5 * area[1][0], 0.5 * area[0][0], 0.5 * area[1][1], 0.5 * area[0][1], r.stage);
+	}
+
+	RldRed_Free(&r);
+	RldRed_TestFree(&t);
+}
+
+// A shared budget (totalTarget): group 0 the sphere of 8 x 8 squares per
+// side (768 triangles, curved: every collapse costs), group 1 beside it the
+// flat grid of 16 x 16 squares (512, flat: collapses nearly free), together
+// 1280 reduced to 700 with the floors 300 and 60. Checked: the total reached,
+// no group further below its floor than its last collapse can take it (the
+// triangles on an edge less one: here at most 1, up to 3 on two-sided
+// sheets),
+// and the flat grid gave up a larger part than the sphere. Then floors that
+// leave no room (700 and 500): refused, naming the total.
+static void RldRed_TestShared(struct RldRedTest *test)
+{
+	struct RldRedTestMesh t;
+	RldRedResult r;
+	RldRedMesh mesh;
+	char why[200];
+	u32 floors[2];
+	u32 counts[2] = {0u, 0u};
+	u32 i;
+	int ok;
+
+	memset(&t, 0, sizeof(t));
+	memset(&r, 0, sizeof(r));
+	RldRed_TestCube(&t, 8u, 64.0, 1, 0.0, 0u);
+	RldRed_TestGrid(&t, 16u, 32.0, 100.0, 1u, 1u, RLDRED_TEST_ONE_SIDED);
+	if (t.failed)
+	{
+		RldRed_TestLine(test, 0, "shared budget", "out of memory");
+		RldRed_TestFree(&t);
+		return;
+	}
+
+	floors[0] = 300u;
+	floors[1] = 60u;
+	mesh = RldRed_TestView(&t, 2u, floors);
+	mesh.totalTarget = 700u;
+	if (RldRed_TestRun(test, "shared budget", &mesh, &r))
+	{
+		for (i = 0; i < r.triangleCount; i++)
+		{
+			counts[t.group[r.sourceTriangle[i]]]++;
+		}
+		ok = (r.triangleCount <= 700u) && (r.triangleCount >= 698u) && ((counts[0] + 1u) >= floors[0]) && ((counts[1] + 1u) >= floors[1]) &&
+		     (r.stage == 0u) &&
+		     ((u64)counts[1] * 768u < (u64)counts[0] * 512u);
+		RldRed_TestLine(test, ok, "shared budget 1280 -> 700: the cheap group gives more", "%u triangles: sphere %u of 768 (floor 300), grid %u of 512 (floor 60)",
+		                r.triangleCount, counts[0], counts[1]);
+	}
+	RldRed_Free(&r);
+
+	floors[0] = 700u;
+	floors[1] = 500u;
+	why[0] = '\0';
+	ok = !RldRed_Reduce(&mesh, &r, why, sizeof(why)) && (r.triangle == NULL) && (strstr(why, "the target is 700") != NULL);
+	RldRed_TestLine(test, ok, "shared budget, floors leave no room: not reachable", "why \"%s\"", why);
+	RldRed_Free(&r);
+
+	RldRed_TestFree(&t);
+}
+
 // The number of failed cases; 0 = passed. Each case reports one line (no
 // line break at the end) through report, which may be NULL.
 int RldRed_SelfTest(void (*report)(const char *line))
@@ -3328,5 +3964,9 @@ int RldRed_SelfTest(void (*report)(const char *line))
 	RldRed_TestRibbon(&test, 32u, RLDRED_TEST_QUAD_BACK, 8u, "ribbon, two-sided quads, as deep as allowed: never pinched");
 	RldRed_SelfTestGroups(&test);
 	RldRed_SelfTestLimits(&test);
+	RldRed_TestColors(&test, 0, 400u, "two-colored sphere 3072 -> 400: the seam stays sharp, no color on the wrong side");
+	RldRed_TestColors(&test, 1, 100u, "cube with a red side and a green stripe 768 -> 100: colors and their areas kept");
+	RldRed_TestColors(&test, 2, 60u, "two-colored open grid 512 -> 60: the seam stays, both areas kept");
+	RldRed_TestShared(&test);
 	return test.failures;
 }

@@ -16,15 +16,25 @@
 //    2  faces -> triangles: quads split at the shorter diagonal, faces of 5 to
 //       1024 corners by ear clipping (degenerate ones refused)
 //    3  weld the corners to positions (1e-5); the color stays per corner
+//    3r --repair auto (default): weld split corners, drop degenerate and doubled
+//       triangles, turn faces outward, close small holes (tools/rldpack_repair.inc);
+//       open parts are drawn from both sides (--open-parts)
 //    3a --fit crash (default): the model to Crash's size - its kart 112.4 long
 //       (or the whole model, without a kart), at most 142.5 tall in game units;
 //       silent passes of steps 2 to 5 measure it, then the chain runs again
 //       with the factor as --scale
 //    4  parts: kart (required), driver, steering wheel
+//    4d --fit crash: the model placed onto the reference dummy - its kart on
+//       Crash's kart (tools/rldpack_dummy.inc); --size and the poses turn
+//       about the dummy's seat
+//    4m --remesh on (on request only): each part group of more than 24
+//       triangles becomes a closed hull (tools/rldpack_remesh.inc), which 4r
+//       then reduces
 //    4r --reduce auto (default): more than 805 triangles are reduced to at most
-//       797, per part group (tools/rldpack_reduce.inc)
-//    4a --size: driver and steering wheel scaled about the hip, the kart not;
-//       the size checks of step 4 and 5 run on the result
+//       797 - one budget shared by kart, driver and steering wheel, each with a
+//       floor (tools/rldpack_reduce.inc)
+//    4a --size: driver and steering wheel scaled about the pivot of the poses,
+//       the kart not; the size checks of step 4 and 5 run on the result
 //    5  axes and scale -> game units: +Y up, +Z forward, 64 per Blender unit
 //    6  draw memory per frame: 28 bytes per untextured triangle
 //    7  colors -> a palette of 64 (or 128)
@@ -39,7 +49,9 @@
 //
 // BESIDE THE CHAIN, for Reload Studio: --voices only checks a folder of voice
 // lines (nothing is packed yet), --preview writes the built model as the game
-// draws it, --icon-preview the portrait before and after as BMP.
+// draws it, --icon-preview the portrait before and after as BMP. --diagnose
+// writes the model as every step saw it (RLDDIAG 1, RldMk_Diagnosis), with the
+// limits of draw memory and file size lifted - and then no character at all.
 //
 // DETERMINISM. The same input gives the same bytes: no time, no random numbers,
 // every sort has a complete tie-break, and floating point only enters through
@@ -48,6 +60,9 @@
 // cannot round differently.
 
 #include "rldpack_reduce.inc"
+#include "rldpack_remesh.inc"
+#include "rldpack_repair.inc"
+#include "rldpack_dummy.inc"
 
 //========================================================================================
 // CONSTANTS
@@ -130,8 +145,10 @@
 // make-char sets 0x20 = (window order reversed against the source) XOR 1.
 #define RLDMK_CULL_SIGN 1u
 
-// The automatic poses turn the driver about the hip: 0.25 Blender units above
-// the ground, on the center line (16 game units).
+// With --fit none the automatic poses turn the driver about the hip: 0.25
+// Blender units above the ground, on the center line (16 game units). With
+// --fit crash they turn about the seat of the reference kart
+// (tools/rldpack_dummy.inc; --wheels off: the bottom of the driver).
 #define RLDMK_HIP_Y 16.0
 
 // Kart detection (ply-no-kart) and the plausibility of the size (ply-axes), in
@@ -1224,6 +1241,12 @@ struct RldMkOptions
 	int twoSided;     // --two-sided: no back face culling
 	int still;        // --poses still
 	u32 sizePercent;  // --size: driver and steering wheel, 100 (or 0) = as exported
+	int repair;       // --repair auto: RldMk_StepRepair; 0 = --repair off
+	int openOneSided; // --open-parts one-sided: open parts keep the cull bit; 0 = two-sided
+	int remesh;       // --remesh on: closed hulls per group first (RldMk_StepRemesh)
+	u32 remeshResolution;  // --remesh-resolution, cells along a group's longest side; 0 = 64
+	int diagnose;     // --diagnose: the last build keeps what RldMk_Diagnosis writes, the limits
+	                  // of draw memory and file size lifted; such a build is never a character
 };
 
 struct RldMkPart
@@ -1232,6 +1255,15 @@ struct RldMkPart
 	double lo[3];
 	double hi[3];
 	int group;
+};
+
+// --diagnose: one value step 9 cut off (RldMk_StepQuantize).
+struct RldMkClamp
+{
+	u32 frame;
+	u32 position;              // the position now
+	u32 axis;                  // 0 x, 1 y, 2 z
+	double value;              // the value before rounding and cutting, in record steps
 };
 
 struct RldMkBuild
@@ -1315,10 +1347,79 @@ struct RldMkBuild
 	size_t cmdlSize;
 	u32 frameSize;
 	u32 drawBytes;
+	u8 *bothSides;             // per triangle: 1 = drawn without the cull bit (RldMk_StepFlips); NULL = none
+
+	// --fit crash (RldMk_StepDummy): the model on the reference dummy
+	int kartSourceValid;       // --remesh: the kart part and the kart group before the hulls
+	double kartSource[6];      // x0 y0 z0 x1 y1 z1
+	double kartGroupSource[6];
+	int dummy;                 // placed: --size, the poses and the size range use dumFit
+	struct RldDumFitResult dumFit;     // at the model's --size
+	struct RldDumFitResult dumFit100;  // the same at 100 % (the size range, RldMk_SizeHull)
+
+	// --repair auto (RldMk_StepRepair)
+	int repaired;              // the repair ran
+	u32 repair[10];            // welded, degenerate, duplicate, flipped, holesClosed, holeTriangles,
+	                           // holesLeft, openEdgesBefore, openEdgesAfter, cracksSplit
+	u8 *triangleOpen;          // per triangle: 1 = of a part still open after the repair; NULL = none
+	u32 openTwoSided;          // drawn triangles without the cull bit because their part is open
+	u32 quantFlips;            // drawn triangles without the cull bit because the packing turns them over
+
+	// --remesh on (RldMk_StepRemesh): the source the hulls were made from,
+	// kept for the colors after the reduction (RldRem_Recolor)
+	int remeshed;
+	u32 remeshFrom;            // triangles before
+	u32 remeshHull;            // after the hulls (with the groups kept as they were)
+	u32 remeshOpenBefore;      // open edges before
+	u32 remeshSource[RLDMK_GROUPS];  // triangles per group before; the reduction shares by these
+	u32 remeshResolution;
+	u32 remPositionCount;
+	double *remPosition;
+	u32 remTriangleCount;      // only the groups that were remeshed
+	u32 *remTriangle;
+	u32 *remColor;
+	u8 *remGroup;
+	u32 bothSidesCount;
+
+	// --diagnose (RldMk_Diagnosis): the model as the steps saw it. "diag"
+	// numbers are those of the positions after welding and fitting.
+	int diagnose;              // limits lifted, the fields below kept
+	u32 *diagFace;             // per triangle: its PLY face (steps 2 to 4)
+	u32 diagFaceNow;           // the face RldMk_AddTriangle is splitting
+	u32 *diagPlyPosition;      // per PLY vertex: its diag position, RLDMK_NONE when dropped
+	u32 diagPositionCount;     // after welding and fitting, before the reduction and --size
+	double *diagPosition;      // 3 per diag position, game units
+	u8 *diagPositionGroup;
+	u32 diagTriangleCount;     // before the reduction
+	u32 *diagTriangle;         // 4 per triangle: diag positions a b c, PLY face
+	u32 *diagTriangleRgb;      // 3 per triangle, 0xRRGGBB as the PLY has it
+	u32 diagReducedCount;      // after the reduction (the same triangles without one)
+	u32 *diagReduced;          // 7 per triangle: diag positions a b c, source triangle, source corners (3 x t + k)
+	u32 *diagPositionFrom;     // per position now: its diag position
+	u32 *triangleReduced;      // per triangle now: its index among the reduced ones
+	u32 diagClampCount;        // every value step 9 cut off at 0 or 255 (254)
+	u32 diagClampRoom;
+	struct RldMkClamp *diagClamp;
 };
 
 static void RldMk_FreeBuild(struct RldMkBuild *b)
 {
+	free(b->bothSides);
+	free(b->triangleOpen);
+	free(b->remPosition);
+	free(b->remTriangle);
+	free(b->remColor);
+	free(b->remGroup);
+	free(b->diagFace);
+	free(b->diagPlyPosition);
+	free(b->diagPosition);
+	free(b->diagPositionGroup);
+	free(b->diagTriangle);
+	free(b->diagTriangleRgb);
+	free(b->diagReduced);
+	free(b->diagPositionFrom);
+	free(b->triangleReduced);
+	free(b->diagClamp);
 	free(b->position);
 	free(b->vertexPosition);
 	free(b->vertexRgb);
@@ -1487,6 +1588,10 @@ static int RldMk_AddTriangle(struct RldMkBuild *b, u32 v0, u32 v1, u32 v2)
 	b->triangle[3u * b->triangleCount + 0u] = v0;
 	b->triangle[3u * b->triangleCount + 1u] = v1;
 	b->triangle[3u * b->triangleCount + 2u] = v2;
+	if (b->diagFace != NULL)
+	{
+		b->diagFace[b->triangleCount] = b->diagFaceNow;
+	}
 	b->triangleCount++;
 	return 1;
 }
@@ -1682,12 +1787,21 @@ static int RldMk_StepTriangles(const struct RldMkPly *ply, struct RldMkBuild *b,
 	{
 		return RldMk_OutOfMemory();
 	}
+	if (b->diagnose)
+	{
+		b->diagFace = (u32 *)malloc((room + 1u) * sizeof(u32));
+		if (b->diagFace == NULL)
+		{
+			return RldMk_OutOfMemory();
+		}
+	}
 
 	for (f = 0; f < ply->faceCount; f++)
 	{
 		const u32 n = ply->cornerCount[f];
 		const u32 *c = &ply->corners[4u * f];
 
+		b->diagFaceNow = f;
 		if (n < 3u)
 		{
 			b->degenerateFaces++;
@@ -1854,6 +1968,211 @@ static void RldMk_StepOpenEdges(struct RldMkBuild *b)
 }
 
 //========================================================================================
+// STEP 3r: --repair auto - A SURFACE THE CULLING CAN DRAW
+//========================================================================================
+//
+// tools/rldpack_repair.inc on the welded and fitted positions, before the parts
+// are found (they profit from the closer weld): corners closer than
+// RldRep_DefaultWeld become one, triangles without area and exact doubles go,
+// cracks of T-junctions are split, every piece is turned outward, holes of at
+// most RLDREP_HOLE_MAX_EDGES_DEFAULT edges are closed. No position is made or
+// moved by more than the weld distance; the triangles may grow by the fills.
+// Each corner keeps the color of the corner it continues (sourceCorner); after
+// a change the corners are vertices of their own (vertexRgb), the positions no
+// triangle uses any more are dropped. What stays open is marked per triangle
+// (triangleOpen): with --open-parts two-sided such a triangle gets no cull bit
+// (RldMk_StepFlips) - the inside of an open kart shell is seen through it
+// otherwise. A model the repair leaves as it is keeps its bytes.
+
+static int RldMk_StepRepair(const struct RldMkPly *ply, struct RldMkBuild *b, const struct RldMkOptions *opt)
+{
+	const u32 triangles = b->triangleCount;
+	RldRepInput in;
+	RldRepResult r;
+	char why[256];
+	u32 *corner;
+	u32 *renumber = NULL;
+	double *position = NULL;
+	u32 *vertexPosition = NULL;
+	u8 *vertexRgb = NULL;
+	u32 *triangle = NULL;
+	u32 *diagFace = NULL;
+	u32 *plyPosition = NULL;
+	u32 used = 0;
+	int same;
+	u32 i;
+
+	if (!opt->repair)
+	{
+		return 1;
+	}
+
+	corner = (u32 *)malloc(((size_t)triangles * 3u + 1u) * sizeof(u32));
+	if (corner == NULL)
+	{
+		return RldMk_OutOfMemory();
+	}
+	for (i = 0; i < (3u * triangles); i++)
+	{
+		corner[i] = b->vertexPosition[b->triangle[i]];
+	}
+
+	in.positionCount = b->positionCount;
+	in.position = b->position;
+	in.triangleCount = triangles;
+	in.triangle = corner;
+	in.cornerColor = NULL;
+	in.weldDistance = RldRep_DefaultWeld(b->positionCount, b->position);
+	in.holeMaxEdges = RLDREP_HOLE_MAX_EDGES_DEFAULT;
+	why[0] = '\0';
+	if (!RldRep_Repair(&in, &r, why, sizeof(why)))
+	{
+		free(corner);
+		RldMk_Say("error", "model-repair", why, "The model cannot be repaired (%s). Build it with --repair off.", why);
+		return 0;
+	}
+
+	b->repaired = 1;
+	b->repair[0] = r.welded;
+	b->repair[1] = r.degenerate;
+	b->repair[2] = r.duplicate;
+	b->repair[3] = r.flipped;
+	b->repair[4] = r.holesClosed;
+	b->repair[5] = r.holeTriangles;
+	b->repair[6] = r.holesLeft;
+	b->repair[7] = r.openEdgesBefore;
+	b->repair[8] = r.openEdgesAfter;
+	b->repair[9] = r.cracksSplit;
+
+	b->triangleOpen = (u8 *)malloc((size_t)r.triangleCount + 1u);
+	if (b->triangleOpen == NULL)
+	{
+		free(corner);
+		RldRep_Free(&r);
+		return RldMk_OutOfMemory();
+	}
+	memcpy(b->triangleOpen, r.open, (size_t)r.triangleCount);
+
+	// Nothing changed: the model keeps its vertices and bytes.
+	same = (r.triangleCount == triangles);
+	for (i = 0; same && (i < (3u * triangles)); i++)
+	{
+		same = (r.triangle[i] == corner[i]) && (r.sourceCorner[i] == i);
+	}
+	free(corner);
+	if (same)
+	{
+		RldRep_Free(&r);
+		return 1;
+	}
+
+	if (r.triangleCount == 0u)
+	{
+		RldRep_Free(&r);
+		RldMk_Say("error", "ply-no-faces", NULL, "The model has no faces. Export the mesh, not only its points.");
+		return 0;
+	}
+
+	renumber = (u32 *)malloc(((size_t)b->positionCount + 1u) * sizeof(u32));
+	position = (double *)malloc(((size_t)b->positionCount + 1u) * 3u * sizeof(double));
+	vertexPosition = (u32 *)malloc(((size_t)r.triangleCount * 3u + 1u) * sizeof(u32));
+	vertexRgb = (u8 *)malloc(((size_t)r.triangleCount * 3u + 1u) * 3u);
+	triangle = (u32 *)malloc(((size_t)r.triangleCount * 3u + 1u) * sizeof(u32));
+	if (b->diagnose)
+	{
+		diagFace = (u32 *)malloc(((size_t)r.triangleCount + 1u) * sizeof(u32));
+		plyPosition = (u32 *)malloc(((size_t)ply->vertexCount + 1u) * sizeof(u32));
+	}
+	if ((renumber == NULL) || (position == NULL) || (vertexPosition == NULL) || (vertexRgb == NULL) || (triangle == NULL) ||
+	    (b->diagnose && ((diagFace == NULL) || (plyPosition == NULL))))
+	{
+		free(renumber);
+		free(position);
+		free(vertexPosition);
+		free(vertexRgb);
+		free(triangle);
+		free(diagFace);
+		free(plyPosition);
+		RldRep_Free(&r);
+		return RldMk_OutOfMemory();
+	}
+
+	// Only the positions a triangle uses, in their old order.
+	for (i = 0; i < b->positionCount; i++)
+	{
+		renumber[i] = RLDMK_NONE;
+	}
+	for (i = 0; i < (3u * r.triangleCount); i++)
+	{
+		renumber[r.triangle[i]] = 0u;
+	}
+	for (i = 0; i < b->positionCount; i++)
+	{
+		if (renumber[i] != RLDMK_NONE)
+		{
+			renumber[i] = used;
+			memcpy(&position[3u * used], &b->position[3u * i], 3u * sizeof(double));
+			used++;
+		}
+	}
+
+	// The corners as vertices of their own: the position from the result, the
+	// color of the corner each one continues.
+	for (i = 0; i < (3u * r.triangleCount); i++)
+	{
+		const u32 source = b->triangle[r.sourceCorner[i]];
+		const u8 *rgb = (b->vertexRgb != NULL) ? &b->vertexRgb[3u * source] : &ply->rgb[3u * source];
+
+		vertexPosition[i] = renumber[r.triangle[i]];
+		memcpy(&vertexRgb[3u * i], rgb, 3u);
+		triangle[i] = i;
+	}
+
+	// --diagnose: the PLY face of each triangle (-1 for a fill) and where each
+	// PLY vertex went. The three corners of a triangle from the input come from
+	// one input triangle (RldRepResult.sourceCorner), a triangle split at a
+	// crack too: its corners carry those of the nearer end of the split edge,
+	// corners of the triangle it was split from. So the source corner of any
+	// corner names the face; only a fill has none.
+	if (diagFace != NULL)
+	{
+		for (i = 0; i < r.triangleCount; i++)
+		{
+			diagFace[i] = (r.added[i] || (b->diagFace == NULL)) ? RLDMK_NONE : b->diagFace[r.sourceCorner[3u * i] / 3u];
+		}
+		for (i = 0; i < ply->vertexCount; i++)
+		{
+			const u32 p = (b->diagPlyPosition != NULL) ? b->diagPlyPosition[i] : b->vertexPosition[i];
+
+			plyPosition[i] = (p != RLDMK_NONE) ? renumber[r.positionMap[p]] : RLDMK_NONE;
+		}
+		free(b->diagFace);
+		free(b->diagPlyPosition);
+		b->diagFace = diagFace;
+		b->diagPlyPosition = plyPosition;
+	}
+
+	free(renumber);
+	free(b->position);
+	free(b->vertexPosition);
+	free(b->vertexRgb);
+	free(b->triangle);
+	b->position = position;
+	b->vertexPosition = vertexPosition;
+	b->vertexRgb = vertexRgb;
+	b->triangle = triangle;
+	b->positionCount = used;
+	b->triangleCount = r.triangleCount;
+	RldRep_Free(&r);
+	RldMk_StepOpenEdges(b);
+
+	RldMk_Say("info", "model-repaired", NULL,
+	          "Repaired: %u corners welded, %u triangles without area and %u doubled ones dropped, %u turned outward, %u cracks split, %u holes closed with %u triangles; open edges %u -> %u.",
+	          b->repair[0], b->repair[1], b->repair[2], b->repair[3], b->repair[9], b->repair[4], b->repair[5], b->repair[7], b->repair[8]);
+	return 1;
+}
+
+//========================================================================================
 // STEP 4: PARTS - KART, DRIVER, STEERING WHEEL
 //========================================================================================
 
@@ -1929,6 +2248,113 @@ static double RldMk_Extent(const struct RldMkPart *part)
 	}
 
 	return extent;
+}
+
+// --repair off: the open parts by the topology alone, as RldRep_Repair marks
+// them (open[]): triangles joined across edges with exactly two triangles are
+// one piece; a piece with an edge of one triangle is open, and all its
+// triangles are drawn from both sides (--open-parts two-sided). Nothing else
+// changes. 0 = out of memory.
+
+struct RldMkOpenEdge
+{
+	u64 key;   // the two positions, lower first
+	u32 triangle;
+};
+
+static int RldMk_CompareOpenEdge(const void *x, const void *y)
+{
+	const struct RldMkOpenEdge *p = (const struct RldMkOpenEdge *)x;
+	const struct RldMkOpenEdge *q = (const struct RldMkOpenEdge *)y;
+
+	if (p->key != q->key)
+	{
+		return (p->key < q->key) ? -1 : 1;
+	}
+	return (p->triangle < q->triangle) ? -1 : ((p->triangle > q->triangle) ? 1 : 0);
+}
+
+static int RldMk_StepOpenParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
+{
+	const u32 corners = 3u * b->triangleCount;
+	struct RldMkOpenEdge *edges;
+	u32 *parent;
+	u8 *open;
+	u32 i;
+	u32 t;
+
+	if (opt->repair || opt->twoSided || opt->openOneSided)
+	{
+		return 1;
+	}
+
+	edges = (struct RldMkOpenEdge *)malloc(((size_t)corners + 1u) * sizeof(*edges));
+	parent = (u32 *)malloc(((size_t)b->triangleCount + 1u) * sizeof(u32));
+	open = (u8 *)calloc((size_t)b->triangleCount + 1u, 1u);
+	b->triangleOpen = (u8 *)calloc((size_t)b->triangleCount + 1u, 1u);
+	if ((edges == NULL) || (parent == NULL) || (open == NULL) || (b->triangleOpen == NULL))
+	{
+		free(edges);
+		free(parent);
+		free(open);
+		return RldMk_OutOfMemory();
+	}
+
+	for (t = 0; t < b->triangleCount; t++)
+	{
+		int k;
+
+		parent[t] = t;
+		for (k = 0; k < 3; k++)
+		{
+			const u32 p = b->vertexPosition[b->triangle[3u * t + (u32)k]];
+			const u32 q = b->vertexPosition[b->triangle[3u * t + (u32)((k + 1) % 3)]];
+
+			edges[3u * t + (u32)k].key = (p < q) ? (((u64)p << 32) | q) : (((u64)q << 32) | p);
+			edges[3u * t + (u32)k].triangle = t;
+		}
+	}
+	qsort(edges, corners, sizeof(*edges), RldMk_CompareOpenEdge);
+
+	// pieces across edges of exactly two triangles; edges of one mark their triangle
+	i = 0;
+	while (i < corners)
+	{
+		u32 run = 1;
+
+		while (((i + run) < corners) && (edges[i + run].key == edges[i].key))
+		{
+			run++;
+		}
+		if (run == 2u)
+		{
+			RldMk_Join(parent, edges[i].triangle, edges[i + 1u].triangle);
+		}
+		else if (run == 1u)
+		{
+			open[edges[i].triangle] = 1u;
+		}
+		i += run;
+	}
+
+	// a piece is open when one of its triangles is
+	for (t = 0; t < b->triangleCount; t++)
+	{
+		if (open[t])
+		{
+			b->triangleOpen[RldMk_Root(parent, t)] = 1u;
+		}
+	}
+	for (t = 0; t < b->triangleCount; t++)
+	{
+		open[t] = b->triangleOpen[RldMk_Root(parent, t)];
+	}
+	memcpy(b->triangleOpen, open, (size_t)b->triangleCount);
+
+	free(edges);
+	free(parent);
+	free(open);
+	return 1;
 }
 
 // Steps 4 and 5: which part is the kart, which the driver and the steering
@@ -2059,13 +2485,49 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 	b->parts[best].group = RLDMK_GROUP_KART;
 
 	// THE DRIVER: the largest other part. The steering wheel: small parts in
-	// front of it. Everything else moves with the driver.
+	// front of it. Everything else moves with the driver, except the parts
+	// that belong to the vehicle (next).
 	b->driverPart = -1;
 	for (i = 0; i < b->partCount; i++)
 	{
 		if (((int)i != best) && ((b->driverPart < 0) || (b->parts[i].triangles > b->parts[b->driverPart].triangles)))
 		{
 			b->driverPart = (int)i;
+		}
+	}
+
+	// MORE OF THE VEHICLE: another part stays still with the kart when it is
+	//   - not a steering wheel (small and in front of the driver, below),
+	//   - one piece across the middle: it reaches over the kart's middle in x
+	//     to both sides,
+	//   - over the kart seen from above, and
+	//   - reaching down below the top of the kart.
+	// A vehicle's body, fork or seat lies in the middle; what a driver has in
+	// pairs - shoes, hands, legs as parts of their own - lies to one side and
+	// moves with him. Measured on four models fitted to Crash's size: the front
+	// of a motorbike (x -22.5..22.8, bottom y 0.7) and its seat (x -12.4..12.4,
+	// bottom 30.3, below the kart's top at 50.9) stay; Crash's shoes on it
+	// (x -16.4..-2.1 and 1.6..16.5) go on with the driver; the only other parts,
+	// the steering wheels of three kart models, are steering wheels. A part of
+	// the driver that is modeled apart and lies across the middle low down
+	// (trousers, say) would stay still as well - join it to the driver's mesh.
+	if (b->driverPart >= 0)
+	{
+		const struct RldMkPart *kart = &b->parts[best];
+		const struct RldMkPart *driver = &b->parts[b->driverPart];
+		const double driverZ = 0.5 * (driver->lo[2] + driver->hi[2]);
+		const double kartX = 0.5 * (kart->lo[0] + kart->hi[0]);
+
+		for (i = 0; i < b->partCount; i++)
+		{
+			struct RldMkPart *part = &b->parts[i];
+			const int wheel = (RldMk_Extent(part) <= (RLDMK_WHEEL_EXTENT * RLDMK_UNITS)) && ((0.5 * (part->lo[2] + part->hi[2])) > driverZ);
+
+			if (((int)i != best) && ((int)i != b->driverPart) && !wheel && (part->lo[0] < kartX) && (part->hi[0] > kartX) && (part->lo[0] <= kart->hi[0]) &&
+			    (part->hi[0] >= kart->lo[0]) && (part->lo[2] <= kart->hi[2]) && (part->hi[2] >= kart->lo[2]) && (part->lo[1] < kart->hi[1]))
+			{
+				part->group = RLDMK_GROUP_KART;
+			}
 		}
 	}
 
@@ -2079,7 +2541,7 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 		{
 			struct RldMkPart *part = &b->parts[i];
 
-			if (((int)i == best) || ((int)i == b->driverPart) || (RldMk_Extent(part) > (RLDMK_WHEEL_EXTENT * RLDMK_UNITS)))
+			if ((part->group == RLDMK_GROUP_KART) || ((int)i == b->driverPart) || (RldMk_Extent(part) > (RLDMK_WHEEL_EXTENT * RLDMK_UNITS)))
 			{
 				continue;
 			}
@@ -2387,6 +2849,486 @@ static void RldMk_FitNumber(char *out, size_t size, double value)
 }
 
 //========================================================================================
+// STEP 4d: --fit crash - ONTO THE REFERENCE DUMMY
+//========================================================================================
+//
+// After --fit crash has scaled the model and step 4 has found its parts (and
+// after --remesh: a hull lies up to a cell outside its source, so its own
+// bottom is the one placed), the model is moved onto the dummy (RldDum_Fit): its kart onto Crash's kart (x
+// middle 0, bottom 5.6, z middle 2.1; the kart part alone, not the vehicle
+// parts that joined it), with --wheels off the whole model onto the ground. One shift for every position; the parts' boxes follow. --size
+// (RldMk_StepSize) and the poses (RldMk_StepPoses) then turn about the
+// dummy's seat and its steering column. With --fit none nothing moves: the
+// model stays where it was exported, and --size and the poses turn about the
+// hip (0, RLDMK_HIP_Y, 0) as before.
+
+static void RldMk_DummyBox(struct RldDumBox *box, const double lo[3], const double hi[3])
+{
+	int a;
+
+	for (a = 0; a < 3; a++)
+	{
+		box->lo[a] = (!box->valid || (lo[a] < box->lo[a])) ? lo[a] : box->lo[a];
+		box->hi[a] = (!box->valid || (hi[a] > box->hi[a])) ? hi[a] : box->hi[a];
+	}
+	box->valid = 1;
+}
+
+static int RldMk_StepDummy(struct RldMkBuild *b, const struct RldMkOptions *opt)
+{
+	struct RldDumFitInput in;
+	struct RldDumBox *boxes[RLDMK_GROUPS];
+	u32 i;
+	int a;
+
+	b->dummy = 0;
+	if (!opt->fit || !b->fitted)
+	{
+		return 1;
+	}
+
+	memset(&in, 0, sizeof(in));
+	boxes[RLDMK_GROUP_KART] = &in.kart;
+	boxes[RLDMK_GROUP_DRIVER] = &in.driver;
+	boxes[RLDMK_GROUP_WHEEL] = &in.wheel;
+	for (i = 0; i < b->partCount; i++)
+	{
+		if (b->parts[i].triangles != 0u)
+		{
+			if (b->parts[i].group != RLDMK_GROUP_KART)
+			{
+				RldMk_DummyBox(boxes[b->parts[i].group], b->parts[i].lo, b->parts[i].hi);
+			}
+			RldMk_DummyBox(&in.model, b->parts[i].lo, b->parts[i].hi);
+		}
+	}
+
+	// THE KART is the kart part alone - the part --fit crash brought to Crash's
+	// length (RldMk_StepFit) and the game's wheel sprites belong to. Vehicle
+	// parts that joined the kart group (a bumper, a motorbike's front) would
+	// move it off the dummy kart. After --remesh the kart part holds the hull
+	// of the whole group: each side of the kart part moves as far as the
+	// group's side moved, where the kart part made that side.
+	if (b->kartSourceValid)
+	{
+		double lo[3];
+		double hi[3];
+
+		for (a = 0; a < 3; a++)
+		{
+			lo[a] = b->kartSource[a] + ((b->kartSource[a] == b->kartGroupSource[a]) ? (b->parts[b->kartPart].lo[a] - b->kartGroupSource[a]) : 0.0);
+			hi[a] = b->kartSource[3 + a] + ((b->kartSource[3 + a] == b->kartGroupSource[3 + a]) ? (b->parts[b->kartPart].hi[a] - b->kartGroupSource[3 + a]) : 0.0);
+		}
+		RldMk_DummyBox(&in.kart, lo, hi);
+	}
+	else
+	{
+		RldMk_DummyBox(&in.kart, b->parts[b->kartPart].lo, b->parts[b->kartPart].hi);
+	}
+	in.wheels = !opt->noWheels;
+	in.sizePercent = 100u;
+	if (!RldDum_Fit(&in, &b->dumFit100))
+	{
+		return 1;
+	}
+	in.sizePercent = opt->sizePercent;
+	RldDum_Fit(&in, &b->dumFit);
+
+	for (i = 0; i < b->positionCount; i++)
+	{
+		for (a = 0; a < 3; a++)
+		{
+			b->position[3u * i + (u32)a] += b->dumFit.shift[a];
+		}
+	}
+	// after --remesh: the source the colors come from moves along (RldRem_Recolor)
+	for (i = 0; (b->remPosition != NULL) && (i < b->remPositionCount); i++)
+	{
+		for (a = 0; a < 3; a++)
+		{
+			b->remPosition[3u * i + (u32)a] += b->dumFit.shift[a];
+		}
+	}
+	for (i = 0; i < b->partCount; i++)
+	{
+		RldMk_Bounds(b, (int)i, b->parts[i].lo, b->parts[i].hi);
+	}
+	b->dummy = 1;
+	return 1;
+}
+
+//========================================================================================
+// STEP 4m: --remesh on - CLOSED HULLS
+//========================================================================================
+//
+// On request only, for a model whose surface is open, doubled or tangled: each
+// part group (kart, driver, steering wheel) of more than RLDMK_REDUCE_KEEP
+// triangles is replaced by a closed, outward hull of its own surface
+// (tools/rldpack_remesh.inc, RLDMK_REMESH_RESOLUTION cells along the group's
+// longest side); a smaller group - a steering wheel - stays as it is. The hull
+// has some 10^5 triangles: step 4r reduces it, the budget shared by the
+// triangles the groups had before (a hull group at least RLDMK_REMESH_SHARE_MIN),
+// and its corners take their colors from the source again (RldRem_Recolor).
+// After it the corners are vertices of their own (vertexRgb), as after 4r.
+// The parts keep their groups: a group's hull belongs to the kart part, the
+// driver part, or the first part of the group.
+
+// The limits of step 4r (see there).
+#define RLDMK_REDUCE_LIMIT (RLDCHAR_DRAW_BYTES_MAX / RLDCHAR_DRAW_BYTES_G3)  // 805
+#define RLDMK_REDUCE_TARGET 797u
+#define RLDMK_REDUCE_KEEP 24u
+#define RLDMK_REDUCE_TRIES 10
+
+#define RLDMK_REMESH_RESOLUTION 64u
+#define RLDMK_REMESH_RESOLUTION_MIN 32u
+#define RLDMK_REMESH_RESOLUTION_MAX 128u
+#define RLDMK_REMESH_SHARE_MIN 40u
+
+static int RldMk_StepRemesh(struct RldMkBuild *b, const struct RldMkOptions *opt, const struct RldMkPly *ply)
+{
+	const u32 resolution = (opt->remeshResolution != 0u) ? opt->remeshResolution : RLDMK_REMESH_RESOLUTION;
+	u32 counts[RLDMK_GROUPS] = {0u, 0u, 0u};
+	int partOfGroup[RLDMK_GROUPS] = {-1, -1, -1};
+	RldRemInput in;
+	RldRemResult hull;
+	char why[256];
+	u32 *keep = NULL;
+	u32 *vertexPosition = NULL;
+	u8 *vertexRgb = NULL;
+	u32 *triangle = NULL;
+	double *position = NULL;
+	u32 *positionPart = NULL;
+	u8 *positionGroup = NULL;
+	u32 *diagFace = NULL;
+	u32 *plyPosition = NULL;
+	u32 keptPositions = 0;
+	u32 keptTriangles = 0;
+	u32 count = 0;
+	u32 corners;
+	u32 t;
+	u32 i;
+	int k;
+
+	if (!opt->remesh)
+	{
+		return 1;
+	}
+
+	for (t = 0; t < b->triangleCount; t++)
+	{
+		counts[b->positionGroup[b->vertexPosition[b->triangle[3u * t]]]]++;
+	}
+	for (i = 0; i < b->partCount; i++)
+	{
+		if (partOfGroup[b->parts[i].group] < 0)
+		{
+			partOfGroup[b->parts[i].group] = (int)i;
+		}
+	}
+	// The kart's hull belongs to the kart part (its bounds measure the kart,
+	// RldMk_StepMeasure), the driver's to the driver part.
+	partOfGroup[RLDMK_GROUP_KART] = b->kartPart;
+	if ((b->driverPart >= 0) && (b->parts[b->driverPart].group == RLDMK_GROUP_DRIVER))
+	{
+		partOfGroup[RLDMK_GROUP_DRIVER] = b->driverPart;
+	}
+
+	// The kart part and the kart group before the hulls (RldMk_StepDummy).
+	{
+		double lo[3];
+		double hi[3];
+		int g;
+
+		b->kartSourceValid = 1;
+		for (g = 0; g < 3; g++)
+		{
+			b->kartSource[g] = b->parts[b->kartPart].lo[g];
+			b->kartSource[3 + g] = b->parts[b->kartPart].hi[g];
+			lo[g] = 1.0e30;
+			hi[g] = -1.0e30;
+		}
+		for (i = 0; i < b->positionCount; i++)
+		{
+			if (b->positionGroup[i] == RLDMK_GROUP_KART)
+			{
+				for (g = 0; g < 3; g++)
+				{
+					lo[g] = (b->position[3u * i + (u32)g] < lo[g]) ? b->position[3u * i + (u32)g] : lo[g];
+					hi[g] = (b->position[3u * i + (u32)g] > hi[g]) ? b->position[3u * i + (u32)g] : hi[g];
+				}
+			}
+		}
+		for (g = 0; g < 3; g++)
+		{
+			b->kartGroupSource[g] = lo[g];
+			b->kartGroupSource[3 + g] = hi[g];
+		}
+	}
+
+	// THE SOURCE: the triangles of the groups to remesh, the positions as they are.
+	b->remPosition = (double *)malloc(((size_t)b->positionCount + 1u) * 3u * sizeof(double));
+	b->remTriangle = (u32 *)malloc(((size_t)b->triangleCount + 1u) * 3u * sizeof(u32));
+	b->remColor = (u32 *)malloc(((size_t)b->triangleCount + 1u) * 3u * sizeof(u32));
+	b->remGroup = (u8 *)malloc((size_t)b->triangleCount + 1u);
+	if ((b->remPosition == NULL) || (b->remTriangle == NULL) || (b->remColor == NULL) || (b->remGroup == NULL))
+	{
+		return RldMk_OutOfMemory();
+	}
+	memcpy(b->remPosition, b->position, (size_t)b->positionCount * 3u * sizeof(double));
+	b->remPositionCount = b->positionCount;
+	for (t = 0; t < b->triangleCount; t++)
+	{
+		const u8 group = b->positionGroup[b->vertexPosition[b->triangle[3u * t]]];
+
+		if (counts[group] <= RLDMK_REDUCE_KEEP)
+		{
+			keptTriangles++;
+			continue;
+		}
+		for (k = 0; k < 3; k++)
+		{
+			const u32 vertex = b->triangle[3u * t + (u32)k];
+			const u8 *rgb = (b->vertexRgb != NULL) ? &b->vertexRgb[3u * vertex] : &ply->rgb[3u * vertex];
+
+			b->remTriangle[3u * count + (u32)k] = b->vertexPosition[vertex];
+			b->remColor[3u * count + (u32)k] = ((u32)rgb[0] << 16) | ((u32)rgb[1] << 8) | (u32)rgb[2];
+		}
+		b->remGroup[count] = group;
+		count++;
+	}
+	b->remTriangleCount = count;
+	b->remeshResolution = resolution;
+	memcpy(b->remeshSource, counts, sizeof(counts));
+
+	if (count == 0u)
+	{
+		RldMk_Say("warning", "model-remesh", NULL, "Nothing was remeshed: kart, driver and steering wheel have at most %u triangles each.", RLDMK_REDUCE_KEEP);
+		return 1;
+	}
+
+	in.positionCount = b->remPositionCount;
+	in.position = b->remPosition;
+	in.triangleCount = count;
+	in.triangle = b->remTriangle;
+	in.cornerColor = b->remColor;
+	in.triangleGroup = b->remGroup;
+	in.groupCount = RLDMK_GROUPS;
+	in.resolution = resolution;
+	why[0] = '\0';
+	if (!RldRem_Remesh(&in, &hull, why, sizeof(why)))
+	{
+		RldMk_Say("error", "model-remesh", why, "The model cannot be remeshed (%s). Build it without --remesh.", why);
+		return 0;
+	}
+
+	// THE NEW MODEL: the hulls, then the groups kept as they were (their
+	// positions in their old order), the corners as vertices of their own.
+	keep = (u32 *)malloc(((size_t)b->positionCount + 1u) * sizeof(u32));
+	if (keep == NULL)
+	{
+		RldRem_Free(&hull);
+		return RldMk_OutOfMemory();
+	}
+	for (i = 0; i < b->positionCount; i++)
+	{
+		keep[i] = RLDMK_NONE;
+	}
+	for (t = 0; t < b->triangleCount; t++)
+	{
+		if (counts[b->positionGroup[b->vertexPosition[b->triangle[3u * t]]]] <= RLDMK_REDUCE_KEEP)
+		{
+			for (k = 0; k < 3; k++)
+			{
+				keep[b->vertexPosition[b->triangle[3u * t + (u32)k]]] = 0u;
+			}
+		}
+	}
+	for (i = 0; i < b->positionCount; i++)
+	{
+		if (keep[i] != RLDMK_NONE)
+		{
+			keep[i] = hull.positionCount + keptPositions++;
+		}
+	}
+
+	corners = 3u * (hull.triangleCount + keptTriangles);
+	vertexPosition = (u32 *)malloc(((size_t)corners + 1u) * sizeof(u32));
+	vertexRgb = (u8 *)malloc(((size_t)corners + 1u) * 3u);
+	triangle = (u32 *)malloc(((size_t)corners + 1u) * sizeof(u32));
+	position = (double *)malloc(((size_t)hull.positionCount + keptPositions + 1u) * 3u * sizeof(double));
+	positionPart = (u32 *)malloc(((size_t)hull.positionCount + keptPositions + 1u) * sizeof(u32));
+	positionGroup = (u8 *)calloc((size_t)hull.positionCount + keptPositions + 1u, 1u);
+	if (b->diagnose)
+	{
+		diagFace = (u32 *)malloc(((size_t)hull.triangleCount + keptTriangles + 1u) * sizeof(u32));
+		plyPosition = (u32 *)malloc(((size_t)ply->vertexCount + 1u) * sizeof(u32));
+	}
+	if ((vertexPosition == NULL) || (vertexRgb == NULL) || (triangle == NULL) || (position == NULL) || (positionPart == NULL) || (positionGroup == NULL) ||
+	    (b->diagnose && ((diagFace == NULL) || (plyPosition == NULL))))
+	{
+		free(keep);
+		free(vertexPosition);
+		free(vertexRgb);
+		free(triangle);
+		free(position);
+		free(positionPart);
+		free(positionGroup);
+		free(diagFace);
+		free(plyPosition);
+		RldRem_Free(&hull);
+		return RldMk_OutOfMemory();
+	}
+
+	memcpy(position, hull.position, (size_t)hull.positionCount * 3u * sizeof(double));
+	for (i = 0; i < hull.positionCount; i++)
+	{
+		positionPart[i] = (u32)b->kartPart;
+	}
+	for (t = 0; t < hull.triangleCount; t++)
+	{
+		const u8 group = hull.triangleGroup[t];
+
+		for (k = 0; k < 3; k++)
+		{
+			const u32 at = 3u * t + (u32)k;
+			const u32 rgb = hull.cornerColor[at];
+
+			vertexPosition[at] = hull.triangle[at];
+			vertexRgb[3u * at + 0u] = (u8)(rgb >> 16);
+			vertexRgb[3u * at + 1u] = (u8)(rgb >> 8);
+			vertexRgb[3u * at + 2u] = (u8)rgb;
+			triangle[at] = at;
+			positionGroup[hull.triangle[at]] = group;
+			positionPart[hull.triangle[at]] = (u32)partOfGroup[group];
+		}
+		if (diagFace != NULL)
+		{
+			diagFace[t] = RLDMK_NONE;
+		}
+	}
+	for (i = 0; i < b->positionCount; i++)
+	{
+		if (keep[i] != RLDMK_NONE)
+		{
+			memcpy(&position[3u * keep[i]], &b->position[3u * i], 3u * sizeof(double));
+			positionGroup[keep[i]] = b->positionGroup[i];
+			positionPart[keep[i]] = b->positionPart[i];
+		}
+	}
+	i = hull.triangleCount;
+	for (t = 0; t < b->triangleCount; t++)
+	{
+		if (counts[b->positionGroup[b->vertexPosition[b->triangle[3u * t]]]] > RLDMK_REDUCE_KEEP)
+		{
+			continue;
+		}
+		for (k = 0; k < 3; k++)
+		{
+			const u32 vertex = b->triangle[3u * t + (u32)k];
+			const u8 *rgb = (b->vertexRgb != NULL) ? &b->vertexRgb[3u * vertex] : &ply->rgb[3u * vertex];
+			const u32 at = 3u * i + (u32)k;
+
+			vertexPosition[at] = keep[b->vertexPosition[vertex]];
+			memcpy(&vertexRgb[3u * at], rgb, 3u);
+			triangle[at] = at;
+		}
+		if (diagFace != NULL)
+		{
+			diagFace[i] = (b->diagFace != NULL) ? b->diagFace[t] : RLDMK_NONE;
+		}
+		i++;
+	}
+	if (plyPosition != NULL)
+	{
+		for (i = 0; i < ply->vertexCount; i++)
+		{
+			const u32 p = (b->diagPlyPosition != NULL) ? b->diagPlyPosition[i] : b->vertexPosition[i];
+
+			plyPosition[i] = (p != RLDMK_NONE) ? keep[p] : RLDMK_NONE;
+		}
+	}
+
+	// Open after the repair: the hulls are closed, the groups kept stay as they were.
+	if (b->triangleOpen != NULL)
+	{
+		u8 *open = (u8 *)calloc((size_t)hull.triangleCount + keptTriangles + 1u, 1u);
+		u32 at = hull.triangleCount;
+
+		if (open == NULL)
+		{
+			free(keep);
+			free(vertexPosition);
+			free(vertexRgb);
+			free(triangle);
+			free(position);
+			free(positionPart);
+			free(positionGroup);
+			free(diagFace);
+			free(plyPosition);
+			RldRem_Free(&hull);
+			return RldMk_OutOfMemory();
+		}
+		for (t = 0; t < b->triangleCount; t++)
+		{
+			if (counts[b->positionGroup[b->vertexPosition[b->triangle[3u * t]]]] <= RLDMK_REDUCE_KEEP)
+			{
+				open[at++] = b->triangleOpen[t];
+			}
+		}
+		free(b->triangleOpen);
+		b->triangleOpen = open;
+	}
+
+	free(keep);
+	free(b->position);
+	free(b->vertexPosition);
+	free(b->vertexRgb);
+	free(b->triangle);
+	free(b->positionPart);
+	free(b->positionGroup);
+	b->position = position;
+	b->vertexPosition = vertexPosition;
+	b->vertexRgb = vertexRgb;
+	b->triangle = triangle;
+	b->positionPart = positionPart;
+	b->positionGroup = positionGroup;
+	b->positionCount = hull.positionCount + keptPositions;
+	b->triangleCount = hull.triangleCount + keptTriangles;
+	if (diagFace != NULL)
+	{
+		free(b->diagFace);
+		b->diagFace = diagFace;
+		free(b->diagPlyPosition);
+		b->diagPlyPosition = plyPosition;
+	}
+	RldRem_Free(&hull);
+
+	// The parts as they are now.
+	b->remeshFrom = b->remeshSource[0] + b->remeshSource[1] + b->remeshSource[2];
+	b->remeshOpenBefore = b->openEdges;
+	memset(b->groupTriangles, 0, sizeof(b->groupTriangles));
+	for (i = 0; i < b->partCount; i++)
+	{
+		b->parts[i].triangles = 0;
+	}
+	for (t = 0; t < b->triangleCount; t++)
+	{
+		const u32 part = b->positionPart[b->vertexPosition[b->triangle[3u * t]]];
+
+		b->parts[part].triangles++;
+		b->groupTriangles[b->parts[part].group]++;
+	}
+	for (i = 0; i < b->partCount; i++)
+	{
+		RldMk_Bounds(b, (int)i, b->parts[i].lo, b->parts[i].hi);
+	}
+	RldMk_StepOpenEdges(b);
+	b->remeshed = 1;
+	b->remeshHull = b->triangleCount;
+	return 1;
+}
+
+//========================================================================================
 // STEP 4r: --reduce auto - FEWER TRIANGLES
 //========================================================================================
 //
@@ -2409,11 +3351,6 @@ static void RldMk_FitNumber(char *out, size_t size, double value)
 // After it the corners are vertices of their own (vertexRgb), the positions
 // no triangle uses any more are dropped, and the counts and bounds of the
 // parts and the open edges are worked out again.
-
-#define RLDMK_REDUCE_LIMIT (RLDCHAR_DRAW_BYTES_MAX / RLDCHAR_DRAW_BYTES_G3)  // 805
-#define RLDMK_REDUCE_TARGET 797u
-#define RLDMK_REDUCE_KEEP 24u
-#define RLDMK_REDUCE_TRIES 10
 
 // The targets per group for `target` triangles in all. 0 = the small groups
 // alone take the whole budget.
@@ -2478,6 +3415,93 @@ static int RldMk_ReduceTargets(const u32 counts[RLDMK_GROUPS], u32 target, u32 t
 	return 1;
 }
 
+// After --remesh no hull may be reduced below RLDMK_REMESH_SHARE_MIN triangles:
+// a hull of a few dozen triangles loses its volume, or the reducer cannot get
+// there. A hull below it is raised to it, the triangles taken from the hull
+// with the highest target (ties: the lower group). 0 = not possible.
+static int RldMk_RemeshFloor(const u32 source[RLDMK_GROUPS], u32 targets[RLDMK_GROUPS])
+{
+	int g;
+
+	for (g = 0; g < RLDMK_GROUPS; g++)
+	{
+		if ((source[g] > RLDMK_REDUCE_KEEP) && (targets[g] < RLDMK_REMESH_SHARE_MIN))
+		{
+			const u32 deficit = RLDMK_REMESH_SHARE_MIN - targets[g];
+			int largest = -1;
+			int h;
+
+			for (h = 0; h < RLDMK_GROUPS; h++)
+			{
+				if ((h != g) && (source[h] > RLDMK_REDUCE_KEEP) && ((largest < 0) || (targets[h] > targets[largest])))
+				{
+					largest = h;
+				}
+			}
+			if ((largest < 0) || (targets[largest] < (RLDMK_REMESH_SHARE_MIN + deficit)))
+			{
+				return 0;
+			}
+			targets[largest] -= deficit;
+			targets[g] = RLDMK_REMESH_SHARE_MIN;
+		}
+	}
+	return 1;
+}
+
+// After --remesh, the reduced triangles' corner colors from the source surface
+// (RldRem_Recolor; the groups kept as they were keep theirs). vertexRgb: 3 per
+// corner of the result, overwritten. 0 = it failed, said.
+static int RldMk_RemeshRecolor(const struct RldMkBuild *b, const RldRedResult *result, u8 *vertexRgb)
+{
+	RldRemInput in;
+	u32 *color = (u32 *)malloc(((size_t)result->triangleCount * 3u + 1u) * sizeof(u32));
+	u8 *group = (u8 *)malloc((size_t)result->triangleCount + 1u);
+	char why[256];
+	u32 i;
+
+	if ((color == NULL) || (group == NULL))
+	{
+		free(color);
+		free(group);
+		return RldMk_OutOfMemory();
+	}
+	for (i = 0; i < (3u * result->triangleCount); i++)
+	{
+		color[i] = ((u32)vertexRgb[3u * i] << 16) | ((u32)vertexRgb[3u * i + 1u] << 8) | (u32)vertexRgb[3u * i + 2u];
+	}
+	for (i = 0; i < result->triangleCount; i++)
+	{
+		group[i] = b->positionGroup[result->triangle[3u * i]];
+	}
+
+	in.positionCount = b->remPositionCount;
+	in.position = b->remPosition;
+	in.triangleCount = b->remTriangleCount;
+	in.triangle = b->remTriangle;
+	in.cornerColor = b->remColor;
+	in.triangleGroup = b->remGroup;
+	in.groupCount = RLDMK_GROUPS;
+	in.resolution = b->remeshResolution;
+	why[0] = '\0';
+	if (!RldRem_Recolor(&in, b->positionCount, b->position, result->triangleCount, result->triangle, group, color, why, sizeof(why)))
+	{
+		free(color);
+		free(group);
+		RldMk_Say("error", "model-remesh", why, "The colors of the remeshed model cannot be taken from the source (%s).", why);
+		return 0;
+	}
+	for (i = 0; i < (3u * result->triangleCount); i++)
+	{
+		vertexRgb[3u * i + 0u] = (u8)(color[i] >> 16);
+		vertexRgb[3u * i + 1u] = (u8)(color[i] >> 8);
+		vertexRgb[3u * i + 2u] = (u8)color[i];
+	}
+	free(color);
+	free(group);
+	return 1;
+}
+
 // The reducer names groups by number; the message names them as the parts.
 static void RldMk_GroupWhy(char *why, size_t size)
 {
@@ -2503,6 +3527,7 @@ static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, co
 	RldRedResult result;
 	char why[256];
 	u32 *corner;
+	u32 *cornerColor;
 	u8 *group;
 	u32 *vertexPosition;
 	u8 *vertexRgb;
@@ -2511,6 +3536,9 @@ static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, co
 	double *position;
 	u32 *positionPart;
 	u8 *positionGroup;
+	u32 *diagReduced = NULL;
+	u32 *diagFrom = NULL;
+	u32 reduceStage;
 	u32 used = 0;
 	u32 t;
 	u32 i;
@@ -2523,21 +3551,42 @@ static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, co
 	}
 
 	corner = (u32 *)malloc(((size_t)triangles * 3u + 1u) * sizeof(u32));
+	cornerColor = (u32 *)malloc(((size_t)triangles * 3u + 1u) * sizeof(u32));
 	group = (u8 *)malloc((size_t)triangles + 1u);
-	if ((corner == NULL) || (group == NULL))
+	if ((corner == NULL) || (cornerColor == NULL) || (group == NULL))
 	{
 		free(corner);
+		free(cornerColor);
 		free(group);
 		return RldMk_OutOfMemory();
 	}
 	for (i = 0; i < (3u * triangles); i++)
 	{
+		const u8 *rgb = (b->vertexRgb != NULL) ? &b->vertexRgb[3u * b->triangle[i]] : &ply->rgb[3u * b->triangle[i]];
+
 		corner[i] = b->vertexPosition[b->triangle[i]];
+		cornerColor[i] = ((u32)rgb[0] << 16) | ((u32)rgb[1] << 8) | (u32)rgb[2];
 	}
 	for (t = 0; t < triangles; t++)
 	{
 		group[t] = b->positionGroup[corner[3u * t]];
 		counts[group[t]]++;
+	}
+
+	// After --remesh the budget is shared by the triangles the groups had
+	// before (a hull would take nearly all of it), a hull at least
+	// RLDMK_REMESH_SHARE_MIN; the groups kept as they were count as they are.
+	if (b->remeshed)
+	{
+		int g;
+
+		for (g = 0; g < RLDMK_GROUPS; g++)
+		{
+			if (b->remeshSource[g] > RLDMK_REDUCE_KEEP)
+			{
+				counts[g] = (b->remeshSource[g] < RLDMK_REMESH_SHARE_MIN) ? RLDMK_REMESH_SHARE_MIN : b->remeshSource[g];
+			}
+		}
 	}
 
 	memset(&result, 0, sizeof(result));
@@ -2546,8 +3595,35 @@ static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, co
 	{
 		snprintf(why, sizeof(why), "the parts of at most %u triangles leave no room for the others", RLDMK_REDUCE_KEEP);
 	}
+	else if (b->remeshed && !RldMk_RemeshFloor(b->remeshSource, targets))
+	{
+		snprintf(why, sizeof(why), "a budget of %u triangles cannot give every hull at least %u", target, RLDMK_REMESH_SHARE_MIN);
+	}
 	else
 	{
+		int g;
+
+		// ONE BUDGET for all groups: the cheapest collapse of any group goes
+		// first (the reducer weighs shape and color seams), so detail stays
+		// where it costs most. Each group has a floor: half of its triangles,
+		// at most its share in proportion (RldMk_ReduceTargets - so the floors
+		// fit the budget), a small group all of them.
+		// NOT AFTER --remesh: each hull keeps its share by the triangles the
+		// group had before (at least RLDMK_REMESH_SHARE_MIN, RldMk_RemeshFloor).
+		// The hull of an open shell (a kart) has an inside and an outside; with
+		// one budget it took 1.5 to 1.9 times the triangles its source had, the
+		// driver only 0.5 to 0.7 times (four models, resolution 64).
+		for (g = 0; !b->remeshed && (g < RLDMK_GROUPS); g++)
+		{
+			if (counts[g] > RLDMK_REDUCE_KEEP)
+			{
+				const u32 half = counts[g] / 2u;
+
+				targets[g] = (half < targets[g]) ? half : targets[g];
+			}
+		}
+
+		memset(&mesh, 0, sizeof(mesh));
 		mesh.positionCount = b->positionCount;
 		mesh.position = b->position;
 		mesh.triangleCount = triangles;
@@ -2555,6 +3631,8 @@ static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, co
 		mesh.triangleGroup = group;
 		mesh.groupCount = RLDMK_GROUPS;
 		mesh.groupTarget = targets;
+		mesh.cornerColor = cornerColor;
+		mesh.totalTarget = b->remeshed ? 0u : target;
 		if (RldRed_Reduce(&mesh, &result, why, sizeof(why)))
 		{
 			why[0] = '\0';
@@ -2565,6 +3643,7 @@ static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, co
 		}
 	}
 	free(corner);
+	free(cornerColor);
 	free(group);
 
 	if (why[0] != '\0')
@@ -2577,6 +3656,7 @@ static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, co
 
 	// The corners as vertices of their own: the position of the result, the
 	// color of the corner each one continues.
+	reduceStage = result.stage;
 	vertexPosition = (u32 *)malloc(((size_t)result.triangleCount * 3u + 1u) * sizeof(u32));
 	vertexRgb = (u8 *)malloc(((size_t)result.triangleCount * 3u + 1u) * 3u);
 	triangle = (u32 *)malloc(((size_t)result.triangleCount * 3u + 1u) * sizeof(u32));
@@ -2584,8 +3664,13 @@ static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, co
 	position = (double *)malloc(((size_t)b->positionCount + 1u) * 3u * sizeof(double));
 	positionPart = (u32 *)malloc(((size_t)b->positionCount + 1u) * sizeof(u32));
 	positionGroup = (u8 *)malloc((size_t)b->positionCount + 1u);
+	if (b->diagnose)
+	{
+		diagReduced = (u32 *)malloc(((size_t)result.triangleCount * 7u + 1u) * sizeof(u32));
+		diagFrom = (u32 *)malloc(((size_t)b->positionCount + 1u) * sizeof(u32));
+	}
 	if ((vertexPosition == NULL) || (vertexRgb == NULL) || (triangle == NULL) || (renumber == NULL) || (position == NULL) || (positionPart == NULL) ||
-	    (positionGroup == NULL))
+	    (positionGroup == NULL) || (b->diagnose && ((diagReduced == NULL) || (diagFrom == NULL))))
 	{
 		free(vertexPosition);
 		free(vertexRgb);
@@ -2594,6 +3679,8 @@ static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, co
 		free(position);
 		free(positionPart);
 		free(positionGroup);
+		free(diagReduced);
+		free(diagFrom);
 		RldRed_Free(&result);
 		return RldMk_OutOfMemory();
 	}
@@ -2615,18 +3702,88 @@ static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, co
 			memcpy(&position[3u * used], &b->position[3u * i], 3u * sizeof(double));
 			positionPart[used] = b->positionPart[i];
 			positionGroup[used] = b->positionGroup[i];
+			if (diagFrom != NULL)
+			{
+				diagFrom[used] = i;
+			}
 			used++;
 		}
 	}
 
 	for (i = 0; i < (3u * result.triangleCount); i++)
 	{
-		const u32 source = b->triangle[3u * result.sourceTriangle[i / 3u] + (i % 3u)];
+		const u32 source = b->triangle[result.sourceCorner[i]];
 		const u8 *rgb = (b->vertexRgb != NULL) ? &b->vertexRgb[3u * source] : &ply->rgb[3u * source];
 
 		vertexPosition[i] = renumber[result.triangle[i]];
 		memcpy(&vertexRgb[3u * i], rgb, 3u);
 		triangle[i] = i;
+	}
+
+	// After --remesh: the colors of the hull corners again from the source
+	// surface (RldRem_Recolor); a kept triangle stands for hundreds of hull
+	// triangles, and the color of whichever survived may be a speck of an eye.
+	if (b->remeshed && (b->remTriangleCount != 0u) && !RldMk_RemeshRecolor(b, &result, vertexRgb))
+	{
+		free(vertexPosition);
+		free(vertexRgb);
+		free(triangle);
+		free(renumber);
+		free(position);
+		free(positionPart);
+		free(positionGroup);
+		free(diagReduced);
+		free(diagFrom);
+		RldRed_Free(&result);
+		return 0;
+	}
+
+	// The open parts: each kept triangle is as open as the one it continues.
+	if (b->triangleOpen != NULL)
+	{
+		u8 *open = (u8 *)malloc((size_t)result.triangleCount + 1u);
+
+		if (open == NULL)
+		{
+			free(vertexPosition);
+			free(vertexRgb);
+			free(triangle);
+			free(renumber);
+			free(position);
+			free(positionPart);
+			free(positionGroup);
+			free(diagReduced);
+			free(diagFrom);
+			RldRed_Free(&result);
+			return RldMk_OutOfMemory();
+		}
+		for (t = 0; t < result.triangleCount; t++)
+		{
+			open[t] = b->triangleOpen[result.sourceTriangle[t]];
+		}
+		free(b->triangleOpen);
+		b->triangleOpen = open;
+	}
+
+	// --diagnose: the kept triangles in the numbers before the reduction (the
+	// positions until here are the diag positions, RldMk_DiagKeep).
+	if (diagReduced != NULL)
+	{
+		for (t = 0; t < result.triangleCount; t++)
+		{
+			diagReduced[7u * t + 0u] = result.triangle[3u * t + 0u];
+			diagReduced[7u * t + 1u] = result.triangle[3u * t + 1u];
+			diagReduced[7u * t + 2u] = result.triangle[3u * t + 2u];
+			diagReduced[7u * t + 3u] = result.sourceTriangle[t];
+			diagReduced[7u * t + 4u] = result.sourceCorner[3u * t + 0u];
+			diagReduced[7u * t + 5u] = result.sourceCorner[3u * t + 1u];
+			diagReduced[7u * t + 6u] = result.sourceCorner[3u * t + 2u];
+		}
+		free(b->diagReduced);
+		free(b->diagPositionFrom);
+		b->diagReduced = diagReduced;
+		b->diagReducedCount = result.triangleCount;
+		b->diagPositionFrom = diagFrom;
 	}
 
 	free(b->triangle);
@@ -2667,6 +3824,12 @@ static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, co
 
 	b->reduced = 1;
 	b->reduceTo = b->triangleCount;
+	if (reduceStage != 0u)
+	{
+		RldMk_Say("info", "model-reduce-fallback", NULL,
+		          (reduceStage == 1u) ? "The reduction reached its target only without its guards of color seams and creases (fallback 1 of 2)."
+		                              : "The reduction reached its target only without its guards and its color cost (fallback 2 of 2).");
+	}
 	if (opt->reduceForce && (opt->reduceWhy != NULL))
 	{
 		RldMk_Say("info", "model-reduced", NULL, "Reduced automatically: %u -> %u triangles, because %s; draw memory %u -> %u bytes.", triangles,
@@ -2692,7 +3855,13 @@ static int RldMk_StepBudget(struct RldMkBuild *b, const struct RldMkOptions *opt
 {
 	const u32 bytes = b->triangleCount * RLDCHAR_DRAW_BYTES_G3;
 
-	if ((b->triangleCount > (RLDCHAR_DRAW_BYTES_MAX / RLDCHAR_DRAW_BYTES_G3)) || (bytes > RLDCHAR_DRAW_BYTES_MAX))
+	if (((b->triangleCount > (RLDCHAR_DRAW_BYTES_MAX / RLDCHAR_DRAW_BYTES_G3)) || (bytes > RLDCHAR_DRAW_BYTES_MAX)) && opt->diagnose)
+	{
+		// --diagnose measures the model as it is: the limit is lifted, said once.
+		RldMk_Say("info", "diagnose-lifted", "model-tris", "Lifted for the diagnosis: the model needs %u bytes of draw memory per frame (%u triangles), at most %u.",
+		          bytes, b->triangleCount, RLDCHAR_DRAW_BYTES_MAX);
+	}
+	else if ((b->triangleCount > (RLDCHAR_DRAW_BYTES_MAX / RLDCHAR_DRAW_BYTES_G3)) || (bytes > RLDCHAR_DRAW_BYTES_MAX))
 	{
 		if (!opt->reduce)
 		{
@@ -2719,10 +3888,17 @@ static int RldMk_StepBudget(struct RldMkBuild *b, const struct RldMkOptions *opt
 	{
 		RldMk_Say("note", "draw-both-sides", NULL, "Both sides are drawn, so the model always costs its full %u bytes per frame instead of about half.", bytes);
 	}
+	else if ((b->openEdges != 0u) && opt->openOneSided)
+	{
+		RldMk_Say("note", "ply-open-edges", NULL,
+		          "The mesh has %u open edges; you may see through it from some sides. Close the holes in the model, or draw open parts from both sides (--open-parts two-sided, the default).",
+		          b->openEdges);
+	}
 	else if (b->openEdges != 0u)
 	{
 		RldMk_Say("note", "ply-open-edges", NULL,
-		          "The mesh has %u open edges; you may see through it from some sides. Close the holes in the model (rldpack make-char --two-sided draws both sides).", b->openEdges);
+		          "The mesh has %u open edges; the parts they belong to are drawn from both sides (no extra triangles). Close the holes in the model to have them culled.",
+		          b->openEdges);
 	}
 
 	return 1;
@@ -2736,6 +3912,8 @@ static int RldMk_StepBudget(struct RldMkBuild *b, const struct RldMkOptions *opt
 // without the half-frame bit. Still: every frame is the neutral pose. The
 // automatic poses move rigid parts only, the kart never:
 //
+// (These are the poses of --fit none, about the hip; with --fit crash the
+// dummy's poses apply instead, RldDum_PoseFrame.)
 //   turn 0..20     driver and steering wheel roll as one block about the hip,
 //                  frame 0 fully toward +X, frame 10 neutral, frame 20 mirrored;
 //                  frames 0-1 and 19-20 are both at the stop, in between linear
@@ -2880,8 +4058,14 @@ static int RldMk_StepPoses(struct RldMkBuild *b)
 	for (f = 0; f < RLDMK_FRAMES_TOTAL; f++)
 	{
 		struct RldMkPose pose;
+		struct RldDumPose dummyPose;
 
 		RldMk_FramePose(f, &pose);
+		RldDum_PoseFrame(f, &dummyPose);
+		if (b->dummy)
+		{
+			RldDum_PoseFit(&dummyPose, &b->dumFit);
+		}
 
 		for (p = 0; p < b->positionCount; p++)
 		{
@@ -2889,9 +4073,14 @@ static int RldMk_StepPoses(struct RldMkBuild *b)
 			double *out = &b->frame[((size_t)f * b->positionCount + p) * 3u];
 			const int group = b->positionGroup[p];
 
-			if (!b->posed || (group == RLDMK_GROUP_KART) || ((group == RLDMK_GROUP_WHEEL) && !pose.wheel))
+			if (!b->posed || (group == RLDMK_GROUP_KART) || (!b->dummy && (group == RLDMK_GROUP_WHEEL) && !pose.wheel))
 			{
 				memcpy(out, neutral, 3u * sizeof(double));
+			}
+			else if (b->dummy)
+			{
+				// on the dummy: about its seat and steering column (RldDum_ApplyPose)
+				RldDum_ApplyPose(&dummyPose, group, neutral, out);
 			}
 			else
 			{
@@ -2908,8 +4097,9 @@ static int RldMk_StepPoses(struct RldMkBuild *b)
 //========================================================================================
 //
 // p' = H + s x (p - H) for every position of the driver and the steering wheel,
-// H the hip (0, RLDMK_HIP_Y, 0) in game units - the point the poses turn
-// about. The kart keeps its size: the game draws the wheels as sprites at
+// H the point the poses turn about, in game units: with --fit crash the seat
+// of the reference kart (RldDum_Fit), with --wheels off the bottom of the
+// driver, with --fit none the hip (0, RLDMK_HIP_Y, 0). The kart keeps its size: the game draws the wheels as sprites at
 // fixed points of the kart (game/DrawTires.c:335-354), and physics and
 // collision follow the driving style, not the model. So the size is a look,
 // not a value: no field in the file, only the corners move.
@@ -2922,9 +4112,10 @@ static int RldMk_StepPoses(struct RldMkBuild *b)
 //     frames, (hi - lo) x 4096 / 255 (254 up), stays <= 32767 (step 9)
 //   * model-coords: ModelFrame.pos and pos + 255 stay in -8192..8191 (step 9, P10)
 //   * model-scale: the model stays within 5 times of 1.8 Blender units long (step 4)
-// The poses are rotations and a stretch about the same hip, so a posed driver
-// corner at size s is H + s x (its pose at 100 % - H): the hull of all frames
-// at any s follows from one pass over the frames at 100 %.
+//   * on the dummy: no corner of the driver below the ground (y 0) in any pose
+// The poses are rotations and a stretch about the same point H, so a posed
+// driver corner at size s is H + s x (its pose at 100 % - H): the hull of all
+// frames at any s follows from one pass over the frames at 100 %.
 
 #define RLDMK_SIZE_MIN 50u
 #define RLDMK_SIZE_MAX 200u
@@ -2933,9 +4124,11 @@ static int RldMk_StepPoses(struct RldMkBuild *b)
 struct RldMkSizeHull
 {
 	int moves;          // there are driver or steering wheel corners
+	int ground;         // on the dummy: no corner may go below the ground (y 0)
+	double pivot[3];    // --size scales about this point: the hip, or the dummy's seat
 	double kartLo[3];   // the kart, game units (the same in every frame)
 	double kartHi[3];
-	double lo[3];       // driver and steering wheel over all frames, relative to the hip
+	double lo[3];       // driver and steering wheel over all frames, relative to the pivot
 	double hi[3];
 	double neutralLo;   // z of driver and steering wheel in the neutral pose, for the length
 	double neutralHi;
@@ -2957,6 +4150,15 @@ static void RldMk_SizeHull(const struct RldMkBuild *b, struct RldMkSizeHull *hul
 	}
 	hull->neutralLo = 1.0e30;
 	hull->neutralHi = -1.0e30;
+	hull->ground = b->dummy;
+	if (b->dummy)
+	{
+		memcpy(hull->pivot, b->dumFit100.seat, sizeof(hull->pivot));
+	}
+	else
+	{
+		hull->pivot[1] = RLDMK_HIP_Y;
+	}
 
 	for (p = 0; p < b->positionCount; p++)
 	{
@@ -2973,8 +4175,8 @@ static void RldMk_SizeHull(const struct RldMkBuild *b, struct RldMkSizeHull *hul
 		else
 		{
 			hull->moves = 1;
-			hull->neutralLo = (v[2] < hull->neutralLo) ? v[2] : hull->neutralLo;
-			hull->neutralHi = (v[2] > hull->neutralHi) ? v[2] : hull->neutralHi;
+			hull->neutralLo = ((v[2] - hull->pivot[2]) < hull->neutralLo) ? (v[2] - hull->pivot[2]) : hull->neutralLo;
+			hull->neutralHi = ((v[2] - hull->pivot[2]) > hull->neutralHi) ? (v[2] - hull->pivot[2]) : hull->neutralHi;
 		}
 	}
 
@@ -2987,10 +4189,17 @@ static void RldMk_SizeHull(const struct RldMkBuild *b, struct RldMkSizeHull *hul
 	for (f = 0; f < (b->posed ? (u32)RLDMK_FRAMES_TOTAL : 1u); f++)
 	{
 		struct RldMkPose pose;
+		struct RldDumPose dummyPose;
 		double trig[6];
 
 		RldMk_FramePose(f, &pose);
 		RldMk_PoseTrig(&pose, trig);
+		RldDum_PoseFrame(f, &dummyPose);
+		if (b->dummy)
+		{
+			// at 100 %: a posed corner at size s is seat + s x (this - seat)
+			RldDum_PoseFit(&dummyPose, &b->dumFit100);
+		}
 
 		for (p = 0; p < b->positionCount; p++)
 		{
@@ -3003,16 +4212,23 @@ static void RldMk_SizeHull(const struct RldMkBuild *b, struct RldMkSizeHull *hul
 				continue;
 			}
 
-			if (!b->posed || ((group == RLDMK_GROUP_WHEEL) && !pose.wheel))
+			if (!b->posed || (!b->dummy && (group == RLDMK_GROUP_WHEEL) && !pose.wheel))
 			{
 				memcpy(moved, neutral, sizeof(moved));
+			}
+			else if (b->dummy)
+			{
+				RldDum_ApplyPose(&dummyPose, group, neutral, moved);
 			}
 			else
 			{
 				RldMk_ApplyPoseTrig(&pose, trig, neutral, moved);
 			}
 
-			moved[1] -= RLDMK_HIP_Y;
+			for (a = 0; a < 3; a++)
+			{
+				moved[a] -= hull->pivot[a];
+			}
 			for (a = 0; a < 3; a++)
 			{
 				hull->lo[a] = (moved[a] < hull->lo[a]) ? moved[a] : hull->lo[a];
@@ -3028,13 +4244,21 @@ static int RldMk_SizeFits(const struct RldMkSizeHull *hull, u32 percent, char *w
 	static const char *const axisNames[3] = {"wide", "tall", "long"};
 	static const double spans[3] = {255.0, 254.0, 255.0};
 	const double s = (double)percent / 100.0;
-	const double hip[3] = {0.0, RLDMK_HIP_Y, 0.0};
+	const double *hip = hull->pivot;
 	double length;
 	int a;
 
 	if (!hull->moves)
 	{
 		return 1;
+	}
+
+	// on the dummy: the lowest corner of all frames at size s is
+	// seat + s x (its height at 100 % - seat), the jump's stretch included
+	if (hull->ground && ((hip[1] + s * hull->lo[1]) < 0.0))
+	{
+		snprintf(why, whySize, "a corner of the driver would go %.1f game units below the ground in some pose", -(hip[1] + s * hull->lo[1]));
+		return 0;
 	}
 
 	for (a = 0; a < 3; a++)
@@ -3068,8 +4292,8 @@ static int RldMk_SizeFits(const struct RldMkSizeHull *hull, u32 percent, char *w
 
 	// as step 4 (RldMk_StepParts): the whole model in the neutral pose
 	{
-		const double driverLo = s * hull->neutralLo;
-		const double driverHi = s * hull->neutralHi;
+		const double driverLo = hip[2] + s * hull->neutralLo;
+		const double driverHi = hip[2] + s * hull->neutralHi;
 		const double lo = (driverLo < hull->kartLo[2]) ? driverLo : hull->kartLo[2];
 		const double hi = (driverHi > hull->kartHi[2]) ? driverHi : hull->kartHi[2];
 
@@ -3105,7 +4329,7 @@ static int RldMk_StepSize(struct RldMkBuild *b, const struct RldMkOptions *opt)
 		b->exported[0] = (hi[2] - lo[2]) / RLDMK_UNITS;
 		b->exported[1] = (b->parts[b->kartPart].hi[0] - b->parts[b->kartPart].lo[0]) / RLDMK_UNITS;
 		b->exported[2] = (hi[1] - lo[1]) / RLDMK_UNITS;
-		b->exported[3] = lo[1] / RLDMK_UNITS;
+		b->exported[3] = (lo[1] - (b->dummy ? b->dumFit.shift[1] : 0.0)) / RLDMK_UNITS;  // before the dummy's shift
 	}
 
 	// THE RANGE: the run of fitting percentages around 100 (or the first run
@@ -3152,8 +4376,11 @@ static int RldMk_StepSize(struct RldMkBuild *b, const struct RldMkOptions *opt)
 		Rld_Emit("value", "size-range", lowText, highText, (const char *)NULL);
 	}
 
-	// 100 %: nothing moves, the bytes are the ones without --size.
-	if (percent == 100u)
+	// 100 %: nothing moves, the bytes are the ones without --size. On the
+	// dummy 100 % is checked as well (below): a driver whose lowest corner
+	// goes below the ground in some pose is refused at 100 % too - the author
+	// then chooses a size in the range on purpose.
+	if ((percent == 100u) && (!hull.ground || RldMk_SizeFits(&hull, percent, why, sizeof(why))))
 	{
 		return 1;
 	}
@@ -3175,15 +4402,17 @@ static int RldMk_StepSize(struct RldMkBuild *b, const struct RldMkOptions *opt)
 	for (p = 0; p < b->positionCount; p++)
 	{
 		double *v = &b->position[3u * p];
+		int a;
 
 		if (b->positionGroup[p] == RLDMK_GROUP_KART)
 		{
 			continue;
 		}
 
-		v[0] = s * v[0];
-		v[1] = RLDMK_HIP_Y + s * (v[1] - RLDMK_HIP_Y);
-		v[2] = s * v[2];
+		for (a = 0; a < 3; a++)
+		{
+			v[a] = hull.pivot[a] + s * (v[a] - hull.pivot[a]);
+		}
 	}
 
 	for (p = 0; p < b->partCount; p++)
@@ -3247,7 +4476,8 @@ static int RldMk_StepMeasure(struct RldMkBuild *b, const struct RldMkOptions *op
 	}
 
 	{
-		const double center = 0.5 * (b->parts[best].lo[0] + b->parts[best].hi[0]) / RLDMK_UNITS;
+		// as exported: before the dummy's shift (RldMk_StepDummy) centers the kart
+		const double center = (0.5 * (b->parts[best].lo[0] + b->parts[best].hi[0]) - (b->dummy ? b->dumFit.shift[0] : 0.0)) / RLDMK_UNITS;
 
 		if ((center > 0.08) || (center < -0.08))
 		{
@@ -3277,6 +4507,56 @@ static int RldMk_StepMeasure(struct RldMkBuild *b, const struct RldMkOptions *op
 // in every frame and cannot jitter while the driver leans (the retail models
 // keep pos the same across turn and jump as well).
 
+// One value in record steps (u = v x 4096 / scale - pos) -> its byte: X and Z
+// 0..255, Y even 0..254. *cut = 1 when it lies beyond and was cut off. By the
+// choice of scale and pos below this cannot happen: the span of every axis
+// over all 47 frames fits the byte (scale = ceil(span x 4096 / 255, Y 254)),
+// and pos is lo rounded, so the lowest value is at least -0.5 (Y -1) and the
+// highest below 255.5 (Y 255) - both round inside. Only rounding of the last
+// bit of a double could reach the ends, so it is still checked (model-quant).
+static s64 RldMk_QuantValue(double u, int axis, int *cut)
+{
+	s64 q;
+
+	if (axis == 1)
+	{
+		q = RldMk_Round(u / 2.0);
+		*cut = (q < 0) || (q > 127);
+		q = (q < 0) ? 0 : ((q > 127) ? 127 : q);
+		return 2 * q;
+	}
+
+	q = RldMk_Round(u);
+	*cut = (q < 0) || (q > 255);
+	return (q < 0) ? 0 : ((q > 255) ? 255 : q);
+}
+
+// --diagnose: one more value cut off. 0 = out of memory.
+static int RldMk_DiagClamp(struct RldMkBuild *b, u32 frame, u32 position, u32 axis, double value)
+{
+	struct RldMkClamp *clamp;
+
+	if (b->diagClampCount == b->diagClampRoom)
+	{
+		const u32 room = (b->diagClampRoom != 0u) ? (2u * b->diagClampRoom) : 64u;
+		struct RldMkClamp *grown = (struct RldMkClamp *)realloc(b->diagClamp, (size_t)room * sizeof(struct RldMkClamp));
+
+		if (grown == NULL)
+		{
+			return 0;
+		}
+		b->diagClamp = grown;
+		b->diagClampRoom = room;
+	}
+
+	clamp = &b->diagClamp[b->diagClampCount++];
+	clamp->frame = frame;
+	clamp->position = position;
+	clamp->axis = axis;
+	clamp->value = value;
+	return 1;
+}
+
 static int RldMk_StepQuantize(struct RldMkBuild *b)
 {
 	static const char *const axisNames[3] = {"wide", "tall", "long"};
@@ -3285,6 +4565,9 @@ static int RldMk_StepQuantize(struct RldMkBuild *b)
 	double hi[3];
 	size_t i;
 	const size_t total = (size_t)RLDMK_FRAMES_TOTAL * b->positionCount;
+	size_t cutFirst = 0;
+	u32 cuts = 0;
+	int cutAxis = 0;
 	int a;
 
 	for (a = 0; a < 3; a++)
@@ -3354,22 +4637,47 @@ static int RldMk_StepQuantize(struct RldMkBuild *b)
 		for (a = 0; a < 3; a++)
 		{
 			const double u = b->frame[3u * i + (size_t)a] * 4096.0 / (double)b->scale[a] - (double)b->origin[a];
-			s64 q;
+			int cut;
+			const s64 q = RldMk_QuantValue(u, a, &cut);
 
-			if (a == 1)
+			if (cut)
 			{
-				q = RldMk_Round(u / 2.0);
-				q = (q < 0) ? 0 : ((q > 127) ? 127 : q);
-				q *= 2;
-			}
-			else
-			{
-				q = RldMk_Round(u);
-				q = (q < 0) ? 0 : ((q > 255) ? 255 : q);
+				if (cuts == 0u)
+				{
+					cutFirst = i;
+					cutAxis = a;
+				}
+				cuts++;
+
+				// --diagnose: every value cut off, as a clamp line.
+				if (b->diagnose && !RldMk_DiagClamp(b, (u32)(i / b->positionCount), (u32)(i % b->positionCount), (u32)a, u))
+				{
+					return RldMk_OutOfMemory();
+				}
 			}
 
 			// stored X, Z (forward), Y (up)
 			b->quant[3u * i + ((a == 0) ? 0u : ((a == 1) ? 2u : 1u))] = (u8)q;
+		}
+	}
+
+	// Never cut off in silence: the corner would sit elsewhere in the game.
+	if (cuts != 0u)
+	{
+		char technical[96];
+
+		snprintf(technical, sizeof(technical), "first: frame %u, position %u, axis %c", (u32)(cutFirst / b->positionCount),
+		         (u32)(cutFirst % b->positionCount), "xyz"[cutAxis]);
+		if (b->diagnose)
+		{
+			RldMk_Say("info", "diagnose-lifted", "model-quant", "Kept for the diagnosis: %u packed values fall outside their byte and were cut off (%s).", cuts,
+			          technical);
+		}
+		else
+		{
+			RldMk_Say("error", "model-quant", technical,
+			          "Internal error: %u packed values of the model fall outside their byte and would be cut off. Please report it.", cuts);
+			return 0;
 		}
 	}
 
@@ -3386,9 +4694,16 @@ static void RldMk_Decoded(const struct RldMkBuild *b, u32 frame, u32 position, d
 	out[2] = (double)((int)q[1] + b->origin[2]) * (double)b->scale[2] / 4096.0;
 }
 
-// Triangles that lose their area (or turn over) in the packed neutral frame
-// are left out: the renderer would not draw them (NCLIP 0, RB:2891-2896), or
-// draw them from the wrong side.
+// Is triangle t one of RldMk_StepFlips (drawn without the cull bit)?
+static int RldMk_BothSides(const struct RldMkBuild *b, u32 t)
+{
+	return (b->bothSides != NULL) && (b->bothSides[t] != 0u);
+}
+
+// Triangles that lose their area in the packed neutral frame are left out: the
+// renderer would not draw them (NCLIP 0, RB:2891-2896). One that turns over
+// there but keeps an area stays and is drawn from both sides (RldMk_StepFlips,
+// as in the other frames).
 static int RldMk_StepCollapse(struct RldMkBuild *b)
 {
 	u32 kept = 0;
@@ -3410,7 +4725,7 @@ static int RldMk_StepCollapse(struct RldMkBuild *b)
 		            RldMk_At(b, RLDMK_NEUTRAL_FRAME, b->vertexPosition[b->triangle[3u * t + 1u]]),
 		            RldMk_At(b, RLDMK_NEUTRAL_FRAME, b->vertexPosition[b->triangle[3u * t + 2u]]), exact);
 
-		if (RldMk_Dot(n, exact) <= 0.0)
+		if (!(RldMk_Dot(n, n) > 0.0) || !(RldMk_Dot(exact, exact) > 0.0))
 		{
 			b->collapsed++;
 			continue;
@@ -3419,6 +4734,14 @@ static int RldMk_StepCollapse(struct RldMkBuild *b)
 		if (kept != t)
 		{
 			memcpy(&b->triangle[3u * kept], &b->triangle[3u * t], 3u * sizeof(u32));
+			if (b->triangleReduced != NULL)
+			{
+				b->triangleReduced[kept] = b->triangleReduced[t];
+			}
+			if (b->triangleOpen != NULL)
+			{
+				b->triangleOpen[kept] = b->triangleOpen[t];
+			}
 		}
 		kept++;
 	}
@@ -3427,7 +4750,7 @@ static int RldMk_StepCollapse(struct RldMkBuild *b)
 
 	if (b->collapsed != 0u)
 	{
-		RldMk_Say("warning", "model-collapse", NULL, "%u triangles collapse to a line after packing and are left out.", b->collapsed);
+		RldMk_Say("warning", "model-collapse", NULL, "%u triangles lose their area after packing and are left out.", b->collapsed);
 	}
 
 	if (kept == 0u)
@@ -3436,6 +4759,75 @@ static int RldMk_StepCollapse(struct RldMkBuild *b)
 		return 0;
 	}
 
+	return 1;
+}
+
+// Thin triangles that turn over by the packing in some other frame (a pose
+// moves them across the grid of the bytes): the game would cull them from the
+// side they are seen from, a hole of a pixel or two. They get no cull bit
+// (RldMk_DrawTriangle) - drawn from both sides they cost no more draw memory,
+// and turned over they are still in place. Seen from behind such a triangle
+// is a sliver within one step of the grid. The triangles of parts still open
+// after the repair are drawn so as well (--open-parts two-sided, the default).
+// With --two-sided every triangle is drawn so already.
+static int RldMk_StepFlips(struct RldMkBuild *b, const struct RldMkOptions *opt)
+{
+	u32 t;
+	u32 f;
+
+	b->bothSidesCount = 0;
+	b->openTwoSided = 0;
+	b->quantFlips = 0;
+	if (opt->twoSided)
+	{
+		return 1;
+	}
+
+	b->bothSides = (u8 *)calloc((size_t)b->triangleCount + 1u, 1u);
+	if (b->bothSides == NULL)
+	{
+		return RldMk_OutOfMemory();
+	}
+
+	for (t = 0; t < b->triangleCount; t++)
+	{
+		const u32 p0 = b->vertexPosition[b->triangle[3u * t + 0u]];
+		const u32 p1 = b->vertexPosition[b->triangle[3u * t + 1u]];
+		const u32 p2 = b->vertexPosition[b->triangle[3u * t + 2u]];
+
+		// a part still open after the repair (--open-parts two-sided)
+		if (!opt->openOneSided && (b->triangleOpen != NULL) && b->triangleOpen[t])
+		{
+			b->bothSides[t] = 1u;
+			b->bothSidesCount++;
+			b->openTwoSided++;
+		}
+
+		for (f = 0; (f < RLDMK_FRAMES_TOTAL) && !b->bothSides[t]; f++)
+		{
+			double packed[3][3];
+			double n[3];
+			double m[3];
+
+			RldMk_Decoded(b, f, p0, packed[0]);
+			RldMk_Decoded(b, f, p1, packed[1]);
+			RldMk_Decoded(b, f, p2, packed[2]);
+			RldMk_Cross(packed[0], packed[1], packed[2], n);
+			RldMk_Cross(RldMk_At(b, f, p0), RldMk_At(b, f, p1), RldMk_At(b, f, p2), m);
+			if (RldMk_Dot(n, m) <= 0.0)
+			{
+				b->bothSides[t] = 1u;
+				b->bothSidesCount++;
+				b->quantFlips++;
+			}
+		}
+	}
+
+	if (b->quantFlips != 0u)
+	{
+		RldMk_Say("note", "model-quant-flip", NULL, "%u thin triangles turn over by the packing in some frames; they are drawn from both sides.",
+		          b->quantFlips);
+	}
 	return 1;
 }
 
@@ -4012,7 +5404,7 @@ static void RldMk_DrawTriangle(struct RldMkStripper *s, u32 triangle, u32 comman
 
 	s->used[triangle] = 1;
 
-	if (s->cull)
+	if (s->cull && !RldMk_BothSides(b, triangle))
 	{
 		b->command[command] |= RLDMK_CMD_CULL | (((parity ^ RLDMK_CULL_SIGN) != 0u) ? RLDMK_CMD_SIDE : 0u);
 	}
@@ -4450,7 +5842,11 @@ static int RldMk_StepWrite(struct RldMkBuild *b)
 
 	b->drawBytes = b->drawCount * RLDCHAR_DRAW_BYTES_G3;
 
-	if (b->cmdlSize > RLDCHAR_LIMIT_CMDL)
+	if ((b->cmdlSize > RLDCHAR_LIMIT_CMDL) && b->diagnose)
+	{
+		RldMk_Say("info", "diagnose-lifted", "mem-model", "Lifted for the diagnosis: the model is %u KB, at most 256 KB.", (u32)((b->cmdlSize + 1023u) / 1024u));
+	}
+	else if (b->cmdlSize > RLDCHAR_LIMIT_CMDL)
 	{
 		RldMk_Say("error", "mem-model", NULL, "The model is %u KB; a character model may be at most 256 KB. Reduce the triangles.",
 		          (u32)((b->cmdlSize + 1023u) / 1024u));
@@ -4753,7 +6149,16 @@ static int RldMk_Winding(const struct RldMkBuild *b, int twoSided, u32 *badOut)
 			return 0;
 		}
 
-		if (!twoSided)
+		if (!twoSided && RldMk_BothSides(b, b->drawTriangle[drawn]))
+		{
+			// turned over by the packing in some frame (RldMk_StepFlips): no cull bit
+			if ((draw & RLDMK_CMD_CULL) != 0u)
+			{
+				*badOut = drawn;
+				return 0;
+			}
+		}
+		else if (!twoSided)
 		{
 			const u32 *source = &b->triangle[3u * b->drawTriangle[drawn]];
 			const u32 side = ((draw & RLDMK_CMD_SIDE) != 0u) ? 1u : 0u;
@@ -4797,11 +6202,189 @@ static int RldMk_Winding(const struct RldMkBuild *b, int twoSided, u32 *badOut)
 	return 1;
 }
 
+// The ModelFrame of frame `index` (0..46, the animations one after the other).
+static const u8 *RldMk_FrameAt(const u8 *cmdl, u32 index)
+{
+	const u8 *body = &cmdl[4];
+	const u32 header = Rld_ReadLE32(&body[RLDMK_MODEL_HEADERS]);
+	const u32 table = Rld_ReadLE32(&body[header + RLDMK_HEADER_ANIMS]);
+	int a;
+
+	for (a = 0; a < RLDCHAR_ANIM_COUNT; a++)
+	{
+		const u32 anim = Rld_ReadLE32(&body[table + 4u * (u32)a]);
+		const u32 frames = Rld_ReadLE16(&body[anim + RLDMK_ANIM_NUM_FRAMES]) & 0x7FFFu;
+		const u32 frameSize = Rld_ReadLE16(&body[anim + RLDMK_ANIM_FRAME_SIZE]);
+
+		if (index < frames)
+		{
+			return &body[anim + RLDMK_ANIM_BYTES + index * frameSize];
+		}
+		index -= frames;
+	}
+
+	return NULL;
+}
+
+// Every one of the 47 frames replayed by the renderer's rules (RldMk_ReplayNext
+// with the records of that frame): each drawn triangle has the records and
+// positions the builder meant in its window order, the color index of each
+// corner, every corner within RldMk_ReadBack's tolerance of the exact pose, and
+// the cull side of its source face (RldMk_Winding, in every frame; a triangle
+// of RldMk_StepFlips has no cull bit). flips[f] counts the triangles of frame f
+// whose packed normal points against the exact one: a thin triangle the
+// rounding turned over - those must be drawn from both sides. 0 = a triangle
+// differs, *badFrame and *badTriangle (draw order) say which.
+static int RldMk_ReplayFrames(const struct RldMkBuild *b, int twoSided, u32 *badFrame, u32 *badTriangle, u32 flips[RLDMK_FRAMES_TOTAL])
+{
+	int scale[3];
+	u32 f;
+
+	*badFrame = 0;
+	*badTriangle = 0;
+	RldMk_ModelScale(b->cmdl, scale);
+
+	for (f = 0; f < RLDMK_FRAMES_TOTAL; f++)
+	{
+		const u8 *frame = RldMk_FrameAt(b->cmdl, f);
+		const double tolerance[3] = {(0.5 + 1.0e-6) * (double)scale[0] / 4096.0, (1.0 + 1.0e-6) * (double)scale[1] / 4096.0,
+		                             (0.5 + 1.0e-6) * (double)scale[2] / 4096.0};
+		struct RldMkReplay replay;
+		u32 corner[3];
+		u32 color[3];
+		u32 draw = 0;
+		u32 drawn = 0;
+		int got;
+
+		*badFrame = f;
+		flips[f] = 0;
+		if (frame == NULL)
+		{
+			return 0;
+		}
+
+		RldMk_ReplayStart(&replay, b->cmdl, b->recordCount);
+		while ((got = RldMk_ReplayNext(&replay, corner, color, &draw)) == 1)
+		{
+			const u32 *source;
+			double packed[3][3];
+			const double *exact[3];
+			double n[3];
+			double m[3];
+			u32 t;
+			int k;
+
+			*badTriangle = drawn;
+			if (drawn >= b->drawCount)
+			{
+				return 0;
+			}
+			t = b->drawTriangle[drawn];
+			source = &b->triangle[3u * t];
+
+			for (k = 0; k < 3; k++)
+			{
+				const u32 position = b->record[corner[k]];
+				int v[3];
+				int j;
+				int axis;
+
+				if (position != b->drawOrder[3u * drawn + (u32)k])
+				{
+					return 0;
+				}
+
+				// The color of the source corner at this position.
+				for (j = 0; (j < 3) && (b->vertexPosition[source[j]] != position); j++)
+				{
+				}
+				if ((j == 3) || (color[k] != b->cornerColor[3u * t + (u32)j]))
+				{
+					return 0;
+				}
+
+				exact[k] = RldMk_At(b, f, position);
+				RldMk_UnpackRecord(frame, corner[k], v);
+				for (axis = 0; axis < 3; axis++)
+				{
+					double d;
+
+					packed[k][axis] = (double)v[axis] * (double)scale[axis] / 16384.0;
+					d = packed[k][axis] - exact[k][axis];
+					if ((d > tolerance[axis]) || (d < -tolerance[axis]))
+					{
+						return 0;
+					}
+				}
+			}
+
+			RldMk_Cross(exact[0], exact[1], exact[2], n);
+			if (!twoSided && RldMk_BothSides(b, t))
+			{
+				if ((draw & RLDMK_CMD_CULL) != 0u)
+				{
+					return 0;
+				}
+			}
+			else if (!twoSided)
+			{
+				const u32 side = ((draw & RLDMK_CMD_SIDE) != 0u) ? 1u : 0u;
+				double facing;
+
+				RldMk_Cross(RldMk_At(b, f, b->vertexPosition[source[0]]), RldMk_At(b, f, b->vertexPosition[source[1]]),
+				            RldMk_At(b, f, b->vertexPosition[source[2]]), m);
+				facing = RldMk_Dot(n, m);
+				if (side != RLDMK_CULL_SIGN)
+				{
+					facing = -facing;
+				}
+				if (((draw & RLDMK_CMD_CULL) == 0u) || (facing <= 0.0))
+				{
+					return 0;
+				}
+			}
+
+			// Turned over by the packing: only allowed without the cull bit.
+			RldMk_Cross(packed[0], packed[1], packed[2], m);
+			if (RldMk_Dot(n, m) <= 0.0)
+			{
+				flips[f]++;
+				if ((draw & RLDMK_CMD_CULL) != 0u)
+				{
+					return 0;
+				}
+			}
+			drawn++;
+		}
+
+		*badTriangle = drawn;
+		if ((got < 0) || !replay.ended || (drawn != b->drawCount) || (replay.vertexIndex != b->recordCount))
+		{
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
 static int RldMk_ReportFinding(void *context, const struct RldCharFinding *finding)
 {
 	(void)context;
 	RldMk_Say("error", finding->rule, finding->detail, "Internal error: the built model breaks the game's rule %s (%s). Please report it.", finding->rule,
 	          RldChar_VerdictWord(finding->verdict));
+	return 1;
+}
+
+// --diagnose: the game's check without the rules of the lifted limits (model-draw;
+// a model beyond model-size is not checked at all, RldMk_CheckBuilt). Counts
+// the other findings and says them as RldMk_ReportFinding.
+static int RldMk_DiagFinding(void *context, const struct RldCharFinding *finding)
+{
+	if (strcmp(finding->rule, "model-draw") != 0)
+	{
+		(*(u32 *)context)++;
+		RldMk_ReportFinding(NULL, finding);
+	}
 	return 1;
 }
 
@@ -4811,14 +6394,31 @@ static int RldMk_CheckBuilt(struct RldMkBuild *b, const struct RldMkOptions *opt
 	struct RldCharFinding first;
 	struct RldCharModelFacts facts;
 	u32 bad = 0;
+	u32 found = 0;
 	int ok = 1;
 
-	if (RldChar_CheckModel(b->cmdl, b->cmdlSize, &first, RldMk_ReportFinding, NULL, &facts) != RLDCHAR_VERDICT_OK)
+	memset(&facts, 0, sizeof(facts));
+	if (b->diagnose && (b->cmdlSize > RLDCHAR_LIMIT_CMDL))
+	{
+		// The check reads no CMDL beyond model-size: the counts are the builder's.
+		facts.triangles = b->drawCount;
+		facts.records = b->recordCount;
+		facts.drawBytes = b->drawBytes;
+		facts.colorCount = b->colorCount;
+		RldMk_Say("info", "diagnose-unchecked", NULL, "The model is larger than the game's check reads; it was read back and replayed only.");
+	}
+	else if (b->diagnose)
+	{
+		RldChar_CheckModel(b->cmdl, b->cmdlSize, &first, RldMk_DiagFinding, &found, &facts);
+		ok = (found == 0u);
+	}
+	else if (RldChar_CheckModel(b->cmdl, b->cmdlSize, &first, RldMk_ReportFinding, NULL, &facts) != RLDCHAR_VERDICT_OK)
 	{
 		ok = 0;
 	}
-	else if ((facts.triangles != b->drawCount) || (facts.records != b->recordCount) || (facts.drawBytes != b->drawBytes) ||
-	         (facts.colorCount != b->colorCount))
+
+	if (ok && ((facts.triangles != b->drawCount) || (facts.records != b->recordCount) || (facts.drawBytes != b->drawBytes) ||
+	           (facts.colorCount != b->colorCount)))
 	{
 		char technical[160];
 
@@ -4840,12 +6440,128 @@ static int RldMk_CheckBuilt(struct RldMkBuild *b, const struct RldMkOptions *opt
 		ok = 0;
 	}
 
+	if (ok)
+	{
+		u32 flips[RLDMK_FRAMES_TOTAL];
+		u32 badFrame = 0;
+
+		if (!RldMk_ReplayFrames(b, opt->twoSided, &badFrame, &bad, flips))
+		{
+			RldMk_Say("error", "model-roundtrip", NULL, "Internal error: the packed model does not read back the same (frame %u, triangle %u). Please report it.",
+			          badFrame, bad);
+			return 0;
+		}
+	}
+
 	return ok;
 }
 
 //========================================================================================
 // THE CHAIN
 //========================================================================================
+
+// --diagnose, after step 4: the welded and fitted positions, the triangles and
+// their PLY faces and colors, before the reduction and --size move anything.
+// 0 = out of memory.
+static int RldMk_DiagKeep(const struct RldMkPly *ply, struct RldMkBuild *b)
+{
+	u32 i;
+	u32 t;
+
+	const int mapped = (b->diagPlyPosition != NULL);
+
+	if (!mapped)
+	{
+		b->diagPlyPosition = (u32 *)malloc(((size_t)ply->vertexCount + 1u) * sizeof(u32));
+	}
+	b->diagPosition = (double *)malloc(((size_t)b->positionCount + 1u) * 3u * sizeof(double));
+	b->diagPositionGroup = (u8 *)malloc((size_t)b->positionCount + 1u);
+	b->diagTriangle = (u32 *)malloc(((size_t)b->triangleCount * 4u + 1u) * sizeof(u32));
+	b->diagTriangleRgb = (u32 *)malloc(((size_t)b->triangleCount * 3u + 1u) * sizeof(u32));
+	if ((b->diagPlyPosition == NULL) || (b->diagPosition == NULL) || (b->diagPositionGroup == NULL) || (b->diagTriangle == NULL) ||
+	    (b->diagTriangleRgb == NULL) || (b->diagFace == NULL))
+	{
+		return RldMk_OutOfMemory();
+	}
+
+	// After --repair or --remesh their steps have made the map.
+	for (i = 0; !mapped && (i < ply->vertexCount); i++)
+	{
+		b->diagPlyPosition[i] = b->vertexPosition[i];
+	}
+	b->diagPositionCount = b->positionCount;
+	memcpy(b->diagPosition, b->position, (size_t)b->positionCount * 3u * sizeof(double));
+	memcpy(b->diagPositionGroup, b->positionGroup, (size_t)b->positionCount);
+
+	b->diagTriangleCount = b->triangleCount;
+	for (t = 0; t < b->triangleCount; t++)
+	{
+		int k;
+
+		for (k = 0; k < 3; k++)
+		{
+			const u32 vertex = b->triangle[3u * t + (u32)k];
+			const u8 *rgb = (b->vertexRgb != NULL) ? &b->vertexRgb[3u * vertex] : &ply->rgb[3u * vertex];
+
+			b->diagTriangle[4u * t + (u32)k] = b->vertexPosition[vertex];
+			b->diagTriangleRgb[3u * t + (u32)k] = ((u32)rgb[0] << 16) | ((u32)rgb[1] << 8) | (u32)rgb[2];
+		}
+		b->diagTriangle[4u * t + 3u] = b->diagFace[t];
+	}
+
+	return 1;
+}
+
+// --diagnose, after step 4r: without a reduction the reduced triangles are the
+// triangles, the positions the diag positions. Every triangle now knows its
+// reduced one (RldMk_StepCollapse keeps it). 0 = out of memory.
+static int RldMk_DiagReduced(struct RldMkBuild *b)
+{
+	u32 i;
+
+	if (b->diagReduced == NULL)
+	{
+		b->diagReduced = (u32 *)malloc(((size_t)b->diagTriangleCount * 7u + 1u) * sizeof(u32));
+		if (b->diagReduced == NULL)
+		{
+			return RldMk_OutOfMemory();
+		}
+		for (i = 0; i < b->diagTriangleCount; i++)
+		{
+			memcpy(&b->diagReduced[7u * i], &b->diagTriangle[4u * i], 3u * sizeof(u32));
+			b->diagReduced[7u * i + 3u] = i;
+			b->diagReduced[7u * i + 4u] = 3u * i + 0u;
+			b->diagReduced[7u * i + 5u] = 3u * i + 1u;
+			b->diagReduced[7u * i + 6u] = 3u * i + 2u;
+		}
+		b->diagReducedCount = b->diagTriangleCount;
+	}
+
+	if (b->diagPositionFrom == NULL)
+	{
+		b->diagPositionFrom = (u32 *)malloc(((size_t)b->positionCount + 1u) * sizeof(u32));
+		if (b->diagPositionFrom == NULL)
+		{
+			return RldMk_OutOfMemory();
+		}
+		for (i = 0; i < b->positionCount; i++)
+		{
+			b->diagPositionFrom[i] = i;
+		}
+	}
+
+	b->triangleReduced = (u32 *)malloc(((size_t)b->triangleCount + 1u) * sizeof(u32));
+	if (b->triangleReduced == NULL)
+	{
+		return RldMk_OutOfMemory();
+	}
+	for (i = 0; i < b->triangleCount; i++)
+	{
+		b->triangleReduced[i] = i;
+	}
+
+	return 1;
+}
 
 // Steps 2-13 and 15 on a PLY that was read, once. 0 = the model cannot be
 // built; every reason was said.
@@ -4859,6 +6575,7 @@ static int RldMk_BuildOnce(const struct RldMkPly *ply, const struct RldMkOptions
 	b->faceCount = ply->faceCount;
 	b->kartPart = -1;
 	b->driverPart = -1;
+	b->diagnose = opt->diagnose;
 
 	// --fit crash: the scale first, then the chain with it (as --scale).
 	if (opt->fit)
@@ -4884,23 +6601,35 @@ static int RldMk_BuildOnce(const struct RldMkPly *ply, const struct RldMkOptions
 
 	RldMk_StepOpenEdges(b);
 
-	if (!RldMk_StepParts(b, opt))
+	if (!RldMk_StepRepair(ply, b, opt) || !RldMk_StepOpenParts(b, opt) || !RldMk_StepParts(b, opt))
 	{
 		return 0;
 	}
 
+	// the kart as modeled (a hull of --remesh is a little longer)
 	if (b->fitted && (b->fitBasis == RLDMK_FIT_KART))
 	{
 		b->fitKart[1] = b->parts[b->kartPart].hi[2] - b->parts[b->kartPart].lo[2];
 	}
 
-	if (!RldMk_StepReduce(ply, b, opt))
+	if (!RldMk_StepRemesh(b, opt, ply) || !RldMk_StepDummy(b, opt) || (b->diagnose && !RldMk_DiagKeep(ply, b)))
 	{
 		return 0;
 	}
 
+	if (!RldMk_StepReduce(ply, b, opt) || (b->diagnose && !RldMk_DiagReduced(b)))
+	{
+		return 0;
+	}
+
+	if (b->remeshed)
+	{
+		RldMk_Say("info", "model-remeshed", NULL, "Remeshed as closed hulls: %u triangles with %u open edges -> %u -> %u triangles with %u open edges.",
+		          b->remeshFrom, b->remeshOpenBefore, b->remeshHull, b->triangleCount, b->openEdges);
+	}
+
 	if (!RldMk_StepSize(b, opt) || !RldMk_StepMeasure(b, opt) || !RldMk_StepBudget(b, opt) || !RldMk_StepPoses(b) || !RldMk_StepQuantize(b) ||
-	    !RldMk_StepCollapse(b) || !RldMk_StepColors(ply, opt, b) || !RldMk_StepCommands(b, opt) || !RldMk_StepWrite(b))
+	    !RldMk_StepCollapse(b) || !RldMk_StepFlips(b, opt) || !RldMk_StepColors(ply, opt, b) || !RldMk_StepCommands(b, opt) || !RldMk_StepWrite(b))
 	{
 		return 0;
 	}
@@ -4917,7 +6646,7 @@ static int RldMk_BuildOnce(const struct RldMkPly *ply, const struct RldMkOptions
 // no use: the last build speaks again with the target before it - or the first
 // one, when no reduction ever worked - so the author sees the real cause.
 // Only that last build speaks. 0 = the model cannot be built; every reason was
-// said.
+// said. With --diagnose only that last build lifts the limits (RldMk_Diagnosis).
 static int RldMk_BuildModel(const struct RldMkPly *ply, const struct RldMkOptions *opt, struct RldMkBuild *b)
 {
 	static char why[RLDMK_REDUCE_TRIES][128];
@@ -4928,6 +6657,7 @@ static int RldMk_BuildModel(const struct RldMkPly *ply, const struct RldMkOption
 	at.reduceTarget = RLDMK_REDUCE_TARGET;
 	at.reduceForce = 0;
 	at.reduceWhy = NULL;
+	at.diagnose = 0;  // the tries see the limits: --diagnose shows the build make-char would make
 	speak = at;
 	for (tries = 1; opt->reduce && (tries < RLDMK_REDUCE_TRIES); tries++)
 	{
@@ -4975,6 +6705,7 @@ static int RldMk_BuildModel(const struct RldMkPly *ply, const struct RldMkOption
 		at.reduceWhy = why[tries];
 	}
 
+	speak.diagnose = opt->diagnose;
 	return RldMk_BuildOnce(ply, &speak, b);
 }
 
@@ -5185,6 +6916,290 @@ static void RldMk_WritePreview(const struct RldMkBuild *b, const char *path)
 	{
 		printf("  preview       %s, %u bytes (3 poses, %u triangles each)\n", path, (u32)size, b->drawCount);
 	}
+}
+
+//========================================================================================
+// --diagnose: THE MODEL AS EVERY STEP SAW IT (RLDDIAG 1)
+//========================================================================================
+//
+// To find where a model loses its shape. Text, LF, fields split by one space,
+// indices from 0, -1 where nothing belongs, numbers as %.6f:
+//   RLDDIAG 1
+//   fit <f>                    the factor of --fit crash (1 with --fit none)
+//   scale <s>                  --scale
+//   size <percent>             --size
+//   hip <x> <y> <z>            the point the poses and --size turn about, game units:
+//                              with --fit crash the seat on the dummy (RldDum_Fit),
+//                              with --fit none the hip (0, 16, 0)
+//   ply <vertices> <faces>
+//   pv <vertex> <position>     per PLY vertex: its welded position, -1 = dropped
+//   positions <P>              welded and fitted, before step 4r and --size, game units:
+//   p <i> <x> <y> <z> <group>  group RLDMK_GROUP_*: 0 kart, 1 driver, 2 steering wheel
+//   triangles <T>              after step 2, before step 4r:
+//   t <i> <a> <b> <c> <group> <face> <rgb0> <rgb1> <rgb2>   the PLY face and its corner colors
+//                              (after --remesh: the hulls, face -1, and the groups kept)
+//   reduced <T1>               after step 4r (the triangles when nothing was reduced):
+//   r <i> <a> <b> <c> <source> <sc0> <sc1> <sc2>   positions as p, the triangle t it continues,
+//                              and per corner the corner 3 x t + k of the t lines whose color
+//                              it carries (at the same position)
+//   records <R>
+//   rec <r> <position>
+//   frames 47
+//   x <frame> <position> <ex> <ey> <ez> <dx> <dy> <dz>   per frame and position with a
+//                              record: exact (before step 9) and decoded from the
+//                              written CMDL by the renderer's rule (RldMk_ReadBack)
+//   clamp <frame> <position> <axis> <value>   a value step 9 cut off at the ends of
+//                              its byte: axis 0 x, 1 y, 2 z; value in record steps
+//                              before rounding (y: steps of one, stored as even bytes)
+//   collapsed <n>              step 9's triangles without area (RldMk_StepCollapse)
+//   drawn <D>                  replayed from the written command list in the game's
+//                              order (RldMk_ReplayNext), the corners turned as --preview
+//                              turns them (counter-clockwise seen from the drawn side):
+//   d <i> <rec0> <rec1> <rec2> <rgb0> <rgb1> <rgb2> <cull> <reduced>   palette colors,
+//                              cull 1 = one side drawn, reduced = r index
+//   palette <n>
+//   c <index> <rgb>
+//   end
+// rgb is 6 hex digits RRGGBB; positions are p numbers throughout. With --reduce
+// auto it is the last build, the one make-char would write. Its limits of draw
+// memory (model-tris, model-draw) and file size (mem-model) are lifted; the
+// 16 bits of a frame (model-frame) are not - the bytes would not read back.
+
+struct RldMkText
+{
+	char *data;
+	size_t size;
+	size_t capacity;
+	int failed;
+};
+
+static void RldMk_TextAdd(struct RldMkText *text, const char *format, ...)
+{
+	char line[256];
+	va_list list;
+	int n;
+
+	if (text->failed)
+	{
+		return;
+	}
+
+	va_start(list, format);
+	n = vsnprintf(line, sizeof(line), format, list);
+	va_end(list);
+	if ((n < 0) || ((size_t)n >= sizeof(line)))
+	{
+		text->failed = 1;
+		return;
+	}
+
+	if ((text->size + (size_t)n + 1u) > text->capacity)
+	{
+		size_t capacity = (text->capacity != 0u) ? text->capacity : 65536u;
+		char *grown;
+
+		while ((text->size + (size_t)n + 1u) > capacity)
+		{
+			capacity *= 2u;
+		}
+		grown = (char *)realloc(text->data, capacity);
+		if (grown == NULL)
+		{
+			text->failed = 1;
+			return;
+		}
+		text->data = grown;
+		text->capacity = capacity;
+	}
+
+	memcpy(&text->data[text->size], line, (size_t)n);
+	text->size += (size_t)n;
+	text->data[text->size] = '\0';
+}
+
+// A palette color of the written CMDL as RRGGBB, -1 for an index beyond it.
+static void RldMk_DiagColor(const struct RldMkBuild *b, u32 index, char out[8])
+{
+	const u8 *body = &b->cmdl[4];
+	const u32 header = Rld_ReadLE32(&body[RLDMK_MODEL_HEADERS]);
+	const u32 colorsAt = Rld_ReadLE32(&body[header + RLDMK_HEADER_COLORS]);
+
+	if (index >= b->colorCount)
+	{
+		snprintf(out, 8, "-1");
+		return;
+	}
+	// file order r, g, b, code (step 7)
+	snprintf(out, 8, "%02x%02x%02x", (u32)body[colorsAt + 4u * index + 0u], (u32)body[colorsAt + 4u * index + 1u], (u32)body[colorsAt + 4u * index + 2u]);
+}
+
+// The diagnosis of a build made with --diagnose, as text (*sizeOut bytes, NUL
+// after them). NULL = out of memory, or the build is not one of --diagnose.
+static char *RldMk_Diagnosis(const struct RldMkBuild *b, const struct RldMkOptions *opt, size_t *sizeOut)
+{
+	struct RldMkText text;
+	struct RldMkReplay replay;
+	u32 *firstRecord;
+	u32 corner[3];
+	u32 color[3];
+	u32 draw = 0;
+	u32 drawn = 0;
+	int scale[3];
+	int got;
+	u32 i;
+	u32 f;
+
+	*sizeOut = 0;
+	if (!b->diagnose || (b->cmdl == NULL) || (b->diagPosition == NULL) || (b->diagReduced == NULL) || (b->triangleReduced == NULL))
+	{
+		return NULL;
+	}
+
+	memset(&text, 0, sizeof(text));
+	firstRecord = (u32 *)malloc(((size_t)b->positionCount + 1u) * sizeof(u32));
+	if (firstRecord == NULL)
+	{
+		return NULL;
+	}
+
+	RldMk_TextAdd(&text, "RLDDIAG 1\n");
+	RldMk_TextAdd(&text, "fit %.6f\n", b->fitted ? b->fitFactor : 1.0);
+	RldMk_TextAdd(&text, "scale %.6f\n", opt->scale);
+	RldMk_TextAdd(&text, "size %u\n", (opt->sizePercent != 0u) ? opt->sizePercent : 100u);
+	if (b->dummy)
+	{
+		RldMk_TextAdd(&text, "hip %.6f %.6f %.6f\n", b->dumFit.seat[0], b->dumFit.seat[1], b->dumFit.seat[2]);
+	}
+	else
+	{
+		RldMk_TextAdd(&text, "hip %.6f %.6f %.6f\n", 0.0, RLDMK_HIP_Y, 0.0);
+	}
+	RldMk_TextAdd(&text, "ply %u %u\n", b->vertexCount, b->faceCount);
+	for (i = 0; i < b->vertexCount; i++)
+	{
+		RldMk_TextAdd(&text, "pv %u %d\n", i, (b->diagPlyPosition[i] != RLDMK_NONE) ? (int)b->diagPlyPosition[i] : -1);
+	}
+
+	RldMk_TextAdd(&text, "positions %u\n", b->diagPositionCount);
+	for (i = 0; i < b->diagPositionCount; i++)
+	{
+		const double *v = &b->diagPosition[3u * i];
+
+		RldMk_TextAdd(&text, "p %u %.6f %.6f %.6f %u\n", i, v[0], v[1], v[2], (u32)b->diagPositionGroup[i]);
+	}
+
+	RldMk_TextAdd(&text, "triangles %u\n", b->diagTriangleCount);
+	for (i = 0; i < b->diagTriangleCount; i++)
+	{
+		const u32 *t = &b->diagTriangle[4u * i];
+		const u32 *rgb = &b->diagTriangleRgb[3u * i];
+
+		RldMk_TextAdd(&text, "t %u %u %u %u %u %d %06x %06x %06x\n", i, t[0], t[1], t[2], (u32)b->diagPositionGroup[t[0]],
+		              (t[3] != RLDMK_NONE) ? (int)t[3] : -1, rgb[0], rgb[1], rgb[2]);
+	}
+
+	RldMk_TextAdd(&text, "reduced %u\n", b->diagReducedCount);
+	for (i = 0; i < b->diagReducedCount; i++)
+	{
+		const u32 *r = &b->diagReduced[7u * i];
+
+		RldMk_TextAdd(&text, "r %u %u %u %u %u %u %u %u\n", i, r[0], r[1], r[2], r[3], r[4], r[5], r[6]);
+	}
+
+	for (i = 0; i < b->positionCount; i++)
+	{
+		firstRecord[i] = RLDMK_NONE;
+	}
+	RldMk_TextAdd(&text, "records %u\n", b->recordCount);
+	for (i = 0; i < b->recordCount; i++)
+	{
+		RldMk_TextAdd(&text, "rec %u %u\n", i, b->diagPositionFrom[b->record[i]]);
+		if (firstRecord[b->record[i]] == RLDMK_NONE)
+		{
+			firstRecord[b->record[i]] = i;
+		}
+	}
+
+	// Positions ascending: the diag numbers keep their order (RldMk_StepReduce).
+	RldMk_ModelScale(b->cmdl, scale);
+	RldMk_TextAdd(&text, "frames %u\n", (u32)RLDMK_FRAMES_TOTAL);
+	for (f = 0; f < RLDMK_FRAMES_TOTAL; f++)
+	{
+		const u8 *frame = RldMk_FrameAt(b->cmdl, f);
+
+		for (i = 0; (frame != NULL) && (i < b->positionCount); i++)
+		{
+			const double *exact = RldMk_At(b, f, i);
+			int v[3];
+
+			if (firstRecord[i] == RLDMK_NONE)
+			{
+				continue;
+			}
+			RldMk_UnpackRecord(frame, firstRecord[i], v);
+			RldMk_TextAdd(&text, "x %u %u %.6f %.6f %.6f %.6f %.6f %.6f\n", f, b->diagPositionFrom[i], exact[0], exact[1], exact[2],
+			              (double)v[0] * (double)scale[0] / 16384.0, (double)v[1] * (double)scale[1] / 16384.0, (double)v[2] * (double)scale[2] / 16384.0);
+		}
+	}
+	free(firstRecord);
+
+	for (i = 0; i < b->diagClampCount; i++)
+	{
+		const struct RldMkClamp *c = &b->diagClamp[i];
+
+		RldMk_TextAdd(&text, "clamp %u %u %u %.6f\n", c->frame, b->diagPositionFrom[c->position], c->axis, c->value);
+	}
+	RldMk_TextAdd(&text, "collapsed %u\n", b->collapsed);
+
+	RldMk_TextAdd(&text, "drawn %u\n", b->drawCount);
+	RldMk_ReplayStart(&replay, b->cmdl, b->recordCount);
+	while ((got = RldMk_ReplayNext(&replay, corner, color, &draw)) == 1)
+	{
+		const int cull = ((draw & RLDMK_CMD_CULL) != 0u);
+		const u32 side = ((draw & RLDMK_CMD_SIDE) != 0u) ? 1u : 0u;
+		const int turnRound = cull && (side != RLDMK_CULL_SIGN);
+		char rgb[3][8];
+		u32 record[3];
+		int reduced = -1;
+		int k;
+
+		// The triangle the builder meant (RldMk_Winding checks the same).
+		if ((drawn < b->drawCount) && (b->record[corner[0]] == b->drawOrder[3u * drawn + 0u]) && (b->record[corner[1]] == b->drawOrder[3u * drawn + 1u]) &&
+		    (b->record[corner[2]] == b->drawOrder[3u * drawn + 2u]))
+		{
+			reduced = (int)b->triangleReduced[b->drawTriangle[drawn]];
+		}
+
+		for (k = 0; k < 3; k++)
+		{
+			const int from = turnRound ? ((3 - k) % 3) : k;
+
+			record[k] = corner[from];
+			RldMk_DiagColor(b, color[from], rgb[k]);
+		}
+		RldMk_TextAdd(&text, "d %u %u %u %u %s %s %s %d %d\n", drawn, record[0], record[1], record[2], rgb[0], rgb[1], rgb[2], cull, reduced);
+		drawn++;
+	}
+
+	RldMk_TextAdd(&text, "palette %u\n", b->colorCount);
+	for (i = 0; i < b->colorCount; i++)
+	{
+		char rgb[8];
+
+		RldMk_DiagColor(b, i, rgb);
+		RldMk_TextAdd(&text, "c %u %s\n", i, rgb);
+	}
+	RldMk_TextAdd(&text, "end\n");
+
+	// A list that does not replay to the end never passed step 15.
+	if (text.failed || (got < 0) || (drawn != b->drawCount))
+	{
+		free(text.data);
+		return NULL;
+	}
+
+	*sizeOut = text.size;
+	return text.data;
 }
 
 // "0,3,5-9": the palette indices a group's triangles use.
@@ -6635,6 +8650,51 @@ static void RldMk_EmitFacts(const struct RldMkBuild *b, u32 templateId)
 		RldMk_Fact("triangles", "%u", b->triangleCount);
 	}
 
+	if (b->dummy)
+	{
+		char dummy[7][24];
+		int k;
+
+		for (k = 0; k < 3; k++)
+		{
+			snprintf(dummy[k], sizeof(dummy[k]), "%.2f", b->dumFit.shift[k]);
+			snprintf(dummy[3 + k], sizeof(dummy[3 + k]), "%.2f", b->dumFit.seat[k]);
+		}
+		snprintf(dummy[6], sizeof(dummy[6]), "%d", b->dumFit.hasWheel);
+		Rld_Emit("char", "dummy", dummy[0], dummy[1], dummy[2], dummy[3], dummy[4], dummy[5], dummy[6], (const char *)NULL);
+	}
+
+	if (b->repaired)
+	{
+		char repaired[10][16];
+		int k;
+
+		for (k = 0; k < 10; k++)
+		{
+			snprintf(repaired[k], sizeof(repaired[k]), "%u", b->repair[k]);
+		}
+		Rld_Emit("char", "repaired", repaired[0], repaired[1], repaired[2], repaired[3], repaired[4], repaired[5], repaired[6], repaired[7], repaired[8],
+		         repaired[9], (const char *)NULL);
+	}
+
+	if (b->bothSides != NULL)
+	{
+		RldMk_Fact("two-sided", "%u", b->openTwoSided);
+		RldMk_Fact("two-sided-packing", "%u", b->quantFlips);
+	}
+
+	if (b->remeshed)
+	{
+		char remeshed[5][16];
+
+		snprintf(remeshed[0], sizeof(remeshed[0]), "%u", b->remeshFrom);
+		snprintf(remeshed[1], sizeof(remeshed[1]), "%u", b->remeshHull);
+		snprintf(remeshed[2], sizeof(remeshed[2]), "%u", b->reduceTo);
+		snprintf(remeshed[3], sizeof(remeshed[3]), "%u", b->remeshOpenBefore);
+		snprintf(remeshed[4], sizeof(remeshed[4]), "%u", b->openEdges);
+		Rld_Emit("char", "remeshed", remeshed[0], remeshed[1], remeshed[2], remeshed[3], remeshed[4], (const char *)NULL);
+	}
+
 	if (b->reduced)
 	{
 		char reduced[4][16];
@@ -6743,6 +8803,33 @@ static void RldMk_PrintFacts(const struct RldMkBuild *b, const struct RldMkOptio
 		printf("  fit           none - the model as exported, x%g\n", opt->scale);
 	}
 
+	if (b->dummy)
+	{
+		printf("  dummy         placed on the reference kart: shifted %.2f %.2f %.2f, seat %.2f %.2f %.2f, steering wheel %s\n", b->dumFit.shift[0],
+		       b->dumFit.shift[1], b->dumFit.shift[2], b->dumFit.seat[0], b->dumFit.seat[1], b->dumFit.seat[2],
+		       b->dumFit.hasWheel ? "turns about its column" : (b->dumFit.wheelAsDriver ? "leans with the driver" : "none"));
+	}
+
+	if (b->repaired)
+	{
+		printf("  repaired      %u corners welded, %u triangles without area and %u doubled dropped, %u turned, %u cracks split,\n", b->repair[0],
+		       b->repair[1], b->repair[2], b->repair[3], b->repair[9]);
+		printf("                %u holes closed (%u triangles), %u open pieces left; open edges %u -> %u\n", b->repair[4], b->repair[5], b->repair[6],
+		       b->repair[7], b->repair[8]);
+	}
+
+	if (b->bothSides != NULL)
+	{
+		printf("  two-sided     %u triangles of open parts%s, %u turned over by the packing (+0 triangles)\n", b->openTwoSided,
+		       opt->openOneSided ? " (--open-parts one-sided: none)" : "", b->quantFlips);
+	}
+
+	if (b->remeshed)
+	{
+		printf("  remeshed      %u -> %u -> %u triangles (closed hulls, %u cells), open edges %u -> %u\n", b->remeshFrom, b->remeshHull, b->reduceTo,
+		       b->remeshResolution, b->remeshOpenBefore, b->openEdges);
+	}
+
 	if (b->reduced)
 	{
 		printf("  reduced       %u -> %u triangles (automatically), draw memory %u -> %u bytes\n", b->reduceFrom, b->reduceTo,
@@ -6806,6 +8893,55 @@ static void RldMk_DefaultOptions(struct RldMkOptions *opt)
 	opt->sizePercent = 100u;
 	opt->fit = 1;
 	opt->reduce = 1;
+	opt->repair = 1;
+}
+
+// --diagnose: the diagnosis of a build into `path` (RldMk_Diagnosis); never a
+// character. The exit code of make-char: 0 = written and nothing else wrong.
+static int RldMk_WriteDiagnosis(const struct RldMkBuild *b, const struct RldMkOptions *opt, int built, const char *path)
+{
+	size_t size = 0;
+	char *text = built ? RldMk_Diagnosis(b, opt, &size) : NULL;
+	FILE *file;
+
+	if (text == NULL)
+	{
+		if (built)
+		{
+			RldMk_OutOfMemory();
+		}
+		RldMk_EmitFile("diagnosis", "failed", path, 0u);
+		printf("\nno diagnosis written - see the errors above\n");
+		return RldMk_Fail(1);
+	}
+
+	file = fopen(path, "wb");
+	if ((file == NULL) || (fwrite(text, 1, size, file) != size) || (fclose(file) != 0))
+	{
+		RldMk_EmitFile("diagnosis", "failed", path, 0u);
+		RldMk_Say("error", "write", path, "The diagnosis file %s cannot be written. Is the folder write-protected?", path);
+		free(text);
+		return RldMk_Fail(1);
+	}
+	free(text);
+	RldMk_EmitFile("diagnosis", "ok", path, size);
+
+	printf("\n%s (diagnosis only - limits lifted, no character written)\n", path);
+	printf("  size          %u bytes\n", (u32)size);
+
+	if (s_rldMkErrors != 0)
+	{
+		return RldMk_Fail(1);
+	}
+
+	{
+		char bytes[24];
+
+		snprintf(bytes, sizeof(bytes), "%u", (u32)size);
+		Rld_Emit("result", "diagnosed", path, bytes, "", (const char *)NULL);
+		s_machineResult = 1;
+	}
+	return 0;
 }
 
 static int RldChar_MakeCommand(int argc, char **argv)
@@ -6832,6 +8968,11 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	const char *iconPreviewArg = NULL;
 	const char *voicesArg = NULL;
 	const char *previewArg = NULL;
+	const char *diagnoseArg = NULL;
+	const char *remeshArg = NULL;
+	const char *resolutionArg = NULL;
+	const char *repairArg = NULL;
+	const char *openArg = NULL;
 	static struct RldMkIcon icon;
 	int haveIcon = 0;
 	int check = 0;
@@ -6946,6 +9087,27 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		{
 			previewArg = argv[++i];
 		}
+		else if ((strcmp(arg, "--repair") == 0) && hasValue)
+		{
+			repairArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--open-parts") == 0) && hasValue)
+		{
+			openArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--remesh") == 0) && hasValue)
+		{
+			remeshArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--remesh-resolution") == 0) && hasValue)
+		{
+			resolutionArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--diagnose") == 0) && hasValue)
+		{
+			diagnoseArg = argv[++i];
+			opt.diagnose = 1;
+		}
 		else if (strcmp(arg, "--two-sided") == 0)
 		{
 			opt.twoSided = 1;
@@ -6969,6 +9131,12 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		fprintf(stderr, "\n");
 		RldChar_Usage(stderr);
 		return RldMk_Fail(2);
+	}
+
+	// --diagnose writes the diagnosis and never a character (RldMk_Diagnosis).
+	if (opt.diagnose)
+	{
+		RldMk_Say("info", "diagnose", NULL, "Diagnosis only: limits lifted, no character written.");
 	}
 
 	// THE SWITCHES. A wrong value is said and the checks go on, so that --check
@@ -7058,6 +9226,63 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		{
 			RldMk_Say("error", "reduce", reduceArg, "Reduce must be auto or off.");
 		}
+	}
+
+	if (repairArg != NULL)
+	{
+		char word[8];
+		const int known = RldMk_Lower(repairArg, word, sizeof(word));
+
+		if (known && (strcmp(word, "off") == 0))
+		{
+			opt.repair = 0;
+		}
+		else if (!known || (strcmp(word, "auto") != 0))
+		{
+			RldMk_Say("error", "repair", repairArg, "Repair must be auto or off.");
+		}
+	}
+	if (openArg != NULL)
+	{
+		char word[16];
+		const int known = RldMk_Lower(openArg, word, sizeof(word));
+
+		if (known && (strcmp(word, "one-sided") == 0))
+		{
+			opt.openOneSided = 1;
+		}
+		else if (!known || (strcmp(word, "two-sided") != 0))
+		{
+			RldMk_Say("error", "open-parts", openArg, "Open parts must be two-sided or one-sided.");
+		}
+	}
+
+	// --remesh (on request only) needs the reduction: a hull has some 10^5 triangles.
+	if (remeshArg != NULL)
+	{
+		char word[8];
+		const int known = RldMk_Lower(remeshArg, word, sizeof(word));
+
+		if (known && (strcmp(word, "on") == 0))
+		{
+			opt.remesh = 1;
+		}
+		else if (!known || (strcmp(word, "off") != 0))
+		{
+			RldMk_Say("error", "remesh", remeshArg, "Remesh must be on or off.");
+		}
+	}
+	if ((resolutionArg != NULL) &&
+	    (!RldMk_ParseWhole(resolutionArg, 100000u, &opt.remeshResolution) || (opt.remeshResolution < RLDMK_REMESH_RESOLUTION_MIN) ||
+	     (opt.remeshResolution > RLDMK_REMESH_RESOLUTION_MAX)))
+	{
+		RldMk_Say("error", "remesh", resolutionArg, "The remesh resolution \"%s\" must be a whole number from %u to %u.", resolutionArg,
+		          RLDMK_REMESH_RESOLUTION_MIN, RLDMK_REMESH_RESOLUTION_MAX);
+		opt.remeshResolution = 0u;
+	}
+	if (opt.remesh && !opt.reduce)
+	{
+		RldMk_Say("error", "remesh", NULL, "--remesh on needs --reduce auto: the hulls have far more triangles than a driver may draw.");
 	}
 
 	if ((posesArg != NULL) && (strcmp(posesArg, "auto") != 0))
@@ -7190,8 +9415,11 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		Rld_Emit("value", "fit", opt.fit ? "crash" : "none", (fitArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "reduce", opt.reduce ? "auto" : "off", (reduceArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "wheels", opt.noWheels ? "off" : "on", (wheelsArg != NULL) ? "switch" : "default", (const char *)NULL);
+		Rld_Emit("value", "remesh", opt.remesh ? "on" : "off", (remeshArg != NULL) ? "switch" : "default", (const char *)NULL);
+		Rld_Emit("value", "repair", opt.repair ? "auto" : "off", (repairArg != NULL) ? "switch" : "default", (const char *)NULL);
+		Rld_Emit("value", "open-parts", opt.openOneSided ? "one-sided" : "two-sided", (openArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "two_sided", opt.twoSided ? "yes" : "no", opt.twoSided ? "switch" : "default", (const char *)NULL);
-		Rld_Emit("value", "out", outPath, (outArg != NULL) ? "switch" : "default", (const char *)NULL);
+		Rld_Emit("value", "out", opt.diagnose ? "none" : outPath, (outArg != NULL) ? "switch" : "default", (const char *)NULL);
 		snprintf(number, sizeof(number), "%u", opt.sizePercent);
 		Rld_Emit("value", "size", number, (sizeArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "icon", (iconArg != NULL) ? iconArg : "", (iconArg != NULL) ? "switch" : "default", (const char *)NULL);
@@ -7324,6 +9552,17 @@ static int RldChar_MakeCommand(int argc, char **argv)
 			       ((classArg == NULL) || (strcmp(classArg, "like") == 0)) ? " (like the template)" : "");
 		}
 		printf("  wheels        %s\n", opt.noWheels ? "hidden - the game draws no kart wheels (--wheels off)" : "shown - the game draws its kart wheels");
+	}
+
+	// THE DIAGNOSIS ends here: a build with lifted limits never becomes a
+	// container, whatever --out or --check say.
+	if (opt.diagnose)
+	{
+		const int code = RldMk_WriteDiagnosis(&build, &opt, built, diagnoseArg);
+
+		RldMk_FreeBuild(&build);
+		RldMk_FreePly(&ply);
+		return code;
 	}
 
 	if (!built || (s_rldMkErrors != 0))
@@ -7798,7 +10037,9 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "  --size <50..200>            the driver and steering wheel in percent of the\n");
 	fprintf(out, "                              model after fitting, or as exported with\n");
 	fprintf(out, "                              --fit none (default 100), scaled about the\n");
-	fprintf(out, "                              hip; the kart keeps its size: %s.\n", RLDMK_SIZE_TEXT);
+	fprintf(out, "                              seat of the reference kart (--wheels off: the\n");
+	fprintf(out, "                              bottom of the driver; --fit none: the hip);\n");
+	fprintf(out, "                              the kart keeps its size: %s.\n", RLDMK_SIZE_TEXT);
 	fprintf(out, "                              rldpack says which range the model takes\n");
 	fprintf(out, "  --icon <png>                the portrait in the menu: cut to 44:26 in the\n");
 	fprintf(out, "                              middle, scaled to 44 x 26, 15 colors and\n");
@@ -7832,15 +10073,37 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "                              for a model with its own (a motorbike, say);\n");
 	fprintf(out, "                              --fit then measures the whole model\n");
 	fprintf(out, "  --reduce auto|off           auto (default): a model of more than %u\n", (u32)RLDMK_REDUCE_LIMIT);
-	fprintf(out, "                              triangles is reduced to at most %u, kart,\n", RLDMK_REDUCE_TARGET);
-	fprintf(out, "                              driver and steering wheel in proportion; off:\n");
-	fprintf(out, "                              such a model is refused (model-tris)\n");
+	fprintf(out, "                              triangles is reduced to at most %u, one budget\n", RLDMK_REDUCE_TARGET);
+	fprintf(out, "                              shared by kart, driver and steering wheel, each\n");
+	fprintf(out, "                              with a floor; off: such a model is refused\n");
+	fprintf(out, "                              (model-tris)\n");
+	fprintf(out, "  --repair auto|off           auto (default): weld split corners, drop\n");
+	fprintf(out, "                              triangles without area and doubles, turn faces\n");
+	fprintf(out, "                              outward, close holes of up to %u edges; off: the\n", RLDREP_HOLE_MAX_EDGES_DEFAULT);
+	fprintf(out, "                              surface as exported\n");
+	fprintf(out, "  --open-parts two-sided|one-sided\n");
+	fprintf(out, "                              two-sided (default): parts still open after the\n");
+	fprintf(out, "                              repair (with --repair off: open as exported) are\n");
+	fprintf(out, "                              drawn from both sides (no extra triangles);\n");
+	fprintf(out, "                              one-sided: culled like the rest\n");
+	fprintf(out, "  --remesh on|off             on: replace kart, driver and steering wheel\n");
+	fprintf(out, "                              (each of more than %u triangles) by closed\n", RLDMK_REDUCE_KEEP);
+	fprintf(out, "                              hulls of their surface, then reduce them -\n");
+	fprintf(out, "                              for a model with holes or loose sheets; off\n");
+	fprintf(out, "                              (default): the surface as modeled\n");
+	fprintf(out, "  --remesh-resolution <n>     cells along a part's longest side for\n");
+	fprintf(out, "                              --remesh, %u..%u (default %u)\n", RLDMK_REMESH_RESOLUTION_MIN, RLDMK_REMESH_RESOLUTION_MAX,
+	        RLDMK_REMESH_RESOLUTION);
 	fprintf(out, "  --scale <f>                 multiply the model (default 1), only with\n");
 	fprintf(out, "                              --fit none\n");
 	fprintf(out, "  --two-sided                 draw both sides of every triangle\n");
 	fprintf(out, "  --out <file>                somewhere else than next to the model\n");
 	fprintf(out, "  --check                     run every check and build in memory, write\n");
 	fprintf(out, "                              nothing (the previews are written)\n");
+	fprintf(out, "  --diagnose <file>           write the model as every step saw it (text,\n");
+	fprintf(out, "                              RLDDIAG 1) and never a character: the limits of\n");
+	fprintf(out, "                              draw memory and file size are lifted for the\n");
+	fprintf(out, "                              measurement; --preview is written, --out ignored\n");
 	fprintf(out, "\n");
 	fprintf(out, "  rldpack make-char --model driver.ply --name \"MY DRIVER\" --template 14\n");
 	fprintf(out, "  rldpack make-char --model driver.ply --name \"MY DRIVER\" --template 14\n");
@@ -9377,7 +11640,7 @@ static void RldMk_SelfTestChri(const u8 *good, size_t goodSize)
 // change updates it, on purpose and in the same change; nothing else may.
 #define RLDMK_GOLDEN_PLAIN "ba7e3208bc98b2af5460110ae6d7d64afe888771b76747a74ae30f3190ce3186"
 #define RLDMK_GOLDEN_SIZE_ICON "9dc78f1370c2e360f2758858b0efcec9c7b21ea7bcedb9be12e5b2f7029a1728"
-#define RLDMK_GOLDEN_FIT "8c3bda92c3e1dc5f761f3b9eb2f281595cc9d290319901c82b024d0a2c433e95"
+#define RLDMK_GOLDEN_FIT "1d71e02adea867a7eece179ecf1327d3e9136e3ca115a6df00ab375ec25d9d43"
 #define RLDMK_GOLDEN_NO_WHEELS "0427aee8b259b0f0076efc6f8cba195fff3b105c8b7216992056bb4ee333b0fe"
 #define RLDMK_GOLDEN_REDUCED "12bfd7bfc5e64ea434695bb90be9629a91f9a52c4f234bff0ec2b440f37f990f"
 
@@ -9594,8 +11857,9 @@ static void RldMk_SelfTestFit(struct RldMkTestMesh *mesh)
 	           "--fit in any case; crashes refused", "fit %d, said: %s", fit, s_rldMkCodes);
 	RldMk_ResetSaid();
 
-	// THE STANDARD MODEL, 115.2 long and 57.6 tall: fitted by 0.9757, the same
-	// bytes as --fit none --scale 0.9757, the size range unchanged.
+	// THE STANDARD MODEL, 115.2 long and 57.6 tall: fitted by 0.9757, the
+	// positions of --fit none --scale 0.9757 moved by one shift onto the dummy
+	// (its kart on the dummy kart), the size range unchanged.
 	memset(&plyAgain, 0, sizeof(plyAgain));
 	memset(&again, 0, sizeof(again));
 	RldMk_TestOptions(&opt);
@@ -9611,9 +11875,25 @@ static void RldMk_SelfTestFit(struct RldMkTestMesh *mesh)
 
 	opt.fit = 0;
 	opt.scale = 0.9757;
-	same = ok && RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again) && !again.fitted && (again.cmdlSize == b.cmdlSize) &&
-	       (memcmp(again.cmdl, b.cmdl, b.cmdlSize) == 0);
-	RldMk_Test(same, "--fit crash = --fit none --scale 0.9757, byte for byte", "differ");
+	same = ok && b.dummy && RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again) && !again.fitted && !again.dummy &&
+	       (again.positionCount == b.positionCount) && (again.drawCount == b.drawCount);
+	{
+		u32 q;
+		int a;
+
+		for (q = 0; same && (q < b.positionCount); q++)
+		{
+			for (a = 0; a < 3; a++)
+			{
+				const double d = b.position[3u * q + (u32)a] - (again.position[3u * q + (u32)a] + b.dumFit.shift[a]);
+
+				same = same && (d < 1.0e-9) && (d > -1.0e-9);
+			}
+		}
+	}
+	RldMk_Test(same && (b.parts[b.kartPart].lo[1] > 5.59) && (b.parts[b.kartPart].lo[1] < 5.61) &&
+	               (0.5 * (b.parts[b.kartPart].lo[0] + b.parts[b.kartPart].hi[0]) < 1.0e-9) && (0.5 * (b.parts[b.kartPart].lo[0] + b.parts[b.kartPart].hi[0]) > -1.0e-9),
+	           "--fit crash = --fit none --scale 0.9757 moved onto the dummy: kart bottom 5.6, centered", "differ");
 	RldMk_FreeBuild(&again);
 	RldMk_FreePly(&plyAgain);
 
@@ -10097,6 +12377,422 @@ static void RldMk_SelfTestPreview(struct RldMkTestMesh *mesh)
 	}
 	RldMk_Test((data != NULL) && ok, "preview: --two-sided marks every corner", "not marked");
 	free(data);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+}
+
+// --- --diagnose ----------------------------------------------------------------------
+
+// Does `text` hold the line `line` (with its LF)?
+static int RldMk_TestHasLine(const char *text, const char *line)
+{
+	const size_t length = strlen(line);
+	const char *at = text;
+
+	while ((at = strstr(at, line)) != NULL)
+	{
+		if (((at == text) || (at[-1] == '\n')) && (at[length] == '\n'))
+		{
+			return 1;
+		}
+		at += length;
+	}
+	return 0;
+}
+
+static void RldMk_SelfTestDiagnose(struct RldMkTestMesh *mesh)
+{
+	struct RldMkOptions opt;
+	struct RldMkPly ply;
+	struct RldMkPly plyAgain;
+	struct RldMkBuild b;
+	struct RldMkBuild again;
+	char line[64];
+	char *text = NULL;
+	char *textAgain = NULL;
+	size_t size = 0;
+	size_t sizeAgain = 0;
+	int ok;
+	u32 i;
+
+	memset(&plyAgain, 0, sizeof(plyAgain));
+	memset(&again, 0, sizeof(again));
+
+	// The split-9 model of 996 triangles, --reduce off: model-tris lifted, the
+	// whole model measured; the text from "RLDDIAG 1" to "end", twice the same.
+	RldMk_TestOptions(&opt);
+	opt.diagnose = 1;
+	RldMk_TestStandard(mesh, 9u, 0, 0.0, -1);
+	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+	RldMk_Test(ok && !RldMk_Said("model-tris") && RldMk_Said("diagnose-lifted") && !b.reduced && (b.drawCount + b.collapsed == 996u),
+	           "--diagnose, 996 triangles, --reduce off: model-tris lifted, built", "built %d, %u drawn, said: %s", ok, b.drawCount, s_rldMkCodes);
+	if (ok)
+	{
+		text = RldMk_Diagnosis(&b, &opt, &size);
+	}
+	snprintf(line, sizeof(line), "drawn %u", b.drawCount);
+	ok = (text != NULL) && (size > 14u) && (strncmp(text, "RLDDIAG 1\n", 10u) == 0) && (strcmp(&text[size - 4u], "end\n") == 0) && (strlen(text) == size) &&
+	     RldMk_TestHasLine(text, "triangles 996") && RldMk_TestHasLine(text, "reduced 996") && RldMk_TestHasLine(text, "frames 47") && RldMk_TestHasLine(text, line);
+	RldMk_Test(ok, "--diagnose text: RLDDIAG 1 ... end, 996 triangles not reduced, every drawn one", "%u bytes", (u32)size);
+	ok = ok && RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again) && ((textAgain = RldMk_Diagnosis(&again, &opt, &sizeAgain)) != NULL) && (sizeAgain == size) &&
+	     (memcmp(textAgain, text, size) == 0);
+	RldMk_Test(ok, "--diagnose built twice: the same text", "differ");
+	free(text);
+	free(textAgain);
+	text = NULL;
+	textAgain = NULL;
+	RldMk_FreeBuild(&again);
+	RldMk_FreePly(&plyAgain);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+
+	// The same with --reduce auto: the build make-char would write; every drawn
+	// triangle knows its reduced one, every reduced one its source.
+	opt.reduce = 1;
+	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && b.reduced && (b.reduceTo <= RLDMK_REDUCE_TARGET) && (b.diagReducedCount == b.reduceTo) &&
+	     !RldMk_Said("diagnose-lifted");
+	for (i = 0; ok && (i < b.diagReducedCount); i++)
+	{
+		const u32 *r = &b.diagReduced[7u * i];
+		int k;
+
+		ok = (r[3] < b.diagTriangleCount);
+		for (k = 0; ok && (k < 3); k++)
+		{
+			// the corner whose color it carries sits at the same position
+			ok = (r[4 + k] < (3u * b.diagTriangleCount)) && (b.diagTriangle[4u * (r[4 + k] / 3u) + (r[4 + k] % 3u)] == r[k]);
+		}
+	}
+	for (i = 0; ok && (i < b.drawCount); i++)
+	{
+		ok = (b.triangleReduced[b.drawTriangle[i]] < b.diagReducedCount);
+	}
+	if (ok)
+	{
+		text = RldMk_Diagnosis(&b, &opt, &size);
+	}
+	snprintf(line, sizeof(line), "reduced %u", b.reduceTo);
+	ok = ok && (text != NULL) && RldMk_TestHasLine(text, "triangles 996") && RldMk_TestHasLine(text, line);
+	if (ok)
+	{
+		// No drawn triangle without its reduced one: no "d" line ends in -1.
+		const char *at = text;
+
+		while (ok && ((at = strstr(at, "\nd ")) != NULL))
+		{
+			const char *end = strchr(at + 1, '\n');
+
+			ok = (end != NULL) && !(((end - at) > 3) && (strncmp(end - 3, " -1", 3u) == 0));
+			at = (end != NULL) ? end : &at[1];
+		}
+	}
+	RldMk_Test(ok,
+	           "--diagnose with --reduce auto: reduced as without it, every triangle traced", "built %d, %u -> %u", ok, b.reduceFrom, b.reduceTo);
+	free(text);
+	text = NULL;
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+
+	// A model within the limits: the same bytes with and without --diagnose, and
+	// no diagnosis from a build without it.
+	RldMk_TestOptions(&opt);
+	RldMk_TestStandard(mesh, 2u, 0, 0.0, -1);
+	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && (RldMk_Diagnosis(&b, &opt, &size) == NULL);
+	opt.diagnose = 1;
+	ok = ok && RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again) && (again.cmdlSize == b.cmdlSize) && (memcmp(again.cmdl, b.cmdl, b.cmdlSize) == 0);
+	RldMk_Test(ok, "--diagnose changes no byte of a model within the limits", "differ");
+	RldMk_FreeBuild(&again);
+	RldMk_FreePly(&plyAgain);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+}
+
+// --- Vehicle parts, packing, every frame read back -----------------------------------
+
+static void RldMk_SelfTestVehicle(struct RldMkTestMesh *mesh)
+{
+	struct RldMkOptions opt;
+	struct RldMkPly ply;
+	struct RldMkBuild b;
+	u32 flips[RLDMK_FRAMES_TOTAL];
+	u32 badFrame = 0;
+	u32 badTriangle = 0;
+	int cut[6];
+	int ok;
+	u32 p;
+
+	// THE PACKING: a value beyond its byte is cut off and says so; the ends
+	// themselves are not cut.
+	ok = (RldMk_QuantValue(-0.6, 0, &cut[0]) == 0) && (RldMk_QuantValue(255.6, 2, &cut[1]) == 255) && (RldMk_QuantValue(255.2, 1, &cut[2]) == 254) &&
+	     (RldMk_QuantValue(-0.5, 0, &cut[3]) == 0) && (RldMk_QuantValue(255.4, 2, &cut[4]) == 255) && (RldMk_QuantValue(254.9, 1, &cut[5]) == 254);
+	RldMk_Test(ok && cut[0] && cut[1] && cut[2] && !cut[3] && !cut[4] && !cut[5], "packing: values beyond the byte are found, the ends are kept",
+	           "%d %d %d %d %d %d", cut[0], cut[1], cut[2], cut[3], cut[4], cut[5]);
+
+	// THE VEHICLE: the standard model with a front part across the middle of
+	// the kart's nose (0.05 to 0.8 above the ground) and a seat across the
+	// middle behind the driver (0.30 to 0.38, below the kart's top at 0.35):
+	// both stay with the kart in every frame. A shoe to one side of the middle
+	// and the steering wheel go on with the driver.
+	RldMk_TestOptions(&opt);
+	RldMk_TestStandard(mesh, 1u, 0, 0.0, -1);
+	{
+		const double frontLo[3] = {-0.20, 0.05, 0.60};
+		const double frontHi[3] = {0.20, 0.80, 0.95};
+		const double seatLo[3] = {-0.20, 0.30, -0.55};
+		const double seatHi[3] = {0.20, 0.38, -0.42};
+		const double shoeLo[3] = {0.05, 0.12, -0.40};
+		const double shoeHi[3] = {0.25, 0.40, 0.30};
+
+		RldMk_TestBox(mesh, frontLo, frontHi, 1u, 30u, 0, -1);
+		RldMk_TestBox(mesh, seatLo, seatHi, 1u, 35u, 0, -1);
+		RldMk_TestBox(mesh, shoeLo, shoeHi, 1u, 40u, 0, -1);
+	}
+	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && (b.groupTriangles[RLDMK_GROUP_KART] == 36u) && (b.groupTriangles[RLDMK_GROUP_DRIVER] == 24u) &&
+	     (b.groupTriangles[RLDMK_GROUP_WHEEL] == 12u) && !RldMk_Said("model-quant");
+	for (p = 0; ok && (p < b.positionCount); p++)
+	{
+		const double *still = RldMk_At(&b, 0u, p);
+		const double *neutral = RldMk_At(&b, RLDMK_NEUTRAL_FRAME, p);
+
+		if ((b.positionGroup[p] == RLDMK_GROUP_KART) && (b.position[3u * p + 2u] > (0.55 * RLDMK_UNITS)))
+		{
+			ok = (still[0] == neutral[0]) && (still[1] == neutral[1]) && (still[2] == neutral[2]);
+		}
+	}
+	RldMk_Test(ok, "vehicle parts across the middle stay with the kart, a shoe to one side and the steering wheel do not",
+	           "kart %u, driver %u, wheel %u, said: %s", b.groupTriangles[RLDMK_GROUP_KART], b.groupTriangles[RLDMK_GROUP_DRIVER],
+	           b.groupTriangles[RLDMK_GROUP_WHEEL], s_rldMkCodes);
+
+	// EVERY FRAME READ BACK: the built model passes; one color index changed in
+	// the command list fails in frame 0 at the first triangle, one record moved
+	// in frame 30 only fails there.
+	ok = ok && RldMk_ReplayFrames(&b, 0, &badFrame, &badTriangle, flips);
+	RldMk_Test(ok, "every frame replayed: the triangles the builder meant", "frame %u, triangle %u", badFrame, badTriangle);
+	if (ok)
+	{
+		u8 *word = &b.cmdl[4u + RLDMK_BODY_COMMANDS + 4u + 4u * 2u];
+
+		Rld_WriteLE32(word, Rld_ReadLE32(word) ^ (1u << RLDMK_COLOR_SHIFT));
+		ok = !RldMk_ReplayFrames(&b, 0, &badFrame, &badTriangle, flips) && (badFrame == 0u) && (badTriangle == 0u);
+		Rld_WriteLE32(word, Rld_ReadLE32(word) ^ (1u << RLDMK_COLOR_SHIFT));
+		RldMk_Test(ok, "a color index changed: found in frame 0, triangle 0", "frame %u, triangle %u", badFrame, badTriangle);
+	}
+	if (ok)
+	{
+		u8 *frame = (u8 *)RldMk_FrameAt(b.cmdl, 30u);
+		u8 *record = &frame[Rld_ReadLE32(&frame[RLDMK_FRAME_VERTEX_OFFSET])];
+
+		record[0] = (u8)(record[0] + 100u);
+		ok = !RldMk_ReplayFrames(&b, 0, &badFrame, &badTriangle, flips) && (badFrame == 30u) && (badTriangle == 0u);
+		RldMk_Test(ok, "a record moved in frame 30 only: found there", "frame %u, triangle %u", badFrame, badTriangle);
+	}
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+}
+
+// --- --repair ------------------------------------------------------------------------
+
+// The cull bits of the triangles a build draws: *culled with the bit, *both without.
+static void RldMk_TestCull(const struct RldMkBuild *b, u32 *culled, u32 *both)
+{
+	struct RldMkReplay replay;
+	u32 corner[3];
+	u32 color[3];
+	u32 draw = 0;
+
+	*culled = 0;
+	*both = 0;
+	RldMk_ReplayStart(&replay, b->cmdl, b->recordCount);
+	while (RldMk_ReplayNext(&replay, corner, color, &draw) == 1)
+	{
+		if ((draw & RLDMK_CMD_CULL) != 0u)
+		{
+			(*culled)++;
+		}
+		else
+		{
+			(*both)++;
+		}
+	}
+}
+
+static void RldMk_SelfTestRepair(struct RldMkTestMesh *mesh)
+{
+	struct RldMkOptions opt;
+	struct RldMkPly ply;
+	struct RldMkPly plyAgain;
+	struct RldMkBuild b;
+	struct RldMkBuild again;
+	struct RldCharFinding first;
+	u32 culled = 0;
+	u32 both = 0;
+	int all = 1;
+	int ok;
+	int k;
+
+	s_rldMkTestFailed += RldRep_SelfTest(RldMk_TestReport);
+	memset(&plyAgain, 0, sizeof(plyAgain));
+	memset(&again, 0, sizeof(again));
+
+	// A steering wheel turned inside out (x mirrored) and a driver with a hole
+	// of 4 edges at the top: --repair auto turns the 12 back and closes the
+	// hole with 2 triangles; the game's check passes, built twice the same,
+	// every triangle culled.
+	RldMk_TestOptions(&opt);
+	opt.repair = 1;
+	{
+		const double kartLo[3] = {-0.45, 0.10, -0.90};
+		const double kartHi[3] = {0.45, 0.35, 0.90};
+		const double driverLo[3] = {-0.25, 0.40, -0.40};
+		const double driverHi[3] = {0.25, 1.00, 0.10};
+		const double wheelLo[3] = {0.15, 0.50, 0.30};
+		const double wheelHi[3] = {-0.15, 0.60, 0.36};
+
+		mesh->vertexCount = 0;
+		mesh->faceCount = 0;
+		RldMk_TestBox(mesh, kartLo, kartHi, 1u, 0u, 0, -1);
+		RldMk_TestBox(mesh, driverLo, driverHi, 1u, 10u, 0, 2);
+		RldMk_TestBox(mesh, wheelLo, wheelHi, 1u, 20u, 0, -1);
+	}
+	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && b.repaired && (b.repair[3] == 12u) && (b.repair[4] == 1u) && (b.repair[5] == 2u) &&
+	     (b.repair[8] == 0u) && (b.openEdges == 0u) && (RldChar_CheckModel(b.cmdl, b.cmdlSize, &first, NULL, NULL, NULL) == RLDCHAR_VERDICT_OK) &&
+	     RldMk_Said("model-repaired");
+	if (ok)
+	{
+		RldMk_TestCull(&b, &culled, &both);
+	}
+	RldMk_Test(ok && (both == 0u) && (culled == b.drawCount), "--repair auto: a part turned inside out turned back, a small hole closed, the game's check passes",
+	           "built %d, turned %u, holes %u (%u triangles), open edges %u -> %u, both sides %u, said: %s", ok, b.repair[3], b.repair[4], b.repair[5],
+	           b.repair[7], b.repair[8], both, s_rldMkCodes);
+	ok = ok && RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again) && (again.cmdlSize == b.cmdlSize) && (memcmp(again.cmdl, b.cmdl, b.cmdlSize) == 0);
+	RldMk_Test(ok, "--repair auto built twice: the same bytes", "differ");
+	RldMk_FreeBuild(&again);
+	RldMk_FreePly(&plyAgain);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+
+	// An open part: the driver of 90 triangles open at the top (12 edges, more
+	// than the 8 a hole may have): it stays open and is drawn from both sides;
+	// with --open-parts one-sided it is culled.
+	RldMk_TestStandard(mesh, 3u, 0, 0.0, 2);
+	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && (b.repair[6] != 0u) && (b.openTwoSided == 90u);
+	if (ok)
+	{
+		RldMk_TestCull(&b, &culled, &both);
+	}
+	RldMk_Test(ok && (both == 90u) && (culled == 24u), "--repair auto: an open part is drawn from both sides, +0 triangles",
+	           "built %d, open two-sided %u, drawn culled %u, both %u", ok, b.openTwoSided, culled, both);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+	opt.openOneSided = 1;
+	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && (b.openTwoSided == 0u);
+	if (ok)
+	{
+		RldMk_TestCull(&b, &culled, &both);
+	}
+	RldMk_Test(ok && (both == 0u), "--open-parts one-sided: the open part is culled", "built %d, both %u", ok, both);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+
+	// --repair off: the open part is found by its topology alone, the same 90.
+	opt.openOneSided = 0;
+	opt.repair = 0;
+	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && !b.repaired && (b.openTwoSided == 90u);
+	if (ok)
+	{
+		RldMk_TestCull(&b, &culled, &both);
+	}
+	RldMk_Test(ok && (both == 90u) && (culled == 24u), "--repair off: the open part is drawn from both sides as well", "built %d, open two-sided %u, both %u",
+	           ok, b.openTwoSided, both);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+	opt.repair = 1;
+
+	// The models of the golden hashes need no repair: --repair auto gives the
+	// bytes of --repair off for all five.
+	for (k = 0; k < 5; k++)
+	{
+		RldMk_TestOptions(&opt);
+		opt.sizePercent = (k == 1) ? 120u : 100u;
+		opt.fit = (k == 2);
+		opt.reduce = (k == 3);
+		opt.noWheels = (k == 4);
+		RldMk_TestStandard(mesh, (k == 3) ? 9u : 2u, 0, 0.0, -1);
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+		opt.repair = 1;
+		ok = ok && RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again) && again.repaired && (again.cmdlSize == b.cmdlSize) &&
+		     (memcmp(again.cmdl, b.cmdl, b.cmdlSize) == 0);
+		if (!ok && all)
+		{
+			all = 0;
+			RldMk_Test(0, "--repair auto on the golden models: the bytes of --repair off", "golden model %d differs", k);
+		}
+		RldMk_FreeBuild(&again);
+		RldMk_FreePly(&plyAgain);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+	}
+	if (all)
+	{
+		RldMk_Test(1, "--repair auto on the golden models: the bytes of --repair off (all five)", "");
+	}
+}
+
+// --- --remesh ------------------------------------------------------------------------
+
+static void RldMk_SelfTestRemesh(struct RldMkTestMesh *mesh)
+{
+	struct RldMkOptions opt;
+	struct RldMkPly ply;
+	struct RldMkPly plyAgain;
+	struct RldMkBuild b;
+	struct RldMkBuild again;
+	struct RldCharFinding first;
+	int ok;
+	int same;
+
+	s_rldMkTestFailed += RldRem_SelfTest(RldMk_TestReport);
+
+	// No hull below 40 triangles: a hull of 30 source triangles would get 33
+	// of 797 in proportion and is raised to 40, the largest hull gives them.
+	{
+		const u32 source[RLDMK_GROUPS] = {12u, 30u, 900u};
+		const u32 counts[RLDMK_GROUPS] = {12u, RLDMK_REMESH_SHARE_MIN, 900u};
+		u32 targets[RLDMK_GROUPS];
+
+		ok = RldMk_ReduceTargets(counts, RLDMK_REDUCE_TARGET, targets) && (targets[1] == 33u) && RldMk_RemeshFloor(source, targets);
+		RldMk_Test(ok && (targets[0] == 12u) && (targets[1] == 40u) && (targets[2] == 745u), "--remesh targets: no hull below 40 (12/30/900 -> 12/40/745)",
+		           "%u %u %u", targets[0], targets[1], targets[2]);
+	}
+
+	// The standard model with a driver of 90 triangles, open at the top:
+	// --remesh on makes it a closed hull and reduces it; kart and steering
+	// wheel (12 triangles each) stay as they are. The game's check passes, no
+	// open edge is left, built twice the same.
+	RldMk_TestOptions(&opt);
+	opt.reduce = 1;
+	opt.remesh = 1;
+	RldMk_TestStandard(mesh, 3u, 0, 0.0, 2);
+	memset(&plyAgain, 0, sizeof(plyAgain));
+	memset(&again, 0, sizeof(again));
+	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && b.remeshed && (b.remeshFrom == 114u) && (b.remeshOpenBefore != 0u) && (b.remeshHull > 1000u) &&
+	     (b.openEdges == 0u) && (b.drawCount <= RLDMK_REDUCE_TARGET) && (b.groupTriangles[RLDMK_GROUP_KART] == 12u) &&
+	     (b.groupTriangles[RLDMK_GROUP_WHEEL] == 12u) && (RldChar_CheckModel(b.cmdl, b.cmdlSize, &first, NULL, NULL, NULL) == RLDCHAR_VERDICT_OK) &&
+	     RldMk_Said("model-remeshed");
+	RldMk_Test(ok, "--remesh on: an open driver becomes a closed hull, reduced, the game's check passes, no open edge",
+	           "built %d, %u -> %u -> %u triangles, open edges %u -> %u, kart %u, wheel %u, said: %s", ok, b.remeshFrom, b.remeshHull, b.drawCount,
+	           b.remeshOpenBefore, b.openEdges, b.groupTriangles[RLDMK_GROUP_KART], b.groupTriangles[RLDMK_GROUP_WHEEL], s_rldMkCodes);
+	same = ok && RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again) && (again.cmdlSize == b.cmdlSize) && (memcmp(again.cmdl, b.cmdl, b.cmdlSize) == 0);
+	RldMk_Test(same, "--remesh on built twice: the same bytes", "differ");
+	RldMk_FreeBuild(&again);
+	RldMk_FreePly(&plyAgain);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+
+	// Without --remesh the same model is built as modeled, open edges and all.
+	opt.remesh = 0;
+	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && !b.remeshed && (b.openEdges != 0u) && !RldMk_Said("model-remeshed");
+	RldMk_Test(ok, "--remesh off (the default): nothing remeshed", "built %d, said: %s", ok, s_rldMkCodes);
 	RldMk_FreeBuild(&b);
 	RldMk_FreePly(&ply);
 }
@@ -11301,6 +13997,11 @@ static int RldChar_SelfTest(void)
 	RldMk_SelfTestFit(mesh);
 	RldMk_SelfTestReduce(mesh);
 	RldMk_SelfTestPreview(mesh);
+	RldMk_SelfTestDiagnose(mesh);
+	RldMk_SelfTestVehicle(mesh);
+	RldMk_SelfTestRemesh(mesh);
+	RldMk_SelfTestRepair(mesh);
+	s_rldMkTestFailed += RldDum_SelfTest(RldMk_TestReport);
 	RldMk_SelfTestPng();
 	RldMk_SelfTestVoices();
 	{
