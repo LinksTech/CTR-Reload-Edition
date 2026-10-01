@@ -17,7 +17,7 @@
 // RECTMENU_ProcessState). The box is the same, so the same widescreen
 // row applies to it ("menu-cup-select", native_uidecl.c).
 // MM_CupSelect_Init and the driver select before it stay retail
-// (MM_Characters.c:657-663).
+// (MM_Characters.c:677-683).
 //
 // WHAT IS DIFFERENT, and only that (marked [C1] to [C6] in the code):
 //

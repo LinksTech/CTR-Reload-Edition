@@ -31,7 +31,7 @@
 // places ask the same function, they cannot drift apart.
 
 // The drop shadow of the frame (RECTMENU_DrawInnerRect type 9,
-// MM_Characters.c:1184) sticks out on the right and at the bottom: measured 77..435 x 30..128
+// MM_Characters.c:1214) sticks out on the right and at the bottom: measured 77..435 x 30..128
 // for the window 77..423 x 30..122. It belongs to the
 // element, also for the edge distance.
 #define NATIVE_MENU_WINDOW_SHADOW_X 12
@@ -52,7 +52,7 @@
 // Three things must hold: a player menu is in the picture, the driver select
 // is the active menu, and the push buffer is not the full canvas. The
 // third is the sign the driver select sets itself: HideDrivers gives every
-// push buffer the whole canvas again through PushBuffer_Init (MM_Characters.c:575).
+// push buffer the whole canvas again through PushBuffer_Init (MM_Characters.c:586).
 int NativeMenuWindow_Active(int index)
 {
 	struct GameTracker *gGT;
@@ -93,7 +93,7 @@ int NativeMenuWindow_Active(int index)
 // The frame including shadow, in the 512 space, where it stands in this frame - so
 // with the offset of the fly-in and fly-out and WITHOUT the clamp at column 512 that
 // only the 3D rectangle gets (MM_Characters.c:215-259). The frame is drawn
-// unclamped (MM_Characters.c:1146-1156), and everything follows
+// unclamped (MM_Characters.c:1176-1186), and everything follows
 // it.
 int NativeMenuWindow_Box(int index, int *outBox)
 {
@@ -159,7 +159,7 @@ int NativeMenuWindow_FrameRegion(int index, int *outRegion)
 	return 1;
 }
 
-// Where the name of the driver stands: the same calculation as MM_Characters.c:1070-1101,
+// Where the name of the driver stands: the same calculation as MM_Characters.c:1107-1138,
 // and the width from the font itself. Exact, not generous: in 2P
 // both names stand side by side at the same height, and in 4P a name can be wider
 // than its window (CRASH BANDICOOT in FONT_SMALL, computed 15 x 13 = 195
@@ -176,6 +176,7 @@ int NativeMenuWindow_NameBand(int index, int *outBand)
 	int centreX;
 	int width;
 	int characterID;
+	const char *customName;
 
 	if (!NativeMenuWindow_Box(index, box) || (outBand == NULL))
 	{
@@ -202,7 +203,17 @@ int NativeMenuWindow_NameBand(int index, int *outBand)
 		return 0;
 	}
 
-	width = DecalFont_GetLineWidth(sdata->lngStrings[data.MetaDataCharacters[characterID].name_LNG_long], (s16)fontType);
+	// The custom grid shows the name of a roster entry in this window: measure that one.
+	customName = MM_NativeCharGrid_SeatName(index);
+	if (customName != NULL)
+	{
+		width = DecalFont_GetLineWidth((char *)customName, (s16)fontType);
+	}
+	else
+	{
+		width = DecalFont_GetLineWidth(sdata->lngStrings[data.MetaDataCharacters[characterID].name_LNG_long], (s16)fontType);
+	}
+
 	centreX = box[0] + (int)((u32)D230.characterSelectWindowWidth >> 1);
 
 	outBand[0] = centreX - (width / 2) - NATIVE_MENU_WINDOW_REACH;

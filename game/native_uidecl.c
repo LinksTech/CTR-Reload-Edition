@@ -7,7 +7,7 @@ int DebugMenu_IsOpen(void);
 
 // Which player menu screen is the active menu? The game says it itself:
 // sdata->ptrActiveMenu points at the box whose procedure draws the screen
-// (MM_TrackSelect.c:453, MM_Characters.c:660/666). In addition a
+// (MM_TrackSelect.c:453, MM_Characters.c:680/686). In addition a
 // menu must be in the picture - otherwise the pointer is a leftover.
 internal int NativeUiDecl_ActiveMenuIs(const struct RectMenu *menu)
 {
@@ -379,7 +379,7 @@ global_variable const struct NativeUiDecl g_nativeUiDecls[] = {
     //
     // With three players the icon grid stands on the left (26..288, edge distance 26)
     // and SELECT CHARACTER in two lines above it, centred on the grid
-    // (MM_Characters.c:688-696, middle 0x9c = 156; measured 80..231 x 20..53).
+    // (MM_Characters.c:708-716, middle 0x9c = 156; measured 80..231 x 20..53).
     // Taken on its own the title would be centred by the edge rule (80 points from
     // the edge) and would wander 203 columns away from the grid at 43:18. As part of the
     // block title + grid (26..288) it holds the left edge together with it.

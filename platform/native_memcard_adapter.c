@@ -9,7 +9,8 @@ static u8 s_memcardNativeInfoSeen[2];
 // Roo, Papu, Joe, Pinstripe, Fake Crash (UNLOCK_CHARACTERS,
 // namespace_Main.h:232-239, bits 5..11 in gameProgress.unlocks[0]) - can be
 // chosen from the start. The character select reads the bits directly
-// (MM_Characters.c:127, :394, :542, :998, :1123, :702), so they are set in the
+// (MM_Characters.c:127, :402, :550, :722; the icon loops :1036 and :1150 via
+// MM_NativeCharGrid_TileDrawn -> MM_NativeCharGrid.c:602), so they are set in the
 // game: NativeUnlock_ApplyToGame sets them in every menu frame
 // (native_menuscreen.c, NativeMenuLock_Tick). Adventure chooses in the
 // garage from a fixed list 0..7 (D233.c:31) and does not read the bits -

@@ -3312,7 +3312,7 @@ void NativeGpu_ApplyUIMapping(void)
 	// the shadow of the one lies in the frame of the other.
 	//
 	// THE SHADOW ONLY COUNTS IN SLOT 3. There the character select draws frame
-	// and shadow (RECTMENU_DrawInnerRect type 9, MM_Characters.c:1184); everything
+	// and shadow (RECTMENU_DrawInnerRect type 9, MM_Characters.c:1214); everything
 	// else lies in slot 0. Measured in 2P: the icon grid begins at
 	// y 125, the shadow strip of the window above reaches to 128 - with the
 	// shadow for all slots, the top edges of the cursor frames around

@@ -18,7 +18,7 @@
 // RECTMENU_ProcessState). The box carries DISABLE_INPUT_ALLOW_FUNCPTRS
 // (D230.c:145-151): the proc IS the whole screen. MM_TrackSelect_Init
 // and everything before it stays retail - the driver select calls it as always
-// (MM_Characters.c:666-667).
+// (MM_Characters.c:686-687).
 //
 // SHARED, NOT COPIED: the constants MM_TRACK_SELECT_* and
 // MM_TRACK_VIDEO_* from MM_TrackSelect.c. That file stands directly before this one

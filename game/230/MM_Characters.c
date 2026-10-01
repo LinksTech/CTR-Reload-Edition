@@ -305,6 +305,9 @@ void MM_Characters_DrawWindows(b32 boolShowDrivers)
 		// set modelPtr in Instance
 		driverInst->model = model;
 
+		// The custom grid shows the model and menu pose of the roster entry on the preview tile.
+		MM_NativeCharGrid_PreviewPose(playerIndex, driverInst);
+
 		// CameraDC, freecam mode
 		gGT->cameraDC[playerIndex].cameraMode = CAMERA_MODE_FREECAM;
 
@@ -319,11 +322,12 @@ void MM_Characters_DrawWindows(b32 boolShowDrivers)
 		// If no transition between players
 		if (*moveTimer == 0)
 		{
-			// compare to character ID
-			if (*currCharacterID != data.characterIDs[playerIndex])
+			// compare to character ID (the custom grid compares tiles, two tiles can share a template)
+			if (MM_NativeCharGrid_PreviewMoveWanted(playerIndex))
 			{
 				*moveTimer = D230.characterSelectDriverModel.moveFrames << 1;
 				D230.characterSelectPlayerState.desiredCharacterID[playerIndex] = data.characterIDs[playerIndex];
+				MM_NativeCharGrid_PreviewDesire(playerIndex);
 			}
 		}
 
@@ -341,6 +345,10 @@ void MM_Characters_DrawWindows(b32 boolShowDrivers)
 			{
 				// make driver fly off screen
 				*currCharacterID = D230.characterSelectPlayerState.desiredCharacterID[playerIndex];
+
+				// The custom grid moves its preview tile along with the ID.
+				MM_NativeCharGrid_PreviewArrive(playerIndex);
+
 				s32 moveFrameScale = RaceFlag_MoveModels((int)nextMoveTimer, (int)D230.characterSelectDriverModel.moveFrames);
 
 				// direction moving
@@ -562,6 +570,9 @@ void MM_Characters_RestoreIDs(void)
 		D230.characterSelectPlayerState.angle[playerIndex] = (playerIndex * MM_CHARACTER_SELECT_ANGLE_STEP) + MM_CHARACTER_SELECT_ANGLE_OFFSET;
 	}
 
+	// The custom grid places cursor, scroll, preview tile and tile transitions on entry.
+	MM_NativeCharGrid_Enter();
+
 	MM_Characters_DrawWindows(0);
 	return;
 }
@@ -607,10 +618,16 @@ void MM_Characters_MenuProc(struct RectMenu *unused)
 		iconPerPlayer[playerIndex] = D230.characterMenuID[data.characterIDs[playerIndex]];
 	}
 
+	// In the custom grid the cursor can stand on a tile past the retail icons.
+	iconPerPlayer[0] = MM_NativeCharGrid_CursorTile(iconPerPlayer[0]);
+
 	// if menu is not in focus
 	if (D230.characterSelectMenuState != IN_MENU)
 	{
 		MM_TransitionInOut(D230.characterSelectTransitionMeta, (int)D230.characterSelectTransitionFrame, MM_CHARACTER_SELECT_TRANSITION_STEP);
+
+		// The custom tiles fly in and out on their own transitions, without a second swoosh.
+		MM_NativeCharGrid_Transition((int)D230.characterSelectTransitionFrame, MM_CHARACTER_SELECT_TRANSITION_STEP);
 	}
 
 	MM_Characters_SetMenuLayout();
@@ -647,6 +664,9 @@ void MM_Characters_MenuProc(struct RectMenu *unused)
 			// if returning to main menu
 			if (D230.characterSelectExitsForward == 0)
 			{
+				// The way back to the title drops the custom pick.
+				MM_NativeCharGrid_LeaveBackward();
+
 				MM_JumpTo_Title_Returning();
 				MM_Characters_HideDrivers();
 				return;
@@ -745,7 +765,8 @@ dontDrawSelectCharacter:
 		Color playerColor;
 		MM_Characters_AnimateColors((u8 *)&playerColor, playerIndex, (int)(s16)(sdata->characterSelectFlags & playerSelectFlag));
 
-		struct CharacterSelectMeta *preInputCharacterMeta = &D230.activeCharacterSelectMeta[currentIcon];
+		// tile before the input: number and frame stand at its position (custom tiles never index the retail tables)
+		s16 preInputIcon = currentIcon;
 		u32 button = sdata->buttonTapPerPlayer[playerIndex];
 
 		if ((D230.characterSelectMenuState == IN_MENU) &&
@@ -811,82 +832,96 @@ dontDrawSelectCharacter:
 						D230.characterSelectPlayerState.modelMoveDir[playerIndex] = MM_CHARACTER_SELECT_MODEL_MOVE_PREV;
 					}
 
-					previousCandidateIcon = candidateIcon;
-					do
+					// The custom grid moves along its own rows, without the retail detour around icons taken by other players (1P only).
+					if (MM_NativeCharGrid_Active())
 					{
-						candidateIcon = MM_Characters_GetNextDriver(direction, previousCandidateIcon);
-						alternateIcon = candidateIcon;
+						candidateIcon = MM_NativeCharGrid_Next(direction, currentIcon);
 
-						if (candidateIcon == previousCandidateIcon)
+						if (candidateIcon != currentIcon)
 						{
-							hitNavigationDeadEnd = 1;
-							nextIcon = MM_Characters_GetNextDriver(direction, (int)(s16)currentIcon);
-							nextIconCopy = (int)nextIcon;
-							candidateIcon = MM_Characters_GetNextDriver(D230.characterSelectFallbackDirection1[direction], nextIconCopy);
-							intermediateIcon = (int)(s16)candidateIcon;
+							// Play sound
+							OtherFX_Play(0, 1);
+						}
+					}
+					else
+					{
+						previousCandidateIcon = candidateIcon;
+						do
+						{
+							candidateIcon = MM_Characters_GetNextDriver(direction, previousCandidateIcon);
+							alternateIcon = candidateIcon;
 
-							if ((((intermediateIcon == alternateIcon) || (nextIconCopy == alternateIcon)) || (nextIconCopy == intermediateIcon)) ||
-							    MM_Characters_boolIsInvalid(iconPerPlayer, intermediateIcon, playerIndex))
+							if (candidateIcon == previousCandidateIcon)
 							{
-								nextIcon = MM_Characters_GetNextDriver(D230.characterSelectFallbackDirection1[direction], (int)(s16)currentIcon);
-								intermediateIcon = (int)nextIcon;
-								candidateIcon = MM_Characters_GetNextDriver(direction, intermediateIcon);
-								alternateIcon = (int)(s16)candidateIcon;
+								hitNavigationDeadEnd = 1;
+								nextIcon = MM_Characters_GetNextDriver(direction, (int)(s16)currentIcon);
+								nextIconCopy = (int)nextIcon;
+								candidateIcon = MM_Characters_GetNextDriver(D230.characterSelectFallbackDirection1[direction], nextIconCopy);
+								intermediateIcon = (int)(s16)candidateIcon;
 
-								if (((alternateIcon == previousCandidateIcon) || (intermediateIcon == previousCandidateIcon)) ||
-								    ((intermediateIcon == alternateIcon || MM_Characters_boolIsInvalid(iconPerPlayer, alternateIcon, playerIndex))))
+								if ((((intermediateIcon == alternateIcon) || (nextIconCopy == alternateIcon)) || (nextIconCopy == intermediateIcon)) ||
+								    MM_Characters_boolIsInvalid(iconPerPlayer, intermediateIcon, playerIndex))
 								{
-									nextIcon = MM_Characters_GetNextDriver(direction, (int)(s16)currentIcon);
+									nextIcon = MM_Characters_GetNextDriver(D230.characterSelectFallbackDirection1[direction], (int)(s16)currentIcon);
 									intermediateIcon = (int)nextIcon;
-									candidateIcon = MM_Characters_GetNextDriver(D230.characterSelectFallbackDirection2[direction], intermediateIcon);
+									candidateIcon = MM_Characters_GetNextDriver(direction, intermediateIcon);
 									alternateIcon = (int)(s16)candidateIcon;
 
 									if (((alternateIcon == previousCandidateIcon) || (intermediateIcon == previousCandidateIcon)) ||
 									    ((intermediateIcon == alternateIcon || MM_Characters_boolIsInvalid(iconPerPlayer, alternateIcon, playerIndex))))
 									{
-										nextIcon = MM_Characters_GetNextDriver(D230.characterSelectFallbackDirection2[direction], (int)(s16)currentIcon);
+										nextIcon = MM_Characters_GetNextDriver(direction, (int)(s16)currentIcon);
 										intermediateIcon = (int)nextIcon;
-										candidateIcon = MM_Characters_GetNextDriver(direction, intermediateIcon);
+										candidateIcon = MM_Characters_GetNextDriver(D230.characterSelectFallbackDirection2[direction], intermediateIcon);
 										alternateIcon = (int)(s16)candidateIcon;
 
-										if ((((alternateIcon == previousCandidateIcon) || (intermediateIcon == previousCandidateIcon)) ||
-										     (intermediateIcon == alternateIcon)) ||
-										    MM_Characters_boolIsInvalid(iconPerPlayer, alternateIcon, playerIndex))
+										if (((alternateIcon == previousCandidateIcon) || (intermediateIcon == previousCandidateIcon)) ||
+										    ((intermediateIcon == alternateIcon || MM_Characters_boolIsInvalid(iconPerPlayer, alternateIcon, playerIndex))))
 										{
-											candidateIcon = (u32)currentIcon;
+											nextIcon = MM_Characters_GetNextDriver(D230.characterSelectFallbackDirection2[direction], (int)(s16)currentIcon);
+											intermediateIcon = (int)nextIcon;
+											candidateIcon = MM_Characters_GetNextDriver(direction, intermediateIcon);
+											alternateIcon = (int)(s16)candidateIcon;
+
+											if ((((alternateIcon == previousCandidateIcon) || (intermediateIcon == previousCandidateIcon)) ||
+											     (intermediateIcon == alternateIcon)) ||
+											    MM_Characters_boolIsInvalid(iconPerPlayer, alternateIcon, playerIndex))
+											{
+												candidateIcon = (u32)currentIcon;
+											}
 										}
 									}
 								}
 							}
-						}
-						candidateInUseByOtherPlayer = false;
-
-						for (s32 otherPlayerIndex = 0; otherPlayerIndex < gGT->numPlyrNextGame; otherPlayerIndex++)
-						{
-							if ((otherPlayerIndex != playerIndex) && ((s16)candidateIcon == iconPerPlayer[otherPlayerIndex]))
-							{
-								candidateInUseByOtherPlayer = true;
-								break;
-							}
-						}
-
-						if (previousCandidateIcon << 0x10 != candidateIcon << 0x10)
-						{
-							// Play sound
-							OtherFX_Play(0, 1);
-						}
-						if (hitNavigationDeadEnd != 0)
-						{
-							deadEndCandidateAvailable = !candidateInUseByOtherPlayer;
 							candidateInUseByOtherPlayer = false;
-							if (deadEndCandidateAvailable)
+
+							for (s32 otherPlayerIndex = 0; otherPlayerIndex < gGT->numPlyrNextGame; otherPlayerIndex++)
 							{
-								break;
+								if ((otherPlayerIndex != playerIndex) && ((s16)candidateIcon == iconPerPlayer[otherPlayerIndex]))
+								{
+									candidateInUseByOtherPlayer = true;
+									break;
+								}
 							}
-							candidateIcon = (u32)currentIcon;
-						}
-						previousCandidateIcon = candidateIcon;
-					} while (candidateInUseByOtherPlayer);
+
+							if (previousCandidateIcon << 0x10 != candidateIcon << 0x10)
+							{
+								// Play sound
+								OtherFX_Play(0, 1);
+							}
+							if (hitNavigationDeadEnd != 0)
+							{
+								deadEndCandidateAvailable = !candidateInUseByOtherPlayer;
+								candidateInUseByOtherPlayer = false;
+								if (deadEndCandidateAvailable)
+								{
+									break;
+								}
+								candidateIcon = (u32)currentIcon;
+							}
+							previousCandidateIcon = candidateIcon;
+						} while (candidateInUseByOtherPlayer);
+					}
 				}
 				currentIcon = (u16)candidateIcon;
 
@@ -899,23 +934,34 @@ dontDrawSelectCharacter:
 					currentIcon = (u16)candidateIcon;
 				}
 
+				// The custom grid scrolls so that the row of the cursor stays visible.
+				MM_NativeCharGrid_Follow(currentIcon);
+
 				// If this player pressed Cross or Circle
 				if (((sdata->buttonTapPerPlayer)[playerIndex] & MM_CHARACTER_SELECT_INPUT_CONFIRM) != 0)
 				{
-					// this player has now selected a character
-					sdata->characterSelectFlags = sdata->characterSelectFlags | (u16)(1 << playerIndex);
-
-					u8 numPlyrNextGame = gGT->numPlyrNextGame;
-
-					// Play sound
-					OtherFX_Play(1, 1);
-
-					// if all players have selected their characters
-					if ((int)(s16)sdata->characterSelectFlags == (1 << numPlyrNextGame) - 1)
+					// A placeholder tile of the custom grid cannot be chosen: refusal sound, no pick.
+					if (!MM_NativeCharGrid_Selectable(currentIcon))
 					{
-						// exit toward cup or track selection
-						D230.characterSelectExitsForward = 1;
-						D230.characterSelectMenuState = EXITING_MENU;
+						OtherFX_Play(5, 1);
+					}
+					else
+					{
+						// this player has now selected a character
+						sdata->characterSelectFlags = sdata->characterSelectFlags | (u16)(1 << playerIndex);
+
+						u8 numPlyrNextGame = gGT->numPlyrNextGame;
+
+						// Play sound
+						OtherFX_Play(1, 1);
+
+						// if all players have selected their characters
+						if ((int)(s16)sdata->characterSelectFlags == (1 << numPlyrNextGame) - 1)
+						{
+							// exit toward cup or track selection
+							D230.characterSelectExitsForward = 1;
+							D230.characterSelectMenuState = EXITING_MENU;
+						}
 					}
 				}
 
@@ -953,8 +999,8 @@ dontDrawSelectCharacter:
 
 		iconPerPlayer[playerIndex] = currentIcon;
 
-		// transition of each icon
-		struct TransitionMeta *currentIconTransition = &D230.characterSelectTransitionMeta[currentIcon];
+		// transition of each icon (the custom grid answers for its own tiles)
+		struct TransitionMeta *currentIconTransition = MM_NativeCharGrid_TileTransition(currentIcon);
 
 		// if player has not selected a character
 		b32 playerSelectedAfterInput = ((sdata->characterSelectFlags >> playerIndex) & 1U) != 0;
@@ -963,8 +1009,8 @@ dontDrawSelectCharacter:
 		{
 			// draw string
 			// "1", "2", "3", "4", above the character icon
-			DecalFont_DrawLine(D230.playerNumberStrings[playerIndex], currentIconTransition->currX + (u32)preInputCharacterMeta->posX - 6,
-			                   currentIconTransition->currY + (u32)preInputCharacterMeta->posY - 3, FONT_BIG, WHITE);
+			DecalFont_DrawLine(D230.playerNumberStrings[playerIndex], currentIconTransition->currX + (u32)MM_NativeCharGrid_TileX(preInputIcon) - 6,
+			                   currentIconTransition->currY + (u32)MM_NativeCharGrid_TileY(preInputIcon) - 3, FONT_BIG, WHITE);
 			outlineColor = playerColor;
 		}
 		else
@@ -972,8 +1018,8 @@ dontDrawSelectCharacter:
 			outlineColor = D230.characterSelect_Outline;
 		}
 
-		drawRect.x = currentIconTransition->currX + preInputCharacterMeta->posX;
-		drawRect.y = currentIconTransition->currY + preInputCharacterMeta->posY;
+		drawRect.x = currentIconTransition->currX + MM_NativeCharGrid_TileX(preInputIcon);
+		drawRect.y = currentIconTransition->currY + MM_NativeCharGrid_TileY(preInputIcon);
 		drawRect.w = MM_CHARACTER_SELECT_ICON_RECT_W;
 		drawRect.h = MM_CHARACTER_SELECT_ICON_RECT_H;
 
@@ -982,20 +1028,12 @@ dontDrawSelectCharacter:
 
 	MM_Characters_PreventOverlap();
 
-	struct CharacterSelectMeta *iconDrawMeta = D230.activeCharacterSelectMeta;
-
-	// loop through character icons
-	for (s32 iconIndex = 0; iconIndex < MM_CHARACTER_SELECT_ICON_COUNT; iconIndex++)
+	// loop through character icons (the custom grid adds its tiles after the retail icons, each where its row is scrolled to)
+	for (s32 iconIndex = 0; iconIndex < MM_NativeCharGrid_TileCount(); iconIndex++)
 	{
-		s16 unlockRequirement = iconDrawMeta->unlockFlags;
-		if (
-		    // If Icon is unlocked by default,
-		    (unlockRequirement == MM_CHARACTER_UNLOCK_ALWAYS) ||
-
-		    // if character is unlocked
-		    // from the global unlock bitfield
-		    // also the variable written by cheats
-		    CHECK_ADV_BIT(sdata->gameProgress.unlocks, unlockRequirement))
+		// If Icon is unlocked by default, or unlocked
+		// from the global unlock bitfield (also written by cheats)
+		if (MM_NativeCharGrid_TileDrawn(iconIndex))
 		{
 			Color iconColor = D230.characterSelect_NeutralColor;
 
@@ -1011,33 +1049,31 @@ dontDrawSelectCharacter:
 				}
 			}
 
-			struct TransitionMeta *iconTransition = &D230.characterSelectTransitionMeta[iconIndex];
+			struct TransitionMeta *iconTransition = MM_NativeCharGrid_TileTransition(iconIndex);
 
-			RECTMENU_DrawPolyGT4(gGT->ptrIcons[data.MetaDataCharacters[iconDrawMeta->characterID].iconID],
-			                     iconTransition->currX + iconDrawMeta->posX + MM_CHARACTER_SELECT_ICON_DECAL_OFFSET_X,
-			                     iconTransition->currY + iconDrawMeta->posY + MM_CHARACTER_SELECT_ICON_DECAL_OFFSET_Y,
+			RECTMENU_DrawPolyGT4(gGT->ptrIcons[data.MetaDataCharacters[MM_NativeCharGrid_TileCharacterID(iconIndex)].iconID],
+			                     iconTransition->currX + MM_NativeCharGrid_TileX(iconIndex) + MM_CHARACTER_SELECT_ICON_DECAL_OFFSET_X,
+			                     iconTransition->currY + MM_NativeCharGrid_TileY(iconIndex) + MM_CHARACTER_SELECT_ICON_DECAL_OFFSET_Y,
 
 			                     &gGT->backBuffer->primMem, gGT->pushBuffer_UI.ptrOT,
 
 			                     ColorCode_GetPacked(&iconColor), ColorCode_GetPacked(&iconColor), ColorCode_GetPacked(&iconColor),
 			                     ColorCode_GetPacked(&iconColor), TRANS_50_DECAL, FP(1.0));
 		}
-
-		iconDrawMeta++;
 	}
 
-	// reset
-	struct CharacterSelectMeta *activeCharacterSelectMeta = D230.activeCharacterSelectMeta;
-
+	// write the character IDs (a custom tile writes its template)
 	for (s32 playerIndex = 0; playerIndex < MM_CHARACTER_SELECT_MAX_PLAYERS; playerIndex++)
 	{
-		data.characterIDs[playerIndex] = activeCharacterSelectMeta[(int)iconPerPlayer[playerIndex]].characterID;
+		data.characterIDs[playerIndex] = MM_NativeCharGrid_TileCharacterID(iconPerPlayer[playerIndex]);
 	}
+
+	// The custom grid remembers the roster entry under the cursor of player 1 as the pick (none on a retail tile).
+	MM_NativeCharGrid_WritePick(iconPerPlayer[0]);
 
 	for (s32 playerIndex = 0; playerIndex < gGT->numPlyrNextGame; playerIndex++)
 	{
 		s16 playerIcon = iconPerPlayer[playerIndex];
-		activeCharacterSelectMeta = &D230.activeCharacterSelectMeta[playerIcon];
 		b32 playerSelected = (((int)(s16)sdata->characterSelectFlags >> playerIndex) & 1U) != 0;
 
 		// if player has not selected a character
@@ -1054,18 +1090,19 @@ dontDrawSelectCharacter:
 			animatedColor.g = (u8)((int)((u32)animatedColor.g << 2) / 5);
 			animatedColor.b = (u8)((int)((u32)animatedColor.b << 2) / 5);
 
-			struct TransitionMeta *selectedIconTransition = &D230.characterSelectTransitionMeta[playerIcon];
+			// position and transition of the tile (the custom grid answers for its own tiles)
+			struct TransitionMeta *selectedIconTransition = MM_NativeCharGrid_TileTransition(playerIcon);
 
-			drawRect.x = selectedIconTransition->currX + activeCharacterSelectMeta->posX + MM_CHARACTER_SELECT_HIGHLIGHT_OFFSET_X;
-			drawRect.y = selectedIconTransition->currY + activeCharacterSelectMeta->posY + MM_CHARACTER_SELECT_HIGHLIGHT_OFFSET_Y;
+			drawRect.x = selectedIconTransition->currX + MM_NativeCharGrid_TileX(playerIcon) + MM_CHARACTER_SELECT_HIGHLIGHT_OFFSET_X;
+			drawRect.y = selectedIconTransition->currY + MM_NativeCharGrid_TileY(playerIcon) + MM_CHARACTER_SELECT_HIGHLIGHT_OFFSET_Y;
 			drawRect.w = MM_CHARACTER_SELECT_HIGHLIGHT_W;
 			drawRect.h = MM_CHARACTER_SELECT_HIGHLIGHT_H;
 
 			// this draws the flashing blue square that appears when you highlight a character in the character select screen
 			CTR_Box_DrawSolidBox(&drawRect, animatedColor, ot);
 		}
-		if ((D230.characterSelectModelMoveTimer[playerIndex] == 0) &&
-		    (D230.characterSelectPlayerState.currentCharacterID[playerIndex] == data.characterIDs[playerIndex]))
+		// The name shows once the preview arrived; the custom grid compares tiles and shows the roster name.
+		if ((D230.characterSelectModelMoveTimer[playerIndex] == 0) && MM_NativeCharGrid_NameShown(playerIndex))
 		{
 			// get number of players
 			u8 numPlyrNextGame = gGT->numPlyrNextGame;
@@ -1096,7 +1133,7 @@ dontDrawSelectCharacter:
 			}
 
 			// draw string
-			DecalFont_DrawLine(sdata->lngStrings[data.MetaDataCharacters[activeCharacterSelectMeta->characterID].name_LNG_long],
+			DecalFont_DrawLine(MM_NativeCharGrid_TileName(playerIcon),
 			                   (int)driverWindowTransition->currX + windowPos->x + (int)((u32)D230.characterSelectWindowWidth >> 1), (int)nameY, fontType,
 			                   (JUSTIFY_CENTER | ORANGE));
 		}
@@ -1105,27 +1142,17 @@ dontDrawSelectCharacter:
 		D230.characterSelectPlayerState.angle[playerIndex] += MM_CHARACTER_SELECT_SPIN_STEP;
 	}
 
-	// reset
-	activeCharacterSelectMeta = D230.activeCharacterSelectMeta;
-
-	// loop through all icons
-	for (s32 iconIndex = 0; iconIndex < MM_CHARACTER_SELECT_ICON_COUNT; iconIndex++)
+	// loop through all icons (the custom grid adds its tiles after the retail icons, each where its row is scrolled to)
+	for (s32 iconIndex = 0; iconIndex < MM_NativeCharGrid_TileCount(); iconIndex++)
 	{
-		s16 unlockRequirement = activeCharacterSelectMeta[iconIndex].unlockFlags;
-
-		if (
-		    // If Icon is unlocked (from array of icons)
-		    (unlockRequirement == MM_CHARACTER_UNLOCK_ALWAYS) ||
-
-		    // if character is unlocked
-		    // from the global unlock bitfield
-		    // also the variable written by cheats
-		    CHECK_ADV_BIT(sdata->gameProgress.unlocks, unlockRequirement))
+		// If Icon is unlocked (from array of icons), or unlocked
+		// from the global unlock bitfield (also written by cheats)
+		if (MM_NativeCharGrid_TileDrawn(iconIndex))
 		{
-			struct TransitionMeta *iconTransition = &D230.characterSelectTransitionMeta[iconIndex];
+			struct TransitionMeta *iconTransition = MM_NativeCharGrid_TileTransition(iconIndex);
 
-			drawRect.x = iconTransition->currX + activeCharacterSelectMeta[iconIndex].posX;
-			drawRect.y = iconTransition->currY + activeCharacterSelectMeta[iconIndex].posY;
+			drawRect.x = iconTransition->currX + MM_NativeCharGrid_TileX(iconIndex);
+			drawRect.y = iconTransition->currY + MM_NativeCharGrid_TileY(iconIndex);
 			drawRect.w = MM_CHARACTER_SELECT_ICON_RECT_W;
 			drawRect.h = MM_CHARACTER_SELECT_ICON_RECT_H;
 
@@ -1133,6 +1160,9 @@ dontDrawSelectCharacter:
 			RECTMENU_DrawInnerRect(&drawRect, 0, ot);
 		}
 	}
+
+	// The custom grid draws its scroll arrows beside the rows.
+	MM_NativeCharGrid_DrawArrows();
 
 	SVec2 *windowPos = D230.activeCharacterSelectWindowPos;
 
