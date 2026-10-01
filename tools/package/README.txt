@@ -185,8 +185,9 @@ for the game (and for cups).
   Model (PLY) Your model of driver, steering wheel and kart in one PLY file
               with vertex colours (ASCII or binary), 1 unit = 1 metre, +Y up,
               +Z forward. The kart is the part at the bottom, about 1.8 long;
-              the game draws the wheels. You can also drag the .ply onto the
-              page.
+              the game draws the wheels. You can also drag files onto the
+              page: a .ply is the model, a .png the icon, a folder the
+              voices.
   Name        Shown in the driver select: 1 to 17 characters, capitals,
               A-Z 0-9 space ! % ' + , - . / : < = > ? _ (anything else is
               left out while you type).
@@ -207,8 +208,9 @@ for the game (and for cups).
   Voices      Optional. A folder with your voice lines as .wav or .vag:
               boost1, boost2, hit1, hit2, spin1, spin2, bigair1, bigair2,
               drop1, drop2, shield1, shield2, passing1, passing2, fire1,
-              fire2, yes, hit. They are checked (format, length, level,
-              gaps), but not packed yet - the driver is silent in the game.
+              fire2, yes, hit. They are checked (format, length, level, and
+              which places are empty), but not packed yet - the driver is
+              silent in the game.
   Preview     The model as the game will draw it. Drag to turn it; the list
               at the top right of the card picks Neutral, Steering left or
               Steering right. The grey kart is an original kart, for the

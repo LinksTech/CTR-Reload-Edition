@@ -346,9 +346,9 @@ is frozen. Source: `include/rldchar.inc`.
 `rldpack make-char` writes CHRI, CMDL and, with `--icon`, CICN, in this order.
 CICN and CPRM are known types. When present, the envelope checks them
 (compression, sizes, limit) and `rldpack verify` checks their hash. A CICN
-larger than 4 KiB therefore refuses the whole file (step 17); every other
-broken CICN only loses the portrait (see CICN below). Nothing interprets CPRM
-yet.
+that breaks an envelope rule (steps 14-19, e.g. larger than 4 KiB) refuses the
+whole file; a CICN that breaks CICN-1..3 only loses the portrait (see CICN
+below). Nothing interprets CPRM yet.
 
 ### CHRI (`RldChar_ParseInfo`)
 
@@ -494,7 +494,8 @@ default 100) bakes the size into the vertices before the poses are made
 - The range a model takes depends on the model: the 16-bit model scale per
   axis (model-scale), the coordinate range of every frame (model-coords) and
   the length of the whole model. `rldpack make-char --machine` reports it as
-  `@value size-range <lo> <hi>`; a size outside is refused (`char-size`).
+  `@value size-range <lo> <hi>` (fields separated by tabs); `0 0` means that
+  no size fits the model. A size outside is refused (`char-size`).
 
 ### CICN (`RldChar_CheckIcon`)
 
@@ -523,8 +524,10 @@ Rules, in order. Each one gives a fixed text that starts with the rule:
 A CICN that breaks a rule never refuses the file: only the portrait is
 dropped, and the template's portrait is shown. `rldpack info` names the
 portrait ("its own", "the template's (no CICN)", or "CICN ignored" with the
-reason); `rldpack verify` prints `IGNORED CICN` for a rule finding, but a CICN
-whose hash does not match fails the file like any other chunk.
+reason); `rldpack verify` prints `IGNORED CICN` for a rule finding. A CICN
+whose hash does not match fails the file in `rldpack verify`; `rldpack info`
+shows "CICN ignored" with the hash mismatch; the game does not read CICN and
+loads the file.
 
 What `rldpack make-char --icon <png>` does (`RldMk_MakeIcon`):
 
@@ -567,7 +570,8 @@ file: CVOI stays a reserved name, and a custom driver is silent in the game.
 - The model's frame counts must match those of the template's retail model;
   otherwise seat 0 stays retail (log line `not bound: frames`).
 - One summary line per start: `[CTR Char] characters: N loaded, M refused (<folder>)`,
-  with `K without an id` in it when files got no tile.
+  with `K without an id` in it when files got no tile. Without a folder, under
+  `--settings-defaults` and with `--char` the line has other wording.
 - With `--settings-defaults` no folder is read unless `--chars-dir` names one.
 
 ### Limits
