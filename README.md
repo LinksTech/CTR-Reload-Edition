@@ -15,7 +15,7 @@
   <!-- Points at the current version on purpose: the nightly build is newer and would come first in the release list. Update with every version tag. -->
   <a href="https://github.com/LinksTech/CTR-Reload-Edition/releases/tag/v0.0-beta0"><img alt="Download the latest release" src="https://img.shields.io/badge/Download-latest%20release-2f9bff?style=for-the-badge&logo=github&logoColor=white"></a>
   <br>
-  <sub>Want the newest state? The <a href="https://github.com/LinksTech/CTR-Reload-Edition/releases/tag/nightly-builds">nightly build</a> is made from the development branch every night - untested, no guarantees.</sub>
+  <sub>Want the newest state? The <a href="https://github.com/LinksTech/CTR-Reload-Edition/releases/tag/nightly-builds">nightly build</a> is made from main every night - untested, no guarantees.</sub>
 </p>
 
 <p align="center">
@@ -134,7 +134,7 @@ Planned, in no particular order and without a date:
 
 - Time Trial and Battle on custom tracks
 - Best times on custom tracks
-- Custom characters - a first version is in the development version (Reload
+- Custom characters - a first version is in the nightly build (Reload
   Studio's Character page and a `characters` folder next to the game). It
   fits every model onto Crash's kart at his size, repairs common export
   faults, reduces a model with too many triangles by itself and can leave

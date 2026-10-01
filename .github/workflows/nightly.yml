@@ -1,20 +1,20 @@
-# CTR Reload Edition - nightly build of the development branch.
+# CTR Reload Edition - nightly build of main.
 #
 # Every day at 21:00 UTC, and by hand (Actions -> Nightly -> Run workflow):
-# builds dev and replaces the one pre-release "nightly-builds" with exactly
+# builds main and replaces the one pre-release "nightly-builds" with exactly
 # the four files of every release (see build.yml): the programs
 # ctr_native.exe and ReloadStudio.exe, and LICENSE and THIRD_PARTY_NOTICES.md,
-# because the licenses must travel with the programs. If dev has not changed
+# because the licenses must travel with the programs. If main has not changed
 # since the last nightly, the run ends after the check and nothing is built
 # or replaced.
 #
 # The last built commit is the tag nightly-builds itself: it always points at
-# the dev commit the nightly was built from.
+# the main commit the nightly was built from.
 #
 # GitHub starts scheduled runs only from the default branch, so this file has
-# to be on main; what it builds is dev. After 60 days without activity in the
-# repository GitHub switches the schedule off; it is switched on again in the
-# Actions tab.
+# to be on main, and main is also what it builds. After 60 days without
+# activity in the repository GitHub switches the schedule off; it is switched
+# on again in the Actions tab.
 #
 # Security notes (as in build.yml):
 # - The token is read-only everywhere; only the release job may write
@@ -57,16 +57,16 @@ jobs:
       sha: ${{ steps.compare.outputs.sha }}
       last: ${{ steps.compare.outputs.last }}
     steps:
-      - name: Has dev changed since the last nightly?
+      - name: Has main changed since the last nightly?
         id: compare
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -e
-          sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/dev" -q .sha)
-          case "$sha" in *[!0-9a-f]*|'') echo "unexpected dev commit: $sha"; exit 1 ;; esac
-          [ ${#sha} = 40 ] || { echo "unexpected dev commit: $sha"; exit 1; }
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/main" -q .sha)
+          case "$sha" in *[!0-9a-f]*|'') echo "unexpected main commit: $sha"; exit 1 ;; esac
+          [ ${#sha} = 40 ] || { echo "unexpected main commit: $sha"; exit 1; }
           if ref=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/nightly-builds" -q '.object.type + " " + .object.sha' 2> err.txt); then
             type=${ref%% *}
             last=${ref#* }
@@ -77,13 +77,13 @@ jobs:
             cat err.txt
             exit 1
           fi
-          echo "dev:            $sha"
+          echo "main:           $sha"
           echo "last nightly:   ${last:-none}"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "last=$last" >> "$GITHUB_OUTPUT"
           if [ "$sha" = "$last" ]; then
             echo "build=false" >> "$GITHUB_OUTPUT"
-            echo "dev is unchanged since the last nightly - nothing to build." >> "$GITHUB_STEP_SUMMARY"
+            echo "main is unchanged since the last nightly - nothing to build." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "build=true" >> "$GITHUB_OUTPUT"
           fi
@@ -93,7 +93,7 @@ jobs:
     if: needs.check.outputs.build == 'true'
     uses: ./.github/workflows/build-job.yml
     with:
-      # The exact commit the check saw, not the branch: a push to dev during
+      # The exact commit the check saw, not the branch: a push to main during
       # the run does not change what this nightly is.
       ref: ${{ needs.check.outputs.sha }}
     permissions:
@@ -118,7 +118,7 @@ jobs:
 
       # The same four files as every release (the two programs, LICENSE and
       # THIRD_PARTY_NOTICES.md), taken out of the package the build job
-      # checked. The build ID must be the dev commit, clean.
+      # checked. The build ID must be the main commit, clean.
       - name: Collect nightly files
         id: files
         shell: bash
@@ -131,7 +131,7 @@ jobs:
           name=$(basename "$zip" .zip)
           id=${name##*-}
           case "$name" in CTR-Reload-?*-?*) ;; *) echo "unexpected package name: $name"; exit 1 ;; esac
-          [ "$id" = "${SHA:0:12}" ] || { echo "build id $id is not the dev commit ${SHA:0:12}"; exit 1; }
+          [ "$id" = "${SHA:0:12}" ] || { echo "build id $id is not the main commit ${SHA:0:12}"; exit 1; }
           mkdir -p out
           unzip -j -o "$zip" "$name/ctr_native.exe" "$name/ReloadStudio.exe" \
             "$name/LICENSE" "$name/THIRD_PARTY_NOTICES.md" -d out
@@ -158,7 +158,7 @@ jobs:
           fi
           {
             echo '> [!WARNING]'
-            echo '> Untested build, straight from the development branch (dev): it may be broken. For a tested version use the newest release that is not a nightly.'
+            echo '> Untested build, straight from main: it may be broken. For a tested version use the newest release that is not a nightly.'
             echo
             echo "Changes since $since:"
             echo

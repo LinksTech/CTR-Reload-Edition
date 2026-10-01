@@ -5,19 +5,19 @@ fork. This page lists the rules; how to build is in [BUILDING.md](BUILDING.md).
 
 ## How development works
 
-Development happens openly on the `dev` branch, in batches and without fixed
+Development happens openly on the `main` branch, in batches and without fixed
 dates. Pull requests are reviewed and merged in batches too, so an answer can
-take a while. `main` holds the releases; a new version comes out when enough
-has come together.
+take a while. Releases are version tags on `main`; a new version comes out
+when enough has come together.
 
 For a bigger change, please open an issue first, so we can agree on the idea
 before you put work into it.
 
 ## Pull requests
 
-1. Fork the repository and create a branch from `dev`.
+1. Fork the repository and create a branch from `main`.
 2. Make your change, build it and test it (see [Build and test](#build-and-test)).
-3. Open the pull request against `dev` - never against `main`.
+3. Open the pull request against `main`.
 
 One topic per pull request: a fix and an unrelated clean-up are two pull
 requests. The pull request template has a short checklist.
@@ -79,7 +79,7 @@ It also runs as one of the self-tests and in the local hooks.
 ## Commit and pull request titles
 
 Commit titles are the public change log: the first line of every commit on
-`dev` is listed in the notes of the nightly build. Keep them and the pull
+`main` is listed in the notes of the nightly build. Keep them and the pull
 request title short, clear and in English, and say what changed, for example
 `Language check: file and folder names`. Details go into the commit message
 body and the pull request text.

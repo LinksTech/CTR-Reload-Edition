@@ -1,4 +1,4 @@
-<!-- Pull requests go into `dev`, never into `main`. The rules are in CONTRIBUTING.md. -->
+<!-- Pull requests go into `main`. The rules are in CONTRIBUTING.md. -->
 
 ## What and why
 
@@ -10,7 +10,7 @@
 
 ## Checklist
 
-- [ ] This pull request targets `dev`.
+- [ ] This pull request targets `main`.
 - [ ] It adds no game data (disc images, extracted files, data tables copied from the game, files in game formats, containers, patches, memory cards, screenshots or recordings with game content, logs with game data) and no tracks, music, characters, textures, fonts, 3D models, voices, sound effects or images made by other people.
 - [ ] Code, comments, commit messages and this text are in English (`python tools/lang_check.py` is clean).
 - [ ] It covers one topic.

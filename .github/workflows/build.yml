@@ -1,6 +1,6 @@
 # CTR Reload Edition - automatic builds.
 #
-# Every push to main or dev: build (32-bit, MSVC), run the self-tests, package,
+# Every push to main: build (32-bit, MSVC), run the self-tests, package,
 # and attach the package to the run as a download.
 # Every version tag (v*, e.g. v0.1.0-beta1): the same, plus a GitHub release
 # with exactly four files: the programs ctr_native.exe and ReloadStudio.exe,
@@ -8,8 +8,8 @@
 # with the programs (GPL-3.0, and the notices of the bundled third-party
 # code). GitHub adds the source code archives of the tag by itself. The
 # release text comes from .github/release-body.txt.
-# Every pull request into main or dev: build, self-tests and package check
-# only. No package download, no release, no cache writes, read-only token.
+# Every pull request into main: build, self-tests and package check only.
+# No package download, no release, no cache writes, read-only token.
 #
 # The build job is in build-job.yml (shared with nightly.yml).
 #
@@ -31,10 +31,10 @@ name: Build
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
     tags: ['v*']
   pull_request:
-    branches: [main, dev]
+    branches: [main]
   workflow_dispatch:
 
 permissions:

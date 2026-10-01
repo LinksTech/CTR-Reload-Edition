@@ -18,7 +18,7 @@ it, instead.
 
 We answer in the report as soon as we can; there are no fixed response times.
 Please give us time to fix the problem before you make it public. A fix goes
-into `dev` and the nightly build first, and then into a release. If we
+into `main` and the nightly build first, and then into a release. If we
 publish an advisory, we name you in it as the finder if you want.
 
 ## Scope

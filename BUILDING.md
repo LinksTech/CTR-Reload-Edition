@@ -114,13 +114,13 @@ trial package anyway) and refuses to package a file type that
 
 ## Automatic builds
 
-- `.github/workflows/build.yml`: every push to `main` or `dev` and every pull
+- `.github/workflows/build.yml`: every push to `main` and every pull
   request builds and runs the self-tests; a version tag (`v*`) also makes the
   release with `ctr_native.exe`, `ReloadStudio.exe`, `LICENSE` and
   `THIRD_PARTY_NOTICES.md`.
 - `.github/workflows/nightly.yml`: every day at 21:00 UTC (and by hand) the
-  pre-release `nightly-builds` is replaced with a build of `dev` that carries
-  the same four files - only when `dev` has changed since the last one. The
+  pre-release `nightly-builds` is replaced with a build of `main` that carries
+  the same four files - only when `main` has changed since the last one. The
   tag `nightly-builds` always points at the commit it was built from.
 - Both use the same build job, `.github/workflows/build-job.yml`.
 - `.github/workflows/guard.yml` (check `content-guard`): every push and every

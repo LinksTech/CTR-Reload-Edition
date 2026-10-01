@@ -66,7 +66,7 @@ jobs:
           python-version: '3.12'
 
       # The cache holds only the installed SDK. It is written only by runs
-      # on main, dev, tags, nightly and manual runs, never by pull requests.
+      # on main, tags, nightly and manual runs, never by pull requests.
       - name: Restore Vulkan SDK from cache
         id: vulkan-cache
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
