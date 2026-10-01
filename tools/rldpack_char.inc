@@ -13,13 +13,16 @@
 // yet; CICN only with --icon - both chunks are optional:
 //
 //    1  read the PLY: ascii 1.0 or binary_little_endian 1.0
-//    2  faces -> triangles: quads split at the shorter diagonal, n-gons refused
+//    2  faces -> triangles: quads split at the shorter diagonal, faces of 5 to
+//       1024 corners by ear clipping (degenerate ones refused)
 //    3  weld the corners to positions (1e-5); the color stays per corner
 //    3a --fit crash (default): the model to Crash's size - its kart 112.4 long
 //       (or the whole model, without a kart), at most 142.5 tall in game units;
 //       silent passes of steps 2 to 5 measure it, then the chain runs again
 //       with the factor as --scale
 //    4  parts: kart (required), driver, steering wheel
+//    4r --reduce auto (default): more than 805 triangles are reduced to at most
+//       797, per part group (tools/rldpack_reduce.inc)
 //    4a --size: driver and steering wheel scaled about the hip, the kart not;
 //       the size checks of step 4 and 5 run on the result
 //    5  axes and scale -> game units: +Y up, +Z forward, 64 per Blender unit
@@ -43,6 +46,8 @@
 // fixed roundings (floor(x + 0.5)). Floor, square root, sine and cosine are
 // written out below instead of taken from the C library, so that two runtimes
 // cannot round differently.
+
+#include "rldpack_reduce.inc"
 
 //========================================================================================
 // CONSTANTS
@@ -265,11 +270,10 @@ static void RldMk_Say(const char *severity, const char *code, const char *techni
 	Rld_Say(severity, code, technical, "%s", text);
 }
 
-// Was this code said since the last RldMk_ResetSaid? For the self-test.
-static int RldMk_Said(const char *code)
+// Is `code` in the list of said codes from p on?
+static int RldMk_SaidFrom(const char *p, const char *code)
 {
 	const size_t length = strlen(code);
-	const char *p = s_rldMkCodes;
 
 	while (*p != '\0')
 	{
@@ -287,6 +291,12 @@ static int RldMk_Said(const char *code)
 	}
 
 	return 0;
+}
+
+// Was this code said since the last RldMk_ResetSaid? For the self-test.
+static int RldMk_Said(const char *code)
+{
+	return RldMk_SaidFrom(s_rldMkCodes, code);
 }
 
 // @char <fact> <value> - only Reload Studio reads these; the file carries no
@@ -498,6 +508,10 @@ struct RldMkPly
 	u8 *rgb;           // 3 per vertex; grey when the file has no colors
 	u32 *corners;      // 4 per face: the first four corners
 	u32 *cornerCount;  // per face, as written
+	u32 *moreStart;    // per face of 5 or more corners: where all its corners start in more[]
+	u32 *more;         // the corners of those faces, in file order
+	u32 moreCount;
+	u32 moreCapacity;
 	int binary;
 	int hasColors;
 	int hasUv;
@@ -510,6 +524,8 @@ static void RldMk_FreePly(struct RldMkPly *ply)
 	free(ply->rgb);
 	free(ply->corners);
 	free(ply->cornerCount);
+	free(ply->moreStart);
+	free(ply->more);
 	memset(ply, 0, sizeof(*ply));
 }
 
@@ -749,6 +765,26 @@ static int RldMk_PlyFind(const struct RldMkPlyElement *element, const char *name
 	}
 
 	return -1;
+}
+
+// One corner of a face of 5 or more corners onto more[]. 0 = out of memory.
+static int RldMk_PlyMore(struct RldMkPly *ply, u32 vertex)
+{
+	if (ply->moreCount == ply->moreCapacity)
+	{
+		const u32 capacity = (ply->moreCapacity != 0u) ? (2u * ply->moreCapacity) : 1024u;
+		u32 *more = (u32 *)realloc(ply->more, (size_t)capacity * sizeof(u32));
+
+		if ((more == NULL) || (capacity <= ply->moreCapacity))
+		{
+			return 0;
+		}
+		ply->more = more;
+		ply->moreCapacity = capacity;
+	}
+
+	ply->more[ply->moreCount++] = vertex;
+	return 1;
 }
 
 // Step 1. Says every error itself (ply-*) and returns 0 then.
@@ -999,7 +1035,8 @@ static int RldMk_ParsePly(const u8 *data, size_t size, struct RldMkPly *ply)
 	ply->rgb = (u8 *)malloc((size_t)ply->vertexCount * 3u + 1u);
 	ply->corners = (u32 *)calloc((size_t)ply->faceCount * 4u + 1u, sizeof(u32));
 	ply->cornerCount = (u32 *)calloc((size_t)ply->faceCount + 1u, sizeof(u32));
-	if ((ply->xyz == NULL) || (ply->rgb == NULL) || (ply->corners == NULL) || (ply->cornerCount == NULL))
+	ply->moreStart = (u32 *)calloc((size_t)ply->faceCount + 1u, sizeof(u32));
+	if ((ply->xyz == NULL) || (ply->rgb == NULL) || (ply->corners == NULL) || (ply->cornerCount == NULL) || (ply->moreStart == NULL))
 	{
 		RldMk_Say("error", "memory", NULL, "rldpack ran out of memory while reading the model.");
 		RldMk_FreePly(ply);
@@ -1054,6 +1091,7 @@ static int RldMk_ParsePly(const u8 *data, size_t size, struct RldMkPly *ply)
 					if (isCorners)
 					{
 						ply->cornerCount[i] = count;
+						ply->moreStart[i] = ply->moreCount;
 					}
 
 					for (k = 0; k < count; k++)
@@ -1081,6 +1119,12 @@ static int RldMk_ParsePly(const u8 *data, size_t size, struct RldMkPly *ply)
 							if (k < 4u)
 							{
 								ply->corners[4u * i + k] = (u32)value;
+							}
+							if ((count > 4u) && !RldMk_PlyMore(ply, (u32)value))
+							{
+								RldMk_Say("error", "memory", NULL, "rldpack ran out of memory while reading the model.");
+								RldMk_FreePly(ply);
+								return 0;
 							}
 						}
 					}
@@ -1172,6 +1216,10 @@ struct RldMkOptions
 	int backwards;    // --forward -z: the model faces -Z and is turned by 180 degrees
 	double scale;     // --scale (only with --fit none)
 	int fit;          // --fit crash: scaled to Crash's size first (RldMk_StepFit); 0 = --fit none
+	int reduce;       // --reduce auto: too many triangles are reduced (RldMk_StepReduce); 0 = --reduce off
+	u32 reduceTarget; // set by RldMk_BuildModel: at most this many triangles after a reduction
+	int reduceForce;  // set by RldMk_BuildModel: reduce even at RLDMK_REDUCE_LIMIT or below
+	const char *reduceWhy;  // set by RldMk_BuildModel with reduceForce: why, for model-reduced
 	int twoSided;     // --two-sided: no back face culling
 	int still;        // --poses still
 	u32 sizePercent;  // --size: driver and steering wheel, 100 (or 0) = as exported
@@ -1191,7 +1239,8 @@ struct RldMkBuild
 	u32 vertexCount;
 	u32 faceCount;
 	u32 quads;
-	u32 degenerate;
+	u32 degenerate;            // triangles without area (after splitting quads and larger faces)
+	u32 degenerateFaces;       // faces of fewer than three corners
 
 	// --fit crash (RldMk_StepFit), game units
 	int fitted;                // the factor was found and applied
@@ -1206,6 +1255,8 @@ struct RldMkBuild
 	u32 positionCount;
 	double *position;          // 3 per position
 	u32 *vertexPosition;       // per PLY vertex, RLDMK_NONE when no triangle uses it
+	u8 *vertexRgb;             // NULL: the colors of the PLY; after a reduction 3 per corner vertex
+	                           // (the corners are vertices of their own then, RldMk_StepReduce)
 
 	// triangles: three PLY vertices each, in the order of the source face
 	u32 triangleCount;
@@ -1223,6 +1274,10 @@ struct RldMkBuild
 	int posed;                 // the automatic poses were made
 	double size[4];            // length, width (kart), height, bottom - Blender units
 	double exported[4];        // the same before --size (ply-axes)
+	int recordLimit;           // RldMk_StepWrite failed model-frame or mem-model (too many records)
+	u32 reduceFrom;            // triangles before RldMk_StepReduce
+	u32 reduceTo;              // and after; the same when nothing was reduced
+	int reduced;               // RldMk_StepReduce reduced the model
 	u32 sizeLow;               // --size: the percentages this model takes, 0 0 = none
 	u32 sizeHigh;
 
@@ -1265,6 +1320,7 @@ static void RldMk_FreeBuild(struct RldMkBuild *b)
 {
 	free(b->position);
 	free(b->vertexPosition);
+	free(b->vertexRgb);
 	free(b->triangle);
 	free(b->parts);
 	free(b->positionPart);
@@ -1434,15 +1490,193 @@ static int RldMk_AddTriangle(struct RldMkBuild *b, u32 v0, u32 v1, u32 v2)
 	return 1;
 }
 
+// Is corner k of the ring an ear: it turns the way of the normal, and no other
+// corner of the face lies in its triangle (on the edge counts as in; corners
+// at the same position as the ear's do not)? *quality is the square of the
+// sine of the triangle's smallest angle: (2 x area)^2 over the squares of the
+// two longer sides - no square root, no angle function.
+static int RldMk_NgonEar(const struct RldMkBuild *b, const u32 *c, const u32 *ring, u32 left, u32 k, const double normal[3], double *quality)
+{
+	const u32 pa = b->vertexPosition[c[ring[(k + left - 1u) % left]]];
+	const u32 pv = b->vertexPosition[c[ring[k]]];
+	const u32 pd = b->vertexPosition[c[ring[(k + 1u) % left]]];
+	const double *a = &b->position[3u * pa];
+	const double *v = &b->position[3u * pv];
+	const double *d = &b->position[3u * pd];
+	double turn[3];
+	double l0;
+	double l1;
+	double l2;
+	u32 w;
+
+	*quality = 0.0;
+	RldMk_Cross(a, v, d, turn);
+	if (!(RldMk_Dot(turn, normal) > 0.0))
+	{
+		return 0;
+	}
+
+	for (w = 0; w < left; w++)
+	{
+		const u32 pw = b->vertexPosition[c[ring[w]]];
+		const double *p = &b->position[3u * pw];
+		double s0[3];
+		double s1[3];
+		double s2[3];
+
+		if ((pw == pa) || (pw == pv) || (pw == pd))
+		{
+			continue;
+		}
+		RldMk_Cross(a, v, p, s0);
+		RldMk_Cross(v, d, p, s1);
+		RldMk_Cross(d, a, p, s2);
+		if ((RldMk_Dot(s0, normal) >= 0.0) && (RldMk_Dot(s1, normal) >= 0.0) && (RldMk_Dot(s2, normal) >= 0.0))
+		{
+			return 0;
+		}
+	}
+
+	l0 = RldMk_Distance2(a, v);
+	l1 = RldMk_Distance2(v, d);
+	l2 = RldMk_Distance2(d, a);
+	if ((l0 <= l1) && (l0 <= l2))
+	{
+		*quality = RldMk_Dot(turn, turn) / (l1 * l2);
+	}
+	else if (l1 <= l2)
+	{
+		*quality = RldMk_Dot(turn, turn) / (l0 * l2);
+	}
+	else
+	{
+		*quality = RldMk_Dot(turn, turn) / (l0 * l1);
+	}
+	return 1;
+}
+
+// A face of 5 to 1024 corners -> n - 2 triangles by ear clipping in the plane
+// of its normal (Newell's, from the welded positions). Each step cuts the best
+// ear - the one whose smallest angle is largest, ties in file order - so that
+// a round face does not become a fan of slivers. Only the two neighbors of a
+// cut ear can change (a simple polygon); should no ear be left, every corner is
+// tested again, and then a corner on a straight line between its neighbors is
+// dropped without a triangle. Each triangle keeps the order of the face, so it
+// winds like it. 0 = no ear and no straight corner: the face is degenerate
+// (twisted, or without area).
+static int RldMk_SplitNgon(struct RldMkBuild *b, const u32 *c, u32 n)
+{
+	u32 ring[RLDMK_PLY_LIST_MAX];
+	u8 ear[RLDMK_PLY_LIST_MAX];
+	double quality[RLDMK_PLY_LIST_MAX];
+	double normal[3] = {0.0, 0.0, 0.0};
+	u32 left = n;
+	u32 i;
+
+	for (i = 0; i < n; i++)
+	{
+		const double *p = &b->position[3u * b->vertexPosition[c[i]]];
+		const double *q = &b->position[3u * b->vertexPosition[c[(i + 1u) % n]]];
+
+		normal[0] += (p[1] - q[1]) * (p[2] + q[2]);
+		normal[1] += (p[2] - q[2]) * (p[0] + q[0]);
+		normal[2] += (p[0] - q[0]) * (p[1] + q[1]);
+		ring[i] = i;
+	}
+	if (!(RldMk_Dot(normal, normal) > 0.0))
+	{
+		return 0;
+	}
+
+	for (i = 0; i < n; i++)
+	{
+		ear[i] = (u8)RldMk_NgonEar(b, c, ring, left, i, normal, &quality[i]);
+	}
+
+	while (left > 3u)
+	{
+		u32 found = RLDMK_NONE;
+		int pass;
+		u32 k;
+
+		for (pass = 0; (pass < 2) && (found == RLDMK_NONE); pass++)
+		{
+			if (pass == 1)
+			{
+				for (k = 0; k < left; k++)
+				{
+					ear[k] = (u8)RldMk_NgonEar(b, c, ring, left, k, normal, &quality[k]);
+				}
+			}
+			for (k = 0; k < left; k++)
+			{
+				if (ear[k] && ((found == RLDMK_NONE) || (quality[k] > quality[found])))
+				{
+					found = k;
+				}
+			}
+		}
+
+		if (found != RLDMK_NONE)
+		{
+			RldMk_AddTriangle(b, c[ring[(found + left - 1u) % left]], c[ring[found]], c[ring[(found + 1u) % left]]);
+		}
+		else
+		{
+			// No ear: a corner on a straight line goes without a triangle.
+			for (k = 0; (k < left) && (found == RLDMK_NONE); k++)
+			{
+				const double *a = &b->position[3u * b->vertexPosition[c[ring[(k + left - 1u) % left]]]];
+				const double *v = &b->position[3u * b->vertexPosition[c[ring[k]]]];
+				const double *d = &b->position[3u * b->vertexPosition[c[ring[(k + 1u) % left]]]];
+				double turn[3];
+
+				RldMk_Cross(a, v, d, turn);
+				if (RldMk_Dot(turn, turn) <= (1.0e-20 * RldMk_Distance2(a, v) * RldMk_Distance2(a, d)))
+				{
+					found = k;
+				}
+			}
+			if (found == RLDMK_NONE)
+			{
+				return 0;
+			}
+		}
+
+		memmove(&ring[found], &ring[found + 1u], (size_t)(left - found - 1u) * sizeof(u32));
+		memmove(&ear[found], &ear[found + 1u], (size_t)(left - found - 1u) * sizeof(u8));
+		memmove(&quality[found], &quality[found + 1u], (size_t)(left - found - 1u) * sizeof(double));
+		left--;
+
+		// The neighbors of the cut corner.
+		{
+			const u32 before = (found + left - 1u) % left;
+			const u32 after = found % left;
+
+			ear[before] = (u8)RldMk_NgonEar(b, c, ring, left, before, normal, &quality[before]);
+			ear[after] = (u8)RldMk_NgonEar(b, c, ring, left, after, normal, &quality[after]);
+		}
+	}
+
+	RldMk_AddTriangle(b, c[ring[0]], c[ring[1]], c[ring[2]]);
+	return 1;
+}
+
 static int RldMk_StepTriangles(const struct RldMkPly *ply, struct RldMkBuild *b, u32 keyCount)
 {
 	u32 ngons = 0;
+	u32 split = 0;
 	u32 *renumber;
 	double *kept;
+	size_t room = 0;
 	u32 f;
 	u32 i;
 
-	b->triangle = (u32 *)malloc(((size_t)ply->faceCount * 2u + 1u) * 3u * sizeof(u32));
+	for (f = 0; f < ply->faceCount; f++)
+	{
+		room += (ply->cornerCount[f] >= 3u) ? (size_t)ply->cornerCount[f] - 2u : 0u;
+	}
+	b->triangle = (u32 *)malloc((room + 1u) * 3u * sizeof(u32));
 	if (b->triangle == NULL)
 	{
 		return RldMk_OutOfMemory();
@@ -1455,7 +1689,7 @@ static int RldMk_StepTriangles(const struct RldMkPly *ply, struct RldMkBuild *b,
 
 		if (n < 3u)
 		{
-			b->degenerate++;
+			b->degenerateFaces++;
 		}
 		else if (n == 3u)
 		{
@@ -1479,6 +1713,10 @@ static int RldMk_StepTriangles(const struct RldMkPly *ply, struct RldMkBuild *b,
 				RldMk_AddTriangle(b, c[1], c[2], c[3]);
 			}
 		}
+		else if (RldMk_SplitNgon(b, &ply->more[ply->moreStart[f]], n))
+		{
+			split++;
+		}
 		else
 		{
 			ngons++;
@@ -1487,9 +1725,15 @@ static int RldMk_StepTriangles(const struct RldMkPly *ply, struct RldMkBuild *b,
 
 	if (ngons != 0u)
 	{
-		RldMk_Say("error", "ply-ngon", NULL, "%u faces have more than four corners. Triangulate the mesh before export (Blender: Triangulate modifier).",
+		RldMk_Say("error", "ply-ngon", NULL,
+		          "%u faces of more than four corners cannot be split into triangles (twisted, or without area). Triangulate the mesh before export (Blender: Triangulate modifier).",
 		          ngons);
 		return 0;
+	}
+
+	if (split != 0u)
+	{
+		RldMk_Say("info", "ply-ngon-split", NULL, "%u faces of more than four corners were split into triangles.", split);
 	}
 
 	if (b->quads != 0u)
@@ -1497,9 +1741,20 @@ static int RldMk_StepTriangles(const struct RldMkPly *ply, struct RldMkBuild *b,
 		RldMk_Say("info", "ply-quads", NULL, "%u quads were split into triangles.", b->quads);
 	}
 
-	if (b->degenerate != 0u)
+	if ((b->degenerate != 0u) && (b->degenerateFaces != 0u))
 	{
-		RldMk_Say("warning", "ply-degenerate", NULL, "%u faces have no area and are left out.", b->degenerate);
+		RldMk_Say("warning", "ply-degenerate", NULL,
+		          "%u triangles have no area (counted after splitting quads and larger faces) and %u faces have fewer than three corners; they are left out.",
+		          b->degenerate, b->degenerateFaces);
+	}
+	else if (b->degenerate != 0u)
+	{
+		RldMk_Say("warning", "ply-degenerate", NULL, "%u triangles have no area and are left out (counted after splitting quads and larger faces).",
+		          b->degenerate);
+	}
+	else if (b->degenerateFaces != 0u)
+	{
+		RldMk_Say("warning", "ply-degenerate", NULL, "%u faces have fewer than three corners and are left out.", b->degenerateFaces);
 	}
 
 	if (b->triangleCount == 0u)
@@ -2117,6 +2372,300 @@ static int RldMk_StepFit(const struct RldMkPly *ply, const struct RldMkOptions *
 static void RldMk_FitNumber(char *out, size_t size, double value)
 {
 	snprintf(out, size, (value >= 1.0) ? "%.1f" : "%.3g", value);
+}
+
+//========================================================================================
+// STEP 4r: --reduce auto - FEWER TRIANGLES
+//========================================================================================
+//
+// The draw memory holds 28 x T <= 22560 bytes per frame: T <= 805 (step 6,
+// model-tris). With more, the model is reduced to at most RLDMK_REDUCE_TARGET
+// triangles by tools/rldpack_reduce.inc. 797 leaves 8 triangles (244 bytes,
+// 1.1 %) in hand: the reduction removes one or two triangles per step and stops
+// at the first count at or below the target, and the reserve keeps the model
+// under the limit should the game count the command list differently. When the
+// built model then still fails mem-model or model-frame (too many records),
+// RldMk_BuildModel lowers the target by 5 % and builds again, at most
+// RLDMK_REDUCE_TRIES times.
+//
+// Per group, on the parts of step 4 (they are not found again): a group of at
+// most RLDMK_REDUCE_KEEP triangles stays whole; the rest of the budget is
+// shared by the other groups in proportion to their triangles, the leftover
+// one by one by the largest remainder (ties: the lower group). The reduction
+// moves positions onto their neighbors and drops triangles, never makes new
+// positions; every kept corner keeps the color of the corner it continues.
+// After it the corners are vertices of their own (vertexRgb), the positions
+// no triangle uses any more are dropped, and the counts and bounds of the
+// parts and the open edges are worked out again.
+
+#define RLDMK_REDUCE_LIMIT (RLDCHAR_DRAW_BYTES_MAX / RLDCHAR_DRAW_BYTES_G3)  // 805
+#define RLDMK_REDUCE_TARGET 797u
+#define RLDMK_REDUCE_KEEP 24u
+#define RLDMK_REDUCE_TRIES 10
+
+// The targets per group for `target` triangles in all. 0 = the small groups
+// alone take the whole budget.
+static int RldMk_ReduceTargets(const u32 counts[RLDMK_GROUPS], u32 target, u32 targets[RLDMK_GROUPS])
+{
+	u32 remainder[RLDMK_GROUPS];
+	u32 fixed = 0;
+	u32 rest = 0;
+	u32 budget;
+	u32 assigned = 0;
+	int g;
+
+	for (g = 0; g < RLDMK_GROUPS; g++)
+	{
+		if (counts[g] <= RLDMK_REDUCE_KEEP)
+		{
+			fixed += counts[g];
+		}
+		else
+		{
+			rest += counts[g];
+		}
+	}
+	if ((rest == 0u) || (fixed >= target))
+	{
+		return 0;
+	}
+
+	budget = target - fixed;
+	for (g = 0; g < RLDMK_GROUPS; g++)
+	{
+		remainder[g] = 0u;
+		targets[g] = counts[g];
+		if (counts[g] > RLDMK_REDUCE_KEEP)
+		{
+			targets[g] = (u32)(((u64)budget * counts[g]) / rest);
+			remainder[g] = (u32)(((u64)budget * counts[g]) % rest);
+			assigned += targets[g];
+		}
+	}
+
+	while (assigned < budget)
+	{
+		int best = -1;
+
+		for (g = 0; g < RLDMK_GROUPS; g++)
+		{
+			if ((counts[g] > RLDMK_REDUCE_KEEP) && (remainder[g] != RLDMK_NONE) && ((best < 0) || (remainder[g] > remainder[best])))
+			{
+				best = g;
+			}
+		}
+		if (best < 0)
+		{
+			break;
+		}
+		targets[best]++;
+		remainder[best] = RLDMK_NONE;  // each group once
+		assigned++;
+	}
+
+	return 1;
+}
+
+// The reducer names groups by number; the message names them as the parts.
+static void RldMk_GroupWhy(char *why, size_t size)
+{
+	char *at = strstr(why, "group ");
+	char rest[256];
+
+	if ((at != NULL) && (at[6] >= '0') && (at[6] < (char)('0' + RLDMK_GROUPS)) && ((at[7] < '0') || (at[7] > '9')))
+	{
+		const int group = at[6] - '0';
+
+		snprintf(rest, sizeof(rest), "%s", &at[7]);
+		snprintf(at, size - (size_t)(at - why), "the %s%s", (group == RLDMK_GROUP_WHEEL) ? "steering wheel" : s_rldMkGroupNames[group], rest);
+	}
+}
+
+static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, const struct RldMkOptions *opt)
+{
+	const u32 triangles = b->triangleCount;
+	const u32 target = (opt->reduceTarget != 0u) ? opt->reduceTarget : RLDMK_REDUCE_TARGET;
+	u32 counts[RLDMK_GROUPS] = {0u, 0u, 0u};
+	u32 targets[RLDMK_GROUPS];
+	RldRedMesh mesh;
+	RldRedResult result;
+	char why[256];
+	u32 *corner;
+	u8 *group;
+	u32 *vertexPosition;
+	u8 *vertexRgb;
+	u32 *triangle;
+	u32 *renumber;
+	double *position;
+	u32 *positionPart;
+	u8 *positionGroup;
+	u32 used = 0;
+	u32 t;
+	u32 i;
+
+	b->reduceFrom = triangles;
+	b->reduceTo = triangles;
+	if (!opt->reduce || (triangles <= target) || (!opt->reduceForce && (triangles <= RLDMK_REDUCE_LIMIT)))
+	{
+		return 1;
+	}
+
+	corner = (u32 *)malloc(((size_t)triangles * 3u + 1u) * sizeof(u32));
+	group = (u8 *)malloc((size_t)triangles + 1u);
+	if ((corner == NULL) || (group == NULL))
+	{
+		free(corner);
+		free(group);
+		return RldMk_OutOfMemory();
+	}
+	for (i = 0; i < (3u * triangles); i++)
+	{
+		corner[i] = b->vertexPosition[b->triangle[i]];
+	}
+	for (t = 0; t < triangles; t++)
+	{
+		group[t] = b->positionGroup[corner[3u * t]];
+		counts[group[t]]++;
+	}
+
+	memset(&result, 0, sizeof(result));
+	why[0] = '\0';
+	if (!RldMk_ReduceTargets(counts, target, targets))
+	{
+		snprintf(why, sizeof(why), "the parts of at most %u triangles leave no room for the others", RLDMK_REDUCE_KEEP);
+	}
+	else
+	{
+		mesh.positionCount = b->positionCount;
+		mesh.position = b->position;
+		mesh.triangleCount = triangles;
+		mesh.triangle = corner;
+		mesh.triangleGroup = group;
+		mesh.groupCount = RLDMK_GROUPS;
+		mesh.groupTarget = targets;
+		if (RldRed_Reduce(&mesh, &result, why, sizeof(why)))
+		{
+			why[0] = '\0';
+		}
+		else if (why[0] == '\0')
+		{
+			snprintf(why, sizeof(why), "reduce: not reached");
+		}
+	}
+	free(corner);
+	free(group);
+
+	if (why[0] != '\0')
+	{
+		RldRed_Free(&result);
+		RldMk_GroupWhy(why, sizeof(why));
+		RldMk_Say("warning", "model-reduce", why, "The model could not be reduced automatically to %u triangles; it keeps %u.", target, triangles);
+		return 1;
+	}
+
+	// The corners as vertices of their own: the position of the result, the
+	// color of the corner each one continues.
+	vertexPosition = (u32 *)malloc(((size_t)result.triangleCount * 3u + 1u) * sizeof(u32));
+	vertexRgb = (u8 *)malloc(((size_t)result.triangleCount * 3u + 1u) * 3u);
+	triangle = (u32 *)malloc(((size_t)result.triangleCount * 3u + 1u) * sizeof(u32));
+	renumber = (u32 *)malloc(((size_t)b->positionCount + 1u) * sizeof(u32));
+	position = (double *)malloc(((size_t)b->positionCount + 1u) * 3u * sizeof(double));
+	positionPart = (u32 *)malloc(((size_t)b->positionCount + 1u) * sizeof(u32));
+	positionGroup = (u8 *)malloc((size_t)b->positionCount + 1u);
+	if ((vertexPosition == NULL) || (vertexRgb == NULL) || (triangle == NULL) || (renumber == NULL) || (position == NULL) || (positionPart == NULL) ||
+	    (positionGroup == NULL))
+	{
+		free(vertexPosition);
+		free(vertexRgb);
+		free(triangle);
+		free(renumber);
+		free(position);
+		free(positionPart);
+		free(positionGroup);
+		RldRed_Free(&result);
+		return RldMk_OutOfMemory();
+	}
+
+	// Only the positions a kept triangle uses, in their old order.
+	for (i = 0; i < b->positionCount; i++)
+	{
+		renumber[i] = RLDMK_NONE;
+	}
+	for (i = 0; i < (3u * result.triangleCount); i++)
+	{
+		renumber[result.triangle[i]] = 0u;
+	}
+	for (i = 0; i < b->positionCount; i++)
+	{
+		if (renumber[i] != RLDMK_NONE)
+		{
+			renumber[i] = used;
+			memcpy(&position[3u * used], &b->position[3u * i], 3u * sizeof(double));
+			positionPart[used] = b->positionPart[i];
+			positionGroup[used] = b->positionGroup[i];
+			used++;
+		}
+	}
+
+	for (i = 0; i < (3u * result.triangleCount); i++)
+	{
+		const u32 source = b->triangle[3u * result.sourceTriangle[i / 3u] + (i % 3u)];
+		const u8 *rgb = (b->vertexRgb != NULL) ? &b->vertexRgb[3u * source] : &ply->rgb[3u * source];
+
+		vertexPosition[i] = renumber[result.triangle[i]];
+		memcpy(&vertexRgb[3u * i], rgb, 3u);
+		triangle[i] = i;
+	}
+
+	free(b->triangle);
+	free(b->vertexPosition);
+	free(b->vertexRgb);
+	free(b->position);
+	free(b->positionPart);
+	free(b->positionGroup);
+	free(renumber);
+	b->triangle = triangle;
+	b->vertexPosition = vertexPosition;
+	b->vertexRgb = vertexRgb;
+	b->position = position;
+	b->positionPart = positionPart;
+	b->positionGroup = positionGroup;
+	b->positionCount = used;
+	b->triangleCount = result.triangleCount;
+	RldRed_Free(&result);
+
+	// The parts as they are now.
+	memset(b->groupTriangles, 0, sizeof(b->groupTriangles));
+	for (i = 0; i < b->partCount; i++)
+	{
+		b->parts[i].triangles = 0;
+	}
+	for (t = 0; t < b->triangleCount; t++)
+	{
+		const u32 part = b->positionPart[b->vertexPosition[b->triangle[3u * t]]];
+
+		b->parts[part].triangles++;
+		b->groupTriangles[b->parts[part].group]++;
+	}
+	for (i = 0; i < b->partCount; i++)
+	{
+		RldMk_Bounds(b, (int)i, b->parts[i].lo, b->parts[i].hi);
+	}
+	RldMk_StepOpenEdges(b);
+
+	b->reduced = 1;
+	b->reduceTo = b->triangleCount;
+	if (opt->reduceForce && (opt->reduceWhy != NULL))
+	{
+		RldMk_Say("info", "model-reduced", NULL, "Reduced automatically: %u -> %u triangles, because %s; draw memory %u -> %u bytes.", triangles,
+		          b->triangleCount, opt->reduceWhy, triangles * RLDCHAR_DRAW_BYTES_G3, b->triangleCount * RLDCHAR_DRAW_BYTES_G3);
+	}
+	else
+	{
+		RldMk_Say("info", "model-reduced", NULL, "Reduced automatically: %u -> %u triangles, draw memory %u -> %u bytes (limit %u).", triangles,
+		          b->triangleCount, triangles * RLDCHAR_DRAW_BYTES_G3, b->triangleCount * RLDCHAR_DRAW_BYTES_G3, RLDCHAR_DRAW_BYTES_MAX);
+	}
+	return 1;
 }
 
 //========================================================================================
@@ -3159,7 +3708,7 @@ static int RldMk_StepColors(const struct RldMkPly *ply, const struct RldMkOption
 
 	for (i = 0; i < corners; i++)
 	{
-		const u8 *c = &ply->rgb[3u * b->triangle[i]];
+		const u8 *c = (b->vertexRgb != NULL) ? &b->vertexRgb[3u * b->triangle[i]] : &ply->rgb[3u * b->triangle[i]];
 
 		rgb[i] = ((u32)c[0] << 16) | ((u32)c[1] << 8) | (u32)c[2];
 	}
@@ -3833,6 +4382,7 @@ static int RldMk_StepWrite(struct RldMkBuild *b)
 	if (b->frameSize > 0xFFFFu)
 	{
 		RldMk_Say("error", "model-frame", NULL, "One animation frame needs %u bytes; at most 65535 fit. Reduce the model.", b->frameSize);
+		b->recordLimit = 1;
 		return 0;
 	}
 
@@ -3879,6 +4429,7 @@ static int RldMk_StepWrite(struct RldMkBuild *b)
 	{
 		RldMk_Say("error", "mem-model", NULL, "The model is %u KB; a character model may be at most 256 KB. Reduce the triangles.",
 		          (u32)((b->cmdlSize + 1023u) / 1024u));
+		b->recordLimit = 1;
 		return 0;
 	}
 
@@ -4271,9 +4822,9 @@ static int RldMk_CheckBuilt(struct RldMkBuild *b, const struct RldMkOptions *opt
 // THE CHAIN
 //========================================================================================
 
-// Steps 2-13 and 15 on a PLY that was read. 0 = the model cannot be built; every
-// reason was said.
-static int RldMk_BuildModel(const struct RldMkPly *ply, const struct RldMkOptions *opt, struct RldMkBuild *b)
+// Steps 2-13 and 15 on a PLY that was read, once. 0 = the model cannot be
+// built; every reason was said.
+static int RldMk_BuildOnce(const struct RldMkPly *ply, const struct RldMkOptions *opt, struct RldMkBuild *b)
 {
 	struct RldMkOptions fitted = *opt;
 	u32 keyCount = 0;
@@ -4318,6 +4869,11 @@ static int RldMk_BuildModel(const struct RldMkPly *ply, const struct RldMkOption
 		b->fitKart[1] = b->parts[b->kartPart].hi[2] - b->parts[b->kartPart].lo[2];
 	}
 
+	if (!RldMk_StepReduce(ply, b, opt))
+	{
+		return 0;
+	}
+
 	if (!RldMk_StepSize(b, opt) || !RldMk_StepMeasure(b, opt) || !RldMk_StepBudget(b, opt) || !RldMk_StepPoses(b) || !RldMk_StepQuantize(b) ||
 	    !RldMk_StepCollapse(b) || !RldMk_StepColors(ply, opt, b) || !RldMk_StepCommands(b, opt) || !RldMk_StepWrite(b))
 	{
@@ -4325,6 +4881,76 @@ static int RldMk_BuildModel(const struct RldMkPly *ply, const struct RldMkOption
 	}
 
 	return RldMk_CheckBuilt(b, opt);
+}
+
+// Steps 2-13 and 15, with the retries of step 4r: with --reduce auto the model
+// is first built without a word. When that build fails mem-model or
+// model-frame (too many records, RldMk_StepWrite), the target is lowered by
+// 5 % - below the triangles it had, so a model of at most 805 is reduced then
+// as well - and it is built again, at most RLDMK_REDUCE_TRIES times in all.
+// When such a build reduces nothing (the reducer cannot), lowering further is
+// no use: the last build speaks again with the target before it - or the first
+// one, when no reduction ever worked - so the author sees the real cause.
+// Only that last build speaks. 0 = the model cannot be built; every reason was
+// said.
+static int RldMk_BuildModel(const struct RldMkPly *ply, const struct RldMkOptions *opt, struct RldMkBuild *b)
+{
+	static char why[RLDMK_REDUCE_TRIES][128];
+	struct RldMkOptions at = *opt;
+	struct RldMkOptions speak;
+	int tries;
+
+	at.reduceTarget = RLDMK_REDUCE_TARGET;
+	at.reduceForce = 0;
+	at.reduceWhy = NULL;
+	speak = at;
+	for (tries = 1; opt->reduce && (tries < RLDMK_REDUCE_TRIES); tries++)
+	{
+		const int quiet = s_rldMkQuiet;
+		const int errors = s_rldMkErrors;
+		const size_t said = strlen(s_rldMkCodes);
+		int limit;
+		int reduced;
+		u32 next;
+
+		s_rldMkQuiet = 1;
+		limit = !RldMk_BuildOnce(ply, &at, b) && b->recordLimit;
+		reduced = b->reduced;
+		next = ((b->reduceFrom < at.reduceTarget) ? b->reduceFrom : at.reduceTarget) * 95u / 100u;
+		if (limit && (b->frameSize > 0xFFFFu))
+		{
+			snprintf(why[tries], sizeof(why[tries]), "at %u triangles one animation frame would need %u bytes, at most 65535", b->reduceTo, b->frameSize);
+		}
+		else if (limit)
+		{
+			snprintf(why[tries], sizeof(why[tries]), "at %u triangles the model would need %u KB, at most 256 KB", b->reduceTo,
+			         (u32)((b->cmdlSize + 1023u) / 1024u));
+		}
+		RldMk_FreeBuild(b);
+		s_rldMkQuiet = quiet;
+		s_rldMkErrors = errors;
+		s_rldMkCodes[said] = '\0';
+
+		if (!limit)
+		{
+			speak = at;
+			break;
+		}
+		if (at.reduceForce && !reduced)
+		{
+			break;
+		}
+		speak = at;
+		if (next == 0u)
+		{
+			break;
+		}
+		at.reduceTarget = next;
+		at.reduceForce = 1;
+		at.reduceWhy = why[tries];
+	}
+
+	return RldMk_BuildOnce(ply, &speak, b);
 }
 
 //========================================================================================
@@ -5973,6 +6599,17 @@ static void RldMk_EmitFacts(const struct RldMkBuild *b, u32 templateId)
 		RldMk_Fact("triangles", "%u", b->triangleCount);
 	}
 
+	if (b->reduced)
+	{
+		char reduced[4][16];
+
+		snprintf(reduced[0], sizeof(reduced[0]), "%u", b->reduceFrom);
+		snprintf(reduced[1], sizeof(reduced[1]), "%u", b->reduceTo);
+		snprintf(reduced[2], sizeof(reduced[2]), "%u", b->reduceFrom * RLDCHAR_DRAW_BYTES_G3);
+		snprintf(reduced[3], sizeof(reduced[3]), "%u", b->reduceTo * RLDCHAR_DRAW_BYTES_G3);
+		Rld_Emit("char", "reduced", reduced[0], reduced[1], reduced[2], reduced[3], (const char *)NULL);
+	}
+
 	if (b->fitted)
 	{
 		char fit[5][24];
@@ -6070,6 +6707,12 @@ static void RldMk_PrintFacts(const struct RldMkBuild *b, const struct RldMkOptio
 		printf("  fit           none - the model as exported, x%g\n", opt->scale);
 	}
 
+	if (b->reduced)
+	{
+		printf("  reduced       %u -> %u triangles (automatically), draw memory %u -> %u bytes\n", b->reduceFrom, b->reduceTo,
+		       b->reduceFrom * RLDCHAR_DRAW_BYTES_G3, b->reduceTo * RLDCHAR_DRAW_BYTES_G3);
+	}
+
 	if (b->partCount != 0u)
 	{
 		printf("  parts         %u - kart %u, driver %u, steering wheel %u triangles\n", b->partCount, b->groupTriangles[RLDMK_GROUP_KART],
@@ -6118,6 +6761,17 @@ static void RldMk_PrintFacts(const struct RldMkBuild *b, const struct RldMkOptio
 	}
 }
 
+// The options of make-char without switches: --fit crash, --reduce auto.
+static void RldMk_DefaultOptions(struct RldMkOptions *opt)
+{
+	memset(opt, 0, sizeof(*opt));
+	opt->colorTarget = 64u;
+	opt->scale = 1.0;
+	opt->sizePercent = 100u;
+	opt->fit = 1;
+	opt->reduce = 1;
+}
+
 static int RldChar_MakeCommand(int argc, char **argv)
 {
 	static char outPath[RLD_PATH_MAX + 16];
@@ -6134,6 +6788,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	const char *forwardArg = NULL;
 	const char *scaleArg = NULL;
 	const char *fitArg = NULL;
+	const char *reduceArg = NULL;
 	const char *outArg = NULL;
 	const char *sizeArg = NULL;
 	const char *iconArg = NULL;
@@ -6161,13 +6816,10 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	char digestText[65];
 	int i;
 
-	memset(&opt, 0, sizeof(opt));
+	RldMk_DefaultOptions(&opt);
 	memset(&ply, 0, sizeof(ply));
 	memset(&build, 0, sizeof(build));
 	memset(nameField, 0, sizeof(nameField));
-	opt.colorTarget = 64u;
-	opt.scale = 1.0;
-	opt.sizePercent = 100u;
 	shownName[0] = '\0';
 	digestText[0] = '\0';
 	RldMk_ResetSaid();
@@ -6224,6 +6876,10 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		else if ((strcmp(arg, "--fit") == 0) && hasValue)
 		{
 			fitArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--reduce") == 0) && hasValue)
+		{
+			reduceArg = argv[++i];
 		}
 		else if ((strcmp(arg, "--out") == 0) && hasValue)
 		{
@@ -6329,6 +6985,18 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		else
 		{
 			opt.scale = value;
+		}
+	}
+
+	if ((reduceArg != NULL) && (strcmp(reduceArg, "auto") != 0))
+	{
+		if (strcmp(reduceArg, "off") == 0)
+		{
+			opt.reduce = 0;
+		}
+		else
+		{
+			RldMk_Say("error", "reduce", reduceArg, "Reduce must be auto or off.");
 		}
 	}
 
@@ -6460,6 +7128,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		snprintf(number, sizeof(number), "%g", opt.scale);
 		Rld_Emit("value", "scale", number, ((scaleArg != NULL) && !opt.fit) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "fit", opt.fit ? "crash" : "none", (fitArg != NULL) ? "switch" : "default", (const char *)NULL);
+		Rld_Emit("value", "reduce", opt.reduce ? "auto" : "off", (reduceArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "two_sided", opt.twoSided ? "yes" : "no", opt.twoSided ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "out", outPath, (outArg != NULL) ? "switch" : "default", (const char *)NULL);
 		snprintf(number, sizeof(number), "%u", opt.sizePercent);
@@ -7080,6 +7749,10 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "                              is found), at most as tall as the tallest driver\n");
 	fprintf(out, "                              (%.1f), the factor rounded to 4 significant\n", RLDMK_RETAIL_HEIGHT_MAX);
 	fprintf(out, "                              digits; none: as exported, in meters\n");
+	fprintf(out, "  --reduce auto|off           auto (default): a model of more than %u\n", (u32)RLDMK_REDUCE_LIMIT);
+	fprintf(out, "                              triangles is reduced to at most %u, kart,\n", RLDMK_REDUCE_TARGET);
+	fprintf(out, "                              driver and steering wheel in proportion; off:\n");
+	fprintf(out, "                              such a model is refused (model-tris)\n");
 	fprintf(out, "  --scale <f>                 multiply the model (default 1), only with\n");
 	fprintf(out, "                              --fit none\n");
 	fprintf(out, "  --two-sided                 draw both sides of every triangle\n");
@@ -7727,7 +8400,24 @@ static void RldMk_SelfTestChain(struct RldMkTestMesh *mesh)
 		RldMk_TestFace(mesh, 5u, v, v + 1u, v + 2u, v + 3u, v + 4u);
 	}
 	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
-	RldMk_Test(!ok && RldMk_Said("ply-ngon"), "five corners refused", "said: %s", s_rldMkCodes);
+	RldMk_Test(ok && RldMk_Said("ply-ngon-split") && !RldMk_Said("ply-ngon"), "five corners split into triangles (ply-ngon-split)", "said: %s",
+	           s_rldMkCodes);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+
+	// Five corners on one line: no triangle to cut, refused.
+	RldMk_TestStandard(mesh, 1u, 0, 0.0, -1);
+	{
+		const u32 v = RldMk_TestVertex(mesh, 0.0, 0.5, -0.7, 50u);
+
+		RldMk_TestVertex(mesh, 0.1, 0.5, -0.7, 50u);
+		RldMk_TestVertex(mesh, 0.2, 0.5, -0.7, 50u);
+		RldMk_TestVertex(mesh, 0.3, 0.5, -0.7, 50u);
+		RldMk_TestVertex(mesh, 0.4, 0.5, -0.7, 50u);
+		RldMk_TestFace(mesh, 5u, v, v + 1u, v + 2u, v + 3u, v + 4u);
+	}
+	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+	RldMk_Test(!ok && RldMk_Said("ply-ngon"), "five corners on a line refused (ply-ngon)", "said: %s", s_rldMkCodes);
 	RldMk_FreeBuild(&b);
 	RldMk_FreePly(&ply);
 
@@ -7820,10 +8510,12 @@ static void RldMk_SelfTestChain(struct RldMkTestMesh *mesh)
 		RldMk_FreePly(&ply);
 	}
 
-	// Too many triangles for the draw memory.
+	// Too many triangles for the draw memory (996), with --reduce off
+	// (RldMk_SelfTestReduce has the same model with auto).
 	RldMk_TestStandard(mesh, 9u, 0, 0.0, -1);
+	opt.reduce = 0;
 	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
-	RldMk_Test(!ok && RldMk_Said("model-tris"), "more draw memory than allowed refused", "said: %s", s_rldMkCodes);
+	RldMk_Test(!ok && RldMk_Said("model-tris"), "more draw memory than allowed refused (--reduce off)", "said: %s", s_rldMkCodes);
 	RldMk_FreeBuild(&b);
 	RldMk_FreePly(&ply);
 
@@ -8494,12 +9186,17 @@ static void RldMk_SelfTestChri(const u8 *good, size_t goodSize)
 // PLAIN with --fit none - the file make-char wrote without switches before
 // --size, --icon, --preview and --fit existed. SIZE_ICON with --fit none,
 // --size 120 and test picture A (RldMk_TestPixelA) as --icon. FIT without
-// further switches (--fit crash, the factor 0.9757). A different value means
-// characters are no longer written the same way - never update it to make the
-// test pass.
+// further switches (--fit crash, the factor 0.9757). A different value of
+// these three means characters are no longer written the same way - never
+// update them to make the test pass.
+// REDUCED from the same model with a driver split 9 (996 triangles) and
+// --fit none: --reduce auto brings it to at most 797. Unlike the three above it
+// follows deliberate changes of the reducer (tools/rldpack_reduce.inc): such a
+// change updates it, on purpose and in the same change; nothing else may.
 #define RLDMK_GOLDEN_PLAIN "ba7e3208bc98b2af5460110ae6d7d64afe888771b76747a74ae30f3190ce3186"
 #define RLDMK_GOLDEN_SIZE_ICON "9dc78f1370c2e360f2758858b0efcec9c7b21ea7bcedb9be12e5b2f7029a1728"
 #define RLDMK_GOLDEN_FIT "8c3bda92c3e1dc5f761f3b9eb2f281595cc9d290319901c82b024d0a2c433e95"
+#define RLDMK_GOLDEN_REDUCED "12bfd7bfc5e64ea434695bb90be9629a91f9a52c4f234bff0ec2b440f37f990f"
 
 // --- --size --------------------------------------------------------------------------
 
@@ -8835,13 +9532,239 @@ static void RldMk_SelfTestFit(struct RldMkTestMesh *mesh)
 		RldMk_FreePly(&ply);
 	}
 
-	// A face of five corners: nothing to measure, so nothing fitted, and the
-	// real pass says ply-ngon once (the measuring pass leaves no error behind).
+	// A face of five corners on a line: nothing to measure, so nothing fitted,
+	// and the real pass says ply-ngon once (the measuring pass leaves no error
+	// behind).
 	RldMk_TestStandard(mesh, 2u, 0, 0.0, -1);
-	RldMk_TestFace(mesh, 5u, 0u, 1u, 2u, 3u, 4u);
+	{
+		const u32 first = RldMk_TestVertex(mesh, 0.0, 0.5, -0.7, 50u);
+
+		RldMk_TestVertex(mesh, 0.1, 0.5, -0.7, 50u);
+		RldMk_TestVertex(mesh, 0.2, 0.5, -0.7, 50u);
+		RldMk_TestVertex(mesh, 0.3, 0.5, -0.7, 50u);
+		RldMk_TestVertex(mesh, 0.4, 0.5, -0.7, 50u);
+		RldMk_TestFace(mesh, 5u, first, first + 1u, first + 2u, first + 3u, first + 4u);
+	}
 	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
 	RldMk_Test(!ok && !b.fitted && (RldMk_TestSaidCount("ply-ngon") == 1u) && (s_rldMkErrors == 1), "--fit crash on an n-gon: ply-ngon once, not fitted",
 	           "built %d, fitted %d, errors %d, said: %s", ok, b.fitted, s_rldMkErrors, s_rldMkCodes);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+}
+
+// --- n-gons and --reduce ---------------------------------------------------------------
+
+static void RldMk_TestReport(const char *line)
+{
+	printf("%s\n", line);
+}
+
+// RldMk_SplitNgon alone, on positions of its own: an L of six corners (area 3)
+// and five corners on a line.
+static void RldMk_SelfTestNgon(void)
+{
+	double position[6 * 3] = {0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 2.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 2.0, 0.0, 0.0, 2.0, 0.0};
+	double line[5 * 3] = {0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 2.0, 0.0, 0.0, 3.0, 0.0, 0.0, 4.0, 0.0, 0.0};
+	u32 vertexPosition[6] = {0u, 1u, 2u, 3u, 4u, 5u};
+	const u32 corners[6] = {0u, 1u, 2u, 3u, 4u, 5u};
+	u32 triangle[3 * 6];
+	struct RldMkBuild b;
+	double area = 0.0;
+	int turned = 0;
+	int ok;
+	u32 t;
+
+	memset(&b, 0, sizeof(b));
+	b.position = position;
+	b.vertexPosition = vertexPosition;
+	b.triangle = triangle;
+	ok = RldMk_SplitNgon(&b, corners, 6u);
+	for (t = 0; ok && (t < b.triangleCount); t++)
+	{
+		double n[3];
+
+		RldMk_Cross(&position[3u * triangle[3u * t]], &position[3u * triangle[3u * t + 1u]], &position[3u * triangle[3u * t + 2u]], n);
+		area += 0.5 * n[2];
+		turned |= !(n[2] > 0.0);
+	}
+	RldMk_Test(ok && (b.triangleCount == 4u) && (area == 3.0) && !turned && (triangle[0] == 1u) && (triangle[1] == 2u) && (triangle[2] == 3u),
+	           "an L of six corners: 4 triangles, area 3, wound like the face, the best ear first (corner 2, a tie with 4)", "split %d, %u triangles, area %g, turned %d", ok,
+	           b.triangleCount, area, turned);
+
+	memset(&b, 0, sizeof(b));
+	b.position = line;
+	b.vertexPosition = vertexPosition;
+	b.triangle = triangle;
+	RldMk_Test(!RldMk_SplitNgon(&b, corners, 5u) && (b.triangleCount == 0u), "five corners on a line: not split", "%u triangles", b.triangleCount);
+}
+
+static void RldMk_SelfTestReduce(struct RldMkTestMesh *mesh)
+{
+	struct RldMkOptions opt;
+	struct RldMkPly ply;
+	struct RldMkPly plyAgain;
+	struct RldMkBuild b;
+	struct RldMkBuild again;
+	struct RldCharFinding first;
+	struct RldCharModelFacts facts;
+	u32 counts[RLDMK_GROUPS];
+	u32 targets[RLDMK_GROUPS];
+	int ok;
+	int same;
+
+	s_rldMkTestFailed += RldRed_SelfTest(RldMk_TestReport);
+	RldMk_SelfTestNgon();
+
+	// THE TARGETS: small groups whole, the rest in proportion, the leftover
+	// by the largest remainder.
+	counts[0] = 12u;
+	counts[1] = 972u;
+	counts[2] = 12u;
+	ok = RldMk_ReduceTargets(counts, RLDMK_REDUCE_TARGET, targets);
+	RldMk_Test(ok && (targets[0] == 12u) && (targets[1] == 773u) && (targets[2] == 12u), "reduce targets 12/972/12 -> 12/773/12", "%u %u %u",
+	           targets[0], targets[1], targets[2]);
+	counts[0] = 300u;
+	counts[1] = 600u;
+	counts[2] = 100u;
+	ok = RldMk_ReduceTargets(counts, 797u, targets);
+	RldMk_Test(ok && (targets[0] == 239u) && (targets[1] == 478u) && (targets[2] == 80u) && ((targets[0] + targets[1] + targets[2]) == 797u),
+	           "reduce targets 300/600/100 -> 239/478/80 (largest remainder)", "%u %u %u", targets[0], targets[1], targets[2]);
+	counts[0] = 20u;
+	counts[1] = 30u;
+	counts[2] = 24u;
+	RldMk_Test(!RldMk_ReduceTargets(counts, 40u, targets), "reduce targets: small groups beyond the target refused", "accepted");
+	counts[0] = 100u;
+	counts[1] = 100u;
+	counts[2] = 100u;
+	ok = RldMk_ReduceTargets(counts, 298u, targets);
+	RldMk_Test(ok && (targets[0] == 100u) && (targets[1] == 99u) && (targets[2] == 99u), "reduce targets: equal remainders go to the lower group",
+	           "%u %u %u", targets[0], targets[1], targets[2]);
+
+	// The split-9 model of 996 triangles, --reduce auto: at most 797, the
+	// game's check passes, built twice the same, model-reduced said once.
+	memset(&plyAgain, 0, sizeof(plyAgain));
+	memset(&again, 0, sizeof(again));
+	RldMk_TestOptions(&opt);
+	opt.reduce = 1;
+	RldMk_TestStandard(mesh, 9u, 0, 0.0, -1);
+	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+	ok = ok && b.reduced && (b.reduceFrom == 996u) && (b.reduceTo <= RLDMK_REDUCE_TARGET) && (b.drawCount <= RLDMK_REDUCE_TARGET) &&
+	     (RldChar_CheckModel(b.cmdl, b.cmdlSize, &first, NULL, NULL, &facts) == RLDCHAR_VERDICT_OK) && (facts.triangles == b.drawCount) &&
+	     (b.groupTriangles[RLDMK_GROUP_KART] == 12u) && (b.groupTriangles[RLDMK_GROUP_WHEEL] == 12u);
+	RldMk_Test(ok && (RldMk_TestSaidCount("model-reduced") == 1u) && !RldMk_Said("model-tris"),
+	           "996 triangles reduced automatically to at most 797, the game's check passes", "built %d, %u -> %u, kart %u, wheel %u, said: %s", ok,
+	           b.reduceFrom, b.reduceTo, b.groupTriangles[RLDMK_GROUP_KART], b.groupTriangles[RLDMK_GROUP_WHEEL], s_rldMkCodes);
+	same = ok && RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again) && (again.cmdlSize == b.cmdlSize) && (memcmp(again.cmdl, b.cmdl, b.cmdlSize) == 0);
+	RldMk_Test(same, "the reduced model built twice: the same bytes", "differ");
+	RldMk_FreeBuild(&again);
+	RldMk_FreePly(&plyAgain);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+
+	// The default options of make-char (--fit crash, --reduce auto) on the same
+	// model.
+	RldMk_DefaultOptions(&opt);
+	RldMk_TestStandard(mesh, 9u, 0, 0.0, -1);
+	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+	RldMk_Test(ok && b.fitted && b.reduced && (b.reduceTo <= RLDMK_REDUCE_TARGET), "make-char's defaults: fitted and reduced", "built %d, said: %s", ok,
+	           s_rldMkCodes);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+	RldMk_TestOptions(&opt);
+	opt.reduce = 1;
+
+	// 804 TRIANGLES, TOO MANY RECORDS: a kart, a driver and 200 quads and 380
+	// triangles apart behind him. Off: mem-model. Auto: nothing to reduce at
+	// 804, but the file is too large - the target goes down by 5 % until it
+	// fits, and model-reduced is said once, with the reason.
+	{
+		const double kartLo[3] = {-0.40, 0.05, -0.85};
+		const double kartHi[3] = {0.40, 0.30, 0.85};
+		const double driverLo[3] = {-0.20, 0.50, 0.00};
+		const double driverHi[3] = {0.20, 1.20, 0.40};
+		u32 k;
+
+		mesh->vertexCount = 0;
+		mesh->faceCount = 0;
+		RldMk_TestBox(mesh, kartLo, kartHi, 1u, 0u, 0, -1);
+		RldMk_TestBox(mesh, driverLo, driverHi, 1u, 10u, 0, -1);
+		for (k = 0; k < 200u; k++)
+		{
+			const double x = -0.30 + 0.03 * (double)(k % 20u);
+			const double y = 0.48 + 0.03 * (double)(k / 20u);
+			const u32 v = RldMk_TestVertex(mesh, x, y, -0.5, 30u + (k % 30u));
+
+			RldMk_TestVertex(mesh, x + 0.015, y, -0.5, 30u + (k % 30u));
+			RldMk_TestVertex(mesh, x + 0.015, y + 0.015, -0.5, 30u + (k % 30u));
+			RldMk_TestVertex(mesh, x, y + 0.015, -0.5, 30u + (k % 30u));
+			RldMk_TestFace(mesh, 4u, v, v + 1u, v + 2u, v + 3u, 0u);
+		}
+		for (k = 0; k < 380u; k++)
+		{
+			const double x = -0.30 + 0.03 * (double)(k % 20u);
+			const double y = 0.80 + 0.03 * (double)(k / 20u);
+			const u32 v = RldMk_TestVertex(mesh, x, y, -0.5, 60u + (k % 30u));
+
+			RldMk_TestVertex(mesh, x + 0.015, y, -0.5, 60u + (k % 30u));
+			RldMk_TestVertex(mesh, x, y + 0.015, -0.5, 60u + (k % 30u));
+			RldMk_TestFace(mesh, 3u, v, v + 1u, v + 2u, 0u, 0u);
+		}
+
+		opt.reduce = 0;
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+		RldMk_Test(!ok && (b.triangleCount == 804u) && RldMk_Said("mem-model"), "804 triangles in 582 parts, --reduce off: mem-model",
+		           "built %d, %u triangles, said: %s", ok, b.triangleCount, s_rldMkCodes);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+
+		opt.reduce = 1;
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && b.reduced && (b.reduceFrom == 804u) && (b.reduceTo < 757u) &&
+		     (RldChar_CheckModel(b.cmdl, b.cmdlSize, &first, NULL, NULL, &facts) == RLDCHAR_VERDICT_OK) && (b.cmdlSize <= RLDCHAR_LIMIT_CMDL);
+		RldMk_Test(ok && (RldMk_TestSaidCount("model-reduced") == 1u) && !RldMk_Said("mem-model"),
+		           "the same, --reduce auto: the target lowered until the file fits, model-reduced once", "built %d, %u -> %u, %u bytes, said: %s", ok,
+		           b.reduceFrom, b.reduceTo, (u32)b.cmdlSize, s_rldMkCodes);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+	}
+
+	// 824 TRIANGLES THE REDUCER CANNOT TOUCH (one-triangle parts): warning
+	// model-reduce, then model-tris - nothing else.
+	{
+		const double kartLo[3] = {-0.40, 0.05, -0.85};
+		const double kartHi[3] = {0.40, 0.30, 0.85};
+		const double driverLo[3] = {-0.20, 0.50, 0.00};
+		const double driverHi[3] = {0.20, 1.20, 0.40};
+		u32 k;
+
+		mesh->vertexCount = 0;
+		mesh->faceCount = 0;
+		RldMk_TestBox(mesh, kartLo, kartHi, 1u, 0u, 0, -1);
+		RldMk_TestBox(mesh, driverLo, driverHi, 1u, 10u, 0, -1);
+		for (k = 0; k < 800u; k++)
+		{
+			const double x = -0.30 + 0.02 * (double)(k % 30u);
+			const double y = 0.48 + 0.02 * (double)(k / 30u);
+			const u32 v = RldMk_TestVertex(mesh, x, y, -0.5, 60u + (k % 30u));
+
+			RldMk_TestVertex(mesh, x + 0.01, y, -0.5, 60u + (k % 30u));
+			RldMk_TestVertex(mesh, x, y + 0.01, -0.5, 60u + (k % 30u));
+			RldMk_TestFace(mesh, 3u, v, v + 1u, v + 2u, 0u, 0u);
+		}
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+		RldMk_Test(!ok && !b.reduced && RldMk_Said("model-reduce") && RldMk_Said("model-tris") && !RldMk_Said("model-reduced"),
+		           "824 triangles the reducer cannot touch: model-reduce, then model-tris", "built %d, said: %s", ok, s_rldMkCodes);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+	}
+
+	// At most 805 nothing is reduced: the bytes of --reduce off.
+	RldMk_TestStandard(mesh, 2u, 0, 0.0, -1);
+	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && !b.reduced;
+	opt.reduce = 0;
+	same = ok && RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again) && (again.cmdlSize == b.cmdlSize) && (memcmp(again.cmdl, b.cmdl, b.cmdlSize) == 0);
+	RldMk_Test(same, "--reduce auto leaves a small model alone (the bytes of off)", "built %d", ok);
+	RldMk_FreeBuild(&again);
+	RldMk_FreePly(&plyAgain);
 	RldMk_FreeBuild(&b);
 	RldMk_FreePly(&ply);
 }
@@ -10081,13 +11004,15 @@ static void RldMk_SelfTestGolden(struct RldMkTestMesh *mesh, const struct RldPng
 		return;
 	}
 
-	for (k = 0; k < 3; k++)
+	for (k = 0; k < 4; k++)
 	{
-		static const char *const builtNames[3] = {"golden model built twice: the same bytes",
+		static const char *const builtNames[4] = {"golden model built twice: the same bytes",
 		                                          "golden model, --size 120 and icon, built twice: the same bytes",
-		                                          "golden model, --fit crash, built twice: the same bytes"};
-		static const char *const goldenNames[3] = {"make-char --fit none", "make-char --fit none --size 120 --icon", "make-char (--fit crash)"};
-		static const char *const goldens[3] = {RLDMK_GOLDEN_PLAIN, RLDMK_GOLDEN_SIZE_ICON, RLDMK_GOLDEN_FIT};
+		                                          "golden model, --fit crash, built twice: the same bytes",
+		                                          "golden model, split 9 and --reduce auto, built twice: the same bytes"};
+		static const char *const goldenNames[4] = {"make-char --fit none", "make-char --fit none --size 120 --icon", "make-char (--fit crash)",
+		                                           "make-char --fit none, split 9 (--reduce auto)"};
+		static const char *const goldens[4] = {RLDMK_GOLDEN_PLAIN, RLDMK_GOLDEN_SIZE_ICON, RLDMK_GOLDEN_FIT, RLDMK_GOLDEN_REDUCED};
 		struct RldMkOptions opt;
 		struct RldMkPly ply;
 		struct RldMkBuild b;
@@ -10102,7 +11027,8 @@ static void RldMk_SelfTestGolden(struct RldMkTestMesh *mesh, const struct RldPng
 		RldMk_TestOptions(&opt);
 		opt.sizePercent = (k == 1) ? 120u : 100u;
 		opt.fit = (k == 2);
-		RldMk_TestStandard(mesh, 2u, 0, 0.0, -1);
+		opt.reduce = (k == 3);
+		RldMk_TestStandard(mesh, (k == 3) ? 9u : 2u, 0, 0.0, -1);
 
 		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again);
 		if (ok)
@@ -10171,6 +11097,7 @@ static int RldChar_SelfTest(void)
 	RldMk_SelfTestChri(good, goodSize);
 	RldMk_SelfTestSize(mesh);
 	RldMk_SelfTestFit(mesh);
+	RldMk_SelfTestReduce(mesh);
 	RldMk_SelfTestPreview(mesh);
 	RldMk_SelfTestPng();
 	RldMk_SelfTestVoices();
