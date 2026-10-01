@@ -135,7 +135,9 @@ Planned, in no particular order and without a date:
 - Time Trial and Battle on custom tracks
 - Best times on custom tracks
 - Custom characters - a first version is in the development version (Reload
-  Studio's Character page and a `characters` folder next to the game); their
+  Studio's Character page and a `characters` folder next to the game). It
+  fits every model to Crash's size, reduces a model with too many triangles
+  by itself and can leave out the kart wheels for a model with its own. Their
   voices and their own portrait in the menu come next
 - Skin support for the drivers
 - ...and more

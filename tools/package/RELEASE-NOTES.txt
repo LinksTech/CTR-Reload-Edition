@@ -76,6 +76,32 @@ NEW IN THIS VERSION
 - The size makes only the driver and the steering wheel larger or smaller;
   the kart keeps its size. Visual size only - physics and collision follow
   the driving style.
+- Crash is the standard size: every character model is fitted to the size
+  of Crash with his kart, whatever scale it was exported in. Its kart gets
+  the length of Crash's kart (112.4 game units); with "Show kart wheels" off
+  the whole model gets that length. It never gets taller than the tallest
+  original driver. The size slider works from there: 100 % = Crash size.
+  The preview shows a dashed "Crash size" box. For scripts: rldpack
+  make-char --fit crash is the default; --fit none keeps the exported size
+  and is the only mode that takes --scale, so a script that passes --scale
+  now needs --fit none as well.
+- Automatic reduction: a model with more triangles than the game has draw
+  memory for (805 triangles without textures - as much as N. Oxide, the most
+  any original driver uses) is reduced to at most 797 triangles, only as far
+  as needed. The shape and the colours stay, kart, driver and steering wheel
+  are reduced each on its own, and the same model always gives the same
+  result. Reload Studio shows the triangles and the draw memory before and
+  after and says "reduced automatically". The check box "Reduce
+  automatically" (on by default; rldpack make-char --reduce off) brings back
+  the old refusal.
+- Faces with more than four corners are split into triangles; only faces
+  that cannot be split (twisted, or without area) are still refused.
+- Kart wheels on or off: the check box "Show kart wheels" (on by default;
+  rldpack make-char --wheels off) is stored in the .rldchar. Off is for
+  models that bring their own wheels or their own vehicle: the game then
+  draws no kart wheels (and no wheel reflections) for that driver; tyre dust
+  and skid marks stay. An older game ignores the setting and draws the
+  wheels. Details of the file: docs/CONTAINER_FORMAT.md in the source code.
 
 
 KNOWN ISSUES
@@ -100,6 +126,8 @@ KNOWN ISSUES
 - Custom characters only in the one-player ARCADE driver select; not in
   NITRO-PIT CRYSTAL or CTR, Time Trial, Adventure, Battle or with two
   players.
+- Custom characters with "Show kart wheels" off: tyre dust and skid marks
+  still show where the game's wheels would be.
 - Very large tracks: flickering holes near the camera are possible when a
   track has very coarse BSP leaves. The log then contains
   "rendered list full" - please report it, with the track's file name and

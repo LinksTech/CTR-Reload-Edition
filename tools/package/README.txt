@@ -113,6 +113,9 @@ players.
   line starting with "[CTR Char] REFUSED").
 - The driving style chosen in Reload Studio decides how the kart drives
   (speed, acceleration, turning) and its engine sound.
+- A character built with "Show kart wheels" off (4.3) drives without the
+  game's kart wheels - its model brings its own. Tyre dust and skid marks
+  stay. The log line "[CTR Char] loaded ..." then ends in ", wheels hidden".
 - For now a custom driver is silent, and the menu shows the portrait of Fake
   Crash instead of the character's own icon.
 
@@ -183,11 +186,14 @@ for the game (and for cups).
 
 4.3 Page "Character" - build a character
   Model (PLY) Your model of driver, steering wheel and kart in one PLY file
-              with vertex colours (ASCII or binary), 1 unit = 1 metre, +Y up,
-              +Z forward. The kart is the part at the bottom, about 1.8 long;
-              the game draws the wheels. You can also drag files onto the
-              page: a .ply is the model, a .png the icon, a folder the
-              voices.
+              with vertex colours (ASCII or binary), +Y up, +Z forward, at
+              any scale: Reload Studio fits it to Crash size (see Size). The
+              kart is the part at the bottom; the game draws the wheels (see
+              "Show kart wheels"). Faces with more than four corners are
+              split into triangles. A model with too many triangles is
+              reduced by itself (see "Reduce automatically"). You can also
+              drag files onto the page: a .ply is the model, a .png the
+              icon, a folder the voices.
   Name        Shown in the driver select: 1 to 17 characters, capitals,
               A-Z 0-9 space ! % ' + , - . / : < = > ? _ (anything else is
               left out while you type).
@@ -195,12 +201,37 @@ for the game (and for cups).
               Balanced, Acceleration, Speed or Turning, each with the
               original drivers that drive like it (default Balanced). This
               decides how the kart drives in the game.
-  Size        50 to 200 % (default 100): makes the driver and the steering
-              wheel larger or smaller; the kart keeps its size. Visual size
-              only - physics and collision follow the driving style. After
-              the first check the bar shows the sizes your model allows and
-              the rest of it is locked; the line below says the range, and
-              why when the bar had to move back.
+  Size        50 to 200 % (default 100). 100 % = Crash size: every model is
+              first fitted to the size of Crash with his kart. Its kart gets
+              the length of Crash's kart (112.4 game units); with "Show kart
+              wheels" off the whole model gets that length. It never gets
+              taller than the tallest original driver. The page shows the
+              factor, for example "Fitted to Crash size: x0.71 (159.2 ->
+              112.4 long)".
+              The bar makes the driver and the steering wheel larger or
+              smaller than that; the kart keeps its size. Visual size only -
+              physics and collision follow the driving style. After the
+              first check the bar shows the sizes your model allows and the
+              rest of it is locked; the line below says the range, and why
+              when the bar had to move back.
+  Reduce automatically
+              On by default. The game has draw memory for 805 triangles per
+              driver (as much as N. Oxide, the most any original driver
+              uses). A model with more is reduced to at most 797 triangles,
+              only as far as needed: the shape and the colours stay, kart,
+              driver and steering wheel are reduced each on its own, and the
+              same model always gives the same result. The page then shows
+              both counts, for example "Triangles 987 -> 797, draw memory
+              27 636 -> 22 316 bytes - reduced automatically". Off: such a
+              model is refused; reduce it yourself in Blender (Decimate
+              modifier).
+  Show kart wheels
+              On by default: the game draws its kart wheels on your kart, as
+              for every driver. Turn it off for a model that brings its own
+              wheels or its own vehicle: the game then draws no kart wheels
+              (and no wheel reflections) for this driver; tyre dust and skid
+              marks stay. The choice is stored in the .rldchar. An older
+              game does not know it and draws the wheels.
   Icon (PNG)  Optional. Your picture and how the game will have it (cut to
               44:26 in the middle, 44 x 26 pixels, 15 colours and
               transparent) side by side. The game does not show the icon yet;
@@ -213,8 +244,10 @@ for the game (and for cups).
               silent in the game.
   Preview     The model as the game will draw it. Drag to turn it; the list
               at the top right of the card picks Neutral, Steering left or
-              Steering right. The grey kart is an original kart, for the
-              size.
+              Steering right. The grey kart is an original kart and the
+              dashed box is Crash size, both for the size. The dark boxes on
+              the kart are the wheels the game draws; with "Show kart
+              wheels" off there are none.
   Output      Where the .rldchar is written; empty = next to the model. Best:
               the game's "characters" folder, then the game finds it at its
               next start.
@@ -288,6 +321,11 @@ Reload Studio
     NITRO-PIT -> CUP. Try a cup with problems and read the check list.
 [ ] Character page: build a character from your model, with and without
     an icon, at a few sizes. The preview matches what you see in the game.
+[ ] Character page: a model exported at any scale comes out at Crash size
+    (100 %) next to the dashed box. A model of more than 805 triangles is
+    "reduced automatically" and still looks like itself in the game.
+[ ] Character page: a model with its own wheels or vehicle, "Show kart
+    wheels" off - the game draws no kart wheels for it.
 [ ] Break the character on purpose: a model without kart, a very large
     model, a broken PNG, a voice file in a wrong format. Reload Studio must
     say what is wrong, never crash.
@@ -332,6 +370,8 @@ Characters
 - Only in the one-player ARCADE driver select; not in NITRO-PIT CRYSTAL or
   CTR, Time Trial, Adventure, Battle or with two players.
 - The size is visual only - physics and collision follow the driving style.
+- With "Show kart wheels" off, tyre dust and skid marks still show where the
+  game's wheels would be.
 
 Previews
 - The invisible kart still hits crates and fruit, so they break in the
