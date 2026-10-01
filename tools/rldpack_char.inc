@@ -161,8 +161,8 @@ static void RldChar_Usage(FILE *out);
 // MESSAGES
 //========================================================================================
 //
-// Every check speaks twice: a line on stderr for people and @msg for the
-// Alpha-Maker (Rld_Say), both from the same text, so that they cannot drift
+// Every check speaks twice: a line on stderr for people and @msg for
+// Reload Studio (Rld_Say), both from the same text, so that they cannot drift
 // apart. The self-test runs the same checks quietly and only asks which codes
 // were said.
 
@@ -246,7 +246,7 @@ static int RldMk_Said(const char *code)
 	return 0;
 }
 
-// @char <fact> <value> - only the Alpha-Maker reads these; the file carries no
+// @char <fact> <value> - only Reload Studio reads these; the file carries no
 // such numbers.
 static void RldMk_Fact(const char *key, const char *format, ...)
 {
@@ -3663,7 +3663,7 @@ static u8 *RldMk_Container(const u8 *chri, size_t chriSize, const u8 *cmdl, size
 // THE COMMAND: rldpack make-char
 //========================================================================================
 
-// @result failed for the Alpha-Maker, once, whatever went wrong.
+// @result failed for Reload Studio, once, whatever went wrong.
 static int RldMk_Fail(int code)
 {
 	if (s_machine && !s_machineResult)
@@ -3778,7 +3778,7 @@ static int RldMk_ParseWhole(const char *text, u32 max, u32 *out)
 	return 1;
 }
 
-// What the build found, as @char lines (the Alpha-Maker shows them; the file
+// What the build found, as @char lines (Reload Studio shows them; the file
 // carries none of these numbers). As far as the chain got.
 static void RldMk_EmitFacts(const struct RldMkBuild *b, u32 templateId)
 {

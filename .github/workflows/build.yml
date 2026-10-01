@@ -3,7 +3,7 @@
 # Every push to main or dev: build (32-bit, MSVC), run the self-tests, package,
 # and attach the package to the run as a download.
 # Every version tag (v*, e.g. v0.1.0-beta1): the same, plus a GitHub release
-# with exactly four files: the programs ctr_native.exe and alphamaker.exe,
+# with exactly four files: the programs ctr_native.exe and ReloadStudio.exe,
 # and LICENSE and THIRD_PARTY_NOTICES.md, because the licenses must travel
 # with the programs (GPL-3.0, and the notices of the bundled third-party
 # code). GitHub adds the source code archives of the tag by itself. The
@@ -87,8 +87,8 @@ jobs:
       # so the programs are the ones it tested and paired, and the license
       # texts are the ones packaged with them. LICENSE (GPL-3.0) and
       # THIRD_PARTY_NOTICES.md (the notices of the bundled third-party code)
-      # must travel with the programs. The exe names stay fixed (the
-      # Alpha-Maker looks for the game as ctr_native.exe); the version is in
+      # must travel with the programs. The exe names stay fixed
+      # (Reload Studio looks for the game as ctr_native.exe); the version is in
       # the release title and in the programs, not in the file names. No
       # package zip, no README: GitHub attaches the source code of the tag to
       # every release by itself.
@@ -105,9 +105,9 @@ jobs:
           case "$id" in *[!0-9a-f]*|'') echo "unexpected build id: $id"; exit 1 ;; esac
           [ ${#id} = 12 ] || { echo "unexpected build id: $id"; exit 1; }
           mkdir -p out
-          unzip -j -o "$zip" "$name/ctr_native.exe" "$name/alphamaker.exe" \
+          unzip -j -o "$zip" "$name/ctr_native.exe" "$name/ReloadStudio.exe" \
             "$name/LICENSE" "$name/THIRD_PARTY_NOTICES.md" -d out
-          for f in ctr_native.exe alphamaker.exe LICENSE THIRD_PARTY_NOTICES.md; do
+          for f in ctr_native.exe ReloadStudio.exe LICENSE THIRD_PARTY_NOTICES.md; do
             [ -s "out/$f" ] || { echo "missing or empty in the package: $f"; exit 1; }
           done
           [ -s src/.github/release-body.txt ] || { echo "release text missing"; exit 1; }
@@ -121,7 +121,7 @@ jobs:
           body_path: src/.github/release-body.txt
           files: |
             out/ctr_native.exe
-            out/alphamaker.exe
+            out/ReloadStudio.exe
             out/LICENSE
             out/THIRD_PARTY_NOTICES.md
           fail_on_unmatched_files: true

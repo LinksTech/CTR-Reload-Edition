@@ -692,7 +692,7 @@ global_variable NativeGfxTarget s_vramTarget = NATIVE_GFX_INVALID;
 
 // Invisible game window: only with --record-preview, set in
 // main.c (NativeArgs_ReadDisplayFlags), because the window comes into being in Platform_Init,
-// before the big loop. The Alpha-Maker records the preview after
+// before the big loop. Reload Studio records the preview after
 // "Build container" without a window appearing that somebody could
 // close. The frames come from the main target, not from the window. HIDDEN
 // and not MINIMIZED: a minimised window has area 0, and with that

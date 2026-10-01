@@ -4,11 +4,11 @@ Build: @BUILD@
 
 CTR Reload runs Crash Team Racing natively on Windows and loads custom tracks.
 This version is a test of two things: the game (CTR Reload @VERSION@) and
-the Alpha-Maker, the tool that turns your exported track into a track the
+Reload Studio, the tool that turns your exported track into a track the
 game can load. Play, build your tracks, race them, and tell us what breaks.
 
 The package holds the game (ctr_native.exe, with its debug symbols
-ctr_native.pdb), the Alpha-Maker (alphamaker.exe), this README.txt, the
+ctr_native.pdb), Reload Studio (ReloadStudio.exe), this README.txt, the
 RELEASE-NOTES.txt, the licenses (LICENSE, THIRD_PARTY_NOTICES.md) and the
 source code of exactly this build:
   @NAME@-source.zip
@@ -21,7 +21,7 @@ Contents
   1. What you need
   2. First start of the game
   3. Custom tracks in the game
-  4. The Alpha-Maker
+  4. Reload Studio
   5. What a track needs for each mode
   6. What we want you to test
   7. Known issues
@@ -34,19 +34,19 @@ Contents
 --------------
 1. Unpack the package folder to a place of its own, for example
    C:\Games\CTR Reload. Always keep ctr_native.exe, ctr_native.pdb and
-   alphamaker.exe together, and always from the same package.
+   ReloadStudio.exe together, and always from the same package.
 2. Start ctr_native.exe and drag your disc image onto the window (once).
-3. Start alphamaker.exe from the same folder. On the "Test in game" page the
+3. Start ReloadStudio.exe from the same folder. On the "Test in game" page the
    game must show "Found: CTR Reload @VERSION@ (@BUILD@)".
 4. On the "Track" page pick your exported track folder, set "Output" to the
    game's "tracks" folder, press "Build container". Wait until the headline
    turns green: "Container built, preview written".
 5. Start the game: ARCADE -> NITRO-PIT -> RACE (or CRYSTAL, or CTR).
 
-Always check the version first. The Alpha-Maker shows it in its title bar,
+Always check the version first. Reload Studio shows it in its title bar,
 the game writes it at the top of its log ("Version: CTR Reload @VERSION@ (...)").
 Both must show @BUILD@. When you get a new build, replace BOTH files. An
-older game or Alpha-Maker from another folder behaves differently - most
+older game or Reload Studio from another folder behaves differently - most
 "it is still broken" reports so far came from an old copy.
 
 
@@ -103,9 +103,9 @@ Custom tracks start without the camera fly-in before the countdown, even if
 the track has its own camera path. The original tracks keep their fly-in.
 
 
-4. THE ALPHA-MAKER
-------------------
-alphamaker.exe builds a track container (.rldtrack) from your exported track,
+4. RELOAD STUDIO
+----------------
+ReloadStudio.exe builds a track container (.rldtrack) from your exported track,
 makes cups, and starts the game on your track. Keep it in the same folder as
 ctr_native.exe: it finds the game and its data there, and your music needs
 the game's sound data.
@@ -169,10 +169,10 @@ for the game (and for cups).
 
 4.3 Page "Test in game" - start the game on your track
   Game program    ctr_native.exe. It is checked with its version; it must be
-                  from the same package as the Alpha-Maker, otherwise:
+                  from the same package as Reload Studio, otherwise:
                   "This game (...) is not from the same package ...". If the
                   game remembered from an earlier session is from another
-                  package, the Alpha-Maker switches once to ctr_native.exe
+                  package, Reload Studio switches once to ctr_native.exe
                   in its own folder and says "Switched from ...".
   Container       The track to test.
   Options         "Play in a window (1280 x 720)", "Driver", "Let the kart
@@ -196,7 +196,7 @@ Also good to know:
 - Bots need nav paths. Without them you race alone, auto drive is off, and
   1st place in a CTR challenge is easy.
 - At most 110 placed objects (crates, fruit, letters and every other placed
-  model). Above 90 the Alpha-Maker warns: explosions and weapons may run
+  model). Above 90 Reload Studio warns: explosions and weapons may run
   short of room.
 - "Build container" fixes the ids of the letter models c, t and r by their
   names, so the HUD shows C T R in that order, and says so.
@@ -204,10 +204,10 @@ Also good to know:
 
 6. WHAT WE WANT YOU TO TEST
 ---------------------------
-Please try these and report what does not match. Test both: the
-Alpha-Maker and the game.
+Please try these and report what does not match. Test both:
+Reload Studio and the game.
 
-Alpha-Maker
+Reload Studio
 [ ] The title bar and the game log both show @BUILD@.
 [ ] Pick your export folder: every file is found, "Minimap" and "Bot data"
     are right for your track.
@@ -219,7 +219,7 @@ Alpha-Maker
     pops up. Change something and build again - the preview is new.
 [ ] Break things on purpose: a folder without .lev, a second .lev, a
     missing .vrm, a renamed file, a very long name, odd characters in the
-    folder name. The Alpha-Maker must say what is wrong, never crash.
+    folder name. Reload Studio must say what is wrong, never crash.
 [ ] "Test in game" -> "Start game" loads your track; bots drive if it has
     nav paths; no camera fly-in before the countdown.
 [ ] Cups page: make a cup with 4 of your tracks, save it, play it in
@@ -249,7 +249,7 @@ Modes and menus
   test track has both restart points and crystals.
 - Crystal Challenge has a fixed time limit of 3:00 for every track for now.
 - CTR Challenge: letters that the exporter wrote without a collision hitbox
-  cannot be collected, so the challenge cannot be won. The Alpha-Maker does
+  cannot be collected, so the challenge cannot be won. Reload Studio does
   not check this yet.
 - No bots and no auto drive on tracks without nav paths. In a CTR Challenge
   1st place is then easy.
@@ -274,7 +274,7 @@ Tracks and sound
   The ambient sound set under "Advanced" is not tested either.
 
 Programs
-- The Alpha-Maker starts the game in developer mode for "Start game" and for
+- Reload Studio starts the game in developer mode for "Start game" and for
   the preview recording. That is intended.
 - The programs are not signed. Some virus scanners may warn about them or
   move them to quarantine; then allow them in your scanner.
@@ -294,7 +294,7 @@ what not to attach). The form asks for:
   Enter, run "ctr_native.exe --version" and paste the line it prints
   ("CTR Reload @VERSION@ (@BUILD@)")
 - what happened, what you expected, and the steps to reproduce it
-- for a custom track: its file name and the SHA-256 the Alpha-Maker shows
+- for a custom track: its file name and the SHA-256 Reload Studio shows
 - the log and screenshots (see below)
 - your Windows version, graphics card and driver version
 
@@ -304,10 +304,10 @@ Which files to attach:
   If the game crashed, the log ends with lines starting with [CTR Crash].
 - If you used "Start game" or "Build container" (the preview): the newest
   "game-test <date>.log" or "game-preview <date>.log" in
-  %TEMP%\CTR Reload Alpha-Maker (paste that path into the Explorer address
+  %TEMP%\Reload Studio (paste that path into the Explorer address
   bar).
 - A screenshot (F12 in the game) if it is about the picture; a screenshot of
-  the Alpha-Maker if it is about a message there.
+  Reload Studio if it is about a message there.
 - If the error shows before the game window (the disc image screen), a
   screenshot of that screen - nothing is logged at that point.
 
@@ -322,7 +322,7 @@ paths with your Windows user name - edit them out if you mind.
   ctr_native.exe      the game
   ctr_native.pdb      debug symbols of the game: with them a crash report
                       names the function, keep it next to ctr_native.exe
-  alphamaker.exe      the Alpha-Maker (track containers, cups, test); the
+  ReloadStudio.exe    Reload Studio (track containers, cups, test); the
                       track checker/packer (rldpack) is built into it
   README.txt          this file
   RELEASE-NOTES.txt   what is new, decisions, known issues
@@ -341,8 +341,8 @@ Created by the game next to ctr_native.exe:
   memcards\           memory card (your saves)
   ctr-settings.cfg    your settings
 
-The Alpha-Maker remembers its settings in %APPDATA%\CTR Reload\alphamaker.ini.
-To update, replace ctr_native.exe, ctr_native.pdb and alphamaker.exe; keep
+Reload Studio remembers its settings in %APPDATA%\CTR Reload\reloadstudio.ini.
+To update, replace ctr_native.exe, ctr_native.pdb and ReloadStudio.exe; keep
 the rest.
 
 

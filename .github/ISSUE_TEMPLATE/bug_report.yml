@@ -1,5 +1,5 @@
 name: Bug report
-description: Something in the game or the Alpha-Maker does not work
+description: Something in the game or Reload Studio does not work
 labels: [bug]
 body:
   - type: markdown
@@ -21,7 +21,7 @@ body:
     attributes:
       label: Version
       description: >-
-        The output of `ctr_native.exe --version`, also for an Alpha-Maker
+        The output of `ctr_native.exe --version`, also for a Reload Studio
         problem. Open the game folder, type `cmd` into the Explorer address
         bar, press Enter, run `ctr_native.exe --version` and paste the line
         it prints.
@@ -35,7 +35,7 @@ body:
       label: Where does it happen?
       options:
         - In the game (ctr_native.exe)
-        - In the Alpha-Maker (alphamaker.exe)
+        - In Reload Studio (ReloadStudio.exe)
         - In both, or not sure
     validations:
       required: true
@@ -71,8 +71,8 @@ body:
     attributes:
       label: Custom track
       description: >-
-        If a custom track is involved: its file name and the SHA-256 the
-        Alpha-Maker shows. Leave empty for the original tracks.
+        If a custom track is involved: its file name and the SHA-256
+        Reload Studio shows. Leave empty for the original tracks.
 
   - type: textarea
     id: logs
@@ -80,8 +80,8 @@ body:
       label: Log and screenshots
       description: >-
         Drag the newest log from the `logs` folder next to the game into this
-        box. If the Alpha-Maker started the game, add the newest `game-test`
-        or `game-preview` log from `%TEMP%\CTR Reload Alpha-Maker` too. If it
+        box. If Reload Studio started the game, add the newest `game-test`
+        or `game-preview` log from `%TEMP%\Reload Studio` too. If it
         is about the picture, add a screenshot (F12 in the game). Issues are
         public: do not attach disc images, any files from the game or content
         made by other people.

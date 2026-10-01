@@ -1,4 +1,4 @@
-// Version resource for the Alpha-Maker.
+// Version resource for Reload Studio.
 //
 // For the same reason as tools/rldpack.rc (see its header): a tool
 // that is handed to strangers should say what it is called, where it comes from
@@ -10,14 +10,14 @@
 
 #include <winver.h>
 
-#define ALPHAMAKER_VERSION_MAJOR 0
-#define ALPHAMAKER_VERSION_MINOR 1
-#define ALPHAMAKER_VERSION_PATCH 0
-#define ALPHAMAKER_VERSION_BUILD 0
+#define RELOADSTUDIO_VERSION_MAJOR 0
+#define RELOADSTUDIO_VERSION_MINOR 1
+#define RELOADSTUDIO_VERSION_PATCH 0
+#define RELOADSTUDIO_VERSION_BUILD 0
 
 VS_VERSION_INFO VERSIONINFO
-FILEVERSION    ALPHAMAKER_VERSION_MAJOR, ALPHAMAKER_VERSION_MINOR, ALPHAMAKER_VERSION_PATCH, ALPHAMAKER_VERSION_BUILD
-PRODUCTVERSION ALPHAMAKER_VERSION_MAJOR, ALPHAMAKER_VERSION_MINOR, ALPHAMAKER_VERSION_PATCH, ALPHAMAKER_VERSION_BUILD
+FILEVERSION    RELOADSTUDIO_VERSION_MAJOR, RELOADSTUDIO_VERSION_MINOR, RELOADSTUDIO_VERSION_PATCH, RELOADSTUDIO_VERSION_BUILD
+PRODUCTVERSION RELOADSTUDIO_VERSION_MAJOR, RELOADSTUDIO_VERSION_MINOR, RELOADSTUDIO_VERSION_PATCH, RELOADSTUDIO_VERSION_BUILD
 FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
 FILEFLAGS      0x0L
 FILEOS         VOS_NT_WINDOWS32
@@ -29,11 +29,11 @@ BEGIN
 		BLOCK "040904b0"
 		BEGIN
 			VALUE "CompanyName",      "CTR Reload"
-			VALUE "FileDescription",  "CTR Reload Alpha-Maker - track containers and cups"
+			VALUE "FileDescription",  "Reload Studio - track containers and cups"
 			VALUE "FileVersion",      "Beta 0"
-			VALUE "InternalName",     "alphamaker"
+			VALUE "InternalName",     "ReloadStudio"
 			VALUE "LegalCopyright",   "CTR Reload"
-			VALUE "OriginalFilename", "alphamaker.exe"
+			VALUE "OriginalFilename", "ReloadStudio.exe"
 			VALUE "ProductName",      "CTR Reload"
 			VALUE "ProductVersion",   "Beta 0"
 			VALUE "Comments",         "Builds .rldtrack containers with rldpack (format 4.1), edits cups.txt, tests tracks in the game."

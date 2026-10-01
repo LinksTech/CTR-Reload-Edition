@@ -4,9 +4,9 @@
 #         -P cmake/CtrBuildId.cmake
 #
 # Created only at configure time, CTR_NATIVE_BUILD_ID would go stale: a build
-# after new commits would keep carrying the old ID, the Alpha-Maker would show
+# after new commits would keep carrying the old ID, Reload Studio would show
 # "<version> (<old id>)" although its code is newer, and the pairing check
-# (Alpha-Maker <-> ctr_native.exe in tools/package/package.sh) would take two
+# (Reload Studio <-> ctr_native.exe in tools/package/package.sh) would take two
 # different states with the same old ID as a pair.
 #
 # So this script runs on every build (target ctr_build_id in

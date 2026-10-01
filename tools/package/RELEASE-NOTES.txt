@@ -1,8 +1,8 @@
 CTR Reload @VERSION@ (@BUILD@) - Release notes
 ==============================================
 
-This version is for track authors who test their own tracks with the
-Alpha-Maker.
+This version is for track authors who test their own tracks with
+Reload Studio.
 
 
 DECISIONS
@@ -12,39 +12,43 @@ DECISIONS
 - Bug reports go to GitHub issues with the "Bug report" form, see section 8
   of README.txt:
   https://github.com/LinksTech/CTR-Reload-Edition/issues/new/choose
-- The package ships the game and the Alpha-Maker. The track packer rldpack is
-  built into the Alpha-Maker and is not a separate program in the package.
+- The package ships the game and Reload Studio. The track packer rldpack is
+  built into Reload Studio and is not a separate program in the package.
 
 
 NEW IN THIS VERSION
 -------------------
+- The Alpha-Maker is now called Reload Studio (ReloadStudio.exe; Beta 0
+  shipped it as alphamaker.exe). Its settings move once from alphamaker.ini
+  to reloadstudio.ini (the old file stays); its test and preview logs are
+  now in %TEMP%\Reload Studio.
 - A track with a broken minimap table no longer crashes the race; it shows no
-  minimap. The Alpha-Maker warns about it.
-- Object limit: the Alpha-Maker refuses tracks with more than 110 placed
+  minimap. Reload Studio warns about it.
+- Object limit: Reload Studio refuses tracks with more than 110 placed
   objects and warns above 90. If the game ever runs out of room, it says so
   in the log and leaves out an effect (an explosion, a flame) instead of
   crashing.
 - Folder and file names with any characters work (for example a Windows user
   name with accents or Cyrillic letters).
 - Logs are kept: every start writes a new log with date and time in the
-  "logs" folder, the last 5 stay. The Alpha-Maker keeps its last 5 test and
+  "logs" folder, the last 5 stay. Reload Studio keeps its last 5 test and
   preview logs the same way.
 - OPTIONS -> GRAPHICS: display mode, aspect ratio, resolution, anti-aliasing.
   Saved and restored at the next start.
-- Track previews in the track selection screen. "Build container" in the
-  Alpha-Maker records the preview by itself, in the background (about 20
+- Track previews in the track selection screen. "Build container" in
+  Reload Studio records the preview by itself, in the background (about 20
   seconds, no game window). The preview shows a drive along your track from
   the driver's view (needs bot data / nav paths; without them a camera flies
   along the restart points). If the preview cannot be recorded, the
-  container is still built, and the Alpha-Maker says why ("preview skipped"
+  container is still built, and Reload Studio says why ("preview skipped"
   or "preview failed"). A preview game that has not finished after 2 minutes
   is stopped.
-- The Alpha-Maker checks that the game next to it is from the same package.
+- Reload Studio checks that the game next to it is from the same package.
   If the game it remembered from an earlier session is from another package,
   it switches once to ctr_native.exe in its own folder and says so.
 - Crystal Challenge for custom tracks: ARCADE -> NITRO-PIT -> CRYSTAL. Collect
   every crystal before the time runs out. Win or lose, you get RETRY or back
-  to NITRO-PIT; nothing is written to your adventure save. The Alpha-Maker
+  to NITRO-PIT; nothing is written to your adventure save. Reload Studio
   ticks every mode your track has the data for.
 - CTR Challenge for custom tracks: ARCADE -> NITRO-PIT -> CTR. Win with 1st
   place and all three letters C, T and R. Win or lose, you get RETRY or back
@@ -68,7 +72,7 @@ KNOWN ISSUES
 - A track with only Crystal Challenge cannot get a preview; the preview is
   recorded in a race.
 - CTR Challenge: letters that the exporter wrote without a collision hitbox
-  cannot be collected, so the challenge cannot be won. The Alpha-Maker does
+  cannot be collected, so the challenge cannot be won. Reload Studio does
   not check this yet.
 - Crystal Challenge: the time limit is fixed at 3:00 for every track for now.
 - No bots and no auto drive on tracks without nav paths. In a CTR Challenge
@@ -87,7 +91,7 @@ KNOWN ISSUES
   container" (make); it fixes wrong model ids.
 - Music banks above 512 KB load, but their playback is not fully tested yet.
   The ambient sound set in the track options is not tested either.
-- The Alpha-Maker starts the game in developer mode for "Test in game" and
+- Reload Studio starts the game in developer mode for "Test in game" and
   for the preview recording. The "extra arguments" field accepts developer
   switches; you do not need it.
 - The executables are not signed. Some virus scanners may warn about them.

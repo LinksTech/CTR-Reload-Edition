@@ -1,9 +1,9 @@
 // rldpack - the packer for .rldtrack containers
 //
 // A program of its own, not part of the game. A track author uses it to build
-// their container and passes on one file. The same source also runs inside the
-// Alpha-Maker as `alphamaker.exe --rldpack <command> ...`
-// (tools/alphamaker/am_rldpack.c).
+// their container and passes on one file. The same source also runs inside
+// Reload Studio as `ReloadStudio.exe --rldpack <command> ...`
+// (tools/reloadstudio/rs_rldpack.c).
 //
 // NO SIGNING PATH ANY MORE.
 //
@@ -89,10 +89,10 @@ void Platform_Log(const char *format, ...)
 // THE MACHINE LINES (--machine)
 //========================================================================================
 //
-// For the Alpha-Maker (tools/alphamaker). With --machine, rldpack writes, next to
+// For Reload Studio (tools/reloadstudio). With --machine, rldpack writes, next to
 // its report, lines that a GUI can read without taking the report
 // apart: each starts with '@', the fields are separated by a TAB. The protocol is
-// in tools/alphamaker/alphamaker.h. Without --machine not one character of the
+// in tools/reloadstudio/reloadstudio.h. Without --machine not one character of the
 // output changes, and never one of the container.
 //
 // A message for authors (@msg) has its own text without switch names and
@@ -1487,7 +1487,7 @@ static void Rld_PrintModelId(int id)
 	}
 }
 
-// The letter correction for humans (NOTE) and for the Alpha-Maker (msg).
+// The letter correction for humans (NOTE) and for Reload Studio (msg).
 // applied 0: found, but left alone (--keep-model-ids).
 static void Rld_LetterReport(const struct RldModelIds *ids, int applied)
 {
@@ -1709,7 +1709,7 @@ static const char *Rld_SpawnCheck(const struct RldSpawn *spawn, u32 modes, char 
 //
 // A mode may only be declared if its data is there - build and make
 // check the same, and a missing piece aborts before a file is created.
-// The Alpha-Maker later shows the same texts next to a grey checkbox.
+// Reload Studio later shows the same texts next to a grey checkbox.
 //
 //   all         SpawnType1: at count >= 3 slot 2 (finish camera, CAM_FollowDriver_Normal),
 //               at count >= 4 slot 3 (fly-in, CAM_FollowDriver_Normal) - Rld_SpawnCheck
@@ -1879,7 +1879,7 @@ static const char *Rld_ModeCheck(u32 modes, const struct RldLevModes *data, cons
 	return NULL;
 }
 
-// The modes in the order in which the Alpha-Maker shows them.
+// The modes in the order in which Reload Studio shows them.
 static const u32 s_modeOrder[5] = {RLD_MODE_RACE, RLD_MODE_TIME_TRIAL, RLD_MODE_CTR_CHALLENGE, RLD_MODE_CRYSTAL_CHALLENGE, RLD_MODE_BATTLE};
 static const char *const s_modeWords[5] = {"race", "time", "ctr", "crystal", "battle"};
 
@@ -1938,7 +1938,7 @@ static void Rld_ModeReason(u32 bit, const struct RldSpawn *spawn, const struct R
 	}
 }
 
-// @mode for all five modes, not only the declared ones - the Alpha-Maker shows
+// @mode for all five modes, not only the declared ones - Reload Studio shows
 // each as a checkbox, grey with a reason. Plus @lev.
 static void Rld_EmitModes(u32 declared, const struct RldSpawn *spawn, const struct RldLevModes *data, const struct RldModelIds *ids)
 {
@@ -1981,7 +1981,7 @@ static void Rld_EmitModes(u32 declared, const struct RldSpawn *spawn, const stru
 	Rld_EmitNumber("lev", "start_spots", (unsigned long long)data->startSpots);
 	Rld_EmitNumber("lev", "spawn_count", spawn->present ? (unsigned long long)spawn->count : 0u);
 	// The numbers behind CTR and Crystal (Model.id 0x93..0x95 and 0x60), for the
-	// "Modes" card in the Alpha-Maker - so far only in the report for humans.
+	// "Modes" card in Reload Studio - so far only in the report for humans.
 	Rld_EmitNumber("lev", "crystals", (unsigned long long)ids->crystals);
 	{
 		char letters[48];
@@ -2783,7 +2783,7 @@ static int Rld_Pack(const struct RldPackJob *job)
 	}
 
 	// Declared, but not built yet in the game for containers: valid, and
-	// said (the Alpha-Maker shows the same note).
+	// said (Reload Studio shows the same note).
 #define RLD_MODE_NOTE(bit, word, label, tag)                                                          \
 	if (((in.modes & (bit)) != 0u) && (((bit) & RLD_MODES_PLAYABLE) == 0u))                          \
 	{                                                                                                 \
@@ -3656,7 +3656,7 @@ static int Rld_EndsWithNoCase(const char *name, const char *suffix)
 	return 1;
 }
 
-// The folder the running exe lies in (rldpack.exe, or alphamaker.exe with
+// The folder the running exe lies in (rldpack.exe, or ReloadStudio.exe with
 // --rldpack) - not the one it was called from.
 static int Rld_ExeDir(const char *argv0, char *dst, size_t dstSize)
 {
@@ -3937,7 +3937,7 @@ static int Rld_ParseSmallNumber(const char *text, u32 *out)
 	return 1;
 }
 
-// @file for the Alpha-Maker: kind, state, name and size of a file in the folder.
+// @file for Reload Studio: kind, state, name and size of a file in the folder.
 static void Rld_EmitFile(const char *kind, const char *state, const char *folderPath, const char *name)
 {
 	char path[RLD_PATH_MAX + RLD_NAME_MAX];
@@ -4104,7 +4104,7 @@ static int Cmd_Make(int argc, char *argv[], const char *argv0)
 	Rld_EmitFolderList("vrm", &folder.vrm, folderPath, 0);
 	// Music from a .sca OR a finished .sndb.
 	// The line @file sndb only comes if a .sndb lies in the folder; so
-	// an older Alpha-Maker still sees exactly one music line.
+	// an older Reload Studio still sees exactly one music line.
 	if ((folder.sca.count > 0) || (folder.sndb.count == 0))
 	{
 		Rld_EmitFolderList("sca", &folder.sca, folderPath, noMusic);
@@ -4350,7 +4350,7 @@ static int Cmd_Make(int argc, char *argv[], const char *argv0)
 	// container gets no SNDB, and the track plays the music of its slot.
 	//
 	// With --check an error here does not end the run: make keeps checking without music,
-	// so that the Alpha-Maker can still show every mode, and
+	// so that Reload Studio can still show every mode, and
 	// ends with 1 at the end.
 #define RLD_MUSIC_FAILED()                                                      \
 	if (!check)                                                                \
@@ -6076,14 +6076,14 @@ static void Rld_Usage(void)
 #ifndef CTR_NATIVE_BUILD_ID
 #define CTR_NATIVE_BUILD_ID "unknown"
 #endif
-	// The same version and build ID as the game and the Alpha-Maker. The build ID stays
-	// an argument of its own: the packaging script looks for it in alphamaker.exe as a
+	// The same version and build ID as the game and Reload Studio. The build ID stays
+	// an argument of its own: the packaging script looks for it in ReloadStudio.exe as a
 	// string that ends there (tools/package/package.sh), not in this help.
 	printf("rldpack - packer for .rldtrack track containers (format 4.1) and .rldchar character containers - CTR Reload %s (%s)\n\n",
 	       CTR_NATIVE_VERSION, CTR_NATIVE_BUILD_ID);
 
-	printf("  The same program runs inside the Alpha-Maker: where this help says\n");
-	printf("  \"rldpack <command>\", \"alphamaker.exe --rldpack <command>\" works the same.\n\n");
+	printf("  The same program runs inside Reload Studio: where this help says\n");
+	printf("  \"rldpack <command>\", \"ReloadStudio.exe --rldpack <command>\" works the same.\n\n");
 
 	printf("COMMANDS\n");
 	printf("  make     <folder>           build a container from a track folder, see below\n");
@@ -6097,7 +6097,7 @@ static void Rld_Usage(void)
 	printf("                              by the first bytes, not by the name)\n");
 	printf("  selftest                    check SHA-256 and the build against fixed cases\n\n");
 	printf("  --machine                   with any command: also print lines for a program\n");
-	printf("                              (the Alpha-Maker), see tools/alphamaker/alphamaker.h.\n");
+	printf("                              (Reload Studio), see tools/reloadstudio/reloadstudio.h.\n");
 	printf("                              info --machine takes several files and also reads\n");
 	printf("                              the LEVD of each\n\n");
 
@@ -6203,7 +6203,7 @@ static void Rld_Usage(void)
 	printf("not prove it.\n");
 }
 
-// info --machine: one block per container for the Alpha-Maker (cup editor and
+// info --machine: one block per container for Reload Studio (cup editor and
 // test page). Unlike info, this reads the LEVD - the cup editor has to know whether
 // a track has nav paths and restart points, and that is only in there.
 // The checks are the same as when building; nothing is changed.
@@ -6327,7 +6327,7 @@ int main(int argc, char *argv[])
 
 	// Unbuffered, so that report, errors and machine lines arrive in the
 	// order in which they are created - stdout and stderr share
-	// one pipe in the Alpha-Maker.
+	// one pipe in Reload Studio.
 	setvbuf(stdout, NULL, _IONBF, 0);
 	Rld_Emit("rldpack", "1", (argc >= 2) ? argv[1] : "", (const char *)NULL);
 

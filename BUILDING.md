@@ -20,7 +20,7 @@ MSVC is the only supported toolchain: the 32-bit preset `windows-msvc-x86`,
 which `build-msvc.bat` uses. `CMakeLists.txt` and `CMakePresets.json` still
 have MinGW branches and presets, but MinGW is untested: no MinGW build is made
 or tested, and the automatic builds use MSVC only. A MinGW build would also
-leave out the Alpha-Maker, which is built under MSVC only.
+leave out Reload Studio, which is built under MSVC only.
 
 ## Build
 
@@ -43,14 +43,14 @@ The same steps with CMake presets:
 In `build-msvc-x86\Release\`:
 
 - `ctr_native.exe` (and `ctr_native.pdb`): the game
-- `alphamaker.exe`: the track authoring tool; it carries the track container
-  packer built in (`alphamaker.exe --rldpack <command>`)
+- `ReloadStudio.exe`: the track authoring tool; it carries the track container
+  packer built in (`ReloadStudio.exe --rldpack <command>`)
 - `rldpack.exe`: the same packer as a command line program of its own (used by
   the self-tests; not part of the package)
 - `shader_spirv_probe.exe`: a build helper that writes the shader sources
 
 `ctr_native.exe --version` reports the version and the build ID, for example
-`CTR Reload Beta 0 (a1b2c3d4e5f6)`; the Alpha-Maker shows the same in its
+`CTR Reload Beta 0 (a1b2c3d4e5f6)`; Reload Studio shows the same in its
 title bar. The build ID is the commit, with `-dirty-<hash>` appended when
 tracked files differ from it.
 
@@ -59,8 +59,8 @@ tracked files differ from it.
 `build-msvc.bat` runs nine self-tests:
 
 - `ctr_native_version`: the version string
-- `rldpack_selftest` and `alphamaker_rldpack_selftest`: the rldpack self-test,
-  directly and through the Alpha-Maker
+- `rldpack_selftest` and `reloadstudio_rldpack_selftest`: the rldpack self-test,
+  directly and through Reload Studio
 - `shader_spirv_dialect`: the shader SPIR-V check
 - `gte_paths_identical`: the GTE self-test
 - `ctr_match_unit`: the unit tests of the matching tools
@@ -97,13 +97,13 @@ In Git Bash, from a clean working tree (all changes committed), after
     BUILD_DIR=build-msvc-x86 bash tools/package/package.sh
 
 `BUILD_DIR` is the build folder (default `build-msvc-x86`). The script builds
-`ctr_native` and `alphamaker` there again (output in `dist-build.log`), checks
+`ctr_native` and `ReloadStudio` there again (output in `dist-build.log`), checks
 that both carry the same build ID, and writes
 `dist\CTR-Reload-<version>-<build id>.zip`, for example
 `CTR-Reload-Beta0-a1b2c3d4e5f6.zip`. The version is `CTR_NATIVE_VERSION` from
 `CMakeLists.txt` without spaces. The zip holds one folder of the same name with:
 
-- `ctr_native.exe`, `ctr_native.pdb`, `alphamaker.exe`
+- `ctr_native.exe`, `ctr_native.pdb`, `ReloadStudio.exe`
 - `README.txt` and `RELEASE-NOTES.txt` (from `tools/package/`)
 - `LICENSE` and `THIRD_PARTY_NOTICES.md`
 - `<name>-source.zip`: the source code of the packaged commit
@@ -116,7 +116,7 @@ trial package anyway) and refuses to package a file type that
 
 - `.github/workflows/build.yml`: every push to `main` or `dev` and every pull
   request builds and runs the self-tests; a version tag (`v*`) also makes the
-  release with `ctr_native.exe`, `alphamaker.exe`, `LICENSE` and
+  release with `ctr_native.exe`, `ReloadStudio.exe`, `LICENSE` and
   `THIRD_PARTY_NOTICES.md`.
 - `.github/workflows/nightly.yml`: every day at 21:00 UTC (and by hand) the
   pre-release `nightly-builds` is replaced with a build of `dev` that carries

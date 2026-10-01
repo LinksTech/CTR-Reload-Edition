@@ -8,8 +8,8 @@
 // With --record-preview (only with --dev, together with --autoload-track)
 // the preview shows the track from the normal driver camera. The player seat
 // is driven by the AI - the same path as --autopilot (MainInit.c,
-// BOTS_Driver_Convert), switched on here by --record-preview so that the
-// Alpha-Maker's command line stays the same. The kart is invisible
+// BOTS_Driver_Convert), switched on here by --record-preview so that
+// Reload Studio's command line stays the same. The kart is invisible
 // (FlyIn_HideDriver), there are no opponents (MainInit_Drivers asks
 // NativeFlyIn_PreviewAlone). The fly-in is already over during setup
 // (container tracks never fly in, see below; START_OF_RACE is cleared in the

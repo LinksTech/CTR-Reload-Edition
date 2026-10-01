@@ -25,7 +25,7 @@
 // BLACK. 0x0000 is transparent in a 16-bit texture; a black
 // preview pixel therefore becomes 0x0421 (1/31 per channel).
 //
-// ALWAYS A FINAL LINE. The Alpha-Maker (recording by itself after "Build
+// ALWAYS A FINAL LINE. Reload Studio (recording by itself after "Build
 // container") reads exactly one line:
 // "[CTR Preview] written <path> (<n> frames)" or
 // "[CTR Preview] FAILED: <reason>". A manual test once ended twice
@@ -43,7 +43,7 @@
 // (g_cfg_windowHidden, native_renderer.c): nobody can
 // close it any more. An end before the result then comes from outside (process
 // killed, crash); that is why the final report no longer says "keep the window
-// open". The title stays for runs by hand without the Alpha-Maker.
+// open". The title stays for runs by hand without Reload Studio.
 // ===========================================================================
 
 #include <platform/native_preview.h>
@@ -366,7 +366,7 @@ void NativePreview_EndFrame(void)
 	}
 	else if (((s_prevRec.captured % NATIVE_PREVIEW_PROGRESS_STEP) == 0) && (s_prevRec.captured < NATIVE_PREVIEW_FRAMES))
 	{
-		// Progress for the Alpha-Maker (Track_PreviewLine) and the log.
+		// Progress for Reload Studio (Track_PreviewLine) and the log.
 		Platform_Log("[CTR Preview] %d of %d frames recorded\n", s_prevRec.captured, NATIVE_PREVIEW_FRAMES);
 	}
 

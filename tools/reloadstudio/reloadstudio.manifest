@@ -1,15 +1,15 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!--
-  Manifest of the Alpha-Maker.
+  Manifest of Reload Studio.
   - Common Controls 6: the controls in the look of Windows 10/11.
-  - PerMonitorV2: sharp on every screen, am_shell.c scales itself (Am_Px).
+  - PerMonitorV2: sharp on every screen, rs_shell.c scales itself (Rs_Px).
   - activeCodePage UTF-8: rldpack in the same program takes paths and names as
     char*; with UTF-8 as the ANSI code page, umlauts and other scripts also get
     through fopen and argv (Windows 10 1903 and newer).
 -->
 <assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
-  <assemblyIdentity type="win32" name="CTRReload.AlphaMaker" version="0.1.0.0"/>
-  <description>CTR Reload Alpha-Maker</description>
+  <assemblyIdentity type="win32" name="CTRReload.ReloadStudio" version="0.1.0.0"/>
+  <description>Reload Studio</description>
   <dependency>
     <dependentAssembly>
       <assemblyIdentity type="win32" name="Microsoft.Windows.Common-Controls" version="6.0.0.0"

@@ -8,7 +8,7 @@ The release downloads contain two programs. `ctr_native.exe` carries SDL3
 (with the components compiled into it), the PsyCross-derived platform layer
 with the code that came in through PsyCross (TOMB5, MAME, PCSX, one PSn00bSDK
 table and material from Sony's Psy-Q SDK), and the Sunset Vista compatibility
-layer. `alphamaker.exe` carries only this project's own code and the Microsoft
+layer. `ReloadStudio.exe` carries only this project's own code and the Microsoft
 C runtime.
 
 ## PsyCross / Psy-X
@@ -20,7 +20,7 @@ Psy-Q-compatible PS1 hardware abstraction layer, including compatible GPU, GTE,
 SPU, CD, and controller library interfaces. CTR Native vendored PsyCross from
 commit `603475326dfa546cb47a6cc338c32053cca56022` and later backported
 upstream fixes. The derived files are compiled into `ctr_native.exe` only;
-`alphamaker.exe` contains none of this code.
+`ReloadStudio.exe` contains none of this code.
 
 Files derived from PsyCross:
 
@@ -257,7 +257,7 @@ modified files remain under the MPL 2.0 and keep their original copyright and
 license notices. Their source code is in this repository at
 `include/psn00bsdk` and in the source code archive of every release.
 
-These headers are not compiled into `ctr_native.exe` or `alphamaker.exe`: no
+These headers are not compiled into `ctr_native.exe` or `ReloadStudio.exe`: no
 source file of the programs includes them (`include/psx/psn00b_prelude.h`,
 which would, is itself included nowhere). `include/gpu.h` (primitive helper
 macros) and `include/namespace_Gamepad.h` (controller button bit values)
@@ -300,7 +300,7 @@ Vendored version: 3.4.10 (`release-3.4.10`)
 SDL3 provides windowing, input, timing and audio for `ctr_native.exe`, finds
 the Vulkan loader, and draws the first-start screen with its 2D renderer and
 file dialog. It is built as a static library and linked only into
-`ctr_native.exe`; no `SDL3.dll` is built, shipped or needed. `alphamaker.exe`
+`ctr_native.exe`; no `SDL3.dll` is built, shipped or needed. `ReloadStudio.exe`
 contains no SDL code.
 
 License: zlib

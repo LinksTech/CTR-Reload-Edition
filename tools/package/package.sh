@@ -10,18 +10,18 @@
 #    source code in the package must come from the same commit.
 # 2. The version is CTR_NATIVE_VERSION from CMakeLists.txt. The package is
 #    named CTR-Reload-<version without spaces>-<build id>.
-# 3. Configure and build ctr_native and alphamaker (Release) in BUILD_DIR.
+# 3. Configure and build ctr_native and ReloadStudio (Release) in BUILD_DIR.
 #    The build output goes to dist-build.log in the tree root.
 # 4. Pairing check: ctr_native.exe --version reports
-#    "CTR Reload <version> (<build id>)", and alphamaker.exe carries the same
+#    "CTR Reload <version> (<build id>)", and ReloadStudio.exe carries the same
 #    build ID. The build ID is created on every build (cmake/CtrBuildId.cmake).
 # 5. Package by ALLOW LIST, never the build folder as a whole:
-#      ctr_native.exe, ctr_native.pdb, alphamaker.exe,
+#      ctr_native.exe, ctr_native.pdb, ReloadStudio.exe,
 #      LICENSE, THIRD_PARTY_NOTICES.md, README.txt, RELEASE-NOTES.txt,
 #      <name>-source.zip (GPL: the source code of this commit, git archive by
 #      allow list - everything the build needs, nothing else).
-#    rldpack is not shipped on its own: the Alpha-Maker carries it
-#    (alphamaker.exe --rldpack ...).
+#    rldpack is not shipped on its own: Reload Studio carries it
+#    (ReloadStudio.exe --rldpack ...).
 # 6. Check: no file type that tools/content_guard.py refuses (disc content,
 #    game formats, containers, 3D models, audio, pictures, archives ...; the
 #    SDL files it lists by path and blob id pass), no logs, no test data, no
@@ -29,7 +29,7 @@
 #    the source zip. A hit aborts, and no zip is created.
 #
 # Output: dist/<name>.zip with the folder <name>/ inside, which holds the files
-# of step 5 directly (<name>/ctr_native.exe, <name>/alphamaker.exe, ...).
+# of step 5 directly (<name>/ctr_native.exe, <name>/ReloadStudio.exe, ...).
 # The build ID is the part of <name> after the last "-" (for a clean tree).
 set -eu
 cd "$(dirname "$0")/../.."
@@ -58,11 +58,11 @@ BUILD_DIR=${BUILD_DIR:-build-msvc-x86}
 echo "== Configure and build (Release) in $BUILD_DIR"
 MSYS_NO_PATHCONV=1 BUILD_DIR="$BUILD_DIR" powershell -NoProfile -Command '
 	cmake --preset windows-msvc-x86 -B $env:BUILD_DIR | Out-Null; if ($LASTEXITCODE) { exit 1 }
-	cmake --build $env:BUILD_DIR --config Release --target ctr_native alphamaker; exit $LASTEXITCODE' > dist-build.log 2>&1 || {
+	cmake --build $env:BUILD_DIR --config Release --target ctr_native ReloadStudio; exit $LASTEXITCODE' > dist-build.log 2>&1 || {
 	echo "ABORT: build failed, see dist-build.log"; exit 3; }
 
 R=$BUILD_DIR/Release
-for f in ctr_native.exe ctr_native.pdb alphamaker.exe; do
+for f in ctr_native.exe ctr_native.pdb ReloadStudio.exe; do
 	[ -f "$R/$f" ] || { echo "ABORT: $R/$f is missing"; exit 3; }
 done
 
@@ -76,14 +76,14 @@ case "$ID" in
 	*dirty*|unknown*) [ "$ALLOW_DIRTY" = 1 ] || { echo "ABORT: build ID '$ID'"; exit 4; } ;;
 esac
 
-# Pairing: the same ID as text in the Alpha-Maker (narrow or UTF-16).
-python - "$ID" "$R/alphamaker.exe" <<'PY' || { echo "ABORT: alphamaker.exe does not carry the build ID of ctr_native.exe"; exit 4; }
+# Pairing: the same ID as text in Reload Studio (narrow or UTF-16).
+python - "$ID" "$R/ReloadStudio.exe" <<'PY' || { echo "ABORT: ReloadStudio.exe does not carry the build ID of ctr_native.exe"; exit 4; }
 import sys
 bid = sys.argv[1].encode('ascii')
 for p in sys.argv[2:]:
     d = open(p, 'rb').read()
     # Whole, not as a substring: narrow with NUL after it, UTF-16 with NUL or ')'
-    # after it (title of the Alpha-Maker) - otherwise abc... would also match abc...-dirty-...
+    # after it (title of Reload Studio) - otherwise abc... would also match abc...-dirty-...
     wide = bid.decode().encode('utf-16-le')
     if bid + b'\0' not in d and wide + b'\0\0' not in d and wide + ')'.encode('utf-16-le') not in d:
         print('  without ID:', p)
@@ -95,7 +95,7 @@ NAME="CTR-Reload-$VERSION_TAG-$ID"
 OUT="dist/$NAME"
 rm -rf "$OUT" "dist/$NAME.zip"
 mkdir -p "$OUT"
-cp "$R/ctr_native.exe" "$R/ctr_native.pdb" "$R/alphamaker.exe" "$OUT/"
+cp "$R/ctr_native.exe" "$R/ctr_native.pdb" "$R/ReloadStudio.exe" "$OUT/"
 cp LICENSE THIRD_PARTY_NOTICES.md "$OUT/"
 for t in README RELEASE-NOTES; do
 	sed -e "s/@VERSION@/$VERSION/g" -e "s/@BUILD@/$ID/g" -e "s/@NAME@/$NAME/g" \
@@ -118,7 +118,7 @@ import content_guard
 root = sys.argv[1]
 BAD_EXT = ('.log', '.dmp')
 BAD_NAME = ('bigfile.big', 'kart.hwl', 'ctr-data.cfg', 'ctr-settings.cfg', 'ctr-view.cfg',
-            'alphamaker.ini', 'track-ids.tsv', 'cups.txt')
+            'alphamaker.ini', 'reloadstudio.ini', 'track-ids.tsv', 'cups.txt')
 # Game data, user files, local measurement/reference/test-data folders and
 # build output (literal folder names, the same ones .gitignore keeps out of
 # the repository).
@@ -167,7 +167,7 @@ with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
 # The release jobs take these four out of the zip by exactly these paths.
 with zipfile.ZipFile(out) as z:
     names = z.namelist()
-missing = [base + '/' + f for f in ('ctr_native.exe', 'alphamaker.exe', 'LICENSE', 'THIRD_PARTY_NOTICES.md')
+missing = [base + '/' + f for f in ('ctr_native.exe', 'ReloadStudio.exe', 'LICENSE', 'THIRD_PARTY_NOTICES.md')
            if base + '/' + f not in names]
 if missing:
     print('  missing in the zip:', ' '.join(missing))

@@ -3,7 +3,7 @@
 This directory contains 14 headers of PSn00bSDK 0.23, taken from the
 CTR-ModSDK project (<https://github.com/CTR-tools/CTR-ModSDK>,
 `include/psn00bsdk`) and modified (see `local changes.txt` for part of the
-changes). They are not compiled into `ctr_native.exe` or `alphamaker.exe`:
+changes). They are not compiled into `ctr_native.exe` or `ReloadStudio.exe`:
 no source file of the programs includes them.
 
 Source: <https://github.com/Lameguy64/PSn00bSDK>

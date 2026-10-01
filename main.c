@@ -951,7 +951,7 @@ static const struct NativeSetupColor s_setupErrBack = {58, 24, 20};     // backg
 // subtitle says how reliable this build is; the build id in the footer
 // (CTR_NATIVE_BUILD_ID, generated per build) says WHICH build it is.
 //
-// The same name everywhere - start screen, --version, Alpha-Maker, log:
+// The same name everywhere - start screen, --version, Reload Studio, log:
 // "CTR Reload <version>" plus the build id. CTR_RELOAD_VERSION is the
 // upper-case form of CTR_NATIVE_VERSION for the debug font and is NOT taken
 // from the build - it has to be changed together with CMakeLists.txt.
@@ -3223,7 +3223,7 @@ int main(int argc, char *argv[])
 				// records every second frame and ends the game. Read in
 				// game/native_flyin.c, which also switches on --autopilot for it. Without
 				// sound and without a visible window: the recording runs alongside
-				// other work (the Alpha-Maker starts it by itself after "Build
+				// other work (Reload Studio starts it by itself after "Build
 				// container"). The window is already hidden by
 				// NativeArgs_ReadDisplayFlags, because it comes into being before this
 				// loop.

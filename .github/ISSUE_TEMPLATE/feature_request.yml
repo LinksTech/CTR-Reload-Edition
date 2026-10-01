@@ -1,5 +1,5 @@
 name: Feature request
-description: An idea for the game, custom tracks or the Alpha-Maker
+description: An idea for the game, custom tracks or Reload Studio
 labels: [enhancement]
 body:
   - type: markdown
@@ -17,7 +17,7 @@ body:
       label: Area
       options:
         - The game
-        - Custom tracks and the Alpha-Maker
+        - Custom tracks and Reload Studio
         - Building and development
         - Something else
     validations:

@@ -1,9 +1,9 @@
-// am_test.c - page "Test in game": start CTR Reload with a container
+// rs_test.c - page "Test in game": start CTR Reload with a container
 //
 // Starts ctr_native.exe with --dev --autoload-track <file>. The game loads
 // the container like the NITRO-PIT row and jumps straight into the race (Arcade,
 // 1 player, 3 laps). After the end the page reads the run's log (--log
-// in %TEMP%\CTR Reload Alpha-Maker) and says whether the race started.
+// in %TEMP%\Reload Studio) and says whether the race started.
 //
 // If the container is not in <game folder>/tracks, the game gets
 // --tracks-dir <folder> --settings-defaults: it then reads only this folder,
@@ -15,7 +15,7 @@
 // exe, then parent, then grandparent - the first one whose subfolder assets
 // contains BIGFILE.BIG or ctr-u.bin.
 
-#include "alphamaker.h"
+#include "reloadstudio.h"
 #include <shellapi.h>
 #include <stdlib.h>
 #include <string.h>
@@ -60,7 +60,7 @@
 #define TEST_VIEW_LINES  400                    // lines in the view "game output"
 #define TEST_DRIVERS     16
 
-// Card heights in 96-dpi pixels. Am_CardInner takes 50 at the top and 16 at the bottom.
+// Card heights in 96-dpi pixels. Rs_CardInner takes 50 at the top and 16 at the bottom.
 #define TEST_CARD_CHROME  66
 #define TEST_GAME_INNER   112
 #define TEST_TRACK_INNER  128
@@ -106,7 +106,7 @@ struct TestState {
     int exeOk;                      // --version: CTR Reload with the same build ID
     int exeMismatch;                // --version: other build or old version "CTR Native"
     wchar_t versionText[256];
-    // Switch to the game next to the Alpha-Maker when the entered one comes from
+    // Switch to the game next to Reload Studio when the entered one comes from
     // another package (e.g. an old test.exe in the ini).
     int exeSwitchUsed;              // at most once per session, never back
     int exeStartup;                 // the check applies to the game from the ini at start
@@ -280,7 +280,7 @@ static void Test_DiskName(const wchar_t *path, wchar_t *out, int cap)
         Test_Copy(out, cap, fd.cFileName);
         FindClose(h);
     } else {
-        Test_Copy(out, cap, Am_PathName(path));
+        Test_Copy(out, cap, Rs_PathName(path));
     }
 }
 
@@ -297,12 +297,12 @@ static int Test_HasAssets(const wchar_t *dir)
     wchar_t assets[TEST_PATH];
     wchar_t probe[TEST_PATH];
 
-    Am_PathJoin(assets, TEST_PATH, dir, L"assets");
-    Am_PathJoin(probe, TEST_PATH, assets, L"BIGFILE.BIG");
-    if (Am_FileExists(probe))
+    Rs_PathJoin(assets, TEST_PATH, dir, L"assets");
+    Rs_PathJoin(probe, TEST_PATH, assets, L"BIGFILE.BIG");
+    if (Rs_FileExists(probe))
         return 1;
-    Am_PathJoin(probe, TEST_PATH, assets, L"ctr-u.bin");
-    return Am_FileExists(probe);
+    Rs_PathJoin(probe, TEST_PATH, assets, L"ctr-u.bin");
+    return Rs_FileExists(probe);
 }
 
 // Like NativeAssets_Init in the game: folder of the exe, parent, grandparent.
@@ -312,13 +312,13 @@ static int Test_FindBase(const wchar_t *exe, wchar_t *out, int cap)
     wchar_t up[TEST_PATH];
     int i;
 
-    Am_PathDir(dir, TEST_PATH, exe);
+    Rs_PathDir(dir, TEST_PATH, exe);
     for (i = 0; i < 3 && dir[0]; i++) {
         if (Test_HasAssets(dir)) {
             Test_Copy(out, cap, dir);
             return 1;
         }
-        Am_PathDir(up, TEST_PATH, dir);
+        Rs_PathDir(up, TEST_PATH, dir);
         if (wcscmp(up, dir) == 0)
             break;
         Test_Copy(dir, TEST_PATH, up);
@@ -328,10 +328,10 @@ static int Test_FindBase(const wchar_t *exe, wchar_t *out, int cap)
 }
 
 // Every test run gets its own log with a timestamp; the last
-// five are kept (Am_RotatedLogPath).
+// five are kept (Rs_RotatedLogPath).
 static void Test_MakeLogPath(wchar_t *out, int cap)
 {
-    Am_RotatedLogPath(out, cap, L"game-test", 5);
+    Rs_RotatedLogPath(out, cap, L"game-test", 5);
 }
 
 static int Test_IsLogLine(const wchar_t *line)
@@ -358,10 +358,10 @@ static void Test_BufAdd(struct TestBuf *b, const wchar_t *s)
         wchar_t *p;
         while (cap < b->len + n + 1)
             cap *= 2;
-        p = Am_Alloc(cap * sizeof(wchar_t));
+        p = Rs_Alloc(cap * sizeof(wchar_t));
         if (b->len)
             memcpy(p, b->p, b->len * sizeof(wchar_t));
-        Am_Free(b->p);
+        Rs_Free(b->p);
         b->p = p;
         b->cap = cap;
     }
@@ -374,16 +374,16 @@ static void Test_BufAdd(struct TestBuf *b, const wchar_t *s)
 static void Test_LinesPush(struct TestLines *l, wchar_t *line, int max)
 {
     if (l->count >= max) {
-        Am_Free(line);
+        Rs_Free(line);
         l->dropped++;
         return;
     }
     if (l->count == l->cap) {
         int cap = l->cap ? l->cap * 2 : 64;
-        wchar_t **v = Am_Alloc((size_t)cap * sizeof(wchar_t *));
+        wchar_t **v = Rs_Alloc((size_t)cap * sizeof(wchar_t *));
         if (l->count)
             memcpy(v, l->v, (size_t)l->count * sizeof(wchar_t *));
-        Am_Free(l->v);
+        Rs_Free(l->v);
         l->v = v;
         l->cap = cap;
     }
@@ -394,8 +394,8 @@ static void Test_LinesFree(struct TestLines *l)
 {
     int i;
     for (i = 0; i < l->count; i++)
-        Am_Free(l->v[i]);
-    Am_Free(l->v);
+        Rs_Free(l->v[i]);
+    Rs_Free(l->v);
     memset(l, 0, sizeof(*l));
 }
 
@@ -405,8 +405,8 @@ static void Test_LinesFree(struct TestLines *l)
 
 static void Test_SetLabel(HWND label, const wchar_t *text, COLORREF color)
 {
-    Am_SetTextColor(label, color);
-    Am_SetText(label, text);
+    Rs_SetTextColor(label, color);
+    Rs_SetText(label, text);
 }
 
 // Single line with "..." (SS_ENDELLIPSIS, SS_PATHELLIPSIS) or wrapping with 0.
@@ -437,12 +437,12 @@ static int Test_OnOff(const wchar_t *arg)
     return -1;
 }
 
-// "<exe>" <command line> of the last start (Am_Free).
+// "<exe>" <command line> of the last start (Rs_Free).
 static wchar_t *Test_CmdText(void)
 {
     size_t cap = wcslen(g_test.runExe) * 2 + wcslen(g_test.runCmd) + 8;
-    wchar_t *t = Am_Alloc(cap * sizeof(wchar_t));
-    Am_AppendArg(t, cap, g_test.runExe);
+    wchar_t *t = Rs_Alloc(cap * sizeof(wchar_t));
+    Rs_AppendArg(t, cap, g_test.runExe);
     if (g_test.runCmd[0]) {
         size_t n = wcslen(t);
         t[n] = L' ';
@@ -458,19 +458,19 @@ static const wchar_t *Test_WhyNot(void)
         return L"The game is already running.";
     if (!g_test.exePath[0])
         return L"Choose the game program (ctr_native.exe) first.";
-    if (!Am_FileExists(g_test.exePath))
+    if (!Rs_FileExists(g_test.exePath))
         return L"The game program was not found - check the Game card.";
     if (g_test.versionJob || g_test.exePending)
         return L"Checking the game program...";
     if (g_test.exeMismatch)
-        return L"The game program is not from the same package as this Alpha-Maker - check the Game card.";
+        return L"The game program is not from the same package as this Reload Studio - check the Game card.";
     if (!g_test.exeOk)
         return L"The game program did not answer like CTR Reload - check the Game card.";
     if (!g_test.baseDir[0])
         return L"CTR Reload has no game data yet - see the Game card.";
     if (!g_test.container[0])
         return L"Choose a track container.";
-    if (!Am_FileExists(g_test.container))
+    if (!Rs_FileExists(g_test.container))
         return L"The track container was not found.";
     if (g_test.infoJob)
         return L"Checking the container...";
@@ -486,7 +486,7 @@ static void Test_UpdateReady(void)
     // Before the first test the heading says what is still missing.
     if (!g_test.ran && !g_test.gameJob)
         Test_SetLabel(g_test.headline, why ? why : L"Ready - press Start game.",
-                      why ? AM_COL_MUTED : AM_COL_TEXT);
+                      why ? RS_COL_MUTED : RS_COL_TEXT);
 }
 
 static void Test_UpdateButtons(void)
@@ -507,13 +507,13 @@ static void Test_UpdateButtons(void)
 // at least minPx96 (96-dpi pixels).
 static int Test_WrapHeight(HWND label, int w, int minPx96)
 {
-    wchar_t *text = Am_GetText(label);
-    int h = Am_Px(minPx96);
+    wchar_t *text = Rs_GetText(label);
+    int h = Rs_Px(minPx96);
 
     if (text[0] && w > 0) {
         HFONT font = (HFONT)SendMessageW(label, WM_GETFONT, 0, 0);
         HDC dc = GetDC(label);
-        HGDIOBJ old = SelectObject(dc, font ? font : Am_Font(AM_FONT_SMALL));
+        HGDIOBJ old = SelectObject(dc, font ? font : Rs_Font(RS_FONT_SMALL));
         RECT r;
         SetRect(&r, 0, 0, w, 0);
         DrawTextW(dc, text, -1, &r, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX);
@@ -522,7 +522,7 @@ static int Test_WrapHeight(HWND label, int w, int minPx96)
         if (r.bottom > h)
             h = r.bottom;
     }
-    Am_Free(text);
+    Rs_Free(text);
     return h;
 }
 
@@ -533,136 +533,136 @@ static void Test_GameHeights(int w, int *versionH, int *baseH)
 {
     *versionH = Test_WrapHeight(g_test.version, w, 18);
     // Without a game folder the error message is in both places (base, tracks).
-    *baseH = g_test.noBase ? Test_WrapHeight(g_test.base, w, 36) : Am_Px(18);
+    *baseH = g_test.noBase ? Test_WrapHeight(g_test.base, w, 36) : Rs_Px(18);
 }
 
 static int Test_GameExtra(int w)
 {
     int vh, bh;
     Test_GameHeights(w, &vh, &bh);
-    return (vh - Am_Px(18)) + (g_test.noBase ? bh - Am_Px(36) : 0);
+    return (vh - Rs_Px(18)) + (g_test.noBase ? bh - Rs_Px(36) : 0);
 }
 
 static void Test_LayoutGame(const RECT *in)
 {
     int x = in->left, y = in->top, w = in->right - in->left;
-    int bw = Am_Px(104);
+    int bw = Rs_Px(104);
     int vh, bh;
 
     Test_GameHeights(w, &vh, &bh);
-    MoveWindow(g_test.exeLabel, x, y, w, Am_Px(20), TRUE);
-    y += Am_Px(22);
-    MoveWindow(g_test.exe, x, y + Am_Px(2), w - bw - Am_Px(8), Am_Px(28), TRUE);
-    MoveWindow(g_test.exeBrowse, in->right - bw, y, bw, Am_Px(32), TRUE);
-    y += Am_Px(36);
+    MoveWindow(g_test.exeLabel, x, y, w, Rs_Px(20), TRUE);
+    y += Rs_Px(22);
+    MoveWindow(g_test.exe, x, y + Rs_Px(2), w - bw - Rs_Px(8), Rs_Px(28), TRUE);
+    MoveWindow(g_test.exeBrowse, in->right - bw, y, bw, Rs_Px(32), TRUE);
+    y += Rs_Px(36);
     MoveWindow(g_test.version, x, y, w, vh, TRUE);
     y += vh;
     MoveWindow(g_test.base, x, y, w, bh, TRUE);
-    MoveWindow(g_test.tracks, x, y + Am_Px(18), w, Am_Px(18), TRUE);
+    MoveWindow(g_test.tracks, x, y + Rs_Px(18), w, Rs_Px(18), TRUE);
 }
 
 static void Test_LayoutTrack(const RECT *in)
 {
     int x = in->left, y = in->top, w = in->right - in->left;
-    int cw = Am_Px(124);
+    int cw = Rs_Px(124);
 
-    SendMessageW(g_test.combo, CB_SETITEMHEIGHT, (WPARAM)-1, Am_Px(22));
-    MoveWindow(g_test.combo, x, y + Am_Px(2), w - cw - Am_Px(8), Am_Px(300), TRUE);
-    MoveWindow(g_test.choose, in->right - cw, y, cw, Am_Px(32), TRUE);
-    y += Am_Px(38);
-    MoveWindow(g_test.info, x, y, w, Am_Px(36), TRUE);
-    y += Am_Px(36);
-    MoveWindow(g_test.nav, x, y, w, Am_Px(18), TRUE);
-    y += Am_Px(18);
-    MoveWindow(g_test.where1, x, y, w, Am_Px(18), TRUE);
-    y += Am_Px(18);
-    MoveWindow(g_test.where2, x, y, w, Am_Px(18), TRUE);
+    SendMessageW(g_test.combo, CB_SETITEMHEIGHT, (WPARAM)-1, Rs_Px(22));
+    MoveWindow(g_test.combo, x, y + Rs_Px(2), w - cw - Rs_Px(8), Rs_Px(300), TRUE);
+    MoveWindow(g_test.choose, in->right - cw, y, cw, Rs_Px(32), TRUE);
+    y += Rs_Px(38);
+    MoveWindow(g_test.info, x, y, w, Rs_Px(36), TRUE);
+    y += Rs_Px(36);
+    MoveWindow(g_test.nav, x, y, w, Rs_Px(18), TRUE);
+    y += Rs_Px(18);
+    MoveWindow(g_test.where1, x, y, w, Rs_Px(18), TRUE);
+    y += Rs_Px(18);
+    MoveWindow(g_test.where2, x, y, w, Rs_Px(18), TRUE);
 }
 
 static void Test_LayoutOptions(const RECT *in)
 {
     int x = in->left, y = in->top, w = in->right - in->left;
-    int dw = w - Am_Px(72);
+    int dw = w - Rs_Px(72);
 
-    if (dw > Am_Px(260))
-        dw = Am_Px(260);
-    MoveWindow(g_test.windowed, x, y, w, Am_Px(24), TRUE);
-    y += Am_Px(30);
-    MoveWindow(g_test.driverLabel, x, y + Am_Px(4), Am_Px(64), Am_Px(20), TRUE);
-    SendMessageW(g_test.driver, CB_SETITEMHEIGHT, (WPARAM)-1, Am_Px(22));
-    MoveWindow(g_test.driver, x + Am_Px(72), y, dw, Am_Px(300), TRUE);
-    y += Am_Px(34);
-    MoveWindow(g_test.autopilot, x, y, w, Am_Px(24), TRUE);
-    y += Am_Px(32);
-    MoveWindow(g_test.argsLabel, x, y, w, Am_Px(20), TRUE);
-    y += Am_Px(22);
-    MoveWindow(g_test.args, x, y, w, Am_Px(28), TRUE);
+    if (dw > Rs_Px(260))
+        dw = Rs_Px(260);
+    MoveWindow(g_test.windowed, x, y, w, Rs_Px(24), TRUE);
+    y += Rs_Px(30);
+    MoveWindow(g_test.driverLabel, x, y + Rs_Px(4), Rs_Px(64), Rs_Px(20), TRUE);
+    SendMessageW(g_test.driver, CB_SETITEMHEIGHT, (WPARAM)-1, Rs_Px(22));
+    MoveWindow(g_test.driver, x + Rs_Px(72), y, dw, Rs_Px(300), TRUE);
+    y += Rs_Px(34);
+    MoveWindow(g_test.autopilot, x, y, w, Rs_Px(24), TRUE);
+    y += Rs_Px(32);
+    MoveWindow(g_test.argsLabel, x, y, w, Rs_Px(20), TRUE);
+    y += Rs_Px(22);
+    MoveWindow(g_test.args, x, y, w, Rs_Px(28), TRUE);
 }
 
 static void Test_LayoutResult(const RECT *in)
 {
     int x = in->left, y = in->top, w = in->right - in->left;
-    int bottomY = in->bottom - Am_Px(32);
+    int bottomY = in->bottom - Rs_Px(32);
     int listH;
 
-    MoveWindow(g_test.start, x, y, Am_Px(160), Am_Px(32), TRUE);
-    y += Am_Px(44);
-    MoveWindow(g_test.headline, x, y, w, Am_Px(40), TRUE);
-    y += Am_Px(46);
-    listH = bottomY - Am_Px(12) - y;
-    if (listH < Am_Px(40))
-        listH = Am_Px(40);
+    MoveWindow(g_test.start, x, y, Rs_Px(160), Rs_Px(32), TRUE);
+    y += Rs_Px(44);
+    MoveWindow(g_test.headline, x, y, w, Rs_Px(40), TRUE);
+    y += Rs_Px(46);
+    listH = bottomY - Rs_Px(12) - y;
+    if (listH < Rs_Px(40))
+        listH = Rs_Px(40);
     MoveWindow(g_test.list, x, y, w, listH, TRUE);
     MoveWindow(g_test.output, x, y, w, listH, TRUE);
     // After a dpi change the shell has set the default font.
-    if ((HFONT)SendMessageW(g_test.output, WM_GETFONT, 0, 0) != Am_Font(AM_FONT_MONO))
-        SendMessageW(g_test.output, WM_SETFONT, (WPARAM)Am_Font(AM_FONT_MONO), TRUE);
-    MoveWindow(g_test.showLog, x, bottomY, Am_Px(128), Am_Px(32), TRUE);
-    MoveWindow(g_test.toggle, x + Am_Px(136), bottomY, Am_Px(156), Am_Px(32), TRUE);
+    if ((HFONT)SendMessageW(g_test.output, WM_GETFONT, 0, 0) != Rs_Font(RS_FONT_MONO))
+        SendMessageW(g_test.output, WM_SETFONT, (WPARAM)Rs_Font(RS_FONT_MONO), TRUE);
+    MoveWindow(g_test.showLog, x, bottomY, Rs_Px(128), Rs_Px(32), TRUE);
+    MoveWindow(g_test.toggle, x + Rs_Px(136), bottomY, Rs_Px(156), Rs_Px(32), TRUE);
 }
 
 static void Test_Layout(HWND page, int w, int h)
 {
-    int left = Am_Px(32), right = w - Am_Px(32);
-    int top = Am_PageTop(), bottom = h - Am_Px(24);
-    int gap = Am_Px(16);
+    int left = Rs_Px(32), right = w - Rs_Px(32);
+    int top = Rs_PageTop(), bottom = h - Rs_Px(24);
+    int gap = Rs_Px(16);
     int colW = (right - left - gap) / 2;
     int rx = left + colW + gap;
-    int gameH = Am_Px(TEST_CARD_CHROME + TEST_GAME_INNER);
-    int trackH = Am_Px(TEST_CARD_CHROME + TEST_TRACK_INNER);
-    int optH = Am_Px(TEST_CARD_CHROME + TEST_OPT_INNER);
+    int gameH = Rs_Px(TEST_CARD_CHROME + TEST_GAME_INNER);
+    int trackH = Rs_Px(TEST_CARD_CHROME + TEST_TRACK_INNER);
+    int optH = Rs_Px(TEST_CARD_CHROME + TEST_OPT_INNER);
     int stacked;
     RECT rc, in;
 
     // Long messages on the card Game make it taller (Track takes less).
     SetRect(&rc, left, top, left + colW, top + gameH);
-    in = Am_CardInner(&rc, 1);
+    in = Rs_CardInner(&rc, 1);
     gameH += Test_GameExtra(in.right - in.left);
     stacked = bottom - top >= gameH + gap + trackH + gap + optH;
 
-    Am_CardClear(page);
+    Rs_CardClear(page);
 
     SetRect(&rc, left, top, left + colW, top + gameH);
-    Am_CardAdd(page, &rc, L"Game");
-    in = Am_CardInner(&rc, 1);
+    Rs_CardAdd(page, &rc, L"Game");
+    in = Rs_CardInner(&rc, 1);
     Test_LayoutGame(&in);
 
     SetRect(&rc, left, top + gameH + gap, left + colW, stacked ? bottom - optH - gap : bottom);
-    Am_CardAdd(page, &rc, L"Track");
-    in = Am_CardInner(&rc, 1);
+    Rs_CardAdd(page, &rc, L"Track");
+    in = Rs_CardInner(&rc, 1);
     Test_LayoutTrack(&in);
 
     if (stacked)
         SetRect(&rc, left, bottom - optH, left + colW, bottom);
     else
         SetRect(&rc, rx, top, right, top + optH);
-    Am_CardAdd(page, &rc, L"Options");
-    in = Am_CardInner(&rc, 1);
+    Rs_CardAdd(page, &rc, L"Options");
+    in = Rs_CardInner(&rc, 1);
     Test_LayoutOptions(&in);
 
     SetRect(&rc, rx, stacked ? top : top + optH + gap, right, bottom);
-    Am_CardAdd(page, &rc, L"Result");
-    in = Am_CardInner(&rc, 1);
+    Rs_CardAdd(page, &rc, L"Result");
+    in = Rs_CardInner(&rc, 1);
     Test_LayoutResult(&in);
 }
 
@@ -670,7 +670,7 @@ static void Test_Relayout(HWND page)
 {
     RECT rc;
     GetClientRect(page, &rc);
-    if (rc.right >= Am_Px(400) && rc.bottom >= Am_Px(300))
+    if (rc.right >= Rs_Px(400) && rc.bottom >= Rs_Px(300))
         Test_Layout(page, rc.right, rc.bottom);
 }
 
@@ -680,7 +680,7 @@ static void Test_Relayout(HWND page)
 
 static int __cdecl Test_CompareItems(const void *a, const void *b)
 {
-    return _wcsicmp(Am_PathName((const wchar_t *)a), Am_PathName((const wchar_t *)b));
+    return _wcsicmp(Rs_PathName((const wchar_t *)a), Rs_PathName((const wchar_t *)b));
 }
 
 // Rebuilds the list: *.rldtrack from the tracks folder (flat, at most 64),
@@ -696,14 +696,14 @@ static void Test_FillCombo(void)
 
     g_test.itemCount = 0;
     if (g_test.tracksDir[0]) {
-        Am_PathJoin(pattern, TEST_PATH, g_test.tracksDir, L"*.rldtrack");
+        Rs_PathJoin(pattern, TEST_PATH, g_test.tracksDir, L"*.rldtrack");
         h = FindFirstFileW(pattern, &fd);
         if (h != INVALID_HANDLE_VALUE) {
             do {
                 const wchar_t *ext = wcsrchr(fd.cFileName, L'.');
                 if ((fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || !ext || _wcsicmp(ext, L".rldtrack") != 0)
                     continue;
-                Am_PathJoin(g_test.items[g_test.itemCount], TEST_PATH, g_test.tracksDir, fd.cFileName);
+                Rs_PathJoin(g_test.items[g_test.itemCount], TEST_PATH, g_test.tracksDir, fd.cFileName);
                 g_test.itemCount++;
             } while (g_test.itemCount < TEST_MAX_FOLDER && FindNextFileW(h, &fd));
             FindClose(h);
@@ -712,7 +712,7 @@ static void Test_FillCombo(void)
     }
     folderCount = g_test.itemCount;
 
-    if (g_test.container[0] && !Am_FileExists(g_test.container))
+    if (g_test.container[0] && !Rs_FileExists(g_test.container))
         g_test.container[0] = 0;
     for (i = 0; i < folderCount; i++)
         if (_wcsicmp(g_test.items[i], g_test.container) == 0)
@@ -729,10 +729,10 @@ static void Test_FillCombo(void)
     SendMessageW(g_test.combo, CB_RESETCONTENT, 0, 0);
     for (i = 0; i < g_test.itemCount; i++) {
         if (i < folderCount) {
-            Test_Copy(text, TEST_PATH * 2, Am_PathName(g_test.items[i]));
+            Test_Copy(text, TEST_PATH * 2, Rs_PathName(g_test.items[i]));
         } else {
-            Am_PathDir(dir, TEST_PATH, g_test.items[i]);
-            swprintf(text, TEST_PATH * 2, L"%ls - %ls", Am_PathName(g_test.items[i]), dir);
+            Rs_PathDir(dir, TEST_PATH, g_test.items[i]);
+            swprintf(text, TEST_PATH * 2, L"%ls - %ls", Rs_PathName(g_test.items[i]), dir);
         }
         SendMessageW(g_test.combo, CB_ADDSTRING, 0, (LPARAM)text);
     }
@@ -745,19 +745,19 @@ static void Test_UpdateWhere(void)
     wchar_t line[TEST_PATH + 64];
 
     if (!g_test.container[0]) {
-        Test_SetLabel(g_test.where1, L"", AM_COL_MUTED);
-        Test_SetLabel(g_test.where2, L"", AM_COL_MUTED);
+        Test_SetLabel(g_test.where1, L"", RS_COL_MUTED);
+        Test_SetLabel(g_test.where2, L"", RS_COL_MUTED);
         return;
     }
-    Am_PathDir(dir, TEST_PATH, g_test.container);
+    Rs_PathDir(dir, TEST_PATH, g_test.container);
     if (Test_SameDir(dir, g_test.tracksDir)) {
-        Test_SetLabel(g_test.where1, L"The game loads it from its own tracks folder.", AM_COL_MUTED);
-        Test_SetLabel(g_test.where2, L"", AM_COL_MUTED);
+        Test_SetLabel(g_test.where1, L"The game loads it from its own tracks folder.", RS_COL_MUTED);
+        Test_SetLabel(g_test.where2, L"", RS_COL_MUTED);
     } else {
         swprintf(line, TEST_PATH + 64, L"The game loads it from %ls", dir);
-        Test_SetLabel(g_test.where1, line, AM_COL_MUTED);
+        Test_SetLabel(g_test.where1, line, RS_COL_MUTED);
         Test_SetLabel(g_test.where2, L"as a test folder. Your game settings and level ids stay untouched.",
-                      AM_COL_MUTED);
+                      RS_COL_MUTED);
     }
 }
 
@@ -779,16 +779,16 @@ static int Test_RunInfo(HWND page)
     args[0] = L"info";
     args[1] = L"--machine";
     args[2] = g_test.container;
-    g_test.infoJob = Am_RunRldpack(page, args, 3);
+    g_test.infoJob = Rs_RunRldpack(page, args, 3);
     Test_ApplyNav();
     if (!g_test.infoJob) {
         g_test.infoState = TEST_INFO_UNKNOWN;
         Test_SetLabel(g_test.info, L"The container could not be checked - the checker did not start.",
-                      AM_COL_WARNING);
+                      RS_COL_WARNING);
         return 0;
     }
     g_test.infoState = TEST_INFO_RUNNING;
-    Test_SetLabel(g_test.info, L"Checking the container...", AM_COL_MUTED);
+    Test_SetLabel(g_test.info, L"Checking the container...", RS_COL_MUTED);
     return 1;
 }
 
@@ -804,7 +804,7 @@ static int Test_EnsureInfo(HWND page, int force)
         g_test.infoState = TEST_INFO_NONE;
         g_test.infoPath[0] = 0;
         const wchar_t *empty = L"There is no track container in the game's tracks folder. Use Choose file...";
-        Test_SetLabel(g_test.info, g_test.tracksDir[0] ? empty : L"", AM_COL_MUTED);
+        Test_SetLabel(g_test.info, g_test.tracksDir[0] ? empty : L"", RS_COL_MUTED);
         g_test.infoNav = -1;
         Test_ApplyNav();
     } else {
@@ -821,7 +821,7 @@ static int Test_EnsureInfo(HWND page, int force)
 static int Test_SetContainer(HWND page, const wchar_t *path, int refill, int force)
 {
     Test_FullPath(path, g_test.container, TEST_PATH);
-    Am_ConfigSet(L"test.container", g_test.container);
+    Rs_ConfigSet(L"test.container", g_test.container);
     if (refill)
         Test_FillCombo();
     Test_UpdateWhere();
@@ -836,18 +836,18 @@ static void Test_ApplyNav(void)
     int none = g_test.infoNav == 0 &&
                (g_test.infoState == TEST_INFO_OK || g_test.infoState == TEST_INFO_NORACE);
     if (none)
-        Test_SetLabel(g_test.nav, L"No nav paths: no bots, you drive alone; auto drive is locked.", AM_COL_WARNING);
+        Test_SetLabel(g_test.nav, L"No nav paths: no bots, you drive alone; auto drive is locked.", RS_COL_WARNING);
     else
-        Test_SetLabel(g_test.nav, L"", AM_COL_WARNING);
+        Test_SetLabel(g_test.nav, L"", RS_COL_WARNING);
     EnableWindow(g_test.autopilot, !none);
-    Am_SetText(g_test.autopilot, none ? L"Let the kart drive itself (needs nav paths - this track has none)"
+    Rs_SetText(g_test.autopilot, none ? L"Let the kart drive itself (needs nav paths - this track has none)"
                                       : L"Let the kart drive itself (autopilot)");
 }
 
 static void Test_InfoLine(wchar_t *line)
 {
     wchar_t *f[8];
-    int n = Am_SplitMachine(line, f, 8);
+    int n = Rs_SplitMachine(line, f, 8);
 
     if (n < 1)
         return;
@@ -875,7 +875,7 @@ static void Test_InfoLine(wchar_t *line)
 static void Test_InfoDone(int code)
 {
     wchar_t text[768];
-    COLORREF color = AM_COL_OK;
+    COLORREF color = RS_COL_OK;
     int race;
 
     g_test.infoJob = 0;
@@ -883,13 +883,13 @@ static void Test_InfoDone(int code)
         g_test.infoState = TEST_INFO_REFUSED;
         swprintf(text, 768, L"The game refuses this container: %ls",
                  g_test.infoReason[0] ? g_test.infoReason : L"no reason given");
-        color = AM_COL_ERROR;
+        color = RS_COL_ERROR;
     } else if (!g_test.infoSawContainer) {
         g_test.infoState = TEST_INFO_UNKNOWN;
         swprintf(text, 768,
                  L"The container could not be checked (the checker ended with code %d). The game will tell more.",
                  code);
-        color = AM_COL_WARNING;
+        color = RS_COL_WARNING;
     } else {
         race = g_test.infoRace;
         if (race < 0)
@@ -897,9 +897,9 @@ static void Test_InfoDone(int code)
         if (!race) {
             g_test.infoState = TEST_INFO_NORACE;
             Test_Copy(text, 768, L"This container does not offer Race, so the game cannot start it.");
-            color = AM_COL_ERROR;
+            color = RS_COL_ERROR;
         } else {
-            const wchar_t *name = g_test.infoName[0] ? g_test.infoName : Am_PathName(g_test.container);
+            const wchar_t *name = g_test.infoName[0] ? g_test.infoName : Rs_PathName(g_test.container);
             g_test.infoState = TEST_INFO_OK;
             if (g_test.infoAuthor[0])
                 swprintf(text, 768, L"%ls by %ls - offers Race", name, g_test.infoAuthor);
@@ -910,10 +910,10 @@ static void Test_InfoDone(int code)
     Test_SetLabel(g_test.info, text, color);
     Test_ApplyNav();
     Test_UpdateReady();
-    if (Am_Automating()) {
-        Am_AutoLog(L"  container check: %ls", text);
+    if (Rs_Automating()) {
+        Rs_AutoLog(L"  container check: %ls", text);
         if (g_test.infoNav == 0)
-            Am_AutoLog(L"  container check: No nav paths - no bots, auto drive locked.");
+            Rs_AutoLog(L"  container check: No nav paths - no bots, auto drive locked.");
     }
 }
 
@@ -929,26 +929,26 @@ static void Test_ApplyBase(HWND page)
     g_test.baseDir[0] = 0;
     g_test.tracksDir[0] = 0;
     g_test.noBase = 0;
-    if (g_test.exePath[0] && Am_FileExists(g_test.exePath)) {
+    if (g_test.exePath[0] && Rs_FileExists(g_test.exePath)) {
         if (Test_FindBase(g_test.exePath, g_test.baseDir, TEST_PATH))
-            Am_PathJoin(g_test.tracksDir, TEST_PATH, g_test.baseDir, L"tracks");
+            Rs_PathJoin(g_test.tracksDir, TEST_PATH, g_test.baseDir, L"tracks");
         else
             g_test.noBase = 1;
     }
     if (g_test.baseDir[0]) {
         Test_SetEllipsis(g_test.base, SS_PATHELLIPSIS);
         swprintf(line, TEST_PATH + 80, L"Game folder: %ls", g_test.baseDir);
-        Test_SetLabel(g_test.base, line, AM_COL_MUTED);
+        Test_SetLabel(g_test.base, line, RS_COL_MUTED);
         swprintf(line, TEST_PATH + 80, L"Tracks folder of the game: %ls%ls", g_test.tracksDir,
-                 Am_DirExists(g_test.tracksDir) ? L"" : L" (not there yet)");
-        Test_SetLabel(g_test.tracks, line, AM_COL_MUTED);
+                 Rs_DirExists(g_test.tracksDir) ? L"" : L" (not there yet)");
+        Test_SetLabel(g_test.tracks, line, RS_COL_MUTED);
     } else if (g_test.noBase) {
         Test_SetEllipsis(g_test.base, 0);
-        Test_SetLabel(g_test.base, AM_TEXT_NO_GAME_DATA, AM_COL_ERROR);
-        Test_SetLabel(g_test.tracks, L"", AM_COL_MUTED);
+        Test_SetLabel(g_test.base, RS_TEXT_NO_GAME_DATA, RS_COL_ERROR);
+        Test_SetLabel(g_test.tracks, L"", RS_COL_MUTED);
     } else {
-        Test_SetLabel(g_test.base, L"", AM_COL_MUTED);
-        Test_SetLabel(g_test.tracks, L"", AM_COL_MUTED);
+        Test_SetLabel(g_test.base, L"", RS_COL_MUTED);
+        Test_SetLabel(g_test.tracks, L"", RS_COL_MUTED);
     }
     ShowWindow(g_test.tracks, g_test.noBase ? SW_HIDE : SW_SHOW);
     Test_Relayout(page);
@@ -960,13 +960,13 @@ static void Test_ApplyBase(HWND page)
 // Reads the program path from the field and asks --version. 1 = question started.
 static int Test_ExeApply(HWND page)
 {
-    wchar_t *text = Am_GetText(g_test.exe);
+    wchar_t *text = Rs_GetText(g_test.exe);
     wchar_t raw[TEST_PATH];
     wchar_t dir[TEST_PATH];
     int started = 0;
 
     Test_Trim(text, raw, TEST_PATH, 1);
-    Am_Free(text);
+    Rs_Free(text);
     KillTimer(page, TEST_TIMER_PROBE);
     g_test.versionJob = 0;
     g_test.exeOk = 0;
@@ -980,23 +980,23 @@ static int Test_ExeApply(HWND page)
     g_test.versionText[0] = 0;
     Test_FullPath(raw, g_test.exePath, TEST_PATH);
     if (g_test.exePath[0])
-        Am_ConfigSet(L"test.exe", g_test.exePath);
+        Rs_ConfigSet(L"test.exe", g_test.exePath);
 
     if (!g_test.exePath[0]) {
-        Test_SetLabel(g_test.version, L"Choose ctr_native.exe, the CTR Reload game program.", AM_COL_MUTED);
-    } else if (Am_DirExists(g_test.exePath)) {
-        Test_SetLabel(g_test.version, L"This is a folder. Choose ctr_native.exe inside it.", AM_COL_ERROR);
-    } else if (!Am_FileExists(g_test.exePath)) {
-        Test_SetLabel(g_test.version, L"This file does not exist.", AM_COL_ERROR);
+        Test_SetLabel(g_test.version, L"Choose ctr_native.exe, the CTR Reload game program.", RS_COL_MUTED);
+    } else if (Rs_DirExists(g_test.exePath)) {
+        Test_SetLabel(g_test.version, L"This is a folder. Choose ctr_native.exe inside it.", RS_COL_ERROR);
+    } else if (!Rs_FileExists(g_test.exePath)) {
+        Test_SetLabel(g_test.version, L"This file does not exist.", RS_COL_ERROR);
     } else {
-        Am_PathDir(dir, TEST_PATH, g_test.exePath);
-        g_test.versionJob = Am_RunProcess(page, g_test.exePath, L"--version", dir, 1);
+        Rs_PathDir(dir, TEST_PATH, g_test.exePath);
+        g_test.versionJob = Rs_RunProcess(page, g_test.exePath, L"--version", dir, 1);
         if (g_test.versionJob) {
-            Test_SetLabel(g_test.version, L"Checking the program...", AM_COL_MUTED);
+            Test_SetLabel(g_test.version, L"Checking the program...", RS_COL_MUTED);
             SetTimer(page, TEST_TIMER_PROBE, 15000, NULL);
             started = 1;
         } else {
-            Test_SetLabel(g_test.version, L"This program could not be started.", AM_COL_ERROR);
+            Test_SetLabel(g_test.version, L"This program could not be started.", RS_COL_ERROR);
         }
     }
     Test_ApplyBase(page);
@@ -1014,9 +1014,9 @@ static void Test_VersionLine(const wchar_t *line)
         Test_Copy(g_test.versionText, 256, line);
 }
 
-// 1 = the remembered line comes from the same package as this Alpha-Maker:
+// 1 = the remembered line comes from the same package as this Reload Studio:
 // "CTR Reload ..." and the ID in the last brackets equals its own.
-// An Alpha-Maker without an ID ("unknown", build without git) does not compare.
+// A Reload Studio without an ID ("unknown", build without git) does not compare.
 static int Test_VersionMatches(const wchar_t *line)
 {
     const wchar_t *paren;
@@ -1024,17 +1024,17 @@ static int Test_VersionMatches(const wchar_t *line)
 
     if (!Test_StartsWith(line, L"CTR Reload "))
         return 0;
-    if (wcscmp(AM_BUILD_ID_W, L"unknown") == 0)
+    if (wcscmp(RS_BUILD_ID_W, L"unknown") == 0)
         return 1;
     paren = wcsrchr(line, L'(');
     if (!paren)
         return 0;
     Test_Between(paren, L"(", L")", id, 64);
-    return _wcsicmp(id, AM_BUILD_ID_W) == 0;
+    return _wcsicmp(id, RS_BUILD_ID_W) == 0;
 }
 
 // The entered game comes from another package: if there is another
-// ctr_native.exe next to the Alpha-Maker, switch to it once per session -
+// ctr_native.exe next to Reload Studio, switch to it once per session -
 // only for the game from the ini at start (Test_ExeApply otherwise sets
 // exeSwitchUsed) - and check again. Loop-free: exeSwitchUsed is set before the switch
 // and never reset; if the neighbouring game does not fit either, the
@@ -1046,8 +1046,8 @@ static int Test_SwitchToNeighbour(HWND page)
 
     if (g_test.exeSwitchUsed || !g_test.exeMismatch || !g_test.exePath[0])
         return 0;
-    Am_PathJoin(probe, TEST_PATH, Am_ExeDir(), L"ctr_native.exe");
-    if (!Am_FileExists(probe))
+    Rs_PathJoin(probe, TEST_PATH, Rs_ExeDir(), L"ctr_native.exe");
+    if (!Rs_FileExists(probe))
         return 0;
     Test_FullPath(probe, full, TEST_PATH);
     if (!full[0] || _wcsicmp(full, g_test.exePath) == 0)
@@ -1056,13 +1056,13 @@ static int Test_SwitchToNeighbour(HWND page)
     g_test.exeSwitchUsed = 1;
     Test_Copy(g_test.exeSwitchFrom, TEST_PATH, g_test.exePath);
     Test_Copy(g_test.exeSwitchFromVersion, 256, g_test.versionText);
-    if (Am_Automating())
-        Am_AutoLog(L"  game program: switching to %ls (next to this Alpha-Maker)", full);
+    if (Rs_Automating())
+        Rs_AutoLog(L"  game program: switching to %ls (next to this Reload Studio)", full);
 
     // Like Test_BrowseExe: set the text without EN_CHANGE debounce, then check.
     // Test_ExeApply writes test.exe (except in automation) and starts --version.
     g_test.quiet = 1;
-    Am_SetText(g_test.exe, full);
+    Rs_SetText(g_test.exe, full);
     g_test.quiet = 0;
     KillTimer(page, TEST_TIMER_EXE);
     g_test.exePending = 0;
@@ -1090,56 +1090,56 @@ static void Test_VersionDone(HWND page, DWORD code)
         swprintf(text, TEST_PATH + 1024,
                  L"Found: %ls. Switched from %ls (%ls) - that game was from another package.",
                  g_test.versionText, g_test.exeSwitchFrom, g_test.exeSwitchFromVersion);
-        Test_SetLabel(g_test.version, text, AM_COL_OK);
+        Test_SetLabel(g_test.version, text, RS_COL_OK);
     } else if (g_test.exeOk) {
         swprintf(text, TEST_PATH + 1024, L"Found: %ls", g_test.versionText);
-        Test_SetLabel(g_test.version, text, AM_COL_OK);
+        Test_SetLabel(g_test.version, text, RS_COL_OK);
     } else if (g_test.exeMismatch) {
         swprintf(text, TEST_PATH + 1024,
-                 L"This game (%ls) is not from the same package as this Alpha-Maker (%ls (%ls)). "
+                 L"This game (%ls) is not from the same package as this Reload Studio (%ls (%ls)). "
                  L"Use ctr_native.exe from the same folder/package.",
-                 g_test.versionText, AM_VERSION_W, AM_BUILD_ID_W);
-        Test_SetLabel(g_test.version, text, AM_COL_ERROR);
+                 g_test.versionText, RS_VERSION_W, RS_BUILD_ID_W);
+        Test_SetLabel(g_test.version, text, RS_COL_ERROR);
     } else {
         Test_Copy(text, TEST_PATH + 1024, L"This program did not answer like CTR Reload.");
-        Test_SetLabel(g_test.version, text, AM_COL_ERROR);
+        Test_SetLabel(g_test.version, text, RS_COL_ERROR);
     }
     // The message about the foreign build (and the note after the switch)
     // wraps: lay out the card Game again.
     Test_Relayout(page);
     Test_UpdateReady();
-    if (Am_Automating())
-        Am_AutoLog(L"  game program: %ls", text);
+    if (Rs_Automating())
+        Rs_AutoLog(L"  game program: %ls", text);
     if (g_test.exeMismatch)
         Test_SwitchToNeighbour(page);
 }
 
-const wchar_t *Am_TestGameProblem(void)
+const wchar_t *Rs_TestGameProblem(void)
 {
     if (!g_test.exePath[0])
         return L"no game is chosen on the Test page.";
-    if (!Am_FileExists(g_test.exePath))
+    if (!Rs_FileExists(g_test.exePath))
         return L"the game program on the Test page was not found.";
     if (g_test.versionJob || g_test.exePending)
         return L"the game check on the Test page is not finished yet.";
     if (g_test.exeMismatch)
-        return L"the game on the Test page is not from the same package as this Alpha-Maker.";
+        return L"the game on the Test page is not from the same package as this Reload Studio.";
     if (!g_test.exeOk)
         return L"the game on the Test page did not answer like CTR Reload.";
     return NULL;
 }
 
 // For the page Track (preview): the entered game. In automation
-// the Alpha-Maker does not write the ini (Am_ConfigSet), otherwise it would still
+// Reload Studio does not write the ini (Rs_ConfigSet), otherwise it would still
 // contain the game of the last session.
-const wchar_t *Am_TestGameExe(void)
+const wchar_t *Rs_TestGameExe(void)
 {
     return g_test.exePath;
 }
 
 // For the page Track (preview): does the result from here apply to exePath?
 // Only a finished, matching --version run for the same path counts.
-int Am_TestGameVerified(const wchar_t *exePath)
+int Rs_TestGameVerified(const wchar_t *exePath)
 {
     wchar_t full[TEST_PATH];
 
@@ -1152,12 +1152,12 @@ int Am_TestGameVerified(const wchar_t *exePath)
 static void Test_BrowseExe(HWND page)
 {
     wchar_t out[TEST_PATH];
-    if (!Am_BrowseOpenFile(page, L"Choose the CTR Reload game program",
+    if (!Rs_BrowseOpenFile(page, L"Choose the CTR Reload game program",
                            L"CTR Reload (ctr_native.exe)\0ctr_native.exe\0Programs (*.exe)\0*.exe\0\0",
                            g_test.exePath, out, TEST_PATH))
         return;
     g_test.quiet = 1;
-    Am_SetText(g_test.exe, out);
+    Rs_SetText(g_test.exe, out);
     g_test.quiet = 0;
     KillTimer(page, TEST_TIMER_EXE);
     g_test.exePending = 0;
@@ -1168,7 +1168,7 @@ static void Test_ChooseFile(HWND page)
 {
     wchar_t out[TEST_PATH];
     const wchar_t *initial = g_test.container[0] ? g_test.container : g_test.tracksDir;
-    if (Am_BrowseOpenFile(page, L"Choose a track container",
+    if (Rs_BrowseOpenFile(page, L"Choose a track container",
                           L"Track containers (*.rldtrack)\0*.rldtrack\0\0", initial, out, TEST_PATH))
         Test_SetContainer(page, out, 1, 1);
 }
@@ -1178,13 +1178,13 @@ static void Test_SaveOptions(void)
     wchar_t v[16];
     wchar_t *args;
 
-    Am_ConfigSet(L"test.windowed", Test_Checked(g_test.windowed) ? L"1" : L"0");
+    Rs_ConfigSet(L"test.windowed", Test_Checked(g_test.windowed) ? L"1" : L"0");
     swprintf(v, 16, L"%d", Test_Driver());
-    Am_ConfigSet(L"test.driver", v);
-    Am_ConfigSet(L"test.autopilot", Test_Checked(g_test.autopilot) ? L"1" : L"0");
-    args = Am_GetText(g_test.args);
-    Am_ConfigSet(L"test.args", args);
-    Am_Free(args);
+    Rs_ConfigSet(L"test.driver", v);
+    Rs_ConfigSet(L"test.autopilot", Test_Checked(g_test.autopilot) ? L"1" : L"0");
+    args = Rs_GetText(g_test.args);
+    Rs_ConfigSet(L"test.args", args);
+    Rs_Free(args);
 }
 
 // ---------------------------------------------------------------------------
@@ -1199,7 +1199,7 @@ static void Test_BuildOutput(void)
     int i, used, shown = 0, hidden = 0, budget, logShow;
 
     if (!g_test.ran) {
-        Am_SetText(g_test.output, L"No test yet. After Start game, the command line, the game's output "
+        Rs_SetText(g_test.output, L"No test yet. After Start game, the command line, the game's output "
                                   L"and its log lines show up here.");
         return;
     }
@@ -1208,7 +1208,7 @@ static void Test_BuildOutput(void)
     Test_BufAdd(&b, L"Command line:\r\n");
     Test_BufAdd(&b, cmdText);
     Test_BufAdd(&b, L"\r\n\r\nGame output:\r\n");
-    Am_Free(cmdText);
+    Rs_Free(cmdText);
     used = 4;
 
     // Keep room for up to 200 log lines; what the output does not
@@ -1262,8 +1262,8 @@ static void Test_BuildOutput(void)
         if (!g_test.log.count)
             Test_BufAdd(&b, L"(none)\r\n");
     }
-    Am_SetText(g_test.output, b.p ? b.p : L"");
-    Am_Free(b.p);
+    Rs_SetText(g_test.output, b.p ? b.p : L"");
+    Rs_Free(b.p);
 }
 
 static void Test_ShowOutput(int on)
@@ -1273,7 +1273,7 @@ static void Test_ShowOutput(int on)
         Test_BuildOutput();
     ShowWindow(g_test.output, on ? SW_SHOW : SW_HIDE);
     ShowWindow(g_test.list, on ? SW_HIDE : SW_SHOW);
-    Am_SetText(g_test.toggle, on ? L"Show messages" : L"Show game output");
+    Rs_SetText(g_test.toggle, on ? L"Show messages" : L"Show game output");
 }
 
 // ---------------------------------------------------------------------------
@@ -1293,10 +1293,10 @@ static void Test_ResetRun(void)
 
 static void Test_AddMsg(int severity, const wchar_t *text, const wchar_t *detail)
 {
-    static const wchar_t *const names[AM_SEV_COUNT] = { L"ok", L"info", L"note", L"warning", L"error" };
-    Am_MsgListAdd(g_test.list, severity, text, detail);
-    if (Am_Automating())
-        Am_AutoLog(L"  %ls: %ls", (severity >= 0 && severity < AM_SEV_COUNT) ? names[severity] : L"info", text);
+    static const wchar_t *const names[RS_SEV_COUNT] = { L"ok", L"info", L"note", L"warning", L"error" };
+    Rs_MsgListAdd(g_test.list, severity, text, detail);
+    if (Rs_Automating())
+        Rs_AutoLog(L"  %ls: %ls", (severity >= 0 && severity < RS_SEV_COUNT) ? names[severity] : L"info", text);
 }
 
 // Builds the command line and starts the game. 1 = running.
@@ -1314,36 +1314,36 @@ static int Test_Start(HWND page)
     if (Test_WhyNot())
         return 0;
     Test_MakeLogPath(g_test.logPath, TEST_PATH);
-    Am_PathDir(dir, TEST_PATH, g_test.container);
+    Rs_PathDir(dir, TEST_PATH, g_test.container);
     Test_DiskName(g_test.container, name, TEST_PATH);
     outside = !Test_SameDir(dir, g_test.tracksDir);
 
     cmd[0] = 0;
-    Am_AppendArg(cmd, TEST_CMD_CAP, L"--dev");
+    Rs_AppendArg(cmd, TEST_CMD_CAP, L"--dev");
     if (Test_Checked(g_test.windowed)) {
-        Am_AppendArg(cmd, TEST_CMD_CAP, L"--windowed");
-        Am_AppendArg(cmd, TEST_CMD_CAP, L"1280x720");
+        Rs_AppendArg(cmd, TEST_CMD_CAP, L"--windowed");
+        Rs_AppendArg(cmd, TEST_CMD_CAP, L"1280x720");
     }
     if (outside) {
-        Am_AppendArg(cmd, TEST_CMD_CAP, L"--tracks-dir");
-        Am_AppendArg(cmd, TEST_CMD_CAP, dir);
-        Am_AppendArg(cmd, TEST_CMD_CAP, L"--settings-defaults");
+        Rs_AppendArg(cmd, TEST_CMD_CAP, L"--tracks-dir");
+        Rs_AppendArg(cmd, TEST_CMD_CAP, dir);
+        Rs_AppendArg(cmd, TEST_CMD_CAP, L"--settings-defaults");
     }
-    Am_AppendArg(cmd, TEST_CMD_CAP, L"--autoload-track");
-    Am_AppendArg(cmd, TEST_CMD_CAP, name);
+    Rs_AppendArg(cmd, TEST_CMD_CAP, L"--autoload-track");
+    Rs_AppendArg(cmd, TEST_CMD_CAP, name);
     if (Test_Driver() > 0) {
         swprintf(num, 16, L"%d", Test_Driver());
-        Am_AppendArg(cmd, TEST_CMD_CAP, L"--driver");
-        Am_AppendArg(cmd, TEST_CMD_CAP, num);
+        Rs_AppendArg(cmd, TEST_CMD_CAP, L"--driver");
+        Rs_AppendArg(cmd, TEST_CMD_CAP, num);
     }
     if (Test_Checked(g_test.autopilot) && IsWindowEnabled(g_test.autopilot))
-        Am_AppendArg(cmd, TEST_CMD_CAP, L"--autopilot");
-    Am_AppendArg(cmd, TEST_CMD_CAP, L"--log");
-    Am_AppendArg(cmd, TEST_CMD_CAP, g_test.logPath);
+        Rs_AppendArg(cmd, TEST_CMD_CAP, L"--autopilot");
+    Rs_AppendArg(cmd, TEST_CMD_CAP, L"--log");
+    Rs_AppendArg(cmd, TEST_CMD_CAP, g_test.logPath);
     // Extra arguments unchanged, with a space after them.
-    text = Am_GetText(g_test.args);
+    text = Rs_GetText(g_test.args);
     Test_Trim(text, extra, TEST_PATH * 2, 0);
-    Am_Free(text);
+    Rs_Free(text);
     if (extra[0]) {
         size_t n = wcslen(cmd);
         if (n + 1 + wcslen(extra) < TEST_CMD_CAP) {
@@ -1357,22 +1357,22 @@ static int Test_Start(HWND page)
     g_test.ran = 1;
     Test_SaveOptions();
     cmdText = Test_CmdText();
-    if (Am_Automating())
-        Am_AutoLog(L"  game command line: %ls", cmdText);
-    Am_MsgListClear(g_test.list);
-    g_test.gameJob = Am_RunProcess(page, g_test.exePath, cmd, g_test.baseDir, 1);
+    if (Rs_Automating())
+        Rs_AutoLog(L"  game command line: %ls", cmdText);
+    Rs_MsgListClear(g_test.list);
+    g_test.gameJob = Rs_RunProcess(page, g_test.exePath, cmd, g_test.baseDir, 1);
     if (!g_test.gameJob) {
         g_test.startFailed = 1;
-        Test_SetLabel(g_test.headline, L"Test failed - see below", AM_COL_ERROR);
-        Test_AddMsg(AM_SEV_ERROR, L"The game could not be started.", cmdText);
+        Test_SetLabel(g_test.headline, L"Test failed - see below", RS_COL_ERROR);
+        Test_AddMsg(RS_SEV_ERROR, L"The game could not be started.", cmdText);
     } else {
-        Test_SetLabel(g_test.headline, L"The game is running - close it to see the result here.", AM_COL_NOTE);
-        Test_AddMsg(AM_SEV_INFO, L"The game was started with this command line:", cmdText);
+        Test_SetLabel(g_test.headline, L"The game is running - close it to see the result here.", RS_COL_NOTE);
+        Test_AddMsg(RS_SEV_INFO, L"The game was started with this command line:", cmdText);
         if (g_test.infoNav == 0)
-            Test_AddMsg(AM_SEV_WARNING, L"The track has no nav paths, so there are no bots in this race - you drive alone.",
+            Test_AddMsg(RS_SEV_WARNING, L"The track has no nav paths, so there are no bots in this race - you drive alone.",
                         L"rldpack info: nav_paths 0");
     }
-    Am_Free(cmdText);
+    Rs_Free(cmdText);
     Test_UpdateButtons();
     Test_UpdateReady();
     if (g_test.showOutput)
@@ -1383,7 +1383,7 @@ static int Test_Start(HWND page)
 // Remembers the log lines with the known prefixes.
 static void Test_ReadLog(void)
 {
-    wchar_t *text = Am_ReadTextFile(g_test.logPath);
+    wchar_t *text = Rs_ReadTextFile(g_test.logPath);
     wchar_t *p, *line;
     size_t n;
 
@@ -1402,9 +1402,9 @@ static void Test_ReadLog(void)
         if (n > 0 && line[n - 1] == L'\r')
             line[n - 1] = 0;
         if (Test_IsLogLine(line))
-            Test_LinesPush(&g_test.log, Am_Dup(line), TEST_MAX_LOG);
+            Test_LinesPush(&g_test.log, Rs_Dup(line), TEST_MAX_LOG);
     }
-    Am_Free(text);
+    Rs_Free(text);
 }
 
 static void Test_Analyze(DWORD code)
@@ -1437,14 +1437,14 @@ static void Test_Analyze(DWORD code)
         }
     }
 
-    Am_MsgListClear(g_test.list);
+    Rs_MsgListClear(g_test.list);
     g_test.raceStarted = race != NULL;
     if (race) {
         Test_Between(race, L" container '", L"', driver", part, 512);
         if (!part[0])
             Test_Between(race, L" container '", L"'", part, 512);
         swprintf(text, 768, L"The race started on '%ls'.", part);
-        Test_AddMsg(AM_SEV_OK, text, race);
+        Test_AddMsg(RS_SEV_OK, text, race);
         // ", bots N": older games do not write it.
         {
             const wchar_t *b = wcsstr(race, L", bots ");
@@ -1452,9 +1452,9 @@ static void Test_Analyze(DWORD code)
                 int bots = _wtoi(b + wcslen(L", bots "));
                 if (bots > 0) {
                     swprintf(text, 768, L"%d bot(s) raced against you.", bots);
-                    Test_AddMsg(AM_SEV_OK, text, race);
+                    Test_AddMsg(RS_SEV_OK, text, race);
                 } else {
-                    Test_AddMsg(AM_SEV_WARNING, L"No bots were in the race - the track has no nav paths for them.", race);
+                    Test_AddMsg(RS_SEV_WARNING, L"No bots were in the race - the track has no nav paths for them.", race);
                 }
             }
         }
@@ -1464,9 +1464,9 @@ static void Test_Analyze(DWORD code)
         if (!wcsstr(l, L"[CTR Debug] --autopilot: level "))
             continue;
         if (wcsstr(l, L" - OFF"))
-            Test_AddMsg(AM_SEV_WARNING, L"Auto drive could not take over: the track has no nav paths. You had the kart.", l);
+            Test_AddMsg(RS_SEV_WARNING, L"Auto drive could not take over: the track has no nav paths. You had the kart.", l);
         else if (wcsstr(l, L"drives as a bot"))
-            Test_AddMsg(AM_SEV_OK, L"Auto drive took over the kart.", l);
+            Test_AddMsg(RS_SEV_OK, L"Auto drive took over the kart.", l);
         break;
     }
     if (nitro) {
@@ -1476,31 +1476,31 @@ static void Test_Analyze(DWORD code)
                      _wtoi(seat + wcslen(L"-> donor slot ")));
         else
             Test_Copy(text, 768, L"The game loaded the container.");
-        Test_AddMsg(AM_SEV_OK, text, nitro);
+        Test_AddMsg(RS_SEV_OK, text, nitro);
     }
 
     if (notIn)
-        Test_AddMsg(AM_SEV_ERROR, L"The game did not find the container in the tracks folder it read.", notIn);
+        Test_AddMsg(RS_SEV_ERROR, L"The game did not find the container in the tracks folder it read.", notIn);
     if (notOffered) {
         Test_Between(notOffered, L"is not offered - ", L" - nothing loaded", part, 512);
         swprintf(text, 768, L"The game does not offer this container: %ls", part);
-        Test_AddMsg(AM_SEV_ERROR, text, notOffered);
+        Test_AddMsg(RS_SEV_ERROR, text, notOffered);
     }
     if (notLoaded) {
         Test_Between(notLoaded, L": NOT LOADED - ", NULL, part, 512);
         swprintf(text, 768, L"The game could not load the container: %ls", part);
-        Test_AddMsg(AM_SEV_ERROR, text, notLoaded);
+        Test_AddMsg(RS_SEV_ERROR, text, notLoaded);
     } else if (didNot) {
-        Test_AddMsg(AM_SEV_ERROR, L"The game could not load the container - see the game log.", didNot);
+        Test_AddMsg(RS_SEV_ERROR, L"The game could not load the container - see the game log.", didNot);
     }
     failed = notIn || notOffered || notLoaded || didNot;
     // At 64 the game rejected the command line; the line below says so.
     if (code != 64) {
         if (!g_test.logFound)
-            Test_AddMsg(AM_SEV_ERROR, L"The game wrote no log. It may not have started - check the game program.",
+            Test_AddMsg(RS_SEV_ERROR, L"The game wrote no log. It may not have started - check the game program.",
                         g_test.logPath);
         else if (!race && !failed)
-            Test_AddMsg(AM_SEV_ERROR, L"The race did not start before the game closed.",
+            Test_AddMsg(RS_SEV_ERROR, L"The race did not start before the game closed.",
                         L"The game log has no [CTR Race] line for a container.");
     }
 
@@ -1522,11 +1522,11 @@ static void Test_Analyze(DWORD code)
         } else {
             Test_Copy(text, 768, L"The game logged a warning about the tracks.");
         }
-        Test_AddMsg(AM_SEV_WARNING, text, l);
+        Test_AddMsg(RS_SEV_WARNING, text, l);
     }
     if (moreWarnings) {
         swprintf(text, 768, L"%d more warning(s) - see the game log.", moreWarnings);
-        Test_AddMsg(AM_SEV_WARNING, text, NULL);
+        Test_AddMsg(RS_SEV_WARNING, text, NULL);
     }
 
     cmdText = Test_CmdText();
@@ -1538,23 +1538,23 @@ static void Test_Analyze(DWORD code)
                 Test_BufAdd(&b, L"\n");
             Test_BufAdd(&b, g_test.out.v[i]);
         }
-        Test_AddMsg(AM_SEV_ERROR, L"The game did not accept its command line (exit code 64).",
+        Test_AddMsg(RS_SEV_ERROR, L"The game did not accept its command line (exit code 64).",
                     (b.p && b.p[0]) ? b.p : L"The game printed nothing.");
-        Am_Free(b.p);
+        Rs_Free(b.p);
     } else if (code >= 0xC0000000u) {
         swprintf(text, 768, L"The game crashed (exit code 0x%08lX).", code);
-        Test_AddMsg(AM_SEV_ERROR, text, cmdText);
+        Test_AddMsg(RS_SEV_ERROR, text, cmdText);
     } else {
         swprintf(text, 768, L"The game closed (exit code %lu).", code);
-        Test_AddMsg(AM_SEV_INFO, text, cmdText);
+        Test_AddMsg(RS_SEV_INFO, text, cmdText);
     }
-    Am_Free(cmdText);
+    Rs_Free(cmdText);
 
     {
         const wchar_t *head = g_test.raceStarted ? L"Test finished - the race started" : L"Test failed - see below";
-        Test_SetLabel(g_test.headline, head, g_test.raceStarted ? AM_COL_OK : AM_COL_ERROR);
-        if (Am_Automating())
-            Am_AutoLog(L"  result: %ls", head);
+        Test_SetLabel(g_test.headline, head, g_test.raceStarted ? RS_COL_OK : RS_COL_ERROR);
+        if (Rs_Automating())
+            Rs_AutoLog(L"  result: %ls", head);
     }
 }
 
@@ -1575,13 +1575,13 @@ static void Test_OpenLog(HWND page)
 {
     wchar_t text[TEST_PATH + 80];
 
-    if (!g_test.logPath[0] || !Am_FileExists(g_test.logPath)) {
-        Am_Tell(page, L"Game log", L"The game has not written a log for this test.");
+    if (!g_test.logPath[0] || !Rs_FileExists(g_test.logPath)) {
+        Rs_Tell(page, L"Game log", L"The game has not written a log for this test.");
         return;
     }
     if ((INT_PTR)ShellExecuteW(NULL, L"open", g_test.logPath, NULL, NULL, SW_SHOWNORMAL) <= 32) {
         swprintf(text, TEST_PATH + 80, L"Windows could not open the game log. It is here:\n%ls", g_test.logPath);
-        Am_Tell(page, L"Game log", text);
+        Rs_Tell(page, L"Game log", text);
     }
 }
 
@@ -1591,9 +1591,9 @@ static void Test_OpenLog(HWND page)
 
 static void Test_Put(FILE *f, const wchar_t *text)
 {
-    char *utf8 = Am_ToUtf8(text);
+    char *utf8 = Rs_ToUtf8(text);
     fputs(utf8, f);
-    Am_Free(utf8);
+    Rs_Free(utf8);
 }
 
 static void Test_PutKV(FILE *f, const wchar_t *key, const wchar_t *value)
@@ -1606,9 +1606,9 @@ static void Test_PutKV(FILE *f, const wchar_t *key, const wchar_t *value)
 
 static void Test_PutCtl(FILE *f, const wchar_t *key, HWND control)
 {
-    wchar_t *text = Am_GetText(control);
+    wchar_t *text = Rs_GetText(control);
     Test_PutKV(f, key, text);
-    Am_Free(text);
+    Rs_Free(text);
 }
 
 static int Test_Report(const wchar_t *path)
@@ -1621,7 +1621,7 @@ static int Test_Report(const wchar_t *path)
 
     if (!f)
         return 0;
-    Test_Put(f, L"Alpha-Maker report - page \"Test in game\"\n\n");
+    Test_Put(f, L"Reload Studio report - page \"Test in game\"\n\n");
     Test_PutKV(f, L"Game program", g_test.exePath[0] ? g_test.exePath : L"(none)");
     Test_PutCtl(f, L"Game program check", g_test.version);
     Test_PutKV(f, L"Game folder", g_test.baseDir[0] ? g_test.baseDir : L"(not found)");
@@ -1650,7 +1650,7 @@ static int Test_Report(const wchar_t *path)
     if (g_test.ran) {
         text = Test_CmdText();
         Test_PutKV(f, L"Command line of the last start", text);
-        Am_Free(text);
+        Rs_Free(text);
         if (g_test.gameJob)
             Test_PutKV(f, L"Last start", L"the game is still running");
         else if (g_test.startFailed)
@@ -1668,7 +1668,7 @@ static int Test_Report(const wchar_t *path)
     Test_PutKV(f, L"View", g_test.showOutput ? L"game output" : L"messages");
 
     Test_Put(f, L"\nMessages (severity, text, detail):\n");
-    Am_MsgListWrite(g_test.list, f);
+    Rs_MsgListWrite(g_test.list, f);
 
     Test_Put(f, L"\nGame log lines of the last run:\n");
     for (i = 0; i < g_test.log.count; i++) {
@@ -1710,68 +1710,68 @@ static void Test_Create(HWND page)
     memset(&g_test, 0, sizeof(g_test));
 
     // Card "Game"
-    g_test.exeLabel = Am_Label(page, TEST_ID_EXE_LABEL, L"Game program", AM_FONT_BOLD);
-    g_test.exe = Am_Edit(page, TEST_ID_EXE, L"", 0);
-    g_test.exeBrowse = Am_Button(page, TEST_ID_EXE_BROWSE, L"Browse...");
-    g_test.version = Am_Label(page, TEST_ID_VERSION, L"", AM_FONT_SMALL);
-    g_test.base = Am_Label(page, TEST_ID_BASE, L"", AM_FONT_SMALL);
-    g_test.tracks = Am_Label(page, TEST_ID_TRACKS, L"", AM_FONT_SMALL);
+    g_test.exeLabel = Rs_Label(page, TEST_ID_EXE_LABEL, L"Game program", RS_FONT_BOLD);
+    g_test.exe = Rs_Edit(page, TEST_ID_EXE, L"", 0);
+    g_test.exeBrowse = Rs_Button(page, TEST_ID_EXE_BROWSE, L"Browse...");
+    g_test.version = Rs_Label(page, TEST_ID_VERSION, L"", RS_FONT_SMALL);
+    g_test.base = Rs_Label(page, TEST_ID_BASE, L"", RS_FONT_SMALL);
+    g_test.tracks = Rs_Label(page, TEST_ID_TRACKS, L"", RS_FONT_SMALL);
     // version wraps (message about a foreign build), Test_LayoutGame measures.
     Test_SetEllipsis(g_test.base, SS_PATHELLIPSIS);
     Test_SetEllipsis(g_test.tracks, SS_PATHELLIPSIS);
 
     // Card "Track"
-    g_test.combo = Am_Combo(page, TEST_ID_COMBO);
-    g_test.choose = Am_Button(page, TEST_ID_CHOOSE, L"Choose file...");
-    g_test.info = Am_Label(page, TEST_ID_INFO, L"", AM_FONT_SMALL);
-    g_test.nav = Am_Label(page, TEST_ID_NAV, L"", AM_FONT_SMALL);
-    g_test.where1 = Am_Label(page, TEST_ID_WHERE1, L"", AM_FONT_SMALL);
-    g_test.where2 = Am_Label(page, TEST_ID_WHERE2, L"", AM_FONT_SMALL);
+    g_test.combo = Rs_Combo(page, TEST_ID_COMBO);
+    g_test.choose = Rs_Button(page, TEST_ID_CHOOSE, L"Choose file...");
+    g_test.info = Rs_Label(page, TEST_ID_INFO, L"", RS_FONT_SMALL);
+    g_test.nav = Rs_Label(page, TEST_ID_NAV, L"", RS_FONT_SMALL);
+    g_test.where1 = Rs_Label(page, TEST_ID_WHERE1, L"", RS_FONT_SMALL);
+    g_test.where2 = Rs_Label(page, TEST_ID_WHERE2, L"", RS_FONT_SMALL);
     Test_SetEllipsis(g_test.nav, SS_ENDELLIPSIS);
     Test_SetEllipsis(g_test.where1, SS_PATHELLIPSIS);
     Test_SetEllipsis(g_test.where2, SS_ENDELLIPSIS);
 
     // Card "Options"
-    g_test.windowed = Am_Check(page, TEST_ID_WINDOWED, L"Play in a window (1280 x 720)");
-    g_test.driverLabel = Am_Label(page, TEST_ID_DRIVER_LABEL, L"Driver", AM_FONT_BOLD);
-    g_test.driver = Am_Combo(page, TEST_ID_DRIVER);
+    g_test.windowed = Rs_Check(page, TEST_ID_WINDOWED, L"Play in a window (1280 x 720)");
+    g_test.driverLabel = Rs_Label(page, TEST_ID_DRIVER_LABEL, L"Driver", RS_FONT_BOLD);
+    g_test.driver = Rs_Combo(page, TEST_ID_DRIVER);
     for (i = 0; i < TEST_DRIVERS; i++)
         SendMessageW(g_test.driver, CB_ADDSTRING, 0, (LPARAM)g_testDrivers[i]);
-    g_test.autopilot = Am_Check(page, TEST_ID_AUTOPILOT, L"Let the kart drive itself (autopilot)");
-    g_test.argsLabel = Am_Label(page, TEST_ID_ARGS_LABEL, L"Extra arguments (for developers)", AM_FONT_BOLD);
-    g_test.args = Am_Edit(page, TEST_ID_ARGS, L"", 0);
+    g_test.autopilot = Rs_Check(page, TEST_ID_AUTOPILOT, L"Let the kart drive itself (autopilot)");
+    g_test.argsLabel = Rs_Label(page, TEST_ID_ARGS_LABEL, L"Extra arguments (for developers)", RS_FONT_BOLD);
+    g_test.args = Rs_Edit(page, TEST_ID_ARGS, L"", 0);
 
     // Card "Result"
-    g_test.start = Am_PrimaryButton(page, TEST_ID_START, L"Start game");
-    g_test.headline = Am_Label(page, TEST_ID_HEADLINE, L"", AM_FONT_BOLD);
-    g_test.list = Am_MsgList(page, TEST_ID_LIST);
-    Am_SetText(g_test.list, L"Press Start game. What the game did with the container shows up here.");
-    g_test.output = Am_Edit(page, TEST_ID_OUTPUT, L"",
+    g_test.start = Rs_PrimaryButton(page, TEST_ID_START, L"Start game");
+    g_test.headline = Rs_Label(page, TEST_ID_HEADLINE, L"", RS_FONT_BOLD);
+    g_test.list = Rs_MsgList(page, TEST_ID_LIST);
+    Rs_SetText(g_test.list, L"Press Start game. What the game did with the container shows up here.");
+    g_test.output = Rs_Edit(page, TEST_ID_OUTPUT, L"",
                             ES_MULTILINE | ES_READONLY | WS_VSCROLL | WS_HSCROLL | ES_AUTOVSCROLL);
-    SendMessageW(g_test.output, WM_SETFONT, (WPARAM)Am_Font(AM_FONT_MONO), FALSE);
+    SendMessageW(g_test.output, WM_SETFONT, (WPARAM)Rs_Font(RS_FONT_MONO), FALSE);
     ShowWindow(g_test.output, SW_HIDE);
-    g_test.showLog = Am_Button(page, TEST_ID_SHOWLOG, L"Show game log");
-    g_test.toggle = Am_Button(page, TEST_ID_TOGGLE, L"Show game output");
+    g_test.showLog = Rs_Button(page, TEST_ID_SHOWLOG, L"Show game log");
+    g_test.toggle = Rs_Button(page, TEST_ID_TOGGLE, L"Show game output");
     Test_UpdateButtons();
 
     // Settings
     g_test.quiet = 1;
-    Am_ConfigGet(L"test.windowed", cfg, TEST_PATH);
+    Rs_ConfigGet(L"test.windowed", cfg, TEST_PATH);
     SendMessageW(g_test.windowed, BM_SETCHECK, wcscmp(cfg, L"0") == 0 ? BST_UNCHECKED : BST_CHECKED, 0);
-    Am_ConfigGet(L"test.driver", cfg, TEST_PATH);
+    Rs_ConfigGet(L"test.driver", cfg, TEST_PATH);
     i = _wtoi(cfg);
     SendMessageW(g_test.driver, CB_SETCURSEL, (WPARAM)((i >= 0 && i < TEST_DRIVERS) ? i : 0), 0);
-    Am_ConfigGet(L"test.autopilot", cfg, TEST_PATH);
+    Rs_ConfigGet(L"test.autopilot", cfg, TEST_PATH);
     SendMessageW(g_test.autopilot, BM_SETCHECK, wcscmp(cfg, L"1") == 0 ? BST_CHECKED : BST_UNCHECKED, 0);
-    Am_ConfigGet(L"test.args", cfg, TEST_PATH);
-    Am_SetText(g_test.args, cfg);
-    Am_ConfigGet(L"test.container", cfg, TEST_PATH);
-    if (cfg[0] && Am_FileExists(cfg))
+    Rs_ConfigGet(L"test.args", cfg, TEST_PATH);
+    Rs_SetText(g_test.args, cfg);
+    Rs_ConfigGet(L"test.container", cfg, TEST_PATH);
+    if (cfg[0] && Rs_FileExists(cfg))
         Test_FullPath(cfg, g_test.container, TEST_PATH);
-    Am_ConfigGet(L"test.exe", cfg, TEST_PATH);
-    if ((!cfg[0] || !Am_FileExists(cfg)) && Am_FindGameExe(found, TEST_PATH))
+    Rs_ConfigGet(L"test.exe", cfg, TEST_PATH);
+    if ((!cfg[0] || !Rs_FileExists(cfg)) && Rs_FindGameExe(found, TEST_PATH))
         Test_Copy(cfg, TEST_PATH, found);
-    Am_SetText(g_test.exe, cfg);
+    Rs_SetText(g_test.exe, cfg);
     g_test.quiet = 0;
     g_test.exeStartup = 1;
     Test_ExeApply(page);
@@ -1845,7 +1845,7 @@ static LRESULT Test_Notify(HWND page, NMHDR *hdr)
 static LRESULT Test_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, int *handled)
 {
     switch (msg) {
-    case AM_WM_JOB_LINE: {
+    case RS_WM_JOB_LINE: {
         wchar_t *line = (wchar_t *)lParam;
         int job = (int)wParam;
         *handled = 1;
@@ -1859,10 +1859,10 @@ static LRESULT Test_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
             Test_VersionLine(line);
         else if (job != 0 && job == g_test.infoJob)
             Test_InfoLine(line);
-        Am_Free(line);
+        Rs_Free(line);
         return 0;
     }
-    case AM_WM_JOB_DONE: {
+    case RS_WM_JOB_DONE: {
         int job = (int)wParam;
         *handled = 1;
         if (job == 0)
@@ -1887,34 +1887,34 @@ static LRESULT Test_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
             if (g_test.versionJob) {
                 g_test.versionJob = 0;
                 g_test.exeOk = 0;
-                Test_SetLabel(g_test.version, L"This program did not answer like CTR Reload.", AM_COL_ERROR);
+                Test_SetLabel(g_test.version, L"This program did not answer like CTR Reload.", RS_COL_ERROR);
                 Test_UpdateReady();
-                if (Am_Automating())
-                    Am_AutoLog(L"  game program: no answer to --version within 15 seconds");
+                if (Rs_Automating())
+                    Rs_AutoLog(L"  game program: no answer to --version within 15 seconds");
             }
             *handled = 1;
         }
         return 0;
-    case AM_WM_PAGE_SHOWN:
+    case RS_WM_PAGE_SHOWN:
         // The folder may have changed (rebuilt on the page Track).
         Test_ApplyBase(page);
         *handled = 1;
         return 0;
-    case AM_WM_OPEN_TEST: {
+    case RS_WM_OPEN_TEST: {
         wchar_t *path = (wchar_t *)lParam;
         *handled = 1;
         if (path) {
-            if (Am_FileExists(path))
+            if (Rs_FileExists(path))
                 Test_SetContainer(page, path, 1, 1);
-            Am_Free(path);
+            Rs_Free(path);
         }
         return 0;
     }
-    case AM_WM_QUERY_CLOSE:
+    case RS_WM_QUERY_CLOSE:
         if (g_test.gameJob) {
             *handled = 1;
-            return Am_AskYesNo(page, L"Test in game",
-                               L"The game is still running. Close the Alpha-Maker anyway? The game stays open.")
+            return Rs_AskYesNo(page, L"Test in game",
+                               L"The game is still running. Close Reload Studio anyway? The game stays open.")
                        ? 1 : 0;
         }
         return 0;
@@ -1930,96 +1930,96 @@ static int Test_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
     if (wcscmp(verb, L"exe") == 0) {
         Test_Trim(arg, raw, TEST_PATH, 1);
         g_test.quiet = 1;
-        Am_SetText(g_test.exe, raw);
+        Rs_SetText(g_test.exe, raw);
         g_test.quiet = 0;
         KillTimer(page, TEST_TIMER_EXE);
         g_test.exePending = 0;
         if (!Test_ExeApply(page)) {
-            wchar_t *label = Am_GetText(g_test.version);
-            Am_AutoLog(L"  the game program '%ls' cannot be checked: %ls", raw, label);
-            Am_Free(label);
-            return AM_AUTO_FAIL;
+            wchar_t *label = Rs_GetText(g_test.version);
+            Rs_AutoLog(L"  the game program '%ls' cannot be checked: %ls", raw, label);
+            Rs_Free(label);
+            return RS_AUTO_FAIL;
         }
-        return AM_AUTO_WAIT;
+        return RS_AUTO_WAIT;
     }
     if (wcscmp(verb, L"container") == 0) {
         Test_Trim(arg, raw, TEST_PATH, 1);
         if (!raw[0]) {
-            Am_AutoLog(L"  container wants a path or a file name");
-            return AM_AUTO_FAIL;
+            Rs_AutoLog(L"  container wants a path or a file name");
+            return RS_AUTO_FAIL;
         }
         // Bare file name: from the game's tracks folder.
         if (!wcschr(raw, L'\\') && !wcschr(raw, L'/') && raw[1] != L':') {
             if (!g_test.tracksDir[0]) {
-                Am_AutoLog(L"  there is no tracks folder of the game to find '%ls' in", raw);
-                return AM_AUTO_FAIL;
+                Rs_AutoLog(L"  there is no tracks folder of the game to find '%ls' in", raw);
+                return RS_AUTO_FAIL;
             }
-            Am_PathJoin(path, TEST_PATH, g_test.tracksDir, raw);
+            Rs_PathJoin(path, TEST_PATH, g_test.tracksDir, raw);
         } else {
             Test_Copy(path, TEST_PATH, raw);
         }
-        if (!Am_FileExists(path)) {
-            Am_AutoLog(L"  %ls does not exist", path);
-            return AM_AUTO_FAIL;
+        if (!Rs_FileExists(path)) {
+            Rs_AutoLog(L"  %ls does not exist", path);
+            return RS_AUTO_FAIL;
         }
         if (!Test_SetContainer(page, path, 1, 1)) {
-            Am_AutoLog(L"  the container check did not start");
-            return AM_AUTO_FAIL;
+            Rs_AutoLog(L"  the container check did not start");
+            return RS_AUTO_FAIL;
         }
-        return AM_AUTO_WAIT;
+        return RS_AUTO_WAIT;
     }
     if (wcscmp(verb, L"windowed") == 0 || wcscmp(verb, L"autopilot") == 0) {
         HWND box = wcscmp(verb, L"windowed") == 0 ? g_test.windowed : g_test.autopilot;
         int on = Test_OnOff(arg);
         if (on < 0) {
-            Am_AutoLog(L"  %ls wants on or off", verb);
-            return AM_AUTO_FAIL;
+            Rs_AutoLog(L"  %ls wants on or off", verb);
+            return RS_AUTO_FAIL;
         }
         SendMessageW(box, BM_SETCHECK, on ? BST_CHECKED : BST_UNCHECKED, 0);
         Test_SaveOptions();
-        return AM_AUTO_DONE;
+        return RS_AUTO_DONE;
     }
     if (wcscmp(verb, L"driver") == 0) {
         wchar_t *end = NULL;
         long n = wcstol(arg, &end, 10);
         if (!arg[0] || (end && *end) || n < 0 || n >= TEST_DRIVERS) {
-            Am_AutoLog(L"  driver wants a number from 0 to 15");
-            return AM_AUTO_FAIL;
+            Rs_AutoLog(L"  driver wants a number from 0 to 15");
+            return RS_AUTO_FAIL;
         }
         SendMessageW(g_test.driver, CB_SETCURSEL, (WPARAM)n, 0);
         Test_SaveOptions();
-        Am_AutoLog(L"  driver %ld: %ls", n, g_testDrivers[n]);
-        return AM_AUTO_DONE;
+        Rs_AutoLog(L"  driver %ld: %ls", n, g_testDrivers[n]);
+        return RS_AUTO_DONE;
     }
     if (wcscmp(verb, L"args") == 0) {
         g_test.quiet = 1;
-        Am_SetText(g_test.args, arg);
+        Rs_SetText(g_test.args, arg);
         g_test.quiet = 0;
         Test_SaveOptions();
-        return AM_AUTO_DONE;
+        return RS_AUTO_DONE;
     }
     if (wcscmp(verb, L"start") == 0) {
         const wchar_t *why = Test_WhyNot();
         if (why) {
-            Am_AutoLog(L"  Start game is not possible: %ls", why);
-            return AM_AUTO_FAIL;
+            Rs_AutoLog(L"  Start game is not possible: %ls", why);
+            return RS_AUTO_FAIL;
         }
         if (!Test_Start(page)) {
-            Am_AutoLog(L"  the game could not be started");
-            return AM_AUTO_FAIL;
+            Rs_AutoLog(L"  the game could not be started");
+            return RS_AUTO_FAIL;
         }
-        return AM_AUTO_WAIT;
+        return RS_AUTO_WAIT;
     }
     if (wcscmp(verb, L"report") == 0) {
         Test_Trim(arg, path, TEST_PATH, 1);
         if (!path[0] || !Test_Report(path)) {
-            Am_AutoLog(L"  could not write the report '%ls'", path);
-            return AM_AUTO_FAIL;
+            Rs_AutoLog(L"  could not write the report '%ls'", path);
+            return RS_AUTO_FAIL;
         }
-        Am_AutoLog(L"  report written: %ls", path);
-        return AM_AUTO_DONE;
+        Rs_AutoLog(L"  report written: %ls", path);
+        return RS_AUTO_DONE;
     }
-    return AM_AUTO_UNKNOWN;
+    return RS_AUTO_UNKNOWN;
 }
 
 static int Test_Busy(HWND page)
@@ -2028,7 +2028,7 @@ static int Test_Busy(HWND page)
     return (g_test.versionJob || g_test.infoJob || g_test.gameJob || g_test.exePending) ? 1 : 0;
 }
 
-const struct AmPageDef g_amTestPage = {
+const struct RsPageDef g_rsTestPage = {
     L"Test in game",
     L"Test in game",
     L"Start CTR Reload with a container. The game jumps straight into a race on it.",

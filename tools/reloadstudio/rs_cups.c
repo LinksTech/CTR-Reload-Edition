@@ -1,4 +1,4 @@
-// am_cups.c - page "Cups" of the Alpha-Maker
+// rs_cups.c - page "Cups" of Reload Studio
 //
 // Four containers make a cup, at most four cups are in cups.txt in the
 // game's track folder (ARCADE -> NITRO-PIT -> CUP). The rules for the file
@@ -10,7 +10,7 @@
 // only what concerns cups.txt: count, lengths, characters, file names.
 // Only cups.txt is written, and only on "Save" - track-ids.tsv never.
 
-#include "alphamaker.h"
+#include "reloadstudio.h"
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
@@ -141,7 +141,7 @@ struct CupsState {
     int fileUnreadable;     // there but not read: Save stays off, the file is never overwritten
     DWORD fileError;        // why (Windows error)
     int fileBadUtf8;        // not valid UTF-8: U+FFFD in the texts, Save asks before writing them
-    struct AmFileStamp fileStamp;   // what was read (or written) - to notice changes from outside
+    struct RsFileStamp fileStamp;   // what was read (or written) - to notice changes from outside
     int fileStampKnown;
     int fileChangeNoted;    // the message "changed outside" is already shown
     int fileCups;
@@ -532,7 +532,7 @@ static unsigned long Cups_FolderStamp(const wchar_t *folder)
     HANDLE h;
     unsigned long stamp = 2166136261u;
 
-    Am_PathJoin(pattern, MAX_PATH, folder, L"*");
+    Rs_PathJoin(pattern, MAX_PATH, folder, L"*");
     h = FindFirstFileW(pattern, &fd);
     if (h == INVALID_HANDLE_VALUE)
         return 0;
@@ -574,7 +574,7 @@ static int Cups_ScanContainers(struct CupsState *s)
     s->infoError[0] = 0;
     s->folderStamp = Cups_FolderStamp(s->folder);
 
-    Am_PathJoin(pattern, MAX_PATH, s->folder, L"*");
+    Rs_PathJoin(pattern, MAX_PATH, s->folder, L"*");
     h = FindFirstFileW(pattern, &fd);
     if (h != INVALID_HANDLE_VALUE) {
         do {
@@ -587,7 +587,7 @@ static int Cups_ScanContainers(struct CupsState *s)
             }
             c = &s->containers[s->containerCount++];
             Cups_Copy(c->file, MAX_PATH, fd.cFileName);
-            Am_PathJoin(c->path, MAX_PATH, s->folder, fd.cFileName);
+            Rs_PathJoin(c->path, MAX_PATH, s->folder, fd.cFileName);
             c->state = CUPS_INFO_PENDING;
             c->race = -1;
             c->navPaths = -1;
@@ -604,7 +604,7 @@ static int Cups_ScanContainers(struct CupsState *s)
     args[1] = L"--machine";
     for (i = 0; i < s->containerCount; i++)
         args[2 + i] = s->containers[i].path;
-    s->infoJob = Am_RunRldpack(s->page, args, 2 + s->containerCount);
+    s->infoJob = Rs_RunRldpack(s->page, args, 2 + s->containerCount);
     if (!s->infoJob) {
         for (i = 0; i < s->containerCount; i++)
             s->containers[i].state = CUPS_INFO_NONE;
@@ -622,7 +622,7 @@ static int Cups_MatchContainer(const struct CupsState *s, const wchar_t *path)
     for (i = 0; i < s->containerCount; i++)
         if (_wcsicmp(s->containers[i].path, path) == 0)
             return i;
-    return Cups_FindContainer(s, Am_PathName(path));
+    return Cups_FindContainer(s, Rs_PathName(path));
 }
 
 static int Cups_Yes(const wchar_t *f)
@@ -635,7 +635,7 @@ static void Cups_JobLine(struct CupsState *s, wchar_t *line)
 {
     wchar_t *f[8];
     struct CupsContainer *c;
-    int n = Am_SplitMachine(line, f, 8);
+    int n = Rs_SplitMachine(line, f, 8);
 
     if (n <= 0)
         return;
@@ -690,7 +690,7 @@ static void Cups_ReadCupsFile(struct CupsState *s)
     wchar_t nm[CUPS_TEXT_CAP], who[64], one[200];
     wchar_t why[256];
     wchar_t *text, *p;
-    struct AmTextRead info;
+    struct RsTextRead info;
     int lineNo = 0, cur = -1, extraCups = 0, other = 0, listed = 0, i;
     int extraTracks[CUPS_MAX_CUPS];
 
@@ -709,8 +709,8 @@ static void Cups_ReadCupsFile(struct CupsState *s)
     memset(&s->fileStamp, 0, sizeof(s->fileStamp));
     s->fileCups = 0;
 
-    Am_PathJoin(path, MAX_PATH, s->folder, L"cups.txt");
-    text = Am_ReadTextFileEx(path, &info);
+    Rs_PathJoin(path, MAX_PATH, s->folder, L"cups.txt");
+    text = Rs_ReadTextFileEx(path, &info);
     if (!text) {
         if (info.stamp.exists) {
             s->fileExists = 1;
@@ -718,14 +718,14 @@ static void Cups_ReadCupsFile(struct CupsState *s)
             s->fileError = info.error;
             Cups_ErrorText(info.error, why, 256);
             swprintf(detail, CUPS_MSG_CAP, L"Windows says: %ls", why);
-            Cups_LoadMsg(s, AM_SEV_ERROR, detail,
+            Cups_LoadMsg(s, RS_SEV_ERROR, detail,
                          L"cups.txt is in this folder but could not be read completely. Save is off so "
                          L"that the file is not overwritten - fix the cause (e.g. close the program that "
                          L"holds it) and press Reload.");
         } else {
             s->fileStamp = info.stamp;
             s->fileStampKnown = 1;
-            Cups_LoadMsg(s, AM_SEV_INFO, NULL, L"There is no cups.txt in this folder yet. Save creates it.");
+            Cups_LoadMsg(s, RS_SEV_INFO, NULL, L"There is no cups.txt in this folder yet. Save creates it.");
         }
         return;
     }
@@ -734,7 +734,7 @@ static void Cups_ReadCupsFile(struct CupsState *s)
     s->fileStampKnown = 1;
     if (info.badUtf8) {
         s->fileBadUtf8 = 1;
-        Cups_LoadMsg(s, AM_SEV_WARNING, NULL,
+        Cups_LoadMsg(s, RS_SEV_WARNING, NULL,
                      L"cups.txt is not valid UTF-8 (it was perhaps saved in another encoding). The "
                      L"characters that could not be read show as replacement marks. Retype them, or "
                      L"save the file as UTF-8 in a text editor and press Reload. Save asks before it "
@@ -808,10 +808,10 @@ static void Cups_ReadCupsFile(struct CupsState *s)
             other++;
         }
     }
-    Am_Free(text);
+    Rs_Free(text);
 
     if (extraCups > 0)
-        Cups_LoadMsg(s, AM_SEV_WARNING, NULL,
+        Cups_LoadMsg(s, RS_SEV_WARNING, NULL,
                      L"cups.txt has more than 4 cups. The game shows only 4; the others were not "
                      L"loaded and are removed when you save.");
     for (i = 0; i < s->cupCount; i++) {
@@ -819,7 +819,7 @@ static void Cups_ReadCupsFile(struct CupsState *s)
             continue;
         Cups_TrimCopy(nm, CUPS_TEXT_CAP, s->cups[i].name);
         Cups_Who(nm, i, who, 64);
-        Cups_LoadMsg(s, AM_SEV_WARNING, NULL,
+        Cups_LoadMsg(s, RS_SEV_WARNING, NULL,
                      L"cups.txt lists %d tracks for %ls, and the game leaves such a cup out. The "
                      L"editor keeps the first 4; the others are removed when you save.",
                      CUPS_TRACKS + extraTracks[i], who);
@@ -838,7 +838,7 @@ static void Cups_ReadCupsFile(struct CupsState *s)
             swprintf(one, 200, L"  |  and %d more", other - listed);
             Cups_Cat(detail, CUPS_MSG_CAP, one);
         }
-        Cups_LoadMsg(s, AM_SEV_WARNING, detail,
+        Cups_LoadMsg(s, RS_SEV_WARNING, detail,
                      L"cups.txt has %d line%ls this page does not understand. The game skips such "
                      L"lines or leaves their cup out; saving removes %ls.",
                      other, Cups_S(other), other == 1 ? L"it" : L"them");
@@ -852,10 +852,10 @@ static void Cups_ReadCupsFile(struct CupsState *s)
 // Sets the text only when it changes - otherwise the label flickers.
 static void Cups_SetText(HWND h, const wchar_t *text)
 {
-    wchar_t *now = Am_GetText(h);
+    wchar_t *now = Rs_GetText(h);
     if (wcscmp(now, text) != 0)
-        Am_SetText(h, text);
-    Am_Free(now);
+        Rs_SetText(h, text);
+    Rs_Free(now);
 }
 
 static int Cups_HasCup(const struct CupsState *s)
@@ -990,16 +990,16 @@ static void Cups_FillCup(struct CupsState *s, int trackSel)
 {
     struct CupsCup *cup = Cups_HasCup(s) ? &s->cups[s->selCup] : NULL;
     wchar_t buf[768];
-    wchar_t *now = Am_GetText(s->nameEdit);
+    wchar_t *now = Rs_GetText(s->nameEdit);
     int t;
 
     // Only set when different: otherwise the cursor jumps while typing.
     if (wcscmp(now, cup ? cup->name : L"") != 0) {
         s->updating = 1;
-        Am_SetText(s->nameEdit, cup ? cup->name : L"");
+        Rs_SetText(s->nameEdit, cup ? cup->name : L"");
         s->updating = 0;
     }
-    Am_Free(now);
+    Rs_Free(now);
 
     SendMessageW(s->trackList, WM_SETREDRAW, FALSE, 0);
     SendMessageW(s->trackList, LB_RESETCONTENT, 0, 0);
@@ -1016,10 +1016,10 @@ static void Cups_FillCup(struct CupsState *s, int trackSel)
     if (cup) {
         swprintf(buf, 768, cup->trackCount == CUPS_TRACKS ? L"4 of 4 - complete" : L"%d of 4",
                  cup->trackCount);
-        Am_SetText(s->tracksCount, buf);
-        Am_SetTextColor(s->tracksCount, cup->trackCount == CUPS_TRACKS ? AM_COL_OK : AM_COL_MUTED);
+        Rs_SetText(s->tracksCount, buf);
+        Rs_SetTextColor(s->tracksCount, cup->trackCount == CUPS_TRACKS ? RS_COL_OK : RS_COL_MUTED);
     } else {
-        Am_SetText(s->tracksCount, L"");
+        Rs_SetText(s->tracksCount, L"");
     }
 }
 
@@ -1064,49 +1064,49 @@ static void Cups_UpdateButtons(struct CupsState *s)
 static void Cups_UpdateStatus(struct CupsState *s)
 {
     wchar_t text[128];
-    COLORREF col = AM_COL_MUTED;
+    COLORREF col = RS_COL_MUTED;
     if (!s->loaded) {
         Cups_Copy(text, 128, L"Choose the tracks folder of the game.");
     } else if (s->fileUnreadable) {
         Cups_Copy(text, 128, L"cups.txt could not be read - Save is off");
-        col = AM_COL_ERROR;
+        col = RS_COL_ERROR;
     } else if (s->fileBadUtf8) {
         swprintf(text, 128, L"cups.txt found - %d cup%ls, not valid UTF-8", s->fileCups, Cups_S(s->fileCups));
-        col = AM_COL_ERROR;
+        col = RS_COL_ERROR;
     } else if (s->fileExists) {
         swprintf(text, 128, L"cups.txt found - %d cup%ls", s->fileCups, Cups_S(s->fileCups));
-        col = AM_COL_OK;
+        col = RS_COL_OK;
     } else {
         Cups_Copy(text, 128, L"No cups.txt yet - Save creates it");
     }
-    Am_SetText(s->folderStatus, text);
-    Am_SetTextColor(s->folderStatus, col);
+    Rs_SetText(s->folderStatus, text);
+    Rs_SetTextColor(s->folderStatus, col);
 }
 
 static void Cups_UpdateHeadline(struct CupsState *s)
 {
     const wchar_t *text;
-    COLORREF col = AM_COL_MUTED;
+    COLORREF col = RS_COL_MUTED;
     wchar_t counts[160];
 
     if (!s->loaded) {
         text = L"No folder loaded";
     } else if (s->dirty) {
         text = L"Unsaved changes";
-        col = AM_COL_WARNING;
+        col = RS_COL_WARNING;
     } else if (s->savedNow) {
         text = L"Saved - the game reads it at its next start";
-        col = AM_COL_OK;
+        col = RS_COL_OK;
     } else if (s->fileUnreadable) {
         text = L"cups.txt could not be read - Save is off";
-        col = AM_COL_ERROR;
+        col = RS_COL_ERROR;
     } else if (!s->fileExists) {
         text = L"No cups.txt yet";
     } else {
         text = L"cups.txt is up to date";
     }
     Cups_SetText(s->headline, text);
-    Am_SetTextColor(s->headline, col);
+    Rs_SetTextColor(s->headline, col);
 
     counts[0] = 0;
     if (s->loaded)
@@ -1132,16 +1132,16 @@ static void Cups_CheckCup(struct CupsState *s, int i)
 
     // Errors: the game leaves the cup out.
     if (!nm[0]) {
-        Cups_Add(AM_SEV_ERROR, NULL, L"Cup %d has no name. A cup needs a name - the game leaves it out.", i + 1);
+        Cups_Add(RS_SEV_ERROR, NULL, L"Cup %d has no name. A cup needs a name - the game leaves it out.", i + 1);
         bad++;
     } else if (bytes > CUPS_NAME_BYTES) {
-        Cups_Add(AM_SEV_ERROR,
+        Cups_Add(RS_SEV_ERROR,
                  bytes != (int)wcslen(nm) ? L"Letters outside A-Z count as two or three characters." : NULL,
                  L"%ls: the name is longer than 47 characters. The game leaves the cup out.", who);
         bad++;
     }
     if (cup->trackCount != CUPS_TRACKS) {
-        Cups_Add(AM_SEV_ERROR, NULL, L"%ls has %d track%ls. A cup needs exactly 4 - the game leaves it out.",
+        Cups_Add(RS_SEV_ERROR, NULL, L"%ls has %d track%ls. A cup needs exactly 4 - the game leaves it out.",
                  who, cup->trackCount, Cups_S(cup->trackCount));
         bad++;
     }
@@ -1149,7 +1149,7 @@ static void Cups_CheckCup(struct CupsState *s, int i)
         if (Cups_Utf8Len(cup->track[t]) <= CUPS_FILE_BYTES)
             continue;
         Cups_Short(shown, CUPS_SHOW_CAP, cup->track[t]);
-        Cups_Add(AM_SEV_ERROR, NULL, L"%ls: the file name %ls is longer than 127 characters. The game leaves the cup out.",
+        Cups_Add(RS_SEV_ERROR, NULL, L"%ls: the file name %ls is longer than 127 characters. The game leaves the cup out.",
                  who, shown);
         bad++;
     }
@@ -1164,7 +1164,7 @@ static void Cups_CheckCup(struct CupsState *s, int i)
             how = L"They show as gaps or button icons.";
         else
             how = icons ? L"They show as button icons." : L"They show as gaps.";
-        Cups_Add(AM_SEV_WARNING, L"The menu draws A-Z, 0-9, the space and ! % ' + , - . / : < = > ? _",
+        Cups_Add(RS_SEV_WARNING, L"The menu draws A-Z, 0-9, the space and ! % ' + , - . / : < = > ? _",
                  L"%ls: the menu cannot draw %ls. %ls", who, chars, how);
         bad++;
     }
@@ -1184,7 +1184,7 @@ static void Cups_CheckCup(struct CupsState *s, int i)
                     seen++;
             if (seen == 1) {
                 Cups_Short(shown, CUPS_SHOW_CAP, cup->track[t]);
-                Cups_Add(AM_SEV_INFO, NULL, L"%ls uses %ls twice.", who, shown);
+                Cups_Add(RS_SEV_INFO, NULL, L"%ls uses %ls twice.", who, shown);
             }
             continue;
         }
@@ -1192,7 +1192,7 @@ static void Cups_CheckCup(struct CupsState *s, int i)
         Cups_Short(shown, CUPS_SHOW_CAP, cup->track[t]);
         c = Cups_FindContainer(s, cup->track[t]);
         if (c < 0) {
-            Cups_Add(AM_SEV_WARNING, NULL,
+            Cups_Add(RS_SEV_WARNING, NULL,
                      L"%ls: %ls is not in this folder. The game shows the cup grey and it cannot be chosen.",
                      who, shown);
             bad++;
@@ -1205,29 +1205,29 @@ static void Cups_CheckCup(struct CupsState *s, int i)
             pending = 1;
             break;
         case CUPS_INFO_NONE:
-            Cups_Add(AM_SEV_WARNING, NULL, L"%ls: the page could not check %ls. Press Reload to try again.",
+            Cups_Add(RS_SEV_WARNING, NULL, L"%ls: the page could not check %ls. Press Reload to try again.",
                      who, shown);
             bad++;
             break;
         case CUPS_INFO_REFUSED:
-            Cups_Add(AM_SEV_WARNING, NULL, L"%ls: the game refuses %ls (%ls). The cup is grey.",
+            Cups_Add(RS_SEV_WARNING, NULL, L"%ls: the game refuses %ls (%ls). The cup is grey.",
                      who, shown, k->reason[0] ? k->reason : L"no reason given");
             bad++;
             break;
         default:
             if (k->race == 0) {
-                Cups_Add(AM_SEV_WARNING, NULL,
+                Cups_Add(RS_SEV_WARNING, NULL,
                          L"%ls: %ls does not offer Race. A cup is a race, so the cup is grey.", who, tn);
                 bad++;
             }
             if (k->navPaths == 0) {
-                Cups_Add(AM_SEV_WARNING, NULL,
+                Cups_Add(RS_SEV_WARNING, NULL,
                          L"%ls: there are no bots on this track (%ls) - it has no nav paths, "
                          L"so the game starts no bots there.", who, tn);
                 bad++;
             }
             if (k->restartPoints == 0) {
-                Cups_Add(AM_SEV_WARNING, NULL,
+                Cups_Add(RS_SEV_WARNING, NULL,
                          L"%ls: %ls has no restart points - laps never count and the race never ends.",
                          who, tn);
                 bad++;
@@ -1242,14 +1242,14 @@ static void Cups_CheckCup(struct CupsState *s, int i)
         Cups_Preview(nm, CUPS_SCREEN_CELLS, a, 40);
         Cups_Preview(nm, CUPS_TITLE_CELLS, b, 40);
         swprintf(detail, 128, L"Cup screen: %ls    Race titles (16): %ls", a, b);
-        Cups_Add(AM_SEV_NOTE, detail, L"%ls: the cup screen shows only 12 characters of the name.", who);
+        Cups_Add(RS_SEV_NOTE, detail, L"%ls: the cup screen shows only 12 characters of the name.", who);
     }
     if (nm[0]) {
         for (j = 0; j < i; j++) {
             wchar_t other[CUPS_TEXT_CAP];
             Cups_TrimCopy(other, CUPS_TEXT_CAP, s->cups[j].name);
             if (Cups_CompareNames(other, nm) == 0) {
-                Cups_Add(AM_SEV_INFO, NULL, L"Cups %d and %d are both named '%ls'. Players cannot tell them apart.",
+                Cups_Add(RS_SEV_INFO, NULL, L"Cups %d and %d are both named '%ls'. Players cannot tell them apart.",
                          j + 1, i + 1, sn);
                 break;
             }
@@ -1257,13 +1257,13 @@ static void Cups_CheckCup(struct CupsState *s, int i)
     }
 
     if (!bad && !pending)
-        Cups_Add(AM_SEV_OK, NULL, L"%ls: 4 tracks, ready.", who);
+        Cups_Add(RS_SEV_OK, NULL, L"%ls: 4 tracks, ready.", who);
 }
 
 // Rechecks everything and fills the message list: errors first.
 static void Cups_Evaluate(struct CupsState *s)
 {
-    static const int order[5] = { AM_SEV_ERROR, AM_SEV_WARNING, AM_SEV_NOTE, AM_SEV_INFO, AM_SEV_OK };
+    static const int order[5] = { RS_SEV_ERROR, RS_SEV_WARNING, RS_SEV_NOTE, RS_SEV_INFO, RS_SEV_OK };
     int i, o;
 
     s_msgCount = 0;
@@ -1271,17 +1271,17 @@ static void Cups_Evaluate(struct CupsState *s)
         for (i = 0; i < s->loadMsgCount; i++)
             Cups_Add(s->loadMsgs[i].sev, s->loadMsgs[i].detail, L"%ls", s->loadMsgs[i].text);
         if (s->infoError[0])
-            Cups_Add(AM_SEV_WARNING, NULL, L"%ls", s->infoError);
+            Cups_Add(RS_SEV_WARNING, NULL, L"%ls", s->infoError);
         if (s->tooMany)
-            Cups_Add(AM_SEV_WARNING, NULL,
+            Cups_Add(RS_SEV_WARNING, NULL,
                      L"This folder has more than 64 containers. The game reads at most 64; this list "
                      L"shows the first 64 found.");
         if (s->containerCount == 0)
-            Cups_Add(AM_SEV_INFO, NULL,
+            Cups_Add(RS_SEV_INFO, NULL,
                      L"There are no containers (.rldtrack files) in this folder. Pack a track on the "
                      L"Track page and put the container here.");
         if (s->cupCount == 0)
-            Cups_Add(AM_SEV_INFO, NULL,
+            Cups_Add(RS_SEV_INFO, NULL,
                      L"There are no cups yet. Press New cup to make one. Without a cup, CUP in "
                      L"NITRO-PIT stays locked in the game.");
         for (i = 0; i < s->cupCount; i++)
@@ -1291,21 +1291,21 @@ static void Cups_Evaluate(struct CupsState *s)
     s->errorCount = 0;
     s->warningCount = 0;
     for (i = 0; i < s_msgCount; i++) {
-        if (s_msgs[i].sev == AM_SEV_ERROR)
+        if (s_msgs[i].sev == RS_SEV_ERROR)
             s->errorCount++;
-        else if (s_msgs[i].sev == AM_SEV_WARNING)
+        else if (s_msgs[i].sev == RS_SEV_WARNING)
             s->warningCount++;
     }
 
-    Am_MsgListClear(s->msgList);
-    Am_SetText(s->msgList, s->loaded ? L"Nothing to report."
+    Rs_MsgListClear(s->msgList);
+    Rs_SetText(s->msgList, s->loaded ? L"Nothing to report."
                                      : L"Choose the tracks folder of the game. The check of your cups appears here.");
     if (s->infoJob)
-        Am_MsgListAdd(s->msgList, AM_SEV_INFO, L"Reading the containers in this folder...", NULL);
+        Rs_MsgListAdd(s->msgList, RS_SEV_INFO, L"Reading the containers in this folder...", NULL);
     for (o = 0; o < 5; o++)
         for (i = 0; i < s_msgCount; i++)
             if (s_msgs[i].sev == order[o])
-                Am_MsgListAdd(s->msgList, s_msgs[i].sev, s_msgs[i].text, s_msgs[i].detail);
+                Rs_MsgListAdd(s->msgList, s_msgs[i].sev, s_msgs[i].text, s_msgs[i].detail);
     Cups_UpdateHeadline(s);
 }
 
@@ -1350,8 +1350,8 @@ static void Cups_JobDone(struct CupsState *s, int code)
     Cups_FillCup(s, Cups_TrackSel(s));
     Cups_Evaluate(s);
     Cups_UpdateButtons(s);
-    if (Am_Automating())
-        Am_AutoLog(L"  cups: %d of %d container(s) checked", s->containerCount - missing, s->containerCount);
+    if (Rs_Automating())
+        Rs_AutoLog(L"  cups: %d of %d container(s) checked", s->containerCount - missing, s->containerCount);
 }
 
 // ---------------------------------------------------------------------------
@@ -1420,7 +1420,7 @@ static int Cups_DeleteCup(struct CupsState *s)
         Cups_Who(nm, s->selCup, who, 64);
         swprintf(q, 256, L"Delete %ls and its list of %d track%ls?\n\nThe containers stay in the folder.",
                  who, cup->trackCount, Cups_S(cup->trackCount));
-        if (!Am_AskYesNo(Am_MainWindow(), L"Delete cup?", q))
+        if (!Rs_AskYesNo(Rs_MainWindow(), L"Delete cup?", q))
             return 0;
     }
     for (i = s->selCup; i < s->cupCount - 1; i++)
@@ -1458,7 +1458,7 @@ static void Cups_NameEdited(struct CupsState *s)
     wchar_t *t;
     if (!Cups_HasCup(s))
         return;
-    t = Am_GetText(s->nameEdit);
+    t = Rs_GetText(s->nameEdit);
     if (wcscmp(t, s->cups[s->selCup].name) != 0) {
         Cups_Copy(s->cups[s->selCup].name, CUPS_TEXT_CAP, t);
         Cups_SetDirty(s);
@@ -1466,7 +1466,7 @@ static void Cups_NameEdited(struct CupsState *s)
         Cups_UpdateNameHint(s);
         Cups_Evaluate(s);
     }
-    Am_Free(t);
+    Rs_Free(t);
 }
 
 static int Cups_AddTrack(struct CupsState *s, int c)
@@ -1561,23 +1561,23 @@ static void Cups_DefaultFolder(wchar_t *out, int cap)
     wchar_t exe[MAX_PATH], dir[MAX_PATH], up[MAX_PATH], big[MAX_PATH], bin[MAX_PATH];
     int level;
 
-    Am_ConfigGet(L"cups.folder", out, cap);
-    if (out[0] && Am_DirExists(out))
+    Rs_ConfigGet(L"cups.folder", out, cap);
+    if (out[0] && Rs_DirExists(out))
         return;
     out[0] = 0;
-    if (!Am_FindGameExe(exe, MAX_PATH))
+    if (!Rs_FindGameExe(exe, MAX_PATH))
         return;
-    Am_PathDir(dir, MAX_PATH, exe);
+    Rs_PathDir(dir, MAX_PATH, exe);
     for (level = 0; level < 3 && dir[0]; level++) {
-        Am_PathJoin(big, MAX_PATH, dir, L"assets\\BIGFILE.BIG");
-        Am_PathJoin(bin, MAX_PATH, dir, L"assets\\ctr-u.bin");
-        if (Am_FileExists(big) || Am_FileExists(bin)) {
-            Am_PathJoin(big, MAX_PATH, dir, L"tracks");
-            if (Am_DirExists(big))
+        Rs_PathJoin(big, MAX_PATH, dir, L"assets\\BIGFILE.BIG");
+        Rs_PathJoin(bin, MAX_PATH, dir, L"assets\\ctr-u.bin");
+        if (Rs_FileExists(big) || Rs_FileExists(bin)) {
+            Rs_PathJoin(big, MAX_PATH, dir, L"tracks");
+            if (Rs_DirExists(big))
                 Cups_Copy(out, cap, big);
             return;
         }
-        Am_PathDir(up, MAX_PATH, dir);
+        Rs_PathDir(up, MAX_PATH, dir);
         if (!up[0] || wcscmp(up, dir) == 0)
             break;
         wcscpy(dir, up);
@@ -1592,24 +1592,24 @@ static int Cups_LoadFolder(struct CupsState *s, const wchar_t *folder)
 
     Cups_CleanPath(folder, dir, MAX_PATH);
     if (!dir[0]) {
-        Am_Tell(Am_MainWindow(), L"No folder", L"Choose the tracks folder of the game first.");
+        Rs_Tell(Rs_MainWindow(), L"No folder", L"Choose the tracks folder of the game first.");
         return -1;
     }
-    if (!Am_DirExists(dir)) {
+    if (!Rs_DirExists(dir)) {
         swprintf(msg, MAX_PATH + 160, L"The folder\n%ls\ndoes not exist. Choose the tracks folder of the game.", dir);
-        Am_Tell(Am_MainWindow(), L"Folder not found", msg);
+        Rs_Tell(Rs_MainWindow(), L"Folder not found", msg);
         return -1;
     }
-    if (s->dirty && !Am_AskYesNo(Am_MainWindow(), L"Discard unsaved changes?",
+    if (s->dirty && !Rs_AskYesNo(Rs_MainWindow(), L"Discard unsaved changes?",
                                  L"The cups have unsaved changes. Load the folder anyway and lose them?")) {
         if (s->loaded)
-            Am_SetText(s->folderEdit, s->folder);
+            Rs_SetText(s->folderEdit, s->folder);
         return -1;
     }
 
     Cups_Copy(s->folder, MAX_PATH, dir);
-    Am_SetText(s->folderEdit, dir);
-    Am_ConfigSet(L"cups.folder", dir);
+    Rs_SetText(s->folderEdit, dir);
+    Rs_ConfigSet(L"cups.folder", dir);
     s->loaded = 1;
     s->dirty = 0;
     s->savedNow = 0;
@@ -1621,28 +1621,28 @@ static int Cups_LoadFolder(struct CupsState *s, const wchar_t *folder)
     Cups_FillContainers(s, NULL);
     Cups_RefreshAll(s, -1);
     Cups_Relayout(s);
-    if (Am_Automating())
-        Am_AutoLog(L"  cups: %ls - %d container(s), %d cup(s) in cups.txt", dir, s->containerCount, s->cupCount);
+    if (Rs_Automating())
+        Rs_AutoLog(L"  cups: %ls - %d container(s), %d cup(s) in cups.txt", dir, s->containerCount, s->cupCount);
     return r;
 }
 
 static int Cups_LoadFromEdit(struct CupsState *s)
 {
-    wchar_t *t = Am_GetText(s->folderEdit);
+    wchar_t *t = Rs_GetText(s->folderEdit);
     int r = Cups_LoadFolder(s, t);
-    Am_Free(t);
+    Rs_Free(t);
     return r;
 }
 
 static void Cups_Browse(struct CupsState *s)
 {
     wchar_t out[MAX_PATH], cur[MAX_PATH];
-    wchar_t *t = Am_GetText(s->folderEdit);
+    wchar_t *t = Rs_GetText(s->folderEdit);
     Cups_CleanPath(t, cur, MAX_PATH);
-    Am_Free(t);
+    Rs_Free(t);
     if (!cur[0] && s->loaded)
         Cups_Copy(cur, MAX_PATH, s->folder);
-    if (Am_BrowseFolder(Am_MainWindow(), L"Choose the tracks folder of the game", cur, out, MAX_PATH))
+    if (Rs_BrowseFolder(Rs_MainWindow(), L"Choose the tracks folder of the game", cur, out, MAX_PATH))
         Cups_LoadFolder(s, out);
 }
 
@@ -1665,14 +1665,14 @@ static void Cups_Rescan(struct CupsState *s)
 static int Cups_FileChanged(const struct CupsState *s)
 {
     wchar_t path[MAX_PATH];
-    struct AmFileStamp now;
+    struct RsFileStamp now;
 
     if (!s->loaded || !s->fileStampKnown)
         return 0;
-    Am_PathJoin(path, MAX_PATH, s->folder, L"cups.txt");
-    if (!Am_FileStampNow(path, &now))
+    Rs_PathJoin(path, MAX_PATH, s->folder, L"cups.txt");
+    if (!Rs_FileStampNow(path, &now))
         return 1;
-    return !Am_FileStampSame(&s->fileStamp, &now);
+    return !Rs_FileStampSame(&s->fileStamp, &now);
 }
 
 // Reads cups.txt again; the cups on the page are replaced, the containers stay.
@@ -1682,13 +1682,13 @@ static void Cups_ReloadCups(struct CupsState *s, const wchar_t *note)
     s->savedNow = 0;
     Cups_ReadCupsFile(s);
     if (note)
-        Cups_LoadMsg(s, AM_SEV_INFO, NULL, L"%ls", note);
+        Cups_LoadMsg(s, RS_SEV_INFO, NULL, L"%ls", note);
     s->selCup = s->cupCount > 0 ? 0 : -1;
     Cups_UpdateStatus(s);
     Cups_RefreshAll(s, -1);
     Cups_Relayout(s);
-    if (Am_Automating())
-        Am_AutoLog(L"  cups: cups.txt read again - %d cup(s)", s->cupCount);
+    if (Rs_Automating())
+        Rs_AutoLog(L"  cups: cups.txt read again - %d cup(s)", s->cupCount);
 }
 
 static void Cups_Shown(struct CupsState *s)
@@ -1703,11 +1703,11 @@ static void Cups_Shown(struct CupsState *s)
         if (s->loaded && (s->fileUnreadable || Cups_FileChanged(s))) {
             if (!s->dirty) {
                 Cups_ReloadCups(s, s->fileUnreadable ? NULL
-                                                     : L"cups.txt was changed outside the Alpha-Maker and has been read again.");
+                                                     : L"cups.txt was changed outside Reload Studio and has been read again.");
             } else if (!s->fileUnreadable && !s->fileChangeNoted) {
                 s->fileChangeNoted = 1;
-                Cups_LoadMsg(s, AM_SEV_WARNING, NULL,
-                             L"cups.txt was changed outside the Alpha-Maker after this page read it. Save "
+                Cups_LoadMsg(s, RS_SEV_WARNING, NULL,
+                             L"cups.txt was changed outside Reload Studio after this page read it. Save "
                              L"asks whether to overwrite those changes or to read the file again.");
                 Cups_Evaluate(s);
             }
@@ -1716,7 +1716,7 @@ static void Cups_Shown(struct CupsState *s)
     }
     s->shown = 1;
     Cups_DefaultFolder(dir, MAX_PATH);
-    Am_SetText(s->folderEdit, dir);
+    Rs_SetText(s->folderEdit, dir);
     if (!dir[0] || Cups_LoadFolder(s, dir) < 0) {
         Cups_UpdateStatus(s);
         Cups_Evaluate(s);
@@ -1731,12 +1731,12 @@ static void Cups_Shown(struct CupsState *s)
 static wchar_t *Cups_BuildFile(const struct CupsState *s)
 {
     size_t cap = 2048 + (size_t)s->cupCount * (CUPS_TRACKS + 1) * (CUPS_TEXT_CAP + 16);
-    wchar_t *t = Am_Alloc(cap * sizeof(wchar_t));
+    wchar_t *t = Rs_Alloc(cap * sizeof(wchar_t));
     wchar_t nm[CUPS_TEXT_CAP];
     int i, k;
 
     Cups_Cat(t, cap, L"# cups.txt - custom cups for ARCADE -> NITRO-PIT -> CUP\r\n");
-    Cups_Cat(t, cap, L"# Written by the CTR Reload Alpha-Maker.\r\n");
+    Cups_Cat(t, cap, L"# Written by CTR Reload - Reload Studio.\r\n");
     Cups_Cat(t, cap, L"# One cup: a line \"cup = <name>\", then exactly four lines \"track = <file>\".\r\n");
     Cups_Cat(t, cap, L"# Track files are looked up in this folder; upper/lower case does not matter.\r\n");
     Cups_Cat(t, cap, L"# At most 4 cups. Lines starting with # are comments.\r\n");
@@ -1770,7 +1770,7 @@ static int Cups_AskOverwrite(const struct CupsState *s)
         Cups_Cat(text, 1400, one);
     }
     Cups_Cat(text, 1400, L"\nSaving removes them. Save anyway?");
-    return Am_AskYesNo(Am_MainWindow(), L"Overwrite lines in cups.txt?", text);
+    return Rs_AskYesNo(Rs_MainWindow(), L"Overwrite lines in cups.txt?", text);
 }
 
 static int Cups_Save(struct CupsState *s)
@@ -1783,21 +1783,21 @@ static int Cups_Save(struct CupsState *s)
     int ok;
 
     if (!s->loaded) {
-        Am_Tell(Am_MainWindow(), L"No folder", L"Choose the tracks folder of the game first.");
+        Rs_Tell(Rs_MainWindow(), L"No folder", L"Choose the tracks folder of the game first.");
         return 0;
     }
     if (s->fileUnreadable) {
         // Never over a file whose content the page does not know.
-        Am_Tell(Am_MainWindow(), L"cups.txt could not be read",
+        Rs_Tell(Rs_MainWindow(), L"cups.txt could not be read",
                 L"cups.txt is in this folder but could not be read, so Save would overwrite cups "
                 L"this page has never seen. Fix the cause (e.g. close the program that holds the file) "
                 L"and press Reload.");
         return 0;
     }
     if (Cups_FileChanged(s)) {
-        int answer = Am_AskChoice(Am_MainWindow(), L"cups.txt was changed outside",
+        int answer = Rs_AskChoice(Rs_MainWindow(), L"cups.txt was changed outside",
                                   L"cups.txt was changed on disk after this page read it (by another "
-                                  L"program or another Alpha-Maker).\n\nOverwrite: save the cups on this "
+                                  L"program or another copy of Reload Studio).\n\nOverwrite: save the cups on this "
                                   L"page and lose those changes.\nReload: read cups.txt again and lose the "
                                   L"changes on this page.\nCancel: keep both as they are.",
                                   changedButtons, 3, 2);
@@ -1808,7 +1808,7 @@ static int Cups_Save(struct CupsState *s)
     }
     Cups_Evaluate(s);
     if (s->errorCount > 0 &&
-        !Am_AskYesNo(Am_MainWindow(), L"Save with problems?",
+        !Rs_AskYesNo(Rs_MainWindow(), L"Save with problems?",
                      L"Some cups have problems (see Check). The game leaves such cups out. Save anyway?"))
         return 0;
     if (s->unkeptTotal > 0 && !Cups_AskOverwrite(s))
@@ -1816,19 +1816,19 @@ static int Cups_Save(struct CupsState *s)
 
     text = Cups_BuildFile(s);
     if (wcschr(text, 0xFFFD) &&
-        Am_AskChoice(Am_MainWindow(), L"Save replacement characters?",
+        Rs_AskChoice(Rs_MainWindow(), L"Save replacement characters?",
                      L"Some cup names or file names contain the replacement mark \xFFFD - characters "
                      L"that could not be read because cups.txt was not valid UTF-8. Saving writes the "
                      L"mark itself; the original characters are lost, and a file name with it will not "
                      L"be found.\n\nRetype those characters first, or save anyway?",
                      badButtons, 2, 1) != 0) {
-        Am_Free(text);
+        Rs_Free(text);
         return 0;
     }
-    Am_PathJoin(path, MAX_PATH, s->folder, L"cups.txt");
-    ok = Am_WriteTextFile(path, text);
+    Rs_PathJoin(path, MAX_PATH, s->folder, L"cups.txt");
+    ok = Rs_WriteTextFile(path, text);
     error = ok ? 0 : GetLastError();
-    Am_Free(text);
+    Rs_Free(text);
     if (!ok) {
         Cups_ErrorText(error, why, 256);
         swprintf(msg, MAX_PATH + 600,
@@ -1836,9 +1836,9 @@ static int Cups_Save(struct CupsState *s)
                  L"changed. The folder may be write-protected, or another program has cups.txt open. Your "
                  L"cups are still here - fix the cause and press Save again.",
                  s->folder, why);
-        Am_Tell(Am_MainWindow(), L"Could not save cups.txt", msg);
-        if (Am_Automating())
-            Am_AutoLog(L"  cups: could not save %ls - %ls", path, why);
+        Rs_Tell(Rs_MainWindow(), L"Could not save cups.txt", msg);
+        if (Rs_Automating())
+            Rs_AutoLog(L"  cups: could not save %ls - %ls", path, why);
         return 0;
     }
 
@@ -1849,7 +1849,7 @@ static int Cups_Save(struct CupsState *s)
     s->fileError = 0;
     s->fileBadUtf8 = 0;
     s->fileChangeNoted = 0;
-    s->fileStampKnown = Am_FileStampNow(path, &s->fileStamp);
+    s->fileStampKnown = Rs_FileStampNow(path, &s->fileStamp);
     s->fileCups = s->cupCount;
     s->unkeptCount = 0;
     s->unkeptTotal = 0;
@@ -1857,8 +1857,8 @@ static int Cups_Save(struct CupsState *s)
     Cups_UpdateStatus(s);
     Cups_Evaluate(s);
     Cups_UpdateButtons(s);
-    if (Am_Automating())
-        Am_AutoLog(L"  cups: saved %ls", path);
+    if (Rs_Automating())
+        Rs_AutoLog(L"  cups: saved %ls", path);
     return 1;
 }
 
@@ -1868,24 +1868,24 @@ static int Cups_Save(struct CupsState *s)
 
 static void Cups_Put(FILE *f, const wchar_t *fmt, ...)
 {
-    wchar_t *buf = Am_Alloc(4096 * sizeof(wchar_t));
+    wchar_t *buf = Rs_Alloc(4096 * sizeof(wchar_t));
     char *u;
     va_list ap;
     va_start(ap, fmt);
     vswprintf(buf, 4095, fmt, ap);
     va_end(ap);
     buf[4095] = 0;
-    u = Am_ToUtf8(buf);
+    u = Rs_ToUtf8(buf);
     fputs(u, f);
-    Am_Free(u);
-    Am_Free(buf);
+    Rs_Free(u);
+    Rs_Free(buf);
 }
 
 static void Cups_PutControl(FILE *f, const wchar_t *label, HWND h)
 {
-    wchar_t *t = Am_GetText(h);
+    wchar_t *t = Rs_GetText(h);
     Cups_Put(f, L"%ls\t%ls%ls\n", label, t, IsWindowEnabled(h) ? L"" : L"\t(disabled)");
-    Am_Free(t);
+    Rs_Free(t);
 }
 
 static int Cups_Report(struct CupsState *s, const wchar_t *path)
@@ -1900,10 +1900,10 @@ static int Cups_Report(struct CupsState *s, const wchar_t *path)
         return 0;
     f = _wfopen(path, L"wb");
     if (!f) {
-        Am_AutoLog(L"  cups: could not write %ls", path);
+        Rs_AutoLog(L"  cups: could not write %ls", path);
         return 0;
     }
-    Cups_Put(f, L"Alpha-Maker - Cups page\n");
+    Cups_Put(f, L"Reload Studio - Cups page\n");
     Cups_Put(f, L"folder\t%ls\n", s->loaded ? s->folder : L"(none loaded)");
     Cups_PutControl(f, L"folder field", s->folderEdit);
     Cups_PutControl(f, L"cups.txt", s->folderStatus);
@@ -1955,8 +1955,8 @@ static int Cups_Report(struct CupsState *s, const wchar_t *path)
     Cups_Put(f, L"\n");
     Cups_PutControl(f, L"headline", s->headline);
     Cups_PutControl(f, L"counts", s->counts);
-    Cups_Put(f, L"\nmessages\t%d\n", Am_MsgListCount(s->msgList));
-    Am_MsgListWrite(s->msgList, f);
+    Cups_Put(f, L"\nmessages\t%d\n", Rs_MsgListCount(s->msgList));
+    Rs_MsgListWrite(s->msgList, f);
     fclose(f);
     return 1;
 }
@@ -1981,53 +1981,53 @@ static void Cups_Create(HWND page)
     s->selCup = -1;
     s->infoCur = -1;
 
-    s->folderEdit = Am_Edit(page, CUPS_ID_FOLDER, L"", 0);
+    s->folderEdit = Rs_Edit(page, CUPS_ID_FOLDER, L"", 0);
     SendMessageW(s->folderEdit, EM_SETCUEBANNER, TRUE, (LPARAM)L"Choose the tracks folder of the game.");
-    s->browseBtn = Am_Button(page, CUPS_ID_BROWSE, L"Browse...");
-    s->reloadBtn = Am_Button(page, CUPS_ID_RELOAD, L"Reload");
-    s->folderStatus = Am_Label(page, CUPS_ID_STATUS, L"", AM_FONT_BODY);
+    s->browseBtn = Rs_Button(page, CUPS_ID_BROWSE, L"Browse...");
+    s->reloadBtn = Rs_Button(page, CUPS_ID_RELOAD, L"Reload");
+    s->folderStatus = Rs_Label(page, CUPS_ID_STATUS, L"", RS_FONT_BODY);
     Cups_AddStyle(s->folderStatus, SS_RIGHT | SS_ENDELLIPSIS);
 
-    s->contList = Am_ListView(page, CUPS_ID_CONTAINERS, LVS_NOSORTHEADER);
+    s->contList = Rs_ListView(page, CUPS_ID_CONTAINERS, LVS_NOSORTHEADER);
     ListView_SetExtendedListViewStyleEx(s->contList, LVS_EX_INFOTIP, LVS_EX_INFOTIP);
     for (i = 0; i < 4; i++) {
         memset(&col, 0, sizeof(col));
         col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
         col.pszText = (LPWSTR)heads[i];
-        col.cx = Am_Px(100);
+        col.cx = Rs_Px(100);
         col.iSubItem = i;
         ListView_InsertColumn(s->contList, i, &col);
     }
-    s->addBtn = Am_Button(page, CUPS_ID_ADD, L"Add selected container");
-    s->contHint = Am_Label(page, CUPS_ID_CONTHINT, L"", AM_FONT_SMALL);
+    s->addBtn = Rs_Button(page, CUPS_ID_ADD, L"Add selected container");
+    s->contHint = Rs_Label(page, CUPS_ID_CONTHINT, L"", RS_FONT_SMALL);
     Cups_AddStyle(s->contHint, SS_ENDELLIPSIS);
-    Am_SetTextColor(s->contHint, AM_COL_MUTED);
+    Rs_SetTextColor(s->contHint, RS_COL_MUTED);
 
-    s->cupList = Am_ListBox(page, CUPS_ID_CUPLIST, 0);
-    s->newBtn = Am_Button(page, CUPS_ID_NEWCUP, L"New cup");
-    s->deleteBtn = Am_Button(page, CUPS_ID_DELCUP, L"Delete");
-    s->cupUpBtn = Am_Button(page, CUPS_ID_CUPUP, L"Move up");
-    s->cupDownBtn = Am_Button(page, CUPS_ID_CUPDOWN, L"Move down");
+    s->cupList = Rs_ListBox(page, CUPS_ID_CUPLIST, 0);
+    s->newBtn = Rs_Button(page, CUPS_ID_NEWCUP, L"New cup");
+    s->deleteBtn = Rs_Button(page, CUPS_ID_DELCUP, L"Delete");
+    s->cupUpBtn = Rs_Button(page, CUPS_ID_CUPUP, L"Move up");
+    s->cupDownBtn = Rs_Button(page, CUPS_ID_CUPDOWN, L"Move down");
 
-    s->nameLabel = Am_Label(page, CUPS_ID_NAMELABEL, L"Name", AM_FONT_BOLD);
-    s->nameEdit = Am_Edit(page, CUPS_ID_NAME, L"", 0);
+    s->nameLabel = Rs_Label(page, CUPS_ID_NAMELABEL, L"Name", RS_FONT_BOLD);
+    s->nameEdit = Rs_Edit(page, CUPS_ID_NAME, L"", 0);
     SendMessageW(s->nameEdit, EM_LIMITTEXT, CUPS_NAME_BYTES, 0);
-    s->nameHint = Am_Label(page, CUPS_ID_NAMEHINT, L"", AM_FONT_SMALL);
-    Am_SetTextColor(s->nameHint, AM_COL_MUTED);
-    s->tracksLabel = Am_Label(page, CUPS_ID_TRACKSLABEL, L"Tracks", AM_FONT_BOLD);
-    s->tracksCount = Am_Label(page, CUPS_ID_TRACKSCOUNT, L"", AM_FONT_SMALL);
+    s->nameHint = Rs_Label(page, CUPS_ID_NAMEHINT, L"", RS_FONT_SMALL);
+    Rs_SetTextColor(s->nameHint, RS_COL_MUTED);
+    s->tracksLabel = Rs_Label(page, CUPS_ID_TRACKSLABEL, L"Tracks", RS_FONT_BOLD);
+    s->tracksCount = Rs_Label(page, CUPS_ID_TRACKSCOUNT, L"", RS_FONT_SMALL);
     Cups_AddStyle(s->tracksCount, SS_RIGHT);
-    Am_SetTextColor(s->tracksCount, AM_COL_MUTED);
-    s->trackList = Am_ListBox(page, CUPS_ID_TRACKLIST, 0);
-    s->removeBtn = Am_Button(page, CUPS_ID_REMOVE, L"Remove");
-    s->trackUpBtn = Am_Button(page, CUPS_ID_TRACKUP, L"Move up");
-    s->trackDownBtn = Am_Button(page, CUPS_ID_TRACKDOWN, L"Move down");
+    Rs_SetTextColor(s->tracksCount, RS_COL_MUTED);
+    s->trackList = Rs_ListBox(page, CUPS_ID_TRACKLIST, 0);
+    s->removeBtn = Rs_Button(page, CUPS_ID_REMOVE, L"Remove");
+    s->trackUpBtn = Rs_Button(page, CUPS_ID_TRACKUP, L"Move up");
+    s->trackDownBtn = Rs_Button(page, CUPS_ID_TRACKDOWN, L"Move down");
 
-    s->msgList = Am_MsgList(page, CUPS_ID_MSGLIST);
-    s->headline = Am_Label(page, CUPS_ID_HEADLINE, L"", AM_FONT_BOLD);
-    s->counts = Am_Label(page, CUPS_ID_COUNTS, L"", AM_FONT_SMALL);
-    Am_SetTextColor(s->counts, AM_COL_MUTED);
-    s->saveBtn = Am_PrimaryButton(page, CUPS_ID_SAVE, L"Save cups.txt");
+    s->msgList = Rs_MsgList(page, CUPS_ID_MSGLIST);
+    s->headline = Rs_Label(page, CUPS_ID_HEADLINE, L"", RS_FONT_BOLD);
+    s->counts = Rs_Label(page, CUPS_ID_COUNTS, L"", RS_FONT_SMALL);
+    Rs_SetTextColor(s->counts, RS_COL_MUTED);
+    s->saveBtn = Rs_PrimaryButton(page, CUPS_ID_SAVE, L"Save cups.txt");
 
     Cups_UpdateStatus(s);
     Cups_Evaluate(s);
@@ -2037,8 +2037,8 @@ static void Cups_Create(HWND page)
 
 static void Cups_SizeColumns(struct CupsState *s, int width)
 {
-    int w = width - GetSystemMetrics(SM_CXVSCROLL) - Am_Px(4);
-    int race = Am_Px(60);
+    int w = width - GetSystemMetrics(SM_CXVSCROLL) - Rs_Px(4);
+    int race = Rs_Px(60);
     int name = (w - race) * 30 / 100;
     int file = (w - race) * 33 / 100;
     ListView_SetColumnWidth(s->contList, 0, name);
@@ -2051,44 +2051,44 @@ static void Cups_SizeColumns(struct CupsState *s, int width)
 static void Cups_Layout(HWND page, int w, int h)
 {
     struct CupsState *s = &s_cups;
-    int left = Am_Px(32), right = w - Am_Px(32);
-    int top = Am_PageTop(), bottom = h - Am_Px(24);
-    int gap = Am_Px(16), g8 = Am_Px(8);
-    int bh = Am_Px(32), eh = Am_Px(28), lh = Am_Px(20), sh = Am_Px(18);
-    int bw = Am_Px(104), addW = Am_Px(172), labelW = Am_Px(56), panelW = Am_Px(260);
+    int left = Rs_Px(32), right = w - Rs_Px(32);
+    int top = Rs_PageTop(), bottom = h - Rs_Px(24);
+    int gap = Rs_Px(16), g8 = Rs_Px(8);
+    int bh = Rs_Px(32), eh = Rs_Px(28), lh = Rs_Px(20), sh = Rs_Px(18);
+    int bw = Rs_Px(104), addW = Rs_Px(172), labelW = Rs_Px(56), panelW = Rs_Px(260);
     int checkH, midTop, midBottom, avail, cupsW, cupW, contW, x, y, iw, half, third;
     RECT card, in;
     wchar_t title[48];
 
-    Am_CardClear(page);
+    Rs_CardClear(page);
 
     // Track folder; the state of cups.txt is on the right in the title line.
     card.left = left;
     card.top = top;
     card.right = right;
-    card.bottom = top + Am_Px(110);
-    Am_CardAdd(page, &card, L"Tracks folder");
-    in = Am_CardInner(&card, 1);
+    card.bottom = top + Rs_Px(110);
+    Rs_CardAdd(page, &card, L"Tracks folder");
+    in = Rs_CardInner(&card, 1);
     y = in.top + (in.bottom - in.top - bh) / 2;
     MoveWindow(s->reloadBtn, in.right - bw, y, bw, bh, TRUE);
     MoveWindow(s->browseBtn, in.right - 2 * bw - g8, y, bw, bh, TRUE);
     MoveWindow(s->folderEdit, in.left, y + (bh - eh) / 2, in.right - 2 * bw - 2 * g8 - in.left, eh, TRUE);
-    MoveWindow(s->folderStatus, in.left + Am_Px(160), card.top + Am_Px(17),
-               in.right - in.left - Am_Px(160), lh, TRUE);
+    MoveWindow(s->folderStatus, in.left + Rs_Px(160), card.top + Rs_Px(17),
+               in.right - in.left - Rs_Px(160), lh, TRUE);
 
     checkH = (bottom - top) * 28 / 100;
-    if (checkH < Am_Px(180))
-        checkH = Am_Px(180);
+    if (checkH < Rs_Px(180))
+        checkH = Rs_Px(180);
     midTop = card.bottom + gap;
     midBottom = bottom - checkH - gap;
 
     avail = right - left - 2 * gap;
     cupsW = avail * 21 / 100;
-    if (cupsW < Am_Px(196))
-        cupsW = Am_Px(196);
+    if (cupsW < Rs_Px(196))
+        cupsW = Rs_Px(196);
     cupW = avail * 34 / 100;
-    if (cupW < Am_Px(290))
-        cupW = Am_Px(290);
+    if (cupW < Rs_Px(290))
+        cupW = Rs_Px(290);
     contW = avail - cupsW - cupW;
 
     // Containers
@@ -2100,21 +2100,21 @@ static void Cups_Layout(HWND page, int w, int h)
         swprintf(title, 48, L"Containers (%d)", s->containerCount);
     else
         Cups_Copy(title, 48, L"Containers");
-    Am_CardAdd(page, &card, title);
-    in = Am_CardInner(&card, 1);
+    Rs_CardAdd(page, &card, title);
+    in = Rs_CardInner(&card, 1);
     iw = in.right - in.left;
     MoveWindow(s->contList, in.left, in.top, iw, in.bottom - bh - g8 - in.top, TRUE);
     Cups_SizeColumns(s, iw);
     MoveWindow(s->addBtn, in.left, in.bottom - bh, addW, bh, TRUE);
-    MoveWindow(s->contHint, in.left + addW + Am_Px(10), in.bottom - bh + (bh - sh) / 2,
-               iw - addW - Am_Px(10), sh, TRUE);
+    MoveWindow(s->contHint, in.left + addW + Rs_Px(10), in.bottom - bh + (bh - sh) / 2,
+               iw - addW - Rs_Px(10), sh, TRUE);
 
     // Cups
     x = card.right + gap;
     card.left = x;
     card.right = x + cupsW;
-    Am_CardAdd(page, &card, L"Cups");
-    in = Am_CardInner(&card, 1);
+    Rs_CardAdd(page, &card, L"Cups");
+    in = Rs_CardInner(&card, 1);
     iw = in.right - in.left;
     half = (iw - g8) / 2;
     y = in.bottom - bh;
@@ -2128,18 +2128,18 @@ static void Cups_Layout(HWND page, int w, int h)
     x = card.right + gap;
     card.left = x;
     card.right = right;
-    Am_CardAdd(page, &card, L"Cup");
-    in = Am_CardInner(&card, 1);
+    Rs_CardAdd(page, &card, L"Cup");
+    in = Rs_CardInner(&card, 1);
     iw = in.right - in.left;
     y = in.top;
-    MoveWindow(s->nameLabel, in.left, y + Am_Px(4), labelW, lh, TRUE);
+    MoveWindow(s->nameLabel, in.left, y + Rs_Px(4), labelW, lh, TRUE);
     MoveWindow(s->nameEdit, in.left + labelW, y, iw - labelW, eh, TRUE);
-    y += eh + Am_Px(4);
-    MoveWindow(s->nameHint, in.left + labelW, y, iw - labelW, Am_Px(32), TRUE);
-    y += Am_Px(32) + Am_Px(6);
+    y += eh + Rs_Px(4);
+    MoveWindow(s->nameHint, in.left + labelW, y, iw - labelW, Rs_Px(32), TRUE);
+    y += Rs_Px(32) + Rs_Px(6);
     MoveWindow(s->tracksLabel, in.left, y, iw / 2, lh, TRUE);
-    MoveWindow(s->tracksCount, in.left + iw / 2, y + Am_Px(2), iw - iw / 2, sh, TRUE);
-    y += lh + Am_Px(4);
+    MoveWindow(s->tracksCount, in.left + iw / 2, y + Rs_Px(2), iw - iw / 2, sh, TRUE);
+    y += lh + Rs_Px(4);
     third = (iw - 2 * g8) / 3;
     MoveWindow(s->trackList, in.left, y, iw, in.bottom - bh - g8 - y, TRUE);
     MoveWindow(s->removeBtn, in.left, in.bottom - bh, third, bh, TRUE);
@@ -2151,12 +2151,12 @@ static void Cups_Layout(HWND page, int w, int h)
     card.top = bottom - checkH;
     card.right = right;
     card.bottom = bottom;
-    Am_CardAdd(page, &card, L"Check");
-    in = Am_CardInner(&card, 1);
+    Rs_CardAdd(page, &card, L"Check");
+    in = Rs_CardInner(&card, 1);
     x = in.right - panelW;
-    MoveWindow(s->msgList, in.left, in.top, x - Am_Px(24) - in.left, in.bottom - in.top, TRUE);
-    MoveWindow(s->headline, x, in.top, panelW, Am_Px(40), TRUE);
-    MoveWindow(s->counts, x, in.top + Am_Px(44), panelW, sh, TRUE);
+    MoveWindow(s->msgList, in.left, in.top, x - Rs_Px(24) - in.left, in.bottom - in.top, TRUE);
+    MoveWindow(s->headline, x, in.top, panelW, Rs_Px(40), TRUE);
+    MoveWindow(s->counts, x, in.top + Rs_Px(44), panelW, sh, TRUE);
     MoveWindow(s->saveBtn, x, in.bottom - bh, panelW, bh, TRUE);
 }
 
@@ -2301,25 +2301,25 @@ static LRESULT Cups_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
     (void)page;
 
     switch (msg) {
-    case AM_WM_JOB_LINE: {
+    case RS_WM_JOB_LINE: {
         wchar_t *line = (wchar_t *)lParam;
         if (s->infoJob && (int)wParam == s->infoJob && line)
             Cups_JobLine(s, line);
-        Am_Free(line);
+        Rs_Free(line);
         *handled = 1;
         return 0;
     }
-    case AM_WM_JOB_DONE:
+    case RS_WM_JOB_DONE:
         if (s->infoJob && (int)wParam == s->infoJob)
             Cups_JobDone(s, (int)lParam);
         *handled = 1;
         return 0;
-    case AM_WM_PAGE_SHOWN:
+    case RS_WM_PAGE_SHOWN:
         Cups_Shown(s);
         *handled = 1;
         return 0;
-    case AM_WM_QUERY_CLOSE:
-        if (s->dirty && !Am_AskYesNo(Am_MainWindow(), L"Close without saving?",
+    case RS_WM_QUERY_CLOSE:
+        if (s->dirty && !Rs_AskYesNo(Rs_MainWindow(), L"Close without saving?",
                                      L"The cups have unsaved changes. Close without saving them?")) {
             *handled = 1;
             return 0;
@@ -2334,19 +2334,19 @@ static LRESULT Cups_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
 static int Cups_AutoResult(int loadResult)
 {
     if (loadResult > 0)
-        return AM_AUTO_WAIT;
-    return loadResult == 0 ? AM_AUTO_DONE : AM_AUTO_FAIL;
+        return RS_AUTO_WAIT;
+    return loadResult == 0 ? RS_AUTO_DONE : RS_AUTO_FAIL;
 }
 
 static int Cups_AutoTrackIndex(struct CupsState *s, const wchar_t *arg)
 {
     int t = Cups_Index(arg) - 1;
     if (!Cups_HasCup(s)) {
-        Am_AutoLog(L"  cups: no cup is selected");
+        Rs_AutoLog(L"  cups: no cup is selected");
         return -1;
     }
     if (t < 0 || t >= s->cups[s->selCup].trackCount) {
-        Am_AutoLog(L"  cups: the cup has no track %ls", arg);
+        Rs_AutoLog(L"  cups: the cup has no track %ls", arg);
         return -1;
     }
     SendMessageW(s->trackList, LB_SETCURSEL, (WPARAM)t, 0);
@@ -2364,7 +2364,7 @@ static int Cups_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
     Cups_TrimCopy(a, CUPS_TEXT_CAP, arg ? arg : L"");
 
     if (wcscmp(verb, L"dir") == 0) {
-        Am_SetText(s->folderEdit, a);
+        Rs_SetText(s->folderEdit, a);
         return Cups_AutoResult(Cups_LoadFromEdit(s));
     }
     if (wcscmp(verb, L"reload") == 0)
@@ -2380,74 +2380,74 @@ static int Cups_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
             }
         }
         if (i < 0 || i >= s->cupCount) {
-            Am_AutoLog(L"  cups: no cup '%ls'", a);
-            return AM_AUTO_FAIL;
+            Rs_AutoLog(L"  cups: no cup '%ls'", a);
+            return RS_AUTO_FAIL;
         }
         Cups_SelectCup(s, i);
-        return AM_AUTO_DONE;
+        return RS_AUTO_DONE;
     }
     if (wcscmp(verb, L"new") == 0) {
         if (!s->loaded || s->cupCount >= CUPS_MAX_CUPS) {
-            Am_AutoLog(L"  cups: %ls", !s->loaded ? L"no folder is loaded" : L"there are already 4 cups");
-            return AM_AUTO_FAIL;
+            Rs_AutoLog(L"  cups: %ls", !s->loaded ? L"no folder is loaded" : L"there are already 4 cups");
+            return RS_AUTO_FAIL;
         }
-        return Cups_NewCup(s, a) ? AM_AUTO_DONE : AM_AUTO_FAIL;
+        return Cups_NewCup(s, a) ? RS_AUTO_DONE : RS_AUTO_FAIL;
     }
     if (wcscmp(verb, L"rename") == 0) {
         if (!Cups_HasCup(s)) {
-            Am_AutoLog(L"  cups: no cup is selected");
-            return AM_AUTO_FAIL;
+            Rs_AutoLog(L"  cups: no cup is selected");
+            return RS_AUTO_FAIL;
         }
         s->updating = 1;
-        Am_SetText(s->nameEdit, a);
+        Rs_SetText(s->nameEdit, a);
         s->updating = 0;
         Cups_NameEdited(s);
-        return AM_AUTO_DONE;
+        return RS_AUTO_DONE;
     }
     if (wcscmp(verb, L"delete") == 0) {
         if (!Cups_HasCup(s)) {
-            Am_AutoLog(L"  cups: no cup is selected");
-            return AM_AUTO_FAIL;
+            Rs_AutoLog(L"  cups: no cup is selected");
+            return RS_AUTO_FAIL;
         }
-        return Cups_DeleteCup(s) ? AM_AUTO_DONE : AM_AUTO_FAIL;
+        return Cups_DeleteCup(s) ? RS_AUTO_DONE : RS_AUTO_FAIL;
     }
     if (wcscmp(verb, L"add") == 0) {
         int c = Cups_FindContainer(s, a);
         if (c < 0) {
-            Am_AutoLog(L"  cups: no container '%ls' in the folder", a);
-            return AM_AUTO_FAIL;
+            Rs_AutoLog(L"  cups: no container '%ls' in the folder", a);
+            return RS_AUTO_FAIL;
         }
         if (!Cups_HasCup(s)) {
-            Am_AutoLog(L"  cups: no cup is selected");
-            return AM_AUTO_FAIL;
+            Rs_AutoLog(L"  cups: no cup is selected");
+            return RS_AUTO_FAIL;
         }
         if (s->cups[s->selCup].trackCount >= CUPS_TRACKS) {
-            Am_AutoLog(L"  cups: the cup already has 4 tracks");
-            return AM_AUTO_FAIL;
+            Rs_AutoLog(L"  cups: the cup already has 4 tracks");
+            return RS_AUTO_FAIL;
         }
         Cups_SelectContainer(s, c);
-        return Cups_AddTrack(s, c) ? AM_AUTO_DONE : AM_AUTO_FAIL;
+        return Cups_AddTrack(s, c) ? RS_AUTO_DONE : RS_AUTO_FAIL;
     }
     if (wcscmp(verb, L"remove") == 0) {
         t = Cups_AutoTrackIndex(s, a);
-        return (t >= 0 && Cups_RemoveTrack(s, t)) ? AM_AUTO_DONE : AM_AUTO_FAIL;
+        return (t >= 0 && Cups_RemoveTrack(s, t)) ? RS_AUTO_DONE : RS_AUTO_FAIL;
     }
     if (wcscmp(verb, L"up") == 0 || wcscmp(verb, L"down") == 0) {
         int dir = verb[0] == L'u' ? -1 : 1;
         t = Cups_AutoTrackIndex(s, a);
         if (t < 0)
-            return AM_AUTO_FAIL;
+            return RS_AUTO_FAIL;
         if (!Cups_MoveTrack(s, t, dir)) {
-            Am_AutoLog(L"  cups: track %d cannot move %ls", t + 1, dir < 0 ? L"up" : L"down");
-            return AM_AUTO_FAIL;
+            Rs_AutoLog(L"  cups: track %d cannot move %ls", t + 1, dir < 0 ? L"up" : L"down");
+            return RS_AUTO_FAIL;
         }
-        return AM_AUTO_DONE;
+        return RS_AUTO_DONE;
     }
     if (wcscmp(verb, L"save") == 0)
-        return Cups_Save(s) ? AM_AUTO_DONE : AM_AUTO_FAIL;
+        return Cups_Save(s) ? RS_AUTO_DONE : RS_AUTO_FAIL;
     if (wcscmp(verb, L"report") == 0)
-        return Cups_Report(s, a) ? AM_AUTO_DONE : AM_AUTO_FAIL;
-    return AM_AUTO_UNKNOWN;
+        return Cups_Report(s, a) ? RS_AUTO_DONE : RS_AUTO_FAIL;
+    return RS_AUTO_UNKNOWN;
 }
 
 static int Cups_Busy(HWND page)
@@ -2456,7 +2456,7 @@ static int Cups_Busy(HWND page)
     return s_cups.infoJob != 0;
 }
 
-const struct AmPageDef g_amCupsPage = {
+const struct RsPageDef g_rsCupsPage = {
     L"Cups",
     L"Custom cups",
     L"Put four containers into a cup. The game reads the cups from cups.txt in its tracks folder.",

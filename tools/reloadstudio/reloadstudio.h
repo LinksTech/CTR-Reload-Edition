@@ -1,30 +1,30 @@
-// alphamaker.h - shared interface of the Alpha-Maker
+// reloadstudio.h - shared interface of Reload Studio
 //
-// The Alpha-Maker is the front end for track authors: pack a track folder into
+// Reload Studio is the front end for track authors: pack a track folder into
 // a .rldtrack container, put together cups for cups.txt, test a
 // track in the game. All texts on screen are English.
 //
-// GROUND RULE: converting and checking is done by rldpack make. The Alpha-Maker carries
-// rldpack.c inside (am_rldpack.c) and starts itself as a child process with
+// GROUND RULE: converting and checking is done by rldpack make. Reload Studio carries
+// rldpack.c inside (rs_rldpack.c) and starts itself as a child process with
 // `--rldpack <arguments>`. It reads its machine lines (below) and shows
 // them. It checks NOTHING itself: no modes, no model ID, no ABR,
 // no music. It assigns no level ID and never touches track-ids.tsv.
 //
 // Files:
-//   am_shell.c    window, sidebar, fonts, colours (light/dark),
+//   rs_shell.c    window, sidebar, fonts, colours (light/dark),
 //                 cards, buttons, message list, dialogs, settings,
 //                 child processes, automation (--do) and screenshot (shot)
-//   am_rldpack.c  rldpack.c with a renamed main
-//   am_track.c    page "Track"
-//   am_cups.c     page "Cups"
-//   am_test.c     page "Test in game"
+//   rs_rldpack.c  rldpack.c with a renamed main
+//   rs_track.c    page "Track"
+//   rs_cups.c     page "Cups"
+//   rs_test.c     page "Test in game"
 //
 // Characters: UTF-16 in the front end (W functions), UTF-8 on the pipe to
 // rldpack and in files. The manifest sets the ANSI code page to UTF-8,
 // so that rldpack (fopen, argv) understands paths with umlauts.
 
-#ifndef ALPHAMAKER_H
-#define ALPHAMAKER_H
+#ifndef RELOADSTUDIO_H
+#define RELOADSTUDIO_H
 
 // As in rldpack.c: wcsncpy, _wfopen and co. without MSVC's _s warnings.
 #ifndef _CRT_SECURE_NO_WARNINGS
@@ -51,7 +51,7 @@
 // game (narrow strings). The game answers --version with
 // "CTR Reload <version> (<build id>)"; the
 // test page demands the same ID as here, otherwise game and
-// Alpha-Maker do not belong together. "unknown" (build without git) does not check.
+// Reload Studio do not belong together. "unknown" (build without git) does not check.
 // ---------------------------------------------------------------------------
 #include "ctr_build_id.h"
 #ifndef CTR_NATIVE_VERSION
@@ -60,13 +60,13 @@
 #ifndef CTR_NATIVE_BUILD_ID
 #define CTR_NATIVE_BUILD_ID "unknown"
 #endif
-#define AM_WIDEN2(x) L##x
-#define AM_WIDEN(x)  AM_WIDEN2(x)
-#define AM_VERSION_W  AM_WIDEN(CTR_NATIVE_VERSION)     // L"Beta 0"
-#define AM_BUILD_ID_W AM_WIDEN(CTR_NATIVE_BUILD_ID)    // L"<12 hex>" or L"<12 hex>-dirty-<6 hex>"
+#define RS_WIDEN2(x) L##x
+#define RS_WIDEN(x)  RS_WIDEN2(x)
+#define RS_VERSION_W  RS_WIDEN(CTR_NATIVE_VERSION)     // L"Beta 0"
+#define RS_BUILD_ID_W RS_WIDEN(CTR_NATIVE_BUILD_ID)    // L"<12 hex>" or L"<12 hex>-dirty-<6 hex>"
 
 // Message when there is no game data next to the game (pages Track and Test).
-#define AM_TEXT_NO_GAME_DATA \
+#define RS_TEXT_NO_GAME_DATA \
     L"CTR Reload has no game data yet. Start ctr_native.exe once and drag your own " \
     L"Crash Team Racing disc image (NTSC-U, .cue/.bin) onto its window. It unpacks " \
     L"the data next to the game; then come back here."
@@ -128,20 +128,20 @@
 // ambient the value "default" means: do not set, even if track.txt has one.
 // ---------------------------------------------------------------------------
 
-#define AM_PROTOCOL 1
+#define RS_PROTOCOL 1
 
 // Severity of a message, for the message list and the colour of labels.
-enum AmSeverity {
-    AM_SEV_OK = 0,      // green: built, present
-    AM_SEV_INFO,        // grey: for information only
-    AM_SEV_NOTE,        // blue: note, e.g. "not playable in CTR Reload yet"
-    AM_SEV_WARNING,     // amber: builds, but take a look
-    AM_SEV_ERROR,       // red: does not build
-    AM_SEV_COUNT
+enum RsSeverity {
+    RS_SEV_OK = 0,      // green: built, present
+    RS_SEV_INFO,        // grey: for information only
+    RS_SEV_NOTE,        // blue: note, e.g. "not playable in CTR Reload yet"
+    RS_SEV_WARNING,     // amber: builds, but take a look
+    RS_SEV_ERROR,       // red: does not build
+    RS_SEV_COUNT
 };
 
-// "@msg" severity from rldpack -> enum. Unknown -> AM_SEV_INFO.
-int Am_SeverityFromText(const wchar_t *text);
+// "@msg" severity from rldpack -> enum. Unknown -> RS_SEV_INFO.
+int Rs_SeverityFromText(const wchar_t *text);
 
 // ---------------------------------------------------------------------------
 // Pages
@@ -153,14 +153,14 @@ int Am_SeverityFromText(const wchar_t *text);
 // ---------------------------------------------------------------------------
 
 // Return values of automate().
-enum AmAuto {
-    AM_AUTO_UNKNOWN = 0,   // verb does not belong to this page
-    AM_AUTO_DONE,          // done
-    AM_AUTO_WAIT,          // started; the shell waits until busy() says 0
-    AM_AUTO_FAIL           // did not work; the shell notes it and continues
+enum RsAuto {
+    RS_AUTO_UNKNOWN = 0,   // verb does not belong to this page
+    RS_AUTO_DONE,          // done
+    RS_AUTO_WAIT,          // started; the shell waits until busy() says 0
+    RS_AUTO_FAIL           // did not work; the shell notes it and continues
 };
 
-struct AmPageDef {
+struct RsPageDef {
     const wchar_t *navName;    // entry in the sidebar, e.g. L"Track"
     const wchar_t *title;      // heading of the page
     const wchar_t *subtitle;   // one line below it
@@ -169,16 +169,16 @@ struct AmPageDef {
     void (*create)(HWND page);
 
     // Position controls. w/h in pixels of the page (without the heading - the
-    // shell paints that above Am_PageTop()). Report the cards for this pass
-    // with Am_CardClear/Am_CardAdd.
+    // shell paints that above Rs_PageTop()). Report the cards for this pass
+    // with Rs_CardClear/Rs_CardAdd.
     void (*layout)(HWND page, int w, int h);
 
     // WM_COMMAND and WM_NOTIFY of the children. Return value as for the window procedure.
     LRESULT (*command)(HWND page, WPARAM wParam, LPARAM lParam);
     LRESULT (*notify)(HWND page, NMHDR *hdr);
 
-    // All other messages to the page window, especially AM_WM_JOB_LINE,
-    // AM_WM_JOB_DONE, WM_TIMER and AM_WM_PAGE_SHOWN. *handled = 1 if the
+    // All other messages to the page window, especially RS_WM_JOB_LINE,
+    // RS_WM_JOB_DONE, WM_TIMER and RS_WM_PAGE_SHOWN. *handled = 1 if the
     // page processed them.
     LRESULT (*message)(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, int *handled);
 
@@ -189,133 +189,133 @@ struct AmPageDef {
     int (*busy)(HWND page);
 };
 
-extern const struct AmPageDef g_amTrackPage;   // am_track.c
-extern const struct AmPageDef g_amCupsPage;    // am_cups.c
-extern const struct AmPageDef g_amTestPage;    // am_test.c
+extern const struct RsPageDef g_rsTrackPage;   // rs_track.c
+extern const struct RsPageDef g_rsCupsPage;    // rs_cups.c
+extern const struct RsPageDef g_rsTestPage;    // rs_test.c
 
-enum AmPageId { AM_PAGE_TRACK = 0, AM_PAGE_CUPS, AM_PAGE_TEST, AM_PAGE_COUNT };
+enum RsPageId { RS_PAGE_TRACK = 0, RS_PAGE_CUPS, RS_PAGE_TEST, RS_PAGE_COUNT };
 
 // Own messages to page windows.
-#define AM_WM_JOB_LINE    (WM_APP + 1)  // wParam = job, lParam = wchar_t* line (Am_Free)
-#define AM_WM_JOB_DONE    (WM_APP + 2)  // wParam = job, lParam = exit code
-#define AM_WM_PAGE_SHOWN  (WM_APP + 3)  // page became visible
-#define AM_WM_OPEN_TEST   (WM_APP + 4)  // to the test page: lParam = wchar_t* container path (Am_Free)
-#define AM_WM_QUERY_CLOSE (WM_APP + 5)  // window is to close: *handled = 1 and return 0 keeps it open
+#define RS_WM_JOB_LINE    (WM_APP + 1)  // wParam = job, lParam = wchar_t* line (Rs_Free)
+#define RS_WM_JOB_DONE    (WM_APP + 2)  // wParam = job, lParam = exit code
+#define RS_WM_PAGE_SHOWN  (WM_APP + 3)  // page became visible
+#define RS_WM_OPEN_TEST   (WM_APP + 4)  // to the test page: lParam = wchar_t* container path (Rs_Free)
+#define RS_WM_QUERY_CLOSE (WM_APP + 5)  // window is to close: *handled = 1 and return 0 keeps it open
 
 // Switch page (also from within a page, e.g. "Test in game" after the build).
-void Am_ShowPage(int id);
-HWND Am_PageWindow(int id);
-HWND Am_MainWindow(void);
+void Rs_ShowPage(int id);
+HWND Rs_PageWindow(int id);
+HWND Rs_MainWindow(void);
 
 // ---------------------------------------------------------------------------
 // Sizes, fonts, colours
 // ---------------------------------------------------------------------------
 
 // Scales a value in 96-dpi pixels to the current resolution.
-int Am_Px(int px96);
+int Rs_Px(int px96);
 
-enum AmFont {
-    AM_FONT_BODY = 0,   // Segoe UI 10 pt - default for all controls
-    AM_FONT_BOLD,       // Segoe UI Semibold 10 pt - labels of fields
-    AM_FONT_SMALL,      // Segoe UI 9 pt - reasons and notes below fields
-    AM_FONT_SECTION,    // Segoe UI Semibold 12 pt - card titles
-    AM_FONT_TITLE,      // Segoe UI Semibold 20 pt - page titles (painted by the shell)
-    AM_FONT_MONO,       // Consolas 9 pt - paths, raw output
-    AM_FONT_COUNT
+enum RsFont {
+    RS_FONT_BODY = 0,   // Segoe UI 10 pt - default for all controls
+    RS_FONT_BOLD,       // Segoe UI Semibold 10 pt - labels of fields
+    RS_FONT_SMALL,      // Segoe UI 9 pt - reasons and notes below fields
+    RS_FONT_SECTION,    // Segoe UI Semibold 12 pt - card titles
+    RS_FONT_TITLE,      // Segoe UI Semibold 20 pt - page titles (painted by the shell)
+    RS_FONT_MONO,       // Consolas 9 pt - paths, raw output
+    RS_FONT_COUNT
 };
-HFONT Am_Font(int font);
+HFONT Rs_Font(int font);
 
 // Colours (COLORREF) from the active palette: light (white cards on a
-// light grey background) or dark. The values are in am_shell.c (g_amPalettes).
+// light grey background) or dark. The values are in rs_shell.c (g_rsPalettes).
 // The macros read the palette on every call; a change of scheme at
 // run time (sidebar, automation "theme") updates everything that is read when
-// drawing. That is why AM_COL_* belongs in no static initialiser, in
+// drawing. That is why RS_COL_* belongs in no static initialiser, in
 // no case label and in no other constant expression. A colour that
 // a page keeps as a COLORREF is that of the old palette after a change
-// (Am_SetTextColor still maps it correctly, but a comparison with AM_COL_*
+// (Rs_SetTextColor still maps it correctly, but a comparison with RS_COL_*
 // no longer holds then).
-enum AmPalSlot {
-    AM_PAL_PAGE = 0,
-    AM_PAL_CARD,
-    AM_PAL_BORDER,
-    AM_PAL_TEXT,
-    AM_PAL_MUTED,
-    AM_PAL_ACCENT,       // orange, the "Build" button - the same in both palettes
-    AM_PAL_ACCENT_DK,
-    AM_PAL_OK,
-    AM_PAL_NOTE,
-    AM_PAL_WARNING,
-    AM_PAL_ERROR,
-    AM_PAL_SIDEBAR,
-    AM_PAL_COUNT
+enum RsPalSlot {
+    RS_PAL_PAGE = 0,
+    RS_PAL_CARD,
+    RS_PAL_BORDER,
+    RS_PAL_TEXT,
+    RS_PAL_MUTED,
+    RS_PAL_ACCENT,       // orange, the "Build" button - the same in both palettes
+    RS_PAL_ACCENT_DK,
+    RS_PAL_OK,
+    RS_PAL_NOTE,
+    RS_PAL_WARNING,
+    RS_PAL_ERROR,
+    RS_PAL_SIDEBAR,
+    RS_PAL_COUNT
 };
-struct AmPalette {
-    COLORREF c[AM_PAL_COUNT];
+struct RsPalette {
+    COLORREF c[RS_PAL_COUNT];
 };
-extern const struct AmPalette *g_amPal;   // am_shell.c; only the shell sets it
+extern const struct RsPalette *g_rsPal;   // rs_shell.c; only the shell sets it
 
-#define AM_COL_PAGE       (g_amPal->c[AM_PAL_PAGE])
-#define AM_COL_CARD       (g_amPal->c[AM_PAL_CARD])
-#define AM_COL_BORDER     (g_amPal->c[AM_PAL_BORDER])
-#define AM_COL_TEXT       (g_amPal->c[AM_PAL_TEXT])
-#define AM_COL_MUTED      (g_amPal->c[AM_PAL_MUTED])
-#define AM_COL_ACCENT     (g_amPal->c[AM_PAL_ACCENT])
-#define AM_COL_ACCENT_DK  (g_amPal->c[AM_PAL_ACCENT_DK])
-#define AM_COL_OK         (g_amPal->c[AM_PAL_OK])
-#define AM_COL_NOTE       (g_amPal->c[AM_PAL_NOTE])
-#define AM_COL_WARNING    (g_amPal->c[AM_PAL_WARNING])
-#define AM_COL_ERROR      (g_amPal->c[AM_PAL_ERROR])
-#define AM_COL_SIDEBAR    (g_amPal->c[AM_PAL_SIDEBAR])
+#define RS_COL_PAGE       (g_rsPal->c[RS_PAL_PAGE])
+#define RS_COL_CARD       (g_rsPal->c[RS_PAL_CARD])
+#define RS_COL_BORDER     (g_rsPal->c[RS_PAL_BORDER])
+#define RS_COL_TEXT       (g_rsPal->c[RS_PAL_TEXT])
+#define RS_COL_MUTED      (g_rsPal->c[RS_PAL_MUTED])
+#define RS_COL_ACCENT     (g_rsPal->c[RS_PAL_ACCENT])
+#define RS_COL_ACCENT_DK  (g_rsPal->c[RS_PAL_ACCENT_DK])
+#define RS_COL_OK         (g_rsPal->c[RS_PAL_OK])
+#define RS_COL_NOTE       (g_rsPal->c[RS_PAL_NOTE])
+#define RS_COL_WARNING    (g_rsPal->c[RS_PAL_WARNING])
+#define RS_COL_ERROR      (g_rsPal->c[RS_PAL_ERROR])
+#define RS_COL_SIDEBAR    (g_rsPal->c[RS_PAL_SIDEBAR])
 
-COLORREF Am_SeverityColor(int severity);
+COLORREF Rs_SeverityColor(int severity);
 
 // ---------------------------------------------------------------------------
 // Cards: white areas with a title that the shell paints onto the page window.
-// A page reports them in layout(): first Am_CardClear, then Am_CardAdd per card.
-// The title is at the top of the card; Am_CardInner returns the rectangle below it,
+// A page reports them in layout(): first Rs_CardClear, then Rs_CardAdd per card.
+// The title is at the top of the card; Rs_CardInner returns the rectangle below it,
 // where the controls belong.
 // ---------------------------------------------------------------------------
 
-void Am_CardClear(HWND page);
-void Am_CardAdd(HWND page, const RECT *outer, const wchar_t *title);
-RECT Am_CardInner(const RECT *outer, int hasTitle);
-int  Am_PageTop(void);    // first free y line below the page heading
+void Rs_CardClear(HWND page);
+void Rs_CardAdd(HWND page, const RECT *outer, const wchar_t *title);
+RECT Rs_CardInner(const RECT *outer, int hasTitle);
+int  Rs_PageTop(void);    // first free y line below the page heading
 
 // ---------------------------------------------------------------------------
-// Create controls - all with AM_FONT_BODY, visible, as a child of page.
+// Create controls - all with RS_FONT_BODY, visible, as a child of page.
 // id is the ID for WM_COMMAND. Position with MoveWindow in layout().
 // ---------------------------------------------------------------------------
 
-HWND Am_Label(HWND page, int id, const wchar_t *text, int font);
-HWND Am_Edit(HWND page, int id, const wchar_t *text, DWORD extraStyle);
-HWND Am_Button(HWND page, int id, const wchar_t *text);
-HWND Am_PrimaryButton(HWND page, int id, const wchar_t *text);  // filled, accent colour
-HWND Am_Check(HWND page, int id, const wchar_t *text);
-HWND Am_Combo(HWND page, int id);                               // CBS_DROPDOWNLIST
-HWND Am_ListBox(HWND page, int id, DWORD extraStyle);           // LBS_NOTIFY
-HWND Am_ListView(HWND page, int id, DWORD extraStyle);          // LVS_REPORT, full row
+HWND Rs_Label(HWND page, int id, const wchar_t *text, int font);
+HWND Rs_Edit(HWND page, int id, const wchar_t *text, DWORD extraStyle);
+HWND Rs_Button(HWND page, int id, const wchar_t *text);
+HWND Rs_PrimaryButton(HWND page, int id, const wchar_t *text);  // filled, accent colour
+HWND Rs_Check(HWND page, int id, const wchar_t *text);
+HWND Rs_Combo(HWND page, int id);                               // CBS_DROPDOWNLIST
+HWND Rs_ListBox(HWND page, int id, DWORD extraStyle);           // LBS_NOTIFY
+HWND Rs_ListView(HWND page, int id, DWORD extraStyle);          // LVS_REPORT, full row
 
-// Text colour of a label (default AM_COL_TEXT). Check boxes ignore it
-// in the light scheme. The shell remembers a palette colour (AM_COL_*) as a
+// Text colour of a label (default RS_COL_TEXT). Check boxes ignore it
+// in the light scheme. The shell remembers a palette colour (RS_COL_*) as a
 // slot, not as a value: after a change of scheme the label gets
 // the equivalent colour of the new palette.
-void Am_SetTextColor(HWND control, COLORREF color);
+void Rs_SetTextColor(HWND control, COLORREF color);
 
-// Convenience: set/read text. Am_GetText returns a buffer (Am_Free).
-void     Am_SetText(HWND control, const wchar_t *text);
-wchar_t *Am_GetText(HWND control);
+// Convenience: set/read text. Rs_GetText returns a buffer (Rs_Free).
+void     Rs_SetText(HWND control, const wchar_t *text);
+wchar_t *Rs_GetText(HWND control);
 
 // ---------------------------------------------------------------------------
 // Message list: own control with wrapping. Every line has a
 // coloured dot (severity), a text and optionally a grey second line.
 // ---------------------------------------------------------------------------
 
-HWND Am_MsgList(HWND page, int id);
-void Am_MsgListClear(HWND list);
-void Am_MsgListAdd(HWND list, int severity, const wchar_t *text, const wchar_t *detail);
-int  Am_MsgListCount(HWND list);
+HWND Rs_MsgList(HWND page, int id);
+void Rs_MsgListClear(HWND list);
+void Rs_MsgListAdd(HWND list, int severity, const wchar_t *text, const wchar_t *detail);
+int  Rs_MsgListCount(HWND list);
 // Writes all entries as "<severity>\t<text>\t<detail>" appended to f (UTF-8).
-void Am_MsgListWrite(HWND list, FILE *f);
+void Rs_MsgListWrite(HWND list, FILE *f);
 
 // ---------------------------------------------------------------------------
 // Child processes
@@ -323,106 +323,109 @@ void Am_MsgListWrite(HWND list, FILE *f);
 
 // Starts this exe as rldpack with the arguments args[0..argc-1] (without
 // "--rldpack"). Every output line (stdout and stderr, UTF-8 -> UTF-16, without
-// line end) arrives as AM_WM_JOB_LINE at notify, at the end AM_WM_JOB_DONE.
+// line end) arrives as RS_WM_JOB_LINE at notify, at the end RS_WM_JOB_DONE.
 // Return: job ID > 0, or 0 if the start failed.
-int  Am_RunRldpack(HWND notify, const wchar_t *const *args, int argc);
+int  Rs_RunRldpack(HWND notify, const wchar_t *const *args, int argc);
 
 // Starts another program (the game). cmdline is the whole command line
-// without the program name. capture = 0: no redirection, only AM_WM_JOB_DONE.
-int  Am_RunProcess(HWND notify, const wchar_t *exe, const wchar_t *cmdline,
+// without the program name. capture = 0: no redirection, only RS_WM_JOB_DONE.
+int  Rs_RunProcess(HWND notify, const wchar_t *exe, const wchar_t *cmdline,
                    const wchar_t *cwd, int capture);
 
-// Kills the process of a running job (Am_RunProcess, Am_RunRldpack)
-// hard; AM_WM_JOB_DONE arrives afterwards as usual. 1 = ended, 0 = no
+// Kills the process of a running job (Rs_RunProcess, Rs_RunRldpack)
+// hard; RS_WM_JOB_DONE arrives afterwards as usual. 1 = ended, 0 = no
 // running job with this ID.
-int  Am_KillJob(int id);
+int  Rs_KillJob(int id);
 
 // Splits a machine line "@kind\tf1\tf2..." IN PLACE. fields[0] is the kind
 // without '@'. Return: number of fields; 0 if the line is not a machine line.
-int  Am_SplitMachine(wchar_t *line, wchar_t **fields, int maxFields);
+int  Rs_SplitMachine(wchar_t *line, wchar_t **fields, int maxFields);
 
-// Appends an argument, correctly quoted, to a command line (for Am_RunProcess).
-void Am_AppendArg(wchar_t *cmdline, size_t cap, const wchar_t *arg);
+// Appends an argument, correctly quoted, to a command line (for Rs_RunProcess).
+void Rs_AppendArg(wchar_t *cmdline, size_t cap, const wchar_t *arg);
 
 // ---------------------------------------------------------------------------
 // Dialogs, paths, settings, memory
 // ---------------------------------------------------------------------------
 
 // Returns 1 if chosen; out gets the path.
-int Am_BrowseFolder(HWND owner, const wchar_t *title, const wchar_t *initial,
+int Rs_BrowseFolder(HWND owner, const wchar_t *title, const wchar_t *initial,
                     wchar_t *out, int outCap);
 // filter as for OPENFILENAME: L"Track containers\0*.rldtrack\0\0"
-int Am_BrowseOpenFile(HWND owner, const wchar_t *title, const wchar_t *filter,
+int Rs_BrowseOpenFile(HWND owner, const wchar_t *title, const wchar_t *filter,
                       const wchar_t *initial, wchar_t *out, int outCap);
-int Am_BrowseSaveFile(HWND owner, const wchar_t *title, const wchar_t *filter,
+int Rs_BrowseSaveFile(HWND owner, const wchar_t *title, const wchar_t *filter,
                       const wchar_t *defExt, const wchar_t *initial,
                       wchar_t *out, int outCap);
 
 // Yes/no question. In automation the answer is always yes, without a dialog.
-int  Am_AskYesNo(HWND owner, const wchar_t *title, const wchar_t *text);
+int  Rs_AskYesNo(HWND owner, const wchar_t *title, const wchar_t *text);
 // Question with count (2..4) buttons labelled buttons[0..]; returns the index of
 // the button pressed, the last one (meant as Cancel) when the dialog is closed.
 // In automation the answer is autoAnswer, without a dialog, logged.
-int  Am_AskChoice(HWND owner, const wchar_t *title, const wchar_t *text,
+int  Rs_AskChoice(HWND owner, const wchar_t *title, const wchar_t *text,
                   const wchar_t *const *buttons, int count, int autoAnswer);
 // Notice with OK. In automation only into the automation log.
-void Am_Tell(HWND owner, const wchar_t *title, const wchar_t *text);
-int  Am_Automating(void);
+void Rs_Tell(HWND owner, const wchar_t *title, const wchar_t *text);
+int  Rs_Automating(void);
 
-// Settings in %APPDATA%\CTR Reload\alphamaker.ini, section [alphamaker].
-void Am_ConfigGet(const wchar_t *key, wchar_t *out, int outCap);
-void Am_ConfigSet(const wchar_t *key, const wchar_t *value);
+// Settings in %APPDATA%\CTR Reload\reloadstudio.ini, section [reloadstudio].
+// If that file is missing at start (not in automation), all keys of the section
+// [alphamaker] in alphamaker.ini (the tool's earlier name) are copied over once;
+// the old file is only read, never changed or deleted.
+void Rs_ConfigGet(const wchar_t *key, wchar_t *out, int outCap);
+void Rs_ConfigSet(const wchar_t *key, const wchar_t *value);
 
 // Directory of this exe (without a trailing slash).
-const wchar_t *Am_ExeDir(void);
+const wchar_t *Rs_ExeDir(void);
 
 // Looks for ctr_native.exe: next to this exe, then up to three folders higher,
 // each time also in build-msvc-x86\Release. 1 = found.
-int Am_FindGameExe(wchar_t *out, int outCap);
+int Rs_FindGameExe(wchar_t *out, int outCap);
 
-// Test page (am_test.c): 1 if exactly this game program was checked there via
-// --version and comes from the same package as the Alpha-Maker.
+// Test page (rs_test.c): 1 if exactly this game program was checked there via
+// --version and comes from the same package as Reload Studio.
 // 0 = not checked, check still running, another program or wrong build.
-int Am_TestGameVerified(const wchar_t *exePath);
+int Rs_TestGameVerified(const wchar_t *exePath);
 // Why the entered game does not count there (yet), as a phrase for
 // "Preview skipped: ..."; NULL = it counts.
-const wchar_t *Am_TestGameProblem(void);
+const wchar_t *Rs_TestGameProblem(void);
 // The game the test page has just entered (full path), or "".
-const wchar_t *Am_TestGameExe(void);
+const wchar_t *Rs_TestGameExe(void);
 
-// New path for a game log (--log): in the folder %TEMP%\CTR Reload Alpha-Maker
+// New path for a game log (--log): in the folder %TEMP%\Reload Studio
 // the file "<kind> YYYY-MM-DD HH-MM-SS.log" in local time, taken -> " (2)", " (3)" ...
 // Creates the folder, deletes the old file "<kind>.log" and cleans up older
 // files of the same kind, so that at most keep remain including the new one.
 // Delete errors (file still open) do not count.
-void Am_RotatedLogPath(wchar_t *out, int cap, const wchar_t *kind, int keep);
+void Rs_RotatedLogPath(wchar_t *out, int cap, const wchar_t *kind, int keep);
 
 // Path helpers.
-int  Am_FileExists(const wchar_t *path);
-int  Am_DirExists(const wchar_t *path);
-void Am_PathJoin(wchar_t *out, int outCap, const wchar_t *dir, const wchar_t *name);
-const wchar_t *Am_PathName(const wchar_t *path);   // pointer to the file name
-void Am_PathDir(wchar_t *out, int outCap, const wchar_t *path);  // its folder
+int  Rs_FileExists(const wchar_t *path);
+int  Rs_DirExists(const wchar_t *path);
+void Rs_PathJoin(wchar_t *out, int outCap, const wchar_t *dir, const wchar_t *name);
+const wchar_t *Rs_PathName(const wchar_t *path);   // pointer to the file name
+void Rs_PathDir(wchar_t *out, int outCap, const wchar_t *path);  // its folder
 
 // Memory and conversion.
-void    *Am_Alloc(size_t bytes);         // zeroed; aborts on shortage
-void     Am_Free(void *p);
-wchar_t *Am_Dup(const wchar_t *s);
-wchar_t *Am_FromUtf8(const char *s, int bytes);   // bytes < 0: up to NUL
-char    *Am_ToUtf8(const wchar_t *s);
+void    *Rs_Alloc(size_t bytes);         // zeroed; aborts on shortage
+void     Rs_Free(void *p);
+wchar_t *Rs_Dup(const wchar_t *s);
+wchar_t *Rs_FromUtf8(const char *s, int bytes);   // bytes < 0: up to NUL
+char    *Rs_ToUtf8(const wchar_t *s);
 
 // Which content of a file was read: size, last write time and a hash
 // (64-bit FNV-1a) of its bytes. exists = 0: the file was not there.
-struct AmFileStamp {
+struct RsFileStamp {
     int exists;
     unsigned long long size;
     FILETIME writeTime;
     unsigned long long hash;
 };
 
-// What Am_ReadTextFileEx found besides the text.
-struct AmTextRead {
-    struct AmFileStamp stamp;
+// What Rs_ReadTextFileEx found besides the text.
+struct RsTextRead {
+    struct RsFileStamp stamp;
     DWORD error;        // Windows error if the file is there but could not be read, else 0
     int badUtf8;        // the bytes are not valid UTF-8; the text has U+FFFD for the bad ones
 };
@@ -430,23 +433,23 @@ struct AmTextRead {
 // Reads a text file (UTF-8, with or without BOM) as UTF-16. NULL if it is not
 // there or could not be read completely (read error, short read, over 16 MB) -
 // never a partial text. Invalid UTF-8 comes back with U+FFFD in its place.
-wchar_t *Am_ReadTextFile(const wchar_t *path);
+wchar_t *Rs_ReadTextFile(const wchar_t *path);
 // The same, and says in info (may be NULL) whether the file exists, why reading
 // failed, whether the UTF-8 was invalid, and the stamp of what was read.
-wchar_t *Am_ReadTextFileEx(const wchar_t *path, struct AmTextRead *info);
+wchar_t *Rs_ReadTextFileEx(const wchar_t *path, struct RsTextRead *info);
 // The stamp of the file as it is on disk now (reads it). 1 = known (also
 // "not there"), 0 = there but could not be read (then *out is unknown).
-int      Am_FileStampNow(const wchar_t *path, struct AmFileStamp *out);
+int      Rs_FileStampNow(const wchar_t *path, struct RsFileStamp *out);
 // 1 if both stamps describe the same content (or both "not there").
-int      Am_FileStampSame(const struct AmFileStamp *a, const struct AmFileStamp *b);
+int      Rs_FileStampSame(const struct RsFileStamp *a, const struct RsFileStamp *b);
 // Writes UTF-16 text as UTF-8 without BOM, line ends as passed. Atomically:
 // the bytes go to "<path>.tmp", are flushed to disk and only then replace the
 // file (ReplaceFileW, or MoveFileExW if it was not there). On failure the old
 // file is unchanged, the temp file is removed, and GetLastError() says why.
 // 1 = ok.
-int      Am_WriteTextFile(const wchar_t *path, const wchar_t *text);
+int      Rs_WriteTextFile(const wchar_t *path, const wchar_t *text);
 
 // Automation log: one line to the automation's stdout (--log <file>).
-void Am_AutoLog(const wchar_t *fmt, ...);
+void Rs_AutoLog(const wchar_t *fmt, ...);
 
 #endif

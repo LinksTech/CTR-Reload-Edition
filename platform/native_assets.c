@@ -1245,10 +1245,9 @@ const char *NativeTrack_WhyNotOffered(int index, int mode, struct NativeTrackRef
 			NativeTrack_RefusalLines(text, "NEEDS NEWER", "NEEDS A", "NEWER", "VERSION OF", "CTR RELOAD");
 			break;
 		case NATIVE_TRACK_REFUSAL_OLDER:
-			// Players pack with the Alpha-Maker, not with rldpack. "IN
-			// ALPHA-MAKER" would be 14 characters, so it takes two lines; the
-			// menu font has '-'.
-			NativeTrack_RefusalLines(text, "OLD FORMAT", "OLD FORMAT", "PACK AGAIN", "IN THE", "ALPHA-MAKER");
+			// Players pack with Reload Studio, not with rldpack. "IN
+			// RELOAD STUDIO" would be 16 characters, so it takes two lines.
+			NativeTrack_RefusalLines(text, "OLD FORMAT", "OLD FORMAT", "PACK AGAIN", "IN RELOAD", "STUDIO");
 			break;
 		case NATIVE_TRACK_REFUSAL_MEMORY:
 			NativeTrack_RefusalLines(text, "MEMORY INFO", "MEMORY INFO", "TOO LOW", "PACK AGAIN", NULL);
@@ -3311,7 +3310,7 @@ internal const char *NativeTrack_ReadAll(struct NativeTrackEntry *entry, struct 
 		if ((need.total > entry->memTotal) || (need.primBytes > entry->primBytes))
 		{
 			snprintf(entry->note, sizeof(entry->note),
-			         "META understates the memory need - the LEV needs %u bytes (draw %u), META says %u (draw %u); pack it again with the Alpha-Maker",
+			         "META understates the memory need - the LEV needs %u bytes (draw %u), META says %u (draw %u); pack it again with Reload Studio",
 			         need.total, need.primBytes, entry->memTotal, entry->primBytes);
 			error = entry->note;
 			read->memoryRefused = 1;

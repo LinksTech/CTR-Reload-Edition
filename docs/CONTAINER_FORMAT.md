@@ -92,7 +92,7 @@ DAMAGED = `RLD_REFUSAL_DAMAGED`. The texts are fixed.
 | 4 | the header can be read | DAMAGED | `the header cannot be read` |
 | 5 | the 8 magic bytes match the type | DAMAGED | `no RLDTRACK magic - the extension says nothing, the magic does` (`RLDCHAR` for a character) |
 | 6 | major > the type's major | NEEDS NEWER | `needs a newer version of CTR Reload - the container format is newer than this build` |
-| 7 | major < the type's major | OLD FORMAT | `old format - pack it again with the Alpha-Maker` |
+| 7 | major < the type's major | OLD FORMAT | `old format - pack it again with Reload Studio` |
 | 8 | no flag bit outside the known bits | NEEDS NEWER | `needs a newer version of CTR Reload - the container needs a feature this build does not know` |
 | 9 | reserved word 0x14 is 0 | DAMAGED | `a reserved header field is not zero` |
 | 10 | file_size equals the real size | DAMAGED | `file_size does not match the real size - truncated download` |

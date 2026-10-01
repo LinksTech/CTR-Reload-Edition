@@ -1,8 +1,8 @@
-// am_track.c - page "Track": build a track folder as .rldtrack
+// rs_track.c - page "Track": build a track folder as .rldtrack
 //
 // The page checks nothing itself. It starts rldpack make (with --check to
 // check, without it to build), reads its machine lines (protocol in
-// alphamaker.h) and shows them.
+// reloadstudio.h) and shows them.
 //
 // Flow: loading a folder is make --check without switches; rldpack then reports the
 // values from track.txt or its defaults. The page enters them into the fields
@@ -14,7 +14,7 @@
 // "Reverb" choice needs the full card width, that is why its
 // labels stand above the fields and the card is on the left.
 
-#include "alphamaker.h"
+#include "reloadstudio.h"
 #include <shellapi.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -254,7 +254,7 @@ static struct {
     COLORREF fileColor[TRACK_FILES], modeColor[TRACK_MODES], ambientColor, headColor;
 
     wchar_t loaded[TRACK_VAL];      // loaded folder, empty = none
-    int shown;                      // AM_WM_PAGE_SHOWN already seen
+    int shown;                      // RS_WM_PAGE_SHOWN already seen
     int applying;                   // fields are being set: trigger no check
     int timer;                      // check waits for the timer
     int jobId, jobKind;             // running job, 0 = none
@@ -354,18 +354,18 @@ static void Track_SizeText(wchar_t *out, int cap, long long bytes)
 
 static const wchar_t *Track_ColorName(COLORREF c)
 {
-    if (c == AM_COL_OK) return L"green";
-    if (c == AM_COL_ERROR) return L"red";
-    if (c == AM_COL_WARNING) return L"amber";
-    if (c == AM_COL_NOTE) return L"blue";
-    if (c == AM_COL_MUTED) return L"grey";
+    if (c == RS_COL_OK) return L"green";
+    if (c == RS_COL_ERROR) return L"red";
+    if (c == RS_COL_WARNING) return L"amber";
+    if (c == RS_COL_NOTE) return L"blue";
+    if (c == RS_COL_MUTED) return L"grey";
     return L"normal";
 }
 
 static void Track_SetLabel(HWND label, const wchar_t *text, COLORREF color, COLORREF *store)
 {
-    Am_SetText(label, text);
-    Am_SetTextColor(label, color);
+    Rs_SetText(label, text);
+    Rs_SetTextColor(label, color);
     if (store)
         *store = color;
 }
@@ -378,7 +378,7 @@ static void Track_Headline(const wchar_t *text, COLORREF color)
 // Text the message list shows as long as it is empty.
 static void Track_EmptyText(const wchar_t *text)
 {
-    Am_SetText(g_track.msgs, text);
+    Rs_SetText(g_track.msgs, text);
 }
 
 // "0x83,0x0" -> {0x83}: numbers decimal or 0x..., trailing zeros
@@ -587,10 +587,10 @@ static void Track_JobReset(void)
 {
     int i;
     for (i = 0; i < g_trackJob.msgCount; i++) {
-        Am_Free(g_trackJob.msgs[i].text);
-        Am_Free(g_trackJob.msgs[i].detail);
+        Rs_Free(g_trackJob.msgs[i].text);
+        Rs_Free(g_trackJob.msgs[i].detail);
     }
-    Am_Free(g_trackJob.msgs);
+    Rs_Free(g_trackJob.msgs);
     memset(&g_trackJob, 0, sizeof(g_trackJob));
     g_track.rawLen = 0;
     g_track.rawLines = 0;
@@ -603,16 +603,16 @@ static void Track_JobMsg(int severity, const wchar_t *text, const wchar_t *detai
     struct TrackJobData *j = &g_trackJob;
     if (j->msgCount == j->msgCap) {
         int cap = j->msgCap ? j->msgCap * 2 : 16;
-        struct TrackMsg *m = Am_Alloc((size_t)cap * sizeof(*m));
+        struct TrackMsg *m = Rs_Alloc((size_t)cap * sizeof(*m));
         if (j->msgCount)
             memcpy(m, j->msgs, (size_t)j->msgCount * sizeof(*m));
-        Am_Free(j->msgs);
+        Rs_Free(j->msgs);
         j->msgs = m;
         j->msgCap = cap;
     }
     j->msgs[j->msgCount].severity = severity;
-    j->msgs[j->msgCount].text = Am_Dup(text);
-    j->msgs[j->msgCount].detail = Am_Dup(detail);
+    j->msgs[j->msgCount].text = Rs_Dup(text);
+    j->msgs[j->msgCount].detail = Rs_Dup(detail);
     j->msgCount++;
 }
 
@@ -625,10 +625,10 @@ static void Track_RawAppend(const wchar_t *line)
         wchar_t *p;
         while (cap < need)
             cap *= 2;
-        p = Am_Alloc(cap * sizeof(wchar_t));
+        p = Rs_Alloc(cap * sizeof(wchar_t));
         if (g_track.rawLen)
             memcpy(p, g_track.rawText, g_track.rawLen * sizeof(wchar_t));
-        Am_Free(g_track.rawText);
+        Rs_Free(g_track.rawText);
         g_track.rawText = p;
         g_track.rawCap = cap;
     }
@@ -644,7 +644,7 @@ static void Track_RawAppend(const wchar_t *line)
 
 static void Track_RawRefresh(void)
 {
-    Am_SetText(g_track.raw, g_track.rawText ? g_track.rawText : L"");
+    Rs_SetText(g_track.raw, g_track.rawText ? g_track.rawText : L"");
 }
 
 // One line of the current run. Human lines and unknown kinds stay
@@ -653,7 +653,7 @@ static void Track_ParseLine(wchar_t *line)
 {
     struct TrackJobData *j = &g_trackJob;
     wchar_t *f[12];
-    int n = Am_SplitMachine(line, f, 12);
+    int n = Rs_SplitMachine(line, f, 12);
     const wchar_t *kind;
 
     if (n <= 0)
@@ -748,7 +748,7 @@ static void Track_ParseLine(wchar_t *line)
             text = detail;
             detail = L"";
         }
-        Track_JobMsg(Am_SeverityFromText(Track_Field(f, n, 1)), text, detail);
+        Track_JobMsg(Rs_SeverityFromText(Track_Field(f, n, 1)), text, detail);
     } else if (wcscmp(kind, L"result") == 0) {
         const wchar_t *bytes = Track_Field(f, n, 3);
         j->resultSeen = 1;
@@ -779,11 +779,11 @@ static void Track_ApplyMap(void)
     if (!map)
         return;
     if (wcscmp(map, L"fits") == 0)
-        Track_SetLabel(g_track.mapValue, L"yes", AM_COL_OK, &g_track.mapColor);
+        Track_SetLabel(g_track.mapValue, L"yes", RS_COL_OK, &g_track.mapColor);
     else if (wcscmp(map, L"scaled") == 0)
-        Track_SetLabel(g_track.mapValue, L"yes - too big for the menu, the game scales it down", AM_COL_OK, &g_track.mapColor);
+        Track_SetLabel(g_track.mapValue, L"yes - too big for the menu, the game scales it down", RS_COL_OK, &g_track.mapColor);
     else
-        Track_SetLabel(g_track.mapValue, L"no - the menu and the race show no map (see the note)", AM_COL_NOTE, &g_track.mapColor);
+        Track_SetLabel(g_track.mapValue, L"no - the menu and the race show no map (see the note)", RS_COL_NOTE, &g_track.mapColor);
 }
 
 // Row "Bot data" from @lev nav_paths, nav_points and
@@ -811,16 +811,16 @@ static void Track_ApplyBots(void)
             if (list[k] == L',')
                 list[k] = L'/';
         swprintf(t, 256, L"yes - %d nav paths (%ls points)", paths, list);
-        Track_SetLabel(g_track.botValue, t, AM_COL_OK, &g_track.botColor);
+        Track_SetLabel(g_track.botValue, t, RS_COL_OK, &g_track.botColor);
     } else if (paths > 0) {
         swprintf(t, 256, L"partly - %d nav paths, only %d of 8 start spots", paths, starts);
-        Track_SetLabel(g_track.botValue, t, AM_COL_WARNING, &g_track.botColor);
+        Track_SetLabel(g_track.botValue, t, RS_COL_WARNING, &g_track.botColor);
     } else {
         if (starts < 8)
             swprintf(t, 256, L"no - no nav paths, no bots; %d of 8 start spots", starts);
         else
             Track_Copy(t, 256, L"no - no nav paths, so no bots race");
-        Track_SetLabel(g_track.botValue, t, AM_COL_WARNING, &g_track.botColor);
+        Track_SetLabel(g_track.botValue, t, RS_COL_WARNING, &g_track.botColor);
     }
 }
 
@@ -832,21 +832,21 @@ static void Track_AdvSummary(void)
     int i;
     t[0] = 0;
     for (i = 0; i < TRACK_C_COUNT; i++) {
-        wchar_t *text = Am_GetText(g_track.combo[i]);
+        wchar_t *text = Rs_GetText(g_track.combo[i]);
         if (i)
             Track_Append(t, TRACK_VAL, L"  \x00b7  ");
         Track_Append(t, TRACK_VAL, g_trackComboLabels[i]);
         Track_Append(t, TRACK_VAL, L": ");
         Track_Append(t, TRACK_VAL, (text && text[0]) ? text : L"-");
-        Am_Free(text);
+        Rs_Free(text);
     }
-    Am_SetText(g_track.advSummary, t);
+    Rs_SetText(g_track.advSummary, t);
 }
 
 static void Track_AdvShow(void)
 {
     int i, show = g_track.advOpen ? SW_SHOW : SW_HIDE;
-    Am_SetText(g_track.advanced, g_track.advOpen ? L"Advanced  \x25be" : L"Advanced  \x25b8");
+    Rs_SetText(g_track.advanced, g_track.advOpen ? L"Advanced  \x25be" : L"Advanced  \x25b8");
     for (i = 0; i < TRACK_C_COUNT; i++) {
         ShowWindow(g_track.comboLabel[i], show);
         ShowWindow(g_track.advHelp[i], show);
@@ -867,13 +867,13 @@ static void Track_FileText(int k, wchar_t *out, int cap, COLORREF *color)
     const struct TrackFileInfo *fi = &g_trackJob.file[k];
     wchar_t size[32];
 
-    *color = AM_COL_TEXT;
+    *color = RS_COL_TEXT;
     size[0] = 0;
     if (fi->bytes >= 0)
         Track_SizeText(size, 32, fi->bytes);
     if (fi->extra || fi->count > 1) {
         swprintf(out, cap, L"%d files - keep only one: %ls", fi->count, fi->names);
-        *color = AM_COL_ERROR;
+        *color = RS_COL_ERROR;
     } else if (fi->count == 1) {
         if (size[0])
             swprintf(out, cap, L"%ls  (%ls)", fi->first, size);
@@ -881,22 +881,22 @@ static void Track_FileText(int k, wchar_t *out, int cap, COLORREF *color)
             Track_Copy(out, cap, fi->first);
         if (fi->unused) {
             Track_Append(out, cap, L" - not used, the music is switched off");
-            *color = AM_COL_MUTED;
+            *color = RS_COL_MUTED;
         }
     } else if (fi->missing) {
         if (k == TRACK_F_SCA) {
             Track_Copy(out, cap, L"none - the track keeps the music of its seat");
-            *color = AM_COL_MUTED;
+            *color = RS_COL_MUTED;
         } else if (k == TRACK_F_TXT) {
             Track_Copy(out, cap, L"none - values below come from the defaults");
-            *color = AM_COL_MUTED;
+            *color = RS_COL_MUTED;
         } else {
             Track_Copy(out, cap, L"missing - the folder needs exactly one");
-            *color = AM_COL_ERROR;
+            *color = RS_COL_ERROR;
         }
     } else {
         Track_Copy(out, cap, L"-");
-        *color = AM_COL_MUTED;
+        *color = RS_COL_MUTED;
     }
 }
 
@@ -932,13 +932,13 @@ static void Track_ApplyValues(void)
     int c;
 
     if (j->valueSeen[TRACK_V_NAME])
-        Am_SetText(g_track.name, j->value[TRACK_V_NAME]);
+        Rs_SetText(g_track.name, j->value[TRACK_V_NAME]);
     if (j->valueSeen[TRACK_V_AUTHOR])
-        Am_SetText(g_track.author, j->value[TRACK_V_AUTHOR]);
+        Rs_SetText(g_track.author, j->value[TRACK_V_AUTHOR]);
     if (j->valueSeen[TRACK_V_VERSION])
-        Am_SetText(g_track.version, j->value[TRACK_V_VERSION]);
+        Rs_SetText(g_track.version, j->value[TRACK_V_VERSION]);
     if (j->valueSeen[TRACK_V_OUT])
-        Am_SetText(g_track.out, j->value[TRACK_V_OUT]);
+        Rs_SetText(g_track.out, j->value[TRACK_V_OUT]);
     for (c = 0; c < TRACK_C_COUNT; c++)
         if (j->valueSeen[g_trackComboValues[c]])
             Track_ComboSelect(c, j->value[g_trackComboValues[c]], 1);
@@ -950,13 +950,13 @@ static void Track_ApplyValues(void)
     if (wcscmp(music, L"none") == 0) {
         Track_SetCheck(g_track.music, 0);
         EnableWindow(g_track.music, FALSE);
-        Am_SetText(g_track.music, L"No music file (.sca or .sndb) in the folder");
+        Rs_SetText(g_track.music, L"No music file (.sca or .sndb) in the folder");
     } else {
         if (sca[0])
             swprintf(text, MAX_PATH + 64, L"Use the music in the folder (%ls)", sca);
         else
             Track_Copy(text, MAX_PATH + 64, L"Use the music in the folder");
-        Am_SetText(g_track.music, text);
+        Rs_SetText(g_track.music, text);
         EnableWindow(g_track.music, TRUE);
         Track_SetCheck(g_track.music, wcscmp(music, L"off") != 0);
     }
@@ -978,15 +978,15 @@ static int Track_ApplyLev(void)
         EnableWindow(cb, FALSE);
         Track_SetLabel(g_track.ambientNote,
                        L"This track has no spot for an ambient sound, so none would play.",
-                       AM_COL_MUTED, &g_track.ambientColor);
+                       RS_COL_MUTED, &g_track.ambientColor);
     } else {
         EnableWindow(cb, TRUE);
-        Track_SetLabel(g_track.ambientNote, L"", AM_COL_MUTED, &g_track.ambientColor);
+        Track_SetLabel(g_track.ambientNote, L"", RS_COL_MUTED, &g_track.ambientColor);
     }
     return changed;
 }
 
-// TIME TRIAL and BATTLE: always grey in the Alpha-Maker, whatever
+// TIME TRIAL and BATTLE: always grey in Reload Studio, whatever
 // data the track has, and never in the container - neither through track.txt
 // nor through a switch from the front end: Track_MakeArgs only takes
 // free, ticked boxes. rldpack on the command line stays as it is.
@@ -1015,7 +1015,7 @@ static int Track_ApplyModes(void)
         const struct TrackModeInfo *m = &g_track.modeInfo[i];
         HWND box = g_track.mode[i];
         const wchar_t *note;
-        COLORREF color = AM_COL_MUTED;
+        COLORREF color = RS_COL_MUTED;
         int enable = 0;
 
         if (Track_ModeComingSoon(i)) {
@@ -1133,7 +1133,7 @@ static void Track_ShowView(void)
         Track_RawRefresh();
     ShowWindow(g_track.raw, g_track.showRaw ? SW_SHOW : SW_HIDE);
     ShowWindow(g_track.msgs, g_track.showRaw ? SW_HIDE : SW_SHOW);
-    Am_SetText(g_track.view, g_track.showRaw ? L"Show messages" : L"Show rldpack output");
+    Rs_SetText(g_track.view, g_track.showRaw ? L"Show messages" : L"Show rldpack output");
 }
 
 static void Track_Relayout(HWND page)
@@ -1161,14 +1161,14 @@ static void Track_AddMsgs(int severity)
     int i;
     for (i = 0; i < g_trackJob.msgCount; i++)
         if (g_trackJob.msgs[i].severity == severity)
-            Am_MsgListAdd(g_track.msgs, severity, g_trackJob.msgs[i].text, g_trackJob.msgs[i].detail);
+            Rs_MsgListAdd(g_track.msgs, severity, g_trackJob.msgs[i].text, g_trackJob.msgs[i].detail);
 }
 
 static void Track_AddAdjustments(void)
 {
     int i;
     for (i = 0; i < g_track.adjustCount; i++)
-        Am_MsgListAdd(g_track.msgs, AM_SEV_WARNING, g_track.adjust[i], NULL);
+        Rs_MsgListAdd(g_track.msgs, RS_SEV_WARNING, g_track.adjust[i], NULL);
 }
 
 // What rldpack could not report itself: no result, failure without a
@@ -1178,22 +1178,22 @@ static int Track_AddRunProblems(int exitCode, int ok)
     struct TrackJobData *j = &g_trackJob;
     wchar_t t[256];
 
-    if (j->protocolSeen && j->protocol != AM_PROTOCOL) {
-        swprintf(t, 256, L"rldpack reports in format %d, but this Alpha-Maker reads format %d.",
-                 j->protocol, AM_PROTOCOL);
-        Am_MsgListAdd(g_track.msgs, AM_SEV_WARNING, t,
-                      L"Some results may be missing. rldpack is built into this Alpha-Maker, so both should always "
+    if (j->protocolSeen && j->protocol != RS_PROTOCOL) {
+        swprintf(t, 256, L"rldpack reports in format %d, but this Reload Studio reads format %d.",
+                 j->protocol, RS_PROTOCOL);
+        Rs_MsgListAdd(g_track.msgs, RS_SEV_WARNING, t,
+                      L"Some results may be missing. rldpack is built into this Reload Studio, so both should always "
                       L"match - this build looks inconsistent.");
     }
     if (!j->resultSeen) {
         swprintf(t, 256, L"rldpack stopped without a result (exit code %d).", exitCode);
-        Am_MsgListAdd(g_track.msgs, AM_SEV_ERROR, t,
+        Rs_MsgListAdd(g_track.msgs, RS_SEV_ERROR, t,
                       L"Click \"Show rldpack output\" to see everything it printed.");
         return 1;
     }
-    if (!ok && Track_CountMsgs(AM_SEV_ERROR) == 0) {
+    if (!ok && Track_CountMsgs(RS_SEV_ERROR) == 0) {
         swprintf(t, 256, L"rldpack did not accept the track, but gave no reason (exit code %d).", exitCode);
-        Am_MsgListAdd(g_track.msgs, AM_SEV_ERROR, t,
+        Rs_MsgListAdd(g_track.msgs, RS_SEV_ERROR, t,
                       L"Click \"Show rldpack output\" to see everything it printed.");
         return 1;
     }
@@ -1209,46 +1209,46 @@ static void Track_ShowCheckResult(int exitCode)
 
     g_track.checked = ok;
     Track_Copy(g_track.checkedPath, TRACK_VAL, j->resultPath);
-    Am_MsgListClear(g_track.msgs);
+    Rs_MsgListClear(g_track.msgs);
     Track_AddAdjustments();
     errors = Track_AddRunProblems(exitCode, ok);
-    errors += Track_CountMsgs(AM_SEV_ERROR);
-    Track_AddMsgs(AM_SEV_ERROR);
-    Track_AddMsgs(AM_SEV_WARNING);
-    Track_AddMsgs(AM_SEV_NOTE);
-    Track_AddMsgs(AM_SEV_INFO);
-    Track_AddMsgs(AM_SEV_OK);
+    errors += Track_CountMsgs(RS_SEV_ERROR);
+    Track_AddMsgs(RS_SEV_ERROR);
+    Track_AddMsgs(RS_SEV_WARNING);
+    Track_AddMsgs(RS_SEV_NOTE);
+    Track_AddMsgs(RS_SEV_INFO);
+    Track_AddMsgs(RS_SEV_OK);
     if (j->musicSeen) {
         swprintf(t, 640, L"Music: %ls", j->musicText[0] ? j->musicText : j->musicState);
-        Am_MsgListAdd(g_track.msgs, AM_SEV_INFO, t, NULL);
+        Rs_MsgListAdd(g_track.msgs, RS_SEV_INFO, t, NULL);
     }
     Track_EmptyText(L"rldpack reported nothing.");
     if (ok) {
-        Track_Headline(L"Ready to build", AM_COL_OK);
+        Track_Headline(L"Ready to build", RS_COL_OK);
     } else {
         swprintf(t, 640, L"Cannot build yet - %d problem(s)", errors);
-        Track_Headline(t, AM_COL_ERROR);
+        Track_Headline(t, RS_COL_ERROR);
     }
     Track_UpdateButtons();
-    if (Am_Automating()) {
+    if (Rs_Automating()) {
         if (ok)
-            Am_AutoLog(L"  check: ready to build, %d warning(s), %d note(s)",
-                       Track_CountMsgs(AM_SEV_WARNING) + g_track.adjustCount, Track_CountMsgs(AM_SEV_NOTE));
+            Rs_AutoLog(L"  check: ready to build, %d warning(s), %d note(s)",
+                       Track_CountMsgs(RS_SEV_WARNING) + g_track.adjustCount, Track_CountMsgs(RS_SEV_NOTE));
         else
-            Am_AutoLog(L"  check: cannot build yet, %d problem(s)", errors);
+            Rs_AutoLog(L"  check: cannot build yet, %d problem(s)", errors);
     }
 }
 
 static void Track_StartFailed(const wchar_t *headline)
 {
-    Am_MsgListClear(g_track.msgs);
-    Am_MsgListAdd(g_track.msgs, AM_SEV_ERROR, L"The Alpha-Maker could not start rldpack.",
-                  L"rldpack runs as a second copy of the Alpha-Maker. Try again; if it keeps failing, "
+    Rs_MsgListClear(g_track.msgs);
+    Rs_MsgListAdd(g_track.msgs, RS_SEV_ERROR, L"Reload Studio could not start rldpack.",
+                  L"rldpack runs as a second copy of Reload Studio. Try again; if it keeps failing, "
                   L"check that no security program blocks it.");
-    Track_Headline(headline, AM_COL_ERROR);
+    Track_Headline(headline, RS_COL_ERROR);
     Track_UpdateButtons();
-    if (Am_Automating())
-        Am_AutoLog(L"  rldpack could not be started");
+    if (Rs_Automating())
+        Rs_AutoLog(L"  rldpack could not be started");
 }
 
 // ---------------------------------------------------------------------------
@@ -1258,7 +1258,7 @@ static void Track_StartFailed(const wchar_t *headline)
 struct TrackArgs {
     const wchar_t *v[TRACK_MAX_ARGS];
     int n;
-    wchar_t *own[8];        // texts from fields, free with Am_Free
+    wchar_t *own[8];        // texts from fields, free with Rs_Free
     int owned;
     wchar_t modes[80];
 };
@@ -1271,7 +1271,7 @@ static void Track_ArgsAdd(struct TrackArgs *a, const wchar_t *s)
 
 static const wchar_t *Track_ArgsText(struct TrackArgs *a, HWND edit)
 {
-    wchar_t *t = Am_GetText(edit);
+    wchar_t *t = Rs_GetText(edit);
     if (a->owned < 8)
         a->own[a->owned++] = t;
     return t;
@@ -1281,7 +1281,7 @@ static void Track_ArgsFree(struct TrackArgs *a)
 {
     int i;
     for (i = 0; i < a->owned; i++)
-        Am_Free(a->own[i]);
+        Rs_Free(a->own[i]);
     a->owned = 0;
 }
 
@@ -1336,10 +1336,10 @@ static int Track_MakeArgs(struct TrackArgs *a, int check, const wchar_t *out)
         Track_ArgsAdd(a, L"--no-music");
     if (!out) {
         // as for the build: without quotation marks and spaces at the edges
-        wchar_t *text = Am_GetText(g_track.out);
-        wchar_t *clean = Am_Alloc(TRACK_VAL * sizeof(wchar_t));
+        wchar_t *text = Rs_GetText(g_track.out);
+        wchar_t *clean = Rs_Alloc(TRACK_VAL * sizeof(wchar_t));
         Track_CleanPath(clean, TRACK_VAL, text);
-        Am_Free(text);
+        Rs_Free(text);
         if (a->owned < 8)
             a->own[a->owned++] = clean;
         out = clean;
@@ -1355,7 +1355,7 @@ static int Track_StartJob(HWND page, int kind, const wchar_t *const *args, int a
 {
     Track_JobReset();
     g_track.jobKind = kind;
-    g_track.jobId = Am_RunRldpack(page, args, argc);
+    g_track.jobId = Rs_RunRldpack(page, args, argc);
     if (!g_track.jobId)
         g_track.jobKind = TRACK_JOB_NONE;
     Track_UpdateButtons();
@@ -1378,24 +1378,24 @@ static void Track_ResetState(void)
     g_track.builtBytes = 0;
     g_track.builtSha[0] = 0;
     for (i = 0; i < TRACK_FILES; i++)
-        Track_SetLabel(g_track.fileValue[i], L"-", AM_COL_MUTED, &g_track.fileColor[i]);
-    Track_SetLabel(g_track.mapValue, L"-", AM_COL_MUTED, &g_track.mapColor);
-    Track_SetLabel(g_track.botValue, L"-", AM_COL_MUTED, &g_track.botColor);
-    Am_SetText(g_track.name, L"");
-    Am_SetText(g_track.author, L"");
-    Am_SetText(g_track.version, L"");
-    Am_SetText(g_track.out, L"");
+        Track_SetLabel(g_track.fileValue[i], L"-", RS_COL_MUTED, &g_track.fileColor[i]);
+    Track_SetLabel(g_track.mapValue, L"-", RS_COL_MUTED, &g_track.mapColor);
+    Track_SetLabel(g_track.botValue, L"-", RS_COL_MUTED, &g_track.botColor);
+    Rs_SetText(g_track.name, L"");
+    Rs_SetText(g_track.author, L"");
+    Rs_SetText(g_track.version, L"");
+    Rs_SetText(g_track.out, L"");
     for (i = 0; i < TRACK_C_COUNT; i++) {
         Track_FillCombo(i);
         EnableWindow(g_track.combo[i], TRUE);
     }
-    Track_SetLabel(g_track.ambientNote, L"", AM_COL_MUTED, &g_track.ambientColor);
+    Track_SetLabel(g_track.ambientNote, L"", RS_COL_MUTED, &g_track.ambientColor);
     Track_SetCheck(g_track.music, 0);
     EnableWindow(g_track.music, FALSE);
-    Am_SetText(g_track.music, L"Use the music in the folder");
+    Rs_SetText(g_track.music, L"Use the music in the folder");
     for (i = 0; i < TRACK_MODES; i++)
         Track_SetCheck(g_track.mode[i], 0);
-    Am_MsgListClear(g_track.msgs);
+    Rs_MsgListClear(g_track.msgs);
     Track_JobReset();
     if (g_track.showRaw)
         Track_RawRefresh();
@@ -1417,25 +1417,25 @@ static int Track_Load(HWND page, const wchar_t *folder)
     g_track.jobKind = TRACK_JOB_NONE;
     Track_Copy(g_track.loaded, TRACK_VAL, clean);
     Track_ResetState();
-    current = Am_GetText(g_track.folder);
+    current = Rs_GetText(g_track.folder);
     if (wcscmp(current, clean) != 0)
-        Am_SetText(g_track.folder, clean);
-    Am_Free(current);
+        Rs_SetText(g_track.folder, clean);
+    Rs_Free(current);
 
     if (!clean[0]) {
-        Track_Headline(L"Choose a track folder to start", AM_COL_MUTED);
+        Track_Headline(L"Choose a track folder to start", RS_COL_MUTED);
         Track_EmptyText(L"Choose a track folder. What rldpack finds shows up here.");
         Track_ApplyModes();
         Track_UpdateButtons();
         Track_Relayout(page);
         return 0;
     }
-    Am_ConfigSet(L"track.folder", clean);
+    Rs_ConfigSet(L"track.folder", clean);
     args[0] = L"make";
     args[1] = clean;
     args[2] = L"--machine";
     args[3] = L"--check";
-    Track_Headline(L"Reading the folder...", AM_COL_MUTED);
+    Track_Headline(L"Reading the folder...", RS_COL_MUTED);
     Track_EmptyText(L"rldpack is reading the folder...");
     if (!Track_StartJob(page, TRACK_JOB_LOAD, args, 4)) {
         Track_ApplyModes();
@@ -1466,17 +1466,17 @@ static int Track_Check(HWND page)
     g_track.checked = 0;
     if (!Track_MakeArgs(&a, 1, NULL)) {
         Track_ArgsFree(&a);
-        Am_MsgListClear(g_track.msgs);
+        Rs_MsgListClear(g_track.msgs);
         Track_AddAdjustments();
-        Am_MsgListAdd(g_track.msgs, AM_SEV_ERROR, L"Tick at least one mode.",
+        Rs_MsgListAdd(g_track.msgs, RS_SEV_ERROR, L"Tick at least one mode.",
                       L"The Modes card shows which modes this track has the data for.");
-        Track_Headline(L"Cannot build yet - 1 problem(s)", AM_COL_ERROR);
+        Track_Headline(L"Cannot build yet - 1 problem(s)", RS_COL_ERROR);
         Track_UpdateButtons();
-        if (Am_Automating())
-            Am_AutoLog(L"  check: cannot build yet, 1 problem(s) - no mode is ticked");
+        if (Rs_Automating())
+            Rs_AutoLog(L"  check: cannot build yet, 1 problem(s) - no mode is ticked");
         return 0;
     }
-    Track_Headline(L"Checking...", AM_COL_MUTED);
+    Track_Headline(L"Checking...", RS_COL_MUTED);
     started = Track_StartJob(page, TRACK_JOB_CHECK, a.v, a.n) != 0;
     Track_ArgsFree(&a);
     if (!started) {
@@ -1496,20 +1496,20 @@ static int Track_Build(HWND page)
 
     if (!Track_CanBuild())
         return -1;
-    text = Am_GetText(g_track.out);
+    text = Rs_GetText(g_track.out);
     Track_CleanPath(path, TRACK_VAL, text[0] ? text : g_track.checkedPath);
-    Am_Free(text);
-    if (path[0] && Am_FileExists(path)) {
+    Rs_Free(text);
+    if (path[0] && Rs_FileExists(path)) {
         wchar_t question[TRACK_VAL + 64];
         swprintf(question, TRACK_VAL + 64, L"%ls exists. Replace it?", path);
-        if (!Am_AskYesNo(Am_MainWindow(), L"Replace container?", question))
+        if (!Rs_AskYesNo(Rs_MainWindow(), L"Replace container?", question))
             return 0;
     }
     if (!Track_MakeArgs(&a, 0, path[0] ? path : NULL)) {
         Track_ArgsFree(&a);
         return -1;
     }
-    Track_Headline(L"Building...", AM_COL_MUTED);
+    Track_Headline(L"Building...", RS_COL_MUTED);
     started = Track_StartJob(page, TRACK_JOB_BUILD, a.v, a.n) != 0;
     Track_ArgsFree(&a);
     if (!started) {
@@ -1539,8 +1539,8 @@ static void Track_CheckDone(HWND page, int exitCode, int wasLoad)
     int firstModes = !g_track.modesKnown && j->anyMode;
     int again;
 
-    if (wasLoad && Am_Automating())
-        Am_AutoLog(L"  folder: lev %ls, vrm %ls, sca %ls, track.txt %ls",
+    if (wasLoad && Rs_Automating())
+        Rs_AutoLog(L"  folder: lev %ls, vrm %ls, sca %ls, track.txt %ls",
                    Track_FileWord(TRACK_F_LEV), Track_FileWord(TRACK_F_VRM),
                    Track_FileWord(TRACK_F_SCA), Track_FileWord(TRACK_F_TXT));
     g_track.applying = 1;
@@ -1568,36 +1568,36 @@ static void Track_BuildDone(HWND page, int exitCode)
     wchar_t detail[128];
     wchar_t size[32];
 
-    Am_MsgListClear(g_track.msgs);
+    Rs_MsgListClear(g_track.msgs);
     Track_EmptyText(L"rldpack reported nothing.");
     if (ok) {
         Track_Copy(g_track.built, TRACK_VAL, j->resultPath);
         g_track.builtBytes = j->resultBytes;
         Track_Copy(g_track.builtSha, 80, j->resultSha);
         Track_SizeText(size, 32, j->resultBytes < 0 ? 0 : j->resultBytes);
-        swprintf(text, TRACK_VAL + 64, L"Container built: %ls (%ls)", Am_PathName(g_track.built), size);
-        Track_Headline(text, AM_COL_OK);
+        swprintf(text, TRACK_VAL + 64, L"Container built: %ls (%ls)", Rs_PathName(g_track.built), size);
+        Track_Headline(text, RS_COL_OK);
         swprintf(text, TRACK_VAL + 64, L"Built %ls", g_track.built);
         swprintf(detail, 128, L"SHA-256 %ls", g_track.builtSha);
-        Am_MsgListAdd(g_track.msgs, AM_SEV_OK, text, detail);
+        Rs_MsgListAdd(g_track.msgs, RS_SEV_OK, text, detail);
         Track_AddRunProblems(exitCode, 1);
-        Track_AddMsgs(AM_SEV_WARNING);
-        Track_AddMsgs(AM_SEV_NOTE);
-        if (Am_Automating())
-            Am_AutoLog(L"  build: ok %ls %lld bytes", g_track.built, g_track.builtBytes);
+        Track_AddMsgs(RS_SEV_WARNING);
+        Track_AddMsgs(RS_SEV_NOTE);
+        if (Rs_Automating())
+            Rs_AutoLog(L"  build: ok %ls %lld bytes", g_track.built, g_track.builtBytes);
     } else {
         int errors;
         g_track.checked = 0;
         g_track.built[0] = 0;
         errors = Track_AddRunProblems(exitCode, 0);
-        errors += Track_CountMsgs(AM_SEV_ERROR);
-        Track_AddMsgs(AM_SEV_ERROR);
-        Track_AddMsgs(AM_SEV_WARNING);
-        Track_AddMsgs(AM_SEV_NOTE);
+        errors += Track_CountMsgs(RS_SEV_ERROR);
+        Track_AddMsgs(RS_SEV_ERROR);
+        Track_AddMsgs(RS_SEV_WARNING);
+        Track_AddMsgs(RS_SEV_NOTE);
         swprintf(text, TRACK_VAL + 64, L"Not built - %d problem(s)", errors);
-        Track_Headline(text, AM_COL_ERROR);
-        if (Am_Automating())
-            Am_AutoLog(L"  build: failed, %d error(s)", errors);
+        Track_Headline(text, RS_COL_ERROR);
+        if (Rs_Automating())
+            Rs_AutoLog(L"  build: failed, %d error(s)", errors);
     }
     Track_Relayout(page);       // show or hide "Test in game" and "Show in folder"
     // Record the preview right after. jobId is already 0 here
@@ -1620,17 +1620,17 @@ static int Track_FindBase(const wchar_t *exe, wchar_t *out, int cap)
     wchar_t probe[TRACK_VAL];
     int i;
 
-    Am_PathDir(dir, TRACK_VAL, exe);
+    Rs_PathDir(dir, TRACK_VAL, exe);
     for (i = 0; i < 3 && dir[0]; i++) {
-        Am_PathJoin(assets, TRACK_VAL, dir, L"assets");
-        Am_PathJoin(probe, TRACK_VAL, assets, L"BIGFILE.BIG");
-        if (!Am_FileExists(probe))
-            Am_PathJoin(probe, TRACK_VAL, assets, L"ctr-u.bin");
-        if (Am_FileExists(probe)) {
+        Rs_PathJoin(assets, TRACK_VAL, dir, L"assets");
+        Rs_PathJoin(probe, TRACK_VAL, assets, L"BIGFILE.BIG");
+        if (!Rs_FileExists(probe))
+            Rs_PathJoin(probe, TRACK_VAL, assets, L"ctr-u.bin");
+        if (Rs_FileExists(probe)) {
             Track_Copy(out, cap, dir);
             return 1;
         }
-        Am_PathDir(up, TRACK_VAL, dir);
+        Rs_PathDir(up, TRACK_VAL, dir);
         if (wcscmp(up, dir) == 0)
             break;
         Track_Copy(dir, TRACK_VAL, up);
@@ -1640,30 +1640,30 @@ static int Track_FindBase(const wchar_t *exe, wchar_t *out, int cap)
 }
 
 // The game program as on the test page: the one chosen there (test.exe),
-// otherwise what Am_FindGameExe finds. 1 = found.
+// otherwise what Rs_FindGameExe finds. 1 = found.
 static int Track_GameExe(wchar_t *out, int cap)
 {
     wchar_t cfg[TRACK_VAL];
-    const wchar_t *page = Am_TestGameExe();
+    const wchar_t *page = Rs_TestGameExe();
 
     // First the game of the page Test - the same one it checked.
-    if (page && page[0] && Am_FileExists(page)) {
+    if (page && page[0] && Rs_FileExists(page)) {
         Track_Copy(out, cap, page);
         return 1;
     }
-    Am_ConfigGet(L"test.exe", cfg, TRACK_VAL);
-    if (cfg[0] && Am_FileExists(cfg)) {
+    Rs_ConfigGet(L"test.exe", cfg, TRACK_VAL);
+    if (cfg[0] && Rs_FileExists(cfg)) {
         Track_Copy(out, cap, cfg);
         return 1;
     }
-    return Am_FindGameExe(out, cap);
+    return Rs_FindGameExe(out, cap);
 }
 
 // Like Test_MakeLogPath, its own kind: a test run can run alongside. Every
 // preview gets its own log, the last five are kept.
 static void Track_PreviewLogPath(wchar_t *out, int cap)
 {
-    Am_RotatedLogPath(out, cap, L"game-preview", 5);
+    Rs_RotatedLogPath(out, cap, L"game-preview", 5);
 }
 
 // The preview did not work. Right after the build (previewAfterBuild) the
@@ -1681,13 +1681,13 @@ static void Track_PreviewFailed(const wchar_t *reason, const wchar_t *detail)
     swprintf(text, TRACK_VAL + 64, L"Preview failed: %ls", reason);
     if (soft) {
         swprintf(head, TRACK_VAL + 96, L"Container built - preview failed: %ls", reason);
-        Track_Headline(head, AM_COL_WARNING);
+        Track_Headline(head, RS_COL_WARNING);
     } else {
-        Track_Headline(text, AM_COL_ERROR);
+        Track_Headline(text, RS_COL_ERROR);
     }
-    Am_MsgListAdd(g_track.msgs, soft ? AM_SEV_WARNING : AM_SEV_ERROR, text, detail);
-    if (Am_Automating())
-        Am_AutoLog(L"  preview: failed - %ls", reason);
+    Rs_MsgListAdd(g_track.msgs, soft ? RS_SEV_WARNING : RS_SEV_ERROR, text, detail);
+    if (Rs_Automating())
+        Rs_AutoLog(L"  preview: failed - %ls", reason);
 }
 
 // Right after the build something is missing for the preview (game not checked,
@@ -1701,12 +1701,12 @@ static void Track_PreviewSkipped(const wchar_t *reason, const wchar_t *detail)
     Track_Copy(g_track.previewReason, TRACK_VAL, reason);
     g_track.previewResult = TRACK_PREVIEW_SKIPPED;
     Track_SizeText(size, 32, g_track.builtBytes < 0 ? 0 : g_track.builtBytes);
-    swprintf(text, TRACK_VAL + 64, L"Container built: %ls (%ls) - preview skipped", Am_PathName(g_track.built), size);
-    Track_Headline(text, AM_COL_WARNING);
+    swprintf(text, TRACK_VAL + 64, L"Container built: %ls (%ls) - preview skipped", Rs_PathName(g_track.built), size);
+    Track_Headline(text, RS_COL_WARNING);
     swprintf(text, TRACK_VAL + 64, L"Preview skipped: %ls", reason);
-    Am_MsgListAdd(g_track.msgs, AM_SEV_WARNING, text, detail);
-    if (Am_Automating())
-        Am_AutoLog(L"  preview: skipped - %ls", reason);
+    Rs_MsgListAdd(g_track.msgs, RS_SEV_WARNING, text, detail);
+    if (Rs_Automating())
+        Rs_AutoLog(L"  preview: skipped - %ls", reason);
 }
 
 // Preview not started at all: skipped after the build (skipDetail, NULL =
@@ -1742,14 +1742,14 @@ static int Track_Preview(HWND page, int afterBuild)
     // If a job is already running (rldpack or a preview), its display
     // stays; that only affects automation.
     if (g_track.jobId) {
-        if (Am_Automating())
-            Am_AutoLog(L"  preview: not started - rldpack or the game is still running");
+        if (Rs_Automating())
+            Rs_AutoLog(L"  preview: not started - rldpack or the game is still running");
         return 0;
     }
     g_track.previewAfterBuild = afterBuild;
     g_track.previewKilled = 0;
     if (!afterBuild) {
-        Am_MsgListClear(g_track.msgs);
+        Rs_MsgListClear(g_track.msgs);
         Track_EmptyText(L"The game reported nothing.");
     }
     g_track.previewResult = TRACK_PREVIEW_NONE;
@@ -1773,7 +1773,7 @@ static int Track_Preview(HWND page, int afterBuild)
     len = GetFullPathNameW(g_track.built, TRACK_VAL, full, NULL);
     if (len == 0 || len >= TRACK_VAL)
         Track_Copy(full, TRACK_VAL, g_track.built);
-    if (!Am_FileExists(full)) {
+    if (!Rs_FileExists(full)) {
         Track_PreviewNotStarted(L"the container is not there any more.", full, NULL);
         return 0;
     }
@@ -1785,53 +1785,53 @@ static int Track_Preview(HWND page, int afterBuild)
     }
     // Only a game from the same package: the page Test asks --version and
     // compares the build ID; its result applies here, an own question does not.
-    // The reason is named by the page Test (Am_TestGameProblem).
-    if (!Am_TestGameVerified(exe)) {
+    // The reason is named by the page Test (Rs_TestGameProblem).
+    if (!Rs_TestGameVerified(exe)) {
         wchar_t why[TRACK_VAL + 160];
         const wchar_t *reason = L"check the game on the Test page first.";
-        if (afterBuild && Am_TestGameProblem())
-            reason = Am_TestGameProblem();
+        if (afterBuild && Rs_TestGameProblem())
+            reason = Rs_TestGameProblem();
         swprintf(why, TRACK_VAL + 160,
                  L"The Test page checks that the game comes from the same package as this "
-                 L"Alpha-Maker. Game program: %ls", exe);
+                 L"Reload Studio. Game program: %ls", exe);
         Track_PreviewNotStarted(reason, why, L"Choose and check the game on the Test page, then build again.");
         return 0;
     }
     if (!Track_FindBase(exe, base, TRACK_VAL)) {
-        Track_PreviewNotStarted(L"CTR Reload has no game data yet.", AM_TEXT_NO_GAME_DATA, NULL);
+        Track_PreviewNotStarted(L"CTR Reload has no game data yet.", RS_TEXT_NO_GAME_DATA, NULL);
         return 0;
     }
-    Am_PathDir(dir, TRACK_VAL, full);
+    Rs_PathDir(dir, TRACK_VAL, full);
     // File name in the spelling on disk: the game compares with strcmp.
     h = FindFirstFileW(full, &fd);
     if (h != INVALID_HANDLE_VALUE) {
         Track_Copy(name, TRACK_VAL, fd.cFileName);
         FindClose(h);
     } else {
-        Track_Copy(name, TRACK_VAL, Am_PathName(full));
+        Track_Copy(name, TRACK_VAL, Rs_PathName(full));
     }
     Track_PreviewLogPath(g_track.previewLog, TRACK_VAL);
 
-    cmd = Am_Alloc(TRACK_CMD_CAP * sizeof(wchar_t));
-    Am_AppendArg(cmd, TRACK_CMD_CAP, L"--dev");
-    Am_AppendArg(cmd, TRACK_CMD_CAP, L"--deterministic");
-    Am_AppendArg(cmd, TRACK_CMD_CAP, L"--settings-defaults");
-    Am_AppendArg(cmd, TRACK_CMD_CAP, L"--windowed");
-    Am_AppendArg(cmd, TRACK_CMD_CAP, L"1280x540");
-    Am_AppendArg(cmd, TRACK_CMD_CAP, L"--aspect");
-    Am_AppendArg(cmd, TRACK_CMD_CAP, L"43:18");
-    Am_AppendArg(cmd, TRACK_CMD_CAP, L"--tracks-dir");
-    Am_AppendArg(cmd, TRACK_CMD_CAP, dir);
-    Am_AppendArg(cmd, TRACK_CMD_CAP, L"--autoload-track");
-    Am_AppendArg(cmd, TRACK_CMD_CAP, name);
-    Am_AppendArg(cmd, TRACK_CMD_CAP, L"--record-preview");
-    Am_AppendArg(cmd, TRACK_CMD_CAP, L"--log");
-    Am_AppendArg(cmd, TRACK_CMD_CAP, g_track.previewLog);
+    cmd = Rs_Alloc(TRACK_CMD_CAP * sizeof(wchar_t));
+    Rs_AppendArg(cmd, TRACK_CMD_CAP, L"--dev");
+    Rs_AppendArg(cmd, TRACK_CMD_CAP, L"--deterministic");
+    Rs_AppendArg(cmd, TRACK_CMD_CAP, L"--settings-defaults");
+    Rs_AppendArg(cmd, TRACK_CMD_CAP, L"--windowed");
+    Rs_AppendArg(cmd, TRACK_CMD_CAP, L"1280x540");
+    Rs_AppendArg(cmd, TRACK_CMD_CAP, L"--aspect");
+    Rs_AppendArg(cmd, TRACK_CMD_CAP, L"43:18");
+    Rs_AppendArg(cmd, TRACK_CMD_CAP, L"--tracks-dir");
+    Rs_AppendArg(cmd, TRACK_CMD_CAP, dir);
+    Rs_AppendArg(cmd, TRACK_CMD_CAP, L"--autoload-track");
+    Rs_AppendArg(cmd, TRACK_CMD_CAP, name);
+    Rs_AppendArg(cmd, TRACK_CMD_CAP, L"--record-preview");
+    Rs_AppendArg(cmd, TRACK_CMD_CAP, L"--log");
+    Rs_AppendArg(cmd, TRACK_CMD_CAP, g_track.previewLog);
 
     // "<exe>" <command line> for the messages, like Test_CmdText
     cap = wcslen(exe) * 2 + wcslen(cmd) + 8;
-    shown = Am_Alloc(cap * sizeof(wchar_t));
-    Am_AppendArg(shown, cap, exe);
+    shown = Rs_Alloc(cap * sizeof(wchar_t));
+    Rs_AppendArg(shown, cap, exe);
     n = wcslen(shown);
     shown[n] = L' ';
     wcscpy(shown + n + 1, cmd);
@@ -1850,7 +1850,7 @@ static int Track_Preview(HWND page, int afterBuild)
     Track_RawAppend(shown);
 
     g_track.jobKind = TRACK_JOB_PREVIEW;
-    g_track.jobId = Am_RunProcess(page, exe, cmd, base, 1);
+    g_track.jobId = Rs_RunProcess(page, exe, cmd, base, 1);
     if (!g_track.jobId) {
         g_track.jobKind = TRACK_JOB_NONE;
         Track_PreviewFailed(L"the game could not be started.", shown);
@@ -1861,16 +1861,16 @@ static int Track_Preview(HWND page, int afterBuild)
         Track_Headline(afterBuild
                            ? L"Container built - recording the preview in the background (about 20 s)..."
                            : L"Recording the preview in the background (about 20 s)...",
-                       AM_COL_MUTED);
-        Am_MsgListAdd(g_track.msgs, AM_SEV_INFO,
+                       RS_COL_MUTED);
+        Rs_MsgListAdd(g_track.msgs, RS_SEV_INFO,
                       L"The game drives the track with the AI as an invisible driver; no window opens.",
                       L"It records one lap and ends by itself; the result shows up here.");
-        Am_MsgListAdd(g_track.msgs, AM_SEV_INFO, L"The game was started with this command line:", shown);
-        if (Am_Automating())
-            Am_AutoLog(L"  preview: game started for %ls", name);
+        Rs_MsgListAdd(g_track.msgs, RS_SEV_INFO, L"The game was started with this command line:", shown);
+        if (Rs_Automating())
+            Rs_AutoLog(L"  preview: game started for %ls", name);
     }
-    Am_Free(cmd);
-    Am_Free(shown);
+    Rs_Free(cmd);
+    Rs_Free(shown);
     if (g_track.showRaw)
         Track_RawRefresh();
     Track_UpdateButtons();
@@ -1961,24 +1961,24 @@ static void Track_PreviewDone(HWND page, int exitCode)
     KillTimer(page, TRACK_TIMER_PREVIEW);
     // After the build its messages are still there; the result is added.
     if (!g_track.previewAfterBuild)
-        Am_MsgListClear(g_track.msgs);
+        Rs_MsgListClear(g_track.msgs);
     if (g_track.previewResult == TRACK_PREVIEW_WRITTEN) {
         if (g_track.previewAfterBuild) {
-            swprintf(text, TRACK_VAL + 64, L"Container built, preview written: %ls", Am_PathName(g_track.previewPath));
-            Track_Headline(text, AM_COL_OK);
+            swprintf(text, TRACK_VAL + 64, L"Container built, preview written: %ls", Rs_PathName(g_track.previewPath));
+            Track_Headline(text, RS_COL_OK);
         }
         swprintf(text, TRACK_VAL + 64, L"Preview written: %ls", g_track.previewPath);
         if (!g_track.previewAfterBuild)
-            Track_Headline(text, AM_COL_OK);
+            Track_Headline(text, RS_COL_OK);
         if (g_track.previewFrames >= 0)
             swprintf(detail, TRACK_VAL + 160,
                      L"%d frames. Copy it to tracks\\vorschau\\ together with the container.",
                      g_track.previewFrames);
         else
             Track_Copy(detail, TRACK_VAL + 160, L"Copy it to tracks\\vorschau\\ together with the container.");
-        Am_MsgListAdd(g_track.msgs, AM_SEV_OK, text, detail);
-        if (Am_Automating())
-            Am_AutoLog(L"  preview: written %ls (%d frames)", g_track.previewPath, g_track.previewFrames);
+        Rs_MsgListAdd(g_track.msgs, RS_SEV_OK, text, detail);
+        if (Rs_Automating())
+            Rs_AutoLog(L"  preview: written %ls (%d frames)", g_track.previewPath, g_track.previewFrames);
     } else if (g_track.previewResult == TRACK_PREVIEW_FAILED) {
         if (g_track.previewHint[0])
             swprintf(detail, TRACK_VAL + 160, L"The game did not load the track: %ls. Game log: %ls",
@@ -2074,11 +2074,11 @@ static void Track_OpenTest(void)
 
     if (!g_track.built[0])
         return;
-    Am_ShowPage(AM_PAGE_TEST);
-    test = Am_PageWindow(AM_PAGE_TEST);
-    path = Am_Dup(g_track.built);
-    if (!test || !PostMessageW(test, AM_WM_OPEN_TEST, 0, (LPARAM)path))
-        Am_Free(path);
+    Rs_ShowPage(RS_PAGE_TEST);
+    test = Rs_PageWindow(RS_PAGE_TEST);
+    path = Rs_Dup(g_track.built);
+    if (!test || !PostMessageW(test, RS_WM_OPEN_TEST, 0, (LPARAM)path))
+        Rs_Free(path);
 }
 
 static void Track_ShowInFolder(void)
@@ -2092,22 +2092,22 @@ static void Track_ShowInFolder(void)
 
 static void Track_BrowseFolder(HWND page)
 {
-    wchar_t *current = Am_GetText(g_track.folder);
+    wchar_t *current = Rs_GetText(g_track.folder);
     wchar_t pick[TRACK_VAL];
-    if (Am_BrowseFolder(Am_MainWindow(), L"Choose the track folder", current, pick, TRACK_VAL))
+    if (Rs_BrowseFolder(Rs_MainWindow(), L"Choose the track folder", current, pick, TRACK_VAL))
         Track_Load(page, pick);
-    Am_Free(current);
+    Rs_Free(current);
 }
 
 static void Track_BrowseOut(void)
 {
-    wchar_t *current = Am_GetText(g_track.out);
+    wchar_t *current = Rs_GetText(g_track.out);
     wchar_t pick[TRACK_VAL];
-    if (Am_BrowseSaveFile(Am_MainWindow(), L"Save the track container as",
+    if (Rs_BrowseSaveFile(Rs_MainWindow(), L"Save the track container as",
                           L"Track containers (*.rldtrack)\0*.rldtrack\0\0", L"rldtrack",
                           current[0] ? current : g_track.loaded, pick, TRACK_VAL))
-        Am_SetText(g_track.out, pick);      // EN_CHANGE schedules the check
-    Am_Free(current);
+        Rs_SetText(g_track.out, pick);      // EN_CHANGE schedules the check
+    Rs_Free(current);
 }
 
 // Enter (IDOK): in the folder field load, on a button press it, otherwise
@@ -2116,9 +2116,9 @@ static void Track_Enter(HWND page)
 {
     HWND focus = GetFocus();
     if (focus == g_track.folder) {
-        wchar_t *text = Am_GetText(g_track.folder);
+        wchar_t *text = Rs_GetText(g_track.folder);
         Track_Load(page, text);
-        Am_Free(text);
+        Rs_Free(text);
     } else if (focus == g_track.folderBrowse || focus == g_track.outBrowse || focus == g_track.check ||
                focus == g_track.build || focus == g_track.view || focus == g_track.test ||
                focus == g_track.show) {
@@ -2142,17 +2142,17 @@ static void Track_Put(FILE *f, const wchar_t *fmt, ...)
     vswprintf(line, 4095, fmt, ap);
     va_end(ap);
     line[4095] = 0;
-    utf8 = Am_ToUtf8(line);
+    utf8 = Rs_ToUtf8(line);
     fputs(utf8, f);
     fputs("\n", f);
-    Am_Free(utf8);
+    Rs_Free(utf8);
 }
 
 static void Track_PutText(FILE *f, const wchar_t *what, HWND control)
 {
-    wchar_t *text = Am_GetText(control);
+    wchar_t *text = Rs_GetText(control);
     Track_Put(f, L"%ls: %ls", what, text);
-    Am_Free(text);
+    Rs_Free(text);
 }
 
 static const wchar_t *Track_EnabledWord(HWND h)
@@ -2168,50 +2168,50 @@ static int Track_WriteReport(const wchar_t *path)
 
     if (!f)
         return 0;
-    Track_Put(f, L"Alpha-Maker - Track page");
+    Track_Put(f, L"Reload Studio - Track page");
     Track_PutText(f, L"folder field", g_track.folder);
     Track_Put(f, L"loaded folder: %ls", g_track.loaded[0] ? g_track.loaded : L"(none)");
     for (i = 0; i < TRACK_FILES; i++) {
-        text = Am_GetText(g_track.fileValue[i]);
+        text = Rs_GetText(g_track.fileValue[i]);
         Track_Put(f, L"file %ls: %ls [%ls]", g_trackFileKinds[i], text, Track_ColorName(g_track.fileColor[i]));
-        Am_Free(text);
+        Rs_Free(text);
     }
-    text = Am_GetText(g_track.mapValue);
+    text = Rs_GetText(g_track.mapValue);
     Track_Put(f, L"minimap: %ls [%ls]", text, Track_ColorName(g_track.mapColor));
-    Am_Free(text);
-    text = Am_GetText(g_track.botValue);
+    Rs_Free(text);
+    text = Rs_GetText(g_track.botValue);
     Track_Put(f, L"bot data: %ls [%ls]", text, Track_ColorName(g_track.botColor));
-    Am_Free(text);
-    text = Am_GetText(g_track.advSummary);
+    Rs_Free(text);
+    text = Rs_GetText(g_track.advSummary);
     Track_Put(f, L"advanced: %ls - %ls", g_track.advOpen ? L"open" : L"closed", text);
-    Am_Free(text);
+    Rs_Free(text);
     Track_PutText(f, L"name", g_track.name);
     Track_PutText(f, L"author", g_track.author);
     Track_PutText(f, L"version", g_track.version);
     for (i = 0; i < TRACK_C_COUNT; i++) {
-        text = Am_GetText(g_track.combo[i]);
+        text = Rs_GetText(g_track.combo[i]);
         Track_Put(f, L"%ls: %ls (passed as %ls, %ls)", g_trackComboVerbs[i], text, Track_ComboValue(i),
                   Track_EnabledWord(g_track.combo[i]));
-        Am_Free(text);
+        Rs_Free(text);
     }
-    text = Am_GetText(g_track.ambientNote);
+    text = Rs_GetText(g_track.ambientNote);
     Track_Put(f, L"ambient note: %ls [%ls]", text, Track_ColorName(g_track.ambientColor));
-    Am_Free(text);
-    text = Am_GetText(g_track.music);
+    Rs_Free(text);
+    text = Rs_GetText(g_track.music);
     Track_Put(f, L"music: %ls (%ls, %ls)", text, Track_IsChecked(g_track.music) ? L"ticked" : L"not ticked",
               Track_EnabledWord(g_track.music));
-    Am_Free(text);
+    Rs_Free(text);
     for (i = 0; i < TRACK_MODES; i++) {
-        text = Am_GetText(g_track.modeNote[i]);
+        text = Rs_GetText(g_track.modeNote[i]);
         Track_Put(f, L"mode %ls: %ls, %ls - %ls [%ls]", g_trackModeWords[i],
                   Track_IsChecked(g_track.mode[i]) ? L"ticked" : L"not ticked",
                   Track_EnabledWord(g_track.mode[i]), text, Track_ColorName(g_track.modeColor[i]));
-        Am_Free(text);
+        Rs_Free(text);
     }
     Track_PutText(f, L"output", g_track.out);
-    text = Am_GetText(g_track.headline);
+    text = Rs_GetText(g_track.headline);
     Track_Put(f, L"headline: %ls [%ls]", text, Track_ColorName(g_track.headColor));
-    Am_Free(text);
+    Rs_Free(text);
     Track_Put(f, L"button Check: %ls", Track_EnabledWord(g_track.check));
     Track_Put(f, L"button Build container: %ls", Track_EnabledWord(g_track.build));
     Track_Put(f, L"buttons Test in game / Show in folder: %ls",
@@ -2234,17 +2234,17 @@ static int Track_WriteReport(const wchar_t *path)
     Track_Put(f, L"view: %ls", g_track.showRaw ? L"rldpack output" : L"messages");
     for (i = 0; i < g_trackJob.levCount; i++)
         Track_Put(f, L"lev %ls: %ls", g_trackJob.levKey[i], g_trackJob.levValue[i]);
-    Track_Put(f, L"messages: %d", Am_MsgListCount(g_track.msgs));
-    Am_MsgListWrite(g_track.msgs, f);
+    Track_Put(f, L"messages: %d", Rs_MsgListCount(g_track.msgs));
+    Rs_MsgListWrite(g_track.msgs, f);
     Track_Put(f, L"rldpack output of the last run: %d line(s)", g_track.rawLines);
     if (g_track.rawText && g_track.rawLen) {
-        char *utf8 = Am_ToUtf8(g_track.rawText);
+        char *utf8 = Rs_ToUtf8(g_track.rawText);
         const char *p;
         for (p = utf8; *p; p++)
             if (*p != '\r')
                 fputc(*p, f);
         fputc('\n', f);
-        Am_Free(utf8);
+        Rs_Free(utf8);
     }
     fclose(f);
     return 1;
@@ -2256,9 +2256,9 @@ static int Track_WriteReport(const wchar_t *path)
 
 static int Track_AutoText(HWND edit, const wchar_t *verb, const wchar_t *arg)
 {
-    Am_SetText(edit, arg);      // EN_CHANGE schedules the check as when typing
-    Am_AutoLog(L"  %ls: %ls", verb, arg);
-    return AM_AUTO_WAIT;
+    Rs_SetText(edit, arg);      // EN_CHANGE schedules the check as when typing
+    Rs_AutoLog(L"  %ls: %ls", verb, arg);
+    return RS_AUTO_WAIT;
 }
 
 static int Track_AutoCombo(HWND page, int c, const wchar_t *arg)
@@ -2269,24 +2269,24 @@ static int Track_AutoCombo(HWND page, int c, const wchar_t *arg)
     if (!IsWindowEnabled(cb)) {
         wchar_t *why;
         if (!arg[0] || _wcsicmp(arg, L"default") == 0) {
-            Am_AutoLog(L"  %ls: stays on the game default", g_trackComboVerbs[c]);
-            return AM_AUTO_DONE;
+            Rs_AutoLog(L"  %ls: stays on the game default", g_trackComboVerbs[c]);
+            return RS_AUTO_DONE;
         }
-        why = Am_GetText(g_track.ambientNote);
-        Am_AutoLog(L"  %ls: cannot be changed - %ls", g_trackComboVerbs[c],
+        why = Rs_GetText(g_track.ambientNote);
+        Rs_AutoLog(L"  %ls: cannot be changed - %ls", g_trackComboVerbs[c],
                    why[0] ? why : L"the choice is greyed out");
-        Am_Free(why);
-        return AM_AUTO_FAIL;
+        Rs_Free(why);
+        return RS_AUTO_FAIL;
     }
     if (Track_ComboSelect(c, arg, 0) < 0) {
-        Am_AutoLog(L"  %ls: '%ls' is not one of the choices", g_trackComboVerbs[c], arg);
-        return AM_AUTO_FAIL;
+        Rs_AutoLog(L"  %ls: '%ls' is not one of the choices", g_trackComboVerbs[c], arg);
+        return RS_AUTO_FAIL;
     }
     SendMessageW(page, WM_COMMAND, MAKEWPARAM(TRACK_ID_COMBO + c, CBN_SELCHANGE), (LPARAM)cb);
-    text = Am_GetText(cb);
-    Am_AutoLog(L"  %ls: %ls", g_trackComboVerbs[c], text);
-    Am_Free(text);
-    return AM_AUTO_WAIT;
+    text = Rs_GetText(cb);
+    Rs_AutoLog(L"  %ls: %ls", g_trackComboVerbs[c], text);
+    Rs_Free(text);
+    return RS_AUTO_WAIT;
 }
 
 // Tick exactly these modes. A mode without data cannot be ticked.
@@ -2303,17 +2303,17 @@ static int Track_AutoModes(HWND page, const wchar_t *arg)
         if (_wcsicmp(word, L"none") == 0)
             continue;
         if (m < 0) {
-            Am_AutoLog(L"  modes: '%ls' is not a mode - use race, time, ctr, crystal, battle", word);
-            return AM_AUTO_FAIL;
+            Rs_AutoLog(L"  modes: '%ls' is not a mode - use race, time, ctr, crystal, battle", word);
+            return RS_AUTO_FAIL;
         }
         want[m] = 1;
     }
     for (i = 0; i < TRACK_MODES; i++) {
         if (want[i] && !IsWindowEnabled(g_track.mode[i])) {
-            wchar_t *why = Am_GetText(g_track.modeNote[i]);
-            Am_AutoLog(L"  modes: %ls cannot be ticked - %ls", g_trackModeLabels[i], why);
-            Am_Free(why);
-            return AM_AUTO_FAIL;
+            wchar_t *why = Rs_GetText(g_track.modeNote[i]);
+            Rs_AutoLog(L"  modes: %ls cannot be ticked - %ls", g_trackModeLabels[i], why);
+            Rs_Free(why);
+            return RS_AUTO_FAIL;
         }
     }
     list[0] = 0;
@@ -2328,8 +2328,8 @@ static int Track_AutoModes(HWND page, const wchar_t *arg)
             SendMessageW(page, WM_COMMAND, MAKEWPARAM(TRACK_ID_MODE + i, BN_CLICKED), (LPARAM)g_track.mode[i]);
         }
     }
-    Am_AutoLog(L"  modes: %ls", list[0] ? list : L"none ticked");
-    return AM_AUTO_WAIT;
+    Rs_AutoLog(L"  modes: %ls", list[0] ? list : L"none ticked");
+    return RS_AUTO_WAIT;
 }
 
 static int Track_AutoMusic(HWND page, const wchar_t *arg)
@@ -2340,17 +2340,17 @@ static int Track_AutoMusic(HWND page, const wchar_t *arg)
     } else if (_wcsicmp(arg, L"off") == 0) {
         on = 0;
     } else {
-        Am_AutoLog(L"  music: say on or off");
-        return AM_AUTO_FAIL;
+        Rs_AutoLog(L"  music: say on or off");
+        return RS_AUTO_FAIL;
     }
     if (!IsWindowEnabled(g_track.music)) {
-        Am_AutoLog(L"  music: cannot be changed - no music file (.sca or .sndb) in the folder");
-        return AM_AUTO_FAIL;
+        Rs_AutoLog(L"  music: cannot be changed - no music file (.sca or .sndb) in the folder");
+        return RS_AUTO_FAIL;
     }
     Track_SetCheck(g_track.music, on);
     SendMessageW(page, WM_COMMAND, MAKEWPARAM(TRACK_ID_MUSIC, BN_CLICKED), (LPARAM)g_track.music);
-    Am_AutoLog(L"  music: %ls", on ? L"on" : L"off");
-    return AM_AUTO_WAIT;
+    Rs_AutoLog(L"  music: %ls", on ? L"on" : L"off");
+    return RS_AUTO_WAIT;
 }
 
 // ---------------------------------------------------------------------------
@@ -2362,220 +2362,220 @@ static void Track_Create(HWND page)
     wchar_t folder[TRACK_VAL];
     int i;
 
-    g_track.folder = Am_Edit(page, TRACK_ID_FOLDER, L"", 0);
-    g_track.folderBrowse = Am_Button(page, TRACK_ID_FOLDER_BROWSE, L"Browse...");
+    g_track.folder = Rs_Edit(page, TRACK_ID_FOLDER, L"", 0);
+    g_track.folderBrowse = Rs_Button(page, TRACK_ID_FOLDER_BROWSE, L"Browse...");
     for (i = 0; i < TRACK_FILES; i++) {
-        g_track.fileLabel[i] = Am_Label(page, TRACK_ID_FILE_LABEL + i, g_trackFileLabels[i], AM_FONT_BOLD);
-        g_track.fileValue[i] = Am_Label(page, TRACK_ID_FILE_VALUE + i, L"-", AM_FONT_BODY);
+        g_track.fileLabel[i] = Rs_Label(page, TRACK_ID_FILE_LABEL + i, g_trackFileLabels[i], RS_FONT_BOLD);
+        g_track.fileValue[i] = Rs_Label(page, TRACK_ID_FILE_VALUE + i, L"-", RS_FONT_BODY);
         Track_Ellipsis(g_track.fileValue[i]);
     }
-    g_track.mapLabel = Am_Label(page, TRACK_ID_MAP_LABEL, L"Minimap", AM_FONT_BOLD);
-    g_track.mapValue = Am_Label(page, TRACK_ID_MAP_VALUE, L"-", AM_FONT_BODY);
+    g_track.mapLabel = Rs_Label(page, TRACK_ID_MAP_LABEL, L"Minimap", RS_FONT_BOLD);
+    g_track.mapValue = Rs_Label(page, TRACK_ID_MAP_VALUE, L"-", RS_FONT_BODY);
     Track_Ellipsis(g_track.mapValue);
-    g_track.botLabel = Am_Label(page, TRACK_ID_BOT_LABEL, L"Bot data", AM_FONT_BOLD);
-    g_track.botValue = Am_Label(page, TRACK_ID_BOT_VALUE, L"-", AM_FONT_BODY);
+    g_track.botLabel = Rs_Label(page, TRACK_ID_BOT_LABEL, L"Bot data", RS_FONT_BOLD);
+    g_track.botValue = Rs_Label(page, TRACK_ID_BOT_VALUE, L"-", RS_FONT_BODY);
     Track_Ellipsis(g_track.botValue);
-    g_track.nameLabel = Am_Label(page, TRACK_ID_NAME_LABEL, L"Name", AM_FONT_BOLD);
-    g_track.name = Am_Edit(page, TRACK_ID_NAME, L"", 0);
+    g_track.nameLabel = Rs_Label(page, TRACK_ID_NAME_LABEL, L"Name", RS_FONT_BOLD);
+    g_track.name = Rs_Edit(page, TRACK_ID_NAME, L"", 0);
     SendMessageW(g_track.name, EM_LIMITTEXT, 64, 0);
-    g_track.authorLabel = Am_Label(page, TRACK_ID_AUTHOR_LABEL, L"Author", AM_FONT_BOLD);
-    g_track.author = Am_Edit(page, TRACK_ID_AUTHOR, L"", 0);
+    g_track.authorLabel = Rs_Label(page, TRACK_ID_AUTHOR_LABEL, L"Author", RS_FONT_BOLD);
+    g_track.author = Rs_Edit(page, TRACK_ID_AUTHOR, L"", 0);
     SendMessageW(g_track.author, EM_LIMITTEXT, 64, 0);
-    g_track.versionLabel = Am_Label(page, TRACK_ID_VERSION_LABEL, L"Version", AM_FONT_BOLD);
-    g_track.version = Am_Edit(page, TRACK_ID_VERSION, L"", ES_NUMBER);
+    g_track.versionLabel = Rs_Label(page, TRACK_ID_VERSION_LABEL, L"Version", RS_FONT_BOLD);
+    g_track.version = Rs_Edit(page, TRACK_ID_VERSION, L"", ES_NUMBER);
     SendMessageW(g_track.version, EM_LIMITTEXT, 9, 0);
 
     for (i = 0; i < TRACK_C_COUNT; i++) {
-        g_track.comboLabel[i] = Am_Label(page, TRACK_ID_COMBO_LABEL + i, g_trackComboLabels[i], AM_FONT_BOLD);
-        g_track.advHelp[i] = Am_Label(page, TRACK_ID_ADV_HELP + i, g_trackComboHelp[i], AM_FONT_SMALL);
-        Am_SetTextColor(g_track.advHelp[i], AM_COL_MUTED);
-        g_track.combo[i] = Am_Combo(page, TRACK_ID_COMBO + i);
+        g_track.comboLabel[i] = Rs_Label(page, TRACK_ID_COMBO_LABEL + i, g_trackComboLabels[i], RS_FONT_BOLD);
+        g_track.advHelp[i] = Rs_Label(page, TRACK_ID_ADV_HELP + i, g_trackComboHelp[i], RS_FONT_SMALL);
+        Rs_SetTextColor(g_track.advHelp[i], RS_COL_MUTED);
+        g_track.combo[i] = Rs_Combo(page, TRACK_ID_COMBO + i);
         if (i == TRACK_C_AMBIENT)
-            g_track.ambientNote = Am_Label(page, TRACK_ID_AMBIENT_NOTE, L"", AM_FONT_SMALL);
+            g_track.ambientNote = Rs_Label(page, TRACK_ID_AMBIENT_NOTE, L"", RS_FONT_SMALL);
     }
-    g_track.music = Am_Check(page, TRACK_ID_MUSIC, L"Use the music in the folder");
-    g_track.advanced = Am_Button(page, TRACK_ID_ADVANCED, L"");
-    g_track.advSummary = Am_Label(page, TRACK_ID_ADV_SUMMARY, L"", AM_FONT_SMALL);
-    Am_SetTextColor(g_track.advSummary, AM_COL_MUTED);
+    g_track.music = Rs_Check(page, TRACK_ID_MUSIC, L"Use the music in the folder");
+    g_track.advanced = Rs_Button(page, TRACK_ID_ADVANCED, L"");
+    g_track.advSummary = Rs_Label(page, TRACK_ID_ADV_SUMMARY, L"", RS_FONT_SMALL);
+    Rs_SetTextColor(g_track.advSummary, RS_COL_MUTED);
     Track_Ellipsis(g_track.advSummary);
     g_track.advOpen = 0;
 
     for (i = 0; i < TRACK_MODES; i++) {
-        g_track.mode[i] = Am_Check(page, TRACK_ID_MODE + i, g_trackModeLabels[i]);
-        g_track.modeNote[i] = Am_Label(page, TRACK_ID_MODE_NOTE + i, L"", AM_FONT_SMALL);
+        g_track.mode[i] = Rs_Check(page, TRACK_ID_MODE + i, g_trackModeLabels[i]);
+        g_track.modeNote[i] = Rs_Label(page, TRACK_ID_MODE_NOTE + i, L"", RS_FONT_SMALL);
     }
 
-    g_track.view = Am_Button(page, TRACK_ID_VIEW, L"Show rldpack output");
-    g_track.outLabel = Am_Label(page, TRACK_ID_OUT_LABEL, L"Output", AM_FONT_BOLD);
-    g_track.out = Am_Edit(page, TRACK_ID_OUT, L"", 0);
-    g_track.outBrowse = Am_Button(page, TRACK_ID_OUT_BROWSE, L"Browse...");
-    g_track.check = Am_Button(page, TRACK_ID_CHECK, L"Check");
-    g_track.build = Am_PrimaryButton(page, TRACK_ID_BUILD, L"Build container");
-    g_track.headline = Am_Label(page, TRACK_ID_HEADLINE, L"", AM_FONT_BOLD);
+    g_track.view = Rs_Button(page, TRACK_ID_VIEW, L"Show rldpack output");
+    g_track.outLabel = Rs_Label(page, TRACK_ID_OUT_LABEL, L"Output", RS_FONT_BOLD);
+    g_track.out = Rs_Edit(page, TRACK_ID_OUT, L"", 0);
+    g_track.outBrowse = Rs_Button(page, TRACK_ID_OUT_BROWSE, L"Browse...");
+    g_track.check = Rs_Button(page, TRACK_ID_CHECK, L"Check");
+    g_track.build = Rs_PrimaryButton(page, TRACK_ID_BUILD, L"Build container");
+    g_track.headline = Rs_Label(page, TRACK_ID_HEADLINE, L"", RS_FONT_BOLD);
     Track_Ellipsis(g_track.headline);
-    g_track.msgs = Am_MsgList(page, TRACK_ID_MESSAGES);
-    g_track.raw = Am_Edit(page, TRACK_ID_RAW, L"",
+    g_track.msgs = Rs_MsgList(page, TRACK_ID_MESSAGES);
+    g_track.raw = Rs_Edit(page, TRACK_ID_RAW, L"",
                           ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_HSCROLL);
-    SendMessageW(g_track.raw, WM_SETFONT, (WPARAM)Am_Font(AM_FONT_MONO), FALSE);
+    SendMessageW(g_track.raw, WM_SETFONT, (WPARAM)Rs_Font(RS_FONT_MONO), FALSE);
     SendMessageW(g_track.raw, EM_LIMITTEXT, 0, 0);
     ShowWindow(g_track.raw, SW_HIDE);
-    g_track.test = Am_Button(page, TRACK_ID_TEST, L"Test in game");
-    g_track.show = Am_Button(page, TRACK_ID_SHOW, L"Show in folder");
+    g_track.test = Rs_Button(page, TRACK_ID_TEST, L"Test in game");
+    g_track.show = Rs_Button(page, TRACK_ID_SHOW, L"Show in folder");
     ShowWindow(g_track.test, SW_HIDE);
     ShowWindow(g_track.show, SW_HIDE);
 
     Track_ResetState();
     Track_AdvShow();
-    Track_Headline(L"Choose a track folder to start", AM_COL_MUTED);
+    Track_Headline(L"Choose a track folder to start", RS_COL_MUTED);
     Track_EmptyText(L"Choose a track folder. What rldpack finds shows up here.");
     Track_ApplyModes();
     Track_UpdateButtons();
 
     // Only enter the last folder; it is loaded on first showing.
-    Am_ConfigGet(L"track.folder", folder, TRACK_VAL);
-    Am_SetText(g_track.folder, folder);
+    Rs_ConfigGet(L"track.folder", folder, TRACK_VAL);
+    Rs_SetText(g_track.folder, folder);
 }
 
 static void Track_PlaceField(HWND label, HWND edit, int x, int labelW, int y, int editW)
 {
-    MoveWindow(label, x, y + Am_Px(4), labelW, Am_Px(20), TRUE);
-    MoveWindow(edit, x + labelW + Am_Px(8), y, editW, Am_Px(28), TRUE);
+    MoveWindow(label, x, y + Rs_Px(4), labelW, Rs_Px(20), TRUE);
+    MoveWindow(edit, x + labelW + Rs_Px(8), y, editW, Rs_Px(28), TRUE);
 }
 
 static void Track_Layout(HWND page, int w, int h)
 {
-    int left = Am_Px(32), right = w - Am_Px(32);
-    int top = Am_PageTop(), bottom = h - Am_Px(24);
-    int gap = Am_Px(16);
+    int left = Rs_Px(32), right = w - Rs_Px(32);
+    int top = Rs_PageTop(), bottom = h - Rs_Px(24);
+    int gap = Rs_Px(16);
     int leftW = (right - left - gap) * 52 / 100;
-    int browseW = Am_Px(100), labelW = Am_Px(140);
+    int browseW = Rs_Px(100), labelW = Rs_Px(140);
     int built = g_track.built[0] != 0;
     // The left column needs 616 px. If the page is lower (the shell
     // limits the window size instead of the client size), it moves closer together.
-    int tight = bottom - top < Am_Px(616);
-    int rowGap = Am_Px(tight ? 6 : 10);
-    int filePitch = Am_Px(tight ? 20 : 22);
-    int fieldPitch = Am_Px(tight ? 32 : 36);
-    int labelPitch = Am_Px(tight ? 20 : 22);
-    int groupGap = Am_Px(tight ? 4 : 10);
+    int tight = bottom - top < Rs_Px(616);
+    int rowGap = Rs_Px(tight ? 6 : 10);
+    int filePitch = Rs_Px(tight ? 20 : 22);
+    int fieldPitch = Rs_Px(tight ? 32 : 36);
+    int labelPitch = Rs_Px(tight ? 20 : 22);
+    int groupGap = Rs_Px(tight ? 4 : 10);
     RECT card, in;
     int x, y, i, width, listBottom;
 
-    Am_CardClear(page);
+    Rs_CardClear(page);
 
     // Top left: folder, files, name, author, version
     card.left = left;
     card.top = top;
     card.right = left + leftW;
     card.bottom = bottom;
-    in = Am_CardInner(&card, 1);
+    in = Rs_CardInner(&card, 1);
     width = in.right - in.left;
     y = in.top;
-    MoveWindow(g_track.folder, in.left, y + Am_Px(2), width - browseW - Am_Px(8), Am_Px(28), TRUE);
-    MoveWindow(g_track.folderBrowse, in.right - browseW, y, browseW, Am_Px(32), TRUE);
-    y += Am_Px(32) + rowGap;
-    x = in.left + labelW + Am_Px(8);
+    MoveWindow(g_track.folder, in.left, y + Rs_Px(2), width - browseW - Rs_Px(8), Rs_Px(28), TRUE);
+    MoveWindow(g_track.folderBrowse, in.right - browseW, y, browseW, Rs_Px(32), TRUE);
+    y += Rs_Px(32) + rowGap;
+    x = in.left + labelW + Rs_Px(8);
     for (i = 0; i < TRACK_FILES; i++) {
-        MoveWindow(g_track.fileLabel[i], in.left, y, labelW, Am_Px(20), TRUE);
-        MoveWindow(g_track.fileValue[i], x, y, in.right - x, Am_Px(20), TRUE);
+        MoveWindow(g_track.fileLabel[i], in.left, y, labelW, Rs_Px(20), TRUE);
+        MoveWindow(g_track.fileValue[i], x, y, in.right - x, Rs_Px(20), TRUE);
         y += filePitch;
     }
-    MoveWindow(g_track.mapLabel, in.left, y, labelW, Am_Px(20), TRUE);
-    MoveWindow(g_track.mapValue, x, y, in.right - x, Am_Px(20), TRUE);
+    MoveWindow(g_track.mapLabel, in.left, y, labelW, Rs_Px(20), TRUE);
+    MoveWindow(g_track.mapValue, x, y, in.right - x, Rs_Px(20), TRUE);
     y += filePitch;
-    MoveWindow(g_track.botLabel, in.left, y, labelW, Am_Px(20), TRUE);
-    MoveWindow(g_track.botValue, x, y, in.right - x, Am_Px(20), TRUE);
+    MoveWindow(g_track.botLabel, in.left, y, labelW, Rs_Px(20), TRUE);
+    MoveWindow(g_track.botValue, x, y, in.right - x, Rs_Px(20), TRUE);
     y += filePitch;
-    y += rowGap + Am_Px(2);
+    y += rowGap + Rs_Px(2);
     Track_PlaceField(g_track.nameLabel, g_track.name, in.left, labelW, y, in.right - x);
     y += fieldPitch;
     Track_PlaceField(g_track.authorLabel, g_track.author, in.left, labelW, y, in.right - x);
     y += fieldPitch;
-    Track_PlaceField(g_track.versionLabel, g_track.version, in.left, labelW, y, Am_Px(80));
-    y += Am_Px(28);
-    card.bottom = y + Am_Px(16);
-    Am_CardAdd(page, &card, L"Track");
+    Track_PlaceField(g_track.versionLabel, g_track.version, in.left, labelW, y, Rs_Px(80));
+    y += Rs_Px(28);
+    card.bottom = y + Rs_Px(16);
+    Rs_CardAdd(page, &card, L"Track");
 
     // Bottom left: music, below it "Advanced" (reverb, bots, ambient sound),
     // collapsed by default. Per field the label,
     // an explaining sentence, then the field.
     card.top = card.bottom + gap;
     card.bottom = bottom;
-    in = Am_CardInner(&card, 1);
+    in = Rs_CardInner(&card, 1);
     width = in.right - in.left;
     y = in.top;
-    MoveWindow(g_track.music, in.left, y, width, Am_Px(24), TRUE);
-    y += Am_Px(24) + rowGap;
-    MoveWindow(g_track.advanced, in.left, y, Am_Px(132), Am_Px(30), TRUE);
-    y += Am_Px(30) + Am_Px(6);
-    MoveWindow(g_track.advSummary, in.left, y, width, Am_Px(18), TRUE);
+    MoveWindow(g_track.music, in.left, y, width, Rs_Px(24), TRUE);
+    y += Rs_Px(24) + rowGap;
+    MoveWindow(g_track.advanced, in.left, y, Rs_Px(132), Rs_Px(30), TRUE);
+    y += Rs_Px(30) + Rs_Px(6);
+    MoveWindow(g_track.advSummary, in.left, y, width, Rs_Px(18), TRUE);
     // Label and sentence in one line, otherwise the card is not enough for
     // all three fields at 820 px window height.
     for (i = 0; i < TRACK_C_COUNT; i++) {
-        int helpX = Am_Px(118);
-        MoveWindow(g_track.comboLabel[i], in.left, y, helpX, Am_Px(20), TRUE);
-        MoveWindow(g_track.advHelp[i], in.left + helpX, y + Am_Px(2), width - helpX, Am_Px(18), TRUE);
+        int helpX = Rs_Px(118);
+        MoveWindow(g_track.comboLabel[i], in.left, y, helpX, Rs_Px(20), TRUE);
+        MoveWindow(g_track.advHelp[i], in.left + helpX, y + Rs_Px(2), width - helpX, Rs_Px(18), TRUE);
         y += labelPitch;
-        MoveWindow(g_track.combo[i], in.left, y, width, Am_Px(300), TRUE);
-        y += Am_Px(28);
+        MoveWindow(g_track.combo[i], in.left, y, width, Rs_Px(300), TRUE);
+        y += Rs_Px(28);
         if (i == TRACK_C_AMBIENT) {
-            MoveWindow(g_track.ambientNote, in.left, y + Am_Px(2), width, Am_Px(18), TRUE);
+            MoveWindow(g_track.ambientNote, in.left, y + Rs_Px(2), width, Rs_Px(18), TRUE);
             y += labelPitch;
         }
         y += groupGap;
     }
-    Am_CardAdd(page, &card, L"Sound");
+    Rs_CardAdd(page, &card, L"Sound");
 
     // Top right: modes, note to the right of the box (up to two lines)
     card.left = left + leftW + gap;
     card.right = right;
     card.top = top;
     card.bottom = bottom;
-    in = Am_CardInner(&card, 1);
+    in = Rs_CardInner(&card, 1);
     width = in.right - in.left;
     y = in.top;
     for (i = 0; i < TRACK_MODES; i++) {
-        int boxW = Am_Px(140);
-        MoveWindow(g_track.mode[i], in.left, y, boxW, Am_Px(24), TRUE);
-        MoveWindow(g_track.modeNote[i], in.left + boxW + Am_Px(8), y + Am_Px(4),
-                   width - boxW - Am_Px(8), Am_Px(32), TRUE);
-        y += Am_Px(36);
+        int boxW = Rs_Px(140);
+        MoveWindow(g_track.mode[i], in.left, y, boxW, Rs_Px(24), TRUE);
+        MoveWindow(g_track.modeNote[i], in.left + boxW + Rs_Px(8), y + Rs_Px(4),
+                   width - boxW - Rs_Px(8), Rs_Px(32), TRUE);
+        y += Rs_Px(36);
     }
-    card.bottom = y + Am_Px(16);
-    Am_CardAdd(page, &card, L"Modes");
+    card.bottom = y + Rs_Px(16);
+    Rs_CardAdd(page, &card, L"Modes");
 
     // Bottom right: build; the toggle is in the title line of the card
     card.top = card.bottom + gap;
     card.bottom = bottom;
-    in = Am_CardInner(&card, 1);
+    in = Rs_CardInner(&card, 1);
     width = in.right - in.left;
-    MoveWindow(g_track.view, in.right - Am_Px(168), card.top + Am_Px(10), Am_Px(168), Am_Px(30), TRUE);
+    MoveWindow(g_track.view, in.right - Rs_Px(168), card.top + Rs_Px(10), Rs_Px(168), Rs_Px(30), TRUE);
     y = in.top;
-    MoveWindow(g_track.outLabel, in.left, y + Am_Px(6), Am_Px(64), Am_Px(20), TRUE);
-    MoveWindow(g_track.out, in.left + Am_Px(72), y + Am_Px(2), width - Am_Px(72) - browseW - Am_Px(8),
-               Am_Px(28), TRUE);
-    MoveWindow(g_track.outBrowse, in.right - browseW, y, browseW, Am_Px(32), TRUE);
-    y += Am_Px(44);
-    MoveWindow(g_track.check, in.left, y, Am_Px(96), Am_Px(32), TRUE);
-    MoveWindow(g_track.build, in.left + Am_Px(104), y, Am_Px(156), Am_Px(32), TRUE);
-    y += Am_Px(44);
-    MoveWindow(g_track.headline, in.left, y, width, Am_Px(22), TRUE);
-    y += Am_Px(28);
-    listBottom = in.bottom - (built ? Am_Px(44) : 0);
-    if (listBottom < y + Am_Px(40))
-        listBottom = y + Am_Px(40);
+    MoveWindow(g_track.outLabel, in.left, y + Rs_Px(6), Rs_Px(64), Rs_Px(20), TRUE);
+    MoveWindow(g_track.out, in.left + Rs_Px(72), y + Rs_Px(2), width - Rs_Px(72) - browseW - Rs_Px(8),
+               Rs_Px(28), TRUE);
+    MoveWindow(g_track.outBrowse, in.right - browseW, y, browseW, Rs_Px(32), TRUE);
+    y += Rs_Px(44);
+    MoveWindow(g_track.check, in.left, y, Rs_Px(96), Rs_Px(32), TRUE);
+    MoveWindow(g_track.build, in.left + Rs_Px(104), y, Rs_Px(156), Rs_Px(32), TRUE);
+    y += Rs_Px(44);
+    MoveWindow(g_track.headline, in.left, y, width, Rs_Px(22), TRUE);
+    y += Rs_Px(28);
+    listBottom = in.bottom - (built ? Rs_Px(44) : 0);
+    if (listBottom < y + Rs_Px(40))
+        listBottom = y + Rs_Px(40);
     MoveWindow(g_track.msgs, in.left, y, width, listBottom - y, TRUE);
     MoveWindow(g_track.raw, in.left, y, width, listBottom - y, TRUE);
-    MoveWindow(g_track.test, in.left, in.bottom - Am_Px(32), Am_Px(128), Am_Px(32), TRUE);
-    MoveWindow(g_track.show, in.left + Am_Px(136), in.bottom - Am_Px(32), Am_Px(136), Am_Px(32), TRUE);
+    MoveWindow(g_track.test, in.left, in.bottom - Rs_Px(32), Rs_Px(128), Rs_Px(32), TRUE);
+    MoveWindow(g_track.show, in.left + Rs_Px(136), in.bottom - Rs_Px(32), Rs_Px(136), Rs_Px(32), TRUE);
     ShowWindow(g_track.test, built ? SW_SHOW : SW_HIDE);
     ShowWindow(g_track.show, built ? SW_SHOW : SW_HIDE);
-    Am_CardAdd(page, &card, L"Build");
+    Rs_CardAdd(page, &card, L"Build");
 
     // After a DPI change the shell sets the base font; the raw output
     // stays in a fixed-width font, though.
-    if ((HFONT)SendMessageW(g_track.raw, WM_GETFONT, 0, 0) != Am_Font(AM_FONT_MONO))
-        SendMessageW(g_track.raw, WM_SETFONT, (WPARAM)Am_Font(AM_FONT_MONO), TRUE);
+    if ((HFONT)SendMessageW(g_track.raw, WM_GETFONT, 0, 0) != Rs_Font(RS_FONT_MONO))
+        SendMessageW(g_track.raw, WM_SETFONT, (WPARAM)Rs_Font(RS_FONT_MONO), TRUE);
 }
 
 static LRESULT Track_Command(HWND page, WPARAM wParam, LPARAM lParam)
@@ -2665,7 +2665,7 @@ static LRESULT Track_Notify(HWND page, NMHDR *hdr)
 static LRESULT Track_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, int *handled)
 {
     switch (msg) {
-    case AM_WM_JOB_LINE: {
+    case RS_WM_JOB_LINE: {
         wchar_t *line = (wchar_t *)lParam;
         if (line && g_track.jobId && (int)wParam == g_track.jobId) {
             Track_RawAppend(line);
@@ -2674,22 +2674,22 @@ static LRESULT Track_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, 
             else
                 Track_ParseLine(line);
         }
-        Am_Free(line);
+        Rs_Free(line);
         *handled = 1;
         return 0;
     }
-    case AM_WM_JOB_DONE:
+    case RS_WM_JOB_DONE:
         if (g_track.jobId && (int)wParam == g_track.jobId)
             Track_JobDone(page, (int)lParam);
         *handled = 1;
         return 0;
     case WM_TIMER:
         // Emergency brake: the preview game (without a window) is still running after
-        // TRACK_PREVIEW_LIMIT. End it; AM_WM_JOB_DONE arrives as usual,
+        // TRACK_PREVIEW_LIMIT. End it; RS_WM_JOB_DONE arrives as usual,
         // Track_PreviewDone reports it.
         if (wParam == TRACK_TIMER_PREVIEW) {
             KillTimer(page, TRACK_TIMER_PREVIEW);
-            if (g_track.jobId && g_track.jobKind == TRACK_JOB_PREVIEW && Am_KillJob(g_track.jobId))
+            if (g_track.jobId && g_track.jobKind == TRACK_JOB_PREVIEW && Rs_KillJob(g_track.jobId))
                 g_track.previewKilled = 1;
             *handled = 1;
             return 0;
@@ -2702,13 +2702,13 @@ static LRESULT Track_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, 
             return 0;
         Track_Check(page);
         return 0;
-    case AM_WM_PAGE_SHOWN:
+    case RS_WM_PAGE_SHOWN:
         if (!g_track.shown) {
-            wchar_t *folder = Am_GetText(g_track.folder);
+            wchar_t *folder = Rs_GetText(g_track.folder);
             g_track.shown = 1;
-            if (folder[0] && !g_track.loaded[0] && Am_DirExists(folder))
+            if (folder[0] && !g_track.loaded[0] && Rs_DirExists(folder))
                 Track_Load(page, folder);
-            Am_Free(folder);
+            Rs_Free(folder);
         }
         *handled = 1;
         return 0;
@@ -2722,9 +2722,9 @@ static int Track_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
 
     if (wcscmp(verb, L"folder") == 0) {
         if (Track_Load(page, arg))
-            return AM_AUTO_WAIT;
-        Am_AutoLog(L"  folder: %ls", arg[0] ? L"rldpack could not be started" : L"no folder given");
-        return AM_AUTO_FAIL;
+            return RS_AUTO_WAIT;
+        Rs_AutoLog(L"  folder: %ls", arg[0] ? L"rldpack could not be started" : L"no folder given");
+        return RS_AUTO_FAIL;
     }
     if (wcscmp(verb, L"name") == 0)
         return Track_AutoText(g_track.name, verb, arg);
@@ -2744,11 +2744,11 @@ static int Track_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
     if (wcscmp(verb, L"check") == 0) {
         r = Track_Check(page);
         if (r > 0)
-            return AM_AUTO_WAIT;
+            return RS_AUTO_WAIT;
         if (r == 0)
-            return AM_AUTO_DONE;
-        Am_AutoLog(L"  check: no track folder is loaded");
-        return AM_AUTO_FAIL;
+            return RS_AUTO_DONE;
+        Rs_AutoLog(L"  check: no track folder is loaded");
+        return RS_AUTO_FAIL;
     }
     // Like the button "Build container". The automation waits for rldpack and
     // for the preview that Track_BuildDone starts right after (Track_Busy:
@@ -2757,24 +2757,24 @@ static int Track_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
     // "preview: failed - ..." or "preview: skipped - ...".
     if (wcscmp(verb, L"build") == 0) {
         if (!Track_CanBuild()) {
-            Am_AutoLog(L"  build: not possible - %ls",
+            Rs_AutoLog(L"  build: not possible - %ls",
                        !g_track.loaded[0] ? L"no track folder is loaded" : L"the last check did not pass");
-            return AM_AUTO_FAIL;
+            return RS_AUTO_FAIL;
         }
         r = Track_Build(page);
         if (r > 0)
-            return AM_AUTO_WAIT;
-        Am_AutoLog(L"  build: not started");
-        return AM_AUTO_FAIL;
+            return RS_AUTO_WAIT;
+        Rs_AutoLog(L"  build: not started");
+        return RS_AUTO_FAIL;
     }
     if (wcscmp(verb, L"test") == 0) {
         if (!g_track.built[0]) {
-            Am_AutoLog(L"  test: no container built yet");
-            return AM_AUTO_FAIL;
+            Rs_AutoLog(L"  test: no container built yet");
+            return RS_AUTO_FAIL;
         }
-        Am_AutoLog(L"  test: %ls", g_track.built);
+        Rs_AutoLog(L"  test: %ls", g_track.built);
         Track_OpenTest();
-        return AM_AUTO_DONE;
+        return RS_AUTO_DONE;
     }
     // Records the preview of the last built container anew (there is no longer a
     // button for it, "build" already records it). The automation
@@ -2782,16 +2782,16 @@ static int Track_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
     // "preview: written ..." or "preview: failed - ...".
     if (wcscmp(verb, L"preview") == 0) {
         if (Track_Preview(page, 0))
-            return AM_AUTO_WAIT;
-        return AM_AUTO_FAIL;
+            return RS_AUTO_WAIT;
+        return RS_AUTO_FAIL;
     }
     if (wcscmp(verb, L"report") == 0) {
         if (!arg[0] || !Track_WriteReport(arg)) {
-            Am_AutoLog(L"  report: could not write '%ls'", arg);
-            return AM_AUTO_FAIL;
+            Rs_AutoLog(L"  report: could not write '%ls'", arg);
+            return RS_AUTO_FAIL;
         }
-        Am_AutoLog(L"  report: %ls", arg);
-        return AM_AUTO_DONE;
+        Rs_AutoLog(L"  report: %ls", arg);
+        return RS_AUTO_DONE;
     }
     if (wcscmp(verb, L"advanced") == 0) {
         int open;
@@ -2800,12 +2800,12 @@ static int Track_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         else if (_wcsicmp(arg, L"close") == 0)
             open = 0;
         else {
-            Am_AutoLog(L"  advanced: say open or close");
-            return AM_AUTO_FAIL;
+            Rs_AutoLog(L"  advanced: say open or close");
+            return RS_AUTO_FAIL;
         }
         if (g_track.advOpen != open)
             SendMessageW(page, WM_COMMAND, MAKEWPARAM(TRACK_ID_ADVANCED, BN_CLICKED), (LPARAM)g_track.advanced);
-        return AM_AUTO_DONE;
+        return RS_AUTO_DONE;
     }
     if (wcscmp(verb, L"view") == 0) {
         int raw;
@@ -2814,16 +2814,16 @@ static int Track_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         else if (_wcsicmp(arg, L"messages") == 0)
             raw = 0;
         else {
-            Am_AutoLog(L"  view: say messages or output");
-            return AM_AUTO_FAIL;
+            Rs_AutoLog(L"  view: say messages or output");
+            return RS_AUTO_FAIL;
         }
         if (g_track.showRaw != raw) {
             g_track.showRaw = raw;
             Track_ShowView();
         }
-        return AM_AUTO_DONE;
+        return RS_AUTO_DONE;
     }
-    return AM_AUTO_UNKNOWN;
+    return RS_AUTO_UNKNOWN;
 }
 
 static int Track_Busy(HWND page)
@@ -2832,7 +2832,7 @@ static int Track_Busy(HWND page)
     return g_track.jobId != 0 || g_track.timer;
 }
 
-const struct AmPageDef g_amTrackPage = {
+const struct RsPageDef g_rsTrackPage = {
     L"Track",
     L"Build a track container",
     L"Pick a track folder with a .lev, a .vrm and optionally music (.sca or .sndb). rldpack checks everything and builds the .rldtrack.",

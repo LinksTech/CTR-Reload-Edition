@@ -3,7 +3,7 @@
   Manifest of ctr_native.exe.
   activeCodePage UTF-8: the program takes paths as char* (argv, fopen,
   FindFirstFileA). With UTF-8 as the ANSI code page, umlauts and other
-  scripts pass through, such as a user name in the Alpha-Maker's temp path
+  scripts pass through, such as a user name in Reload Studio's temp path
   (Windows 10 1903 and newer; older Windows versions skip the entry).
   Deliberately without dpiAware: that would change SDL's window scaling.
 -->

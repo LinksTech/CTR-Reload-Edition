@@ -3,7 +3,7 @@ project(CTR-Native C)
 include(CheckCCompilerFlag)
 
 # The version players see: "CTR Reload <version> (<build id>)" on the start
-# screen, in --version, in the Alpha-Maker and in the log. The upstream
+# screen, in --version, in Reload Studio and in the log. The upstream
 # ctr-native version number is not shown to players.
 # tools/package/package.sh reads this line to name the package.
 set(CTR_NATIVE_VERSION "Beta 0")
@@ -150,8 +150,8 @@ target_include_directories(ctr_native PRIVATE ${CMAKE_SOURCE_DIR}/include)
 
 # The packer for .rldtrack containers. A PROGRAM OF ITS OWN, not part of the game -
 # a track author builds their container with it; the game uses nothing of it.
-# The Alpha-Maker carries the same code (see below), and the release package
-# ships only the Alpha-Maker. rldpack.exe is built for the self-test and for
+# Reload Studio carries the same code (see below), and the release package
+# ships only Reload Studio. rldpack.exe is built for the self-test and for
 # use on the command line.
 #
 # The version resource is only attached under MSVC. It gives the binary a
@@ -194,32 +194,33 @@ set_target_properties(rldpack PROPERTIES
     C_EXTENSIONS OFF
 )
 
-# The Alpha-Maker: the front end for track authors, see the header of
-# tools/alphamaker/alphamaker.h. ONE exe that carries rldpack inside
-# (am_rldpack.c: the same tools/rldpack.c with a renamed main) and starts itself
+# Reload Studio: the front end for track authors, see the header of
+# tools/reloadstudio/reloadstudio.h. ONE exe that carries rldpack inside
+# (rs_rldpack.c: the same tools/rldpack.c with a renamed main) and starts itself
 # as a child process for every pack and check step - no second
 # implementation of a check. Win32 front end, so only under MSVC; under
 # MinGW it stays out like rldpack's version resource.
 if(MSVC)
-    add_executable(alphamaker WIN32
-        tools/alphamaker/am_shell.c
-        tools/alphamaker/am_track.c
-        tools/alphamaker/am_cups.c
-        tools/alphamaker/am_test.c
-        tools/alphamaker/am_rldpack.c
+    add_executable(ReloadStudio WIN32
+        tools/reloadstudio/rs_shell.c
+        tools/reloadstudio/rs_track.c
+        tools/reloadstudio/rs_cups.c
+        tools/reloadstudio/rs_test.c
+        tools/reloadstudio/rs_rldpack.c
         platform/native_disc_image.c
-        tools/alphamaker/alphamaker.rc
-        tools/alphamaker/alphamaker.manifest
+        tools/reloadstudio/reloadstudio.rc
+        tools/reloadstudio/reloadstudio.manifest
     )
     # The same version and build ID as the game, for the title and the pairing
     # check - from generated/ctr_build_id.h, new on every build (target
     # ctr_build_id).
-    target_compile_definitions(alphamaker PRIVATE CTR_NATIVE
+    target_compile_definitions(ReloadStudio PRIVATE CTR_NATIVE
         CTR_NATIVE_VERSION=\"${CTR_NATIVE_VERSION}\")
-    target_include_directories(alphamaker PRIVATE ${CMAKE_SOURCE_DIR}/include ${CTR_BUILD_ID_DIR})
-    add_dependencies(alphamaker ctr_build_id)
-    target_link_libraries(alphamaker PRIVATE comctl32 comdlg32 shell32 ole32 uuid uxtheme)
-    set_target_properties(alphamaker PROPERTIES
+    target_include_directories(ReloadStudio PRIVATE ${CMAKE_SOURCE_DIR}/include ${CTR_BUILD_ID_DIR})
+    add_dependencies(ReloadStudio ctr_build_id)
+    target_link_libraries(ReloadStudio PRIVATE comctl32 comdlg32 shell32 ole32 uuid uxtheme)
+    set_target_properties(ReloadStudio PROPERTIES
+        OUTPUT_NAME ReloadStudio
         C_STANDARD 17
         C_STANDARD_REQUIRED ON
         C_EXTENSIONS OFF
@@ -338,11 +339,11 @@ if(BUILD_TESTING)
     # step against fixed cases. The hashing is self-written in this tree, so it
     # has to prove itself.
     add_test(NAME rldpack_selftest COMMAND $<TARGET_FILE:rldpack> selftest)
-    # The same self-test through the rldpack inside the Alpha-Maker: proves that the
+    # The same self-test through the rldpack inside Reload Studio: proves that the
     # built-in version is the same one and talks over the pipe.
     if(MSVC)
-        add_test(NAME alphamaker_rldpack_selftest COMMAND $<TARGET_FILE:alphamaker> --rldpack selftest)
-        set_tests_properties(alphamaker_rldpack_selftest PROPERTIES PASS_REGULAR_EXPRESSION "Self-test passed")
+        add_test(NAME reloadstudio_rldpack_selftest COMMAND $<TARGET_FILE:ReloadStudio> --rldpack selftest)
+        set_tests_properties(reloadstudio_rldpack_selftest PROPERTIES PASS_REGULAR_EXPRESSION "Self-test passed")
     endif()
     set_tests_properties(ctr_native_version PROPERTIES PASS_REGULAR_EXPRESSION "^CTR Reload Beta ")
 

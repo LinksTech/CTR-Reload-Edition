@@ -67,7 +67,7 @@ without an emulator, and plays custom tracks next to the original ones.
   automatically for the track screen
 - Fixes for crashes found in community tracks, and broken track data
   gets caught before you race, not mid-race
-- Alpha-Maker: turns your track data into a ready-to-play file — no
+- Reload Studio: turns your track data into a ready-to-play file — no
   command line, no scripts, no patching, just a window
 
 ### ⚙️ Under the hood
@@ -92,7 +92,8 @@ without an emulator, and plays custom tracks next to the original ones.
 1. Download **`ctr_native.exe`** (the game) and **`alphamaker.exe`** (the track
    tool) from the [latest release](https://github.com/LinksTech/CTR-Reload-Edition/releases/tag/v0.0-beta0)
    into one folder you can write to, for example `C:\Games\CTR Reload` (not
-   `C:\Program Files`).
+   `C:\Program Files`). Beta 0 ships the tool as `alphamaker.exe`; it has been
+   called Reload Studio since then.
 2. Start `ctr_native.exe` and drag your disc image (`.cue` or `.bin`) onto the
    window. The game unpacks what it needs into an `assets` folder next to it,
    once (about 520 MB).
@@ -104,7 +105,7 @@ Windows 10 (1903 or newer) or Windows 11 and a graphics driver with Vulkan 1.0.
 
 ## Custom tracks
 
-The Alpha-Maker (`alphamaker.exe`) builds a track container from your exported
+Reload Studio (`ReloadStudio.exe`) builds a track container from your exported
 track folder (`.lev`, `.vrm` and optional music), checks it and records its
 preview. On its Cups page you put up to four cups together, and "Test in game"
 starts a race on your track straight away. Keep it next to `ctr_native.exe`.
@@ -120,12 +121,12 @@ starts a race on your track straight away. Keep it next to `ctr_native.exe`.
 | Time Trial, Battle | not available yet |
 
 At most 110 placed objects (crates, fruit, letters and every other placed
-model); above 90 the Alpha-Maker warns.
+model); above 90 Reload Studio warns.
 
 </details>
 
-Every page and message of the Alpha-Maker is explained in section 4 of the
-[Alpha-Maker guide](tools/package/README.txt).
+Every page and message of Reload Studio is explained in section 4 of the
+[Reload Studio guide](tools/package/README.txt).
 
 ## What's next
 
@@ -171,7 +172,7 @@ the bug report template, one issue per problem.
 - The version: `ctr_native.exe --version`
 - What happened, what you expected, and the steps to get there
 - The newest log from the `logs` folder next to the game
-- For a custom track: its file name and the SHA-256 the Alpha-Maker shows
+- For a custom track: its file name and the SHA-256 Reload Studio shows
 
 Issues are public: never attach disc images, the `assets` folder, memory cards
 or other game data, and edit your Windows user name out of the log if you mind.

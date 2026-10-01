@@ -857,7 +857,7 @@ static const char *Rld_OpenAs(struct RldReader *reader, const char *path, const 
 	}
 	if (reader->major < format->major)
 	{
-		return Rld_Refuse(reader, RLD_REFUSAL_OLDER, "old format - pack it again with the Alpha-Maker");
+		return Rld_Refuse(reader, RLD_REFUSAL_OLDER, "old format - pack it again with Reload Studio");
 	}
 
 	// Since 4.1 the header flags are required features: a bit this build does not

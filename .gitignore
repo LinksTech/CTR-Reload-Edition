@@ -83,6 +83,7 @@ ctr-settings.cfg
 ctr-data.cfg
 ctr-view.cfg
 alphamaker.ini
+reloadstudio.ini
 
 # --- Screenshots and dumps (show game content) ---------------------------
 *.tga

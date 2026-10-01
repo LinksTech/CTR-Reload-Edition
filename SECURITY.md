@@ -25,7 +25,7 @@ publish an advisory, we name you in it as the finder if you want.
 
 In scope:
 
-- `ctr_native.exe` and `alphamaker.exe` (with the built-in `rldpack` packer),
+- `ctr_native.exe` and `ReloadStudio.exe` (with the built-in `rldpack` packer),
   as built from this repository - for example a crafted track container, cup
   list, settings file or disc image that makes a program run code, or read or
   write files outside its folders
