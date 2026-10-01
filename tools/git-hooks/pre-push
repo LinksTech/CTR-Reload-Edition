@@ -21,11 +21,17 @@
 #   - videos outside externals/SDL
 #   - any file larger than 5 MB
 #   - the SHA-256 of known game files (compared by size first, then hashed)
+# A pushed ref must end at a commit, also through annotated tags: a tag on a
+# tree or a blob has no commit to check, so it is refused.
 # Like the other hooks it needs Python 3; without it every push is refused.
 
 remote="$1"
 zero=0000000000000000000000000000000000000000
 limit=5242880
+
+# Replace refs must not hide or swap objects: git push sends the real ones.
+GIT_NO_REPLACE_OBJECTS=1
+export GIT_NO_REPLACE_OBJECTS
 
 root=$(git rev-parse --show-toplevel) || exit 1
 py=python
@@ -54,6 +60,14 @@ refuse() {
 
 while read local_ref local_sha remote_ref remote_sha; do
 	[ "$local_sha" = "$zero" ] && continue
+	# Only a commit, or a tag that ends at a commit, may be pushed: for a tag
+	# on a tree or a blob git rev-list lists no commit, so nothing below would
+	# be checked, and the check on GitHub cannot check it out either. ^{}
+	# peels every annotated tag on the way; a git error refuses the push.
+	kind=$(git cat-file -t "$local_sha^{}") ||
+		refuse "git cannot read the object $local_sha of $local_ref"
+	[ "$kind" = commit ] ||
+		refuse "$local_ref points at a $kind, not at a commit: only commits and their tags can be pushed"
 	# The commits this push sends. A ref that is new on the remote gets its
 	# whole history checked: the remote-tracking refs may be stale (a remote
 	# that was deleted and created again still has them locally), and fail

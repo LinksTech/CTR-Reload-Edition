@@ -119,10 +119,11 @@ root = sys.argv[1]
 BAD_EXT = ('.log', '.dmp')
 BAD_NAME = ('bigfile.big', 'kart.hwl', 'ctr-data.cfg', 'ctr-settings.cfg', 'ctr-view.cfg',
             'alphamaker.ini', 'track-ids.tsv', 'cups.txt')
-# Game data, user files, and local measurement/reference/test-data folders
-# (literal folder names, the same ones .gitignore keeps out of the repository).
+# Game data, user files, local measurement/reference/test-data folders and
+# build output (literal folder names, the same ones .gitignore keeps out of
+# the repository).
 BAD_DIR = ('concept/', 'messung-', 'baseline-', 'testdata/', 'test-bats/', 'memcards/', 'assets/', 'tracks/',
-           'tracks_archive/', 'debug/', 'logs/', 'characters/')
+           'tracks_archive/', 'debug/', 'logs/', 'characters/', 'build/', 'out/')
 bad = []
 def check(name, read=None):
     path = name.replace('\\', '/')

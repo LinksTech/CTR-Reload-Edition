@@ -6,6 +6,8 @@
 # file types, on 3D model, audio, picture and archive file types and on binary
 # files larger than 1 MB in any commit. The only exceptions are the SDL files
 # that the script lists by path and blob id. The rules are in the script.
+# Before that, the script's self-test (--self-test) checks the rules against
+# paths and contents made up in the script, so a weakened rule fails the run.
 #
 # One check name, content-guard, for push and pull request: both check the
 # whole history, so a later commit that deletes a file never makes it pass,
@@ -42,7 +44,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      # A push that deletes a branch or tag has no commit: both steps are
+      # A push that deletes a branch or tag has no commit: every step is
       # skipped and the job passes.
       - name: Check out with the whole history
         if: github.event.deleted != true
@@ -50,6 +52,10 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+
+      - name: Self-test of the content guard
+        if: github.event.deleted != true
+        run: python3 tools/content_guard.py --self-test
 
       - name: Check every commit in the history
         if: github.event.deleted != true

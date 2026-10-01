@@ -128,8 +128,10 @@ trial package anyway) and refuses to package a file type that
   history of the checked-out commit, the whole tree of each: it fails on game
   data file types, on 3D model, audio, picture and archive file types and on
   binary files larger than 1 MB. The only exceptions are the pictures and
-  sounds of `externals/SDL`, listed in the script by path and blob id. The
-  same check by hand: `python tools/content_guard.py --history HEAD`.
+  sounds of `externals/SDL`, listed in the script by path and blob id. Before
+  that, `python tools/content_guard.py --self-test` checks the rules against
+  paths and contents made up in the script. The same check by hand:
+  `python tools/content_guard.py --history HEAD`.
 
 ## Before you commit and push
 
@@ -144,7 +146,8 @@ Enable the hooks once per clone:
   (untracked, it stays on your machine).
 - `pre-push` runs the rules of `tools/content_guard.py` on every commit the
   push would send and also refuses logs, game files and settings by name,
-  forbidden folders, files larger than 5 MB and known game files by SHA-256.
-  It recognizes game data and content by other people only by file type,
-  name, folder, size and these hashes, not by what a file contains. It needs
-  Python, like the other hooks.
+  forbidden folders, videos outside `externals/SDL`, files larger than 5 MB
+  and known game files by SHA-256. It refuses a tag that does not point at a
+  commit (a tag on a tree or a blob). It recognizes game data and content by
+  other people only by file type, name, folder, size and these hashes, not by
+  what a file contains. It needs Python 3, like the other hooks.

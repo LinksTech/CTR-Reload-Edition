@@ -14,6 +14,11 @@
                                                       <path>" (git ls-tree -l
                                                       without the mode); used by
                                                       tools/git-hooks/pre-push
+    python tools/content_guard.py --self-test         the rules against paths and
+                                                      contents made up in this
+                                                      script (no git objects);
+                                                      GitHub runs it before the
+                                                      history check
 
 Every file of every checked commit is looked at - the whole tree of each
 commit, not only what it changed and not only the newest commit: a file that
@@ -44,9 +49,11 @@ objects only.
 
 Exit code 0 = clean, 1 = forbidden content, 2 = usage or git error. With
 --stdin it prints one line "<path><TAB><reason>" per forbidden file and its
-errors go to standard error.
+errors go to standard error. With --self-test it prints one line per case;
+exit code 0 = every case as expected, 1 = a case failed.
 """
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -59,7 +66,8 @@ import textwrap
 # (TRAILING): the game's formats and the files made from them, and 3D models,
 # audio, pictures and archives, which are often made by other people (a test
 # generates its files in code).
-# tools/git-hooks/pre-push uses this list too (--stdin).
+# tools/git-hooks/pre-push uses this list too (--stdin). The self-test has a
+# second copy, TEST_TYPES: change both together.
 GROUPS = (
     ('disc image', '.bin .cue .iso .img .chd .ecm .pbp .mdf .mds .nrg .ccd .sub .toc'),
     ('game data', '.lev .vrm .big .xa .str .hwl .ctr .mpk .xnf .vag .vab .vh .vb .tim .lng'),
@@ -285,7 +293,12 @@ def is_binary(oid):
     p.wait()
     if len(head) < PROBE:
         raise Failure('cannot read file content %s' % oid)
-    return b'\0' in head
+    return looks_binary(head)
+
+
+def looks_binary(data):
+    """git's test: a NUL byte in the first PROBE bytes."""
+    return b'\0' in data[:PROBE]
 
 
 def allowed(path, oid):
@@ -394,6 +407,178 @@ def from_stdin():
     return 1 if found else 0
 
 
+# The self-test (--self-test) writes the rules down a second time: every file
+# type that must be refused, with its group, the groups an ALLOWED entry may
+# lift, the 1 MB limit, git's NUL test and two SDL files with their listed
+# content. A change that weakens GROUPS, LIFTABLE, TRAILING, ALLOWED or the
+# binary rule makes it fail. Apart from the two SDL entries, every path, blob
+# id and file content it uses is made up in this script; it reads no git
+# objects.
+# TEST_TYPES is the second copy of GROUPS: change both together.
+TEST_TYPES = (
+    ('disc image', '.bin .cue .iso .img .chd .ecm .pbp .mdf .mds .nrg .ccd .sub .toc'),
+    ('game data', '.lev .vrm .big .xa .str .hwl .ctr .mpk .xnf .vag .vab .vh .vb .tim .lng'),
+    ('track container', '.rldtrack'),
+    ('character container', '.rldchar'),
+    ('track preview', '.rldprev'),
+    ('music or sound data', '.sca .sndb .cseq'),
+    ('patch', '.xdelta .ppf .ips .bps .vcdiff'),
+    ('memory card or save file', '.mcr .mcd .gme .srm .sav'),
+    ('save state', '.ctrstates .state'),
+    ('replay', '.ctrreplay'),
+    ('3D model', '.ply .obj .fbx .blend .blend1 .glb .gltf .dae .3ds .stl .abc .usd .usda'
+                 ' .usdc .usdz .x3d .ma .mb .max .c4d .lwo .pmx .pmd .md2 .md3 .smd'),
+    ('audio', '.wav .mp3 .ogg .flac .aif .aiff .m4a .opus .wma .mid .midi'
+              ' .psf .psf2 .minipsf'),
+    ('picture', '.png .jpg .jpeg .gif .webp .bmp .tga .ppm .tif .tiff .dds .psd .ico .icns'),
+    ('archive', '.zip .rar .7z .tar .gz .tgz .bz2 .xz'),
+)
+TEST_LIFTABLE = ('audio', 'picture')
+TEST_LIMIT = 1024 * 1024
+TEST_PROBE = 8000
+TEST_SDL = (
+    ('externals/SDL/test/sword.wav', '193cf5432044cd03f3d7289dd0d8a8e1809b1c7c'),
+    ('externals/SDL/test/sample.png', '375f01d700d11c80d90062a5b89bb70d7f079e32'),
+)
+
+
+def blob_id(data):
+    """The object id git gives this content as a blob."""
+    return hashlib.sha1(b'blob %d\0' % len(data) + data).hexdigest()
+
+
+def self_test():
+    """The --self-test check: one line per case, exit code 0 if every case
+    gives the expected answer, else 1."""
+    listed = sorted(ALLOWED)
+    fake = {}       # made-up ALLOWED entries, path -> blob id, only for the test
+    cases = []
+
+    def refused(path, oid=None, group=None):
+        reason = forbidden_type(path, oid)
+        if reason is None:
+            return 'passes, expected to be refused'
+        if group and not reason.endswith('(%s)' % group):
+            return 'refused as "%s", expected group "%s"' % (reason, group)
+        return None
+
+    def passes(path, oid=None):
+        reason = forbidden_type(path, oid)
+        return 'refused (%s), expected to pass' % reason if reason else None
+
+    def binary_rule(path, data, expect_refused):
+        oid = blob_id(data)
+        reason = judge(path, 'blob', oid, str(len(data)), {oid: looks_binary(data)})
+        if expect_refused and not reason:
+            return 'passes, expected to be refused'
+        if reason and not expect_refused:
+            return 'refused (%s), expected to pass' % reason
+        return None
+
+    def allowed_entries():
+        bad = [path for path, oid in listed
+               if not path.startswith(ALLOWED_PREFIX) or not re.fullmatch('[0-9a-f]{40}', oid)
+               or forbidden_type(path, oid)]
+        return 'not usable: %s' % ', '.join(bad[:5]) if bad else None
+
+    def case(label, test, *args):
+        cases.append((label, lambda: test(*args)))
+
+    # Every type, in its group; then letter case and the end of the name.
+    for group, exts in TEST_TYPES:
+        for ext in exts.split():
+            case('refuses %s (%s)' % (ext, group), refused, 'some/folder/file' + ext, None, group)
+    for path in ('X.PLY', 'track/Level.LEV', 'model.Blend1', 'driver/kart.RLDCHAR', 'pack.7Z',
+                 'face.PnG', 'run.CtrReplay', 'externals/SDL/test/NEW.WAV'):
+        case('refuses %s (letter case)' % path, refused, path)
+    for path in ('x.ply.', 'x.ply ', 'x.ply . .', 'x.wav\r', 'x.png\t', 'x.lev\x7f',
+                 'x.rldchar\x1f.', 'x.zip \x0b', 'externals/SDL/test/x.png.'):
+        case("refuses '%s' (end of the name)" % path, refused, path)
+    for path in ('driver.v2.ply', 'pack.tar.gz'):
+        case('refuses %s (the last extension counts)' % path, refused, path)
+    for path in ('folder/.png', '.ply'):
+        case('refuses %s (a name that is only the extension)' % path, refused, path)
+
+    # The SDL files: only the exact path with the listed content passes.
+    for path, oid in TEST_SDL:
+        case('passes %s with its listed content' % path, passes, path, oid)
+        case('refuses %s with other content' % path, refused, path, '0' * 40)
+        case('refuses %s with one other digit' % path, refused, path,
+             oid[:-1] + ('0' if oid[-1] != '0' else '1'))
+        case('refuses %s with unknown content' % path, refused, path, None)
+        folder, name = path.rsplit('/', 1)
+        stem, ext = name.rsplit('.', 1)
+        for moved in ('%s/%s2.%s' % (folder, stem, ext), 'game/' + name, path.lower(),
+                      path + '.', './' + path):
+            case('refuses the listed content of %s at %s' % (name, moved), refused, moved, oid)
+    for path in ('externals/SDL/test/new.png', 'externals/SDL/test/new.wav',
+                 'externals/SDL/test/x.ply', 'externals/SDL/x.rldchar'):
+        case('refuses %s (no entry, no folder exception)' % path, refused, path, blob_id(b'new'))
+    case('every ALLOWED entry (%d) is under %s with a blob id and passes'
+         % (len(listed), ALLOWED_PREFIX), allowed_entries)
+
+    # Made-up exact entries: they lift only audio and pictures, and only
+    # under externals/SDL/.
+    for group, exts in TEST_TYPES:
+        ext = exts.split()[0]
+        path = 'externals/SDL/test/made-up' + ext
+        fake[path] = blob_id(path.encode())
+        if group in TEST_LIFTABLE:
+            case('passes %s (%s) with an exact SDL entry' % (ext, group), passes, path, fake[path])
+        else:
+            case('refuses %s (%s) even with an exact SDL entry' % (ext, group),
+                 refused, path, fake[path], group)
+    for path in ('game/made-up.png', 'externals/other/made-up.png'):
+        fake[path] = blob_id(path.encode())
+        case('refuses %s (exact entry outside externals/SDL/)' % path, refused, path, fake[path])
+
+    # Files that are no concern.
+    for path in ('main.c', 'README.md', 'docs/assets/banner-dark.svg', 'tools/content_guard.py',
+                 'include/png.h', 'notes.png.txt', 'model.blendx', 'Makefile'):
+        case('passes %s (harmless)' % path, passes, path, blob_id(path.encode()))
+
+    # Binary files larger than 1 MB, with git's NUL test.
+    big = b'\0' + b'x' * TEST_LIMIT
+    fake['externals/SDL/test/made-up.dat'] = blob_id(big)
+    for label, path, data, expect in (
+            ('a binary file of 1 MB + 1 byte', 'tools/big.dat', big, True),
+            ('a binary file of exactly 1 MB', 'tools/big.dat',
+             b'\0' + b'x' * (TEST_LIMIT - 1), False),
+            ('a text file of 1 MB + 1 byte', 'tools/big.txt', b'x' * (TEST_LIMIT + 1), False),
+            ('a NUL at byte %d (binary)' % (TEST_PROBE - 1), 'tools/big.dat',
+             b'x' * (TEST_PROBE - 1) + b'\0' + b'x' * (TEST_LIMIT + 1 - TEST_PROBE), True),
+            ('a NUL only at byte %d (text, as git)' % TEST_PROBE, 'tools/big.dat',
+             b'x' * TEST_PROBE + b'\0' + b'x' * (TEST_LIMIT - TEST_PROBE), False),
+            ('a binary file over 1 MB with an exact SDL entry', 'externals/SDL/test/made-up.dat',
+             big, False),
+            ('the same binary file at another SDL path', 'externals/SDL/test/other.dat',
+             big, True)):
+        case('%s %s' % ('refuses' if expect else 'passes', label), binary_rule, path, data, expect)
+
+    added = set(fake.items()) - ALLOWED
+    ALLOWED.update(added)
+    failed = 0
+    try:
+        for label, test in cases:
+            try:
+                problem = test()
+            except Exception as e:      # a crash is a failed case, never a pass
+                problem = 'error: %s' % e
+            if problem:
+                failed += 1
+                print('  FAIL  %s: %s' % (shown(label), shown(problem)))
+            else:
+                print('  ok    %s' % shown(label))
+    finally:
+        ALLOWED.difference_update(added)
+    if failed:
+        print('content_guard: self-test FAILED - %d of %d case(s)' % (failed, len(cases)))
+        annotate('self-test failed: %d of %d case(s)' % (failed, len(cases)))
+        return 1
+    print('content_guard: self-test passed - %d case(s)' % len(cases))
+    return 0
+
+
 def from_github():
     """What this run checks, or None if the push deleted a branch or tag."""
     event = os.environ.get('GITHUB_EVENT_NAME', '')
@@ -427,7 +612,11 @@ def main(argv):
                       help='the automatic check: --history HEAD for a push or pull request')
     mode.add_argument('--stdin', action='store_true',
                       help='the files listed on standard input (tools/git-hooks/pre-push)')
+    mode.add_argument('--self-test', action='store_true',
+                      help='the rules against paths and contents made up in this script')
     args = ap.parse_args(argv)
+    if args.self_test:
+        return self_test()
     out = sys.stderr if args.stdin else sys.stdout
     try:
         base = None
