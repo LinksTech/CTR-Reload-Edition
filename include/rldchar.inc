@@ -49,6 +49,10 @@
 #define RLDCHAR_LIMIT_CICN (4u * 1024u)    // the portrait, exactly RLDCHAR_ICON_BYTES (CICN-3)
 #define RLDCHAR_LIMIT_CPRM (4u * 1024u)    // known type, not written yet
 #define RLDCHAR_INFO_FIXED_SIZE 0x1Cu
+#define RLDCHAR_CHRI_FLAGS_OFFSET 0x1Cu    // u32 flags, present when fixedSize >= RLDCHAR_CHRI_SIZE_FLAGS
+#define RLDCHAR_CHRI_SIZE_FLAGS 0x20u
+#define RLDCHAR_FLAG_NO_WHEELS 0x1u        // CHRI flags bit 0: the game draws no kart wheels for this driver
+#define RLDCHAR_FLAGS_KNOWN RLDCHAR_FLAG_NO_WHEELS   // the CHRI flag bits this reader understands
 #define RLDCHAR_NAME_FIELD 20
 #define RLDCHAR_NAME_MAX 17
 #define RLDCHAR_AUTHOR_MAX 64
@@ -128,11 +132,15 @@ static const struct RldFormat s_rldCharFormat = {
 // 0x03 u8  class        engine class 0..3
 // 0x04 char[20] name    the display name, see RldChar_NameValid
 // 0x18 u32 charVersion  the version for humans; the game tells versions apart by the CMDL hash
+// 0x1C u32 flags        only when fixedSize >= 0x20, else 0; bit 0 RLDCHAR_FLAG_NO_WHEELS
 // fixedSize: u32 stringCount, then per string u32 length + bytes; string 0 is the author
 //
 // A new field only ever lengthens fixedSize, a new string is only ever
 // appended: an older reader skips both. META had no length field and paid for
-// it with a major bump.
+// it with a major bump. flags is the first such field: the packer writes
+// fixedSize 0x20 only when a bit is set, so a file without flags keeps the
+// bytes it had before, and a reader from before flags skips them and draws
+// the wheels.
 
 // The menu font: A-Z, 0-9, space and ! % ' + , - . / : < = > ? _
 // (font_characterIconID, game/zGlobal_DATA.c:2597-2703). Upper case only -
@@ -221,6 +229,7 @@ struct RldCharInfo
 	u32 classId;
 	char name[RLDCHAR_NAME_FIELD + 1];
 	u32 charVersion;
+	u32 flags;                             // 0 when absent (fixedSize < 0x20); unknown bits kept as stored
 	u32 stringCount;
 	char author[RLDCHAR_AUTHOR_MAX + 1];   // "" when absent
 };
@@ -268,6 +277,17 @@ static const char *RldChar_ParseInfo(struct RldCharInfo *out, const u8 *bytes, s
 	out->name[RLDCHAR_NAME_FIELD] = '\0';
 
 	out->charVersion = Rld_ReadLE32(&bytes[0x18]);
+
+	// flags has no rule of its own. CHRI-1 has already placed fixedSize inside
+	// the chunk, so the 4 bytes lie in it. A bit outside RLDCHAR_FLAGS_KNOWN is
+	// no finding either - a CHRI finding refuses the file, and a bit a newer
+	// packer sets must not refuse it (forward compatible). It stays in
+	// out->flags as stored; whoever reads flags tests only the bits it knows.
+	if (out->fixedSize >= RLDCHAR_CHRI_SIZE_FLAGS)
+	{
+		out->flags = Rld_ReadLE32(&bytes[RLDCHAR_CHRI_FLAGS_OFFSET]);
+	}
+
 	out->stringCount = Rld_ReadLE32(&bytes[out->fixedSize]);
 
 	// Every entry takes at least its 4 length bytes, so even a stringCount of

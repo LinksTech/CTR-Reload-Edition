@@ -109,6 +109,12 @@ int NativeChar_SeatEngineClass(int seat, int retailClass);
 // silent), else 0.
 int NativeChar_SeatSilent(int seat);
 
+// game/DrawTires.c, the solid wheels and their reflection: 1 when model is the
+// model of a loaded file whose CHRI flags set RLDCHAR_FLAG_NO_WHEELS (the race
+// seat and the driver select preview alike), else 0 - also for NULL, retail
+// models and an empty roster.
+int NativeChar_ModelHidesWheels(const struct Model *model);
+
 // Right after VehBirth_SetConsts on the birth path: one line "drive values"
 // with the values just written, only for a bound seat.
 void NativeChar_NoteDriveValues(const struct Driver *d, int seat);

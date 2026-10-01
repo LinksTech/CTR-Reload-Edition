@@ -1,5 +1,9 @@
 #include <common.h>
 
+// From platform/native_chars.c: 1 for the model of a custom character whose
+// file asks for no kart wheels, else 0 (every retail model, NULL).
+int NativeChar_ModelHidesWheels(const struct Model *model);
+
 static const u32 sDrawTiresSolidJumpTable[8] = {
     0x8006ed7c, 0x8006ed98, 0x8006edb4, 0x8006edcc, 0x8006ede4, 0x8006ee00, 0x8006ee1c, 0x8006ee3c,
 };
@@ -804,6 +808,11 @@ static int DrawTiresSolid_StagePlayer(struct DrawTiresScratch *scratch, struct D
 		return 0;
 	}
 
+	if (NativeChar_ModelHidesWheels(inst->model))
+	{
+		return 0;
+	}
+
 #if defined(CTR_NATIVE)
 	// THE WHEELS, AND WHY FORCING THE MODEL DID NOT BRING THEM BACK.
 	//
@@ -819,7 +828,8 @@ static int DrawTiresSolid_StagePlayer(struct DrawTiresScratch *scratch, struct D
 	// without wheels at distance is the block.
 	//
 	// Counted either way, including when the answer is ignored, so the report can
-	// say what the rule costs rather than only that it is off.
+	// say what the rule costs rather than only that it is off. A custom driver
+	// whose file hides the wheels has returned above and is not counted.
 	{
 		const int pastThreshold = ((idpp->lodIndex - scratch->lodThreshold) > 0);
 
@@ -1404,6 +1414,11 @@ static int DrawTiresReflection_StagePlayer(struct DrawTiresScratch *scratch, str
 		return 0;
 	}
 
+	if (NativeChar_ModelHidesWheels(inst->model))
+	{
+		return 0;
+	}
+
 #if defined(CTR_NATIVE)
 	// THE WHEELS, AND WHY FORCING THE MODEL DID NOT BRING THEM BACK.
 	//
@@ -1419,7 +1434,8 @@ static int DrawTiresReflection_StagePlayer(struct DrawTiresScratch *scratch, str
 	// without wheels at distance is the block.
 	//
 	// Counted either way, including when the answer is ignored, so the report can
-	// say what the rule costs rather than only that it is off.
+	// say what the rule costs rather than only that it is off. A custom driver
+	// whose file hides the wheels has returned above and is not counted.
 	{
 		const int pastThreshold = ((idpp->lodIndex - scratch->lodThreshold) > 0);
 

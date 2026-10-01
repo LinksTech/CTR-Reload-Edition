@@ -336,7 +336,7 @@ is frozen. Source: `include/rldchar.inc`.
 
 | Chunk | Status | Limit | Content |
 |---|---|---|---|
-| CHRI | required | 4 KiB | template, class, name, version, author |
+| CHRI | required | 4 KiB | template, class, name, version, flags, author |
 | CMDL | required | 256 KiB | the model, in the game's native model format |
 | CICN | optional, written by `rldpack make-char --icon` | 4 KiB | the portrait, exactly 612 bytes (rules CICN-1..3); the game does not show it yet |
 | CPRM | optional, known type: not written by rldpack, content not interpreted yet | 4 KiB | values; layout not fixed (draft) |
@@ -359,11 +359,18 @@ below). Nothing interprets CPRM yet.
 | 0x03 | u8 | class | engine class 0..3: balanced, acceleration, speed, turning; the game drives the character with it |
 | 0x04 | char[20] | name | display name, see the name rule |
 | 0x18 | u32 | charVersion | for humans; the CMDL hash, not this number, is meant to tell versions apart |
+| 0x1C | u32 | flags | only when fixedSize >= 0x20, else 0; bit 0 (`RLDCHAR_FLAG_NO_WHEELS`): the game draws no kart wheels for this driver (tyre dust and skid marks stay: they are effects at the wheel points, not wheels); further bits are reserved |
 | fixedSize | u32 | stringCount | then per string: u32 length, bytes |
 | | | string 0 | author, at most 64 bytes; "" when absent |
 
-- `rldpack` writes fixedSize 0x1C and one string, the author (UTF-8; the packer checks it).
-- A reader skips numeric bytes beyond 0x1C and strings beyond the first.
+- `rldpack` writes fixedSize 0x1C and one string, the author (UTF-8; the packer
+  checks it). Only when flags is not 0 (`rldpack make-char --wheels off`) does it
+  write fixedSize 0x20 with flags at 0x1C, so a file without flags has the same
+  bytes as before the field existed.
+- A reader skips numeric bytes beyond the fields it knows and strings beyond the
+  first. A reader from before flags skips it and draws the wheels.
+- Flag bits a reader does not know are ignored: they are no finding and never
+  refuse the file.
 - `rldpack make-char --template` sets the template, `--class` the class
   (default: the template's own class). Reload Studio asks for no template: it
   always passes `--template 14` and the driving style the author chose
@@ -486,8 +493,8 @@ default 100) bakes the size into the vertices before the poses are made
   H = (0, 16, 0) game units (0.25 Blender units above the ground):
   p' = H + s x (p - H).
 - The kart is not scaled: the game draws the wheels as sprites at fixed
-  points of the kart, so it stays as large as the model has it (about a
-  retail kart).
+  points of the kart (unless the CHRI flags hide them, bit 0), so it stays as
+  large as the model has it (about a retail kart).
 - It is a visual size only - physics and collision follow the driving style
   (the class in CHRI).
 - 100 gives the same bytes as no `--size` at all.
@@ -566,6 +573,7 @@ file: CVOI stays a reserved name, and a custom driver is silent in the game.
 | a broken file | skipped with one log line `[CTR Char] REFUSED <file>: <kind> (<rule>) <detail>`; the game starts anyway |
 | the first 32 valid files | a tile each in the one-player ARCADE driver select, after the retail drivers (not for CRYSTAL and CTR under NITRO-PIT); a further valid file gets the log line `NO ID` and no tile |
 | menu and race | the driver select shows the template's portrait and the name from CHRI; in the race seat 0 runs on the template's character id with the custom model, the class in CHRI sets the physics values and the engine sound, and the template's voice is not played |
+| wheels | with `RLDCHAR_FLAG_NO_WHEELS` set in CHRI the game draws no kart wheels (and no wheel reflections) for the custom model - tyre dust and skid marks stay, they are effects at the wheel points, not wheels - and the load line `[CTR Char] loaded <file>: ...` ends in `, wheels hidden`; without the bit the wheels are drawn as for a retail driver |
 
 - The model's frame counts must match those of the template's retail model;
   otherwise seat 0 stays retail (log line `not bound: frames`).
@@ -667,7 +675,7 @@ CHRI rules (`RldChar_ParseInfo`). A finding refuses the file as DAMAGED.
 
 | Rule | What must hold |
 |---|---|
-| CHRI-1 | CHRI >= 0x20 bytes; fixedSize >= 0x1C, a multiple of 4, and <= CHRI size - 4 |
+| CHRI-1 | CHRI >= 0x20 bytes; fixedSize >= 0x1C, a multiple of 4, and <= CHRI size - 4 (so flags, when fixedSize >= 0x20, lies in CHRI) |
 | CHRI-2 | template 0..14 |
 | CHRI-3 | class 0..3 |
 | CHRI-4 | the name rule |
@@ -683,7 +691,7 @@ CHRI rules (`RldChar_ParseInfo`). A finding refuses the file as DAMAGED.
 | a new layout inside SNDB, PARM or CICN | the chunk's own version field: an older reader drops only that chunk |
 | a new PARM key | no bump: unknown keys are skipped |
 | a new string in META or CHRI | appended at the end only |
-| a new field in CHRI | a longer fixedSize; an older reader skips the extra bytes |
+| a new field in CHRI | a longer fixedSize; an older reader skips the extra bytes. flags at 0x1C came this way (fixedSize 0x20, written only when a bit is set): an older reader skips it and draws the wheels. A new flag bit needs no bump: a reader ignores bits it does not know |
 | a new number in META | not possible without a new major: META's numeric part has no length field. New things go into optional chunks |
 | something without which the content is wrong | a required-feature bit in header field 0x0C; a reader that does not know it refuses (NEEDS NEWER) |
 | a change an older reader would misread | a new major: older readers say NEEDS NEWER, newer readers say OLD FORMAT for the old files |

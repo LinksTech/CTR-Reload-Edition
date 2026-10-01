@@ -1217,6 +1217,7 @@ struct RldMkOptions
 	double scale;     // --scale (only with --fit none)
 	int fit;          // --fit crash: scaled to Crash's size first (RldMk_StepFit); 0 = --fit none
 	int reduce;       // --reduce auto: too many triangles are reduced (RldMk_StepReduce); 0 = --reduce off
+	int noWheels;     // --wheels off: CHRI flag RLDCHAR_FLAG_NO_WHEELS, and --fit measures the whole model
 	u32 reduceTarget; // set by RldMk_BuildModel: at most this many triangles after a reduction
 	int reduceForce;  // set by RldMk_BuildModel: reduce even at RLDMK_REDUCE_LIMIT or below
 	const char *reduceWhy;  // set by RldMk_BuildModel with reduceForce: why, for model-reduced
@@ -2166,6 +2167,10 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 //      far longer than his kart leaves the kart too short at f1.
 //   3  with a kart of length K at f1: f = min(f1 x 112.4 / K, 142.5 / H);
 //      without one f = f1
+// With --wheels off passes 2 and 3 are left out: f = f1. The game draws its
+// wheel sprites at fixed points of a retail kart, so with wheels the kart has
+// to be a retail kart's length; without them the model's own vehicle may be
+// any length.
 // f is rounded to 4 significant digits and applied as --scale f: the chain runs
 // again from step 2 with that scale, so --fit crash gives the same bytes as
 // --fit none --scale f. Kart detection, model-scale, ply-axes and ply-center
@@ -2331,9 +2336,16 @@ static int RldMk_StepFit(const struct RldMkPly *ply, const struct RldMkOptions *
 	b->fitFactor = (f > 0.0) ? RldMk_FitRound(f) : 1.0;
 	b->fitBasis = RLDMK_FIT_MODEL;
 
-	// 2: the kart at f1
+	// 2: the kart at f1 - not with --wheels off: then the model brings its own
+	// vehicle (a motorbike, say), which need not be as long as a retail kart,
+	// and no wheel sprite has to sit on it - the whole model is the measure.
 	at.scale = b->fitFactor;
-	if (RldMk_FitProbe(ply, &at, &probe, 1) && (probe.kartPart >= 0))
+	memset(&probe, 0, sizeof(probe));
+	if (opt->noWheels)
+	{
+		kart = -1;
+	}
+	else if (RldMk_FitProbe(ply, &at, &probe, 1) && (probe.kartPart >= 0))
 	{
 		kart = probe.kartPart;
 	}
@@ -5222,10 +5234,14 @@ static void RldMk_PartColors(const struct RldMkBuild *b, int group, char *out, s
 
 // CHRI 1.0 (include/rldchar.inc, RldChar_ParseInfo reads it): fixedSize 0x1C,
 // template, class, the 20-byte name, charVersion, then one string: the author.
-static u8 *RldMk_BuildChri(u32 templateId, u32 classId, const u8 name[RLDCHAR_NAME_FIELD], u32 charVersion, const char *author, size_t *sizeOut)
+// fixedSize 0x20 with the flags only when a flag is set: without one the
+// bytes are those from before the flags existed (include/rldchar.inc).
+static u8 *RldMk_BuildChri(u32 templateId, u32 classId, const u8 name[RLDCHAR_NAME_FIELD], u32 charVersion, const char *author, u32 flags,
+                           size_t *sizeOut)
 {
 	const size_t length = strlen(author);
-	const size_t size = RLDCHAR_INFO_FIXED_SIZE + 4u + 4u + length;
+	const u32 fixedSize = (flags != 0u) ? RLDCHAR_CHRI_SIZE_FLAGS : RLDCHAR_INFO_FIXED_SIZE;
+	const size_t size = fixedSize + 4u + 4u + length;
 	u8 *data = (u8 *)calloc(1, size);
 
 	*sizeOut = 0;
@@ -5234,14 +5250,18 @@ static u8 *RldMk_BuildChri(u32 templateId, u32 classId, const u8 name[RLDCHAR_NA
 		return NULL;
 	}
 
-	Rld_WriteLE16(&data[0x00], RLDCHAR_INFO_FIXED_SIZE);
+	Rld_WriteLE16(&data[0x00], fixedSize);
 	data[0x02] = (u8)templateId;
 	data[0x03] = (u8)classId;
 	memcpy(&data[0x04], name, RLDCHAR_NAME_FIELD);
 	Rld_WriteLE32(&data[0x18], charVersion);
-	Rld_WriteLE32(&data[RLDCHAR_INFO_FIXED_SIZE], 1u);
-	Rld_WriteLE32(&data[RLDCHAR_INFO_FIXED_SIZE + 4u], (u32)length);
-	memcpy(&data[RLDCHAR_INFO_FIXED_SIZE + 8u], author, length);
+	if (flags != 0u)
+	{
+		Rld_WriteLE32(&data[RLDCHAR_CHRI_FLAGS_OFFSET], flags);
+	}
+	Rld_WriteLE32(&data[fixedSize], 1u);
+	Rld_WriteLE32(&data[fixedSize + 4u], (u32)length);
+	memcpy(&data[fixedSize + 8u], author, length);
 
 	*sizeOut = size;
 	return data;
@@ -6541,6 +6561,20 @@ static int RldMk_ParseWhole(const char *text, u32 max, u32 *out)
 	return 1;
 }
 
+// `text` in lower case into `word`, as --up takes its value in any case.
+// 0 = longer than `size` - 1: no word of a switch.
+static int RldMk_Lower(const char *text, char *word, size_t size)
+{
+	size_t k;
+
+	for (k = 0; ((k + 1u) < size) && (text[k] != '\0'); k++)
+	{
+		word[k] = (char)(((text[k] >= 'A') && (text[k] <= 'Z')) ? (text[k] - 'A' + 'a') : text[k]);
+	}
+	word[k] = '\0';
+	return (text[k] == '\0');
+}
+
 // --fit (default crash) and whether --scale may go with it: *fit is 1 for
 // crash, 0 for none. 0 = a wrong value or --scale with crash, said (fit,
 // fit-scale); *fit stays crash after a wrong value.
@@ -6697,7 +6731,7 @@ static void RldMk_PrintFacts(const struct RldMkBuild *b, const struct RldMkOptio
 		}
 		else
 		{
-			snprintf(basis, sizeof(basis), "%s", b->fitCapped ? "model height, no kart found" : "model length, no kart found");
+			snprintf(basis, sizeof(basis), "%s %s", b->fitCapped ? "model height," : "model length,", opt->noWheels ? "wheels hidden" : "no kart found");
 		}
 		printf("  fit           x%.4g to Crash size (%s): %s -> %s long, %s -> %s tall (game units)\n", b->fitFactor, basis, fit[0], fit[1], fit[2],
 		       fit[3]);
@@ -6789,6 +6823,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	const char *scaleArg = NULL;
 	const char *fitArg = NULL;
 	const char *reduceArg = NULL;
+	const char *wheelsArg = NULL;
 	const char *outArg = NULL;
 	const char *sizeArg = NULL;
 	const char *iconArg = NULL;
@@ -6880,6 +6915,10 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		else if ((strcmp(arg, "--reduce") == 0) && hasValue)
 		{
 			reduceArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--wheels") == 0) && hasValue)
+		{
+			wheelsArg = argv[++i];
 		}
 		else if ((strcmp(arg, "--out") == 0) && hasValue)
 		{
@@ -6985,6 +7024,20 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		else
 		{
 			opt.scale = value;
+		}
+	}
+
+	if (wheelsArg != NULL)
+	{
+		char word[8];
+
+		if (RldMk_Lower(wheelsArg, word, sizeof(word)) && (strcmp(word, "off") == 0))
+		{
+			opt.noWheels = 1;
+		}
+		else if (!RldMk_Lower(wheelsArg, word, sizeof(word)) || (strcmp(word, "on") != 0))
+		{
+			RldMk_Say("error", "wheels", wheelsArg, "Wheels must be on or off.");
 		}
 	}
 
@@ -7129,6 +7182,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		Rld_Emit("value", "scale", number, ((scaleArg != NULL) && !opt.fit) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "fit", opt.fit ? "crash" : "none", (fitArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "reduce", opt.reduce ? "auto" : "off", (reduceArg != NULL) ? "switch" : "default", (const char *)NULL);
+		Rld_Emit("value", "wheels", opt.noWheels ? "off" : "on", (wheelsArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "two_sided", opt.twoSided ? "yes" : "no", opt.twoSided ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "out", outPath, (outArg != NULL) ? "switch" : "default", (const char *)NULL);
 		snprintf(number, sizeof(number), "%u", opt.sizePercent);
@@ -7262,6 +7316,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 			printf("  class         %u %s%s\n", classId, s_rldMkClassNames[classId],
 			       ((classArg == NULL) || (strcmp(classArg, "like") == 0)) ? " (like the template)" : "");
 		}
+		printf("  wheels        %s\n", opt.noWheels ? "hidden - the game draws no kart wheels (--wheels off)" : "shown - the game draws its kart wheels");
 	}
 
 	if (!built || (s_rldMkErrors != 0))
@@ -7273,7 +7328,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	}
 
 	// CHRI, checked with the reader the game runs, and the container.
-	chri = RldMk_BuildChri(templateId, classId, nameField, charVersion, authorArg, &chriSize);
+	chri = RldMk_BuildChri(templateId, classId, nameField, charVersion, authorArg, opt.noWheels ? RLDCHAR_FLAG_NO_WHEELS : 0u, &chriSize);
 	if (chri != NULL)
 	{
 		struct RldCharInfo back;
@@ -7533,6 +7588,11 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		printf("  char_version  %u\n", info.charVersion);
 		printf("  template      %u %s\n", info.templateId, (info.templateId < RLDMK_TEMPLATE_COUNT) ? s_rldMkTemplates[info.templateId].name : "");
 		printf("  class         %u %s\n", info.classId, (info.classId < RLDMK_CLASS_COUNT) ? s_rldMkClassNames[info.classId] : "");
+		printf("  wheels        %s\n", ((info.flags & RLDCHAR_FLAG_NO_WHEELS) != 0u) ? "hidden" : "shown");
+		if ((info.flags & ~(u32)RLDCHAR_FLAGS_KNOWN) != 0u)
+		{
+			printf("  flags         0x%08x (unknown bits ignored)\n", info.flags);
+		}
 		printf("  chunks        ");
 		for (i = 0; i < reader.chunkCount; i++)
 		{
@@ -7582,6 +7642,12 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		Rld_Emit("value", "template", number, "container", (const char *)NULL);
 		snprintf(number, sizeof(number), "%u", info.classId);
 		Rld_Emit("value", "class", number, "container", (const char *)NULL);
+		Rld_Emit("value", "wheels", ((info.flags & RLDCHAR_FLAG_NO_WHEELS) != 0u) ? "off" : "on", "container", (const char *)NULL);
+		if ((info.flags & ~(u32)RLDCHAR_FLAGS_KNOWN) != 0u)
+		{
+			snprintf(number, sizeof(number), "0x%08x", info.flags);
+			Rld_Emit("value", "flags", number, "container", (const char *)NULL);
+		}
 		snprintf(number, sizeof(number), "%u.%u", reader.major, reader.minor);
 		Rld_Emit("value", "format", number, "container", (const char *)NULL);
 		snprintf(number, sizeof(number), "%u", facts.triangles);
@@ -7745,10 +7811,15 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "  --forward z|-z              -z: the model looks backwards and is turned\n");
 	fprintf(out, "  --fit crash|none            crash (default): scale the model to Crash's\n");
 	fprintf(out, "                              size - its kart as long as Crash with his kart\n");
-	fprintf(out, "                              (%.1f game units; the whole model when no kart\n", RLDMK_CRASH_LENGTH);
-	fprintf(out, "                              is found), at most as tall as the tallest driver\n");
+	fprintf(out, "                              (%.1f game units; the whole model with\n", RLDMK_CRASH_LENGTH);
+	fprintf(out, "                              --wheels off or when no kart is found), at\n");
+	fprintf(out, "                              most as tall as the tallest driver\n");
 	fprintf(out, "                              (%.1f), the factor rounded to 4 significant\n", RLDMK_RETAIL_HEIGHT_MAX);
 	fprintf(out, "                              digits; none: as exported, in meters\n");
+	fprintf(out, "  --wheels on|off             on (default): the game draws its kart wheels at\n");
+	fprintf(out, "                              the points of a retail kart; off: no wheels -\n");
+	fprintf(out, "                              for a model with its own (a motorbike, say);\n");
+	fprintf(out, "                              --fit then measures the whole model\n");
 	fprintf(out, "  --reduce auto|off           auto (default): a model of more than %u\n", (u32)RLDMK_REDUCE_LIMIT);
 	fprintf(out, "                              triangles is reduced to at most %u, kart,\n", RLDMK_REDUCE_TARGET);
 	fprintf(out, "                              driver and steering wheel in proportion; off:\n");
@@ -9035,6 +9106,102 @@ static void RldMk_SelfTestRules(const u8 *good, size_t goodSize)
 }
 
 // CHRI, the container, and the name as the maker takes it.
+// CHRI flags (--wheels off): written only when set, read forward compatibly.
+static void RldMk_SelfTestChriFlags(const u8 field[RLDCHAR_NAME_FIELD], const u8 *good, size_t goodSize)
+{
+	struct RldCharInfo info;
+	const char *why;
+	size_t size = 0;
+	size_t sizeAgain = 0;
+	u8 *plain;
+	u8 *flagged;
+	u8 *again;
+	u8 *m;
+
+	// Without a flag: fixedSize 0x1C as always, flags 0 - although the word at
+	// 0x1C (the string count) is not 0.
+	plain = RldMk_BuildChri(14u, 0u, field, 3u, "self-test", 0u, &size);
+	why = (plain != NULL) ? RldChar_ParseInfo(&info, plain, size) : "out of memory";
+	RldMk_Test((why == NULL) && (Rld_ReadLE16(&plain[0x00]) == RLDCHAR_INFO_FIXED_SIZE) && (Rld_ReadLE32(&plain[0x1C]) == 1u) && (info.flags == 0u),
+	           "CHRI without flags: fixedSize 0x1C, flags 0 (the string count at 0x1C is no flag)", "%s", (why != NULL) ? why : "a field differs");
+	free(plain);
+
+	// No wheels: fixedSize 0x20, everything else read as before, twice the same,
+	// and the container with it checks.
+	flagged = RldMk_BuildChri(14u, 0u, field, 3u, "self-test", RLDCHAR_FLAG_NO_WHEELS, &size);
+	again = RldMk_BuildChri(14u, 0u, field, 3u, "self-test", RLDCHAR_FLAG_NO_WHEELS, &sizeAgain);
+	why = (flagged != NULL) ? RldChar_ParseInfo(&info, flagged, size) : "out of memory";
+	RldMk_Test((why == NULL) && (again != NULL) && (size == sizeAgain) && (memcmp(flagged, again, size) == 0) &&
+	               (Rld_ReadLE16(&flagged[0x00]) == RLDCHAR_CHRI_SIZE_FLAGS) && (info.flags == RLDCHAR_FLAG_NO_WHEELS) && (info.templateId == 14u) &&
+	               (info.classId == 0u) && (strcmp(info.name, "SELF TEST") == 0) && (info.charVersion == 3u) && (strcmp(info.author, "self-test") == 0),
+	           "CHRI with no wheels: fixedSize 0x20, flag and fields there and back, twice the same", "%s", (why != NULL) ? why : "a field differs");
+	if ((flagged != NULL) && (good != NULL))
+	{
+		size_t fileSize = 0;
+		u8 *file = RldMk_Container(flagged, size, good, goodSize, NULL, &fileSize);
+		int ok = (file != NULL);
+
+		if (ok)
+		{
+			const u64 dirAt = Rld_ReadLE64(&file[0x18]);
+			const u8 *entry = &file[(size_t)dirAt + RLD_DIR_ENTRY_SIZE];
+
+			ok = (RldChar_CheckModel(&file[(size_t)Rld_ReadLE64(&entry[0x08])], (size_t)Rld_ReadLE64(&entry[0x10]), NULL, NULL, NULL, NULL) ==
+			      RLDCHAR_VERDICT_OK);
+		}
+		RldMk_Test(ok, "container with no wheels: the model checks", "not as written");
+		free(file);
+	}
+	free(again);
+
+	// Unknown bits are kept and ignored, never refused; 0x2 alone is no flag
+	// this reader knows.
+	m = RldMk_TestCopy(flagged, size);
+	if (m != NULL)
+	{
+		Rld_WriteLE32(&m[RLDCHAR_CHRI_FLAGS_OFFSET], 0x80000001u);
+		why = RldChar_ParseInfo(&info, m, size);
+		RldMk_Test((why == NULL) && (info.flags == 0x80000001u) && ((info.flags & RLDCHAR_FLAG_NO_WHEELS) != 0u), "CHRI flags 0x80000001: accepted, no wheels",
+		           "%s", (why != NULL) ? why : "flags differ");
+		Rld_WriteLE32(&m[RLDCHAR_CHRI_FLAGS_OFFSET], 0x2u);
+		why = RldChar_ParseInfo(&info, m, size);
+		RldMk_Test((why == NULL) && (info.flags == 0x2u) && ((info.flags & RLDCHAR_FLAG_NO_WHEELS) == 0u), "CHRI flags 0x2 alone: accepted, wheels shown",
+		           "%s", (why != NULL) ? why : "flags differ");
+
+		// fixedSize 0x22: not a multiple of 4.
+		Rld_WriteLE32(&m[RLDCHAR_CHRI_FLAGS_OFFSET], RLDCHAR_FLAG_NO_WHEELS);
+		Rld_WriteLE16(&m[0x00], 0x22u);
+		why = RldChar_ParseInfo(&info, m, size);
+		RldMk_Test((why != NULL) && (strncmp(why, "CHRI-1", 6) == 0), "CHRI fixedSize 0x22 refused (CHRI-1)", "got %s", (why != NULL) ? why : "accepted");
+
+		// fixedSize 0x20, but the chunk ends before the string count.
+		Rld_WriteLE16(&m[0x00], RLDCHAR_CHRI_SIZE_FLAGS);
+		why = RldChar_ParseInfo(&info, m, RLDCHAR_CHRI_SIZE_FLAGS + 2u);
+		RldMk_Test((why != NULL) && (strncmp(why, "CHRI-1", 6) == 0), "CHRI fixedSize 0x20 without room for the string count refused (CHRI-1)", "got %s",
+		           (why != NULL) ? why : "accepted");
+		free(m);
+	}
+
+	// fixedSize 0x24: the flags and 4 bytes of a later field, then the author.
+	if (flagged != NULL)
+	{
+		const size_t longer = size + 4u;
+
+		m = (u8 *)calloc(1, longer);
+		if (m != NULL)
+		{
+			memcpy(m, flagged, RLDCHAR_CHRI_SIZE_FLAGS);
+			memcpy(&m[RLDCHAR_CHRI_SIZE_FLAGS + 4u], &flagged[RLDCHAR_CHRI_SIZE_FLAGS], size - RLDCHAR_CHRI_SIZE_FLAGS);
+			Rld_WriteLE16(&m[0x00], 0x24u);
+			why = RldChar_ParseInfo(&info, m, longer);
+			RldMk_Test((why == NULL) && (info.flags == RLDCHAR_FLAG_NO_WHEELS) && (strcmp(info.author, "self-test") == 0),
+			           "CHRI fixedSize 0x24 (a later field): accepted, flags and author read", "%s", (why != NULL) ? why : "a field differs");
+			free(m);
+		}
+	}
+	free(flagged);
+}
+
 static void RldMk_SelfTestChri(const u8 *good, size_t goodSize)
 {
 	static const struct
@@ -9055,7 +9222,7 @@ static void RldMk_SelfTestChri(const u8 *good, size_t goodSize)
 
 	memset(field, 0, sizeof(field));
 	memcpy(field, "SELF TEST", 9u);
-	chri = RldMk_BuildChri(14u, 0u, field, 3u, "self-test", &chriSize);
+	chri = RldMk_BuildChri(14u, 0u, field, 3u, "self-test", 0u, &chriSize);
 	why = (chri != NULL) ? RldChar_ParseInfo(&info, chri, chriSize) : "out of memory";
 	RldMk_Test((why == NULL) && (info.templateId == 14u) && (info.classId == 0u) && (strcmp(info.name, "SELF TEST") == 0) && (info.charVersion == 3u) &&
 	               (strcmp(info.author, "self-test") == 0),
@@ -9146,7 +9313,7 @@ static void RldMk_SelfTestChri(const u8 *good, size_t goodSize)
 			free(m);
 			memset(author, 'x', RLDCHAR_AUTHOR_MAX + 1);
 			author[RLDCHAR_AUTHOR_MAX + 1] = '\0';
-			m = RldMk_BuildChri(14u, 0u, field, 1u, author, &size);
+			m = RldMk_BuildChri(14u, 0u, field, 1u, author, 0u, &size);
 			if (m == NULL)
 			{
 				continue;
@@ -9159,6 +9326,8 @@ static void RldMk_SelfTestChri(const u8 *good, size_t goodSize)
 		free(m);
 	}
 	free(chri);
+
+	RldMk_SelfTestChriFlags(field, good, goodSize);
 
 	// The name as typed: capitals, the menu font, the length.
 	RldMk_ResetSaid();
@@ -9189,6 +9358,8 @@ static void RldMk_SelfTestChri(const u8 *good, size_t goodSize)
 // further switches (--fit crash, the factor 0.9757). A different value of
 // these three means characters are no longer written the same way - never
 // update them to make the test pass.
+// NO_WHEELS with --fit none and --wheels off: the CMDL of PLAIN, the CHRI with
+// fixedSize 0x20 and the flag RLDCHAR_FLAG_NO_WHEELS - frozen like those.
 // REDUCED from the same model with a driver split 9 (996 triangles) and
 // --fit none: --reduce auto brings it to at most 797. Unlike the three above it
 // follows deliberate changes of the reducer (tools/rldpack_reduce.inc): such a
@@ -9196,6 +9367,7 @@ static void RldMk_SelfTestChri(const u8 *good, size_t goodSize)
 #define RLDMK_GOLDEN_PLAIN "ba7e3208bc98b2af5460110ae6d7d64afe888771b76747a74ae30f3190ce3186"
 #define RLDMK_GOLDEN_SIZE_ICON "9dc78f1370c2e360f2758858b0efcec9c7b21ea7bcedb9be12e5b2f7029a1728"
 #define RLDMK_GOLDEN_FIT "8c3bda92c3e1dc5f761f3b9eb2f281595cc9d290319901c82b024d0a2c433e95"
+#define RLDMK_GOLDEN_NO_WHEELS "0427aee8b259b0f0076efc6f8cba195fff3b105c8b7216992056bb4ee333b0fe"
 #define RLDMK_GOLDEN_REDUCED "12bfd7bfc5e64ea434695bb90be9629a91f9a52c4f234bff0ec2b440f37f990f"
 
 // --- --size --------------------------------------------------------------------------
@@ -9489,6 +9661,16 @@ static void RldMk_SelfTestFit(struct RldMkTestMesh *mesh)
 		               (b.fitAfter[0] > 143.0),
 		           "--fit crash with a tail: the kart 115.2 -> 112.4 long (x0.9757)", "built %d, basis %d, x%.4g, kart %.2f, model %.2f, said: %s", ok,
 		           b.fitBasis, b.fitFactor, b.fitKart[1], b.fitAfter[0], s_rldMkCodes);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+
+		// --wheels off: the whole model, 147.2 -> 112.4 (x0.7636).
+		opt.noWheels = 1;
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+		opt.noWheels = 0;
+		RldMk_Test(ok && (b.fitBasis == RLDMK_FIT_MODEL) && (b.fitFactor == 0.7636) && (b.fitAfter[0] > 112.35) && (b.fitAfter[0] < 112.45),
+		           "--fit crash with a tail and --wheels off: the whole model 147.2 -> 112.4 long (x0.7636)", "built %d, basis %d, x%.4g, model %.2f, said: %s",
+		           ok, b.fitBasis, b.fitFactor, b.fitAfter[0], s_rldMkCodes);
 		RldMk_FreeBuild(&b);
 		RldMk_FreePly(&ply);
 	}
@@ -10991,28 +11173,35 @@ static void RldMk_SelfTestGolden(struct RldMkTestMesh *mesh, const struct RldPng
 	static struct RldMkIcon icon;
 	u8 field[RLDCHAR_NAME_FIELD];
 	size_t chriSize = 0;
+	size_t chriNoWheelsSize = 0;
 	u8 *chri;
+	u8 *chriNoWheels;
 	int k;
 
 	memset(field, 0, sizeof(field));
 	memcpy(field, "SELF TEST", 9u);
-	chri = RldMk_BuildChri(14u, 0u, field, 1u, "", &chriSize);
-	if ((chri == NULL) || !RldMk_MakeIcon(a, &icon))
+	chri = RldMk_BuildChri(14u, 0u, field, 1u, "", 0u, &chriSize);
+	chriNoWheels = RldMk_BuildChri(14u, 0u, field, 1u, "", RLDCHAR_FLAG_NO_WHEELS, &chriNoWheelsSize);
+	if ((chri == NULL) || (chriNoWheels == NULL) || !RldMk_MakeIcon(a, &icon))
 	{
 		RldMk_Test(0, "golden hashes", "out of memory");
 		free(chri);
+		free(chriNoWheels);
 		return;
 	}
 
-	for (k = 0; k < 4; k++)
+	for (k = 0; k < 5; k++)
 	{
-		static const char *const builtNames[4] = {"golden model built twice: the same bytes",
+		static const char *const builtNames[5] = {"golden model built twice: the same bytes",
 		                                          "golden model, --size 120 and icon, built twice: the same bytes",
 		                                          "golden model, --fit crash, built twice: the same bytes",
-		                                          "golden model, split 9 and --reduce auto, built twice: the same bytes"};
-		static const char *const goldenNames[4] = {"make-char --fit none", "make-char --fit none --size 120 --icon", "make-char (--fit crash)",
-		                                           "make-char --fit none, split 9 (--reduce auto)"};
-		static const char *const goldens[4] = {RLDMK_GOLDEN_PLAIN, RLDMK_GOLDEN_SIZE_ICON, RLDMK_GOLDEN_FIT, RLDMK_GOLDEN_REDUCED};
+		                                          "golden model, split 9 and --reduce auto, built twice: the same bytes",
+		                                          "golden model, --wheels off, built twice: the same bytes"};
+		static const char *const goldenNames[5] = {"make-char --fit none", "make-char --fit none --size 120 --icon", "make-char (--fit crash)",
+		                                           "make-char --fit none, split 9 (--reduce auto)", "make-char --fit none --wheels off"};
+		static const char *const goldens[5] = {RLDMK_GOLDEN_PLAIN, RLDMK_GOLDEN_SIZE_ICON, RLDMK_GOLDEN_FIT, RLDMK_GOLDEN_REDUCED, RLDMK_GOLDEN_NO_WHEELS};
+		const u8 *info = (k == 4) ? chriNoWheels : chri;
+		const size_t infoSize = (k == 4) ? chriNoWheelsSize : chriSize;
 		struct RldMkOptions opt;
 		struct RldMkPly ply;
 		struct RldMkBuild b;
@@ -11028,13 +11217,14 @@ static void RldMk_SelfTestGolden(struct RldMkTestMesh *mesh, const struct RldPng
 		opt.sizePercent = (k == 1) ? 120u : 100u;
 		opt.fit = (k == 2);
 		opt.reduce = (k == 3);
+		opt.noWheels = (k == 4);
 		RldMk_TestStandard(mesh, (k == 3) ? 9u : 2u, 0, 0.0, -1);
 
 		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again);
 		if (ok)
 		{
-			file = RldMk_Container(chri, chriSize, b.cmdl, b.cmdlSize, (k == 1) ? icon.cicn : NULL, &size);
-			fileAgain = RldMk_Container(chri, chriSize, again.cmdl, again.cmdlSize, (k == 1) ? icon.cicn : NULL, &sizeAgain);
+			file = RldMk_Container(info, infoSize, b.cmdl, b.cmdlSize, (k == 1) ? icon.cicn : NULL, &size);
+			fileAgain = RldMk_Container(info, infoSize, again.cmdl, again.cmdlSize, (k == 1) ? icon.cicn : NULL, &sizeAgain);
 		}
 		ok = ok && (file != NULL) && (fileAgain != NULL) && (size == sizeAgain) && (memcmp(file, fileAgain, size) == 0);
 
@@ -11065,6 +11255,7 @@ static void RldMk_SelfTestGolden(struct RldMkTestMesh *mesh, const struct RldPng
 	}
 
 	free(chri);
+	free(chriNoWheels);
 }
 
 // The number of failed cases; 0 = passed.

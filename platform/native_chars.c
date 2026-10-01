@@ -55,6 +55,9 @@
 //            or NULL and the retail lookup by name. The class of a bound seat
 //            comes from its CHRI (NativeChar_SeatEngineClass), its voice stays
 //            silent (NativeChar_SeatSilent).
+//   draw     NativeChar_ModelHidesWheels (game/DrawTires.c): a file whose
+//            CHRI flags set RLDCHAR_FLAG_NO_WHEELS is drawn without the kart
+//            wheels and their reflection, wherever its model is drawn.
 //   stage 0  NativeChar_ClearSeats: the next load starts with empty seats.
 //
 // THE MODEL IS THE NATIVE ONE. CMDL is framed like a model file of the BIGFILE
@@ -401,9 +404,13 @@ internal int NativeChar_ReadFile(const char *path, const char *file, struct Nati
 
 internal void NativeChar_LogLoaded(const struct NativeCharFile *entry)
 {
-	Platform_Log("[CTR Char] loaded %s: template %u, class %u, CMDL %02x%02x%02x%02x%02x%02x, %llu bytes\n", entry->file, (unsigned)entry->info.templateId,
+	// The CHRI flags only add to the line when a known bit is set; a file
+	// without flags keeps the line as it always was.
+	const char *wheels = ((entry->info.flags & RLDCHAR_FLAG_NO_WHEELS) != 0) ? ", wheels hidden" : "";
+
+	Platform_Log("[CTR Char] loaded %s: template %u, class %u, CMDL %02x%02x%02x%02x%02x%02x, %llu bytes%s\n", entry->file, (unsigned)entry->info.templateId,
 	             (unsigned)entry->info.classId, (unsigned)entry->cmdlHash[0], (unsigned)entry->cmdlHash[1], (unsigned)entry->cmdlHash[2],
-	             (unsigned)entry->cmdlHash[3], (unsigned)entry->cmdlHash[4], (unsigned)entry->cmdlHash[5], (unsigned long long)entry->fileBytes);
+	             (unsigned)entry->cmdlHash[3], (unsigned)entry->cmdlHash[4], (unsigned)entry->cmdlHash[5], (unsigned long long)entry->fileBytes, wheels);
 }
 
 // A valid file becomes the next entry while there is an id for it; after
@@ -943,6 +950,30 @@ int NativeChar_EntryMenuFrame(int entry)
 	}
 
 	return (int)(NativeChar_AnimFrames(model, 0) >> 1);
+}
+
+// Keyed on the model, not on a seat: whatever instance draws the model of a
+// file asks here - seat 0 in a race and the driver instance of the driver
+// select preview alike. Called per instance and frame, so no log line. An
+// empty roster never enters the loop: 0, the retail wheels.
+int NativeChar_ModelHidesWheels(const struct Model *model)
+{
+	int entry;
+
+	if (model == NULL)
+	{
+		return 0;
+	}
+
+	for (entry = 0; (entry < s_charRosterFiles) && (entry < NATIVE_CHAR_ROSTER_MAX); entry++)
+	{
+		if (s_charFiles[entry].model == model)
+		{
+			return (s_charFiles[entry].info.flags & RLDCHAR_FLAG_NO_WHEELS) != 0;
+		}
+	}
+
+	return 0;
 }
 
 // ---------------------------------------------------------------------------
