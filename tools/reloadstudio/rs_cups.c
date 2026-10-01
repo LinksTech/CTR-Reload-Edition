@@ -1556,6 +1556,8 @@ static void Cups_CleanPath(const wchar_t *in, wchar_t *out, int cap)
 // The game's track folder: the folder saved in the ini, otherwise "tracks" in the
 // first of (folder of ctr_native.exe, its parent, its grandparent) with
 // assets\BIGFILE.BIG or assets\ctr-u.bin - if that "tracks" folder exists.
+// The game program comes from Rs_FindGameExe (the same rule as on every
+// page); the climb here is the game's own search for its data.
 static void Cups_DefaultFolder(wchar_t *out, int cap)
 {
     wchar_t exe[MAX_PATH], dir[MAX_PATH], up[MAX_PATH], big[MAX_PATH], bin[MAX_PATH];

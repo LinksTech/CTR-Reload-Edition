@@ -1639,21 +1639,16 @@ static int Track_FindBase(const wchar_t *exe, wchar_t *out, int cap)
     return 0;
 }
 
-// The game program as on the test page: the one chosen there (test.exe),
-// otherwise what Rs_FindGameExe finds. 1 = found.
+// The game program as on the test page: the one entered there, otherwise
+// what Rs_FindGameExe finds (the setting test.exe, then ctr_native.exe next
+// to Reload Studio). 1 = found.
 static int Track_GameExe(wchar_t *out, int cap)
 {
-    wchar_t cfg[TRACK_VAL];
     const wchar_t *page = Rs_TestGameExe();
 
     // First the game of the page Test - the same one it checked.
     if (page && page[0] && Rs_FileExists(page)) {
         Track_Copy(out, cap, page);
-        return 1;
-    }
-    Rs_ConfigGet(L"test.exe", cfg, TRACK_VAL);
-    if (cfg[0] && Rs_FileExists(cfg)) {
-        Track_Copy(out, cap, cfg);
         return 1;
     }
     return Rs_FindGameExe(out, cap);
@@ -1779,8 +1774,7 @@ static int Track_Preview(HWND page, int afterBuild)
     }
     if (!Track_GameExe(exe, TRACK_VAL)) {
         Track_PreviewNotStarted(L"the game program (ctr_native.exe) was not found.",
-                                L"Choose it on the Test page first.",
-                                L"Choose and check the game on the Test page, then build again.");
+                                RS_TEXT_NO_GAME_EXE, RS_TEXT_NO_GAME_EXE);
         return 0;
     }
     // Only a game from the same package: the page Test asks --version and

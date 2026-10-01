@@ -22,6 +22,12 @@
 //   rs_view.c     3D model view (window class RsModelView, rs_view.h)
 //   rs_test.c     page "Test in game"
 //
+// Command line (details in rs_shell.c): `--rldpack <arguments>` (first
+// argument: the rldpack face), `--do "<verb> <argument>"` (automation, any
+// number of times), `--log <file>` (automation log), `--theme dark|light|system`,
+// `--settings <ini>` (settings, logs and temporary files only there - below at
+// Rs_ConfigGet).
+//
 // Characters: UTF-16 in the front end (W functions), UTF-8 on the pipe to
 // rldpack and in files. The manifest sets the ANSI code page to UTF-8,
 // so that rldpack (fopen, argv) understands paths with umlauts.
@@ -469,16 +475,41 @@ int  Rs_Automating(void);
 // Settings in %APPDATA%\CTR Reload\reloadstudio.ini, section [reloadstudio].
 // If that file is missing at start (not in automation), all keys of the section
 // [alphamaker] in alphamaker.ini (the tool's earlier name) are copied over once;
-// the old file is only read, never changed or deleted.
+// the old file is only read, never changed or deleted. In automation (--do)
+// the settings are neither read nor written.
+//
+// Command line `--settings <ini>` (for automation and tests): the settings are
+// read and written only in that file, also in automation (theme and start page
+// stay fixed there: light, page Track), nothing is copied from alphamaker.ini,
+// and logs and temporary files go to the folder of that file (Rs_TempDir).
+// Reload Studio then touches neither %APPDATA% nor %TEMP%. `--rldpack` ignores it.
+// Missing levels of the folder are created. A missing value, a folder (existing,
+// or ending in a slash) or a folder that cannot be created is an error: no
+// settings, logs next to this exe, a message box (in automation: the log).
 void Rs_ConfigGet(const wchar_t *key, wchar_t *out, int outCap);
 void Rs_ConfigSet(const wchar_t *key, const wchar_t *value);
+// Full path of the settings file in use, "" = none.
+const wchar_t *Rs_SettingsPath(void);
+
+// Folder for logs and temporary files, created: %TEMP%\Reload Studio, with
+// --settings the folder of the settings file. Every page takes its temporary
+// files from here.
+void Rs_TempDir(wchar_t *out, int cap);
 
 // Directory of this exe (without a trailing slash).
 const wchar_t *Rs_ExeDir(void);
 
-// Looks for ctr_native.exe: next to this exe, then up to three folders higher,
-// each time also in build-msvc-x86\Release. 1 = found.
+// The game program, the same rule for every page: the chosen one (setting
+// test.exe, chosen on the page "Test in game") if that file exists, otherwise
+// ctr_native.exe in the folder of this exe. No other folder is searched.
+// 1 = found; 0 = out is "" (show RS_TEXT_NO_GAME_EXE).
 int Rs_FindGameExe(wchar_t *out, int outCap);
+
+// Message when Rs_FindGameExe finds nothing (pages other than Test).
+#define RS_TEXT_NO_GAME_EXE \
+    L"The game program (ctr_native.exe) was not found next to Reload Studio. " \
+    L"Put Reload Studio into the folder of the game, or choose the game on the " \
+    L"page Test in game (Browse) - Reload Studio remembers the choice."
 
 // Test page (rs_test.c): 1 if exactly this game program was checked there via
 // --version and comes from the same package as Reload Studio.
@@ -490,8 +521,9 @@ const wchar_t *Rs_TestGameProblem(void);
 // The game the test page has just entered (full path), or "".
 const wchar_t *Rs_TestGameExe(void);
 
-// New path for a game log (--log): in the folder %TEMP%\Reload Studio
-// the file "<kind> YYYY-MM-DD HH-MM-SS.log" in local time, taken -> " (2)", " (3)" ...
+// New path for a game log (--log): in the folder Rs_TempDir (%TEMP%\Reload
+// Studio, or the folder of --settings) the file "<kind> YYYY-MM-DD HH-MM-SS.log"
+// in local time, taken -> " (2)", " (3)" ...
 // Creates the folder, deletes the old file "<kind>.log" and cleans up older
 // files of the same kind, so that at most keep remain including the new one.
 // Delete errors (file still open) do not count.

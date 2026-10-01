@@ -22,7 +22,19 @@
 // current page (also "size <n>" with one number). `--log <file>` writes the
 // automation log. In automation
 // no dialog asks (answer always yes) and the settings are neither
-// read nor written.
+// read nor written - except with --settings (below).
+//
+// SETTINGS FILE
+//
+// `--settings <ini>` makes Reload Studio read and write its settings only in
+// that file (created when missing, no copy from an older file), also in
+// automation. Logs and temporary files then go to the folder of that file
+// instead of %TEMP%\Reload Studio (Rs_TempDir). Nothing is read from or
+// written to %APPDATA% or %TEMP%. A missing value or a folder instead of a file
+// is an error (Rs_ConfigInit): no settings, a message, no fallback to %APPDATA%.
+// Meant for automation and tests; without the
+// switch everything stays as described in reloadstudio.h. The rldpack face
+// (`--rldpack`, first argument) never reads settings and ignores the switch.
 //
 // COLOUR SCHEME
 //
@@ -90,6 +102,10 @@ static HBRUSH g_brInput;
 static wchar_t g_exePath[MAX_PATH];
 static wchar_t g_exeDir[MAX_PATH];
 static wchar_t g_iniPath[MAX_PATH];
+static int g_settingsFile;              // --settings <ini>: settings, logs and temp files only there
+static wchar_t g_dataDir[MAX_PATH];     // with --settings: the folder of that file
+#define RS_SETTINGS_ERR (MAX_PATH * 2 + 256)
+static wchar_t g_settingsError[RS_SETTINGS_ERR];   // --settings unusable: why, else ""
 static int g_hoverNav = -1;
 static int g_trackingMouse;
 
@@ -495,14 +511,14 @@ void Rs_ConfigGet(const wchar_t *key, wchar_t *out, int outCap)
     if (outCap <= 0)
         return;
     out[0] = 0;
-    if (g_automating || !g_iniPath[0])
+    if ((g_automating && !g_settingsFile) || !g_iniPath[0])
         return;
     GetPrivateProfileStringW(L"reloadstudio", key, L"", out, (DWORD)outCap, g_iniPath);
 }
 
 void Rs_ConfigSet(const wchar_t *key, const wchar_t *value)
 {
-    if (g_automating || !g_iniPath[0])
+    if ((g_automating && !g_settingsFile) || !g_iniPath[0])
         return;
     WritePrivateProfileStringW(L"reloadstudio", key, value ? value : L"", g_iniPath);
 }
@@ -530,10 +546,67 @@ static void Rs_ConfigMigrate(const wchar_t *dir)
     Rs_Free(section);
 }
 
-static void Rs_ConfigInit(void)
+// settingsArg: the value of --settings, or NULL without the switch. With the
+// switch the file is made a full path (a bare name would land in the Windows
+// folder with WritePrivateProfileStringW), all missing levels of its folder are
+// created, and nothing is copied over from alphamaker.ini. A missing value, a
+// folder (an existing one or a path ending in a slash), a path that cannot be
+// made full or a folder that cannot be created is an error: then there are no
+// settings at all, logs and temporary files go next to this exe - never to
+// %APPDATA% or %TEMP% - and g_settingsError says why (automation log; outside
+// automation a message box once the window is there).
+static void Rs_SettingsFail(const wchar_t *why, const wchar_t *value)
+{
+    g_iniPath[0] = 0;
+    wcscpy(g_dataDir, g_exeDir);
+    swprintf(g_settingsError, RS_SETTINGS_ERR,
+             L"--settings: %ls ('%ls'). Reload Studio runs without saved settings; logs and "
+             L"temporary files go to %ls.", why, value ? value : L"", g_exeDir);
+    Rs_AutoLog(L"settings: %ls", g_settingsError);
+}
+
+static void Rs_ConfigInit(const wchar_t *settingsArg)
 {
     wchar_t dir[MAX_PATH];
     PWSTR appData = NULL;
+
+    if (g_settingsFile) {
+        size_t len = settingsArg ? wcslen(settingsArg) : 0;
+        DWORD n;
+        int r;
+        if (len == 0) {
+            Rs_SettingsFail(L"the path of a settings file is missing", settingsArg);
+            return;
+        }
+        if (settingsArg[len - 1] == L'\\' || settingsArg[len - 1] == L'/') {
+            Rs_SettingsFail(L"this is a folder, not a file", settingsArg);
+            return;
+        }
+        n = GetFullPathNameW(settingsArg, MAX_PATH, g_iniPath, NULL);
+        if (n == 0 || n >= MAX_PATH) {
+            Rs_SettingsFail(L"not a usable file path", settingsArg);
+            return;
+        }
+        if (Rs_DirExists(g_iniPath)) {
+            Rs_SettingsFail(L"this is a folder, not a file", settingsArg);
+            return;
+        }
+        Rs_PathDir(g_dataDir, MAX_PATH, g_iniPath);
+        if (!g_dataDir[0]) {
+            Rs_SettingsFail(L"not a usable file path", settingsArg);
+            return;
+        }
+        if (!Rs_DirExists(g_dataDir)) {
+            r = SHCreateDirectoryExW(NULL, g_dataDir, NULL);
+            if (r != ERROR_SUCCESS && r != ERROR_ALREADY_EXISTS) {
+                wchar_t why[64];
+                swprintf(why, 64, L"its folder could not be created (error %d)", r);
+                Rs_SettingsFail(why, settingsArg);
+                return;
+            }
+        }
+        return;
+    }
     if (FAILED(SHGetKnownFolderPath(&FOLDERID_RoamingAppData, 0, NULL, &appData)))
         return;
     Rs_PathJoin(dir, MAX_PATH, appData, L"CTR Reload");
@@ -543,37 +616,50 @@ static void Rs_ConfigInit(void)
     Rs_ConfigMigrate(dir);
 }
 
+const wchar_t *Rs_SettingsPath(void)
+{
+    return g_iniPath;
+}
+
+void Rs_TempDir(wchar_t *out, int cap)
+{
+    wchar_t tmp[MAX_PATH + 1];
+    DWORD n;
+
+    if (cap <= 0)
+        return;
+    if (g_settingsFile) {
+        wcsncpy(out, g_dataDir, (size_t)cap - 1);
+        out[cap - 1] = 0;
+    } else {
+        n = GetTempPathW(MAX_PATH + 1, tmp);
+        if (n == 0 || n > MAX_PATH) {
+            wcsncpy(tmp, g_exeDir, MAX_PATH);
+            tmp[MAX_PATH] = 0;
+        }
+        Rs_PathJoin(out, cap, tmp, L"Reload Studio");
+    }
+    CreateDirectoryW(out, NULL);
+}
+
+// The one rule for the game program, for every page: the chosen one (setting
+// test.exe, written by the Test page) if that file exists, otherwise
+// ctr_native.exe in the folder of this exe. No search in other folders.
 int Rs_FindGameExe(wchar_t *out, int outCap)
 {
-    wchar_t dir[MAX_PATH];
-    wchar_t probe[MAX_PATH];
-    wchar_t sub[MAX_PATH];
-    int up;
+    wchar_t probe[MAX_PATH * 2];
 
-    wcsncpy(dir, g_exeDir, MAX_PATH - 1);
-    dir[MAX_PATH - 1] = 0;
-    for (up = 0; up <= 3; up++) {
-        Rs_PathJoin(probe, MAX_PATH, dir, L"ctr_native.exe");
-        if (Rs_FileExists(probe)) {
-            wcsncpy(out, probe, (size_t)outCap - 1);
-            out[outCap - 1] = 0;
-            return 1;
-        }
-        Rs_PathJoin(sub, MAX_PATH, dir, L"build-msvc-x86\\Release");
-        Rs_PathJoin(probe, MAX_PATH, sub, L"ctr_native.exe");
-        if (Rs_FileExists(probe)) {
-            wcsncpy(out, probe, (size_t)outCap - 1);
-            out[outCap - 1] = 0;
-            return 1;
-        }
-        Rs_PathDir(sub, MAX_PATH, dir);
-        if (!sub[0] || wcscmp(sub, dir) == 0)
-            break;
-        wcscpy(dir, sub);
-    }
-    if (outCap > 0)
-        out[0] = 0;
-    return 0;
+    if (outCap <= 0)
+        return 0;
+    out[0] = 0;
+    Rs_ConfigGet(L"test.exe", probe, MAX_PATH * 2);
+    if (!probe[0] || !Rs_FileExists(probe))
+        Rs_PathJoin(probe, MAX_PATH * 2, g_exeDir, L"ctr_native.exe");
+    if (!Rs_FileExists(probe))
+        return 0;
+    wcsncpy(out, probe, (size_t)outCap - 1);
+    out[outCap - 1] = 0;
+    return 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -629,7 +715,6 @@ static int Rs_LogCmp(const void *a, const void *b)
 
 void Rs_RotatedLogPath(wchar_t *out, int cap, const wchar_t *kind, int keep)
 {
-    wchar_t tmp[MAX_PATH + 1];
     wchar_t dir[RS_LOG_DIR];
     wchar_t name[MAX_PATH];
     wchar_t full[RS_LOG_FULL];
@@ -639,20 +724,13 @@ void Rs_RotatedLogPath(wchar_t *out, int cap, const wchar_t *kind, int keep)
     SYSTEMTIME st;
     WIN32_FIND_DATAW fd;
     HANDLE h;
-    DWORD n;
 
     if (cap <= 0)
         return;
     out[0] = 0;
     if (keep < 1)
         keep = 1;
-    n = GetTempPathW(MAX_PATH + 1, tmp);
-    if (n == 0 || n > MAX_PATH) {
-        wcsncpy(tmp, g_exeDir, MAX_PATH);
-        tmp[MAX_PATH] = 0;
-    }
-    Rs_PathJoin(dir, RS_LOG_DIR, tmp, L"Reload Studio");
-    CreateDirectoryW(dir, NULL);
+    Rs_TempDir(dir, RS_LOG_DIR);
 
     // Once: the file with the fixed name from earlier. Errors do not count.
     swprintf(name, MAX_PATH, L"%ls.log", kind);
@@ -839,7 +917,8 @@ int Rs_BrowseFolder(HWND owner, const wchar_t *title, const wchar_t *initial,
                                 &IID_IFileOpenDialog, (void **)&dlg)))
         return 0;
     IFileOpenDialog_GetOptions(dlg, &opts);
-    IFileOpenDialog_SetOptions(dlg, opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
+    IFileOpenDialog_SetOptions(dlg, opts | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST |
+                                        FOS_DONTADDTORECENT);
     if (title)
         IFileOpenDialog_SetTitle(dlg, title);
     if (initial && *initial && Rs_DirExists(initial) &&
@@ -2950,6 +3029,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
     wchar_t cfg[16];
     int startPage = RS_PAGE_TRACK;
     int cmdTheme = -1;
+    const wchar_t *settingsArg = NULL;
     RECT wr;
 
     (void)prev;
@@ -2970,8 +3050,17 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
             g_autoLogPath[MAX_PATH - 1] = 0;
         } else if (wcscmp(argv[i], L"--theme") == 0 && i + 1 < argc) {
             cmdTheme = Rs_ThemeParse(argv[++i]);
+        } else if (wcscmp(argv[i], L"--settings") == 0) {
+            // Without a value it still keeps Reload Studio out of %APPDATA%:
+            // Rs_ConfigInit then has no file and says so in the log.
+            g_settingsFile = 1;
+            settingsArg = i + 1 < argc ? argv[++i] : NULL;
         }
     }
+    // Before anything is logged (Rs_ConfigInit, the pages' create): the
+    // automation log starts empty.
+    if (g_automating && g_autoLogPath[0])
+        DeleteFileW(g_autoLogPath);
 
     InitializeCriticalSection(&g_jobLock);
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
@@ -2979,7 +3068,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
     icc.dwSize = sizeof(icc);
     icc.dwICC = ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES | ICC_UPDOWN_CLASS | ICC_BAR_CLASSES;
     InitCommonControlsEx(&icc);
-    Rs_ConfigInit();
+    Rs_ConfigInit(settingsArg);
 
     {
         HDC dc = GetDC(NULL);
@@ -2989,7 +3078,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
     Rs_MakeFonts();
 
     // Colour scheme: command line before ini before Windows. In automation
-    // Rs_ConfigGet reads nothing; without --theme it is light there.
+    // without --theme it is light, also with --settings (screenshots do not
+    // depend on an earlier run).
     if (cmdTheme >= 0) {
         g_themeMode = cmdTheme;
     } else if (g_automating) {
@@ -3041,7 +3131,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
 
     // "page=" holds the name of the page; a digit is the number of earlier
     // versions, from before the page "Character" (0 track, 1 cups, 2 test).
-    Rs_ConfigGet(L"page", cfg, 16);
+    // Automation always starts on the page Track, also with --settings.
+    cfg[0] = 0;
+    if (!g_automating)
+        Rs_ConfigGet(L"page", cfg, 16);
     if (cfg[0] >= L'0' && cfg[0] <= L'2' && cfg[1] == 0) {
         static const int oldPages[3] = { RS_PAGE_TRACK, RS_PAGE_CUPS, RS_PAGE_TEST };
         startPage = oldPages[cfg[0] - L'0'];
@@ -3051,11 +3144,14 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
     Rs_ShowPage(startPage);
     ShowWindow(g_main, g_automating ? SW_SHOWNORMAL : show);
     UpdateWindow(g_main);
+    // An unusable --settings: in automation only in the log (Rs_SettingsFail).
+    if (g_settingsError[0] && !g_automating)
+        MessageBoxW(g_main, g_settingsError, L"Reload Studio - settings", MB_OK | MB_ICONWARNING);
 
     if (g_automating) {
-        if (g_autoLogPath[0])
-            DeleteFileW(g_autoLogPath);
         Rs_AutoLog(L"Reload Studio automation, %d step(s)", g_autoCount);
+        if (g_settingsFile)
+            Rs_AutoLog(L"settings: %ls", g_iniPath[0] ? g_iniPath : L"(none - see above)");
         g_autoSettleUntil = GetTickCount() + 300;
         SetTimer(g_main, RS_TIMER_AUTO, 50, NULL);
     }

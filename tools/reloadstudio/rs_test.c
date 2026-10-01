@@ -3,7 +3,8 @@
 // Starts ctr_native.exe with --dev --autoload-track <file>. The game loads
 // the container like the NITRO-PIT row and jumps straight into the race (Arcade,
 // 1 player, 3 laps). After the end the page reads the run's log (--log
-// in %TEMP%\Reload Studio) and says whether the race started.
+// in Rs_TempDir: %TEMP%\Reload Studio, or the folder of --settings) and says
+// whether the race started.
 //
 // If the container is not in <game folder>/tracks, the game gets
 // --tracks-dir <folder> --settings-defaults: it then reads only this folder,
@@ -11,6 +12,8 @@
 // its settings alone. The page itself writes neither track-ids.tsv
 // nor cups.txt.
 //
+// The game program itself comes from Rs_FindGameExe (the setting test.exe,
+// otherwise ctr_native.exe next to Reload Studio); the field writes test.exe.
 // The page looks for the game folder like the game does (NativeAssets_Init): folder of the
 // exe, then parent, then grandparent - the first one whose subfolder assets
 // contains BIGFILE.BIG or ctr-u.bin.
@@ -111,6 +114,8 @@ struct TestState {
     int exeSwitchUsed;              // at most once per session, never back
     int exeStartup;                 // the check applies to the game from the ini at start
     int exeSwitchNote;              // the running check is the one after the switch
+    int exeNotFound;                // at start Rs_FindGameExe found nothing
+    wchar_t exeStale[TEST_PATH];    // at start: test.exe named a file that is not there
     wchar_t exeSwitchFrom[TEST_PATH];   // rejected program
     wchar_t exeSwitchFromVersion[256];  // its line from --version
 
@@ -963,10 +968,13 @@ static int Test_ExeApply(HWND page)
     wchar_t *text = Rs_GetText(g_test.exe);
     wchar_t raw[TEST_PATH];
     wchar_t dir[TEST_PATH];
+    wchar_t note[TEST_PATH * 2 + 320];
     int started = 0;
+    int notFound = g_test.exeStartup && g_test.exeNotFound;
 
     Test_Trim(text, raw, TEST_PATH, 1);
     Rs_Free(text);
+    g_test.exeNotFound = 0;
     KillTimer(page, TEST_TIMER_PROBE);
     g_test.versionJob = 0;
     g_test.exeOk = 0;
@@ -982,7 +990,23 @@ static int Test_ExeApply(HWND page)
     if (g_test.exePath[0])
         Rs_ConfigSet(L"test.exe", g_test.exePath);
 
-    if (!g_test.exePath[0]) {
+    if (!g_test.exePath[0] && notFound) {
+        // Rs_FindGameExe: neither the chosen program nor one next to Reload Studio.
+        if (g_test.exeStale[0])
+            swprintf(note, TEST_PATH * 2 + 320,
+                     L"The game program was not found: the chosen %ls does not exist, and there is "
+                     L"no ctr_native.exe next to Reload Studio (%ls). Choose it with Browse - "
+                     L"Reload Studio remembers the choice.",
+                     g_test.exeStale, Rs_ExeDir());
+        else
+            swprintf(note, TEST_PATH * 2 + 320,
+                     L"The game program was not found: there is no ctr_native.exe next to "
+                     L"Reload Studio (%ls). Choose it with Browse - Reload Studio remembers the choice.",
+                     Rs_ExeDir());
+        Test_SetLabel(g_test.version, note, RS_COL_ERROR);
+        if (Rs_Automating())
+            Rs_AutoLog(L"  game program: %ls", note);
+    } else if (!g_test.exePath[0]) {
         Test_SetLabel(g_test.version, L"Choose ctr_native.exe, the CTR Reload game program.", RS_COL_MUTED);
     } else if (Rs_DirExists(g_test.exePath)) {
         Test_SetLabel(g_test.version, L"This is a folder. Choose ctr_native.exe inside it.", RS_COL_ERROR);
@@ -1060,7 +1084,7 @@ static int Test_SwitchToNeighbour(HWND page)
         Rs_AutoLog(L"  game program: switching to %ls (next to this Reload Studio)", full);
 
     // Like Test_BrowseExe: set the text without EN_CHANGE debounce, then check.
-    // Test_ExeApply writes test.exe (except in automation) and starts --version.
+    // Test_ExeApply writes test.exe (in automation only with --settings) and starts --version.
     g_test.quiet = 1;
     Rs_SetText(g_test.exe, full);
     g_test.quiet = 0;
@@ -1129,9 +1153,9 @@ const wchar_t *Rs_TestGameProblem(void)
     return NULL;
 }
 
-// For the page Track (preview): the entered game. In automation
-// Reload Studio does not write the ini (Rs_ConfigSet), otherwise it would still
-// contain the game of the last session.
+// For the page Track (preview): the entered game. In automation without
+// --settings Reload Studio does not write the ini (Rs_ConfigSet), otherwise it
+// would still contain the game of the last session.
 const wchar_t *Rs_TestGameExe(void)
 {
     return g_test.exePath;
@@ -1768,10 +1792,17 @@ static void Test_Create(HWND page)
     Rs_ConfigGet(L"test.container", cfg, TEST_PATH);
     if (cfg[0] && Rs_FileExists(cfg))
         Test_FullPath(cfg, g_test.container, TEST_PATH);
+    // The game: one rule for all pages (Rs_FindGameExe). A chosen program that
+    // is gone is only named in the message, not put back into the field.
     Rs_ConfigGet(L"test.exe", cfg, TEST_PATH);
-    if ((!cfg[0] || !Rs_FileExists(cfg)) && Rs_FindGameExe(found, TEST_PATH))
-        Test_Copy(cfg, TEST_PATH, found);
-    Rs_SetText(g_test.exe, cfg);
+    if (cfg[0] && !Rs_FileExists(cfg))
+        Test_Copy(g_test.exeStale, TEST_PATH, cfg);
+    if (!Rs_FindGameExe(found, TEST_PATH))
+        found[0] = 0;
+    g_test.exeNotFound = !found[0];
+    if (Rs_Automating() && found[0])
+        Rs_AutoLog(L"  game program at start: %ls", found);
+    Rs_SetText(g_test.exe, found);
     g_test.quiet = 0;
     g_test.exeStartup = 1;
     Test_ExeApply(page);
