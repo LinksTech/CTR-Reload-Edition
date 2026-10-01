@@ -2176,7 +2176,7 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 // --fit none --scale f. Kart detection, model-scale, ply-axes and ply-center
 // see the fitted model, and --size works on it (100 % = Crash's size).
 
-#define RLDMK_FIT_MODEL 0   // the whole model at Crash's length (no kart found)
+#define RLDMK_FIT_MODEL 0   // the whole model at Crash's length (no kart found, or --wheels off)
 #define RLDMK_FIT_KART 1    // the kart at the length of Crash's
 
 // 10^n for 0 <= n <= 22: every one of these is exact in a double.
@@ -2694,9 +2694,18 @@ static int RldMk_StepBudget(struct RldMkBuild *b, const struct RldMkOptions *opt
 
 	if ((b->triangleCount > (RLDCHAR_DRAW_BYTES_MAX / RLDCHAR_DRAW_BYTES_G3)) || (bytes > RLDCHAR_DRAW_BYTES_MAX))
 	{
-		RldMk_Say("error", "model-tris", NULL,
-		          "The model needs %u bytes of draw memory per frame (%u triangles); a driver may use %u, no more than N. Oxide. Reduce it in Blender (Decimate modifier).",
-		          bytes, b->triangleCount, RLDCHAR_DRAW_BYTES_MAX);
+		if (!opt->reduce)
+		{
+			RldMk_Say("error", "model-tris", NULL,
+			          "The model needs %u bytes of draw memory per frame (%u triangles); a driver may use %u, no more than N. Oxide. Let rldpack reduce it (--reduce auto; Reload Studio: Reduce automatically), or reduce it in Blender (Decimate modifier).",
+			          bytes, b->triangleCount, RLDCHAR_DRAW_BYTES_MAX);
+		}
+		else
+		{
+			RldMk_Say("error", "model-tris", NULL,
+			          "The model needs %u bytes of draw memory per frame (%u triangles); a driver may use %u, no more than N. Oxide. Reduce it in Blender (Decimate modifier).",
+			          bytes, b->triangleCount, RLDCHAR_DRAW_BYTES_MAX);
+		}
 		return 0;
 	}
 
@@ -3214,7 +3223,11 @@ static int RldMk_StepMeasure(struct RldMkBuild *b, const struct RldMkOptions *op
 	{
 		const double *e = b->exported;
 
-		if (((e[0] < RLDMK_KART_LENGTH_MIN) || (e[0] > RLDMK_KART_LENGTH_MAX) || (e[1] < 0.8) || (e[1] > 1.0) || (e[2] < 0.6) || (e[2] > 2.7) ||
+		// With --wheels off the model brings its own vehicle (a motorbike,
+		// say): it need not be as wide as a retail kart.
+		const int narrow = !opt->noWheels && ((e[1] < 0.8) || (e[1] > 1.0));
+
+		if (((e[0] < RLDMK_KART_LENGTH_MIN) || (e[0] > RLDMK_KART_LENGTH_MAX) || narrow || (e[2] < 0.6) || (e[2] > 2.7) ||
 		     (e[3] < RLDMK_KART_BOTTOM_MIN) || (e[3] > RLDMK_KART_BOTTOM_MAX)) &&
 		    b->fitted)
 		{
@@ -3224,7 +3237,7 @@ static int RldMk_StepMeasure(struct RldMkBuild *b, const struct RldMkOptions *op
 			          b->fitFactor, e[0], e[1], e[2], e[3], RLDMK_CRASH_LENGTH / RLDMK_UNITS, RLDMK_CRASH_HEIGHT / RLDMK_UNITS,
 			          (double)RLDMK_RETAIL_KART_WIDTH / RLDMK_UNITS);
 		}
-		else if ((e[0] < RLDMK_KART_LENGTH_MIN) || (e[0] > RLDMK_KART_LENGTH_MAX) || (e[1] < 0.8) || (e[1] > 1.0) || (e[2] < 0.6) || (e[2] > 2.7) ||
+		else if ((e[0] < RLDMK_KART_LENGTH_MIN) || (e[0] > RLDMK_KART_LENGTH_MAX) || narrow || (e[2] < 0.6) || (e[2] > 2.7) ||
 		         (e[3] < RLDMK_KART_BOTTOM_MIN) || (e[3] > RLDMK_KART_BOTTOM_MAX))
 		{
 			RldMk_Say("warning", "ply-axes", NULL,
@@ -6581,22 +6594,11 @@ static int RldMk_Lower(const char *text, char *word, size_t size)
 static int RldMk_FitSwitch(const char *fitArg, const char *scaleArg, int *fit)
 {
 	char word[8];
-	size_t k = 0;
-
-	// in any case, as --up
-	if (fitArg != NULL)
-	{
-		for (k = 0; ((k + 1u) < sizeof(word)) && (fitArg[k] != '\0'); k++)
-		{
-			word[k] = (char)(((fitArg[k] >= 'A') && (fitArg[k] <= 'Z')) ? (fitArg[k] - 'A' + 'a') : fitArg[k]);
-		}
-	}
-	word[k] = '\0';
 
 	*fit = 1;
-	if ((fitArg != NULL) && ((fitArg[k] != '\0') || (strcmp(word, "crash") != 0)))
+	if ((fitArg != NULL) && (!RldMk_Lower(fitArg, word, sizeof(word)) || (strcmp(word, "crash") != 0)))
 	{
-		if ((fitArg[k] != '\0') || (strcmp(word, "none") != 0))
+		if (!RldMk_Lower(fitArg, word, sizeof(word)) || (strcmp(word, "none") != 0))
 		{
 			RldMk_Say("error", "fit", fitArg, "Fit must be crash or none.");
 			return 0;
@@ -7027,27 +7029,32 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		}
 	}
 
+	// --wheels and --reduce in any case, as --fit and --up.
 	if (wheelsArg != NULL)
 	{
 		char word[8];
+		const int known = RldMk_Lower(wheelsArg, word, sizeof(word));
 
-		if (RldMk_Lower(wheelsArg, word, sizeof(word)) && (strcmp(word, "off") == 0))
+		if (known && (strcmp(word, "off") == 0))
 		{
 			opt.noWheels = 1;
 		}
-		else if (!RldMk_Lower(wheelsArg, word, sizeof(word)) || (strcmp(word, "on") != 0))
+		else if (!known || (strcmp(word, "on") != 0))
 		{
 			RldMk_Say("error", "wheels", wheelsArg, "Wheels must be on or off.");
 		}
 	}
 
-	if ((reduceArg != NULL) && (strcmp(reduceArg, "auto") != 0))
+	if (reduceArg != NULL)
 	{
-		if (strcmp(reduceArg, "off") == 0)
+		char word[8];
+		const int known = RldMk_Lower(reduceArg, word, sizeof(word));
+
+		if (known && (strcmp(word, "off") == 0))
 		{
 			opt.reduce = 0;
 		}
-		else
+		else if (!known || (strcmp(word, "auto") != 0))
 		{
 			RldMk_Say("error", "reduce", reduceArg, "Reduce must be auto or off.");
 		}
@@ -7334,6 +7341,10 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		struct RldCharInfo back;
 		const char *why = RldChar_ParseInfo(&back, chri, chriSize);
 
+		if ((why == NULL) && (back.flags != (opt.noWheels ? RLDCHAR_FLAG_NO_WHEELS : 0u)))
+		{
+			why = "the flags differ";
+		}
 		if (why != NULL)
 		{
 			RldMk_Say("error", "chri", why, "Internal error: the character info does not read back (%s). Please report it.", why);
@@ -9105,7 +9116,6 @@ static void RldMk_SelfTestRules(const u8 *good, size_t goodSize)
 	free(m);
 }
 
-// CHRI, the container, and the name as the maker takes it.
 // CHRI flags (--wheels off): written only when set, read forward compatibly.
 static void RldMk_SelfTestChriFlags(const u8 field[RLDCHAR_NAME_FIELD], const u8 *good, size_t goodSize)
 {
@@ -9202,6 +9212,7 @@ static void RldMk_SelfTestChriFlags(const u8 field[RLDCHAR_NAME_FIELD], const u8
 	free(flagged);
 }
 
+// CHRI, the container, and the name as the maker takes it.
 static void RldMk_SelfTestChri(const u8 *good, size_t goodSize)
 {
 	static const struct

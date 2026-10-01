@@ -53,10 +53,14 @@
 //     (the surface would pinch). Together with the rule before, this is the
 //     link condition; on a two-sided sheet it holds for the front and the
 //     back at once, because both share the positions,
-//   - both are on a border edge (an edge with a single triangle) while (u, v)
-//     itself is not one: two outlines would meet in one point. Only real
-//     borders count here; the outline of a two-sided sheet and the sharp edge
-//     of a thin closed wedge (comb teeth) are covered by the link condition,
+//   - both are on an outline while (u, v) itself is no open edge: two
+//     outlines would meet in one point. An outline is an edge with a single
+//     triangle, or an open edge (see above) at a position that front and back
+//     of a two-sided sheet share (it has an edge with more than two
+//     triangles): the link condition alone would let a chord between two
+//     outline positions pinch such a sheet. A closed thin part (comb teeth)
+//     has open edges too, but its positions are not shared; the link
+//     condition keeps it whole and its teeth may melt together,
 //   - v or a third corner of the edge would be left without any triangle (a
 //     position would vanish without its quadric being counted),
 //   - a moved triangle would get the same three positions as a triangle v
@@ -66,12 +70,12 @@
 //     two-sided sheet may become twins,
 //   - the normal of a moved triangle turns by more than about 75 degrees
 //     against its current normal (no fold, no flip) or its area becomes zero,
-//   - in the first phase: the normal of a moved triangle turns by more than
-//     60 degrees against the normal of its input triangle (no slow turning
-//     over many collapses). When the first phase runs dry above a target,
-//     every edge is measured again and a second phase goes on without this
-//     rule, so that fine detail that cannot be kept (a comb of 0.1-unit
-//     teeth, say) can still melt together,
+//   - the normal of a moved triangle turns by more than 60 degrees against
+//     the normal of its input triangle (no slow turning over many collapses).
+//     When this first phase runs dry above a target, every edge is measured
+//     again and a second phase goes on with 134 degrees instead, so that
+//     fine detail that cannot be kept (a comb of 0.1-unit teeth, say) can
+//     still melt together,
 //   - a moved triangle becomes a needle (RLDRED_QUALITY_MIN, a tip below about
 //     5 degrees) worse than the worst triangle around u was before. So the
 //     worst shape of the whole mesh never drops below the needle limit or
@@ -143,6 +147,11 @@ typedef struct RldRedResult
 // the normal of its input triangle. Compared squared: no square root needed.
 #define RLDRED_FLIP_COS 0.25
 #define RLDRED_SOURCE_COS 0.5
+
+// In the second phase the limit against the input triangle is looser:
+// acos(-0.7) = 134 degrees, enough for fine detail (comb teeth) to melt
+// together, but no triangle turns all the way round.
+#define RLDRED_SOURCE_COS_LATE (-0.7)
 
 // Two triangles on one edge lie on the same side of it when their third
 // corners, seen along the edge, point within acos(0.9) = 25.8 degrees.
@@ -233,6 +242,18 @@ static int RldRed_Within(const double *a, const double *b, double cosine)
 	const double d = RldRed_Dot(a, b);
 
 	return (d > 0.0) && ((d * d) > (cosine * cosine * RldRed_Dot(a, a) * RldRed_Dot(b, b)));
+}
+
+// The same for any cosine from -1 to 1 (angles beyond 90 degrees too).
+static int RldRed_TurnBelow(const double *a, const double *b, double cosine)
+{
+	const double d = RldRed_Dot(a, b);
+
+	if (cosine >= 0.0)
+	{
+		return RldRed_Within(a, b, cosine);
+	}
+	return (d >= 0.0) || ((d * d) < (cosine * cosine * RldRed_Dot(a, a) * RldRed_Dot(b, b)));
 }
 
 // 1 when the angle between a and b is above 180 degrees - acos(cosine).
@@ -339,7 +360,9 @@ struct RldRedState
 	u32 *countU;           // triangles of u on the edge to this position
 	u32 *countV;           // triangles of v on the edge to this position
 	u32 *countUV;          // triangles with u, v and this position
-	u32 *edgeCount;        // RldRed_OnBorder: triangles on the edge to this position
+	u32 *edgeOpen;         // RldRed_OnOpenEdge: 1 while the edge to this position looks open
+	u32 *edgeCount;        // RldRed_OnOpenEdge: triangles on the edge to this position
+	double *wing;          // 3 per position: RldRed_OnOpenEdge, the first wing of the edge
 	u32 markNow;
 
 	// scratch lists
@@ -381,7 +404,9 @@ static void RldRed_FreeState(struct RldRedState *s)
 	free(s->countU);
 	free(s->countV);
 	free(s->countUV);
+	free(s->edgeOpen);
 	free(s->edgeCount);
+	free(s->wing);
 	free(s->listU);
 	free(s->listV);
 	free(s->listX);
@@ -643,14 +668,51 @@ static u32 RldRed_Ring(struct RldRedState *s, u32 x)
 	return neighbors;
 }
 
-// 1 when position x lies on a border edge: an edge to a neighbor that only
-// one of its triangles uses. triangles are all live triangles at x. Uses
-// markB and edgeCount.
-static int RldRed_OnBorder(struct RldRedState *s, u32 x, const u32 *triangles, u32 count)
+// 1 when position x lies on an outline: on an edge with a single triangle,
+// or - where x is shared by front and back of a two-sided sheet, seen as an
+// edge at x with more than two triangles - on an open edge (all its
+// triangles on one side of it, see the head of this file). A closed thin
+// part (comb teeth) has the open edges but not the shared positions: there
+// the link condition keeps the surface whole. triangles are all live
+// triangles at x. Uses markB, edgeOpen, edgeCount and wing.
+static int RldRed_OnOpenEdge(struct RldRedState *s, u32 x, const u32 *triangles, u32 count)
 {
 	const u32 mark = RldRed_NextMark(s);
+	int shared = 0;
+	int open = 0;
 	u32 i;
 	u32 k;
+
+	for (i = 0; i < count; i++)
+	{
+		const u32 *t = &s->corner[3u * triangles[i]];
+
+		for (k = 0; k < 3u; k++)
+		{
+			const u32 w = t[k];
+			double wing[3];
+
+			if (w == x)
+			{
+				continue;
+			}
+			RldRed_Wing(s, x, w, t[0] ^ t[1] ^ t[2] ^ x ^ w, wing);
+			if (s->markB[w] != mark)
+			{
+				s->markB[w] = mark;
+				s->edgeOpen[w] = 1u;
+				s->edgeCount[w] = 0u;
+				s->wing[3u * w + 0u] = wing[0];
+				s->wing[3u * w + 1u] = wing[1];
+				s->wing[3u * w + 2u] = wing[2];
+			}
+			else if (!RldRed_Within(&s->wing[3u * w], wing, RLDRED_OPEN_COS))
+			{
+				s->edgeOpen[w] = 0u;
+			}
+			s->edgeCount[w]++;
+		}
+	}
 
 	for (i = 0; i < count; i++)
 	{
@@ -664,29 +726,16 @@ static int RldRed_OnBorder(struct RldRedState *s, u32 x, const u32 *triangles, u
 			{
 				continue;
 			}
-			if (s->markB[w] != mark)
-			{
-				s->markB[w] = mark;
-				s->edgeCount[w] = 0u;
-			}
-			s->edgeCount[w]++;
-		}
-	}
-
-	for (i = 0; i < count; i++)
-	{
-		const u32 *t = &s->corner[3u * triangles[i]];
-
-		for (k = 0; k < 3u; k++)
-		{
-			if ((t[k] != x) && (s->edgeCount[t[k]] == 1u))
+			if (s->edgeCount[w] == 1u)
 			{
 				return 1;
 			}
+			shared |= (s->edgeCount[w] > 2u);
+			open |= (s->edgeOpen[w] != 0u);
 		}
 	}
 
-	return 0;
+	return shared && open;
 }
 
 //========================================================================================
@@ -723,6 +772,8 @@ static int RldRed_Push(struct RldRedState *s, u32 u, u32 v)
 static int RldRed_CanCollapse(struct RldRedState *s, u32 u, u32 v, u32 *countU)
 {
 	const u32 group = s->positionGroup[u];
+	double firstWing[3] = {0.0, 0.0, 0.0};
+	int edgeOpen = 1;
 	u32 nu;
 	u32 nv;
 	u32 onEdge = 0;
@@ -755,6 +806,20 @@ static int RldRed_CanCollapse(struct RldRedState *s, u32 u, u32 v, u32 *countU)
 		}
 		if (RldRed_HasCorner(t, v))
 		{
+			double wing[3];
+
+			// The edge (u, v) is open when all its triangles lie on one side of it.
+			RldRed_Wing(s, u, v, t[0] ^ t[1] ^ t[2] ^ u ^ v, wing);
+			if (onEdge == 0u)
+			{
+				firstWing[0] = wing[0];
+				firstWing[1] = wing[1];
+				firstWing[2] = wing[2];
+			}
+			else if (!RldRed_Within(firstWing, wing, RLDRED_OPEN_COS))
+			{
+				edgeOpen = 0;
+			}
 			onEdge++;
 		}
 		else
@@ -854,9 +919,9 @@ static int RldRed_CanCollapse(struct RldRedState *s, u32 u, u32 v, u32 *countU)
 		}
 	}
 
-	// Two positions on border edges may only be joined along a border edge;
+	// Two positions on open edges may only be joined along an open edge;
 	// across the inside two outlines would meet in one point.
-	if ((onEdge != 1u) && RldRed_OnBorder(s, u, s->listU, nu) && RldRed_OnBorder(s, v, s->listV, nv))
+	if (!edgeOpen && RldRed_OnOpenEdge(s, u, s->listU, nu) && RldRed_OnOpenEdge(s, v, s->listV, nv))
 	{
 		return 0;
 	}
@@ -931,7 +996,8 @@ static int RldRed_CanCollapse(struct RldRedState *s, u32 u, u32 v, u32 *countU)
 		}
 		RldRed_Normal(s, tu, before);
 		RldRed_Cross(moved3[0], moved3[1], moved3[2], after);
-		if (!RldRed_Within(before, after, RLDRED_FLIP_COS) || (s->strict && !RldRed_Within(&s->sourceNormal[3u * tu], after, RLDRED_SOURCE_COS)))
+		if (!RldRed_Within(before, after, RLDRED_FLIP_COS) ||
+		    !RldRed_TurnBelow(&s->sourceNormal[3u * tu], after, s->strict ? RLDRED_SOURCE_COS : RLDRED_SOURCE_COS_LATE))
 		{
 			return 0;
 		}
@@ -1182,7 +1248,9 @@ static int RldRed_Setup(struct RldRedState *s, const RldRedMesh *mesh)
 	s->countU = (u32 *)calloc(np, sizeof(u32));
 	s->countV = (u32 *)calloc(np, sizeof(u32));
 	s->countUV = (u32 *)calloc(np, sizeof(u32));
+	s->edgeOpen = (u32 *)calloc(np, sizeof(u32));
 	s->edgeCount = (u32 *)calloc(np, sizeof(u32));
+	s->wing = (double *)calloc(np * 3u, sizeof(double));
 	s->listU = (u32 *)malloc(mp * sizeof(u32));
 	s->listV = (u32 *)malloc(mp * sizeof(u32));
 	s->listX = (u32 *)malloc(mp * sizeof(u32));
@@ -1191,8 +1259,8 @@ static int RldRed_Setup(struct RldRedState *s, const RldRedMesh *mesh)
 	if ((s->position == NULL) || (s->quadric == NULL) || (s->sourceNormal == NULL) || (s->corner == NULL) || (s->triangleAlive == NULL) ||
 	    (s->head == NULL) || (s->next == NULL) || (s->stamp == NULL) || (s->valence == NULL) || (s->positionState == NULL) ||
 	    (s->positionGroup == NULL) || (s->pinned == NULL) || (s->markA == NULL) || (s->markB == NULL) || (s->markC == NULL) || (s->markD == NULL) ||
-	    (s->countU == NULL) || (s->countV == NULL) || (s->countUV == NULL) || (s->edgeCount == NULL) || (s->listU == NULL) ||
-	    (s->listV == NULL) || (s->listX == NULL) || (s->ring == NULL) || (s->touched == NULL))
+	    (s->countU == NULL) || (s->countV == NULL) || (s->countUV == NULL) || (s->edgeOpen == NULL) || (s->edgeCount == NULL) || (s->wing == NULL) ||
+	    (s->listU == NULL) || (s->listV == NULL) || (s->listX == NULL) || (s->ring == NULL) || (s->touched == NULL))
 	{
 		return 0;
 	}
@@ -1406,6 +1474,11 @@ static int RldRed_Setup(struct RldRedState *s, const RldRedMesh *mesh)
 // THE REDUCTION
 //========================================================================================
 
+// The collapses the second phase did in the last RldRed_Reduce (0 when the
+// first phase reached every target); read by the self-test. The packer runs
+// one reduction at a time.
+static u32 s_rldRedLateCollapses;
+
 void RldRed_Free(RldRedResult *result)
 {
 	if (result == NULL)
@@ -1464,6 +1537,7 @@ int RldRed_Reduce(const RldRedMesh *mesh, RldRedResult *out, char *why, size_t w
 	// The cheapest valid collapse, until every group is at its target or no
 	// collapse is left. Two phases: when the first runs dry above a target,
 	// the second goes on without the normal limit against the input triangle.
+	s_rldRedLateCollapses = 0u;
 	for (phase = 0; (phase < 2u) && (above != 0u); phase++)
 	{
 		s.strict = (phase == 0u);
@@ -1497,6 +1571,7 @@ int RldRed_Reduce(const RldRedMesh *mesh, RldRedResult *out, char *why, size_t w
 			}
 
 			g = s.positionGroup[c.u];
+			s_rldRedLateCollapses += s.strict ? 0u : 1u;
 			if (!RldRed_Collapse(&s, c.u, c.v, nu, c.cost))
 			{
 				RldRed_FreeState(&s);
@@ -1572,10 +1647,11 @@ int RldRed_Reduce(const RldRedMesh *mesh, RldRedResult *out, char *why, size_t w
 // Every result is checked (RldRed_TestValid) for: targets reached, only input
 // positions of the same group, sourceTriangle valid and rising, each corner
 // at its input corner's position or that position gone, no repeated corner,
-// area above zero, the normal within 60 degrees of the input triangle's, no
-// shape worse than the needle limit or the worst input triangle, the box of every group the same, no new doubled triangle, no
-// more edges with more than two triangles than the input had, and the same
-// bytes from a second run.
+// area above zero, the normal within 60 degrees of the input triangle's
+// (within 134 where the second phase was needed), no shape worse than the
+// needle limit or the worst input triangle, the box of every group the same,
+// no new doubled triangle, no more edges with more than two triangles than
+// the input had, and the same bytes from a second run.
 
 struct RldRedTestMesh
 {
@@ -1980,7 +2056,7 @@ static int RldRed_TestValid(const RldRedMesh *mesh, const RldRedResult *r, int s
 		// measures about the middle of the box).
 		RldRed_Cross(&mesh->position[3u * c[0]], &mesh->position[3u * c[1]], &mesh->position[3u * c[2]], now);
 		RldRed_Cross(&mesh->position[3u * in[0]], &mesh->position[3u * in[1]], &mesh->position[3u * in[2]], was);
-		if (!(RldRed_Dot(now, now) > 0.0) || (sourceTurn && !RldRed_Within(was, now, RLDRED_SOURCE_COS - 0.001)))
+		if (!(RldRed_Dot(now, now) > 0.0) || !RldRed_TurnBelow(was, now, (sourceTurn ? RLDRED_SOURCE_COS : RLDRED_SOURCE_COS_LATE) - 0.001))
 		{
 			snprintf(detail, detailSize, "triangle %u: no area, or turned by more than 60 degrees from input triangle %u", i, source);
 			return 0;
@@ -2557,8 +2633,8 @@ static void RldRed_TestDisc(struct RldRedTest *test, u32 n, u32 target, const ch
 // triangles. Teeth this fine cannot all be kept; at about 400 triangles the
 // walls of the gaps must turn as the teeth melt together, which the first
 // phase forbids (it stops at 410): reached only by the second. Checked:
-// target reached, closed, the box kept, no new needle (RldRed_TestValid,
-// without the 60 degrees of the first phase).
+// target reached, closed, the second phase did collapses, the box kept, no
+// new needle (RldRed_TestValid, with the 134 degrees of the second phase).
 static void RldRed_TestComb(struct RldRedTest *test, u32 teeth, u32 target, const char *name)
 {
 	struct RldRedTestMesh t;
@@ -2662,8 +2738,191 @@ static void RldRed_TestComb(struct RldRedTest *test, u32 teeth, u32 target, cons
 		test->sourceTurn = 1;
 		if (done)
 		{
-			ok = (r.triangleCount <= target) && (r.triangleCount + 2u >= target) && RldRed_TestClosed(&r);
-			RldRed_TestLine(test, ok, name, "%u triangles, closed %d", r.triangleCount, RldRed_TestClosed(&r));
+			ok = (r.triangleCount <= target) && (r.triangleCount + 2u >= target) && RldRed_TestClosed(&r) && (s_rldRedLateCollapses != 0u);
+			RldRed_TestLine(test, ok, name, "%u triangles, closed %d, %u collapses in the second phase", r.triangleCount, RldRed_TestClosed(&r),
+			                s_rldRedLateCollapses);
+		}
+	}
+
+	RldRed_Free(&r);
+	RldRed_TestFree(&t);
+}
+
+// A ribbon: a quarter circle of radius 20, `segments` quads long and 0.5
+// wide, one-sided or two-sided (kind as RldRed_TestGrid), reduced as far as
+// the rules allow. It may get short, but its side facing +z stays one piece
+// and is never pinched: no position on more than two outline edges.
+static void RldRed_TestRibbon(struct RldRedTest *test, u32 segments, int kind, u32 limit, const char *name)
+{
+	struct RldRedTestMesh t;
+	RldRedResult r;
+	RldRedMesh mesh;
+	double c = 1.0;
+	double sn = 0.0;
+	double sc = 0.0;
+	double ss = 0.0;
+	double term = 1.0;
+	const double step = 1.5707963267948966 / (double)segments;
+	char why[200];
+	u32 target = 1u;
+	u32 reached = 0;
+	u32 i;
+	u32 k;
+
+	memset(&t, 0, sizeof(t));
+	memset(&r, 0, sizeof(r));
+	for (k = 0; k < 12u; k++)
+	{
+		if ((k % 2u) == 0u)
+		{
+			sc += ((k % 4u) == 0u) ? term : -term;
+		}
+		else
+		{
+			ss += ((k % 4u) == 1u) ? term : -term;
+		}
+		term *= step / (double)(k + 1u);
+	}
+	for (i = 0; i <= segments; i++)
+	{
+		const double nc = c * sc - sn * ss;
+
+		RldRed_TestPosition(&t, 20.0 * c, 20.0 * sn, 0.0);
+		RldRed_TestPosition(&t, 20.5 * c, 20.5 * sn, 0.0);
+		sn = sn * sc + c * ss;
+		c = nc;
+	}
+	for (i = 0; i < segments; i++)
+	{
+		const u32 a = 2u * i;
+		const u32 b = a + 2u;
+		const u32 cc = a + 3u;
+		const u32 d = a + 1u;
+
+		// a, b on the inner arc, d, c on the outer: (a, b, c, d) faces -z.
+		RldRed_TestTriangle(&t, a, cc, b, 0u);
+		RldRed_TestTriangle(&t, a, d, cc, 0u);
+		if (kind == RLDRED_TEST_TWINS)
+		{
+			RldRed_TestTriangle(&t, a, b, cc, 0u);
+			RldRed_TestTriangle(&t, a, cc, d, 0u);
+		}
+		else if (kind == RLDRED_TEST_QUAD_BACK)
+		{
+			RldRed_TestTriangle(&t, a, b, d, 0u);
+			RldRed_TestTriangle(&t, b, cc, d, 0u);
+		}
+	}
+	if (t.failed)
+	{
+		RldRed_TestLine(test, 0, name, "out of memory");
+		RldRed_TestFree(&t);
+		return;
+	}
+
+	mesh = RldRed_TestView(&t, 1u, &target);
+	if (RldRed_Reduce(&mesh, &r, why, sizeof(why)) || (sscanf(why, "reduce: group 0 keeps %u", &reached) != 1))
+	{
+		RldRed_TestLine(test, 0, name, "expected to stop above 1 triangle, why \"%s\"", why);
+	}
+	else
+	{
+		RldRed_Free(&r);
+		mesh = RldRed_TestView(&t, 1u, &reached);
+		if (RldRed_TestRun(test, name, &mesh, &r))
+		{
+			u32 *label = (u32 *)calloc((size_t)r.triangleCount + 1u, sizeof(u32));
+			u32 *outline = (u32 *)calloc((size_t)t.positionCount + 1u, sizeof(u32));
+			u32 pieces = 0;
+			u32 pinched = 0;
+			u32 j;
+
+			if ((label == NULL) || (outline == NULL))
+			{
+				RldRed_TestLine(test, 0, name, "out of memory");
+			}
+			else
+			{
+				// The triangles facing +z (one side): label 0 = the other side.
+				for (i = 0; i < r.triangleCount; i++)
+				{
+					const u32 *q = &r.triangle[3u * i];
+					double normal[3];
+
+					RldRed_Cross(&t.position[3u * q[0]], &t.position[3u * q[1]], &t.position[3u * q[2]], normal);
+					label[i] = (normal[2] > 0.0) ? RLDRED_NONE : 0u;
+				}
+
+				// Pieces: joined across shared edges (two shared corners).
+				for (i = 0; i < r.triangleCount; i++)
+				{
+					int grew = 1;
+
+					if (label[i] != RLDRED_NONE)
+					{
+						continue;
+					}
+					label[i] = ++pieces;
+					while (grew)
+					{
+						grew = 0;
+						for (j = 0; j < r.triangleCount; j++)
+						{
+							u32 o;
+
+							for (o = 0; (o < r.triangleCount) && (label[j] == RLDRED_NONE); o++)
+							{
+								const u32 *x = &r.triangle[3u * j];
+								const u32 *y = &r.triangle[3u * o];
+								const u32 shared = (u32)RldRed_HasCorner(y, x[0]) + (u32)RldRed_HasCorner(y, x[1]) + (u32)RldRed_HasCorner(y, x[2]);
+
+								if ((label[o] == pieces) && (shared == 2u))
+								{
+									label[j] = pieces;
+									grew = 1;
+								}
+							}
+						}
+					}
+				}
+
+				// Outline edges (a single triangle of this side); a position on
+				// more than two of them is a pinch.
+				for (i = 0; i < r.triangleCount; i++)
+				{
+					u32 k;
+
+					if (label[i] == 0u)
+					{
+						continue;
+					}
+					for (k = 0; k < 3u; k++)
+					{
+						const u32 ea = r.triangle[3u * i + k];
+						const u32 eb = r.triangle[3u * i + (k + 1u) % 3u];
+						u32 on = 0;
+
+						for (j = 0; j < r.triangleCount; j++)
+						{
+							on += ((label[j] != 0u) && RldRed_HasCorner(&r.triangle[3u * j], ea) && RldRed_HasCorner(&r.triangle[3u * j], eb)) ? 1u : 0u;
+						}
+						if (on == 1u)
+						{
+							outline[ea]++;
+							outline[eb]++;
+						}
+					}
+				}
+				for (j = 0; j < t.positionCount; j++)
+				{
+					pinched += (outline[j] > 2u) ? 1u : 0u;
+				}
+
+				RldRed_TestLine(test, (pieces == 1u) && (pinched == 0u) && (r.triangleCount <= limit), name,
+				                "stopped at %u triangles (limit %u), one side in %u pieces, %u pinched positions", r.triangleCount, limit, pieces, pinched);
+			}
+			free(label);
+			free(outline);
 		}
 	}
 
@@ -3064,6 +3323,9 @@ int RldRed_SelfTest(void (*report)(const char *line))
 	RldRed_SelfTestNonManifold(&test);
 	RldRed_TestDisc(&test, 1024u, 797u, "disc of 1024 corners, caps as fans of needles, 4092 -> 797");
 	RldRed_TestComb(&test, 256u, 400u, "comb of 256 teeth, caps as fans of needles, 4104 -> 400 (second phase)");
+	RldRed_TestRibbon(&test, 32u, RLDRED_TEST_ONE_SIDED, 8u, "ribbon, one-sided, as deep as allowed: never pinched");
+	RldRed_TestRibbon(&test, 32u, RLDRED_TEST_TWINS, 8u, "ribbon, two-sided twins, as deep as allowed: never pinched");
+	RldRed_TestRibbon(&test, 32u, RLDRED_TEST_QUAD_BACK, 8u, "ribbon, two-sided quads, as deep as allowed: never pinched");
 	RldRed_SelfTestGroups(&test);
 	RldRed_SelfTestLimits(&test);
 	return test.failures;
