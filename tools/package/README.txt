@@ -2,10 +2,11 @@ CTR Reload @VERSION@ - README for testers
 ==========================================
 Build: @BUILD@
 
-CTR Reload runs Crash Team Racing natively on Windows and loads custom tracks.
-This version is a test of two things: the game (CTR Reload @VERSION@) and
-Reload Studio, the tool that turns your exported track into a track the
-game can load. Play, build your tracks, race them, and tell us what breaks.
+CTR Reload runs Crash Team Racing natively on Windows and loads custom tracks
+and custom characters. This version is a test of two things: the game (CTR
+Reload @VERSION@) and Reload Studio, the tool that turns your exported track
+or character model into a file the game can load. Play, build your tracks and
+characters, race them, and tell us what breaks.
 
 The package holds the game (ctr_native.exe, with its debug symbols
 ctr_native.pdb), Reload Studio (ReloadStudio.exe), this README.txt, the
@@ -20,7 +21,7 @@ Contents
   0. Quick start
   1. What you need
   2. First start of the game
-  3. Custom tracks in the game
+  3. Custom tracks and characters in the game
   4. Reload Studio
   5. What a track needs for each mode
   6. What we want you to test
@@ -78,8 +79,8 @@ Graphics: OPTIONS -> GRAPHICS. Up/down picks a row, left/right changes it.
 The choices are saved in ctr-settings.cfg and are there after a restart.
 
 
-3. CUSTOM TRACKS IN THE GAME
-----------------------------
+3. CUSTOM TRACKS AND CHARACTERS IN THE GAME
+-------------------------------------------
 The game loads every .rldtrack file in its "tracks" folder at start. Custom
 tracks are under ARCADE -> NITRO-PIT:
 
@@ -102,13 +103,26 @@ written to your adventure save.
 Custom tracks start without the camera fly-in before the countdown, even if
 the track has its own camera path. The original tracks keep their fly-in.
 
+Custom characters: the game reads every .rldchar file in its "characters"
+folder at start (make them on Reload Studio's "Character" page, 4.3). Each
+gets a tile in the one-player ARCADE driver select, after the original
+drivers; the tiles are sorted by file name, at most 32 get one. Not in
+NITRO-PIT CRYSTAL or CTR, not in Time Trial, Adventure, Battle or with two
+players.
+- A broken file is skipped and the game starts anyway; the log says why (a
+  line starting with "[CTR Char] REFUSED").
+- The driving style chosen in Reload Studio decides how the kart drives
+  (speed, acceleration, turning) and its engine sound.
+- For now a custom driver is silent, and the menu shows the portrait of Fake
+  Crash instead of the character's own icon.
+
 
 4. RELOAD STUDIO
 ----------------
 ReloadStudio.exe builds a track container (.rldtrack) from your exported track,
-makes cups, and starts the game on your track. Keep it in the same folder as
-ctr_native.exe: it finds the game and its data there, and your music needs
-the game's sound data.
+makes cups, builds characters (.rldchar) from a 3D model, and starts the game
+on your track. Keep it in the same folder as ctr_native.exe: it finds the
+game and its data there, and your music needs the game's sound data.
 
 Colours in all messages: green = done, amber = works, but read this,
 red = stopped.
@@ -167,7 +181,53 @@ for the game (and for cups).
   characters and characters the menu font does not have. The game leaves out
   a cup with problems.
 
-4.3 Page "Test in game" - start the game on your track
+4.3 Page "Character" - build a character
+  Model (PLY) Your model of driver, steering wheel and kart in one PLY file
+              with vertex colours (ASCII or binary), 1 unit = 1 metre, +Y up,
+              +Z forward. The kart is the part at the bottom, about 1.8 long;
+              the game draws the wheels. You can also drag the .ply onto the
+              page.
+  Name        Shown in the driver select: 1 to 17 characters, capitals,
+              A-Z 0-9 space ! % ' + , - . / : < = > ? _ (anything else is
+              left out while you type).
+  Driving style
+              Balanced, Acceleration, Speed or Turning, each with the
+              original drivers that drive like it (default Balanced). This
+              decides how the kart drives in the game.
+  Size        50 to 200 % (default 100): makes the driver and the steering
+              wheel larger or smaller; the kart keeps its size. Visual size
+              only - physics and collision follow the driving style. After
+              the first check the bar shows the sizes your model allows and
+              the rest of it is locked; the line below says the range, and
+              why when the bar had to move back.
+  Icon (PNG)  Optional. Your picture and how the game will have it (cut to
+              44:26 in the middle, 44 x 26 pixels, 15 colours and
+              transparent) side by side. The game does not show the icon yet;
+              the menu shows the portrait of Fake Crash.
+  Voices      Optional. A folder with your voice lines as .wav or .vag:
+              boost1, boost2, hit1, hit2, spin1, spin2, bigair1, bigair2,
+              drop1, drop2, shield1, shield2, passing1, passing2, fire1,
+              fire2, yes, hit. They are checked (format, length, level,
+              gaps), but not packed yet - the driver is silent in the game.
+  Preview     The model as the game will draw it. Drag to turn it; the list
+              at the top right of the card picks Neutral, Steering left or
+              Steering right. The grey kart is an original kart, for the
+              size.
+  Output      Where the .rldchar is written; empty = next to the model. Best:
+              the game's "characters" folder, then the game finds it at its
+              next start.
+  Check       Checks everything without writing (also runs by itself 0.6
+              seconds after every change). The messages say what to fix.
+  Build character
+              Writes the .rldchar (asks before it replaces a file) and shows
+              its SHA-256. "Show in folder" opens the folder.
+  Show rldpack output
+              The full checker log.
+
+The file name is the character's identity in the game; the name in the menu
+lives inside the file.
+
+4.4 Page "Test in game" - start the game on your track
   Game program    ctr_native.exe. It is checked with its version; it must be
                   from the same package as Reload Studio, otherwise:
                   "This game (...) is not from the same package ...". If the
@@ -224,6 +284,11 @@ Reload Studio
     nav paths; no camera fly-in before the countdown.
 [ ] Cups page: make a cup with 4 of your tracks, save it, play it in
     NITRO-PIT -> CUP. Try a cup with problems and read the check list.
+[ ] Character page: build a character from your model, with and without
+    an icon, at a few sizes. The preview matches what you see in the game.
+[ ] Break the character on purpose: a model without kart, a very large
+    model, a broken PNG, a voice file in a wrong format. Reload Studio must
+    say what is wrong, never crash.
 [ ] Dark mode / light mode (bottom left), resizing the window: everything
     stays readable.
 
@@ -235,6 +300,8 @@ In the game
 [ ] NITRO-PIT -> CTR (if your track has C, T, R): drive through C, T and R
     yourself and finish 1st -> YOU WIN. Miss a letter -> TRY AGAIN.
 [ ] Pause -> QUIT in a challenge brings you back to the menu.
+[ ] Your character in ARCADE: its tile is in the driver select, the race
+    runs, the kart drives like the driving style you chose.
 [ ] Anything that looks wrong on your track: holes, black floors, missing
     objects, sound.
 
@@ -255,6 +322,14 @@ Modes and menus
   1st place is then easy.
 - With exactly two tracks in the folder, the track wheel can show two names
   on top of each other after you scroll it.
+
+Characters
+- A custom driver is silent: voices are checked, but not packed yet.
+- The driver select shows the portrait of Fake Crash, not the character's
+  own icon.
+- Only in the one-player ARCADE driver select; not in NITRO-PIT CRYSTAL or
+  CTR, Time Trial, Adventure, Battle or with two players.
+- The size is visual only - physics and collision follow the driving style.
 
 Previews
 - The invisible kart still hits crates and fruit, so they break in the
@@ -294,7 +369,8 @@ what not to attach). The form asks for:
   Enter, run "ctr_native.exe --version" and paste the line it prints
   ("CTR Reload @VERSION@ (@BUILD@)")
 - what happened, what you expected, and the steps to reproduce it
-- for a custom track: its file name and the SHA-256 Reload Studio shows
+- for a custom track or character: its file name and the SHA-256 Reload
+  Studio shows
 - the log and screenshots (see below)
 - your Windows version, graphics card and driver version
 
@@ -312,9 +388,10 @@ Which files to attach:
   screenshot of that screen - nothing is logged at that point.
 
 Please do NOT attach: the "assets" folder, disc images, memory cards
-("memcards" folder), track containers (.rldtrack) or their source files
-(.lev/.vrm/.sca), or anything else from the game data. Logs contain folder
-paths with your Windows user name - edit them out if you mind.
+("memcards" folder), track or character containers (.rldtrack, .rldchar) or
+their source files (.lev/.vrm/.sca/.ply), or anything else from the game
+data. Logs contain folder paths with your Windows user name - edit them out
+if you mind.
 
 
 9. FILES AND FOLDERS
@@ -322,8 +399,8 @@ paths with your Windows user name - edit them out if you mind.
   ctr_native.exe      the game
   ctr_native.pdb      debug symbols of the game: with them a crash report
                       names the function, keep it next to ctr_native.exe
-  ReloadStudio.exe    Reload Studio (track containers, cups, test); the
-                      track checker/packer (rldpack) is built into it
+  ReloadStudio.exe    Reload Studio (track containers, cups, characters,
+                      test); the checker/packer (rldpack) is built into it
   README.txt          this file
   RELEASE-NOTES.txt   what is new, decisions, known issues
   LICENSE             the GNU General Public License version 3
@@ -337,6 +414,7 @@ Created by the game next to ctr_native.exe:
   tracks\             your .rldtrack files; tracks\vorschau\ the previews;
                       tracks\cups.txt your cups; tracks\track-ids.tsv is
                       written by the game - leave it alone
+  characters\         your .rldchar files
   logs\               the last 5 game logs
   memcards\           memory card (your saves)
   ctr-settings.cfg    your settings

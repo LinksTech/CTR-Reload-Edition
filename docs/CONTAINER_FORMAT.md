@@ -5,9 +5,10 @@ CTR Reload Edition has two container types. Both share one envelope:
 | Extension | Content | Written by | Read by |
 |---|---|---|---|
 | `.rldtrack` | a custom track, format 4.1 (frozen) | `rldpack build`, `rldpack make` | the game, `rldpack info`, `rldpack verify` |
-| `.rldchar` | a custom character, format 1.0 (draft) | `rldpack make-char` | the game (developer switch only), `rldpack info`, `rldpack verify` |
+| `.rldchar` | a custom character, format 1.0 (draft) | `rldpack make-char` (also through Reload Studio's Character page) | the game (`characters` folder), `rldpack info`, `rldpack verify` |
 
-The game does not offer characters in its menus yet; there is no default character folder.
+The game reads every `.rldchar` of its `characters` folder at start; see
+"What the game does" in section 3.
 
 All numbers are little-endian. KiB = 1024 bytes, MiB = 1024 KiB.
 
@@ -337,22 +338,25 @@ is frozen. Source: `include/rldchar.inc`.
 |---|---|---|---|
 | CHRI | required | 4 KiB | template, class, name, version, author |
 | CMDL | required | 256 KiB | the model, in the game's native model format |
-| CICN | optional, known type: not written by rldpack, content not interpreted yet | 4 KiB | portrait; layout not fixed (draft) |
+| CICN | optional, written by `rldpack make-char --icon` | 4 KiB | the portrait, exactly 612 bytes (rules CICN-1..3); the game does not show it yet |
 | CPRM | optional, known type: not written by rldpack, content not interpreted yet | 4 KiB | values; layout not fixed (draft) |
 | CVOI | reserved name, planned | none (unknown, skipped) | voices; layout not defined |
 | CTEX | reserved name, planned | none (unknown, skipped) | texture data; layout not defined |
 
+`rldpack make-char` writes CHRI, CMDL and, with `--icon`, CICN, in this order.
 CICN and CPRM are known types. When present, the envelope checks them
-(compression, sizes, limit) and `rldpack verify` checks their hash. Nothing
-interprets their content yet.
+(compression, sizes, limit) and `rldpack verify` checks their hash. A CICN
+larger than 4 KiB therefore refuses the whole file (step 17); every other
+broken CICN only loses the portrait (see CICN below). Nothing interprets CPRM
+yet.
 
 ### CHRI (`RldChar_ParseInfo`)
 
 | Offset | Type | Field | Meaning |
 |---|---|---|---|
 | 0x00 | u16 | fixedSize | length of the numeric part: >= 0x1C, a multiple of 4 |
-| 0x02 | u8 | template | the retail character 0..14 the character stands in for |
-| 0x03 | u8 | class | engine class 0..3: balanced, acceleration, speed, turning |
+| 0x02 | u8 | template | the retail character 0..14 the character runs on in the game; Reload Studio always writes 14 (Fake Crash) |
+| 0x03 | u8 | class | engine class 0..3: balanced, acceleration, speed, turning; the game drives the character with it |
 | 0x04 | char[20] | name | display name, see the name rule |
 | 0x18 | u32 | charVersion | for humans; the CMDL hash, not this number, is meant to tell versions apart |
 | fixedSize | u32 | stringCount | then per string: u32 length, bytes |
@@ -360,6 +364,10 @@ interprets their content yet.
 
 - `rldpack` writes fixedSize 0x1C and one string, the author (UTF-8; the packer checks it).
 - A reader skips numeric bytes beyond 0x1C and strings beyond the first.
+- `rldpack make-char --template` sets the template, `--class` the class
+  (default: the template's own class). Reload Studio asks for no template: it
+  always passes `--template 14` and the driving style the author chose
+  (default balanced).
 
 Name rule (`RldChar_NameValid`, one function for packer and reader):
 
@@ -468,6 +476,100 @@ What `rldpack make-char` writes (`RldMk_WriteCmdl`):
 The pointer map has 8 entries: Model.headers, ptrCommandList, ptrColors,
 ptrAnimations, and the 4 table entries.
 
+### The size of the driver
+
+The format has no size field. `rldpack make-char --size <percent>` (50..200,
+default 100) bakes the size into the vertices before the poses are made
+(`RldMk_StepSize`):
+
+- Only the driver and the steering wheel are scaled, about the hip
+  H = (0, 16, 0) game units (0.25 Blender units above the ground):
+  p' = H + s x (p - H).
+- The kart is not scaled: the game draws the wheels as sprites at fixed
+  points of the kart, so it stays as large as the model has it (about a
+  retail kart).
+- It is a visual size only - physics and collision follow the driving style
+  (the class in CHRI).
+- 100 gives the same bytes as no `--size` at all.
+- The range a model takes depends on the model: the 16-bit model scale per
+  axis (model-scale), the coordinate range of every frame (model-coords) and
+  the length of the whole model. `rldpack make-char --machine` reports it as
+  `@value size-range <lo> <hi>`; a size outside is refused (`char-size`).
+
+### CICN (`RldChar_CheckIcon`)
+
+The portrait in the driver select, in the retail portrait format:
+
+| Offset | Type | Field | 1.0 |
+|---|---|---|---|
+| 0x00 | u16 | version | 1 |
+| 0x02 | u16 | depth | 4 bits per texel |
+| 0x04 | u16 | width | 44 |
+| 0x06 | u16 | height | 26 |
+| 0x08 | u16[16] | clut | RGB555 and the STP bit 15, red in bits 0-4; the value 0x0000 is transparent, so black is 0x0421 |
+| 0x28 | u16[26][11] | texels | the rows from the top; 4 texels per word, the lowest nibble is the leftmost |
+
+612 bytes, nothing else; there is no VRAM position in the chunk.
+
+Rules, in order. Each one gives a fixed text that starts with the rule:
+
+| Rule | What must hold |
+|---|---|
+| CICN-3 | at least 8 bytes (checked first: below 8 bytes there is no header) |
+| CICN-1 | version 1 and depth 4 |
+| CICN-2 | width 44 and height 26 |
+| CICN-3 | exactly 612 bytes |
+
+A CICN that breaks a rule never refuses the file: only the portrait is
+dropped, and the template's portrait is shown. `rldpack info` names the
+portrait ("its own", "the template's (no CICN)", or "CICN ignored" with the
+reason); `rldpack verify` prints `IGNORED CICN` for a rule finding, but a CICN
+whose hash does not match fails the file like any other chunk.
+
+What `rldpack make-char --icon <png>` does (`RldMk_MakeIcon`):
+
+1. Reads the PNG with its own reader (`include/rldpng.inc`): color types 0,
+   2, 3, 4 and 6, bit depths 1 to 16, not interlaced, at most 4096 x 4096
+   pixels.
+2. Cuts it to 44:26 in the middle; the longer side loses the same on both
+   ends (one pixel more at the end when the difference is odd).
+3. Scales it to 44 x 26 with a box filter in integers, the colors weighted by
+   their alpha. A texel that is less than half covered is transparent.
+4. Reduces the opaque texels to at most 15 colors (the same median cut and
+   k-means as the model's palette). Entry 0 is transparent; a color that
+   rounds to 0x0000 is written as 0x0421.
+5. Builds the chunk twice, compares the bytes and runs CICN-1..3 on it.
+
+Without `--icon` the file has no CICN, and the game shows the template's
+portrait.
+
+The game does not read CICN yet (`platform/native_chars.c`): until a later
+version, the driver select shows the template's portrait for every custom
+character, with or without CICN.
+
+### Voices: checked, not packed
+
+`rldpack make-char --voices <folder>` reads the voice files (boost1/2, hit1/2,
+spin1/2, bigair1/2, drop1/2, shield1/2, passing1/2, fire1/2, yes, hit; .wav or
+.vag), assigns them to their places and checks them. Nothing goes into the
+file: CVOI stays a reserved name, and a custom driver is silent in the game.
+
+### What the game does
+
+| When | What |
+|---|---|
+| start | every `*.rldchar` in the `characters` folder next to the game (the extension in any case, subfolders skipped): the names are sorted first, then the files are read in that order |
+| per file | envelope (`Rld_OpenAs`), the CMDL size before any memory is taken, CHRI and CMDL with their hashes, `RldChar_ParseInfo`, `RldChar_CheckModel`, then the pointer map. CICN and CPRM are not read |
+| a broken file | skipped with one log line `[CTR Char] REFUSED <file>: <kind> (<rule>) <detail>`; the game starts anyway |
+| the first 32 valid files | a tile each in the one-player ARCADE driver select, after the retail drivers (not for CRYSTAL and CTR under NITRO-PIT); a further valid file gets the log line `NO ID` and no tile |
+| menu and race | the driver select shows the template's portrait and the name from CHRI; in the race seat 0 runs on the template's character id with the custom model, the class in CHRI sets the physics values and the engine sound, and the template's voice is not played |
+
+- The model's frame counts must match those of the template's retail model;
+  otherwise seat 0 stays retail (log line `not bound: frames`).
+- One summary line per start: `[CTR Char] characters: N loaded, M refused (<folder>)`,
+  with `K without an id` in it when files got no tile.
+- With `--settings-defaults` no folder is read unless `--chars-dir` names one.
+
 ### Limits
 
 | Constant | Value |
@@ -574,7 +676,7 @@ CHRI rules (`RldChar_ParseInfo`). A finding refuses the file as DAMAGED.
 | a new minor version | nothing: a reader takes any minor, names it and never refuses because of it |
 | a new optional chunk | no bump: an older reader checks its position, type and overlap and skips it |
 | an optional chunk taken out of the format | no bump: older files keep loading, the chunk is skipped, its name is blocked |
-| a new layout inside SNDB or PARM | the chunk's own version field: an older reader drops only that chunk |
+| a new layout inside SNDB, PARM or CICN | the chunk's own version field: an older reader drops only that chunk |
 | a new PARM key | no bump: unknown keys are skipped |
 | a new string in META or CHRI | appended at the end only |
 | a new field in CHRI | a longer fixedSize; an older reader skips the extra bytes |
@@ -594,7 +696,8 @@ Chunk names:
 | META, LEVD, VRMD | `.rldtrack` | required |
 | SNDB, PARM | `.rldtrack` | optional |
 | CHRI, CMDL | `.rldchar` | required |
-| CICN, CPRM | `.rldchar` | optional known types (portrait, values): not written by rldpack, content not interpreted yet |
+| CICN | `.rldchar` | optional (portrait): written by `rldpack make-char --icon`, not shown by the game yet |
+| CPRM | `.rldchar` | optional known type (values): not written by rldpack, content not interpreted yet |
 | CVOI, CTEX | `.rldchar` | reserved, planned (voices, texture data) |
 | SIGN | blocked | signature, taken out of the format; skipped in older files |
 | MMAP | blocked | menu map, taken out with 4.1; skipped in older files |

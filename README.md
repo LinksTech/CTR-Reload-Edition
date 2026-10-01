@@ -134,7 +134,9 @@ Planned, in no particular order and without a date:
 
 - Time Trial and Battle on custom tracks
 - Best times on custom tracks
-- Custom characters
+- Custom characters - a first version is in the development state (Reload
+  Studio's Character page and a `characters` folder next to the game); their
+  voices and their own portrait in the menu come next
 - Skin support for the drivers
 - ...and more
 

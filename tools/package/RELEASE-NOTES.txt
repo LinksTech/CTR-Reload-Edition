@@ -61,6 +61,21 @@ NEW IN THIS VERSION
 - "Build container" sets the ids of the letter models c, t and r by their
   names, so the HUD shows C T R in that order. When it changes one, it says
   so in its messages.
+- Custom characters: put .rldchar files into the new "characters" folder next
+  to the game. Each gets a tile in the one-player ARCADE driver select, after
+  the original drivers (at most 32). A broken file is skipped, the game starts
+  anyway and the log says why.
+- Reload Studio has a new page "Character": a PLY model of driver, steering
+  wheel and kart, a name, a driving style, a size, an optional icon and an
+  optional voices folder. It checks while you type, shows the model as the
+  game will draw it (turnable, three poses, next to an original kart) and
+  builds the .rldchar. The page always builds on Fake Crash; it asks for no
+  original driver to start from.
+- The driving style (Balanced, Acceleration, Speed, Turning) decides how a
+  custom character's kart drives and its engine sound.
+- The size makes only the driver and the steering wheel larger or smaller;
+  the kart keeps its size. Visual size only - physics and collision follow
+  the driving style.
 
 
 KNOWN ISSUES
@@ -78,6 +93,13 @@ KNOWN ISSUES
 - No bots and no auto drive on tracks without nav paths. In a CTR Challenge
   1st place is then easy.
 - Multiplayer (VS., BATTLE, 2 players) is locked.
+- Custom characters are silent: Reload Studio checks voice files, but does
+  not pack them yet.
+- A custom character's icon is packed when you give one, but the game does
+  not show it yet: the driver select shows the portrait of Fake Crash.
+- Custom characters only in the one-player ARCADE driver select; not in
+  NITRO-PIT CRYSTAL or CTR, Time Trial, Adventure, Battle or with two
+  players.
 - Very large tracks: flickering holes near the camera are possible when a
   track has very coarse BSP leaves. The log then contains
   "rendered list full" - please report it, with the track's file name and
