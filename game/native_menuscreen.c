@@ -1,5 +1,7 @@
 #include <common.h>
 
+#include <platform/native_chars.h>
+
 #ifdef CTR_NATIVE
 
 // MENU SCREENS THAT MOVE THEMSELVES.
@@ -1139,6 +1141,13 @@ internal void NativeMenuLock_ProcMain(struct RectMenu *menu)
 	{
 		s_nativePitOpen = 0;
 		s_nativePitRequest = NATIVE_PIT_REQUEST_NONE;
+
+		// Any other choice than ARCADE drops the custom pick: it belongs to
+		// the arcade path it was made on (platform/native_chars.c).
+		if ((menu->rows != NULL) && ((menu->rows[menu->rowSelected].stringIndex & MENU_ROW_LNG_MASK) != LNG_ARCADE))
+		{
+			NativeChar_SetPick(-1);
+		}
 	}
 
 	if (!NativeMenuLock_ChoiceIsLocked(menu) && !NativeMenuMain_Answer(menu))

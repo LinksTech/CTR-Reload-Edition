@@ -287,6 +287,7 @@ int MM_NativeCharGrid_PreviewMoveWanted(int playerIndex);          // retail: cu
 void MM_NativeCharGrid_PreviewDesire(int playerIndex);             // with the retail desired write: remember the cursor tile
 void MM_NativeCharGrid_PreviewArrive(int playerIndex);             // with the retail current = desired: current tile = desired tile
 void MM_NativeCharGrid_PreviewPose(int playerIndex, struct Instance *driverInst); // after the retail model and pose: custom model and menu frame
+int MM_NativeCharGrid_PreviewCustom(void);                         // 1 while the preview window shows a custom model (grid on, entry with a model)
 int MM_NativeCharGrid_NameShown(int playerIndex);                  // retail: currentCharacterID[p] == data.characterIDs[p]
 const char *MM_NativeCharGrid_SeatName(int index);                 // NameBand: the custom name shown for seat index, else NULL
 int MM_NativeCharGrid_SelfTest(void);                              // --char-grid-selftest; 0 = passed

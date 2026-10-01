@@ -23,6 +23,12 @@
 #define NATIVE_SAVESTATE_DIR        "debug/states"
 #define NATIVE_SAVESTATE_QUICK_PATH "debug/states/quick.ctrstates"
 
+// platform/native_chars.c, later in the same build: 1 while a custom character
+// is bound to a seat, picked, or shown in the driver select preview. Its model
+// and tables live outside the regions a quick state holds, so a quick state
+// is neither written nor restored then.
+int NativeChar_Active(void);
+
 // A quick state can only be loaded in the build that wrote it. It depends on
 // code addresses (NativeCheckpoint_RelocateImagePointerSlot in
 // native_checkpoint.c); loaded from another build, the game crashes. The id is FNV-1a over
@@ -132,6 +138,12 @@ internal s32 NativeSaveState_PreparePayload(void)
 
 internal s32 NativeSaveState_SaveQuick(void)
 {
+	if (NativeChar_Active())
+	{
+		Platform_LogWarn("[CTR State] quick save refused: a custom character is active (a quick state cannot hold it)\n");
+		return 0;
+	}
+
 	if (!NativeSaveState_PrepareDir())
 	{
 		Platform_Log("[CTR State] failed to create quick state directory: %s\n", NATIVE_SAVESTATE_DIR);
@@ -178,6 +190,13 @@ internal s32 NativeSaveState_LoadQuick(void)
 	{
 		Platform_Log("[CTR State] quick state %s is from another build (tag 0x%08x, this build 0x%08x, %s) - not loaded\n", NATIVE_SAVESTATE_QUICK_PATH,
 		             info.buildTag, NativeSaveState_BuildTag(), CTR_NATIVE_BUILD_ID);
+		return 0;
+	}
+
+	if (NativeChar_Active())
+	{
+		Platform_LogWarn("[CTR State] quick state %s not loaded: a custom character is active (a quick state cannot restore it)\n",
+		                 NATIVE_SAVESTATE_QUICK_PATH);
 		return 0;
 	}
 

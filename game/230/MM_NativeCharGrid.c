@@ -40,13 +40,32 @@
 // tiles row 2 is centred anew as a whole. --char-grid-selftest checks the
 // numbers.
 //
-// NAVIGATION is one rule for every row: left and right to the neighbour in the
-// row, up and down one row to the tile with the nearest x - on a tie down takes
-// the right one and up the left one. No wrap-around. For up, left and right in
-// rows 0 and 1, and for down in row 0, that is the retail neighbour table. Down
-// from row 1 follows the rule; retail gets to the same tiles there only through
-// its detour (MM_Characters.c:848-923), which does not run in the grid: the grid
-// is one-player only, so no tile is ever taken by another player.
+// NAVIGATION: RETAIL FIRST, THEN THE GRID. A retail tile moves as retail
+// moves it, a custom tile moves in the grid, and at a dead end both take the
+// retail detour (MM_Characters.c:848-923). Two neighbour functions:
+//   the table - D230.characterSelectMeta1P2P[tile].nextIconByDirection;
+//   the grid  - left and right to the neighbour in the row, up and down one
+//               row to the tile with the nearest x (on a tie down takes the
+//               right one, up the left one); no wrap-around, off the grid the
+//               tile stays (MM_NativeCharGrid_GridNext).
+// The detour is retail's for one player (the grid is one-player only, so no
+// tile is ever taken by another): the neighbour; at a dead end fallback
+// direction 1 after the press, the press after fallback direction 1, then the
+// same with fallback direction 2 (D230.characterSelectFallbackDirection1/2);
+// else the tile stays (MM_NativeCharGrid_Detour). A press on
+//   a retail tile: (1) left or right onto a custom tile of the grid - only
+//                  Fake Crash right to entry 0; (2) else the retail press,
+//                  the table with its detour (MM_NativeCharGrid_RetailStep),
+//                  wherever it moves; (3) else, at a retail dead end, the grid
+//                  - only down from row 2 into the custom row 3;
+//   a custom tile: (4) the grid with the detour, the grid as its neighbour
+//                  function.
+// So retail keeps all its 60 presses (Joe left -> Roo, Roo down -> Joe,
+// Papu down -> Fake Crash) except Fake Crash right (entry 0 instead of Pura)
+// and, from four entries on, Joe, Penta and Fake Crash down (row 3 instead of
+// staying). A press changes the row by one at most - the scroll keeps the tile
+// before the press in view - and every tile can be reached. A locked retail
+// tile is never a neighbour, as MM_Characters_GetNextDriver keeps it.
 //
 // STATE lives in global_variable: OVR230_ResetRuntimeState copies all of D230
 // back on every return from a race (D230.c:855-875), and the scroll, the
@@ -109,6 +128,10 @@
 // The self-test prints at most this many failures; the count says the rest.
 #define MM_NATIVE_GRID_TEST_REPORT_MAX 20
 #define MM_NATIVE_GRID_TEST_WALK_STEPS 1000
+
+// The dead ends of the retail table that stay with one player
+// (MM_NativeCharGrid_TestRetailStep).
+#define MM_NATIVE_GRID_TEST_RETAIL_STAYS 13
 
 // The layout the table gives. Rows are numbered from the top, columns from the
 // left, both from 0.
@@ -379,9 +402,9 @@ internal int MM_NativeCharGrid_YFor(const struct MM_NativeGridGeometry *g, int r
 	return g->firstY + (row * g->rowPitch);
 }
 
-// The next tile for a d-pad press (chapter 2 of the rule above). Returns the
-// tile itself where there is nothing to go to.
-internal int MM_NativeCharGrid_NextFor(const struct MM_NativeGridGeometry *g, int entries, int direction, int tile)
+// The grid neighbour for a d-pad press (block NAVIGATION). Returns the tile
+// itself where there is nothing to go to.
+internal int MM_NativeCharGrid_GridNext(const struct MM_NativeGridGeometry *g, int entries, int direction, int tile)
 {
 	int row;
 	int col;
@@ -602,6 +625,144 @@ internal int MM_NativeCharGrid_RetailDrawn(int tile)
 	return (unlockRequirement == MM_CHARACTER_UNLOCK_ALWAYS) || CHECK_ADV_BIT(sdata->gameProgress.unlocks, unlockRequirement);
 }
 
+// ===========================================================================
+//  THE NAVIGATION (block NAVIGATION at the top), as pure functions of the
+//  geometry, the number of entries and the D230 tables. locks = 1 reads the
+//  unlock bits as MM_Characters_GetNextDriver does; the self-test passes 0,
+//  every driver unlocked, as the native game keeps them.
+// ===========================================================================
+
+// The neighbour functions of the detour.
+#define MM_NATIVE_GRID_NEIGHBOUR_TABLE 0
+#define MM_NATIVE_GRID_NEIGHBOUR_GRID 1
+
+// The neighbour in the retail table. Layout 0 only, where
+// D230.activeCharacterSelectMeta is this table (MM_Characters.c:432).
+internal int MM_NativeCharGrid_RetailNext(int direction, int icon)
+{
+	return D230.characterSelectMeta1P2P[icon].nextIconByDirection[direction];
+}
+
+// One step of a neighbour function. The table is only asked for retail tiles,
+// and it only names retail tiles. A locked retail tile is no neighbour: the
+// tile stays, as MM_Characters_GetNextDriver keeps it.
+internal int MM_NativeCharGrid_Neighbour(const struct MM_NativeGridGeometry *g, int entries, int kind, int locks, int direction, int tile)
+{
+	int next;
+
+	if (kind == MM_NATIVE_GRID_NEIGHBOUR_TABLE)
+	{
+		next = MM_NativeCharGrid_RetailNext(direction, tile);
+	}
+	else
+	{
+		next = MM_NativeCharGrid_GridNext(g, entries, direction, tile);
+	}
+
+	if (locks && MM_NativeCharGrid_IsRetailTile(next) && !MM_NativeCharGrid_RetailDrawn(next))
+	{
+		return tile;
+	}
+
+	return next;
+}
+
+// One press with one player as MM_Characters.c:848-923 makes it, on the
+// neighbour function kind: the neighbour, and at a dead end the four detours
+// in their order. With one player no tile is taken by another, so the retail
+// loop runs once and every "taken" test is false.
+internal int MM_NativeCharGrid_Detour(const struct MM_NativeGridGeometry *g, int entries, int kind, int locks, int direction, int current)
+{
+	const int fallback1 = D230.characterSelectFallbackDirection1[direction];
+	const int fallback2 = D230.characterSelectFallbackDirection2[direction];
+	const int previous = current;
+	int alternate = MM_NativeCharGrid_Neighbour(g, entries, kind, locks, direction, previous);
+	int next;
+	int middle;
+
+	if (alternate != previous)
+	{
+		return alternate;
+	}
+
+	next = MM_NativeCharGrid_Neighbour(g, entries, kind, locks, direction, current);
+	middle = MM_NativeCharGrid_Neighbour(g, entries, kind, locks, fallback1, next);
+	if ((middle != alternate) && (next != alternate) && (next != middle))
+	{
+		return middle;
+	}
+
+	middle = MM_NativeCharGrid_Neighbour(g, entries, kind, locks, fallback1, current);
+	alternate = MM_NativeCharGrid_Neighbour(g, entries, kind, locks, direction, middle);
+	if ((alternate != previous) && (middle != previous) && (middle != alternate))
+	{
+		return alternate;
+	}
+
+	middle = MM_NativeCharGrid_Neighbour(g, entries, kind, locks, direction, current);
+	alternate = MM_NativeCharGrid_Neighbour(g, entries, kind, locks, fallback2, middle);
+	if ((alternate != previous) && (middle != previous) && (middle != alternate))
+	{
+		return alternate;
+	}
+
+	middle = MM_NativeCharGrid_Neighbour(g, entries, kind, locks, fallback2, current);
+	alternate = MM_NativeCharGrid_Neighbour(g, entries, kind, locks, direction, middle);
+	if ((alternate != previous) && (middle != previous) && (middle != alternate))
+	{
+		return alternate;
+	}
+
+	return current;
+}
+
+// The retail press with one player: the table and its detour.
+internal int MM_NativeCharGrid_RetailStep(int locks, int direction, int current)
+{
+	return MM_NativeCharGrid_Detour(NULL, 0, MM_NATIVE_GRID_NEIGHBOUR_TABLE, locks, direction, current);
+}
+
+// The next tile for a d-pad press: steps (1) to (4) of block NAVIGATION.
+// Returns the tile itself where there is nothing to go to.
+internal int MM_NativeCharGrid_NextFor(const struct MM_NativeGridGeometry *g, int entries, int locks, int direction, int tile)
+{
+	int row;
+	int col;
+	int next;
+
+	if (!MM_NativeCharGrid_Place(g, entries, tile, &row, &col))
+	{
+		return tile;
+	}
+
+	// (4) A custom tile: the grid, with the detour at a dead end.
+	if (!MM_NativeCharGrid_IsRetailTile(tile))
+	{
+		return MM_NativeCharGrid_Detour(g, entries, MM_NATIVE_GRID_NEIGHBOUR_GRID, locks, direction, tile);
+	}
+
+	// (1) Left or right onto a custom tile in the row.
+	if ((direction == CHARACTER_SELECT_DIR_LEFT) || (direction == CHARACTER_SELECT_DIR_RIGHT))
+	{
+		next = MM_NativeCharGrid_Neighbour(g, entries, MM_NATIVE_GRID_NEIGHBOUR_GRID, locks, direction, tile);
+
+		if (!MM_NativeCharGrid_IsRetailTile(next))
+		{
+			return next;
+		}
+	}
+
+	// (2) The retail press, wherever it moves.
+	next = MM_NativeCharGrid_RetailStep(locks, direction, tile);
+	if (next != tile)
+	{
+		return next;
+	}
+
+	// (3) A retail dead end: the grid.
+	return MM_NativeCharGrid_Neighbour(g, entries, MM_NATIVE_GRID_NEIGHBOUR_GRID, locks, direction, tile);
+}
+
 int MM_NativeCharGrid_Active(void)
 {
 	// The roster first: in a run without custom characters that is the only
@@ -758,11 +919,12 @@ s16 MM_NativeCharGrid_Next(int direction, s16 tile)
 		return tile;
 	}
 
-	next = MM_NativeCharGrid_NextFor(MM_NativeCharGrid_Geometry(), MM_NativeCharGrid_Entries(), direction, tile);
+	next = MM_NativeCharGrid_NextFor(MM_NativeCharGrid_Geometry(), MM_NativeCharGrid_Entries(), 1, direction, tile);
 
 	// A locked retail tile is never entered: the cursor stays, as
-	// MM_Characters_GetNextDriver keeps it. The native game unlocks every
-	// driver in each menu frame (NativeMenuLock_Tick), so this only guards.
+	// MM_Characters_GetNextDriver keeps it. The neighbour functions skip
+	// locked tiles already, and the native game unlocks every driver in each
+	// menu frame (NativeMenuLock_Tick), so this only guards.
 	if (MM_NativeCharGrid_IsRetailTile(next) && !MM_NativeCharGrid_RetailDrawn(next))
 	{
 		return tile;
@@ -1155,6 +1317,22 @@ void MM_NativeCharGrid_PreviewPose(int playerIndex, struct Instance *driverInst)
 	driverInst->animFrame = (s16)NativeChar_EntryMenuFrame(entry);
 }
 
+int MM_NativeCharGrid_PreviewCustom(void)
+{
+	// The model PreviewPose puts into the preview window: a roster entry with
+	// a model on the current preview tile. A placeholder shows its template.
+	// Only while the driver select runs (its exit transition included): the
+	// preview tile keeps its last value after any way out - title, track or
+	// cup select, a race confirmed before the model had flown - and must not
+	// count there.
+	if (!MM_NativeCharGrid_Active() || (sdata->ptrActiveMenu != &D230.menuCharacterSelect))
+	{
+		return 0;
+	}
+
+	return NativeChar_EntryModel(MM_NativeCharGrid_EntryOf(s_gridPreviewCurrentTile)) != NULL;
+}
+
 int MM_NativeCharGrid_NameShown(int playerIndex)
 {
 	if (!MM_NativeCharGrid_Active() || (playerIndex != 0))
@@ -1229,60 +1407,111 @@ internal void MM_NativeCharGrid_Expect(struct MM_NativeGridTest *test, int ok, c
 	}
 }
 
-// The neighbour in the retail table with every driver unlocked
-// (MM_Characters_GetNextDriver; the native game unlocks them all).
-internal int MM_NativeCharGrid_RetailNext(int direction, int icon)
+// The four presses retail moves only through its detour with one player
+// (MM_Characters.c:848-923), written out: Roo down, Papu down, Joe left, Fake
+// Crash right. The other 13 dead ends of the table stay.
+global_variable const s16 s_gridTestRetailDetours[4][3] = {
+    {10, CHARACTER_SELECT_DIR_DOWN, 12}, {11, CHARACTER_SELECT_DIR_DOWN, 14}, {12, CHARACTER_SELECT_DIR_LEFT, 10}, {14, CHARACTER_SELECT_DIR_RIGHT, 7}};
+
+// THE GRID NEIGHBOUR ONCE MORE, from the cells and their x and not from
+// MM_NativeCharGrid_GridNext: left and right one column in the row, up and
+// down one row to the nearest x, on a tie down the rightmost and up the
+// leftmost; off the grid the tile stays.
+internal int MM_NativeCharGrid_TestGridNext(const struct MM_NativeGridGeometry *g, int entries, int direction, int tile)
 {
-	return D230.characterSelectMeta1P2P[icon].nextIconByDirection[direction];
+	const int rows = MM_NativeCharGrid_RowsFor(g, entries);
+	int row;
+	int col;
+	int target;
+	int x0;
+	int targetSize;
+	int nearest = -1;
+	int leftmost = -1;
+	int rightmost = -1;
+	int c;
+
+	if (!MM_NativeCharGrid_Place(g, entries, tile, &row, &col))
+	{
+		return tile;
+	}
+
+	if ((direction == CHARACTER_SELECT_DIR_LEFT) || (direction == CHARACTER_SELECT_DIR_RIGHT))
+	{
+		const int size = MM_NativeCharGrid_RowSizeFor(g, entries, row);
+		int expectCol = col + ((direction == CHARACTER_SELECT_DIR_LEFT) ? -1 : 1);
+
+		expectCol = (expectCol < 0) ? 0 : ((expectCol >= size) ? (size - 1) : expectCol);
+		return MM_NativeCharGrid_TileAt(g, entries, row, expectCol);
+	}
+
+	target = row + ((direction == CHARACTER_SELECT_DIR_UP) ? -1 : 1);
+	if ((target < 0) || (target >= rows))
+	{
+		return tile;
+	}
+
+	x0 = MM_NativeCharGrid_XFor(g, entries, row, col);
+	targetSize = MM_NativeCharGrid_RowSizeFor(g, entries, target);
+
+	for (c = 0; c < targetSize; c++)
+	{
+		const int distance = abs(MM_NativeCharGrid_XFor(g, entries, target, c) - x0);
+
+		if ((nearest < 0) || (distance < nearest))
+		{
+			nearest = distance;
+		}
+	}
+
+	for (c = 0; c < targetSize; c++)
+	{
+		if (abs(MM_NativeCharGrid_XFor(g, entries, target, c) - x0) == nearest)
+		{
+			leftmost = (leftmost < 0) ? c : leftmost;
+			rightmost = c;
+		}
+	}
+
+	return MM_NativeCharGrid_TileAt(g, entries, target, (direction == CHARACTER_SELECT_DIR_DOWN) ? rightmost : leftmost);
 }
 
-// One press in the retail driver select with one player (MM_Characters.c:848-923):
-// the neighbour, and at a dead end the four detours in their order. With one
-// player no icon is taken by another, so the loop runs once and every
-// "taken" test is false.
-internal int MM_NativeCharGrid_RetailStep(int direction, int current)
+// The retail press against the table and the four detours written out above:
+// where the table moves, the press moves the same; at a dead end it takes the
+// listed detour or stays.
+internal void MM_NativeCharGrid_TestRetailStep(struct MM_NativeGridTest *test)
 {
-	const int fallback1 = D230.characterSelectFallbackDirection1[direction];
-	const int fallback2 = D230.characterSelectFallbackDirection2[direction];
-	const int previous = current;
-	int alternate = MM_NativeCharGrid_RetailNext(direction, previous);
-	int next;
-	int middle;
+	int stays = 0;
+	int tile;
+	int direction;
+	int k;
 
-	if (alternate != previous)
+	for (tile = 0; tile < MM_CHARACTER_SELECT_ICON_COUNT; tile++)
 	{
-		return alternate;
+		for (direction = 0; direction < CHARACTER_SELECT_DIRECTION_COUNT; direction++)
+		{
+			const int table = MM_NativeCharGrid_RetailNext(direction, tile);
+			const int step = MM_NativeCharGrid_RetailStep(0, direction, tile);
+			int expect = table;
+
+			if (table == tile)
+			{
+				for (k = 0; k < 4; k++)
+				{
+					if ((s_gridTestRetailDetours[k][0] == tile) && (s_gridTestRetailDetours[k][1] == direction))
+					{
+						expect = s_gridTestRetailDetours[k][2];
+					}
+				}
+
+				stays += (expect == tile) ? 1 : 0;
+			}
+
+			MM_NativeCharGrid_Expect(test, step == expect, "retail tile %d %s gives %d, expected %d", tile, s_gridDirectionNames[direction], step, expect);
+		}
 	}
 
-	next = MM_NativeCharGrid_RetailNext(direction, current);
-	middle = MM_NativeCharGrid_RetailNext(fallback1, next);
-	if ((middle != alternate) && (next != alternate) && (next != middle))
-	{
-		return middle;
-	}
-
-	middle = MM_NativeCharGrid_RetailNext(fallback1, current);
-	alternate = MM_NativeCharGrid_RetailNext(direction, middle);
-	if ((alternate != previous) && (middle != previous) && (middle != alternate))
-	{
-		return alternate;
-	}
-
-	middle = MM_NativeCharGrid_RetailNext(direction, current);
-	alternate = MM_NativeCharGrid_RetailNext(fallback2, middle);
-	if ((alternate != previous) && (middle != previous) && (middle != alternate))
-	{
-		return alternate;
-	}
-
-	middle = MM_NativeCharGrid_RetailNext(fallback2, current);
-	alternate = MM_NativeCharGrid_RetailNext(direction, middle);
-	if ((alternate != previous) && (middle != previous) && (middle != alternate))
-	{
-		return alternate;
-	}
-
-	return current;
+	MM_NativeCharGrid_Expect(test, stays == MM_NATIVE_GRID_TEST_RETAIL_STAYS, "%d retail dead ends stay, expected %d", stays,
+	                         MM_NATIVE_GRID_TEST_RETAIL_STAYS);
 }
 
 internal int MM_NativeCharGrid_BoxesOverlap(int ax, int ay, int aw, int ah, int bx, int by, int bw, int bh)
@@ -1612,16 +1841,29 @@ internal void MM_NativeCharGrid_TestLayout(struct MM_NativeGridTest *test, const
 	}
 }
 
-// The d-pad from every tile in every direction, and the reach from tile 0.
+// The d-pad from every tile in every direction, and the reach from and back to
+// tile 0.
+//
+// The grid neighbour against the rule written out (TestGridNext). A retail
+// tile against the retail press (RetailStep), all 60 pairs, with exactly two
+// exceptions: Fake Crash right goes to entry 0 once there is one, and from four
+// entries on Joe, Penta and Fake Crash go down into row 3 - retail dead ends,
+// where the grid now has a row. A custom tile goes to its grid neighbour; at a
+// dead end it takes the first detour through a fallback direction that can
+// move (two grid steps) and stays only when none can. Every press changes the
+// row by one at most: that is what the scroll relies on.
 internal void MM_NativeCharGrid_TestNavigation(struct MM_NativeGridTest *test, const struct MM_NativeGridGeometry *g, int entries)
 {
 	const int tiles = MM_CHARACTER_SELECT_ICON_COUNT + entries;
-	const int rows = MM_NativeCharGrid_RowsFor(g, entries);
+	const int fakeCrash = s_gridTestRetailRows[2][2];
+	const int expectChanged = ((entries >= 1) ? 1 : 0) + ((entries >= 4) ? 3 : 0);
 	int reached[MM_NATIVE_GRID_TILES_MAX];
 	int queue[MM_NATIVE_GRID_TILES_MAX];
 	int queueHead = 0;
 	int queueTail = 0;
 	int reachedCount = 0;
+	int changed = 0;
+	int grown;
 	int tile;
 	int direction;
 
@@ -1638,10 +1880,13 @@ internal void MM_NativeCharGrid_TestNavigation(struct MM_NativeGridTest *test, c
 		for (direction = 0; direction < CHARACTER_SELECT_DIRECTION_COUNT; direction++)
 		{
 			const char *name = s_gridDirectionNames[direction];
-			const int next = MM_NativeCharGrid_NextFor(g, entries, direction, tile);
-			const int size = MM_NativeCharGrid_RowSizeFor(g, entries, row);
+			const int next = MM_NativeCharGrid_NextFor(g, entries, 0, direction, tile);
+			const int gridNext = MM_NativeCharGrid_TestGridNext(g, entries, direction, tile);
 			int nextRow = -1;
 			int nextCol = -1;
+
+			MM_NativeCharGrid_Expect(test, MM_NativeCharGrid_GridNext(g, entries, direction, tile) == gridNext, "tile %d %s: grid neighbour %d, expected %d",
+			                         tile, name, MM_NativeCharGrid_GridNext(g, entries, direction, tile), gridNext);
 
 			MM_NativeCharGrid_Expect(test, (next >= 0) && (next < tiles) && MM_NativeCharGrid_Place(g, entries, next, &nextRow, &nextCol),
 			                         "tile %d %s gives %d", tile, name, next);
@@ -1651,76 +1896,53 @@ internal void MM_NativeCharGrid_TestNavigation(struct MM_NativeGridTest *test, c
 				continue;
 			}
 
-			if ((direction == CHARACTER_SELECT_DIR_LEFT) || (direction == CHARACTER_SELECT_DIR_RIGHT))
-			{
-				int expectCol = col + ((direction == CHARACTER_SELECT_DIR_LEFT) ? -1 : 1);
+			MM_NativeCharGrid_Expect(test, abs(nextRow - row) <= 1, "tile %d %s goes from row %d to row %d", tile, name, row, nextRow);
 
-				expectCol = (expectCol < 0) ? 0 : ((expectCol >= size) ? (size - 1) : expectCol);
-				MM_NativeCharGrid_Expect(test, (nextRow == row) && (nextCol == expectCol), "tile %d %s goes to row %d col %d, expected row %d col %d", tile,
-				                         name, nextRow, nextCol, row, expectCol);
-			}
-			else
+			if (tile < MM_CHARACTER_SELECT_ICON_COUNT)
 			{
-				const int target = row + ((direction == CHARACTER_SELECT_DIR_UP) ? -1 : 1);
+				const int retail = MM_NativeCharGrid_RetailStep(0, direction, tile);
 
-				if ((target < 0) || (target >= rows))
+				changed += (next != retail) ? 1 : 0;
+
+				if ((tile == fakeCrash) && (direction == CHARACTER_SELECT_DIR_RIGHT) && (entries >= 1))
 				{
-					MM_NativeCharGrid_Expect(test, next == tile, "tile %d %s leaves the grid to %d", tile, name, next);
+					MM_NativeCharGrid_Expect(test, next == MM_CHARACTER_SELECT_ICON_COUNT, "Fake Crash right gives %d, expected entry 0", next);
+				}
+				else if ((row == (g->rowCount - 1)) && (direction == CHARACTER_SELECT_DIR_DOWN) && (entries >= 4))
+				{
+					MM_NativeCharGrid_Expect(test, (retail == tile) && (next == gridNext) && (nextRow == (row + 1)),
+					                         "tile %d down gives %d in row %d, expected the grid neighbour %d in row %d (retail %d)", tile, next, nextRow,
+					                         gridNext, row + 1, retail);
 				}
 				else
 				{
-					const int x0 = MM_NativeCharGrid_XFor(g, entries, row, col);
-					const int targetSize = MM_NativeCharGrid_RowSizeFor(g, entries, target);
-					int nearest = -1;
-					int leftmost = -1;
-					int rightmost = -1;
-					int c;
-
-					for (c = 0; c < targetSize; c++)
-					{
-						const int distance = abs(MM_NativeCharGrid_XFor(g, entries, target, c) - x0);
-
-						if ((nearest < 0) || (distance < nearest))
-						{
-							nearest = distance;
-						}
-					}
-
-					for (c = 0; c < targetSize; c++)
-					{
-						if (abs(MM_NativeCharGrid_XFor(g, entries, target, c) - x0) == nearest)
-						{
-							leftmost = (leftmost < 0) ? c : leftmost;
-							rightmost = c;
-						}
-					}
-
-					MM_NativeCharGrid_Expect(test,
-					                         (nextRow == target) && (nextCol == ((direction == CHARACTER_SELECT_DIR_DOWN) ? rightmost : leftmost)),
-					                         "tile %d %s goes to row %d col %d, expected row %d col %d", tile, name, nextRow, nextCol, target,
-					                         (direction == CHARACTER_SELECT_DIR_DOWN) ? rightmost : leftmost);
+					MM_NativeCharGrid_Expect(test, next == retail, "tile %d %s gives %d, the retail press %d", tile, name, next, retail);
 				}
 			}
-
-			// The retail neighbour table, 42 pairs: up, left and right in rows 0
-			// and 1, down in row 0.
-			if ((tile < MM_CHARACTER_SELECT_ICON_COUNT) && (row < (g->rowCount - 1)) && ((direction != CHARACTER_SELECT_DIR_DOWN) || (row == 0)))
+			else if (gridNext != tile)
 			{
-				const int retail = MM_NativeCharGrid_RetailNext(direction, tile);
-
-				MM_NativeCharGrid_Expect(test, next == retail, "tile %d %s gives %d, the retail table %d", tile, name, next, retail);
+				MM_NativeCharGrid_Expect(test, next == gridNext, "custom tile %d %s gives %d, the grid neighbour %d", tile, name, next, gridNext);
 			}
-
-			// Down from row 1 retail arrives through its detour - at the same
-			// tiles while row 2 is the retail one.
-			if ((entries == 0) && (tile < MM_CHARACTER_SELECT_ICON_COUNT) && (row == (g->rowCount - 2)) && (direction == CHARACTER_SELECT_DIR_DOWN))
+			else
 			{
-				const int retail = MM_NativeCharGrid_RetailStep(direction, tile);
+				const int middle1 = MM_NativeCharGrid_TestGridNext(g, entries, D230.characterSelectFallbackDirection1[direction], tile);
+				const int middle2 = MM_NativeCharGrid_TestGridNext(g, entries, D230.characterSelectFallbackDirection2[direction], tile);
+				const int viaFallback1 = MM_NativeCharGrid_TestGridNext(g, entries, direction, middle1);
+				const int viaFallback2 = MM_NativeCharGrid_TestGridNext(g, entries, direction, middle2);
+				const int canFallback1 = (viaFallback1 != tile) && (middle1 != tile) && (middle1 != viaFallback1);
+				const int canFallback2 = (viaFallback2 != tile) && (middle2 != tile) && (middle2 != viaFallback2);
+				const int expect = canFallback1 ? viaFallback1 : (canFallback2 ? viaFallback2 : tile);
 
-				MM_NativeCharGrid_Expect(test, next == retail, "tile %d %s gives %d, retail with its detour %d", tile, name, next, retail);
+				// A dead end. The press itself does not move here, so of the four
+				// detours only the two through a fallback direction can, the first
+				// one first; the tile stays only when neither can.
+				MM_NativeCharGrid_Expect(test, next == expect, "custom tile %d %s at a dead end gives %d, expected %d (detours %d, %d)", tile, name, next,
+				                         expect, viaFallback1, viaFallback2);
 			}
 		}
 	}
+
+	MM_NativeCharGrid_Expect(test, changed == expectChanged, "%d retail presses changed, expected %d", changed, expectChanged);
 
 	// Every tile can be reached from tile 0.
 	memset(reached, 0, sizeof(reached));
@@ -1734,7 +1956,7 @@ internal void MM_NativeCharGrid_TestNavigation(struct MM_NativeGridTest *test, c
 
 		for (direction = 0; direction < CHARACTER_SELECT_DIRECTION_COUNT; direction++)
 		{
-			const int next = MM_NativeCharGrid_NextFor(g, entries, direction, from);
+			const int next = MM_NativeCharGrid_NextFor(g, entries, 0, direction, from);
 
 			if ((next >= 0) && (next < tiles) && !reached[next])
 			{
@@ -1746,6 +1968,39 @@ internal void MM_NativeCharGrid_TestNavigation(struct MM_NativeGridTest *test, c
 	}
 
 	MM_NativeCharGrid_Expect(test, reachedCount == tiles, "%d of %d tiles reachable from tile 0", reachedCount, tiles);
+
+	// And tile 0 from every tile: grow the set of tiles with a way back.
+	memset(reached, 0, sizeof(reached));
+	reached[0] = 1;
+	reachedCount = 1;
+
+	do
+	{
+		grown = 0;
+
+		for (tile = 0; tile < tiles; tile++)
+		{
+			if (reached[tile])
+			{
+				continue;
+			}
+
+			for (direction = 0; direction < CHARACTER_SELECT_DIRECTION_COUNT; direction++)
+			{
+				const int next = MM_NativeCharGrid_NextFor(g, entries, 0, direction, tile);
+
+				if ((next >= 0) && (next < tiles) && reached[next])
+				{
+					reached[tile] = 1;
+					reachedCount++;
+					grown = 1;
+					break;
+				}
+			}
+		}
+	} while (grown);
+
+	MM_NativeCharGrid_Expect(test, reachedCount == tiles, "%d of %d tiles lead back to tile 0", reachedCount, tiles);
 }
 
 // One press on a walk: the scroll follows, the cursor row and the tile before
@@ -1756,7 +2011,7 @@ internal void MM_NativeCharGrid_TestStep(struct MM_NativeGridTest *test, const s
 {
 	const int tiles = MM_CHARACTER_SELECT_ICON_COUNT + entries;
 	const int visible = MM_NativeCharGrid_VisibleRows(g);
-	const int next = MM_NativeCharGrid_NextFor(g, entries, direction, *tile);
+	const int next = MM_NativeCharGrid_NextFor(g, entries, 0, direction, *tile);
 	int beforeRow = -1;
 	int row = -1;
 	int col;
@@ -1879,6 +2134,9 @@ int MM_NativeCharGrid_SelfTest(void)
 	if (test.failures == 0)
 	{
 		MM_NativeCharGrid_TestTable(&test, &geometry);
+
+		// The retail press the navigation is checked against.
+		MM_NativeCharGrid_TestRetailStep(&test);
 	}
 
 	// The layout functions need three rows; with others the numbers above

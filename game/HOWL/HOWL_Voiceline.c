@@ -1,5 +1,9 @@
 #include <common.h>
 
+// From platform/native_chars.c, further down in the translation unit: 1 for a
+// seat bound to a custom character (its voices are not packed yet), else 0.
+int NativeChar_SeatSilent(int seat);
+
 // does not really touch voiceline
 void Voiceline_PoolInit(void)
 {
@@ -127,6 +131,23 @@ static u32 Voiceline_RequestPlay_NextAudioRNG(void)
 	return sdata->audioRNG;
 }
 
+// A voice names its speaker by character id, not by seat. A custom character is
+// bound only where that id belongs to one seat (a one-player arcade race: the
+// bots are the other ids, LOAD_Robots1P), so the seat holding the id answers.
+// Without a bound seat nothing here is ever true; reads only, no state.
+static int Voiceline_SpeakerSilent(u32 characterID)
+{
+	for (int seat = 0; seat < LOAD_CHARACTER_ID_COUNT; seat++)
+	{
+		if (((u32)data.characterIDs[seat] == characterID) && (NativeChar_SeatSilent(seat) != 0))
+		{
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
 void Voiceline_RequestPlay(u32 voiceID, u32 characterID, u32 characterID2)
 {
 	u8 voiceType;
@@ -145,6 +166,13 @@ void Voiceline_RequestPlay(u32 voiceID, u32 characterID, u32 characterID2)
 	}
 
 	if (characterID2 >= 0x11)
+	{
+		return;
+	}
+
+	// A bound custom seat speaks with no voice of its template: dropped here,
+	// before the audio RNG and the timestamps move.
+	if (Voiceline_SpeakerSilent(characterID) != 0)
 	{
 		return;
 	}

@@ -5,6 +5,12 @@
 // that keeps its retail model.
 struct Model *NativeChar_SeatModel(int index);
 
+// Also from platform/native_chars.c: the engine class of a seat (the class of
+// the bound custom character, else retailClass unchanged) and the log line of
+// the drive values a bound seat was born with.
+int NativeChar_SeatEngineClass(int seat, int retailClass);
+void NativeChar_NoteDriveValues(const struct Driver *d, int seat);
+
 enum
 {
 	VEH_BIRTH_ADV_RETURN_LEVEL_COUNT = 0x14,
@@ -546,7 +552,9 @@ void VehBirth_SetConsts(struct Driver *driver)
 {
 	u8 *d = (u8 *)driver;
 
-	int engineID = data.MetaDataCharacters[data.characterIDs[driver->driverID]].engineID;
+	// Seat = driverID, the index into data.characterIDs (players and bots: the
+	// index in gGT->drivers; ghosts: 1 + ghostID). Unbound: the retail class.
+	int engineID = NativeChar_SeatEngineClass(driver->driverID, data.MetaDataCharacters[data.characterIDs[driver->driverID]].engineID);
 
 	for (u32 i = 0; i < VEH_BIRTH_META_PHYS_COUNT; i++)
 	{
@@ -592,7 +600,7 @@ void VehBirth_EngineAudio_AllPlayers(void)
 
 		u8 driverID = d->driverID;
 
-		int engine = data.MetaDataCharacters[data.characterIDs[driverID]].engineID;
+		int engine = NativeChar_SeatEngineClass(driverID, data.MetaDataCharacters[data.characterIDs[driverID]].engineID);
 
 		EngineAudio_InitOnce((engine * 4) + driverID, HOWL_SFX_CENTER_NO_DISTORTION);
 	}
@@ -711,6 +719,9 @@ void VehBirth_NonGhost(struct Thread *t, int index)
 	d->terrainMeta2 = d->terrainMeta1;
 #endif
 	VehBirth_SetConsts(d);
+
+	// Logs the drive values of a bound custom seat; nothing for any other seat.
+	NativeChar_NoteDriveValues(d, index);
 
 	// if you are in cutscene or in main menu
 	if ((gGT->gameMode1 & GAME_MODE_MENU_OR_CUTSCENE_MASK) != 0)

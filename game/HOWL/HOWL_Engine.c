@@ -1,5 +1,10 @@
 #include <common.h>
 
+// From platform/native_chars.c, further down in the translation unit: the engine
+// class of a seat - the class of a bound custom character, else retailClass
+// unchanged.
+int NativeChar_SeatEngineClass(int seat, int retailClass);
+
 // Initialize car engine audio system for one driver
 b32 EngineAudio_InitOnce(u32 soundID, u32 flags)
 {
@@ -138,7 +143,7 @@ void EngineSound_Player(struct Driver *driver)
 	u32 volume;
 	u32 distortion;
 	u32 lr;
-	int engine = data.MetaDataCharacters[data.characterIDs[id]].engineID;
+	int engine = NativeChar_SeatEngineClass(id, data.MetaDataCharacters[data.characterIDs[id]].engineID);
 
 	if (driver->engineSoundMode == ENGINE_SOUND_FADE_OUT)
 	{

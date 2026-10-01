@@ -46,6 +46,10 @@
 #define NATIVE_REPLAY_REPORT_METADATA_NAME       "metadata.txt"
 #define NATIVE_REPLAY_REPORT_LOG_NAME            "ctr-native.log"
 
+// platform/native_chars.c, later in the same build: 1 while a custom character
+// is bound to a seat, picked, or shown in the driver select preview.
+int NativeChar_Active(void);
+
 enum NativeReplaySchedulerMode
 {
 	NATIVE_REPLAY_MODE_NONE = 0,
@@ -1458,6 +1462,21 @@ int NativeReplayScheduler_BeginFrame(const struct NativeReplaySchedulerFrameInfo
 
 		s_startRequested = 0;
 		s_recordStartDeferredLogged = 0;
+
+		// A recording started in the middle of a run begins with a checkpoint of
+		// the running game (the bootstrap, WriteCheckpointIfDue below), and only
+		// that one is restored on playback. A custom character lives in native
+		// tables outside every checkpoint region, so that start is refused while
+		// one is active; the report stays armed. --record from boot is not
+		// affected: its bootstrap is taken in the first frame, everything after
+		// it comes back from the inputs.
+		if (NativeChar_Active())
+		{
+			Platform_LogWarn("[CTR Replay] report recording refused: a custom character is active (a recording that starts mid-run cannot "
+			                 "restore it; --record without --toggle records from boot)\n");
+			return 0;
+		}
+
 		if (!NativeReplayScheduler_StartReportRecording())
 		{
 			return 1;

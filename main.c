@@ -304,9 +304,9 @@ static const NativeSwitch s_devSwitches[] = {
     {"--tracks", "", "no effect, only accepted for old measuring command lines"},
     {"--no-tracks", "", "do not open tracks/"},
     {"--tracks-dir", "<folder>", "containers from this folder instead of tracks/ (reference runs)"},
-    {"--chars-dir", "<folder>", "folder of the character file for --char; only remembered, never scanned"},
-    {"--char", "<file>", "custom character from this .rldchar (in --chars-dir, or an absolute path): a tile in the one-player arcade driver select right after the retail drivers, or with --level and --driver <its template> straight on seat 0"},
-    {"--dev-grid-fill", "<n>", "n placeholder tiles, 1 to 32, after the --char tile in the one-player arcade driver select (rows and scrolling with many entries); a placeholder cannot be chosen"},
+    {"--chars-dir", "<folder>", "custom characters from every .rldchar of this folder instead of characters/, also with --settings-defaults (test runs); with --char only the folder of that file"},
+    {"--char", "<file>", "only this .rldchar (in --chars-dir, or an absolute path) and no folder: a tile in the one-player arcade driver select right after the retail drivers, or with --level and --driver <its template> straight on seat 0"},
+    {"--dev-grid-fill", "<n>", "n placeholder tiles, 1 to 32, after the custom character tiles in the one-player arcade driver select (rows and scrolling with many entries); a placeholder cannot be chosen"},
     {"--ui-safe-area-off", "", "UI safe area off"},
     {"--ui-declarations-off", "", "UI declarations off"},
     {"--ui-floor-off", "", "UI floor off"},
@@ -1740,14 +1740,19 @@ static int NativeSetup_RunWindow(void)
 // version of the reasoning is below, because the next person to want a second
 // folder will read this.
 //
-// ONE FOLDER, AND THE COUNT IS THE POINT.
+// ONE FOLDER PER KIND OF FILE, AND THE COUNT IS THE POINT.
 //
 //   tracks/       every .rldtrack, flat, next to track-ids.tsv and cups.txt
+//   characters/   every .rldchar, flat
 //
-// characters/ for .rldchar stood here until container format 4.1. .rldchar was
-// never specified, and a folder whose README promises a format nobody is
-// building promises too much - so it is no longer created. An existing one is
-// left alone.
+// The kind of file decides the folder, nothing else: a track and a character
+// are read by different code, at different times, under different rules, and
+// neither stands in for the other. characters/ was struck once, with
+// container format 4.1, while .rldchar had no specification yet - a README
+// promising a format nobody was building promised too much. Now the format is
+// specified (docs/CONTAINER_FORMAT.md), Reload Studio writes it and the game
+// reads the folder at every start (NativeChar_LoadRoster,
+// platform/native_chars.c), so the folder is created again.
 //
 // NOT one folder per game mode. "Time Trial" and "Adventure" are modes a track
 // is PLAYED in, not kinds of file: the same container is a race, a time trial
@@ -1790,6 +1795,19 @@ static const struct NativeContentFolder s_contentFolders[] = {
      "(track-ids.tsv) and cups.txt use it. Renaming a file makes it a new\n"
      "track. The track's name and its author live inside the container. They\n"
      "are what the author wrote there - nothing proves them.\n"},
+    {NATIVE_CHAR_DIR_NAME,
+     "Put .rldchar files here. One file per character, nothing to install.\n"
+     "\n"
+     "Make them with Reload Studio (the Character page). They are read once\n"
+     "at start, where they lie. Remove a file and the character is gone again.\n"
+     "\n"
+     "A character gets a tile in the one-player arcade driver select, after\n"
+     "the retail drivers. A broken file is skipped - the game starts anyway,\n"
+     "and the log says why (the lines starting with [CTR Char]).\n"
+     "\n"
+     "The file name is how the game knows a character; the tiles are sorted\n"
+     "by it, and at most 32 characters get one. Renaming a file makes it a\n"
+     "new character. The name shown in the menu lives inside the file.\n"},
 };
 
 #define NATIVE_CONTENT_FOLDER_COUNT ((int)(sizeof(s_contentFolders) / sizeof(s_contentFolders[0])))
@@ -2173,11 +2191,11 @@ int main(int argc, char *argv[])
 			NativeSubpixel_Arm(everyFrames);
 		}
 
-		// The custom character and the placeholders of the grid
-		// (platform/native_chars.c). Only remembered up here: a --char that
-		// names no folder has to end the start before the first window (the
-		// setup screen below is one); the file itself is read and the roster
-		// built just before CTR_Main.
+		// The test ways of the custom characters and the placeholders of the
+		// grid (platform/native_chars.c). Only remembered up here: a --char
+		// that names no folder has to end the start before the first window
+		// (the setup screen below is one); the folder or the file is read and
+		// the roster built just before CTR_Main.
 		if ((strcmp(argv[argIndex], "--chars-dir") == 0) && ((argIndex + 1) < argc))
 		{
 			NativeChar_SetFolder(argv[++argIndex]);
@@ -3458,12 +3476,17 @@ int main(int argc, char *argv[])
 	(void)argv;
 #endif
 
-	// --char: the character file is read, checked and relocated here, in host
-	// memory and after every other start step - the MEMPACK split above stays
-	// as it is. Without --char no file is touched; with --dev the exit line of
-	// the instance counter is registered either way. Then the roster of the
-	// driver select is built from the file and --dev-grid-fill.
-	NativeChar_LoadDev();
+	// THE CHARACTERS FOLDER IS READ ON EVERY START, independent of --no-tracks.
+	//
+	// Every .rldchar of characters/ (or of --chars-dir; only the one file with
+	// --char) is read, checked and relocated here, in host memory and after
+	// every other start step - the MEMPACK split above stays as it is, so a
+	// folder full of characters changes nothing in the memory of the game.
+	// Under --settings-defaults no folder is read unless --chars-dir names one.
+	// A broken file is skipped with a line and the start goes on. With --dev
+	// the exit line of the instance counter is registered either way. Then the
+	// roster of the driver select is built from the files and --dev-grid-fill.
+	NativeChar_LoadRoster();
 
 	const int result = CTR_Main();
 

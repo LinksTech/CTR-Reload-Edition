@@ -10,7 +10,7 @@ static u8 s_memcardNativeInfoSeen[2];
 // namespace_Main.h:232-239, bits 5..11 in gameProgress.unlocks[0]) - can be
 // chosen from the start. The character select reads the bits directly
 // (MM_Characters.c:127, :402, :550, :722; the icon loops :1036 and :1150 via
-// MM_NativeCharGrid_TileDrawn -> MM_NativeCharGrid.c:602), so they are set in the
+// MM_NativeCharGrid_TileDrawn -> MM_NativeCharGrid.c:625), so they are set in the
 // game: NativeUnlock_ApplyToGame sets them in every menu frame
 // (native_menuscreen.c, NativeMenuLock_Tick). Adventure chooses in the
 // garage from a fixed list 0..7 (D233.c:31) and does not read the bits -
@@ -133,6 +133,104 @@ static void NativeUnlock_MaskForSave(u8 *buffer, int size)
 	{
 		Platform_Log("[CTR Card] save: driver unlock bits 0x%03x -> 0x%03x (the game has all drivers; the card keeps only its own)\n",
 		             (unsigned)(before & UNLOCK_CHARACTERS), (unsigned)(profile->gameProgress.unlocks[0] & UNLOCK_CHARACTERS));
+	}
+}
+
+// ONLY RETAIL DRIVER IDS ON THE CARD.
+//
+// A custom character has no driver id of its own in data.characterIDs: the
+// load funnel binds its model to a seat whose id stays the template 0..14
+// (platform/native_chars.c). So no game code writes another id to the card, and
+// this is only the safety net on both sides of it: before the checksum of every
+// save, and after a load whose checksum was right. A field outside the retail
+// range is set back and named in the log; every other byte stays. On a load
+// only the buffer changes, the file only on the next save.
+//
+// The retail writers stay in range, so for them nothing changes and the file
+// stays byte-identical: high scores from the driver select (MainGameEnd.c:121,
+// :141; 15 tiles without N. Oxide, MM_Characters.c:12), the defaults 0..12
+// (GAMEPROG.c:128-133), the garage 0..7 (D233.c:31), the empty profile -1
+// (GAMEPROG.c:189-202), the ghost of the time trial driver (GhostTape.c:14).
+// N. Oxide (15) is no card driver: no retail writer stores him, and a ghost
+// with his id has no model to load (GhostReplay.c:390-392).
+//
+// - SLOTS (0x1680, header 0x1600ffee as RefreshCard.c:556 checks it): the 18 x
+//   12 high score ids (u16, 0..14, else 0) and the 4 adventure profiles (s16,
+//   -1 empty or 0..14; below -1 becomes -1, above 14 becomes 0, so a profile
+//   keeps whether it is occupied, SelectProfile.c:637, NativeUnlock_Earned).
+// - ghost (0x3e00): GhostHeader.characterID (s16, 0..14, else 0).
+// - every other size: untouched.
+#define NATIVE_CARD_SLOTS_HEADER  0x1600ffeeu
+#define NATIVE_CARD_GHOST_SIZE    0x3e00
+#define NATIVE_CARD_DRIVER_LAST   FAKE_CRASH
+
+static void NativeCard_ClampDriverIds(u8 *buffer, int size, const char *when)
+{
+	const char *after = (strcmp(when, "load") == 0) ? "the file changes only on the next save" : "the card gets the retail value";
+
+	if (buffer == NULL)
+	{
+		return;
+	}
+
+	if (size == NATIVE_UNLOCK_SLOTS_SIZE)
+	{
+		struct MemcardProfile *profile = (struct MemcardProfile *)buffer;
+
+		if (CTR_ReadU32LE(buffer) != NATIVE_CARD_SLOTS_HEADER)
+		{
+			return;
+		}
+
+		for (int track = 0; track < MEMCARD_HIGH_SCORE_TRACK_COUNT; track++)
+		{
+			for (int entry = 0; entry < MEMCARD_HIGH_SCORE_ENTRIES_PER_TRACK; entry++)
+			{
+				struct HighScoreEntry *score = &profile->gameProgress.highScoreTracks[track].scoreEntry[entry];
+
+				if (score->characterID > NATIVE_CARD_DRIVER_LAST)
+				{
+					Platform_LogWarn("[CTR Card] %s: high score track %d entry %d: driver id %d is not a retail driver - set to 0 (%s)\n", when, track,
+					                 entry, (int)score->characterID, after);
+					score->characterID = 0;
+				}
+			}
+		}
+
+		for (int k = 0; k < MEMCARD_ADV_PROFILE_COUNT; k++)
+		{
+			s16 id = profile->advProgress[k].characterID;
+			s16 clamped = id;
+
+			if (id < -1)
+			{
+				clamped = -1;
+			}
+			else if (id > NATIVE_CARD_DRIVER_LAST)
+			{
+				clamped = 0;
+			}
+
+			if (clamped != id)
+			{
+				Platform_LogWarn("[CTR Card] %s: adventure profile %d: driver id %d is not a retail driver - set to %d (%s)\n", when, k, (int)id,
+				                 (int)clamped, after);
+				profile->advProgress[k].characterID = clamped;
+			}
+		}
+
+		return;
+	}
+
+	if (size == NATIVE_CARD_GHOST_SIZE)
+	{
+		struct GhostHeader *ghost = (struct GhostHeader *)buffer;
+
+		if ((ghost->characterID < 0) || (ghost->characterID > NATIVE_CARD_DRIVER_LAST))
+		{
+			Platform_LogWarn("[CTR Card] %s: ghost: driver id %d is not a retail driver - set to 0 (%s)\n", when, (int)ghost->characterID, after);
+			ghost->characterID = 0;
+		}
 	}
 }
 
@@ -286,6 +384,11 @@ u8 MEMCARD_Load(int slotIdx, char *name, u8 *ptrMemcard, int memcardFileSize, u3
 		checksumResult = MEMCARD_ChecksumLoad(ptrMemcard, memcardFileSize);
 	} while (checksumResult == MC_RETURN_PENDING);
 
+	if (checksumResult == MC_RETURN_IOE)
+	{
+		NativeCard_ClampDriverIds(ptrMemcard, memcardFileSize, "load");
+	}
+
 	NativeUnlock_NoteCard(ptrMemcard, memcardFileSize);
 
 	return checksumResult == MC_RETURN_IOE ? MC_RETURN_IOE : MC_RETURN_TIMEOUT;
@@ -296,6 +399,7 @@ u8 MEMCARD_Save(int slotIdx, char *name, char *icon, u8 *ptrMemcard, int memcard
 	char nativeName[64];
 
 	NativeUnlock_MaskForSave(ptrMemcard, memcardFileSize);
+	NativeCard_ClampDriverIds(ptrMemcard, memcardFileSize, "save");
 
 	sdata->crc16_checkpoint_byteIndex = 0;
 	sdata->crc16_checkpoint_status = 0;

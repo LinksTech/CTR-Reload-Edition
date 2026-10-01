@@ -1,5 +1,5 @@
 // ===========================================================================
-// CUSTOM CHARACTERS - ROSTER, PICK AND SEAT 0.
+// CUSTOM CHARACTERS - THE FOLDER, THE ROSTER, THE PICK AND THE SEATS.
 //
 // A custom character is an overlay, never a new character id: the engine
 // only ever sees the templates 0..14 in data.characterIDs. The driver select
@@ -7,28 +7,44 @@
 // and leaves its choice here as the pick; at every load the funnel decides
 // from the pick whether seat 0 is born with the custom model.
 //
-// THE ROSTER, fixed at start. For now it comes from developer switches only:
-// entry 0 is the --char file when it loaded, then the placeholders of
-// --dev-grid-fill - "PLACEHOLDER <n>" on template (n - 1) % 15, without a
-// model. They fill the grid so that rows and scrolling can be seen, and they
-// cannot be chosen. At most NATIVE_CHAR_ROSTER_MAX entries in all. A scan of
-// a characters folder will take the place of the switches; nothing that reads
-// the roster has to change for it.
+// THE FOLDER. characters/ under the game folder (NATIVE_CHAR_DIR_NAME; main.c
+// creates it with a README), read once at start and independent of
+// --no-tracks. Every *.rldchar in it (the extension in any case, subfolders
+// skipped) is collected first, then the names are sorted the way the track
+// list sorts them, and only then the files are read in that order. A broken
+// file is skipped with one REFUSED line and the game starts anyway. The first
+// NATIVE_CHAR_ROSTER_MAX valid files get the runtime ids
+// NATIVE_CHAR_RUNTIME_ID_FIRST + rank; every valid file after them is named
+// in a loud NO ID line and left out. One summary line per start, also for an
+// empty folder; a missing folder is one line of its own. Under
+// --settings-defaults no folder is read unless --chars-dir names one.
+//
+// THE TEST WAYS (developer switches, main.c): --chars-dir <folder> reads that
+// folder instead of characters/; --char <file> reads only this one file and
+// no folder; --dev-grid-fill <n> adds placeholders.
+//
+// THE ROSTER, fixed at start: the files in sorted order, then the
+// placeholders of --dev-grid-fill - "PLACEHOLDER <n>" on template
+// (n - 1) % 15, without a model. They fill the grid so that rows and
+// scrolling can be seen, and they cannot be chosen. At most
+// NATIVE_CHAR_ROSTER_MAX entries in all.
 //
 // THE PICK. An entry index, or -1 for retail. The driver select writes it in
 // every frame it runs: -1 on a retail tile, while the grid is off and on the
-// way back to the title. The direct start (DebugMenu_JumpToLevel: --level,
-// --autoload-track, the LEVEL and TRACK pages of the debug menu) sets entry 0
-// when it is a loaded file, so --level with --driver <template> --char <file>
-// binds as it always did.
+// way back to the title. A main-menu choice other than ARCADE
+// (game/native_menuscreen.c) and every menu load onto the title drop it too.
+// The direct start (DebugMenu_JumpToLevel: --level, --autoload-track, the
+// LEVEL and TRACK pages of the debug menu) sets entry 0 only for --char, so
+// --level with --driver <template> --char <file> binds as it always did.
 // NativeChar_ModeAllowed is the menu side of the mode rule; the funnel keeps
 // its own checks of the race it loads.
 //
-// THE PATH OF THE FILE.
-//   start    NativeChar_LoadDev, once, before CTR_Main: envelope (Rld_OpenAs
-//            with s_rldCharFormat), CHRI, CMDL with its hash, RldChar_CheckModel
-//            on the bytes as stored, then ONE LOAD_RunPtrMap on the host copy.
-//            The model lives in host memory for the whole run - not in the
+// THE PATH OF A FILE.
+//   start    NativeChar_LoadRoster, once, before CTR_Main: envelope
+//            (Rld_OpenAs with s_rldCharFormat), CHRI, the CMDL size against
+//            RLDCHAR_LIMIT_CMDL, CMDL with its hash, RldChar_CheckModel on the
+//            bytes as stored, then ONE LOAD_RunPtrMap on the host copy. The
+//            model lives in host memory for the whole run - not in the
 //            MEMPACK, so the memory layout of the game stays as it is. Then
 //            the roster is built.
 //   stage 5  NativeChar_ArmSeats (game/LOAD/LOAD_TenStages.c): the funnel
@@ -36,7 +52,9 @@
 //            a file and characterIDs[0] holds its template. Its order is fixed,
 //            and the first answer that is not "yes" ends it.
 //   birth    NativeChar_SeatModel (game/Vehicle/VehBirth.c): the bound model,
-//            or NULL and the retail lookup by name.
+//            or NULL and the retail lookup by name. The class of a bound seat
+//            comes from its CHRI (NativeChar_SeatEngineClass), its voice stays
+//            silent (NativeChar_SeatSilent).
 //   stage 0  NativeChar_ClearSeats: the next load starts with empty seats.
 //
 // THE MODEL IS THE NATIVE ONE. CMDL is framed like a model file of the BIGFILE
@@ -48,19 +66,22 @@
 // LOAD_MODEL_FILE_HEADER_BYTES (load stage 6, LOAD_DramFile hands out the file
 // start, game/LOAD/LOAD_File.c:231-236).
 //
-// RETAIL STAYS. Without --char and --dev-grid-fill: no file is opened, the
-// roster is empty (the grid stays off), the pick stays -1, the funnel returns
-// at its first step, the seat model is NULL and VehBirth takes the retail
-// expression. The instance counter counts in every run and changes nothing;
-// its exit line is there with --dev only. The log lines are read by a
-// measuring tool and keep their wording.
+// RETAIL STAYS. Without a .rldchar in the folder and without --char and
+// --dev-grid-fill: the roster is empty (the grid stays off), the pick stays
+// -1, the funnel binds nothing, the seat model is NULL, every seat function
+// returns the retail value and VehBirth takes the retail expression. The only
+// trace is the summary line. The instance counter counts in every run and
+// changes nothing; its exit line is there with --dev only. The log lines are
+// read by a measuring tool and keep their wording.
 //
-// KNOWN GAP: a quick state holds host pointers and a model outside the
-// MEMPACK. Runs with a custom character use no quick states.
+// QUICK STATES hold host pointers and a model outside the MEMPACK: they are
+// refused while NativeChar_Active() says a custom character is in play.
 // ===========================================================================
 
 #include <platform/native_chars.h>
 #include <platform/native_path.h>
+
+#include <SDL3/SDL.h>
 
 // The envelope reader, then the character format on top of it (the same two
 // files the packer compiles, tools/rldpack.c).
@@ -69,6 +90,7 @@
 
 #define NATIVE_CHAR_PATH_MAX 1024
 #define NATIVE_CHAR_SEATS 8
+#define NATIVE_CHAR_EXTENSION ".rldchar"
 
 // A driver pack lists a few dozen models; the bound only keeps a broken list
 // from walking on forever.
@@ -85,29 +107,39 @@ global_variable char s_charFile[NATIVE_CHAR_PATH_MAX];
 global_variable int s_charGiven;
 global_variable int s_charArgTooLong;
 
-// The loaded file: the CMDL chunk (relocated, never freed - instances point
-// into it) and what CHRI said.
-global_variable struct
+// One loaded file: its name on disk (the identity, owned here for the whole
+// run), the CMDL chunk (relocated, never freed - instances point into it) and
+// what CHRI said.
+struct NativeCharFile
 {
+	char *file;
 	u8 *cmdl;
 	struct Model *model;
 	struct RldCharInfo info;
-} s_char;
+	u8 cmdlHash[6];
+	u64 fileBytes;
+};
 
-// The overlay per seat. Only seat 0 is ever armed so far. motorId is the
-// character id the engine runs the seat on - the template.
+// The files of the roster, in sorted order: entry e < s_charRosterFiles is
+// s_charFiles[e], with runtime id NATIVE_CHAR_RUNTIME_ID_FIRST + e.
+global_variable struct NativeCharFile s_charFiles[NATIVE_CHAR_ROSTER_MAX];
+
+// The overlay per seat. Only seat 0 is ever armed so far. entry is the roster
+// entry it was armed with, motorId the character id the engine runs the seat
+// on - the template.
 global_variable struct
 {
 	struct Model *model;
+	int entry;
 	int motorId;
 } s_seat[NATIVE_CHAR_SEATS];
 
 // --dev-grid-fill, as main.c passed it on (0 = none).
 global_variable int s_charGridFill;
 
-// The roster, built once by NativeChar_LoadDev: s_charRosterFiles entries are
-// files (0 or 1, the --char file), the rest up to s_charRosterCount are
-// placeholders. Placeholder n (1-based) is entry s_charRosterFiles + n - 1.
+// The roster, built once by NativeChar_LoadRoster: s_charRosterFiles entries
+// are files, the rest up to s_charRosterCount are placeholders. Placeholder n
+// (1-based) is entry s_charRosterFiles + n - 1.
 global_variable int s_charRosterCount;
 global_variable int s_charRosterFiles;
 
@@ -130,8 +162,8 @@ internal void NativeChar_Remember(char *dst, const char *value)
 {
 	const char *text = (value != NULL) ? value : "";
 
-	// A cut path could name another file: the cut copy is only for the log,
-	// NativeChar_BuildPath refuses it.
+	// A cut path could name another file or folder: the cut copy is only for
+	// the log, NativeChar_BuildPath and NativeChar_ScanFolder refuse it.
 	if (strlen(text) >= NATIVE_CHAR_PATH_MAX)
 	{
 		s_charArgTooLong = 1;
@@ -171,9 +203,34 @@ int NativeChar_ArgsUsable(void)
 	return 0;
 }
 
-// The file: an absolute --char as it stands, otherwise inside --chars-dir; a
-// relative folder lies under the game folder, as with --tracks-dir
-// (NativeTrack_Scan, platform/native_assets.c).
+// The folder: characters/ under the game folder without --chars-dir; an
+// absolute --chars-dir as it stands, a relative one under the game folder - as
+// NativeTrack_Scan resolves --tracks-dir (platform/native_assets.c).
+internal int NativeChar_FolderPath(char *dst, size_t dstSize)
+{
+	if (s_charArgTooLong)
+	{
+		return 0;
+	}
+
+	if (s_charFolder[0] == '\0')
+	{
+		return NativePath_Join(dst, dstSize, NativeStr8_FromCString(NativeAssets_GetBaseDir()), NATIVE_STR8_LIT(NATIVE_CHAR_DIR_NAME));
+	}
+
+	if (NativeChar_IsAbsolute(s_charFolder))
+	{
+		const int written = snprintf(dst, dstSize, "%s", s_charFolder);
+
+		return (written >= 0) && ((size_t)written < dstSize);
+	}
+
+	return NativePath_Join(dst, dstSize, NativeStr8_FromCString(NativeAssets_GetBaseDir()), NativeStr8_FromCString(s_charFolder));
+}
+
+// The --char file: an absolute --char as it stands, otherwise inside
+// --chars-dir (NativeChar_FolderPath; main.c has refused a relative --char
+// without --chars-dir).
 internal int NativeChar_BuildPath(char *dst, size_t dstSize)
 {
 	char folder[NATIVE_CHAR_PATH_MAX];
@@ -190,16 +247,7 @@ internal int NativeChar_BuildPath(char *dst, size_t dstSize)
 		return (written >= 0) && ((size_t)written < dstSize);
 	}
 
-	if (s_charFolder[0] == '\0')
-	{
-		return 0;
-	}
-
-	if (NativeChar_IsAbsolute(s_charFolder))
-	{
-		snprintf(folder, sizeof(folder), "%s", s_charFolder);
-	}
-	else if (!NativePath_Join(folder, sizeof(folder), NativeStr8_FromCString(NativeAssets_GetBaseDir()), NativeStr8_FromCString(s_charFolder)))
+	if ((s_charFolder[0] == '\0') || !NativeChar_FolderPath(folder, sizeof(folder)))
 	{
 		return 0;
 	}
@@ -208,7 +256,7 @@ internal int NativeChar_BuildPath(char *dst, size_t dstSize)
 }
 
 // One line, the wording a measuring tool reads: REFUSED <file>: <WORD> (<rule>) <detail>.
-internal void NativeChar_Refuse(const char *word, const char *rule, const char *format, ...)
+internal void NativeChar_Refuse(const char *file, const char *word, const char *rule, const char *format, ...)
 {
 	char detail[256];
 	va_list args;
@@ -218,7 +266,7 @@ internal void NativeChar_Refuse(const char *word, const char *rule, const char *
 	va_end(args);
 	detail[sizeof(detail) - 1] = '\0';
 
-	Platform_Log("[CTR Char] REFUSED %s: %s (%s) %s\n", s_charFile, word, rule, detail);
+	Platform_Log("[CTR Char] REFUSED %s: %s (%s) %s\n", file, word, rule, detail);
 }
 
 internal void NativeChar_ReportAtExit(void)
@@ -226,47 +274,34 @@ internal void NativeChar_ReportAtExit(void)
 	Platform_Log("[CTR Char] at exit: instances dropped %lld total, %lld seat 0\n", (long long)s_droppedTotal, (long long)s_droppedSeat0);
 }
 
-// The --char file: read, checked, relocated. Every way out but the last leaves
-// s_char empty, and the file then has no entry in the roster.
-internal void NativeChar_LoadFile(void)
+// One file: read, checked, relocated into *out. 0 after a REFUSED line (named
+// by file), with nothing left allocated; 1 with out->cmdl and out->model set.
+// out->file is the caller's.
+internal int NativeChar_ReadFile(const char *path, const char *file, struct NativeCharFile *out)
 {
 	struct RldReader reader;
 	struct RldCharInfo info;
 	struct RldCharFinding finding;
-	char path[NATIVE_CHAR_PATH_MAX];
 	const char *why;
 	const u8 *modelEntry;
-	u8 cmdlHash[6];
 	u8 *infoBytes;
 	u8 *cmdl;
 	size_t infoSize = 0;
 	size_t cmdlSize = 0;
 	int infoIndex = -1;
 	int modelIndex = -1;
-	u64 fileBytes;
+	u64 cmdlBytes;
 	enum RldCharVerdict verdict;
-
-	// Retail: without --char no file is touched.
-	if (!s_charGiven)
-	{
-		return;
-	}
 
 	// The detail of every refusal is a fixed text: the reader's, the parser's,
 	// the check's or this file's own.
-	if (!NativeChar_BuildPath(path, sizeof(path)))
-	{
-		NativeChar_Refuse("DAMAGED", "path", "%s", "the path of the file is too long");
-		return;
-	}
-
 	why = Rld_OpenAs(&reader, path, &s_rldCharFormat);
 	if (why != NULL)
 	{
 		const char *word = (reader.refusal == RLD_REFUSAL_NEWER) ? "NEEDS NEWER" : ((reader.refusal == RLD_REFUSAL_OLDER) ? "OLD FORMAT" : "DAMAGED");
 
-		NativeChar_Refuse(word, "envelope", "%s", why);
-		return;
+		NativeChar_Refuse(file, word, "envelope", "%s", why);
+		return 0;
 	}
 
 	// Rld_OpenAs has proved both present (the required chunks of the format).
@@ -276,21 +311,33 @@ internal void NativeChar_LoadFile(void)
 	if ((infoIndex < 0) || (modelEntry == NULL))
 	{
 		Rld_Close(&reader);
-		NativeChar_Refuse("DAMAGED", "envelope", "%s", "CHRI or CMDL is missing - required chunk");
-		return;
+		NativeChar_Refuse(file, "DAMAGED", "envelope", "%s", "CHRI or CMDL is missing - required chunk");
+		return 0;
+	}
+
+	// The size of the model (P19), from the directory entry and BEFORE the
+	// malloc: the file comes from a stranger, and its number must not decide
+	// how much memory is taken. Rld_OpenAs and Rld_ReadChunk hold the same
+	// limit; this line names it in the words of the model check.
+	cmdlBytes = Rld_ReadLE64(&modelEntry[0x18]);
+	if (cmdlBytes > RLDCHAR_LIMIT_CMDL)
+	{
+		Rld_Close(&reader);
+		NativeChar_Refuse(file, "DAMAGED", "model-size", "CMDL is %llu bytes, at most %u", (unsigned long long)cmdlBytes, (unsigned)RLDCHAR_LIMIT_CMDL);
+		return 0;
 	}
 
 	// The CMDL hash as Rld_ReadChunk proves it below; the directory stays in the
 	// reader after the file is closed.
-	memcpy(cmdlHash, &modelEntry[RLD_DIR_HASH_OFFSET], sizeof(cmdlHash));
-	fileBytes = reader.fileSize;
+	memcpy(out->cmdlHash, &modelEntry[RLD_DIR_HASH_OFFSET], sizeof(out->cmdlHash));
+	out->fileBytes = reader.fileSize;
 
 	infoBytes = Rld_ReadChunk(&reader, infoIndex, &infoSize, &why);
 	if (infoBytes == NULL)
 	{
 		Rld_Close(&reader);
-		NativeChar_Refuse("DAMAGED", "chunk", "%s", why);
-		return;
+		NativeChar_Refuse(file, "DAMAGED", "chunk", "%s", why);
+		return 0;
 	}
 
 	cmdl = Rld_ReadChunk(&reader, modelIndex, &cmdlSize, &why);
@@ -298,8 +345,8 @@ internal void NativeChar_LoadFile(void)
 	if (cmdl == NULL)
 	{
 		free(infoBytes);
-		NativeChar_Refuse("DAMAGED", "chunk", "%s", why);
-		return;
+		NativeChar_Refuse(file, "DAMAGED", "chunk", "%s", why);
+		return 0;
 	}
 
 	why = RldChar_ParseInfo(&info, infoBytes, infoSize);
@@ -312,8 +359,8 @@ internal void NativeChar_LoadFile(void)
 
 		snprintf(rule, sizeof(rule), "%.*s", (colon != NULL) ? (int)(colon - why) : 0, why);
 		free(cmdl);
-		NativeChar_Refuse("DAMAGED", (rule[0] != '\0') ? rule : "CHRI", "%s", (colon != NULL) ? (colon + 2) : why);
-		return;
+		NativeChar_Refuse(file, "DAMAGED", (rule[0] != '\0') ? rule : "CHRI", "%s", (colon != NULL) ? (colon + 2) : why);
+		return 0;
 	}
 
 	// BEFORE the relocation: the pointer fields still hold body offsets, which
@@ -324,8 +371,8 @@ internal void NativeChar_LoadFile(void)
 	if (verdict != RLDCHAR_VERDICT_OK)
 	{
 		free(cmdl);
-		NativeChar_Refuse(RldChar_VerdictWord(verdict), (finding.rule != NULL) ? finding.rule : "model", "%s", finding.detail);
-		return;
+		NativeChar_Refuse(file, RldChar_VerdictWord(verdict), (finding.rule != NULL) ? finding.rule : "model", "%s", finding.detail);
+		return 0;
 	}
 
 	// ONCE, on the host copy, through the loader's own relocation: origin is the
@@ -340,26 +387,304 @@ internal void NativeChar_LoadFile(void)
 		if (LOAD_RunPtrMap(body, (int)bodyBytes, map, (int)(mapBytes / 4u)) == 0)
 		{
 			free(cmdl);
-			NativeChar_Refuse("PTRMAP", "ptrmap", "%s", "LOAD_RunPtrMap refused the pointer map - nothing patched");
-			return;
+			NativeChar_Refuse(file, "PTRMAP", "ptrmap", "%s", "LOAD_RunPtrMap refused the pointer map - nothing patched");
+			return 0;
 		}
 
-		s_char.cmdl = cmdl;
-		s_char.model = (struct Model *)body;
-		s_char.info = info;
+		out->cmdl = cmdl;
+		out->model = (struct Model *)body;
+		out->info = info;
 	}
 
-	Platform_Log("[CTR Char] loaded %s: template %u, class %u, CMDL %02x%02x%02x%02x%02x%02x, %llu bytes\n", s_charFile, (unsigned)info.templateId,
-	             (unsigned)info.classId, (unsigned)cmdlHash[0], (unsigned)cmdlHash[1], (unsigned)cmdlHash[2], (unsigned)cmdlHash[3], (unsigned)cmdlHash[4],
-	             (unsigned)cmdlHash[5], (unsigned long long)fileBytes);
+	return 1;
 }
 
-// Entry 0 is the file when it loaded - a refused one has no tile - then the
-// placeholders. Built once: the grid, the pick and the funnel all count on
-// the same entries for the whole run. Silent while it is empty.
+internal void NativeChar_LogLoaded(const struct NativeCharFile *entry)
+{
+	Platform_Log("[CTR Char] loaded %s: template %u, class %u, CMDL %02x%02x%02x%02x%02x%02x, %llu bytes\n", entry->file, (unsigned)entry->info.templateId,
+	             (unsigned)entry->info.classId, (unsigned)entry->cmdlHash[0], (unsigned)entry->cmdlHash[1], (unsigned)entry->cmdlHash[2],
+	             (unsigned)entry->cmdlHash[3], (unsigned)entry->cmdlHash[4], (unsigned)entry->cmdlHash[5], (unsigned long long)entry->fileBytes);
+}
+
+// A valid file becomes the next entry while there is an id for it; after
+// that it is named loudly and let go. 1 = it got an entry (and keeps file).
+internal int NativeChar_Admit(struct NativeCharFile *loaded, char *file)
+{
+	if (s_charRosterFiles >= NATIVE_CHAR_ROSTER_MAX)
+	{
+		Platform_LogWarn("[CTR Char] NO ID %s: all %d custom character ids are taken - the file is valid but not in the driver select\n", file,
+		                 NATIVE_CHAR_ROSTER_MAX);
+		free(loaded->cmdl);
+		return 0;
+	}
+
+	loaded->file = file;
+	s_charFiles[s_charRosterFiles] = *loaded;
+	s_charRosterFiles++;
+	NativeChar_LogLoaded(loaded);
+	return 1;
+}
+
+//----------------------------------------------------------------------------------------
+// THE FOLDER
+//----------------------------------------------------------------------------------------
+
+internal int NativeChar_HasExtension(const char *fileName)
+{
+	const size_t nameLength = strlen(fileName);
+	const size_t extLength = sizeof(NATIVE_CHAR_EXTENSION) - 1u;
+	size_t i;
+
+	if (nameLength <= extLength)
+	{
+		return 0;
+	}
+
+	// The extension may be upper or lower case, as with .rldtrack
+	// (NativeTrack_HasExtension, platform/native_assets.c).
+	for (i = 0; i < extLength; i++)
+	{
+		char a = fileName[nameLength - extLength + i];
+
+		if ((a >= 'A') && (a <= 'Z'))
+		{
+			a = (char)(a - 'A' + 'a');
+		}
+
+		if (a != NATIVE_CHAR_EXTENSION[i])
+		{
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
+// THE ORDER: the one of the track list - NTFS-like, character by character,
+// upper cased. The same comparison as NativeTrack_UpperChar and
+// NativeTrack_CompareNames (platform/native_assets.c), which are internal to
+// that file; keep the two in step. Same folder contents, same ids, on every
+// disk and file system.
+internal int NativeChar_UpperChar(char c)
+{
+	if ((c >= 'a') && (c <= 'z'))
+	{
+		return c - ('a' - 'A');
+	}
+
+	return (int)(unsigned char)c;
+}
+
+internal int NativeChar_CompareNames(const char *a, const char *b)
+{
+	while ((*a != '\0') && (NativeChar_UpperChar(*a) == NativeChar_UpperChar(*b)))
+	{
+		a++;
+		b++;
+	}
+
+	return NativeChar_UpperChar(*a) - NativeChar_UpperChar(*b);
+}
+
+internal int NativeChar_CompareNameEntries(const void *a, const void *b)
+{
+	const char *nameA = *(const char *const *)a;
+	const char *nameB = *(const char *const *)b;
+	const int order = NativeChar_CompareNames(nameA, nameB);
+
+	// Two names that differ only in case (a case-sensitive file system) still
+	// get a fixed order.
+	return (order != 0) ? order : strcmp(nameA, nameB);
+}
+
+struct NativeCharNameList
+{
+	const char *folder;
+	char **names;
+	int count;
+	int capacity;
+	int outOfMemory;
+};
+
+// Every name is collected before anything is read: no cap and no order from
+// the file system decide which file comes first.
+internal SDL_EnumerationResult SDLCALL NativeChar_CollectName(void *userdata, const char *dirname, const char *fname)
+{
+	struct NativeCharNameList *list = (struct NativeCharNameList *)userdata;
+	char path[NATIVE_CHAR_PATH_MAX];
+	SDL_PathInfo info;
+	size_t length;
+	char *copy;
+
+	(void)dirname;
+
+	if (!NativeChar_HasExtension(fname))
+	{
+		return SDL_ENUM_CONTINUE;
+	}
+
+	// A subfolder is skipped, even one named like a file. A name whose path is
+	// too long is kept: reading it refuses it with a line.
+	if (NativePath_Join(path, sizeof(path), NativeStr8_FromCString(list->folder), NativeStr8_FromCString(fname)) && SDL_GetPathInfo(path, &info) &&
+	    (info.type != SDL_PATHTYPE_FILE))
+	{
+		return SDL_ENUM_CONTINUE;
+	}
+
+	if (list->count >= list->capacity)
+	{
+		const int capacity = (list->capacity > 0) ? (list->capacity * 2) : 64;
+		char **grown = (char **)realloc(list->names, (size_t)capacity * sizeof(char *));
+
+		if (grown == NULL)
+		{
+			list->outOfMemory = 1;
+			return SDL_ENUM_FAILURE;
+		}
+
+		list->names = grown;
+		list->capacity = capacity;
+	}
+
+	length = strlen(fname);
+	copy = (char *)malloc(length + 1u);
+	if (copy == NULL)
+	{
+		list->outOfMemory = 1;
+		return SDL_ENUM_FAILURE;
+	}
+
+	memcpy(copy, fname, length + 1u);
+	list->names[list->count] = copy;
+	list->count++;
+	return SDL_ENUM_CONTINUE;
+}
+
+// The folder (characters/ or --chars-dir): every name, sorted, then read in
+// that order. Ends with exactly one line about the folder.
+internal void NativeChar_ScanFolder(void)
+{
+	char folder[NATIVE_CHAR_PATH_MAX];
+	struct NativeCharNameList list;
+	SDL_PathInfo folderInfo;
+	int refused = 0;
+	int noId = 0;
+	int i;
+
+	if (!NativeChar_FolderPath(folder, sizeof(folder)))
+	{
+		Platform_Log("[CTR Char] no characters folder - the path of the folder is too long, nothing loaded\n");
+		return;
+	}
+
+	if (!SDL_GetPathInfo(folder, &folderInfo) || (folderInfo.type != SDL_PATHTYPE_DIRECTORY))
+	{
+		Platform_Log("[CTR Char] no characters folder - nothing loaded (%s)\n", folder);
+		return;
+	}
+
+	memset(&list, 0, sizeof(list));
+	list.folder = folder;
+
+	// A list that did not run to its end reads nothing: a part of the folder
+	// would give other ids than the whole of it.
+	if (!SDL_EnumerateDirectory(folder, NativeChar_CollectName, &list))
+	{
+		if (list.outOfMemory)
+		{
+			Platform_LogWarn("[CTR Char] out of memory while listing the characters folder - nothing loaded (%s)\n", folder);
+		}
+		else
+		{
+			Platform_LogWarn("[CTR Char] the characters folder cannot be listed - nothing loaded (%s)\n", folder);
+		}
+
+		for (i = 0; i < list.count; i++)
+		{
+			free(list.names[i]);
+		}
+
+		free(list.names);
+		return;
+	}
+
+	if (list.count > 1)
+	{
+		qsort(list.names, (size_t)list.count, sizeof(list.names[0]), NativeChar_CompareNameEntries);
+	}
+
+	for (i = 0; i < list.count; i++)
+	{
+		struct NativeCharFile loaded;
+		char path[NATIVE_CHAR_PATH_MAX];
+		char *name = list.names[i];
+
+		memset(&loaded, 0, sizeof(loaded));
+
+		if (!NativePath_Join(path, sizeof(path), NativeStr8_FromCString(folder), NativeStr8_FromCString(name)))
+		{
+			NativeChar_Refuse(name, "DAMAGED", "path", "%s", "the path of the file is too long");
+			refused++;
+			free(name);
+			continue;
+		}
+
+		if (!NativeChar_ReadFile(path, name, &loaded))
+		{
+			refused++;
+			free(name);
+			continue;
+		}
+
+		// An entry keeps its name for the whole run.
+		if (!NativeChar_Admit(&loaded, name))
+		{
+			noId++;
+			free(name);
+		}
+	}
+
+	free(list.names);
+
+	if (noId > 0)
+	{
+		Platform_Log("[CTR Char] characters: %d loaded, %d refused, %d without an id (%s)\n", s_charRosterFiles, refused, noId, folder);
+	}
+	else
+	{
+		Platform_Log("[CTR Char] characters: %d loaded, %d refused (%s)\n", s_charRosterFiles, refused, folder);
+	}
+}
+
+// --char: this one file and no folder.
+internal void NativeChar_LoadGivenFile(void)
+{
+	struct NativeCharFile loaded;
+	char path[NATIVE_CHAR_PATH_MAX];
+
+	memset(&loaded, 0, sizeof(loaded));
+
+	if (!NativeChar_BuildPath(path, sizeof(path)))
+	{
+		NativeChar_Refuse(s_charFile, "DAMAGED", "path", "%s", "the path of the file is too long");
+		Platform_Log("[CTR Char] characters: 0 loaded, 1 refused (--char)\n");
+		return;
+	}
+
+	if (NativeChar_ReadFile(path, s_charFile, &loaded))
+	{
+		NativeChar_Admit(&loaded, s_charFile);
+	}
+
+	Platform_Log("[CTR Char] characters: %d loaded, %d refused (--char %s)\n", s_charRosterFiles, 1 - s_charRosterFiles, path);
+}
+
+// The files first - a refused one has no tile - then the placeholders. Built
+// once: the grid, the pick and the funnel all count on the same entries for
+// the whole run. Silent while it is empty.
 internal void NativeChar_BuildRoster(void)
 {
-	const int files = (s_char.model != NULL) ? 1 : 0;
+	const int files = s_charRosterFiles;
 	int count = files + s_charGridFill;
 	int n;
 
@@ -375,7 +700,6 @@ internal void NativeChar_BuildRoster(void)
 		snprintf(s_charPlaceholderName[n - 1], sizeof(s_charPlaceholderName[n - 1]), "PLACEHOLDER %d", n);
 	}
 
-	s_charRosterFiles = files;
 	s_charRosterCount = count;
 
 	if (count > 0)
@@ -384,7 +708,7 @@ internal void NativeChar_BuildRoster(void)
 	}
 }
 
-void NativeChar_LoadDev(void)
+void NativeChar_LoadRoster(void)
 {
 	// Registered here, at start, so the line has its place in the table of exit
 	// reports before the ones a race registers on its way.
@@ -393,7 +717,21 @@ void NativeChar_LoadDev(void)
 		Platform_AtExitReport(NativeChar_ReportAtExit);
 	}
 
-	NativeChar_LoadFile();
+	if (s_charGiven)
+	{
+		NativeChar_LoadGivenFile();
+	}
+	else if (Platform_SettingsLocked() && (s_charFolder[0] == '\0'))
+	{
+		// --settings-defaults: a run that reads nothing of the player's
+		// own, unless --chars-dir names a folder for it.
+		Platform_Log("[CTR Char] characters: not read under --settings-defaults (--chars-dir <folder> reads one)\n");
+	}
+	else
+	{
+		NativeChar_ScanFolder();
+	}
+
 	NativeChar_BuildRoster();
 }
 
@@ -551,7 +889,7 @@ int NativeChar_EntryTemplate(int entry)
 
 	if ((entry >= 0) && (entry < s_charRosterFiles))
 	{
-		return (int)s_char.info.templateId;
+		return (int)s_charFiles[entry].info.templateId;
 	}
 
 	return -1;
@@ -568,7 +906,7 @@ const char *NativeChar_EntryName(int entry)
 
 	if ((entry >= 0) && (entry < s_charRosterFiles))
 	{
-		return s_char.info.name;
+		return s_charFiles[entry].info.name;
 	}
 
 	return "";
@@ -584,7 +922,7 @@ struct Model *NativeChar_EntryModel(int entry)
 	// A file is in the roster only once its model is loaded and relocated.
 	if ((entry >= 0) && (entry < s_charRosterFiles))
 	{
-		return s_char.model;
+		return s_charFiles[entry].model;
 	}
 
 	return NULL;
@@ -624,10 +962,12 @@ int NativeChar_Pick(void)
 
 void NativeChar_PickForJump(void)
 {
-	// The direct start has no driver select: it takes the file when there is
-	// one. Whether it binds is still the funnel's answer - --driver has to have
-	// put the template into characterIDs[0].
-	NativeChar_SetPick((s_charRosterFiles > 0) ? 0 : -1);
+	// The direct start has no driver select: it takes the --char file when it
+	// loaded. A file from the folder is never picked here - a --level start
+	// stays retail unless --char asks otherwise. Whether it binds is still the
+	// funnel's answer - --driver has to have put the template into
+	// characterIDs[0].
+	NativeChar_SetPick((s_charGiven && (s_charRosterFiles > 0)) ? 0 : -1);
 }
 
 // The modes a custom character may be picked in, read before the race exists:
@@ -666,47 +1006,59 @@ void NativeChar_ArmSeats(void)
 	// Nothing from an earlier load survives into this one.
 	NativeChar_ClearSeats();
 
-	// 1. No file loaded (no --char, or refused): retail, silently. Placeholders
-	//    alone never bind, so the roster has nothing to give either.
-	if (s_char.model == NULL)
-	{
-		return;
-	}
-
-	// 2. A menu load, silently. characterIDs[0] keeps the template on the way
-	//    back into the menu, and the menu births drivers too (VehBirth_NonGhost).
+	// 1. A menu load, silently. characterIDs[0] keeps the template on the way
+	//    back into the menu, and the menu births drivers too
+	//    (VehBirth_NonGhost). A load of the main menu onto the title (quit,
+	//    race end, cup end, demo end) drops the pick - not the garage, which
+	//    is a menu load as well.
 	if ((gGT->gameMode1 & MAIN_MENU) != 0)
 	{
+		if ((gGT->levelID == MAIN_MENU_LEVEL) && (sdata->mainMenuState == MAIN_MENU_TITLE))
+		{
+			s_charPick = -1;
+		}
+
 		return;
 	}
 
-	// 3. Demo: every seat is a bot of the attract mode or --autoload-demo.
+	// 2. No file in the roster: retail, silently. Placeholders alone never
+	//    bind, so the roster has nothing to give either.
+	if (s_charRosterFiles == 0)
+	{
+		return;
+	}
+
+	// 3. No custom pick: retail, silently.
+	if ((pick < 0) || (pick >= s_charRosterCount))
+	{
+		return;
+	}
+
+	// 4. Demo: every seat is a bot of the attract mode or --autoload-demo.
 	if (gGT->boolDemoMode != 0)
 	{
 		Platform_Log("[CTR Char] not bound: demo\n");
 		return;
 	}
 
-	// 4. The mode.
+	// 5. The mode. The driver select and the main menu keep the pick at -1
+	//    outside the modes it may be made in, so a pick here is a gap in that
+	//    rule: loud, and the pick is dropped.
 	modeWhy = NativeChar_ModeRefusal(gGT);
 	if (modeWhy != NULL)
 	{
-		Platform_Log("[CTR Char] not bound: mode %s (gameMode1 0x%08x, %d player(s))\n", modeWhy, (unsigned)gGT->gameMode1, (int)gGT->numPlyrCurrGame);
+		Platform_LogWarn("[CTR Char] not bound: mode %s (gameMode1 0x%08x, %d player(s)) - custom pick in a forbidden mode, must not happen - pick dropped\n",
+		                 modeWhy, (unsigned)gGT->gameMode1, (int)gGT->numPlyrCurrGame);
+		s_charPick = -1;
 		return;
 	}
 
-	// 5. The pick names a file, and the seat runs on its template. Both, because
+	// 6. The pick names a file, and the seat runs on its template. Both, because
 	//    the pick can outlive the choice it came from (CHANGE LEVEL, the next
 	//    race of a cup), and characterIDs[0] is what the engine drives: the
 	//    driver select writes the template there, --driver does on a direct start.
-	if ((pick < 0) || (pick >= s_charRosterCount))
-	{
-		Platform_Log("[CTR Char] seat 0 empty: no custom pick\n");
-		return;
-	}
-
-	// A file is in the roster only with its model, so no model means a
-	// placeholder - which the driver select does not let anyone choose.
+	//    A file is in the roster only with its model, so no model means a
+	//    placeholder - which the driver select does not let anyone choose.
 	model = NativeChar_EntryModel(pick);
 	if (model == NULL)
 	{
@@ -721,7 +1073,7 @@ void NativeChar_ArmSeats(void)
 		return;
 	}
 
-	// 6. The frame counts of the donor: the game logic counts frames from the
+	// 7. The frame counts of the donor: the game logic counts frames from the
 	//    model it draws, and the penalties hang on two of them.
 	donor = NativeChar_DonorModel(templateId);
 	for (a = 0; a < RLDCHAR_ANIM_COUNT; a++)
@@ -736,10 +1088,11 @@ void NativeChar_ArmSeats(void)
 		}
 	}
 
-	// 7. Bound.
+	// 8. Bound.
 	s_seat[0].model = model;
+	s_seat[0].entry = pick;
 	s_seat[0].motorId = templateId;
-	Platform_Log("[CTR Char] seat 0 = %s on template %d\n", s_charFile, templateId);
+	Platform_Log("[CTR Char] seat 0 = %s on template %d\n", s_charFiles[pick].file, templateId);
 }
 
 struct Model *NativeChar_SeatModel(int index)
@@ -756,6 +1109,78 @@ struct Model *NativeChar_SeatModel(int index)
 	}
 
 	return s_seat[index].model;
+}
+
+// ---------------------------------------------------------------------------
+// THE SEAT VALUES. Every function gives the retail value for a seat that is
+// not bound or whose guard fails (NativeChar_SeatModel NULL).
+// ---------------------------------------------------------------------------
+
+int NativeChar_SeatEngineClass(int seat, int retailClass)
+{
+	// The class decides the physics (data.metaPhys) and the engine sound
+	// channel alike; every reader asks here, so the two never disagree.
+	if (NativeChar_SeatModel(seat) == NULL)
+	{
+		return retailClass;
+	}
+
+	return (int)s_charFiles[s_seat[seat].entry].info.classId;
+}
+
+int NativeChar_SeatSilent(int seat)
+{
+	// Voices are not packed yet: a bound custom seat says nothing rather than
+	// speak with the template's voice.
+	return NativeChar_SeatModel(seat) != NULL;
+}
+
+void NativeChar_NoteDriveValues(const struct Driver *d, int seat)
+{
+	int classId;
+	int templateId;
+
+	if ((d == NULL) || (NativeChar_SeatModel(seat) == NULL))
+	{
+		return;
+	}
+
+	templateId = s_seat[seat].motorId;
+	classId = NativeChar_SeatEngineClass(seat, data.MetaDataCharacters[templateId].engineID);
+
+	// The values VehBirth_SetConsts has just written from data.metaPhys, and
+	// the engine sound index of VehBirth_EngineAudio_AllPlayers (class * 4 +
+	// driverID).
+	Platform_Log("[CTR Char] drive values seat %d: class %d (template %d is class %d), speed %d accelSpeed %d accel %d turn %d turnDecrease %d "
+	             "inputDelay %d preTurbo %d driftBase %d weight %d, engine audio %d\n",
+	             seat, classId, templateId, data.MetaDataCharacters[templateId].engineID, (int)d->const_Speed_ClassStat, (int)d->const_AccelSpeed_ClassStat,
+	             (int)d->const_Accel_ClassStat, (int)d->const_TurnRate, (int)d->const_TurnDecreaseRate, (int)d->const_TurnInputDelay, (int)d->const_PreTurbo,
+	             (int)d->const_DriftTurnBase, (int)d->const_CollisionWeight, (classId * 4) + (int)d->driverID);
+}
+
+int NativeChar_Active(void)
+{
+	int seat;
+
+	// A seat counts while it is armed, guard or not: the question is whether
+	// host pointers are in play.
+	for (seat = 0; seat < NATIVE_CHAR_SEATS; seat++)
+	{
+		if (s_seat[seat].model != NULL)
+		{
+			return 1;
+		}
+	}
+
+	// The pick counts too: a restore puts characterIDs[0] back, not the pick,
+	// and on the same template the pick would then bind to a restored retail
+	// state.
+	if (s_charPick >= 0)
+	{
+		return 1;
+	}
+
+	return MM_NativeCharGrid_PreviewCustom();
 }
 
 void NativeChar_NoteDroppedInstance(const struct Instance *inst)

@@ -1,5 +1,10 @@
 #include <common.h>
 
+// From platform/native_chars.c, further down in the translation unit: the engine
+// class of a seat - the class of a bound custom character, else retailClass
+// unchanged.
+int NativeChar_SeatEngineClass(int seat, int retailClass);
+
 enum
 {
 	VEH_STUCK_MASK_BSP_PROBE_HEIGHT = 0x100,
@@ -1801,7 +1806,9 @@ void VehStuckProc_Warp_Init(struct Thread *th, struct Driver *d)
 
 	u8 playerID = d->driverID;
 
-	int engine = data.MetaDataCharacters[data.characterIDs[playerID]].engineID;
+	// The same class as at birth (VehBirth_EngineAudio_AllPlayers), so the
+	// engine sound stopped here is the one that was started.
+	int engine = NativeChar_SeatEngineClass(playerID, data.MetaDataCharacters[data.characterIDs[playerID]].engineID);
 
 	EngineAudio_Stop((engine * VEH_WARP_ENGINE_AUDIO_STRIDE) + playerID);
 
