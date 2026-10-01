@@ -40,6 +40,10 @@ void Platform_Log(const char *format, ...);
 int Platform_GetVBlankCount(void);
 #endif
 
+// From platform/native_chars.c, further down in the translation unit: the steer
+// frame of seat 0 beside every rank report (only with a loaded --char file).
+void NativeChar_NoteVBlank(int vblank);
+
 
 void PlayLevel_UpdateLapStats(void)
 {
@@ -531,6 +535,8 @@ void PlayLevel_UpdateLapStats(void)
 					             (unsigned)d->botData.botFlags, (int)d->checkpoint.currentIndex);
 				}
 			}
+
+			NativeChar_NoteVBlank(vblank);
 		}
 	}
 #endif

@@ -1,5 +1,11 @@
 #include <common.h>
 
+// From platform/native_chars.c, further down in the translation unit: the funnel
+// that binds a custom character to seat 0 (stage 5), and the empty seats once the
+// level's memory is given back (stage 0).
+void NativeChar_ArmSeats(void);
+void NativeChar_ClearSeats(void);
+
 #ifdef CTR_NATIVE
 // See game/LOAD/LOAD_File.c: declaration instead of a platform header, because this
 // file is part of the game's unity build.
@@ -290,6 +296,9 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 
 			// erase all memory loaded after first boot
 			MEMPACK_PopToState(sdata->bookmarkID);
+
+			// The driver pack a seat was checked against is gone with it.
+			NativeChar_ClearSeats();
 		}
 
 		gGT->level1 = 0;
@@ -523,6 +532,12 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 		}
 
 		LOAD_GlobalModelPtrs_MPK();
+
+		// Custom character funnel: mode, characterIDs and the donor list
+		// (PLYROBJECTLIST) are final here, and the drivers are born only after
+		// the load.
+		NativeChar_ArmSeats();
+
 		DecalGlobal_Clear(gGT);
 
 		gGT->mpkIcons = 0;

@@ -1,5 +1,10 @@
 #include <common.h>
 
+// From platform/native_chars.c, further down in the translation unit: the model
+// of a custom character the load funnel bound to this seat, NULL for every seat
+// that keeps its retail model.
+struct Model *NativeChar_SeatModel(int index);
+
 enum
 {
 	VEH_BIRTH_ADV_RETURN_LEVEL_COUNT = 0x14,
@@ -664,7 +669,14 @@ void VehBirth_NonGhost(struct Thread *t, int index)
 		id = data.characterIDs[index];
 	}
 
-	struct Model *m = VehBirth_GetModelByName(data.MetaDataCharacters[id].name_Debug);
+	// A bound custom character first (only seat 0 of a one-player arcade race,
+	// --char); NULL leaves the retail lookup below exactly as it was.
+	struct Model *m = NativeChar_SeatModel(index);
+
+	if (m == NULL)
+	{
+		m = VehBirth_GetModelByName(data.MetaDataCharacters[id].name_Debug);
+	}
 
 	struct Instance *inst = INSTANCE_Birth3D(m, m->name, t);
 

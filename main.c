@@ -77,6 +77,7 @@
 #include "platform/native_str.c"
 #include "platform/native_preview.c"
 #include "platform/native_testfiles.c"
+#include "platform/native_chars.c"
 
 #ifndef CC
 #if defined(__GNUC__)
@@ -303,6 +304,8 @@ static const NativeSwitch s_devSwitches[] = {
     {"--tracks", "", "no effect, only accepted for old measuring command lines"},
     {"--no-tracks", "", "do not open tracks/"},
     {"--tracks-dir", "<folder>", "containers from this folder instead of tracks/ (reference runs)"},
+    {"--chars-dir", "<folder>", "folder of the character file for --char; only remembered, never scanned"},
+    {"--char", "<file>", "custom character from this .rldchar (in --chars-dir, or an absolute path) as the model of seat 0 in a one-player arcade race on its template (--driver)"},
     {"--ui-safe-area-off", "", "UI safe area off"},
     {"--ui-declarations-off", "", "UI declarations off"},
     {"--ui-floor-off", "", "UI floor off"},
@@ -2157,6 +2160,24 @@ int main(int argc, char *argv[])
 
 			NativeSubpixel_Arm(everyFrames);
 		}
+
+		// The custom character (platform/native_chars.c). Only remembered up
+		// here: a --char that names no folder has to end the start before the
+		// first window (the setup screen below is one); the file itself is read
+		// just before CTR_Main.
+		if ((strcmp(argv[argIndex], "--chars-dir") == 0) && ((argIndex + 1) < argc))
+		{
+			NativeChar_SetFolder(argv[++argIndex]);
+		}
+		else if ((strcmp(argv[argIndex], "--char") == 0) && ((argIndex + 1) < argc))
+		{
+			NativeChar_SetFile(argv[++argIndex]);
+		}
+	}
+
+	if (!NativeChar_ArgsUsable())
+	{
+		return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
 	}
 
 	printf("[CTR Native] Starting...\n");
@@ -3391,6 +3412,12 @@ int main(int argc, char *argv[])
 	(void)argc;
 	(void)argv;
 #endif
+
+	// --char: the character file is read, checked and relocated here, in host
+	// memory and after every other start step - the MEMPACK split above stays
+	// as it is. Without --char no file is touched; with --dev the exit line of
+	// the instance counter is registered either way.
+	NativeChar_LoadDev();
 
 	const int result = CTR_Main();
 

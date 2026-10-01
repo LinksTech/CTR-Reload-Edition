@@ -1599,7 +1599,11 @@ void Platform_Init(const char *title, int width, int height, int fullscreen)
 // the window closer, QUIT in the menu and --dump-exit all end in
 // Platform_Shutdown, through atexit or directly, and s_platformInitialized makes sure
 // that it happens once.
-#define PLATFORM_EXIT_REPORT_MAX 16
+//
+// 32 places, 16 before: a menu run over container tracks with anti-aliasing
+// already filled all 16, and the next report would have been lost. Function
+// pointers only - nothing else depends on the size.
+#define PLATFORM_EXIT_REPORT_MAX 32
 
 global_variable void (*s_exitReports[PLATFORM_EXIT_REPORT_MAX])(void);
 global_variable int s_exitReportCount = 0;
@@ -1886,8 +1890,11 @@ void Platform_DumpStateAt(int saveAt, int loadAt)
 	}
 }
 
+void NativeChar_NoteVBlank(int vblank); // platform/native_chars.c, later in the same build
+
 // The shot, at the VBlank it was asked for. Its own small function so that it
-// sits beside the dump rather than inside the frame.
+// sits beside the dump rather than inside the frame. With --char the steer
+// frame of seat 0 at the same moment goes beside it (platform/native_chars.c).
 internal void Platform_ShotIfDue(void)
 {
 	if ((g_cfg_shotAt <= 0) || (Platform_GetVBlankCount() < g_cfg_shotAt))
@@ -1913,6 +1920,7 @@ internal void Platform_ShotIfDue(void)
 		// to a log line from the parser (that line carries the state when the frame
 		// was built).
 		Platform_Log("[CTR Shot] vblank %d: %s (asked for %d)\n", Platform_GetVBlankCount(), path, g_cfg_shotAt);
+		NativeChar_NoteVBlank(Platform_GetVBlankCount());
 
 		s_shotNext++;
 		g_cfg_shotAt = (s_shotNext < g_cfg_shotCount) ? g_cfg_shotList[s_shotNext] : 0;
@@ -1921,6 +1929,7 @@ internal void Platform_ShotIfDue(void)
 
 	g_cfg_shotAt = 0;
 	Platform_TakeScreenshot((g_cfg_shotName[0] != '\0') ? g_cfg_shotName : NULL);
+	NativeChar_NoteVBlank(Platform_GetVBlankCount());
 }
 
 // --msaa-at V:L,... (main.c): at VBlank V, ask for anti-aliasing level L as a

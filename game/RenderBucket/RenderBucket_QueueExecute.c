@@ -13,6 +13,12 @@
 // every other track the call returns at once.
 void NativeTrackMod_NoteDrawExit(struct Instance *inst, int reason, u32 detail);
 
+// From platform/native_chars.c, also further down. The five draw handlers below
+// stop an instance without a word when a primitive writer finds the draw memory
+// full (every writer returns -1 only for that): the rest of the model is missing
+// from that frame. This counts each such stop, in total and for the driver of
+// seat 0. Only a counter - no picture changes.
+void NativeChar_NoteDroppedInstance(const struct Instance *inst);
 
 struct RenderBucketEntry
 {
@@ -4692,6 +4698,7 @@ void RenderBucket_DrawFunc_Normal(struct RenderBucketDrawContext *ctx)
 			if (RenderBucket_DispatchDrawInstPrim(ctx, drawCommand, tex, depthMac0) < 0)
 			{
 				NativeTrackMod_NoteDrawExit(ctx->inst, 11, drawCommand);
+				NativeChar_NoteDroppedInstance(ctx->inst);
 				return;
 			}
 		}
@@ -4969,6 +4976,7 @@ static void RenderBucket_DrawFunc_Special(struct RenderBucketDrawContext *ctx)
 
 			if (RenderBucket_DrawSpecialPrimitive(ctx, drawCommand, useRtps, reuseFirstVertex, tex) < 0)
 			{
+				NativeChar_NoteDroppedInstance(ctx->inst);
 				return;
 			}
 		}
@@ -5070,6 +5078,7 @@ static void RenderBucket_DrawFunc_Reflection(struct RenderBucketDrawContext *ctx
 
 			if (RenderBucket_DrawReflectionPrimitive(ctx, drawCommand, useRtps, reuseFirstVertex, tex) < 0)
 			{
+				NativeChar_NoteDroppedInstance(ctx->inst);
 				return;
 			}
 		}
@@ -5180,6 +5189,7 @@ static void RenderBucket_DrawFunc_Split(struct RenderBucketDrawContext *ctx)
 
 			if (RenderBucket_DrawWaterSplitClipped(ctx, drawCommand, tex, depthMac0) < 0)
 			{
+				NativeChar_NoteDroppedInstance(ctx->inst);
 				return;
 			}
 		}
@@ -5291,6 +5301,7 @@ static void RenderBucket_DrawFunc_NormalAlt(struct RenderBucketDrawContext *ctx)
 
 			if (RenderBucket_DrawSplitClipped(ctx, drawCommand, tex, depthMac0) < 0)
 			{
+				NativeChar_NoteDroppedInstance(ctx->inst);
 				return;
 			}
 		}
