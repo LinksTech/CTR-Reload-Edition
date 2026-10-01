@@ -111,7 +111,8 @@ Enable the hooks once per clone:
 - `pre-push` checks every commit the push would send and refuses the push if
   one of them contains, among other things, anything `content-guard` refuses,
   a file in a forbidden folder (such as `assets` or `tracks`) or any file
-  larger than 5 MB. Like the other hooks, it needs Python 3.
+  larger than 5 MB. Like the other hooks, it needs Python 3; it also needs
+  `sha256sum` or `shasum`. Any error in its check refuses the push.
 
 ## License
 

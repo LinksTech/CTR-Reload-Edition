@@ -150,4 +150,8 @@ Enable the hooks once per clone:
   and known game files by SHA-256. It refuses a tag that does not point at a
   commit (a tag on a tree or a blob). It recognizes game data and content by
   other people only by file type, name, folder, size and these hashes, not by
-  what a file contains. It needs Python 3, like the other hooks.
+  what a file contains. It needs Python 3, like the other hooks, and
+  `sha256sum` or `shasum`. It fails closed: an error in any step (git,
+  Python, a missing tool) refuses the push. `sh tools/git-hooks/pre-push
+  --self-test` checks its steps on their own, with real and failing git
+  objects and tools; the check `content-guard` runs it too.

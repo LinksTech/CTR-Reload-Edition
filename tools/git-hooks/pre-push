@@ -3,7 +3,11 @@
 #
 # Refuses a push that would publish game data, content made by other people
 # or anything else that must never leave the machine. Once something is public
-# it cannot be taken back, so this hook fails closed.
+# it cannot be taken back, so this hook fails closed: every step is checked on
+# its own, and any error (git, Python, awk, a missing tool, a temporary file
+# that cannot be written) refuses the push. No step runs in a pipe: in a pipe
+# the error of one command is lost and an empty result looks like "nothing
+# found".
 #
 # Install (once per clone):
 #   git config core.hooksPath tools/git-hooks
@@ -24,8 +28,29 @@
 # A pushed ref must end at a commit, also through annotated tags: a tag on a
 # tree or a blob has no commit to check, so it is refused.
 # Like the other hooks it needs Python 3; without it every push is refused.
+# The hash step needs sha256sum or shasum; without them every push with a
+# file of the size of a known game file is refused.
+#
+# Self-test (no remote, no push; it builds its own repository in a
+# temporary folder):
+#   sh tools/git-hooks/pre-push --self-test
+# It runs every step of the check on its own, with real and with failing
+# git objects and tools, and ends with exit code 0 only if every case
+# gives the expected result.
 
-remote="$1"
+# The temporary folder. Set before anything else: a variable of the same name
+# from the environment must never reach "rm -rf".
+work=
+hasher=
+
+# Where sh is bash (Git for Windows), it takes over functions exported from
+# the environment ("export -f git"), and a function goes before the command
+# of the same name. No such function may stand in for a tool this hook relies
+# on. The self-test defines its stand-ins later, in its own cases.
+unset -f git awk tr wc sort grep cat rm mkdir mktemp sha256sum shasum \
+	python python3 echo printf read test '[' command ||
+	{ echo "pre-push: PUSH REFUSED - cannot remove functions from the environment" >&2; exit 1; }
+
 zero=0000000000000000000000000000000000000000
 limit=5242880
 
@@ -33,23 +58,16 @@ limit=5242880
 GIT_NO_REPLACE_OBJECTS=1
 export GIT_NO_REPLACE_OBJECTS
 
-root=$(git rev-parse --show-toplevel) || exit 1
-py=python
-command -v "$py" >/dev/null 2>&1 || py=python3
-guard="$root/tools/content_guard.py"
-
 # size sha256 name - known game files that must never be pushed
 known="605698800 f780bf2331476aabfc00772fa758b12dd95ebfbc907968132cbd3cdd4e2c07c0 disc-image(ctr-u.bin)
 270360576 98779a7990f395fe3620481a1b5478149c88ff17fffa64905369f3e46368fce7 BIGFILE.BIG
 12248724 d63447845881c65bc081672a01762f7cd9461dd5992b12acdb79e402be5948c2 KART.HWL"
-sizes=$(echo "$known" | cut -d' ' -f1 | tr '\n' ' ')
 
-tmp=$(mktemp 2>/dev/null || echo "${TMPDIR:-/tmp}/ctr-pre-push.$$")
-: > "$tmp.found"
-
-# Removes the temporary files.
+# Removes the temporary folder.
 cleanup() {
-	rm -f "$tmp" "$tmp.list" "$tmp.trees" "$tmp.lines" "$tmp.files" "$tmp.guard" "$tmp.found"
+	if [ -n "$work" ]; then
+		rm -rf "$work"
+	fi
 }
 # Stops the hook when a step fails: the push is refused, nothing is sent.
 refuse() {
@@ -58,49 +76,161 @@ refuse() {
 	exit 1
 }
 
-while read local_ref local_sha remote_ref remote_sha; do
-	[ "$local_sha" = "$zero" ] && continue
-	# Only a commit, or a tag that ends at a commit, may be pushed: for a tag
-	# on a tree or a blob git rev-list lists no commit, so nothing below would
-	# be checked, and the check on GitHub cannot check it out either. ^{}
-	# peels every annotated tag on the way; a git error refuses the push.
-	kind=$(git cat-file -t "$local_sha^{}") ||
-		refuse "git cannot read the object $local_sha of $local_ref"
-	[ "$kind" = commit ] ||
-		refuse "$local_ref points at a $kind, not at a commit: only commits and their tags can be pushed"
-	# The commits this push sends. A ref that is new on the remote gets its
-	# whole history checked: the remote-tracking refs may be stale (a remote
-	# that was deleted and created again still has them locally), and fail
-	# closed means not trusting them.
-	if [ "$remote_sha" != "$zero" ] && git cat-file -e "$remote_sha" 2>/dev/null; then
-		git rev-list "$local_sha" "^$remote_sha" > "$tmp.list" || refuse "git rev-list failed"
+# Creates the temporary folder. mktemp -d makes a new folder that only this
+# user can write to. There is no fallback to a fixed name: a file of that name
+# could already be there, made by someone else, so without mktemp the push is
+# refused.
+make_work() {
+	work=
+	w=$(mktemp -d 2>/dev/null) || refuse "cannot create a temporary folder (mktemp -d failed)"
+	[ -n "$w" ] && [ -d "$w" ] || refuse "cannot create a temporary folder (mktemp -d gave no folder)"
+	work=$w
+	: > "$work/found" || refuse "cannot write in the temporary folder $work"
+}
+
+# Reads the table of known game files into sizes (the sizes, separated by
+# spaces). A line that is not "size sha256 name" refuses the push: a broken
+# table would let a game file through without a word.
+read_known() {
+	sizes=
+	k_count=0
+	while read -r k_size k_hash k_name k_rest; do
+		# An empty line carries no entry (an empty table is one).
+		[ -z "$k_size$k_hash$k_name$k_rest" ] && continue
+		case $k_size in
+		'' | *[!0-9]*) refuse "the table of known game files is broken (size '$k_size')" ;;
+		esac
+		case $k_hash in
+		*[!0-9a-f]*) refuse "the table of known game files is broken (hash of $k_name)" ;;
+		esac
+		[ "${#k_hash}" = 64 ] && [ -n "$k_name" ] && [ -z "$k_rest" ] ||
+			refuse "the table of known game files is broken (line of $k_name)"
+		sizes="$sizes $k_size"
+		k_count=$((k_count + 1))
+	done <<EOF
+$known
+EOF
+	# An empty table checks nothing: also a here-document the shell could not
+	# create ends up here.
+	[ "$k_count" -gt 0 ] || refuse "the table of known game files is empty"
+}
+
+# Sets num to the number that "wc $1" prints for file $2 (BSD wc puts blanks
+# before it). Anything that is not a number refuses the push.
+wc_num() {
+	num=$(wc "$1" < "$2") || refuse "cannot measure $2"
+	num=${num#"${num%%[!	 ]*}"}
+	case $num in
+	'' | *[!0-9]*) refuse "cannot measure $2 (wc printed '$num')" ;;
+	esac
+}
+
+# Sets hasher to the command that prints a SHA-256. None of them refuses the
+# push: without a hash a known game file of the right size would pass.
+find_hasher() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		hasher=sha256sum
+	elif command -v shasum >/dev/null 2>&1; then
+		hasher=shasum
 	else
-		git rev-list "$local_sha" > "$tmp.list" || refuse "git rev-list failed"
+		refuse "neither sha256sum nor shasum is installed, so the SHA-256 of a file cannot be checked"
 	fi
-	# Every path in every one of those commits, not only new objects: a
-	# forbidden path must be caught even if its content already exists
-	# elsewhere (same blob under an allowed name, or already on the remote).
-	# One commit after the other into a file, without a pipe: if git cannot
-	# list a commit, the push is refused instead of checking a shorter list.
-	: > "$tmp.trees"
-	while read commit; do
-		git ls-tree -r -l -z --full-tree "$commit" >> "$tmp.trees" ||
-			refuse "git cannot list the files of commit $commit"
-	done < "$tmp.list" || refuse "git cannot list the files of a commit"
-	awk -v RS='\0' '{ t = index($0, "\t"); split(substr($0, 1, t - 1), f, " "); print f[2] " " f[3] " " f[4] " " substr($0, t + 1) }' \
-		"$tmp.trees" > "$tmp.lines" || refuse "cannot read the list of files"
-	LC_ALL=C sort -u "$tmp.lines" > "$tmp.files" || refuse "cannot sort the list of files"
-	# The rules of tools/content_guard.py on the same files: file types (with
-	# the exact SDL exceptions) and binary files larger than 1 MB. Exit code
-	# 1 counts only with findings: a crash must not pass for a clean result.
-	"$py" "$guard" --stdin < "$tmp.files" > "$tmp.guard"
+}
+
+# Prints the SHA-256 of file $1 as the first word of standard output. -b reads
+# the file as bytes on every system.
+sha256_file() {
+	if [ "$hasher" = shasum ]; then
+		shasum -a 256 -b < "$1"
+	else
+		sha256sum -b < "$1"
+	fi
+}
+
+# Sets blob_hash to the SHA-256 of blob $1, which must be $2 bytes long ($3 is
+# its path, for the messages). The blob goes into a file first, not into a
+# pipe: in "git cat-file | sha256sum" a git error only shows as the hash of
+# empty input, which matches no game file and so passed as clean. Every step
+# is checked; a git error, a wrong size or a missing or empty hash refuses the
+# push.
+hash_blob() {
+	blob_hash=
+	[ -n "$hasher" ] || find_hasher
+	rm -f "$work/blob" "$work/hash" || refuse "cannot clear the temporary folder $work"
+	git cat-file blob "$1" > "$work/blob" < /dev/null ||
+		refuse "git cannot read the blob $1 ($3), so its SHA-256 cannot be checked"
+	wc_num -c "$work/blob"
+	[ "$num" = "$2" ] ||
+		refuse "the blob $1 ($3) has $num bytes instead of $2, so its SHA-256 cannot be checked"
+	sha256_file "$work/blob" > "$work/hash" ||
+		refuse "cannot compute the SHA-256 of $3 ($hasher failed)"
+	read -r blob_hash h_rest < "$work/hash"
+	case $blob_hash in
+	'' | *[!0-9a-f]*) refuse "cannot compute the SHA-256 of $3 ($hasher printed '$blob_hash')" ;;
+	esac
+	[ "${#blob_hash}" = 64 ] ||
+		refuse "cannot compute the SHA-256 of $3 ($hasher printed '$blob_hash')"
+}
+
+# Turns the NUL separated "git ls-tree -r -l -z" output in $work/trees into
+# lines "type id size path" in $work/files. Outside the paths that output has
+# no line break, so any line break belongs to a path: it refuses the push, as
+# on the line after it the rest of the path would no longer be checked. With
+# that ruled out, tr turns every NUL into a line break, and awk reads plain
+# lines (not every awk can split records at NUL). A record that does not look
+# like an ls-tree entry refuses the push, and the number of lines read must
+# equal the number of NUL bytes, so that no entry is skipped unchecked.
+parse_trees() {
+	tr -cd '\n' < "$work/trees" > "$work/breaks" || refuse "cannot read the list of files"
+	wc_num -c "$work/breaks"
+	[ "$num" = 0 ] ||
+		refuse "a path in the list of files has a line break, so the rest of it cannot be checked"
+	tr -cd '\000' < "$work/trees" > "$work/nul" || refuse "cannot count the entries of the list of files"
+	wc_num -c "$work/nul"
+	entries=$num
+	tr '\000' '\n' < "$work/trees" > "$work/records" || refuse "cannot read the list of files"
+	awk '
+	{
+		t = index($0, "\t")
+		if (t == 0) { bad = "an entry without a path"; exit }
+		n = split(substr($0, 1, t - 1), f, " ")
+		path = substr($0, t + 1)
+		if (n != 4 || path == "" || f[3] !~ /^[0-9a-f]+$/ || (f[2] != "blob" && f[2] != "commit" && f[2] != "tree")) {
+			bad = "an entry it cannot read (" path ")"; exit
+		}
+		# ls-tree prints BAD as the size of a blob that is not in this clone.
+		if (f[2] == "blob" && f[4] !~ /^[0-9]+$/) { bad = "a file whose content is missing from this clone (" path ")"; exit }
+		print f[2] " " f[3] " " f[4] " " path
+	}
+	END {
+		if (bad != "") { print "pre-push: the list of files has " bad > "/dev/stderr"; exit 2 }
+	}' "$work/records" > "$work/lines" || refuse "cannot read the list of files"
+	wc_num -l "$work/lines"
+	[ "$num" = "$entries" ] ||
+		refuse "the list of files has $entries entries, but only $num were read"
+	LC_ALL=C sort -u "$work/lines" > "$work/files" || refuse "cannot sort the list of files"
+}
+
+# The rules of tools/content_guard.py on the files in $work/files: file types
+# (with the exact SDL exceptions) and binary files larger than 1 MB. Exit code
+# 1 counts only with findings and exit code 0 only without: a crash must not
+# pass for a clean result.
+run_guard() {
+	"$py" "$guard" --stdin < "$work/files" > "$work/guard"
 	rc=$?
-	if [ "$rc" = 1 ] && [ -s "$tmp.guard" ]; then
-		awk '{ sub(/\r$/, ""); print "BAD\t" $0 }' "$tmp.guard" >> "$tmp.found" ||
+	if [ "$rc" = 1 ] && [ -s "$work/guard" ]; then
+		awk '{ sub(/\r$/, ""); print "BAD\t" $0 }' "$work/guard" >> "$work/found" ||
 			refuse "cannot read the findings of tools/content_guard.py"
-	elif [ "$rc" != 0 ]; then
+	elif [ "$rc" != 0 ] || [ -s "$work/guard" ]; then
 		refuse "tools/content_guard.py could not check the files (is Python 3 installed?)"
 	fi
+}
+
+# The rules of this hook on the files in $work/files. Findings go to
+# $work/found as "BAD<TAB>path<TAB>reason"; a file whose size matches a known
+# game file as "HASH<TAB>id<TAB>size<TAB>path" (the path last, so a tab in it
+# cannot shift the id).
+check_rules() {
 	awk -v limit="$limit" -v sizes="$sizes" '
 	BEGIN { n = split(sizes, s, " "); for (i = 1; i <= n; i++) known[s[i]] = 1 }
 	$1 == "blob" {
@@ -125,24 +255,500 @@ while read local_ref local_sha remote_ref remote_sha; do
 			if (base ~ /\.(mp4|avi)$/) print "BAD\t" path "\tvideo outside externals/SDL"
 		}
 		if (size > limit) print "BAD\t" path "\tlarger than 5 MB (" size " bytes)"
-		if ((size "") in known) print "HASH\t" path "\t" sha
-	}' "$tmp.files" >> "$tmp.found" || refuse "cannot check the list of files"
-done
+		if ((size "") in known) print "HASH\t" sha "\t" size "\t" path
+	}' "$work/files" >> "$work/found" || refuse "cannot check the list of files"
+}
 
-# Hash only the blobs whose size matches a known game file.
-grep '^HASH' "$tmp.found" | while IFS='	' read tag path sha; do
-	h=$(git cat-file blob "$sha" | sha256sum | cut -d' ' -f1)
-	name=$(echo "$known" | awk -v h="$h" '$2 == h { print $3 }')
-	[ -n "$name" ] && printf 'BAD\t%s\tSHA-256 matches %s\n' "$path" "$name"
-done >> "$tmp.found"
+# Checks one line from git: "local_ref local_sha remote_ref remote_sha".
+check_ref() {
+	# git writes four fields with full object ids. Anything else (an empty
+	# line, an extra field, a short id) is not what git sends, so it is refused
+	# instead of guessed.
+	[ -n "$local_ref" ] && [ -n "$remote_ref" ] ||
+		refuse "cannot read the line from git: '$local_ref $local_sha $remote_ref $remote_sha'"
+	for id in "$local_sha" "$remote_sha"; do
+		case $id in
+		*[!0-9a-f]*) refuse "cannot read the line from git: '$local_ref $local_sha $remote_ref $remote_sha'" ;;
+		esac
+		case ${#id} in
+		40 | 64) ;;
+		*) refuse "cannot read the line from git: '$local_ref $local_sha $remote_ref $remote_sha'" ;;
+		esac
+	done
+	# A ref that is deleted sends nothing.
+	[ "$local_sha" = "$zero" ] && return 0
+	# Only a commit, or a tag that ends at a commit, may be pushed: for a tag
+	# on a tree or a blob git rev-list lists no commit, so nothing below would
+	# be checked, and the check on GitHub cannot check it out either. ^{}
+	# peels every annotated tag on the way; a git error refuses the push.
+	kind=$(git cat-file -t "$local_sha^{}") ||
+		refuse "git cannot read the object $local_sha of $local_ref"
+	[ "$kind" = commit ] ||
+		refuse "$local_ref points at a $kind, not at a commit: only commits and their tags can be pushed"
+	# The commits this push sends. A ref that is new on the remote gets its
+	# whole history checked: the remote-tracking refs may be stale (a remote
+	# that was deleted and created again still has them locally), and fail
+	# closed means not trusting them.
+	if [ "$remote_sha" != "$zero" ] && git cat-file -e "$remote_sha" 2>/dev/null; then
+		git rev-list "$local_sha" "^$remote_sha" > "$work/list" || refuse "git rev-list failed"
+	else
+		git rev-list "$local_sha" > "$work/list" || refuse "git rev-list failed"
+	fi
+	# Every path in every one of those commits, not only new objects: a
+	# forbidden path must be caught even if its content already exists
+	# elsewhere (same blob under an allowed name, or already on the remote).
+	# One commit after the other into a file, without a pipe: if git cannot
+	# list a commit, the push is refused instead of checking a shorter list.
+	: > "$work/trees" || refuse "cannot write in the temporary folder $work"
+	while read -r commit; do
+		git ls-tree -r -l -z --full-tree "$commit" >> "$work/trees" < /dev/null ||
+			refuse "git cannot list the files of commit $commit"
+	done < "$work/list" || refuse "git cannot list the files of a commit"
+	parse_trees
+	run_guard
+	check_rules
+}
 
-if grep -q '^BAD' "$tmp.found"; then
+# Checks every line that git writes to standard input. "|| [ -n ... ]" also
+# checks a last line without a line break, which read reports as the end.
+# No line at all is what git writes when it sends nothing (every ref is up to
+# date or rejected); the hook says so instead of reporting a passed check.
+check_refs() {
+	refs=0
+	while read -r local_ref local_sha remote_ref remote_sha || [ -n "$local_ref" ]; do
+		check_ref
+		refs=$((refs + 1))
+		local_ref=
+	done
+	[ "$refs" -gt 0 ] || echo "pre-push: git lists no ref to send, nothing to check" >&2
+}
+
+# Hashes only the blobs whose size matches a known game file. The candidates
+# come from a file, not from a pipe: refuse then stops the hook itself, not
+# only the subshell at the end of a pipe, and an error in the loop cannot get
+# lost.
+check_hashes() {
+	grep '^HASH' "$work/found" > "$work/hashes"
+	rc=$?
+	[ "$rc" = 0 ] || [ "$rc" = 1 ] || refuse "cannot read the list of files to hash"
+	while IFS='	' read -r tag sha size path; do
+		hash_blob "$sha" "$size" "$path"
+		match=
+		seen=0
+		while read -r k_size k_hash k_name k_rest; do
+			[ -z "$k_hash" ] && continue
+			seen=$((seen + 1))
+			[ "$k_hash" = "$blob_hash" ] && match=$k_name
+		done <<EOF
+$known
+EOF
+		# Compared with fewer entries than read_known counted (a here-document
+		# the shell could not create), no match would look clean.
+		[ "$seen" = "$k_count" ] || refuse "cannot compare $path with the table of known game files"
+		if [ -n "$match" ]; then
+			printf 'BAD\t%s\tSHA-256 matches %s\n' "$path" "$match" >> "$work/found" ||
+				refuse "cannot write in the temporary folder $work"
+		fi
+	done < "$work/hashes" || refuse "cannot hash the files"
+}
+
+# Refuses the push if a step found something. grep tells three cases apart:
+# 0 = found, 1 = nothing found, anything else = it could not read the list,
+# which must not pass for "nothing found".
+report() {
+	grep '^BAD' "$work/found" > "$work/bad"
+	rc=$?
+	[ "$rc" = 1 ] && return 0
+	[ "$rc" = 0 ] || refuse "cannot read the findings"
 	echo "pre-push: PUSH REFUSED - forbidden content:" >&2
-	grep '^BAD' "$tmp.found" | cut -f2- | sed 's/\t/: /; s/^/  /' >&2
+	awk '{ line = $0; sub(/^BAD\t/, "", line); sub(/\t/, ": ", line); print "  " line }' "$work/bad" >&2
 	echo "pre-push: nothing was sent. Remove the files from history before pushing." >&2
 	cleanup
 	exit 1
+}
+
+# Picks the Python 3 command. A missing one shows up as a failing
+# tools/content_guard.py, which refuses the push.
+pick_python() {
+	py=python
+	command -v "$py" >/dev/null 2>&1 || py=python3
+}
+
+# --- self-test ---------------------------------------------------------------
+
+# Stops the self-test when it cannot set up its cases.
+st_die() {
+	echo "pre-push self-test: FAILED - cannot set up: $1" >&2
+	cleanup
+	exit 1
+}
+
+# Writes file $1 as a blob into the test repository; sets st_sha.
+st_blob() {
+	st_sha=$(git hash-object -w --no-filters "$1") || st_die "git hash-object $1"
+}
+
+# Makes a commit of the files given as pairs "name file"; sets st_commit.
+st_commit() {
+	: > "$base/tree" || st_die "cannot write $base/tree"
+	while [ "$#" -gt 1 ]; do
+		st_blob "$2"
+		printf '100644 blob %s\t%s\n' "$st_sha" "$1" >> "$base/tree" || st_die "cannot write $base/tree"
+		shift 2
+	done
+	st_tree=$(git mktree < "$base/tree") || st_die "git mktree"
+	st_commit=$(git commit-tree --no-gpg-sign -m "self-test" "$st_tree" < /dev/null) || st_die "git commit-tree"
+}
+
+# Runs the case function $2 in a subshell with a work folder of its own, so
+# that refuse ends only the case. $1 is the expected result: "ok" (exit code
+# 0) or "refused" (exit code 1 and "PUSH REFUSED - $3" in the messages). $4
+# describes the case; every further argument must appear in the messages too.
+run_case() {
+	[ "$#" -ge 4 ] || st_die "run_case $2 needs four arguments"
+	cases=$((cases + 1))
+	expect=$1 fn=$2 text=$3 what=$4
+	shift 4
+	dir=$base/case$cases
+	mkdir "$dir" && : > "$dir/found" || st_die "cannot create $dir"
+	(
+		work=$dir
+		"$fn"
+	) > "$base/out" 2> "$base/err" < /dev/null
+	rc=$?
+	good=
+	if [ "$expect" = ok ]; then
+		[ "$rc" = 0 ] && good=1
+	elif [ "$rc" = 1 ] && grep -q -F -e "PUSH REFUSED - $text" "$base/err"; then
+		good=1
+	fi
+	for must in "$@"; do
+		grep -q -F -e "$must" "$base/err" || good=
+	done
+	if [ -n "$good" ]; then
+		echo "  ok      $what"
+	else
+		failed=$((failed + 1))
+		echo "  FAILED  $what (exit code $rc, expected $expect)"
+		while IFS= read -r line; do
+			echo "          $line"
+		done < "$base/err"
+	fi
+}
+
+# The cases. A case that checks a value prints what it got when it differs.
+t_table() {
+	read_known
+	[ "$sizes" = " 605698800 270360576 12248724" ] && [ "$k_count" = 3 ] ||
+		{ echo "sizes '$sizes', $k_count entries" >&2; return 1; }
+}
+t_table_broken() {
+	known="12 not-a-hash name"
+	read_known
+}
+t_table_empty() {
+	known=
+	read_known
+}
+t_mktemp_fails() {
+	mktemp() { return 1; }
+	make_work
+}
+t_mktemp_no_folder() {
+	mktemp() { :; }
+	make_work
+}
+t_hash_real() {
+	hash_blob "$st_hello" 6 hello.txt
+	[ "$blob_hash" = "$hello_sha256" ] || { echo "SHA-256 '$blob_hash'" >&2; return 1; }
+}
+t_hash_unreadable() {
+	hash_blob "$st_missing" 6 missing.txt
+}
+t_hash_wrong_size() {
+	hash_blob "$st_hello" 7 hello.txt
+}
+t_hash_tool_fails() {
+	sha256_file() { return 1; }
+	hash_blob "$st_hello" 6 hello.txt
+}
+t_hash_tool_empty() {
+	sha256_file() { :; }
+	hash_blob "$st_hello" 6 hello.txt
+}
+t_hash_no_tool() {
+	hasher=
+	PATH=$base/empty
+	find_hasher
+}
+t_candidate_bad() {
+	known="6 $hello_sha256 test-game-file"
+	read_known
+	printf 'HASH\t%s\t6\tdir/hello.bin\n' "$st_hello" > "$work/found"
+	check_hashes
+	report
+}
+t_candidate_clean() {
+	known="6 $other_sha256 test-game-file"
+	read_known
+	printf 'HASH\t%s\t6\tdir/hello.bin\n' "$st_hello" > "$work/found"
+	check_hashes
+	report
+}
+t_candidate_unreadable() {
+	known="6 $hello_sha256 test-game-file"
+	read_known
+	printf 'HASH\t%s\t6\tdir/missing.bin\n' "$st_missing" > "$work/found"
+	check_hashes
+	report
+}
+t_candidate_step_fails() {
+	read_known
+	sha256_file() { return 1; }
+	printf 'HASH\t%s\t6\tdir/hello.bin\n' "$st_hello" > "$work/found"
+	check_hashes
+	report
+}
+t_report_unreadable() {
+	rm -f "$work/found"
+	report
+}
+t_parse_ok() {
+	printf '100644 blob %s       6\tdir/a b.txt\0' "$st_hello" > "$work/trees"
+	parse_trees
+	read -r line < "$work/files"
+	[ "$line" = "blob $st_hello 6 dir/a b.txt" ] || { echo "line '$line'" >&2; return 1; }
+}
+t_parse_newline() {
+	printf '100644 blob %s       6\tdir/a\nKART.HWL\0' "$st_hello" > "$work/trees"
+	parse_trees
+}
+t_parse_missing_object() {
+	printf '100644 blob %s     BAD\tdir/a.txt\0' "$st_missing" > "$work/trees"
+	parse_trees
+}
+t_parse_short_read() {
+	# An awk that reads fewer lines than there are entries (here none) must
+	# not leave the files it skips unchecked.
+	awk() { :; }
+	printf '100644 blob %s       6\ta.txt\0' "$st_hello" > "$work/trees"
+	printf '100644 blob %s       6\tb.log\0' "$st_hello" >> "$work/trees"
+	parse_trees
+}
+t_guard_crash() {
+	fake_python() { return 1; }
+	py=fake_python
+	: > "$work/files"
+	run_guard
+}
+t_guard_unexpected_output() {
+	fake_python() { echo "something"; return 0; }
+	py=fake_python
+	: > "$work/files"
+	run_guard
+}
+t_ref_malformed() {
+	printf 'refs/heads/main not-an-id refs/heads/main %s\n' "$zero" > "$work/in"
+	check_refs < "$work/in"
+}
+t_ref_blob() {
+	printf 'refs/tags/x %s refs/tags/x %s\n' "$st_hello" "$zero" > "$work/in"
+	check_refs < "$work/in"
+}
+t_ref_revlist_fails() {
+	git() { case $1 in rev-list) return 128 ;; esac; command git "$@"; }
+	printf 'refs/heads/main %s refs/heads/main %s\n' "$st_clean" "$zero" > "$work/in"
+	check_refs < "$work/in"
+}
+t_ref_lstree_fails() {
+	git() { case $1 in ls-tree) return 128 ;; esac; command git "$@"; }
+	printf 'refs/heads/main %s refs/heads/main %s\n' "$st_clean" "$zero" > "$work/in"
+	check_refs < "$work/in"
+}
+# The rules of this hook, on lines as parse_trees writes them. The blob id is
+# never read by these rules.
+t_rule() {
+	printf 'blob %s %s %s\n' "$st_hello" "$1" "$2" > "$work/files"
+	read_known
+	check_rules
+	report
+}
+t_rule_folder() { t_rule 6 "src/assets/a.txt"; }
+t_rule_folder_tracks() { t_rule 6 "Tracks/a.txt"; }
+t_rule_build() { t_rule 6 "x/build-vs/a.c"; }
+t_rule_measurement() { t_rule 6 "notes/baseline-x/a.txt"; }
+t_rule_size() { t_rule 5242881 "big.txt"; }
+t_rule_docs_assets() { t_rule 6 "docs/assets/banner.png"; }
+t_rule_video() { t_rule 6 "clip.MP4"; }
+t_rule_name() { t_rule 6 "src/Cups.TXT."; }
+t_rule_allowed() {
+	{
+		printf 'blob %s 6 docs/assets/banner.svg\n' "$st_hello"
+		printf 'blob %s 6 externals/SDL/test/clip.mp4\n' "$st_hello"
+		printf 'blob %s 5242880 exactly-5-mb.txt\n' "$st_hello"
+		printf 'blob %s 6 src/assetsx/a.txt\n' "$st_hello"
+		printf 'blob %s 6 README.md\n' "$st_hello"
+	} > "$work/files"
+	read_known
+	check_rules
+	report
+}
+t_flow_clean() {
+	read_known
+	printf 'refs/heads/main %s refs/heads/main %s\n' "$st_clean" "$zero" > "$work/in"
+	check_refs < "$work/in"
+	check_hashes
+	report
+}
+t_flow_bad_last_line() {
+	read_known
+	# The last line without a line break, as a sloppy caller might send it.
+	printf 'refs/heads/main %s refs/heads/main %s\nrefs/heads/b %s refs/heads/b %s' \
+		"$st_clean" "$zero" "$st_bad" "$zero" > "$work/in"
+	check_refs < "$work/in"
+	check_hashes
+	report
+}
+t_flow_known_hash() {
+	known="6 $hello_sha256 test-game-file"
+	read_known
+	printf 'refs/heads/main %s refs/heads/main %s\n' "$st_known" "$zero" > "$work/in"
+	check_refs < "$work/in"
+	check_hashes
+	report
+}
+t_flow_hash_fails() {
+	known="6 $hello_sha256 test-game-file"
+	read_known
+	sha256_file() { return 1; }
+	printf 'refs/heads/main %s refs/heads/main %s\n' "$st_known" "$zero" > "$work/in"
+	check_refs < "$work/in"
+	check_hashes
+	report
+}
+
+self_test() {
+	# content_guard.py next to the hook's folder: the self-test does not
+	# need to run inside a work tree.
+	case $0 in
+	*/*) guard=${0%/*}/../content_guard.py ;;
+	*) guard=../content_guard.py ;;
+	esac
+	[ -f "$guard" ] || st_die "tools/content_guard.py not found next to tools/git-hooks"
+	pick_python
+	make_work
+	base=$work
+	# The folder goes away also if the shell stops on an error of its own.
+	trap cleanup EXIT
+	mkdir "$base/empty" || st_die "cannot create $base/empty"
+	# A repository of its own: the cases write blobs and commits, never into
+	# the repository the self-test is run from.
+	unset GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+	git init -q --bare "$base/repo.git" || st_die "git init"
+	GIT_DIR=$base/repo.git
+	export GIT_DIR
+	GIT_AUTHOR_NAME=self-test GIT_AUTHOR_EMAIL=self-test@example.invalid
+	GIT_COMMITTER_NAME=self-test GIT_COMMITTER_EMAIL=self-test@example.invalid
+	export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+
+	# "hello\n": 6 bytes, its SHA-256 written down here, not computed.
+	hello_sha256=5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03
+	other_sha256=0000000000000000000000000000000000000000000000000000000000000001
+	printf 'hello\n' > "$base/hello" || st_die "cannot write $base/hello"
+	st_blob "$base/hello"
+	st_hello=$st_sha
+	# An id that names no object in the test repository.
+	st_missing=1111111111111111111111111111111111111111
+	printf 'readme\n' > "$base/readme" || st_die "cannot write $base/readme"
+	printf 'data\n' > "$base/data" || st_die "cannot write $base/data"
+	st_commit README.md "$base/readme"
+	st_clean=$st_commit
+	st_commit README.md "$base/readme" crash.log "$base/data" disc.iso "$base/data"
+	st_bad=$st_commit
+	st_commit README.md "$base/readme" hello.txt "$base/hello"
+	st_known=$st_commit
+
+	cases=0
+	failed=0
+	run_case ok t_table "" "the table of known game files is read"
+	run_case refused t_table_broken "the table of known game files is broken" "a broken table refuses"
+	run_case refused t_table_empty "the table of known game files is empty" "an empty table refuses"
+	run_case refused t_mktemp_fails "cannot create a temporary folder" "mktemp fails: refused, no fixed name"
+	run_case refused t_mktemp_no_folder "cannot create a temporary folder" "mktemp gives no folder: refused"
+	run_case ok t_hash_real "" "SHA-256 of a real blob is the right value"
+	run_case refused t_hash_unreadable "git cannot read the blob" "SHA-256 of an object git cannot read: refused"
+	run_case refused t_hash_wrong_size "the blob" "blob of another size than listed: refused" \
+		"has 6 bytes instead of 7"
+	run_case refused t_hash_tool_fails "cannot compute the SHA-256" "hash tool fails: refused"
+	run_case refused t_hash_tool_empty "cannot compute the SHA-256" "hash tool prints nothing: refused"
+	run_case refused t_hash_no_tool "neither sha256sum nor shasum" "no hash tool: refused"
+	run_case refused t_candidate_bad "forbidden content" "known size and SHA-256: BAD" \
+		"dir/hello.bin: SHA-256 matches test-game-file"
+	run_case ok t_candidate_clean "" "known size, other SHA-256: clean"
+	run_case refused t_candidate_unreadable "git cannot read the blob" "candidate git cannot read: refused, not clean"
+	run_case refused t_candidate_step_fails "cannot compute the SHA-256" "failing step in the hash loop: refused, not clean"
+	run_case refused t_report_unreadable "cannot read the findings" "findings cannot be read: refused, not clean"
+	run_case ok t_parse_ok "" "an ls-tree entry is read with its path"
+	run_case refused t_parse_newline "a path in the list of files has a line break" "path with a line break: refused"
+	run_case refused t_parse_missing_object "cannot read the list of files" "blob missing from the clone: refused" \
+		"missing from this clone"
+	run_case refused t_parse_short_read "the list of files has 2 entries, but only 0 were read" "awk reads fewer entries: refused"
+	run_case refused t_guard_crash "tools/content_guard.py could not check" "content_guard.py fails: refused"
+	run_case refused t_guard_unexpected_output "tools/content_guard.py could not check" \
+		"content_guard.py exit code 0 with output: refused"
+	run_case refused t_ref_malformed "cannot read the line from git" "malformed line from git: refused"
+	run_case refused t_ref_blob "refs/tags/x points at a blob" "ref on a blob: refused"
+	run_case refused t_ref_revlist_fails "git rev-list failed" "git rev-list fails: refused"
+	run_case refused t_ref_lstree_fails "git cannot list the files of commit" "git ls-tree fails: refused"
+	run_case refused t_rule_folder "forbidden content" "rule: forbidden folder" \
+		"src/assets/a.txt: forbidden folder"
+	run_case refused t_rule_folder_tracks "forbidden content" "rule: forbidden folder, other case" \
+		"Tracks/a.txt: forbidden folder"
+	run_case refused t_rule_build "forbidden content" "rule: build folder" \
+		"x/build-vs/a.c: measurement, reference or build folder"
+	run_case refused t_rule_measurement "forbidden content" "rule: reference folder" \
+		"notes/baseline-x/a.txt: measurement, reference or build folder"
+	run_case refused t_rule_size "forbidden content" "rule: larger than 5 MB" \
+		"big.txt: larger than 5 MB (5242881 bytes)"
+	run_case refused t_rule_docs_assets "forbidden content" "rule: docs/assets only .svg" \
+		"docs/assets/banner.png: only .svg drawings belong in docs/assets"
+	run_case refused t_rule_video "forbidden content" "rule: video outside externals/SDL" \
+		"clip.MP4: video outside externals/SDL"
+	run_case refused t_rule_name "forbidden content" "rule: game file or user settings by name" \
+		"src/Cups.TXT.: game file or user settings"
+	run_case ok t_rule_allowed "" "rules: banner .svg, SDL video, exactly 5 MB, similar folder name pass"
+	run_case ok t_flow_clean "" "whole check, clean commit: passed"
+	run_case refused t_flow_bad_last_line "forbidden content" "whole check, last line without a line break: checked" \
+		"crash.log: log or dump" "disc.iso: "
+	run_case refused t_flow_known_hash "forbidden content" "whole check, known SHA-256: refused" \
+		"hello.txt: SHA-256 matches test-game-file"
+	run_case refused t_flow_hash_fails "cannot compute the SHA-256" "whole check, hash step fails: refused"
+
+	cleanup
+	if [ "$failed" != 0 ]; then
+		echo "pre-push self-test FAILED - $failed of $cases case(s)"
+		exit 1
+	fi
+	echo "pre-push self-test passed - $cases case(s)"
+	exit 0
+}
+
+# git always calls the hook with two arguments (remote name and URL), so a
+# remote called --self-test can never switch the check off.
+if [ "$#" = 1 ] && [ "$1" = --self-test ]; then
+	self_test
 fi
+
+remote="$1"
+root=$(git rev-parse --show-toplevel) || refuse "not inside a git work tree"
+[ -n "$root" ] || refuse "git rev-parse gave no work tree"
+guard="$root/tools/content_guard.py"
+pick_python
+read_known
+make_work
+check_refs
+check_hashes
+report
 cleanup
 echo "pre-push: content check passed" >&2
 exit 0

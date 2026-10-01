@@ -15,14 +15,17 @@
 #
 # This check comes after the fact: the commits are already on GitHub when it
 # runs. tools/git-hooks/pre-push runs the same rules (and more) before anything
-# leaves the machine.
+# leaves the machine; its self-test (--self-test) runs here as well, so a step
+# of the hook that no longer refuses on an error fails the run.
 #
 # Security notes (as in build.yml):
 # - Read-only token, no secrets, no pull_request_target trigger.
 # - The checkout keeps no credentials. The script only reads git objects; it
-#   builds and runs nothing from the checked commits.
-# - A pull request runs this file and the script as the pull request has
-#   them, so a pull request that changes either needs a careful review.
+#   builds and runs nothing from the checked commits. The hook's self-test
+#   writes made-up blobs into a repository of its own in a temporary folder.
+# - A pull request runs this file, the script and the hook as the pull
+#   request has them, so a pull request that changes any of them needs a
+#   careful review.
 # - No concurrency group: a cancelled run would leave commits unchecked.
 # - The one action is pinned to its full commit SHA (as in build.yml).
 
@@ -56,6 +59,10 @@ jobs:
       - name: Self-test of the content guard
         if: github.event.deleted != true
         run: python3 tools/content_guard.py --self-test
+
+      - name: Self-test of the pre-push hook
+        if: github.event.deleted != true
+        run: sh tools/git-hooks/pre-push --self-test
 
       - name: Check every commit in the history
         if: github.event.deleted != true
