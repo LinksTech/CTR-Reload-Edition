@@ -14,6 +14,8 @@
 // is the pattern that has already caught this tree several times - one falls
 // behind, and then the packer writes what the game cannot read.
 //
+// docs/CONTAINER_FORMAT.md describes this format; change it in the same commit.
+//
 // THE SIGNATURE WAS TAKEN OUT OF THE FORMAT ON 2026-09-19.
 //
 // This is where SHA-512 and a complete Ed25519 implementation used to be, about

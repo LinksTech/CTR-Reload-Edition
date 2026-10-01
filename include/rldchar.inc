@@ -1,10 +1,10 @@
 // rldchar.inc - the .rldchar format (custom characters), once, for both sides
 //
-// AN INCLUDE, NOT A MODULE, and pulled in AFTER include/rldtrack.inc by the same
-// two translation units:
+// AN INCLUDE, NOT A MODULE, always pulled in AFTER include/rldtrack.inc. The game
+// includes it in platform/native_chars.c; rldpack in tools/rldpack.c.
 //
 //   tools/rldpack.c           the packer (make-char, info, verify)
-//   platform/native_assets.c  the game, once it loads characters; it only reads and checks
+//   platform/native_chars.c   the game; it only reads and checks
 //
 // The envelope is the one of rldtrack.inc - header, directory, SHA-256 per
 // chunk, the position checks - opened with Rld_OpenAs and s_rldCharFormat below.
@@ -12,6 +12,8 @@
 // CMDL, the name rule, and RldChar_CheckModel, the check every model passes
 // before it is relocated or drawn. Shared for the reason given at the head of
 // rldtrack.inc: the packer must never write a model the game refuses.
+//
+// docs/CONTAINER_FORMAT.md describes this format; change it in the same commit.
 //
 // ONLY READING, PARSING AND CHECKING. The writing side is tools/rldpack_char.inc.
 // Nothing here prints: findings go back as return values and through a
@@ -91,6 +93,11 @@ static u64 RldChar_ChunkLimit(const u8 *type)
 	}
 	return 0;
 }
+
+// KNOWN, NOT WRITTEN YET: CICN (portrait) and CPRM (values) have a size limit
+// above; rldpack does not write them and nothing interprets their content yet.
+// RESERVED NAMES: CVOI (voices) and CTEX (texture data) are planned; until then
+// they have no limit here and are skipped like any unknown chunk.
 
 // The required chunks: CHRI and CMDL. CICN and CPRM are optional - a required
 // chunk could never become optional again within major 1.
