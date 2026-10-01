@@ -18,8 +18,9 @@
 // `--do "<verb> <argument>"` (any number of times) plays back steps as if
 // someone had clicked: the same callbacks as the buttons. Meant so that acceptance
 // and repacking run reproducibly, without a second implementation. Shell
-// verbs: page, shot, wait, size, theme, quit. Everything else goes to the current
-// page. `--log <file>` writes the automation log. In automation
+// verbs: page, shot, wait, size <w> <h>, theme, quit. Everything else goes to the
+// current page (also "size <n>" with one number). `--log <file>` writes the
+// automation log. In automation
 // no dialog asks (answer always yes) and the settings are neither
 // read nor written.
 //
@@ -77,7 +78,7 @@ static HWND g_main;
 static HWND g_sidebar;
 static HWND g_pages[RS_PAGE_COUNT];
 static const struct RsPageDef *const g_defs[RS_PAGE_COUNT] = {
-    &g_rsTrackPage, &g_rsCupsPage, &g_rsTestPage
+    &g_rsTrackPage, &g_rsCupsPage, &g_rsCharPage, &g_rsTestPage
 };
 static int g_current = -1;
 static int g_dpi = 96;
@@ -2291,6 +2292,19 @@ static LRESULT CALLBACK Rs_PageProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
+// The pages by name: the automation verb "page <name>" and the setting "page=".
+static const wchar_t *const g_pageWords[RS_PAGE_COUNT] = { L"track", L"cups", L"char", L"test" };
+
+// RS_PAGE_* of a name, -1 if unknown.
+static int Rs_PageByWord(const wchar_t *word)
+{
+    int i;
+    for (i = 0; i < RS_PAGE_COUNT; i++)
+        if (wcscmp(word, g_pageWords[i]) == 0)
+            return i;
+    return -1;
+}
+
 HWND Rs_PageWindow(int id)
 {
     return (id >= 0 && id < RS_PAGE_COUNT) ? g_pages[id] : NULL;
@@ -2313,11 +2327,7 @@ void Rs_ShowPage(int id)
     ShowWindow(g_pages[id], SW_SHOW);
     InvalidateRect(g_sidebar, NULL, FALSE);
     SendMessageW(g_pages[id], RS_WM_PAGE_SHOWN, 0, 0);
-    {
-        wchar_t v[8];
-        swprintf(v, 8, L"%d", id);
-        Rs_ConfigSet(L"page", v);
-    }
+    Rs_ConfigSet(L"page", g_pageWords[id]);
 }
 
 // ---------------------------------------------------------------------------
@@ -2327,6 +2337,7 @@ void Rs_ShowPage(int id)
 static const wchar_t *const g_navIcons[RS_PAGE_COUNT] = {
     L"\xE8B7",   // Folder
     L"\xE8FD",   // BulletedList
+    L"\xE77B",   // Contact
     L"\xE768",   // Play
 };
 
@@ -2670,6 +2681,14 @@ static void Rs_AutoQueue(const wchar_t *step)
     }
 }
 
+// How many whole numbers "%d %d" reads from an automation argument (0..2).
+static int Rs_AutoNumbers(const wchar_t *arg)
+{
+    int a = 0, b = 0;
+    int n = swscanf(arg, L"%d %d", &a, &b);
+    return n < 0 ? 0 : n;
+}
+
 static int Rs_PageBusy(int id)
 {
     const struct RsPageDef *def = g_defs[id];
@@ -2701,10 +2720,7 @@ static void Rs_AutoTick(void)
     Rs_AutoLog(L"> %ls %ls", s->verb, s->arg);
 
     if (wcscmp(s->verb, L"page") == 0) {
-        int id = -1;
-        if (wcscmp(s->arg, L"track") == 0) id = RS_PAGE_TRACK;
-        else if (wcscmp(s->arg, L"cups") == 0) id = RS_PAGE_CUPS;
-        else if (wcscmp(s->arg, L"test") == 0) id = RS_PAGE_TEST;
+        int id = Rs_PageByWord(s->arg);
         if (id < 0) {
             Rs_AutoLog(L"  FAIL: unknown page '%ls'", s->arg);
             g_autoFailed++;
@@ -2725,7 +2741,9 @@ static void Rs_AutoTick(void)
         g_autoSettleUntil = GetTickCount() + (DWORD)_wtoi(s->arg);
         return;
     }
-    if (wcscmp(s->verb, L"size") == 0) {
+    // "size <w> <h>" is the window size. With exactly one number the verb belongs
+    // to the page (the character size on the page "Character").
+    if (wcscmp(s->verb, L"size") == 0 && Rs_AutoNumbers(s->arg) != 1) {
         int w = 0, h = 0;
         RECT r;
         if (swscanf(s->arg, L"%d %d", &w, &h) == 2 && w > 0 && h > 0) {
@@ -2959,7 +2977,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     memset(&icc, 0, sizeof(icc));
     icc.dwSize = sizeof(icc);
-    icc.dwICC = ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES | ICC_UPDOWN_CLASS;
+    icc.dwICC = ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES | ICC_UPDOWN_CLASS | ICC_BAR_CLASSES;
     InitCommonControlsEx(&icc);
     Rs_ConfigInit();
 
@@ -3021,9 +3039,15 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
     }
     Rs_Layout();
 
+    // "page=" holds the name of the page; a digit is the number of earlier
+    // versions, from before the page "Character" (0 track, 1 cups, 2 test).
     Rs_ConfigGet(L"page", cfg, 16);
-    if (cfg[0] >= L'0' && cfg[0] < L'0' + RS_PAGE_COUNT)
-        startPage = cfg[0] - L'0';
+    if (cfg[0] >= L'0' && cfg[0] <= L'2' && cfg[1] == 0) {
+        static const int oldPages[3] = { RS_PAGE_TRACK, RS_PAGE_CUPS, RS_PAGE_TEST };
+        startPage = oldPages[cfg[0] - L'0'];
+    } else if (Rs_PageByWord(cfg) >= 0) {
+        startPage = Rs_PageByWord(cfg);
+    }
     Rs_ShowPage(startPage);
     ShowWindow(g_main, g_automating ? SW_SHOWNORMAL : show);
     UpdateWindow(g_main);

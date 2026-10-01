@@ -206,6 +206,8 @@ if(MSVC)
         tools/reloadstudio/rs_track.c
         tools/reloadstudio/rs_cups.c
         tools/reloadstudio/rs_test.c
+        tools/reloadstudio/rs_char.c
+        tools/reloadstudio/rs_view.c
         tools/reloadstudio/rs_rldpack.c
         platform/native_disc_image.c
         tools/reloadstudio/reloadstudio.rc

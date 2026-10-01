@@ -1,8 +1,9 @@
 // reloadstudio.h - shared interface of Reload Studio
 //
-// Reload Studio is the front end for track authors: pack a track folder into
-// a .rldtrack container, put together cups for cups.txt, test a
-// track in the game. All texts on screen are English.
+// Reload Studio is the front end for track and character authors: pack a
+// track folder into a .rldtrack container, put together cups for cups.txt,
+// build a .rldchar character from a PLY model, test a track in the game. All
+// texts on screen are English.
 //
 // GROUND RULE: converting and checking is done by rldpack make. Reload Studio carries
 // rldpack.c inside (rs_rldpack.c) and starts itself as a child process with
@@ -17,6 +18,8 @@
 //   rs_rldpack.c  rldpack.c with a renamed main
 //   rs_track.c    page "Track"
 //   rs_cups.c     page "Cups"
+//   rs_char.c     page "Character"
+//   rs_view.c     3D model view (window class RsModelView, rs_view.h)
 //   rs_test.c     page "Test in game"
 //
 // Characters: UTF-16 in the front end (W functions), UTF-8 on the pipe to
@@ -126,6 +129,75 @@
 // Switches of make that the front end sets: --name --author --track-version
 // --modes --reverb --bots --ambient --no-music --out. For reverb, bots and
 // ambient the value "default" means: do not set, even if track.txt has one.
+//
+// make-char (page "Character") speaks the same protocol. It writes no @finding
+// lines; its findings are @msg. Order: @rldpack, the @value block of the
+// switches, the icon lines (with --icon), the voice lines (with --voices),
+// @file ply, @msg of reading the PLY, @value size-range, @msg of the chain,
+// @char, @file preview and @value kart-box (with --preview and a built model),
+// @result, @end.
+//
+//   @rldpack  1  make-char
+//   @value    <key> <value> <origin>
+//             origin: switch | default | template (class without --class)
+//             key: name (in capitals, as written), author, char_version,
+//                  template (0..14, -1 = not usable), class (0 balanced,
+//                  1 acceleration, 2 speed, 3 turning, -1 = not usable), poses
+//                  (auto | still), colors (64 | 128), up (y | z), forward
+//                  (z | -z), scale, two_sided (yes | no), out, size (the
+//                  --size percent used, 100 when missing or invalid), icon,
+//                  voices ("" when not given)
+//   @value    size-range <lo> <hi>          (no origin)
+//             the --size percentages this model takes, whole numbers inside
+//             50..200, the run around 100; "0 0" = no size fits (the model
+//             itself is too large). For every model whose parts were found.
+//   @value    kart-box <x0> <y0> <z0> <x1> <y1> <z1>   (no origin, --preview only)
+//             the model's kart in the neutral frame, in the units of the
+//             preview file; the kart is never scaled by --size
+//   @value    retail-kart <x0> <y0> <z0> <x1> <y1> <z1>   (no origin)
+//             the fixed box of a retail kart in the same units; the page draws
+//             it as the grey size reference next to the model
+//   @file     <kind> <state> <name> <bytes>
+//             ply           ok | missing          the model
+//             icon          ok | missing | bad    --icon (bad: not a PNG rldpack reads)
+//             icon-original ok | failed           <prefix>-original.bmp, the PNG as read
+//             icon-preview  ok | failed           <prefix>-icon.bmp, 44 x 26 as in the game
+//             voice         ok | bad | unused | unknown | ignored   per file of the folder
+//             preview       ok | failed           --preview (failed: warning, build unaffected)
+//             The BMPs are 32 bit BI_RGB, bottom-up, B G R A (A = 0 transparent).
+//   @char     <fact> <value> [<detail>]       for the display, not in the file:
+//             vertices faces quads triangles, parts <count> <"kart N, driver N,
+//             steering wheel N">, size <length> <width> <height> <bottom>
+//             (Blender units, after --size), scale <x> <y> <z>, colors_in,
+//             colors_out, color_error <mean> <max>, part_colors <group> <ranges>,
+//             records, slots, frames, draw_bytes, draw_delta, icon_source <w> <h>,
+//             icon_crop <x> <y> <w> <h>, icon_colors, icon_opaque (of 1144),
+//             voices <"n of 18">
+//   @msg      as above. ids the page reads itself: char-size (error,
+//             "Size N% is outside lo..hi% for this model: <why>. Choose a size in
+//             that range."). Others of make-char, shown as they come: icon-file,
+//             icon-roundtrip, icon-small, icon-empty, icon-colors, icon-preview,
+//             voice-folder, voice-other, voice-unknown, voice-double, voice-wav,
+//             voice-vag, voice-stereo, voice-silent, voice-clip,
+//             voice-length-line, voice-length-short, voice-source, voice-same,
+//             voice-template, voice-missing, voice-later (always with --voices),
+//             preview, and the ply-*, model-*, name*, usage ... of before
+//   @result   <ok | failed | checked> <output path> <bytes> <sha256>
+//             with --icon the container has a third chunk CICN (612 bytes)
+//   @end      <exit code>
+//
+// Commands the page "Character" calls (always --template 14, Fake Crash):
+//   make-char --machine --check --model <ply> --name <n> --template 14
+//             --class <balanced|acceleration|speed|turning> --size <percent>
+//             [--icon <png> --icon-preview <prefix>] [--voices <dir>]
+//             --preview <file> [--out <f>]      check; writes only the preview files
+//   make-char --machine --model ... --out <f>  build: the same switches without
+//             --check, --preview and --icon-preview
+// The --preview file (little endian): "RLDPV1\0\0", u32 poses = 3 (turn frame 10
+// neutral, frame 0 full steer left, frame 20 full steer right), per pose u32
+// triangles and per triangle 3 corners of s16 x, y, z (game units, +Y up, +Z
+// forward, +X the driver's left), u8 r, g, b, u8 pad (bit 0: drawn from both
+// sides). Corners counter-clockwise seen from the side the game draws.
 // ---------------------------------------------------------------------------
 
 #define RS_PROTOCOL 1
@@ -191,9 +263,10 @@ struct RsPageDef {
 
 extern const struct RsPageDef g_rsTrackPage;   // rs_track.c
 extern const struct RsPageDef g_rsCupsPage;    // rs_cups.c
+extern const struct RsPageDef g_rsCharPage;    // rs_char.c
 extern const struct RsPageDef g_rsTestPage;    // rs_test.c
 
-enum RsPageId { RS_PAGE_TRACK = 0, RS_PAGE_CUPS, RS_PAGE_TEST, RS_PAGE_COUNT };
+enum RsPageId { RS_PAGE_TRACK = 0, RS_PAGE_CUPS, RS_PAGE_CHAR, RS_PAGE_TEST, RS_PAGE_COUNT };
 
 // Own messages to page windows.
 #define RS_WM_JOB_LINE    (WM_APP + 1)  // wParam = job, lParam = wchar_t* line (Rs_Free)
