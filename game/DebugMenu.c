@@ -1250,8 +1250,551 @@ internal void DebugMenu_MenuKeysTick(void)
 	}
 }
 
+
+// ---------------------------------------------------------------------------
+//  --level-tour: many tracks in one run.
+//
+//  WHAT FOR. A measurement that has to hold for every track - nothing writes
+//  where it must not, on any of them - is one run per track with --level, and
+//  eighteen runs where one would do. The tour is that one run.
+//
+//  HOW. Every entry starts FROM THE MAIN MENU, with the code of --level (a
+//  disc track) or of --autoload-track (a container), and after
+//  --level-tour-frames race frames goes back the way pause QUIT goes back. Race
+//  to race, like the cup, would be quicker, and would bring two traps along: a
+//  disc track after a container on the same donor slot would keep driving the
+//  container (NativeTrack_ActiveForLevel compares the slot only), and a
+//  container that offers Crystal and no Race is not swapped in by the loader's
+//  start (MM_NativeTracks_StartLoad loads by the rule for Race). Through the
+//  menu every entry takes a road that is already walked: the title edge above
+//  releases the container (MM_NativeTracks_Disarm), and the menu's VRAM is
+//  loaded again each time.
+//
+//  Who drives is up to the caller: --autopilot makes seat 0 a bot, the tour
+//  does not. One VRAM dump per entry, at its last race frame
+//  (Platform_DumpRequest, <--dump-prefix>-tour-NN-<track>.tga). After the last
+//  entry the run ends through Platform_QuitGame, the door --menu-keys-quit uses.
+#define DBG_TOUR_MAX           64
+#define DBG_TOUR_RETAIL_RACES  18 // level ids 0..17, include/namespace_Level.h
+// How long one entry may take to come up - from the menu to the first race
+// frame, or from the race back to the menu - before the tour gives up: two
+// minutes of VBlanks. A tour that hangs on one track ends with a line that
+// names it, rather than running until somebody notices.
+#define DBG_TOUR_WAIT_VBLANKS  7200
+
+enum
+{
+	DBG_TOUR_DISC,    // a disc track, started like --level
+	DBG_TOUR_RACE,    // a container offering Race, started like --autoload-track
+	DBG_TOUR_CRYSTAL, // a container offering Crystal and no Race, started like the TRACK page with the probe
+};
+
+enum
+{
+	DBG_TOUR_PHASE_READ,    // the list is read when the main menu is first up
+	DBG_TOUR_PHASE_MENU,    // waiting for the main menu, then the next entry starts
+	DBG_TOUR_PHASE_DRIVING, // the entry is loading or racing, frames are counted
+	DBG_TOUR_PHASE_QUIT,    // the last dump is written at the end of the frame, the run ends in the next
+	DBG_TOUR_PHASE_OFF,
+};
+
+struct DebugTourEntry
+{
+	int level;      // DBG_TOUR_DISC: the level id; otherwise unused
+	int trackIndex; // a container's row in the track list, -1 for a disc track
+	int mode;       // DBG_TOUR_*
+};
+
+global_variable struct DebugTourEntry s_tour[DBG_TOUR_MAX];
+global_variable int s_tourCount = 0;
+global_variable int s_tourSkipped = 0;
+global_variable int s_tourDriven = 0;
+global_variable int s_tourPos = 0;
+global_variable int s_tourFrames = 0;
+global_variable int s_tourLevel = -1;   // the level id the current entry was started on
+global_variable int s_tourSawOut = 0;   // the current entry has been seen out of the race once
+global_variable int s_tourSince = 0;    // VBlank at which the current wait began
+global_variable int s_tourPhase = DBG_TOUR_PHASE_READ;
+
+internal void DebugMenu_TourAdd(int level, int trackIndex, int mode)
+{
+	if (s_tourCount >= DBG_TOUR_MAX)
+	{
+		s_tourSkipped++;
+		Platform_Log("[CTR Tour] skip entry %d: the list holds %d\n", s_tourCount + s_tourSkipped, DBG_TOUR_MAX);
+		return;
+	}
+
+	s_tour[s_tourCount].level = level;
+	s_tour[s_tourCount].trackIndex = trackIndex;
+	s_tour[s_tourCount].mode = mode;
+	s_tourCount++;
+}
+
+// A container by the offer rule of the menu: Race if it offers Race, else
+// Crystal if it offers Crystal, else a line that says why not.
+internal void DebugMenu_TourAddContainer(int index)
+{
+	const struct NativeTrackEntry *entry = NativeTrack_Get(index);
+	const char *whyNoRace = NativeTrack_WhyNoRace(index, NULL);
+	const char *whyNoCrystal;
+
+	if (entry == NULL)
+	{
+		s_tourSkipped++;
+		Platform_Log("[CTR Tour] skip row %d: not in the track list\n", index);
+		return;
+	}
+
+	if (whyNoRace == NULL)
+	{
+		DebugMenu_TourAdd(-1, index, DBG_TOUR_RACE);
+		return;
+	}
+
+	whyNoCrystal = NativeTrack_WhyNotOffered(index, NATIVE_TRACK_MODE_CRYSTAL, NULL);
+
+	if (whyNoCrystal == NULL)
+	{
+		DebugMenu_TourAdd(-1, index, DBG_TOUR_CRYSTAL);
+		return;
+	}
+
+	s_tourSkipped++;
+	Platform_Log("[CTR Tour] skip '%s': race - %s; crystal - %s\n", entry->file, whyNoRace, whyNoCrystal);
+}
+
+internal void DebugMenu_TourAddWord(const char *word)
+{
+	int value = 0;
+	int digits = 0;
+	int i;
+
+	if (strcmp(word, "races") == 0)
+	{
+		for (i = 0; i < DBG_TOUR_RETAIL_RACES; i++)
+		{
+			DebugMenu_TourAdd(i, -1, DBG_TOUR_DISC);
+		}
+		return;
+	}
+
+	if (strcmp(word, "containers") == 0)
+	{
+		for (i = 0; i < NativeTrack_Count(); i++)
+		{
+			DebugMenu_TourAddContainer(i);
+		}
+		return;
+	}
+
+	for (i = 0; (word[i] >= '0') && (word[i] <= '9') && (digits < 6); i++)
+	{
+		value = (value * 10) + (word[i] - '0');
+		digits++;
+	}
+
+	if ((digits > 0) && (word[i] == '\0'))
+	{
+		if (value < DBG_TOUR_RETAIL_RACES)
+		{
+			DebugMenu_TourAdd(value, -1, DBG_TOUR_DISC);
+		}
+		else if ((value >= NATIVE_TRACK_LEVELID_FIRST) && (value < (NATIVE_TRACK_LEVELID_FIRST + NATIVE_TRACK_LEVELID_COUNT)))
+		{
+			const int index = NativeTrack_IndexForLevel(value);
+
+			if (index < 0)
+			{
+				s_tourSkipped++;
+				Platform_Log("[CTR Tour] skip '%s': no container has level id %d in this run\n", word, value);
+			}
+			else
+			{
+				DebugMenu_TourAddContainer(index);
+			}
+		}
+		else
+		{
+			s_tourSkipped++;
+			Platform_Log("[CTR Tour] skip '%s': neither a race track (0..%d) nor a container id (%d..%d)\n", word, DBG_TOUR_RETAIL_RACES - 1,
+			             NATIVE_TRACK_LEVELID_FIRST, NATIVE_TRACK_LEVELID_FIRST + NATIVE_TRACK_LEVELID_COUNT - 1);
+		}
+		return;
+	}
+
+	// A file name, compared the way --autoload-track compares it.
+	for (i = 0; i < NativeTrack_Count(); i++)
+	{
+		const struct NativeTrackEntry *entry = NativeTrack_Get(i);
+
+		if ((entry != NULL) && (strcmp(entry->file, word) == 0))
+		{
+			DebugMenu_TourAddContainer(i);
+			return;
+		}
+	}
+
+	s_tourSkipped++;
+	Platform_Log("[CTR Tour] skip '%s': not in the track folder (%d container(s) listed)\n", word, NativeTrack_Count());
+}
+
+internal void DebugMenu_TourRead(void)
+{
+	extern char g_cfg_levelTour[1024];
+	extern int g_cfg_levelTourFrames;
+	const char *at = g_cfg_levelTour;
+
+	while (*at != '\0')
+	{
+		char word[128];
+		int length = 0;
+
+		while (*at == ' ')
+		{
+			at++;
+		}
+
+		while ((*at != '\0') && (*at != ','))
+		{
+			if (length < (int)sizeof(word) - 1)
+			{
+				word[length++] = *at;
+			}
+			at++;
+		}
+
+		while ((length > 0) && (word[length - 1] == ' '))
+		{
+			length--;
+		}
+
+		word[length] = '\0';
+
+		if (length > 0)
+		{
+			DebugMenu_TourAddWord(word);
+		}
+
+		if (*at == ',')
+		{
+			at++;
+		}
+	}
+
+	Platform_Log("[CTR Tour] %d track(s), %d skipped, %d frame(s) each, list '%s'\n", s_tourCount, s_tourSkipped, g_cfg_levelTourFrames,
+	             g_cfg_levelTour);
+}
+
+internal const char *DebugMenu_TourDiscName(int level)
+{
+	for (int i = 0; i < DBG_COUNT(s_levels); i++)
+	{
+		if (s_levels[i].id == level)
+		{
+			return s_levels[i].name;
+		}
+	}
+
+	return "?";
+}
+
+// The dump's name: tour-NN-L<level> for a disc track, tour-NN-<file without
+// .rldtrack> for a container, anything but letters, digits, '-' and '_' as '_'.
+internal void DebugMenu_TourDump(const struct DebugTourEntry *entry)
+{
+	char name[96];
+	int length;
+
+	if (entry->trackIndex < 0)
+	{
+		snprintf(name, sizeof(name), "tour-%02d-L%d", s_tourPos + 1, entry->level);
+	}
+	else
+	{
+		const struct NativeTrackEntry *track = NativeTrack_Get(entry->trackIndex);
+		const char *file = (track != NULL) ? track->file : "unknown";
+		const char *dot = strrchr(file, '.');
+
+		length = (dot != NULL) ? (int)(dot - file) : (int)strlen(file);
+		snprintf(name, sizeof(name), "tour-%02d-%.*s", s_tourPos + 1, length, file);
+
+		for (char *c = name + 8; *c != '\0'; c++)
+		{
+			const int keep = ((*c >= 'a') && (*c <= 'z')) || ((*c >= 'A') && (*c <= 'Z')) || ((*c >= '0') && (*c <= '9')) || (*c == '-') || (*c == '_');
+
+			if (!keep)
+			{
+				*c = '_';
+			}
+		}
+	}
+
+	Platform_DumpRequest(name);
+}
+
+// Starts the entry at s_tourPos. 1 = a jump was requested, 0 = it could not
+// be started (said in the log).
+internal int DebugMenu_TourStart(struct GameTracker *gGT)
+{
+	extern int g_cfg_jumpDriver;
+	const struct DebugTourEntry *entry = &s_tour[s_tourPos];
+
+	if (entry->mode == DBG_TOUR_DISC)
+	{
+		s_tourLevel = entry->level;
+		Platform_Log("[CTR Tour] %d/%d: level %d (%s) at vblank %d\n", s_tourPos + 1, s_tourCount, s_tourLevel, DebugMenu_TourDiscName(s_tourLevel),
+		             Platform_GetVBlankCount());
+		DebugMenu_JumpToLevel(gGT, s_tourLevel, g_cfg_jumpDriver);
+		return 1;
+	}
+
+	{
+		const struct NativeTrackEntry *track = NativeTrack_Get(entry->trackIndex);
+		const char *file = (track != NULL) ? track->file : "?";
+
+		if (entry->mode == DBG_TOUR_RACE)
+		{
+			// --autoload-track, word for word: the NITRO-PIT row, then the row's
+			// runtime ID through the funnel.
+			if (!MM_NativeTracks_LoadRow(entry->trackIndex))
+			{
+				Platform_Log("[CTR Tour] %d/%d: '%s' did not load - skipped\n", s_tourPos + 1, s_tourCount, file);
+				return 0;
+			}
+
+			s_tourLevel = NativeTrack_LevelForIndex(entry->trackIndex);
+			Platform_Log("[CTR Tour] %d/%d: level %d container '%s' race (seat %d) at vblank %d\n", s_tourPos + 1, s_tourCount, s_tourLevel, file,
+			             NativeTrack_LoadedDonorLevel(), Platform_GetVBlankCount());
+			DebugMenu_JumpToLevel(gGT, s_tourLevel, g_cfg_jumpDriver);
+			return 1;
+		}
+
+		// Crystal: the TRACK page with the crystal probe, but loaded by the rule
+		// for Crystal (MM_NativeTracks_LoadRowFor, as the CRYSTAL list does),
+		// and the probe only for this one jump.
+		if (!MM_NativeTracks_LoadRowFor(entry->trackIndex, NATIVE_TRACK_MODE_CRYSTAL))
+		{
+			Platform_Log("[CTR Tour] %d/%d: '%s' did not load - skipped\n", s_tourPos + 1, s_tourCount, file);
+			return 0;
+		}
+
+		s_tourLevel = NativeTrack_LoadedDonorLevel();
+		Platform_Log("[CTR Tour] %d/%d: level %d container '%s' crystal at vblank %d\n", s_tourPos + 1, s_tourCount, s_tourLevel, file,
+		             Platform_GetVBlankCount());
+		MM_NativeCrystal_MarkDebug();
+
+		{
+			const int probeWas = s_crystalProbe;
+
+			s_crystalProbe = 1;
+			DebugMenu_JumpToLevel(gGT, s_tourLevel, g_cfg_jumpDriver);
+			s_crystalProbe = probeWas;
+		}
+		return 1;
+	}
+}
+
+// Back to the main menu, the way pause QUIT goes (MainFreeze_MenuPtrQuit), with
+// whatever box is open closed first, the way DebugMenu_JumpToLevel does it - an
+// end-of-race box when the race was over before its frames were.
+internal void DebugMenu_TourLeave(struct GameTracker *gGT)
+{
+	if (sdata->ptrActiveMenu != NULL)
+	{
+		RECTMENU_Hide(sdata->ptrActiveMenu);
+	}
+	sdata->ptrDesiredMenu = NULL;
+
+	GhostTape_Destroy();
+	sdata->Loading.OnBegin.AddBitsConfig0 |= MAIN_MENU;
+	sdata->mainMenuState = MAIN_MENU_TITLE;
+	sdata->Loading.OnBegin.RemBitsConfig0 |= ADVENTURE_ARENA;
+	gGT->gameMode1 &= ~PAUSE_1;
+	MainRaceTrack_RequestLoad(MAIN_MENU_LEVEL);
+}
+
+internal void DebugMenu_TourStop(const char *why)
+{
+	Platform_Log("[CTR Tour] stopped: %s; %d driven, %d skipped, %d not reached\n", why, s_tourDriven, s_tourSkipped, s_tourCount - s_tourPos);
+	s_tourPhase = DBG_TOUR_PHASE_OFF;
+	Platform_QuitGame("--level-tour stopped");
+}
+
+// In the menu: start the next entry once the main menu is up. 1 = started.
+internal int DebugMenu_TourMenuStep(struct GameTracker *gGT, int now, int menuUp)
+{
+	if (!menuUp)
+	{
+		if ((now - s_tourSince) > DBG_TOUR_WAIT_VBLANKS)
+		{
+			DebugMenu_TourStop("the main menu did not come back");
+		}
+		return 0;
+	}
+
+	if (!DebugMenu_TourStart(gGT))
+	{
+		// Tried once, in the menu it was tried from; the next entry gets the
+		// next frame.
+		s_tourSkipped++;
+		s_tourPos++;
+		return 0;
+	}
+
+	s_tourPhase = DBG_TOUR_PHASE_DRIVING;
+	s_tourFrames = 0;
+	s_tourSawOut = 0;
+	s_tourSince = now;
+	return 1;
+}
+
+// The entry is over - its frames are driven, or the game left the race by
+// itself. Dump, then back to the menu or, after the last entry, to the end.
+// leftByItself: the game is already on its way to the menu (or in a demo), and
+// only a demo still needs the QUIT road.
+internal void DebugMenu_TourFinish(struct GameTracker *gGT, int now, int leftByItself)
+{
+	DebugMenu_TourDump(&s_tour[s_tourPos]);
+
+	if (leftByItself)
+	{
+		Platform_Log("[CTR Tour] %d/%d: level %d ended early after %d race frame(s), at vblank %d\n", s_tourPos + 1, s_tourCount, s_tourLevel,
+		             s_tourFrames, now);
+	}
+	else
+	{
+		Platform_Log("[CTR Tour] %d/%d: level %d done, %d race frame(s), at vblank %d\n", s_tourPos + 1, s_tourCount, s_tourLevel, s_tourFrames, now);
+	}
+
+	s_tourDriven++;
+	s_tourPos++;
+
+	if (s_tourPos >= s_tourCount)
+	{
+		// The dump is written at the end of this frame; the run ends in the
+		// next one, so the last track's dump is not lost.
+		Platform_Log("[CTR Tour] done: %d driven, %d skipped at vblank %d\n", s_tourDriven, s_tourSkipped, now);
+		s_tourPhase = DBG_TOUR_PHASE_QUIT;
+		return;
+	}
+
+	if ((gGT->gameMode1 & MAIN_MENU) == 0)
+	{
+		DebugMenu_TourLeave(gGT);
+	}
+
+	s_tourPhase = DBG_TOUR_PHASE_MENU;
+	s_tourSince = now;
+}
+
+// On the road: count race frames, and after the last one finish the entry.
+//
+// Counted only after the entry has been out of a race once - the frame of the
+// start is still the menu, and a frame that still draws the old level under the
+// flag must not count for the new one. A demo is not a race (inRace says so).
+//
+// Once counting has begun, the main menu or a demo means the game left the race
+// by itself (a crystal time limit, an end box that went on): the entry ends
+// there, with its own line. Any other gap - a load, a restart - is waited for,
+// and the wait is measured from the last race frame.
+internal void DebugMenu_TourDriveStep(struct GameTracker *gGT, int now, int inRace)
+{
+	extern int g_cfg_levelTourFrames;
+
+	if (!inRace)
+	{
+		s_tourSawOut = 1;
+
+		if ((s_tourFrames > 0) && (((gGT->gameMode1 & MAIN_MENU) != 0) || (gGT->boolDemoMode != 0)))
+		{
+			DebugMenu_TourFinish(gGT, now, 1);
+			return;
+		}
+
+		if ((now - s_tourSince) > DBG_TOUR_WAIT_VBLANKS)
+		{
+			DebugMenu_TourStop((s_tourFrames == 0) ? "the race did not come up" : "the race did not come back");
+		}
+		return;
+	}
+
+	if (!s_tourSawOut)
+	{
+		return;
+	}
+
+	s_tourFrames++;
+	s_tourSince = now;
+
+	if (s_tourFrames >= g_cfg_levelTourFrames)
+	{
+		DebugMenu_TourFinish(gGT, now, 0);
+	}
+}
+
+// One step per game frame. 1 = a track was started this frame (the caller
+// ends the frame's debug work there, as --level does). Without --level-tour it
+// only reads two words and returns 0.
+internal int DebugMenu_TourTick(struct GameTracker *gGT)
+{
+	extern char g_cfg_levelTour[1024];
+	const int now = Platform_GetVBlankCount();
+	const int menuUp = ((gGT->gameMode1 & MAIN_MENU) != 0) && (sdata->ptrActiveMenu != NULL) && (sdata->Loading.stage == LOAD_IDLE);
+	const int inRace = ((gGT->gameMode1 & MAIN_MENU) == 0) && (gGT->boolDemoMode == 0) && (sdata->Loading.stage == LOAD_IDLE) &&
+	                   (sdata->load_inProgress == 0);
+	int started = 0;
+
+	if ((g_cfg_levelTour[0] == '\0') || (s_tourPhase == DBG_TOUR_PHASE_OFF))
+	{
+		return 0;
+	}
+
+	if (s_tourPhase == DBG_TOUR_PHASE_READ)
+	{
+		if (!menuUp)
+		{
+			return 0;
+		}
+
+		DebugMenu_TourRead();
+		s_tourPhase = DBG_TOUR_PHASE_MENU;
+		s_tourSince = now;
+	}
+
+	if ((s_tourPhase == DBG_TOUR_PHASE_MENU) && (s_tourPos >= s_tourCount))
+	{
+		// An empty list, or the entries left could not be started: no dump is
+		// waiting, the run ends in this frame.
+		Platform_Log("[CTR Tour] done: %d driven, %d skipped at vblank %d\n", s_tourDriven, s_tourSkipped, now);
+		s_tourPhase = DBG_TOUR_PHASE_QUIT;
+	}
+
+	if (s_tourPhase == DBG_TOUR_PHASE_QUIT)
+	{
+		s_tourPhase = DBG_TOUR_PHASE_OFF;
+		Platform_QuitGame("--level-tour");
+	}
+	else if (s_tourPhase == DBG_TOUR_PHASE_MENU)
+	{
+		started = DebugMenu_TourMenuStep(gGT, now, menuUp);
+	}
+	else
+	{
+		DebugMenu_TourDriveStep(gGT, now, inRace);
+	}
+
+	return started;
+}
+
+// The portrait strip counter (platform/native_renderer.c) starts at the first
+// game frame; the boot clear before it is counted on its own.
+void NativeRenderer_StripArm(void);
+
 void DebugMenu_Frame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 {
+	NativeRenderer_StripArm();
+
 	// The key sequence first: it must have set the pad bus before anything
 	// in this frame reads it.
 	DebugMenu_MenuKeysTick();
@@ -1504,6 +2047,12 @@ void DebugMenu_Frame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 				             gGT->levelID, Platform_GetVBlankCount());
 				Platform_QuitGame("--exit-after-frames");
 			}
+		}
+
+		// --level-tour LIST: one track after another, see DebugMenu_TourTick.
+		if (DebugMenu_TourTick(gGT))
+		{
+			return;
 		}
 
 		if ((g_cfg_jumpLevel >= 0) && ((gGT->gameMode1 & MAIN_MENU) != 0) && (sdata->ptrActiveMenu != NULL))

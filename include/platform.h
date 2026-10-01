@@ -108,6 +108,10 @@ void Platform_DumpConfigure(const char *list, const char *prefix, int exitAfterL
 // since boot: one run writes the quick state at saveAt, later runs load it at
 // loadAt and dump a fixed number of VBlanks after that. Either may be -1.
 void Platform_DumpStateAt(int saveAt, int loadAt);
+
+// One VRAM dump at the end of the current frame, <--dump-prefix>-<name>.tga,
+// for a moment no VBlank list can name in advance (--level-tour).
+void Platform_DumpRequest(const char *name);
 #endif
 void Platform_PresentVRAMDisplay(void);
 void Platform_PinVRAMDisplayFrames(int frameCount);

@@ -51,9 +51,18 @@ void NativeRenderer_PresentMainTarget(void);
 void NativeRenderer_ReportPresentPath(int vblank);
 
 // The sums a run leaves behind - vertex ring peak and wraps, fill quads, page
-// store fills - printed once at exit through Platform_AtExitReport, before the
-// log closes. Always, even when everything is zero.
+// store fills, writes into the portrait strip - printed once at exit through
+// Platform_AtExitReport, before the log closes. Always, even when everything is
+// zero.
 void NativeRenderer_PrintExitSummary(void);
+
+// The portrait strip (VRAM x 256..511, y 266..295): every write into it is
+// counted, see the note on the definition. StripArm starts the count proper at
+// the first game frame (the boot clear before it is counted on its own);
+// idempotent. StripOwnWrites(1) / (0) brackets the portrait uploader's own
+// writes, which are then counted as "own uploads" and not as hits; it nests.
+void NativeRenderer_StripArm(void);
+void NativeRenderer_StripOwnWrites(int on);
 
 // The internal picture into a caller-owned buffer, BGRA8, no padding. Returns
 // 0 when nothing was read - which is a case that happens, so it is a case that

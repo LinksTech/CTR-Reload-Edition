@@ -254,6 +254,8 @@ static const NativeSwitch s_devSwitches[] = {
     {"--sample-shading", "<off|textured>", "sample shading of the anti-aliasing for comparison (default textured)"},
     {"--level", "<n>", "jump straight into level id n as soon as the main menu is up"},
     {"--driver", "<n>", "driver for the jump with --level or --autoload-track (default 0, Crash)"},
+    {"--level-tour", "<list>", "drive the listed tracks one after another, each started from the main menu like --level / --autoload-track and left after --level-tour-frames race frames like QUIT, then end; list: races (level ids 0..17), containers (every container of the track folder), level ids, container file names, comma-separated"},
+    {"--level-tour-frames", "<n>", "race frames per track of --level-tour (default 600)"},
     {"--setup", "", "first-start screen even when data is there"},
     {"--record", "", "record a replay report under debug/reports/ from boot (the log goes there too)"},
     {"--replay", "<file>", "play a replay"},
@@ -3195,6 +3197,28 @@ int main(int argc, char *argv[])
 				g_cfg_jumpLevel = atoi(argv[++argIndex]);
 				printf("[CTR Native] jumping to level %d\n", g_cfg_jumpLevel);
 			}
+			else if ((strcmp(argv[argIndex], "--level-tour") == 0) && ((argIndex + 1) < argc))
+			{
+				// Many tracks in one run, each one the way --level or
+				// --autoload-track starts it. The list is only kept here; it is
+				// read once the main menu is up, when the track folder has been
+				// scanned. Run by game/DebugMenu.c, beside --level.
+				extern char g_cfg_levelTour[1024];
+
+				snprintf(g_cfg_levelTour, sizeof(g_cfg_levelTour), "%s", argv[++argIndex]);
+				printf("[CTR Native] level tour: '%s'\n", g_cfg_levelTour);
+			}
+			else if ((strcmp(argv[argIndex], "--level-tour-frames") == 0) && ((argIndex + 1) < argc))
+			{
+				extern int g_cfg_levelTourFrames;
+
+				g_cfg_levelTourFrames = atoi(argv[++argIndex]);
+				if (g_cfg_levelTourFrames < 1)
+				{
+					g_cfg_levelTourFrames = 1;
+				}
+				printf("[CTR Native] level tour: %d race frame(s) each\n", g_cfg_levelTourFrames);
+			}
 			else if ((strcmp(argv[argIndex], "--autoload-track") == 0) && ((argIndex + 1) < argc))
 			{
 				// Straight into a CONTAINER track, hands-off - the NITRO-PIT row
@@ -3414,7 +3438,10 @@ int main(int argc, char *argv[])
 			Platform_DumpStateAt(saveStateAt, loadStateAt);
 		}
 
-		if (dumpList != NULL)
+		// The prefix alone as well: --level-tour names its dumps itself
+		// (Platform_DumpRequest) and has no VBlank list. Without a list the
+		// call sets only the prefix.
+		if ((dumpList != NULL) || (dumpPrefix != NULL))
 		{
 			Platform_DumpConfigure(dumpList, dumpPrefix, dumpExit);
 		}

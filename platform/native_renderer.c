@@ -581,6 +581,13 @@ int g_cfg_weaponPoolEmpty = 0;
 // (probe for a full pool). Read by game/MAIN/MainInit.c.
 int g_cfg_instancePool = 0;
 
+// --level-tour <list> and --level-tour-frames <n>: several tracks in one run,
+// each started from the main menu the way --level / --autoload-track start one,
+// left after n race frames the way pause QUIT leaves, and the run ends after
+// the last. Empty: no tour. Read by game/DebugMenu.c, beside --level.
+char g_cfg_levelTour[1024] = "";
+int g_cfg_levelTourFrames = 600;
+
 // --- The VRAM copy window ---------------------------------------------------
 //
 // NativeRenderer_CopyVRAM took its rectangle on trust. Every other VRAM entry
@@ -2662,6 +2669,194 @@ internal void NativeRenderer_ApplyMsaa(void)
 	             NativeRenderer_MsaaName(NativeRenderer_GetMsaa()));
 }
 
+// --- Who writes the portrait strip ------------------------------------------
+//
+// x 256..511, y 266..295 (VRAM halfwords) is where custom character portraits
+// are meant to go: between the NITRO-PIT map tables (rows 264/265) and the
+// second display buffer (from row 296). Nothing the game loads is supposed to
+// land there - the disc, the containers and the code were read and found to
+// leave it alone. This counts what a run actually does there, on the three ways
+// a write reaches VRAM: a copy (LoadImage, or the destination of MoveImage), a
+// clear, and a GPU pack. It only counts - no pixel, no order, no timing changes.
+//
+// Armed at the first game frame (DebugMenu_Frame). The boot clear covers all of
+// VRAM and is not a stranger's write, so everything before that is counted on
+// its own. Restoring a quick state copies all of VRAM back and is counted on
+// its own as well: it brings back what was there, it writes nothing new.
+//
+// The portrait uploader brackets its own writes with
+// NativeRenderer_StripOwnWrites(1) / (0); those are "own uploads", not hits.
+// One line at exit (NativeRenderer_PrintExitSummary), the first hits as they
+// happen.
+#define NATIVE_VRAM_STRIP_X   256
+#define NATIVE_VRAM_STRIP_Y   266
+#define NATIVE_VRAM_STRIP_W   256
+#define NATIVE_VRAM_STRIP_H   30
+#define NATIVE_VRAM_STRIP_SAY 8 // hits logged when they happen
+
+enum
+{
+	NATIVE_STRIP_LOAD,
+	NATIVE_STRIP_MOVE,
+	NATIVE_STRIP_CLEAR,
+	NATIVE_STRIP_GPU,
+	NATIVE_STRIP_PATHS
+};
+
+global_variable const char *const s_stripPathNames[NATIVE_STRIP_PATHS] = {"load", "move", "clear", "gpu"};
+global_variable int s_stripArmed;
+global_variable int s_stripOwn;
+global_variable int s_stripWrites[2][NATIVE_STRIP_PATHS]; // [0] before the first game frame, [1] after
+global_variable int s_stripOwnWrites;
+global_variable int s_stripStateRestores;
+// The first write before the first game frame that is not a clear to 0 (-1:
+// none), said in full at exit; the boot clear itself is the expected one.
+global_variable int s_stripBootPath = -1;
+global_variable int s_stripBootValue;
+global_variable int s_stripBootVBlank;
+global_variable RECT16 s_stripBootRect;
+global_variable int s_stripFirstPath = -1;
+global_variable int s_stripFirstVBlank;
+global_variable RECT16 s_stripFirstRect;
+
+// x, y, w, h are the rectangle as it is written, after any cut to VRAM.
+// clearColor is the halfword a clear writes, -1 for every other way.
+internal void NativeRenderer_NoteStripWrite(int path, int x, int y, int w, int h, int clearColor)
+{
+	if (!((x < NATIVE_VRAM_STRIP_X + NATIVE_VRAM_STRIP_W) && (x + w > NATIVE_VRAM_STRIP_X) && (y < NATIVE_VRAM_STRIP_Y + NATIVE_VRAM_STRIP_H) &&
+	      (y + h > NATIVE_VRAM_STRIP_Y)))
+	{
+		return;
+	}
+
+	if (s_stripOwn > 0)
+	{
+		s_stripOwnWrites++;
+		return;
+	}
+
+	if (!s_stripArmed)
+	{
+		s_stripWrites[0][path]++;
+
+		if (((path != NATIVE_STRIP_CLEAR) || (clearColor != 0)) && (s_stripBootPath < 0))
+		{
+			s_stripBootPath = path;
+			s_stripBootValue = clearColor;
+			s_stripBootVBlank = Platform_GetVBlankCount();
+			s_stripBootRect.x = (s16)x;
+			s_stripBootRect.y = (s16)y;
+			s_stripBootRect.w = (s16)w;
+			s_stripBootRect.h = (s16)h;
+		}
+		return;
+	}
+
+	s_stripWrites[1][path]++;
+
+	int hits = 0;
+
+	for (int i = 0; i < NATIVE_STRIP_PATHS; i++)
+	{
+		hits += s_stripWrites[1][i];
+	}
+
+	if (s_stripFirstPath < 0)
+	{
+		s_stripFirstPath = path;
+		s_stripFirstVBlank = Platform_GetVBlankCount();
+		s_stripFirstRect.x = (s16)x;
+		s_stripFirstRect.y = (s16)y;
+		s_stripFirstRect.w = (s16)w;
+		s_stripFirstRect.h = (s16)h;
+	}
+
+	if (hits <= NATIVE_VRAM_STRIP_SAY)
+	{
+		char value[24] = "";
+
+		if (clearColor >= 0)
+		{
+			SDL_snprintf(value, sizeof(value), " value 0x%04x", (unsigned)clearColor);
+		}
+
+		Platform_Log("[CTR VRAM] strip hit %d: %s (%d,%d %dx%d)%s at vblank %d\n", hits, s_stripPathNames[path], x, y, w, h, value,
+		             Platform_GetVBlankCount());
+	}
+}
+
+// From DebugMenu_Frame, its first line. Idempotent.
+void NativeRenderer_StripArm(void)
+{
+	s_stripArmed = 1;
+}
+
+// See native_renderer.h. Nests, and never goes below zero.
+void NativeRenderer_StripOwnWrites(int on)
+{
+	if (on)
+	{
+		s_stripOwn++;
+	}
+	else if (s_stripOwn > 0)
+	{
+		s_stripOwn--;
+	}
+}
+
+internal void NativeRenderer_PrintStripSummary(void)
+{
+	const int *after = s_stripWrites[1];
+	const int *before = s_stripWrites[0];
+	const int hits = after[NATIVE_STRIP_LOAD] + after[NATIVE_STRIP_MOVE] + after[NATIVE_STRIP_CLEAR] + after[NATIVE_STRIP_GPU];
+	const int early = before[NATIVE_STRIP_LOAD] + before[NATIVE_STRIP_MOVE] + before[NATIVE_STRIP_CLEAR] + before[NATIVE_STRIP_GPU];
+	char first[96];
+	char boot[192];
+	char bracket[48] = "";
+
+	if (s_stripBootPath >= 0)
+	{
+		char value[24] = "";
+
+		if (s_stripBootValue >= 0)
+		{
+			SDL_snprintf(value, sizeof(value), " value 0x%04x", (unsigned)s_stripBootValue);
+		}
+
+		SDL_snprintf(boot, sizeof(boot), "NOT ONLY CLEAR 0: load %d, move %d, clear %d, gpu %d, first %s (%d,%d %dx%d)%s at vblank %d",
+		             before[NATIVE_STRIP_LOAD], before[NATIVE_STRIP_MOVE], before[NATIVE_STRIP_CLEAR], before[NATIVE_STRIP_GPU],
+		             s_stripPathNames[s_stripBootPath], s_stripBootRect.x, s_stripBootRect.y, s_stripBootRect.w, s_stripBootRect.h, value,
+		             s_stripBootVBlank);
+	}
+	else
+	{
+		SDL_snprintf(boot, sizeof(boot), "clear 0x0000 only");
+	}
+
+	// A bracket of the portrait uploader that was opened and never closed:
+	// every write after it was taken for its own and not counted as a hit.
+	if (s_stripOwn != 0)
+	{
+		SDL_snprintf(bracket, sizeof(bracket), "; own bracket open (%d)", s_stripOwn);
+	}
+
+	if (s_stripFirstPath >= 0)
+	{
+		SDL_snprintf(first, sizeof(first), "first %s (%d,%d %dx%d) at vblank %d", s_stripPathNames[s_stripFirstPath], s_stripFirstRect.x,
+		             s_stripFirstRect.y, s_stripFirstRect.w, s_stripFirstRect.h, s_stripFirstVBlank);
+	}
+	else
+	{
+		SDL_snprintf(first, sizeof(first), "first none");
+	}
+
+	Platform_Log("[CTR VRAM] strip x %d..%d y %d..%d: %d write(s) (load %d, move %d, clear %d, gpu %d), %s; own uploads %d; state restores %d; "
+	             "before the first frame %d (%s)%s\n",
+	             NATIVE_VRAM_STRIP_X, NATIVE_VRAM_STRIP_X + NATIVE_VRAM_STRIP_W - 1, NATIVE_VRAM_STRIP_Y, NATIVE_VRAM_STRIP_Y + NATIVE_VRAM_STRIP_H - 1,
+	             hits, after[NATIVE_STRIP_LOAD], after[NATIVE_STRIP_MOVE], after[NATIVE_STRIP_CLEAR], after[NATIVE_STRIP_GPU], first, s_stripOwnWrites,
+	             s_stripStateRestores, early, boot, bracket);
+}
+
 internal void NativeRenderer_MarkVRAMDirty(int x, int y, int w, int h)
 {
 	RECT16 rect;
@@ -2684,6 +2879,7 @@ internal void NativeRenderer_MarkGpuVRAMNewer(int x, int y, int w, int h)
 		return;
 	}
 
+	NativeRenderer_NoteStripWrite(NATIVE_STRIP_GPU, rect.x, rect.y, rect.w, rect.h, -1);
 	NativeRenderer_MarkPagesDirty(rect.x, rect.y, rect.w, rect.h);
 
 	const int tileX0 = rect.x / NATIVE_VRAM_TILE_SIZE;
@@ -3470,6 +3666,8 @@ void NativeRenderer_ClearVRAM(int x, int y, int w, int h, u8 r, u8 g, u8 b)
 	w = clipped.w;
 	h = clipped.h;
 
+	NativeRenderer_NoteStripWrite(NATIVE_STRIP_CLEAR, x, y, w, h, color);
+
 	u16 *dst = s_vram.cpuPixels + x + y * VRAM_WIDTH;
 
 	// clear VRAM region with given color
@@ -4242,6 +4440,9 @@ void NativeRenderer_CopyVRAM(u16 *src, int x, int y, int w, int h, int dst_x, in
 		return;
 	}
 
+	// Only the destination: the source of a move is read, not written.
+	NativeRenderer_NoteStripWrite(fromVram ? NATIVE_STRIP_MOVE : NATIVE_STRIP_LOAD, dst_x + cutLeft, dst_y + cutTop, copyW, copyH, -1);
+
 	src += (x + cutLeft) + (y + cutTop) * stride;
 
 	u16 *dst = s_vram.cpuPixels + (dst_x + cutLeft) + (dst_y + cutTop) * VRAM_WIDTH;
@@ -4338,6 +4539,7 @@ int NativeRenderer_RestoreVRAMState(const void *src, int srcSize)
 	}
 
 	SDL_memcpy(s_vram.cpuPixels, src, sizeof(s_vram.cpuPixels));
+	s_stripStateRestores++; // the portrait strip counter: not a hit, see there
 	// NOTE(aalhendi): Restored VRAM is authoritative PSX state. Host GL caches
 	// are rebuildable, so mark all of VRAM dirty and drop stale bindings.
 	s_vram.cpuDirtyRectCount = 0;
@@ -4469,6 +4671,7 @@ void NativeRenderer_PrintExitSummary(void)
 	             s_fillQuadPeak, s_fillQuadCapacity);
 	Platform_Log("[CTR Pages] at exit: %d fills in all, %d spared, %d of %d tiles named\n", s_pages.refillsTotal, s_pages.fillsSpared, s_pages.namedCount,
 	             NATIVE_PAGE_TILE_COUNT);
+	NativeRenderer_PrintStripSummary();
 }
 
 void NativeRenderer_ReportPresentPath(int vblank)

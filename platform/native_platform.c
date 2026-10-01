@@ -1808,6 +1808,22 @@ global_variable int s_dumpCount;
 global_variable int s_dumpExitAfterLast;
 global_variable const char *s_dumpPrefix = "dump";
 
+// One dump at the end of the current frame, named instead of anchored on a
+// VBlank: --level-tour asks for one per track, at a moment that no list given
+// at the start can know. <prefix>-<name>.tga, the prefix of --dump-prefix. One
+// request is kept; a second one in the same frame replaces it.
+global_variable char s_dumpRequestName[96];
+
+void Platform_DumpRequest(const char *name)
+{
+	if ((name == NULL) || (name[0] == '\0'))
+	{
+		return;
+	}
+
+	snprintf(s_dumpRequestName, sizeof(s_dumpRequestName), "%s", name);
+}
+
 // Anchoring on the VBlank count alone turned out not to be enough.
 //
 // The count fixes how much game time has passed since the process started, and
@@ -1971,6 +1987,18 @@ internal void Platform_DumpIfDue(void)
 	{
 		s_loadStateDone = 1;
 		NativeSaveState_RequestLoad();
+	}
+
+	// A named request (Platform_DumpRequest) is served before the VBlank list
+	// and needs none: the list can end the run, the request never does.
+	if (s_dumpRequestName[0] != '\0')
+	{
+		char path[256];
+
+		snprintf(path, sizeof(path), "%s-%s.tga", s_dumpPrefix, s_dumpRequestName);
+		s_dumpRequestName[0] = '\0';
+		NativeRenderer_SaveVRAM(path, 0, 0, VRAM_WIDTH, VRAM_HEIGHT, 1);
+		Platform_Log("[CTR Dump] %s at VBlank %d (requested)\n", path, Platform_GetVBlankCount());
 	}
 
 	if (s_dumpCount == 0)
