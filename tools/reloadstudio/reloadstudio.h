@@ -146,7 +146,8 @@
 //                  (auto | still), colors (64 | 128), up (y | z), forward
 //                  (z | -z), scale, two_sided (yes | no), out, size (the
 //                  --size percent used, 100 when missing or invalid), icon,
-//                  voices ("" when not given)
+//                  voices ("" when not given), fit (crash | none), reduce
+//                  (auto | off), wheels (on | off)
 //   @value    size-range <lo> <hi>          (no origin)
 //             the --size percentages this model takes, whole numbers inside
 //             50..200, the run around 100; "0 0" = no size fits (the model
@@ -157,6 +158,10 @@
 //   @value    retail-kart <x0> <y0> <z0> <x1> <y1> <z1>   (no origin)
 //             the fixed box of a retail kart in the same units; the page draws
 //             it as the grey size reference next to the model
+//   @value    crash-box <x0> <y0> <z0> <x1> <y1> <z1>   (no origin)
+//             Crash with his kart (retail racer model, birth pose) in the same
+//             units, with ONE DECIMAL ("-33.8"); --fit crash fits the model to
+//             it, the page outlines it about the model
 //   @file     <kind> <state> <name> <bytes>
 //             ply           ok | missing          the model
 //             icon          ok | missing | bad    --icon (bad: not a PNG rldpack reads)
@@ -172,7 +177,15 @@
 //             colors_out, color_error <mean> <max>, part_colors <group> <ranges>,
 //             records, slots, frames, draw_bytes, draw_delta, icon_source <w> <h>,
 //             icon_crop <x> <y> <w> <h>, icon_colors, icon_opaque (of 1144),
-//             voices <"n of 18">
+//             voices <"n of 18">,
+//             fit <factor> <length before> <after> <height before> <after>
+//             <kart | model>: the --fit crash factor (4 significant digits,
+//             %.4g), the lengths and heights in game units (1 decimal; below 1
+//             3 significant digits, %.3g - a model in millimeters); kart = the
+//             model's kart was matched to Crash's, model = the whole model (no
+//             kart found, or --wheels off),
+//             reduced <triangles before> <after> <draw bytes before> <after>:
+//             only when --reduce auto lowered the triangle count
 //   @msg      as above. ids the page reads itself: char-size (error,
 //             "Size N% is outside lo..hi% for this model: <why>. Choose a size in
 //             that range."). Others of make-char, shown as they come: icon-file,
@@ -181,14 +194,25 @@
 //             voice-vag, voice-stereo, voice-silent, voice-clip,
 //             voice-length-line, voice-length-short, voice-source, voice-same,
 //             voice-template, voice-missing, voice-later (always with --voices),
-//             preview, and the ply-*, model-*, name*, usage ... of before
+//             preview, model-reduced (info, with every reduction), and the
+//             ply-*, model-*, name*, usage ... of before
 //   @result   <ok | failed | checked> <output path> <bytes> <sha256>
 //             with --icon the container has a third chunk CICN (612 bytes)
 //   @end      <exit code>
 //
+// info --machine <file.rldchar> (rldpack; the page does not call it yet):
+//   @container <file> <ok | refused> <reason>
+//   @value    name, author, char_version, template, class, wheels (on | off),
+//             flags (0x%08x, only when the CHRI flags carry bits this rldpack
+//             does not know), format - all with origin "container"
+//   @char     triangles, records, colors_out, frames, draw_bytes,
+//             verdict <word> <rule> <detail>, icon <state> <why>
+//
 // Commands the page "Character" calls (always --template 14, Fake Crash):
 //   make-char --machine --check --model <ply> --name <n> --template 14
 //             --class <balanced|acceleration|speed|turning> --size <percent>
+//             [--reduce off] [--wheels off]   (only when unchecked; the
+//             defaults are --reduce auto, --wheels on, --fit crash)
 //             [--icon <png> --icon-preview <prefix>] [--voices <dir>]
 //             --preview <file> [--out <f>]      check; writes only the preview files
 //   make-char --machine --model ... --out <f>  build: the same switches without

@@ -21,8 +21,9 @@
 // carried in 1/16 game units and 1/16 pixels, divisions are C divisions
 // (truncating, defined by the standard), the square root is an integer one.
 // Ties in the depth test keep the triangle drawn first, and the drawing order
-// is fixed (floor, reference kart, model in file order). Only the text comes
-// from GDI, which is the same for the same machine and font settings.
+// is fixed (floor, reference kart, wheels on the model, model in file order,
+// Crash outline). Only the text comes from GDI, which is the same for the
+// same machine and font settings.
 //
 // THE AXES
 //
@@ -67,6 +68,13 @@
 // one floor at y = 0, so heights compare directly. The framing depends on all
 // three poses and the reference, not on the yaw or the pose: turning or
 // changing the pose never zooms.
+//
+// Two additions at the model (both in its coordinates, so they turn with it):
+// the kart wheels the game draws for every driver (RsView_SetWheels; dark
+// boxes at the wheel positions of the reference kart - the game places its
+// wheels by the kart, not by the model), and the size of Crash with his kart
+// as a dashed outline (RsView_SetCrashBox), which make-char fits every model
+// to. The framing includes both.
 
 #include "reloadstudio.h"
 #include "rs_view.h"
@@ -122,6 +130,11 @@ struct RsView {
     // The retail kart (game units).
     int hasRef;
     int ref[6];                // x0 y0 z0 x1 y1 z1, lo <= hi
+    int wheels;                // the game's kart wheels on the model (needs the reference)
+
+    // Crash with his kart (tenths of game units), drawn as an outline.
+    int hasCrash;
+    int crash[6];              // x0 y0 z0 x1 y1 z1, lo <= hi
 
     int pose;
     int yaw;                   // 0..359
@@ -233,6 +246,23 @@ static unsigned long long RsView_Isqrt(unsigned long long n)
 static long long RsView_FloorDiv16(long long v)
 {
     return v >= 0 ? v / 16 : -((-v + 15) / 16);
+}
+
+// Tenths of a game unit -> whole units, rounded down / up (also for negative t).
+static int RsView_TenthsFloor(int t)
+{
+    return t >= 0 ? t / 10 : -((-t + 9) / 10);
+}
+
+static int RsView_TenthsCeil(int t)
+{
+    return -RsView_TenthsFloor(-t);
+}
+
+// Tenths of a game unit -> 1/16 units (truncating, as every division here).
+static long long RsView_TenthsSub(int t)
+{
+    return (long long)t * RS_VIEW_SUB / 10;
 }
 
 static long long RsView_Min3(long long a, long long b, long long c)
@@ -576,6 +606,28 @@ static void RsView_Scene(const struct RsView *v, int w, int h, int labelH, struc
             ylo = v->ref[1];
         if (v->ref[4] > yhi)
             yhi = v->ref[4];
+        // The wheels on the model lie inside the reference box.
+        if (v->wheels && rRef > rModel)
+            rModel = rRef;
+    }
+    if (v->hasCrash) {
+        // Whole units outwards, so that the outline stays inside the framing.
+        long long ax = RsView_TenthsCeil(v->crash[3]) > -RsView_TenthsFloor(v->crash[0])
+                           ? RsView_TenthsCeil(v->crash[3]) : -RsView_TenthsFloor(v->crash[0]);
+        long long az = RsView_TenthsCeil(v->crash[5]) > -RsView_TenthsFloor(v->crash[2])
+                           ? RsView_TenthsCeil(v->crash[5]) : -RsView_TenthsFloor(v->crash[2]);
+        long long rCrash;
+        if (ax < 0)
+            ax = 0;
+        if (az < 0)
+            az = 0;
+        rCrash = (long long)RsView_Isqrt((unsigned long long)(ax * ax + az * az)) + 1;
+        if (rCrash > rModel)
+            rModel = rCrash;
+        if (RsView_TenthsFloor(v->crash[1]) < ylo)
+            ylo = RsView_TenthsFloor(v->crash[1]);
+        if (RsView_TenthsCeil(v->crash[4]) > yhi)
+            yhi = RsView_TenthsCeil(v->crash[4]);
     }
     rMax = rModel > rRef ? rModel : rRef;
     if (v->hasRef) {
@@ -629,8 +681,9 @@ static void RsView_Scene(const struct RsView *v, int w, int h, int labelH, struc
     s->cam.cyq = (long long)(h - labelH) * RS_VIEW_SUB / 2;
 }
 
+// off: s->offRef for the reference kart, s->offModel for the wheels on the model.
 static void RsView_DrawBox(const struct RsViewTarget *t, const struct RsViewScene *s,
-                           const struct RsViewBox *box, COLORREF color)
+                           const struct RsViewBox *box, long long off, COLORREF color)
 {
     // Corner k: x from bit 0, y from bit 1, z from bit 2. Faces in the order
     // -X +X -Y +Y -Z +Z, corners going round each face. The box is closed, so it
@@ -646,7 +699,7 @@ static void RsView_DrawBox(const struct RsViewTarget *t, const struct RsViewScen
 
     for (k = 0; k < 8; k++)
         RsView_Project(&s->cam, (k & 1) ? box->hi[0] : box->lo[0], (k & 2) ? box->hi[1] : box->lo[1],
-                       (k & 4) ? box->hi[2] : box->lo[2], s->offRef, 1, &corner[k]);
+                       (k & 4) ? box->hi[2] : box->lo[2], off, 1, &corner[k]);
     for (f = 0; f < 6; f++) {
         struct RsViewVert tri[3];
         const int r = GetRValue(color) * shade[f] / 100;
@@ -665,6 +718,67 @@ static void RsView_DrawBox(const struct RsViewTarget *t, const struct RsViewScen
         tri[2] = corner[faces[f][3]];
         RsView_Triangle(t, tri, 0);
     }
+}
+
+// A dashed line of square dots, thick pixels wide, from a to b. Depth is
+// interpolated like in RsView_Fill; a dot is drawn where nothing nearer is
+// in the picture, so the model hides the outline behind it. The depth buffer
+// is left as it is (the outline is drawn last).
+static void RsView_DashLine(const struct RsViewTarget *t, const struct RsViewVert *a, const struct RsViewVert *b,
+                            unsigned int pixel, int thick, int dash)
+{
+    const long long dx = b->x - a->x, dy = b->y - a->y;
+    long long steps, i;
+
+    if (a->x < -RS_VIEW_COORD_MAX || a->x > RS_VIEW_COORD_MAX || a->y < -RS_VIEW_COORD_MAX ||
+        a->y > RS_VIEW_COORD_MAX || b->x < -RS_VIEW_COORD_MAX || b->x > RS_VIEW_COORD_MAX ||
+        b->y < -RS_VIEW_COORD_MAX || b->y > RS_VIEW_COORD_MAX)
+        return;
+    // One step per pixel along the longer screen axis.
+    steps = ((dx < 0 ? -dx : dx) > (dy < 0 ? -dy : dy) ? (dx < 0 ? -dx : dx) : (dy < 0 ? -dy : dy)) / RS_VIEW_SUB + 1;
+    for (i = 0; i <= steps; i++) {
+        long long px, py;
+        int z, ox, oy;
+        if ((i / dash) & 1)
+            continue;   // the gap of the dash
+        px = RsView_FloorDiv16(a->x + dx * i / steps) - thick / 2;
+        py = RsView_FloorDiv16(a->y + dy * i / steps) - thick / 2;
+        z = (int)(a->z + (long long)(b->z - a->z) * i / steps);
+        for (oy = 0; oy < thick; oy++) {
+            for (ox = 0; ox < thick; ox++) {
+                const long long x = px + ox, y = py + oy;
+                size_t at;
+                if (x < 0 || y < 0 || x >= t->w || y >= t->h)
+                    continue;
+                at = (size_t)y * (size_t)t->w + (size_t)x;
+                if (z >= t->depth[at])
+                    t->pixels[at] = pixel;
+            }
+        }
+    }
+}
+
+// The outline of Crash's box about the model: its 12 edges, dashed.
+static void RsView_DrawCrash(const struct RsView *v, const struct RsViewTarget *t, const struct RsViewScene *s,
+                             unsigned int pixel)
+{
+    // Edges as pairs of corners (bit 0 x, bit 1 y, bit 2 z, as in RsView_DrawBox).
+    static const int edges[12][2] = {
+        { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 },     // along x
+        { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 },     // along y
+        { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 },     // along z
+    };
+    struct RsViewVert corner[8];
+    const int thick = Rs_Px(1) > 1 ? Rs_Px(1) : 1;
+    const int dash = Rs_Px(5) > 2 ? Rs_Px(5) : 2;
+    int k;
+
+    for (k = 0; k < 8; k++)
+        RsView_Project(&s->cam, RsView_TenthsSub(v->crash[(k & 1) ? 3 : 0]),
+                       RsView_TenthsSub(v->crash[(k & 2) ? 4 : 1]),
+                       RsView_TenthsSub(v->crash[(k & 4) ? 5 : 2]), s->offModel, 1, &corner[k]);
+    for (k = 0; k < 12; k++)
+        RsView_DashLine(t, &corner[edges[k][0]], &corner[edges[k][1]], pixel, thick, dash);
 }
 
 static void RsView_DrawText(struct RsView *v, const RECT *rc, const wchar_t *text, int font, UINT format)
@@ -698,6 +812,31 @@ static void RsView_CenterText(struct RsView *v, const wchar_t *text)
     RsView_DrawText(v, &calc, text, RS_FONT_BODY, DT_WORDBREAK | DT_CENTER);
 }
 
+// A label centred below the lowest projected corner of a box given in 1/16 units.
+static void RsView_BoxLabel(struct RsView *v, const struct RsViewScene *s, const long long *lo, const long long *hi,
+                            long long off, int labelH, const wchar_t *text)
+{
+    struct RsViewVert c8;
+    long long minX = 0, maxX = 0, maxY = 0;
+    RECT r;
+    int k;
+    for (k = 0; k < 8; k++) {
+        RsView_Project(&s->cam, (k & 1) ? hi[0] : lo[0], (k & 2) ? hi[1] : lo[1], (k & 4) ? hi[2] : lo[2], off, 1,
+                       &c8);
+        if (k == 0 || c8.x < minX)
+            minX = c8.x;
+        if (k == 0 || c8.x > maxX)
+            maxX = c8.x;
+        if (k == 0 || c8.y > maxY)
+            maxY = c8.y;
+    }
+    r.left = (int)((minX + maxX) / 2 / RS_VIEW_SUB) - Rs_Px(80);
+    r.right = r.left + 2 * Rs_Px(80);
+    r.top = (int)(maxY / RS_VIEW_SUB) + Rs_Px(4);
+    r.bottom = r.top + labelH;
+    RsView_DrawText(v, &r, text, RS_FONT_SMALL, DT_CENTER | DT_SINGLELINE);
+}
+
 static void RsView_Render(HWND view, struct RsView *v)
 {
     struct RsViewTarget t;
@@ -705,7 +844,7 @@ static void RsView_Render(HWND view, struct RsView *v)
     const unsigned int bg = RsView_Pixel(RS_COL_PAGE);
     const COLORREF page = RS_COL_PAGE;
     const int dark = GetRValue(page) + GetGValue(page) + GetBValue(page) < 3 * 128;
-    const int labelH = v->hasRef ? Rs_Px(20) : 0;
+    const int labelH = (v->hasRef || v->hasCrash) ? Rs_Px(20) : 0;
     size_t i, n = (size_t)v->w * (size_t)v->h;
     int k;
 
@@ -760,7 +899,18 @@ static void RsView_Render(HWND view, struct RsView *v)
         const COLORREF wheel = dark ? RGB(78, 82, 92) : RGB(96, 100, 108);
         int count = RsView_RefParts(v, parts);
         for (k = 0; k < count; k++)
-            RsView_DrawBox(&t, &s, &parts[k], parts[k].wheel ? wheel : body);
+            RsView_DrawBox(&t, &s, &parts[k], s.offRef, parts[k].wheel ? wheel : body);
+    }
+
+    // The game's kart wheels on the model: the wheel boxes of the reference
+    // kart, darker than its grey ones.
+    if (v->hasRef && v->wheels) {
+        struct RsViewBox parts[RS_VIEW_REF_PARTS];
+        const COLORREF tyre = dark ? RGB(34, 36, 42) : RGB(46, 48, 54);
+        int count = RsView_RefParts(v, parts);
+        for (k = 0; k < count; k++)
+            if (parts[k].wheel)
+                RsView_DrawBox(&t, &s, &parts[k], s.offModel, tyre);
     }
 
     // The model, in file order.
@@ -784,28 +934,27 @@ static void RsView_Render(HWND view, struct RsView *v)
         }
     }
 
+    // Crash's size about the model, over everything but what is in front of it.
+    if (v->hasCrash)
+        RsView_DrawCrash(v, &t, &s, RsView_Pixel(RS_COL_ACCENT));
+
     GdiFlush();   // the bits are done; GDI writes the text on top
     if (v->hasRef) {
         // "Retail kart" below the lowest point of its box.
-        struct RsViewVert c8;
-        long long minX = 0, maxX = 0, maxY = 0;
-        RECT r;
-        for (k = 0; k < 8; k++) {
-            RsView_Project(&s.cam, (long long)v->ref[(k & 1) ? 3 : 0] * RS_VIEW_SUB,
-                           (long long)v->ref[(k & 2) ? 4 : 1] * RS_VIEW_SUB,
-                           (long long)v->ref[(k & 4) ? 5 : 2] * RS_VIEW_SUB, s.offRef, 1, &c8);
-            if (k == 0 || c8.x < minX)
-                minX = c8.x;
-            if (k == 0 || c8.x > maxX)
-                maxX = c8.x;
-            if (k == 0 || c8.y > maxY)
-                maxY = c8.y;
+        long long lo[3], hi[3];
+        for (k = 0; k < 3; k++) {
+            lo[k] = (long long)v->ref[k] * RS_VIEW_SUB;
+            hi[k] = (long long)v->ref[k + 3] * RS_VIEW_SUB;
         }
-        r.left = (int)((minX + maxX) / 2 / RS_VIEW_SUB) - Rs_Px(80);
-        r.right = r.left + 2 * Rs_Px(80);
-        r.top = (int)(maxY / RS_VIEW_SUB) + Rs_Px(4);
-        r.bottom = r.top + labelH;
-        RsView_DrawText(v, &r, L"Retail kart", RS_FONT_SMALL, DT_CENTER | DT_SINGLELINE);
+        RsView_BoxLabel(v, &s, lo, hi, s.offRef, labelH, L"Retail kart");
+    }
+    if (v->hasCrash) {
+        long long lo[3], hi[3];
+        for (k = 0; k < 3; k++) {
+            lo[k] = RsView_TenthsSub(v->crash[k]);
+            hi[k] = RsView_TenthsSub(v->crash[k + 3]);
+        }
+        RsView_BoxLabel(v, &s, lo, hi, s.offModel, labelH, L"Crash size");
     }
     if (v->poses[v->pose].count == 0)
         RsView_CenterText(v, L"This pose has no triangles.");
@@ -911,6 +1060,7 @@ static LRESULT CALLBACK RsView_Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     case WM_CREATE:
         v = (struct RsView *)Rs_Alloc(sizeof(struct RsView));
         v->yaw = RS_VIEW_DEFAULT_YAW;
+        v->wheels = 1;
         v->dirty = 1;
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)v);
         return 0;
@@ -1119,6 +1269,41 @@ void RsView_SetReference(HWND view, int x0, int y0, int z0, int x1, int y1, int 
         }
     v->hasRef = box[0] < box[3] && box[1] < box[4] && box[2] < box[5];
     memcpy(v->ref, box, sizeof(box));
+    RsView_Changed(view, v);
+}
+
+void RsView_SetWheels(HWND view, int on)
+{
+    struct RsView *v = RsView_Data(view);
+    if (!v || v->wheels == (on != 0))
+        return;
+    v->wheels = on != 0;
+    RsView_Changed(view, v);
+}
+
+void RsView_SetCrashBox(HWND view, int x0, int y0, int z0, int x1, int y1, int z1)
+{
+    struct RsView *v = RsView_Data(view);
+    int box[6], a;
+    if (!v)
+        return;
+    box[0] = x0; box[1] = y0; box[2] = z0;
+    box[3] = x1; box[4] = y1; box[5] = z1;
+    // Tenths of the s16 range of the model, as for the reference.
+    for (a = 0; a < 6; a++) {
+        if (box[a] < -327680)
+            box[a] = -327680;
+        if (box[a] > 327670)
+            box[a] = 327670;
+    }
+    for (a = 0; a < 3; a++)
+        if (box[a] > box[a + 3]) {
+            int swap = box[a];
+            box[a] = box[a + 3];
+            box[a + 3] = swap;
+        }
+    v->hasCrash = box[0] < box[3] && box[1] < box[4] && box[2] < box[5];
+    memcpy(v->crash, box, sizeof(box));
     RsView_Changed(view, v);
 }
 

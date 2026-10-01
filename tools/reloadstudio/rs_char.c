@@ -12,9 +12,18 @@
 // icon, for the decoded and the converted picture (--icon-preview). These go to
 // files in %TEMP%\Reload Studio that are deleted once they are shown.
 //
-// Size: rldpack reports the sizes this model allows (@value size-range); the
-// slider stays inside them. It is a visual size only - physics and collision
-// follow the driving style.
+// Size: rldpack fits every model to the size of Crash with his kart (--fit
+// crash, its default) and reports the factor (@char fit); 100 % on the slider
+// is that size. It reports the sizes this model allows (@value size-range);
+// the slider stays inside them. It is a visual size only - physics and
+// collision follow the driving style. The preview outlines Crash's size
+// (@value crash-box) about the model.
+//
+// Options: "Reduce automatically" (rldpack's default --reduce auto: a model
+// over the game's draw memory loses triangles until it fits; @char reduced
+// says how many) and "Show kart wheels" (--wheels; off = the game draws no
+// kart wheels for this driver, for models with wheels of their own). Only the
+// switches that differ from rldpack's default are passed.
 //
 // Split: on the left the character and the build, on the right icon and voices
 // and the 3D preview.
@@ -40,6 +49,7 @@
 #define CHAR_POSES         3      // poses in a --preview file
 #define CHAR_IMAGE_CLASS   L"RsCharImage"
 #define CHAR_IMAGE_MAX     16384  // largest edge of a picture the page shows
+#define CHAR_INFO_LINES    3      // lines of the model info at most
 
 // Controls
 #define CHAR_ID_MODEL_LABEL    100
@@ -57,6 +67,11 @@
 #define CHAR_ID_SIZE_VALUE     112
 #define CHAR_ID_SIZE_NOTE      113
 #define CHAR_ID_SIZE_HINT      114
+#define CHAR_ID_REDUCE         115
+#define CHAR_ID_WHEELS         116
+#define CHAR_ID_SIZE_FIT       117
+#define CHAR_ID_SIZE_CRASH     118
+#define CHAR_ID_OPTIONS_LABEL  119
 #define CHAR_ID_ICON_LABEL     120
 #define CHAR_ID_ICON           121
 #define CHAR_ID_ICON_BROWSE    122
@@ -114,6 +129,7 @@ static const int g_charPoseView[CHAR_POSES] = { RS_VIEW_POSE_NEUTRAL, RS_VIEW_PO
 #define CHAR_SIZE_HINT_TEXT L"Visual size only - physics and collision follow the driving style."
 #define CHAR_NAME_RULE_TEXT L"1 to 17 characters: A-Z 0-9 space ! % ' + , - . / : < = > ? _"
 #define CHAR_VOICES_TEXT L"Voices are checked but not packed yet - the driver is silent in the game."
+#define CHAR_FIT_WAIT_TEXT L"The model is fitted to Crash size when it is checked."
 
 // ---------------------------------------------------------------------------
 // State
@@ -146,6 +162,18 @@ struct CharJobData {
     int kart[6];                    // @value kart-box: the model's own kart
     int retailSeen;
     int retail[6];                  // @value retail-kart: the retail kart, the size reference
+    int crashSeen;
+    int crash[6];                   // @value crash-box: Crash with his kart, in tenths of game units
+    wchar_t reduce[48];             // @value reduce: "<auto|off> <origin>"
+    wchar_t fit[48];                // @value fit: "<crash|none> <origin>"
+    wchar_t wheels[48];             // @value wheels: "<on|off> <origin>"
+    int reducedSeen;
+    long reduced[4];                // @char reduced: triangles before, after; draw bytes before, after
+    int fitSeen;
+    wchar_t fitFactor[16];          // @char fit: factor, length before/after, height before/after
+    wchar_t fitLength[2][16];
+    wchar_t fitHeight[2][16];
+    wchar_t fitBasis[16];           // kart | model: what was matched to Crash's length
     wchar_t triangles[32];          // @char triangles (or faces)
     wchar_t parts[160];             // @char parts: "kart 1, driver 2, steering wheel 3"
     wchar_t voices[32];             // @char voices: "<n> of 18"
@@ -163,14 +191,16 @@ static struct {
     HWND modelLabel, model, modelBrowse, modelInfo;
     HWND nameLabel, name, nameNote;
     HWND classLabel, cls, classHelp;
-    HWND sizeLabel, size, sizeValue, sizeNote, sizeHint;
+    HWND sizeLabel, size, sizeValue, sizeNote, sizeHint, sizeFit, sizeCrash;
+    HWND optionsLabel, reduce, wheels;
     HWND iconLabel, icon, iconBrowse, iconClear, iconCaption[CHAR_IMG_COUNT], iconImage[CHAR_IMG_COUNT];
     HWND voicesLabel, voices, voicesBrowse, voicesClear, voicesNote;
     HWND view, pose, viewNote;
     HWND outLabel, out, outBrowse, check, build, headline, msgs, raw, rawToggle, show;
 
     // colours of the labels, for the report
-    COLORREF headColor, nameColor, sizeColor, infoColor, viewColor;
+    COLORREF headColor, nameColor, sizeColor, infoColor, viewColor, fitColor;
+    wchar_t infoFull[CHAR_VAL];     // the model info before Char_FitLines
 
     int applying;                   // fields are being set: trigger no check
     int timer;                      // check waits for the timer
@@ -188,6 +218,8 @@ static struct {
     int kart[6];
     int retailKnown;
     int retail[6];
+    int crashKnown;
+    int crash[6];                   // tenths of game units
     int poseNow;
     int yawNow;
     int previewShown;               // the view shows a model
@@ -320,9 +352,9 @@ static int Char_EndsWith(const wchar_t *path, const wchar_t *ending)
     return n >= e && _wcsicmp(path + n - e, ending) == 0;
 }
 
-// Up to max whole numbers out of the text (separated by anything else),
-// rounded and held to -32768..32767.
-static int Char_Numbers(const wchar_t *s, int *out, int max)
+// Up to max numbers out of the text (separated by anything else), times
+// scale, rounded to whole numbers and held to -32768..32767 times scale.
+static int Char_NumbersScaled(const wchar_t *s, int *out, int max, int scale)
 {
     int n = 0;
     while (*s && n < max) {
@@ -337,14 +369,138 @@ static int Char_Numbers(const wchar_t *s, int *out, int max)
             s++;
             continue;
         }
-        if (v > 32767.0)
-            v = 32767.0;
-        if (v < -32768.0)
-            v = -32768.0;
+        v *= scale;
+        if (v > 32767.0 * scale)
+            v = 32767.0 * scale;
+        if (v < -32768.0 * scale)
+            v = -32768.0 * scale;
         out[n++] = (int)(v < 0 ? v - 0.5 : v + 0.5);
         s = end;
     }
     return n;
+}
+
+// Up to max whole numbers out of the text, rounded and held to -32768..32767.
+static int Char_Numbers(const wchar_t *s, int *out, int max)
+{
+    return Char_NumbersScaled(s, out, max, 1);
+}
+
+// A whole number with a space between groups of three digits: "27 636".
+static void Char_Grouped(wchar_t *out, int cap, long v)
+{
+    wchar_t digits[24];
+    int n, i, o = 0;
+    swprintf(digits, 24, L"%ld", v < 0 ? -v : v);
+    n = (int)wcslen(digits);
+    if (v < 0 && o < cap - 1)
+        out[o++] = L'-';
+    for (i = 0; i < n && o < cap - 1; i++) {
+        if (i > 0 && (n - i) % 3 == 0 && o < cap - 1)
+            out[o++] = L' ';
+        if (o < cap - 1)
+            out[o++] = digits[i];
+    }
+    out[o] = 0;
+}
+
+static int Char_IsChecked(HWND box)
+{
+    return SendMessageW(box, BM_GETCHECK, 0, 0) == BST_CHECKED;
+}
+
+static void Char_SetChecked(HWND box, int on)
+{
+    SendMessageW(box, BM_SETCHECK, on ? BST_CHECKED : BST_UNCHECKED, 0);
+}
+
+// Height the text of a label takes wrapped at width, at most maxLines lines
+// (the rest is cut off at a line boundary).
+static int Char_TextHeight(HWND label, int width, int maxLines)
+{
+    wchar_t *text = Rs_GetText(label);
+    HDC dc = GetDC(label);
+    HFONT font = (HFONT)SendMessageW(label, WM_GETFONT, 0, 0);
+    HGDIOBJ old;
+    TEXTMETRICW tm;
+    RECT rc;
+    int h = Rs_Px(18), lineH;
+
+    if (dc) {
+        old = SelectObject(dc, font ? font : Rs_Font(RS_FONT_SMALL));
+        GetTextMetricsW(dc, &tm);
+        lineH = tm.tmHeight;
+        rc.left = 0;
+        rc.top = 0;
+        rc.right = width;
+        rc.bottom = 0;
+        DrawTextW(dc, text, -1, &rc, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX | DT_EXPANDTABS);
+        h = rc.bottom;
+        if (lineH > 0 && h > lineH * maxLines)
+            h = lineH * maxLines;
+        SelectObject(dc, old);
+        ReleaseDC(label, dc);
+    }
+    Rs_Free(text);
+    return h;
+}
+
+// Puts full into label so that it takes at most maxLines lines at width: as
+// it is when it fits, else cut after a word and ended with "..." - what does
+// not fit is cut off visibly, never silently.
+static void Char_FitLines(HWND label, const wchar_t *full, int width, int maxLines)
+{
+    HDC dc = GetDC(label);
+    HFONT font = (HFONT)SendMessageW(label, WM_GETFONT, 0, 0);
+    HGDIOBJ old;
+    TEXTMETRICW tm;
+    wchar_t buf[CHAR_VAL + 4];
+    size_t n = wcslen(full);
+
+    Char_Copy(buf, CHAR_VAL, full);
+    if (dc && width > 0) {
+        old = SelectObject(dc, font ? font : Rs_Font(RS_FONT_SMALL));
+        GetTextMetricsW(dc, &tm);
+        for (;;) {
+            RECT rc = { 0, 0, width, 0 };
+            DrawTextW(dc, buf, -1, &rc, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX | DT_EXPANDTABS);
+            if (rc.bottom <= tm.tmHeight * maxLines)
+                break;
+            // One word less (and the spaces and dashes before it).
+            while (n > 0 && full[n - 1] != L' ')
+                n--;
+            while (n > 0 && (full[n - 1] == L' ' || full[n - 1] == L'-' || full[n - 1] == L','))
+                n--;
+            if (n == 0)
+                break;
+            memcpy(buf, full, n * sizeof(wchar_t));
+            wcscpy(buf + n, L"...");
+        }
+        SelectObject(dc, old);
+    }
+    if (dc)
+        ReleaseDC(label, dc);
+    Rs_SetText(label, buf);
+}
+
+// Width a check box needs for its text in its font: box, gap, text, a margin.
+static int Char_CheckWidth(HWND box)
+{
+    wchar_t text[128];
+    HDC dc = GetDC(box);
+    HFONT font = (HFONT)SendMessageW(box, WM_GETFONT, 0, 0);
+    HGDIOBJ old;
+    SIZE ext;
+    int n = GetWindowTextW(box, text, 128);
+
+    ext.cx = n * Rs_Px(8);
+    if (dc) {
+        old = SelectObject(dc, font ? font : Rs_Font(RS_FONT_BODY));
+        GetTextExtentPoint32W(dc, text, n, &ext);
+        SelectObject(dc, old);
+        ReleaseDC(box, dc);
+    }
+    return Rs_Px(13 + 4 + 6) + ext.cx;
 }
 
 // The menu font of the game: A-Z, 0-9, space and ! % ' + , - . / : < = > ? _
@@ -899,6 +1055,16 @@ static void Char_ParseLine(wchar_t *line)
                 j->retailSeen = 1;
                 memcpy(j->retail, v, sizeof(j->retail));
             }
+        } else if (wcscmp(key, L"crash-box") == 0) {
+            // Decimals ("-33.8"): kept in tenths.
+            Char_JoinFields(f, n, all, 256);
+            if (Char_NumbersScaled(all, v, 6, 10) == 6) {
+                j->crashSeen = 1;
+                memcpy(j->crash, v, sizeof(j->crash));
+            }
+        } else if (wcscmp(key, L"reduce") == 0 || wcscmp(key, L"fit") == 0 || wcscmp(key, L"wheels") == 0) {
+            wchar_t *dst = key[0] == L'r' ? j->reduce : key[0] == L'f' ? j->fit : j->wheels;
+            Char_JoinFields(f, n, dst, 48);
         }
     } else if (wcscmp(kind, L"char") == 0) {
         const wchar_t *key = Char_Field(f, n, 1);
@@ -908,6 +1074,22 @@ static void Char_ParseLine(wchar_t *line)
             Char_Copy(j->parts, 160, Char_Field(f, n, 3));
         else if (wcscmp(key, L"voices") == 0)
             Char_Copy(j->voices, 32, Char_Field(f, n, 2));
+        else if (wcscmp(key, L"reduced") == 0 && n >= 6) {
+            // <triangles before> <after> <draw bytes before> <after>
+            int i;
+            for (i = 0; i < 4; i++)
+                j->reduced[i] = wcstol(Char_Field(f, n, 2 + i), NULL, 10);
+            j->reducedSeen = 1;
+        } else if (wcscmp(key, L"fit") == 0 && n >= 8) {
+            // <factor> <length before> <after> <height before> <after> <kart|model>
+            j->fitSeen = 1;
+            Char_Copy(j->fitFactor, 16, Char_Field(f, n, 2));
+            Char_Copy(j->fitLength[0], 16, Char_Field(f, n, 3));
+            Char_Copy(j->fitLength[1], 16, Char_Field(f, n, 4));
+            Char_Copy(j->fitHeight[0], 16, Char_Field(f, n, 5));
+            Char_Copy(j->fitHeight[1], 16, Char_Field(f, n, 6));
+            Char_Copy(j->fitBasis, 16, Char_Field(f, n, 7));
+        }
     } else if (wcscmp(kind, L"msg") == 0) {
         const wchar_t *text = Char_Field(f, n, 3);
         const wchar_t *detail = Char_Field(f, n, 4);
@@ -1031,6 +1213,7 @@ static void Char_SizeForget(void)
     g_char.sizeLocked = 0;
     Char_SizeRangeShow();
     Char_SizeNote();
+    Char_SetLabel(g_char.sizeFit, CHAR_FIT_WAIT_TEXT, RS_COL_MUTED, &g_char.fitColor);
 }
 
 // ---------------------------------------------------------------------------
@@ -1074,6 +1257,27 @@ static void Char_Relayout(HWND page)
         Char_Layout(page, rc.right, rc.bottom);
         InvalidateRect(page, NULL, TRUE);
     }
+}
+
+// The model info wraps to at most CHAR_INFO_LINES lines (Char_FitLines); the
+// page is laid out again only when its height changes.
+static void Char_SetInfo(const wchar_t *text, COLORREF color)
+{
+    HWND page = GetParent(g_char.modelInfo);
+    RECT rc;
+    int need;
+
+    Char_Copy(g_char.infoFull, CHAR_VAL, text);
+    Char_SetLabel(g_char.modelInfo, text, color, &g_char.infoColor);
+    GetClientRect(g_char.modelInfo, &rc);
+    if (rc.right <= 0)
+        return;
+    Char_FitLines(g_char.modelInfo, g_char.infoFull, rc.right, CHAR_INFO_LINES);
+    need = Char_TextHeight(g_char.modelInfo, rc.right, CHAR_INFO_LINES);
+    if (need < Rs_Px(18))
+        need = Rs_Px(18);
+    if (need != rc.bottom)
+        Char_Relayout(page);
 }
 
 static int Char_CountMsgs(int severity)
@@ -1131,22 +1335,56 @@ static void Char_ApplyModelInfo(void)
     wchar_t size[32];
 
     if (j->plySeen && wcscmp(j->plyState, L"ok") != 0) {
-        Char_SetLabel(g_char.modelInfo, L"The model file cannot be opened - check the path.", RS_COL_ERROR,
-                      &g_char.infoColor);
+        Char_SetInfo(L"The model file cannot be opened - check the path.", RS_COL_ERROR);
         return;
     }
     if (!j->plySeen) {
-        Char_SetLabel(g_char.modelInfo, L"-", RS_COL_MUTED, &g_char.infoColor);
+        Char_SetInfo(L"-", RS_COL_MUTED);
         return;
     }
     Char_SizeText(size, 32, j->plyBytes < 0 ? 0 : j->plyBytes);
-    if (j->triangles[0] && j->parts[0])
+    if (j->reducedSeen) {
+        // Reduced: what it changed first, then the parts as without it.
+        wchar_t n[4][24];
+        int i;
+        for (i = 0; i < 4; i++)
+            Char_Grouped(n[i], 24, j->reduced[i]);
+        swprintf(t, 512, L"Triangles %ls -> %ls, draw memory %ls -> %ls bytes - reduced automatically%ls%ls (%ls)",
+                 n[0], n[1], n[2], n[3], j->parts[0] ? L" - " : L"", j->parts, size);
+    } else if (j->triangles[0] && j->parts[0])
         swprintf(t, 512, L"%ls triangles - %ls  (%ls)", j->triangles, j->parts, size);
     else if (j->triangles[0])
         swprintf(t, 512, L"%ls triangles  (%ls)", j->triangles, size);
     else
         swprintf(t, 512, L"read, but not converted - see the messages  (%ls)", size);
-    Char_SetLabel(g_char.modelInfo, t, j->parts[0] ? RS_COL_TEXT : RS_COL_WARNING, &g_char.infoColor);
+    Char_SetInfo(t, j->parts[0] ? RS_COL_TEXT : RS_COL_WARNING);
+}
+
+// The line below the slider: what 100 % is for this model (@char fit).
+static void Char_ApplyFit(void)
+{
+    struct CharJobData *j = &g_charJob;
+    wchar_t t[256];
+
+    if (j->fitSeen) {
+        // With a kart its length was matched to Crash's (the driver may stick
+        // out); without one the whole model. With --wheels off rldpack always
+        // takes the whole model, so "model" means "no kart" only while the
+        // wheels are on. The factor as received (4 significant digits: a
+        // model in millimeters is not "x0.00").
+        const int wheelsOff = wcsncmp(j->wheels, L"off", 3) == 0;
+        const wchar_t *basis = (wcscmp(j->fitBasis, L"model") == 0 && !wheelsOff) ? L" - no kart" : L"";
+        swprintf(t, 256, L"Fitted to Crash size: x%ls (%ls -> %ls long)%ls", j->fitFactor, j->fitLength[0],
+                 j->fitLength[1], basis);
+        Char_SetLabel(g_char.sizeFit, t, RS_COL_TEXT, &g_char.fitColor);
+    } else if (wcsncmp(j->fit, L"none", 4) == 0) {
+        Char_SetLabel(g_char.sizeFit, L"Not fitted - the model keeps the size it was exported in.", RS_COL_MUTED,
+                      &g_char.fitColor);
+    } else if (j->plySeen && wcscmp(j->plyState, L"ok") == 0) {
+        Char_SetLabel(g_char.sizeFit, L"Not fitted - see the messages.", RS_COL_MUTED, &g_char.fitColor);
+    } else {
+        Char_SetLabel(g_char.sizeFit, CHAR_FIT_WAIT_TEXT, RS_COL_MUTED, &g_char.fitColor);
+    }
 }
 
 // The line below the voices folder: how many places rldpack filled.
@@ -1192,6 +1430,18 @@ static void Char_ApplyPreview(int seq)
                             g_char.retail[4], g_char.retail[5]);
     else
         RsView_SetReference(g_char.view, 0, 0, 0, 0, 0, 0);
+    // Crash's size as an outline about the model; the game's wheels on it
+    // as the check box says (they need the reference kart).
+    if (j->crashSeen) {
+        g_char.crashKnown = 1;
+        memcpy(g_char.crash, j->crash, sizeof(g_char.crash));
+    }
+    if (g_char.crashKnown)
+        RsView_SetCrashBox(g_char.view, g_char.crash[0], g_char.crash[1], g_char.crash[2], g_char.crash[3],
+                           g_char.crash[4], g_char.crash[5]);
+    else
+        RsView_SetCrashBox(g_char.view, 0, 0, 0, 0, 0, 0);
+    RsView_SetWheels(g_char.view, Char_IsChecked(g_char.wheels));
     g_char.previewShown = 0;
     g_char.previewPoses = 0;
     memset(g_char.previewTris, 0, sizeof(g_char.previewTris));
@@ -1212,8 +1462,14 @@ static void Char_ApplyPreview(int seq)
     for (i = 0; i < CHAR_POSES; i++)
         g_char.previewTris[i] = (unsigned long)RsView_TriangleCount(g_char.view, i);
     RsView_SetPose(g_char.view, g_charPoseView[g_char.poseNow]);
-    Char_ViewNote(g_char.retailKnown ? L"Drag to turn the model. The grey kart is a retail kart for size."
-                                     : L"Drag to turn the model.", RS_COL_MUTED);
+    if (g_char.retailKnown && g_char.crashKnown)
+        Char_ViewNote(L"Drag to turn the model. Grey kart: a retail kart. Dashed box: the size of Crash.",
+                      RS_COL_MUTED);
+    else if (g_char.crashKnown)
+        Char_ViewNote(L"Drag to turn the model. Dashed box: the size of Crash.", RS_COL_MUTED);
+    else
+        Char_ViewNote(g_char.retailKnown ? L"Drag to turn the model. The grey kart is a retail kart for size."
+                                         : L"Drag to turn the model.", RS_COL_MUTED);
 }
 
 // The icon as decoded and as converted, from the --icon-preview files.
@@ -1276,6 +1532,13 @@ static void Char_ShowCheckResult(int exitCode)
                        g_char.rangeHi);
         else
             Rs_AutoLog(L"  size: %d %%, allowed range not reported", g_char.sizeNow);
+        if (g_charJob.fitSeen)
+            Rs_AutoLog(L"  fit: x%ls, %ls -> %ls long, %ls -> %ls tall, by the %ls", g_charJob.fitFactor,
+                       g_charJob.fitLength[0], g_charJob.fitLength[1], g_charJob.fitHeight[0],
+                       g_charJob.fitHeight[1], g_charJob.fitBasis);
+        if (g_charJob.reducedSeen)
+            Rs_AutoLog(L"  reduced: %ld -> %ld triangles, draw memory %ld -> %ld bytes", g_charJob.reduced[0],
+                       g_charJob.reduced[1], g_charJob.reduced[2], g_charJob.reduced[3]);
         if (g_char.previewShown)
             Rs_AutoLog(L"  preview: %d pose(s), %lu/%lu/%lu triangles", g_char.previewPoses,
                        g_char.previewTris[0], g_char.previewTris[1], g_char.previewTris[2]);
@@ -1365,6 +1628,15 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
     Char_ArgsAdd(a, Char_ClassWord());
     Char_ArgsAdd(a, L"--size");
     Char_ArgsAdd(a, a->size);
+    // Only what differs from rldpack's defaults (--reduce auto, --wheels on).
+    if (!Char_IsChecked(g_char.reduce)) {
+        Char_ArgsAdd(a, L"--reduce");
+        Char_ArgsAdd(a, L"off");
+    }
+    if (!Char_IsChecked(g_char.wheels)) {
+        Char_ArgsAdd(a, L"--wheels");
+        Char_ArgsAdd(a, L"off");
+    }
     if (a->icon[0]) {
         Char_ArgsAdd(a, L"--icon");
         Char_ArgsAdd(a, a->icon);
@@ -1420,7 +1692,7 @@ static void Char_NoModel(void)
     g_char.previewPoses = 0;
     RsView_Clear(g_char.view, NULL);
     Char_ViewNote(L"Choose a PLY model - its converted form shows up here.", RS_COL_MUTED);
-    Char_SetLabel(g_char.modelInfo, L"-", RS_COL_MUTED, &g_char.infoColor);
+    Char_SetInfo(L"-", RS_COL_MUTED);
     Char_Headline(L"Choose a PLY model to start", RS_COL_MUTED);
     Char_EmptyText(L"Choose a PLY model. What rldpack finds shows up here.");
     Char_UpdateButtons();
@@ -1566,6 +1838,7 @@ static void Char_CheckDone(HWND page, int exitCode, int seq)
         Char_SizeForget();
     }
     Char_ApplyModelInfo();
+    Char_ApplyFit();
     Char_ApplyVoices();
     Char_ApplyPreview(seq);
     Char_ApplyIcon(seq);
@@ -1875,7 +2148,8 @@ static int Char_WriteReport(const wchar_t *path)
         return 0;
     Char_Put(f, L"Reload Studio - Character page");
     Char_PutText(f, L"model", g_char.model);
-    Char_PutLabel(f, L"model info", g_char.modelInfo, g_char.infoColor);
+    Char_PutLabel(f, L"model info (shown)", g_char.modelInfo, g_char.infoColor);
+    Char_Put(f, L"model info (full): %ls", g_char.infoFull);
     Char_PutText(f, L"name", g_char.name);
     Char_PutLabel(f, L"name note", g_char.nameNote, g_char.nameColor);
     text = Rs_GetText(g_char.cls);
@@ -1891,6 +2165,26 @@ static int Char_WriteReport(const wchar_t *path)
         Char_Put(f, L"size range: (not reported)");
     Char_PutLabel(f, L"size note", g_char.sizeNote, g_char.sizeColor);
     Char_PutText(f, L"size hint", g_char.sizeHint);
+    Char_PutText(f, L"size label", g_char.sizeCrash);
+    Char_PutLabel(f, L"fit line", g_char.sizeFit, g_char.fitColor);
+    Char_Put(f, L"fit (last run): %ls", g_charJob.fit[0] ? g_charJob.fit : L"(not reported)");
+    if (g_charJob.fitSeen)
+        Char_Put(f, L"fitted: x%ls, %ls -> %ls long, %ls -> %ls tall (game units), by the %ls", g_charJob.fitFactor,
+                 g_charJob.fitLength[0], g_charJob.fitLength[1], g_charJob.fitHeight[0], g_charJob.fitHeight[1],
+                 g_charJob.fitBasis);
+    else
+        Char_Put(f, L"fitted: (not reported)");
+    Char_Put(f, L"option Reduce automatically: %ls (%ls)", Char_IsChecked(g_char.reduce) ? L"on" : L"off",
+             Char_IsChecked(g_char.reduce) ? L"rldpack's default" : L"passed as --reduce off");
+    Char_Put(f, L"reduce (last run): %ls", g_charJob.reduce[0] ? g_charJob.reduce : L"(not reported)");
+    if (g_charJob.reducedSeen)
+        Char_Put(f, L"reduced: %ld -> %ld triangles, draw memory %ld -> %ld bytes", g_charJob.reduced[0],
+                 g_charJob.reduced[1], g_charJob.reduced[2], g_charJob.reduced[3]);
+    else
+        Char_Put(f, L"reduced: (not reported)");
+    Char_Put(f, L"option Show kart wheels: %ls (%ls)", Char_IsChecked(g_char.wheels) ? L"on" : L"off",
+             Char_IsChecked(g_char.wheels) ? L"rldpack's default" : L"passed as --wheels off");
+    Char_Put(f, L"wheels (last run): %ls", g_charJob.wheels[0] ? g_charJob.wheels : L"(not reported)");
     Char_PutText(f, L"icon", g_char.icon);
     for (i = 0; i < CHAR_IMG_COUNT; i++) {
         const struct CharImage *img = &g_char.image[i];
@@ -1912,6 +2206,13 @@ static int Char_WriteReport(const wchar_t *path)
                  g_char.retail[3], g_char.retail[4], g_char.retail[5]);
     else
         Char_Put(f, L"retail kart: (not reported)");
+    if (g_char.crashKnown)
+        Char_Put(f, L"crash box: %.1f %.1f %.1f %.1f %.1f %.1f", g_char.crash[0] / 10.0, g_char.crash[1] / 10.0,
+                 g_char.crash[2] / 10.0, g_char.crash[3] / 10.0, g_char.crash[4] / 10.0, g_char.crash[5] / 10.0);
+    else
+        Char_Put(f, L"crash box: (not reported)");
+    Char_Put(f, L"preview wheels: %ls", !Char_IsChecked(g_char.wheels) ? L"hidden"
+                                        : g_char.retailKnown ? L"shown" : L"none (no retail kart reported)");
     if (g_char.previewShown)
         Char_Put(f, L"preview: %d pose(s), triangles %lu/%lu/%lu", g_char.previewPoses, g_char.previewTris[0],
                  g_char.previewTris[1], g_char.previewTris[2]);
@@ -2006,6 +2307,32 @@ static int Char_AutoSize(HWND page, const wchar_t *arg)
     return RS_AUTO_DONE;
 }
 
+// "reduce on|off", "wheels on|off": the check box as when clicked, then the
+// check at once (as for "size"), so that a following "shot" shows its result.
+static int Char_AutoOption(HWND page, HWND box, const wchar_t *verb, const wchar_t *arg)
+{
+    int on, r;
+    if (_wcsicmp(arg, L"on") == 0)
+        on = 1;
+    else if (_wcsicmp(arg, L"off") == 0)
+        on = 0;
+    else {
+        Rs_AutoLog(L"  %ls: say on or off", verb);
+        return RS_AUTO_FAIL;
+    }
+    Char_SetChecked(box, on);
+    if (box == g_char.wheels)
+        RsView_SetWheels(g_char.view, on);
+    Rs_AutoLog(L"  %ls: %ls", verb, on ? L"on" : L"off");
+    r = Char_Check(page);
+    if (r > 0)
+        return RS_AUTO_WAIT;
+    if (r < 0)
+        Rs_AutoLog(L"  %ls: %ls", verb,
+                   g_char.jobId ? L"checked after the running build" : L"not checked - no model is chosen");
+    return RS_AUTO_DONE;
+}
+
 static int Char_AutoPose(const wchar_t *arg)
 {
     int i;
@@ -2063,8 +2390,7 @@ static void Char_Create(HWND page)
     g_char.modelLabel = Rs_Label(page, CHAR_ID_MODEL_LABEL, L"Model (PLY)", RS_FONT_BOLD);
     g_char.model = Rs_Edit(page, CHAR_ID_MODEL, L"", 0);
     g_char.modelBrowse = Rs_Button(page, CHAR_ID_MODEL_BROWSE, L"Browse...");
-    g_char.modelInfo = Rs_Label(page, CHAR_ID_MODEL_INFO, L"-", RS_FONT_SMALL);
-    Char_Ellipsis(g_char.modelInfo);
+    g_char.modelInfo = Rs_Label(page, CHAR_ID_MODEL_INFO, L"-", RS_FONT_SMALL);   // wraps (Char_Layout)
 
     g_char.nameLabel = Rs_Label(page, CHAR_ID_NAME_LABEL, L"Name", RS_FONT_BOLD);
     g_char.name = Rs_Edit(page, CHAR_ID_NAME, L"", ES_UPPERCASE);
@@ -2097,7 +2423,20 @@ static void Char_Create(HWND page)
     g_char.sizeHint = Rs_Label(page, CHAR_ID_SIZE_HINT, CHAR_SIZE_HINT_TEXT, RS_FONT_SMALL);
     Rs_SetTextColor(g_char.sizeHint, RS_COL_MUTED);
     Char_Ellipsis(g_char.sizeHint);
+    g_char.sizeCrash = Rs_Label(page, CHAR_ID_SIZE_CRASH, L"100 % = Crash size", RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.sizeCrash, RS_COL_MUTED);
+    Char_Ellipsis(g_char.sizeCrash);
+    g_char.sizeFit = Rs_Label(page, CHAR_ID_SIZE_FIT, CHAR_FIT_WAIT_TEXT, RS_FONT_SMALL);
+    Char_Ellipsis(g_char.sizeFit);
+    g_char.fitColor = RS_COL_MUTED;
+    Rs_SetTextColor(g_char.sizeFit, g_char.fitColor);
     g_char.sizeNow = CHAR_SIZE_DEFAULT;
+
+    g_char.optionsLabel = Rs_Label(page, CHAR_ID_OPTIONS_LABEL, L"Options", RS_FONT_BOLD);
+    g_char.reduce = Rs_Check(page, CHAR_ID_REDUCE, L"Reduce automatically");
+    g_char.wheels = Rs_Check(page, CHAR_ID_WHEELS, L"Show kart wheels");
+    Char_SetChecked(g_char.reduce, 1);
+    Char_SetChecked(g_char.wheels, 1);
 
     g_char.iconLabel = Rs_Label(page, CHAR_ID_ICON_LABEL, L"Icon (PNG)", RS_FONT_BOLD);
     g_char.icon = Rs_Edit(page, CHAR_ID_ICON, L"", 0);
@@ -2178,7 +2517,7 @@ static void Char_Layout(HWND page, int w, int h)
     int browseW = Rs_Px(100), clearW = Rs_Px(72), labelW = Rs_Px(112);
     int built = g_char.built[0] != 0;
     RECT card, in;
-    int x, y, width, fieldW, listBottom, factor, boxW, boxH, i;
+    int x, y, width, fieldW, listBottom, factor, boxW, boxH, i, reduceW, wheelsW, infoH;
 
     Rs_CardClear(page);
 
@@ -2194,8 +2533,11 @@ static void Char_Layout(HWND page, int w, int h)
     Char_PlaceField(g_char.modelLabel, g_char.model, in.left, labelW, y + Rs_Px(2), fieldW - browseW - Rs_Px(8));
     MoveWindow(g_char.modelBrowse, in.right - browseW, y, browseW, Rs_Px(32), TRUE);
     y += Rs_Px(34);
-    MoveWindow(g_char.modelInfo, x, y, fieldW, Rs_Px(18), TRUE);
-    y += Rs_Px(26);
+    // One line, or up to CHAR_INFO_LINES when the text needs them.
+    Char_FitLines(g_char.modelInfo, g_char.infoFull, fieldW, CHAR_INFO_LINES);
+    infoH = Char_TextHeight(g_char.modelInfo, fieldW, CHAR_INFO_LINES);
+    MoveWindow(g_char.modelInfo, x, y, fieldW, infoH > Rs_Px(18) ? infoH : Rs_Px(18), TRUE);
+    y += Rs_Px(26) + (infoH > Rs_Px(18) ? infoH - Rs_Px(18) : 0);
     Char_PlaceField(g_char.nameLabel, g_char.name, in.left, labelW, y, Rs_Px(220) < fieldW ? Rs_Px(220) : fieldW);
     y += Rs_Px(30);
     MoveWindow(g_char.nameNote, x, y, fieldW, Rs_Px(18), TRUE);
@@ -2209,10 +2551,26 @@ static void Char_Layout(HWND page, int w, int h)
     MoveWindow(g_char.size, x - Rs_Px(4), y, fieldW - Rs_Px(64), Rs_Px(30), TRUE);
     MoveWindow(g_char.sizeValue, in.right - Rs_Px(60), y + Rs_Px(4), Rs_Px(60), Rs_Px(20), TRUE);
     y += Rs_Px(32);
+    // What 100 % is: in the label column under "Size", the fit beside it.
+    MoveWindow(g_char.sizeCrash, in.left, y, labelW, Rs_Px(18), TRUE);
+    MoveWindow(g_char.sizeFit, x, y, fieldW, Rs_Px(18), TRUE);
+    y += Rs_Px(20);
     MoveWindow(g_char.sizeNote, x, y, fieldW, Rs_Px(18), TRUE);
     y += Rs_Px(20);
     MoveWindow(g_char.sizeHint, x, y, fieldW, Rs_Px(18), TRUE);
-    y += Rs_Px(18);
+    y += Rs_Px(26);
+    // Both check boxes in one row while they fit, else one below the other.
+    reduceW = Char_CheckWidth(g_char.reduce);
+    wheelsW = Char_CheckWidth(g_char.wheels);
+    MoveWindow(g_char.optionsLabel, in.left, y + Rs_Px(2), labelW, Rs_Px(20), TRUE);
+    MoveWindow(g_char.reduce, x, y, reduceW < fieldW ? reduceW : fieldW, Rs_Px(24), TRUE);
+    if (reduceW + Rs_Px(12) + wheelsW <= fieldW) {
+        MoveWindow(g_char.wheels, x + reduceW + Rs_Px(12), y, wheelsW, Rs_Px(24), TRUE);
+    } else {
+        y += Rs_Px(26);
+        MoveWindow(g_char.wheels, x, y, wheelsW < fieldW ? wheelsW : fieldW, Rs_Px(24), TRUE);
+    }
+    y += Rs_Px(24);
     card.bottom = y + Rs_Px(16);
     Rs_CardAdd(page, &card, L"Character");
 
@@ -2329,6 +2687,17 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
     case CHAR_ID_CLASS:
         if (code == CBN_SELCHANGE)
             Char_Changed(page);
+        break;
+    case CHAR_ID_REDUCE:
+        if (code == BN_CLICKED)
+            Char_Changed(page);
+        break;
+    case CHAR_ID_WHEELS:
+        // The preview follows at once; the check follows as for every field.
+        if (code == BN_CLICKED) {
+            RsView_SetWheels(g_char.view, Char_IsChecked(g_char.wheels));
+            Char_Changed(page);
+        }
         break;
     case CHAR_ID_VIEW:
         if (code == RS_VIEW_N_YAW)
@@ -2493,6 +2862,10 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         Rs_AutoLog(L"  build: not started");
         return RS_AUTO_FAIL;
     }
+    if (wcscmp(verb, L"reduce") == 0)
+        return Char_AutoOption(page, g_char.reduce, verb, arg);
+    if (wcscmp(verb, L"wheels") == 0)
+        return Char_AutoOption(page, g_char.wheels, verb, arg);
     if (wcscmp(verb, L"pose") == 0)
         return Char_AutoPose(arg);
     if (wcscmp(verb, L"turn") == 0)

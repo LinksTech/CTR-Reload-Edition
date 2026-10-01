@@ -11,6 +11,8 @@
 //                        WS_CHILD | WS_VISIBLE, ..., page, (HMENU)id, instance, NULL);
 //   RsView_LoadPreview(view, path);                  after every check
 //   RsView_SetReference(view, <retail kart box>);    fixed retail size, see below
+//   RsView_SetCrashBox(view, <Crash box>);           size outline about the model
+//   RsView_SetWheels(view, 0 | 1);                   the game's kart wheels on the model
 //   RsView_SetPose(view, 0..2);  RsView_SetYaw(view, degrees);
 //
 // The window text is shown while there is no model (as in the message list),
@@ -70,6 +72,19 @@ int  RsView_GetYaw(HWND view);   // 0..359
 // kart"; its outline is exactly this box. Values are clamped to 16 bits. A box
 // with no extent on one axis (e.g. all zero) removes the reference.
 void RsView_SetReference(HWND view, int x0, int y0, int z0, int x1, int y1, int z1);
+
+// The kart wheels the game draws for this driver: on = dark wheels at the
+// wheel positions of the reference kart (the same boxes as its grey wheels),
+// placed on the model; off = none. They need the reference; a new view has
+// them on.
+void RsView_SetWheels(HWND view, int on);
+
+// The size of Crash with his kart ("@value crash-box"), in TENTHS of a game
+// unit (the line carries one decimal). It is drawn as a dashed outline about
+// the model, labelled "Crash size", hidden where the model is in front of it.
+// Values are clamped to 16 bits of game units. A box with no extent on one
+// axis (e.g. all zero) removes the outline.
+void RsView_SetCrashBox(HWND view, int x0, int y0, int z0, int x1, int y1, int z1);
 
 // Drops the model and shows message instead (NULL or "": the window text).
 void RsView_Clear(HWND view, const wchar_t *message);
