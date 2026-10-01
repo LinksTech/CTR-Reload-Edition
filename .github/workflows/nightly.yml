@@ -3,7 +3,7 @@
 # Every day at 21:00 UTC, and by hand (Actions -> Nightly -> Run workflow):
 # builds dev and replaces the one pre-release "nightly-builds" with exactly
 # the four files of every release (see build.yml): the programs
-# ctr_native.exe and alphamaker.exe, and LICENSE and THIRD_PARTY_NOTICES.md,
+# ctr_native.exe and ReloadStudio.exe, and LICENSE and THIRD_PARTY_NOTICES.md,
 # because the licenses must travel with the programs. If dev has not changed
 # since the last nightly, the run ends after the check and nothing is built
 # or replaced.
@@ -133,9 +133,9 @@ jobs:
           case "$name" in CTR-Reload-?*-?*) ;; *) echo "unexpected package name: $name"; exit 1 ;; esac
           [ "$id" = "${SHA:0:12}" ] || { echo "build id $id is not the dev commit ${SHA:0:12}"; exit 1; }
           mkdir -p out
-          unzip -j -o "$zip" "$name/ctr_native.exe" "$name/alphamaker.exe" \
+          unzip -j -o "$zip" "$name/ctr_native.exe" "$name/ReloadStudio.exe" \
             "$name/LICENSE" "$name/THIRD_PARTY_NOTICES.md" -d out
-          for f in ctr_native.exe alphamaker.exe LICENSE THIRD_PARTY_NOTICES.md; do
+          for f in ctr_native.exe ReloadStudio.exe LICENSE THIRD_PARTY_NOTICES.md; do
             [ -s "out/$f" ] || { echo "missing or empty in the package: $f"; exit 1; }
           done
           ls -l out
@@ -185,7 +185,7 @@ jobs:
           if gh api "repos/$repo/git/ref/tags/nightly-builds" > /dev/null 2>&1; then
             gh api -X DELETE "repos/$repo/git/refs/tags/nightly-builds"
           fi
-          gh release create nightly-builds out/ctr_native.exe out/alphamaker.exe \
+          gh release create nightly-builds out/ctr_native.exe out/ReloadStudio.exe \
             out/LICENSE out/THIRD_PARTY_NOTICES.md -R "$repo" \
             --target "$SHA" \
             --title "Nightly build — $(date -u +%Y-%m-%d) ($ID)" \

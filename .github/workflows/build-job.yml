@@ -108,7 +108,7 @@ jobs:
 
       # Output: dist/CTR-Reload-<version without spaces>-<build id>.zip; its
       # top folder has the same name and holds ctr_native.exe (with its .pdb),
-      # alphamaker.exe, README.txt, RELEASE-NOTES.txt, LICENSE,
+      # ReloadStudio.exe, README.txt, RELEASE-NOTES.txt, LICENSE,
       # THIRD_PARTY_NOTICES.md and the source zip (the list is in package.sh).
       - name: Package
         shell: bash
