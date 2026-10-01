@@ -52,10 +52,12 @@
 #endif
 
 typedef unsigned char u8;
+typedef unsigned short u16;
 typedef unsigned int u32;
 typedef unsigned long long u64;
 typedef signed long long s64;
 typedef signed short s16;
+typedef signed int s32;
 
 #define RLD_ARRAY_COUNT(a) ((int)(sizeof(a) / sizeof((a)[0])))
 
@@ -63,6 +65,7 @@ typedef signed short s16;
 // is the side that writes. The game pulls in the same file without it.
 #define RLDTRACK_WITH_BUILDER
 #include <rldtrack.inc>
+#include <rldchar.inc>
 
 // Build ID (CTR_NATIVE_BUILD_ID), generated on every build - see Rld_Usage.
 #include "ctr_build_id.h"
@@ -566,6 +569,15 @@ static u8 *Rld_Build(const struct RldBuildInput *in, size_t *sizeOut, const char
 // The help is further down, but `build` already needs it: whoever forgets the
 // required arguments gets the whole help and not one line.
 static void Rld_Usage(void);
+
+// Characters (.rldchar): make-char and its info, verify, self-test and help are in
+// tools/rldpack_char.inc, included near the end of this file, after every helper
+// it uses. info, verify, selftest and the help call into it from here on.
+static int RldChar_MakeCommand(int argc, char **argv);
+static int RldChar_InfoCommand(const char *path, int machine);
+static int RldChar_VerifyCommand(const char *path);
+static int RldChar_SelfTest(void);
+static void RldChar_Usage(FILE *out);
 
 
 //========================================================================================
@@ -4588,6 +4600,25 @@ static void Rld_PrintParm(const struct RldParm *parm)
 	}
 }
 
+// info and verify choose the container type by its first 8 bytes, never by the
+// name. Only the RLDCHAR magic (with its NUL) leads to the character reader;
+// a track, a file shorter than 8 bytes or a foreign one takes the track path
+// exactly as before, with the same texts.
+static int Rld_IsCharFile(const char *path)
+{
+	u8 magic[8];
+	FILE *file = fopen(path, "rb");
+	int isChar = 0;
+
+	if (file != NULL)
+	{
+		isChar = (fread(magic, 1, sizeof(magic), file) == sizeof(magic)) && (memcmp(magic, RLDCHAR_MAGIC, 8) == 0);
+		fclose(file);
+	}
+
+	return isChar;
+}
+
 static int Cmd_Info(int argc, char *argv[], int full)
 {
 	struct RldReader reader;
@@ -4603,6 +4634,11 @@ static int Cmd_Info(int argc, char *argv[], int full)
 	{
 		fprintf(stderr, "rldpack %s <file.rldtrack>\n", full ? "verify" : "info");
 		return 2;
+	}
+
+	if (Rld_IsCharFile(argv[0]))
+	{
+		return full ? RldChar_VerifyCommand(argv[0]) : RldChar_InfoCommand(argv[0], 0);
 	}
 
 	error = Rld_Open(&reader, argv[0]);
@@ -6018,6 +6054,10 @@ static int Cmd_Selftest(void)
 	// MAKE: model ID, spawn table, SCA -> SNDB, track.txt.
 	failed |= Rld_SelftestMake();
 
+	// MAKE-CHAR: PLY, the chain, the model rules, CHRI (tools/rldpack_char.inc).
+	// It counts its failed cases; here only "any" matters.
+	failed |= (RldChar_SelfTest() != 0);
+
 	printf(failed ? "\nSelf-test FAILED.\n" : "\nSelf-test passed.\n");
 	return failed;
 }
@@ -6036,8 +6076,11 @@ static void Rld_Usage(void)
 #ifndef CTR_NATIVE_BUILD_ID
 #define CTR_NATIVE_BUILD_ID "unknown"
 #endif
-	// The same version and build ID as the game and the Alpha-Maker (the packaging script checks it here).
-	printf("rldpack - packer for .rldtrack track containers, format 4.1 - CTR Reload %s (%s)\n\n", CTR_NATIVE_VERSION, CTR_NATIVE_BUILD_ID);
+	// The same version and build ID as the game and the Alpha-Maker. The build ID stays
+	// an argument of its own: the packaging script looks for it in alphamaker.exe as a
+	// string that ends there (tools/package/package.sh), not in this help.
+	printf("rldpack - packer for .rldtrack track containers (format 4.1) and .rldchar character containers - CTR Reload %s (%s)\n\n",
+	       CTR_NATIVE_VERSION, CTR_NATIVE_BUILD_ID);
 
 	printf("  The same program runs inside the Alpha-Maker: where this help says\n");
 	printf("  \"rldpack <command>\", \"alphamaker.exe --rldpack <command>\" works the same.\n\n");
@@ -6045,10 +6088,13 @@ static void Rld_Usage(void)
 	printf("COMMANDS\n");
 	printf("  make     <folder>           build a container from a track folder, see below\n");
 	printf("  build    ...                build a container from single files, see below\n");
+	printf("  make-char ...               build a character (.rldchar) from a PLY model, see below\n");
 	printf("  info     <file>             show the format, META and PARM, leaves LEVD/VRMD untouched\n");
 	printf("  verify   <file>             check every chunk against its hash, SNDB and PARM\n");
 	printf("                              with the game's own reader, and warn if the track\n");
 	printf("                              lacks the data of a declared ctr or crystal mode\n");
+	printf("                              info and verify also read .rldchar files (chosen\n");
+	printf("                              by the first bytes, not by the name)\n");
 	printf("  selftest                    check SHA-256 and the build against fixed cases\n\n");
 	printf("  --machine                   with any command: also print lines for a program\n");
 	printf("                              (the Alpha-Maker), see tools/alphamaker/alphamaker.h.\n");
@@ -6090,6 +6136,8 @@ static void Rld_Usage(void)
 	printf("    modes = race\n");
 	printf("    reverb = 2\n");
 	printf("\n");
+
+	RldChar_Usage(stdout);
 
 	printf("BUILD - REQUIRED\n");
 	printf("  --lev <file>                track geometry (.lev), 16 MB at most\n");
@@ -6180,6 +6228,13 @@ static int Cmd_InfoMachine(int argc, char *argv[])
 		char number[24];
 		char format[16];
 
+		// A character speaks for itself, in its own lines.
+		if (Rld_IsCharFile(argv[f]))
+		{
+			RldChar_InfoCommand(argv[f], 1);
+			continue;
+		}
+
 		error = Rld_Open(&reader, argv[f]);
 		if (error != NULL)
 		{
@@ -6237,6 +6292,12 @@ static int Cmd_InfoMachine(int argc, char *argv[])
 	return 0;
 }
 
+// CHARACTERS: make-char, and info, verify, self-test and help for .rldchar. Here,
+// after every helper it uses (s_machine, Rld_Emit, Rld_Say, Rld_ReadFile, Rld_IsUtf8,
+// Rld_AddChunk, RLD_PATH_MAX, Rld_EndsWithNoCase); its entry points are declared at
+// the head of COMMANDS. The reader and the model check are include/rldchar.inc.
+#include "rldpack_char.inc"
+
 // Searched for --machine and removed before a command sees the arguments:
 // otherwise make would report an unknown argument before the machine is on.
 static int Rld_MainCommand(int argc, char *argv[]);
@@ -6279,7 +6340,8 @@ int main(int argc, char *argv[])
 		result = Rld_MainCommand(argc, argv);
 	}
 
-	if ((result != 0) && !s_machineResult && (argc >= 2) && ((strcmp(argv[1], "make") == 0) || (strcmp(argv[1], "build") == 0)))
+	if ((result != 0) && !s_machineResult && (argc >= 2) &&
+	    ((strcmp(argv[1], "make") == 0) || (strcmp(argv[1], "build") == 0) || (strcmp(argv[1], "make-char") == 0)))
 	{
 		Rld_Emit("result", "failed", "", "0", "", (const char *)NULL);
 	}
@@ -6318,6 +6380,10 @@ static int Rld_MainCommand(int argc, char *argv[])
 	if (strcmp(argv[1], "make") == 0)
 	{
 		return Cmd_Make(argc - 2, &argv[2], argv[0]);
+	}
+	if (strcmp(argv[1], "make-char") == 0)
+	{
+		return RldChar_MakeCommand(argc - 2, &argv[2]);
 	}
 	if (strcmp(argv[1], "info") == 0)
 	{

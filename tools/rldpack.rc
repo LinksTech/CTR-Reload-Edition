@@ -50,14 +50,14 @@ BEGIN
 		BLOCK "040904b0"
 		BEGIN
 			VALUE "CompanyName",      "CTR Reload"
-			VALUE "FileDescription",  "rldpack - packer for .rldtrack track containers"
+			VALUE "FileDescription",  "rldpack - packer for .rldtrack track and .rldchar character containers"
 			VALUE "FileVersion",      "0.1.0.0"
 			VALUE "InternalName",     "rldpack"
 			VALUE "LegalCopyright",   "CTR Reload"
 			VALUE "OriginalFilename", "rldpack.exe"
 			VALUE "ProductName",      "CTR Reload"
 			VALUE "ProductVersion",   "0.1.0.0"
-			VALUE "Comments",         "Builds and checks .rldtrack containers, format 4.1."
+			VALUE "Comments",         "Builds and checks .rldtrack track containers (format 4.1) and .rldchar character containers."
 		END
 	END
 	BLOCK "VarFileInfo"
