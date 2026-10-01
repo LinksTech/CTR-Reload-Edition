@@ -10078,7 +10078,8 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "                              with a floor; off: such a model is refused\n");
 	fprintf(out, "                              (model-tris)\n");
 	fprintf(out, "  --repair auto|off           auto (default): weld split corners, drop\n");
-	fprintf(out, "                              triangles without area and doubles, turn faces\n");
+	fprintf(out, "                              triangles without area and doubles, split\n");
+	fprintf(out, "                              triangles at cracks (T-junctions), turn faces\n");
 	fprintf(out, "                              outward, close holes of up to %u edges; off: the\n", RLDREP_HOLE_MAX_EDGES_DEFAULT);
 	fprintf(out, "                              surface as exported\n");
 	fprintf(out, "  --open-parts two-sided|one-sided\n");

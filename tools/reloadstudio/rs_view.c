@@ -33,8 +33,10 @@
 // (the file format is described at "--preview" in tools/rldpack_char.inc:
 // "+Y up, +Z forward, +X the driver's left"; RldMk_Axes maps the PLY axes by a
 // proper rotation; the records are "X, Z (forward), Y (up)"): the ground is
-// y = 0, the hip sits at y = 16 (RLDMK_HIP_Y), the retail kart's bottom at
-// y = 6. The system is right-handed. The view keeps that: y is drawn upwards, so the
+// y = 0; with --fit crash the kart's bottom stands at y = 5.6 like the
+// dummy's (RLDDUM_KART_BOTTOM), and the poses turn the driver about the seat
+// of the reference kart (RLDDUM_SEAT, tools/rldpack_dummy.inc). The system is
+// right-handed. The view keeps that: y is drawn upwards, so the
 // driver stands upright, and the projection below contains no mirror - a
 // triangle seen from the side of its right-hand normal runs counter-clockwise
 // on screen.
