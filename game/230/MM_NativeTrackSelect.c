@@ -99,6 +99,15 @@ void MM_NativeTrackSelect_SetChosen(int chosen)
 	}
 }
 
+// The marker for code outside this file (MM_NATIVE_CHOSEN_*, 0 = none). The
+// driver select asks it before the track select has set CRYSTAL_CHALLENGE or
+// TOKEN_RACE: the custom characters are offered only where the marker is
+// neither CRYSTAL nor CTR (NativeChar_ModeAllowed, platform/native_chars.c).
+int MM_NativeTrackSelect_Chosen(void)
+{
+	return s_nativeTrackSelectChosen;
+}
+
 internal int MM_NativeTrackSelect_Crystal(void)
 {
 	return s_nativeTrackSelectChosen == MM_NATIVE_CHOSEN_CRYSTAL;

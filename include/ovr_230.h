@@ -243,12 +243,53 @@ void MM_NativeTrackSelect_SetChosen(int chosen);
 void MM_NativeTrackSelect_Hook(void);
 void MM_NativeTrackSelect_MenuProc(struct RectMenu *menu);
 
+// The NITRO-PIT row chosen in the race type box: 0 or MM_NATIVE_CHOSEN_*. The
+// mode rule of the driver select reads it (NativeChar_ModeAllowed).
+int MM_NativeTrackSelect_Chosen(void);
+
 // Which mode the list of the track screen provides (NATIVE_TRACK_MODE_RACE,
 // _CRYSTAL or _CTR, native_assets.h): who is in it, what can be chosen,
 // what is loaded. Set by MM_NativeTrackSelect_SetChosen.
 void MM_NativeTracks_SetListMode(int mode);
 int MM_NativeTracks_ListMode(void);
 int MM_NativeTracks_LoadRowFor(int index, int mode);
+
+// THE DRIVER SELECT GRID FOR CUSTOM CHARACTERS (game/230/MM_NativeCharGrid.c).
+//
+// Tile 0..14 is the retail icon index of the active table, tile 15 + e is
+// roster entry e (platform/native_chars.h). MM_Characters.c asks these
+// functions wherever it reads a tile. While MM_NativeCharGrid_Active() is 0
+// every one of them returns the retail expression of its call site (named in
+// its comment) and changes nothing.
+struct TransitionMeta;
+
+// 1 while the driver select shows the custom grid: numPlyrNextGame == 1,
+// D230.characterSelectLayoutIndex == 0, NativeChar_ModeAllowed() and
+// NativeChar_RosterCount() >= 1.
+int MM_NativeCharGrid_Active(void);
+int MM_NativeCharGrid_TileCount(void);                             // retail MM_CHARACTER_SELECT_ICON_COUNT
+s16 MM_NativeCharGrid_CursorTile(s16 retailIcon);                  // retail: retailIcon (= characterMenuID[characterIDs[0]])
+s16 MM_NativeCharGrid_Next(int direction, s16 tile);               // the grid's d-pad step; only called while active
+void MM_NativeCharGrid_Follow(s16 tile);                           // scroll so that the tile is visible; no-op while off
+int MM_NativeCharGrid_TileDrawn(int tile);                         // retail: unlockFlags (s16) == ALWAYS || CHECK_ADV_BIT(unlocks, unlockFlags) of meta[tile]
+s16 MM_NativeCharGrid_TileX(int tile);                             // retail: D230.activeCharacterSelectMeta[tile].posX
+s16 MM_NativeCharGrid_TileY(int tile);                             // retail: .posY; grid: the drawn y with scroll
+s16 MM_NativeCharGrid_TileCharacterID(int tile);                   // retail: meta[tile].characterID; custom tile: its template
+struct TransitionMeta *MM_NativeCharGrid_TileTransition(int tile); // retail: &D230.characterSelectTransitionMeta[tile]
+char *MM_NativeCharGrid_TileName(int tile);                        // retail: sdata->lngStrings[data.MetaDataCharacters[meta[tile].characterID].name_LNG_long]
+int MM_NativeCharGrid_Selectable(int tile);                        // retail 1; placeholder 0 and its log line - call it on Cross/Circle only
+void MM_NativeCharGrid_Transition(int framesPassed, int numFrames); // the custom tile transitions, without the swoosh of MM_TransitionInOut
+void MM_NativeCharGrid_Enter(void);                                // end of RestoreIDs, before DrawWindows(0): cursor, scroll, preview tile, transitions
+void MM_NativeCharGrid_WritePick(s16 tile0);                       // after the characterIDs loop: pick = tile0 - 15 on a custom tile, else -1 (also while off)
+void MM_NativeCharGrid_LeaveBackward(void);                        // back to the title: pick = -1
+void MM_NativeCharGrid_DrawArrows(void);                           // the scroll arrows; no-op while off
+int MM_NativeCharGrid_PreviewMoveWanted(int playerIndex);          // retail: currentCharacterID[p] != data.characterIDs[p]
+void MM_NativeCharGrid_PreviewDesire(int playerIndex);             // with the retail desired write: remember the cursor tile
+void MM_NativeCharGrid_PreviewArrive(int playerIndex);             // with the retail current = desired: current tile = desired tile
+void MM_NativeCharGrid_PreviewPose(int playerIndex, struct Instance *driverInst); // after the retail model and pose: custom model and menu frame
+int MM_NativeCharGrid_NameShown(int playerIndex);                  // retail: currentCharacterID[p] == data.characterIDs[p]
+const char *MM_NativeCharGrid_SeatName(int index);                 // NameBand: the custom name shown for seat index, else NULL
+int MM_NativeCharGrid_SelfTest(void);                              // --char-grid-selftest; 0 = passed
 
 // NITRO-PIT -> CRYSTAL (game/230/MM_NativeCrystal.c): the crystal challenge
 // for containers, on the path of the debug jump.

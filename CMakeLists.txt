@@ -372,6 +372,14 @@ if(BUILD_TESTING)
     set_tests_properties(gte_paths_identical PROPERTIES
         PASS_REGULAR_EXPRESSION "selftest passed: [0-9]+ operations, 0 differences"
     )
+    # The driver select grid for 0 to 32 custom entries: positions, navigation
+    # and scrolling, with rows 0 and 1 held to the retail table. Like the GTE
+    # test it only computes - on the D230 tables in the exe, without a window
+    # or game data.
+    add_test(NAME char_grid_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --char-grid-selftest)
+    set_tests_properties(char_grid_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "char grid selftest passed: [0-9]+ checks, 0 failures"
+    )
 
     # FOREIGN INPUT, REFUSED CLEANLY. A container (.rldtrack) and a disc image
     # come from strangers: every length, offset and index in them is checked

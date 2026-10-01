@@ -277,6 +277,9 @@
 #include "230/MM_Title.c"
 #include "230/MM_CheatCodes.c"
 #include "230/MM_Characters.c"
+// Directly behind the original on purpose: the custom grid of the driver select
+// reads its MM_CHARACTER_SELECT_* constants (see the file).
+#include "230/MM_NativeCharGrid.c"
 #include "230/MM_TrackSelect.c"
 // Directly behind the original on purpose: the copy for ARCADE -> CUSTOM reads
 // its MM_TRACK_SELECT_* / MM_TRACK_VIDEO_* constants (see the file).

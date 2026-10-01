@@ -4,6 +4,10 @@
 // the [CTR Race] line names them, a measurement run must show "cheats none".
 const char *NativeMenuCheats_Describe(void);
 
+// From platform/native_chars.c, further down in the translation unit: the pick
+// of a custom character for a start that skips the driver select.
+void NativeChar_PickForJump(void);
+
 #ifdef CTR_NATIVE
 
 // The TRACKS page reads fields of struct NativeTrackEntry, and a struct
@@ -636,6 +640,10 @@ internal void DebugMenu_JumpToLevel(struct GameTracker *gGT, int levelID, int dr
 	// MAIN_MENU is off, and a second copy of that fill would be a second source
 	// for the same eight numbers.
 	data.characterIDs[0] = (s16)driverID;
+
+	// No driver select on this way, so no pick from it: the --char file, if one
+	// loaded, else none. The load funnel binds it only on its template.
+	NativeChar_PickForJump();
 
 	// MEASURING INSTRUMENT, see s_crystalProbe. Off is the default, and then
 	// the same two masks as without the probe stand below, bit for bit.

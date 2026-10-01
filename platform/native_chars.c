@@ -1,20 +1,40 @@
 // ===========================================================================
-// CUSTOM CHARACTERS - THE DEVELOPER PROOF OF CONCEPT.
+// CUSTOM CHARACTERS - ROSTER, PICK AND SEAT 0.
 //
-// One .rldchar file stands in for the driver model of seat 0. Nothing else:
-// no roster, no menu, no character select. The race is set up by the switches
-// that already exist (--level, --driver <template>, --autopilot); this module
-// only swaps the model the seat is born with.
+// A custom character is an overlay, never a new character id: the engine
+// only ever sees the templates 0..14 in data.characterIDs. The driver select
+// shows the roster after the 15 retail tiles (game/230/MM_NativeCharGrid.c)
+// and leaves its choice here as the pick; at every load the funnel decides
+// from the pick whether seat 0 is born with the custom model.
+//
+// THE ROSTER, fixed at start. For now it comes from developer switches only:
+// entry 0 is the --char file when it loaded, then the placeholders of
+// --dev-grid-fill - "PLACEHOLDER <n>" on template (n - 1) % 15, without a
+// model. They fill the grid so that rows and scrolling can be seen, and they
+// cannot be chosen. At most NATIVE_CHAR_ROSTER_MAX entries in all. A scan of
+// a characters folder will take the place of the switches; nothing that reads
+// the roster has to change for it.
+//
+// THE PICK. An entry index, or -1 for retail. The driver select writes it in
+// every frame it runs: -1 on a retail tile, while the grid is off and on the
+// way back to the title. The direct start (DebugMenu_JumpToLevel: --level,
+// --autoload-track, the LEVEL and TRACK pages of the debug menu) sets entry 0
+// when it is a loaded file, so --level with --driver <template> --char <file>
+// binds as it always did.
+// NativeChar_ModeAllowed is the menu side of the mode rule; the funnel keeps
+// its own checks of the race it loads.
 //
 // THE PATH OF THE FILE.
 //   start    NativeChar_LoadDev, once, before CTR_Main: envelope (Rld_OpenAs
 //            with s_rldCharFormat), CHRI, CMDL with its hash, RldChar_CheckModel
 //            on the bytes as stored, then ONE LOAD_RunPtrMap on the host copy.
 //            The model lives in host memory for the whole run - not in the
-//            MEMPACK, so the memory layout of the game stays as it is.
+//            MEMPACK, so the memory layout of the game stays as it is. Then
+//            the roster is built.
 //   stage 5  NativeChar_ArmSeats (game/LOAD/LOAD_TenStages.c): the funnel
-//            decides per load whether seat 0 is bound. Its order is fixed, and
-//            the first answer that is not "yes" ends it.
+//            decides per load whether seat 0 is bound - only when the pick is
+//            a file and characterIDs[0] holds its template. Its order is fixed,
+//            and the first answer that is not "yes" ends it.
 //   birth    NativeChar_SeatModel (game/Vehicle/VehBirth.c): the bound model,
 //            or NULL and the retail lookup by name.
 //   stage 0  NativeChar_ClearSeats: the next load starts with empty seats.
@@ -28,14 +48,15 @@
 // LOAD_MODEL_FILE_HEADER_BYTES (load stage 6, LOAD_DramFile hands out the file
 // start, game/LOAD/LOAD_File.c:231-236).
 //
-// RETAIL STAYS. Without --char: no file is opened, the funnel returns at its
-// first step, the seat model is NULL and VehBirth takes the retail expression.
-// The instance counter counts in every run and changes nothing; its exit line
-// is there with --dev only. The log lines are read by a measuring tool and
-// keep their wording.
+// RETAIL STAYS. Without --char and --dev-grid-fill: no file is opened, the
+// roster is empty (the grid stays off), the pick stays -1, the funnel returns
+// at its first step, the seat model is NULL and VehBirth takes the retail
+// expression. The instance counter counts in every run and changes nothing;
+// its exit line is there with --dev only. The log lines are read by a
+// measuring tool and keep their wording.
 //
-// KNOWN GAP until the roster phase: a quick state holds host pointers and a
-// model outside the MEMPACK. Proof-of-concept runs use no quick states.
+// KNOWN GAP: a quick state holds host pointers and a model outside the
+// MEMPACK. Runs with a custom character use no quick states.
 // ===========================================================================
 
 #include <platform/native_chars.h>
@@ -73,13 +94,29 @@ global_variable struct
 	struct RldCharInfo info;
 } s_char;
 
-// The overlay per seat. Only seat 0 is ever armed in the proof of concept.
-// motorId is the character id the engine runs the seat on - the template.
+// The overlay per seat. Only seat 0 is ever armed so far. motorId is the
+// character id the engine runs the seat on - the template.
 global_variable struct
 {
 	struct Model *model;
 	int motorId;
 } s_seat[NATIVE_CHAR_SEATS];
+
+// --dev-grid-fill, as main.c passed it on (0 = none).
+global_variable int s_charGridFill;
+
+// The roster, built once by NativeChar_LoadDev: s_charRosterFiles entries are
+// files (0 or 1, the --char file), the rest up to s_charRosterCount are
+// placeholders. Placeholder n (1-based) is entry s_charRosterFiles + n - 1.
+global_variable int s_charRosterCount;
+global_variable int s_charRosterFiles;
+
+// Capitals, a space and digits: inside the CHRI name rule (RldChar_NameCheck),
+// so whatever draws the name of a file draws these too.
+global_variable char s_charPlaceholderName[NATIVE_CHAR_ROSTER_MAX][RLDCHAR_NAME_FIELD + 1];
+
+// The pick of the driver select: an entry of the roster, or -1 (retail).
+global_variable int s_charPick = -1;
 
 global_variable s64 s_droppedTotal;
 global_variable s64 s_droppedSeat0;
@@ -112,6 +149,13 @@ void NativeChar_SetFile(const char *file)
 {
 	s_charGiven = 1;
 	NativeChar_Remember(s_charFile, file);
+}
+
+void NativeChar_SetGridFill(int count)
+{
+	// main.c refuses a count outside 1..NATIVE_CHAR_ROSTER_MAX; the bounds here
+	// only keep the roster from reading past its names.
+	s_charGridFill = (count < 0) ? 0 : ((count > NATIVE_CHAR_ROSTER_MAX) ? NATIVE_CHAR_ROSTER_MAX : count);
 }
 
 int NativeChar_ArgsUsable(void)
@@ -182,7 +226,9 @@ internal void NativeChar_ReportAtExit(void)
 	Platform_Log("[CTR Char] at exit: instances dropped %lld total, %lld seat 0\n", (long long)s_droppedTotal, (long long)s_droppedSeat0);
 }
 
-void NativeChar_LoadDev(void)
+// The --char file: read, checked, relocated. Every way out but the last leaves
+// s_char empty, and the file then has no entry in the roster.
+internal void NativeChar_LoadFile(void)
 {
 	struct RldReader reader;
 	struct RldCharInfo info;
@@ -199,13 +245,6 @@ void NativeChar_LoadDev(void)
 	int modelIndex = -1;
 	u64 fileBytes;
 	enum RldCharVerdict verdict;
-
-	// Registered here, at start, so the line has its place in the table of exit
-	// reports before the ones a race registers on its way.
-	if (g_cfg_dev)
-	{
-		Platform_AtExitReport(NativeChar_ReportAtExit);
-	}
 
 	// Retail: without --char no file is touched.
 	if (!s_charGiven)
@@ -315,14 +354,58 @@ void NativeChar_LoadDev(void)
 	             (unsigned)cmdlHash[5], (unsigned long long)fileBytes);
 }
 
+// Entry 0 is the file when it loaded - a refused one has no tile - then the
+// placeholders. Built once: the grid, the pick and the funnel all count on
+// the same entries for the whole run. Silent while it is empty.
+internal void NativeChar_BuildRoster(void)
+{
+	const int files = (s_char.model != NULL) ? 1 : 0;
+	int count = files + s_charGridFill;
+	int n;
+
+	if (count > NATIVE_CHAR_ROSTER_MAX)
+	{
+		Platform_Log("[CTR Char] roster: %d entries asked for, the first %d kept - %d placeholder(s) cut\n", count, NATIVE_CHAR_ROSTER_MAX,
+		             count - NATIVE_CHAR_ROSTER_MAX);
+		count = NATIVE_CHAR_ROSTER_MAX;
+	}
+
+	for (n = 1; n <= (count - files); n++)
+	{
+		snprintf(s_charPlaceholderName[n - 1], sizeof(s_charPlaceholderName[n - 1]), "PLACEHOLDER %d", n);
+	}
+
+	s_charRosterFiles = files;
+	s_charRosterCount = count;
+
+	if (count > 0)
+	{
+		Platform_Log("[CTR Char] roster: %d entr%s, %d file, %d placeholder(s)\n", count, (count == 1) ? "y" : "ies", files, count - files);
+	}
+}
+
+void NativeChar_LoadDev(void)
+{
+	// Registered here, at start, so the line has its place in the table of exit
+	// reports before the ones a race registers on its way.
+	if (g_cfg_dev)
+	{
+		Platform_AtExitReport(NativeChar_ReportAtExit);
+	}
+
+	NativeChar_LoadFile();
+	NativeChar_BuildRoster();
+}
+
 void NativeChar_ClearSeats(void)
 {
 	memset(s_seat, 0, sizeof(s_seat));
 }
 
-// The first reason why this race is not one the proof of concept binds in,
-// NULL when it is: arcade, one player, no time trial, adventure, relic, battle
-// or cutscene bit. The crystal and CTR challenge bits do not refuse.
+// The first reason why this race is not one the funnel binds in, NULL when it
+// is: arcade, one player, no time trial, adventure, relic, battle or cutscene
+// bit. The crystal and CTR challenge bits do not refuse: the menu keeps the
+// pick at -1 there (NativeChar_ModeAllowed), and the direct start may bind.
 internal const char *NativeChar_ModeRefusal(const struct GameTracker *gGT)
 {
 	const u32 mode1 = (u32)gGT->gameMode1;
@@ -435,10 +518,147 @@ internal u32 NativeChar_AnimFrames(const struct Model *model, int a)
 	return anim->numFrames & NATIVE_CHAR_FRAME_MASK;
 }
 
+// ---------------------------------------------------------------------------
+// THE ROSTER, as the driver select reads it. Every function answers for any
+// index: outside the roster -1, "", 0 or NULL.
+// ---------------------------------------------------------------------------
+
+int NativeChar_RosterCount(void)
+{
+	return s_charRosterCount;
+}
+
+// The number n of "PLACEHOLDER <n>" (1-based) for a placeholder entry, else 0.
+internal int NativeChar_PlaceholderNumber(int entry)
+{
+	if ((entry < s_charRosterFiles) || (entry >= s_charRosterCount))
+	{
+		return 0;
+	}
+
+	return entry - s_charRosterFiles + 1;
+}
+
+int NativeChar_EntryTemplate(int entry)
+{
+	const int n = NativeChar_PlaceholderNumber(entry);
+
+	// Placeholders walk through the templates 0..14 in order.
+	if (n > 0)
+	{
+		return (n - 1) % (RLDCHAR_TEMPLATE_MAX + 1);
+	}
+
+	if ((entry >= 0) && (entry < s_charRosterFiles))
+	{
+		return (int)s_char.info.templateId;
+	}
+
+	return -1;
+}
+
+const char *NativeChar_EntryName(int entry)
+{
+	const int n = NativeChar_PlaceholderNumber(entry);
+
+	if (n > 0)
+	{
+		return s_charPlaceholderName[n - 1];
+	}
+
+	if ((entry >= 0) && (entry < s_charRosterFiles))
+	{
+		return s_char.info.name;
+	}
+
+	return "";
+}
+
+int NativeChar_EntryIsPlaceholder(int entry)
+{
+	return NativeChar_PlaceholderNumber(entry) > 0;
+}
+
+struct Model *NativeChar_EntryModel(int entry)
+{
+	// A file is in the roster only once its model is loaded and relocated.
+	if ((entry >= 0) && (entry < s_charRosterFiles))
+	{
+		return s_char.model;
+	}
+
+	return NULL;
+}
+
+// The pose of the menu preview. A file carries a race model, not a menu model:
+// its frame 0 of animation 0 - what the menu shows a retail menu model in - is
+// one end of the steering animation. The middle frame is the one a race starts
+// the drive animation on (VehFrameInst_GetStartFrame, game/Vehicle/VehFrame.c):
+// 21 frames -> 10.
+int NativeChar_EntryMenuFrame(int entry)
+{
+	const struct Model *model = NativeChar_EntryModel(entry);
+
+	if (model == NULL)
+	{
+		return 0;
+	}
+
+	return (int)(NativeChar_AnimFrames(model, 0) >> 1);
+}
+
+// ---------------------------------------------------------------------------
+// THE PICK
+// ---------------------------------------------------------------------------
+
+void NativeChar_SetPick(int entry)
+{
+	// Only an entry of the roster is kept: whatever else arrives means retail.
+	s_charPick = ((entry >= 0) && (entry < s_charRosterCount)) ? entry : -1;
+}
+
+int NativeChar_Pick(void)
+{
+	return s_charPick;
+}
+
+void NativeChar_PickForJump(void)
+{
+	// The direct start has no driver select: it takes the file when there is
+	// one. Whether it binds is still the funnel's answer - --driver has to have
+	// put the template into characterIDs[0].
+	NativeChar_SetPick((s_charRosterFiles > 0) ? 0 : -1);
+}
+
+// The modes a custom character may be picked in, read before the race exists:
+// the main menu has set ARCADE_MODE and cleared the others
+// (game/230/MM_MenuFlow.c), the race type box has set the NITRO-PIT marker
+// (game/native_menuscreen.c). Not the CRYSTAL_CHALLENGE or TOKEN_RACE bits -
+// the track select sets those only after the driver select.
+int NativeChar_ModeAllowed(void)
+{
+	const struct GameTracker *gGT = sdata->gGT;
+	u32 mode1;
+	int chosen;
+
+	if (gGT == NULL)
+	{
+		return 0;
+	}
+
+	mode1 = (u32)gGT->gameMode1;
+	chosen = MM_NativeTrackSelect_Chosen();
+
+	return ((mode1 & ARCADE_MODE) != 0) && ((mode1 & (TIME_TRIAL | ADVENTURE_MODE | BATTLE_MODE)) == 0) && (gGT->numPlyrNextGame == 1) &&
+	       (gGT->boolDemoMode == 0) && (chosen != MM_NATIVE_CHOSEN_CRYSTAL) && (chosen != MM_NATIVE_CHOSEN_CTR);
+}
+
 void NativeChar_ArmSeats(void)
 {
 	struct GameTracker *gGT = sdata->gGT;
-	const int templateId = (int)s_char.info.templateId;
+	const int pick = s_charPick;
+	struct Model *model;
+	int templateId;
 	const char *modeWhy;
 	const struct Model *donor;
 	int a;
@@ -446,7 +666,8 @@ void NativeChar_ArmSeats(void)
 	// Nothing from an earlier load survives into this one.
 	NativeChar_ClearSeats();
 
-	// 1. No file loaded (no --char, or refused): retail, silently.
+	// 1. No file loaded (no --char, or refused): retail, silently. Placeholders
+	//    alone never bind, so the roster has nothing to give either.
 	if (s_char.model == NULL)
 	{
 		return;
@@ -474,7 +695,26 @@ void NativeChar_ArmSeats(void)
 		return;
 	}
 
-	// 5. The seat runs on the template: --driver chose it.
+	// 5. The pick names a file, and the seat runs on its template. Both, because
+	//    the pick can outlive the choice it came from (CHANGE LEVEL, the next
+	//    race of a cup), and characterIDs[0] is what the engine drives: the
+	//    driver select writes the template there, --driver does on a direct start.
+	if ((pick < 0) || (pick >= s_charRosterCount))
+	{
+		Platform_Log("[CTR Char] seat 0 empty: no custom pick\n");
+		return;
+	}
+
+	// A file is in the roster only with its model, so no model means a
+	// placeholder - which the driver select does not let anyone choose.
+	model = NativeChar_EntryModel(pick);
+	if (model == NULL)
+	{
+		Platform_Log("[CTR Char] seat 0 empty: entry %d is a placeholder\n", pick);
+		return;
+	}
+
+	templateId = NativeChar_EntryTemplate(pick);
 	if ((int)data.characterIDs[0] != templateId)
 	{
 		Platform_Log("[CTR Char] seat 0 empty: template %d is not %d\n", (int)data.characterIDs[0], templateId);
@@ -486,7 +726,7 @@ void NativeChar_ArmSeats(void)
 	donor = NativeChar_DonorModel(templateId);
 	for (a = 0; a < RLDCHAR_ANIM_COUNT; a++)
 	{
-		const u32 ours = NativeChar_AnimFrames(s_char.model, a);
+		const u32 ours = NativeChar_AnimFrames(model, a);
 		const u32 theirs = NativeChar_AnimFrames(donor, a);
 
 		if (ours != theirs)
@@ -497,7 +737,7 @@ void NativeChar_ArmSeats(void)
 	}
 
 	// 7. Bound.
-	s_seat[0].model = s_char.model;
+	s_seat[0].model = model;
 	s_seat[0].motorId = templateId;
 	Platform_Log("[CTR Char] seat 0 = %s on template %d\n", s_charFile, templateId);
 }
@@ -535,8 +775,10 @@ void NativeChar_NoteVBlank(int vblank)
 	const struct GameTracker *gGT = sdata->gGT;
 	const struct Instance *inst;
 
-	// Only with a loaded file: a refused one leaves the run retail.
-	if ((s_char.model == NULL) || (gGT == NULL))
+	// Only while seat 0 is bound and still runs on its template (the guard of
+	// NativeChar_SeatModel): a refused file, an unbound race and a race on a
+	// retail tile stay as quiet as a retail run.
+	if ((NativeChar_SeatModel(0) == NULL) || (gGT == NULL))
 	{
 		return;
 	}

@@ -305,7 +305,8 @@ static const NativeSwitch s_devSwitches[] = {
     {"--no-tracks", "", "do not open tracks/"},
     {"--tracks-dir", "<folder>", "containers from this folder instead of tracks/ (reference runs)"},
     {"--chars-dir", "<folder>", "folder of the character file for --char; only remembered, never scanned"},
-    {"--char", "<file>", "custom character from this .rldchar (in --chars-dir, or an absolute path) as the model of seat 0 in a one-player arcade race on its template (--driver)"},
+    {"--char", "<file>", "custom character from this .rldchar (in --chars-dir, or an absolute path): a tile in the one-player arcade driver select right after the retail drivers, or with --level and --driver <its template> straight on seat 0"},
+    {"--dev-grid-fill", "<n>", "n placeholder tiles, 1 to 32, after the --char tile in the one-player arcade driver select (rows and scrolling with many entries); a placeholder cannot be chosen"},
     {"--ui-safe-area-off", "", "UI safe area off"},
     {"--ui-declarations-off", "", "UI declarations off"},
     {"--ui-floor-off", "", "UI floor off"},
@@ -313,6 +314,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--ui-anchor-legacy", "", "old UI anchors"},
     {"--selftest-disc", "<dir>", "unpack the test images in <dir> (good-*/bad-*.bin), then end"},
     {"--gte-selftest", "", "both GTE paths against each other, then end"},
+    {"--char-grid-selftest", "", "layout, navigation and scrolling of the driver select grid for 0 to 32 custom entries, then end; no window, no data needed"},
     {"--selftest-containers", "<dir>", "every check the game runs on a container, on every *.rldtrack in dir (good-* must load, bad-* must be refused), then end; no window, no data needed"},
     {"--make-test-containers", "<dir>", "write the synthetic good-*/bad-* containers of the container self-test into dir, then end"},
     {"--make-test-disc", "<dir>", "write the synthetic good-*/bad-* disc images of the disc self-test into dir, then end"},
@@ -1986,6 +1988,16 @@ int main(int argc, char *argv[])
 			return NativeGteCheck_Run();
 		}
 
+		// The driver select grid (game/230/MM_NativeCharGrid.c) for every count of
+		// custom entries: layout, navigation and scrolling against the D230
+		// tables. Up here for the same reason: it computes on tables that are in
+		// the exe and needs no window, data or graphics card (ctest
+		// char_grid_selftest).
+		if (strcmp(argv[argIndex], "--char-grid-selftest") == 0)
+		{
+			return MM_NativeCharGrid_SelfTest();
+		}
+
 		// The container self-test, up here for the same reason: it only reads
 		// files - no platform, window, audio or asset folder, no disc image,
 		// no GPU - so it runs on CI (ctest selftest_bad_containers).
@@ -2161,10 +2173,11 @@ int main(int argc, char *argv[])
 			NativeSubpixel_Arm(everyFrames);
 		}
 
-		// The custom character (platform/native_chars.c). Only remembered up
-		// here: a --char that names no folder has to end the start before the
-		// first window (the setup screen below is one); the file itself is read
-		// just before CTR_Main.
+		// The custom character and the placeholders of the grid
+		// (platform/native_chars.c). Only remembered up here: a --char that
+		// names no folder has to end the start before the first window (the
+		// setup screen below is one); the file itself is read and the roster
+		// built just before CTR_Main.
 		if ((strcmp(argv[argIndex], "--chars-dir") == 0) && ((argIndex + 1) < argc))
 		{
 			NativeChar_SetFolder(argv[++argIndex]);
@@ -2172,6 +2185,38 @@ int main(int argc, char *argv[])
 		else if ((strcmp(argv[argIndex], "--char") == 0) && ((argIndex + 1) < argc))
 		{
 			NativeChar_SetFile(argv[++argIndex]);
+		}
+		else if ((strcmp(argv[argIndex], "--dev-grid-fill") == 0) && ((argIndex + 1) < argc))
+		{
+			// Placeholder tiles for the driver select grid. A count outside
+			// 1..NATIVE_CHAR_ROSTER_MAX ends the start here, like a --char without
+			// a folder: a measuring call that silently ran with another count
+			// would measure another grid. Digits only, from the first character on:
+			// strtol alone would also take " 5" and "+5".
+			const char *value = argv[++argIndex];
+			int digitsOnly = (value[0] >= '0') && (value[0] <= '9');
+			long count = 0;
+
+			for (size_t i = 1; digitsOnly && (value[i] != '\0'); i++)
+			{
+				digitsOnly = (value[i] >= '0') && (value[i] <= '9');
+			}
+
+			// Too many digits saturate at LONG_MAX, which is out of range as well.
+			if (digitsOnly)
+			{
+				count = strtol(value, NULL, 10);
+			}
+
+			if (!digitsOnly || (count < 1) || (count > NATIVE_CHAR_ROSTER_MAX))
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --dev-grid-fill expects a count from 1 to %d, got %s\n", NATIVE_CHAR_ROSTER_MAX, value);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			NativeChar_SetGridFill((int)count);
 		}
 	}
 
@@ -3416,7 +3461,8 @@ int main(int argc, char *argv[])
 	// --char: the character file is read, checked and relocated here, in host
 	// memory and after every other start step - the MEMPACK split above stays
 	// as it is. Without --char no file is touched; with --dev the exit line of
-	// the instance counter is registered either way.
+	// the instance counter is registered either way. Then the roster of the
+	// driver select is built from the file and --dev-grid-fill.
 	NativeChar_LoadDev();
 
 	const int result = CTR_Main();
