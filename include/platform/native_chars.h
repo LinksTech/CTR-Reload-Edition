@@ -13,6 +13,8 @@
 struct Model;
 struct Instance;
 struct Driver;
+struct Icon;
+struct TextureLayout;
 
 // The roster holds at most this many entries; the driver select numbers them
 // from NATIVE_CHAR_RUNTIME_ID_FIRST on (entry e has runtime id FIRST + e).
@@ -48,11 +50,13 @@ int NativeChar_ArgsUsable(void);
 // Per file: Rld_OpenAs with s_rldCharFormat, CHRI (RldChar_ParseInfo), the
 // CMDL size against RLDCHAR_LIMIT_CMDL before any malloc, CMDL read whole
 // (hash per chunk), RldChar_CheckModel on the UNRELOCATED bytes, then
-// LOAD_RunPtrMap once on the host copy (0 -> refused "PTRMAP"). One line
-// "loaded" or "REFUSED" per file; a refused file is skipped and the game
-// starts. From the 33rd valid file on: a loud "NO ID" line, no entry. Then one
-// summary line ("characters: N loaded, M refused (<folder>)", or one line for
-// a missing folder), and the roster is built; it stays fixed for the run.
+// LOAD_RunPtrMap once on the host copy (0 -> refused "PTRMAP"), then CICN when
+// present (RldChar_CheckIcon; a broken CICN costs only the portrait). One line
+// "loaded" or "REFUSED" per file, after "loaded" one line "portrait"; a
+// refused file is skipped and the game starts. From the 33rd valid file on: a
+// loud "NO ID" line, no entry. Then one summary line ("characters: N loaded,
+// M refused (<folder>)", or one line for a missing folder), and the roster is
+// built; it stays fixed for the run.
 void NativeChar_LoadRoster(void);
 
 // The roster: the loaded files in sorted order, then the placeholders of
@@ -64,6 +68,51 @@ const char *NativeChar_EntryName(int entry);    // CHRI name; placeholders "PLAC
 int NativeChar_EntryIsPlaceholder(int entry);   // 1 for a placeholder, 0 for a file, 0 outside
 struct Model *NativeChar_EntryModel(int entry); // the relocated host model of a file; NULL for placeholders and outside
 int NativeChar_EntryMenuFrame(int entry);       // menu pose: (frames of animation 0) >> 1 of the model (21 -> 10), 0 without model
+
+// THE PORTRAITS of the driver select grid (CICN, include/rldchar.inc). A file
+// with a usable CICN owns portrait slot e = its entry while e is below
+// NATIVE_CHAR_PORTRAIT_SLOTS; every slot has a fixed place in the VRAM strip
+// x 256..511, y 266..295, which no retail or container path writes:
+//   texels  x 256 + 64p + 11s, y 266, 11 x 26 halfwords (4 bit, 44 x 26
+//           texels), page p = slot / 5, column s = slot % 5 - the four 4-bit
+//           texture pages x 256/320/384/448 with y base 256, u0 = 44s, v0 = 10;
+//   CLUT    x 256 + 16 (slot % 16), y 292 + slot / 16, 16 x 1.
+// In rows 266..291 the last 9 halfwords of every page stay free (x 311..319,
+// 375..383, 439..447, 503..511), and so do the rows 294..295. Entries without
+// a CICN, with a broken one, from entry 20 on, and placeholders show the
+// template's portrait as before. Only the grid shows the own portrait: the
+// race HUD, the results and the cup standings read characterIDs and keep the
+// template's portrait (game/UI/UI_Rank.c, game/222.c, game/UI/UI_CupStandings.c).
+#define NATIVE_CHAR_PORTRAIT_SLOTS 20
+
+struct NativeCharPortraitSlot
+{
+	int texelX, texelY, texelW, texelH; // VRAM halfwords
+	int clutX, clutY, clutW;            // VRAM halfwords, one row
+	int u0, v0;                         // texel coordinates inside the page
+	int pageBits;                       // tpage bits 0..4: page x (x / 64) and the y base 256 bit (0x10)
+};
+
+// Pure geometry of a slot, for the upload and the self-test. 0 for a slot
+// outside 0..NATIVE_CHAR_PORTRAIT_SLOTS - 1 (out untouched).
+int NativeChar_PortraitSlot(int slot, struct NativeCharPortraitSlot *out);
+
+// The texture layout of slot from the template's: clut, page, y base and the
+// four UV corners new; abr and everything else of tpage as in the template.
+// The size is the template's (u1 - u0, v2 - v0); 0 when it does not fit into
+// the 44 x 26 of a slot or the slot is outside, else 1.
+int NativeChar_PortraitLayout(int slot, const struct TextureLayout *templateLayout, struct TextureLayout *out);
+
+// The driver select grid, for a custom tile: the own portrait of entry
+// (uploaded into the strip at the first call after NativeChar_PortraitsDirty)
+// or templateIcon when the entry has none. Silent for a retail run: without a
+// file with a CICN nothing is uploaded and nothing logged.
+struct Icon *NativeChar_EntryPortrait(int entry, struct Icon *templateIcon);
+
+// Every entering of the driver select: the next NativeChar_EntryPortrait
+// uploads all own portraits again (a race, a quick state or a video may have
+// used the VRAM in between).
+void NativeChar_PortraitsDirty(void);
 
 // The pick of the driver select: an entry index, or -1 (retail). Written in
 // every frame of the driver select; an index outside the roster is kept as -1.

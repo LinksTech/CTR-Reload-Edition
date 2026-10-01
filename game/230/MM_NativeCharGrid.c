@@ -1040,6 +1040,24 @@ s16 MM_NativeCharGrid_TileCharacterID(int tile)
 	return (s16)templateId;
 }
 
+// The portrait of a tile. Retail (grid off or a retail tile) is the retail
+// expression of the call site in MM_Characters.c, unchanged - the same pointer,
+// so the same primitive. A custom tile asks the roster: its own portrait (CICN)
+// or the template's, which a custom tile has always shown (placeholders of
+// --dev-grid-fill have no file and stay on the template's).
+struct Icon *MM_NativeCharGrid_TileIcon(int tile)
+{
+	struct GameTracker *gGT = sdata->gGT;
+	struct Icon *templateIcon = gGT->ptrIcons[data.MetaDataCharacters[MM_NativeCharGrid_TileCharacterID(tile)].iconID];
+
+	if (!MM_NativeCharGrid_Active() || MM_NativeCharGrid_IsRetailTile(tile))
+	{
+		return templateIcon;
+	}
+
+	return NativeChar_EntryPortrait(MM_NativeCharGrid_EntryOf(tile), templateIcon);
+}
+
 struct TransitionMeta *MM_NativeCharGrid_TileTransition(int tile)
 {
 	int entry;
@@ -1116,6 +1134,11 @@ void MM_NativeCharGrid_Enter(void)
 	s16 tile;
 	int row;
 	int col;
+
+	// The own portraits go into the strip again at the first draw of this
+	// screen: a race or a video in between may have used the VRAM. Only a
+	// flag - without a portrait to show nothing is uploaded.
+	NativeChar_PortraitsDirty();
 
 	if (!MM_NativeCharGrid_Active())
 	{
@@ -1367,7 +1390,9 @@ const char *MM_NativeCharGrid_SeatName(int index)
 //  (D230.c), and calls the pure layout functions above for every entry count
 //  from 0 to NATIVE_CHAR_ROSTER_MAX. The expected numbers are the ones of the
 //  layout rule, written out here on purpose: the grid derives them from the
-//  table, the test holds them against it.
+//  table, the test holds them against it. The portrait slots of the roster
+//  (NativeChar_PortraitSlot, NativeChar_PortraitLayout) are pure as well and
+//  checked at the end.
 // ===========================================================================
 
 struct MM_NativeGridTest
@@ -2120,6 +2145,136 @@ internal void MM_NativeCharGrid_TestScroll(struct MM_NativeGridTest *test, const
 	}
 }
 
+// THE PORTRAIT SLOTS (platform/native_chars.h, NATIVE_CHAR_PORTRAIT_SLOTS),
+// the rule written out once more: slot k on page p = k / 5, column s = k % 5,
+// texels x 256 + 64p + 11s, y 266, 11 x 26; CLUT x 256 + 16 (k % 16),
+// y 292 + k / 16, 16 x 1; all inside the strip x 256..511, y 266..295, no two
+// rectangles overlapping; the layout made from a 44 x 26 template points at
+// exactly these texels and this CLUT, 4 bit, y base 256, abr kept.
+#define MM_NATIVE_GRID_TEST_STRIP_X0 256
+#define MM_NATIVE_GRID_TEST_STRIP_X1 512
+#define MM_NATIVE_GRID_TEST_STRIP_Y0 266
+#define MM_NATIVE_GRID_TEST_STRIP_Y1 296
+
+internal int MM_NativeCharGrid_TestInStrip(int x, int y, int w, int h)
+{
+	return (w > 0) && (h > 0) && (x >= MM_NATIVE_GRID_TEST_STRIP_X0) && ((x + w) <= MM_NATIVE_GRID_TEST_STRIP_X1) && (y >= MM_NATIVE_GRID_TEST_STRIP_Y0) &&
+	       ((y + h) <= MM_NATIVE_GRID_TEST_STRIP_Y1);
+}
+
+internal void MM_NativeCharGrid_TestPortraits(struct MM_NativeGridTest *test)
+{
+	struct NativeCharPortraitSlot slots[NATIVE_CHAR_PORTRAIT_SLOTS];
+	struct NativeCharPortraitSlot outside;
+	struct TextureLayout templateLayout;
+	struct TextureLayout layout;
+	int k;
+	int j;
+
+	for (k = 0; k < NATIVE_CHAR_PORTRAIT_SLOTS; k++)
+	{
+		struct NativeCharPortraitSlot *s = &slots[k];
+		const int page = k / 5;
+		const int column = k % 5;
+		int pageX;
+
+		memset(s, 0, sizeof(*s));
+		MM_NativeCharGrid_Expect(test, NativeChar_PortraitSlot(k, s) == 1, "portrait slot %d is not given", k);
+
+		MM_NativeCharGrid_Expect(test, (s->texelX == (256 + (64 * page) + (11 * column))) && (s->texelY == 266) && (s->texelW == 11) && (s->texelH == 26),
+		                         "portrait slot %d texels at %d,%d %dx%d", k, s->texelX, s->texelY, s->texelW, s->texelH);
+		MM_NativeCharGrid_Expect(test, (s->clutX == (256 + (16 * (k % 16)))) && (s->clutY == (292 + (k / 16))) && (s->clutW == 16),
+		                         "portrait slot %d CLUT at %d,%d width %d", k, s->clutX, s->clutY, s->clutW);
+		MM_NativeCharGrid_Expect(test, MM_NativeCharGrid_TestInStrip(s->texelX, s->texelY, s->texelW, s->texelH),
+		                         "portrait slot %d texels leave the strip", k);
+		MM_NativeCharGrid_Expect(test, MM_NativeCharGrid_TestInStrip(s->clutX, s->clutY, s->clutW, 1), "portrait slot %d CLUT leaves the strip", k);
+		MM_NativeCharGrid_Expect(test, (s->clutX % 16) == 0, "portrait slot %d CLUT x %d is not a multiple of 16", k, s->clutX);
+
+		// The page: a 4-bit page is 64 halfwords wide; the slot lies in it
+		// whole, u0 counts 4 texels per halfword from the page edge.
+		pageX = (s->pageBits & 0xf) * 64;
+		MM_NativeCharGrid_Expect(test, ((s->pageBits & 0xf) == (s->texelX / 64)) && ((s->pageBits & 0x10) != 0) && ((s->pageBits & ~0x1f) == 0),
+		                         "portrait slot %d page bits 0x%02x", k, s->pageBits);
+		MM_NativeCharGrid_Expect(test, (s->texelX >= pageX) && ((s->texelX + s->texelW) <= (pageX + 64)), "portrait slot %d crosses its page", k);
+		MM_NativeCharGrid_Expect(test, (s->u0 == ((s->texelX - pageX) * 4)) && (s->u0 == (44 * column)) && ((s->u0 + 44) <= 255),
+		                         "portrait slot %d u0 %d", k, s->u0);
+		MM_NativeCharGrid_Expect(test, (s->v0 == (s->texelY - 256)) && ((s->v0 + 26) <= 255), "portrait slot %d v0 %d", k, s->v0);
+	}
+
+	for (k = 0; k < NATIVE_CHAR_PORTRAIT_SLOTS; k++)
+	{
+		for (j = 0; j < NATIVE_CHAR_PORTRAIT_SLOTS; j++)
+		{
+			const struct NativeCharPortraitSlot *a = &slots[k];
+			const struct NativeCharPortraitSlot *b = &slots[j];
+
+			MM_NativeCharGrid_Expect(test, !MM_NativeCharGrid_BoxesOverlap(a->texelX, a->texelY, a->texelW, a->texelH, b->clutX, b->clutY, b->clutW, 1),
+			                         "portrait slot %d texels overlap the CLUT of slot %d", k, j);
+
+			if (j <= k)
+			{
+				continue;
+			}
+
+			MM_NativeCharGrid_Expect(test, !MM_NativeCharGrid_BoxesOverlap(a->texelX, a->texelY, a->texelW, a->texelH, b->texelX, b->texelY, b->texelW, b->texelH),
+			                         "portrait slots %d and %d overlap", k, j);
+			MM_NativeCharGrid_Expect(test, !MM_NativeCharGrid_BoxesOverlap(a->clutX, a->clutY, a->clutW, 1, b->clutX, b->clutY, b->clutW, 1),
+			                         "portrait CLUTs %d and %d overlap", k, j);
+		}
+	}
+
+	// No slot beyond the 20: the entries from 20 on keep the template's.
+	MM_NativeCharGrid_Expect(test, NativeChar_PortraitSlot(NATIVE_CHAR_PORTRAIT_SLOTS, &outside) == 0, "portrait slot %d is given", NATIVE_CHAR_PORTRAIT_SLOTS);
+	MM_NativeCharGrid_Expect(test, NativeChar_PortraitSlot(-1, &outside) == 0, "portrait slot -1 is given");
+
+	// The layout from a template of 44 x 26 somewhere else, 8 bit, abr 2, y
+	// base 0, bit 11 set: everything that names the place is new.
+	memset(&templateLayout, 0, sizeof(templateLayout));
+	templateLayout.u0 = 100;
+	templateLayout.u2 = 100;
+	templateLayout.u1 = 144;
+	templateLayout.u3 = 144;
+	templateLayout.v0 = 50;
+	templateLayout.v1 = 50;
+	templateLayout.v2 = 76;
+	templateLayout.v3 = 76;
+	templateLayout.clut = 0x7abc;
+	templateLayout.tpage = (u16)(0x0800 | 0x0080 | 0x0040 | 0x0009);
+
+	for (k = 0; k < NATIVE_CHAR_PORTRAIT_SLOTS; k++)
+	{
+		const struct NativeCharPortraitSlot *s = &slots[k];
+		const int ok = NativeChar_PortraitLayout(k, &templateLayout, &layout);
+		const int clutX = (layout.clut & 0x3f) << 4;
+		const int clutY = layout.clut >> 6;
+		const int pageX = (layout.tpage & 0xf) * 64;
+		const int pageY = ((layout.tpage & 0x10) != 0) ? 256 : 0;
+
+		MM_NativeCharGrid_Expect(test, ok, "portrait layout %d refused a 44 x 26 template", k);
+		MM_NativeCharGrid_Expect(test, (clutX == s->clutX) && (clutY == s->clutY), "portrait layout %d CLUT 0x%04x is %d,%d", k, layout.clut, clutX, clutY);
+		MM_NativeCharGrid_Expect(test, (((layout.tpage >> 7) & 3) == 0) && ((layout.tpage & 0x60) == 0x40) && ((layout.tpage & 0x800) == 0),
+		                         "portrait layout %d tpage 0x%04x: not 4 bit, abr lost or bit 11 kept", k, layout.tpage);
+		MM_NativeCharGrid_Expect(test, ((pageX + (layout.u0 / 4)) == s->texelX) && ((pageY + layout.v0) == s->texelY),
+		                         "portrait layout %d samples from %d,%d", k, pageX + (layout.u0 / 4), pageY + layout.v0);
+		MM_NativeCharGrid_Expect(test,
+		                         (layout.u2 == layout.u0) && (layout.u1 == (layout.u0 + 44)) && (layout.u3 == layout.u1) && (layout.v1 == layout.v0) &&
+		                             (layout.v2 == (layout.v0 + 26)) && (layout.v3 == layout.v2),
+		                         "portrait layout %d corners", k);
+		MM_NativeCharGrid_Expect(test, ((pageX + ((layout.u1 + 3) / 4)) <= (s->texelX + s->texelW)) && ((pageY + layout.v2) <= (s->texelY + s->texelH)),
+		                         "portrait layout %d samples beyond its slot", k);
+	}
+
+	// A template larger than a slot is not given a slot layout.
+	templateLayout.u1 = 145;
+	MM_NativeCharGrid_Expect(test, NativeChar_PortraitLayout(0, &templateLayout, &layout) == 0, "portrait layout took a 45 wide template");
+	templateLayout.u1 = 144;
+	templateLayout.v2 = 77;
+	MM_NativeCharGrid_Expect(test, NativeChar_PortraitLayout(0, &templateLayout, &layout) == 0, "portrait layout took a 27 high template");
+	templateLayout.v2 = 76;
+	MM_NativeCharGrid_Expect(test, NativeChar_PortraitLayout(NATIVE_CHAR_PORTRAIT_SLOTS, &templateLayout, &layout) == 0, "portrait layout given for slot %d",
+	                         NATIVE_CHAR_PORTRAIT_SLOTS);
+}
+
 int MM_NativeCharGrid_SelfTest(void)
 {
 	struct MM_NativeGridGeometry geometry;
@@ -2152,9 +2307,10 @@ int MM_NativeCharGrid_SelfTest(void)
 		}
 	}
 
-	// The arrows need no table.
+	// The arrows need no table, nor do the portrait slots.
 	test.entries = 0;
 	MM_NativeCharGrid_TestArrows(&test);
+	MM_NativeCharGrid_TestPortraits(&test);
 
 	if (test.failures != 0)
 	{

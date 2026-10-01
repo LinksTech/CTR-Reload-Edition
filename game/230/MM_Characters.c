@@ -1051,7 +1051,7 @@ dontDrawSelectCharacter:
 
 			struct TransitionMeta *iconTransition = MM_NativeCharGrid_TileTransition(iconIndex);
 
-			RECTMENU_DrawPolyGT4(gGT->ptrIcons[data.MetaDataCharacters[MM_NativeCharGrid_TileCharacterID(iconIndex)].iconID],
+			RECTMENU_DrawPolyGT4(MM_NativeCharGrid_TileIcon(iconIndex),
 			                     iconTransition->currX + MM_NativeCharGrid_TileX(iconIndex) + MM_CHARACTER_SELECT_ICON_DECAL_OFFSET_X,
 			                     iconTransition->currY + MM_NativeCharGrid_TileY(iconIndex) + MM_CHARACTER_SELECT_ICON_DECAL_OFFSET_Y,
 

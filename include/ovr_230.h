@@ -275,6 +275,7 @@ int MM_NativeCharGrid_TileDrawn(int tile);                         // retail: un
 s16 MM_NativeCharGrid_TileX(int tile);                             // retail: D230.activeCharacterSelectMeta[tile].posX
 s16 MM_NativeCharGrid_TileY(int tile);                             // retail: .posY; grid: the drawn y with scroll
 s16 MM_NativeCharGrid_TileCharacterID(int tile);                   // retail: meta[tile].characterID; custom tile: its template
+struct Icon *MM_NativeCharGrid_TileIcon(int tile);                 // retail: gGT->ptrIcons[MetaDataCharacters[TileCharacterID].iconID]; custom: CICN or that
 struct TransitionMeta *MM_NativeCharGrid_TileTransition(int tile); // retail: &D230.characterSelectTransitionMeta[tile]
 char *MM_NativeCharGrid_TileName(int tile);                        // retail: sdata->lngStrings[data.MetaDataCharacters[meta[tile].characterID].name_LNG_long]
 int MM_NativeCharGrid_Selectable(int tile);                        // retail 1; placeholder 0 and its log line - call it on Cross/Circle only

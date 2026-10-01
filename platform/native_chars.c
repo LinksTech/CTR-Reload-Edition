@@ -58,6 +58,11 @@
 //   draw     NativeChar_ModelHidesWheels (game/DrawTires.c): a file whose
 //            CHRI flags set RLDCHAR_FLAG_NO_WHEELS is drawn without the kart
 //            wheels and their reflection, wherever its model is drawn.
+//   grid     NativeChar_EntryPortrait (game/230/MM_NativeCharGrid.c): the
+//            CICN of a file, read at start, is uploaded into its slot of the
+//            portrait strip at the first draw after every entering of the
+//            driver select and drawn on its tile. Only there - see THE
+//            PORTRAITS.
 //   stage 0  NativeChar_ClearSeats: the next load starts with empty seats.
 //
 // THE MODEL IS THE NATIVE ONE. CMDL is framed like a model file of the BIGFILE
@@ -110,9 +115,20 @@ global_variable char s_charFile[NATIVE_CHAR_PATH_MAX];
 global_variable int s_charGiven;
 global_variable int s_charArgTooLong;
 
+// What a file's CICN gave (NativeChar_ReadIcon).
+enum
+{
+	NATIVE_CHAR_ICON_NONE = 0,    // no CICN: the template's portrait
+	NATIVE_CHAR_ICON_OWN = 1,     // iconWords hold a checked CICN
+	NATIVE_CHAR_ICON_IGNORED = 2, // CICN present but unusable (iconWhy): the template's portrait
+};
+
+#define NATIVE_CHAR_ICON_WORDS (RLDCHAR_ICON_BYTES / 2u)
+
 // One loaded file: its name on disk (the identity, owned here for the whole
-// run), the CMDL chunk (relocated, never freed - instances point into it) and
-// what CHRI said.
+// run), the CMDL chunk (relocated, never freed - instances point into it),
+// what CHRI said and the portrait of CICN as 16-bit words (word 0x04 the CLUT,
+// word 0x14 the texels, include/rldchar.inc).
 struct NativeCharFile
 {
 	char *file;
@@ -121,6 +137,9 @@ struct NativeCharFile
 	struct RldCharInfo info;
 	u8 cmdlHash[6];
 	u64 fileBytes;
+	int icon;
+	const char *iconWhy;
+	u16 iconWords[NATIVE_CHAR_ICON_WORDS];
 };
 
 // The files of the roster, in sorted order: entry e < s_charRosterFiles is
@@ -277,6 +296,53 @@ internal void NativeChar_ReportAtExit(void)
 	Platform_Log("[CTR Char] at exit: instances dropped %lld total, %lld seat 0\n", (long long)s_droppedTotal, (long long)s_droppedSeat0);
 }
 
+// The portrait (CICN, optional): checked with RldChar_CheckIcon and kept as
+// words. Whatever is wrong with it - unreadable, hash, CICN-1..3 - costs only
+// the portrait, never the file (docs/CONTAINER_FORMAT.md, CICN). No line here:
+// NativeChar_Admit names the outcome once the entry is known.
+internal void NativeChar_ReadIcon(struct RldReader *reader, struct NativeCharFile *out)
+{
+	const char *why = NULL;
+	size_t size = 0;
+	int index = -1;
+	u8 *bytes;
+	u32 w;
+
+	out->icon = NATIVE_CHAR_ICON_NONE;
+	out->iconWhy = NULL;
+
+	if ((Rld_FindEntry(reader, "CICN", &index) == NULL) || (index < 0))
+	{
+		return;
+	}
+
+	bytes = Rld_ReadChunk(reader, index, &size, &why);
+	if (bytes == NULL)
+	{
+		out->icon = NATIVE_CHAR_ICON_IGNORED;
+		out->iconWhy = (why != NULL) ? why : "CICN cannot be read";
+		return;
+	}
+
+	why = RldChar_CheckIcon(bytes, size);
+	if (why != NULL)
+	{
+		free(bytes);
+		out->icon = NATIVE_CHAR_ICON_IGNORED;
+		out->iconWhy = why;
+		return;
+	}
+
+	// Little endian on disk, the VRAM words as they are uploaded.
+	for (w = 0; w < NATIVE_CHAR_ICON_WORDS; w++)
+	{
+		out->iconWords[w] = (u16)Rld_ReadLE16(&bytes[2u * w]);
+	}
+
+	free(bytes);
+	out->icon = NATIVE_CHAR_ICON_OWN;
+}
+
 // One file: read, checked, relocated into *out. 0 after a REFUSED line (named
 // by file), with nothing left allocated; 1 with out->cmdl and out->model set.
 // out->file is the caller's.
@@ -308,7 +374,7 @@ internal int NativeChar_ReadFile(const char *path, const char *file, struct Nati
 	}
 
 	// Rld_OpenAs has proved both present (the required chunks of the format).
-	// CICN and CPRM are not read.
+	// CICN is read after CMDL (NativeChar_ReadIcon), CPRM is not read.
 	Rld_FindEntry(&reader, "CHRI", &infoIndex);
 	modelEntry = Rld_FindEntry(&reader, "CMDL", &modelIndex);
 	if ((infoIndex < 0) || (modelEntry == NULL))
@@ -344,6 +410,11 @@ internal int NativeChar_ReadFile(const char *path, const char *file, struct Nati
 	}
 
 	cmdl = Rld_ReadChunk(&reader, modelIndex, &cmdlSize, &why);
+	if (cmdl != NULL)
+	{
+		NativeChar_ReadIcon(&reader, out);
+	}
+
 	Rld_Close(&reader);
 	if (cmdl == NULL)
 	{
@@ -413,6 +484,30 @@ internal void NativeChar_LogLoaded(const struct NativeCharFile *entry)
 	             (unsigned)entry->cmdlHash[3], (unsigned)entry->cmdlHash[4], (unsigned)entry->cmdlHash[5], (unsigned long long)entry->fileBytes, wheels);
 }
 
+// The portrait of an admitted entry, one line of its own after "loaded" (that
+// line keeps its wording, measuring tools read it).
+internal void NativeChar_LogPortrait(int entry)
+{
+	const struct NativeCharFile *f = &s_charFiles[entry];
+
+	if (f->icon == NATIVE_CHAR_ICON_NONE)
+	{
+		Platform_Log("[CTR Char] portrait %s: the template's (no CICN)\n", f->file);
+	}
+	else if (f->icon == NATIVE_CHAR_ICON_IGNORED)
+	{
+		Platform_Log("[CTR Char] portrait %s: CICN ignored - %s - the template's\n", f->file, f->iconWhy);
+	}
+	else if (entry >= NATIVE_CHAR_PORTRAIT_SLOTS)
+	{
+		Platform_Log("[CTR Char] portrait %s: no slot (entry %d, %d slots) - the template's\n", f->file, entry, NATIVE_CHAR_PORTRAIT_SLOTS);
+	}
+	else
+	{
+		Platform_Log("[CTR Char] portrait %s: own (slot %d)\n", f->file, entry);
+	}
+}
+
 // A valid file becomes the next entry while there is an id for it; after
 // that it is named loudly and let go. 1 = it got an entry (and keeps file).
 internal int NativeChar_Admit(struct NativeCharFile *loaded, char *file)
@@ -429,6 +524,7 @@ internal int NativeChar_Admit(struct NativeCharFile *loaded, char *file)
 	s_charFiles[s_charRosterFiles] = *loaded;
 	s_charRosterFiles++;
 	NativeChar_LogLoaded(loaded);
+	NativeChar_LogPortrait(s_charRosterFiles - 1);
 	return 1;
 }
 
@@ -974,6 +1070,216 @@ int NativeChar_ModelHidesWheels(const struct Model *model)
 	}
 
 	return 0;
+}
+
+// ---------------------------------------------------------------------------
+// THE PORTRAITS (native_chars.h, NATIVE_CHAR_PORTRAIT_SLOTS). Slot e belongs to
+// entry e; a slot is uploaded only for a file with a usable CICN, so a run
+// without such a file writes nothing into VRAM and logs nothing here.
+//
+// The strip x 256..511, y 266..295 is written by nothing else: no container
+// and no retail file that the game loads, and no code path but the clear at
+// start and the restore of a quick state (whole VRAM). Every upload is
+// bracketed with NativeRenderer_StripOwnWrites, so the strip counter of the
+// renderer tells these writes from any foreign one.
+//
+// WHEN: at the first NativeChar_EntryPortrait after NativeChar_PortraitsDirty,
+// which the grid calls on every entering of the driver select
+// (MM_NativeCharGrid_Enter) - after a race, a track select, a quick state, a
+// video, whatever used the VRAM in between. At most 20 slots x 2 small
+// LoadImage.
+//
+// NOT HERE: the race HUD (game/UI/UI_Rank.c), the arcade results
+// (game/222.c) and the cup standings (game/UI/UI_CupStandings.c) index the
+// portraits by characterIDs and keep showing the template's portrait.
+// ---------------------------------------------------------------------------
+
+#define NATIVE_CHAR_PORTRAIT_STRIP_X 256
+#define NATIVE_CHAR_PORTRAIT_STRIP_Y 266
+#define NATIVE_CHAR_PORTRAIT_PAGE_Y 256        // y base of a page with tpage bit 0x10
+#define NATIVE_CHAR_PORTRAIT_PAGE_W 64         // halfwords of a texture page
+#define NATIVE_CHAR_PORTRAIT_PAGE_BIT_Y 0x10   // tpage: y base 256
+#define NATIVE_CHAR_PORTRAIT_PER_PAGE 5        // 5 x 11 halfwords = 55 of 64
+#define NATIVE_CHAR_PORTRAIT_CLUT_Y 292
+#define NATIVE_CHAR_PORTRAIT_CLUTS_PER_ROW 16  // 16 x 16 halfwords = the width of the strip
+#define NATIVE_CHAR_PORTRAIT_TEXELS_PER_WORD 4 // 4 bit
+#define NATIVE_CHAR_PORTRAIT_CLUT_WORD (0x08u / 2u)                  // CICN byte 0x08
+#define NATIVE_CHAR_PORTRAIT_TEXEL_WORD (RLDCHAR_ICON_WORDS_AT / 2u) // CICN byte 0x28
+
+// The tpage bits a slot sets anew: page x (0..3), y base (4), depth (7..8) and
+// bit 11; abr (5..6) stays the template's - TRANS_50_DECAL sets it anyway.
+#define NATIVE_CHAR_PORTRAIT_TPAGE_MASK 0x099fu
+
+global_variable struct Icon s_portraitIcon[NATIVE_CHAR_PORTRAIT_SLOTS];
+global_variable int s_portraitsDirty = 1;
+global_variable int s_portraitGeometryLogged;
+global_variable u8 s_portraitSizeLogged[NATIVE_CHAR_PORTRAIT_SLOTS];
+
+int NativeChar_PortraitSlot(int slot, struct NativeCharPortraitSlot *out)
+{
+	int page;
+	int pageX;
+
+	if ((out == NULL) || (slot < 0) || (slot >= NATIVE_CHAR_PORTRAIT_SLOTS))
+	{
+		return 0;
+	}
+
+	page = slot / NATIVE_CHAR_PORTRAIT_PER_PAGE;
+	pageX = NATIVE_CHAR_PORTRAIT_STRIP_X + (NATIVE_CHAR_PORTRAIT_PAGE_W * page);
+
+	out->texelX = pageX + ((int)RLDCHAR_ICON_ROW_WORDS * (slot % NATIVE_CHAR_PORTRAIT_PER_PAGE));
+	out->texelY = NATIVE_CHAR_PORTRAIT_STRIP_Y;
+	out->texelW = (int)RLDCHAR_ICON_ROW_WORDS;
+	out->texelH = (int)RLDCHAR_ICON_HEIGHT;
+	out->clutX = NATIVE_CHAR_PORTRAIT_STRIP_X + ((int)RLDCHAR_ICON_COLORS * (slot % NATIVE_CHAR_PORTRAIT_CLUTS_PER_ROW));
+	out->clutY = NATIVE_CHAR_PORTRAIT_CLUT_Y + (slot / NATIVE_CHAR_PORTRAIT_CLUTS_PER_ROW);
+	out->clutW = (int)RLDCHAR_ICON_COLORS;
+	out->u0 = (out->texelX - pageX) * NATIVE_CHAR_PORTRAIT_TEXELS_PER_WORD;
+	out->v0 = NATIVE_CHAR_PORTRAIT_STRIP_Y - NATIVE_CHAR_PORTRAIT_PAGE_Y;
+	out->pageBits = ((pageX / NATIVE_CHAR_PORTRAIT_PAGE_W) & 0xf) | NATIVE_CHAR_PORTRAIT_PAGE_BIT_Y;
+	return 1;
+}
+
+int NativeChar_PortraitLayout(int slot, const struct TextureLayout *templateLayout, struct TextureLayout *out)
+{
+	struct NativeCharPortraitSlot place;
+	int w;
+	int h;
+
+	if ((templateLayout == NULL) || (out == NULL) || !NativeChar_PortraitSlot(slot, &place))
+	{
+		return 0;
+	}
+
+	// The size the template's portrait is drawn with (DecalHUD_DrawPolyGT4,
+	// game/DecalHUD.c: u1 - u0 by v2 - v0). The retail size is not written in
+	// the code; up to 44 x 26 the tile shows that part of the own portrait, a
+	// larger one would sample beyond the slot.
+	w = (int)templateLayout->u1 - (int)templateLayout->u0;
+	h = (int)templateLayout->v2 - (int)templateLayout->v0;
+	if ((w < 1) || (w > (int)RLDCHAR_ICON_WIDTH) || (h < 1) || (h > (int)RLDCHAR_ICON_HEIGHT))
+	{
+		return 0;
+	}
+
+	*out = *templateLayout;
+	out->u0 = (u8)place.u0;
+	out->u2 = (u8)place.u0;
+	out->u1 = (u8)(place.u0 + w);
+	out->u3 = (u8)(place.u0 + w);
+	out->v0 = (u8)place.v0;
+	out->v1 = (u8)place.v0;
+	out->v2 = (u8)(place.v0 + h);
+	out->v3 = (u8)(place.v0 + h);
+	out->clut = (u16)((place.clutY << 6) | (place.clutX >> 4));
+	out->tpage = (u16)((templateLayout->tpage & ~(u16)NATIVE_CHAR_PORTRAIT_TPAGE_MASK) | (u16)place.pageBits);
+	return 1;
+}
+
+void NativeChar_PortraitsDirty(void)
+{
+	s_portraitsDirty = 1;
+}
+
+// Every own portrait into its slot: texels and CLUT, then one VRAM update.
+internal void NativeChar_PortraitsUpload(void)
+{
+	int uploaded = 0;
+	int entry;
+
+	s_portraitsDirty = 0;
+
+	for (entry = 0; (entry < s_charRosterFiles) && (entry < NATIVE_CHAR_PORTRAIT_SLOTS); entry++)
+	{
+		struct NativeCharFile *f = &s_charFiles[entry];
+		struct NativeCharPortraitSlot place;
+		RECT16 rect;
+
+		if ((f->icon != NATIVE_CHAR_ICON_OWN) || !NativeChar_PortraitSlot(entry, &place))
+		{
+			continue;
+		}
+
+		if (uploaded == 0)
+		{
+			NativeRenderer_StripOwnWrites(1);
+		}
+
+		rect.x = (s16)place.texelX;
+		rect.y = (s16)place.texelY;
+		rect.w = (s16)place.texelW;
+		rect.h = (s16)place.texelH;
+		LoadImage(&rect, &f->iconWords[NATIVE_CHAR_PORTRAIT_TEXEL_WORD]);
+
+		rect.x = (s16)place.clutX;
+		rect.y = (s16)place.clutY;
+		rect.w = (s16)place.clutW;
+		rect.h = 1;
+		LoadImage(&rect, &f->iconWords[NATIVE_CHAR_PORTRAIT_CLUT_WORD]);
+
+		uploaded++;
+	}
+
+	if (uploaded == 0)
+	{
+		return;
+	}
+
+	NativeRenderer_StripOwnWrites(0);
+
+	// Visible at once, as LoadImage2 makes the minimap
+	// (game/230/MM_NativeTrackSelect.c, MM_NativeTrackSelect_MapUpload).
+	NativeRenderer_UpdateVRAM();
+	Platform_Log("[CTR Char] portraits: %d uploaded to the strip at vblank %d\n", uploaded, Platform_GetVBlankCount());
+}
+
+struct Icon *NativeChar_EntryPortrait(int entry, struct Icon *templateIcon)
+{
+	struct TextureLayout layout;
+	const struct NativeCharFile *f;
+	struct Icon *own;
+
+	if ((templateIcon == NULL) || (entry < 0) || (entry >= s_charRosterFiles) || (entry >= NATIVE_CHAR_PORTRAIT_SLOTS))
+	{
+		return templateIcon;
+	}
+
+	f = &s_charFiles[entry];
+	if (f->icon != NATIVE_CHAR_ICON_OWN)
+	{
+		return templateIcon;
+	}
+
+	if (!NativeChar_PortraitLayout(entry, &templateIcon->texLayout, &layout))
+	{
+		if (!s_portraitSizeLogged[entry])
+		{
+			s_portraitSizeLogged[entry] = 1;
+			Platform_Log("[CTR Char] portrait %s: the template's portrait is %d x %d, a slot holds %u x %u - the template's\n", f->file,
+			             (int)templateIcon->texLayout.u1 - (int)templateIcon->texLayout.u0, (int)templateIcon->texLayout.v2 - (int)templateIcon->texLayout.v0,
+			             (unsigned)RLDCHAR_ICON_WIDTH, (unsigned)RLDCHAR_ICON_HEIGHT);
+		}
+
+		return templateIcon;
+	}
+
+	if (!s_portraitGeometryLogged)
+	{
+		s_portraitGeometryLogged = 1;
+		Platform_Log("[CTR Char] portrait geometry: template %d x %d, tpage 0x%04x\n", (int)templateIcon->texLayout.u1 - (int)templateIcon->texLayout.u0,
+		             (int)templateIcon->texLayout.v2 - (int)templateIcon->texLayout.v0, (unsigned)templateIcon->texLayout.tpage);
+	}
+
+	if (s_portraitsDirty)
+	{
+		NativeChar_PortraitsUpload();
+	}
+
+	own = &s_portraitIcon[entry];
+	*own = *templateIcon;
+	own->texLayout = layout;
+	return own;
 }
 
 // ---------------------------------------------------------------------------
