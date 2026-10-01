@@ -19,7 +19,7 @@
 //   rs_track.c    page "Track"
 //   rs_cups.c     page "Cups"
 //   rs_char.c     page "Character"
-//   rs_view.c     3D model view (window class RsModelView, rs_view.h)
+//   rs_view.c     3D model view on the reference dummy (window class RsModelView, rs_view.h)
 //   rs_test.c     page "Test in game"
 //
 // Command line (details in rs_shell.c): `--rldpack <arguments>` (first
@@ -150,10 +150,12 @@
 //                  template (0..14, -1 = not usable), class (0 balanced,
 //                  1 acceleration, 2 speed, 3 turning, -1 = not usable), poses
 //                  (auto | still), colors (64 | 128), up (y | z), forward
-//                  (z | -z), scale, two_sided (yes | no), out, size (the
-//                  --size percent used, 100 when missing or invalid), icon,
+//                  (z | -z), scale, two_sided (yes | no), out ("none" with
+//                  --diagnose), size (the --size percent used, 100 when
+//                  missing or invalid), icon,
 //                  voices ("" when not given), fit (crash | none), reduce
-//                  (auto | off), wheels (on | off)
+//                  (auto | off), wheels (on | off), repair (auto | off),
+//                  open-parts (two-sided | one-sided), remesh (on | off)
 //   @value    size-range <lo> <hi>          (no origin)
 //             the --size percentages this model takes, whole numbers inside
 //             50..200, the run around 100; "0 0" = no size fits (the model
@@ -162,8 +164,9 @@
 //             the model's kart in the neutral frame, in the units of the
 //             preview file; the kart is never scaled by --size
 //   @value    retail-kart <x0> <y0> <z0> <x1> <y1> <z1>   (no origin)
-//             the fixed box of a retail kart in the same units; the page draws
-//             it as the grey size reference next to the model
+//             the fixed box of a retail kart in the same units; the page only
+//             reports it - the preview draws the reference dummy of make-char
+//             (tools/rldpack_dummy.inc) under the model instead
 //   @value    crash-box <x0> <y0> <z0> <x1> <y1> <z1>   (no origin)
 //             Crash with his kart (retail racer model, birth pose) in the same
 //             units, with ONE DECIMAL ("-33.8"); --fit crash fits the model to
@@ -191,7 +194,22 @@
 //             model's kart was matched to Crash's, model = the whole model (no
 //             kart found, or --wheels off),
 //             reduced <triangles before> <after> <draw bytes before> <after>:
-//             only when --reduce auto lowered the triangle count
+//             only when --reduce auto lowered the triangle count,
+//             dummy <shift x> <y> <z> <seat x> <y> <z> <wheel 0 | 1>: only with
+//             --fit crash when the model was placed onto the reference dummy;
+//             shift = added to every position, seat = the pivot of --size and
+//             the poses (game units, %.2f), wheel 1 = it has a steering wheel,
+//             repaired <welded> <degenerate> <duplicate> <flipped> <holes
+//             closed> <hole triangles> <holes left> <open edges before>
+//             <after> <cracks split>: with --repair auto (the default),
+//             two-sided <n>: triangles of parts still open after the repair,
+//             drawn from both sides at no extra cost (--open-parts two-sided,
+//             the default); only the open parts,
+//             two-sided-packing <n>: triangles that turn over by the packing in
+//             some pose and are therefore drawn from both sides (always next to
+//             two-sided),
+//             remeshed <triangles of the source> <of the hulls> <after the
+//             reduction> <open edges before> <after>: only with --remesh on
 //   @msg      as above. ids the page reads itself: char-size (error,
 //             "Size N% is outside lo..hi% for this model: <why>. Choose a size in
 //             that range."). Others of make-char, shown as they come: icon-file,
@@ -200,7 +218,10 @@
 //             voice-vag, voice-stereo, voice-silent, voice-clip,
 //             voice-length-line, voice-length-short, voice-source, voice-same,
 //             voice-template, voice-missing, voice-later (always with --voices),
-//             preview, model-reduced (info, with every reduction), and the
+//             preview, model-reduced (info, with every reduction),
+//             model-reduce-fallback (info, the reduction reached its target only
+//             without some of its guards), model-repaired (info),
+//             model-remeshed (info), model-quant-flip (note), and the
 //             ply-*, model-*, name*, usage ... of before
 //   @result   <ok | failed | checked> <output path> <bytes> <sha256>
 //             with --icon the container has a third chunk CICN (612 bytes)
@@ -217,8 +238,11 @@
 // Commands the page "Character" calls (always --template 14, Fake Crash):
 //   make-char --machine --check --model <ply> --name <n> --template 14
 //             --class <balanced|acceleration|speed|turning> --size <percent>
-//             [--reduce off] [--wheels off]   (only when unchecked; the
-//             defaults are --reduce auto, --wheels on, --fit crash)
+//             [--repair off] [--open-parts one-sided] [--remesh on]
+//             [--reduce off] [--wheels off]   (only when they differ from the
+//             defaults --repair auto, --open-parts two-sided, --remesh off,
+//             --reduce auto, --wheels on, --fit crash); --remesh on is passed
+//             only with --reduce auto (the page greys the option out otherwise)
 //             [--icon <png> --icon-preview <prefix>] [--voices <dir>]
 //             --preview <file> [--out <f>]      check; writes only the preview files
 //   make-char --machine --model ... --out <f>  build: the same switches without

@@ -10,13 +10,17 @@
 //   view = CreateWindowW(L"RsModelView", L"<text while empty>",
 //                        WS_CHILD | WS_VISIBLE, ..., page, (HMENU)id, instance, NULL);
 //   RsView_LoadPreview(view, path);                  after every check
-//   RsView_SetReference(view, <retail kart box>);    fixed retail size, see below
 //   RsView_SetCrashBox(view, <Crash box>);           size outline about the model
-//   RsView_SetWheels(view, 0 | 1);                   the game's kart wheels on the model
+//   RsView_SetWheels(view, 0 | 1);                   the game's kart wheels on the dummy
 //   RsView_SetPose(view, 0..2);  RsView_SetYaw(view, degrees);
 //
-// The window text is shown while there is no model (as in the message list),
-// unless RsView_Clear passed its own message.
+// Under the model the view always draws the reference dummy of make-char
+// (tools/rldpack_dummy.inc): the retail kart at Crash's size with his seat,
+// his steering wheel and the kart wheels the game draws. make-char fits every
+// model onto it, so model and dummy share one origin; what the model leaves
+// open, the dummy shows. While there is no model, the dummy is drawn alone
+// with the window text above it; a message of RsView_Clear (or a preview that
+// cannot be read) is shown instead of the picture.
 //
 // Dragging with the left mouse button turns the model; the parent then gets
 // WM_COMMAND with HIWORD(wParam) = RS_VIEW_N_YAW, LOWORD(wParam) = the control
@@ -65,18 +69,9 @@ void RsView_SetPose(HWND view, int pose);
 void RsView_SetYaw(HWND view, int degrees);
 int  RsView_GetYaw(HWND view);   // 0..359
 
-// The retail kart for size comparison, as a box in the game units of the model
-// (a retail kart is 112 x 56 units with its bottom at 6, tools/rldpack_char.inc).
-// Not the model's own "@value kart-box": the model already shows its own kart.
-// It is drawn as a grey, simplified kart next to the model, labelled "Retail
-// kart"; its outline is exactly this box. Values are clamped to 16 bits. A box
-// with no extent on one axis (e.g. all zero) removes the reference.
-void RsView_SetReference(HWND view, int x0, int y0, int z0, int x1, int y1, int z1);
-
-// The kart wheels the game draws for this driver: on = dark wheels at the
-// wheel positions of the reference kart (the same boxes as its grey wheels),
-// placed on the model; off = none. They need the reference; a new view has
-// them on.
+// The kart wheels the game draws for this driver: on = the four wheels of the
+// dummy (where the game draws its wheel sprites), off = the dummy without
+// them. A new view has them on. The framing does not change with them.
 void RsView_SetWheels(HWND view, int on);
 
 // The size of Crash with his kart ("@value crash-box"), in TENTHS of a game
@@ -92,5 +87,16 @@ void RsView_Clear(HWND view, const wchar_t *message);
 // TRUE while a model is loaded; the number of triangles of a pose (0 without a model).
 BOOL RsView_Loaded(HWND view);
 int  RsView_TriangleCount(HWND view, int pose);
+
+// The reference dummy (RldDum_Mesh of tools/rldpack_dummy.inc), defined in
+// rs_rldpack.c - the translation unit that carries rldpack. Positions in 1/16
+// game units (rounded), 3 per position; triangles as 3 position indices,
+// wound outward, each with a colour 0xRRGGBB. wheels: with the four kart
+// wheels the game draws. pose: RS_VIEW_POSE_*; the steering wheel is turned as
+// in that frame (RldDum_PoseFrame, RldDum_ApplyPose), the rest stays.
+// Returns the triangle count and *positionCount; 0 (and *positionCount 0)
+// when a buffer is too small. position or triangle NULL: only the counts.
+int Rs_DummyMesh(int wheels, int pose, int *position, int positionMax, int *triangle, unsigned int *color,
+                 int triangleMax, int *positionCount);
 
 #endif

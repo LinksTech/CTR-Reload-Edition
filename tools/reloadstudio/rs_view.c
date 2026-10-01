@@ -21,9 +21,11 @@
 // carried in 1/16 game units and 1/16 pixels, divisions are C divisions
 // (truncating, defined by the standard), the square root is an integer one.
 // Ties in the depth test keep the triangle drawn first, and the drawing order
-// is fixed (floor, reference kart, wheels on the model, model in file order,
-// Crash outline). Only the text comes from GDI, which is the same for the
-// same machine and font settings.
+// is fixed (floor, model in file order, dummy, Crash outline). The dummy
+// comes from rldpack's own numbers in doubles (Rs_DummyMesh, rs_rldpack.c),
+// computed without library functions and rounded to 1/16 units there. Only
+// the text comes from GDI, which is the same for the same machine and font
+// settings.
 //
 // THE AXES
 //
@@ -62,19 +64,34 @@
 //
 // THE PICTURE
 //
-// Camera slightly from above (RS_VIEW_PITCH), perspective, the model on the
-// left, the retail kart (RsView_SetReference) on the right, both turning about
-// their own origin - the point the game turns a kart about - and standing on
-// one floor at y = 0, so heights compare directly. The framing depends on all
-// three poses and the reference, not on the yaw or the pose: turning or
-// changing the pose never zooms.
+// Camera slightly from above (RS_VIEW_PITCH), perspective, the model turning
+// about its origin - the point the game turns a kart about - and standing on
+// a floor at y = 0. The framing depends on all three poses, the dummy (with
+// its wheels, in all three poses), the Crash outline and the floor, which
+// stays inside the picture - not on the yaw, the pose or the wheels: turning,
+// changing the pose or switching the wheels never zooms.
 //
-// Two additions at the model (both in its coordinates, so they turn with it):
-// the kart wheels the game draws for every driver (RsView_SetWheels; dark
-// boxes at the wheel positions of the reference kart - the game places its
-// wheels by the kart, not by the model), and the size of Crash with his kart
-// as a dashed outline (RsView_SetCrashBox), which make-char fits every model
-// to. The framing includes both.
+// THE DUMMY
+//
+// Under the model, in its coordinates (so it turns with it), the view draws
+// the reference dummy of make-char (tools/rldpack_dummy.inc, RldDum_Mesh):
+// the retail kart at Crash's size with his seat, his steering wheel (turned
+// as in the pose) and, with RsView_SetWheels on, the four wheels the game
+// draws for every driver - the game places them by the kart, not by the
+// model. make-char fits every model onto this dummy (--fit crash), so the two
+// lie on each other. The dummy NEVER covers the model: the model is drawn
+// first and marks its pixels (RsViewTarget.mask), the dummy is drawn only
+// into pixels the model left free, with the depth test against the floor and
+// itself. So every pixel of the model is exactly as without the dummy (also
+// the parts inside the dummy's walls, e.g. a model's own wheels), and the
+// grey dummy shows only where the model leaves a gap. The dummy has one
+// colour per triangle; it is shaded by a fixed light per face of the dummy,
+// so its shape stays readable.
+// No separate retail kart stands beside the model: the dummy is the measured
+// retail kart in its real place, which compares better than a box next to it.
+//
+// The size of Crash with his kart stays as a dashed outline about the model
+// (RsView_SetCrashBox): the dummy has no driver, the outline shows his height.
 
 #include "reloadstudio.h"
 #include "rs_view.h"
@@ -89,7 +106,8 @@
 #define RS_VIEW_SUB 16                                  // positions in 1/16 units and pixels
 #define RS_VIEW_DEPTH_SHIFT 20                          // depth values: camera distance / depth in Q20
 #define RS_VIEW_COORD_MAX (1LL << 18)                   // 1/16 pixels; see RsView_Triangle
-#define RS_VIEW_REF_PARTS 6
+#define RS_VIEW_DUMMY_POS_MAX 2048                      // far above the dummy (RLDDUM_MESH_TRIANGLES_MAX 600)
+#define RS_VIEW_DUMMY_TRI_MAX 2048
 #define RS_VIEW_MESSAGE_CAP 512
 
 static const unsigned char s_rsViewMagic[RS_VIEW_MAGIC_BYTES] = { 'R', 'L', 'D', 'P', 'V', '1', 0, 0 };
@@ -127,10 +145,15 @@ struct RsView {
     int ymin, ymax;            // over all poses
     wchar_t message[RS_VIEW_MESSAGE_CAP];
 
-    // The retail kart (game units).
-    int hasRef;
-    int ref[6];                // x0 y0 z0 x1 y1 z1, lo <= hi
-    int wheels;                // the game's kart wheels on the model (needs the reference)
+    // The dummy (Rs_DummyMesh), built again on every render: positions in
+    // 1/16 units, triangles, a colour per triangle. Its extent over all poses
+    // with wheels, in game units, for the framing.
+    int *dumPos;
+    int *dumTri;
+    unsigned int *dumColor;
+    long long dumRadius2;
+    int dumYmin, dumYmax;
+    int wheels;                // the game's kart wheels on the dummy
 
     // Crash with his kart (tenths of game units), drawn as an outline.
     int hasCrash;
@@ -149,6 +172,7 @@ struct RsView {
     HGDIOBJ oldBmp;
     unsigned int *pixels;
     int *depth;
+    unsigned char *mask;                // 1 = a pixel of the model (RsViewTarget.mask)
     int w, h;
     int dirty;                          // the picture no longer matches the state
     const struct RsPalette *drawnPal;   // palette the picture was drawn with
@@ -174,22 +198,20 @@ struct RsViewCam {
 struct RsViewScene {
     struct RsViewCam cam;
     long long offModel;         // sideways offset after the turn, 1/16 units
-    long long offRef;
     long long floorX, floorZ;   // half width and half depth of the floor, 1/16 units
     long long floorY;           // its height, 1/16 units
 };
 
+// mask / maskMode: RS_VIEW_MASK_* - the model marks its pixels, the dummy
+// leaves them alone.
+enum { RS_VIEW_MASK_NONE = 0, RS_VIEW_MASK_SET, RS_VIEW_MASK_SKIP };
+
 struct RsViewTarget {
     unsigned int *pixels;
     int *depth;
+    unsigned char *mask;
+    int maskMode;
     int w, h;
-};
-
-// A part of the simplified reference kart, in 1/16 game units.
-struct RsViewBox {
-    long long lo[3];
-    long long hi[3];
-    int wheel;
 };
 
 static struct RsView *RsView_Data(HWND view)
@@ -492,8 +514,10 @@ static void RsView_Fill(const struct RsViewTarget *t, const struct RsViewVert *a
         long long e0 = e0Row, e1 = e1Row, e2 = e2Row;
         unsigned int *pix = t->pixels + (size_t)py * (size_t)t->w;
         int *dep = t->depth + (size_t)py * (size_t)t->w;
+        unsigned char *own = t->mask + (size_t)py * (size_t)t->w;
         for (px = px0; px <= px1; px++) {
-            if (e0 + bias0 >= 0 && e1 + bias1 >= 0 && e2 + bias2 >= 0) {
+            if (e0 + bias0 >= 0 && e1 + bias1 >= 0 && e2 + bias2 >= 0 &&
+                !(t->maskMode == RS_VIEW_MASK_SKIP && own[px])) {
                 // e0 + e1 + e2 == area and all three >= 0 here, so every sum
                 // below is a weighted mean without overflow (area < 2^40,
                 // depth < 2^21).
@@ -505,6 +529,8 @@ static void RsView_Fill(const struct RsViewTarget *t, const struct RsViewVert *a
                     const unsigned int bl = (unsigned int)((e0 * a->b + e1 * b->b + e2 * c->b + half) / area);
                     dep[px] = z;
                     pix[px] = (r << 16) | (g << 8) | bl;
+                    if (t->maskMode == RS_VIEW_MASK_SET)
+                        own[px] = 1;
                 }
             }
             e0 += e0dx;
@@ -546,70 +572,31 @@ static void RsView_Triangle(const struct RsViewTarget *t, const struct RsViewVer
 // The scene
 // ---------------------------------------------------------------------------
 
-// The simplified retail kart: wheels, a chassis and a seat back, all inside the
-// box and together reaching every side of it, so its outline is exactly the
-// box given to RsView_SetReference. The proportions are only for the eye.
-static int RsView_RefParts(const struct RsView *v, struct RsViewBox *parts)
-{
-    const long long x0 = (long long)v->ref[0] * RS_VIEW_SUB, y0 = (long long)v->ref[1] * RS_VIEW_SUB;
-    const long long z0 = (long long)v->ref[2] * RS_VIEW_SUB, x1 = (long long)v->ref[3] * RS_VIEW_SUB;
-    const long long y1 = (long long)v->ref[4] * RS_VIEW_SUB, z1 = (long long)v->ref[5] * RS_VIEW_SUB;
-    const long long len = z1 - z0, wid = x1 - x0, hgt = y1 - y0;
-    const long long wheelW = wid / 5;
-    const long long wheelH = (len * 7 / 25 < hgt) ? len * 7 / 25 : hgt;
-    int n = 0, side;
-
-    for (side = 0; side < 2; side++) {
-        const long long wx0 = side ? x1 - wheelW : x0;
-        const long long wx1 = side ? x1 : x0 + wheelW;
-        // rear wheel: the bigger one
-        parts[n].lo[0] = wx0; parts[n].lo[1] = y0; parts[n].lo[2] = z0;
-        parts[n].hi[0] = wx1; parts[n].hi[1] = y0 + wheelH; parts[n].hi[2] = z0 + len * 3 / 10;
-        parts[n].wheel = 1;
-        n++;
-        // front wheel
-        parts[n].lo[0] = wx0; parts[n].lo[1] = y0; parts[n].lo[2] = z1 - len / 4;
-        parts[n].hi[0] = wx1; parts[n].hi[1] = y0 + wheelH * 4 / 5; parts[n].hi[2] = z1;
-        parts[n].wheel = 1;
-        n++;
-    }
-    // chassis between the wheels
-    parts[n].lo[0] = x0 + wheelW; parts[n].lo[1] = y0 + wheelH / 5; parts[n].lo[2] = z0 + len / 10;
-    parts[n].hi[0] = x1 - wheelW; parts[n].hi[1] = y0 + wheelH * 3 / 5; parts[n].hi[2] = z1;
-    parts[n].wheel = 0;
-    n++;
-    // seat back, up to the top of the box
-    parts[n].lo[0] = x0 + wid * 3 / 10; parts[n].lo[1] = y0 + wheelH * 2 / 5; parts[n].lo[2] = z0 + len / 8;
-    parts[n].hi[0] = x1 - wid * 3 / 10; parts[n].hi[1] = y1; parts[n].hi[2] = z0 + len / 4;
-    parts[n].wheel = 0;
-    n++;
-    return n;
-}
-
-// Framing from the extents only (not from the yaw or the pose): every object
-// fits in a cylinder about its vertical axis, so any turn stays inside.
+// Framing from the extents only (not from the yaw, the pose or the wheels):
+// model, dummy and Crash outline fit in a cylinder about the vertical axis,
+// so any turn stays inside.
 static void RsView_Scene(const struct RsView *v, int w, int h, int labelH, struct RsViewScene *s)
 {
     long long rModel = (long long)RsView_Isqrt((unsigned long long)v->radius2) + 1;
-    long long rRef = 0, rMax, gap, halfW, ylo, yhi, ey, ey2, ez2, rScene, dist, dmin, hw, hh, fx, fy;
+    long long rDummy = (long long)RsView_Isqrt((unsigned long long)v->dumRadius2) + 1;
+    long long rMax, halfW, ylo, yhi, ey, ey2, ez2, rScene, dist, dmin, hw, hh, fx, fy;
     long long floorX, floorZ;
     const int margin = Rs_Px(12);
     const int ps = RsView_Sin(RS_VIEW_PITCH), pc = RsView_Cos(RS_VIEW_PITCH);
 
     ylo = v->ymin < 0 ? v->ymin : 0;
     yhi = v->ymax > 0 ? v->ymax : 0;
-    if (v->hasRef) {
-        long long ax = (long long)v->ref[0] * v->ref[0] > (long long)v->ref[3] * v->ref[3] ? v->ref[0] : v->ref[3];
-        long long az = (long long)v->ref[2] * v->ref[2] > (long long)v->ref[5] * v->ref[5] ? v->ref[2] : v->ref[5];
-        rRef = (long long)RsView_Isqrt((unsigned long long)(ax * ax + az * az)) + 1;
-        if (v->ref[1] < ylo)
-            ylo = v->ref[1];
-        if (v->ref[4] > yhi)
-            yhi = v->ref[4];
-        // The wheels on the model lie inside the reference box.
-        if (v->wheels && rRef > rModel)
-            rModel = rRef;
+    if (!v->loaded) {
+        rModel = 1;
+        ylo = 0;
+        yhi = 0;
     }
+    if (rDummy > rModel)
+        rModel = rDummy;
+    if (v->dumYmin < ylo)
+        ylo = v->dumYmin;
+    if (v->dumYmax > yhi)
+        yhi = v->dumYmax;
     if (v->hasCrash) {
         // Whole units outwards, so that the outline stays inside the framing.
         long long ax = RsView_TenthsCeil(v->crash[3]) > -RsView_TenthsFloor(v->crash[0])
@@ -629,17 +616,9 @@ static void RsView_Scene(const struct RsView *v, int w, int h, int labelH, struc
         if (RsView_TenthsCeil(v->crash[4]) > yhi)
             yhi = RsView_TenthsCeil(v->crash[4]);
     }
-    rMax = rModel > rRef ? rModel : rRef;
-    if (v->hasRef) {
-        gap = rMax / 4 + 1;
-        halfW = (2 * rModel + gap + 2 * rRef + 1) / 2;
-        s->offModel = (-halfW + rModel) * RS_VIEW_SUB;
-        s->offRef = (halfW - rRef) * RS_VIEW_SUB;
-    } else {
-        halfW = rModel;
-        s->offModel = 0;
-        s->offRef = 0;
-    }
+    rMax = rModel;
+    halfW = rModel;
+    s->offModel = 0;
     ey = (yhi - ylo + 1) / 2 + 1;
 
     floorX = halfW + rMax / 8 + 1;
@@ -667,6 +646,25 @@ static void RsView_Scene(const struct RsView *v, int w, int h, int labelH, struc
         hh = 1;
     fx = hw * RS_VIEW_SUB * dmin / halfW;
     fy = hh * RS_VIEW_SUB * dmin / ey2;
+    // The floor is not turned and reaches further than the objects: its four
+    // corners (x +-floorX, y about -ey below the centre, z +-floorZ) stay
+    // inside the picture as well.
+    {
+        int side;
+        for (side = -1; side <= 1; side += 2) {
+            const long long fz = side * floorZ;
+            const long long fy2 = (-ey * pc - fz * ps) / 16384;
+            const long long fz2 = (-ey * ps + fz * pc) / 16384 + 1;
+            const long long d = dist - fz2;
+            const long long ay = fy2 < 0 ? -fy2 + 1 : fy2 + 1;
+            if (d > 0) {
+                if (hw * RS_VIEW_SUB * d / floorX < fx)
+                    fx = hw * RS_VIEW_SUB * d / floorX;
+                if (hh * RS_VIEW_SUB * d / ay < fy)
+                    fy = hh * RS_VIEW_SUB * d / ay;
+            }
+        }
+    }
 
     s->cam.yawSin = RsView_Sin(v->yaw);
     s->cam.yawCos = RsView_Cos(v->yaw);
@@ -678,46 +676,7 @@ static void RsView_Scene(const struct RsView *v, int w, int h, int labelH, struc
     if (s->cam.fq < 1)
         s->cam.fq = 1;
     s->cam.cxq = (long long)w * RS_VIEW_SUB / 2;
-    s->cam.cyq = (long long)(h - labelH) * RS_VIEW_SUB / 2;
-}
-
-// off: s->offRef for the reference kart, s->offModel for the wheels on the model.
-static void RsView_DrawBox(const struct RsViewTarget *t, const struct RsViewScene *s,
-                           const struct RsViewBox *box, long long off, COLORREF color)
-{
-    // Corner k: x from bit 0, y from bit 1, z from bit 2. Faces in the order
-    // -X +X -Y +Y -Z +Z, corners going round each face. The box is closed, so it
-    // is drawn without culling and the winding does not matter.
-    static const int faces[6][4] = {
-        { 0, 2, 6, 4 }, { 1, 3, 7, 5 }, { 0, 1, 5, 4 }, { 2, 3, 7, 6 }, { 0, 1, 3, 2 }, { 4, 5, 7, 6 },
-    };
-    // A fixed light from above and in front, per face of the kart (not of the
-    // screen), so that the edges of the grey shape stay readable.
-    static const int shade[6] = { 74, 74, 58, 100, 86, 86 };
-    struct RsViewVert corner[8];
-    int k, f;
-
-    for (k = 0; k < 8; k++)
-        RsView_Project(&s->cam, (k & 1) ? box->hi[0] : box->lo[0], (k & 2) ? box->hi[1] : box->lo[1],
-                       (k & 4) ? box->hi[2] : box->lo[2], off, 1, &corner[k]);
-    for (f = 0; f < 6; f++) {
-        struct RsViewVert tri[3];
-        const int r = GetRValue(color) * shade[f] / 100;
-        const int g = GetGValue(color) * shade[f] / 100;
-        const int b = GetBValue(color) * shade[f] / 100;
-        for (k = 0; k < 4; k++) {
-            corner[faces[f][k]].r = r;
-            corner[faces[f][k]].g = g;
-            corner[faces[f][k]].b = b;
-        }
-        tri[0] = corner[faces[f][0]];
-        tri[1] = corner[faces[f][1]];
-        tri[2] = corner[faces[f][2]];
-        RsView_Triangle(t, tri, 0);
-        tri[1] = corner[faces[f][2]];
-        tri[2] = corner[faces[f][3]];
-        RsView_Triangle(t, tri, 0);
-    }
+    s->cam.cyq = (long long)(h + labelH) * RS_VIEW_SUB / 2;   // the label room is at the top
 }
 
 // A dashed line of square dots, thick pixels wide, from a to b. Depth is
@@ -762,7 +721,7 @@ static void RsView_DashLine(const struct RsViewTarget *t, const struct RsViewVer
 static void RsView_DrawCrash(const struct RsView *v, const struct RsViewTarget *t, const struct RsViewScene *s,
                              unsigned int pixel)
 {
-    // Edges as pairs of corners (bit 0 x, bit 1 y, bit 2 z, as in RsView_DrawBox).
+    // Edges as pairs of corners (corner k: x from bit 0, y from bit 1, z from bit 2).
     static const int edges[12][2] = {
         { 0, 1 }, { 2, 3 }, { 4, 5 }, { 6, 7 },     // along x
         { 0, 2 }, { 1, 3 }, { 4, 6 }, { 5, 7 },     // along y
@@ -779,6 +738,55 @@ static void RsView_DrawCrash(const struct RsView *v, const struct RsViewTarget *
                        RsView_TenthsSub(v->crash[(k & 4) ? 5 : 2]), s->offModel, 1, &corner[k]);
     for (k = 0; k < 12; k++)
         RsView_DashLine(t, &corner[edges[k][0]], &corner[edges[k][1]], pixel, thick, dash);
+}
+
+// The light on a face of the dummy, percent of its colour: a fixed light from
+// above, in front and from the driver's left, in the dummy's coordinates (so
+// it turns with it), 7 long: (2, 6, 3). Faces turned away keep 55 %.
+static int RsView_DummyShade(const int *a, const int *b, const int *c)
+{
+    const long long ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2];
+    const long long wx = c[0] - a[0], wy = c[1] - a[1], wz = c[2] - a[2];
+    // The outward normal (the dummy is wound outward); coordinates below 2^12
+    // in 1/16 units, so every product here stays below 2^50.
+    const long long nx = uy * wz - uz * wy, ny = uz * wx - ux * wz, nz = ux * wy - uy * wx;
+    const long long len = (long long)RsView_Isqrt((unsigned long long)(nx * nx + ny * ny + nz * nz));
+    const long long dot = 2 * nx + 6 * ny + 3 * nz;
+    if (len == 0)
+        return 100;
+    if (dot <= 0)
+        return 55;
+    return 55 + (int)(dot * 45 / (len * 7));
+}
+
+// The dummy in the pose of the view, under the model.
+static void RsView_DrawDummy(struct RsView *v, const struct RsViewTarget *t, const struct RsViewScene *s)
+{
+    int positions = 0, i, k;
+    const int tris = Rs_DummyMesh(v->wheels, v->pose, v->dumPos, RS_VIEW_DUMMY_POS_MAX, v->dumTri, v->dumColor,
+                                  RS_VIEW_DUMMY_TRI_MAX, &positions);
+
+    for (i = 0; i < tris; i++) {
+        struct RsViewVert vert[3];
+        const int *corner[3];
+        const unsigned int rgb = v->dumColor[i];
+        int shade;
+        for (k = 0; k < 3; k++) {
+            const int at = v->dumTri[3 * i + k];
+            if (at < 0 || at >= positions)
+                return;   // cannot happen with RldDum_Mesh; never read past the buffer
+            corner[k] = v->dumPos + 3 * at;
+        }
+        shade = RsView_DummyShade(corner[0], corner[1], corner[2]);
+        for (k = 0; k < 3; k++) {
+            RsView_Project(&s->cam, corner[k][0], corner[k][1], corner[k][2], s->offModel, 1, &vert[k]);
+            vert[k].r = (int)((rgb >> 16) & 0xFF) * shade / 100;
+            vert[k].g = (int)((rgb >> 8) & 0xFF) * shade / 100;
+            vert[k].b = (int)(rgb & 0xFF) * shade / 100;
+        }
+        // Closed solids: drawn without culling, as the boxes before.
+        RsView_Triangle(t, vert, 0);
+    }
 }
 
 static void RsView_DrawText(struct RsView *v, const RECT *rc, const wchar_t *text, int font, UINT format)
@@ -812,12 +820,13 @@ static void RsView_CenterText(struct RsView *v, const wchar_t *text)
     RsView_DrawText(v, &calc, text, RS_FONT_BODY, DT_WORDBREAK | DT_CENTER);
 }
 
-// A label centred below the lowest projected corner of a box given in 1/16 units.
+// A label centred above the highest projected corner of a box given in 1/16
+// units - above it, so that the dummy's wheels in front do not cover it.
 static void RsView_BoxLabel(struct RsView *v, const struct RsViewScene *s, const long long *lo, const long long *hi,
                             long long off, int labelH, const wchar_t *text)
 {
     struct RsViewVert c8;
-    long long minX = 0, maxX = 0, maxY = 0;
+    long long minX = 0, maxX = 0, minY = 0;
     RECT r;
     int k;
     for (k = 0; k < 8; k++) {
@@ -827,14 +836,14 @@ static void RsView_BoxLabel(struct RsView *v, const struct RsViewScene *s, const
             minX = c8.x;
         if (k == 0 || c8.x > maxX)
             maxX = c8.x;
-        if (k == 0 || c8.y > maxY)
-            maxY = c8.y;
+        if (k == 0 || c8.y < minY)
+            minY = c8.y;
     }
     r.left = (int)((minX + maxX) / 2 / RS_VIEW_SUB) - Rs_Px(80);
     r.right = r.left + 2 * Rs_Px(80);
-    r.top = (int)(maxY / RS_VIEW_SUB) + Rs_Px(4);
-    r.bottom = r.top + labelH;
-    RsView_DrawText(v, &r, text, RS_FONT_SMALL, DT_CENTER | DT_SINGLELINE);
+    r.bottom = (int)(minY / RS_VIEW_SUB) - Rs_Px(2);
+    r.top = r.bottom - labelH;
+    RsView_DrawText(v, &r, text, RS_FONT_SMALL, DT_CENTER | DT_BOTTOM | DT_SINGLELINE);
 }
 
 static void RsView_Render(HWND view, struct RsView *v)
@@ -842,29 +851,23 @@ static void RsView_Render(HWND view, struct RsView *v)
     struct RsViewTarget t;
     struct RsViewScene s;
     const unsigned int bg = RsView_Pixel(RS_COL_PAGE);
-    const COLORREF page = RS_COL_PAGE;
-    const int dark = GetRValue(page) + GetGValue(page) + GetBValue(page) < 3 * 128;
-    const int labelH = (v->hasRef || v->hasCrash) ? Rs_Px(20) : 0;
+    const int labelH = v->hasCrash ? Rs_Px(20) : 0;
     size_t i, n = (size_t)v->w * (size_t)v->h;
+    wchar_t text[RS_VIEW_MESSAGE_CAP];
     int k;
 
     GdiFlush();   // GDI must be done with the DIB before its bits are written
     for (i = 0; i < n; i++) {
         v->pixels[i] = bg;
         v->depth[i] = 0;   // depth 0 = infinitely far
+        v->mask[i] = 0;
     }
     v->dirty = 0;
     v->drawnPal = g_rsPal;
 
-    if (!v->loaded) {
-        wchar_t text[RS_VIEW_MESSAGE_CAP];
-        if (v->message[0]) {
-            RsView_CenterText(v, v->message);
-        } else {
-            GetWindowTextW(view, text, RS_VIEW_MESSAGE_CAP);
-            text[RS_VIEW_MESSAGE_CAP - 1] = 0;
-            RsView_CenterText(v, text);
-        }
+    // A message instead of the picture (RsView_Clear, a preview that cannot be read).
+    if (!v->loaded && v->message[0]) {
+        RsView_CenterText(v, v->message);
         return;
     }
     if (v->w < 8 || v->h < 8)
@@ -872,11 +875,13 @@ static void RsView_Render(HWND view, struct RsView *v)
 
     t.pixels = v->pixels;
     t.depth = v->depth;
+    t.mask = v->mask;
+    t.maskMode = RS_VIEW_MASK_NONE;
     t.w = v->w;
     t.h = v->h;
     RsView_Scene(v, v->w, v->h, labelH, &s);
 
-    // The floor: two triangles under both objects, not turned with them.
+    // The floor: two triangles under everything, not turned with it.
     {
         struct RsViewVert q[4], tri[3];
         const COLORREF fc = RS_COL_BORDER;
@@ -892,29 +897,9 @@ static void RsView_Render(HWND view, struct RsView *v)
         RsView_Triangle(&t, tri, 0);
     }
 
-    // The retail kart.
-    if (v->hasRef) {
-        struct RsViewBox parts[RS_VIEW_REF_PARTS];
-        const COLORREF body = dark ? RGB(128, 134, 146) : RGB(160, 164, 172);
-        const COLORREF wheel = dark ? RGB(78, 82, 92) : RGB(96, 100, 108);
-        int count = RsView_RefParts(v, parts);
-        for (k = 0; k < count; k++)
-            RsView_DrawBox(&t, &s, &parts[k], s.offRef, parts[k].wheel ? wheel : body);
-    }
-
-    // The game's kart wheels on the model: the wheel boxes of the reference
-    // kart, darker than its grey ones.
-    if (v->hasRef && v->wheels) {
-        struct RsViewBox parts[RS_VIEW_REF_PARTS];
-        const COLORREF tyre = dark ? RGB(34, 36, 42) : RGB(46, 48, 54);
-        int count = RsView_RefParts(v, parts);
-        for (k = 0; k < count; k++)
-            if (parts[k].wheel)
-                RsView_DrawBox(&t, &s, &parts[k], s.offModel, tyre);
-    }
-
-    // The model, in file order.
-    {
+    // The model, in file order; it marks its pixels.
+    t.maskMode = RS_VIEW_MASK_SET;
+    if (v->loaded) {
         const struct RsViewPoseData *pose = &v->poses[v->pose];
         int tri, c;
         for (tri = 0; tri < pose->count; tri++) {
@@ -934,20 +919,17 @@ static void RsView_Render(HWND view, struct RsView *v)
         }
     }
 
+    // The dummy the model is fitted onto, only where the model left the
+    // picture free: it never covers the model.
+    t.maskMode = RS_VIEW_MASK_SKIP;
+    RsView_DrawDummy(v, &t, &s);
+    t.maskMode = RS_VIEW_MASK_NONE;
+
     // Crash's size about the model, over everything but what is in front of it.
     if (v->hasCrash)
         RsView_DrawCrash(v, &t, &s, RsView_Pixel(RS_COL_ACCENT));
 
     GdiFlush();   // the bits are done; GDI writes the text on top
-    if (v->hasRef) {
-        // "Retail kart" below the lowest point of its box.
-        long long lo[3], hi[3];
-        for (k = 0; k < 3; k++) {
-            lo[k] = (long long)v->ref[k] * RS_VIEW_SUB;
-            hi[k] = (long long)v->ref[k + 3] * RS_VIEW_SUB;
-        }
-        RsView_BoxLabel(v, &s, lo, hi, s.offRef, labelH, L"Retail kart");
-    }
     if (v->hasCrash) {
         long long lo[3], hi[3];
         for (k = 0; k < 3; k++) {
@@ -956,8 +938,17 @@ static void RsView_Render(HWND view, struct RsView *v)
         }
         RsView_BoxLabel(v, &s, lo, hi, s.offModel, labelH, L"Crash size");
     }
-    if (v->poses[v->pose].count == 0)
+    if (!v->loaded) {
+        // The dummy alone: the window text above it.
+        RECT r = { 0, 0, v->w, Rs_Px(28) };
+        InflateRect(&r, -Rs_Px(16), 0);
+        OffsetRect(&r, 0, Rs_Px(8));
+        GetWindowTextW(view, text, RS_VIEW_MESSAGE_CAP);
+        text[RS_VIEW_MESSAGE_CAP - 1] = 0;
+        RsView_DrawText(v, &r, text, RS_FONT_BODY, DT_CENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+    } else if (v->poses[v->pose].count == 0) {
         RsView_CenterText(v, L"This pose has no triangles.");
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -973,11 +964,13 @@ static void RsView_FreeFrame(struct RsView *v)
     if (v->dib)
         DeleteObject(v->dib);
     Rs_Free(v->depth);
+    Rs_Free(v->mask);
     v->mem = NULL;
     v->dib = NULL;
     v->oldBmp = NULL;
     v->pixels = NULL;
     v->depth = NULL;
+    v->mask = NULL;
     v->w = 0;
     v->h = 0;
 }
@@ -1015,6 +1008,7 @@ static int RsView_EnsureFrame(struct RsView *v, int w, int h)
     v->oldBmp = SelectObject(v->mem, v->dib);
     v->pixels = (unsigned int *)bits;
     v->depth = (int *)Rs_Alloc((size_t)w * (size_t)h * sizeof(int));
+    v->mask = (unsigned char *)Rs_Alloc((size_t)w * (size_t)h);
     v->w = w;
     v->h = h;
     v->dirty = 1;
@@ -1036,6 +1030,40 @@ static void RsView_PaintTo(HWND view, struct RsView *v, HDC dc)
         FillRect(dc, &rc, br);
         DeleteObject(br);
     }
+}
+
+// The extent of the dummy over all poses, with its wheels, in whole game units
+// outwards - for a framing that does not change with the pose or the wheels.
+static void RsView_DummyExtent(struct RsView *v)
+{
+    long long r2 = 0;
+    int ymin = 0, ymax = 0, pose, i, positions;
+
+    for (pose = 0; pose < RS_VIEW_POSE_COUNT; pose++) {
+        if (!Rs_DummyMesh(1, pose, v->dumPos, RS_VIEW_DUMMY_POS_MAX, v->dumTri, v->dumColor, RS_VIEW_DUMMY_TRI_MAX,
+                          &positions))
+            continue;
+        for (i = 0; i < positions; i++) {
+            const long long x = v->dumPos[3 * i], y = v->dumPos[3 * i + 1], z = v->dumPos[3 * i + 2];
+            const long long ax = (x < 0 ? -x : x) / RS_VIEW_SUB + 1, az = (z < 0 ? -z : z) / RS_VIEW_SUB + 1;
+            const int ylo = (int)RsView_FloorDiv16(y), yhi = (int)-RsView_FloorDiv16(-y);
+            if (ax * ax + az * az > r2)
+                r2 = ax * ax + az * az;
+            if (ylo < ymin)
+                ymin = ylo;
+            if (yhi > ymax)
+                ymax = yhi;
+        }
+    }
+    v->dumRadius2 = r2;
+    v->dumYmin = ymin;
+    v->dumYmax = ymax;
+}
+
+// Something to turn: a model, or the dummy alone (no message instead of it).
+static int RsView_Turnable(const struct RsView *v)
+{
+    return v->loaded || !v->message[0];
 }
 
 static void RsView_SetYawFrom(HWND view, struct RsView *v, int degrees, int notify)
@@ -1062,12 +1090,19 @@ static LRESULT CALLBACK RsView_Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         v->yaw = RS_VIEW_DEFAULT_YAW;
         v->wheels = 1;
         v->dirty = 1;
+        v->dumPos = (int *)Rs_Alloc((size_t)RS_VIEW_DUMMY_POS_MAX * 3 * sizeof(int));
+        v->dumTri = (int *)Rs_Alloc((size_t)RS_VIEW_DUMMY_TRI_MAX * 3 * sizeof(int));
+        v->dumColor = (unsigned int *)Rs_Alloc((size_t)RS_VIEW_DUMMY_TRI_MAX * sizeof(unsigned int));
+        RsView_DummyExtent(v);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)v);
         return 0;
     case WM_DESTROY:
         if (v) {
             RsView_FreeFrame(v);
             RsView_DropModel(v);
+            Rs_Free(v->dumPos);
+            Rs_Free(v->dumTri);
+            Rs_Free(v->dumColor);
             Rs_Free(v);
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
         }
@@ -1095,13 +1130,13 @@ static LRESULT CALLBACK RsView_Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         RsView_PaintTo(hwnd, v, (HDC)wParam);
         return 0;
     case WM_SETCURSOR:
-        if (v && v->loaded && LOWORD(lParam) == HTCLIENT) {
+        if (v && RsView_Turnable(v) && LOWORD(lParam) == HTCLIENT) {
             SetCursor(LoadCursor(NULL, IDC_SIZEWE));
             return TRUE;
         }
         break;
     case WM_LBUTTONDOWN:
-        if (v && v->loaded) {
+        if (v && RsView_Turnable(v)) {
             v->dragging = 1;
             v->dragX = (short)LOWORD(lParam);
             v->dragYaw = v->yaw;
@@ -1245,33 +1280,6 @@ int RsView_GetYaw(HWND view)
     return v ? v->yaw : 0;
 }
 
-void RsView_SetReference(HWND view, int x0, int y0, int z0, int x1, int y1, int z1)
-{
-    struct RsView *v = RsView_Data(view);
-    int box[6], a;
-    if (!v)
-        return;
-    box[0] = x0; box[1] = y0; box[2] = z0;
-    box[3] = x1; box[4] = y1; box[5] = z1;
-    // Model coordinates are s16; clamped to that, the squares in RsView_Scene
-    // cannot overflow whatever the caller passes.
-    for (a = 0; a < 6; a++) {
-        if (box[a] < -32768)
-            box[a] = -32768;
-        if (box[a] > 32767)
-            box[a] = 32767;
-    }
-    for (a = 0; a < 3; a++)
-        if (box[a] > box[a + 3]) {
-            int swap = box[a];
-            box[a] = box[a + 3];
-            box[a + 3] = swap;
-        }
-    v->hasRef = box[0] < box[3] && box[1] < box[4] && box[2] < box[5];
-    memcpy(v->ref, box, sizeof(box));
-    RsView_Changed(view, v);
-}
-
 void RsView_SetWheels(HWND view, int on)
 {
     struct RsView *v = RsView_Data(view);
@@ -1289,7 +1297,8 @@ void RsView_SetCrashBox(HWND view, int x0, int y0, int z0, int x1, int y1, int z
         return;
     box[0] = x0; box[1] = y0; box[2] = z0;
     box[3] = x1; box[4] = y1; box[5] = z1;
-    // Tenths of the s16 range of the model, as for the reference.
+    // Tenths of the s16 range of the model: the squares in RsView_Scene cannot
+    // overflow whatever the caller passes.
     for (a = 0; a < 6; a++) {
         if (box[a] < -327680)
             box[a] = -327680;

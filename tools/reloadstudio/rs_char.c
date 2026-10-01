@@ -10,20 +10,37 @@
 // ended, its lines are only freed. A check also asks rldpack for the converted
 // model (--preview, shown by the RsModelView control of rs_view.c) and, with an
 // icon, for the decoded and the converted picture (--icon-preview). These go to
-// files in %TEMP%\Reload Studio that are deleted once they are shown.
+// files in the folder of Rs_TempDir (%TEMP%\Reload Studio, with --settings the
+// folder of the settings file) that are deleted once they are shown.
 //
 // Size: rldpack fits every model to the size of Crash with his kart (--fit
 // crash, its default) and reports the factor (@char fit); 100 % on the slider
 // is that size. It reports the sizes this model allows (@value size-range);
 // the slider stays inside them. It is a visual size only - physics and
-// collision follow the driving style. The preview outlines Crash's size
-// (@value crash-box) about the model.
+// collision follow the driving style. The preview draws the model on the
+// reference dummy it was fitted onto (rs_view.c) and outlines Crash's size
+// (@value crash-box) about it.
 //
-// Options: "Reduce automatically" (rldpack's default --reduce auto: a model
-// over the game's draw memory loses triangles until it fits; @char reduced
-// says how many) and "Show kart wheels" (--wheels; off = the game draws no
-// kart wheels for this driver, for models with wheels of their own). Only the
-// switches that differ from rldpack's default are passed.
+// Options, each a make-char switch; only the switches that differ from
+// rldpack's default are passed:
+//   "Repair the model" (default on, --repair auto; off = --repair off): split
+//      corners welded, faces turned outward, small holes closed; @char
+//      repaired says what changed, shown below the options when anything did
+//   "Draw open parts from both sides" (default on, --open-parts two-sided;
+//      off = --open-parts one-sided): parts still open after the repair are
+//      drawn from both sides at no extra triangles; @char two-sided counts them
+//   "Closed hull (remesh)" (default OFF, only on request: --remesh on): every
+//      part becomes a closed hull that the reduction then brings back under
+//      the limit; @char remeshed gives the counts. The preview shows the
+//      result like every other build, so the author sees what it does. It
+//      needs "Reduce automatically": greyed out (and not passed) while that
+//      is off, with a line saying why
+//   "Reduce automatically" (default on, --reduce auto: a model over the
+//      game's draw memory loses triangles until it fits; @char reduced says
+//      how many)
+//   "Show kart wheels" (default on, --wheels; off = the game draws no kart
+//      wheels for this driver, for models with wheels of their own; the
+//      preview's dummy follows at once)
 //
 // Split: on the left the character and the build, on the right icon and voices
 // and the 3D preview.
@@ -50,6 +67,9 @@
 #define CHAR_IMAGE_CLASS   L"RsCharImage"
 #define CHAR_IMAGE_MAX     16384  // largest edge of a picture the page shows
 #define CHAR_INFO_LINES    3      // lines of the model info at most
+#define CHAR_QUALITY_LINES 6      // lines of the repair / remesh note at most
+#define CHAR_REPAIR_FIELDS 10     // numbers of @char repaired
+#define CHAR_REMESH_FIELDS 5      // numbers of @char remeshed
 
 // Controls
 #define CHAR_ID_MODEL_LABEL    100
@@ -96,6 +116,10 @@
 #define CHAR_ID_RAW            157
 #define CHAR_ID_RAW_TOGGLE     158
 #define CHAR_ID_SHOW           159
+#define CHAR_ID_REPAIR         160
+#define CHAR_ID_OPEN_PARTS     161
+#define CHAR_ID_REMESH         162
+#define CHAR_ID_QUALITY        163
 
 enum { CHAR_JOB_NONE = 0, CHAR_JOB_CHECK, CHAR_JOB_BUILD };
 enum { CHAR_IMG_ORIGINAL = 0, CHAR_IMG_ICON, CHAR_IMG_COUNT };
@@ -130,6 +154,7 @@ static const int g_charPoseView[CHAR_POSES] = { RS_VIEW_POSE_NEUTRAL, RS_VIEW_PO
 #define CHAR_NAME_RULE_TEXT L"1 to 17 characters: A-Z 0-9 space ! % ' + , - . / : < = > ? _"
 #define CHAR_VOICES_TEXT L"Voices are checked but not packed yet - the driver is silent in the game."
 #define CHAR_FIT_WAIT_TEXT L"The model is fitted to Crash size when it is checked."
+#define CHAR_REMESH_NEEDS_TEXT L"Closed hull needs Reduce automatically: the hulls have far more triangles than a driver may draw."
 
 // ---------------------------------------------------------------------------
 // State
@@ -167,6 +192,18 @@ struct CharJobData {
     wchar_t reduce[48];             // @value reduce: "<auto|off> <origin>"
     wchar_t fit[48];                // @value fit: "<crash|none> <origin>"
     wchar_t wheels[48];             // @value wheels: "<on|off> <origin>"
+    wchar_t repair[48];             // @value repair: "<auto|off> <origin>"
+    wchar_t openParts[48];          // @value open-parts: "<two-sided|one-sided> <origin>"
+    wchar_t remesh[48];             // @value remesh: "<on|off> <origin>"
+    int repairedSeen;
+    long repaired[CHAR_REPAIR_FIELDS];  // @char repaired: welded, degenerate, duplicate, flipped, holes
+                                        // closed, hole triangles, holes left, open edges before, after,
+                                        // cracks split
+    int twoSidedSeen;
+    long twoSided;                  // @char two-sided: triangles of open parts drawn from both sides
+    int remeshedSeen;
+    long remeshed[CHAR_REMESH_FIELDS];  // @char remeshed: triangles of the source, of the hulls, after;
+                                        // open edges before, after
     int reducedSeen;
     long reduced[4];                // @char reduced: triangles before, after; draw bytes before, after
     int fitSeen;
@@ -192,14 +229,14 @@ static struct {
     HWND nameLabel, name, nameNote;
     HWND classLabel, cls, classHelp;
     HWND sizeLabel, size, sizeValue, sizeNote, sizeHint, sizeFit, sizeCrash;
-    HWND optionsLabel, reduce, wheels;
+    HWND optionsLabel, repair, openParts, remesh, reduce, wheels, quality;
     HWND iconLabel, icon, iconBrowse, iconClear, iconCaption[CHAR_IMG_COUNT], iconImage[CHAR_IMG_COUNT];
     HWND voicesLabel, voices, voicesBrowse, voicesClear, voicesNote;
     HWND view, pose, viewNote;
     HWND outLabel, out, outBrowse, check, build, headline, msgs, raw, rawToggle, show;
 
     // colours of the labels, for the report
-    COLORREF headColor, nameColor, sizeColor, infoColor, viewColor, fitColor;
+    COLORREF headColor, nameColor, sizeColor, infoColor, viewColor, fitColor, qualityColor;
     wchar_t infoFull[CHAR_VAL];     // the model info before Char_FitLines
 
     int applying;                   // fields are being set: trigger no check
@@ -801,20 +838,16 @@ static void Char_ImagesClear(void)
 }
 
 // ---------------------------------------------------------------------------
-// Temp files of a check: %TEMP%\Reload Studio\char-<process>-<number>...
+// Temp files of a check: <Rs_TempDir>\char-<process>-<number>... (Rs_TempDir:
+// %TEMP%\Reload Studio, with --settings the folder of the settings file)
 // ---------------------------------------------------------------------------
 
 static void Char_TempBase(wchar_t *out, int cap, int seq)
 {
-    wchar_t tmp[MAX_PATH + 1];
-    wchar_t dir[MAX_PATH + 32];
+    wchar_t dir[CHAR_VAL];
     wchar_t name[64];
-    DWORD n = GetTempPathW(MAX_PATH + 1, tmp);
 
-    if (n == 0 || n > MAX_PATH)
-        Char_Copy(tmp, MAX_PATH + 1, Rs_ExeDir());
-    Rs_PathJoin(dir, MAX_PATH + 32, tmp, L"Reload Studio");
-    CreateDirectoryW(dir, NULL);
+    Rs_TempDir(dir, CHAR_VAL);   // created there
     swprintf(name, 64, L"char-%lu-%d", (unsigned long)GetCurrentProcessId(), seq);
     Rs_PathJoin(out, cap, dir, name);
 }
@@ -827,17 +860,48 @@ static void Char_TempPath(wchar_t *out, int cap, int seq, const wchar_t *kind)
     Char_Append(out, cap, kind);
 }
 
+// Every file a check leaves: the --preview file and the two of --icon-preview.
+static const wchar_t *const g_charTempKinds[3] = { L".rldpv", L"-original.bmp", L"-icon.bmp" };
+
 static void Char_TempDelete(int seq)
 {
-    static const wchar_t *const kinds[3] = { L".rldpv", L"-original.bmp", L"-icon.bmp" };
     wchar_t path[CHAR_VAL];
     int i;
     if (seq <= 0)
         return;
     for (i = 0; i < 3; i++) {
-        Char_TempPath(path, CHAR_VAL, seq, kinds[i]);
+        Char_TempPath(path, CHAR_VAL, seq, g_charTempKinds[i]);
         DeleteFileW(path);
     }
+}
+
+// 1 if name is exactly one of the page's own temp files,
+// "char-<digits>-<digits><kind>" with a kind of g_charTempKinds; *pid = the
+// first number. Nothing else in the folder is the page's to delete - with
+// --settings it is a folder of the user.
+static int Char_TempOwnName(const wchar_t *name, unsigned long *pid)
+{
+    const wchar_t *p = name + 5;
+    const wchar_t *digits;
+    int i;
+
+    if (wcsncmp(name, L"char-", 5) != 0)
+        return 0;
+    digits = p;
+    while (*p >= L'0' && *p <= L'9')
+        p++;
+    if (p == digits || p - digits > 10 || *p != L'-')
+        return 0;
+    *pid = wcstoul(digits, NULL, 10);
+    digits = ++p;
+    while (*p >= L'0' && *p <= L'9')
+        p++;
+    if (p == digits || p - digits > 10)
+        return 0;
+    for (i = 0; i < 3; i++)
+        if (wcscmp(p, g_charTempKinds[i]) == 0)
+            return 1;
+    return 0;
 }
 
 // An outdated check is ended; its files are deleted when it has gone.
@@ -864,9 +928,10 @@ static void Char_Abandon(void)
     g_char.jobSeq = 0;
 }
 
-// Leftovers of earlier runs: files "char-<pid>-..." of processes that are no
-// longer running (a check ended on closing may still have held its files).
-// Files of running Reload Studios stay.
+// Leftovers of earlier runs: the page's own files "char-<pid>-<number><kind>"
+// (Char_TempOwnName) of processes that are no longer running (a check ended
+// on closing may still have held its files). Files of running Reload Studios
+// and every other file stay.
 static void Char_TempSweep(void)
 {
     wchar_t pattern[CHAR_VAL];
@@ -882,10 +947,12 @@ static void Char_TempSweep(void)
     if (find == INVALID_HANDLE_VALUE)
         return;
     do {
-        unsigned long pid = wcstoul(fd.cFileName + 5, NULL, 10);
+        unsigned long pid = 0;
         HANDLE proc;
         int alive = 0;
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+            continue;
+        if (!Char_TempOwnName(fd.cFileName, &pid))
             continue;
         if (pid == 0 || pid == GetCurrentProcessId())
             continue;
@@ -1004,8 +1071,8 @@ static void Char_JoinFields(wchar_t **f, int n, wchar_t *out, int cap)
 static void Char_ParseLine(wchar_t *line)
 {
     struct CharJobData *j = &g_charJob;
-    wchar_t *f[12];
-    int n = Rs_SplitMachine(line, f, 12);
+    wchar_t *f[16];
+    int n = Rs_SplitMachine(line, f, 16);
     const wchar_t *kind;
 
     if (n <= 0)
@@ -1065,6 +1132,12 @@ static void Char_ParseLine(wchar_t *line)
         } else if (wcscmp(key, L"reduce") == 0 || wcscmp(key, L"fit") == 0 || wcscmp(key, L"wheels") == 0) {
             wchar_t *dst = key[0] == L'r' ? j->reduce : key[0] == L'f' ? j->fit : j->wheels;
             Char_JoinFields(f, n, dst, 48);
+        } else if (wcscmp(key, L"repair") == 0) {
+            Char_JoinFields(f, n, j->repair, 48);
+        } else if (wcscmp(key, L"open-parts") == 0) {
+            Char_JoinFields(f, n, j->openParts, 48);
+        } else if (wcscmp(key, L"remesh") == 0) {
+            Char_JoinFields(f, n, j->remesh, 48);
         }
     } else if (wcscmp(kind, L"char") == 0) {
         const wchar_t *key = Char_Field(f, n, 1);
@@ -1080,6 +1153,20 @@ static void Char_ParseLine(wchar_t *line)
             for (i = 0; i < 4; i++)
                 j->reduced[i] = wcstol(Char_Field(f, n, 2 + i), NULL, 10);
             j->reducedSeen = 1;
+        } else if (wcscmp(key, L"repaired") == 0 && n >= 2 + CHAR_REPAIR_FIELDS) {
+            // the ten counts of the repair (RldMk_EmitFacts in tools/rldpack_char.inc)
+            int i;
+            for (i = 0; i < CHAR_REPAIR_FIELDS; i++)
+                j->repaired[i] = wcstol(Char_Field(f, n, 2 + i), NULL, 10);
+            j->repairedSeen = 1;
+        } else if (wcscmp(key, L"two-sided") == 0 && n >= 3) {
+            j->twoSided = wcstol(Char_Field(f, n, 2), NULL, 10);
+            j->twoSidedSeen = 1;
+        } else if (wcscmp(key, L"remeshed") == 0 && n >= 2 + CHAR_REMESH_FIELDS) {
+            int i;
+            for (i = 0; i < CHAR_REMESH_FIELDS; i++)
+                j->remeshed[i] = wcstol(Char_Field(f, n, 2 + i), NULL, 10);
+            j->remeshedSeen = 1;
         } else if (wcscmp(key, L"fit") == 0 && n >= 8) {
             // <factor> <length before> <after> <height before> <after> <kart|model>
             j->fitSeen = 1;
@@ -1402,13 +1489,130 @@ static void Char_ApplyVoices(void)
     Rs_SetText(g_char.voicesNote, t);
 }
 
+// "Closed hull (remesh)" works only with "Reduce automatically" (make-char:
+// --remesh on needs --reduce auto). While that is off the box is greyed out
+// and --remesh is not passed, whatever its tick says.
+static int Char_RemeshAllowed(void)
+{
+    return Char_IsChecked(g_char.reduce);
+}
+
+static int Char_RemeshOn(void)
+{
+    return Char_RemeshAllowed() && Char_IsChecked(g_char.remesh);
+}
+
+static void Char_UpdateOptions(void)
+{
+    EnableWindow(g_char.remesh, Char_RemeshAllowed());
+}
+
+// "<n> <singular|plural>" with the number grouped, after ", " when out has text.
+static void Char_CountPart(wchar_t *out, int cap, long n, const wchar_t *one, const wchar_t *many)
+{
+    wchar_t num[24];
+    wchar_t part[128];
+    Char_Grouped(num, 24, n);
+    swprintf(part, 128, L"%ls%ls %ls", out[0] ? L", " : L"", num, n == 1 ? one : many);
+    Char_Append(out, cap, part);
+}
+
+// The lines below the options: what the repair changed (only when it changed
+// anything), the open parts drawn from both sides (only when there are such)
+// and the remesh - each only as rldpack reported it (@char repaired,
+// two-sided, remeshed) - and why "Closed hull" is greyed out. Lines are
+// separated by CR LF.
+static void Char_QualityText(wchar_t *out, int cap)
+{
+    struct CharJobData *j = &g_charJob;
+    wchar_t line[512];
+    wchar_t n[5][24];
+    int i;
+
+    out[0] = 0;
+    if (j->repairedSeen) {
+        const long *r = j->repaired;
+        line[0] = 0;
+        if (r[0])
+            Char_CountPart(line, 512, r[0], L"corner welded", L"corners welded");
+        if (r[1] + r[2])
+            Char_CountPart(line, 512, r[1] + r[2], L"empty or doubled triangle dropped",
+                           L"empty or doubled triangles dropped");
+        if (r[3])
+            Char_CountPart(line, 512, r[3], L"face turned outward", L"faces turned outward");
+        if (r[9])
+            Char_CountPart(line, 512, r[9], L"crack split", L"cracks split");
+        if (r[4])
+            Char_CountPart(line, 512, r[4], L"hole closed", L"holes closed");
+        if (r[7] != r[8]) {
+            wchar_t part[96];
+            Char_Grouped(n[0], 24, r[7]);
+            Char_Grouped(n[1], 24, r[8]);
+            swprintf(part, 96, L"%lsopen edges %ls -> %ls", line[0] ? L", " : L"", n[0], n[1]);
+            Char_Append(line, 512, part);
+        }
+        if (line[0]) {
+            Char_Append(out, cap, L"Repaired: ");
+            Char_Append(out, cap, line);
+        }
+    }
+    // Only when it says something: the option on and parts drawn so.
+    if (j->twoSidedSeen && j->twoSided > 0 && wcsncmp(j->openParts, L"one-sided", 9) != 0) {
+        Char_Grouped(n[0], 24, j->twoSided);
+        swprintf(line, 512, L"Two-sided open parts: %ls %ls (+0 triangles)", n[0],
+                 j->twoSided == 1 ? L"triangle" : L"triangles");
+        if (out[0])
+            Char_Append(out, cap, L"\r\n");
+        Char_Append(out, cap, line);
+    }
+    if (j->remeshedSeen) {
+        for (i = 0; i < CHAR_REMESH_FIELDS; i++)
+            Char_Grouped(n[i], 24, j->remeshed[i]);
+        swprintf(line, 512, L"Remeshed: %ls triangles -> closed hulls of %ls -> %ls triangles, open edges %ls -> %ls",
+                 n[0], n[1], n[2], n[3], n[4]);
+        if (out[0])
+            Char_Append(out, cap, L"\r\n");
+        Char_Append(out, cap, line);
+    }
+    if (!Char_RemeshAllowed()) {
+        if (out[0])
+            Char_Append(out, cap, L"\r\n");
+        Char_Append(out, cap, CHAR_REMESH_NEEDS_TEXT);
+    }
+}
+
+// Height of the note below the options: 0 while it is empty.
+static int Char_QualityHeight(int width)
+{
+    wchar_t *text = Rs_GetText(g_char.quality);
+    int empty = !text[0];
+    Rs_Free(text);
+    return empty ? 0 : Char_TextHeight(g_char.quality, width, CHAR_QUALITY_LINES);
+}
+
+// Into the label; the page is laid out again when its height changes.
+static void Char_ApplyQuality(void)
+{
+    wchar_t t[CHAR_VAL];
+    RECT rc;
+    int shownH, need;
+
+    GetClientRect(g_char.quality, &rc);
+    shownH = Char_IsShown(g_char.quality) ? rc.bottom : 0;
+    Char_QualityText(t, CHAR_VAL);
+    Char_SetLabel(g_char.quality, t, RS_COL_TEXT, &g_char.qualityColor);
+    need = Char_QualityHeight(rc.right > 0 ? rc.right : Rs_Px(300));
+    if (need != shownH)
+        Char_Relayout(GetParent(g_char.quality));
+}
+
 static void Char_ViewNote(const wchar_t *text, COLORREF color)
 {
     Char_SetLabel(g_char.viewNote, text, color, &g_char.viewColor);
 }
 
-// The converted model of the check into the 3D view, the reference kart next
-// to it. Without a preview file the view is emptied.
+// The converted model of the check into the 3D view, on the dummy it was
+// fitted onto. Without a preview file the view shows why instead.
 static void Char_ApplyPreview(int seq)
 {
     wchar_t path[CHAR_VAL];
@@ -1419,19 +1623,14 @@ static void Char_ApplyPreview(int seq)
         g_char.kartKnown = 1;
         memcpy(g_char.kart, j->kart, sizeof(g_char.kart));
     }
-    // The grey reference is the fixed retail kart, not the model's own kart
-    // (that one is part of the model anyway). Without the line: no reference.
+    // The retail kart box is only reported (the dummy under the model is the
+    // retail kart itself).
     if (j->retailSeen) {
         g_char.retailKnown = 1;
         memcpy(g_char.retail, j->retail, sizeof(g_char.retail));
     }
-    if (g_char.retailKnown)
-        RsView_SetReference(g_char.view, g_char.retail[0], g_char.retail[1], g_char.retail[2], g_char.retail[3],
-                            g_char.retail[4], g_char.retail[5]);
-    else
-        RsView_SetReference(g_char.view, 0, 0, 0, 0, 0, 0);
-    // Crash's size as an outline about the model; the game's wheels on it
-    // as the check box says (they need the reference kart).
+    // Crash's size as an outline about the model; the game's wheels on the
+    // dummy as the check box says.
     if (j->crashSeen) {
         g_char.crashKnown = 1;
         memcpy(g_char.crash, j->crash, sizeof(g_char.crash));
@@ -1462,14 +1661,9 @@ static void Char_ApplyPreview(int seq)
     for (i = 0; i < CHAR_POSES; i++)
         g_char.previewTris[i] = (unsigned long)RsView_TriangleCount(g_char.view, i);
     RsView_SetPose(g_char.view, g_charPoseView[g_char.poseNow]);
-    if (g_char.retailKnown && g_char.crashKnown)
-        Char_ViewNote(L"Drag to turn the model. Grey kart: a retail kart. Dashed box: the size of Crash.",
-                      RS_COL_MUTED);
-    else if (g_char.crashKnown)
-        Char_ViewNote(L"Drag to turn the model. Dashed box: the size of Crash.", RS_COL_MUTED);
-    else
-        Char_ViewNote(g_char.retailKnown ? L"Drag to turn the model. The grey kart is a retail kart for size."
-                                         : L"Drag to turn the model.", RS_COL_MUTED);
+    Char_ViewNote(g_char.crashKnown ? L"Drag to turn. Grey: Crash's kart the model is fitted onto. Dashed box: Crash's size."
+                                    : L"Drag to turn. Grey: Crash's kart the model is fitted onto.",
+                  RS_COL_MUTED);
 }
 
 // The icon as decoded and as converted, from the --icon-preview files.
@@ -1539,6 +1733,17 @@ static void Char_ShowCheckResult(int exitCode)
         if (g_charJob.reducedSeen)
             Rs_AutoLog(L"  reduced: %ld -> %ld triangles, draw memory %ld -> %ld bytes", g_charJob.reduced[0],
                        g_charJob.reduced[1], g_charJob.reduced[2], g_charJob.reduced[3]);
+        if (g_charJob.repairedSeen)
+            Rs_AutoLog(L"  repaired: %ld welded, %ld degenerate, %ld doubled, %ld turned, %ld holes closed with %ld "
+                       L"triangles, %ld left, open edges %ld -> %ld, %ld cracks split",
+                       g_charJob.repaired[0], g_charJob.repaired[1], g_charJob.repaired[2], g_charJob.repaired[3],
+                       g_charJob.repaired[4], g_charJob.repaired[5], g_charJob.repaired[6], g_charJob.repaired[7],
+                       g_charJob.repaired[8], g_charJob.repaired[9]);
+        if (g_charJob.twoSidedSeen)
+            Rs_AutoLog(L"  two-sided open parts: %ld triangles", g_charJob.twoSided);
+        if (g_charJob.remeshedSeen)
+            Rs_AutoLog(L"  remeshed: %ld -> %ld -> %ld triangles, open edges %ld -> %ld", g_charJob.remeshed[0],
+                       g_charJob.remeshed[1], g_charJob.remeshed[2], g_charJob.remeshed[3], g_charJob.remeshed[4]);
         if (g_char.previewShown)
             Rs_AutoLog(L"  preview: %d pose(s), %lu/%lu/%lu triangles", g_char.previewPoses,
                        g_char.previewTris[0], g_char.previewTris[1], g_char.previewTris[2]);
@@ -1628,7 +1833,20 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
     Char_ArgsAdd(a, Char_ClassWord());
     Char_ArgsAdd(a, L"--size");
     Char_ArgsAdd(a, a->size);
-    // Only what differs from rldpack's defaults (--reduce auto, --wheels on).
+    // Only what differs from rldpack's defaults (--repair auto, --open-parts
+    // two-sided, --remesh off, --reduce auto, --wheels on).
+    if (!Char_IsChecked(g_char.repair)) {
+        Char_ArgsAdd(a, L"--repair");
+        Char_ArgsAdd(a, L"off");
+    }
+    if (!Char_IsChecked(g_char.openParts)) {
+        Char_ArgsAdd(a, L"--open-parts");
+        Char_ArgsAdd(a, L"one-sided");
+    }
+    if (Char_RemeshOn()) {
+        Char_ArgsAdd(a, L"--remesh");
+        Char_ArgsAdd(a, L"on");
+    }
     if (!Char_IsChecked(g_char.reduce)) {
         Char_ArgsAdd(a, L"--reduce");
         Char_ArgsAdd(a, L"off");
@@ -1691,7 +1909,9 @@ static void Char_NoModel(void)
     g_char.previewShown = 0;
     g_char.previewPoses = 0;
     RsView_Clear(g_char.view, NULL);
-    Char_ViewNote(L"Choose a PLY model - its converted form shows up here.", RS_COL_MUTED);
+    Char_ViewNote(L"Grey: Crash's kart, seat and steering wheel - a model is fitted onto it. Choose a PLY model.",
+                  RS_COL_MUTED);
+    Char_ApplyQuality();
     Char_SetInfo(L"-", RS_COL_MUTED);
     Char_Headline(L"Choose a PLY model to start", RS_COL_MUTED);
     Char_EmptyText(L"Choose a PLY model. What rldpack finds shows up here.");
@@ -1840,6 +2060,7 @@ static void Char_CheckDone(HWND page, int exitCode, int seq)
     Char_ApplyModelInfo();
     Char_ApplyFit();
     Char_ApplyVoices();
+    Char_ApplyQuality();
     Char_ApplyPreview(seq);
     Char_ApplyIcon(seq);
     Char_TempDelete(seq);
@@ -2185,6 +2406,49 @@ static int Char_WriteReport(const wchar_t *path)
     Char_Put(f, L"option Show kart wheels: %ls (%ls)", Char_IsChecked(g_char.wheels) ? L"on" : L"off",
              Char_IsChecked(g_char.wheels) ? L"rldpack's default" : L"passed as --wheels off");
     Char_Put(f, L"wheels (last run): %ls", g_charJob.wheels[0] ? g_charJob.wheels : L"(not reported)");
+    Char_Put(f, L"option Repair the model: %ls (%ls)", Char_IsChecked(g_char.repair) ? L"on" : L"off",
+             Char_IsChecked(g_char.repair) ? L"rldpack's default" : L"passed as --repair off");
+    Char_Put(f, L"repair (last run): %ls", g_charJob.repair[0] ? g_charJob.repair : L"(not reported)");
+    if (g_charJob.repairedSeen)
+        Char_Put(f, L"repaired: %ld welded, %ld degenerate, %ld doubled, %ld turned outward, %ld holes closed with %ld "
+                    L"triangles, %ld holes left, open edges %ld -> %ld, %ld cracks split",
+                 g_charJob.repaired[0], g_charJob.repaired[1], g_charJob.repaired[2], g_charJob.repaired[3],
+                 g_charJob.repaired[4], g_charJob.repaired[5], g_charJob.repaired[6], g_charJob.repaired[7],
+                 g_charJob.repaired[8], g_charJob.repaired[9]);
+    else
+        Char_Put(f, L"repaired: (not reported)");
+    Char_Put(f, L"option Draw open parts from both sides: %ls (%ls)", Char_IsChecked(g_char.openParts) ? L"on" : L"off",
+             Char_IsChecked(g_char.openParts) ? L"rldpack's default" : L"passed as --open-parts one-sided");
+    Char_Put(f, L"open parts (last run): %ls", g_charJob.openParts[0] ? g_charJob.openParts : L"(not reported)");
+    if (g_charJob.twoSidedSeen)
+        Char_Put(f, L"two-sided: %ld triangles", g_charJob.twoSided);
+    else
+        Char_Put(f, L"two-sided: (not reported)");
+    Char_Put(f, L"option Closed hull (remesh): %ls (%ls)", Char_IsChecked(g_char.remesh) ? L"on" : L"off",
+             !Char_RemeshAllowed() ? L"greyed out, not passed - needs Reduce automatically"
+             : Char_RemeshOn()     ? L"passed as --remesh on"
+                                   : L"rldpack's default");
+    Char_Put(f, L"remesh (last run): %ls", g_charJob.remesh[0] ? g_charJob.remesh : L"(not reported)");
+    if (g_charJob.remeshedSeen)
+        Char_Put(f, L"remeshed: %ld -> %ld -> %ld triangles, open edges %ld -> %ld", g_charJob.remeshed[0],
+                 g_charJob.remeshed[1], g_charJob.remeshed[2], g_charJob.remeshed[3], g_charJob.remeshed[4]);
+    else
+        Char_Put(f, L"remeshed: (not reported)");
+    {
+        // The note below the options, its lines joined by " | ".
+        wchar_t *note = Rs_GetText(g_char.quality);
+        wchar_t line[CHAR_VAL];
+        const wchar_t *p;
+        line[0] = 0;
+        for (p = note; *p; p++) {
+            wchar_t one[2] = { *p, 0 };
+            if (*p == L'\r')
+                continue;
+            Char_Append(line, CHAR_VAL, *p == L'\n' ? L" | " : one);
+        }
+        Char_Put(f, L"quality note: %ls [%ls]", line[0] ? line : L"(none)", Char_ColorName(g_char.qualityColor));
+        Rs_Free(note);
+    }
     Char_PutText(f, L"icon", g_char.icon);
     for (i = 0; i < CHAR_IMG_COUNT; i++) {
         const struct CharImage *img = &g_char.image[i];
@@ -2211,8 +2475,7 @@ static int Char_WriteReport(const wchar_t *path)
                  g_char.crash[2] / 10.0, g_char.crash[3] / 10.0, g_char.crash[4] / 10.0, g_char.crash[5] / 10.0);
     else
         Char_Put(f, L"crash box: (not reported)");
-    Char_Put(f, L"preview wheels: %ls", !Char_IsChecked(g_char.wheels) ? L"hidden"
-                                        : g_char.retailKnown ? L"shown" : L"none (no retail kart reported)");
+    Char_Put(f, L"preview dummy: shown, wheels %ls", Char_IsChecked(g_char.wheels) ? L"shown" : L"hidden");
     if (g_char.previewShown)
         Char_Put(f, L"preview: %d pose(s), triangles %lu/%lu/%lu", g_char.previewPoses, g_char.previewTris[0],
                  g_char.previewTris[1], g_char.previewTris[2]);
@@ -2307,6 +2570,7 @@ static int Char_AutoSize(HWND page, const wchar_t *arg)
     return RS_AUTO_DONE;
 }
 
+// "repair on|off", "open-parts on|off" (on = from both sides), "remesh on|off",
 // "reduce on|off", "wheels on|off": the check box as when clicked, then the
 // check at once (as for "size"), so that a following "shot" shows its result.
 static int Char_AutoOption(HWND page, HWND box, const wchar_t *verb, const wchar_t *arg)
@@ -2323,7 +2587,12 @@ static int Char_AutoOption(HWND page, HWND box, const wchar_t *verb, const wchar
     Char_SetChecked(box, on);
     if (box == g_char.wheels)
         RsView_SetWheels(g_char.view, on);
+    Char_UpdateOptions();
+    if (box == g_char.reduce)
+        Char_ApplyQuality();
     Rs_AutoLog(L"  %ls: %ls", verb, on ? L"on" : L"off");
+    if (box == g_char.remesh && on && !Char_RemeshAllowed())
+        Rs_AutoLog(L"  %ls: greyed out - needs Reduce automatically, not passed", verb);
     r = Char_Check(page);
     if (r > 0)
         return RS_AUTO_WAIT;
@@ -2433,10 +2702,19 @@ static void Char_Create(HWND page)
     g_char.sizeNow = CHAR_SIZE_DEFAULT;
 
     g_char.optionsLabel = Rs_Label(page, CHAR_ID_OPTIONS_LABEL, L"Options", RS_FONT_BOLD);
+    g_char.repair = Rs_Check(page, CHAR_ID_REPAIR, L"Repair the model");
+    g_char.openParts = Rs_Check(page, CHAR_ID_OPEN_PARTS, L"Draw open parts from both sides");
+    g_char.remesh = Rs_Check(page, CHAR_ID_REMESH, L"Closed hull (remesh)");
     g_char.reduce = Rs_Check(page, CHAR_ID_REDUCE, L"Reduce automatically");
     g_char.wheels = Rs_Check(page, CHAR_ID_WHEELS, L"Show kart wheels");
+    Char_SetChecked(g_char.repair, 1);
+    Char_SetChecked(g_char.openParts, 1);
+    Char_SetChecked(g_char.remesh, 0);      // only on request
     Char_SetChecked(g_char.reduce, 1);
     Char_SetChecked(g_char.wheels, 1);
+    Char_UpdateOptions();
+    g_char.quality = Rs_Label(page, CHAR_ID_QUALITY, L"", RS_FONT_SMALL);   // wraps (Char_Layout)
+    g_char.qualityColor = RS_COL_TEXT;
 
     g_char.iconLabel = Rs_Label(page, CHAR_ID_ICON_LABEL, L"Icon (PNG)", RS_FONT_BOLD);
     g_char.icon = Rs_Edit(page, CHAR_ID_ICON, L"", 0);
@@ -2517,7 +2795,8 @@ static void Char_Layout(HWND page, int w, int h)
     int browseW = Rs_Px(100), clearW = Rs_Px(72), labelW = Rs_Px(112);
     int built = g_char.built[0] != 0;
     RECT card, in;
-    int x, y, width, fieldW, listBottom, factor, boxW, boxH, i, reduceW, wheelsW, infoH;
+    int x, y, width, fieldW, listBottom, factor, boxW, boxH, i, infoH, qualityH;
+    HWND options[5];
 
     Rs_CardClear(page);
 
@@ -2559,18 +2838,36 @@ static void Char_Layout(HWND page, int w, int h)
     y += Rs_Px(20);
     MoveWindow(g_char.sizeHint, x, y, fieldW, Rs_Px(18), TRUE);
     y += Rs_Px(26);
-    // Both check boxes in one row while they fit, else one below the other.
-    reduceW = Char_CheckWidth(g_char.reduce);
-    wheelsW = Char_CheckWidth(g_char.wheels);
+    // The check boxes left to right, a new row where the next one does not fit.
+    options[0] = g_char.repair;
+    options[1] = g_char.openParts;
+    options[2] = g_char.remesh;
+    options[3] = g_char.reduce;
+    options[4] = g_char.wheels;
     MoveWindow(g_char.optionsLabel, in.left, y + Rs_Px(2), labelW, Rs_Px(20), TRUE);
-    MoveWindow(g_char.reduce, x, y, reduceW < fieldW ? reduceW : fieldW, Rs_Px(24), TRUE);
-    if (reduceW + Rs_Px(12) + wheelsW <= fieldW) {
-        MoveWindow(g_char.wheels, x + reduceW + Rs_Px(12), y, wheelsW, Rs_Px(24), TRUE);
-    } else {
-        y += Rs_Px(26);
-        MoveWindow(g_char.wheels, x, y, wheelsW < fieldW ? wheelsW : fieldW, Rs_Px(24), TRUE);
+    {
+        int cx = x;
+        for (i = 0; i < 5; i++) {
+            int bw = Char_CheckWidth(options[i]);
+            if (bw > fieldW)
+                bw = fieldW;
+            if (cx > x && cx + bw > x + fieldW) {
+                cx = x;
+                y += Rs_Px(26);
+            }
+            MoveWindow(options[i], cx, y, bw, Rs_Px(24), TRUE);
+            cx += bw + Rs_Px(12);
+        }
     }
     y += Rs_Px(24);
+    // What the repair, the open parts and the remesh did (Char_ApplyQuality).
+    MoveWindow(g_char.quality, x, y + Rs_Px(4), fieldW, Rs_Px(18), FALSE);
+    qualityH = Char_QualityHeight(fieldW);
+    ShowWindow(g_char.quality, qualityH > 0 ? SW_SHOW : SW_HIDE);
+    if (qualityH > 0) {
+        MoveWindow(g_char.quality, x, y + Rs_Px(4), fieldW, qualityH, TRUE);
+        y += Rs_Px(4) + qualityH;
+    }
     card.bottom = y + Rs_Px(16);
     Rs_CardAdd(page, &card, L"Character");
 
@@ -2689,6 +2986,15 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
             Char_Changed(page);
         break;
     case CHAR_ID_REDUCE:
+        if (code == BN_CLICKED) {
+            Char_UpdateOptions();
+            Char_ApplyQuality();
+            Char_Changed(page);
+        }
+        break;
+    case CHAR_ID_REPAIR:
+    case CHAR_ID_OPEN_PARTS:
+    case CHAR_ID_REMESH:
         if (code == BN_CLICKED)
             Char_Changed(page);
         break;
@@ -2862,6 +3168,12 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         Rs_AutoLog(L"  build: not started");
         return RS_AUTO_FAIL;
     }
+    if (wcscmp(verb, L"repair") == 0)
+        return Char_AutoOption(page, g_char.repair, verb, arg);
+    if (wcscmp(verb, L"open-parts") == 0)
+        return Char_AutoOption(page, g_char.openParts, verb, arg);
+    if (wcscmp(verb, L"remesh") == 0)
+        return Char_AutoOption(page, g_char.remesh, verb, arg);
     if (wcscmp(verb, L"reduce") == 0)
         return Char_AutoOption(page, g_char.reduce, verb, arg);
     if (wcscmp(verb, L"wheels") == 0)
