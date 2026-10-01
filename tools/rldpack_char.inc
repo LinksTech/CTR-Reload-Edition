@@ -15,6 +15,10 @@
 //    1  read the PLY: ascii 1.0 or binary_little_endian 1.0
 //    2  faces -> triangles: quads split at the shorter diagonal, n-gons refused
 //    3  weld the corners to positions (1e-5); the color stays per corner
+//    3a --fit crash (default): the model to Crash's size - its kart 112.4 long
+//       (or the whole model, without a kart), at most 142.5 tall in game units;
+//       silent passes of steps 2 to 5 measure it, then the chain runs again
+//       with the factor as --scale
 //    4  parts: kart (required), driver, steering wheel
 //    4a --size: driver and steering wheel scaled about the hip, the kart not;
 //       the size checks of step 4 and 5 run on the result
@@ -143,6 +147,29 @@
 #define RLDMK_RETAIL_KART_WIDTH 56
 #define RLDMK_RETAIL_KART_BOTTOM 6
 #define RLDMK_RETAIL_KART_TOP 16   // = RLDMK_HIP_Y
+
+// CRASH AS THE STANDARD SIZE (--fit crash). Measured once on the retail driver
+// models - only the numbers are here: the racer model HI of each character in
+// BIGFILE, animation 0, frame 10 (the birth pose), decoded like RB:2443-2473
+// and its delta frames like RB:2588-2637, in model units ((pos + byte) x
+// scale / 4096, without the instance scale 0.8 the game draws a driver with).
+//   Crash (character 0): x -33.8..34.3, y 5.6..88.3, z -54.1..58.3, so 112.4
+//   long, 68.1 wide, 82.7 tall (y up, z forward).
+//   Lengths: 14 of the 16 HI models are 111.9..112.4 long; Coco 120.8,
+//   N. Oxide 243.2 (a spaceship).
+//   Heights: the 15 drivers without N. Oxide are 53.6 (Penta Penguin) to
+//   142.5 (Papu Papu) tall, their bottom 0.9..5.9 above the ground
+//   (N. Oxide 164.0 tall, bottom 0.0).
+// The length is that of a driver WITH his kart. A model is scaled so that its
+// kart is as long as Crash's (the game draws the wheels at fixed points of a
+// retail kart); the tallest of the 15 caps the height, also for a model
+// without a vehicle (RldMk_StepFit).
+#define RLDMK_CRASH_LENGTH 112.4
+#define RLDMK_CRASH_HEIGHT 82.7
+#define RLDMK_CRASH_BOX {-33.8, 5.6, -54.1, 34.3, 88.3, 58.3}   // x0 y0 z0 x1 y1 z1 (@value crash-box)
+#define RLDMK_RETAIL_HEIGHT_MAX 142.5
+#define RLDMK_FIT_MIN 0.0001   // the factor stays in the range --scale takes
+#define RLDMK_FIT_MAX 1000.0
 
 struct RldMkTemplate
 {
@@ -1143,7 +1170,8 @@ struct RldMkOptions
 	u32 colorTarget;  // 64 or 128
 	int upZ;          // --up z: the PLY has +Z up (Blender's own axes), its -Y side is the front
 	int backwards;    // --forward -z: the model faces -Z and is turned by 180 degrees
-	double scale;     // --scale
+	double scale;     // --scale (only with --fit none)
+	int fit;          // --fit crash: scaled to Crash's size first (RldMk_StepFit); 0 = --fit none
 	int twoSided;     // --two-sided: no back face culling
 	int still;        // --poses still
 	u32 sizePercent;  // --size: driver and steering wheel, 100 (or 0) = as exported
@@ -1164,6 +1192,15 @@ struct RldMkBuild
 	u32 faceCount;
 	u32 quads;
 	u32 degenerate;
+
+	// --fit crash (RldMk_StepFit), game units
+	int fitted;                // the factor was found and applied
+	double fitFactor;          // 4 significant digits, applied as --scale
+	int fitBasis;              // RLDMK_FIT_KART or RLDMK_FIT_MODEL: what was brought to Crash's length
+	int fitCapped;             // the height of the tallest retail driver decided instead
+	double fitBefore[2];       // length (z) and height (y) of the whole model at scale 1
+	double fitAfter[2];        // the same after the factor
+	double fitKart[2];         // RLDMK_FIT_KART: the kart's length at scale 1 and after
 
 	// welded positions (game units, neutral pose); only those a triangle uses
 	u32 positionCount;
@@ -1711,9 +1748,19 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 	{
 		const double factor = (length > RLDMK_DRIVER_LENGTH) ? (length / RLDMK_DRIVER_LENGTH) : (RLDMK_DRIVER_LENGTH / ((length > 0.0) ? length : 1.0e-9));
 
-		RldMk_Say("error", "model-scale", NULL,
-		          "The model is %.1f Blender units long - about %.0f times too large (or small) for a driver. Export it in meters; a driver with kart is about 1.8 units long.",
-		          length, factor);
+		if (b->fitted)
+		{
+			// Fitted, the model is only this short when it is far taller than long.
+			RldMk_Say("error", "model-scale", NULL,
+			          "Fitted to Crash size (x%.4g), the model is %.2f Blender units long but %.2f tall - far taller than it is long. Check the axes (+Y up, +Z forward); --fit none builds it at its exported size.",
+			          b->fitFactor, length, (hi[1] - lo[1]) / RLDMK_UNITS);
+		}
+		else
+		{
+			RldMk_Say("error", "model-scale", NULL,
+			          "The model is %.1f Blender units long - about %.0f times too large (or small) for a driver. Export it in meters; a driver with kart is about 1.8 units long.",
+			          length, factor);
+		}
 		return 0;
 	}
 
@@ -1739,7 +1786,16 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 
 	if (best < 0)
 	{
-		RldMk_Say("error", "ply-no-kart", NULL, "No kart found. A character needs a kart: a part at the bottom of the model, about 1.8 Blender units long.");
+		if (b->fitted)
+		{
+			RldMk_Say("error", "ply-no-kart", NULL,
+			          "No kart found in the model fitted to Crash size (x%.4g). A character needs a kart: a separate part at the bottom of the model, about as long as Crash's kart. --fit none checks the model at its exported size.",
+			          b->fitFactor);
+		}
+		else
+		{
+			RldMk_Say("error", "ply-no-kart", NULL, "No kart found. A character needs a kart: a part at the bottom of the model, about 1.8 Blender units long.");
+		}
 		return 0;
 	}
 
@@ -1836,6 +1892,231 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 
 	// Size and centering (step 5) follow in RldMk_StepMeasure, after --size.
 	return 1;
+}
+
+//========================================================================================
+// STEP 3a: --fit crash - THE MODEL AT CRASH'S SIZE
+//========================================================================================
+//
+// Before the parts, the model is scaled so that its kart is as long as Crash's
+// (the game draws the wheels at fixed points of a retail kart), and the whole
+// model at most as tall as the tallest retail driver. Three silent passes, in
+// game units after the axes:
+//   1  steps 2 and 3 at scale 1: L and H, the extent along z (forward) and y
+//      (up) of the welded positions the triangles use;
+//      f1 = min(112.4 / L, 142.5 / H)  - the whole model at Crash's length
+//   2  steps 2 to 4 at f1: the kart as step 4 finds it. When it finds none,
+//      the longest part that would be a kart at Crash's length (bottom near
+//      the ground, the whole model within the length step 4 takes) - a driver
+//      far longer than his kart leaves the kart too short at f1.
+//   3  with a kart of length K at f1: f = min(f1 x 112.4 / K, 142.5 / H);
+//      without one f = f1
+// f is rounded to 4 significant digits and applied as --scale f: the chain runs
+// again from step 2 with that scale, so --fit crash gives the same bytes as
+// --fit none --scale f. Kart detection, model-scale, ply-axes and ply-center
+// see the fitted model, and --size works on it (100 % = Crash's size).
+
+#define RLDMK_FIT_MODEL 0   // the whole model at Crash's length (no kart found)
+#define RLDMK_FIT_KART 1    // the kart at the length of Crash's
+
+// 10^n for 0 <= n <= 22: every one of these is exact in a double.
+static double RldMk_Pow10(int n)
+{
+	double p = 1.0;
+
+	while (n-- > 0)
+	{
+		p *= 10.0;
+	}
+	return p;
+}
+
+// A factor -> 4 significant digits, halves up, within 0.0001..1000 (the range
+// of --scale). The result is k / 10^n (or k x 10^n) with whole k and an exact
+// power of ten: the same double strtod gives for the printed digits.
+static double RldMk_FitRound(double f)
+{
+	int digits = 3;  // decimals after the point for 1 <= f < 10
+	double k;
+
+	if (!(f > 0.0))
+	{
+		return 1.0;
+	}
+	f = (f > RLDMK_FIT_MAX) ? RLDMK_FIT_MAX : ((f < RLDMK_FIT_MIN) ? RLDMK_FIT_MIN : f);
+
+	while ((digits > 0) && (f >= RldMk_Pow10(4 - digits)))
+	{
+		digits--;
+	}
+	while ((digits < 7) && ((f * RldMk_Pow10(digits - 3)) < 1.0))
+	{
+		digits++;
+	}
+
+	k = RldMk_Floor(f * RldMk_Pow10(digits) + 0.5);
+	f = k / RldMk_Pow10(digits);
+	return (f > RLDMK_FIT_MAX) ? RLDMK_FIT_MAX : f;
+}
+
+// The factor for the whole model, `length` long and `height` tall (game
+// units), not rounded; 0 for a model without either extent. *capped = 1 when
+// the height decided.
+static double RldMk_FitModel(double length, double height, int *capped)
+{
+	double f = 0.0;
+
+	*capped = 0;
+	if (length > 0.0)
+	{
+		f = RLDMK_CRASH_LENGTH / length;
+	}
+	if ((height > 0.0) && ((f == 0.0) || ((RLDMK_RETAIL_HEIGHT_MAX / height) < f)))
+	{
+		f = RLDMK_RETAIL_HEIGHT_MAX / height;
+		*capped = 1;
+	}
+	return f;
+}
+
+// The rounded factor of the whole model (pass 1 alone).
+static double RldMk_FitFactor(double length, double height)
+{
+	int capped;
+	const double f = RldMk_FitModel(length, height, &capped);
+
+	return (f > 0.0) ? RldMk_FitRound(f) : 1.0;
+}
+
+// Steps 2 and 3 (and 4 with `parts`) without a word: what they say is taken
+// back, the real pass says it again. 1 = they got through.
+static int RldMk_FitProbe(const struct RldMkPly *ply, const struct RldMkOptions *opt, struct RldMkBuild *probe, int parts)
+{
+	const int quiet = s_rldMkQuiet;
+	const int errors = s_rldMkErrors;
+	const size_t said = strlen(s_rldMkCodes);
+	u32 keyCount = 0;
+	int ok;
+
+	memset(probe, 0, sizeof(*probe));
+	probe->kartPart = -1;
+	probe->driverPart = -1;
+	s_rldMkQuiet = 1;
+	ok = RldMk_StepWeld(ply, opt, probe, &keyCount) && RldMk_StepTriangles(ply, probe, keyCount) && (!parts || RldMk_StepParts(probe, opt));
+	s_rldMkQuiet = quiet;
+	s_rldMkErrors = errors;
+	s_rldMkCodes[said] = '\0';
+	return ok;
+}
+
+// Pass 2 without a kart from step 4: the longest part that is one at Crash's
+// length - its bottom within the kart's range and the whole model within the
+// length step 4 takes. Ties as step 4: the lower bottom. -1 = none.
+static int RldMk_FitKart(const struct RldMkBuild *probe)
+{
+	double lo[3];
+	double hi[3];
+	int best = -1;
+	u32 i;
+
+	RldMk_Bounds(probe, -1, lo, hi);
+	for (i = 0; i < probe->partCount; i++)
+	{
+		const struct RldMkPart *part = &probe->parts[i];
+		const double length = part->hi[2] - part->lo[2];
+		double r;
+
+		if (!(length > 0.0))
+		{
+			continue;
+		}
+
+		r = RLDMK_CRASH_LENGTH / length;
+		if (((part->lo[1] * r / RLDMK_UNITS) < RLDMK_KART_BOTTOM_MIN) || ((part->lo[1] * r / RLDMK_UNITS) > RLDMK_KART_BOTTOM_MAX) ||
+		    (((hi[2] - lo[2]) * r / RLDMK_UNITS) > (RLDMK_DRIVER_LENGTH * 5.0)))
+		{
+			continue;
+		}
+
+		if ((best < 0) || (length > (probe->parts[best].hi[2] - probe->parts[best].lo[2])) ||
+		    ((length == (probe->parts[best].hi[2] - probe->parts[best].lo[2])) && (part->lo[1] < probe->parts[best].lo[1])))
+		{
+			best = (int)i;
+		}
+	}
+
+	return best;
+}
+
+// Passes 1 to 3; *scale becomes the factor. 0 = pass 1 did not get through:
+// nothing is fitted, and the real pass says why.
+static int RldMk_StepFit(const struct RldMkPly *ply, const struct RldMkOptions *opt, struct RldMkBuild *b, double *scale)
+{
+	struct RldMkOptions at = *opt;
+	struct RldMkBuild probe;
+	double lo[3];
+	double hi[3];
+	double f;
+	int kart = -1;
+
+	// 1: the whole model at scale 1
+	at.scale = 1.0;
+	if (!RldMk_FitProbe(ply, &at, &probe, 0))
+	{
+		RldMk_FreeBuild(&probe);
+		return 0;
+	}
+	RldMk_Bounds(&probe, -1, lo, hi);
+	RldMk_FreeBuild(&probe);
+
+	b->fitted = 1;
+	b->fitBefore[0] = hi[2] - lo[2];
+	b->fitBefore[1] = hi[1] - lo[1];
+	f = RldMk_FitModel(b->fitBefore[0], b->fitBefore[1], &b->fitCapped);
+	b->fitFactor = (f > 0.0) ? RldMk_FitRound(f) : 1.0;
+	b->fitBasis = RLDMK_FIT_MODEL;
+
+	// 2: the kart at f1
+	at.scale = b->fitFactor;
+	if (RldMk_FitProbe(ply, &at, &probe, 1) && (probe.kartPart >= 0))
+	{
+		kart = probe.kartPart;
+	}
+	else if (probe.parts != NULL)
+	{
+		kart = RldMk_FitKart(&probe);
+	}
+
+	// 3: the kart at Crash's length, the height capped
+	if ((kart >= 0) && ((probe.parts[kart].hi[2] - probe.parts[kart].lo[2]) > 0.0))
+	{
+		const double length = probe.parts[kart].hi[2] - probe.parts[kart].lo[2];
+
+		f = b->fitFactor * RLDMK_CRASH_LENGTH / length;
+		b->fitBasis = RLDMK_FIT_KART;
+		b->fitCapped = 0;
+		if ((b->fitBefore[1] > 0.0) && ((RLDMK_RETAIL_HEIGHT_MAX / b->fitBefore[1]) < f))
+		{
+			f = RLDMK_RETAIL_HEIGHT_MAX / b->fitBefore[1];
+			b->fitCapped = 1;
+		}
+		b->fitKart[0] = length / b->fitFactor;
+		b->fitFactor = RldMk_FitRound(f);
+		b->fitKart[1] = b->fitKart[0] * b->fitFactor;
+	}
+	RldMk_FreeBuild(&probe);
+
+	b->fitAfter[0] = b->fitBefore[0] * b->fitFactor;
+	b->fitAfter[1] = b->fitBefore[1] * b->fitFactor;
+	*scale = b->fitFactor;
+	return 1;
+}
+
+// A measure of the fit for people and Reload Studio: one decimal, or 3
+// significant digits below 1 (a model exported in millimeters).
+static void RldMk_FitNumber(char *out, size_t size, double value)
+{
+	snprintf(out, size, (value >= 1.0) ? "%.1f" : "%.3g", value);
 }
 
 //========================================================================================
@@ -2372,8 +2653,18 @@ static int RldMk_StepMeasure(struct RldMkBuild *b, const struct RldMkOptions *op
 	{
 		const double *e = b->exported;
 
-		if ((e[0] < RLDMK_KART_LENGTH_MIN) || (e[0] > RLDMK_KART_LENGTH_MAX) || (e[1] < 0.8) || (e[1] > 1.0) || (e[2] < 0.6) || (e[2] > 2.7) ||
-		    (e[3] < RLDMK_KART_BOTTOM_MIN) || (e[3] > RLDMK_KART_BOTTOM_MAX))
+		if (((e[0] < RLDMK_KART_LENGTH_MIN) || (e[0] > RLDMK_KART_LENGTH_MAX) || (e[1] < 0.8) || (e[1] > 1.0) || (e[2] < 0.6) || (e[2] > 2.7) ||
+		     (e[3] < RLDMK_KART_BOTTOM_MIN) || (e[3] > RLDMK_KART_BOTTOM_MAX)) &&
+		    b->fitted)
+		{
+			// The scale is the fit's own: only the shape and the axes are left to check.
+			RldMk_Say("warning", "ply-axes", NULL,
+			          "Fitted to Crash size (x%.4g), the model is %.2f long, %.2f wide and %.2f tall and starts %.2f above the ground (Blender units); Crash with his kart is %.2f long and %.2f tall, a retail kart %.2f wide. Check the axes (+Y up, +Z forward) and the kart; --fit none shows the exported size.",
+			          b->fitFactor, e[0], e[1], e[2], e[3], RLDMK_CRASH_LENGTH / RLDMK_UNITS, RLDMK_CRASH_HEIGHT / RLDMK_UNITS,
+			          (double)RLDMK_RETAIL_KART_WIDTH / RLDMK_UNITS);
+		}
+		else if ((e[0] < RLDMK_KART_LENGTH_MIN) || (e[0] > RLDMK_KART_LENGTH_MAX) || (e[1] < 0.8) || (e[1] > 1.0) || (e[2] < 0.6) || (e[2] > 2.7) ||
+		         (e[3] < RLDMK_KART_BOTTOM_MIN) || (e[3] > RLDMK_KART_BOTTOM_MAX))
 		{
 			RldMk_Say("warning", "ply-axes", NULL,
 			          "The model is %.2f long, %.2f wide and %.2f tall and starts %.2f above the ground (Blender units). A driver with kart is about 1.8 long, 0.9 wide and 0.9-2.3 tall. Check scale and axes (+Y up, +Z forward).",
@@ -3984,6 +4275,7 @@ static int RldMk_CheckBuilt(struct RldMkBuild *b, const struct RldMkOptions *opt
 // reason was said.
 static int RldMk_BuildModel(const struct RldMkPly *ply, const struct RldMkOptions *opt, struct RldMkBuild *b)
 {
+	struct RldMkOptions fitted = *opt;
 	u32 keyCount = 0;
 
 	memset(b, 0, sizeof(*b));
@@ -3992,15 +4284,42 @@ static int RldMk_BuildModel(const struct RldMkPly *ply, const struct RldMkOption
 	b->kartPart = -1;
 	b->driverPart = -1;
 
+	// --fit crash: the scale first, then the chain with it (as --scale).
+	if (opt->fit)
+	{
+		RldMk_StepFit(ply, opt, b, &fitted.scale);
+	}
+	opt = &fitted;
+
 	if (!RldMk_StepWeld(ply, opt, b, &keyCount) || !RldMk_StepTriangles(ply, b, keyCount))
 	{
 		return 0;
 	}
 
+	if (b->fitted)
+	{
+		double lo[3];
+		double hi[3];
+
+		RldMk_Bounds(b, -1, lo, hi);
+		b->fitAfter[0] = hi[2] - lo[2];
+		b->fitAfter[1] = hi[1] - lo[1];
+	}
+
 	RldMk_StepOpenEdges(b);
 
-	if (!RldMk_StepParts(b, opt) || !RldMk_StepSize(b, opt) || !RldMk_StepMeasure(b, opt) || !RldMk_StepBudget(b, opt) || !RldMk_StepPoses(b) ||
-	    !RldMk_StepQuantize(b) || !RldMk_StepCollapse(b) || !RldMk_StepColors(ply, opt, b) || !RldMk_StepCommands(b, opt) || !RldMk_StepWrite(b))
+	if (!RldMk_StepParts(b, opt))
+	{
+		return 0;
+	}
+
+	if (b->fitted && (b->fitBasis == RLDMK_FIT_KART))
+	{
+		b->fitKart[1] = b->parts[b->kartPart].hi[2] - b->parts[b->kartPart].lo[2];
+	}
+
+	if (!RldMk_StepSize(b, opt) || !RldMk_StepMeasure(b, opt) || !RldMk_StepBudget(b, opt) || !RldMk_StepPoses(b) || !RldMk_StepQuantize(b) ||
+	    !RldMk_StepCollapse(b) || !RldMk_StepColors(ply, opt, b) || !RldMk_StepCommands(b, opt) || !RldMk_StepWrite(b))
 	{
 		return 0;
 	}
@@ -5596,6 +5915,44 @@ static int RldMk_ParseWhole(const char *text, u32 max, u32 *out)
 	return 1;
 }
 
+// --fit (default crash) and whether --scale may go with it: *fit is 1 for
+// crash, 0 for none. 0 = a wrong value or --scale with crash, said (fit,
+// fit-scale); *fit stays crash after a wrong value.
+static int RldMk_FitSwitch(const char *fitArg, const char *scaleArg, int *fit)
+{
+	char word[8];
+	size_t k = 0;
+
+	// in any case, as --up
+	if (fitArg != NULL)
+	{
+		for (k = 0; ((k + 1u) < sizeof(word)) && (fitArg[k] != '\0'); k++)
+		{
+			word[k] = (char)(((fitArg[k] >= 'A') && (fitArg[k] <= 'Z')) ? (fitArg[k] - 'A' + 'a') : fitArg[k]);
+		}
+	}
+	word[k] = '\0';
+
+	*fit = 1;
+	if ((fitArg != NULL) && ((fitArg[k] != '\0') || (strcmp(word, "crash") != 0)))
+	{
+		if ((fitArg[k] != '\0') || (strcmp(word, "none") != 0))
+		{
+			RldMk_Say("error", "fit", fitArg, "Fit must be crash or none.");
+			return 0;
+		}
+		*fit = 0;
+	}
+
+	if (*fit && (scaleArg != NULL))
+	{
+		RldMk_Say("error", "fit-scale", scaleArg, "--scale needs --fit none.");
+		return 0;
+	}
+
+	return 1;
+}
+
 // What the build found, as @char lines (Reload Studio shows them; the file
 // carries none of these numbers). As far as the chain got.
 static void RldMk_EmitFacts(const struct RldMkBuild *b, u32 templateId)
@@ -5614,6 +5971,18 @@ static void RldMk_EmitFacts(const struct RldMkBuild *b, u32 templateId)
 	if (b->triangleCount != 0u)
 	{
 		RldMk_Fact("triangles", "%u", b->triangleCount);
+	}
+
+	if (b->fitted)
+	{
+		char fit[5][24];
+
+		snprintf(fit[0], sizeof(fit[0]), "%.4g", b->fitFactor);
+		RldMk_FitNumber(fit[1], sizeof(fit[1]), b->fitBefore[0]);
+		RldMk_FitNumber(fit[2], sizeof(fit[2]), b->fitAfter[0]);
+		RldMk_FitNumber(fit[3], sizeof(fit[3]), b->fitBefore[1]);
+		RldMk_FitNumber(fit[4], sizeof(fit[4]), b->fitAfter[1]);
+		Rld_Emit("char", "fit", fit[0], fit[1], fit[2], fit[3], fit[4], (b->fitBasis == RLDMK_FIT_KART) ? "kart" : "model", (const char *)NULL);
 	}
 
 	if (b->partCount != 0u)
@@ -5673,6 +6042,33 @@ static void RldMk_PrintFacts(const struct RldMkBuild *b, const struct RldMkOptio
 	}
 
 	printf("  model         %u vertices, %u faces (%u quads split), %u triangles\n", b->vertexCount, b->faceCount, b->quads, b->triangleCount);
+
+	if (b->fitted)
+	{
+		char fit[6][24];
+		char basis[80];
+
+		RldMk_FitNumber(fit[0], sizeof(fit[0]), b->fitBefore[0]);
+		RldMk_FitNumber(fit[1], sizeof(fit[1]), b->fitAfter[0]);
+		RldMk_FitNumber(fit[2], sizeof(fit[2]), b->fitBefore[1]);
+		RldMk_FitNumber(fit[3], sizeof(fit[3]), b->fitAfter[1]);
+		RldMk_FitNumber(fit[4], sizeof(fit[4]), b->fitKart[0]);
+		RldMk_FitNumber(fit[5], sizeof(fit[5]), b->fitKart[1]);
+		if (b->fitBasis == RLDMK_FIT_KART)
+		{
+			snprintf(basis, sizeof(basis), "kart length %s -> %s%s", fit[4], fit[5], b->fitCapped ? ", capped at the tallest driver" : "");
+		}
+		else
+		{
+			snprintf(basis, sizeof(basis), "%s", b->fitCapped ? "model height, no kart found" : "model length, no kart found");
+		}
+		printf("  fit           x%.4g to Crash size (%s): %s -> %s long, %s -> %s tall (game units)\n", b->fitFactor, basis, fit[0], fit[1], fit[2],
+		       fit[3]);
+	}
+	else if (!opt->fit)
+	{
+		printf("  fit           none - the model as exported, x%g\n", opt->scale);
+	}
 
 	if (b->partCount != 0u)
 	{
@@ -5737,6 +6133,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	const char *upArg = NULL;
 	const char *forwardArg = NULL;
 	const char *scaleArg = NULL;
+	const char *fitArg = NULL;
 	const char *outArg = NULL;
 	const char *sizeArg = NULL;
 	const char *iconArg = NULL;
@@ -5823,6 +6220,10 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		else if ((strcmp(arg, "--scale") == 0) && hasValue)
 		{
 			scaleArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--fit") == 0) && hasValue)
+		{
+			fitArg = argv[++i];
 		}
 		else if ((strcmp(arg, "--out") == 0) && hasValue)
 		{
@@ -5915,7 +6316,8 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		}
 	}
 
-	if (scaleArg != NULL)
+	// --scale only with --fit none: the fit decides the scale itself.
+	if (RldMk_FitSwitch(fitArg, scaleArg, &opt.fit) && (scaleArg != NULL))
 	{
 		char *end = NULL;
 		const double value = strtod(scaleArg, &end);
@@ -6056,7 +6458,8 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		Rld_Emit("value", "up", opt.upZ ? "z" : "y", (upArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "forward", opt.backwards ? "-z" : "z", (forwardArg != NULL) ? "switch" : "default", (const char *)NULL);
 		snprintf(number, sizeof(number), "%g", opt.scale);
-		Rld_Emit("value", "scale", number, (scaleArg != NULL) ? "switch" : "default", (const char *)NULL);
+		Rld_Emit("value", "scale", number, ((scaleArg != NULL) && !opt.fit) ? "switch" : "default", (const char *)NULL);
+		Rld_Emit("value", "fit", opt.fit ? "crash" : "none", (fitArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "two_sided", opt.twoSided ? "yes" : "no", opt.twoSided ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "out", outPath, (outArg != NULL) ? "switch" : "default", (const char *)NULL);
 		snprintf(number, sizeof(number), "%u", opt.sizePercent);
@@ -6078,6 +6481,20 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		snprintf(box[4], sizeof(box[4]), "%d", RLDMK_RETAIL_KART_TOP);
 		snprintf(box[5], sizeof(box[5]), "%d", RLDMK_RETAIL_KART_LENGTH / 2);
 		Rld_Emit("value", "retail-kart", box[0], box[1], box[2], box[3], box[4], box[5], (const char *)NULL);
+	}
+
+	// Crash with his kart in the birth pose, the size --fit crash scales to
+	// (x0 y0 z0 x1 y1 z1, the same units).
+	{
+		static const double crash[6] = RLDMK_CRASH_BOX;
+		char box[6][16];
+		int k;
+
+		for (k = 0; k < 6; k++)
+		{
+			snprintf(box[k], sizeof(box[k]), "%.1f", crash[k]);
+		}
+		Rld_Emit("value", "crash-box", box[0], box[1], box[2], box[3], box[4], box[5], (const char *)NULL);
 	}
 
 	// THE PORTRAIT AND THE VOICES before the model: their findings show even
@@ -6292,6 +6709,42 @@ static int RldMk_ListFinding(void *context, const struct RldCharFinding *finding
 	return 1;
 }
 
+// Length (z) and height (y) of a checked model in the neutral turn frame, game
+// units as the renderer decodes them (RldMk_UnpackRecord) - next to Crash's.
+static void RldMk_ModelExtent(const u8 *cmdl, u32 records, double extent[2])
+{
+	const u8 *body = &cmdl[4];
+	const u32 header = Rld_ReadLE32(&body[RLDMK_MODEL_HEADERS]);
+	const u32 table = Rld_ReadLE32(&body[header + RLDMK_HEADER_ANIMS]);
+	const u32 turn = Rld_ReadLE32(&body[table]);
+	const u32 frameSize = Rld_ReadLE16(&body[turn + RLDMK_ANIM_FRAME_SIZE]);
+	const u32 frames = Rld_ReadLE16(&body[turn + RLDMK_ANIM_NUM_FRAMES]) & 0x7FFFu;
+	const u8 *frame = &body[turn + RLDMK_ANIM_BYTES + ((frames > RLDMK_NEUTRAL_FRAME) ? RLDMK_NEUTRAL_FRAME : 0u) * frameSize];
+	double lo[3] = {1.0e30, 1.0e30, 1.0e30};
+	double hi[3] = {-1.0e30, -1.0e30, -1.0e30};
+	int scale[3];
+	u32 r;
+	int a;
+
+	RldMk_ModelScale(cmdl, scale);
+	for (r = 0; r < records; r++)
+	{
+		int v[3];
+
+		RldMk_UnpackRecord(frame, r, v);
+		for (a = 0; a < 3; a++)
+		{
+			const double unit = (double)v[a] * (double)scale[a] / 16384.0;
+
+			lo[a] = (unit < lo[a]) ? unit : lo[a];
+			hi[a] = (unit > hi[a]) ? unit : hi[a];
+		}
+	}
+
+	extent[0] = (records != 0u) ? (hi[2] - lo[2]) : 0.0;
+	extent[1] = (records != 0u) ? (hi[1] - lo[1]) : 0.0;
+}
+
 static int RldMk_Inspect(const char *path, int full, int machine)
 {
 	struct RldReader reader;
@@ -6483,6 +6936,11 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		printf("  draw memory   %u bytes per frame, at most %u\n", facts.drawBytes, RLDCHAR_DRAW_BYTES_MAX);
 		if (verdict == RLDCHAR_VERDICT_OK)
 		{
+			double extent[2];
+
+			RldMk_ModelExtent(cmdl, facts.records, extent);
+			printf("  size          %.1f long, %.1f tall (game units, steering straight); Crash is %.1f long, %.1f tall\n", extent[0], extent[1],
+			       RLDMK_CRASH_LENGTH, RLDMK_CRASH_HEIGHT);
 			printf("  verdict       OK - the game loads it\n");
 		}
 		else
@@ -6573,8 +7031,9 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "MAKE-CHAR\n");
 	fprintf(out, "  rldpack make-char --model <ply> --name <text> --template <0..14> [switches]\n");
 	fprintf(out, "  Builds a character (.rldchar) from a PLY model with vertex colors, ASCII\n");
-	fprintf(out, "  or binary, in meters, +Y up and +Z forward. The model brings its kart: a\n");
-	fprintf(out, "  part at the bottom, about 1.8 units long; the game draws the wheels.\n");
+	fprintf(out, "  or binary, +Y up and +Z forward, at any scale: it is fitted to Crash's\n");
+	fprintf(out, "  size (--fit). The model brings its kart: a part at the bottom, as long\n");
+	fprintf(out, "  as the kart of a driver; the game draws the wheels.\n");
 	fprintf(out, "  The file lands NEXT TO the model as <model>.rldchar.\n");
 	fprintf(out, "\n");
 	fprintf(out, "  --model <ply>               the model (required)\n");
@@ -6591,8 +7050,9 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "  --class <style>             the driving style: like (the template's, default),\n");
 	fprintf(out, "                              balanced, acceleration, speed, turning (or 0..3)\n");
 	fprintf(out, "  --size <50..200>            the driver and steering wheel in percent of the\n");
-	fprintf(out, "                              model (default 100), scaled about the hip; the\n");
-	fprintf(out, "                              kart keeps its size: %s.\n", RLDMK_SIZE_TEXT);
+	fprintf(out, "                              model after fitting, or as exported with\n");
+	fprintf(out, "                              --fit none (default 100), scaled about the\n");
+	fprintf(out, "                              hip; the kart keeps its size: %s.\n", RLDMK_SIZE_TEXT);
 	fprintf(out, "                              rldpack says which range the model takes\n");
 	fprintf(out, "  --icon <png>                the portrait in the menu: cut to 44:26 in the\n");
 	fprintf(out, "                              middle, scaled to 44 x 26, 15 colors and\n");
@@ -6614,7 +7074,14 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "  --up y|z                    the up axis of the PLY (default y); z for\n");
 	fprintf(out, "                              Blender's own axes, with the front at -Y\n");
 	fprintf(out, "  --forward z|-z              -z: the model looks backwards and is turned\n");
-	fprintf(out, "  --scale <f>                 multiply the model (default 1)\n");
+	fprintf(out, "  --fit crash|none            crash (default): scale the model to Crash's\n");
+	fprintf(out, "                              size - its kart as long as Crash with his kart\n");
+	fprintf(out, "                              (%.1f game units; the whole model when no kart\n", RLDMK_CRASH_LENGTH);
+	fprintf(out, "                              is found), at most as tall as the tallest driver\n");
+	fprintf(out, "                              (%.1f), the factor rounded to 4 significant\n", RLDMK_RETAIL_HEIGHT_MAX);
+	fprintf(out, "                              digits; none: as exported, in meters\n");
+	fprintf(out, "  --scale <f>                 multiply the model (default 1), only with\n");
+	fprintf(out, "                              --fit none\n");
 	fprintf(out, "  --two-sided                 draw both sides of every triangle\n");
 	fprintf(out, "  --out <file>                somewhere else than next to the model\n");
 	fprintf(out, "  --check                     run every check and build in memory, write\n");
@@ -8024,12 +8491,15 @@ static void RldMk_SelfTestChri(const u8 *good, size_t goodSize)
 // ascii PLY) with CHRI template 14, class 0, name "SELF TEST", version 1 and no
 // author. These are the bytes of
 //   rldpack make-char --model <that PLY> --name "SELF TEST" --template 14
-// PLAIN without further switches - the file make-char wrote before --size,
-// --icon and --preview existed. SIZE_ICON with --size 120 and test picture A
-// (RldMk_TestPixelA) as --icon. A different value means characters are no
-// longer written the same way - never update it to make the test pass.
+// PLAIN with --fit none - the file make-char wrote without switches before
+// --size, --icon, --preview and --fit existed. SIZE_ICON with --fit none,
+// --size 120 and test picture A (RldMk_TestPixelA) as --icon. FIT without
+// further switches (--fit crash, the factor 0.9757). A different value means
+// characters are no longer written the same way - never update it to make the
+// test pass.
 #define RLDMK_GOLDEN_PLAIN "ba7e3208bc98b2af5460110ae6d7d64afe888771b76747a74ae30f3190ce3186"
 #define RLDMK_GOLDEN_SIZE_ICON "9dc78f1370c2e360f2758858b0efcec9c7b21ea7bcedb9be12e5b2f7029a1728"
+#define RLDMK_GOLDEN_FIT "8c3bda92c3e1dc5f761f3b9eb2f281595cc9d290319901c82b024d0a2c433e95"
 
 // --- --size --------------------------------------------------------------------------
 
@@ -8162,6 +8632,218 @@ static void RldMk_SelfTestSize(struct RldMkTestMesh *mesh)
 		RldMk_FreeBuild(&b);
 		RldMk_FreePly(&ply);
 	}
+}
+
+// --- --fit ---------------------------------------------------------------------------
+
+// How often `code` was said since the last RldMk_ResetSaid.
+static u32 RldMk_TestSaidCount(const char *code)
+{
+	const size_t length = strlen(code);
+	const char *p = s_rldMkCodes;
+	u32 count = 0;
+
+	while (*p != '\0')
+	{
+		if ((strncmp(p, code, length) == 0) && ((p[length] == ' ') || (p[length] == '\0')))
+		{
+			count++;
+		}
+
+		p = strchr(p, ' ');
+		if (p == NULL)
+		{
+			break;
+		}
+		p++;
+	}
+
+	return count;
+}
+
+static void RldMk_SelfTestFit(struct RldMkTestMesh *mesh)
+{
+	struct RldMkOptions opt;
+	struct RldMkPly ply;
+	struct RldMkPly plyAgain;
+	struct RldMkBuild b;
+	struct RldMkBuild again;
+	double f;
+	int fit = -1;
+	int ok;
+	int same;
+	u32 v;
+
+	// THE FACTOR OF THE WHOLE MODEL: the length decides, the tallest driver
+	// caps, 4 significant digits (halves up), within the range of --scale.
+	f = RldMk_FitFactor(115.2, 57.6);
+	RldMk_Test(f == 0.9757, "fit: 112.4 / 115.2 = 0.97569 rounds up to 0.9757", "got %.10f", f);
+	f = RldMk_FitFactor(159.2, 131.2);
+	RldMk_Test(f == 0.706, "fit: 112.4 / 159.2 = 0.70603 rounds down to 0.7060", "got %.10f", f);
+	f = RldMk_FitFactor(100.0, 200.0);
+	RldMk_Test(f == 0.7125, "fit: a model 200 tall is capped at 142.5 (0.7125)", "got %.10f", f);
+	f = RldMk_FitFactor(56.2, 0.0);
+	RldMk_Test(f == 2.0, "fit: a model 56.2 long and flat doubles", "got %.10f", f);
+	f = RldMk_FitFactor(0.0, 0.0);
+	RldMk_Test(f == 1.0, "fit: no extent at all stays at 1", "got %.10f", f);
+	RldMk_Test((RldMk_FitFactor(1.0e-9, 1.0e-9) == RLDMK_FIT_MAX) && (RldMk_FitFactor(1.0e12, 1.0e12) == RLDMK_FIT_MIN),
+	           "fit: the factor stays within 0.0001..1000", "got %g and %g", RldMk_FitFactor(1.0e-9, 1.0e-9), RldMk_FitFactor(1.0e12, 1.0e12));
+	f = RldMk_FitFactor(11520.0, 5760.0);
+	RldMk_Test(f == 0.009757, "fit: exported in centimeters, 4 significant digits (0.009757)", "got %.12f", f);
+	RldMk_Test((RldMk_FitRound(12.3456) == 12.35) && (RldMk_FitRound(0.00012346) == 0.0001235) && (RldMk_FitRound(999.96) == 1000.0) &&
+	               (RldMk_FitRound(9.99996) == 10.0) && (RldMk_FitRound(0.1) == 0.1) && (RldMk_FitRound(1.0) == 1.0),
+	           "fit: 4 significant digits at every size, the double of the printed digits", "got %.12g %.12g %.12g %.12g", RldMk_FitRound(12.3456),
+	           RldMk_FitRound(0.00012346), RldMk_FitRound(999.96), RldMk_FitRound(9.99996));
+
+	// THE SWITCHES: crash by default, --scale only with --fit none.
+	RldMk_ResetSaid();
+	RldMk_Test(RldMk_FitSwitch(NULL, NULL, &fit) && (fit == 1) && (s_rldMkCodes[0] == '\0'), "--fit: crash by default", "fit %d, said: %s", fit,
+	           s_rldMkCodes);
+	RldMk_ResetSaid();
+	RldMk_Test(!RldMk_FitSwitch(NULL, "2", &fit) && RldMk_Said("fit-scale"), "--scale without --fit none refused (fit-scale)", "said: %s", s_rldMkCodes);
+	RldMk_ResetSaid();
+	RldMk_Test(!RldMk_FitSwitch("crash", "2", &fit) && RldMk_Said("fit-scale"), "--scale with --fit crash refused (fit-scale)", "said: %s", s_rldMkCodes);
+	RldMk_ResetSaid();
+	RldMk_Test(RldMk_FitSwitch("none", "2", &fit) && (fit == 0) && (s_rldMkCodes[0] == '\0'), "--fit none takes --scale", "fit %d, said: %s", fit,
+	           s_rldMkCodes);
+	RldMk_ResetSaid();
+	RldMk_Test(!RldMk_FitSwitch("box", NULL, &fit) && (fit == 1) && RldMk_Said("fit"), "--fit box refused (fit)", "fit %d, said: %s", fit, s_rldMkCodes);
+	RldMk_ResetSaid();
+	RldMk_Test(RldMk_FitSwitch("NONE", "2", &fit) && (fit == 0) && RldMk_FitSwitch("Crash", NULL, &fit) && (fit == 1) &&
+	               !RldMk_FitSwitch("crashes", NULL, &fit) && RldMk_Said("fit"),
+	           "--fit in any case; crashes refused", "fit %d, said: %s", fit, s_rldMkCodes);
+	RldMk_ResetSaid();
+
+	// THE STANDARD MODEL, 115.2 long and 57.6 tall: fitted by 0.9757, the same
+	// bytes as --fit none --scale 0.9757, the size range unchanged.
+	memset(&plyAgain, 0, sizeof(plyAgain));
+	memset(&again, 0, sizeof(again));
+	RldMk_TestOptions(&opt);
+	RldMk_TestStandard(mesh, 2u, 0, 0.0, -1);
+	opt.fit = 1;
+	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+	RldMk_Test(ok && b.fitted && (b.fitFactor == 0.9757) && (b.fitBasis == RLDMK_FIT_KART) && (b.fitBefore[0] > 115.19) && (b.fitBefore[0] < 115.21) && (b.fitBefore[1] > 57.59) &&
+	               (b.fitBefore[1] < 57.61) && (b.fitAfter[0] > 112.35) && (b.fitAfter[0] < 112.45) && (b.sizeLow == 50u) && (b.sizeHigh == 200u),
+	           "--fit crash: 115.2 -> 112.4 long, factor 0.9757, size range 50..200", "built %d, fitted %d, x%.4f, %.2f -> %.2f long, %.2f tall, range %u..%u",
+	           ok, b.fitted, b.fitFactor, b.fitBefore[0], b.fitAfter[0], b.fitBefore[1], b.sizeLow, b.sizeHigh);
+	RldMk_Test(ok && (RldMk_TestSaidCount("ply-quads") == 1u), "--fit crash: the measuring pass says nothing (ply-quads once)", "said: %s",
+	           s_rldMkCodes);
+
+	opt.fit = 0;
+	opt.scale = 0.9757;
+	same = ok && RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again) && !again.fitted && (again.cmdlSize == b.cmdlSize) &&
+	       (memcmp(again.cmdl, b.cmdl, b.cmdlSize) == 0);
+	RldMk_Test(same, "--fit crash = --fit none --scale 0.9757, byte for byte", "differ");
+	RldMk_FreeBuild(&again);
+	RldMk_FreePly(&plyAgain);
+
+	// --fit none is the model as exported: nothing fitted, the bytes of scale 1.
+	opt.scale = 1.0;
+	ok = ok && RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again) && !again.fitted && (again.fitFactor == 0.0) &&
+	     ((again.cmdlSize != b.cmdlSize) || (memcmp(again.cmdl, b.cmdl, b.cmdlSize) != 0));
+	RldMk_Test(ok, "--fit none: nothing fitted, other bytes than --fit crash", "not as expected");
+	RldMk_FreeBuild(&again);
+	RldMk_FreePly(&plyAgain);
+
+	// --size 120 on the fitted model: 100 % is Crash's size.
+	opt.fit = 1;
+	opt.sizePercent = 120u;
+	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again) && again.fitted && (again.fitFactor == 0.9757);
+	RldMk_Test(ok, "--fit crash with --size 120 builds", "said: %s", s_rldMkCodes);
+	RldMk_FreeBuild(&again);
+	RldMk_FreePly(&plyAgain);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+
+	// TEN TIMES TOO LARGE (exported in decimeters): --fit none stops at
+	// model-scale, --fit crash takes it at 0.09757.
+	for (v = 0; v < mesh->vertexCount; v++)
+	{
+		mesh->xyz[v][0] *= 10.0;
+		mesh->xyz[v][1] *= 10.0;
+		mesh->xyz[v][2] *= 10.0;
+	}
+	RldMk_TestOptions(&opt);
+	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+	RldMk_Test(!ok && RldMk_Said("model-scale"), "--fit none: a model 18 units long refused (model-scale)", "said: %s", s_rldMkCodes);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+	opt.fit = 1;
+	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+	RldMk_Test(ok && b.fitted && (b.fitFactor == 0.09757) && !RldMk_Said("model-scale") && !RldMk_Said("ply-axes"),
+	           "--fit crash: a model 18 units long fitted by 0.09757", "built %d, x%.4g, said: %s", ok, b.fitFactor, s_rldMkCodes);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+
+	// THE KART DECIDES. A tail behind the driver (2.3 long in all): step 4
+	// finds the kart at f1, and the kart comes out as long as Crash's.
+	{
+		const double kartLo[3] = {-0.45, 0.05, -0.90};
+		const double kartHi[3] = {0.45, 0.25, 0.90};
+		const double driverLo[3] = {-0.30, 0.60, -1.40};
+		const double driverHi[3] = {0.30, 1.40, 0.40};
+
+		mesh->vertexCount = 0;
+		mesh->faceCount = 0;
+		RldMk_TestBox(mesh, kartLo, kartHi, 1u, 0u, 0, -1);
+		RldMk_TestBox(mesh, driverLo, driverHi, 2u, 10u, 0, -1);
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+		RldMk_Test(ok && (b.fitBasis == RLDMK_FIT_KART) && (b.fitFactor == 0.9757) && (b.fitKart[1] > 112.35) && (b.fitKart[1] < 112.45) &&
+		               (b.fitAfter[0] > 143.0),
+		           "--fit crash with a tail: the kart 115.2 -> 112.4 long (x0.9757)", "built %d, basis %d, x%.4g, kart %.2f, model %.2f, said: %s", ok,
+		           b.fitBasis, b.fitFactor, b.fitKart[1], b.fitAfter[0], s_rldMkCodes);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+	}
+
+	// A driver far longer than his kart (kart 1.4, all 2.4): at f1 the kart is
+	// too short for step 4, the fit still finds it (the longest part that is a
+	// kart at Crash's length) - x1.254, the kart 112.4 long, and it builds.
+	{
+		const double kartLo[3] = {-0.45, 0.05, -0.70};
+		const double kartHi[3] = {0.45, 0.25, 0.70};
+		const double driverLo[3] = {-0.30, 0.60, -1.10};
+		const double driverHi[3] = {0.30, 1.40, 1.30};
+
+		mesh->vertexCount = 0;
+		mesh->faceCount = 0;
+		RldMk_TestBox(mesh, kartLo, kartHi, 1u, 0u, 0, -1);
+		RldMk_TestBox(mesh, driverLo, driverHi, 2u, 10u, 0, -1);
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+		RldMk_Test(ok && (b.fitBasis == RLDMK_FIT_KART) && (b.fitFactor == 1.254) && (b.fitKart[1] > 112.3) && (b.fitKart[1] < 112.5) &&
+		               !RldMk_Said("ply-no-kart"),
+		           "--fit crash with a long driver: the kart found, x1.254", "built %d, basis %d, x%.4g, kart %.2f, said: %s", ok, b.fitBasis, b.fitFactor,
+		           b.fitKart[1], s_rldMkCodes);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+	}
+
+	// No kart at all (a driver in the air): the whole model at Crash's length,
+	// and ply-no-kart.
+	{
+		const double driverLo[3] = {-0.30, 0.60, -0.40};
+		const double driverHi[3] = {0.30, 1.40, 0.40};
+
+		mesh->vertexCount = 0;
+		mesh->faceCount = 0;
+		RldMk_TestBox(mesh, driverLo, driverHi, 2u, 10u, 0, -1);
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+		RldMk_Test(!ok && b.fitted && (b.fitBasis == RLDMK_FIT_MODEL) && (b.fitFactor == 2.195) && RldMk_Said("ply-no-kart"),
+		           "--fit crash without a kart: the model's length (x2.195), ply-no-kart", "built %d, basis %d, x%.4g, said: %s", ok, b.fitBasis,
+		           b.fitFactor, s_rldMkCodes);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+	}
+
+	// A face of five corners: nothing to measure, so nothing fitted, and the
+	// real pass says ply-ngon once (the measuring pass leaves no error behind).
+	RldMk_TestStandard(mesh, 2u, 0, 0.0, -1);
+	RldMk_TestFace(mesh, 5u, 0u, 1u, 2u, 3u, 4u);
+	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+	RldMk_Test(!ok && !b.fitted && (RldMk_TestSaidCount("ply-ngon") == 1u) && (s_rldMkErrors == 1), "--fit crash on an n-gon: ply-ngon once, not fitted",
+	           "built %d, fitted %d, errors %d, said: %s", ok, b.fitted, s_rldMkErrors, s_rldMkCodes);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
 }
 
 // --- --preview -----------------------------------------------------------------------
@@ -9399,8 +10081,13 @@ static void RldMk_SelfTestGolden(struct RldMkTestMesh *mesh, const struct RldPng
 		return;
 	}
 
-	for (k = 0; k < 2; k++)
+	for (k = 0; k < 3; k++)
 	{
+		static const char *const builtNames[3] = {"golden model built twice: the same bytes",
+		                                          "golden model, --size 120 and icon, built twice: the same bytes",
+		                                          "golden model, --fit crash, built twice: the same bytes"};
+		static const char *const goldenNames[3] = {"make-char --fit none", "make-char --fit none --size 120 --icon", "make-char (--fit crash)"};
+		static const char *const goldens[3] = {RLDMK_GOLDEN_PLAIN, RLDMK_GOLDEN_SIZE_ICON, RLDMK_GOLDEN_FIT};
 		struct RldMkOptions opt;
 		struct RldMkPly ply;
 		struct RldMkBuild b;
@@ -9413,14 +10100,15 @@ static void RldMk_SelfTestGolden(struct RldMkTestMesh *mesh, const struct RldPng
 		int ok;
 
 		RldMk_TestOptions(&opt);
-		opt.sizePercent = (k == 0) ? 100u : 120u;
+		opt.sizePercent = (k == 1) ? 120u : 100u;
+		opt.fit = (k == 2);
 		RldMk_TestStandard(mesh, 2u, 0, 0.0, -1);
 
 		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again);
 		if (ok)
 		{
-			file = RldMk_Container(chri, chriSize, b.cmdl, b.cmdlSize, (k == 0) ? NULL : icon.cicn, &size);
-			fileAgain = RldMk_Container(chri, chriSize, again.cmdl, again.cmdlSize, (k == 0) ? NULL : icon.cicn, &sizeAgain);
+			file = RldMk_Container(chri, chriSize, b.cmdl, b.cmdlSize, (k == 1) ? icon.cicn : NULL, &size);
+			fileAgain = RldMk_Container(chri, chriSize, again.cmdl, again.cmdlSize, (k == 1) ? icon.cicn : NULL, &sizeAgain);
 		}
 		ok = ok && (file != NULL) && (fileAgain != NULL) && (size == sizeAgain) && (memcmp(file, fileAgain, size) == 0);
 
@@ -9436,8 +10124,8 @@ static void RldMk_SelfTestGolden(struct RldMkTestMesh *mesh, const struct RldPng
 			     (memcmp(&entry[RLD_DIR_HASH_OFFSET], digest, 32u) == 0);
 		}
 
-		RldMk_Test(ok, (k == 0) ? "golden model built twice: the same bytes" : "golden model, --size 120 and icon, built twice: the same bytes", "differ");
-		if (Rld_CheckGolden((k == 0) ? "make-char" : "make-char --size 120 --icon", file, size, (k == 0) ? RLDMK_GOLDEN_PLAIN : RLDMK_GOLDEN_SIZE_ICON) != 0)
+		RldMk_Test(ok, builtNames[k], "differ");
+		if (Rld_CheckGolden(goldenNames[k], file, size, goldens[k]) != 0)
 		{
 			s_rldMkTestFailed++;
 		}
@@ -9482,6 +10170,7 @@ static int RldChar_SelfTest(void)
 	}
 	RldMk_SelfTestChri(good, goodSize);
 	RldMk_SelfTestSize(mesh);
+	RldMk_SelfTestFit(mesh);
 	RldMk_SelfTestPreview(mesh);
 	RldMk_SelfTestPng();
 	RldMk_SelfTestVoices();
