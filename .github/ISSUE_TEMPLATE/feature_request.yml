@@ -51,5 +51,5 @@ body:
       label: Before you send it
       options:
         - label: I checked What's next and the open issues.
-        - label: I attached no disc images, `assets` files, memory cards or other game data.
+        - label: I attached no disc images, `assets` files, memory cards or other game data, and no content made by other people.
           required: true

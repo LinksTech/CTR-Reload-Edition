@@ -41,6 +41,7 @@ branch. That means no:
   from your disc count as game data, also when you paste them into a source
   file as a C table
 - content by other people: custom tracks, music, characters, textures, fonts
+- 3D models, voices, sound effects and images made by other people
 
 This rule is about data: decompilation work on the game's code is welcome.
 The retail data tables and texts already in the code come from the upstream
@@ -52,11 +53,16 @@ merging. We cannot take it back. This already starts with a push to your
 fork, because forks are public too.
 
 The automatic check `content-guard` fails if any commit of a pull request
-contains a game data file type or a binary file over 1 MB. The local
-`pre-push` hook (see [Local hooks](#local-hooks)) runs a similar check before
-anything leaves your machine. No check catches everything, so please look at
-what you commit. If a test needs a file, generate it in code, as the
-self-tests do (`platform/native_testfiles.c`).
+contains a game data file type, a 3D model, audio, picture or archive file
+type (`.ply`, `.obj`, `.fbx`, `.blend`, `.gltf`, `.wav`, `.mp3`, `.ogg`,
+`.png`, `.jpg`, `.bmp`, `.zip`, `.7z`, ...) or a binary file over 1 MB. These
+types fail even if you made the file yourself; the only exceptions are the
+pictures and sounds of the bundled SDL copy, which `tools/content_guard.py`
+lists one by one with their exact content. The local `pre-push` hook (see
+[Local hooks](#local-hooks)) runs the same check and more before anything
+leaves your machine. No check catches everything, so please look at what you
+commit. If a test needs a file, generate it in code, as the self-tests do
+(`platform/native_testfiles.c`).
 
 Screenshots in an issue or a pull request comment are fine, just not as files
 in the repository.
@@ -103,9 +109,9 @@ Enable the hooks once per clone:
 - `pre-commit` and `commit-msg` run the language check on the staged files and
   on the commit message.
 - `pre-push` checks every commit the push would send and refuses the push if
-  one of them contains, among other things, a game data file type, a file in
-  a forbidden folder (such as `assets` or `tracks`) or any file larger than
-  5 MB.
+  one of them contains, among other things, anything `content-guard` refuses,
+  a file in a forbidden folder (such as `assets` or `tracks`) or any file
+  larger than 5 MB. Like the other hooks, it needs Python.
 
 ## License
 

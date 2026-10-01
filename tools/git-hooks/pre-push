@@ -1,8 +1,8 @@
 #!/bin/sh
 # CTR Reload Edition - pre-push guard.
 #
-# Refuses a push that would publish game data, third-party track content or
-# anything else that must never leave the machine. Once something is public
+# Refuses a push that would publish game data, content made by other people
+# or anything else that must never leave the machine. Once something is public
 # it cannot be taken back, so this hook fails closed.
 #
 # Install (once per clone):
@@ -10,17 +10,27 @@
 #
 # It checks every blob that the push would send (all objects reachable from
 # the pushed commits and not yet on the remote):
-#   - forbidden file types (disc images, game formats, containers, patches,
-#     memory cards, logs, save states, raw pictures)
-#   - forbidden folders (assets, tracks, test data, measurement and
-#     reference folders, build output)
-#   - pictures and sounds outside externals/SDL
+#   - the rules of tools/content_guard.py, the check that GitHub runs: the
+#     forbidden file types there (disc images, game formats, containers,
+#     patches, memory cards, save states, replays, 3D models, audio,
+#     pictures, archives) and binary files larger than 1 MB; the only
+#     exceptions are the SDL files that the script lists by path and blob id
+#   - logs and dumps, game files and user settings by name
+#   - forbidden folders (assets, tracks, characters, test data, measurement
+#     and reference folders, build output)
+#   - videos outside externals/SDL
 #   - any file larger than 5 MB
 #   - the SHA-256 of known game files (compared by size first, then hashed)
+# Like the other hooks it needs Python 3; without it every push is refused.
 
 remote="$1"
 zero=0000000000000000000000000000000000000000
 limit=5242880
+
+root=$(git rev-parse --show-toplevel) || exit 1
+py=python
+command -v "$py" >/dev/null 2>&1 || py=python3
+guard="$root/tools/content_guard.py"
 
 # size sha256 name - known game files that must never be pushed
 known="605698800 f780bf2331476aabfc00772fa758b12dd95ebfbc907968132cbd3cdd4e2c07c0 disc-image(ctr-u.bin)
@@ -31,6 +41,17 @@ sizes=$(echo "$known" | cut -d' ' -f1 | tr '\n' ' ')
 tmp=$(mktemp 2>/dev/null || echo "${TMPDIR:-/tmp}/ctr-pre-push.$$")
 : > "$tmp.found"
 
+# Removes the temporary files.
+cleanup() {
+	rm -f "$tmp" "$tmp.list" "$tmp.trees" "$tmp.lines" "$tmp.files" "$tmp.guard" "$tmp.found"
+}
+# Stops the hook when a step fails: the push is refused, nothing is sent.
+refuse() {
+	echo "pre-push: PUSH REFUSED - $1" >&2
+	cleanup
+	exit 1
+}
+
 while read local_ref local_sha remote_ref remote_sha; do
 	[ "$local_sha" = "$zero" ] && continue
 	# The commits this push sends. A ref that is new on the remote gets its
@@ -38,33 +59,46 @@ while read local_ref local_sha remote_ref remote_sha; do
 	# that was deleted and created again still has them locally), and fail
 	# closed means not trusting them.
 	if [ "$remote_sha" != "$zero" ] && git cat-file -e "$remote_sha" 2>/dev/null; then
-		git rev-list "$local_sha" "^$remote_sha" > "$tmp.list" || exit 1
+		git rev-list "$local_sha" "^$remote_sha" > "$tmp.list" || refuse "git rev-list failed"
 	else
-		git rev-list "$local_sha" > "$tmp.list" || exit 1
+		git rev-list "$local_sha" > "$tmp.list" || refuse "git rev-list failed"
 	fi
 	# Every path in every one of those commits, not only new objects: a
 	# forbidden path must be caught even if its content already exists
 	# elsewhere (same blob under an allowed name, or already on the remote).
+	# One commit after the other into a file, without a pipe: if git cannot
+	# list a commit, the push is refused instead of checking a shorter list.
+	: > "$tmp.trees"
 	while read commit; do
-		git ls-tree -r -l -z --full-tree "$commit" || exit 1
-	done < "$tmp.list" |
-	awk -v RS='\0' '{ t = index($0, "\t"); split(substr($0, 1, t - 1), f, " "); print f[2] " " f[3] " " f[4] " " substr($0, t + 1) }' |
-	sort -u |
+		git ls-tree -r -l -z --full-tree "$commit" >> "$tmp.trees" ||
+			refuse "git cannot list the files of commit $commit"
+	done < "$tmp.list" || refuse "git cannot list the files of a commit"
+	awk -v RS='\0' '{ t = index($0, "\t"); split(substr($0, 1, t - 1), f, " "); print f[2] " " f[3] " " f[4] " " substr($0, t + 1) }' \
+		"$tmp.trees" > "$tmp.lines" || refuse "cannot read the list of files"
+	LC_ALL=C sort -u "$tmp.lines" > "$tmp.files" || refuse "cannot sort the list of files"
+	# The rules of tools/content_guard.py on the same files: file types (with
+	# the exact SDL exceptions) and binary files larger than 1 MB. Exit code
+	# 1 counts only with findings: a crash must not pass for a clean result.
+	"$py" "$guard" --stdin < "$tmp.files" > "$tmp.guard"
+	rc=$?
+	if [ "$rc" = 1 ] && [ -s "$tmp.guard" ]; then
+		awk '{ sub(/\r$/, ""); print "BAD\t" $0 }' "$tmp.guard" >> "$tmp.found" ||
+			refuse "cannot read the findings of tools/content_guard.py"
+	elif [ "$rc" != 0 ]; then
+		refuse "tools/content_guard.py could not check the files (is Python 3 installed?)"
+	fi
 	awk -v limit="$limit" -v sizes="$sizes" '
 	BEGIN { n = split(sizes, s, " "); for (i = 1; i <= n; i++) known[s[i]] = 1 }
 	$1 == "blob" {
 		sha = $2; size = $3 + 0
 		path = $0; sub(/^[^ ]+ [^ ]+ [^ ]+ /, "", path)
 		lower = tolower(path)
-		k = split(lower, part, "/"); base = part[k]
+		# The last part of the path without trailing dots, spaces and control
+		# characters, as content_guard.py compares it.
+		k = split(lower, part, "/"); base = part[k]; sub(/[[:cntrl:] .]+$/, "", base)
 		sdl = (lower ~ /^externals\/sdl\//)
 
-		if (base ~ /\.(bin|cue|iso|img|chd|ecm|pbp|mdf|mds|nrg|ccd|sub|toc)$/) print "BAD\t" path "\tdisc image type"
-		if (base ~ /\.(big|hwl|xa|str|xnf|vag|vab|vh|vb|lev|vrm|ctr|mpk|tim|lng)$/) print "BAD\t" path "\tgame data type"
-		if (base ~ /\.(rldtrack|rldchar|rldprev|sca|sndb|cseq)$/) print "BAD\t" path "\ttrack/character container or music data"
-		if (base ~ /\.(xdelta|ppf|ips|bps|vcdiff)$/) print "BAD\t" path "\tpatch file"
-		if (base ~ /\.(mcr|mcd|gme|srm|sav|ctrstates|state)$/) print "BAD\t" path "\tmemory card or save state"
-		if (base ~ /\.(log|dmp|tga|ppm|bmp)$/) print "BAD\t" path "\tlog, dump or raw picture"
+		if (base ~ /\.(log|dmp)$/) print "BAD\t" path "\tlog or dump"
 		if (base ~ /^(bigfile\.big|kart\.hwl|ctr-settings\.cfg|ctr-data\.cfg|ctr-view\.cfg|alphamaker\.ini|track-ids\.tsv|cups\.txt)$/) print "BAD\t" path "\tgame file or user settings"
 		# docs/assets holds the README banner and nothing else: SVG drawings
 		# only, never a picture, sound or anything from the game.
@@ -74,11 +108,11 @@ while read local_ref local_sha remote_ref remote_sha; do
 			p = "/" lower
 			if (p ~ /\/(assets|tracks|tracks_archive|testdata|memcards|debug|logs|dist|concept|characters|vorschau)\//) print "BAD\t" path "\tforbidden folder"
 			if (p ~ /\/(messung-|baseline-)/ || p ~ /\/(test-bats|build|out)\// || p ~ /\/build-[^\/]*\//) print "BAD\t" path "\tmeasurement, reference or build folder"
-			if (base ~ /\.(png|jpg|jpeg|gif|webp|ico|icns|wav|ogg|mp3|flac|mp4|avi)$/) print "BAD\t" path "\tpicture/sound outside externals/SDL"
+			if (base ~ /\.(mp4|avi)$/) print "BAD\t" path "\tvideo outside externals/SDL"
 		}
 		if (size > limit) print "BAD\t" path "\tlarger than 5 MB (" size " bytes)"
 		if ((size "") in known) print "HASH\t" path "\t" sha
-	}' >> "$tmp.found"
+	}' "$tmp.files" >> "$tmp.found" || refuse "cannot check the list of files"
 done
 
 # Hash only the blobs whose size matches a known game file.
@@ -92,9 +126,9 @@ if grep -q '^BAD' "$tmp.found"; then
 	echo "pre-push: PUSH REFUSED - forbidden content:" >&2
 	grep '^BAD' "$tmp.found" | cut -f2- | sed 's/\t/: /; s/^/  /' >&2
 	echo "pre-push: nothing was sent. Remove the files from history before pushing." >&2
-	rm -f "$tmp" "$tmp.list" "$tmp.found"
+	cleanup
 	exit 1
 fi
-rm -f "$tmp" "$tmp.list" "$tmp.found"
+cleanup
 echo "pre-push: content check passed" >&2
 exit 0

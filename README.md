@@ -42,7 +42,9 @@ without an emulator, and plays custom tracks next to the original ones.
 > [!IMPORTANT]
 > You need **your own disc image** of the game, NTSC-U (SCUS-94426), as
 > `.cue`/`.bin`. This repository and its releases contain **no game data**: no
-> disc image, no extracted files, no models, textures, music or tracks.
+> disc image, no extracted files, no models, textures, music or tracks. Apart
+> from the bundled SDL library, they hold no 3D models, voices, sound effects
+> or images made by other people either.
 
 > [!WARNING]
 > This is a **pre-release** for testing. Expect bugs - and please

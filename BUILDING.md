@@ -109,8 +109,8 @@ that both carry the same build ID, and writes
 - `<name>-source.zip`: the source code of the packaged commit
 
 The script refuses a tree with uncommitted changes (`--allow-dirty` makes a
-trial package anyway) and refuses to package anything that looks like game
-data.
+trial package anyway) and refuses to package a file type that
+`tools/content_guard.py` refuses or anything else that looks like game data.
 
 ## Automatic builds
 
@@ -126,8 +126,10 @@ data.
 - `.github/workflows/guard.yml` (check `content-guard`): every push and every
   pull request runs `tools/content_guard.py`, which checks every commit in the
   history of the checked-out commit, the whole tree of each: it fails on game
-  data file types and on binary files larger than 1 MB. The same check by
-  hand: `python tools/content_guard.py --history HEAD`.
+  data file types, on 3D model, audio, picture and archive file types and on
+  binary files larger than 1 MB. The only exceptions are the pictures and
+  sounds of `externals/SDL`, listed in the script by path and blob id. The
+  same check by hand: `python tools/content_guard.py --history HEAD`.
 
 ## Before you commit and push
 
@@ -140,5 +142,9 @@ Enable the hooks once per clone:
   the person-name and local-folder checks, list the names (one per line) and
   your checkout folder (`path <folder>`) in `tools/lang_check_names.local.txt`
   (untracked, it stays on your machine).
-- `pre-push` refuses pushes that contain game data, third-party content or
-  files larger than 5 MB.
+- `pre-push` runs the rules of `tools/content_guard.py` on every commit the
+  push would send and also refuses logs, game files and settings by name,
+  forbidden folders, files larger than 5 MB and known game files by SHA-256.
+  It recognizes game data and content by other people only by file type,
+  name, folder, size and these hashes, not by what a file contains. It needs
+  Python, like the other hooks.

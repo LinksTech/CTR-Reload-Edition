@@ -3,15 +3,17 @@
 # Every push (any branch or tag) and every pull request: tools/content_guard.py
 # checks the whole history of the checked-out commit - the pushed commit, or
 # for a pull request the merge commit into its base - and fails on game data
-# file types and on binary files larger than 1 MB in any commit. The rules are
-# in the script.
+# file types, on 3D model, audio, picture and archive file types and on binary
+# files larger than 1 MB in any commit. The only exceptions are the SDL files
+# that the script lists by path and blob id. The rules are in the script.
 #
 # One check name, content-guard, for push and pull request: both check the
 # whole history, so a later commit that deletes a file never makes it pass,
 # and a direct push gets the same check as a pull request.
 #
 # This check comes after the fact: the commits are already on GitHub when it
-# runs. tools/git-hooks/pre-push stops game data before it leaves the machine.
+# runs. tools/git-hooks/pre-push runs the same rules (and more) before anything
+# leaves the machine.
 #
 # Security notes (as in build.yml):
 # - Read-only token, no secrets, no pull_request_target trigger.

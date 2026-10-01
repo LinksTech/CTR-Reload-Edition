@@ -8,7 +8,8 @@ body:
         Thanks for reporting! One issue per problem, please.
 
         **Issues are public.** Never attach disc images, the `assets` folder,
-        memory cards or any other files from the game. Screenshots are fine.
+        memory cards or any other files from the game, nor 3D models, voices,
+        sound effects or images made by other people. Screenshots are fine.
         Logs contain folder paths with your Windows user name - edit them out
         if you mind.
 
@@ -82,7 +83,8 @@ body:
         box. If the Alpha-Maker started the game, add the newest `game-test`
         or `game-preview` log from `%TEMP%\CTR Reload Alpha-Maker` too. If it
         is about the picture, add a screenshot (F12 in the game). Issues are
-        public: do not attach disc images or any files from the game.
+        public: do not attach disc images, any files from the game or content
+        made by other people.
 
   - type: input
     id: windows
@@ -114,5 +116,5 @@ body:
       label: Before you send it
       options:
         - label: I searched the open issues, and this is one problem.
-        - label: I attached no disc images, `assets` files, memory cards or other game data.
+        - label: I attached no disc images, `assets` files, memory cards or other game data, and no content made by other people.
           required: true

@@ -11,7 +11,7 @@
 ## Checklist
 
 - [ ] This pull request targets `dev`.
-- [ ] It adds no game data (disc images, extracted files, data tables copied from the game, files in game formats, containers, patches, memory cards, screenshots or recordings with game content, logs with game data) and no tracks, music, characters, textures or fonts by other people.
+- [ ] It adds no game data (disc images, extracted files, data tables copied from the game, files in game formats, containers, patches, memory cards, screenshots or recordings with game content, logs with game data) and no tracks, music, characters, textures, fonts, 3D models, voices, sound effects or images made by other people.
 - [ ] Code, comments, commit messages and this text are in English (`python tools/lang_check.py` is clean).
 - [ ] It covers one topic.
 - [ ] `build-msvc.bat` builds with 0 warnings and all self-tests pass.

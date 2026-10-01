@@ -2,8 +2,9 @@
 #
 # This repository contains source code only. It never contains data from the
 # game (disc images, extracted files, models, textures, sounds, tracks) or
-# content made by other people (custom tracks, music, characters).
-# tools/git-hooks/pre-push enforces the same rules at push time:
+# content made by other people (custom tracks, music, characters, 3D models,
+# voices, sound effects, images). tools/content_guard.py checks the same on
+# GitHub, and tools/git-hooks/pre-push at push time:
 #   git config core.hooksPath tools/git-hooks
 
 # --- Game data: disc images and extracted files --------------------------
@@ -19,6 +20,7 @@
 *.nrg
 *.ccd
 *.sub
+*.toc
 *.big
 *.hwl
 *.xa
@@ -72,6 +74,7 @@ memcards/
 *.sav
 *.ctrstates
 *.state
+*.ctrreplay
 debug/
 logs/
 *.log
@@ -89,6 +92,80 @@ VRAM.TGA
 SCREENSHOT.BMP
 /*.png
 /*.jpg
+
+# --- 3D models, audio, pictures and archives (often by other people) -----
+# The types that tools/content_guard.py refuses (a test generates its files
+# in code). Files that git already tracks stay tracked. In externals/SDL,
+# the bundled copy of SDL, the types of its own pictures and sounds are not
+# ignored: an SDL update that brings a new one shows up as untracked instead
+# of being left out without a word, and the guard refuses it until ALLOWED
+# in tools/content_guard.py lists it with its blob id.
+*.ply
+*.obj
+*.fbx
+*.blend
+*.blend1
+*.glb
+*.gltf
+*.dae
+*.3ds
+*.stl
+*.abc
+*.usd
+*.usda
+*.usdc
+*.usdz
+*.x3d
+*.ma
+*.mb
+*.max
+*.c4d
+*.lwo
+*.pmx
+*.pmd
+*.md2
+*.md3
+*.smd
+*.wav
+*.mp3
+*.ogg
+*.flac
+*.aif
+*.aiff
+*.m4a
+*.opus
+*.wma
+*.mid
+*.midi
+*.psf
+*.psf2
+*.minipsf
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.bmp
+*.tga
+*.ppm
+*.tif
+*.tiff
+*.dds
+*.psd
+*.ico
+*.icns
+*.zip
+*.rar
+*.7z
+*.tar
+*.gz
+*.tgz
+*.bz2
+*.xz
+!/externals/SDL/**/*.png
+!/externals/SDL/**/*.webp
+!/externals/SDL/**/*.wav
+!/externals/SDL/**/*.icns
 
 # --- Measurement and reference runs (screenshots of the game) ------------
 messung-*/
