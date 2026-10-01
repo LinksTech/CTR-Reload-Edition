@@ -1276,10 +1276,13 @@ internal void DebugMenu_MenuKeysTick(void)
 //  entry the run ends through Platform_QuitGame, the door --menu-keys-quit uses.
 #define DBG_TOUR_MAX           64
 #define DBG_TOUR_RETAIL_RACES  18 // level ids 0..17, include/namespace_Level.h
-// How long one entry may take to come up - from the menu to the first race
-// frame, or from the race back to the menu - before the tour gives up: two
-// minutes of VBlanks. A tour that hangs on one track ends with a line that
-// names it, rather than running until somebody notices.
+// How long the tour may go without progress - the main menu up, a track
+// started, a race frame counted - before it gives up: two minutes of VBlanks.
+// A tour that hangs ends with a line that says where, rather than running until
+// somebody notices. Watched at the end of every frame by the platform
+// (Platform_SetDeadline), not here: this function does not run while the game
+// loads (MainMain.c, the game logic is skipped while LOADING is set), and a
+// watch that sleeps exactly when a load hangs is no watch.
 #define DBG_TOUR_WAIT_VBLANKS  7200
 
 enum
@@ -1312,9 +1315,8 @@ global_variable int s_tourDriven = 0;
 global_variable int s_tourPos = 0;
 global_variable int s_tourFrames = 0;
 global_variable int s_tourLevel = -1;   // the level id the current entry was started on
-global_variable int s_tourSawOut = 0;   // the current entry has been seen out of the race once
-global_variable int s_tourSince = 0;    // VBlank at which the current wait began
 global_variable int s_tourPhase = DBG_TOUR_PHASE_READ;
+global_variable int s_tourWatched = 0; // the deadline has been set once
 
 internal void DebugMenu_TourAdd(int level, int trackIndex, int mode)
 {
@@ -1621,17 +1623,45 @@ internal void DebugMenu_TourStop(const char *why)
 	Platform_QuitGame("--level-tour stopped");
 }
 
+// Called by the platform at the end of a frame in which the deadline passed.
+// What the tour was waiting for follows from its phase.
+internal void DebugMenu_TourMissed(void)
+{
+	if (s_tourPhase == DBG_TOUR_PHASE_READ)
+	{
+		DebugMenu_TourStop("the main menu did not come up");
+	}
+	else if (s_tourPhase == DBG_TOUR_PHASE_MENU)
+	{
+		DebugMenu_TourStop("the main menu did not come back");
+	}
+	else if (s_tourPhase == DBG_TOUR_PHASE_DRIVING)
+	{
+		DebugMenu_TourStop((s_tourFrames == 0) ? "the race did not come up" : "the race did not come back");
+	}
+	else if (s_tourPhase == DBG_TOUR_PHASE_QUIT)
+	{
+		// Done, but the frame that was to end the run never came.
+		s_tourPhase = DBG_TOUR_PHASE_OFF;
+		Platform_QuitGame("--level-tour");
+	}
+}
+
+// Progress: the watch starts over from this VBlank.
+internal void DebugMenu_TourProgress(int now)
+{
+	Platform_SetDeadline(now + DBG_TOUR_WAIT_VBLANKS, DebugMenu_TourMissed);
+}
+
 // In the menu: start the next entry once the main menu is up. 1 = started.
 internal int DebugMenu_TourMenuStep(struct GameTracker *gGT, int now, int menuUp)
 {
 	if (!menuUp)
 	{
-		if ((now - s_tourSince) > DBG_TOUR_WAIT_VBLANKS)
-		{
-			DebugMenu_TourStop("the main menu did not come back");
-		}
 		return 0;
 	}
+
+	DebugMenu_TourProgress(now);
 
 	if (!DebugMenu_TourStart(gGT))
 	{
@@ -1644,8 +1674,6 @@ internal int DebugMenu_TourMenuStep(struct GameTracker *gGT, int now, int menuUp
 
 	s_tourPhase = DBG_TOUR_PHASE_DRIVING;
 	s_tourFrames = 0;
-	s_tourSawOut = 0;
-	s_tourSince = now;
 	return 1;
 }
 
@@ -1685,47 +1713,41 @@ internal void DebugMenu_TourFinish(struct GameTracker *gGT, int now, int leftByI
 	}
 
 	s_tourPhase = DBG_TOUR_PHASE_MENU;
-	s_tourSince = now;
+	DebugMenu_TourProgress(now);
 }
 
 // On the road: count race frames, and after the last one finish the entry.
 //
-// Counted only after the entry has been out of a race once - the frame of the
-// start is still the menu, and a frame that still draws the old level under the
-// flag must not count for the new one. A demo is not a race (inRace says so).
+// No "seen out of the race first" gate. It was meant to keep frames of the old
+// level under the flag from counting, but this function never sees those: the
+// game logic, and with it DebugMenu_Frame, is skipped while LOADING is set
+// (MainMain.c, `if ((gGT->gameMode1 & LOADING) == 0)` around
+// MainFrame_GameLogic), and when the flag already covers the menu at the start,
+// the next call is the first race frame - the gate never opened and nothing
+// was counted. It is not needed either: every entry starts from the main menu,
+// and until the new level is loaded either MAIN_MENU is set or Loading.stage is
+// not idle (MainRaceTrack_RequestLoad sets LOAD_REQUESTED in the frame of the
+// start), so inRace cannot be true for the old level. A demo is not a race.
 //
 // Once counting has begun, the main menu or a demo means the game left the race
 // by itself (a crystal time limit, an end box that went on): the entry ends
-// there, with its own line. Any other gap - a load, a restart - is waited for,
-// and the wait is measured from the last race frame.
+// there, with its own line. Any other gap - a load, a restart - is waited for;
+// the deadline runs from the last race frame.
 internal void DebugMenu_TourDriveStep(struct GameTracker *gGT, int now, int inRace)
 {
 	extern int g_cfg_levelTourFrames;
 
 	if (!inRace)
 	{
-		s_tourSawOut = 1;
-
 		if ((s_tourFrames > 0) && (((gGT->gameMode1 & MAIN_MENU) != 0) || (gGT->boolDemoMode != 0)))
 		{
 			DebugMenu_TourFinish(gGT, now, 1);
-			return;
 		}
-
-		if ((now - s_tourSince) > DBG_TOUR_WAIT_VBLANKS)
-		{
-			DebugMenu_TourStop((s_tourFrames == 0) ? "the race did not come up" : "the race did not come back");
-		}
-		return;
-	}
-
-	if (!s_tourSawOut)
-	{
 		return;
 	}
 
 	s_tourFrames++;
-	s_tourSince = now;
+	DebugMenu_TourProgress(now);
 
 	if (s_tourFrames >= g_cfg_levelTourFrames)
 	{
@@ -1741,8 +1763,8 @@ internal int DebugMenu_TourTick(struct GameTracker *gGT)
 	extern char g_cfg_levelTour[1024];
 	const int now = Platform_GetVBlankCount();
 	const int menuUp = ((gGT->gameMode1 & MAIN_MENU) != 0) && (sdata->ptrActiveMenu != NULL) && (sdata->Loading.stage == LOAD_IDLE);
-	const int inRace = ((gGT->gameMode1 & MAIN_MENU) == 0) && (gGT->boolDemoMode == 0) && (sdata->Loading.stage == LOAD_IDLE) &&
-	                   (sdata->load_inProgress == 0);
+	const int inRace = ((gGT->gameMode1 & MAIN_MENU) == 0) && (gGT->levelID != MAIN_MENU_LEVEL) && (gGT->boolDemoMode == 0) &&
+	                   (sdata->Loading.stage == LOAD_IDLE) && (sdata->load_inProgress == 0);
 	int started = 0;
 
 	if ((g_cfg_levelTour[0] == '\0') || (s_tourPhase == DBG_TOUR_PHASE_OFF))
@@ -1752,6 +1774,13 @@ internal int DebugMenu_TourTick(struct GameTracker *gGT)
 
 	if (s_tourPhase == DBG_TOUR_PHASE_READ)
 	{
+		// The watch starts with the first game frame of the run.
+		if (!s_tourWatched)
+		{
+			s_tourWatched = 1;
+			DebugMenu_TourProgress(now);
+		}
+
 		if (!menuUp)
 		{
 			return 0;
@@ -1759,7 +1788,7 @@ internal int DebugMenu_TourTick(struct GameTracker *gGT)
 
 		DebugMenu_TourRead();
 		s_tourPhase = DBG_TOUR_PHASE_MENU;
-		s_tourSince = now;
+		DebugMenu_TourProgress(now);
 	}
 
 	if ((s_tourPhase == DBG_TOUR_PHASE_MENU) && (s_tourPos >= s_tourCount))
@@ -1773,6 +1802,7 @@ internal int DebugMenu_TourTick(struct GameTracker *gGT)
 	if (s_tourPhase == DBG_TOUR_PHASE_QUIT)
 	{
 		s_tourPhase = DBG_TOUR_PHASE_OFF;
+		Platform_SetDeadline(-1, NULL);
 		Platform_QuitGame("--level-tour");
 	}
 	else if (s_tourPhase == DBG_TOUR_PHASE_MENU)

@@ -112,6 +112,11 @@ void Platform_DumpStateAt(int saveAt, int loadAt);
 // One VRAM dump at the end of the current frame, <--dump-prefix>-<name>.tga,
 // for a moment no VBlank list can name in advance (--level-tour).
 void Platform_DumpRequest(const char *name);
+
+// A deadline in VBlanks for a run that drives itself: passed before it is
+// moved on, onMissed is called at the end of that frame (and ends the run).
+// Checked every frame, also while a level loads. -1 or NULL clears it.
+void Platform_SetDeadline(int vblank, void (*onMissed)(void));
 #endif
 void Platform_PresentVRAMDisplay(void);
 void Platform_PinVRAMDisplayFrames(int frameCount);

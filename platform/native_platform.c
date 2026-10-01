@@ -1824,6 +1824,34 @@ void Platform_DumpRequest(const char *name)
 	snprintf(s_dumpRequestName, sizeof(s_dumpRequestName), "%s", name);
 }
 
+// A deadline for a run that drives itself (--level-tour): when the VBlank count
+// passes it before the caller has moved it on, onMissed is called at the end of
+// that frame, and is expected to end the run with a line that says why. Here and
+// not in the game logic, because the game logic does not run while a level
+// loads - a watch that sleeps exactly when a load hangs is no watch. -1 clears.
+global_variable int s_deadlineVBlank = -1;
+global_variable void (*s_deadlineMissed)(void);
+
+void Platform_SetDeadline(int vblank, void (*onMissed)(void))
+{
+	s_deadlineVBlank = (onMissed != NULL) ? vblank : -1;
+	s_deadlineMissed = onMissed;
+}
+
+internal void Platform_DeadlineIfDue(void)
+{
+	void (*missed)(void) = s_deadlineMissed;
+
+	if ((s_deadlineVBlank < 0) || (missed == NULL) || (Platform_GetVBlankCount() <= s_deadlineVBlank))
+	{
+		return;
+	}
+
+	s_deadlineVBlank = -1;
+	s_deadlineMissed = NULL;
+	missed();
+}
+
 // Anchoring on the VBlank count alone turned out not to be enough.
 //
 // The count fixes how much game time has passed since the process started, and
@@ -2095,6 +2123,7 @@ void Platform_EndFrame(void)
 	NativePreview_EndFrame(); // --record-preview (platform/native_preview.c)
 	Platform_MsaaSwitchIfDue();
 	Platform_DumpIfDue();
+	Platform_DeadlineIfDue(); // after the dump: a run that ends here keeps it
 #endif
 	// Behind everything a frame still costs: the disturbance delay and the
 	// line of the frame log (--inject-delay, --frame-log; at the VBlank clock).
