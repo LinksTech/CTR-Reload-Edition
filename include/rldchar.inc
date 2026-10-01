@@ -46,7 +46,7 @@
 #define RLDCHAR_HEADER_FLAGS_KNOWN 0u
 #define RLDCHAR_LIMIT_CHRI (4u * 1024u)
 #define RLDCHAR_LIMIT_CMDL (256u * 1024u)
-#define RLDCHAR_LIMIT_CICN (4u * 1024u)    // known type, not written yet
+#define RLDCHAR_LIMIT_CICN (4u * 1024u)    // the portrait, exactly RLDCHAR_ICON_BYTES (CICN-3)
 #define RLDCHAR_LIMIT_CPRM (4u * 1024u)    // known type, not written yet
 #define RLDCHAR_INFO_FIXED_SIZE 0x1Cu
 #define RLDCHAR_NAME_FIELD 20
@@ -94,8 +94,9 @@ static u64 RldChar_ChunkLimit(const u8 *type)
 	return 0;
 }
 
-// KNOWN, NOT WRITTEN YET: CICN (portrait) and CPRM (values) have a size limit
-// above; rldpack does not write them and nothing interprets their content yet.
+// OPTIONAL: CICN (portrait, RldChar_CheckIcon below) is written by rldpack
+// make-char --icon; the game does not show it yet. CPRM (values) has a size
+// limit above, but rldpack does not write it and nothing interprets it yet.
 // RESERVED NAMES: CVOI (voices) and CTEX (texture data) are planned; until then
 // they have no limit here and are skipped like any unknown chunk.
 
@@ -301,6 +302,62 @@ static const char *RldChar_ParseInfo(struct RldCharInfo *out, const u8 *bytes, s
 		}
 
 		at += length;
+	}
+
+	return NULL;
+}
+
+//========================================================================================
+// CICN - THE PORTRAIT
+//========================================================================================
+//
+// 0x00 u16 version      1
+// 0x02 u16 depth        4 (bits per texel)
+// 0x04 u16 width        44
+// 0x06 u16 height       26
+// 0x08 u16[16] clut     RGB555 + STP bit; 0x0000 is transparent (the PS1 rule),
+//                       so black is written as 0x0421
+// 0x28 u16[26][11]      the texel words exactly as they lie in VRAM: 4 bits per
+//                       texel, the lowest nibble is the leftmost texel
+//
+// 612 bytes, nothing else: the retail portrait format (44 wide, game/222.c:497-500;
+// 26 high, game/native_uidecl.c:366). A broken CICN never refuses the file -
+// the game shows the template's portrait instead. Another depth or size would
+// come as version 2, which an older reader drops the same way.
+
+#define RLDCHAR_ICON_VERSION 1u
+#define RLDCHAR_ICON_DEPTH 4u
+#define RLDCHAR_ICON_WIDTH 44u
+#define RLDCHAR_ICON_HEIGHT 26u
+#define RLDCHAR_ICON_COLORS 16u
+#define RLDCHAR_ICON_WORDS_AT 0x28u                        // offset of the texel words
+#define RLDCHAR_ICON_ROW_WORDS (RLDCHAR_ICON_WIDTH / 4u)   // 11
+#define RLDCHAR_ICON_BYTES (RLDCHAR_ICON_WORDS_AT + 2u * RLDCHAR_ICON_ROW_WORDS * RLDCHAR_ICON_HEIGHT)   // 612
+#define RLDCHAR_ICON_TRANSPARENT 0x0000u
+#define RLDCHAR_ICON_BLACK 0x0421u
+
+// CICN-1..3. NULL = usable, else a fixed text that starts with the rule; the
+// caller drops only the portrait. Size first: below 8 bytes there is no header.
+static const char *RldChar_CheckIcon(const u8 *bytes, size_t size)
+{
+	if ((bytes == NULL) || (size < 8u))
+	{
+		return "CICN-3: CICN is not 612 bytes";
+	}
+
+	if ((Rld_ReadLE16(&bytes[0x00]) != RLDCHAR_ICON_VERSION) || (Rld_ReadLE16(&bytes[0x02]) != RLDCHAR_ICON_DEPTH))
+	{
+		return "CICN-1: CICN is not version 1 with 4 bits per texel";
+	}
+
+	if ((Rld_ReadLE16(&bytes[0x04]) != RLDCHAR_ICON_WIDTH) || (Rld_ReadLE16(&bytes[0x06]) != RLDCHAR_ICON_HEIGHT))
+	{
+		return "CICN-2: the portrait is not 44 x 26";
+	}
+
+	if (size != (size_t)RLDCHAR_ICON_BYTES)
+	{
+		return "CICN-3: CICN is not 612 bytes";
 	}
 
 	return NULL;

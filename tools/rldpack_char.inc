@@ -9,13 +9,15 @@
 //
 // "RB" below is game/RenderBucket/RenderBucket_QueueExecute.c.
 //
-// THE CHAIN, one step after the other. Step 14, the portrait chunk CICN, and the
-// values chunk CPRM are not written yet - both chunks are optional:
+// THE CHAIN, one step after the other. The values chunk CPRM is not written
+// yet; CICN only with --icon - both chunks are optional:
 //
 //    1  read the PLY: ascii 1.0 or binary_little_endian 1.0
 //    2  faces -> triangles: quads split at the shorter diagonal, n-gons refused
 //    3  weld the corners to positions (1e-5); the color stays per corner
 //    4  parts: kart (required), driver, steering wheel
+//    4a --size: driver and steering wheel scaled about the hip, the kart not;
+//       the size checks of step 4 and 5 run on the result
 //    5  axes and scale -> game units: +Y up, +Z forward, 64 per Blender unit
 //    6  draw memory per frame: 28 bytes per untextured triangle
 //    7  colors -> a palette of 64 (or 128)
@@ -23,9 +25,14 @@
 //    9  quantization: one byte per axis, the up axis on even values
 //   10  command list: strips and fans, the vertex cache, cull bits per triangle
 //   11  raw frames, 12 model and header, 13 pointer map -> the CMDL chunk
+//   14  --icon: a PNG (include/rldpng.inc) -> the portrait CICN, 44 x 26, 16 colors
 //   15  the game's own check (RldChar_CheckModel), read back by the renderer's
 //       rule, the cull side replayed per triangle, built twice
-//   16  CHRI + CMDL -> .rldchar through the shared envelope
+//   16  CHRI + CMDL (+ CICN) -> .rldchar through the shared envelope
+//
+// BESIDE THE CHAIN, for Reload Studio: --voices only checks a folder of voice
+// lines (nothing is packed yet), --preview writes the built model as the game
+// draws it, --icon-preview the portrait before and after as BMP.
 //
 // DETERMINISM. The same input gives the same bytes: no time, no random numbers,
 // every sort has a complete tie-break, and floating point only enters through
@@ -127,6 +134,15 @@
 #define RLDMK_KART_LENGTH_MAX 2.5
 #define RLDMK_DRIVER_LENGTH 1.8
 #define RLDMK_WHEEL_EXTENT 0.6    // the steering wheel: a small part in front of the driver
+
+// The retail kart in game units, for the size reference of Reload Studio
+// (@value retail-kart): 112 long, 56 wide, its bottom 6 above the ground,
+// taken as centered on x = 0 and z = 0. The height goes up to the seat line
+// (hip y 16, RLDMK_HIP_Y); the retail kart's own height is not measured.
+#define RLDMK_RETAIL_KART_LENGTH 112
+#define RLDMK_RETAIL_KART_WIDTH 56
+#define RLDMK_RETAIL_KART_BOTTOM 6
+#define RLDMK_RETAIL_KART_TOP 16   // = RLDMK_HIP_Y
 
 struct RldMkTemplate
 {
@@ -262,6 +278,20 @@ static void RldMk_Fact(const char *key, const char *format, ...)
 	vsnprintf(text, sizeof(text), format, list);
 	va_end(list);
 	Rld_Emit("char", key, text, (const char *)NULL);
+}
+
+// @file <kind> <state> <name> <bytes> - not while the self-test runs quietly.
+static void RldMk_EmitFile(const char *kind, const char *state, const char *name, size_t bytes)
+{
+	char number[24];
+
+	if (!s_machine || s_rldMkQuiet)
+	{
+		return;
+	}
+
+	snprintf(number, sizeof(number), "%llu", (unsigned long long)bytes);
+	Rld_Emit("file", kind, state, name, number, (const char *)NULL);
 }
 
 //========================================================================================
@@ -1116,6 +1146,7 @@ struct RldMkOptions
 	double scale;     // --scale
 	int twoSided;     // --two-sided: no back face culling
 	int still;        // --poses still
+	u32 sizePercent;  // --size: driver and steering wheel, 100 (or 0) = as exported
 };
 
 struct RldMkPart
@@ -1154,6 +1185,9 @@ struct RldMkBuild
 	u32 groupTriangles[RLDMK_GROUPS];
 	int posed;                 // the automatic poses were made
 	double size[4];            // length, width (kart), height, bottom - Blender units
+	double exported[4];        // the same before --size (ply-axes)
+	u32 sizeLow;               // --size: the percentages this model takes, 0 0 = none
+	u32 sizeHigh;
 
 	// the 47 frames: RLDMK_FRAMES_TOTAL x positionCount x 3, game units
 	double *frame;
@@ -1800,30 +1834,7 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 		}
 	}
 
-	// Size, centering (step 5), in Blender units.
-	b->size[0] = length;
-	b->size[1] = (b->parts[best].hi[0] - b->parts[best].lo[0]) / RLDMK_UNITS;
-	b->size[2] = (hi[1] - lo[1]) / RLDMK_UNITS;
-	b->size[3] = lo[1] / RLDMK_UNITS;
-
-	if ((b->size[0] < RLDMK_KART_LENGTH_MIN) || (b->size[0] > RLDMK_KART_LENGTH_MAX) || (b->size[1] < 0.8) || (b->size[1] > 1.0) || (b->size[2] < 0.6) ||
-	    (b->size[2] > 2.7) || (b->size[3] < RLDMK_KART_BOTTOM_MIN) || (b->size[3] > RLDMK_KART_BOTTOM_MAX))
-	{
-		RldMk_Say("warning", "ply-axes", NULL,
-		          "The model is %.2f long, %.2f wide and %.2f tall and starts %.2f above the ground (Blender units). A driver with kart is about 1.8 long, 0.9 wide and 0.9-2.3 tall. Check scale and axes (+Y up, +Z forward).",
-		          b->size[0], b->size[1], b->size[2], b->size[3]);
-	}
-
-	{
-		const double center = 0.5 * (b->parts[best].lo[0] + b->parts[best].hi[0]) / RLDMK_UNITS;
-
-		if ((center > 0.08) || (center < -0.08))
-		{
-			RldMk_Say("warning", "ply-center", NULL, "The model is %.2f Blender units off-center to the side. Center the kart on x = 0.",
-			          (center < 0.0) ? -center : center);
-		}
-	}
-
+	// Size and centering (step 5) follow in RldMk_StepMeasure, after --size.
 	return 1;
 }
 
@@ -1860,7 +1871,7 @@ static int RldMk_StepBudget(struct RldMkBuild *b, const struct RldMkOptions *opt
 	else if (b->openEdges != 0u)
 	{
 		RldMk_Say("note", "ply-open-edges", NULL,
-		          "The mesh has %u open edges; you may see through it from some sides. Close the holes or tick 'Draw both sides'.", b->openEdges);
+		          "The mesh has %u open edges; you may see through it from some sides. Close the holes in the model (rldpack make-char --two-sided draws both sides).", b->openEdges);
 	}
 
 	return 1;
@@ -1955,22 +1966,26 @@ static void RldMk_FramePose(u32 frame, struct RldMkPose *pose)
 	}
 }
 
-static void RldMk_ApplyPose(const struct RldMkPose *pose, const double in[3], double out[3])
+// The sines and cosines of a pose: pitch, yaw, roll.
+static void RldMk_PoseTrig(const struct RldMkPose *pose, double trig[6])
 {
-	double sp;
-	double cp;
-	double sy;
-	double cy;
-	double sr;
-	double cr;
+	RldMk_SinCos(pose->pitch, &trig[0], &trig[1]);
+	RldMk_SinCos(pose->yaw, &trig[2], &trig[3]);
+	RldMk_SinCos(pose->roll, &trig[4], &trig[5]);
+}
+
+static void RldMk_ApplyPoseTrig(const struct RldMkPose *pose, const double trig[6], const double in[3], double out[3])
+{
+	const double sp = trig[0];
+	const double cp = trig[1];
+	const double sy = trig[2];
+	const double cy = trig[3];
+	const double sr = trig[4];
+	const double cr = trig[5];
 	double x = in[0];
 	double y = (in[1] - RLDMK_HIP_Y) * pose->stretch;
 	double z = in[2];
 	double t;
-
-	RldMk_SinCos(pose->pitch, &sp, &cp);
-	RldMk_SinCos(pose->yaw, &sy, &cy);
-	RldMk_SinCos(pose->roll, &sr, &cr);
 
 	// pitch about X: the top toward +Z
 	t = y * cp - z * sp;
@@ -1990,6 +2005,14 @@ static void RldMk_ApplyPose(const struct RldMkPose *pose, const double in[3], do
 	out[0] = x;
 	out[1] = y + RLDMK_HIP_Y;
 	out[2] = z;
+}
+
+static void RldMk_ApplyPose(const struct RldMkPose *pose, const double in[3], double out[3])
+{
+	double trig[6];
+
+	RldMk_PoseTrig(pose, trig);
+	RldMk_ApplyPoseTrig(pose, trig, in, out);
 }
 
 static int RldMk_StepPoses(struct RldMkBuild *b)
@@ -2023,6 +2046,348 @@ static int RldMk_StepPoses(struct RldMkBuild *b)
 			{
 				RldMk_ApplyPose(&pose, neutral, out);
 			}
+		}
+	}
+
+	return 1;
+}
+
+//========================================================================================
+// STEP 4a: --size - THE DRIVER, LARGER OR SMALLER
+//========================================================================================
+//
+// p' = H + s x (p - H) for every position of the driver and the steering wheel,
+// H the hip (0, RLDMK_HIP_Y, 0) in game units - the point the poses turn
+// about. The kart keeps its size: the game draws the wheels as sprites at
+// fixed points of the kart (game/DrawTires.c:335-354), and physics and
+// collision follow the driving style, not the model. So the size is a look,
+// not a value: no field in the file, only the corners move.
+//
+// THE RANGE a model takes is worked out before: every check of the chain that
+// depends on the size, and only those. They are three; everything else
+// (triangles, records, vertex cache, frame size, draw memory, the model rules
+// other than model-coords) counts the same at any size:
+//   * model-scale: ModelHeader.scale is s16 per axis - the hull of all 47
+//     frames, (hi - lo) x 4096 / 255 (254 up), stays <= 32767 (step 9)
+//   * model-coords: ModelFrame.pos and pos + 255 stay in -8192..8191 (step 9, P10)
+//   * model-scale: the model stays within 5 times of 1.8 Blender units long (step 4)
+// The poses are rotations and a stretch about the same hip, so a posed driver
+// corner at size s is H + s x (its pose at 100 % - H): the hull of all frames
+// at any s follows from one pass over the frames at 100 %.
+
+#define RLDMK_SIZE_MIN 50u
+#define RLDMK_SIZE_MAX 200u
+#define RLDMK_SIZE_TEXT "visual size only - physics and collision follow the driving style"
+
+struct RldMkSizeHull
+{
+	int moves;          // there are driver or steering wheel corners
+	double kartLo[3];   // the kart, game units (the same in every frame)
+	double kartHi[3];
+	double lo[3];       // driver and steering wheel over all frames, relative to the hip
+	double hi[3];
+	double neutralLo;   // z of driver and steering wheel in the neutral pose, for the length
+	double neutralHi;
+};
+
+static void RldMk_SizeHull(const struct RldMkBuild *b, struct RldMkSizeHull *hull)
+{
+	u32 f;
+	u32 p;
+	int a;
+
+	memset(hull, 0, sizeof(*hull));
+	for (a = 0; a < 3; a++)
+	{
+		hull->kartLo[a] = 1.0e30;
+		hull->kartHi[a] = -1.0e30;
+		hull->lo[a] = 1.0e30;
+		hull->hi[a] = -1.0e30;
+	}
+	hull->neutralLo = 1.0e30;
+	hull->neutralHi = -1.0e30;
+
+	for (p = 0; p < b->positionCount; p++)
+	{
+		const double *v = &b->position[3u * p];
+
+		if (b->positionGroup[p] == RLDMK_GROUP_KART)
+		{
+			for (a = 0; a < 3; a++)
+			{
+				hull->kartLo[a] = (v[a] < hull->kartLo[a]) ? v[a] : hull->kartLo[a];
+				hull->kartHi[a] = (v[a] > hull->kartHi[a]) ? v[a] : hull->kartHi[a];
+			}
+		}
+		else
+		{
+			hull->moves = 1;
+			hull->neutralLo = (v[2] < hull->neutralLo) ? v[2] : hull->neutralLo;
+			hull->neutralHi = (v[2] > hull->neutralHi) ? v[2] : hull->neutralHi;
+		}
+	}
+
+	if (!hull->moves)
+	{
+		return;
+	}
+
+	// Without poses every frame is the neutral one: one pass is enough.
+	for (f = 0; f < (b->posed ? (u32)RLDMK_FRAMES_TOTAL : 1u); f++)
+	{
+		struct RldMkPose pose;
+		double trig[6];
+
+		RldMk_FramePose(f, &pose);
+		RldMk_PoseTrig(&pose, trig);
+
+		for (p = 0; p < b->positionCount; p++)
+		{
+			const double *neutral = &b->position[3u * p];
+			const int group = b->positionGroup[p];
+			double moved[3];
+
+			if (group == RLDMK_GROUP_KART)
+			{
+				continue;
+			}
+
+			if (!b->posed || ((group == RLDMK_GROUP_WHEEL) && !pose.wheel))
+			{
+				memcpy(moved, neutral, sizeof(moved));
+			}
+			else
+			{
+				RldMk_ApplyPoseTrig(&pose, trig, neutral, moved);
+			}
+
+			moved[1] -= RLDMK_HIP_Y;
+			for (a = 0; a < 3; a++)
+			{
+				hull->lo[a] = (moved[a] < hull->lo[a]) ? moved[a] : hull->lo[a];
+				hull->hi[a] = (moved[a] > hull->hi[a]) ? moved[a] : hull->hi[a];
+			}
+		}
+	}
+}
+
+// Does `percent` fit? 1 = yes; 0 = no, *why says which check (English, for the message).
+static int RldMk_SizeFits(const struct RldMkSizeHull *hull, u32 percent, char *why, size_t whySize)
+{
+	static const char *const axisNames[3] = {"wide", "tall", "long"};
+	static const double spans[3] = {255.0, 254.0, 255.0};
+	const double s = (double)percent / 100.0;
+	const double hip[3] = {0.0, RLDMK_HIP_Y, 0.0};
+	double length;
+	int a;
+
+	if (!hull->moves)
+	{
+		return 1;
+	}
+
+	for (a = 0; a < 3; a++)
+	{
+		const double driverLo = hip[a] + s * hull->lo[a];
+		const double driverHi = hip[a] + s * hull->hi[a];
+		const double lo = (driverLo < hull->kartLo[a]) ? driverLo : hull->kartLo[a];
+		const double hi = (driverHi > hull->kartHi[a]) ? driverHi : hull->kartHi[a];
+		const double needed = RldMk_Ceil((hi - lo) * 4096.0 / spans[a]);
+		int scale;
+		int origin;
+		double low;
+
+		// as step 9 (RldMk_StepQuantize)
+		if (needed > 32767.0)
+		{
+			snprintf(why, whySize, "the model would be %.1f Blender units %s, more than the game's 16-bit model scale holds", (hi - lo) / RLDMK_UNITS,
+			         axisNames[a]);
+			return 0;
+		}
+
+		scale = (needed < 1.0) ? 1 : (int)needed;
+		low = lo * 4096.0 / (double)scale;
+		origin = (a == 1) ? (2 * (int)RldMk_Round(low / 2.0)) : (int)RldMk_Round(low);
+		if ((origin < RLDCHAR_COORD_MIN) || ((origin + RLDCHAR_RECORD_SPAN) > RLDCHAR_COORD_MAX))
+		{
+			snprintf(why, whySize, "the model would leave the game's coordinate range");
+			return 0;
+		}
+	}
+
+	// as step 4 (RldMk_StepParts): the whole model in the neutral pose
+	{
+		const double driverLo = s * hull->neutralLo;
+		const double driverHi = s * hull->neutralHi;
+		const double lo = (driverLo < hull->kartLo[2]) ? driverLo : hull->kartLo[2];
+		const double hi = (driverHi > hull->kartHi[2]) ? driverHi : hull->kartHi[2];
+
+		length = (hi - lo) / RLDMK_UNITS;
+		if ((length < (RLDMK_DRIVER_LENGTH / 5.0)) || (length > (RLDMK_DRIVER_LENGTH * 5.0)))
+		{
+			snprintf(why, whySize, "the model would be %.2f Blender units long; a character is %.2f to %.2f long", length, RLDMK_DRIVER_LENGTH / 5.0,
+			         RLDMK_DRIVER_LENGTH * 5.0);
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
+static int RldMk_StepSize(struct RldMkBuild *b, const struct RldMkOptions *opt)
+{
+	const u32 percent = (opt->sizePercent != 0u) ? opt->sizePercent : 100u;
+	struct RldMkSizeHull hull;
+	char why[160];
+	u32 low = 0;
+	u32 high = 0;
+	u32 p;
+	double s;
+
+	// The measures as exported, for ply-axes in RldMk_StepMeasure (the same
+	// formulas as b->size there).
+	{
+		double lo[3];
+		double hi[3];
+
+		RldMk_Bounds(b, -1, lo, hi);
+		b->exported[0] = (hi[2] - lo[2]) / RLDMK_UNITS;
+		b->exported[1] = (b->parts[b->kartPart].hi[0] - b->parts[b->kartPart].lo[0]) / RLDMK_UNITS;
+		b->exported[2] = (hi[1] - lo[1]) / RLDMK_UNITS;
+		b->exported[3] = lo[1] / RLDMK_UNITS;
+	}
+
+	// THE RANGE: the run of fitting percentages around 100 (or the first run
+	// when 100 itself does not fit). Every percentage is checked on its own below.
+	RldMk_SizeHull(b, &hull);
+	if (RldMk_SizeFits(&hull, 100u, why, sizeof(why)))
+	{
+		low = 100u;
+	}
+	else
+	{
+		for (p = RLDMK_SIZE_MIN; (p <= RLDMK_SIZE_MAX) && (low == 0u); p++)
+		{
+			if (RldMk_SizeFits(&hull, p, why, sizeof(why)))
+			{
+				low = p;
+			}
+		}
+	}
+
+	if (low != 0u)
+	{
+		high = low;
+		while ((low > RLDMK_SIZE_MIN) && RldMk_SizeFits(&hull, low - 1u, why, sizeof(why)))
+		{
+			low--;
+		}
+		while ((high < RLDMK_SIZE_MAX) && RldMk_SizeFits(&hull, high + 1u, why, sizeof(why)))
+		{
+			high++;
+		}
+	}
+
+	b->sizeLow = low;
+	b->sizeHigh = high;
+
+	if (!s_rldMkQuiet)
+	{
+		char lowText[16];
+		char highText[16];
+
+		snprintf(lowText, sizeof(lowText), "%u", low);
+		snprintf(highText, sizeof(highText), "%u", high);
+		Rld_Emit("value", "size-range", lowText, highText, (const char *)NULL);
+	}
+
+	// 100 %: nothing moves, the bytes are the ones without --size.
+	if (percent == 100u)
+	{
+		return 1;
+	}
+
+	if (!RldMk_SizeFits(&hull, percent, why, sizeof(why)))
+	{
+		if (low == 0u)
+		{
+			RldMk_Say("error", "char-size", NULL, "Size %u%% does not fit this model at any size: %s.", percent, why);
+		}
+		else
+		{
+			RldMk_Say("error", "char-size", NULL, "Size %u%% is outside %u..%u%% for this model: %s. Choose a size in that range.", percent, low, high, why);
+		}
+		return 0;
+	}
+
+	s = (double)percent / 100.0;
+	for (p = 0; p < b->positionCount; p++)
+	{
+		double *v = &b->position[3u * p];
+
+		if (b->positionGroup[p] == RLDMK_GROUP_KART)
+		{
+			continue;
+		}
+
+		v[0] = s * v[0];
+		v[1] = RLDMK_HIP_Y + s * (v[1] - RLDMK_HIP_Y);
+		v[2] = s * v[2];
+	}
+
+	for (p = 0; p < b->partCount; p++)
+	{
+		RldMk_Bounds(b, (int)p, b->parts[p].lo, b->parts[p].hi);
+	}
+
+	return 1;
+}
+
+// Step 5 on the model as it will be: size and centering, in Blender units.
+// With --size other than 100 the length check of step 4 runs again (a model
+// whose size passed RldMk_SizeFits passes it).
+static int RldMk_StepMeasure(struct RldMkBuild *b, const struct RldMkOptions *opt)
+{
+	const int best = b->kartPart;
+	double lo[3];
+	double hi[3];
+
+	RldMk_Bounds(b, -1, lo, hi);
+	b->size[0] = (hi[2] - lo[2]) / RLDMK_UNITS;
+	b->size[1] = (b->parts[best].hi[0] - b->parts[best].lo[0]) / RLDMK_UNITS;
+	b->size[2] = (hi[1] - lo[1]) / RLDMK_UNITS;
+	b->size[3] = lo[1] / RLDMK_UNITS;
+
+	if ((opt->sizePercent != 0u) && (opt->sizePercent != 100u) &&
+	    ((b->size[0] < (RLDMK_DRIVER_LENGTH / 5.0)) || (b->size[0] > (RLDMK_DRIVER_LENGTH * 5.0))))
+	{
+		RldMk_Say("error", "char-size", NULL, "Size %u%% makes the model %.2f Blender units long; a character is %.2f to %.2f long. Choose a smaller size.",
+		          opt->sizePercent, b->size[0], RLDMK_DRIVER_LENGTH / 5.0, RLDMK_DRIVER_LENGTH * 5.0);
+		return 0;
+	}
+
+	// Scale and axes are a question of the export: checked on the model as
+	// exported (b->exported, before --size), so that a large --size does not
+	// send the author back to Blender. At 100 % both are the same.
+	{
+		const double *e = b->exported;
+
+		if ((e[0] < RLDMK_KART_LENGTH_MIN) || (e[0] > RLDMK_KART_LENGTH_MAX) || (e[1] < 0.8) || (e[1] > 1.0) || (e[2] < 0.6) || (e[2] > 2.7) ||
+		    (e[3] < RLDMK_KART_BOTTOM_MIN) || (e[3] > RLDMK_KART_BOTTOM_MAX))
+		{
+			RldMk_Say("warning", "ply-axes", NULL,
+			          "The model is %.2f long, %.2f wide and %.2f tall and starts %.2f above the ground (Blender units). A driver with kart is about 1.8 long, 0.9 wide and 0.9-2.3 tall. Check scale and axes (+Y up, +Z forward).",
+			          e[0], e[1], e[2], e[3]);
+		}
+	}
+
+	{
+		const double center = 0.5 * (b->parts[best].lo[0] + b->parts[best].hi[0]) / RLDMK_UNITS;
+
+		if ((center > 0.08) || (center < -0.08))
+		{
+			RldMk_Say("warning", "ply-center", NULL, "The model is %.2f Blender units off-center to the side. Center the kart on x = 0.",
+			          (center < 0.0) ? -center : center);
 		}
 	}
 
@@ -2282,64 +2647,18 @@ static u32 RldMk_Nearest(const u32 *palette, u32 count, u32 rgb)
 	return best;
 }
 
-static int RldMk_StepColors(const struct RldMkPly *ply, const struct RldMkOptions *opt, struct RldMkBuild *b)
+// THE PALETTE of at most `target` colors for the distinct colors[0..unique)
+// (sorted by value, with their weights): kept as they are when they fit, else
+// median cut and two k-means rounds; entries nobody comes to are dropped, the
+// order stays. Sets colors[i].palette; returns the number of entries. Used for
+// the model (step 7) and the portrait (step 14).
+static u32 RldMk_Palette(struct RldMkColor *colors, u32 unique, u32 target, u32 palette[RLDCHAR_COLORS_MAX])
 {
-	const u32 corners = 3u * b->triangleCount;
-	struct RldMkColor *colors;
-	u32 *rgb;
-	u32 palette[RLDCHAR_COLORS_MAX];
 	u32 remap[RLDCHAR_COLORS_MAX];
-	u32 unique = 0;
 	u32 count = 0;
 	u32 i;
-	double sum = 0.0;
-	double weights = 0.0;
 
-	rgb = (u32 *)malloc(((size_t)corners + 1u) * sizeof(u32));
-	colors = (struct RldMkColor *)malloc(((size_t)corners + 1u) * sizeof(struct RldMkColor));
-	b->cornerColor = (u8 *)malloc((size_t)corners + 1u);
-	if ((rgb == NULL) || (colors == NULL) || (b->cornerColor == NULL))
-	{
-		free(rgb);
-		free(colors);
-		return RldMk_OutOfMemory();
-	}
-
-	for (i = 0; i < corners; i++)
-	{
-		const u8 *c = &ply->rgb[3u * b->triangle[i]];
-
-		rgb[i] = ((u32)c[0] << 16) | ((u32)c[1] << 8) | (u32)c[2];
-	}
-
-	// The distinct colors with their weights, sorted by value.
-	{
-		u32 *sorted = (u32 *)malloc(((size_t)corners + 1u) * sizeof(u32));
-
-		if (sorted == NULL)
-		{
-			free(rgb);
-			free(colors);
-			return RldMk_OutOfMemory();
-		}
-		memcpy(sorted, rgb, (size_t)corners * sizeof(u32));
-		qsort(sorted, corners, sizeof(u32), RldMk_CompareU32);
-		for (i = 0; i < corners; i++)
-		{
-			if ((unique == 0u) || (colors[unique - 1u].rgb != sorted[i]))
-			{
-				colors[unique].rgb = sorted[i];
-				colors[unique].weight = 0;
-				colors[unique].palette = 0;
-				unique++;
-			}
-			colors[unique - 1u].weight++;
-		}
-		free(sorted);
-	}
-	b->colorsIn = unique;
-
-	if (unique <= opt->colorTarget)
+	if (unique <= target)
 	{
 		for (i = 0; i < unique; i++)
 		{
@@ -2360,7 +2679,7 @@ static int RldMk_StepColors(const struct RldMkPly *ply, const struct RldMkOption
 		boxFirst[0] = 0;
 		boxCount[0] = unique;
 
-		while (boxes < opt->colorTarget)
+		while (boxes < target)
 		{
 			int bestBox = -1;
 			int bestChannel = 0;
@@ -2521,6 +2840,67 @@ static int RldMk_StepColors(const struct RldMkPly *ply, const struct RldMkOption
 		}
 		count = kept;
 	}
+
+	return count;
+}
+
+static int RldMk_StepColors(const struct RldMkPly *ply, const struct RldMkOptions *opt, struct RldMkBuild *b)
+{
+	const u32 corners = 3u * b->triangleCount;
+	struct RldMkColor *colors;
+	u32 *rgb;
+	u32 palette[RLDCHAR_COLORS_MAX];
+	u32 unique = 0;
+	u32 count = 0;
+	u32 i;
+	double sum = 0.0;
+	double weights = 0.0;
+
+	rgb = (u32 *)malloc(((size_t)corners + 1u) * sizeof(u32));
+	colors = (struct RldMkColor *)malloc(((size_t)corners + 1u) * sizeof(struct RldMkColor));
+	b->cornerColor = (u8 *)malloc((size_t)corners + 1u);
+	if ((rgb == NULL) || (colors == NULL) || (b->cornerColor == NULL))
+	{
+		free(rgb);
+		free(colors);
+		return RldMk_OutOfMemory();
+	}
+
+	for (i = 0; i < corners; i++)
+	{
+		const u8 *c = &ply->rgb[3u * b->triangle[i]];
+
+		rgb[i] = ((u32)c[0] << 16) | ((u32)c[1] << 8) | (u32)c[2];
+	}
+
+	// The distinct colors with their weights, sorted by value.
+	{
+		u32 *sorted = (u32 *)malloc(((size_t)corners + 1u) * sizeof(u32));
+
+		if (sorted == NULL)
+		{
+			free(rgb);
+			free(colors);
+			return RldMk_OutOfMemory();
+		}
+		memcpy(sorted, rgb, (size_t)corners * sizeof(u32));
+		qsort(sorted, corners, sizeof(u32), RldMk_CompareU32);
+		for (i = 0; i < corners; i++)
+		{
+			if ((unique == 0u) || (colors[unique - 1u].rgb != sorted[i]))
+			{
+				colors[unique].rgb = sorted[i];
+				colors[unique].weight = 0;
+				colors[unique].palette = 0;
+				unique++;
+			}
+			colors[unique - 1u].weight++;
+		}
+		free(sorted);
+	}
+	b->colorsIn = unique;
+
+	count = RldMk_Palette(colors, unique, opt->colorTarget, palette);
 
 	b->colorCount = count;
 	b->colorMax = 0.0;
@@ -3218,11 +3598,45 @@ static int RldMk_StepWrite(struct RldMkBuild *b)
 // STEP 15: THE COUNTER-CHECK
 //========================================================================================
 
-// Read back by the renderer's rule (RB:2437-2467): X = (byte0 + (pos.x & 0x7fff))
-// << 2 in 16 bits, Y = ((byte2 + pos.y) << 2) with bit 0 of the sum cleared
-// (mask 0xfff8ffff), Z = (pos.z + byte1) << 2; game units = that x scale / 16384.
-// Each record against the position it stands for, in every frame: X and Z within
-// half a step, Y within half a double step. 0 = a record is off, *badOut says which.
+// One record of a frame as the renderer unpacks it (RB:2437-2467): X = (byte0 +
+// (pos.x & 0x7fff)) << 2 in 16 bits, Y = ((byte2 + pos.y) << 2) with bit 0 of the
+// sum cleared (mask 0xfff8ffff), Z = (pos.z + byte1) << 2. These are the 16-bit
+// values the GTE gets; game units = value x ModelHeader.scale / 16384. `frame`
+// points at the ModelFrame.
+static void RldMk_UnpackRecord(const u8 *frame, u32 record, int out[3])
+{
+	const u32 posX = Rld_ReadLE16(&frame[0]);
+	const u32 posY = Rld_ReadLE16(&frame[2]);
+	const u32 posZ = Rld_ReadLE16(&frame[4]);
+	const u8 *q = &frame[Rld_ReadLE32(&frame[RLDMK_FRAME_VERTEX_OFFSET]) + 3u * record];
+	const u32 originXY = (posX & 0x7FFFu) | (posY << 16);
+	const u32 vertexXZ = (u32)q[0] | ((u32)q[2] << 16);
+	const u32 packedXY = ((vertexXZ + originXY) << 2) & 0xFFF8FFFFu;
+	const u32 packedZ = (posZ + (u32)q[1]) << 2;
+
+	out[0] = (int)(packedXY & 0xFFFFu) - (((packedXY & 0x8000u) != 0u) ? 0x10000 : 0);
+	out[1] = (int)(packedXY >> 16) - (((packedXY & 0x80000000u) != 0u) ? 0x10000 : 0);
+	out[2] = (int)(packedZ & 0xFFFFu) - (((packedZ & 0x8000u) != 0u) ? 0x10000 : 0);
+}
+
+// ModelHeader.scale of a built model, as the s16 the GTE takes.
+static void RldMk_ModelScale(const u8 *cmdl, int scale[3])
+{
+	const u8 *body = &cmdl[4];
+	const u32 header = Rld_ReadLE32(&body[RLDMK_MODEL_HEADERS]);
+	int a;
+
+	for (a = 0; a < 3; a++)
+	{
+		const u32 raw = Rld_ReadLE16(&body[header + RLDMK_HEADER_SCALE + 2u * (u32)a]);
+
+		scale[a] = (raw >= 0x8000u) ? ((int)raw - 0x10000) : (int)raw;
+	}
+}
+
+// Read back by the renderer's rule (RldMk_UnpackRecord). Each record against the
+// position it stands for, in every frame: X and Z within half a step, Y within
+// half a double step. 0 = a record is off, *badOut says which.
 static int RldMk_ReadBack(const struct RldMkBuild *b, u32 *badOut)
 {
 	const u8 *body = &b->cmdl[4];
@@ -3233,12 +3647,7 @@ static int RldMk_ReadBack(const struct RldMkBuild *b, u32 *badOut)
 	int a;
 
 	*badOut = 0;
-	for (a = 0; a < 3; a++)
-	{
-		const u32 raw = Rld_ReadLE16(&body[header + RLDMK_HEADER_SCALE + 2u * (u32)a]);
-
-		scale[a] = (raw >= 0x8000u) ? ((int)raw - 0x10000) : (int)raw;
-	}
+	RldMk_ModelScale(b->cmdl, scale);
 
 	for (a = 0; a < RLDCHAR_ANIM_COUNT; a++)
 	{
@@ -3250,30 +3659,20 @@ static int RldMk_ReadBack(const struct RldMkBuild *b, u32 *badOut)
 		for (k = 0; k < frames; k++)
 		{
 			const u8 *frame = &body[anim + RLDMK_ANIM_BYTES + k * frameSize];
-			const u32 posX = Rld_ReadLE16(&frame[0]);
-			const u32 posY = Rld_ReadLE16(&frame[2]);
-			const u32 posZ = Rld_ReadLE16(&frame[4]);
-			const u8 *records = &frame[Rld_ReadLE32(&frame[RLDMK_FRAME_VERTEX_OFFSET])];
 			u32 r;
 
 			for (r = 0; r < b->recordCount; r++)
 			{
-				const u8 *q = &records[3u * r];
-				const u32 originXY = (posX & 0x7FFFu) | (posY << 16);
-				const u32 vertexXZ = (u32)q[0] | ((u32)q[2] << 16);
-				const u32 packedXY = ((vertexXZ + originXY) << 2) & 0xFFF8FFFFu;
-				const u32 packedZ = (posZ + (u32)q[1]) << 2;
-				const int vx = (int)(packedXY & 0xFFFFu) - (((packedXY & 0x8000u) != 0u) ? 0x10000 : 0);
-				const int vy = (int)(packedXY >> 16) - (((packedXY & 0x80000000u) != 0u) ? 0x10000 : 0);
-				const int vz = (int)(packedZ & 0xFFFFu) - (((packedZ & 0x8000u) != 0u) ? 0x10000 : 0);
 				const double *exact = RldMk_At(b, frameIndex, b->record[r]);
+				int v[3];
 				double got[3];
 				double tolerance[3];
 				int axis;
 
-				got[0] = (double)vx * (double)scale[0] / 16384.0;
-				got[1] = (double)vy * (double)scale[1] / 16384.0;
-				got[2] = (double)vz * (double)scale[2] / 16384.0;
+				RldMk_UnpackRecord(frame, r, v);
+				got[0] = (double)v[0] * (double)scale[0] / 16384.0;
+				got[1] = (double)v[1] * (double)scale[1] / 16384.0;
+				got[2] = (double)v[2] * (double)scale[2] / 16384.0;
 				tolerance[0] = (0.5 + 1.0e-6) * (double)scale[0] / 4096.0;
 				tolerance[1] = (1.0 + 1.0e-6) * (double)scale[1] / 4096.0;
 				tolerance[2] = (0.5 + 1.0e-6) * (double)scale[2] / 4096.0;
@@ -3297,57 +3696,73 @@ static int RldMk_ReadBack(const struct RldMkBuild *b, u32 *badOut)
 	return 1;
 }
 
-// model-winding: the GTE window replayed from the written command words
-// exactly as RenderBucket_DrawFunc_Normal moves it (RB:4630-4672, 2826-2844),
-// with the positions the records and the cache slots stand for. Every triangle
-// has to be the one the builder meant, carry the cull bit (unless both sides are
-// drawn), and the side its cull bits let through (RB:2884-2899, RLDMK_CULL_SIGN)
-// has to be the side the normal of its source face points to. 0 = not so,
-// *badOut is the triangle in draw order.
-static int RldMk_Winding(const struct RldMkBuild *b, int twoSided, u32 *badOut)
+// THE GTE WINDOW, replayed from the written command words exactly as
+// RenderBucket_DrawFunc_Normal moves it (RB:4630-4672, 2826-2844): which records
+// a triangle is drawn from, in the order of the window, which command's cull
+// bits apply, and the color index of each corner - the color window moves with
+// the corner window (tempColor, RB:4636-4639, 4659). model-winding checks it,
+// --preview draws with it.
+struct RldMkReplay
 {
-	const u8 *body = &b->cmdl[4];
-	const u32 bodySize = Rld_ReadLE32(b->cmdl);
-	const u32 header = Rld_ReadLE32(&body[RLDMK_MODEL_HEADERS]);
-	u32 at = Rld_ReadLE32(&body[header + RLDMK_HEADER_COMMANDS]) + 4u;
-	u32 slotPosition[256];
-	u32 window[4];
-	u32 fifo[3];
-	u32 stripLength = 0;
-	u32 prim = 0;
-	u32 vertexIndex = 0;
-	u32 drawn = 0;
-	int ended = 0;
+	const u8 *body;
+	u32 bodySize;
+	u32 at;                // the next command word, body offset
+	u32 recordCount;
+	u32 vertexIndex;       // the next record
+	u32 slotRecord[256];
+	u32 window[4];         // records
+	u32 windowColor[4];    // color indices
+	u32 fifo[3];           // records in the order of the GTE window
+	u32 stripLength;
+	u32 prim;
+	int ended;             // the end word was read
+};
+
+static void RldMk_ReplayStart(struct RldMkReplay *r, const u8 *cmdl, u32 recordCount)
+{
+	u32 header;
 	u32 i;
 
-	*badOut = 0;
+	memset(r, 0, sizeof(*r));
+	r->body = &cmdl[4];
+	r->bodySize = Rld_ReadLE32(cmdl);
+	r->recordCount = recordCount;
+	header = Rld_ReadLE32(&r->body[RLDMK_MODEL_HEADERS]);
+	r->at = Rld_ReadLE32(&r->body[header + RLDMK_HEADER_COMMANDS]) + 4u;
+
 	for (i = 0; i < 256u; i++)
 	{
-		slotPosition[i] = RLDMK_NONE;
+		r->slotRecord[i] = RLDMK_NONE;
 	}
 	for (i = 0; i < 4u; i++)
 	{
-		window[i] = RLDMK_NONE;
+		r->window[i] = RLDMK_NONE;
 	}
-	fifo[0] = RLDMK_NONE;
-	fifo[1] = RLDMK_NONE;
-	fifo[2] = RLDMK_NONE;
+	r->fifo[0] = RLDMK_NONE;
+	r->fifo[1] = RLDMK_NONE;
+	r->fifo[2] = RLDMK_NONE;
+}
 
-	while ((at + 4u) <= bodySize)
+// The next triangle. 1 = corner[] (records, in the order of the GTE window),
+// color[] (color indices of the same corners), *draw (the command whose cull
+// bits apply); 0 = no more: the end word (r->ended) or the end of the body;
+// -1 = the list reads a record that is not there or a cache slot never written.
+static int RldMk_ReplayNext(struct RldMkReplay *r, u32 corner[3], u32 color[3], u32 *draw)
+{
+	while ((r->at + 4u) <= r->bodySize)
 	{
-		const u32 command = Rld_ReadLE32(&body[at]);
+		const u32 command = Rld_ReadLE32(&r->body[r->at]);
 		const u32 flags = command >> 24;
 		const u32 slot = (command >> 16) & 0xFFu;
-		u32 position;
-		u32 draw;
+		u32 record;
 		int useRtps;
 		int reuse;
 
-		at += 4u;
+		r->at += 4u;
 		if (command == RLDMK_CMD_END)
 		{
-			ended = 1;
-			break;
+			r->ended = 1;
+			return 0;
 		}
 		if ((command >> 16) == 0u)
 		{
@@ -3356,73 +3771,113 @@ static int RldMk_Winding(const struct RldMkBuild *b, int twoSided, u32 *badOut)
 
 		if ((flags & 0x04u) != 0u)
 		{
-			position = slotPosition[slot];
+			record = r->slotRecord[slot];
 		}
 		else
 		{
-			if (vertexIndex >= b->recordCount)
+			if (r->vertexIndex >= r->recordCount)
 			{
-				*badOut = drawn;
-				return 0;
+				return -1;
 			}
-			position = b->record[vertexIndex++];
-			slotPosition[slot] = position;
+			record = r->vertexIndex++;
+			r->slotRecord[slot] = record;
 		}
 
-		if (position == RLDMK_NONE)
+		if (record == RLDMK_NONE)
 		{
-			*badOut = drawn;
-			return 0;
+			return -1;
 		}
 
-		window[0] = window[1];
-		window[1] = window[2];
-		window[2] = window[3];
-		window[3] = position;
+		r->window[0] = r->window[1];
+		r->window[1] = r->window[2];
+		r->window[2] = r->window[3];
+		r->window[3] = record;
+		r->windowColor[0] = r->windowColor[1];
+		r->windowColor[1] = r->windowColor[2];
+		r->windowColor[2] = r->windowColor[3];
+		r->windowColor[3] = (command >> RLDMK_COLOR_SHIFT) & 0x7Fu;
 
-		if (((flags & 0x80u) != 0u) || (stripLength == 0u))
+		if (((flags & 0x80u) != 0u) || (r->stripLength == 0u))
 		{
-			prim = command;
+			r->prim = command;
 		}
 		if ((flags & 0x80u) != 0u)
 		{
-			stripLength = 0;
+			r->stripLength = 0;
 		}
 
-		useRtps = (stripLength > 2u);
+		useRtps = (r->stripLength > 2u);
 		reuse = useRtps && ((flags & 0x40u) != 0u);
 		if (reuse)
 		{
-			window[1] = window[0];
+			r->window[1] = r->window[0];
+			r->windowColor[1] = r->windowColor[0];
 		}
 
-		if (stripLength < 2u)
+		if (r->stripLength < 2u)
 		{
-			stripLength++;
+			r->stripLength++;
 			continue;
 		}
 
-		draw = (stripLength == 2u) ? prim : command;
+		*draw = (r->stripLength == 2u) ? r->prim : command;
 		if (!useRtps)
 		{
 			// RTPT: the strip's three corners (RB:2812-2824)
-			fifo[0] = window[1];
-			fifo[1] = window[2];
-			fifo[2] = window[3];
+			r->fifo[0] = r->window[1];
+			r->fifo[1] = r->window[2];
+			r->fifo[2] = r->window[3];
 		}
 		else if (reuse)
 		{
 			// SXY1 := SXY0, then RTPS shifts: corner 0 stays (RB:2828-2838)
-			fifo[1] = fifo[2];
-			fifo[2] = position;
+			r->fifo[1] = r->fifo[2];
+			r->fifo[2] = record;
 		}
 		else
 		{
-			fifo[0] = fifo[1];
-			fifo[1] = fifo[2];
-			fifo[2] = position;
+			r->fifo[0] = r->fifo[1];
+			r->fifo[1] = r->fifo[2];
+			r->fifo[2] = record;
 		}
-		stripLength++;
+		r->stripLength++;
+
+		corner[0] = r->fifo[0];
+		corner[1] = r->fifo[1];
+		corner[2] = r->fifo[2];
+		color[0] = r->windowColor[1];
+		color[1] = r->windowColor[2];
+		color[2] = r->windowColor[3];
+		return 1;
+	}
+
+	return 0;
+}
+
+// model-winding: the replayed window (RldMk_ReplayNext) with the positions the
+// records stand for. Every triangle has to be the one the builder meant, carry
+// the cull bit (unless both sides are drawn), and the side its cull bits let
+// through (RB:2884-2899, RLDMK_CULL_SIGN) has to be the side the normal of its
+// source face points to. 0 = not so, *badOut is the triangle in draw order.
+static int RldMk_Winding(const struct RldMkBuild *b, int twoSided, u32 *badOut)
+{
+	struct RldMkReplay replay;
+	u32 corner[3];
+	u32 color[3];
+	u32 draw = 0;
+	u32 drawn = 0;
+	int got;
+
+	*badOut = 0;
+	RldMk_ReplayStart(&replay, b->cmdl, b->recordCount);
+
+	while ((got = RldMk_ReplayNext(&replay, corner, color, &draw)) == 1)
+	{
+		u32 fifo[3];
+
+		fifo[0] = b->record[corner[0]];
+		fifo[1] = b->record[corner[1]];
+		fifo[2] = b->record[corner[2]];
 
 		if ((drawn >= b->drawCount) || (fifo[0] != b->drawOrder[3u * drawn + 0u]) || (fifo[1] != b->drawOrder[3u * drawn + 1u]) ||
 		    (fifo[2] != b->drawOrder[3u * drawn + 2u]))
@@ -3466,7 +3921,7 @@ static int RldMk_Winding(const struct RldMkBuild *b, int twoSided, u32 *badOut)
 		drawn++;
 	}
 
-	if (!ended || (drawn != b->drawCount) || (vertexIndex != b->recordCount))
+	if ((got < 0) || !replay.ended || (drawn != b->drawCount) || (replay.vertexIndex != b->recordCount))
 	{
 		*badOut = drawn;
 		return 0;
@@ -3544,13 +3999,222 @@ static int RldMk_BuildModel(const struct RldMkPly *ply, const struct RldMkOption
 
 	RldMk_StepOpenEdges(b);
 
-	if (!RldMk_StepParts(b, opt) || !RldMk_StepBudget(b, opt) || !RldMk_StepPoses(b) || !RldMk_StepQuantize(b) || !RldMk_StepCollapse(b) ||
-	    !RldMk_StepColors(ply, opt, b) || !RldMk_StepCommands(b, opt) || !RldMk_StepWrite(b))
+	if (!RldMk_StepParts(b, opt) || !RldMk_StepSize(b, opt) || !RldMk_StepMeasure(b, opt) || !RldMk_StepBudget(b, opt) || !RldMk_StepPoses(b) ||
+	    !RldMk_StepQuantize(b) || !RldMk_StepCollapse(b) || !RldMk_StepColors(ply, opt, b) || !RldMk_StepCommands(b, opt) || !RldMk_StepWrite(b))
 	{
 		return 0;
 	}
 
 	return RldMk_CheckBuilt(b, opt);
+}
+
+//========================================================================================
+// --preview: THE BUILT MODEL AS THE GAME DRAWS IT
+//========================================================================================
+//
+// For the 3D view of Reload Studio, which checks nothing and rebuilds nothing:
+// it gets the triangles out of the written CMDL by the renderer's own rules -
+// the corners unpacked from the frame records (RldMk_UnpackRecord), the
+// triangles and their colors from the replayed command list (RldMk_ReplayNext).
+//
+// THE FILE, little endian:
+//   "RLDPV1\0\0"               8 bytes
+//   u32 poses                  3: turn frame 10 (neutral), turn frame 0, turn frame 20
+//   per pose: u32 triangles, then per triangle 3 corners of
+//     s16 x, s16 y, s16 z      game units in model space (rounded): +Y up,
+//                              +Z forward, +X the driver's left
+//     u8 r, u8 g, u8 b         the vertex color as the model stores it
+//     u8 pad                   bit 0 = 1: drawn from both sides (no cull bit)
+// The corners of a triangle run counter-clockwise seen from the side the game
+// draws: the right-hand normal (b - a) x (c - a) points to the viewer who sees
+// it. A triangle with bit 0 of pad set is seen from both sides.
+//
+// Turn frame 0 is the full stop for steering LEFT, frame 20 for steering right
+// (game/Vehicle/VehFrame.c:208 maps -simpTurnState to the frame; a left turn
+// makes simpTurnState positive, game/Vehicle/VehPhysProc.c:1107-1132). The
+// automatic poses lean the driver toward +X - his left - in frame 0.
+
+#define RLDMK_PREVIEW_POSES 3u
+#define RLDMK_PREVIEW_CORNER_BYTES 10u
+
+static const u32 s_rldMkPreviewFrames[RLDMK_PREVIEW_POSES] = {RLDMK_NEUTRAL_FRAME, 0u, 20u};
+
+// A GTE value -> game units: value x scale / 16384, rounded half up, kept in 16 bits.
+static int RldMk_PreviewUnit(int value, int scale)
+{
+	const s64 shifted = (s64)value * (s64)scale + 8192;
+	s64 units = (shifted >= 0) ? (shifted / 16384) : -((-shifted + 16383) / 16384);
+
+	units = (units < -32768) ? -32768 : ((units > 32767) ? 32767 : units);
+	return (int)units;
+}
+
+// The preview of a built (and checked) model in memory, and the box of its kart
+// in the neutral frame (x0 y0 z0 x1 y1 z1, the same units). NULL = out of
+// memory, or the list does not replay - neither happens to a model that passed
+// step 15.
+static u8 *RldMk_Preview(const struct RldMkBuild *b, size_t *sizeOut, int kartBox[6])
+{
+	const u8 *body = &b->cmdl[4];
+	const u32 header = Rld_ReadLE32(&body[RLDMK_MODEL_HEADERS]);
+	const u32 table = Rld_ReadLE32(&body[header + RLDMK_HEADER_ANIMS]);
+	const u32 colorsAt = Rld_ReadLE32(&body[header + RLDMK_HEADER_COLORS]);
+	const u32 turn = Rld_ReadLE32(&body[table]);
+	const u32 frameSize = Rld_ReadLE16(&body[turn + RLDMK_ANIM_FRAME_SIZE]);
+	const size_t size = 12u + (size_t)RLDMK_PREVIEW_POSES * (4u + (size_t)b->drawCount * 3u * RLDMK_PREVIEW_CORNER_BYTES);
+	int scale[3];
+	size_t at = 12;
+	u8 *out;
+	u32 pose;
+	u32 r;
+	int a;
+
+	*sizeOut = 0;
+	RldMk_ModelScale(b->cmdl, scale);
+
+	out = (u8 *)calloc(1, size);
+	if (out == NULL)
+	{
+		return NULL;
+	}
+	memcpy(out, "RLDPV1\0\0", 8u);
+	Rld_WriteLE32(&out[8], RLDMK_PREVIEW_POSES);
+
+	for (pose = 0; pose < RLDMK_PREVIEW_POSES; pose++)
+	{
+		const u8 *frame = &body[turn + RLDMK_ANIM_BYTES + s_rldMkPreviewFrames[pose] * frameSize];
+		struct RldMkReplay replay;
+		u32 corner[3];
+		u32 color[3];
+		u32 draw = 0;
+		u32 count = 0;
+		int got;
+
+		Rld_WriteLE32(&out[at], b->drawCount);
+		at += 4u;
+
+		RldMk_ReplayStart(&replay, b->cmdl, b->recordCount);
+		while ((got = RldMk_ReplayNext(&replay, corner, color, &draw)) == 1)
+		{
+			const int cull = ((draw & RLDMK_CMD_CULL) != 0u);
+			const u32 side = ((draw & RLDMK_CMD_SIDE) != 0u) ? 1u : 0u;
+			// window order when its normal is the drawn side (RldMk_Winding), else turned round
+			const int turnRound = cull && (side != RLDMK_CULL_SIGN);
+			int k;
+
+			if (count >= b->drawCount)
+			{
+				free(out);
+				return NULL;
+			}
+
+			for (k = 0; k < 3; k++)
+			{
+				const int from = turnRound ? ((3 - k) % 3) : k;
+				const u32 index = color[from];
+				int v[3];
+
+				RldMk_UnpackRecord(frame, corner[from], v);
+				for (a = 0; a < 3; a++)
+				{
+					Rld_WriteLE16(&out[at + 2u * (u32)a], (u32)RldMk_PreviewUnit(v[a], scale[a]) & 0xFFFFu);
+				}
+
+				if (index < b->colorCount)
+				{
+					// file order r, g, b, code (step 7)
+					out[at + 6u] = body[colorsAt + 4u * index + 0u];
+					out[at + 7u] = body[colorsAt + 4u * index + 1u];
+					out[at + 8u] = body[colorsAt + 4u * index + 2u];
+				}
+				out[at + 9u] = (u8)(cull ? 0u : 1u);
+				at += RLDMK_PREVIEW_CORNER_BYTES;
+			}
+
+			count++;
+		}
+
+		if ((got < 0) || (count != b->drawCount))
+		{
+			free(out);
+			return NULL;
+		}
+	}
+
+	// The kart in the neutral frame: the size reference next to the driver.
+	for (a = 0; a < 3; a++)
+	{
+		kartBox[a] = 32767;
+		kartBox[3 + a] = -32768;
+	}
+	for (r = 0; r < b->recordCount; r++)
+	{
+		const u8 *frame = &body[turn + RLDMK_ANIM_BYTES + RLDMK_NEUTRAL_FRAME * frameSize];
+		int v[3];
+
+		if (b->positionGroup[b->record[r]] != RLDMK_GROUP_KART)
+		{
+			continue;
+		}
+
+		RldMk_UnpackRecord(frame, r, v);
+		for (a = 0; a < 3; a++)
+		{
+			const int unit = RldMk_PreviewUnit(v[a], scale[a]);
+
+			kartBox[a] = (unit < kartBox[a]) ? unit : kartBox[a];
+			kartBox[3 + a] = (unit > kartBox[3 + a]) ? unit : kartBox[3 + a];
+		}
+	}
+
+	*sizeOut = size;
+	return out;
+}
+
+// Writes the preview next to the build; a failure is a warning: the character
+// itself is not touched by it.
+static void RldMk_WritePreview(const struct RldMkBuild *b, const char *path)
+{
+	int box[6];
+	size_t size = 0;
+	u8 *data = RldMk_Preview(b, &size, box);
+	FILE *file;
+
+	if (data == NULL)
+	{
+		RldMk_EmitFile("preview", "failed", path, 0u);
+		RldMk_Say("warning", "preview", path, "The preview cannot be made (out of memory). The character is not affected.");
+		return;
+	}
+
+	file = fopen(path, "wb");
+	if ((file == NULL) || (fwrite(data, 1, size, file) != size) || (fclose(file) != 0))
+	{
+		RldMk_EmitFile("preview", "failed", path, 0u);
+		RldMk_Say("warning", "preview", path, "The preview file %s cannot be written. Is the folder write-protected?", path);
+		free(data);
+		return;
+	}
+	free(data);
+
+	RldMk_EmitFile("preview", "ok", path, size);
+
+	if (s_machine && !s_rldMkQuiet)
+	{
+		char text[6][16];
+		int k;
+
+		for (k = 0; k < 6; k++)
+		{
+			snprintf(text[k], sizeof(text[k]), "%d", box[k]);
+		}
+		Rld_Emit("value", "kart-box", text[0], text[1], text[2], text[3], text[4], text[5], (const char *)NULL);
+	}
+
+	if (!s_rldMkQuiet)
+	{
+		printf("  preview       %s, %u bytes (3 poses, %u triangles each)\n", path, (u32)size, b->drawCount);
+	}
 }
 
 // "0,3,5-9": the palette indices a group's triangles use.
@@ -3638,8 +4302,9 @@ static u8 *RldMk_BuildChri(u32 templateId, u32 classId, const u8 name[RLDCHAR_NA
 	return data;
 }
 
-// CHRI and CMDL through the shared envelope (Rld_WriteEnvelope, rldtrack.inc).
-static u8 *RldMk_Container(const u8 *chri, size_t chriSize, const u8 *cmdl, size_t cmdlSize, size_t *sizeOut)
+// CHRI, CMDL and - with --icon - CICN through the shared envelope
+// (Rld_WriteEnvelope, rldtrack.inc). cicn NULL: two chunks, as before CICN existed.
+static u8 *RldMk_Container(const u8 *chri, size_t chriSize, const u8 *cmdl, size_t cmdlSize, const u8 *cicn, size_t *sizeOut)
 {
 	struct RldContainer container;
 	u8 *out;
@@ -3648,6 +4313,10 @@ static u8 *RldMk_Container(const u8 *chri, size_t chriSize, const u8 *cmdl, size
 	memset(&container, 0, sizeof(container));
 	Rld_AddChunk(&container, "CHRI", chri, chriSize, RLD_COMPRESSION_NONE);
 	Rld_AddChunk(&container, "CMDL", cmdl, cmdlSize, RLD_COMPRESSION_NONE);
+	if (cicn != NULL)
+	{
+		Rld_AddChunk(&container, "CICN", cicn, RLDCHAR_ICON_BYTES, RLD_COMPRESSION_NONE);
+	}
 
 	out = Rld_WriteEnvelope(&s_rldCharFormat, 0u, &container, sizeOut);
 
@@ -3657,6 +4326,1155 @@ static u8 *RldMk_Container(const u8 *chri, size_t chriSize, const u8 *cmdl, size
 	}
 
 	return out;
+}
+
+//========================================================================================
+// FOREIGN FILES OF LIMITED SIZE (--icon, --voices)
+//========================================================================================
+
+// The size of a file without reading it; 0 = it cannot be opened (*ok 0).
+static size_t RldMk_FileSize(const char *path, int *ok)
+{
+	FILE *file = fopen(path, "rb");
+	long size = -1;
+
+	*ok = 0;
+	if (file == NULL)
+	{
+		return 0;
+	}
+	if (fseek(file, 0, SEEK_END) == 0)
+	{
+		size = ftell(file);
+	}
+	fclose(file);
+
+	if (size < 0)
+	{
+		return 0;
+	}
+	*ok = 1;
+	return (size_t)size;
+}
+
+// Reads a file only when it is at most `max` bytes: the size is asked first.
+// 1 = read; 0 = cannot be opened or read (*tooLarge 0), or larger than max
+// (*tooLarge 1, *sizeOut the size, nothing read).
+static int RldMk_ReadLimited(const char *path, size_t max, u8 **dataOut, size_t *sizeOut, int *tooLarge)
+{
+	int ok = 0;
+	const size_t size = RldMk_FileSize(path, &ok);
+
+	*dataOut = NULL;
+	*sizeOut = size;
+	*tooLarge = 0;
+	if (!ok)
+	{
+		return 0;
+	}
+	if (size > max)
+	{
+		*tooLarge = 1;
+		return 0;
+	}
+
+	if (!Rld_ReadFile(path, dataOut, sizeOut))
+	{
+		return 0;
+	}
+
+	// It may have grown in between.
+	if (*sizeOut > max)
+	{
+		free(*dataOut);
+		*dataOut = NULL;
+		*tooLarge = 1;
+		return 0;
+	}
+
+	return 1;
+}
+
+//========================================================================================
+// STEP 14: THE PORTRAIT (CICN) FROM A PNG
+//========================================================================================
+//
+// The PNG (include/rldpng.inc, 8-bit RGBA) -> 44 x 26 texels, 4 bits, 16 colors
+// (layout and rules CICN-1..3: include/rldchar.inc):
+//   1  cut to 44:26 in the middle: the longer side loses the same on both ends
+//      (one pixel more at the end when it is odd)
+//   2  a box filter to 44 x 26 with exact shares, in integers, as Rld_ScaleMap
+//      (include/rldtrack.inc): every texel averages the area it covers, the
+//      colors weighted by their alpha; a texel less than half covered is
+//      transparent (index 0)
+//   3  the colors of the opaque texels -> at most 15 by median cut and two
+//      k-means rounds (RldMk_Palette, the same as the model's colors)
+//   4  RGB555 in CLUT entries 1..15, entry 0 = 0x0000 (transparent); a color
+//      that rounds to 0x0000 becomes 0x0421, the PS1's opaque black
+// A picture smaller than 44 x 26 is enlarged the same way (and looks blurry).
+
+#define RLDMK_ICON_TEXELS (RLDCHAR_ICON_WIDTH * RLDCHAR_ICON_HEIGHT)
+#define RLDMK_ICON_FILE_MAX (16u * 1024u * 1024u)   // PNG file size, asked before reading
+
+struct RldMkIcon
+{
+	u8 cicn[RLDCHAR_ICON_BYTES];
+	u8 index[RLDCHAR_ICON_HEIGHT][RLDCHAR_ICON_WIDTH];   // 0 = transparent
+	u16 clut[RLDCHAR_ICON_COLORS];
+	u32 source[2];       // width and height of the picture
+	u32 crop[4];         // x, y, width, height of the cut in the picture
+	u32 colorsIn;        // distinct colors of the opaque texels
+	u32 colorCount;      // CLUT entries used, 1..15
+	u32 opaque;          // opaque texels
+};
+
+static u32 RldMk_To5(u32 value)
+{
+	return (value * 31u + 127u) / 255u;
+}
+
+static u32 RldMk_From5(u32 value)
+{
+	return (value * 255u + 15u) / 31u;
+}
+
+// 1 = made. The only failure is an image without pixels, which rldpng never returns.
+static int RldMk_MakeIcon(const struct RldPngImage *image, struct RldMkIcon *icon)
+{
+	const s64 tw = RLDCHAR_ICON_WIDTH;
+	const s64 th = RLDCHAR_ICON_HEIGHT;
+	struct RldMkColor colors[RLDMK_ICON_TEXELS];
+	u32 rgb[RLDMK_ICON_TEXELS];
+	u32 sorted[RLDMK_ICON_TEXELS];
+	u32 palette[RLDCHAR_COLORS_MAX];
+	u32 opaqueCount = 0;
+	u32 unique = 0;
+	s64 sw;
+	s64 sh;
+	s64 left;
+	s64 top;
+	s64 X;
+	s64 Y;
+	u32 i;
+
+	memset(icon, 0, sizeof(*icon));
+	if ((image->rgba == NULL) || (image->width == 0u) || (image->height == 0u))
+	{
+		return 0;
+	}
+
+	// 1: the cut. Wider than 44:26 -> the full height, else the full width.
+	if (((s64)image->width * th) > ((s64)image->height * tw))
+	{
+		sh = image->height;
+		sw = ((s64)image->height * tw + th / 2) / th;
+		sw = (sw < 1) ? 1 : ((sw > (s64)image->width) ? (s64)image->width : sw);
+	}
+	else
+	{
+		sw = image->width;
+		sh = ((s64)image->width * th + tw / 2) / tw;
+		sh = (sh < 1) ? 1 : ((sh > (s64)image->height) ? (s64)image->height : sh);
+	}
+	left = ((s64)image->width - sw) / 2;
+	top = ((s64)image->height - sh) / 2;
+	icon->crop[0] = (u32)left;
+	icon->crop[1] = (u32)top;
+	icon->crop[2] = (u32)sw;
+	icon->crop[3] = (u32)sh;
+
+	// 2: the box filter. Texel X covers the picture's x from X*sw to (X+1)*sw,
+	// measured in parts of 1/tw; pixel x lies at x*tw to (x+1)*tw. The same
+	// vertically. The shares of one texel add up to sw*sh.
+	for (Y = 0; Y < th; Y++)
+	{
+		for (X = 0; X < tw; X++)
+		{
+			s64 weight = 0;
+			s64 cover = 0;
+			s64 sum[3] = {0, 0, 0};
+			s64 y;
+
+			for (y = (Y * sh) / th; (y < sh) && ((y * th) < ((Y + 1) * sh)); y++)
+			{
+				const s64 y0 = ((Y * sh) > (y * th)) ? (Y * sh) : (y * th);
+				const s64 y1 = (((Y + 1) * sh) < ((y + 1) * th)) ? ((Y + 1) * sh) : ((y + 1) * th);
+				s64 x;
+
+				for (x = (X * sw) / tw; (x < sw) && ((x * tw) < ((X + 1) * sw)); x++)
+				{
+					const s64 x0 = ((X * sw) > (x * tw)) ? (X * sw) : (x * tw);
+					const s64 x1 = (((X + 1) * sw) < ((x + 1) * tw)) ? ((X + 1) * sw) : ((x + 1) * tw);
+					const s64 part = (x1 - x0) * (y1 - y0);
+					const u8 *pixel = &image->rgba[(((size_t)(top + y) * image->width) + (size_t)(left + x)) * 4u];
+					int c;
+
+					if (part <= 0)
+					{
+						continue;
+					}
+
+					weight += part;
+					cover += part * (s64)pixel[3];
+					for (c = 0; c < 3; c++)
+					{
+						sum[c] += part * (s64)pixel[3] * (s64)pixel[c];
+					}
+				}
+			}
+
+			// Below half covered: transparent. rgb[] keeps the average color of the rest.
+			if ((cover == 0) || ((cover * 2) < (weight * 255)))
+			{
+				rgb[Y * tw + X] = RLDMK_NONE;
+				continue;
+			}
+
+			rgb[Y * tw + X] = ((u32)((sum[0] + cover / 2) / cover) << 16) | ((u32)((sum[1] + cover / 2) / cover) << 8) | (u32)((sum[2] + cover / 2) / cover);
+			sorted[opaqueCount++] = rgb[Y * tw + X];
+		}
+	}
+	icon->opaque = opaqueCount;
+
+	// 3: the palette of the opaque texels, as the model's colors (step 7).
+	qsort(sorted, opaqueCount, sizeof(u32), RldMk_CompareU32);
+	for (i = 0; i < opaqueCount; i++)
+	{
+		if ((unique == 0u) || (colors[unique - 1u].rgb != sorted[i]))
+		{
+			colors[unique].rgb = sorted[i];
+			colors[unique].weight = 0;
+			colors[unique].palette = 0;
+			unique++;
+		}
+		colors[unique - 1u].weight++;
+	}
+	icon->colorsIn = unique;
+	icon->colorCount = RldMk_Palette(colors, unique, RLDCHAR_ICON_COLORS - 1u, palette);
+
+	// colors[] back in value order for the lookup (red is the top byte).
+	s_rldMkSortChannel = 0;
+	qsort(colors, unique, sizeof(struct RldMkColor), RldMk_CompareColor);
+
+	// 4: the CLUT.
+	icon->clut[0] = (u16)RLDCHAR_ICON_TRANSPARENT;
+	for (i = 0; i < icon->colorCount; i++)
+	{
+		const u32 value = RldMk_To5((palette[i] >> 16) & 0xFFu) | (RldMk_To5((palette[i] >> 8) & 0xFFu) << 5) | (RldMk_To5(palette[i] & 0xFFu) << 10);
+
+		icon->clut[i + 1u] = (u16)((value != 0u) ? value : RLDCHAR_ICON_BLACK);
+	}
+
+	for (Y = 0; Y < th; Y++)
+	{
+		for (X = 0; X < tw; X++)
+		{
+			const u32 value = rgb[Y * tw + X];
+			u32 low = 0;
+			u32 high = unique;
+
+			if (value == RLDMK_NONE)
+			{
+				icon->index[Y][X] = 0;
+				continue;
+			}
+
+			while (low < high)
+			{
+				const u32 mid = low + (high - low) / 2u;
+
+				if (colors[mid].rgb < value)
+				{
+					low = mid + 1u;
+				}
+				else
+				{
+					high = mid;
+				}
+			}
+			icon->index[Y][X] = (u8)(colors[low].palette + 1u);
+		}
+	}
+
+	// The chunk.
+	Rld_WriteLE16(&icon->cicn[0x00], RLDCHAR_ICON_VERSION);
+	Rld_WriteLE16(&icon->cicn[0x02], RLDCHAR_ICON_DEPTH);
+	Rld_WriteLE16(&icon->cicn[0x04], RLDCHAR_ICON_WIDTH);
+	Rld_WriteLE16(&icon->cicn[0x06], RLDCHAR_ICON_HEIGHT);
+	for (i = 0; i < RLDCHAR_ICON_COLORS; i++)
+	{
+		Rld_WriteLE16(&icon->cicn[0x08u + 2u * i], icon->clut[i]);
+	}
+	for (Y = 0; Y < th; Y++)
+	{
+		for (X = 0; X < tw; X += 4)
+		{
+			const u32 word = (u32)icon->index[Y][X] | ((u32)icon->index[Y][X + 1] << 4) | ((u32)icon->index[Y][X + 2] << 8) | ((u32)icon->index[Y][X + 3] << 12);
+
+			Rld_WriteLE16(&icon->cicn[RLDCHAR_ICON_WORDS_AT + 2u * ((u32)Y * RLDCHAR_ICON_ROW_WORDS + (u32)X / 4u)], word);
+		}
+	}
+
+	return 1;
+}
+
+// A 32-bit BMP (BITMAPINFOHEADER, BI_RGB, rows bottom-up), the alpha in the
+// fourth byte of each pixel (B, G, R, A). For Reload Studio's side-by-side view.
+static int RldMk_WriteBmp(const char *path, u32 width, u32 height, const u8 *rgba)
+{
+	const size_t pixels = (size_t)width * height * 4u;
+	u8 head[54];
+	u8 *row;
+	FILE *file;
+	u32 y;
+	int ok = 1;
+
+	memset(head, 0, sizeof(head));
+	head[0] = 'B';
+	head[1] = 'M';
+	Rld_WriteLE32(&head[2], (u32)(sizeof(head) + pixels));
+	Rld_WriteLE32(&head[10], (u32)sizeof(head));
+	Rld_WriteLE32(&head[14], 40u);
+	Rld_WriteLE32(&head[18], width);
+	Rld_WriteLE32(&head[22], height);
+	Rld_WriteLE16(&head[26], 1u);
+	Rld_WriteLE16(&head[28], 32u);
+	Rld_WriteLE32(&head[34], (u32)pixels);
+	Rld_WriteLE32(&head[38], 2835u);
+	Rld_WriteLE32(&head[42], 2835u);
+
+	row = (u8 *)malloc((size_t)width * 4u + 1u);
+	file = fopen(path, "wb");
+	if ((row == NULL) || (file == NULL) || (fwrite(head, 1, sizeof(head), file) != sizeof(head)))
+	{
+		free(row);
+		if (file != NULL)
+		{
+			fclose(file);
+		}
+		return 0;
+	}
+
+	for (y = 0; ok && (y < height); y++)
+	{
+		const u8 *source = &rgba[(size_t)(height - 1u - y) * width * 4u];
+		u32 x;
+
+		for (x = 0; x < width; x++)
+		{
+			row[4u * x + 0u] = source[4u * x + 2u];
+			row[4u * x + 1u] = source[4u * x + 1u];
+			row[4u * x + 2u] = source[4u * x + 0u];
+			row[4u * x + 3u] = source[4u * x + 3u];
+		}
+		ok = (fwrite(row, 1, (size_t)width * 4u, file) == ((size_t)width * 4u));
+	}
+
+	free(row);
+	return (fclose(file) == 0) && ok;
+}
+
+static void RldMk_EmitWritten(const char *kind, const char *path, int ok, size_t bytes)
+{
+	RldMk_EmitFile(kind, ok ? "ok" : "failed", path, ok ? bytes : 0u);
+	if (!ok)
+	{
+		RldMk_Say("warning", "icon-preview", path, "The picture %s cannot be written. Is the folder write-protected?", path);
+	}
+}
+
+// --icon: the PNG read, turned into CICN (built twice: the same bytes), checked
+// with the reader the game will run, the findings said. --icon-preview writes
+// <prefix>-original.bmp (the PNG as read) and <prefix>-icon.bmp (44 x 26 as the
+// game shows it). 1 = *icon holds a sound portrait.
+static int RldMk_IconStep(const char *path, const char *previewPrefix, struct RldMkIcon *icon)
+{
+	static struct RldMkIcon again;
+	struct RldPngImage image;
+	const char *why = NULL;
+	u8 *data = NULL;
+	size_t size = 0;
+	int tooLarge = 0;
+	int result;
+
+	if (!RldMk_ReadLimited(path, RLDMK_ICON_FILE_MAX, &data, &size, &tooLarge))
+	{
+		if (tooLarge)
+		{
+			RldMk_EmitFile("icon", "bad", path, size);
+			RldMk_Say("error", "icon-file", path,
+			          "The icon %s is %u MB; rldpack reads PNG files of at most 16 MB. Save it smaller - a portrait is 44 x 26, a few hundred pixels are plenty.",
+			          path, (u32)((size + 1048575u) / 1048576u));
+			return 0;
+		}
+
+		RldMk_EmitFile("icon", "missing", path, 0u);
+		RldMk_Say("error", "icon-file", path, "The icon file %s cannot be opened. Check the path, or leave the icon out - the game then shows the template's portrait.",
+		          path);
+		return 0;
+	}
+
+	result = RldPng_Decode(data, size, &image, &why);
+	free(data);
+
+	if (result != RLDPNG_OK)
+	{
+		RldMk_EmitFile("icon", "bad", path, size);
+		if (result == RLDPNG_INTERLACED)
+		{
+			RldMk_Say("error", "icon-file", why, "The icon %s is an interlaced PNG; rldpack reads only non-interlaced ones. Save it again with interlacing turned off.",
+			          path);
+		}
+		else if (result == RLDPNG_TOO_LARGE)
+		{
+			RldMk_Say("error", "icon-file", why, "The icon %s is too large (%s). Scale it down to at most 4096 x 4096 pixels - 44 x 26 or a multiple is best.", path,
+			          why);
+		}
+		else if (result == RLDPNG_MEMORY)
+		{
+			RldMk_OutOfMemory();
+		}
+		else
+		{
+			RldMk_Say("error", "icon-file", why, "The icon %s is not a PNG rldpack can read (%s). Save it again as PNG (8 bit, not interlaced).", path, why);
+		}
+		return 0;
+	}
+
+	RldMk_EmitFile("icon", "ok", path, size);
+
+	if (previewPrefix != NULL)
+	{
+		char out[RLD_PATH_MAX + 32];
+		int ok;
+
+		snprintf(out, sizeof(out), "%s-original.bmp", previewPrefix);
+		ok = RldMk_WriteBmp(out, image.width, image.height, image.rgba);
+		RldMk_EmitWritten("icon-original", out, ok, 54u + (size_t)image.width * image.height * 4u);
+	}
+
+	if (!RldMk_MakeIcon(&image, icon) || !RldMk_MakeIcon(&image, &again) || (memcmp(icon->cicn, again.cicn, sizeof(icon->cicn)) != 0) ||
+	    (RldChar_CheckIcon(icon->cicn, sizeof(icon->cicn)) != NULL))
+	{
+		RldMk_Say("error", "icon-roundtrip", NULL, "Internal error: the portrait does not come out the same twice. Please report it.");
+		RldPng_Free(&image);
+		return 0;
+	}
+	icon->source[0] = image.width;
+	icon->source[1] = image.height;
+
+	if (s_machine && !s_rldMkQuiet)
+	{
+		char text[3][32];
+
+		snprintf(text[0], sizeof(text[0]), "%u %u", image.width, image.height);
+		snprintf(text[1], sizeof(text[1]), "%u %u %u %u", icon->crop[0], icon->crop[1], icon->crop[2], icon->crop[3]);
+		snprintf(text[2], sizeof(text[2]), "%u", icon->colorCount);
+		Rld_Emit("char", "icon_source", text[0], (const char *)NULL);
+		Rld_Emit("char", "icon_crop", text[1], (const char *)NULL);
+		Rld_Emit("char", "icon_colors", text[2], (const char *)NULL);
+		snprintf(text[2], sizeof(text[2]), "%u", icon->opaque);
+		Rld_Emit("char", "icon_opaque", text[2], (const char *)NULL);
+	}
+
+	if ((image.width < RLDCHAR_ICON_WIDTH) || (image.height < RLDCHAR_ICON_HEIGHT))
+	{
+		RldMk_Say("note", "icon-small", NULL, "The icon is only %u x %u pixels and was enlarged to 44 x 26, so it looks blurry. Use a picture of at least 44 x 26.",
+		          image.width, image.height);
+	}
+
+	if (icon->opaque == 0u)
+	{
+		RldMk_Say("warning", "icon-empty", NULL,
+		          "The icon is fully transparent at 44 x 26, so the menu would show an empty tile. Use a picture whose subject covers most of it.");
+	}
+	else if (icon->colorsIn > icon->colorCount)
+	{
+		RldMk_Say("info", "icon-colors", NULL, "The icon was reduced to %u colors (the portrait has 15 and transparent).", icon->colorCount);
+	}
+
+	if (previewPrefix != NULL)
+	{
+		u8 shown[RLDMK_ICON_TEXELS * 4u];
+		char out[RLD_PATH_MAX + 32];
+		u32 y;
+		u32 x;
+
+		for (y = 0; y < RLDCHAR_ICON_HEIGHT; y++)
+		{
+			for (x = 0; x < RLDCHAR_ICON_WIDTH; x++)
+			{
+				const u32 index = icon->index[y][x];
+				const u32 c = icon->clut[index];
+				u8 *pixel = &shown[(y * RLDCHAR_ICON_WIDTH + x) * 4u];
+
+				pixel[0] = (u8)((index != 0u) ? RldMk_From5(c & 31u) : 0u);
+				pixel[1] = (u8)((index != 0u) ? RldMk_From5((c >> 5) & 31u) : 0u);
+				pixel[2] = (u8)((index != 0u) ? RldMk_From5((c >> 10) & 31u) : 0u);
+				pixel[3] = (u8)((index != 0u) ? 255u : 0u);
+			}
+		}
+
+		snprintf(out, sizeof(out), "%s-icon.bmp", previewPrefix);
+		RldMk_EmitWritten("icon-preview", out, RldMk_WriteBmp(out, RLDCHAR_ICON_WIDTH, RLDCHAR_ICON_HEIGHT, shown), 54u + sizeof(shown));
+	}
+
+	RldPng_Free(&image);
+	return 1;
+}
+
+//========================================================================================
+// --voices: THE VOICE LINES, CHECKED ONLY
+//========================================================================================
+//
+// Read, sorted to their places, measured - nothing is packed yet, and a
+// character is silent in the game until voices are (voice-later). The file
+// name says the place (upper or lower case alike), the extension the format:
+//
+//   boost1/2 hit1/2 spin1/2 bigair1/2 drop1/2 shield1/2 passing1/2 fire1/2
+//                    the 8 sets of voice lines, two each
+//   yes, hit         the two short sounds, which play only for templates 12..14
+//
+//   .wav  RIFF/WAVE, PCM 8/16/24 bit or float 32, 1 or 2 channels, 8000..48000 Hz
+//         (also WAVE_FORMAT_EXTENSIBLE); LIST/INFO ISFT is read (voice-source)
+//   .vag  the PS1 format: "VAGp", 0x30 bytes of header (include/psx/libspu.h:477),
+//         big-endian data size and rate, 16-byte SPU-ADPCM blocks up to the
+//         first one with the end flag
+//
+// Every file is a foreign one: lengths are checked against the bytes, and a
+// file rldpack cannot read stops the build (voice-wav, voice-vag).
+
+#define RLDMK_VOICE_SLOTS 18
+#define RLDMK_VOICE_SHORT_FIRST 16       // yes and hit
+#define RLDMK_VOICE_LINE_MS 3500u        // voice lines are cut after 3.5 s
+#define RLDMK_VOICE_SHORT_MS 1000u       // short sounds after 1.0 s
+#define RLDMK_VOICE_FILES_MAX 64u
+#define RLDMK_VOICE_BYTES_MAX (32u * 1024u * 1024u)
+
+static const char *const s_rldMkVoiceSlots[RLDMK_VOICE_SLOTS] = {"boost1",  "boost2",  "hit1",     "hit2",     "spin1", "spin2",
+                                                                 "bigair1", "bigair2", "drop1",    "drop2",    "shield1", "shield2",
+                                                                 "passing1", "passing2", "fire1", "fire2", "yes",   "hit"};
+
+struct RldMkVoiceFile
+{
+	char name[RLD_NAME_MAX];
+	u8 *data;            // the bytes when given in memory (self-test); NULL: read from the folder when needed
+	size_t size;
+};
+
+struct RldMkVoiceSound
+{
+	int vag;
+	u32 rate;
+	u32 channels;
+	u32 frames;          // samples per channel
+	u32 clipped;         // samples at full level
+	int silent;
+	int psound;          // LIST/INFO ISFT names PSound
+	u8 hash[32];         // of the sample bytes, for voice-same
+};
+
+static int RldMk_VoiceSlot(const char *name, int *vag)
+{
+	char base[32];
+	size_t length = strlen(name);
+	size_t i;
+	int s;
+
+	*vag = 0;
+	if (Rld_EndsWithNoCase(name, ".vag"))
+	{
+		*vag = 1;
+	}
+	else if (!Rld_EndsWithNoCase(name, ".wav"))
+	{
+		return -2;
+	}
+
+	length -= 4u;
+	if ((length == 0u) || (length >= sizeof(base)))
+	{
+		return -1;
+	}
+
+	for (i = 0; i < length; i++)
+	{
+		const char c = name[i];
+
+		base[i] = ((c >= 'A') && (c <= 'Z')) ? (char)(c - 'A' + 'a') : c;
+	}
+	base[length] = '\0';
+
+	for (s = 0; s < RLDMK_VOICE_SLOTS; s++)
+	{
+		if (strcmp(base, s_rldMkVoiceSlots[s]) == 0)
+		{
+			return s;
+		}
+	}
+
+	return -1;
+}
+
+static int RldMk_ContainsNoCase(const u8 *text, size_t size, const char *word)
+{
+	const size_t length = strlen(word);
+	size_t i;
+	size_t k;
+
+	for (i = 0; (i + length) <= size; i++)
+	{
+		for (k = 0; k < length; k++)
+		{
+			char c = (char)text[i + k];
+
+			c = ((c >= 'A') && (c <= 'Z')) ? (char)(c - 'A' + 'a') : c;
+			if (c != word[k])
+			{
+				break;
+			}
+		}
+		if (k == length)
+		{
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+// A WAV file. NULL = read, else the reason (fixed text).
+static const char *RldMk_ReadWav(const u8 *data, size_t size, struct RldMkVoiceSound *out)
+{
+	size_t at = 12;
+	size_t dataAt = 0;
+	u32 dataSize = 0;
+	int haveFormat = 0;
+	int haveData = 0;
+	u32 format = 0;
+	u32 bits = 0;
+	u32 blockAlign = 0;
+	u32 zero = 0;
+	u32 i;
+	u32 total;
+
+	memset(out, 0, sizeof(*out));
+
+	if ((size < 12u) || (memcmp(data, "RIFF", 4u) != 0) || (memcmp(&data[8], "WAVE", 4u) != 0))
+	{
+		return "no RIFF/WAVE header";
+	}
+
+	while ((size - at) >= 8u)
+	{
+		const u8 *id = &data[at];
+		const u32 length = Rld_ReadLE32(&data[at + 4u]);
+
+		at += 8u;
+		if ((size_t)length > (size - at))
+		{
+			return "a chunk runs past the end of the file";
+		}
+
+		if (memcmp(id, "fmt ", 4u) == 0)
+		{
+			if (length < 16u)
+			{
+				return "the format chunk is too short";
+			}
+			format = Rld_ReadLE16(&data[at]);
+			out->channels = Rld_ReadLE16(&data[at + 2u]);
+			out->rate = Rld_ReadLE32(&data[at + 4u]);
+			blockAlign = Rld_ReadLE16(&data[at + 12u]);
+			bits = Rld_ReadLE16(&data[at + 14u]);
+			if (format == 0xFFFEu)
+			{
+				// WAVE_FORMAT_EXTENSIBLE: the real format leads the sub-format GUID
+				if (length < 40u)
+				{
+					return "the extensible format chunk is too short";
+				}
+				format = Rld_ReadLE16(&data[at + 24u]);
+			}
+			haveFormat = 1;
+		}
+		else if ((memcmp(id, "data", 4u) == 0) && !haveData)
+		{
+			dataAt = at;
+			dataSize = length;
+			haveData = 1;
+		}
+		else if ((memcmp(id, "LIST", 4u) == 0) && (length >= 4u) && (memcmp(&data[at], "INFO", 4u) == 0))
+		{
+			size_t sub = at + 4u;
+			const size_t end = at + length;
+
+			while ((end - sub) >= 8u)
+			{
+				const u32 subLength = Rld_ReadLE32(&data[sub + 4u]);
+
+				if ((size_t)subLength > (end - sub - 8u))
+				{
+					break;
+				}
+				if ((memcmp(&data[sub], "ISFT", 4u) == 0) && RldMk_ContainsNoCase(&data[sub + 8u], subLength, "psound"))
+				{
+					out->psound = 1;
+				}
+				sub += 8u + subLength;
+				if (((subLength & 1u) != 0u) && (sub < end))
+				{
+					sub++;
+				}
+			}
+		}
+
+		at += length;
+		if (((length & 1u) != 0u) && (at < size))
+		{
+			at++;
+		}
+	}
+
+	if (!haveFormat || !haveData)
+	{
+		return "the format or the data chunk is missing";
+	}
+	if (!(((format == 1u) && ((bits == 8u) || (bits == 16u) || (bits == 24u))) || ((format == 3u) && (bits == 32u))))
+	{
+		return "only PCM with 8, 16 or 24 bits and 32-bit float are read";
+	}
+	if ((out->channels < 1u) || (out->channels > 2u))
+	{
+		return "only mono and stereo are read";
+	}
+	if ((out->rate < 8000u) || (out->rate > 48000u))
+	{
+		return "the sample rate is outside 8000..48000 Hz";
+	}
+	if (blockAlign != (out->channels * bits / 8u))
+	{
+		return "the block size does not match channels and bits";
+	}
+
+	out->frames = dataSize / blockAlign;
+	total = out->frames * out->channels;
+
+	for (i = 0; i < total; i++)
+	{
+		const u8 *s = &data[dataAt + (size_t)i * (bits / 8u)];
+		int full;
+		int isZero;
+
+		if (bits == 8u)
+		{
+			full = (s[0] == 0u) || (s[0] == 255u);
+			isZero = (s[0] == 128u);
+		}
+		else if (bits == 16u)
+		{
+			const u32 v = Rld_ReadLE16(s);
+
+			full = (v == 0x7FFFu) || (v == 0x8000u);
+			isZero = (v == 0u);
+		}
+		else if (bits == 24u)
+		{
+			const u32 v = (u32)s[0] | ((u32)s[1] << 8) | ((u32)s[2] << 16);
+
+			full = (v == 0x7FFFFFu) || (v == 0x800000u);
+			isZero = (v == 0u);
+		}
+		else
+		{
+			float f;
+			u32 word = Rld_ReadLE32(s);
+
+			memcpy(&f, &word, sizeof(f));
+			full = (f >= 1.0f) || (f <= -1.0f);
+			isZero = (f == 0.0f);
+		}
+
+		out->clipped += full ? 1u : 0u;
+		zero += isZero ? 1u : 0u;
+	}
+
+	out->silent = (zero == total);
+	Sha256(&data[dataAt], (size_t)out->frames * blockAlign, out->hash);
+	return NULL;
+}
+
+// Rounded down, also for negative numbers.
+static int RldMk_FloorDiv64(int value)
+{
+	return (value >= 0) ? (value / 64) : -((-value + 63) / 64);
+}
+
+// A VAG file: header, size, end flag, and the samples decoded for the level
+// (the SPU's ADPCM: 28 samples per 16-byte block, 5 prediction filters).
+static const char *RldMk_ReadVag(const u8 *data, size_t size, struct RldMkVoiceSound *out)
+{
+	static const int filter0[5] = {0, 60, 115, 98, 122};
+	static const int filter1[5] = {0, 0, -52, -55, -60};
+	u32 dataSize;
+	size_t payload;
+	size_t blocks;
+	size_t end;
+	size_t b;
+	int s1 = 0;
+	int s2 = 0;
+	u32 zero = 0;
+
+	memset(out, 0, sizeof(*out));
+	out->vag = 1;
+	out->channels = 1;
+
+	if ((size < 0x30u) || (memcmp(data, "VAGp", 4u) != 0))
+	{
+		return "no VAGp header";
+	}
+
+	dataSize = RldPng_BE32(&data[0x0C]);
+	out->rate = RldPng_BE32(&data[0x10]);
+	payload = size - 0x30u;
+
+	// The data size counts the blocks; writers differ by up to two blocks of
+	// padding at the start and the end.
+	if (((size_t)dataSize > payload) || ((payload - (size_t)dataSize) > 32u) || ((payload % 16u) != 0u))
+	{
+		return "the size in the header does not match the file";
+	}
+	if ((out->rate < 8000u) || (out->rate > 48000u))
+	{
+		return "the sample rate is outside 8000..48000 Hz";
+	}
+
+	blocks = payload / 16u;
+	for (end = 0; end < blocks; end++)
+	{
+		if ((data[0x30u + 16u * end + 1u] & 1u) != 0u)
+		{
+			break;
+		}
+	}
+	if (end == blocks)
+	{
+		return "no block carries the end flag";
+	}
+
+	for (b = 0; b <= end; b++)
+	{
+		const u8 *block = &data[0x30u + 16u * b];
+		u32 shift = block[0] & 0x0Fu;
+		const u32 filter = (block[0] >> 4) & 0x0Fu;
+		u32 k;
+
+		if (filter > 4u)
+		{
+			return "a block uses an unknown filter";
+		}
+		shift = (shift > 12u) ? 9u : shift;
+
+		for (k = 0; k < 28u; k++)
+		{
+			const u32 nibble = (block[2u + k / 2u] >> ((k & 1u) * 4u)) & 0x0Fu;
+			const int signedNibble = (nibble >= 8u) ? ((int)nibble - 16) : (int)nibble;
+			int value = signedNibble * (1 << (12u - shift)) + RldMk_FloorDiv64(s1 * filter0[filter] + s2 * filter1[filter] + 32);
+
+			value = (value < -32768) ? -32768 : ((value > 32767) ? 32767 : value);
+			out->clipped += ((value == 32767) || (value == -32768)) ? 1u : 0u;
+			zero += (value == 0) ? 1u : 0u;
+			s2 = s1;
+			s1 = value;
+		}
+	}
+
+	out->frames = (u32)(end + 1u) * 28u;
+	out->silent = (zero == out->frames);
+	Sha256(&data[0x30], (end + 1u) * 16u, out->hash);
+	return NULL;
+}
+
+// Every finding of a voice folder, from its files (sorted by name). dir: the
+// folder - a file that fills a place is read from there only then, at most
+// RLDMK_VOICE_BYTES_MAX (the size asked first), checked and let go, so one
+// file is held at a time; NULL: the bytes are in files[].data (self-test).
+// templateId: the template, RLDMK_NONE when not known.
+static void RldMk_CheckVoices(const struct RldMkVoiceFile *files, u32 count, u32 templateId, const char *dir)
+{
+	int slotFile[RLDMK_VOICE_SLOTS];
+	int slotOk[RLDMK_VOICE_SLOTS];
+	struct RldMkVoiceSound sound[RLDMK_VOICE_SLOTS];
+	char missing[256];
+	u32 filled = 0;
+	u32 i;
+	int s;
+	int t;
+
+	for (s = 0; s < RLDMK_VOICE_SLOTS; s++)
+	{
+		slotFile[s] = -1;
+		slotOk[s] = 0;
+	}
+
+	// V1: the names. WAV before VAG when both fill a place.
+	for (i = 0; i < count; i++)
+	{
+		int vag = 0;
+		const int slot = RldMk_VoiceSlot(files[i].name, &vag);
+
+		if (slot == -2)
+		{
+			RldMk_EmitFile("voice", "ignored", files[i].name, files[i].size);
+			RldMk_Say("note", "voice-other", NULL, "%s is not a .wav or .vag file and is left out.", files[i].name);
+			continue;
+		}
+		if (slot < 0)
+		{
+			RldMk_EmitFile("voice", "unknown", files[i].name, files[i].size);
+			RldMk_Say("warning", "voice-unknown", NULL, "%s does not match a voice line and is left out. Use names like boost1.wav, hit2.wav, yes.wav.",
+			          files[i].name);
+			continue;
+		}
+
+		if (slotFile[slot] >= 0)
+		{
+			int keptVag = 0;
+			const int kept = slotFile[slot];
+			int use;
+
+			RldMk_VoiceSlot(files[kept].name, &keptVag);
+			use = (keptVag && !vag) ? (int)i : kept;
+			RldMk_Say("warning", "voice-double", NULL, "%s and %s both fill \"%s\"; %s is used. Remove the other one.", files[kept].name, files[i].name,
+			          s_rldMkVoiceSlots[slot], files[use].name);
+			RldMk_EmitFile("voice", "unused", files[(use == kept) ? i : (u32)kept].name, files[(use == kept) ? i : (u32)kept].size);
+			slotFile[slot] = use;
+			continue;
+		}
+
+		slotFile[slot] = (int)i;
+	}
+
+	// V2-V4: read, length, level.
+	for (s = 0; s < RLDMK_VOICE_SLOTS; s++)
+	{
+		const struct RldMkVoiceFile *file;
+		const char *why = NULL;
+		const u8 *data;
+		u8 *read = NULL;
+		size_t size;
+		u32 ms;
+		u32 limit;
+		int vag = 0;
+
+		if (slotFile[s] < 0)
+		{
+			continue;
+		}
+
+		file = &files[slotFile[s]];
+		RldMk_VoiceSlot(file->name, &vag);
+		data = file->data;
+		size = file->size;
+
+		if ((data == NULL) && (dir != NULL))
+		{
+			char path[RLD_PATH_MAX + RLD_NAME_MAX];
+			int tooLarge = 0;
+
+			snprintf(path, sizeof(path), "%s" RLD_SEP "%s", dir, file->name);
+			if (RldMk_ReadLimited(path, RLDMK_VOICE_BYTES_MAX, &read, &size, &tooLarge))
+			{
+				data = read;
+			}
+			why = tooLarge ? "the file is larger than 32 MB" : "the file cannot be read";
+		}
+
+		if (data != NULL)
+		{
+			why = vag ? RldMk_ReadVag(data, size, &sound[s]) : RldMk_ReadWav(data, size, &sound[s]);
+		}
+		else if (dir == NULL)
+		{
+			why = "the file cannot be read";
+		}
+		free(read);
+
+		if (why != NULL)
+		{
+			RldMk_EmitFile("voice", "bad", file->name, file->size);
+			if (vag)
+			{
+				RldMk_Say("error", "voice-vag", why, "%s is not a VAG file rldpack can read (%s). Export it again as a PS1 VAG, or use a 16-bit PCM WAV.",
+				          file->name, why);
+			}
+			else
+			{
+				RldMk_Say("error", "voice-wav", why, "%s is not a WAV file rldpack can read (%s). Export it as 16-bit PCM WAV.", file->name, why);
+			}
+			continue;
+		}
+
+		RldMk_EmitFile("voice", "ok", file->name, file->size);
+		slotOk[s] = 1;
+		filled++;
+
+		// Rounded up, so that a sound just over the limit never reads as the limit.
+		ms = (u32)(((u64)sound[s].frames * 1000u + sound[s].rate - 1u) / sound[s].rate);
+		limit = (s >= RLDMK_VOICE_SHORT_FIRST) ? RLDMK_VOICE_SHORT_MS : RLDMK_VOICE_LINE_MS;
+
+		if (sound[s].channels == 2u)
+		{
+			RldMk_Say("note", "voice-stereo", NULL, "%s is stereo; it will be mixed to mono.", file->name);
+		}
+		if (sound[s].silent)
+		{
+			RldMk_Say("warning", "voice-silent", NULL, "%s is silent - every sample is zero. Export the sound again.", file->name);
+		}
+		else if (sound[s].clipped != 0u)
+		{
+			RldMk_Say("note", "voice-clip", NULL, "%s is clipped (%u samples at full level). Lower its volume a little.", file->name, sound[s].clipped);
+		}
+		if (ms > limit)
+		{
+			const u32 hundredths = (ms + 9u) / 10u;
+
+			if (s >= RLDMK_VOICE_SHORT_FIRST)
+			{
+				RldMk_Say("warning", "voice-length-short", NULL, "%s is %u.%02u s long; short sounds are cut after %u.%02u s. Shorten it.", file->name,
+				          hundredths / 100u, hundredths % 100u, limit / 1000u, (limit % 1000u) / 10u);
+			}
+			else
+			{
+				RldMk_Say("warning", "voice-length-line", NULL, "%s is %u.%02u s long; voice lines are cut after 3.50 s. Shorten it.", file->name,
+				          hundredths / 100u, hundredths % 100u);
+			}
+		}
+		if (sound[s].psound)
+		{
+			RldMk_Say("note", "voice-source", NULL,
+			          "%s was made with PSound, a tool that copies sounds out of PlayStation games. Keep this character on your own computer.", file->name);
+		}
+	}
+
+	// V4: the same sound twice.
+	for (s = 0; s < RLDMK_VOICE_SLOTS; s++)
+	{
+		for (t = s + 1; slotOk[s] && (t < RLDMK_VOICE_SLOTS); t++)
+		{
+			if (slotOk[t] && (sound[s].vag == sound[t].vag) && (sound[s].rate == sound[t].rate) && (sound[s].channels == sound[t].channels) &&
+			    (sound[s].frames == sound[t].frames) && (memcmp(sound[s].hash, sound[t].hash, 32u) == 0))
+			{
+				RldMk_Say("note", "voice-same", NULL, "%s and %s are the same sound.", files[slotFile[s]].name, files[slotFile[t]].name);
+			}
+		}
+	}
+
+	// V4: the short sounds play only for N. Tropy, Penta Penguin and Fake Crash.
+	if ((slotOk[RLDMK_VOICE_SHORT_FIRST] || slotOk[RLDMK_VOICE_SHORT_FIRST + 1]) && (templateId < 12u))
+	{
+		RldMk_Say("warning", "voice-template", NULL,
+		          "Short sounds ignored: yes and hit only play with template driver N. Tropy, Penta Penguin or Fake Crash.");
+	}
+
+	// V9: the empty places.
+	missing[0] = '\0';
+	for (s = 0; s < RLDMK_VOICE_SLOTS; s++)
+	{
+		const size_t used = strlen(missing);
+
+		if ((slotFile[s] < 0) && ((used + strlen(s_rldMkVoiceSlots[s]) + 3u) < sizeof(missing)))
+		{
+			snprintf(&missing[used], sizeof(missing) - used, "%s%s", (used != 0u) ? ", " : "", s_rldMkVoiceSlots[s]);
+		}
+	}
+	if (missing[0] != '\0')
+	{
+		RldMk_Say("note", "voice-missing", NULL, "No file for: %s.", missing);
+	}
+
+	{
+		char text[24];
+
+		snprintf(text, sizeof(text), "%u", filled);
+		RldMk_Fact("voices", "%s of %d", text, RLDMK_VOICE_SLOTS);
+	}
+
+	RldMk_Say("note", "voice-later", NULL, "Voices are checked but not packed yet - the driver is silent in the game.");
+}
+
+struct RldMkVoiceFolder
+{
+	struct RldMkVoiceFile *files;   // the first RLDMK_VOICE_FILES_MAX names, sorted
+	u32 count;
+	u32 seen;
+};
+
+// Keeps the RLDMK_VOICE_FILES_MAX first names by strcmp, whatever order the
+// system lists them in.
+static void RldMk_VoiceVisit(void *context, const char *name)
+{
+	struct RldMkVoiceFolder *folder = (struct RldMkVoiceFolder *)context;
+	char kept[RLD_NAME_MAX];
+	u32 at;
+
+	folder->seen++;
+	snprintf(kept, sizeof(kept), "%s", name);
+
+	at = folder->count;
+	while ((at > 0u) && (strcmp(kept, folder->files[at - 1u].name) < 0))
+	{
+		at--;
+	}
+	if (at >= RLDMK_VOICE_FILES_MAX)
+	{
+		return;
+	}
+
+	if (folder->count < RLDMK_VOICE_FILES_MAX)
+	{
+		folder->count++;
+	}
+	memmove(&folder->files[at + 1u], &folder->files[at], (size_t)(folder->count - 1u - at) * sizeof(folder->files[0]));
+	memcpy(folder->files[at].name, kept, sizeof(kept));
+}
+
+// --voices <dir>: list and check; a file is read only when it fills a place.
+static void RldMk_VoiceStep(const char *dir, u32 templateId)
+{
+	static struct RldMkVoiceFile files[RLDMK_VOICE_FILES_MAX];
+	struct RldMkVoiceFolder folder;
+	u32 i;
+
+	memset(files, 0, sizeof(files));
+	folder.files = files;
+	folder.count = 0;
+	folder.seen = 0;
+
+	if (!Rld_EachFile(dir, RldMk_VoiceVisit, &folder))
+	{
+		RldMk_Say("error", "voice-folder", dir, "The voice folder %s cannot be opened. Check the path, or leave the voices out.", dir);
+		return;
+	}
+
+	if (folder.seen > folder.count)
+	{
+		RldMk_Say("warning", "voice-folder", NULL, "The voice folder holds %u files; only the first %u by name are looked at. Keep only the voice lines in it.",
+		          folder.seen, folder.count);
+	}
+
+	// Only the sizes, for the @file lines; nothing is read here.
+	for (i = 0; i < folder.count; i++)
+	{
+		char path[RLD_PATH_MAX + RLD_NAME_MAX];
+		int ok = 0;
+
+		snprintf(path, sizeof(path), "%s" RLD_SEP "%s", dir, files[i].name);
+		files[i].data = NULL;
+		files[i].size = RldMk_FileSize(path, &ok);
+	}
+
+	RldMk_CheckVoices(files, folder.count, templateId, dir);
 }
 
 //========================================================================================
@@ -3920,6 +5738,13 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	const char *forwardArg = NULL;
 	const char *scaleArg = NULL;
 	const char *outArg = NULL;
+	const char *sizeArg = NULL;
+	const char *iconArg = NULL;
+	const char *iconPreviewArg = NULL;
+	const char *voicesArg = NULL;
+	const char *previewArg = NULL;
+	static struct RldMkIcon icon;
+	int haveIcon = 0;
 	int check = 0;
 	int authorGiven;
 	int built;
@@ -3945,6 +5770,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	memset(nameField, 0, sizeof(nameField));
 	opt.colorTarget = 64u;
 	opt.scale = 1.0;
+	opt.sizePercent = 100u;
 	shownName[0] = '\0';
 	digestText[0] = '\0';
 	RldMk_ResetSaid();
@@ -4001,6 +5827,26 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		else if ((strcmp(arg, "--out") == 0) && hasValue)
 		{
 			outArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--size") == 0) && hasValue)
+		{
+			sizeArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--icon") == 0) && hasValue)
+		{
+			iconArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--icon-preview") == 0) && hasValue)
+		{
+			iconPreviewArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--voices") == 0) && hasValue)
+		{
+			voicesArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--preview") == 0) && hasValue)
+		{
+			previewArg = argv[++i];
 		}
 		else if (strcmp(arg, "--two-sided") == 0)
 		{
@@ -4094,6 +5940,17 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		{
 			RldMk_Say("error", "poses", posesArg, "The poses must be auto or still.");
 		}
+	}
+
+	if ((sizeArg != NULL) && (!RldMk_ParseWhole(sizeArg, 100000u, &opt.sizePercent) || (opt.sizePercent < RLDMK_SIZE_MIN) || (opt.sizePercent > RLDMK_SIZE_MAX)))
+	{
+		RldMk_Say("error", "char-size", sizeArg, "The size \"%s\" must be a whole number from 50 to 200 (percent; %s).", sizeArg, RLDMK_SIZE_TEXT);
+		opt.sizePercent = 100u;
+	}
+
+	if ((iconPreviewArg != NULL) && (iconArg == NULL))
+	{
+		RldMk_Say("error", "usage", "--icon-preview", "--icon-preview needs --icon <png>: there is no portrait to show without it.");
 	}
 
 	if (templateArg == NULL)
@@ -4202,6 +6059,36 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		Rld_Emit("value", "scale", number, (scaleArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "two_sided", opt.twoSided ? "yes" : "no", opt.twoSided ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "out", outPath, (outArg != NULL) ? "switch" : "default", (const char *)NULL);
+		snprintf(number, sizeof(number), "%u", opt.sizePercent);
+		Rld_Emit("value", "size", number, (sizeArg != NULL) ? "switch" : "default", (const char *)NULL);
+		Rld_Emit("value", "icon", (iconArg != NULL) ? iconArg : "", (iconArg != NULL) ? "switch" : "default", (const char *)NULL);
+		Rld_Emit("value", "voices", (voicesArg != NULL) ? voicesArg : "", (voicesArg != NULL) ? "switch" : "default", (const char *)NULL);
+	}
+
+	// The retail kart as the size reference, in the units of the preview
+	// (x0 y0 z0 x1 y1 z1); the height up to the seat line (hip y 16) - the
+	// retail kart's own height is not measured.
+	{
+		char box[6][16];
+
+		snprintf(box[0], sizeof(box[0]), "%d", -RLDMK_RETAIL_KART_WIDTH / 2);
+		snprintf(box[1], sizeof(box[1]), "%d", RLDMK_RETAIL_KART_BOTTOM);
+		snprintf(box[2], sizeof(box[2]), "%d", -RLDMK_RETAIL_KART_LENGTH / 2);
+		snprintf(box[3], sizeof(box[3]), "%d", RLDMK_RETAIL_KART_WIDTH / 2);
+		snprintf(box[4], sizeof(box[4]), "%d", RLDMK_RETAIL_KART_TOP);
+		snprintf(box[5], sizeof(box[5]), "%d", RLDMK_RETAIL_KART_LENGTH / 2);
+		Rld_Emit("value", "retail-kart", box[0], box[1], box[2], box[3], box[4], box[5], (const char *)NULL);
+	}
+
+	// THE PORTRAIT AND THE VOICES before the model: their findings show even
+	// when the model cannot be read.
+	if (iconArg != NULL)
+	{
+		haveIcon = RldMk_IconStep(iconArg, iconPreviewArg, &icon);
+	}
+	if (voicesArg != NULL)
+	{
+		RldMk_VoiceStep(voicesArg, templateId);
 	}
 
 	// THE MODEL.
@@ -4259,8 +6146,24 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		}
 	}
 
+	// THE PREVIEW of a model that was built, whatever else is wrong: Reload
+	// Studio shows it while the author fixes the name.
+	if (built && (previewArg != NULL))
+	{
+		RldMk_WritePreview(&build, previewArg);
+	}
+
 	if (!s_rldMkQuiet)
 	{
+		if (opt.sizePercent != 100u)
+		{
+			printf("  driver size   %u%% (the kart stays as it is; %s)\n", opt.sizePercent, RLDMK_SIZE_TEXT);
+		}
+		if (haveIcon)
+		{
+			printf("  icon          %s: %u x %u, cut %u x %u at %u,%u -> 44 x 26, %u colors, %u of %u texels opaque\n", iconArg, icon.source[0],
+			       icon.source[1], icon.crop[2], icon.crop[3], icon.crop[0], icon.crop[1], icon.colorCount, icon.opaque, RLDMK_ICON_TEXELS);
+		}
 		printf("  name          \"%s\"\n", shownName);
 		printf("  author        \"%s\"\n", authorArg);
 		printf("  version       %u\n", charVersion);
@@ -4300,7 +6203,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 
 	if (chri != NULL)
 	{
-		container = RldMk_Container(chri, chriSize, build.cmdl, build.cmdlSize, &containerSize);
+		container = RldMk_Container(chri, chriSize, build.cmdl, build.cmdlSize, haveIcon ? icon.cicn : NULL, &containerSize);
 	}
 
 	if (container == NULL)
@@ -4346,6 +6249,10 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	printf("  size          %u bytes\n", (u32)containerSize);
 	printf("  CHRI          %u bytes\n", (u32)chriSize);
 	printf("  CMDL          %u bytes\n", (u32)build.cmdlSize);
+	if (haveIcon)
+	{
+		printf("  CICN          %u bytes (the portrait)\n", (u32)RLDCHAR_ICON_BYTES);
+	}
 	printf("  sha256        %s\n", digestText);
 	printf("  format        %d.%d%s\n", RLDCHAR_VERSION_MAJOR, RLDCHAR_VERSION_MINOR, (RLDCHAR_VERSION_MINOR == 0) ? " (draft)" : "");
 
@@ -4400,6 +6307,9 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 	size_t cmdlSize = 0;
 	int chriIndex = -1;
 	int cmdlIndex = -1;
+	int iconIndex = -1;
+	const char *iconState = "none";
+	const char *iconWhy = "";
 	int failed = 0;
 	char text[256];
 	int i;
@@ -4478,6 +6388,20 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		return 1;
 	}
 
+	// The portrait: optional, and a broken one drops only itself (CICN-1..3) -
+	// the game then shows the template's portrait.
+	if (Rld_FindEntry(&reader, "CICN", &iconIndex) != NULL)
+	{
+		size_t iconSize = 0;
+		const char *iconError = NULL;
+		u8 *iconData = Rld_ReadChunk(&reader, iconIndex, &iconSize, &iconError);
+
+		iconWhy = (iconData != NULL) ? RldChar_CheckIcon(iconData, iconSize) : ((iconError != NULL) ? iconError : "CICN cannot be read");
+		iconState = (iconWhy == NULL) ? "ok" : "ignored";
+		iconWhy = (iconWhy == NULL) ? "" : iconWhy;
+		free(iconData);
+	}
+
 	if (!machine)
 	{
 		printf("%s\n", path);
@@ -4493,6 +6417,18 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 			const u8 *entry = &reader.directory[i * RLD_DIR_ENTRY_SIZE];
 
 			printf("%.4s%s%s", (const char *)entry, (RldChar_ChunkLimit(entry) != 0u) ? "" : " (skipped)", ((i + 1) < reader.chunkCount) ? " " : "\n");
+		}
+		if (strcmp(iconState, "ok") == 0)
+		{
+			printf("  portrait      its own (CICN, 44 x 26)\n");
+		}
+		else if (strcmp(iconState, "none") == 0)
+		{
+			printf("  portrait      the template's (no CICN)\n");
+		}
+		else
+		{
+			printf("  portrait      the template's - CICN ignored: %s\n", iconWhy);
 		}
 		if (full)
 		{
@@ -4537,6 +6473,7 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		snprintf(number, sizeof(number), "%u", facts.drawBytes);
 		Rld_Emit("char", "draw_bytes", number, (const char *)NULL);
 		Rld_Emit("char", "verdict", RldChar_VerdictWord(verdict), (first.rule != NULL) ? first.rule : "", first.detail, (const char *)NULL);
+		Rld_Emit("char", "icon", iconState, iconWhy, (const char *)NULL);
 	}
 	else
 	{
@@ -4591,7 +6528,14 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 				continue;
 			}
 
-			printf("  ok     %.4s   %u bytes\n", (const char *)entry, (u32)size);
+			if ((i == iconIndex) && (RldChar_CheckIcon(data, size) != NULL))
+			{
+				printf("  IGNORED CICN  %s - the game shows the template's portrait\n", RldChar_CheckIcon(data, size));
+			}
+			else
+			{
+				printf("  ok     %.4s   %u bytes\n", (const char *)entry, (u32)size);
+			}
 			free(data);
 		}
 
@@ -4637,14 +6581,31 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "  --name <text>               the name in the menu (required), 1 to 17 of\n");
 	fprintf(out, "                              A-Z 0-9 space ! %% ' + , - . / : < = > ? _\n");
 	fprintf(out, "  --template <0..14>          the driver the character stands in for\n");
-	fprintf(out, "                              (required) - voice, portrait and the kart's\n");
-	fprintf(out, "                              values come from it:\n");
+	fprintf(out, "                              (required) - the portrait (without --icon)\n");
+	fprintf(out, "                              and the frame counts come from it; the class\n");
+	fprintf(out, "                              decides the kart's values:\n");
 	for (t = 0; t < RLDMK_TEMPLATE_COUNT; t++)
 	{
 		fprintf(out, "%s%2d %-16s%s", ((t % 3) == 0) ? "                              " : "", t, s_rldMkTemplates[t].name, ((t % 3) == 2) ? "\n" : "");
 	}
-	fprintf(out, "  --class like|0..3           like the template (default), 0 balanced,\n");
-	fprintf(out, "                              1 acceleration, 2 speed, 3 turning\n");
+	fprintf(out, "  --class <style>             the driving style: like (the template's, default),\n");
+	fprintf(out, "                              balanced, acceleration, speed, turning (or 0..3)\n");
+	fprintf(out, "  --size <50..200>            the driver and steering wheel in percent of the\n");
+	fprintf(out, "                              model (default 100), scaled about the hip; the\n");
+	fprintf(out, "                              kart keeps its size: %s.\n", RLDMK_SIZE_TEXT);
+	fprintf(out, "                              rldpack says which range the model takes\n");
+	fprintf(out, "  --icon <png>                the portrait in the menu: cut to 44:26 in the\n");
+	fprintf(out, "                              middle, scaled to 44 x 26, 15 colors and\n");
+	fprintf(out, "                              transparent (PNG, not interlaced). Without it\n");
+	fprintf(out, "                              the game shows the template's portrait\n");
+	fprintf(out, "  --icon-preview <prefix>     also write <prefix>-original.bmp and\n");
+	fprintf(out, "                              <prefix>-icon.bmp (the portrait as the game has it)\n");
+	fprintf(out, "  --voices <folder>           check voice lines: boost1/2 hit1/2 spin1/2\n");
+	fprintf(out, "                              bigair1/2 drop1/2 shield1/2 passing1/2 fire1/2,\n");
+	fprintf(out, "                              yes, hit - .wav or .vag. Checked only: they are\n");
+	fprintf(out, "                              not packed yet, the driver is silent in the game\n");
+	fprintf(out, "  --preview <file>            also write the built model as the game draws it,\n");
+	fprintf(out, "                              3 poses (for Reload Studio's 3D view)\n");
 	fprintf(out, "  --author <text>             your name or handle, 64 bytes at most\n");
 	fprintf(out, "  --char-version <n>          counts your own revisions (default 1)\n");
 	fprintf(out, "  --poses auto|still          auto: the driver leans when steering (default);\n");
@@ -4656,9 +6617,12 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "  --scale <f>                 multiply the model (default 1)\n");
 	fprintf(out, "  --two-sided                 draw both sides of every triangle\n");
 	fprintf(out, "  --out <file>                somewhere else than next to the model\n");
-	fprintf(out, "  --check                     run every check and build in memory, write nothing\n");
+	fprintf(out, "  --check                     run every check and build in memory, write\n");
+	fprintf(out, "                              nothing (the previews are written)\n");
 	fprintf(out, "\n");
 	fprintf(out, "  rldpack make-char --model driver.ply --name \"MY DRIVER\" --template 14\n");
+	fprintf(out, "  rldpack make-char --model driver.ply --name \"MY DRIVER\" --template 14\n");
+	fprintf(out, "      --class speed --size 110 --icon portrait.png --voices voices\n");
 	fprintf(out, "\n");
 }
 
@@ -5003,6 +6967,7 @@ static void RldMk_TestOptions(struct RldMkOptions *opt)
 	memset(opt, 0, sizeof(*opt));
 	opt->colorTarget = 64u;
 	opt->scale = 1.0;
+	opt->sizePercent = 100u;
 }
 
 // Write, read and build a test mesh. 1 = built; ply and build are freed by the caller.
@@ -5942,8 +7907,8 @@ static void RldMk_SelfTestChri(const u8 *good, size_t goodSize)
 	{
 		size_t size = 0;
 		size_t sizeAgain = 0;
-		u8 *file = RldMk_Container(chri, chriSize, good, goodSize, &size);
-		u8 *again = RldMk_Container(chri, chriSize, good, goodSize, &sizeAgain);
+		u8 *file = RldMk_Container(chri, chriSize, good, goodSize, NULL, &size);
+		u8 *again = RldMk_Container(chri, chriSize, good, goodSize, NULL, &sizeAgain);
 		int ok = (file != NULL) && (again != NULL) && (size == sizeAgain) && (memcmp(file, again, size) == 0);
 
 		if (ok)
@@ -6050,6 +8015,1444 @@ static void RldMk_SelfTestChri(const u8 *good, size_t goodSize)
 	           "name of 17 characters taken, with a note", "said: %s", s_rldMkCodes);
 }
 
+//========================================================================================
+// SELF-TEST: --size, --preview, the PNG reader, --icon, --voices, golden hashes
+//========================================================================================
+
+// GOLDEN HASHES: the SHA-256 of whole .rldchar files built from fixed inputs -
+// the standard test model (RldMk_TestStandard with a driver split 2, written as
+// ascii PLY) with CHRI template 14, class 0, name "SELF TEST", version 1 and no
+// author. These are the bytes of
+//   rldpack make-char --model <that PLY> --name "SELF TEST" --template 14
+// PLAIN without further switches - the file make-char wrote before --size,
+// --icon and --preview existed. SIZE_ICON with --size 120 and test picture A
+// (RldMk_TestPixelA) as --icon. A different value means characters are no
+// longer written the same way - never update it to make the test pass.
+#define RLDMK_GOLDEN_PLAIN "ba7e3208bc98b2af5460110ae6d7d64afe888771b76747a74ae30f3190ce3186"
+#define RLDMK_GOLDEN_SIZE_ICON "9dc78f1370c2e360f2758858b0efcec9c7b21ea7bcedb9be12e5b2f7029a1728"
+
+// --- --size --------------------------------------------------------------------------
+
+// The highest decoded Y of driver and steering wheel and the kart's decoded
+// box, neutral frame, game units.
+static void RldMk_TestMeasure(const struct RldMkBuild *b, double *top, double kartLo[3], double kartHi[3])
+{
+	u32 r;
+	int a;
+
+	*top = -1.0e30;
+	for (a = 0; a < 3; a++)
+	{
+		kartLo[a] = 1.0e30;
+		kartHi[a] = -1.0e30;
+	}
+
+	for (r = 0; r < b->recordCount; r++)
+	{
+		double p[3];
+
+		RldMk_Decoded(b, RLDMK_NEUTRAL_FRAME, b->record[r], p);
+		if (b->positionGroup[b->record[r]] == RLDMK_GROUP_KART)
+		{
+			for (a = 0; a < 3; a++)
+			{
+				kartLo[a] = (p[a] < kartLo[a]) ? p[a] : kartLo[a];
+				kartHi[a] = (p[a] > kartHi[a]) ? p[a] : kartHi[a];
+			}
+		}
+		else if (p[1] > *top)
+		{
+			*top = p[1];
+		}
+	}
+}
+
+static void RldMk_SelfTestSize(struct RldMkTestMesh *mesh)
+{
+	struct RldMkOptions opt;
+	struct RldMkPly ply;
+	struct RldMkPly plyAgain;
+	struct RldMkBuild b;
+	struct RldMkBuild again;
+	int ok;
+	int same;
+
+	memset(&plyAgain, 0, sizeof(plyAgain));
+	memset(&again, 0, sizeof(again));
+	RldMk_TestOptions(&opt);
+	RldMk_TestStandard(mesh, 2u, 0, 0.0, -1);
+
+	// 100 and 0 are the model as exported.
+	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+	opt.sizePercent = 0u;
+	same = ok && RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again) && (again.cmdlSize == b.cmdlSize) && (memcmp(again.cmdl, b.cmdl, b.cmdlSize) == 0);
+	RldMk_Test(same && (b.sizeLow == 50u) && (b.sizeHigh == 200u), "--size 100: the model as exported, range 50..200", "range %u..%u, same %d",
+	           b.sizeLow, b.sizeHigh, same);
+	RldMk_FreeBuild(&again);
+	RldMk_FreePly(&plyAgain);
+
+	// 120: the kart stays, the driver grows about the hip.
+	opt.sizePercent = 120u;
+	if (ok && RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again))
+	{
+		double top100;
+		double top120;
+		double lo100[3];
+		double hi100[3];
+		double lo120[3];
+		double hi120[3];
+		int kartSame = 1;
+		int a;
+
+		RldMk_TestMeasure(&b, &top100, lo100, hi100);
+		RldMk_TestMeasure(&again, &top120, lo120, hi120);
+		for (a = 0; a < 3; a++)
+		{
+			const double step = (double)again.scale[a] / 4096.0 * ((a == 1) ? 2.0 : 1.0) + (double)b.scale[a] / 4096.0 * ((a == 1) ? 2.0 : 1.0);
+
+			if (((lo120[a] - lo100[a]) > step) || ((lo100[a] - lo120[a]) > step) || ((hi120[a] - hi100[a]) > step) || ((hi100[a] - hi120[a]) > step))
+			{
+				kartSame = 0;
+			}
+		}
+		top100 = RLDMK_HIP_Y + 1.2 * (top100 - RLDMK_HIP_Y);
+		RldMk_Test(kartSame && ((top120 - top100) < 1.0) && ((top100 - top120) < 1.0), "--size 120: the kart stays, the driver grows about the hip",
+		           "kart same %d, driver top %.2f, expected %.2f", kartSame, top120, top100);
+	}
+	else
+	{
+		RldMk_Test(0, "--size 120: the kart stays, the driver grows about the hip", "not built, said: %s", s_rldMkCodes);
+	}
+	RldMk_FreeBuild(&again);
+	RldMk_FreePly(&plyAgain);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+
+	// A driver 4.8 long: at 188 % the model would be longer than 9 Blender units.
+	{
+		const double kartLo[3] = {-0.45, 0.10, -0.90};
+		const double kartHi[3] = {0.45, 0.35, 0.90};
+		const double driverLo[3] = {-0.25, 0.40, -2.40};
+		const double driverHi[3] = {0.25, 1.00, 2.40};
+		const double wheelLo[3] = {-0.15, 0.50, 0.30};
+		const double wheelHi[3] = {0.15, 0.60, 0.36};
+
+		mesh->vertexCount = 0;
+		mesh->faceCount = 0;
+		RldMk_TestBox(mesh, kartLo, kartHi, 1u, 0u, 0, -1);
+		RldMk_TestBox(mesh, driverLo, driverHi, 2u, 10u, 0, -1);
+		RldMk_TestBox(mesh, wheelLo, wheelHi, 1u, 20u, 0, -1);
+
+		opt.sizePercent = 100u;
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+		RldMk_Test(ok && (b.sizeLow == 50u) && (b.sizeHigh == 187u), "--size range of a long driver: 50..187", "built %d, range %u..%u", ok, b.sizeLow,
+		           b.sizeHigh);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+
+		opt.sizePercent = 187u;
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+		RldMk_Test(ok && !RldMk_Said("char-size"), "--size 187 of the long driver built", "said: %s", s_rldMkCodes);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+
+		opt.sizePercent = 200u;
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+		RldMk_Test(!ok && RldMk_Said("char-size"), "--size 200 of the long driver refused (char-size)", "said: %s", s_rldMkCodes);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+	}
+}
+
+// --- --preview -----------------------------------------------------------------------
+
+static int RldMk_TestPreviewCorner(const u8 *data, size_t at, int axis)
+{
+	const u32 raw = Rld_ReadLE16(&data[at + 2u * (u32)axis]);
+
+	return (raw >= 0x8000u) ? ((int)raw - 0x10000) : (int)raw;
+}
+
+static void RldMk_SelfTestPreview(struct RldMkTestMesh *mesh)
+{
+	struct RldMkOptions opt;
+	struct RldMkPly ply;
+	struct RldMkBuild b;
+	int box[6];
+	size_t size = 0;
+	u8 *data = NULL;
+	int ok;
+
+	RldMk_TestOptions(&opt);
+	RldMk_TestStandard(mesh, 2u, 0, 0.0, -1);
+	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+	if (ok)
+	{
+		data = RldMk_Preview(&b, &size, box);
+	}
+
+	ok = (data != NULL) && (size == (12u + 3u * (4u + (size_t)b.drawCount * 30u))) && (memcmp(data, "RLDPV1\0\0", 8u) == 0) && (Rld_ReadLE32(&data[8]) == 3u);
+	if (ok)
+	{
+		u32 pose;
+
+		for (pose = 0; pose < 3u; pose++)
+		{
+			ok = ok && (Rld_ReadLE32(&data[12u + (size_t)pose * (4u + (size_t)b.drawCount * 30u)]) == b.drawCount);
+		}
+	}
+	RldMk_Test(ok, "preview: RLDPV1, 3 poses, every triangle", "size %u, %u triangles", (u32)size, b.drawCount);
+
+	// The kart box: 0.9 x 0.25 x 1.8 at 0.1 above the ground, in game units.
+	RldMk_Test(ok && (box[0] >= -30) && (box[0] <= -28) && (box[3] >= 28) && (box[3] <= 30) && (box[1] >= 5) && (box[1] <= 8) && (box[4] >= 21) &&
+	               (box[4] <= 24) && (box[2] >= -59) && (box[2] <= -56) && (box[5] >= 56) && (box[5] <= 59),
+	           "preview: kart box in game units", "%d %d %d .. %d %d %d", box[0], box[1], box[2], box[3], box[4], box[5]);
+
+	// Neutral pose: every kart triangle faces out (its right-hand normal points
+	// away from the kart's middle) and has no both-sides bit; the driver leans
+	// toward +X in turn frame 0 (pose 1) and the other way in frame 20 (pose 2).
+	if (ok)
+	{
+		const int middle[3] = {(box[0] + box[3]) / 2, (box[1] + box[4]) / 2, (box[2] + box[5]) / 2};
+		s64 lean[3] = {0, 0, 0};
+		u32 kartTriangles = 0;
+		u32 inward = 0;
+		u32 bothSides = 0;
+		u32 pose;
+		u32 t;
+
+		for (pose = 0; pose < 3u; pose++)
+		{
+			const size_t first = 16u + (size_t)pose * (4u + (size_t)b.drawCount * 30u);
+
+			for (t = 0; t < b.drawCount; t++)
+			{
+				const size_t at = first + (size_t)t * 30u;
+				int c[3][3];
+				int inKart = 1;
+				int k;
+				int a;
+
+				for (k = 0; k < 3; k++)
+				{
+					for (a = 0; a < 3; a++)
+					{
+						c[k][a] = RldMk_TestPreviewCorner(data, at + 10u * (u32)k, a);
+						if ((c[k][a] < box[a]) || (c[k][a] > box[3 + a]))
+						{
+							inKart = 0;
+						}
+					}
+					bothSides += ((data[at + 10u * (u32)k + 9u] & 1u) != 0u) ? 1u : 0u;
+
+					// The same corners in every pose: those high up in the neutral one.
+					if (RldMk_TestPreviewCorner(data, 16u + (size_t)t * 30u + 10u * (u32)k, 1) > 30)
+					{
+						lean[pose] += c[k][0];
+					}
+				}
+
+				if ((pose == 0u) && inKart)
+				{
+					const s64 u[3] = {c[1][0] - c[0][0], c[1][1] - c[0][1], c[1][2] - c[0][2]};
+					const s64 v[3] = {c[2][0] - c[0][0], c[2][1] - c[0][1], c[2][2] - c[0][2]};
+					const s64 n[3] = {u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]};
+					const s64 out[3] = {c[0][0] + c[1][0] + c[2][0] - 3 * middle[0], c[0][1] + c[1][1] + c[2][1] - 3 * middle[1],
+					                    c[0][2] + c[1][2] + c[2][2] - 3 * middle[2]};
+
+					kartTriangles++;
+					if ((n[0] * out[0] + n[1] * out[1] + n[2] * out[2]) <= 0)
+					{
+						inward++;
+					}
+				}
+			}
+		}
+
+		RldMk_Test((kartTriangles == 12u) && (inward == 0u) && (bothSides == 0u), "preview: drawn sides counter-clockwise, facing out",
+		           "%u kart triangles, %u inward, %u both-sides corners", kartTriangles, inward, bothSides);
+		RldMk_Test((lean[1] > lean[0]) && (lean[0] > lean[2]), "preview: turn frame 0 leans toward +X, frame 20 the other way", "x sums %lld %lld %lld",
+		           (long long)lean[0], (long long)lean[1], (long long)lean[2]);
+	}
+	free(data);
+	data = NULL;
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+
+	// Both sides drawn: bit 0 of pad in every corner.
+	opt.twoSided = 1;
+	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+	if (ok)
+	{
+		data = RldMk_Preview(&b, &size, box);
+	}
+	if (data != NULL)
+	{
+		u32 marked = 0;
+		u32 t;
+
+		for (t = 0; t < 3u * b.drawCount; t++)
+		{
+			marked += ((data[16u + (size_t)t * 10u + 9u] & 1u) != 0u) ? 1u : 0u;
+		}
+		ok = (marked == (3u * b.drawCount));
+	}
+	RldMk_Test((data != NULL) && ok, "preview: --two-sided marks every corner", "not marked");
+	free(data);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+}
+
+// --- The PNG reader ------------------------------------------------------------------
+//
+// Pictures made here: samples from a formula, packed, filtered (every row
+// another filter), compressed into stored or fixed-Huffman blocks by the
+// small deflate below, wrapped in chunks with their CRC. A dynamic-Huffman
+// stream is given as bytes (made once by zlib 1.3.1 at level 9 from the samples
+// of RldMk_TestDynamicSample) - writing one here would be a second encoder.
+
+struct RldMkBitWriter
+{
+	struct RldMkBuffer *buffer;
+	u32 bits;
+	u32 count;
+};
+
+static void RldMk_PutBits(struct RldMkBitWriter *w, u32 value, u32 count)
+{
+	w->bits |= value << w->count;
+	w->count += count;
+	while (w->count >= 8u)
+	{
+		const u8 byte = (u8)(w->bits & 0xFFu);
+
+		RldMk_BufferBytes(w->buffer, &byte, 1u);
+		w->bits >>= 8;
+		w->count -= 8u;
+	}
+}
+
+static void RldMk_PutFlush(struct RldMkBitWriter *w)
+{
+	if (w->count != 0u)
+	{
+		const u8 byte = (u8)(w->bits & 0xFFu);
+
+		RldMk_BufferBytes(w->buffer, &byte, 1u);
+	}
+	w->bits = 0;
+	w->count = 0;
+}
+
+// A Huffman code goes out with its highest bit first.
+static void RldMk_PutCode(struct RldMkBitWriter *w, u32 code, u32 length)
+{
+	u32 reversed = 0;
+	u32 i;
+
+	for (i = 0; i < length; i++)
+	{
+		reversed = (reversed << 1) | ((code >> i) & 1u);
+	}
+	RldMk_PutBits(w, reversed, length);
+}
+
+// The fixed literal/length code (RFC 1951 3.2.6).
+static void RldMk_PutSymbol(struct RldMkBitWriter *w, u32 symbol)
+{
+	if (symbol < 144u)
+	{
+		RldMk_PutCode(w, 0x30u + symbol, 8u);
+	}
+	else if (symbol < 256u)
+	{
+		RldMk_PutCode(w, 0x190u + (symbol - 144u), 9u);
+	}
+	else if (symbol < 280u)
+	{
+		RldMk_PutCode(w, symbol - 256u, 7u);
+	}
+	else
+	{
+		RldMk_PutCode(w, 0xC0u + (symbol - 280u), 8u);
+	}
+}
+
+static void RldMk_PutMatch(struct RldMkBitWriter *w, u32 length, u32 distance)
+{
+	int i = RLDPNG_LENGTH_CODES - 1;
+	int j = RLDPNG_DISTANCE_CODES - 1;
+
+	while ((u32)s_rldPngLengthBase[i] > length)
+	{
+		i--;
+	}
+	RldMk_PutSymbol(w, 257u + (u32)i);
+	RldMk_PutBits(w, length - s_rldPngLengthBase[i], s_rldPngLengthExtra[i]);
+
+	while ((u32)s_rldPngDistanceBase[j] > distance)
+	{
+		j--;
+	}
+	RldMk_PutCode(w, (u32)j, 5u);
+	RldMk_PutBits(w, distance - s_rldPngDistanceBase[j], s_rldPngDistanceExtra[j]);
+}
+
+// A zlib stream. mode 0: stored blocks of 300 bytes; mode 1: two fixed-Huffman
+// blocks with literals and matches at distance 1 and `stride` (the row above).
+static void RldMk_TestDeflate(struct RldMkBuffer *out, const u8 *data, size_t size, int mode, size_t stride, int breakAdler)
+{
+	static const u8 header[2] = {0x78u, 0x01u};
+	struct RldMkBitWriter w;
+	u8 adler[4];
+	u32 sum;
+
+	memset(&w, 0, sizeof(w));
+	w.buffer = out;
+	RldMk_BufferBytes(out, header, 2u);
+
+	if (mode == 0)
+	{
+		size_t at = 0;
+
+		do
+		{
+			const size_t n = ((size - at) < 300u) ? (size - at) : 300u;
+			u8 lengths[4];
+
+			RldMk_PutBits(&w, ((at + n) == size) ? 1u : 0u, 1u);
+			RldMk_PutBits(&w, 0u, 2u);
+			RldMk_PutFlush(&w);
+			lengths[0] = (u8)(n & 0xFFu);
+			lengths[1] = (u8)((n >> 8) & 0xFFu);
+			lengths[2] = (u8)(~n & 0xFFu);
+			lengths[3] = (u8)((~n >> 8) & 0xFFu);
+			RldMk_BufferBytes(out, lengths, 4u);
+			RldMk_BufferBytes(out, &data[at], n);
+			at += n;
+		} while (at < size);
+	}
+	else
+	{
+		size_t at = 0;
+		int block;
+
+		for (block = 0; block < 2; block++)
+		{
+			const size_t end = (block == 0) ? (size / 2u) : size;
+
+			RldMk_PutBits(&w, (block == 1) ? 1u : 0u, 1u);
+			RldMk_PutBits(&w, 1u, 2u);
+
+			while (at < end)
+			{
+				const size_t candidates[2] = {1u, stride};
+				size_t bestLength = 0;
+				size_t bestDistance = 0;
+				int k;
+
+				for (k = 0; k < 2; k++)
+				{
+					const size_t d = candidates[k];
+					size_t length = 0;
+
+					if ((d == 0u) || (d > at))
+					{
+						continue;
+					}
+					while ((length < 258u) && ((at + length) < end) && (data[at + length] == data[at + length - d]))
+					{
+						length++;
+					}
+					if (length > bestLength)
+					{
+						bestLength = length;
+						bestDistance = d;
+					}
+				}
+
+				if (bestLength >= 3u)
+				{
+					RldMk_PutMatch(&w, (u32)bestLength, (u32)bestDistance);
+					at += bestLength;
+				}
+				else
+				{
+					RldMk_PutSymbol(&w, data[at]);
+					at++;
+				}
+			}
+
+			RldMk_PutSymbol(&w, 256u);
+		}
+		RldMk_PutFlush(&w);
+	}
+
+	sum = RldPng_Adler(data, size) ^ (breakAdler ? 1u : 0u);
+	adler[0] = (u8)(sum >> 24);
+	adler[1] = (u8)(sum >> 16);
+	adler[2] = (u8)(sum >> 8);
+	adler[3] = (u8)sum;
+	RldMk_BufferBytes(out, adler, 4u);
+}
+
+static void RldMk_PutBE32(u8 *at, u32 value)
+{
+	at[0] = (u8)(value >> 24);
+	at[1] = (u8)(value >> 16);
+	at[2] = (u8)(value >> 8);
+	at[3] = (u8)value;
+}
+
+static void RldMk_TestChunk(struct RldMkBuffer *png, const char *type, const u8 *data, u32 length)
+{
+	u8 *both = (u8 *)malloc((size_t)length + 4u);
+	u8 word[4];
+
+	if (both == NULL)
+	{
+		return;
+	}
+	memcpy(both, type, 4u);
+	if (length != 0u)
+	{
+		memcpy(&both[4], data, length);
+	}
+
+	RldMk_PutBE32(word, length);
+	RldMk_BufferBytes(png, word, 4u);
+	RldMk_BufferBytes(png, both, (size_t)length + 4u);
+	RldMk_PutBE32(word, RldPng_Crc(both, (size_t)length + 4u));
+	RldMk_BufferBytes(png, word, 4u);
+	free(both);
+}
+
+struct RldMkTestImage
+{
+	u32 width;
+	u32 height;
+	u32 colorType;
+	u32 depth;
+	int mode;            // 0 stored blocks, 1 fixed Huffman
+	int trns;            // a transparent key (types 0, 2) or palette alpha (type 3)
+	u32 paletteCount;    // type 3
+	int pictureA;        // the samples of RldMk_TestPixelA (RGBA 8 bit)
+	int badFilter;       // row 0 gets the unknown filter 5
+	int breakAdler;
+};
+
+// Test picture A, 60 x 40: transparent corners, a black ring, inside a
+// color ramp, the top rows at alpha 90 (below half coverage).
+static void RldMk_TestPixelA(u32 x, u32 y, u8 rgba[4])
+{
+	const int dx = 2 * (int)x - 59;
+	const int dy = 2 * (int)y - 39;
+	const int r2 = dx * dx + dy * dy;
+
+	if (r2 > 36 * 36)
+	{
+		rgba[0] = rgba[1] = rgba[2] = rgba[3] = 0;
+	}
+	else if (r2 > 31 * 31)
+	{
+		rgba[0] = rgba[1] = rgba[2] = 0;
+		rgba[3] = 255;
+	}
+	else
+	{
+		rgba[0] = (u8)((x * 4u) & 0xFFu);
+		rgba[1] = (u8)((y * 6u) & 0xFFu);
+		rgba[2] = (u8)(((x + y) * 3u) & 0xFFu);
+		rgba[3] = (u8)((y < 10u) ? 90u : 255u);
+	}
+}
+
+static u32 RldMk_TestMax(const struct RldMkTestImage *t)
+{
+	return (t->depth == 16u) ? 65535u : ((1u << t->depth) - 1u);
+}
+
+// Sample c of pixel x, y as stored, at the picture's depth.
+static u32 RldMk_TestSample(const struct RldMkTestImage *t, u32 x, u32 y, u32 c)
+{
+	if (t->pictureA)
+	{
+		u8 rgba[4];
+
+		RldMk_TestPixelA(x, y, rgba);
+		return rgba[c];
+	}
+
+	if (t->colorType == 3u)
+	{
+		return (x * 5u + y * 3u + x * y) % t->paletteCount;
+	}
+
+	return ((x * 5u + y * 3u + c * 7u + x * y) * ((t->depth == 16u) ? 2741u : 1u)) % (RldMk_TestMax(t) + 1u);
+}
+
+static u8 RldMk_TestPalette(u32 index, u32 channel)
+{
+	return (u8)((channel == 0u) ? (index * 16u) : ((channel == 1u) ? (255u - index * 16u) : ((index * 37u) & 0xFFu)));
+}
+
+// The pixel a reader has to give, from the formula - not from the reader.
+static void RldMk_TestExpected(const struct RldMkTestImage *t, u32 x, u32 y, u8 rgba[4])
+{
+	const u32 max = RldMk_TestMax(t);
+	u32 s[4];
+	u32 c;
+
+	if (t->pictureA)
+	{
+		RldMk_TestPixelA(x, y, rgba);
+		return;
+	}
+
+	for (c = 0; c < 4u; c++)
+	{
+		const u32 v = RldMk_TestSample(t, x, y, c);
+
+		s[c] = (t->depth == 16u) ? ((v * 255u + 32767u) / 65535u) : (v * 255u / max);
+	}
+
+	switch (t->colorType)
+	{
+	case 0:
+		rgba[0] = rgba[1] = rgba[2] = (u8)s[0];
+		rgba[3] = (u8)((t->trns && (RldMk_TestSample(t, x, y, 0u) == RldMk_TestSample(t, 1u, 0u, 0u))) ? 0u : 255u);
+		break;
+	case 2:
+		rgba[0] = (u8)s[0];
+		rgba[1] = (u8)s[1];
+		rgba[2] = (u8)s[2];
+		rgba[3] = (u8)((t->trns && (RldMk_TestSample(t, x, y, 0u) == RldMk_TestSample(t, 1u, 0u, 0u)) &&
+		                (RldMk_TestSample(t, x, y, 1u) == RldMk_TestSample(t, 1u, 0u, 1u)) && (RldMk_TestSample(t, x, y, 2u) == RldMk_TestSample(t, 1u, 0u, 2u)))
+		                   ? 0u
+		                   : 255u);
+		break;
+	case 3:
+	{
+		const u32 index = RldMk_TestSample(t, x, y, 0u);
+
+		rgba[0] = RldMk_TestPalette(index, 0u);
+		rgba[1] = RldMk_TestPalette(index, 1u);
+		rgba[2] = RldMk_TestPalette(index, 2u);
+		rgba[3] = (u8)((t->trns && (index < 6u)) ? (index * 40u) : 255u);
+		break;
+	}
+	case 4:
+		rgba[0] = rgba[1] = rgba[2] = (u8)s[0];
+		rgba[3] = (u8)s[1];
+		break;
+	default:
+		rgba[0] = (u8)s[0];
+		rgba[1] = (u8)s[1];
+		rgba[2] = (u8)s[2];
+		rgba[3] = (u8)s[3];
+		break;
+	}
+}
+
+static int RldMk_TestPaeth(int a, int b, int c)
+{
+	const int p = a + b - c;
+	const int pa = (p > a) ? (p - a) : (a - p);
+	const int pb = (p > b) ? (p - b) : (b - p);
+	const int pc = (p > c) ? (p - c) : (c - p);
+
+	return ((pa <= pb) && (pa <= pc)) ? a : ((pb <= pc) ? b : c);
+}
+
+// The whole PNG. NULL = out of memory.
+static u8 *RldMk_TestPng(const struct RldMkTestImage *t, size_t *sizeOut)
+{
+	const u32 channels = RldPng_Channels(t->colorType);
+	const size_t rowBytes = ((size_t)t->width * channels * t->depth + 7u) / 8u;
+	const size_t bpp = ((channels * t->depth) >= 8u) ? ((channels * t->depth) / 8u) : 1u;
+	struct RldMkBuffer idat;
+	struct RldMkBuffer png;
+	u8 *plain = (u8 *)calloc(rowBytes * t->height + 1u, 1u);
+	u8 *raw = (u8 *)malloc((rowBytes + 1u) * t->height + 1u);
+	u8 head[13];
+	u32 x;
+	u32 y;
+	u32 c;
+
+	*sizeOut = 0;
+	memset(&idat, 0, sizeof(idat));
+	memset(&png, 0, sizeof(png));
+	if ((plain == NULL) || (raw == NULL))
+	{
+		free(plain);
+		free(raw);
+		return NULL;
+	}
+
+	for (y = 0; y < t->height; y++)
+	{
+		u8 *row = &plain[(size_t)y * rowBytes];
+
+		for (x = 0; x < t->width; x++)
+		{
+			for (c = 0; c < channels; c++)
+			{
+				const u32 v = RldMk_TestSample(t, x, y, c);
+				const u32 bit = (x * channels + c) * t->depth;
+
+				if (t->depth == 16u)
+				{
+					row[bit / 8u] = (u8)(v >> 8);
+					row[bit / 8u + 1u] = (u8)v;
+				}
+				else if (t->depth == 8u)
+				{
+					row[bit / 8u] = (u8)v;
+				}
+				else
+				{
+					row[bit / 8u] = (u8)(row[bit / 8u] | (v << (8u - t->depth - (bit & 7u))));
+				}
+			}
+		}
+	}
+
+	for (y = 0; y < t->height; y++)
+	{
+		const u8 *row = &plain[(size_t)y * rowBytes];
+		const u8 *above = (y > 0u) ? &plain[(size_t)(y - 1u) * rowBytes] : NULL;
+		u8 *line = &raw[(size_t)y * (rowBytes + 1u)];
+		const u32 filter = (t->badFilter && (y == 0u)) ? 5u : (y % 5u);
+		size_t i;
+
+		line[0] = (u8)filter;
+		for (i = 0; i < rowBytes; i++)
+		{
+			const int a = (i >= bpp) ? row[i - bpp] : 0;
+			const int b = (above != NULL) ? above[i] : 0;
+			const int cc = ((i >= bpp) && (above != NULL)) ? above[i - bpp] : 0;
+			int predicted = 0;
+
+			if (filter == 1u)
+			{
+				predicted = a;
+			}
+			else if (filter == 2u)
+			{
+				predicted = b;
+			}
+			else if (filter == 3u)
+			{
+				predicted = (a + b) >> 1;
+			}
+			else if (filter == 4u)
+			{
+				predicted = RldMk_TestPaeth(a, b, cc);
+			}
+			line[1u + i] = (u8)(row[i] - predicted);
+		}
+	}
+
+	RldMk_TestDeflate(&idat, raw, (rowBytes + 1u) * t->height, t->mode, rowBytes + 1u, t->breakAdler);
+	free(plain);
+	free(raw);
+
+	RldMk_BufferBytes(&png, s_rldPngSignature, 8u);
+	RldMk_PutBE32(&head[0], t->width);
+	RldMk_PutBE32(&head[4], t->height);
+	head[8] = (u8)t->depth;
+	head[9] = (u8)t->colorType;
+	head[10] = 0;
+	head[11] = 0;
+	head[12] = 0;
+	RldMk_TestChunk(&png, "IHDR", head, 13u);
+	RldMk_TestChunk(&png, "tEXt", (const u8 *)"Comment\0rldpack self-test", 25u);
+
+	if (t->colorType == 3u)
+	{
+		u8 palette[3u * 256u];
+		u8 alpha[6];
+		u32 i;
+
+		for (i = 0; i < t->paletteCount; i++)
+		{
+			palette[3u * i + 0u] = RldMk_TestPalette(i, 0u);
+			palette[3u * i + 1u] = RldMk_TestPalette(i, 1u);
+			palette[3u * i + 2u] = RldMk_TestPalette(i, 2u);
+		}
+		RldMk_TestChunk(&png, "PLTE", palette, 3u * t->paletteCount);
+
+		if (t->trns)
+		{
+			for (i = 0; i < 6u; i++)
+			{
+				alpha[i] = (u8)(i * 40u);
+			}
+			RldMk_TestChunk(&png, "tRNS", alpha, (t->paletteCount < 6u) ? t->paletteCount : 6u);
+		}
+	}
+	else if (t->trns && ((t->colorType == 0u) || (t->colorType == 2u)))
+	{
+		u8 key[6];
+
+		for (c = 0; c < 3u; c++)
+		{
+			const u32 v = RldMk_TestSample(t, 1u, 0u, c);
+
+			key[2u * c] = (u8)(v >> 8);
+			key[2u * c + 1u] = (u8)v;
+		}
+		RldMk_TestChunk(&png, "tRNS", key, (t->colorType == 0u) ? 2u : 6u);
+	}
+
+	// Two IDAT: the reader joins them.
+	RldMk_TestChunk(&png, "IDAT", idat.data, (u32)(idat.size / 2u));
+	RldMk_TestChunk(&png, "IDAT", &idat.data[idat.size / 2u], (u32)(idat.size - idat.size / 2u));
+	RldMk_TestChunk(&png, "IEND", NULL, 0u);
+	free(idat.data);
+
+	*sizeOut = png.size;
+	return png.data;
+}
+
+// Decoded as expected, pixel for pixel?
+static int RldMk_TestDecodes(const struct RldMkTestImage *t, const u8 *png, size_t size)
+{
+	struct RldPngImage image;
+	const char *why = NULL;
+	int ok;
+	u32 x;
+	u32 y;
+
+	ok = (png != NULL) && (RldPng_Decode(png, size, &image, &why) == RLDPNG_OK) && (image.width == t->width) && (image.height == t->height);
+	for (y = 0; ok && (y < t->height); y++)
+	{
+		for (x = 0; ok && (x < t->width); x++)
+		{
+			u8 want[4];
+
+			RldMk_TestExpected(t, x, y, want);
+			ok = (memcmp(&image.rgba[((size_t)y * t->width + x) * 4u], want, 4u) == 0);
+		}
+	}
+
+	if (png != NULL)
+	{
+		RldPng_Free(&image);
+	}
+	return ok;
+}
+
+// The samples the dynamic-Huffman stream below holds: gray, 8 bit, 32 x 16, filter 0.
+static u8 RldMk_TestDynamicSample(u32 x, u32 y)
+{
+	return (u8)(((((x * x + 3u * y * y + x * y) % 7u) < 2u) ? 200u : 40u) + ((x ^ y) & 3u));
+}
+
+static const u8 s_rldMkTestDynamic[142] = {
+	0x78, 0xDA, 0x8D, 0x51, 0xD9, 0x0D, 0x43, 0x31, 0x08, 0xF3, 0x38, 0x04, 0xF6, 0xDF, 0x81, 0x63,
+	0xA9, 0xC7, 0x51, 0xA9, 0x7D, 0x57, 0xD4, 0x0F, 0xCB, 0x52, 0x20, 0xD8, 0x06, 0xA8, 0xB1, 0xD0,
+	0xF2, 0xD0, 0x95, 0x6C, 0x1E, 0x94, 0xAC, 0xE6, 0xF9, 0xC6, 0x51, 0x35, 0x2C, 0x12, 0x4F, 0xF0,
+	0xA2, 0xE0, 0x66, 0x95, 0x66, 0xEB, 0x37, 0x71, 0x70, 0xFE, 0xA9, 0xFE, 0x44, 0xCD, 0x4A, 0xD4,
+	0xAC, 0x44, 0xCD, 0x4A, 0x60, 0xFA, 0xDF, 0x81, 0xD2, 0xDC, 0xE1, 0xE3, 0x21, 0xC6, 0x83, 0x8E,
+	0x07, 0x1B, 0x0F, 0x3E, 0x1E, 0x46, 0x7F, 0x8D, 0x3E, 0x8D, 0xBE, 0x8C, 0x7E, 0x31, 0xA2, 0x33,
+	0x98, 0x76, 0x06, 0xB7, 0xCE, 0x10, 0xDE, 0x19, 0xB4, 0x6A, 0xF8, 0xF6, 0x3E, 0xCF, 0xC1, 0x55,
+	0xF3, 0xEA, 0x07, 0xFB, 0x0C, 0x7F, 0xEE, 0x61, 0xBB, 0x4B, 0xFC, 0xEE, 0xFD, 0xE9, 0x26, 0xB8,
+	0xDF, 0xEF, 0x7C, 0x5B, 0xDC, 0xEF, 0x77, 0x9E, 0x73, 0x00, 0xF7, 0x89, 0x92, 0x21,
+};
+
+// Rewrites the CRC of the chunk at `at` after a change of its data.
+static void RldMk_TestPatchCrc(u8 *png, size_t at)
+{
+	const u32 length = RldPng_BE32(&png[at]);
+
+	RldMk_PutBE32(&png[at + 8u + length], RldPng_Crc(&png[at + 4u], (size_t)length + 4u));
+}
+
+static int RldMk_TestRefused(const u8 *png, size_t size, int expected)
+{
+	struct RldPngImage image;
+	const char *why = NULL;
+	const int result = RldPng_Decode(png, size, &image, &why);
+
+	if (result == RLDPNG_OK)
+	{
+		RldPng_Free(&image);
+	}
+	return (result == expected) && (why != NULL) && (image.rgba == NULL);
+}
+
+static void RldMk_SelfTestPng(void)
+{
+	static const struct
+	{
+		u32 width, height, colorType, depth;
+		int mode, trns;
+		u32 paletteCount;
+		const char *name;
+	} cases[8] = {
+		{13u, 7u, 3u, 4u, 0, 1, 11u, "png: palette 4 bit, tRNS, stored blocks"},
+		{17u, 5u, 0u, 1u, 0, 1, 0u, "png: gray 1 bit, tRNS, stored blocks"},
+		{9u, 4u, 0u, 2u, 1, 0, 0u, "png: gray 2 bit, fixed Huffman"},
+		{5u, 4u, 0u, 16u, 1, 0, 0u, "png: gray 16 bit, fixed Huffman"},
+		{9u, 6u, 2u, 8u, 1, 1, 0u, "png: RGB 8 bit, tRNS, fixed Huffman"},
+		{7u, 3u, 4u, 8u, 0, 0, 0u, "png: gray and alpha 8 bit, stored blocks"},
+		{4u, 2u, 6u, 16u, 1, 0, 0u, "png: RGBA 16 bit, fixed Huffman"},
+		{6u, 5u, 3u, 1u, 1, 0, 2u, "png: palette 1 bit, fixed Huffman"},
+	};
+	struct RldMkTestImage t;
+	size_t size = 0;
+	u8 *png;
+	int c;
+
+	for (c = 0; c < 8; c++)
+	{
+		memset(&t, 0, sizeof(t));
+		t.width = cases[c].width;
+		t.height = cases[c].height;
+		t.colorType = cases[c].colorType;
+		t.depth = cases[c].depth;
+		t.mode = cases[c].mode;
+		t.trns = cases[c].trns;
+		t.paletteCount = cases[c].paletteCount;
+		png = RldMk_TestPng(&t, &size);
+		RldMk_Test(RldMk_TestDecodes(&t, png, size), cases[c].name, "the pixels differ");
+		free(png);
+	}
+
+	// Picture A in both block kinds.
+	memset(&t, 0, sizeof(t));
+	t.width = 60u;
+	t.height = 40u;
+	t.colorType = 6u;
+	t.depth = 8u;
+	t.pictureA = 1;
+	for (c = 0; c < 2; c++)
+	{
+		t.mode = c;
+		png = RldMk_TestPng(&t, &size);
+		RldMk_Test(RldMk_TestDecodes(&t, png, size), (c == 0) ? "png: picture A, stored blocks" : "png: picture A, fixed Huffman with matches",
+		           "the pixels differ");
+		free(png);
+	}
+
+	// A dynamic-Huffman block.
+	{
+		struct RldMkBuffer file;
+		struct RldPngImage image;
+		const char *why = NULL;
+		u8 head[13];
+		int ok;
+		u32 x;
+		u32 y;
+
+		memset(&file, 0, sizeof(file));
+		memset(&image, 0, sizeof(image));
+		RldMk_BufferBytes(&file, s_rldPngSignature, 8u);
+		RldMk_PutBE32(&head[0], 32u);
+		RldMk_PutBE32(&head[4], 16u);
+		head[8] = 8u;
+		head[9] = 0u;
+		head[10] = 0u;
+		head[11] = 0u;
+		head[12] = 0u;
+		RldMk_TestChunk(&file, "IHDR", head, 13u);
+		RldMk_TestChunk(&file, "IDAT", s_rldMkTestDynamic, (u32)sizeof(s_rldMkTestDynamic));
+		RldMk_TestChunk(&file, "IEND", NULL, 0u);
+
+		ok = (file.data != NULL) && (RldPng_Decode(file.data, file.size, &image, &why) == RLDPNG_OK);
+		for (y = 0; ok && (y < 16u); y++)
+		{
+			for (x = 0; ok && (x < 32u); x++)
+			{
+				const u8 *pixel = &image.rgba[(y * 32u + x) * 4u];
+				const u8 v = RldMk_TestDynamicSample(x, y);
+
+				ok = (pixel[0] == v) && (pixel[1] == v) && (pixel[2] == v) && (pixel[3] == 255u);
+			}
+		}
+		if ((file.data != NULL) && (image.rgba != NULL))
+		{
+			RldPng_Free(&image);
+		}
+		RldMk_Test(ok, "png: a dynamic-Huffman block", "%s", (why != NULL) ? why : "the pixels differ");
+
+		// The same stream cut short.
+		if (file.data != NULL)
+		{
+			struct RldMkBuffer cut;
+
+			memset(&cut, 0, sizeof(cut));
+			RldMk_BufferBytes(&cut, file.data, 8u + 25u);
+			RldMk_TestChunk(&cut, "IDAT", s_rldMkTestDynamic, 100u);
+			RldMk_TestChunk(&cut, "IEND", NULL, 0u);
+			RldMk_Test((cut.data != NULL) && RldMk_TestRefused(cut.data, cut.size, RLDPNG_BAD), "png: a cut dynamic block refused", "accepted");
+			free(cut.data);
+		}
+		free(file.data);
+	}
+
+	// THE REFUSALS, each from picture A with one thing broken. IHDR lies at 8,
+	// its data at 16, its CRC at 29; tEXt follows at 33.
+	t.mode = 1;
+	png = RldMk_TestPng(&t, &size);
+	if (png != NULL)
+	{
+		u8 *bad = (u8 *)malloc(size + 64u);
+		const u32 textLength = RldPng_BE32(&png[33]);
+		const size_t idatAt = 33u + 12u + textLength;
+
+		if (bad != NULL)
+		{
+			memcpy(bad, png, size);
+			bad[idatAt + 8u + 5u] ^= 0x10u;
+			RldMk_Test(RldMk_TestRefused(bad, size, RLDPNG_BAD), "png: a wrong CRC refused", "accepted");
+
+			memcpy(bad, png, size);
+			bad[16u + 12u] = 1u;
+			RldMk_TestPatchCrc(bad, 8u);
+			RldMk_Test(RldMk_TestRefused(bad, size, RLDPNG_INTERLACED), "png: interlaced refused with its own answer", "not so");
+
+			memcpy(bad, png, size);
+			RldMk_PutBE32(&bad[16u], 5000u);
+			RldMk_TestPatchCrc(bad, 8u);
+			RldMk_Test(RldMk_TestRefused(bad, size, RLDPNG_TOO_LARGE), "png: 5000 pixels wide refused before any memory", "not so");
+
+			memcpy(bad, png, size);
+			bad[16u + 9u] = 2u;
+			bad[16u + 8u] = 4u;
+			RldMk_TestPatchCrc(bad, 8u);
+			RldMk_Test(RldMk_TestRefused(bad, size, RLDPNG_BAD), "png: RGB with 4 bits refused", "accepted");
+
+			memcpy(bad, png, size);
+			RldMk_PutBE32(&bad[idatAt], 0x7FFFFFF0u);
+			RldMk_Test(RldMk_TestRefused(bad, size, RLDPNG_BAD), "png: a chunk longer than the file refused", "accepted");
+
+			memcpy(bad, png, size);
+			RldMk_PutBE32(&bad[8u], 12u);
+			RldMk_Test(RldMk_TestRefused(bad, size, RLDPNG_BAD), "png: IHDR of 12 bytes refused", "accepted");
+
+			RldMk_Test(RldMk_TestRefused(png, size - 12u, RLDPNG_BAD), "png: no IEND refused", "accepted");
+			RldMk_Test(RldMk_TestRefused(png, 20u, RLDPNG_BAD), "png: cut in the header refused", "accepted");
+
+			memcpy(bad, png, size);
+			bad[1] = 'Q';
+			RldMk_Test(RldMk_TestRefused(bad, size, RLDPNG_BAD), "png: no signature refused", "accepted");
+
+			// An unknown critical chunk in front of IEND.
+			memcpy(bad, png, size - 12u);
+			{
+				struct RldMkBuffer more;
+
+				memset(&more, 0, sizeof(more));
+				RldMk_BufferBytes(&more, bad, size - 12u);
+				RldMk_TestChunk(&more, "ABCD", (const u8 *)"x", 1u);
+				RldMk_TestChunk(&more, "IEND", NULL, 0u);
+				RldMk_Test((more.data != NULL) && RldMk_TestRefused(more.data, more.size, RLDPNG_BAD), "png: an unknown critical chunk refused", "accepted");
+				free(more.data);
+			}
+			free(bad);
+		}
+		free(png);
+	}
+
+	t.breakAdler = 1;
+	png = RldMk_TestPng(&t, &size);
+	RldMk_Test((png != NULL) && RldMk_TestRefused(png, size, RLDPNG_BAD), "png: a wrong Adler-32 refused", "accepted");
+	free(png);
+	t.breakAdler = 0;
+
+	t.badFilter = 1;
+	png = RldMk_TestPng(&t, &size);
+	RldMk_Test((png != NULL) && RldMk_TestRefused(png, size, RLDPNG_BAD), "png: an unknown row filter refused", "accepted");
+	free(png);
+}
+
+// --- --icon --------------------------------------------------------------------------
+
+// Picture A decoded, for the icon tests and the golden hash. 1 = read.
+static int RldMk_TestPictureA(struct RldPngImage *image)
+{
+	struct RldMkTestImage t;
+	const char *why = NULL;
+	size_t size = 0;
+	u8 *png;
+	int ok;
+
+	memset(&t, 0, sizeof(t));
+	memset(image, 0, sizeof(*image));
+	t.width = 60u;
+	t.height = 40u;
+	t.colorType = 6u;
+	t.depth = 8u;
+	t.mode = 1;
+	t.pictureA = 1;
+
+	png = RldMk_TestPng(&t, &size);
+	ok = (png != NULL) && (RldPng_Decode(png, size, image, &why) == RLDPNG_OK);
+	free(png);
+	return ok;
+}
+
+static void RldMk_SelfTestIcon(const struct RldPngImage *a)
+{
+	static struct RldMkIcon icon;
+	static struct RldMkIcon again;
+	static u8 pixels[22u * 13u * 4u];
+	struct RldPngImage small;
+	u8 broken[RLDCHAR_ICON_BYTES + 4u];
+	int ok;
+	u32 i;
+
+	ok = RldMk_MakeIcon(a, &icon) && RldMk_MakeIcon(a, &again) && (memcmp(icon.cicn, again.cicn, sizeof(icon.cicn)) == 0);
+	RldMk_Test(ok && (RldChar_CheckIcon(icon.cicn, sizeof(icon.cicn)) == NULL) && (Rld_ReadLE16(&icon.cicn[0x04]) == 44u) &&
+	               (Rld_ReadLE16(&icon.cicn[0x06]) == 26u),
+	           "icon: CICN 1, 4 bit, 44 x 26, 612 bytes, twice the same", "not so");
+	RldMk_Test(ok && (icon.crop[0] == 0u) && (icon.crop[1] == 2u) && (icon.crop[2] == 60u) && (icon.crop[3] == 35u),
+	           "icon: 60 x 40 cut to 60 x 35 in the middle", "cut %u x %u at %u,%u", icon.crop[2], icon.crop[3], icon.crop[0], icon.crop[1]);
+	RldMk_Test(ok && (icon.index[0][0] == 0u) && (icon.index[25][43] == 0u) && (icon.index[13][22] != 0u) && (icon.index[3][22] == 0u) &&
+	               (icon.colorCount >= 2u) && (icon.colorCount <= 15u) && (icon.clut[0] == 0u),
+	           "icon: corners and the half-covered top transparent, at most 15 colors", "%u colors, corner %u, middle %u, top %u", icon.colorCount,
+	           (u32)icon.index[0][0], (u32)icon.index[13][22], (u32)icon.index[3][22]);
+	{
+		int used = 1;
+
+		for (i = 0; i < (u32)RLDMK_ICON_TEXELS; i++)
+		{
+			const u32 index = icon.index[i / RLDCHAR_ICON_WIDTH][i % RLDCHAR_ICON_WIDTH];
+			const u32 word = Rld_ReadLE16(&icon.cicn[RLDCHAR_ICON_WORDS_AT + 2u * (i / 4u)]);
+
+			if ((index > icon.colorCount) || (((word >> (4u * (i % 4u))) & 15u) != index) || ((index != 0u) && (icon.clut[index] == 0u)))
+			{
+				used = 0;
+			}
+		}
+		RldMk_Test(ok && used, "icon: texel words, low nibble first, no opaque texel on 0x0000", "not so");
+	}
+
+	// Black and white, 22 x 13 (each pixel 2 x 2 texels): 0x0421 and 0x7FFF.
+	for (i = 0; i < (22u * 13u); i++)
+	{
+		const u8 v = (u8)(((i % 22u) < 11u) ? 0u : 255u);
+
+		pixels[4u * i + 0u] = v;
+		pixels[4u * i + 1u] = v;
+		pixels[4u * i + 2u] = v;
+		pixels[4u * i + 3u] = 255u;
+	}
+	memset(&small, 0, sizeof(small));
+	small.width = 22u;
+	small.height = 13u;
+	small.rgba = pixels;
+	ok = RldMk_MakeIcon(&small, &icon) && (icon.opaque == (u32)RLDMK_ICON_TEXELS) && (icon.colorCount == 2u);
+	RldMk_Test(ok && (icon.clut[1] == RLDCHAR_ICON_BLACK) && (icon.clut[2] == 0x7FFFu) && (icon.index[0][0] == 1u) && (icon.index[0][43] == 2u),
+	           "icon: black is 0x0421, white 0x7FFF, a small picture enlarged", "%u colors, clut %04x %04x", icon.colorCount, (u32)icon.clut[1], (u32)icon.clut[2]);
+
+	// Coverage: alpha 127 is transparent, 128 is not.
+	for (i = 0; i < (22u * 13u); i++)
+	{
+		pixels[4u * i + 3u] = 127u;
+	}
+	ok = RldMk_MakeIcon(&small, &icon) && (icon.opaque == 0u);
+	for (i = 0; i < (22u * 13u); i++)
+	{
+		pixels[4u * i + 3u] = 128u;
+	}
+	ok = ok && RldMk_MakeIcon(&small, &icon) && (icon.opaque == (u32)RLDMK_ICON_TEXELS);
+	RldMk_Test(ok, "icon: below half coverage transparent", "not so");
+
+	// CICN-1..3.
+	RldMk_MakeIcon(a, &icon);
+	memcpy(broken, icon.cicn, RLDCHAR_ICON_BYTES);
+	Rld_WriteLE16(&broken[0x00], 2u);
+	ok = (RldChar_CheckIcon(broken, RLDCHAR_ICON_BYTES) != NULL) && (strncmp(RldChar_CheckIcon(broken, RLDCHAR_ICON_BYTES), "CICN-1", 6) == 0);
+	memcpy(broken, icon.cicn, RLDCHAR_ICON_BYTES);
+	Rld_WriteLE16(&broken[0x02], 8u);
+	ok = ok && (strncmp(RldChar_CheckIcon(broken, RLDCHAR_ICON_BYTES), "CICN-1", 6) == 0);
+	memcpy(broken, icon.cicn, RLDCHAR_ICON_BYTES);
+	Rld_WriteLE16(&broken[0x04], 43u);
+	ok = ok && (strncmp(RldChar_CheckIcon(broken, RLDCHAR_ICON_BYTES), "CICN-2", 6) == 0);
+	memcpy(broken, icon.cicn, RLDCHAR_ICON_BYTES);
+	ok = ok && (strncmp(RldChar_CheckIcon(broken, RLDCHAR_ICON_BYTES - 1u), "CICN-3", 6) == 0) &&
+	     (strncmp(RldChar_CheckIcon(broken, RLDCHAR_ICON_BYTES + 1u), "CICN-3", 6) == 0) && (strncmp(RldChar_CheckIcon(broken, 4u), "CICN-3", 6) == 0);
+	RldMk_Test(ok, "icon: CICN-1..3 refuse version, depth, size, length", "not so");
+}
+
+// --- --voices ------------------------------------------------------------------------
+
+// A 16-bit PCM WAV. kind 0: a triangle wave, 1: some samples at full level, 2: silence.
+static u8 *RldMk_TestWav(u32 rate, u32 channels, u32 frames, int kind, int psound, size_t *sizeOut)
+{
+	struct RldMkBuffer wav;
+	const u32 dataBytes = frames * channels * 2u;
+	const u32 listBytes = psound ? 32u : 0u;
+	u8 word[4];
+	u32 i;
+
+	memset(&wav, 0, sizeof(wav));
+	RldMk_BufferBytes(&wav, "RIFF", 4u);
+	RldMk_BufferLE32(&wav, 4u + 24u + listBytes + 8u + dataBytes);
+	RldMk_BufferBytes(&wav, "WAVEfmt ", 8u);
+	RldMk_BufferLE32(&wav, 16u);
+	Rld_WriteLE16(word, 1u);
+	Rld_WriteLE16(&word[2], channels);
+	RldMk_BufferBytes(&wav, word, 4u);
+	RldMk_BufferLE32(&wav, rate);
+	RldMk_BufferLE32(&wav, rate * channels * 2u);
+	Rld_WriteLE16(word, channels * 2u);
+	Rld_WriteLE16(&word[2], 16u);
+	RldMk_BufferBytes(&wav, word, 4u);
+
+	if (psound)
+	{
+		// LIST INFO ISFT "PSound 3.0" with its NUL, 11 bytes and one pad byte.
+		RldMk_BufferBytes(&wav, "LIST", 4u);
+		RldMk_BufferLE32(&wav, 24u);
+		RldMk_BufferBytes(&wav, "INFOISFT", 8u);
+		RldMk_BufferLE32(&wav, 11u);
+		RldMk_BufferBytes(&wav, "PSound 3.0\0\0", 12u);
+	}
+
+	RldMk_BufferBytes(&wav, "data", 4u);
+	RldMk_BufferLE32(&wav, dataBytes);
+	for (i = 0; i < (frames * channels); i++)
+	{
+		const u32 phase = i % 64u;
+		int value = (phase < 32u) ? ((int)phase * 500 - 8000) : ((64 - (int)phase) * 500 - 8000);
+
+		if (kind == 1)
+		{
+			value = ((i % 100u) == 0u) ? 32767 : value;
+		}
+		else if (kind == 2)
+		{
+			value = 0;
+		}
+		Rld_WriteLE16(word, (u32)value & 0xFFFFu);
+		RldMk_BufferBytes(&wav, word, 2u);
+	}
+
+	*sizeOut = wav.size;
+	return wav.data;
+}
+
+// A VAG: header, a zero block, `blocks` blocks of samples, the last with the end flag.
+static u8 *RldMk_TestVag(u32 blocks, int badSize, size_t *sizeOut)
+{
+	struct RldMkBuffer vag;
+	u8 head[0x30];
+	u8 block[16];
+	u32 b;
+	u32 k;
+
+	memset(&vag, 0, sizeof(vag));
+	memset(head, 0, sizeof(head));
+	memcpy(head, "VAGp", 4u);
+	RldMk_PutBE32(&head[0x04], 3u);
+	RldMk_PutBE32(&head[0x0C], (blocks + 1u) * 16u + (badSize ? 64u : 0u));
+	RldMk_PutBE32(&head[0x10], 11025u);
+	memcpy(&head[0x20], "test", 4u);
+	RldMk_BufferBytes(&vag, head, sizeof(head));
+
+	memset(block, 0, sizeof(block));
+	RldMk_BufferBytes(&vag, block, sizeof(block));
+	for (b = 0; b < blocks; b++)
+	{
+		block[0] = 0x02u;   // shift 2, filter 0
+		block[1] = (u8)(((b + 1u) == blocks) ? 1u : 0u);
+		for (k = 2; k < 16u; k++)
+		{
+			block[k] = (u8)((k * 3u + b) & 0x77u);
+		}
+		RldMk_BufferBytes(&vag, block, sizeof(block));
+	}
+
+	*sizeOut = vag.size;
+	return vag.data;
+}
+
+struct RldMkTestVoices
+{
+	struct RldMkVoiceFile files[8];
+	u32 count;
+};
+
+static void RldMk_TestVoice(struct RldMkTestVoices *v, const char *name, u8 *data, size_t size)
+{
+	snprintf(v->files[v->count].name, sizeof(v->files[0].name), "%s", name);
+	v->files[v->count].data = data;
+	v->files[v->count].size = size;
+	v->count++;
+}
+
+static void RldMk_TestVoicesFree(struct RldMkTestVoices *v)
+{
+	u32 i;
+
+	for (i = 0; i < v->count; i++)
+	{
+		free(v->files[i].data);
+	}
+	memset(v, 0, sizeof(*v));
+}
+
+static void RldMk_SelfTestVoices(void)
+{
+	struct RldMkTestVoices v;
+	size_t size = 0;
+	u8 *data;
+
+	// A good set: one line as WAV, a short sound as VAG, template 14.
+	memset(&v, 0, sizeof(v));
+	data = RldMk_TestWav(11025u, 1u, 5513u, 0, 0, &size);
+	RldMk_TestVoice(&v, "boost1.wav", data, size);
+	data = RldMk_TestVag(20u, 0, &size);
+	RldMk_TestVoice(&v, "yes.vag", data, size);
+	RldMk_ResetSaid();
+	RldMk_CheckVoices(v.files, v.count, 14u, NULL);
+	RldMk_Test((s_rldMkErrors == 0) && RldMk_Said("voice-later") && RldMk_Said("voice-missing") && !RldMk_Said("voice-template") &&
+	               !RldMk_Said("voice-clip") && !RldMk_Said("voice-length-line") && !RldMk_Said("voice-silent"),
+	           "voices: a WAV line and a VAG sound read, the gaps named, voice-later", "said: %s", s_rldMkCodes);
+
+	// The short sound with a template that cannot play it.
+	RldMk_ResetSaid();
+	RldMk_CheckVoices(v.files, v.count, 0u, NULL);
+	RldMk_Test(RldMk_Said("voice-template"), "voices: yes with template 0 warned", "said: %s", s_rldMkCodes);
+	RldMk_TestVoicesFree(&v);
+
+	// Names: a double, an unknown, another file.
+	data = RldMk_TestVag(4u, 0, &size);
+	RldMk_TestVoice(&v, "BOOST1.VAG", data, size);
+	data = RldMk_TestWav(22050u, 1u, 2000u, 0, 0, &size);
+	RldMk_TestVoice(&v, "boost1.wav", data, size);
+	data = RldMk_TestWav(22050u, 1u, 2000u, 0, 0, &size);
+	RldMk_TestVoice(&v, "hit3.wav", data, size);
+	data = (u8 *)malloc(4u);
+	if (data != NULL)
+	{
+		memcpy(data, "text", 4u);
+	}
+	RldMk_TestVoice(&v, "readme.txt", data, 4u);
+	RldMk_ResetSaid();
+	RldMk_CheckVoices(v.files, v.count, 14u, NULL);
+	RldMk_Test((s_rldMkErrors == 0) && RldMk_Said("voice-double") && RldMk_Said("voice-unknown") && RldMk_Said("voice-other"),
+	           "voices: double, unknown and other files named", "said: %s", s_rldMkCodes);
+	RldMk_TestVoicesFree(&v);
+
+	// Level, length, channels, source, the same sound twice.
+	data = RldMk_TestWav(11025u, 2u, 3000u, 0, 0, &size);
+	RldMk_TestVoice(&v, "drop1.wav", data, size);
+	data = RldMk_TestWav(11025u, 1u, 3000u, 1, 0, &size);
+	RldMk_TestVoice(&v, "drop2.wav", data, size);
+	data = RldMk_TestWav(11025u, 1u, 44100u, 0, 0, &size);
+	RldMk_TestVoice(&v, "fire1.wav", data, size);
+	data = RldMk_TestWav(11025u, 1u, 3000u, 2, 0, &size);
+	RldMk_TestVoice(&v, "hit1.wav", data, size);
+	data = RldMk_TestWav(11025u, 1u, 3000u, 0, 1, &size);
+	RldMk_TestVoice(&v, "spin1.wav", data, size);
+	data = RldMk_TestWav(11025u, 1u, 3000u, 0, 0, &size);
+	RldMk_TestVoice(&v, "spin2.wav", data, size);
+	data = RldMk_TestWav(11025u, 1u, 16538u, 0, 0, &size);
+	RldMk_TestVoice(&v, "yes.wav", data, size);
+	RldMk_ResetSaid();
+	RldMk_CheckVoices(v.files, v.count, 14u, NULL);
+	RldMk_Test((s_rldMkErrors == 0) && RldMk_Said("voice-stereo") && RldMk_Said("voice-clip") && RldMk_Said("voice-length-line") &&
+	               RldMk_Said("voice-silent") && RldMk_Said("voice-source") && RldMk_Said("voice-same") && RldMk_Said("voice-length-short"),
+	           "voices: stereo, clipped, too long, silent, PSound, the same sound", "said: %s", s_rldMkCodes);
+	RldMk_TestVoicesFree(&v);
+
+	// Files rldpack cannot read stop the build.
+	data = RldMk_TestWav(11025u, 1u, 100u, 0, 0, &size);
+	if (data != NULL)
+	{
+		memcpy(&data[8], "WAVX", 4u);
+	}
+	RldMk_TestVoice(&v, "shield1.wav", data, size);
+	data = RldMk_TestWav(96000u, 1u, 100u, 0, 0, &size);
+	RldMk_TestVoice(&v, "shield2.wav", data, size);
+	data = RldMk_TestVag(4u, 1, &size);
+	RldMk_TestVoice(&v, "hit.vag", data, size);
+	RldMk_ResetSaid();
+	RldMk_CheckVoices(v.files, v.count, 14u, NULL);
+	RldMk_Test((s_rldMkErrors == 3) && RldMk_Said("voice-wav") && RldMk_Said("voice-vag"), "voices: a broken WAV, 96 kHz and a VAG of a wrong size refused",
+	           "%d errors, said: %s", s_rldMkErrors, s_rldMkCodes);
+	RldMk_TestVoicesFree(&v);
+}
+
+// --- Golden hashes -------------------------------------------------------------------
+
+static void RldMk_SelfTestGolden(struct RldMkTestMesh *mesh, const struct RldPngImage *a)
+{
+	static struct RldMkIcon icon;
+	u8 field[RLDCHAR_NAME_FIELD];
+	size_t chriSize = 0;
+	u8 *chri;
+	int k;
+
+	memset(field, 0, sizeof(field));
+	memcpy(field, "SELF TEST", 9u);
+	chri = RldMk_BuildChri(14u, 0u, field, 1u, "", &chriSize);
+	if ((chri == NULL) || !RldMk_MakeIcon(a, &icon))
+	{
+		RldMk_Test(0, "golden hashes", "out of memory");
+		free(chri);
+		return;
+	}
+
+	for (k = 0; k < 2; k++)
+	{
+		struct RldMkOptions opt;
+		struct RldMkPly ply;
+		struct RldMkBuild b;
+		struct RldMkPly plyAgain;
+		struct RldMkBuild again;
+		u8 *file = NULL;
+		u8 *fileAgain = NULL;
+		size_t size = 0;
+		size_t sizeAgain = 0;
+		int ok;
+
+		RldMk_TestOptions(&opt);
+		opt.sizePercent = (k == 0) ? 100u : 120u;
+		RldMk_TestStandard(mesh, 2u, 0, 0.0, -1);
+
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again);
+		if (ok)
+		{
+			file = RldMk_Container(chri, chriSize, b.cmdl, b.cmdlSize, (k == 0) ? NULL : icon.cicn, &size);
+			fileAgain = RldMk_Container(chri, chriSize, again.cmdl, again.cmdlSize, (k == 0) ? NULL : icon.cicn, &sizeAgain);
+		}
+		ok = ok && (file != NULL) && (fileAgain != NULL) && (size == sizeAgain) && (memcmp(file, fileAgain, size) == 0);
+
+		// With the portrait: three chunks, CICN last, its hash in the directory.
+		if (ok && (k == 1))
+		{
+			const u64 dirAt = Rld_ReadLE64(&file[0x18]);
+			const u8 *entry = &file[(size_t)dirAt + 2u * RLD_DIR_ENTRY_SIZE];
+			u8 digest[32];
+
+			Sha256(&file[(size_t)Rld_ReadLE64(&entry[0x08])], RLDCHAR_ICON_BYTES, digest);
+			ok = (Rld_ReadLE32(&file[0x10]) == 3u) && (memcmp(entry, "CICN", 4u) == 0) && (Rld_ReadLE64(&entry[0x10]) == (u64)RLDCHAR_ICON_BYTES) &&
+			     (memcmp(&entry[RLD_DIR_HASH_OFFSET], digest, 32u) == 0);
+		}
+
+		RldMk_Test(ok, (k == 0) ? "golden model built twice: the same bytes" : "golden model, --size 120 and icon, built twice: the same bytes", "differ");
+		if (Rld_CheckGolden((k == 0) ? "make-char" : "make-char --size 120 --icon", file, size, (k == 0) ? RLDMK_GOLDEN_PLAIN : RLDMK_GOLDEN_SIZE_ICON) != 0)
+		{
+			s_rldMkTestFailed++;
+		}
+
+		free(file);
+		free(fileAgain);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+		RldMk_FreeBuild(&again);
+		RldMk_FreePly(&plyAgain);
+	}
+
+	free(chri);
+}
+
 // The number of failed cases; 0 = passed.
 static int RldChar_SelfTest(void)
 {
@@ -6078,6 +9481,24 @@ static int RldChar_SelfTest(void)
 		RldMk_Test(0, "model rules", "no good model to break");
 	}
 	RldMk_SelfTestChri(good, goodSize);
+	RldMk_SelfTestSize(mesh);
+	RldMk_SelfTestPreview(mesh);
+	RldMk_SelfTestPng();
+	RldMk_SelfTestVoices();
+	{
+		struct RldPngImage pictureA;
+
+		if (RldMk_TestPictureA(&pictureA))
+		{
+			RldMk_SelfTestIcon(&pictureA);
+			RldMk_SelfTestGolden(mesh, &pictureA);
+		}
+		else
+		{
+			RldMk_Test(0, "icon and golden hashes", "test picture A cannot be read");
+		}
+		RldPng_Free(&pictureA);
+	}
 	s_rldMkQuiet = quietBefore;
 	RldMk_ResetSaid();
 

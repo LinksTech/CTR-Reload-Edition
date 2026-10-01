@@ -67,6 +67,9 @@ typedef signed int s32;
 #include <rldtrack.inc>
 #include <rldchar.inc>
 
+// The PNG reader for make-char --icon: packer only, the game reads no PNG.
+#include <rldpng.inc>
+
 // Build ID (CTR_NATIVE_BUILD_ID), generated on every build - see Rld_Usage.
 #include "ctr_build_id.h"
 
@@ -3846,10 +3849,13 @@ static void Rld_FolderSort(struct RldFolder *folder, const char *name)
 	}
 }
 
-static int Rld_ReadFolder(const char *path, struct RldFolder *folder)
-{
-	memset(folder, 0, sizeof(*folder));
+// Every file at the top level of a folder (no subfolders), in the order the
+// system lists them; the callers sort or classify. 0 = the folder cannot be
+// opened. make and make-char --voices.
+typedef void (*RldFileVisit)(void *context, const char *name);
 
+static int Rld_EachFile(const char *path, RldFileVisit visit, void *context)
+{
 #if defined(_WIN32)
 	{
 		char pattern[RLD_PATH_MAX + 4];
@@ -3867,7 +3873,7 @@ static int Rld_ReadFolder(const char *path, struct RldFolder *folder)
 		{
 			if ((found.attrib & _A_SUBDIR) == 0)
 			{
-				Rld_FolderSort(folder, found.name);
+				visit(context, found.name);
 			}
 		} while (_findnext(handle, &found) == 0);
 
@@ -3891,7 +3897,7 @@ static int Rld_ReadFolder(const char *path, struct RldFolder *folder)
 			snprintf(full, sizeof(full), "%s/%s", path, entry->d_name);
 			if ((stat(full, &info) == 0) && S_ISREG(info.st_mode))
 			{
-				Rld_FolderSort(folder, entry->d_name);
+				visit(context, entry->d_name);
 			}
 		}
 
@@ -3900,6 +3906,17 @@ static int Rld_ReadFolder(const char *path, struct RldFolder *folder)
 #endif
 
 	return 1;
+}
+
+static void Rld_FolderVisit(void *context, const char *name)
+{
+	Rld_FolderSort((struct RldFolder *)context, name);
+}
+
+static int Rld_ReadFolder(const char *path, struct RldFolder *folder)
+{
+	memset(folder, 0, sizeof(*folder));
+	return Rld_EachFile(path, Rld_FolderVisit, folder);
 }
 
 static void Rld_PrintFolderList(const struct RldFolderList *list)
