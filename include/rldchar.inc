@@ -99,8 +99,9 @@ static u64 RldChar_ChunkLimit(const u8 *type)
 }
 
 // OPTIONAL: CICN (portrait, RldChar_CheckIcon below) is written by rldpack
-// make-char --icon; the game does not show it yet. CPRM (values) has a size
-// limit above, but rldpack does not write it and nothing interprets it yet.
+// make-char --icon; the game shows it in the driver select grid
+// (platform/native_chars.c). CPRM (values) has a size limit above, but
+// rldpack does not write it and nothing interprets it yet.
 // RESERVED NAMES: CVOI (voices) and CTEX (texture data) are planned; until then
 // they have no limit here and are skipped like any unknown chunk.
 
@@ -341,8 +342,12 @@ static const char *RldChar_ParseInfo(struct RldCharInfo *out, const u8 *bytes, s
 //                       texel, the lowest nibble is the leftmost texel
 //
 // 612 bytes, nothing else: the retail portrait format (44 wide, game/222.c:497-500;
-// 26 high, game/native_uidecl.c:366). A broken CICN never refuses the file -
-// the game shows the template's portrait instead. Another depth or size would
+// 26 high, game/native_uidecl.c:366). The game uploads it into a strip of
+// VRAM of its own and draws it on the character's tile in the driver select
+// grid (NativeChar_EntryPortrait, include/platform/native_chars.h); the race
+// HUD, the results and the cup standings keep the template's portrait. A
+// broken CICN never refuses the file - the game shows the template's
+// portrait instead. Another depth or size would
 // come as version 2, which an older reader drops the same way.
 
 #define RLDCHAR_ICON_VERSION 1u

@@ -136,9 +136,10 @@ Planned, in no particular order and without a date:
 - Best times on custom tracks
 - Custom characters - a first version is in the development version (Reload
   Studio's Character page and a `characters` folder next to the game). It
-  fits every model to Crash's size, reduces a model with too many triangles
-  by itself and can leave out the kart wheels for a model with its own. Their
-  voices and their own portrait in the menu come next
+  fits every model onto Crash's kart at his size, repairs common export
+  faults, reduces a model with too many triangles by itself and can leave
+  out the kart wheels for a model with its own. A character's icon shows in
+  the driver select. Their voices come next
 - Skin support for the drivers
 - ...and more
 

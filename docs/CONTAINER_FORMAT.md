@@ -338,7 +338,7 @@ is frozen. Source: `include/rldchar.inc`.
 |---|---|---|---|
 | CHRI | required | 4 KiB | template, class, name, version, flags, author |
 | CMDL | required | 256 KiB | the model, in the game's native model format |
-| CICN | optional, written by `rldpack make-char --icon` | 4 KiB | the portrait, exactly 612 bytes (rules CICN-1..3); the game does not show it yet |
+| CICN | optional, written by `rldpack make-char --icon` | 4 KiB | the portrait, exactly 612 bytes (rules CICN-1..3); the game shows it in the driver select grid |
 | CPRM | optional, known type: not written by rldpack, content not interpreted yet | 4 KiB | values; layout not fixed (draft) |
 | CVOI | reserved name, planned | none (unknown, skipped) | voices; layout not defined |
 | CTEX | reserved name, planned | none (unknown, skipped) | texture data; layout not defined |
@@ -489,9 +489,13 @@ The format has no size field. `rldpack make-char --size <percent>` (50..200,
 default 100) bakes the size into the vertices before the poses are made
 (`RldMk_StepSize`):
 
-- Only the driver and the steering wheel are scaled, about the hip
-  H = (0, 16, 0) game units (0.25 Blender units above the ground):
-  p' = H + s x (p - H).
+- Only the driver and the steering wheel are scaled, about a pivot P:
+  p' = P + s x (p - P). With `--fit crash` (the default) the model is first
+  placed onto the reference dummy (`tools/rldpack_dummy.inc`, the retail kart
+  at Crash's size) and P is the dummy's seat (0, 10.2, 0.9) game units; with
+  `--wheels off` it is the middle of the driver's bottom. With `--fit none`
+  P is the hip (0, 16, 0) (0.25 Blender units above the ground). The driver
+  leans about the same point when steering.
 - The kart is not scaled: the game draws the wheels as sprites at fixed
   points of the kart (unless the CHRI flags hide them, bit 0), so it stays as
   large as the model has it (about a retail kart).
@@ -533,8 +537,8 @@ dropped, and the template's portrait is shown. `rldpack info` names the
 portrait ("its own", "the template's (no CICN)", or "CICN ignored" with the
 reason); `rldpack verify` prints `IGNORED CICN` for a rule finding. A CICN
 whose hash does not match fails the file in `rldpack verify`; `rldpack info`
-shows "CICN ignored" with the hash mismatch; the game does not read CICN and
-loads the file.
+shows "CICN ignored" with the hash mismatch; the game loads the file and drops
+only the portrait (log line `CICN ignored`).
 
 What `rldpack make-char --icon <png>` does (`RldMk_MakeIcon`):
 
@@ -553,9 +557,20 @@ What `rldpack make-char --icon <png>` does (`RldMk_MakeIcon`):
 Without `--icon` the file has no CICN, and the game shows the template's
 portrait.
 
-The game does not read CICN yet (`platform/native_chars.c`): until a later
-version, the driver select shows the template's portrait for every custom
-character, with or without CICN.
+What the game does with it (`platform/native_chars.c`,
+`NativeChar_ReadIcon`): at start it reads the CICN of every file it loads
+and runs CICN-1..3; a chunk it cannot read (hash, compression) or that breaks
+a rule costs only the portrait. The first 20 entries of the roster (the
+loaded files in sorted order) own a portrait slot in a strip of VRAM that no
+retail or track path writes (x 256..511, y 266..295; layout in
+`include/platform/native_chars.h`). Each time the driver select grid is
+entered, the usable portraits are uploaded there, and a custom tile draws its
+own portrait in the size of the template's. A tile without a usable CICN or
+beyond the 20 slots shows the template's portrait. Only the grid shows the
+own portrait: the race HUD, the results and the cup standings show the
+template's. After the load line the game logs one line per file,
+`[CTR Char] portrait <file>: own (slot <n>)` or the reason followed by
+`the template's` (for example `CICN ignored - <reason> - the template's`).
 
 ### Voices: checked, not packed
 
@@ -569,10 +584,10 @@ file: CVOI stays a reserved name, and a custom driver is silent in the game.
 | When | What |
 |---|---|
 | start | every `*.rldchar` in the `characters` folder next to the game (the extension in any case, subfolders skipped): the names are sorted first, then the files are read in that order |
-| per file | envelope (`Rld_OpenAs`), the CMDL size before any memory is taken, CHRI and CMDL with their hashes, `RldChar_ParseInfo`, `RldChar_CheckModel`, then the pointer map. CICN and CPRM are not read |
+| per file | envelope (`Rld_OpenAs`), the CMDL size before any memory is taken, CHRI and CMDL with their hashes, `RldChar_ParseInfo`, `RldChar_CheckModel`, then the pointer map, then CICN when present (`RldChar_CheckIcon`; a broken CICN costs only the portrait). CPRM is not read |
 | a broken file | skipped with one log line `[CTR Char] REFUSED <file>: <kind> (<rule>) <detail>`; the game starts anyway |
 | the first 32 valid files | a tile each in the one-player ARCADE driver select, after the retail drivers (not for CRYSTAL and CTR under NITRO-PIT); a further valid file gets the log line `NO ID` and no tile |
-| menu and race | the driver select shows the template's portrait and the name from CHRI; in the race seat 0 runs on the template's character id with the custom model, the class in CHRI sets the physics values and the engine sound, and the template's voice is not played |
+| menu and race | the driver select shows the own portrait (CICN, first 20 entries; else the template's, see CICN) and the name from CHRI; the race HUD, the results and the cup standings show the template's portrait; in the race seat 0 runs on the template's character id with the custom model, the class in CHRI sets the physics values and the engine sound, and the template's voice is not played |
 | wheels | with `RLDCHAR_FLAG_NO_WHEELS` set in CHRI the game draws no kart wheels (and no wheel reflections) for the custom model - tyre dust and skid marks stay, they are effects at the wheel points, not wheels - and the load line `[CTR Char] loaded <file>: ...` ends in `, wheels hidden`; without the bit the wheels are drawn as for a retail driver |
 
 - The model's frame counts must match those of the template's retail model;
@@ -708,7 +723,7 @@ Chunk names:
 | META, LEVD, VRMD | `.rldtrack` | required |
 | SNDB, PARM | `.rldtrack` | optional |
 | CHRI, CMDL | `.rldchar` | required |
-| CICN | `.rldchar` | optional (portrait): written by `rldpack make-char --icon`, not shown by the game yet |
+| CICN | `.rldchar` | optional (portrait): written by `rldpack make-char --icon`, shown in the game's driver select grid |
 | CPRM | `.rldchar` | optional known type (values): not written by rldpack, content not interpreted yet |
 | CVOI, CTEX | `.rldchar` | reserved, planned (voices, texture data) |
 | SIGN | blocked | signature, taken out of the format; skipped in older files |

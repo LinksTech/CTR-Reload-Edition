@@ -116,8 +116,13 @@ players.
 - A character built with "Show kart wheels" off (4.3) drives without the
   game's kart wheels - its model brings its own. Tyre dust and skid marks
   stay. The log line "[CTR Char] loaded ..." then ends in ", wheels hidden".
-- For now a custom driver is silent, and the menu shows the portrait of Fake
-  Crash instead of the character's own icon.
+- A character built with an icon (4.3) shows it on its tile in the driver
+  select, for the first 20 files the game loads (sorted by file name; a
+  refused file does not count). Without an icon, with a broken one and from
+  the 21st loaded file on, the tile shows the portrait of Fake Crash; a log
+  line starting with "[CTR Char] portrait" says which. The race HUD, the
+  results and the cup standings still show the portrait of Fake Crash.
+- For now a custom driver is silent.
 
 
 4. RELOAD STUDIO
@@ -189,9 +194,13 @@ for the game (and for cups).
               with vertex colours (ASCII or binary), +Y up, +Z forward, at
               any scale: Reload Studio fits it to Crash size (see Size). The
               kart is the part at the bottom; the game draws the wheels (see
-              "Show kart wheels"). Faces with more than four corners are
-              split into triangles. A model with too many triangles is
-              reduced by itself (see "Reduce automatically"). You can also
+              "Show kart wheels"). Other parts of a vehicle that lie across
+              the middle of the kart (a body, a fork, a seat) stay still with
+              it; parts to one side (shoes, hands) move with the driver.
+              Faces with more than four corners are split into triangles.
+              Small faults of the export are repaired (see "Repair the
+              model"), and a model with too many triangles is reduced by
+              itself (see "Reduce automatically"). You can also
               drag files onto the page: a .ply is the model, a .png the
               icon, a folder the voices.
   Name        Shown in the driver select: 1 to 17 characters, capitals,
@@ -205,26 +214,55 @@ for the game (and for cups).
               first fitted to the size of Crash with his kart. Its kart gets
               the length of Crash's kart (112.4 game units); with "Show kart
               wheels" off the whole model gets that length. It never gets
-              taller than the tallest original driver. The page shows the
-              factor, for example "Fitted to Crash size: x0.71 (159.2 ->
-              112.4 long)".
+              taller than the tallest original driver. Then it is placed
+              onto Crash's kart: your kart at the height and in the middle of
+              his (with "Show kart wheels" off the whole model stands on the
+              ground). The page shows the factor, for example "Fitted to
+              Crash size: x0.71 (159.2 -> 112.4 long)".
               The bar makes the driver and the steering wheel larger or
-              smaller than that; the kart keeps its size. Visual size only -
-              physics and collision follow the driving style. After the
-              first check the bar shows the sizes your model allows and the
-              rest of it is locked; the line below says the range, and why
-              when the bar had to move back.
+              smaller than that, about Crash's seat (with "Show kart wheels"
+              off: about the bottom of your driver); the kart keeps its size.
+              When steering, the driver leans about the same point. Visual
+              size only - physics and collision follow the driving style.
+              After the first check the bar shows the sizes your model
+              allows and the rest of it is locked; the line below says the
+              range, and why when the bar had to move back.
+  Repair the model
+              On by default. Fixes what exports often get wrong: split
+              corners are welded, triangles without area and doubled ones
+              are dropped, faces are turned outward, cracks are split and
+              holes of up to 8 edges are closed. The line below the options
+              says what changed, for example "Repaired: 12 corners welded,
+              2 holes closed, open edges 14 -> 0". Off: the surface as
+              exported.
+  Draw open parts from both sides
+              On by default. A part that is still open after the repair (a
+              kart shell without a floor, say) would let you look into it
+              from behind; its triangles are drawn from both sides instead,
+              at no extra triangles. Off: drawn from one side like the rest.
+  Closed hull (remesh)
+              Off by default; only for a model full of holes or loose sheets
+              that the repair cannot fix. Kart, driver and steering wheel are
+              each replaced by a closed hull of their surface (a part of at
+              most 24 triangles stays as it is), which is then reduced; the
+              colours are taken over from your model. The preview shows the
+              result. Needs "Reduce automatically": greyed out while that
+              is off.
   Reduce automatically
               On by default. The game has draw memory for 805 triangles per
               driver (as much as N. Oxide, the most any original driver
               uses). A model with more is reduced to at most 797 triangles,
               only as far as needed: the shape and the colours stay, kart,
               driver and steering wheel are reduced each on its own, and the
-              same model always gives the same result. The page then shows
-              both counts, for example "Triangles 987 -> 797, draw memory
-              27 636 -> 22 316 bytes - reduced automatically". Off: such a
-              model is refused; reduce it yourself in Blender (Decimate
-              modifier).
+              same model always gives the same result. Colours always stay
+              in their place and no face ever turns to the back. Colour
+              borders and sharp edges are guarded as well; if the target
+              cannot be reached that way, the reduction first drops these
+              guards and then, if needed, its colour cost, and says so.
+              The page then shows both counts, for example "Triangles 987 ->
+              797, draw memory 27 636 -> 22 316 bytes - reduced
+              automatically". Off: such a model is refused; reduce it
+              yourself in Blender (Decimate modifier).
   Show kart wheels
               On by default: the game draws its kart wheels on your kart, as
               for every driver. Turn it off for a model that brings its own
@@ -234,8 +272,9 @@ for the game (and for cups).
               game does not know it and draws the wheels.
   Icon (PNG)  Optional. Your picture and how the game will have it (cut to
               44:26 in the middle, 44 x 26 pixels, 15 colours and
-              transparent) side by side. The game does not show the icon yet;
-              the menu shows the portrait of Fake Crash.
+              transparent) side by side. The game shows it on the
+              character's tile in the driver select (see 3.); without an
+              icon the tile shows the portrait of Fake Crash.
   Voices      Optional. A folder with your voice lines as .wav or .vag:
               boost1, boost2, hit1, hit2, spin1, spin2, bigair1, bigair2,
               drop1, drop2, shield1, shield2, passing1, passing2, fire1,
@@ -244,10 +283,12 @@ for the game (and for cups).
               silent in the game.
   Preview     The model as the game will draw it. Drag to turn it; the list
               at the top right of the card picks Neutral, Steering left or
-              Steering right. The grey kart is an original kart and the
-              dashed box is Crash size, both for the size. The dark boxes on
-              the kart are the wheels the game draws; with "Show kart
-              wheels" off there are none.
+              Steering right. Under your model stands the reference: an
+              original kart at Crash's size with his seat, his steering wheel
+              and the kart wheels the game draws (none with "Show kart
+              wheels" off). Your model is fitted onto it and always drawn in
+              front of it, so the grey reference shows only where your model
+              leaves a gap. The dashed box is Crash size.
   Output      Where the .rldchar is written; empty = next to the model. Best:
               the game's "characters" folder, then the game finds it at its
               next start.
@@ -263,12 +304,16 @@ The file name is the character's identity in the game; the name in the menu
 lives inside the file.
 
 4.4 Page "Test in game" - start the game on your track
-  Game program    ctr_native.exe. It is checked with its version; it must be
-                  from the same package as Reload Studio, otherwise:
-                  "This game (...) is not from the same package ...". If the
-                  game remembered from an earlier session is from another
-                  package, Reload Studio switches once to ctr_native.exe
-                  in its own folder and says "Switched from ...".
+  Game program    ctr_native.exe. Reload Studio takes the one you chose here
+                  with Browse (it remembers the choice), otherwise the one in
+                  its own folder; it searches no other folder. If neither is
+                  there, every page that needs the game says so. The game is
+                  checked with its version; it must be from the same package
+                  as Reload Studio, otherwise: "This game (...) is not from
+                  the same package ...". If the game remembered from an
+                  earlier session is from another package, Reload Studio
+                  switches once to ctr_native.exe in its own folder and says
+                  "Switched from ...".
   Container       The track to test.
   Options         "Play in a window (1280 x 720)", "Driver", "Let the kart
                   drive itself (autopilot)" (needs nav paths). "Extra
@@ -322,8 +367,12 @@ Reload Studio
 [ ] Character page: build a character from your model, with and without
     an icon, at a few sizes. The preview matches what you see in the game.
 [ ] Character page: a model exported at any scale comes out at Crash size
-    (100 %) next to the dashed box. A model of more than 805 triangles is
-    "reduced automatically" and still looks like itself in the game.
+    (100 %) on the grey reference kart, inside the dashed box. A model of
+    more than 805 triangles is "reduced automatically" and still looks like
+    itself in the game: colours in their place, no holes, no faces missing.
+[ ] Character page: a model with holes, split corners or open parts -
+    "Repair the model" and "Draw open parts from both sides" on and off.
+    Try "Closed hull (remesh)" on a model the repair cannot fix.
 [ ] Character page: a model with its own wheels or vehicle, "Show kart
     wheels" off - the game draws no kart wheels for it.
 [ ] Break the character on purpose: a model without kart, a very large
@@ -340,8 +389,9 @@ In the game
 [ ] NITRO-PIT -> CTR (if your track has C, T, R): drive through C, T and R
     yourself and finish 1st -> YOU WIN. Miss a letter -> TRY AGAIN.
 [ ] Pause -> QUIT in a challenge brings you back to the menu.
-[ ] Your character in ARCADE: its tile is in the driver select, the race
-    runs, the kart drives like the driving style you chose.
+[ ] Your character in ARCADE: its tile is in the driver select, with its
+    icon if you gave one; the race runs, the kart drives like the driving
+    style you chose.
 [ ] Anything that looks wrong on your track: holes, black floors, missing
     objects, sound.
 
@@ -365,8 +415,9 @@ Modes and menus
 
 Characters
 - A custom driver is silent: voices are checked, but not packed yet.
-- The driver select shows the portrait of Fake Crash, not the character's
-  own icon.
+- The character's own icon shows only in the driver select, and only for
+  the first 20 loaded files; the race HUD, the results and the cup
+  standings show the portrait of Fake Crash.
 - Only in the one-player ARCADE driver select; not in NITRO-PIT CRYSTAL or
   CTR, Time Trial, Adventure, Battle or with two players.
 - The size is visual only - physics and collision follow the driving style.
@@ -423,7 +474,7 @@ Which files to attach:
 - If you used "Start game" or "Build container" (the preview): the newest
   "game-test <date>.log" or "game-preview <date>.log" in
   %TEMP%\Reload Studio (paste that path into the Explorer address
-  bar).
+  bar; with --settings, see 9., in the folder of that file).
 - A screenshot (F12 in the game) if it is about the picture; a screenshot of
   Reload Studio if it is about a message there.
 - If the error shows before the game window (the disc image screen), a
@@ -462,6 +513,9 @@ Created by the game next to ctr_native.exe:
   ctr-settings.cfg    your settings
 
 Reload Studio remembers its settings in %APPDATA%\CTR Reload\reloadstudio.ini.
+For automation and tests, "ReloadStudio.exe --settings <file.ini>" keeps
+its settings in that file instead, and its logs and temporary files in the
+folder of that file; nothing is then written to %APPDATA% or %TEMP%.
 To update, replace ctr_native.exe, ctr_native.pdb and ReloadStudio.exe; keep
 the rest.
 

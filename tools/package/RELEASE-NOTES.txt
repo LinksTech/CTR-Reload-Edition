@@ -68,7 +68,7 @@ NEW IN THIS VERSION
 - Reload Studio has a new page "Character": a PLY model of driver, steering
   wheel and kart, a name, a driving style, a size, an optional icon and an
   optional voices folder. It checks while you type, shows the model as the
-  game will draw it (turnable, three poses, next to an original kart) and
+  game will draw it (turnable, three poses, on Crash's kart) and
   builds the .rldchar. The page always builds on Fake Crash; it asks for no
   original driver to start from.
 - The driving style (Balanced, Acceleration, Speed, Turning) decides how a
@@ -102,6 +102,49 @@ NEW IN THIS VERSION
   draws no kart wheels (and no wheel reflections) for that driver; tyre dust
   and skid marks stay. An older game ignores the setting and draws the
   wheels. Details of the file: docs/CONTAINER_FORMAT.md in the source code.
+- A custom character's icon now shows on its tile in the driver select, for
+  the first 20 files the game loads (refused files do not count). Without
+  an icon, with a broken one and from the 21st loaded file on, the tile
+  shows the portrait of Fake Crash; the log
+  line "[CTR Char] portrait ..." says which.
+- Repair the model: the check box (on by default; rldpack make-char
+  --repair off) welds split corners, drops triangles without area and
+  doubled ones, turns faces outward, splits cracks and closes holes of up
+  to 8 edges. Reload Studio says what it changed.
+- Draw open parts from both sides: the check box (on by default; rldpack
+  make-char --open-parts one-sided) draws the triangles of parts that are
+  still open after the repair from both sides, so you cannot look into
+  them from behind. It costs no triangles.
+- Closed hull (remesh): the check box (off by default; rldpack make-char
+  --remesh on, with --remesh-resolution 32..128) replaces kart, driver and
+  steering wheel by closed hulls of their surface, then reduces them and
+  takes the colours over from the model. Only for a model the repair
+  cannot fix; it needs "Reduce automatically".
+- Better reduction: colours always stay in their place and no face ever
+  turns to the back. Colour borders and sharp edges are guarded as well;
+  if the target cannot be reached that way, the reduction first drops
+  these guards and then, if needed, its colour cost, and says so.
+- The model is placed onto a reference kart: an original kart at Crash's
+  size with his seat and steering wheel. Your kart sits at the height and
+  in the middle of Crash's; the size slider and the lean when steering
+  work about Crash's seat (with "Show kart wheels" off: about the bottom
+  of the driver). Parts of a vehicle across the middle of the
+  kart (a body, a fork, a seat) stay still with the kart. The preview
+  shows this reference with the game's kart wheels (on or off) instead of
+  an original kart beside the model.
+- Every one of the 47 animation frames is read back as the game reads it
+  before the file is written. A value that would be cut off in the packing
+  is an error (model-quant). Thin triangles that the packing turns over in
+  some frames are drawn from both sides, so they leave no holes.
+- For scripts: rldpack make-char --diagnose <file> writes the model as
+  every step saw it (text) and never a character.
+- Reload Studio finds the game only in two places: the program chosen on
+  the "Test in game" page (Browse), otherwise ctr_native.exe in its own
+  folder. It no longer searches other folders; when the game is missing,
+  the page says how to choose it.
+- Reload Studio --settings <file.ini> (for automation and tests): settings,
+  logs and temporary files only in that file and its folder, nothing in
+  %APPDATA% or %TEMP%.
 
 
 KNOWN ISSUES
@@ -121,8 +164,9 @@ KNOWN ISSUES
 - Multiplayer (VS., BATTLE, 2 players) is locked.
 - Custom characters are silent: Reload Studio checks voice files, but does
   not pack them yet.
-- A custom character's icon is packed when you give one, but the game does
-  not show it yet: the driver select shows the portrait of Fake Crash.
+- A custom character's icon shows only in the driver select, and only for
+  the first 20 loaded files; the race HUD, the results and the cup
+  standings show the portrait of Fake Crash.
 - Custom characters only in the one-player ARCADE driver select; not in
   NITRO-PIT CRYSTAL or CTR, Time Trial, Adventure, Battle or with two
   players.
