@@ -4850,6 +4850,39 @@ static int Rld_Check(const char *what, const u8 *got, const u8 *want, size_t siz
 	return 1;
 }
 
+// GOLDEN HASHES: the SHA-256 of a whole container built from fixed synthetic
+// inputs. Determinism shows that two builds agree with each other; these show
+// that they still agree with the bytes this packer wrote before its envelope
+// code was shared with other container types. A different value means a
+// .rldtrack is no longer written the same way - never update it to make the
+// test pass.
+#define RLD_GOLDEN_3_CHUNKS "489b8b3a20846502c5372ab9d0ce0e6a3946acced40cab96eed3aa7e6e4ccc00"
+#define RLD_GOLDEN_5_CHUNKS "5d8c5b474136b44717da5463d1aa8a0f75e07050af751ed8915807ae83285489"
+
+static int Rld_CheckGolden(const char *name, const u8 *data, size_t size, const char *wantHex)
+{
+	u8 digest[32];
+	u8 want[32];
+
+	if (data == NULL)
+	{
+		printf("  FAIL golden hash %s: no container\n", name);
+		return 1;
+	}
+
+	Sha256(data, size, digest);
+	if (!Rld_HexToBytes(wantHex, want, 32) || (memcmp(digest, want, 32) != 0))
+	{
+		printf("  FAIL golden hash %s: expected %s, got ", name, wantHex);
+		Rld_PrintHex(digest, 32);
+		printf("\n");
+		return 1;
+	}
+
+	printf("  ok   golden hash %s, %llu bytes\n", name, (unsigned long long)size);
+	return 0;
+}
+
 // --- Self-test for make -------------------------------------------------------------
 //
 // All synthetic, no real track data: a LEV in miniature, a
@@ -5388,6 +5421,9 @@ static int Cmd_Selftest(void)
 			printf("  ok   determinism, %llu bytes identical twice\n", (unsigned long long)sizeA);
 		}
 
+		// GOLDEN HASH, three chunks: META LEVD VRMD from the inputs above.
+		failed |= Rld_CheckGolden("3 chunks", a, sizeA, RLD_GOLDEN_3_CHUNKS);
+
 		// META THERE AND BACK.
 		//
 		// It checks the field positions of META. A swapped offset between
@@ -5556,6 +5592,40 @@ static int Cmd_Selftest(void)
 			free(withSound);
 			in.sndb = NULL;
 			in.sndbSize = 0;
+		}
+
+		// GOLDEN HASH, five chunks: META LEVD VRMD SNDB PARM, so the order of the
+		// optional chunks and PARM through Rld_Build are covered too. SNDB and PARM
+		// are filler, not valid chunks: Rld_Build checks only their sizes and
+		// copies them, and this case is about the envelope.
+		{
+			u8 sound[200];
+			u8 values[24];
+			u8 *five;
+			size_t fiveSize = 0;
+
+			for (i = 0; i < (int)sizeof(sound); i++)
+			{
+				sound[i] = (u8)(i * 13 + 1);
+			}
+			for (i = 0; i < (int)sizeof(values); i++)
+			{
+				values[i] = (u8)(i * 17 + 9);
+			}
+
+			in.sndb = sound;
+			in.sndbSize = sizeof(sound);
+			in.parm = values;
+			in.parmSize = sizeof(values);
+
+			five = Rld_Build(&in, &fiveSize, &error);
+			failed |= Rld_CheckGolden("5 chunks", five, fiveSize, RLD_GOLDEN_5_CHUNKS);
+
+			free(five);
+			in.sndb = NULL;
+			in.sndbSize = 0;
+			in.parm = NULL;
+			in.parmSize = 0;
 		}
 	}
 
