@@ -1492,8 +1492,8 @@ internal void NativeTrack_AddFile(const char *dirPath, const char *fileName)
 		// Both numbers if the version was the reason.
 		if ((entry->refusal == NATIVE_TRACK_REFUSAL_NEWER) || (entry->refusal == NATIVE_TRACK_REFUSAL_OLDER))
 		{
-			Platform_Log("[CTR Tracks]   container format %u.%u, this build reads %d.x%s\n", entry->formatMajor, entry->formatMinor,
-			             RLD_VERSION_MAJOR, (entry->unknownFlags != 0u) ? " - it needs feature bits this build does not know" : "");
+			Platform_Log("[CTR Tracks]   container format %u.%u, this build reads %u.x%s\n", entry->formatMajor, entry->formatMinor,
+			             s_rldTrackFormat.major, (entry->unknownFlags != 0u) ? " - it needs feature bits this build does not know" : "");
 			if (entry->unknownFlags != 0u)
 			{
 				Platform_Log("[CTR Tracks]   unknown feature bits 0x%08x\n", entry->unknownFlags);

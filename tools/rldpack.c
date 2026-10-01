@@ -460,9 +460,6 @@ static u8 *Rld_Build(const struct RldBuildInput *in, size_t *sizeOut, const char
 	struct RldMemNeed need;
 	u8 *meta;
 	size_t metaSize;
-	u64 offset;
-	u64 dirOffset;
-	u64 fileSize;
 	u8 *out;
 	int i;
 
@@ -542,48 +539,10 @@ static u8 *Rld_Build(const struct RldBuildInput *in, size_t *sizeOut, const char
 		Rld_AddChunk(&container, "PARM", in->parm, in->parmSize, RLD_COMPRESSION_NONE);
 	}
 
-	offset = RLD_HEADER_SIZE;
-	for (i = 0; i < container.chunkCount; i++)
-	{
-		container.chunks[i].offset = offset;
-		offset += container.chunks[i].sizeStored;
-	}
-
-	dirOffset = offset;
-	fileSize = dirOffset + (u64)container.chunkCount * RLD_DIR_ENTRY_SIZE;
-
-	out = (u8 *)calloc(1, (size_t)fileSize);
-	if (out == NULL)
-	{
-		free(meta);
-		*errorOut = "out of memory";
-		return NULL;
-	}
-
-	memcpy(&out[0x00], RLD_MAGIC, 8);
-	Rld_WriteLE16(&out[0x08], RLD_VERSION_MAJOR);
-	Rld_WriteLE16(&out[0x0a], RLD_VERSION_MINOR);
-	// Required features: this packer sets none (RLD_HEADER_FLAGS_KNOWN).
-	Rld_WriteLE32(&out[0x0c], 0);
-	Rld_WriteLE32(&out[0x10], (u32)container.chunkCount);
-	Rld_WriteLE32(&out[0x14], 0);
-	Rld_WriteLE64(&out[0x18], dirOffset);
-	Rld_WriteLE64(&out[0x20], fileSize);
-
-	for (i = 0; i < container.chunkCount; i++)
-	{
-		const struct RldChunk *chunk = &container.chunks[i];
-		u8 *entry = &out[(size_t)dirOffset + (size_t)i * RLD_DIR_ENTRY_SIZE];
-
-		memcpy(&out[(size_t)chunk->offset], chunk->stored, (size_t)chunk->sizeStored);
-
-		memcpy(&entry[0x00], chunk->type, 4);
-		Rld_WriteLE32(&entry[0x04], chunk->flags);
-		Rld_WriteLE64(&entry[0x08], chunk->offset);
-		Rld_WriteLE64(&entry[0x10], chunk->sizeStored);
-		Rld_WriteLE64(&entry[0x18], chunk->sizeRaw);
-		memcpy(&entry[0x20], chunk->hash, 32);
-	}
+	// Header, chunks and directory: the envelope every container type shares
+	// (rldtrack.inc). Required features: this packer sets none
+	// (RLD_HEADER_FLAGS_KNOWN).
+	out = Rld_WriteEnvelope(&s_rldTrackFormat, 0, &container, sizeOut);
 
 	for (i = 0; i < container.chunkCount; i++)
 	{
@@ -591,7 +550,12 @@ static u8 *Rld_Build(const struct RldBuildInput *in, size_t *sizeOut, const char
 	}
 	free(meta);
 
-	*sizeOut = (size_t)fileSize;
+	if (out == NULL)
+	{
+		*errorOut = "out of memory";
+		return NULL;
+	}
+
 	return out;
 }
 
@@ -2731,7 +2695,7 @@ static int Rld_Pack(const struct RldPackJob *job)
 			       abrReport.layoutsStp, abrReport.layoutsUnknown);
 		}
 	}
-	printf("  format        %d.%d, meta_version %d (frozen)\n", RLD_VERSION_MAJOR, RLD_VERSION_MINOR, RLD_META_VERSION);
+	printf("  format        %u.%u, meta_version %d (frozen)\n", s_rldTrackFormat.major, s_rldTrackFormat.minorWritten, RLD_META_VERSION);
 
 	Rld_Emit("lev", "map", mapKind, (const char *)NULL);
 	// Without a map this is not an error: a note, not an abort.
@@ -4647,7 +4611,7 @@ static int Cmd_Info(int argc, char *argv[], int full)
 		fprintf(stderr, "rldpack: %s\n", error);
 		if ((reader.refusal == RLD_REFUSAL_NEWER) || (reader.refusal == RLD_REFUSAL_OLDER))
 		{
-			fprintf(stderr, "         container format %u.%u, this rldpack reads %d.x", reader.major, reader.minor, RLD_VERSION_MAJOR);
+			fprintf(stderr, "         container format %u.%u, this rldpack reads %u.x", reader.major, reader.minor, reader.format->major);
 			if (reader.unknownFlags != 0u)
 			{
 				fprintf(stderr, ", unknown feature bits 0x%08x", reader.unknownFlags);

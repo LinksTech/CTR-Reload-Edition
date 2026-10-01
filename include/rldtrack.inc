@@ -362,6 +362,50 @@ static u64 Rld_ChunkLimit(const u8 *type)
 	return 0;
 }
 
+// WHAT MAKES ONE CONTAINER TYPE DIFFERENT FROM ANOTHER. The envelope - header,
+// directory, hashes, position checks - is the same for every type; these are
+// the only places where a type has its own values. The reader (Rld_OpenAs,
+// Rld_ReadChunk) and the writer (Rld_WriteEnvelope) take them from here instead
+// of from the RLD_* constants.
+struct RldFormat
+{
+	const char *magic;                   // 8 bytes, compared with memcmp ("RLDTRACK", "RLDCHAR" incl. its NUL)
+	const char *noMagicText;             // refusal text when the magic does not match
+	u32 major;                           // the one content major this build reads and the packer writes
+	u32 minorWritten;                    // what the packer writes; a reader never refuses a minor
+	u32 flagsKnown;                      // required-feature bits this build knows
+	int minChunks;                       // lower bound of chunk_count (upper bound RLD_CHUNK_MAX)
+	const char *countText;               // refusal text for chunk_count outside minChunks..RLD_CHUNK_MAX
+	int requiredCount;                   // number of entries in required[] and missingText[]
+	const char *const *required;         // 4-character chunk types that must be present
+	const char *const *missingText;      // refusal text per required type
+	u64 (*chunkLimit)(const u8 *type);   // size limit of a known type, 0 = unknown type = skipped
+};
+
+// The required chunks of a track: META, LEVD and VRMD. SNDB and PARM are optional.
+static const char *const s_rldTrackRequired[3] = {"META", "LEVD", "VRMD"};
+static const char *const s_rldTrackMissing[3] = {"META is missing - required chunk", "LEVD is missing - required chunk",
+                                                 "VRMD is missing - required chunk"};
+
+// .rldtrack, exactly the values and texts the reader and the packer had before
+// they were shared with other container types. 4.1 is frozen: nothing here changes.
+//
+// Lower bound 3 since 2026-09-19, 4 before: the required chunks are META,
+// LEVD and VRMD. An existing container with SIGN passes through unchanged.
+static const struct RldFormat s_rldTrackFormat = {
+    RLD_MAGIC,                                                         // magic
+    "no RLDTRACK magic - the extension says nothing, the magic does",  // noMagicText
+    RLD_VERSION_MAJOR,                                                 // major
+    RLD_VERSION_MINOR,                                                 // minorWritten
+    RLD_HEADER_FLAGS_KNOWN,                                            // flagsKnown
+    3,                                                                 // minChunks
+    "chunk_count is outside 3..64",                                    // countText
+    3,                                                                 // requiredCount
+    s_rldTrackRequired,                                                // required
+    s_rldTrackMissing,                                                 // missingText
+    Rld_ChunkLimit,                                                    // chunkLimit
+};
+
 // WHICH MODES THE TRACK OFFERS.
 //
 // In META and not in the path: four folders would be the same track four times, and
@@ -705,6 +749,10 @@ struct RldReader
 	u32 minor;
 	u32 unknownFlags;
 	enum RldRefusal refusal;
+
+	// The type it was opened as (Rld_OpenAs), set before any check. Memory
+	// only, nothing in the file; Rld_ReadChunk takes the limits from it.
+	const struct RldFormat *format;
 };
 
 static void Rld_Close(struct RldReader *reader)
@@ -749,9 +797,14 @@ static const char *Rld_Refuse(struct RldReader *reader, enum RldRefusal refusal,
 //
 // Since 4.1 Rld_Open enforces the format's rules itself,
 // the same for game and packer: position, overlap, duplicate, compression and
-// limit per known type, and the three required chunks. The track list thereby
+// limit per known type, and the required chunks of the type (a track: META,
+// LEVD, VRMD). The track list thereby
 // refuses what until 4.0 only failed when the track was picked.
-static const char *Rld_Open(struct RldReader *reader, const char *path)
+//
+// Rld_OpenAs is that reader for any container type: the checks and their order
+// are the same for all, only the values of struct RldFormat differ. Rld_Open
+// below opens a track.
+static const char *Rld_OpenAs(struct RldReader *reader, const char *path, const struct RldFormat *format)
 {
 	u8 header[RLD_HEADER_SIZE];
 	long measured;
@@ -762,6 +815,7 @@ static const char *Rld_Open(struct RldReader *reader, const char *path)
 	int j;
 
 	memset(reader, 0, sizeof(*reader));
+	reader->format = format;
 
 	reader->file = fopen(path, "rb");
 	if (reader->file == NULL)
@@ -786,20 +840,20 @@ static const char *Rld_Open(struct RldReader *reader, const char *path)
 		return Rld_Refuse(reader, RLD_REFUSAL_DAMAGED, "the header cannot be read");
 	}
 
-	if (memcmp(header, RLD_MAGIC, 8) != 0)
+	if (memcmp(header, format->magic, 8) != 0)
 	{
-		return Rld_Refuse(reader, RLD_REFUSAL_DAMAGED, "no RLDTRACK magic - the extension says nothing, the magic does");
+		return Rld_Refuse(reader, RLD_REFUSAL_DAMAGED, format->noMagicText);
 	}
 
 	// Both directions have their own text: a newer container needs a
 	// newer game, an older one a new packing run. The numbers are in the reader.
 	reader->major = Rld_ReadLE16(&header[0x08]);
 	reader->minor = Rld_ReadLE16(&header[0x0a]);
-	if (reader->major > RLD_VERSION_MAJOR)
+	if (reader->major > format->major)
 	{
 		return Rld_Refuse(reader, RLD_REFUSAL_NEWER, "needs a newer version of CTR Reload - the container format is newer than this build");
 	}
-	if (reader->major < RLD_VERSION_MAJOR)
+	if (reader->major < format->major)
 	{
 		return Rld_Refuse(reader, RLD_REFUSAL_OLDER, "old format - pack it again with the Alpha-Maker");
 	}
@@ -809,7 +863,7 @@ static const char *Rld_Open(struct RldReader *reader, const char *path)
 	// had the salt; the word is reserved and stays 0.
 	flags = Rld_ReadLE32(&header[0x0c]);
 	pad = Rld_ReadLE32(&header[0x14]);
-	reader->unknownFlags = flags & ~RLD_HEADER_FLAGS_KNOWN;
+	reader->unknownFlags = flags & ~format->flagsKnown;
 	if (reader->unknownFlags != 0)
 	{
 		return Rld_Refuse(reader, RLD_REFUSAL_NEWER, "needs a newer version of CTR Reload - the container needs a feature this build does not know");
@@ -826,11 +880,10 @@ static const char *Rld_Open(struct RldReader *reader, const char *path)
 	}
 
 	reader->chunkCount = (int)Rld_ReadLE32(&header[0x10]);
-	// Lower bound 3 since 2026-09-19, 4 before: the required chunks are META,
-	// LEVD and VRMD. An existing container with SIGN passes through unchanged.
-	if ((reader->chunkCount < 3) || (reader->chunkCount > RLD_CHUNK_MAX))
+	// The lower bound is the type's (a track: 3, see s_rldTrackFormat).
+	if ((reader->chunkCount < format->minChunks) || (reader->chunkCount > RLD_CHUNK_MAX))
 	{
-		return Rld_Refuse(reader, RLD_REFUSAL_DAMAGED, "chunk_count is outside 3..64");
+		return Rld_Refuse(reader, RLD_REFUSAL_DAMAGED, format->countText);
 	}
 
 	reader->dirOffset = Rld_ReadLE64(&header[0x18]);
@@ -852,7 +905,7 @@ static const char *Rld_Open(struct RldReader *reader, const char *path)
 		u64 stored = Rld_ReadLE64(&entry[0x10]);
 		u64 raw = Rld_ReadLE64(&entry[0x18]);
 		u32 method = Rld_ReadLE32(&entry[0x04]) & 0x0fu;
-		u64 limit = Rld_ChunkLimit(entry);
+		u64 limit = format->chunkLimit(entry);
 
 		// The position check applies to EVERY entry, including an unknown one.
 		if ((offset < RLD_HEADER_SIZE) || (offset > reader->dirOffset) || (stored > (reader->dirOffset - offset)))
@@ -901,31 +954,30 @@ static const char *Rld_Open(struct RldReader *reader, const char *path)
 
 	// The required chunks, already here: until 4.0 a line without LEVD looked
 	// healthy in the list and only failed when it was picked.
+	for (j = 0; j < format->requiredCount; j++)
 	{
-		static const char *const required[3] = {"META", "LEVD", "VRMD"};
-		static const char *const missing[3] = {"META is missing - required chunk", "LEVD is missing - required chunk",
-		                                       "VRMD is missing - required chunk"};
+		int found = 0;
 
-		for (j = 0; j < 3; j++)
+		for (i = 0; i < reader->chunkCount; i++)
 		{
-			int found = 0;
-
-			for (i = 0; i < reader->chunkCount; i++)
+			if (memcmp(&reader->directory[i * RLD_DIR_ENTRY_SIZE], format->required[j], 4) == 0)
 			{
-				if (memcmp(&reader->directory[i * RLD_DIR_ENTRY_SIZE], required[j], 4) == 0)
-				{
-					found = 1;
-				}
+				found = 1;
 			}
+		}
 
-			if (!found)
-			{
-				return Rld_Refuse(reader, RLD_REFUSAL_DAMAGED, missing[j]);
-			}
+		if (!found)
+		{
+			return Rld_Refuse(reader, RLD_REFUSAL_DAMAGED, format->missingText[j]);
 		}
 	}
 
 	return NULL;
+}
+
+static const char *Rld_Open(struct RldReader *reader, const char *path)
+{
+	return Rld_OpenAs(reader, path, &s_rldTrackFormat);
 }
 
 static const u8 *Rld_FindEntry(const struct RldReader *reader, const char type[4], int *indexOut)
@@ -953,7 +1005,8 @@ static const u8 *Rld_FindEntry(const struct RldReader *reader, const char type[4
 // bytes as they are in the file.
 //
 // Only KNOWN types. Nobody reads an unknown one (it is skipped):
-// it has no limit that could apply here, and no consumer.
+// it has no limit that could apply here, and no consumer. Known means known
+// to the type the reader was opened as (reader->format->chunkLimit).
 static u8 *Rld_ReadChunk(struct RldReader *reader, int index, size_t *sizeOut, const char **errorOut)
 {
 	const u8 *entry = &reader->directory[index * RLD_DIR_ENTRY_SIZE];
@@ -961,7 +1014,7 @@ static u8 *Rld_ReadChunk(struct RldReader *reader, int index, size_t *sizeOut, c
 	u64 stored = Rld_ReadLE64(&entry[0x10]);
 	u64 raw = Rld_ReadLE64(&entry[0x18]);
 	u32 method = Rld_ReadLE32(&entry[0x04]) & 0x0fu;
-	u64 limit = Rld_ChunkLimit(entry);
+	u64 limit = reader->format->chunkLimit(entry);
 	u8 digest[32];
 	u8 *bytes;
 
@@ -2873,6 +2926,69 @@ static const char *Rld_CheckLev(const u8 *lev, size_t size)
 
 
 #if defined(RLDTRACK_WITH_BUILDER)
+
+//----------------------------------------------------------------------------------------
+// THE ENVELOPE, WRITTEN - the counterpart of Rld_OpenAs, for every container type.
+//
+// Lays out header (format->magic, format->major, format->minorWritten, flags,
+// chunk_count, 0, dirOffset, fileSize), the stored chunk bytes in container
+// order (assigns chunk->offset) and the directory. Returns a calloc'ed buffer
+// (caller frees) or NULL when out of memory. Does not free chunk->stored.
+//
+// The order of the chunks is the order of the container: directory order and
+// offset order are the same. The reader demands no order.
+static u8 *Rld_WriteEnvelope(const struct RldFormat *format, u32 flags, struct RldContainer *container, size_t *sizeOut)
+{
+	u64 offset = RLD_HEADER_SIZE;
+	u64 dirOffset;
+	u64 fileSize;
+	u8 *out;
+	int i;
+
+	*sizeOut = 0;
+
+	for (i = 0; i < container->chunkCount; i++)
+	{
+		container->chunks[i].offset = offset;
+		offset += container->chunks[i].sizeStored;
+	}
+
+	dirOffset = offset;
+	fileSize = dirOffset + (u64)container->chunkCount * RLD_DIR_ENTRY_SIZE;
+
+	out = (u8 *)calloc(1, (size_t)fileSize);
+	if (out == NULL)
+	{
+		return NULL;
+	}
+
+	memcpy(&out[0x00], format->magic, 8);
+	Rld_WriteLE16(&out[0x08], format->major);
+	Rld_WriteLE16(&out[0x0a], format->minorWritten);
+	Rld_WriteLE32(&out[0x0c], flags);
+	Rld_WriteLE32(&out[0x10], (u32)container->chunkCount);
+	Rld_WriteLE32(&out[0x14], 0);
+	Rld_WriteLE64(&out[0x18], dirOffset);
+	Rld_WriteLE64(&out[0x20], fileSize);
+
+	for (i = 0; i < container->chunkCount; i++)
+	{
+		const struct RldChunk *chunk = &container->chunks[i];
+		u8 *entry = &out[(size_t)dirOffset + (size_t)i * RLD_DIR_ENTRY_SIZE];
+
+		memcpy(&out[(size_t)chunk->offset], chunk->stored, (size_t)chunk->sizeStored);
+
+		memcpy(&entry[0x00], chunk->type, 4);
+		Rld_WriteLE32(&entry[0x04], chunk->flags);
+		Rld_WriteLE64(&entry[0x08], chunk->offset);
+		Rld_WriteLE64(&entry[0x10], chunk->sizeStored);
+		Rld_WriteLE64(&entry[0x18], chunk->sizeRaw);
+		memcpy(&entry[0x20], chunk->hash, 32);
+	}
+
+	*sizeOut = (size_t)fileSize;
+	return out;
+}
 
 //----------------------------------------------------------------------------------------
 // THE ABR FIELD - why a track without a single image error runs at half

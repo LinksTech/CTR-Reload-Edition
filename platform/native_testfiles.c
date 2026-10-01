@@ -764,11 +764,15 @@ internal void NativeTestMeta_Build(struct NativeTestBlob *meta, const struct Nat
 // ---------------------------------------------------------------------------
 // The envelope, in the layout the packer writes
 //
-//   0x00 "RLDTRACK", 0x08 major u16, 0x0a minor u16, 0x0c flags u32,
+//   0x00 magic ("RLDTRACK"), 0x08 major u16, 0x0a minor u16, 0x0c flags u32,
 //   0x10 chunk_count u32, 0x14 reserved u32, 0x18 dir_offset u64,
 //   0x20 file_size u64; the chunks from 0x28 in directory order; the
 //   directory last, 64 bytes per entry: 0x00 type, 0x04 flags (compression),
 //   0x08 offset u64, 0x10 size_stored u64, 0x18 size_raw u64, 0x20 SHA-256.
+//
+// Magic, major and minor come from the container type (struct RldFormat in
+// rldtrack.inc; the track files here use s_rldTrackFormat), the way the
+// packer's Rld_WriteEnvelope takes them.
 // ---------------------------------------------------------------------------
 
 struct NativeTestLayout
@@ -782,7 +786,8 @@ struct NativeTestLayout
 	u64 fileSize;
 };
 
-internal void NativeTestCont_Assemble(const struct NativeTestParts *p, struct NativeTestBlob *out, struct NativeTestLayout *layout)
+internal void NativeTestCont_Assemble(const struct RldFormat *format, const struct NativeTestParts *p, struct NativeTestBlob *out,
+                                      struct NativeTestLayout *layout)
 {
 	u64 offset = RLD_HEADER_SIZE;
 	int part;
@@ -811,9 +816,9 @@ internal void NativeTestCont_Assemble(const struct NativeTestParts *p, struct Na
 	layout->fileSize = offset + (u64)index * RLD_DIR_ENTRY_SIZE;
 
 	NativeTestBlob_Alloc(out, (size_t)layout->fileSize);
-	memcpy(out->data, RLD_MAGIC, 8);
-	NativeTestBlob_Put16(out, 0x08, RLD_VERSION_MAJOR);
-	NativeTestBlob_Put16(out, 0x0a, RLD_VERSION_MINOR);
+	memcpy(out->data, format->magic, 8);
+	NativeTestBlob_Put16(out, 0x08, format->major);
+	NativeTestBlob_Put16(out, 0x0a, format->minorWritten);
 	NativeTestBlob_Put32(out, 0x0c, 0u);
 	NativeTestBlob_Put32(out, 0x10, (u32)layout->chunkCount);
 	NativeTestBlob_Put32(out, 0x14, 0u);
@@ -1615,7 +1620,7 @@ internal void NativeTestCont_EmitParts(const char *name, struct NativeTestParts 
 	char cell[NTC_PART_COUNT][24];
 	int part;
 
-	NativeTestCont_Assemble(p, &file, &layout);
+	NativeTestCont_Assemble(&s_rldTrackFormat, p, &file, &layout);
 	NativeTestCont_Write(name, &file);
 
 	for (part = 0; part < NTC_PART_COUNT; part++)
@@ -2334,7 +2339,7 @@ int NativeTestFiles_MakeContainers(const char *dir)
 	NativeTestMeta_Build(&s_testGood.meta, &s_testGood.lev, "Self-test Synthetic");
 	s_testGood.hasSndb = 1;
 	s_testGood.hasParm = 1;
-	NativeTestCont_Assemble(&s_testGood, &s_testGoodFile, &s_testGoodLayout);
+	NativeTestCont_Assemble(&s_rldTrackFormat, &s_testGood, &s_testGoodFile, &s_testGoodLayout);
 
 	printf("[selftest] test containers into %s\n", dir);
 	printf("[selftest] good-synthetic: %u bytes - META %u, LEVD %u, VRMD %u, SNDB %u, PARM %u\n", (u32)s_testGoodFile.size, (u32)s_testGood.meta.size,
