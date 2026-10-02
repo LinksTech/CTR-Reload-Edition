@@ -74,13 +74,24 @@ typedef signed int s32;
 // Build ID (CTR_NATIVE_BUILD_ID), generated on every build - see Rld_Usage.
 #include "ctr_build_id.h"
 
-// THE GAME'S DISC IMAGE READER (platform/native_disc_image.c), for make.
+// THE GAME'S DISC IMAGE READER (platform/native_disc_image.c), for make and
+// for make-char --icon-preview.
 //
 // Declared by hand here and not via native_disc_image.h: that header pulls in
-// macros.h, and its types are already defined at the top of this file. Two
-// functions, with exactly the signatures from the header.
+// macros.h, and its types are already defined at the top of this file. The
+// functions below, with exactly the signatures from the header.
 int NativeDiscImage_OpenImagePath(const char *path);
 int NativeDiscImage_ReadFileBytes(const char *path, int rawSectors, u8 **dataOut, int *sizeOut);
+
+// And for the retail portrait of make-char --icon-preview: one file of the image
+// and some of its sectors (the same struct as in native_disc_image.h).
+struct NativeDiscImageFile
+{
+	u32 lba;
+	u32 size;
+};
+int NativeDiscImage_FindFile(const char *path, struct NativeDiscImageFile *fileOut);
+int NativeDiscImage_ReadDataSectors(const struct NativeDiscImageFile *file, u32 sector, u32 sectorCount, void *dst);
 
 // In the game the reader reports through Platform_Log. rldpack has no log; what
 // an author needs to know, the report of make says itself.

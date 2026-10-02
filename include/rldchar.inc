@@ -45,7 +45,7 @@
 #define RLDCHAR_VERSION_MINOR 0            // 0 = draft until the format is frozen
 #define RLDCHAR_HEADER_FLAGS_KNOWN 0u
 #define RLDCHAR_LIMIT_CHRI (4u * 1024u)
-#define RLDCHAR_LIMIT_CMDL (256u * 1024u)
+#define RLDCHAR_LIMIT_CMDL (4u * 1024u * 1024u)   // room for RLDCHAR_DRAW_BYTES_MAX at 3 records per triangle (47 raw frames)
 #define RLDCHAR_LIMIT_CICN (4u * 1024u)    // the portrait, exactly RLDCHAR_ICON_BYTES (CICN-3)
 #define RLDCHAR_LIMIT_CPRM (4u * 1024u)    // known type, not written yet
 #define RLDCHAR_LIMIT_CMSK (256u * 1024u)  // the own mask; the envelope bound only - version 1 holds CMSK-3 (16 KiB)
@@ -74,7 +74,7 @@
 #define RLDCHAR_CLASS_MAX 3
 #define RLDCHAR_TNT_HEIGHT_MIN 16
 #define RLDCHAR_TNT_HEIGHT_MAX 96
-#define RLDCHAR_DRAW_BYTES_MAX 22560u      // 564 x 0x28 (oxide_hi)
+#define RLDCHAR_DRAW_BYTES_MAX 201600u     // 7200 x 0x1C: the most triangles any mesh can be built at (frameSize, 3 records each); reserved per bound seat (NativeChar_DrawReserve)
 #define RLDCHAR_DRAW_BYTES_G3 28u          // RB:3063-3070
 #define RLDCHAR_DRAW_BYTES_GT3 40u         // RB:3088-3090
 #define RLDCHAR_SLOT_MAX 87
@@ -396,17 +396,19 @@ static const char *RldChar_ParseInfo(struct RldCharInfo *out, const u8 *bytes, s
 // 0x04 u16 width        44
 // 0x06 u16 height       26
 // 0x08 u16[16] clut     RGB555 + STP bit; 0x0000 is transparent (the PS1 rule),
-//                       so black is written as 0x0421
+//                       so black is written as 0x0421. Every portrait is drawn
+//                       semi-transparent: a word with the STP bit (0x8000)
+//                       halves what lies behind it, one without is opaque
 // 0x28 u16[26][11]      the texel words exactly as they lie in VRAM: 4 bits per
 //                       texel, the lowest nibble is the leftmost texel
 //
 // 612 bytes, nothing else: the retail portrait format (44 wide, game/222.c:497-500;
 // 26 high, game/native_uidecl.c:366). The game uploads it into a strip of
-// VRAM of its own and draws it on the character's tile in the driver select
-// grid (NativeChar_EntryPortrait, include/platform/native_chars.h); the race
-// HUD, the results and the cup standings keep the template's portrait. A
-// broken CICN never refuses the file - the game shows the template's
-// portrait instead. Another depth or size would
+// VRAM of its own and draws it where the template's portrait would be: on
+// the character's tile in the driver select grid (NativeChar_EntryPortrait)
+// and for the seat in the race HUD, the results and the cup standings
+// (NativeChar_SeatPortrait, include/platform/native_chars.h). A broken CICN
+// never refuses the file - the game shows the template's portrait instead. Another depth or size would
 // come as version 2, which an older reader drops the same way.
 
 #define RLDCHAR_ICON_VERSION 1u
@@ -467,7 +469,7 @@ static const char *RldChar_CheckIcon(const u8 *bytes, size_t size)
 // THE RULES, in the order they are checked. The first finding decides the
 // verdict; the packer goes on and reports all of them.
 //
-//   before    model-size          CMDL <= 256 KiB (DAMAGED; the envelope refuses it first)
+//   before    model-size          CMDL <= 4 MiB (DAMAGED; the envelope refuses it first)
 //   stage 1   model-bounds        structures lie in the body, the chunk ends right behind the map
 //             model-map           the pointer map is exact
 //             model-head          Model: id -1, name 1..12 characters and zero after, one header
@@ -491,10 +493,10 @@ static const char *RldChar_CheckIcon(const u8 *bytes, size_t size)
 //             model-frame-layout  vertexOffset == 0x1C                       (per frame)
 //             model-verts         the frame carries all records              (per frame)
 //             model-coords        -8192 <= pos and pos + 255 <= 8191         (per frame and axis)
-//   stage 4   model-draw          draw memory of the model <= 22560 bytes
+//   stage 4   model-draw          draw memory of the model <= RLDCHAR_DRAW_BYTES_MAX
 //
 // The own mask (CMSK) runs the same rules with its own profile: 1 animation
-// of 1 frame, at most 1960 bytes of draw memory (RldChar_CheckMask).
+// of 1 frame, at most RLDCHAR_MASK_DRAW_BYTES_MAX bytes of draw memory (RldChar_CheckMask).
 //
 // A model whose command list has no end word has no known record count:
 // everything that needs it (stage 3 sizes, stage 4) is not checked then.
@@ -1604,9 +1606,10 @@ static enum RldCharVerdict RldChar_CheckProfile(const struct RldCharProfile *pro
 	}
 
 	// Stage 4: model-draw. The draw memory of one frame is shared by HUD,
-	// particles, every instance and the track (game/MAIN/MainInit.c:83-141); a
-	// character costs at most what retail's largest, oxide_hi, costs, the own
-	// mask what the retail mask akumouth costs.
+	// particles, every instance and the track (game/MAIN/MainInit.c:83-141).
+	// A custom model does not take from that share: the game adds what the
+	// bound seats may draw on top of it (NativeChar_DrawReserve), so the bound
+	// here is a budget of the PC, not one of retail's models.
 	if (check.listComplete && !check.stop && (check.facts->drawBytes > profile->drawMax))
 	{
 		RldChar_Find(&check, "model-draw", RLDCHAR_VERDICT_MODEL_LIMIT, "%u triangles (%u G3 x 28 + %u GT3 x 40) cost %u bytes of draw memory, at most %u",
@@ -1653,8 +1656,8 @@ static enum RldCharVerdict RldChar_CheckModel(const u8 *cmdl, size_t size, struc
 //   CMSK-3   CMSK <= 16 KiB
 //   then     every model-* rule of CMDL on the model frame at 0x04, with
 //            these differences: exactly 1 animation of 1 frame, and the draw
-//            memory at most 1960 bytes - what the retail mask akumouth costs
-//            (49 textured triangles x 40), so 70 triangles with vertex colors.
+//            memory at most RLDCHAR_MASK_DRAW_BYTES_MAX - 400 triangles with vertex colors,
+//            reserved on top like the model (NativeChar_DrawReserve).
 //
 // A finding NEVER refuses the file: it costs only the own mask, and the game
 // shows the retail mask (like a broken CICN). The envelope bound of CMSK
@@ -1666,7 +1669,7 @@ static enum RldCharVerdict RldChar_CheckModel(const u8 *cmdl, size_t size, struc
 #define RLDCHAR_MASK_VERSION 1u
 #define RLDCHAR_MASK_HEAD_BYTES 4u                 // version and flags, then the model frame
 #define RLDCHAR_MASK_BYTES_MAX (16u * 1024u)       // CMSK-3
-#define RLDCHAR_MASK_DRAW_BYTES_MAX 1960u          // 49 x 0x28 (akumouth)
+#define RLDCHAR_MASK_DRAW_BYTES_MAX 11200u         // 400 x 0x1C
 #define RLDCHAR_MASK_ANIM_COUNT 1
 
 static const u16 s_rldCharMaskFrames[RLDCHAR_MASK_ANIM_COUNT] = {1};

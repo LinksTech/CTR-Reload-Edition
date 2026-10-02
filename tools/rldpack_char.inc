@@ -30,9 +30,11 @@
 //    4m --remesh on (on request only): each part group of more than 24
 //       triangles becomes a closed hull (tools/rldpack_remesh.inc), which 4r
 //       then reduces
-//    4r --reduce auto (default): more than 805 triangles are reduced to at most
-//       797 - one budget shared by kart, driver and steering wheel, each with a
-//       floor (tools/rldpack_reduce.inc)
+//    4r --reduce auto (default): more than RLDMK_REDUCE_LIMIT triangles (the
+//       draw memory of a character, include/rldchar.inc) are reduced to at most
+//       RLDMK_REDUCE_TARGET - one budget shared by kart, driver and steering
+//       wheel, each with a floor (tools/rldpack_reduce.inc); at or below the
+//       limit nothing is reduced
 //    4a --size: driver and steering wheel scaled about the pivot of the poses,
 //       the kart not; the size checks of step 4 and 5 run on the result
 //    5  axes and scale -> game units: +Y up, +Z forward, 64 per Blender unit
@@ -70,7 +72,7 @@
 
 #define RLDMK_NONE 0xFFFFFFFFu
 
-#define RLDMK_PLY_MAX 100000u     // vertices and faces each (ply-big): a guard, not a format limit
+#define RLDMK_PLY_MAX 1000000u    // vertices and faces each (ply-big): a guard, not a format limit
 #define RLDMK_PLY_LIST_MAX 1024u  // entries of one list the reader accepts at all
 #define RLDMK_TEMPLATE_COUNT 15   // 0..14, include/namespace_Vehicle.h:39-53; 15 (N. Oxide) is never one
 #define RLDMK_CLASS_COUNT 4       // enum EngineClass, include/namespace_Vehicle.h:563-578
@@ -85,11 +87,12 @@
 // here: x -35.1..33.2, y -30.7..55.4, z -14.7..9.7 in model units, so 86.1
 // tall about the center (-0.95, 12.35, -2.5); 49 textured triangles = 1960
 // bytes of draw memory per frame. An own mask is fitted to that height
-// (--mask-size scales it) and that center, and may cost no more: 70 triangles
-// with vertex colors (RLDCHAR_MASK_DRAW_BYTES_MAX).
+// (--mask-size scales it) and that center; it may draw 400 triangles with
+// vertex colors (RLDCHAR_MASK_DRAW_BYTES_MAX), which the game reserves on top
+// of the frame's draw memory like the model's.
 #define RLDMK_MASK_HEIGHT 86.1
 #define RLDMK_MASK_CENTER {-0.95, 12.35, -2.5}
-#define RLDMK_MASK_TRIANGLES_MAX (RLDCHAR_MASK_DRAW_BYTES_MAX / RLDCHAR_DRAW_BYTES_G3)   // 70
+#define RLDMK_MASK_TRIANGLES_MAX (RLDCHAR_MASK_DRAW_BYTES_MAX / RLDCHAR_DRAW_BYTES_G3)   // 400
 #define RLDMK_MASK_CMDL_MAX (RLDCHAR_MASK_BYTES_MAX - RLDCHAR_MASK_HEAD_BYTES)           // the model frame in CMSK
 #define RLDMK_MASK_SIZE_MIN 50u
 #define RLDMK_MASK_SIZE_MAX 150u
@@ -1839,6 +1842,14 @@ static int RldMk_StepTriangles(const struct RldMkPly *ply, struct RldMkBuild *b,
 	{
 		room += (ply->cornerCount[f] >= 3u) ? (size_t)ply->cornerCount[f] - 2u : 0u;
 	}
+	// More triangles than the reducer takes can never be built - and their
+	// arrays below could pass what a 32-bit size counts.
+	if (room > (size_t)RLDRED_INPUT_MAX)
+	{
+		RldMk_Say("error", "ply-big", NULL, "The model has %llu triangles; rldpack reads at most %u. Reduce it in Blender (Decimate modifier).",
+		          (unsigned long long)room, (u32)RLDRED_INPUT_MAX);
+		return 0;
+	}
 	b->triangle = (u32 *)malloc((room + 1u) * 3u * sizeof(u32));
 	if (b->triangle == NULL)
 	{
@@ -3031,8 +3042,8 @@ static int RldMk_StepDummy(struct RldMkBuild *b, const struct RldMkOptions *opt)
 // driver part, or the first part of the group.
 
 // The limits of step 4r (see there).
-#define RLDMK_REDUCE_LIMIT (RLDCHAR_DRAW_BYTES_MAX / RLDCHAR_DRAW_BYTES_G3)  // 805
-#define RLDMK_REDUCE_TARGET 797u
+#define RLDMK_REDUCE_LIMIT (RLDCHAR_DRAW_BYTES_MAX / RLDCHAR_DRAW_BYTES_G3)  // the triangles that draw memory holds
+#define RLDMK_REDUCE_TARGET (RLDMK_REDUCE_LIMIT - (RLDMK_REDUCE_LIMIT / 100u))  // 1 % in hand
 #define RLDMK_REDUCE_KEEP 24u
 #define RLDMK_REDUCE_TRIES 10
 
@@ -3389,13 +3400,15 @@ static int RldMk_StepRemesh(struct RldMkBuild *b, const struct RldMkOptions *opt
 // STEP 4r: --reduce auto - FEWER TRIANGLES
 //========================================================================================
 //
-// The draw memory holds 28 x T <= 22560 bytes per frame: T <= 805 (step 6,
-// model-tris). With more, the model is reduced to at most RLDMK_REDUCE_TARGET
-// triangles by tools/rldpack_reduce.inc. 797 leaves 8 triangles (244 bytes,
-// 1.1 %) in hand: the reduction removes one or two triangles per step and stops
-// at the first count at or below the target, and the reserve keeps the model
-// under the limit should the game count the command list differently. When the
-// built model then still fails mem-model or model-frame (too many records),
+// The draw memory of a character holds 28 x T <= RLDCHAR_DRAW_BYTES_MAX bytes
+// per frame: T <= RLDMK_REDUCE_LIMIT (step 6, model-tris). With more, the model
+// is reduced to at most RLDMK_REDUCE_TARGET triangles by
+// tools/rldpack_reduce.inc. The target keeps 1 % in hand: the reduction removes
+// one or two triangles per step and stops at the first count at or below the
+// target, and the reserve keeps the model under the limit should the game count
+// the command list differently. At or below the limit nothing is reduced -
+// not even when the file would be too large (RldMk_BuildModel). When a reduced
+// model then still fails mem-model or model-frame (too many records),
 // RldMk_BuildModel lowers the target by 5 % and builds again, at most
 // RLDMK_REDUCE_TRIES times.
 //
@@ -3602,6 +3615,24 @@ static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, co
 
 	b->reduceFrom = triangles;
 	b->reduceTo = triangles;
+
+	// The model against its limit before anything is reduced, for Reload
+	// Studio: triangles, their limit, draw memory, its limit. These are the
+	// triangles the limit counts (step 6): after repair, before reduction and
+	// before packing. @char triangles at the end is what the game draws: the
+	// same less what the reduction took (@char reduced) and less the triangles
+	// packing left without area (@char collapsed, model-collapse).
+	if (!opt->maskModel && s_machine && !s_rldMkQuiet)
+	{
+		char text[4][16];
+
+		snprintf(text[0], sizeof(text[0]), "%u", triangles);
+		snprintf(text[1], sizeof(text[1]), "%u", (u32)RLDMK_REDUCE_LIMIT);
+		snprintf(text[2], sizeof(text[2]), "%u", triangles * RLDCHAR_DRAW_BYTES_G3);
+		snprintf(text[3], sizeof(text[3]), "%u", (u32)RLDCHAR_DRAW_BYTES_MAX);
+		Rld_Emit("char", "budget", text[0], text[1], text[2], text[3], (const char *)NULL);
+	}
+
 	if (!opt->reduce || (triangles <= target) || (!opt->reduceForce && (triangles <= (opt->maskModel ? RLDMK_MASK_TRIANGLES_MAX : RLDMK_REDUCE_LIMIT))))
 	{
 		return 1;
@@ -3889,12 +3920,12 @@ static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, co
 	}
 	if (opt->reduceForce && (opt->reduceWhy != NULL))
 	{
-		RldMk_Say("info", "model-reduced", NULL, "Reduced automatically: %u -> %u triangles, because %s; draw memory %u -> %u bytes.", triangles,
+		RldMk_Say("info", "model-reduced", NULL, "Reduced to fit: %u -> %u triangles, because %s; draw memory %u -> %u bytes.", triangles,
 		          b->triangleCount, opt->reduceWhy, triangles * RLDCHAR_DRAW_BYTES_G3, b->triangleCount * RLDCHAR_DRAW_BYTES_G3);
 	}
 	else
 	{
-		RldMk_Say("info", opt->maskModel ? "mask-reduced" : "model-reduced", NULL, "Reduced automatically: %u -> %u triangles, draw memory %u -> %u bytes (limit %u).",
+		RldMk_Say("info", opt->maskModel ? "mask-reduced" : "model-reduced", NULL, "Reduced to fit: %u -> %u triangles, draw memory %u -> %u bytes (limit %u).",
 		          triangles, b->triangleCount, triangles * RLDCHAR_DRAW_BYTES_G3, b->triangleCount * RLDCHAR_DRAW_BYTES_G3,
 		          opt->maskModel ? (u32)RLDCHAR_MASK_DRAW_BYTES_MAX : (u32)RLDCHAR_DRAW_BYTES_MAX);
 	}
@@ -3906,8 +3937,9 @@ static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, co
 //========================================================================================
 //
 // B = 28 x G3 + 40 x GT3 bytes per model and frame (RB:3063-3070, 3088-3090), at
-// most 22560 (564 textured triangles, N. Oxide). make-char writes G3 only. The
-// number is shown, never written into the file.
+// most RLDCHAR_DRAW_BYTES_MAX (RLDMK_REDUCE_LIMIT untextured triangles: what one frame of the
+// model format holds in the worst case, include/rldchar.inc). make-char writes
+// G3 only. The number is shown (@char budget), never written into the file.
 
 static int RldMk_StepBudget(struct RldMkBuild *b, const struct RldMkOptions *opt)
 {
@@ -3924,14 +3956,14 @@ static int RldMk_StepBudget(struct RldMkBuild *b, const struct RldMkOptions *opt
 		if (!opt->reduce)
 		{
 			RldMk_Say("error", "model-tris", NULL,
-			          "The model needs %u bytes of draw memory per frame (%u triangles); a driver may use %u, no more than N. Oxide. Let rldpack reduce it (--reduce auto; Reload Studio: Reduce automatically), or reduce it in Blender (Decimate modifier).",
-			          bytes, b->triangleCount, RLDCHAR_DRAW_BYTES_MAX);
+			          "The model needs %u bytes of draw memory per frame (%u triangles); a driver may use %u (%u triangles). Let rldpack reduce it (--reduce auto; Reload Studio: Reduce to fit), or reduce it in Blender (Decimate modifier).",
+			          bytes, b->triangleCount, RLDCHAR_DRAW_BYTES_MAX, (u32)RLDMK_REDUCE_LIMIT);
 		}
 		else
 		{
 			RldMk_Say("error", "model-tris", NULL,
-			          "The model needs %u bytes of draw memory per frame (%u triangles); a driver may use %u, no more than N. Oxide. Reduce it in Blender (Decimate modifier).",
-			          bytes, b->triangleCount, RLDCHAR_DRAW_BYTES_MAX);
+			          "The model needs %u bytes of draw memory per frame (%u triangles); a driver may use %u (%u triangles). Reduce it in Blender (Decimate modifier).",
+			          bytes, b->triangleCount, RLDCHAR_DRAW_BYTES_MAX, (u32)RLDMK_REDUCE_LIMIT);
 		}
 		return 0;
 	}
@@ -3939,7 +3971,7 @@ static int RldMk_StepBudget(struct RldMkBuild *b, const struct RldMkOptions *opt
 	if (b->triangleCount > RLDMK_HI_TRIANGLES_MAX)
 	{
 		RldMk_Say("note", "model-tris-info", NULL,
-		          "%u triangles - more than any original driver (564), but without textures they cost no more draw memory than N. Oxide.", b->triangleCount);
+		          "%u triangles - more than any original driver (564); the game gives a custom driver draw memory of its own.", b->triangleCount);
 	}
 
 	if (opt->twoSided)
@@ -5930,7 +5962,8 @@ static int RldMk_StepWrite(struct RldMkBuild *b)
 
 	if ((b->cmdlSize > limit) && b->diagnose)
 	{
-		RldMk_Say("info", "diagnose-lifted", "mem-model", "Lifted for the diagnosis: the model is %u KB, at most 256 KB.", (u32)((b->cmdlSize + 1023u) / 1024u));
+		RldMk_Say("info", "diagnose-lifted", "mem-model", "Lifted for the diagnosis: the model is %u KB, at most %u KB.", (u32)((b->cmdlSize + 1023u) / 1024u),
+		          (u32)(RLDCHAR_LIMIT_CMDL / 1024u));
 	}
 	else if ((b->cmdlSize > limit) && b->maskModel)
 	{
@@ -5940,8 +5973,8 @@ static int RldMk_StepWrite(struct RldMkBuild *b)
 	}
 	else if (b->cmdlSize > limit)
 	{
-		RldMk_Say("error", "mem-model", NULL, "The model is %u KB; a character model may be at most 256 KB. Reduce the triangles.",
-		          (u32)((b->cmdlSize + 1023u) / 1024u));
+		RldMk_Say("error", "mem-model", NULL, "The model is %u KB; a character model may be at most %u KB. Reduce the triangles.",
+		          (u32)((b->cmdlSize + 1023u) / 1024u), (u32)(RLDCHAR_LIMIT_CMDL / 1024u));
 		b->recordLimit = 1;
 		return 0;
 	}
@@ -6909,9 +6942,10 @@ static int RldMk_BuildPass(const struct RldMkPly *ply, const struct RldMkOptions
 
 // Steps 2-13 and 15, with the retries of step 4r: with --reduce auto the model
 // is first built without a word. When that build fails mem-model or
-// model-frame (too many records, RldMk_StepWrite), the target is lowered by
-// 5 % - below the triangles it had, so a model of at most 805 is reduced then
-// as well - and it is built again, at most RLDMK_REDUCE_TRIES times in all.
+// model-frame (too many records, RldMk_StepWrite) and the model has more
+// triangles than its limit, the target is lowered by 5 % and it is built
+// again, at most RLDMK_REDUCE_TRIES times in all. A model at or below the limit
+// is never reduced: it speaks with its real cause.
 // When such a build reduces nothing (the reducer cannot), lowering further is
 // no use: the last build speaks again with the target before it - or the first
 // one, when no reduction ever worked - so the author sees the real cause.
@@ -6936,11 +6970,13 @@ static int RldMk_BuildModel(const struct RldMkPly *ply, const struct RldMkOption
 		const size_t said = strlen(s_rldMkCodes);
 		int limit;
 		int reduced;
+		u32 from;
 		u32 next;
 
 		s_rldMkQuiet = 1;
 		limit = !RldMk_BuildPass(ply, &at, b) && b->recordLimit;
 		reduced = b->reduced;
+		from = b->reduceFrom;
 		next = ((b->reduceFrom < at.reduceTarget) ? b->reduceFrom : at.reduceTarget) * 95u / 100u;
 		if (limit && (b->frameSize > 0xFFFFu))
 		{
@@ -6953,8 +6989,8 @@ static int RldMk_BuildModel(const struct RldMkPly *ply, const struct RldMkOption
 		}
 		else if (limit)
 		{
-			snprintf(why[tries], sizeof(why[tries]), "at %u triangles the model would need %u KB, at most 256 KB", b->reduceTo,
-			         (u32)((b->cmdlSize + 1023u) / 1024u));
+			snprintf(why[tries], sizeof(why[tries]), "at %u triangles the model would need %u KB, at most %u KB", b->reduceTo,
+			         (u32)((b->cmdlSize + 1023u) / 1024u), (u32)(RLDCHAR_LIMIT_CMDL / 1024u));
 		}
 		RldMk_FreeBuild(b);
 		s_rldMkQuiet = quiet;
@@ -6964,6 +7000,10 @@ static int RldMk_BuildModel(const struct RldMkPly *ply, const struct RldMkOption
 		if (!limit)
 		{
 			speak = at;
+			break;
+		}
+		if (from <= (opt->maskModel ? (u32)RLDMK_MASK_TRIANGLES_MAX : (u32)RLDMK_REDUCE_LIMIT))
+		{
 			break;
 		}
 		if (at.reduceForce && !reduced)
@@ -7717,6 +7757,138 @@ static int RldMk_ReadLimited(const char *path, size_t max, u8 **dataOut, size_t 
 // A picture of exactly 43 x 25 becomes those texels one to one; one of exactly
 // 44 x 26 fills all of CICN one to one, as before the fit to 43 x 25. A picture
 // smaller than 43 x 25 is enlarged the same way (and looks blurry).
+//
+// THREE OPTIONS, each off by default - without them the CICN is the same, byte
+// for byte (RLDMK_GOLDEN_SIZE_ICON):
+//   --icon-background corners  before step 1, the plain color around the
+//      subject becomes transparent (RldMk_ClearBackground); auto does that only
+//      for a PNG without a single transparent pixel
+//   --icon-fit fit|fill  step 1 cuts around the subject (the pixels at least
+//      half opaque) instead of the whole picture and places it where a retail
+//      portrait has its head (RLDMK_ICON_HEAD_*): fit shows all of it, fill
+//      fills the head box and cuts the rest - at the sides, or above and below
+//      the face (half the subject's width below its top). One factor for both
+//      axes: never stretched
+//   --icon-frame retail  after step 2, the retail frame and its dark box
+//      behind the subject (RLDMK_ICON_FRAME_*): two CLUT entries, 13 colors
+//      for the subject
+
+#define RLDMK_ICON_BACKGROUND_ALPHA 0u     // the PNG's alpha, nothing else (as before)
+#define RLDMK_ICON_BACKGROUND_CORNERS 1u   // and the plain color around the subject
+#define RLDMK_ICON_BACKGROUND_AUTO 2u      // CORNERS for a PNG without transparent pixels, else ALPHA
+#define RLDMK_ICON_FIT_NONE 0u             // the whole picture cut to 43:25 (as before)
+#define RLDMK_ICON_FIT_FIT 1u
+#define RLDMK_ICON_FIT_FILL 2u
+#define RLDMK_ICON_FRAME_NONE 0u
+#define RLDMK_ICON_FRAME_RETAIL 1u
+#define RLDMK_ICON_TOLERANCE 24u           // --icon-tolerance default, per channel of 255
+#define RLDMK_ICON_TOLERANCE_MAX 128u
+
+// THE HEAD BOX, measured once on the 16 driver portraits of the disc (43 x 25
+// each, 4 bits; numbers only, no pixels): the head - every texel that is
+// neither transparent, nor the frame, nor the dark box - is 34..43 texels wide
+// (median 41) and 24..25 high (median 25), starts at x 0 in 13 of 16 and ends
+// at x 37..42 (median 40), reaches the bottom row in 15 and the top row in 15;
+// its center of mass lies at x
+// 18.4..23.0 (median 20.2), y 9.9..14.3 (median 11.2). So the subject goes into
+// x 0..40, y 0..24: centered across, standing on the bottom row.
+#define RLDMK_ICON_HEAD_X 0
+#define RLDMK_ICON_HEAD_W 41
+#define RLDMK_ICON_HEAD_H 25
+
+// THE RETAIL FRAME, measured on the same portraits: 2 texels wide at the sides
+// and 1 at the top and bottom, in the opaque near-black 0x0400 (STP clear),
+// at x 2..38 and y 1..23 (9 of the 15 portraits with such a frame; 4 end at x
+// 40, 2 at x 39; the 16th, Fake Crash, draws the frame in 0x8000 like its
+// box); inside it 0x8000, black WITH the STP
+// bit (30..246 texels per portrait, median 100). Every place that draws a
+// portrait draws it semi-transparent (TRANS_50_DECAL: game/UI/UI_Rank.c,
+// game/222.c, game/UI/UI_CupStandings.c, game/230/MM_Characters.c), and then
+// a texel with the STP bit halves what lies behind it while one without stays
+// opaque (platform/native_shaders.inc, GPU_STP_PASS_FUNC): the box darkens the
+// race behind the head, the frame does not let it through. The head lies over
+// both and reaches past the frame (29..98 texels per portrait).
+#define RLDMK_ICON_FRAME_X0 2
+#define RLDMK_ICON_FRAME_X1 38
+#define RLDMK_ICON_FRAME_Y0 1
+#define RLDMK_ICON_FRAME_Y1 23
+#define RLDMK_ICON_FRAME_WIDTH 2
+#define RLDMK_ICON_FRAME_COLOR 0x0400u
+#define RLDMK_ICON_BOX_COLOR 0x8000u
+#define RLDMK_ICON_FRAME_TEXEL 0xFFFFFFFEu   // in rgb[] beside RLDMK_NONE: never a 24-bit color
+#define RLDMK_ICON_BOX_TEXEL 0xFFFFFFFDu
+
+struct RldMkIconOptions
+{
+	u32 background;   // RLDMK_ICON_BACKGROUND_*
+	u32 tolerance;    // 0..RLDMK_ICON_TOLERANCE_MAX
+	u32 fit;          // RLDMK_ICON_FIT_*
+	u32 frame;        // RLDMK_ICON_FRAME_*
+};
+
+static const struct RldMkIconOptions s_rldMkIconDefault = {RLDMK_ICON_BACKGROUND_ALPHA, RLDMK_ICON_TOLERANCE, RLDMK_ICON_FIT_NONE,
+                                                           RLDMK_ICON_FRAME_NONE};
+
+// The words of the options, by their value (the machine lines say these).
+static const char *const s_rldMkIconBackgroundWords[3] = {"alpha", "corners", "auto"};
+static const char *const s_rldMkIconFitWords[3] = {"none", "fit", "fill"};
+static const char *const s_rldMkIconFrameWords[2] = {"none", "retail"};
+
+// One word of `words` -> its index. 0 = not one of them.
+static int RldMk_IconWord(const char *text, const char *const *words, u32 count, u32 *out)
+{
+	u32 i;
+
+	for (i = 0; i < count; i++)
+	{
+		if (strcmp(text, words[i]) == 0)
+		{
+			*out = i;
+			return 1;
+		}
+	}
+	return 0;
+}
+
+// --icon-background, --icon-tolerance, --icon-fit and --icon-frame (each NULL
+// when not given) into *options; a value that is not known is said (usage)
+// and leaves that option as it was. 1 = all of them taken.
+static int RldMk_IconSwitches(const char *background, const char *tolerance, const char *fit, const char *frame, struct RldMkIconOptions *options)
+{
+	int ok = 1;
+
+	if ((background != NULL) && !RldMk_IconWord(background, s_rldMkIconBackgroundWords, 3u, &options->background))
+	{
+		RldMk_Say("error", "usage", "--icon-background", "--icon-background is alpha, corners or auto, not '%s'.", background);
+		ok = 0;
+	}
+	if (tolerance != NULL)
+	{
+		char *end = NULL;
+		const unsigned long value = strtoul(tolerance, &end, 10);
+
+		if ((end == tolerance) || (*end != '\0') || (tolerance[0] == '-') || (tolerance[0] == '+') || (value > RLDMK_ICON_TOLERANCE_MAX))
+		{
+			RldMk_Say("error", "usage", "--icon-tolerance", "--icon-tolerance is a whole number from 0 to %u, not '%s'.", RLDMK_ICON_TOLERANCE_MAX, tolerance);
+			ok = 0;
+		}
+		else
+		{
+			options->tolerance = (u32)value;
+		}
+	}
+	if ((fit != NULL) && !RldMk_IconWord(fit, s_rldMkIconFitWords, 3u, &options->fit))
+	{
+		RldMk_Say("error", "usage", "--icon-fit", "--icon-fit is none, fit or fill, not '%s'.", fit);
+		ok = 0;
+	}
+	if ((frame != NULL) && !RldMk_IconWord(frame, s_rldMkIconFrameWords, 2u, &options->frame))
+	{
+		RldMk_Say("error", "usage", "--icon-frame", "--icon-frame is none or retail, not '%s'.", frame);
+		ok = 0;
+	}
+	return ok;
+}
 
 #define RLDMK_ICON_TEXELS (RLDCHAR_ICON_WIDTH * RLDCHAR_ICON_HEIGHT)
 #define RLDMK_ICON_SHOWN_WIDTH 43u    // the part of CICN the menu tile shows, from the top left
@@ -7733,9 +7905,500 @@ struct RldMkIcon
 	u32 crop[4];         // x, y, width, height of the cut in the picture
 	u32 scaled[2];       // the texels the cut was scaled to: 43 x 25, or 44 x 26 for a picture of exactly that size
 	u32 colorsIn;        // distinct colors of the opaque texels
-	u32 colorCount;      // CLUT entries used, 1..15
+	u32 colorCount;      // CLUT entries used, 1..15 (1..13 with the frame)
 	u32 opaque;          // opaque texels
+	u32 cleared;         // pixels the background step made transparent (0 without it)
+	u32 backgroundRgb;   // the color it took for the background, 0xRRGGBB
+	u32 subject[4];      // x, y, width, height of the subject in the picture (--icon-fit)
+	u32 place[4];        // x, y, width, height of the subject in the 43 x 25 (--icon-fit)
 };
+
+// --icon-background corners: the plain color around the subject becomes
+// transparent.
+// THE COLOR: the opaque pixels on the border of the picture, and those beside a
+// transparent pixel that a path through transparent pixels joins to the
+// border, vote. The most frequent RGB555 value among them (on a tie the lower)
+// gives a first color, the average of its voters. It is the background when at
+// least half of all voters lie within `tolerance` of it in every channel - a
+// background with a little noise still counts - else nothing changes. The
+// color is then the average of those voters.
+// THE FILL: from the four corners, to the 4 neighbors, through transparent
+// pixels and pixels within `tolerance` of that color in every channel. Only the
+// area the corners reach is cleared: a pixel of the same color inside the
+// subject (an eye, a tooth, a hole it closes) stays, and so does a part of the
+// subject that touches the border but is closed off from the corners by its
+// outline (a white shirt at the bottom of a white picture).
+// THE FRINGE: an opaque pixel beside a cleared one, within twice the tolerance,
+// is an edge blended with the background; it keeps alpha in proportion to its
+// distance, but never less than half - so at one pixel per texel an outline
+// close to the background's color stays.
+// THE BOX: when a corner the fill starts from is transparent, the opaque
+// part it reaches lies between the transparent surroundings and the subject:
+// a box the picture was exported with (it goes), or a part of the subject in
+// the color of its outline - the outline itself, dark hair, a dark coat (they
+// stay). The fill clears it only when it is a box on both counts:
+//   deep: somewhere at least RldMk_BgCore pixels deep (a band twice as wide);
+//      a thinner one is the outline (*keptOut = RLDMK_BG_KEPT_LINE)
+//   square: at least 3/4 of its pixels beside the transparent surroundings lie
+//      on the edges of its own bounding box - a box's edge is straight, the
+//      edge of hair or a head is round (RLDMK_BG_KEPT_SHAPE)
+// THE SUBJECT: whatever the corners, the fill may not take (nearly) all of the
+// picture: when less than 1/20 of the opaque pixels would stay, it took the
+// subject, and nothing changes (RLDMK_BG_KEPT_SUBJECT).
+// What it cannot tell apart: an outline in the background's own color that
+// touches a plain opaque background (black on black) goes with it.
+// Integers only, in a fixed order: the same picture gives the same pixels
+// everywhere. 1 = done (cleared may be 0); 0 = out of memory.
+#define RLDMK_BG_REACHED 1u   // state[]: joined to the border through transparent pixels
+#define RLDMK_BG_FILLED 2u    // state[]: reached by the fill from the corners
+#define RLDMK_BG_KEPT_LINE 1u      // *keptOut: only a thin line in the color - an outline
+#define RLDMK_BG_KEPT_SHAPE 2u     // not shaped like a box - a part of the subject
+#define RLDMK_BG_KEPT_SUBJECT 3u   // it would take (nearly) all of the picture
+
+static int RldMk_BgNear(const u8 *p, const u32 color[3], u32 tolerance)
+{
+	return ((u32)abs((int)p[0] - (int)color[0]) <= tolerance) && ((u32)abs((int)p[1] - (int)color[1]) <= tolerance) &&
+	       ((u32)abs((int)p[2] - (int)color[2]) <= tolerance);
+}
+
+static u32 RldMk_BgKey(const u8 *p)
+{
+	return ((u32)p[0] >> 3) | (((u32)p[1] >> 3) << 5) | (((u32)p[2] >> 3) << 10);
+}
+
+// A voter: opaque, on the border or beside a pixel of RLDMK_BG_REACHED.
+static int RldMk_BgVoter(const u8 *rgba, const u8 *state, u32 width, u32 height, size_t i)
+{
+	const u32 x = (u32)(i % width);
+	const u32 y = (u32)(i / width);
+
+	if (rgba[i * 4u + 3u] < 128u)
+	{
+		return 0;
+	}
+	return (x == 0u) || (y == 0u) || (x + 1u == width) || (y + 1u == height) || (state[i - 1u] == RLDMK_BG_REACHED) ||
+	       (state[i + 1u] == RLDMK_BG_REACHED) || (state[i - width] == RLDMK_BG_REACHED) || (state[i + width] == RLDMK_BG_REACHED);
+}
+
+// How deep the opaque part of the fill has to be somewhere (chessboard
+// distance to the nearest pixel outside it) when the corners are transparent:
+// 3 pixels, more for a larger picture (1/16 of its shorter side), so that an
+// outline that grows with the picture stays an outline.
+static u32 RldMk_BgCore(u32 width, u32 height)
+{
+	const u32 side = (width < height) ? width : height;
+
+	return (side / 16u > 3u) ? (side / 16u) : 3u;
+}
+
+static int RldMk_ClearBackground(u8 *rgba, u32 width, u32 height, u32 tolerance, u32 *clearedOut, u32 *colorOut, u32 *keptOut)
+{
+	const size_t count = (size_t)width * height;
+	u8 *state = (u8 *)calloc(count, 1);
+	u32 *queue = (u32 *)malloc(count * sizeof(u32));
+	u32 *votes = (u32 *)calloc(32768u, sizeof(u32));
+	u64 sum[3] = {0, 0, 0};
+	u32 total = 0;
+	u32 best = 0;
+	u32 bestVotes = 0;
+	u32 nearCount = 0;
+	u32 color[3] = {0, 0, 0};
+	size_t head;
+	size_t tail;
+	size_t i;
+	int pass;
+	int round;
+	int clearSeed = 0;   // a corner the fill starts from is transparent
+
+	*clearedOut = 0;
+	*colorOut = 0;
+	*keptOut = 0;
+	if ((state == NULL) || (queue == NULL) || (votes == NULL))
+	{
+		free(state);
+		free(queue);
+		free(votes);
+		return 0;
+	}
+
+	// Pass 0: the transparent pixels joined to the border, from every border
+	// pixel. Pass 1: the fill, from the four corners only.
+	for (pass = 0; pass < 2; pass++)
+	{
+		const u8 mark = (u8)((pass == 0) ? RLDMK_BG_REACHED : RLDMK_BG_FILLED);
+
+		head = 0;
+		tail = 0;
+		if (pass == 0)
+		{
+			for (i = 0; i < count; i++)
+			{
+				const u32 x = (u32)(i % width);
+				const u32 y = (u32)(i / width);
+
+				if ((rgba[i * 4u + 3u] < 128u) && ((x == 0u) || (y == 0u) || (x + 1u == width) || (y + 1u == height)))
+				{
+					state[i] = mark;
+					queue[tail++] = (u32)i;
+				}
+			}
+		}
+		else
+		{
+			const size_t corners[4] = {0, (size_t)width - 1u, count - width, count - 1u};
+			int k;
+
+			for (k = 0; k < 4; k++)
+			{
+				const u8 *p = &rgba[corners[k] * 4u];
+
+				if ((state[corners[k]] != mark) && ((p[3] < 128u) || RldMk_BgNear(p, color, tolerance)))
+				{
+					state[corners[k]] = mark;
+					queue[tail++] = (u32)corners[k];
+					clearSeed |= (p[3] < 128u);
+				}
+			}
+		}
+
+		while (head < tail)
+		{
+			const u32 at = queue[head++];
+			const u32 x = at % width;
+			const u32 y = at / width;
+			u32 n[4];
+			int k;
+			int ways = 0;
+
+			if (x > 0u)
+			{
+				n[ways++] = at - 1u;
+			}
+			if (x + 1u < width)
+			{
+				n[ways++] = at + 1u;
+			}
+			if (y > 0u)
+			{
+				n[ways++] = at - width;
+			}
+			if (y + 1u < height)
+			{
+				n[ways++] = at + width;
+			}
+
+			for (k = 0; k < ways; k++)
+			{
+				const u8 *p = &rgba[(size_t)n[k] * 4u];
+
+				if (state[n[k]] >= mark)
+				{
+					continue;
+				}
+				if ((p[3] < 128u) || ((pass == 1) && RldMk_BgNear(p, color, tolerance)))
+				{
+					state[n[k]] = mark;
+					queue[tail++] = n[k];
+				}
+			}
+		}
+
+		if (pass == 1)
+		{
+			break;
+		}
+
+		// The vote. Round 0: the most frequent RGB555 value; round 1: the
+		// average of its voters; round 2: the voters near that average.
+		for (i = 0; i < count; i++)
+		{
+			if (RldMk_BgVoter(rgba, state, width, height, i))
+			{
+				votes[RldMk_BgKey(&rgba[i * 4u])]++;
+				total++;
+			}
+		}
+		for (i = 0; i < 32768u; i++)
+		{
+			if (votes[i] > bestVotes)
+			{
+				bestVotes = votes[i];
+				best = (u32)i;
+			}
+		}
+		for (round = 1; (round <= 2) && (total > 0u); round++)
+		{
+			u32 n = 0;
+
+			sum[0] = 0;
+			sum[1] = 0;
+			sum[2] = 0;
+			for (i = 0; i < count; i++)
+			{
+				const u8 *p = &rgba[i * 4u];
+
+				if (RldMk_BgVoter(rgba, state, width, height, i) && ((round == 1) ? (RldMk_BgKey(p) == best) : RldMk_BgNear(p, color, tolerance)))
+				{
+					sum[0] += p[0];
+					sum[1] += p[1];
+					sum[2] += p[2];
+					n++;
+				}
+			}
+			if (round == 2)
+			{
+				nearCount = n;
+			}
+			if (n == 0u)
+			{
+				break;
+			}
+			color[0] = (u32)((sum[0] + n / 2u) / n);
+			color[1] = (u32)((sum[1] + n / 2u) / n);
+			color[2] = (u32)((sum[2] + n / 2u) / n);
+		}
+		if ((total == 0u) || ((nearCount * 2u) < total))
+		{
+			free(state);
+			free(queue);
+			free(votes);
+			return 1;
+		}
+		*colorOut = (color[0] << 16) | (color[1] << 8) | color[2];
+	}
+
+	// The box (see above): from a transparent corner, the opaque pixels of the
+	// fill need a core and straight edges. Chessboard distance in two sweeps, in queue[].
+	if (clearSeed)
+	{
+		const u32 core = RldMk_BgCore(width, height);
+		u32 deepest = 0;
+		int sweep;
+
+		for (sweep = 0; sweep < 2; sweep++)
+		{
+			for (i = 0; i < count; i++)
+			{
+				const size_t at = (sweep == 0) ? i : (count - 1u - i);
+				const u32 x = (u32)(at % width);
+				const u32 y = (u32)(at / width);
+				const int dir = (sweep == 0) ? -1 : 1;
+				const int yn = (int)y + dir;
+				u32 d = 0xFFFFFFFFu;
+				int dx;
+
+				if ((state[at] != RLDMK_BG_FILLED) || (rgba[at * 4u + 3u] < 128u))
+				{
+					queue[at] = 0;
+					continue;
+				}
+				if (sweep == 1)
+				{
+					d = queue[at];
+				}
+				// The row behind (three neighbors) and the pixel before in this row.
+				for (dx = -1; dx <= 1; dx++)
+				{
+					const int xn = (int)x + dx;
+					const u32 n = ((xn < 0) || (xn >= (int)width) || (yn < 0) || (yn >= (int)height)) ? 0u : queue[(size_t)yn * width + (size_t)xn];
+
+					d = (n + 1u < d) ? (n + 1u) : d;
+				}
+				{
+					const int xn = (int)x + dir;
+					const u32 n = ((xn < 0) || (xn >= (int)width)) ? 0u : queue[(size_t)y * width + (size_t)xn];
+
+					d = (n + 1u < d) ? (n + 1u) : d;
+				}
+				queue[at] = d;
+				deepest = (d > deepest) ? d : deepest;
+			}
+		}
+		*keptOut = (deepest < core) ? RLDMK_BG_KEPT_LINE : 0u;
+
+		// Square: its pixels beside the transparent surroundings (which the
+		// fill went through), on the edges of its bounding box.
+		if (*keptOut == 0u)
+		{
+			u32 box[4] = {width, height, 0, 0};
+			u32 edge = 0;
+			u32 straight = 0;
+
+			for (i = 0; i < count; i++)
+			{
+				const u32 x = (u32)(i % width);
+				const u32 y = (u32)(i / width);
+
+				if ((state[i] == RLDMK_BG_FILLED) && (rgba[i * 4u + 3u] >= 128u))
+				{
+					box[0] = (x < box[0]) ? x : box[0];
+					box[1] = (y < box[1]) ? y : box[1];
+					box[2] = (x > box[2]) ? x : box[2];
+					box[3] = (y > box[3]) ? y : box[3];
+				}
+			}
+			for (i = 0; i < count; i++)
+			{
+				const u32 x = (u32)(i % width);
+				const u32 y = (u32)(i / width);
+				int beside = 0;
+
+				if ((state[i] != RLDMK_BG_FILLED) || (rgba[i * 4u + 3u] < 128u))
+				{
+					continue;
+				}
+				beside = ((x > 0u) && (state[i - 1u] == RLDMK_BG_FILLED) && (rgba[(i - 1u) * 4u + 3u] < 128u)) ||
+				         ((x + 1u < width) && (state[i + 1u] == RLDMK_BG_FILLED) && (rgba[(i + 1u) * 4u + 3u] < 128u)) ||
+				         ((y > 0u) && (state[i - width] == RLDMK_BG_FILLED) && (rgba[(i - width) * 4u + 3u] < 128u)) ||
+				         ((y + 1u < height) && (state[i + width] == RLDMK_BG_FILLED) && (rgba[(i + width) * 4u + 3u] < 128u));
+				if (beside)
+				{
+					edge++;
+					straight += ((x == box[0]) || (x == box[2]) || (y == box[1]) || (y == box[3])) ? 1u : 0u;
+				}
+			}
+			*keptOut = ((straight * 4u) < (edge * 3u)) ? RLDMK_BG_KEPT_SHAPE : 0u;
+		}
+	}
+
+	// The subject: at least 1/20 of the opaque pixels stays.
+	if (*keptOut == 0u)
+	{
+		u32 opaque = 0;
+		u32 filled = 0;
+
+		for (i = 0; i < count; i++)
+		{
+			if (rgba[i * 4u + 3u] >= 128u)
+			{
+				opaque++;
+				filled += (state[i] == RLDMK_BG_FILLED) ? 1u : 0u;
+			}
+		}
+		*keptOut = ((filled > 0u) && ((u64)(opaque - filled) * 20u < (u64)opaque)) ? RLDMK_BG_KEPT_SUBJECT : 0u;
+	}
+	if (*keptOut != 0u)
+	{
+		free(state);
+		free(queue);
+		free(votes);
+		return 1;
+	}
+
+	// Cleared: what the fill reached. The fringe: opaque, beside a cleared
+	// pixel, its largest channel distance d within twice the tolerance - alpha
+	// times (d - tolerance) / tolerance, at least 128.
+	for (i = 0; i < count; i++)
+	{
+		u8 *p = &rgba[i * 4u];
+
+		if ((state[i] == RLDMK_BG_FILLED) && (p[3] >= 128u))
+		{
+			p[3] = 0;
+			(*clearedOut)++;
+		}
+	}
+	for (i = 0; (tolerance > 0u) && (i < count); i++)
+	{
+		const u32 x = (u32)(i % width);
+		const u32 y = (u32)(i / width);
+		u8 *p = &rgba[i * 4u];
+		u32 d = 0;
+		u32 faded;
+		int c;
+
+		if ((state[i] == RLDMK_BG_FILLED) || (p[3] < 128u))
+		{
+			continue;
+		}
+		if (!(((x > 0u) && (state[i - 1u] == RLDMK_BG_FILLED)) || ((x + 1u < width) && (state[i + 1u] == RLDMK_BG_FILLED)) ||
+		      ((y > 0u) && (state[i - width] == RLDMK_BG_FILLED)) || ((y + 1u < height) && (state[i + width] == RLDMK_BG_FILLED))))
+		{
+			continue;
+		}
+		for (c = 0; c < 3; c++)
+		{
+			const u32 e = (u32)abs((int)p[c] - (int)color[c]);
+
+			d = (e > d) ? e : d;
+		}
+		if ((d > tolerance) && (d < 2u * tolerance))
+		{
+			faded = ((u32)p[3] * (d - tolerance)) / tolerance;
+			p[3] = (u8)((faded < 128u) ? 128u : faded);
+		}
+	}
+
+	free(state);
+	free(queue);
+	free(votes);
+	return 1;
+}
+
+// --icon-background on the picture as read: alpha leaves it, corners clears
+// the background (RldMk_ClearBackground), auto does that only for a picture
+// without a single pixel that is not fully opaque. *usedOut = alpha or
+// corners, what it came to. 1 = done; 0 = out of memory.
+static int RldMk_IconBackground(struct RldPngImage *image, const struct RldMkIconOptions *options, u32 *usedOut, u32 *clearedOut, u32 *colorOut, u32 *keptOut)
+{
+	u32 used = options->background;
+
+	*clearedOut = 0;
+	*colorOut = 0;
+	*keptOut = 0;
+	if (used == RLDMK_ICON_BACKGROUND_AUTO)
+	{
+		size_t i;
+
+		used = RLDMK_ICON_BACKGROUND_CORNERS;
+		for (i = 0; i < (size_t)image->width * image->height; i++)
+		{
+			if (image->rgba[i * 4u + 3u] != 255u)
+			{
+				used = RLDMK_ICON_BACKGROUND_ALPHA;
+				break;
+			}
+		}
+	}
+	*usedOut = used;
+	return (used != RLDMK_ICON_BACKGROUND_CORNERS) ||
+	       RldMk_ClearBackground(image->rgba, image->width, image->height, options->tolerance, clearedOut, colorOut, keptOut);
+}
+
+// The subject: the box of the pixels at least half opaque. 0 = there is none.
+static int RldMk_SubjectBox(const struct RldPngImage *image, s64 box[4])
+{
+	s64 x0 = (s64)image->width;
+	s64 y0 = (s64)image->height;
+	s64 x1 = -1;
+	s64 y1 = -1;
+	u32 x;
+	u32 y;
+
+	for (y = 0; y < image->height; y++)
+	{
+		for (x = 0; x < image->width; x++)
+		{
+			if (image->rgba[(((size_t)y * image->width) + x) * 4u + 3u] >= 128u)
+			{
+				x0 = ((s64)x < x0) ? (s64)x : x0;
+				y0 = ((s64)y < y0) ? (s64)y : y0;
+				x1 = ((s64)x > x1) ? (s64)x : x1;
+				y1 = ((s64)y > y1) ? (s64)y : y1;
+			}
+		}
+	}
+
+	if (x1 < 0)
+	{
+		return 0;
+	}
+	box[0] = x0;
+	box[1] = y0;
+	box[2] = x1 - x0 + 1;
+	box[3] = y1 - y0 + 1;
+	return 1;
+}
 
 static u32 RldMk_To5(u32 value)
 {
@@ -7747,13 +8410,24 @@ static u32 RldMk_From5(u32 value)
 	return (value * 255u + 15u) / 31u;
 }
 
-// 1 = made. The only failure is an image without pixels, which rldpng never returns.
-static int RldMk_MakeIcon(const struct RldPngImage *image, struct RldMkIcon *icon)
+// 1 = made. The only failure is an image without pixels, which rldpng never
+// returns. `image` is the picture after the background step (RldMk_IconStep).
+static int RldMk_MakeIconWith(const struct RldPngImage *image, const struct RldMkIconOptions *options, struct RldMkIcon *icon)
 {
 	const s64 stride = RLDCHAR_ICON_WIDTH;
-	const int whole = (image->width == RLDCHAR_ICON_WIDTH) && (image->height == RLDCHAR_ICON_HEIGHT);
-	const s64 tw = whole ? (s64)RLDCHAR_ICON_WIDTH : (s64)RLDMK_ICON_SHOWN_WIDTH;
-	const s64 th = whole ? (s64)RLDCHAR_ICON_HEIGHT : (s64)RLDMK_ICON_SHOWN_HEIGHT;
+	const int framed = (options->frame == RLDMK_ICON_FRAME_RETAIL);
+	const u32 subjectColors = framed ? (RLDCHAR_ICON_COLORS - 3u) : (RLDCHAR_ICON_COLORS - 1u);
+	s64 box[4];
+	const int fitted = (options->fit != RLDMK_ICON_FIT_NONE) && (image->rgba != NULL) && RldMk_SubjectBox(image, box);
+	const int whole = !fitted && (image->width == RLDCHAR_ICON_WIDTH) && (image->height == RLDCHAR_ICON_HEIGHT);
+	const s64 shownW = whole ? (s64)RLDCHAR_ICON_WIDTH : (s64)RLDMK_ICON_SHOWN_WIDTH;
+	const s64 shownH = whole ? (s64)RLDCHAR_ICON_HEIGHT : (s64)RLDMK_ICON_SHOWN_HEIGHT;
+	s64 tw = shownW;   // the texels the cut is scaled to
+	s64 th = shownH;
+	s64 dx = 0;        // and where they lie
+	s64 dy = 0;
+	u32 frameIndex = 0;
+	u32 boxIndex = 0;
 	struct RldMkColor colors[RLDMK_ICON_TEXELS];
 	u32 rgb[RLDMK_ICON_TEXELS];
 	u32 sorted[RLDMK_ICON_TEXELS];
@@ -7774,31 +8448,119 @@ static int RldMk_MakeIcon(const struct RldPngImage *image, struct RldMkIcon *ico
 		return 0;
 	}
 
-	// 1: the cut. Wider than tw:th -> the full height, else the full width.
-	if (((s64)image->width * th) > ((s64)image->height * tw))
+	if (fitted)
 	{
-		sh = image->height;
-		sw = ((s64)image->height * tw + th / 2) / th;
-		sw = (sw < 1) ? 1 : ((sw > (s64)image->width) ? (s64)image->width : sw);
+		const s64 w = box[2];
+		const s64 h = box[3];
+
+		if (options->fit == RLDMK_ICON_FIT_FIT)
+		{
+			// 1 (fit): the side that is longer for the head box sets the one
+			// factor; the cut then takes exactly tw:th around the subject, the
+			// extra above it (it stands on the bottom row) and on both sides -
+			// beyond the picture's edge it is transparent.
+			if ((w * RLDMK_ICON_HEAD_H) >= (h * RLDMK_ICON_HEAD_W))
+			{
+				tw = RLDMK_ICON_HEAD_W;
+				th = (h * RLDMK_ICON_HEAD_W + w / 2) / w;
+			}
+			else
+			{
+				th = RLDMK_ICON_HEAD_H;
+				tw = (w * RLDMK_ICON_HEAD_H + h / 2) / h;
+			}
+			tw = (tw < 1) ? 1 : tw;
+			th = (th < 1) ? 1 : th;
+			if ((w * th) > (h * tw))
+			{
+				sw = w;
+				sh = (w * th + tw - 1) / tw;
+			}
+			else
+			{
+				sh = h;
+				sw = (h * tw + th - 1) / th;
+			}
+			left = box[0] - (sw - w) / 2;
+			top = box[1] + h - sh;
+		}
+		else
+		{
+			// 1 (fill): the head box filled; the longer side is cut. Across:
+			// the same at both sides. Upright: around the face, which lies
+			// about half the subject's width below its top - a head is about
+			// as tall as it is wide, and the head of a bust or a figure is at
+			// its top and no wider than it. Cut from the top, a tall picture
+			// kept only the top of the head; cut in the middle, a bust kept its
+			// chest.
+			tw = RLDMK_ICON_HEAD_W;
+			th = RLDMK_ICON_HEAD_H;
+			if ((w * th) > (h * tw))
+			{
+				sh = h;
+				sw = (h * tw + th / 2) / th;
+				sw = (sw < 1) ? 1 : sw;
+				left = box[0] + (w - sw) / 2;
+				top = box[1];
+			}
+			else
+			{
+				s64 face;
+
+				sw = w;
+				sh = (w * th + tw / 2) / tw;
+				sh = (sh < 1) ? 1 : sh;
+				left = box[0];
+				face = ((w < h) ? w : h) / 2 - sh / 2;
+				top = box[1] + ((face < 0) ? 0 : ((face > (h - sh)) ? (h - sh) : face));
+			}
+		}
+		dx = RLDMK_ICON_HEAD_X + (RLDMK_ICON_HEAD_W - tw) / 2;
+		dy = (s64)RLDMK_ICON_SHOWN_HEIGHT - th;
+		icon->subject[0] = (u32)box[0];
+		icon->subject[1] = (u32)box[1];
+		icon->subject[2] = (u32)box[2];
+		icon->subject[3] = (u32)box[3];
+		icon->place[0] = (u32)dx;
+		icon->place[1] = (u32)dy;
+		icon->place[2] = (u32)tw;
+		icon->place[3] = (u32)th;
 	}
 	else
 	{
-		sw = image->width;
-		sh = ((s64)image->width * th + tw / 2) / tw;
-		sh = (sh < 1) ? 1 : ((sh > (s64)image->height) ? (s64)image->height : sh);
+		// 1: the cut. Wider than tw:th -> the full height, else the full width.
+		if (((s64)image->width * th) > ((s64)image->height * tw))
+		{
+			sh = image->height;
+			sw = ((s64)image->height * tw + th / 2) / th;
+			sw = (sw < 1) ? 1 : ((sw > (s64)image->width) ? (s64)image->width : sw);
+		}
+		else
+		{
+			sw = image->width;
+			sh = ((s64)image->width * th + tw / 2) / tw;
+			sh = (sh < 1) ? 1 : ((sh > (s64)image->height) ? (s64)image->height : sh);
+		}
+		left = ((s64)image->width - sw) / 2;
+		top = ((s64)image->height - sh) / 2;
 	}
-	left = ((s64)image->width - sw) / 2;
-	top = ((s64)image->height - sh) / 2;
-	icon->crop[0] = (u32)left;
-	icon->crop[1] = (u32)top;
+	icon->crop[0] = (u32)((left < 0) ? 0 : left);
+	icon->crop[1] = (u32)((top < 0) ? 0 : top);
 	icon->crop[2] = (u32)sw;
 	icon->crop[3] = (u32)sh;
 	icon->scaled[0] = (u32)tw;
 	icon->scaled[1] = (u32)th;
 
+	// Texels the scaled cut does not cover (--icon-fit) stay transparent.
+	for (i = 0; i < (u32)RLDMK_ICON_TEXELS; i++)
+	{
+		rgb[i] = RLDMK_NONE;
+	}
+
 	// 2: the box filter. Texel X covers the picture's x from X*sw to (X+1)*sw,
 	// measured in parts of 1/tw; pixel x lies at x*tw to (x+1)*tw. The same
-	// vertically. The shares of one texel add up to sw*sh.
+	// vertically. The shares of one texel add up to sw*sh. A pixel beyond the
+	// picture (only a fitted cut reaches there) counts as transparent.
 	for (Y = 0; Y < th; Y++)
 	{
 		for (X = 0; X < tw; X++)
@@ -7819,7 +8581,7 @@ static int RldMk_MakeIcon(const struct RldPngImage *image, struct RldMkIcon *ico
 					const s64 x0 = ((X * sw) > (x * tw)) ? (X * sw) : (x * tw);
 					const s64 x1 = (((X + 1) * sw) < ((x + 1) * tw)) ? ((X + 1) * sw) : ((x + 1) * tw);
 					const s64 part = (x1 - x0) * (y1 - y0);
-					const u8 *pixel = &image->rgba[(((size_t)(top + y) * image->width) + (size_t)(left + x)) * 4u];
+					const u8 *pixel;
 					int c;
 
 					if (part <= 0)
@@ -7828,6 +8590,11 @@ static int RldMk_MakeIcon(const struct RldPngImage *image, struct RldMkIcon *ico
 					}
 
 					weight += part;
+					if (((top + y) < 0) || ((left + x) < 0) || ((top + y) >= (s64)image->height) || ((left + x) >= (s64)image->width))
+					{
+						continue;
+					}
+					pixel = &image->rgba[(((size_t)(top + y) * image->width) + (size_t)(left + x)) * 4u];
 					cover += part * (s64)pixel[3];
 					for (c = 0; c < 3; c++)
 					{
@@ -7839,33 +8606,55 @@ static int RldMk_MakeIcon(const struct RldPngImage *image, struct RldMkIcon *ico
 			// Below half covered: transparent. rgb[] keeps the average color of the rest.
 			if ((cover == 0) || ((cover * 2) < (weight * 255)))
 			{
-				rgb[Y * stride + X] = RLDMK_NONE;
+				rgb[(dy + Y) * stride + dx + X] = RLDMK_NONE;
 				continue;
 			}
 
-			rgb[Y * stride + X] = ((u32)((sum[0] + cover / 2) / cover) << 16) | ((u32)((sum[1] + cover / 2) / cover) << 8) | (u32)((sum[2] + cover / 2) / cover);
+			rgb[(dy + Y) * stride + dx + X] =
+			    ((u32)((sum[0] + cover / 2) / cover) << 16) | ((u32)((sum[1] + cover / 2) / cover) << 8) | (u32)((sum[2] + cover / 2) / cover);
+		}
+	}
+
+	// 2b (--icon-frame retail): where the subject leaves the texels
+	// transparent, the frame - 2 texels at the sides, 1 at the top and bottom,
+	// as the retail portraits draw it - and inside it the dark box.
+	if (framed)
+	{
+		for (Y = RLDMK_ICON_FRAME_Y0; Y <= RLDMK_ICON_FRAME_Y1; Y++)
+		{
+			for (X = RLDMK_ICON_FRAME_X0; X <= RLDMK_ICON_FRAME_X1; X++)
+			{
+				const int edge = (X < (RLDMK_ICON_FRAME_X0 + RLDMK_ICON_FRAME_WIDTH)) || (X > (RLDMK_ICON_FRAME_X1 - RLDMK_ICON_FRAME_WIDTH)) ||
+				                 (Y == RLDMK_ICON_FRAME_Y0) || (Y == RLDMK_ICON_FRAME_Y1);
+
+				if (rgb[Y * stride + X] == RLDMK_NONE)
+				{
+					rgb[Y * stride + X] = edge ? RLDMK_ICON_FRAME_TEXEL : RLDMK_ICON_BOX_TEXEL;
+				}
+			}
 		}
 	}
 
 	// 3: the texels the tile does not show repeat their neighbors.
-	for (Y = 0; Y < th; Y++)
+	for (Y = 0; Y < shownH; Y++)
 	{
-		for (X = tw; X < stride; X++)
+		for (X = shownW; X < stride; X++)
 		{
-			rgb[Y * stride + X] = rgb[Y * stride + tw - 1];
+			rgb[Y * stride + X] = rgb[Y * stride + shownW - 1];
 		}
 	}
-	for (Y = th; Y < (s64)RLDCHAR_ICON_HEIGHT; Y++)
+	for (Y = shownH; Y < (s64)RLDCHAR_ICON_HEIGHT; Y++)
 	{
-		memcpy(&rgb[Y * stride], &rgb[(th - 1) * stride], (size_t)stride * sizeof(u32));
+		memcpy(&rgb[Y * stride], &rgb[(shownH - 1) * stride], (size_t)stride * sizeof(u32));
 	}
 
 	// Every texel of CICN, the copies included: they weigh in the palette like
 	// the texels they repeat (counting them or not changes the palette of a
-	// picture of exactly 43 x 25, which is taken one to one).
+	// picture of exactly 43 x 25, which is taken one to one). Frame and box
+	// have CLUT entries of their own.
 	for (i = 0; i < (u32)RLDMK_ICON_TEXELS; i++)
 	{
-		if (rgb[i] != RLDMK_NONE)
+		if (rgb[i] <= 0xFFFFFFu)
 		{
 			sorted[opaqueCount++] = rgb[i];
 		}
@@ -7886,7 +8675,7 @@ static int RldMk_MakeIcon(const struct RldPngImage *image, struct RldMkIcon *ico
 		colors[unique - 1u].weight++;
 	}
 	icon->colorsIn = unique;
-	icon->colorCount = RldMk_Palette(colors, unique, RLDCHAR_ICON_COLORS - 1u, palette);
+	icon->colorCount = RldMk_Palette(colors, unique, subjectColors, palette);
 
 	// colors[] back in value order for the lookup (red is the top byte).
 	s_rldMkSortChannel = 0;
@@ -7900,6 +8689,13 @@ static int RldMk_MakeIcon(const struct RldPngImage *image, struct RldMkIcon *ico
 
 		icon->clut[i + 1u] = (u16)((value != 0u) ? value : RLDCHAR_ICON_BLACK);
 	}
+	if (framed)
+	{
+		frameIndex = icon->colorCount + 1u;
+		boxIndex = icon->colorCount + 2u;
+		icon->clut[frameIndex] = (u16)RLDMK_ICON_FRAME_COLOR;
+		icon->clut[boxIndex] = (u16)RLDMK_ICON_BOX_COLOR;
+	}
 
 	for (Y = 0; Y < (s64)RLDCHAR_ICON_HEIGHT; Y++)
 	{
@@ -7909,9 +8705,9 @@ static int RldMk_MakeIcon(const struct RldPngImage *image, struct RldMkIcon *ico
 			u32 low = 0;
 			u32 high = unique;
 
-			if (value == RLDMK_NONE)
+			if (value > 0xFFFFFFu)
 			{
-				icon->index[Y][X] = 0;
+				icon->index[Y][X] = (u8)((value == RLDMK_ICON_FRAME_TEXEL) ? frameIndex : ((value == RLDMK_ICON_BOX_TEXEL) ? boxIndex : 0u));
 				continue;
 			}
 
@@ -7952,6 +8748,12 @@ static int RldMk_MakeIcon(const struct RldPngImage *image, struct RldMkIcon *ico
 	}
 
 	return 1;
+}
+
+// The portrait as before the options (the self-test and the golden hash).
+static int RldMk_MakeIcon(const struct RldPngImage *image, struct RldMkIcon *icon)
+{
+	return RldMk_MakeIconWith(image, &s_rldMkIconDefault, icon);
 }
 
 // A 32-bit BMP (BITMAPINFOHEADER, BI_RGB, rows bottom-up), the alpha in the
@@ -8019,11 +8821,263 @@ static void RldMk_EmitWritten(const char *kind, const char *path, int ok, size_t
 	}
 }
 
+// THE TEMPLATE'S RETAIL PORTRAIT, for Reload Studio's side-by-side view only
+// (--icon-preview). Read at the moment from the game's own data, found the way
+// Rld_FindHwl finds KART.HWL: assets\BIGFILE.BIG, or BIGFILE.BIG inside
+// assets\ctr-u.bin, next to this program or up to two folders above it.
+// BIGFILE entry 258 is shared.vrm, the 16-bit pictures the game puts into VRAM
+// at boot (game/MAIN/MainMain.c, LOAD_VramFile 0x102; one picture, or 0x20 and
+// a chain of them: game/LOAD/LOAD_File.c, LOAD_VramFileCallback); entry 259 is
+// the shared pack, whose first word leads to its icon table (struct
+// LevTexLookup, game/DecalGlobal.c). The icon with the template's iconID
+// (game/zGlobal_DATA.c, MetaDataCharacters) gives page, CLUT and corners.
+// Nothing of it stays: the pixels go to <prefix>-retail.bmp in the Studio's
+// temporary folder, never into a container. No retail pixels are written in
+// this file - only where they are. 1 = rgba holds the 43 x 25 portrait, STP
+// texels at alpha 128 (drawn at half, as the game draws them).
+#define RLDMK_BIG_SHARED_VRM 258u
+#define RLDMK_BIG_SHARED_PACK 259u
+#define RLDMK_BIG_ENTRIES_MAX 4096u
+#define RLDMK_BIG_ENTRY_MAX (4u * 1024u * 1024u)
+#define RLDMK_SECTOR 2048u
+
+// MetaDataCharacters[id].iconID per template (game/zGlobal_DATA.c).
+static const u8 s_rldMkIconId[RLDMK_TEMPLATE_COUNT] = {32, 33, 34, 35, 36, 37, 38, 39, 43, 41, 40, 42, 44, 53, 54};
+
+struct RldMkBig
+{
+	FILE *loose;                       // assets\BIGFILE.BIG, or NULL
+	struct NativeDiscImageFile inImage; // BIGFILE.BIG inside ctr-u.bin when loose is NULL
+};
+
+// `count` sectors from `sector` of BIGFILE.BIG. 1 = read.
+static int RldMk_BigSectors(const struct RldMkBig *big, u32 sector, u32 count, u8 *dst)
+{
+	if (big->loose != NULL)
+	{
+		return (fseek(big->loose, (long)sector * (long)RLDMK_SECTOR, SEEK_SET) == 0) &&
+		       (fread(dst, 1, (size_t)count * RLDMK_SECTOR, big->loose) == (size_t)count * RLDMK_SECTOR);
+	}
+	return NativeDiscImage_ReadDataSectors(&big->inImage, sector, count, dst);
+}
+
+// One entry of BIGFILE.BIG (struct BigHeader, include/namespace_Load.h), at most
+// RLDMK_BIG_ENTRY_MAX bytes. NULL = not there.
+static u8 *RldMk_BigEntry(const struct RldMkBig *big, u32 index, u32 *sizeOut)
+{
+	u8 first[RLDMK_SECTOR];
+	u8 *table;
+	u8 *data;
+	u32 count;
+	u32 tableSectors;
+	u32 offset;
+	u32 size;
+
+	*sizeOut = 0;
+	if (!RldMk_BigSectors(big, 0u, 1u, first))
+	{
+		return NULL;
+	}
+	count = Rld_ReadLE32(&first[4]);
+	if ((count <= index) || (count > RLDMK_BIG_ENTRIES_MAX))
+	{
+		return NULL;
+	}
+	tableSectors = (8u + 8u * count + RLDMK_SECTOR - 1u) / RLDMK_SECTOR;
+	table = (u8 *)malloc((size_t)tableSectors * RLDMK_SECTOR);
+	if ((table == NULL) || !RldMk_BigSectors(big, 0u, tableSectors, table))
+	{
+		free(table);
+		return NULL;
+	}
+	offset = Rld_ReadLE32(&table[8u + 8u * index]);
+	size = Rld_ReadLE32(&table[12u + 8u * index]);
+	free(table);
+	if ((size == 0u) || (size > RLDMK_BIG_ENTRY_MAX))
+	{
+		return NULL;
+	}
+
+	data = (u8 *)malloc(((size_t)size + RLDMK_SECTOR - 1u) / RLDMK_SECTOR * RLDMK_SECTOR);
+	if ((data == NULL) || !RldMk_BigSectors(big, offset, (size + RLDMK_SECTOR - 1u) / RLDMK_SECTOR, data))
+	{
+		free(data);
+		return NULL;
+	}
+	*sizeOut = size;
+	return data;
+}
+
+// The VRAM word at x, y as shared.vrm leaves it; 0 where it puts nothing.
+static u32 RldMk_VrmWord(const u8 *vrm, u32 size, u32 x, u32 y)
+{
+	u32 at = 0;
+	u32 next = 0;
+	int chain = (size >= 8u) && (Rld_ReadLE32(&vrm[0]) == 0x20u);
+
+	if (chain)
+	{
+		at = 8u;
+		next = Rld_ReadLE32(&vrm[4]);
+	}
+	// at only grows, by 4 bytes at least, and every sum is taken in 64 bits: a
+	// damaged chain ends the walk, it never wraps around.
+	while ((u64)at + 0x14u <= (u64)size)
+	{
+		const u32 rx = Rld_ReadLE16(&vrm[at + 0x0Cu]);
+		const u32 ry = Rld_ReadLE16(&vrm[at + 0x0Eu]);
+		const u32 rw = Rld_ReadLE16(&vrm[at + 0x10u]);
+		const u32 rh = Rld_ReadLE16(&vrm[at + 0x12u]);
+
+		if ((x >= rx) && (x < rx + rw) && (y >= ry) && (y < ry + rh))
+		{
+			const u64 word = (u64)at + 0x14u + 2u * ((u64)(y - ry) * rw + (x - rx));
+
+			return (word + 2u <= (u64)size) ? Rld_ReadLE16(&vrm[(size_t)word]) : 0u;
+		}
+		if (!chain || ((next & ~3u) == 0u) || ((u64)at + (next & ~3u) + 4u > (u64)size))
+		{
+			break;
+		}
+		at += next & ~3u;
+		next = Rld_ReadLE32(&vrm[at]);
+		at += 4u;
+	}
+	return 0u;
+}
+
+// The icon `iconId` of the shared pack, its texels through shared.vrm, into
+// width x height RGBA: 0x0000 transparent, a word with the STP bit at alpha
+// 128, every other opaque. Every offset is checked against the data. 1 = found.
+static int RldMk_RetailIcon(const u8 *vrm, u32 vrmSize, const u8 *pack, u32 packSize, u32 iconId, u8 *rgba, u32 width, u32 height)
+{
+	// The pack: u32 size, then the data; its pointers are offsets into the data.
+	const u8 *packData = pack + 4u;
+	const u32 dataSize = (packSize >= 4u) ? (packSize - 4u) : 0u;
+	u32 lookup;
+	u32 icons = 0;
+	u32 iconCount = 0;
+	u32 k;
+
+	if (dataSize < 20u)
+	{
+		return 0;
+	}
+	lookup = Rld_ReadLE32(&packData[0]);
+	if (lookup <= (dataSize - 16u))
+	{
+		iconCount = Rld_ReadLE32(&packData[lookup]);
+		icons = Rld_ReadLE32(&packData[lookup + 4u]);
+	}
+	for (k = 0; (k < iconCount) && (icons <= dataSize) && (k < (dataSize - icons) / 0x20u); k++)
+	{
+		const u8 *icon = &packData[icons + 0x20u * k];
+		u32 u0;
+		u32 v0;
+		u32 clut;
+		u32 tpage;
+		u32 pageX;
+		u32 pageY;
+		u32 clutX;
+		u32 clutY;
+		u32 x;
+		u32 y;
+
+		if (Rld_ReadLE32(&icon[0x10]) != iconId)
+		{
+			continue;
+		}
+		u0 = icon[0x14];
+		v0 = icon[0x15];
+		clut = Rld_ReadLE16(&icon[0x16]);
+		tpage = Rld_ReadLE16(&icon[0x1A]);
+		if (((tpage >> 7) & 3u) != 0u)   // a portrait is 4 bits; anything else is not drawn here
+		{
+			return 0;
+		}
+		pageX = (tpage & 0xFu) * 64u;
+		pageY = ((tpage >> 4) & 1u) * 256u;
+		clutX = (clut & 0x3Fu) * 16u;
+		clutY = (clut >> 6) & 0x1FFu;
+		for (y = 0; y < height; y++)
+		{
+			for (x = 0; x < width; x++)
+			{
+				const u32 word = RldMk_VrmWord(vrm, vrmSize, pageX + (u0 + x) / 4u, pageY + v0 + y);
+				const u32 c = RldMk_VrmWord(vrm, vrmSize, clutX + ((word >> (4u * ((u0 + x) & 3u))) & 0xFu), clutY);
+				u8 *pixel = &rgba[(y * width + x) * 4u];
+
+				pixel[0] = (u8)RldMk_From5(c & 31u);
+				pixel[1] = (u8)RldMk_From5((c >> 5) & 31u);
+				pixel[2] = (u8)RldMk_From5((c >> 10) & 31u);
+				pixel[3] = (u8)((c == 0u) ? 0u : ((c & 0x8000u) ? 128u : 255u));
+			}
+		}
+		return 1;
+	}
+	return 0;
+}
+
+static int RldMk_RetailPortrait(const char *argv0, u32 templateId, u8 *rgba, u32 width, u32 height)
+{
+	struct RldMkBig big;
+	char dir[RLD_PATH_MAX];
+	u8 *vrm = NULL;
+	u8 *pack = NULL;
+	u32 vrmSize = 0;
+	u32 packSize = 0;
+	int found = 0;
+	int level;
+
+	memset(&big, 0, sizeof(big));
+	if ((templateId >= (u32)RLDMK_TEMPLATE_COUNT) || !Rld_ExeDir(argv0, dir, sizeof(dir)))
+	{
+		return 0;
+	}
+
+	for (level = 0; (level < 3) && !found; level++)
+	{
+		char loose[RLD_PATH_MAX + 32];
+		char image[RLD_PATH_MAX + 32];
+		char parent[RLD_PATH_MAX];
+
+		snprintf(loose, sizeof(loose), "%s" RLD_SEP "assets" RLD_SEP "BIGFILE.BIG", dir);
+		snprintf(image, sizeof(image), "%s" RLD_SEP "assets" RLD_SEP "ctr-u.bin", dir);
+		big.loose = fopen(loose, "rb");
+		found = (big.loose != NULL) ||
+		        (Rld_FileExists(image) && NativeDiscImage_OpenImagePath(image) && NativeDiscImage_FindFile("BIGFILE.BIG", &big.inImage));
+		if (!found && Rld_ParentDir(dir, parent, sizeof(parent)))
+		{
+			snprintf(dir, sizeof(dir), "%s", parent);
+		}
+	}
+	if (!found)
+	{
+		return 0;
+	}
+
+	vrm = RldMk_BigEntry(&big, RLDMK_BIG_SHARED_VRM, &vrmSize);
+	pack = RldMk_BigEntry(&big, RLDMK_BIG_SHARED_PACK, &packSize);
+	if (big.loose != NULL)
+	{
+		fclose(big.loose);
+	}
+	found = (vrm != NULL) && (pack != NULL) && RldMk_RetailIcon(vrm, vrmSize, pack, packSize, s_rldMkIconId[templateId], rgba, width, height);
+
+	free(vrm);
+	free(pack);
+	return found;
+}
+
 // --icon: the PNG read, turned into CICN (built twice: the same bytes), checked
 // with the reader the game will run, the findings said. --icon-preview writes
-// <prefix>-original.bmp (the PNG as read) and <prefix>-icon.bmp (43 x 25 as the
-// menu tile shows it). 1 = *icon holds a sound portrait.
-static int RldMk_IconStep(const char *path, const char *previewPrefix, struct RldMkIcon *icon)
+// <prefix>-original.bmp (the PNG as read), <prefix>-icon.bmp (43 x 25 as the
+// menu tile shows it; texels with the STP bit at alpha 128, the half the game
+// draws them with) and, when the game's data is found, <prefix>-retail.bmp
+// (the template's retail portrait, RldMk_RetailPortrait). 1 = *icon holds a
+// sound portrait.
+static int RldMk_IconStep(const char *path, const char *previewPrefix, const struct RldMkIconOptions *options, const char *argv0, u32 templateId,
+                          struct RldMkIcon *icon)
 {
 	static struct RldMkIcon again;
 	struct RldPngImage image;
@@ -8032,6 +9086,10 @@ static int RldMk_IconStep(const char *path, const char *previewPrefix, struct Rl
 	size_t size = 0;
 	int tooLarge = 0;
 	int result;
+	u32 background = RLDMK_ICON_BACKGROUND_ALPHA;
+	u32 kept = 0;
+	u32 cleared = 0;
+	u32 backgroundRgb = 0;
 
 	if (!RldMk_ReadLimited(path, RLDMK_ICON_FILE_MAX, &data, &size, &tooLarge))
 	{
@@ -8084,7 +9142,15 @@ static int RldMk_IconStep(const char *path, const char *previewPrefix, struct Rl
 		RldMk_EmitWritten("icon-original", out, ok, 54u + (size_t)image.width * image.height * 4u);
 	}
 
-	if (!RldMk_MakeIcon(&image, icon) || !RldMk_MakeIcon(&image, &again) || (memcmp(icon->cicn, again.cicn, sizeof(icon->cicn)) != 0) ||
+	// --icon-background, on the picture as read and before the cut.
+	if (!RldMk_IconBackground(&image, options, &background, &cleared, &backgroundRgb, &kept))
+	{
+		RldPng_Free(&image);
+		RldMk_OutOfMemory();
+		return 0;
+	}
+
+	if (!RldMk_MakeIconWith(&image, options, icon) || !RldMk_MakeIconWith(&image, options, &again) || (memcmp(icon->cicn, again.cicn, sizeof(icon->cicn)) != 0) ||
 	    (RldChar_CheckIcon(icon->cicn, sizeof(icon->cicn)) != NULL))
 	{
 		RldMk_Say("error", "icon-roundtrip", NULL, "Internal error: the portrait does not come out the same twice. Please report it.");
@@ -8093,6 +9159,29 @@ static int RldMk_IconStep(const char *path, const char *previewPrefix, struct Rl
 	}
 	icon->source[0] = image.width;
 	icon->source[1] = image.height;
+	icon->cleared = cleared;
+	icon->backgroundRgb = backgroundRgb;
+
+	if ((background == RLDMK_ICON_BACKGROUND_CORNERS) && (kept == RLDMK_BG_KEPT_LINE))
+	{
+		RldMk_Say("note", "icon-background", NULL,
+		          "The color around the transparent part is only a thin line, so it was kept as the subject's outline and nothing was made transparent.");
+	}
+	else if ((background == RLDMK_ICON_BACKGROUND_CORNERS) && (kept == RLDMK_BG_KEPT_SHAPE))
+	{
+		RldMk_Say("note", "icon-background", NULL,
+		          "The color around the transparent part is not shaped like a box (its edge is not straight), so it was kept as part of the subject - dark hair or clothes beside a dark outline - and nothing was made transparent.");
+	}
+	else if ((background == RLDMK_ICON_BACKGROUND_CORNERS) && (kept == RLDMK_BG_KEPT_SUBJECT))
+	{
+		RldMk_Say("note", "icon-background", NULL,
+		          "The background step would have taken the whole subject (it is all in the background's color), so nothing was made transparent.");
+	}
+	else if ((background == RLDMK_ICON_BACKGROUND_CORNERS) && (cleared == 0u))
+	{
+		RldMk_Say("note", "icon-background", NULL,
+		          "No plain background was found around the subject, so nothing was made transparent. A single color around it works best.");
+	}
 
 	if (s_machine && !s_rldMkQuiet)
 	{
@@ -8108,6 +9197,10 @@ static int RldMk_IconStep(const char *path, const char *previewPrefix, struct Rl
 		Rld_Emit("char", "icon_colors", text[2], (const char *)NULL);
 		snprintf(text[2], sizeof(text[2]), "%u", icon->opaque);
 		Rld_Emit("char", "icon_opaque", text[2], (const char *)NULL);
+		snprintf(text[0], sizeof(text[0]), "%u %06X", icon->cleared, icon->backgroundRgb);
+		Rld_Emit("char", "icon_background", text[0], (const char *)NULL);
+		snprintf(text[1], sizeof(text[1]), "%u %u %u %u", icon->place[0], icon->place[1], icon->place[2], icon->place[3]);
+		Rld_Emit("char", "icon_place", text[1], (const char *)NULL);
 	}
 
 	if ((image.width < RLDMK_ICON_SHOWN_WIDTH) || (image.height < RLDMK_ICON_SHOWN_HEIGHT))
@@ -8116,14 +9209,21 @@ static int RldMk_IconStep(const char *path, const char *previewPrefix, struct Rl
 		          image.width, image.height);
 	}
 
-	if (icon->opaque == 0u)
+	if ((icon->opaque == 0u) && (cleared > 0u))
+	{
+		RldMk_Say("warning", "icon-empty", NULL,
+		          "The icon is fully transparent at 43 x 25 after the background step made %u pixels transparent, so the menu would show an empty tile. Keep the PNG's background (--icon-background alpha; Reload Studio: untick Make background transparent).",
+		          cleared);
+	}
+	else if (icon->opaque == 0u)
 	{
 		RldMk_Say("warning", "icon-empty", NULL,
 		          "The icon is fully transparent at 43 x 25, so the menu would show an empty tile. Use a picture whose subject covers most of it.");
 	}
 	else if (icon->colorsIn > icon->colorCount)
 	{
-		RldMk_Say("info", "icon-colors", NULL, "The icon was reduced to %u colors (the portrait has 15 and transparent).", icon->colorCount);
+		RldMk_Say("info", "icon-colors", NULL, "The icon was reduced to %u colors (the portrait has 15 and transparent%s).", icon->colorCount,
+		          (options->frame == RLDMK_ICON_FRAME_RETAIL) ? "; the retail frame takes 2 of them" : "");
 	}
 
 	if (previewPrefix != NULL)
@@ -8144,12 +9244,20 @@ static int RldMk_IconStep(const char *path, const char *previewPrefix, struct Rl
 				pixel[0] = (u8)((index != 0u) ? RldMk_From5(c & 31u) : 0u);
 				pixel[1] = (u8)((index != 0u) ? RldMk_From5((c >> 5) & 31u) : 0u);
 				pixel[2] = (u8)((index != 0u) ? RldMk_From5((c >> 10) & 31u) : 0u);
-				pixel[3] = (u8)((index != 0u) ? 255u : 0u);
+				pixel[3] = (u8)((index == 0u) ? 0u : ((c & 0x8000u) ? 128u : 255u));
 			}
 		}
 
 		snprintf(out, sizeof(out), "%s-icon.bmp", previewPrefix);
 		RldMk_EmitWritten("icon-preview", out, RldMk_WriteBmp(out, RLDMK_ICON_SHOWN_WIDTH, RLDMK_ICON_SHOWN_HEIGHT, shown), 54u + sizeof(shown));
+
+		// Without the game's data there is no retail portrait beside it - the
+		// Studio then shows the head box and the frame as lines.
+		if (RldMk_RetailPortrait(argv0, templateId, shown, RLDMK_ICON_SHOWN_WIDTH, RLDMK_ICON_SHOWN_HEIGHT))
+		{
+			snprintf(out, sizeof(out), "%s-retail.bmp", previewPrefix);
+			RldMk_EmitWritten("icon-retail", out, RldMk_WriteBmp(out, RLDMK_ICON_SHOWN_WIDTH, RLDMK_ICON_SHOWN_HEIGHT, shown), 54u + sizeof(shown));
+		}
 	}
 
 	RldPng_Free(&image);
@@ -9101,7 +10209,10 @@ static void RldMk_EmitFacts(const struct RldMkBuild *b, u32 templateId)
 	RldMk_Fact("quads", "%u", b->quads);
 	if (b->triangleCount != 0u)
 	{
+		// What the game draws; with @char collapsed the step back to the
+		// count of @char budget (and @char reduced).
 		RldMk_Fact("triangles", "%u", b->triangleCount);
+		RldMk_Fact("collapsed", "%u", b->collapsed);
 	}
 
 	if (b->dummy)
@@ -9537,6 +10648,11 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	const char *sizeArg = NULL;
 	const char *iconArg = NULL;
 	const char *iconPreviewArg = NULL;
+	const char *iconBackgroundArg = NULL;
+	const char *iconToleranceArg = NULL;
+	const char *iconFitArg = NULL;
+	const char *iconFrameArg = NULL;
+	struct RldMkIconOptions iconOptions = s_rldMkIconDefault;
 	const char *voicesArg = NULL;
 	const char *previewArg = NULL;
 	const char *diagnoseArg = NULL;
@@ -9673,6 +10789,22 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		else if ((strcmp(arg, "--icon-preview") == 0) && hasValue)
 		{
 			iconPreviewArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--icon-background") == 0) && hasValue)
+		{
+			iconBackgroundArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--icon-tolerance") == 0) && hasValue)
+		{
+			iconToleranceArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--icon-fit") == 0) && hasValue)
+		{
+			iconFitArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--icon-frame") == 0) && hasValue)
+		{
+			iconFrameArg = argv[++i];
 		}
 		else if ((strcmp(arg, "--voices") == 0) && hasValue)
 		{
@@ -9948,6 +11080,11 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	{
 		RldMk_Say("error", "usage", "--icon-preview", "--icon-preview needs --icon <png>: there is no portrait to show without it.");
 	}
+	if (((iconBackgroundArg != NULL) || (iconToleranceArg != NULL) || (iconFitArg != NULL) || (iconFrameArg != NULL)) && (iconArg == NULL))
+	{
+		RldMk_Say("error", "usage", "--icon-*", "--icon-background, --icon-tolerance, --icon-fit and --icon-frame need --icon <png>.");
+	}
+	(void)RldMk_IconSwitches(iconBackgroundArg, iconToleranceArg, iconFitArg, iconFrameArg, &iconOptions);
 
 	if (templateArg == NULL)
 	{
@@ -10077,6 +11214,12 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		snprintf(number, sizeof(number), "%u", opt.sizePercent);
 		Rld_Emit("value", "size", number, (sizeArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "icon", (iconArg != NULL) ? iconArg : "", (iconArg != NULL) ? "switch" : "default", (const char *)NULL);
+		Rld_Emit("value", "icon-background", s_rldMkIconBackgroundWords[iconOptions.background], (iconBackgroundArg != NULL) ? "switch" : "default",
+		         (const char *)NULL);
+		snprintf(number, sizeof(number), "%u", iconOptions.tolerance);
+		Rld_Emit("value", "icon-tolerance", number, (iconToleranceArg != NULL) ? "switch" : "default", (const char *)NULL);
+		Rld_Emit("value", "icon-fit", s_rldMkIconFitWords[iconOptions.fit], (iconFitArg != NULL) ? "switch" : "default", (const char *)NULL);
+		Rld_Emit("value", "icon-frame", s_rldMkIconFrameWords[iconOptions.frame], (iconFrameArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "voices", (voicesArg != NULL) ? voicesArg : "", (voicesArg != NULL) ? "switch" : "default", (const char *)NULL);
 	}
 
@@ -10113,7 +11256,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	// when the model cannot be read.
 	if (iconArg != NULL)
 	{
-		haveIcon = RldMk_IconStep(iconArg, iconPreviewArg, &icon);
+		haveIcon = RldMk_IconStep(iconArg, iconPreviewArg, &iconOptions, argv[0], templateId, &icon);
 	}
 	if (voicesArg != NULL)
 	{
@@ -10198,6 +11341,15 @@ static int RldChar_MakeCommand(int argc, char **argv)
 			printf("  icon          %s: %u x %u, cut %u x %u at %u,%u -> %u x %u (the menu shows 43 x 25 of 44 x 26), %u colors, %u of %u texels opaque\n",
 			       iconArg, icon.source[0], icon.source[1], icon.crop[2], icon.crop[3], icon.crop[0], icon.crop[1], icon.scaled[0], icon.scaled[1],
 			       icon.colorCount, icon.opaque, RLDMK_ICON_TEXELS);
+			if (icon.cleared > 0u)
+			{
+				printf("  icon bg       %u pixels around the subject made transparent (background %06X)\n", icon.cleared, icon.backgroundRgb);
+			}
+			if (icon.place[2] > 0u)
+			{
+				printf("  icon fit      subject %u x %u at %u,%u -> %u x %u at %u,%u of 43 x 25 (a retail head: 41 x 25 at 0,0)\n", icon.subject[2],
+				       icon.subject[3], icon.subject[0], icon.subject[1], icon.place[2], icon.place[3], icon.place[0], icon.place[1]);
+			}
 		}
 		printf("  name          \"%s\"\n", shownName);
 		printf("  author        \"%s\"\n", authorArg);
@@ -10839,7 +11991,24 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "                              transparent. Without it the game shows the\n");
 	fprintf(out, "                              template's portrait\n");
 	fprintf(out, "  --icon-preview <prefix>     also write <prefix>-original.bmp and\n");
-	fprintf(out, "                              <prefix>-icon.bmp (the 43 x 25 the menu shows)\n");
+	fprintf(out, "                              <prefix>-icon.bmp (the 43 x 25 the menu shows),\n");
+	fprintf(out, "                              and <prefix>-retail.bmp (the template's portrait,\n");
+	fprintf(out, "                              read from the game's data when it is found)\n");
+	fprintf(out, "  --icon-background <how>     alpha (default): the PNG's transparency only;\n");
+	fprintf(out, "                              corners: also the plain color around the\n");
+	fprintf(out, "                              subject, filled from the four corners - the\n");
+	fprintf(out, "                              same color inside the subject, or closed off by\n");
+	fprintf(out, "                              its outline, stays; auto: corners for a PNG\n");
+	fprintf(out, "                              without any transparent pixel\n");
+	fprintf(out, "  --icon-tolerance <0..128>   how far a color may be from the background\n");
+	fprintf(out, "                              and still count as it, per channel (default 24)\n");
+	fprintf(out, "  --icon-fit <how>            none (default): the whole picture cut to 43:25;\n");
+	fprintf(out, "                              fit: the subject whole, as large as a retail\n");
+	fprintf(out, "                              head (41 x 25, standing on the bottom row);\n");
+	fprintf(out, "                              fill: the subject fills that box, cut at the\n");
+	fprintf(out, "                              sides, or around the face. Never stretched\n");
+	fprintf(out, "  --icon-frame <how>          none (default) or retail: the retail frame and\n");
+	fprintf(out, "                              the dark half-transparent box behind the subject\n");
 	fprintf(out, "  --voices <folder>           check voice lines: boost1/2 hit1/2 spin1/2\n");
 	fprintf(out, "                              bigair1/2 drop1/2 shield1/2 passing1/2 fire1/2,\n");
 	fprintf(out, "                              yes, hit - .wav or .vag. Checked only: they are\n");
@@ -10884,7 +12053,10 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "                              triangles is reduced to at most %u, one budget\n", RLDMK_REDUCE_TARGET);
 	fprintf(out, "                              shared by kart, driver and steering wheel, each\n");
 	fprintf(out, "                              with a floor; off: such a model is refused\n");
-	fprintf(out, "                              (model-tris)\n");
+	fprintf(out, "                              (model-tris). At or below the limit nothing is\n");
+	fprintf(out, "                              reduced. Reload Studio: Reduce to fit. The limit\n");
+	fprintf(out, "                              counts the triangles after repair; packing may\n");
+	fprintf(out, "                              then drop a few without area (model-collapse)\n");
 	fprintf(out, "  --repair auto|off           auto (default): weld split corners, drop\n");
 	fprintf(out, "                              triangles without area and doubles, split\n");
 	fprintf(out, "                              triangles at cracks (T-junctions), turn faces\n");
@@ -11016,7 +12188,7 @@ static void RldMk_BufferFloat(struct RldMkBuffer *buffer, double value)
 	RldMk_BufferLE32(buffer, word);
 }
 
-#define RLDMK_TEST_VERTICES 8192
+#define RLDMK_TEST_VERTICES 32768
 #define RLDMK_TEST_FACES 8192
 
 struct RldMkTestMesh
@@ -11145,6 +12317,21 @@ static void RldMk_TestCone(struct RldMkTestMesh *mesh, double x, double y, doubl
 		RldMk_TestFace(mesh, 3u, apex, ring[(i + 1) % 12], ring[i], 0u, 0u);
 		RldMk_TestFace(mesh, 3u, center, ring[i], ring[(i + 1) % 12], 0u, 0u);
 	}
+}
+
+// The driver split of RldMk_TestStandard whose model - kart 12, steering
+// wheel 12 and driver 12 x n x n triangles - is the first over
+// RLDMK_REDUCE_LIMIT (or `limit`); *trianglesOut its triangles.
+static u32 RldMk_TestSplitOver(u32 limit, u32 *trianglesOut)
+{
+	u32 n = 1;
+
+	while ((24u + 12u * n * n) <= limit)
+	{
+		n++;
+	}
+	*trianglesOut = 24u + 12u * n * n;
+	return n;
 }
 
 // Kart, driver and steering wheel as three boxes - a model every check passes.
@@ -11508,7 +12695,7 @@ static void RldMk_SelfTestPly(struct RldMkTestMesh *mesh)
 	                             "element face 1\nproperty list uchar uint vertex_indices\nend_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 7\n",
 	                             "ply-index"),
 	           "PLY face index out of range refused", "said: %s", s_rldMkCodes);
-	RldMk_Test(RldMk_TestPlyText("ply\nformat ascii 1.0\nelement vertex 100001\nproperty float x\nproperty float y\nproperty float z\n"
+	RldMk_Test(RldMk_TestPlyText("ply\nformat ascii 1.0\nelement vertex 1000001\nproperty float x\nproperty float y\nproperty float z\n"
 	                             "element face 1\nproperty list uchar uint vertex_indices\nend_header\n",
 	                             "ply-big"),
 	           "PLY with too many vertices refused", "said: %s", s_rldMkCodes);
@@ -11664,12 +12851,17 @@ static void RldMk_SelfTestChain(struct RldMkTestMesh *mesh)
 		RldMk_FreePly(&ply);
 	}
 
-	// Too many triangles for the draw memory (996), with --reduce off
-	// (RldMk_SelfTestReduce has the same model with auto).
-	RldMk_TestStandard(mesh, 9u, 0, 0.0, -1);
-	opt.reduce = 0;
-	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
-	RldMk_Test(!ok && RldMk_Said("model-tris"), "more draw memory than allowed refused (--reduce off)", "said: %s", s_rldMkCodes);
+	// Too many triangles for the draw memory (the first split over the limit),
+	// with --reduce off (RldMk_SelfTestReduce has the same model with auto).
+	{
+		u32 over = 0;
+
+		RldMk_TestStandard(mesh, RldMk_TestSplitOver(RLDMK_REDUCE_LIMIT, &over), 0, 0.0, -1);
+		opt.reduce = 0;
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+		RldMk_Test(!ok && RldMk_Said("model-tris") && (b.triangleCount == over), "more draw memory than allowed refused (--reduce off)",
+		           "%u triangles, said: %s", b.triangleCount, s_rldMkCodes);
+	}
 	RldMk_FreeBuild(&b);
 	RldMk_FreePly(&ply);
 
@@ -12178,13 +13370,15 @@ static void RldMk_SelfTestRules(const u8 *good, size_t goodSize)
 	RldMk_TestRule("bad-frame-64k", m, size, "model-frame-size", RLDCHAR_VERDICT_MODEL_LIMIT);
 	free(m);
 
-	// stage 4: 805 untextured triangles are 22540 bytes, 806 are 22568.
-	m = RldMk_TestStrip(807u, 807u, &size);
-	RldMk_TestRule("good-drawbytes-max (805 triangles)", m, size, NULL, RLDCHAR_VERDICT_OK);
+	// stage 4: RLDMK_REDUCE_LIMIT untextured triangles are exactly
+	// RLDCHAR_DRAW_BYTES_MAX, one more is 28 bytes over (a strip: 2 records more
+	// than triangles).
+	m = RldMk_TestStrip(RLDMK_REDUCE_LIMIT + 2u, RLDMK_REDUCE_LIMIT + 2u, &size);
+	RldMk_TestRule("good-drawbytes-max (the limit of triangles)", m, size, NULL, RLDCHAR_VERDICT_OK);
 	free(m);
 
-	m = RldMk_TestStrip(808u, 808u, &size);
-	RldMk_TestRule("bad-drawbytes (806 triangles)", m, size, "model-draw", RLDCHAR_VERDICT_MODEL_LIMIT);
+	m = RldMk_TestStrip(RLDMK_REDUCE_LIMIT + 3u, RLDMK_REDUCE_LIMIT + 3u, &size);
+	RldMk_TestRule("bad-drawbytes (one triangle over the limit)", m, size, "model-draw", RLDCHAR_VERDICT_MODEL_LIMIT);
 	free(m);
 }
 
@@ -12635,15 +13829,18 @@ static void RldMk_SelfTestChri(const u8 *good, size_t goodSize)
 // 43 x 25 the menu shows (RldMk_MakeIcon): only its CICN changed, CHRI and CMDL
 // stayed. A deliberate change of the portrait conversion updates it the same
 // way; nothing else may.
-// REDUCED from the same model with a driver split 9 (996 triangles) and
-// --fit none: --reduce auto brings it to at most 797. Unlike the three above it
-// follows deliberate changes of the reducer (tools/rldpack_reduce.inc): such a
-// change updates it, on purpose and in the same change; nothing else may.
+// REDUCED from the same model with the first driver split over the limit
+// (RldMk_TestSplitOver: 25, 7524 triangles at 7200) and --fit none: --reduce
+// auto brings it to at most RLDMK_REDUCE_TARGET. Unlike the three above it
+// follows deliberate changes of the reducer (tools/rldpack_reduce.inc) and of
+// the limit (RLDCHAR_DRAW_BYTES_MAX): such a change updates it, on purpose and
+// in the same change; nothing else may. Last changed on 2026-10-02 with the
+// limit 805 -> 7200 triangles (it was split 9, 996 triangles -> 797).
 #define RLDMK_GOLDEN_PLAIN "ba7e3208bc98b2af5460110ae6d7d64afe888771b76747a74ae30f3190ce3186"
 #define RLDMK_GOLDEN_SIZE_ICON "61960b1c58d8a38e9728d891799fad7d53f8682864c44ede49f9e61f42e536d7"
 #define RLDMK_GOLDEN_FIT "1d71e02adea867a7eece179ecf1327d3e9136e3ca115a6df00ab375ec25d9d43"
 #define RLDMK_GOLDEN_NO_WHEELS "0427aee8b259b0f0076efc6f8cba195fff3b105c8b7216992056bb4ee333b0fe"
-#define RLDMK_GOLDEN_REDUCED "12bfd7bfc5e64ea434695bb90be9629a91f9a52c4f234bff0ec2b440f37f990f"
+#define RLDMK_GOLDEN_REDUCED "b602e356987fc179466d0bffa3481470da83e26815e40727bd82b3dfb7d3abe2"
 
 // --- --size --------------------------------------------------------------------------
 
@@ -13083,6 +14280,7 @@ static void RldMk_SelfTestReduce(struct RldMkTestMesh *mesh)
 	struct RldCharModelFacts facts;
 	u32 counts[RLDMK_GROUPS];
 	u32 targets[RLDMK_GROUPS];
+	u32 over = 0;
 	int ok;
 	int same;
 
@@ -13090,11 +14288,12 @@ static void RldMk_SelfTestReduce(struct RldMkTestMesh *mesh)
 	RldMk_SelfTestNgon();
 
 	// THE TARGETS: small groups whole, the rest in proportion, the leftover
-	// by the largest remainder.
+	// by the largest remainder. A fixed target of 797 (the limit of make-char
+	// before 2026-10-02): these test the sharing, not the limit.
 	counts[0] = 12u;
 	counts[1] = 972u;
 	counts[2] = 12u;
-	ok = RldMk_ReduceTargets(counts, RLDMK_REDUCE_TARGET, targets);
+	ok = RldMk_ReduceTargets(counts, 797u, targets);
 	RldMk_Test(ok && (targets[0] == 12u) && (targets[1] == 773u) && (targets[2] == 12u), "reduce targets 12/972/12 -> 12/773/12", "%u %u %u",
 	           targets[0], targets[1], targets[2]);
 	counts[0] = 300u;
@@ -13114,19 +14313,20 @@ static void RldMk_SelfTestReduce(struct RldMkTestMesh *mesh)
 	RldMk_Test(ok && (targets[0] == 100u) && (targets[1] == 99u) && (targets[2] == 99u), "reduce targets: equal remainders go to the lower group",
 	           "%u %u %u", targets[0], targets[1], targets[2]);
 
-	// The split-9 model of 996 triangles, --reduce auto: at most 797, the
-	// game's check passes, built twice the same, model-reduced said once.
+	// The first split over the limit, --reduce auto: at most
+	// RLDMK_REDUCE_TARGET, the game's check passes, built twice the same,
+	// model-reduced said once.
 	memset(&plyAgain, 0, sizeof(plyAgain));
 	memset(&again, 0, sizeof(again));
 	RldMk_TestOptions(&opt);
 	opt.reduce = 1;
-	RldMk_TestStandard(mesh, 9u, 0, 0.0, -1);
+	RldMk_TestStandard(mesh, RldMk_TestSplitOver(RLDMK_REDUCE_LIMIT, &over), 0, 0.0, -1);
 	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
-	ok = ok && b.reduced && (b.reduceFrom == 996u) && (b.reduceTo <= RLDMK_REDUCE_TARGET) && (b.drawCount <= RLDMK_REDUCE_TARGET) &&
+	ok = ok && b.reduced && (b.reduceFrom == over) && (b.reduceTo <= RLDMK_REDUCE_TARGET) && (b.drawCount <= RLDMK_REDUCE_TARGET) &&
 	     (RldChar_CheckModel(b.cmdl, b.cmdlSize, &first, NULL, NULL, &facts) == RLDCHAR_VERDICT_OK) && (facts.triangles == b.drawCount) &&
 	     (b.groupTriangles[RLDMK_GROUP_KART] == 12u) && (b.groupTriangles[RLDMK_GROUP_WHEEL] == 12u);
 	RldMk_Test(ok && (RldMk_TestSaidCount("model-reduced") == 1u) && !RldMk_Said("model-tris"),
-	           "996 triangles reduced automatically to at most 797, the game's check passes", "built %d, %u -> %u, kart %u, wheel %u, said: %s", ok,
+	           "over the limit: reduced automatically to at most the target, the game's check passes", "built %d, %u -> %u, kart %u, wheel %u, said: %s", ok,
 	           b.reduceFrom, b.reduceTo, b.groupTriangles[RLDMK_GROUP_KART], b.groupTriangles[RLDMK_GROUP_WHEEL], s_rldMkCodes);
 	same = ok && RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again) && (again.cmdlSize == b.cmdlSize) && (memcmp(again.cmdl, b.cmdl, b.cmdlSize) == 0);
 	RldMk_Test(same, "the reduced model built twice: the same bytes", "differ");
@@ -13138,7 +14338,7 @@ static void RldMk_SelfTestReduce(struct RldMkTestMesh *mesh)
 	// The default options of make-char (--fit crash, --reduce auto) on the same
 	// model.
 	RldMk_DefaultOptions(&opt);
-	RldMk_TestStandard(mesh, 9u, 0, 0.0, -1);
+	RldMk_TestStandard(mesh, RldMk_TestSplitOver(RLDMK_REDUCE_LIMIT, &over), 0, 0.0, -1);
 	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
 	RldMk_Test(ok && b.fitted && b.reduced && (b.reduceTo <= RLDMK_REDUCE_TARGET), "make-char's defaults: fitted and reduced", "built %d, said: %s", ok,
 	           s_rldMkCodes);
@@ -13147,10 +14347,9 @@ static void RldMk_SelfTestReduce(struct RldMkTestMesh *mesh)
 	RldMk_TestOptions(&opt);
 	opt.reduce = 1;
 
-	// 804 TRIANGLES, TOO MANY RECORDS: a kart, a driver and 200 quads and 380
-	// triangles apart behind him. Off: mem-model. Auto: nothing to reduce at
-	// 804, but the file is too large - the target goes down by 5 % until it
-	// fits, and model-reduced is said once, with the reason.
+	// 804 TRIANGLES IN 582 PARTS: a kart, a driver and 200 quads and 380
+	// triangles apart behind him - many records for few triangles. Under the
+	// limit: built with --reduce off, and auto reduces nothing - the same bytes.
 	{
 		const double kartLo[3] = {-0.40, 0.05, -0.85};
 		const double kartHi[3] = {0.40, 0.30, 0.85};
@@ -13185,24 +14384,24 @@ static void RldMk_SelfTestReduce(struct RldMkTestMesh *mesh)
 		}
 
 		opt.reduce = 0;
-		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
-		RldMk_Test(!ok && (b.triangleCount == 804u) && RldMk_Said("mem-model"), "804 triangles in 582 parts, --reduce off: mem-model",
-		           "built %d, %u triangles, said: %s", ok, b.triangleCount, s_rldMkCodes);
-		RldMk_FreeBuild(&b);
-		RldMk_FreePly(&ply);
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again) && (again.triangleCount == 804u) &&
+		     (RldChar_CheckModel(again.cmdl, again.cmdlSize, &first, NULL, NULL, &facts) == RLDCHAR_VERDICT_OK);
+		RldMk_Test(ok && !RldMk_Said("mem-model"), "804 triangles in 582 parts, --reduce off: built", "built %d, %u triangles, said: %s", ok,
+		           again.triangleCount, s_rldMkCodes);
 
 		opt.reduce = 1;
-		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && b.reduced && (b.reduceFrom == 804u) && (b.reduceTo < 757u) &&
-		     (RldChar_CheckModel(b.cmdl, b.cmdlSize, &first, NULL, NULL, &facts) == RLDCHAR_VERDICT_OK) && (b.cmdlSize <= RLDCHAR_LIMIT_CMDL);
-		RldMk_Test(ok && (RldMk_TestSaidCount("model-reduced") == 1u) && !RldMk_Said("mem-model"),
-		           "the same, --reduce auto: the target lowered until the file fits, model-reduced once", "built %d, %u -> %u, %u bytes, said: %s", ok,
-		           b.reduceFrom, b.reduceTo, (u32)b.cmdlSize, s_rldMkCodes);
+		ok = ok && RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && !b.reduced && (b.cmdlSize == again.cmdlSize) && (memcmp(b.cmdl, again.cmdl, b.cmdlSize) == 0);
+		RldMk_Test(ok && !RldMk_Said("model-reduced"), "the same, --reduce auto: under the limit nothing is reduced, the bytes of off",
+		           "built %d, %u -> %u, %u bytes, said: %s", ok, b.reduceFrom, b.reduceTo, (u32)b.cmdlSize, s_rldMkCodes);
 		RldMk_FreeBuild(&b);
 		RldMk_FreePly(&ply);
+		RldMk_FreeBuild(&again);
+		RldMk_FreePly(&plyAgain);
 	}
 
-	// 824 TRIANGLES THE REDUCER CANNOT TOUCH (one-triangle parts): warning
-	// model-reduce, then model-tris - nothing else.
+	// TRIANGLES THE REDUCER CANNOT TOUCH (one-triangle parts, more than the
+	// limit, in layers of 30 x 30): warning model-reduce, then model-tris -
+	// nothing else.
 	{
 		const double kartLo[3] = {-0.40, 0.05, -0.85};
 		const double kartHi[3] = {0.40, 0.30, 0.85};
@@ -13214,24 +14413,25 @@ static void RldMk_SelfTestReduce(struct RldMkTestMesh *mesh)
 		mesh->faceCount = 0;
 		RldMk_TestBox(mesh, kartLo, kartHi, 1u, 0u, 0, -1);
 		RldMk_TestBox(mesh, driverLo, driverHi, 1u, 10u, 0, -1);
-		for (k = 0; k < 800u; k++)
+		for (k = 0; k < RLDMK_REDUCE_LIMIT; k++)
 		{
 			const double x = -0.30 + 0.02 * (double)(k % 30u);
-			const double y = 0.48 + 0.02 * (double)(k / 30u);
-			const u32 v = RldMk_TestVertex(mesh, x, y, -0.5, 60u + (k % 30u));
+			const double y = 0.48 + 0.02 * (double)((k / 30u) % 30u);
+			const double z = -0.5 - 0.02 * (double)(k / 900u);
+			const u32 v = RldMk_TestVertex(mesh, x, y, z, 60u + (k % 30u));
 
-			RldMk_TestVertex(mesh, x + 0.01, y, -0.5, 60u + (k % 30u));
-			RldMk_TestVertex(mesh, x, y + 0.01, -0.5, 60u + (k % 30u));
+			RldMk_TestVertex(mesh, x + 0.01, y, z, 60u + (k % 30u));
+			RldMk_TestVertex(mesh, x, y + 0.01, z, 60u + (k % 30u));
 			RldMk_TestFace(mesh, 3u, v, v + 1u, v + 2u, 0u, 0u);
 		}
 		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
 		RldMk_Test(!ok && !b.reduced && RldMk_Said("model-reduce") && RldMk_Said("model-tris") && !RldMk_Said("model-reduced"),
-		           "824 triangles the reducer cannot touch: model-reduce, then model-tris", "built %d, said: %s", ok, s_rldMkCodes);
+		           "more triangles than the limit the reducer cannot touch: model-reduce, then model-tris", "built %d, said: %s", ok, s_rldMkCodes);
 		RldMk_FreeBuild(&b);
 		RldMk_FreePly(&ply);
 	}
 
-	// At most 805 nothing is reduced: the bytes of --reduce off.
+	// At most the limit nothing is reduced: the bytes of --reduce off.
 	RldMk_TestStandard(mesh, 2u, 0, 0.0, -1);
 	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && !b.reduced;
 	opt.reduce = 0;
@@ -13409,32 +14609,36 @@ static void RldMk_SelfTestDiagnose(struct RldMkTestMesh *mesh)
 	struct RldMkBuild b;
 	struct RldMkBuild again;
 	char line[64];
+	char overLine[2][32];
 	char *text = NULL;
 	char *textAgain = NULL;
 	size_t size = 0;
 	size_t sizeAgain = 0;
+	u32 over = 0;
 	int ok;
 	u32 i;
 
 	memset(&plyAgain, 0, sizeof(plyAgain));
 	memset(&again, 0, sizeof(again));
 
-	// The split-9 model of 996 triangles, --reduce off: model-tris lifted, the
+	// The first split over the limit, --reduce off: model-tris lifted, the
 	// whole model measured; the text from "RLDDIAG 1" to "end", twice the same.
 	RldMk_TestOptions(&opt);
 	opt.diagnose = 1;
-	RldMk_TestStandard(mesh, 9u, 0, 0.0, -1);
+	RldMk_TestStandard(mesh, RldMk_TestSplitOver(RLDMK_REDUCE_LIMIT, &over), 0, 0.0, -1);
+	snprintf(overLine[0], sizeof(overLine[0]), "triangles %u", over);
+	snprintf(overLine[1], sizeof(overLine[1]), "reduced %u", over);
 	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
-	RldMk_Test(ok && !RldMk_Said("model-tris") && RldMk_Said("diagnose-lifted") && !b.reduced && (b.drawCount + b.collapsed == 996u),
-	           "--diagnose, 996 triangles, --reduce off: model-tris lifted, built", "built %d, %u drawn, said: %s", ok, b.drawCount, s_rldMkCodes);
+	RldMk_Test(ok && !RldMk_Said("model-tris") && RldMk_Said("diagnose-lifted") && !b.reduced && (b.drawCount + b.collapsed == over),
+	           "--diagnose, over the limit, --reduce off: model-tris lifted, built", "built %d, %u drawn, said: %s", ok, b.drawCount, s_rldMkCodes);
 	if (ok)
 	{
 		text = RldMk_Diagnosis(&b, &opt, &size);
 	}
 	snprintf(line, sizeof(line), "drawn %u", b.drawCount);
 	ok = (text != NULL) && (size > 14u) && (strncmp(text, "RLDDIAG 1\n", 10u) == 0) && (strcmp(&text[size - 4u], "end\n") == 0) && (strlen(text) == size) &&
-	     RldMk_TestHasLine(text, "triangles 996") && RldMk_TestHasLine(text, "reduced 996") && RldMk_TestHasLine(text, "frames 47") && RldMk_TestHasLine(text, line);
-	RldMk_Test(ok, "--diagnose text: RLDDIAG 1 ... end, 996 triangles not reduced, every drawn one", "%u bytes", (u32)size);
+	     RldMk_TestHasLine(text, overLine[0]) && RldMk_TestHasLine(text, overLine[1]) && RldMk_TestHasLine(text, "frames 47") && RldMk_TestHasLine(text, line);
+	RldMk_Test(ok, "--diagnose text: RLDDIAG 1 ... end, all triangles not reduced, every drawn one", "%u bytes", (u32)size);
 	ok = ok && RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again) && ((textAgain = RldMk_Diagnosis(&again, &opt, &sizeAgain)) != NULL) && (sizeAgain == size) &&
 	     (memcmp(textAgain, text, size) == 0);
 	RldMk_Test(ok, "--diagnose built twice: the same text", "differ");
@@ -13473,7 +14677,7 @@ static void RldMk_SelfTestDiagnose(struct RldMkTestMesh *mesh)
 		text = RldMk_Diagnosis(&b, &opt, &size);
 	}
 	snprintf(line, sizeof(line), "reduced %u", b.reduceTo);
-	ok = ok && (text != NULL) && RldMk_TestHasLine(text, "triangles 996") && RldMk_TestHasLine(text, line);
+	ok = ok && (text != NULL) && RldMk_TestHasLine(text, overLine[0]) && RldMk_TestHasLine(text, line);
 	if (ok)
 	{
 		// No drawn triangle without its reduced one: no "d" line ends in -1.
@@ -13627,6 +14831,7 @@ static void RldMk_SelfTestRepair(struct RldMkTestMesh *mesh)
 	struct RldCharFinding first;
 	u32 culled = 0;
 	u32 both = 0;
+	u32 over = 0;
 	int all = 1;
 	int ok;
 	int k;
@@ -13718,7 +14923,7 @@ static void RldMk_SelfTestRepair(struct RldMkTestMesh *mesh)
 		opt.fit = (k == 2);
 		opt.reduce = (k == 3);
 		opt.noWheels = (k == 4);
-		RldMk_TestStandard(mesh, (k == 3) ? 9u : 2u, 0, 0.0, -1);
+		RldMk_TestStandard(mesh, (k == 3) ? RldMk_TestSplitOver(RLDMK_REDUCE_LIMIT, &over) : 2u, 0, 0.0, -1);
 		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
 		opt.repair = 1;
 		ok = ok && RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again) && again.repaired && (again.cmdlSize == b.cmdlSize) &&
@@ -13761,7 +14966,7 @@ static void RldMk_SelfTestRemesh(struct RldMkTestMesh *mesh)
 		const u32 counts[RLDMK_GROUPS] = {12u, RLDMK_REMESH_SHARE_MIN, 900u};
 		u32 targets[RLDMK_GROUPS];
 
-		ok = RldMk_ReduceTargets(counts, RLDMK_REDUCE_TARGET, targets) && (targets[1] == 33u) && RldMk_RemeshFloor(source, targets);
+		ok = RldMk_ReduceTargets(counts, 797u, targets) && (targets[1] == 33u) && RldMk_RemeshFloor(source, targets);
 		RldMk_Test(ok && (targets[0] == 12u) && (targets[1] == 40u) && (targets[2] == 745u), "--remesh targets: no hull below 40 (12/30/900 -> 12/40/745)",
 		           "%u %u %u", targets[0], targets[1], targets[2]);
 	}
@@ -14502,7 +15707,7 @@ static void RldMk_SelfTestPng(void)
 		int mode, trns;
 		u32 paletteCount;
 		const char *name;
-	} cases[8] = {
+	} cases[15] = {
 		{13u, 7u, 3u, 4u, 0, 1, 11u, "png: palette 4 bit, tRNS, stored blocks"},
 		{17u, 5u, 0u, 1u, 0, 1, 0u, "png: gray 1 bit, tRNS, stored blocks"},
 		{9u, 4u, 0u, 2u, 1, 0, 0u, "png: gray 2 bit, fixed Huffman"},
@@ -14511,13 +15716,20 @@ static void RldMk_SelfTestPng(void)
 		{7u, 3u, 4u, 8u, 0, 0, 0u, "png: gray and alpha 8 bit, stored blocks"},
 		{4u, 2u, 6u, 16u, 1, 0, 0u, "png: RGBA 16 bit, fixed Huffman"},
 		{6u, 5u, 3u, 1u, 1, 0, 2u, "png: palette 1 bit, fixed Huffman"},
+		{11u, 6u, 3u, 8u, 1, 1, 200u, "png: palette 8 bit, tRNS, fixed Huffman"},
+		{8u, 5u, 3u, 2u, 0, 1, 4u, "png: palette 2 bit, tRNS, stored blocks"},
+		{9u, 5u, 0u, 8u, 1, 1, 0u, "png: gray 8 bit, tRNS, fixed Huffman"},
+		{6u, 4u, 0u, 16u, 0, 1, 0u, "png: gray 16 bit, tRNS, stored blocks"},
+		{5u, 4u, 2u, 16u, 1, 1, 0u, "png: RGB 16 bit, tRNS, fixed Huffman"},
+		{6u, 3u, 4u, 16u, 0, 0, 0u, "png: gray and alpha 16 bit, stored blocks"},
+		{7u, 4u, 6u, 8u, 1, 0, 0u, "png: RGBA 8 bit, fixed Huffman"},
 	};
 	struct RldMkTestImage t;
 	size_t size = 0;
 	u8 *png;
 	int c;
 
-	for (c = 0; c < 8; c++)
+	for (c = 0; c < 15; c++)
 	{
 		memset(&t, 0, sizeof(t));
 		t.width = cases[c].width;
@@ -14529,6 +15741,28 @@ static void RldMk_SelfTestPng(void)
 		t.paletteCount = cases[c].paletteCount;
 		png = RldMk_TestPng(&t, &size);
 		RldMk_Test(RldMk_TestDecodes(&t, png, size), cases[c].name, "the pixels differ");
+
+		// With tRNS, transparency has to arrive: the key color or the
+		// palette entries with alpha 0 (a portrait's background) at alpha 0.
+		if (t.trns && (png != NULL))
+		{
+			struct RldPngImage image;
+			const char *why = NULL;
+			u32 clear = 0;
+			u32 i;
+			char name[96];
+
+			if (RldPng_Decode(png, size, &image, &why) == RLDPNG_OK)
+			{
+				for (i = 0; i < (t.width * t.height); i++)
+				{
+					clear += (image.rgba[4u * i + 3u] == 0u) ? 1u : 0u;
+				}
+				RldPng_Free(&image);
+			}
+			snprintf(name, sizeof(name), "%s: transparent pixels arrive", cases[c].name);
+			RldMk_Test(clear > 0u, name, "none");
+		}
 		free(png);
 
 		// The same interlaced (Adam7): the pixels of the image without.
@@ -14896,6 +16130,537 @@ static void RldMk_SelfTestIcon(const struct RldPngImage *a)
 	RldMk_Test(ok, "icon: CICN-1..3 refuse version, depth, size, length", "not so");
 }
 
+// --- --icon-background, --icon-fit, --icon-frame, the retail portrait -------------------
+
+// Test picture B, 60 x 40, every pixel opaque: a plain blue with a little noise
+// around a round figure with a black outline 2 pixels wide that runs off the
+// bottom edge. Inside: a shirt at the bottom in the background's own color
+// (closed off from the corners by the outline), two eyes (white, black
+// pupil), a mouth in the background's own color, skin. 1 = background.
+#define RLDMK_TEST_BG_R 40u
+#define RLDMK_TEST_BG_G 160u
+#define RLDMK_TEST_BG_B 220u
+
+static int RldMk_TestPixelB(u32 x, u32 y, u8 rgba[4])
+{
+	const int dx = 2 * (int)x - 59;
+	const int dy = 2 * (int)y - 60;
+	const int r2 = dx * dx + dy * dy;
+	const int e1 = (2 * (int)x - 46) * (2 * (int)x - 46) + (2 * (int)y - 44) * (2 * (int)y - 44);
+	const int e2 = (2 * (int)x - 72) * (2 * (int)x - 72) + (2 * (int)y - 44) * (2 * (int)y - 44);
+	const int noise = (int)((x * 7u + y * 3u) % 7u) - 3;
+
+	rgba[3] = 255u;
+	if (r2 > 34 * 34)
+	{
+		rgba[0] = (u8)((int)RLDMK_TEST_BG_R + noise);
+		rgba[1] = (u8)((int)RLDMK_TEST_BG_G + noise);
+		rgba[2] = (u8)((int)RLDMK_TEST_BG_B + noise);
+		return 1;
+	}
+	if (r2 > 30 * 30)
+	{
+		rgba[0] = rgba[1] = rgba[2] = 0u;
+	}
+	else if ((y >= 32u) || ((x >= 28u) && (x <= 31u) && (y >= 27u) && (y <= 28u)))
+	{
+		rgba[0] = (u8)RLDMK_TEST_BG_R;
+		rgba[1] = (u8)RLDMK_TEST_BG_G;
+		rgba[2] = (u8)RLDMK_TEST_BG_B;
+	}
+	else if ((e1 <= 4) || (e2 <= 4))
+	{
+		rgba[0] = rgba[1] = rgba[2] = 0u;
+	}
+	else if ((e1 <= 64) || (e2 <= 64))
+	{
+		rgba[0] = rgba[1] = rgba[2] = 255u;
+	}
+	else
+	{
+		rgba[0] = 230u;
+		rgba[1] = 180u;
+		rgba[2] = 120u;
+	}
+	return 0;
+}
+
+// Test picture C, 43 x 25: a transparent border 2 pixels wide, inside it an
+// opaque box of near-black (8, 8, 8) - the box a portrait exported from the
+// PS1 brings along - and on it a figure with a dark grey outline (40, 40, 40),
+// an eye whose pupil has the box's own color. 0 = transparent, 1 = box,
+// 2 = outline, 3 = figure.
+static int RldMk_TestPixelC(u32 x, u32 y, u8 rgba[4])
+{
+	const int ex = 2 * (int)x - 42;
+	const int ey = 2 * (int)y - 24;
+	const int e = ex * ex + 3 * ey * ey;
+	const int eye = ((int)x - 24) * ((int)x - 24) + ((int)y - 11) * ((int)y - 11);
+
+	rgba[3] = 255u;
+	if ((x < 2u) || (x > 40u) || (y < 2u) || (y > 22u))
+	{
+		rgba[0] = rgba[1] = rgba[2] = rgba[3] = 0u;
+		return 0;
+	}
+	if (e > 26 * 26)
+	{
+		rgba[0] = rgba[1] = rgba[2] = 8u;
+		return 1;
+	}
+	if (e > 22 * 22)
+	{
+		rgba[0] = rgba[1] = rgba[2] = 40u;
+		return 2;
+	}
+	if (eye == 0)
+	{
+		rgba[0] = rgba[1] = rgba[2] = 8u;
+	}
+	else if (eye <= 4)
+	{
+		rgba[0] = rgba[1] = rgba[2] = 255u;
+	}
+	else
+	{
+		rgba[0] = 170u;
+		rgba[1] = 120u;
+		rgba[2] = 200u;
+	}
+	return 3;
+}
+
+// A transparent 200 x 100 picture with one opaque rectangle (for --icon-fit).
+static void RldMk_TestRect(u8 *rgba, u32 x0, u32 y0, u32 w, u32 h)
+{
+	u32 x;
+	u32 y;
+
+	memset(rgba, 0, 200u * 100u * 4u);
+	for (y = y0; y < y0 + h; y++)
+	{
+		for (x = x0; x < x0 + w; x++)
+		{
+			u8 *p = &rgba[(y * 200u + x) * 4u];
+
+			p[0] = (u8)(60u + x);
+			p[1] = (u8)(40u + y);
+			p[2] = 90u;
+			p[3] = 255u;
+		}
+	}
+}
+
+// Texels [x0, x1] x [y0, y1] of the 43 x 25 opaque and every other one shown
+// transparent?
+static int RldMk_TestOpaqueBox(const struct RldMkIcon *icon, u32 x0, u32 y0, u32 x1, u32 y1)
+{
+	u32 x;
+	u32 y;
+
+	for (y = 0; y < RLDMK_ICON_SHOWN_HEIGHT; y++)
+	{
+		for (x = 0; x < RLDMK_ICON_SHOWN_WIDTH; x++)
+		{
+			const int inside = (x >= x0) && (x <= x1) && (y >= y0) && (y <= y1);
+
+			if ((icon->index[y][x] != 0u) != inside)
+			{
+				return 0;
+			}
+		}
+	}
+	return 1;
+}
+
+// A TIM block for the synthetic shared.vrm: 16-bit, w x h words at x, y.
+static void RldMk_TestTim(struct RldMkBuffer *vrm, u32 x, u32 y, u32 w, u32 h, const u16 *words)
+{
+	u8 rect[8];
+	u32 i;
+
+	RldMk_BufferLE32(vrm, 0x10u);
+	RldMk_BufferLE32(vrm, 2u);
+	RldMk_BufferLE32(vrm, 12u + 2u * w * h);
+	Rld_WriteLE16(&rect[0], x);
+	Rld_WriteLE16(&rect[2], y);
+	Rld_WriteLE16(&rect[4], w);
+	Rld_WriteLE16(&rect[6], h);
+	RldMk_BufferBytes(vrm, rect, 8u);
+	for (i = 0; i < (w * h); i++)
+	{
+		Rld_WriteLE16(rect, words[i]);
+		RldMk_BufferBytes(vrm, rect, 2u);
+	}
+}
+
+static void RldMk_SelfTestIconOptions(const struct RldPngImage *a)
+{
+	static struct RldMkIcon icon;
+	static struct RldMkIcon plain;
+	static u8 pixels[200u * 100u * 4u];
+	struct RldMkIconOptions options = s_rldMkIconDefault;
+	struct RldPngImage image;
+	u32 used = 0;
+	u32 cleared = 0;
+	u32 color = 0;
+	u32 expected = 0;
+	u32 x;
+	u32 y;
+	u32 thin = 0;
+	int ok;
+	int k;
+
+	memset(&image, 0, sizeof(image));
+	image.rgba = pixels;
+
+	// THE SWITCHES. The defaults are what make-char did before them.
+	RldMk_Test((options.background == RLDMK_ICON_BACKGROUND_ALPHA) && (options.tolerance == 24u) && (options.fit == RLDMK_ICON_FIT_NONE) &&
+	               (options.frame == RLDMK_ICON_FRAME_NONE),
+	           "icon options: defaults alpha, 24, none, none", "not so");
+	RldMk_ResetSaid();
+	ok = RldMk_IconSwitches("corners", "0", "fill", "retail", &options) && (options.background == RLDMK_ICON_BACKGROUND_CORNERS) &&
+	     (options.tolerance == 0u) && (options.fit == RLDMK_ICON_FIT_FILL) && (options.frame == RLDMK_ICON_FRAME_RETAIL);
+	ok = ok && RldMk_IconSwitches("auto", "128", "fit", "none", &options) && (options.background == RLDMK_ICON_BACKGROUND_AUTO) &&
+	     (options.tolerance == 128u) && (options.fit == RLDMK_ICON_FIT_FIT) && (options.frame == RLDMK_ICON_FRAME_NONE) && (s_rldMkCodes[0] == '\0');
+	RldMk_Test(ok, "icon options: every word taken", "said: %s", s_rldMkCodes);
+	{
+		static const char *const bad[4][4] = {{"Corners", NULL, NULL, NULL}, {NULL, "129", NULL, NULL}, {NULL, "-1", "stretch", NULL}, {NULL, "2x", NULL, "box"}};
+
+		for (k = 0; k < 4; k++)
+		{
+			options = s_rldMkIconDefault;
+			RldMk_ResetSaid();
+			ok = !RldMk_IconSwitches(bad[k][0], bad[k][1], bad[k][2], bad[k][3], &options) && RldMk_Said("usage") &&
+			     (memcmp(&options, &s_rldMkIconDefault, sizeof(options)) == 0);
+			RldMk_Test(ok, (k == 0) ? "icon options: Corners refused (usage), nothing changed"
+			                        : ((k == 1) ? "icon options: tolerance 129 refused" : ((k == 2) ? "icon options: tolerance -1 and fit stretch refused" : "icon options: tolerance 2x and frame box refused")),
+			           "said: %s", s_rldMkCodes);
+		}
+		RldMk_ResetSaid();
+	}
+
+	// CORNERS on picture B: exactly the background goes - not the outline
+	// that runs off the bottom edge, not the shirt in the background's color
+	// that it closes off, not the mouth in that color, not the eyes.
+	image.width = 60u;
+	image.height = 40u;
+	for (y = 0; y < 40u; y++)
+	{
+		for (x = 0; x < 60u; x++)
+		{
+			expected += (u32)RldMk_TestPixelB(x, y, &pixels[(y * 60u + x) * 4u]);
+		}
+	}
+	options = s_rldMkIconDefault;
+	options.background = RLDMK_ICON_BACKGROUND_CORNERS;
+	ok = RldMk_IconBackground(&image, &options, &used, &cleared, &color, &thin) && (used == RLDMK_ICON_BACKGROUND_CORNERS) && (cleared == expected);
+	for (y = 0; ok && (y < 40u); y++)
+	{
+		for (x = 0; ok && (x < 60u); x++)
+		{
+			u8 want[4];
+			const int background = RldMk_TestPixelB(x, y, want);
+
+			ok = (pixels[(y * 60u + x) * 4u + 3u] == (background ? 0u : 255u)) && (memcmp(&pixels[(y * 60u + x) * 4u], want, 3u) == 0);
+		}
+	}
+	RldMk_Test(ok && ((u32)abs((int)(color >> 16) - (int)RLDMK_TEST_BG_R) <= 2u) && ((u32)abs((int)((color >> 8) & 0xFFu) - (int)RLDMK_TEST_BG_G) <= 2u) &&
+	               ((u32)abs((int)(color & 0xFFu) - (int)RLDMK_TEST_BG_B) <= 2u),
+	           "icon corners: a noisy plain background goes, the outline at the edge, the shirt and mouth in its color and the eyes stay",
+	           "%u of %u cleared, color %06X", cleared, expected, color);
+	ok = RldMk_MakeIcon(&image, &icon) && (icon.index[0][0] == 0u) && (icon.index[0][42] == 0u) && (icon.index[24][0] == 0u) && (icon.index[24][21] != 0u) &&
+	     (icon.index[12][21] != 0u);
+	RldMk_Test(ok, "icon corners: the CICN has transparent corners and the shirt at the bottom", "corner %u, bottom %u", (u32)icon.index[0][0],
+	           (u32)icon.index[24][21]);
+
+	// Tolerance 0 on the noisy background: under half the voters match - nothing changes.
+	for (y = 0; y < 40u; y++)
+	{
+		for (x = 0; x < 60u; x++)
+		{
+			(void)RldMk_TestPixelB(x, y, &pixels[(y * 60u + x) * 4u]);
+		}
+	}
+	options.tolerance = 0u;
+	ok = RldMk_IconBackground(&image, &options, &used, &cleared, &color, &thin) && (cleared == 0u);
+	for (x = 0; ok && (x < 60u * 40u); x++)
+	{
+		ok = (pixels[x * 4u + 3u] == 255u);
+	}
+	RldMk_Test(ok, "icon corners: tolerance 0 on a noisy background changes nothing", "%u cleared", cleared);
+
+	// AUTO: corners for picture B (not one pixel transparent), alpha for C.
+	options.tolerance = RLDMK_ICON_TOLERANCE;
+	options.background = RLDMK_ICON_BACKGROUND_AUTO;
+	ok = RldMk_IconBackground(&image, &options, &used, &cleared, &color, &thin) && (used == RLDMK_ICON_BACKGROUND_CORNERS) && (cleared == expected);
+
+	// CORNERS on picture C, one pixel per texel: the box goes through the
+	// transparent border, the outline near its color and the pupil in its color stay.
+	image.width = RLDMK_ICON_SHOWN_WIDTH;
+	image.height = RLDMK_ICON_SHOWN_HEIGHT;
+	expected = 0;
+	for (y = 0; y < RLDMK_ICON_SHOWN_HEIGHT; y++)
+	{
+		for (x = 0; x < RLDMK_ICON_SHOWN_WIDTH; x++)
+		{
+			expected += (RldMk_TestPixelC(x, y, &pixels[(y * RLDMK_ICON_SHOWN_WIDTH + x) * 4u]) == 1) ? 1u : 0u;
+		}
+	}
+	ok = ok && RldMk_IconBackground(&image, &options, &used, &cleared, &color, &thin) && (used == RLDMK_ICON_BACKGROUND_ALPHA) && (cleared == 0u);
+	ok = ok && RldMk_MakeIcon(&image, &plain);
+	RldMk_Test(ok, "icon auto: corners for a picture without transparency, nothing for one with it", "used %u, %u cleared", used, cleared);
+
+	options.background = RLDMK_ICON_BACKGROUND_CORNERS;
+	ok = RldMk_IconBackground(&image, &options, &used, &cleared, &color, &thin) && (cleared == expected) && (color == 0x080808u) && RldMk_MakeIcon(&image, &icon);
+	for (y = 0; ok && (y < RLDMK_ICON_SHOWN_HEIGHT); y++)
+	{
+		for (x = 0; ok && (x < RLDMK_ICON_SHOWN_WIDTH); x++)
+		{
+			u8 want[4];
+			const int kind = RldMk_TestPixelC(x, y, want);
+
+			ok = ((icon.index[y][x] != 0u) == (kind >= 2)) && ((plain.index[y][x] != 0u) == (kind >= 1));
+		}
+	}
+	RldMk_Test(ok && !thin && (icon.index[11][24] != 0u), "icon corners: a near-black box goes, the dark outline and the pupil in the box's color stay",
+	           "%u of %u cleared, color %06X", cleared, expected, color);
+
+	// Picture B with its background transparent: the black outline borders
+	// the transparent part, but it is a line - it stays, nothing changes.
+	image.width = 60u;
+	image.height = 40u;
+	for (y = 0; y < 40u; y++)
+	{
+		for (x = 0; x < 60u; x++)
+		{
+			u8 *p = &pixels[(y * 60u + x) * 4u];
+
+			if (RldMk_TestPixelB(x, y, p))
+			{
+				p[0] = p[1] = p[2] = p[3] = 0u;
+			}
+		}
+	}
+	ok = RldMk_MakeIcon(&image, &plain) && RldMk_IconBackground(&image, &options, &used, &cleared, &color, &thin) && (thin == RLDMK_BG_KEPT_LINE) && (cleared == 0u) &&
+	     RldMk_MakeIcon(&image, &icon) && (memcmp(icon.cicn, plain.cicn, sizeof(icon.cicn)) == 0) && (icon.index[24][14] != 0u);
+	RldMk_Test(ok, "icon corners: a black outline around a transparent background is a line - it stays", "kept %u, %u cleared", thin, cleared);
+
+	// Thick parts of the subject in the outline's color, on transparent: a
+	// black disc (k 0), and dark hair joined to a black outline above a face
+	// (k 1) - round edges, not a box: they stay. An opaque picture of one
+	// color (k 2): the step would take all of it - nothing changes. A bust on
+	// transparent whose body runs off the bottom, opaque in both lower corners
+	// (k 3): the body stays.
+	for (k = 0; k < 4; k++)
+	{
+		static const char *const names[4] = {"icon corners: a black disc on transparent is the subject - it stays",
+		                                     "icon corners: dark hair at a black outline is the subject - it stays",
+		                                     "icon corners: a picture of one color - the step would take all of it, nothing changes",
+		                                     "icon corners: a body in two opaque corners of a transparent picture is the subject - it stays"};
+		static const u32 why[4] = {RLDMK_BG_KEPT_SHAPE, RLDMK_BG_KEPT_SHAPE, RLDMK_BG_KEPT_SUBJECT, RLDMK_BG_KEPT_SHAPE};
+
+		image.width = 64u;
+		image.height = 64u;
+		for (y = 0; y < 64u; y++)
+		{
+			for (x = 0; x < 64u; x++)
+			{
+				const int d = ((int)x - 32) * ((int)x - 32) + ((int)y - 34) * ((int)y - 34);
+				u8 *p = &pixels[(y * 64u + x) * 4u];
+
+				p[3] = 255u;
+				if (k == 2)
+				{
+					p[0] = 200u;
+					p[1] = 30u;
+					p[2] = 30u;
+				}
+				else if (k == 3)
+				{
+					const int body = (y >= 36u) && ((u32)abs((int)x - 32) < 10u + (y - 36u));
+					const int head = (((int)x - 32) * ((int)x - 32) + ((int)y - 20) * ((int)y - 20)) <= 14 * 14;
+
+					p[0] = (u8)(body ? 60u : 230u);
+					p[1] = (u8)(body ? 90u : 180u);
+					p[2] = (u8)(body ? 170u : 140u);
+					p[3] = (u8)((body || head) ? 255u : 0u);
+				}
+				else if (d > 28 * 28)
+				{
+					p[0] = p[1] = p[2] = p[3] = 0u;
+				}
+				else if ((k == 0) || (d > 27 * 27))
+				{
+					p[0] = p[1] = p[2] = 0u;
+				}
+				else
+				{
+					p[0] = p[1] = p[2] = (u8)((y < 26u) ? 10u : 0u);
+					if (y >= 26u)
+					{
+						p[0] = 230u;
+						p[1] = 180u;
+						p[2] = 140u;
+					}
+				}
+			}
+		}
+		options = s_rldMkIconDefault;
+		options.background = RLDMK_ICON_BACKGROUND_CORNERS;
+		ok = RldMk_MakeIcon(&image, &plain) && RldMk_IconBackground(&image, &options, &used, &cleared, &color, &thin) && (thin == why[k]) &&
+		     (cleared == 0u) && RldMk_MakeIcon(&image, &icon) && (memcmp(icon.cicn, plain.cicn, sizeof(icon.cicn)) == 0) && (icon.opaque > 0u);
+		RldMk_Test(ok, names[k], "kept %u, %u cleared", thin, cleared);
+	}
+	options = s_rldMkIconDefault;
+	options.background = RLDMK_ICON_BACKGROUND_CORNERS;
+
+	// FIT and FILL: a tall and a wide rectangle; one factor for both axes.
+	image.width = 200u;
+	image.height = 100u;
+	for (k = 0; k < 4; k++)
+	{
+		static const u32 rect[2][4] = {{100u, 20u, 40u, 50u}, {10u, 60u, 120u, 30u}};
+		static const u32 place[4][4] = {{10u, 0u, 20u, 25u}, {0u, 15u, 41u, 10u}, {0u, 0u, 41u, 25u}, {0u, 0u, 41u, 25u}};
+		static const u32 opaque[4][4] = {{10u, 0u, 29u, 24u}, {0u, 15u, 39u, 24u}, {0u, 0u, 40u, 24u}, {0u, 0u, 40u, 24u}};
+		// The cuts: fit takes the extra above and at both sides (the wide one
+		// 3 pixels more: 123 x 30 for 41 x 10); fill cuts the wide one at both
+		// sides, the tall one around the face: 40 / 2 - 24 / 2 = 8 above.
+		static const u32 crop[4][2] = {{100u, 20u}, {9u, 60u}, {100u, 28u}, {45u, 60u}};
+		static const char *const names[4] = {"icon fit: a tall subject 20 x 25, centered in the head box, standing on the bottom row",
+		                                     "icon fit: a wide subject 41 x 10 on the bottom row",
+		                                     "icon fill: a tall subject fills the head box 41 x 25, cut around the face",
+		                                     "icon fill: a wide subject fills the head box 41 x 25"};
+		const u32 *r = rect[k & 1];
+
+		RldMk_TestRect(pixels, r[0], r[1], r[2], r[3]);
+		options = s_rldMkIconDefault;
+		options.fit = (k < 2) ? RLDMK_ICON_FIT_FIT : RLDMK_ICON_FIT_FILL;
+		ok = RldMk_MakeIconWith(&image, &options, &icon) && (memcmp(icon.place, place[k], sizeof(icon.place)) == 0) && (icon.crop[0] == crop[k][0]) &&
+		     (icon.crop[1] == crop[k][1]) &&
+		     (icon.subject[0] == r[0]) && (icon.subject[1] == r[1]) && (icon.subject[2] == r[2]) && (icon.subject[3] == r[3]) &&
+		     RldMk_TestOpaqueBox(&icon, opaque[k][0], opaque[k][1], opaque[k][2], opaque[k][3]);
+		// Never stretched: the cut has the shape of the texels it becomes,
+		// to half a texel.
+		{
+			const s64 skew = (s64)icon.crop[2] * icon.scaled[1] - (s64)icon.crop[3] * icon.scaled[0];
+
+			ok = ok && ((2 * ((skew < 0) ? -skew : skew)) <= (s64)((icon.crop[2] > icon.crop[3]) ? icon.crop[2] : icon.crop[3]));
+		}
+		RldMk_Test(ok, names[k], "place %u,%u %u x %u, cut %u x %u -> %u x %u", icon.place[0], icon.place[1], icon.place[2], icon.place[3], icon.crop[2], icon.crop[3],
+		           icon.scaled[0], icon.scaled[1]);
+	}
+
+	// FRAME: around the tall subject, the frame 0x0400 (x 2..38, y 1..23, 2
+	// wide at the sides) and inside it the box 0x8000; the subject over both.
+	RldMk_TestRect(pixels, 100u, 20u, 40u, 50u);
+	options = s_rldMkIconDefault;
+	options.fit = RLDMK_ICON_FIT_FIT;
+	options.frame = RLDMK_ICON_FRAME_RETAIL;
+	ok = RldMk_MakeIconWith(&image, &options, &icon) && (RldChar_CheckIcon(icon.cicn, sizeof(icon.cicn)) == NULL);
+	{
+		const u32 f = icon.colorCount + 1u;
+		const u32 b = icon.colorCount + 2u;
+
+		ok = ok && (icon.clut[f] == 0x0400u) && (icon.clut[b] == 0x8000u) && (Rld_ReadLE16(&icon.cicn[0x08u + 2u * f]) == 0x0400u) &&
+		     (icon.index[12][2] == f) && (icon.index[12][3] == f) && (icon.index[12][4] == b) && (icon.index[12][36] == b) && (icon.index[12][37] == f) &&
+		     (icon.index[12][38] == f) && (icon.index[12][39] == 0u) && (icon.index[12][0] == 0u) && (icon.index[0][5] == 0u) && (icon.index[1][5] == f) &&
+		     (icon.index[2][5] == b) && (icon.index[23][5] == f) && (icon.index[24][5] == 0u) && (icon.index[12][20] >= 1u) && (icon.index[12][20] <= icon.colorCount) &&
+		     (icon.index[1][20] >= 1u) && (icon.index[1][20] <= icon.colorCount);
+	}
+	RldMk_Test(ok, "icon frame: 0x0400 frame and 0x8000 box where the subject leaves them, the subject over both", "colors %u, x2 %u x4 %u x20 %u",
+	           icon.colorCount, (u32)icon.index[12][2], (u32)icon.index[12][4], (u32)icon.index[12][20]);
+	options.fit = RLDMK_ICON_FIT_NONE;
+	ok = RldMk_MakeIconWith(a, &options, &icon) && (icon.colorCount <= 13u) && (icon.clut[icon.colorCount + 1u] == 0x0400u) &&
+	     (icon.clut[icon.colorCount + 2u] == 0x8000u) && (icon.index[3][2] == icon.colorCount + 1u);
+	RldMk_Test(ok, "icon frame: picture A in 13 colors and the frame's two", "%u colors", icon.colorCount);
+
+	// THE RETAIL PORTRAIT: a made-up shared.vrm (two pictures in a chain: the
+	// CLUT at 16,5, the texels on page 1) and a pack with two icons.
+	{
+		static const u16 clut[16] = {0x0000u, 0x7FFFu, 0x8000u, 0x001Fu};
+		static u16 texels[11u * 25u];
+		struct RldMkBuffer vrm;
+		struct RldMkBuffer pack;
+		u8 record[0x20];
+		u8 rgba[RLDMK_ICON_SHOWN_TEXELS * 4u];
+		size_t first;
+		int n;
+
+		for (y = 0; y < 25u; y++)
+		{
+			for (x = 0; x < 11u; x++)
+			{
+				u32 word = 0;
+				u32 t;
+
+				for (t = 0; t < 4u; t++)
+				{
+					word |= ((4u * x + t + y) % 4u) << (4u * t);
+				}
+				texels[y * 11u + x] = (u16)word;
+			}
+		}
+		memset(&vrm, 0, sizeof(vrm));
+		RldMk_BufferLE32(&vrm, 0x20u);
+		RldMk_BufferLE32(&vrm, 20u + 2u * 16u);
+		first = vrm.size;
+		RldMk_TestTim(&vrm, 16u, 5u, 16u, 1u, clut);
+		RldMk_BufferLE32(&vrm, 20u + 2u * 11u * 25u);
+		RldMk_TestTim(&vrm, 64u, 0u, 11u, 25u, texels);
+		RldMk_BufferLE32(&vrm, 0u);
+
+		memset(&pack, 0, sizeof(pack));
+		RldMk_BufferLE32(&pack, 8u + 16u + 2u * 0x20u);   // the size, then the data
+		RldMk_BufferLE32(&pack, 8u);                       // -> LevTexLookup
+		RldMk_BufferLE32(&pack, 0u);
+		RldMk_BufferLE32(&pack, 2u);                       // numIcon
+		RldMk_BufferLE32(&pack, 24u);                      // firstIcon
+		RldMk_BufferLE32(&pack, 0u);
+		RldMk_BufferLE32(&pack, 0u);
+		for (n = 0; n < 2; n++)
+		{
+			memset(record, 0, sizeof(record));
+			record[0] = (u8)'x';
+			Rld_WriteLE32(&record[0x10], (n == 0) ? 99u : (u32)s_rldMkIconId[14]);
+			Rld_WriteLE16(&record[0x16], (5u << 6) | (16u >> 4));
+			Rld_WriteLE16(&record[0x1A], 1u);
+			RldMk_BufferBytes(&pack, record, sizeof(record));
+		}
+
+		ok = (vrm.data != NULL) && (pack.data != NULL) && (first == 8u) &&
+		     RldMk_RetailIcon(vrm.data, (u32)vrm.size, pack.data, (u32)pack.size, s_rldMkIconId[14], rgba, RLDMK_ICON_SHOWN_WIDTH, RLDMK_ICON_SHOWN_HEIGHT);
+		for (y = 0; ok && (y < RLDMK_ICON_SHOWN_HEIGHT); y++)
+		{
+			for (x = 0; ok && (x < RLDMK_ICON_SHOWN_WIDTH); x++)
+			{
+				static const u8 want[4][4] = {{0, 0, 0, 0}, {255, 255, 255, 255}, {0, 0, 0, 128}, {255, 0, 0, 255}};
+
+				ok = (memcmp(&rgba[(y * RLDMK_ICON_SHOWN_WIDTH + x) * 4u], want[(x + y) % 4u], 4u) == 0);
+			}
+		}
+		RldMk_Test(ok, "retail portrait: icon by iconID, CLUT and texels through a chain of VRAM pictures, STP at alpha 128", "not so");
+		ok = (vrm.data != NULL) && (pack.data != NULL) && !RldMk_RetailIcon(vrm.data, (u32)vrm.size, pack.data, (u32)pack.size, 7u, rgba, 43u, 25u) &&
+		     !RldMk_RetailIcon(vrm.data, (u32)vrm.size, pack.data, 20u, s_rldMkIconId[14], rgba, 43u, 25u);
+		RldMk_Test(ok, "retail portrait: an iconID not there and a pack cut short give nothing", "not so");
+
+		// A damaged chain: a step that would wrap around, one of 0, and one
+		// past the end - each walk ends, nothing is found beyond.
+		ok = (vrm.data != NULL);
+		for (n = 0; ok && (n < 3); n++)
+		{
+			static const u32 steps[3] = {0xFFFFFFFCu, 0u, 0x7FFFFFF0u};
+
+			Rld_WriteLE32(&vrm.data[4], steps[n]);
+			ok = (RldMk_VrmWord(vrm.data, (u32)vrm.size, 64u, 0u) == 0u) && (RldMk_VrmWord(vrm.data, (u32)vrm.size, 16u, 5u) == 0x0000u) &&
+			     (RldMk_VrmWord(vrm.data, (u32)vrm.size, 17u, 5u) == 0x7FFFu);
+		}
+		RldMk_Test(ok, "retail portrait: a damaged chain of VRAM pictures ends the walk (no wrap, no endless loop)", "not so");
+		free(vrm.data);
+		free(pack.data);
+	}
+}
+
 // --- --voices ------------------------------------------------------------------------
 
 // A 16-bit PCM WAV. kind 0: a triangle wave, 1: some samples at full level, 2: silence.
@@ -15107,6 +16872,7 @@ static void RldMk_SelfTestGolden(struct RldMkTestMesh *mesh, const struct RldPng
 	size_t chriNoWheelsSize = 0;
 	u8 *chri;
 	u8 *chriNoWheels;
+	u32 over = 0;
 	int k;
 
 	memset(field, 0, sizeof(field));
@@ -15126,10 +16892,10 @@ static void RldMk_SelfTestGolden(struct RldMkTestMesh *mesh, const struct RldPng
 		static const char *const builtNames[5] = {"golden model built twice: the same bytes",
 		                                          "golden model, --size 120 and icon, built twice: the same bytes",
 		                                          "golden model, --fit crash, built twice: the same bytes",
-		                                          "golden model, split 9 and --reduce auto, built twice: the same bytes",
+		                                          "golden model, over the limit and --reduce auto, built twice: the same bytes",
 		                                          "golden model, --wheels off, built twice: the same bytes"};
 		static const char *const goldenNames[5] = {"make-char --fit none", "make-char --fit none --size 120 --icon", "make-char (--fit crash)",
-		                                           "make-char --fit none, split 9 (--reduce auto)", "make-char --fit none --wheels off"};
+		                                           "make-char --fit none, over the limit (--reduce auto)", "make-char --fit none --wheels off"};
 		static const char *const goldens[5] = {RLDMK_GOLDEN_PLAIN, RLDMK_GOLDEN_SIZE_ICON, RLDMK_GOLDEN_FIT, RLDMK_GOLDEN_REDUCED, RLDMK_GOLDEN_NO_WHEELS};
 		const u8 *info = (k == 4) ? chriNoWheels : chri;
 		const size_t infoSize = (k == 4) ? chriNoWheelsSize : chriSize;
@@ -15149,7 +16915,7 @@ static void RldMk_SelfTestGolden(struct RldMkTestMesh *mesh, const struct RldPng
 		opt.fit = (k == 2);
 		opt.reduce = (k == 3);
 		opt.noWheels = (k == 4);
-		RldMk_TestStandard(mesh, (k == 3) ? 9u : 2u, 0, 0.0, -1);
+		RldMk_TestStandard(mesh, (k == 3) ? RldMk_TestSplitOver(RLDMK_REDUCE_LIMIT, &over) : 2u, 0, 0.0, -1);
 
 		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again);
 		if (ok)
@@ -15191,8 +16957,8 @@ static void RldMk_SelfTestGolden(struct RldMkTestMesh *mesh, const struct RldPng
 
 // THE OWN MASK (--mask-model): a box as the mask - fitted to the retail mask's
 // height and centered on its center, one animation of one frame, CMSK by the
-// game's rules, built twice the same; a finer box reduced to at most 70
-// triangles; the rules CMSK-1..3 and model-anims on a broken copy; a container
+// game's rules, built twice the same; a finer box, over the mask's limit,
+// reduced under it; the rules CMSK-1..3 and model-anims on a broken copy; a container
 // with CMSK last and its golden hash. Without --mask-model nothing changes:
 // the five golden hashes above.
 #define RLDMK_GOLDEN_MASK "bddb29319b18eace9a99be406977fbf0b5f6d2e31fa7d432059bd23ed49e3a32"
@@ -15204,12 +16970,19 @@ static void RldMk_SelfTestMask(struct RldMkTestMesh *mesh)
 	static const double center[3] = RLDMK_MASK_CENTER;
 	u8 *cmsk = NULL;
 	size_t cmskSize = 0;
+	u32 maskSplit = 1;
 	int k;
 
-	// The large box first: the CMSK of the small one stays for the rules below.
+	while ((12u * maskSplit * maskSplit) <= RLDMK_MASK_TRIANGLES_MAX)
+	{
+		maskSplit++;
+	}
+
+	// The large box first (the first split over the mask's limit): the CMSK of
+	// the small one stays for the rules below.
 	for (k = 0; k < 2; k++)
 	{
-		const u32 n = (k == 0) ? 3u : 1u;
+		const u32 n = (k == 0) ? maskSplit : 1u;
 		struct RldMkOptions opt;
 		struct RldMkPly ply;
 		struct RldMkPly plyAgain;
@@ -15255,13 +17028,13 @@ static void RldMk_SelfTestMask(struct RldMkTestMesh *mesh)
 			     ((0.5 * (boxLo[1] + boxHi[1]) - center[1]) < 1.0e-9) && ((0.5 * (boxLo[1] + boxHi[1]) - center[1]) > -1.0e-9) &&
 			     ((0.5 * (boxLo[2] + boxHi[2]) - center[2]) < 1.0e-9) && ((0.5 * (boxLo[2] + boxHi[2]) - center[2]) > -1.0e-9) &&
 			     ((boxHi[1] - boxLo[1]) > 85.0) && ((boxHi[1] - boxLo[1]) < 87.2);
-			if (n == 3u)
+			if (k == 0)
 			{
-				ok = ok && b.reduced && (b.reduceFrom == 108u) && (b.triangleCount <= RLDMK_MASK_TRIANGLES_MAX);
+				ok = ok && b.reduced && (b.reduceFrom == 12u * maskSplit * maskSplit) && (b.triangleCount <= RLDMK_MASK_TRIANGLES_MAX);
 			}
 		}
 		RldMk_Test(ok, (n == 1u) ? "mask: a box of 12 triangles - 1 x 1 frame, 86.1 tall on the retail center, CMSK passes, built twice the same"
-		                         : "mask: a box of 108 triangles reduced to at most 70, CMSK passes",
+		                         : "mask: a box over the mask's limit reduced under it, CMSK passes",
 		           "not so");
 
 		RldMk_FreeBuild(&b);
@@ -15404,6 +17177,7 @@ static int RldChar_SelfTest(void)
 		if (RldMk_TestPictureA(&pictureA))
 		{
 			RldMk_SelfTestIcon(&pictureA);
+			RldMk_SelfTestIconOptions(&pictureA);
 			RldMk_SelfTestGolden(mesh, &pictureA);
 		}
 		else
