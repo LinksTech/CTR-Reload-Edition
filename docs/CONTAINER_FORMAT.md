@@ -375,7 +375,15 @@ interprets CPRM yet.
   `--mask aku` or `--mask uka`) does it write fixedSize 0x20 with flags at
   0x1C, so a file without flags has the same bytes as before the field existed.
   Only with `--map-color` does it write fixedSize 0x24, bit 3 and the color at
-  0x20.
+  0x20. `--y-full` sets bit 4 (see "What rldpack make-char writes" under
+  CMDL); it is about every model of the file, the own mask of
+  `--mask-model` included.
+- `rldpack info` and `rldpack verify` name the height (`even values of the
+  up axis, as retail` or `every value of the up axis (--y-full, CHRI bit
+  4)`) and, for a model that passes, count its odd heights (`odd heights
+  <n> of <m>`, with a hint when there are some without bit 4). With
+  `--machine` they print `@value y-full <on|off> container`; make-char
+  prints `@value y-full <on|off> <switch|default>`.
 - A reader skips numeric bytes beyond the fields it knows and strings beyond the
   first. A reader from before flags skips it, draws the wheels and gives the
   driver the template's mask; a reader from before mapColor shows the
@@ -512,6 +520,28 @@ What `rldpack make-char` writes (`RldMk_WriteCmdl`):
 
 The pointer map has 8 entries: Model.headers, ptrCommandList, ptrColors,
 ptrAnimations, and the 4 table entries.
+
+The command list and the frames as `rldpack make-char` packs them:
+
+- Colors: a palette of at most 128 colors (`--colors 128|64`, default 128;
+  `@value colors <n> <switch|default>`). The color index has 7 bits (bits
+  15-9), so 128 is the most the renderer can address. A model with more
+  colors is merged by median cut and two k-means rounds; an entry that
+  k-means leaves unused takes the color with the largest weighted error, so
+  every entry is used.
+- Bit 27 is never set: every color comes from ptrColors. With bit 27 the
+  renderer first copies the colors into the scratchpad, where they take the
+  cache slots below ceil(N / 2); without it model-slot-color has nothing to
+  check and every slot is free.
+- The vertex cache uses the slots 1..87 (`RLDCHAR_SLOT_MAX`), first in,
+  first out; a corner still in its slot is fetched with bit 26 and costs no
+  record. Slot 0 stays unused: a command of slot 0 without flags would have
+  its upper 16 bits all 0 and read as a color-only command.
+- The up axis: the renderer clears bit 0 of pos.y + byte, so without CHRI
+  bit 4 pos.y and every Y byte are even (128 heights). With
+  `--y-full` (CHRI bit 4, `RLDCHAR_FLAG_FULL_HEIGHT`) the Y bytes take
+  every value 0..255 at the same scale, half the height step; pos.y stays
+  even in every frame either way. X and Z always take every value.
 
 ### The model rldpack make-char reads (PLY or OBJ)
 
@@ -1070,8 +1100,8 @@ switch, a built `.rldchar` has the same bytes.
 
 `RLDCHAR_DRAW_BYTES_MAX` is the one place of the model limit: model-draw,
 the reduction of `rldpack make-char` (`RLDMK_REDUCE_LIMIT`, and
-`RLDMK_REDUCE_TARGET`, the limit less 1 %) and the messages of Reload Studio
-follow it. The draw-memory bounds and the CMDL limit are budgets of the PC,
+`RLDMK_REDUCE_TARGET`, the same 7200 triangles: the game counts the triangles
+as make-char does) and the messages of Reload Studio follow it. The draw-memory bounds and the CMDL limit are budgets of the PC,
 not of the PS1 or of a retail model. 7200 is the most triangles at which
 every mesh can be built: a frame is at most 65535 bytes, and at three records
 per triangle (the worst case of the command list) 7278 triangles fit, so 7200
@@ -1087,6 +1117,12 @@ without a frame running out of draw memory and without a dropped instance.
   with its triangles and draw bytes and the limit). With `--machine` it
   reports the model against the limit before anything is reduced:
   `@char budget <triangles> <limit> <draw bytes> <limit in bytes>`.
+- `--remesh on` (on request only) replaces each part group of more than 24
+  triangles by a closed hull of its surface (`--remesh-resolution`, 32..128
+  cells along its longest side, default 64) and reduces the hulls. A hull
+  has no detail its source did not have, so it is reduced to twice the
+  triangles of the source, at least 1000 and at most `RLDMK_REDUCE_TARGET`
+  (`RldMk_RemeshTarget`), not to the whole limit.
 - `rldpack make-char` reads a PLY or OBJ of at most 1000000 vertices and
   faces each (`RLDMK_PLY_MAX`, `ply-big`, `obj-big`): a guard of the tool,
   not a format limit, so that a large export is reduced instead of refused.
@@ -1191,7 +1227,7 @@ CHRI rules (`RldChar_ParseInfo`). A finding refuses the file as DAMAGED.
 | a new layout inside SNDB, PARM, CICN or CVOI | the chunk's own version field: an older reader drops only that chunk |
 | a new PARM key | no bump: unknown keys are skipped |
 | a new string in META or CHRI | appended at the end only |
-| a new field in CHRI | a longer fixedSize; an older reader skips the extra bytes. flags at 0x1C came this way (fixedSize 0x20, written only when a bit is set): an older reader skips it and draws the wheels. A new flag bit needs no bump: a reader ignores bits it does not know. The mask in bits 1-2 came this way: an older reader gives the driver the template's mask. mapColor at 0x20 came as the second field (fixedSize 0x24, written only with bit 3): an older reader shows the template's minimap color |
+| a new field in CHRI | a longer fixedSize; an older reader skips the extra bytes. flags at 0x1C came this way (fixedSize 0x20, written only when a bit is set): an older reader skips it and draws the wheels. A new flag bit needs no bump: a reader ignores bits it does not know. Bit 4 (full height) came this way: an older game draws an odd height one value lower. The mask in bits 1-2 came this way: an older reader gives the driver the template's mask. mapColor at 0x20 came as the second field (fixedSize 0x24, written only with bit 3): an older reader shows the template's minimap color |
 | a new number in META | not possible without a new major: META's numeric part has no length field. New things go into optional chunks |
 | something without which the content is wrong | a required-feature bit in header field 0x0C; a reader that does not know it refuses (NEEDS NEWER) |
 | a change an older reader would misread | a new major: older readers say NEEDS NEWER, newer readers say OLD FORMAT for the old files |
