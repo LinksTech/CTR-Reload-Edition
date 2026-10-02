@@ -67,6 +67,7 @@
 // cannot round differently.
 
 #include <time.h>
+#include <sys/stat.h>
 
 //========================================================================================
 // PROGRESS (--machine)
@@ -446,6 +447,18 @@ static void RldMk_EmitFile(const char *kind, const char *state, const char *name
 
 	snprintf(number, sizeof(number), "%llu", (unsigned long long)bytes);
 	Rld_Emit("file", kind, state, name, number, (const char *)NULL);
+}
+
+// Deletes a file, also a write-protected one (the old character moved aside
+// keeps the protection of the file it was). 1 = gone or not there.
+static int RldMk_RemoveFile(const char *path)
+{
+	if ((remove(path) == 0) || (errno == ENOENT))
+	{
+		return 1;
+	}
+	_chmod(path, _S_IREAD | _S_IWRITE);
+	return (remove(path) == 0);
 }
 
 // fopen(path, "wb") failed with errno `openError`: when that is ENOENT, a
@@ -1468,6 +1481,7 @@ struct RldMkBuild
 	u32 groupTriangles[RLDMK_GROUPS];
 	int posed;                 // the automatic poses were made
 	int vehicleOnly;           // --wheels off and no driver above the vehicle: the whole model is the vehicle and stands still
+	u32 strayPieces;           // --wheels off: pieces far off the model left out of its size and place (RldMk_RobustBox)
 	double size[4];            // length, width (kart), height, bottom - Blender units
 	double exported[4];        // the same before --size (ply-axes)
 	double center;             // ply-center: the kart's middle to the side of x = 0, model units as exported
@@ -2637,7 +2651,9 @@ static int RldMk_UnderDriver(const struct RldMkBuild *b, u32 vehicle)
 
 	for (i = 0; i < b->partCount; i++)
 	{
-		if ((i != vehicle) && ((d < 0) || (b->parts[i].weight > b->parts[d].weight)))
+		// a stray piece (under 8 triangles and 1 % of them) is no driver
+		if ((i != vehicle) && ((b->parts[i].triangles >= 8u) || (((u64)b->parts[i].triangles * 100u) >= (u64)b->triangleCount)) &&
+		    ((d < 0) || (b->parts[i].weight > b->parts[d].weight)))
 		{
 			d = (int)i;
 		}
@@ -2817,6 +2833,28 @@ static int RldMk_PartWeights(struct RldMkBuild *b)
 	return 1;
 }
 
+// May part `i` be a steering wheel? With the kart wheels shown: yes (the
+// rule of step 4 decides). Without them only a part that starts above half
+// the height of the vehicle part `kart` - a car's or truck's front wheels,
+// mirrors and number plate stand low and are the vehicle's - and, on a
+// vehicle of its own shorter than a kart (`shortVehicle`), only one that sits
+// on it (RldMk_SteeringOnVehicle). A motorbike's handlebar starts at 37.0 of
+// its frame's 45.5.
+static int RldMk_SteeringAllowed(const struct RldMkBuild *b, u32 i, int kart, int noWheels, int shortVehicle)
+{
+	const struct RldMkPart *vehicle = &b->parts[kart];
+
+	if (!noWheels)
+	{
+		return 1;
+	}
+	if (b->parts[i].lo[1] <= (vehicle->lo[1] + 0.5 * (vehicle->hi[1] - vehicle->lo[1])))
+	{
+		return 0;
+	}
+	return !shortVehicle || RldMk_SteeringOnVehicle(b, i, kart);
+}
+
 // Steps 4 and 5: which part is the kart, which the driver and the steering
 // wheel, and whether the model is the size and the way round of a driver.
 static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
@@ -2983,7 +3021,33 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 				         " A long part at the bottom (%.2f model units long) is not under the driver - beside or behind him - so it is not taken as the kart.",
 				         (b->parts[away].hi[2] - b->parts[away].lo[2]) / RLDMK_UNITS);
 			}
-			if (b->fitted)
+			if (b->fitted && opt->noWheels)
+			{
+				// Without kart wheels the model was fitted within Crash: a kart
+				// is not asked for, a vehicle of its own is - say how long the
+				// longest part at the bottom came out.
+				int bottom = -1;
+
+				for (i = 0; i < b->partCount; i++)
+				{
+					const double low = b->parts[i].lo[1] / RLDMK_UNITS;
+
+					if ((low >= RLDMK_KART_BOTTOM_MIN) && (low <= RLDMK_KART_BOTTOM_MAX) &&
+					    ((bottom < 0) || ((b->parts[i].hi[2] - b->parts[i].lo[2]) > (b->parts[bottom].hi[2] - b->parts[bottom].lo[2]))))
+					{
+						bottom = (int)i;
+					}
+				}
+				if ((also[0] == '\0') && (bottom >= 0) && (((b->parts[bottom].hi[2] - b->parts[bottom].lo[2]) / RLDMK_UNITS) < RLDMK_VEHICLE_LENGTH_MIN))
+				{
+					snprintf(also, sizeof(also), " The longest part at the bottom is %.2f model units long after the fit within Crash.",
+					         (b->parts[bottom].hi[2] - b->parts[bottom].lo[2]) / RLDMK_UNITS);
+				}
+				RldMk_Say("error", "ply-no-kart", NULL,
+				          "No vehicle found in the model fitted within Crash (x%.4g). With the kart wheels hidden a character needs a vehicle of its own: a separate part at the bottom, at least %.2f model units long and longer than tall, under the driver.%s",
+				          b->fitFactor, RLDMK_VEHICLE_LENGTH_MIN, also);
+			}
+			else if (b->fitted)
 			{
 				RldMk_Say("error", "ply-no-kart", NULL,
 				          "No kart found in the model fitted to Crash size (x%.4g). A character needs a kart: a separate part at the bottom of the model, about as long as Crash's kart.%s On the command line, --fit none checks the model at its exported size.",
@@ -3048,7 +3112,7 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 		for (i = 0; i < b->partCount; i++)
 		{
 			struct RldMkPart *part = &b->parts[i];
-			const int wheel = (!noSteering || RldMk_SteeringOnVehicle(b, i, best)) && (RldMk_Extent(part) <= (RLDMK_WHEEL_EXTENT * RLDMK_UNITS)) &&
+			const int wheel = RldMk_SteeringAllowed(b, i, best, opt->noWheels, noSteering) && (RldMk_Extent(part) <= (RLDMK_WHEEL_EXTENT * RLDMK_UNITS)) &&
 			                  ((0.5 * (part->lo[2] + part->hi[2])) > driverZ);
 
 			if (((int)i != best) && ((int)i != b->driverPart) && !wheel && (part->lo[0] < kartX) && (part->hi[0] > kartX) && (part->lo[0] <= kart->hi[0]) &&
@@ -3122,7 +3186,7 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 		for (i = 0; i < b->partCount; i++)
 		{
 			struct RldMkPart *part = &b->parts[i];
-			const int wheel = (!noSteering || RldMk_SteeringOnVehicle(b, i, best)) && (b->driverPart >= 0) && (RldMk_Extent(part) <= (RLDMK_WHEEL_EXTENT * RLDMK_UNITS)) &&
+			const int wheel = RldMk_SteeringAllowed(b, i, best, opt->noWheels, noSteering) && (b->driverPart >= 0) && (RldMk_Extent(part) <= (RLDMK_WHEEL_EXTENT * RLDMK_UNITS)) &&
 			                  ((0.5 * (part->lo[2] + part->hi[2])) > driverZ);
 
 			if ((b->driverPart < 0) || (((int)i != b->driverPart) && !wheel && !RldMk_AboveVehicle(part, &b->parts[best])))
@@ -3143,7 +3207,7 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 		{
 			struct RldMkPart *part = &b->parts[i];
 
-			if ((noSteering && !RldMk_SteeringOnVehicle(b, i, best)) || (part->group == RLDMK_GROUP_KART) || ((int)i == b->driverPart) ||
+			if (!RldMk_SteeringAllowed(b, i, best, opt->noWheels, noSteering) || (part->group == RLDMK_GROUP_KART) || ((int)i == b->driverPart) ||
 			    (RldMk_Extent(part) > (RLDMK_WHEEL_EXTENT * RLDMK_UNITS)))
 			{
 				continue;
@@ -3385,11 +3449,12 @@ static double RldMk_FitWhole(double length, double height, double width, int *ca
 // size on every side, as the wheels, mirrors and number plates of the
 // measured vehicles do; one farther off is left out (a piece of 3
 // triangles, 1 % of a car, made it 3 times as small). 0 = no triangle.
-static int RldMk_RobustBox(const struct RldMkBuild *b, double lo[3], double hi[3])
+static int RldMk_RobustBox(const struct RldMkBuild *b, double lo[3], double hi[3], u32 *strayOut)
 {
 	const u32 n = b->positionCount;
 	u32 *parent = (u32 *)malloc(((size_t)n + 1u) * sizeof(u32));
 	double *count = (double *)calloc((size_t)n + 1u, sizeof(double));
+	u32 *triangles = (u32 *)calloc((size_t)n + 1u, sizeof(u32));
 	u8 *core = (u8 *)calloc((size_t)n + 1u, 1u);
 	double *box = (double *)malloc(((size_t)n + 1u) * 6u * sizeof(double));
 	u8 *seen = (u8 *)calloc((size_t)n + 1u, 1u);
@@ -3397,19 +3462,25 @@ static int RldMk_RobustBox(const struct RldMkBuild *b, double lo[3], double hi[3
 	double coreHi[3];
 	double total = 0.0;
 	double taken = 0.0;
+	u32 stray = 0;
 	int found = 0;
 	u32 p;
 	u32 t;
 	int a;
 
-	if ((parent == NULL) || (count == NULL) || (core == NULL) || (box == NULL) || (seen == NULL) || (b->triangleCount == 0u))
+	if ((parent == NULL) || (count == NULL) || (triangles == NULL) || (core == NULL) || (box == NULL) || (seen == NULL) || (b->triangleCount == 0u))
 	{
 		free(parent);
 		free(count);
+		free(triangles);
 		free(core);
 		free(box);
 		free(seen);
 		RldMk_Bounds(b, -1, lo, hi);
+		if (strayOut != NULL)
+		{
+			*strayOut = 0;
+		}
 		return (b->triangleCount != 0u);
 	}
 
@@ -3433,6 +3504,7 @@ static int RldMk_RobustBox(const struct RldMkBuild *b, double lo[3], double hi[3
 		RldMk_Cross(&b->position[3u * b->vertexPosition[b->triangle[3u * t + 0u]]], &b->position[3u * b->vertexPosition[b->triangle[3u * t + 1u]]],
 		            &b->position[3u * b->vertexPosition[b->triangle[3u * t + 2u]]], normal);
 		count[root] += RldMk_Sqrt(RldMk_Dot(normal, normal));
+		triangles[root]++;
 		total += RldMk_Sqrt(RldMk_Dot(normal, normal));
 		for (k = 0; k < 3u; k++)
 		{
@@ -3447,7 +3519,10 @@ static int RldMk_RobustBox(const struct RldMkBuild *b, double lo[3], double hi[3
 		}
 	}
 
-	// the core: the largest pieces until 90 % of the area, at least one
+	// the core: the largest pieces until 90 % of the area, at least one -
+	// only pieces of 8 triangles or 1 % of them and more: a flat square of
+	// two triangles far off, 15 % of the area, made a car five times as
+	// small. A piece looked at and not taken is marked 2.
 	while (((taken * 10.0) < (total * 9.0)) || !found)
 	{
 		u32 best = RLDMK_NONE;
@@ -3463,6 +3538,11 @@ static int RldMk_RobustBox(const struct RldMkBuild *b, double lo[3], double hi[3
 		{
 			break;
 		}
+		if ((triangles[best] < 8u) && (((u64)triangles[best] * 100u) < (u64)b->triangleCount))
+		{
+			core[best] = 2;
+			continue;
+		}
 		core[best] = 1;
 		taken += count[best];
 		for (a = 0; a < 3; a++)
@@ -3473,13 +3553,31 @@ static int RldMk_RobustBox(const struct RldMkBuild *b, double lo[3], double hi[3
 		found = 1;
 	}
 
+	// no piece qualified (a model of tiny pieces only): every piece
+	if (!found)
+	{
+		for (p = 0; p < n; p++)
+		{
+			if (seen[p])
+			{
+				for (a = 0; a < 3; a++)
+				{
+					coreLo[a] = (!found || (box[6u * p + (u32)a] < coreLo[a])) ? box[6u * p + (u32)a] : coreLo[a];
+					coreHi[a] = (!found || (box[6u * p + 3u + (u32)a] > coreHi[a])) ? box[6u * p + 3u + (u32)a] : coreHi[a];
+				}
+				core[p] = 1;
+				found = 1;
+			}
+		}
+	}
+
 	memcpy(lo, coreLo, sizeof(coreLo));
 	memcpy(hi, coreHi, sizeof(coreHi));
 	for (p = 0; found && (p < n); p++)
 	{
 		int near = 1;
 
-		if (!seen[p] || core[p])
+		if (!seen[p] || (core[p] == 1u))
 		{
 			continue;
 		}
@@ -3494,10 +3592,16 @@ static int RldMk_RobustBox(const struct RldMkBuild *b, double lo[3], double hi[3
 			lo[a] = (box[6u * p + (u32)a] < lo[a]) ? box[6u * p + (u32)a] : lo[a];
 			hi[a] = (box[6u * p + 3u + (u32)a] > hi[a]) ? box[6u * p + 3u + (u32)a] : hi[a];
 		}
+		stray += near ? 0u : 1u;
+	}
+	if (strayOut != NULL)
+	{
+		*strayOut = stray;
 	}
 
 	free(parent);
 	free(count);
+	free(triangles);
 	free(core);
 	free(box);
 	free(seen);
@@ -3605,7 +3709,7 @@ static int RldMk_StepFit(const struct RldMkPly *ply, const struct RldMkOptions *
 	}
 	if (opt->noWheels)
 	{
-		RldMk_RobustBox(&probe, lo, hi);
+		RldMk_RobustBox(&probe, lo, hi, NULL);
 	}
 	else
 	{
@@ -3744,9 +3848,16 @@ static int RldMk_StepDummy(struct RldMkBuild *b, const struct RldMkOptions *opt)
 		double lo[3];
 		double hi[3];
 
-		if (RldMk_RobustBox(b, lo, hi))
+		if (RldMk_RobustBox(b, lo, hi, &b->strayPieces))
 		{
 			RldMk_DummyBox(&in.model, lo, hi);
+		}
+		if (b->strayPieces != 0u)
+		{
+			RldMk_Say("warning", "ply-stray", NULL,
+			          "%u small piece%s far off the model %s left out of its size and its place, but %s still in it and can make it too large. Remove %s from the model.",
+			          b->strayPieces, (b->strayPieces == 1u) ? "" : "s", (b->strayPieces == 1u) ? "was" : "were", (b->strayPieces == 1u) ? "it is" : "they are",
+			          (b->strayPieces == 1u) ? "it" : "them");
 		}
 	}
 
@@ -5300,13 +5411,16 @@ static int RldMk_StepSize(struct RldMkBuild *b, const struct RldMkOptions *opt)
 
 	if (!RldMk_SizeFits(&hull, percent, why, sizeof(why)))
 	{
+		const char *stray = (b->strayPieces != 0u) ? " The far-off pieces named by ply-stray count here - remove them from the model." : "";
+
 		if (low == 0u)
 		{
-			RldMk_Say("error", "char-size", NULL, "Size %u%% does not fit this model at any size: %s.", percent, why);
+			RldMk_Say("error", "char-size", NULL, "Size %u%% does not fit this model at any size: %s.%s", percent, why, stray);
 		}
 		else
 		{
-			RldMk_Say("error", "char-size", NULL, "Size %u%% is outside %u..%u%% for this model: %s. Choose a size in that range.", percent, low, high, why);
+			RldMk_Say("error", "char-size", NULL, "Size %u%% is outside %u..%u%% for this model: %s. Choose a size in that range.%s", percent, low, high, why,
+			          stray);
 		}
 		return 0;
 	}
@@ -13367,14 +13481,14 @@ static int RldChar_MakeCommand(int argc, char **argv)
 			int moved;
 
 			snprintf(oldPath, sizeof(oldPath), "%s.old", outPath);
-			remove(oldPath);  // a leftover of an earlier run; usually there is none
+			RldMk_RemoveFile(oldPath);  // a leftover of an earlier run; usually there is none
 			moved = (rename(outPath, oldPath) == 0);  // fails when there is no old file - fine
 			written = (rename(partPath, outPath) == 0);
-			if (moved && written)
+			if (moved && written && !RldMk_RemoveFile(oldPath))
 			{
-				remove(oldPath);
+				RldMk_Say("warning", "write", oldPath, "The character was written, but its old file %s cannot be deleted. Delete it by hand.", oldPath);
 			}
-			else if (moved)
+			else if (moved && !written)
 			{
 				rename(oldPath, outPath);
 			}
@@ -20752,6 +20866,72 @@ static void RldMk_SelfTestFaceSource(struct RldMkTestMesh *mesh)
 	}
 }
 
+// --wheels off: (a) a flat square of 2 triangles far off with nearly half
+// the surface of a vehicle does not change its size and is named
+// (ply-stray); (b) on a short vehicle, low front wheels in front of the
+// driver are no steering wheel.
+static void RldMk_SelfTestStrayAndWheels(struct RldMkTestMesh *mesh)
+{
+	static const double bodyLo[3] = {-0.30, 0.10, -0.60};
+	static const double bodyHi[3] = {0.30, 0.40, 0.60};
+	struct RldMkOptions opt;
+	struct RldMkPly ply;
+	struct RldMkBuild b;
+	int ok;
+
+	mesh->vertexCount = 0;
+	mesh->faceCount = 0;
+	RldMk_TestBox(mesh, bodyLo, bodyHi, 6u, 0u, 0, -1);  // 432 triangles: the square is under 1 % of them
+	{
+		const u32 v = RldMk_TestVertex(mesh, 3.0, 0.0, -0.75, 30u);
+
+		RldMk_TestVertex(mesh, 4.5, 0.0, -0.75, 30u);
+		RldMk_TestVertex(mesh, 4.5, 0.0, 0.75, 30u);
+		RldMk_TestVertex(mesh, 3.0, 0.0, 0.75, 30u);
+		RldMk_TestFace(mesh, 4u, v, v + 3u, v + 2u, v + 1u, 0u);
+	}
+	RldMk_TestOptions(&opt);
+	opt.fit = 1;
+	opt.noWheels = 1;
+	opt.repair = 1;
+	// the square stays in the model, 3 units off: it may make the model too
+	// large to build (char-size, pointing at ply-stray) - the size is the body's
+	RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+	ok = RldMk_Said("ply-stray") && (b.fitBefore[0] > 76.7) && (b.fitBefore[0] < 76.9) && b.vehicleOnly;
+	RldMk_Test(ok, "--wheels off: a flat square far off (2 triangles, much surface) is left out of the size (ply-stray)", "length %.2f, said: %s",
+	           b.fitBefore[0], s_rldMkCodes);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+
+	{
+		static const double vehicleLo[3] = {-0.40, 0.00, -0.50};
+		static const double vehicleHi[3] = {0.40, 0.30, 0.50};
+		static const double driverLo[3] = {-0.25, 0.32, -0.30};
+		static const double driverHi[3] = {0.25, 1.40, 0.10};
+		int w;
+
+		mesh->vertexCount = 0;
+		mesh->faceCount = 0;
+		RldMk_TestBox(mesh, vehicleLo, vehicleHi, 1u, 0u, 0, -1);
+		RldMk_TestBox(mesh, driverLo, driverHi, 2u, 10u, 0, -1);
+		for (w = 0; w < 2; w++)
+		{
+			const double lo[3] = {w ? 0.30 : -0.38, 0.00, 0.30};
+			const double hi[3] = {w ? 0.38 : -0.30, 0.10, 0.45};
+
+			RldMk_TestBox(mesh, lo, hi, 1u, 20u + (u32)w, 0, -1);
+		}
+		RldMk_TestOptions(&opt);
+		opt.fit = 1;
+		opt.noWheels = 1;
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && RldMk_Said("ply-kart-short") && (b.groupTriangles[RLDMK_GROUP_WHEEL] == 0u);
+		RldMk_Test(ok, "--wheels off, a short vehicle: its low front wheels are no steering wheel", "built %d, kart %u, driver %u, wheel %u, said: %s", ok,
+		           b.groupTriangles[RLDMK_GROUP_KART], b.groupTriangles[RLDMK_GROUP_DRIVER], b.groupTriangles[RLDMK_GROUP_WHEEL], s_rldMkCodes);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+	}
+}
+
 static int RldChar_SelfTest(void)
 {
 	struct RldMkTestMesh *mesh = (struct RldMkTestMesh *)calloc(1, sizeof(struct RldMkTestMesh));
@@ -20820,6 +21000,7 @@ static int RldChar_SelfTest(void)
 	RldMk_SelfTestTurret(mesh);
 	RldMk_SelfTestNoSteering(mesh);
 	RldMk_SelfTestFaceSource(mesh);
+	RldMk_SelfTestStrayAndWheels(mesh);
 	s_rldMkQuiet = quietBefore;
 	RldMk_ResetSaid();
 
