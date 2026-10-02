@@ -1391,6 +1391,7 @@ struct RldMkBuild
 	int posed;                 // the automatic poses were made
 	double size[4];            // length, width (kart), height, bottom - Blender units
 	double exported[4];        // the same before --size (ply-axes)
+	double center;             // ply-center: the kart's middle to the side of x = 0, model units as exported
 	int recordLimit;           // RldMk_StepWrite failed model-frame or mem-model (too many records)
 	u32 reduceFrom;            // triangles before RldMk_StepReduce
 	u32 reduceTo;              // and after; the same when nothing was reduced
@@ -4653,13 +4654,23 @@ static int RldMk_StepMeasure(struct RldMkBuild *b, const struct RldMkOptions *op
 	}
 
 	{
-		// as exported: before the dummy's shift (RldMk_StepDummy) centers the kart
-		const double center = (0.5 * (b->parts[best].lo[0] + b->parts[best].hi[0]) - (b->dummy ? b->dumFit.shift[0] : 0.0)) / RLDMK_UNITS;
+		// As exported: before the dummy's shift (RldMk_StepDummy) and in the
+		// units of the file - the factor of --fit crash (or --scale) taken
+		// back, so that the number is the one the author sees in Blender.
+		// With the dummy the kart is centered for the game anyway: then it is
+		// only worth knowing.
+		const double fitted = (0.5 * (b->parts[best].lo[0] + b->parts[best].hi[0]) - (b->dummy ? b->dumFit.shift[0] : 0.0)) / RLDMK_UNITS;
+		const double center = (opt->scale > 0.0) ? (fitted / opt->scale) : fitted;
 
-		if ((center > 0.08) || (center < -0.08))
+		b->center = center;
+		if (((fitted > 0.08) || (fitted < -0.08)) && b->dummy)
 		{
-			RldMk_Say("warning", "ply-center", NULL, "The model is %.2f Blender units off-center to the side. Center the kart on x = 0.",
+			RldMk_Say("info", "ply-center", NULL, "The kart sits %.2f model units to the side of x = 0; it is centered for the game - nothing to do.",
 			          (center < 0.0) ? -center : center);
+		}
+		else if ((fitted > 0.08) || (fitted < -0.08))
+		{
+			RldMk_Say("warning", "ply-center", NULL, "The kart sits %.2f model units to the side of x = 0. Center it on x = 0.", (center < 0.0) ? -center : center);
 		}
 	}
 
@@ -18810,6 +18821,42 @@ static void RldMk_SelfTestParts(struct RldMkTestMesh *mesh)
 		snprintf(name, sizeof(name), "parts: a hull %s the kart's top %s", lift ? "0.01 above" : "resting on", lift ? "leans with the driver" : "stays with the kart");
 		RldMk_Test(ok, name, "parts %u, driver part %d, kart %u, driver %u, said: %s", b.partCount, b.driverPart, b.groupTriangles[RLDMK_GROUP_KART],
 		           b.groupTriangles[RLDMK_GROUP_DRIVER], s_rldMkCodes);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+	}
+
+	// PLY-CENTER: the kart 0.5 to the side in the file. Fitted onto the dummy
+	// the kart is centered anyway: info, in model units (0.5, not the fitted
+	// value); --fit none at --scale 1.2: a warning, 0.5 as well.
+	for (lift = 0; lift < 2; lift++)
+	{
+		const double lo[3] = {0.05, 0.10, -0.90};
+		const double hi[3] = {0.95, 0.35, 0.90};
+		const double dLo[3] = {0.25, 0.40, -0.40};
+		const double dHi[3] = {0.75, 1.00, 0.10};
+		u32 warningsBefore;
+
+		mesh->vertexCount = 0;
+		mesh->faceCount = 0;
+		RldMk_TestBox(mesh, lo, hi, 1u, 0u, 0, -1);
+		RldMk_TestBox(mesh, dLo, dHi, 2u, 10u, 0, -1);
+		RldMk_TestOptions(&opt);
+		opt.fit = (lift == 0);
+		opt.scale = (lift == 0) ? 1.0 : 1.2;
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+		warningsBefore = (u32)s_rldMkWarnings;
+		if (lift == 0)
+		{
+			RldMk_Test(ok && b.dummy && RldMk_Said("ply-center") && (warningsBefore == 0u) && (b.center > 0.4999) && (b.center < 0.5001),
+			           "ply-center fitted onto the dummy: info, 0.50 model units as in the file", "built %d, dummy %d, center %.4f, warnings %u, said: %s", ok,
+			           b.dummy, b.center, warningsBefore, s_rldMkCodes);
+		}
+		else
+		{
+			RldMk_Test(ok && !b.dummy && RldMk_Said("ply-center") && (warningsBefore >= 1u) && (b.center > 0.4999) && (b.center < 0.5001),
+			           "ply-center with --fit none --scale 1.2: warning, 0.50 model units as in the file", "built %d, center %.4f, warnings %u, said: %s", ok,
+			           b.center, warningsBefore, s_rldMkCodes);
+		}
 		RldMk_FreeBuild(&b);
 		RldMk_FreePly(&ply);
 	}
