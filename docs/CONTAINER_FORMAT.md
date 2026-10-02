@@ -796,6 +796,73 @@ default 100) bakes the size into the vertices before the poses are made
   `@value size-range <lo> <hi>` (fields separated by tabs); `0 0` means that
   no size fits the model. A size outside is refused (`char-size`).
 
+### How rldpack make-char runs
+
+Nothing of this is in the container; it is how the tool gets there.
+
+- `--check` runs every check and builds the model in memory once, and
+  writes nothing but the previews. A build without `--check` builds the
+  model twice and compares the bytes (`model-roundtrip` when they differ).
+- The output: `--out <file>` (or the file next to the model) is written as
+  `<file>.part` and renamed at the end. An older file is first moved aside
+  to `<file>.old` and deleted only once the new one is in place; when the
+  rename fails it is moved back, so the old character stays. A failed
+  write deletes the `.part`; a process that is stopped (Reload Studio's
+  Cancel ends it) leaves at most the `.part`, never half a character under
+  the real name. The output and the `@result` line name `<file>`, never
+  the `.part`.
+- Progress, only with `--machine`: `@progress <step> <done> <total>`
+  (fields separated by tabs, like every machine line), step `repair` (7
+  passes), `remesh` (6 phases per part group), `reduce` (the triangles
+  removed of those to remove; a new stage starts again at 0) or `write`
+  (bytes). At most one line per 250 ms, the first 250 ms after the start
+  at the earliest, so short runs stay silent; the end of a step (done =
+  total) is said when a line of that step with less done came before.
+  stdout is flushed after each line. The clock only decides whether a line
+  is written: the container, the preview and the diagnosis stay the same
+  bytes.
+- Before a long reduction, only with `--machine`: a reduction of more than
+  60000 triangles gives the info `reduce-slow` with an estimate of the
+  time from a measured curve ("Reducing <n> triangles takes about <t>;
+  decimate the model in the modeling tool first to save time", or, for the
+  hulls of `--remesh`, "The closed hulls give <n> triangles; reducing them
+  takes about <t>"), not twice in a row for the same count.
+- The reduction cache, only with `--check` (Reload Studio checks again
+  after every change of a field): a reduced mesh is kept in the folder for
+  temporary files (TEMP, else TMP) as `rldpack-reduce-<nn>.bin`, at most 16
+  files, and taken again for the same input. Its key is the SHA-256 of the
+  program's build ID, every input array and the targets; a build ID that
+  does not tell states of the code apart (unknown, or a modified tree
+  without its hash) means no cache. The file carries the SHA-256 of its
+  content and is written through a `.part`; a file that is missing,
+  damaged or not plausible, and every error of the cache, only mean that
+  the reduction runs. Only reductions that reach their target are kept. A
+  hit gives the bytes the reduction gives. `--no-cache` turns it off; a
+  build without `--check` never uses it, and the self-test neither.
+- `--preview <file>` writes the built model as the game draws it, for the
+  3D view of Reload Studio (`RldMk_WritePreview`). Little-endian, no
+  padding:
+
+  | Offset | Type | Field |
+  |---|---|---|
+  | 0x00 | char[8] | `RLDPV2` and two NUL |
+  | 0x08 | u32 | poses = 3: turn frame 10 (neutral), turn frame 0, turn frame 20 |
+  | 0x0C | | per pose: u32 triangles T (the same in every pose), then T x 3 corners of 10 bytes: s16 x, y, z in 1/16 game units (model space, +Y up, +Z forward, +X the driver's left), u8 r, g, b (the vertex color as stored), u8 flags (bit 0: drawn from both sides; bits 1-7 are 0) |
+
+  Size 12 + 3 x (4 + T x 30). The corners of a triangle run
+  counter-clockwise seen from the side the game draws. The game draws a
+  corner in steps of 0.2 to 0.6 units; 1/16 units keep the preview within
+  1/32 of it. The older `RLDPV1` is the same with whole game units;
+  Reload Studio reads both.
+- The self-test (`rldpack selftest`, also `ReloadStudio.exe --rldpack
+  selftest`) builds fixed models made in the code and compares the
+  SHA-256 of what comes out with fixed values (`RLDMK_GOLDEN_*`): PLAIN,
+  SIZE_ICON, FIT, NO_WHEELS, REDUCED, REMESH (an open driver with
+  `--remesh on`), MASK, OBJ and the voices. A golden changes only with a
+  deliberate change of what it covers, in the same commit, never to make
+  the test pass; on another compiler or runtime a different value shows a
+  drift.
+
 ### CICN (`RldChar_CheckIcon`)
 
 The portrait in the driver select, in the retail portrait format:
