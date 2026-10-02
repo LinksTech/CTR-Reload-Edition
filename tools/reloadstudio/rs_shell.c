@@ -2639,11 +2639,60 @@ struct RsJob {
     HANDLE read;
 };
 
+// A line "@progress\t<step>\t<done>\t<total>" (tabs or spaces) of rldpack.
+// Return: 1 and *p filled, 0 if the line is something else or malformed.
+static int Rs_ParseProgress(const char *line, int len, struct RsJobProgress *p)
+{
+    static const char tag[] = "@progress";
+    char buf[96];
+    char *s, *end;
+    int i, n = 0;
+
+    if (len <= (int)sizeof(tag) - 1 || len >= (int)sizeof(buf) ||
+        memcmp(line, tag, sizeof(tag) - 1) != 0 ||
+        (line[sizeof(tag) - 1] != '\t' && line[sizeof(tag) - 1] != ' '))
+        return 0;
+    memcpy(buf, line, (size_t)len);
+    buf[len] = 0;
+    s = buf + sizeof(tag) - 1;
+    while (*s == '\t' || *s == ' ')
+        s++;
+    while (s[n] && s[n] != '\t' && s[n] != ' ')
+        n++;
+    if (n == 0 || n >= (int)(sizeof(p->step) / sizeof(p->step[0])))
+        return 0;
+    memset(p, 0, sizeof(*p));
+    for (i = 0; i < n; i++)
+        p->step[i] = (wchar_t)(unsigned char)s[i];
+    s += n;
+    if (*s != '\t' && *s != ' ')
+        return 0;
+    p->done = strtoul(s, &end, 10);
+    if (end == s || (*end != '\t' && *end != ' '))
+        return 0;
+    s = end;
+    p->total = strtoul(s, &end, 10);
+    if (end == s)
+        return 0;
+    while (*end == '\t' || *end == ' ')
+        end++;
+    return *end == 0;
+}
+
 static void Rs_PostLine(struct RsJob *job, const char *line, int len)
 {
     wchar_t *w;
+    struct RsJobProgress progress;
     while (len > 0 && (line[len - 1] == '\r' || line[len - 1] == '\n'))
         len--;
+    // Progress is not a line for the log: a message of its own.
+    if (Rs_ParseProgress(line, len, &progress)) {
+        struct RsJobProgress *p = Rs_Alloc(sizeof(*p));
+        *p = progress;
+        if (!PostMessageW(job->notify, RS_WM_JOB_PROGRESS, (WPARAM)job->id, (LPARAM)p))
+            Rs_Free(p);
+        return;
+    }
     w = Rs_FromUtf8(line, len);
     if (!PostMessageW(job->notify, RS_WM_JOB_LINE, (WPARAM)job->id, (LPARAM)w))
         Rs_Free(w);
@@ -3117,13 +3166,17 @@ static LRESULT CALLBACK Rs_PageProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             return st->def->notify(hwnd, (NMHDR *)lParam);
         return 0;
     }
+    if (msg == RS_WM_JOB_PROGRESS && g_automating && lParam) {
+        const struct RsJobProgress *p = (const struct RsJobProgress *)lParam;
+        Rs_AutoLog(L"  progress %ls %lu/%lu", p->step, p->done, p->total);
+    }
     if (st && st->ready && st->def->message) {
         int handled = 0;
         LRESULT r = st->def->message(hwnd, msg, wParam, lParam, &handled);
         if (handled)
             return r;
     }
-    if (msg == RS_WM_JOB_LINE || msg == RS_WM_JOB_BUSY) {
+    if (msg == RS_WM_JOB_LINE || msg == RS_WM_JOB_BUSY || msg == RS_WM_JOB_PROGRESS) {
         Rs_Free((void *)lParam);
         return 0;
     }
