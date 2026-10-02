@@ -3,11 +3,14 @@
 # Every push to main: build (32-bit, MSVC), run the self-tests, package,
 # and attach the package to the run as a download.
 # Every version tag (v*, e.g. v0.1.0-beta1): the same, plus a GitHub release
-# with exactly four files: the programs ctr_native.exe and ReloadStudio.exe,
-# and LICENSE and THIRD_PARTY_NOTICES.md, because the licenses must travel
-# with the programs (GPL-3.0, and the notices of the bundled third-party
-# code). GitHub adds the source code archives of the tag by itself. The
-# release text comes from .github/release-body.txt.
+# with exactly five files: the programs ctr_native.exe and ReloadStudio.exe,
+# LICENSE and THIRD_PARTY_NOTICES.md, because the licenses must travel with
+# the programs (GPL-3.0, and the notices of the bundled third-party code),
+# and README.txt, the guide of the package. GitHub adds the source code
+# archives of the tag by itself. The release text comes from
+# .github/release-body.txt, the release title from the version in
+# CMakeLists.txt. A tag without "beta" or "alpha" in its name is a full
+# release and becomes the latest one; the nightly build never does.
 # Every pull request into main: build, self-tests and package check only.
 # No package download, no release, no cache writes, read-only token.
 #
@@ -72,7 +75,9 @@ jobs:
         with:
           fetch-depth: 1
           persist-credentials: false
-          sparse-checkout: .github/release-body.txt
+          sparse-checkout: |
+            .github/release-body.txt
+            CMakeLists.txt
           sparse-checkout-cone-mode: false
           path: src
 
@@ -82,16 +87,16 @@ jobs:
           name: ${{ needs.build.outputs.artifact }}
           path: dist
 
-      # Every release carries exactly these four files, all from this one
+      # Every release carries exactly these five files, all from this one
       # run: they are taken out of the package that the build job checked,
-      # so the programs are the ones it tested and paired, and the license
-      # texts are the ones packaged with them. LICENSE (GPL-3.0) and
+      # so the programs are the ones it tested and paired, and the texts are
+      # the ones packaged with them. LICENSE (GPL-3.0) and
       # THIRD_PARTY_NOTICES.md (the notices of the bundled third-party code)
-      # must travel with the programs. The exe names stay fixed
-      # (Reload Studio looks for the game as ctr_native.exe); the version is in
-      # the release title and in the programs, not in the file names. No
-      # package zip, no README: GitHub attaches the source code of the tag to
-      # every release by itself.
+      # must travel with the programs; README.txt is the guide of the
+      # package. The exe names stay fixed (Reload Studio looks for the game
+      # as ctr_native.exe); the version is in the release title and in the
+      # programs, not in the file names. No package zip: GitHub attaches the
+      # source code of the tag to every release by itself.
       - name: Collect release files
         id: files
         shell: bash
@@ -106,24 +111,31 @@ jobs:
           [ ${#id} = 12 ] || { echo "unexpected build id: $id"; exit 1; }
           mkdir -p out
           unzip -j -o "$zip" "$name/ctr_native.exe" "$name/ReloadStudio.exe" \
-            "$name/LICENSE" "$name/THIRD_PARTY_NOTICES.md" -d out
-          for f in ctr_native.exe ReloadStudio.exe LICENSE THIRD_PARTY_NOTICES.md; do
+            "$name/LICENSE" "$name/THIRD_PARTY_NOTICES.md" "$name/README.txt" -d out
+          for f in ctr_native.exe ReloadStudio.exe LICENSE THIRD_PARTY_NOTICES.md README.txt; do
             [ -s "out/$f" ] || { echo "missing or empty in the package: $f"; exit 1; }
           done
           [ -s src/.github/release-body.txt ] || { echo "release text missing"; exit 1; }
+          # The release title carries the version the programs report, from
+          # CMakeLists.txt: set(CTR_NATIVE_VERSION "...").
+          version=$(sed -n 's/^set(CTR_NATIVE_VERSION "\([^"]*\)")$/\1/p' src/CMakeLists.txt | tr -d '\r')
+          [ -n "$version" ] || { echo "version not found in CMakeLists.txt"; exit 1; }
           ls -l out
           echo "build_id=$id" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Create release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
-          name: CTR Reload Edition ${{ github.ref_name }} (${{ steps.files.outputs.build_id }})
+          name: CTR Reload ${{ steps.files.outputs.version }}
           body_path: src/.github/release-body.txt
           files: |
             out/ctr_native.exe
             out/ReloadStudio.exe
             out/LICENSE
             out/THIRD_PARTY_NOTICES.md
+            out/README.txt
           fail_on_unmatched_files: true
           prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
+          make_latest: ${{ !(contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha')) }}
           generate_release_notes: false
