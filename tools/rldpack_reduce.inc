@@ -2278,16 +2278,18 @@ static u32 s_rldRedSlowSaid;
 // did not make the model that big, --remesh did.
 #define RLDRED_SLOW_SAME 1000u
 
-// The reductions of one make-char run in the curve; with the cache on, the
-// passes after the first read the file (THE CACHE).
+// The reductions of one make-char run in the curve; with the cache in use
+// (on and a key: a build ID that tells states apart), the passes after the
+// first read the file (THE CACHE).
 #define RLDRED_SLOW_PASSES 4u
 
 static u32 s_rldRedSlowHull;
 
-static void RldRed_SaySlow(u32 triangles)
+// cached: the cache is on and has a key for this input (RldRed_Reduce).
+static void RldRed_SaySlow(u32 triangles, int cached)
 {
 	const int remesh = (s_rldRedSlowHull != 0u) && (triangles >= s_rldRedSlowHull) && ((triangles - s_rldRedSlowHull) <= RLDRED_SLOW_SAME);
-	const u32 seconds = s_rldRedCache ? ((RldRed_SlowSeconds(triangles) + RLDRED_SLOW_PASSES - 1u) / RLDRED_SLOW_PASSES) : RldRed_SlowSeconds(triangles);
+	const u32 seconds = cached ? ((RldRed_SlowSeconds(triangles) + RLDRED_SLOW_PASSES - 1u) / RLDRED_SLOW_PASSES) : RldRed_SlowSeconds(triangles);
 	char text[256];
 	char when[32];
 
@@ -2364,7 +2366,7 @@ int RldRed_Reduce(const RldRedMesh *mesh, RldRedResult *out, char *why, size_t w
 	{
 		return 1;
 	}
-	RldRed_SaySlow(mesh->triangleCount);
+	RldRed_SaySlow(mesh->triangleCount, cached);
 
 	for (stage = 0; stage < 3u; stage++)
 	{
