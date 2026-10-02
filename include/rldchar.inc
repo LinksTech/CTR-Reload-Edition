@@ -58,7 +58,10 @@
 #define RLDCHAR_MASK_LIKE 0u               // like the template - every file from before the field
 #define RLDCHAR_MASK_AKU 1u                // Aku Aku
 #define RLDCHAR_MASK_UKA 2u                // Uka Uka; 3 is reserved and read as RLDCHAR_MASK_LIKE
-#define RLDCHAR_FLAGS_KNOWN (RLDCHAR_FLAG_NO_WHEELS | RLDCHAR_FLAG_MASK_BITS)   // the CHRI flag bits this reader understands
+#define RLDCHAR_FLAG_MAP_COLOR 0x8u        // CHRI flags bit 3: the minimap marker has the color at 0x20 (RldChar_MapColor)
+#define RLDCHAR_FLAGS_KNOWN (RLDCHAR_FLAG_NO_WHEELS | RLDCHAR_FLAG_MASK_BITS | RLDCHAR_FLAG_MAP_COLOR)   // the CHRI flag bits this reader understands
+#define RLDCHAR_CHRI_MAP_COLOR_OFFSET 0x20u   // u8 r, g, b, 0 - present when fixedSize >= RLDCHAR_CHRI_SIZE_MAP_COLOR
+#define RLDCHAR_CHRI_SIZE_MAP_COLOR 0x24u
 #define RLDCHAR_NAME_FIELD 20
 #define RLDCHAR_NAME_MAX 17
 #define RLDCHAR_AUTHOR_MAX 64
@@ -151,7 +154,10 @@ static const struct RldFormat s_rldCharFormat = {
 // 0x04 char[20] name    the display name, see RldChar_NameValid
 // 0x18 u32 charVersion  the version for humans; the game tells versions apart by the CMDL hash
 // 0x1C u32 flags        only when fixedSize >= 0x20, else 0; bit 0 RLDCHAR_FLAG_NO_WHEELS,
-//                       bits 1-2 the mask (RLDCHAR_MASK_*, RldChar_Mask)
+//                       bits 1-2 the mask (RLDCHAR_MASK_*, RldChar_Mask),
+//                       bit 3 RLDCHAR_FLAG_MAP_COLOR
+// 0x20 u8[4] mapColor   only when fixedSize >= 0x24: red, green, blue of the
+//                       minimap marker, then 0; used only with bit 3 set
 // fixedSize: u32 stringCount, then per string u32 length + bytes; string 0 is the author
 //
 // A new field only ever lengthens fixedSize, a new string is only ever
@@ -159,7 +165,10 @@ static const struct RldFormat s_rldCharFormat = {
 // it with a major bump. flags is the first such field: the packer writes
 // fixedSize 0x20 only when a bit is set, so a file without flags keeps the
 // bytes it had before, and a reader from before flags skips them and draws
-// the wheels.
+// the wheels. mapColor is the second: fixedSize 0x24 only when a color is
+// chosen (flags then holds RLDCHAR_FLAG_MAP_COLOR), and a reader from before
+// it accepts the file (bit 3 is an unknown bit there, the 4 bytes lie behind
+// the fields it reads) and shows the template's color.
 
 // The menu font: A-Z, 0-9, space and ! % ' + , - . / : < = > ? _
 // (font_characterIconID, game/zGlobal_DATA.c:2597-2703). Upper case only -
@@ -249,6 +258,7 @@ struct RldCharInfo
 	char name[RLDCHAR_NAME_FIELD + 1];
 	u32 charVersion;
 	u32 flags;                             // 0 when absent (fixedSize < 0x20); unknown bits kept as stored
+	u32 mapColor;                          // the 4 bytes at 0x20 as a little-endian u32, 0 when absent (fixedSize < 0x24)
 	u32 stringCount;
 	char author[RLDCHAR_AUTHOR_MAX + 1];   // "" when absent
 };
@@ -260,6 +270,22 @@ static u32 RldChar_Mask(u32 flags)
 	const u32 mask = (flags & RLDCHAR_FLAG_MASK_BITS) >> RLDCHAR_FLAG_MASK_SHIFT;
 
 	return (mask > RLDCHAR_MASK_UKA) ? RLDCHAR_MASK_LIKE : mask;
+}
+
+// The color of the minimap marker: 1 with *color = 0x00BBGGRR - the byte order
+// of the file is the order of the game's color words (data.colors,
+// game/zGlobal_DATA.c), so the bytes are used as they are; byte 3 is not
+// read. 0 (and *color untouched) without RLDCHAR_FLAG_MAP_COLOR or without
+// the field: the template's color. Neither case is a finding.
+static int RldChar_MapColor(const struct RldCharInfo *info, u32 *color)
+{
+	if (((info->flags & RLDCHAR_FLAG_MAP_COLOR) == 0u) || (info->fixedSize < RLDCHAR_CHRI_SIZE_MAP_COLOR))
+	{
+		return 0;
+	}
+
+	*color = info->mapColor & 0x00ffffffu;
+	return 1;
 }
 
 // CHRI-1..5. NULL = valid, else a fixed text that starts with the rule; the
@@ -314,6 +340,12 @@ static const char *RldChar_ParseInfo(struct RldCharInfo *out, const u8 *bytes, s
 	if (out->fixedSize >= RLDCHAR_CHRI_SIZE_FLAGS)
 	{
 		out->flags = Rld_ReadLE32(&bytes[RLDCHAR_CHRI_FLAGS_OFFSET]);
+	}
+
+	// mapColor the same way: inside the chunk once CHRI-1 holds, no rule.
+	if (out->fixedSize >= RLDCHAR_CHRI_SIZE_MAP_COLOR)
+	{
+		out->mapColor = Rld_ReadLE32(&bytes[RLDCHAR_CHRI_MAP_COLOR_OFFSET]);
 	}
 
 	out->stringCount = Rld_ReadLE32(&bytes[out->fixedSize]);

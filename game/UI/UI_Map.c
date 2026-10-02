@@ -1,5 +1,10 @@
 #include <common.h>
 
+// From platform/native_chars.c, further down in the translation unit: the
+// marker color of a seat - the color the file of a bound custom character
+// chooses, else retail unchanged.
+const u32 *NativeChar_SeatMapColor(int seat, const u32 *retail);
+
 enum UIMapConstants
 {
 	UI_MAP_NEUTRAL_COLOR = 0x808080,
@@ -240,22 +245,17 @@ void UI_Map_DrawAdvPlayer(struct UIMap *map, const s32 worldPos[3], int unused1,
 	return;
 }
 
-// Draw icon on map
-void UI_Map_DrawRawIcon(struct UIMap *map, const s32 worldPos[3], int iconID, int colorID, int unused, s16 scale)
+// Draw icon on map, with the four corner colors given.
+static void UI_Map_DrawRawIconColors(struct UIMap *map, const s32 worldPos[3], int iconID, const u32 *ptrColor, s16 scale)
 {
 	int posX;
 	int posY;
-	u32 *ptrColor;
 	struct GameTracker *gGT = sdata->gGT;
-
-	(void)unused;
 
 	posX = worldPos[0];
 	posY = worldPos[2];
 
 	UI_Map_GetIconPos(map, &posX, &posY);
-
-	ptrColor = data.ptrColor[colorID];
 
 	struct Icon **iconPtrArray = ICONGROUP_GETICONS(sdata->gGT->iconGroup[UI_MAP_ICON_GROUP]);
 
@@ -263,6 +263,14 @@ void UI_Map_DrawRawIcon(struct UIMap *map, const s32 worldPos[3], int iconID, in
 	                     ptrColor[3], 0, (int)scale);
 
 	return;
+}
+
+// Draw icon on map
+void UI_Map_DrawRawIcon(struct UIMap *map, const s32 worldPos[3], int iconID, int colorID, int unused, s16 scale)
+{
+	(void)unused;
+
+	UI_Map_DrawRawIconColors(map, worldPos, iconID, data.ptrColor[colorID], scale);
 }
 
 void UI_Map_DrawDrivers(struct UIMap *map, struct Thread *bucket, s16 *driverIconCounter)
@@ -316,7 +324,18 @@ void UI_Map_DrawDrivers(struct UIMap *map, struct Thread *bucket, s16 *driverIco
 			iconID = UI_MAP_PLAYER_ICON_HUMAN;
 		}
 
-		UI_Map_DrawRawIcon(map, &bucket->inst->matrix.t[0], iconID, (s16)kartColor, 0, UI_MAP_ICON_SCALE);
+		// A bound custom seat may have its own marker color; the white blink of
+		// the player stays (platform/native_chars.c).
+		{
+			const u32 *colors = data.ptrColor[(s16)kartColor];
+
+			if (kartColor != WHITE)
+			{
+				colors = NativeChar_SeatMapColor(d->driverID, colors);
+			}
+
+			UI_Map_DrawRawIconColors(map, &bucket->inst->matrix.t[0], iconID, colors, UI_MAP_ICON_SCALE);
+		}
 	}
 	return;
 }

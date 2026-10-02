@@ -177,7 +177,8 @@ global_variable struct NativeCharFile s_charFiles[NATIVE_CHAR_ROSTER_MAX];
 // on - the template. maskNoted and maskMissingNoted keep the mask lines of
 // NativeChar_NoteMask and NativeChar_SeatMaskGood to one per load; ownMask is
 // the file's own mask model (NULL = retail), ownMaskNoted its line;
-// portraitNoted the line of NativeChar_SeatPortrait.
+// portraitNoted the line of NativeChar_SeatPortrait; mapColor the four corner
+// colors of the minimap marker when the file chooses one (hasMapColor).
 global_variable struct
 {
 	struct Model *model;
@@ -188,6 +189,8 @@ global_variable struct
 	struct Model *ownMask;
 	int ownMaskNoted;
 	int portraitNoted;
+	int hasMapColor;
+	u32 mapColor[4];
 } s_seat[NATIVE_CHAR_SEATS];
 
 // --dev-grid-fill, as main.c passed it on (0 = none).
@@ -1229,9 +1232,11 @@ int NativeChar_ModelHidesWheels(const struct Model *model)
 // entry e; a slot is uploaded only for a file with a usable CICN, so a run
 // without such a file writes nothing into VRAM and logs nothing here.
 //
-// The strip x 256..511, y 266..295 is written by nothing else: no container
-// and no retail file that the game loads, and no code path but the clear at
-// start and the restore of a quick state (whole VRAM). Every upload is
+// The strip x 256..511, y 266..295 is written by nothing else that is known:
+// no retail file that the game loads and none of the track containers
+// measured so far, and no code path but the clear at start and the restore of
+// a quick state (whole VRAM). The VRMD of a foreign container is not checked
+// for it (Rld_CheckVrm holds length and chain, not the place). Every upload is
 // bracketed with NativeRenderer_StripOwnWrites, so the strip counter of the
 // renderer tells these writes from any foreign one.
 //
@@ -1246,8 +1251,8 @@ int NativeChar_ModelHidesWheels(const struct Model *model)
 // NativeChar_SeatPortrait for the portrait of a seat: a bound seat gets the
 // portrait of its file, every other seat the template's icon unchanged. The
 // race icons (the driver pack, 43 x 25 like the menu's) lie elsewhere in VRAM;
-// no track, podium or pack file writes the strip, and binding a seat marks the
-// portraits dirty, so the first HUD draw of a race uploads them - also on a
+// no retail track, podium or pack file and no container measured so far
+// writes the strip, and binding a seat marks the portraits dirty, so the first HUD draw of a race uploads them - also on a
 // direct start that never saw the driver select.
 // ---------------------------------------------------------------------------
 
@@ -1412,7 +1417,8 @@ struct Icon *NativeChar_SeatPortrait(int seat, struct Icon *templateIcon)
 		s_seat[seat].portraitNoted = 1;
 		if (icon != templateIcon)
 		{
-			Platform_Log("[CTR Char] hud portrait seat %d: own (slot %d, %s)\n", seat, entry, f->file);
+			Platform_Log("[CTR Char] hud portrait seat %d: own (slot %d, %s, tpage 0x%04x -> 0x%04x)\n", seat, entry, f->file,
+			             (unsigned)templateIcon->texLayout.tpage, (unsigned)icon->texLayout.tpage);
 		}
 		else
 		{
@@ -1521,6 +1527,55 @@ int NativeChar_ModeAllowed(void)
 	       (gGT->boolDemoMode == 0) && (chosen != MM_NATIVE_CHOSEN_CRYSTAL) && (chosen != MM_NATIVE_CHOSEN_CTR);
 }
 
+// After a binding: who sits where in this race - the character id of every
+// seat, the file of a bound one, and the minimap color it gets. Only then: a
+// race without a custom character keeps its log as it was.
+internal void NativeChar_LogSeats(void)
+{
+	char line[512];
+	size_t used = 0;
+	int seat;
+
+	line[0] = '\0';
+	for (seat = 0; seat < NATIVE_CHAR_SEATS; seat++)
+	{
+		int written;
+
+		if (s_seat[seat].model != NULL)
+		{
+			if (s_seat[seat].hasMapColor)
+			{
+				// RRGGBB as rldpack and Reload Studio show it; the color word is 0x00BBGGRR.
+				const u32 c = s_seat[seat].mapColor[0];
+
+				written = snprintf(&line[used], sizeof(line) - used, " %d=%d (%s, map color %02X%02X%02X)", seat, (int)data.characterIDs[seat],
+				                   s_charFiles[s_seat[seat].entry].file, (unsigned)(c & 0xffu), (unsigned)((c >> 8) & 0xffu), (unsigned)((c >> 16) & 0xffu));
+			}
+			else
+			{
+				written = snprintf(&line[used], sizeof(line) - used, " %d=%d (%s, map color of the template)", seat, (int)data.characterIDs[seat],
+				                   s_charFiles[s_seat[seat].entry].file);
+			}
+		}
+		else
+		{
+			written = snprintf(&line[used], sizeof(line) - used, " %d=%d", seat, (int)data.characterIDs[seat]);
+		}
+
+		// Too long (a very long file name): the seat that does not fit is cut
+		// whole, and the line says so.
+		if ((written < 0) || ((size_t)written >= (sizeof(line) - used)))
+		{
+			line[used] = '\0';
+			Platform_Log("[CTR Char] seats:%s ... (cut at seat %d)\n", line, seat);
+			return;
+		}
+		used += (size_t)written;
+	}
+
+	Platform_Log("[CTR Char] seats:%s\n", line);
+}
+
 void NativeChar_ArmSeats(void)
 {
 	struct GameTracker *gGT = sdata->gGT;
@@ -1626,6 +1681,23 @@ void NativeChar_ArmSeats(void)
 	// upload it anew at the first draw, whatever happened since the driver select.
 	NativeChar_PortraitsDirty();
 	Platform_Log("[CTR Char] seat 0 = %s on template %d\n", s_charFiles[pick].file, templateId);
+
+	// The marker of the minimap: one flat color like the retail driver colors
+	// (data.colors, ALL4), or the template's.
+	{
+		u32 color = 0;
+
+		if (RldChar_MapColor(&s_charFiles[pick].info, &color))
+		{
+			s_seat[0].hasMapColor = 1;
+			s_seat[0].mapColor[0] = color;
+			s_seat[0].mapColor[1] = color;
+			s_seat[0].mapColor[2] = color;
+			s_seat[0].mapColor[3] = color;
+		}
+	}
+
+	NativeChar_LogSeats();
 }
 
 struct Model *NativeChar_SeatModel(int index)
@@ -1659,6 +1731,16 @@ int NativeChar_SeatEngineClass(int seat, int retailClass)
 	}
 
 	return (int)s_charFiles[s_seat[seat].entry].info.classId;
+}
+
+const u32 *NativeChar_SeatMapColor(int seat, const u32 *retail)
+{
+	if ((NativeChar_SeatModel(seat) == NULL) || !s_seat[seat].hasMapColor)
+	{
+		return retail;
+	}
+
+	return s_seat[seat].mapColor;
 }
 
 int NativeChar_SeatSilent(int seat)
@@ -2144,6 +2226,75 @@ internal void NativeChar_OwnMaskSelfTest(int *checks, int *failures)
 	}
 }
 
+// The map color of CHRI (RldChar_MapColor): a CHRI of fixedSize bytes on
+// template 14 with flags and the 4 color bytes where they fit, read back.
+internal void NativeChar_MapColorSelfTest(int *checks, int *failures)
+{
+	static const struct
+	{
+		const char *name;
+		u32 fixedSize;
+		u32 flags;
+		u8 color[4];
+		int has;
+		u32 expect;
+	} cases[] = {
+	    {"old file 0x1C", 0x1Cu, 0u, {0, 0, 0, 0}, 0, 0u},
+	    {"flags only, bit 3 without the field", 0x20u, RLDCHAR_FLAG_MAP_COLOR, {0, 0, 0, 0}, 0, 0u},
+	    {"field without bit 3", 0x24u, 0u, {0x12, 0x34, 0x56, 0}, 0, 0u},
+	    {"color 12 34 56", 0x24u, RLDCHAR_FLAG_MAP_COLOR, {0x12, 0x34, 0x56, 0}, 1, 0x563412u},
+	    {"black is a color", 0x24u, RLDCHAR_FLAG_MAP_COLOR, {0, 0, 0, 0}, 1, 0u},
+	    {"byte 3 is not read", 0x24u, RLDCHAR_FLAG_MAP_COLOR, {0x80, 0x80, 0x80, 0xff}, 1, 0x808080u},
+	    {"with wheels off and uka", 0x24u, RLDCHAR_FLAG_MAP_COLOR | 0x5u, {0xff, 0, 0, 0}, 1, 0x0000ffu},
+	    {"longer fixedSize 0x28", 0x28u, RLDCHAR_FLAG_MAP_COLOR, {0, 0xff, 0, 0}, 1, 0x00ff00u},
+	};
+	u8 bytes[0x2Cu];
+	struct RldCharInfo info;
+	char what[160];
+	u32 color;
+	int c;
+	int seat;
+
+	for (c = 0; c < (int)(sizeof(cases) / sizeof(cases[0])); c++)
+	{
+		const u32 fixedSize = cases[c].fixedSize;
+		int has;
+
+		memset(bytes, 0, sizeof(bytes));
+		bytes[0x00] = (u8)fixedSize;
+		bytes[0x02] = RLDCHAR_TEMPLATE_MAX;
+		memcpy(&bytes[0x04], "MAP", 3);
+		if (fixedSize >= RLDCHAR_CHRI_SIZE_FLAGS)
+		{
+			NativeChar_TestPut32(&bytes[RLDCHAR_CHRI_FLAGS_OFFSET], cases[c].flags);
+		}
+		if (fixedSize >= RLDCHAR_CHRI_SIZE_MAP_COLOR)
+		{
+			memcpy(&bytes[RLDCHAR_CHRI_MAP_COLOR_OFFSET], cases[c].color, 4);
+		}
+
+		snprintf(what, sizeof(what), "map color %s: CHRI refused", cases[c].name);
+		NativeChar_MaskExpect(checks, failures, RldChar_ParseInfo(&info, bytes, (size_t)fixedSize + 4u) == NULL, what);
+
+		color = 0xdeadbeefu;
+		has = RldChar_MapColor(&info, &color);
+		snprintf(what, sizeof(what), "map color %s: %d 0x%08x, not %d 0x%06x", cases[c].name, has, (unsigned)color, cases[c].has, (unsigned)cases[c].expect);
+		NativeChar_MaskExpect(checks, failures, (has == cases[c].has) && (has ? (color == cases[c].expect) : (color == 0xdeadbeefu)), what);
+
+		snprintf(what, sizeof(what), "map color %s: the mask moved", cases[c].name);
+		NativeChar_MaskExpect(checks, failures, RldChar_Mask(info.flags) == RldChar_Mask(cases[c].flags), what);
+	}
+
+	// No seat is bound: every seat keeps the retail color words.
+	for (seat = -1; seat <= NATIVE_CHAR_SEATS; seat++)
+	{
+		static const u32 retail[4] = {1, 2, 3, 4};
+
+		snprintf(what, sizeof(what), "unbound seat %d: not the retail map color", seat);
+		NativeChar_MaskExpect(checks, failures, NativeChar_SeatMapColor(seat, retail) == retail, what);
+	}
+}
+
 void NativeChar_MaskSelfTest(int *checks, int *failures)
 {
 	// One case per file: hasFlags, flags, the mask RldChar_Mask must give, and
@@ -2165,7 +2316,8 @@ void NativeChar_MaskSelfTest(int *checks, int *failures)
 	    {"reserved 3", 1, 0x6u, RLDCHAR_MASK_LIKE, 0, 1},
 	    {"wheels off and uka", 1, 0x5u, RLDCHAR_MASK_UKA, 0, 0},
 	    {"wheels off and aku", 1, 0x3u, RLDCHAR_MASK_AKU, 1, 1},
-	    {"unknown bit 3 and aku", 1, 0xau, RLDCHAR_MASK_AKU, 1, 1},
+	    {"map color bit 3 without the field and aku", 1, 0xau, RLDCHAR_MASK_AKU, 1, 1},
+	    {"unknown bit 4 and aku", 1, 0x12u, RLDCHAR_MASK_AKU, 1, 1},
 	};
 	u8 bytes[RLDCHAR_CHRI_SIZE_FLAGS + 4u];
 	struct RldCharInfo info;
@@ -2224,4 +2376,5 @@ void NativeChar_MaskSelfTest(int *checks, int *failures)
 	}
 
 	NativeChar_OwnMaskSelfTest(checks, failures);
+	NativeChar_MapColorSelfTest(checks, failures);
 }

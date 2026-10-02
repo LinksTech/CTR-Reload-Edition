@@ -1,5 +1,9 @@
 #include <common.h>
 
+// From platform/native_chars.c, further down in the translation unit: 1 for a
+// bound custom seat, which has no voice yet.
+int NativeChar_SeatSilent(int seat);
+
 int howl_Disable(void)
 {
 	if (sdata->boolAudioEnabled == 0)
@@ -318,8 +322,9 @@ void OptionsMenu_TestSound(int newRow, int newBoolPlay)
 
 		int sampleVoiceID;
 
-		// every 25th frame
-		if (frameCount == (frameCount / 25) * 25)
+		// every 25th frame; a bound custom seat has no voice to sample
+		// (platform/native_chars.c)
+		if ((frameCount == (frameCount / 25) * 25) && (NativeChar_SeatSilent(driverID) == 0))
 		{
 			// every 50th frame (0, 50, 100, 150)
 			if (frameCount == (frameCount / 50) * 50)

@@ -165,8 +165,15 @@ struct Model *NativeChar_SeatModel(int index);
 int NativeChar_SeatEngineClass(int seat, int retailClass);
 
 // 1 for a bound custom seat (voices are not packed yet, the seat stays
-// silent), else 0.
+// silent: no voice line, and no sample of the voice slider in the options of
+// the pause menu, game/HOWL/HOWL_Settings.c), else 0.
 int NativeChar_SeatSilent(int seat);
+
+// game/UI/UI_Map.c, the minimap marker of a seat: the four corner colors of
+// the CHRI map color (RldChar_MapColor) for a bound seat whose guard holds and
+// whose file chooses one, else retail - the caller's data.ptrColor entry,
+// unchanged. The blink of the player (WHITE) stays the caller's.
+const u32 *NativeChar_SeatMapColor(int seat, const u32 *retail);
 
 // The mask of a seat, for VehPickupItem_MaskBoolGoodGuy and the HUD icon
 // (game/UI/UI_Weapon.c): 1 Aku Aku, 0 Uka Uka. A bound seat whose guard holds
