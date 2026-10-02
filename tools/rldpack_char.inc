@@ -42,7 +42,7 @@
 //       the kart not; the size checks of step 4 and 5 run on the result
 //    5  axes and scale -> game units: +Y up, +Z forward, 64 per Blender unit
 //    6  draw memory per frame: 28 bytes per untextured triangle
-//    7  colors -> a palette of 64 (or 128)
+//    7  colors -> a palette of 128 (or 64)
 //    8  the 47 frames 21/7/15/4: still, or the automatic poses
 //    9  quantization: one byte per axis, the up axis on even values
 //   10  command list: strips and fans, the vertex cache, cull bits per triangle
@@ -195,7 +195,7 @@ static void RldMk_Progress(const char *step, u32 done, u32 total)
 #define RLDMK_CMD_FAN 0x40000000u      // keep the first corner (fan), RB:4646-4654, 2826-2838
 #define RLDMK_CMD_SIDE 0x20000000u     // cull side, XOR the instance flag 0x8000, RB:2888-2899
 #define RLDMK_CMD_CULL 0x10000000u     // back face test (NCLIP) on, RB:2884-2903
-#define RLDMK_CMD_SCRATCH 0x08000000u  // color from the scratch color cache, RB:2525-2527
+#define RLDMK_CMD_SCRATCH 0x08000000u  // color from the scratch color cache, RB:2525-2527 (make-char never sets it)
 #define RLDMK_CMD_CACHED 0x04000000u   // corner from its cache slot, no new record, RB:2588-2596, 4616-4619
 #define RLDMK_CMD_END 0xFFFFFFFFu      // RB:4596
 #define RLDMK_SLOT_SHIFT 16            // bits 23-16
@@ -5475,8 +5475,10 @@ static int RldMk_StepFlips(struct RldMkBuild *b, const struct RldMkOptions *opt)
 // STEP 7: COLORS
 //========================================================================================
 //
-// The color index has 7 bits (RB:2520-2532): at most 128 colors, 64 by default
-// as the retail drivers have at most. More colors are merged by median cut
+// The color index has 7 bits (RB:2520-2532): at most 128 colors, the default
+// (--colors 64 as the retail drivers have at most). They cost no draw memory
+// and, without bit 27 (step 10), no slots of the vertex cache either. More
+// colors are merged by median cut
 // (weighted by how many corners use a color), then two k-means rounds. All in
 // integers with fixed tie-breaks: the lowest index wins.
 
@@ -5894,10 +5896,16 @@ static int RldMk_StepColors(const struct RldMkPly *ply, const struct RldMkOption
 // shared corner shows one color. The vertex cache is per position: a cached
 // corner keeps only its place (RB:2588-2596), its command brings the color.
 //
-// THE CACHE as retail uses it: bit 27 on every command, the slots ceil(N/2)..87
-// (the slots below share the scratchpad with the N cached colors, RB:2504-2532
-// against RB:678-686), filled first in, first out. A corner still in its slot
-// is fetched with bit 26 and costs no record.
+// THE CACHE: the slots 1..87, filled first in, first out. A corner still in
+// its slot is fetched with bit 26 and costs no record. Bit 27 is never set:
+// with it the renderer copies the N colors to the scratchpad first and takes
+// them from there (RB:2504-2532), which costs the slots below ceil(N/2) (the
+// same scratchpad, RB:678-686) - at 128 colors 64 of the 88 slots, 18-34 %
+// more records. Without it the color comes from ptrColors (RB:2525-2536), the
+// same palette entry, and the game's check frees every slot
+// (include/rldchar.inc, the rule needs colorCacheUsed). Slot 0 stays unused:
+// a command of slot 0 without flags has its upper half zero and would be read
+// as a color command (RB:4614-4617).
 
 struct RldMkEdge
 {
@@ -6032,7 +6040,7 @@ static u32 RldMk_EmitCorner(struct RldMkStripper *s, u32 corner, u32 flags)
 		b->record[b->recordCount++] = position;
 	}
 
-	b->command[b->commandCount] = flags | RLDMK_CMD_SCRATCH | (slot << RLDMK_SLOT_SHIFT) | (s->cornerColor[corner] << RLDMK_COLOR_SHIFT);
+	b->command[b->commandCount] = flags | (slot << RLDMK_SLOT_SHIFT) | (s->cornerColor[corner] << RLDMK_COLOR_SHIFT);
 	return b->commandCount++;
 }
 
@@ -6070,7 +6078,7 @@ static int RldMk_StepCommands(struct RldMkBuild *b, const struct RldMkOptions *o
 	s.build = b;
 	s.cull = !opt->twoSided;
 
-	b->slotLow = (b->colorCount + 1u) / 2u;
+	b->slotLow = 1u;
 	b->slotCount = (RLDCHAR_SLOT_MAX + 1u) - b->slotLow;
 
 	keys = (u32 *)malloc(((size_t)corners + 1u) * sizeof(u32));
@@ -11904,7 +11912,7 @@ static void RldMk_PrintFacts(const struct RldMkBuild *b, const struct RldMkOptio
 static void RldMk_DefaultOptions(struct RldMkOptions *opt)
 {
 	memset(opt, 0, sizeof(*opt));
-	opt->colorTarget = 64u;
+	opt->colorTarget = 128u;
 	opt->scale = 1.0;
 	opt->sizePercent = 100u;
 	opt->fit = 1;
@@ -13652,7 +13660,7 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "  --char-version <n>          counts your own revisions (default 1)\n");
 	fprintf(out, "  --poses auto|still          auto: the driver leans when steering (default);\n");
 	fprintf(out, "                              still: all 47 frames the same\n");
-	fprintf(out, "  --colors 64|128             the palette (default 64)\n");
+	fprintf(out, "  --colors 128|64             the palette (default 128)\n");
 	fprintf(out, "  --up y|z                    the up axis of the model (default y); z for\n");
 	fprintf(out, "                              Blender's own axes, with the front at -Y\n");
 	fprintf(out, "  --forward z|-z              -z: the model looks backwards and is turned\n");
@@ -14542,7 +14550,7 @@ static void RldMk_SelfTestChain(struct RldMkTestMesh *mesh)
 		{
 			const u32 slot = (b.command[i] >> RLDMK_SLOT_SHIFT) & 0xFFu;
 
-			if ((slot < b.slotLow) || (slot > (u32)RLDCHAR_SLOT_MAX) || ((b.command[i] & RLDMK_CMD_SCRATCH) == 0u))
+			if ((slot < 1u) || (slot > (u32)RLDCHAR_SLOT_MAX) || ((b.command[i] & RLDMK_CMD_SCRATCH) != 0u))
 			{
 				inRange = 0;
 			}
@@ -14551,7 +14559,8 @@ static void RldMk_SelfTestChain(struct RldMkTestMesh *mesh)
 				hits++;
 			}
 		}
-		RldMk_Test(inRange && (hits != 0u) && ((b.recordCount + hits) == b.commandCount), "cache slots ceil(N/2)..87, hits cost no record",
+		RldMk_Test(inRange && (b.slotLow == 1u) && (hits != 0u) && ((b.recordCount + hits) == b.commandCount),
+		           "cache slots 1..87 without bit 27, hits cost no record",
 		           "slots from %u, %u hits, %u records, %u commands", b.slotLow, hits, b.recordCount, b.commandCount);
 		RldMk_Test(ok && (b.strips < b.triangleCount), "triangles in strips", "%u strips for %u triangles", b.strips, b.triangleCount);
 	}
@@ -14561,6 +14570,16 @@ static void RldMk_SelfTestChain(struct RldMkTestMesh *mesh)
 	opt.colorTarget = 128u;
 	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
 	RldMk_Test(ok && (b.colorCount <= 128u) && (b.colorCount > 64u), "colors reduced to 128", "%u -> %u", b.colorsIn, b.colorCount);
+	{
+		u32 high = 0;
+
+		for (i = 0; ok && (i < b.commandCount); i++)
+		{
+			high = (((b.command[i] >> RLDMK_SLOT_SHIFT) & 0xFFu) > high) ? ((b.command[i] >> RLDMK_SLOT_SHIFT) & 0xFFu) : high;
+			ok = ((b.command[i] & RLDMK_CMD_SCRATCH) == 0u);
+		}
+		RldMk_Test(ok && (high > 64u), "128 colors without bit 27: slots above 64 in use", "highest slot %u", high);
+	}
 	RldMk_FreeBuild(&b);
 	RldMk_FreePly(&ply);
 	opt.colorTarget = 64u;
@@ -14982,11 +15001,14 @@ static void RldMk_SelfTestRules(const u8 *good, size_t goodSize)
 	RldMk_TestRule("bad-slot-88", m, goodSize, "model-slots", RLDCHAR_VERDICT_MODEL_LIMIT);
 	free(m);
 
+	// make-char sets no bit 27, so every slot from 1 is free; with bit 27 on
+	// one command the colors take the scratchpad and the slots below ceil(N/2)
+	// are theirs - its own slot 1 among them.
 	m = RldMk_TestCopy(good, goodSize);
 	if (m != NULL)
 	{
 		at = 4u + RldMk_TestCommand(m, 0u);
-		Rld_WriteLE32(&m[at], Rld_ReadLE32(&m[at]) & ~0x00FF0000u);
+		Rld_WriteLE32(&m[at], Rld_ReadLE32(&m[at]) | RLDMK_CMD_SCRATCH);
 	}
 	RldMk_TestRule("bad-slot-color", m, goodSize, "model-slot-color", RLDCHAR_VERDICT_MODEL_LIMIT);
 	free(m);
@@ -15503,11 +15525,15 @@ static void RldMk_SelfTestChri(const u8 *good, size_t goodSize)
 // the limit (RLDCHAR_DRAW_BYTES_MAX): such a change updates it, on purpose and
 // in the same change; nothing else may. Last changed on 2026-10-02 with the
 // limit 805 -> 7200 triangles (it was split 9, 996 triangles -> 797).
-#define RLDMK_GOLDEN_PLAIN "ba7e3208bc98b2af5460110ae6d7d64afe888771b76747a74ae30f3190ce3186"
-#define RLDMK_GOLDEN_SIZE_ICON "61960b1c58d8a38e9728d891799fad7d53f8682864c44ede49f9e61f42e536d7"
-#define RLDMK_GOLDEN_FIT "04afccc63f6db122d512b67c8a8446ebdd0e8ee7cfa3aea10d605e4e2536829a"
-#define RLDMK_GOLDEN_NO_WHEELS "0427aee8b259b0f0076efc6f8cba195fff3b105c8b7216992056bb4ee333b0fe"
-#define RLDMK_GOLDEN_REDUCED "b602e356987fc179466d0bffa3481470da83e26815e40727bd82b3dfb7d3abe2"
+// ALL of them (and RLDMK_GOLDEN_MASK, RLDMK_GOLDEN_OBJ) changed once on purpose
+// with the command list without bit 27 (step 10, the vertex cache in the
+// slots 1..87): the same triangles, colors and frames, other cache slots and
+// records. The test models keep --colors 64 (RldMk_TestOptions).
+#define RLDMK_GOLDEN_PLAIN "394c9a045f7c03d8218f2b7c248c553faab3b7f47daebedde1e636b1b2f2b3a7"
+#define RLDMK_GOLDEN_SIZE_ICON "12f8880b561f2c5fb6dabfa2ae3a0f1f8d14f7e3bca1a07a1db9c526e56e50c7"
+#define RLDMK_GOLDEN_FIT "fed8b96dcba705b150ee8ca109d5fd17ebfa70e9a11767a292a1a8b03bac3e08"
+#define RLDMK_GOLDEN_NO_WHEELS "4d80fa05dfd7539318fce7e7e1dd88fe2d49ba723fa8c7accdbccba45cfd9b2d"
+#define RLDMK_GOLDEN_REDUCED "3b527e44ce786fa928f1c9ad1de893e48d6fdd642e007fc7d9c82ed4b464b638"
 
 // --- --size --------------------------------------------------------------------------
 
@@ -19168,7 +19194,7 @@ static void RldMk_SelfTestGolden(struct RldMkTestMesh *mesh, const struct RldPng
 // reduced under it; the rules CMSK-1..3 and model-anims on a broken copy; a container
 // with CMSK last and its golden hash. Without --mask-model nothing changes:
 // the five golden hashes above.
-#define RLDMK_GOLDEN_MASK "bddb29319b18eace9a99be406977fbf0b5f6d2e31fa7d432059bd23ed49e3a32"
+#define RLDMK_GOLDEN_MASK "2aa8f030a436bbec9029224b23b11226e2bb0c882cfb95b32d9d2f6c10c40077"
 
 static void RldMk_SelfTestMask(struct RldMkTestMesh *mesh)
 {

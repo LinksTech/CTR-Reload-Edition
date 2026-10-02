@@ -14,7 +14,7 @@
 // It follows deliberate changes of the chain like the hashes above, and of
 // the color rule of the OBJ reader (tools/rldpack_obj.inc); nothing else may
 // change it.
-#define RLDMK_GOLDEN_OBJ "03f73080168ecc7ac50076496400f594c5b27da5cdc86f3792f577c06b586c5d"
+#define RLDMK_GOLDEN_OBJ "5acda11482a0b15d7be9a5d6cf8fe689c6c17d4e01a12bd634e075b37e0eff0e"
 
 // A JPEG of 16 x 16 pixels in four squares of 8 x 8: (200, 40, 40) and
 // (40, 200, 40) at the top, (40, 40, 200) and (230, 230, 230) below; quality
