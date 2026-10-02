@@ -2634,6 +2634,8 @@ static int RldMk_OverVehicle(const struct RldMkPart *part, const struct RldMkPar
 	return 1;
 }
 
+// Whether part i counts as a part of its own (step 4, defined below).
+static int RldMk_PartCounts(const struct RldMkBuild *b, u32 i);
 // THE VEHICLE LIES UNDER THE DRIVER: is the middle of the driver - the part
 // with the most triangles besides `vehicle` (RldMk_PartWeights; ties: the first) - over the
 // vehicle seen from above, x and z each within the vehicle's extent and an
