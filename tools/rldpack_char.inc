@@ -13197,7 +13197,11 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	// The file is written as <out>.part and renamed at the end: a build that
 	// fails or is stopped (Reload Studio's Cancel ends the process) leaves at
 	// most the .part, never half a character under the real name. A .part of
-	// a failed write is deleted here.
+	// a failed write is deleted here. An existing <out> is moved aside to
+	// <out>.old first and only deleted once the new file is in place; when
+	// the rename fails it is moved back - the old character stays. (rename
+	// does not replace a file on every system, and the standard library has
+	// no call that does.)
 	if (!check)
 	{
 		static char partPath[RLD_PATH_MAX + 32];
@@ -13224,8 +13228,21 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		}
 		if (written)
 		{
-			remove(outPath);  // rename does not replace a file on every system; a missing one is fine
+			static char oldPath[RLD_PATH_MAX + 32];
+			int moved;
+
+			snprintf(oldPath, sizeof(oldPath), "%s.old", outPath);
+			remove(oldPath);  // a leftover of an earlier run; usually there is none
+			moved = (rename(outPath, oldPath) == 0);  // fails when there is no old file - fine
 			written = (rename(partPath, outPath) == 0);
+			if (moved && written)
+			{
+				remove(oldPath);
+			}
+			else if (moved)
+			{
+				rename(oldPath, outPath);
+			}
 		}
 		if (!written)
 		{
