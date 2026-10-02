@@ -499,6 +499,8 @@ enum RsPageId { RS_PAGE_TRACK = 0, RS_PAGE_CUPS, RS_PAGE_CHAR, RS_PAGE_TEST, RS_
 #define RS_WM_JOB_PROGRESS (WM_APP + 7) // wParam = job, lParam = struct RsJobProgress* (Rs_Free)
 #define RS_WM_JOB_BUSY     (WM_APP + 8) // a job could not start, all slots taken: wParam = jobs
                                         // running, lParam = wchar_t* "busy: N jobs running" (Rs_Free)
+// WM_APP + 64 and up: a page's own messages to itself (rs_char.c: CHAR_WM_ACTIVATED, posted by its
+// subclass of the main window when Reload Studio becomes the active program again).
 
 // Switch page (also from within a page, e.g. "Test in game" after the build).
 void Rs_ShowPage(int id);

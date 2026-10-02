@@ -249,6 +249,11 @@ Tab 1 Model
               the icon, a folder the voices. A .png dragged together with an
               .obj is not taken as the icon: it is mostly a texture, which
               the material file names anyway.
+              Export again as often as you like: when you come back to
+              Reload Studio (or to this page), it checks again by itself if
+              the model, its material file, a texture (also one put next to
+              the material file since), the icon or a file of the voices
+              folder has been written since the last check.
   OBJ         Reload Studio tells a PLY from an OBJ by what is in the file,
               not by its name: a PLY named .obj is read as a PLY, with a
               warning. A file of another format (FBX, glTF, STL, Blender...)

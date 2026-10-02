@@ -7,7 +7,11 @@
 //
 // Flow: typing in a text field starts a new check after 600 ms, a click (a
 // choice in a list, a tick, a colour) after 100 ms; choosing a model checks at
-// once. A new check makes the running one outdated: it is
+// once. A model exported again (or its MTL, a texture, the icon, a file of the
+// voices folder) is checked again when Reload Studio becomes the active
+// program again or the page is shown again: the page keeps a stamp (size and
+// time of writing) of every file the last check read (Char_StampFields,
+// Char_ImportFiles) and compares it then (Char_FilesChanged). A new check makes the running one outdated: it is
 // ended, its lines are only freed. A check also asks rldpack for the converted
 // model (--preview, shown by the RsModelView control of rs_view.c) and, with an
 // icon, for the decoded and the converted picture (--icon-preview). These go to
@@ -183,6 +187,11 @@
 #define CHAR_IMPORT_ROWS_MAX 1024 // rows of each kind (MTL, texture, group) the list keeps, at most
 #define CHAR_IMPORT_MIN_ROWS 2    // rows that list shows at least (it scrolls in itself), 1 where
                                   // two would push the bar below CHAR_BAR_MIN_H
+// Posted to the page by its subclass of the main window when Reload Studio
+// becomes the active program again (WM_ACTIVATEAPP goes to the main window
+// only). WM_APP + 64 and up are the page's own (reloadstudio.h).
+#define CHAR_WM_ACTIVATED  (WM_APP + 64)
+#define CHAR_SUBCLASS_MAIN 0x43484152  // the ID of that subclass ("CHAR")
 
 // Controls
 #define CHAR_ID_MODEL_LABEL    100
@@ -543,6 +552,14 @@ static struct {
     // colours of the labels, for the report
     COLORREF headColor, nameColor, sizeColor, infoColor, viewColor, fitColor, qualityColor;
     wchar_t infoFull[CHAR_VAL];     // the model info before Char_FitLines
+
+    // Stamps (Char_Stamp*) of the files the check shown read: stampRun of the
+    // model, the icon and the voices folder when the running check started,
+    // stampFields of those when the check shown started, stampImport of the
+    // MTL and texture files it named (stampFiles, "a\0b\0\0", Rs_Free).
+    unsigned long long stampRun, stampFields, stampImport;
+    wchar_t *stampFiles;
+    int stampKnown;                 // the stamps belong to the check shown
 
     int applying;                   // fields are being set: trigger no check
     int timer;                      // check waits for the timer
@@ -2630,6 +2647,198 @@ static void Char_ImportClear(void)
     }
 }
 
+// ---------------------------------------------------------------------------
+// Stamps of the files a check read: a 64-bit FNV-1a hash over the path (in
+// small letters), the size and the time of writing of each file - a model
+// exported again changes it, a file only opened does not.
+// ---------------------------------------------------------------------------
+
+#define CHAR_STAMP_START 14695981039346656037ULL
+
+static unsigned long long Char_StampBytes(unsigned long long h, const void *data, size_t n)
+{
+    const unsigned char *p = (const unsigned char *)data;
+    size_t i;
+    for (i = 0; i < n; i++) {
+        h ^= p[i];
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+static unsigned long long Char_StampPath(unsigned long long h, const wchar_t *path)
+{
+    for (; *path; path++) {
+        wchar_t c = towlower(*path);
+        if (c == L'/')
+            c = L'\\';
+        h = Char_StampBytes(h, &c, sizeof(c));
+    }
+    return Char_StampBytes(h, L"", sizeof(wchar_t));
+}
+
+// One file: its path, and its size and time of writing (or that it is not
+// there).
+static unsigned long long Char_StampFile(unsigned long long h, const wchar_t *path)
+{
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    h = Char_StampPath(h, path);
+    if (path[0] && GetFileAttributesExW(path, GetFileExInfoStandard, &fa)) {
+        h = Char_StampBytes(h, &fa.nFileSizeHigh, sizeof(fa.nFileSizeHigh));
+        h = Char_StampBytes(h, &fa.nFileSizeLow, sizeof(fa.nFileSizeLow));
+        h = Char_StampBytes(h, &fa.ftLastWriteTime, sizeof(fa.ftLastWriteTime));
+    } else {
+        h = Char_StampBytes(h, "none", 4);
+    }
+    return h;
+}
+
+// A folder: every file in it (not below it), in any order.
+static unsigned long long Char_StampFolder(unsigned long long h, const wchar_t *dir)
+{
+    wchar_t pattern[CHAR_VAL];
+    WIN32_FIND_DATAW fd;
+    HANDLE find;
+    unsigned long long sum = 0, count = 0;
+
+    h = Char_StampPath(h, dir);
+    if (!dir[0])
+        return h;
+    Rs_PathJoin(pattern, CHAR_VAL, dir, L"*");
+    find = FindFirstFileW(pattern, &fd);
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            unsigned long long one;
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                continue;
+            one = Char_StampPath(CHAR_STAMP_START, fd.cFileName);
+            one = Char_StampBytes(one, &fd.nFileSizeHigh, sizeof(fd.nFileSizeHigh));
+            one = Char_StampBytes(one, &fd.nFileSizeLow, sizeof(fd.nFileSizeLow));
+            one = Char_StampBytes(one, &fd.ftLastWriteTime, sizeof(fd.ftLastWriteTime));
+            sum += one;
+            count++;
+        } while (FindNextFileW(find, &fd));
+        FindClose(find);
+    }
+    h = Char_StampBytes(h, &sum, sizeof(sum));
+    return Char_StampBytes(h, &count, sizeof(count));
+}
+
+// The files of the fields: the model, the icon, the voices folder.
+static unsigned long long Char_StampFields(const wchar_t *model, const wchar_t *icon, const wchar_t *voices)
+{
+    unsigned long long h = CHAR_STAMP_START;
+    h = Char_StampFile(h, model);
+    h = Char_StampFile(h, icon);
+    return Char_StampFolder(h, voices);
+}
+
+// A list of files "a\0b\0\0" (NULL = none).
+static unsigned long long Char_StampList(const wchar_t *list)
+{
+    unsigned long long h = CHAR_STAMP_START;
+    for (; list && *list; list += wcslen(list) + 1)
+        h = Char_StampFile(h, list);
+    return h;
+}
+
+static void Char_ListAdd(wchar_t **list, size_t *len, size_t *cap, const wchar_t *path)
+{
+    size_t n = wcslen(path);
+    if (!n)
+        return;
+    if (*len + n + 2 > *cap) {
+        size_t grown = *cap ? *cap * 2 : 1024;
+        wchar_t *p;
+        while (grown < *len + n + 2)
+            grown *= 2;
+        p = Rs_Alloc(grown * sizeof(wchar_t));
+        if (*len)
+            memcpy(p, *list, *len * sizeof(wchar_t));
+        Rs_Free(*list);
+        *list = p;
+        *cap = grown;
+    }
+    memcpy(*list + *len, path, n * sizeof(wchar_t));
+    *len += n;
+    (*list)[(*len)++] = 0;
+    (*list)[*len] = 0;
+}
+
+// The MTL and texture files of the last check (g_char.importRow): each MTL,
+// each texture as rldpack names it and, by its name, next to each MTL (where
+// a texture delivered later is put). "a\0b\0\0", Rs_Free; NULL = none.
+static wchar_t *Char_ImportFiles(void)
+{
+    wchar_t *list = NULL;
+    size_t len = 0, cap = 0;
+    wchar_t dir[CHAR_VAL], beside[CHAR_VAL];
+    int i, k;
+
+    for (i = 0; i < g_char.importRowCount; i++) {
+        const struct CharImport *r = &g_char.importRow[i];
+        if (r->kind == CHAR_IMPORT_GROUP || !r->path[0])
+            continue;
+        Char_ListAdd(&list, &len, &cap, r->path);
+        if (r->kind != CHAR_IMPORT_TEXTURE)
+            continue;
+        for (k = 0; k < g_char.importRowCount; k++) {
+            const struct CharImport *m = &g_char.importRow[k];
+            if (m->kind != CHAR_IMPORT_MTL || !m->path[0])
+                continue;
+            Rs_PathDir(dir, CHAR_VAL, m->path);
+            Rs_PathJoin(beside, CHAR_VAL, dir, Rs_PathName(r->path));
+            Char_ListAdd(&list, &len, &cap, beside);
+        }
+    }
+    return list;
+}
+
+// The stamps of the check that has just been shown.
+static void Char_StampShown(void)
+{
+    Rs_Free(g_char.stampFiles);
+    g_char.stampFiles = Char_ImportFiles();
+    g_char.stampImport = Char_StampList(g_char.stampFiles);
+    g_char.stampFields = g_char.stampRun;
+    g_char.stampKnown = 1;
+}
+
+static void Char_ChangedSoon(HWND page);
+
+// When Reload Studio is active again or the page is shown again: a file the
+// check shown read has been written since (a model exported again, a texture
+// delivered) - check again. Not while a check waits or runs: it reads the
+// files anew anyway. Returns 1 if a check was asked for.
+static int Char_FilesChanged(HWND page, const wchar_t *why)
+{
+    wchar_t model[CHAR_VAL], icon[CHAR_VAL], voices[CHAR_VAL];
+
+    if (!g_char.stampKnown || g_char.jobId || g_char.timer)
+        return 0;
+    Char_FieldPath(g_char.model, model, CHAR_VAL);
+    if (!model[0])
+        return 0;
+    Char_FieldPath(g_char.icon, icon, CHAR_VAL);
+    Char_FieldPath(g_char.voices, voices, CHAR_VAL);
+    if (Char_StampFields(model, icon, voices) == g_char.stampFields &&
+        Char_StampList(g_char.stampFiles) == g_char.stampImport)
+        return 0;
+    if (Rs_Automating())
+        Rs_AutoLog(L"  files: written since the last check (%ls) - checking again", why);
+    Char_ChangedSoon(page);
+    return 1;
+}
+
+// The main window's WM_ACTIVATEAPP, to the page (CHAR_WM_ACTIVATED).
+static LRESULT CALLBACK Char_MainSub(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR id, DWORD_PTR data)
+{
+    (void)id;
+    if (msg == WM_ACTIVATEAPP && wParam)
+        PostMessageW((HWND)data, CHAR_WM_ACTIVATED, 0, 0);
+    return DefSubclassProc(hwnd, msg, wParam, lParam);
+}
+
 // The list: the state amber where a file was not found or not read, the
 // whole path and the material as the tooltip of a row.
 static LRESULT Char_ImportNotify(NMHDR *hdr)
@@ -4013,6 +4222,7 @@ static void Char_NoModel(HWND page)
     memset(g_char.tabErrors, 0, sizeof(g_char.tabErrors));
     memset(g_char.tabWarnings, 0, sizeof(g_char.tabWarnings));
     g_char.modelRead = 0;
+    g_char.stampKnown = 0;
     Char_SetInfo(CHAR_START_TEXT, RS_COL_MUTED);
     Char_ImportClear();
     Char_Headline(L"Choose a PLY or OBJ model to start", RS_COL_MUTED);
@@ -4052,6 +4262,7 @@ static int Char_Check(HWND page)
         return -1;
     }
     Char_Copy(g_char.checkModel, CHAR_VAL, a.model);
+    g_char.stampRun = Char_StampFields(a.model, a.icon, a.voices);
     Char_Headline(L"Checking...", RS_COL_MUTED);
     started = Char_StartJob(page, CHAR_JOB_CHECK, a.v, a.n, seq) != 0;
     Char_ArgsFree(&a);
@@ -4244,6 +4455,7 @@ static void Char_CheckDone(HWND page, int exitCode, int seq)
     Char_ApplyPreview(seq);
     Char_ApplyIcon(seq);
     Char_TempDeleteKeep(seq, 1);      // the voice previews go with the next check
+    Char_StampShown();
     Char_ShowCheckResult(exitCode);
     // The cards of the preview features follow the model just checked.
     CharWheels_ModelChecked(page, g_char.checkModel, g_char.sizeNow, g_char.checked);
@@ -5560,6 +5772,7 @@ static void Char_Create(HWND page)
     }
 
     DragAcceptFiles(page, TRUE);
+    SetWindowSubclass(Rs_MainWindow(), Char_MainSub, CHAR_SUBCLASS_MAIN, (DWORD_PTR)page);
     Char_TempSweep();
 
     g_char.applying = 1;
@@ -6506,15 +6719,27 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
             Char_OutCue();
         else if (_wcsicmp(def, g_char.checkDefault) != 0)
             Char_Changed(page);
+        Char_FilesChanged(page, L"page shown");
         *handled = 1;
         return 0;
     }
+    case CHAR_WM_ACTIVATED:
+        // Reload Studio is the active program again: on this page, while it
+        // is shown (another page checks again when it is shown).
+        if (IsWindowVisible(page))
+            Char_FilesChanged(page, L"Reload Studio active again");
+        *handled = 1;
+        return 0;
     case WM_DROPFILES:
         Char_Drop(page, (HDROP)wParam);
         *handled = 1;
         return 0;
     case WM_DESTROY: {
         int i;
+        RemoveWindowSubclass(Rs_MainWindow(), Char_MainSub, CHAR_SUBCLASS_MAIN);
+        Rs_Free(g_char.stampFiles);
+        g_char.stampFiles = NULL;
+        g_char.stampKnown = 0;
         Char_Abandon();
         for (i = 0; i < CHAR_PENDING; i++)
             Char_TempDelete(g_char.pending[i].seq);
