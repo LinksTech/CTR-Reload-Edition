@@ -7942,6 +7942,9 @@ struct RldMkIcon
 //   square: at least 3/4 of its pixels beside the transparent surroundings lie
 //      on the edges of its own bounding box - a box's edge is straight, the
 //      edge of hair or a head is round (RLDMK_BG_KEPT_SHAPE)
+//   around: at least 3/4 of the opaque pixels it leaves lie inside its
+//      bounding box - a box stands behind the subject, a rectangular body
+//      stands below the head (RLDMK_BG_KEPT_AROUND)
 // THE SUBJECT: whatever the corners, the fill may not take (nearly) all of the
 // picture: when less than 1/20 of the opaque pixels would stay, it took the
 // subject, and nothing changes (RLDMK_BG_KEPT_SUBJECT).
@@ -7954,6 +7957,7 @@ struct RldMkIcon
 #define RLDMK_BG_KEPT_LINE 1u      // *keptOut: only a thin line in the color - an outline
 #define RLDMK_BG_KEPT_SHAPE 2u     // not shaped like a box - a part of the subject
 #define RLDMK_BG_KEPT_SUBJECT 3u   // it would take (nearly) all of the picture
+#define RLDMK_BG_KEPT_AROUND 4u    // it does not stand around the rest - a part of the subject
 
 static int RldMk_BgNear(const u8 *p, const u32 color[3], u32 tolerance)
 {
@@ -8258,6 +8262,26 @@ static int RldMk_ClearBackground(u8 *rgba, u32 width, u32 height, u32 tolerance,
 				}
 			}
 			*keptOut = ((straight * 4u) < (edge * 3u)) ? RLDMK_BG_KEPT_SHAPE : 0u;
+
+			// Around: the rest of the opaque pixels inside that box.
+			if (*keptOut == 0u)
+			{
+				u32 rest = 0;
+				u32 within = 0;
+
+				for (i = 0; i < count; i++)
+				{
+					const u32 x = (u32)(i % width);
+					const u32 y = (u32)(i / width);
+
+					if ((state[i] != RLDMK_BG_FILLED) && (rgba[i * 4u + 3u] >= 128u))
+					{
+						rest++;
+						within += ((x >= box[0]) && (x <= box[2]) && (y >= box[1]) && (y <= box[3])) ? 1u : 0u;
+					}
+				}
+				*keptOut = ((within * 4u) < (rest * 3u)) ? RLDMK_BG_KEPT_AROUND : 0u;
+			}
 		}
 	}
 
@@ -9088,6 +9112,7 @@ static int RldMk_IconStep(const char *path, const char *previewPrefix, const str
 	int result;
 	u32 background = RLDMK_ICON_BACKGROUND_ALPHA;
 	u32 kept = 0;
+	int hadAlpha = 0;
 	u32 cleared = 0;
 	u32 backgroundRgb = 0;
 
@@ -9142,7 +9167,16 @@ static int RldMk_IconStep(const char *path, const char *previewPrefix, const str
 		RldMk_EmitWritten("icon-original", out, ok, 54u + (size_t)image.width * image.height * 4u);
 	}
 
-	// --icon-background, on the picture as read and before the cut.
+	// --icon-background, on the picture as read and before the cut. A picture
+	// with transparency of its own is told about every pixel the step takes.
+	{
+		size_t i;
+
+		for (i = 0; !hadAlpha && (i < (size_t)image.width * image.height); i++)
+		{
+			hadAlpha = (image.rgba[i * 4u + 3u] != 255u);
+		}
+	}
 	if (!RldMk_IconBackground(&image, options, &background, &cleared, &backgroundRgb, &kept))
 	{
 		RldPng_Free(&image);
@@ -9172,10 +9206,21 @@ static int RldMk_IconStep(const char *path, const char *previewPrefix, const str
 		RldMk_Say("note", "icon-background", NULL,
 		          "The color around the transparent part is not shaped like a box (its edge is not straight), so it was kept as part of the subject - dark hair or clothes beside a dark outline - and nothing was made transparent.");
 	}
+	else if ((background == RLDMK_ICON_BACKGROUND_CORNERS) && (kept == RLDMK_BG_KEPT_AROUND))
+	{
+		RldMk_Say("note", "icon-background", NULL,
+		          "The opaque color beside the transparent part does not stand around the rest of the picture, so it was kept as part of the subject and nothing was made transparent.");
+	}
 	else if ((background == RLDMK_ICON_BACKGROUND_CORNERS) && (kept == RLDMK_BG_KEPT_SUBJECT))
 	{
 		RldMk_Say("note", "icon-background", NULL,
 		          "The background step would have taken the whole subject (it is all in the background's color), so nothing was made transparent.");
+	}
+	else if ((background == RLDMK_ICON_BACKGROUND_CORNERS) && (cleared > 0u) && hadAlpha)
+	{
+		RldMk_Say("note", "icon-background", NULL,
+		          "Removed an opaque box of %u pixels behind the picture (color %06X). Untick Make background transparent (--icon-background alpha) to keep it.",
+		          cleared, backgroundRgb);
 	}
 	else if ((background == RLDMK_ICON_BACKGROUND_CORNERS) && (cleared == 0u))
 	{
@@ -9203,10 +9248,13 @@ static int RldMk_IconStep(const char *path, const char *previewPrefix, const str
 		Rld_Emit("char", "icon_place", text[1], (const char *)NULL);
 	}
 
-	if ((image.width < RLDMK_ICON_SHOWN_WIDTH) || (image.height < RLDMK_ICON_SHOWN_HEIGHT))
+	// Enlarged so that it shows: the cut has less than 3/4 of the texels it
+	// became across or down (the whole 43 x 25, or with --icon-fit the place
+	// of the subject) - one stretched column does not count.
+	if (((icon->crop[2] * 4u) < (icon->scaled[0] * 3u)) || ((icon->crop[3] * 4u) < (icon->scaled[1] * 3u)))
 	{
-		RldMk_Say("note", "icon-small", NULL, "The icon is only %u x %u pixels and was enlarged to 43 x 25, so it looks blurry. Use a picture of at least 43 x 25.",
-		          image.width, image.height);
+		RldMk_Say("note", "icon-small", NULL, "%u x %u pixels of the picture were enlarged to %u x %u texels, so the icon looks blurry. Use a larger picture.",
+		          icon->crop[2], icon->crop[3], icon->scaled[0], icon->scaled[1]);
 	}
 
 	if ((icon->opaque == 0u) && (cleared > 0u))
@@ -16451,14 +16499,16 @@ static void RldMk_SelfTestIconOptions(const struct RldPngImage *a)
 	// (k 1) - round edges, not a box: they stay. An opaque picture of one
 	// color (k 2): the step would take all of it - nothing changes. A bust on
 	// transparent whose body runs off the bottom, opaque in both lower corners
-	// (k 3): the body stays.
-	for (k = 0; k < 4; k++)
+	// (k 3): the body stays. A rectangular body below a round head, on
+	// transparent (k 4): straight like a box, but not around the head - it stays.
+	for (k = 0; k < 5; k++)
 	{
-		static const char *const names[4] = {"icon corners: a black disc on transparent is the subject - it stays",
+		static const char *const names[5] = {"icon corners: a black disc on transparent is the subject - it stays",
 		                                     "icon corners: dark hair at a black outline is the subject - it stays",
 		                                     "icon corners: a picture of one color - the step would take all of it, nothing changes",
-		                                     "icon corners: a body in two opaque corners of a transparent picture is the subject - it stays"};
-		static const u32 why[4] = {RLDMK_BG_KEPT_SHAPE, RLDMK_BG_KEPT_SHAPE, RLDMK_BG_KEPT_SUBJECT, RLDMK_BG_KEPT_SHAPE};
+		                                     "icon corners: a body in two opaque corners of a transparent picture is the subject - it stays",
+		                                     "icon corners: a rectangular body below a head is the subject - it stays"};
+		static const u32 why[5] = {RLDMK_BG_KEPT_SHAPE, RLDMK_BG_KEPT_SHAPE, RLDMK_BG_KEPT_SUBJECT, RLDMK_BG_KEPT_SHAPE, RLDMK_BG_KEPT_AROUND};
 
 		image.width = 64u;
 		image.height = 64u;
@@ -16475,6 +16525,16 @@ static void RldMk_SelfTestIconOptions(const struct RldPngImage *a)
 					p[0] = 200u;
 					p[1] = 30u;
 					p[2] = 30u;
+				}
+				else if (k == 4)
+				{
+					const int body = (x >= 12u) && (x < 52u) && (y >= 30u);
+					const int head = (((int)x - 32) * ((int)x - 32) + ((int)y - 15) * ((int)y - 15)) <= 13 * 13;
+
+					p[0] = 60u;
+					p[1] = (u8)(body ? 60u : 200u);
+					p[2] = (u8)(body ? 220u : 60u);
+					p[3] = (u8)((body || head) ? 255u : 0u);
 				}
 				else if (k == 3)
 				{
