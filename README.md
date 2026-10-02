@@ -12,8 +12,8 @@
 </p>
 
 <p align="center">
-  <!-- Points at the current version on purpose: the nightly build is newer and would come first in the release list. Update with every version tag. -->
-  <a href="https://github.com/LinksTech/CTR-Reload-Edition/releases/tag/v0.0-beta0"><img alt="Download the latest release" src="https://img.shields.io/badge/Download-latest%20release-2f9bff?style=for-the-badge&logo=github&logoColor=white"></a>
+  <!-- releases/latest is the newest full release; the nightly build is a pre-release and never "latest". -->
+  <a href="https://github.com/LinksTech/CTR-Reload-Edition/releases/latest"><img alt="Download the latest release" src="https://img.shields.io/badge/Download-latest%20release-2f9bff?style=for-the-badge&logo=github&logoColor=white"></a>
   <br>
   <sub>Want the newest state? The <a href="https://github.com/LinksTech/CTR-Reload-Edition/releases/tag/nightly-builds">nightly build</a> is made from main every night - untested, no guarantees.</sub>
 </p>
@@ -89,11 +89,10 @@ without an emulator, and plays custom tracks next to the original ones.
 
 ## Getting started
 
-1. Download **`ctr_native.exe`** (the game) and **`alphamaker.exe`** (the track
-   tool) from the [latest release](https://github.com/LinksTech/CTR-Reload-Edition/releases/tag/v0.0-beta0)
+1. Download **`ctr_native.exe`** (the game) and **`ReloadStudio.exe`** (the
+   track and character tool) from the [latest release](https://github.com/LinksTech/CTR-Reload-Edition/releases/latest)
    into one folder you can write to, for example `C:\Games\CTR Reload` (not
-   `C:\Program Files`). Beta 0 ships the tool as `alphamaker.exe`; it has been
-   called Reload Studio since then.
+   `C:\Program Files`).
 2. Start `ctr_native.exe` and drag your disc image (`.cue` or `.bin`) onto the
    window. The game unpacks what it needs into an `assets` folder next to it,
    once (about 520 MB).
