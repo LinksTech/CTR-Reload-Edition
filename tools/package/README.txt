@@ -500,7 +500,12 @@ On the right
 
 The bar at the bottom
   Headline    What the last check or build says, e.g. "Ready to build" (one
-              line; point at it to read a longer one whole).
+              line; point at it to read a longer one whole). A check or
+              build that takes longer than a moment (a large model reduced,
+              a closed hull) shows a bar beside it - "Reducing 45 %" - and
+              the button Cancel (or Esc): it stops rldpack. A cancelled
+              build writes nothing; a character file of that name from
+              before stays as it was.
   Messages    What rldpack found. A click on a message (or Enter on the one
               framed with the arrow keys) opens the tab it belongs to (one
               about the icon "In-game look", one about the name "Driver").

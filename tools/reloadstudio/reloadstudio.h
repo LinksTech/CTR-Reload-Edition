@@ -290,6 +290,12 @@
 //             author, class, template, map-color, write) under the tab Model:
 //             a click on one of these opens it; an error stops the build as
 //             every error does
+//   @progress <repair | remesh | reduce | write> <done> <total>   at most
+//             every 250 ms during a long step (total 0 = not known); the shell
+//             passes it as RS_WM_JOB_PROGRESS, not as a line - the page shows
+//             a bar of it and Cancel beside the headline (Rs_JobCancel; a build
+//             writes <out>.part first and renames it at the end, the page
+//             deletes what a cancelled build left)
 //   @result   <ok | failed | checked> <output path> <bytes> <sha256>
 //             with --icon the container has a third chunk CICN (612 bytes), with
 //             --voices and at least one clip a chunk CVOI (the voices,
@@ -352,7 +358,8 @@
 //   name <text>, class <word>, mask aku|uka, mapcolor
 //   template|RRGGBB, size <percent>, icon <png|none>, icon-fit fit|fill|none,
 //   icon-transparent on|off, icon-frame on|off, repair|open-parts|remesh|reduce|
-//   wheels on|off, reduce-to-fit, out <file|none>, check, build, pose
+//   wheels on|off, reduce-to-fit, out <file|none>, check, build, cancel (as
+//   the button Cancel while rldpack runs - as "now cancel"), pose
 //   neutral|left|right, turn <degrees>, tab <1..5|name>, extras
 //   import|wheels|animations, up y|z, forward z|-z, colors 128|64, vertex-colors
 //   auto|modulate|color (the card Import; the last passed for an OBJ only),

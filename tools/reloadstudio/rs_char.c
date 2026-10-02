@@ -137,14 +137,18 @@
 //                   lives here, not on the tab Model: there an OBJ leaves no
 //                   room at 1366 x 768 and at 1920 x 1080 with 150 % (the bar
 //                   is at its least height), and its choices are rarely
-//                   needed - rldpack names the one to change when it is
+//                   needed - rldpack names the one to change when it is.
 // The head of a tab shows its number in a circle: green done, red problem (an
 // error of the last run belongs to it), amber warning, an outline when it is
 // optional or still to do. The bar at the bottom: headline, the message list
 // (a click on a message opens the tab it belongs to), output, Check, Build,
-// Back and Next. Every control is a child of the page as before, with the same
-// ID; the controls of the other tabs are only hidden - a message to one of them
-// still works. Ctrl+Tab and Ctrl+Shift+Tab step through the tabs.
+// Back and Next. A check or build that runs longer than CHAR_PROGRESS_DELAY
+// shows a bar of its progress (the @progress lines of rldpack, which the
+// shell passes as RS_WM_JOB_PROGRESS) and Cancel beside the headline: Cancel
+// ends rldpack (Rs_JobCancel); a build cancelled leaves at most <out>.part,
+// which the page deletes - a file <out> from before stays as it was. Every
+// control is a child of the page as before, with the same ID; the controls of
+// the other tabs are only hidden - a message to one of them still works. Ctrl+Tab and Ctrl+Shift+Tab step through the tabs.
 
 #include "reloadstudio.h"
 #include "rs_anim.h"
@@ -159,6 +163,9 @@
 #include <wchar.h>
 
 #define CHAR_TIMER_CHECK   1
+#define CHAR_TIMER_BUSY    2      // the progress bar and Cancel show after CHAR_PROGRESS_DELAY
+#define CHAR_PROGRESS_DELAY 300
+#define CHAR_PROGRESS_CLASS L"RsCharProgress"
 #define CHAR_CHECK_DELAY   600    // after typing in a text field
 // After a click on a list, a tick or a colour: short, but not at once - the
 // arrow keys and the mouse wheel step through a closed list one CBN_SELCHANGE
@@ -285,6 +292,8 @@
 #define CHAR_ID_ICON_CORNERS   174   // "Make background transparent"
 #define CHAR_ID_ICON_FRAME     175   // "Retail frame"
 #define CHAR_ID_REDUCE_FIT     176   // the button "Reduce to fit" below the options (tab Model)
+#define CHAR_ID_CANCEL         177   // Cancel beside the headline, while rldpack runs
+#define CHAR_ID_PROGRESS       178   // the progress bar beside it
 #define CHAR_ID_TAB            180   // 180..184: the heads of the tabs 1..5
 #define CHAR_ID_BACK           185
 #define CHAR_ID_NEXT           186
@@ -610,6 +619,11 @@ static struct {
     HWND view, pose, viewNote;
     HWND outLabel, out, outBrowse, check, build, headline, msgs, raw, rawToggle, show;
     HWND reduceFit;                 // "Reduce to fit" below the options, only over the limit
+    HWND cancel, progress;          // beside the headline while rldpack runs (Char_ProgressShow)
+    int progressOn;                 // they are shown
+    int progressPos;                // 0..1000, -1 = not known
+    wchar_t progressText[64];       // what the bar says
+    wchar_t buildOut[CHAR_VAL];     // the output of the running build: its <out>.part goes after a cancel
     int reduceFitOn;                // it is shown (on the tab Model)
     int qualityOn;                  // the note below the options has text (shown on the tab Model)
     HWND tabHead[CHAR_TABS], back, next, extrasSwitch[CHAR_EXTRAS_COUNT];
@@ -4287,8 +4301,11 @@ static void Char_ShowCheckResult(int exitCode)
     }
 }
 
+static void Char_ProgressShow(HWND page, int on);
+
 static void Char_StartFailed(const wchar_t *headline)
 {
+    Char_ProgressShow(GetParent(g_char.headline), 0);
     Char_MsgClear();
     Char_MsgAdd(-1, RS_SEV_ERROR, L"Reload Studio could not start rldpack.",
                   L"rldpack runs as a second copy of Reload Studio. Try again; if it keeps failing, "
@@ -4297,6 +4314,95 @@ static void Char_StartFailed(const wchar_t *headline)
     Char_UpdateButtons();
     if (Rs_Automating())
         Rs_AutoLog(L"  rldpack could not be started");
+}
+
+// ---------------------------------------------------------------------------
+// Progress of a long check or build
+// ---------------------------------------------------------------------------
+
+// The bar: the part done in the accent colour, the text over it.
+static LRESULT CALLBACK Char_ProgressProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_ERASEBKGND)
+        return 1;
+    if (msg == WM_PAINT) {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(hwnd, &ps);
+        RECT rc, done;
+        HBRUSH br;
+        HGDIOBJ old;
+
+        GetClientRect(hwnd, &rc);
+        br = CreateSolidBrush(RS_COL_CARD);
+        FillRect(dc, &rc, br);
+        DeleteObject(br);
+        if (g_char.progressPos > 0) {
+            done = rc;
+            done.right = rc.left + (int)((long long)(rc.right - rc.left) * g_char.progressPos / 1000);
+            br = CreateSolidBrush(RS_COL_ACCENT);
+            FillRect(dc, &done, br);
+            DeleteObject(br);
+        }
+        br = CreateSolidBrush(RS_COL_BORDER);
+        FrameRect(dc, &rc, br);
+        DeleteObject(br);
+        old = SelectObject(dc, Rs_Font(RS_FONT_SMALL));
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, RS_COL_TEXT);
+        DrawTextW(dc, g_char.progressText, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(dc, old);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+// The bar and Cancel beside the headline, on or off (the bar is laid out again).
+static void Char_ProgressShow(HWND page, int on)
+{
+    if (!on)
+        KillTimer(page, CHAR_TIMER_BUSY);
+    if ((on != 0) != g_char.progressOn) {
+        g_char.progressOn = on != 0;
+        Char_Relayout(page);
+    }
+}
+
+// A @progress line of the running job: the step and how far it is.
+static void Char_Progress(HWND page, const struct RsJobProgress *p)
+{
+    static const wchar_t *const steps[][2] = { { L"repair", L"Repairing" }, { L"remesh", L"Remeshing" },
+                                               { L"reduce", L"Reducing" }, { L"write", L"Writing" } };
+    const wchar_t *word = p->step;
+    int i;
+
+    for (i = 0; i < (int)(sizeof(steps) / sizeof(steps[0])); i++)
+        if (wcscmp(p->step, steps[i][0]) == 0)
+            word = steps[i][1];
+    if (p->total > 0) {
+        unsigned long done = p->done < p->total ? p->done : p->total;
+        g_char.progressPos = (int)((unsigned long long)done * 1000 / p->total);
+        swprintf(g_char.progressText, 64, L"%ls %lu %%", word, (unsigned long)((unsigned long long)done * 100 / p->total));
+    } else {
+        g_char.progressPos = -1;
+        swprintf(g_char.progressText, 64, L"%ls...", word);
+    }
+    // A line of progress comes only from a long step: the bar shows at once.
+    Char_ProgressShow(page, 1);
+    InvalidateRect(g_char.progress, NULL, FALSE);
+}
+
+// Cancel: rldpack is ended; RS_WM_JOB_DONE follows with RS_JOB_CANCELLED.
+static int Char_Cancel(HWND page)
+{
+    (void)page;
+    if (!g_char.jobId)
+        return 0;
+    if (!Rs_JobCancel(g_char.jobId))
+        return 0;
+    Char_Headline(L"Cancelling...", RS_COL_MUTED);
+    EnableWindow(g_char.cancel, FALSE);
+    return 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -4599,6 +4705,15 @@ static int Char_StartJob(HWND page, int kind, const wchar_t *const *args, int ar
     if (!g_char.jobId) {
         g_char.jobKind = CHAR_JOB_NONE;
         g_char.jobSeq = 0;
+    } else {
+        // The bar and Cancel when it takes longer than a moment (a bar shown
+        // for the check just ended stays for this one).
+        g_char.progressPos = -1;
+        Char_Copy(g_char.progressText, 64, kind == CHAR_JOB_BUILD ? L"Building..." : L"Checking...");
+        InvalidateRect(g_char.progress, NULL, FALSE);
+        EnableWindow(g_char.cancel, TRUE);
+        if (!g_char.progressOn)
+            SetTimer(page, CHAR_TIMER_BUSY, CHAR_PROGRESS_DELAY, NULL);
     }
     Char_UpdateButtons();
     return g_char.jobId;
@@ -4626,6 +4741,7 @@ static void Char_NoModel(HWND page)
     Char_ImportClear();
     Char_Headline(L"Choose a PLY or OBJ model to start", RS_COL_MUTED);
     Char_ReduceFitShow(page, 0);
+    Char_ProgressShow(page, 0);
     Char_VoicesClear();
     Char_EmptyText(L"Choose a PLY or OBJ model. What rldpack finds shows up here.");
     Char_UpdateButtons();
@@ -4721,6 +4837,7 @@ static int Char_CheckDone(HWND page, int exitCode, int seq);
 static void Char_CacheShow(HWND page, int i, const wchar_t *model, unsigned long long stamp)
 {
     Char_CacheTouch(i);
+    Char_ProgressShow(page, 0);
     Char_JobReset();
     Char_RawAppend(L"Nothing has changed since this check (the same command, the same files): its result is shown "
                    L"again without running rldpack. Check runs it anew.");
@@ -5057,6 +5174,7 @@ static int Char_Build(HWND page)
         Char_ArgsFree(&a);
         return -1;
     }
+    Char_Copy(g_char.buildOut, CHAR_VAL, a.out);
     g_char.buildWheelsOff = !Char_IsChecked(g_char.wheels);
     g_char.buildMask = Char_MaskIndex();
     g_char.buildMapSet = g_char.mapColorSet;
@@ -5283,6 +5401,50 @@ static void Char_BuildDone(HWND page, int exitCode)
     Char_Relayout(page);        // show or hide "Show in folder"
 }
 
+// "<out>.part" of the build: rldpack writes the character there first and
+// renames it at the end; what a build cancelled (or ended otherwise) left
+// goes.
+static void Char_DeletePart(void)
+{
+    wchar_t part[CHAR_VAL + 8];
+    if (!g_char.buildOut[0])
+        return;
+    swprintf(part, CHAR_VAL + 8, L"%ls.part", g_char.buildOut);
+    if (Rs_FileExists(part) && DeleteFileW(part) && Rs_Automating())
+        Rs_AutoLog(L"  build: deleted %ls", part);
+}
+
+// A check or build ended by Cancel: nothing of it is shown; the result shown
+// before stays in the view, the headline says what happened.
+static void Char_CancelDone(HWND page, int kind, int seq)
+{
+    Char_MsgClear();
+    if (kind == CHAR_JOB_BUILD) {
+        Char_MsgAdd(-1, RS_SEV_INFO, L"The build was cancelled - nothing was written.",
+                    L"A character file of that name from before is left as it was.");
+        Char_Headline(L"Cancelled - nothing was written", RS_COL_WARNING);
+        if (Rs_Automating())
+            Rs_AutoLog(L"  build: cancelled");
+        // The check before the build still holds: Build can be pressed again.
+        if (g_char.checkAfterBuild)
+            Char_Check(page);
+        return;
+    }
+    Rs_Free(g_char.runKey);
+    Rs_Free(g_char.runModelKey);
+    Rs_Free(g_char.metaModelRaw);
+    Rs_Free(g_char.metaFeed);
+    g_char.runKey = g_char.runModelKey = g_char.metaModelRaw = g_char.metaFeed = NULL;
+    g_char.metaSeq = 0;
+    if (seq > 0)
+        Char_TempDelete(seq);
+    g_char.checked = 0;
+    Char_MsgAdd(-1, RS_SEV_INFO, L"The check was cancelled.", L"Check starts it again, and so does a change to a field.");
+    Char_Headline(L"Cancelled - Check starts it again", RS_COL_WARNING);
+    if (Rs_Automating())
+        Rs_AutoLog(L"  check: cancelled");
+}
+
 static void Char_JobDone(HWND page, int exitCode)
 {
     int kind = g_char.jobKind;
@@ -5291,8 +5453,16 @@ static void Char_JobDone(HWND page, int exitCode)
     g_char.jobId = 0;
     g_char.jobKind = CHAR_JOB_NONE;
     g_char.jobSeq = 0;
+    Char_ProgressShow(page, 0);
     if (g_char.showRaw)
         Char_RawRefresh();
+    if (kind == CHAR_JOB_BUILD)
+        Char_DeletePart();
+    if (exitCode == RS_JOB_CANCELLED) {
+        Char_CancelDone(page, kind, seq);
+        Char_UpdateButtons();
+        return;
+    }
     if (kind == CHAR_JOB_BUILD) {
         Char_BuildDone(page, exitCode);
         if (g_char.checkAfterBuild)
@@ -5592,7 +5762,7 @@ static void Char_Enter(HWND page)
     HWND focus = GetFocus();
     if (focus == g_char.modelBrowse || focus == g_char.iconBrowse || focus == g_char.iconClear ||
         focus == g_char.voicesBrowse || focus == g_char.voicesClear || focus == g_char.voicePlay ||
-        focus == g_char.texturesBrowse || focus == g_char.texturesClear ||
+        focus == g_char.texturesBrowse || focus == g_char.texturesClear || focus == g_char.cancel ||
         focus == g_char.outBrowse ||
         focus == g_char.check || focus == g_char.build || focus == g_char.rawToggle || focus == g_char.show ||
         focus == g_char.back || focus == g_char.next || (focus && GetDlgCtrlID(focus) >= CHAR_ID_TAB &&
@@ -5866,6 +6036,8 @@ static int Char_WriteReport(const wchar_t *path)
     Char_Put(f, L"button Build character: %ls", Char_EnabledWord(g_char.build));
     Char_Put(f, L"button Show in folder: %ls", Char_IsShown(g_char.show) ? L"shown" : L"hidden");
     Char_Put(f, L"button Reduce to fit: %ls", g_char.reduceFitOn ? L"shown" : L"hidden");
+    Char_Put(f, L"button Cancel and progress: %ls%ls%ls", g_char.progressOn ? L"shown, " : L"hidden",
+             g_char.progressOn ? g_char.progressText : L"", g_char.progressOn && !IsWindowEnabled(g_char.cancel) ? L" (cancelling)" : L"");
     if (g_char.built[0])
         Char_Put(f, L"last built: %ls, %lld bytes, SHA-256 %ls", g_char.built, g_char.builtBytes, g_char.builtSha);
     else
@@ -6587,6 +6759,19 @@ static void Char_Create(HWND page)
     ShowWindow(g_char.show, SW_HIDE);
     g_char.reduceFit = Rs_Button(page, CHAR_ID_REDUCE_FIT, L"Reduce to fit");
     ShowWindow(g_char.reduceFit, SW_HIDE);
+    g_char.cancel = Rs_Button(page, CHAR_ID_CANCEL, L"Cancel");
+    Rs_SetTip(g_char.cancel, L"Stops rldpack. A build cancelled writes nothing; a character file from before stays as "
+                             L"it was.");
+    ShowWindow(g_char.cancel, SW_HIDE);
+    memset(&wc, 0, sizeof(wc));
+    wc.cbSize = sizeof(wc);
+    wc.hInstance = inst;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.lpfnWndProc = Char_ProgressProc;
+    wc.lpszClassName = CHAR_PROGRESS_CLASS;
+    RegisterClassExW(&wc);
+    g_char.progress = CreateWindowExW(0, CHAR_PROGRESS_CLASS, L"", WS_CHILD, 0, 0, 10, 10, page,
+                                      (HMENU)(INT_PTR)CHAR_ID_PROGRESS, inst, NULL);
     g_char.back = Rs_Button(page, CHAR_ID_BACK, L"< Back");
     g_char.next = Rs_Button(page, CHAR_ID_NEXT, L"Next >");
     Rs_MsgListSetClickable(g_char.msgs, 1);
@@ -6643,7 +6828,8 @@ static void Char_Create(HWND page)
     // then the preview and the bar.
     SetWindowPos(g_char.reduceFit, g_char.quality, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     {
-        HWND last[] = { g_char.view, g_char.pose, g_char.viewNote, g_char.headline, g_char.rawToggle, g_char.msgs,
+        HWND last[] = { g_char.view, g_char.pose, g_char.viewNote, g_char.headline, g_char.progress, g_char.cancel,
+                        g_char.rawToggle, g_char.msgs,
                         g_char.raw, g_char.outLabel, g_char.out, g_char.outBrowse, g_char.show, g_char.back,
                         g_char.next, g_char.check, g_char.build };
         for (i = 0; i < (int)(sizeof(last) / sizeof(last[0])); i++)
@@ -7100,6 +7286,18 @@ static int Char_LayBar(HWND page, const struct CharLay *k, int left, int right, 
     width = in.right - in.left;
     rawW = Char_TextWidth(g_char.rawToggle, L"Show rldpack output") + Rs_Px(28);
     headW = width - rawW - Rs_Px(12);
+    // While rldpack runs: the bar of its progress and Cancel, left of the
+    // toggle; the headline gives them its room.
+    if (g_char.progressOn) {
+        int cancelW = Char_TextWidth(g_char.cancel, L"Cancel") + Rs_Px(32);
+        int progW = Rs_Px(160);
+        int cx = in.right - rawW - Rs_Px(12) - cancelW;
+        MoveWindow(g_char.cancel, cx, in.top, cancelW, Rs_Px(24), TRUE);
+        MoveWindow(g_char.progress, cx - Rs_Px(8) - progW, in.top + Rs_Px(3), progW, Rs_Px(18), TRUE);
+        headW -= cancelW + progW + Rs_Px(20);
+    }
+    ShowWindow(g_char.cancel, g_char.progressOn ? SW_SHOWNA : SW_HIDE);
+    ShowWindow(g_char.progress, g_char.progressOn ? SW_SHOWNA : SW_HIDE);
     MoveWindow(g_char.headline, in.left, in.top + Rs_Px(2), headW, Rs_Px(22), TRUE);
     MoveWindow(g_char.rawToggle, in.right - rawW, in.top, rawW, Rs_Px(24), TRUE);
     y = in.top + Rs_Px(24) + Rs_Px(4);
@@ -7359,6 +7557,13 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
         Char_Enter(page);
         break;
     case IDCANCEL:
+        // Esc while rldpack runs: as Cancel.
+        if (g_char.progressOn)
+            Char_Cancel(page);
+        break;
+    case CHAR_ID_CANCEL:
+        if (code == BN_CLICKED)
+            Char_Cancel(page);
         break;
     case CHAR_ID_MODEL:
         if (code == EN_CHANGE)
@@ -7656,6 +7861,25 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
         *handled = 1;
         return 0;
     }
+    case RS_WM_JOB_PROGRESS: {
+        struct RsJobProgress *p = (struct RsJobProgress *)lParam;
+        if (p && g_char.jobId && (int)wParam == g_char.jobId)
+            Char_Progress(page, p);
+        Rs_Free(p);
+        *handled = 1;
+        return 0;
+    }
+    case RS_WM_JOB_BUSY: {
+        // All job slots taken: rldpack did not start (Char_StartFailed said
+        // so already); the message list says why.
+        wchar_t *text = (wchar_t *)lParam;
+        Char_MsgClear();
+        Char_MsgAdd(-1, RS_SEV_ERROR, L"rldpack could not start: Reload Studio runs as many jobs as it can.",
+                    text ? text : L"Wait until a check or build has ended, then check again.");
+        Rs_Free(text);
+        *handled = 1;
+        return 0;
+    }
     case RS_WM_JOB_DONE:
         if (g_char.jobId && (int)wParam == g_char.jobId)
             Char_JobDone(page, (int)lParam);
@@ -7664,6 +7888,13 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
         *handled = 1;
         return 0;
     case WM_TIMER:
+        if (wParam == CHAR_TIMER_BUSY) {
+            KillTimer(page, CHAR_TIMER_BUSY);
+            if (g_char.jobId)
+                Char_ProgressShow(page, 1);
+            *handled = 1;
+            return 0;
+        }
         if (wParam != CHAR_TIMER_CHECK)
             return 0;
         *handled = 1;
@@ -7789,6 +8020,17 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         return Char_AutoVoicePlay(arg);
     if (wcscmp(verb, L"out") == 0)
         return Char_AutoText(g_char.out, verb, arg, 1);
+    // Like the button Cancel (it shows while rldpack runs): mostly as "now
+    // cancel", since a step waits until the page is idle.
+    if (wcscmp(verb, L"cancel") == 0) {
+        int kind = g_char.jobKind;
+        if (!Char_Cancel(page)) {
+            Rs_AutoLog(L"  cancel: nothing is running");
+            return RS_AUTO_DONE;
+        }
+        Rs_AutoLog(L"  cancel: the %ls is cancelled", kind == CHAR_JOB_BUILD ? L"build" : L"check");
+        return RS_AUTO_WAIT;
+    }
     if (wcscmp(verb, L"check") == 0) {
         r = Char_CheckNow(page);
         if (r > 0)
