@@ -515,14 +515,19 @@ static void RldMk_SelfTestObjColors(void)
 // The edges of a texture of 4 x 4 (left column red, right column green, the
 // rest white): a face whose vt all lie in 0..1 is clamped, u = 0 is red and
 // u = 1 green, also half a texel inside; a face tiled over u 0..2 repeats,
-// u = 0 and u = 2 mix both edges as before.
+// u = 0 and u = 2 mix both edges as before. map_Kd -o 0.75 moves u 0.125 to
+// the green column, -s 0.25 u 0.5 to the red one, -clamp on u 1.2..1.4 to
+// the right edge.
 static void RldMk_SelfTestObjEdges(void)
 {
-	static const char mtl[] = "newmtl edge\nmap_Kd edge.png\n";
+	static const char mtl[] = "newmtl edge\nmap_Kd edge.png\nnewmtl offs\nmap_Kd -o 0.75 0 0 edge.png\nnewmtl scal\nmap_Kd -s 0.25 1 1 edge.png\n"
+	                          "newmtl clmp\nmap_Kd -clamp on edge.png\n";
 	static const char obj[] = "mtllib edge.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\n"
-	                          "vt 0 0.5\nvt 1 0.5\nvt 0.5 0.5\nvt 0.1 0.5\nvt 0.9 0.5\nvt 2 0.5\nvt 1.5 0.5\n"
-	                          "usemtl edge\nf 1/1 2/2 3/3\nf 1/4 2/5 3/3\nf 1/1 2/6 3/7\n";
-	static const u32 want[3][3] = {{0xFF0000u, 0x00FF00u, 0xFFFFFFu}, {0xFF0000u, 0x00FF00u, 0xFFFFFFu}, {0x808000u, 0x808000u, 0xFFFFFFu}};
+	                          "vt 0 0.5\nvt 1 0.5\nvt 0.5 0.5\nvt 0.1 0.5\nvt 0.9 0.5\nvt 2 0.5\nvt 1.5 0.5\nvt 0.125 0.5\nvt 1.2 0.5\nvt 1.4 0.5\n"
+	                          "usemtl edge\nf 1/1 2/2 3/3\nf 1/4 2/5 3/3\nf 1/1 2/6 3/7\n"
+	                          "usemtl offs\nf 1/8 2/8 3/8\nusemtl scal\nf 1/3 2/3 3/3\nusemtl clmp\nf 1/9 2/10 3/9\n";
+	static const u32 want[6][3] = {{0xFF0000u, 0x00FF00u, 0xFFFFFFu}, {0xFF0000u, 0x00FF00u, 0xFFFFFFu}, {0x808000u, 0x808000u, 0xFFFFFFu},
+	                               {0x00FF00u, 0x00FF00u, 0x00FF00u}, {0xFF0000u, 0xFF0000u, 0xFF0000u}, {0x00FF00u, 0x00FF00u, 0x00FF00u}};
 	struct RldObjMemFile files[2];
 	struct RldMkPly ply;
 	struct RldMkModelInfo info;
@@ -553,17 +558,18 @@ static void RldMk_SelfTestObjEdges(void)
 	s_rldObjFileCount = 2u;
 
 	ok = (png != NULL) && RldMk_TestImport("selftest/edge.obj", obj, sizeof(obj) - 1u, &ply, &info, RLDMK_ROLE_MAIN);
-	for (f = 0; ok && (f < 3u); f++)
+	for (f = 0; ok && (f < 6u); f++)
 	{
 		for (k = 0; k < 3u; k++)
 		{
 			same = same && (RldMk_TestCornerRgb(&ply, f, k) == want[f][k]);
 		}
 	}
-	RldMk_Test(ok && same, "OBJ texture edges: vt in 0..1 clamped (u 0 red, u 1 green, also near the edge), tiled vt repeated",
-	           "read %d, %06X %06X | %06X %06X | %06X %06X", ok, ok ? RldMk_TestCornerRgb(&ply, 0u, 0u) : 0u, ok ? RldMk_TestCornerRgb(&ply, 0u, 1u) : 0u,
-	           ok ? RldMk_TestCornerRgb(&ply, 1u, 0u) : 0u, ok ? RldMk_TestCornerRgb(&ply, 1u, 1u) : 0u, ok ? RldMk_TestCornerRgb(&ply, 2u, 0u) : 0u,
-	           ok ? RldMk_TestCornerRgb(&ply, 2u, 1u) : 0u);
+	RldMk_Test(ok && same, "OBJ texture edges: vt in 0..1 clamped (u 0 red, u 1 green, also near the edge), tiled vt repeated; map_Kd -o, -s, -clamp on",
+	           "read %d, %06X %06X | %06X %06X | %06X %06X | -o %06X -s %06X -clamp %06X", ok, ok ? RldMk_TestCornerRgb(&ply, 0u, 0u) : 0u,
+	           ok ? RldMk_TestCornerRgb(&ply, 0u, 1u) : 0u, ok ? RldMk_TestCornerRgb(&ply, 1u, 0u) : 0u, ok ? RldMk_TestCornerRgb(&ply, 1u, 1u) : 0u,
+	           ok ? RldMk_TestCornerRgb(&ply, 2u, 0u) : 0u, ok ? RldMk_TestCornerRgb(&ply, 2u, 1u) : 0u, ok ? RldMk_TestCornerRgb(&ply, 3u, 0u) : 0u,
+	           ok ? RldMk_TestCornerRgb(&ply, 4u, 0u) : 0u, ok ? RldMk_TestCornerRgb(&ply, 5u, 1u) : 0u);
 	RldMk_FreePly(&ply);
 
 	s_rldObjFiles = NULL;

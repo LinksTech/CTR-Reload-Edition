@@ -24,8 +24,9 @@
 //   2. otherwise the material: Kd times the texture; no Kd but a texture:
 //      the texture; neither: grey.
 //   3. grey is 0x80 per channel, like a PLY without colors.
-// The texture is sampled at the corner's vt: bilinear, repeated (u and v
-// modulo 1) - with the edges clamped on a face whose vt all lie in 0..1 -,
+// The texture is sampled at the corner's vt (map_Kd -o and -s: offset +
+// scale x vt): bilinear, repeated (u and v modulo 1) - with the edges
+// clamped on a face whose coordinates all lie in 0..1 or with -clamp on -,
 // v = 0 at the bottom of the picture, alpha not used. PNG through
 // include/rldpng.inc, JPEG and TGA through tools/rldpack_image.c. A texture
 // that is not at its path is looked for at a fixed list of other places
@@ -512,6 +513,9 @@ struct RldObjMaterial
 	int hasKd;
 	double kd[3];
 	char *map;       // map_Kd as written, its options removed; NULL = none
+	double offset[2]; // map_Kd -o u v: the texture coordinates are offset + scale x vt
+	double scale[2];  // map_Kd -s u v (1 1 without it)
+	int clampOn;     // map_Kd -clamp on: vt clamped into 0..1, the edges clamped
 	u32 library;     // the MTL file it came from
 	u32 texture;     // into RldObjModel.textures, RLDMK_NONE = none
 };
@@ -1369,25 +1373,33 @@ static u32 RldObj_OptionValues(const struct RldObjWord *option, int *numbers)
 
 // The file name of a map_Kd line: the options before it skipped, the rest of
 // the line (spaces allowed), without quotes around it. A word that starts
-// with '-' but is no option of the format starts the name (-face.png).
-static void RldObj_MapName(const char *line, size_t length, size_t at, struct RldObjWord *name)
+// with '-' but is no option of the format starts the name (-face.png). -o,
+// -s (u and v; w is not used) and -clamp go into *material.
+static void RldObj_MapName(const char *line, size_t length, size_t at, struct RldObjWord *name, struct RldObjMaterial *material)
 {
 	struct RldObjWord word;
 
+	material->offset[0] = 0.0;
+	material->offset[1] = 0.0;
+	material->scale[0] = 1.0;
+	material->scale[1] = 1.0;
+	material->clampOn = 0;
+
 	for (;;)
 	{
+		struct RldObjWord option;
 		size_t before = at;
 		int numbers;
 		u32 values;
 		u32 i;
 
-		if (!RldObj_Word(line, length, &at, &word) || (word.text[0] != '-') || (word.length < 2u))
+		if (!RldObj_Word(line, length, &at, &option) || (option.text[0] != '-') || (option.length < 2u))
 		{
 			at = before;
 			break;
 		}
 
-		values = RldObj_OptionValues(&word, &numbers);
+		values = RldObj_OptionValues(&option, &numbers);
 		if (values == 0u)
 		{
 			at = before;
@@ -1395,13 +1407,25 @@ static void RldObj_MapName(const char *line, size_t length, size_t at, struct Rl
 		}
 		for (i = 0; i < values; i++)
 		{
-			double value;
+			double value = 0.0;
 
 			before = at;
 			if (!RldObj_Word(line, length, &at, &word) || (numbers && (RldObj_Number(&word, &value) != 1)))
 			{
 				at = before;
 				break;
+			}
+			if (RldObj_Is(&option, "-o") && (i < 2u))
+			{
+				material->offset[i] = value;
+			}
+			else if (RldObj_Is(&option, "-s") && (i < 2u))
+			{
+				material->scale[i] = value;
+			}
+			else if (RldObj_Is(&option, "-clamp"))
+			{
+				material->clampOn = RldObj_IsNoCase(&word, "on");
 			}
 		}
 	}
@@ -1467,6 +1491,8 @@ static int RldObj_ReadLibrary(struct RldObjModel *m, u32 library, const u8 *data
 				memset(material, 0, sizeof(*material));
 				material->library = library;
 				material->texture = RLDMK_NONE;
+				material->scale[0] = 1.0;
+				material->scale[1] = 1.0;
 				current = index;
 			}
 			continue;
@@ -1526,7 +1552,7 @@ static int RldObj_ReadLibrary(struct RldObjModel *m, u32 library, const u8 *data
 		{
 			struct RldObjMaterial *material = &m->materials[current];
 
-			RldObj_MapName(text.buffer, text.length, at, &rest);
+			RldObj_MapName(text.buffer, text.length, at, &rest, material);
 			free(material->map);
 			material->map = NULL;
 			if (rest.length != 0u)
@@ -2004,6 +2030,22 @@ static void RldObj_BaseColors(const struct RldObjModel *m, u8 *cornerRgb, u8 *co
 	}
 }
 
+// The texture coordinates of a corner as its material's map_Kd places them:
+// offset + scale x vt, clamped into 0..1 with -clamp on.
+static void RldObj_TextureUv(const struct RldObjModel *m, const struct RldObjMaterial *material, u32 vt, double uv[2])
+{
+	int k;
+
+	for (k = 0; k < 2; k++)
+	{
+		uv[k] = material->offset[k] + material->scale[k] * m->uv[2u * vt + (u32)k];
+		if (material->clampOn)
+		{
+			uv[k] = (uv[k] < 0.0) ? 0.0 : ((uv[k] > 1.0) ? 1.0 : uv[k]);
+		}
+	}
+}
+
 // Is the model a PS1 rip, whose vertex colors on textured faces modulate the
 // texture (0x80 = the texture as it is), and is that used? The textured
 // corners are those of faces whose material has a map_Kd, found or not;
@@ -2101,8 +2143,14 @@ static u32 RldObj_ApplyTexture(struct RldObjModel *m, u32 texture, u8 *cornerRgb
 		for (k = 0; k < m->faceCorners[f]; k++)
 		{
 			const u32 vt = m->cornerT[m->faceFirst[f] + k];
+			double uv[2];
 
-			if ((vt != RLDMK_NONE) && !((m->uv[2u * vt] >= 0.0) && (m->uv[2u * vt] <= 1.0) && (m->uv[2u * vt + 1u] >= 0.0) && (m->uv[2u * vt + 1u] <= 1.0)))
+			if (vt == RLDMK_NONE)
+			{
+				continue;
+			}
+			RldObj_TextureUv(m, material, vt, uv);
+			if (!((uv[0] >= 0.0) && (uv[0] <= 1.0) && (uv[1] >= 0.0) && (uv[1] <= 1.0)))
 			{
 				clamp = 0;
 			}
@@ -2114,6 +2162,7 @@ static u32 RldObj_ApplyTexture(struct RldObjModel *m, u32 texture, u8 *cornerRgb
 			const u32 v = m->cornerV[corner];
 			const u32 vt = m->cornerT[corner];
 			double sample[3];
+			double uv[2];
 			double c[3];
 			int n;
 
@@ -2123,7 +2172,8 @@ static u32 RldObj_ApplyTexture(struct RldObjModel *m, u32 texture, u8 *cornerRgb
 				continue;
 			}
 
-			RldObj_Sample(t, m->uv[2u * vt + 0u], m->uv[2u * vt + 1u], clamp, sample);
+			RldObj_TextureUv(m, material, vt, uv);
+			RldObj_Sample(t, uv[0], uv[1], clamp, sample);
 			for (n = 0; n < 3; n++)
 			{
 				double base = m->vColored[v] ? m->vrgb[3u * v + (u32)n] : (material->hasKd ? material->kd[n] : 1.0);
