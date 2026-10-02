@@ -123,7 +123,8 @@
 // rest goes on with b to d.
 //
 // DEFAULTS (for make-char). RldRep_DefaultWeld: the longest side of the box /
-// RLDREP_WELD_DIVISOR (1024), 0.11 game units at Crash's length of 112.4.
+// RLDREP_WELD_DIVISOR (1024), 0.11 game units at Crash's length of 112.4; a
+// position far off the rest (a stray triangle) does not count for the box.
 // make-char stores one byte per axis and frame, so one quantization step is
 // about the extent / 255; the weld moves a position by at most a quarter of a
 // step along the longest axis and less than half a step along the shortest
@@ -208,6 +209,10 @@ typedef struct RldRepResult
 // RldRep_DefaultWeld: the longest side of the box divided by this (see the
 // head of the file).
 #define RLDREP_WELD_DIVISOR 1024.0
+
+// RldRep_DefaultWeld leaves positions out of the box that lie more than this
+// many times the middle half of the model beyond it (a stray triangle).
+#define RLDREP_WELD_FAR 4.0
 
 // Step 2b follows a crack along at most this many positions.
 #define RLDREP_SPLIT_MAX 16u
@@ -2745,36 +2750,80 @@ double RldRep_DefaultWeldUsed(const RldRepInput *in)
 	return longest / RLDREP_WELD_DIVISOR;
 }
 
+static int RldRep_CompareDouble(const void *x, const void *y)
+{
+	const double a = *(const double *)x;
+	const double b = *(const double *)y;
+
+	return (a < b) ? -1 : ((a > b) ? 1 : 0);
+}
+
 // The same over ALL given positions - equal to RldRep_DefaultWeldUsed when
-// every position is used (make-char drops unused ones before the repair).
+// every position is used (make-char drops unused ones before the repair) and
+// nothing lies far off. FAR OFF: per axis the range between the positions at
+// a quarter and at three quarters of the sorted values is the core; every
+// position more than RLDREP_WELD_FAR times the largest core range (over the
+// three axes) beyond the core on some axis is left out of the box. A stray
+// triangle 300 units beside a model of 60 would otherwise make the weld five
+// times as wide and weld the model into pieces; the model's own extremes (a
+// long antenna, a tail) lie within that and still count. Out of memory: the
+// whole box.
 double RldRep_DefaultWeld(u32 positionCount, const double *position)
 {
 	double lo[3];
 	double hi[3];
+	double coreLo[3];
+	double coreHi[3];
+	double range = 0.0;
 	double longest = 0.0;
+	double *sorted;
+	const u32 cut = positionCount / 4u;
 	u32 i;
+	int any = 0;
 	int k;
 
 	if ((positionCount == 0u) || (position == NULL))
 	{
 		return 0.0;
 	}
+	sorted = (double *)malloc((size_t)positionCount * sizeof(double));
 	for (k = 0; k < 3; k++)
 	{
-		lo[k] = position[k];
-		hi[k] = position[k];
+		coreLo[k] = -1.0e300;
+		coreHi[k] = 1.0e300;
+		if (sorted == NULL)
+		{
+			continue;
+		}
+		for (i = 0; i < positionCount; i++)
+		{
+			sorted[i] = position[3u * i + (u32)k];
+		}
+		qsort(sorted, positionCount, sizeof(double), RldRep_CompareDouble);
+		coreLo[k] = sorted[cut];
+		coreHi[k] = sorted[positionCount - 1u - cut];
+		range = ((coreHi[k] - coreLo[k]) > range) ? (coreHi[k] - coreLo[k]) : range;
 	}
-	for (i = 1; i < positionCount; i++)
+	free(sorted);
+	range *= RLDREP_WELD_FAR;
+
+	for (i = 0; i < positionCount; i++)
 	{
+		const double *p = &position[3u * i];
+
+		if ((p[0] < (coreLo[0] - range)) || (p[0] > (coreHi[0] + range)) || (p[1] < (coreLo[1] - range)) || (p[1] > (coreHi[1] + range)) ||
+		    (p[2] < (coreLo[2] - range)) || (p[2] > (coreHi[2] + range)))
+		{
+			continue;
+		}
 		for (k = 0; k < 3; k++)
 		{
-			const double v = position[3u * i + (u32)k];
-
-			lo[k] = (v < lo[k]) ? v : lo[k];
-			hi[k] = (v > hi[k]) ? v : hi[k];
+			lo[k] = (!any || (p[k] < lo[k])) ? p[k] : lo[k];
+			hi[k] = (!any || (p[k] > hi[k])) ? p[k] : hi[k];
 		}
+		any = 1;
 	}
-	for (k = 0; k < 3; k++)
+	for (k = 0; any && (k < 3); k++)
 	{
 		longest = ((hi[k] - lo[k]) > longest) ? (hi[k] - lo[k]) : longest;
 	}
@@ -4181,6 +4230,54 @@ static void RldRep_SelfTestLarge(struct RldRepTest *test)
 	RldRep_TestFree(&mesh);
 }
 
+// A stray triangle far beside a model (a sphere of radius 1, 3000 units
+// away): the default weld is the sphere's own, the sphere is not welded
+// into pieces, the stray triangle stays. Without the stray triangle the
+// weld is the longest side of the box / 1024, as before.
+static void RldRep_SelfTestStray(struct RldRepTest *test)
+{
+	struct RldRepTestMesh mesh;
+	RldRepResult r;
+	const char *name = "stray triangle 3000 units beside a sphere: the weld of the sphere, nothing welded";
+	double lo[3] = {0.0, 0.0, 0.0};
+	double hi[3] = {0.0, 0.0, 0.0};
+	double box;
+	double alone;
+	double weld;
+	u32 sphereTriangles;
+	u32 a;
+
+	memset(&mesh, 0, sizeof(mesh));
+	RldRep_TestSphere(&mesh, 0.0, 0.0, 0.0, 1.0, 32u, 16u, 0, 0);
+	alone = RldRep_DefaultWeld(mesh.positionCount, mesh.position);
+	sphereTriangles = mesh.triangleCount;
+	for (a = 0; a < mesh.positionCount; a++)
+	{
+		u32 k;
+
+		for (k = 0; k < 3u; k++)
+		{
+			lo[k] = ((a == 0u) || (mesh.position[3u * a + k] < lo[k])) ? mesh.position[3u * a + k] : lo[k];
+			hi[k] = ((a == 0u) || (mesh.position[3u * a + k] > hi[k])) ? mesh.position[3u * a + k] : hi[k];
+		}
+	}
+	box = hi[0] - lo[0];
+	box = ((hi[1] - lo[1]) > box) ? (hi[1] - lo[1]) : box;
+	box = ((hi[2] - lo[2]) > box) ? (hi[2] - lo[2]) : box;
+	a = RldRep_TestPosition(&mesh, 3000.0, 0.0, 0.0);
+	RldRep_TestTriangle(&mesh, a, RldRep_TestPosition(&mesh, 3000.0, 1.0, 0.0), RldRep_TestPosition(&mesh, 3000.0, 0.0, 1.0));
+	weld = RldRep_DefaultWeld(mesh.positionCount, mesh.position);
+	RldRep_TestLine(test, !mesh.failed && (alone == (box / RLDREP_WELD_DIVISOR)) && (weld == alone), "default weld: box / 1024, a stray triangle left out",
+	                "alone %.9f, with the stray triangle %.9f", alone, weld);
+	if (RldRep_TestRun(test, name, &mesh, weld, 8u, &r))
+	{
+		RldRep_TestLine(test, (r.welded == 0u) && (r.triangleCount == (sphereTriangles + 1u)), name, "welded %u, %u triangles of %u", r.welded,
+		                r.triangleCount, sphereTriangles + 1u);
+		RldRep_Free(&r);
+	}
+	RldRep_TestFree(&mesh);
+}
+
 static int RldRep_TestRefused(const struct RldRepTestMesh *mesh, double weld, u32 holeMax)
 {
 	RldRepInput in = RldRep_TestInput(mesh, weld, holeMax);
@@ -4233,6 +4330,7 @@ int RldRep_SelfTest(void (*report)(const char *line))
 	RldRep_SelfTestShapes(&test);
 	RldRep_SelfTestTies(&test);
 	RldRep_SelfTestLarge(&test);
+	RldRep_SelfTestStray(&test);
 	RldRep_SelfTestLimits(&test);
 	return test.failures;
 }
