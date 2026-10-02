@@ -426,7 +426,7 @@ internal void NativeChar_ReadMask(struct RldReader *reader, struct NativeCharFil
 	bytes = Rld_ReadChunk(reader, index, &size, &why);
 	if (bytes == NULL)
 	{
-		snprintf(out->maskWhy, sizeof(out->maskWhy), "%s", (why != NULL) ? why : "CMSK cannot be read");
+		snprintf(out->maskWhy, sizeof(out->maskWhy), "DAMAGED (chunk) %s", (why != NULL) ? why : "CMSK cannot be read");
 		return;
 	}
 

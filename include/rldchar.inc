@@ -596,8 +596,8 @@ struct RldCharProfile
 {
 	const char *chunk;      // the chunk the model frame lies in, for the texts
 	const char *what;       // "a character" / "a mask"
-	u32 sizeMax;            // model-size
-	u32 animCount;          // model-anims: exactly this many
+	u32 sizeMax;            // model-size; at most RLDCHAR_LIMIT_CMDL (the bit maps)
+	u32 animCount;          // model-anims: exactly this many; at most RLDCHAR_ANIM_COUNT (the facts)
 	const u16 *frames;      // model-anim-frames, per animation
 	const char *framesWho;  // model-anim-frames: whose counts these are
 	u32 drawMax;            // model-draw
@@ -1397,7 +1397,8 @@ static void RldChar_CheckFrames(struct RldCharCheck *check)
 	static const char axisNames[3] = {'x', 'y', 'z'};
 	const u64 records = check->records;
 	const int recordsKnown = check->listComplete;
-	const u32 animCount = (check->animCount < check->profile->animCount) ? check->animCount : check->profile->animCount;
+	const u32 profileAnims = (check->profile->animCount < RLDCHAR_ANIM_COUNT) ? check->profile->animCount : RLDCHAR_ANIM_COUNT;
+	const u32 animCount = (check->animCount < profileAnims) ? check->animCount : profileAnims;
 	u64 frameBytes = 0;
 	u32 a;
 
@@ -1626,7 +1627,9 @@ static enum RldCharVerdict RldChar_CheckModel(const u8 *cmdl, size_t size, struc
 // A finding NEVER refuses the file: it costs only the own mask, and the game
 // shows the retail mask (like a broken CICN). The envelope bound of CMSK
 // (RLDCHAR_LIMIT_CMSK) is wider than CMSK-3 on purpose: a later, larger
-// version is dropped as a mask, not as a file.
+// version is dropped as a mask, not as a file. The envelope rules (size above
+// RLDCHAR_LIMIT_CMSK, compression, size_stored != size_raw) still refuse the
+// file, as for every known chunk.
 
 #define RLDCHAR_MASK_VERSION 1u
 #define RLDCHAR_MASK_HEAD_BYTES 4u                 // version and flags, then the model frame
@@ -1635,6 +1638,12 @@ static enum RldCharVerdict RldChar_CheckModel(const u8 *cmdl, size_t size, struc
 #define RLDCHAR_MASK_ANIM_COUNT 1
 
 static const u16 s_rldCharMaskFrames[RLDCHAR_MASK_ANIM_COUNT] = {1};
+
+// What every profile has to keep: the facts hold RLDCHAR_ANIM_COUNT
+// animations, and the static bit maps of the map check are sized for
+// RLDCHAR_LIMIT_CMDL. A profile beyond either does not compile.
+typedef char RldChar_MaskAnimsFitTheFacts[(RLDCHAR_MASK_ANIM_COUNT <= RLDCHAR_ANIM_COUNT) ? 1 : -1];
+typedef char RldChar_MaskFitsTheBitMaps[(RLDCHAR_MASK_BYTES_MAX <= RLDCHAR_LIMIT_CMDL) ? 1 : -1];
 
 static const struct RldCharProfile s_rldCharProfileMask = {
     "CMSK",                       // chunk
