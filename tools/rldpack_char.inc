@@ -3573,7 +3573,7 @@ static int RldMk_StepDummy(struct RldMkBuild *b, const struct RldMkOptions *opt)
 
 // The limits of step 4r (see there).
 #define RLDMK_REDUCE_LIMIT (RLDCHAR_DRAW_BYTES_MAX / RLDCHAR_DRAW_BYTES_G3)  // the triangles that draw memory holds
-#define RLDMK_REDUCE_TARGET (RLDMK_REDUCE_LIMIT - (RLDMK_REDUCE_LIMIT / 100u))  // 1 % in hand
+#define RLDMK_REDUCE_TARGET RLDMK_REDUCE_LIMIT  // the game counts as make-char does (RldMk_CheckBuilt)
 #define RLDMK_REDUCE_KEEP 24u
 #define RLDMK_REDUCE_TRIES 10
 
@@ -3933,10 +3933,12 @@ static int RldMk_StepRemesh(struct RldMkBuild *b, const struct RldMkOptions *opt
 // The draw memory of a character holds 28 x T <= RLDCHAR_DRAW_BYTES_MAX bytes
 // per frame: T <= RLDMK_REDUCE_LIMIT (step 6, model-tris). With more, the model
 // is reduced to at most RLDMK_REDUCE_TARGET triangles by
-// tools/rldpack_reduce.inc. The target keeps 1 % in hand: the reduction removes
-// one or two triangles per step and stops at the first count at or below the
-// target, and the reserve keeps the model under the limit should the game count
-// the command list differently. At or below the limit nothing is reduced -
+// tools/rldpack_reduce.inc. The target is the limit itself: the reduction
+// removes one or two triangles per step and stops at the first count at or
+// below it, and the game cannot count differently - step 15 replays the
+// command list by the game's own check and refuses a model whose count
+// differs from the builder's (model-roundtrip, RldMk_CheckBuilt). A reserve
+// of 1 % for that case only cost 72 triangles. At or below the limit nothing is reduced -
 // not even when the file would be too large (RldMk_BuildModel). When a reduced
 // model then still fails mem-model or model-frame (too many records),
 // RldMk_BuildModel lowers the target by 5 % and builds again, at most
@@ -15533,7 +15535,7 @@ static void RldMk_SelfTestChri(const u8 *good, size_t goodSize)
 #define RLDMK_GOLDEN_SIZE_ICON "12f8880b561f2c5fb6dabfa2ae3a0f1f8d14f7e3bca1a07a1db9c526e56e50c7"
 #define RLDMK_GOLDEN_FIT "fed8b96dcba705b150ee8ca109d5fd17ebfa70e9a11767a292a1a8b03bac3e08"
 #define RLDMK_GOLDEN_NO_WHEELS "4d80fa05dfd7539318fce7e7e1dd88fe2d49ba723fa8c7accdbccba45cfd9b2d"
-#define RLDMK_GOLDEN_REDUCED "3b527e44ce786fa928f1c9ad1de893e48d6fdd642e007fc7d9c82ed4b464b638"
+#define RLDMK_GOLDEN_REDUCED "f29726b550d8436c84f0d5bc47f2854843d9d81aec39c3a61071e6932fd69dd6"
 
 // --- --size --------------------------------------------------------------------------
 
