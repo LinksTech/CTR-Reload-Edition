@@ -123,6 +123,7 @@ struct RsPageState {
     int viewW, viewH;
     int fitting;
     int fitPosted;
+    int headW;          // the width the heading was measured for (Rs_TopUpdate)
 };
 
 static HINSTANCE g_inst;
@@ -134,6 +135,8 @@ static HWND g_lastFocus;
 static int g_narrow;                    // sidebar with icons only
 static int g_forcedDpi;                 // --ui-scale as dpi, 0 = the monitor's
 static int g_screenW, g_screenH;        // --screen, 0 = the real monitor
+static int g_pageTop;                   // Rs_PageTop, 0 = not measured yet
+static int g_topChanged;                // a fit moved Rs_PageTop: lay the other pages out again
 static HWND g_pages[RS_PAGE_COUNT];
 static const struct RsPageDef *const g_defs[RS_PAGE_COUNT] = {
     &g_rsTrackPage, &g_rsCupsPage, &g_rsCharPage, &g_rsTestPage
@@ -1574,9 +1577,47 @@ RECT Rs_CardInner(const RECT *outer, int hasTitle)
     return r;
 }
 
+static SIZE Rs_TextSize(HDC dc, HFONT font, const wchar_t *text, int width, UINT flags);
+static void Rs_Layout(int relayout);
+
+// The heading of a page at the page width w: title and subtitle wrap where the
+// page is narrower than their line. *titleBottom and *subBottom are the lower
+// edges of both (on one line each: 68 and 92 at 96 dpi, as always).
+static void Rs_HeadMetrics(const struct RsPageDef *def, int w, int *titleBottom, int *subBottom)
+{
+    HDC dc = GetDC(NULL);
+    int room = w - Rs_Px(64), th, sh;
+    if (room < Rs_Px(100))
+        room = Rs_Px(100);
+    th = Rs_TextSize(dc, Rs_Font(RS_FONT_TITLE), def->title, room, DT_WORDBREAK | DT_NOPREFIX).cy;
+    sh = Rs_TextSize(dc, Rs_Font(RS_FONT_BODY), def->subtitle, room, DT_WORDBREAK | DT_NOPREFIX).cy;
+    ReleaseDC(NULL, dc);
+    *titleBottom = Rs_Px(24) + (th > Rs_Px(44) ? th : Rs_Px(44));
+    *subBottom = *titleBottom + (sh > Rs_Px(24) ? sh : Rs_Px(24));
+}
+
+// Rs_PageTop is one value for all pages (a page asks for it without saying which
+// it is): below the deepest heading of all pages at their present widths, at
+// least 104 px. 1 = it changed.
+static int Rs_TopUpdate(void)
+{
+    int i, top = Rs_Px(104), old = g_pageTop;
+    for (i = 0; i < RS_PAGE_COUNT; i++) {
+        struct RsPageState *st = g_pages[i] ? Rs_State(g_pages[i]) : NULL;
+        int tb, sb;
+        if (!st || st->headW <= 0)
+            continue;
+        Rs_HeadMetrics(st->def, st->headW, &tb, &sb);
+        if (sb + Rs_Px(12) > top)
+            top = sb + Rs_Px(12);
+    }
+    g_pageTop = top;
+    return top != old;
+}
+
 int Rs_PageTop(void)
 {
-    return Rs_Px(104);
+    return g_pageTop > 0 ? g_pageTop : Rs_Px(104);
 }
 
 static int Rs_InCard(struct RsPageState *st, HWND page, HWND ctl)
@@ -2361,15 +2402,18 @@ static void Rs_PagePaint(HWND hwnd)
     FillRect(dc, &rc, g_brPage);
     SetBkMode(dc, TRANSPARENT);
     if (st && st->def) {
-        RECT t = { Rs_Px(32), Rs_Px(24), rc.right - Rs_Px(32), Rs_Px(68) };
+        RECT t;
+        int tb, sb;
+        Rs_HeadMetrics(st->def, rc.right, &tb, &sb);
+        SetRect(&t, Rs_Px(32), Rs_Px(24), rc.right - Rs_Px(32), tb);
         oldFont = SelectObject(dc, Rs_Font(RS_FONT_TITLE));
         SetTextColor(dc, RS_COL_TEXT);
-        DrawTextW(dc, st->def->title, -1, &t, DT_SINGLELINE | DT_NOPREFIX);
-        t.top = Rs_Px(68);
-        t.bottom = Rs_Px(92);
+        DrawTextW(dc, st->def->title, -1, &t, DT_WORDBREAK | DT_NOPREFIX);
+        t.top = tb;
+        t.bottom = sb;
         SelectObject(dc, Rs_Font(RS_FONT_BODY));
         SetTextColor(dc, RS_COL_MUTED);
-        DrawTextW(dc, st->def->subtitle, -1, &t, DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        DrawTextW(dc, st->def->subtitle, -1, &t, DT_WORDBREAK | DT_NOPREFIX);
         for (i = 0; i < st->cardCount; i++) {
             struct RsCard *c = &st->cards[i];
             Rs_FillRound(dc, &c->rc, Rs_Px(12), RS_COL_CARD, RS_COL_BORDER);
@@ -2633,6 +2677,12 @@ static void Rs_PageFit(int id, int relayout)
         w = view.cx > need.cx ? view.cx : need.cx;
         h = view.cy > need.cy ? view.cy : need.cy;
         GetClientRect(page, &pr);
+        // The heading wraps at this width: Rs_PageTop before the layout runs.
+        if (st->headW != w) {
+            st->headW = w;
+            if (Rs_TopUpdate())
+                g_topChanged = 1;
+        }
         if (pr.right != w || pr.bottom != h) {
             SetWindowPos(page, NULL, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
         } else if (relayout && st->def->layout) {
@@ -2754,7 +2804,10 @@ static LRESULT CALLBACK Rs_HostProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         // page that became shorter (a card closed) shrinks back as well.
         if (id >= 0 && id < RS_PAGE_COUNT && g_pages[id]) {
             Rs_State(g_pages[id])->fitPosted = 0;
+            g_topChanged = 0;
             Rs_PageFit(id, 0);
+            if (g_topChanged)
+                Rs_Layout(1);
         }
         return 0;
     }
@@ -3239,7 +3292,9 @@ done:
 //   window   <client w> <client h> <dpi> <monitor dpi> <sidebar w> <narrow> <compact>
 //   view     <x> <y> <w> <h>        the visible part of the page, in the client area
 //   page     <word> <w> <h> <scroll x> <scroll y> <min w> <min h>
-//   header   <title w> <subtitle w> <room w>        room = page width - 64
+//   header   <title w> <subtitle w> <room w> <bottom> <page top>
+//            title and subtitle on one line, room = page width - 64, bottom = lower
+//            edge of the (wrapped) heading, page top = Rs_PageTop
 //   card     <l> <t> <r> <b> <title right edge> <title>
 //   control  <id> <class> <l> <t> <r> <b> <visible> <enabled> <ellipsis> <need w> <need h> <text>
 //   focus    <id>                   the control with the keyboard focus, if on the page
@@ -3345,10 +3400,14 @@ static int Rs_DumpControls(const wchar_t *path)
     fprintf(f, "view\t%ld\t%ld\t%d\t%d\n", hr.left, hr.top, st->viewW, st->viewH);
     fprintf(f, "page\t%ls\t%ld\t%ld\t%d\t%d\t%d\t%d\n", g_pageWords[st->id], pr.right, pr.bottom,
             st->scrollX, st->scrollY, Rs_PageMin(st).cx, Rs_PageMin(st).cy);
-    fprintf(f, "header\t%ld\t%ld\t%ld\n",
-            Rs_TextSize(dc, Rs_Font(RS_FONT_TITLE), st->def->title, 0, DT_SINGLELINE | DT_NOPREFIX).cx,
-            Rs_TextSize(dc, Rs_Font(RS_FONT_BODY), st->def->subtitle, 0, DT_SINGLELINE | DT_NOPREFIX).cx,
-            pr.right - Rs_Px(64));
+    {
+        int tb, sb;
+        Rs_HeadMetrics(st->def, pr.right, &tb, &sb);
+        fprintf(f, "header\t%ld\t%ld\t%ld\t%d\t%d\n",
+                Rs_TextSize(dc, Rs_Font(RS_FONT_TITLE), st->def->title, 0, DT_SINGLELINE | DT_NOPREFIX).cx,
+                Rs_TextSize(dc, Rs_Font(RS_FONT_BODY), st->def->subtitle, 0, DT_SINGLELINE | DT_NOPREFIX).cx,
+                pr.right - Rs_Px(64), sb, Rs_PageTop());
+    }
     for (i = 0; i < st->cardCount; i++) {
         struct RsCard *k = &st->cards[i];
         long edge = k->hasTitle ? k->rc.left + Rs_Px(18) +
@@ -3564,7 +3623,7 @@ static void Rs_AutoTick(void)
 static void Rs_Layout(int relayout)
 {
     RECT rc;
-    int side, i;
+    int side, i, round;
     GetClientRect(g_main, &rc);
     g_narrow = rc.right < Rs_Px(RS_WIDE_MIN);
     side = Rs_Px(g_narrow ? RS_SIDEBAR_NARROW : RS_SIDEBAR_W);
@@ -3572,11 +3631,19 @@ static void Rs_Layout(int relayout)
     InvalidateRect(g_sidebar, NULL, FALSE);
     Rs_TipsUpdate();
     MoveWindow(g_host, side, 0, rc.right - side > 1 ? rc.right - side : 1, rc.bottom > 1 ? rc.bottom : 1, TRUE);
-    for (i = 0; i < RS_PAGE_COUNT; i++)
-        if (i != g_current)
-            Rs_PageFit(i, relayout);
-    if (g_current >= 0)
-        Rs_PageFit(g_current, relayout);
+    // A second round when a page's width moved the common Rs_PageTop (its
+    // heading wraps into another line): then every page anew.
+    for (round = 0; round < 2; round++) {
+        g_topChanged = Rs_TopUpdate();     // the fonts may have changed (dpi)
+        for (i = 0; i < RS_PAGE_COUNT; i++)
+            if (i != g_current)
+                Rs_PageFit(i, relayout);
+        if (g_current >= 0)
+            Rs_PageFit(g_current, relayout);
+        if (!g_topChanged)
+            break;
+        relayout = 1;
+    }
 }
 
 // The work area the window has to fit into: that of its monitor, or with
