@@ -2715,6 +2715,7 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 	u32 i;
 	int best = -1;
 	int aside = -1;
+	int noSteering = 0;  // the vehicle is the model's own, shorter than a kart: no steering wheel is looked for
 
 	parent = (u32 *)malloc(((size_t)b->positionCount + 1u) * sizeof(u32));
 	partOfRoot = (u32 *)malloc(((size_t)b->positionCount + 1u) * sizeof(u32));
@@ -2837,6 +2838,11 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 		if ((vehicle >= 0) && opt->noWheels)
 		{
 			best = vehicle;
+			// A vehicle of its own, shorter than a kart (a tank's chassis, a
+			// board): it has no retail steering wheel, and a small part in
+			// front of the driver is his own (a tank driver's arms) - fitted
+			// within Crash it may well be as small as a steering wheel.
+			noSteering = 1;
 			RldMk_Say("info", "ply-kart-short", NULL, "Kart wheels hidden: the vehicle at the bottom (%.2f model units long) is taken as the kart.", vehicleLength);
 		}
 		else
@@ -2921,7 +2927,7 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 		for (i = 0; i < b->partCount; i++)
 		{
 			struct RldMkPart *part = &b->parts[i];
-			const int wheel = (RldMk_Extent(part) <= (RLDMK_WHEEL_EXTENT * RLDMK_UNITS)) && ((0.5 * (part->lo[2] + part->hi[2])) > driverZ);
+			const int wheel = !noSteering && (RldMk_Extent(part) <= (RLDMK_WHEEL_EXTENT * RLDMK_UNITS)) && ((0.5 * (part->lo[2] + part->hi[2])) > driverZ);
 
 			if (((int)i != best) && ((int)i != b->driverPart) && !wheel && (part->lo[0] < kartX) && (part->hi[0] > kartX) && (part->lo[0] <= kart->hi[0]) &&
 			    (part->hi[0] >= kart->lo[0]) && (part->lo[2] <= kart->hi[2]) && (part->hi[2] >= kart->lo[2]) && (part->lo[1] <= kart->hi[1]))
@@ -2983,7 +2989,8 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 		for (i = 0; i < b->partCount; i++)
 		{
 			struct RldMkPart *part = &b->parts[i];
-			const int wheel = (b->driverPart >= 0) && (RldMk_Extent(part) <= (RLDMK_WHEEL_EXTENT * RLDMK_UNITS)) && ((0.5 * (part->lo[2] + part->hi[2])) > driverZ);
+			const int wheel = !noSteering && (b->driverPart >= 0) && (RldMk_Extent(part) <= (RLDMK_WHEEL_EXTENT * RLDMK_UNITS)) &&
+			                  ((0.5 * (part->lo[2] + part->hi[2])) > driverZ);
 
 			if ((b->driverPart < 0) || (((int)i != b->driverPart) && !wheel && !RldMk_AboveVehicle(part, &b->parts[best])))
 			{
@@ -3003,7 +3010,7 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 		{
 			struct RldMkPart *part = &b->parts[i];
 
-			if ((part->group == RLDMK_GROUP_KART) || ((int)i == b->driverPart) || (RldMk_Extent(part) > (RLDMK_WHEEL_EXTENT * RLDMK_UNITS)))
+			if (noSteering || (part->group == RLDMK_GROUP_KART) || ((int)i == b->driverPart) || (RldMk_Extent(part) > (RLDMK_WHEEL_EXTENT * RLDMK_UNITS)))
 			{
 				continue;
 			}
@@ -20452,6 +20459,39 @@ static void RldMk_SelfTestTurret(struct RldMkTestMesh *mesh)
 	}
 }
 
+// NO STEERING WHEEL ON A VEHICLE OF ITS OWN: --wheels off, a vehicle shorter
+// than a kart, a driver on it and a small part in front of him (arms, say):
+// the small part leans with the driver instead of turning as a steering wheel.
+static void RldMk_SelfTestNoSteering(struct RldMkTestMesh *mesh)
+{
+	static const double vehicleLo[3] = {-0.40, 0.00, -0.50};
+	static const double vehicleHi[3] = {0.40, 0.30, 0.50};
+	static const double driverLo[3] = {-0.25, 0.32, -0.30};
+	static const double driverHi[3] = {0.25, 1.40, 0.10};
+	static const double armsLo[3] = {-0.10, 0.70, 0.20};
+	static const double armsHi[3] = {0.10, 0.80, 0.30};
+	struct RldMkOptions opt;
+	struct RldMkPly ply;
+	struct RldMkBuild b;
+	int ok;
+
+	mesh->vertexCount = 0;
+	mesh->faceCount = 0;
+	RldMk_TestBox(mesh, vehicleLo, vehicleHi, 1u, 0u, 0, -1);
+	RldMk_TestBox(mesh, driverLo, driverHi, 2u, 10u, 0, -1);
+	RldMk_TestBox(mesh, armsLo, armsHi, 1u, 20u, 0, -1);
+	RldMk_TestOptions(&opt);
+	opt.fit = 1;
+	opt.noWheels = 1;
+	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && RldMk_Said("ply-kart-short") && (b.groupTriangles[RLDMK_GROUP_WHEEL] == 0u) &&
+	     (b.groupTriangles[RLDMK_GROUP_DRIVER] == 60u);
+	RldMk_Test(ok, "--wheels off, a vehicle of its own: a small part in front of the driver leans with him, no steering wheel",
+	           "built %d, kart %u, driver %u, wheel %u, said: %s", ok, b.groupTriangles[RLDMK_GROUP_KART], b.groupTriangles[RLDMK_GROUP_DRIVER],
+	           b.groupTriangles[RLDMK_GROUP_WHEEL], s_rldMkCodes);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+}
+
 static int RldChar_SelfTest(void)
 {
 	struct RldMkTestMesh *mesh = (struct RldMkTestMesh *)calloc(1, sizeof(struct RldMkTestMesh));
@@ -20518,6 +20558,7 @@ static int RldChar_SelfTest(void)
 	RldMk_SelfTestRemeshTarget();
 	RldMk_SelfTestStrtod();
 	RldMk_SelfTestTurret(mesh);
+	RldMk_SelfTestNoSteering(mesh);
 	s_rldMkQuiet = quietBefore;
 	RldMk_ResetSaid();
 
