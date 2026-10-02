@@ -205,10 +205,14 @@ set_target_properties(rldpack PROPERTIES
 # own: SSE2, no contraction into FMA, no reordering. /fp:precise and
 # /arch:SSE2 are what MSVC does for x86 anyway; they are written down here so
 # that a global /fp:fast or a changed default cannot change containers without
-# a word. tools/rldpack.c stops the build with #error if they are overridden
-# anyway.
+# a word. GCC and Clang for i686 would compute double in the 80-bit x87 unit
+# instead; -msse2 -mfpmath=sse gives them the same arithmetic as MSVC,
+# -ffp-contract=off and -fno-fast-math keep FMA and reordering out.
+# tools/rldpack.c stops the build with #error if they are overridden anyway.
 if(CTR_NATIVE_MSVC_FRONTEND)
     set(CTR_RLDPACK_FP_OPTIONS /fp:precise /arch:SSE2)
+else()
+    set(CTR_RLDPACK_FP_OPTIONS -msse2 -mfpmath=sse -ffp-contract=off -fno-fast-math)
 endif()
 target_compile_options(rldpack PRIVATE ${CTR_RLDPACK_FP_OPTIONS})
 
