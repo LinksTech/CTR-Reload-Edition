@@ -12883,8 +12883,14 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	RldMk_EmitFacts(&build, templateId);
 	RldMk_PrintFacts(&build, &opt, templateId);
 
-	// BUILT TWICE: the same input must give the same bytes.
-	if (built)
+	// BUILT TWICE: the same input must give the same bytes. Not with --check:
+	// Reload Studio checks after every change of a field, and nothing is
+	// written then - the build that writes the character still builds twice.
+	if (built && check)
+	{
+		printf("  checks        the game's model rules, read back, cull sides (built once: --check)\n");
+	}
+	else if (built)
 	{
 		struct RldMkBuild again;
 		const int quiet = s_rldMkQuiet;
