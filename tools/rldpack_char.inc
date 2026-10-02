@@ -65,6 +65,54 @@
 // written out below instead of taken from the C library, so that two runtimes
 // cannot round differently.
 
+#include <time.h>
+
+//========================================================================================
+// PROGRESS (--machine)
+//========================================================================================
+//
+// Long steps - repair, remesh, reduce (tools/rldpack_repair.inc, _remesh.inc,
+// _reduce.inc) and writing the file - say how far they are, for the progress
+// bar of Reload Studio: "@progress <step> <done> <total>" (TAB between the
+// fields like every machine line), at most one line per 250 ms of the clock,
+// stdout flushed after each. The first line comes 250 ms after the start at
+// the earliest, so short runs stay silent; the end of a step (done = total)
+// is said when a line of that step with less done was said before, so a bar
+// ends full. Also in the quiet passes (the fit probe, the tries of step 4r):
+// the long work runs there. Only with --machine. The clock decides only
+// whether a line is written - it never reaches the file, the preview or the
+// diagnosis, which stay the same bytes however often this is called.
+// Callers: not per triangle, every 1024 steps or per round is enough.
+
+static clock_t s_rldMkProgressAt;
+static char s_rldMkProgressStep[16];
+static u32 s_rldMkProgressDone;
+
+static void RldMk_Progress(const char *step, u32 done, u32 total)
+{
+	const clock_t now = clock();
+	const int sameStep = (strncmp(step, s_rldMkProgressStep, sizeof(s_rldMkProgressStep)) == 0);
+	const int finish = (total != 0u) && (done == total) && sameStep && (s_rldMkProgressDone < done);
+	char numbers[2][16];
+
+	if (!s_machine || (now == (clock_t)-1))
+	{
+		return;
+	}
+	if (!finish && ((double)(now - s_rldMkProgressAt) < (0.25 * (double)CLOCKS_PER_SEC)))
+	{
+		return;
+	}
+
+	s_rldMkProgressAt = now;
+	snprintf(s_rldMkProgressStep, sizeof(s_rldMkProgressStep), "%s", step);
+	s_rldMkProgressDone = done;
+	snprintf(numbers[0], sizeof(numbers[0]), "%u", done);
+	snprintf(numbers[1], sizeof(numbers[1]), "%u", total);
+	Rld_Emit("progress", step, numbers[0], numbers[1], (const char *)NULL);
+	fflush(stdout);
+}
+
 #include "rldpack_reduce.inc"
 #include "rldpack_remesh.inc"
 #include "rldpack_repair.inc"
@@ -12830,13 +12878,45 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		}
 	}
 
+	// The file is written as <out>.part and renamed at the end: a build that
+	// fails or is stopped (Reload Studio's Cancel ends the process) leaves at
+	// most the .part, never half a character under the real name. A .part of
+	// a failed write is deleted here.
 	if (!check)
 	{
-		FILE *file = fopen(outPath, "wb");
-		const int openError = (file == NULL) ? errno : 0;
+		static char partPath[RLD_PATH_MAX + 32];
+		FILE *file;
+		int openError;
+		int written;
+		size_t at = 0;
 
-		if ((file == NULL) || (fwrite(container, 1, containerSize, file) != containerSize) || (fclose(file) != 0))
+		snprintf(partPath, sizeof(partPath), "%s.part", outPath);
+		file = fopen(partPath, "wb");
+		openError = (file == NULL) ? errno : 0;
+		written = (file != NULL);
+		while (written && (at < containerSize))
 		{
+			const size_t chunk = ((containerSize - at) < 65536u) ? (containerSize - at) : 65536u;
+
+			written = (fwrite(&container[at], 1, chunk, file) == chunk);
+			at += chunk;
+			RldMk_Progress("write", (u32)at, (u32)containerSize);
+		}
+		if (file != NULL)
+		{
+			written = (fclose(file) == 0) && written;
+		}
+		if (written)
+		{
+			remove(outPath);  // rename does not replace a file on every system; a missing one is fine
+			written = (rename(partPath, outPath) == 0);
+		}
+		if (!written)
+		{
+			if (file != NULL)
+			{
+				remove(partPath);
+			}
 			if (!RldMk_SayMissingFolder("error", "write", outPath, "The character file", openError))
 			{
 				RldMk_Say("error", "write", outPath,
