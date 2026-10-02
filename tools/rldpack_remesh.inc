@@ -1,8 +1,10 @@
 // rldpack_remesh.inc - a closed hull per group for make-char (fallback, on request)
 //
 // Part of the packer, never of the game. Self-contained: it needs only the C
-// standard library (stdlib, string, stdio, stdarg) and the types u8, u32 and
-// u64 of tools/rldpack.c, so it can be included anywhere after those.
+// standard library (stdlib, string, stdio, stdarg), the types u8, u32 and u64
+// of tools/rldpack.c and RldMk_Progress of tools/rldpack_char.inc (progress
+// lines for Reload Studio, which never change a result), so it can be
+// included anywhere after those.
 //
 // WHAT IT DOES. A model whose surface is open, doubled or tangled (holes,
 // loose sheets, parts stuck into each other) is replaced, group by group, by
@@ -519,6 +521,19 @@ struct RldRemGrid
 
 // The work budget of a group; the self-test lowers it to try the refusal.
 static u64 s_rldRemWorkMax = RLDREM_WORK_MAX;
+
+// Progress for Reload Studio (@progress remesh): RLDREM_PROGRESS_PHASES
+// phases per group that has triangles (grid, inside, surface, smoothing and
+// pull, colors, check); s_rldRemProgressAt counts the phases done.
+#define RLDREM_PROGRESS_PHASES 6u
+
+static u32 s_rldRemProgressAt;
+static u32 s_rldRemProgressTotal;
+
+static void RldRem_Progress(u32 phase)
+{
+	RldMk_Progress("remesh", s_rldRemProgressAt + phase, s_rldRemProgressTotal);
+}
 
 // Counts steps of work; 0 once the budget of the group is used up.
 static int RldRem_Work(struct RldRemGrid *g, u32 steps)
@@ -1939,6 +1954,7 @@ static int RldRem_Group(const RldRemInput *in, u8 group, const u32 *list, u32 li
 		free(tri);
 		return 0;
 	}
+	RldRem_Progress(1u);
 	if (!RldRem_VoteInside(&g) || !RldRem_FloodOutside(&g))
 	{
 		snprintf(why, whySize, g.overrun ? "remesh: too complex for remesh at this resolution (group %u)." : "remesh: out of memory.", (u32)group);
@@ -1952,6 +1968,8 @@ static int RldRem_Group(const RldRemInput *in, u8 group, const u32 *list, u32 li
 		s_rldRemStats.insideCells += (g.flag[t] & RLDREM_OUTSIDE) ? 0u : 1u;
 		s_rldRemStats.votedCells += ((g.flag[t] & (RLDREM_VOTED | RLDREM_SURFACE)) == RLDREM_VOTED) ? 1u : 0u;
 	}
+
+	RldRem_Progress(2u);
 
 	// 3: the surface; its positions are the sorted unique edge keys.
 	RldRem_March(&g, &keys);
@@ -2054,6 +2072,7 @@ static int RldRem_Group(const RldRemInput *in, u8 group, const u32 *list, u32 li
 	}
 
 	// 4: smooth, then pull onto the model.
+	RldRem_Progress(3u);
 	memcpy(smooth, base, (size_t)vertexCount * 3u * sizeof(double));
 	for (k = 0; k < RLDREM_SMOOTH_STEPS; k++)
 	{
@@ -2193,6 +2212,7 @@ static int RldRem_Group(const RldRemInput *in, u8 group, const u32 *list, u32 li
 	}
 
 	// 5: colors.
+	RldRem_Progress(4u);
 	for (v = 0; v < vertexCount; v++)
 	{
 		double q[3];
@@ -2233,6 +2253,7 @@ static int RldRem_Group(const RldRemInput *in, u8 group, const u32 *list, u32 li
 	}
 
 	// 6: the check.
+	RldRem_Progress(5u);
 	if (!RldRem_CheckHull(pos, triangle, keys.count, why, whySize))
 	{
 		goto done;
@@ -2291,6 +2312,7 @@ static int RldRem_Group(const RldRemInput *in, u8 group, const u32 *list, u32 li
 	out->positionCount += vertexCount;
 	out->triangleCount += keys.count;
 	ok = 1;
+	RldRem_Progress(RLDREM_PROGRESS_PHASES);
 
 done:
 	s_rldRemStats.work = (g.work > s_rldRemStats.work) ? g.work : s_rldRemStats.work;
@@ -2420,6 +2442,20 @@ int RldRem_Remesh(const RldRemInput *in, RldRemResult *out, char *why, size_t wh
 		snprintf(why, whySize, "remesh: out of memory.");
 		return 0;
 	}
+	s_rldRemProgressAt = 0u;
+	s_rldRemProgressTotal = 0u;
+	for (group = 0; group < in->groupCount; group++)
+	{
+		for (t = 0; t < in->triangleCount; t++)
+		{
+			if (in->triangleGroup[t] == group)
+			{
+				s_rldRemProgressTotal += RLDREM_PROGRESS_PHASES;
+				break;
+			}
+		}
+	}
+	RldRem_Progress(0u);
 	for (group = 0; group < in->groupCount; group++)
 	{
 		u32 count = 0;
@@ -2441,6 +2477,7 @@ int RldRem_Remesh(const RldRemInput *in, RldRemResult *out, char *why, size_t wh
 			RldRem_Free(out);
 			return 0;
 		}
+		s_rldRemProgressAt += RLDREM_PROGRESS_PHASES;
 	}
 	free(list);
 	return 1;

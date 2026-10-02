@@ -1,8 +1,10 @@
 // rldpack_reduce.inc - automatic mesh reduction for make-char
 //
 // Part of the packer, never of the game. Self-contained: it needs only the C
-// standard library (stdlib, string, stdio, stdarg) and the types u8 and u32
-// of tools/rldpack.c, so it can be included anywhere after those.
+// standard library (stdlib, string, stdio, stdarg), the types u8 and u32 of
+// tools/rldpack.c and RldMk_Progress of tools/rldpack_char.inc (progress
+// lines for Reload Studio, which never change a result), so it can be
+// included anywhere after those.
 //
 // WHAT IT DOES. A model with more triangles than the draw memory of a driver
 // allows is reduced to a target per group (kart, driver, steering wheel), or
@@ -1810,6 +1812,35 @@ static int RldRed_Setup(struct RldRedState *s, const RldRedMesh *mesh, int guard
 // one reduction at a time.
 static u32 s_rldRedLateCollapses;
 
+// Progress for Reload Studio (@progress reduce): the triangles removed so far
+// against the triangles to remove. RldMk_Progress keeps the pace of the lines;
+// it is called every RLDRED_PROGRESS_STEP heap entries or positions. A later
+// stage (RldRed_Reduce) starts again at 0.
+#define RLDRED_PROGRESS_STEP 256u
+
+static u32 RldRed_ToRemove(const struct RldRedState *s)
+{
+	u32 goal = 0;
+	u32 g;
+
+	if (s->mesh->totalTarget != 0u)
+	{
+		return (s->m > s->mesh->totalTarget) ? (s->m - s->mesh->totalTarget) : 0u;
+	}
+	for (g = 0; g < s->mesh->groupCount; g++)
+	{
+		goal += (s->groupCount[g] > s->mesh->groupTarget[g]) ? (s->groupCount[g] - s->mesh->groupTarget[g]) : 0u;
+	}
+	return goal;
+}
+
+static void RldRed_Progress(const struct RldRedState *s, u32 goal)
+{
+	const u32 removed = s->m - s->total;
+
+	RldMk_Progress("reduce", (removed < goal) ? removed : goal, goal);
+}
+
 void RldRed_Free(RldRedResult *result)
 {
 	if (result == NULL)
@@ -1830,6 +1861,8 @@ static int RldRed_Run(const RldRedMesh *mesh, RldRedResult *out, char *why, size
 	struct RldRedState s;
 	u32 above = 0;
 	u32 kept = 0;
+	u32 goal;
+	u32 pops = 0;
 	u32 phase;
 	u32 g;
 	u32 p;
@@ -1847,6 +1880,8 @@ static int RldRed_Run(const RldRedMesh *mesh, RldRedResult *out, char *why, size
 	{
 		above += RldRed_GroupAbove(&s, g) ? 1u : 0u;
 	}
+	goal = RldRed_ToRemove(&s);
+	RldRed_Progress(&s, goal);
 
 	// The cheapest valid collapse, until every group is at its target or no
 	// collapse is left. Two phases: when the first runs dry above a target,
@@ -1861,6 +1896,10 @@ static int RldRed_Run(const RldRedMesh *mesh, RldRedResult *out, char *why, size
 		{
 			const u32 neighbors = RldRed_Ring(&s, p);
 
+			if ((p % RLDRED_PROGRESS_STEP) == 0u)
+			{
+				RldRed_Progress(&s, goal);
+			}
 			for (i = 0; i < neighbors; i++)
 			{
 				if (!RldRed_Push(&s, p, s.ring[i]))
@@ -1879,6 +1918,10 @@ static int RldRed_Run(const RldRedMesh *mesh, RldRedResult *out, char *why, size
 
 			RldRed_HeapPop(&s, &c);
 			RldRed_MarkGuard(&s);
+			if ((++pops % RLDRED_PROGRESS_STEP) == 0u)
+			{
+				RldRed_Progress(&s, goal);
+			}
 			if (!RldRed_Current(&s, &c) || !RldRed_CanCollapse(&s, c.u, c.v, &nu))
 			{
 				continue;
@@ -1904,6 +1947,7 @@ static int RldRed_Run(const RldRedMesh *mesh, RldRedResult *out, char *why, size
 		}
 	}
 
+	RldRed_Progress(&s, goal);
 	if ((mesh->totalTarget != 0u) && (s.total > mesh->totalTarget))
 	{
 		snprintf(why, whySize, "reduce: %u triangles kept, the target is %u; no further collapse keeps the mesh valid.", s.total, mesh->totalTarget);

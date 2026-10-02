@@ -1,8 +1,10 @@
 // rldpack_repair.inc - mesh repair for make-char: weld, clean, orient, close small holes
 //
 // Part of the packer, never of the game. Self-contained: it needs only the C
-// standard library (stdlib, string, stdio, stdarg) and the types u8, u32 and
-// s64 of tools/rldpack.c, so it can be included anywhere after those.
+// standard library (stdlib, string, stdio, stdarg), the types u8, u32 and s64
+// of tools/rldpack.c and RldMk_Progress of tools/rldpack_char.inc (progress
+// lines for Reload Studio, which never change a result), so it can be
+// included anywhere after those.
 //
 // WHY. The game draws a driver with back face culling: a triangle is seen
 // from its front only. Models from modelling programs often are not ready for
@@ -2779,6 +2781,17 @@ double RldRep_DefaultWeld(u32 positionCount, const double *position)
 	return longest / RLDREP_WELD_DIVISOR;
 }
 
+// Progress for Reload Studio (@progress repair): the passes of RldRep_Repair
+// done (weld, clean, cracks, orient, holes, orient again, count). Always 1,
+// so that it chains with the passes.
+#define RLDREP_PROGRESS_PASSES 7u
+
+static int RldRep_Progress(u32 done)
+{
+	RldMk_Progress("repair", done, RLDREP_PROGRESS_PASSES);
+	return 1;
+}
+
 // 1 = repaired (also when holes remain): out holds the result (free with
 // RldRep_Free). 0 = invalid input or out of memory: out is empty and why (may
 // be NULL) says which.
@@ -2897,7 +2910,8 @@ int RldRep_Repair(const RldRepInput *in, RldRepResult *out, char *why, size_t wh
 		s.diagonal = RldRep_Sqrt(RldRep_Dot(d, d));
 	}
 
-	ok = RldRep_Weld(&s, &out->welded) && RldRep_Clean(&s, out) && RldRep_SplitCracks(&s, out);
+	ok = RldRep_Progress(0u) && RldRep_Weld(&s, &out->welded) && RldRep_Progress(1u) && RldRep_Clean(&s, out) && RldRep_Progress(2u) &&
+	     RldRep_SplitCracks(&s, out) && RldRep_Progress(3u);
 
 	if (ok)
 	{
@@ -2920,7 +2934,8 @@ int RldRep_Repair(const RldRepInput *in, RldRepResult *out, char *why, size_t wh
 		}
 	}
 
-	ok = ok && RldRep_Orient(&s, 1) && RldRep_Holes(&s, out) && RldRep_Orient(&s, 0) && RldRep_Count(&s, out);
+	ok = ok && RldRep_Orient(&s, 1) && RldRep_Progress(4u) && RldRep_Holes(&s, out) && RldRep_Progress(5u) && RldRep_Orient(&s, 0) &&
+	     RldRep_Progress(6u) && RldRep_Count(&s, out) && RldRep_Progress(7u);
 
 	if (ok)
 	{
