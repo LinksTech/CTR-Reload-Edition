@@ -12100,6 +12100,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	const char *previewArg = NULL;
 	const char *diagnoseArg = NULL;
 	const char *remeshArg = NULL;
+	int noCache = 0;
 	const char *resolutionArg = NULL;
 	const char *repairArg = NULL;
 	const char *openArg = NULL;
@@ -12304,6 +12305,10 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		else if (strcmp(arg, "--check") == 0)
 		{
 			check = 1;
+		}
+		else if (strcmp(arg, "--no-cache") == 0)
+		{
+			noCache = 1;
 		}
 		else
 		{
@@ -12738,6 +12743,13 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		voiceOptions.preview = voicePreviewArg;
 		cvoi = RldMk_VoiceStep(voicesArg, &voiceOptions, &cvoiSize);
 	}
+
+	// A reduced model is kept in TEMP and taken again for the same input
+	// (tools/rldpack_reduce.inc, THE CACHE) - only with --check, the check
+	// Reload Studio runs after every change of a field. A real build always
+	// reduces, so that "built twice" builds twice; --no-cache turns the cache
+	// off for --check as well. The self-tests never use it.
+	s_rldRedCache = check && !noCache;
 
 	// THE MODEL: PLY or OBJ, by its content (tools/rldpack_import.inc).
 	if (!RldMk_LoadModel(modelArg, &ply, &modelInfo, RLDMK_ROLE_MAIN))
@@ -13702,6 +13714,10 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "  --out <file>                somewhere else than next to the model\n");
 	fprintf(out, "  --check                     run every check and build in memory, write\n");
 	fprintf(out, "                              nothing (the previews are written)\n");
+	fprintf(out, "  --no-cache                  with --check: reduce the model even when the\n");
+	fprintf(out, "                              same one was reduced before (--check keeps a\n");
+	fprintf(out, "                              reduced model in TEMP and takes it again - the\n");
+	fprintf(out, "                              same bytes; a build without --check never does)\n");
 	fprintf(out, "  --diagnose <file>           write the model as every step saw it (text,\n");
 	fprintf(out, "                              RLDDIAG 1) and never a character: the limits of\n");
 	fprintf(out, "                              draw memory and file size are lifted for the\n");
