@@ -1374,6 +1374,34 @@ static void RldMk_SelfTestObjCases(struct RldMkTestMesh *mesh)
 			           "a TGA cut short: tex-unreadable", "why: %s", (why != NULL) ? why : "-");
 			free(tga);
 		}
+		{
+			// "BM" and 30..33 bytes: too short for the header the reader
+			// looks at (up to byte 33), never read as BMP.
+			u32 n;
+			int all = 1;
+
+			for (n = 30u; n < 34u; n++)
+			{
+				struct RldObjTexture cut;
+				const char *why = NULL;
+				int fromImg = 0;
+				u8 *bm = (u8 *)calloc(n, 1u);
+
+				memset(&cut, 0, sizeof(cut));
+				if (bm != NULL)
+				{
+					bm[0] = 'B';
+					bm[1] = 'M';
+					bm[18] = 2u;
+					bm[22] = 2u;
+					bm[28] = 24u;
+				}
+				all = all && (bm != NULL) && (RldObj_Decode("selftest/short.bmp", bm, n, &cut, &fromImg, &why) == RLDMK_TEXTURE_UNSUPPORTED) &&
+				      (cut.rgba == NULL);
+				free(bm);
+			}
+			RldMk_Test(all, "a BMP head of 30 to 33 bytes: not read as BMP (tex-unsupported)", "");
+		}
 		RldMk_Test(RldMk_TestObjError("selftest/notes.ply", "just some words\n", 16u, "ply-format"), "unknown content named .ply: the PLY reader's ply-format",
 		           "said: %s", s_rldMkCodes);
 		RldMk_Test((png != NULL) && RldMk_TestObjError("selftest/picture.obj", (const char *)png, pngSize, "model-unsupported"),

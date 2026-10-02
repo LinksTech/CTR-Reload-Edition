@@ -2075,7 +2075,7 @@ static int RldObj_Decode(const char *path, const u8 *data, size_t size, struct R
 	static const u8 png[8] = {0x89u, 0x50u, 0x4Eu, 0x47u, 0x0Du, 0x0Au, 0x1Au, 0x0Au};
 	const int jpeg = (size >= 3u) && (data[0] == 0xFFu) && (data[1] == 0xD8u) && (data[2] == 0xFFu);
 	const int tga = Rld_EndsWithNoCase(path, ".tga") || ((size >= 26u) && (memcmp(&data[size - 18u], "TRUEVISION-XFILE.", 17) == 0));
-	const int bmp = (size >= 30u) && (data[0] == 'B') && (data[1] == 'M');
+	const int bmp = (size >= 34u) && (data[0] == 'B') && (data[1] == 'M');
 
 	*fromImg = 0;
 	*why = NULL;
