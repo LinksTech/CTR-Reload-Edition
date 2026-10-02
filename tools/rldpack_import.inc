@@ -18,8 +18,9 @@
 //   @model format ply|obj
 //   @model mtl ok|missing|bad|none <path|->    OBJ: one per MTL file, none = no mtllib
 //   @file  mtl ok|missing|bad <path> <bytes>   OBJ: the same files
-//   @model texture ok|missing|unreadable|unsupported <material> <path>
-//                                              OBJ: one per material in use with map_Kd
+//   @model texture ok|missing|unreadable|unsupported <material> <path> <sha256|->
+//                                              OBJ: one per material in use with map_Kd;
+//                                              the SHA-256 of the file read, - = none
 //   @model group <faces> <name>                OBJ: one per o/g line, in file order
 //   @model colors vertex|material|texture|grey|mixed
 //                                              where the colors of the corners came from
@@ -78,8 +79,9 @@ struct RldMkModelInfo
 	u32 points;       // points made (OBJ: one per vertex and color)
 };
 
-// @model <key> <fields> - not while the self-test runs quietly.
-static void RldMk_EmitModel(const char *key, const char *a, const char *b, const char *c)
+// @model <key> <fields> (up to four, the first NULL ends them) - not while
+// the self-test runs quietly.
+static void RldMk_EmitModel(const char *key, const char *a, const char *b, const char *c, const char *d)
 {
 	if (!s_machine || s_rldMkQuiet)
 	{
@@ -93,9 +95,13 @@ static void RldMk_EmitModel(const char *key, const char *a, const char *b, const
 	{
 		Rld_Emit("model", key, a, b, (const char *)NULL);
 	}
-	else
+	else if (d == NULL)
 	{
 		Rld_Emit("model", key, a, b, c, (const char *)NULL);
+	}
+	else
+	{
+		Rld_Emit("model", key, a, b, c, d, (const char *)NULL);
 	}
 }
 
@@ -405,7 +411,7 @@ static int RldMk_ImportModel(const char *path, const u8 *data, size_t size, stru
 		Rld_Emit("file", kind, "ok", path, bytes, (const char *)NULL);
 		if (described && (choice.reader != NULL))
 		{
-			RldMk_EmitModel("format", choice.reader->word, NULL, NULL);
+			RldMk_EmitModel("format", choice.reader->word, NULL, NULL, NULL);
 		}
 		if (role == RLDMK_ROLE_MASK)
 		{
@@ -443,7 +449,7 @@ static int RldMk_ImportModel(const char *path, const u8 *data, size_t size, stru
 		                   : (c == RLDMK_COLORS_GREY)     ? "grey"
 		                                                  : "mixed";
 
-		RldMk_EmitModel("colors", word, NULL, NULL);
+		RldMk_EmitModel("colors", word, NULL, NULL, NULL);
 	}
 	return 1;
 }

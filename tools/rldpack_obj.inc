@@ -568,6 +568,7 @@ struct RldObjTexture
 	u32 height;
 	u8 *rgba;
 	u32 library;     // the MTL file of the first material that uses it
+	char sha[65];    // SHA-256 of the file read, hex; "" = none read
 };
 
 struct RldObjModel
@@ -1697,7 +1698,7 @@ static int RldObj_Libraries(struct RldObjModel *m, const char *objPath, char (*l
 
 	if (m->libraryCount == 0u)
 	{
-		RldMk_EmitModel("mtl", "none", "-", NULL);
+		RldMk_EmitModel("mtl", "none", "-", NULL, NULL);
 		return 1;
 	}
 
@@ -1810,7 +1811,7 @@ static int RldObj_Libraries(struct RldObjModel *m, const char *objPath, char (*l
 				RldMk_EmitFile("mtl", "ok", path, size);
 			}
 			free(data);
-			RldMk_EmitModel("mtl", s_rldObjMtlWords[state], path, NULL);
+			RldMk_EmitModel("mtl", s_rldObjMtlWords[state], path, NULL, NULL);
 			(*libraryCount)++;
 			info->libraries++;
 
@@ -2316,7 +2317,7 @@ static void RldObj_VertexColors(struct RldObjModel *m)
 	}
 
 	m->modulate = (s_rldObjOptions.vertexColors == RLDOBJ_VERTEX_MODULATE) || ((s_rldObjOptions.vertexColors == RLDOBJ_VERTEX_AUTO) && rip);
-	RldMk_EmitModel("vertex-colors", s_rldObjVertexWords[s_rldObjOptions.vertexColors], rip ? "rip" : "plain", NULL);
+	RldMk_EmitModel("vertex-colors", s_rldObjVertexWords[s_rldObjOptions.vertexColors], rip ? "rip" : "plain", NULL, NULL);
 }
 
 // One texture onto the corners of the faces whose material uses it: the
@@ -2589,6 +2590,22 @@ static void RldObj_SayMissing(const struct RldObjModel *m, char (*libraryPath)[R
 	          Rld_LastComponent(libraryPath[m->textures[first].library]));
 }
 
+// SHA-256 of a file as 64 hex digits.
+static void RldObj_Digest(const u8 *data, size_t size, char out[65])
+{
+	static const char hex[] = "0123456789abcdef";
+	u8 digest[32];
+	u32 k;
+
+	Sha256(data, size, digest);
+	for (k = 0; k < 32u; k++)
+	{
+		out[2u * k] = hex[digest[k] >> 4];
+		out[2u * k + 1u] = hex[digest[k] & 15u];
+	}
+	out[64] = '\0';
+}
+
 // The texture of a material in use: the file it names, found, read, applied
 // and freed again, one after the other. 0 = out of memory (said).
 static int RldObj_Textures(struct RldObjModel *m, const char *objPath, char (*libraryPath)[RLD_PATH_MAX], const u8 *nameUsed, u8 *cornerRgb,
@@ -2689,6 +2706,9 @@ static int RldObj_Textures(struct RldObjModel *m, const char *objPath, char (*li
 		}
 		else
 		{
+			// Which file was read: the bytes depend on the files next to
+			// the model, the digest in @model texture makes that visible.
+			RldObj_Digest(data, size, t->sha);
 			t->state = RldObj_Decode(shown, data, size, t, &fromImg, &why);
 		}
 		free(data);
@@ -2741,7 +2761,7 @@ static int RldObj_Textures(struct RldObjModel *m, const char *objPath, char (*li
 			}
 			info->textures++;
 			info->texturesOk += (t->state == RLDMK_TEXTURE_OK) ? 1u : 0u;
-			RldMk_EmitModel("texture", s_rldObjTextureWords[t->state], m->names.text[n], shown);
+			RldMk_EmitModel("texture", s_rldObjTextureWords[t->state], m->names.text[n], shown, (t->sha[0] != '\0') ? t->sha : "-");
 			if (t->state == RLDMK_TEXTURE_OK)
 			{
 				continue;
@@ -3071,7 +3091,7 @@ static int RldObj_Parse(const char *path, const u8 *data, size_t size, struct Rl
 			char faces[16];
 
 			snprintf(faces, sizeof(faces), "%u", m.groups[i].faces);
-			RldMk_EmitModel("group", faces, (m.groups[i].name[0] != '\0') ? m.groups[i].name : "-", NULL);
+			RldMk_EmitModel("group", faces, (m.groups[i].name[0] != '\0') ? m.groups[i].name : "-", NULL, NULL);
 		}
 		if (m.groupsMore != 0u)
 		{

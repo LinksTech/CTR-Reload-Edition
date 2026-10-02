@@ -1176,6 +1176,13 @@ static void RldMk_SelfTestObj(struct RldMkTestMesh *mesh)
 		return;
 	}
 
+	{
+		char sha[65];
+
+		RldObj_Digest((const u8 *)"abc", 3u, sha);
+		RldMk_Test(strcmp(sha, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") == 0, "OBJ texture digest (@model texture): SHA-256 of abc",
+		           "%s", sha);
+	}
 	RldMk_SelfTestObjSame(mesh, chri, chriSize);
 	RldMk_SelfTestObjGolden(mesh, chri, chriSize);
 	RldMk_SelfTestObjColors();
