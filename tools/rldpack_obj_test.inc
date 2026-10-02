@@ -731,6 +731,41 @@ static void RldMk_SelfTestObjUniform(void)
 	free(png);
 }
 
+// Ke: the brighter of Kd and Ke per channel (Ke alone without Kd); d, Tr and
+// map_d: one obj-transparency, the colors as without them.
+static void RldMk_SelfTestObjEmission(void)
+{
+	static const char mtl[] = "newmtl glow\nKd 0 0 0\nKe 1 0.5 0\nnewmtl ke\nKe 0 1 0\nnewmtl dim\nKd 0.5 0.5 0.5\nKe 0.2 0.8 0.1\n"
+	                          "newmtl ghost\nKd 1 0 0\nd 0.3\nnewmtl tr\nTr 0.7\nKd 0 0 1\nnewmtl cut\nKd 1 1 0\nmap_d cut.png\n";
+	static const char obj[] = "mtllib emission.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\n"
+	                          "usemtl glow\nf 1 2 3\nusemtl ke\nf 1 2 3\nusemtl dim\nf 1 2 3\nusemtl ghost\nf 1 2 3\nusemtl tr\nf 1 2 3\nusemtl cut\nf 1 2 3\n";
+	static const u32 want[6] = {0xFF8000u, 0x00FF00u, 0x80CC80u, 0xFF0000u, 0x0000FFu, 0xFFFF00u};
+	struct RldObjMemFile files[1];
+	struct RldMkPly ply;
+	struct RldMkModelInfo info;
+	u32 f;
+	int ok;
+	int same = 1;
+
+	files[0].path = "selftest/emission.mtl";
+	files[0].data = (const u8 *)mtl;
+	files[0].size = sizeof(mtl) - 1u;
+	s_rldObjFiles = files;
+	s_rldObjFileCount = 1u;
+	ok = RldMk_TestImport("selftest/emission.obj", obj, sizeof(obj) - 1u, &ply, &info, RLDMK_ROLE_MAIN);
+	for (f = 0; ok && (f < 6u); f++)
+	{
+		same = same && (RldMk_TestCornerRgb(&ply, f, 0u) == want[f]);
+	}
+	RldMk_Test(ok && same && (RldMk_TestSaidCount("obj-transparency") == 1u) && (s_rldMkWarnings == 0),
+	           "OBJ Ke: FF8000, Ke alone 00FF00, max(Kd, Ke) 80CC80; d, Tr, map_d: one obj-transparency", "read %d, %06X %06X %06X, said: %s", ok,
+	           ok ? RldMk_TestCornerRgb(&ply, 0u, 0u) : 0u, ok ? RldMk_TestCornerRgb(&ply, 1u, 0u) : 0u, ok ? RldMk_TestCornerRgb(&ply, 2u, 0u) : 0u,
+	           s_rldMkCodes);
+	RldMk_FreePly(&ply);
+	s_rldObjFiles = NULL;
+	s_rldObjFileCount = 0;
+}
+
 // What falls back with a warning, what fails, and which format a file is.
 static void RldMk_SelfTestObjCases(struct RldMkTestMesh *mesh)
 {
@@ -1076,6 +1111,7 @@ static void RldMk_SelfTestObj(struct RldMkTestMesh *mesh)
 	RldMk_SelfTestObjVertexColors();
 	RldMk_SelfTestObjEdges();
 	RldMk_SelfTestObjUniform();
+	RldMk_SelfTestObjEmission();
 	RldMk_SelfTestObjCases(mesh);
 	free(chri);
 }

@@ -549,6 +549,8 @@ struct RldObjMaterial
 {
 	int hasKd;
 	double kd[3];
+	double ke[3];    // Ke, the light of its own (0 without it)
+	int transparent; // d below 1, Tr above 0 or a map_d
 	char *map;       // map_Kd as written, its options removed; NULL = none
 	double offset[2]; // map_Kd -o u v: the texture coordinates are offset + scale x vt
 	double scale[2];  // map_Kd -s u v (1 1 without it)
@@ -1586,6 +1588,43 @@ static int RldObj_ReadLibrary(struct RldObjModel *m, u32 library, const u8 *data
 			continue;
 		}
 
+		if (RldObj_IsNoCase(&keyword, "Ke") || RldObj_IsNoCase(&keyword, "d") || RldObj_IsNoCase(&keyword, "Tr"))
+		{
+			struct RldObjMaterial *material = &m->materials[current];
+			struct RldObjWord word;
+			double value[3] = {0.0, 0.0, 0.0};
+			int n = 0;
+
+			while ((n < 3) && RldObj_Word(text.buffer, text.length, &at, &word) && (RldObj_Number(&word, &value[n]) == 1))
+			{
+				n++;
+			}
+			if (RldObj_IsNoCase(&keyword, "Ke"))
+			{
+				// Ke r g b, or one value for all three; spectral and xyz are
+				// not read.
+				for (n = (n == 1) ? 1 : 3; n < 3; n++)
+				{
+					value[n] = value[0];
+				}
+				for (n = 0; n < 3; n++)
+				{
+					material->ke[n] = (value[n] < 0.0) ? 0.0 : ((value[n] > 1.0) ? 1.0 : value[n]);
+				}
+			}
+			else if (n >= 1)
+			{
+				material->transparent |= ((keyword.text[0] == 'd') || (keyword.text[0] == 'D')) ? (value[0] < 1.0) : (value[0] > 0.0);
+			}
+			continue;
+		}
+
+		if (RldObj_IsNoCase(&keyword, "map_d"))
+		{
+			m->materials[current].transparent = 1;
+			continue;
+		}
+
 		if (RldObj_IsNoCase(&keyword, "map_Kd"))
 		{
 			struct RldObjMaterial *material = &m->materials[current];
@@ -1614,6 +1653,28 @@ static int RldObj_ReadLibrary(struct RldObjModel *m, u32 library, const u8 *data
 	{
 		RldMk_Say("warning", "mtl-bad", "map_Kd without a file name",
 		          "Line %u of the material file %s names no texture after map_Kd; that material is drawn without a texture.", badMap, path);
+	}
+
+	// A material that lights itself (Ke): the game draws without light, so
+	// its color is the brighter of Kd and Ke per channel (Ke without Kd: Ke).
+	{
+		u32 i;
+
+		for (i = 0; i < m->materialNames.count; i++)
+		{
+			struct RldObjMaterial *material = &m->materials[i];
+			int k;
+
+			if ((material->library != library) || !((material->ke[0] > 0.0) || (material->ke[1] > 0.0) || (material->ke[2] > 0.0)))
+			{
+				continue;
+			}
+			for (k = 0; k < 3; k++)
+			{
+				material->kd[k] = (!material->hasKd || (material->ke[k] > material->kd[k])) ? material->ke[k] : material->kd[k];
+			}
+			material->hasKd = 1;
+		}
 	}
 	return (got >= 0) && (defined != 0u);
 }
@@ -2923,6 +2984,20 @@ static int RldObj_Parse(const char *path, const u8 *data, size_t size, struct Rl
 		if ((m.colored != 0u) && kdIgnored && !m.uniform)
 		{
 			RldMk_Say("info", "obj-vertex-colors", NULL, "The model has vertex colors: they are used, and the materials' Kd colors are ignored.");
+		}
+		{
+			u32 transparent = 0;
+
+			for (i = 0; i < m.names.count; i++)
+			{
+				transparent += (nameUsed[i] && (m.nameMaterial[i] != RLDMK_NONE) && m.materials[m.nameMaterial[i]].transparent) ? 1u : 0u;
+			}
+			if (transparent != 0u)
+			{
+				RldMk_Say("info", "obj-transparency", NULL,
+				          "%u material%s in use %s transparent (d, Tr or map_d); the game draws the model opaque.",
+				          transparent, (transparent == 1u) ? "" : "s", (transparent == 1u) ? "is" : "are");
+			}
 		}
 		if (m.modulated != 0u)
 		{
