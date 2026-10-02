@@ -502,7 +502,10 @@ static int RldWheel_Command(int argc, char **argv)
 	if (!Rld_ReadFile(modelArg, &data, &size))
 	{
 		Rld_Emit("file", "ply", "missing", modelArg, "0", (const char *)NULL);
-		RldMk_Say("error", "ply-open", modelArg, "The wheel model file %s cannot be opened.", modelArg);
+		if (!s_rldReadTooLarge)  // file-too-large said why already
+		{
+			RldMk_Say("error", "ply-open", modelArg, "The wheel model file %s cannot be opened.", modelArg);
+		}
 		return 1;
 	}
 	snprintf(number[0], sizeof(number[0]), "%u", (u32)size);

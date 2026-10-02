@@ -745,7 +745,10 @@ static int RldAnim_ReadPose(const char *dir, const char *file, struct RldMkPly *
 	RldAnim_JoinPath(path, sizeof(path), dir, file);
 	if (!Rld_ReadFile(path, &data, &size))
 	{
-		RldMk_Say("error", "pose-read", path, "%s: the file cannot be opened.", file);
+		if (!s_rldReadTooLarge)  // file-too-large said why already
+		{
+			RldMk_Say("error", "pose-read", path, "%s: the file cannot be opened.", file);
+		}
 		return 0;
 	}
 
