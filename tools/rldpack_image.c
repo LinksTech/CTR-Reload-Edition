@@ -1,14 +1,14 @@
-// rldpack_image.c - JPEG and TGA pictures for rldpack (OBJ textures)
+// rldpack_image.c - JPEG, TGA and BMP pictures for rldpack (OBJ textures)
 //
 // Part of the packer, never of the game. The one place where rldpack and
-// Reload Studio carry code they did not write themselves: the JPEG and TGA
-// decoders of stb_image (externals/SDL/src/video/stb_image.h, the copy SDL
+// Reload Studio carry code they did not write themselves: the JPEG, TGA and
+// BMP decoders of stb_image (externals/SDL/src/video/stb_image.h, the copy SDL
 // keeps; MIT license, see THIRD_PARTY_NOTICES.md). PNG stays with rldpack's
 // own reader (include/rldpng.inc). This file is a translation unit of its own
 // for the targets rldpack and ReloadStudio, so that stb_image's names stay out
 // of tools/rldpack.c.
 //
-// Only memory is read (no stdio), only JPEG and TGA are compiled in, without
+// Only memory is read (no stdio), only JPEG, TGA and BMP are compiled in, without
 // SIMD - the scalar decoder gives the same pixels on every processor - and no
 // side may exceed RLDIMG_SIDE_MAX, the limit of the PNG reader.
 
@@ -35,6 +35,7 @@ static const char *s_rldImgWhy;
 #define STBI_NO_THREAD_LOCALS
 #define STBI_ONLY_JPEG
 #define STBI_ONLY_TGA
+#define STBI_ONLY_BMP
 #define STBI_NO_STDIO
 #define STBI_NO_LINEAR
 #define STBI_NO_HDR

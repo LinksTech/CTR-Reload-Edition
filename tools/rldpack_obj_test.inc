@@ -900,6 +900,103 @@ static void RldMk_SelfTestObjTextureDirs(void)
 	free(bluePng);
 }
 
+// A BMP of width x height RGB pixels (rows given from the top): 24 bits from
+// the bottom row up, or 32 bits (BGRA) from the top with a negative height.
+static u8 *RldMk_TestBmp(u32 width, u32 height, const u8 *rgb, int top32, size_t *sizeOut)
+{
+	const u32 bytes = top32 ? 4u : 3u;
+	const u32 row = ((width * bytes) + 3u) & ~3u;
+	struct RldMkBuffer b;
+	u8 head[54];
+	u32 k;
+
+	memset(&b, 0, sizeof(b));
+	memset(head, 0, sizeof(head));
+	head[0] = 'B';
+	head[1] = 'M';
+	Rld_WriteLE32(&head[2], 54u + row * height);
+	Rld_WriteLE32(&head[10], 54u);
+	Rld_WriteLE32(&head[14], 40u);
+	Rld_WriteLE32(&head[18], width);
+	Rld_WriteLE32(&head[22], top32 ? (u32)(-(s32)height) : height);
+	head[26] = 1;
+	head[28] = (u8)(8u * bytes);
+	Rld_WriteLE32(&head[34], row * height);
+	RldMk_BufferBytes(&b, head, sizeof(head));
+	for (k = 0; k < height; k++)
+	{
+		const u32 y = top32 ? k : (height - 1u - k);
+		u8 line[64];
+		u32 x;
+
+		memset(line, 0, sizeof(line));
+		for (x = 0; x < width; x++)
+		{
+			const u8 *p = &rgb[((size_t)y * width + x) * 3u];
+
+			line[bytes * x + 0u] = p[2];
+			line[bytes * x + 1u] = p[1];
+			line[bytes * x + 2u] = p[0];
+			if (top32)
+			{
+				line[bytes * x + 3u] = 255u;
+			}
+		}
+		RldMk_BufferBytes(&b, line, row);
+	}
+	*sizeOut = b.size;
+	return b.data;
+}
+
+// BMP textures: the 2 x 2 checker (red, green / blue, white) as a 24-bit BMP
+// from the bottom up and as a 32-bit one from the top, read like the PNG; a
+// BMP cut short is tex-unreadable.
+static void RldMk_SelfTestObjBmp(void)
+{
+	static const char mtl[] = "newmtl b24\nmap_Kd b24.bmp\nnewmtl b32\nmap_Kd b32.bmp\nnewmtl cut\nKd 0 0 1\nmap_Kd cut.bmp\n";
+	static const char obj[] = "mtllib bmp.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0.25 0.75\nvt 0.75 0.25\nvt 0.75 0.75\n"
+	                          "usemtl b24\nf 1/1 2/2 3/3\nusemtl b32\nf 1/1 2/2 3/3\nusemtl cut\nf 1/1 2/2 3/3\n";
+	struct RldObjMemFile files[4];
+	struct RldMkPly ply;
+	struct RldMkModelInfo info;
+	size_t size24 = 0;
+	size_t size32 = 0;
+	u8 *b24 = RldMk_TestBmp(2u, 2u, s_rldMkTestChecker, 0, &size24);
+	u8 *b32 = RldMk_TestBmp(2u, 2u, s_rldMkTestChecker, 1, &size32);
+	u32 f;
+	int ok;
+	int same = 1;
+
+	files[0].path = "selftest/bmp.mtl";
+	files[0].data = (const u8 *)mtl;
+	files[0].size = sizeof(mtl) - 1u;
+	files[1].path = "selftest/b24.bmp";
+	files[1].data = b24;
+	files[1].size = size24;
+	files[2].path = "selftest/b32.bmp";
+	files[2].data = b32;
+	files[2].size = size32;
+	files[3].path = "selftest/cut.bmp";
+	files[3].data = b24;
+	files[3].size = size24 - 4u;
+	s_rldObjFiles = files;
+	s_rldObjFileCount = 4u;
+	ok = (b24 != NULL) && (b32 != NULL) && RldMk_TestImport("selftest/bmp.obj", obj, sizeof(obj) - 1u, &ply, &info, RLDMK_ROLE_MAIN);
+	for (f = 0; ok && (f < 2u); f++)
+	{
+		same = same && (RldMk_TestCornerRgb(&ply, f, 0u) == 0xFF0000u) && (RldMk_TestCornerRgb(&ply, f, 1u) == 0xFFFFFFu) &&
+		       (RldMk_TestCornerRgb(&ply, f, 2u) == 0x00FF00u);
+	}
+	RldMk_Test(ok && same && (info.texturesOk == 2u) && (RldMk_TestCornerRgb(&ply, 2u, 0u) == 0x0000FFu) && RldMk_Said("tex-unreadable"),
+	           "OBJ BMP textures: 24 bits from the bottom, 32 bits from the top; one cut short: tex-unreadable", "read %d, same %d, textures %u/%u, said: %s",
+	           ok, same, info.texturesOk, info.textures, s_rldMkCodes);
+	RldMk_FreePly(&ply);
+	s_rldObjFiles = NULL;
+	s_rldObjFileCount = 0;
+	free(b24);
+	free(b32);
+}
+
 // What falls back with a warning, what fails, and which format a file is.
 static void RldMk_SelfTestObjCases(struct RldMkTestMesh *mesh)
 {
@@ -1297,6 +1394,7 @@ static void RldMk_SelfTestObj(struct RldMkTestMesh *mesh)
 	RldMk_SelfTestObjEmission();
 	RldMk_SelfTestObjAlpha();
 	RldMk_SelfTestObjTextureDirs();
+	RldMk_SelfTestObjBmp();
 	RldMk_SelfTestObjCases(mesh);
 	free(chri);
 }

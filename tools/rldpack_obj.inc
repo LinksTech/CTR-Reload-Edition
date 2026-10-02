@@ -29,7 +29,7 @@
 // clamped on a face whose coordinates all lie in 0..1 or with -clamp on -,
 // v = 0 at the bottom of the picture, each texel by its alpha (a corner on
 // fully transparent texels keeps its color without the texture). PNG through
-// include/rldpng.inc, JPEG and TGA through tools/rldpack_image.c. A texture
+// include/rldpng.inc, JPEG, TGA and BMP through tools/rldpack_image.c. A texture
 // that is not at its path is looked for at a fixed list of other places
 // (RldObj_SearchTexture); @model texture names the file used.
 //
@@ -52,7 +52,7 @@
 #define RLDOBJ_TEXTURES_SAID 16u                  // texture warnings said one by one, the rest counted
 #define RLDOBJ_DETECT_BYTES (64u * 1024u)
 
-// JPEG and TGA: tools/rldpack_image.c (stb_image). 0 = decoded into *rgba,
+// JPEG, TGA and BMP: tools/rldpack_image.c (stb_image). 0 = decoded into *rgba,
 // width x height x 4 bytes with the rows from the top, freed with RldImg_Free.
 int RldImg_Decode(const unsigned char *data, size_t size, unsigned int *width, unsigned int *height, unsigned char **rgba, const char **why);
 void RldImg_Free(unsigned char *rgba);
@@ -2035,10 +2035,6 @@ static int RldObj_JpegSize(const u8 *data, size_t size, u32 *width, u32 *height)
 // Pictures that are not read, by their first bytes.
 static const char *RldObj_OtherPicture(const u8 *d, size_t size)
 {
-	if ((size >= 2u) && (d[0] == 'B') && (d[1] == 'M'))
-	{
-		return "a BMP picture";
-	}
 	if ((size >= 4u) && (memcmp(d, "GIF8", 4) == 0))
 	{
 		return "a GIF picture";
@@ -2067,7 +2063,7 @@ static const char *RldObj_OtherPicture(const u8 *d, size_t size)
 	{
 		return "a Radiance HDR picture";
 	}
-	return "not a PNG, JPEG or TGA picture";
+	return "not a PNG, JPEG, TGA or BMP picture";
 }
 
 // A texture file -> RGBA. RLDMK_TEXTURE_*, and *why for the message.
@@ -2076,6 +2072,7 @@ static int RldObj_Decode(const char *path, const u8 *data, size_t size, struct R
 	static const u8 png[8] = {0x89u, 0x50u, 0x4Eu, 0x47u, 0x0Du, 0x0Au, 0x1Au, 0x0Au};
 	const int jpeg = (size >= 3u) && (data[0] == 0xFFu) && (data[1] == 0xD8u) && (data[2] == 0xFFu);
 	const int tga = Rld_EndsWithNoCase(path, ".tga") || ((size >= 26u) && (memcmp(&data[size - 18u], "TRUEVISION-XFILE.", 17) == 0));
+	const int bmp = (size >= 30u) && (data[0] == 'B') && (data[1] == 'M');
 
 	*fromImg = 0;
 	*why = NULL;
@@ -2110,7 +2107,7 @@ static int RldObj_Decode(const char *path, const u8 *data, size_t size, struct R
 		return RLDMK_TEXTURE_UNREADABLE;
 	}
 
-	if (jpeg || (tga && (size >= 18u)))
+	if (jpeg || bmp || (tga && (size >= 18u)))
 	{
 		u32 width = 0;
 		u32 height = 0;
@@ -2119,7 +2116,29 @@ static int RldObj_Decode(const char *path, const u8 *data, size_t size, struct R
 		unsigned char *rgba = NULL;
 		const int sized = jpeg ? RldObj_JpegSize(data, size, &width, &height) : 1;
 
-		if (!jpeg)
+		u32 bits = 0;
+		int plain = 0;
+
+		if (bmp && (Rld_ReadLE32(&data[14]) == 12u))
+		{
+			// The old header: 16-bit size, no compression.
+			width = (u32)data[18] | ((u32)data[19] << 8);
+			height = (u32)data[20] | ((u32)data[21] << 8);
+			bits = (u32)data[24] | ((u32)data[25] << 8);
+			plain = 1;
+		}
+		else if (bmp)
+		{
+			// The height is negative for rows from the top.
+			const s32 bw = (s32)Rld_ReadLE32(&data[18]);
+			const s32 bh = (s32)Rld_ReadLE32(&data[22]);
+
+			width = (bw < 0) ? (u32)(-(s64)bw) : (u32)bw;
+			height = (bh < 0) ? (u32)(-(s64)bh) : (u32)bh;
+			bits = (u32)data[28] | ((u32)data[29] << 8);
+			plain = (Rld_ReadLE32(&data[30]) == 0u) || (Rld_ReadLE32(&data[30]) == 3u);
+		}
+		else if (!jpeg)
 		{
 			width = (u32)data[12] | ((u32)data[13] << 8);
 			height = (u32)data[14] | ((u32)data[15] << 8);
@@ -2129,8 +2148,20 @@ static int RldObj_Decode(const char *path, const u8 *data, size_t size, struct R
 			*why = "larger than 4096 pixels on a side";
 			return RLDMK_TEXTURE_UNSUPPORTED;
 		}
+		// An uncompressed BMP cut short: stb_image fills the rest with 0.
+		if (plain)
+		{
+			const u64 row = (((u64)width * bits + 31u) / 32u) * 4u;
+			const u64 need = (u64)Rld_ReadLE32(&data[10]) + row * height;
+
+			if ((u64)size < need)
+			{
+				*why = "the file ends early";
+				return RLDMK_TEXTURE_UNREADABLE;
+			}
+		}
 		// An uncompressed TGA cut short: stb_image fills the rest with 0.
-		if (!jpeg && (data[2] >= 1u) && (data[2] <= 3u))
+		if (!jpeg && !bmp && (data[2] >= 1u) && (data[2] <= 3u))
 		{
 			const u64 palette = (data[1] != 0u) ? ((u64)((u32)data[5] | ((u32)data[6] << 8)) * (((u32)data[7] + 7u) / 8u)) : 0u;
 			const u64 need = 18u + (u64)data[0] + palette + (u64)width * height * (((u32)data[16] + 7u) / 8u);
@@ -2563,7 +2594,7 @@ static u32 RldObj_ApplyTexture(struct RldObjModel *m, u32 texture, u8 *cornerRgb
 // file name in one of these folders, then the name with another of these
 // file types. The first file there counts.
 static const char *const s_rldObjTextureFolders[] = {"textures", "tex", "images", "maps"};
-static const char *const s_rldObjTextureTypes[] = {".png", ".jpg", ".jpeg", ".tga"};
+static const char *const s_rldObjTextureTypes[] = {".png", ".jpg", ".jpeg", ".tga", ".bmp"};
 #define RLDOBJ_TEXTURE_FOLDERS (sizeof(s_rldObjTextureFolders) / sizeof(s_rldObjTextureFolders[0]))
 #define RLDOBJ_TEXTURE_TYPES (sizeof(s_rldObjTextureTypes) / sizeof(s_rldObjTextureTypes[0]))
 
@@ -2724,7 +2755,7 @@ static void RldObj_SayMissing(const struct RldObjModel *m, char (*libraryPath)[R
 
 	// The technical line: where the first one was looked for.
 	snprintf(where, sizeof(where), "looked for at %s, %snext to the MTL and OBJ files, in their folders textures, tex, images and maps, also as .png, .jpg, "
-	         ".jpeg and .tga", m->textures[first].path, (s_rldObjOptions.textureDirCount != 0u) ? "in the --textures folders, " : "");
+	         ".jpeg, .tga and .bmp", m->textures[first].path, (s_rldObjOptions.textureDirCount != 0u) ? "in the --textures folders, " : "");
 
 	if (missing == 1u)
 	{
@@ -2953,7 +2984,8 @@ static int RldObj_Textures(struct RldObjModel *m, const char *objPath, char (*li
 			else
 			{
 				RldMk_Say("warning", "tex-unsupported", why,
-				          "The texture %s of the material \"%s\" is %s - PNG, JPEG and TGA up to 4096 pixels are read; its faces keep the vertex or material color.",
+				          "The texture %s of the material \"%s\" is %s - PNG, JPEG, TGA and BMP up to 4096 pixels are read; its faces keep the vertex or material "
+				          "color.",
 				          Rld_LastComponent(shown), m->names.text[n], why);
 			}
 		}
