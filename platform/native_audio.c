@@ -273,6 +273,28 @@ struct NativeAudioXaStream
 	s16 ring[NATIVE_AUDIO_XA_RING_FRAMES * NATIVE_AUDIO_CHANNELS];
 };
 
+// One host PCM clip, mono s16 little endian, beside the SPU voices and the XA
+// stream: the voice of a custom character (platform/native_chars.c). Two
+// places. The line holds the CD channel the way an XA line does - it closes
+// the XA when it starts, follows the XA volume (and so its fades), counts as
+// XA playing, and whatever closes the XA silences it. The short sound plays
+// beside the XA like an OtherFX, at its own volume; only the next short sound,
+// a restore, the shutdown and NativeAudio_StopPcmClips end it early. The
+// samples are the caller's and outlive the clip. Never part of a snapshot; an
+// inactive place mixes nothing.
+struct NativeAudioPcmClip
+{
+	const u8 *samples;
+	int frameCount;
+	int sampleRate;
+	int gain; // 0..256, 256 = as recorded
+	b32 active;
+	u64 outputFrame;
+	u64 outputFrameCount;
+	s16 volumeLeft; // the short sound's own; the line plays at s_audio.xa's
+	s16 volumeRight;
+};
+
 struct NativeAudioState
 {
 	b32 init;
@@ -291,6 +313,8 @@ struct NativeAudioState
 	struct NativeAudioVoice voices[NATIVE_AUDIO_SPU_VOICE_COUNT];
 	struct NativeAudioXA xa;
 	struct NativeAudioXaStream xaStream;
+	struct NativeAudioPcmClip pcmLine;
+	struct NativeAudioPcmClip pcmShort;
 	struct NativeAudioOutput output;
 };
 
@@ -1461,6 +1485,8 @@ internal void NativeAudio_CloseXANoLock(void)
 	memset(&s_audio.xa, 0, sizeof(s_audio.xa));
 	free(s_audio.xaStream.sectors);
 	memset(&s_audio.xaStream, 0, sizeof(s_audio.xaStream));
+	// A new XA, a stop, a restore and the shutdown silence the line too.
+	memset(&s_audio.pcmLine, 0, sizeof(s_audio.pcmLine));
 }
 
 internal void NativeAudio_CopyVoiceToState(struct NativeAudioVoiceState *dst, const struct NativeAudioVoice *src)
@@ -2557,6 +2583,7 @@ int NativeAudio_RestoreState(const void *src, int srcSize)
 	NativeAudio_LockOutput();
 
 	NativeAudio_CloseXANoLock();
+	memset(&s_audio.pcmShort, 0, sizeof(s_audio.pcmShort));
 
 	s_audio.init = restoreInit;
 	s_audio.muted = snapshot->muted;
@@ -2618,6 +2645,61 @@ int NativeAudio_RestoreState(const void *src, int srcSize)
 	return 1;
 }
 
+internal int NativeAudio_GetPcmClipSampleNoLock(const struct NativeAudioPcmClip *pcm, int frameIndex)
+{
+	const u8 *at = &pcm->samples[(size_t)frameIndex * 2u];
+
+	return (int)(s16)(u16)((u32)at[0] | ((u32)at[1] << 8));
+}
+
+// One output frame of a clip: linear between the two source frames around it,
+// times the clip's gain. The line at the XA volume, only while CD audio is
+// mixed and into the reverb when CD reverb is on, as XA; the short sound at its
+// own volume, without reverb (an OtherFX with the default flags has no echo).
+internal void NativeAudio_MixPcmClipNoLock(struct NativeAudioPcmClip *pcm, b32 line, int *mixLeft, int *mixRight, int *reverbSendLeft,
+                                           int *reverbSendRight)
+{
+	if (pcm->outputFrame >= pcm->outputFrameCount)
+	{
+		pcm->active = 0;
+		return;
+	}
+
+	if (!line || s_audio.cdMixEnabled)
+	{
+		const u64 positionFp = ((pcm->outputFrame * (u64)pcm->sampleRate) << NATIVE_AUDIO_FP_SHIFT) / NATIVE_AUDIO_SAMPLE_RATE;
+		const int frameIndex = (int)(positionFp >> NATIVE_AUDIO_FP_SHIFT);
+		const u32 frac = (u32)(positionFp & (NATIVE_AUDIO_FP_ONE - 1));
+		const s16 volumeLeft = line ? s_audio.xa.volumeLeft : pcm->volumeLeft;
+		const s16 volumeRight = line ? s_audio.xa.volumeRight : pcm->volumeRight;
+		int a = NativeAudio_GetPcmClipSampleNoLock(pcm, frameIndex);
+		int b = a;
+		int sample;
+
+		if (frameIndex + 1 < pcm->frameCount)
+		{
+			b = NativeAudio_GetPcmClipSampleNoLock(pcm, frameIndex + 1);
+		}
+
+		sample = a + (int)(((s64)(b - a) * frac) >> NATIVE_AUDIO_FP_SHIFT);
+		sample = (sample * pcm->gain) / 256;
+
+		NativeAudio_MixSample(mixLeft, mixRight, NativeAudio_ApplyVolume(sample, volumeLeft, s_audio.masterVolumeLeft),
+		                      NativeAudio_ApplyVolume(sample, volumeRight, s_audio.masterVolumeRight));
+		if (line && s_audio.cdReverbEnabled)
+		{
+			NativeAudio_MixSample(reverbSendLeft, reverbSendRight, NativeAudio_ApplyMasterVolume(sample, volumeLeft),
+			                      NativeAudio_ApplyMasterVolume(sample, volumeRight));
+		}
+	}
+
+	pcm->outputFrame++;
+	if (pcm->outputFrame >= pcm->outputFrameCount)
+	{
+		pcm->active = 0;
+	}
+}
+
 internal void NativeAudio_MixFrame(s16 *outLeft, s16 *outRight)
 {
 	int mixLeft = 0;
@@ -2655,6 +2737,16 @@ internal void NativeAudio_MixFrame(s16 *outLeft, s16 *outRight)
 			}
 			NativeAudio_AdvanceXAOutputFrameNoLock();
 		}
+	}
+
+	if (s_audio.pcmLine.active)
+	{
+		NativeAudio_MixPcmClipNoLock(&s_audio.pcmLine, 1, &mixLeft, &mixRight, &reverbSendLeft, &reverbSendRight);
+	}
+
+	if (s_audio.pcmShort.active)
+	{
+		NativeAudio_MixPcmClipNoLock(&s_audio.pcmShort, 0, &mixLeft, &mixRight, &reverbSendLeft, &reverbSendRight);
 	}
 
 	if (!s_audio.muted)
@@ -2865,6 +2957,7 @@ void NativeAudio_Shutdown(void)
 	}
 
 	NativeAudio_CloseXANoLock();
+	memset(&s_audio.pcmShort, 0, sizeof(s_audio.pcmShort));
 	SDL_QuitSubSystem(SDL_INIT_AUDIO);
 }
 
@@ -3275,7 +3368,7 @@ int NativeAudio_IsXAPlaying(void)
 {
 	NativeAudio_LockOutput();
 
-	int playing = s_audio.xa.active;
+	int playing = s_audio.xa.active || s_audio.pcmLine.active;
 
 	NativeAudio_UnlockOutput();
 
@@ -3384,6 +3477,77 @@ int NativeAudio_PlayXAFile(const char *relativePath, int channelFilter, int volu
 	return 1;
 }
 
+internal void NativeAudio_StartPcmClipNoLock(struct NativeAudioPcmClip *pcm, const u8 *samples, int frameCount, int sampleRate, int gain, int volumeLeft,
+                                           int volumeRight)
+{
+	memset(pcm, 0, sizeof(*pcm));
+	pcm->samples = samples;
+	pcm->frameCount = frameCount;
+	pcm->sampleRate = sampleRate;
+	pcm->gain = gain;
+	pcm->outputFrameCount = (((u64)frameCount * NATIVE_AUDIO_SAMPLE_RATE) + ((u64)sampleRate - 1)) / (u64)sampleRate;
+	pcm->volumeLeft = (s16)volumeLeft;
+	pcm->volumeRight = (s16)volumeRight;
+	pcm->active = 1;
+}
+
+internal int NativeAudio_PcmClipUsable(const u8 *samples, int frameCount, int sampleRate, int gain)
+{
+	return (samples != NULL) && (frameCount > 0) && (sampleRate > 0) && (sampleRate <= NATIVE_AUDIO_SAMPLE_RATE) && (gain >= 0) && (gain <= 256);
+}
+
+int NativeAudio_PlayPcmLine(const u8 *samples, int frameCount, int sampleRate, int gain, int volume)
+{
+	if (!NativeAudio_PcmClipUsable(samples, frameCount, sampleRate, gain))
+	{
+		return 0;
+	}
+
+	// As NativeAudio_PlayXATrack: the device is opened here if it is not.
+	if (!NativeAudio_SpuInit())
+	{
+		return 0;
+	}
+
+	NativeAudio_LockOutput();
+
+	// The CD channel, as NativeAudio_PlayXATrack takes it.
+	NativeAudio_CloseXANoLock();
+	s_audio.xa.volumeLeft = (s16)volume;
+	s_audio.xa.volumeRight = (s16)volume;
+	s_audio.commonAttr.cd.volume.left = (s16)volume;
+	s_audio.commonAttr.cd.volume.right = (s16)volume;
+	s_audio.commonAttr.mask |= SPU_COMMON_CDVOLL | SPU_COMMON_CDVOLR;
+	NativeAudio_StartPcmClipNoLock(&s_audio.pcmLine, samples, frameCount, sampleRate, gain, volume, volume);
+
+	NativeAudio_UnlockOutput();
+
+	return 1;
+}
+
+int NativeAudio_PlayPcmShort(const u8 *samples, int frameCount, int sampleRate, int gain, int volumeLeft, int volumeRight)
+{
+	// As an SPU voice: only on a mixer that runs, the device is never opened here.
+	if (!NativeAudio_PcmClipUsable(samples, frameCount, sampleRate, gain) || !s_audio.init)
+	{
+		return 0;
+	}
+
+	NativeAudio_LockOutput();
+	NativeAudio_StartPcmClipNoLock(&s_audio.pcmShort, samples, frameCount, sampleRate, gain, volumeLeft, volumeRight);
+	NativeAudio_UnlockOutput();
+
+	return 1;
+}
+
+void NativeAudio_StopPcmClips(void)
+{
+	NativeAudio_LockOutput();
+	memset(&s_audio.pcmLine, 0, sizeof(s_audio.pcmLine));
+	memset(&s_audio.pcmShort, 0, sizeof(s_audio.pcmShort));
+	NativeAudio_UnlockOutput();
+}
+
 int NativeAudio_GetXACurrOffset(void)
 {
 	u64 outputFrame;
@@ -3392,7 +3556,12 @@ int NativeAudio_GetXACurrOffset(void)
 
 	NativeAudio_LockOutput();
 
-	if ((s_audio.xa.hasTrackIdentity == 0) || (s_audio.xa.sampleRate <= 0))
+	if (s_audio.pcmLine.active)
+	{
+		// A line counts in the same blocks of 256 output frames.
+		offset = (int)(s_audio.pcmLine.outputFrame >> 8);
+	}
+	else if ((s_audio.xa.hasTrackIdentity == 0) || (s_audio.xa.sampleRate <= 0))
 	{
 		offset = 0;
 	}

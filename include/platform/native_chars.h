@@ -63,8 +63,10 @@ int NativeChar_ArgsUsable(void);
 // LOAD_RunPtrMap once on the host copy (0 -> refused "PTRMAP"), then CICN when
 // present (RldChar_CheckIcon; a broken CICN costs only the portrait), then CMSK
 // when present (RldChar_CheckMask and one LOAD_RunPtrMap; a broken CMSK costs
-// only the own mask). One line "loaded" or "REFUSED" per file, after "loaded"
-// one line "portrait" and, for a file with CMSK, one line "mask"; a
+// only the own mask), then CVOI when present (RldChar_CheckVoices; a broken
+// CVOI costs only the voices; the bytes are read again only for a bound seat). One line "loaded" or
+// "REFUSED" per file, after "loaded" one line "portrait", for a file with CMSK
+// one line "mask", the line "draw bytes" and one line "voices"; a
 // refused file is skipped and the game starts. From the 33rd valid file on: a
 // loud "NO ID" line, no entry. Then one summary line ("characters: N loaded,
 // M refused (<folder>)", or one line for a missing folder), and the roster is
@@ -165,7 +167,7 @@ int NativeChar_ModeAllowed(void);
 void NativeChar_ArmSeats(void);
 
 // Load stage 0, right after MEMPACK_PopToState: the seats are emptied with the
-// level they were armed for.
+// level they were armed for, and the voices they held are let go.
 void NativeChar_ClearSeats(void);
 
 // Load stage 0, MainInit_PrimMem: the draw memory the custom models of this
@@ -194,10 +196,32 @@ struct Model *NativeChar_SeatModel(int index);
 // unchanged retail expression.
 int NativeChar_SeatEngineClass(int seat, int retailClass);
 
-// 1 for a bound custom seat (voices are not packed yet, the seat stays
-// silent: no voice line, and no sample of the voice slider in the options of
-// the pause menu, game/HOWL/HOWL_Settings.c), else 0.
+// 1 for a bound custom seat whose guard holds: it never speaks with its
+// template's voice - no retail voice line or short sound, and no sample of
+// the voice slider in the options of the pause menu (game/HOWL/
+// HOWL_Settings.c). Else 0.
 int NativeChar_SeatSilent(int seat);
+
+// THE VOICES (CVOI, include/rldchar.inc), game/HOWL/HOWL_Voiceline.c. The
+// funnel reads the CVOI of the file it binds (load stage 5) and lets it go with
+// the seats (NativeChar_ClearSeats, after silencing the clips). 1 for a bound
+// seat whose guard holds and whose file's voices are held, else 0 - a silent
+// bound seat drops every voice before the audio RNG moves, as before.
+int NativeChar_SeatVoiced(int seat);
+
+// A voiced seat speaks where its template would, decided as retail decides;
+// only the sound is its own. Line: retail voice set 0..7 = event 0..7, clip
+// pick % count (pick = the audio RNG value retail takes for its XA line), on
+// the CD channel at volume (NativeAudio_PlayPcmLine). Short: voice type 0 =
+// short-yes, 1 = short-hit, clip pick % count, beside the XA at the SPU voice
+// volume the retail short sound would get (NativeAudio_PlayPcmShort). Both give the
+// clip's length in the unit of CDSYS_XAGetTrackLength (disc sectors at 150 a
+// second), or 0 when nothing plays (an event without clips, no audio output).
+// One line "[CTR Voice] seat <s> event <key> clip <name> (<i> of <n>)" per
+// clip played, "[CTR Voice] seat <s> event <key>: no clip - silent" per event
+// without clips.
+int NativeChar_SeatSpeakLine(int seat, u32 voiceSet, u32 pick, int volume);
+int NativeChar_SeatSpeakShort(int seat, u32 voiceType, u32 pick, int volumeLeft, int volumeRight);
 
 // game/UI/UI_Map.c, the minimap marker of a seat: the four corner colors of
 // the CHRI map color (RldChar_MapColor) for a bound seat whose guard holds and

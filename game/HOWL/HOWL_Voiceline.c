@@ -1,8 +1,14 @@
 #include <common.h>
 
-// From platform/native_chars.c, further down in the translation unit: 1 for a
-// seat bound to a custom character (its voices are not packed yet), else 0.
+// From platform/native_chars.c, further down in the translation unit. A seat
+// bound to a custom character never speaks with its template's voice
+// (NativeChar_SeatSilent 1); with voices of its own (NativeChar_SeatVoiced 1)
+// it speaks with those. The two speak calls give the clip's length in the
+// unit of CDSYS_XAGetTrackLength, 0 when nothing plays.
 int NativeChar_SeatSilent(int seat);
+int NativeChar_SeatVoiced(int seat);
+int NativeChar_SeatSpeakLine(int seat, u32 voiceSet, u32 pick, int volume);
+int NativeChar_SeatSpeakShort(int seat, u32 voiceType, u32 pick, int volumeLeft, int volumeRight);
 
 // does not really touch voiceline
 void Voiceline_PoolInit(void)
@@ -133,19 +139,85 @@ static u32 Voiceline_RequestPlay_NextAudioRNG(void)
 
 // A voice names its speaker by character id, not by seat. A custom character is
 // bound only where that id belongs to one seat (a one-player arcade race: the
-// bots are the other ids, LOAD_Robots1P), so the seat holding the id answers.
-// Without a bound seat nothing here is ever true; reads only, no state.
-static int Voiceline_SpeakerSilent(u32 characterID)
+// bots are the other ids, LOAD_Robots1P), so the seat holding the id answers:
+// the bound seat, or -1 for a retail speaker. Without a bound seat it is
+// always -1; reads only, no state.
+static int Voiceline_CustomSpeaker(u32 characterID)
 {
 	for (int seat = 0; seat < LOAD_CHARACTER_ID_COUNT; seat++)
 	{
 		if (((u32)data.characterIDs[seat] == characterID) && (NativeChar_SeatSilent(seat) != 0))
 		{
-			return 1;
+			return seat;
 		}
 	}
 
-	return 0;
+	return -1;
+}
+
+// The line of a custom speaker, in place of CDSYS_XAPlay(CDSYS_XA_TYPE_GAME,
+// xaID): its own clip of the same set, picked with the same RNG value. A clip
+// that plays holds the CD channel as the XA line would, so the queue waits, a
+// pause fades it and a load stops it as it would the retail line; the wait
+// after it is computed as retail computes it, from the clip's length in the
+// same unit. Nothing to play is the XA failure: 0x1e.
+static void Voiceline_StartCustom(int seat, u32 voiceSetIndex, u32 rng, u32 xaID)
+{
+	const int volume = sdata->vol_Voice << CDSYS_XA_VOLUME_SHIFT;
+	const int length = NativeChar_SeatSpeakLine(seat, voiceSetIndex, rng, volume);
+
+	if (length == 0)
+	{
+		sdata->voicelineCooldown = 0x1e;
+		return;
+	}
+
+	// A copy of the XA state the native branch of CDSYS_XAPlay (game/CDSYS.c)
+	// sets for a track that starts: keep the two alike.
+	sdata->XA_State = XA_PLAYING;
+	sdata->XA_Playing_Index = (int)xaID;
+	sdata->XA_Playing_Category = CDSYS_XA_TYPE_GAME;
+	sdata->XA_VolumeBitshift = volume;
+	sdata->XA_boolFinished = 0;
+	sdata->XA_CurrOffset = 0;
+	sdata->XA_MaxSampleIndex = 0;
+	sdata->XA_MaxSampleNumSaved = 0;
+	for (int i = 0; i < CDSYS_XA_MAX_SAMPLE_WINDOW; i++)
+	{
+		sdata->XA_MaxSampleValArr[i] = 0;
+	}
+	sdata->XA_MaxSampleVal = 0;
+	sdata->XA_MaxSampleValInArr = 0;
+
+	sdata->voicelineCooldown = (s16)(length / 5) + 0x1e;
+}
+
+// The short sound of a custom speaker, in place of OtherFX_Play(soundID, 2): at
+// the SPU voice volume the retail sound would get - OtherFX_Play_LowLevel with
+// the default flags (howl_InitChannelAttr_OtherFX: vol_Voice for a sound with
+// the voice flag, vol_FX else, times its volume; Channel_SetVolume). Where
+// retail would play nothing (audio off, no such sound, not loaded), nothing.
+static void Voiceline_ShortCustom(int seat, u32 voiceType, u32 soundID)
+{
+	struct ChannelAttr attr;
+	struct OtherFX *otherFX;
+
+	if ((sdata->boolAudioEnabled == 0) || (sdata->ptrHowlHeader == NULL) || (soundID >= (u32)sdata->ptrHowlHeader->numOtherFX))
+	{
+		return;
+	}
+
+	otherFX = &sdata->howl_metaOtherFX[soundID];
+	if (Howl_SpuAddr(otherFX->spuIndex) == 0)
+	{
+		return;
+	}
+
+	howl_InitChannelAttr_OtherFX(otherFX, &attr, HowlSfx_Volume(HOWL_SFX_DEFAULT_FLAGS), HowlSfx_LR(HOWL_SFX_DEFAULT_FLAGS),
+	                             HowlSfx_Distortion(HOWL_SFX_DEFAULT_FLAGS));
+
+	// The clip: read the audio RNG, never move it.
+	(void)NativeChar_SeatSpeakShort(seat, voiceType, sdata->audioRNG >> 8, attr.audioL, attr.audioR);
 }
 
 void Voiceline_RequestPlay(u32 voiceID, u32 characterID, u32 characterID2)
@@ -154,6 +226,7 @@ void Voiceline_RequestPlay(u32 voiceID, u32 characterID, u32 characterID2)
 	u32 elapsedFrames;
 	u32 canImmediate;
 	u32 canQueue;
+	int customSeat;
 
 	if (voiceID >= 0x18)
 	{
@@ -170,9 +243,11 @@ void Voiceline_RequestPlay(u32 voiceID, u32 characterID, u32 characterID2)
 		return;
 	}
 
-	// A bound custom seat speaks with no voice of its template: dropped here,
-	// before the audio RNG and the timestamps move.
-	if (Voiceline_SpeakerSilent(characterID) != 0)
+	// A bound custom seat speaks with no voice of its template. Without voices
+	// of its own it is dropped here, before the audio RNG and the timestamps
+	// move; with them it takes the retail decision below.
+	customSeat = Voiceline_CustomSpeaker(characterID);
+	if ((customSeat >= 0) && (NativeChar_SeatVoiced(customSeat) == 0))
 	{
 		return;
 	}
@@ -253,7 +328,12 @@ void Voiceline_RequestPlay(u32 voiceID, u32 characterID, u32 characterID2)
 	}
 
 playImmediate:
-	if (voiceType == 0)
+	if (customSeat >= 0)
+	{
+		// Its own short sound, beside the XA and the line.
+		Voiceline_ShortCustom(customSeat, voiceType, (characterID + ((voiceType == 0) ? 0x1c : 0x2c)) & 0xffff);
+	}
+	else if (voiceType == 0)
 	{
 		OtherFX_Play((characterID + 0x1c) & 0xffff, 2);
 	}
@@ -343,6 +423,13 @@ void Voiceline_StartPlay(struct Item *voiceLine)
 	u32 rng = Voiceline_RequestPlay_NextAudioRNG();
 	u32 voiceIndex = rng % numVoiceIDs;
 	u32 xaID = (u16)voiceIDs[voiceIndex];
+	int customSeat = Voiceline_CustomSpeaker(characterID);
+
+	if (customSeat >= 0)
+	{
+		Voiceline_StartCustom(customSeat, voiceSetIndex, rng, xaID);
+		return;
+	}
 
 	if (CDSYS_XAPlay(CDSYS_XA_TYPE_GAME, xaID) == 0)
 	{

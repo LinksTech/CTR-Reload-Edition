@@ -1,7 +1,7 @@
 #include <common.h>
 
 // From platform/native_chars.c, further down in the translation unit: 1 for a
-// bound custom seat, which has no voice yet.
+// bound custom seat, which never speaks with its template's voice.
 int NativeChar_SeatSilent(int seat);
 
 int howl_Disable(void)

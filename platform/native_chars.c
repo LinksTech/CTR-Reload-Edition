@@ -59,8 +59,12 @@
 //            and the first answer that is not "yes" ends it.
 //   birth    NativeChar_SeatModel (game/Vehicle/VehBirth.c): the bound model,
 //            or NULL and the retail lookup by name. The class of a bound seat
-//            comes from its CHRI (NativeChar_SeatEngineClass), its voice stays
-//            silent (NativeChar_SeatSilent).
+//            comes from its CHRI (NativeChar_SeatEngineClass). It never speaks
+//            with its template's voice (NativeChar_SeatSilent): a file with
+//            usable voices (CVOI, checked at start, NativeChar_ReadVoices, and
+//            read again when a seat is bound, NativeChar_HoldVoices) speaks
+//            with its own clips (NativeChar_SeatSpeak, game/HOWL/
+//            HOWL_Voiceline.c), a file without is silent.
 //   draw     NativeChar_ModelHidesWheels (game/DrawTires.c): a file whose
 //            CHRI flags set RLDCHAR_FLAG_NO_WHEELS is drawn without the kart
 //            wheels and their reflection, wherever its model is drawn.
@@ -102,6 +106,7 @@
 // ===========================================================================
 
 #include <platform/native_chars.h>
+#include <platform/native_audio.h>
 #include <platform/native_path.h>
 
 #include <SDL3/SDL.h>
@@ -144,6 +149,19 @@ enum
 
 #define NATIVE_CHAR_ICON_WORDS (RLDCHAR_ICON_BYTES / 2u)
 
+// What a file's CVOI gave (NativeChar_ReadVoices).
+enum
+{
+	NATIVE_CHAR_VOICES_NONE = 0,    // no CVOI: silent
+	NATIVE_CHAR_VOICES_OWN = 1,     // cvoi and voices hold a checked CVOI
+	NATIVE_CHAR_VOICES_IGNORED = 2, // CVOI present but unusable (voiceWhy): silent
+};
+
+// The unit of an XA line's length (CDSYS_XAGetTrackLength, game/CDSYS.c): the
+// disc sectors it spans, read at double speed (CDSYS_CD_MODE_XA_AUDIO), so 150
+// a second. Voiceline_StartPlay waits length / 5 + 0x1e game frames.
+#define NATIVE_CHAR_VOICE_SECTORS_PER_SECOND 150u
+
 // What a file's CMSK gave (NativeChar_ReadMask).
 enum
 {
@@ -159,6 +177,7 @@ enum
 struct NativeCharFile
 {
 	char *file;
+	char *path;                 // where it was read, for the CVOI of a bound seat (NativeChar_HoldVoices)
 	u8 *cmdl;
 	struct Model *model;
 	struct RldCharInfo info;
@@ -175,6 +194,10 @@ struct NativeCharFile
 	u32 maskDrawBytes;          // what one draw of the own mask costs at most (RldChar_CheckMask, model-draw)
 	int maskState;              // NATIVE_CHAR_MASK_*
 	char maskWhy[192];          // NATIVE_CHAR_MASK_IGNORED: the rule and its detail
+	u8 *cvoi;                   // the CVOI chunk, held only while a seat is bound to the file; else NULL
+	struct RldCharVoices voices; // what RldChar_CheckVoices read (at start, and again from cvoi)
+	int voiceState;             // NATIVE_CHAR_VOICES_*
+	const char *voiceWhy;       // NATIVE_CHAR_VOICES_IGNORED: the reader's or the check's fixed text
 };
 
 // The files of the roster, in sorted order: entry e < s_charRosterFiles is
@@ -517,6 +540,49 @@ internal void NativeChar_DropMask(struct NativeCharFile *f)
 	f->mask = NULL;
 }
 
+// The voices (CVOI, optional): checked with RldChar_CheckVoices; the bytes are
+// let go again - only a bound seat holds them (NativeChar_HoldVoices), so a
+// roster of files with voices costs no memory for them. Whatever is wrong with
+// it - unreadable, hash, CVOI-1..4 - costs only the voices, never the file
+// (docs/CONTAINER_FORMAT.md, CVOI). No line here: NativeChar_Admit names the
+// outcome once the entry is known.
+internal void NativeChar_ReadVoices(struct RldReader *reader, struct NativeCharFile *out)
+{
+	const char *why = NULL;
+	size_t size = 0;
+	int index = -1;
+	u8 *bytes;
+
+	out->cvoi = NULL;
+	memset(&out->voices, 0, sizeof(out->voices));
+	out->voiceState = NATIVE_CHAR_VOICES_NONE;
+	out->voiceWhy = NULL;
+
+	if ((Rld_FindEntry(reader, "CVOI", &index) == NULL) || (index < 0))
+	{
+		return;
+	}
+
+	bytes = Rld_ReadChunk(reader, index, &size, &why);
+	if (bytes == NULL)
+	{
+		out->voiceState = NATIVE_CHAR_VOICES_IGNORED;
+		out->voiceWhy = (why != NULL) ? why : "CVOI cannot be read";
+		return;
+	}
+
+	why = RldChar_CheckVoices(bytes, (u64)size, &out->voices);
+	free(bytes);
+	if (why != NULL)
+	{
+		out->voiceState = NATIVE_CHAR_VOICES_IGNORED;
+		out->voiceWhy = why;
+		return;
+	}
+
+	out->voiceState = NATIVE_CHAR_VOICES_OWN;
+}
+
 // One file: read, checked, relocated into *out. 0 after a REFUSED line (named
 // by file), with nothing left allocated; 1 with out->cmdl and out->model set.
 // out->file is the caller's.
@@ -589,6 +655,7 @@ internal int NativeChar_ReadFile(const char *path, const char *file, struct Nati
 	{
 		NativeChar_ReadIcon(&reader, out);
 		NativeChar_ReadMask(&reader, out);
+		NativeChar_ReadVoices(&reader, out);
 	}
 
 	Rld_Close(&reader);
@@ -709,9 +776,47 @@ internal void NativeChar_LogMask(int entry)
 	}
 }
 
+// The voices of an admitted entry, one line for every file: the clips of each
+// event in event order, or why it is silent.
+internal void NativeChar_LogVoices(int entry)
+{
+	const struct NativeCharFile *f = &s_charFiles[entry];
+	char line[256];
+	size_t used = 0;
+	int e;
+
+	if (f->voiceState == NATIVE_CHAR_VOICES_NONE)
+	{
+		Platform_Log("[CTR Char] voices %s: none - silent\n", f->file);
+		return;
+	}
+
+	if (f->voiceState == NATIVE_CHAR_VOICES_IGNORED)
+	{
+		Platform_Log("[CTR Char] voices %s: CVOI ignored - %s - silent\n", f->file, f->voiceWhy);
+		return;
+	}
+
+	// Ten keys of at most 9 characters and counts of one digit: always fits.
+	line[0] = '\0';
+	for (e = 0; e < RLDCHAR_VOICE_EVENTS; e++)
+	{
+		const int written = snprintf(&line[used], sizeof(line) - used, "%s%s %u", (e == 0) ? "" : ", ", s_rldCharVoiceEvents[e], (unsigned)f->voices.count[e]);
+
+		if ((written < 0) || ((size_t)written >= (sizeof(line) - used)))
+		{
+			break;
+		}
+		used += (size_t)written;
+	}
+
+	Platform_Log("[CTR Char] voices %s: %u clips - %s\n", f->file, (unsigned)f->voices.clipCount, line);
+}
+
 // A valid file becomes the next entry while there is an id for it; after
-// that it is named loudly and let go. 1 = it got an entry (and keeps file).
-internal int NativeChar_Admit(struct NativeCharFile *loaded, char *file)
+// that it is named loudly and let go. 1 = it got an entry (and keeps file and
+// a copy of path).
+internal int NativeChar_Admit(struct NativeCharFile *loaded, char *file, const char *path)
 {
 	if (s_charRosterFiles >= NATIVE_CHAR_ROSTER_MAX)
 	{
@@ -723,6 +828,7 @@ internal int NativeChar_Admit(struct NativeCharFile *loaded, char *file)
 	}
 
 	loaded->file = file;
+	loaded->path = SDL_strdup(path);
 	s_charFiles[s_charRosterFiles] = *loaded;
 	s_charRosterFiles++;
 	NativeChar_LogLoaded(loaded);
@@ -732,6 +838,7 @@ internal int NativeChar_Admit(struct NativeCharFile *loaded, char *file)
 	// What the draw reserve counts for it (NativeChar_DrawReserve), one draw.
 	Platform_Log("[CTR Char] draw bytes %s: model %u, own mask %u\n", loaded->file, (unsigned)loaded->drawBytes,
 	             (unsigned)((loaded->maskState == NATIVE_CHAR_MASK_OWN) ? loaded->maskDrawBytes : 0u));
+	NativeChar_LogVoices(s_charRosterFiles - 1);
 	return 1;
 }
 
@@ -947,7 +1054,7 @@ internal void NativeChar_ScanFolder(void)
 		}
 
 		// An entry keeps its name for the whole run.
-		if (!NativeChar_Admit(&loaded, name))
+		if (!NativeChar_Admit(&loaded, name, path))
 		{
 			noId++;
 			free(name);
@@ -983,7 +1090,7 @@ internal void NativeChar_LoadGivenFile(void)
 
 	if (NativeChar_ReadFile(path, s_charFile, &loaded))
 	{
-		NativeChar_Admit(&loaded, s_charFile);
+		NativeChar_Admit(&loaded, s_charFile, path);
 	}
 
 	Platform_Log("[CTR Char] characters: %d loaded, %d refused (--char %s)\n", s_charRosterFiles, 1 - s_charRosterFiles, path);
@@ -1051,9 +1158,89 @@ void NativeChar_LoadRoster(void)
 	}
 }
 
+// The CVOI of a file a seat is bound to, read again from its path at the
+// binding (load stage 5): the file is checked again (hash, CVOI-1..4) and the
+// clip table taken from these bytes. Whatever fails now costs only the voices
+// of this run, with one line. Nothing for a file without voices.
+internal void NativeChar_HoldVoices(int entry)
+{
+	struct NativeCharFile *f = &s_charFiles[entry];
+	struct RldReader reader;
+	const char *why;
+	size_t size = 0;
+	int index = -1;
+	u8 *bytes = NULL;
+
+	if ((f->voiceState != NATIVE_CHAR_VOICES_OWN) || (f->cvoi != NULL))
+	{
+		return;
+	}
+
+	why = (f->path != NULL) ? Rld_OpenAs(&reader, f->path, &s_rldCharFormat) : "the path of the file was not kept";
+	if (why == NULL)
+	{
+		if ((Rld_FindEntry(&reader, "CVOI", &index) == NULL) || (index < 0))
+		{
+			why = "CVOI is no longer in the file";
+		}
+		else
+		{
+			bytes = Rld_ReadChunk(&reader, index, &size, &why);
+			if ((bytes == NULL) && (why == NULL))
+			{
+				why = "CVOI cannot be read";
+			}
+		}
+		Rld_Close(&reader);
+	}
+
+	if (bytes != NULL)
+	{
+		why = RldChar_CheckVoices(bytes, (u64)size, &f->voices);
+	}
+
+	if (why != NULL)
+	{
+		free(bytes);
+		memset(&f->voices, 0, sizeof(f->voices));
+		f->voiceState = NATIVE_CHAR_VOICES_IGNORED;
+		f->voiceWhy = why;
+		Platform_Log("[CTR Char] voices %s: CVOI ignored - %s - silent\n", f->file, why);
+		return;
+	}
+
+	f->cvoi = bytes;
+}
+
+// Every held CVOI is let go with the seats; both clip places are silenced
+// first, the mixer may still read from the bytes. Nothing without a held one.
+internal void NativeChar_ReleaseVoices(void)
+{
+	int held = 0;
+	int e;
+
+	for (e = 0; e < s_charRosterFiles; e++)
+	{
+		held += (s_charFiles[e].cvoi != NULL) ? 1 : 0;
+	}
+
+	if (held == 0)
+	{
+		return;
+	}
+
+	NativeAudio_StopPcmClips();
+	for (e = 0; e < s_charRosterFiles; e++)
+	{
+		free(s_charFiles[e].cvoi);
+		s_charFiles[e].cvoi = NULL;
+	}
+}
+
 void NativeChar_ClearSeats(void)
 {
 	memset(s_seat, 0, sizeof(s_seat));
+	NativeChar_ReleaseVoices();
 }
 
 // The first reason why this race is not one the funnel binds in, NULL when it
@@ -1934,6 +2121,11 @@ internal void NativeChar_ArmDevSeats(struct GameTracker *gGT)
 		bound++;
 	}
 
+	if (bound > 0)
+	{
+		NativeChar_HoldVoices(entry);
+	}
+
 	// From here until the next load arms its seats, drops count for this one.
 	s_charDevLoadOpen = 1;
 	s_charDevLoadLevel = gGT->levelID;
@@ -2063,6 +2255,7 @@ void NativeChar_ArmSeats(void)
 	// upload it anew at the first draw, whatever happened since the driver select.
 	NativeChar_PortraitsDirty();
 	Platform_Log("[CTR Char] seat 0 = %s on template %d\n", s_charFiles[pick].file, templateId);
+	NativeChar_HoldVoices(pick);
 
 	// The marker of the minimap: one flat color like the retail driver colors
 	// (data.colors, ALL4), or the template's.
@@ -2128,9 +2321,87 @@ const u32 *NativeChar_SeatMapColor(int seat, const u32 *retail)
 
 int NativeChar_SeatSilent(int seat)
 {
-	// Voices are not packed yet: a bound custom seat says nothing rather than
-	// speak with the template's voice.
+	// A bound custom seat never speaks with the template's voice - with its
+	// own clips (NativeChar_SeatVoiced) or not at all.
 	return NativeChar_SeatModel(seat) != NULL;
+}
+
+int NativeChar_SeatVoiced(int seat)
+{
+	return (NativeChar_SeatModel(seat) != NULL) && (s_charFiles[s_seat[seat].entry].voiceState == NATIVE_CHAR_VOICES_OWN) &&
+	       (s_charFiles[s_seat[seat].entry].cvoi != NULL);
+}
+
+// Clip pick % count of the event, started on the mixer (a line at volume on the
+// CD channel, a short sound at volumeLeft / volumeRight beside it); its length
+// in the unit of CDSYS_XAGetTrackLength (whole sectors at
+// NATIVE_CHAR_VOICE_SECTORS_PER_SECOND), or 0 when nothing plays: an event
+// without clips (one line), or no audio output (as an XA line that does not
+// start, no line).
+internal int NativeChar_SeatSpeak(int seat, int event, u32 pick, int volumeLeft, int volumeRight)
+{
+	const struct NativeCharFile *f;
+	const struct RldCharVoiceClip *clip;
+	u32 count;
+	u32 index;
+	int played;
+
+	if (!NativeChar_SeatVoiced(seat) || (event < 0) || (event >= RLDCHAR_VOICE_EVENTS))
+	{
+		return 0;
+	}
+
+	f = &s_charFiles[s_seat[seat].entry];
+	count = f->voices.count[event];
+	if (count == 0)
+	{
+		Platform_Log("[CTR Voice] seat %d event %s: no clip - silent\n", seat, s_rldCharVoiceEvents[event]);
+		return 0;
+	}
+
+	index = pick % count;
+	clip = &f->voices.clip[f->voices.first[event] + index];
+	if (event < RLDCHAR_VOICE_SHORT_FIRST)
+	{
+		played = NativeAudio_PlayPcmLine(&f->cvoi[clip->offset], (int)clip->frames, (int)RLDCHAR_VOICE_RATE, (int)clip->volume, volumeLeft);
+	}
+	else
+	{
+		played = NativeAudio_PlayPcmShort(&f->cvoi[clip->offset], (int)clip->frames, (int)RLDCHAR_VOICE_RATE, (int)clip->volume, volumeLeft,
+		                                  volumeRight);
+	}
+
+	if (!played)
+	{
+		return 0;
+	}
+
+	Platform_Log("[CTR Voice] seat %d event %s clip %s (%u of %u)\n", seat, s_rldCharVoiceEvents[event], clip->name, (unsigned)(index + 1u),
+	             (unsigned)count);
+	return (int)(((clip->frames * NATIVE_CHAR_VOICE_SECTORS_PER_SECOND) + (RLDCHAR_VOICE_RATE - 1u)) / RLDCHAR_VOICE_RATE);
+}
+
+int NativeChar_SeatSpeakLine(int seat, u32 voiceSet, u32 pick, int volume)
+{
+	// The retail sets 0..7 are the events 0..7; set 8 (voice ids 21..23) has
+	// no event and no caller.
+	if (voiceSet >= (u32)RLDCHAR_VOICE_SHORT_FIRST)
+	{
+		return 0;
+	}
+
+	return NativeChar_SeatSpeak(seat, (int)voiceSet, pick, volume, volume);
+}
+
+int NativeChar_SeatSpeakShort(int seat, u32 voiceType, u32 pick, int volumeLeft, int volumeRight)
+{
+	// The short sound of set 0 (OtherFX char + 0x1c) and of set 1 (char + 0x2c).
+	if (voiceType > 1u)
+	{
+		return 0;
+	}
+
+	return NativeChar_SeatSpeak(seat, RLDCHAR_VOICE_SHORT_FIRST + (int)voiceType, pick, volumeLeft, volumeRight);
 }
 
 // Whether the level holds the mask (1 Aku Aku, 0 Uka Uka): its model and its

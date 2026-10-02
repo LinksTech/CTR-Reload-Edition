@@ -29,6 +29,22 @@ void NativeAudio_SpuSetCommonCDReverb(s32 enabled);
 int NativeAudio_PlayXATrack(int categoryID, int xaID, int volumeLeft, int volumeRight);
 int NativeAudio_PlayXAFile(const char *relativePath, int channelFilter, int volumeLeft, int volumeRight);
 int NativeAudio_GetXATrackLength(int categoryID, int xaID);
+// Host clips, mono s16 little endian at sampleRate (at most the output rate),
+// up to the output rate by linear interpolation, times gain / 256. The samples
+// stay the caller's and must outlive the clip. Never in a snapshot (a restore
+// leaves both places silent). 0 when nothing plays.
+// The line: a voice line on the CD channel, one place - the XA stops, the clip
+// plays at volume as XA volume (faded by NativeAudio_SetXAVolume), counts in
+// NativeAudio_IsXAPlaying and NativeAudio_GetXACurrOffset and stops with the
+// XA (NativeAudio_StopXA, a new XA). Opens the device like PlayXATrack.
+int NativeAudio_PlayPcmLine(const u8 *samples, int frameCount, int sampleRate, int gain, int volume);
+// The short sound: one place of its own beside the XA and the line, at
+// volumeLeft / volumeRight like an SPU voice volume; a new short sound
+// replaces the one playing, nothing of the XA touches it. Only while the
+// mixer runs (the device is never opened here).
+int NativeAudio_PlayPcmShort(const u8 *samples, int frameCount, int sampleRate, int gain, int volumeLeft, int volumeRight);
+// Both places silent at once, before the caller lets the samples go.
+void NativeAudio_StopPcmClips(void);
 int NativeAudio_IsXAPlaying(void);
 int NativeAudio_GetXACurrOffset(void);
 int NativeAudio_GetXAMaxSample(void);
