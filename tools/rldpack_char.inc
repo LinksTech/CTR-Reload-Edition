@@ -12207,6 +12207,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	int i;
 
 	RldMk_DefaultOptions(&opt);
+	RldObj_ResetOptions();
 	memset(&ply, 0, sizeof(ply));
 	memset(&build, 0, sizeof(build));
 	memset(nameField, 0, sizeof(nameField));
@@ -12219,7 +12220,12 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		const char *arg = argv[i];
 		const int hasValue = ((i + 1) < argc);
 
-		if ((strcmp(arg, "--model") == 0) && hasValue)
+		// The switches of the OBJ reader (tools/rldpack_obj.inc).
+		if (RldObj_Argument(arg, hasValue ? argv[i + 1] : NULL))
+		{
+			i++;
+		}
+		else if ((strcmp(arg, "--model") == 0) && hasValue)
 		{
 			modelArg = argv[++i];
 		}
@@ -12774,6 +12780,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		Rld_Emit("value", "icon-fit", s_rldMkIconFitWords[iconOptions.fit], (iconFitArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "icon-frame", s_rldMkIconFrameWords[iconOptions.frame], (iconFrameArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "voices", (voicesArg != NULL) ? voicesArg : "", (voicesArg != NULL) ? "switch" : "default", (const char *)NULL);
+		RldObj_EmitValues();
 		if (voicesArg != NULL)
 		{
 			Rld_Emit("value", "voice-normalize", voiceNormalize ? "on" : "off", voiceNormalize ? "switch" : "default", (const char *)NULL);
@@ -13738,6 +13745,7 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "  --up y|z                    the up axis of the model (default y); z for\n");
 	fprintf(out, "                              Blender's own axes, with the front at -Y\n");
 	fprintf(out, "  --forward z|-z              -z: the model looks backwards and is turned\n");
+	RldObj_Usage(out);
 	fprintf(out, "  --fit crash|none            crash (default): scale the model to Crash's\n");
 	fprintf(out, "                              size - its kart as long as Crash with his kart\n");
 	fprintf(out, "                              (%.1f game units; the whole model with\n", RLDMK_CRASH_LENGTH);
