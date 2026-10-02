@@ -2742,6 +2742,42 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 		}
 	}
 
+	// THE DRIVER CHOSEN BY THE TRIANGLES may be a detailed part of the vehicle
+	// (a spoiler, a cannon) while the real driver - fewer triangles - went to
+	// the kart and stands still. The rule itself stays (the highest part
+	// instead breaks a separate head or an antenna on the kart); a large part
+	// that reaches above the driver and stays with the kart is named. Large =
+	// not a steering wheel by its extent; not a stick either: as wide and as
+	// deep as an eighth of its height (an antenna is not a driver).
+	if (b->driverPart >= 0)
+	{
+		const struct RldMkPart *driver = &b->parts[b->driverPart];
+		int higher = -1;
+
+		for (i = 0; i < b->partCount; i++)
+		{
+			const struct RldMkPart *part = &b->parts[i];
+			const double height = part->hi[1] - part->lo[1];
+
+			if (((int)i == best) || ((int)i == b->driverPart) || (part->group != RLDMK_GROUP_KART) || (RldMk_Extent(part) <= (RLDMK_WHEEL_EXTENT * RLDMK_UNITS)) ||
+			    !(part->hi[1] > driver->hi[1]) || ((8.0 * (part->hi[0] - part->lo[0])) < height) || ((8.0 * (part->hi[2] - part->lo[2])) < height))
+			{
+				continue;
+			}
+			if ((higher < 0) || (part->hi[1] > b->parts[higher].hi[1]))
+			{
+				higher = (int)i;
+			}
+		}
+
+		if (higher >= 0)
+		{
+			RldMk_Say("warning", "ply-driver", NULL,
+			          "The driver was taken as the part with the most triangles (%u, up to %.2f model units high), but a larger part reaching higher (%u triangles, up to %.2f) stays still with the kart. If that part is the driver, join the vehicle's own parts to the kart's mesh (Blender: select them, Ctrl+J), so that the driver is the only other large part.",
+			          driver->triangles, driver->hi[1] / RLDMK_UNITS, b->parts[higher].triangles, b->parts[higher].hi[1] / RLDMK_UNITS);
+		}
+	}
+
 	for (p = 0; p < b->positionCount; p++)
 	{
 		b->positionGroup[p] = (u8)b->parts[b->positionPart[p]].group;
@@ -18901,6 +18937,33 @@ static void RldMk_SelfTestParts(struct RldMkTestMesh *mesh)
 		RldMk_Test(ok && (b.fitBasis == RLDMK_FIT_KART) && ((b.fitCapped != 0) == (lift == 0)) && (RldMk_Said("fit-capped") == (lift == 0)),
 		           lift ? "fit not capped: no fit-capped" : "fit capped by the height: fit-capped", "built %d, basis %d, capped %d, said: %s", ok, b.fitBasis,
 		           b.fitCapped, s_rldMkCodes);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+	}
+
+	// PLY-DRIVER: (0) a detailed spoiler is taken as the driver, the real
+	// driver (12 triangles, reaching into the kart) stands still: warned.
+	// (1) a separate large head above the body moves with it, (2) a thin
+	// antenna on the kart reaches higher than the driver: no warning.
+	for (lift = 0; lift < 3; lift++)
+	{
+		static const double boxes[3][2][6] = {
+		    {{-0.25, 0.25, -0.40, 0.25, 1.20, 0.10}, {-0.40, 0.40, -0.85, 0.40, 0.55, -0.70}},
+		    {{-0.25, 0.25, -0.30, 0.25, 1.00, 0.10}, {-0.35, 1.00, -0.35, 0.35, 1.60, 0.25}},
+		    {{-0.25, 0.40, -0.30, 0.25, 1.00, 0.10}, {-0.02, 0.20, -0.80, 0.02, 1.90, -0.76}}};
+		static const u32 splits[3][2] = {{1u, 3u}, {3u, 1u}, {3u, 1u}};
+		static const char *const names[3] = {"parts: a detailed spoiler taken as the driver, the real one still: ply-driver",
+		                                     "parts: a separate large head above the body: no ply-driver",
+		                                     "parts: a thin antenna on the kart higher than the driver: no ply-driver"};
+
+		mesh->vertexCount = 0;
+		mesh->faceCount = 0;
+		RldMk_TestBox(mesh, kartLo, kartHi, 1u, 0u, 0, -1);
+		RldMk_TestBox(mesh, &boxes[lift][0][0], &boxes[lift][0][3], splits[lift][0], 10u, 0, -1);
+		RldMk_TestBox(mesh, &boxes[lift][1][0], &boxes[lift][1][3], splits[lift][1], 20u, 0, -1);
+		RldMk_TestOptions(&opt);
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && (RldMk_Said("ply-driver") == (lift == 0));
+		RldMk_Test(ok, names[lift], "said: %s", s_rldMkCodes);
 		RldMk_FreeBuild(&b);
 		RldMk_FreePly(&ply);
 	}
