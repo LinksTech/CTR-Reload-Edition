@@ -55,7 +55,10 @@
 // are (:3067-3073). No lighting, no 2x factor (that only exists for textured
 // primitives, where 128 means "texture as it is"). So the factor here is 1:1:
 // corner byte 255 is pixel 255. The PS1 GPU then dithers to 15 bits; the view
-// does not imitate that.
+// does not imitate that. The view shows the brightest case: in the race the
+// ground under the kart sets alphaScale (game/COLL.c): 0.25 + luma/128 of the
+// colour below luma 96, at most 75 % darker - the page says so below the
+// preview.
 //
 // THE BACK FACES
 //
