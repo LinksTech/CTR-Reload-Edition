@@ -68,6 +68,10 @@ void RldImg_Free(unsigned char *rgba);
 //                                         (RldObj_ApplyTexture); default auto
 //   --colors-from vertex|material         the vertex colors or the materials
 //                                         (RldObj_UniformColors); default auto
+//   --textures <folder>                   where else textures are looked for,
+//                                         before the other places
+//                                         (RldObj_SearchTexture); up to
+//                                         RLDOBJ_TEXTURE_DIRS times
 
 enum
 {
@@ -87,12 +91,16 @@ enum
 
 static const char *const s_rldObjFromWords[3] = {"auto", "vertex", "material"};
 
+#define RLDOBJ_TEXTURE_DIRS 8u
+
 struct RldObjOptions
 {
 	int vertexColors;      // RLDOBJ_VERTEX_*
 	int vertexColorsGiven;
 	int colorsFrom;        // RLDOBJ_FROM_*
 	int colorsFromGiven;
+	char textureDirs[RLDOBJ_TEXTURE_DIRS][RLD_PATH_MAX];  // --textures, each with a separator at its end
+	u32 textureDirCount;
 };
 
 static struct RldObjOptions s_rldObjOptions;
@@ -139,6 +147,25 @@ static int RldObj_Argument(const char *arg, const char *value)
 		RldMk_Say("error", "colors-from", value, "The colors must come from vertex or material (or auto).");
 		return 1;
 	}
+	if ((strcmp(arg, "--textures") == 0) && (value != NULL))
+	{
+		const size_t length = strlen(value);
+		const int separator = (length != 0u) && Rld_IsSeparator(value[length - 1u]);
+
+		if ((length == 0u) || ((length + 2u) > RLD_PATH_MAX))
+		{
+			RldMk_Say("error", "textures", value, "The textures folder must be a folder name (at most %u characters).", RLD_PATH_MAX - 2u);
+		}
+		else if (s_rldObjOptions.textureDirCount >= RLDOBJ_TEXTURE_DIRS)
+		{
+			RldMk_Say("error", "textures", value, "At most %u textures folders can be given.", RLDOBJ_TEXTURE_DIRS);
+		}
+		else
+		{
+			snprintf(s_rldObjOptions.textureDirs[s_rldObjOptions.textureDirCount++], RLD_PATH_MAX, "%s%s", value, separator ? "" : "/");
+		}
+		return 1;
+	}
 	return 0;
 }
 
@@ -149,6 +176,19 @@ static void RldObj_EmitValues(void)
 	         (const char *)NULL);
 	Rld_Emit("value", "colors-from", s_rldObjFromWords[s_rldObjOptions.colorsFrom], s_rldObjOptions.colorsFromGiven ? "switch" : "default",
 	         (const char *)NULL);
+	if (s_rldObjOptions.textureDirCount == 0u)
+	{
+		Rld_Emit("value", "textures", "", "default", (const char *)NULL);
+	}
+	else
+	{
+		u32 i;
+
+		for (i = 0; i < s_rldObjOptions.textureDirCount; i++)
+		{
+			Rld_Emit("value", "textures", s_rldObjOptions.textureDirs[i], "switch", (const char *)NULL);
+		}
+	}
 }
 
 // The help of the switches, in make-char's help.
@@ -163,6 +203,8 @@ static void RldObj_Usage(FILE *out)
 	fprintf(out, "                              colors of its textured corners have their\n");
 	fprintf(out, "                              median at 0x70..0x90, at least 5 %% exactly\n");
 	fprintf(out, "                              0x7F or 0x80 grey), else color\n");
+	fprintf(out, "  --textures <folder>         OBJ: look for textures that are not at their\n");
+	fprintf(out, "                              path in this folder first (up to %u times)\n", RLDOBJ_TEXTURE_DIRS);
 	fprintf(out, "  --colors-from vertex|material\n");
 	fprintf(out, "                              OBJ: the vertex colors or the materials' Kd\n");
 	fprintf(out, "                              (times their textures); without it the vertex\n");
@@ -2681,8 +2723,8 @@ static void RldObj_SayMissing(const struct RldObjModel *m, char (*libraryPath)[R
 	}
 
 	// The technical line: where the first one was looked for.
-	snprintf(where, sizeof(where), "looked for at %s, next to the MTL and OBJ files, in their folders textures, tex, images and maps, also as .png, .jpg, .jpeg and .tga",
-	         m->textures[first].path);
+	snprintf(where, sizeof(where), "looked for at %s, %snext to the MTL and OBJ files, in their folders textures, tex, images and maps, also as .png, .jpg, "
+	         ".jpeg and .tga", m->textures[first].path, (s_rldObjOptions.textureDirCount != 0u) ? "in the --textures folders, " : "");
 
 	if (missing == 1u)
 	{
@@ -2791,11 +2833,23 @@ static int RldObj_Textures(struct RldObjModel *m, const char *objPath, char (*li
 			char folder[2][RLD_PATH_MAX];
 			const char *folders[2];
 
+			const char *dirs[RLDOBJ_TEXTURE_DIRS];
+			u32 k;
+
+			// The folders of --textures first, then the MTL and OBJ files'.
+			for (k = 0; k < s_rldObjOptions.textureDirCount; k++)
+			{
+				dirs[k] = s_rldObjOptions.textureDirs[k];
+			}
+			read = RldObj_SearchTexture(t->path, dirs, s_rldObjOptions.textureDirCount, &data, &size, nearby, sizeof(nearby));
 			RldObj_Folder(libraryPath[t->library], folder[0], sizeof(folder[0]));
 			RldObj_Folder(objPath, folder[1], sizeof(folder[1]));
 			folders[0] = folder[0];
 			folders[1] = folder[1];
-			read = RldObj_SearchTexture(t->path, folders, (strcmp(folder[0], folder[1]) != 0) ? 2u : 1u, &data, &size, nearby, sizeof(nearby));
+			if (read == RLDOBJ_READ_MISSING)
+			{
+				read = RldObj_SearchTexture(t->path, folders, (strcmp(folder[0], folder[1]) != 0) ? 2u : 1u, &data, &size, nearby, sizeof(nearby));
+			}
 			if ((read == RLDOBJ_READ_OK) || (read == RLDOBJ_READ_LARGE))
 			{
 				RldMk_Say("info", "tex-found-nearby", t->path, "The texture %s is not at the path the material file gives; %s is used.",

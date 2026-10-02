@@ -837,6 +837,69 @@ static void RldMk_SelfTestObjAlpha(void)
 	free(png.data);
 }
 
+// --textures: its folder comes before the places next to the MTL file. A
+// texture at a foreign path is in selftest/other/ (red) and next to the MTL
+// file (blue): blue without the switch, red with it; nine folders are one
+// too many.
+static void RldMk_SelfTestObjTextureDirs(void)
+{
+	static const char mtl[] = "newmtl a\nmap_Kd C:/gone/a.png\n";
+	static const char obj[] = "mtllib dirs.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0.5 0.5\nusemtl a\nf 1/1 2/1 3/1\n";
+	static const u8 red[12] = {255, 0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0};
+	static const u8 blue[12] = {0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0, 255};
+	static const char *const given[3] = {NULL, "selftest/other", "selftest/other/"};
+	struct RldObjMemFile files[3];
+	size_t redSize = 0;
+	size_t blueSize = 0;
+	u8 *redPng = RldMk_TestPngRgb(2u, 2u, red, &redSize);
+	u8 *bluePng = RldMk_TestPngRgb(2u, 2u, blue, &blueSize);
+	u32 c;
+	int nine = 1;
+
+	files[0].path = "selftest/dirs.mtl";
+	files[0].data = (const u8 *)mtl;
+	files[0].size = sizeof(mtl) - 1u;
+	files[1].path = "selftest/other/a.png";
+	files[1].data = redPng;
+	files[1].size = redSize;
+	files[2].path = "selftest/a.png";
+	files[2].data = bluePng;
+	files[2].size = blueSize;
+	s_rldObjFiles = files;
+	s_rldObjFileCount = 3u;
+
+	for (c = 0; c < 3u; c++)
+	{
+		struct RldMkPly ply;
+		struct RldMkModelInfo info;
+		char name[96];
+		int ok;
+
+		RldObj_ResetOptions();
+		ok = (given[c] == NULL) || RldObj_Argument("--textures", given[c]);
+		ok = ok && (redPng != NULL) && (bluePng != NULL) && RldMk_TestImport("selftest/dirs.obj", obj, sizeof(obj) - 1u, &ply, &info, RLDMK_ROLE_MAIN);
+		snprintf(name, sizeof(name), "OBJ --textures %s: %s", (given[c] != NULL) ? given[c] : "(none)", (given[c] != NULL) ? "red" : "blue");
+		RldMk_Test(ok && (RldMk_TestCornerRgb(&ply, 0u, 0u) == ((given[c] != NULL) ? 0xFF0000u : 0x0000FFu)) && RldMk_Said("tex-found-nearby"), name,
+		           "read %d, %06X, said: %s", ok, ok ? RldMk_TestCornerRgb(&ply, 0u, 0u) : 0u, s_rldMkCodes);
+		RldMk_FreePly(&ply);
+	}
+
+	RldObj_ResetOptions();
+	RldMk_ResetSaid();
+	for (c = 0; c < 9u; c++)
+	{
+		nine = nine && RldObj_Argument("--textures", "selftest/other");
+	}
+	RldMk_Test(nine && (RldMk_TestSaidCount("textures") == 1u) && (s_rldObjOptions.textureDirCount == RLDOBJ_TEXTURE_DIRS),
+	           "--textures nine times: one error textures, eight folders kept", "said: %s", s_rldMkCodes);
+	RldObj_ResetOptions();
+
+	s_rldObjFiles = NULL;
+	s_rldObjFileCount = 0;
+	free(redPng);
+	free(bluePng);
+}
+
 // What falls back with a warning, what fails, and which format a file is.
 static void RldMk_SelfTestObjCases(struct RldMkTestMesh *mesh)
 {
@@ -1233,6 +1296,7 @@ static void RldMk_SelfTestObj(struct RldMkTestMesh *mesh)
 	RldMk_SelfTestObjUniform();
 	RldMk_SelfTestObjEmission();
 	RldMk_SelfTestObjAlpha();
+	RldMk_SelfTestObjTextureDirs();
 	RldMk_SelfTestObjCases(mesh);
 	free(chri);
 }
