@@ -11,7 +11,12 @@
 // voices folder) is checked again when Reload Studio becomes the active
 // program again or the page is shown again: the page keeps a stamp (size and
 // time of writing) of every file the last check read (Char_StampFields,
-// Char_ImportFiles) and compares it then (Char_FilesChanged). A new check makes the running one outdated: it is
+// Char_ImportFiles) and compares it then (Char_FilesChanged).
+// The results of the last CHAR_CACHE checks are kept (their lines and their
+// temp files): a check with the same command (but for its temp files) while
+// the stamps of its files are the same shows the result kept again, without
+// rldpack (Char_CacheFind) - a tick set and taken back, a name typed and
+// taken back. Check, Enter and choosing a model always run rldpack. A new check makes the running one outdated: it is
 // ended, its lines are only freed. A check also asks rldpack for the converted
 // model (--preview, shown by the RsModelView control of rs_view.c) and, with an
 // icon, for the decoded and the converted picture (--icon-preview). These go to
@@ -154,6 +159,7 @@
 // to change with CHAR_TEMPLATE; rldpack says the template's mask in @value mask.
 #define CHAR_TEMPLATE_MASK 1
 #define CHAR_PENDING       16     // outdated checks whose temp files wait for their end
+#define CHAR_CACHE         4      // checks whose results are kept (Char_Cache*)
 #define CHAR_POSES         3      // poses in a --preview file
 #define CHAR_IMAGE_CLASS   L"RsCharImage"
 #define CHAR_SWATCH_CLASS  L"RsCharSwatch"
@@ -560,6 +566,15 @@ static struct {
     unsigned long long stampRun, stampFields, stampImport;
     wchar_t *stampFiles;
     int stampKnown;                 // the stamps belong to the check shown
+    // The results kept, [0] the newest (Char_Cache*): the command without its
+    // temp files (Char_ArgsKey), the raw output (the command, then the lines
+    // of rldpack), the exit code, the temp files and the stamps of the files.
+    struct {
+        wchar_t *key, *raw, *stampFiles;
+        int exitCode, seq;
+        unsigned long long stampFields, stampImport;
+    } cache[CHAR_CACHE];
+    wchar_t *runKey;                // the key of the running check (Rs_Free)
 
     int applying;                   // fields are being set: trigger no check
     int timer;                      // check waits for the timer
@@ -1409,6 +1424,8 @@ static void Char_Abandon(void)
     g_char.jobId = 0;
     g_char.jobKind = CHAR_JOB_NONE;
     g_char.jobSeq = 0;
+    Rs_Free(g_char.runKey);
+    g_char.runKey = NULL;
 }
 
 // Leftovers of earlier runs: the page's own files "char-<pid>-<number><kind>"
@@ -1465,6 +1482,64 @@ static void Char_PendingDone(int id)
             g_char.pending[i].seq = 0;
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Results kept (CHAR_CACHE): a kept result owns the temp files of its check
+// until it is dropped.
+// ---------------------------------------------------------------------------
+
+// 1 if a kept result (other than the one at skip) has the temp files of seq.
+static int Char_CacheHasSeq(int seq, int skip)
+{
+    int i;
+    for (i = 0; i < CHAR_CACHE; i++)
+        if (i != skip && g_char.cache[i].key && g_char.cache[i].seq == seq)
+            return 1;
+    return 0;
+}
+
+// Drops the result at i; its temp files go unless another result has them
+// (the voice previews of the list shown stay - Char_ApplyVoices deletes them
+// when the list changes).
+static void Char_CacheDrop(int i)
+{
+    int seq = g_char.cache[i].seq;
+    int had = g_char.cache[i].key != NULL;
+    Rs_Free(g_char.cache[i].key);
+    Rs_Free(g_char.cache[i].raw);
+    Rs_Free(g_char.cache[i].stampFiles);
+    if (had && seq > 0 && !Char_CacheHasSeq(seq, i))
+        Char_TempDeleteKeep(seq, seq == g_char.voiceSeq);
+    memmove(&g_char.cache[i], &g_char.cache[i + 1], sizeof(g_char.cache[0]) * (size_t)(CHAR_CACHE - 1 - i));
+    memset(&g_char.cache[CHAR_CACHE - 1], 0, sizeof(g_char.cache[0]));
+}
+
+// Moves the result at i to the front (the newest).
+static void Char_CacheTouch(int i)
+{
+    if (i > 0) {
+        unsigned char keep[sizeof(g_char.cache[0])];
+        memcpy(keep, &g_char.cache[i], sizeof(keep));
+        memmove(&g_char.cache[1], &g_char.cache[0], sizeof(g_char.cache[0]) * (size_t)i);
+        memcpy(&g_char.cache[0], keep, sizeof(keep));
+    }
+}
+
+// A copy of a list "a\0b\0\0" (NULL = none).
+static wchar_t *Char_ListDup(const wchar_t *list)
+{
+    const wchar_t *p = list;
+    wchar_t *copy;
+    size_t n;
+    if (!list)
+        return NULL;
+    while (*p)
+        p += wcslen(p) + 1;
+    n = (size_t)(p - list) + 1;
+    copy = Rs_Alloc(n * sizeof(wchar_t));
+    memcpy(copy, list, n * sizeof(wchar_t));
+    return copy;
 }
 
 // ---------------------------------------------------------------------------
@@ -3243,7 +3318,8 @@ static void Char_VoicesClear(void)
     g_char.voiceKnown = 0;
     g_char.voiceClips = g_char.voiceFilled = 0;
     memset(g_char.voiceEventCount, 0, sizeof(g_char.voiceEventCount));
-    Char_TempDeleteVoices(g_char.voiceSeq);
+    if (!Char_CacheHasSeq(g_char.voiceSeq, -1))
+        Char_TempDeleteVoices(g_char.voiceSeq);
     g_char.voiceSeq = 0;
     Char_VoiceFill();
     Char_VoiceEventsShow();
@@ -3269,7 +3345,7 @@ static void Char_ApplyVoices(int seq)
         memcpy(g_char.voiceEventCount, j->voiceEvent, sizeof(g_char.voiceEventCount));
     else
         memset(g_char.voiceEventCount, 0, sizeof(g_char.voiceEventCount));
-    if (g_char.voiceSeq != seq)
+    if (g_char.voiceSeq != seq && !Char_CacheHasSeq(g_char.voiceSeq, -1))
         Char_TempDeleteVoices(g_char.voiceSeq);
     g_char.voiceSeq = seq;
     // A file that has gone from the folder keeps no event of its own.
@@ -4235,12 +4311,104 @@ static void Char_NoModel(HWND page)
     CharAnim_ModelChecked(page, L"", g_char.sizeNow, 0);
 }
 
-// Checks with the values of the fields. Return: 1 = rldpack running,
-// 0 = done without rldpack (the message is already there), -1 = nothing to check.
-static int Char_Check(HWND page)
+// The command of a check without its temp files (the values of --preview,
+// --icon-preview and --voice-preview), one argument per line (Rs_Free).
+static wchar_t *Char_ArgsKey(const struct CharArgs *a)
+{
+    size_t n = 1;
+    wchar_t *key;
+    int i;
+    for (i = 0; i < a->n; i++)
+        n += wcslen(a->v[i]) + 1;
+    key = Rs_Alloc(n * sizeof(wchar_t));
+    key[0] = 0;
+    for (i = 0; i < a->n; i++) {
+        int temp = i > 0 && (wcscmp(a->v[i - 1], L"--preview") == 0 || wcscmp(a->v[i - 1], L"--icon-preview") == 0 ||
+                             wcscmp(a->v[i - 1], L"--voice-preview") == 0);
+        wcscat(key, temp ? L"-" : a->v[i]);
+        wcscat(key, L"\n");
+    }
+    return key;
+}
+
+// The kept result of this command whose files have not been written since
+// (stamp: of the model, the icon and the voices folder now), -1 = none.
+static int Char_CacheFind(const wchar_t *key, unsigned long long stamp)
+{
+    int i;
+    for (i = 0; i < CHAR_CACHE; i++)
+        if (g_char.cache[i].key && wcscmp(g_char.cache[i].key, key) == 0 && g_char.cache[i].stampFields == stamp &&
+            Char_StampList(g_char.cache[i].stampFiles) == g_char.cache[i].stampImport)
+            return i;
+    return -1;
+}
+
+// Keeps the result of the check just shown (its key is taken over), the
+// newest first; the oldest goes when all places are taken.
+static void Char_CacheStore(wchar_t *key, int exitCode, int seq)
+{
+    int i;
+    for (i = 0; i < CHAR_CACHE; i++)
+        if (g_char.cache[i].key && wcscmp(g_char.cache[i].key, key) == 0)
+            Char_CacheDrop(i--);
+    if (g_char.cache[CHAR_CACHE - 1].key)
+        Char_CacheDrop(CHAR_CACHE - 1);
+    Char_CacheTouch(CHAR_CACHE - 1);    // the empty place to the front
+    g_char.cache[0].key = key;
+    g_char.cache[0].raw = Rs_Dup(g_char.rawText ? g_char.rawText : L"");
+    g_char.cache[0].exitCode = exitCode;
+    g_char.cache[0].seq = seq;
+    g_char.cache[0].stampFields = g_char.stampFields;
+    g_char.cache[0].stampImport = g_char.stampImport;
+    g_char.cache[0].stampFiles = Char_ListDup(g_char.stampFiles);
+}
+
+static int Char_CheckDone(HWND page, int exitCode, int seq);
+
+// The result kept at i, shown again as if rldpack had just reported it: its
+// lines into the raw output and the parser, then the end of a check with its
+// temp files. stamp: of the model, the icon and the voices folder now.
+static void Char_CacheShow(HWND page, int i, const wchar_t *model, unsigned long long stamp)
+{
+    wchar_t *raw, *line, *next;
+    int first = 1;
+
+    Char_CacheTouch(i);
+    Char_JobReset();
+    Char_RawAppend(L"Nothing has changed since this check (the same command, the same files): its result is shown "
+                   L"again without running rldpack. Check runs it anew.");
+    raw = Rs_Dup(g_char.cache[0].raw);
+    for (line = raw; line; line = next) {
+        next = wcsstr(line, L"\r\n");
+        if (next) {
+            *next = 0;
+            next += 2;
+        }
+        Char_RawAppend(line);
+        if (!first)
+            Char_ParseLine(line);       // splits the line: after Char_RawAppend
+        first = 0;
+    }
+    Rs_Free(raw);
+    Char_Copy(g_char.checkModel, CHAR_VAL, model);
+    g_char.stampRun = stamp;
+    if (Rs_Automating())
+        Rs_AutoLog(L"  check: nothing has changed since an earlier check - its result is shown again, rldpack does not run");
+    if (g_char.showRaw)
+        Char_RawRefresh();
+    Char_CheckDone(page, g_char.cache[0].exitCode, g_char.cache[0].seq);
+    Char_UpdateButtons();
+}
+
+// Checks with the values of the fields; force = 0: a result kept for the
+// same command and files is shown again instead (Char_CacheFind). Return:
+// 1 = rldpack running, 0 = done without rldpack (the message is already
+// there), -1 = nothing to check.
+static int Char_CheckRun(HWND page, int force)
 {
     struct CharArgs a;
-    int started, seq;
+    int started, seq, hit;
+    unsigned long long stamp;
 
     // While building: the fields no longer match the last check. Build stays
     // locked, the check follows as soon as the build has ended (Char_JobDone).
@@ -4255,22 +4423,47 @@ static int Char_Check(HWND page)
     g_char.checkAfterBuild = 0;
     Char_Abandon();             // a running check is thereby outdated
     g_char.checked = 0;
-    seq = ++g_char.seq;
+    seq = g_char.seq + 1;       // taken only when rldpack runs
     if (!Char_MakeArgs(&a, 1, NULL, seq)) {
         Char_ArgsFree(&a);
         Char_NoModel(page);
         return -1;
     }
+    stamp = Char_StampFields(a.model, a.icon, a.voices);
+    g_char.runKey = Char_ArgsKey(&a);
+    hit = force ? -1 : Char_CacheFind(g_char.runKey, stamp);
+    if (hit >= 0) {
+        Rs_Free(g_char.runKey);
+        g_char.runKey = NULL;
+        Char_CacheShow(page, hit, a.model, stamp);
+        Char_ArgsFree(&a);
+        return 0;
+    }
+    g_char.seq = seq;
     Char_Copy(g_char.checkModel, CHAR_VAL, a.model);
-    g_char.stampRun = Char_StampFields(a.model, a.icon, a.voices);
+    g_char.stampRun = stamp;
     Char_Headline(L"Checking...", RS_COL_MUTED);
     started = Char_StartJob(page, CHAR_JOB_CHECK, a.v, a.n, seq) != 0;
     Char_ArgsFree(&a);
     if (!started) {
+        Rs_Free(g_char.runKey);
+        g_char.runKey = NULL;
         Char_StartFailed(L"Cannot build yet - 1 problem(s)");
         return 0;
     }
     return 1;
+}
+
+// A check after a change: a result kept for it is shown again.
+static int Char_Check(HWND page)
+{
+    return Char_CheckRun(page, 0);
+}
+
+// A check asked for (Check, Enter, a model chosen): rldpack always runs.
+static int Char_CheckNow(HWND page)
+{
+    return Char_CheckRun(page, 1);
 }
 
 // Return: 1 = rldpack builds, 0 = refused (replacing declined), -1 = not possible.
@@ -4387,7 +4580,7 @@ static void Char_MapColorPick(HWND page)
 // End of a check: range, model facts, preview and icon into the page. If the
 // size is outside the range rldpack reported, the slider goes to the nearest
 // allowed size and the check runs again at once.
-static void Char_CheckDone(HWND page, int exitCode, int seq)
+static int Char_CheckDone(HWND page, int exitCode, int seq)
 {
     struct CharJobData *j = &g_charJob;
     const struct CharMsg *sizeMsg = Char_FindMsg(L"char-size");
@@ -4436,10 +4629,11 @@ static void Char_CheckDone(HWND page, int exitCode, int seq)
             if (Rs_Automating())
                 Rs_AutoLog(L"  size: %d %% is outside %d..%d %% for this model - set to %d %%", was,
                            g_char.rangeLo, g_char.rangeHi, g_char.sizeNow);
-            Char_TempDelete(seq);
-            if (Char_Check(page) >= 0) {
+            if (!Char_CacheHasSeq(seq, -1))
+                Char_TempDelete(seq);
+            if (Char_CheckNow(page) >= 0) {
                 Char_SizeNote();
-                return;
+                return 0;
             }
         }
         g_char.applying = 0;
@@ -4454,12 +4648,13 @@ static void Char_CheckDone(HWND page, int exitCode, int seq)
     Char_ApplyQuality();
     Char_ApplyPreview(seq);
     Char_ApplyIcon(seq);
-    Char_TempDeleteKeep(seq, 1);      // the voice previews go with the next check
+    // The temp files stay with the result kept (Char_CacheStore).
     Char_StampShown();
     Char_ShowCheckResult(exitCode);
     // The cards of the preview features follow the model just checked.
     CharWheels_ModelChecked(page, g_char.checkModel, g_char.sizeNow, g_char.checked);
     CharAnim_ModelChecked(page, g_char.checkModel, g_char.sizeNow, g_char.checked);
+    return 1;
 }
 
 static void Char_BuildDone(HWND page, int exitCode)
@@ -4562,9 +4757,18 @@ static void Char_JobDone(HWND page, int exitCode)
         Char_BuildDone(page, exitCode);
         if (g_char.checkAfterBuild)
             Char_Check(page);
+    } else {
+        wchar_t *key = g_char.runKey;
+        g_char.runKey = NULL;
+        if (Char_CheckDone(page, exitCode, seq)) {
+            if (key)
+                Char_CacheStore(key, exitCode, seq);
+            else
+                Char_TempDeleteKeep(seq, 1);    // the voice previews go with the next check
+        } else {
+            Rs_Free(key);
+        }
     }
-    else
-        Char_CheckDone(page, exitCode, seq);
     Char_UpdateButtons();
 }
 
@@ -4598,7 +4802,7 @@ static int Char_SetModel(HWND page, const wchar_t *path)
         Rs_PathDir(dir, CHAR_VAL, clean);
         Rs_ConfigSet(L"char.folder", dir);
     }
-    return Char_Check(page) > 0;
+    return Char_CheckNow(page) > 0;
 }
 
 // Only the characters of the menu font, capitals, at most 17. rldpack checks
@@ -4842,7 +5046,7 @@ static void Char_Enter(HWND page)
                                                          GetDlgCtrlID(focus) < CHAR_ID_EXTRAS + CHAR_EXTRAS_COUNT)) {
         SendMessageW(focus, BM_CLICK, 0, 0);
     } else if (focus && GetParent(focus) == page) {
-        Char_Check(page);
+        Char_CheckNow(page);
     }
 }
 
@@ -5123,6 +5327,12 @@ static int Char_WriteReport(const wchar_t *path)
     }
     Char_Put(f, L"messages: %d", Rs_MsgListCount(g_char.msgs));
     Rs_MsgListWrite(g_char.msgs, f);
+    {
+        int kept = 0;
+        for (i = 0; i < CHAR_CACHE; i++)
+            kept += g_char.cache[i].key != NULL;
+        Char_Put(f, L"results kept: %d of %d", kept, CHAR_CACHE);
+    }
     Char_Put(f, L"rldpack output of the last run: %d line(s)", g_char.rawLines);
     if (g_char.rawText && g_char.rawLen) {
         char *utf8 = Rs_ToUtf8(g_char.rawText);
@@ -6554,7 +6764,7 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
         break;
     case CHAR_ID_CHECK:
         if (code == BN_CLICKED)
-            Char_Check(page);
+            Char_CheckNow(page);
         break;
     case CHAR_ID_BUILD:
         if (code == BN_CLICKED)
@@ -6743,6 +6953,10 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
         Char_Abandon();
         for (i = 0; i < CHAR_PENDING; i++)
             Char_TempDelete(g_char.pending[i].seq);
+        for (i = 0; i < CHAR_CACHE; i++)
+            Char_TempDelete(g_char.cache[i].seq);
+        while (g_char.cache[0].key)
+            Char_CacheDrop(0);
         Char_VoiceStop();
         Char_TempDeleteVoices(g_char.voiceSeq);
         g_char.voiceSeq = 0;
@@ -6809,7 +7023,7 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
     if (wcscmp(verb, L"out") == 0)
         return Char_AutoText(g_char.out, verb, arg, 1);
     if (wcscmp(verb, L"check") == 0) {
-        r = Char_Check(page);
+        r = Char_CheckNow(page);
         if (r > 0)
             return RS_AUTO_WAIT;
         if (r == 0)

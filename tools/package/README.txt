@@ -485,7 +485,12 @@ The bar at the bottom
   Check       Checks everything without writing (also runs by itself 0.6
               seconds after typing in a field and 0.1 seconds after a click
               on a list, a tick box or a colour; at once when the size
-              slider is let go). The messages say what to fix.
+              slider is let go). The messages say what to fix. Reload Studio
+              keeps the results of the last four checks: a change taken back
+              (a tick set and cleared again, a name typed and deleted) shows
+              the result kept at once, without checking again, as long as no
+              file of the model has been written since. The button Check
+              always checks anew.
   Build character
               Writes the .rldchar (asks before it replaces a file) and says
               what is in it in the green headline of the bar, e.g.
