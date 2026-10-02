@@ -16,8 +16,28 @@ DECISIONS
   built into Reload Studio and is not a separate program in the package.
 
 
-NEW IN THIS VERSION
--------------------
+NEW IN 0.0.5 BETA
+-----------------
+- Custom characters: Reload Studio (page Character) builds a driver from a
+  PLY or OBJ model - OBJ with its MTL and PNG/JPG/TGA/BMP textures - with a
+  portrait, a mask (Aku Aku or Uka Uka), voice clips and the kart wheels
+  drawn or hidden. The model is fitted to Crash's size, repaired and, above
+  the limit, reduced; the preview shows it next to Crash and in the steering
+  poses. The file goes into the "characters" folder next to the game; restart
+  the game to see it in the driver selection.
+- NITRO-PIT: the MODE panel on the laps box, and Time Trial with its own
+  best times.
+- Reload Studio follows the Windows display setting (100 %, 125 %, 150 %),
+  shows what it reads from a model (format, materials, textures, groups),
+  and can cancel a long check or build.
+- Fixes: concave quads are split correctly; a model with seams between its
+  parts is fitted to the right size; the preview matches the game's
+  rounding; up to 128 colors per character; large models say beforehand how
+  long their reduction takes.
+
+
+NEW IN BETA 0
+-------------
 - The Alpha-Maker is now called Reload Studio (ReloadStudio.exe; Beta 0
   shipped it as alphamaker.exe). Its settings move once from alphamaker.ini
   to reloadstudio.ini (the old file stays); its test and preview logs are

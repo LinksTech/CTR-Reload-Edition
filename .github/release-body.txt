@@ -1,1 +1,11 @@
-CTR Reload Edition is a native Windows version of Crash Team Racing (PS1, 1999) with support for custom tracks, built on ctr-native and the CTR-ModSDK decompilation. This is a pre-release for testing: expect bugs. It contains no game data - you need your own NTSC-U disc image (SCUS-94426). Download ctr_native.exe and ReloadStudio.exe into one folder; the game asks for the disc image on the first start. Report bugs as GitHub issues: https://github.com/LinksTech/CTR-Reload-Edition/issues
+CTR Reload 0.0.5 Beta is a native Windows version of Crash Team Racing (PS1, 1999) that loads custom tracks and custom characters. It contains no game data: you need your own NTSC-U disc image (SCUS-94426, .cue/.bin). Download ctr_native.exe and ReloadStudio.exe into one folder you can write to; the game asks for the disc image on the first start. README.txt explains the rest.
+
+New in 0.0.5
+- Custom characters with Reload Studio: build a driver from a PLY or OBJ model (OBJ with MTL and PNG/JPG/TGA/BMP textures), with your own portrait, mask (Aku Aku or Uka Uka), voice clips, and the kart wheels drawn or hidden. The model is fitted to Crash's size, repaired and reduced automatically; the preview shows it next to Crash and in the steering poses.
+- NITRO-PIT: the MODE panel on the laps box, and Time Trial with its own best times.
+- Reload Studio scales with the Windows display setting (100 %, 125 %, 150 %), shows what it reads from a model, and can cancel a long check or build.
+- Fixes: concave quads are split correctly; a model with seams between its parts is fitted to the right size; the preview matches the game's rounding; more colors per character (128); large models say beforehand how long their reduction takes.
+
+Good to know
+- Characters go into the characters folder next to the game, tracks into tracks. The game reads both folders when it starts: after a new driver or track, restart the game.
+- This is a beta: expect rough edges. Report bugs as GitHub issues: https://github.com/LinksTech/CTR-Reload-Edition/issues
