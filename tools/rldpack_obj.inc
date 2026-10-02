@@ -17,7 +17,10 @@
 // of a PLY (sRGB bytes as they are, no conversion):
 //   1. a vertex with a color: that color; Kd is not used (Blender writes
 //      Kd 0.8 for every material, the model would be a fifth darker). With a
-//      texture: the vertex color times the texture.
+//      texture: the vertex color times the texture - for a PS1 rip the
+//      vertex color x 255/128, at most 1, as the PS1 drew it (0x80 = the
+//      texture as it is; RldObj_VertexColors, --vertex-colors). Without the
+//      texture file the vertex color stays as it is.
 //   2. otherwise the material: Kd times the texture; no Kd but a texture:
 //      the texture; neither: grey.
 //   3. grey is 0x80 per channel, like a PLY without colors.
@@ -50,6 +53,83 @@
 // width x height x 4 bytes with the rows from the top, freed with RldImg_Free.
 int RldImg_Decode(const unsigned char *data, size_t size, unsigned int *width, unsigned int *height, unsigned char **rgba, const char **why);
 void RldImg_Free(unsigned char *rgba);
+
+//========================================================================================
+// THE SWITCHES OF THE OBJ READER
+//========================================================================================
+//
+// make-char hands its arguments to RldObj_Argument first; what it takes is
+// the reader's, read by RldObj_Parse. RldObj_ResetOptions gives the defaults
+// (make-char calls it before its arguments, the self-test after its cases).
+//   --vertex-colors auto|modulate|color   how a vertex color meets a texture
+//                                         (RldObj_ApplyTexture); default auto
+
+enum
+{
+	RLDOBJ_VERTEX_AUTO = 0,
+	RLDOBJ_VERTEX_MODULATE,
+	RLDOBJ_VERTEX_COLOR
+};
+
+static const char *const s_rldObjVertexWords[3] = {"auto", "modulate", "color"};
+
+struct RldObjOptions
+{
+	int vertexColors;      // RLDOBJ_VERTEX_*
+	int vertexColorsGiven;
+};
+
+static struct RldObjOptions s_rldObjOptions;
+
+static void RldObj_ResetOptions(void)
+{
+	memset(&s_rldObjOptions, 0, sizeof(s_rldObjOptions));
+}
+
+// A make-char argument with its value (NULL = none follows). 1 = the
+// reader's, the value used (a wrong one said as an error, the checks go on);
+// 0 = not the reader's.
+static int RldObj_Argument(const char *arg, const char *value)
+{
+	if ((strcmp(arg, "--vertex-colors") == 0) && (value != NULL))
+	{
+		int k;
+
+		for (k = 0; k < 3; k++)
+		{
+			if (strcmp(value, s_rldObjVertexWords[k]) == 0)
+			{
+				s_rldObjOptions.vertexColors = k;
+				s_rldObjOptions.vertexColorsGiven = 1;
+				return 1;
+			}
+		}
+		RldMk_Say("error", "vertex-colors", value, "The vertex colors must be auto, modulate or color.");
+		return 1;
+	}
+	return 0;
+}
+
+// @value lines of the switches, after make-char's own.
+static void RldObj_EmitValues(void)
+{
+	Rld_Emit("value", "vertex-colors", s_rldObjVertexWords[s_rldObjOptions.vertexColors], s_rldObjOptions.vertexColorsGiven ? "switch" : "default",
+	         (const char *)NULL);
+}
+
+// The help of the switches, in make-char's help.
+static void RldObj_Usage(FILE *out)
+{
+	fprintf(out, "  --vertex-colors auto|modulate|color\n");
+	fprintf(out, "                              OBJ: how a vertex color meets a texture.\n");
+	fprintf(out, "                              modulate: as on the PS1, 0x80 shows the\n");
+	fprintf(out, "                              texture as it is (x 255/128, at most 255);\n");
+	fprintf(out, "                              color: texture x color/255; auto (default):\n");
+	fprintf(out, "                              modulate when the model is a PS1 rip (the\n");
+	fprintf(out, "                              colors of its textured corners have their\n");
+	fprintf(out, "                              median at 0x70..0x90, at least 5 %% exactly\n");
+	fprintf(out, "                              0x7F or 0x80 grey), else color\n");
+}
 
 // The keywords of the format that are read past (obj-ignored, one note each).
 static const char *const s_rldObjIgnored[] = {"s",    "l",     "p",    "vp",  "cstype", "deg",      "bmat",     "step",   "curv",       "curv2",
@@ -482,6 +562,8 @@ struct RldObjModel
 	u32 colored;                       // v lines with a color
 	u32 clamped;                       // color values clamped into 0..1
 	u32 ignored;                       // bit per s_rldObjIgnored entry already said
+	int modulate;                      // vertex colors modulate textures (RldObj_VertexColors)
+	u32 modulated;                     // corners where they did
 	char *line;                        // RLDOBJ_LINE_MAX + 1
 };
 
@@ -1903,10 +1985,81 @@ static void RldObj_BaseColors(const struct RldObjModel *m, u8 *cornerRgb, u8 *co
 	}
 }
 
+// Is the model a PS1 rip, whose vertex colors on textured faces modulate the
+// texture (0x80 = the texture as it is), and is that used? The textured
+// corners are those of faces whose material has a map_Kd, found or not;
+// their vertex colors (the brightest channel; a corner without one counts as
+// white) have their median at 0x70..0x90 and at least 5 % of them are
+// exactly 0x7F or 0x80 grey. A model painted in Blender has white (0xFF)
+// there. --vertex-colors decides over
+// it. Says @model vertex-colors <mode> <rip|plain>.
+static void RldObj_VertexColors(struct RldObjModel *m)
+{
+	u32 histogram[256];
+	u32 corners = 0;
+	u32 grey = 0;
+	u32 f;
+	int rip = 0;
+
+	memset(histogram, 0, sizeof(histogram));
+	for (f = 0; f < m->faceCount; f++)
+	{
+		const struct RldObjMaterial *material = RldObj_FaceMaterial(m, f);
+		u32 k;
+
+		if ((material == NULL) || (material->map == NULL))
+		{
+			continue;
+		}
+		for (k = 0; k < m->faceCorners[f]; k++)
+		{
+			const u32 v = m->cornerV[m->faceFirst[f] + k];
+			u8 rgb[3];
+			u8 top;
+
+			// A corner without a vertex color counts as white.
+			if (!m->vColored[v])
+			{
+				histogram[255]++;
+				corners++;
+				continue;
+			}
+			RldObj_Store(rgb, &m->vrgb[3u * v]);
+			top = (rgb[0] > rgb[1]) ? rgb[0] : rgb[1];
+			top = (rgb[2] > top) ? rgb[2] : top;
+			histogram[top]++;
+			corners++;
+			grey += ((rgb[0] == rgb[1]) && (rgb[1] == rgb[2]) && ((rgb[0] == 0x7Fu) || (rgb[0] == 0x80u))) ? 1u : 0u;
+		}
+	}
+
+	if (corners != 0u)
+	{
+		// The lower median: the value of the ((corners - 1) / 2)-th corner.
+		const u32 middle = (corners - 1u) / 2u;
+		u32 below = 0;
+		u32 value;
+
+		for (value = 0; value < 255u; value++)
+		{
+			if ((below + histogram[value]) > middle)
+			{
+				break;
+			}
+			below += histogram[value];
+		}
+		rip = (value >= 0x70u) && (value <= 0x90u) && ((20u * grey) >= corners);
+	}
+
+	m->modulate = (s_rldObjOptions.vertexColors == RLDOBJ_VERTEX_MODULATE) || ((s_rldObjOptions.vertexColors == RLDOBJ_VERTEX_AUTO) && rip);
+	RldMk_EmitModel("vertex-colors", s_rldObjVertexWords[s_rldObjOptions.vertexColors], rip ? "rip" : "plain", NULL);
+}
+
 // One texture onto the corners of the faces whose material uses it: the
-// vertex color, or else Kd (1 without Kd), times the texture. Returns the
+// vertex color, or else Kd (1 without Kd), times the texture; a vertex color
+// x 255/128 (at most 1) when it modulates (RldObj_VertexColors). Returns the
 // corners that have no vt and keep their color.
-static u32 RldObj_ApplyTexture(const struct RldObjModel *m, u32 texture, u8 *cornerRgb, u8 *cornerSource)
+static u32 RldObj_ApplyTexture(struct RldObjModel *m, u32 texture, u8 *cornerRgb, u8 *cornerSource)
 {
 	const struct RldObjTexture *t = &m->textures[texture];
 	u32 noUv = 0;
@@ -1940,10 +2093,17 @@ static u32 RldObj_ApplyTexture(const struct RldObjModel *m, u32 texture, u8 *cor
 			RldObj_Sample(t, m->uv[2u * vt + 0u], m->uv[2u * vt + 1u], sample);
 			for (n = 0; n < 3; n++)
 			{
-				const double base = m->vColored[v] ? m->vrgb[3u * v + (u32)n] : (material->hasKd ? material->kd[n] : 1.0);
+				double base = m->vColored[v] ? m->vrgb[3u * v + (u32)n] : (material->hasKd ? material->kd[n] : 1.0);
 
+				// As on the PS1: 0x80 = the texture as it is.
+				if (m->vColored[v] && m->modulate)
+				{
+					base = base * (255.0 / 128.0);
+					base = (base > 1.0) ? 1.0 : base;
+				}
 				c[n] = base * sample[n];
 			}
+			m->modulated += (m->vColored[v] && m->modulate) ? 1u : 0u;
 			RldObj_Store(&cornerRgb[3u * corner], c);
 			cornerSource[corner] = (u8)RLDMK_COLORS_TEXTURE;
 		}
@@ -2539,6 +2699,7 @@ static int RldObj_Parse(const char *path, const u8 *data, size_t size, struct Rl
 
 	if (ok)
 	{
+		RldObj_VertexColors(&m);
 		RldObj_BaseColors(&m, cornerRgb, cornerSource);
 		ok = RldObj_Textures(&m, path, libraryPath, nameUsed, cornerRgb, cornerSource, info);
 	}
@@ -2561,6 +2722,13 @@ static int RldObj_Parse(const char *path, const u8 *data, size_t size, struct Rl
 		if ((m.colored != 0u) && kdIgnored)
 		{
 			RldMk_Say("info", "obj-vertex-colors", NULL, "The model has vertex colors: they are used, and the materials' Kd colors are ignored.");
+		}
+		if (m.modulated != 0u)
+		{
+			RldMk_Say("info", "obj-vertex-modulation", s_rldObjVertexWords[s_rldObjOptions.vertexColors],
+			          "On %u textured corners the vertex color modulates the texture as on the PS1: 0x80 shows the texture as it is (--vertex-colors color; "
+			          "Reload Studio: Vertex colors: Plain color).",
+			          m.modulated);
 		}
 		if (m.clamped != 0u)
 		{

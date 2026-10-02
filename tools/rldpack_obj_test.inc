@@ -512,6 +512,88 @@ static void RldMk_SelfTestObjColors(void)
 	free(tga);
 }
 
+// --vertex-colors: a PS1 rip (vertex colors 0x80 on textured faces) shows its
+// texture as it is (texel 0xC0 x 0x80 = 0xC0), a face without texture and a
+// texture not found keep the vertex color; color gives texel x color/255;
+// a model with 0.8 grey (painted in Blender) stays color unless modulate is
+// asked for.
+static void RldMk_SelfTestObjVertexColors(void)
+{
+	static const char mtl[] = "newmtl tex\nmap_Kd c0.png\nnewmtl kd\nKd 0.2 0.4 0.6\nnewmtl gone\nmap_Kd missing.png\n";
+	static const char faces[] = "vt 0.5 0.5\nusemtl tex\nf 1/1 2/1 3/1\nusemtl kd\nf 1 2 3\nusemtl gone\nf 1/1 2/1 3/1\nusemtl tex\nf 4/1 2/1 3/1\n";
+	static const u8 grey[12] = {0xC0, 0xC0, 0xC0, 0xC0, 0xC0, 0xC0, 0xC0, 0xC0, 0xC0, 0xC0, 0xC0, 0xC0};
+	// mode (-1 = not given), the color of v 1..3, the corners of faces 0..3,
+	// modulation said
+	static const struct
+	{
+		const char *mode;
+		double v;
+		u32 want[4];
+		int said;
+	} cases[5] = {
+	    {NULL, 128.0 / 255.0, {0xC0C0C0u, 0x808080u, 0x808080u, 0xC0BF99u}, 1},
+	    {"color", 128.0 / 255.0, {0x606060u, 0x808080u, 0x808080u, 0x73604Du}, 0},
+	    {"modulate", 128.0 / 255.0, {0xC0C0C0u, 0x808080u, 0x808080u, 0xC0BF99u}, 1},
+	    {NULL, 0.8, {0x9A9A9Au, 0xCCCCCCu, 0xCCCCCCu, 0x73604Du}, 0},
+	    {"modulate", 0.8, {0xC0C0C0u, 0xCCCCCCu, 0xCCCCCCu, 0xC0BF99u}, 1},
+	};
+	struct RldObjMemFile files[2];
+	size_t pngSize = 0;
+	u8 *png = RldMk_TestPngRgb(2u, 2u, grey, &pngSize);
+	u32 c;
+
+	files[0].path = "selftest/vc.mtl";
+	files[0].data = (const u8 *)mtl;
+	files[0].size = sizeof(mtl) - 1u;
+	files[1].path = "selftest/c0.png";
+	files[1].data = png;
+	files[1].size = pngSize;
+	s_rldObjFiles = files;
+	s_rldObjFileCount = 2u;
+
+	for (c = 0; c < 5u; c++)
+	{
+		struct RldMkBuffer b;
+		struct RldMkPly ply;
+		struct RldMkModelInfo info;
+		char name[160];
+		int ok;
+		int same = 1;
+		u32 f;
+
+		memset(&b, 0, sizeof(b));
+		RldMk_BufferText(&b, "mtllib vc.mtl\nv 0 0 0 %.6f %.6f %.6f\nv 1 0 0 %.6f %.6f %.6f\nv 0 1 0 %.6f %.6f %.6f\nv 0 0 1 0.6 0.5 0.4\n%s", cases[c].v,
+		                 cases[c].v, cases[c].v, cases[c].v, cases[c].v, cases[c].v, cases[c].v, cases[c].v, cases[c].v, faces);
+		RldObj_ResetOptions();
+		RldMk_ResetSaid();
+		ok = (cases[c].mode == NULL) || RldObj_Argument("--vertex-colors", cases[c].mode);
+		ok = ok && (png != NULL) && (b.data != NULL) && RldMk_TestImport("selftest/vc.obj", (const char *)b.data, b.size, &ply, &info, RLDMK_ROLE_MAIN);
+		for (f = 0; ok && (f < 4u); f++)
+		{
+			same = same && (RldMk_TestCornerRgb(&ply, f, 0u) == cases[c].want[f]);
+		}
+		snprintf(name, sizeof(name), "OBJ --vertex-colors %s, vertex colors %.2f: %06X %06X %06X %06X", (cases[c].mode != NULL) ? cases[c].mode : "(auto)",
+		         cases[c].v, cases[c].want[0], cases[c].want[1], cases[c].want[2], cases[c].want[3]);
+		RldMk_Test(ok && same && (RldMk_Said("obj-vertex-modulation") == cases[c].said), name, "read %d, %06X %06X %06X %06X, said: %s", ok,
+		           ok ? RldMk_TestCornerRgb(&ply, 0u, 0u) : 0u, ok ? RldMk_TestCornerRgb(&ply, 1u, 0u) : 0u, ok ? RldMk_TestCornerRgb(&ply, 2u, 0u) : 0u,
+		           ok ? RldMk_TestCornerRgb(&ply, 3u, 0u) : 0u, s_rldMkCodes);
+		RldMk_FreePly(&ply);
+		free(b.data);
+	}
+
+	RldMk_ResetSaid();
+	RldObj_ResetOptions();
+	RldMk_Test(RldObj_Argument("--vertex-colors", "bright") && RldMk_Said("vertex-colors") && !RldObj_Argument("--colors", "64") &&
+	               !RldObj_Argument("--vertex-colors", NULL),
+	           "--vertex-colors with a wrong value: vertex-colors; other arguments are not the OBJ reader's", "said: %s", s_rldMkCodes);
+	RldObj_ResetOptions();
+	RldObj_EmitValues();
+
+	s_rldObjFiles = NULL;
+	s_rldObjFileCount = 0;
+	free(png);
+}
+
 // What falls back with a warning, what fails, and which format a file is.
 static void RldMk_SelfTestObjCases(struct RldMkTestMesh *mesh)
 {
@@ -854,6 +936,7 @@ static void RldMk_SelfTestObj(struct RldMkTestMesh *mesh)
 	RldMk_SelfTestObjSame(mesh, chri, chriSize);
 	RldMk_SelfTestObjGolden(mesh, chri, chriSize);
 	RldMk_SelfTestObjColors();
+	RldMk_SelfTestObjVertexColors();
 	RldMk_SelfTestObjCases(mesh);
 	free(chri);
 }
