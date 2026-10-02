@@ -496,6 +496,9 @@ enum RsPageId { RS_PAGE_TRACK = 0, RS_PAGE_CUPS, RS_PAGE_CHAR, RS_PAGE_TEST, RS_
 #define RS_WM_QUERY_CLOSE (WM_APP + 5)  // window is to close: *handled = 1 and return 0 keeps it open
 #define RS_WM_STEP_TAB    (WM_APP + 6)  // Ctrl+Tab (wParam 1) or Ctrl+Shift+Tab (wParam -1): a page with tabs
                                         // of its own steps through them, *handled = 1 and returns 1
+#define RS_WM_JOB_PROGRESS (WM_APP + 7) // wParam = job, lParam = struct RsJobProgress* (Rs_Free)
+#define RS_WM_JOB_BUSY     (WM_APP + 8) // a job could not start, all slots taken: wParam = jobs
+                                        // running, lParam = wchar_t* "busy: N jobs running" (Rs_Free)
 
 // Switch page (also from within a page, e.g. "Test in game" after the build).
 void Rs_ShowPage(int id);
@@ -664,7 +667,8 @@ void Rs_MsgListWrite(HWND list, FILE *f);
 // Starts this exe as rldpack with the arguments args[0..argc-1] (without
 // "--rldpack"). Every output line (stdout and stderr, UTF-8 -> UTF-16, without
 // line end) arrives as RS_WM_JOB_LINE at notify, at the end RS_WM_JOB_DONE.
-// Return: job ID > 0, or 0 if the start failed.
+// Return: job ID > 0, or 0 if the start failed. When all job slots are
+// taken, RS_WM_JOB_BUSY arrives at notify as well.
 int  Rs_RunRldpack(HWND notify, const wchar_t *const *args, int argc);
 
 // Starts another program (the game). cmdline is the whole command line
@@ -676,6 +680,27 @@ int  Rs_RunProcess(HWND notify, const wchar_t *exe, const wchar_t *cmdline,
 // hard; RS_WM_JOB_DONE arrives afterwards as usual. 1 = ended, 0 = no
 // running job with this ID.
 int  Rs_KillJob(int id);
+
+// A line "@progress\t<step>\t<done>\t<total>" of rldpack does not arrive as
+// RS_WM_JOB_LINE but as RS_WM_JOB_PROGRESS. step as rldpack wrote it
+// ("repair", "remesh", "reduce", "write"); total 0 = not known.
+struct RsJobProgress {
+    wchar_t step[16];
+    unsigned long done;
+    unsigned long total;
+};
+
+// Exit code in RS_WM_JOB_DONE of a job ended by Rs_JobCancel (the value of
+// STATUS_CONTROL_C_EXIT).
+#define RS_JOB_CANCELLED (-1073741510)
+
+// Cancels a running job: its process ends (an rldpack job together with
+// every process it started), with the exit code RS_JOB_CANCELLED.
+// RS_WM_JOB_DONE arrives afterwards as usual, after all lines of the job;
+// only then are the files of the process closed (delete "<out>.part" there).
+// A job that ended by itself just before keeps its own exit code.
+// 1 = ended, 0 = no running job with this ID.
+int  Rs_JobCancel(int id);
 
 // Splits a machine line "@kind\tf1\tf2..." IN PLACE. fields[0] is the kind
 // without '@'. Return: number of fields; 0 if the line is not a machine line.
