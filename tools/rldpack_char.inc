@@ -1235,6 +1235,7 @@ struct RldMkOptions
 	int fit;          // --fit crash: scaled to Crash's size first (RldMk_StepFit); 0 = --fit none
 	int reduce;       // --reduce auto: too many triangles are reduced (RldMk_StepReduce); 0 = --reduce off
 	int noWheels;     // --wheels off: CHRI flag RLDCHAR_FLAG_NO_WHEELS, and --fit measures the whole model
+	u32 mask;         // --mask: RLDCHAR_MASK_LIKE (default), _AKU or _UKA, CHRI flags bits 1-2
 	u32 reduceTarget; // set by RldMk_BuildModel: at most this many triangles after a reduction
 	int reduceForce;  // set by RldMk_BuildModel: reduce even at RLDMK_REDUCE_LIMIT or below
 	const char *reduceWhy;  // set by RldMk_BuildModel with reduceForce: why, for model-reduced
@@ -7393,20 +7394,31 @@ static int RldMk_ReadLimited(const char *path, size_t max, u8 **dataOut, size_t 
 //========================================================================================
 //
 // The PNG (include/rldpng.inc, 8-bit RGBA) -> 44 x 26 texels, 4 bits, 16 colors
-// (layout and rules CICN-1..3: include/rldchar.inc):
-//   1  cut to 44:26 in the middle: the longer side loses the same on both ends
+// (layout and rules CICN-1..3: include/rldchar.inc). The menu tile shows only
+// 43 x 25 of them: it draws the own portrait at the size of the template's
+// (platform/native_chars.c, NativeChar_PortraitLayout), and that one is
+// 43 x 25 (the game's log line "portrait geometry"). So the picture is fitted
+// to those 43 x 25:
+//   1  cut to 43:25 in the middle: the longer side loses the same on both ends
 //      (one pixel more at the end when it is odd)
-//   2  a box filter to 44 x 26 with exact shares, in integers, as Rld_ScaleMap
+//   2  a box filter to 43 x 25 with exact shares, in integers, as Rld_ScaleMap
 //      (include/rldtrack.inc): every texel averages the area it covers, the
 //      colors weighted by their alpha; a texel less than half covered is
 //      transparent (index 0)
-//   3  the colors of the opaque texels -> at most 15 by median cut and two
+//   3  column 43 repeats column 42, row 25 repeats row 24: the texels the tile
+//      does not show, filled so that no seam appears if one ever is shown
+//   4  the colors of the opaque texels -> at most 15 by median cut and two
 //      k-means rounds (RldMk_Palette, the same as the model's colors)
-//   4  RGB555 in CLUT entries 1..15, entry 0 = 0x0000 (transparent); a color
+//   5  RGB555 in CLUT entries 1..15, entry 0 = 0x0000 (transparent); a color
 //      that rounds to 0x0000 becomes 0x0421, the PS1's opaque black
-// A picture smaller than 44 x 26 is enlarged the same way (and looks blurry).
+// A picture of exactly 43 x 25 becomes those texels one to one; one of exactly
+// 44 x 26 fills all of CICN one to one, as before the fit to 43 x 25. A picture
+// smaller than 43 x 25 is enlarged the same way (and looks blurry).
 
 #define RLDMK_ICON_TEXELS (RLDCHAR_ICON_WIDTH * RLDCHAR_ICON_HEIGHT)
+#define RLDMK_ICON_SHOWN_WIDTH 43u    // the part of CICN the menu tile shows, from the top left
+#define RLDMK_ICON_SHOWN_HEIGHT 25u
+#define RLDMK_ICON_SHOWN_TEXELS (RLDMK_ICON_SHOWN_WIDTH * RLDMK_ICON_SHOWN_HEIGHT)
 #define RLDMK_ICON_FILE_MAX (16u * 1024u * 1024u)   // PNG file size, asked before reading
 
 struct RldMkIcon
@@ -7416,6 +7428,7 @@ struct RldMkIcon
 	u16 clut[RLDCHAR_ICON_COLORS];
 	u32 source[2];       // width and height of the picture
 	u32 crop[4];         // x, y, width, height of the cut in the picture
+	u32 scaled[2];       // the texels the cut was scaled to: 43 x 25, or 44 x 26 for a picture of exactly that size
 	u32 colorsIn;        // distinct colors of the opaque texels
 	u32 colorCount;      // CLUT entries used, 1..15
 	u32 opaque;          // opaque texels
@@ -7434,8 +7447,10 @@ static u32 RldMk_From5(u32 value)
 // 1 = made. The only failure is an image without pixels, which rldpng never returns.
 static int RldMk_MakeIcon(const struct RldPngImage *image, struct RldMkIcon *icon)
 {
-	const s64 tw = RLDCHAR_ICON_WIDTH;
-	const s64 th = RLDCHAR_ICON_HEIGHT;
+	const s64 stride = RLDCHAR_ICON_WIDTH;
+	const int whole = (image->width == RLDCHAR_ICON_WIDTH) && (image->height == RLDCHAR_ICON_HEIGHT);
+	const s64 tw = whole ? (s64)RLDCHAR_ICON_WIDTH : (s64)RLDMK_ICON_SHOWN_WIDTH;
+	const s64 th = whole ? (s64)RLDCHAR_ICON_HEIGHT : (s64)RLDMK_ICON_SHOWN_HEIGHT;
 	struct RldMkColor colors[RLDMK_ICON_TEXELS];
 	u32 rgb[RLDMK_ICON_TEXELS];
 	u32 sorted[RLDMK_ICON_TEXELS];
@@ -7456,7 +7471,7 @@ static int RldMk_MakeIcon(const struct RldPngImage *image, struct RldMkIcon *ico
 		return 0;
 	}
 
-	// 1: the cut. Wider than 44:26 -> the full height, else the full width.
+	// 1: the cut. Wider than tw:th -> the full height, else the full width.
 	if (((s64)image->width * th) > ((s64)image->height * tw))
 	{
 		sh = image->height;
@@ -7475,6 +7490,8 @@ static int RldMk_MakeIcon(const struct RldPngImage *image, struct RldMkIcon *ico
 	icon->crop[1] = (u32)top;
 	icon->crop[2] = (u32)sw;
 	icon->crop[3] = (u32)sh;
+	icon->scaled[0] = (u32)tw;
+	icon->scaled[1] = (u32)th;
 
 	// 2: the box filter. Texel X covers the picture's x from X*sw to (X+1)*sw,
 	// measured in parts of 1/tw; pixel x lies at x*tw to (x+1)*tw. The same
@@ -7519,17 +7536,40 @@ static int RldMk_MakeIcon(const struct RldPngImage *image, struct RldMkIcon *ico
 			// Below half covered: transparent. rgb[] keeps the average color of the rest.
 			if ((cover == 0) || ((cover * 2) < (weight * 255)))
 			{
-				rgb[Y * tw + X] = RLDMK_NONE;
+				rgb[Y * stride + X] = RLDMK_NONE;
 				continue;
 			}
 
-			rgb[Y * tw + X] = ((u32)((sum[0] + cover / 2) / cover) << 16) | ((u32)((sum[1] + cover / 2) / cover) << 8) | (u32)((sum[2] + cover / 2) / cover);
-			sorted[opaqueCount++] = rgb[Y * tw + X];
+			rgb[Y * stride + X] = ((u32)((sum[0] + cover / 2) / cover) << 16) | ((u32)((sum[1] + cover / 2) / cover) << 8) | (u32)((sum[2] + cover / 2) / cover);
+		}
+	}
+
+	// 3: the texels the tile does not show repeat their neighbors.
+	for (Y = 0; Y < th; Y++)
+	{
+		for (X = tw; X < stride; X++)
+		{
+			rgb[Y * stride + X] = rgb[Y * stride + tw - 1];
+		}
+	}
+	for (Y = th; Y < (s64)RLDCHAR_ICON_HEIGHT; Y++)
+	{
+		memcpy(&rgb[Y * stride], &rgb[(th - 1) * stride], (size_t)stride * sizeof(u32));
+	}
+
+	// Every texel of CICN, the copies included: they weigh in the palette like
+	// the texels they repeat (counting them or not changes the palette of a
+	// picture of exactly 43 x 25, which is taken one to one).
+	for (i = 0; i < (u32)RLDMK_ICON_TEXELS; i++)
+	{
+		if (rgb[i] != RLDMK_NONE)
+		{
+			sorted[opaqueCount++] = rgb[i];
 		}
 	}
 	icon->opaque = opaqueCount;
 
-	// 3: the palette of the opaque texels, as the model's colors (step 7).
+	// 4: the palette of the opaque texels, as the model's colors (step 7).
 	qsort(sorted, opaqueCount, sizeof(u32), RldMk_CompareU32);
 	for (i = 0; i < opaqueCount; i++)
 	{
@@ -7549,7 +7589,7 @@ static int RldMk_MakeIcon(const struct RldPngImage *image, struct RldMkIcon *ico
 	s_rldMkSortChannel = 0;
 	qsort(colors, unique, sizeof(struct RldMkColor), RldMk_CompareColor);
 
-	// 4: the CLUT.
+	// 5: the CLUT.
 	icon->clut[0] = (u16)RLDCHAR_ICON_TRANSPARENT;
 	for (i = 0; i < icon->colorCount; i++)
 	{
@@ -7558,11 +7598,11 @@ static int RldMk_MakeIcon(const struct RldPngImage *image, struct RldMkIcon *ico
 		icon->clut[i + 1u] = (u16)((value != 0u) ? value : RLDCHAR_ICON_BLACK);
 	}
 
-	for (Y = 0; Y < th; Y++)
+	for (Y = 0; Y < (s64)RLDCHAR_ICON_HEIGHT; Y++)
 	{
-		for (X = 0; X < tw; X++)
+		for (X = 0; X < stride; X++)
 		{
-			const u32 value = rgb[Y * tw + X];
+			const u32 value = rgb[Y * stride + X];
 			u32 low = 0;
 			u32 high = unique;
 
@@ -7598,9 +7638,9 @@ static int RldMk_MakeIcon(const struct RldPngImage *image, struct RldMkIcon *ico
 	{
 		Rld_WriteLE16(&icon->cicn[0x08u + 2u * i], icon->clut[i]);
 	}
-	for (Y = 0; Y < th; Y++)
+	for (Y = 0; Y < (s64)RLDCHAR_ICON_HEIGHT; Y++)
 	{
-		for (X = 0; X < tw; X += 4)
+		for (X = 0; X < stride; X += 4)
 		{
 			const u32 word = (u32)icon->index[Y][X] | ((u32)icon->index[Y][X + 1] << 4) | ((u32)icon->index[Y][X + 2] << 8) | ((u32)icon->index[Y][X + 3] << 12);
 
@@ -7678,8 +7718,8 @@ static void RldMk_EmitWritten(const char *kind, const char *path, int ok, size_t
 
 // --icon: the PNG read, turned into CICN (built twice: the same bytes), checked
 // with the reader the game will run, the findings said. --icon-preview writes
-// <prefix>-original.bmp (the PNG as read) and <prefix>-icon.bmp (44 x 26 as the
-// game shows it). 1 = *icon holds a sound portrait.
+// <prefix>-original.bmp (the PNG as read) and <prefix>-icon.bmp (43 x 25 as the
+// menu tile shows it). 1 = *icon holds a sound portrait.
 static int RldMk_IconStep(const char *path, const char *previewPrefix, struct RldMkIcon *icon)
 {
 	static struct RldMkIcon again;
@@ -7696,7 +7736,7 @@ static int RldMk_IconStep(const char *path, const char *previewPrefix, struct Rl
 		{
 			RldMk_EmitFile("icon", "bad", path, size);
 			RldMk_Say("error", "icon-file", path,
-			          "The icon %s is %u MB; rldpack reads PNG files of at most 16 MB. Save it smaller - a portrait is 44 x 26, a few hundred pixels are plenty.",
+			          "The icon %s is %u MB; rldpack reads PNG files of at most 16 MB. Save it smaller - a portrait is 43 x 25, a few hundred pixels are plenty.",
 			          path, (u32)((size + 1048575u) / 1048576u));
 			return 0;
 		}
@@ -7713,14 +7753,9 @@ static int RldMk_IconStep(const char *path, const char *previewPrefix, struct Rl
 	if (result != RLDPNG_OK)
 	{
 		RldMk_EmitFile("icon", "bad", path, size);
-		if (result == RLDPNG_INTERLACED)
+		if (result == RLDPNG_TOO_LARGE)
 		{
-			RldMk_Say("error", "icon-file", why, "The icon %s is an interlaced PNG; rldpack reads only non-interlaced ones. Save it again with interlacing turned off.",
-			          path);
-		}
-		else if (result == RLDPNG_TOO_LARGE)
-		{
-			RldMk_Say("error", "icon-file", why, "The icon %s is too large (%s). Scale it down to at most 4096 x 4096 pixels - 44 x 26 or a multiple is best.", path,
+			RldMk_Say("error", "icon-file", why, "The icon %s is too large (%s). Scale it down to at most 4096 x 4096 pixels - 43 x 25 or a multiple is best.", path,
 			          why);
 		}
 		else if (result == RLDPNG_MEMORY)
@@ -7729,7 +7764,7 @@ static int RldMk_IconStep(const char *path, const char *previewPrefix, struct Rl
 		}
 		else
 		{
-			RldMk_Say("error", "icon-file", why, "The icon %s is not a PNG rldpack can read (%s). Save it again as PNG (8 bit, not interlaced).", path, why);
+			RldMk_Say("error", "icon-file", why, "The icon %s is not a PNG rldpack can read (%s). Save it again as PNG (8 bit).", path, why);
 		}
 		return 0;
 	}
@@ -7765,21 +7800,23 @@ static int RldMk_IconStep(const char *path, const char *previewPrefix, struct Rl
 		snprintf(text[2], sizeof(text[2]), "%u", icon->colorCount);
 		Rld_Emit("char", "icon_source", text[0], (const char *)NULL);
 		Rld_Emit("char", "icon_crop", text[1], (const char *)NULL);
+		snprintf(text[1], sizeof(text[1]), "%u %u", icon->scaled[0], icon->scaled[1]);
+		Rld_Emit("char", "icon_scaled", text[1], (const char *)NULL);
 		Rld_Emit("char", "icon_colors", text[2], (const char *)NULL);
 		snprintf(text[2], sizeof(text[2]), "%u", icon->opaque);
 		Rld_Emit("char", "icon_opaque", text[2], (const char *)NULL);
 	}
 
-	if ((image.width < RLDCHAR_ICON_WIDTH) || (image.height < RLDCHAR_ICON_HEIGHT))
+	if ((image.width < RLDMK_ICON_SHOWN_WIDTH) || (image.height < RLDMK_ICON_SHOWN_HEIGHT))
 	{
-		RldMk_Say("note", "icon-small", NULL, "The icon is only %u x %u pixels and was enlarged to 44 x 26, so it looks blurry. Use a picture of at least 44 x 26.",
+		RldMk_Say("note", "icon-small", NULL, "The icon is only %u x %u pixels and was enlarged to 43 x 25, so it looks blurry. Use a picture of at least 43 x 25.",
 		          image.width, image.height);
 	}
 
 	if (icon->opaque == 0u)
 	{
 		RldMk_Say("warning", "icon-empty", NULL,
-		          "The icon is fully transparent at 44 x 26, so the menu would show an empty tile. Use a picture whose subject covers most of it.");
+		          "The icon is fully transparent at 43 x 25, so the menu would show an empty tile. Use a picture whose subject covers most of it.");
 	}
 	else if (icon->colorsIn > icon->colorCount)
 	{
@@ -7788,18 +7825,18 @@ static int RldMk_IconStep(const char *path, const char *previewPrefix, struct Rl
 
 	if (previewPrefix != NULL)
 	{
-		u8 shown[RLDMK_ICON_TEXELS * 4u];
+		u8 shown[RLDMK_ICON_SHOWN_TEXELS * 4u];
 		char out[RLD_PATH_MAX + 32];
 		u32 y;
 		u32 x;
 
-		for (y = 0; y < RLDCHAR_ICON_HEIGHT; y++)
+		for (y = 0; y < RLDMK_ICON_SHOWN_HEIGHT; y++)
 		{
-			for (x = 0; x < RLDCHAR_ICON_WIDTH; x++)
+			for (x = 0; x < RLDMK_ICON_SHOWN_WIDTH; x++)
 			{
 				const u32 index = icon->index[y][x];
 				const u32 c = icon->clut[index];
-				u8 *pixel = &shown[(y * RLDCHAR_ICON_WIDTH + x) * 4u];
+				u8 *pixel = &shown[(y * RLDMK_ICON_SHOWN_WIDTH + x) * 4u];
 
 				pixel[0] = (u8)((index != 0u) ? RldMk_From5(c & 31u) : 0u);
 				pixel[1] = (u8)((index != 0u) ? RldMk_From5((c >> 5) & 31u) : 0u);
@@ -7809,7 +7846,7 @@ static int RldMk_IconStep(const char *path, const char *previewPrefix, struct Rl
 		}
 
 		snprintf(out, sizeof(out), "%s-icon.bmp", previewPrefix);
-		RldMk_EmitWritten("icon-preview", out, RldMk_WriteBmp(out, RLDCHAR_ICON_WIDTH, RLDCHAR_ICON_HEIGHT, shown), 54u + sizeof(shown));
+		RldMk_EmitWritten("icon-preview", out, RldMk_WriteBmp(out, RLDMK_ICON_SHOWN_WIDTH, RLDMK_ICON_SHOWN_HEIGHT, shown), 54u + sizeof(shown));
 	}
 
 	RldPng_Free(&image);
@@ -8630,6 +8667,69 @@ static int RldMk_FitSwitch(const char *fitArg, const char *scaleArg, int *fit)
 	return 1;
 }
 
+// --mask (default like) in any case, as --wheels: *mask is RLDCHAR_MASK_LIKE,
+// _AKU or _UKA. 0 = a wrong value, said (mask); *mask then stays like.
+static int RldMk_MaskSwitch(const char *maskArg, u32 *mask)
+{
+	char word[8];
+	const int known = (maskArg != NULL) ? RldMk_Lower(maskArg, word, sizeof(word)) : 0;
+
+	*mask = RLDCHAR_MASK_LIKE;
+	if (maskArg == NULL)
+	{
+		return 1;
+	}
+	if (known && (strcmp(word, "aku") == 0))
+	{
+		*mask = RLDCHAR_MASK_AKU;
+	}
+	else if (known && (strcmp(word, "uka") == 0))
+	{
+		*mask = RLDCHAR_MASK_UKA;
+	}
+	else if (!known || (strcmp(word, "like") != 0))
+	{
+		RldMk_Say("error", "mask", maskArg, "The mask must be aku, uka or like.");
+		return 0;
+	}
+
+	return 1;
+}
+
+// The CHRI flags of a build: no wheels (bit 0) and the mask (bits 1-2). Both
+// unset = 0, and CHRI keeps fixedSize 0x1C as before the flags.
+static u32 RldMk_ChriFlags(const struct RldMkOptions *opt)
+{
+	return (opt->noWheels ? RLDCHAR_FLAG_NO_WHEELS : 0u) | ((opt->mask << RLDCHAR_FLAG_MASK_SHIFT) & RLDCHAR_FLAG_MASK_BITS);
+}
+
+// The mask a driver wears, as a word: "aku" or "uka"; with RLDCHAR_MASK_LIKE
+// the template's (RLDCHAR_TEMPLATE_WEARS_AKU); "none" without a template.
+static const char *RldMk_MaskWord(u32 mask, u32 templateId)
+{
+	if (mask == RLDCHAR_MASK_AKU)
+	{
+		return "aku";
+	}
+	if (mask == RLDCHAR_MASK_UKA)
+	{
+		return "uka";
+	}
+	if (templateId > (u32)RLDCHAR_TEMPLATE_MAX)
+	{
+		return "none";
+	}
+	return RLDCHAR_TEMPLATE_WEARS_AKU(templateId) ? "aku" : "uka";
+}
+
+// The same for people: "Aku Aku", "Uka Uka" or "not determined".
+static const char *RldMk_MaskName(u32 mask, u32 templateId)
+{
+	const char *word = RldMk_MaskWord(mask, templateId);
+
+	return (strcmp(word, "aku") == 0) ? "Aku Aku" : ((strcmp(word, "uka") == 0) ? "Uka Uka" : "not determined");
+}
+
 // What the build found, as @char lines (Reload Studio shows them; the file
 // carries none of these numbers). As far as the chain got.
 static void RldMk_EmitFacts(const struct RldMkBuild *b, u32 templateId)
@@ -8962,6 +9062,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	const char *fitArg = NULL;
 	const char *reduceArg = NULL;
 	const char *wheelsArg = NULL;
+	const char *maskArg = NULL;
 	const char *outArg = NULL;
 	const char *sizeArg = NULL;
 	const char *iconArg = NULL;
@@ -9062,6 +9163,10 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		else if ((strcmp(arg, "--wheels") == 0) && hasValue)
 		{
 			wheelsArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--mask") == 0) && hasValue)
+		{
+			maskArg = argv[++i];
 		}
 		else if ((strcmp(arg, "--out") == 0) && hasValue)
 		{
@@ -9212,6 +9317,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 			RldMk_Say("error", "wheels", wheelsArg, "Wheels must be on or off.");
 		}
 	}
+	(void)RldMk_MaskSwitch(maskArg, &opt.mask);
 
 	if (reduceArg != NULL)
 	{
@@ -9415,6 +9521,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		Rld_Emit("value", "fit", opt.fit ? "crash" : "none", (fitArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "reduce", opt.reduce ? "auto" : "off", (reduceArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "wheels", opt.noWheels ? "off" : "on", (wheelsArg != NULL) ? "switch" : "default", (const char *)NULL);
+		Rld_Emit("value", "mask", RldMk_MaskWord(opt.mask, templateId), (opt.mask != RLDCHAR_MASK_LIKE) ? "switch" : "template", (const char *)NULL);
 		Rld_Emit("value", "remesh", opt.remesh ? "on" : "off", (remeshArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "repair", opt.repair ? "auto" : "off", (repairArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "open-parts", opt.openOneSided ? "one-sided" : "two-sided", (openArg != NULL) ? "switch" : "default", (const char *)NULL);
@@ -9536,8 +9643,9 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		}
 		if (haveIcon)
 		{
-			printf("  icon          %s: %u x %u, cut %u x %u at %u,%u -> 44 x 26, %u colors, %u of %u texels opaque\n", iconArg, icon.source[0],
-			       icon.source[1], icon.crop[2], icon.crop[3], icon.crop[0], icon.crop[1], icon.colorCount, icon.opaque, RLDMK_ICON_TEXELS);
+			printf("  icon          %s: %u x %u, cut %u x %u at %u,%u -> %u x %u (the menu shows 43 x 25 of 44 x 26), %u colors, %u of %u texels opaque\n",
+			       iconArg, icon.source[0], icon.source[1], icon.crop[2], icon.crop[3], icon.crop[0], icon.crop[1], icon.scaled[0], icon.scaled[1],
+			       icon.colorCount, icon.opaque, RLDMK_ICON_TEXELS);
 		}
 		printf("  name          \"%s\"\n", shownName);
 		printf("  author        \"%s\"\n", authorArg);
@@ -9552,6 +9660,11 @@ static int RldChar_MakeCommand(int argc, char **argv)
 			       ((classArg == NULL) || (strcmp(classArg, "like") == 0)) ? " (like the template)" : "");
 		}
 		printf("  wheels        %s\n", opt.noWheels ? "hidden - the game draws no kart wheels (--wheels off)" : "shown - the game draws its kart wheels");
+		if (templateId < RLDMK_TEMPLATE_COUNT)
+		{
+			printf("  mask          %s (%s)\n", RldMk_MaskName(opt.mask, templateId),
+			       (opt.mask == RLDCHAR_MASK_AKU) ? "--mask aku" : ((opt.mask == RLDCHAR_MASK_UKA) ? "--mask uka" : "like the template"));
+		}
 	}
 
 	// THE DIAGNOSIS ends here: a build with lifted limits never becomes a
@@ -9574,13 +9687,13 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	}
 
 	// CHRI, checked with the reader the game runs, and the container.
-	chri = RldMk_BuildChri(templateId, classId, nameField, charVersion, authorArg, opt.noWheels ? RLDCHAR_FLAG_NO_WHEELS : 0u, &chriSize);
+	chri = RldMk_BuildChri(templateId, classId, nameField, charVersion, authorArg, RldMk_ChriFlags(&opt), &chriSize);
 	if (chri != NULL)
 	{
 		struct RldCharInfo back;
 		const char *why = RldChar_ParseInfo(&back, chri, chriSize);
 
-		if ((why == NULL) && (back.flags != (opt.noWheels ? RLDCHAR_FLAG_NO_WHEELS : 0u)))
+		if ((why == NULL) && (back.flags != RldMk_ChriFlags(&opt)))
 		{
 			why = "the flags differ";
 		}
@@ -9839,6 +9952,15 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		printf("  template      %u %s\n", info.templateId, (info.templateId < RLDMK_TEMPLATE_COUNT) ? s_rldMkTemplates[info.templateId].name : "");
 		printf("  class         %u %s\n", info.classId, (info.classId < RLDMK_CLASS_COUNT) ? s_rldMkClassNames[info.classId] : "");
 		printf("  wheels        %s\n", ((info.flags & RLDCHAR_FLAG_NO_WHEELS) != 0u) ? "hidden" : "shown");
+		if (RldChar_Mask(info.flags) != RLDCHAR_MASK_LIKE)
+		{
+			printf("  mask          %s\n", RldMk_MaskName(RldChar_Mask(info.flags), info.templateId));
+		}
+		else
+		{
+			printf("  mask          %s (%s)\n", RldMk_MaskName(RLDCHAR_MASK_LIKE, info.templateId),
+			       ((info.flags & RLDCHAR_FLAG_MASK_BITS) != 0u) ? "reserved value 3, read as like the template" : "like the template");
+		}
 		if ((info.flags & ~(u32)RLDCHAR_FLAGS_KNOWN) != 0u)
 		{
 			printf("  flags         0x%08x (unknown bits ignored)\n", info.flags);
@@ -9893,6 +10015,8 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		snprintf(number, sizeof(number), "%u", info.classId);
 		Rld_Emit("value", "class", number, "container", (const char *)NULL);
 		Rld_Emit("value", "wheels", ((info.flags & RLDCHAR_FLAG_NO_WHEELS) != 0u) ? "off" : "on", "container", (const char *)NULL);
+		Rld_Emit("value", "mask", RldMk_MaskWord(RldChar_Mask(info.flags), info.templateId),
+		         (RldChar_Mask(info.flags) != RLDCHAR_MASK_LIKE) ? "container" : "template", (const char *)NULL);
 		if ((info.flags & ~(u32)RLDCHAR_FLAGS_KNOWN) != 0u)
 		{
 			snprintf(number, sizeof(number), "0x%08x", info.flags);
@@ -10041,12 +10165,14 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "                              bottom of the driver; --fit none: the hip);\n");
 	fprintf(out, "                              the kart keeps its size: %s.\n", RLDMK_SIZE_TEXT);
 	fprintf(out, "                              rldpack says which range the model takes\n");
-	fprintf(out, "  --icon <png>                the portrait in the menu: cut to 44:26 in the\n");
-	fprintf(out, "                              middle, scaled to 44 x 26, 15 colors and\n");
-	fprintf(out, "                              transparent (PNG, not interlaced). Without it\n");
-	fprintf(out, "                              the game shows the template's portrait\n");
+	fprintf(out, "  --icon <png>                the portrait in the menu: cut to 43:25 in the\n");
+	fprintf(out, "                              middle, scaled to the 43 x 25 the menu shows\n");
+	fprintf(out, "                              (of 44 x 26 in the file; a picture of exactly\n");
+	fprintf(out, "                              44 x 26 is taken whole), 15 colors and\n");
+	fprintf(out, "                              transparent. Without it the game shows the\n");
+	fprintf(out, "                              template's portrait\n");
 	fprintf(out, "  --icon-preview <prefix>     also write <prefix>-original.bmp and\n");
-	fprintf(out, "                              <prefix>-icon.bmp (the portrait as the game has it)\n");
+	fprintf(out, "                              <prefix>-icon.bmp (the 43 x 25 the menu shows)\n");
 	fprintf(out, "  --voices <folder>           check voice lines: boost1/2 hit1/2 spin1/2\n");
 	fprintf(out, "                              bigair1/2 drop1/2 shield1/2 passing1/2 fire1/2,\n");
 	fprintf(out, "                              yes, hit - .wav or .vag. Checked only: they are\n");
@@ -10072,6 +10198,10 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "                              the points of a retail kart; off: no wheels -\n");
 	fprintf(out, "                              for a model with its own (a motorbike, say);\n");
 	fprintf(out, "                              --fit then measures the whole model\n");
+	fprintf(out, "  --mask aku|uka|like         the mask the driver wears: the mask item, the\n");
+	fprintf(out, "                              rescue after a fall, its sound and music and\n");
+	fprintf(out, "                              the HUD icon; like (default): the template's\n");
+	fprintf(out, "                              (Fake Crash: Uka Uka); aku: Aku Aku; uka: Uka Uka\n");
 	fprintf(out, "  --reduce auto|off           auto (default): a model of more than %u\n", (u32)RLDMK_REDUCE_LIMIT);
 	fprintf(out, "                              triangles is reduced to at most %u, one budget\n", RLDMK_REDUCE_TARGET);
 	fprintf(out, "                              shared by kart, driver and steering wheel, each\n");
@@ -11381,6 +11511,7 @@ static void RldMk_SelfTestRules(const u8 *good, size_t goodSize)
 }
 
 // CHRI flags (--wheels off): written only when set, read forward compatibly.
+// The mask (bits 1-2) has its own test, RldMk_SelfTestChriMask.
 static void RldMk_SelfTestChriFlags(const u8 field[RLDCHAR_NAME_FIELD], const u8 *good, size_t goodSize)
 {
 	struct RldCharInfo info;
@@ -11396,8 +11527,10 @@ static void RldMk_SelfTestChriFlags(const u8 field[RLDCHAR_NAME_FIELD], const u8
 	// 0x1C (the string count) is not 0.
 	plain = RldMk_BuildChri(14u, 0u, field, 3u, "self-test", 0u, &size);
 	why = (plain != NULL) ? RldChar_ParseInfo(&info, plain, size) : "out of memory";
-	RldMk_Test((why == NULL) && (Rld_ReadLE16(&plain[0x00]) == RLDCHAR_INFO_FIXED_SIZE) && (Rld_ReadLE32(&plain[0x1C]) == 1u) && (info.flags == 0u),
-	           "CHRI without flags: fixedSize 0x1C, flags 0 (the string count at 0x1C is no flag)", "%s", (why != NULL) ? why : "a field differs");
+	RldMk_Test((why == NULL) && (Rld_ReadLE16(&plain[0x00]) == RLDCHAR_INFO_FIXED_SIZE) && (Rld_ReadLE32(&plain[0x1C]) == 1u) && (info.flags == 0u) &&
+	               (RldChar_Mask(info.flags) == RLDCHAR_MASK_LIKE),
+	           "CHRI without flags: fixedSize 0x1C, flags 0 (the string count at 0x1C is no flag), mask like the template", "%s",
+	           (why != NULL) ? why : "a field differs");
 	free(plain);
 
 	// No wheels: fixedSize 0x20, everything else read as before, twice the same,
@@ -11428,7 +11561,7 @@ static void RldMk_SelfTestChriFlags(const u8 field[RLDCHAR_NAME_FIELD], const u8
 	}
 	free(again);
 
-	// Unknown bits are kept and ignored, never refused; 0x2 alone is no flag
+	// Unknown bits are kept and ignored, never refused; 0x8 alone is no flag
 	// this reader knows.
 	m = RldMk_TestCopy(flagged, size);
 	if (m != NULL)
@@ -11437,10 +11570,10 @@ static void RldMk_SelfTestChriFlags(const u8 field[RLDCHAR_NAME_FIELD], const u8
 		why = RldChar_ParseInfo(&info, m, size);
 		RldMk_Test((why == NULL) && (info.flags == 0x80000001u) && ((info.flags & RLDCHAR_FLAG_NO_WHEELS) != 0u), "CHRI flags 0x80000001: accepted, no wheels",
 		           "%s", (why != NULL) ? why : "flags differ");
-		Rld_WriteLE32(&m[RLDCHAR_CHRI_FLAGS_OFFSET], 0x2u);
+		Rld_WriteLE32(&m[RLDCHAR_CHRI_FLAGS_OFFSET], 0x8u);
 		why = RldChar_ParseInfo(&info, m, size);
-		RldMk_Test((why == NULL) && (info.flags == 0x2u) && ((info.flags & RLDCHAR_FLAG_NO_WHEELS) == 0u), "CHRI flags 0x2 alone: accepted, wheels shown",
-		           "%s", (why != NULL) ? why : "flags differ");
+		RldMk_Test((why == NULL) && (info.flags == 0x8u) && ((info.flags & RLDCHAR_FLAG_NO_WHEELS) == 0u) && (RldChar_Mask(info.flags) == RLDCHAR_MASK_LIKE),
+		           "CHRI flags 0x8 alone: accepted, wheels shown, mask like the template", "%s", (why != NULL) ? why : "flags differ");
 
 		// fixedSize 0x22: not a multiple of 4.
 		Rld_WriteLE32(&m[RLDCHAR_CHRI_FLAGS_OFFSET], RLDCHAR_FLAG_NO_WHEELS);
@@ -11474,6 +11607,99 @@ static void RldMk_SelfTestChriFlags(const u8 field[RLDCHAR_NAME_FIELD], const u8
 		}
 	}
 	free(flagged);
+}
+
+// --mask: CHRI flags bits 1-2, written only when chosen; the reserved value 3
+// reads as like the template, never refused.
+static void RldMk_SelfTestChriMask(const u8 field[RLDCHAR_NAME_FIELD])
+{
+	static const struct
+	{
+		const char *word;
+		int wheelsOff;
+		u32 mask;
+		u32 flags;
+		const char *name;
+	} cases[3] = {
+		{"aku", 0, RLDCHAR_MASK_AKU, 0x2u, "CHRI with --mask aku: flags 0x2, fixedSize 0x20, Aku Aku there and back, twice the same"},
+		{"uka", 0, RLDCHAR_MASK_UKA, 0x4u, "CHRI with --mask uka: flags 0x4, fixedSize 0x20, Uka Uka there and back, twice the same"},
+		{"uka", 1, RLDCHAR_MASK_UKA, 0x5u, "CHRI with --wheels off --mask uka: flags 0x5, both there and back, twice the same"},
+	};
+	static const char *const words[4] = {"AKU", "Uka", "like", "maybe"};
+	static const u32 wordMasks[4] = {RLDCHAR_MASK_AKU, RLDCHAR_MASK_UKA, RLDCHAR_MASK_LIKE, RLDCHAR_MASK_LIKE};
+	struct RldMkOptions opt;
+	struct RldCharInfo info;
+	const char *why;
+	size_t size = 0;
+	size_t sizeAgain = 0;
+	u32 wearsAku = 0;
+	u32 t;
+	int k;
+
+	for (k = 0; k < 3; k++)
+	{
+		u8 *chri;
+		u8 *again;
+		u32 flags;
+
+		RldMk_DefaultOptions(&opt);
+		opt.noWheels = cases[k].wheelsOff;
+		opt.mask = cases[k].mask;
+		flags = RldMk_ChriFlags(&opt);
+		chri = RldMk_BuildChri(14u, 0u, field, 3u, "self-test", flags, &size);
+		again = RldMk_BuildChri(14u, 0u, field, 3u, "self-test", flags, &sizeAgain);
+		why = (chri != NULL) ? RldChar_ParseInfo(&info, chri, size) : "out of memory";
+		RldMk_Test((why == NULL) && (flags == cases[k].flags) && (again != NULL) && (size == sizeAgain) && (memcmp(chri, again, size) == 0) &&
+		               (Rld_ReadLE16(&chri[0x00]) == RLDCHAR_CHRI_SIZE_FLAGS) && (info.flags == cases[k].flags) &&
+		               (RldChar_Mask(info.flags) == cases[k].mask) && (((info.flags & RLDCHAR_FLAG_NO_WHEELS) != 0u) == (cases[k].wheelsOff != 0)) &&
+		               (strcmp(RldMk_MaskWord(RldChar_Mask(info.flags), info.templateId), cases[k].word) == 0),
+		           cases[k].name, "%s, flags 0x%x", (why != NULL) ? why : "a field differs", flags);
+		free(chri);
+		free(again);
+	}
+
+	// The reserved value 3 (raw 0x6): read without a finding, the mask like
+	// the template - Uka Uka on Fake Crash.
+	{
+		u8 *chri = RldMk_BuildChri(14u, 0u, field, 3u, "self-test", 0x6u, &size);
+
+		why = (chri != NULL) ? RldChar_ParseInfo(&info, chri, size) : "out of memory";
+		RldMk_Test((why == NULL) && (info.flags == 0x6u) && (RldChar_Mask(info.flags) == RLDCHAR_MASK_LIKE) &&
+		               ((info.flags & ~(u32)RLDCHAR_FLAGS_KNOWN) == 0u) && (strcmp(RldMk_MaskWord(RldChar_Mask(info.flags), info.templateId), "uka") == 0),
+		           "CHRI flags 0x6 (mask 3, reserved): accepted, read as like the template", "%s", (why != NULL) ? why : "a field differs");
+		free(chri);
+	}
+
+	// The templates that wear Aku Aku: Crash, Coco, Polar, Pura, Penta - and no
+	// 15 (N. Oxide is never a template).
+	for (t = 0u; t <= 15u; t++)
+	{
+		if (RLDCHAR_TEMPLATE_WEARS_AKU(t))
+		{
+			wearsAku |= 1u << t;
+		}
+	}
+	RldMk_Test(wearsAku == ((1u << 0) | (1u << 3) | (1u << 6) | (1u << 7) | (1u << 13)), "templates wearing Aku Aku: 0, 3, 6, 7, 13 (none at 15)",
+	           "bits 0x%x", wearsAku);
+	RldMk_Test((strcmp(RldMk_MaskWord(RLDCHAR_MASK_LIKE, 14u), "uka") == 0) && (strcmp(RldMk_MaskWord(RLDCHAR_MASK_LIKE, 13u), "aku") == 0) &&
+	               (strcmp(RldMk_MaskWord(RLDCHAR_MASK_UKA, 0u), "uka") == 0) && (strcmp(RldMk_MaskWord(RLDCHAR_MASK_LIKE, RLDMK_NONE), "none") == 0),
+	           "mask words: like on Fake Crash uka, like on Penta aku, uka on Crash uka, without a template none", "%s",
+	           RldMk_MaskWord(RLDCHAR_MASK_LIKE, 14u));
+
+	// The switch in any case; anything else is said (mask) and stays like.
+	for (k = 0; k < 4; k++)
+	{
+		u32 mask = 0xFFu;
+		int ok;
+		char name[64];
+
+		RldMk_ResetSaid();
+		ok = RldMk_MaskSwitch(words[k], &mask);
+		snprintf(name, sizeof(name), "--mask %s: %s", words[k], (k < 3) ? "taken" : "refused (mask)");
+		RldMk_Test((ok == (k < 3)) && (mask == wordMasks[k]) && ((k < 3) ? (s_rldMkCodes[0] == '\0') : RldMk_Said("mask")), name, "said: %s, mask %u",
+		           s_rldMkCodes, mask);
+	}
+	RldMk_ResetSaid();
 }
 
 // CHRI, the container, and the name as the maker takes it.
@@ -11603,6 +11829,7 @@ static void RldMk_SelfTestChri(const u8 *good, size_t goodSize)
 	free(chri);
 
 	RldMk_SelfTestChriFlags(field, good, goodSize);
+	RldMk_SelfTestChriMask(field);
 
 	// The name as typed: capitals, the menu font, the length.
 	RldMk_ResetSaid();
@@ -11635,12 +11862,16 @@ static void RldMk_SelfTestChri(const u8 *good, size_t goodSize)
 // update them to make the test pass.
 // NO_WHEELS with --fit none and --wheels off: the CMDL of PLAIN, the CHRI with
 // fixedSize 0x20 and the flag RLDCHAR_FLAG_NO_WHEELS - frozen like those.
+// SIZE_ICON last changed on 2026-10-02 with the fit of the portrait to the
+// 43 x 25 the menu shows (RldMk_MakeIcon): only its CICN changed, CHRI and CMDL
+// stayed. A deliberate change of the portrait conversion updates it the same
+// way; nothing else may.
 // REDUCED from the same model with a driver split 9 (996 triangles) and
 // --fit none: --reduce auto brings it to at most 797. Unlike the three above it
 // follows deliberate changes of the reducer (tools/rldpack_reduce.inc): such a
 // change updates it, on purpose and in the same change; nothing else may.
 #define RLDMK_GOLDEN_PLAIN "ba7e3208bc98b2af5460110ae6d7d64afe888771b76747a74ae30f3190ce3186"
-#define RLDMK_GOLDEN_SIZE_ICON "9dc78f1370c2e360f2758858b0efcec9c7b21ea7bcedb9be12e5b2f7029a1728"
+#define RLDMK_GOLDEN_SIZE_ICON "61960b1c58d8a38e9728d891799fad7d53f8682864c44ede49f9e61f42e536d7"
 #define RLDMK_GOLDEN_FIT "1d71e02adea867a7eece179ecf1327d3e9136e3ca115a6df00ab375ec25d9d43"
 #define RLDMK_GOLDEN_NO_WHEELS "0427aee8b259b0f0076efc6f8cba195fff3b105c8b7216992056bb4ee333b0fe"
 #define RLDMK_GOLDEN_REDUCED "12bfd7bfc5e64ea434695bb90be9629a91f9a52c4f234bff0ec2b440f37f990f"
@@ -13034,6 +13265,7 @@ struct RldMkTestImage
 	int pictureA;        // the samples of RldMk_TestPixelA (RGBA 8 bit)
 	int badFilter;       // row 0 gets the unknown filter 5
 	int breakAdler;
+	int interlaced;      // Adam7: seven passes, each filtered on its own
 };
 
 // Test picture A, 60 x 40: transparent corners, a black ring, inside a
@@ -13159,40 +13391,34 @@ static int RldMk_TestPaeth(int a, int b, int c)
 	return ((pa <= pb) && (pa <= pc)) ? a : ((pb <= pc) ? b : c);
 }
 
-// The whole PNG. NULL = out of memory.
-static u8 *RldMk_TestPng(const struct RldMkTestImage *t, size_t *sizeOut)
+// One pass of the picture (with t->interlaced the pixels of Adam7 geometry g,
+// else all of them): w x h pixels packed into rows, each row filtered by y % 5
+// (row 0 with the unknown filter 5 for badFilter), into raw. Returns the bytes
+// written, 0 = out of memory.
+static size_t RldMk_TestPass(const struct RldMkTestImage *t, const u8 g[4], u32 w, u32 h, u8 *raw)
 {
 	const u32 channels = RldPng_Channels(t->colorType);
-	const size_t rowBytes = ((size_t)t->width * channels * t->depth + 7u) / 8u;
+	const size_t rowBytes = ((size_t)w * channels * t->depth + 7u) / 8u;
 	const size_t bpp = ((channels * t->depth) >= 8u) ? ((channels * t->depth) / 8u) : 1u;
-	struct RldMkBuffer idat;
-	struct RldMkBuffer png;
-	u8 *plain = (u8 *)calloc(rowBytes * t->height + 1u, 1u);
-	u8 *raw = (u8 *)malloc((rowBytes + 1u) * t->height + 1u);
-	u8 head[13];
+	u8 *plain = (u8 *)calloc(rowBytes * h + 1u, 1u);
 	u32 x;
 	u32 y;
 	u32 c;
 
-	*sizeOut = 0;
-	memset(&idat, 0, sizeof(idat));
-	memset(&png, 0, sizeof(png));
-	if ((plain == NULL) || (raw == NULL))
+	if (plain == NULL)
 	{
-		free(plain);
-		free(raw);
-		return NULL;
+		return 0;
 	}
 
-	for (y = 0; y < t->height; y++)
+	for (y = 0; y < h; y++)
 	{
 		u8 *row = &plain[(size_t)y * rowBytes];
 
-		for (x = 0; x < t->width; x++)
+		for (x = 0; x < w; x++)
 		{
 			for (c = 0; c < channels; c++)
 			{
-				const u32 v = RldMk_TestSample(t, x, y, c);
+				const u32 v = RldMk_TestSample(t, g[0] + x * g[2], g[1] + y * g[3], c);
 				const u32 bit = (x * channels + c) * t->depth;
 
 				if (t->depth == 16u)
@@ -13212,7 +13438,7 @@ static u8 *RldMk_TestPng(const struct RldMkTestImage *t, size_t *sizeOut)
 		}
 	}
 
-	for (y = 0; y < t->height; y++)
+	for (y = 0; y < h; y++)
 	{
 		const u8 *row = &plain[(size_t)y * rowBytes];
 		const u8 *above = (y > 0u) ? &plain[(size_t)(y - 1u) * rowBytes] : NULL;
@@ -13248,8 +13474,72 @@ static u8 *RldMk_TestPng(const struct RldMkTestImage *t, size_t *sizeOut)
 		}
 	}
 
-	RldMk_TestDeflate(&idat, raw, (rowBytes + 1u) * t->height, t->mode, rowBytes + 1u, t->breakAdler);
 	free(plain);
+	return (rowBytes + 1u) * h;
+}
+
+// The whole PNG. NULL = out of memory.
+static u8 *RldMk_TestPng(const struct RldMkTestImage *t, size_t *sizeOut)
+{
+	const u32 channels = RldPng_Channels(t->colorType);
+	const u32 passes = t->interlaced ? 7u : 1u;
+	struct RldPngImage geometry;
+	struct RldMkBuffer idat;
+	struct RldMkBuffer png;
+	size_t total = 0;
+	size_t at = 0;
+	u8 *raw;
+	u8 head[13];
+	u32 pass;
+	u32 c;
+
+	*sizeOut = 0;
+	memset(&idat, 0, sizeof(idat));
+	memset(&png, 0, sizeof(png));
+	memset(&geometry, 0, sizeof(geometry));
+	geometry.width = t->width;
+	geometry.height = t->height;
+	geometry.interlace = t->interlaced ? 1u : 0u;
+
+	for (pass = 0; pass < passes; pass++)
+	{
+		u32 w;
+		u32 h;
+
+		(void)RldPng_Pass(&geometry, pass, &w, &h);
+		if ((w != 0u) && (h != 0u))
+		{
+			total += (((size_t)w * channels * t->depth + 7u) / 8u + 1u) * h;
+		}
+	}
+
+	raw = (u8 *)malloc(total + 1u);
+	if (raw == NULL)
+	{
+		return NULL;
+	}
+
+	for (pass = 0; pass < passes; pass++)
+	{
+		u32 w;
+		u32 h;
+		const u8 *g = RldPng_Pass(&geometry, pass, &w, &h);
+		size_t written;
+
+		if ((w == 0u) || (h == 0u))
+		{
+			continue;
+		}
+		written = RldMk_TestPass(t, g, w, h, &raw[at]);
+		if (written == 0u)
+		{
+			free(raw);
+			return NULL;
+		}
+		at += written;
+	}
+
+	RldMk_TestDeflate(&idat, raw, total, t->mode, ((size_t)t->width * channels * t->depth + 7u) / 8u + 1u, t->breakAdler);
 	free(raw);
 
 	RldMk_BufferBytes(&png, s_rldPngSignature, 8u);
@@ -13259,7 +13549,7 @@ static u8 *RldMk_TestPng(const struct RldMkTestImage *t, size_t *sizeOut)
 	head[9] = (u8)t->colorType;
 	head[10] = 0;
 	head[11] = 0;
-	head[12] = 0;
+	head[12] = (u8)(t->interlaced ? 1u : 0u);
 	RldMk_TestChunk(&png, "IHDR", head, 13u);
 	RldMk_TestChunk(&png, "tEXt", (const u8 *)"Comment\0rldpack self-test", 25u);
 
@@ -13377,6 +13667,64 @@ static int RldMk_TestRefused(const u8 *png, size_t size, int expected)
 	return (result == expected) && (why != NULL) && (image.rgba == NULL);
 }
 
+// Adam7 as PNG section 8.2 writes it, typed here and not taken from the
+// reader: per pass {first column, first row, column step, row step}, and the
+// pass sizes of a 9 x 9 picture (columns, rows).
+static int RldMk_TestAdam7Geometry(void)
+{
+	static const u8 spec[7][4] = {{0, 0, 8, 8}, {4, 0, 8, 8}, {0, 4, 4, 8}, {2, 0, 4, 4}, {0, 2, 2, 4}, {1, 0, 2, 2}, {0, 1, 1, 2}};
+	static const u32 nine[7][2] = {{2, 2}, {1, 2}, {3, 1}, {2, 3}, {5, 2}, {4, 5}, {9, 4}};
+	struct RldPngImage image;
+	u32 pass;
+	int ok = 1;
+
+	memset(&image, 0, sizeof(image));
+	image.width = 9u;
+	image.height = 9u;
+	image.interlace = 1u;
+	for (pass = 0; pass < 7u; pass++)
+	{
+		u32 w;
+		u32 h;
+		const u8 *g = RldPng_Pass(&image, pass, &w, &h);
+
+		ok = ok && (memcmp(g, spec[pass], 4u) == 0) && (w == nine[pass][0]) && (h == nine[pass][1]);
+	}
+
+	return ok;
+}
+
+// The picture t interlaced (Adam7) and not: both read as the formula says,
+// and pixel for pixel the same as each other.
+static int RldMk_TestInterlaced(const struct RldMkTestImage *t)
+{
+	struct RldMkTestImage both[2];
+	struct RldPngImage image[2];
+	const char *why = NULL;
+	int ok = 1;
+	int k;
+
+	memset(image, 0, sizeof(image));
+	for (k = 0; k < 2; k++)
+	{
+		size_t size = 0;
+		u8 *png;
+
+		both[k] = *t;
+		both[k].interlaced = k;
+		png = RldMk_TestPng(&both[k], &size);
+		ok = ok && RldMk_TestDecodes(&both[k], png, size) && (png != NULL) && (RldPng_Decode(png, size, &image[k], &why) == RLDPNG_OK) &&
+		     (image[k].interlace == (u32)k);
+		free(png);
+	}
+
+	ok = ok && (image[0].rgba != NULL) && (image[1].rgba != NULL) &&
+	     (memcmp(image[0].rgba, image[1].rgba, (size_t)t->width * t->height * 4u) == 0);
+	RldPng_Free(&image[0]);
+	RldPng_Free(&image[1]);
+	return ok;
+}
+
 static void RldMk_SelfTestPng(void)
 {
 	static const struct
@@ -13413,6 +13761,45 @@ static void RldMk_SelfTestPng(void)
 		png = RldMk_TestPng(&t, &size);
 		RldMk_Test(RldMk_TestDecodes(&t, png, size), cases[c].name, "the pixels differ");
 		free(png);
+
+		// The same interlaced (Adam7): the pixels of the image without.
+		{
+			char name[96];
+
+			snprintf(name, sizeof(name), "%s, interlaced", cases[c].name);
+			RldMk_Test(RldMk_TestInterlaced(&t), name, "the pixels differ");
+		}
+	}
+
+	RldMk_Test(RldMk_TestAdam7Geometry(), "png: Adam7 passes as the specification has them, the pass sizes of 9 x 9", "not so");
+
+	// Adam7 at sizes where passes are empty (1 x 1: only pass 1; 5 x 1: no
+	// pass below row 0) or end early, and picture A.
+	{
+		static const u32 sizes[5][2] = {{1u, 1u}, {5u, 1u}, {1u, 6u}, {3u, 2u}, {9u, 9u}};
+
+		for (c = 0; c < 5; c++)
+		{
+			char name[96];
+
+			memset(&t, 0, sizeof(t));
+			t.width = sizes[c][0];
+			t.height = sizes[c][1];
+			t.colorType = 2u;
+			t.depth = 8u;
+			t.mode = c & 1;
+			snprintf(name, sizeof(name), "png: RGB 8 bit, %u x %u, interlaced", t.width, t.height);
+			RldMk_Test(RldMk_TestInterlaced(&t), name, "the pixels differ");
+		}
+
+		memset(&t, 0, sizeof(t));
+		t.width = 60u;
+		t.height = 40u;
+		t.colorType = 6u;
+		t.depth = 8u;
+		t.pictureA = 1;
+		t.mode = 1;
+		RldMk_Test(RldMk_TestInterlaced(&t), "png: picture A interlaced, the pixels of the one without", "the pixels differ");
 	}
 
 	// Picture A in both block kinds.
@@ -13504,14 +13891,33 @@ static void RldMk_SelfTestPng(void)
 			RldMk_Test(RldMk_TestRefused(bad, size, RLDPNG_BAD), "png: a wrong CRC refused", "accepted");
 
 			memcpy(bad, png, size);
-			bad[16u + 12u] = 1u;
+			bad[16u + 12u] = 2u;
 			RldMk_TestPatchCrc(bad, 8u);
-			RldMk_Test(RldMk_TestRefused(bad, size, RLDPNG_INTERLACED), "png: interlaced refused with its own answer", "not so");
+			RldMk_Test(RldMk_TestRefused(bad, size, RLDPNG_BAD), "png: interlace method 2 refused", "accepted");
 
 			memcpy(bad, png, size);
 			RldMk_PutBE32(&bad[16u], 5000u);
 			RldMk_TestPatchCrc(bad, 8u);
 			RldMk_Test(RldMk_TestRefused(bad, size, RLDPNG_TOO_LARGE), "png: 5000 pixels wide refused before any memory", "not so");
+
+			// 4096 x 4096 with the data of 60 x 40: far too short, refused
+			// before the 64 MB of the image are taken.
+			memcpy(bad, png, size);
+			RldMk_PutBE32(&bad[16u], 4096u);
+			RldMk_PutBE32(&bad[20u], 4096u);
+			RldMk_TestPatchCrc(bad, 8u);
+			{
+				struct RldPngImage image;
+				const char *why = NULL;
+				const int result = RldPng_Decode(bad, size, &image, &why);
+
+				RldMk_Test((result == RLDPNG_BAD) && (why != NULL) && (strncmp(why, "the image data is far too short", 31) == 0),
+				           "png: 4096 x 4096 with a few bytes of data refused before its memory", "%s", (why != NULL) ? why : "accepted");
+				if (result == RLDPNG_OK)
+				{
+					RldPng_Free(&image);
+				}
+			}
 
 			memcpy(bad, png, size);
 			bad[16u + 9u] = 2u;
@@ -13593,7 +13999,7 @@ static void RldMk_SelfTestIcon(const struct RldPngImage *a)
 {
 	static struct RldMkIcon icon;
 	static struct RldMkIcon again;
-	static u8 pixels[22u * 13u * 4u];
+	static u8 pixels[RLDMK_ICON_TEXELS * 4u];
 	struct RldPngImage small;
 	u8 broken[RLDCHAR_ICON_BYTES + 4u];
 	int ok;
@@ -13603,8 +14009,20 @@ static void RldMk_SelfTestIcon(const struct RldPngImage *a)
 	RldMk_Test(ok && (RldChar_CheckIcon(icon.cicn, sizeof(icon.cicn)) == NULL) && (Rld_ReadLE16(&icon.cicn[0x04]) == 44u) &&
 	               (Rld_ReadLE16(&icon.cicn[0x06]) == 26u),
 	           "icon: CICN 1, 4 bit, 44 x 26, 612 bytes, twice the same", "not so");
-	RldMk_Test(ok && (icon.crop[0] == 0u) && (icon.crop[1] == 2u) && (icon.crop[2] == 60u) && (icon.crop[3] == 35u),
-	           "icon: 60 x 40 cut to 60 x 35 in the middle", "cut %u x %u at %u,%u", icon.crop[2], icon.crop[3], icon.crop[0], icon.crop[1]);
+	RldMk_Test(ok && (icon.crop[0] == 0u) && (icon.crop[1] == 2u) && (icon.crop[2] == 60u) && (icon.crop[3] == 35u) && (icon.scaled[0] == 43u) &&
+	               (icon.scaled[1] == 25u),
+	           "icon: 60 x 40 cut to 60 x 35 (43:25) in the middle, scaled to 43 x 25", "cut %u x %u at %u,%u, scaled %u x %u", icon.crop[2], icon.crop[3],
+	           icon.crop[0], icon.crop[1], icon.scaled[0], icon.scaled[1]);
+	{
+		int same = 1;
+
+		for (i = 0; i < RLDCHAR_ICON_HEIGHT; i++)
+		{
+			same = same && (icon.index[i][43] == icon.index[i][42]);
+		}
+		same = same && (memcmp(icon.index[25], icon.index[24], RLDCHAR_ICON_WIDTH) == 0);
+		RldMk_Test(ok && same, "icon: column 43 repeats column 42, row 25 repeats row 24", "not so");
+	}
 	RldMk_Test(ok && (icon.index[0][0] == 0u) && (icon.index[25][43] == 0u) && (icon.index[13][22] != 0u) && (icon.index[3][22] == 0u) &&
 	               (icon.colorCount >= 2u) && (icon.colorCount <= 15u) && (icon.clut[0] == 0u),
 	           "icon: corners and the half-covered top transparent, at most 15 colors", "%u colors, corner %u, middle %u, top %u", icon.colorCount,
@@ -13625,7 +14043,47 @@ static void RldMk_SelfTestIcon(const struct RldPngImage *a)
 		RldMk_Test(ok && used, "icon: texel words, low nibble first, no opaque texel on 0x0000", "not so");
 	}
 
-	// Black and white, 22 x 13 (each pixel 2 x 2 texels): 0x0421 and 0x7FFF.
+	// Black and white, exactly 43 x 25: taken one to one, 0x0421 and 0x7FFF.
+	memset(&small, 0, sizeof(small));
+	small.width = RLDMK_ICON_SHOWN_WIDTH;
+	small.height = RLDMK_ICON_SHOWN_HEIGHT;
+	small.rgba = pixels;
+	for (i = 0; i < RLDMK_ICON_SHOWN_TEXELS; i++)
+	{
+		const u8 v = (u8)(((i % RLDMK_ICON_SHOWN_WIDTH) < 21u) ? 0u : 255u);
+
+		pixels[4u * i + 0u] = v;
+		pixels[4u * i + 1u] = v;
+		pixels[4u * i + 2u] = v;
+		pixels[4u * i + 3u] = 255u;
+	}
+	ok = RldMk_MakeIcon(&small, &icon) && (icon.opaque == (u32)RLDMK_ICON_TEXELS) && (icon.colorCount == 2u) && (icon.crop[2] == 43u) &&
+	     (icon.crop[3] == 25u) && (icon.scaled[0] == 43u) && (icon.scaled[1] == 25u);
+	RldMk_Test(ok && (icon.clut[1] == RLDCHAR_ICON_BLACK) && (icon.clut[2] == 0x7FFFu) && (icon.index[0][20] == 1u) && (icon.index[24][21] == 2u) &&
+	               (icon.index[0][43] == 2u) && (icon.index[25][0] == 1u),
+	           "icon: 43 x 25 one to one, black is 0x0421, white 0x7FFF", "%u colors, clut %04x %04x", icon.colorCount, (u32)icon.clut[1],
+	           (u32)icon.clut[2]);
+
+	// Exactly 44 x 26: all of CICN one to one, as before the fit to 43 x 25.
+	small.width = RLDCHAR_ICON_WIDTH;
+	small.height = RLDCHAR_ICON_HEIGHT;
+	for (i = 0; i < (u32)RLDMK_ICON_TEXELS; i++)
+	{
+		const u8 v = (u8)(((i % RLDCHAR_ICON_WIDTH) < 22u) ? 0u : 255u);
+
+		pixels[4u * i + 0u] = v;
+		pixels[4u * i + 1u] = v;
+		pixels[4u * i + 2u] = v;
+		pixels[4u * i + 3u] = (u8)((i < RLDCHAR_ICON_WIDTH) ? 0u : 255u);
+	}
+	ok = RldMk_MakeIcon(&small, &icon) && (icon.opaque == (u32)(RLDMK_ICON_TEXELS - RLDCHAR_ICON_WIDTH)) && (icon.colorCount == 2u) &&
+	     (icon.scaled[0] == 44u) && (icon.scaled[1] == 26u);
+	RldMk_Test(ok && (icon.index[0][0] == 0u) && (icon.index[1][21] == 1u) && (icon.index[1][22] == 2u) && (icon.index[25][43] == 2u),
+	           "icon: 44 x 26 one to one, the whole of CICN", "%u colors, %u opaque", icon.colorCount, icon.opaque);
+
+	// 22 x 13: smaller than 43 x 25, enlarged.
+	small.width = 22u;
+	small.height = 13u;
 	for (i = 0; i < (22u * 13u); i++)
 	{
 		const u8 v = (u8)(((i % 22u) < 11u) ? 0u : 255u);
@@ -13635,13 +14093,9 @@ static void RldMk_SelfTestIcon(const struct RldPngImage *a)
 		pixels[4u * i + 2u] = v;
 		pixels[4u * i + 3u] = 255u;
 	}
-	memset(&small, 0, sizeof(small));
-	small.width = 22u;
-	small.height = 13u;
-	small.rgba = pixels;
-	ok = RldMk_MakeIcon(&small, &icon) && (icon.opaque == (u32)RLDMK_ICON_TEXELS) && (icon.colorCount == 2u);
-	RldMk_Test(ok && (icon.clut[1] == RLDCHAR_ICON_BLACK) && (icon.clut[2] == 0x7FFFu) && (icon.index[0][0] == 1u) && (icon.index[0][43] == 2u),
-	           "icon: black is 0x0421, white 0x7FFF, a small picture enlarged", "%u colors, clut %04x %04x", icon.colorCount, (u32)icon.clut[1], (u32)icon.clut[2]);
+	ok = RldMk_MakeIcon(&small, &icon) && (icon.opaque == (u32)RLDMK_ICON_TEXELS) && (icon.crop[2] == 22u) && (icon.crop[3] == 13u) &&
+	     (icon.index[0][0] != icon.index[0][42]);
+	RldMk_Test(ok, "icon: 22 x 13 enlarged to 43 x 25", "%u opaque, cut %u x %u", icon.opaque, icon.crop[2], icon.crop[3]);
 
 	// Coverage: alpha 127 is transparent, 128 is not.
 	for (i = 0; i < (22u * 13u); i++)

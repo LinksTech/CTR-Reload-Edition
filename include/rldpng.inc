@@ -22,9 +22,10 @@
 // WHAT IS READ: color types 0 (gray), 2 (RGB), 3 (palette), 4 (gray + alpha)
 // and 6 (RGBA) in the bit depths the specification allows per type (1, 2, 4,
 // 8, 16), tRNS for types 0, 2 and 3. Ancillary chunks (gAMA, pHYs, text, ...)
-// are skipped; an unknown critical chunk is refused. Interlaced (Adam7) images
-// are refused with an answer of their own (RLDPNG_INTERLACED), so that the
-// caller can say what to do about it.
+// are skipped; an unknown critical chunk is refused. Interlaced images (Adam7,
+// PNG section 8.2) are read pass by pass: seven reduced images, each with
+// filters of its own, whose pixels land on their places in the whole picture -
+// the same pixels as the image saved without interlacing.
 //
 // THE RESULT is 8-bit RGBA, rows top to bottom, no color management. 16-bit
 // samples are rounded to 8 bits, smaller depths widened (v x 255 / max). All in
@@ -45,7 +46,6 @@ enum
 {
 	RLDPNG_OK = 0,
 	RLDPNG_BAD,          // not a PNG rldpack can read; the reason says why
-	RLDPNG_INTERLACED,   // a sound header, but Adam7 interlacing
 	RLDPNG_TOO_LARGE,    // wider or higher than RLDPNG_SIDE_MAX, or more than RLDPNG_PIXELS_MAX pixels
 	RLDPNG_MEMORY        // out of memory
 };
@@ -56,6 +56,7 @@ struct RldPngImage
 	u32 height;
 	u32 colorType;   // as in IHDR
 	u32 bitDepth;    // as in IHDR
+	u32 interlace;   // as in IHDR: 0 none, 1 Adam7
 	u8 *rgba;        // width x height x 4 bytes, NULL unless RldPng_Decode said RLDPNG_OK
 };
 
@@ -758,6 +759,23 @@ static u8 RldPng_To8(u32 value, u32 depth)
 	}
 }
 
+// Adam7 (PNG section 8.2): per pass the first column and row and the steps
+// between them. A picture without interlacing is one pass {0, 0, 1, 1}.
+static const u8 s_rldPngAdam7[7][4] = {{0, 0, 8, 8}, {4, 0, 8, 8}, {0, 4, 4, 8}, {2, 0, 4, 4}, {0, 2, 2, 4}, {1, 0, 2, 2}, {0, 1, 1, 2}};
+static const u8 s_rldPngOnePass[4] = {0, 0, 1, 1};
+
+// The size of pass `pass` (0..6 with interlacing, else only 0): its pixels per
+// row and its rows, 0 for a pass without pixels - such a pass has no bytes in
+// the data, not even the filter bytes. Returns the pass's geometry.
+static const u8 *RldPng_Pass(const struct RldPngImage *image, u32 pass, u32 *w, u32 *h)
+{
+	const u8 *g = (image->interlace != 0u) ? s_rldPngAdam7[pass] : s_rldPngOnePass;
+
+	*w = (image->width > g[0]) ? ((image->width - g[0] + g[2] - 1u) / g[2]) : 0u;
+	*h = (image->height > g[1]) ? ((image->height - g[1] + g[3] - 1u) / g[3]) : 0u;
+	return g;
+}
+
 // A PNG file in memory -> 8-bit RGBA in out->rgba. RLDPNG_OK, or a code and
 // *why (fixed text, or a text in a static buffer that the next call overwrites).
 static int RldPng_Decode(const u8 *data, size_t size, struct RldPngImage *out, const char **why)
@@ -775,11 +793,13 @@ static int RldPng_Decode(const u8 *data, size_t size, struct RldPngImage *out, c
 	u8 *idat = NULL;
 	size_t idatSize = 0;
 	u8 *raw = NULL;
-	size_t rowBytes = 0;
 	size_t rawSize = 0;
 	size_t idatMax = 0;
 	size_t at = 8;
 	const char *bad;
+	size_t rawAt = 0;
+	u32 passes = 1;
+	u32 pass;
 	u32 x;
 	u32 y;
 
@@ -878,16 +898,13 @@ static int RldPng_Decode(const u8 *data, size_t size, struct RldPngImage *out, c
 				*why = "it uses an unknown compression or filter method";
 				return RLDPNG_BAD;
 			}
-			if (body[12] == 1u)
-			{
-				*why = "the image is interlaced (Adam7)";
-				return RLDPNG_INTERLACED;
-			}
-			if (body[12] != 0u)
+			if (body[12] > 1u)
 			{
 				*why = "it uses an unknown interlace method";
 				return RLDPNG_BAD;
 			}
+			out->interlace = body[12];
+			passes = (out->interlace != 0u) ? 7u : 1u;
 			if ((out->width > RLDPNG_SIDE_MAX) || (out->height > RLDPNG_SIDE_MAX) || (((u64)out->width * (u64)out->height) > (u64)RLDPNG_PIXELS_MAX))
 			{
 				snprintf(text, sizeof(text), "the image is %u x %u pixels; rldpack reads at most %u x %u", out->width, out->height, RLDPNG_SIDE_MAX, RLDPNG_SIDE_MAX);
@@ -895,15 +912,24 @@ static int RldPng_Decode(const u8 *data, size_t size, struct RldPngImage *out, c
 				return RLDPNG_TOO_LARGE;
 			}
 
-			// The sizes, in 64 bits first: at most 4096 x 64 bits per row. The
-			// compressed data of an image is never much larger than the image:
-			// stored blocks add 5 bytes per 65535. Generous room on top, and
-			// never more than the file holds.
+			// The sizes, in 64 bits first: at most 4096 x 64 bits per row, a
+			// filter byte per row of each pass. The compressed data of an image
+			// is never much larger than the image: stored blocks add 5 bytes per
+			// 65535. Generous room on top, and never more than the file holds.
 			{
-				const u64 rowBits = (u64)out->width * (u64)channels * (u64)out->bitDepth;
-				const u64 total = ((rowBits + 7u) / 8u + 1u) * (u64)out->height;
+				u64 total = 0;
 
-				rowBytes = (size_t)((rowBits + 7u) / 8u);
+				for (pass = 0; pass < passes; pass++)
+				{
+					u32 w;
+					u32 h;
+
+					(void)RldPng_Pass(out, pass, &w, &h);
+					if ((w != 0u) && (h != 0u))
+					{
+						total += (((u64)w * (u64)channels * (u64)out->bitDepth + 7u) / 8u + 1u) * (u64)h;
+					}
+				}
 				rawSize = (size_t)total;
 				idatMax = rawSize + rawSize / 8u + 4096u;
 				idatMax = (idatMax < size) ? idatMax : size;
@@ -1020,6 +1046,15 @@ static int RldPng_Decode(const u8 *data, size_t size, struct RldPngImage *out, c
 		return RLDPNG_BAD;
 	}
 
+	// Deflate gives at most 258 bytes per two bits, 1032 per byte: data that
+	// cannot fill the image is refused before the image's memory is taken.
+	if ((u64)rawSize > ((u64)idatSize * 1032u))
+	{
+		*why = "the image data is far too short for the image - the file is cut off or damaged";
+		free(idat);
+		return RLDPNG_BAD;
+	}
+
 	raw = (u8 *)malloc(rawSize);
 	out->rgba = (u8 *)malloc((size_t)out->width * (size_t)out->height * 4u);
 	if ((raw == NULL) || (out->rgba == NULL))
@@ -1036,8 +1071,24 @@ static int RldPng_Decode(const u8 *data, size_t size, struct RldPngImage *out, c
 	if (bad == NULL)
 	{
 		const size_t bitsPerPixel = (size_t)channels * out->bitDepth;
+		size_t passAt = 0;
 
-		bad = RldPng_Unfilter(raw, out->height, rowBytes, (bitsPerPixel >= 8u) ? (bitsPerPixel / 8u) : 1u);
+		// Each pass has filters of its own: its first row has no row above.
+		for (pass = 0; (bad == NULL) && (pass < passes); pass++)
+		{
+			u32 w;
+			u32 h;
+			size_t rowBytes;
+
+			(void)RldPng_Pass(out, pass, &w, &h);
+			if ((w == 0u) || (h == 0u))
+			{
+				continue;
+			}
+			rowBytes = ((size_t)w * bitsPerPixel + 7u) / 8u;
+			bad = RldPng_Unfilter(&raw[passAt], h, rowBytes, (bitsPerPixel >= 8u) ? (bitsPerPixel / 8u) : 1u);
+			passAt += (rowBytes + 1u) * h;
+		}
 	}
 	if (bad != NULL)
 	{
@@ -1047,64 +1098,80 @@ static int RldPng_Decode(const u8 *data, size_t size, struct RldPngImage *out, c
 		return RLDPNG_BAD;
 	}
 
-	for (y = 0; y < out->height; y++)
+	// The pixels of each pass onto their places.
+	for (pass = 0; pass < passes; pass++)
 	{
-		const u8 *row = &raw[(size_t)y * (rowBytes + 1u) + 1u];
-		u8 *pixel = &out->rgba[(size_t)y * out->width * 4u];
+		u32 w;
+		u32 h;
+		const u8 *g = RldPng_Pass(out, pass, &w, &h);
+		const size_t rowBytes = ((size_t)w * channels * out->bitDepth + 7u) / 8u;
 
-		for (x = 0; x < out->width; x++, pixel += 4)
+		if ((w == 0u) || (h == 0u))
 		{
-			const u32 depth = out->bitDepth;
-			u32 s[4];
-			u32 c;
+			continue;
+		}
 
-			for (c = 0; c < channels; c++)
+		for (y = 0; y < h; y++)
+		{
+			const u8 *row = &raw[rawAt + (size_t)y * (rowBytes + 1u) + 1u];
+			const size_t outY = (size_t)g[1] + (size_t)y * g[3];
+
+			for (x = 0; x < w; x++)
 			{
-				s[c] = RldPng_Sample(row, x * channels + c, depth);
-			}
+				u8 *pixel = &out->rgba[(outY * out->width + (size_t)g[0] + (size_t)x * g[2]) * 4u];
+				const u32 depth = out->bitDepth;
+				u32 s[4];
+				u32 c;
 
-			switch (out->colorType)
-			{
-			case 0:
-				pixel[0] = pixel[1] = pixel[2] = RldPng_To8(s[0], depth);
-				pixel[3] = (hasTrnsKey && (s[0] == trnsKey[0])) ? 0u : 255u;
-				break;
-
-			case 2:
-				pixel[0] = RldPng_To8(s[0], depth);
-				pixel[1] = RldPng_To8(s[1], depth);
-				pixel[2] = RldPng_To8(s[2], depth);
-				pixel[3] = (hasTrnsKey && (s[0] == trnsKey[0]) && (s[1] == trnsKey[1]) && (s[2] == trnsKey[2])) ? 0u : 255u;
-				break;
-
-			case 3:
-				if (s[0] >= paletteCount)
+				for (c = 0; c < channels; c++)
 				{
-					snprintf(text, sizeof(text), "a pixel uses palette entry %u, but the palette has %u", s[0], paletteCount);
-					free(raw);
-					RldPng_Free(out);
-					*why = text;
-					return RLDPNG_BAD;
+					s[c] = RldPng_Sample(row, x * channels + c, depth);
 				}
-				pixel[0] = palette[3u * s[0] + 0u];
-				pixel[1] = palette[3u * s[0] + 1u];
-				pixel[2] = palette[3u * s[0] + 2u];
-				pixel[3] = paletteAlpha[s[0]];
-				break;
 
-			case 4:
-				pixel[0] = pixel[1] = pixel[2] = RldPng_To8(s[0], depth);
-				pixel[3] = RldPng_To8(s[1], depth);
-				break;
+				switch (out->colorType)
+				{
+				case 0:
+					pixel[0] = pixel[1] = pixel[2] = RldPng_To8(s[0], depth);
+					pixel[3] = (hasTrnsKey && (s[0] == trnsKey[0])) ? 0u : 255u;
+					break;
 
-			default:
-				pixel[0] = RldPng_To8(s[0], depth);
-				pixel[1] = RldPng_To8(s[1], depth);
-				pixel[2] = RldPng_To8(s[2], depth);
-				pixel[3] = RldPng_To8(s[3], depth);
-				break;
+				case 2:
+					pixel[0] = RldPng_To8(s[0], depth);
+					pixel[1] = RldPng_To8(s[1], depth);
+					pixel[2] = RldPng_To8(s[2], depth);
+					pixel[3] = (hasTrnsKey && (s[0] == trnsKey[0]) && (s[1] == trnsKey[1]) && (s[2] == trnsKey[2])) ? 0u : 255u;
+					break;
+
+				case 3:
+					if (s[0] >= paletteCount)
+					{
+						snprintf(text, sizeof(text), "a pixel uses palette entry %u, but the palette has %u", s[0], paletteCount);
+						free(raw);
+						RldPng_Free(out);
+						*why = text;
+						return RLDPNG_BAD;
+					}
+					pixel[0] = palette[3u * s[0] + 0u];
+					pixel[1] = palette[3u * s[0] + 1u];
+					pixel[2] = palette[3u * s[0] + 2u];
+					pixel[3] = paletteAlpha[s[0]];
+					break;
+
+				case 4:
+					pixel[0] = pixel[1] = pixel[2] = RldPng_To8(s[0], depth);
+					pixel[3] = RldPng_To8(s[1], depth);
+					break;
+
+				default:
+					pixel[0] = RldPng_To8(s[0], depth);
+					pixel[1] = RldPng_To8(s[1], depth);
+					pixel[2] = RldPng_To8(s[2], depth);
+					pixel[3] = RldPng_To8(s[3], depth);
+					break;
+				}
 			}
 		}
+		rawAt += (rowBytes + 1u) * h;
 	}
 
 	free(raw);
