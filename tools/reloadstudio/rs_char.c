@@ -71,14 +71,6 @@
 // rldpack reads from the game's data; without them the measured frame stands
 // in as lines.
 //
-// "Open .rldchar..." (tab Model) starts from a character built before:
-// rldpack info --machine --icon-preview reads it (the same reader and checks as
-// the game's), and the page fills in name, driving style, mask, minimap colour,
-// kart wheels and the output (the file itself), and shows its portrait. The
-// file holds the built model and the portrait, not the PLY and the PNG they
-// came from, nor the size and the options of the model: the model field and
-// the icon field are emptied, and the page says to choose both again.
-//
 // After a build the headline names the mask and the kart wheels in the file,
 // where a wrong choice cannot be missed, and says to restart the game: it
 // reads its characters folder only when it starts. The options are not
@@ -215,8 +207,6 @@
 #define CHAR_ID_BACK           185
 #define CHAR_ID_NEXT           186
 #define CHAR_ID_EXTRAS         187   // 187..188: Wheels | Animations in the tab Extras
-#define CHAR_ID_OPEN           189   // "Open .rldchar..." (tab Model)
-#define CHAR_ID_OPEN_NOTE      190
 // The controls of the cards Wheels and Animations (WH_ID_FIRST..WH_ID_LAST in
 // rs_wheels.c, AN_ID_FIRST..AN_ID_LAST in rs_anim.c): the tab Extras shows them.
 #define CHAR_ID_WHEELS_FIRST   300
@@ -224,7 +214,7 @@
 #define CHAR_ID_ANIM_FIRST     340
 #define CHAR_ID_ANIM_LAST      379
 
-enum { CHAR_JOB_NONE = 0, CHAR_JOB_CHECK, CHAR_JOB_BUILD, CHAR_JOB_OPEN };
+enum { CHAR_JOB_NONE = 0, CHAR_JOB_CHECK, CHAR_JOB_BUILD };
 
 // The tabs, in their order.
 enum { CHAR_TAB_MODEL = 0, CHAR_TAB_DRIVER, CHAR_TAB_LOOK, CHAR_TAB_VOICES, CHAR_TAB_EXTRAS, CHAR_TABS };
@@ -299,7 +289,6 @@ static const int g_charPoseView[CHAR_POSES] = { RS_VIEW_POSE_NEUTRAL, RS_VIEW_PO
 
 // Before a model is chosen, below its field (the page has no subtitle).
 #define CHAR_START_TEXT L"Pick a PLY model of driver, steering wheel and kart. rldpack converts and checks it and builds the .rldchar."
-#define CHAR_OPEN_TEXT L"Start from a character built before: fills in everything but model and icon."
 #define CHAR_SIZE_HINT_TEXT L"Visual size only - physics and collision follow the driving style."
 #define CHAR_NAME_RULE_TEXT L"1 to 17 characters: A-Z 0-9 space ! % ' + , - . / : < = > ? _"
 #define CHAR_VOICES_TEXT L"Voices are checked but not packed yet - the driver is silent in the game."
@@ -371,13 +360,6 @@ struct CharJobData {
     wchar_t triangles[32];          // @char triangles (or faces)
     wchar_t parts[160];             // @char parts: "kart 1, driver 2, steering wheel 3"
     wchar_t voices[32];             // @char voices: "<n> of 18"
-    int containerSeen;              // info (Open .rldchar): @container <file> <ok | refused> <reason>
-    wchar_t container[16];
-    wchar_t containerWhy[256];
-    wchar_t name[64];               // @value name
-    int classSeen, classId;         // @value class: 0..3
-    int templateSeen, templateId;   // @value template
-    int iconPreviewOk;              // @file icon-preview ok
     struct CharMsg *msgs;
     int msgCount, msgCap;
     int resultSeen;
@@ -416,8 +398,6 @@ static struct {
     int msgTabCount, msgTabCap;
     int modelRead;                  // the last run read the model in the field
     int stepShown;                  // the heads were drawn once (Char_TabsUpdate)
-    HWND open, openNote;            // "Open .rldchar..." and the line beside it
-    wchar_t openPath[CHAR_VAL];     // the .rldchar opened last
 
     // colours of the labels, for the report
     COLORREF headColor, nameColor, sizeColor, infoColor, viewColor, fitColor, qualityColor;
@@ -472,8 +452,6 @@ static struct CharJobData g_charJob;
 
 static void Char_Layout(HWND page, int w, int h);
 static int Char_Check(HWND page);
-static void Char_OpenDone(HWND page, int seq);
-static void Char_NameFilter(void);
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -537,7 +515,7 @@ static void Char_Relayout(HWND page);
 static int Char_IsNote(HWND label)
 {
     return label && (label == g_char.nameNote || label == g_char.sizeFit || label == g_char.sizeNote ||
-                     label == g_char.viewNote || label == g_char.voicesNote || label == g_char.openNote);
+                     label == g_char.viewNote || label == g_char.voicesNote);
 }
 
 // Height of a note (or the headline) at this width: its lines, at least one,
@@ -1209,7 +1187,7 @@ static void Char_Abandon(void)
     int i;
     if (!g_char.jobId)
         return;
-    if (g_char.jobKind == CHAR_JOB_CHECK || g_char.jobKind == CHAR_JOB_OPEN) {
+    if (g_char.jobKind == CHAR_JOB_CHECK) {
         Rs_KillJob(g_char.jobId);
         for (i = 0; i < CHAR_PENDING; i++)
             if (!g_char.pending[i].id)
@@ -1380,13 +1358,7 @@ static void Char_ParseLine(wchar_t *line)
     if (wcscmp(kind, L"rldpack") == 0) {
         j->protocolSeen = 1;
         j->protocol = _wtoi(Char_Field(f, n, 1));
-    } else if (wcscmp(kind, L"container") == 0) {
-        j->containerSeen = 1;
-        Char_Copy(j->container, 16, Char_Field(f, n, 2));
-        Char_Copy(j->containerWhy, 256, Char_Field(f, n, 3));
     } else if (wcscmp(kind, L"file") == 0) {
-        if (wcscmp(Char_Field(f, n, 1), L"icon-preview") == 0)
-            j->iconPreviewOk = wcscmp(Char_Field(f, n, 2), L"ok") == 0;
         if (wcscmp(Char_Field(f, n, 1), L"icon-retail") == 0)
             j->iconRetailOk = wcscmp(Char_Field(f, n, 2), L"ok") == 0;
         if (wcscmp(Char_Field(f, n, 1), L"ply") == 0) {
@@ -1402,16 +1374,6 @@ static void Char_ParseLine(wchar_t *line)
         if (wcscmp(key, L"out") == 0) {
             j->outSeen = 1;
             Char_Copy(j->out, CHAR_VAL, Char_Field(f, n, 2));
-        } else if (wcscmp(key, L"name") == 0) {
-            Char_Copy(j->name, 64, Char_Field(f, n, 2));
-        } else if (wcscmp(key, L"class") == 0) {
-            const wchar_t *val = Char_Field(f, n, 2);
-            j->classSeen = val[0] != 0;
-            j->classId = val[0] ? _wtoi(val) : -1;
-        } else if (wcscmp(key, L"template") == 0) {
-            const wchar_t *val = Char_Field(f, n, 2);
-            j->templateSeen = val[0] != 0;
-            j->templateId = val[0] ? _wtoi(val) : -1;
         } else if (wcscmp(key, L"size-range") == 0) {
             Char_JoinFields(f, n, all, 256);
             if (Char_Numbers(all, v, 2) == 2 && v[0] == 0 && v[1] == 0) {
@@ -1557,8 +1519,7 @@ static int Char_TabOfId(int id, int *card)
 {
     *card = -1;
     if ((id >= CHAR_ID_MODEL_LABEL && id <= CHAR_ID_MODEL_INFO) || (id >= CHAR_ID_SIZE_LABEL && id <= CHAR_ID_OPTIONS_LABEL) ||
-        (id >= CHAR_ID_REPAIR && id <= CHAR_ID_QUALITY) || id == CHAR_ID_REDUCE_FIT || id == CHAR_ID_OPEN ||
-        id == CHAR_ID_OPEN_NOTE)
+        (id >= CHAR_ID_REPAIR && id <= CHAR_ID_QUALITY) || id == CHAR_ID_REDUCE_FIT)
         return CHAR_TAB_MODEL;
     if ((id >= CHAR_ID_NAME_LABEL && id <= CHAR_ID_CLASS_HELP) || (id >= CHAR_ID_MASK_LABEL && id <= CHAR_ID_MASK_HELP))
         return CHAR_TAB_DRIVER;
@@ -1946,7 +1907,6 @@ static void Char_UpdateButtons(void)
     EnableWindow(g_char.check, model[0] && !building);
     EnableWindow(g_char.build, Char_CanBuild());
     EnableWindow(g_char.modelBrowse, !building);
-    EnableWindow(g_char.open, !building);
     EnableWindow(g_char.iconBrowse, !building);
     EnableWindow(g_char.voicesBrowse, !building);
     EnableWindow(g_char.outBrowse, !building);
@@ -3127,181 +3087,9 @@ static void Char_JobDone(HWND page, int exitCode)
         if (g_char.checkAfterBuild)
             Char_Check(page);
     }
-    else if (kind == CHAR_JOB_OPEN)
-        Char_OpenDone(page, seq);
     else
         Char_CheckDone(page, exitCode, seq);
     Char_UpdateButtons();
-}
-
-// ---------------------------------------------------------------------------
-// Open .rldchar
-// ---------------------------------------------------------------------------
-
-// Reads a .rldchar with rldpack info. Return: 1 = rldpack running, 0 = it could
-// not be started (the message is there), -1 = not now (building) or no file.
-static int Char_Open(HWND page, const wchar_t *path)
-{
-    const wchar_t *args[5];
-    wchar_t clean[CHAR_VAL];
-    wchar_t prefix[CHAR_VAL];
-    int seq;
-
-    Char_CleanPath(clean, CHAR_VAL, path);
-    if (!clean[0] || (g_char.jobId && g_char.jobKind == CHAR_JOB_BUILD))
-        return -1;
-    KillTimer(page, CHAR_TIMER_CHECK);
-    g_char.timer = 0;
-    Char_Abandon();
-    seq = ++g_char.seq;
-    Char_TempPath(prefix, CHAR_VAL, seq, L"");
-    Char_Copy(g_char.openPath, CHAR_VAL, clean);
-    args[0] = L"info";
-    args[1] = L"--machine";
-    args[2] = L"--icon-preview";
-    args[3] = prefix;
-    args[4] = clean;
-    Char_Headline(L"Opening...", RS_COL_MUTED);
-    if (!Char_StartJob(page, CHAR_JOB_OPEN, args, 5, seq)) {
-        Char_StartFailed(L"Not opened - 1 problem(s)");
-        return 0;
-    }
-    return 1;
-}
-
-static void Char_OpenDone(HWND page, int seq)
-{
-    // A copy: Char_NoModel below starts the page afresh, the run data too.
-    struct CharJobData got = g_charJob;
-    struct CharJobData *j = &got;
-    const wchar_t *file = Rs_PathName(g_char.openPath);
-    wchar_t text[CHAR_VAL + 160];
-    wchar_t path[CHAR_VAL];
-    unsigned long rgb = 0;
-    wchar_t mapText[8];
-    int mapSet = 0, wheelsOff, i;
-
-    got.msgs = NULL;            // they stay with g_charJob
-    got.msgCount = got.msgCap = 0;
-    // Without the values rldpack could not read the file as a character.
-    if (!j->classSeen) {
-        Char_TempDelete(seq);
-        Char_MsgClear();
-        swprintf(text, CHAR_VAL + 160, L"%ls cannot be opened as a character.", file);
-        Char_MsgAdd(-1, RS_SEV_ERROR, text, j->containerWhy[0] ? j->containerWhy : L"rldpack did not read it as a .rldchar.");
-        Char_Headline(L"Not opened - 1 problem(s)", RS_COL_ERROR);
-        Char_UpdateButtons();
-        if (Rs_Automating())
-            Rs_AutoLog(L"  open: %ls cannot be opened: %ls", g_char.openPath, j->containerWhy);
-        return;
-    }
-    if (j->mapColor[0] && wcsncmp(j->mapColor, L"template", 8) != 0) {
-        wchar_t *end;
-        rgb = wcstoul(j->mapColor, &end, 16);
-        mapSet = end - j->mapColor == 6;
-    }
-    swprintf(mapText, 8, L"%06lX", rgb & 0xFFFFFF);
-    wheelsOff = wcsncmp(j->wheels, L"off", 3) == 0;
-
-    // The fields as if typed, without a check: model and icon are emptied.
-    Char_Copy(path, CHAR_VAL, g_char.openPath);
-    g_char.applying = 1;
-    Rs_SetText(g_char.model, L"");
-    Rs_SetText(g_char.icon, L"");
-    Rs_SetText(g_char.name, j->name);
-    Char_NameFilter();
-    if (j->classId >= 0 && j->classId < CHAR_CLASS_COUNT)
-        SendMessageW(g_char.cls, CB_SETCURSEL, (WPARAM)j->classId, 0);
-    for (i = 0; i < CHAR_MASK_COUNT; i++)
-        if (wcsncmp(j->mask, g_charMasks[i].word, 3) == 0)
-            SendMessageW(g_char.mask, CB_SETCURSEL, (WPARAM)i, 0);
-    Char_SetChecked(g_char.wheels, !wheelsOff);
-    RsView_SetWheels(g_char.view, !wheelsOff);
-    g_char.mapColorSet = mapSet;
-    g_char.mapColor = mapSet ? RGB((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF) : CHAR_TEMPLATE_MAP_COLOR;
-    Char_MapColorShow();
-    Rs_SetText(g_char.out, path);
-    g_char.applying = 0;
-    Char_UpdateIconOptions();
-    Char_SizeForget();
-    {
-        // Char_NoModel empties the raw output too: the lines of info stay.
-        wchar_t *raw = g_char.rawText;
-        size_t len = g_char.rawLen, cap = g_char.rawCap;
-        int lines = g_char.rawLines;
-        g_char.rawText = NULL;
-        g_char.rawLen = g_char.rawCap = 0;
-        Char_NoModel(page);
-        Rs_Free(g_char.rawText);
-        g_char.rawText = raw;
-        g_char.rawLen = len;
-        g_char.rawCap = cap;
-        g_char.rawLines = lines;
-        if (g_char.showRaw)
-            Char_RawRefresh();
-    }
-
-    // What is filled in, and what has to be chosen again.
-    swprintf(text, CHAR_VAL + 160, L"%ls holds the built model, not the PLY: choose its PLY model again.", file);
-    Char_SetInfo(text, RS_COL_WARNING);
-    swprintf(text, CHAR_VAL + 160, L"Opened %ls", path);
-    Char_SetLabel(g_char.openNote, text, RS_COL_TEXT, NULL);
-    swprintf(text, CHAR_VAL + 160, j->iconPreviewOk ? L"Opened %ls - choose its PLY model and icon PNG again"
-                                                     : L"Opened %ls - choose its PLY model again", file);
-    Char_Headline(text, RS_COL_NOTE);
-    Char_MsgClear();
-    swprintf(text, CHAR_VAL + 160, L"Filled in from %ls: name, driving style, mask, minimap colour and kart wheels.", file);
-    Char_MsgAdd(CHAR_TAB_DRIVER, RS_SEV_OK, text, L"Output is that file: Build replaces it (it asks first).");
-    Char_MsgAdd(CHAR_TAB_MODEL, RS_SEV_NOTE, L"Choose the PLY model again.",
-                L"A .rldchar holds the built model, not the PLY it came from. Size and the options of the model "
-                L"are not in it either - set them as before.");
-    if (j->iconPreviewOk)
-        Char_MsgAdd(CHAR_TAB_LOOK, RS_SEV_NOTE, L"Choose the icon PNG again.",
-                    L"The file holds the portrait (shown on In-game look), not the PNG. Without a PNG the new "
-                    L"build gets the template's portrait.");
-    if (j->templateSeen && j->templateId != _wtoi(CHAR_TEMPLATE)) {
-        swprintf(text, CHAR_VAL + 160, L"It was built with template %d; Reload Studio builds with Fake Crash (%ls).",
-                 j->templateId, CHAR_TEMPLATE);
-        Char_MsgAdd(CHAR_TAB_DRIVER, RS_SEV_NOTE, text, NULL);
-    }
-    if (wcscmp(j->container, L"ok") != 0)
-        Char_MsgAdd(-1, RS_SEV_WARNING, L"The game refuses this file as it is.", j->containerWhy);
-
-    // Its portrait in the place of the converted icon, beside the frame.
-    Char_ImagesClear();
-    Rs_SetText(g_char.iconImage[CHAR_IMG_ORIGINAL], L"not in the .rldchar");
-    Rs_SetText(g_char.iconImage[CHAR_IMG_ICON], L"the template's icon");
-    if (j->iconPreviewOk) {
-        Char_TempPath(text, CHAR_VAL, seq, L"-icon.bmp");
-        if (Char_LoadBmp(text, &g_char.image[CHAR_IMG_ICON])) {
-            Char_GameCompose(seq);
-            Rs_SetText(g_char.iconCaption[CHAR_IMG_ICON], L"In the opened file - choose its PNG again");
-        }
-        for (i = 0; i < CHAR_IMG_COUNT; i++)
-            InvalidateRect(g_char.iconImage[i], NULL, FALSE);
-    }
-    Char_TempDelete(seq);
-    Char_UpdateButtons();
-    Char_Relayout(page);
-    if (Rs_Automating())
-        Rs_AutoLog(L"  open: %ls: name %ls, class %d, mask %.3ls, kart wheels %ls, map colour %ls, portrait %ls, %ls",
-                   path, j->name, j->classId, j->mask, wheelsOff ? L"hidden" : L"shown",
-                   mapSet ? mapText : L"like the template", j->iconPreviewOk ? L"shown" : L"none",
-                   wcscmp(j->container, L"ok") == 0 ? L"the game loads it" : L"refused");
-}
-
-static void Char_BrowseOpen(HWND page)
-{
-    wchar_t start[CHAR_VAL];
-    wchar_t pick[CHAR_VAL];
-    start[0] = 0;
-    if (Char_GameCharDir(start, CHAR_VAL))
-        Char_Append(start, CHAR_VAL, L"\\");
-    if (!start[0] || !Rs_DirExists(start))
-        Rs_ConfigGet(L"char.out", start, CHAR_VAL);
-    if (Rs_BrowseOpenFile(Rs_MainWindow(), L"Open a character",
-                          L"Characters (*.rldchar)\0*.rldchar\0All files\0*.*\0\0", start, pick, CHAR_VAL))
-        Char_Open(page, pick);
 }
 
 // ---------------------------------------------------------------------------
@@ -3515,7 +3303,7 @@ static void Char_Enter(HWND page)
     if (focus == g_char.modelBrowse || focus == g_char.iconBrowse || focus == g_char.iconClear ||
         focus == g_char.voicesBrowse || focus == g_char.voicesClear || focus == g_char.outBrowse ||
         focus == g_char.check || focus == g_char.build || focus == g_char.rawToggle || focus == g_char.show ||
-        focus == g_char.back || focus == g_char.next || focus == g_char.open || (focus && GetDlgCtrlID(focus) >= CHAR_ID_TAB &&
+        focus == g_char.back || focus == g_char.next || (focus && GetDlgCtrlID(focus) >= CHAR_ID_TAB &&
                                                          GetDlgCtrlID(focus) < CHAR_ID_EXTRAS + CHAR_EXTRAS_COUNT)) {
         SendMessageW(focus, BM_CLICK, 0, 0);
     } else if (focus && GetParent(focus) == page) {
@@ -3691,7 +3479,6 @@ static int Char_WriteReport(const wchar_t *path)
     Char_PutText(f, L"voices", g_char.voices);
     Char_PutText(f, L"voices note", g_char.voicesNote);
     Char_PutText(f, L"output", g_char.out);
-    Char_Put(f, L"opened: %ls", g_char.openPath[0] ? g_char.openPath : L"(none)");
     if (g_char.kartKnown)
         Char_Put(f, L"kart box: %d %d %d %d %d %d", g_char.kart[0], g_char.kart[1], g_char.kart[2],
                  g_char.kart[3], g_char.kart[4], g_char.kart[5]);
@@ -4043,12 +3830,6 @@ static void Char_Create(HWND page)
     g_char.model = Rs_Edit(page, CHAR_ID_MODEL, L"", 0);
     g_char.modelBrowse = Rs_Button(page, CHAR_ID_MODEL_BROWSE, L"Browse...");
     g_char.modelInfo = Rs_Label(page, CHAR_ID_MODEL_INFO, L"-", RS_FONT_SMALL);   // wraps (Char_Layout)
-    g_char.open = Rs_Button(page, CHAR_ID_OPEN, L"Open .rldchar...");
-    g_char.openNote = Rs_Label(page, CHAR_ID_OPEN_NOTE, CHAR_OPEN_TEXT, RS_FONT_SMALL);
-    Rs_SetTextColor(g_char.openNote, RS_COL_MUTED);
-    Rs_SetTip(g_char.open, L"Fills in name, driving style, mask, minimap colour, kart wheels and the output from a "
-                           L"character built before, and shows its portrait. Model and icon are not in the file: "
-                           L"choose them again.");
 
     g_char.nameLabel = Rs_Label(page, CHAR_ID_NAME_LABEL, L"Name", RS_FONT_BOLD);
     g_char.name = Rs_Edit(page, CHAR_ID_NAME, L"", ES_UPPERCASE);
@@ -4216,8 +3997,6 @@ static void Char_Create(HWND page)
     // Tab order: the heads, the tab shown (Reduce to fit after the options),
     // then the preview and the bar.
     SetWindowPos(g_char.reduceFit, g_char.quality, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    SetWindowPos(g_char.open, g_char.tabHead[CHAR_TABS - 1], 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-    SetWindowPos(g_char.openNote, g_char.open, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     {
         HWND last[] = { g_char.view, g_char.pose, g_char.viewNote, g_char.headline, g_char.rawToggle, g_char.msgs,
                         g_char.raw, g_char.outLabel, g_char.out, g_char.outBrowse, g_char.show, g_char.back,
@@ -4298,15 +4077,6 @@ static int Char_LayModel(const struct CharLay *k, const RECT *in)
     HWND options[5];
     int x = in->left + k->labelW + Rs_Px(8), fieldW = in->right - x, y = in->top, infoH, qualityH, noteH, i;
 
-    // "Open .rldchar..." first, the line beside it.
-    {
-        int bw = Char_TextWidth(g_char.open, L"Open .rldchar...") + Rs_Px(32);
-        int noteW = in->right - in->left - bw - Rs_Px(12);
-        noteH = Char_NoteHeight(g_char.openNote, noteW);
-        MoveWindow(g_char.open, in->left, y, bw, Rs_Px(30), TRUE);
-        MoveWindow(g_char.openNote, in->left + bw + Rs_Px(12), y + Rs_Px(6), noteW, noteH, TRUE);
-        y += (noteH + Rs_Px(6) > Rs_Px(30) ? noteH + Rs_Px(6) : Rs_Px(30)) + Rs_Px(8);
-    }
     Char_PlaceField(g_char.modelLabel, g_char.model, in->left, k->labelW, y + Rs_Px(2), fieldW - k->browseW - Rs_Px(8));
     MoveWindow(g_char.modelBrowse, in->right - k->browseW, y, k->browseW, Rs_Px(32), TRUE);
     y += Rs_Px(34);
@@ -4856,10 +4626,6 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
         if (code == BN_CLICKED)
             Char_BrowseModel(page);
         break;
-    case CHAR_ID_OPEN:
-        if (code == BN_CLICKED)
-            Char_BrowseOpen(page);
-        break;
     case CHAR_ID_ICON_BROWSE:
         if (code == BN_CLICKED)
             Char_BrowseIcon();
@@ -5020,15 +4786,6 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         return Char_AutoExtras(page, arg);
     if (wcscmp(verb, L"problem") == 0)
         return Char_AutoProblem(page, arg);
-    // Like "Open .rldchar..." with this file chosen.
-    if (wcscmp(verb, L"open") == 0) {
-        Rs_AutoLog(L"  open: %ls", arg);
-        r = Char_Open(page, arg);
-        if (r > 0)
-            return RS_AUTO_WAIT;
-        Rs_AutoLog(L"  open: %ls", !arg[0] ? L"say which .rldchar" : r < 0 ? L"a build is running" : L"rldpack could not be started");
-        return RS_AUTO_FAIL;
-    }
     if (wcscmp(verb, L"model") == 0) {
         if (!arg[0] || _wcsicmp(arg, L"none") == 0) {
             Char_SetModel(page, L"");

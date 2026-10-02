@@ -590,7 +590,6 @@ static void Rld_Usage(void);
 // it uses. info, verify, selftest and the help call into it from here on.
 static int RldChar_MakeCommand(int argc, char **argv);
 static int RldChar_InfoCommand(const char *path, int machine);
-static void RldChar_InfoIcon(const char *path, const char *prefix);
 static int RldChar_VerifyCommand(const char *path);
 static int RldChar_SelfTest(void);
 static void RldChar_Usage(FILE *out);
@@ -6147,9 +6146,7 @@ static void Rld_Usage(void)
 	printf("  --machine                   with any command: also print lines for a program\n");
 	printf("                              (Reload Studio), see tools/reloadstudio/reloadstudio.h.\n");
 	printf("                              info --machine takes several files and also reads\n");
-	printf("                              the LEVD of each; --icon-preview <prefix> before\n");
-	printf("                              them writes the portrait of a .rldchar as\n");
-	printf("                              <prefix>-icon.bmp\n\n");
+	printf("                              the LEVD of each\n\n");
 
 	printf("MAKE\n");
 	printf("  rldpack make <folder> [switches]\n");
@@ -6259,25 +6256,13 @@ static void Rld_Usage(void)
 // test page). Unlike info, this reads the LEVD - the cup editor has to know whether
 // a track has nav paths and restart points, and that is only in there.
 // The checks are the same as when building; nothing is changed.
-// --icon-preview <prefix> before the files: the portrait of a .rldchar as the
-// menu tile shows it, <prefix>-icon.bmp (Reload Studio, "Open .rldchar...").
 static int Cmd_InfoMachine(int argc, char *argv[])
 {
-	const char *iconPrefix = NULL;
 	int f;
 
-	// Without a file (also when only --icon-preview was given): the usage.
-	if ((argc >= 1) && (strcmp(argv[0], "--icon-preview") == 0))
-	{
-		const int used = (argc >= 2) ? 2 : 1;
-
-		iconPrefix = (argc >= 2) ? argv[1] : NULL;
-		argv += used;
-		argc -= used;
-	}
 	if (argc < 1)
 	{
-		fprintf(stderr, "rldpack info --machine [--icon-preview <prefix>] <file.rldtrack> [<file.rldtrack> ...]\n");
+		fprintf(stderr, "rldpack info --machine <file.rldtrack> [<file.rldtrack> ...]\n");
 		return 2;
 	}
 
@@ -6296,10 +6281,6 @@ static int Cmd_InfoMachine(int argc, char *argv[])
 		if (Rld_IsCharFile(argv[f]))
 		{
 			RldChar_InfoCommand(argv[f], 1);
-			if (iconPrefix != NULL)
-			{
-				RldChar_InfoIcon(argv[f], iconPrefix);
-			}
 			continue;
 		}
 

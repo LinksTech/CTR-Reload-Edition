@@ -239,17 +239,13 @@
 //             with --icon the container has a third chunk CICN (612 bytes)
 //   @end      <exit code>
 //
-// info --machine [--icon-preview <prefix>] <file.rldchar> (the page's
-// "Open .rldchar...", with --icon-preview):
+// info --machine <file.rldchar> (rldpack; the page does not call it yet):
 //   @container <file> <ok | refused> <reason>
 //   @value    name, author, char_version, template, class, wheels (on | off),
 //             flags (0x%08x, only when the CHRI flags carry bits this rldpack
 //             does not know), format - all with origin "container"
 //   @char     triangles, records, colors_out, frames, draw_bytes,
 //             verdict <word> <rule> <detail>, icon <state> <why>
-//   @file     icon-preview ok | failed <prefix>-icon.bmp <bytes>   (only with
-//             --icon-preview and a usable portrait: 43 x 25 as the menu tile
-//             shows it, the BMP of make-char --icon-preview)
 //
 // Commands the page "Character" calls (always --template 14, Fake Crash):
 //   make-char --machine --check --model <ply> --name <n> --template 14
