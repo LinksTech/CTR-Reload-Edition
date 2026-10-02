@@ -3581,6 +3581,7 @@ static int RldMk_StepDummy(struct RldMkBuild *b, const struct RldMkOptions *opt)
 #define RLDMK_REMESH_RESOLUTION_MIN 32u
 #define RLDMK_REMESH_RESOLUTION_MAX 128u
 #define RLDMK_REMESH_SHARE_MIN 40u
+#define RLDMK_REMESH_TARGET_MIN 1000u  // a remeshed model keeps at least this many triangles (RldMk_StepReduce)
 
 static int RldMk_StepRemesh(struct RldMkBuild *b, const struct RldMkOptions *opt, const struct RldMkPly *ply)
 {
@@ -4119,10 +4120,25 @@ static void RldMk_GroupWhy(char *why, size_t size)
 	}
 }
 
+// The target after --remesh: a hull has no detail its source did not have
+// (a cell of the hull is some 1.8 units), so it need not fill the draw
+// memory: twice the triangles of the source, at least
+// RLDMK_REMESH_TARGET_MIN, at most `target`. megumi (1089 triangles) went to
+// 7101 triangles - 552 % more draw memory per seat, reserved by the game for
+// real - and its check took 28 s.
+static u32 RldMk_RemeshTarget(const struct RldMkBuild *b, u32 target)
+{
+	const u32 twice = 2u * b->remeshFrom;
+	const u32 wanted = (twice > RLDMK_REMESH_TARGET_MIN) ? twice : RLDMK_REMESH_TARGET_MIN;
+
+	return (wanted < target) ? wanted : target;
+}
+
 static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, const struct RldMkOptions *opt)
 {
 	const u32 triangles = b->triangleCount;
-	const u32 target = (opt->reduceTarget != 0u) ? opt->reduceTarget : RLDMK_REDUCE_TARGET;
+	const u32 target = b->remeshed ? RldMk_RemeshTarget(b, (opt->reduceTarget != 0u) ? opt->reduceTarget : RLDMK_REDUCE_TARGET)
+	                               : ((opt->reduceTarget != 0u) ? opt->reduceTarget : RLDMK_REDUCE_TARGET);
 	u32 counts[RLDMK_GROUPS] = {0u, 0u, 0u};
 	u32 targets[RLDMK_GROUPS];
 	RldRedMesh mesh;
@@ -19983,6 +19999,28 @@ static void RldMk_SelfTestPaletteFull(void)
 	RldMk_Test(ok, "palette: more colors than entries fill every entry (64 and 128)", "%u %u %u %u %u %u", got[0], got[1], got[2], got[3], got[4], got[5]);
 }
 
+// THE TARGET AFTER --REMESH: twice the source, at least 1000, at most the
+// target it is given.
+static void RldMk_SelfTestRemeshTarget(void)
+{
+	static const u32 from[4] = {1089u, 300u, 5000u, 1089u};
+	static const u32 limit[4] = {7200u, 7200u, 7200u, 1500u};
+	static const u32 want[4] = {2178u, 1000u, 7200u, 1500u};
+	struct RldMkBuild b;
+	int k;
+	int ok = 1;
+	u32 got[4];
+
+	memset(&b, 0, sizeof(b));
+	for (k = 0; k < 4; k++)
+	{
+		b.remeshFrom = from[k];
+		got[k] = RldMk_RemeshTarget(&b, limit[k]);
+		ok = ok && (got[k] == want[k]);
+	}
+	RldMk_Test(ok, "--remesh target: twice the source, at least 1000, at most the limit", "%u %u %u %u", got[0], got[1], got[2], got[3]);
+}
+
 static int RldChar_SelfTest(void)
 {
 	struct RldMkTestMesh *mesh = (struct RldMkTestMesh *)calloc(1, sizeof(struct RldMkTestMesh));
@@ -20046,6 +20084,7 @@ static int RldChar_SelfTest(void)
 	RldMk_SelfTestUpHint(mesh);
 	RldMk_SelfTestPlyElements();
 	RldMk_SelfTestPaletteFull();
+	RldMk_SelfTestRemeshTarget();
 	s_rldMkQuiet = quietBefore;
 	RldMk_ResetSaid();
 
