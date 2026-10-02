@@ -2974,7 +2974,11 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 		// when it is small and in front like a steering wheel. Repeated until
 		// nothing changes; a part only ever joins the vehicle, so at most
 		// partCount rounds. A part that starts inside another (deeper than
-		// RLDMK_CONTACT) is not lying on it and stays with the driver.
+		// RLDMK_CONTACT) is not lying on it and stays with the driver, and so
+		// does a part the driver part itself sits on (his bottom within
+		// RLDMK_CONTACT of its top or below, the two over each other): a
+		// separate pair of trousers on a separate seat leans with him, while
+		// a turret in front of him stays with the hull.
 		{
 			int changed = 1;
 
@@ -2986,7 +2990,14 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 					struct RldMkPart *part = &b->parts[i];
 					u32 j;
 
+					const struct RldMkPart *driver = &b->parts[b->driverPart];
+
 					if (((int)i == b->driverPart) || (part->group == RLDMK_GROUP_KART) || !(part->lo[0] < kartX) || !(part->hi[0] > kartX))
+					{
+						continue;
+					}
+					if ((driver->lo[1] <= (part->hi[1] + RLDMK_CONTACT)) && (driver->lo[0] <= part->hi[0]) && (driver->hi[0] >= part->lo[0]) &&
+					    (driver->lo[2] <= part->hi[2]) && (driver->hi[2] >= part->lo[2]))
 					{
 						continue;
 					}
@@ -20503,6 +20514,31 @@ static void RldMk_SelfTestTurret(struct RldMkTestMesh *mesh)
 			           "built %d, kart %u, driver %u, wheel %u", ok, b.groupTriangles[RLDMK_GROUP_KART], b.groupTriangles[RLDMK_GROUP_DRIVER],
 			           b.groupTriangles[RLDMK_GROUP_WHEEL]);
 		}
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+	}
+
+	// Trousers lying on a seat on the kart, the body sitting on the trousers:
+	// they lean with the driver.
+	{
+		static const double seatLo[3] = {-0.30, 0.35, -0.60};
+		static const double seatHi[3] = {0.30, 0.45, -0.20};
+		static const double trousersLo[3] = {-0.25, 0.45, -0.55};
+		static const double trousersHi[3] = {0.25, 0.70, -0.25};
+		static const double bodyLo[3] = {-0.25, 0.70, -0.55};
+		static const double bodyHi[3] = {0.25, 1.40, -0.25};
+		int ok;
+
+		mesh->vertexCount = 0;
+		mesh->faceCount = 0;
+		RldMk_TestBox(mesh, kartLo, kartHi, 1u, 0u, 0, -1);
+		RldMk_TestBox(mesh, bodyLo, bodyHi, 3u, 10u, 0, -1);
+		RldMk_TestBox(mesh, seatLo, seatHi, 1u, 30u, 0, -1);
+		RldMk_TestBox(mesh, trousersLo, trousersHi, 1u, 40u, 0, -1);
+		RldMk_TestOptions(&opt);
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && (b.groupTriangles[RLDMK_GROUP_KART] == 24u) && (b.groupTriangles[RLDMK_GROUP_DRIVER] == 120u);
+		RldMk_Test(ok, "parts: trousers on a seat, the driver sitting on them: they lean with the driver", "built %d, kart %u, driver %u, wheel %u", ok,
+		           b.groupTriangles[RLDMK_GROUP_KART], b.groupTriangles[RLDMK_GROUP_DRIVER], b.groupTriangles[RLDMK_GROUP_WHEEL]);
 		RldMk_FreeBuild(&b);
 		RldMk_FreePly(&ply);
 	}
