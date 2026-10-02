@@ -2,7 +2,7 @@
 //
 // Reload Studio is the front end for track and character authors: pack a
 // track folder into a .rldtrack container, put together cups for cups.txt,
-// build a .rldchar character from a PLY model, test a track in the game. All
+// build a .rldchar character from a PLY or OBJ model, test a track in the game. All
 // texts on screen are English.
 //
 // GROUND RULE: converting and checking is done by rldpack make. Reload Studio carries
@@ -144,7 +144,8 @@
 // make-char (page "Character") speaks the same protocol. It writes no @finding
 // lines; its findings are @msg. Order: @rldpack, the @value block of the
 // switches, the icon lines (with --icon), the voice lines (with --voices),
-// @file ply, @msg of reading the PLY, @value size-range, @msg of the chain,
+// @file ply (an OBJ: @file obj, then @file mtl per material file), the @model
+// lines, @msg of reading the model, @value size-range, @msg of the chain,
 // @char, @file preview and @value kart-box (with --preview and a built model),
 // @result, @end.
 //
@@ -181,7 +182,10 @@
 //             units, with ONE DECIMAL ("-33.8"); --fit crash fits the model to
 //             it, the page outlines it about the model
 //   @file     <kind> <state> <name> <bytes>
-//             ply           ok | missing          the model
+//             ply           ok | missing          the model, a PLY
+//             obj           ok | missing          the model, an OBJ (instead of ply)
+//             mtl           ok | missing | bad    a material file of the OBJ (the page reads
+//                                                 @model mtl instead)
 //             icon          ok | missing | bad    --icon (bad: not a PNG rldpack reads)
 //             icon-original ok | failed           <prefix>-original.bmp, the PNG as read
 //             icon-preview  ok | failed           <prefix>-icon.bmp, 43 x 25 as the menu tile
@@ -224,6 +228,25 @@
 //             two-sided),
 //             remeshed <triangles of the source> <of the hulls> <after the
 //             reduction> <open edges before> <after>: only with --remesh on
+//   @model    what rldpack read of the model, after @file ply | obj:
+//             format <ply | obj>     the format, told by the content (the file
+//                                    ending only has to agree: model-misnamed)
+//             mtl <ok | missing | none | bad> <path | ->   per mtllib of an OBJ;
+//                                    none = the OBJ names no material file
+//             texture <ok | missing | unreadable | unsupported> <material> <path>
+//                                    per map_Kd of an OBJ (PNG, JPG, TGA)
+//             group <faces> <name>   per o and g of an OBJ, in the order of the
+//                                    file ("-" = no name, at most 1024 lines,
+//                                    the rest only counted: info obj-groups);
+//                                    only for information
+//             colors <vertex | material | texture | grey | mixed>   where the
+//                                    colours came from
+//             The page shows them on the tab Model: a line (the format, the
+//             MTL, the textures found, the groups, the colours) for every OBJ
+//             and for a model whose file is not named .ply, and below it a list
+//             of the mtl, texture and group lines (at most 1024 of each kind;
+//             the line counts them all, with the groups of obj-groups) where
+//             there is more than an OBJ without an MTL.
 //   @voice    <file> <state> <event | -> <ms> <bytes> <rate> <channels> <peak> <preview | ->
 //             with --voices, one per file of the folder, by name: state ok |
 //             bad | unknown | ignored | unused | cut (packed, but cut to the
@@ -254,7 +277,19 @@
 //             model-reduce-fallback (info, the reduction reached its target only
 //             without some of its guards), model-repaired (info),
 //             model-remeshed (info), model-quant-flip (note), and the
-//             ply-*, model-*, name*, usage ... of before
+//             ply-*, model-*, name*, usage ... of before; reading the model
+//             adds the errors model-unknown, model-unsupported (a known other
+//             format, named), model-open, model-ply-only, obj-syntax, obj-index,
+//             obj-number, obj-face, obj-empty, obj-big (with the line), the
+//             warnings model-misnamed, mtl-missing, mtl-bad, mtl-material,
+//             tex-missing, tex-unreadable, tex-unsupported, tex-no-uv,
+//             obj-no-colors, obj-color-range and the infos obj-ignored,
+//             obj-vertex-colors, obj-groups, tex-found-nearby, tex-alpha. The
+//             page puts every id that does not start with
+//             icon, voice, name, mask, pose or wheel- (and is not one of
+//             author, class, template, map-color, write) under the tab Model:
+//             a click on one of these opens it; an error stops the build as
+//             every error does
 //   @result   <ok | failed | checked> <output path> <bytes> <sha256>
 //             with --icon the container has a third chunk CICN (612 bytes), with
 //             --voices and at least one clip a chunk CVOI (the voices,
@@ -270,7 +305,7 @@
 //             verdict <word> <rule> <detail>, icon <state> <why>
 //
 // Commands the page "Character" calls (always --template 14, Fake Crash):
-//   make-char --machine --check --model <ply> --name <n> --template 14
+//   make-char --machine --check --model <ply | obj> --name <n> --template 14
 //             --class <balanced|acceleration|speed|turning> --size <percent>
 //             [--repair off] [--open-parts one-sided] [--remesh on]
 //             [--reduce off] [--wheels off] [--mask aku|uka]   (only when they
@@ -291,7 +326,11 @@
 //             --check, --preview, --icon-preview and --voice-preview
 //
 // Automation verbs of the page "Character" (--do, besides those of the shell):
-//   model <ply|none>, name <text>, class <word>, mask aku|uka, mapcolor
+//   model <ply|obj|none>, drop <path>[|<path>...] (as dropping these files
+//   onto the page together: a folder is the voices, a .ply or .obj the model,
+//   a .png the icon only when no .obj came with it, another 3D file
+//   the model only when neither came with it),
+//   name <text>, class <word>, mask aku|uka, mapcolor
 //   template|RRGGBB, size <percent>, icon <png|none>, icon-fit fit|fill|none,
 //   icon-transparent on|off, icon-frame on|off, repair|open-parts|remesh|reduce|
 //   wheels on|off, reduce-to-fit, out <file|none>, check, build, pose

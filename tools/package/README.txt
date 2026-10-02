@@ -232,8 +232,10 @@ optional or still to do. A click on a head, "< Back" and "Next >" in the bar,
 or Ctrl+Tab and Ctrl+Shift+Tab move between the tabs.
 
 Tab 1 Model
-  Model (PLY) Your model of driver, steering wheel and kart in one PLY file
-              with vertex colours (ASCII or binary), +Y up, +Z forward, at
+  Model (PLY or OBJ)
+              Your model of driver, steering wheel and kart in one file: a
+              PLY with vertex colours (ASCII or binary) or an OBJ (see OBJ
+              below), +Y up, +Z forward, at
               any scale: Reload Studio fits it to Crash size (see Size). The
               kart is the part at the bottom; the game draws the wheels (see
               "Show kart wheels"). Other parts of a vehicle that lie across
@@ -243,8 +245,47 @@ Tab 1 Model
               Small faults of the export are repaired (see "Repair the
               model"); a model with more triangles than a driver may draw
               is refused or reduced (see "Reduce to fit"). You can also
-              drag files onto the page: a .ply is the model, a .png the
-              icon, a folder the voices.
+              drag files onto the page: a .ply or .obj is the model, a .png
+              the icon, a folder the voices. A .png dragged together with an
+              .obj is not taken as the icon: it is mostly a texture, which
+              the material file names anyway.
+  OBJ         Reload Studio tells a PLY from an OBJ by what is in the file,
+              not by its name: a PLY named .obj is read as a PLY, with a
+              warning. A file of another format (FBX, glTF, STL, Blender...)
+              is refused with its name; export it as PLY or OBJ. An OBJ may
+              bring vertex colours ("v x y z r g b", as Blender writes them),
+              materials (mtllib and usemtl, the colour Kd of the material
+              file) and textures (map_Kd: PNG, JPG or TGA). The colour of
+              each corner of a face:
+              - vertex colours in the OBJ: the vertex colour, times the
+                texture at the corner where the material has one. Kd is not
+                used then - Blender writes Kd 0.8 for every material, which
+                would make the model a fifth darker;
+              - no vertex colours: Kd times the texture; a texture without
+                Kd: the texture; neither: grey.
+              A texture gives the colour at the corners of a face (where its
+              UV points), not a picture on the face: small faces show it
+              best. Its transparency is not used.
+              Paths in the OBJ are relative to the OBJ, paths in the material
+              file relative to the material file; a texture with a path of
+              another computer is also found when it lies next to the
+              material file. What is missing does not stop the build: the
+              model keeps its vertex colours, Kd or grey instead, and the
+              message list says what was missing (a click opens this tab).
+              Below the model field a line says what was read, for example
+              "OBJ: MTL found, 3 of 4 textures found, 2 groups - colours:
+              textures", and the list below it names the material file,
+              the texture of each material (found, missing, cannot be read)
+              and the groups (o and g, for information only; the parts
+              kart, driver and steering wheel are found as for a PLY). Faces
+              with more than four corners are split into triangles; lines,
+              points and curves are left out. A broken OBJ (a number that is
+              none, a corner that does not exist, no faces) is refused with
+              the line it found it in. Poses and wheels of your own (tab
+              Extras) are read from PLY only for now.
+              On the command line an OBJ goes where a PLY goes:
+              "ReloadStudio.exe --rldpack make-char --model <file.obj> ...";
+              the material file and the textures are looked for as above.
   Size        50 to 200 % (default 100). 100 % = Crash size: every model is
               first fitted to the size of Crash with his kart. Its kart gets
               the length of Crash's kart (112.4 game units); with "Show kart
@@ -652,7 +693,7 @@ Which files to attach:
 
 Please do NOT attach: the "assets" folder, disc images, memory cards
 ("memcards" folder), track or character containers (.rldtrack, .rldchar) or
-their source files (.lev/.vrm/.sca/.ply), or anything else from the game
+their source files (.lev/.vrm/.sca/.ply/.obj), or anything else from the game
 data. Logs contain folder paths with your Windows user name - edit them out
 if you mind.
 

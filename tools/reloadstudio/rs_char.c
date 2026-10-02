@@ -1,4 +1,4 @@
-// rs_char.c - page "Character": build a PLY model as .rldchar
+// rs_char.c - page "Character": build a PLY or OBJ model as .rldchar
 //
 // The page checks nothing itself. It starts rldpack make-char (with --check to
 // check, without it to build), reads its machine lines (protocol in
@@ -71,6 +71,16 @@
 // rldpack reads from the game's data; without them the measured frame stands
 // in as lines.
 //
+// Model: a PLY, or an OBJ with its material file (MTL) and the textures the
+// MTL names (PNG, JPG, TGA). rldpack tells the format by the content and
+// says what it read in @model lines: the format, the MTL, every texture with
+// its material, the groups (o, g) and where the colours came from. For an OBJ
+// the tab Model shows them below the model field: one line with the summary
+// and a small list (MTL, textures, groups) that scrolls in itself. A PLY shows
+// the line only when the file is not named .ply. What went wrong (mtl-*,
+// tex-*, obj-*, model-*) is in the message list like every message about the
+// model; an error there stops the build as always.
+//
 // Voices (tab 4): a folder of WAV or VAG files, --voices. rldpack names every
 // file of it (@voice: length, size, the event it fills or none) and counts the
 // clips of the ten events (@voiceevent, in the order of s_rldCharVoiceEvents in
@@ -90,7 +100,8 @@
 //
 // Layout: the steps as tabs on the left, the 3D preview always on the right,
 // the build below both, so that every tab is seen whole without scrolling:
-//   1 Model         the PLY, its size, the options and what rldpack did to it
+//   1 Model         the PLY or OBJ, its size, the options and what rldpack did
+//                   to it
 //   2 Driver        name, driving style, mask
 //   3 In-game look  icon (framing, transparency, frame, the game's view of it)
 //                   and minimap colour
@@ -163,6 +174,9 @@
 #define CHAR_VOICE_CLASS   L"RsCharVoiceEvents"
 #define CHAR_VOICE_CELL_H  22     // a row of the overview of the events
 #define CHAR_VOICE_LIST_MIN_H 96  // the file list, at least: its head and three rows
+#define CHAR_IMPORT_ROWS_MAX 1024 // rows of each kind (MTL, texture, group) the list keeps, at most
+#define CHAR_IMPORT_MIN_ROWS 2    // rows that list shows at least (it scrolls in itself), 1 where
+                                  // two would push the bar below CHAR_BAR_MIN_H
 
 // Controls
 #define CHAR_ID_MODEL_LABEL    100
@@ -238,6 +252,8 @@
 #define CHAR_ID_VOICE_RULE     191   // the line with the file names (tab Voices)
 #define CHAR_ID_VOICE_EVENTS_LABEL 192
 #define CHAR_ID_VOICE_EVENTS   193   // the ten events at a glance
+#define CHAR_ID_MODEL_IMPORT   194   // the line of what rldpack read (format, MTL, textures, colours)
+#define CHAR_ID_MODEL_FILES    195   // the list of the MTL, the textures and the groups of an OBJ
 // The controls of the cards Wheels and Animations (WH_ID_FIRST..WH_ID_LAST in
 // rs_wheels.c, AN_ID_FIRST..AN_ID_LAST in rs_anim.c): the tab Extras shows them.
 #define CHAR_ID_WHEELS_FIRST   300
@@ -339,7 +355,7 @@ static const wchar_t *const g_charPoseTexts[CHAR_POSES] = { L"Neutral", L"Steeri
 static const int g_charPoseView[CHAR_POSES] = { RS_VIEW_POSE_NEUTRAL, RS_VIEW_POSE_FRAME0, RS_VIEW_POSE_FRAME20 };
 
 // Before a model is chosen, below its field (the page has no subtitle).
-#define CHAR_START_TEXT L"Pick a PLY model of driver, steering wheel and kart. rldpack converts and checks it and builds the .rldchar."
+#define CHAR_START_TEXT L"Pick a PLY or OBJ model of driver, steering wheel and kart. rldpack converts and checks it and builds the .rldchar."
 #define CHAR_SIZE_HINT_TEXT L"Visual size only - physics and collision follow the driving style."
 #define CHAR_NAME_RULE_TEXT L"1 to 17 characters: A-Z 0-9 space ! % ' + , - . / : < = > ? _"
 #define CHAR_VOICES_TEXT L"Optional - without voices the driver is silent in the game."
@@ -377,12 +393,29 @@ struct CharVoice {
     wchar_t *preview;               // the --voice-preview WAV (Rs_Free), NULL = none
 };
 
+// A row of the list of what an OBJ brought along: its MTL, a texture (one
+// @model texture line, per material) or a group (@model group).
+enum { CHAR_IMPORT_MTL = 0, CHAR_IMPORT_TEXTURE, CHAR_IMPORT_GROUP };
+struct CharImport {
+    int kind;                       // CHAR_IMPORT_*
+    wchar_t state[16];              // ok | missing | unreadable | unsupported | bad | none ("" for a group)
+    wchar_t material[128];          // the material of a texture
+    wchar_t path[CHAR_VAL];         // the file as rldpack names it, or the name of the group
+    long long faces;                // faces of a group
+};
+
 // What the running (or last) rldpack run reported.
 struct CharJobData {
     int protocolSeen, protocol;
-    int plySeen;
-    wchar_t plyState[16];
-    long long plyBytes;
+    int modelSeen;                  // @file ply | obj: the model file
+    wchar_t modelState[16];
+    long long modelBytes;
+    wchar_t modelFormat[8];         // @model format: ply | obj, "" = not reported
+    wchar_t modelColors[16];        // @model colors: vertex | material | texture | grey | mixed
+    struct CharImport *import;      // @model mtl, texture and group lines, in their order
+    int importCount, importCap;
+    int importLines[3];             // the lines of each kind CHAR_IMPORT_*, kept or not
+    long groupsMore;                // groups rldpack did not list (@msg obj-groups "<n> more groups ...")
     int outSeen;
     wchar_t out[CHAR_VAL];
     int rangeSeen, rangeLo, rangeHi;
@@ -442,6 +475,17 @@ struct CharJobData {
 
 static struct {
     HWND modelLabel, model, modelBrowse, modelInfo;
+    HWND modelImport, modelFiles;   // what rldpack read (Char_ApplyImport)
+    int importOn;                   // the line below the model info is shown (on the tab Model)
+    int filesOn;                    // and the list below it
+    // What the last check read, taken over from g_charJob when it ends.
+    struct CharImport *importRow;
+    int importRowCount;
+    int importTotal[3];             // MTL files, textures, groups of the model (also those not in the list)
+    wchar_t importFormat[8], importColors[16];
+    COLORREF importColor;
+    int filesW;                     // width of the list, for its columns
+    int filesLeast;                 // rows the list shows at least (Char_Layout)
     HWND nameLabel, name, nameNote;
     HWND classLabel, cls, classHelp;
     HWND maskLabel, mask, maskHelp;
@@ -607,7 +651,8 @@ static void Char_Relayout(HWND page);
 static int Char_IsNote(HWND label)
 {
     return label && (label == g_char.nameNote || label == g_char.sizeFit || label == g_char.sizeNote ||
-                     label == g_char.viewNote || label == g_char.voicesNote || label == g_char.voiceRule);
+                     label == g_char.viewNote || label == g_char.voicesNote || label == g_char.voiceRule ||
+                     label == g_char.modelImport);
 }
 
 // Height of a note (or the headline) at this width: its lines, at least one,
@@ -1419,6 +1464,7 @@ static void Char_JobReset(void)
     }
     Rs_Free(g_charJob.msgs);
     Char_VoicesFree(g_charJob.voice, g_charJob.voiceCount);
+    Rs_Free(g_charJob.import);
     memset(&g_charJob, 0, sizeof(g_charJob));
     g_char.rawLen = 0;
     g_char.rawLines = 0;
@@ -1539,6 +1585,60 @@ static void Char_VoiceLine(wchar_t **f, int n)
     v->preview = (*field && wcscmp(field, L"-") != 0) ? Rs_Dup(field) : NULL;
 }
 
+// @model format <ply|obj>, colors <vertex|material|texture|grey|mixed>,
+// mtl <state> <path|->, texture <state> <material> <path>, group <faces> <name>
+static void Char_ImportLine(wchar_t **f, int n)
+{
+    struct CharJobData *j = &g_charJob;
+    const wchar_t *key = Char_Field(f, n, 1);
+    struct CharImport *r;
+    int kind;
+
+    if (wcscmp(key, L"format") == 0) {
+        Char_Copy(j->modelFormat, 8, Char_Field(f, n, 2));
+        return;
+    }
+    if (wcscmp(key, L"colors") == 0) {
+        Char_Copy(j->modelColors, 16, Char_Field(f, n, 2));
+        return;
+    }
+    if (wcscmp(key, L"mtl") == 0)
+        kind = CHAR_IMPORT_MTL;
+    else if (wcscmp(key, L"texture") == 0)
+        kind = CHAR_IMPORT_TEXTURE;
+    else if (wcscmp(key, L"group") == 0)
+        kind = CHAR_IMPORT_GROUP;
+    else
+        return;
+    if (j->importLines[kind]++ >= CHAR_IMPORT_ROWS_MAX)
+        return;     // only counted
+    if (j->importCount == j->importCap) {
+        int cap = j->importCap ? j->importCap * 2 : 16;
+        struct CharImport *m = Rs_Alloc((size_t)cap * sizeof(*m));
+        if (j->importCount)
+            memcpy(m, j->import, (size_t)j->importCount * sizeof(*m));
+        Rs_Free(j->import);
+        j->import = m;
+        j->importCap = cap;
+    }
+    r = &j->import[j->importCount++];
+    memset(r, 0, sizeof(*r));
+    r->kind = kind;
+    if (kind == CHAR_IMPORT_GROUP) {
+        // "-": a group without a name
+        r->faces = wcstoll(Char_Field(f, n, 2), NULL, 10);
+        Char_Copy(r->path, CHAR_VAL, wcscmp(Char_Field(f, n, 3), L"-") == 0 ? L"" : Char_Field(f, n, 3));
+    } else {
+        Char_Copy(r->state, 16, Char_Field(f, n, 2));
+        if (kind == CHAR_IMPORT_TEXTURE) {
+            Char_Copy(r->material, 128, Char_Field(f, n, 3));
+            Char_Copy(r->path, CHAR_VAL, Char_Field(f, n, 4));
+        } else {
+            Char_Copy(r->path, CHAR_VAL, wcscmp(Char_Field(f, n, 3), L"-") == 0 ? L"" : Char_Field(f, n, 3));
+        }
+    }
+}
+
 // One line of the current run. Human lines and unknown kinds stay only in
 // the raw output. The line is split in the process.
 static void Char_ParseLine(wchar_t *line)
@@ -1557,11 +1657,12 @@ static void Char_ParseLine(wchar_t *line)
     } else if (wcscmp(kind, L"file") == 0) {
         if (wcscmp(Char_Field(f, n, 1), L"icon-retail") == 0)
             j->iconRetailOk = wcscmp(Char_Field(f, n, 2), L"ok") == 0;
-        if (wcscmp(Char_Field(f, n, 1), L"ply") == 0) {
+        // The model: a PLY, or an OBJ (its MTL comes as @model mtl as well).
+        if (wcscmp(Char_Field(f, n, 1), L"ply") == 0 || wcscmp(Char_Field(f, n, 1), L"obj") == 0) {
             const wchar_t *bytes = Char_Field(f, n, 4);
-            j->plySeen = 1;
-            Char_Copy(j->plyState, 16, Char_Field(f, n, 2));
-            j->plyBytes = *bytes ? wcstoll(bytes, NULL, 10) : -1;
+            j->modelSeen = 1;
+            Char_Copy(j->modelState, 16, Char_Field(f, n, 2));
+            j->modelBytes = *bytes ? wcstoll(bytes, NULL, 10) : -1;
         }
     } else if (wcscmp(kind, L"value") == 0) {
         const wchar_t *key = Char_Field(f, n, 1);
@@ -1677,6 +1778,8 @@ static void Char_ParseLine(wchar_t *line)
             Char_Copy(j->fitHeight[1], 16, Char_Field(f, n, 6));
             Char_Copy(j->fitBasis, 16, Char_Field(f, n, 7));
         }
+    } else if (wcscmp(kind, L"model") == 0) {
+        Char_ImportLine(f, n);
     } else if (wcscmp(kind, L"voice") == 0) {
         Char_VoiceLine(f, n);
     } else if (wcscmp(kind, L"voiceevent") == 0) {
@@ -1692,6 +1795,9 @@ static void Char_ParseLine(wchar_t *line)
             text = detail;
             detail = L"";
         }
+        // The groups beyond the ones rldpack lists: "<n> more groups (o, g) are not listed."
+        if (wcscmp(Char_Field(f, n, 2), L"obj-groups") == 0)
+            j->groupsMore += wcstol(text, NULL, 10);
         Char_JobMsg(Rs_SeverityFromText(Char_Field(f, n, 1)), Char_Field(f, n, 2), text, detail);
     } else if (wcscmp(kind, L"result") == 0) {
         const wchar_t *bytes = Char_Field(f, n, 3);
@@ -1725,7 +1831,8 @@ static int Char_TabOfId(int id, int *card)
 {
     *card = -1;
     if ((id >= CHAR_ID_MODEL_LABEL && id <= CHAR_ID_MODEL_INFO) || (id >= CHAR_ID_SIZE_LABEL && id <= CHAR_ID_OPTIONS_LABEL) ||
-        (id >= CHAR_ID_REPAIR && id <= CHAR_ID_QUALITY) || id == CHAR_ID_REDUCE_FIT)
+        (id >= CHAR_ID_REPAIR && id <= CHAR_ID_QUALITY) || id == CHAR_ID_REDUCE_FIT || id == CHAR_ID_MODEL_IMPORT ||
+        id == CHAR_ID_MODEL_FILES)
         return CHAR_TAB_MODEL;
     if ((id >= CHAR_ID_NAME_LABEL && id <= CHAR_ID_CLASS_HELP) || (id >= CHAR_ID_MASK_LABEL && id <= CHAR_ID_MASK_HELP))
         return CHAR_TAB_DRIVER;
@@ -2219,22 +2326,22 @@ static int Char_AddRunProblems(int exitCode, int ok)
     return 0;
 }
 
-// The line below the model field: what rldpack found in the PLY.
+// The line below the model field: what rldpack found in the model.
 static void Char_ApplyModelInfo(void)
 {
     struct CharJobData *j = &g_charJob;
     wchar_t t[512];
     wchar_t size[32];
 
-    if (j->plySeen && wcscmp(j->plyState, L"ok") != 0) {
+    if (j->modelSeen && wcscmp(j->modelState, L"ok") != 0) {
         Char_SetInfo(L"The model file cannot be opened - check the path.", RS_COL_ERROR);
         return;
     }
-    if (!j->plySeen) {
+    if (!j->modelSeen) {
         Char_SetInfo(L"-", RS_COL_MUTED);
         return;
     }
-    Char_SizeText(size, 32, j->plyBytes < 0 ? 0 : j->plyBytes);
+    Char_SizeText(size, 32, j->modelBytes < 0 ? 0 : j->modelBytes);
     if (j->reducedSeen) {
         // Reduced: what it changed first, then the parts as without it.
         wchar_t n[4][24];
@@ -2250,6 +2357,318 @@ static void Char_ApplyModelInfo(void)
     else
         swprintf(t, 512, L"read, but not converted - see the messages  (%ls)", size);
     Char_SetInfo(t, j->parts[0] ? RS_COL_TEXT : RS_COL_WARNING);
+}
+
+// ---------------------------------------------------------------------------
+// What rldpack read of the model (@model): the line below the model info and
+// the list of the MTL, the textures and the groups of an OBJ
+// ---------------------------------------------------------------------------
+
+static const wchar_t *const g_charImportKinds[] = { L"MTL", L"Texture", L"Group" };
+
+// The words of a state of @model mtl or texture, for the list.
+static const wchar_t *Char_ImportStateText(const wchar_t *state)
+{
+    if (wcscmp(state, L"ok") == 0)
+        return L"found";
+    if (wcscmp(state, L"unreadable") == 0 || wcscmp(state, L"bad") == 0)
+        return L"cannot be read";
+    if (wcscmp(state, L"unsupported") == 0)
+        return L"not a PNG, JPG or TGA";
+    return state;   // missing, none
+}
+
+// 1 = the row says that something was not found or not read (amber).
+static int Char_ImportProblem(const struct CharImport *r)
+{
+    return r->kind != CHAR_IMPORT_GROUP && wcscmp(r->state, L"ok") != 0 && wcscmp(r->state, L"none") != 0;
+}
+
+// The texts of a row in the columns "File or group" and "State".
+static void Char_ImportTexts(const struct CharImport *r, wchar_t *name, int nameCap, wchar_t *state, int stateCap)
+{
+    if (r->kind == CHAR_IMPORT_GROUP) {
+        Char_Copy(name, nameCap, r->path[0] ? r->path : L"(no name)");
+        swprintf(state, (size_t)stateCap, L"%lld face%ls", r->faces, r->faces == 1 ? L"" : L"s");
+        return;
+    }
+    if (r->path[0])
+        Char_Copy(name, nameCap, Rs_PathName(r->path));
+    else
+        Char_Copy(name, nameCap, r->kind == CHAR_IMPORT_MTL ? L"(no mtllib line)" : L"-");
+    Char_Copy(state, stateCap, Char_ImportStateText(r->state));
+}
+
+static void Char_ImportColumns(int width)
+{
+    int w = width - Rs_Metric(g_char.modelFiles, SM_CXVSCROLL) - Rs_Px(4);
+    int item = Char_TextWidth(g_char.modelFiles, L"Texture") + Rs_Px(16);
+    int state = Char_TextWidth(g_char.modelFiles, L"State") + Rs_Px(16);
+    int material = Char_TextWidth(g_char.modelFiles, L"Material") + Rs_Px(16);
+    int name, i;
+
+    g_char.filesW = width;
+    for (i = 0; i < g_char.importRowCount; i++) {
+        const struct CharImport *r = &g_char.importRow[i];
+        wchar_t text[CHAR_VAL], st[48];
+        int tw;
+        Char_ImportTexts(r, text, CHAR_VAL, st, 48);
+        tw = Char_TextWidth(g_char.modelFiles, st) + Rs_Px(16);
+        if (tw > state)
+            state = tw;
+        tw = Char_TextWidth(g_char.modelFiles, r->material) + Rs_Px(16);
+        if (tw > material)
+            material = tw;
+    }
+    // Material takes at most a third of the room Item and State leave.
+    if (material > (w - item - state) / 3)
+        material = (w - item - state) / 3;
+    name = w - item - state - material;
+    if (name < Rs_Px(80))
+        name = Rs_Px(80);
+    ListView_SetColumnWidth(g_char.modelFiles, 0, item);
+    ListView_SetColumnWidth(g_char.modelFiles, 1, name);
+    ListView_SetColumnWidth(g_char.modelFiles, 2, material);
+    ListView_SetColumnWidth(g_char.modelFiles, 3, state);
+}
+
+// Height of the list for this many rows: its head, the rows, the border.
+static int Char_ImportListHeight(int rows)
+{
+    HWND head = ListView_GetHeader(g_char.modelFiles);
+    int headH = Rs_Px(24), rowH = 0;
+    RECT rc;
+
+    if (head) {
+        HDLAYOUT hl;
+        WINDOWPOS wp;
+        RECT all = { 0, 0, 1000, 1000 };
+        memset(&wp, 0, sizeof(wp));
+        hl.prc = &all;
+        hl.pwpos = &wp;
+        if (Header_Layout(head, &hl) && wp.cy > 0)
+            headH = wp.cy;
+    }
+    if (ListView_GetItemCount(g_char.modelFiles) > 0 && ListView_GetItemRect(g_char.modelFiles, 0, &rc, LVIR_BOUNDS))
+        rowH = rc.bottom - rc.top;
+    if (rowH <= 0) {
+        TEXTMETRICW tm;
+        HDC dc = GetDC(g_char.modelFiles);
+        HGDIOBJ old = SelectObject(dc, (HFONT)SendMessageW(g_char.modelFiles, WM_GETFONT, 0, 0));
+        GetTextMetricsW(dc, &tm);
+        SelectObject(dc, old);
+        ReleaseDC(g_char.modelFiles, dc);
+        rowH = tm.tmHeight + Rs_Px(4);
+    }
+    return headH + rows * rowH + 2 * GetSystemMetrics(SM_CYBORDER) + Rs_Px(2);
+}
+
+// The list anew from g_char.importRow.
+static void Char_ImportFill(void)
+{
+    int i;
+    SendMessageW(g_char.modelFiles, WM_SETREDRAW, FALSE, 0);
+    ListView_DeleteAllItems(g_char.modelFiles);
+    for (i = 0; i < g_char.importRowCount; i++) {
+        const struct CharImport *r = &g_char.importRow[i];
+        wchar_t name[CHAR_VAL], state[48];
+        LVITEMW it;
+        Char_ImportTexts(r, name, CHAR_VAL, state, 48);
+        memset(&it, 0, sizeof(it));
+        it.mask = LVIF_TEXT | LVIF_PARAM;
+        it.iItem = i;
+        it.pszText = (LPWSTR)g_charImportKinds[r->kind];
+        it.lParam = i;
+        ListView_InsertItem(g_char.modelFiles, &it);
+        ListView_SetItemText(g_char.modelFiles, i, 1, name);
+        ListView_SetItemText(g_char.modelFiles, i, 2, (LPWSTR)r->material);
+        ListView_SetItemText(g_char.modelFiles, i, 3, state);
+    }
+    if (g_char.filesW > 0)
+        Char_ImportColumns(g_char.filesW);
+    SendMessageW(g_char.modelFiles, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(g_char.modelFiles, NULL, TRUE);
+}
+
+// The line: the format, for an OBJ its MTL, textures and groups, and where
+// the colours came from. *problem = 1 when something was not found or read
+// or the model has no colours (the line is amber then).
+static void Char_ImportSummary(wchar_t *out, int cap, int *problem)
+{
+    int obj = wcscmp(g_char.importFormat, L"obj") == 0;
+    int mtl = g_char.importTotal[CHAR_IMPORT_MTL], tex = g_char.importTotal[CHAR_IMPORT_TEXTURE];
+    int groups = g_char.importTotal[CHAR_IMPORT_GROUP], mtlOk = 0, texOk = 0, listed = 0, i;
+    const wchar_t *mtlState = L"";
+    const wchar_t *c = g_char.importColors;
+    wchar_t t[160];
+
+    *problem = 0;
+    for (i = 0; i < g_char.importRowCount; i++) {
+        const struct CharImport *r = &g_char.importRow[i];
+        if (Char_ImportProblem(r))
+            *problem = 1;
+        if (r->kind == CHAR_IMPORT_MTL) {
+            if (!mtlState[0])
+                mtlState = r->state;
+            mtlOk += wcscmp(r->state, L"ok") == 0;
+        } else if (r->kind == CHAR_IMPORT_TEXTURE) {
+            texOk += wcscmp(r->state, L"ok") == 0;
+        } else {
+            listed++;
+        }
+    }
+    Char_Copy(out, cap, obj ? L"OBJ" : L"PLY");
+    if (obj) {
+        t[0] = 0;
+        if (mtl > 1)
+            swprintf(t, 160, L": %d of %d MTL files found", mtlOk, mtl);
+        else if (mtl == 1 && wcscmp(mtlState, L"none") == 0)
+            Char_Copy(t, 160, L": no MTL");
+        else if (mtl == 1)
+            swprintf(t, 160, L": MTL %ls", Char_ImportStateText(mtlState));
+        Char_Append(out, cap, t);
+        if (tex) {
+            swprintf(t, 160, L"%ls %d of %d texture%ls found", mtl ? L"," : L":", texOk, tex, tex == 1 ? L"" : L"s");
+            Char_Append(out, cap, t);
+        }
+        if (groups) {
+            swprintf(t, 160, L"%ls %d group%ls", (mtl || tex) ? L"," : L":", groups, groups == 1 ? L"" : L"s");
+            Char_Append(out, cap, t);
+        }
+        if (listed < groups) {
+            swprintf(t, 160, L" (%d listed)", listed);
+            Char_Append(out, cap, t);
+        }
+    } else {
+        Char_Append(out, cap, L", read by its content");
+    }
+    // Where the colours came from (mixed: from more than one of the three).
+    if (wcscmp(c, L"vertex") == 0)
+        Char_Append(out, cap, L" - colours: vertices");
+    else if (wcscmp(c, L"material") == 0)
+        Char_Append(out, cap, L" - colours: materials");
+    else if (wcscmp(c, L"texture") == 0)
+        Char_Append(out, cap, L" - colours: textures");
+    else if (wcscmp(c, L"mixed") == 0)
+        Char_Append(out, cap, L" - colours: several sources");
+    else if (wcscmp(c, L"grey") == 0) {
+        Char_Append(out, cap, L" - no colours: grey");
+        *problem = 1;
+    }
+}
+
+// After a check: takes over what it read and shows it - the line for every
+// OBJ and for a model whose file is not named .ply, the list where there are
+// rows (MTL, textures, groups).
+static void Char_ApplyImport(void)
+{
+    struct CharJobData *j = &g_charJob;
+    wchar_t model[CHAR_VAL], t[CHAR_VAL];
+    int importOn, filesOn, problem = 0, i;
+
+    Rs_Free(g_char.importRow);
+    g_char.importRow = j->import;
+    g_char.importRowCount = j->importCount;
+    memcpy(g_char.importTotal, j->importLines, sizeof(g_char.importTotal));
+    // rldpack lists at most 1024 groups and counts the rest in obj-groups.
+    g_char.importTotal[CHAR_IMPORT_GROUP] += (int)j->groupsMore;
+    j->import = NULL;
+    j->importCount = j->importCap = 0;
+    Char_Copy(g_char.importFormat, 8, j->modelFormat);
+    Char_Copy(g_char.importColors, 16, j->modelColors);
+
+    Char_FieldPath(g_char.model, model, CHAR_VAL);
+    importOn = g_char.importFormat[0] &&
+               (wcscmp(g_char.importFormat, L"ply") != 0 || !Char_EndsWith(model, L".ply"));
+    // The list only with something the line does not say already: a file
+    // (MTL, texture) or a group - not for an OBJ that names no MTL and has
+    // no groups (its one row would be "no mtllib line").
+    filesOn = 0;
+    for (i = 0; importOn && i < g_char.importRowCount && !filesOn; i++)
+        filesOn = g_char.importRow[i].kind != CHAR_IMPORT_MTL || wcscmp(g_char.importRow[i].state, L"none") != 0;
+    if (importOn) {
+        Char_ImportSummary(t, CHAR_VAL, &problem);
+        g_char.importColor = problem ? RS_COL_WARNING : RS_COL_TEXT;
+        Rs_SetText(g_char.modelImport, t);
+        Rs_SetTextColor(g_char.modelImport, g_char.importColor);
+        Rs_SetTip(g_char.modelImport, t);
+    } else {
+        Rs_SetText(g_char.modelImport, L"");
+    }
+    Char_ImportFill();
+    // Laid out again whenever there is something to show: the list takes the
+    // height its rows need, as far as the tab has room.
+    if (importOn || importOn != g_char.importOn || filesOn != g_char.filesOn) {
+        g_char.importOn = importOn;
+        g_char.filesOn = filesOn;
+        Char_Relayout(GetParent(g_char.modelImport));
+    }
+}
+
+// No model: nothing read.
+static void Char_ImportClear(void)
+{
+    Rs_Free(g_char.importRow);
+    g_char.importRow = NULL;
+    g_char.importRowCount = 0;
+    memset(g_char.importTotal, 0, sizeof(g_char.importTotal));
+    g_char.importFormat[0] = 0;
+    g_char.importColors[0] = 0;
+    Rs_SetText(g_char.modelImport, L"");
+    Char_ImportFill();
+    if (g_char.importOn || g_char.filesOn) {
+        g_char.importOn = g_char.filesOn = 0;
+        Char_Relayout(GetParent(g_char.modelImport));
+    }
+}
+
+// The list: the state amber where a file was not found or not read, the
+// whole path and the material as the tooltip of a row.
+static LRESULT Char_ImportNotify(NMHDR *hdr)
+{
+    switch (hdr->code) {
+    case NM_CUSTOMDRAW: {
+        NMLVCUSTOMDRAW *cd = (NMLVCUSTOMDRAW *)hdr;
+        if (cd->nmcd.dwDrawStage == CDDS_PREPAINT)
+            return CDRF_NOTIFYITEMDRAW;
+        if (cd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT)
+            return CDRF_NOTIFYSUBITEMDRAW;
+        if (cd->nmcd.dwDrawStage == (CDDS_ITEMPREPAINT | CDDS_SUBITEM)) {
+            int row = (int)cd->nmcd.lItemlParam;
+            if (cd->iSubItem == 3 && row >= 0 && row < g_char.importRowCount &&
+                Char_ImportProblem(&g_char.importRow[row]))
+                cd->clrText = RS_COL_WARNING;
+            else
+                cd->clrText = ListView_GetTextColor(g_char.modelFiles);
+            return CDRF_NEWFONT;
+        }
+        return CDRF_DODEFAULT;
+    }
+    case LVN_GETINFOTIPW: {
+        NMLVGETINFOTIPW *tip = (NMLVGETINFOTIPW *)hdr;
+        LVITEMW it;
+        memset(&it, 0, sizeof(it));
+        it.mask = LVIF_PARAM;
+        it.iItem = tip->iItem;
+        if (tip->pszText && tip->cchTextMax > 0 && ListView_GetItem(g_char.modelFiles, &it) && it.lParam >= 0 &&
+            it.lParam < g_char.importRowCount) {
+            const struct CharImport *r = &g_char.importRow[it.lParam];
+            wchar_t name[CHAR_VAL], state[48];
+            Char_ImportTexts(r, name, CHAR_VAL, state, 48);
+            if (r->kind == CHAR_IMPORT_TEXTURE)
+                swprintf(tip->pszText, (size_t)tip->cchTextMax, L"%ls\nTexture of the material %ls: %ls", r->path,
+                         r->material, state);
+            else if (r->kind == CHAR_IMPORT_MTL)
+                swprintf(tip->pszText, (size_t)tip->cchTextMax, L"%ls\nMaterial file: %ls", r->path[0] ? r->path : name,
+                         state);
+            else
+                swprintf(tip->pszText, (size_t)tip->cchTextMax, L"Group %ls: %ls (for information only)", name, state);
+            tip->pszText[tip->cchTextMax - 1] = 0;
+        }
+        return 0;
+    }
+    }
+    return 0;
 }
 
 // The line below the slider: what 100 % is for this model (@char fit).
@@ -2272,7 +2691,7 @@ static void Char_ApplyFit(void)
     } else if (wcsncmp(j->fit, L"none", 4) == 0) {
         Char_SetLabel(g_char.sizeFit, L"Not fitted - the model keeps the size it was exported in.", RS_COL_MUTED,
                       &g_char.fitColor);
-    } else if (j->plySeen && wcscmp(j->plyState, L"ok") == 0) {
+    } else if (j->modelSeen && wcscmp(j->modelState, L"ok") == 0) {
         Char_SetLabel(g_char.sizeFit, L"Not fitted - see the messages.", RS_COL_MUTED, &g_char.fitColor);
     } else {
         Char_SetLabel(g_char.sizeFit, CHAR_FIT_WAIT_TEXT, RS_COL_MUTED, &g_char.fitColor);
@@ -2580,7 +2999,7 @@ static void Char_VoiceNote(void)
     if (!voices[0]) {
         Char_Copy(t, 256, CHAR_VOICES_TEXT);
     } else if (!g_char.modelRead && !g_char.voiceKnown) {
-        Char_Copy(t, 256, L"Choose a PLY model on the tab Model: its check reads the voice files.");
+        Char_Copy(t, 256, L"Choose a model on the tab Model: its check reads the voice files.");
     } else if (!g_char.voiceKnown) {
         Char_Copy(t, 256, L"The voice folder was not read - see the messages.");
         color = RS_COL_WARNING;
@@ -3360,7 +3779,8 @@ static int Char_GameCharDir(wchar_t *out, int cap)
 
 // The output while the field is empty: <game>\characters\<model name>.rldchar
 // when the game program is known (the name as rldpack makes it: the model's
-// file name without .ply); "" otherwise - rldpack then writes next to the model.
+// file name without .ply or .obj); "" otherwise - rldpack then writes next to
+// the model.
 static void Char_DefaultOut(const wchar_t *model, wchar_t *out, int cap)
 {
     wchar_t dir[CHAR_VAL];
@@ -3372,7 +3792,7 @@ static void Char_DefaultOut(const wchar_t *model, wchar_t *out, int cap)
         return;
     Char_Copy(name, CHAR_VAL - 8, Rs_PathName(model));
     n = wcslen(name);
-    if (n > 4 && _wcsicmp(name + n - 4, L".ply") == 0)
+    if (n > 4 && (_wcsicmp(name + n - 4, L".ply") == 0 || _wcsicmp(name + n - 4, L".obj") == 0))
         name[n - 4] = 0;
     Char_Append(name, CHAR_VAL, L".rldchar");
     Rs_PathJoin(out, cap, dir, name);
@@ -3561,17 +3981,18 @@ static void Char_NoModel(HWND page)
     g_char.previewShown = 0;
     g_char.previewPoses = 0;
     RsView_Clear(g_char.view, NULL);
-    Char_ViewNote(L"Grey: Crash with his kart - the size a model is fitted to. Choose a PLY model.",
+    Char_ViewNote(L"Grey: Crash with his kart - the size a model is fitted to. Choose a PLY or OBJ model.",
                   RS_COL_MUTED);
     Char_ApplyQuality();
     memset(g_char.tabErrors, 0, sizeof(g_char.tabErrors));
     memset(g_char.tabWarnings, 0, sizeof(g_char.tabWarnings));
     g_char.modelRead = 0;
     Char_SetInfo(CHAR_START_TEXT, RS_COL_MUTED);
-    Char_Headline(L"Choose a PLY model to start", RS_COL_MUTED);
+    Char_ImportClear();
+    Char_Headline(L"Choose a PLY or OBJ model to start", RS_COL_MUTED);
     Char_ReduceFitShow(page, 0);
     Char_VoicesClear();
-    Char_EmptyText(L"Choose a PLY model. What rldpack finds shows up here.");
+    Char_EmptyText(L"Choose a PLY or OBJ model. What rldpack finds shows up here.");
     Char_UpdateButtons();
     g_char.checkModel[0] = 0;
     CharWheels_ModelChecked(page, L"", g_char.sizeNow, 0);
@@ -3772,11 +4193,12 @@ static void Char_CheckDone(HWND page, int exitCode, int seq)
             }
         }
         g_char.applying = 0;
-    } else if (j->plySeen && wcscmp(j->plyState, L"ok") != 0) {
+    } else if (j->modelSeen && wcscmp(j->modelState, L"ok") != 0) {
         Char_SizeForget();
     }
-    g_char.modelRead = j->plySeen && wcscmp(j->plyState, L"ok") == 0;
+    g_char.modelRead = j->modelSeen && wcscmp(j->modelState, L"ok") == 0;
     Char_ApplyModelInfo();
+    Char_ApplyImport();
     Char_ApplyFit();
     Char_ApplyVoices(seq);
     Char_ApplyQuality();
@@ -4003,7 +4425,8 @@ static void Char_BrowseModel(HWND page)
     wchar_t pick[CHAR_VAL];
     Char_DialogStart(g_char.model, start, CHAR_VAL);
     if (Rs_BrowseOpenFile(Rs_MainWindow(), L"Choose the character model",
-                          L"PLY models (*.ply)\0*.ply\0All files\0*.*\0\0", start, pick, CHAR_VAL))
+                          L"3D models (*.ply;*.obj)\0*.ply;*.obj\0PLY models (*.ply)\0*.ply\0"
+                          L"OBJ models (*.obj)\0*.obj\0All files\0*.*\0\0", start, pick, CHAR_VAL))
         Char_SetModel(page, pick);
 }
 
@@ -4063,40 +4486,92 @@ static void Char_ShowInFolder(void)
     ShellExecuteW(NULL, L"open", L"explorer.exe", params, NULL, SW_SHOWNORMAL);
 }
 
-// Files dropped onto the page: a .ply is the model, a .png the icon, a folder
-// the voices folder.
-static void Char_Drop(HWND page, HDROP drop)
+// A file ending of another 3D format: dropped, it goes into the model field
+// all the same, and the check says what it is and which formats are read.
+static int Char_OtherModelFile(const wchar_t *path)
 {
-    UINT count = DragQueryFileW(drop, 0xFFFFFFFF, NULL, 0);
-    wchar_t path[CHAR_VAL];
-    wchar_t model[CHAR_VAL];
-    UINT i;
+    static const wchar_t *const endings[] = { L".fbx", L".gltf", L".glb", L".stl", L".blend", L".3ds", L".dae" };
+    int i;
+    for (i = 0; i < (int)(sizeof(endings) / sizeof(endings[0])); i++)
+        if (Char_EndsWith(path, endings[i]))
+            return 1;
+    return 0;
+}
 
-    int tab = -1;
+// Files dropped onto the page (or given to the automation verb "drop"): a
+// .ply or .obj is the model, a .png the icon, a folder the voices folder. A
+// file of another 3D format is the model only when no .ply or .obj came
+// with it. A .png that comes with an .obj is not the icon: dropped with an
+// OBJ it is its texture (rldpack reads it through the MTL), and an icon that
+// changes unasked would go unnoticed. With a .ply it is the icon as always.
+// Returns the number of paths taken.
+static int Char_DropPaths(HWND page, const wchar_t *const *paths, int count)
+{
+    wchar_t model[CHAR_VAL], other[CHAR_VAL];
+    int i, tab = -1, taken = 0, withModel = 0, withObj = 0;
 
     model[0] = 0;
+    other[0] = 0;
     for (i = 0; i < count; i++) {
-        if (!DragQueryFileW(drop, i, path, CHAR_VAL))
-            continue;
+        if (Char_EndsWith(paths[i], L".obj"))
+            withObj = 1;
+        if (withObj || Char_EndsWith(paths[i], L".ply"))
+            withModel = 1;
+    }
+    for (i = 0; i < count; i++) {
+        const wchar_t *path = paths[i];
         if (Rs_DirExists(path)) {
             Rs_SetText(g_char.voices, path);
             if (tab < 0)
                 tab = CHAR_TAB_VOICES;
-        } else if (Char_EndsWith(path, L".png")) {
+        } else if (Char_EndsWith(path, L".png") && !withObj) {
             Rs_SetText(g_char.icon, path);
             if (tab < 0 || tab == CHAR_TAB_VOICES)
                 tab = CHAR_TAB_LOOK;
-        } else if (Char_EndsWith(path, L".ply")) {
+        } else if (Char_EndsWith(path, L".ply") || Char_EndsWith(path, L".obj")) {
             Char_Copy(model, CHAR_VAL, path);
             tab = CHAR_TAB_MODEL;
+        } else if (Char_OtherModelFile(path) && !withModel) {
+            Char_Copy(other, CHAR_VAL, path);
+            tab = CHAR_TAB_MODEL;
+        } else {
+            if (Rs_Automating())
+                Rs_AutoLog(L"  drop: not taken: %ls", path);
+            continue;
         }
+        taken++;
     }
-    DragFinish(drop);
+    if (!model[0])
+        Char_Copy(model, CHAR_VAL, other);
     // The tab of what was dropped (the model first) comes to the front.
     if (tab >= 0 && tab != g_char.tab)
         Char_SelectTab(page, tab, 0);
     if (model[0])
         Char_SetModel(page, model);
+    return taken;
+}
+
+static void Char_Drop(HWND page, HDROP drop)
+{
+    UINT count = DragQueryFileW(drop, 0xFFFFFFFF, NULL, 0);
+    wchar_t (*path)[CHAR_VAL];
+    const wchar_t **list;
+    UINT i;
+    int n = 0;
+
+    if (count > 64)
+        count = 64;     // more than anyone drops at once
+    path = Rs_Alloc((size_t)(count ? count : 1) * sizeof(*path));
+    list = Rs_Alloc((size_t)(count ? count : 1) * sizeof(*list));
+    for (i = 0; i < count; i++)
+        if (DragQueryFileW(drop, i, path[n], CHAR_VAL)) {
+            list[n] = path[n];
+            n++;
+        }
+    DragFinish(drop);
+    Char_DropPaths(page, list, n);
+    Rs_Free((void *)list);
+    Rs_Free(path);
 }
 
 // Enter (IDOK): on a button press it, otherwise check immediately.
@@ -4166,6 +4641,23 @@ static int Char_WriteReport(const wchar_t *path)
     Char_PutText(f, L"model", g_char.model);
     Char_PutLabel(f, L"model info (shown)", g_char.modelInfo, g_char.infoColor);
     Char_Put(f, L"model info (full): %ls", g_char.infoFull);
+    if (g_char.importOn)
+        Char_PutLabel(f, L"model read", g_char.modelImport, g_char.importColor);
+    else
+        Char_Put(f, L"model read: (hidden)");
+    Char_Put(f, L"model format (last check): %ls", g_char.importFormat[0] ? g_char.importFormat : L"(not reported)");
+    Char_Put(f, L"model colours (last check): %ls", g_char.importColors[0] ? g_char.importColors : L"(not reported)");
+    Char_Put(f, L"model files list: %ls, %d row(s); MTL %d, textures %d, groups %d in all", g_char.filesOn ? L"shown" : L"hidden",
+             g_char.importRowCount, g_char.importTotal[CHAR_IMPORT_MTL], g_char.importTotal[CHAR_IMPORT_TEXTURE],
+             g_char.importTotal[CHAR_IMPORT_GROUP]);
+    for (i = 0; i < g_char.importRowCount; i++) {
+        const struct CharImport *r = &g_char.importRow[i];
+        wchar_t name[CHAR_VAL], state[48];
+        Char_ImportTexts(r, name, CHAR_VAL, state, 48);
+        Char_Put(f, L"model file: %ls | %ls | %ls | %ls%ls | %ls", g_charImportKinds[r->kind], name,
+                 r->material[0] ? r->material : L"-", state, Char_ImportProblem(r) ? L" [amber]" : L"",
+                 r->path[0] ? r->path : L"-");
+    }
     Char_PutText(f, L"name", g_char.name);
     Char_PutLabel(f, L"name note", g_char.nameNote, g_char.nameColor);
     text = Rs_GetText(g_char.cls);
@@ -4692,6 +5184,39 @@ static int Char_AutoVoicePlay(const wchar_t *arg)
     return Char_VoicePlay(row) ? RS_AUTO_DONE : RS_AUTO_FAIL;
 }
 
+// "drop <path>[|<path>...]": as dropping these files together onto the page
+// (Char_DropPaths). | cannot be part of a Windows path.
+static int Char_AutoDrop(HWND page, const wchar_t *arg)
+{
+    wchar_t buf[4 * CHAR_VAL];
+    const wchar_t *list[16];
+    wchar_t *p = buf;
+    int n = 0, taken, i;
+
+    Char_Copy(buf, 4 * CHAR_VAL, arg);
+    while (*p && n < 16) {
+        wchar_t *bar = wcschr(p, L'|');
+        if (bar)
+            *bar = 0;
+        if (*p)
+            list[n++] = p;
+        if (!bar)
+            break;
+        p = bar + 1;
+    }
+    if (!n) {
+        Rs_AutoLog(L"  drop: no path");
+        return RS_AUTO_FAIL;
+    }
+    for (i = 0; i < n; i++)
+        Rs_AutoLog(L"  drop: %ls", list[i]);
+    taken = Char_DropPaths(page, list, n);
+    Rs_AutoLog(L"  drop: %d of %d taken, tab %ls", taken, n, g_charTabWords[g_char.tab]);
+    if (!taken)
+        return RS_AUTO_DONE;
+    return RS_AUTO_WAIT;    // a model checks at once, the others after the delay
+}
+
 static int Char_AutoTurn(const wchar_t *arg)
 {
     wchar_t *end;
@@ -4740,10 +5265,31 @@ static void Char_Create(HWND page)
     g_char.tab = CHAR_TAB_MODEL;
     g_char.extrasCard = CHAR_EXTRAS_WHEELS;
 
-    g_char.modelLabel = Rs_Label(page, CHAR_ID_MODEL_LABEL, L"Model (PLY)", RS_FONT_BOLD);
+    g_char.modelLabel = Rs_Label(page, CHAR_ID_MODEL_LABEL, L"Model (PLY or OBJ)", RS_FONT_BOLD);
     g_char.model = Rs_Edit(page, CHAR_ID_MODEL, L"", 0);
     g_char.modelBrowse = Rs_Button(page, CHAR_ID_MODEL_BROWSE, L"Browse...");
     g_char.modelInfo = Rs_Label(page, CHAR_ID_MODEL_INFO, L"-", RS_FONT_SMALL);   // wraps (Char_Layout)
+    g_char.modelImport = Rs_Label(page, CHAR_ID_MODEL_IMPORT, L"", RS_FONT_SMALL); // wraps (Char_Layout)
+    {
+        static const wchar_t *const heads[4] = { L"Item", L"File or group", L"Material", L"State" };
+        LVCOLUMNW col;
+        g_char.modelFiles = Rs_ListView(page, CHAR_ID_MODEL_FILES, LVS_NOSORTHEADER);
+        ListView_SetExtendedListViewStyleEx(g_char.modelFiles, LVS_EX_INFOTIP, LVS_EX_INFOTIP);
+        for (i = 0; i < 4; i++) {
+            memset(&col, 0, sizeof(col));
+            col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT;
+            col.fmt = LVCFMT_LEFT;
+            col.pszText = (LPWSTR)heads[i];
+            col.cx = Rs_Px(80);
+            col.iSubItem = i;
+            ListView_InsertColumn(g_char.modelFiles, i, &col);
+        }
+        Rs_SetTip(g_char.modelFiles, L"What the OBJ brought along: its material file (MTL), the texture of each "
+                                     L"material and the groups (o, g - for information only). Point at a row for "
+                                     L"the whole path.");
+        ShowWindow(g_char.modelImport, SW_HIDE);
+        ShowWindow(g_char.modelFiles, SW_HIDE);
+    }
 
     g_char.nameLabel = Rs_Label(page, CHAR_ID_NAME_LABEL, L"Name", RS_FONT_BOLD);
     g_char.name = Rs_Edit(page, CHAR_ID_NAME, L"", ES_UPPERCASE);
@@ -5034,9 +5580,9 @@ static int Char_LayStrip(int left, int right, int top)
     return top + h;
 }
 
-// Tab 1 Model: model, size, options, what rldpack did. Returns the bottom of
-// what it placed.
-static int Char_LayModel(const struct CharLay *k, const RECT *in)
+// Tab 1 Model: model, what rldpack read of it (the list filesH tall), size,
+// options, what rldpack did. Returns the bottom of what it placed.
+static int Char_LayModelAt(const struct CharLay *k, const RECT *in, int filesH)
 {
     HWND options[5];
     int x = in->left + k->labelW + Rs_Px(8), fieldW = in->right - x, y = in->top, infoH, qualityH, noteH, i;
@@ -5051,6 +5597,19 @@ static int Char_LayModel(const struct CharLay *k, const RECT *in)
         infoH = Rs_Px(18);
     MoveWindow(g_char.modelInfo, x, y, fieldW, infoH, TRUE);
     y += infoH + Rs_Px(8);
+    // An OBJ (or a model not named .ply): the line of what was read right
+    // below, then the list of its MTL, textures and groups over the width
+    // of the card.
+    if (g_char.importOn) {
+        noteH = Char_NoteHeight(g_char.modelImport, fieldW);
+        MoveWindow(g_char.modelImport, x, y - Rs_Px(6), fieldW, noteH, TRUE);
+        y += noteH + Rs_Px(2);
+    }
+    if (g_char.filesOn) {
+        MoveWindow(g_char.modelFiles, in->left, y, in->right - in->left, filesH, TRUE);
+        Char_ImportColumns(in->right - in->left);
+        y += filesH + Rs_Px(8);
+    }
     MoveWindow(g_char.sizeLabel, in->left, y + Rs_Px(4), k->labelW, Rs_Px(20), TRUE);
     MoveWindow(g_char.size, x - Rs_Px(4), y, fieldW - Rs_Px(64), Rs_Px(30), TRUE);
     MoveWindow(g_char.sizeValue, in->right - Rs_Px(60), y + Rs_Px(4), Rs_Px(60), Rs_Px(20), TRUE);
@@ -5103,6 +5662,27 @@ static int Char_LayModel(const struct CharLay *k, const RECT *in)
         y += Rs_Px(36);
     }
     return y;
+}
+
+// Tab 1 with the list of what an OBJ brought along at least
+// g_char.filesLeast rows tall, taller as far as the room down to in->bottom
+// allows, never taller than its rows. Laid out with in->bottom above in->top
+// it says how much it needs at least.
+static int Char_LayModel(const struct CharLay *k, const RECT *in)
+{
+    int least, most, end;
+
+    if (!g_char.filesOn)
+        return Char_LayModelAt(k, in, 0);
+    least = Char_ImportListHeight(g_char.importRowCount < g_char.filesLeast ? g_char.importRowCount
+                                                                             : g_char.filesLeast);
+    most = Char_ImportListHeight(g_char.importRowCount);
+    end = Char_LayModelAt(k, in, least);
+    if (most > least && in->bottom > end) {
+        int more = in->bottom - end;
+        end = Char_LayModelAt(k, in, least + (more < most - least ? more : most - least));
+    }
+    return end;
 }
 
 // Tab 2 Driver: name, driving style, mask.
@@ -5377,6 +5957,10 @@ static void Char_TabApply(HWND page)
             want = want && g_char.reduceFitOn;
         else if (c == g_char.quality)
             want = want && g_char.qualityOn;
+        else if (c == g_char.modelImport)
+            want = want && g_char.importOn;
+        else if (c == g_char.modelFiles)
+            want = want && g_char.filesOn;
         if (want != Char_IsShown(c))
             ShowWindow(c, want ? SW_SHOWNA : SW_HIDE);
     }
@@ -5459,18 +6043,26 @@ static void Char_Layout(HWND page, int w, int h)
     // Every tab is laid out (the hidden ones too, so that their notes have
     // their width), and the tallest sets the room above the bar for all of
     // them - In-game look and Voices last: their pictures and their list take
-    // the room there is (Voices here with its least height).
+    // the room there is (Model and Voices here with the least height of
+    // their lists).
     card.left = left;
     card.top = contentTop;
     card.right = left + leftW;
     card.bottom = contentTop;
     in = Rs_CardInner(&card, 0);
+    // The list of Model shows one row less where it would push the bar
+    // below its least height.
+    g_char.filesLeast = CHAR_IMPORT_MIN_ROWS;
     for (t = 0; t < CHAR_TAB_EXTRAS; t++) {
         int end;
         if (t == CHAR_TAB_LOOK)
             continue;
         end = (t == CHAR_TAB_MODEL ? Char_LayModel(&k, &in) : t == CHAR_TAB_DRIVER ? Char_LayDriver(&k, &in)
                                                                                  : Char_LayVoices(&k, &in)) + Rs_Px(16);
+        if (t == CHAR_TAB_MODEL && g_char.filesOn && bottom - end - vgap < Rs_Px(CHAR_BAR_MIN_H)) {
+            g_char.filesLeast = 1;
+            end = Char_LayModel(&k, &in) + Rs_Px(16);
+        }
         if (end > need)
             need = end;
     }
@@ -5484,11 +6076,14 @@ static void Char_Layout(HWND page, int w, int h)
         barTop = need + vgap;
     upperBottom = barTop - vgap;
 
-    // In-game look and Voices in the room above the bar; only the smallest
-    // pictures may still push the bar lower (the list of Voices never does:
-    // its least height is in need above).
+    // Model, In-game look and Voices in the room above the bar; only the
+    // smallest pictures may still push the bar lower (the lists of Model and
+    // Voices never do: their least height is in need above).
     card.bottom = upperBottom;
     in = Rs_CardInner(&card, 0);
+    t = Char_LayModel(&k, &in) + Rs_Px(16);
+    if (g_char.tab == CHAR_TAB_MODEL && t > upperBottom)
+        upperBottom = t;
     t = Char_LayLook(&k, &in) + Rs_Px(16);
     if (g_char.tab == CHAR_TAB_LOOK && t > upperBottom)
         upperBottom = t;
@@ -5782,6 +6377,8 @@ static LRESULT Char_Notify(HWND page, NMHDR *hdr)
     LRESULT r;
     if (hdr && hdr->idFrom == CHAR_ID_VOICE_LIST && hdr->hwndFrom == g_char.voiceList)
         return Char_VoiceNotify(hdr);
+    if (hdr && hdr->idFrom == CHAR_ID_MODEL_FILES && hdr->hwndFrom == g_char.modelFiles)
+        return Char_ImportNotify(hdr);
     r = CharAnim_Notify(page, hdr, &handled);
     if (handled)
         return r;
@@ -5884,6 +6481,9 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
         g_char.voiceRow = NULL;
         g_char.voiceRowCount = 0;
         Char_ImagesClear();
+        Rs_Free(g_char.importRow);
+        g_char.importRow = NULL;
+        g_char.importRowCount = 0;
         Rs_Free(g_char.msgTab);
         g_char.msgTab = NULL;
         g_char.msgTabCount = g_char.msgTabCap = 0;
@@ -5915,6 +6515,8 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         Rs_AutoLog(L"  model: rldpack could not be started");
         return RS_AUTO_FAIL;
     }
+    if (wcscmp(verb, L"drop") == 0)
+        return Char_AutoDrop(page, arg);
     if (wcscmp(verb, L"name") == 0)
         return Char_AutoText(g_char.name, verb, arg, 0);
     if (wcscmp(verb, L"class") == 0)
