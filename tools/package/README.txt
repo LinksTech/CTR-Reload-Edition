@@ -228,6 +228,15 @@ optional or still to do. A click on a head, "< Back" and "Next >" in the bar,
 or Ctrl+Tab and Ctrl+Shift+Tab move between the tabs.
 
 Tab 1 Model
+  Open .rldchar...
+              Starts from a character built before: fills in Name, Driving
+              style, Mask, Minimap colour, "Show kart wheels" and Output (the
+              file itself - Build replaces it, it asks first) and shows its
+              portrait on "In-game look". The file holds the built model and
+              the portrait, not the PLY and the PNG they came from, nor Size
+              and the options of the model: the model and icon fields are
+              emptied. Choose both again (and set Size and the options as
+              before), then build.
   Model (PLY) Your model of driver, steering wheel and kart in one PLY file
               with vertex colours (ASCII or binary), +Y up, +Z forward, at
               any scale: Reload Studio fits it to Crash size (see Size). The

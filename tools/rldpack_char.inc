@@ -11995,6 +11995,59 @@ static int RldChar_InfoCommand(const char *path, int machine)
 	return RldMk_Inspect(path, 0, machine);
 }
 
+// info --machine --icon-preview <prefix>: the portrait of the file as the menu
+// tile shows it (the top left 43 x 25 of CICN), as make-char --icon-preview
+// writes it: <prefix>-icon.bmp, a texel of colour 0x0000 transparent, one with
+// the STP bit half. @file icon-preview ok | failed <file> <bytes>. Nothing
+// without a usable CICN - the line @char icon of info says why.
+static void RldChar_InfoIcon(const char *path, const char *prefix)
+{
+	struct RldReader reader;
+	u8 shown[RLDMK_ICON_SHOWN_TEXELS * 4u];
+	char out[RLD_PATH_MAX + 32];
+	const char *error = NULL;
+	size_t size = 0;
+	int index = -1;
+	u8 *data = NULL;
+	u32 y;
+	u32 x;
+
+	memset(&reader, 0, sizeof(reader));
+	if (Rld_OpenAs(&reader, path, &s_rldCharFormat) != NULL)
+	{
+		return;
+	}
+	if (Rld_FindEntry(&reader, "CICN", &index) != NULL)
+	{
+		data = Rld_ReadChunk(&reader, index, &size, &error);
+	}
+	Rld_Close(&reader);
+	if ((data == NULL) || (RldChar_CheckIcon(data, size) != NULL))
+	{
+		free(data);
+		return;
+	}
+
+	for (y = 0; y < RLDMK_ICON_SHOWN_HEIGHT; y++)
+	{
+		for (x = 0; x < RLDMK_ICON_SHOWN_WIDTH; x++)
+		{
+			const u32 word = Rld_ReadLE16(&data[RLDCHAR_ICON_WORDS_AT + 2u * (y * RLDCHAR_ICON_ROW_WORDS + x / 4u)]);
+			const u32 c = Rld_ReadLE16(&data[0x08u + 2u * ((word >> ((x % 4u) * 4u)) & 15u)]);
+			u8 *pixel = &shown[(y * RLDMK_ICON_SHOWN_WIDTH + x) * 4u];
+
+			pixel[0] = (u8)RldMk_From5(c & 31u);
+			pixel[1] = (u8)RldMk_From5((c >> 5) & 31u);
+			pixel[2] = (u8)RldMk_From5((c >> 10) & 31u);
+			pixel[3] = (u8)((c == RLDCHAR_ICON_TRANSPARENT) ? 0u : ((c & 0x8000u) ? 128u : 255u));
+		}
+	}
+	free(data);
+
+	snprintf(out, sizeof(out), "%s-icon.bmp", prefix);
+	RldMk_EmitWritten("icon-preview", out, RldMk_WriteBmp(out, RLDMK_ICON_SHOWN_WIDTH, RLDMK_ICON_SHOWN_HEIGHT, shown), 54u + sizeof(shown));
+}
+
 static int RldChar_VerifyCommand(const char *path)
 {
 	return RldMk_Inspect(path, 1, 0);
