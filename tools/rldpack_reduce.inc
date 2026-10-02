@@ -2012,10 +2012,11 @@ static int RldRed_Run(const RldRedMesh *mesh, RldRedResult *out, char *why, size
 // THE CACHE
 //========================================================================================
 //
-// Reload Studio checks a model again after every change of a field, and one
-// make-char run reduces the same model several times (a silent try, the
-// build, and both again for "built twice"). With the cache on
-// (s_rldRedCache; make-char sets it unless --no-cache) a reduced mesh is kept
+// Reload Studio checks a model again after every change of a field (make-char
+// --check), and one run reduces the same model more than once (a silent try
+// and the build). With the cache on (s_rldRedCache; make-char sets it for
+// --check only, unless --no-cache: a real build always reduces, so that
+// "built twice" builds twice) a reduced mesh is kept
 // in the folder for temporary files (TEMP, else TMP) as
 // rldpack-reduce-<slot>.bin and taken from there when the same input comes
 // again.
@@ -2235,10 +2236,11 @@ static void RldRed_CacheWrite(const u8 *key, const RldRedResult *r)
 }
 
 // THE NOTE BEFORE A LONG REDUCTION. The time grows a little faster than the
-// triangles. Measured: make-char --check of a closed sphere with colors
-// (Reload Studio's Check with Reduce to fit), the whole run, which reduces
-// the same model four times (a silent try, the build, and both again for
-// "built twice"): triangles after repair -> seconds; the last point is 10
+// triangles. Measured: make-char of a closed sphere with colors and Reduce
+// to fit, the whole run, which reduces the same model four times (a silent
+// try, the build, and both again for "built twice"; --check then built twice
+// as well, it now builds once and reduces twice): triangles after repair ->
+// seconds; the last point is 10
 // such spheres side by side. Between the points the time is interpolated,
 // beyond the last one the last step goes on (a million triangles: 330 s; see
 // RLDRED_INPUT_MAX for a measurement there).
@@ -2280,7 +2282,9 @@ static u32 s_rldRedSlowSaid;
 
 // The reductions of one make-char run in the curve; with the cache in use
 // (on and a key: a build ID that tells states apart), the passes after the
-// first read the file (THE CACHE).
+// first read the file (THE CACHE) and the note counts one. --check without
+// the cache (--no-cache, or no key) reduces twice, not four times: this file
+// cannot tell it from a build, and the note then says twice the time.
 #define RLDRED_SLOW_PASSES 4u
 
 static u32 s_rldRedSlowHull;
