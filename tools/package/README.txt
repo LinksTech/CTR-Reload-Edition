@@ -488,7 +488,10 @@ The bar at the bottom
               reads its "characters" folder only when it starts. "Show in
               folder" opens the folder.
   Show rldpack output
-              The full checker log, in place of the messages.
+              The full checker log, in place of the messages. Its first line
+              is the command Reload Studio ran ("ReloadStudio.exe --rldpack
+              make-char ..."): copied to a command prompt in the folder of
+              Reload Studio it checks or builds the same.
 
 The file name is the character's identity in the game; the name in the menu
 lives inside the file. The fields and options of the page are not

@@ -139,6 +139,7 @@
 #define CHAR_VAL           1024   // length of a value or path
 #define CHAR_VOICE_SET_MAX 64     // files with an event of their own (--voice), at most
 #define CHAR_MAX_ARGS      (48 + 2 * CHAR_VOICE_SET_MAX)
+#define CHAR_CMD_CAP       32768  // the command in the raw output, at most (the shell's RS_CMD_CAP)
 #define CHAR_NAME_MAX      17     // RLDCHAR_NAME_MAX in include/rldchar.inc
 #define CHAR_SIZE_MIN      50     // range of the --size switch
 #define CHAR_SIZE_MAX      200
@@ -3963,7 +3964,20 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
 
 static int Char_StartJob(HWND page, int kind, const wchar_t *const *args, int argc, int seq)
 {
+    wchar_t *cmd = Rs_Alloc(CHAR_CMD_CAP * sizeof(wchar_t));
+    int i;
+
     Char_JobReset();
+    // The command first in the raw output ("Show rldpack output"), quoted as
+    // the shell passes it: copied to a command prompt in the folder of
+    // Reload Studio it runs the same check or build.
+    cmd[0] = 0;
+    Rs_AppendArg(cmd, CHAR_CMD_CAP, L"ReloadStudio.exe");
+    Rs_AppendArg(cmd, CHAR_CMD_CAP, L"--rldpack");
+    for (i = 0; i < argc; i++)
+        Rs_AppendArg(cmd, CHAR_CMD_CAP, args[i]);
+    Char_RawAppend(cmd);
+    Rs_Free(cmd);
     g_char.jobKind = kind;
     g_char.jobSeq = seq;
     g_char.jobId = Rs_RunRldpack(page, args, argc);
