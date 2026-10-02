@@ -16,7 +16,13 @@
 // temp files): a check with the same command (but for its temp files) while
 // the stamps of its files are the same shows the result kept again, without
 // rldpack (Char_CacheFind) - a tick set and taken back, a name typed and
-// taken back. Check, Enter and choosing a model always run rldpack. A new check makes the running one outdated: it is
+// taken back. Check, Enter and choosing a model always run rldpack.
+// When only the name, the driving style, the mask, the minimap colour or the
+// output differ from a result kept (the same model, options and files),
+// rldpack checks only them - with a model file that is not there, so that it
+// stops right after them - and the model part of the result kept stands
+// (Char_MetaStart, Char_MetaDone): no second reading, repair, fit, reduction
+// and preview of the same model. A new check makes the running one outdated: it is
 // ended, its lines are only freed. A check also asks rldpack for the converted
 // model (--preview, shown by the RsModelView control of rs_view.c) and, with an
 // icon, for the decoded and the converted picture (--icon-preview). These go to
@@ -282,7 +288,11 @@
 #define CHAR_ID_ANIM_FIRST     340
 #define CHAR_ID_ANIM_LAST      379
 
-enum { CHAR_JOB_NONE = 0, CHAR_JOB_CHECK, CHAR_JOB_BUILD };
+// CHAR_JOB_META: rldpack checks only the name, the driving style, the mask,
+// the minimap colour and the output (Char_MetaStart).
+enum { CHAR_JOB_NONE = 0, CHAR_JOB_CHECK, CHAR_JOB_BUILD, CHAR_JOB_META };
+// What a machine line is to Char_MetaDone (Char_LineKind).
+enum { CHAR_LINE_MODEL = 0, CHAR_LINE_META, CHAR_LINE_END };
 
 // The tabs, in their order.
 enum { CHAR_TAB_MODEL = 0, CHAR_TAB_DRIVER, CHAR_TAB_LOOK, CHAR_TAB_VOICES, CHAR_TAB_EXTRAS, CHAR_TABS };
@@ -567,14 +577,24 @@ static struct {
     wchar_t *stampFiles;
     int stampKnown;                 // the stamps belong to the check shown
     // The results kept, [0] the newest (Char_Cache*): the command without its
-    // temp files (Char_ArgsKey), the raw output (the command, then the lines
-    // of rldpack), the exit code, the temp files and the stamps of the files.
+    // temp files (Char_ArgsKey), the same without the name, driving style,
+    // mask, minimap colour and output (modelKey), the raw output shown (the
+    // command, then the lines of rldpack), that of the run that read the
+    // model (modelRaw), the lines the result was read from (feed, one per
+    // line), the output rldpack named, the exit code, the temp files and the
+    // stamps of the files.
     struct {
-        wchar_t *key, *raw, *stampFiles;
+        wchar_t *key, *modelKey, *raw, *modelRaw, *feed, *out, *stampFiles;
         int exitCode, seq;
         unsigned long long stampFields, stampImport;
     } cache[CHAR_CACHE];
-    wchar_t *runKey;                // the key of the running check (Rs_Free)
+    wchar_t *runKey, *runModelKey;  // the keys of the running check (Rs_Free)
+    // The result kept that a running CHAR_JOB_META completes: copies of its
+    // modelRaw, feed and out, its temp files.
+    wchar_t *metaModelRaw, *metaFeed;
+    int metaSeq;
+    wchar_t *feedText;              // the lines of the result shown, as Char_Feed got them
+    size_t feedLen, feedCap;
 
     int applying;                   // fields are being set: trigger no check
     int timer;                      // check waits for the timer
@@ -1408,7 +1428,7 @@ static void Char_Abandon(void)
     int i;
     if (!g_char.jobId)
         return;
-    if (g_char.jobKind == CHAR_JOB_CHECK) {
+    if (g_char.jobKind == CHAR_JOB_CHECK || g_char.jobKind == CHAR_JOB_META) {
         Rs_KillJob(g_char.jobId);
         for (i = 0; i < CHAR_PENDING; i++)
             if (!g_char.pending[i].id)
@@ -1426,6 +1446,12 @@ static void Char_Abandon(void)
     g_char.jobSeq = 0;
     Rs_Free(g_char.runKey);
     g_char.runKey = NULL;
+    Rs_Free(g_char.runModelKey);
+    g_char.runModelKey = NULL;
+    Rs_Free(g_char.metaModelRaw);
+    Rs_Free(g_char.metaFeed);
+    g_char.metaModelRaw = g_char.metaFeed = NULL;
+    g_char.metaSeq = 0;
 }
 
 // Leftovers of earlier runs: the page's own files "char-<pid>-<number><kind>"
@@ -1507,7 +1533,11 @@ static void Char_CacheDrop(int i)
     int seq = g_char.cache[i].seq;
     int had = g_char.cache[i].key != NULL;
     Rs_Free(g_char.cache[i].key);
+    Rs_Free(g_char.cache[i].modelKey);
     Rs_Free(g_char.cache[i].raw);
+    Rs_Free(g_char.cache[i].modelRaw);
+    Rs_Free(g_char.cache[i].feed);
+    Rs_Free(g_char.cache[i].out);
     Rs_Free(g_char.cache[i].stampFiles);
     if (had && seq > 0 && !Char_CacheHasSeq(seq, i))
         Char_TempDeleteKeep(seq, seq == g_char.voiceSeq);
@@ -1570,6 +1600,9 @@ static void Char_JobReset(void)
     g_char.rawLines = 0;
     if (g_char.rawText)
         g_char.rawText[0] = 0;
+    g_char.feedLen = 0;
+    if (g_char.feedText)
+        g_char.feedText[0] = 0;
 }
 
 static void Char_JobMsg(int severity, const wchar_t *code, const wchar_t *text, const wchar_t *detail)
@@ -1910,6 +1943,51 @@ static void Char_ParseLine(wchar_t *line)
         j->endSeen = 1;
         j->endCode = _wtoi(Char_Field(f, n, 1));
     }
+}
+
+// A line of the result shown: kept in feedText (for Char_CacheStore), then
+// read (Char_ParseLine on a copy).
+static void Char_Feed(const wchar_t *line)
+{
+    size_t n = wcslen(line);
+    wchar_t *copy;
+    if (g_char.feedLen + n + 2 > g_char.feedCap) {
+        size_t cap = g_char.feedCap ? g_char.feedCap : 4096;
+        wchar_t *p;
+        while (cap < g_char.feedLen + n + 2)
+            cap *= 2;
+        p = Rs_Alloc(cap * sizeof(wchar_t));
+        if (g_char.feedLen)
+            memcpy(p, g_char.feedText, g_char.feedLen * sizeof(wchar_t));
+        Rs_Free(g_char.feedText);
+        g_char.feedText = p;
+        g_char.feedCap = cap;
+    }
+    memcpy(g_char.feedText + g_char.feedLen, line, n * sizeof(wchar_t));
+    g_char.feedLen += n;
+    g_char.feedText[g_char.feedLen++] = L'\n';
+    g_char.feedText[g_char.feedLen] = 0;
+    copy = Rs_Dup(line);
+    Char_ParseLine(copy);
+    Rs_Free(copy);
+}
+
+// Every line of text (lines ended by \n or \r\n) to fn, from line first on.
+static void Char_EachLine(const wchar_t *text, int first, void (*fn)(const wchar_t *line))
+{
+    wchar_t *all = Rs_Dup(text ? text : L""), *line, *next;
+    int i = 0;
+    for (line = all; line && *line; line = next, i++) {
+        next = wcschr(line, L'\n');
+        if (next) {
+            if (next > line && next[-1] == L'\r')
+                next[-1] = 0;
+            *next++ = 0;
+        }
+        if (i >= first)
+            fn(line);
+    }
+    Rs_Free(all);
 }
 
 static const struct CharMsg *Char_FindMsg(const wchar_t *code)
@@ -4311,9 +4389,18 @@ static void Char_NoModel(HWND page)
     CharAnim_ModelChecked(page, L"", g_char.sizeNow, 0);
 }
 
+// The switches that change nothing rldpack does with the model: name,
+// driving style, mask, minimap colour, output.
+static int Char_IsMetaSwitch(const wchar_t *arg)
+{
+    return wcscmp(arg, L"--name") == 0 || wcscmp(arg, L"--class") == 0 || wcscmp(arg, L"--mask") == 0 ||
+           wcscmp(arg, L"--map-color") == 0 || wcscmp(arg, L"--out") == 0;
+}
+
 // The command of a check without its temp files (the values of --preview,
 // --icon-preview and --voice-preview), one argument per line (Rs_Free).
-static wchar_t *Char_ArgsKey(const struct CharArgs *a)
+// model = 1: also without the switches of Char_IsMetaSwitch and their values.
+static wchar_t *Char_ArgsKey(const struct CharArgs *a, int model)
 {
     size_t n = 1;
     wchar_t *key;
@@ -4325,6 +4412,10 @@ static wchar_t *Char_ArgsKey(const struct CharArgs *a)
     for (i = 0; i < a->n; i++) {
         int temp = i > 0 && (wcscmp(a->v[i - 1], L"--preview") == 0 || wcscmp(a->v[i - 1], L"--icon-preview") == 0 ||
                              wcscmp(a->v[i - 1], L"--voice-preview") == 0);
+        if (model && Char_IsMetaSwitch(a->v[i])) {
+            i++;        // and its value
+            continue;
+        }
         wcscat(key, temp ? L"-" : a->v[i]);
         wcscat(key, L"\n");
     }
@@ -4333,19 +4424,29 @@ static wchar_t *Char_ArgsKey(const struct CharArgs *a)
 
 // The kept result of this command whose files have not been written since
 // (stamp: of the model, the icon and the voices folder now), -1 = none.
-static int Char_CacheFind(const wchar_t *key, unsigned long long stamp)
+// model = 1: key is a modelKey, and the result must name its output.
+static int Char_CacheFindKey(const wchar_t *key, unsigned long long stamp, int model)
 {
     int i;
-    for (i = 0; i < CHAR_CACHE; i++)
-        if (g_char.cache[i].key && wcscmp(g_char.cache[i].key, key) == 0 && g_char.cache[i].stampFields == stamp &&
+    for (i = 0; i < CHAR_CACHE; i++) {
+        const wchar_t *own = model ? g_char.cache[i].modelKey : g_char.cache[i].key;
+        if (own && wcscmp(own, key) == 0 && g_char.cache[i].stampFields == stamp &&
+            (!model || (g_char.cache[i].out && g_char.cache[i].out[0])) &&
             Char_StampList(g_char.cache[i].stampFiles) == g_char.cache[i].stampImport)
             return i;
+    }
     return -1;
 }
 
-// Keeps the result of the check just shown (its key is taken over), the
-// newest first; the oldest goes when all places are taken.
-static void Char_CacheStore(wchar_t *key, int exitCode, int seq)
+static int Char_CacheFind(const wchar_t *key, unsigned long long stamp)
+{
+    return Char_CacheFindKey(key, stamp, 0);
+}
+
+// Keeps the result of the check just shown (its keys are taken over), the
+// newest first; the oldest goes when all places are taken. modelRaw: the
+// raw output of the run that read the model, NULL = the one shown.
+static void Char_CacheStore(wchar_t *key, wchar_t *modelKey, int exitCode, int seq, const wchar_t *modelRaw)
 {
     int i;
     for (i = 0; i < CHAR_CACHE; i++)
@@ -4355,7 +4456,11 @@ static void Char_CacheStore(wchar_t *key, int exitCode, int seq)
         Char_CacheDrop(CHAR_CACHE - 1);
     Char_CacheTouch(CHAR_CACHE - 1);    // the empty place to the front
     g_char.cache[0].key = key;
+    g_char.cache[0].modelKey = modelKey;
     g_char.cache[0].raw = Rs_Dup(g_char.rawText ? g_char.rawText : L"");
+    g_char.cache[0].modelRaw = Rs_Dup(modelRaw ? modelRaw : g_char.cache[0].raw);
+    g_char.cache[0].feed = Rs_Dup(g_char.feedText ? g_char.feedText : L"");
+    g_char.cache[0].out = Rs_Dup(g_charJob.outSeen ? g_charJob.out : L"");
     g_char.cache[0].exitCode = exitCode;
     g_char.cache[0].seq = seq;
     g_char.cache[0].stampFields = g_char.stampFields;
@@ -4370,34 +4475,216 @@ static int Char_CheckDone(HWND page, int exitCode, int seq);
 // temp files. stamp: of the model, the icon and the voices folder now.
 static void Char_CacheShow(HWND page, int i, const wchar_t *model, unsigned long long stamp)
 {
-    wchar_t *raw, *line, *next;
-    int first = 1;
-
     Char_CacheTouch(i);
     Char_JobReset();
     Char_RawAppend(L"Nothing has changed since this check (the same command, the same files): its result is shown "
                    L"again without running rldpack. Check runs it anew.");
-    raw = Rs_Dup(g_char.cache[0].raw);
-    for (line = raw; line; line = next) {
-        next = wcsstr(line, L"\r\n");
-        if (next) {
-            *next = 0;
-            next += 2;
-        }
-        Char_RawAppend(line);
-        if (!first)
-            Char_ParseLine(line);       // splits the line: after Char_RawAppend
-        first = 0;
-    }
-    Rs_Free(raw);
+    Char_EachLine(g_char.cache[0].raw, 0, Char_RawAppend);
+    Char_EachLine(g_char.cache[0].feed, 0, Char_Feed);
     Char_Copy(g_char.checkModel, CHAR_VAL, model);
     g_char.stampRun = stamp;
     if (Rs_Automating())
-        Rs_AutoLog(L"  check: nothing has changed since an earlier check - its result is shown again, rldpack does not run");
+        Rs_AutoLog(L"  result kept: nothing has changed since an earlier check - shown again, rldpack does not run");
     if (g_char.showRaw)
         Char_RawRefresh();
     Char_CheckDone(page, g_char.cache[0].exitCode, g_char.cache[0].seq);
     Char_UpdateButtons();
+}
+
+// The message codes and @value keys of the switches of Char_IsMetaSwitch, and
+// of the template, the author and the version they come with.
+static int Char_IsMetaCode(const wchar_t *code)
+{
+    static const wchar_t *const codes[] = { L"name", L"name-upper", L"name-chars", L"name-long", L"class", L"mask",
+                                            L"map-color", L"template", L"author", L"version" };
+    int i;
+    for (i = 0; i < (int)(sizeof(codes) / sizeof(codes[0])); i++)
+        if (wcscmp(code, codes[i]) == 0)
+            return 1;
+    return 0;
+}
+
+static int Char_IsMetaValue(const wchar_t *key)
+{
+    static const wchar_t *const keys[] = { L"name", L"author", L"char_version", L"template", L"class", L"mask",
+                                           L"map-color", L"out" };
+    int i;
+    for (i = 0; i < (int)(sizeof(keys) / sizeof(keys[0])); i++)
+        if (wcscmp(key, keys[i]) == 0)
+            return 1;
+    return 0;
+}
+
+// CHAR_LINE_META: a @msg or @value of those; CHAR_LINE_END: @result, @end;
+// CHAR_LINE_MODEL: everything else (also a line that is no machine line).
+// *error: a @msg error.
+static int Char_LineKind(const wchar_t *line, int *error)
+{
+    wchar_t *copy = Rs_Dup(line);
+    wchar_t *f[8];
+    int n = Rs_SplitMachine(copy, f, 8), kind = CHAR_LINE_MODEL;
+
+    *error = 0;
+    if (n > 0 && wcscmp(f[0], L"msg") == 0) {
+        *error = Rs_SeverityFromText(Char_Field(f, n, 1)) == RS_SEV_ERROR;
+        if (Char_IsMetaCode(Char_Field(f, n, 2)))
+            kind = CHAR_LINE_META;
+    } else if (n > 0 && wcscmp(f[0], L"value") == 0) {
+        if (Char_IsMetaValue(Char_Field(f, n, 1)))
+            kind = CHAR_LINE_META;
+    } else if (n > 0 && (wcscmp(f[0], L"result") == 0 || wcscmp(f[0], L"end") == 0)) {
+        kind = CHAR_LINE_END;
+    }
+    Rs_Free(copy);
+    return kind;
+}
+
+// Only the switches of Char_IsMetaSwitch differ from the result kept at
+// base: rldpack checks them alone (CHAR_JOB_META), with --model a file of
+// the temp folder that is never written - it reports them and stops at the
+// model. Char_MetaDone puts its lines and the model part of base together.
+// 1 = started.
+static int Char_MetaStart(HWND page, const struct CharArgs *a, int base, unsigned long long stamp)
+{
+    const wchar_t *v[24];
+    wchar_t none[CHAR_VAL];
+    int n = 0, i, out = 0, started;
+
+    Char_TempPath(none, CHAR_VAL, 0, L"-none.ply");
+    v[n++] = L"make-char";
+    v[n++] = L"--machine";
+    v[n++] = L"--check";
+    v[n++] = L"--model";
+    v[n++] = none;
+    for (i = 0; i + 1 < a->n && n + 2 <= 22; i++) {
+        if (Char_IsMetaSwitch(a->v[i]) || wcscmp(a->v[i], L"--template") == 0) {
+            out |= wcscmp(a->v[i], L"--out") == 0;
+            v[n++] = a->v[i];
+            v[n++] = a->v[++i];
+        }
+    }
+    if (!out) {
+        // As rldpack names it for this model: what it named for base.
+        v[n++] = L"--out";
+        v[n++] = g_char.cache[base].out;
+    }
+    g_char.metaModelRaw = Rs_Dup(g_char.cache[base].modelRaw);
+    g_char.metaFeed = Rs_Dup(g_char.cache[base].feed);
+    g_char.metaSeq = g_char.cache[base].seq;
+    Char_CacheTouch(base);
+    Char_Copy(g_char.checkModel, CHAR_VAL, a->model);
+    g_char.stampRun = stamp;
+    Char_Headline(L"Checking...", RS_COL_MUTED);
+    if (Rs_Automating())
+        Rs_AutoLog(L"  result kept: only name, driving style, mask, minimap colour or output changed - rldpack checks them, "
+                   L"the model part is that of an earlier check");
+    started = Char_StartJob(page, CHAR_JOB_META, v, n, 0) != 0;
+    if (!started) {
+        Rs_Free(g_char.metaModelRaw);
+        Rs_Free(g_char.metaFeed);
+        g_char.metaModelRaw = g_char.metaFeed = NULL;
+    }
+    return started;
+}
+
+static int Char_CheckNow(HWND page);
+
+// The line of the run that read the model, unless it is about a switch of
+// Char_IsMetaSwitch (those come from the CHAR_JOB_META run) or its end; its
+// @result is noted (g_char's merge state below).
+static int g_charMergeResult, g_charMergeChecked, g_charMergeErrors;
+
+static void Char_MergeModelLine(const wchar_t *line)
+{
+    int error, kind = Char_LineKind(line, &error);
+    if (error)
+        g_charMergeErrors++;
+    if (kind == CHAR_LINE_MODEL) {
+        Char_Feed(line);
+    } else if (kind == CHAR_LINE_END && wcsncmp(line, L"@result", 7) == 0) {
+        g_charMergeResult = 1;
+        g_charMergeChecked = wcsncmp(line + 7, L"\tchecked", 8) == 0;
+    }
+}
+
+static void Char_MergeMetaLine(const wchar_t *line)
+{
+    int error;
+    if (Char_LineKind(line, &error) == CHAR_LINE_META)
+        Char_Feed(line);
+}
+
+// 1 if the CHAR_JOB_META run said what was asked: its protocol, the output,
+// and no message but about its switches and the model it was not to find.
+static int Char_MetaUsable(void)
+{
+    struct CharJobData *j = &g_charJob;
+    int i;
+    if (!j->protocolSeen || j->protocol != RS_PROTOCOL || !j->outSeen || !j->mask[0])
+        return 0;
+    for (i = 0; i < j->msgCount; i++) {
+        const wchar_t *code = j->msgs[i].code ? j->msgs[i].code : L"";
+        if (!Char_IsMetaCode(code) && !Char_EndsWith(code, L"-open") && wcsncmp(code, L"model-", 6) != 0)
+            return 0;
+    }
+    return 1;
+}
+
+// End of a CHAR_JOB_META run: its lines about the switches, the lines of the
+// result kept but for those, and a result of the two (checked when there is
+// no error left) as the result of a check. Where the run said anything else,
+// or the result kept has no result line, rldpack checks everything.
+static void Char_MetaDone(HWND page)
+{
+    wchar_t *metaRaw = Rs_Dup(g_char.rawText ? g_char.rawText : L"");
+    wchar_t *modelRaw = g_char.metaModelRaw, *feed = g_char.metaFeed;
+    wchar_t *key = g_char.runKey, *modelKey = g_char.runModelKey;
+    wchar_t line[CHAR_VAL + 64];
+    int seq = g_char.metaSeq, errors, exitCode, usable;
+
+    g_char.metaModelRaw = g_char.metaFeed = NULL;
+    g_char.runKey = g_char.runModelKey = NULL;
+    g_char.metaSeq = 0;
+    Char_JobReset();
+    Char_EachLine(metaRaw, 1, Char_Feed);
+    usable = Char_MetaUsable();
+    Char_JobReset();
+    g_charMergeResult = g_charMergeChecked = g_charMergeErrors = 0;
+    if (usable) {
+        Char_RawAppend(L"Only the name, the driving style, the mask, the minimap colour or the output changed: rldpack "
+                       L"checked them alone (the first command; its model file is never written, so it stops there), "
+                       L"the model part is the result of the check before (the second command).");
+        Char_EachLine(metaRaw, 0, Char_RawAppend);
+        Char_EachLine(modelRaw, 0, Char_RawAppend);
+        Char_EachLine(metaRaw, 1, Char_MergeMetaLine);
+        Char_EachLine(feed, 0, Char_MergeModelLine);
+    }
+    if (!usable || !g_charMergeResult || (!g_charMergeChecked && g_charMergeErrors == 0)) {
+        if (Rs_Automating())
+            Rs_AutoLog(L"  result kept: could not be put together with the new run - rldpack checks everything");
+        Rs_Free(metaRaw);
+        Rs_Free(modelRaw);
+        Rs_Free(feed);
+        Rs_Free(key);
+        Rs_Free(modelKey);
+        Char_CheckNow(page);
+        return;
+    }
+    errors = Char_CountMsgs(RS_SEV_ERROR);
+    exitCode = errors ? 1 : 0;
+    swprintf(line, CHAR_VAL + 64, L"@result\t%ls\t%ls\t\t", errors ? L"failed" : L"checked", g_charJob.out);
+    Char_Feed(line);
+    swprintf(line, CHAR_VAL + 64, L"@end\t%d", exitCode);
+    Char_Feed(line);
+    if (Char_CheckDone(page, exitCode, seq) && key && modelKey) {
+        Char_CacheStore(key, modelKey, exitCode, seq, modelRaw);
+        key = modelKey = NULL;
+    }
+    Rs_Free(key);
+    Rs_Free(modelKey);
+    Rs_Free(metaRaw);
+    Rs_Free(modelRaw);
+    Rs_Free(feed);
 }
 
 // Checks with the values of the fields; force = 0: a result kept for the
@@ -4430,14 +4717,21 @@ static int Char_CheckRun(HWND page, int force)
         return -1;
     }
     stamp = Char_StampFields(a.model, a.icon, a.voices);
-    g_char.runKey = Char_ArgsKey(&a);
+    g_char.runKey = Char_ArgsKey(&a, 0);
+    g_char.runModelKey = Char_ArgsKey(&a, 1);
     hit = force ? -1 : Char_CacheFind(g_char.runKey, stamp);
     if (hit >= 0) {
         Rs_Free(g_char.runKey);
-        g_char.runKey = NULL;
+        Rs_Free(g_char.runModelKey);
+        g_char.runKey = g_char.runModelKey = NULL;
         Char_CacheShow(page, hit, a.model, stamp);
         Char_ArgsFree(&a);
         return 0;
+    }
+    hit = force ? -1 : Char_CacheFindKey(g_char.runModelKey, stamp, 1);
+    if (hit >= 0 && Char_MetaStart(page, &a, hit, stamp)) {
+        Char_ArgsFree(&a);
+        return 1;
     }
     g_char.seq = seq;
     Char_Copy(g_char.checkModel, CHAR_VAL, a.model);
@@ -4447,7 +4741,8 @@ static int Char_CheckRun(HWND page, int force)
     Char_ArgsFree(&a);
     if (!started) {
         Rs_Free(g_char.runKey);
-        g_char.runKey = NULL;
+        Rs_Free(g_char.runModelKey);
+        g_char.runKey = g_char.runModelKey = NULL;
         Char_StartFailed(L"Cannot build yet - 1 problem(s)");
         return 0;
     }
@@ -4757,16 +5052,17 @@ static void Char_JobDone(HWND page, int exitCode)
         Char_BuildDone(page, exitCode);
         if (g_char.checkAfterBuild)
             Char_Check(page);
+    } else if (kind == CHAR_JOB_META) {
+        Char_MetaDone(page);
     } else {
-        wchar_t *key = g_char.runKey;
-        g_char.runKey = NULL;
-        if (Char_CheckDone(page, exitCode, seq)) {
-            if (key)
-                Char_CacheStore(key, exitCode, seq);
-            else
-                Char_TempDeleteKeep(seq, 1);    // the voice previews go with the next check
+        wchar_t *key = g_char.runKey, *modelKey = g_char.runModelKey;
+        g_char.runKey = g_char.runModelKey = NULL;
+        if (Char_CheckDone(page, exitCode, seq) && key && modelKey) {
+            Char_CacheStore(key, modelKey, exitCode, seq, NULL);
         } else {
             Rs_Free(key);
+            Rs_Free(modelKey);
+            Char_TempDeleteKeep(seq, 1);    // the voice previews go with the next check
         }
     }
     Char_UpdateButtons();
@@ -6890,7 +7186,9 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
         wchar_t *line = (wchar_t *)lParam;
         if (line && g_char.jobId && (int)wParam == g_char.jobId) {
             Char_RawAppend(line);
-            Char_ParseLine(line);
+            // The lines of a CHAR_JOB_META run are read when it ends (Char_MetaDone).
+            if (g_char.jobKind != CHAR_JOB_META)
+                Char_Feed(line);
         }
         Rs_Free(line);
         *handled = 1;
@@ -6957,6 +7255,9 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
             Char_TempDelete(g_char.cache[i].seq);
         while (g_char.cache[0].key)
             Char_CacheDrop(0);
+        Rs_Free(g_char.feedText);
+        g_char.feedText = NULL;
+        g_char.feedLen = g_char.feedCap = 0;
         Char_VoiceStop();
         Char_TempDeleteVoices(g_char.voiceSeq);
         g_char.voiceSeq = 0;

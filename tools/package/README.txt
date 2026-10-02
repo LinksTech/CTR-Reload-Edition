@@ -489,8 +489,12 @@ The bar at the bottom
               keeps the results of the last four checks: a change taken back
               (a tick set and cleared again, a name typed and deleted) shows
               the result kept at once, without checking again, as long as no
-              file of the model has been written since. The button Check
-              always checks anew.
+              file of the model has been written since. When only the name,
+              the driving style, the mask, the minimap colour or the output
+              change, rldpack checks only them and the model part of the
+              result kept stands - no second reading and reducing of the
+              same model ("Show rldpack output" shows both commands). The
+              button Check always checks anew.
   Build character
               Writes the .rldchar (asks before it replaces a file) and says
               what is in it in the green headline of the bar, e.g.

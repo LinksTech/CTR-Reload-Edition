@@ -324,6 +324,17 @@
 //             --preview <file> [--out <f>]      check; writes only the preview files
 //   make-char --machine --model ... --out <f>  build: the same switches without
 //             --check, --preview, --icon-preview and --voice-preview
+//   make-char --machine --check --model <temp folder>\char-<pid>-0-none.ply
+//             --name <n> --template 14 --class <c> --mask <m> [--map-color RRGGBB]
+//             --out <f>   when only name, class, mask, minimap colour or output
+//             differ from a result the page keeps (the same model, switches and
+//             files): the model file is never written, so rldpack reports these
+//             switches and stops at the model; the page takes their @msg and
+//             @value lines from this run and every other line from the result
+//             kept (rs_char.c, Char_MetaDone). A check whose command and files
+//             are those of a result kept runs nothing (Char_CacheFind).
+// The raw output of the page ("Show rldpack output") starts with the command,
+// "ReloadStudio.exe --rldpack make-char ...", quoted as it was passed.
 //
 // Automation verbs of the page "Character" (--do, besides those of the shell):
 //   model <ply|obj|none>, drop <path>[|<path>...] (as dropping these files
