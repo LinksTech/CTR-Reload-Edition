@@ -2998,8 +2998,13 @@ static double RldMk_FitFactor(double length, double height)
 	return (f > 0.0) ? RldMk_FitRound(f) : 1.0;
 }
 
-// Steps 2 and 3 (and 4 with `parts`) without a word: what they say is taken
-// back, the real pass says it again. 1 = they got through.
+// Steps 2 and 3 (and 3r and 4 with `parts`) without a word: what they say is
+// taken back, the real pass says it again. 1 = they got through. The parts
+// are found on the repaired mesh, as in the real pass: an export with split
+// seams (every corner a vertex of its own, moved by 1e-5 or more) falls apart
+// into faces under the weld of step 3 alone, and a fragment of the kart then
+// set the scale (a motorbike 13 % too large, or measured as a whole model and
+// 26 % too small - built without a word).
 static int RldMk_FitProbe(const struct RldMkPly *ply, const struct RldMkOptions *opt, struct RldMkBuild *probe, int parts)
 {
 	const int quiet = s_rldMkQuiet;
@@ -3012,7 +3017,12 @@ static int RldMk_FitProbe(const struct RldMkPly *ply, const struct RldMkOptions 
 	probe->kartPart = -1;
 	probe->driverPart = -1;
 	s_rldMkQuiet = 1;
-	ok = RldMk_StepWeld(ply, opt, probe, &keyCount) && RldMk_StepTriangles(ply, probe, keyCount) && (!parts || RldMk_StepParts(probe, opt));
+	ok = RldMk_StepWeld(ply, opt, probe, &keyCount) && RldMk_StepTriangles(ply, probe, keyCount);
+	if (ok && parts)
+	{
+		RldMk_StepOpenEdges(probe);
+		ok = RldMk_StepRepair(ply, probe, opt) && RldMk_StepParts(probe, opt);
+	}
 	s_rldMkQuiet = quiet;
 	s_rldMkErrors = errors;
 	s_rldMkCodes[said] = '\0';
@@ -19101,6 +19111,80 @@ static void RldMk_SelfTestUnderDriver(struct RldMkTestMesh *mesh)
 	}
 }
 
+// THE FIT ON SPLIT SEAMS: kart, driver and steering wheel with every corner
+// of every face a vertex of its own, moved by up to 1e-5 or 2e-5 (an export
+// with split seams; the kart's faces a quarter of its length) are fitted like
+// the clean model - the same factor, its kart the measure (with --repair
+// auto, the default).
+static void RldMk_SelfTestFitSeams(struct RldMkTestMesh *mesh)
+{
+	static const double noises[3] = {0.0, 1.0e-5, 2.0e-5};
+	static const double kartLo[3] = {-0.45, 0.10, -0.90};
+	static const double kartHi[3] = {0.45, 0.35, 0.90};
+	static const double driverLo[3] = {-0.25, 0.40, -0.40};
+	static const double driverHi[3] = {0.25, 1.00, 0.10};
+	static const double wheelLo[3] = {-0.15, 0.50, 0.30};
+	static const double wheelHi[3] = {0.15, 0.60, 0.36};
+	struct RldMkOptions opt;
+	struct RldMkPly ply;
+	struct RldMkBuild b;
+	double clean = 0.0;
+	int n;
+
+	for (n = 0; n < 3; n++)
+	{
+		char name[96];
+		u32 f;
+		int ok;
+
+		// kart, driver and steering wheel, then every corner of every face a
+		// vertex of its own, moved
+		mesh->vertexCount = 0;
+		mesh->faceCount = 0;
+		RldMk_TestBox(mesh, kartLo, kartHi, 4u, 0u, 0, -1);
+		RldMk_TestBox(mesh, driverLo, driverHi, 2u, 10u, 0, -1);
+		RldMk_TestBox(mesh, wheelLo, wheelHi, 1u, 20u, 0, -1);
+		for (f = 0; f < mesh->faceCount; f++)
+		{
+			u32 k;
+
+			for (k = 0; k < mesh->cornerCount[f]; k++)
+			{
+				const u32 from = mesh->corners[f][k];
+				const u32 v = mesh->vertexCount;
+				int a;
+
+				if (v >= RLDMK_TEST_VERTICES)
+				{
+					break;
+				}
+				for (a = 0; a < 3; a++)
+				{
+					// -1 .. +1 in eleven fixed steps, different per corner and axis
+					const double step = (double)((int)((v * 7u + (u32)a * 3u) % 11u) - 5) / 5.0;
+
+					mesh->xyz[v][a] = mesh->xyz[from][a] + noises[n] * step;
+				}
+				memcpy(mesh->rgb[v], mesh->rgb[from], 3u);
+				mesh->corners[f][k] = v;
+				mesh->vertexCount++;
+			}
+		}
+		RldMk_TestOptions(&opt);
+		opt.fit = 1;
+		opt.repair = 1;
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && b.fitted && (b.fitBasis == RLDMK_FIT_KART);
+		if (n == 0)
+		{
+			clean = b.fitFactor;
+		}
+		snprintf(name, sizeof(name), "--fit crash on split seams moved by %g: the kart is the measure, x%.4g", noises[n], clean);
+		RldMk_Test(ok && (b.fitFactor == clean), name, "built %d, basis %d, x%.4g, said: %s", ok, b.fitBasis, b.fitFactor, s_rldMkCodes);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+	}
+}
+
 static int RldChar_SelfTest(void)
 {
 	struct RldMkTestMesh *mesh = (struct RldMkTestMesh *)calloc(1, sizeof(struct RldMkTestMesh));
@@ -19159,6 +19243,7 @@ static int RldChar_SelfTest(void)
 	RldMk_SelfTestShortVehicle(mesh);
 	RldMk_SelfTestParts(mesh);
 	RldMk_SelfTestUnderDriver(mesh);
+	RldMk_SelfTestFitSeams(mesh);
 	s_rldMkQuiet = quietBefore;
 	RldMk_ResetSaid();
 
