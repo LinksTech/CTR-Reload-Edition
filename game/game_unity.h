@@ -292,6 +292,8 @@
 #include "230/MM_NativeCrystal.c"
 // NITRO-PIT -> CTR: the same for the CTR Challenge.
 #include "230/MM_NativeCtr.c"
+// NITRO-PIT -> MODE: TIME TRIAL: alone on a container, best times in a file of its own.
+#include "230/MM_NativeTimeTrial.c"
 #include "230/MM_HighScore.c"
 #include "230/MM_Scrapbook.c"
 #include "230/MM_Video.c"

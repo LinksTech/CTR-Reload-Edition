@@ -243,6 +243,21 @@ void MM_NativeTrackSelect_SetChosen(int chosen);
 void MM_NativeTrackSelect_Hook(void);
 void MM_NativeTrackSelect_MenuProc(struct RectMenu *menu);
 
+// The MODE box below the lap box of the NITRO RACE track screen
+// (game/230/MM_NativeTrackSelect.c). RACE is the default and changes nothing.
+// Rows after TIME TRIAL (boss race, modifiers) are planned and not offered yet.
+enum
+{
+	MM_NATIVE_MODE_RACE = 0,
+	MM_NATIVE_MODE_TIME_TRIAL = 1,
+	MM_NATIVE_MODE_OFFERED = 2,
+};
+int MM_NativeTrackSelect_Mode(void);
+
+// NITRO-PIT -> MODE: TIME TRIAL (game/230/MM_NativeTimeTrial.c). The track
+// screen calls it at the start when the MODE box stands on TIME TRIAL.
+void MM_NativeTimeTrial_Arm(void);
+
 // The NITRO-PIT row chosen in the race type box: 0 or MM_NATIVE_CHOSEN_*. The
 // mode rule of the driver select reads it (NativeChar_ModeAllowed).
 int MM_NativeTrackSelect_Chosen(void);

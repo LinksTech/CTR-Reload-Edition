@@ -96,6 +96,20 @@ int MM_NativeTracks_ListMode(void)
 // The rows of the CHEATS box (native_menuscreen.c).
 char *NativeMenuCheats_String(s16 index);
 
+// The MODE box of the NITRO RACE track screen ([K9] in
+// MM_NativeTrackSelect.c, which comes after this file in the unity build and is
+// the only reader). In the free gap 0x8b..0x8f of the range in ovr_230.h.
+// TIME TRIAL is LNG_TIME_TRIAL from the language file; MODE has a colon there
+// (LNG_MODE), the title of the lap box has none (LNG_LAPS).
+enum
+{
+	MM_NATIVE_LNG_MODE = MM_NATIVE_LNG_BASE + 0x8b,
+	MM_NATIVE_LNG_MODE_RACE = MM_NATIVE_LNG_BASE + 0x8c,
+
+	// Planned, not offered yet.
+	MM_NATIVE_LNG_MODE_BOSS_RACE = MM_NATIVE_LNG_BASE + 0x8d,
+};
+
 char *MM_NativeMenu_String(s16 index)
 {
 	char *cheat;
@@ -131,6 +145,12 @@ char *MM_NativeMenu_String(s16 index)
 		return "CHEATS";
 	case MM_NATIVE_LNG_GRAPHICS:
 		return "GRAPHICS";
+	case MM_NATIVE_LNG_MODE:
+		return "MODE";
+	case MM_NATIVE_LNG_MODE_RACE:
+		return "RACE";
+	case MM_NATIVE_LNG_MODE_BOSS_RACE:
+		return "BOSS RACE";
 	default:
 		break;
 	}
