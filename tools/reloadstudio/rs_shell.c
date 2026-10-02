@@ -89,8 +89,12 @@ int Rldpack_Main(int argc, char *argv[]);
 // Sizes of the window in 96-dpi pixels (Rs_Px). Below RS_WIDE_MIN of client
 // width the sidebar is RS_SIDEBAR_NARROW wide (icons only); below
 // RS_SIDEBAR_FULL_H of client height it leaves out the version and the footer.
+// RS_WIDE_MIN leaves a page 1064 px beside the full sidebar (with a vertical
+// scroll bar about 1047): the page "Character" keeps its two columns from about
+// 1042 on, so widening the window never takes them away again when the sidebar
+// grows (at 964 + 216 it went two, one, two columns while dragging).
 #define RS_SIDEBAR_NARROW 60
-#define RS_WIDE_MIN (RS_SIDEBAR_W + RS_PAGE_MIN_W)
+#define RS_WIDE_MIN (RS_SIDEBAR_W + 1064)
 #define RS_SIDEBAR_FULL_H 430
 #define RS_MIN_CLIENT_W 480
 #define RS_MIN_CLIENT_H 320
@@ -2693,9 +2697,12 @@ static void Rs_PageFit(int id, int relayout)
         ext = Rs_PageExtent(page, st);
         if (ext.cx <= w && ext.cy <= h)
             break;
-        if (ext.cx > need.cx)
+        // Grow only where the layout reached beyond the page: a layout that just
+        // fills the page must not keep the width of a pass without scroll bars
+        // (that width plus a vertical bar would scroll sideways for nothing).
+        if (ext.cx > w)
             need.cx = ext.cx;
-        if (ext.cy > need.cy)
+        if (ext.cy > h)
             need.cy = ext.cy;
     }
     st->viewW = view.cx;
