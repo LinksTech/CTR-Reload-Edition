@@ -35,6 +35,16 @@ void NativeChar_SetFile(const char *file);
 // 1..NATIVE_CHAR_ROSTER_MAX), only remembered.
 void NativeChar_SetGridFill(int count);
 
+// --dev-char-seats (main.c, only with --dev): every seat of a one-player
+// arcade race on a custom model, the bot seats put on the file's template
+// (seat 0 keeps --driver's), each with the template's class - ALL the first
+// file of the roster, CYCLE the next file at every race load it binds
+// (several models measured in one run). Only remembered.
+#define NATIVE_CHAR_DEV_SEATS_OFF 0
+#define NATIVE_CHAR_DEV_SEATS_ALL 1
+#define NATIVE_CHAR_DEV_SEATS_CYCLE 2
+void NativeChar_SetDevSeats(int mode);
+
 // main.c, before any window: 0 when --char names a file that is neither in a
 // --chars-dir nor an absolute path (the message is then on stderr), else 1.
 int NativeChar_ArgsUsable(void);
@@ -147,12 +157,32 @@ int NativeChar_ModeAllowed(void);
 // MAIN_MENU_TITLE) drops the pick, silently. A race load binds seat 0 only
 // when the pick is a file (silent without a pick), the mode allows it (else a
 // loud line and the pick is dropped) and data.characterIDs[0] holds the
-// file's template; it never writes characterIDs.
+// file's template; it never writes characterIDs. With --dev-char-seats every
+// seat of such a race is bound instead, pick or not - the one way that writes
+// characterIDs: the bot seats 1..7 get the file's template (one "dev seats"
+// line per load, and one with the instances it dropped when the next load
+// arms).
 void NativeChar_ArmSeats(void);
 
 // Load stage 0, right after MEMPACK_PopToState: the seats are emptied with the
 // level they were armed for.
 void NativeChar_ClearSeats(void);
+
+// Load stage 0, MainInit_PrimMem: the draw memory the custom models of this
+// load may take, added to each of the two buffers on top of tableBytes (the
+// number of the level so far, only for the log line) - the largest model of
+// the roster on the main menu level (the driver select), the picked file's
+// model as an invisible driver (the ghost writer) and its own mask in a race
+// whose mode and characterIDs[0] let the funnel bind it, with
+// --dev-char-seats seat 0 as a ghost and every other seat at its draw bytes
+// (bots never turn invisible); each times two (a reflective floor draws an
+// instance twice). 0 and no line without a file in the roster and for every
+// other load.
+u32 NativeChar_DrawReserve(int tableBytes);
+
+// main.c, after NativeChar_LoadRoster and before MEMPACK_Init: what both
+// buffers of the largest NativeChar_DrawReserve take; 0 without a file.
+u32 NativeChar_MempackExtraNeeded(void);
 
 // game/Vehicle/VehBirth.c: the model of a bound seat while data.characterIDs
 // still holds the id it was armed for, else NULL (then the retail lookup).

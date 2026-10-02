@@ -2,6 +2,7 @@
 
 #ifdef CTR_NATIVE
 int NativeFlyIn_PreviewAlone(void); // game/native_flyin.c
+u32 NativeChar_DrawReserve(int tableBytes); // platform/native_chars.c
 
 static void MainInit_InitVisMemBspListNodes(struct VisMem *visMem, struct mesh_info *mesh)
 {
@@ -249,6 +250,14 @@ void MainInit_PrimMem(struct GameTracker *gGT)
 				             trackBytes, skyBytes, size);
 		}
 	}
+
+	// AND THE CUSTOM CHARACTERS THEIR OWN SHARE (platform/native_chars.c, THE
+	// DRAW RESERVE): a custom model may draw more than the retail model it
+	// stands in for, and what it draws more must not be missing from the
+	// track. Added last, so everything above keeps its bytes at the same
+	// offsets and the reserve lies at the end. Without a file in characters/
+	// this is 0 and every byte as before.
+	size += (int)NativeChar_DrawReserve(size);
 #endif
 
 	MainDB_PrimMem(&gGT->db[0].primMem, size);

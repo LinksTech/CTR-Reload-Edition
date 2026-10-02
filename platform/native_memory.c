@@ -96,8 +96,9 @@ void Platform_SetMempackExtra(u32 bytes)
 		// LOUD, and not as one line among many. A fixed number used to
 		// clamp silently here, and whatever was then missing looked in the frame like a
 		// renderer bug.
-		Platform_LogError("[CTR MEMPACK] a track asks for %u bytes behind the window, the ceiling is %u\n", wanted, CTR_NATIVE_MEMPACK_EXTRA_MAX);
-		Platform_LogError("[CTR MEMPACK] clamped. That track will be missing geometry - raise CTR_NATIVE_MEMPACK_EXTRA_MAX\n");
+		Platform_LogError("[CTR MEMPACK] the start asks for %u bytes behind the window (tracks and custom characters), the ceiling is %u\n", wanted,
+		                  CTR_NATIVE_MEMPACK_EXTRA_MAX);
+		Platform_LogError("[CTR MEMPACK] clamped. A track or a custom character will be missing geometry - raise CTR_NATIVE_MEMPACK_EXTRA_MAX\n");
 	}
 
 	// Rounded to four, so every boundary in the pack stays word-aligned.

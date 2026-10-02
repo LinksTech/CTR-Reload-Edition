@@ -309,6 +309,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--chars-dir", "<folder>", "custom characters from every .rldchar of this folder instead of characters/, also with --settings-defaults (test runs); with --char only the folder of that file"},
     {"--char", "<file>", "only this .rldchar (in --chars-dir, or an absolute path) and no folder: a tile in the one-player arcade driver select right after the retail drivers, or with --level and --driver <its template> straight on seat 0"},
     {"--dev-grid-fill", "<n>", "n placeholder tiles, 1 to 32, after the custom character tiles in the one-player arcade driver select (rows and scrolling with many entries); a placeholder cannot be chosen"},
+    {"--dev-char-seats", "<all|cycle>", "every seat of a one-player arcade race drives a custom model, the bots put on the file's template (give --driver <that template> for seat 0), with the template's class: all =the first file of the roster, cycle = the next file at every race load (several models measured in one run); draw memory and mempack grow by eight models"},
     {"--ui-safe-area-off", "", "UI safe area off"},
     {"--ui-declarations-off", "", "UI declarations off"},
     {"--ui-floor-off", "", "UI floor off"},
@@ -2238,6 +2239,28 @@ int main(int argc, char *argv[])
 
 			NativeChar_SetGridFill((int)count);
 		}
+		else if ((strcmp(argv[argIndex], "--dev-char-seats") == 0) && ((argIndex + 1) < argc))
+		{
+			// A measuring switch: a word it does not know ends the start, like
+			// --dev-grid-fill - a run that silently bound nothing would measure retail.
+			const char *value = argv[++argIndex];
+
+			if (strcmp(value, "all") == 0)
+			{
+				NativeChar_SetDevSeats(NATIVE_CHAR_DEV_SEATS_ALL);
+			}
+			else if (strcmp(value, "cycle") == 0)
+			{
+				NativeChar_SetDevSeats(NATIVE_CHAR_DEV_SEATS_CYCLE);
+			}
+			else
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --dev-char-seats expects all or cycle, got %s\n", value);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+		}
 	}
 
 	if (!NativeChar_ArgsUsable())
@@ -3512,13 +3535,31 @@ int main(int argc, char *argv[])
 	//
 	// Every .rldchar of characters/ (or of --chars-dir; only the one file with
 	// --char) is read, checked and relocated here, in host memory and after
-	// every other start step - the MEMPACK split above stays as it is, so a
-	// folder full of characters changes nothing in the memory of the game.
+	// every other start step; the models never enter the MEMPACK, only the
+	// draw memory they may take is added behind its window (below).
 	// Under --settings-defaults no folder is read unless --chars-dir names one.
 	// A broken file is skipped with a line and the start goes on. With --dev
 	// the exit line of the instance counter is registered either way. Then the
 	// roster of the driver select is built from the files and --dev-grid-fill.
 	NativeChar_LoadRoster();
+
+	// The draw memory of custom models (NativeChar_DrawReserve) lies in the
+	// MEMPACK like the rest of the draw memory, so the window grows by what
+	// the largest load of them can take - here, after the roster and before
+	// MEMPACK_Init in CTR_Main. Without a file nothing is added and nothing
+	// said: the split above stays as it is.
+	{
+		const u32 charExtra = NativeChar_MempackExtraNeeded();
+
+		if (charExtra != 0u)
+		{
+			const u32 before = Platform_GetMempackExtra();
+
+			Platform_SetMempackExtra(before + charExtra);
+			Platform_Log("[CTR Native] characters/: mempack extra +%u bytes for the draw memory of custom models, %u in force\n", charExtra,
+			             Platform_GetMempackExtra());
+		}
+	}
 
 	const int result = CTR_Main();
 

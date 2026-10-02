@@ -21,7 +21,13 @@
 //
 // THE TEST WAYS (developer switches, main.c): --chars-dir <folder> reads that
 // folder instead of characters/; --char <file> reads only this one file and
-// no folder; --dev-grid-fill <n> adds placeholders.
+// no folder; --dev-grid-fill <n> adds placeholders; --dev-char-seats all|cycle
+// puts every seat of a one-player arcade race on a file's model (measuring,
+// NativeChar_ArmDevSeats).
+//
+// THE DRAW RESERVE (NativeChar_DrawReserve): the draw memory of a load grows
+// by what its custom models may draw, the MEMPACK window by what the largest
+// such load needs (NativeChar_MempackExtraNeeded) - both 0 without a file.
 //
 // THE ROSTER, fixed at start: the files in sorted order, then the
 // placeholders of --dev-grid-fill - "PLACEHOLDER <n>" on template
@@ -158,12 +164,15 @@ struct NativeCharFile
 	struct RldCharInfo info;
 	u8 cmdlHash[6];
 	u64 fileBytes;
+	u32 drawBytes;              // what one draw of the model costs at most (RldChar_CheckModel, model-draw)
+	u32 triangles;              // of the model (RldChar_CheckModel), for the cost of a ghost draw
 	int icon;
 	const char *iconWhy;
 	u16 iconWords[NATIVE_CHAR_ICON_WORDS];
 	u8 *cmsk;                   // the CMSK chunk, relocated, never freed while in the roster; NULL without own mask
 	struct Model *mask;         // the own mask model inside cmsk, NULL = the retail mask
 	u32 maskTriangles;
+	u32 maskDrawBytes;          // what one draw of the own mask costs at most (RldChar_CheckMask, model-draw)
 	int maskState;              // NATIVE_CHAR_MASK_*
 	char maskWhy[192];          // NATIVE_CHAR_MASK_IGNORED: the rule and its detail
 };
@@ -172,7 +181,8 @@ struct NativeCharFile
 // s_charFiles[e], with runtime id NATIVE_CHAR_RUNTIME_ID_FIRST + e.
 global_variable struct NativeCharFile s_charFiles[NATIVE_CHAR_ROSTER_MAX];
 
-// The overlay per seat. Only seat 0 is ever armed so far. entry is the roster
+// The overlay per seat. Only seat 0 is armed for the player; the developer
+// switch --dev-char-seats arms every seat (devSeat). entry is the roster
 // entry it was armed with, motorId the character id the engine runs the seat
 // on - the template. maskNoted and maskMissingNoted keep the mask lines of
 // NativeChar_NoteMask and NativeChar_SeatMaskGood to one per load; ownMask is
@@ -191,10 +201,23 @@ global_variable struct
 	int portraitNoted;
 	int hasMapColor;
 	u32 mapColor[4];
+	int devSeat;                // bound by --dev-char-seats: the class stays the template's
 } s_seat[NATIVE_CHAR_SEATS];
 
 // --dev-grid-fill, as main.c passed it on (0 = none).
 global_variable int s_charGridFill;
+
+// --dev-char-seats, as main.c passed it on, and the race loads it has bound
+// (the file of the next one with NATIVE_CHAR_DEV_SEATS_CYCLE). While such a
+// load is open, the instances it drops are counted on their own and named
+// when the next load arms its seats (or at exit).
+global_variable int s_charDevSeats;
+global_variable int s_charDevLoads;
+global_variable int s_charDevLoadOpen;
+global_variable int s_charDevLoadLevel;
+global_variable s64 s_charDevDroppedTotal;
+global_variable s64 s_charDevDroppedSeat0;
+global_variable s64 s_charDevDroppedBound;
 
 // The roster, built once by NativeChar_LoadRoster: s_charRosterFiles entries
 // are files, the rest up to s_charRosterCount are placeholders. Placeholder n
@@ -240,6 +263,11 @@ void NativeChar_SetFile(const char *file)
 {
 	s_charGiven = 1;
 	NativeChar_Remember(s_charFile, file);
+}
+
+void NativeChar_SetDevSeats(int mode)
+{
+	s_charDevSeats = ((mode == NATIVE_CHAR_DEV_SEATS_ALL) || (mode == NATIVE_CHAR_DEV_SEATS_CYCLE)) ? mode : NATIVE_CHAR_DEV_SEATS_OFF;
 }
 
 void NativeChar_SetGridFill(int count)
@@ -328,8 +356,23 @@ internal void NativeChar_Refuse(const char *file, const char *word, const char *
 	Platform_Log("[CTR Char] REFUSED %s: %s (%s) %s\n", file, word, rule, detail);
 }
 
+// --dev-char-seats: the instances the load just ended dropped, one line per
+// bound race load - also with none, the line is the measurement.
+internal void NativeChar_FlushDevLoad(void)
+{
+	if (!s_charDevLoadOpen)
+	{
+		return;
+	}
+
+	s_charDevLoadOpen = 0;
+	Platform_Log("[CTR Char] dev seats: load %d on level %d ended, instances dropped %lld total, %lld seat 0, %lld on bound seats\n", s_charDevLoads,
+	             s_charDevLoadLevel, (long long)s_charDevDroppedTotal, (long long)s_charDevDroppedSeat0, (long long)s_charDevDroppedBound);
+}
+
 internal void NativeChar_ReportAtExit(void)
 {
+	NativeChar_FlushDevLoad();
 	Platform_Log("[CTR Char] at exit: instances dropped %lld total, %lld seat 0\n", (long long)s_droppedTotal, (long long)s_droppedSeat0);
 }
 
@@ -399,6 +442,7 @@ internal int NativeChar_CheckMaskBytes(struct NativeCharFile *out, const u8 *byt
 	}
 
 	out->maskTriangles = facts.triangles;
+	out->maskDrawBytes = facts.drawBytes;
 	return 1;
 }
 
@@ -418,6 +462,7 @@ internal void NativeChar_ReadMask(struct RldReader *reader, struct NativeCharFil
 	out->cmsk = NULL;
 	out->mask = NULL;
 	out->maskTriangles = 0;
+	out->maskDrawBytes = 0;
 	out->maskState = NATIVE_CHAR_MASK_NONE;
 	out->maskWhy[0] = '\0';
 
@@ -490,6 +535,7 @@ internal int NativeChar_ReadFile(const char *path, const char *file, struct Nati
 	int modelIndex = -1;
 	u64 cmdlBytes;
 	enum RldCharVerdict verdict;
+	struct RldCharModelFacts facts;
 
 	// The detail of every refusal is a fixed text: the reader's, the parser's,
 	// the check's or this file's own.
@@ -572,7 +618,7 @@ internal int NativeChar_ReadFile(const char *path, const char *file, struct Nati
 	// is what the check reads. The game stops at the first finding. Only an OK
 	// reaches the relocation - with --ptr-map-unchecked LOAD_RunPtrMap checks
 	// nothing itself, so this is the one check that always runs.
-	verdict = RldChar_CheckModel(cmdl, cmdlSize, &finding, NULL, NULL, NULL);
+	verdict = RldChar_CheckModel(cmdl, cmdlSize, &finding, NULL, NULL, &facts);
 	if (verdict != RLDCHAR_VERDICT_OK)
 	{
 		free(cmdl);
@@ -601,6 +647,8 @@ internal int NativeChar_ReadFile(const char *path, const char *file, struct Nati
 		out->cmdl = cmdl;
 		out->model = (struct Model *)body;
 		out->info = info;
+		out->drawBytes = facts.drawBytes;
+		out->triangles = facts.triangles;
 	}
 
 	return 1;
@@ -680,6 +728,10 @@ internal int NativeChar_Admit(struct NativeCharFile *loaded, char *file)
 	NativeChar_LogLoaded(loaded);
 	NativeChar_LogPortrait(s_charRosterFiles - 1);
 	NativeChar_LogMask(s_charRosterFiles - 1);
+
+	// What the draw reserve counts for it (NativeChar_DrawReserve), one draw.
+	Platform_Log("[CTR Char] draw bytes %s: model %u, own mask %u\n", loaded->file, (unsigned)loaded->drawBytes,
+	             (unsigned)((loaded->maskState == NATIVE_CHAR_MASK_OWN) ? loaded->maskDrawBytes : 0u));
 	return 1;
 }
 
@@ -991,6 +1043,12 @@ void NativeChar_LoadRoster(void)
 	}
 
 	NativeChar_BuildRoster();
+
+	// A measuring switch that binds nothing would measure retail: loud.
+	if ((s_charDevSeats != NATIVE_CHAR_DEV_SEATS_OFF) && (s_charRosterFiles == 0))
+	{
+		Platform_LogWarn("[CTR Char] dev seats: no file in the roster - every seat stays retail\n");
+	}
 }
 
 void NativeChar_ClearSeats(void)
@@ -1112,6 +1170,244 @@ internal u32 NativeChar_AnimFrames(const struct Model *model, int a)
 	}
 
 	return anim->numFrames & NATIVE_CHAR_FRAME_MASK;
+}
+
+// ---------------------------------------------------------------------------
+// THE DRAW RESERVE. A custom model is drawn into the same draw memory as
+// everything else (gGT->db[].primMem, game/MAIN/MainInit.c), and the
+// instances come before the track (game/MAIN/MainFrame_RenderFrame.c): what a
+// larger model takes, the track misses at the end of the frame ("draw memory
+// full", game/226). So the memory of a load grows by what its custom models
+// may draw, and the table of the level keeps its budget for everything else.
+//
+// Sized in load stage 0 (MainInit_PrimMem), before the funnel of stage 5 has
+// decided, from what decides it there and is already known: the main menu
+// level reserves the largest model of the roster (the driver select draws one
+// entry's model at a time, game/230/MM_NativeCharGrid.c); a race reserves the
+// picked file for seat 0 when the mode lets the funnel bind and
+// characterIDs[0] holds the file's template, and with --dev-char-seats every
+// seat on the file that load takes. Only the frame counts of the donor are
+// not known yet: a load the funnel then refuses for them leaves its share
+// unused. Each load's bytes times NATIVE_CHAR_DRAW_PASSES - a reflective floor
+// draws an instance twice (RenderBucket_DrawReflectionPrimitive). Not scaled
+// with the canvas: what a model draws does not depend on the picture's width.
+//
+// WHAT ONE DRAW COSTS. The normal writer takes 28 bytes per triangle without
+// texture and 40 with one - the draw bytes of RldChar_CheckModel, every
+// triangle, no back face culled. An invisible driver (the item,
+// game/Vehicle/VehPickupItem.c, and the cheat, game/Vehicle/VehBirth.c, which
+// only makes the seats of players invisible) is drawn by the ghost writer
+// (RenderBucket_DrawInstPrim_GhostAtRange,
+// game/RenderBucket/RenderBucket_QueueExecute.c): a mask packet in front of
+// every triangle, 60 bytes without texture, 64 with one. A bot never turns
+// invisible in the races the funnel binds in - game/PickupBots.c fires only
+// bombs, missiles, TNT and potions - so seat 0 is reserved as a ghost and
+// every other seat at its draw bytes. The own mask stays on the normal writer
+// while its driver is invisible (game/231/RB_MaskShieldCloud.c).
+//
+// NOT IN IT: a triangle that crosses the split line of an instance is cut into
+// up to three (RenderBucket_DrawSplitClipped; on a reflective floor
+// RenderBucket_DrawWaterSplitClipped in both passes). Only the triangles on
+// that one line pay - a band of the model, not all of it - and how wide the
+// band gets is not determined; a visible seat 0 has the ghost's margin (60
+// against 28 bytes) for it. The measuring runs of --dev-char-seats name what
+// was missing per load ("instances dropped", "draw memory full").
+//
+// RETAIL STAYS: no file in the roster, reserve 0, no line, and every byte of
+// the draw memory and of the MEMPACK is what it was. A race on a retail tile
+// reserves nothing either; only the main menu level grows once a file is in
+// the roster - at its end, behind everything the table gives it.
+// ---------------------------------------------------------------------------
+
+#define NATIVE_CHAR_DRAW_PASSES 2u
+#define NATIVE_CHAR_GHOST_BYTES_G3 60u  // mask packet 0x1C, draw mode 8, tagless G3 0x18 (RenderBucketGhostFlatPacket)
+#define NATIVE_CHAR_GHOST_BYTES_GT3 64u // mask packet 0x1C, tagless GT3 0x24 (RenderBucketGhostTexturedPacket)
+
+// The kinds of load the reserve knows.
+enum
+{
+	NATIVE_CHAR_LOAD_MENU = 0,  // the driver select: one model, never a ghost
+	NATIVE_CHAR_LOAD_SEAT0 = 1, // a race with the pick on seat 0: ghost and own mask
+	NATIVE_CHAR_LOAD_DEV = 2,   // --dev-char-seats: seat 0 a ghost, the other seats at their draw bytes
+};
+
+// --dev-char-seats: the roster entry of the next race load.
+internal int NativeChar_DevSeatsEntry(void)
+{
+	if ((s_charRosterFiles == 0) || (s_charDevSeats != NATIVE_CHAR_DEV_SEATS_CYCLE))
+	{
+		return 0;
+	}
+
+	return s_charDevLoads % s_charRosterFiles;
+}
+
+// One ghost draw of a file's model: drawBytes = 28 x G3 + 40 x GT3 and
+// triangles = G3 + GT3, so GT3 = (drawBytes - 28 x triangles) / 12.
+internal u32 NativeChar_FileGhostBytes(const struct NativeCharFile *f)
+{
+	const u32 plain = f->triangles * RLDCHAR_DRAW_BYTES_G3;
+	const u32 gt3 = (f->drawBytes > plain) ? ((f->drawBytes - plain) / (RLDCHAR_DRAW_BYTES_GT3 - RLDCHAR_DRAW_BYTES_G3)) : 0u;
+	const u32 g3 = (f->triangles > gt3) ? (f->triangles - gt3) : 0u;
+
+	return (g3 * NATIVE_CHAR_GHOST_BYTES_G3) + (gt3 * NATIVE_CHAR_GHOST_BYTES_GT3);
+}
+
+// One buffer, one pass: what a load of this kind may draw with entry's model;
+// *seat0 the share of seat 0 (with the own mask in a race of the pick),
+// *other that of every other seat. 0 outside the files.
+internal u32 NativeChar_LoadBytes(int kind, int entry, u32 *seat0, u32 *other)
+{
+	const struct NativeCharFile *f;
+
+	*seat0 = 0;
+	*other = 0;
+
+	if ((entry < 0) || (entry >= s_charRosterFiles))
+	{
+		return 0;
+	}
+
+	f = &s_charFiles[entry];
+	if (kind == NATIVE_CHAR_LOAD_MENU)
+	{
+		*seat0 = f->drawBytes;
+		return *seat0;
+	}
+
+	*seat0 = NativeChar_FileGhostBytes(f);
+	if (kind == NATIVE_CHAR_LOAD_SEAT0)
+	{
+		*seat0 += (f->maskState == NATIVE_CHAR_MASK_OWN) ? f->maskDrawBytes : 0u;
+		return *seat0;
+	}
+
+	*other = f->drawBytes;
+	return *seat0 + ((u32)(NATIVE_CHAR_SEATS - 1) * *other);
+}
+
+// The entry whose load of this kind costs the most (the first of equal ones),
+// -1 without a file.
+internal int NativeChar_LargestEntry(int kind)
+{
+	u32 largest = 0;
+	int found = -1;
+	int entry;
+
+	for (entry = 0; entry < s_charRosterFiles; entry++)
+	{
+		u32 seat0;
+		u32 other;
+		const u32 bytes = NativeChar_LoadBytes(kind, entry, &seat0, &other);
+
+		if ((found < 0) || (bytes > largest))
+		{
+			largest = bytes;
+			found = entry;
+		}
+	}
+
+	return found;
+}
+
+u32 NativeChar_DrawReserve(int tableBytes)
+{
+	const struct GameTracker *gGT = sdata->gGT;
+	char detail[192];
+	u32 seat0;
+	u32 other;
+	u32 bytes;
+	int kind;
+	int entry;
+
+	if ((s_charRosterFiles == 0) || (gGT == NULL))
+	{
+		return 0;
+	}
+
+	if ((gGT->gameMode1 & MAIN_MENU) != 0)
+	{
+		// Only the level of the driver select; the garage and the other menu
+		// loads never draw a file's model.
+		if (gGT->levelID != MAIN_MENU_LEVEL)
+		{
+			return 0;
+		}
+
+		kind = NATIVE_CHAR_LOAD_MENU;
+		entry = NativeChar_LargestEntry(kind);
+	}
+	else if (NativeChar_ModeRefusal(gGT) != NULL)
+	{
+		return 0;
+	}
+	else if (s_charDevSeats != NATIVE_CHAR_DEV_SEATS_OFF)
+	{
+		// Every seat on the file the funnel will take (NativeChar_ArmDevSeats);
+		// a dev seat wears the retail mask.
+		kind = NATIVE_CHAR_LOAD_DEV;
+		entry = NativeChar_DevSeatsEntry();
+	}
+	else
+	{
+		// Seat 0, when the pick is a file on the template the seat runs on.
+		kind = NATIVE_CHAR_LOAD_SEAT0;
+		entry = s_charPick;
+		if ((entry < 0) || (entry >= s_charRosterFiles) || ((int)data.characterIDs[0] != NativeChar_EntryTemplate(entry)))
+		{
+			return 0;
+		}
+	}
+
+	bytes = NativeChar_LoadBytes(kind, entry, &seat0, &other) * NATIVE_CHAR_DRAW_PASSES;
+	if (bytes == 0u)
+	{
+		return 0;
+	}
+
+	if (kind == NATIVE_CHAR_LOAD_MENU)
+	{
+		snprintf(detail, sizeof(detail), "main menu, the largest file: 1 model x %u bytes", (unsigned)seat0);
+	}
+	else if (kind == NATIVE_CHAR_LOAD_SEAT0)
+	{
+		snprintf(detail, sizeof(detail), "race, seat 0: %u bytes as a ghost with the own mask", (unsigned)seat0);
+	}
+	else
+	{
+		snprintf(detail, sizeof(detail), "race, --dev-char-seats: seat 0 %u bytes as a ghost + %d x %u bytes", (unsigned)seat0, NATIVE_CHAR_SEATS - 1,
+		         (unsigned)other);
+	}
+
+	Platform_Log("[CTR Char] draw memory: %d bytes + %u for custom models (%s, x %u passes, %s) = %d\n", tableBytes, (unsigned)bytes, detail,
+	             (unsigned)NATIVE_CHAR_DRAW_PASSES, s_charFiles[entry].file, tableBytes + (int)bytes);
+	return bytes;
+}
+
+u32 NativeChar_MempackExtraNeeded(void)
+{
+	// The largest reserve any load can ask for - the main menu's, a race's of
+	// seat 0, and with --dev-char-seats every seat's - for both buffers
+	// (db[0], db[1]).
+	u32 largest = 0;
+	int kind;
+
+	for (kind = NATIVE_CHAR_LOAD_MENU; kind <= NATIVE_CHAR_LOAD_DEV; kind++)
+	{
+		u32 seat0;
+		u32 other;
+		u32 bytes;
+
+		if ((kind == NATIVE_CHAR_LOAD_DEV) && (s_charDevSeats == NATIVE_CHAR_DEV_SEATS_OFF))
+		{
+			continue;
+		}
+
+		bytes = NativeChar_LoadBytes(kind, NativeChar_LargestEntry(kind), &seat0, &other);
+		largest = (bytes > largest) ? bytes : largest;
+	}
+
+	return 2u * NATIVE_CHAR_DRAW_PASSES * largest;
 }
 
 // ---------------------------------------------------------------------------
@@ -1576,6 +1872,82 @@ internal void NativeChar_LogSeats(void)
 	Platform_Log("[CTR Char] seats:%s\n", line);
 }
 
+// --dev-char-seats: every seat of a one-player arcade race on the model of one
+// file. The bot seats 1..7 are first put on the file's template - THE ONE PLACE
+// that writes data.characterIDs, and only on this developer way: the arcade
+// pack of the load (BI_1PARCADEPACK + characterIDs[0], game/LOAD/LOAD_Assets.c)
+// holds seat 0's driver and the bots LOAD_Robots1P chose in stage 4, so a bot
+// on another template has no donor of the file's frame counts. Run with
+// --driver <the file's template> and seat 0 too finds its donor in the pack;
+// every seat then shares the one host model (one instance each). Class and
+// drive values are those of the template on every seat (the bots all run on
+// it), the own mask is not worn (the retail one is), the map color is the
+// template's. A seat without a donor or whose donor's frame counts differ
+// stays retail. A load the funnel would refuse (demo, mode) binds nothing and
+// writes nothing.
+internal void NativeChar_ArmDevSeats(struct GameTracker *gGT)
+{
+	const char *modeWhy = NativeChar_ModeRefusal(gGT);
+	const int entry = NativeChar_DevSeatsEntry();
+	const int fileTemplate = (int)s_charFiles[entry].info.templateId;
+	int bound = 0;
+	int seat;
+
+	if ((gGT->boolDemoMode != 0) || (modeWhy != NULL))
+	{
+		Platform_Log("[CTR Char] dev seats: not bound (%s)\n", (modeWhy != NULL) ? modeWhy : "demo");
+		return;
+	}
+
+	s_charDevLoads++;
+
+	// Stage 5: LOAD_Robots1P has filled the bot seats in stage 4, the drivers
+	// are born after the load (VehBirth reads characterIDs[seat]).
+	for (seat = 1; seat < NATIVE_CHAR_SEATS; seat++)
+	{
+		data.characterIDs[seat] = (s16)fileTemplate;
+	}
+
+	for (seat = 0; seat < NATIVE_CHAR_SEATS; seat++)
+	{
+		const int templateId = (int)data.characterIDs[seat];
+		const struct Model *donor = ((templateId >= 0) && (templateId <= RLDCHAR_TEMPLATE_MAX)) ? NativeChar_DonorModel(templateId) : NULL;
+		int same = (donor != NULL);
+		int a;
+
+		for (a = 0; same && (a < RLDCHAR_ANIM_COUNT); a++)
+		{
+			same = (NativeChar_AnimFrames(s_charFiles[entry].model, a) == NativeChar_AnimFrames(donor, a));
+		}
+
+		if (!same)
+		{
+			Platform_Log("[CTR Char] dev seats: seat %d stays retail (template %d, %s)\n", seat, templateId,
+			             (donor == NULL) ? "no donor in the driver pack" : "other frame counts");
+			continue;
+		}
+
+		s_seat[seat].model = s_charFiles[entry].model;
+		s_seat[seat].entry = entry;
+		s_seat[seat].motorId = templateId;
+		s_seat[seat].devSeat = 1;
+		bound++;
+	}
+
+	// From here until the next load arms its seats, drops count for this one.
+	s_charDevLoadOpen = 1;
+	s_charDevLoadLevel = gGT->levelID;
+	s_charDevDroppedTotal = 0;
+	s_charDevDroppedSeat0 = 0;
+	s_charDevDroppedBound = 0;
+
+	NativeChar_PortraitsDirty();
+	Platform_Log("[CTR Char] dev seats: %s, load %d on level %d, %d of %d seats = %s (%u draw bytes), bots on template %d\n",
+	             (s_charDevSeats == NATIVE_CHAR_DEV_SEATS_CYCLE) ? "cycle" : "all", s_charDevLoads, gGT->levelID, bound, NATIVE_CHAR_SEATS,
+	             s_charFiles[entry].file, (unsigned)s_charFiles[entry].drawBytes, fileTemplate);
+	NativeChar_LogSeats();
+}
+
 void NativeChar_ArmSeats(void)
 {
 	struct GameTracker *gGT = sdata->gGT;
@@ -1586,7 +1958,9 @@ void NativeChar_ArmSeats(void)
 	const struct Model *donor;
 	int a;
 
-	// Nothing from an earlier load survives into this one.
+	// Nothing from an earlier load survives into this one; a load of
+	// --dev-char-seats names what it dropped first.
+	NativeChar_FlushDevLoad();
 	NativeChar_ClearSeats();
 
 	// 1. A menu load, silently. characterIDs[0] keeps the template on the way
@@ -1608,6 +1982,14 @@ void NativeChar_ArmSeats(void)
 	//    bind, so the roster has nothing to give either.
 	if (s_charRosterFiles == 0)
 	{
+		return;
+	}
+
+	// 2b. --dev-char-seats (developer switch, measuring): every seat, the pick
+	//     does not count.
+	if (s_charDevSeats != NATIVE_CHAR_DEV_SEATS_OFF)
+	{
+		NativeChar_ArmDevSeats(gGT);
 		return;
 	}
 
@@ -1724,8 +2106,9 @@ struct Model *NativeChar_SeatModel(int index)
 int NativeChar_SeatEngineClass(int seat, int retailClass)
 {
 	// The class decides the physics (data.metaPhys) and the engine sound
-	// channel alike; every reader asks here, so the two never disagree.
-	if (NativeChar_SeatModel(seat) == NULL)
+	// channel alike; every reader asks here, so the two never disagree. A seat
+	// of --dev-char-seats keeps the class of its template.
+	if ((NativeChar_SeatModel(seat) == NULL) || s_seat[seat].devSeat)
 	{
 		return retailClass;
 	}
@@ -1952,6 +2335,24 @@ void NativeChar_NoteDroppedInstance(const struct Instance *inst)
 	{
 		s_droppedSeat0++;
 	}
+
+	// --dev-char-seats: the same per load, and which drops were bound seats.
+	if (s_charDevLoadOpen)
+	{
+		int seat;
+
+		s_charDevDroppedTotal++;
+
+		for (seat = 0; (inst != NULL) && (gGT != NULL) && (seat < NATIVE_CHAR_SEATS); seat++)
+		{
+			if ((gGT->drivers[seat] != NULL) && (gGT->drivers[seat]->instSelf == inst))
+			{
+				s_charDevDroppedSeat0 += (seat == 0) ? 1 : 0;
+				s_charDevDroppedBound += (s_seat[seat].model != NULL) ? 1 : 0;
+				break;
+			}
+		}
+	}
 }
 
 void NativeChar_NoteVBlank(int vblank)
@@ -2175,8 +2576,9 @@ internal void NativeChar_OwnMaskSelfTest(int *checks, int *failures)
 	size = NativeChar_TestMask(buf, sizeof(buf), 56u, NATIVE_CHAR_TEST_MASK_GOOD);
 	NativeChar_TestMaskCase(checks, failures, "56 triangles", buf, size, 1, NULL, 56u);
 
-	size = NativeChar_TestMask(buf, sizeof(buf), 70u, NATIVE_CHAR_TEST_MASK_GOOD);
-	NativeChar_TestMaskCase(checks, failures, "70 triangles (1960 bytes)", buf, size, 1, NULL, 70u);
+	size = NativeChar_TestMask(buf, sizeof(buf), RLDCHAR_MASK_DRAW_BYTES_MAX / RLDCHAR_DRAW_BYTES_G3, NATIVE_CHAR_TEST_MASK_GOOD);
+	NativeChar_TestMaskCase(checks, failures, "the most triangles (RLDCHAR_MASK_DRAW_BYTES_MAX)", buf, size, 1, NULL,
+	                        RLDCHAR_MASK_DRAW_BYTES_MAX / RLDCHAR_DRAW_BYTES_G3);
 
 	// The same model is no character: the profiles stay apart, and the
 	// character texts are the ones they were.
@@ -2185,8 +2587,8 @@ internal void NativeChar_OwnMaskSelfTest(int *checks, int *failures)
 	                      (finding.rule != NULL) && (strcmp(finding.detail, "ModelHeader.numAnimations is 1 - a character has exactly 4") == 0),
 	                      "own mask as CMDL: not 'a character has exactly 4'");
 
-	size = NativeChar_TestMask(buf, sizeof(buf), 71u, NATIVE_CHAR_TEST_MASK_GOOD);
-	NativeChar_TestMaskCase(checks, failures, "71 triangles", buf, size, 0, "model-draw", 0u);
+	size = NativeChar_TestMask(buf, sizeof(buf), (RLDCHAR_MASK_DRAW_BYTES_MAX / RLDCHAR_DRAW_BYTES_G3) + 1u, NATIVE_CHAR_TEST_MASK_GOOD);
+	NativeChar_TestMaskCase(checks, failures, "one triangle more", buf, size, 0, "model-draw", 0u);
 
 	// CMSK-3 before any model rule: a good head, 16 KiB + 4 bytes.
 	size = NativeChar_TestMask(buf, sizeof(buf), 56u, NATIVE_CHAR_TEST_MASK_GOOD);
