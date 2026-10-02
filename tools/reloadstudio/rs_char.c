@@ -623,6 +623,7 @@ static struct {
     int progressOn;                 // they are shown
     int progressPos;                // 0..1000, -1 = not known
     wchar_t progressText[64];       // what the bar says
+    wchar_t slowText[48];           // "about N s" of the info reduce-slow of the running job, "" = none
     wchar_t buildOut[CHAR_VAL];     // the output of the running build: its <out>.part goes after a cancel
     int reduceFitOn;                // it is shown (on the tab Model)
     int qualityOn;                  // the note below the options has text (shown on the tab Model)
@@ -1945,8 +1946,9 @@ static void Char_ParseLine(wchar_t *line)
                 j->budget[i] = wcstol(Char_Field(f, n, 2 + i), NULL, 10);
             j->budgetSeen = 1;
             // It comes before the reduction, which takes minutes for a model
-            // of a million triangles: the headline says so meanwhile.
-            if (j->budget[0] > j->budget[1] && g_char.runReduce) {
+            // of a million triangles: the headline says so meanwhile (unless
+            // reduce-slow said how long already).
+            if (j->budget[0] > j->budget[1] && g_char.runReduce && !g_char.slowText[0]) {
                 wchar_t t[160], a[24], b[24];
                 Char_Grouped(a, 24, j->budget[0]);
                 Char_Grouped(b, 24, j->budget[1]);
@@ -2007,6 +2009,22 @@ static void Char_ParseLine(wchar_t *line)
         // The groups beyond the ones rldpack lists: "<n> more groups (o, g) are not listed."
         if (wcscmp(Char_Field(f, n, 2), L"obj-groups") == 0)
             j->groupsMore += wcstol(text, NULL, 10);
+        // How long the reduction takes ("... takes about N s"): into the
+        // headline beside the bar at once, not only into the list at the end.
+        if (wcscmp(Char_Field(f, n, 2), L"reduce-slow") == 0 && g_char.jobId && g_char.jobKind != CHAR_JOB_META) {
+            const wchar_t *about = wcsstr(text, L"about ");
+            if (about) {
+                wchar_t line[96];
+                size_t k = 0;
+                while (about[k] && about[k] != L';' && about[k] != L'.' && k < 47)
+                    k++;
+                memcpy(g_char.slowText, about, k * sizeof(wchar_t));
+                g_char.slowText[k] = 0;
+                swprintf(line, 96, L"%ls - the reduction takes %ls", g_char.jobKind == CHAR_JOB_BUILD ? L"Building" : L"Checking",
+                         g_char.slowText);
+                Char_Headline(line, RS_COL_MUTED);
+            }
+        }
         Char_JobMsg(Rs_SeverityFromText(Char_Field(f, n, 1)), Char_Field(f, n, 2), text, detail);
     } else if (wcscmp(kind, L"result") == 0) {
         const wchar_t *bytes = Char_Field(f, n, 3);
@@ -4709,6 +4727,7 @@ static int Char_StartJob(HWND page, int kind, const wchar_t *const *args, int ar
         // The bar and Cancel when it takes longer than a moment (a bar shown
         // for the check just ended stays for this one).
         g_char.progressPos = -1;
+        g_char.slowText[0] = 0;
         Char_Copy(g_char.progressText, 64, kind == CHAR_JOB_BUILD ? L"Building..." : L"Checking...");
         InvalidateRect(g_char.progress, NULL, FALSE);
         EnableWindow(g_char.cancel, TRUE);
@@ -5440,7 +5459,14 @@ static void Char_CancelDone(HWND page, int kind, int seq)
         Char_TempDelete(seq);
     g_char.checked = 0;
     Char_MsgAdd(-1, RS_SEV_INFO, L"The check was cancelled.", L"Check starts it again, and so does a change to a field.");
-    Char_Headline(L"Cancelled - Check starts it again", RS_COL_WARNING);
+    if (g_char.slowText[0]) {
+        // What rldpack said of the reduction stays: the next try takes as long.
+        wchar_t line[128];
+        swprintf(line, 128, L"Cancelled - Check starts it again (the reduction takes %ls)", g_char.slowText);
+        Char_Headline(line, RS_COL_WARNING);
+    } else {
+        Char_Headline(L"Cancelled - Check starts it again", RS_COL_WARNING);
+    }
     if (Rs_Automating())
         Rs_AutoLog(L"  check: cancelled");
 }

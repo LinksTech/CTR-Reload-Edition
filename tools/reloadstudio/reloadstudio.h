@@ -283,13 +283,22 @@
 //             obj-number, obj-face, obj-empty, obj-big (with the line), the
 //             warnings model-misnamed, mtl-missing, mtl-bad, mtl-material,
 //             tex-missing, tex-unreadable, tex-unsupported, tex-no-uv,
-//             obj-no-colors, obj-color-range and the infos obj-ignored,
-//             obj-vertex-colors, obj-groups, tex-found-nearby, tex-alpha. The
-//             page puts every id that does not start with
-//             icon, voice, name, mask, pose or wheel- (and is not one of
-//             author, class, template, map-color, write) under the tab Model:
-//             a click on one of these opens it; an error stops the build as
-//             every error does
+//             obj-no-colors, obj-color-range, obj-vertex-colors-uniform and the
+//             infos obj-ignored, obj-vertex-colors, obj-vertex-modulation,
+//             obj-transparency, obj-groups, tex-found-nearby, tex-alpha; fitting
+//             and finding the parts add the warnings fit-capped, ply-driver,
+//             ply-stray, the infos ply-kart-short, ply-vehicle-only and the note
+//             ply-up-axis; a large reduction says beforehand how long it takes
+//             (info reduce-slow, "... takes about N s": the page shows it in
+//             the headline while rldpack runs and keeps it after Cancel); a
+//             wrong value of a switch is an error named after it (up, forward,
+//             colors, vertex-colors). The page puts up, forward, colors,
+//             vertex-colors, ply-up-axis and obj-vertex-modulation under the
+//             tab Extras, card Import (where those choices are); every other id
+//             that does not start with icon, voice, name, mask, pose or wheel-
+//             (and is not one of author, class, template, map-color, write)
+//             under the tab Model: a click on one of these opens it; an error
+//             stops the build as every error does
 //   @progress <repair | remesh | reduce | write> <done> <total>   at most
 //             every 250 ms during a long step (total 0 = not known); the shell
 //             passes it as RS_WM_JOB_PROGRESS, not as a line - the page shows
