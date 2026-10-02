@@ -4407,12 +4407,17 @@ static void Char_NameFilter(void)
         Char_SetLabel(g_char.nameNote, CHAR_NAME_RULE_TEXT, RS_COL_MUTED, &g_char.nameColor);
 }
 
-static void Char_SizeScrolled(HWND page)
+// While the slider is dragged every new size waits the 600 ms of typing; when
+// it is let go (TB_ENDTRACK, also after the keys) a check still waiting starts
+// at once.
+static void Char_SizeScrolled(HWND page, int code)
 {
     int before = g_char.sizeNow;
     Char_SizeSet(Char_SizePos());
     if (g_char.sizeNow != before)
         Char_Changed(page);
+    if (code == TB_ENDTRACK && g_char.timer && !g_char.applying)
+        Char_Check(page);
 }
 
 static void Char_SetPose(int pose)
@@ -6465,7 +6470,7 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
         return 0;
     case WM_HSCROLL:
         if ((HWND)lParam == g_char.size) {
-            Char_SizeScrolled(page);
+            Char_SizeScrolled(page, LOWORD(wParam));
             *handled = 1;
         }
         return 0;
