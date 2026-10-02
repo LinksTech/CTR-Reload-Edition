@@ -221,7 +221,13 @@ static const double s_rldDumRetailTurn[11] = {45.2, 44.65, 42.3, 38.3, 33.2, 28.
 // the dummy's seat; scaled about that seat they went to y -18 at --size 200).
 // There the seat is the bottom of the driver: the middle of its box in x and
 // z at its lowest y. Nothing of the driver is below it, so no driver corner
-// goes below the ground in any frame at any --size.
+// goes below the ground in any frame at any --size. The poses turn about the
+// bottom of the driver's main part instead (the part make-char chose as the
+// driver; without it the seat): about the bottom of the whole group the
+// motorbike rider leaned from his shoes, and the shoes, 0.4..21.2 high beside
+// the bike, moved with him by up to 8.3. Below that pivot the poses leave the
+// driver as it is (below), so his shoes stay on the ground in every pose;
+// above it, up to 2.7 above his body's bottom (18.5), they bend a little.
 // A kart driver keeps the dummy's seat; only corners below the seat can sink
 // there, by their stretch (jump 1.05) and --size: at size s the lowest is
 // seat + s x 1.05 x (its neutral y - seat) - at 200 % above the ground for
@@ -385,6 +391,7 @@ struct RldDumFitInput
 {
 	struct RldDumBox kart;    // the kart group (RLDMK_GROUP_KART), positions the triangles use
 	struct RldDumBox driver;  // the driver group
+	struct RldDumBox driverPart;  // its main part alone (--wheels off: the pivot of the poses); valid 0 = none
 	struct RldDumBox wheel;   // the steering wheel group; valid 0 = the model has none
 	struct RldDumBox model;   // every position a triangle uses
 	int wheels;               // 1 = the game draws its kart wheels (default), 0 = --wheels off
@@ -405,7 +412,8 @@ struct RldDumFitResult
 	double seat[3];           // the pivot of --size and of the driver's poses: RLDDUM_SEAT, or
 	                          // without kart wheels the bottom of the driver
 	double pivot[3];          // the pivot of the poses at this size: the seat, or for a kart driver
-	                          // sitting higher its own bottom (moved by --size about the seat)
+	                          // sitting higher its own bottom, without kart wheels the bottom of
+	                          // the driver's main part (moved by --size about the seat)
 	int ownPivot;             // the pivot is the model's own: below it the poses leave the driver
 	int hasWheel;             // the model has a steering wheel: it turns, the hands follow it
 	int wheelAsDriver;        // its steering wheel group leans with the driver instead (RldDum_Fit)
@@ -466,9 +474,10 @@ static int RldDum_Fit(const struct RldDumFitInput *in, struct RldDumFitResult *o
 	out->lengthDelta = (placed->hi[2] - placed->lo[2]) - (kartBox[5] - kartBox[2]);
 	out->widthDelta = (placed->hi[0] - placed->lo[0]) - (kartBox[3] - kartBox[0]);
 
-	// Without kart wheels the seat is the bottom of the driver; a kart driver
-	// sitting higher turns about its own bottom; for both the height the lean
-	// bends over (RLDDUM_BEND_HEIGHT).
+	// Without kart wheels the seat is the bottom of the driver and the poses
+	// turn about the bottom of its main part; a kart driver sitting higher
+	// turns about its own bottom; for both the height the lean bends over
+	// (RLDDUM_BEND_HEIGHT).
 	{
 		const struct RldDumBox *body = in->driver.valid ? &in->driver : &in->model;
 		double pivot[3];
@@ -500,7 +509,14 @@ static int RldDum_Fit(const struct RldDumFitInput *in, struct RldDumFitResult *o
 			out->seat[2] = 0.5 * (body->lo[2] + body->hi[2]) + out->shift[2];
 		}
 		memcpy(pivot, out->seat, sizeof(pivot));
-		if (in->wheels && (in->position != NULL) && (in->positionGroup != NULL))
+		if (!in->wheels && in->driverPart.valid)
+		{
+			pivot[0] = 0.5 * (in->driverPart.lo[0] + in->driverPart.hi[0]) + out->shift[0];
+			pivot[1] = in->driverPart.lo[1] + out->shift[1];
+			pivot[2] = 0.5 * (in->driverPart.lo[2] + in->driverPart.hi[2]) + out->shift[2];
+			out->ownPivot = 1;
+		}
+		else if (in->wheels && (in->position != NULL) && (in->positionGroup != NULL))
 		{
 			double low = 0.0;
 			int found = 0;
@@ -1694,7 +1710,9 @@ static int RldDum_SelfTest(void (*report)(const char *line))
 	// WITHOUT KART WHEELS: a motorbike-like model, its driver from y 0.35 up,
 	// 46 wide and 75 long, a handlebar in front. At 50, 100 and 200 % no corner
 	// of driver or handlebar goes below the ground in any frame, and frame 20
-	// mirrors frame 0 with the bend as well.
+	// mirrors frame 0 with the bend as well. With its main part from 18.5 up
+	// (the shoes below) the same, the poses turn about (0, 18.5, 20.85), and
+	// the corners below stay where they are.
 	{
 		static const u32 sizes[3] = {50u, 100u, 200u};
 		static const double gx[3] = {-23.0, 0.0, 23.0};
@@ -1731,11 +1749,20 @@ static int RldDum_SelfTest(void (*report)(const char *line))
 		bike.wheels = 0;
 
 		ok = 1;
-		for (k = 0; k < 3; k++)
+		for (k = 0; k < 6; k++)
 		{
-			bike.sizePercent = sizes[k];
+			bike.sizePercent = sizes[k % 3];
+			bike.driverPart.valid = (k >= 3);
+			bike.driverPart.lo[0] = -17.0;
+			bike.driverPart.lo[1] = 18.5;
+			bike.driverPart.lo[2] = gz[0];
+			bike.driverPart.hi[0] = 17.0;
+			bike.driverPart.hi[1] = gy[5];
+			bike.driverPart.hi[2] = gz[2];
 			ok = ok && RldDum_Fit(&bike, &fit) && fit.hasWheel && (fit.bendHeight >= RLDDUM_BEND_HEIGHT) && (fit.seat[0] == 0.0) &&
-			     (fit.seat[1] == 0.35) && (fit.seat[2] > 20.849) && (fit.seat[2] < 20.851);
+			     (fit.seat[1] == 0.35) && (fit.seat[2] > 20.849) && (fit.seat[2] < 20.851) && (fit.ownPivot == (k >= 3)) && (fit.pivot[0] == 0.0) &&
+			     (fit.pivot[2] > 20.849) && (fit.pivot[2] < 20.851) &&
+			     ((k < 3) || ((fit.pivot[1] > (0.35 + fit.size * 18.15 - 1.0e-9)) && (fit.pivot[1] < (0.35 + fit.size * 18.15 + 1.0e-9))));
 			for (f = 0; f < RLDDUM_FRAMES_TOTAL; f++)
 			{
 				RldDum_PoseFrame(f, &pose);
@@ -1757,6 +1784,7 @@ static int RldDum_SelfTest(void (*report)(const char *line))
 							RldDum_Place(&fit, RLDDUM_GROUP_DRIVER, v, placed);
 							RldDum_ApplyPose(&pose, RLDDUM_GROUP_DRIVER, placed, out);
 							lowest = (out[1] < lowest) ? out[1] : lowest;
+							ok = ok && ((k < 3) || (iy > 2) || (memcmp(out, placed, sizeof(out)) == 0));
 							if (f <= 20u)
 							{
 								placed[0] = -placed[0];
@@ -1773,7 +1801,7 @@ static int RldDum_SelfTest(void (*report)(const char *line))
 			}
 		}
 		ok = ok && (lowest >= 0.0);
-		RldDum_Check(report, ok, "pose: without kart wheels the driver bends about its bottom, nothing below the ground at 50..200 %");
+		RldDum_Check(report, ok, "pose: without kart wheels the driver bends about its bottom or its main part's, nothing below the ground at 50..200 %");
 	}
 
 	// A KART DRIVER SITTING HIGHER: its bottom in the seat zone 40 high, its
