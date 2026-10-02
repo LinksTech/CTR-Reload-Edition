@@ -90,9 +90,8 @@ int Rldpack_Main(int argc, char *argv[]);
 // width the sidebar is RS_SIDEBAR_NARROW wide (icons only); below
 // RS_SIDEBAR_FULL_H of client height it leaves out the version and the footer.
 // RS_WIDE_MIN leaves a page 1064 px beside the full sidebar (with a vertical
-// scroll bar about 1047): the page "Character" keeps its two columns from about
-// 1042 on, so widening the window never takes them away again when the sidebar
-// grows (at 964 + 216 it went two, one, two columns while dragging).
+// scroll bar about 1047), so that widening the window never takes room away
+// from a page again when the sidebar grows.
 #define RS_SIDEBAR_NARROW 60
 #define RS_WIDE_MIN (RS_SIDEBAR_W + 1064)
 #define RS_SIDEBAR_FULL_H 430
@@ -1600,7 +1599,8 @@ static void Rs_Layout(int relayout);
 
 // The heading of a page at the page width w: title and subtitle wrap where the
 // page is narrower than their line. *titleBottom and *subBottom are the lower
-// edges of both (on one line each: 68 and 92 at 96 dpi, as always).
+// edges of both (on one line each: 68 and 92 at 96 dpi, as always). A page
+// without a subtitle ("") ends at its title: *subBottom = *titleBottom.
 static void Rs_HeadMetrics(const struct RsPageDef *def, int w, int *titleBottom, int *subBottom)
 {
     HDC dc = GetDC(NULL);
@@ -1611,7 +1611,17 @@ static void Rs_HeadMetrics(const struct RsPageDef *def, int w, int *titleBottom,
     sh = Rs_TextSize(dc, Rs_Font(RS_FONT_BODY), def->subtitle, room, DT_WORDBREAK | DT_NOPREFIX).cy;
     ReleaseDC(NULL, dc);
     *titleBottom = Rs_Px(24) + (th > Rs_Px(44) ? th : Rs_Px(44));
-    *subBottom = *titleBottom + (sh > Rs_Px(24) ? sh : Rs_Px(24));
+    *subBottom = def->subtitle[0] ? *titleBottom + (sh > Rs_Px(24) ? sh : Rs_Px(24)) : *titleBottom;
+}
+
+int Rs_PageHeadBottom(HWND page, int w)
+{
+    struct RsPageState *st = page ? Rs_State(page) : NULL;
+    int tb, sb;
+    if (!st || !st->def)
+        return Rs_PageTop();
+    Rs_HeadMetrics(st->def, w, &tb, &sb);
+    return sb;
 }
 
 // Rs_PageTop is one value for all pages (a page asks for it without saying which
@@ -2078,11 +2088,78 @@ struct RsMsgList {
     int scroll;
     int total;
     int laidWidth;
+    int clickable;      // Rs_MsgListSetClickable
+    int clicked;        // the entry of the last click, -1 = none
+    int whole;          // Rs_MsgListSetWhole
+    int focused;        // the entry the keys move, -1 = none (a clickable list)
 };
+
+// Whole entries only (Rs_MsgListSetWhole): the height of the line "N more
+// below" in place of an entry that would be cut.
+#define RS_MSG_MORE_H 18
 
 static struct RsMsgList *Rs_MsgData(HWND list)
 {
     return (struct RsMsgList *)GetWindowLongPtrW(list, GWLP_USERDATA);
+}
+
+// The entry under the point y of the list's client area, -1 = none.
+static int Rs_MsgHit(HWND list, int y)
+{
+    struct RsMsgList *m = Rs_MsgData(list);
+    int i;
+    if (!m)
+        return -1;
+    y += m->scroll;
+    for (i = 0; i < m->count; i++)
+        if (y >= m->items[i].y && y < m->items[i].y + m->items[i].h)
+            return i;
+    return -1;
+}
+
+// Whole entries: the entry that starts the view at the scroll position pos
+// (the last one starting at or above it), at most the first from which all
+// the rest fits.
+static int Rs_MsgFirstAt(const struct RsMsgList *m, int pos)
+{
+    int i, k = 0;
+    for (i = 0; i < m->count; i++)
+        if (m->items[i].y <= pos)
+            k = i;
+    return k;
+}
+
+static int Rs_MsgSnap(HWND list, int pos)
+{
+    struct RsMsgList *m = Rs_MsgData(list);
+    RECT rc;
+    int k, last;
+    if (!m || m->count == 0)
+        return 0;
+    GetClientRect(list, &rc);
+    k = Rs_MsgFirstAt(m, pos);
+    for (last = 0; last < m->count && m->total - m->items[last].y > rc.bottom; last++)
+        ;
+    if (last >= m->count)
+        last = m->count - 1;
+    if (k > last)
+        k = last;
+    return m->items[k].y;
+}
+
+// Whole entries: the last entry drawn whole when the view starts at scroll
+// (the first one always counts, also when it is taller than the list).
+static int Rs_MsgLastWhole(const struct RsMsgList *m, int scroll, int height)
+{
+    int i = Rs_MsgFirstAt(m, scroll), last = i;
+    for (i = i + 1; i < m->count; i++) {
+        int bottom = m->items[i].y + m->items[i].h - scroll;
+        int reserve = i + 1 < m->count ? Rs_Px(RS_MSG_MORE_H) : 0;
+        if (bottom > height - reserve)
+            break;
+        last = i;
+    }
+    return last;
 }
 
 static void Rs_MsgLayout(HWND list)
@@ -2116,7 +2193,7 @@ static void Rs_MsgLayout(HWND list)
             h += Rs_Px(2) + d.bottom;
         }
         it->y = y;
-        it->h = h + Rs_Px(14);
+        it->h = h + Rs_Px(m->whole ? 6 : 14);
         y += it->h;
     }
     SelectObject(dc, old);
@@ -2127,6 +2204,8 @@ static void Rs_MsgLayout(HWND list)
         m->scroll = m->total - rc.bottom;
     if (m->scroll < 0)
         m->scroll = 0;
+    if (m->whole)
+        m->scroll = Rs_MsgSnap(list, m->scroll);
     memset(&si, 0, sizeof(si));
     si.cbSize = sizeof(si);
     si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
@@ -2169,22 +2248,55 @@ static void Rs_MsgPaint(HWND list)
         struct RsMsgItem *it = &m->items[i];
         int top = it->y - m->scroll;
         int dot = Rs_Px(10);
+        int pad = Rs_Px(m->whole ? 3 : 7);
         RECT t;
         HBRUSH br;
         HGDIOBJ oldBr, oldPen;
         if (top + it->h < 0 || top > rc.bottom)
             continue;
+        // Whole entries: in place of the first that does not fit, the line
+        // "N more below" (the first entry of the view always shows).
+        if (m->whole && it->y > m->scroll && i > Rs_MsgLastWhole(m, m->scroll, rc.bottom)) {
+            wchar_t more[64];
+            RECT line;
+            HBRUSH lb;
+            t.left = Rs_Px(32);
+            t.right = rc.right - Rs_Px(8);
+            t.top = top < rc.bottom - Rs_Px(RS_MSG_MORE_H) ? top : rc.bottom - Rs_Px(RS_MSG_MORE_H);
+            t.bottom = t.top + Rs_Px(RS_MSG_MORE_H);
+            line = t;
+            line.left = 0;
+            line.bottom = rc.bottom;
+            FillRect(mem, &line, g_brCard);
+            swprintf(more, 64, L"%d more below - scroll", m->count - i);
+            SelectObject(mem, Rs_Font(RS_FONT_SMALL));
+            SetTextColor(mem, RS_COL_MUTED);
+            DrawTextW(mem, more, -1, &t, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+            line.top = t.top;
+            line.bottom = t.top + 1;
+            line.left = Rs_Px(32);
+            line.right = rc.right - Rs_Px(8);
+            lb = CreateSolidBrush(g_rsShellColors[g_dark].divider);
+            FillRect(mem, &line, lb);
+            DeleteObject(lb);
+            break;
+        }
         br = CreateSolidBrush(Rs_SeverityColor(it->severity));
         oldBr = SelectObject(mem, br);
         oldPen = SelectObject(mem, GetStockObject(NULL_PEN));
-        Ellipse(mem, Rs_Px(12), top + Rs_Px(12), Rs_Px(12) + dot + 1, top + Rs_Px(12) + dot + 1);
+        Ellipse(mem, Rs_Px(12), top + pad + Rs_Px(5), Rs_Px(12) + dot + 1, top + pad + Rs_Px(5) + dot + 1);
         SelectObject(mem, oldBr);
         SelectObject(mem, oldPen);
         DeleteObject(br);
+        if (i == m->focused && GetFocus() == list) {
+            RECT f = { Rs_Px(2), top + 1, rc.right - Rs_Px(2), top + it->h - 1 };
+            SetTextColor(mem, RS_COL_TEXT);
+            DrawFocusRect(mem, &f);
+        }
 
         t.left = Rs_Px(32);
         t.right = rc.right - Rs_Px(8);
-        t.top = top + Rs_Px(7);
+        t.top = top + pad;
         t.bottom = top + it->h;
         SelectObject(mem, Rs_Font(RS_FONT_BODY));
         SetTextColor(mem, it->severity == RS_SEV_ERROR ? RS_COL_ERROR : RS_COL_TEXT);
@@ -2225,9 +2337,62 @@ static void Rs_MsgScrollTo(HWND list, int pos)
         pos = m->total - rc.bottom;
     if (pos < 0)
         pos = 0;
+    if (m->whole)
+        pos = Rs_MsgSnap(list, pos);
     m->scroll = pos;
     SetScrollPos(list, SB_VERT, pos, TRUE);
     InvalidateRect(list, NULL, FALSE);
+}
+
+// Whole entries: the view moves by entries, steps of them up (< 0) or down.
+static void Rs_MsgStep(HWND list, int steps)
+{
+    struct RsMsgList *m = Rs_MsgData(list);
+    int k;
+    if (!m || m->count == 0)
+        return;
+    k = Rs_MsgFirstAt(m, m->scroll) + steps;
+    if (k < 0)
+        k = 0;
+    if (k >= m->count)
+        k = m->count - 1;
+    Rs_MsgScrollTo(list, m->items[k].y);
+}
+
+// The keyboard entry of a clickable list into view, whole.
+static void Rs_MsgFocusIntoView(HWND list)
+{
+    struct RsMsgList *m = Rs_MsgData(list);
+    RECT rc;
+    int guard;
+    if (!m || m->focused < 0 || m->focused >= m->count)
+        return;
+    GetClientRect(list, &rc);
+    if (m->items[m->focused].y < m->scroll)
+        Rs_MsgScrollTo(list, m->items[m->focused].y);
+    for (guard = 0; guard < m->count; guard++) {
+        int bottom = m->items[m->focused].y + m->items[m->focused].h - m->scroll;
+        int over = m->whole ? m->focused > Rs_MsgLastWhole(m, m->scroll, rc.bottom) : bottom > rc.bottom;
+        int before = m->scroll;
+        if (!over)
+            break;
+        if (m->whole)
+            Rs_MsgStep(list, 1);
+        else
+            Rs_MsgScrollTo(list, m->scroll + bottom - rc.bottom);
+        if (m->scroll == before)
+            break;
+    }
+    InvalidateRect(list, NULL, FALSE);
+}
+
+static void Rs_MsgClick(HWND list, int hit)
+{
+    struct RsMsgList *m = Rs_MsgData(list);
+    if (!m || hit < 0 || hit >= m->count)
+        return;
+    m->clicked = hit;
+    SendMessageW(GetParent(list), WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(list), RS_MSGN_CLICK), (LPARAM)list);
 }
 
 static LRESULT CALLBACK Rs_MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -2264,14 +2429,22 @@ static LRESULT CALLBACK Rs_MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
         return r;
     }
     case WM_MOUSEWHEEL:
-        if (m)
+        if (m && m->whole) {
+            int notches = GET_WHEEL_DELTA_WPARAM(wParam) / WHEEL_DELTA;
+            Rs_MsgStep(hwnd, notches ? -notches : (GET_WHEEL_DELTA_WPARAM(wParam) > 0 ? -1 : 1));
+        } else if (m) {
             Rs_MsgScrollTo(hwnd, m->scroll - GET_WHEEL_DELTA_WPARAM(wParam) * Rs_Px(48) / WHEEL_DELTA);
+        }
         return 0;
     case WM_VSCROLL:
         if (m) {
             RECT rc;
             int pos = m->scroll;
             GetClientRect(hwnd, &rc);
+            if (m->whole && (LOWORD(wParam) == SB_LINEUP || LOWORD(wParam) == SB_LINEDOWN)) {
+                Rs_MsgStep(hwnd, LOWORD(wParam) == SB_LINEUP ? -1 : 1);
+                return 0;
+            }
             switch (LOWORD(wParam)) {
             case SB_LINEUP: pos -= Rs_Px(24); break;
             case SB_LINEDOWN: pos += Rs_Px(24); break;
@@ -2293,8 +2466,91 @@ static LRESULT CALLBACK Rs_MsgProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lP
             Rs_MsgScrollTo(hwnd, pos);
         }
         return 0;
+    case WM_SETCURSOR:
+        // A clickable list shows the hand over its entries.
+        if (m && m->clickable && LOWORD(lParam) == HTCLIENT) {
+            POINT pt;
+            GetCursorPos(&pt);
+            ScreenToClient(hwnd, &pt);
+            if (Rs_MsgHit(hwnd, pt.y) >= 0) {
+                SetCursor(LoadCursor(NULL, IDC_HAND));
+                return TRUE;
+            }
+        }
+        break;
+    case WM_LBUTTONUP:
+        if (m && m->clickable) {
+            int hit = Rs_MsgHit(hwnd, (short)HIWORD(lParam));
+            if (hit >= 0) {
+                m->focused = hit;
+                InvalidateRect(hwnd, NULL, FALSE);
+                Rs_MsgClick(hwnd, hit);
+            }
+        }
+        return 0;
+    // A clickable list is a stop of the key Tab: up and down move between
+    // the entries, Enter or Space act as a click on the one framed.
+    case WM_GETDLGCODE:
+        if (m && m->clickable) {
+            const MSG *km = (const MSG *)lParam;
+            if (km && km->message == WM_KEYDOWN && km->wParam == VK_RETURN)
+                return DLGC_WANTMESSAGE;
+            return DLGC_WANTARROWS | DLGC_WANTCHARS;
+        }
+        break;
+    case WM_SETFOCUS:
+    case WM_KILLFOCUS:
+        if (m && msg == WM_SETFOCUS && m->focused < 0 && m->count > 0)
+            m->focused = Rs_MsgFirstAt(m, m->scroll);
+        InvalidateRect(hwnd, NULL, FALSE);
+        break;
+    case WM_KEYDOWN:
+        if (m && m->clickable && m->count > 0) {
+            if (wParam == VK_UP || wParam == VK_DOWN) {
+                int k = m->focused < 0 ? 0 : m->focused + (wParam == VK_UP ? -1 : 1);
+                m->focused = k < 0 ? 0 : k >= m->count ? m->count - 1 : k;
+                Rs_MsgFocusIntoView(hwnd);
+                return 0;
+            }
+            if (wParam == VK_RETURN || wParam == VK_SPACE) {
+                Rs_MsgClick(hwnd, m->focused);
+                return 0;
+            }
+        }
+        break;
+    case WM_CHAR:
+        if (m && m->clickable && (wParam == L' ' || wParam == L'\r'))
+            return 0;       // no beep: WM_KEYDOWN acted
+        break;
     }
     return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+void Rs_MsgListSetClickable(HWND list, int on)
+{
+    struct RsMsgList *m = Rs_MsgData(list);
+    LONG_PTR style = GetWindowLongPtrW(list, GWL_STYLE);
+    if (!m)
+        return;
+    m->clickable = on != 0;
+    m->focused = -1;
+    SetWindowLongPtrW(list, GWL_STYLE, on ? style | WS_TABSTOP : style & ~(LONG_PTR)WS_TABSTOP);
+}
+
+void Rs_MsgListSetWhole(HWND list, int on)
+{
+    struct RsMsgList *m = Rs_MsgData(list);
+    if (!m)
+        return;
+    m->whole = on != 0;
+    Rs_MsgLayout(list);
+    InvalidateRect(list, NULL, FALSE);
+}
+
+int Rs_MsgListClicked(HWND list)
+{
+    struct RsMsgList *m = Rs_MsgData(list);
+    return (m && m->clicked >= 0 && m->clicked < m->count) ? m->clicked : -1;
 }
 
 HWND Rs_MsgList(HWND page, int id)
@@ -2318,6 +2574,8 @@ void Rs_MsgListClear(HWND list)
     // and the list should not jump to the top then. Rs_MsgLayout
     // limits it to the new content.
     m->count = 0;
+    m->clicked = -1;
+    m->focused = -1;
     Rs_MsgLayout(list);
     InvalidateRect(list, NULL, FALSE);
 }
@@ -4384,6 +4642,13 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
                 SendMessageW(g_host, msg.message, msg.wParam, msg.lParam);
                 continue;
             }
+        }
+        // Ctrl+Tab and Ctrl+Shift+Tab: to a page with tabs of its own (it
+        // answers 1); every other page keeps the key as before.
+        if (page && msg.message == WM_KEYDOWN && msg.wParam == VK_TAB && (GetKeyState(VK_CONTROL) & 0x8000) &&
+            SendMessageW(page, RS_WM_STEP_TAB, (GetKeyState(VK_SHIFT) & 0x8000) ? (WPARAM)-1 : 1, 0)) {
+            Rs_FocusIntoView();
+            continue;
         }
         if (!page || !IsDialogMessageW(page, &msg)) {
             TranslateMessage(&msg);

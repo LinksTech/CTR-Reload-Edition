@@ -62,6 +62,7 @@
 
 #define AN_VAL              1024
 #define AN_POSES            6       // in the order of the preview file (RLDPS1)
+#define AN_LIST_ROWS        4       // rows of the pose list shown at once
 #define AN_NOTE_LINES       3
 
 #define AN_TEXT_NOTE        L"Poses of your own for steering and the other animations."
@@ -620,22 +621,28 @@ int CharAnim_Layout(HWND page, int left, int right, int top, int labelW)
     MoveWindow(g_an.clear, in.right - clearW, y, clearW, Rs_Px(32), TRUE);
     y += Rs_Px(40);
 
-    // The six poses, one line each, the whole width of the card.
+    // The six poses, one line each, the whole width of the card; AN_LIST_ROWS
+    // of them at once, the list scrolls (the card fits beside the bar of the page).
     itemH = (int)SendMessageW(g_an.list, LB_GETITEMHEIGHT, 0, 0);
     if (itemH <= 0)
         itemH = Rs_Px(18);
-    h = AN_POSES * itemH + 2 * Rs_Metric(g_an.list, SM_CYBORDER) + Rs_Px(4);
+    h = AN_LIST_ROWS * itemH + 2 * Rs_Metric(g_an.list, SM_CYBORDER) + Rs_Px(4);
     MoveWindow(g_an.list, in.left, y, width, h, TRUE);
     y += h + Rs_Px(10);
 
+    // The pose choice, "Mark body parts..." beside it where it fits.
     MoveWindow(g_an.showLabel, in.left, y + Rs_Px(6), labelW, Rs_Px(20), TRUE);
     w = Rs_Px(240) < fieldW ? Rs_Px(240) : fieldW;
     MoveWindow(g_an.show, x, y + Rs_Px(2), w, Rs_Px(200), TRUE);
-    y += Rs_Px(38);
     text = Rs_GetText(g_an.mark);
-    w = Rs_TextWidth(g_an.mark, text) + Rs_Px(32);
+    h = Rs_TextWidth(g_an.mark, text) + Rs_Px(32);
     Rs_Free(text);
-    MoveWindow(g_an.mark, x, y, w < fieldW ? w : fieldW, Rs_Px(32), TRUE);
+    if (x + w + Rs_Px(12) + h <= in.right) {
+        MoveWindow(g_an.mark, x + w + Rs_Px(12), y, h, Rs_Px(32), TRUE);
+    } else {
+        y += Rs_Px(38);
+        MoveWindow(g_an.mark, x, y, h < fieldW ? h : fieldW, Rs_Px(32), TRUE);
+    }
     y += Rs_Px(40);
 
     h = An_TextHeight(g_an.before, width);

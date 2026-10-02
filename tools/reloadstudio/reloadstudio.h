@@ -345,6 +345,12 @@ int Rs_SeverityFromText(const wchar_t *text);
 // keep a preview no taller than what can be seen at once.
 void Rs_PageViewSize(HWND page, int *w, int *h);
 
+// The lower edge of this page's own heading at the page width w: below its
+// subtitle, or below its title when the subtitle is "". Rs_PageTop is the same
+// line for every page (the deepest heading of all); a page without a subtitle
+// may start its cards higher, at this line plus a margin.
+int Rs_PageHeadBottom(HWND page, int w);
+
 // Minimum size of a page in 96-dpi pixels when its definition says 0.
 #define RS_PAGE_MIN_W 964
 #define RS_PAGE_MIN_H 760
@@ -405,6 +411,8 @@ enum RsPageId { RS_PAGE_TRACK = 0, RS_PAGE_CUPS, RS_PAGE_CHAR, RS_PAGE_TEST, RS_
 #define RS_WM_PAGE_SHOWN  (WM_APP + 3)  // page became visible
 #define RS_WM_OPEN_TEST   (WM_APP + 4)  // to the test page: lParam = wchar_t* container path (Rs_Free)
 #define RS_WM_QUERY_CLOSE (WM_APP + 5)  // window is to close: *handled = 1 and return 0 keeps it open
+#define RS_WM_STEP_TAB    (WM_APP + 6)  // Ctrl+Tab (wParam 1) or Ctrl+Shift+Tab (wParam -1): a page with tabs
+                                        // of its own steps through them, *handled = 1 and returns 1
 
 // Switch page (also from within a page, e.g. "Test in game" after the build).
 void Rs_ShowPage(int id);
@@ -552,6 +560,17 @@ HWND Rs_MsgList(HWND page, int id);
 void Rs_MsgListClear(HWND list);
 void Rs_MsgListAdd(HWND list, int severity, const wchar_t *text, const wchar_t *detail);
 int  Rs_MsgListCount(HWND list);
+// A clickable list shows the hand over its entries; a click on one sends
+// WM_COMMAND with the notification code RS_MSGN_CLICK to the page, and
+// Rs_MsgListClicked then says which entry it was (0 = the first, -1 = none).
+// It is a stop of the key Tab: up and down frame an entry, Enter or Space
+// click it.
+#define RS_MSGN_CLICK 1
+void Rs_MsgListSetClickable(HWND list, int on);
+int  Rs_MsgListClicked(HWND list);
+// Whole entries only: less space around each, an entry that would be cut is
+// left out for a line "N more below - scroll", and the list scrolls by entries.
+void Rs_MsgListSetWhole(HWND list, int on);
 // Writes all entries as "<severity>\t<text>\t<detail>" appended to f (UTF-8).
 void Rs_MsgListWrite(HWND list, FILE *f);
 

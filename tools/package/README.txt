@@ -219,6 +219,15 @@ for the game (and for cups).
   a cup with problems.
 
 4.3 Page "Character" - build a character
+The page goes in five steps, one tab each: 1 Model, 2 Driver, 3 In-game look,
+4 Voices, 5 Extras. The preview stays on the right and the bar with the
+messages and the build at the bottom; nothing has to be scrolled (from
+1366 x 768 on). Each tab head shows its number in a circle: green = done,
+amber = read the warnings, red = a problem to fix there, an outline =
+optional or still to do. A click on a head, "< Back" and "Next >" in the bar,
+or Ctrl+Tab and Ctrl+Shift+Tab move between the tabs.
+
+Tab 1 Model
   Model (PLY) Your model of driver, steering wheel and kart in one PLY file
               with vertex colours (ASCII or binary), +Y up, +Z forward, at
               any scale: Reload Studio fits it to Crash size (see Size). The
@@ -232,27 +241,6 @@ for the game (and for cups).
               is refused or reduced (see "Reduce to fit"). You can also
               drag files onto the page: a .ply is the model, a .png the
               icon, a folder the voices.
-  Name        Shown in the driver select: 1 to 17 characters, capitals,
-              A-Z 0-9 space ! % ' + , - . / : < = > ? _ (anything else is
-              left out while you type).
-  Driving style
-              Balanced, Acceleration, Speed or Turning, each with the
-              original drivers that drive like it (default Balanced). This
-              decides how the kart drives in the game.
-  Mask        Aku Aku (like Crash, Coco, Polar, Pura, Penta) or Uka Uka
-              (like the template Fake Crash, Cortex, Tiny and the rest);
-              default Uka Uka, the mask of Fake Crash. Worn for the mask
-              item and after a fall, with its sound and music, and shown as
-              its icon in the race HUD. The choice is stored in the .rldchar;
-              an older game does not know it and gives the driver Uka Uka.
-  Minimap colour
-              The colour of your driver's marker on the minimap. "Choose..."
-              (or a click on the colour field) picks one, "Like the
-              template" goes back to the default, the colour of Fake Crash
-              (808080: the marker as drawn). 80 per channel is neutral,
-              higher values are brighter. The choice is stored in the
-              .rldchar; an older game does not know it and shows the
-              colour of Fake Crash.
   Size        50 to 200 % (default 100). 100 % = Crash size: every model is
               first fitted to the size of Crash with his kart. Its kart gets
               the length of Crash's kart (112.4 game units); with "Show kart
@@ -294,11 +282,11 @@ for the game (and for cups).
               Off by default. A driver may draw a limited number of
               triangles; a model under that limit is never reduced, and the
               line below the options says so, with its count and the limit.
-              A model over it is refused: the line below the buttons gives
-              its triangles and the limit, and the button "Reduce to fit"
-              there ticks this box and checks again. With the box ticked a
-              model over the limit is reduced until it fits, only as far as
-              needed: the shape and the colours stay, kart,
+              A model over it is refused: the headline of the bar gives its
+              triangles and the limit, and the button "Reduce to fit" below
+              the options ticks this box and checks again. With the box
+              ticked a model over the limit is reduced until it fits, only
+              as far as needed: the shape and the colours stay, kart,
               driver and steering wheel are reduced each on its own, and the
               same model always gives the same result. Colours always stay
               in their place and no face ever turns to the back. Colour
@@ -315,6 +303,23 @@ for the game (and for cups).
               (and no wheel reflections) for this driver; tyre dust and skid
               marks stay. The choice is stored in the .rldchar. An older
               game does not know it and draws the wheels.
+
+Tab 2 Driver
+  Name        Shown in the driver select: 1 to 17 characters, capitals,
+              A-Z 0-9 space ! % ' + , - . / : < = > ? _ (anything else is
+              left out while you type).
+  Driving style
+              Balanced, Acceleration, Speed or Turning, each with the
+              original drivers that drive like it (default Balanced). This
+              decides how the kart drives in the game.
+  Mask        Aku Aku (like Crash, Coco, Polar, Pura, Penta) or Uka Uka
+              (like the template Fake Crash, Cortex, Tiny and the rest);
+              default Uka Uka, the mask of Fake Crash. Worn for the mask
+              item and after a fall, with its sound and music, and shown as
+              its icon in the race HUD. The choice is stored in the .rldchar;
+              an older game does not know it and gives the driver Uka Uka.
+
+Tab 3 In-game look
   Icon (PNG)  Optional. Any PNG, at any size. It becomes the 43 x 25
               portrait of the game (as much of a portrait as the game shows)
               of 15 colours; transparency in the PNG is always kept. The game
@@ -337,12 +342,31 @@ for the game (and for cups).
               a colour of the race, beside the portrait of Fake Crash (read
               from the game's data next to Reload Studio; without them its
               frame is drawn as lines). It follows every change at once.
+  Minimap colour
+              The colour of your driver's marker on the minimap. "Choose..."
+              (or a click on the colour field) picks one, "Like the
+              template" goes back to the default, the colour of Fake Crash
+              (808080: the marker as drawn). 80 per channel is neutral,
+              higher values are brighter. The choice is stored in the
+              .rldchar; an older game does not know it and shows the
+              colour of Fake Crash.
+
+Tab 4 Voices
   Voices      Optional. A folder with your voice lines as .wav or .vag:
               boost1, boost2, hit1, hit2, spin1, spin2, bigair1, bigair2,
               drop1, drop2, shield1, shield2, passing1, passing2, fire1,
               fire2, yes, hit. They are checked (format, length, level, and
               which places are empty), but not packed yet - the driver is
               silent in the game.
+
+Tab 5 Extras
+  Wheels, Animations
+              Wheels and poses of your own, one card at a time (the two
+              words at the top of the tab switch between them). Their fields
+              are marked "Coming soon" and greyed out; nothing of them is
+              written into a character yet.
+
+On the right
   Preview     The model as the game will draw it. Drag to turn it; the list
               at the top right of the card picks Neutral, Steering left or
               Steering right. On the left your model, with the kart wheels
@@ -351,6 +375,15 @@ for the game (and for cups).
               "Crash size": the original kart at Crash's size, the size your
               model is fitted to, with a plain driver figure as tall as
               Crash. Both turn together.
+
+The bar at the bottom
+  Headline    What the last check or build says, e.g. "Ready to build" (one
+              line; point at it to read a longer one whole).
+  Messages    What rldpack found. A click on a message (or Enter on the one
+              framed with the arrow keys) opens the tab it belongs to (one
+              about the icon "In-game look", one about the name "Driver").
+              The list shows whole messages; "N more below" says how many
+              follow - scroll to them.
   Output      Where the .rldchar is written. Empty: the game's "characters"
               folder when Reload Studio knows the game (the one on the page
               "Test in game", else the one in its own folder), else next to
@@ -360,18 +393,14 @@ for the game (and for cups).
               seconds after every change). The messages say what to fix.
   Build character
               Writes the .rldchar (asks before it replaces a file) and says
-              what is in it in the green line below the buttons, e.g.
+              what is in it in the green headline of the bar, e.g.
               "Built: mydriver.rldchar (55 KB) - mask Aku Aku, kart wheels
               hidden." - check the mask there. The message below adds its
               SHA-256. Restart the game to load the new file - the game
               reads its "characters" folder only when it starts. "Show in
               folder" opens the folder.
   Show rldpack output
-              The full checker log.
-  Wheels, Animations
-              Cards below the preview for wheels and poses of your own.
-              Their fields are marked "Coming soon" and greyed out; nothing
-              of them is written into a character yet.
+              The full checker log, in place of the messages.
 
 The file name is the character's identity in the game; the name in the menu
 lives inside the file. The fields and options of the page are not

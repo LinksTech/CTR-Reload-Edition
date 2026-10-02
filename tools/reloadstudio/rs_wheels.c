@@ -61,7 +61,7 @@
 #define WH_ENDED            8       // jobs ended by a newer input whose end is still to come
 
 #define WH_TEXT_NOTE        L"Wheels of your own instead of the game's kart wheels."
-#define WH_TEXT_WHEELS      L"'Show kart wheels' above stays as it is: off = no wheels at all."
+#define WH_TEXT_WHEELS      L"'Show kart wheels' on the tab Model stays as it is: off = no wheels at all."
 #define WH_TEXT_NONE        L"No wheel model chosen."
 
 static struct {
