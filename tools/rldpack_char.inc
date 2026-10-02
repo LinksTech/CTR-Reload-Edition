@@ -246,6 +246,7 @@ static void RldMk_Progress(const char *step, u32 done, u32 total)
 // long.
 #define RLDMK_VEHICLE_LENGTH_MIN 0.6
 #define RLDMK_WHEEL_EXTENT 0.6    // the steering wheel: a small part in front of the driver
+#define RLDMK_CONTACT 1.0         // game units: a part within this of another's top lies on it (RldMk_StepParts)
 
 // The retail kart in game units, for the size reference of Reload Studio
 // (@value retail-kart): 112 long, 56 wide, its bottom 6 above the ground,
@@ -2903,6 +2904,46 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 			    (part->hi[0] >= kart->lo[0]) && (part->lo[2] <= kart->hi[2]) && (part->hi[2] >= kart->lo[2]) && (part->lo[1] <= kart->hi[1]))
 			{
 				part->group = RLDMK_GROUP_KART;
+			}
+		}
+
+		// AND WHAT RESTS ON THE VEHICLE: a part across the kart's middle that
+		// lies on the top of a vehicle part - its bottom within
+		// RLDMK_CONTACT of that part's top, the two over each other seen from
+		// above - is vehicle too (a turret on a hull, a box on a seat), also
+		// when it is small and in front like a steering wheel. Repeated until
+		// nothing changes; a part only ever joins the vehicle, so at most
+		// partCount rounds. A part that starts inside another (deeper than
+		// RLDMK_CONTACT) is not lying on it and stays with the driver.
+		{
+			int changed = 1;
+
+			while (changed)
+			{
+				changed = 0;
+				for (i = 0; i < b->partCount; i++)
+				{
+					struct RldMkPart *part = &b->parts[i];
+					u32 j;
+
+					if (((int)i == b->driverPart) || (part->group == RLDMK_GROUP_KART) || !(part->lo[0] < kartX) || !(part->hi[0] > kartX))
+					{
+						continue;
+					}
+					for (j = 0; j < b->partCount; j++)
+					{
+						const struct RldMkPart *base = &b->parts[j];
+						const double gap = part->lo[1] - base->hi[1];
+
+						if ((j != i) && (base->group == RLDMK_GROUP_KART) && (gap <= RLDMK_CONTACT) && (gap >= -RLDMK_CONTACT) &&
+						    (part->lo[0] <= base->hi[0]) && (part->hi[0] >= base->lo[0]) && (part->lo[2] <= base->hi[2]) && (part->hi[2] >= base->lo[2]))
+						{
+							part->group = RLDMK_GROUP_KART;
+							changed = 1;
+							break;
+						}
+					}
+				}
 			}
 		}
 	}
@@ -19726,12 +19767,13 @@ static void RldMk_SelfTestParts(struct RldMkTestMesh *mesh)
 	int ok;
 
 	// A HULL RESTING ON THE KART: its bottom exactly at the kart's top (a tank's
-	// hull on its chassis) stays with the kart; lifted by 0.01 it is something
+	// hull on its chassis) stays with the kart; lifted by 0.03 (1.9 units, more
+	// than RLDMK_CONTACT) it is something
 	// else and leans with the driver.
 	for (lift = 0; lift < 2; lift++)
 	{
-		const double hullLo[3] = {-0.35, 0.35 + 0.01 * (double)lift, -0.70};
-		const double hullHi[3] = {0.35, 0.55 + 0.01 * (double)lift, 0.70};
+		const double hullLo[3] = {-0.35, 0.35 + 0.03 * (double)lift, -0.70};
+		const double hullHi[3] = {0.35, 0.55 + 0.03 * (double)lift, 0.70};
 		char name[96];
 
 		mesh->vertexCount = 0;
@@ -19743,7 +19785,7 @@ static void RldMk_SelfTestParts(struct RldMkTestMesh *mesh)
 		opt.noWheels = 1;
 		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && (b.partCount == 3u) && (b.driverPart >= 0) && (b.parts[b.driverPart].triangles == 48u) &&
 		     (b.groupTriangles[RLDMK_GROUP_KART] == (lift ? 12u : 24u)) && (b.groupTriangles[RLDMK_GROUP_DRIVER] == (lift ? 60u : 48u));
-		snprintf(name, sizeof(name), "parts: a hull %s the kart's top %s", lift ? "0.01 above" : "resting on", lift ? "leans with the driver" : "stays with the kart");
+		snprintf(name, sizeof(name), "parts: a hull %s the kart's top %s", lift ? "0.03 above" : "resting on", lift ? "leans with the driver" : "stays with the kart");
 		RldMk_Test(ok, name, "parts %u, driver part %d, kart %u, driver %u, said: %s", b.partCount, b.driverPart, b.groupTriangles[RLDMK_GROUP_KART],
 		           b.groupTriangles[RLDMK_GROUP_DRIVER], s_rldMkCodes);
 		RldMk_FreeBuild(&b);
@@ -20256,6 +20298,53 @@ static void RldMk_SelfTestStrtod(void)
 	RldMk_Test(bad < 0, "strtod rounds decimal numbers to the nearest double, ties to even", "case %d: %s", bad, (bad >= 0) ? cases[bad].text : "");
 }
 
+// A TURRET ON THE HULL: the hull rests on the kart (vehicle), a turret lies
+// on the hull - small and in front of the driver, so far a steering wheel -
+// and stays with the vehicle; one that starts inside the hull does not.
+static void RldMk_SelfTestTurret(struct RldMkTestMesh *mesh)
+{
+	static const double kartLo[3] = {-0.45, 0.10, -0.90};
+	static const double kartHi[3] = {0.45, 0.35, 0.90};
+	static const double driverLo[3] = {-0.25, 0.70, -0.80};
+	static const double driverHi[3] = {0.25, 1.30, -0.30};
+	static const double hullLo[3] = {-0.35, 0.35, -0.70};
+	static const double hullHi[3] = {0.35, 0.55, 0.70};
+	struct RldMkOptions opt;
+	struct RldMkPly ply;
+	struct RldMkBuild b;
+	int run;
+
+	for (run = 0; run < 2; run++)
+	{
+		const double turretLo[3] = {-0.15, run ? 0.45 : 0.55, 0.10};
+		const double turretHi[3] = {0.15, 0.70, 0.40};
+		int ok;
+
+		mesh->vertexCount = 0;
+		mesh->faceCount = 0;
+		RldMk_TestBox(mesh, kartLo, kartHi, 1u, 0u, 0, -1);
+		RldMk_TestBox(mesh, driverLo, driverHi, 3u, 10u, 0, -1);
+		RldMk_TestBox(mesh, hullLo, hullHi, 1u, 30u, 0, -1);
+		RldMk_TestBox(mesh, turretLo, turretHi, 1u, 40u, 0, -1);
+		RldMk_TestOptions(&opt);
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+		if (run == 0)
+		{
+			RldMk_Test(ok && (b.groupTriangles[RLDMK_GROUP_KART] == 36u) && (b.groupTriangles[RLDMK_GROUP_WHEEL] == 0u),
+			           "parts: a turret lying on the hull on the kart stays with the vehicle", "built %d, kart %u, driver %u, wheel %u", ok,
+			           b.groupTriangles[RLDMK_GROUP_KART], b.groupTriangles[RLDMK_GROUP_DRIVER], b.groupTriangles[RLDMK_GROUP_WHEEL]);
+		}
+		else
+		{
+			RldMk_Test(ok && (b.groupTriangles[RLDMK_GROUP_KART] == 24u), "parts: a part starting inside the hull is not lying on it",
+			           "built %d, kart %u, driver %u, wheel %u", ok, b.groupTriangles[RLDMK_GROUP_KART], b.groupTriangles[RLDMK_GROUP_DRIVER],
+			           b.groupTriangles[RLDMK_GROUP_WHEEL]);
+		}
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+	}
+}
+
 static int RldChar_SelfTest(void)
 {
 	struct RldMkTestMesh *mesh = (struct RldMkTestMesh *)calloc(1, sizeof(struct RldMkTestMesh));
@@ -20321,6 +20410,7 @@ static int RldChar_SelfTest(void)
 	RldMk_SelfTestPaletteFull();
 	RldMk_SelfTestRemeshTarget();
 	RldMk_SelfTestStrtod();
+	RldMk_SelfTestTurret(mesh);
 	s_rldMkQuiet = quietBefore;
 	RldMk_ResetSaid();
 
