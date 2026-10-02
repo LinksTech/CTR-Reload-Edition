@@ -1948,7 +1948,14 @@ static int RldMk_StepTriangles(const struct RldMkPly *ply, struct RldMkBuild *b,
 
 	if (b->quads != 0u)
 	{
-		RldMk_Say("info", "ply-quads", NULL, "%u quads were split into triangles.", b->quads);
+		if (b->quads == 1u)
+		{
+			RldMk_Say("info", "ply-quads", NULL, "1 four-sided face was split into two triangles.");
+		}
+		else
+		{
+			RldMk_Say("info", "ply-quads", NULL, "%u four-sided faces were split into triangles.", b->quads);
+		}
 	}
 
 	if ((b->degenerate != 0u) && (b->degenerateFaces != 0u))
@@ -2564,13 +2571,13 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 		{
 			// Fitted, the model is only this short when it is far taller than long.
 			RldMk_Say("error", "model-scale", NULL,
-			          "Fitted to Crash size (x%.4g), the model is %.2f Blender units long but %.2f tall - far taller than it is long. Check the axes (+Y up, +Z forward); --fit none builds it at its exported size.",
+			          "Fitted to Crash size (x%.4g), the model is %.2f model units long but %.2f tall - far taller than it is long. Check the axes (+Y up, +Z forward). On the command line, --fit none builds it at its exported size.",
 			          b->fitFactor, length, (hi[1] - lo[1]) / RLDMK_UNITS);
 		}
 		else
 		{
 			RldMk_Say("error", "model-scale", NULL,
-			          "The model is %.1f Blender units long - about %.0f times too large (or small) for a driver. Export it in meters; a driver with kart is about 1.8 units long.",
+			          "The model is %.1f model units long - about %.0f times too large (or small) for a driver. Export it in meters (Blender: 1 unit = 1 meter); a driver with kart is about 1.8 units long.",
 			          length, factor);
 		}
 		return 0;
@@ -2604,30 +2611,32 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 	{
 		const int vehicle = RldMk_ShortVehicle(b);
 		const double vehicleLength = (vehicle >= 0) ? ((b->parts[vehicle].hi[2] - b->parts[vehicle].lo[2]) / RLDMK_UNITS) : 0.0;
-		char also[96];
+		char also[224];
 
 		if ((vehicle >= 0) && opt->noWheels)
 		{
 			best = vehicle;
-			RldMk_Say("info", "ply-kart-short", NULL, "Wheels off: the vehicle at the bottom (%.2f long) is the kart.", vehicleLength);
+			RldMk_Say("info", "ply-kart-short", NULL, "Kart wheels hidden: the vehicle at the bottom (%.2f model units long) is taken as the kart.", vehicleLength);
 		}
 		else
 		{
 			also[0] = '\0';
 			if (vehicle >= 0)
 			{
-				snprintf(also, sizeof(also), " With wheels off, the vehicle at the bottom (%.2f long) would be taken as the kart.", vehicleLength);
+				snprintf(also, sizeof(also),
+				         " The vehicle at the bottom (%.2f model units long) is shorter than a kart; with the kart wheels hidden it is taken as the kart (--wheels off; Reload Studio: untick Show kart wheels).",
+				         vehicleLength);
 			}
 			if (b->fitted)
 			{
 				RldMk_Say("error", "ply-no-kart", NULL,
-				          "No kart found in the model fitted to Crash size (x%.4g). A character needs a kart: a separate part at the bottom of the model, about as long as Crash's kart. --fit none checks the model at its exported size.%s",
+				          "No kart found in the model fitted to Crash size (x%.4g). A character needs a kart: a separate part at the bottom of the model, about as long as Crash's kart.%s On the command line, --fit none checks the model at its exported size.",
 				          b->fitFactor, also);
 			}
 			else
 			{
 				RldMk_Say("error", "ply-no-kart", NULL,
-				          "No kart found. A character needs a kart: a part at the bottom of the model, about 1.8 Blender units long.%s", also);
+				          "No kart found. A character needs a kart: a part at the bottom of the model, about 1.8 model units long (Blender: meters).%s", also);
 			}
 			return 0;
 		}
@@ -4069,7 +4078,7 @@ static int RldMk_StepBudget(struct RldMkBuild *b, const struct RldMkOptions *opt
 	else if ((b->openEdges != 0u) && opt->openOneSided)
 	{
 		RldMk_Say("note", "ply-open-edges", NULL,
-		          "The mesh has %u open edges; you may see through it from some sides. Close the holes in the model, or draw open parts from both sides (--open-parts two-sided, the default).",
+		          "The mesh has %u open edges; you may see through it from some sides. Close the holes in the model, or draw open parts from both sides (--open-parts two-sided, the default; Reload Studio: Draw open parts from both sides).",
 		          b->openEdges);
 	}
 	else if (b->openEdges != 0u)
@@ -4453,7 +4462,7 @@ static int RldMk_SizeFits(const struct RldMkSizeHull *hull, u32 percent, char *w
 		// as step 9 (RldMk_StepQuantize)
 		if (needed > 32767.0)
 		{
-			snprintf(why, whySize, "the model would be %.1f Blender units %s, more than the game's 16-bit model scale holds", (hi - lo) / RLDMK_UNITS,
+			snprintf(why, whySize, "the model would be %.1f model units %s, more than the game's 16-bit model scale holds", (hi - lo) / RLDMK_UNITS,
 			         axisNames[a]);
 			return 0;
 		}
@@ -4478,7 +4487,7 @@ static int RldMk_SizeFits(const struct RldMkSizeHull *hull, u32 percent, char *w
 		length = (hi - lo) / RLDMK_UNITS;
 		if ((length < (RLDMK_DRIVER_LENGTH / 5.0)) || (length > (RLDMK_DRIVER_LENGTH * 5.0)))
 		{
-			snprintf(why, whySize, "the model would be %.2f Blender units long; a character is %.2f to %.2f long", length, RLDMK_DRIVER_LENGTH / 5.0,
+			snprintf(why, whySize, "the model would be %.2f model units long; a character is %.2f to %.2f long", length, RLDMK_DRIVER_LENGTH / 5.0,
 			         RLDMK_DRIVER_LENGTH * 5.0);
 			return 0;
 		}
@@ -4619,7 +4628,7 @@ static int RldMk_StepMeasure(struct RldMkBuild *b, const struct RldMkOptions *op
 	if ((opt->sizePercent != 0u) && (opt->sizePercent != 100u) &&
 	    ((b->size[0] < (RLDMK_DRIVER_LENGTH / 5.0)) || (b->size[0] > (RLDMK_DRIVER_LENGTH * 5.0))))
 	{
-		RldMk_Say("error", "char-size", NULL, "Size %u%% makes the model %.2f Blender units long; a character is %.2f to %.2f long. Choose a smaller size.",
+		RldMk_Say("error", "char-size", NULL, "Size %u%% makes the model %.2f model units long; a character is %.2f to %.2f long. Choose a smaller size.",
 		          opt->sizePercent, b->size[0], RLDMK_DRIVER_LENGTH / 5.0, RLDMK_DRIVER_LENGTH * 5.0);
 		return 0;
 	}
@@ -4640,7 +4649,7 @@ static int RldMk_StepMeasure(struct RldMkBuild *b, const struct RldMkOptions *op
 		{
 			// The scale is the fit's own: only the shape and the axes are left to check.
 			RldMk_Say("warning", "ply-axes", NULL,
-			          "Fitted to Crash size (x%.4g), the model is %.2f long, %.2f wide and %.2f tall and starts %.2f above the ground (Blender units); Crash with his kart is %.2f long and %.2f tall, a retail kart %.2f wide. Check the axes (+Y up, +Z forward) and the kart; --fit none shows the exported size.",
+			          "Fitted to Crash size (x%.4g), the model is %.2f long, %.2f wide and %.2f tall and starts %.2f above the ground (model units; Blender: meters); Crash with his kart is %.2f long and %.2f tall, a retail kart %.2f wide. Check the axes (+Y up, +Z forward) and the kart. On the command line, --fit none shows the exported size.",
 			          b->fitFactor, e[0], e[1], e[2], e[3], RLDMK_CRASH_LENGTH / RLDMK_UNITS, RLDMK_CRASH_HEIGHT / RLDMK_UNITS,
 			          (double)RLDMK_RETAIL_KART_WIDTH / RLDMK_UNITS);
 		}
@@ -4648,7 +4657,7 @@ static int RldMk_StepMeasure(struct RldMkBuild *b, const struct RldMkOptions *op
 		         (e[3] < RLDMK_KART_BOTTOM_MIN) || (e[3] > RLDMK_KART_BOTTOM_MAX))
 		{
 			RldMk_Say("warning", "ply-axes", NULL,
-			          "The model is %.2f long, %.2f wide and %.2f tall and starts %.2f above the ground (Blender units). A driver with kart is about 1.8 long, 0.9 wide and 0.9-2.3 tall. Check scale and axes (+Y up, +Z forward).",
+			          "The model is %.2f long, %.2f wide and %.2f tall and starts %.2f above the ground (model units; Blender: meters). A driver with kart is about 1.8 long, 0.9 wide and 0.9-2.3 tall. Check scale and axes (+Y up, +Z forward).",
 			          e[0], e[1], e[2], e[3]);
 		}
 	}
@@ -4790,7 +4799,7 @@ static int RldMk_StepQuantize(struct RldMkBuild *b)
 		if (needed > 32767.0)
 		{
 			RldMk_Say("error", "model-scale", NULL,
-			          "The model is %.1f Blender units %s - too large for a driver. Export it in meters; a driver with kart is about 1.8 units long.",
+			          "The model is %.1f model units %s - too large for a driver. Export it in meters (Blender: 1 unit = 1 meter); a driver with kart is about 1.8 units long.",
 			          (hi[a] - lo[a]) / RLDMK_UNITS, axisNames[a]);
 			return 0;
 		}
@@ -5407,7 +5416,8 @@ static int RldMk_StepColors(const struct RldMkPly *ply, const struct RldMkOption
 
 	if (ply->hasUv)
 	{
-		RldMk_Say("note", "ply-uv-unused", NULL, "The model has texture coordinates, but textures are not supported yet - only the vertex colors are used.");
+		RldMk_Say("note", "ply-uv-unused", NULL,
+		          "The model has texture coordinates, but a PLY file brings no textures - only the vertex colors are used. To use textures, export as OBJ with its MTL file and images.");
 	}
 	if (ply->alphaBelow != 0u)
 	{
