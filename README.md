@@ -99,7 +99,8 @@ without an emulator, and plays custom tracks next to the original ones.
    once (about 520 MB).
 3. Set up the picture in OPTIONS → GRAPHICS.
 4. Create a folder `tracks` next to the game and put `.rldtrack` files into it.
-5. Race them: ARCADE → NITRO-PIT → RACE, CUP, CRYSTAL or CTR.
+5. Race them: ARCADE → NITRO-PIT → RACE, CUP, CRYSTAL or CTR. Under RACE, the
+   MODE box below the laps offers TIME TRIAL.
 
 Windows 10 (1903 or newer) or Windows 11 and a graphics driver with Vulkan 1.0.
 
@@ -118,7 +119,8 @@ starts a race on your track straight away. Keep it next to `ctr_native.exe`.
 | Race | restart points (the checkpoints that count the laps); bots also need nav paths |
 | Crystal Challenge | at least one crystal |
 | CTR Challenge | each of the letters C, T and R exactly once |
-| Time Trial, Battle | not available yet |
+| Time Trial | the same as Race; chosen in the MODE box below the laps |
+| Battle | not available yet |
 
 At most 110 placed objects (crates, fruit, letters and every other placed
 model); above 90 Reload Studio warns.
@@ -132,8 +134,8 @@ Every page and message of Reload Studio is explained in section 4 of the
 
 Planned, in no particular order and without a date:
 
-- Time Trial and Battle on custom tracks
-- Best times on custom tracks
+- Battle on custom tracks
+- Boss races and race modifiers in NITRO-PIT
 - Custom characters - a first version is in the nightly build (Reload
   Studio's Character page and a `characters` folder next to the game). It
   fits every model onto Crash's kart at his size, repairs common export

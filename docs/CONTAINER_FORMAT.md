@@ -182,7 +182,7 @@ Mode bits (`RLD_MODE_*`):
 |---|---|---|
 | 0x1 | Race | playable |
 | 0x2 | CTR Challenge | playable |
-| 0x4 | Time Trial | can be declared, not playable yet |
+| 0x4 | Time Trial | can be declared, not needed: the NITRO-PIT time trial (MODE box under RACE) runs on every Race track |
 | 0x8 | Crystal Challenge | playable |
 | 0x10 | Battle | reserved, `rldpack` refuses it |
 

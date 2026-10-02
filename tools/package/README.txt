@@ -84,9 +84,10 @@ The choices are saved in ctr-settings.cfg and are there after a restart.
 The game loads every .rldtrack file in its "tracks" folder at start. Custom
 tracks are under ARCADE -> NITRO-PIT:
 
-  RACE         single race on a custom track (with bots if it has nav paths)
+  RACE         single race on a custom track (with bots if it has nav paths);
+               below the laps the MODE box: RACE or TIME TRIAL
   CUP          custom cups from tracks\cups.txt (made on the Cups page)
-  TIME TRIAL   grey, "COMING IN BETA 2"
+  TIME TRIAL   grey, "COMING IN BETA 2" - the time trial is under RACE, MODE
   CRYSTAL      crystal challenge: collect every crystal in 3:00
   CTR          CTR challenge: finish 1st and collect C, T and R
 
@@ -96,6 +97,16 @@ offers several modes is listed under each of them.
 
 In the track list the window on the left plays the track's preview. Without a
 preview it shows NO PREVIEW; that is not an error.
+
+Time trial: in the track list press X, then DOWN past the last lap row into
+the MODE box, choose TIME TRIAL with X, pick the laps and start with X. You
+drive alone, without crates or fruit; the HUD lists the lap times and your
+best time for this track and lap count. The best times are kept in
+nitro-pit-times.tsv next to the game, one line per track and lap count with
+driver and date - never on the memory card. A line of a track that is no
+longer in the folder stays in the file. A rebuilt track counts as a new
+track. RETRY drives the time trial again, CHANGE LEVEL goes back to the
+track list.
 
 Crystal and CTR challenges end with RETRY or back to NITRO-PIT. Nothing is
 written to your adventure save.
@@ -108,8 +119,8 @@ folder at start (make them on Reload Studio's "Character" page, 4.3). It
 reads the folder only then: after you build or replace a character,
 restart the game. Each gets a tile in the one-player ARCADE driver select,
 after the original drivers; the tiles are sorted by file name, at most 32
-get one. Not in NITRO-PIT CRYSTAL or CTR, not in Time Trial, Adventure,
-Battle or with two players.
+get one. Not in NITRO-PIT CRYSTAL or CTR, not in the original Time Trial,
+Adventure, Battle or with two players (the NITRO-PIT time trial takes them).
 - A broken file is skipped and the game starts anyway; the log says why (a
   line starting with "[CTR Char] REFUSED").
 - The driving style chosen in Reload Studio decides how the kart drives
@@ -393,7 +404,7 @@ folders the file dialogs open in are).
   Race              restart points (the checkpoints that count the laps)
   Crystal Challenge at least one crystal on the track
   CTR Challenge     each of the letters C, T and R exactly once
-  Time Trial        not available yet (greyed out)
+  Time Trial        the same as Race (in the game: RACE, MODE TIME TRIAL)
   Battle            not available yet (greyed out)
 
 Also good to know:
@@ -464,6 +475,8 @@ In the game
     let the time run out, lose; RETRY works.
 [ ] NITRO-PIT -> CTR (if your track has C, T, R): drive through C, T and R
     yourself and finish 1st -> YOU WIN. Miss a letter -> TRY AGAIN.
+[ ] NITRO-PIT -> RACE -> MODE TIME TRIAL: you drive alone, the lap times
+    show, and the next run shows your best time.
 [ ] Pause -> QUIT in a challenge brings you back to the menu.
 [ ] Your character in ARCADE: its tile is in the driver select, with its
     icon if you gave one; the race runs, the kart drives like the driving
@@ -475,8 +488,11 @@ In the game
 7. KNOWN ISSUES
 ---------------
 Modes and menus
-- Custom tracks play Race, Crystal Challenge and CTR Challenge. Time Trial
-  and Battle are planned. Best times on custom tracks are not saved.
+- Custom tracks play Race (also as Time Trial), Crystal Challenge and CTR
+  Challenge. Battle is planned.
+- Time trial: the HUD keeps TIME at the top left, the rank column and the
+  wumpa counter. A new record and a new best lap in one run show only NEW
+  RECORD; the best lap is in the file. There is no ghost.
 - Multiplayer (VS., BATTLE, 2 players) is locked.
 - A track that offers both Race and Crystal Challenge is not tested yet: no
   test track has both restart points and crystals.
@@ -495,7 +511,7 @@ Characters
   score lists and profiles show the portrait of Fake Crash.
 - The cup podium shows Fake Crash.
 - Only in the one-player ARCADE driver select; not in NITRO-PIT CRYSTAL or
-  CTR, Time Trial, Adventure, Battle or with two players.
+  CTR, the original Time Trial, Adventure, Battle or with two players.
 - The size is visual only - physics and collision follow the driving style.
 - With "Show kart wheels" off, tyre dust and skid marks still show where the
   game's wheels would be.
