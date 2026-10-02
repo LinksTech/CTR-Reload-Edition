@@ -365,6 +365,39 @@ static void RldMk_EmitFile(const char *kind, const char *state, const char *name
 	Rld_Emit("file", kind, state, name, number, (const char *)NULL);
 }
 
+// fopen(path, "wb") failed with errno `openError`: when that is ENOENT, a
+// folder on the way does not exist - said with `code` (the folder named), and
+// 1 is returned. Otherwise 0: the caller says its usual text.
+static int RldMk_SayMissingFolder(const char *severity, const char *code, const char *path, const char *what, int openError)
+{
+	char folder[RLD_PATH_MAX];
+	size_t length = strlen(path);
+
+	if (openError != ENOENT)
+	{
+		return 0;
+	}
+
+	while ((length > 0u) && (path[length - 1u] != '/') && (path[length - 1u] != '\\'))
+	{
+		length--;
+	}
+	if (length > 1u)
+	{
+		length--;  // without the separator, but "/" stays "/"
+	}
+	if (length >= sizeof(folder))
+	{
+		length = sizeof(folder) - 1u;
+	}
+	memcpy(folder, path, length);
+	folder[length] = '\0';
+
+	RldMk_Say(severity, code, path, "%s %s cannot be written: the folder %s does not exist. Create it, or choose another place to save.", what, path,
+	          (folder[0] != '\0') ? folder : ".");
+	return 1;
+}
+
 //========================================================================================
 // ARITHMETIC THAT ROUNDS THE SAME EVERYWHERE
 //========================================================================================
@@ -1253,6 +1286,8 @@ struct RldMkOptions
 	int reduce;       // --reduce auto: too many triangles are reduced (RldMk_StepReduce); 0 = --reduce off
 	int noWheels;     // --wheels off: CHRI flag RLDCHAR_FLAG_NO_WHEELS, and --fit measures the whole model
 	u32 mask;         // --mask: RLDCHAR_MASK_LIKE (default), _AKU or _UKA, CHRI flags bits 1-2
+	int hasMapColor;  // --map-color: CHRI flag RLDCHAR_FLAG_MAP_COLOR and mapColor
+	u32 mapColor;     // 0x00BBGGRR
 	u32 reduceTarget; // set by RldMk_BuildModel: at most this many triangles after a reduction
 	int reduceForce;  // set by RldMk_BuildModel: reduce even at RLDMK_REDUCE_LIMIT or below
 	const char *reduceWhy;  // set by RldMk_BuildModel with reduceForce: why, for model-reduced
@@ -7120,6 +7155,7 @@ static void RldMk_WritePreview(const struct RldMkBuild *b, const char *path)
 	size_t size = 0;
 	u8 *data = RldMk_Preview(b, &size, box);
 	FILE *file;
+	int openError;
 
 	if (data == NULL)
 	{
@@ -7129,10 +7165,14 @@ static void RldMk_WritePreview(const struct RldMkBuild *b, const char *path)
 	}
 
 	file = fopen(path, "wb");
+	openError = (file == NULL) ? errno : 0;
 	if ((file == NULL) || (fwrite(data, 1, size, file) != size) || (fclose(file) != 0))
 	{
 		RldMk_EmitFile("preview", "failed", path, 0u);
-		RldMk_Say("warning", "preview", path, "The preview file %s cannot be written. Is the folder write-protected?", path);
+		if (!RldMk_SayMissingFolder("warning", "preview", path, "The preview file", openError))
+		{
+			RldMk_Say("warning", "preview", path, "The preview file %s cannot be written. Is the folder write-protected?", path);
+		}
 		free(data);
 		return;
 	}
@@ -7504,11 +7544,14 @@ static void RldMk_PartColors(const struct RldMkBuild *b, int group, char *out, s
 // template, class, the 20-byte name, charVersion, then one string: the author.
 // fixedSize 0x20 with the flags only when a flag is set: without one the
 // bytes are those from before the flags existed (include/rldchar.inc).
-static u8 *RldMk_BuildChri(u32 templateId, u32 classId, const u8 name[RLDCHAR_NAME_FIELD], u32 charVersion, const char *author, u32 flags,
-                           size_t *sizeOut)
+// fixedSize 0x24 with the map color only when RLDCHAR_FLAG_MAP_COLOR is set:
+// mapColor 0x00BBGGRR is written as it is (r, g, b, 0).
+static u8 *RldMk_BuildChriColor(u32 templateId, u32 classId, const u8 name[RLDCHAR_NAME_FIELD], u32 charVersion, const char *author, u32 flags,
+                                u32 mapColor, size_t *sizeOut)
 {
 	const size_t length = strlen(author);
-	const u32 fixedSize = (flags != 0u) ? RLDCHAR_CHRI_SIZE_FLAGS : RLDCHAR_INFO_FIXED_SIZE;
+	const u32 fixedSize = ((flags & RLDCHAR_FLAG_MAP_COLOR) != 0u) ? RLDCHAR_CHRI_SIZE_MAP_COLOR
+	                                                               : ((flags != 0u) ? RLDCHAR_CHRI_SIZE_FLAGS : RLDCHAR_INFO_FIXED_SIZE);
 	const size_t size = fixedSize + 4u + 4u + length;
 	u8 *data = (u8 *)calloc(1, size);
 
@@ -7527,6 +7570,10 @@ static u8 *RldMk_BuildChri(u32 templateId, u32 classId, const u8 name[RLDCHAR_NA
 	{
 		Rld_WriteLE32(&data[RLDCHAR_CHRI_FLAGS_OFFSET], flags);
 	}
+	if ((flags & RLDCHAR_FLAG_MAP_COLOR) != 0u)
+	{
+		Rld_WriteLE32(&data[RLDCHAR_CHRI_MAP_COLOR_OFFSET], mapColor & 0x00FFFFFFu);
+	}
 	Rld_WriteLE32(&data[fixedSize], 1u);
 	Rld_WriteLE32(&data[fixedSize + 4u], (u32)length);
 	memcpy(&data[fixedSize + 8u], author, length);
@@ -7535,9 +7582,15 @@ static u8 *RldMk_BuildChri(u32 templateId, u32 classId, const u8 name[RLDCHAR_NA
 	return data;
 }
 
-// CHRI, CMDL and - with --icon - CICN through the shared envelope
-// (Rld_WriteEnvelope, rldtrack.inc). cicn NULL: two chunks, as before CICN existed.
-// CHRI, CMDL, then CICN and CMSK (the own mask) when there are any.
+static u8 *RldMk_BuildChri(u32 templateId, u32 classId, const u8 name[RLDCHAR_NAME_FIELD], u32 charVersion, const char *author, u32 flags,
+                           size_t *sizeOut)
+{
+	return RldMk_BuildChriColor(templateId, classId, name, charVersion, author, flags, 0u, sizeOut);
+}
+
+// CHRI, CMDL, then CICN (--icon) and CMSK (--mask-model) when there are any,
+// through the shared envelope (Rld_WriteEnvelope, rldtrack.inc). Without them
+// two chunks, as before CICN existed.
 static u8 *RldMk_ContainerMask(const u8 *chri, size_t chriSize, const u8 *cmdl, size_t cmdlSize, const u8 *cicn, const u8 *cmsk, size_t cmskSize,
                                size_t *sizeOut)
 {
@@ -8946,11 +8999,62 @@ static int RldMk_MaskSwitch(const char *maskArg, u32 *mask)
 	return 1;
 }
 
-// The CHRI flags of a build: no wheels (bit 0) and the mask (bits 1-2). Both
-// unset = 0, and CHRI keeps fixedSize 0x1C as before the flags.
+// --map-color RRGGBB (hex, any case, a leading # allowed): *color is
+// 0x00BBGGRR, the order of CHRI and of the game's color words. 0 = not six hex
+// digits, said (map-color).
+static int RldMk_MapColorSwitch(const char *arg, u32 *color)
+{
+	const char *digits = (arg[0] == '#') ? &arg[1] : arg;
+	u32 rgb = 0;
+	int k;
+
+	for (k = 0; k < 6; k++)
+	{
+		const char c = digits[k];
+		u32 v = 16u;  // not a hex digit
+
+		if ((c >= '0') && (c <= '9'))
+		{
+			v = (u32)(c - '0');
+		}
+		else if ((c >= 'a') && (c <= 'f'))
+		{
+			v = (u32)(c - 'a' + 10);
+		}
+		else if ((c >= 'A') && (c <= 'F'))
+		{
+			v = (u32)(c - 'A' + 10);
+		}
+
+		if (v > 15u)
+		{
+			break;
+		}
+		rgb = (rgb << 4) | v;
+	}
+	if ((k != 6) || (digits[6] != '\0'))
+	{
+		RldMk_Say("error", "map-color", arg, "The map color \"%s\" must be six hex digits RRGGBB, as FF8000 for orange.", arg);
+		return 0;
+	}
+
+	*color = ((rgb >> 16) & 0xFFu) | (rgb & 0xFF00u) | ((rgb & 0xFFu) << 16);
+	return 1;
+}
+
+// 0x00BBGGRR -> "RRGGBB" (7 bytes with the end).
+static void RldMk_MapColorText(u32 color, char text[8])
+{
+	snprintf(text, 8, "%02X%02X%02X", color & 0xFFu, (color >> 8) & 0xFFu, (color >> 16) & 0xFFu);
+}
+
+// The CHRI flags of a build: no wheels (bit 0), the mask (bits 1-2) and an
+// own map color (bit 3). All unset = 0, and CHRI keeps fixedSize 0x1C as
+// before the flags.
 static u32 RldMk_ChriFlags(const struct RldMkOptions *opt)
 {
-	return (opt->noWheels ? RLDCHAR_FLAG_NO_WHEELS : 0u) | ((opt->mask << RLDCHAR_FLAG_MASK_SHIFT) & RLDCHAR_FLAG_MASK_BITS);
+	return (opt->noWheels ? RLDCHAR_FLAG_NO_WHEELS : 0u) | ((opt->mask << RLDCHAR_FLAG_MASK_SHIFT) & RLDCHAR_FLAG_MASK_BITS) |
+	       (opt->hasMapColor ? RLDCHAR_FLAG_MAP_COLOR : 0u);
 }
 
 // The mask a driver wears, as a word: "aku" or "uka"; with RLDCHAR_MASK_LIKE
@@ -9253,6 +9357,7 @@ static int RldMk_WriteDiagnosis(const struct RldMkBuild *b, const struct RldMkOp
 	size_t size = 0;
 	char *text = built ? RldMk_Diagnosis(b, opt, &size) : NULL;
 	FILE *file;
+	int openError;
 
 	if (text == NULL)
 	{
@@ -9266,10 +9371,14 @@ static int RldMk_WriteDiagnosis(const struct RldMkBuild *b, const struct RldMkOp
 	}
 
 	file = fopen(path, "wb");
+	openError = (file == NULL) ? errno : 0;
 	if ((file == NULL) || (fwrite(text, 1, size, file) != size) || (fclose(file) != 0))
 	{
 		RldMk_EmitFile("diagnosis", "failed", path, 0u);
-		RldMk_Say("error", "write", path, "The diagnosis file %s cannot be written. Is the folder write-protected?", path);
+		if (!RldMk_SayMissingFolder("error", "write", path, "The diagnosis file", openError))
+		{
+			RldMk_Say("error", "write", path, "The diagnosis file %s cannot be written. Is the folder write-protected?", path);
+		}
 		free(text);
 		return RldMk_Fail(1);
 	}
@@ -9417,6 +9526,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	const char *wheelsArg = NULL;
 	const char *maskArg = NULL;
 	const char *maskModelArg = NULL;
+	const char *mapColorArg = NULL;
 	const char *maskSizeArg = NULL;
 	const char *maskUpArg = NULL;
 	const char *maskForwardArg = NULL;
@@ -9531,6 +9641,10 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		else if ((strcmp(arg, "--mask-model") == 0) && hasValue)
 		{
 			maskModelArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--map-color") == 0) && hasValue)
+		{
+			mapColorArg = argv[++i];
 		}
 		else if ((strcmp(arg, "--mask-size") == 0) && hasValue)
 		{
@@ -9694,6 +9808,10 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		}
 	}
 	(void)RldMk_MaskSwitch(maskArg, &opt.mask);
+	if (mapColorArg != NULL)
+	{
+		opt.hasMapColor = RldMk_MapColorSwitch(mapColorArg, &opt.mapColor);
+	}
 
 	// THE OWN MASK: its own options, the profile of a mask (RldMk_BuildMaskOnce).
 	RldMk_DefaultOptions(&maskOpt);
@@ -9939,6 +10057,12 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		Rld_Emit("value", "reduce", opt.reduce ? "auto" : "off", (reduceArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "wheels", opt.noWheels ? "off" : "on", (wheelsArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "mask", RldMk_MaskWord(opt.mask, templateId), (opt.mask != RLDCHAR_MASK_LIKE) ? "switch" : "template", (const char *)NULL);
+		{
+			char color[8];
+
+			RldMk_MapColorText(opt.mapColor, color);
+			Rld_Emit("value", "map-color", opt.hasMapColor ? color : "template", opt.hasMapColor ? "switch" : "template", (const char *)NULL);
+		}
 		if (maskModelArg != NULL)
 		{
 			Rld_Emit("value", "mask-model", maskModelArg, "switch", (const char *)NULL);
@@ -10093,6 +10217,17 @@ static int RldChar_MakeCommand(int argc, char **argv)
 			printf("  mask          %s (%s)\n", RldMk_MaskName(opt.mask, templateId),
 			       (opt.mask == RLDCHAR_MASK_AKU) ? "--mask aku" : ((opt.mask == RLDCHAR_MASK_UKA) ? "--mask uka" : "like the template"));
 		}
+		if (opt.hasMapColor)
+		{
+			char color[8];
+
+			RldMk_MapColorText(opt.mapColor, color);
+			printf("  map color     %s (--map-color)\n", color);
+		}
+		else
+		{
+			printf("  map color     the template's\n");
+		}
 	}
 
 	// THE DIAGNOSIS ends here: a build with lifted limits never becomes a
@@ -10117,15 +10252,24 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	}
 
 	// CHRI, checked with the reader the game runs, and the container.
-	chri = RldMk_BuildChri(templateId, classId, nameField, charVersion, authorArg, RldMk_ChriFlags(&opt), &chriSize);
+	chri = RldMk_BuildChriColor(templateId, classId, nameField, charVersion, authorArg, RldMk_ChriFlags(&opt), opt.mapColor, &chriSize);
 	if (chri != NULL)
 	{
 		struct RldCharInfo back;
 		const char *why = RldChar_ParseInfo(&back, chri, chriSize);
+		u32 color = 0;
 
 		if ((why == NULL) && (back.flags != RldMk_ChriFlags(&opt)))
 		{
 			why = "the flags differ";
+		}
+		if ((why == NULL) && (RldChar_MapColor(&back, &color) != opt.hasMapColor))
+		{
+			why = "the map color differs";
+		}
+		if ((why == NULL) && opt.hasMapColor && (color != opt.mapColor))
+		{
+			why = "the map color differs";
 		}
 		if (why != NULL)
 		{
@@ -10167,11 +10311,15 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	if (!check)
 	{
 		FILE *file = fopen(outPath, "wb");
+		const int openError = (file == NULL) ? errno : 0;
 
 		if ((file == NULL) || (fwrite(container, 1, containerSize, file) != containerSize) || (fclose(file) != 0))
 		{
-			RldMk_Say("error", "write", outPath,
-			          "The character file cannot be written. Is the folder write-protected, or is the file open in another program?");
+			if (!RldMk_SayMissingFolder("error", "write", outPath, "The character file", openError))
+			{
+				RldMk_Say("error", "write", outPath,
+				          "The character file cannot be written. Is the folder write-protected, or is the file open in another program?");
+			}
 			free(cmsk);
 			free(chri);
 			free(container);
@@ -10448,6 +10596,20 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		{
 			printf("  portrait      the template's - CICN ignored: %s\n", iconWhy);
 		}
+		{
+			char color[8];
+			u32 mapColor = 0;
+
+			if (RldChar_MapColor(&info, &mapColor))
+			{
+				RldMk_MapColorText(mapColor, color);
+				printf("  map color     %s\n", color);
+			}
+			else
+			{
+				printf("  map color     the template's\n");
+			}
+		}
 		if (strcmp(maskState, "own") == 0)
 		{
 			printf("  own mask      %u triangles, %u bytes of draw memory per frame (at most %u), %u colors (CMSK)\n", maskFacts.triangles,
@@ -10494,6 +10656,14 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		Rld_Emit("value", "wheels", ((info.flags & RLDCHAR_FLAG_NO_WHEELS) != 0u) ? "off" : "on", "container", (const char *)NULL);
 		Rld_Emit("value", "mask", RldMk_MaskWord(RldChar_Mask(info.flags), info.templateId),
 		         (RldChar_Mask(info.flags) != RLDCHAR_MASK_LIKE) ? "container" : "template", (const char *)NULL);
+		{
+			char color[8];
+			u32 mapColor = 0;
+			const int own = RldChar_MapColor(&info, &mapColor);
+
+			RldMk_MapColorText(mapColor, color);
+			Rld_Emit("value", "map-color", own ? color : "template", own ? "container" : "template", (const char *)NULL);
+		}
 		if ((info.flags & ~(u32)RLDCHAR_FLAGS_KNOWN) != 0u)
 		{
 			snprintf(number, sizeof(number), "0x%08x", info.flags);
@@ -10699,6 +10869,8 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "                              rescue after a fall, its sound and music and\n");
 	fprintf(out, "                              the HUD icon; like (default): the template's\n");
 	fprintf(out, "                              (Fake Crash: Uka Uka); aku: Aku Aku; uka: Uka Uka\n");
+	fprintf(out, "  --map-color RRGGBB          the color of the driver's marker on the minimap\n");
+	fprintf(out, "                              (hex, as FF8000); default the template's\n");
 	fprintf(out, "  --mask-model <ply>          an own mask drawn in place of Aku Aku / Uka Uka\n");
 	fprintf(out, "                              (--mask still decides which of the two it is:\n");
 	fprintf(out, "                              sound, music, beam): a PLY with vertex colors,\n");
@@ -12067,7 +12239,7 @@ static void RldMk_SelfTestChriFlags(const u8 field[RLDCHAR_NAME_FIELD], const u8
 	}
 	free(again);
 
-	// Unknown bits are kept and ignored, never refused; 0x8 alone is no flag
+	// Unknown bits are kept and ignored, never refused; 0x10 alone is no flag
 	// this reader knows.
 	m = RldMk_TestCopy(flagged, size);
 	if (m != NULL)
@@ -12076,10 +12248,10 @@ static void RldMk_SelfTestChriFlags(const u8 field[RLDCHAR_NAME_FIELD], const u8
 		why = RldChar_ParseInfo(&info, m, size);
 		RldMk_Test((why == NULL) && (info.flags == 0x80000001u) && ((info.flags & RLDCHAR_FLAG_NO_WHEELS) != 0u), "CHRI flags 0x80000001: accepted, no wheels",
 		           "%s", (why != NULL) ? why : "flags differ");
-		Rld_WriteLE32(&m[RLDCHAR_CHRI_FLAGS_OFFSET], 0x8u);
+		Rld_WriteLE32(&m[RLDCHAR_CHRI_FLAGS_OFFSET], 0x10u);
 		why = RldChar_ParseInfo(&info, m, size);
-		RldMk_Test((why == NULL) && (info.flags == 0x8u) && ((info.flags & RLDCHAR_FLAG_NO_WHEELS) == 0u) && (RldChar_Mask(info.flags) == RLDCHAR_MASK_LIKE),
-		           "CHRI flags 0x8 alone: accepted, wheels shown, mask like the template", "%s", (why != NULL) ? why : "flags differ");
+		RldMk_Test((why == NULL) && (info.flags == 0x10u) && ((info.flags & RLDCHAR_FLAG_NO_WHEELS) == 0u) && (RldChar_Mask(info.flags) == RLDCHAR_MASK_LIKE),
+		           "CHRI flags 0x10 alone: accepted, wheels shown, mask like the template", "%s", (why != NULL) ? why : "flags differ");
 
 		// fixedSize 0x22: not a multiple of 4.
 		Rld_WriteLE32(&m[RLDCHAR_CHRI_FLAGS_OFFSET], RLDCHAR_FLAG_NO_WHEELS);
@@ -12206,6 +12378,96 @@ static void RldMk_SelfTestChriMask(const u8 field[RLDCHAR_NAME_FIELD])
 		           s_rldMkCodes, mask);
 	}
 	RldMk_ResetSaid();
+}
+
+// --map-color: CHRI flag bit 3 and the color at 0x20 (fixedSize 0x24), written
+// only when chosen; bit 3 without the field and the field without bit 3 read
+// as the template's color, without a finding.
+static void RldMk_SelfTestMapColor(const u8 field[RLDCHAR_NAME_FIELD])
+{
+	static const char *const words[5] = {"FF8000", "#00ff7f", "FF80", "GG0000", "FF80000"};
+	static const u32 colors[5] = {0x000080FFu, 0x007FFF00u, 0u, 0u, 0u};
+	struct RldMkOptions opt;
+	struct RldCharInfo info;
+	const char *why;
+	size_t size = 0;
+	size_t sizeAgain = 0;
+	u32 color = 0;
+	u8 *chri;
+	u8 *again;
+	char text[8];
+	int k;
+
+	for (k = 0; k < 5; k++)
+	{
+		char name[64];
+		int ok;
+
+		RldMk_ResetSaid();
+		color = 0xFFFFFFFFu;
+		ok = RldMk_MapColorSwitch(words[k], &color);
+		snprintf(name, sizeof(name), "--map-color %s: %s", words[k], (k < 2) ? "taken" : "refused (map-color)");
+		RldMk_Test((k < 2) ? (ok && (color == colors[k])) : (!ok && RldMk_Said("map-color")), name, "said: %s, color 0x%06x", s_rldMkCodes, color);
+	}
+	RldMk_ResetSaid();
+	RldMk_MapColorText(0x000080FFu, text);
+	RldMk_Test(strcmp(text, "FF8000") == 0, "map color 0x000080FF written as FF8000", "%s", text);
+
+	// --wheels off --mask uka --map-color FF8000: flags 0xD, fixedSize 0x24,
+	// the bytes FF 80 00 00 at 0x20, read back, twice the same.
+	RldMk_DefaultOptions(&opt);
+	opt.noWheels = 1;
+	opt.mask = RLDCHAR_MASK_UKA;
+	opt.hasMapColor = 1;
+	opt.mapColor = 0x000080FFu;
+	chri = RldMk_BuildChriColor(14u, 0u, field, 3u, "self-test", RldMk_ChriFlags(&opt), opt.mapColor, &size);
+	again = RldMk_BuildChriColor(14u, 0u, field, 3u, "self-test", RldMk_ChriFlags(&opt), opt.mapColor, &sizeAgain);
+	why = (chri != NULL) ? RldChar_ParseInfo(&info, chri, size) : "out of memory";
+	color = 0;
+	RldMk_Test((why == NULL) && (again != NULL) && (size == sizeAgain) && (memcmp(chri, again, size) == 0) &&
+	               (Rld_ReadLE16(&chri[0x00]) == RLDCHAR_CHRI_SIZE_MAP_COLOR) && (info.flags == 0xDu) && (chri[0x20] == 0xFFu) && (chri[0x21] == 0x80u) &&
+	               (chri[0x22] == 0x00u) && (chri[0x23] == 0x00u) && RldChar_MapColor(&info, &color) && (color == 0x000080FFu) &&
+	               (RldChar_Mask(info.flags) == RLDCHAR_MASK_UKA) && (strcmp(info.author, "self-test") == 0),
+	           "CHRI with --wheels off --mask uka --map-color FF8000: flags 0xD, fixedSize 0x24, color and fields there and back", "%s",
+	           (why != NULL) ? why : "a field differs");
+	free(again);
+
+	// The field without bit 3: the template's color.
+	if (chri != NULL)
+	{
+		Rld_WriteLE32(&chri[RLDCHAR_CHRI_FLAGS_OFFSET], RLDCHAR_FLAG_NO_WHEELS);
+		why = RldChar_ParseInfo(&info, chri, size);
+		color = 0x123456u;
+		RldMk_Test((why == NULL) && !RldChar_MapColor(&info, &color) && (color == 0x123456u), "CHRI color without bit 3: accepted, the template's color",
+		           "%s", (why != NULL) ? why : "a color was read");
+	}
+	free(chri);
+
+	// Bit 3 through RldMk_BuildChri (no color passed): fixedSize 0x24, the color 0.
+	chri = RldMk_BuildChri(14u, 0u, field, 3u, "self-test", RLDCHAR_FLAG_MAP_COLOR, &size);
+	why = (chri != NULL) ? RldChar_ParseInfo(&info, chri, size) : "out of memory";
+	color = 0x123456u;
+	RldMk_Test((why == NULL) && (Rld_ReadLE16(&chri[0x00]) == RLDCHAR_CHRI_SIZE_MAP_COLOR) && RldChar_MapColor(&info, &color) && (color == 0u),
+	           "CHRI bit 3 through BuildChri: fixedSize 0x24 with color 0", "%s", (why != NULL) ? why : "a field differs");
+	if (chri != NULL)
+	{
+		u8 *m = (u8 *)calloc(1, size);
+
+		if (m != NULL)
+		{
+			// Bit 3 without the field: the same CHRI cut to fixedSize 0x20 reads
+			// as the template's color.
+			memcpy(m, chri, RLDCHAR_CHRI_SIZE_FLAGS);
+			memcpy(&m[RLDCHAR_CHRI_SIZE_FLAGS], &chri[RLDCHAR_CHRI_SIZE_MAP_COLOR], size - RLDCHAR_CHRI_SIZE_MAP_COLOR);
+			Rld_WriteLE16(&m[0x00], RLDCHAR_CHRI_SIZE_FLAGS);
+			why = RldChar_ParseInfo(&info, m, size - 4u);
+			color = 0x123456u;
+			RldMk_Test((why == NULL) && (info.flags == RLDCHAR_FLAG_MAP_COLOR) && !RldChar_MapColor(&info, &color) && (color == 0x123456u),
+			           "CHRI bit 3 without the field (fixedSize 0x20): accepted, the template's color", "%s", (why != NULL) ? why : "a color was read");
+			free(m);
+		}
+	}
+	free(chri);
 }
 
 // CHRI, the container, and the name as the maker takes it.
@@ -12336,6 +12598,7 @@ static void RldMk_SelfTestChri(const u8 *good, size_t goodSize)
 
 	RldMk_SelfTestChriFlags(field, good, goodSize);
 	RldMk_SelfTestChriMask(field);
+	RldMk_SelfTestMapColor(field);
 
 	// The name as typed: capitals, the menu font, the length.
 	RldMk_ResetSaid();

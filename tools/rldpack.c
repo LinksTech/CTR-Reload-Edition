@@ -41,6 +41,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <errno.h>
 
 // For make: list the track folder and resolve paths.
 #if defined(_WIN32)
