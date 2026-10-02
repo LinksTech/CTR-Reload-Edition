@@ -460,7 +460,9 @@ On the right
               the right, in grey and in the same scale on the same floor,
               "Crash size": the original kart at Crash's size, the size your
               model is fitted to, with a plain driver figure as tall as
-              Crash. Both turn together.
+              Crash. Both turn together. The colours are those on a bright
+              road: on dark ground the game shades every driver, by up to
+              75 % (the line below the preview says so).
 
 The bar at the bottom
   Headline    What the last check or build says, e.g. "Ready to build" (one

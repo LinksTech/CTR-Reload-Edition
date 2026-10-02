@@ -367,6 +367,8 @@ static const int g_charPoseView[CHAR_POSES] = { RS_VIEW_POSE_NEUTRAL, RS_VIEW_PO
 #define CHAR_VOICES_TEXT L"Optional - without voices the driver is silent in the game."
 #define CHAR_VOICE_RULE_TEXT L"File names: boost1-4 hit1-4 spin1-4 bigair1-4 drop1-4 shield1-4 passing1-4 fire1-4, yes, hit (.wav, .vag)"
 #define CHAR_FIT_WAIT_TEXT L"The model is fitted to Crash size when it is checked."
+// (No line break between 75 and %: a no-break space.)
+#define CHAR_VIEW_SHADE_TEXT L"Colours as on a bright road. On dark ground the game shades every driver, by up to 75\u00A0%."
 #define CHAR_REMESH_NEEDS_TEXT L"Closed hull needs Reduce to fit: the hulls have far more triangles than a driver may draw."
 
 // ---------------------------------------------------------------------------
@@ -3454,7 +3456,12 @@ static void Char_ApplyPreview(int seq)
     for (i = 0; i < CHAR_POSES; i++)
         g_char.previewTris[i] = (unsigned long)RsView_TriangleCount(g_char.view, i);
     RsView_SetPose(g_char.view, g_charPoseView[g_char.poseNow]);
-    Char_ViewNote(L"Drag to turn. Right, grey: Crash and his kart - the size it is fitted to.",
+    // The preview shows the colours of the palette as they are - the game's
+    // brightest case. In the race the ground under the kart darkens the
+    // driver (game/COLL.c sets alphaScale from the track's colour there,
+    // RenderBucket fades towards black): 0.25 + luma / 128 of the colour on
+    // ground darker than luma 96, at most 75 % darker.
+    Char_ViewNote(L"Drag to turn. Right, grey: Crash and his kart - the size it is fitted to. " CHAR_VIEW_SHADE_TEXT,
                   RS_COL_MUTED);
 }
 
