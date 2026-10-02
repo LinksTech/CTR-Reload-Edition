@@ -18,9 +18,12 @@ The game itself needs your own disc image at run time (see [README.md](README.md
 
 MSVC is the only supported toolchain: the 32-bit preset `windows-msvc-x86`,
 which `build-msvc.bat` uses. `CMakeLists.txt` and `CMakePresets.json` still
-have MinGW branches and presets, but MinGW is untested: no MinGW build is made
-or tested, and the automatic builds use MSVC only. A MinGW build would also
-leave out Reload Studio, which is built under MSVC only.
+have MinGW branches and presets; the game and Reload Studio are built under
+MSVC only. The automatic build additionally compiles rldpack alone with
+MinGW-w64 GCC (i686, preset `windows-mingw-i686-release`) and runs its
+self-test, so that the golden hashes of the containers are checked with a
+second compiler; that step is new and may fail without failing the run until
+it has run green once.
 
 ## Build
 
