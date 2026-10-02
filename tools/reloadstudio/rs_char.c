@@ -17,9 +17,9 @@
 // crash, its default) and reports the factor (@char fit); 100 % on the slider
 // is that size. It reports the sizes this model allows (@value size-range);
 // the slider stays inside them. It is a visual size only - physics and
-// collision follow the driving style. The preview draws the model on the
-// reference dummy it was fitted onto (rs_view.c) and outlines Crash's size
-// (@value crash-box) about it.
+// collision follow the driving style. The preview draws the model beside the
+// reference dummy (rs_view.c): the kart it was fitted onto with a driver of
+// Crash's size (@value crash-box), in the same scale.
 //
 // Options, each a make-char switch; only the switches that differ from
 // rldpack's default are passed:
@@ -42,6 +42,16 @@
 //      wheels for this driver, for models with wheels of their own; the
 //      preview's dummy follows at once)
 //
+// Mask: Aku Aku or Uka Uka, the mask the driver wears (the mask item, the
+// rescue after a fall, its sound and music, the HUD icon). The choice starts
+// at the mask of the template (Fake Crash: Uka Uka); --mask aku|uka is passed
+// only when it differs, so a file with the default stays the same bytes.
+//
+// After a build the message names the kart wheels and the mask in the file
+// and says to restart the game: it reads its characters folder only when it
+// starts. The options are not remembered - every start of the Studio begins
+// with the defaults.
+//
 // Split: on the left the character and the build, on the right icon and voices
 // and the 3D preview.
 
@@ -62,12 +72,19 @@
 #define CHAR_SIZE_MAX      200
 #define CHAR_SIZE_DEFAULT  100
 #define CHAR_TEMPLATE      L"14"  // Fake Crash: the Studio asks for no template
+// The mask of CHAR_TEMPLATE, an index into g_charMasks: Fake Crash wears Uka Uka
+// (bit 14 is clear in RLDCHAR_TEMPLATE_AKU_BITS, include/rldchar.inc). It has
+// to change with CHAR_TEMPLATE; rldpack says the template's mask in @value mask.
+#define CHAR_TEMPLATE_MASK 1
 #define CHAR_PENDING       16     // outdated checks whose temp files wait for their end
 #define CHAR_POSES         3      // poses in a --preview file
 #define CHAR_IMAGE_CLASS   L"RsCharImage"
 #define CHAR_IMAGE_MAX     16384  // largest edge of a picture the page shows
+#define CHAR_ICON_W        43     // the part of the icon the menu tile shows (--icon-preview)
+#define CHAR_ICON_H        25
 #define CHAR_INFO_LINES    3      // lines of the model info at most
 #define CHAR_QUALITY_LINES 6      // lines of the repair / remesh note at most
+#define CHAR_NOTE_LINES    3      // lines of a note below a field at most (they wrap)
 #define CHAR_REPAIR_FIELDS 10     // numbers of @char repaired
 #define CHAR_REMESH_FIELDS 5      // numbers of @char remeshed
 
@@ -120,6 +137,9 @@
 #define CHAR_ID_OPEN_PARTS     161
 #define CHAR_ID_REMESH         162
 #define CHAR_ID_QUALITY        163
+#define CHAR_ID_MASK_LABEL     164
+#define CHAR_ID_MASK           165
+#define CHAR_ID_MASK_HELP      166
 
 enum { CHAR_JOB_NONE = 0, CHAR_JOB_CHECK, CHAR_JOB_BUILD };
 enum { CHAR_IMG_ORIGINAL = 0, CHAR_IMG_ICON, CHAR_IMG_COUNT };
@@ -142,6 +162,21 @@ static const struct CharClass g_charClasses[] = {
     { L"turning",      L"Turning - like Polar, Pura, Ripper Roo, Penta Penguin" },
 };
 #define CHAR_CLASS_COUNT ((int)(sizeof(g_charClasses) / sizeof(g_charClasses[0])))
+
+struct CharMask {
+    const wchar_t *word;    // this is how the value goes to rldpack (--mask)
+    const wchar_t *name;    // for the build message and the report
+    const wchar_t *text;
+};
+
+// The two masks, in the order of RLDCHAR_MASK_AKU, RLDCHAR_MASK_UKA
+// (include/rldchar.inc) less one. In retail Crash, Coco, Polar, Pura and Penta
+// wear Aku Aku (RLDCHAR_TEMPLATE_AKU_BITS), every other driver Uka Uka.
+static const struct CharMask g_charMasks[] = {
+    { L"aku", L"Aku Aku", L"Aku Aku - like Crash, Coco, Polar, Pura, Penta" },
+    { L"uka", L"Uka Uka", L"Uka Uka - like Fake Crash, Cortex, Tiny and the rest" },
+};
+#define CHAR_MASK_COUNT ((int)(sizeof(g_charMasks) / sizeof(g_charMasks[0])))
 
 // Poses of the preview, in the order of the --preview file: anim 0 frame 10
 // (neutral), frame 0 (full steer left) and frame 20 (full steer right) - the
@@ -195,6 +230,7 @@ struct CharJobData {
     wchar_t repair[48];             // @value repair: "<auto|off> <origin>"
     wchar_t openParts[48];          // @value open-parts: "<two-sided|one-sided> <origin>"
     wchar_t remesh[48];             // @value remesh: "<on|off> <origin>"
+    wchar_t mask[48];               // @value mask: "<aku|uka|none> <origin>"
     int repairedSeen;
     long repaired[CHAR_REPAIR_FIELDS];  // @char repaired: welded, degenerate, duplicate, flipped, holes
                                         // closed, hole triangles, holes left, open edges before, after,
@@ -228,6 +264,7 @@ static struct {
     HWND modelLabel, model, modelBrowse, modelInfo;
     HWND nameLabel, name, nameNote;
     HWND classLabel, cls, classHelp;
+    HWND maskLabel, mask, maskHelp;
     HWND sizeLabel, size, sizeValue, sizeNote, sizeHint, sizeFit, sizeCrash;
     HWND optionsLabel, repair, openParts, remesh, reduce, wheels, quality;
     HWND iconLabel, icon, iconBrowse, iconClear, iconCaption[CHAR_IMG_COUNT], iconImage[CHAR_IMG_COUNT];
@@ -269,6 +306,9 @@ static struct {
     wchar_t built[CHAR_VAL];        // last built character
     long long builtBytes;
     wchar_t builtSha[80];
+    wchar_t checkDefault[CHAR_VAL]; // the game's default output the last check used, "" = none
+    int buildWheelsOff;             // what the running build passed, for its message
+    int buildMask;                  // index into g_charMasks
     int showRaw;
     wchar_t *rawText;               // all lines of the last run
     size_t rawLen, rawCap;
@@ -310,12 +350,6 @@ static const wchar_t *Char_Field(wchar_t **fields, int count, int i)
     return (i < count && fields[i]) ? fields[i] : L"";
 }
 
-static void Char_Ellipsis(HWND label)
-{
-    LONG_PTR style = GetWindowLongPtrW(label, GWL_STYLE);
-    SetWindowLongPtrW(label, GWL_STYLE, style | SS_ENDELLIPSIS);
-}
-
 static int Char_IsShown(HWND h)
 {
     return (GetWindowLongPtrW(h, GWL_STYLE) & WS_VISIBLE) != 0;
@@ -340,12 +374,39 @@ static const wchar_t *Char_ColorName(COLORREF c)
     return L"normal";
 }
 
+static int Char_TextHeight(HWND label, int width, int maxLines);
+static void Char_Relayout(HWND page);
+
+// The notes below the fields whose text changes. They wrap instead of ending
+// in "...", so a narrow page loses none of their words.
+static int Char_IsNote(HWND label)
+{
+    return label && (label == g_char.nameNote || label == g_char.sizeFit || label == g_char.sizeNote ||
+                     label == g_char.viewNote || label == g_char.headline || label == g_char.voicesNote);
+}
+
+// Height of a note (or the headline) at this width: its lines, at least one,
+// at most CHAR_NOTE_LINES.
+static int Char_NoteHeight(HWND label, int width)
+{
+    int least = label == g_char.headline ? Rs_Px(22) : Rs_Px(18);
+    int h = Char_TextHeight(label, width, CHAR_NOTE_LINES);
+    return h > least ? h : least;
+}
+
 static void Char_SetLabel(HWND label, const wchar_t *text, COLORREF color, COLORREF *store)
 {
     Rs_SetText(label, text);
     Rs_SetTextColor(label, color);
     if (store)
         *store = color;
+    // A note that now needs more or fewer lines: the page is laid out again.
+    if (Char_IsNote(label)) {
+        RECT rc;
+        GetWindowRect(label, &rc);
+        if (rc.right > rc.left && Char_NoteHeight(label, rc.right - rc.left) != rc.bottom - rc.top)
+            Char_Relayout(GetParent(label));
+    }
 }
 
 static void Char_Headline(const wchar_t *text, COLORREF color)
@@ -538,6 +599,41 @@ static int Char_CheckWidth(HWND box)
         ReleaseDC(box, dc);
     }
     return Rs_Px(13 + 4 + 6) + ext.cx;
+}
+
+// Width of a text in the font of control h.
+static int Char_TextWidth(HWND h, const wchar_t *text)
+{
+    HDC dc = GetDC(h);
+    HFONT font = (HFONT)SendMessageW(h, WM_GETFONT, 0, 0);
+    HGDIOBJ old;
+    SIZE ext;
+    int n = (int)wcslen(text);
+
+    ext.cx = n * Rs_Px(8);
+    if (dc) {
+        old = SelectObject(dc, font ? font : Rs_Font(RS_FONT_BODY));
+        GetTextExtentPoint32W(dc, text, n, &ext);
+        SelectObject(dc, old);
+        ReleaseDC(h, dc);
+    }
+    return ext.cx;
+}
+
+// Width of the longest entry of a combo box, without margins and arrow.
+static int Char_ComboTextWidth(HWND combo)
+{
+    wchar_t text[256];
+    int i, n = (int)SendMessageW(combo, CB_GETCOUNT, 0, 0), most = 0;
+
+    for (i = 0; i < n; i++) {
+        if (SendMessageW(combo, CB_GETLBTEXTLEN, (WPARAM)i, 0) >= 256)
+            continue;
+        SendMessageW(combo, CB_GETLBTEXT, (WPARAM)i, (LPARAM)text);
+        if (Char_TextWidth(combo, text) > most)
+            most = Char_TextWidth(combo, text);
+    }
+    return most;
 }
 
 // The menu font of the game: A-Z, 0-9, space and ! % ' + , - . / : < = > ? _
@@ -1138,6 +1234,8 @@ static void Char_ParseLine(wchar_t *line)
             Char_JoinFields(f, n, j->openParts, 48);
         } else if (wcscmp(key, L"remesh") == 0) {
             Char_JoinFields(f, n, j->remesh, 48);
+        } else if (wcscmp(key, L"mask") == 0) {
+            Char_JoinFields(f, n, j->mask, 48);
         }
     } else if (wcscmp(kind, L"char") == 0) {
         const wchar_t *key = Char_Field(f, n, 1);
@@ -1486,7 +1584,7 @@ static void Char_ApplyVoices(void)
                  g_charJob.voices);
     else
         Char_Copy(t, 256, CHAR_VOICES_TEXT);
-    Rs_SetText(g_char.voicesNote, t);
+    Char_SetLabel(g_char.voicesNote, t, RS_COL_MUTED, NULL);
 }
 
 // "Closed hull (remesh)" works only with "Reduce automatically" (make-char:
@@ -1629,8 +1727,8 @@ static void Char_ApplyPreview(int seq)
         g_char.retailKnown = 1;
         memcpy(g_char.retail, j->retail, sizeof(g_char.retail));
     }
-    // Crash's size as an outline about the model; the game's wheels on the
-    // dummy as the check box says.
+    // Crash's size for the dummy's driver; the game's wheels under the model
+    // as the check box says.
     if (j->crashSeen) {
         g_char.crashKnown = 1;
         memcpy(g_char.crash, j->crash, sizeof(g_char.crash));
@@ -1661,8 +1759,7 @@ static void Char_ApplyPreview(int seq)
     for (i = 0; i < CHAR_POSES; i++)
         g_char.previewTris[i] = (unsigned long)RsView_TriangleCount(g_char.view, i);
     RsView_SetPose(g_char.view, g_charPoseView[g_char.poseNow]);
-    Char_ViewNote(g_char.crashKnown ? L"Drag to turn. Grey: Crash's kart the model is fitted onto. Dashed box: Crash's size."
-                                    : L"Drag to turn. Grey: Crash's kart the model is fitted onto.",
+    Char_ViewNote(L"Drag to turn. Right, grey: Crash and his kart - the size it is fitted to.",
                   RS_COL_MUTED);
 }
 
@@ -1805,6 +1902,81 @@ static const wchar_t *Char_ClassWord(void)
     return g_charClasses[sel].word;
 }
 
+// Index into g_charMasks of the chosen mask.
+static int Char_MaskIndex(void)
+{
+    LRESULT sel = SendMessageW(g_char.mask, CB_GETCURSEL, 0, 0);
+    if (sel < 0 || sel >= CHAR_MASK_COUNT)
+        sel = CHAR_TEMPLATE_MASK;
+    return (int)sel;
+}
+
+// The folder the game loads its characters from: "characters" next to the game
+// program (the one entered on the page Test in game, else Rs_FindGameExe).
+// 0 = no game program is known; out is "".
+static int Char_GameCharDir(wchar_t *out, int cap)
+{
+    wchar_t exe[CHAR_VAL];
+    wchar_t dir[CHAR_VAL];
+    const wchar_t *page = Rs_TestGameExe();
+
+    out[0] = 0;
+    if (page && page[0] && Rs_FileExists(page))
+        Char_Copy(exe, CHAR_VAL, page);
+    else if (!Rs_FindGameExe(exe, CHAR_VAL))
+        return 0;
+    Rs_PathDir(dir, CHAR_VAL, exe);
+    Rs_PathJoin(out, cap, dir, L"characters");
+    return 1;
+}
+
+// The output while the field is empty: <game>\characters\<model name>.rldchar
+// when the game program is known (the name as rldpack makes it: the model's
+// file name without .ply); "" otherwise - rldpack then writes next to the model.
+static void Char_DefaultOut(const wchar_t *model, wchar_t *out, int cap)
+{
+    wchar_t dir[CHAR_VAL];
+    wchar_t name[CHAR_VAL];
+    size_t n;
+
+    out[0] = 0;
+    if (!model[0] || !Char_GameCharDir(dir, CHAR_VAL))
+        return;
+    Char_Copy(name, CHAR_VAL - 8, Rs_PathName(model));
+    n = wcslen(name);
+    if (n > 4 && _wcsicmp(name + n - 4, L".ply") == 0)
+        name[n - 4] = 0;
+    Char_Append(name, CHAR_VAL, L".rldchar");
+    Rs_PathJoin(out, cap, dir, name);
+}
+
+// 1 if path lies directly in the game's characters folder.
+static int Char_InGameCharDir(const wchar_t *path)
+{
+    wchar_t dir[CHAR_VAL];
+    wchar_t own[CHAR_VAL];
+
+    wchar_t full[CHAR_VAL];
+
+    if (!Char_GameCharDir(dir, CHAR_VAL))
+        return 0;
+    if (!GetFullPathNameW(path, CHAR_VAL, full, NULL))
+        Char_Copy(full, CHAR_VAL, path);
+    Rs_PathDir(own, CHAR_VAL, full);
+    if (GetFullPathNameW(dir, CHAR_VAL, full, NULL))
+        Char_Copy(dir, CHAR_VAL, full);
+    return _wcsicmp(own, dir) == 0;
+}
+
+// The cue of the empty output field before a check names the file.
+static void Char_OutCue(void)
+{
+    wchar_t dir[CHAR_VAL];
+    SendMessageW(g_char.out, EM_SETCUEBANNER, FALSE,
+                 (LPARAM)(Char_GameCharDir(dir, CHAR_VAL) ? L"In the game's characters folder (.rldchar)"
+                                                          : L"Next to the model (.rldchar)"));
+}
+
 // make-char with the values of the fields. check = 1: with --check and the
 // preview files of number seq. out: output path (NULL = from the field).
 // Returns 0 if there is no model.
@@ -1855,6 +2027,12 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
         Char_ArgsAdd(a, L"--wheels");
         Char_ArgsAdd(a, L"off");
     }
+    // The mask only when it is not the template's: a file with the default
+    // keeps its bytes (rldpack's --mask like).
+    if (Char_MaskIndex() != CHAR_TEMPLATE_MASK) {
+        Char_ArgsAdd(a, L"--mask");
+        Char_ArgsAdd(a, g_charMasks[Char_MaskIndex()].word);
+    }
     if (a->icon[0]) {
         Char_ArgsAdd(a, L"--icon");
         Char_ArgsAdd(a, a->icon);
@@ -1873,10 +2051,19 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
         Char_ArgsAdd(a, L"--preview");
         Char_ArgsAdd(a, a->preview);
     }
+    // A path the author chose comes first; without one the game's characters
+    // folder when the game is known, else rldpack's default next to the model.
     if (out)
         Char_CleanPath(a->out, CHAR_VAL, out);
     else
         Char_FieldPath(g_char.out, a->out, CHAR_VAL);
+    if (!a->out[0]) {
+        Char_DefaultOut(a->model, a->out, CHAR_VAL);
+        if (check)
+            Char_Copy(g_char.checkDefault, CHAR_VAL, a->out);
+    } else if (check) {
+        g_char.checkDefault[0] = 0;
+    }
     if (a->out[0]) {
         Char_ArgsAdd(a, L"--out");
         Char_ArgsAdd(a, a->out);
@@ -1909,7 +2096,7 @@ static void Char_NoModel(void)
     g_char.previewShown = 0;
     g_char.previewPoses = 0;
     RsView_Clear(g_char.view, NULL);
-    Char_ViewNote(L"Grey: Crash's kart, seat and steering wheel - a model is fitted onto it. Choose a PLY model.",
+    Char_ViewNote(L"Grey: Crash with his kart - the size a model is fitted to. Choose a PLY model.",
                   RS_COL_MUTED);
     Char_ApplyQuality();
     Char_SetInfo(L"-", RS_COL_MUTED);
@@ -1964,7 +2151,14 @@ static int Char_Build(HWND page)
 
     if (!Char_CanBuild())
         return -1;
+    // An empty field: the game's characters folder as it is now (the game may
+    // have been chosen since the last check), else rldpack's default.
     Char_FieldPath(g_char.out, field, CHAR_VAL);
+    if (!field[0]) {
+        wchar_t model[CHAR_VAL];
+        Char_FieldPath(g_char.model, model, CHAR_VAL);
+        Char_DefaultOut(model, field, CHAR_VAL);
+    }
     Char_CleanPath(path, CHAR_VAL, field[0] ? field : g_char.checkedPath);
     if (path[0] && Rs_FileExists(path)) {
         wchar_t question[CHAR_VAL + 64];
@@ -1972,10 +2166,34 @@ static int Char_Build(HWND page)
         if (!Rs_AskYesNo(Rs_MainWindow(), L"Replace character?", question))
             return 0;
     }
+    // The game's characters folder is made when it is missing (a fresh game).
+    // When that fails (a write-protected game folder) nothing is built.
+    if (path[0] && Char_InGameCharDir(path)) {
+        wchar_t dir[CHAR_VAL];
+        Rs_PathDir(dir, CHAR_VAL, path);
+        if (!Rs_DirExists(dir)) {
+            if (CreateDirectoryW(dir, NULL) || GetLastError() == ERROR_ALREADY_EXISTS) {
+                if (Rs_Automating())
+                    Rs_AutoLog(L"  build: made the folder %ls", dir);
+            } else {
+                wchar_t text[CHAR_VAL + 64];
+                swprintf(text, CHAR_VAL + 64, L"Cannot make the folder %ls.", dir);
+                Rs_MsgListClear(g_char.msgs);
+                Rs_MsgListAdd(g_char.msgs, RS_SEV_ERROR, text,
+                              L"Choose another output with Browse, or make the folder yourself.");
+                Char_Headline(L"Not built - 1 problem(s)", RS_COL_ERROR);
+                if (Rs_Automating())
+                    Rs_AutoLog(L"  build: cannot make the folder %ls", dir);
+                return -1;
+            }
+        }
+    }
     if (!Char_MakeArgs(&a, 0, path[0] ? path : NULL, 0)) {
         Char_ArgsFree(&a);
         return -1;
     }
+    g_char.buildWheelsOff = !Char_IsChecked(g_char.wheels);
+    g_char.buildMask = Char_MaskIndex();
     Char_Headline(L"Building...", RS_COL_MUTED);
     started = Char_StartJob(page, CHAR_JOB_BUILD, a.v, a.n, 0) != 0;
     Char_ArgsFree(&a);
@@ -2018,7 +2236,9 @@ static void Char_CheckDone(HWND page, int exitCode, int seq)
     }
     if (j->outSeen) {
         wchar_t cue[CHAR_VAL + 32];
-        swprintf(cue, CHAR_VAL + 32, L"Next to the model: %ls", Rs_PathName(j->out));
+        swprintf(cue, CHAR_VAL + 32, Char_InGameCharDir(j->out) ? L"In the game's characters folder: %ls"
+                                                                : L"Next to the model: %ls",
+                 Rs_PathName(j->out));
         SendMessageW(g_char.out, EM_SETCUEBANNER, FALSE, (LPARAM)cue);
     }
     g_char.rangeNone = j->rangeNone;
@@ -2072,27 +2292,53 @@ static void Char_BuildDone(HWND page, int exitCode)
     struct CharJobData *j = &g_charJob;
     int ok = j->resultSeen && wcscmp(j->resultState, L"ok") == 0;
     wchar_t text[CHAR_VAL + 64];
-    wchar_t detail[128];
+    wchar_t detail[192];
     wchar_t size[32];
 
     Rs_MsgListClear(g_char.msgs);
     Char_EmptyText(L"rldpack reported nothing.");
     if (ok) {
+        // What is in the file: rldpack's @value lines, else what the build passed.
+        int wheelsOff = j->wheels[0] ? wcsncmp(j->wheels, L"off", 3) == 0 : g_char.buildWheelsOff;
+        const wchar_t *mask = wcsncmp(j->mask, L"aku", 3) == 0   ? g_charMasks[0].name
+                              : wcsncmp(j->mask, L"uka", 3) == 0 ? g_charMasks[1].name
+                                                                 : g_charMasks[g_char.buildMask].name;
         Char_Copy(g_char.built, CHAR_VAL, j->resultPath);
         g_char.builtBytes = j->resultBytes;
         Char_Copy(g_char.builtSha, 80, j->resultSha);
         Char_SizeText(size, 32, j->resultBytes < 0 ? 0 : j->resultBytes);
-        swprintf(text, CHAR_VAL + 64, L"Character built: %ls (%ls)", Rs_PathName(g_char.built), size);
+        swprintf(text, CHAR_VAL + 64, L"Character built: %ls (%ls) - restart the game to load it.",
+                 Rs_PathName(g_char.built), size);
         Char_Headline(text, RS_COL_OK);
         swprintf(text, CHAR_VAL + 64, L"Built %ls", g_char.built);
-        swprintf(detail, 128, L"SHA-256 %ls", g_char.builtSha);
+        swprintf(detail, 192, L"Kart wheels %ls, mask %ls - SHA-256 %ls", wheelsOff ? L"hidden" : L"shown", mask,
+                 g_char.builtSha);
         Rs_MsgListAdd(g_char.msgs, RS_SEV_OK, text, detail);
+        // The game loads characters only from the folder characters next to
+        // it, and reads that folder once, when it starts.
+        if (!Char_InGameCharDir(g_char.built)) {
+            wchar_t dir[CHAR_VAL];
+            if (Char_GameCharDir(dir, CHAR_VAL)) {
+                swprintf(text, CHAR_VAL + 64, L"Copy it into %ls - the game loads characters only from there.", dir);
+                Rs_MsgListAdd(g_char.msgs, RS_SEV_NOTE, text, NULL);
+            } else {
+                Rs_MsgListAdd(g_char.msgs, RS_SEV_NOTE,
+                              L"Copy it into the characters folder next to ctr_native.exe - the game loads characters "
+                              L"only from there.",
+                              L"Reload Studio does not know the game yet: choose it on the page Test in game, then "
+                              L"a build with an empty Output goes into its characters folder.");
+            }
+        }
+        Rs_MsgListAdd(g_char.msgs, RS_SEV_INFO, L"Restart the game to load the new file.",
+                      L"The game reads the characters folder only when it starts.");
         Char_AddRunProblems(exitCode, 1);
         Char_AddMsgs(RS_SEV_WARNING);
         Char_AddMsgs(RS_SEV_NOTE);
         Rs_ConfigSet(L"char.out", g_char.built);
-        if (Rs_Automating())
+        if (Rs_Automating()) {
             Rs_AutoLog(L"  build: ok %ls %lld bytes sha256 %ls", g_char.built, g_char.builtBytes, g_char.builtSha);
+            Rs_AutoLog(L"  build: kart wheels %ls, mask %ls", wheelsOff ? L"hidden" : L"shown", mask);
+        }
     } else {
         int errors;
         g_char.checked = 0;
@@ -2264,6 +2510,20 @@ static void Char_BrowseOut(void)
     wchar_t start[CHAR_VAL];
     wchar_t pick[CHAR_VAL];
     Char_FieldPath(g_char.out, start, CHAR_VAL);
+    if (!start[0]) {
+        // The game's characters folder when the game is known (made if missing).
+        wchar_t model[CHAR_VAL];
+        Char_FieldPath(g_char.model, model, CHAR_VAL);
+        Char_DefaultOut(model, start, CHAR_VAL);
+        if (!start[0] && Char_GameCharDir(start, CHAR_VAL))
+            Char_Append(start, CHAR_VAL, L"\\");
+        if (start[0]) {
+            wchar_t dir[CHAR_VAL];
+            Rs_PathDir(dir, CHAR_VAL, start);
+            if (!Rs_DirExists(dir))
+                CreateDirectoryW(dir, NULL);
+        }
+    }
     if (!start[0])
         Rs_ConfigGet(L"char.out", start, CHAR_VAL);
     if (!start[0])
@@ -2377,6 +2637,12 @@ static int Char_WriteReport(const wchar_t *path)
     Char_Put(f, L"driving style: %ls (passed as %ls)", text, Char_ClassWord());
     Rs_Free(text);
     Char_Put(f, L"template: %ls (fixed)", CHAR_TEMPLATE);
+    if (Char_MaskIndex() == CHAR_TEMPLATE_MASK)
+        Char_Put(f, L"mask: %ls (like the template, not passed)", g_charMasks[Char_MaskIndex()].name);
+    else
+        Char_Put(f, L"mask: %ls (passed as --mask %ls)", g_charMasks[Char_MaskIndex()].name,
+                 g_charMasks[Char_MaskIndex()].word);
+    Char_Put(f, L"mask (last run): %ls", g_charJob.mask[0] ? g_charJob.mask : L"(not reported)");
     Char_Put(f, L"size: %d %%", g_char.sizeNow);
     if (g_char.rangeNone)
         Char_Put(f, L"size range: none fits this model");
@@ -2540,6 +2806,21 @@ static int Char_AutoClass(HWND page, const wchar_t *arg)
     return RS_AUTO_FAIL;
 }
 
+static int Char_AutoMask(HWND page, const wchar_t *arg)
+{
+    int i;
+    for (i = 0; i < CHAR_MASK_COUNT; i++) {
+        if (_wcsicmp(arg, g_charMasks[i].word) == 0) {
+            SendMessageW(g_char.mask, CB_SETCURSEL, (WPARAM)i, 0);
+            SendMessageW(page, WM_COMMAND, MAKEWPARAM(CHAR_ID_MASK, CBN_SELCHANGE), (LPARAM)g_char.mask);
+            Rs_AutoLog(L"  mask: %ls", g_charMasks[i].name);
+            return RS_AUTO_WAIT;
+        }
+    }
+    Rs_AutoLog(L"  mask: '%ls' is not a mask - use aku or uka", arg);
+    return RS_AUTO_FAIL;
+}
+
 static int Char_AutoSize(HWND page, const wchar_t *arg)
 {
     wchar_t *end;
@@ -2665,7 +2946,6 @@ static void Char_Create(HWND page)
     g_char.name = Rs_Edit(page, CHAR_ID_NAME, L"", ES_UPPERCASE);
     SendMessageW(g_char.name, EM_LIMITTEXT, CHAR_NAME_MAX, 0);
     g_char.nameNote = Rs_Label(page, CHAR_ID_NAME_NOTE, L"", RS_FONT_SMALL);
-    Char_Ellipsis(g_char.nameNote);
 
     g_char.classLabel = Rs_Label(page, CHAR_ID_CLASS_LABEL, L"Driving style", RS_FONT_BOLD);
     g_char.cls = Rs_Combo(page, CHAR_ID_CLASS);
@@ -2676,7 +2956,16 @@ static void Char_Create(HWND page)
                                 L"How the kart drives: speed, acceleration and turning as the drivers named.",
                                 RS_FONT_SMALL);
     Rs_SetTextColor(g_char.classHelp, RS_COL_MUTED);
-    Char_Ellipsis(g_char.classHelp);
+
+    g_char.maskLabel = Rs_Label(page, CHAR_ID_MASK_LABEL, L"Mask", RS_FONT_BOLD);
+    g_char.mask = Rs_Combo(page, CHAR_ID_MASK);
+    for (i = 0; i < CHAR_MASK_COUNT; i++)
+        SendMessageW(g_char.mask, CB_ADDSTRING, 0, (LPARAM)g_charMasks[i].text);
+    SendMessageW(g_char.mask, CB_SETCURSEL, CHAR_TEMPLATE_MASK, 0);
+    g_char.maskHelp = Rs_Label(page, CHAR_ID_MASK_HELP,
+                               L"Worn for the mask item and after a fall, with its music.",
+                               RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.maskHelp, RS_COL_MUTED);
 
     g_char.sizeLabel = Rs_Label(page, CHAR_ID_SIZE_LABEL, L"Size", RS_FONT_BOLD);
     g_char.size = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
@@ -2688,15 +2977,11 @@ static void Char_Create(HWND page)
     SendMessageW(g_char.size, TBM_SETPOS, TRUE, CHAR_SIZE_DEFAULT);
     g_char.sizeValue = Rs_Label(page, CHAR_ID_SIZE_VALUE, L"", RS_FONT_BODY);
     g_char.sizeNote = Rs_Label(page, CHAR_ID_SIZE_NOTE, L"", RS_FONT_SMALL);
-    Char_Ellipsis(g_char.sizeNote);
     g_char.sizeHint = Rs_Label(page, CHAR_ID_SIZE_HINT, CHAR_SIZE_HINT_TEXT, RS_FONT_SMALL);
     Rs_SetTextColor(g_char.sizeHint, RS_COL_MUTED);
-    Char_Ellipsis(g_char.sizeHint);
     g_char.sizeCrash = Rs_Label(page, CHAR_ID_SIZE_CRASH, L"100 % = Crash size", RS_FONT_SMALL);
     Rs_SetTextColor(g_char.sizeCrash, RS_COL_MUTED);
-    Char_Ellipsis(g_char.sizeCrash);
     g_char.sizeFit = Rs_Label(page, CHAR_ID_SIZE_FIT, CHAR_FIT_WAIT_TEXT, RS_FONT_SMALL);
-    Char_Ellipsis(g_char.sizeFit);
     g_char.fitColor = RS_COL_MUTED;
     Rs_SetTextColor(g_char.sizeFit, g_char.fitColor);
     g_char.sizeNow = CHAR_SIZE_DEFAULT;
@@ -2721,9 +3006,10 @@ static void Char_Create(HWND page)
     SendMessageW(g_char.icon, EM_SETCUEBANNER, FALSE, (LPARAM)L"Optional - without it the game shows the template's icon");
     g_char.iconBrowse = Rs_Button(page, CHAR_ID_ICON_BROWSE, L"Browse...");
     g_char.iconClear = Rs_Button(page, CHAR_ID_ICON_CLEAR, L"Clear");
-    g_char.iconCaption[CHAR_IMG_ORIGINAL] = Rs_Label(page, CHAR_ID_ICON_CAPTION, L"Your picture", RS_FONT_SMALL);
-    g_char.iconCaption[CHAR_IMG_ICON] = Rs_Label(page, CHAR_ID_ICON_CAPTION + 1, L"In the game (44 x 26, 16 colours)",
-                                                 RS_FONT_SMALL);
+    g_char.iconCaption[CHAR_IMG_ORIGINAL] =
+        Rs_Label(page, CHAR_ID_ICON_CAPTION, L"Your picture (PNG, any size)", RS_FONT_SMALL);
+    g_char.iconCaption[CHAR_IMG_ICON] =
+        Rs_Label(page, CHAR_ID_ICON_CAPTION + 1, L"In the driver grid (43 x 25, 16 colours)", RS_FONT_SMALL);
     for (i = 0; i < CHAR_IMG_COUNT; i++) {
         Rs_SetTextColor(g_char.iconCaption[i], RS_COL_MUTED);
         g_char.iconImage[i] = Char_ImageBox(page, CHAR_ID_ICON_IMAGE + i, &g_char.image[i]);
@@ -2736,7 +3022,6 @@ static void Char_Create(HWND page)
     g_char.voicesClear = Rs_Button(page, CHAR_ID_VOICES_CLEAR, L"Clear");
     g_char.voicesNote = Rs_Label(page, CHAR_ID_VOICES_NOTE, CHAR_VOICES_TEXT, RS_FONT_SMALL);
     Rs_SetTextColor(g_char.voicesNote, RS_COL_MUTED);
-    Char_Ellipsis(g_char.voicesNote);
 
     g_char.view = CreateWindowExW(0, RS_VIEW_CLASS, L"No model yet", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, page,
                                   (HMENU)(INT_PTR)CHAR_ID_VIEW, inst, NULL);
@@ -2747,17 +3032,15 @@ static void Char_Create(HWND page)
         SendMessageW(g_char.pose, CB_ADDSTRING, 0, (LPARAM)g_charPoseTexts[i]);
     SendMessageW(g_char.pose, CB_SETCURSEL, 0, 0);
     g_char.viewNote = Rs_Label(page, CHAR_ID_VIEW_NOTE, L"", RS_FONT_SMALL);
-    Char_Ellipsis(g_char.viewNote);
 
     g_char.rawToggle = Rs_Button(page, CHAR_ID_RAW_TOGGLE, L"Show rldpack output");
     g_char.outLabel = Rs_Label(page, CHAR_ID_OUT_LABEL, L"Output", RS_FONT_BOLD);
     g_char.out = Rs_Edit(page, CHAR_ID_OUT, L"", 0);
-    SendMessageW(g_char.out, EM_SETCUEBANNER, FALSE, (LPARAM)L"Next to the model (.rldchar)");
+    Char_OutCue();
     g_char.outBrowse = Rs_Button(page, CHAR_ID_OUT_BROWSE, L"Browse...");
     g_char.check = Rs_Button(page, CHAR_ID_CHECK, L"Check");
     g_char.build = Rs_PrimaryButton(page, CHAR_ID_BUILD, L"Build character");
     g_char.headline = Rs_Label(page, CHAR_ID_HEADLINE, L"", RS_FONT_BOLD);
-    Char_Ellipsis(g_char.headline);
     g_char.msgs = Rs_MsgList(page, CHAR_ID_MESSAGES);
     g_char.raw = Rs_Edit(page, CHAR_ID_RAW, L"",
                          ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | WS_HSCROLL);
@@ -2786,65 +3069,88 @@ static void Char_PlaceField(HWND label, HWND field, int x, int labelW, int y, in
     MoveWindow(field, x + labelW + Rs_Px(8), y, fieldW, Rs_Px(28), TRUE);
 }
 
-static void Char_Layout(HWND page, int w, int h)
+// Least sizes (96 dpi). The message list and the 3D preview never get less
+// than these heights: where the page has less room, their cards reach below it
+// and the shell makes the page that much taller and scrolls it (reloadstudio.h,
+// "Pages"). CHAR_PAGE_MIN_H is about what the left column then needs with one
+// row of options more than usual, so that the shell rarely lays out twice.
+// CHAR_PAGE_MIN_W is small on purpose: the layout measures what it needs and
+// puts the cards below each other on a narrow page (Char_Layout).
+#define CHAR_MSGS_MIN_H  150
+#define CHAR_VIEW_MIN_H  240
+#define CHAR_PAGE_MIN_W  400
+#define CHAR_PAGE_MIN_H  920
+#define CHAR_FIELD_MIN_W 116    // the icon and voices fields beside Browse and Clear
+
+// Measures of the layout, the same for all cards.
+struct CharLay {
+    int gap, labelW, browseW, clearW;
+    int viewH;                  // the visible height of the page
+};
+
+// Card "Character": model, name, driving style, mask, size, options. Returns
+// the bottom of the card.
+static int Char_LayCharacter(HWND page, const struct CharLay *k, int left, int right, int top)
 {
-    int left = Rs_Px(32), right = w - Rs_Px(32);
-    int top = Rs_PageTop(), bottom = h - Rs_Px(24);
-    int gap = Rs_Px(16);
-    int leftW = (right - left - gap) / 2;
-    int browseW = Rs_Px(100), clearW = Rs_Px(72), labelW = Rs_Px(112);
-    int built = g_char.built[0] != 0;
     RECT card, in;
-    int x, y, width, fieldW, listBottom, factor, boxW, boxH, i, infoH, qualityH;
     HWND options[5];
+    int x, y, fieldW, infoH, qualityH, noteH, i;
 
-    Rs_CardClear(page);
-
-    // Top left: model, name, driving style, size
     card.left = left;
     card.top = top;
-    card.right = left + leftW;
-    card.bottom = bottom;
+    card.right = right;
+    card.bottom = top;
     in = Rs_CardInner(&card, 1);
-    x = in.left + labelW + Rs_Px(8);
+    x = in.left + k->labelW + Rs_Px(8);
     fieldW = in.right - x;
     y = in.top;
-    Char_PlaceField(g_char.modelLabel, g_char.model, in.left, labelW, y + Rs_Px(2), fieldW - browseW - Rs_Px(8));
-    MoveWindow(g_char.modelBrowse, in.right - browseW, y, browseW, Rs_Px(32), TRUE);
+    Char_PlaceField(g_char.modelLabel, g_char.model, in.left, k->labelW, y + Rs_Px(2), fieldW - k->browseW - Rs_Px(8));
+    MoveWindow(g_char.modelBrowse, in.right - k->browseW, y, k->browseW, Rs_Px(32), TRUE);
     y += Rs_Px(34);
     // One line, or up to CHAR_INFO_LINES when the text needs them.
     Char_FitLines(g_char.modelInfo, g_char.infoFull, fieldW, CHAR_INFO_LINES);
     infoH = Char_TextHeight(g_char.modelInfo, fieldW, CHAR_INFO_LINES);
     MoveWindow(g_char.modelInfo, x, y, fieldW, infoH > Rs_Px(18) ? infoH : Rs_Px(18), TRUE);
     y += Rs_Px(26) + (infoH > Rs_Px(18) ? infoH - Rs_Px(18) : 0);
-    Char_PlaceField(g_char.nameLabel, g_char.name, in.left, labelW, y, Rs_Px(220) < fieldW ? Rs_Px(220) : fieldW);
+    Char_PlaceField(g_char.nameLabel, g_char.name, in.left, k->labelW, y, Rs_Px(220) < fieldW ? Rs_Px(220) : fieldW);
     y += Rs_Px(30);
-    MoveWindow(g_char.nameNote, x, y, fieldW, Rs_Px(18), TRUE);
-    y += Rs_Px(26);
-    MoveWindow(g_char.classLabel, in.left, y + Rs_Px(4), labelW, Rs_Px(20), TRUE);
+    noteH = Char_NoteHeight(g_char.nameNote, fieldW);
+    MoveWindow(g_char.nameNote, x, y, fieldW, noteH, TRUE);
+    y += Rs_Px(8) + noteH;
+    MoveWindow(g_char.classLabel, in.left, y + Rs_Px(4), k->labelW, Rs_Px(20), TRUE);
     MoveWindow(g_char.cls, x, y, fieldW, Rs_Px(300), TRUE);
     y += Rs_Px(30);
-    MoveWindow(g_char.classHelp, x, y, fieldW, Rs_Px(18), TRUE);
-    y += Rs_Px(26);
-    MoveWindow(g_char.sizeLabel, in.left, y + Rs_Px(4), labelW, Rs_Px(20), TRUE);
+    noteH = Char_NoteHeight(g_char.classHelp, fieldW);
+    MoveWindow(g_char.classHelp, x, y, fieldW, noteH, TRUE);
+    y += Rs_Px(8) + noteH;
+    MoveWindow(g_char.maskLabel, in.left, y + Rs_Px(4), k->labelW, Rs_Px(20), TRUE);
+    MoveWindow(g_char.mask, x, y, fieldW, Rs_Px(300), TRUE);
+    y += Rs_Px(30);
+    noteH = Char_NoteHeight(g_char.maskHelp, fieldW);
+    MoveWindow(g_char.maskHelp, x, y, fieldW, noteH, TRUE);
+    y += Rs_Px(8) + noteH;
+    MoveWindow(g_char.sizeLabel, in.left, y + Rs_Px(4), k->labelW, Rs_Px(20), TRUE);
     MoveWindow(g_char.size, x - Rs_Px(4), y, fieldW - Rs_Px(64), Rs_Px(30), TRUE);
     MoveWindow(g_char.sizeValue, in.right - Rs_Px(60), y + Rs_Px(4), Rs_Px(60), Rs_Px(20), TRUE);
     y += Rs_Px(32);
     // What 100 % is: in the label column under "Size", the fit beside it.
-    MoveWindow(g_char.sizeCrash, in.left, y, labelW, Rs_Px(18), TRUE);
-    MoveWindow(g_char.sizeFit, x, y, fieldW, Rs_Px(18), TRUE);
-    y += Rs_Px(20);
-    MoveWindow(g_char.sizeNote, x, y, fieldW, Rs_Px(18), TRUE);
-    y += Rs_Px(20);
-    MoveWindow(g_char.sizeHint, x, y, fieldW, Rs_Px(18), TRUE);
-    y += Rs_Px(26);
+    MoveWindow(g_char.sizeCrash, in.left, y, k->labelW, Rs_Px(18), TRUE);
+    noteH = Char_NoteHeight(g_char.sizeFit, fieldW);
+    MoveWindow(g_char.sizeFit, x, y, fieldW, noteH, TRUE);
+    y += Rs_Px(2) + noteH;
+    noteH = Char_NoteHeight(g_char.sizeNote, fieldW);
+    MoveWindow(g_char.sizeNote, x, y, fieldW, noteH, TRUE);
+    y += Rs_Px(2) + noteH;
+    noteH = Char_NoteHeight(g_char.sizeHint, fieldW);
+    MoveWindow(g_char.sizeHint, x, y, fieldW, noteH, TRUE);
+    y += Rs_Px(8) + noteH;
     // The check boxes left to right, a new row where the next one does not fit.
     options[0] = g_char.repair;
     options[1] = g_char.openParts;
     options[2] = g_char.remesh;
     options[3] = g_char.reduce;
     options[4] = g_char.wheels;
-    MoveWindow(g_char.optionsLabel, in.left, y + Rs_Px(2), labelW, Rs_Px(20), TRUE);
+    MoveWindow(g_char.optionsLabel, in.left, y + Rs_Px(2), k->labelW, Rs_Px(20), TRUE);
     {
         int cx = x;
         for (i = 0; i < 5; i++) {
@@ -2870,82 +3176,200 @@ static void Char_Layout(HWND page, int w, int h)
     }
     card.bottom = y + Rs_Px(16);
     Rs_CardAdd(page, &card, L"Character");
+    return card.bottom;
+}
 
-    // Bottom left: build; the toggle is in the title line of the card
-    card.top = card.bottom + gap;
-    card.bottom = bottom;
+// Card "Build": output, buttons, headline and messages, down to bottom, but
+// the list never lower than CHAR_MSGS_MIN_H (bottom <= top: just that). The
+// toggle is in the title line of the card. Returns the bottom of the card.
+static int Char_LayBuild(HWND page, const struct CharLay *k, int left, int right, int top, int bottom)
+{
+    RECT card, in;
+    int y, width, listBottom, noteH;
+
+    card.left = left;
+    card.top = top;
+    card.right = right;
+    card.bottom = bottom > top ? bottom : top;
     in = Rs_CardInner(&card, 1);
     width = in.right - in.left;
     MoveWindow(g_char.rawToggle, in.right - Rs_Px(168), card.top + Rs_Px(10), Rs_Px(168), Rs_Px(30), TRUE);
     y = in.top;
     MoveWindow(g_char.outLabel, in.left, y + Rs_Px(6), Rs_Px(64), Rs_Px(20), TRUE);
-    MoveWindow(g_char.out, in.left + Rs_Px(72), y + Rs_Px(2), width - Rs_Px(72) - browseW - Rs_Px(8),
+    MoveWindow(g_char.out, in.left + Rs_Px(72), y + Rs_Px(2), width - Rs_Px(72) - k->browseW - Rs_Px(8),
                Rs_Px(28), TRUE);
-    MoveWindow(g_char.outBrowse, in.right - browseW, y, browseW, Rs_Px(32), TRUE);
+    MoveWindow(g_char.outBrowse, in.right - k->browseW, y, k->browseW, Rs_Px(32), TRUE);
     y += Rs_Px(44);
     MoveWindow(g_char.check, in.left, y, Rs_Px(96), Rs_Px(32), TRUE);
     MoveWindow(g_char.build, in.left + Rs_Px(104), y, Rs_Px(156), Rs_Px(32), TRUE);
     MoveWindow(g_char.show, in.right - Rs_Px(136), y, Rs_Px(136), Rs_Px(32), TRUE);
-    ShowWindow(g_char.show, built ? SW_SHOW : SW_HIDE);
+    ShowWindow(g_char.show, g_char.built[0] ? SW_SHOW : SW_HIDE);
     y += Rs_Px(44);
-    MoveWindow(g_char.headline, in.left, y, width, Rs_Px(22), TRUE);
-    y += Rs_Px(28);
+    noteH = Char_NoteHeight(g_char.headline, width);
+    MoveWindow(g_char.headline, in.left, y, width, noteH, TRUE);
+    y += Rs_Px(6) + noteH;
     listBottom = in.bottom;
-    if (listBottom < y + Rs_Px(40))
-        listBottom = y + Rs_Px(40);
+    // Room for the build message and the lines below it (restart, copy).
+    if (listBottom < y + Rs_Px(CHAR_MSGS_MIN_H))
+        listBottom = y + Rs_Px(CHAR_MSGS_MIN_H);
     MoveWindow(g_char.msgs, in.left, y, width, listBottom - y, TRUE);
     MoveWindow(g_char.raw, in.left, y, width, listBottom - y, TRUE);
+    card.bottom += listBottom - in.bottom;      // around a list longer than the room
     Rs_CardAdd(page, &card, L"Build");
+    return card.bottom;
+}
 
-    // Top right: icon (picture and conversion side by side, enlarged), voices
-    card.left = left + leftW + gap;
-    card.right = right;
+// Card "Icon and voices": the picture and its conversion side by side,
+// enlarged. Returns the bottom of the card.
+static int Char_LayIcon(HWND page, const struct CharLay *k, int left, int right, int top)
+{
+    RECT card, in;
+    int x, y, width, fieldW, factor, boxW, boxH, noteH, i;
+
+    card.left = left;
     card.top = top;
-    card.bottom = bottom;
+    card.right = right;
+    card.bottom = top;
     in = Rs_CardInner(&card, 1);
     width = in.right - in.left;
-    x = in.left + labelW + Rs_Px(8);
+    x = in.left + k->labelW + Rs_Px(8);
     fieldW = in.right - x;
     y = in.top;
-    Char_PlaceField(g_char.iconLabel, g_char.icon, in.left, labelW, y + Rs_Px(2),
-                    fieldW - browseW - clearW - Rs_Px(16));
-    MoveWindow(g_char.iconBrowse, in.right - browseW - clearW - Rs_Px(8), y, browseW, Rs_Px(32), TRUE);
-    MoveWindow(g_char.iconClear, in.right - clearW, y, clearW, Rs_Px(32), TRUE);
+    Char_PlaceField(g_char.iconLabel, g_char.icon, in.left, k->labelW, y + Rs_Px(2),
+                    fieldW - k->browseW - k->clearW - Rs_Px(16));
+    MoveWindow(g_char.iconBrowse, in.right - k->browseW - k->clearW - Rs_Px(8), y, k->browseW, Rs_Px(32), TRUE);
+    MoveWindow(g_char.iconClear, in.right - k->clearW, y, k->clearW, Rs_Px(32), TRUE);
     y += Rs_Px(40);
-    // Whole steps of the 44 x 26 icon, at most 4; the picture box beside it as large.
-    for (factor = 4; factor > 1 && 2 * Rs_Px(44 * factor + 8) + gap > width; factor--)
+    // Whole steps of the icon, at most 4; the picture box beside it as large.
+    for (factor = 4; factor > 1 && 2 * Rs_Px(CHAR_ICON_W * factor + 8) + k->gap > width; factor--)
         ;
-    boxW = Rs_Px(44 * factor + 8);
-    boxH = Rs_Px(26 * factor + 8);
+    boxW = Rs_Px(CHAR_ICON_W * factor + 8);
+    boxH = Rs_Px(CHAR_ICON_H * factor + 8);
     for (i = 0; i < CHAR_IMG_COUNT; i++) {
-        int bx = in.left + i * (boxW + gap);
-        MoveWindow(g_char.iconCaption[i], bx, y, boxW + gap, Rs_Px(18), TRUE);
+        int bx = in.left + i * (boxW + k->gap);
+        // The last caption may run on to the edge of the card.
+        MoveWindow(g_char.iconCaption[i], bx, y, i == CHAR_IMG_COUNT - 1 ? in.right - bx : boxW + k->gap, Rs_Px(18),
+                   TRUE);
         MoveWindow(g_char.iconImage[i], bx, y + Rs_Px(20), boxW, boxH, TRUE);
     }
     y += Rs_Px(20) + boxH + Rs_Px(12);
-    Char_PlaceField(g_char.voicesLabel, g_char.voices, in.left, labelW, y + Rs_Px(2),
-                    fieldW - browseW - clearW - Rs_Px(16));
-    MoveWindow(g_char.voicesBrowse, in.right - browseW - clearW - Rs_Px(8), y, browseW, Rs_Px(32), TRUE);
-    MoveWindow(g_char.voicesClear, in.right - clearW, y, clearW, Rs_Px(32), TRUE);
+    Char_PlaceField(g_char.voicesLabel, g_char.voices, in.left, k->labelW, y + Rs_Px(2),
+                    fieldW - k->browseW - k->clearW - Rs_Px(16));
+    MoveWindow(g_char.voicesBrowse, in.right - k->browseW - k->clearW - Rs_Px(8), y, k->browseW, Rs_Px(32), TRUE);
+    MoveWindow(g_char.voicesClear, in.right - k->clearW, y, k->clearW, Rs_Px(32), TRUE);
     y += Rs_Px(36);
-    MoveWindow(g_char.voicesNote, x, y, fieldW, Rs_Px(18), TRUE);
-    y += Rs_Px(18);
+    noteH = Char_NoteHeight(g_char.voicesNote, fieldW);
+    MoveWindow(g_char.voicesNote, x, y, fieldW, noteH, TRUE);
+    y += noteH;
     card.bottom = y + Rs_Px(16);
     Rs_CardAdd(page, &card, L"Icon and voices");
+    return card.bottom;
+}
 
-    // Bottom right: 3D preview; the pose choice is in the title line of the card
-    card.top = card.bottom + gap;
-    card.bottom = bottom;
+// Card "Preview": down to bottom (bottom <= top: as tall as the view allows),
+// but never taller than the visible part of the page, so that the whole
+// preview can be seen at once, and never lower than CHAR_VIEW_MIN_H. The pose
+// choice is in the title line of the card.
+static void Char_LayPreview(HWND page, const struct CharLay *k, int left, int right, int top, int bottom)
+{
+    RECT card, in;
+    int y, width, viewBottom, noteH, most;
+
+    card.left = left;
+    card.top = top;
+    card.right = right;
+    card.bottom = bottom > top ? bottom : top;
     in = Rs_CardInner(&card, 1);
     width = in.right - in.left;
     MoveWindow(g_char.pose, in.right - Rs_Px(168), card.top + Rs_Px(10), Rs_Px(168), Rs_Px(200), TRUE);
     y = in.top;
-    listBottom = in.bottom - Rs_Px(24);
-    if (listBottom < y + Rs_Px(80))
-        listBottom = y + Rs_Px(80);
-    MoveWindow(g_char.view, in.left, y, width, listBottom - y, TRUE);
-    MoveWindow(g_char.viewNote, in.left, listBottom + Rs_Px(6), width, Rs_Px(18), TRUE);
+    noteH = Char_NoteHeight(g_char.viewNote, width);
+    // The visible height less the title, the note and the margins of the card
+    // and the margins of the page above and below it.
+    most = k->viewH - (in.top - card.top) - Rs_Px(6) - noteH - Rs_Px(16) - 2 * Rs_Px(24);
+    viewBottom = bottom > top ? in.bottom - Rs_Px(6) - noteH : y + most;
+    if (viewBottom > y + most)
+        viewBottom = y + most;
+    if (viewBottom < y + Rs_Px(CHAR_VIEW_MIN_H))
+        viewBottom = y + Rs_Px(CHAR_VIEW_MIN_H);
+    MoveWindow(g_char.view, in.left, y, width, viewBottom - y, TRUE);
+    MoveWindow(g_char.viewNote, in.left, viewBottom + Rs_Px(6), width, noteH, TRUE);
+    card.bottom = viewBottom + Rs_Px(6) + noteH + Rs_Px(16);
     Rs_CardAdd(page, &card, L"Preview");
+}
+
+static void Char_Layout(HWND page, int w, int h)
+{
+    struct CharLay k;
+    int left = Rs_Px(32), right = w - Rs_Px(32);
+    int top = Rs_PageTop(), bottom = h - Rs_Px(24);
+    int viewW = 0, leastLeft, leastRight, comboW, i, y;
+    HWND column[9];
+
+    Rs_CardClear(page);
+    k.viewH = 0;
+    Rs_PageViewSize(page, &viewW, &k.viewH);
+    if (viewW <= 0 || viewW > w)
+        viewW = w;
+    if (k.viewH <= 0 || k.viewH > h)
+        k.viewH = h;
+    k.gap = Rs_Px(16);
+    k.browseW = Rs_Px(100);
+    k.clearW = Rs_Px(72);
+    k.labelW = Rs_Px(112);
+
+    // Nothing is cut short: the label column is as wide as its widest label,
+    // and the card "Character" holds the longest entry of either combo.
+    column[0] = g_char.modelLabel;
+    column[1] = g_char.nameLabel;
+    column[2] = g_char.classLabel;
+    column[3] = g_char.maskLabel;
+    column[4] = g_char.sizeLabel;
+    column[5] = g_char.sizeCrash;
+    column[6] = g_char.optionsLabel;
+    column[7] = g_char.iconLabel;
+    column[8] = g_char.voicesLabel;
+    for (i = 0; i < 9; i++) {
+        wchar_t *text = Rs_GetText(column[i]);
+        int tw = Char_TextWidth(column[i], text) + Rs_Px(4);
+        if (tw > k.labelW)
+            k.labelW = tw;
+        Rs_Free(text);
+    }
+    comboW = Char_ComboTextWidth(g_char.cls);
+    SendMessageW(g_char.cls, CB_SETDROPPEDWIDTH, (WPARAM)(comboW + Rs_Px(16)), 0);
+    i = Char_ComboTextWidth(g_char.mask);
+    SendMessageW(g_char.mask, CB_SETDROPPEDWIDTH, (WPARAM)(i + Rs_Px(16)), 0);
+    if (i > comboW)
+        comboW = i;
+    comboW += Rs_Px(28);        // the margins and the arrow
+    // Rs_CardInner takes 18 on each side.
+    leastLeft = 2 * Rs_Px(18) + k.labelW + Rs_Px(8) + comboW;
+    leastRight = 2 * Rs_Px(18) + k.labelW + Rs_Px(8) + Rs_Px(CHAR_FIELD_MIN_W) + k.browseW + k.clearW + Rs_Px(16);
+
+    if (left + leastLeft + k.gap + leastRight + Rs_Px(32) <= viewW) {
+        // Two columns: character and build on the left, icon and preview on
+        // the right; the left one at least as wide as it needs.
+        int leftW = (right - left - k.gap) / 2;
+        if (leftW < leastLeft)
+            leftW = leastLeft;
+        y = Char_LayCharacter(page, &k, left, left + leftW, top);
+        Char_LayBuild(page, &k, left, left + leftW, y + k.gap, bottom);
+        y = Char_LayIcon(page, &k, left + leftW + k.gap, right, top);
+        Char_LayPreview(page, &k, left + leftW + k.gap, right, y + k.gap, bottom);
+    } else {
+        // One column at full width, the cards below each other; only when even
+        // that does not fit, the page gets wider and scrolls sideways.
+        int least = leastLeft > leastRight ? leastLeft : leastRight;
+        if (right - left < least)
+            left = Rs_Px(16);   // a narrower margin first
+        if (right - left < least)
+            right = left + least;
+        y = Char_LayCharacter(page, &k, left, right, top);
+        y = Char_LayIcon(page, &k, left, right, y + k.gap);
+        y = Char_LayBuild(page, &k, left, right, y + k.gap, y + k.gap);
+        Char_LayPreview(page, &k, left, right, y + k.gap, y + k.gap);
+    }
 
     // After a DPI change the shell sets the base font; the raw output
     // stays in a fixed-width font, though.
@@ -2982,6 +3406,7 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
             Char_Changed(page);
         break;
     case CHAR_ID_CLASS:
+    case CHAR_ID_MASK:
         if (code == CBN_SELCHANGE)
             Char_Changed(page);
         break;
@@ -3103,6 +3528,19 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
             *handled = 1;
         }
         return 0;
+    case RS_WM_PAGE_SHOWN: {
+        // The game may have been chosen on the page Test meanwhile: the cue
+        // follows, and a check again when the default output has moved.
+        wchar_t field[CHAR_VAL], model[CHAR_VAL], def[CHAR_VAL];
+        Char_FieldPath(g_char.out, field, CHAR_VAL);
+        Char_FieldPath(g_char.model, model, CHAR_VAL);
+        Char_DefaultOut(model, def, CHAR_VAL);
+        if (!model[0] || field[0])
+            Char_OutCue();
+        else if (_wcsicmp(def, g_char.checkDefault) != 0)
+            Char_Changed(page);
+        return 0;
+    }
     case WM_DROPFILES:
         Char_Drop(page, (HDROP)wParam);
         *handled = 1;
@@ -3139,6 +3577,8 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         return Char_AutoText(g_char.name, verb, arg, 0);
     if (wcscmp(verb, L"class") == 0)
         return Char_AutoClass(page, arg);
+    if (wcscmp(verb, L"mask") == 0)
+        return Char_AutoMask(page, arg);
     if (wcscmp(verb, L"size") == 0)
         return Char_AutoSize(page, arg);
     if (wcscmp(verb, L"icon") == 0)
@@ -3209,5 +3649,7 @@ const struct RsPageDef g_rsCharPage = {
     Char_Notify,
     Char_Message,
     Char_Automate,
-    Char_Busy
+    Char_Busy,
+    CHAR_PAGE_MIN_W,
+    CHAR_PAGE_MIN_H
 };
