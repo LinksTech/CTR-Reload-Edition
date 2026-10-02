@@ -135,6 +135,7 @@ static HWND g_main;
 static HWND g_sidebar;
 static HWND g_host;                     // the scrolling view the pages sit in
 static HWND g_tips;                     // tooltips of the narrow sidebar
+static HWND g_pageTips;                 // tooltips of page controls (Rs_SetTip)
 static HWND g_lastFocus;
 static int g_narrow;                    // sidebar with icons only
 static int g_forcedDpi;                 // --ui-scale as dpi, 0 = the monitor's
@@ -1304,6 +1305,14 @@ static void Rs_ThemeControl(HWND h)
             ListView_SetTextBkColor(h, (COLORREF)(UINT_PTR)GetPropW(h, L"RsLvTextBk"));
             ListView_SetTextColor(h, (COLORREF)(UINT_PTR)GetPropW(h, L"RsLvText"));
         }
+    } else if (_wcsicmp(cls, TRACKBAR_CLASSW) == 0) {
+        // A slider keeps Windows' theme in both schemes; its background comes from
+        // WM_CTLCOLORSTATIC of the page. It keeps that brush from its first
+        // painting, and a change of scheme replaces the brushes: WM_THEMECHANGED
+        // (SetWindowTheme) makes it ask again, otherwise it stays light.
+        SetWindowTheme(h, NULL, NULL);
+        InvalidateRect(h, NULL, TRUE);
+        return;
     } else if (_wcsicmp(cls, L"ListBox") != 0 && _wcsicmp(cls, L"RsMsgList") != 0 &&
                _wcsicmp(cls, L"RsPageHost") != 0) {
         // Labels, pages, sidebar, headers (via the list).
@@ -1337,6 +1346,11 @@ static void Rs_ApplyTheme(int dark, int save)
     if (g_main) {
         Rs_TitleBarTheme(g_main);
         EnumChildWindows(g_main, Rs_ThemeChild, 0);
+        // The tooltips are popups, not children: EnumChildWindows misses them.
+        if (g_tips)
+            SetWindowTheme(g_tips, g_dark ? L"DarkMode_Explorer" : NULL, NULL);
+        if (g_pageTips)
+            SetWindowTheme(g_pageTips, g_dark ? L"DarkMode_Explorer" : NULL, NULL);
         SetWindowPos(g_main, NULL, 0, 0, 0, 0,
                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
         RedrawWindow(g_main, NULL, NULL,
@@ -1662,10 +1676,63 @@ HWND Rs_Label(HWND page, int id, const wchar_t *text, int font)
     return Rs_Make(page, id, L"STATIC", text, SS_LEFT | SS_NOPREFIX, 0, font);
 }
 
+// The cue of an empty, disabled one-line input field: Windows shows a cue
+// (EM_SETCUEBANNER) only while the field is enabled, and a field locked with
+// its cue ("Coming soon") would be a blank box. The shell writes the cue in
+// RS_COL_MUTED over what Windows painted.
+static void Rs_EditCuePaint(HWND h, HDC dc)
+{
+    wchar_t cue[256];
+    RECT rc;
+    HFONT font;
+    HGDIOBJ oldFont;
+
+    if (IsWindowEnabled(h) || GetWindowTextLengthW(h) > 0 || (GetWindowLongPtrW(h, GWL_STYLE) & ES_MULTILINE))
+        return;
+    cue[0] = 0;
+    if (!SendMessageW(h, EM_GETCUEBANNER, (WPARAM)cue, 256) || !cue[0])
+        return;
+    cue[255] = 0;
+    SendMessageW(h, EM_GETRECT, 0, (LPARAM)&rc);
+    font = (HFONT)SendMessageW(h, WM_GETFONT, 0, 0);
+    oldFont = SelectObject(dc, font ? font : Rs_Font(RS_FONT_BODY));
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, RS_COL_MUTED);
+    DrawTextW(dc, cue, -1, &rc, DT_SINGLELINE | DT_LEFT | DT_NOPREFIX | DT_END_ELLIPSIS);
+    SelectObject(dc, oldFont);
+}
+
+static LRESULT CALLBACK Rs_EditSub(HWND h, UINT msg, WPARAM wParam, LPARAM lParam,
+                                   UINT_PTR id, DWORD_PTR ref)
+{
+    LRESULT r;
+    (void)ref;
+    if (msg == WM_NCDESTROY) {
+        RemoveWindowSubclass(h, Rs_EditSub, id);
+        return DefSubclassProc(h, msg, wParam, lParam);
+    }
+    r = DefSubclassProc(h, msg, wParam, lParam);
+    if (msg == WM_PAINT) {
+        HDC dc = GetDC(h);
+        if (dc) {
+            Rs_EditCuePaint(h, dc);
+            ReleaseDC(h, dc);
+        }
+    } else if (msg == WM_PRINTCLIENT) {
+        Rs_EditCuePaint(h, (HDC)wParam);
+    } else if (msg == WM_ENABLE || msg == WM_SETTEXT || msg == EM_SETCUEBANNER) {
+        InvalidateRect(h, NULL, TRUE);
+    }
+    return r;
+}
+
 HWND Rs_Edit(HWND page, int id, const wchar_t *text, DWORD extraStyle)
 {
-    return Rs_Themed(Rs_Make(page, id, L"EDIT", text, WS_TABSTOP | ES_AUTOHSCROLL | extraStyle,
-                             WS_EX_CLIENTEDGE, RS_FONT_BODY));
+    HWND h = Rs_Make(page, id, L"EDIT", text, WS_TABSTOP | ES_AUTOHSCROLL | extraStyle,
+                     WS_EX_CLIENTEDGE, RS_FONT_BODY);
+    if (h && !(extraStyle & ES_MULTILINE))
+        SetWindowSubclass(h, Rs_EditSub, 1, 0);   // the cue of a one-line field only
+    return Rs_Themed(h);
 }
 
 HWND Rs_Button(HWND page, int id, const wchar_t *text)
@@ -1762,6 +1829,166 @@ wchar_t *Rs_GetText(HWND control)
     return t;
 }
 
+int Rs_CheckBoxWidth(HWND box)
+{
+    wchar_t text[128];
+    int n = GetWindowTextW(box, text, 128);
+
+    text[n < 128 ? n : 127] = 0;
+    return Rs_Px(13 + 4 + 6) + Rs_TextWidth(box, text);
+}
+
+int Rs_TextWidth(HWND h, const wchar_t *text)
+{
+    HDC dc = GetDC(h);
+    HFONT font = (HFONT)SendMessageW(h, WM_GETFONT, 0, 0);
+    HGDIOBJ old;
+    SIZE ext;
+    int n = text ? (int)wcslen(text) : 0;
+
+    ext.cx = n * Rs_Px(8);
+    if (dc) {
+        old = SelectObject(dc, font ? font : Rs_Font(RS_FONT_BODY));
+        GetTextExtentPoint32W(dc, text ? text : L"", n, &ext);
+        SelectObject(dc, old);
+        ReleaseDC(h, dc);
+    }
+    return ext.cx;
+}
+
+// ---------------------------------------------------------------------------
+// Preview features and tooltips of page controls
+// ---------------------------------------------------------------------------
+
+int g_rsPreviewFeatures;
+
+// Every control with a tooltip has two tools in g_pageTips: one on the page
+// window over the control's rectangle (uId = control ID) - a disabled control
+// gets no mouse messages, they go to the page - and one on the control itself
+// (TTF_IDISHWND) for when it is enabled and takes the mouse. Only one of them
+// ever sees the mouse. The table keeps the texts for the verb "controls".
+#define RS_MAX_PAGE_TIPS 64
+struct RsPageTip {
+    HWND page;
+    HWND control;
+    int id;
+    wchar_t *text;
+};
+static struct RsPageTip g_pageTip[RS_MAX_PAGE_TIPS];
+static int g_pageTipCount;
+
+static void Rs_PageTipsCreate(void)
+{
+    if (g_pageTips || !g_main)
+        return;
+    g_pageTips = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+                                 CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+                                 g_main, NULL, g_inst, NULL);
+    if (!g_pageTips)
+        return;
+    SendMessageW(g_pageTips, TTM_SETMAXTIPWIDTH, 0, Rs_Px(320));
+    if (g_dark)
+        SetWindowTheme(g_pageTips, L"DarkMode_Explorer", NULL);
+}
+
+static void Rs_PageTipTools(const struct RsPageTip *t, TOOLINFOW *onPage, TOOLINFOW *onControl)
+{
+    memset(onPage, 0, sizeof(*onPage));
+    onPage->cbSize = sizeof(*onPage);
+    onPage->uFlags = TTF_SUBCLASS;
+    onPage->hwnd = t->page;
+    onPage->uId = (UINT_PTR)t->id;
+    *onControl = *onPage;
+    onControl->uFlags = TTF_SUBCLASS | TTF_IDISHWND;
+    onControl->uId = (UINT_PTR)t->control;
+}
+
+// The rectangle of the tool on the page: where the control is, in page
+// coordinates; empty while it is hidden. The page moves as a whole when the
+// view scrolls, so only a layout changes it. The control's own WS_VISIBLE, as
+// in Rs_PageExtent: IsWindowVisible is false on a page that is not shown, and a
+// layout there would empty every tool of the page.
+static RECT Rs_PageTipRect(const struct RsPageTip *t)
+{
+    RECT r = { 0, 0, 0, 0 };
+    if (IsWindow(t->control) && (GetWindowLongPtrW(t->control, GWL_STYLE) & WS_VISIBLE)) {
+        GetWindowRect(t->control, &r);
+        MapWindowPoints(NULL, t->page, (POINT *)&r, 2);
+    }
+    return r;
+}
+
+void Rs_SetTip(HWND control, const wchar_t *text)
+{
+    struct RsPageTip *t = NULL;
+    TOOLINFOW onPage, onControl;
+    int i;
+
+    if (!control)
+        return;
+    Rs_PageTipsCreate();
+    for (i = 0; i < g_pageTipCount; i++)
+        if (g_pageTip[i].control == control)
+            t = &g_pageTip[i];
+    if (t && g_pageTips) {
+        Rs_PageTipTools(t, &onPage, &onControl);
+        SendMessageW(g_pageTips, TTM_DELTOOLW, 0, (LPARAM)&onPage);
+        SendMessageW(g_pageTips, TTM_DELTOOLW, 0, (LPARAM)&onControl);
+    }
+    if (!text || !text[0]) {
+        if (t) {
+            Rs_Free(t->text);
+            *t = g_pageTip[--g_pageTipCount];
+        }
+        return;
+    }
+    if (!t) {
+        if (g_pageTipCount >= RS_MAX_PAGE_TIPS)
+            return;
+        t = &g_pageTip[g_pageTipCount++];
+        t->control = control;
+    } else {
+        Rs_Free(t->text);
+    }
+    t->page = GetParent(control);
+    t->id = GetDlgCtrlID(control);
+    t->text = Rs_Dup(text);
+    if (!g_pageTips)
+        return;
+    Rs_PageTipTools(t, &onPage, &onControl);
+    onPage.lpszText = t->text;
+    onPage.rect = Rs_PageTipRect(t);
+    onControl.lpszText = t->text;
+    SendMessageW(g_pageTips, TTM_ADDTOOLW, 0, (LPARAM)&onPage);
+    SendMessageW(g_pageTips, TTM_ADDTOOLW, 0, (LPARAM)&onControl);
+}
+
+// After every layout() of a page: the tools on the page follow their controls.
+static void Rs_TipsSyncPage(HWND page)
+{
+    TOOLINFOW onPage, onControl;
+    int i;
+
+    if (!g_pageTips)
+        return;
+    SendMessageW(g_pageTips, TTM_SETMAXTIPWIDTH, 0, Rs_Px(320));
+    for (i = 0; i < g_pageTipCount; i++) {
+        if (g_pageTip[i].page != page)
+            continue;
+        Rs_PageTipTools(&g_pageTip[i], &onPage, &onControl);
+        onPage.rect = Rs_PageTipRect(&g_pageTip[i]);
+        SendMessageW(g_pageTips, TTM_NEWTOOLRECTW, 0, (LPARAM)&onPage);
+    }
+}
+
+HWND Rs_ComingSoon(HWND page, int id)
+{
+    HWND h = Rs_Label(page, id, g_rsPreviewFeatures ? L"Preview feature" : L"Coming soon", RS_FONT_SMALL);
+    if (h)
+        Rs_SetTextColor(h, g_rsPreviewFeatures ? RS_COL_NOTE : RS_COL_MUTED);
+    return h;
+}
+
 static void Rs_DrawPrimary(DRAWITEMSTRUCT *di)
 {
     wchar_t text[128];
@@ -1789,6 +2016,47 @@ static void Rs_DrawPrimary(DRAWITEMSTRUCT *di)
     oldFont = SelectObject(di->hDC, Rs_Font(RS_FONT_BOLD));
     DrawTextW(di->hDC, text, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     SelectObject(di->hDC, oldFont);
+}
+
+// A disabled push button in the dark scheme: DarkMode_Explorer writes its text
+// almost as light as that of an enabled one. The shell paints it then: the
+// theme's disabled button, the text in RS_COL_MUTED. 1 = painted (the page
+// answers CDRF_SKIPDEFAULT); everything else stays with Windows.
+static int Rs_DisabledButtonDraw(HWND page, NMCUSTOMDRAW *cd)
+{
+    wchar_t cls[16], text[128];
+    HWND h = cd->hdr.hwndFrom;
+    LONG_PTR type;
+    HTHEME theme;
+    HBRUSH br;
+    HGDIOBJ oldFont;
+    HFONT font;
+    RECT rc = cd->rc;
+    UINT flags = DT_CENTER | DT_VCENTER | DT_SINGLELINE;
+
+    if (!g_dark || cd->dwDrawStage != CDDS_PREPAINT || IsWindowEnabled(h) ||
+        !GetClassNameW(h, cls, 16) || _wcsicmp(cls, L"Button") != 0)
+        return 0;
+    type = GetWindowLongPtrW(h, GWL_STYLE) & BS_TYPEMASK;
+    if (type != BS_PUSHBUTTON && type != BS_DEFPUSHBUTTON)
+        return 0;
+    theme = GetWindowTheme(h);
+    if (!theme)
+        return 0;
+    br = (HBRUSH)SendMessageW(page, WM_CTLCOLORSTATIC, (WPARAM)cd->hdc, (LPARAM)h);
+    FillRect(cd->hdc, &rc, br ? br : g_brPage);
+    DrawThemeBackground(theme, cd->hdc, BP_PUSHBUTTON, PBS_DISABLED, &rc, NULL);
+    GetWindowTextW(h, text, 127);
+    text[127] = 0;
+    if (SendMessageW(h, WM_QUERYUISTATE, 0, 0) & UISF_HIDEACCEL)
+        flags |= DT_HIDEPREFIX;
+    font = (HFONT)SendMessageW(h, WM_GETFONT, 0, 0);
+    oldFont = SelectObject(cd->hdc, font ? font : Rs_Font(RS_FONT_BODY));
+    SetBkMode(cd->hdc, TRANSPARENT);
+    SetTextColor(cd->hdc, RS_COL_MUTED);
+    DrawTextW(cd->hdc, text, -1, &rc, flags);
+    SelectObject(cd->hdc, oldFont);
+    return 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -2454,6 +2722,7 @@ static LRESULT CALLBACK Rs_PageProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     case WM_SIZE:
         if (st && st->ready && st->def->layout) {
             st->def->layout(hwnd, LOWORD(lParam), HIWORD(lParam));
+            Rs_TipsSyncPage(hwnd);
             InvalidateRect(hwnd, NULL, TRUE);
         }
         return 0;
@@ -2491,6 +2760,8 @@ static LRESULT CALLBACK Rs_PageProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             return st->def->command(hwnd, wParam, lParam);
         return 0;
     case WM_NOTIFY:
+        if (((NMHDR *)lParam)->code == NM_CUSTOMDRAW && Rs_DisabledButtonDraw(hwnd, (NMCUSTOMDRAW *)lParam))
+            return CDRF_SKIPDEFAULT;
         if (st && st->ready && st->def->notify)
             return st->def->notify(hwnd, (NMHDR *)lParam);
         return 0;
@@ -2546,6 +2817,7 @@ void Rs_ShowPage(int id)
     ShowWindow(g_pages[id], SW_SHOW);
     InvalidateRect(g_sidebar, NULL, FALSE);
     SendMessageW(g_pages[id], RS_WM_PAGE_SHOWN, 0, 0);
+    Rs_TipsSyncPage(g_pages[id]);
     Rs_ConfigSet(L"page", g_pageWords[id]);
 }
 
@@ -2693,6 +2965,7 @@ static void Rs_PageFit(int id, int relayout)
             SetWindowPos(page, NULL, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
         } else if (relayout && st->def->layout) {
             st->def->layout(page, w, h);
+            Rs_TipsSyncPage(page);
             InvalidateRect(page, NULL, TRUE);
         }
         relayout = 0;
@@ -2817,6 +3090,8 @@ static LRESULT CALLBACK Rs_HostProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             Rs_PageFit(id, 0);
             if (g_topChanged)
                 Rs_Layout(1);
+            // Also after a layout a page ran by itself (a card that grew).
+            Rs_TipsSyncPage(g_pages[id]);
         }
         return 0;
     }
@@ -2937,8 +3212,11 @@ static void Rs_TipsCreate(void)
     g_tips = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
                              CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
                              g_main, NULL, g_inst, NULL);
+    Rs_PageTipsCreate();
     if (!g_tips)
         return;
+    if (g_dark)
+        SetWindowTheme(g_tips, L"DarkMode_Explorer", NULL);
     for (i = 0; i <= RS_NAV_THEME; i++) {
         memset(&ti, 0, sizeof(ti));
         ti.cbSize = sizeof(ti);
@@ -3307,6 +3585,7 @@ done:
 //   card     <l> <t> <r> <b> <title right edge> <title>
 //   control  <id> <class> <l> <t> <r> <b> <visible> <enabled> <ellipsis> <need w> <need h> <text>
 //   focus    <id>                   the control with the keyboard focus, if on the page
+//   tip      <id> <text>            the tooltip of a control of the page (Rs_SetTip)
 //   side     <name> <l> <t> <r> <b> <text right edge>
 // need w / need h: what the text asks for in the control's font - for a label
 // the width on one line and the height wrapped at the control's width, for a
@@ -3431,6 +3710,12 @@ static int Rs_DumpControls(const wchar_t *path)
         while (GetParent(c) != page)
             c = GetParent(c);
         fprintf(f, "focus\t%d\n", GetDlgCtrlID(c));
+    }
+    for (i = 0; i < g_pageTipCount; i++) {
+        if (g_pageTip[i].page != page)
+            continue;
+        fprintf(f, "tip\t%d\t", g_pageTip[i].id);
+        Rs_DumpText(f, g_pageTip[i].text);
     }
     for (i = 0; i <= RS_NAV_THEME; i++) {
         RECT r = i == RS_NAV_THEME ? Rs_ThemeRect() : Rs_NavRect(i);
@@ -3876,6 +4161,9 @@ static const wchar_t g_helpText[] =
     L"  --do \"<verb> <arg>\"    automation step, any number of times (below)\n"
     L"  --log <file>           automation log\n"
     L"  --rldpack <args>       run as rldpack (only as the first argument)\n"
+    L"  --enable-preview-features\n"
+    L"                         unlock fields marked \"Coming soon\" (unfinished;\n"
+    L"                         nothing of them is written into a container)\n"
     L"  --help                 this text\n"
     L"\n"
     L"Automation verbs of the window: page track|cups|char|test, shot <file.bmp>\n"
@@ -3903,7 +4191,7 @@ static void Rs_Help(void)
 // "--ui-scale 150" or "150%" -> dpi, 0 if not a percentage from 75 to 300.
 static int Rs_ParseScale(const wchar_t *s)
 {
-    wchar_t *end;
+    wchar_t *end = NULL;
     long pct = s ? wcstol(s, &end, 10) : 0;
     if (!s || end == s || (*end && !(end[0] == L'%' && end[1] == 0)) || pct < 75 || pct > 300)
         return 0;
@@ -3958,6 +4246,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
             scaleArg = i + 1 < argc ? argv[++i] : L"";
         } else if (wcscmp(argv[i], L"--screen") == 0) {
             screenArg = i + 1 < argc ? argv[++i] : L"";
+        } else if (wcscmp(argv[i], L"--enable-preview-features") == 0) {
+            // Never stored: every start without it has the fields locked again.
+            g_rsPreviewFeatures = 1;
         } else if (wcscmp(argv[i], L"--help") == 0 || wcscmp(argv[i], L"-h") == 0 ||
                    wcscmp(argv[i], L"/?") == 0) {
             Rs_Help();
@@ -4075,6 +4366,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
         Rs_AutoLog(L"Reload Studio automation, %d step(s)", g_autoCount);
         if (g_settingsFile)
             Rs_AutoLog(L"settings: %ls", g_iniPath[0] ? g_iniPath : L"(none - see above)");
+        if (g_rsPreviewFeatures)
+            Rs_AutoLog(L"preview features: on");
         g_autoSettleUntil = GetTickCount() + 300;
         SetTimer(g_main, RS_TIMER_AUTO, 50, NULL);
     }

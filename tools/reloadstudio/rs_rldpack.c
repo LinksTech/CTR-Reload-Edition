@@ -89,3 +89,63 @@ int Rs_DummyMesh(int wheels, int pose, int *position, int positionMax, int *tria
     free(c);
     return (int)triangles;
 }
+
+// See rs_view.h. The wheel points the game draws its wheels at for the dummy,
+// from the same defines RldDum_Mesh builds its wheels with.
+void Rs_DummyTires(int center[4][3], int *halfSize)
+{
+    static const double side[4] = { RLDDUM_TIRE_X, -RLDDUM_TIRE_X, RLDDUM_TIRE_X, -RLDDUM_TIRE_X };
+    static const double z[4] = { RLDDUM_TIRE_FRONT_Z, RLDDUM_TIRE_FRONT_Z, RLDDUM_TIRE_REAR_Z, RLDDUM_TIRE_REAR_Z };
+    int i;
+
+    for (i = 0; i < 4; i++) {
+        center[i][0] = Rs_DummySub(side[i]);
+        center[i][1] = Rs_DummySub(RLDDUM_TIRE_Y);
+        center[i][2] = Rs_DummySub(z[i]);
+    }
+    if (halfSize)
+        *halfSize = Rs_DummySub(RLDDUM_TIRE_HALF_SIZE);
+}
+
+// Tenths of a game unit, half away from zero (the unit of RS_VIEW_DUMMY_*).
+static int Rs_DummyTenths(double v)
+{
+    return v >= 0.0 ? (int)(v * 10.0 + 0.5) : -(int)(-v * 10.0 + 0.5);
+}
+
+// See rs_view.h: the copies RS_VIEW_DUMMY_* against the RLDDUM_* values.
+int Rs_DummyCopiesCheck(wchar_t *why, int whyCap)
+{
+    static const double wheel[3] = RLDDUM_WHEEL_CENTER;
+    static const double crash[6] = RLDDUM_CRASH_BOX;
+    const struct {
+        const wchar_t *name;
+        int copy;
+        double value;
+    } pairs[] = {
+        { L"RS_VIEW_DUMMY_SEAT_Y", RS_VIEW_DUMMY_SEAT_Y, RLDDUM_SEAT_Y },
+        { L"RS_VIEW_DUMMY_WHEEL_X", RS_VIEW_DUMMY_WHEEL_X, wheel[0] },
+        { L"RS_VIEW_DUMMY_WHEEL_Y", RS_VIEW_DUMMY_WHEEL_Y, wheel[1] },
+        { L"RS_VIEW_DUMMY_WHEEL_Z", RS_VIEW_DUMMY_WHEEL_Z, wheel[2] },
+        { L"RS_VIEW_DUMMY_WHEEL_RADIUS", RS_VIEW_DUMMY_WHEEL_RADIUS, RLDDUM_WHEEL_RADIUS },
+        { L"RS_VIEW_DUMMY_TURN_WHEEL", RS_VIEW_DUMMY_TURN_WHEEL * 10, RLDDUM_TURN_WHEEL },
+        { L"RS_VIEW_DUMMY_CRASH_X0", RS_VIEW_DUMMY_CRASH_X0, crash[0] },
+        { L"RS_VIEW_DUMMY_CRASH_Y0", RS_VIEW_DUMMY_CRASH_Y0, crash[1] },
+        { L"RS_VIEW_DUMMY_CRASH_Z0", RS_VIEW_DUMMY_CRASH_Z0, crash[2] },
+        { L"RS_VIEW_DUMMY_CRASH_X1", RS_VIEW_DUMMY_CRASH_X1, crash[3] },
+        { L"RS_VIEW_DUMMY_CRASH_Y1", RS_VIEW_DUMMY_CRASH_Y1, crash[4] },
+        { L"RS_VIEW_DUMMY_CRASH_Z1", RS_VIEW_DUMMY_CRASH_Z1, crash[5] },
+    };
+    size_t i;
+
+    for (i = 0; i < sizeof(pairs) / sizeof(pairs[0]); i++)
+        if (pairs[i].copy != Rs_DummyTenths(pairs[i].value)) {
+            if (why && whyCap > 0)
+                swprintf(why, (size_t)whyCap, L"%ls is %d, rldpack has %d (tenths)", pairs[i].name, pairs[i].copy,
+                         Rs_DummyTenths(pairs[i].value));
+            return 0;
+        }
+    if (why && whyCap > 0)
+        why[0] = 0;
+    return 1;
+}

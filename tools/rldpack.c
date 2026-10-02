@@ -594,6 +594,16 @@ static int RldChar_VerifyCommand(const char *path);
 static int RldChar_SelfTest(void);
 static void RldChar_Usage(FILE *out);
 
+// Previews for Reload Studio that never write a container: char-poses
+// (tools/rldpack_anim.inc) and char-wheel (tools/rldpack_wheel.inc), both
+// included next to tools/rldpack_char.inc.
+static int RldAnim_PosesCommand(int argc, char **argv);
+static int RldAnim_SelfTest(void);
+static void RldAnim_Usage(FILE *out);
+static int RldWheel_Command(int argc, char **argv);
+static int RldWheel_SelfTest(void);
+static void RldWheel_Usage(FILE *out);
+
 
 //========================================================================================
 // CHECK WHAT IS INSIDE - BEFORE IT IS WRITTEN
@@ -6087,6 +6097,10 @@ static int Cmd_Selftest(void)
 	// It counts its failed cases; here only "any" matters.
 	failed |= (RldChar_SelfTest() != 0);
 
+	// CHAR-POSES and CHAR-WHEEL (tools/rldpack_anim.inc, tools/rldpack_wheel.inc).
+	failed |= (RldAnim_SelfTest() != 0);
+	failed |= (RldWheel_SelfTest() != 0);
+
 	printf(failed ? "\nSelf-test FAILED.\n" : "\nSelf-test passed.\n");
 	return failed;
 }
@@ -6118,6 +6132,10 @@ static void Rld_Usage(void)
 	printf("  make     <folder>           build a container from a track folder, see below\n");
 	printf("  build    ...                build a container from single files, see below\n");
 	printf("  make-char ...               build a character (.rldchar) from a PLY model, see below\n");
+	printf("  char-poses ...              check pose PLYs against a character model and\n");
+	printf("                              write them for the preview, see below\n");
+	printf("  char-wheel ...              read a wheel PLY of one's own and write it for\n");
+	printf("                              the preview, see below\n");
 	printf("  info     <file>             show the format, META and PARM, leaves LEVD/VRMD untouched\n");
 	printf("  verify   <file>             check every chunk against its hash, SNDB and PARM\n");
 	printf("                              with the game's own reader, and warn if the track\n");
@@ -6167,6 +6185,8 @@ static void Rld_Usage(void)
 	printf("\n");
 
 	RldChar_Usage(stdout);
+	RldAnim_Usage(stdout);
+	RldWheel_Usage(stdout);
 
 	printf("BUILD - REQUIRED\n");
 	printf("  --lev <file>                track geometry (.lev), 16 MB at most\n");
@@ -6327,6 +6347,10 @@ static int Cmd_InfoMachine(int argc, char *argv[])
 // the head of COMMANDS. The reader and the model check are include/rldchar.inc.
 #include "rldpack_char.inc"
 
+// char-poses and char-wheel: they use the PLY reader and the chain of make-char.
+#include "rldpack_anim.inc"
+#include "rldpack_wheel.inc"
+
 // Searched for --machine and removed before a command sees the arguments:
 // otherwise make would report an unknown argument before the machine is on.
 static int Rld_MainCommand(int argc, char *argv[]);
@@ -6413,6 +6437,14 @@ static int Rld_MainCommand(int argc, char *argv[])
 	if (strcmp(argv[1], "make-char") == 0)
 	{
 		return RldChar_MakeCommand(argc - 2, &argv[2]);
+	}
+	if (strcmp(argv[1], "char-poses") == 0)
+	{
+		return RldAnim_PosesCommand(argc - 2, &argv[2]);
+	}
+	if (strcmp(argv[1], "char-wheel") == 0)
+	{
+		return RldWheel_Command(argc - 2, &argv[2]);
 	}
 	if (strcmp(argv[1], "info") == 0)
 	{

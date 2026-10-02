@@ -47,8 +47,9 @@ enum RsViewPose {
 
 // The measured points of the reference dummy (tools/rldpack_dummy.inc) that
 // the dummy's driver of the view is anchored at, in TENTHS of a game unit
-// (degrees for the turn). They are copies: rs_rldpack.c, which carries
-// rldpack, checks them against the RLDDUM_* values.
+// (degrees for the turn). They are copies: Rs_DummyCopiesCheck (rs_rldpack.c,
+// which carries rldpack) compares them with the RLDDUM_* values; the first
+// RsView_Register writes a line into the automation log when one differs.
 #define RS_VIEW_DUMMY_SEAT_Y 102          // RLDDUM_SEAT_Y 10.2
 #define RS_VIEW_DUMMY_WHEEL_X 0           // RLDDUM_WHEEL_CENTER (0, 38, 24)
 #define RS_VIEW_DUMMY_WHEEL_Y 380
@@ -109,6 +110,40 @@ void RsView_Clear(HWND view, const wchar_t *message);
 BOOL RsView_Loaded(HWND view);
 int  RsView_TriangleCount(HWND view, int pose);
 
+// Preview features (only called with --enable-preview-features). Without
+// them nothing below is loaded and the view draws exactly as described above.
+//
+// A set of extra poses of the same model (rldpack char-poses --preview,
+// "RLDPS1\0\0", u32 count, per pose u32 triangles + the triangle records of
+// RLDPV1). Shown instead of the built model while index >= 0. Loading takes
+// the set into the framing; switching between poses never zooms.
+BOOL RsView_LoadPoseSet(HWND view, const wchar_t *path);
+int  RsView_PoseSetCount(HWND view);
+void RsView_ShowPoseSet(HWND view, int index);     // -1 = the built model again (RsView_SetPose applies)
+void RsView_DropPoseSet(HWND view);
+
+// A wheel model (rldpack char-wheel --preview, "RLDPW1\0\0", u32 triangles +
+// the records of RLDPV1, centred on its axle, sized like the game's wheel).
+// Drawn at the dummy's four wheel points instead of the game's wheels, only
+// while RsView_SetWheels is on; the dummy beside the model keeps the game's
+// wheels.
+BOOL RsView_LoadWheelModel(HWND view, const wchar_t *path);
+void RsView_DropWheelModel(HWND view);
+void RsView_SetWheelScale(HWND view, int percent);  // 50..200, integer scaling
+void RsView_SetWheelTurn(HWND view, int spinDegrees, int steerDegrees);  // spin about the axle, steer the front pair
+void RsView_SetWheelAnimation(HWND view, int on);   // own WM_TIMER on the view; never on by itself
+//
+// The wheel file (1/16 game units): axle along X through the origin, the rim
+// (outer side) toward +X - as on the driver's left. The -X pair is drawn
+// mirrored. Spin: + rolls forward (the top toward +Z), any integer taken
+// modulo 360. Steer: + steers left (the front edge toward +X), clamped to
+// +-RS_VIEW_WHEEL_STEER_MAX, the front pair only. The animation turns both by
+// fixed steps per tick of the view's own timer (not by the clock); it stops
+// while the view is hidden or minimized or has no wheel model. Without a
+// wheel model the angles change nothing.
+// Loading and the scale may change the framing; pose, spin and steering never.
+#define RS_VIEW_WHEEL_STEER_MAX 22   // the game's full lock, 22.5 degrees (game/DrawTires.c, wheelRotation)
+
 // The reference dummy (RldDum_Mesh of tools/rldpack_dummy.inc), defined in
 // rs_rldpack.c - the translation unit that carries rldpack. Positions in 1/16
 // game units (rounded), 3 per position; triangles as 3 position indices,
@@ -119,5 +154,15 @@ int  RsView_TriangleCount(HWND view, int pose);
 // when a buffer is too small. position or triangle NULL: only the counts.
 int Rs_DummyMesh(int wheels, int pose, int *position, int positionMax, int *triangle, unsigned int *color,
                  int triangleMax, int *positionCount);
+
+// The four wheel points of the dummy (RLDDUM_TIRE_* of tools/rldpack_dummy.inc),
+// defined in rs_rldpack.c: centres in 1/16 game units (rounded), order front
+// left, front right, rear left, rear right; *halfSize the half size of the
+// game's wheel in 1/16 game units.
+void Rs_DummyTires(int center[4][3], int *halfSize);
+
+// rs_rldpack.c: 1 if every RS_VIEW_DUMMY_* above equals its RLDDUM_* value
+// (rounded to tenths); else 0 and why names the first that differs.
+int Rs_DummyCopiesCheck(wchar_t *why, int whyCap);
 
 #endif

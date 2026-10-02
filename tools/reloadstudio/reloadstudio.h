@@ -20,6 +20,8 @@
 //   rs_cups.c     page "Cups"
 //   rs_char.c     page "Character"
 //   rs_view.c     3D model view beside the reference dummy (window class RsModelView, rs_view.h)
+//   rs_wheels.c   card "Wheels" of the page "Character" (preview feature, rs_wheels.h)
+//   rs_anim.c     card "Animations" of the page "Character" (preview feature, rs_anim.h)
 //   rs_test.c     page "Test in game"
 //
 // Command line (details in rs_shell.c): `--rldpack <arguments>` (first
@@ -28,7 +30,8 @@
 // `--settings <ini>` (settings, logs and temporary files only there - below at
 // Rs_ConfigGet), `--ui-scale <percent>` (scale of the window instead of the
 // monitor's), `--screen <w>x<h>` (lay the window out as on a screen of that
-// size), `--help`.
+// size), `--enable-preview-features` (unlock the fields marked "Coming soon",
+// g_rsPreviewFeatures below; never stored), `--help`.
 //
 // Characters: UTF-16 in the front end (W functions), UTF-8 on the pipe to
 // rldpack and in files. The manifest sets the ANSI code page to UTF-8,
@@ -263,6 +266,45 @@
 // triangles and per triangle 3 corners of s16 x, y, z (game units, +Y up, +Z
 // forward, +X the driver's left), u8 r, g, b, u8 pad (bit 0: drawn from both
 // sides). Corners counter-clockwise seen from the side the game draws.
+//
+// char-poses (the card "Animations" of the page "Character", rs_anim.c; only
+// with --enable-preview-features) - poses of one's own for the preview, never a
+// container (tools/rldpack_anim.inc, details there):
+//   char-poses --machine --model <ply> --pose-dir <folder> --size <percent>
+//              [--wheels off] [--repair off] --preview <file>
+//   @rldpack  1  char-poses
+//   @value    pose-dir <folder> switch, then size, fit, wheels, repair, up and
+//             forward as make-char says them
+//   @file     ply ok | missing <model> <bytes>
+//   @msg      as make-char; own ids pose-*, pose-model, pose-dir, pose-folder
+//   @char     pose <name> <ok | missing | bad | unused | automatic> <file> <rule>
+//             six, in the order turn_left turn_right reverse bump jump idle
+//   @char     pose-unknown <file>                 per .ply that is no pose
+//   @char     poses <found> <shown>
+//   @file     preview ok | failed <name> <bytes>
+//   @end      <exit code>   (no @result: nothing is built)
+// The --preview file (little endian): "RLDPS1\0\0", u32 poses = 6 (in the order
+// above, 0 triangles for a missing or refused one), per pose u32 triangles and
+// the triangle records of RLDPV1 (the faces before repair and reduction, drawn
+// from both sides).
+//
+// char-wheel (the card "Wheels" of the page "Character", rs_wheels.c; only with
+// --enable-preview-features) - a wheel of one's own for the preview, never a
+// container (tools/rldpack_wheel.inc):
+//   char-wheel --machine --model <ply> --preview <file>
+//   @rldpack  1  char-wheel
+//   @value    model, up, forward, repair, reduce, preview  <value> <origin>
+//   @file     ply ok | missing <name> <bytes>
+//   @msg      as make-char; own ids: wheel-tris (error, more than 128 triangles
+//             after the reduction), wheel-flat (error), wheel-off-axis (warning)
+//   @char     repaired (as make-char), fit <factor> <across before> <after>,
+//             reduced <before> <after>, wheel <triangles> <across> <wide> <two-sided>
+//   @value    wheel-size <across> built
+//   @file     preview ok | failed <name> <bytes>
+//   @end      <exit code>   (no @result: nothing is built)
+// The --preview file (little endian): "RLDPW1\0\0", u32 triangles, per triangle
+// 3 corners as in RLDPV1 but in 1/16 game units, wheel-local: the axle centre in
+// the origin, the axle along X, the outer side +X, 32 game units across.
 // ---------------------------------------------------------------------------
 
 #define RS_PROTOCOL 1
@@ -473,6 +515,33 @@ void Rs_SetTextColor(HWND control, COLORREF color);
 // Convenience: set/read text. Rs_GetText returns a buffer (Rs_Free).
 void     Rs_SetText(HWND control, const wchar_t *text);
 wchar_t *Rs_GetText(HWND control);
+
+// Measuring for layout(): the width a check box needs for its text (box, gap,
+// text, a margin), and the width of a text in the font of control h.
+int Rs_CheckBoxWidth(HWND box);
+int Rs_TextWidth(HWND h, const wchar_t *text);
+
+// ---------------------------------------------------------------------------
+// Preview features: fields of a page that are shown but not finished yet.
+// Without --enable-preview-features they are visible, greyed out and marked
+// "Coming soon"; nothing of them is ever written into a container.
+// ---------------------------------------------------------------------------
+
+// 1 with --enable-preview-features on the command line (rs_shell.c). Never
+// stored in the settings. Every command and automation path of a locked field
+// checks it first - EnableWindow alone does not stop a posted WM_COMMAND.
+extern int g_rsPreviewFeatures;
+
+// Tooltip for a control of a page, NULL or "" removes it. The tool sits on the
+// page window over the control's rectangle, so it also shows for a disabled
+// control (those get no mouse messages). The shell moves the rectangles after
+// every layout() and lists the tips in the automation verb "controls".
+void Rs_SetTip(HWND control, const wchar_t *text);
+
+// The small hint at the right of a card's title line: "Coming soon" (muted),
+// with --enable-preview-features "Preview feature" (note colour). Position it in
+// layout() like any label.
+HWND Rs_ComingSoon(HWND page, int id);
 
 // ---------------------------------------------------------------------------
 // Message list: own control with wrapping. Every line has a

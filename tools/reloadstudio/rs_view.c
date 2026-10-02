@@ -109,6 +109,17 @@
 // (RsViewTarget.mask), the wheels are drawn only into pixels the model left
 // free. So every pixel of the model is exactly as without them (also a
 // model's own wheels inside them).
+//
+// PREVIEW FEATURES
+//
+// Only with --enable-preview-features does the page load more into the view:
+// a pose set (RLDPS1, drawn instead of the model's pose while one is chosen)
+// and a wheel model (RLDPW1, drawn under the model at the four wheel points
+// of Rs_DummyTires instead of the game's wheels, by the same rule: never over
+// the model). The dummy beside it keeps the game's wheels. The wheel turns by
+// whole degrees from the same sine table; its animation runs on the view's
+// own timer in fixed steps per tick. Nothing loaded: nothing of it is used,
+// and the picture is the same as without these features.
 
 #include "reloadstudio.h"
 #include "rs_view.h"
@@ -131,6 +142,12 @@
 #define RS_VIEW_DRIVER_PARTS 16                         // boxes of the dummy driver (RsView_DriverMesh)
 #define RS_VIEW_DRIVER_BODY 0xA0A0A0u
 #define RS_VIEW_DRIVER_HEAD 0xB4B4B4u
+#define RS_VIEW_SET_POSES_MAX 16                        // poses of a pose set (RLDPS1)
+#define RS_VIEW_WHEEL_TRIS_MAX 16384                    // triangles of a wheel model (RLDPW1)
+#define RS_VIEW_TIMER_WHEEL 1                           // the view's own timer: the wheel animation
+#define RS_VIEW_WHEEL_TICK_MS 33
+#define RS_VIEW_WHEEL_SPIN_STEP 12                      // degrees of spin per tick
+#define RS_VIEW_WHEEL_STEER_STEP 2                      // degrees of steering per tick
 
 // Crash with his kart in tenths of game units while the caller has given no
 // box (RS_VIEW_DUMMY_CRASH_*, rs_view.h).
@@ -140,6 +157,8 @@ static const int s_rsViewCrashDefault[6] = {
 };
 
 static const unsigned char s_rsViewMagic[RS_VIEW_MAGIC_BYTES] = { 'R', 'L', 'D', 'P', 'V', '1', 0, 0 };
+static const unsigned char s_rsViewSetMagic[RS_VIEW_MAGIC_BYTES] = { 'R', 'L', 'D', 'P', 'S', '1', 0, 0 };
+static const unsigned char s_rsViewWheelMagic[RS_VIEW_MAGIC_BYTES] = { 'R', 'L', 'D', 'P', 'W', '1', 0, 0 };
 
 // sin(0..90 degrees) * 16384, rounded half up. A table instead of sin(), so that
 // no runtime library can round differently.
@@ -201,6 +220,35 @@ struct RsView {
 
     int pose;
     int yaw;                   // 0..359
+
+    // A pose set (RsView_LoadPoseSet): setData owns the bytes, setCount = 0:
+    // none. setIndex >= 0 draws that pose instead of the model's. Extents
+    // like radius2, ymin, ymax, over the whole set.
+    unsigned char *setData;
+    struct RsViewPoseData setPoses[RS_VIEW_SET_POSES_MAX];
+    int setCount;
+    int setIndex;
+    long long setRadius2;
+    int setYmin, setYmax;
+
+    // A wheel model (RsView_LoadWheelModel): wheelData owns the bytes,
+    // wheelCount = 0: none - the game's wheels are drawn as before.
+    // wheelR2: largest y*y + z*z, wheelHalfW: largest |x|, both of the file
+    // (1/16 units, wheel-local). tire*: the dummy's wheel points (Rs_DummyTires).
+    unsigned char *wheelData;
+    const unsigned char *wheelTris;
+    int wheelCount;
+    long long wheelR2;
+    int wheelHalfW;
+    int wheelScale;            // percent, 50..200
+    int wheelSpin;             // 0..359
+    int wheelSteer;            // -RS_VIEW_WHEEL_STEER_MAX..RS_VIEW_WHEEL_STEER_MAX
+    int wheelSteerStep;        // +-RS_VIEW_WHEEL_STEER_STEP while animated
+    int wheelAnim;             // the animation is on (RsView_SetWheelAnimation)
+    int wheelTimer;            // the timer runs (stopped while the view is hidden)
+    long long wheelRadius2;    // the framing of the wheel model, like tireRadius2
+    int wheelYmin, wheelYmax;
+    int tireAt[4][3];          // FL FR RL RR, 1/16 units
 
     int dragging;
     int dragX;
@@ -512,6 +560,187 @@ static void RsView_Changed(HWND view, struct RsView *v)
     InvalidateRect(view, NULL, FALSE);
 }
 
+// ---------------------------------------------------------------------------
+// Preview features: the pose set and the wheel model
+// ---------------------------------------------------------------------------
+//
+// Both files carry the triangle records of RLDPV1 (RsView_Parse): a pose set
+// ("RLDPS1") in whole game units like the model, a wheel model ("RLDPW1") in
+// 1/16 game units about its axle. Without them nothing below is used and the
+// view draws as before.
+
+// One block "u32 triangles + records" at *at; checks its length first.
+static int RsView_ParseTris(const unsigned char *data, size_t bytes, size_t *at, struct RsViewPoseData *out)
+{
+    unsigned int tris;
+    if (bytes - *at < 4)
+        return 0;
+    tris = RsView_ReadU32(data + *at);
+    *at += 4;
+    if (tris > (bytes - *at) / RS_VIEW_TRI_BYTES)
+        return 0;
+    out->tris = data + *at;
+    out->count = (int)tris;
+    *at += (size_t)tris * RS_VIEW_TRI_BYTES;
+    return 1;
+}
+
+static void RsView_DropSet(struct RsView *v)
+{
+    Rs_Free(v->setData);
+    v->setData = NULL;
+    memset(v->setPoses, 0, sizeof(v->setPoses));
+    v->setCount = 0;
+    v->setIndex = -1;
+    v->setRadius2 = 0;
+    v->setYmin = 0;
+    v->setYmax = 0;
+}
+
+// A pose set; takes data on success, leaves v untouched otherwise.
+static int RsView_ParseSet(struct RsView *v, unsigned char *data, size_t bytes, wchar_t *why, int whyCap)
+{
+    struct RsViewPoseData poses[RS_VIEW_SET_POSES_MAX];
+    size_t at;
+    unsigned int count;
+    int p, i, c, ymin = 0, ymax = 0, any = 0;
+    long long radius2 = 0;
+
+    if (bytes < RS_VIEW_MAGIC_BYTES + 4 || memcmp(data, s_rsViewSetMagic, RS_VIEW_MAGIC_BYTES) != 0) {
+        swprintf(why, whyCap, L"it is not a pose set (it does not start with RLDPS1)");
+        return 0;
+    }
+    count = RsView_ReadU32(data + RS_VIEW_MAGIC_BYTES);
+    if (count < 1 || count > RS_VIEW_SET_POSES_MAX) {
+        swprintf(why, whyCap, L"it has %u poses, 1..%d are possible", count, RS_VIEW_SET_POSES_MAX);
+        return 0;
+    }
+    at = RS_VIEW_MAGIC_BYTES + 4;
+    for (p = 0; p < (int)count; p++)
+        if (!RsView_ParseTris(data, bytes, &at, &poses[p])) {
+            swprintf(why, whyCap, L"it ends inside pose %d", p);
+            return 0;
+        }
+    if (at != bytes) {
+        swprintf(why, whyCap, L"%u bytes follow after the last pose", (unsigned)(bytes - at));
+        return 0;
+    }
+    for (p = 0; p < (int)count; p++)
+        for (i = 0; i < poses[p].count; i++)
+            for (c = 0; c < 3; c++) {
+                const unsigned char *q = poses[p].tris + (size_t)i * RS_VIEW_TRI_BYTES + c * RS_VIEW_CORNER_BYTES;
+                const long long x = RsView_ReadS16(q), y = RsView_ReadS16(q + 2), z = RsView_ReadS16(q + 4);
+                if (x * x + z * z > radius2)
+                    radius2 = x * x + z * z;
+                if (!any || y < ymin)
+                    ymin = (int)y;
+                if (!any || y > ymax)
+                    ymax = (int)y;
+                any = 1;
+            }
+
+    RsView_DropSet(v);
+    v->setData = data;
+    memcpy(v->setPoses, poses, (size_t)count * sizeof(poses[0]));
+    v->setCount = (int)count;
+    v->setRadius2 = radius2;
+    v->setYmin = ymin;
+    v->setYmax = ymax;
+    return 1;
+}
+
+static void RsView_DropWheel(struct RsView *v)
+{
+    Rs_Free(v->wheelData);
+    v->wheelData = NULL;
+    v->wheelTris = NULL;
+    v->wheelCount = 0;
+    v->wheelR2 = 0;
+    v->wheelHalfW = 0;
+    v->wheelRadius2 = 0;
+    v->wheelYmin = 0;
+    v->wheelYmax = 0;
+}
+
+// A wheel model; takes data on success, leaves v untouched otherwise.
+static int RsView_ParseWheel(struct RsView *v, unsigned char *data, size_t bytes, wchar_t *why, int whyCap)
+{
+    struct RsViewPoseData tris;
+    size_t at = RS_VIEW_MAGIC_BYTES;
+    long long r2 = 0;
+    int i, c, halfW = 0;
+
+    if (bytes < RS_VIEW_MAGIC_BYTES + 4 || memcmp(data, s_rsViewWheelMagic, RS_VIEW_MAGIC_BYTES) != 0) {
+        swprintf(why, whyCap, L"it is not a wheel model (it does not start with RLDPW1)");
+        return 0;
+    }
+    if (!RsView_ParseTris(data, bytes, &at, &tris) || at != bytes) {
+        swprintf(why, whyCap, L"its length does not match its triangle count");
+        return 0;
+    }
+    if (tris.count < 1 || tris.count > RS_VIEW_WHEEL_TRIS_MAX) {
+        swprintf(why, whyCap, L"it has %d triangles, 1..%d are possible", tris.count, RS_VIEW_WHEEL_TRIS_MAX);
+        return 0;
+    }
+    for (i = 0; i < tris.count; i++)
+        for (c = 0; c < 3; c++) {
+            const unsigned char *q = tris.tris + (size_t)i * RS_VIEW_TRI_BYTES + c * RS_VIEW_CORNER_BYTES;
+            const long long x = RsView_ReadS16(q), y = RsView_ReadS16(q + 2), z = RsView_ReadS16(q + 4);
+            const long long ax = x < 0 ? -x : x;
+            if (y * y + z * z > r2)
+                r2 = y * y + z * z;
+            if (ax > halfW)
+                halfW = (int)ax;
+        }
+
+    RsView_DropWheel(v);
+    v->wheelData = data;
+    v->wheelTris = tris.tris;
+    v->wheelCount = tris.count;
+    v->wheelR2 = r2;
+    v->wheelHalfW = halfW;
+    return 1;
+}
+
+// The wheel model at its scale about a wheel point, 1/16 units: radius = how
+// far it reaches up and down, reach = across. Under every spin it stays in a
+// cylinder of its radius and half width; under every steering angle that
+// stays in a circle of radius reach about the point.
+static void RsView_WheelReach(const struct RsView *v, long long *radius, long long *reach)
+{
+    const long long r = ((long long)RsView_Isqrt((unsigned long long)v->wheelR2) + 1) * v->wheelScale / 100 + 1;
+    const long long hw = (long long)v->wheelHalfW * v->wheelScale / 100 + 1;
+    *radius = r;
+    *reach = (long long)RsView_Isqrt((unsigned long long)(r * r + hw * hw)) + 1;
+}
+
+// The framing of the wheel model (wheelRadius2, wheelYmin, wheelYmax in whole
+// units, like tireRadius2), again on loading and on a new scale - never on a
+// turn.
+static void RsView_WheelExtent(struct RsView *v)
+{
+    long long r, reach, r2 = 0;
+    int i, ymin = 0, ymax = 0;
+    if (!v->wheelCount)
+        return;
+    RsView_WheelReach(v, &r, &reach);
+    for (i = 0; i < 4; i++) {
+        const long long x = v->tireAt[i][0], y = v->tireAt[i][1], z = v->tireAt[i][2];
+        const long long ax = ((x < 0 ? -x : x) + reach) / RS_VIEW_SUB + 1;
+        const long long az = ((z < 0 ? -z : z) + reach) / RS_VIEW_SUB + 1;
+        const int ylo = (int)RsView_FloorDiv16(y - r), yhi = (int)-RsView_FloorDiv16(-(y + r));
+        if (ax * ax + az * az > r2)
+            r2 = ax * ax + az * az;
+        if (ylo < ymin)
+            ymin = ylo;
+        if (yhi > ymax)
+            ymax = yhi;
+    }
+    v->wheelRadius2 = r2;
+    v->wheelYmin = ymin;
+    v->wheelYmax = ymax;
+}
+
 // The model's span across the picture (all poses) with the game's wheels
 // under it - whether they are shown or not, so that switching them never zooms.
 static void RsView_ModelSpans(struct RsView *v)
@@ -537,6 +766,26 @@ static void RsView_ModelSpans(struct RsView *v)
         v->tireEnd <= positions)
         for (i = v->tireFirst; i < v->tireEnd; i++)
             RsView_SpanAdd(&tr, v->modelLo, v->modelHi, v->dumPos[3 * i], v->dumPos[3 * i + 2]);
+    // A pose set and a wheel model, while loaded: the framing holds all of
+    // them, so that switching the pose or turning the wheels never zooms.
+    for (p = 0; p < v->setCount; p++) {
+        for (i = 0; i < v->setPoses[p].count; i++) {
+            const unsigned char *t = v->setPoses[p].tris + (size_t)i * RS_VIEW_TRI_BYTES;
+            for (c = 0; c < 3; c++) {
+                const unsigned char *q = t + c * RS_VIEW_CORNER_BYTES;
+                RsView_SpanAdd(&tr, v->modelLo, v->modelHi, (long long)RsView_ReadS16(q) * RS_VIEW_SUB,
+                               (long long)RsView_ReadS16(q + 4) * RS_VIEW_SUB);
+            }
+        }
+    }
+    if (v->wheelCount) {
+        long long r, reach;
+        RsView_WheelReach(v, &r, &reach);
+        for (i = 0; i < 4; i++)
+            for (c = 0; c < 4; c++)
+                RsView_SpanAdd(&tr, v->modelLo, v->modelHi, v->tireAt[i][0] + ((c & 1) ? reach : -reach),
+                               v->tireAt[i][2] + ((c & 2) ? reach : -reach));
+    }
     if (v->modelLo[0] > v->modelHi[0]) {
         // Nothing at all: a point at the origin.
         RsView_SpanReset(v->modelLo, v->modelHi);
@@ -743,6 +992,24 @@ static void RsView_Scene(const struct RsView *v, int w, int h, int topH, struct 
             ylo = v->tireYmin;
         if (v->tireYmax > yhi)
             yhi = v->tireYmax;
+        if (v->setCount) {
+            const long long rSet = (long long)RsView_Isqrt((unsigned long long)v->setRadius2) + 1;
+            if (v->setYmin < ylo)
+                ylo = v->setYmin;
+            if (v->setYmax > yhi)
+                yhi = v->setYmax;
+            if (rSet > rModel)
+                rModel = rSet;
+        }
+        if (v->wheelCount) {
+            const long long rWheel = (long long)RsView_Isqrt((unsigned long long)v->wheelRadius2) + 1;
+            if (v->wheelYmin < ylo)
+                ylo = v->wheelYmin;
+            if (v->wheelYmax > yhi)
+                yhi = v->wheelYmax;
+            if (rWheel > rTire)
+                rTire = rWheel;
+        }
         if (rTire > rModel)
             rModel = rTire;
         if (rModel > rMax)
@@ -1065,6 +1332,49 @@ static void RsView_DrawSolid(const struct RsViewTarget *t, const struct RsViewSc
     }
 }
 
+// The wheel model at the four wheel points under the model (instead of the
+// game's wheels), each corner: spin about +X (rolling forward: the top goes
+// to +Z), on the -X side mirrored (x -> -x, corners 1 and 2 swapped, so the
+// rim faces outwards and the culling stays right), scaled, the front pair
+// steered about +Y (+ = left: the front edge toward +X), moved to its point.
+// Colours 1:1 as in the file, like the model; pad bit 0 = both sides.
+static void RsView_DrawWheels(const struct RsView *v, const struct RsViewTarget *t, const struct RsViewScene *s)
+{
+    const long long ss = RsView_Sin(v->wheelSpin), sc = RsView_Cos(v->wheelSpin);
+    const long long ps = RsView_Sin(v->wheelSteer), pc = RsView_Cos(v->wheelSteer);
+    int w, i, c;
+
+    for (w = 0; w < 4; w++) {
+        const int mirror = v->tireAt[w][0] < 0;
+        const int front = w < 2;
+        for (i = 0; i < v->wheelCount; i++) {
+            const unsigned char *p = v->wheelTris + (size_t)i * RS_VIEW_TRI_BYTES;
+            struct RsViewVert vert[3];
+            for (c = 0; c < 3; c++) {
+                const unsigned char *q = p + (mirror && c ? 3 - c : c) * RS_VIEW_CORNER_BYTES;
+                const long long x0 = RsView_ReadS16(q), y0 = RsView_ReadS16(q + 2), z0 = RsView_ReadS16(q + 4);
+                long long x = mirror ? -x0 : x0;
+                long long y = (y0 * sc - z0 * ss) / 16384;
+                long long z = (y0 * ss + z0 * sc) / 16384;
+                x = x * v->wheelScale / 100;
+                y = y * v->wheelScale / 100;
+                z = z * v->wheelScale / 100;
+                if (front) {
+                    const long long xs = (x * pc + z * ps) / 16384;
+                    z = (z * pc - x * ps) / 16384;
+                    x = xs;
+                }
+                RsView_Project(&s->cam, x + v->tireAt[w][0], y + v->tireAt[w][1], z + v->tireAt[w][2], s->offModel,
+                               1, &vert[c]);
+                vert[c].r = q[6];
+                vert[c].g = q[7];
+                vert[c].b = q[8];
+            }
+            RsView_Triangle(t, vert, !(p[9] & 1));
+        }
+    }
+}
+
 // The game's wheels under the model (only into pixels the model left free),
 // then the dummy beside it: kart and driver in the pose of the view.
 static void RsView_DrawDummy(struct RsView *v, const struct RsViewTarget *t, const struct RsViewScene *s)
@@ -1075,7 +1385,10 @@ static void RsView_DrawDummy(struct RsView *v, const struct RsViewTarget *t, con
     const int tris = Rs_DummyMesh(1, v->pose, v->dumPos, RS_VIEW_DUMMY_POS_MAX, v->dumTri, v->dumColor,
                                   RS_VIEW_DUMMY_TRI_MAX, &positions);
 
-    if (v->loaded && v->wheels && v->tireEnd > v->tireFirst && v->tireEnd <= positions) {
+    if (v->loaded && v->wheels && v->wheelCount) {
+        own.maskMode = RS_VIEW_MASK_SKIP;
+        RsView_DrawWheels(v, &own, s);
+    } else if (v->loaded && v->wheels && v->tireEnd > v->tireFirst && v->tireEnd <= positions) {
         own.maskMode = RS_VIEW_MASK_SKIP;
         RsView_DrawSolid(&own, s, s->offModel, v->dumPos, positions, v->dumTri, v->dumColor, tris, v->tireFirst,
                          v->tireEnd);
@@ -1144,6 +1457,15 @@ static void RsView_BoxLabel(struct RsView *v, const struct RsViewScene *s, const
     RsView_DrawText(v, &r, text, RS_FONT_SMALL, DT_CENTER | DT_BOTTOM | DT_SINGLELINE);
 }
 
+// The triangles drawn for the model: a pose of the pose set while one is
+// chosen, else the pose of the preview file.
+static const struct RsViewPoseData *RsView_ShownPose(const struct RsView *v)
+{
+    if (v->setIndex >= 0 && v->setIndex < v->setCount)
+        return &v->setPoses[v->setIndex];
+    return &v->poses[v->pose];
+}
+
 static void RsView_Render(HWND view, struct RsView *v)
 {
     struct RsViewTarget t;
@@ -1203,7 +1525,7 @@ static void RsView_Render(HWND view, struct RsView *v)
     // The model, in file order; it marks its pixels.
     t.maskMode = RS_VIEW_MASK_SET;
     if (v->loaded) {
-        const struct RsViewPoseData *pose = &v->poses[v->pose];
+        const struct RsViewPoseData *pose = RsView_ShownPose(v);
         int tri, c;
         for (tri = 0; tri < pose->count; tri++) {
             const unsigned char *p = pose->tris + (size_t)tri * RS_VIEW_TRI_BYTES;
@@ -1243,7 +1565,7 @@ static void RsView_Render(HWND view, struct RsView *v)
         GetWindowTextW(view, text, RS_VIEW_MESSAGE_CAP);
         text[RS_VIEW_MESSAGE_CAP - 1] = 0;
         RsView_DrawText(v, &r, text, RS_FONT_BODY, DT_CENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    } else if (v->poses[v->pose].count == 0) {
+    } else if (RsView_ShownPose(v)->count == 0) {
         RsView_CenterText(v, L"This pose has no triangles.");
     }
 }
@@ -1444,6 +1766,18 @@ static void RsView_SetYawFrom(HWND view, struct RsView *v, int degrees, int noti
     }
 }
 
+// The view's own timer for the wheel animation (another window than the
+// page's timers, so no ID can clash).
+static void RsView_WheelTimer(HWND view, struct RsView *v, int run)
+{
+    if (run && !v->wheelTimer)
+        v->wheelTimer = SetTimer(view, RS_VIEW_TIMER_WHEEL, RS_VIEW_WHEEL_TICK_MS, NULL) != 0;
+    else if (!run && v->wheelTimer) {
+        KillTimer(view, RS_VIEW_TIMER_WHEEL);
+        v->wheelTimer = 0;
+    }
+}
+
 static LRESULT CALLBACK RsView_Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     struct RsView *v = RsView_Data(hwnd);
@@ -1462,12 +1796,18 @@ static LRESULT CALLBACK RsView_Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         v->dumHi = (long long *)Rs_Alloc(360 * sizeof(long long));
         RsView_FindTires(v);
         RsView_DummyExtent(v);
+        v->setIndex = -1;
+        v->wheelScale = 100;
+        Rs_DummyTires(v->tireAt, NULL);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)v);
         return 0;
     case WM_DESTROY:
         if (v) {
+            RsView_WheelTimer(hwnd, v, 0);
             RsView_FreeFrame(v);
             RsView_DropModel(v);
+            RsView_DropSet(v);
+            RsView_DropWheel(v);
             Rs_Free(v->dumPos);
             Rs_Free(v->dumTri);
             Rs_Free(v->dumColor);
@@ -1491,9 +1831,38 @@ static LRESULT CALLBACK RsView_Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     }
     case WM_ERASEBKGND:
         return 1;
+    case WM_SHOWWINDOW:
+        if (v && !wParam)
+            RsView_WheelTimer(hwnd, v, 0);
+        break;
+    case WM_TIMER:
+        if (v && wParam == RS_VIEW_TIMER_WHEEL) {
+            // Fixed steps per tick, not per time: hidden, minimized or
+            // without a wheel model the timer stops (and the picture with
+            // it) until the next paint starts it again.
+            if (!v->wheelAnim || !v->wheelCount || !IsWindowVisible(hwnd) ||
+                IsIconic(GetAncestor(hwnd, GA_ROOT))) {
+                RsView_WheelTimer(hwnd, v, 0);
+                return 0;
+            }
+            v->wheelSpin = RsView_NormDeg(v->wheelSpin + RS_VIEW_WHEEL_SPIN_STEP);
+            if (v->wheelSteerStep == 0)
+                v->wheelSteerStep = RS_VIEW_WHEEL_STEER_STEP;
+            if (v->wheelSteer + v->wheelSteerStep > RS_VIEW_WHEEL_STEER_MAX ||
+                v->wheelSteer + v->wheelSteerStep < -RS_VIEW_WHEEL_STEER_MAX)
+                v->wheelSteerStep = -v->wheelSteerStep;
+            v->wheelSteer += v->wheelSteerStep;
+            if (v->wheelCount && v->loaded && v->wheels)
+                RsView_Changed(hwnd, v);
+            return 0;
+        }
+        break;
     case WM_PAINT: {
         PAINTSTRUCT ps;
-        HDC dc = BeginPaint(hwnd, &ps);
+        HDC dc;
+        if (v && v->wheelAnim && v->wheelCount && !v->wheelTimer)
+            RsView_WheelTimer(hwnd, v, 1);   // shown again, or a wheel model came
+        dc = BeginPaint(hwnd, &ps);
         RsView_PaintTo(hwnd, v, dc);
         EndPaint(hwnd, &ps);
         return 0;
@@ -1548,8 +1917,13 @@ BOOL RsView_Register(HINSTANCE instance)
     wc.hInstance = instance;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.lpszClassName = RS_VIEW_CLASS;
-    if (RegisterClassExW(&wc))
+    if (RegisterClassExW(&wc)) {
+        // Once: the dummy's driver hangs on copies of rldpack's measures.
+        wchar_t why[160];
+        if (!Rs_DummyCopiesCheck(why, 160))
+            Rs_AutoLog(L"  preview: dummy measures differ from rldpack: %ls", why);
         return TRUE;
+    }
     return GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
 }
 
@@ -1715,4 +2089,186 @@ int RsView_TriangleCount(HWND view, int pose)
     if (!v || !v->loaded || pose < 0 || pose >= RS_VIEW_POSE_COUNT)
         return 0;
     return v->poses[pose].count;
+}
+
+// ---------------------------------------------------------------------------
+// Preview features: a set of poses and a wheel model
+// ---------------------------------------------------------------------------
+
+// The whole file into memory (Rs_Alloc); NULL with why filled otherwise.
+static unsigned char *RsView_ReadFile(const wchar_t *path, size_t *bytes, wchar_t *why, int whyCap)
+{
+    HANDLE f;
+    LARGE_INTEGER size;
+    unsigned char *data;
+    DWORD want, done = 0;
+
+    f = (path && *path) ? CreateFileW(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                      NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL)
+                        : INVALID_HANDLE_VALUE;
+    if (f == INVALID_HANDLE_VALUE) {
+        swprintf(why, whyCap, L"the file could not be opened (Windows error %lu)",
+                 (unsigned long)((path && *path) ? GetLastError() : ERROR_FILE_NOT_FOUND));
+        return NULL;
+    }
+    if (!GetFileSizeEx(f, &size) || size.QuadPart < 0 || size.QuadPart > RS_VIEW_FILE_MAX) {
+        CloseHandle(f);
+        swprintf(why, whyCap, L"the file is missing its size or is larger than %u MB",
+                 RS_VIEW_FILE_MAX / (1024u * 1024u));
+        return NULL;
+    }
+    want = (DWORD)size.QuadPart;
+    data = (unsigned char *)Rs_Alloc((size_t)want + 1);
+    while (done < want) {
+        DWORD part = 0;
+        if (!ReadFile(f, data + done, want - done, &part, NULL) || part == 0)
+            break;
+        done += part;
+    }
+    CloseHandle(f);
+    if (done != want) {
+        Rs_Free(data);
+        swprintf(why, whyCap, L"the file could not be read completely");
+        return NULL;
+    }
+    *bytes = (size_t)want;
+    return data;
+}
+
+// The framing changed (a set or a wheel model came or went, a new wheel
+// scale): the model's spans again, then a new picture.
+static void RsView_Reframe(HWND view, struct RsView *v)
+{
+    if (v->loaded)
+        RsView_ModelSpans(v);
+    RsView_Changed(view, v);
+}
+
+// A damaged or missing set drops the one shown before (FALSE); the model
+// stays. The pose set is shown from RsView_ShowPoseSet on.
+BOOL RsView_LoadPoseSet(HWND view, const wchar_t *path)
+{
+    struct RsView *v = RsView_Data(view);
+    wchar_t why[256];
+    unsigned char *data;
+    size_t bytes = 0;
+    if (!v)
+        return FALSE;
+    data = RsView_ReadFile(path, &bytes, why, 256);
+    if (!data || !RsView_ParseSet(v, data, bytes, why, 256)) {
+        Rs_Free(data);
+        RsView_DropSet(v);
+        Rs_AutoLog(L"  preview: the pose set could not be shown: %ls", why);
+        RsView_Reframe(view, v);
+        return FALSE;
+    }
+    RsView_Reframe(view, v);
+    return TRUE;
+}
+
+int RsView_PoseSetCount(HWND view)
+{
+    struct RsView *v = RsView_Data(view);
+    return v ? v->setCount : 0;
+}
+
+// Never zooms: the framing holds the whole set since it was loaded.
+void RsView_ShowPoseSet(HWND view, int index)
+{
+    struct RsView *v = RsView_Data(view);
+    if (!v)
+        return;
+    if (index < 0 || index >= v->setCount)
+        index = -1;
+    if (index == v->setIndex)
+        return;
+    v->setIndex = index;
+    RsView_Changed(view, v);
+}
+
+void RsView_DropPoseSet(HWND view)
+{
+    struct RsView *v = RsView_Data(view);
+    if (!v || !v->setData)
+        return;
+    RsView_DropSet(v);
+    RsView_Reframe(view, v);
+}
+
+// A damaged or missing file drops the wheel model shown before (FALSE): the
+// game's wheels come back.
+BOOL RsView_LoadWheelModel(HWND view, const wchar_t *path)
+{
+    struct RsView *v = RsView_Data(view);
+    wchar_t why[256];
+    unsigned char *data;
+    size_t bytes = 0;
+    if (!v)
+        return FALSE;
+    data = RsView_ReadFile(path, &bytes, why, 256);
+    if (!data || !RsView_ParseWheel(v, data, bytes, why, 256)) {
+        Rs_Free(data);
+        RsView_DropWheel(v);
+        Rs_AutoLog(L"  preview: the wheel model could not be shown: %ls", why);
+        RsView_Reframe(view, v);
+        return FALSE;
+    }
+    RsView_WheelExtent(v);
+    RsView_Reframe(view, v);
+    return TRUE;
+}
+
+void RsView_DropWheelModel(HWND view)
+{
+    struct RsView *v = RsView_Data(view);
+    if (!v || !v->wheelData)
+        return;
+    RsView_DropWheel(v);
+    RsView_Reframe(view, v);
+}
+
+// A new size is a new wheel: the framing follows it (turning never zooms).
+void RsView_SetWheelScale(HWND view, int percent)
+{
+    struct RsView *v = RsView_Data(view);
+    if (!v)
+        return;
+    if (percent < 50)
+        percent = 50;
+    if (percent > 200)
+        percent = 200;
+    if (percent == v->wheelScale)
+        return;
+    v->wheelScale = percent;
+    if (v->wheelCount) {
+        RsView_WheelExtent(v);
+        RsView_Reframe(view, v);
+    }
+}
+
+void RsView_SetWheelTurn(HWND view, int spinDegrees, int steerDegrees)
+{
+    struct RsView *v = RsView_Data(view);
+    if (!v)
+        return;
+    spinDegrees = RsView_NormDeg(spinDegrees);
+    if (steerDegrees < -RS_VIEW_WHEEL_STEER_MAX)
+        steerDegrees = -RS_VIEW_WHEEL_STEER_MAX;
+    if (steerDegrees > RS_VIEW_WHEEL_STEER_MAX)
+        steerDegrees = RS_VIEW_WHEEL_STEER_MAX;
+    if (spinDegrees == v->wheelSpin && steerDegrees == v->wheelSteer)
+        return;
+    v->wheelSpin = spinDegrees;
+    v->wheelSteer = steerDegrees;
+    if (v->wheelCount)
+        RsView_Changed(view, v);
+}
+
+void RsView_SetWheelAnimation(HWND view, int on)
+{
+    struct RsView *v = RsView_Data(view);
+    if (!v)
+        return;
+    v->wheelAnim = on != 0;
+    RsView_WheelTimer(view, v, v->wheelAnim && v->wheelCount && IsWindowVisible(view));
 }
