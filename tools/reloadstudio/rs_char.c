@@ -5,8 +5,9 @@
 // reloadstudio.h) and shows them. The Studio asks for no template: it always
 // passes --template 14 (Fake Crash). The driving style is the --class switch.
 //
-// Flow: every change to a field starts a new check after 600 ms; choosing a
-// model checks at once. A new check makes the running one outdated: it is
+// Flow: typing in a text field starts a new check after 600 ms, a click (a
+// choice in a list, a tick, a colour) after 100 ms; choosing a model checks at
+// once. A new check makes the running one outdated: it is
 // ended, its lines are only freed. A check also asks rldpack for the converted
 // model (--preview, shown by the RsModelView control of rs_view.c) and, with an
 // icon, for the decoded and the converted picture (--icon-preview). These go to
@@ -130,7 +131,11 @@
 #include <wchar.h>
 
 #define CHAR_TIMER_CHECK   1
-#define CHAR_CHECK_DELAY   600
+#define CHAR_CHECK_DELAY   600    // after typing in a text field
+// After a click on a list, a tick or a colour: short, but not at once - the
+// arrow keys and the mouse wheel step through a closed list one CBN_SELCHANGE
+// at a time, and each would start and end a run of rldpack.
+#define CHAR_CLICK_DELAY   100
 #define CHAR_VAL           1024   // length of a value or path
 #define CHAR_VOICE_SET_MAX 64     // files with an event of their own (--voice), at most
 #define CHAR_MAX_ARGS      (48 + 2 * CHAR_VOICE_SET_MAX)
@@ -4101,15 +4106,28 @@ static int Char_Build(HWND page)
     return 1;
 }
 
-// A field has changed: check in 600 ms.
-static void Char_Changed(HWND page)
+// A field has changed: check in delay ms (a timer already waiting is
+// replaced, so the last change sets the time).
+static void Char_ChangedAfter(HWND page, UINT delay)
 {
     if (g_char.applying)
         return;
     g_char.checked = 0;
-    SetTimer(page, CHAR_TIMER_CHECK, CHAR_CHECK_DELAY, NULL);
+    SetTimer(page, CHAR_TIMER_CHECK, delay, NULL);
     g_char.timer = 1;
     Char_UpdateButtons();
+}
+
+// Typed into a text field: check in 600 ms.
+static void Char_Changed(HWND page)
+{
+    Char_ChangedAfter(page, CHAR_CHECK_DELAY);
+}
+
+// Clicked (a list, a tick box, the minimap colour): check in 100 ms.
+static void Char_ChangedSoon(HWND page)
+{
+    Char_ChangedAfter(page, CHAR_CLICK_DELAY);
 }
 
 static void Char_MapColorSet(HWND page, int set, COLORREF color)
@@ -4117,7 +4135,7 @@ static void Char_MapColorSet(HWND page, int set, COLORREF color)
     g_char.mapColorSet = set;
     g_char.mapColor = color;
     Char_MapColorShow();
-    Char_Changed(page);
+    Char_ChangedSoon(page);
 }
 
 // "Choose...": the colour dialog, starting at the colour shown.
@@ -6194,7 +6212,7 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
             if (row >= 0 && sel >= 0 && sel <= CHAR_VOICE_NONE) {
                 int r = Char_VoiceAssign(row, (int)sel);
                 if (r > 0)
-                    Char_Changed(page);
+                    Char_ChangedSoon(page);
                 else if (r < 0) {
                     MessageBeep(MB_ICONWARNING);
                     Char_VoiceSelShow();    // the choice goes back to what is passed
@@ -6208,18 +6226,18 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
         break;
     case CHAR_ID_VOICE_NORMALIZE:
         if (code == BN_CLICKED)
-            Char_Changed(page);
+            Char_ChangedSoon(page);
         break;
     case CHAR_ID_CLASS:
     case CHAR_ID_MASK:
     case CHAR_ID_ICON_FIT:
         if (code == CBN_SELCHANGE)
-            Char_Changed(page);
+            Char_ChangedSoon(page);
         break;
     case CHAR_ID_ICON_CORNERS:
     case CHAR_ID_ICON_FRAME:
         if (code == BN_CLICKED)
-            Char_Changed(page);
+            Char_ChangedSoon(page);
         break;
     case CHAR_ID_MAPCOLOR_PICK:
         if (code == BN_CLICKED)
@@ -6245,20 +6263,20 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
         if (code == BN_CLICKED) {
             Char_UpdateOptions();
             Char_ApplyQuality();
-            Char_Changed(page);
+            Char_ChangedSoon(page);
         }
         break;
     case CHAR_ID_REPAIR:
     case CHAR_ID_OPEN_PARTS:
     case CHAR_ID_REMESH:
         if (code == BN_CLICKED)
-            Char_Changed(page);
+            Char_ChangedSoon(page);
         break;
     case CHAR_ID_WHEELS:
-        // The preview follows at once; the check follows as for every field.
+        // The preview follows at once; the check follows as for every click.
         if (code == BN_CLICKED) {
             RsView_SetWheels(g_char.view, Char_IsChecked(g_char.wheels));
-            Char_Changed(page);
+            Char_ChangedSoon(page);
         }
         break;
     case CHAR_ID_VIEW:

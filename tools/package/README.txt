@@ -476,7 +476,9 @@ The bar at the bottom
               the model. A file outside the game's "characters" folder must
               be copied there; the build message says so.
   Check       Checks everything without writing (also runs by itself 0.6
-              seconds after every change). The messages say what to fix.
+              seconds after typing in a field and 0.1 seconds after a click
+              on a list, a tick box or a colour). The messages say what to
+              fix.
   Build character
               Writes the .rldchar (asks before it replaces a file) and says
               what is in it in the green headline of the bar, e.g.
