@@ -5714,6 +5714,62 @@ static u32 RldMk_Palette(struct RldMkColor *colors, u32 unique, u32 target, u32 
 		{
 			colors[i].palette = RldMk_Nearest(palette, count, colors[i].rgb);
 		}
+
+		// EMPTY ENTRIES are filled again: k-means can leave an entry that no
+		// color is nearest to (megumi: 62 of 64 used). Each one takes the
+		// color with the largest weighted error (weight x squared distance to
+		// its entry; ties: the first), and every color goes to its nearest
+		// entry again - that color itself at least uses it.
+		{
+			u32 entry;
+
+			for (entry = 0; entry < count; entry++)
+			{
+				u8 usedEntry[RLDCHAR_COLORS_MAX];
+				u64 worstError = 0;
+				u32 worst = RLDMK_NONE;
+
+				memset(usedEntry, 0, sizeof(usedEntry));
+				for (i = 0; i < unique; i++)
+				{
+					usedEntry[colors[i].palette] = 1;
+				}
+				if (usedEntry[entry])
+				{
+					continue;
+				}
+
+				for (i = 0; i < unique; i++)
+				{
+					const u32 at = palette[colors[i].palette];
+					u64 error = 0;
+					int c;
+
+					for (c = 0; c < 3; c++)
+					{
+						const int d = (int)RldMk_Channel(colors[i].rgb, c) - (int)RldMk_Channel(at, c);
+
+						error += (u64)(d * d);
+					}
+					error *= (u64)colors[i].weight;
+					if (error > worstError)
+					{
+						worstError = error;
+						worst = i;
+					}
+				}
+				if (worst == RLDMK_NONE)
+				{
+					break;
+				}
+
+				palette[entry] = colors[worst].rgb;
+				for (i = 0; i < unique; i++)
+				{
+					colors[i].palette = RldMk_Nearest(palette, count, colors[i].rgb);
+				}
+			}
+		}
 	}
 
 	// Entries nobody uses go, the order stays.
@@ -19872,6 +19928,61 @@ static void RldMk_SelfTestPlyElements(void)
 	free(text.data);
 }
 
+// THE PALETTE KEEPS EVERY ENTRY: more colors than entries in a few fixed
+// sets (a gray ramp with a few heavy colors, two tight clusters and a spread)
+// fill all 64 and all 128 entries - an entry k-means leaves empty is filled
+// again with the color the palette misses most.
+static void RldMk_SelfTestPaletteFull(void)
+{
+	static struct RldMkColor colors[600];
+	u32 palette[RLDCHAR_COLORS_MAX];
+	int set;
+	int ok = 1;
+	u32 got[6];
+
+	for (set = 0; set < 6; set++)
+	{
+		const u32 target = (set & 1) ? 128u : 64u;
+		u32 unique = 0;
+		u32 k;
+
+		for (k = 0; k < 600u; k++)
+		{
+			u32 r;
+			u32 g;
+			u32 b;
+			u32 w;
+
+			if (set < 2)
+			{
+				r = g = b = (k * 255u) / 599u;
+				w = ((k % 97u) == 0u) ? 5000u : 1u;
+			}
+			else if (set < 4)
+			{
+				r = (k < 300u) ? (20u + k % 7u) : (230u - k % 5u);
+				g = (k < 300u) ? (40u + (k / 7u) % 9u) : (200u - (k / 5u) % 11u);
+				b = (k * 37u) % 256u;
+				w = 1u + (k % 13u) * 40u;
+			}
+			else
+			{
+				r = (k * 73u) % 256u;
+				g = (k * 151u) % 256u;
+				b = (k * 199u) % 256u;
+				w = 1u + ((k * 7u) % 50u);
+			}
+			colors[unique].rgb = (r << 16) | (g << 8) | b;
+			colors[unique].weight = w;
+			colors[unique].palette = 0;
+			unique++;
+		}
+		got[set] = RldMk_Palette(colors, unique, target, palette);
+		ok = ok && (got[set] == target);
+	}
+	RldMk_Test(ok, "palette: more colors than entries fill every entry (64 and 128)", "%u %u %u %u %u %u", got[0], got[1], got[2], got[3], got[4], got[5]);
+}
+
 static int RldChar_SelfTest(void)
 {
 	struct RldMkTestMesh *mesh = (struct RldMkTestMesh *)calloc(1, sizeof(struct RldMkTestMesh));
@@ -19934,6 +20045,7 @@ static int RldChar_SelfTest(void)
 	RldMk_SelfTestVehicleOnly(mesh);
 	RldMk_SelfTestUpHint(mesh);
 	RldMk_SelfTestPlyElements();
+	RldMk_SelfTestPaletteFull();
 	s_rldMkQuiet = quietBefore;
 	RldMk_ResetSaid();
 
