@@ -3,9 +3,10 @@
 // Part of the packer, never of the game. Self-contained: it needs only the C
 // standard library (stdlib, string, stdio, stdarg), the types u8 and u32,
 // s_machine, Rld_Say and CTR_NATIVE_BUILD_ID of tools/rldpack.c, the SHA-256
-// of include/rldtrack.inc (THE CACHE), and RldMk_Progress of
-// tools/rldpack_char.inc (progress lines for Reload Studio, which never change
-// a result), so it can be included anywhere after those.
+// of include/rldtrack.inc (THE CACHE), and RldMk_Progress and
+// s_rldRedSlowPasses of tools/rldpack_char.inc (progress lines for Reload
+// Studio, which never change a result; the reductions of a run, for the note
+// before a long one), so it can be included anywhere after those.
 //
 // WHAT IT DOES. A model with more triangles than the draw memory of a driver
 // allows is reduced to a target per group (kart, driver, steering wheel), or
@@ -2280,11 +2281,11 @@ static u32 s_rldRedSlowSaid;
 // did not make the model that big, --remesh did.
 #define RLDRED_SLOW_SAME 1000u
 
-// The reductions of one make-char run in the curve; with the cache in use
-// (on and a key: a build ID that tells states apart), the passes after the
-// first read the file (THE CACHE) and the note counts one. --check without
-// the cache (--no-cache, or no key) reduces twice, not four times: this file
-// cannot tell it from a build, and the note then says twice the time.
+// The reductions of one make-char run in the curve. The run at hand reduces
+// s_rldRedSlowPasses times (tools/rldpack_char.inc: 4 for a build, 2 for
+// --check); with the cache in use (on and a key: a build ID that tells states
+// apart) the passes after the first read the file (THE CACHE) and the note
+// counts one.
 #define RLDRED_SLOW_PASSES 4u
 
 static u32 s_rldRedSlowHull;
@@ -2293,7 +2294,8 @@ static u32 s_rldRedSlowHull;
 static void RldRed_SaySlow(u32 triangles, int cached)
 {
 	const int remesh = (s_rldRedSlowHull != 0u) && (triangles >= s_rldRedSlowHull) && ((triangles - s_rldRedSlowHull) <= RLDRED_SLOW_SAME);
-	const u32 seconds = cached ? ((RldRed_SlowSeconds(triangles) + RLDRED_SLOW_PASSES - 1u) / RLDRED_SLOW_PASSES) : RldRed_SlowSeconds(triangles);
+	const u32 passes = cached ? 1u : s_rldRedSlowPasses;
+	const u32 seconds = (RldRed_SlowSeconds(triangles) * passes + RLDRED_SLOW_PASSES - 1u) / RLDRED_SLOW_PASSES;
 	char text[256];
 	char when[32];
 
