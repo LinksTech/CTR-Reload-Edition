@@ -54,6 +54,7 @@
 #define RLDOBJ_TEXTURE_BYTES (64u * 1024u * 1024u)
 #define RLDOBJ_TEXTURES_SAID 16u                  // texture warnings said one by one, the rest counted
 #define RLDOBJ_DETECT_BYTES (64u * 1024u)
+#define RLDOBJ_DETAIL_BYTES ((size_t)192u * 1024u * 1024u) // textures kept for the split (RldObj_Detail), at most
 
 // JPEG, TGA and BMP: tools/rldpack_image.c (stb_image). 0 = decoded into *rgba,
 // width x height x 4 bytes with the rows from the top, freed with RldImg_Free.
@@ -75,6 +76,9 @@ void RldImg_Free(unsigned char *rgba);
 //                                         before the other places
 //                                         (RldObj_SearchTexture); up to
 //                                         RLDOBJ_TEXTURE_DIRS times
+//   --texture-detail off|auto|<n>         textured triangles split until the
+//                                         model has up to n triangles
+//                                         (RldObj_Detail); default auto
 
 enum
 {
@@ -96,6 +100,19 @@ static const char *const s_rldObjFromWords[3] = {"auto", "vertex", "material"};
 
 #define RLDOBJ_TEXTURE_DIRS 8u
 
+enum
+{
+	RLDOBJ_DETAIL_AUTO = 0,
+	RLDOBJ_DETAIL_OFF,
+	RLDOBJ_DETAIL_COUNT
+};
+
+// The triangles draw memory holds (as RLDMK_REDUCE_LIMIT of the chain); auto
+// aims at RLDOBJ_DETAIL_AUTO_TRIANGLES, which leaves room for what repair
+// adds (cracks closed, holes filled) before reduction would start.
+#define RLDOBJ_DETAIL_LIMIT (RLDCHAR_DRAW_BYTES_MAX / RLDCHAR_DRAW_BYTES_G3)
+#define RLDOBJ_DETAIL_AUTO_TRIANGLES 6000u
+
 struct RldObjOptions
 {
 	int vertexColors;      // RLDOBJ_VERTEX_*
@@ -104,13 +121,21 @@ struct RldObjOptions
 	int colorsFromGiven;
 	char textureDirs[RLDOBJ_TEXTURE_DIRS][RLD_PATH_MAX];  // --textures, each with a separator at its end
 	u32 textureDirCount;
+	int textureDetail;     // RLDOBJ_DETAIL_*
+	u32 detailTriangles;   // RLDOBJ_DETAIL_COUNT: the n of --texture-detail
+	int textureDetailGiven;
 };
 
 static struct RldObjOptions s_rldObjOptions;
 
+// What --texture-detail is without the switch: auto. The self-test sets off
+// while its cases of single corners run (RldMk_SelfTestObj).
+static int s_rldObjDetailDefault = RLDOBJ_DETAIL_AUTO;
+
 static void RldObj_ResetOptions(void)
 {
 	memset(&s_rldObjOptions, 0, sizeof(s_rldObjOptions));
+	s_rldObjOptions.textureDetail = s_rldObjDetailDefault;
 }
 
 // A make-char argument with its value (NULL = none follows). 1 = the
@@ -169,6 +194,33 @@ static int RldObj_Argument(const char *arg, const char *value)
 		}
 		return 1;
 	}
+	if ((strcmp(arg, "--texture-detail") == 0) && (value != NULL))
+	{
+		u32 n = 0;
+		size_t k;
+
+		for (k = 0; (value[k] >= '0') && (value[k] <= '9') && (n <= RLDOBJ_DETAIL_LIMIT); k++)
+		{
+			n = n * 10u + (u32)(value[k] - '0');
+		}
+		if ((strcmp(value, "off") == 0) || (strcmp(value, "auto") == 0))
+		{
+			s_rldObjOptions.textureDetail = (value[0] == 'o') ? RLDOBJ_DETAIL_OFF : RLDOBJ_DETAIL_AUTO;
+			s_rldObjOptions.textureDetailGiven = 1;
+		}
+		else if ((k != 0u) && (value[k] == '\0') && (n >= 1u) && (n <= RLDOBJ_DETAIL_LIMIT))
+		{
+			s_rldObjOptions.textureDetail = RLDOBJ_DETAIL_COUNT;
+			s_rldObjOptions.detailTriangles = n;
+			s_rldObjOptions.textureDetailGiven = 1;
+		}
+		else
+		{
+			RldMk_Say("error", "texture-detail", value, "The texture detail must be off, auto or a number of triangles from 1 to %u.",
+			          (u32)RLDOBJ_DETAIL_LIMIT);
+		}
+		return 1;
+	}
 	return 0;
 }
 
@@ -192,6 +244,14 @@ static void RldObj_EmitValues(void)
 			Rld_Emit("value", "textures", s_rldObjOptions.textureDirs[i], "switch", (const char *)NULL);
 		}
 	}
+	{
+		char n[16];
+
+		snprintf(n, sizeof(n), "%u", s_rldObjOptions.detailTriangles);
+		Rld_Emit("value", "texture-detail",
+		         (s_rldObjOptions.textureDetail == RLDOBJ_DETAIL_COUNT) ? n : ((s_rldObjOptions.textureDetail == RLDOBJ_DETAIL_OFF) ? "off" : "auto"),
+		         s_rldObjOptions.textureDetailGiven ? "switch" : "default", (const char *)NULL);
+	}
 }
 
 // The help of the switches, in make-char's help.
@@ -208,6 +268,12 @@ static void RldObj_Usage(FILE *out)
 	fprintf(out, "                              0x7F or 0x80 grey), else color\n");
 	fprintf(out, "  --textures <folder>         OBJ: look for textures that are not at their\n");
 	fprintf(out, "                              path in this folder first (up to %u times)\n", RLDOBJ_TEXTURE_DIRS);
+	fprintf(out, "  --texture-detail off|auto|<n>\n");
+	fprintf(out, "                              OBJ: textured triangles are split where\n");
+	fprintf(out, "                              their texture differs most from what three\n");
+	fprintf(out, "                              corner colors show, until the model has n\n");
+	fprintf(out, "                              triangles (1..%u); auto (default): %u;\n", (u32)RLDOBJ_DETAIL_LIMIT, RLDOBJ_DETAIL_AUTO_TRIANGLES);
+	fprintf(out, "                              off: three colors per triangle\n");
 	fprintf(out, "  --colors-from vertex|material\n");
 	fprintf(out, "                              OBJ: the vertex colors or the materials' Kd\n");
 	fprintf(out, "                              (times their textures); without it the vertex\n");
@@ -709,6 +775,10 @@ struct RldObjTexture
 	u8 *rgba;
 	u32 library;     // the MTL file of the first material that uses it
 	char sha[65];    // SHA-256 of the file read, hex; "" = none read
+	int fromImg;     // rgba from RldImg_Decode (freed with RldImg_Free)
+	int kept;        // rgba kept for the split (RldObj_Detail), applied after it
+	int nearest;     // fitted to the texel each point lies in (RldObj_FitTriangle)
+	char *shown;     // a kept texture found elsewhere: that file (NULL = path)
 };
 
 struct RldObjModel
@@ -799,7 +869,15 @@ static void RldObj_FreeModel(struct RldObjModel *m)
 	free(m->materials);
 	for (i = 0; i < m->textureCount; i++)
 	{
-		free(m->textures[i].rgba);
+		if (m->textures[i].fromImg)
+		{
+			RldImg_Free(m->textures[i].rgba);
+		}
+		else
+		{
+			free(m->textures[i].rgba);
+		}
+		free(m->textures[i].shown);
 	}
 	free(m->textures);
 	free(m->line);
@@ -2286,6 +2364,43 @@ static int RldObj_Sample(const struct RldObjTexture *t, double u, double v, int 
 	return 1;
 }
 
+// The texel (u, v) lies in, as the PS1 drew textures (no filtering): for the
+// split (RldObj_Detail), whose pieces end at texel edges and then show a
+// texel as it is. Repeated or clamped as RldObj_Sample; 0 = the texel is
+// fully transparent, *out not set.
+static int RldObj_SampleNearest(const struct RldObjTexture *t, double u, double v, int clamp, double out[3])
+{
+	double fu = clamp ? u : (u - RldMk_Floor(u));
+	double fv = clamp ? v : (v - RldMk_Floor(v));
+	double x;
+	double y;
+	const u8 *q;
+	int c;
+
+	if (!(fu >= 0.0))
+	{
+		fu = 0.0;
+	}
+	if (!(fv >= 0.0))
+	{
+		fv = 0.0;
+	}
+	x = RldMk_Floor(fu * (double)t->width);
+	y = RldMk_Floor((1.0 - fv) * (double)t->height);
+	x = (x < 0.0) ? 0.0 : ((x > (double)(t->width - 1u)) ? (double)(t->width - 1u) : x);
+	y = (y < 0.0) ? 0.0 : ((y > (double)(t->height - 1u)) ? (double)(t->height - 1u) : y);
+	q = &t->rgba[4u * ((u32)y * t->width + (u32)x)];
+	if (q[3] == 0u)
+	{
+		return 0;
+	}
+	for (c = 0; c < 3; c++)
+	{
+		out[c] = (double)q[c] / 255.0;
+	}
+	return 1;
+}
+
 static const char *const s_rldObjTextureWords[4] = {"ok", "missing", "unreadable", "unsupported"};
 
 //========================================================================================
@@ -2516,8 +2631,12 @@ static void RldObj_VertexColors(struct RldObjModel *m)
 // exactly; a texel at a corner no longer decides alone. Every sum runs in a
 // fixed order. 0 = all corners at one texture coordinate, or a sample point
 // on fully transparent texels: the caller samples at the corners instead.
-static int RldObj_FitTriangle(const struct RldObjTexture *t, const double uv[3][2], int clamp, double fit[3][3])
+// A texture kept for the split is read texel by texel (t->nearest,
+// RldObj_SampleNearest). With `error`: the mean square of what the fitted
+// colors miss at the sample points, per channel (0..1 units).
+static int RldObj_FitTriangle(const struct RldObjTexture *t, const double uv[3][2], int clamp, double fit[3][3], double *error)
 {
+	static double seen[32u * 32u][3];
 	double b[3][3];
 	double extent = 0.0;
 	double count = 0.0;
@@ -2564,7 +2683,8 @@ static int RldObj_FitTriangle(const struct RldObjTexture *t, const double uv[3][
 				{
 					continue;
 				}
-				if (!RldObj_Sample(t, l0 * uv[0][0] + l1 * uv[1][0] + l2 * uv[2][0], l0 * uv[0][1] + l1 * uv[1][1] + l2 * uv[2][1], clamp, f))
+				if (!(t->nearest ? RldObj_SampleNearest : RldObj_Sample)(t, l0 * uv[0][0] + l1 * uv[1][0] + l2 * uv[2][0],
+				                                                         l0 * uv[0][1] + l1 * uv[1][1] + l2 * uv[2][1], clamp, f))
 				{
 					return 0;
 				}
@@ -2573,6 +2693,10 @@ static int RldObj_FitTriangle(const struct RldObjTexture *t, const double uv[3][
 					b[0][c] += f[c] * l0;
 					b[1][c] += f[c] * l1;
 					b[2][c] += f[c] * l2;
+				}
+				if (error != NULL)
+				{
+					memcpy(seen[(u32)count], f, sizeof(f));
 				}
 				count += 1.0;
 			}
@@ -2587,6 +2711,42 @@ static int RldObj_FitTriangle(const struct RldObjTexture *t, const double uv[3][
 
 			fit[k][c] = (v < 0.0) ? 0.0 : ((v > 1.0) ? 1.0 : v);
 		}
+	}
+
+	// The same points again, in the same order: the Gouraud mix against
+	// what was read there.
+	if (error != NULL)
+	{
+		double sum = 0.0;
+		u32 s = 0;
+
+		for (i = 0; i < n; i++)
+		{
+			for (j = 0; (i + j) < n; j++)
+			{
+				int up;
+
+				for (up = 0; up < 2; up++)
+				{
+					const double l1 = ((double)i + (up ? (1.0 / 3.0) : (2.0 / 3.0))) / (double)n;
+					const double l2 = ((double)j + (up ? (1.0 / 3.0) : (2.0 / 3.0))) / (double)n;
+					const double l0 = 1.0 - l1 - l2;
+
+					if (!up && ((i + j + 2u) > n))
+					{
+						continue;
+					}
+					for (c = 0; c < 3; c++)
+					{
+						const double d = l0 * fit[0][c] + l1 * fit[1][c] + l2 * fit[2][c] - seen[s][c];
+
+						sum += d * d;
+					}
+					s++;
+				}
+			}
+		}
+		*error = sum / (3.0 * count);
 	}
 	return 1;
 }
@@ -2647,7 +2807,7 @@ static u32 RldObj_ApplyTexture(struct RldObjModel *m, u32 texture, u8 *cornerRgb
 			{
 				RldObj_TextureUv(m, material, m->cornerT[m->faceFirst[f] + k], uv[k]);
 			}
-			fitted = RldObj_FitTriangle(t, uv, clamp, fit);
+			fitted = RldObj_FitTriangle(t, uv, clamp, fit, NULL);
 		}
 
 		for (k = 0; k < m->faceCorners[f]; k++)
@@ -2899,10 +3059,54 @@ static void RldObj_Digest(const u8 *data, size_t size, char out[65])
 	out[64] = '\0';
 }
 
+// A texture read: applied to its faces (RldObj_ApplyTexture), its
+// transparency said, and freed.
+static void RldObj_TextureDone(struct RldObjModel *m, u32 i, const char *shown, u8 *cornerRgb, u8 *cornerSource, struct RldMkModelInfo *info)
+{
+	struct RldObjTexture *t = &m->textures[i];
+	const size_t texels = (size_t)t->width * t->height;
+	size_t p;
+	u32 clear = 0;
+
+	info->noUv += RldObj_ApplyTexture(m, i, cornerRgb, cornerSource, &clear);
+	for (p = 0; p < texels; p++)
+	{
+		if (t->rgba[4u * p + 3u] != 255u)
+		{
+			if (clear == 0u)
+			{
+				RldMk_Say("info", "tex-alpha", shown, "The texture %s has transparency: transparent texels add nothing to the colors.",
+				          Rld_LastComponent(shown));
+			}
+			else
+			{
+				RldMk_Say("info", "tex-alpha", shown,
+				          "The texture %s has transparency: transparent texels add nothing to the colors; %u corners on fully transparent "
+				          "texels keep the vertex or material color.",
+				          Rld_LastComponent(shown), clear);
+			}
+			break;
+		}
+	}
+	if (t->fromImg)
+	{
+		RldImg_Free(t->rgba);
+	}
+	else
+	{
+		free(t->rgba);
+	}
+	t->rgba = NULL;
+	t->fromImg = 0;
+	t->kept = 0;
+}
+
 // The texture of a material in use: the file it names, found, read, applied
-// and freed again, one after the other. 0 = out of memory (said).
+// and freed again, one after the other - or, with --texture-detail, kept for
+// the split (t->kept, *kept bytes) and applied after it (RldObj_Parse).
+// 0 = out of memory (said).
 static int RldObj_Textures(struct RldObjModel *m, const char *objPath, char (*libraryPath)[RLD_PATH_MAX], const u8 *nameUsed, u8 *cornerRgb,
-                           u8 *cornerSource, struct RldMkModelInfo *info)
+                           u8 *cornerSource, struct RldMkModelInfo *info, size_t *kept)
 {
 	u32 said = 0;
 	u32 unsaid = 0;
@@ -3023,39 +3227,21 @@ static int RldObj_Textures(struct RldObjModel *m, const char *objPath, char (*li
 
 		if (t->state == RLDMK_TEXTURE_OK)
 		{
-			const size_t texels = (size_t)t->width * t->height;
-			size_t p;
-			u32 clear = 0;
+			const size_t bytes = (size_t)t->width * t->height * 4u;
 
-			info->noUv += RldObj_ApplyTexture(m, i, cornerRgb, cornerSource, &clear);
-			for (p = 0; p < texels; p++)
+			t->fromImg = fromImg;
+			// Kept for the split while the kept ones stay within
+			// RLDOBJ_DETAIL_BYTES; the others as without it.
+			if ((s_rldObjOptions.textureDetail != RLDOBJ_DETAIL_OFF) && (bytes <= (RLDOBJ_DETAIL_BYTES - *kept)) &&
+			    ((shown == t->path) || ((t->shown = RldObj_Copy(shown, strlen(shown), RLD_PATH_MAX)) != NULL)))
 			{
-				if (t->rgba[4u * p + 3u] != 255u)
-				{
-					if (clear == 0u)
-					{
-						RldMk_Say("info", "tex-alpha", shown, "The texture %s has transparency: transparent texels add nothing to the colors.",
-						          Rld_LastComponent(shown));
-					}
-					else
-					{
-						RldMk_Say("info", "tex-alpha", shown,
-						          "The texture %s has transparency: transparent texels add nothing to the colors; %u corners on fully transparent "
-						          "texels keep the vertex or material color.",
-						          Rld_LastComponent(shown), clear);
-					}
-					break;
-				}
-			}
-			if (fromImg)
-			{
-				RldImg_Free(t->rgba);
+				*kept += bytes;
+				t->kept = 1;
 			}
 			else
 			{
-				free(t->rgba);
+				RldObj_TextureDone(m, i, shown, cornerRgb, cornerSource, info);
 			}
-			t->rgba = NULL;
 		}
 
 		// One line and one message per material that uses it.
@@ -3106,6 +3292,1365 @@ static int RldObj_Textures(struct RldObjModel *m, const char *objPath, char (*li
 	}
 	RldObj_SayMissing(m, libraryPath);
 	return 1;
+}
+
+//========================================================================================
+// THE SPLIT OF TEXTURED TRIANGLES (--texture-detail)
+//========================================================================================
+//
+// Three corner colors show a texture only as a gradient. With textures read
+// and --texture-detail not off, textured triangles are split in two at their
+// longest edge, the one whose texture its fitted corners miss most first
+// (mean square per channel x area in model units; equal ones by the order
+// they were made), until the model has RLDOBJ_DETAIL_AUTO_TRIANGLES (or the
+// n of the switch) triangles as step 2 counts them - below the
+// RLDOBJ_DETAIL_LIMIT of draw memory, with room for what repair adds. A
+// model that has them already is not split; then nothing changes at all.
+//
+// No crack: an edge is split for every triangle that has it (by position,
+// welded on the 1e-5 grid of step 3, whatever its material), each with a
+// point of its own (its vertex color, its vt), so seams of color stay. Before
+// an edge is split, a triangle on it whose own longest edge is longer is
+// split there first (longest edge propagation, RLDOBJ_DETAIL_DEPTH deep), so
+// the pieces keep their shape. The edges of faces of 4 or more corners that
+// stay faces are never split.
+//
+// A triangle is not split when its texture is shown within RLDOBJ_DETAIL_FLAT,
+// when it covers less than one texel (its halves would show nothing new), or
+// when a half would be lower than the model's size / RLDOBJ_DETAIL_HEIGHT:
+// step 9 packs positions into 8 bits per axis over the whole model, the up
+// axis into 7, and a lower triangle could lose its area there
+// (model-collapse). Textured quads with vt at all corners become two
+// triangles at the shorter diagonal first, as step 2 would split them.
+// Textures kept for the split are read texel by texel (RldObj_SampleNearest),
+// as the PS1 drew them: a piece that ends at texel edges shows its texels
+// exactly (a checker of 8 x 8 texels on a square: 128 triangles).
+// Everything runs in a fixed order: the same file gives the same points.
+
+#define RLDOBJ_DETAIL_DEPTH 8                               // longest edge propagation
+#define RLDOBJ_DETAIL_FLAT (2.0 / 255.0)                    // shown well enough: root mean square per channel
+#define RLDOBJ_DETAIL_HEIGHT 125.0                          // a half at least the model's size / this high
+#define RLDOBJ_DETAIL_ON_EDGE 64u                           // triangles on one edge that are split together, at most
+
+struct RldObjDetailTri
+{
+	u32 v[3];
+	u32 vt[3];
+	u32 face;      // the face it comes from
+	u32 texture;   // its kept texture with vt at all corners, RLDMK_NONE = none
+	int alive;
+};
+
+struct RldObjDetailEdge
+{
+	u32 a;         // welded positions, a < b; RLDMK_NONE = an empty slot
+	u32 b;
+	u32 head;      // its first use, RLDMK_NONE = none
+	int locked;    // an edge of a face that stays a face
+};
+
+struct RldObjDetailUse
+{
+	u32 tri;
+	u32 next;
+};
+
+struct RldObjDetailRank
+{
+	double priority;
+	u32 tri;
+};
+
+struct RldObjDetail
+{
+	struct RldObjModel *m;
+	u32 *weld;                        // per v: its welded position
+	u32 weldCapacity;
+	double *pos;                      // per welded position: x y z
+	u32 posCount;
+	u32 posCapacity;
+	struct RldObjDetailTri *tri;
+	u32 triCount;
+	u32 triCapacity;
+	struct RldObjDetailEdge *edge;    // open addressing
+	u32 edgeSlots;                    // a power of two, at least twice edgeCount
+	u32 edgeCount;
+	struct RldObjDetailUse *use;
+	u32 useCount;
+	u32 useCapacity;
+	struct RldObjDetailRank *heap;    // the triangles to split, the worst on top
+	u32 heapCount;
+	u32 heapCapacity;
+	u32 triangles;                    // as step 2 counts them
+	u32 target;
+	u32 splits;
+	double height;                    // the lowest half allowed
+	u32 *posPart;                     // per welded position: its part (joined by faces)
+	u32 posPartCapacity;
+	u32 *partTriangles;               // per part: its triangles now
+	u32 *partAbove;                   // per part: the one with the next more triangles, RLDMK_NONE = none
+	u8 *partFixed;                    // per part: as many triangles as another one - not split
+	s64 *place;                       // the points on the 1e-5 grid, 3 per slot (open addressing)
+	u8 *placeUsed;
+	u32 placeSlots;                   // a power of two, at least twice placeCount
+	u32 placeCount;
+	int failed;                       // out of memory
+};
+
+struct RldObjWeldKey
+{
+	s64 key[3];
+	u32 v;
+};
+
+static int RldObj_CompareWeld(const void *pa, const void *pb)
+{
+	const struct RldObjWeldKey *a = (const struct RldObjWeldKey *)pa;
+	const struct RldObjWeldKey *b = (const struct RldObjWeldKey *)pb;
+	int k;
+
+	for (k = 0; k < 3; k++)
+	{
+		if (a->key[k] != b->key[k])
+		{
+			return (a->key[k] < b->key[k]) ? -1 : 1;
+		}
+	}
+	return (a->v < b->v) ? -1 : ((a->v > b->v) ? 1 : 0);
+}
+
+static double RldObj_DetailLength2(const struct RldObjDetail *d, u32 a, u32 b)
+{
+	const double *p = &d->pos[3u * a];
+	const double *q = &d->pos[3u * b];
+	const double x = p[0] - q[0];
+	const double y = p[1] - q[1];
+	const double z = p[2] - q[2];
+
+	return x * x + y * y + z * z;
+}
+
+// Twice the area of the triangle of welded positions a, b, c, squared.
+static double RldObj_DetailArea2(const struct RldObjDetail *d, u32 a, u32 b, u32 c)
+{
+	const double *p = &d->pos[3u * a];
+	const double *q = &d->pos[3u * b];
+	const double *r = &d->pos[3u * c];
+	const double u[3] = {q[0] - p[0], q[1] - p[1], q[2] - p[2]};
+	const double w[3] = {r[0] - p[0], r[1] - p[1], r[2] - p[2]};
+	const double n[3] = {u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]};
+
+	return n[0] * n[0] + n[1] * n[1] + n[2] * n[2];
+}
+
+static u32 RldObj_EdgeHash(u32 a, u32 b)
+{
+	u32 h = a * 0x9E3779B1u;
+
+	h ^= b * 0x85EBCA77u;
+	h ^= h >> 15;
+	h *= 0x2C1B3C6Du;
+	h ^= h >> 13;
+	return h;
+}
+
+// The slot of edge a-b (in any order); with add, made when missing.
+// RLDMK_NONE = not there (or out of memory, d->failed).
+static u32 RldObj_DetailEdge(struct RldObjDetail *d, u32 a, u32 b, int add)
+{
+	const u32 lo = (a < b) ? a : b;
+	const u32 hi = (a < b) ? b : a;
+	u32 slot;
+
+	if (add && ((2u * (d->edgeCount + 1u)) > d->edgeSlots))
+	{
+		const u32 slots = (d->edgeSlots != 0u) ? (2u * d->edgeSlots) : 4096u;
+		struct RldObjDetailEdge *bigger = (struct RldObjDetailEdge *)malloc((size_t)slots * sizeof(*bigger));
+		u32 i;
+
+		if ((bigger == NULL) || (slots <= d->edgeSlots))
+		{
+			free(bigger);
+			d->failed = 1;
+			return RLDMK_NONE;
+		}
+		for (i = 0; i < slots; i++)
+		{
+			bigger[i].a = RLDMK_NONE;
+		}
+		for (i = 0; i < d->edgeSlots; i++)
+		{
+			if (d->edge[i].a != RLDMK_NONE)
+			{
+				u32 s = RldObj_EdgeHash(d->edge[i].a, d->edge[i].b) & (slots - 1u);
+
+				while (bigger[s].a != RLDMK_NONE)
+				{
+					s = (s + 1u) & (slots - 1u);
+				}
+				bigger[s] = d->edge[i];
+			}
+		}
+		free(d->edge);
+		d->edge = bigger;
+		d->edgeSlots = slots;
+	}
+	if (d->edgeSlots == 0u)
+	{
+		return RLDMK_NONE;
+	}
+
+	slot = RldObj_EdgeHash(lo, hi) & (d->edgeSlots - 1u);
+	while (d->edge[slot].a != RLDMK_NONE)
+	{
+		if ((d->edge[slot].a == lo) && (d->edge[slot].b == hi))
+		{
+			return slot;
+		}
+		slot = (slot + 1u) & (d->edgeSlots - 1u);
+	}
+	if (!add)
+	{
+		return RLDMK_NONE;
+	}
+	d->edge[slot].a = lo;
+	d->edge[slot].b = hi;
+	d->edge[slot].head = RLDMK_NONE;
+	d->edge[slot].locked = 0;
+	d->edgeCount++;
+	return slot;
+}
+
+static u32 RldObj_PlaceHash(const s64 key[3])
+{
+	return RldObj_EdgeHash((u32)key[0] ^ (u32)((u64)key[2] >> 32), (u32)key[1] ^ ((u32)key[2] * 0x27D4EB2Du));
+}
+
+// Is there a point at `xyz` already (on the 1e-5 grid of step 3)? With add,
+// it is one afterwards (1 = out of memory then, d->failed). A new point where
+// another one is would be welded to it by step 3 and join parts that were
+// apart (a wheel touching the body): such an edge is not split.
+static int RldObj_DetailPlace(struct RldObjDetail *d, const double xyz[3], int add)
+{
+	s64 key[3];
+	u32 slot;
+	int a;
+
+	if (add && ((2u * (d->placeCount + 1u)) > d->placeSlots))
+	{
+		const u32 slots = (d->placeSlots != 0u) ? (2u * d->placeSlots) : 4096u;
+		s64 *place = (s64 *)malloc((size_t)slots * 3u * sizeof(s64));
+		u8 *used = (u8 *)calloc(slots, 1u);
+		u32 i;
+
+		if ((place == NULL) || (used == NULL) || (slots <= d->placeSlots))
+		{
+			free(place);
+			free(used);
+			d->failed = 1;
+			return 1;
+		}
+		for (i = 0; i < d->placeSlots; i++)
+		{
+			if (d->placeUsed[i])
+			{
+				u32 s = RldObj_PlaceHash(&d->place[3u * i]) & (slots - 1u);
+
+				while (used[s])
+				{
+					s = (s + 1u) & (slots - 1u);
+				}
+				memcpy(&place[3u * s], &d->place[3u * i], 3u * sizeof(s64));
+				used[s] = 1u;
+			}
+		}
+		free(d->place);
+		free(d->placeUsed);
+		d->place = place;
+		d->placeUsed = used;
+		d->placeSlots = slots;
+	}
+	if (d->placeSlots == 0u)
+	{
+		return 0;
+	}
+
+	for (a = 0; a < 3; a++)
+	{
+		key[a] = RldMk_Round(xyz[a] * 100000.0);
+	}
+	slot = RldObj_PlaceHash(key) & (d->placeSlots - 1u);
+	while (d->placeUsed[slot])
+	{
+		if (memcmp(&d->place[3u * slot], key, sizeof(key)) == 0)
+		{
+			return 1;
+		}
+		slot = (slot + 1u) & (d->placeSlots - 1u);
+	}
+	if (add)
+	{
+		memcpy(&d->place[3u * slot], key, sizeof(key));
+		d->placeUsed[slot] = 1u;
+		d->placeCount++;
+	}
+	return 0;
+}
+
+static int RldObj_DetailLocked(struct RldObjDetail *d, u32 a, u32 b)
+{
+	const u32 slot = RldObj_DetailEdge(d, a, b, 0);
+
+	return (slot != RLDMK_NONE) && d->edge[slot].locked;
+}
+
+// Edge k of triangle t (corner k to corner k + 1) as welded positions.
+static void RldObj_DetailEnds(const struct RldObjDetail *d, u32 t, int k, u32 *a, u32 *b)
+{
+	*a = d->weld[d->tri[t].v[k]];
+	*b = d->weld[d->tri[t].v[(k + 1) % 3]];
+}
+
+// The longest edge of t that may be split (the first of equal ones), -1 =
+// none.
+static int RldObj_DetailLongest(struct RldObjDetail *d, u32 t, double *length2)
+{
+	double best = 0.0;
+	int found = -1;
+	int k;
+
+	for (k = 0; k < 3; k++)
+	{
+		u32 a;
+		u32 b;
+		double l;
+
+		RldObj_DetailEnds(d, t, k, &a, &b);
+		if ((a == b) || RldObj_DetailLocked(d, a, b))
+		{
+			continue;
+		}
+		l = RldObj_DetailLength2(d, a, b);
+		if (l > best)
+		{
+			best = l;
+			found = k;
+		}
+	}
+	*length2 = best;
+	return found;
+}
+
+// Are both halves of t, split at edge k, at least d->height high?
+static int RldObj_DetailHalves(const struct RldObjDetail *d, u32 t, int k, double mid[3])
+{
+	const u32 a = d->weld[d->tri[t].v[k]];
+	const u32 b = d->weld[d->tri[t].v[(k + 1) % 3]];
+	const u32 c = d->weld[d->tri[t].v[(k + 2) % 3]];
+	const double area4 = RldObj_DetailArea2(d, a, b, c);   // (2 x area)^2 = (4 x the area of a half)^2
+	const double *pc = &d->pos[3u * c];
+	const double ab = RldObj_DetailLength2(d, a, b) * 0.25;
+	const double mc = (mid[0] - pc[0]) * (mid[0] - pc[0]) + (mid[1] - pc[1]) * (mid[1] - pc[1]) + (mid[2] - pc[2]) * (mid[2] - pc[2]);
+	const double ca = RldObj_DetailLength2(d, c, a);
+	const double cb = RldObj_DetailLength2(d, c, b);
+	double longest[2];
+	int h;
+
+	// Squared lengths, no square root: the height of a half over its
+	// longest side s is 2 x (area / 2) / s, at least d->height when
+	// area^2 = area4 / 4 >= height^2 x s^2.
+	longest[0] = (ab > mc) ? ab : mc;
+	longest[0] = (ca > longest[0]) ? ca : longest[0];
+	longest[1] = (ab > mc) ? ab : mc;
+	longest[1] = (cb > longest[1]) ? cb : longest[1];
+	for (h = 0; h < 2; h++)
+	{
+		if (!(longest[h] > 0.0) || !((area4 * 0.25) >= (d->height * d->height * longest[h])))
+		{
+			return 0;
+		}
+	}
+	return 1;
+}
+
+static void RldObj_DetailMid(const struct RldObjDetail *d, u32 a, u32 b, double mid[3])
+{
+	int k;
+
+	for (k = 0; k < 3; k++)
+	{
+		mid[k] = (d->pos[3u * a + (u32)k] + d->pos[3u * b + (u32)k]) * 0.5;
+	}
+}
+
+// Before b: is a higher in the heap (worse, or as bad and made first)?
+static int RldObj_DetailAbove(const struct RldObjDetailRank *a, const struct RldObjDetailRank *b)
+{
+	return (a->priority > b->priority) || ((a->priority == b->priority) && (a->tri < b->tri));
+}
+
+static void RldObj_DetailPush(struct RldObjDetail *d, double priority, u32 t)
+{
+	u32 i;
+
+	if (!RldObj_Grow((void **)&d->heap, d->heapCount, &d->heapCapacity, sizeof(*d->heap)))
+	{
+		d->failed = 1;
+		return;
+	}
+	i = d->heapCount++;
+	d->heap[i].priority = priority;
+	d->heap[i].tri = t;
+	while (i != 0u)
+	{
+		const u32 parent = (i - 1u) / 2u;
+		struct RldObjDetailRank swap;
+
+		if (!RldObj_DetailAbove(&d->heap[i], &d->heap[parent]))
+		{
+			break;
+		}
+		swap = d->heap[i];
+		d->heap[i] = d->heap[parent];
+		d->heap[parent] = swap;
+		i = parent;
+	}
+}
+
+static u32 RldObj_DetailPop(struct RldObjDetail *d)
+{
+	const u32 top = d->heap[0].tri;
+	u32 i = 0;
+
+	d->heap[0] = d->heap[--d->heapCount];
+	for (;;)
+	{
+		const u32 l = 2u * i + 1u;
+		const u32 r = l + 1u;
+		u32 best = i;
+		struct RldObjDetailRank swap;
+
+		if ((l < d->heapCount) && RldObj_DetailAbove(&d->heap[l], &d->heap[best]))
+		{
+			best = l;
+		}
+		if ((r < d->heapCount) && RldObj_DetailAbove(&d->heap[r], &d->heap[best]))
+		{
+			best = r;
+		}
+		if (best == i)
+		{
+			break;
+		}
+		swap = d->heap[i];
+		d->heap[i] = d->heap[best];
+		d->heap[best] = swap;
+		i = best;
+	}
+	return top;
+}
+
+// Into the heap when t is worth a split: its texture missed by more than
+// RLDOBJ_DETAIL_FLAT, at least one texel, halves high enough.
+static void RldObj_DetailRate(struct RldObjDetail *d, u32 t)
+{
+	const struct RldObjDetailTri *x = &d->tri[t];
+	const struct RldObjMaterial *material;
+	const struct RldObjTexture *texture;
+	double uv[3][2];
+	double fit[3][3];
+	double mid[3];
+	double error = 0.0;
+	double length2;
+	double texels;
+	double area2;
+	int clamp = 1;
+	int edge;
+	int k;
+
+	if (x->texture == RLDMK_NONE)
+	{
+		return;
+	}
+	material = RldObj_FaceMaterial(d->m, x->face);
+	texture = &d->m->textures[x->texture];
+	for (k = 0; k < 3; k++)
+	{
+		RldObj_TextureUv(d->m, material, x->vt[k], uv[k]);
+		if (!((uv[k][0] >= 0.0) && (uv[k][0] <= 1.0) && (uv[k][1] >= 0.0) && (uv[k][1] <= 1.0)))
+		{
+			clamp = 0;
+		}
+	}
+	texels = 0.5 * ((uv[1][0] - uv[0][0]) * (uv[2][1] - uv[0][1]) - (uv[1][1] - uv[0][1]) * (uv[2][0] - uv[0][0])) * (double)texture->width *
+	         (double)texture->height;
+	texels = (texels < 0.0) ? -texels : texels;
+	if (!(texels >= 0.999))
+	{
+		return;
+	}
+	edge = RldObj_DetailLongest(d, t, &length2);
+	if (edge < 0)
+	{
+		return;
+	}
+	{
+		u32 a;
+		u32 b;
+
+		RldObj_DetailEnds(d, t, edge, &a, &b);
+		RldObj_DetailMid(d, a, b, mid);
+		area2 = RldObj_DetailArea2(d, a, b, d->weld[x->v[(edge + 2) % 3]]);
+	}
+	if (!RldObj_DetailHalves(d, t, edge, mid))
+	{
+		return;
+	}
+	if (!RldObj_FitTriangle(texture, uv, clamp, fit, &error) || !(error > (RLDOBJ_DETAIL_FLAT * RLDOBJ_DETAIL_FLAT)))
+	{
+		return;
+	}
+	// error x area ranks as its square does: error^2 x (2 x area)^2.
+	RldObj_DetailPush(d, error * error * area2, t);
+}
+
+// A triangle more, its edges known. 0 = out of memory.
+static int RldObj_DetailAdd(struct RldObjDetail *d, const u32 v[3], const u32 vt[3], u32 face, u32 texture, int rate)
+{
+	const u32 t = d->triCount;
+	int k;
+
+	if (!RldObj_Grow((void **)&d->tri, d->triCount, &d->triCapacity, sizeof(*d->tri)))
+	{
+		d->failed = 1;
+		return 0;
+	}
+	memcpy(d->tri[t].v, v, sizeof(d->tri[t].v));
+	memcpy(d->tri[t].vt, vt, sizeof(d->tri[t].vt));
+	d->tri[t].face = face;
+	d->tri[t].texture = texture;
+	d->tri[t].alive = 1;
+	d->triCount++;
+
+	for (k = 0; k < 3; k++)
+	{
+		u32 a;
+		u32 b;
+		u32 slot;
+
+		RldObj_DetailEnds(d, t, k, &a, &b);
+		if (a == b)
+		{
+			continue;
+		}
+		slot = RldObj_DetailEdge(d, a, b, 1);
+		if ((slot == RLDMK_NONE) || !RldObj_Grow((void **)&d->use, d->useCount, &d->useCapacity, sizeof(*d->use)))
+		{
+			d->failed = 1;
+			return 0;
+		}
+		d->use[d->useCount].tri = t;
+		d->use[d->useCount].next = d->edge[slot].head;
+		d->edge[slot].head = d->useCount++;
+	}
+	if (rate)
+	{
+		RldObj_DetailRate(d, t);
+	}
+	return !d->failed;
+}
+
+// The living triangles on edge a-b, by the order they were made. Their
+// number; more than `max` = not all listed.
+static u32 RldObj_DetailOnEdge(struct RldObjDetail *d, u32 a, u32 b, u32 *list, u32 max)
+{
+	const u32 slot = RldObj_DetailEdge(d, a, b, 0);
+	u32 count = 0;
+	u32 u;
+	u32 i;
+
+	if (slot == RLDMK_NONE)
+	{
+		return 0;
+	}
+	for (u = d->edge[slot].head; u != RLDMK_NONE; u = d->use[u].next)
+	{
+		const u32 t = d->use[u].tri;
+
+		if (d->tri[t].alive)
+		{
+			if (count < max)
+			{
+				// Newest first in the list: kept in order of making.
+				for (i = count; (i != 0u) && (list[i - 1u] > t); i--)
+				{
+					list[i] = list[i - 1u];
+				}
+				list[i] = t;
+			}
+			count++;
+		}
+	}
+	return count;
+}
+
+// A point more: v as `from` (the vertex color the mean of both ends, when
+// both have one), at the welded position w. RLDMK_NONE = out of memory.
+static u32 RldObj_DetailVertex(struct RldObjDetail *d, u32 v0, u32 v1, u32 w)
+{
+	struct RldObjModel *m = d->m;
+	const u32 v = m->vCount;
+	int k;
+
+	if (v >= m->vCapacity)
+	{
+		u32 capacity = m->vCapacity;
+		u32 c2 = m->vCapacity;
+		u32 c3 = m->vCapacity;
+
+		if (!RldObj_Grow((void **)&m->xyz, m->vCount, &capacity, 3u * sizeof(double)) ||
+		    !RldObj_Grow((void **)&m->vrgb, m->vCount, &c2, 3u * sizeof(double)) || !RldObj_Grow((void **)&m->vColored, m->vCount, &c3, 1u))
+		{
+			d->failed = 1;
+			return RLDMK_NONE;
+		}
+		m->vCapacity = capacity;
+	}
+	if (v >= d->weldCapacity)
+	{
+		if (!RldObj_Grow((void **)&d->weld, v, &d->weldCapacity, sizeof(u32)))
+		{
+			d->failed = 1;
+			return RLDMK_NONE;
+		}
+	}
+	memcpy(&m->xyz[3u * v], &d->pos[3u * w], 3u * sizeof(double));
+	m->vColored[v] = (u8)(m->vColored[v0] && m->vColored[v1]);
+	for (k = 0; k < 3; k++)
+	{
+		m->vrgb[3u * v + (u32)k] = m->vColored[v] ? ((m->vrgb[3u * v0 + (u32)k] + m->vrgb[3u * v1 + (u32)k]) * 0.5) : 0.0;
+	}
+	d->weld[v] = w;
+	m->vCount++;
+	return v;
+}
+
+// A vt more, the mean of two. RLDMK_NONE = out of memory.
+static u32 RldObj_DetailVt(struct RldObjDetail *d, u32 t0, u32 t1)
+{
+	struct RldObjModel *m = d->m;
+
+	if (!RldObj_Grow((void **)&m->uv, m->vtCount, &m->vtCapacity, 2u * sizeof(double)))
+	{
+		d->failed = 1;
+		return RLDMK_NONE;
+	}
+	m->uv[2u * m->vtCount + 0u] = (m->uv[2u * t0 + 0u] + m->uv[2u * t1 + 0u]) * 0.5;
+	m->uv[2u * m->vtCount + 1u] = (m->uv[2u * t0 + 1u] + m->uv[2u * t1 + 1u]) * 0.5;
+	return m->vtCount++;
+}
+
+// Edge a-b split for every triangle on it. 1 = split, 0 = not (no room,
+// a half too low, too many triangles on it), -1 = out of memory.
+static int RldObj_DetailSplit(struct RldObjDetail *d, u32 a, u32 b, u32 depth)
+{
+	u32 list[RLDOBJ_DETAIL_ON_EDGE];
+	u32 made[RLDOBJ_DETAIL_ON_EDGE][3];   // v0, v1 -> the new v (per pair)
+	u32 madeT[RLDOBJ_DETAIL_ON_EDGE][3];  // vt0, vt1 -> the new vt
+	u32 madeCount = 0;
+	u32 madeTCount = 0;
+	u32 count;
+	u32 w;
+	u32 i;
+	double mid[3];
+	const double length2 = RldObj_DetailLength2(d, a, b);
+
+	// A triangle on it with a longer edge of its own: that one first.
+	for (;;)
+	{
+		int again = 0;
+
+		count = RldObj_DetailOnEdge(d, a, b, list, RLDOBJ_DETAIL_ON_EDGE);
+		if ((count == 0u) || (count > RLDOBJ_DETAIL_ON_EDGE))
+		{
+			return 0;
+		}
+		for (i = 0; (i < count) && (depth < RLDOBJ_DETAIL_DEPTH); i++)
+		{
+			double own;
+			const int k = RldObj_DetailLongest(d, list[i], &own);
+			u32 p;
+			u32 q;
+
+			if (k < 0)
+			{
+				continue;
+			}
+			RldObj_DetailEnds(d, list[i], k, &p, &q);
+			if ((((p == a) && (q == b)) || ((p == b) && (q == a))) || !(own > (length2 * (1.0 + 1e-9))))
+			{
+				continue;
+			}
+			{
+				const int r = RldObj_DetailSplit(d, p, q, depth + 1u);
+
+				if (r < 0)
+				{
+					return r;
+				}
+				// That one cannot be split: a-b is split as it is.
+				if (r == 0)
+				{
+					depth = RLDOBJ_DETAIL_DEPTH;
+					break;
+				}
+			}
+			again = 1;
+			break;
+		}
+		if (!again)
+		{
+			break;
+		}
+	}
+
+	if ((d->triangles + count) > d->target)
+	{
+		return 0;
+	}
+	// Step 4 takes the part with the most triangles (after the kart) for
+	// the driver: a part stays below the one it must stay below
+	// (RldObj_DetailParts), so that the same part becomes the driver.
+	{
+		const u32 part = d->posPart[a];
+		const u32 above = d->partAbove[part];
+
+		if (d->partFixed[part] || ((above != RLDMK_NONE) && ((d->partTriangles[part] + count) >= d->partTriangles[above])))
+		{
+			return 0;
+		}
+	}
+	RldObj_DetailMid(d, a, b, mid);
+	if (RldObj_DetailPlace(d, mid, 0))
+	{
+		return 0;
+	}
+	for (i = 0; i < count; i++)
+	{
+		int k;
+
+		for (k = 0; k < 3; k++)
+		{
+			u32 p;
+			u32 q;
+
+			RldObj_DetailEnds(d, list[i], k, &p, &q);
+			if (((p == a) && (q == b)) || ((p == b) && (q == a)))
+			{
+				break;
+			}
+		}
+		if ((k == 3) || !RldObj_DetailHalves(d, list[i], k, mid))
+		{
+			return 0;
+		}
+	}
+
+	// The new welded position.
+	if (RldObj_DetailPlace(d, mid, 1) || !RldObj_Grow((void **)&d->pos, d->posCount, &d->posCapacity, 3u * sizeof(double)))
+	{
+		d->failed = 1;
+		return -1;
+	}
+	if (!RldObj_Grow((void **)&d->posPart, d->posCount, &d->posPartCapacity, sizeof(u32)))
+	{
+		d->failed = 1;
+		return -1;
+	}
+	w = d->posCount++;
+	memcpy(&d->pos[3u * w], mid, sizeof(mid));
+	d->posPart[w] = d->posPart[a];
+	d->partTriangles[d->posPart[a]] += count;
+
+	for (i = 0; i < count; i++)
+	{
+		struct RldObjDetailTri x = d->tri[list[i]];
+		u32 v[2][3];
+		u32 vt[2][3];
+		u32 nv = RLDMK_NONE;
+		u32 nt = RLDMK_NONE;
+		u32 j;
+		int k;
+
+		for (k = 0; k < 3; k++)
+		{
+			u32 p;
+			u32 q;
+
+			RldObj_DetailEnds(d, list[i], k, &p, &q);
+			if (((p == a) && (q == b)) || ((p == b) && (q == a)))
+			{
+				break;
+			}
+		}
+		{
+			const u32 c0 = (u32)k;
+			const u32 c1 = (u32)((k + 1) % 3);
+			const u32 v0 = (x.v[c0] < x.v[c1]) ? x.v[c0] : x.v[c1];
+			const u32 v1 = (x.v[c0] < x.v[c1]) ? x.v[c1] : x.v[c0];
+
+			// One new point per pair of points: triangles that share
+			// both ends share it, a seam of color keeps its two sides.
+			for (j = 0; j < madeCount; j++)
+			{
+				if ((made[j][0] == v0) && (made[j][1] == v1))
+				{
+					nv = made[j][2];
+				}
+			}
+			if (nv == RLDMK_NONE)
+			{
+				nv = RldObj_DetailVertex(d, v0, v1, w);
+				if (nv == RLDMK_NONE)
+				{
+					return -1;
+				}
+				made[madeCount][0] = v0;
+				made[madeCount][1] = v1;
+				made[madeCount][2] = nv;
+				madeCount++;
+			}
+			if ((x.vt[c0] != RLDMK_NONE) && (x.vt[c1] != RLDMK_NONE))
+			{
+				const u32 t0 = (x.vt[c0] < x.vt[c1]) ? x.vt[c0] : x.vt[c1];
+				const u32 t1 = (x.vt[c0] < x.vt[c1]) ? x.vt[c1] : x.vt[c0];
+
+				for (j = 0; j < madeTCount; j++)
+				{
+					if ((madeT[j][0] == t0) && (madeT[j][1] == t1))
+					{
+						nt = madeT[j][2];
+					}
+				}
+				if (nt == RLDMK_NONE)
+				{
+					nt = RldObj_DetailVt(d, t0, t1);
+					if (nt == RLDMK_NONE)
+					{
+						return -1;
+					}
+					madeT[madeTCount][0] = t0;
+					madeT[madeTCount][1] = t1;
+					madeT[madeTCount][2] = nt;
+					madeTCount++;
+				}
+			}
+
+			// The halves keep the way round: corner c1, then c0, is the
+			// new point.
+			memcpy(v[0], x.v, sizeof(v[0]));
+			memcpy(v[1], x.v, sizeof(v[1]));
+			memcpy(vt[0], x.vt, sizeof(vt[0]));
+			memcpy(vt[1], x.vt, sizeof(vt[1]));
+			v[0][c1] = nv;
+			vt[0][c1] = nt;
+			v[1][c0] = nv;
+			vt[1][c0] = nt;
+		}
+		d->tri[list[i]].alive = 0;
+		if (!RldObj_DetailAdd(d, v[0], vt[0], x.face, x.texture, 1) || !RldObj_DetailAdd(d, v[1], vt[1], x.face, x.texture, 1))
+		{
+			return -1;
+		}
+		d->triangles++;
+	}
+	d->splits++;
+	return 1;
+}
+
+static int RldObj_CompareDetailTri(const void *pa, const void *pb, const struct RldObjDetailTri *tri)
+{
+	const u32 a = *(const u32 *)pa;
+	const u32 b = *(const u32 *)pb;
+
+	if (tri[a].face != tri[b].face)
+	{
+		return (tri[a].face < tri[b].face) ? -1 : 1;
+	}
+	return (a < b) ? -1 : ((a > b) ? 1 : 0);
+}
+
+static const struct RldObjDetailTri *s_rldObjDetailSort;
+
+static int RldObj_CompareDetail(const void *pa, const void *pb)
+{
+	return RldObj_CompareDetailTri(pa, pb, s_rldObjDetailSort);
+}
+
+// The faces again: each face that became triangles replaced by the living
+// ones, in the order they were made. 0 = out of memory.
+static int RldObj_DetailFaces(struct RldObjDetail *d, const u8 *made)
+{
+	struct RldObjModel *m = d->m;
+	u32 *order;
+	u32 *cornerV = NULL;
+	u32 *cornerT = NULL;
+	u32 *faceFirst = NULL;
+	u32 *faceCorners = NULL;
+	u32 *faceName = NULL;
+	u32 alive = 0;
+	u32 corners = 0;
+	u32 faces = 0;
+	u32 at = 0;
+	u32 f;
+	u32 t;
+
+	order = (u32 *)malloc((size_t)d->triCount * sizeof(u32) + 4u);
+	if (order == NULL)
+	{
+		return 0;
+	}
+	for (t = 0; t < d->triCount; t++)
+	{
+		if (d->tri[t].alive)
+		{
+			order[alive++] = t;
+		}
+	}
+	s_rldObjDetailSort = d->tri;
+	qsort(order, alive, sizeof(u32), RldObj_CompareDetail);
+	s_rldObjDetailSort = NULL;
+
+	for (f = 0; f < m->faceCount; f++)
+	{
+		if (!made[f])
+		{
+			corners += m->faceCorners[f];
+			faces++;
+		}
+	}
+	corners += 3u * alive;
+	faces += alive;
+	cornerV = (u32 *)malloc((size_t)corners * sizeof(u32) + 4u);
+	cornerT = (u32 *)malloc((size_t)corners * sizeof(u32) + 4u);
+	faceFirst = (u32 *)malloc((size_t)faces * sizeof(u32) + 4u);
+	faceCorners = (u32 *)malloc((size_t)faces * sizeof(u32) + 4u);
+	faceName = (u32 *)malloc((size_t)faces * sizeof(u32) + 4u);
+	if ((cornerV == NULL) || (cornerT == NULL) || (faceFirst == NULL) || (faceCorners == NULL) || (faceName == NULL))
+	{
+		free(order);
+		free(cornerV);
+		free(cornerT);
+		free(faceFirst);
+		free(faceCorners);
+		free(faceName);
+		return 0;
+	}
+
+	corners = 0;
+	faces = 0;
+	for (f = 0; f < m->faceCount; f++)
+	{
+		if (!made[f])
+		{
+			memcpy(&cornerV[corners], &m->cornerV[m->faceFirst[f]], (size_t)m->faceCorners[f] * sizeof(u32));
+			memcpy(&cornerT[corners], &m->cornerT[m->faceFirst[f]], (size_t)m->faceCorners[f] * sizeof(u32));
+			faceFirst[faces] = corners;
+			faceCorners[faces] = m->faceCorners[f];
+			faceName[faces] = m->faceName[f];
+			corners += m->faceCorners[f];
+			faces++;
+			continue;
+		}
+		for (; (at < alive) && (d->tri[order[at]].face == f); at++)
+		{
+			memcpy(&cornerV[corners], d->tri[order[at]].v, 3u * sizeof(u32));
+			memcpy(&cornerT[corners], d->tri[order[at]].vt, 3u * sizeof(u32));
+			faceFirst[faces] = corners;
+			faceCorners[faces] = 3u;
+			faceName[faces] = m->faceName[f];
+			corners += 3u;
+			faces++;
+		}
+	}
+	free(order);
+
+	free(m->cornerV);
+	free(m->cornerT);
+	free(m->faceFirst);
+	free(m->faceCorners);
+	free(m->faceName);
+	m->cornerV = cornerV;
+	m->cornerT = cornerT;
+	m->faceFirst = faceFirst;
+	m->faceCorners = faceCorners;
+	m->faceName = faceName;
+	m->cornerCount = corners;
+	m->cornerCapacity = corners;
+	m->faceCount = faces;
+	m->faceCapacity = faces;
+	return 1;
+}
+
+static const u32 *s_rldObjDetailCount;
+
+// More triangles first, equal ones in the order of the parts.
+static int RldObj_CompareDetailPart(const void *pa, const void *pb)
+{
+	const u32 a = *(const u32 *)pa;
+	const u32 b = *(const u32 *)pb;
+
+	if (s_rldObjDetailCount[a] != s_rldObjDetailCount[b])
+	{
+		return (s_rldObjDetailCount[a] > s_rldObjDetailCount[b]) ? -1 : 1;
+	}
+	return (a < b) ? -1 : ((a > b) ? 1 : 0);
+}
+
+static u32 RldObj_DetailRoot(u32 *parent, u32 i)
+{
+	while (parent[i] != i)
+	{
+		parent[i] = parent[parent[i]];
+		i = parent[i];
+	}
+	return i;
+}
+
+// The parts as step 4 joins them (faces that share a position), their
+// triangles, the part each must stay below and the ones that stay as they
+// are. 0 = out of memory.
+static int RldObj_DetailParts(struct RldObjDetail *d)
+{
+	const struct RldObjModel *m = d->m;
+	u32 *parent = (u32 *)malloc(((size_t)d->posCount + 1u) * sizeof(u32));
+	u32 *order = (u32 *)malloc(((size_t)d->posCount + 1u) * sizeof(u32));
+	u32 parts = 0;
+	u32 f;
+	u32 i;
+
+	d->posPartCapacity = d->posCount + 1u;
+	d->posPart = (u32 *)malloc((size_t)d->posPartCapacity * sizeof(u32));
+	if ((parent == NULL) || (order == NULL) || (d->posPart == NULL))
+	{
+		free(parent);
+		free(order);
+		return 0;
+	}
+	for (i = 0; i < d->posCount; i++)
+	{
+		parent[i] = i;
+	}
+	for (f = 0; f < m->faceCount; f++)
+	{
+		const u32 *cv = &m->cornerV[m->faceFirst[f]];
+		u32 k;
+
+		for (k = 1; (m->faceCorners[f] >= 3u) && (k < m->faceCorners[f]); k++)
+		{
+			const u32 r0 = RldObj_DetailRoot(parent, d->weld[cv[0]]);
+			const u32 r1 = RldObj_DetailRoot(parent, d->weld[cv[k]]);
+
+			parent[(r0 < r1) ? r1 : r0] = (r0 < r1) ? r0 : r1;
+		}
+	}
+	for (i = 0; i < d->posCount; i++)
+	{
+		const u32 r = RldObj_DetailRoot(parent, i);
+
+		if (r == i)
+		{
+			order[i] = parts++;
+		}
+		d->posPart[i] = order[r];
+	}
+
+	d->partTriangles = (u32 *)calloc((size_t)parts + 1u, sizeof(u32));
+	d->partAbove = (u32 *)malloc(((size_t)parts + 1u) * sizeof(u32));
+	d->partFixed = (u8 *)calloc((size_t)parts + 1u, 1u);
+	if ((d->partTriangles == NULL) || (d->partAbove == NULL) || (d->partFixed == NULL))
+	{
+		free(parent);
+		free(order);
+		return 0;
+	}
+	for (f = 0; f < m->faceCount; f++)
+	{
+		if (m->faceCorners[f] >= 3u)
+		{
+			d->partTriangles[d->posPart[d->weld[m->cornerV[m->faceFirst[f]]]]] += m->faceCorners[f] - 2u;
+		}
+	}
+	for (i = 0; i < parts; i++)
+	{
+		order[i] = i;
+	}
+	s_rldObjDetailCount = d->partTriangles;
+	qsort(order, parts, sizeof(u32), RldObj_CompareDetailPart);
+	s_rldObjDetailCount = NULL;
+	// The first stays above the second, the second above all others: then
+	// whichever part is the kart (found by its shape), the largest of the
+	// others stays the driver. Parts with as many triangles as the second
+	// one (a tie step 4 decides by its own order) stay as they are.
+	for (i = 0; i < parts; i++)
+	{
+		d->partAbove[order[i]] = (i == 0u) ? RLDMK_NONE : ((i == 1u) ? order[0] : order[1]);
+		if ((parts >= 2u) && (i != 1u) && (d->partTriangles[order[i]] == d->partTriangles[order[1]]))
+		{
+			d->partFixed[order[i]] = 1u;
+			d->partFixed[order[1]] = 1u;
+		}
+	}
+	free(parent);
+	free(order);
+	return 1;
+}
+
+// The split (see above), when textures are kept. 0 = out of memory (said).
+static int RldObj_Detail(struct RldObjModel *m)
+{
+	struct RldObjDetail d;
+	struct RldObjWeldKey *keys = NULL;
+	u8 *made = NULL;
+	double low[3] = {0.0, 0.0, 0.0};
+	double high[3] = {0.0, 0.0, 0.0};
+	double size = 0.0;
+	u32 before = 0;
+	u32 used = 0;
+	u32 f;
+	u32 i;
+	int ok = 1;
+
+	memset(&d, 0, sizeof(d));
+	d.m = m;
+	d.target = (s_rldObjOptions.textureDetail == RLDOBJ_DETAIL_COUNT) ? s_rldObjOptions.detailTriangles : RLDOBJ_DETAIL_AUTO_TRIANGLES;
+
+	// The triangles as step 2 counts them; a model that has enough is left.
+	for (f = 0; f < m->faceCount; f++)
+	{
+		before += (m->faceCorners[f] >= 3u) ? (m->faceCorners[f] - 2u) : 0u;
+	}
+	if (before >= d.target)
+	{
+		return 1;
+	}
+	d.triangles = before;
+
+	// Welded positions as step 3 welds them; the size of the model.
+	d.weldCapacity = m->vCount + 1u;
+	d.weld = (u32 *)malloc((size_t)d.weldCapacity * sizeof(u32));
+	keys = (struct RldObjWeldKey *)malloc(((size_t)m->vCount + 1u) * sizeof(*keys));
+	made = (u8 *)calloc((size_t)m->faceCount + 1u, 1u);
+	d.posCapacity = m->vCount + 1u;
+	d.pos = (double *)malloc((size_t)d.posCapacity * 3u * sizeof(double));
+	if ((d.weld == NULL) || (keys == NULL) || (made == NULL) || (d.pos == NULL))
+	{
+		ok = 0;
+	}
+	if (ok)
+	{
+		for (i = 0; i < m->vCount; i++)
+		{
+			int a;
+
+			for (a = 0; a < 3; a++)
+			{
+				keys[i].key[a] = RldMk_Round(m->xyz[3u * i + (u32)a] * 100000.0);
+			}
+			keys[i].v = i;
+		}
+		qsort(keys, m->vCount, sizeof(*keys), RldObj_CompareWeld);
+		for (i = 0; i < m->vCount; i++)
+		{
+			if ((i == 0u) || (memcmp(keys[i].key, keys[i - 1u].key, sizeof(keys[i].key)) != 0))
+			{
+				memcpy(&d.pos[3u * d.posCount], &m->xyz[3u * keys[i].v], 3u * sizeof(double));
+				d.posCount++;
+			}
+			d.weld[keys[i].v] = d.posCount - 1u;
+		}
+		for (i = 0; ok && (i < d.posCount); i++)
+		{
+			RldObj_DetailPlace(&d, &d.pos[3u * i], 1);
+			ok = !d.failed;
+		}
+		ok = ok && RldObj_DetailParts(&d);
+		for (f = 0; f < m->faceCount; f++)
+		{
+			u32 k;
+
+			for (k = 0; k < m->faceCorners[f]; k++)
+			{
+				const double *p = &m->xyz[3u * m->cornerV[m->faceFirst[f] + k]];
+				int a;
+
+				for (a = 0; a < 3; a++)
+				{
+					low[a] = ((used == 0u) || (p[a] < low[a])) ? p[a] : low[a];
+					high[a] = ((used == 0u) || (p[a] > high[a])) ? p[a] : high[a];
+				}
+				used++;
+			}
+		}
+		for (i = 0; i < 3u; i++)
+		{
+			size = ((high[i] - low[i]) > size) ? (high[i] - low[i]) : size;
+		}
+		d.height = size / RLDOBJ_DETAIL_HEIGHT;
+	}
+
+	// Triangles: every face of 3 corners, a textured quad as two; the
+	// edges of the other faces locked.
+	for (i = 0; i < m->textureCount; i++)
+	{
+		m->textures[i].nearest = m->textures[i].kept;
+	}
+	for (f = 0; ok && (f < m->faceCount); f++)
+	{
+		const struct RldObjMaterial *material = RldObj_FaceMaterial(m, f);
+		const u32 n = m->faceCorners[f];
+		const u32 *cv = &m->cornerV[m->faceFirst[f]];
+		const u32 *ct = &m->cornerT[m->faceFirst[f]];
+		u32 texture = ((material != NULL) && (material->texture != RLDMK_NONE) && m->textures[material->texture].kept) ? material->texture : RLDMK_NONE;
+		u32 k;
+
+		for (k = 0; k < n; k++)
+		{
+			texture = (ct[k] == RLDMK_NONE) ? RLDMK_NONE : texture;
+		}
+		if (n == 3u)
+		{
+			made[f] = 1u;
+			ok = RldObj_DetailAdd(&d, cv, ct, f, texture, 0);
+		}
+		else if ((n == 4u) && (texture != RLDMK_NONE))
+		{
+			const double *p0 = &m->xyz[3u * cv[0]];
+			const double *p1 = &m->xyz[3u * cv[1]];
+			const double *p2 = &m->xyz[3u * cv[2]];
+			const double *p3 = &m->xyz[3u * cv[3]];
+			const double d02 = (p0[0] - p2[0]) * (p0[0] - p2[0]) + (p0[1] - p2[1]) * (p0[1] - p2[1]) + (p0[2] - p2[2]) * (p0[2] - p2[2]);
+			const double d13 = (p1[0] - p3[0]) * (p1[0] - p3[0]) + (p1[1] - p3[1]) * (p1[1] - p3[1]) + (p1[2] - p3[2]) * (p1[2] - p3[2]);
+			const u32 first[2][3] = {{0u, 1u, 2u}, {0u, 1u, 3u}};
+			const u32 second[2][3] = {{0u, 2u, 3u}, {1u, 2u, 3u}};
+			const int s = (d02 <= d13) ? 0 : 1;
+			u32 v[3];
+			u32 vt[3];
+
+			made[f] = 1u;
+			for (k = 0; k < 3u; k++)
+			{
+				v[k] = cv[first[s][k]];
+				vt[k] = ct[first[s][k]];
+			}
+			ok = RldObj_DetailAdd(&d, v, vt, f, texture, 0);
+			for (k = 0; ok && (k < 3u); k++)
+			{
+				v[k] = cv[second[s][k]];
+				vt[k] = ct[second[s][k]];
+			}
+			ok = ok && RldObj_DetailAdd(&d, v, vt, f, texture, 0);
+		}
+		else if (n >= 4u)
+		{
+			for (k = 0; ok && (k < n); k++)
+			{
+				const u32 a = d.weld[cv[k]];
+				const u32 b = d.weld[cv[(k + 1u) % n]];
+
+				if (a != b)
+				{
+					const u32 slot = RldObj_DetailEdge(&d, a, b, 1);
+
+					ok = (slot != RLDMK_NONE);
+					if (ok)
+					{
+						d.edge[slot].locked = 1;
+					}
+				}
+			}
+		}
+	}
+
+	// An open edge (of one triangle) is locked as well: the rim of a hole
+	// keeps its edges, so that repair closes the same holes (it closes only
+	// small ones, counted in edges).
+	for (i = 0; ok && (i < d.edgeSlots); i++)
+	{
+		if ((d.edge[i].a != RLDMK_NONE) && (d.edge[i].head != RLDMK_NONE) && (d.use[d.edge[i].head].next == RLDMK_NONE))
+		{
+			d.edge[i].locked = 1;
+		}
+	}
+
+	// Rated once all edges are known (locked ones too), then split, the
+	// worst first.
+	for (i = 0; ok && (i < d.triCount); i++)
+	{
+		RldObj_DetailRate(&d, i);
+		ok = !d.failed;
+	}
+	while (ok && (d.heapCount != 0u) && (d.triangles < d.target))
+	{
+		const u32 t = RldObj_DetailPop(&d);
+		double length2;
+		int k;
+
+		if (!d.tri[t].alive)
+		{
+			continue;
+		}
+		k = RldObj_DetailLongest(&d, t, &length2);
+		if (k >= 0)
+		{
+			u32 a;
+			u32 b;
+
+			RldObj_DetailEnds(&d, t, k, &a, &b);
+			ok = (RldObj_DetailSplit(&d, a, b, 0u) >= 0) && !d.failed;
+		}
+	}
+
+	// Nothing split: the model as without the split (corners sampled as
+	// before, quads left to step 2).
+	if (ok && (d.splits != 0u))
+	{
+		ok = RldObj_DetailFaces(&d, made);
+		if (ok)
+		{
+			RldMk_Say("info", "obj-texture-detail", NULL,
+			          "Textured triangles were split so that their textures show: %u triangles became %u (--texture-detail off: three colors per "
+			          "triangle).",
+			          before, d.triangles);
+		}
+	}
+	else
+	{
+		for (i = 0; i < m->textureCount; i++)
+		{
+			m->textures[i].nearest = 0;
+		}
+	}
+
+	free(keys);
+	free(made);
+	free(d.weld);
+	free(d.pos);
+	free(d.tri);
+	free(d.edge);
+	free(d.use);
+	free(d.heap);
+	free(d.place);
+	free(d.placeUsed);
+	free(d.posPart);
+	free(d.partTriangles);
+	free(d.partAbove);
+	free(d.partFixed);
+	if (!ok)
+	{
+		RldObj_Memory();
+	}
+	return ok;
 }
 
 //========================================================================================
@@ -3256,6 +4801,7 @@ static int RldObj_Parse(const char *path, const u8 *data, size_t size, struct Rl
 	u8 *cornerRgb = NULL;
 	u8 *cornerSource = NULL;
 	u8 *nameUsed = NULL;
+	size_t kept = 0;
 	int ok;
 
 	memset(&m, 0, sizeof(m));
@@ -3338,7 +4884,39 @@ static int RldObj_Parse(const char *path, const u8 *data, size_t size, struct Rl
 		}
 		RldObj_VertexColors(&m);
 		RldObj_BaseColors(&m, cornerRgb, cornerSource);
-		ok = RldObj_Textures(&m, path, libraryPath, nameUsed, cornerRgb, cornerSource, info);
+		ok = RldObj_Textures(&m, path, libraryPath, nameUsed, cornerRgb, cornerSource, info, &kept);
+	}
+
+	// Textures kept for the split: split, the colors again for the faces
+	// as they are now, then the textures applied.
+	if (ok && (kept != 0u))
+	{
+		u32 i;
+
+		ok = RldObj_Detail(&m);
+		if (ok)
+		{
+			free(cornerRgb);
+			free(cornerSource);
+			cornerRgb = (u8 *)malloc((size_t)m.cornerCount * 3u + 1u);
+			cornerSource = (u8 *)malloc((size_t)m.cornerCount + 1u);
+			ok = (cornerRgb != NULL) && (cornerSource != NULL);
+			if (!ok)
+			{
+				RldObj_Memory();
+			}
+		}
+		if (ok)
+		{
+			RldObj_BaseColors(&m, cornerRgb, cornerSource);
+		}
+		for (i = 0; ok && (i < m.textureCount); i++)
+		{
+			if (m.textures[i].kept)
+			{
+				RldObj_TextureDone(&m, i, (m.textures[i].shown != NULL) ? m.textures[i].shown : m.textures[i].path, cornerRgb, cornerSource, info);
+			}
+		}
 	}
 	ok = ok && RldObj_Points(&m, cornerRgb, ply);
 

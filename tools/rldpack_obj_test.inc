@@ -16,6 +16,13 @@
 // change it.
 #define RLDMK_GOLDEN_OBJ "5acda11482a0b15d7be9a5d6cf8fe689c6c17d4e01a12bd634e075b37e0eff0e"
 
+// GOLDEN OBJ DETAIL: the points and faces the OBJ reader makes of a square
+// in noise of 32 x 32 texels at --texture-detail 500 (RldMk_SelfTestObjDetail:
+// x y z as doubles, the colors, the corners) - the split of textured
+// triangles (tools/rldpack_obj.inc, RldObj_Detail). The golden OBJ above is
+// built at off; nothing else may change this one.
+#define RLDMK_GOLDEN_OBJ_DETAIL "e9441f056e5dc5e2c3536f9b6cf596dad5d20c1ed9db7e749f6e5909349ff84e"
+
 // A JPEG of 16 x 16 pixels in four squares of 8 x 8: (200, 40, 40) and
 // (40, 200, 40) at the top, (40, 40, 200) and (230, 230, 230) below; quality
 // 90, no chroma subsampling.
@@ -1057,6 +1064,339 @@ static void RldMk_SelfTestObjFit(void)
 	free(dotPng);
 }
 
+// --- --texture-detail: the split of textured triangles (RldObj_Detail) ---
+
+// Cracks: a point of the model inside an edge of a face (a T-junction, which
+// opens when drawn). Every pair of edge and point counted.
+static u32 RldMk_TestCracks(const struct RldMkPly *ply)
+{
+	u32 cracks = 0;
+	u32 f;
+
+	for (f = 0; f < ply->faceCount; f++)
+	{
+		const u32 n = (ply->cornerCount[f] > 4u) ? 4u : ply->cornerCount[f];
+		u32 k;
+
+		for (k = 0; k < n; k++)
+		{
+			const double *a = &ply->xyz[3u * ply->corners[4u * f + k]];
+			const double *b = &ply->xyz[3u * ply->corners[4u * f + ((k + 1u) % n)]];
+			const double e[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+			const double length2 = e[0] * e[0] + e[1] * e[1] + e[2] * e[2];
+			u32 p;
+
+			if (!(length2 > 0.0))
+			{
+				continue;
+			}
+			for (p = 0; p < ply->vertexCount; p++)
+			{
+				const double *q = &ply->xyz[3u * p];
+				const double w[3] = {q[0] - a[0], q[1] - a[1], q[2] - a[2]};
+				const double t = w[0] * e[0] + w[1] * e[1] + w[2] * e[2];
+				const double c[3] = {w[1] * e[2] - w[2] * e[1], w[2] * e[0] - w[0] * e[2], w[0] * e[1] - w[1] * e[0]};
+
+				if ((t > (length2 * 1e-9)) && (t < (length2 * (1.0 - 1e-9))) && ((c[0] * c[0] + c[1] * c[1] + c[2] * c[2]) <= (length2 * length2 * 1e-18)))
+				{
+					cracks++;
+				}
+			}
+		}
+	}
+	return cracks;
+}
+
+// The mean difference per channel (0..255) between the corners' Gouraud mix
+// and the texture read texel by texel, over the triangles in the square
+// z = 0, x and y in 0..1 (u = x, v = y), weighed by area; *faces = their
+// number.
+static double RldMk_TestDetailError(const struct RldMkPly *ply, const u8 *rgb, u32 width, u32 height, u32 *faces)
+{
+	double sum = 0.0;
+	double total = 0.0;
+	u32 f;
+
+	*faces = 0;
+	for (f = 0; f < ply->faceCount; f++)
+	{
+		const double *p[3];
+		double area;
+		double face = 0.0;
+		double count = 0.0;
+		u32 i;
+		u32 j;
+		u32 k;
+		int inside = (ply->cornerCount[f] == 3u);
+
+		for (k = 0; inside && (k < 3u); k++)
+		{
+			p[k] = &ply->xyz[3u * ply->corners[4u * f + k]];
+			inside = (p[k][2] == 0.0) && (p[k][0] >= 0.0) && (p[k][0] <= 1.0) && (p[k][1] >= 0.0) && (p[k][1] <= 1.0);
+		}
+		if (!inside)
+		{
+			continue;
+		}
+		(*faces)++;
+		area = 0.5 * ((p[1][0] - p[0][0]) * (p[2][1] - p[0][1]) - (p[1][1] - p[0][1]) * (p[2][0] - p[0][0]));
+		area = (area < 0.0) ? -area : area;
+		for (i = 0; i < 8u; i++)
+		{
+			for (j = 0; (i + j) < 8u; j++)
+			{
+				const double l1 = ((double)i + (1.0 / 3.0)) / 8.0;
+				const double l2 = ((double)j + (1.0 / 3.0)) / 8.0;
+				const double l0 = 1.0 - l1 - l2;
+				const double x = l0 * p[0][0] + l1 * p[1][0] + l2 * p[2][0];
+				const double y = l0 * p[0][1] + l1 * p[1][1] + l2 * p[2][1];
+				u32 column = (u32)(x * (double)width);
+				u32 row = (u32)((1.0 - y) * (double)height);
+				int c;
+
+				column = (column >= width) ? (width - 1u) : column;
+				row = (row >= height) ? (height - 1u) : row;
+				for (c = 0; c < 3; c++)
+				{
+					const double g = l0 * (double)ply->rgb[3u * ply->corners[4u * f + 0u] + (u32)c] + l1 * (double)ply->rgb[3u * ply->corners[4u * f + 1u] + (u32)c] +
+					                 l2 * (double)ply->rgb[3u * ply->corners[4u * f + 2u] + (u32)c];
+					const double d = g - (double)rgb[3u * (row * width + column) + (u32)c];
+
+					face += (d < 0.0) ? -d : d;
+				}
+				count += 3.0;
+			}
+		}
+		sum += area * face / count;
+		total += area;
+	}
+	return (total > 0.0) ? (sum / total) : 0.0;
+}
+
+// The square x, y in 0..1 (u = x, v = y) as a grid of cells x cells, two
+// triangles each, with the material "tex"; `more` after it.
+static void RldMk_TestDetailSquare(struct RldMkBuffer *b, u32 cells, const char *more)
+{
+	u32 i;
+	u32 j;
+
+	RldMk_BufferText(b, "mtllib detail.mtl\n");
+	for (j = 0; j <= cells; j++)
+	{
+		for (i = 0; i <= cells; i++)
+		{
+			RldMk_BufferText(b, "v %.9f %.9f 0\nvt %.9f %.9f\n", (double)i / (double)cells, (double)j / (double)cells, (double)i / (double)cells,
+			                 (double)j / (double)cells);
+		}
+	}
+	RldMk_BufferText(b, "usemtl tex\n");
+	for (j = 0; j < cells; j++)
+	{
+		for (i = 0; i < cells; i++)
+		{
+			const u32 a = j * (cells + 1u) + i + 1u;
+			const u32 c = a + cells + 1u;
+
+			RldMk_BufferText(b, "f %u/%u %u/%u %u/%u\nf %u/%u %u/%u %u/%u\n", a, a, a + 1u, a + 1u, c + 1u, c + 1u, a, a, c + 1u, c + 1u, c, c);
+		}
+	}
+	RldMk_BufferText(b, "%s", more);
+
+	// Closed below by a tent to a point under the middle (grey): the
+	// square's rim is no open edge, which the split leaves as it is.
+	RldMk_BufferText(b, "v 0.5 0.5 -1\nusemtl grey\n");
+	for (i = 0; i < cells; i++)
+	{
+		const u32 bottom = i + 1u;
+		const u32 top = cells * (cells + 1u) + i + 1u;
+		const u32 left = i * (cells + 1u) + 1u;
+		const u32 right = i * (cells + 1u) + cells + 1u;
+
+		RldMk_BufferText(b, "f %u -1 %u\nf %u %u -1\nf %u -1 %u\nf %u %u -1\n", bottom, bottom + 1u, top, top + 1u, left + cells + 1u, left, right,
+		                 right + cells + 1u);
+	}
+}
+
+// Read with --texture-detail `detail` (NULL = the default).
+static int RldMk_TestDetailRead(const struct RldMkBuffer *b, const char *detail, struct RldMkPly *ply)
+{
+	struct RldMkModelInfo info;
+	int ok;
+
+	RldObj_ResetOptions();
+	ok = (b->data != NULL) && ((detail == NULL) || RldObj_Argument("--texture-detail", detail));
+	ok = ok && RldMk_TestImport("selftest/detail.obj", (const char *)b->data, b->size, ply, &info, RLDMK_ROLE_MAIN);
+	RldObj_ResetOptions();
+	return ok;
+}
+
+static int RldMk_TestSamePly(const struct RldMkPly *a, const struct RldMkPly *b)
+{
+	return (a->vertexCount == b->vertexCount) && (a->faceCount == b->faceCount) &&
+	       (memcmp(a->xyz, b->xyz, (size_t)a->vertexCount * 3u * sizeof(double)) == 0) && (memcmp(a->rgb, b->rgb, (size_t)a->vertexCount * 3u) == 0) &&
+	       (memcmp(a->corners, b->corners, (size_t)a->faceCount * 4u * sizeof(u32)) == 0) &&
+	       (memcmp(a->cornerCount, b->cornerCount, (size_t)a->faceCount * sizeof(u32)) == 0);
+}
+
+// The split: a checker of 8 x 8 texels on a square of 2 triangles comes out
+// exactly with 128 triangles, its neighbor (other points at the same
+// positions, another material) split along without a crack; a picture of
+// 32 x 32 texels in noise up to 500 triangles, with the edge of a quad that
+// stays a quad never split; 64 x 64 texels with auto up to 6000, the same
+// twice; n = 1 (the model has more) and off as before; a square far smaller
+// than the model (its halves would be lower than 1/125 of it) not split, nor
+// an edge with a point of another part at its middle; the values of the
+// switch.
+static void RldMk_SelfTestObjDetail(void)
+{
+	static const char mtl[] = "newmtl tex\nmap_Kd detail.png\nnewmtl grey\nKd 0.5 0.5 0.5\n";
+	struct RldObjMemFile files[2];
+	struct RldMkBuffer b;
+	struct RldMkPly ply[2];
+	u8 checker[8u * 8u * 3u];
+	u8 noise[64u * 64u * 3u];
+	u8 *png = NULL;
+	size_t pngSize = 0;
+	u32 faces = 0;
+	u32 x;
+	u32 y;
+	int ok;
+	double error;
+
+	files[0].path = "selftest/detail.mtl";
+	files[0].data = (const u8 *)mtl;
+	files[0].size = sizeof(mtl) - 1u;
+	files[1].path = "selftest/detail.png";
+	s_rldObjFiles = files;
+	s_rldObjFileCount = 2u;
+	memset(ply, 0, sizeof(ply));
+
+	// The checker; below it a grey triangle on points of its own.
+	for (y = 0; y < 8u; y++)
+	{
+		for (x = 0; x < 8u; x++)
+		{
+			const int red = (((x + y) & 1u) == 0u);
+
+			checker[3u * (8u * y + x) + 0u] = red ? 230u : 30u;
+			checker[3u * (8u * y + x) + 1u] = red ? 40u : 30u;
+			checker[3u * (8u * y + x) + 2u] = red ? 30u : 200u;
+		}
+	}
+	png = RldMk_TestPngRgb(8u, 8u, checker, &pngSize);
+	files[1].data = png;
+	files[1].size = pngSize;
+	memset(&b, 0, sizeof(b));
+	RldMk_TestDetailSquare(&b, 1u, "v 0 0 0\nv 1 0 0\nv 0.5 -1 0\nusemtl grey\nf 5 7 6\n");
+	ok = (png != NULL) && RldMk_TestDetailRead(&b, NULL, &ply[0]);
+	error = ok ? RldMk_TestDetailError(&ply[0], checker, 8u, 8u, &faces) : 99.0;
+	RldMk_Test(ok && (faces <= 200u) && (error < 0.5) && RldMk_Said("obj-texture-detail") && (RldMk_TestCracks(&ply[0]) == 0u),
+	           "OBJ --texture-detail auto: a checker of 8 x 8 texels exact in at most 200 triangles, its neighbor split along without a crack",
+	           "read %d, %u triangles in the square, %u in all, error %.3f, cracks %u, said: %s", ok, faces, ok ? ply[0].faceCount : 0u, error,
+	           ok ? RldMk_TestCracks(&ply[0]) : 0u, s_rldMkCodes);
+	RldMk_FreePly(&ply[0]);
+
+	// Off and n = 1 (fewer than the model has): as before the split.
+	ok = RldMk_TestDetailRead(&b, "off", &ply[0]) && RldMk_TestDetailRead(&b, "1", &ply[1]);
+	RldMk_Test(ok && (ply[0].faceCount == 7u) && RldMk_TestSamePly(&ply[0], &ply[1]) && !RldMk_Said("obj-texture-detail"),
+	           "OBJ --texture-detail off and 1: three colors per triangle, as without the split", "read %d, %u and %u faces", ok, ok ? ply[0].faceCount : 0u,
+	           ok ? ply[1].faceCount : 0u);
+	RldMk_FreePly(&ply[0]);
+	RldMk_FreePly(&ply[1]);
+	free(b.data);
+
+	// Far smaller than the model: not split (model-collapse).
+	memset(&b, 0, sizeof(b));
+	RldMk_TestDetailSquare(&b, 1u, "v 200 0 0\nv 201 0 0\nv 200 1 0\nusemtl grey\nf 5 6 7\n");
+	ok = RldMk_TestDetailRead(&b, NULL, &ply[0]);
+	RldMk_Test(ok && (ply[0].faceCount == 7u) && !RldMk_Said("obj-texture-detail"), "OBJ --texture-detail: no half lower than 1/125 of the model",
+	           "read %d, %u faces", ok, ok ? ply[0].faceCount : 0u);
+	RldMk_FreePly(&ply[0]);
+	free(b.data);
+
+	// A point of another part at the middle of the longest edge: a new
+	// point there would join both parts (step 3 welds it), not split.
+	memset(&b, 0, sizeof(b));
+	RldMk_TestDetailSquare(&b, 1u, "v 0.5 0.5 0\nv 0.5 0.5 1\nv 0.5 1.5 1\nusemtl grey\nf 5 6 7\n");
+	ok = RldMk_TestDetailRead(&b, NULL, &ply[0]);
+	RldMk_Test(ok && (ply[0].faceCount == 7u), "OBJ --texture-detail: no new point where a point of another part is", "read %d, %u faces", ok,
+	           ok ? ply[0].faceCount : 0u);
+	RldMk_FreePly(&ply[0]);
+	free(b.data);
+	free(png);
+
+	// Noise on a gradient, 32 x 32 texels, up to 500 triangles; a grey quad
+	// at x 1..2 stays a quad, its edge is never split.
+	for (y = 0; y < 64u; y++)
+	{
+		for (x = 0; x < 64u; x++)
+		{
+			const u32 h = ((x * 73856093u) ^ (y * 19349663u)) * 0x9E3779B1u;
+
+			noise[3u * (64u * y + x) + 0u] = (u8)(x * 3u + ((h >> 8) & 31u));
+			noise[3u * (64u * y + x) + 1u] = (u8)(y * 3u + ((h >> 16) & 31u));
+			noise[3u * (64u * y + x) + 2u] = (u8)(((x + y) * 2u) ^ ((h >> 24) & 15u));
+		}
+	}
+	png = RldMk_TestPngRgb(32u, 32u, noise, &pngSize);
+	files[1].data = png;
+	files[1].size = pngSize;
+	memset(&b, 0, sizeof(b));
+	RldMk_TestDetailSquare(&b, 4u, "v 2 0 0\nv 2 0.25 0\nusemtl grey\nf 5 26 27 10\n");
+	ok = (png != NULL) && RldMk_TestDetailRead(&b, "500", &ply[0]);
+	RldMk_Test(ok && (ply[0].faceCount <= 499u) && (ply[0].faceCount >= 450u) && (RldMk_TestCracks(&ply[0]) == 0u),
+	           "OBJ --texture-detail 500: noise of 32 x 32 texels in up to 500 triangles (a quad 2), the quad's edge never split, no crack",
+	           "read %d, %u faces, cracks %u", ok, ok ? ply[0].faceCount : 0u, ok ? RldMk_TestCracks(&ply[0]) : 0u);
+	if (ok)
+	{
+		struct RldMkBuffer g;
+
+		memset(&g, 0, sizeof(g));
+		RldMk_BufferBytes(&g, ply[0].xyz, (size_t)ply[0].vertexCount * 3u * sizeof(double));
+		RldMk_BufferBytes(&g, ply[0].rgb, (size_t)ply[0].vertexCount * 3u);
+		RldMk_BufferBytes(&g, ply[0].corners, (size_t)ply[0].faceCount * 4u * sizeof(u32));
+		RldMk_BufferBytes(&g, ply[0].cornerCount, (size_t)ply[0].faceCount * sizeof(u32));
+		if ((g.data == NULL) || (Rld_CheckGolden("OBJ --texture-detail 500: the points and faces read", g.data, g.size, RLDMK_GOLDEN_OBJ_DETAIL) != 0))
+		{
+			s_rldMkTestFailed++;
+		}
+		free(g.data);
+	}
+	RldMk_FreePly(&ply[0]);
+	free(b.data);
+	free(png);
+
+	// 64 x 64 texels with auto: up to 6000, the same twice.
+	png = RldMk_TestPngRgb(64u, 64u, noise, &pngSize);
+	files[1].data = png;
+	files[1].size = pngSize;
+	memset(&b, 0, sizeof(b));
+	RldMk_TestDetailSquare(&b, 16u, "");
+	ok = (png != NULL) && RldMk_TestDetailRead(&b, "auto", &ply[0]) && RldMk_TestDetailRead(&b, NULL, &ply[1]);
+	RldMk_Test(ok && (ply[0].faceCount <= RLDOBJ_DETAIL_AUTO_TRIANGLES) && (ply[0].faceCount >= 5500u) && RldMk_TestSamePly(&ply[0], &ply[1]),
+	           "OBJ --texture-detail auto: noise of 64 x 64 texels in up to 6000 triangles, the same twice", "read %d, %u faces", ok,
+	           ok ? ply[0].faceCount : 0u);
+	RldMk_FreePly(&ply[0]);
+	RldMk_FreePly(&ply[1]);
+	free(b.data);
+	free(png);
+
+	s_rldObjFiles = NULL;
+	s_rldObjFileCount = 0;
+
+	RldMk_ResetSaid();
+	ok = RldObj_Argument("--texture-detail", "0") && RldMk_Said("texture-detail");
+	RldMk_ResetSaid();
+	ok = ok && RldObj_Argument("--texture-detail", "7201") && RldMk_Said("texture-detail");
+	RldMk_ResetSaid();
+	ok = ok && RldObj_Argument("--texture-detail", "12x") && RldMk_Said("texture-detail");
+	RldMk_ResetSaid();
+	ok = ok && RldObj_Argument("--texture-detail", "7200") && !RldMk_Said("texture-detail") && (s_rldObjOptions.textureDetail == RLDOBJ_DETAIL_COUNT) &&
+	     (s_rldObjOptions.detailTriangles == 7200u);
+	RldMk_Test(ok, "--texture-detail: 1..7200, off or auto; 0, 7201, 12x said as texture-detail", "said: %s", s_rldMkCodes);
+	RldObj_ResetOptions();
+}
+
 // What falls back with a warning, what fails, and which format a file is.
 static void RldMk_SelfTestObjCases(struct RldMkTestMesh *mesh)
 {
@@ -1473,6 +1813,9 @@ static void RldMk_SelfTestObj(struct RldMkTestMesh *mesh)
 		RldMk_Test(strcmp(sha, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") == 0, "OBJ texture digest (@model texture): SHA-256 of abc",
 		           "%s", sha);
 	}
+	// The cases of single corners, made before the split: at off.
+	s_rldObjDetailDefault = RLDOBJ_DETAIL_OFF;
+	RldObj_ResetOptions();
 	RldMk_SelfTestObjSame(mesh, chri, chriSize);
 	RldMk_SelfTestObjGolden(mesh, chri, chriSize);
 	RldMk_SelfTestObjColors();
@@ -1485,6 +1828,9 @@ static void RldMk_SelfTestObj(struct RldMkTestMesh *mesh)
 	RldMk_SelfTestObjBmp();
 	RldMk_SelfTestObjFit();
 	RldMk_SelfTestObjCases(mesh);
+	s_rldObjDetailDefault = RLDOBJ_DETAIL_AUTO;
+	RldObj_ResetOptions();
+	RldMk_SelfTestObjDetail();
 	free(chri);
 }
 
