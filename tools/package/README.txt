@@ -451,11 +451,23 @@ Tab 4 Voices
   --voices none of them is passed and the driver is silent.
 
 Tab 5 Extras
+              Three cards, one at a time: the words Import, Wheels and
+              Animations at the top of the tab switch between them.
+  Import      How rldpack reads the model. The defaults suit most models;
+              when one does not, a message names the choice to change (a
+              click on it opens this card).
+              Vertex colors (an OBJ only): how a vertex colour meets the
+              texture of its face. "Auto (default)": an OBJ ripped from a
+              PS1 game (the vertex colours of its textured faces lie around
+              0x80) lights its textures as the PS1 did - 0x80 shows the
+              texture as it is -, any other model keeps texture times vertex
+              colour. "Texture modulation (PS1)" and "Plain color" choose one
+              of the two for every model ("--vertex-colors modulate|color" on
+              the command line; Auto passes nothing).
   Wheels, Animations
-              Wheels and poses of your own, one card at a time (the two
-              words at the top of the tab switch between them). Their fields
-              are marked "Coming soon" and greyed out; nothing of them is
-              written into a character yet.
+              Wheels and poses of your own. Their fields are marked "Coming
+              soon" and greyed out; nothing of them is written into a
+              character yet.
 
 On the right
   Preview     The model as the game will draw it. Drag to turn it; the list

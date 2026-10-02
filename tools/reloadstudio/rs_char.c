@@ -123,8 +123,14 @@
 //                   and minimap colour
 //   4 Voices        the folder, its files and their events, Play, the ten
 //                   events at a glance
-//   5 Extras        the cards Wheels and Animations (rs_wheels.c, rs_anim.c),
-//                   one at a time, locked without --enable-preview-features
+//   5 Extras        the cards Import (how rldpack reads the model: for an OBJ
+//                   how its vertex colours meet its textures), Wheels and
+//                   Animations (rs_wheels.c, rs_anim.c), one at a time; the
+//                   last two locked without --enable-preview-features. Import
+//                   lives here, not on the tab Model: there an OBJ leaves no
+//                   room at 1366 x 768 and at 1920 x 1080 with 150 % (the bar
+//                   is at its least height), and its choices are rarely
+//                   needed - rldpack names the one to change when it is
 // The head of a tab shows its number in a circle: green done, red problem (an
 // error of the last run belongs to it), amber warning, an outline when it is
 // optional or still to do. The bar at the bottom: headline, the message list
@@ -275,7 +281,7 @@
 #define CHAR_ID_TAB            180   // 180..184: the heads of the tabs 1..5
 #define CHAR_ID_BACK           185
 #define CHAR_ID_NEXT           186
-#define CHAR_ID_EXTRAS         187   // 187..188: Wheels | Animations in the tab Extras
+#define CHAR_ID_EXTRAS         187   // 187..189: Import | Wheels | Animations in the tab Extras
 #define CHAR_ID_VOICE_RULE     191   // the line with the file names (tab Voices)
 #define CHAR_ID_VOICE_EVENTS_LABEL 192
 #define CHAR_ID_VOICE_EVENTS   193   // the ten events at a glance
@@ -283,10 +289,17 @@
 #define CHAR_ID_MODEL_FILES    195   // the list of the MTL, the textures and the groups of an OBJ
 // The controls of the cards Wheels and Animations (WH_ID_FIRST..WH_ID_LAST in
 // rs_wheels.c, AN_ID_FIRST..AN_ID_LAST in rs_anim.c): the tab Extras shows them.
+// The card Import (380..399) is the page's own.
 #define CHAR_ID_WHEELS_FIRST   300
 #define CHAR_ID_WHEELS_LAST    339
 #define CHAR_ID_ANIM_FIRST     340
 #define CHAR_ID_ANIM_LAST      379
+#define CHAR_ID_IMPORT_FIRST   380
+#define CHAR_ID_IMPORT_NOTE    380   // the note at the top of the card Import
+#define CHAR_ID_VCOLORS_LABEL  389   // Vertex colors (an OBJ only)
+#define CHAR_ID_VCOLORS        390
+#define CHAR_ID_VCOLORS_HELP   391
+#define CHAR_ID_IMPORT_LAST    399
 
 // CHAR_JOB_META: rldpack checks only the name, the driving style, the mask,
 // the minimap colour and the output (Char_MetaStart).
@@ -299,7 +312,7 @@ enum { CHAR_TAB_MODEL = 0, CHAR_TAB_DRIVER, CHAR_TAB_LOOK, CHAR_TAB_VOICES, CHAR
 // What the head of a tab shows.
 enum { CHAR_STEP_TODO = 0, CHAR_STEP_OPTIONAL, CHAR_STEP_DONE, CHAR_STEP_WARNING, CHAR_STEP_PROBLEM };
 // The card the tab Extras shows.
-enum { CHAR_EXTRAS_WHEELS = 0, CHAR_EXTRAS_ANIM, CHAR_EXTRAS_COUNT };
+enum { CHAR_EXTRAS_IMPORT = 0, CHAR_EXTRAS_WHEELS, CHAR_EXTRAS_ANIM, CHAR_EXTRAS_COUNT };
 enum { CHAR_IMG_ORIGINAL = 0, CHAR_IMG_ICON, CHAR_IMG_COUNT };
 
 // ---------------------------------------------------------------------------
@@ -351,6 +364,13 @@ static const struct CharFit g_charIconFits[] = {
 #define CHAR_ICON_FIT_DEFAULT 0   // what the page starts with
 #define CHAR_ICON_FIT_RLDPACK 2   // rldpack's default, not passed
 
+// How the vertex colours of an OBJ meet its textures (--vertex-colors), in the
+// order of the list on the card Import; only what is not auto is passed. The
+// texts are the ones rldpack's messages name ("Vertex colors: Plain color").
+static const wchar_t *const g_charVColorWords[] = { L"auto", L"modulate", L"color" };
+static const wchar_t *const g_charVColorTexts[] = { L"Auto (default)", L"Texture modulation (PS1)", L"Plain color" };
+#define CHAR_VCOLORS_COUNT ((int)(sizeof(g_charVColorWords) / sizeof(g_charVColorWords[0])))
+
 struct CharVoiceEvent {
     const wchar_t *word;    // this is how the value goes to rldpack (--voice <file>=<word>)
     const wchar_t *text;
@@ -378,8 +398,8 @@ static const struct CharVoiceEvent g_charVoiceEvents[CHAR_VOICE_EVENTS + 1] = {
 static const wchar_t *const g_charTabWords[CHAR_TABS] = { L"model", L"driver", L"look", L"voices", L"extras" };
 static const wchar_t *const g_charTabTexts[CHAR_TABS] = { L"Model", L"Driver", L"In-game look", L"Voices", L"Extras" };
 static const wchar_t *const g_charStepWords[] = { L"to do", L"optional", L"done", L"warning", L"problem" };
-static const wchar_t *const g_charExtrasWords[CHAR_EXTRAS_COUNT] = { L"wheels", L"animations" };
-static const wchar_t *const g_charExtrasTexts[CHAR_EXTRAS_COUNT] = { L"Wheels", L"Animations" };
+static const wchar_t *const g_charExtrasWords[CHAR_EXTRAS_COUNT] = { L"import", L"wheels", L"animations" };
+static const wchar_t *const g_charExtrasTexts[CHAR_EXTRAS_COUNT] = { L"Import", L"Wheels", L"Animations" };
 
 static const wchar_t *const g_charPoseWords[CHAR_POSES] = { L"neutral", L"left", L"right" };
 static const wchar_t *const g_charPoseTexts[CHAR_POSES] = { L"Neutral", L"Steering left", L"Steering right" };
@@ -556,11 +576,14 @@ static struct {
     int reduceFitOn;                // it is shown (on the tab Model)
     int qualityOn;                  // the note below the options has text (shown on the tab Model)
     HWND tabHead[CHAR_TABS], back, next, extrasSwitch[CHAR_EXTRAS_COUNT];
+    HWND importNote, vcolorsLabel, vcolors, vcolorsHelp;  // the card Import of the tab Extras
+    int objOn;                      // the model is an OBJ: its own choices are shown (Char_ObjUpdate)
     int tab;                        // CHAR_TAB_*
     int extrasCard;                 // CHAR_EXTRAS_*
     int step[CHAR_TABS];            // CHAR_STEP_* of each head
     int tabErrors[CHAR_TABS], tabWarnings[CHAR_TABS];   // of the last run, per tab
     int *msgTab;                    // the tab of every entry of the message list, -1 = none
+    int *msgCard;                   // and its card in the tab Extras, -1 = none
     int msgTabCount, msgTabCap;
     int modelRead;                  // the last run read the model in the field
     int stepShown;                  // the heads were drawn once (Char_TabsUpdate)
@@ -645,6 +668,7 @@ static struct CharJobData g_charJob;
 
 static void Char_Layout(HWND page, int w, int h);
 static int Char_Check(HWND page);
+static void Char_ObjUpdate(HWND page);
 static void Char_VoiceSelShow(void);
 static int Char_VoicesHeard(int *clips, int *events);
 static void Char_VoiceColumns(int width);
@@ -2029,6 +2053,25 @@ static int Char_TabOfId(int id, int *card)
         *card = CHAR_EXTRAS_ANIM;
         return CHAR_TAB_EXTRAS;
     }
+    if (id >= CHAR_ID_IMPORT_FIRST && id <= CHAR_ID_IMPORT_LAST) {
+        *card = CHAR_EXTRAS_IMPORT;
+        return CHAR_TAB_EXTRAS;
+    }
+    return -1;
+}
+
+// The card of the tab Extras an @msg id belongs to, -1 = none: the choices of
+// the card Import (vertex colours of an OBJ).
+static int Char_CardOfCode(const wchar_t *code)
+{
+    if (!code)
+        return -1;
+    if (wcscmp(code, L"vertex-colors") == 0 || wcscmp(code, L"obj-vertex-modulation") == 0)
+        return CHAR_EXTRAS_IMPORT;
+    if (wcsncmp(code, L"pose", 4) == 0)
+        return CHAR_EXTRAS_ANIM;
+    if (wcsncmp(code, L"wheel-", 6) == 0)
+        return CHAR_EXTRAS_WHEELS;
     return -1;
 }
 
@@ -2048,6 +2091,8 @@ static int Char_TabOfCode(const wchar_t *code)
         return CHAR_TAB_DRIVER;
     if (wcsncmp(code, L"pose", 4) == 0 || wcsncmp(code, L"wheel-", 6) == 0)
         return CHAR_TAB_EXTRAS;
+    if (Char_CardOfCode(code) == CHAR_EXTRAS_IMPORT)
+        return CHAR_TAB_EXTRAS;
     return CHAR_TAB_MODEL;
 }
 
@@ -2058,20 +2103,35 @@ static void Char_MsgClear(void)
     g_char.msgTabCount = 0;
 }
 
-static void Char_MsgAdd(int tab, int severity, const wchar_t *text, const wchar_t *detail)
+// card: of the tab Extras (Char_CardOfCode), -1 = none.
+static void Char_MsgAddCard(int tab, int card, int severity, const wchar_t *text, const wchar_t *detail)
 {
     if (g_char.msgTabCount == g_char.msgTabCap) {
         int cap = g_char.msgTabCap ? g_char.msgTabCap * 2 : 32;
         int *n = Rs_Alloc((size_t)cap * sizeof(*n));
-        if (g_char.msgTabCount)
+        int *c = Rs_Alloc((size_t)cap * sizeof(*c));
+        if (g_char.msgTabCount) {
             memcpy(n, g_char.msgTab, (size_t)g_char.msgTabCount * sizeof(*n));
+            memcpy(c, g_char.msgCard, (size_t)g_char.msgTabCount * sizeof(*c));
+        }
         Rs_Free(g_char.msgTab);
+        Rs_Free(g_char.msgCard);
         g_char.msgTab = n;
+        g_char.msgCard = c;
         g_char.msgTabCap = cap;
     }
-    g_char.msgTab[g_char.msgTabCount++] = tab;
+    g_char.msgTab[g_char.msgTabCount] = tab;
+    g_char.msgCard[g_char.msgTabCount++] = tab == CHAR_TAB_EXTRAS ? card : -1;
     Rs_MsgListAdd(g_char.msgs, severity, text, detail);
 }
+
+static void Char_MsgAdd(int tab, int severity, const wchar_t *text, const wchar_t *detail)
+{
+    Char_MsgAddCard(tab, -1, severity, text, detail);
+}
+
+// A message of the list opens its tab (and its card of the tab Extras).
+static void Char_MsgOpen(HWND page, int i);
 
 // The errors and warnings of the last run per tab, for the heads.
 static void Char_CountTabs(void)
@@ -2294,6 +2354,19 @@ static void Char_SelectExtras(HWND page, int c)
     Char_Relayout(page);
 }
 
+static void Char_MsgOpen(HWND page, int i)
+{
+    if (i < 0 || i >= g_char.msgTabCount || g_char.msgTab[i] < 0)
+        return;
+    if (g_char.msgCard[i] >= 0 && g_char.msgCard[i] != g_char.extrasCard) {
+        int c;
+        g_char.extrasCard = g_char.msgCard[i];
+        for (c = 0; c < CHAR_EXTRAS_COUNT; c++)
+            InvalidateRect(g_char.extrasSwitch[c], NULL, FALSE);
+    }
+    Char_SelectTab(page, g_char.msgTab[i], 0);
+}
+
 // ---------------------------------------------------------------------------
 // Size slider
 // ---------------------------------------------------------------------------
@@ -2471,8 +2544,8 @@ static void Char_AddMsgs(int severity)
     int i;
     for (i = 0; i < g_charJob.msgCount; i++)
         if (g_charJob.msgs[i].severity == severity)
-            Char_MsgAdd(Char_TabOfCode(g_charJob.msgs[i].code), severity, g_charJob.msgs[i].text,
-                        g_charJob.msgs[i].detail);
+            Char_MsgAddCard(Char_TabOfCode(g_charJob.msgs[i].code), Char_CardOfCode(g_charJob.msgs[i].code), severity,
+                            g_charJob.msgs[i].text, g_charJob.msgs[i].detail);
 }
 
 // What rldpack could not report itself: no result, failure without a
@@ -2781,6 +2854,7 @@ static void Char_ApplyImport(void)
         g_char.filesOn = filesOn;
         Char_Relayout(GetParent(g_char.modelImport));
     }
+    Char_ObjUpdate(GetParent(g_char.modelImport));
 }
 
 // No model: nothing read.
@@ -2798,6 +2872,39 @@ static void Char_ImportClear(void)
         g_char.importOn = g_char.filesOn = 0;
         Char_Relayout(GetParent(g_char.modelImport));
     }
+}
+
+// The model is an OBJ: by what the last check of this model read, else by its
+// name.
+static int Char_ModelIsObj(void)
+{
+    wchar_t model[CHAR_VAL];
+    Char_FieldPath(g_char.model, model, CHAR_VAL);
+    if (g_char.importFormat[0] && model[0] && _wcsicmp(model, g_char.checkModel) == 0)
+        return wcscmp(g_char.importFormat, L"obj") == 0;
+    return Char_EndsWith(model, L".obj");
+}
+
+static int Char_VColorIndex(void)
+{
+    LRESULT sel = SendMessageW(g_char.vcolors, CB_GETCURSEL, 0, 0);
+    return (sel < 0 || sel >= CHAR_VCOLORS_COUNT) ? 0 : (int)sel;
+}
+
+static void Char_ChangedSoon(HWND page);
+
+// The choices of an OBJ are shown only for an OBJ; the page is laid out
+// again when that changes. A choice not passed so far (the model turned out
+// an OBJ by its content) is checked with.
+static void Char_ObjUpdate(HWND page)
+{
+    int obj = Char_ModelIsObj();
+    if (obj == g_char.objOn)
+        return;
+    g_char.objOn = obj;
+    Char_Relayout(page);
+    if (obj && Char_VColorIndex() != 0)
+        Char_ChangedSoon(page);
 }
 
 // ---------------------------------------------------------------------------
@@ -4252,6 +4359,11 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
         Char_ArgsAdd(a, L"--wheels");
         Char_ArgsAdd(a, L"off");
     }
+    // An OBJ: how its vertex colours meet its textures, when not auto.
+    if (g_char.objOn && Char_VColorIndex() != 0) {
+        Char_ArgsAdd(a, L"--vertex-colors");
+        Char_ArgsAdd(a, g_charVColorWords[Char_VColorIndex()]);
+    }
     // The mask always, also the template's: the file carries the choice.
     Char_ArgsAdd(a, L"--mask");
     Char_ArgsAdd(a, g_charMasks[Char_MaskIndex()].word);
@@ -5079,6 +5191,7 @@ static void Char_ModelChanged(HWND page)
         return;
     Char_SizeForget();
     g_char.modelRead = 0;
+    Char_ObjUpdate(page);
     Char_Changed(page);
 }
 
@@ -5094,6 +5207,7 @@ static int Char_SetModel(HWND page, const wchar_t *path)
     g_char.applying = 0;
     Char_SizeForget();
     g_char.modelRead = 0;
+    Char_ObjUpdate(page);
     if (clean[0]) {
         Rs_PathDir(dir, CHAR_VAL, clean);
         Rs_ConfigSet(L"char.folder", dir);
@@ -5610,13 +5724,17 @@ static int Char_WriteReport(const wchar_t *path)
     for (i = 0; i < CHAR_TABS; i++)
         Char_Put(f, L"tab %d %ls: %ls", i + 1, g_charTabTexts[i], g_charStepWords[g_char.step[i]]);
     Char_Put(f, L"extras card: %ls", g_charExtrasTexts[g_char.extrasCard]);
+    Char_Put(f, L"vertex colors: %ls (%ls) [%ls]", g_charVColorTexts[Char_VColorIndex()],
+             !g_char.objOn ? L"not passed - no OBJ" : Char_VColorIndex() ? L"passed as --vertex-colors" : L"rldpack's default",
+             g_char.objOn ? L"shown" : L"hidden");
     {
         // The tab of every message, in the order of the list ("-" = none).
         wchar_t line[CHAR_VAL];
         line[0] = 0;
         for (i = 0; i < g_char.msgTabCount; i++) {
-            wchar_t one[16];
-            swprintf(one, 16, L"%ls%ls", i ? L" " : L"", g_char.msgTab[i] >= 0 ? g_charTabWords[g_char.msgTab[i]] : L"-");
+            wchar_t one[32];
+            swprintf(one, 32, L"%ls%ls%ls%ls", i ? L" " : L"", g_char.msgTab[i] >= 0 ? g_charTabWords[g_char.msgTab[i]] : L"-",
+                     g_char.msgCard[i] >= 0 ? L"/" : L"", g_char.msgCard[i] >= 0 ? g_charExtrasWords[g_char.msgCard[i]] : L"");
             Char_Append(line, CHAR_VAL, one);
         }
         Char_Put(f, L"message tabs: %ls", line[0] ? line : L"(none)");
@@ -5841,7 +5959,7 @@ static int Char_AutoTab(HWND page, const wchar_t *arg)
     return RS_AUTO_FAIL;
 }
 
-// "extras wheels|animations": the card the tab Extras shows (it opens the tab).
+// "extras import|wheels|animations": the card the tab Extras shows (it opens the tab).
 static int Char_AutoExtras(HWND page, const wchar_t *arg)
 {
     int c;
@@ -5854,7 +5972,7 @@ static int Char_AutoExtras(HWND page, const wchar_t *arg)
             return RS_AUTO_DONE;
         }
     }
-    Rs_AutoLog(L"  extras: say wheels or animations");
+    Rs_AutoLog(L"  extras: say import, wheels or animations");
     return RS_AUTO_FAIL;
 }
 
@@ -5871,10 +5989,34 @@ static int Char_AutoProblem(HWND page, const wchar_t *arg)
         Rs_AutoLog(L"  problem: message %ld belongs to no tab", n);
         return RS_AUTO_DONE;
     }
-    Char_SelectTab(page, g_char.msgTab[n - 1], 0);
+    Char_MsgOpen(page, (int)n - 1);
     UpdateWindow(page);
-    Rs_AutoLog(L"  problem: message %ld -> tab %d %ls", n, g_char.tab + 1, g_charTabTexts[g_char.tab]);
+    Rs_AutoLog(L"  problem: message %ld -> tab %d %ls%ls%ls", n, g_char.tab + 1, g_charTabTexts[g_char.tab],
+               g_char.tab == CHAR_TAB_EXTRAS ? L", card " : L"", g_char.tab == CHAR_TAB_EXTRAS ? g_charExtrasTexts[g_char.extrasCard] : L"");
     return RS_AUTO_DONE;
+}
+
+// "vertex-colors auto|modulate|color": the choice of the card Import as when
+// chosen, then the check at once (an OBJ only: for another model it is not
+// shown and not passed).
+static int Char_AutoVColors(HWND page, const wchar_t *arg)
+{
+    int i, r;
+    for (i = 0; i < CHAR_VCOLORS_COUNT; i++) {
+        if (_wcsicmp(arg, g_charVColorWords[i]) == 0) {
+            SendMessageW(g_char.vcolors, CB_SETCURSEL, (WPARAM)i, 0);
+            Rs_AutoLog(L"  vertex-colors: %ls%ls", g_charVColorTexts[i], g_char.objOn ? L"" : L" (not shown and not passed - no OBJ)");
+            r = Char_Check(page);
+            if (r > 0)
+                return RS_AUTO_WAIT;
+            if (r < 0)
+                Rs_AutoLog(L"  vertex-colors: %ls",
+                           g_char.jobId ? L"checked after the running build" : L"not checked - no model is chosen");
+            return RS_AUTO_DONE;
+        }
+    }
+    Rs_AutoLog(L"  vertex-colors: '%ls' - say auto, modulate or color", arg);
+    return RS_AUTO_FAIL;
 }
 
 // "voice <file>=<event|none>": as choosing the file in the list and the event
@@ -6025,7 +6167,7 @@ static void Char_Create(HWND page)
         g_char.tabHead[i] = Char_TabButton(page, CHAR_ID_TAB + i, text, RS_FONT_BOLD);
     }
     g_char.tab = CHAR_TAB_MODEL;
-    g_char.extrasCard = CHAR_EXTRAS_WHEELS;
+    g_char.extrasCard = CHAR_EXTRAS_IMPORT;
 
     g_char.modelLabel = Rs_Label(page, CHAR_ID_MODEL_LABEL, L"Model (PLY or OBJ)", RS_FONT_BOLD);
     g_char.model = Rs_Edit(page, CHAR_ID_MODEL, L"", 0);
@@ -6261,9 +6403,27 @@ static void Char_Create(HWND page)
     Rs_MsgListSetClickable(g_char.msgs, 1);
     Rs_MsgListSetWhole(g_char.msgs, 1);
     Rs_SetTip(g_char.msgs, L"Click a message to open the tab it belongs to.");
-    // The tab Extras: its switch, then the cards of the preview features.
+    // The tab Extras: its switch, the card Import, then the cards of the
+    // preview features.
     for (i = 0; i < CHAR_EXTRAS_COUNT; i++)
         g_char.extrasSwitch[i] = Char_TabButton(page, CHAR_ID_EXTRAS + i, g_charExtrasTexts[i], RS_FONT_SECTION);
+    g_char.importNote = Rs_Label(page, CHAR_ID_IMPORT_NOTE,
+                                 L"How rldpack reads the model. The defaults suit most models; a message names the choice "
+                                 L"to change when one does not.",
+                                 RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.importNote, RS_COL_MUTED);
+    g_char.vcolorsLabel = Rs_Label(page, CHAR_ID_VCOLORS_LABEL, L"Vertex colors", RS_FONT_BOLD);
+    g_char.vcolors = Rs_Combo(page, CHAR_ID_VCOLORS);
+    for (i = 0; i < CHAR_VCOLORS_COUNT; i++)
+        SendMessageW(g_char.vcolors, CB_ADDSTRING, 0, (LPARAM)g_charVColorTexts[i]);
+    SendMessageW(g_char.vcolors, CB_SETCURSEL, 0, 0);
+    Rs_SetTip(g_char.vcolors, L"Auto: an OBJ ripped from a PS1 game (vertex colours of its textured faces around 0x80) "
+                              L"lights its textures as the PS1 did, any other keeps texture times vertex colour. Texture "
+                              L"modulation (PS1): always as the PS1, 0x80 shows the texture as it is. Plain color: always "
+                              L"texture times vertex colour.");
+    g_char.vcolorsHelp = Rs_Label(page, CHAR_ID_VCOLORS_HELP, L"OBJ: how a vertex colour meets the texture of its face.",
+                                  RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.vcolorsHelp, RS_COL_MUTED);
     CharWheels_Create(page, g_char.view);
     CharAnim_Create(page, g_char.view);
     // Tab order: the heads, the tab shown (Reduce to fit after the options),
@@ -6611,8 +6771,55 @@ static int Char_LayVoices(const struct CharLay *k, const RECT *in)
     return y + ruleH;
 }
 
-// Tab 5 Extras: Wheels | Animations in the title line of the card (the card
-// itself has no title), the card of rs_wheels.c or rs_anim.c below it.
+// One choice of the card Import: label, list as wide as its longest entry,
+// the note beside it (two lines at most) or, where that leaves too little,
+// below it. Returns the top of the next row.
+static int Char_LayChoice(const struct CharLay *k, const RECT *in, int y, HWND label, HWND combo, HWND help)
+{
+    int x = in->left + k->labelW + Rs_Px(8), fieldW = in->right - x;
+    int comboW = Char_ComboTextWidth(combo) + Rs_Px(28), helpX, helpW, h;
+
+    if (comboW > fieldW)
+        comboW = fieldW;
+    MoveWindow(label, in->left, y + Rs_Px(4), k->labelW, Rs_Px(20), TRUE);
+    MoveWindow(combo, x, y, comboW, Rs_Px(300), TRUE);
+    helpX = x + comboW + Rs_Px(12);
+    helpW = in->right - helpX;
+    if (helpW >= Rs_Px(180)) {
+        h = Char_TextHeight(help, helpW, 2);
+        MoveWindow(help, helpX, y + Rs_Px(5), helpW, h, TRUE);
+        h += Rs_Px(5);
+        return y + (h > Rs_Px(30) ? h : Rs_Px(30)) + Rs_Px(8);
+    }
+    h = Char_TextHeight(help, fieldW, 2);
+    MoveWindow(help, x, y + Rs_Px(30), fieldW, h, TRUE);
+    return y + Rs_Px(30) + h + Rs_Px(8);
+}
+
+// Tab 5 Extras, the card Import: a note, then the choices (those of an OBJ
+// only for an OBJ). Returns the bottom of the card.
+static int Char_LayImport(const struct CharLay *k, int left, int right, int top)
+{
+    RECT card, in;
+    int y, noteH;
+
+    card.left = left;
+    card.top = top;
+    card.right = right;
+    card.bottom = top;
+    in = Rs_CardInner(&card, 1);
+    y = in.top;
+    noteH = Char_TextHeight(g_char.importNote, in.right - in.left, CHAR_NOTE_LINES);
+    MoveWindow(g_char.importNote, in.left, y, in.right - in.left, noteH, TRUE);
+    y += noteH + Rs_Px(12);
+    if (g_char.objOn)
+        y = Char_LayChoice(k, &in, y, g_char.vcolorsLabel, g_char.vcolors, g_char.vcolorsHelp);
+    return y + Rs_Px(16);
+}
+
+// Tab 5 Extras: Import | Wheels | Animations in the title line of the card
+// (the card itself has no title), the card Import, or that of rs_wheels.c
+// or rs_anim.c, below it.
 static void Char_LayExtrasSwitch(const RECT *card)
 {
     int x = card->left + Rs_Px(10), c;
@@ -6724,6 +6931,8 @@ static void Char_TabApply(HWND page)
             want = want && g_char.importOn;
         else if (c == g_char.modelFiles)
             want = want && g_char.filesOn;
+        else if (c == g_char.vcolorsLabel || c == g_char.vcolors || c == g_char.vcolorsHelp)
+            want = want && g_char.objOn;
         if (want != Char_IsShown(c))
             ShowWindow(c, want ? SW_SHOWNA : SW_HIDE);
     }
@@ -6738,7 +6947,7 @@ static void Char_Layout(HWND page, int w, int h)
     int vgap = Rs_Px(12), avail, leftW, least, comboW, contentTop, extrasBottom[CHAR_EXTRAS_COUNT];
     int barH, barTop, upperBottom, need, t, i;
     RECT card, in;
-    HWND column[13];
+    HWND column[14];
 
     Rs_CardClear(page);
     k.gap = Rs_Px(16);
@@ -6761,7 +6970,8 @@ static void Char_Layout(HWND page, int w, int h)
     column[10] = g_char.iconFitLabel;
     column[11] = g_char.voiceEventLabel;
     column[12] = g_char.voiceEventsLabel;
-    for (i = 0; i < 13; i++) {
+    column[13] = g_char.vcolorsLabel;
+    for (i = 0; i < 14; i++) {
         wchar_t *text = Rs_GetText(column[i]);
         int tw = Char_TextWidth(column[i], text) + Rs_Px(4);
         if (tw > k.labelW)
@@ -6774,6 +6984,7 @@ static void Char_Layout(HWND page, int w, int h)
     SendMessageW(g_char.mask, CB_SETDROPPEDWIDTH, (WPARAM)(i + Rs_Px(16)), 0);
     SendMessageW(g_char.iconFit, CB_SETDROPPEDWIDTH, (WPARAM)(Char_ComboTextWidth(g_char.iconFit) + Rs_Px(16)), 0);
     SendMessageW(g_char.voiceEvent, CB_SETDROPPEDWIDTH, (WPARAM)(Char_ComboTextWidth(g_char.voiceEvent) + Rs_Px(16)), 0);
+    SendMessageW(g_char.vcolors, CB_SETDROPPEDWIDTH, (WPARAM)(Char_ComboTextWidth(g_char.vcolors) + Rs_Px(16)), 0);
     if (i > comboW)
         comboW = i;
     comboW += Rs_Px(28);        // the margins and the arrow
@@ -6801,7 +7012,11 @@ static void Char_Layout(HWND page, int w, int h)
     extrasBottom[CHAR_EXTRAS_WHEELS] = CharWheels_Layout(page, left, left + leftW, contentTop, k.labelW);
     extrasBottom[CHAR_EXTRAS_ANIM] = CharAnim_Layout(page, left, left + leftW, contentTop, k.labelW);
     Rs_CardClear(page);
-    need = extrasBottom[0] > extrasBottom[1] ? extrasBottom[0] : extrasBottom[1];
+    extrasBottom[CHAR_EXTRAS_IMPORT] = Char_LayImport(&k, left, left + leftW, contentTop);
+    need = 0;
+    for (i = 0; i < CHAR_EXTRAS_COUNT; i++)
+        if (extrasBottom[i] > need)
+            need = extrasBottom[i];
 
     // Every tab is laid out (the hidden ones too, so that their notes have
     // their width), and the tallest sets the room above the bar for all of
@@ -6900,11 +7115,8 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
         break;
     case CHAR_ID_MESSAGES:
         // A click on a message: the tab it belongs to.
-        if (code == RS_MSGN_CLICK) {
-            int hit = Rs_MsgListClicked(g_char.msgs);
-            if (hit >= 0 && hit < g_char.msgTabCount && g_char.msgTab[hit] >= 0)
-                Char_SelectTab(page, g_char.msgTab[hit], 0);
-        }
+        if (code == RS_MSGN_CLICK)
+            Char_MsgOpen(page, Rs_MsgListClicked(g_char.msgs));
         break;
     case IDOK:
         Char_Enter(page);
@@ -6976,6 +7188,7 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
     case CHAR_ID_CLASS:
     case CHAR_ID_MASK:
     case CHAR_ID_ICON_FIT:
+    case CHAR_ID_VCOLORS:
         if (code == CBN_SELCHANGE)
             Char_ChangedSoon(page);
         break;
@@ -7270,6 +7483,8 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
         g_char.importRowCount = 0;
         Rs_Free(g_char.msgTab);
         g_char.msgTab = NULL;
+        Rs_Free(g_char.msgCard);
+        g_char.msgCard = NULL;
         g_char.msgTabCount = g_char.msgTabCap = 0;
         return 0;
     }
@@ -7369,6 +7584,8 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         return Char_AutoOption(page, g_char.wheels, verb, arg);
     if (wcscmp(verb, L"icon-fit") == 0)
         return Char_AutoIconFit(page, arg);
+    if (wcscmp(verb, L"vertex-colors") == 0)
+        return Char_AutoVColors(page, arg);
     if (wcscmp(verb, L"icon-transparent") == 0)
         return Char_AutoOption(page, g_char.iconCorners, verb, arg);
     if (wcscmp(verb, L"icon-frame") == 0)
