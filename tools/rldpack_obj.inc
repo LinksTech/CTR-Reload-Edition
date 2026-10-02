@@ -23,7 +23,9 @@
 //   3. grey is 0x80 per channel, like a PLY without colors.
 // The texture is sampled at the corner's vt: bilinear, repeated (u and v
 // modulo 1), v = 0 at the bottom of the picture, alpha not used. PNG through
-// include/rldpng.inc, JPEG and TGA through tools/rldpack_image.c.
+// include/rldpng.inc, JPEG and TGA through tools/rldpack_image.c. A texture
+// that is not at its path is looked for at a fixed list of other places
+// (RldObj_SearchTexture); @model texture names the file used.
 //
 // THE POINTS. The chain keeps one color per point, so the reader makes one
 // point for each different pair (v, final color), in the order the faces first
@@ -415,7 +417,6 @@ struct RldObjTexture
 	u32 height;
 	u8 *rgba;
 	u32 library;     // the MTL file of the first material that uses it
-	int nearby;      // missing: also looked for next to that MTL file
 };
 
 struct RldObjModel
@@ -1908,24 +1909,116 @@ static u32 RldObj_ApplyTexture(const struct RldObjModel *m, u32 texture, u8 *cor
 	return noUv;
 }
 
-// The name a missing texture should have: as the material file writes it
-// when that is relative to the material file, else the file name alone.
-static const char *RldObj_MissingName(const struct RldObjModel *m, u32 texture)
-{
-	const struct RldObjTexture *t = &m->textures[texture];
-	u32 n;
+// A texture that is not at its path is looked for at a fixed list of other
+// places, never by listing a folder. In each folder of `folders` (the MTL
+// file's, then the OBJ file's): the last two parts of the path (a texture
+// in textures/ of a project moved to another computer), the file name, the
+// file name in one of these folders, then the name with another of these
+// file types. The first file there counts.
+static const char *const s_rldObjTextureFolders[] = {"textures", "tex", "images", "maps"};
+static const char *const s_rldObjTextureTypes[] = {".png", ".jpg", ".jpeg", ".tga"};
+#define RLDOBJ_TEXTURE_FOLDERS (sizeof(s_rldObjTextureFolders) / sizeof(s_rldObjTextureFolders[0]))
+#define RLDOBJ_TEXTURE_TYPES (sizeof(s_rldObjTextureTypes) / sizeof(s_rldObjTextureTypes[0]))
 
-	if (!t->nearby)
+// The places for one folder in the order above: place `k` -> out. 0 = no such
+// place (or too long), -1 = past the last one.
+static int RldObj_TexturePlace(const char *folder, const char *given, u32 k, char *out, size_t outSize)
+{
+	const char *name = Rld_LastComponent(given);
+	const char *tail = name;
+	const char *dot = strrchr(name, '.');
+	const size_t stem = ((dot != NULL) && (dot != name)) ? (size_t)(dot - name) : strlen(name);
+	int n;
+
+	// The last two parts: back over the separators before the name, then
+	// over the folder name before them.
 	{
-		for (n = 0; n < m->materialNames.count; n++)
+		const char *p = name;
+		const char *end;
+
+		while ((p > given) && Rld_IsSeparator(p[-1]))
 		{
-			if ((m->materials[n].texture == texture) && (m->materials[n].map != NULL) && !RldObj_IsAbsolute(m->materials[n].map))
+			p--;
+		}
+		end = p;
+		while ((p > given) && !Rld_IsSeparator(p[-1]) && (p[-1] != ':'))
+		{
+			p--;
+		}
+		tail = (p < end) ? p : name;
+	}
+
+	if (k == 0u)
+	{
+		n = (tail != name) ? snprintf(out, outSize, "%s%s", folder, tail) : -1;
+	}
+	else if (k == 1u)
+	{
+		n = snprintf(out, outSize, "%s%s", folder, name);
+	}
+	else if (k < (2u + RLDOBJ_TEXTURE_FOLDERS))
+	{
+		n = snprintf(out, outSize, "%s%s/%s", folder, s_rldObjTextureFolders[k - 2u], name);
+	}
+	else if (k < (2u + RLDOBJ_TEXTURE_FOLDERS + (1u + RLDOBJ_TEXTURE_FOLDERS) * RLDOBJ_TEXTURE_TYPES))
+	{
+		// The other file types: next to it, then in the folders.
+		const u32 at = k - 2u - RLDOBJ_TEXTURE_FOLDERS;
+		const u32 sub = at / RLDOBJ_TEXTURE_TYPES;
+		const char *type = s_rldObjTextureTypes[at % RLDOBJ_TEXTURE_TYPES];
+
+		if ((dot != NULL) && (dot != name) && Rld_EndsWithNoCase(name, type) && (strlen(dot) == strlen(type)))
+		{
+			return 0;
+		}
+		n = (sub == 0u) ? snprintf(out, outSize, "%s%.*s%s", folder, (int)stem, name, type)
+		                : snprintf(out, outSize, "%s%s/%.*s%s", folder, s_rldObjTextureFolders[sub - 1u], (int)stem, name, type);
+	}
+	else
+	{
+		return -1;
+	}
+	return (n > 0) && ((size_t)n < outSize);
+}
+
+// The texture `given` (not found there) at the other places. RLDOBJ_READ_* of
+// the file found, its path in found; RLDOBJ_READ_MISSING = none.
+static int RldObj_SearchTexture(const char *given, const char *const *folders, u32 folderCount, u8 **data, size_t *size, char *found, size_t foundSize)
+{
+	u32 k;
+
+	for (k = 0;; k++)
+	{
+		int more = 0;
+		u32 f;
+
+		for (f = 0; f < folderCount; f++)
+		{
+			const int place = RldObj_TexturePlace(folders[f], given, k, found, foundSize);
+			int read;
+
+			if (place < 0)
 			{
-				return m->materials[n].map;
+				continue;
+			}
+			more = 1;
+			if ((place == 0) || (strcmp(found, given) == 0))
+			{
+				continue;
+			}
+			read = RldObj_ReadFile(found, RLDOBJ_TEXTURE_BYTES, data, size);
+			if (read != RLDOBJ_READ_MISSING)
+			{
+				return read;
 			}
 		}
+		if (!more)
+		{
+			break;
+		}
 	}
-	return Rld_LastComponent(t->path);
+	found[0] = '\0';
+	return RLDOBJ_READ_MISSING;
 }
 
 // All textures that were not found in one warning (tex-missing): which ones,
@@ -1935,7 +2028,7 @@ static void RldObj_SayMissing(const struct RldObjModel *m, char (*libraryPath)[R
 {
 	u32 first = RLDMK_NONE;
 	char names[400];
-	char where[RLD_PATH_MAX + 64];
+	char where[RLD_PATH_MAX + 160];
 	char more[32];
 	size_t used = 0;
 	u32 missing = 0;
@@ -1955,7 +2048,7 @@ static void RldObj_SayMissing(const struct RldObjModel *m, char (*libraryPath)[R
 		missing++;
 		if (listed < 3u)
 		{
-			const int n = snprintf(&names[used], sizeof(names) - used, "%s%s", (used != 0u) ? ", " : "", RldObj_MissingName(m, i));
+			const int n = snprintf(&names[used], sizeof(names) - used, "%s%s", (used != 0u) ? ", " : "", Rld_LastComponent(m->textures[i].path));
 
 			if ((n > 0) && ((size_t)n < (sizeof(names) - used)))
 			{
@@ -1983,17 +2076,8 @@ static void RldObj_SayMissing(const struct RldObjModel *m, char (*libraryPath)[R
 	}
 
 	// The technical line: where the first one was looked for.
-	if (m->textures[first].nearby)
-	{
-		char folder[RLD_PATH_MAX];
-
-		RldObj_Folder(libraryPath[m->textures[first].library], folder, sizeof(folder));
-		snprintf(where, sizeof(where), "looked for at %s and in %s", m->textures[first].path, (folder[0] != '\0') ? folder : "the current folder");
-	}
-	else
-	{
-		snprintf(where, sizeof(where), "looked for at %s", m->textures[first].path);
-	}
+	snprintf(where, sizeof(where), "looked for at %s, next to the MTL and OBJ files, in their folders textures, tex, images and maps, also as .png, .jpg, .jpeg and .tga",
+	         m->textures[first].path);
 
 	if (missing == 1u)
 	{
@@ -2014,8 +2098,8 @@ static void RldObj_SayMissing(const struct RldObjModel *m, char (*libraryPath)[R
 
 // The texture of a material in use: the file it names, found, read, applied
 // and freed again, one after the other. 0 = out of memory (said).
-static int RldObj_Textures(struct RldObjModel *m, char (*libraryPath)[RLD_PATH_MAX], const u8 *nameUsed, u8 *cornerRgb, u8 *cornerSource,
-                           struct RldMkModelInfo *info)
+static int RldObj_Textures(struct RldObjModel *m, const char *objPath, char (*libraryPath)[RLD_PATH_MAX], const u8 *nameUsed, u8 *cornerRgb,
+                           u8 *cornerSource, struct RldMkModelInfo *info)
 {
 	u32 said = 0;
 	u32 unsaid = 0;
@@ -2077,27 +2161,22 @@ static int RldObj_Textures(struct RldObjModel *m, char (*libraryPath)[RLD_PATH_M
 		int read = RldObj_ReadFile(t->path, RLDOBJ_TEXTURE_BYTES, &data, &size);
 		u32 n;
 
-		// An absolute path that is not there: the same name next to the MTL file.
-		if ((read == RLDOBJ_READ_MISSING) && RldObj_IsAbsolute(t->path))
+		// Not at its path: the other places (RldObj_SearchTexture).
+		if (read == RLDOBJ_READ_MISSING)
 		{
-			char folder[RLD_PATH_MAX];
+			char folder[2][RLD_PATH_MAX];
+			const char *folders[2];
 
-			RldObj_Folder(libraryPath[t->library], folder, sizeof(folder));
-			if ((snprintf(nearby, sizeof(nearby), "%s%s", folder, Rld_LastComponent(t->path)) < (int)sizeof(nearby)) && (strcmp(nearby, t->path) != 0))
+			RldObj_Folder(libraryPath[t->library], folder[0], sizeof(folder[0]));
+			RldObj_Folder(objPath, folder[1], sizeof(folder[1]));
+			folders[0] = folder[0];
+			folders[1] = folder[1];
+			read = RldObj_SearchTexture(t->path, folders, (strcmp(folder[0], folder[1]) != 0) ? 2u : 1u, &data, &size, nearby, sizeof(nearby));
+			if ((read == RLDOBJ_READ_OK) || (read == RLDOBJ_READ_LARGE))
 			{
-				t->nearby = 1;
-				read = RldObj_ReadFile(nearby, RLDOBJ_TEXTURE_BYTES, &data, &size);
-				if (read == RLDOBJ_READ_OK)
-				{
-					RldMk_Say("info", "tex-found-nearby", t->path,
-					          "The texture %s is not at the path the material file gives; the file of that name next to the material file is used.",
-					          Rld_LastComponent(t->path));
-					shown = nearby;
-				}
-				else if (read != RLDOBJ_READ_MEMORY)
-				{
-					read = RLDOBJ_READ_MISSING;
-				}
+				RldMk_Say("info", "tex-found-nearby", t->path, "The texture %s is not at the path the material file gives; %s is used.",
+				          Rld_LastComponent(t->path), nearby);
+				shown = nearby;
 			}
 		}
 
@@ -2419,7 +2498,7 @@ static int RldObj_Parse(const char *path, const u8 *data, size_t size, struct Rl
 	if (ok)
 	{
 		RldObj_BaseColors(&m, cornerRgb, cornerSource);
-		ok = RldObj_Textures(&m, libraryPath, nameUsed, cornerRgb, cornerSource, info);
+		ok = RldObj_Textures(&m, path, libraryPath, nameUsed, cornerRgb, cornerSource, info);
 	}
 	ok = ok && RldObj_Points(&m, cornerRgb, ply);
 

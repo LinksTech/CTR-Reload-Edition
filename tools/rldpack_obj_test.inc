@@ -518,7 +518,7 @@ static void RldMk_SelfTestObjCases(struct RldMkTestMesh *mesh)
 	static const char tri[] = "v 0 0 0\nv 1 0 0\nv 0 1 0\n";
 	static const char badPicture[] = "BM this is no picture rldpack reads";
 	static const char binaryMtl[] = "newmtl a\0\0\0";
-	struct RldObjMemFile files[5];
+	struct RldObjMemFile files[8];
 	struct RldMkPly ply;
 	struct RldMkModelInfo info;
 	struct RldMkBuffer b;
@@ -600,6 +600,55 @@ static void RldMk_SelfTestObjCases(struct RldMkTestMesh *mesh)
 		RldMk_FreePly(&ply);
 		s_rldObjFiles = NULL;
 		s_rldObjFileCount = 0;
+	}
+
+	// Textures not at their path, found at the other places: in textures/
+	// next to the MTL file, with another file type, the last two parts of a
+	// foreign path before a file of the same name next to the MTL file (blue),
+	// next to the OBJ file when the MTL file is elsewhere.
+	{
+		static const char found[] = "mtllib ../lib/found.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0.5 0.5\n"
+		                            "usemtl a\nf 1/1 2/1 3/1\nusemtl b\nf 1/1 2/1 3/1\nusemtl c\nf 1/1 2/1 3/1\nusemtl d\nf 1/1 2/1 3/1\n";
+		static const char mtl[] = "newmtl a\nmap_Kd a.png\nnewmtl b\nmap_Kd b.tga\nnewmtl c\nmap_Kd C:/other/project/textures/c.png\nnewmtl d\nmap_Kd d.png\n";
+		static const u8 red[12] = {255, 0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0};
+		static const u8 blue[12] = {0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0, 255};
+		size_t redSize = 0;
+		size_t blueSize = 0;
+		u8 *redPng = RldMk_TestPngRgb(2u, 2u, red, &redSize);
+		u8 *bluePng = RldMk_TestPngRgb(2u, 2u, blue, &blueSize);
+		u32 f;
+		int same = 1;
+
+		files[0].path = "selftest/obj/../lib/found.mtl";
+		files[0].data = (const u8 *)mtl;
+		files[0].size = sizeof(mtl) - 1u;
+		files[1].path = "selftest/obj/../lib/textures/a.png";
+		files[2].path = "selftest/obj/../lib/b.png";
+		files[3].path = "selftest/obj/../lib/textures/c.png";
+		files[4].path = "selftest/obj/d.png";
+		for (f = 1; f < 5u; f++)
+		{
+			files[f].data = redPng;
+			files[f].size = redSize;
+		}
+		files[5].path = "selftest/obj/../lib/c.png";
+		files[5].data = bluePng;
+		files[5].size = blueSize;
+		s_rldObjFiles = files;
+		s_rldObjFileCount = 6u;
+		ok = (redPng != NULL) && (bluePng != NULL) && RldMk_TestImport("selftest/obj/found.obj", found, sizeof(found) - 1u, &ply, &info, RLDMK_ROLE_MAIN);
+		for (f = 0; ok && (f < 4u); f++)
+		{
+			same = same && (RldMk_TestCornerRgb(&ply, f, 0u) == 0xFF0000u);
+		}
+		RldMk_Test(ok && same && (info.texturesOk == 4u) && (RldMk_TestSaidCount("tex-found-nearby") == 4u) && (s_rldMkWarnings == 0),
+		           "OBJ textures found elsewhere: in textures/, as .png for .tga, the last two parts of a foreign path first, next to the OBJ",
+		           "read %d, same %d, textures %u/%u, said: %s", ok, same, info.texturesOk, info.textures, s_rldMkCodes);
+		RldMk_FreePly(&ply);
+		s_rldObjFiles = NULL;
+		s_rldObjFileCount = 0;
+		free(redPng);
+		free(bluePng);
 	}
 
 	// Nothing but grey: obj-no-colors; a face of 5 and of 6 corners through more[].
