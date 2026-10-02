@@ -248,8 +248,8 @@ static const double s_rldDumRetailTurn[11] = {45.2, 44.65, 42.3, 38.3, 33.2, 28.
 // back. Its poses turn about its own bottom instead: the lowest driver corner
 // in the seat zone (z < RLDDUM_SEAT_ZONE_Z, where the dummy's seat was
 // measured), when that lies more than RLDDUM_SEAT_RAISE above the dummy's
-// seat; x and z stay the dummy's. The three kart test models sit 0.3 below to
-// 0.6 above the dummy's seat: they keep it. Below such a pivot of its own the
+// seat; x and z stay the dummy's. The three kart test models sit 2.0 below to
+// 0.3 above the dummy's seat: they keep it. Below such a pivot of its own the
 // poses leave the driver as it is (feet in front stand on the kart floor), so
 // nothing goes lower in any pose than it is; --size stays about the dummy's
 // seat (RldDum_Place) and the pivot moves with it.
@@ -419,15 +419,16 @@ struct RldDumFitResult
 	int basis;                // RLDDUM_FIT_KART or RLDDUM_FIT_MODEL
 	double shift[3];          // added to every position of every group (RldDum_Place)
 	double size;              // --size as a factor, about the seat, driver and steering wheel only
-	double seat[3];           // the pivot of --size and of the driver's poses: RLDDUM_SEAT, or
-	                          // without kart wheels the bottom of the driver
+	double seat[3];           // the pivot of --size: RLDDUM_SEAT, or without kart wheels the
+	                          // bottom of the driver group (the poses turn about pivot)
 	double pivot[3];          // the pivot of the poses at this size: the seat, or for a kart driver
 	                          // sitting higher its own bottom, without kart wheels the bottom of
 	                          // the driver's main part (moved by --size about the seat)
 	int ownPivot;             // the pivot is the model's own: below it the poses leave the driver
 	int hasWheel;             // the model has a steering wheel: it turns, the hands follow it
 	int wheelAsDriver;        // its steering wheel group leans with the driver instead (RldDum_Fit)
-	double bendHeight;        // > 0: the driver bends over this height above the seat (at 100 %)
+	double bendHeight;        // > 0: in reverse, bump and jump the driver bends over this height
+	                          // above the pivot (at 100 %)
 	double turnHeight;        // > 0: the same in the turn: the driver's height above the pivot
 	double wheelCenter[3];    // its column passes through here (after shift and size)
 	double wheelRadius;       // its ring: half its x extent (after size)
