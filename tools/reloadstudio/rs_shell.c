@@ -18,11 +18,30 @@
 // `--do "<verb> <argument>"` (any number of times) plays back steps as if
 // someone had clicked: the same callbacks as the buttons. Meant so that acceptance
 // and repacking run reproducibly, without a second implementation. Shell
-// verbs: page, shot, wait, size <w> <h>, theme, quit. Everything else goes to the
+// verbs: page, shot, wait, size <w> <h>, scroll, controls, theme, quit (all in
+// --help). Everything else goes to the
 // current page (also "size <n>" with one number). `--log <file>` writes the
 // automation log. In automation
 // no dialog asks (answer always yes) and the settings are neither
 // read nor written - except with --settings (below).
+//
+// SCALE AND WINDOW SIZE
+//
+// The manifest makes the window dpi aware per monitor (PerMonitorV2): every size
+// goes through Rs_Px with the dpi of the monitor the window is on, and moving it
+// to a monitor with another scale (WM_DPICHANGED) makes fonts and layouts anew.
+// The window opens inside the work area of its monitor and can be made as small
+// as RS_MIN_CLIENT_W x RS_MIN_CLIENT_H; the pages sit in a scrolling view
+// (the host, Rs_PageFit), so a page that does not fit scrolls instead of being
+// cut. Below RS_WIDE_MIN the sidebar shows only its icons (with tooltips), and
+// in a low window it leaves out the version and the footer.
+//
+// For tests without such a monitor: `--ui-scale <percent>` scales the window
+// as Windows would at that display scale (Windows itself still draws scroll
+// bars and frames in the monitor's size), and
+// `--screen <w>x<h>` gives the window the work area of a screen of that size
+// (w x h pixels, minus a taskbar of 48 px at the scale), even when it is larger
+// than the real one; the verb "shot" then still shows the whole window.
 //
 // SETTINGS FILE
 //
@@ -67,6 +86,21 @@ int Rldpack_Main(int argc, char *argv[]);
 #define RS_TIMER_AUTO 1
 #define RS_CMD_CAP 32768
 
+// Sizes of the window in 96-dpi pixels (Rs_Px). Below RS_WIDE_MIN of client
+// width the sidebar is RS_SIDEBAR_NARROW wide (icons only); below
+// RS_SIDEBAR_FULL_H of client height it leaves out the version and the footer.
+#define RS_SIDEBAR_NARROW 60
+#define RS_WIDE_MIN (RS_SIDEBAR_W + RS_PAGE_MIN_W)
+#define RS_SIDEBAR_FULL_H 430
+#define RS_MIN_CLIENT_W 480
+#define RS_MIN_CLIENT_H 320
+#define RS_START_W 1340
+#define RS_START_H 1000
+#define RS_TASKBAR_H 48
+
+// To the host: a page laid itself out again (wParam = page id), see Rs_CardClear.
+#define RS_WM_FIT (WM_APP + 32)
+
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
@@ -83,11 +117,23 @@ struct RsPageState {
     int ready;
     struct RsCard cards[RS_MAX_CARDS];
     int cardCount;
+    // The scrolling view (Rs_PageFit): the page's offset in the host, the
+    // visible part, and whether a fit is running or already posted.
+    int scrollX, scrollY;
+    int viewW, viewH;
+    int fitting;
+    int fitPosted;
 };
 
 static HINSTANCE g_inst;
 static HWND g_main;
 static HWND g_sidebar;
+static HWND g_host;                     // the scrolling view the pages sit in
+static HWND g_tips;                     // tooltips of the narrow sidebar
+static HWND g_lastFocus;
+static int g_narrow;                    // sidebar with icons only
+static int g_forcedDpi;                 // --ui-scale as dpi, 0 = the monitor's
+static int g_screenW, g_screenH;        // --screen, 0 = the real monitor
 static HWND g_pages[RS_PAGE_COUNT];
 static const struct RsPageDef *const g_defs[RS_PAGE_COUNT] = {
     &g_rsTrackPage, &g_rsCupsPage, &g_rsCharPage, &g_rsTestPage
@@ -1009,6 +1055,14 @@ int Rs_Px(int px96)
     return MulDiv(px96, g_dpi, 96);
 }
 
+int Rs_Metric(HWND h, int index)
+{
+    UINT dpi = h ? GetDpiForWindow(h) : 0;
+    if (!dpi)
+        dpi = GetDpiForSystem();
+    return GetSystemMetricsForDpi(index, dpi);
+}
+
 HFONT Rs_Font(int font)
 {
     if (font < 0 || font >= RS_FONT_COUNT)
@@ -1243,7 +1297,8 @@ static void Rs_ThemeControl(HWND h)
             ListView_SetTextBkColor(h, (COLORREF)(UINT_PTR)GetPropW(h, L"RsLvTextBk"));
             ListView_SetTextColor(h, (COLORREF)(UINT_PTR)GetPropW(h, L"RsLvText"));
         }
-    } else if (_wcsicmp(cls, L"ListBox") != 0 && _wcsicmp(cls, L"RsMsgList") != 0) {
+    } else if (_wcsicmp(cls, L"ListBox") != 0 && _wcsicmp(cls, L"RsMsgList") != 0 &&
+               _wcsicmp(cls, L"RsPageHost") != 0) {
         // Labels, pages, sidebar, headers (via the list).
         return;
     }
@@ -1300,7 +1355,8 @@ static void Rs_ToggleTheme(void)
 // control (DarkMode_Explorer::Button, where missing Button), background and
 // text in the colours of the page's WM_CTLCOLORSTATIC, disabled RS_COL_MUTED.
 // Clicking, keys and state stay with Windows' button. In the light scheme
-// everything goes to Windows unchanged.
+// everything goes to Windows unchanged - unless --ui-scale differs from the
+// monitor's scale (Rs_CheckSub).
 static void Rs_CheckPaint(HWND h, HDC target)
 {
     RECT rc, g, t;
@@ -1344,7 +1400,9 @@ static void Rs_CheckPaint(HWND h, HDC target)
 
     glyph.cx = Rs_Px(13);
     glyph.cy = Rs_Px(13);
-    theme = OpenThemeData(h, L"Button");
+    // In the size of the window's scale (OpenThemeData alone answers for the
+    // main monitor), so that the box grows with the text.
+    theme = OpenThemeDataForDpi(h, L"Button", (UINT)g_dpi);
     if (theme)
         GetThemePartSize(theme, mem, BP_CHECKBOX, part, NULL, TS_DRAW, &glyph);
     g.left = 0;
@@ -1400,7 +1458,9 @@ static LRESULT CALLBACK Rs_CheckSub(HWND h, UINT msg, WPARAM wParam, LPARAM lPar
         RemoveWindowSubclass(h, Rs_CheckSub, id);
         return DefSubclassProc(h, msg, wParam, lParam);
     }
-    if (!g_dark)
+    // Light at the monitor's scale: Windows paints. Under --ui-scale its box
+    // would keep the monitor's size beside scaled text, so the shell paints then too.
+    if (!g_dark && (UINT)g_dpi == GetDpiForWindow(h))
         return DefSubclassProc(h, msg, wParam, lParam);
     switch (msg) {
     case WM_ERASEBKGND:
@@ -1476,8 +1536,16 @@ static struct RsPageState *Rs_State(HWND page)
 void Rs_CardClear(HWND page)
 {
     struct RsPageState *st = Rs_State(page);
-    if (st)
-        st->cardCount = 0;
+    if (!st)
+        return;
+    st->cardCount = 0;
+    // A layout is running. If the page started it itself (more lines, a card
+    // opened), the host checks afterwards whether the page still holds all of
+    // it (Rs_PageFit); inside a fit the fit checks anyway.
+    if (!st->fitting && !st->fitPosted && g_host) {
+        st->fitPosted = 1;
+        PostMessageW(g_host, RS_WM_FIT, (WPARAM)st->id, 0);
+    }
 }
 
 void Rs_CardAdd(HWND page, const RECT *outer, const wchar_t *title)
@@ -1577,10 +1645,29 @@ HWND Rs_Check(HWND page, int id, const wchar_t *text)
     return Rs_Themed(h);
 }
 
+// A closed combo box without the focus hands the mouse wheel to the page
+// (and so to the scrolling view): otherwise scrolling the page over it would
+// change its choice.
+static LRESULT CALLBACK Rs_ComboSub(HWND h, UINT msg, WPARAM wParam, LPARAM lParam,
+                                    UINT_PTR id, DWORD_PTR ref)
+{
+    (void)ref;
+    if (msg == WM_NCDESTROY) {
+        RemoveWindowSubclass(h, Rs_ComboSub, id);
+    } else if ((msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL) && g_host && GetFocus() != h &&
+               !SendMessageW(h, CB_GETDROPPEDSTATE, 0, 0)) {
+        return SendMessageW(g_host, msg, wParam, lParam);
+    }
+    return DefSubclassProc(h, msg, wParam, lParam);
+}
+
 HWND Rs_Combo(HWND page, int id)
 {
-    return Rs_Themed(Rs_Make(page, id, L"COMBOBOX", L"", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
-                             0, RS_FONT_BODY));
+    HWND h = Rs_Make(page, id, L"COMBOBOX", L"", WS_TABSTOP | WS_VSCROLL | CBS_DROPDOWNLIST,
+                     0, RS_FONT_BODY);
+    if (h)
+        SetWindowSubclass(h, Rs_ComboSub, 1, 0);
+    return Rs_Themed(h);
 }
 
 HWND Rs_ListBox(HWND page, int id, DWORD extraStyle)
@@ -1695,7 +1782,7 @@ static void Rs_MsgLayout(HWND list)
     if (!m)
         return;
     GetClientRect(list, &rc);
-    width = rc.right - Rs_Px(44) - GetSystemMetrics(SM_CXVSCROLL);
+    width = rc.right - Rs_Px(44) - Rs_Metric(list, SM_CXVSCROLL);
     if (width < Rs_Px(60))
         width = Rs_Px(60);
     dc = GetDC(list);
@@ -2394,6 +2481,8 @@ HWND Rs_MainWindow(void)
     return g_main;
 }
 
+static void Rs_PageFit(int id, int relayout);
+
 void Rs_ShowPage(int id)
 {
     int i;
@@ -2403,10 +2492,307 @@ void Rs_ShowPage(int id)
         if (i != id && g_pages[i])
             ShowWindow(g_pages[i], SW_HIDE);
     g_current = id;
+    Rs_PageFit(id, 0);      // the scroll bars of this page
     ShowWindow(g_pages[id], SW_SHOW);
     InvalidateRect(g_sidebar, NULL, FALSE);
     SendMessageW(g_pages[id], RS_WM_PAGE_SHOWN, 0, 0);
     Rs_ConfigSet(L"page", g_pageWords[id]);
+}
+
+// ---------------------------------------------------------------------------
+// Scrolling view
+//
+// The host is the window right of the sidebar; the pages are its children. A
+// page window is as large as the host, but never smaller than the page's
+// minimum size (RsPageDef minWidth, minHeight) or than what its layout placed
+// (Rs_PageExtent). Where it is larger, the host shows a part of it with scroll
+// bars and moves it: by the bars, the mouse wheel (Shift: sideways), and so
+// that a control reached with the keyboard is in view (Rs_FocusIntoView).
+// ---------------------------------------------------------------------------
+
+static SIZE Rs_PageMin(const struct RsPageState *st)
+{
+    SIZE m;
+    m.cx = Rs_Px(st->def->minWidth > 0 ? st->def->minWidth : RS_PAGE_MIN_W);
+    m.cy = Rs_Px(st->def->minHeight > 0 ? st->def->minHeight : RS_PAGE_MIN_H);
+    return m;
+}
+
+// The size the page needs for what its layout placed: the rightmost and the
+// lowest visible control or card, plus the margins a layout keeps (32 px at
+// the right, 24 px at the bottom). Hidden controls do not count.
+static SIZE Rs_PageExtent(HWND page, const struct RsPageState *st)
+{
+    SIZE e = { 0, 0 };
+    HWND c;
+    int i;
+
+    for (c = GetWindow(page, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT)) {
+        RECT r;
+        if (!(GetWindowLongPtrW(c, GWL_STYLE) & WS_VISIBLE))
+            continue;
+        GetWindowRect(c, &r);
+        MapWindowPoints(NULL, page, (POINT *)&r, 2);
+        if (r.right > e.cx)
+            e.cx = r.right;
+        if (r.bottom > e.cy)
+            e.cy = r.bottom;
+    }
+    for (i = 0; st && i < st->cardCount; i++) {
+        if (st->cards[i].rc.right > e.cx)
+            e.cx = st->cards[i].rc.right;
+        if (st->cards[i].rc.bottom > e.cy)
+            e.cy = st->cards[i].rc.bottom;
+    }
+    if (e.cx > 0)
+        e.cx += Rs_Px(32);
+    if (e.cy > 0)
+        e.cy += Rs_Px(24);
+    return e;
+}
+
+// The visible part of the host for a page of the size need: the host minus the
+// scroll bars that this size brings.
+static SIZE Rs_HostView(SIZE need)
+{
+    RECT hr;
+    SIZE v;
+    int sbW = Rs_Metric(g_host, SM_CXVSCROLL), sbH = Rs_Metric(g_host, SM_CYHSCROLL);
+    int vert, horz;
+
+    GetWindowRect(g_host, &hr);     // no border: the window is client and bars
+    v.cx = hr.right - hr.left;
+    v.cy = hr.bottom - hr.top;
+    vert = need.cy > v.cy;
+    horz = need.cx > v.cx - (vert ? sbW : 0);
+    if (horz && !vert)
+        vert = need.cy > v.cy - sbH;
+    if (vert)
+        v.cx -= sbW;
+    if (horz)
+        v.cy -= sbH;
+    if (v.cx < 1)
+        v.cx = 1;
+    if (v.cy < 1)
+        v.cy = 1;
+    return v;
+}
+
+// Keeps the scroll position inside the page, moves the page there and, for
+// the page shown, sets the scroll bars (they hide where the page fits).
+static void Rs_PagePlace(struct RsPageState *st, HWND page)
+{
+    RECT pr;
+    SCROLLINFO si;
+
+    GetClientRect(page, &pr);
+    if (st->scrollX > pr.right - st->viewW)
+        st->scrollX = pr.right - st->viewW;
+    if (st->scrollX < 0)
+        st->scrollX = 0;
+    if (st->scrollY > pr.bottom - st->viewH)
+        st->scrollY = pr.bottom - st->viewH;
+    if (st->scrollY < 0)
+        st->scrollY = 0;
+    SetWindowPos(page, NULL, -st->scrollX, -st->scrollY, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+    if (st->id != g_current)
+        return;
+    memset(&si, 0, sizeof(si));
+    si.cbSize = sizeof(si);
+    si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+    si.nMax = pr.right > 0 ? pr.right - 1 : 0;
+    si.nPage = (UINT)st->viewW;
+    si.nPos = st->scrollX;
+    SetScrollInfo(g_host, SB_HORZ, &si, TRUE);
+    si.nMax = pr.bottom > 0 ? pr.bottom - 1 : 0;
+    si.nPage = (UINT)st->viewH;
+    si.nPos = st->scrollY;
+    SetScrollInfo(g_host, SB_VERT, &si, TRUE);
+}
+
+// Sizes page id for the host: the view, at least the minimum, at least what the
+// layout placed. A changed size lays the page out (WM_SIZE); relayout = 1 lays
+// it out also when the size stays (another dpi). If the layout then reaches
+// beyond the page, the page grows to it and is laid out again (at most twice).
+static void Rs_PageFit(int id, int relayout)
+{
+    HWND page = (id >= 0 && id < RS_PAGE_COUNT) ? g_pages[id] : NULL;
+    struct RsPageState *st = page ? Rs_State(page) : NULL;
+    SIZE need, view = { 1, 1 }, ext;
+    RECT pr;
+    int pass, w, h;
+
+    if (!st || !st->ready || !g_host || st->fitting)
+        return;
+    st->fitting = 1;
+    need = Rs_PageMin(st);
+    for (pass = 0; pass < 3; pass++) {
+        view = Rs_HostView(need);
+        st->viewW = view.cx;        // for Rs_PageViewSize inside the layout
+        st->viewH = view.cy;
+        w = view.cx > need.cx ? view.cx : need.cx;
+        h = view.cy > need.cy ? view.cy : need.cy;
+        GetClientRect(page, &pr);
+        if (pr.right != w || pr.bottom != h) {
+            SetWindowPos(page, NULL, 0, 0, w, h, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        } else if (relayout && st->def->layout) {
+            st->def->layout(page, w, h);
+            InvalidateRect(page, NULL, TRUE);
+        }
+        relayout = 0;
+        ext = Rs_PageExtent(page, st);
+        if (ext.cx <= w && ext.cy <= h)
+            break;
+        if (ext.cx > need.cx)
+            need.cx = ext.cx;
+        if (ext.cy > need.cy)
+            need.cy = ext.cy;
+    }
+    st->viewW = view.cx;
+    st->viewH = view.cy;
+    st->fitting = 0;
+    Rs_PagePlace(st, page);
+}
+
+void Rs_PageViewSize(HWND page, int *w, int *h)
+{
+    struct RsPageState *st = page ? Rs_State(page) : NULL;
+    RECT pr = { 0, 0, 0, 0 };
+    if (page)
+        GetClientRect(page, &pr);
+    if (w)
+        *w = (st && st->viewW > 0 && st->viewW < pr.right) ? st->viewW : pr.right;
+    if (h)
+        *h = (st && st->viewH > 0 && st->viewH < pr.bottom) ? st->viewH : pr.bottom;
+}
+
+static void Rs_ScrollPage(int x, int y)
+{
+    HWND page = g_current >= 0 ? g_pages[g_current] : NULL;
+    struct RsPageState *st = page ? Rs_State(page) : NULL;
+    if (!st)
+        return;
+    st->scrollX = x;
+    st->scrollY = y;
+    Rs_PagePlace(st, page);
+}
+
+// After a key: if the keyboard focus moved to another control of the page,
+// scroll so that the control is in view, with a margin.
+static void Rs_FocusIntoView(void)
+{
+    HWND f = GetFocus(), page, top;
+    struct RsPageState *st;
+    RECT r;
+    int x, y, m = Rs_Px(16);
+
+    if (f == g_lastFocus)
+        return;
+    g_lastFocus = f;
+    page = g_current >= 0 ? g_pages[g_current] : NULL;
+    if (!f || !page || !IsChild(page, f))
+        return;
+    for (top = f; GetParent(top) != page; top = GetParent(top))
+        ;
+    st = Rs_State(page);
+    GetWindowRect(top, &r);
+    MapWindowPoints(NULL, page, (POINT *)&r, 2);
+    x = st->scrollX;
+    y = st->scrollY;
+    if (r.right + m > x + st->viewW)
+        x = r.right + m - st->viewW;
+    if (r.left - m < x)
+        x = r.left - m;
+    if (r.bottom + m > y + st->viewH)
+        y = r.bottom + m - st->viewH;
+    if (r.top - m < y)
+        y = r.top - m;
+    if (x != st->scrollX || y != st->scrollY)
+        Rs_ScrollPage(x, y);
+}
+
+static int Rs_ScrollStep(HWND host, int bar, int code, int pos, int view)
+{
+    SCROLLINFO si;
+    switch (code) {
+    case SB_LINEUP: return pos - Rs_Px(40);
+    case SB_LINEDOWN: return pos + Rs_Px(40);
+    case SB_PAGEUP: return pos - (view - Rs_Px(40));
+    case SB_PAGEDOWN: return pos + (view - Rs_Px(40));
+    case SB_TOP: return 0;
+    case SB_BOTTOM: return 0x3FFFFFFF;
+    case SB_THUMBTRACK:
+    case SB_THUMBPOSITION:
+        memset(&si, 0, sizeof(si));
+        si.cbSize = sizeof(si);
+        si.fMask = SIF_TRACKPOS;
+        GetScrollInfo(host, bar, &si);
+        return si.nTrackPos;
+    }
+    return pos;
+}
+
+static LRESULT CALLBACK Rs_HostProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    HWND page = g_current >= 0 ? g_pages[g_current] : NULL;
+    struct RsPageState *st = page ? Rs_State(page) : NULL;
+
+    switch (msg) {
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_PAINT: {
+        // Only seen where no page lies (while the pages are made).
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(hwnd, &ps);
+        FillRect(dc, &ps.rcPaint, g_brPage);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    case RS_WM_FIT: {
+        int id = (int)wParam;
+        // Always a fit, not only when something reaches beyond the page: a
+        // page that became shorter (a card closed) shrinks back as well.
+        if (id >= 0 && id < RS_PAGE_COUNT && g_pages[id]) {
+            Rs_State(g_pages[id])->fitPosted = 0;
+            Rs_PageFit(id, 0);
+        }
+        return 0;
+    }
+    case WM_VSCROLL:
+        if (st)
+            Rs_ScrollPage(st->scrollX, Rs_ScrollStep(hwnd, SB_VERT, LOWORD(wParam), st->scrollY, st->viewH));
+        return 0;
+    case WM_HSCROLL:
+        if (st)
+            Rs_ScrollPage(Rs_ScrollStep(hwnd, SB_HORZ, LOWORD(wParam), st->scrollX, st->viewW), st->scrollY);
+        return 0;
+    case WM_MOUSEWHEEL:
+    case WM_MOUSEHWHEEL:
+        if (st) {
+            int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+            int side = msg == WM_MOUSEHWHEEL || (GET_KEYSTATE_WPARAM(wParam) & MK_SHIFT);
+            UINT lines = 3;
+            RECT pr;
+            int step;
+            GetClientRect(page, &pr);
+            // A page that is only too wide scrolls sideways with the wheel.
+            if (!side && pr.bottom <= st->viewH && pr.right > st->viewW)
+                side = 1;
+            SystemParametersInfoW(SPI_GETWHEELSCROLLLINES, 0, &lines, 0);
+            if (lines == WHEEL_PAGESCROLL)
+                step = MulDiv(side ? st->viewW : st->viewH, delta, WHEEL_DELTA);
+            else
+                step = MulDiv((int)lines * Rs_Px(20), delta, WHEEL_DELTA);
+            if (msg == WM_MOUSEHWHEEL)
+                Rs_ScrollPage(st->scrollX + step, st->scrollY);
+            else if (side)
+                Rs_ScrollPage(st->scrollX - step, st->scrollY);
+            else
+                Rs_ScrollPage(st->scrollX, st->scrollY - step);
+        }
+        return msg == WM_MOUSEHWHEEL ? TRUE : 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
 
 // ---------------------------------------------------------------------------
@@ -2420,14 +2806,24 @@ static const wchar_t *const g_navIcons[RS_PAGE_COUNT] = {
     L"\xE768",   // Play
 };
 
+// 1 if the sidebar is too low for the version line and the footer: then the
+// entries move up and the scheme entry follows right below them.
+static int Rs_SideCompact(void)
+{
+    RECT client;
+    GetClientRect(g_sidebar, &client);
+    return client.bottom < Rs_Px(RS_SIDEBAR_FULL_H);
+}
+
 static RECT Rs_NavRect(int i)
 {
     RECT r;
     RECT client;
+    int compact = Rs_SideCompact();
     GetClientRect(g_sidebar, &client);
-    r.left = Rs_Px(12);
-    r.right = client.right - Rs_Px(12);
-    r.top = Rs_Px(112) + i * Rs_Px(46);
+    r.left = Rs_Px(g_narrow ? 8 : 12);
+    r.right = client.right - r.left;
+    r.top = Rs_Px(compact ? 72 : 112) + i * Rs_Px(compact ? 42 : 46);
     r.bottom = r.top + Rs_Px(40);
     return r;
 }
@@ -2441,11 +2837,55 @@ static RECT Rs_ThemeRect(void)
     RECT r;
     RECT client;
     GetClientRect(g_sidebar, &client);
-    r.left = Rs_Px(12);
-    r.right = client.right - Rs_Px(12);
-    r.bottom = client.bottom - Rs_Px(72);
-    r.top = r.bottom - Rs_Px(36);
+    r.left = Rs_Px(g_narrow ? 8 : 12);
+    r.right = client.right - r.left;
+    if (Rs_SideCompact()) {
+        RECT last = Rs_NavRect(RS_PAGE_COUNT - 1);
+        r.top = last.bottom + Rs_Px(8);
+        r.bottom = r.top + Rs_Px(36);
+    } else {
+        r.bottom = client.bottom - Rs_Px(72);
+        r.top = r.bottom - Rs_Px(36);
+    }
     return r;
+}
+
+// The narrow sidebar shows only icons; the tooltips name them.
+static void Rs_TipsUpdate(void)
+{
+    TOOLINFOW ti;
+    int i;
+    if (!g_tips)
+        return;
+    for (i = 0; i <= RS_NAV_THEME; i++) {
+        memset(&ti, 0, sizeof(ti));
+        ti.cbSize = sizeof(ti);
+        ti.hwnd = g_sidebar;
+        ti.uId = (UINT_PTR)i + 1;
+        ti.rect = i == RS_NAV_THEME ? Rs_ThemeRect() : Rs_NavRect(i);
+        SendMessageW(g_tips, TTM_NEWTOOLRECTW, 0, (LPARAM)&ti);
+    }
+    SendMessageW(g_tips, TTM_ACTIVATE, (WPARAM)g_narrow, 0);
+}
+
+static void Rs_TipsCreate(void)
+{
+    TOOLINFOW ti;
+    int i;
+    g_tips = CreateWindowExW(WS_EX_TOPMOST, TOOLTIPS_CLASSW, NULL, WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+                             CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+                             g_main, NULL, g_inst, NULL);
+    if (!g_tips)
+        return;
+    for (i = 0; i <= RS_NAV_THEME; i++) {
+        memset(&ti, 0, sizeof(ti));
+        ti.cbSize = sizeof(ti);
+        ti.uFlags = TTF_SUBCLASS;
+        ti.hwnd = g_sidebar;
+        ti.uId = (UINT_PTR)i + 1;
+        ti.lpszText = LPSTR_TEXTCALLBACKW;
+        SendMessageW(g_tips, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+    }
 }
 
 static void Rs_SidebarPaint(HWND hwnd)
@@ -2468,27 +2908,35 @@ static void Rs_SidebarPaint(HWND hwnd)
     DeleteObject(bg);
     SetBkMode(mem, TRANSPARENT);
 
-    {
+    oldFont = SelectObject(mem, Rs_Font(RS_FONT_SECTION));
+    if (g_narrow) {
+        // Only the mark; the name is in the title bar.
+        RECT mark = { (rc.right - Rs_Px(6)) / 2, Rs_Px(30), (rc.right - Rs_Px(6)) / 2 + Rs_Px(6), Rs_Px(56) };
+        HBRUSH acc = CreateSolidBrush(RS_COL_ACCENT);
+        FillRect(mem, &mark, acc);
+        DeleteObject(acc);
+    } else {
         RECT t = { Rs_Px(24), Rs_Px(28), rc.right - Rs_Px(12), Rs_Px(60) };
         RECT mark = { Rs_Px(24), Rs_Px(30), Rs_Px(30), Rs_Px(56) };
         HBRUSH acc = CreateSolidBrush(RS_COL_ACCENT);
         FillRect(mem, &mark, acc);
         DeleteObject(acc);
         t.left = Rs_Px(40);
-        oldFont = SelectObject(mem, Rs_Font(RS_FONT_SECTION));
         SetTextColor(mem, RGB(255, 255, 255));
-        DrawTextW(mem, L"Reload Studio", -1, &t, DT_SINGLELINE | DT_NOPREFIX);
-        t.top = Rs_Px(56);
-        t.bottom = Rs_Px(80);
-        SelectObject(mem, Rs_Font(RS_FONT_SMALL));
-        SetTextColor(mem, RGB(150, 156, 170));
-        DrawTextW(mem, L"CTR Reload track tools", -1, &t, DT_SINGLELINE | DT_NOPREFIX);
-        // Version and build ID, free up to the navigation (from 112)
-        t.top = Rs_Px(76);
-        t.bottom = Rs_Px(96);
-        SetTextColor(mem, RGB(120, 126, 140));
-        DrawTextW(mem, RS_VERSION_W L" (" RS_BUILD_ID_W L")", -1, &t,
-                  DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        DrawTextW(mem, L"Reload Studio", -1, &t, DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        if (!Rs_SideCompact()) {
+            t.top = Rs_Px(56);
+            t.bottom = Rs_Px(80);
+            SelectObject(mem, Rs_Font(RS_FONT_SMALL));
+            SetTextColor(mem, RGB(150, 156, 170));
+            DrawTextW(mem, L"CTR Reload track tools", -1, &t, DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+            // Version and build ID, free up to the navigation (from 112)
+            t.top = Rs_Px(76);
+            t.bottom = Rs_Px(96);
+            SetTextColor(mem, RGB(120, 126, 140));
+            DrawTextW(mem, RS_VERSION_W L" (" RS_BUILD_ID_W L")", -1, &t,
+                      DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+        }
     }
 
     for (i = 0; i < RS_PAGE_COUNT; i++) {
@@ -2505,14 +2953,18 @@ static void Rs_SidebarPaint(HWND hwnd)
             DeleteObject(acc);
         }
         t = r;
-        t.left += Rs_Px(16);
         SelectObject(mem, g_iconFont);
         SetTextColor(mem, sel ? RGB(255, 255, 255) : RGB(150, 156, 170));
+        if (g_narrow) {
+            DrawTextW(mem, g_navIcons[i], -1, &t, DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX);
+            continue;
+        }
+        t.left += Rs_Px(16);
         DrawTextW(mem, g_navIcons[i], -1, &t, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
         t.left += Rs_Px(30);
         SelectObject(mem, Rs_Font(sel ? RS_FONT_BOLD : RS_FONT_BODY));
         SetTextColor(mem, sel ? RGB(255, 255, 255) : RGB(200, 204, 214));
-        DrawTextW(mem, g_defs[i]->navName, -1, &t, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+        DrawTextW(mem, g_defs[i]->navName, -1, &t, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
     }
 
     {
@@ -2521,18 +2973,23 @@ static void Rs_SidebarPaint(HWND hwnd)
         RECT t = r;
         if (g_hoverNav == RS_NAV_THEME)
             Rs_FillRound(mem, &r, Rs_Px(8), RGB(36, 39, 49), RGB(36, 39, 49));
-        t.left += Rs_Px(16);
         SelectObject(mem, g_iconFont);
         SetTextColor(mem, RGB(150, 156, 170));
-        DrawTextW(mem, g_dark ? L"\xE706" : L"\xE708", -1, &t, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
-        t.left += Rs_Px(30);
-        SelectObject(mem, Rs_Font(RS_FONT_BODY));
-        SetTextColor(mem, RGB(200, 204, 214));
-        DrawTextW(mem, g_dark ? L"Light mode" : L"Dark mode", -1, &t,
-                  DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+        if (g_narrow) {
+            DrawTextW(mem, g_dark ? L"\xE706" : L"\xE708", -1, &t,
+                      DT_SINGLELINE | DT_VCENTER | DT_CENTER | DT_NOPREFIX);
+        } else {
+            t.left += Rs_Px(16);
+            DrawTextW(mem, g_dark ? L"\xE706" : L"\xE708", -1, &t, DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX);
+            t.left += Rs_Px(30);
+            SelectObject(mem, Rs_Font(RS_FONT_BODY));
+            SetTextColor(mem, RGB(200, 204, 214));
+            DrawTextW(mem, g_dark ? L"Light mode" : L"Dark mode", -1, &t,
+                      DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS);
+        }
     }
 
-    {
+    if (!g_narrow && !Rs_SideCompact()) {
         RECT t = { Rs_Px(24), rc.bottom - Rs_Px(60), rc.right - Rs_Px(12), rc.bottom - Rs_Px(40) };
         SelectObject(mem, Rs_Font(RS_FONT_SMALL));
         SetTextColor(mem, RGB(120, 126, 140));
@@ -2571,6 +3028,19 @@ static int Rs_NavHit(LPARAM lParam)
 static LRESULT CALLBACK Rs_SidebarProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg) {
+    case WM_NOTIFY: {
+        NMHDR *hdr = (NMHDR *)lParam;
+        if (hdr && hdr->code == TTN_GETDISPINFOW) {
+            NMTTDISPINFOW *di = (NMTTDISPINFOW *)lParam;
+            int i = (int)hdr->idFrom - 1;
+            if (i >= 0 && i < RS_PAGE_COUNT)
+                di->lpszText = (LPWSTR)g_defs[i]->navName;
+            else
+                di->lpszText = (LPWSTR)(g_dark ? L"Light mode" : L"Dark mode");
+            return 0;
+        }
+        break;
+    }
     case WM_ERASEBKGND:
         return 1;
     case WM_PAINT:
@@ -2653,16 +3123,37 @@ static int Rs_ShotFlat(const unsigned char *bits, int stride, int w, int h)
 
 // The screenshot shows the client area of the window (without the title bar).
 //
-// First PrintWindow with PW_RENDERFULLCONTENT over the whole window and the
-// client area cut out of it; PW_CLIENTONLY together with PW_RENDERFULLCONTENT
-// gave a black picture here. If the picture stays single-coloured, the
-// screen is read at the window's location, with the window briefly
-// topmost for that.
+// First PrintWindow over the whole window and the client area cut out of it:
+// with PW_RENDERFULLCONTENT, and if that picture stays single-coloured, without
+// it (PW_CLIENTONLY together with PW_RENDERFULLCONTENT gave a black picture
+// here). Both also see the parts of a window that lie beyond the screen
+// (--screen larger than the monitor). Only if both stay single-coloured is the
+// screen read at the window's location, with the window briefly topmost for
+// that - which needs the window to lie on the screen.
+static int Rs_ShotPrint(HDC mem, HBITMAP wbmp, const unsigned char *wbits, int wstride, int ww, int wh,
+                        int dx, int dy, unsigned char *bits, int stride, int w, int h, UINT flags)
+{
+    HGDIOBJ old;
+    int y;
+
+    old = SelectObject(mem, wbmp);
+    PrintWindow(g_main, mem, flags);
+    GdiFlush();
+    SelectObject(mem, old);
+    // Rows lie from bottom to top: client row y is in window row dy + y.
+    for (y = 0; y < h && dy + y < wh; y++) {
+        unsigned char *dst = bits + (size_t)(h - 1 - y) * stride;
+        const unsigned char *src = wbits + (size_t)(wh - 1 - (dy + y)) * wstride + (size_t)dx * 3;
+        memcpy(dst, src, (size_t)((w <= ww - dx) ? w : ww - dx) * 3);
+    }
+    return !Rs_ShotFlat(bits, stride, w, h);
+}
+
 static int Rs_Shot(const wchar_t *path)
 {
     RECT wr, cr;
     POINT origin = { 0, 0 };
-    int w, h, ww, wh, stride, wstride, y, ok = 0;
+    int w, h, ww, wh, stride, wstride, ok = 0;
     HDC screen, mem;
     BITMAPINFO bi, wbi;
     void *bits = NULL, *wbits = NULL;
@@ -2690,17 +3181,22 @@ static int Rs_Shot(const wchar_t *path)
     wstride = (ww * 3 + 3) & ~3;
     if (bmp && wbmp) {
         int dx = origin.x - wr.left, dy = origin.y - wr.top;
-        old = SelectObject(mem, wbmp);
-        PrintWindow(g_main, mem, 2 /* PW_RENDERFULLCONTENT */);
-        GdiFlush();
-        SelectObject(mem, old);
-        // Rows lie from bottom to top: client row y is in window row dy + y.
-        for (y = 0; y < h && dy + y < wh; y++) {
-            unsigned char *dst = (unsigned char *)bits + (size_t)(h - 1 - y) * stride;
-            const unsigned char *src = (const unsigned char *)wbits + (size_t)(wh - 1 - (dy + y)) * wstride + (size_t)dx * 3;
-            memcpy(dst, src, (size_t)((w <= ww - dx) ? w : ww - dx) * 3);
-        }
-        if (Rs_ShotFlat((const unsigned char *)bits, stride, w, h)) {
+        int seen = Rs_ShotPrint(mem, wbmp, wbits, wstride, ww, wh, dx, dy, bits, stride, w, h,
+                                2 /* PW_RENDERFULLCONTENT */);
+        if (!seen)
+            seen = Rs_ShotPrint(mem, wbmp, wbits, wstride, ww, wh, dx, dy, bits, stride, w, h, 0);
+        if (!seen) {
+            RECT desk;
+            desk.left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+            desk.top = GetSystemMetrics(SM_YVIRTUALSCREEN);
+            desk.right = desk.left + GetSystemMetrics(SM_CXVIRTUALSCREEN);
+            desk.bottom = desk.top + GetSystemMetrics(SM_CYVIRTUALSCREEN);
+            if (origin.x < desk.left || origin.y < desk.top || origin.x + w > desk.right ||
+                origin.y + h > desk.bottom) {
+                Rs_AutoLog(L"  shot: PrintWindow gave a flat picture, and the window does not lie "
+                           L"on the screen to be read from there");
+                goto done;
+            }
             Rs_AutoLog(L"  shot: PrintWindow gave a flat picture - reading the screen instead");
             SetWindowPos(g_main, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
             RedrawWindow(g_main, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
@@ -2724,6 +3220,7 @@ static int Rs_Shot(const wchar_t *path)
             ok = 1;
         }
     }
+done:
     if (bmp)
         DeleteObject(bmp);
     if (wbmp)
@@ -2731,6 +3228,165 @@ static int Rs_Shot(const wchar_t *path)
     DeleteDC(mem);
     ReleaseDC(NULL, screen);
     return ok;
+}
+
+// ---------------------------------------------------------------------------
+// The verb "controls <file>": what the window shows, for checks from outside
+// (overlaps, cut text, parts that cannot be reached). UTF-8, one line per
+// thing, fields separated by TABs, rectangles as left top right bottom in
+// pixels. Page things in coordinates of the whole page (scroll position 0),
+// sidebar things in those of the sidebar:
+//   window   <client w> <client h> <dpi> <monitor dpi> <sidebar w> <narrow> <compact>
+//   view     <x> <y> <w> <h>        the visible part of the page, in the client area
+//   page     <word> <w> <h> <scroll x> <scroll y> <min w> <min h>
+//   header   <title w> <subtitle w> <room w>        room = page width - 64
+//   card     <l> <t> <r> <b> <title right edge> <title>
+//   control  <id> <class> <l> <t> <r> <b> <visible> <enabled> <ellipsis> <need w> <need h> <text>
+//   focus    <id>                   the control with the keyboard focus, if on the page
+//   side     <name> <l> <t> <r> <b> <text right edge>
+// need w / need h: what the text asks for in the control's font - for a label
+// the width on one line and the height wrapped at the control's width, for a
+// button or check box the width with its box or margin, for a one-line input
+// field or combo box the height of a line with its frame; 0 where not measured.
+// ---------------------------------------------------------------------------
+
+static void Rs_DumpText(FILE *f, const wchar_t *text)
+{
+    wchar_t clean[256];
+    char *utf8;
+    int i;
+    for (i = 0; text[i] && i < 255; i++)
+        clean[i] = (text[i] == L'\t' || text[i] == L'\r' || text[i] == L'\n') ? L' ' : text[i];
+    clean[i] = 0;
+    utf8 = Rs_ToUtf8(clean);
+    fprintf(f, "%s\n", utf8);
+    Rs_Free(utf8);
+}
+
+static SIZE Rs_TextSize(HDC dc, HFONT font, const wchar_t *text, int width, UINT flags)
+{
+    RECT t = { 0, 0, width > 0 ? width : 0, 0 };
+    HGDIOBJ old = SelectObject(dc, font);
+    SIZE sz;
+    DrawTextW(dc, text, -1, &t, DT_CALCRECT | flags);
+    SelectObject(dc, old);
+    sz.cx = t.right;
+    sz.cy = t.bottom;
+    return sz;
+}
+
+static void Rs_DumpControl(FILE *f, HDC dc, HWND page, HWND c)
+{
+    wchar_t cls[64], text[256];
+    LONG_PTR style = GetWindowLongPtrW(c, GWL_STYLE);
+    HFONT font = (HFONT)SendMessageW(c, WM_GETFONT, 0, 0);
+    RECT r;
+    int needW = 0, needH = 0, ellipsis = 0;
+
+    if (!GetClassNameW(c, cls, 64))
+        cls[0] = 0;
+    GetWindowTextW(c, text, 255);
+    text[255] = 0;
+    GetWindowRect(c, &r);
+    MapWindowPoints(NULL, page, (POINT *)&r, 2);
+    if (!font)
+        font = Rs_Font(RS_FONT_BODY);
+    if (_wcsicmp(cls, L"Static") == 0) {
+        ellipsis = (style & SS_ELLIPSISMASK) != 0;
+        if (text[0] && (style & SS_TYPEMASK) <= SS_RIGHT) {
+            needW = Rs_TextSize(dc, font, text, 0, DT_SINGLELINE | DT_NOPREFIX).cx;
+            needH = Rs_TextSize(dc, font, text, r.right - r.left, DT_WORDBREAK | DT_NOPREFIX | DT_EXPANDTABS).cy;
+        }
+    } else if ((_wcsicmp(cls, L"Edit") == 0 && !(style & ES_MULTILINE)) || _wcsicmp(cls, L"ComboBox") == 0) {
+        // One line of text plus frame and inner margin; the width is not measured.
+        needH = Rs_TextSize(dc, font, L"Ag", 0, DT_SINGLELINE).cy + Rs_Px(_wcsicmp(cls, L"Edit") == 0 ? 6 : 4);
+    } else if (_wcsicmp(cls, L"Button") == 0 && text[0]) {
+        LONG_PTR type = style & BS_TYPEMASK;
+        SIZE sz;
+        if (GetPropW(c, L"RsPrimary"))
+            font = Rs_Font(RS_FONT_BOLD);
+        sz = Rs_TextSize(dc, font, text, 0, DT_SINGLELINE);
+        needH = sz.cy;
+        if (type == BS_CHECKBOX || type == BS_AUTOCHECKBOX || type == BS_RADIOBUTTON ||
+            type == BS_AUTORADIOBUTTON || type == BS_3STATE || type == BS_AUTO3STATE)
+            needW = Rs_Px(20) + sz.cx;
+        else if (type != BS_GROUPBOX)
+            needW = sz.cx + Rs_Px(16);
+    }
+    fprintf(f, "control\t%d\t%ls\t%ld\t%ld\t%ld\t%ld\t%d\t%d\t%d\t%d\t%d\t", GetDlgCtrlID(c), cls,
+            r.left, r.top, r.right, r.bottom,
+            (style & WS_VISIBLE) ? 1 : 0, (style & WS_DISABLED) ? 0 : 1, ellipsis, needW, needH);
+    Rs_DumpText(f, text);
+}
+
+static int Rs_DumpControls(const wchar_t *path)
+{
+    HWND page = g_current >= 0 ? g_pages[g_current] : NULL;
+    struct RsPageState *st = page ? Rs_State(page) : NULL;
+    RECT cr, pr, sr, hr;
+    HDC dc;
+    FILE *f;
+    HWND c;
+    int i;
+
+    if (!st)
+        return 0;
+    f = _wfopen(path, L"wb");
+    if (!f)
+        return 0;
+    GetClientRect(g_main, &cr);
+    GetClientRect(page, &pr);
+    GetClientRect(g_sidebar, &sr);
+    GetWindowRect(g_host, &hr);
+    MapWindowPoints(NULL, g_main, (POINT *)&hr, 2);
+    dc = GetDC(page);
+    fprintf(f, "window\t%ld\t%ld\t%d\t%u\t%ld\t%d\t%d\n", cr.right, cr.bottom, g_dpi,
+            GetDpiForWindow(g_main), sr.right, g_narrow, Rs_SideCompact());
+    fprintf(f, "view\t%ld\t%ld\t%d\t%d\n", hr.left, hr.top, st->viewW, st->viewH);
+    fprintf(f, "page\t%ls\t%ld\t%ld\t%d\t%d\t%d\t%d\n", g_pageWords[st->id], pr.right, pr.bottom,
+            st->scrollX, st->scrollY, Rs_PageMin(st).cx, Rs_PageMin(st).cy);
+    fprintf(f, "header\t%ld\t%ld\t%ld\n",
+            Rs_TextSize(dc, Rs_Font(RS_FONT_TITLE), st->def->title, 0, DT_SINGLELINE | DT_NOPREFIX).cx,
+            Rs_TextSize(dc, Rs_Font(RS_FONT_BODY), st->def->subtitle, 0, DT_SINGLELINE | DT_NOPREFIX).cx,
+            pr.right - Rs_Px(64));
+    for (i = 0; i < st->cardCount; i++) {
+        struct RsCard *k = &st->cards[i];
+        long edge = k->hasTitle ? k->rc.left + Rs_Px(18) +
+                    Rs_TextSize(dc, Rs_Font(RS_FONT_SECTION), k->title, 0, DT_SINGLELINE | DT_NOPREFIX).cx : 0;
+        fprintf(f, "card\t%ld\t%ld\t%ld\t%ld\t%ld\t", k->rc.left, k->rc.top, k->rc.right, k->rc.bottom, edge);
+        Rs_DumpText(f, k->title);
+    }
+    for (c = GetWindow(page, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT))
+        Rs_DumpControl(f, dc, page, c);
+    c = GetFocus();
+    if (c && IsChild(page, c)) {
+        while (GetParent(c) != page)
+            c = GetParent(c);
+        fprintf(f, "focus\t%d\n", GetDlgCtrlID(c));
+    }
+    for (i = 0; i <= RS_NAV_THEME; i++) {
+        RECT r = i == RS_NAV_THEME ? Rs_ThemeRect() : Rs_NavRect(i);
+        const wchar_t *name = i == RS_NAV_THEME ? (g_dark ? L"Light mode" : L"Dark mode") : g_defs[i]->navName;
+        long edge = g_narrow ? 0 : r.left + Rs_Px(46) +
+                    Rs_TextSize(dc, Rs_Font(i == g_current ? RS_FONT_BOLD : RS_FONT_BODY), name, 0,
+                                DT_SINGLELINE | DT_NOPREFIX).cx;
+        fprintf(f, "side\t%ls\t%ld\t%ld\t%ld\t%ld\t%ld\n", i == RS_NAV_THEME ? L"theme" : g_pageWords[i],
+                r.left, r.top, r.right, r.bottom, edge);
+    }
+    if (!g_narrow) {
+        long edge = Rs_Px(40) + Rs_TextSize(dc, Rs_Font(RS_FONT_SECTION), L"Reload Studio", 0,
+                                            DT_SINGLELINE | DT_NOPREFIX).cx;
+        fprintf(f, "side\theader\t%d\t%d\t%ld\t%d\t%ld\n", Rs_Px(24), Rs_Px(28), sr.right - Rs_Px(12),
+                Rs_SideCompact() ? Rs_Px(60) : Rs_Px(96), edge);
+        if (!Rs_SideCompact())
+            fprintf(f, "side\tfooter\t%d\t%ld\t%ld\t%ld\t%ld\n", Rs_Px(24), sr.bottom - Rs_Px(60),
+                    sr.right - Rs_Px(12), sr.bottom - Rs_Px(22),
+                    Rs_Px(24) + Rs_TextSize(dc, Rs_Font(RS_FONT_SMALL), L"Packing and checks: rldpack", 0,
+                                            DT_SINGLELINE | DT_NOPREFIX).cx);
+    }
+    ReleaseDC(page, dc);
+    fclose(f);
+    return 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -2820,6 +3476,29 @@ static void Rs_AutoTick(void)
         g_autoSettleUntil = GetTickCount() + (DWORD)_wtoi(s->arg);
         return;
     }
+    // "scroll top | bottom | <x> <y>": the scrolling view of the page shown.
+    if (wcscmp(s->verb, L"scroll") == 0) {
+        int x = 0, y = 0;
+        if (wcscmp(s->arg, L"top") == 0)
+            Rs_ScrollPage(0, 0);
+        else if (wcscmp(s->arg, L"bottom") == 0)
+            Rs_ScrollPage(0x3FFFFFFF, 0x3FFFFFFF);
+        else if (swscanf(s->arg, L"%d %d", &x, &y) == 2)
+            Rs_ScrollPage(x, y);
+        else {
+            Rs_AutoLog(L"  FAIL: say scroll top, scroll bottom or scroll <x> <y>");
+            g_autoFailed++;
+        }
+        g_autoSettleUntil = GetTickCount() + 200;
+        return;
+    }
+    if (wcscmp(s->verb, L"controls") == 0) {
+        if (!Rs_DumpControls(s->arg)) {
+            Rs_AutoLog(L"  FAIL: could not write %ls", s->arg);
+            g_autoFailed++;
+        }
+        return;
+    }
     // "size <w> <h>" is the window size. With exactly one number the verb belongs
     // to the page (the character size on the page "Character").
     if (wcscmp(s->verb, L"size") == 0 && Rs_AutoNumbers(s->arg) != 1) {
@@ -2830,7 +3509,7 @@ static void Rs_AutoTick(void)
             r.top = 0;
             r.right = w;
             r.bottom = h;
-            AdjustWindowRectEx(&r, WS_OVERLAPPEDWINDOW, FALSE, 0);
+            AdjustWindowRectExForDpi(&r, WS_OVERLAPPEDWINDOW, FALSE, 0, GetDpiForWindow(g_main));
             SetWindowPos(g_main, NULL, 0, 0, r.right - r.left, r.bottom - r.top,
                          SWP_NOMOVE | SWP_NOZORDER);
         }
@@ -2879,16 +3558,67 @@ static void Rs_AutoTick(void)
 // Main window
 // ---------------------------------------------------------------------------
 
-static void Rs_Layout(void)
+// Sidebar and host side by side, then every page fitted to the host (the one
+// shown last, so that its scroll bars stay). relayout = 1 lays the pages out
+// also where their size stays (after a change of dpi).
+static void Rs_Layout(int relayout)
 {
     RECT rc;
     int side, i;
     GetClientRect(g_main, &rc);
-    side = Rs_Px(RS_SIDEBAR_W);
+    g_narrow = rc.right < Rs_Px(RS_WIDE_MIN);
+    side = Rs_Px(g_narrow ? RS_SIDEBAR_NARROW : RS_SIDEBAR_W);
     MoveWindow(g_sidebar, 0, 0, side, rc.bottom, TRUE);
+    InvalidateRect(g_sidebar, NULL, FALSE);
+    Rs_TipsUpdate();
+    MoveWindow(g_host, side, 0, rc.right - side > 1 ? rc.right - side : 1, rc.bottom > 1 ? rc.bottom : 1, TRUE);
     for (i = 0; i < RS_PAGE_COUNT; i++)
-        if (g_pages[i])
-            MoveWindow(g_pages[i], side, 0, rc.right - side, rc.bottom, TRUE);
+        if (i != g_current)
+            Rs_PageFit(i, relayout);
+    if (g_current >= 0)
+        Rs_PageFit(g_current, relayout);
+}
+
+// The work area the window has to fit into: that of its monitor, or with
+// --screen that of the screen given there (at the origin of the real one).
+static RECT Rs_WorkArea(HWND hwnd)
+{
+    MONITORINFO mi;
+    RECT r = { 0, 0, 1024, 768 };
+    memset(&mi, 0, sizeof(mi));
+    mi.cbSize = sizeof(mi);
+    if (GetMonitorInfoW(MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST), &mi))
+        r = mi.rcWork;
+    if (g_screenW > 0) {
+        r.right = r.left + g_screenW;
+        r.bottom = r.top + g_screenH - Rs_Px(RS_TASKBAR_H);
+    }
+    return r;
+}
+
+// The window at start: RS_START_W x RS_START_H client area, but inside the work
+// area (moved there, and made smaller where it is larger). With --screen it
+// fills that work area, as a maximized window would.
+static void Rs_PlaceWindow(void)
+{
+    RECT work = Rs_WorkArea(g_main), wr, r = { 0, 0, Rs_Px(RS_START_W), Rs_Px(RS_START_H) };
+    int ww = work.right - work.left, wh = work.bottom - work.top, w, h, x, y;
+
+    if (g_screenW > 0) {
+        SetWindowPos(g_main, NULL, work.left, work.top, ww, wh, SWP_NOZORDER | SWP_NOACTIVATE);
+        return;
+    }
+    AdjustWindowRectExForDpi(&r, WS_OVERLAPPEDWINDOW, FALSE, 0, GetDpiForWindow(g_main));
+    w = r.right - r.left < ww ? r.right - r.left : ww;
+    h = r.bottom - r.top < wh ? r.bottom - r.top : wh;
+    GetWindowRect(g_main, &wr);
+    x = wr.left + w > work.right ? work.right - w : wr.left;
+    y = wr.top + h > work.bottom ? work.bottom - h : wr.top;
+    if (x < work.left)
+        x = work.left;
+    if (y < work.top)
+        y = work.top;
+    SetWindowPos(g_main, NULL, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 static BOOL CALLBACK Rs_RefontChild(HWND child, LPARAM unused)
@@ -2906,27 +3636,54 @@ static LRESULT CALLBACK Rs_MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 {
     switch (msg) {
     case WM_SIZE:
-        Rs_Layout();
+        if (g_host)
+            Rs_Layout(0);
         return 0;
     case WM_GETMINMAXINFO: {
-        // The minimum size applies to the client area: sidebar plus a
-        // page of 964 x 760 (96 dpi). Frame and title bar are added.
+        // The minimum applies to the client area (RS_MIN_CLIENT_W x _H, frame
+        // and title bar added), but never more than the work area: the pages
+        // scroll instead. With --screen the window may be larger than the
+        // real screen.
         MINMAXINFO *mm = (MINMAXINFO *)lParam;
-        RECT r = { 0, 0, Rs_Px(1180), Rs_Px(760) };
-        AdjustWindowRectExForDpi(&r, WS_OVERLAPPEDWINDOW, FALSE, 0, (UINT)g_dpi);
+        RECT r = { 0, 0, Rs_Px(RS_MIN_CLIENT_W), Rs_Px(RS_MIN_CLIENT_H) };
+        RECT work = Rs_WorkArea(hwnd);
+        AdjustWindowRectExForDpi(&r, WS_OVERLAPPEDWINDOW, FALSE, 0, GetDpiForWindow(hwnd));
         mm->ptMinTrackSize.x = r.right - r.left;
         mm->ptMinTrackSize.y = r.bottom - r.top;
+        if (mm->ptMinTrackSize.x > work.right - work.left)
+            mm->ptMinTrackSize.x = work.right - work.left;
+        if (mm->ptMinTrackSize.y > work.bottom - work.top)
+            mm->ptMinTrackSize.y = work.bottom - work.top;
+        if (g_screenW > 0) {
+            if (mm->ptMaxTrackSize.x < g_screenW + r.right - r.left)
+                mm->ptMaxTrackSize.x = g_screenW + r.right - r.left;
+            if (mm->ptMaxTrackSize.y < g_screenH + r.bottom - r.top)
+                mm->ptMaxTrackSize.y = g_screenH + r.bottom - r.top;
+        }
         return 0;
     }
     case WM_DPICHANGED: {
+        // Another monitor: fonts and every layout anew, the window as Windows
+        // proposes. With --ui-scale the scale stays and so does the window.
         RECT *r = (RECT *)lParam;
-        g_dpi = HIWORD(wParam);
-        Rs_MakeFonts();
-        EnumChildWindows(hwnd, Rs_RefontChild, 0);
-        SetWindowPos(hwnd, NULL, r->left, r->top, r->right - r->left, r->bottom - r->top,
-                     SWP_NOZORDER | SWP_NOACTIVATE);
-        Rs_Layout();
-        InvalidateRect(hwnd, NULL, TRUE);
+        if (!g_forcedDpi) {
+            int i, old = g_dpi;
+            g_dpi = HIWORD(wParam);
+            // The scroll positions in the new scale, so that the same part stays in view.
+            for (i = 0; i < RS_PAGE_COUNT; i++) {
+                struct RsPageState *ps = g_pages[i] ? Rs_State(g_pages[i]) : NULL;
+                if (ps && old > 0) {
+                    ps->scrollX = MulDiv(ps->scrollX, g_dpi, old);
+                    ps->scrollY = MulDiv(ps->scrollY, g_dpi, old);
+                }
+            }
+            Rs_MakeFonts();
+            EnumChildWindows(hwnd, Rs_RefontChild, 0);
+            SetWindowPos(hwnd, NULL, r->left, r->top, r->right - r->left, r->bottom - r->top,
+                         SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        Rs_Layout(1);
+        RedrawWindow(hwnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN);
         return 0;
     }
     case WM_TIMER:
@@ -2993,6 +3750,10 @@ static void Rs_RegisterClasses(void)
     wc.lpszClassName = L"RsPage";
     RegisterClassExW(&wc);
 
+    wc.lpfnWndProc = Rs_HostProc;
+    wc.lpszClassName = L"RsPageHost";
+    RegisterClassExW(&wc);
+
     wc.lpfnWndProc = Rs_MsgProc;
     wc.lpszClassName = L"RsMsgList";
     RegisterClassExW(&wc);
@@ -3020,6 +3781,68 @@ static int Rs_RunAsRldpack(int argc, wchar_t **wargv)
     return r;
 }
 
+static const wchar_t g_helpText[] =
+    L"Reload Studio " RS_VERSION_W L" (" RS_BUILD_ID_W L") - track containers, cups and characters\n"
+    L"for CTR Reload.\n"
+    L"\n"
+    L"Usage: ReloadStudio.exe [options]\n"
+    L"\n"
+    L"  --settings <ini>       settings only in this file; logs and temporary files\n"
+    L"                         go to its folder\n"
+    L"  --theme dark|light|system\n"
+    L"                         colour scheme at start\n"
+    L"  --ui-scale <percent>   scale of the window, 75 to 300 (e.g. 150), instead of\n"
+    L"                         the display scale of the monitor\n"
+    L"  --screen <w>x<h>       lay the window out as if it filled the work area of a\n"
+    L"                         screen of w x h pixels (minus a taskbar of 48 px at\n"
+    L"                         the scale), also larger than the real one - for\n"
+    L"                         screenshots, e.g. --screen 1366x768 --ui-scale 150\n"
+    L"  --do \"<verb> <arg>\"    automation step, any number of times (below)\n"
+    L"  --log <file>           automation log\n"
+    L"  --rldpack <args>       run as rldpack (only as the first argument)\n"
+    L"  --help                 this text\n"
+    L"\n"
+    L"Automation verbs of the window: page track|cups|char|test, shot <file.bmp>\n"
+    L"(the client area), wait <ms>, size <w> <h> (client area), scroll top|bottom|\n"
+    L"<x> <y> (the page shown), controls <file> (every control of the page with its\n"
+    L"rectangle, see rs_shell.c), theme dark|light|system, quit. Every other verb\n"
+    L"goes to the page shown.\n";
+
+// --help: to stdout where it is redirected into a file or a pipe, otherwise in
+// a message box (a window program has no console of its own).
+static void Rs_Help(void)
+{
+    HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+    DWORD type = (out && out != INVALID_HANDLE_VALUE) ? GetFileType(out) : FILE_TYPE_UNKNOWN;
+    if (type == FILE_TYPE_DISK || type == FILE_TYPE_PIPE) {
+        char *utf8 = Rs_ToUtf8(g_helpText);
+        DWORD put = 0;
+        WriteFile(out, utf8, (DWORD)strlen(utf8), &put, NULL);
+        Rs_Free(utf8);
+        return;
+    }
+    MessageBoxW(NULL, g_helpText, L"Reload Studio - command line", MB_OK | MB_ICONINFORMATION);
+}
+
+// "--ui-scale 150" or "150%" -> dpi, 0 if not a percentage from 75 to 300.
+static int Rs_ParseScale(const wchar_t *s)
+{
+    wchar_t *end;
+    long pct = s ? wcstol(s, &end, 10) : 0;
+    if (!s || end == s || (*end && !(end[0] == L'%' && end[1] == 0)) || pct < 75 || pct > 300)
+        return 0;
+    return (int)MulDiv(96, (int)pct, 100);
+}
+
+// "--screen 1920x1080" -> 1, 0 if not two sizes from 320 to 16384.
+static int Rs_ParseScreen(const wchar_t *s, int *w, int *h)
+{
+    wchar_t x = 0, extra = 0;
+    if (!s || swscanf(s, L"%d%lc%d%lc", w, &x, h, &extra) != 3 || (x != L'x' && x != L'X'))
+        return 0;
+    return *w >= 320 && *w <= 16384 && *h >= 320 && *h <= 16384;
+}
+
 int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
 {
     int argc = 0, i;
@@ -3030,7 +3853,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
     int startPage = RS_PAGE_TRACK;
     int cmdTheme = -1;
     const wchar_t *settingsArg = NULL;
-    RECT wr;
+    const wchar_t *scaleArg = NULL, *screenArg = NULL;
 
     (void)prev;
     (void)cmdLine;
@@ -3055,12 +3878,32 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
             // Rs_ConfigInit then has no file and says so in the log.
             g_settingsFile = 1;
             settingsArg = i + 1 < argc ? argv[++i] : NULL;
+        } else if (wcscmp(argv[i], L"--ui-scale") == 0) {
+            scaleArg = i + 1 < argc ? argv[++i] : L"";
+        } else if (wcscmp(argv[i], L"--screen") == 0) {
+            screenArg = i + 1 < argc ? argv[++i] : L"";
+        } else if (wcscmp(argv[i], L"--help") == 0 || wcscmp(argv[i], L"-h") == 0 ||
+                   wcscmp(argv[i], L"/?") == 0) {
+            Rs_Help();
+            LocalFree(argv);
+            return 0;
         }
     }
     // Before anything is logged (Rs_ConfigInit, the pages' create): the
     // automation log starts empty.
     if (g_automating && g_autoLogPath[0])
         DeleteFileW(g_autoLogPath);
+    if (scaleArg) {
+        g_forcedDpi = Rs_ParseScale(scaleArg);
+        if (!g_forcedDpi)
+            Rs_AutoLog(L"--ui-scale: '%ls' is not a percentage from 75 to 300; the monitor's scale applies",
+                       scaleArg);
+    }
+    if (screenArg && !Rs_ParseScreen(screenArg, &g_screenW, &g_screenH)) {
+        Rs_AutoLog(L"--screen: '%ls' is not <width>x<height> from 320 to 16384; the real screen applies",
+                   screenArg);
+        g_screenW = g_screenH = 0;
+    }
 
     InitializeCriticalSection(&g_jobLock);
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
@@ -3075,6 +3918,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
         g_dpi = GetDeviceCaps(dc, LOGPIXELSY);
         ReleaseDC(NULL, dc);
     }
+    if (g_forcedDpi)
+        g_dpi = g_forcedDpi;
     Rs_MakeFonts();
 
     // Colour scheme: command line before ini before Windows. In automation
@@ -3093,15 +3938,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
     Rs_SetPalette(Rs_ThemeWantsDark(g_themeMode));
     Rs_RegisterClasses();
 
-    wr.left = 0;
-    wr.top = 0;
-    wr.right = Rs_Px(1280);
-    wr.bottom = Rs_Px(820);
-    AdjustWindowRectEx(&wr, WS_OVERLAPPEDWINDOW, FALSE, 0);
+    // The size follows once the dpi of the window's monitor is known (Rs_PlaceWindow).
     g_main = CreateWindowExW(0, L"RsMain",
                              L"Reload Studio - " RS_VERSION_W L" (" RS_BUILD_ID_W L")",
                              WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-                             CW_USEDEFAULT, CW_USEDEFAULT, wr.right - wr.left, wr.bottom - wr.top,
+                             CW_USEDEFAULT, CW_USEDEFAULT, Rs_Px(RS_START_W), Rs_Px(RS_START_H),
                              NULL, NULL, inst, NULL);
     if (!g_main)
         return 1;
@@ -3109,25 +3950,31 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
         Rs_TitleBarTheme(g_main);   // before the first showing, otherwise it flashes light
     {
         UINT dpi = GetDpiForWindow(g_main);
-        if (dpi && (int)dpi != g_dpi) {
+        if (!g_forcedDpi && dpi && (int)dpi != g_dpi) {
             g_dpi = (int)dpi;
             Rs_MakeFonts();
         }
     }
     g_sidebar = CreateWindowExW(0, L"RsSidebar", L"", WS_CHILD | WS_VISIBLE,
                                 0, 0, 10, 10, g_main, NULL, inst, NULL);
+    g_host = Rs_Themed(CreateWindowExW(WS_EX_CONTROLPARENT, L"RsPageHost", L"",
+                                       WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_VSCROLL | WS_HSCROLL,
+                                       0, 0, 10, 10, g_main, NULL, inst, NULL));
+    ShowScrollBar(g_host, SB_BOTH, FALSE);
+    Rs_TipsCreate();
     for (i = 0; i < RS_PAGE_COUNT; i++) {
         struct RsPageState *st = Rs_Alloc(sizeof(*st));
         st->id = i;
         st->def = g_defs[i];
         g_pages[i] = CreateWindowExW(WS_EX_CONTROLPARENT, L"RsPage", g_defs[i]->navName,
                                      WS_CHILD | WS_CLIPCHILDREN, 0, 0, 10, 10,
-                                     g_main, NULL, inst, st);
+                                     g_host, NULL, inst, st);
         if (st->def->create)
             st->def->create(g_pages[i]);
         st->ready = 1;
     }
-    Rs_Layout();
+    Rs_PlaceWindow();
+    Rs_Layout(1);
 
     // "page=" holds the name of the page; a digit is the number of earlier
     // versions, from before the page "Character" (0 track, 1 cups, 2 test).
@@ -3158,10 +4005,27 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
 
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
         HWND page = g_current >= 0 ? g_pages[g_current] : NULL;
-        if (page && IsDialogMessageW(page, &msg))
-            continue;
-        TranslateMessage(&msg);
-        DispatchMessageW(&msg);
+        int key = msg.message >= WM_KEYFIRST && msg.message <= WM_KEYLAST;
+        // A slider without the focus hands the mouse wheel to the scrolling view
+        // (like Rs_ComboSub): scrolling the page over it must not move it.
+        if ((msg.message == WM_MOUSEWHEEL || msg.message == WM_MOUSEHWHEEL) && g_host &&
+            msg.hwnd != GetFocus()) {
+            wchar_t cls[32];
+            if (GetClassNameW(msg.hwnd, cls, 32) && _wcsicmp(cls, TRACKBAR_CLASSW) == 0) {
+                SendMessageW(g_host, msg.message, msg.wParam, msg.lParam);
+                continue;
+            }
+        }
+        if (!page || !IsDialogMessageW(page, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        // Tab and the other keys may move the focus: then into view. A click
+        // moves it too, but onto something visible already.
+        if (key)
+            Rs_FocusIntoView();
+        else
+            g_lastFocus = GetFocus();
     }
     LocalFree(argv);
     CoUninitialize();

@@ -2836,5 +2836,7 @@ const struct RsPageDef g_rsTrackPage = {
     Track_Notify,
     Track_Message,
     Track_Automate,
-    Track_Busy
+    Track_Busy,
+    RS_PAGE_MIN_W,
+    RS_PAGE_MIN_H
 };

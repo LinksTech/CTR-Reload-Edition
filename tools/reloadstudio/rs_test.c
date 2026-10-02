@@ -2069,5 +2069,7 @@ const struct RsPageDef g_rsTestPage = {
     Test_Notify,
     Test_Message,
     Test_Automate,
-    Test_Busy
+    Test_Busy,
+    RS_PAGE_MIN_W,
+    RS_PAGE_MIN_H
 };

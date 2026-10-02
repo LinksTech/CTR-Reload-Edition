@@ -2039,7 +2039,7 @@ static void Cups_Create(HWND page)
 
 static void Cups_SizeColumns(struct CupsState *s, int width)
 {
-    int w = width - GetSystemMetrics(SM_CXVSCROLL) - Rs_Px(4);
+    int w = width - Rs_Metric(s->contList, SM_CXVSCROLL) - Rs_Px(4);
     int race = Rs_Px(60);
     int name = (w - race) * 30 / 100;
     int file = (w - race) * 33 / 100;
@@ -2084,13 +2084,14 @@ static void Cups_Layout(HWND page, int w, int h)
     midTop = card.bottom + gap;
     midBottom = bottom - checkH - gap;
 
+    // The lower bounds keep "Move down" whole on the half and third buttons.
     avail = right - left - 2 * gap;
     cupsW = avail * 21 / 100;
-    if (cupsW < Rs_Px(196))
-        cupsW = Rs_Px(196);
+    if (cupsW < Rs_Px(232))
+        cupsW = Rs_Px(232);
     cupW = avail * 34 / 100;
-    if (cupW < Rs_Px(290))
-        cupW = Rs_Px(290);
+    if (cupW < Rs_Px(320))
+        cupW = Rs_Px(320);
     contW = avail - cupsW - cupW;
 
     // Containers
@@ -2468,5 +2469,7 @@ const struct RsPageDef g_rsCupsPage = {
     Cups_Notify,
     Cups_Message,
     Cups_Automate,
-    Cups_Busy
+    Cups_Busy,
+    RS_PAGE_MIN_W,
+    RS_PAGE_MIN_H
 };

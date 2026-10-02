@@ -19,14 +19,16 @@
 //   rs_track.c    page "Track"
 //   rs_cups.c     page "Cups"
 //   rs_char.c     page "Character"
-//   rs_view.c     3D model view on the reference dummy (window class RsModelView, rs_view.h)
+//   rs_view.c     3D model view beside the reference dummy (window class RsModelView, rs_view.h)
 //   rs_test.c     page "Test in game"
 //
 // Command line (details in rs_shell.c): `--rldpack <arguments>` (first
 // argument: the rldpack face), `--do "<verb> <argument>"` (automation, any
 // number of times), `--log <file>` (automation log), `--theme dark|light|system`,
 // `--settings <ini>` (settings, logs and temporary files only there - below at
-// Rs_ConfigGet).
+// Rs_ConfigGet), `--ui-scale <percent>` (scale of the window instead of the
+// monitor's), `--screen <w>x<h>` (lay the window out as on a screen of that
+// size), `--help`.
 //
 // Characters: UTF-16 in the front end (W functions), UTF-8 on the pipe to
 // rldpack and in files. The manifest sets the ANSI code page to UTF-8,
@@ -155,7 +157,9 @@
 //                  missing or invalid), icon,
 //                  voices ("" when not given), fit (crash | none), reduce
 //                  (auto | off), wheels (on | off), repair (auto | off),
-//                  open-parts (two-sided | one-sided), remesh (on | off)
+//                  open-parts (two-sided | one-sided), remesh (on | off),
+//                  mask (aku | uka, "none" when the template is not usable;
+//                  origin switch with --mask aku|uka, otherwise template)
 //   @value    size-range <lo> <hi>          (no origin)
 //             the --size percentages this model takes, whole numbers inside
 //             50..200, the run around 100; "0 0" = no size fits (the model
@@ -175,7 +179,8 @@
 //             ply           ok | missing          the model
 //             icon          ok | missing | bad    --icon (bad: not a PNG rldpack reads)
 //             icon-original ok | failed           <prefix>-original.bmp, the PNG as read
-//             icon-preview  ok | failed           <prefix>-icon.bmp, 44 x 26 as in the game
+//             icon-preview  ok | failed           <prefix>-icon.bmp, 43 x 25 as the menu tile
+//                                                 shows it (the CICN chunk stays 44 x 26)
 //             voice         ok | bad | unused | unknown | ignored   per file of the folder
 //             preview       ok | failed           --preview (failed: warning, build unaffected)
 //             The BMPs are 32 bit BI_RGB, bottom-up, B G R A (A = 0 transparent).
@@ -185,7 +190,9 @@
 //             (Blender units, after --size), scale <x> <y> <z>, colors_in,
 //             colors_out, color_error <mean> <max>, part_colors <group> <ranges>,
 //             records, slots, frames, draw_bytes, draw_delta, icon_source <w> <h>,
-//             icon_crop <x> <y> <w> <h>, icon_colors, icon_opaque (of 1144),
+//             icon_crop <x> <y> <w> <h>, icon_scaled <w> <h> (the texels the cut
+//             was scaled to: 43 x 25, or 44 x 26 for a picture of exactly that
+//             size), icon_colors, icon_opaque (of 1144),
 //             voices <"n of 18">,
 //             fit <factor> <length before> <after> <height before> <after>
 //             <kart | model>: the --fit crash factor (4 significant digits,
@@ -239,9 +246,10 @@
 //   make-char --machine --check --model <ply> --name <n> --template 14
 //             --class <balanced|acceleration|speed|turning> --size <percent>
 //             [--repair off] [--open-parts one-sided] [--remesh on]
-//             [--reduce off] [--wheels off]   (only when they differ from the
-//             defaults --repair auto, --open-parts two-sided, --remesh off,
-//             --reduce auto, --wheels on, --fit crash); --remesh on is passed
+//             [--reduce off] [--wheels off] [--mask aku|uka]   (only when they
+//             differ from the defaults --repair auto, --open-parts two-sided,
+//             --remesh off, --reduce auto, --wheels on, --fit crash, the mask of
+//             the template); --remesh on is passed
 //             only with --reduce auto (the page greys the option out otherwise)
 //             [--icon <png> --icon-preview <prefix>] [--voices <dir>]
 //             --preview <file> [--out <f>]      check; writes only the preview files
@@ -276,7 +284,25 @@ int Rs_SeverityFromText(const wchar_t *text);
 // paints background and cards, colours labels, paints main buttons and
 // passes everything else on to the page's callbacks. A page creates its
 // controls in create() and positions them in layout().
+//
+// The page window is the whole page, not only the part that is visible: the
+// shell puts it into a scrolling view. It is as large as the view, but never
+// smaller than the page's minimum size (minWidth, minHeight) and never smaller
+// than what layout() placed - a control or card that ends below or right of
+// the page makes the page that much larger (plus the usual margin of 24 px at
+// the bottom and 32 px at the right), with scroll bars, the mouse wheel and the
+// keyboard focus (Tab) scrolling it into view. So a layout fills the size it is
+// given, as before, and needs no scroll code.
 // ---------------------------------------------------------------------------
+
+// The visible part of the page in the scrolling view, in pixels: at most the
+// page's own size. Valid inside layout() (the shell knows it before), e.g. to
+// keep a preview no taller than what can be seen at once.
+void Rs_PageViewSize(HWND page, int *w, int *h);
+
+// Minimum size of a page in 96-dpi pixels when its definition says 0.
+#define RS_PAGE_MIN_W 964
+#define RS_PAGE_MIN_H 760
 
 // Return values of automate().
 enum RsAuto {
@@ -313,6 +339,12 @@ struct RsPageDef {
 
     // 1 as long as the page is waiting for a child process.
     int (*busy)(HWND page);
+
+    // Smallest size of the page in 96-dpi pixels (the shell scales it): below
+    // it the view scrolls instead of handing layout() less. 0 = RS_PAGE_MIN_W,
+    // RS_PAGE_MIN_H. A definition that ends with busy keeps the defaults.
+    int minWidth;
+    int minHeight;
 };
 
 extern const struct RsPageDef g_rsTrackPage;   // rs_track.c
@@ -338,8 +370,15 @@ HWND Rs_MainWindow(void);
 // Sizes, fonts, colours
 // ---------------------------------------------------------------------------
 
-// Scales a value in 96-dpi pixels to the current resolution.
+// Scales a value in 96-dpi pixels to the current resolution: the dpi of the
+// monitor the window is on (it follows a move to another monitor), or the
+// --ui-scale of the command line.
 int Rs_Px(int px96);
+
+// A system metric (SM_CXVSCROLL, ...) for the monitor of the window h. Windows
+// draws scroll bars, check boxes and frames in that size, also under
+// --ui-scale; GetSystemMetrics alone answers for the main monitor only.
+int Rs_Metric(HWND h, int index);
 
 enum RsFont {
     RS_FONT_BODY = 0,   // Segoe UI 10 pt - default for all controls
