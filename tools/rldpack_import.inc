@@ -472,9 +472,9 @@ static int RldMk_LoadModel(const char *path, struct RldMkPly *ply, struct RldMkM
 
 		if (s_rldReadTooLarge)
 		{
-			// Rld_ReadFile said why (file-too-large); not "cannot be opened"
-			// as well, but counted like every error of make-char.
-			Rld_Emit("file", kind, "missing", path, "0", (const char *)NULL);
+			// Rld_ReadFile said why (file-too-large): no "cannot be opened"
+			// and no @file missing - the file is there - but counted like
+			// every error of make-char.
 			s_rldMkErrors++;
 		}
 		else if (role == RLDMK_ROLE_MASK)
