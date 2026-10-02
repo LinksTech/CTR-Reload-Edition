@@ -2273,6 +2273,28 @@ internal void MM_NativeCharGrid_TestPortraits(struct MM_NativeGridTest *test)
 	templateLayout.v2 = 76;
 	MM_NativeCharGrid_Expect(test, NativeChar_PortraitLayout(NATIVE_CHAR_PORTRAIT_SLOTS, &templateLayout, &layout) == 0, "portrait layout given for slot %d",
 	                         NATIVE_CHAR_PORTRAIT_SLOTS);
+
+	// The race icon of a driver pack: 43 x 25, 4 bit, page x 256 y 0, abr 3
+	// (tpage 0x64). Into slot 0 it keeps abr and takes the strip's page.
+	memset(&templateLayout, 0, sizeof(templateLayout));
+	templateLayout.u1 = 43;
+	templateLayout.v2 = 25;
+	templateLayout.tpage = 0x64;
+	MM_NativeCharGrid_Expect(test,
+	                         NativeChar_PortraitLayout(0, &templateLayout, &layout) && (layout.tpage == 0x74) && (layout.u1 == 43) && (layout.v2 == 10 + 25),
+	                         "race portrait into slot 0: tpage 0x%04x, u1 %d, v2 %d", (unsigned)layout.tpage, (int)layout.u1, (int)layout.v2);
+
+	// No seat is bound here: the race asks for every seat and gets the
+	// template's icon itself, the pointer unchanged.
+	{
+		struct Icon templateIcon;
+
+		memset(&templateIcon, 0, sizeof(templateIcon));
+		for (k = -1; k <= 8; k++)
+		{
+			MM_NativeCharGrid_Expect(test, NativeChar_SeatPortrait(k, &templateIcon) == &templateIcon, "seat %d without a binding: not the template's icon", k);
+		}
+	}
 }
 
 int MM_NativeCharGrid_SelfTest(void)

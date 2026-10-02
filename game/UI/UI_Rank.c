@@ -1,5 +1,10 @@
 #include <common.h>
 
+// From platform/native_chars.c, further down in the translation unit: the
+// portrait of a seat - the own portrait of a bound custom character, else
+// templateIcon unchanged.
+struct Icon *NativeChar_SeatPortrait(int seat, struct Icon *templateIcon);
+
 enum UIRankConstants
 {
 	UI_RANK_DRIVER_COUNT = 8,
@@ -216,7 +221,7 @@ void UI_DrawRankedDrivers(void)
 
 				UI_DrawDriverIcon(
 
-				    gGT->ptrIcons[data.MetaDataCharacters[data.characterIDs[driverIndex]].iconID],
+				    NativeChar_SeatPortrait(driverIndex, gGT->ptrIcons[data.MetaDataCharacters[data.characterIDs[driverIndex]].iconID]),
 
 				    pos.x, pos.y, &gGT->backBuffer->primMem,
 
@@ -324,7 +329,8 @@ void UI_DrawRankedDrivers(void)
 			int posX = nextTrackX + UI_RANK_TRACK_ICON_POS_X_OFFSET;
 			int posY = UI_RANK_TRACK_ICON_POS_Y;
 
-			DecalHUD_DrawPolyGT4(gGT->ptrIcons[data.MetaDataCharacters[data.characterIDs[driverIndex]].iconID], posX, posY,
+			DecalHUD_DrawPolyGT4(NativeChar_SeatPortrait(driverIndex, gGT->ptrIcons[data.MetaDataCharacters[data.characterIDs[driverIndex]].iconID]), posX,
+			                     posY,
 
 			                     // pointer to PrimMem struct
 			                     &gGT->backBuffer->primMem,

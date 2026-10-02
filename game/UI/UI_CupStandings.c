@@ -1,5 +1,10 @@
 #include <common.h>
 
+// From platform/native_chars.c, further down in the translation unit: the
+// portrait of a seat - the own portrait of a bound custom character, else
+// templateIcon unchanged.
+struct Icon *NativeChar_SeatPortrait(int seat, struct Icon *templateIcon);
+
 enum
 {
 	UI_CUP_STANDINGS_MENU_READY_END_OPTIONS = 1,
@@ -445,7 +450,7 @@ void UI_CupStandings_InputAndDraw(void)
 		}
 
 		// Draw character icon
-		UI_DrawDriverIcon(gGT->ptrIcons[data.MetaDataCharacters[data.characterIDs[d->driverID]].iconID],
+		UI_DrawDriverIcon(NativeChar_SeatPortrait(d->driverID, gGT->ptrIcons[data.MetaDataCharacters[data.characterIDs[d->driverID]].iconID]),
 
 		                  drawPos.x, drawPos.y, &gGT->backBuffer->primMem,
 

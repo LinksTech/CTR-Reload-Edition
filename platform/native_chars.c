@@ -176,7 +176,8 @@ global_variable struct NativeCharFile s_charFiles[NATIVE_CHAR_ROSTER_MAX];
 // entry it was armed with, motorId the character id the engine runs the seat
 // on - the template. maskNoted and maskMissingNoted keep the mask lines of
 // NativeChar_NoteMask and NativeChar_SeatMaskGood to one per load; ownMask is
-// the file's own mask model (NULL = retail), ownMaskNoted its line.
+// the file's own mask model (NULL = retail), ownMaskNoted its line;
+// portraitNoted the line of NativeChar_SeatPortrait.
 global_variable struct
 {
 	struct Model *model;
@@ -186,6 +187,7 @@ global_variable struct
 	int maskMissingNoted;
 	struct Model *ownMask;
 	int ownMaskNoted;
+	int portraitNoted;
 } s_seat[NATIVE_CHAR_SEATS];
 
 // --dev-grid-fill, as main.c passed it on (0 = none).
@@ -1239,9 +1241,14 @@ int NativeChar_ModelHidesWheels(const struct Model *model)
 // video, whatever used the VRAM in between. At most 20 slots x 2 small
 // LoadImage.
 //
-// NOT HERE: the race HUD (game/UI/UI_Rank.c), the arcade results
-// (game/222.c) and the cup standings (game/UI/UI_CupStandings.c) index the
-// portraits by characterIDs and keep showing the template's portrait.
+// IN A RACE: the race HUD (game/UI/UI_Rank.c), the arcade results
+// (game/222.c) and the cup standings (game/UI/UI_CupStandings.c) ask
+// NativeChar_SeatPortrait for the portrait of a seat: a bound seat gets the
+// portrait of its file, every other seat the template's icon unchanged. The
+// race icons (the driver pack, 43 x 25 like the menu's) lie elsewhere in VRAM;
+// no track, podium or pack file writes the strip, and binding a seat marks the
+// portraits dirty, so the first HUD draw of a race uploads them - also on a
+// direct start that never saw the driver select.
 // ---------------------------------------------------------------------------
 
 #define NATIVE_CHAR_PORTRAIT_STRIP_X 256
@@ -1382,6 +1389,40 @@ internal void NativeChar_PortraitsUpload(void)
 	// (game/230/MM_NativeTrackSelect.c, MM_NativeTrackSelect_MapUpload).
 	NativeRenderer_UpdateVRAM();
 	Platform_Log("[CTR Char] portraits: %d uploaded to the strip at vblank %d\n", uploaded, Platform_GetVBlankCount());
+}
+
+struct Icon *NativeChar_SeatPortrait(int seat, struct Icon *templateIcon)
+{
+	struct Icon *icon;
+	int entry;
+
+	if (NativeChar_SeatModel(seat) == NULL)
+	{
+		return templateIcon;
+	}
+
+	entry = s_seat[seat].entry;
+	icon = NativeChar_EntryPortrait(entry, templateIcon);
+
+	// One line per load, at the first portrait the race draws for the seat.
+	if (s_seat[seat].portraitNoted == 0)
+	{
+		const struct NativeCharFile *f = &s_charFiles[entry];
+
+		s_seat[seat].portraitNoted = 1;
+		if (icon != templateIcon)
+		{
+			Platform_Log("[CTR Char] hud portrait seat %d: own (slot %d, %s)\n", seat, entry, f->file);
+		}
+		else
+		{
+			const char *why = (f->icon == NATIVE_CHAR_ICON_NONE) ? "no CICN" : ((f->icon == NATIVE_CHAR_ICON_IGNORED) ? "CICN ignored" : "no slot or size");
+
+			Platform_Log("[CTR Char] hud portrait seat %d: the template's (%s, %s)\n", seat, why, f->file);
+		}
+	}
+
+	return icon;
 }
 
 struct Icon *NativeChar_EntryPortrait(int entry, struct Icon *templateIcon)
@@ -1580,6 +1621,10 @@ void NativeChar_ArmSeats(void)
 	s_seat[0].entry = pick;
 	s_seat[0].motorId = templateId;
 	s_seat[0].ownMask = s_charFiles[pick].mask;
+
+	// The race draws the seat's portrait from the strip (NativeChar_SeatPortrait):
+	// upload it anew at the first draw, whatever happened since the driver select.
+	NativeChar_PortraitsDirty();
 	Platform_Log("[CTR Char] seat 0 = %s on template %d\n", s_charFiles[pick].file, templateId);
 }
 

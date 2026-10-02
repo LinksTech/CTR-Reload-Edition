@@ -1,5 +1,10 @@
 #include <common.h>
 
+// From platform/native_chars.c, further down in the translation unit: the
+// portrait of a seat - the own portrait of a bound custom character, else
+// templateIcon unchanged.
+struct Icon *NativeChar_SeatPortrait(int seat, struct Icon *templateIcon);
+
 enum ArcadeAdventureEndMenuConstants
 {
 	AA_SCREEN_DEPTH = 0x200,
@@ -531,7 +536,7 @@ void AA_EndEvent_DrawMenu(void)
 				// Draw the driver's character icon
 				UI_DrawDriverIcon(
 
-				    gameTrackerPtr->ptrIcons[iconID],
+				    NativeChar_SeatPortrait(gameTrackerPtr->driversInRaceOrder[i]->driverID, gameTrackerPtr->ptrIcons[iconID]),
 
 				    pos.x, 0x60, &gameTrackerPtr->backBuffer->primMem,
 

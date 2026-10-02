@@ -82,9 +82,10 @@ int NativeChar_EntryMenuFrame(int entry);       // menu pose: (frames of animati
 // In rows 266..291 the last 9 halfwords of every page stay free (x 311..319,
 // 375..383, 439..447, 503..511), and so do the rows 294..295. Entries without
 // a CICN, with a broken one, from entry 20 on, and placeholders show the
-// template's portrait as before. Only the grid shows the own portrait: the
-// race HUD, the results and the cup standings read characterIDs and keep the
-// template's portrait (game/UI/UI_Rank.c, game/222.c, game/UI/UI_CupStandings.c).
+// template's portrait as before. The grid shows the own portrait of an entry
+// (NativeChar_EntryPortrait), the race HUD, the arcade results and the cup
+// standings that of a bound seat (NativeChar_SeatPortrait; game/UI/UI_Rank.c,
+// game/222.c, game/UI/UI_CupStandings.c).
 #define NATIVE_CHAR_PORTRAIT_SLOTS 20
 
 struct NativeCharPortraitSlot
@@ -110,6 +111,13 @@ int NativeChar_PortraitLayout(int slot, const struct TextureLayout *templateLayo
 // or templateIcon when the entry has none. Silent for a retail run: without a
 // file with a CICN nothing is uploaded and nothing logged.
 struct Icon *NativeChar_EntryPortrait(int entry, struct Icon *templateIcon);
+
+// The race side: the portrait of a seat for the HUD rank list, the arcade
+// results and the cup standings. A bound seat whose guard holds
+// (NativeChar_SeatModel != NULL) gets NativeChar_EntryPortrait of its entry;
+// every other seat gets templateIcon, the caller's unchanged retail icon. One
+// line "hud portrait seat <n>: ..." per load, only for a bound seat.
+struct Icon *NativeChar_SeatPortrait(int seat, struct Icon *templateIcon);
 
 // Every entering of the driver select: the next NativeChar_EntryPortrait
 // uploads all own portraits again (a race, a quick state or a video may have
