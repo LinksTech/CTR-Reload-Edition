@@ -1364,9 +1364,11 @@ void NativeMenuLock_Tick(void)
 	s_nativeMenuReasonDrawn = 0;
 
 	// First: take the crystal bit of a container challenge out of the menu,
-	// and build a requested return to NITRO-PIT.
+	// and build a requested return to NITRO-PIT. The time trial marker goes
+	// the same way: back in the menu, the next NITRO RACE has bots again.
 	MM_NativeCrystal_MenuTick();
 	MM_NativeCtr_MenuTick();
+	MM_NativeTimeTrial_MenuTick();
 	NativeMenuPit_Return();
 
 	NativeUnlock_ApplyToGame();

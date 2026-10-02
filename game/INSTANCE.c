@@ -464,6 +464,16 @@ void INSTANCE_LevInitAll(struct InstDef *levInstDef, int numInst)
 		}
 
 #if defined(CTR_NATIVE)
+		// NITRO-PIT -> MODE: TIME TRIAL (MM_NativeTimeTrial.c): an arcade race
+		// without the TIME_TRIAL bit, so the branch above did not run. The same
+		// rule as there: item crates, fruit crates and wumpa fruit lose draw
+		// and collision.
+		if (boolArcadeOnly && MM_NativeTimeTrial_IsCustom())
+		{
+			inst->flags &= ~DRAW_COLLISION_MASK;
+			MM_NativeTimeTrial_NoteItemOff();
+		}
+
 		// NITRO-PIT -> CTR (MM_NativeCtr.c): a container CTR
 		// challenge runs as ARCADE_MODE with TOKEN_RACE, without ADVENTURE_MODE.
 		// The letters then keep their draw and collision bits.

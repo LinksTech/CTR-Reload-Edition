@@ -419,6 +419,14 @@ void AA_EndEvent_DrawMenu(void)
 
 		DecalFont_DrawLine(languageStrings[ctrWon ? LNG_YOU_WIN : LNG_TRY_AGAIN], 0x100, 0x8c, FONT_BIG, (JUSTIFY_CENTER | ORANGE));
 	}
+
+	// NITRO-PIT -> MODE: TIME TRIAL (MM_NativeTimeTrial.c): the finish is
+	// compared with the stored best once, then BEST and NEW RECORD in the same
+	// place as the CTR line - the end box below moves down for it.
+	if (MM_NativeTimeTrial_IsCustom())
+	{
+		MM_NativeTimeTrial_EndFrame();
+	}
 #endif
 
 	for (i = 0; i < gameTrackerPtr->numPlyrCurrGame; i++)
@@ -607,6 +615,15 @@ void AA_EndEvent_DrawMenu(void)
 		if (MM_NativeCtr_IsCustom())
 		{
 			RECTMENU_Show(MM_NativeCtr_EndMenu());
+			gameMenuReady |= AA_MENU_READY_FLAG;
+			return;
+		}
+
+		// Container time trial: the rows of menu222, lower down, below
+		// BEST and NEW RECORD (MM_NativeTimeTrial.c).
+		if (MM_NativeTimeTrial_IsCustom())
+		{
+			RECTMENU_Show(MM_NativeTimeTrial_EndMenu());
 			gameMenuReady |= AA_MENU_READY_FLAG;
 			return;
 		}

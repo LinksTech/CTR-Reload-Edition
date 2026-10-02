@@ -536,6 +536,14 @@ void MainInit_Drivers(struct GameTracker *gGT)
 		{
 			numDrivers = numPlyrCurrGame;
 		}
+
+		// NITRO-PIT -> MODE: TIME TRIAL (MM_NativeTimeTrial.c): alone, as the
+		// retail time trial (the mask above leaves it without bots). RaceAlone
+		// also sets the race up for the mode; without its marker it is 0.
+		if (MM_NativeTimeTrial_RaceAlone())
+		{
+			numDrivers = numPlyrCurrGame;
+		}
 #endif
 
 		// Spawn AIs
@@ -744,6 +752,10 @@ void MainInit_FinalizeInit(struct GameTracker *gGT)
 		{
 			extern int g_cfg_autopilot;
 			void Platform_Log(const char *format, ...);
+
+			// NITRO-PIT -> MODE: TIME TRIAL (MM_NativeTimeTrial.c): one line with
+			// what this setup left out (bots, crates, fruit) and the stored best.
+			MM_NativeTimeTrial_LogRace();
 
 			if (g_cfg_autopilot && (gGT->numPlyrCurrGame == 1) && (gGT->drivers[0] != NULL) && (gGT->levelID < GEM_STONE_VALLEY) &&
 			    ((gGT->gameMode1 & MAIN_MENU) == 0))

@@ -541,6 +541,10 @@ void RenderAllHUD(struct GameTracker *gGT)
 #if defined(CTR_NATIVE)
 						// --ctr-grab (only with --dev, only container CTR): measurement probe, otherwise off.
 						MM_NativeCtr_ProbeFrame();
+
+						// NITRO-PIT -> MODE: TIME TRIAL (MM_NativeTimeTrial.c): the
+						// stored best and the lap list, which the arcade HUD has not.
+						MM_NativeTimeTrial_DrawHud();
 #endif
 						UI_RenderFrame_Racing();
 					}

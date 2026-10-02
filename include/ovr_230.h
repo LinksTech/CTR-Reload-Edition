@@ -258,6 +258,17 @@ int MM_NativeTrackSelect_Mode(void);
 // screen calls it at the start when the MODE box stands on TIME TRIAL.
 void MM_NativeTimeTrial_Arm(void);
 
+// The rest of that mode: a NITRO RACE alone, without items, best times in a
+// file of its own. IsCustom is 0 without the marker - every hook then does nothing.
+int MM_NativeTimeTrial_IsCustom(void);
+void MM_NativeTimeTrial_MenuTick(void);            // native_menuscreen.c, menu level only
+int MM_NativeTimeTrial_RaceAlone(void);            // MainInit_Drivers: 1 = no bots
+void MM_NativeTimeTrial_NoteItemOff(void);         // INSTANCE_LevInitAll: a crate or fruit switched off
+void MM_NativeTimeTrial_LogRace(void);             // MainInit_FinalizeInit, next to the [CTR Race] line
+void MM_NativeTimeTrial_DrawHud(void);             // MainFrame_RenderFrame.c, before UI_RenderFrame_Racing
+void MM_NativeTimeTrial_EndFrame(void);            // 222.c, every frame of the results
+struct RectMenu *MM_NativeTimeTrial_EndMenu(void); // 222.c, instead of menu222
+
 // The NITRO-PIT row chosen in the race type box: 0 or MM_NATIVE_CHOSEN_*. The
 // mode rule of the driver select reads it (NativeChar_ModeAllowed).
 int MM_NativeTrackSelect_Chosen(void);

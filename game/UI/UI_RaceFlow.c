@@ -158,6 +158,15 @@ void UI_RaceStart_IntroText1P(void)
 						textID = LNG_CTR_CHALLENGE_TITLE;
 						goto LAB_80055930;
 					}
+
+					// NITRO-PIT -> MODE: TIME TRIAL (MM_NativeTimeTrial.c):
+					// ARCADE_MODE without the TIME_TRIAL bit; title as in
+					// retail time trial.
+					if (MM_NativeTimeTrial_IsCustom())
+					{
+						textID = LNG_TIME_TRIAL;
+						goto LAB_80055930;
+					}
 #endif
 
 					if (
