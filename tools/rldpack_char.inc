@@ -1482,6 +1482,7 @@ struct RldMkBuild
 	int posed;                 // the automatic poses were made
 	int vehicleOnly;           // --wheels off and no driver above the vehicle: the whole model is the vehicle and stands still
 	u32 strayPieces;           // --wheels off: pieces far off the model left out of its size and place (RldMk_RobustBox)
+	u32 weightTotal;           // the weights of all parts (RldMk_PartWeights)
 	double size[4];            // length, width (kart), height, bottom - Blender units
 	double exported[4];        // the same before --size (ply-axes)
 	double center;             // ply-center: the kart's middle to the side of x = 0, model units as exported
@@ -2652,7 +2653,7 @@ static int RldMk_UnderDriver(const struct RldMkBuild *b, u32 vehicle)
 	for (i = 0; i < b->partCount; i++)
 	{
 		// a stray piece (under 8 triangles and 1 % of them) is no driver
-		if ((i != vehicle) && ((b->parts[i].triangles >= 8u) || (((u64)b->parts[i].triangles * 100u) >= (u64)b->triangleCount)) &&
+		if ((i != vehicle) && RldMk_PartCounts(b, i) &&
 		    ((d < 0) || (b->parts[i].weight > b->parts[d].weight)))
 		{
 			d = (int)i;
@@ -2767,14 +2768,15 @@ static int RldMk_SteeringOnVehicle(const struct RldMkBuild *b, u32 i, int kart)
 	return 0;
 }
 
-// THE WEIGHT OF A PART for picking the driver: its triangles - but the pieces
+// THE WEIGHT OF A PART (or of any group of triangles, `groupOf` per triangle,
+// `weight` per group preset to its triangles) for picking the driver: its triangles - but the pieces
 // of a face a reader split (ply->faceSource: the OBJ reader cuts textured
 // triangles for their texture detail) count once, as the triangle they were.
 // A steering wheel cut into many pieces for its texture stays a steering
 // wheel. Faces nobody split, and triangles repair added, count as before, so
 // a model without faceSource keeps exactly its triangle counts. 0 = out of
 // memory.
-static int RldMk_PartWeights(struct RldMkBuild *b)
+static int RldMk_SplitCount(const struct RldMkBuild *b, const u32 *groupOf, u32 *weight)
 {
 	u32 *uses;
 	u64 *keys;
@@ -2782,10 +2784,6 @@ static int RldMk_PartWeights(struct RldMkBuild *b)
 	u32 t;
 	u32 i;
 
-	for (i = 0; i < b->partCount; i++)
-	{
-		b->parts[i].weight = b->parts[i].triangles;
-	}
 	if ((b->faceSource == NULL) || (b->diagFace == NULL))
 	{
 		return 1;
@@ -2807,16 +2805,15 @@ static int RldMk_PartWeights(struct RldMkBuild *b)
 		}
 	}
 
-	// the triangles of split faces: (part, source) once each
+	// the triangles of split faces: (group, source) once each
 	for (t = 0; t < b->triangleCount; t++)
 	{
 		const u32 face = b->diagFace[t];
-		const u32 part = b->positionPart[b->vertexPosition[b->triangle[3u * t]]];
 
 		if ((face < b->faceCount2) && (b->faceSource[face] < b->faceCount2) && (uses[b->faceSource[face]] > 1u))
 		{
-			keys[keyCount++] = ((u64)part << 32) | (u64)b->faceSource[face];
-			b->parts[part].weight--;
+			keys[keyCount++] = ((u64)groupOf[t] << 32) | (u64)b->faceSource[face];
+			weight[groupOf[t]]--;
 		}
 	}
 	qsort(keys, keyCount, sizeof(u64), RldMk_CompareU64);
@@ -2824,13 +2821,54 @@ static int RldMk_PartWeights(struct RldMkBuild *b)
 	{
 		if ((i == 0u) || (keys[i] != keys[i - 1u]))
 		{
-			b->parts[(u32)(keys[i] >> 32)].weight++;
+			weight[(u32)(keys[i] >> 32)]++;
 		}
 	}
 
 	free(uses);
 	free(keys);
 	return 1;
+}
+
+static int RldMk_PartWeights(struct RldMkBuild *b)
+{
+	u32 *groupOf = (u32 *)malloc(((size_t)b->triangleCount + 1u) * sizeof(u32));
+	u32 *weight = (u32 *)calloc((size_t)b->partCount + 1u, sizeof(u32));
+	u32 t;
+	u32 i;
+	int ok;
+
+	if ((groupOf == NULL) || (weight == NULL))
+	{
+		free(groupOf);
+		free(weight);
+		return 0;
+	}
+	for (i = 0; i < b->partCount; i++)
+	{
+		weight[i] = b->parts[i].triangles;
+	}
+	for (t = 0; t < b->triangleCount; t++)
+	{
+		groupOf[t] = b->positionPart[b->vertexPosition[b->triangle[3u * t]]];
+	}
+	ok = RldMk_SplitCount(b, groupOf, weight);
+	b->weightTotal = 0;
+	for (i = 0; i < b->partCount; i++)
+	{
+		b->parts[i].weight = weight[i];
+		b->weightTotal += weight[i];
+	}
+	free(groupOf);
+	free(weight);
+	return ok;
+}
+
+// A part counts for picking a driver at all when it has 8 triangles or 1 % of
+// them (by weight: the pieces of a split face once) - a stray piece does not.
+static int RldMk_PartCounts(const struct RldMkBuild *b, u32 i)
+{
+	return (b->parts[i].weight >= 8u) || (((u64)b->parts[i].weight * 100u) >= (u64)b->weightTotal);
 }
 
 // May part `i` be a steering wheel? With the kart wheels shown: yes (the
@@ -3076,7 +3114,7 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 	{
 		if (((int)i != best) &&
 		    (!opt->noWheels || (RldMk_AboveVehicle(&b->parts[i], &b->parts[best]) && RldMk_OverVehicle(&b->parts[i], &b->parts[best]) &&
-		                        (((u64)b->parts[i].triangles * 100u) >= (u64)b->triangleCount))) &&
+		                        (((u64)b->parts[i].weight * 100u) >= (u64)b->weightTotal))) &&
 		    ((b->driverPart < 0) || (b->parts[i].weight > b->parts[b->driverPart].weight)))
 		{
 			b->driverPart = (int)i;
@@ -3275,8 +3313,8 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 		if (higher >= 0)
 		{
 			RldMk_Say("warning", "ply-driver", NULL,
-			          "The driver was taken as the part with the most triangles (%u, up to %.2f model units high), but a larger part reaching higher (%u triangles, up to %.2f) stays still with the kart. If that part is the driver, join the vehicle's own parts to the kart's mesh (Blender: select them, Ctrl+J), so that the driver is the only other large part.",
-			          driver->triangles, driver->hi[1] / RLDMK_UNITS, b->parts[higher].triangles, b->parts[higher].hi[1] / RLDMK_UNITS);
+			          "The driver was taken as the part with the most triangles (%u, pieces of a split face counted once; up to %.2f model units high), but a large part reaching higher (%u triangles, up to %.2f) stays still with the kart. If that part is the driver, join the vehicle's own parts to the kart's mesh (Blender: select them, Ctrl+J), so that the driver is the only other large part.",
+			          driver->weight, driver->hi[1] / RLDMK_UNITS, b->parts[higher].triangles, b->parts[higher].hi[1] / RLDMK_UNITS);
 		}
 	}
 
@@ -3462,6 +3500,7 @@ static int RldMk_RobustBox(const struct RldMkBuild *b, double lo[3], double hi[3
 	double coreHi[3];
 	double total = 0.0;
 	double taken = 0.0;
+	u32 weightTotal = 0;
 	u32 stray = 0;
 	int found = 0;
 	u32 p;
@@ -3519,6 +3558,26 @@ static int RldMk_RobustBox(const struct RldMkBuild *b, double lo[3], double hi[3
 		}
 	}
 
+	// the pieces' triangles as weights (the pieces of a split face once)
+	{
+		u32 *groupOf = (u32 *)malloc(((size_t)b->triangleCount + 1u) * sizeof(u32));
+
+		for (t = 0; (groupOf != NULL) && (t < b->triangleCount); t++)
+		{
+			groupOf[t] = RldMk_Root(parent, b->vertexPosition[b->triangle[3u * t]]);
+		}
+		if (groupOf != NULL)
+		{
+			RldMk_SplitCount(b, groupOf, triangles);
+		}
+		free(groupOf);
+		weightTotal = 0;
+		for (p = 0; p < n; p++)
+		{
+			weightTotal += triangles[p];
+		}
+	}
+
 	// the core: the largest pieces until 90 % of the area, at least one -
 	// only pieces of 8 triangles or 1 % of them and more: a flat square of
 	// two triangles far off, 15 % of the area, made a car five times as
@@ -3538,7 +3597,7 @@ static int RldMk_RobustBox(const struct RldMkBuild *b, double lo[3], double hi[3
 		{
 			break;
 		}
-		if ((triangles[best] < 8u) && (((u64)triangles[best] * 100u) < (u64)b->triangleCount))
+		if ((triangles[best] < 8u) && (((u64)triangles[best] * 100u) < (u64)weightTotal))
 		{
 			core[best] = 2;
 			continue;
@@ -20932,6 +20991,70 @@ static void RldMk_SelfTestStrayAndWheels(struct RldMkTestMesh *mesh)
 	}
 }
 
+// A SPLIT VEHICLE AND A SMALL DRIVER, --wheels off: a body of 2700 triangles
+// that are pieces of its 6 faces (faceSource) and a driver of 12 on it. The
+// driver counts against the faces (12 of 18), not against the pieces (12 of
+// 2712, under 1 %): with the sources he is the driver, without them the
+// model is a vehicle alone.
+static void RldMk_SelfTestSplitVehicle(struct RldMkTestMesh *mesh)
+{
+	static const double bodyLo[3] = {-0.30, 0.10, -0.60};
+	static const double bodyHi[3] = {0.30, 0.40, 0.60};
+	static const double driverLo[3] = {-0.15, 0.42, -0.30};
+	static const double driverHi[3] = {0.15, 0.80, 0.00};
+	int withSource;
+
+	mesh->vertexCount = 0;
+	mesh->faceCount = 0;
+	RldMk_TestBox(mesh, bodyLo, bodyHi, 15u, 0u, 0, -1);
+	RldMk_TestBox(mesh, driverLo, driverHi, 1u, 10u, 0, -1);
+
+	for (withSource = 1; withSource >= 0; withSource--)
+	{
+		struct RldMkOptions opt;
+		struct RldMkPly ply;
+		struct RldMkBuild b;
+		size_t size = 0;
+		u8 *data = RldMk_TestPly(mesh, 0, 1, 0, &size);
+		int ok;
+
+		memset(&ply, 0, sizeof(ply));
+		memset(&b, 0, sizeof(b));
+		RldMk_ResetSaid();
+		RldMk_TestOptions(&opt);
+		opt.fit = 1;
+		opt.noWheels = 1;
+		opt.repair = 1;
+		ok = (data != NULL) && RldMk_ParsePly(data, size, &ply);
+		if (ok && withSource)
+		{
+			u32 f;
+
+			ply.faceSource = (u32 *)malloc(((size_t)ply.faceCount + 1u) * sizeof(u32));
+			ok = (ply.faceSource != NULL);
+			for (f = 0; ok && (f < ply.faceCount); f++)
+			{
+				ply.faceSource[f] = (f < 1350u) ? (f / 225u) : f;
+			}
+		}
+		ok = ok && RldMk_BuildModel(&ply, &opt, &b);
+		if (withSource)
+		{
+			RldMk_Test(ok && !b.vehicleOnly && (b.groupTriangles[RLDMK_GROUP_DRIVER] == 12u),
+			           "--wheels off, a split vehicle (faceSource) and a driver of 12 triangles: he is the driver", "built %d, kart %u, driver %u, said: %s",
+			           ok, b.groupTriangles[RLDMK_GROUP_KART], b.groupTriangles[RLDMK_GROUP_DRIVER], s_rldMkCodes);
+		}
+		else
+		{
+			RldMk_Test(ok && b.vehicleOnly, "--wheels off, the same without faceSource: 12 of 2712 triangles, no driver", "built %d, kart %u, driver %u, said: %s", ok,
+			           b.groupTriangles[RLDMK_GROUP_KART], b.groupTriangles[RLDMK_GROUP_DRIVER], s_rldMkCodes);
+		}
+		free(data);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+	}
+}
+
 static int RldChar_SelfTest(void)
 {
 	struct RldMkTestMesh *mesh = (struct RldMkTestMesh *)calloc(1, sizeof(struct RldMkTestMesh));
@@ -21001,6 +21124,7 @@ static int RldChar_SelfTest(void)
 	RldMk_SelfTestNoSteering(mesh);
 	RldMk_SelfTestFaceSource(mesh);
 	RldMk_SelfTestStrayAndWheels(mesh);
+	RldMk_SelfTestSplitVehicle(mesh);
 	s_rldMkQuiet = quietBefore;
 	RldMk_ResetSaid();
 
