@@ -1093,6 +1093,20 @@ static void RldMk_SelfTestObjCases(struct RldMkTestMesh *mesh)
 		RldMk_Test((b.data != NULL) && RldMk_TestObjError("selftest/huge.obj", (const char *)b.data, b.size, "obj-big"), "OBJ refused: more than 1000000 vertices",
 		           "said: %s", s_rldMkCodes);
 		free(b.data);
+
+		// A 0 byte past the first 64 KiB the format is told by.
+		memset(&b, 0, sizeof(b));
+		RldMk_BufferText(&b, "%s", tri);
+		for (i = 0; i < 4000u; i++)
+		{
+			RldMk_BufferText(&b, "# a comment line to fill the file past what tells its format\n");
+		}
+		RldMk_BufferText(&b, "usemtl a");
+		RldMk_BufferBytes(&b, "\0", 1u);
+		RldMk_BufferText(&b, "b\nf 1 2 3\n");
+		RldMk_Test((b.data != NULL) && (b.size > RLDOBJ_DETECT_BYTES) && RldMk_TestObjError("selftest/zero.obj", (const char *)b.data, b.size, "obj-syntax"),
+		           "OBJ refused: a 0 byte past the first 64 KiB", "said: %s", s_rldMkCodes);
+		free(b.data);
 	}
 
 	// The format by the content, the name only compared.

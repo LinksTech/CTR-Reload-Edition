@@ -1275,7 +1275,23 @@ static int RldObj_ReadLines(struct RldObjModel *m, const u8 *data, size_t size)
 {
 	struct RldObjText text;
 	u32 name = RLDMK_NONE;
+	const u8 *zero = (const u8 *)memchr(data, 0, size);
 	int got;
+
+	// An OBJ is text: a 0 byte anywhere (RldObj_Detect looks only at the
+	// start) stops the reader at its line, before a name is cut at it.
+	if (zero != NULL)
+	{
+		const u8 *p;
+		u32 line = 1;
+
+		for (p = data; p < zero; p++)
+		{
+			line += (*p == '\n') ? 1u : 0u;
+		}
+		RldObj_Syntax(line, "a 0 byte: not text");
+		return 0;
+	}
 
 	RldObj_TextStart(&text, data, size, m->line);
 	while ((got = RldObj_Line(&text)) > 0)
