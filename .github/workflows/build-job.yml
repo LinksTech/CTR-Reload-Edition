@@ -1,7 +1,9 @@
 # CTR Reload Edition - the build job, shared by build.yml and nightly.yml.
 #
 # Builds (32-bit, MSVC), runs the self-tests, packages, and - except for pull
-# requests - attaches the package to the run. It never writes to the
+# requests - attaches the package to the run. Then it builds rldpack once
+# more with MinGW-w64 GCC (i686) and runs its self-test, so that the goldens
+# are checked with a second compiler family. It never writes to the
 # repository: the token is read-only here, and the release jobs that may
 # write live in the calling workflows.
 #
@@ -124,6 +126,40 @@ jobs:
           path: dist/*.zip
           if-no-files-found: error
 
+      # THE SAME RLDPACK WITH A SECOND COMPILER. The self-test holds goldens:
+      # the exact bytes of finished containers. A compiler that rounds a
+      # double differently (x87, FMA, fast math) fails it here instead of
+      # building other containers unnoticed; the flags that prevent it are
+      # in CMakeLists.txt next to rldpack. Only rldpack is built with MinGW -
+      # the game and Reload Studio stay MSVC - and only its self-test runs.
+      # It comes after the upload on purpose: a failure here keeps the run
+      # (and with it every release that needs it) red, but the MSVC package
+      # stays available for comparison.
+      #
+      # The tool chain comes from the MSYS2 installation of the runner image
+      # (C:\msys64) through pacman, whose packages MSYS2 signs. The i686
+      # prefix (mingw32) is empty on the image, so refreshing the package
+      # list for it changes nothing that is already installed.
+      - name: Install MinGW-w64 GCC for i686
+        shell: pwsh
+        run: |
+          & C:\msys64\usr\bin\bash.exe -lc 'pacman -Sy --noconfirm --needed mingw-w64-i686-gcc mingw-w64-i686-make'
+          if ($LASTEXITCODE -ne 0) { throw "pacman failed ($LASTEXITCODE)" }
+
+      - name: Build rldpack with MinGW i686 and run its self-test
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\msys64\mingw32\bin;$env:PATH"
+          & i686-w64-mingw32-gcc --version
+          cmake --preset windows-mingw-i686-release -DBUILD_TESTING=OFF
+          if ($LASTEXITCODE -ne 0) { throw "MinGW configure failed ($LASTEXITCODE)" }
+          cmake --build --preset windows-mingw-i686-release --target rldpack --parallel
+          if ($LASTEXITCODE -ne 0) { throw "MinGW build of rldpack failed ($LASTEXITCODE)" }
+          & .\build-mingw-i686-release\rldpack.exe selftest *> mingw-selftest.log
+          $rc = $LASTEXITCODE
+          Get-Content mingw-selftest.log
+          if ($rc -ne 0) { throw "rldpack selftest failed under MinGW i686 ($rc)" }
+
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -132,4 +168,5 @@ jobs:
           path: |
             build-msvc-x86/Testing/Temporary/LastTest.log
             dist-build.log
+            mingw-selftest.log
           if-no-files-found: ignore
