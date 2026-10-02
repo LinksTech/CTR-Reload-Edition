@@ -109,8 +109,12 @@ enum
 
 // The triangles draw memory holds (as RLDMK_REDUCE_LIMIT of the chain); auto
 // aims at RLDOBJ_DETAIL_AUTO_TRIANGLES, which leaves room for what repair
-// adds (cracks closed, holes filled) before reduction would start.
+// adds (cracks closed, holes filled) before reduction would start. The n of
+// --texture-detail goes up to RLDOBJ_DETAIL_MAX, 200 below the limit: at
+// 7200 the triangles repair adds (12 for a PS1 pickup) would not fit and a
+// build with --reduce off would end in model-tris.
 #define RLDOBJ_DETAIL_LIMIT (RLDCHAR_DRAW_BYTES_MAX / RLDCHAR_DRAW_BYTES_G3)
+#define RLDOBJ_DETAIL_MAX (RLDOBJ_DETAIL_LIMIT - 200u)
 #define RLDOBJ_DETAIL_AUTO_TRIANGLES 6000u
 
 struct RldObjOptions
@@ -199,7 +203,7 @@ static int RldObj_Argument(const char *arg, const char *value)
 		u32 n = 0;
 		size_t k;
 
-		for (k = 0; (value[k] >= '0') && (value[k] <= '9') && (n <= RLDOBJ_DETAIL_LIMIT); k++)
+		for (k = 0; (value[k] >= '0') && (value[k] <= '9') && (n <= RLDOBJ_DETAIL_MAX); k++)
 		{
 			n = n * 10u + (u32)(value[k] - '0');
 		}
@@ -208,7 +212,7 @@ static int RldObj_Argument(const char *arg, const char *value)
 			s_rldObjOptions.textureDetail = (value[0] == 'o') ? RLDOBJ_DETAIL_OFF : RLDOBJ_DETAIL_AUTO;
 			s_rldObjOptions.textureDetailGiven = 1;
 		}
-		else if ((k != 0u) && (value[k] == '\0') && (n >= 1u) && (n <= RLDOBJ_DETAIL_LIMIT))
+		else if ((k != 0u) && (value[k] == '\0') && (n >= 1u) && (n <= RLDOBJ_DETAIL_MAX))
 		{
 			s_rldObjOptions.textureDetail = RLDOBJ_DETAIL_COUNT;
 			s_rldObjOptions.detailTriangles = n;
@@ -217,7 +221,7 @@ static int RldObj_Argument(const char *arg, const char *value)
 		else
 		{
 			RldMk_Say("error", "texture-detail", value, "The texture detail must be off, auto or a number of triangles from 1 to %u.",
-			          (u32)RLDOBJ_DETAIL_LIMIT);
+			          (u32)RLDOBJ_DETAIL_MAX);
 		}
 		return 1;
 	}
@@ -272,7 +276,7 @@ static void RldObj_Usage(FILE *out)
 	fprintf(out, "                              OBJ: textured triangles are split where\n");
 	fprintf(out, "                              their texture differs most from what three\n");
 	fprintf(out, "                              corner colors show, until the model has n\n");
-	fprintf(out, "                              triangles (1..%u); auto (default): %u;\n", (u32)RLDOBJ_DETAIL_LIMIT, RLDOBJ_DETAIL_AUTO_TRIANGLES);
+	fprintf(out, "                              triangles (1..%u); auto (default): %u;\n", (u32)RLDOBJ_DETAIL_MAX, RLDOBJ_DETAIL_AUTO_TRIANGLES);
 	fprintf(out, "                              off: three colors per triangle\n");
 	fprintf(out, "  --colors-from vertex|material\n");
 	fprintf(out, "                              OBJ: the vertex colors or the materials' Kd\n");
@@ -3308,9 +3312,10 @@ static int RldObj_Textures(struct RldObjModel *m, const char *objPath, char (*li
 // longest edge, the one whose texture its fitted corners miss most first
 // (mean square per channel x area in model units; equal ones by the order
 // they were made), until the model has RLDOBJ_DETAIL_AUTO_TRIANGLES (or the
-// n of the switch) triangles as step 2 counts them - below the
-// RLDOBJ_DETAIL_LIMIT of draw memory, with room for what repair adds. A
-// model that has them already is not split; then nothing changes at all.
+// n of the switch, at most RLDOBJ_DETAIL_MAX) triangles as step 2 counts
+// them - below the RLDOBJ_DETAIL_LIMIT of draw memory, with room for what
+// repair adds. A model that has them already is not split; then nothing
+// changes at all.
 //
 // No crack: an edge is split for every triangle that has it (by position,
 // welded on the 1e-5 grid of step 3, whatever its material), each with a

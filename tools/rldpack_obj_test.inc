@@ -1414,13 +1414,13 @@ static void RldMk_SelfTestObjDetail(void)
 	RldMk_ResetSaid();
 	ok = RldObj_Argument("--texture-detail", "0") && RldMk_Said("texture-detail");
 	RldMk_ResetSaid();
-	ok = ok && RldObj_Argument("--texture-detail", "7201") && RldMk_Said("texture-detail");
+	ok = ok && RldObj_Argument("--texture-detail", "7001") && RldMk_Said("texture-detail");
 	RldMk_ResetSaid();
 	ok = ok && RldObj_Argument("--texture-detail", "12x") && RldMk_Said("texture-detail");
 	RldMk_ResetSaid();
-	ok = ok && RldObj_Argument("--texture-detail", "7200") && !RldMk_Said("texture-detail") && (s_rldObjOptions.textureDetail == RLDOBJ_DETAIL_COUNT) &&
-	     (s_rldObjOptions.detailTriangles == 7200u);
-	RldMk_Test(ok, "--texture-detail: 1..7200, off or auto; 0, 7201, 12x said as texture-detail", "said: %s", s_rldMkCodes);
+	ok = ok && RldObj_Argument("--texture-detail", "7000") && !RldMk_Said("texture-detail") && (s_rldObjOptions.textureDetail == RLDOBJ_DETAIL_COUNT) &&
+	     (s_rldObjOptions.detailTriangles == 7000u);
+	RldMk_Test(ok, "--texture-detail: 1..7000, off or auto; 0, 7001 (no room left for repair), 12x said as texture-detail", "said: %s", s_rldMkCodes);
 	RldObj_ResetOptions();
 }
 
