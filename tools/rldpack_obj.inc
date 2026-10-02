@@ -304,6 +304,101 @@ static int RldObj_Join(const char *folder, const char *name, char *out, size_t o
 	return (n >= 0) && ((size_t)n < outSize);
 }
 
+// Is the last part written before path[o] (which follows its separator) ".."?
+static int RldObj_LastIsUp(const char *path, size_t start, size_t o)
+{
+	const size_t end = o - 1u;
+	size_t begin = end;
+
+	while ((begin > start) && !Rld_IsSeparator(path[begin - 1u]))
+	{
+		begin--;
+	}
+	return ((end - begin) == 2u) && (path[begin] == '.') && (path[begin + 1u] == '.');
+}
+
+// A path tidied in place: "." parts and doubled separators dropped, a part
+// followed by ".." dropped with it; the separators as written, a drive and
+// leading separators kept. "./t.png", "a/../t.png" and "t.png" become one.
+static void RldObj_TidyPath(char *path)
+{
+	size_t start = 0;
+	size_t r;
+	size_t o;
+
+	if ((path[0] != '\0') && (path[1] == ':'))
+	{
+		start = 2;
+	}
+	while (Rld_IsSeparator(path[start]))
+	{
+		start++;
+	}
+	r = start;
+	o = start;
+	while (path[r] != '\0')
+	{
+		size_t end = r;
+		size_t n;
+
+		while ((path[end] != '\0') && !Rld_IsSeparator(path[end]))
+		{
+			end++;
+		}
+		n = end - r;
+		if ((n == 1u) && (path[r] == '.'))
+		{
+			// "." is dropped.
+		}
+		else if ((n == 2u) && (path[r] == '.') && (path[r + 1u] == '.') && (o > start) && !RldObj_LastIsUp(path, start, o))
+		{
+			// ".." drops the part before it: back over its separator and it.
+			o--;
+			while ((o > start) && !Rld_IsSeparator(path[o - 1u]))
+			{
+				o--;
+			}
+		}
+		else
+		{
+			memmove(&path[o], &path[r], n);
+			o += n;
+			if (path[end] != '\0')
+			{
+				path[o++] = path[end];
+			}
+		}
+		r = end;
+		while (Rld_IsSeparator(path[r]))
+		{
+			r++;
+		}
+	}
+	path[o] = '\0';
+}
+
+// The same file? Paths compared as Windows does: in any letter case, with \
+// and / alike.
+static int RldObj_SamePath(const char *a, const char *b)
+{
+	for (;; a++, b++)
+	{
+		char x = *a;
+		char y = *b;
+
+		x = ((x >= 'A') && (x <= 'Z')) ? (char)(x - 'A' + 'a') : ((x == '\\') ? '/' : x);
+		y = ((y >= 'A') && (y <= 'Z')) ? (char)(y - 'A' + 'a') : ((y == '\\') ? '/' : y);
+		if (x != y)
+		{
+			return 0;
+		}
+		if (x == '\0')
+		{
+			return 1;
+		}
+	}
+}
+
 //========================================================================================
 // LINES, WORDS AND NUMBERS
 //========================================================================================
@@ -2643,9 +2738,12 @@ static int RldObj_Textures(struct RldObjModel *m, const char *objPath, char (*li
 		{
 			snprintf(path, sizeof(path), "%s", material->map);
 		}
+		// One texture per file however its path is written (./t.png,
+		// a/../t.png, T.PNG): read and applied once.
+		RldObj_TidyPath(path);
 		for (k = 0; k < m->textureCount; k++)
 		{
-			if (strcmp(m->textures[k].path, path) == 0)
+			if (RldObj_SamePath(m->textures[k].path, path))
 			{
 				break;
 			}

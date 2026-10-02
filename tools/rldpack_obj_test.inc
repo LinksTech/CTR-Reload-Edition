@@ -1177,6 +1177,34 @@ static void RldMk_SelfTestObj(struct RldMkTestMesh *mesh)
 	}
 
 	{
+		static const char *const paths[][2] = {
+		    {"./t.png", "t.png"},
+		    {"././t.png", "t.png"},
+		    {"a/./b//c/../t.png", "a/b/t.png"},
+		    {"C:\\x\\.\\y\\..\\t.png", "C:\\x\\t.png"},
+		    {"../../t.png", "../../t.png"},
+		    {"a/../../t.png", "../t.png"},
+		    {"//server/share/./t.png", "//server/share/t.png"},
+		    {"/x/y/../../t.png", "/t.png"},
+		};
+		char path[64];
+		u32 i;
+		int same = 1;
+
+		for (i = 0; i < (u32)(sizeof(paths) / sizeof(paths[0])); i++)
+		{
+			snprintf(path, sizeof(path), "%s", paths[i][0]);
+			RldObj_TidyPath(path);
+			if (strcmp(path, paths[i][1]) != 0)
+			{
+				same = 0;
+				RldMk_Test(0, "OBJ texture path tidied", "%s -> %s, not %s", paths[i][0], path, paths[i][1]);
+			}
+		}
+		RldMk_Test(same && RldObj_SamePath("C:\\Mod\\T.png", "c:/mod/t.PNG") && !RldObj_SamePath("a/t.png", "a/t.pn"),
+		           "OBJ texture paths: ./ and x/../ tidied, compared in any letter case and with \\ as /", "same %d", same);
+	}
+	{
 		char sha[65];
 
 		RldObj_Digest((const u8 *)"abc", 3u, sha);
