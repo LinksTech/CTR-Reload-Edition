@@ -456,6 +456,11 @@ Tab 5 Extras
   Import      How rldpack reads the model. The defaults suit most models;
               when one does not, a message names the choice to change (a
               click on it opens this card).
+              Up: the axis that points up in the file - "Y (default)" as
+              Blender exports with +Y up, "Z" for Blender's own axes with
+              the front at -Y ("--up z"). Forward: "-Z" for a model that
+              looks backwards; it is turned round ("--forward -z"). rldpack
+              says "set Up to Z" when a model only fits that way.
               Vertex colors (an OBJ only): how a vertex colour meets the
               texture of its face. "Auto (default)": an OBJ ripped from a
               PS1 game (the vertex colours of its textured faces lie around
