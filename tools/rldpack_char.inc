@@ -6852,6 +6852,20 @@ static int RldMk_BuildOnce(const struct RldMkPly *ply, const struct RldMkOptions
 		b->fitKart[1] = b->parts[b->kartPart].hi[2] - b->parts[b->kartPart].lo[2];
 	}
 
+	// The kart at Crash's length would have made the model taller than
+	// the tallest retail driver: the height decided, the kart is shorter
+	// than 112.4 and the game's wheels (RLDDUM_TIRE_*) stand off its ends.
+	// --size does not help here (it scales the driver after the fit).
+	if (b->fitted && b->fitCapped && (b->fitBasis == RLDMK_FIT_KART) && (b->fitKart[0] > 0.0))
+	{
+		const double tall = b->fitBefore[1] * RLDMK_CRASH_LENGTH / b->fitKart[0];
+		const u32 percent = (u32)RldMk_Floor(100.0 * RLDMK_RETAIL_HEIGHT_MAX / tall);
+
+		RldMk_Say("warning", "fit-capped", NULL,
+		          "With its kart at the length of Crash's the model would be %.2f model units tall, more than the tallest retail driver (%.2f): the whole model was made smaller, so the kart is %.2f long instead of %.2f and the game's wheels will not sit on it. Make the driver smaller in the model (to about %u%% of the model's height), or hide the kart wheels (--wheels off; Reload Studio: untick Show kart wheels).",
+		          tall / RLDMK_UNITS, RLDMK_RETAIL_HEIGHT_MAX / RLDMK_UNITS, b->fitKart[1] / RLDMK_UNITS, RLDMK_CRASH_LENGTH / RLDMK_UNITS, percent);
+	}
+
 	if (!RldMk_StepRemesh(b, opt, ply) || !RldMk_StepDummy(b, opt) || (b->diagnose && !RldMk_DiagKeep(ply, b)))
 	{
 		return 0;
@@ -18867,6 +18881,26 @@ static void RldMk_SelfTestParts(struct RldMkTestMesh *mesh)
 			           "ply-center with --fit none --scale 1.2: warning, 0.50 model units as in the file", "built %d, center %.4f, warnings %u, said: %s", ok,
 			           b.center, warningsBefore, s_rldMkCodes);
 		}
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+	}
+
+	// FIT-CAPPED: a driver 2.5 tall on a kart 1.8 long - the height decides
+	// the fit, the kart ends up shorter than Crash's: a warning. 1.0 tall: none.
+	for (lift = 0; lift < 2; lift++)
+	{
+		const double dHi[3] = {0.25, lift ? 1.00 : 2.50, 0.10};
+
+		mesh->vertexCount = 0;
+		mesh->faceCount = 0;
+		RldMk_TestBox(mesh, kartLo, kartHi, 1u, 0u, 0, -1);
+		RldMk_TestBox(mesh, driverLo, dHi, 2u, 10u, 0, -1);
+		RldMk_TestOptions(&opt);
+		opt.fit = 1;
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+		RldMk_Test(ok && (b.fitBasis == RLDMK_FIT_KART) && ((b.fitCapped != 0) == (lift == 0)) && (RldMk_Said("fit-capped") == (lift == 0)),
+		           lift ? "fit not capped: no fit-capped" : "fit capped by the height: fit-capped", "built %d, basis %d, capped %d, said: %s", ok, b.fitBasis,
+		           b.fitCapped, s_rldMkCodes);
 		RldMk_FreeBuild(&b);
 		RldMk_FreePly(&ply);
 	}
