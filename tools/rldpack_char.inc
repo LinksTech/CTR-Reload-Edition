@@ -47,10 +47,11 @@
 //   14  --icon: a PNG (include/rldpng.inc) -> the portrait CICN, 44 x 26, 16 colors
 //   15  the game's own check (RldChar_CheckModel), read back by the renderer's
 //       rule, the cull side replayed per triangle, built twice
-//   16  CHRI + CMDL (+ CICN) -> .rldchar through the shared envelope
+//   16  CHRI + CMDL (+ CICN, CMSK, CVOI) -> .rldchar through the shared envelope
 //
-// BESIDE THE CHAIN, for Reload Studio: --voices only checks a folder of voice
-// lines (nothing is packed yet), --preview writes the built model as the game
+// --voices packs a folder of sound files as the voices CVOI (RldMk_PackVoices).
+// BESIDE THE CHAIN, for Reload Studio: --voice-preview writes every sound as
+// the game plays it, --preview writes the built model as the game
 // draws it, --icon-preview the portrait before and after as BMP. --diagnose
 // writes the model as every step saw it (RLDDIAG 1, RldMk_Diagnosis), with the
 // limits of draw memory and file size lifted - and then no character at all.
@@ -253,11 +254,13 @@ static void RldChar_Usage(FILE *out);
 
 static int s_rldMkQuiet;
 static int s_rldMkErrors;
+static int s_rldMkWarnings;   // for the self-test: a code said as a warning or as a note
 static char s_rldMkCodes[2048];
 
 static void RldMk_ResetSaid(void)
 {
 	s_rldMkErrors = 0;
+	s_rldMkWarnings = 0;
 	s_rldMkCodes[0] = '\0';
 }
 
@@ -270,6 +273,10 @@ static void RldMk_Say(const char *severity, const char *code, const char *techni
 	if (strcmp(severity, "error") == 0)
 	{
 		s_rldMkErrors++;
+	}
+	else if (strcmp(severity, "warning") == 0)
+	{
+		s_rldMkWarnings++;
 	}
 
 	if ((used + strlen(code) + 2u) < sizeof(s_rldMkCodes))
@@ -7628,11 +7635,12 @@ static u8 *RldMk_BuildChri(u32 templateId, u32 classId, const u8 name[RLDCHAR_NA
 	return RldMk_BuildChriColor(templateId, classId, name, charVersion, author, flags, 0u, sizeOut);
 }
 
-// CHRI, CMDL, then CICN (--icon) and CMSK (--mask-model) when there are any,
-// through the shared envelope (Rld_WriteEnvelope, rldtrack.inc). Without them
-// two chunks, as before CICN existed.
-static u8 *RldMk_ContainerMask(const u8 *chri, size_t chriSize, const u8 *cmdl, size_t cmdlSize, const u8 *cicn, const u8 *cmsk, size_t cmskSize,
-                               size_t *sizeOut)
+// CHRI, CMDL, then CICN (--icon), CMSK (--mask-model) and CVOI (--voices) when
+// there are any, in this order, through the shared envelope
+// (Rld_WriteEnvelope, rldtrack.inc). Without them two chunks, as before CICN
+// existed.
+static u8 *RldMk_ContainerVoices(const u8 *chri, size_t chriSize, const u8 *cmdl, size_t cmdlSize, const u8 *cicn, const u8 *cmsk, size_t cmskSize,
+                                 const u8 *cvoi, size_t cvoiSize, size_t *sizeOut)
 {
 	struct RldContainer container;
 	u8 *out;
@@ -7649,6 +7657,10 @@ static u8 *RldMk_ContainerMask(const u8 *chri, size_t chriSize, const u8 *cmdl, 
 	{
 		Rld_AddChunk(&container, "CMSK", cmsk, cmskSize, RLD_COMPRESSION_NONE);
 	}
+	if (cvoi != NULL)
+	{
+		Rld_AddChunk(&container, "CVOI", cvoi, cvoiSize, RLD_COMPRESSION_NONE);
+	}
 
 	out = Rld_WriteEnvelope(&s_rldCharFormat, 0u, &container, sizeOut);
 
@@ -7658,6 +7670,12 @@ static u8 *RldMk_ContainerMask(const u8 *chri, size_t chriSize, const u8 *cmdl, 
 	}
 
 	return out;
+}
+
+static u8 *RldMk_ContainerMask(const u8 *chri, size_t chriSize, const u8 *cmdl, size_t cmdlSize, const u8 *cicn, const u8 *cmsk, size_t cmskSize,
+                               size_t *sizeOut)
+{
+	return RldMk_ContainerVoices(chri, chriSize, cmdl, cmdlSize, cicn, cmsk, cmskSize, NULL, 0u, sizeOut);
 }
 
 static u8 *RldMk_Container(const u8 *chri, size_t chriSize, const u8 *cmdl, size_t cmdlSize, const u8 *cicn, size_t *sizeOut)
@@ -9313,36 +9331,56 @@ static int RldMk_IconStep(const char *path, const char *previewPrefix, const str
 }
 
 //========================================================================================
-// --voices: THE VOICE LINES, CHECKED ONLY
+// --voices: THE VOICES -> CVOI
 //========================================================================================
 //
-// Read, sorted to their places, measured - nothing is packed yet, and a
-// character is silent in the game until voices are (voice-later). The file
-// name says the place (upper or lower case alike), the extension the format:
+// A folder of sound files becomes the chunk CVOI (layout and rules CVOI-1..4:
+// include/rldchar.inc). The file name says the event (upper or lower case
+// alike), the extension the format:
 //
-//   boost1/2 hit1/2 spin1/2 bigair1/2 drop1/2 shield1/2 passing1/2 fire1/2
-//                    the 8 sets of voice lines, two each
-//   yes, hit         the two short sounds, which play only for templates 12..14
+//   boost1..4 hit1..4 spin1..4 bigair1..4 drop1..4 shield1..4 passing1..4 fire1..4
+//                    the 8 sets of voice lines (events 0..7), up to four each
+//   yes, hit         the two short sounds (events 8 and 9)
+//
+// --voice <file>=<event|none> overrides the name for one file of the folder:
+// any file goes to any event (s_rldCharVoiceEvents), or stays out. The clips
+// of an event are ordered by file name (in lower case, then as written); an
+// event takes at most RLDCHAR_VOICE_PER_EVENT (voice-too-many).
 //
 //   .wav  RIFF/WAVE, PCM 8/16/24 bit or float 32, 1 or 2 channels, 8000..48000 Hz
 //         (also WAVE_FORMAT_EXTENSIBLE); LIST/INFO ISFT is read (voice-source)
 //   .vag  the PS1 format: "VAGp", 0x30 bytes of header (include/psx/libspu.h:477),
 //         big-endian data size and rate, 16-byte SPU-ADPCM blocks up to the
-//         first one with the end flag
+//         first one with the end flag - decoded, never encoded
 //
-// Every file is a foreign one: lengths are checked against the bytes, and a
-// file rldpack cannot read stops the build (voice-wav, voice-vag).
+// THE SOUND THE GAME PLAYS, made in this order: the samples as 16 bit, stereo
+// mixed to mono (the mean, rounded down), the rate converted to 22050 Hz with
+// a low-pass (RldMk_VoiceResample; a file at 22050 Hz keeps every sample), cut
+// after 3.5 s (events 0..7) or 1.0 s (events 8 and 9), and with
+// --voice-normalize the peak set to -1 dBFS (RldMk_VoiceNormalize). Integers
+// throughout but the filter taps, which are rounded once: the same files give
+// the same bytes. --voice-preview writes every readable file of the folder in
+// exactly that form as a WAV, for Reload Studio's Play button; a file in no
+// event is cut like a voice line there.
+//
+// Every file is a foreign one: lengths are checked against the bytes. A file
+// rldpack cannot read stops the build when it is in an event (voice-wav,
+// voice-vag); in no event it is only listed as bad.
 
-#define RLDMK_VOICE_SLOTS 18
-#define RLDMK_VOICE_SHORT_FIRST 16       // yes and hit
-#define RLDMK_VOICE_LINE_MS 3500u        // voice lines are cut after 3.5 s
-#define RLDMK_VOICE_SHORT_MS 1000u       // short sounds after 1.0 s
+#define RLDMK_VOICE_NAMES 34             // 8 events x 4 numbered names, then yes and hit
+#define RLDMK_VOICE_LINE_MS 3500u        // RLDCHAR_VOICE_LINE_FRAMES
+#define RLDMK_VOICE_SHORT_MS 1000u       // RLDCHAR_VOICE_SHORT_FRAMES
 #define RLDMK_VOICE_FILES_MAX 64u
+#define RLDMK_VOICE_ASSIGN_MAX 64u       // --voice switches
 #define RLDMK_VOICE_BYTES_MAX (32u * 1024u * 1024u)
-
-static const char *const s_rldMkVoiceSlots[RLDMK_VOICE_SLOTS] = {"boost1",  "boost2",  "hit1",     "hit2",     "spin1", "spin2",
-                                                                 "bigair1", "bigair2", "drop1",    "drop2",    "shield1", "shield2",
-                                                                 "passing1", "passing2", "fire1", "fire2", "yes",   "hit"};
+#define RLDMK_VOICE_PEAK 29204           // -1 dBFS: 32768 x 10^(-1/20), rounded
+#define RLDMK_VOICE_PHASES 256u          // the positions between two samples the filter knows
+#define RLDMK_VOICE_ZEROS 8              // zero crossings of the filter on each side
+#define RLDMK_VOICE_PASS 0.92            // the cutoff, a part of the lower of the two Nyquist frequencies
+#define RLDMK_VOICE_ONE 65536            // the taps of one phase add up to this
+#define RLDMK_VOICE_TAPS_MAX 64u         // 2 x ceil(8 / (22050 / 48000 x 0.92)) = 38 at most
+#define RLDMK_VOICE_CLIP_AUDIBLE 16u     // samples at full level from which voice-clip is a warning, below a note
+#define RLDMK_VOICE_QUIET 328            // -40 dBFS: a clip with a lower peak is not normalized (voice-quiet)
 
 struct RldMkVoiceFile
 {
@@ -9358,19 +9396,97 @@ struct RldMkVoiceSound
 	u32 channels;
 	u32 frames;          // samples per channel
 	u32 clipped;         // samples at full level
+	u32 peak;            // the largest |sample| of any channel as 16 bit, 32768 = full scale
 	int silent;
 	int psound;          // LIST/INFO ISFT names PSound
 	u8 hash[32];         // of the sample bytes, for voice-same
+	s16 *mono;           // when asked for: `frames` samples, the channels mixed (malloc)
 };
 
-static int RldMk_VoiceSlot(const char *name, int *vag)
+// What make-char passes on from its switches.
+struct RldMkVoiceOptions
+{
+	const char **assign;         // the values of --voice: <file>=<event|none>
+	u32 assignCount;
+	int normalize;               // --voice-normalize
+	const char *preview;         // --voice-preview <prefix>; NULL: no preview
+};
+
+// One file of the folder as make-char sees it.
+struct RldMkVoiceItem
+{
+	int byName;          // RldMk_VoiceEvent: -2 not .wav/.vag, -1 no event's name, else the event
+	int vag;
+	int event;           // -1: in no event
+	int chosen;          // the event (or none) comes from --voice
+	int read;            // the samples were read
+	int cut;             // longer than its event allows
+	struct RldMkVoiceSound sound;
+	s16 *clip;           // the clip as the game plays it - kept only for a file in an event
+	u32 clipFrames;
+	u32 clipFull;        // samples of the clip at full level before normalizing, the resampler's clamps included
+	u32 clipPeak;        // the largest |sample| of the clip before normalizing
+	int doubleOf;        // lost a voice-double to file doubleOf - 1; 0: no double
+	int previewDone;
+};
+
+static s64 RldMk_VoiceFloorDiv(s64 value, s64 divisor)
+{
+	return (value >= 0) ? (value / divisor) : -((-value + divisor - 1) / divisor);
+}
+
+static char RldMk_VoiceLowerChar(char c)
+{
+	return ((c >= 'A') && (c <= 'Z')) ? (char)(c - 'A' + 'a') : c;
+}
+
+// Names compared in lower case, then as written - the order of the clips
+// within an event.
+static int RldMk_VoiceNameOrder(const char *a, const char *b)
+{
+	size_t i;
+
+	for (i = 0; (a[i] != '\0') || (b[i] != '\0'); i++)
+	{
+		const char x = RldMk_VoiceLowerChar(a[i]);
+		const char y = RldMk_VoiceLowerChar(b[i]);
+
+		if (x != y)
+		{
+			return ((u8)x < (u8)y) ? -1 : 1;
+		}
+	}
+
+	return strcmp(a, b);
+}
+
+static int RldMk_VoiceSameNoCase(const char *a, const char *b)
+{
+	size_t i;
+
+	for (i = 0; (a[i] != '\0') || (b[i] != '\0'); i++)
+	{
+		if (RldMk_VoiceLowerChar(a[i]) != RldMk_VoiceLowerChar(b[i]))
+		{
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
+// The event a file name stands for (0..9), and the place of that name
+// (0..RLDMK_VOICE_NAMES-1, for voice-double). -2: not a .wav or .vag file,
+// -1: no event's name.
+static int RldMk_VoiceEvent(const char *name, int *vag, int *place)
 {
 	char base[32];
 	size_t length = strlen(name);
 	size_t i;
-	int s;
+	int e;
 
 	*vag = 0;
+	*place = -1;
 	if (Rld_EndsWithNoCase(name, ".vag"))
 	{
 		*vag = 1;
@@ -9388,21 +9504,53 @@ static int RldMk_VoiceSlot(const char *name, int *vag)
 
 	for (i = 0; i < length; i++)
 	{
-		const char c = name[i];
-
-		base[i] = ((c >= 'A') && (c <= 'Z')) ? (char)(c - 'A' + 'a') : c;
+		base[i] = RldMk_VoiceLowerChar(name[i]);
 	}
 	base[length] = '\0';
 
-	for (s = 0; s < RLDMK_VOICE_SLOTS; s++)
+	for (e = 0; e < RLDCHAR_VOICE_SHORT_FIRST; e++)
 	{
-		if (strcmp(base, s_rldMkVoiceSlots[s]) == 0)
+		const size_t keyLength = strlen(s_rldCharVoiceEvents[e]);
+
+		if ((length == (keyLength + 1u)) && (memcmp(base, s_rldCharVoiceEvents[e], keyLength) == 0) && (base[keyLength] >= '1') &&
+		    (base[keyLength] <= (char)('0' + RLDCHAR_VOICE_PER_EVENT)))
 		{
-			return s;
+			*place = e * RLDCHAR_VOICE_PER_EVENT + (base[keyLength] - '1');
+			return e;
 		}
+	}
+	if (strcmp(base, "yes") == 0)
+	{
+		*place = RLDMK_VOICE_NAMES - 2;
+		return RLDCHAR_VOICE_SHORT_FIRST;
+	}
+	if (strcmp(base, "hit") == 0)
+	{
+		*place = RLDMK_VOICE_NAMES - 1;
+		return RLDCHAR_VOICE_SHORT_FIRST + 1;
 	}
 
 	return -1;
+}
+
+// The event of a --voice value: 0..9, -1 for none, -2 for no event.
+static int RldMk_VoiceKey(const char *key)
+{
+	int e;
+
+	if (RldMk_VoiceSameNoCase(key, "none"))
+	{
+		return -1;
+	}
+	for (e = 0; e < RLDCHAR_VOICE_EVENTS; e++)
+	{
+		if (RldMk_VoiceSameNoCase(key, s_rldCharVoiceEvents[e]))
+		{
+			return e;
+		}
+	}
+
+	return -2;
 }
 
 static int RldMk_ContainsNoCase(const u8 *text, size_t size, const char *word)
@@ -9432,8 +9580,9 @@ static int RldMk_ContainsNoCase(const u8 *text, size_t size, const char *word)
 	return 0;
 }
 
-// A WAV file. NULL = read, else the reason (fixed text).
-static const char *RldMk_ReadWav(const u8 *data, size_t size, struct RldMkVoiceSound *out)
+// A WAV file. NULL = read, else the reason (fixed text). decode: also the
+// samples mixed to mono in out->mono.
+static const char *RldMk_ReadWav(const u8 *data, size_t size, struct RldMkVoiceSound *out, int decode)
 {
 	size_t at = 12;
 	size_t dataAt = 0;
@@ -9446,6 +9595,7 @@ static const char *RldMk_ReadWav(const u8 *data, size_t size, struct RldMkVoiceS
 	u32 zero = 0;
 	u32 i;
 	u32 total;
+	int left = 0;
 
 	memset(out, 0, sizeof(*out));
 
@@ -9547,18 +9697,33 @@ static const char *RldMk_ReadWav(const u8 *data, size_t size, struct RldMkVoiceS
 	}
 
 	out->frames = dataSize / blockAlign;
+	if (out->frames == 0u)
+	{
+		return "the file holds no samples";
+	}
 	total = out->frames * out->channels;
+
+	if (decode)
+	{
+		out->mono = (s16 *)malloc((size_t)out->frames * sizeof(s16));
+		if (out->mono == NULL)
+		{
+			return "the file is too large to decode";
+		}
+	}
 
 	for (i = 0; i < total; i++)
 	{
 		const u8 *s = &data[dataAt + (size_t)i * (bits / 8u)];
 		int full;
 		int isZero;
+		int value;
 
 		if (bits == 8u)
 		{
 			full = (s[0] == 0u) || (s[0] == 255u);
 			isZero = (s[0] == 128u);
+			value = (s[0] == 255u) ? 32767 : (((int)s[0] - 128) * 256);   // 255 is full level, as 0 is
 		}
 		else if (bits == 16u)
 		{
@@ -9566,6 +9731,7 @@ static const char *RldMk_ReadWav(const u8 *data, size_t size, struct RldMkVoiceS
 
 			full = (v == 0x7FFFu) || (v == 0x8000u);
 			isZero = (v == 0u);
+			value = (int)v - (int)((v & 0x8000u) << 1);
 		}
 		else if (bits == 24u)
 		{
@@ -9573,6 +9739,7 @@ static const char *RldMk_ReadWav(const u8 *data, size_t size, struct RldMkVoiceS
 
 			full = (v == 0x7FFFFFu) || (v == 0x800000u);
 			isZero = (v == 0u);
+			value = (int)RldMk_VoiceFloorDiv((s64)v - (s64)((v & 0x800000u) << 1), 256);
 		}
 		else
 		{
@@ -9582,10 +9749,48 @@ static const char *RldMk_ReadWav(const u8 *data, size_t size, struct RldMkVoiceS
 			memcpy(&f, &word, sizeof(f));
 			full = (f >= 1.0f) || (f <= -1.0f);
 			isZero = (f == 0.0f);
+			if (!(f == f))
+			{
+				value = 0;
+			}
+			else if (f >= 1.0f)
+			{
+				value = 32767;
+			}
+			else if (f <= -1.0f)
+			{
+				value = -32768;
+			}
+			else
+			{
+				const s64 rounded = RldMk_Round((double)f * 32768.0);
+
+				value = (rounded > 32767) ? 32767 : (int)rounded;
+			}
 		}
 
 		out->clipped += full ? 1u : 0u;
 		zero += isZero ? 1u : 0u;
+		if ((u32)((value < 0) ? -value : value) > out->peak)
+		{
+			out->peak = (u32)((value < 0) ? -value : value);
+		}
+
+		if (out->mono != NULL)
+		{
+			if (out->channels == 1u)
+			{
+				out->mono[i] = (s16)value;
+			}
+			else if ((i & 1u) == 0u)
+			{
+				left = value;
+			}
+			else
+			{
+				out->mono[i / 2u] = (s16)RldMk_VoiceFloorDiv((s64)left + value, 2);
+			}
+		}
 	}
 
 	out->silent = (zero == total);
@@ -9599,9 +9804,10 @@ static int RldMk_FloorDiv64(int value)
 	return (value >= 0) ? (value / 64) : -((-value + 63) / 64);
 }
 
-// A VAG file: header, size, end flag, and the samples decoded for the level
-// (the SPU's ADPCM: 28 samples per 16-byte block, 5 prediction filters).
-static const char *RldMk_ReadVag(const u8 *data, size_t size, struct RldMkVoiceSound *out)
+// A VAG file: header, size, end flag, and the samples decoded (the SPU's
+// ADPCM: 28 samples per 16-byte block, 5 prediction filters). decode: the
+// samples also in out->mono.
+static const char *RldMk_ReadVag(const u8 *data, size_t size, struct RldMkVoiceSound *out, int decode)
 {
 	static const int filter0[5] = {0, 60, 115, 98, 122};
 	static const int filter1[5] = {0, 0, -52, -55, -60};
@@ -9651,6 +9857,15 @@ static const char *RldMk_ReadVag(const u8 *data, size_t size, struct RldMkVoiceS
 		return "no block carries the end flag";
 	}
 
+	if (decode)
+	{
+		out->mono = (s16 *)malloc((end + 1u) * 28u * sizeof(s16));
+		if (out->mono == NULL)
+		{
+			return "the file is too large to decode";
+		}
+	}
+
 	for (b = 0; b <= end; b++)
 	{
 		const u8 *block = &data[0x30u + 16u * b];
@@ -9660,6 +9875,8 @@ static const char *RldMk_ReadVag(const u8 *data, size_t size, struct RldMkVoiceS
 
 		if (filter > 4u)
 		{
+			free(out->mono);
+			out->mono = NULL;
 			return "a block uses an unknown filter";
 		}
 		shift = (shift > 12u) ? 9u : shift;
@@ -9673,6 +9890,14 @@ static const char *RldMk_ReadVag(const u8 *data, size_t size, struct RldMkVoiceS
 			value = (value < -32768) ? -32768 : ((value > 32767) ? 32767 : value);
 			out->clipped += ((value == 32767) || (value == -32768)) ? 1u : 0u;
 			zero += (value == 0) ? 1u : 0u;
+			if ((u32)((value < 0) ? -value : value) > out->peak)
+			{
+				out->peak = (u32)((value < 0) ? -value : value);
+			}
+			if (out->mono != NULL)
+			{
+				out->mono[b * 28u + k] = (s16)value;
+			}
 			s2 = s1;
 			s1 = value;
 		}
@@ -9684,212 +9909,751 @@ static const char *RldMk_ReadVag(const u8 *data, size_t size, struct RldMkVoiceS
 	return NULL;
 }
 
-// Every finding of a voice folder, from its files (sorted by name). dir: the
-// folder - a file that fills a place is read from there only then, at most
-// RLDMK_VOICE_BYTES_MAX (the size asked first), checked and let go, so one
-// file is held at a time; NULL: the bytes are in files[].data (self-test).
-// templateId: the template, RLDMK_NONE when not known.
-static void RldMk_CheckVoices(const struct RldMkVoiceFile *files, u32 count, u32 templateId, const char *dir)
+// The sine of any angle in radians: brought into -90..90 degrees for
+// RldMk_SinCos, whose series is exact there.
+static double RldMk_VoiceSin(double radians)
 {
-	int slotFile[RLDMK_VOICE_SLOTS];
-	int slotOk[RLDMK_VOICE_SLOTS];
-	struct RldMkVoiceSound sound[RLDMK_VOICE_SLOTS];
-	char missing[256];
-	u32 filled = 0;
-	u32 i;
-	int s;
-	int t;
+	const double pi = 3.14159265358979323846;
+	double x = radians - 2.0 * pi * (double)RldMk_Round(radians / (2.0 * pi));
+	double sine;
+	double cosine;
 
-	for (s = 0; s < RLDMK_VOICE_SLOTS; s++)
+	if (x > 0.5 * pi)
 	{
-		slotFile[s] = -1;
-		slotOk[s] = 0;
+		x = pi - x;
+	}
+	else if (x < -0.5 * pi)
+	{
+		x = -pi - x;
+	}
+	RldMk_SinCos(x * (180.0 / pi), &sine, &cosine);
+	return sine;
+}
+
+// From `rate` to RLDCHAR_VOICE_RATE: out[n] lies at n * rate / 22050 input
+// samples, the position rounded down to 1/RLDMK_VOICE_PHASES of a sample. The
+// filter is a sinc with its cutoff at RLDMK_VOICE_PASS of the lower Nyquist
+// frequency - against aliasing when the rate goes down, against images when it
+// goes up - in a Hann window of RLDMK_VOICE_ZEROS zero crossings on each side.
+// Its taps are computed in doubles once per call and rounded to integers that
+// add up to RLDMK_VOICE_ONE in every phase; all else is integer. Samples
+// before the start and after the end count as 0. At most maxFrames samples are
+// made (malloc, *framesOut of them); *fullFrames: how many the whole sound
+// has. At 22050 Hz the samples stay as they are. NULL: out of memory.
+static s16 *RldMk_VoiceResample(const s16 *in, u32 frames, u32 rate, u32 maxFrames, u32 *framesOut, u32 *fullFrames)
+{
+	const u32 target = RLDCHAR_VOICE_RATE;
+	const u32 full = (u32)(((u64)frames * target + rate - 1u) / rate);
+	const u32 count = (full < maxFrames) ? full : maxFrames;
+	s16 *out = (s16 *)malloc(((count != 0u) ? count : 1u) * sizeof(s16));
+	const double pi = 3.14159265358979323846;
+	double ratio;
+	double cutoff;
+	s32 *table;
+	s32 half;
+	u32 taps;
+	u32 p;
+	u32 n;
+
+	*framesOut = 0;
+	*fullFrames = full;
+	if (out == NULL)
+	{
+		return NULL;
+	}
+	if (rate == target)
+	{
+		memcpy(out, in, (size_t)count * sizeof(s16));
+		*framesOut = count;
+		return out;
+	}
+
+	ratio = (rate > target) ? ((double)target / (double)rate) : 1.0;
+	cutoff = 0.5 * ratio * RLDMK_VOICE_PASS;   // cycles per input sample
+	half = (s32)RldMk_Ceil((double)RLDMK_VOICE_ZEROS / (2.0 * cutoff));
+	taps = 2u * (u32)half;
+	if (taps > RLDMK_VOICE_TAPS_MAX)
+	{
+		free(out);
+		return NULL;
+	}
+	table = (s32 *)malloc((size_t)RLDMK_VOICE_PHASES * taps * sizeof(s32));
+	if (table == NULL)
+	{
+		free(out);
+		return NULL;
+	}
+
+	for (p = 0; p < RLDMK_VOICE_PHASES; p++)
+	{
+		const double fraction = (double)p / (double)RLDMK_VOICE_PHASES;
+		double weight[RLDMK_VOICE_TAPS_MAX];
+		double sum = 0.0;
+		s32 total = 0;
+		u32 largest = 0;
+		u32 k;
+
+		for (k = 0; k < taps; k++)
+		{
+			const double x = (double)((s32)k - half + 1) - fraction;   // from the output position, in input samples
+			const double t = 2.0 * cutoff * x;
+			const double sinc = (t == 0.0) ? 1.0 : (RldMk_VoiceSin(pi * t) / (pi * t));
+			const double window = 0.5 + 0.5 * RldMk_VoiceSin(pi * x / (double)half + 0.5 * pi);
+
+			weight[k] = sinc * window;
+			sum += weight[k];
+			largest = (weight[k] > weight[largest]) ? k : largest;
+		}
+		for (k = 0; k < taps; k++)
+		{
+			table[p * taps + k] = (s32)RldMk_Round(weight[k] / sum * (double)RLDMK_VOICE_ONE);
+			total += table[p * taps + k];
+		}
+		table[p * taps + largest] += RLDMK_VOICE_ONE - total;
+	}
+
+	for (n = 0; n < count; n++)
+	{
+		const u64 position = (u64)n * rate;
+		const s64 base = (s64)(position / target);
+		const u32 phase = (u32)(((position % target) * RLDMK_VOICE_PHASES) / target);
+		const s32 *tap = &table[phase * taps];
+		s64 sum = 0;
+		s64 value;
+		u32 k;
+
+		for (k = 0; k < taps; k++)
+		{
+			const s64 at = base + (s64)k - half + 1;
+
+			if ((at >= 0) && (at < (s64)frames))
+			{
+				sum += (s64)tap[k] * in[(size_t)at];
+			}
+		}
+		value = RldMk_VoiceFloorDiv(sum + RLDMK_VOICE_ONE / 2, RLDMK_VOICE_ONE);
+		out[n] = (s16)((value > 32767) ? 32767 : ((value < -32768) ? -32768 : value));
+	}
+
+	free(table);
+	*framesOut = count;
+	return out;
+}
+
+// The largest |sample| of a clip and how many samples lie at full level
+// (32767 or -32768).
+static u32 RldMk_VoicePeak(const s16 *samples, u32 frames, u32 *full)
+{
+	u32 peak = 0;
+	u32 i;
+
+	*full = 0;
+	for (i = 0; i < frames; i++)
+	{
+		const u32 v = (u32)((samples[i] < 0) ? -(s32)samples[i] : (s32)samples[i]);
+
+		peak = (v > peak) ? v : peak;
+		*full += ((samples[i] == 32767) || (samples[i] == -32768)) ? 1u : 0u;
+	}
+
+	return peak;
+}
+
+// --voice-normalize: the largest |sample| becomes RLDMK_VOICE_PEAK (-1 dBFS),
+// every sample scaled alike, rounded half up. A clip with its peak below
+// RLDMK_VOICE_QUIET (-40 dBFS) stays as it is: lifting noise or near silence
+// to full level helps no one (voice-quiet says so).
+static void RldMk_VoiceNormalize(s16 *samples, u32 frames)
+{
+	u32 full = 0;
+	const s64 peak = (s64)RldMk_VoicePeak(samples, frames, &full);
+	u32 i;
+
+	if (peak < RLDMK_VOICE_QUIET)
+	{
+		return;
+	}
+
+	for (i = 0; i < frames; i++)
+	{
+		samples[i] = (s16)RldMk_VoiceFloorDiv((s64)samples[i] * RLDMK_VOICE_PEAK * 2 + peak, 2 * peak);
+	}
+}
+
+// A 16-bit mono WAV at 22050 Hz: what the game plays (--voice-preview).
+static int RldMk_WriteWav(const char *path, const s16 *samples, u32 frames)
+{
+	u8 head[44];
+	u8 pair[2];
+	FILE *file;
+	u32 i;
+	int ok;
+
+	memcpy(head, "RIFF", 4u);
+	Rld_WriteLE32(&head[4], 36u + 2u * frames);
+	memcpy(&head[8], "WAVEfmt ", 8u);
+	Rld_WriteLE32(&head[16], 16u);
+	Rld_WriteLE16(&head[20], 1u);
+	Rld_WriteLE16(&head[22], 1u);
+	Rld_WriteLE32(&head[24], RLDCHAR_VOICE_RATE);
+	Rld_WriteLE32(&head[28], 2u * RLDCHAR_VOICE_RATE);
+	Rld_WriteLE16(&head[32], 2u);
+	Rld_WriteLE16(&head[34], 16u);
+	memcpy(&head[36], "data", 4u);
+	Rld_WriteLE32(&head[40], 2u * frames);
+
+	file = fopen(path, "wb");
+	if (file == NULL)
+	{
+		return 0;
+	}
+	ok = (fwrite(head, 1, sizeof(head), file) == sizeof(head));
+	for (i = 0; ok && (i < frames); i++)
+	{
+		Rld_WriteLE16(pair, (u32)(u16)samples[i]);
+		ok = (fwrite(pair, 1, 2u, file) == 2u);
+	}
+
+	return (fclose(file) == 0) && ok;
+}
+
+// The name of a clip in CVOI: the file name without its extension, at most
+// 15 characters, printable ASCII (anything else becomes '_') - for the log only.
+static void RldMk_VoiceClipName(const char *fileName, u8 field[RLDCHAR_VOICE_NAME_BYTES])
+{
+	size_t length = strlen(fileName);
+	size_t i;
+
+	memset(field, 0, RLDCHAR_VOICE_NAME_BYTES);
+	if (Rld_EndsWithNoCase(fileName, ".wav") || Rld_EndsWithNoCase(fileName, ".vag"))
+	{
+		length -= 4u;
+	}
+	if (length == 0u)
+	{
+		memcpy(field, "clip", 4u);
+		return;
+	}
+	length = (length < (RLDCHAR_VOICE_NAME_BYTES - 1u)) ? length : (RLDCHAR_VOICE_NAME_BYTES - 1u);
+	for (i = 0; i < length; i++)
+	{
+		const u8 c = (u8)fileName[i];
+
+		field[i] = ((c >= 0x20u) && (c <= 0x7Eu)) ? c : (u8)'_';
+	}
+}
+
+// One sound file of the folder: from files[i].data, or read from dir (at
+// most RLDMK_VOICE_BYTES_MAX, the size asked first) and let go again. NULL =
+// read (item->sound filled, the samples in item->sound.mono), else why not.
+static const char *RldMk_VoiceRead(const struct RldMkVoiceFile *file, const char *dir, struct RldMkVoiceItem *item)
+{
+	const char *why = NULL;
+	const u8 *data = file->data;
+	u8 *read = NULL;
+	size_t size = file->size;
+
+	if ((data == NULL) && (dir != NULL))
+	{
+		char path[RLD_PATH_MAX + RLD_NAME_MAX];
+		int tooLarge = 0;
+
+		snprintf(path, sizeof(path), "%s" RLD_SEP "%s", dir, file->name);
+		if (RldMk_ReadLimited(path, RLDMK_VOICE_BYTES_MAX, &read, &size, &tooLarge))
+		{
+			data = read;
+		}
+		why = tooLarge ? "the file is larger than 32 MB" : "the file cannot be read";
+	}
+
+	if (data != NULL)
+	{
+		why = item->vag ? RldMk_ReadVag(data, size, &item->sound, 1) : RldMk_ReadWav(data, size, &item->sound, 1);
+	}
+	else if (dir == NULL)
+	{
+		why = "the file cannot be read";
+	}
+	free(read);
+
+	if (why != NULL)
+	{
+		free(item->sound.mono);
+		item->sound.mono = NULL;
+	}
+	return why;
+}
+
+// --voice <file>=<event|none>, split at the last '=' (no event key holds
+// one, a file name may); the last one for a file wins. 0 = said wrong.
+static int RldMk_VoiceAssign(const char *value, const struct RldMkVoiceFile *files, u32 count, struct RldMkVoiceItem *items)
+{
+	const char *equals = strrchr(value, '=');
+	char name[RLD_NAME_MAX];
+	size_t length;
+	int file = -1;
+	int event;
+	u32 i;
+
+	if ((equals == NULL) || (equals == value) || (equals[1] == '\0') || ((size_t)(equals - value) >= sizeof(name)))
+	{
+		RldMk_Say("error", "voice-assign", value, "\"%s\" is not a file and its event, as in laugh.wav=shield.", value);
+		return 0;
+	}
+	length = (size_t)(equals - value);
+	memcpy(name, value, length);
+	name[length] = '\0';
+
+	for (i = 0; (i < count) && (file < 0); i++)
+	{
+		file = (strcmp(files[i].name, name) == 0) ? (int)i : -1;
+	}
+	for (i = 0; (i < count) && (file < 0); i++)
+	{
+		file = RldMk_VoiceSameNoCase(files[i].name, name) ? (int)i : -1;
+	}
+	if (file < 0)
+	{
+		RldMk_Say("error", "voice-assign", value, "%s is not in the voice folder.", name);
+		return 0;
+	}
+
+	event = RldMk_VoiceKey(&equals[1]);
+	if (event == -2)
+	{
+		RldMk_Say("error", "voice-assign", value,
+		          "\"%s\" is not an event. The events: boost, hit, spin, bigair, drop, shield, passing, fire, short-yes, short-hit, or none.", &equals[1]);
+		return 0;
+	}
+	if ((items[file].byName == -2) && (event >= 0))
+	{
+		RldMk_Say("error", "voice-assign", value, "%s is not a .wav or .vag file.", files[file].name);
+		return 0;
+	}
+
+	items[file].event = event;
+	items[file].chosen = 1;
+	return 1;
+}
+
+static const char *RldMk_VoiceState(const struct RldMkVoiceItem *item)
+{
+	if (item->byName == -2)
+	{
+		return "ignored";
+	}
+	if (!item->read)
+	{
+		return "bad";
+	}
+	if (item->event >= 0)
+	{
+		return item->cut ? "cut" : "ok";
+	}
+	return ((item->byName == -1) && !item->chosen) ? "unknown" : "unused";
+}
+
+// THE VOICES of a folder, from its files (sorted by name), into CVOI. dir:
+// the folder the files are read from when needed; NULL: the bytes are in
+// files[].data (self-test). Every finding is said, every file gets its @file
+// and @voice line, and the events their @voiceevent. The chunk (malloc, size
+// in *sizeOut), already checked by the game's own RldChar_CheckVoices; NULL
+// when no file is in an event or a voice error was said.
+static u8 *RldMk_PackVoices(const struct RldMkVoiceFile *files, u32 count, const struct RldMkVoiceOptions *options, const char *dir, size_t *sizeOut)
+{
+	struct RldMkVoiceItem *items = (struct RldMkVoiceItem *)calloc((count != 0u) ? count : 1u, sizeof(struct RldMkVoiceItem));
+	int placeFile[RLDMK_VOICE_NAMES];
+	u32 order[RLDCHAR_VOICE_EVENTS][RLDMK_VOICE_FILES_MAX];
+	u32 inEvent[RLDCHAR_VOICE_EVENTS];
+	u8 first[RLDCHAR_VOICE_EVENTS];
+	u8 *cvoi = NULL;
+	const int errorsBefore = s_rldMkErrors;
+	u32 clipCount = 0;
+	u32 eventsUsed = 0;
+	u32 bytes;
+	u32 i;
+	int e;
+
+	*sizeOut = 0;
+	if (items == NULL)
+	{
+		RldMk_OutOfMemory();
+		return NULL;
+	}
+	for (i = 0; i < RLDMK_VOICE_NAMES; i++)
+	{
+		placeFile[i] = -1;
 	}
 
 	// V1: the names. WAV before VAG when both fill a place.
 	for (i = 0; i < count; i++)
 	{
-		int vag = 0;
-		const int slot = RldMk_VoiceSlot(files[i].name, &vag);
+		int place = -1;
 
-		if (slot == -2)
+		items[i].byName = RldMk_VoiceEvent(files[i].name, &items[i].vag, &place);
+		items[i].event = -1;
+		if (items[i].byName == -2)
 		{
-			RldMk_EmitFile("voice", "ignored", files[i].name, files[i].size);
 			RldMk_Say("note", "voice-other", NULL, "%s is not a .wav or .vag file and is left out.", files[i].name);
 			continue;
 		}
-		if (slot < 0)
+		if (place < 0)
 		{
-			RldMk_EmitFile("voice", "unknown", files[i].name, files[i].size);
-			RldMk_Say("warning", "voice-unknown", NULL, "%s does not match a voice line and is left out. Use names like boost1.wav, hit2.wav, yes.wav.",
-			          files[i].name);
 			continue;
 		}
 
-		if (slotFile[slot] >= 0)
+		if (placeFile[place] >= 0)
 		{
-			int keptVag = 0;
-			const int kept = slotFile[slot];
-			int use;
+			const int kept = placeFile[place];
+			const int use = (items[kept].vag && !items[i].vag) ? (int)i : kept;
+			const int other = (use == kept) ? (int)i : kept;
 
-			RldMk_VoiceSlot(files[kept].name, &keptVag);
-			use = (keptVag && !vag) ? (int)i : kept;
-			RldMk_Say("warning", "voice-double", NULL, "%s and %s both fill \"%s\"; %s is used. Remove the other one.", files[kept].name, files[i].name,
-			          s_rldMkVoiceSlots[slot], files[use].name);
-			RldMk_EmitFile("voice", "unused", files[(use == kept) ? i : (u32)kept].name, files[(use == kept) ? i : (u32)kept].size);
-			slotFile[slot] = use;
+			items[use].event = items[i].byName;
+			items[use].doubleOf = 0;
+			items[other].event = -1;
+			items[other].doubleOf = use + 1;
+			placeFile[place] = use;
 			continue;
 		}
 
-		slotFile[slot] = (int)i;
+		placeFile[place] = (int)i;
+		items[i].event = items[i].byName;
 	}
 
-	// V2-V4: read, length, level.
-	for (s = 0; s < RLDMK_VOICE_SLOTS; s++)
+	// V1: what --voice says wins over the name.
+	for (i = 0; i < options->assignCount; i++)
 	{
-		const struct RldMkVoiceFile *file;
-		const char *why = NULL;
-		const u8 *data;
-		u8 *read = NULL;
-		size_t size;
-		u32 ms;
-		u32 limit;
-		int vag = 0;
+		(void)RldMk_VoiceAssign(options->assign[i], files, count, items);
+	}
+	for (i = 0; i < count; i++)
+	{
+		// A double only while --voice has not settled it: neither file got an
+		// event of its own.
+		if ((items[i].doubleOf != 0) && !items[i].chosen && !items[items[i].doubleOf - 1].chosen)
+		{
+			const char *used = files[items[i].doubleOf - 1].name;
 
-		if (slotFile[s] < 0)
+			RldMk_Say("warning", "voice-double", NULL, "%s and %s have the name of the same voice line; %s is used. Remove the other one, or choose an event for it.",
+			          used, files[i].name, used);
+		}
+		if ((items[i].byName == -1) && !items[i].chosen)
+		{
+			RldMk_Say("warning", "voice-unknown", NULL, "%s does not have the name of a voice line and is left out. Name it like boost1.wav or yes.wav, or choose its event.",
+			          files[i].name);
+		}
+	}
+
+	// V2-V4: every .wav and .vag is read - for the list and the preview -, and
+	// made into the clip the game plays.
+	for (i = 0; i < count; i++)
+	{
+		struct RldMkVoiceItem *item = &items[i];
+		const int isShort = (item->event >= RLDCHAR_VOICE_SHORT_FIRST);
+		const u32 limit = isShort ? RLDCHAR_VOICE_SHORT_FRAMES : RLDCHAR_VOICE_LINE_FRAMES;
+		const char *why;
+		u32 full = 0;
+
+		if (item->byName == -2)
 		{
 			continue;
 		}
 
-		file = &files[slotFile[s]];
-		RldMk_VoiceSlot(file->name, &vag);
-		data = file->data;
-		size = file->size;
-
-		if ((data == NULL) && (dir != NULL))
-		{
-			char path[RLD_PATH_MAX + RLD_NAME_MAX];
-			int tooLarge = 0;
-
-			snprintf(path, sizeof(path), "%s" RLD_SEP "%s", dir, file->name);
-			if (RldMk_ReadLimited(path, RLDMK_VOICE_BYTES_MAX, &read, &size, &tooLarge))
-			{
-				data = read;
-			}
-			why = tooLarge ? "the file is larger than 32 MB" : "the file cannot be read";
-		}
-
-		if (data != NULL)
-		{
-			why = vag ? RldMk_ReadVag(data, size, &sound[s]) : RldMk_ReadWav(data, size, &sound[s]);
-		}
-		else if (dir == NULL)
-		{
-			why = "the file cannot be read";
-		}
-		free(read);
-
+		why = RldMk_VoiceRead(&files[i], dir, item);
 		if (why != NULL)
 		{
-			RldMk_EmitFile("voice", "bad", file->name, file->size);
-			if (vag)
+			if (item->event < 0)
+			{
+				continue;
+			}
+			if (item->vag)
 			{
 				RldMk_Say("error", "voice-vag", why, "%s is not a VAG file rldpack can read (%s). Export it again as a PS1 VAG, or use a 16-bit PCM WAV.",
-				          file->name, why);
+				          files[i].name, why);
 			}
 			else
 			{
-				RldMk_Say("error", "voice-wav", why, "%s is not a WAV file rldpack can read (%s). Export it as 16-bit PCM WAV.", file->name, why);
+				RldMk_Say("error", "voice-wav", why, "%s is not a WAV file rldpack can read (%s). Export it as 16-bit PCM WAV.", files[i].name, why);
 			}
 			continue;
 		}
 
-		RldMk_EmitFile("voice", "ok", file->name, file->size);
-		slotOk[s] = 1;
-		filled++;
+		item->clip = RldMk_VoiceResample(item->sound.mono, item->sound.frames, item->sound.rate, limit, &item->clipFrames, &full);
+		free(item->sound.mono);
+		item->sound.mono = NULL;
+		if (item->clip == NULL)
+		{
+			RldMk_OutOfMemory();
+			continue;
+		}
+		item->read = 1;
+		item->cut = (full > limit);
+		item->clipPeak = RldMk_VoicePeak(item->clip, item->clipFrames, &item->clipFull);
+		if (options->normalize)
+		{
+			RldMk_VoiceNormalize(item->clip, item->clipFrames);
+		}
 
-		// Rounded up, so that a sound just over the limit never reads as the limit.
-		ms = (u32)(((u64)sound[s].frames * 1000u + sound[s].rate - 1u) / sound[s].rate);
-		limit = (s >= RLDMK_VOICE_SHORT_FIRST) ? RLDMK_VOICE_SHORT_MS : RLDMK_VOICE_LINE_MS;
-
-		if (sound[s].channels == 2u)
+		if (item->event >= 0)
 		{
-			RldMk_Say("note", "voice-stereo", NULL, "%s is stereo; it will be mixed to mono.", file->name);
-		}
-		if (sound[s].silent)
-		{
-			RldMk_Say("warning", "voice-silent", NULL, "%s is silent - every sample is zero. Export the sound again.", file->name);
-		}
-		else if (sound[s].clipped != 0u)
-		{
-			RldMk_Say("note", "voice-clip", NULL, "%s is clipped (%u samples at full level). Lower its volume a little.", file->name, sound[s].clipped);
-		}
-		if (ms > limit)
-		{
+			// Rounded up, so that a sound just over the limit never reads as the limit.
+			const u32 ms = (u32)(((u64)item->sound.frames * 1000u + item->sound.rate - 1u) / item->sound.rate);
 			const u32 hundredths = (ms + 9u) / 10u;
 
-			if (s >= RLDMK_VOICE_SHORT_FIRST)
+			if (item->sound.channels == 2u)
 			{
-				RldMk_Say("warning", "voice-length-short", NULL, "%s is %u.%02u s long; short sounds are cut after %u.%02u s. Shorten it.", file->name,
-				          hundredths / 100u, hundredths % 100u, limit / 1000u, (limit % 1000u) / 10u);
+				RldMk_Say("note", "voice-stereo", NULL, "%s is stereo; it is mixed to mono.", files[i].name);
 			}
-			else
+			if (item->sound.silent)
 			{
-				RldMk_Say("warning", "voice-length-line", NULL, "%s is %u.%02u s long; voice lines are cut after 3.50 s. Shorten it.", file->name,
+				RldMk_Say("warning", "voice-silent", NULL, "%s is silent - every sample is zero. Export the sound again.", files[i].name);
+			}
+			else if (item->clipPeak < (u32)RLDMK_VOICE_QUIET)
+			{
+				RldMk_Say("warning", "voice-quiet", NULL, "%s is nearly silent - its peak is below -40 dBFS%s. Export it louder.", files[i].name,
+				          options->normalize ? ", so it is not normalized" : "");
+			}
+			else if (item->clipFull != 0u)
+			{
+				// Counted on the clip as the game plays it (before normalizing,
+				// which keeps the distortion): the samples at full level, the ones
+				// the resampler had to clamp included. A warning only where it can
+				// be heard: a few lone samples at full level are a note.
+				RldMk_Say((item->clipFull >= RLDMK_VOICE_CLIP_AUDIBLE) ? "warning" : "note", "voice-clip", NULL,
+				          "%s is clipped (%u sample%s at full level). Lower its volume a little.", files[i].name, item->clipFull,
+				          (item->clipFull == 1u) ? "" : "s");
+			}
+			if (item->cut && isShort)
+			{
+				RldMk_Say("warning", "voice-length-short", NULL, "%s is %u.%02u s long; short sounds are cut after %u.%02u s. Shorten it.", files[i].name,
+				          hundredths / 100u, hundredths % 100u, RLDMK_VOICE_SHORT_MS / 1000u, (RLDMK_VOICE_SHORT_MS % 1000u) / 10u);
+			}
+			else if (item->cut)
+			{
+				RldMk_Say("warning", "voice-length-line", NULL, "%s is %u.%02u s long; voice lines are cut after 3.50 s. Shorten it.", files[i].name,
 				          hundredths / 100u, hundredths % 100u);
 			}
+			if (item->sound.psound)
+			{
+				RldMk_Say("note", "voice-source", NULL,
+				          "%s was made with PSound, a tool that copies sounds out of PlayStation games. Keep this character on your own computer.",
+				          files[i].name);
+			}
 		}
-		if (sound[s].psound)
+
+		if (options->preview != NULL)
 		{
-			RldMk_Say("note", "voice-source", NULL,
-			          "%s was made with PSound, a tool that copies sounds out of PlayStation games. Keep this character on your own computer.", file->name);
+			char path[RLD_PATH_MAX + 32];
+
+			snprintf(path, sizeof(path), "%s-voice-%u.wav", options->preview, i + 1u);
+			item->previewDone = RldMk_WriteWav(path, item->clip, item->clipFrames);
+			if (!item->previewDone)
+			{
+				RldMk_Say("warning", "voice-preview", path, "The sound %s cannot be written. Is the folder write-protected?", path);
+			}
 		}
+
+		if (item->event < 0)
+		{
+			free(item->clip);
+			item->clip = NULL;
+		}
+	}
+
+	// The events: their files in the order of the names, at most 4 each.
+	for (e = 0; e < RLDCHAR_VOICE_EVENTS; e++)
+	{
+		inEvent[e] = 0;
+		for (i = 0; i < count; i++)
+		{
+			u32 at;
+
+			if (items[i].event != e)
+			{
+				continue;
+			}
+			at = inEvent[e];
+			while ((at > 0u) && (RldMk_VoiceNameOrder(files[i].name, files[order[e][at - 1u]].name) < 0))
+			{
+				order[e][at] = order[e][at - 1u];
+				at--;
+			}
+			order[e][at] = i;
+			inEvent[e]++;
+		}
+		if (inEvent[e] > (u32)RLDCHAR_VOICE_PER_EVENT)
+		{
+			char detail[64];
+
+			snprintf(detail, sizeof(detail), "%u sounds in the event %s, at most %d", inEvent[e], s_rldCharVoiceEvents[e], RLDCHAR_VOICE_PER_EVENT);
+			RldMk_Say("error", "voice-too-many", detail, "The event %s has %u sounds; it takes at most %d. Move %s to another event.",
+			          s_rldCharVoiceEvents[e], inEvent[e], RLDCHAR_VOICE_PER_EVENT, files[order[e][inEvent[e] - 1u]].name);
+		}
+		first[e] = (u8)((clipCount < 255u) ? clipCount : 255u);
+		clipCount += inEvent[e];
+		eventsUsed += (inEvent[e] != 0u) ? 1u : 0u;
 	}
 
 	// V4: the same sound twice.
-	for (s = 0; s < RLDMK_VOICE_SLOTS; s++)
+	for (i = 0; i < count; i++)
 	{
-		for (t = s + 1; slotOk[s] && (t < RLDMK_VOICE_SLOTS); t++)
+		u32 k;
+
+		for (k = i + 1u; items[i].read && (items[i].event >= 0) && (k < count); k++)
 		{
-			if (slotOk[t] && (sound[s].vag == sound[t].vag) && (sound[s].rate == sound[t].rate) && (sound[s].channels == sound[t].channels) &&
-			    (sound[s].frames == sound[t].frames) && (memcmp(sound[s].hash, sound[t].hash, 32u) == 0))
+			const struct RldMkVoiceSound *a = &items[i].sound;
+			const struct RldMkVoiceSound *b = &items[k].sound;
+
+			if (items[k].read && (items[k].event >= 0) && (a->vag == b->vag) && (a->rate == b->rate) && (a->channels == b->channels) &&
+			    (a->frames == b->frames) && (memcmp(a->hash, b->hash, 32u) == 0))
 			{
-				RldMk_Say("note", "voice-same", NULL, "%s and %s are the same sound.", files[slotFile[s]].name, files[slotFile[t]].name);
+				RldMk_Say("note", "voice-same", NULL, "%s and %s are the same sound.", files[i].name, files[k].name);
 			}
 		}
 	}
 
-	// V4: the short sounds play only for N. Tropy, Penta Penguin and Fake Crash.
-	if ((slotOk[RLDMK_VOICE_SHORT_FIRST] || slotOk[RLDMK_VOICE_SHORT_FIRST + 1]) && (templateId < 12u))
+	// V9: the silent events.
 	{
-		RldMk_Say("warning", "voice-template", NULL,
-		          "Short sounds ignored: yes and hit only play with template driver N. Tropy, Penta Penguin or Fake Crash.");
-	}
+		char missing[256];
 
-	// V9: the empty places.
-	missing[0] = '\0';
-	for (s = 0; s < RLDMK_VOICE_SLOTS; s++)
-	{
-		const size_t used = strlen(missing);
-
-		if ((slotFile[s] < 0) && ((used + strlen(s_rldMkVoiceSlots[s]) + 3u) < sizeof(missing)))
+		missing[0] = '\0';
+		for (e = 0; e < RLDCHAR_VOICE_EVENTS; e++)
 		{
-			snprintf(&missing[used], sizeof(missing) - used, "%s%s", (used != 0u) ? ", " : "", s_rldMkVoiceSlots[s]);
+			const size_t used = strlen(missing);
+
+			if ((inEvent[e] == 0u) && ((used + strlen(s_rldCharVoiceEvents[e]) + 3u) < sizeof(missing)))
+			{
+				snprintf(&missing[used], sizeof(missing) - used, "%s%s", (used != 0u) ? ", " : "", s_rldCharVoiceEvents[e]);
+			}
+		}
+		if (clipCount == 0u)
+		{
+			RldMk_Say("note", "voice-missing", NULL, "No sound is in an event - the driver stays silent in the game.");
+		}
+		else if (missing[0] != '\0')
+		{
+			RldMk_Say("note", "voice-missing", NULL, "No sound for: %s. The driver is silent there.", missing);
 		}
 	}
-	if (missing[0] != '\0')
+
+	// The lines for Reload Studio, file by file in the folder's order.
+	if (s_machine && !s_rldMkQuiet)
 	{
-		RldMk_Say("note", "voice-missing", NULL, "No file for: %s.", missing);
+		for (i = 0; i < count; i++)
+		{
+			const struct RldMkVoiceItem *item = &items[i];
+			const char *state = RldMk_VoiceState(item);
+			char number[6][24];
+			char path[RLD_PATH_MAX + 32];
+			snprintf(number[0], sizeof(number[0]), "%u",
+			         item->read ? (u32)(((u64)item->sound.frames * 1000u + item->sound.rate - 1u) / item->sound.rate) : 0u);
+			snprintf(number[1], sizeof(number[1]), "%llu", (unsigned long long)files[i].size);
+			snprintf(number[2], sizeof(number[2]), "%u", item->read ? item->sound.rate : 0u);
+			snprintf(number[3], sizeof(number[3]), "%u", item->read ? item->sound.channels : 0u);
+			snprintf(number[4], sizeof(number[4]), "%u", item->read ? (u32)(((u64)item->sound.peak * 1000u + 16384u) / 32768u) : 0u);
+			if (item->previewDone)
+			{
+				snprintf(path, sizeof(path), "%s-voice-%u.wav", options->preview, i + 1u);
+			}
+			else
+			{
+				snprintf(path, sizeof(path), "-");
+			}
+
+			RldMk_EmitFile("voice", state, files[i].name, files[i].size);
+			Rld_Emit("voice", files[i].name, state, (item->event >= 0) ? s_rldCharVoiceEvents[item->event] : "-", number[0], number[1], number[2], number[3],
+			         number[4], path, (const char *)NULL);
+		}
+		for (e = 0; e < RLDCHAR_VOICE_EVENTS; e++)
+		{
+			char number[16];
+
+			snprintf(number, sizeof(number), "%u", inEvent[e]);
+			Rld_Emit("voiceevent", s_rldCharVoiceEvents[e], number, (const char *)NULL);
+		}
+		{
+			char clips[16];
+			char events[16];
+
+			snprintf(clips, sizeof(clips), "%u", clipCount);
+			snprintf(events, sizeof(events), "%u", eventsUsed);
+			Rld_Emit("char", "voices", clips, events, (const char *)NULL);
+		}
 	}
 
+	// CVOI: head, events, clips, samples (include/rldchar.inc).
+	bytes = RLDCHAR_VOICE_CLIPS_AT + clipCount * RLDCHAR_VOICE_CLIP_BYTES;
+	for (e = 0; e < RLDCHAR_VOICE_EVENTS; e++)
 	{
-		char text[24];
+		u32 k;
 
-		snprintf(text, sizeof(text), "%u", filled);
-		RldMk_Fact("voices", "%s of %d", text, RLDMK_VOICE_SLOTS);
+		for (k = 0; k < inEvent[e]; k++)
+		{
+			bytes += 2u * items[order[e][k]].clipFrames;
+		}
+	}
+	if ((s_rldMkErrors == errorsBefore) && (clipCount != 0u) && (clipCount <= (u32)RLDCHAR_VOICE_CLIPS_MAX))
+	{
+		cvoi = (u8 *)calloc(1, bytes);
+		if (cvoi == NULL)
+		{
+			RldMk_OutOfMemory();
+		}
+	}
+	if (cvoi != NULL)
+	{
+		u32 clip = 0;
+		u32 at = RLDCHAR_VOICE_CLIPS_AT + clipCount * RLDCHAR_VOICE_CLIP_BYTES;
+		const char *why;
+
+		Rld_WriteLE32(&cvoi[0x00], RLDCHAR_VOICE_VERSION);
+		Rld_WriteLE32(&cvoi[0x04], RLDCHAR_VOICE_RATE);
+		Rld_WriteLE32(&cvoi[0x08], clipCount);
+		for (e = 0; e < RLDCHAR_VOICE_EVENTS; e++)
+		{
+			u8 *event = &cvoi[RLDCHAR_VOICE_HEAD_BYTES + (u32)e * RLDCHAR_VOICE_EVENT_BYTES];
+			u32 k;
+
+			event[0] = first[e];
+			event[1] = (u8)inEvent[e];
+			for (k = 0; k < inEvent[e]; k++, clip++)
+			{
+				const struct RldMkVoiceItem *item = &items[order[e][k]];
+				u8 *entry = &cvoi[RLDCHAR_VOICE_CLIPS_AT + clip * RLDCHAR_VOICE_CLIP_BYTES];
+				u32 s;
+
+				RldMk_VoiceClipName(files[order[e][k]].name, entry);
+				Rld_WriteLE32(&entry[0x10], at);
+				Rld_WriteLE32(&entry[0x14], item->clipFrames);
+				Rld_WriteLE16(&entry[0x18], RLDCHAR_VOICE_VOLUME_FULL);
+				for (s = 0; s < item->clipFrames; s++)
+				{
+					Rld_WriteLE16(&cvoi[at + 2u * s], (u32)(u16)item->clip[s]);
+				}
+				at += 2u * item->clipFrames;
+			}
+		}
+
+		// The game's own check: rldpack never writes voices the game drops.
+		why = RldChar_CheckVoices(cvoi, bytes, NULL);
+		if (why != NULL)
+		{
+			RldMk_Say("error", "voice-pack", why, "Internal error: the packed voices do not pass the game's check (%s). Please report it.", why);
+			free(cvoi);
+			cvoi = NULL;
+		}
+		else
+		{
+			*sizeOut = bytes;
+		}
 	}
 
-	RldMk_Say("note", "voice-later", NULL, "Voices are checked but not packed yet - the driver is silent in the game.");
+	for (i = 0; i < count; i++)
+	{
+		free(items[i].clip);
+		free(items[i].sound.mono);
+	}
+	free(items);
+	return cvoi;
 }
 
 struct RldMkVoiceFolder
@@ -9928,13 +10692,15 @@ static void RldMk_VoiceVisit(void *context, const char *name)
 	memcpy(folder->files[at].name, kept, sizeof(kept));
 }
 
-// --voices <dir>: list and check; a file is read only when it fills a place.
-static void RldMk_VoiceStep(const char *dir, u32 templateId)
+// --voices <dir>: list the folder, read its sound files one at a time, pack
+// CVOI (RldMk_PackVoices). NULL: no chunk - see the messages.
+static u8 *RldMk_VoiceStep(const char *dir, const struct RldMkVoiceOptions *options, size_t *sizeOut)
 {
 	static struct RldMkVoiceFile files[RLDMK_VOICE_FILES_MAX];
 	struct RldMkVoiceFolder folder;
 	u32 i;
 
+	*sizeOut = 0;
 	memset(files, 0, sizeof(files));
 	folder.files = files;
 	folder.count = 0;
@@ -9943,16 +10709,16 @@ static void RldMk_VoiceStep(const char *dir, u32 templateId)
 	if (!Rld_EachFile(dir, RldMk_VoiceVisit, &folder))
 	{
 		RldMk_Say("error", "voice-folder", dir, "The voice folder %s cannot be opened. Check the path, or leave the voices out.", dir);
-		return;
+		return NULL;
 	}
 
 	if (folder.seen > folder.count)
 	{
-		RldMk_Say("warning", "voice-folder", NULL, "The voice folder holds %u files; only the first %u by name are looked at. Keep only the voice lines in it.",
+		RldMk_Say("warning", "voice-folder", NULL, "The voice folder holds %u files; only the first %u by name are looked at. Keep only the voices in it.",
 		          folder.seen, folder.count);
 	}
 
-	// Only the sizes, for the @file lines; nothing is read here.
+	// Only the sizes, for the @file lines; the files are read one at a time.
 	for (i = 0; i < folder.count; i++)
 	{
 		char path[RLD_PATH_MAX + RLD_NAME_MAX];
@@ -9963,7 +10729,7 @@ static void RldMk_VoiceStep(const char *dir, u32 templateId)
 		files[i].size = RldMk_FileSize(path, &ok);
 	}
 
-	RldMk_CheckVoices(files, folder.count, templateId, dir);
+	return RldMk_PackVoices(files, folder.count, options, dir, sizeOut);
 }
 
 //========================================================================================
@@ -10702,6 +11468,12 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	const char *iconFrameArg = NULL;
 	struct RldMkIconOptions iconOptions = s_rldMkIconDefault;
 	const char *voicesArg = NULL;
+	static const char *voiceAssign[RLDMK_VOICE_ASSIGN_MAX];
+	u32 voiceAssignCount = 0;
+	int voiceNormalize = 0;
+	const char *voicePreviewArg = NULL;
+	u8 *cvoi = NULL;
+	size_t cvoiSize = 0;
 	const char *previewArg = NULL;
 	const char *diagnoseArg = NULL;
 	const char *remeshArg = NULL;
@@ -10858,6 +11630,26 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		{
 			voicesArg = argv[++i];
 		}
+		else if ((strcmp(arg, "--voice") == 0) && hasValue)
+		{
+			if (voiceAssignCount < RLDMK_VOICE_ASSIGN_MAX)
+			{
+				voiceAssign[voiceAssignCount++] = argv[i + 1];
+			}
+			else
+			{
+				RldMk_Say("error", "usage", argv[i + 1], "At most %u sounds can be given an event one by one.", RLDMK_VOICE_ASSIGN_MAX);
+			}
+			i++;
+		}
+		else if (strcmp(arg, "--voice-normalize") == 0)
+		{
+			voiceNormalize = 1;
+		}
+		else if ((strcmp(arg, "--voice-preview") == 0) && hasValue)
+		{
+			voicePreviewArg = argv[++i];
+		}
 		else if ((strcmp(arg, "--preview") == 0) && hasValue)
 		{
 			previewArg = argv[++i];
@@ -11000,6 +11792,10 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	if ((maskModelArg == NULL) && ((maskSizeArg != NULL) || (maskUpArg != NULL) || (maskForwardArg != NULL)))
 	{
 		RldMk_Say("error", "usage", "--mask-size", "--mask-size, --mask-up and --mask-forward need --mask-model <ply>.");
+	}
+	if ((voicesArg == NULL) && ((voiceAssignCount != 0u) || voiceNormalize || (voicePreviewArg != NULL)))
+	{
+		RldMk_Say("error", "usage", "--voice", "--voice, --voice-normalize and --voice-preview need --voices <folder>.");
 	}
 	if ((maskSizeArg != NULL) && (!RldMk_ParseWhole(maskSizeArg, 100000u, &maskOpt.sizePercent) || (maskOpt.sizePercent < RLDMK_MASK_SIZE_MIN) ||
 	                              (maskOpt.sizePercent > RLDMK_MASK_SIZE_MAX)))
@@ -11269,6 +12065,10 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		Rld_Emit("value", "icon-fit", s_rldMkIconFitWords[iconOptions.fit], (iconFitArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "icon-frame", s_rldMkIconFrameWords[iconOptions.frame], (iconFrameArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "voices", (voicesArg != NULL) ? voicesArg : "", (voicesArg != NULL) ? "switch" : "default", (const char *)NULL);
+		if (voicesArg != NULL)
+		{
+			Rld_Emit("value", "voice-normalize", voiceNormalize ? "on" : "off", voiceNormalize ? "switch" : "default", (const char *)NULL);
+		}
 	}
 
 	// The retail kart as the size reference, in the units of the preview
@@ -11308,7 +12108,13 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	}
 	if (voicesArg != NULL)
 	{
-		RldMk_VoiceStep(voicesArg, templateId);
+		struct RldMkVoiceOptions voiceOptions;
+
+		voiceOptions.assign = voiceAssign;
+		voiceOptions.assignCount = voiceAssignCount;
+		voiceOptions.normalize = voiceNormalize;
+		voiceOptions.preview = voicePreviewArg;
+		cvoi = RldMk_VoiceStep(voicesArg, &voiceOptions, &cvoiSize);
 	}
 
 	// THE MODEL.
@@ -11316,6 +12122,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	{
 		Rld_Emit("file", "ply", "missing", modelArg, "0", (const char *)NULL);
 		RldMk_Say("error", "ply-open", modelArg, "The model file %s cannot be opened.", modelArg);
+		free(cvoi);
 		return RldMk_Fail(1);
 	}
 
@@ -11331,6 +12138,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	if (!RldMk_ParsePly(plyData, plySize, &ply))
 	{
 		free(plyData);
+		free(cvoi);
 		return RldMk_Fail(1);
 	}
 	free(plyData);
@@ -11437,6 +12245,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		const int code = RldMk_WriteDiagnosis(&build, &opt, built, diagnoseArg);
 
 		free(cmsk);
+		free(cvoi);
 		RldMk_FreeBuild(&build);
 		RldMk_FreePly(&ply);
 		return code;
@@ -11446,6 +12255,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	{
 		printf("\nnothing written - see the errors above\n");
 		free(cmsk);
+		free(cvoi);
 		RldMk_FreeBuild(&build);
 		RldMk_FreePly(&ply);
 		return RldMk_Fail(1);
@@ -11481,7 +12291,8 @@ static int RldChar_MakeCommand(int argc, char **argv)
 
 	if (chri != NULL)
 	{
-		container = RldMk_ContainerMask(chri, chriSize, build.cmdl, build.cmdlSize, haveIcon ? icon.cicn : NULL, cmsk, cmskSize, &containerSize);
+		container = RldMk_ContainerVoices(chri, chriSize, build.cmdl, build.cmdlSize, haveIcon ? icon.cicn : NULL, cmsk, cmskSize, cvoi, cvoiSize,
+		                                  &containerSize);
 	}
 
 	if (container == NULL)
@@ -11491,6 +12302,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 			RldMk_OutOfMemory();
 		}
 		free(cmsk);
+		free(cvoi);
 		free(chri);
 		RldMk_FreeBuild(&build);
 		RldMk_FreePly(&ply);
@@ -11521,6 +12333,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 				          "The character file cannot be written. Is the folder write-protected, or is the file open in another program?");
 			}
 			free(cmsk);
+			free(cvoi);
 			free(chri);
 			free(container);
 			RldMk_FreeBuild(&build);
@@ -11541,6 +12354,27 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	{
 		printf("  CMSK          %u bytes (the own mask)\n", (u32)cmskSize);
 	}
+	if (cvoi != NULL)
+	{
+		struct RldCharVoices voices;
+		u32 frames = 0;
+		u32 events = 0;
+		u32 c;
+		int e;
+
+		(void)RldChar_CheckVoices(cvoi, cvoiSize, &voices);
+		for (c = 0; c < voices.clipCount; c++)
+		{
+			frames += voices.clip[c].frames;
+		}
+		for (e = 0; e < RLDCHAR_VOICE_EVENTS; e++)
+		{
+			events += (voices.count[e] != 0u) ? 1u : 0u;
+		}
+		printf("  CVOI          %u bytes (the voices: %u sounds in %u of %d events, %u.%02u s%s)\n", (u32)cvoiSize, voices.clipCount, events,
+		       RLDCHAR_VOICE_EVENTS, frames / RLDCHAR_VOICE_RATE, (frames % RLDCHAR_VOICE_RATE) * 100u / RLDCHAR_VOICE_RATE,
+		       voiceNormalize ? ", normalized" : "");
+	}
 	printf("  sha256        %s\n", digestText);
 	printf("  format        %d.%d%s\n", RLDCHAR_VERSION_MAJOR, RLDCHAR_VERSION_MINOR, (RLDCHAR_VERSION_MINOR == 0) ? " (draft)" : "");
 
@@ -11553,6 +12387,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	}
 
 	free(cmsk);
+	free(cvoi);
 	free(chri);
 	free(container);
 	RldMk_FreeBuild(&build);
@@ -11617,6 +12452,33 @@ static void RldMk_ModelExtent(const u8 *cmdl, u32 records, double extent[2])
 	extent[1] = (records != 0u) ? (hi[1] - lo[1]) : 0.0;
 }
 
+// "18 sounds in 10 of 10 events, 21.30 s: boost 2, hit 2, ..." - the voices
+// of a CVOI that passed RldChar_CheckVoices.
+static void RldMk_VoiceSummary(const struct RldCharVoices *voices, char *text, size_t size)
+{
+	u32 frames = 0;
+	u32 events = 0;
+	size_t used;
+	u32 c;
+	int e;
+
+	for (c = 0; c < voices->clipCount; c++)
+	{
+		frames += voices->clip[c].frames;
+	}
+	for (e = 0; e < RLDCHAR_VOICE_EVENTS; e++)
+	{
+		events += (voices->count[e] != 0u) ? 1u : 0u;
+	}
+	snprintf(text, size, "%u sounds in %u of %d events, %u.%02u s:", voices->clipCount, events, RLDCHAR_VOICE_EVENTS, frames / RLDCHAR_VOICE_RATE,
+	         (frames % RLDCHAR_VOICE_RATE) * 100u / RLDCHAR_VOICE_RATE);
+	for (e = 0; e < RLDCHAR_VOICE_EVENTS; e++)
+	{
+		used = strlen(text);
+		snprintf(&text[used], size - used, "%s %s %u", (e == 0) ? "" : ",", s_rldCharVoiceEvents[e], (u32)voices->count[e]);
+	}
+}
+
 static int RldMk_Inspect(const char *path, int full, int machine)
 {
 	struct RldReader reader;
@@ -11639,6 +12501,11 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 	const char *maskState = "none";
 	struct RldCharFinding maskFirst;
 	struct RldCharModelFacts maskFacts;
+	int voiceIndex = -1;
+	const char *voiceState = "none";
+	const char *voiceWhy = "";
+	struct RldCharVoices voices;
+	char voiceText[256];
 	int failed = 0;
 	char text[256];
 	int i;
@@ -11648,6 +12515,8 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 	memset(&first, 0, sizeof(first));
 	memset(&maskFirst, 0, sizeof(maskFirst));
 	memset(&maskFacts, 0, sizeof(maskFacts));
+	memset(&voices, 0, sizeof(voices));
+	voiceText[0] = '\0';
 	listing.printed = 0;
 
 	error = Rld_OpenAs(&reader, path, &s_rldCharFormat);
@@ -11754,6 +12623,24 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		free(maskData);
 	}
 
+	// The voices: optional, and broken ones drop only themselves (CVOI-1..4) -
+	// the driver is then silent.
+	if (Rld_FindEntry(&reader, "CVOI", &voiceIndex) != NULL)
+	{
+		size_t voiceSize = 0;
+		const char *voiceError = NULL;
+		u8 *voiceData = Rld_ReadChunk(&reader, voiceIndex, &voiceSize, &voiceError);
+
+		voiceWhy = (voiceData != NULL) ? RldChar_CheckVoices(voiceData, (u64)voiceSize, &voices) : ((voiceError != NULL) ? voiceError : "CVOI cannot be read");
+		voiceState = (voiceWhy == NULL) ? "ok" : "ignored";
+		voiceWhy = (voiceWhy == NULL) ? "" : voiceWhy;
+		if (voiceWhy[0] == '\0')
+		{
+			RldMk_VoiceSummary(&voices, voiceText, sizeof(voiceText));
+		}
+		free(voiceData);
+	}
+
 	if (!machine)
 	{
 		printf("%s\n", path);
@@ -11822,6 +12709,18 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		else
 		{
 			printf("  own mask      the retail mask - CMSK ignored: %s %s\n", (maskFirst.rule != NULL) ? maskFirst.rule : "", maskFirst.detail);
+		}
+		if (strcmp(voiceState, "ok") == 0)
+		{
+			printf("  voices        %s (CVOI)\n", voiceText);
+		}
+		else if (strcmp(voiceState, "none") == 0)
+		{
+			printf("  voices        none - the driver is silent (no CVOI)\n");
+		}
+		else
+		{
+			printf("  voices        none - the driver is silent; CVOI ignored: %s\n", voiceWhy);
 		}
 		if (full)
 		{
@@ -11899,6 +12798,23 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 			snprintf(number, sizeof(number), "%u", maskFacts.drawBytes);
 			Rld_Emit("value", "mask-draw-bytes", number, "container", (const char *)NULL);
 		}
+		Rld_Emit("value", "own-voices", voiceState, (strcmp(voiceState, "ok") == 0) ? voiceText : ((strcmp(voiceState, "none") == 0) ? "container" : voiceWhy),
+		         (const char *)NULL);
+		if (strcmp(voiceState, "ok") == 0)
+		{
+			u32 events = 0;
+			int e;
+
+			for (e = 0; e < RLDCHAR_VOICE_EVENTS; e++)
+			{
+				snprintf(number, sizeof(number), "%u", (u32)voices.count[e]);
+				Rld_Emit("voiceevent", s_rldCharVoiceEvents[e], number, (const char *)NULL);
+				events += (voices.count[e] != 0u) ? 1u : 0u;
+			}
+			snprintf(number, sizeof(number), "%u", voices.clipCount);
+			snprintf(text, sizeof(text), "%u", events);
+			Rld_Emit("char", "voices", number, text, (const char *)NULL);
+		}
 	}
 	else
 	{
@@ -11965,6 +12881,10 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 			else if ((i == maskIndex) && (strcmp(maskState, "own") != 0))
 			{
 				printf("  IGNORED CMSK  %s %s - the game shows the retail mask\n", (maskFirst.rule != NULL) ? maskFirst.rule : "", maskFirst.detail);
+			}
+			else if ((i == voiceIndex) && (strcmp(voiceState, "ok") != 0))
+			{
+				printf("  IGNORED CVOI  %s - the driver is silent\n", voiceWhy);
 			}
 			else
 			{
@@ -12057,10 +12977,24 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "                              sides, or around the face. Never stretched\n");
 	fprintf(out, "  --icon-frame <how>          none (default) or retail: the retail frame and\n");
 	fprintf(out, "                              the dark half-transparent box behind the subject\n");
-	fprintf(out, "  --voices <folder>           check voice lines: boost1/2 hit1/2 spin1/2\n");
-	fprintf(out, "                              bigair1/2 drop1/2 shield1/2 passing1/2 fire1/2,\n");
-	fprintf(out, "                              yes, hit - .wav or .vag. Checked only: they are\n");
-	fprintf(out, "                              not packed yet, the driver is silent in the game\n");
+	fprintf(out, "  --voices <folder>           the driver's voice (chunk CVOI): .wav or .vag\n");
+	fprintf(out, "                              files named boost1..4 hit1..4 spin1..4\n");
+	fprintf(out, "                              bigair1..4 drop1..4 shield1..4 passing1..4\n");
+	fprintf(out, "                              fire1..4 (voice lines, cut after 3.5 s) and\n");
+	fprintf(out, "                              yes, hit (short sounds, cut after 1.0 s); made\n");
+	fprintf(out, "                              mono at 22050 Hz. An event without a sound is\n");
+	fprintf(out, "                              silent; without --voices the driver is silent\n");
+	fprintf(out, "  --voice <file>=<event>      put one file of the folder into an event, or\n");
+	fprintf(out, "                              take it out with none (up to %u times):\n", RLDMK_VOICE_ASSIGN_MAX);
+	fprintf(out, "                              boost, hit, spin, bigair, drop, shield,\n");
+	fprintf(out, "                              passing, fire, short-yes, short-hit; at most %d\n", RLDCHAR_VOICE_PER_EVENT);
+	fprintf(out, "                              per event, in the order of their names; split\n");
+	fprintf(out, "                              at the last =, so a file name may hold one\n");
+	fprintf(out, "  --voice-normalize           set the peak of every sound to -1 dBFS;\n");
+	fprintf(out, "                              without it the samples stay as given\n");
+	fprintf(out, "  --voice-preview <prefix>    also write every readable file of the folder\n");
+	fprintf(out, "                              as the game plays it: <prefix>-voice-<n>.wav,\n");
+	fprintf(out, "                              n counting the folder's files from 1 by name\n");
 	fprintf(out, "  --preview <file>            also write the built model as the game draws it,\n");
 	fprintf(out, "                              3 poses (for Reload Studio's 3D view)\n");
 	fprintf(out, "  --author <text>             your name or handle, 64 bytes at most\n");
@@ -16723,7 +17657,8 @@ static void RldMk_SelfTestIconOptions(const struct RldPngImage *a)
 
 // --- --voices ------------------------------------------------------------------------
 
-// A 16-bit PCM WAV. kind 0: a triangle wave, 1: some samples at full level, 2: silence.
+// A 16-bit PCM WAV. kind 0: a triangle wave, 1: some samples at full level, 2: silence,
+// 3: a square wave of +-31000.
 static u8 *RldMk_TestWav(u32 rate, u32 channels, u32 frames, int kind, int psound, size_t *sizeOut)
 {
 	struct RldMkBuffer wav;
@@ -16771,6 +17706,10 @@ static u8 *RldMk_TestWav(u32 rate, u32 channels, u32 frames, int kind, int psoun
 		{
 			value = 0;
 		}
+		else if (kind == 3)
+		{
+			value = (phase < 32u) ? 31000 : -31000;
+		}
 		Rld_WriteLE16(word, (u32)value & 0xFFFFu);
 		RldMk_BufferBytes(&wav, word, 2u);
 	}
@@ -16814,9 +17753,150 @@ static u8 *RldMk_TestVag(u32 blocks, int badSize, size_t *sizeOut)
 	return vag.data;
 }
 
+// A 16-bit PCM WAV of a sine of `hz` at `amplitude`, every channel alike.
+static u8 *RldMk_TestSine(u32 rate, u32 channels, u32 frames, u32 hz, int amplitude, size_t *sizeOut)
+{
+	struct RldMkBuffer wav;
+	const u32 dataBytes = frames * channels * 2u;
+	u8 word[4];
+	u32 f;
+	u32 c;
+
+	memset(&wav, 0, sizeof(wav));
+	RldMk_BufferBytes(&wav, "RIFF", 4u);
+	RldMk_BufferLE32(&wav, 4u + 24u + 8u + dataBytes);
+	RldMk_BufferBytes(&wav, "WAVEfmt ", 8u);
+	RldMk_BufferLE32(&wav, 16u);
+	Rld_WriteLE16(word, 1u);
+	Rld_WriteLE16(&word[2], channels);
+	RldMk_BufferBytes(&wav, word, 4u);
+	RldMk_BufferLE32(&wav, rate);
+	RldMk_BufferLE32(&wav, rate * channels * 2u);
+	Rld_WriteLE16(word, channels * 2u);
+	Rld_WriteLE16(&word[2], 16u);
+	RldMk_BufferBytes(&wav, word, 4u);
+	RldMk_BufferBytes(&wav, "data", 4u);
+	RldMk_BufferLE32(&wav, dataBytes);
+	for (f = 0; f < frames; f++)
+	{
+		const double turns = (double)((u64)f * hz % rate) / (double)rate;
+		const int value = (int)RldMk_Round((double)amplitude * RldMk_VoiceSin(2.0 * 3.14159265358979323846 * turns));
+
+		for (c = 0; c < channels; c++)
+		{
+			Rld_WriteLE16(word, (u32)value & 0xFFFFu);
+			RldMk_BufferBytes(&wav, word, 2u);
+		}
+	}
+
+	*sizeOut = wav.size;
+	return wav.data;
+}
+
+// A PCM WAV of 8 or 24 bits, or of 32-bit float (bits 32), of a triangle
+// wave in every channel.
+static u8 *RldMk_TestWavBits(u32 rate, u32 channels, u32 bits, u32 frames, size_t *sizeOut)
+{
+	struct RldMkBuffer wav;
+	const u32 bytes = bits / 8u;
+	const u32 dataBytes = frames * channels * bytes;
+	u8 word[4];
+	u32 f;
+	u32 c;
+
+	memset(&wav, 0, sizeof(wav));
+	RldMk_BufferBytes(&wav, "RIFF", 4u);
+	RldMk_BufferLE32(&wav, 4u + 24u + 8u + dataBytes);
+	RldMk_BufferBytes(&wav, "WAVEfmt ", 8u);
+	RldMk_BufferLE32(&wav, 16u);
+	Rld_WriteLE16(word, (bits == 32u) ? 3u : 1u);
+	Rld_WriteLE16(&word[2], channels);
+	RldMk_BufferBytes(&wav, word, 4u);
+	RldMk_BufferLE32(&wav, rate);
+	RldMk_BufferLE32(&wav, rate * channels * bytes);
+	Rld_WriteLE16(word, channels * bytes);
+	Rld_WriteLE16(&word[2], bits);
+	RldMk_BufferBytes(&wav, word, 4u);
+	RldMk_BufferBytes(&wav, "data", 4u);
+	RldMk_BufferLE32(&wav, dataBytes);
+	for (f = 0; f < frames; f++)
+	{
+		for (c = 0; c < channels; c++)
+		{
+			const u32 phase = (f + 7u * c) % 50u;
+			const int value = ((phase < 25u) ? (int)phase : (50 - (int)phase)) * 1200 - 15000 - (int)c * 333;   // 16-bit scale
+
+			if (bits == 8u)
+			{
+				word[0] = (u8)((value / 256) + 128);
+			}
+			else if (bits == 24u)
+			{
+				const s32 v24 = value * 256 - 77;
+
+				word[0] = (u8)((u32)v24 & 0xFFu);
+				word[1] = (u8)(((u32)v24 >> 8) & 0xFFu);
+				word[2] = (u8)(((u32)v24 >> 16) & 0xFFu);
+			}
+			else
+			{
+				const float x = (float)value / 32768.0f;
+				u32 w;
+
+				memcpy(&w, &x, sizeof(w));
+				Rld_WriteLE32(word, w);
+			}
+			RldMk_BufferBytes(&wav, word, bytes);
+		}
+	}
+
+	*sizeOut = wav.size;
+	return wav.data;
+}
+
+// A VAG whose blocks run through every filter (0..4) and every shift
+// (0..15; 13..15 are read as 9), at 22050 Hz.
+static u8 *RldMk_TestVagAll(u32 blocks, size_t *sizeOut)
+{
+	struct RldMkBuffer vag;
+	u8 head[0x30];
+	u8 block[16];
+	u32 b;
+	u32 k;
+
+	memset(&vag, 0, sizeof(vag));
+	memset(head, 0, sizeof(head));
+	memcpy(head, "VAGp", 4u);
+	RldMk_PutBE32(&head[0x04], 3u);
+	RldMk_PutBE32(&head[0x0C], blocks * 16u);
+	RldMk_PutBE32(&head[0x10], 22050u);
+	RldMk_BufferBytes(&vag, head, sizeof(head));
+	for (b = 0; b < blocks; b++)
+	{
+		block[0] = (u8)(((b % 5u) << 4) | (b % 16u));
+		block[1] = (u8)(((b + 1u) == blocks) ? 1u : 0u);
+		for (k = 2; k < 16u; k++)
+		{
+			block[k] = (u8)((k * 37u + b * 11u) & 0xFFu);
+		}
+		RldMk_BufferBytes(&vag, block, sizeof(block));
+	}
+
+	*sizeOut = vag.size;
+	return vag.data;
+}
+
+// The samples of a 16-bit WAV of RldMk_TestWav without PSound: 44 bytes of
+// header, then the data.
+static const u8 *RldMk_TestWavSamples(const u8 *wav, u32 *frames)
+{
+	*frames = Rld_ReadLE32(&wav[40]) / 2u;
+	return &wav[44];
+}
+
 struct RldMkTestVoices
 {
-	struct RldMkVoiceFile files[8];
+	struct RldMkVoiceFile files[16];
 	u32 count;
 };
 
@@ -16839,28 +17919,86 @@ static void RldMk_TestVoicesFree(struct RldMkTestVoices *v)
 	memset(v, 0, sizeof(*v));
 }
 
-static void RldMk_SelfTestVoices(void)
+// RldMk_PackVoices on the files in memory, quietly, the said codes reset first.
+static u8 *RldMk_TestPack(const struct RldMkTestVoices *v, const char **assign, u32 assignCount, int normalize, size_t *size)
+{
+	struct RldMkVoiceOptions options;
+
+	options.assign = assign;
+	options.assignCount = assignCount;
+	options.normalize = normalize;
+	options.preview = NULL;
+	RldMk_ResetSaid();
+	return RldMk_PackVoices(v->files, v->count, &options, NULL, size);
+}
+
+// The largest |sample| of samples [from, to) of a clip, or of 16-bit bytes.
+static u32 RldMk_TestPeak(const u8 *samples, u32 from, u32 to)
+{
+	u32 peak = 0;
+	u32 i;
+
+	for (i = from; i < to; i++)
+	{
+		const int v = (int)Rld_ReadLE16(&samples[2u * i]) - (int)((Rld_ReadLE16(&samples[2u * i]) & 0x8000u) << 1);
+		const u32 a = (u32)((v < 0) ? -v : v);
+
+		peak = (a > peak) ? a : peak;
+	}
+
+	return peak;
+}
+
+// The largest |sample| of a resampled sound away from its ends.
+static u32 RldMk_TestPeakMiddle(const s16 *samples, u32 frames)
+{
+	u32 peak = 0;
+	u32 i;
+
+	for (i = 64u; (i + 64u) < frames; i++)
+	{
+		const u32 a = (u32)((samples[i] < 0) ? -(int)samples[i] : (int)samples[i]);
+
+		peak = (a > peak) ? a : peak;
+	}
+
+	return peak;
+}
+
+// The same bytes from the same sounds, across runtimes: a line resampled
+// from 44100 Hz, a short sound from 11025 Hz, one at 22050 Hz kept as it is,
+// all normalized. A different value means the voices of every character
+// sound different now - never update it to make the test pass.
+// The same for every input form: a VAG through all filters and shifts, 24
+// bit at 48000 Hz, 8 bit at 8000 Hz, float stereo at 44100 Hz.
+#define RLDMK_GOLDEN_VOICES_FORMATS "79a0d831cff14217a10e496c3b82b4b5b4ae37157d531a02a64d8fdd7959983f"
+
+#define RLDMK_GOLDEN_VOICES "bfd085935f41c4c71f52b727ebcb4d90f73f34af027dc912e88f3c8251e35528"
+
+static void RldMk_SelfTestVoices(const u8 *good, size_t goodSize)
 {
 	struct RldMkTestVoices v;
+	struct RldCharVoices voices;
 	size_t size = 0;
+	size_t cvoiSize = 0;
+	u8 *cvoi;
 	u8 *data;
+	int ok;
 
-	// A good set: one line as WAV, a short sound as VAG, template 14.
+	// A good set: one line as WAV, a short sound as VAG.
 	memset(&v, 0, sizeof(v));
 	data = RldMk_TestWav(11025u, 1u, 5513u, 0, 0, &size);
 	RldMk_TestVoice(&v, "boost1.wav", data, size);
 	data = RldMk_TestVag(20u, 0, &size);
 	RldMk_TestVoice(&v, "yes.vag", data, size);
-	RldMk_ResetSaid();
-	RldMk_CheckVoices(v.files, v.count, 14u, NULL);
-	RldMk_Test((s_rldMkErrors == 0) && RldMk_Said("voice-later") && RldMk_Said("voice-missing") && !RldMk_Said("voice-template") &&
-	               !RldMk_Said("voice-clip") && !RldMk_Said("voice-length-line") && !RldMk_Said("voice-silent"),
-	           "voices: a WAV line and a VAG sound read, the gaps named, voice-later", "said: %s", s_rldMkCodes);
-
-	// The short sound with a template that cannot play it.
-	RldMk_ResetSaid();
-	RldMk_CheckVoices(v.files, v.count, 0u, NULL);
-	RldMk_Test(RldMk_Said("voice-template"), "voices: yes with template 0 warned", "said: %s", s_rldMkCodes);
+	cvoi = RldMk_TestPack(&v, NULL, 0u, 0, &cvoiSize);
+	ok = (cvoi != NULL) && (s_rldMkErrors == 0) && (RldChar_CheckVoices(cvoi, cvoiSize, &voices) == NULL) && (voices.clipCount == 2u) &&
+	     (voices.count[0] == 1u) && (voices.count[RLDCHAR_VOICE_SHORT_FIRST] == 1u) && (voices.first[RLDCHAR_VOICE_SHORT_FIRST] == 1u) &&
+	     (voices.clip[0].frames == 11026u) && (voices.clip[1].frames == 21u * 28u * 2u) && (strcmp(voices.clip[0].name, "boost1") == 0) &&
+	     (strcmp(voices.clip[1].name, "yes") == 0) && (voices.clip[0].volume == RLDCHAR_VOICE_VOLUME_FULL);
+	RldMk_Test(ok && RldMk_Said("voice-missing") && !RldMk_Said("voice-clip") && !RldMk_Said("voice-length-line") && !RldMk_Said("voice-silent"),
+	           "voices: a WAV line and a VAG sound packed into CVOI at 22050 Hz, the silent events named", "said: %s", s_rldMkCodes);
+	free(cvoi);
 	RldMk_TestVoicesFree(&v);
 
 	// Names: a double, an unknown, another file.
@@ -16869,23 +18007,24 @@ static void RldMk_SelfTestVoices(void)
 	data = RldMk_TestWav(22050u, 1u, 2000u, 0, 0, &size);
 	RldMk_TestVoice(&v, "boost1.wav", data, size);
 	data = RldMk_TestWav(22050u, 1u, 2000u, 0, 0, &size);
-	RldMk_TestVoice(&v, "hit3.wav", data, size);
+	RldMk_TestVoice(&v, "hit5.wav", data, size);
 	data = (u8 *)malloc(4u);
 	if (data != NULL)
 	{
 		memcpy(data, "text", 4u);
 	}
 	RldMk_TestVoice(&v, "readme.txt", data, 4u);
-	RldMk_ResetSaid();
-	RldMk_CheckVoices(v.files, v.count, 14u, NULL);
-	RldMk_Test((s_rldMkErrors == 0) && RldMk_Said("voice-double") && RldMk_Said("voice-unknown") && RldMk_Said("voice-other"),
-	           "voices: double, unknown and other files named", "said: %s", s_rldMkCodes);
+	cvoi = RldMk_TestPack(&v, NULL, 0u, 0, &cvoiSize);
+	ok = (cvoi != NULL) && (RldChar_CheckVoices(cvoi, cvoiSize, &voices) == NULL) && (voices.clipCount == 1u) && (voices.clip[0].frames == 2000u);
+	RldMk_Test(ok && (s_rldMkErrors == 0) && RldMk_Said("voice-double") && RldMk_Said("voice-unknown") && RldMk_Said("voice-other"),
+	           "voices: double (the WAV kept), unknown and other files named", "said: %s", s_rldMkCodes);
+	free(cvoi);
 	RldMk_TestVoicesFree(&v);
 
 	// Level, length, channels, source, the same sound twice.
 	data = RldMk_TestWav(11025u, 2u, 3000u, 0, 0, &size);
 	RldMk_TestVoice(&v, "drop1.wav", data, size);
-	data = RldMk_TestWav(11025u, 1u, 3000u, 1, 0, &size);
+	data = RldMk_TestWav(22050u, 1u, 3000u, 1, 0, &size);
 	RldMk_TestVoice(&v, "drop2.wav", data, size);
 	data = RldMk_TestWav(11025u, 1u, 44100u, 0, 0, &size);
 	RldMk_TestVoice(&v, "fire1.wav", data, size);
@@ -16897,11 +18036,13 @@ static void RldMk_SelfTestVoices(void)
 	RldMk_TestVoice(&v, "spin2.wav", data, size);
 	data = RldMk_TestWav(11025u, 1u, 16538u, 0, 0, &size);
 	RldMk_TestVoice(&v, "yes.wav", data, size);
-	RldMk_ResetSaid();
-	RldMk_CheckVoices(v.files, v.count, 14u, NULL);
-	RldMk_Test((s_rldMkErrors == 0) && RldMk_Said("voice-stereo") && RldMk_Said("voice-clip") && RldMk_Said("voice-length-line") &&
+	cvoi = RldMk_TestPack(&v, NULL, 0u, 0, &cvoiSize);
+	ok = (cvoi != NULL) && (RldChar_CheckVoices(cvoi, cvoiSize, &voices) == NULL) && (voices.clipCount == 7u) &&
+	     (voices.clip[voices.first[7]].frames == RLDCHAR_VOICE_LINE_FRAMES) && (voices.clip[voices.first[8]].frames == RLDCHAR_VOICE_SHORT_FRAMES);
+	RldMk_Test(ok && (s_rldMkErrors == 0) && RldMk_Said("voice-stereo") && RldMk_Said("voice-clip") && RldMk_Said("voice-length-line") &&
 	               RldMk_Said("voice-silent") && RldMk_Said("voice-source") && RldMk_Said("voice-same") && RldMk_Said("voice-length-short"),
-	           "voices: stereo, clipped, too long, silent, PSound, the same sound", "said: %s", s_rldMkCodes);
+	           "voices: stereo, clipped, too long (cut to 3.5 s and 1.0 s), silent, PSound, the same sound", "said: %s", s_rldMkCodes);
+	free(cvoi);
 	RldMk_TestVoicesFree(&v);
 
 	// Files rldpack cannot read stop the build.
@@ -16915,11 +18056,328 @@ static void RldMk_SelfTestVoices(void)
 	RldMk_TestVoice(&v, "shield2.wav", data, size);
 	data = RldMk_TestVag(4u, 1, &size);
 	RldMk_TestVoice(&v, "hit.vag", data, size);
-	RldMk_ResetSaid();
-	RldMk_CheckVoices(v.files, v.count, 14u, NULL);
-	RldMk_Test((s_rldMkErrors == 3) && RldMk_Said("voice-wav") && RldMk_Said("voice-vag"), "voices: a broken WAV, 96 kHz and a VAG of a wrong size refused",
-	           "%d errors, said: %s", s_rldMkErrors, s_rldMkCodes);
+	cvoi = RldMk_TestPack(&v, NULL, 0u, 0, &cvoiSize);
+	RldMk_Test((cvoi == NULL) && (s_rldMkErrors == 3) && RldMk_Said("voice-wav") && RldMk_Said("voice-vag"),
+	           "voices: a broken WAV, 96 kHz and a VAG of a wrong size refused, no CVOI", "%d errors, said: %s", s_rldMkErrors, s_rldMkCodes);
+	free(cvoi);
 	RldMk_TestVoicesFree(&v);
+
+	// voice-clip: 15 samples at full level are a note, 16 a warning.
+	data = RldMk_TestWav(22050u, 1u, 1500u, 1, 0, &size);
+	RldMk_TestVoice(&v, "hit1.wav", data, size);
+	cvoi = RldMk_TestPack(&v, NULL, 0u, 0, &cvoiSize);
+	ok = RldMk_Said("voice-clip") && (s_rldMkWarnings == 0);
+	free(cvoi);
+	RldMk_TestVoicesFree(&v);
+	data = RldMk_TestWav(22050u, 1u, 1600u, 1, 0, &size);
+	RldMk_TestVoice(&v, "hit1.wav", data, size);
+	cvoi = RldMk_TestPack(&v, NULL, 0u, 0, &cvoiSize);
+	ok = ok && RldMk_Said("voice-clip") && (s_rldMkWarnings == 1);
+	RldMk_Test(ok, "voices: 15 samples at full level a note, 16 a warning (voice-clip)", "%d warnings, said: %s", s_rldMkWarnings, s_rldMkCodes);
+	free(cvoi);
+	RldMk_TestVoicesFree(&v);
+
+	// --voice splits at the last '=': a file name may hold one.
+	{
+		static const char *assign[] = {"a=b.wav=fire"};
+
+		data = RldMk_TestWav(22050u, 1u, 100u, 0, 0, &size);
+		RldMk_TestVoice(&v, "a=b.wav", data, size);
+		cvoi = RldMk_TestPack(&v, assign, 1u, 0, &cvoiSize);
+		ok = (cvoi != NULL) && (s_rldMkErrors == 0) && (RldChar_CheckVoices(cvoi, cvoiSize, &voices) == NULL) && (voices.count[7] == 1u) &&
+		     (strcmp(voices.clip[0].name, "a=b") == 0);
+		RldMk_Test(ok, "voices: --voice a=b.wav=fire splits at the last '='", "said: %s", s_rldMkCodes);
+		free(cvoi);
+		RldMk_TestVoicesFree(&v);
+	}
+
+	// A double that --voice settles is no double; one it does not settle is.
+	{
+		static const char *assign[] = {"BOOST1.VAG=fire"};
+
+		data = RldMk_TestVag(4u, 0, &size);
+		RldMk_TestVoice(&v, "BOOST1.VAG", data, size);
+		data = RldMk_TestWav(22050u, 1u, 2000u, 0, 0, &size);
+		RldMk_TestVoice(&v, "boost1.wav", data, size);
+		cvoi = RldMk_TestPack(&v, assign, 1u, 0, &cvoiSize);
+		ok = (cvoi != NULL) && (RldChar_CheckVoices(cvoi, cvoiSize, &voices) == NULL) && (voices.count[0] == 1u) && (voices.count[7] == 1u) &&
+		     !RldMk_Said("voice-double");
+		free(cvoi);
+		cvoi = RldMk_TestPack(&v, NULL, 0u, 0, &cvoiSize);
+		ok = ok && RldMk_Said("voice-double");
+		RldMk_Test(ok, "voices: voice-double only while --voice has not given the other file an event", "said: %s", s_rldMkCodes);
+		free(cvoi);
+		RldMk_TestVoicesFree(&v);
+	}
+
+	// What the game plays decides: a square wave below full level whose
+	// overshoot the resampler clamps is clipped; a near-silent sound is
+	// voice-quiet and not lifted by --voice-normalize.
+	{
+		data = RldMk_TestWav(44100u, 1u, 8820u, 3, 0, &size);
+		RldMk_TestVoice(&v, "hit1.wav", data, size);
+		data = RldMk_TestSine(22050u, 1u, 4000u, 300u, 100, &size);
+		RldMk_TestVoice(&v, "spin1.wav", data, size);
+		cvoi = RldMk_TestPack(&v, NULL, 0u, 1, &cvoiSize);
+		ok = (cvoi != NULL) && (RldChar_CheckVoices(cvoi, cvoiSize, &voices) == NULL) && RldMk_Said("voice-clip") && RldMk_Said("voice-quiet") &&
+		     (RldMk_TestPeak(&cvoi[voices.clip[voices.first[2]].offset], 0u, voices.clip[voices.first[2]].frames) <= 100u) &&
+		     (RldMk_TestPeak(&cvoi[voices.clip[voices.first[2]].offset], 0u, voices.clip[voices.first[2]].frames) >= 95u);
+		RldMk_Test(ok, "voices: clamps of the resampler count as clipped, a near-silent sound is not normalized (voice-quiet)", "said: %s",
+		           s_rldMkCodes);
+		free(cvoi);
+		RldMk_TestVoicesFree(&v);
+	}
+
+	// 8 bit: 255 is full level, as 0 is - 20 of them clip.
+	{
+		u32 k;
+
+		data = RldMk_TestWavBits(22050u, 1u, 8u, 1000u, &size);
+		for (k = 0; (data != NULL) && (k < 20u); k++)
+		{
+			data[44u + 10u * k] = 255u;
+		}
+		RldMk_TestVoice(&v, "hit1.wav", data, size);
+		cvoi = RldMk_TestPack(&v, NULL, 0u, 0, &cvoiSize);
+		RldMk_Test((cvoi != NULL) && RldMk_Said("voice-clip") && (s_rldMkWarnings == 1), "voices: 8-bit samples of 255 count as full level (voice-clip)",
+		           "%d warnings, said: %s", s_rldMkWarnings, s_rldMkCodes);
+		free(cvoi);
+		RldMk_TestVoicesFree(&v);
+	}
+
+	// Every input form, packed twice the same and against its golden hash.
+	{
+		u8 *again;
+		size_t againSize = 0;
+
+		data = RldMk_TestVagAll(80u, &size);
+		RldMk_TestVoice(&v, "boost1.vag", data, size);
+		data = RldMk_TestWavBits(48000u, 1u, 24u, 4800u, &size);
+		RldMk_TestVoice(&v, "hit1.wav", data, size);
+		data = RldMk_TestWavBits(8000u, 1u, 8u, 1600u, &size);
+		RldMk_TestVoice(&v, "spin1.wav", data, size);
+		data = RldMk_TestWavBits(44100u, 2u, 32u, 4410u, &size);
+		RldMk_TestVoice(&v, "fire1.wav", data, size);
+		cvoi = RldMk_TestPack(&v, NULL, 0u, 0, &cvoiSize);
+		again = RldMk_TestPack(&v, NULL, 0u, 0, &againSize);
+		ok = (cvoi != NULL) && (s_rldMkErrors == 0) && (RldChar_CheckVoices(cvoi, cvoiSize, &voices) == NULL) && (voices.clipCount == 4u) &&
+		     (voices.clip[0].frames == 80u * 28u) && (voices.clip[1].frames == 2205u) && (voices.clip[2].frames == 4410u) &&
+		     (voices.clip[3].frames == 2205u) && (again != NULL) && (againSize == cvoiSize) && (memcmp(cvoi, again, cvoiSize) == 0);
+		RldMk_Test(ok, "voices: VAG (all filters and shifts), 24 bit, 8 bit and float stereo read, packed twice the same", "%d errors, said: %s",
+		           s_rldMkErrors, s_rldMkCodes);
+		if (Rld_CheckGolden("make-char --voices (VAG, 24 bit, 8 bit, float)", cvoi, cvoiSize, RLDMK_GOLDEN_VOICES_FORMATS) != 0)
+		{
+			s_rldMkTestFailed++;
+		}
+		free(cvoi);
+		free(again);
+		RldMk_TestVoicesFree(&v);
+	}
+
+	// --voice: any file into any event, a name taken out; the order by name.
+	{
+		static const char *assign[] = {"laugh.wav=shield", "BOOST1.WAV=none", "hit.wav=passing", "d.wav=fire", "B.wav=FIRE", "a.wav=fire", "c.wav=fire"};
+		static const char *wrong[] = {"nothere.wav=boost", "laugh.wav=loud", "laugh.wav"};
+		static const char *names[] = {"B.wav", "a.wav", "boost1.wav", "boost2.wav", "c.wav", "d.wav", "e.wav", "hit.wav", "laugh.wav"};
+		u32 n;
+
+		for (n = 0; n < 9u; n++)
+		{
+			data = RldMk_TestWav(22050u, 1u, 100u + n, 0, 0, &size);
+			RldMk_TestVoice(&v, names[n], data, size);
+		}
+		cvoi = RldMk_TestPack(&v, assign, 7u, 0, &cvoiSize);
+		ok = (cvoi != NULL) && (s_rldMkErrors == 0) && (RldChar_CheckVoices(cvoi, cvoiSize, &voices) == NULL) && (voices.clipCount == 7u) &&
+		     (voices.count[0] == 1u) && (voices.clip[voices.first[0]].frames == 103u) && (voices.count[5] == 1u) && (voices.count[6] == 1u) &&
+		     (voices.count[RLDCHAR_VOICE_SHORT_FIRST + 1] == 0u) && (voices.count[7] == 4u) && (strcmp(voices.clip[voices.first[7]].name, "a") == 0) &&
+		     (strcmp(voices.clip[voices.first[7] + 1u].name, "B") == 0) && (strcmp(voices.clip[voices.first[7] + 3u].name, "d") == 0) &&
+		     RldMk_Said("voice-unknown") && !RldMk_Said("voice-too-many");
+		RldMk_Test(ok, "voices: --voice puts files into events and takes one out, 4 in an event by name", "said: %s", s_rldMkCodes);
+		free(cvoi);
+
+		cvoi = RldMk_TestPack(&v, wrong, 3u, 0, &cvoiSize);
+		RldMk_Test((s_rldMkErrors == 3) && RldMk_Said("voice-assign") && (cvoi == NULL), "voices: --voice with an unknown file, event and form refused",
+		           "%d errors, said: %s", s_rldMkErrors, s_rldMkCodes);
+		free(cvoi);
+
+		assign[0] = "e.wav=fire";
+		cvoi = RldMk_TestPack(&v, assign, 7u, 0, &cvoiSize);
+		RldMk_Test((cvoi == NULL) && (s_rldMkErrors == 1) && RldMk_Said("voice-too-many"), "voices: 5 sounds in one event refused (voice-too-many)",
+		           "%d errors, said: %s", s_rldMkErrors, s_rldMkCodes);
+		assign[0] = "laugh.wav=shield";
+		free(cvoi);
+		RldMk_TestVoicesFree(&v);
+	}
+
+	// Resampling: 22050 Hz sample for sample; down from 44100 and 48000 Hz,
+	// up from 8000 and 11025 Hz, the level of a tone kept and one above the
+	// new Nyquist frequency filtered out; the cut.
+	{
+		static const u32 rates[4] = {8000u, 11025u, 44100u, 48000u};
+		s16 tone[9600];
+		s16 *out;
+		u32 frames = 0;
+		u32 full = 0;
+		u32 r;
+		u32 i;
+
+		for (i = 0; i < 9600u; i++)
+		{
+			tone[i] = (s16)((int)(i % 200u) * 100 - 10000);
+		}
+		out = RldMk_VoiceResample(tone, 9600u, 22050u, RLDCHAR_VOICE_LINE_FRAMES, &frames, &full);
+		ok = (out != NULL) && (frames == 9600u) && (full == 9600u) && (memcmp(out, tone, sizeof(tone)) == 0);
+		free(out);
+
+		for (r = 0; ok && (r < 4u); r++)
+		{
+			const u32 n = rates[r] / 5u;   // 0.2 s
+			u32 k;
+
+			for (k = 0; k < n; k++)
+			{
+				const double turns = (double)((u64)k * 1000u % rates[r]) / (double)rates[r];
+
+				tone[k] = (s16)RldMk_Round(16000.0 * RldMk_VoiceSin(2.0 * 3.14159265358979323846 * turns));
+			}
+			out = RldMk_VoiceResample(tone, n, rates[r], RLDCHAR_VOICE_LINE_FRAMES, &frames, &full);
+			ok = (out != NULL) && (frames == 4410u) && (full == 4410u) && (RldMk_TestPeakMiddle(out, frames) >= 15200u) &&
+			     (RldMk_TestPeakMiddle(out, frames) <= 16800u);
+			free(out);
+		}
+		RldMk_Test(ok, "voices: 22050 Hz kept sample for sample, a 1 kHz tone keeps its level from 8000, 11025, 44100 and 48000 Hz", "not so");
+
+		for (i = 0; i < 8820u; i++)
+		{
+			const double turns = (double)((u64)i * 15000u % 44100u) / 44100.0;
+
+			tone[i] = (s16)RldMk_Round(16000.0 * RldMk_VoiceSin(2.0 * 3.14159265358979323846 * turns));
+		}
+		out = RldMk_VoiceResample(tone, 8820u, 44100u, RLDCHAR_VOICE_LINE_FRAMES, &frames, &full);
+		ok = (out != NULL) && (frames == 4410u) && (RldMk_TestPeakMiddle(out, frames) < 1600u);
+		free(out);
+		out = RldMk_VoiceResample(tone, 8820u, 44100u, 1000u, &frames, &full);
+		ok = ok && (out != NULL) && (frames == 1000u) && (full == 4410u);
+		free(out);
+		RldMk_Test(ok, "voices: 15 kHz at 44100 Hz filtered out (low-pass), the cut keeps the length asked", "not so");
+	}
+
+	// --voice-normalize: the peak at -1 dBFS, loud or quiet; without it a
+	// sound at 22050 Hz keeps its samples. Packed twice: the same bytes.
+	{
+		u8 *again;
+		size_t againSize = 0;
+		u32 frames = 0;
+		const u8 *samples;
+
+		data = RldMk_TestSine(44100u, 2u, 30000u, 440u, 1000, &size);
+		RldMk_TestVoice(&v, "boost1.wav", data, size);
+		data = RldMk_TestWav(22050u, 1u, 4000u, 1, 0, &size);
+		RldMk_TestVoice(&v, "hit1.wav", data, size);
+		data = RldMk_TestSine(11025u, 1u, 5000u, 300u, 20000, &size);
+		RldMk_TestVoice(&v, "yes.wav", data, size);
+
+		cvoi = RldMk_TestPack(&v, NULL, 0u, 0, &cvoiSize);
+		samples = RldMk_TestWavSamples(v.files[1].data, &frames);
+		ok = (cvoi != NULL) && (RldChar_CheckVoices(cvoi, cvoiSize, &voices) == NULL) && (voices.clip[1].frames == frames) &&
+		     (memcmp(&cvoi[voices.clip[1].offset], samples, 2u * frames) == 0);
+		free(cvoi);
+		RldMk_Test(ok, "voices: without --voice-normalize a sound at 22050 Hz keeps every sample", "not so");
+
+		cvoi = RldMk_TestPack(&v, NULL, 0u, 1, &cvoiSize);
+		again = RldMk_TestPack(&v, NULL, 0u, 1, &againSize);
+		ok = (cvoi != NULL) && (RldChar_CheckVoices(cvoi, cvoiSize, &voices) == NULL) && (voices.clipCount == 3u);
+		ok = ok && (RldMk_TestPeak(&cvoi[voices.clip[0].offset], 0u, voices.clip[0].frames) == (u32)RLDMK_VOICE_PEAK) &&
+		     (RldMk_TestPeak(&cvoi[voices.clip[1].offset], 0u, voices.clip[1].frames) == (u32)RLDMK_VOICE_PEAK) &&
+		     (RldMk_TestPeak(&cvoi[voices.clip[2].offset], 0u, voices.clip[2].frames) == (u32)RLDMK_VOICE_PEAK);
+		RldMk_Test(ok, "voices: --voice-normalize sets every peak to -1 dBFS (29204)", "not so");
+		RldMk_Test((cvoi != NULL) && (again != NULL) && (againSize == cvoiSize) && (memcmp(cvoi, again, cvoiSize) == 0),
+		           "voices: packed twice, the same bytes", "not so");
+		if (Rld_CheckGolden("make-char --voices (44100 Hz stereo, 22050 Hz, 11025 Hz, normalized)", cvoi, cvoiSize, RLDMK_GOLDEN_VOICES) != 0)
+		{
+			s_rldMkTestFailed++;
+		}
+		free(again);
+		RldMk_TestVoicesFree(&v);
+	}
+
+	// CVOI-1..4, each broken once on a good chunk; the reader the game runs.
+	if (cvoi != NULL)
+	{
+		u8 *broken = (u8 *)malloc(cvoiSize + 2u);
+
+		ok = (broken != NULL) && (RldChar_CheckVoices(cvoi, cvoiSize, NULL) == NULL);
+		if (ok)
+		{
+			const char *why;
+
+			memcpy(broken, cvoi, cvoiSize);
+			Rld_WriteLE32(&broken[0x00], 2u);
+			why = RldChar_CheckVoices(broken, cvoiSize, &voices);
+			ok = (why != NULL) && (strncmp(why, "CVOI-1", 6) == 0) && (voices.clipCount == 0u);
+
+			memcpy(broken, cvoi, cvoiSize);
+			broken[RLDCHAR_VOICE_HEAD_BYTES + 1u] = 5u;
+			why = RldChar_CheckVoices(broken, cvoiSize, NULL);
+			ok = ok && (why != NULL) && (strncmp(why, "CVOI-2", 6) == 0);
+
+			memcpy(broken, cvoi, cvoiSize);
+			Rld_WriteLE32(&broken[RLDCHAR_VOICE_CLIPS_AT + 0x14u], 0u);
+			why = RldChar_CheckVoices(broken, cvoiSize, NULL);
+			ok = ok && (why != NULL) && (strncmp(why, "CVOI-3", 6) == 0);
+
+			memcpy(broken, cvoi, cvoiSize);
+			broken[cvoiSize] = 0u;
+			broken[cvoiSize + 1u] = 0u;
+			why = RldChar_CheckVoices(broken, cvoiSize + 2u, NULL);
+			ok = ok && (why != NULL) && (strncmp(why, "CVOI-4", 6) == 0);
+		}
+		RldMk_Test(ok, "voices: CVOI-1..4 drop a wrong version, an event of 5, an empty clip, bytes behind the last clip", "not so");
+		free(broken);
+	}
+
+	// A container with CVOI: three chunks, CVOI last with its hash; without
+	// it the container is the one of before.
+	if ((good != NULL) && (cvoi != NULL))
+	{
+		u8 field[RLDCHAR_NAME_FIELD];
+		size_t chriSize = 0;
+		size_t plainSize = 0;
+		u8 *chri;
+		u8 *file = NULL;
+		u8 *plain = NULL;
+		u8 *before = NULL;
+		size_t beforeSize = 0;
+
+		memset(field, 0, sizeof(field));
+		memcpy(field, "SELF TEST", 9u);
+		chri = RldMk_BuildChri(14u, 0u, field, 1u, "", 0u, &chriSize);
+		ok = (chri != NULL);
+		if (ok)
+		{
+			file = RldMk_ContainerVoices(chri, chriSize, good, goodSize, NULL, NULL, 0u, cvoi, cvoiSize, &size);
+			plain = RldMk_ContainerVoices(chri, chriSize, good, goodSize, NULL, NULL, 0u, NULL, 0u, &plainSize);
+			before = RldMk_Container(chri, chriSize, good, goodSize, NULL, &beforeSize);
+		}
+		ok = ok && (file != NULL) && (plain != NULL) && (before != NULL);
+		if (ok)
+		{
+			const u64 dirAt = Rld_ReadLE64(&file[0x18]);
+			const u8 *entry = &file[(size_t)dirAt + 2u * RLD_DIR_ENTRY_SIZE];
+			u8 digest[32];
+
+			Sha256(&file[(size_t)Rld_ReadLE64(&entry[0x08])], cvoiSize, digest);
+			ok = (Rld_ReadLE32(&file[0x10]) == 3u) && (memcmp(entry, "CVOI", 4u) == 0) && (Rld_ReadLE64(&entry[0x10]) == (u64)cvoiSize) &&
+			     (memcmp(&entry[RLD_DIR_HASH_OFFSET], digest, 32u) == 0) && (RldChar_ChunkLimit(entry) == RLDCHAR_LIMIT_CVOI) &&
+			     (plainSize == beforeSize) && (memcmp(plain, before, plainSize) == 0) && (Rld_ReadLE32(&plain[0x10]) == 2u);
+		}
+		RldMk_Test(ok, "voices: container with CVOI last, its hash in the directory; without voices the same bytes as before", "not so");
+		free(file);
+		free(plain);
+		free(before);
+		free(chri);
+	}
+	free(cvoi);
 }
 
 // --- Golden hashes -------------------------------------------------------------------
@@ -17229,7 +18687,7 @@ static int RldChar_SelfTest(void)
 	RldMk_SelfTestRepair(mesh);
 	s_rldMkTestFailed += RldDum_SelfTest(RldMk_TestReport);
 	RldMk_SelfTestPng();
-	RldMk_SelfTestVoices();
+	RldMk_SelfTestVoices(good, goodSize);
 	RldMk_SelfTestMask(mesh);
 	{
 		struct RldPngImage pictureA;

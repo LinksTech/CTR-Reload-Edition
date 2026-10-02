@@ -49,6 +49,7 @@
 #define RLDCHAR_LIMIT_CICN (4u * 1024u)    // the portrait, exactly RLDCHAR_ICON_BYTES (CICN-3)
 #define RLDCHAR_LIMIT_CPRM (4u * 1024u)    // known type, not written yet
 #define RLDCHAR_LIMIT_CMSK (256u * 1024u)  // the own mask; the envelope bound only - version 1 holds CMSK-3 (16 KiB)
+#define RLDCHAR_LIMIT_CVOI (6u * 1024u * 1024u)   // the voices; CVOI-1..4 allow at most 5293176 bytes (RLDCHAR_VOICE_BYTES_MAX)
 #define RLDCHAR_INFO_FIXED_SIZE 0x1Cu
 #define RLDCHAR_CHRI_FLAGS_OFFSET 0x1Cu    // u32 flags, present when fixedSize >= RLDCHAR_CHRI_SIZE_FLAGS
 #define RLDCHAR_CHRI_SIZE_FLAGS 0x20u
@@ -113,6 +114,10 @@ static u64 RldChar_ChunkLimit(const u8 *type)
 	{
 		return RLDCHAR_LIMIT_CMSK;
 	}
+	if (memcmp(type, "CVOI", 4) == 0)
+	{
+		return RLDCHAR_LIMIT_CVOI;
+	}
 	return 0;
 }
 
@@ -120,10 +125,12 @@ static u64 RldChar_ChunkLimit(const u8 *type)
 // make-char --icon; the game shows it in the driver select grid
 // (platform/native_chars.c). CMSK (the own mask, RldChar_CheckMask below) is
 // written by rldpack make-char --mask-model; the game draws it in place of
-// the Aku Aku / Uka Uka model. CPRM (values) has a size limit above, but
-// rldpack does not write it and nothing interprets it yet.
-// RESERVED NAMES: CVOI (voices) and CTEX (texture data) are planned; until then
-// they have no limit here and are skipped like any unknown chunk.
+// the Aku Aku / Uka Uka model. CVOI (the voices, RldChar_CheckVoices below) is
+// written by rldpack make-char --voices; the game plays its clips for the
+// bound seat. CPRM (values) has a size limit above, but rldpack does not
+// write it and nothing interprets it yet.
+// RESERVED NAME: CTEX (texture data) is planned; until then it has no limit
+// here and is skipped like any unknown chunk.
 
 // The required chunks: CHRI and CMDL. CICN and CPRM are optional - a required
 // chunk could never become optional again within major 1.
@@ -1742,6 +1749,253 @@ static enum RldCharVerdict RldChar_CheckMask(const u8 *cmsk, size_t size, struct
 	}
 
 	return RldChar_CheckProfile(&s_rldCharProfileMask, &cmsk[RLDCHAR_MASK_HEAD_BYTES], size - RLDCHAR_MASK_HEAD_BYTES, first, report, context, facts);
+}
+
+//========================================================================================
+// CVOI - THE VOICES
+//========================================================================================
+//
+// 0x00 u32 version      1
+// 0x04 u32 rate         22050, the sample rate of every clip (mono, s16)
+// 0x08 u32 clipCount    1..40
+// 0x0C u32 reserved     0
+// 0x10 10 x { u8 first; u8 count; u16 reserved }    the events, in the order of
+//                       s_rldCharVoiceEvents: clips [first, first + count)
+// 0x38 clipCount x 28   the clips:
+//        +0x00 char[16] name     printable ASCII (0x20..0x7E), 1..15 characters,
+//                                then NUL up to the end (for the log only)
+//        +0x10 u32 offset        from the start of the chunk
+//        +0x14 u32 frames        samples of the clip
+//        +0x18 u16 volume        0..256, 256 = as recorded
+//        +0x1A u16 reserved      0
+// then the samples, s16 little-endian, clip after clip in table order
+//
+// OPTIONAL. Events 0..7 are the retail voice sets by index (data.voiceID[],
+// game/zGlobal_DATA.c), events 8 and 9 the two short sounds the retail driver
+// plays at once (OtherFX, game/HOWL/HOWL_Voiceline.c). The game picks a clip
+// of an event the way retail picks an XA line of the set; an event without
+// clips is silent - never the template's voice.
+//
+// THE RULES, in the order they are checked:
+//
+//   CVOI-1   the head: at least 16 bytes, version 1, rate 22050, clipCount
+//            1..40, reserved 0
+//   CVOI-2   the event table: complete, count 0..4, reserved 0, and first is
+//            the sum of the counts before it (an empty event too) - so the
+//            events share the clips 0..clipCount-1 in order, each clip in
+//            exactly one event, and the counts add up to clipCount
+//   CVOI-3   the clip table: complete; name as above; offset even and not
+//            inside the tables; frames 1..77175 (3.5 s) for events 0..7,
+//            1..22050 (1.0 s) for events 8 and 9; volume 0..256; reserved 0
+//   CVOI-4   the samples: the first clip starts at the end of the clip table,
+//            every next one where the one before ends, and the last one ends
+//            at the end of the chunk
+//
+// A finding NEVER refuses the file: it costs only the voices, and the driver
+// is silent (like a broken CICN). The envelope rules (size above
+// RLDCHAR_LIMIT_CVOI, compression, size_stored != size_raw) still refuse the
+// file, as for every known chunk. The envelope bound is a little wider than
+// the largest CVOI the rules allow (RLDCHAR_VOICE_BYTES_MAX).
+
+#define RLDCHAR_VOICE_VERSION 1u
+#define RLDCHAR_VOICE_RATE 22050u
+#define RLDCHAR_VOICE_EVENTS 10
+#define RLDCHAR_VOICE_PER_EVENT 4
+#define RLDCHAR_VOICE_CLIPS_MAX 40
+#define RLDCHAR_VOICE_LINE_FRAMES 77175u           // 3.5 s at 22050 Hz
+#define RLDCHAR_VOICE_SHORT_FRAMES 22050u          // 1.0 s at 22050 Hz
+#define RLDCHAR_VOICE_SHORT_FIRST 8                // events 8 and 9 are the short sounds
+#define RLDCHAR_VOICE_VOLUME_FULL 256u
+#define RLDCHAR_VOICE_NAME_BYTES 16u
+#define RLDCHAR_VOICE_HEAD_BYTES 0x10u
+#define RLDCHAR_VOICE_EVENT_BYTES 4u
+#define RLDCHAR_VOICE_CLIPS_AT (RLDCHAR_VOICE_HEAD_BYTES + RLDCHAR_VOICE_EVENTS * RLDCHAR_VOICE_EVENT_BYTES)   // 0x38
+#define RLDCHAR_VOICE_CLIP_BYTES 28u
+#define RLDCHAR_VOICE_BYTES_MAX                                                                                                         \
+	(RLDCHAR_VOICE_CLIPS_AT + RLDCHAR_VOICE_CLIPS_MAX * RLDCHAR_VOICE_CLIP_BYTES +                                                      \
+	 2u * RLDCHAR_VOICE_PER_EVENT * (RLDCHAR_VOICE_SHORT_FIRST * RLDCHAR_VOICE_LINE_FRAMES +                                             \
+	                                 (RLDCHAR_VOICE_EVENTS - RLDCHAR_VOICE_SHORT_FIRST) * RLDCHAR_VOICE_SHORT_FRAMES))   // 5293176
+
+// The largest CVOI the rules allow fits the envelope bound, and every event
+// can hold its 4 clips. A change beyond either does not compile.
+typedef char RldChar_VoicesFitTheLimit[(RLDCHAR_VOICE_BYTES_MAX <= RLDCHAR_LIMIT_CVOI) ? 1 : -1];
+typedef char RldChar_VoiceClipsFitTheEvents[(RLDCHAR_VOICE_CLIPS_MAX == RLDCHAR_VOICE_EVENTS * RLDCHAR_VOICE_PER_EVENT) ? 1 : -1];
+
+// The event keys, by event number (rldpack --voice, the Studio, the log).
+static const char *const s_rldCharVoiceEvents[RLDCHAR_VOICE_EVENTS] = {"boost", "hit",     "spin", "bigair",    "drop",
+                                                                       "shield", "passing", "fire", "short-yes", "short-hit"};
+
+struct RldCharVoiceClip
+{
+	char name[RLDCHAR_VOICE_NAME_BYTES + 1u];   // NUL-terminated
+	u32 offset;                                 // from the start of the chunk; the samples are bytes + offset, s16 LE
+	u32 frames;
+	u16 volume;                                 // 0..256
+};
+
+struct RldCharVoices
+{
+	u32 clipCount;
+	u8 first[RLDCHAR_VOICE_EVENTS];
+	u8 count[RLDCHAR_VOICE_EVENTS];
+	struct RldCharVoiceClip clip[RLDCHAR_VOICE_CLIPS_MAX];
+};
+
+// CVOI-1..4 on the chunk exactly as stored. NULL = usable (out filled), else a
+// fixed text that starts with the rule ("CVOI-2: ...") and out is all zero;
+// the caller drops only the voices. out may be NULL for the check alone.
+static const char *RldChar_CheckVoices(const u8 *bytes, u64 size, struct RldCharVoices *out)
+{
+	struct RldCharVoices voices;
+	u32 clipCount;
+	u32 tableEnd;
+	u32 sum = 0u;
+	u64 at;
+	u32 e;
+	u32 c;
+
+	memset(&voices, 0, sizeof(voices));
+	if (out != NULL)
+	{
+		memset(out, 0, sizeof(*out));
+	}
+
+	if ((bytes == NULL) || (size < (u64)RLDCHAR_VOICE_HEAD_BYTES))
+	{
+		return "CVOI-1: CVOI is shorter than its 16-byte head";
+	}
+	if (Rld_ReadLE32(&bytes[0x00]) != RLDCHAR_VOICE_VERSION)
+	{
+		return "CVOI-1: CVOI is not version 1";
+	}
+	if (Rld_ReadLE32(&bytes[0x04]) != RLDCHAR_VOICE_RATE)
+	{
+		return "CVOI-1: the sample rate is not 22050";
+	}
+	clipCount = Rld_ReadLE32(&bytes[0x08]);
+	if ((clipCount < 1u) || (clipCount > (u32)RLDCHAR_VOICE_CLIPS_MAX))
+	{
+		return "CVOI-1: the clip count is outside 1..40";
+	}
+	if (Rld_ReadLE32(&bytes[0x0C]) != 0u)
+	{
+		return "CVOI-1: the reserved head field is not 0";
+	}
+
+	if (size < (u64)RLDCHAR_VOICE_CLIPS_AT)
+	{
+		return "CVOI-2: the event table is cut off";
+	}
+	for (e = 0u; e < (u32)RLDCHAR_VOICE_EVENTS; e++)
+	{
+		const u8 *event = &bytes[RLDCHAR_VOICE_HEAD_BYTES + e * RLDCHAR_VOICE_EVENT_BYTES];
+
+		if (event[1] > (u8)RLDCHAR_VOICE_PER_EVENT)
+		{
+			return "CVOI-2: an event has more than 4 clips";
+		}
+		if (Rld_ReadLE16(&event[2]) != 0u)
+		{
+			return "CVOI-2: the reserved field of an event is not 0";
+		}
+		if ((u32)event[0] != sum)
+		{
+			return "CVOI-2: the events do not share the clips in order without a gap";
+		}
+		voices.first[e] = event[0];
+		voices.count[e] = event[1];
+		sum += event[1];
+	}
+	if (sum != clipCount)
+	{
+		return "CVOI-2: the clips of the events do not add up to the clip count";
+	}
+
+	tableEnd = RLDCHAR_VOICE_CLIPS_AT + clipCount * RLDCHAR_VOICE_CLIP_BYTES;
+	if (size < (u64)tableEnd)
+	{
+		return "CVOI-3: the clip table is cut off";
+	}
+	for (e = 0u; e < (u32)RLDCHAR_VOICE_EVENTS; e++)
+	{
+		const u32 framesMax = (e >= (u32)RLDCHAR_VOICE_SHORT_FIRST) ? RLDCHAR_VOICE_SHORT_FRAMES : RLDCHAR_VOICE_LINE_FRAMES;
+
+		for (c = voices.first[e]; c < (u32)voices.first[e] + voices.count[e]; c++)
+		{
+			const u8 *clip = &bytes[RLDCHAR_VOICE_CLIPS_AT + c * RLDCHAR_VOICE_CLIP_BYTES];
+			u32 length = 0u;
+			u32 i;
+
+			while ((length < RLDCHAR_VOICE_NAME_BYTES) && (clip[length] != 0u))
+			{
+				if ((clip[length] < 0x20u) || (clip[length] > 0x7Eu))
+				{
+					return "CVOI-3: a clip name has a character outside printable ASCII";
+				}
+				length++;
+			}
+			if (length == 0u)
+			{
+				return "CVOI-3: a clip name is empty";
+			}
+			if (length == RLDCHAR_VOICE_NAME_BYTES)
+			{
+				return "CVOI-3: a clip name is not NUL-terminated";
+			}
+			for (i = length; i < RLDCHAR_VOICE_NAME_BYTES; i++)
+			{
+				if (clip[i] != 0u)
+				{
+					return "CVOI-3: a clip name field is not all zero after the name";
+				}
+			}
+			memcpy(voices.clip[c].name, clip, length);
+			voices.clip[c].offset = Rld_ReadLE32(&clip[0x10]);
+			voices.clip[c].frames = Rld_ReadLE32(&clip[0x14]);
+			voices.clip[c].volume = (u16)Rld_ReadLE16(&clip[0x18]);
+			if (((voices.clip[c].offset & 1u) != 0u) || (voices.clip[c].offset < tableEnd))
+			{
+				return "CVOI-3: a clip offset is odd or inside the tables";
+			}
+			if ((voices.clip[c].frames < 1u) || (voices.clip[c].frames > framesMax))
+			{
+				return "CVOI-3: a clip is empty or longer than its event allows";
+			}
+			if (voices.clip[c].volume > RLDCHAR_VOICE_VOLUME_FULL)
+			{
+				return "CVOI-3: a clip volume is above 256";
+			}
+			if (Rld_ReadLE16(&clip[0x1A]) != 0u)
+			{
+				return "CVOI-3: the reserved field of a clip is not 0";
+			}
+		}
+	}
+
+	at = tableEnd;
+	for (c = 0u; c < clipCount; c++)
+	{
+		if ((u64)voices.clip[c].offset != at)
+		{
+			return "CVOI-4: the samples of a clip do not follow the one before";
+		}
+		at += 2u * (u64)voices.clip[c].frames;
+		if (at > size)
+		{
+			return "CVOI-4: the samples of a clip run past the end of the chunk";
+		}
+	}
+	if (at != size)
+	{
+		return "CVOI-4: there are bytes behind the last clip";
+	}
+
+	voices.clipCount = clipCount;
+	if (out != NULL)
+	{
+		*out = voices;
+	}
+	return NULL;
 }
 
 #endif // RLDCHAR_INC

@@ -3873,7 +3873,7 @@ static void Rld_FolderSort(struct RldFolder *folder, const char *name)
 
 // Every file at the top level of a folder (no subfolders), in the order the
 // system lists them; the callers sort or classify. 0 = the folder cannot be
-// opened. make and make-char --voices.
+// opened. make, and make-char --voices (which packs the folder as CVOI).
 typedef void (*RldFileVisit)(void *context, const char *name);
 
 static int Rld_EachFile(const char *path, RldFileVisit visit, void *context)
@@ -6141,7 +6141,9 @@ static void Rld_Usage(void)
 	printf("                              with the game's own reader, and warn if the track\n");
 	printf("                              lacks the data of a declared ctr or crystal mode\n");
 	printf("                              info and verify also read .rldchar files (chosen\n");
-	printf("                              by the first bytes, not by the name)\n");
+	printf("                              by the first bytes, not by the name) and check\n");
+	printf("                              the model, the portrait, the own mask and the\n");
+	printf("                              voices with the game's own rules\n");
 	printf("  selftest                    check SHA-256 and the build against fixed cases\n\n");
 	printf("  --machine                   with any command: also print lines for a program\n");
 	printf("                              (Reload Studio), see tools/reloadstudio/reloadstudio.h.\n");

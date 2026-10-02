@@ -55,7 +55,7 @@ Header field 0x08 is the content major of each magic; the envelope itself never 
 | known required-feature bits | none | none |
 | chunk_count | 3..64 | 2..64 |
 | required chunks | META, LEVD, VRMD | CHRI, CMDL |
-| known chunks and size limits | META 64 KiB, LEVD 16 MiB, VRMD 4 MiB, SNDB 4 MiB, PARM 4 KiB (`Rld_ChunkLimit`) | CHRI 4 KiB, CMDL 4 MiB, CICN 4 KiB, CMSK 256 KiB, CPRM 4 KiB (`RldChar_ChunkLimit`) |
+| known chunks and size limits | META 64 KiB, LEVD 16 MiB, VRMD 4 MiB, SNDB 4 MiB, PARM 4 KiB (`Rld_ChunkLimit`) | CHRI 4 KiB, CMDL 4 MiB, CICN 4 KiB, CMSK 256 KiB, CPRM 4 KiB, CVOI 6 MiB (`RldChar_ChunkLimit`) |
 
 Each type has its own table of known chunks: a CMDL inside a `.rldtrack` and a
 META inside a `.rldchar` are unknown chunks and are skipped.
@@ -341,18 +341,20 @@ is frozen. Source: `include/rldchar.inc`.
 | CICN | optional, written by `rldpack make-char --icon` | 4 KiB | the portrait, exactly 612 bytes (rules CICN-1..3); the game shows it in the driver select grid, the race HUD, the results and the cup standings |
 | CMSK | optional, experimental, written by `rldpack make-char --mask-model` | 256 KiB (rule CMSK-3: 16 KiB) | an own mask model, drawn in place of Aku Aku / Uka Uka (rules CMSK-1..3) |
 | CPRM | optional, known type: not written by rldpack, content not interpreted yet | 4 KiB | values; layout not fixed (draft) |
-| CVOI | reserved name, planned | none (unknown, skipped) | voices; layout not defined |
+| CVOI | optional, written by `rldpack make-char --voices` | 6 MiB (the rules allow at most 5293176 bytes) | the driver's voice: up to 4 clips for each of 10 events, mono 16 bit at 22050 Hz (rules CVOI-1..4) |
 | CTEX | reserved name, planned | none (unknown, skipped) | texture data; layout not defined |
 | CWHL | reserved name, planned | none (unknown, skipped) | own wheels; planned layout below ("Planned: CWHL, own wheels"), not read and not written |
 
-`rldpack make-char` writes CHRI, CMDL, then CICN with `--icon` and CMSK with
-`--mask-model`, in this order. CICN, CMSK and CPRM are known types. When
-present, the envelope checks them (compression, sizes, limit) and `rldpack
-verify` checks their hash. A CICN or CMSK that breaks an envelope rule (steps
-14-19, e.g. a CICN larger than 4 KiB or a CMSK larger than 256 KiB) refuses
-the whole file; a CICN that breaks CICN-1..3 only loses the portrait, a CMSK
-that breaks CMSK-1..3 or a model rule only loses the own mask (see CICN and
-CMSK below). Nothing interprets CPRM yet.
+`rldpack make-char` writes CHRI, CMDL, then CICN with `--icon`, CMSK with
+`--mask-model` and CVOI with `--voices`, in this order. CICN, CMSK, CVOI and
+CPRM are known types. When present, the envelope checks them (compression,
+sizes, limit) and `rldpack verify` checks their hash. A CICN, CMSK or CVOI
+that breaks an envelope rule (steps 14-19, e.g. a CICN larger than 4 KiB, a
+CMSK larger than 256 KiB or a CVOI larger than 6 MiB) refuses the whole file;
+a CICN that breaks CICN-1..3 only loses the portrait, a CMSK that breaks
+CMSK-1..3 or a model rule only loses the own mask, a CVOI that breaks
+CVOI-1..4 only loses the voices (see CICN, CMSK and CVOI below). Nothing
+interprets CPRM yet.
 
 ### CHRI (`RldChar_ParseInfo`)
 
@@ -704,12 +706,180 @@ and the invincibility stay retail, and the bots wear the retail masks. The
 first own mask of each load logs
 `[CTR Char] mask seat 0: own model from the file (<n> triangles)`.
 
-### Voices: checked, not packed
+### CVOI (`RldChar_CheckVoices`)
 
-`rldpack make-char --voices <folder>` reads the voice files (boost1/2, hit1/2,
-spin1/2, bigair1/2, drop1/2, shield1/2, passing1/2, fire1/2, yes, hit; .wav or
-.vag), assigns them to their places and checks them. Nothing goes into the
-file: CVOI stays a reserved name, and a custom driver is silent in the game.
+The driver's own voice: short clips for the moments a retail driver speaks.
+Optional; without it the driver is silent. Source: the CVOI section of
+`include/rldchar.inc`. All numbers little-endian, as in CHRI.
+
+| Offset | Type | Field | 1 |
+|---|---|---|---|
+| 0x00 | u32 | version | 1 |
+| 0x04 | u32 | rate | 22050, the sample rate of every clip (mono, signed 16 bit) |
+| 0x08 | u32 | clipCount | 1..40 |
+| 0x0C | u32 | reserved | 0 |
+| 0x10 | 10 x 4 bytes | events | per event, in the order of the table below: u8 first, u8 count, u16 reserved 0 - the event's clips are [first, first + count) |
+| 0x38 | clipCount x 28 bytes | clips | per clip: char[16] name, u32 offset, u32 frames, u16 volume, u16 reserved 0 |
+| | | samples | signed 16-bit little-endian, clip after clip in table order |
+
+A clip: `name` is printable ASCII (0x20..0x7E), 1..15 characters, then NUL up
+to byte 15 - the file name without its extension, for the log only. `offset`
+counts from the start of the chunk, `frames` is the number of samples, and
+`volume` scales the clip (256 = as recorded; `rldpack` writes 256).
+
+The events. 0..7 are the retail voice sets by index (`data.voiceID[]`,
+`game/zGlobal_DATA.c`); 8 and 9 the two short sounds the retail driver plays
+at once instead of a voice line (`game/HOWL/HOWL_Voiceline.c`):
+
+| Event | Key | Retail | File names by default |
+|---|---|---|---|
+| 0 | boost | set 0: a fast boost | boost1..boost4 |
+| 1 | hit | set 1: hit by a weapon, squashed, crashing into a driver or a wall | hit1..hit4 |
+| 2 | spin | set 2: spinning out | spin1..spin4 |
+| 3 | bigair | set 3: a boost on landing a jump | bigair1..bigair4 |
+| 4 | drop | set 4: laying a mine or a potion | drop1..drop4 |
+| 5 | shield | set 5: an attack the mask or shield takes | shield1..shield4 |
+| 6 | passing | set 6: said by the driver who passes the player | passing1..passing4 |
+| 7 | fire | set 7: firing a bomb, a missile or a warp orb, using a mask or the clock | fire1..fire4 |
+| 8 | short-yes | the short sound in place of set 0 | yes |
+| 9 | short-hit | the short sound in place of set 1 | hit |
+
+Rules, in order (the first finding is the reason given):
+
+| Rule | What must hold |
+|---|---|
+| CVOI-1 | at least 16 bytes; version 1; rate 22050; clipCount 1..40; reserved 0 |
+| CVOI-2 | the event table lies in the chunk; per event count 0..4, reserved 0, and first is the sum of the counts before it (an empty event too) - so the events share the clips 0..clipCount-1 in order, each clip in exactly one event, and the counts add up to clipCount |
+| CVOI-3 | the clip table lies in the chunk; per clip the name as above; offset even and not inside the tables; frames 1..77175 (3.5 s) for events 0..7 and 1..22050 (1.0 s) for events 8 and 9; volume 0..256; reserved 0 |
+| CVOI-4 | the first clip starts at the end of the clip table, each next one where the one before ends, and the last one ends at the end of the chunk |
+
+A CVOI that breaks a rule or has a wrong hash never refuses the file: only the
+voices are dropped, and the driver is silent (as for a broken CICN). A CVOI
+that breaks an envelope rule (larger than 6 MiB, compressed, size_stored not
+size_raw) refuses the whole file. A new layout comes as version 2, which an
+older reader drops the same way.
+
+The bounds and why:
+
+- 22050 Hz, mono, 16 bit: the retail voice lines are XA audio at 37800 Hz
+  mono, 4-bit ADPCM (all 314 tracks of the game's voice folder measured);
+  22050 Hz keeps speech clear at a little more than half the bytes of 44100 Hz,
+  and the game mixes at 44100 Hz, an exact multiple.
+- 3.5 s for a voice line: the longest retail voice line of sets 0..7 is
+  2.99 s (256 lines of 16 drivers measured in whole XA sectors of 0.107 s; the
+  median is 1.28 s, none is longer than 3.5 s; the longest line of the other
+  retail sets is 3.41 s). The bound is the one rldpack already checked against.
+- 1.0 s for a short sound: the bound rldpack already checked against; the
+  length of the retail short sounds is not determined.
+- 4 clips per event: retail has 2 per set; 4 give room for variety, and an
+  event picks a clip the way retail picks a line of the set.
+- Size: the rules allow at most 5293176 bytes (32 clips of 3.5 s, 8 of 1.0 s,
+  the tables); the envelope bound of 6 MiB even holds 40 clips of 3.5 s
+  (6175176 bytes). The game holds the bytes only for a bound seat (see
+  below), at most one chunk per bound file. Reading and checking such a chunk
+  (SHA-256 and CVOI-1..4) took about 15 ms on the measuring PC (`rldpack
+  verify` of a file with the largest CVOI, warm file cache: 70 ms against 42
+  ms without voices, the chunk read twice); the game pays it at start and
+  again when it binds the driver, in the load screen.
+
+What `rldpack make-char --voices <folder>` does (`RldMk_PackVoices`): every
+file of the folder (the first 64 by name) is listed; a `.wav` (PCM 8/16/24
+bit or float 32, 1 or 2 channels, 8000..48000 Hz) or `.vag` (PS1 ADPCM,
+decoded, never encoded) goes to the event its name says (case does not
+matter; a WAV wins over a VAG of the same name). `--voice
+<file>=<event|none>` (up to 64 times; the last one for a file wins) puts one
+file into an event by its key, or takes it out; it is split at the last `=`,
+so a file name may hold one. `voice-double` is said only when two files still
+share a name after that: neither of them got an event of its own. `--voice
+<file>=none` on the file that wins such a name leaves the other file unused
+too: it gets an event only by a `--voice` of its own. The clips of an event are ordered by file name (in lower
+case, then as written); more than 4 stop the build (`voice-too-many`). Each
+clip is made into what the game plays: 16 bit, stereo mixed to mono (the
+mean, rounded down), converted to 22050 Hz by a windowed-sinc low-pass
+(a file at 22050 Hz keeps every sample), cut after 3.5 s or 1.0 s
+(`voice-length-line`, `voice-length-short`), and with `--voice-normalize` its
+peak set to -1 dBFS (29204) - unless the peak is below -40 dBFS (328): such a
+clip stays as it is, lifting near silence or noise to full level helps no
+one (`voice-quiet`). Integers throughout but the filter taps, which
+are rounded once: the same files give the same bytes. The chunk is checked
+with `RldChar_CheckVoices` before it is written. A file of an event that
+rldpack cannot read stops the build (`voice-wav`, `voice-vag`), and so do a
+wrong `--voice` (`voice-assign`), a voice folder that cannot be opened
+(`voice-folder`; more than 64 files there are a warning with the same code),
+more than 4 clips in an event (`voice-too-many`) and packed voices that do not
+pass the game's check (`voice-pack`, an internal error). The other findings
+are warnings or notes: `voice-silent`, `voice-quiet`, `voice-clip`,
+`voice-double`, `voice-unknown`, `voice-other`, `voice-stereo`,
+`voice-same`, `voice-source`, `voice-missing`, and `voice-preview` when a
+preview cannot be written. `voice-clip` counts the samples at full level of
+the clip as the game plays it, before normalizing (which keeps the
+distortion), the ones the resampler had to clamp included; it is a warning
+from 16 such samples on (audible), a note below - a few lone samples at full
+level are common in exports and not heard. `--voice-preview <prefix>` writes every
+readable file of the folder as the game plays it, `<prefix>-voice-<n>.wav`
+(n counts the folder's files from 1 by name). Without a file in an event no
+CVOI is written; without `--voices` the file has no CVOI and the same bytes
+as before.
+
+With `--machine`, per file of the folder `@file voice <state> <name> <bytes>`
+and `@voice <name> <state> <event|-> <ms> <bytes> <rate> <channels>
+<peak_permille> <preview|->` (state ok, cut, bad, unknown, unused or
+ignored; ms, rate, channels and the peak - per mille of full scale, before
+normalizing - of the file as given), then `@voiceevent <key> <count>` for all
+10 events and `@char voices <clips> <events with a clip>`.
+
+`rldpack info` names it: `voices <n> sounds in <m> of 10 events, <s> s:
+boost <n>, ... (CVOI)`, `none - the driver is silent (no CVOI)` or `none -
+the driver is silent; CVOI ignored: <rule>: <detail>`; with `--machine`
+`@value own-voices <ok|none|ignored> <text>`, and for usable voices the
+`@voiceevent` and `@char voices` lines. `rldpack verify` prints `IGNORED
+CVOI` for a rule finding; a CVOI whose hash does not match fails the file in
+`rldpack verify`, while the game drops only the voices.
+
+What the game does with it (`platform/native_chars.c`,
+`game/HOWL/HOWL_Voiceline.c`, `platform/native_audio.c`):
+
+- At start it reads the CVOI of every file it loads, checks it (hash and
+  `RldChar_CheckVoices`) and lets the bytes go again; only the clip table
+  stays. One line per file, after the draw bytes line:
+  `[CTR Char] voices <file>: <n> clips - boost <n>, hit <n>, spin <n>, bigair <n>, drop <n>, shield <n>, passing <n>, fire <n>, short-yes <n>, short-hit <n>`
+  (all 10 events, 0 included), `[CTR Char] voices <file>: none - silent` or
+  `[CTR Char] voices <file>: CVOI ignored - <reason> - silent`.
+- When it binds a seat (in the load screen of a race) it reads the CVOI of
+  that file again, checks it again and holds the bytes until the seats are
+  cleared - so memory is taken only for bound seats. A file changed or
+  removed since the start costs only the voices of that race, with a second
+  line `[CTR Char] voices <file>: CVOI ignored - <reason> - silent`.
+- A bound seat without usable voices is silent, as before: no random number
+  is drawn for it.
+- A bound seat with voices keeps the retail decision: the same random
+  numbers, chances, cooldowns, queue and boss race branch, and the
+  template's line count for `rng % num`. Only the source changes. A voice
+  line plays clip `rng % count` of its event with the same random number;
+  the cooldown comes from the clip's length in the retail unit (sectors at
+  150 per second, divided by 5, plus 30 frames). Set 0 at once gives
+  short-yes, set 1 short-hit; a short sound plays only where retail would
+  play the template's own short sound - that sound must be loaded, at the
+  level retail gives it. For which templates that holds is not determined
+  from the code; Reload Studio builds every character on template 14 (Fake
+  Crash). An event
+  without a clip is silent (a voice line then has the cooldown of 30 frames
+  of a failed XA line). The template's voice is never played for the seat,
+  and the sample of the voice volume slider stays silent for it.
+- Two PCM places play the clips, mono 22050 Hz to 44100 Hz by linear
+  interpolation, times `volume` / 256. A voice line takes the place of an XA
+  voice line, at its volume: a new XA, a stop, pause, the end of a level and
+  a restore end it as they end an XA line. A short sound has a place of its
+  own beside it, at the level retail gives the template's short sound: a new
+  short sound replaces the one playing, and it does not cut the line. Quick
+  states and replays do not hold either: after a restore both are silent.
+  Without a bound seat with voices nothing of this runs.
+- Per clip: `[CTR Voice] seat <s> event <key> clip <name> (<i> of <n>)`;
+  without a clip: `[CTR Voice] seat <s> event <key>: no clip - silent`.
+- Retail facts that hold for the custom driver too: passing (set 6) is said
+  by the driver who passes the player, so a custom driver on the player's
+  seat in a one-player race never says it; fire and drop are said only for
+  a human driver; set 8 has no caller and is not an event.
 
 ### Planned: driver animations from pose models
 
@@ -799,10 +969,10 @@ switch, a built `.rldchar` has the same bytes.
 | When | What |
 |---|---|
 | start | every `*.rldchar` in the `characters` folder next to the game (the extension in any case, subfolders skipped): the names are sorted first, then the files are read in that order |
-| per file | envelope (`Rld_OpenAs`), the CMDL size before any memory is taken, CHRI and CMDL with their hashes, `RldChar_ParseInfo`, `RldChar_CheckModel`, then the pointer map, then CICN when present (`RldChar_CheckIcon`; a broken CICN costs only the portrait), then CMSK when present (`RldChar_CheckMask`; a broken CMSK costs only the own mask). CPRM is not read |
+| per file | envelope (`Rld_OpenAs`), the CMDL size before any memory is taken, CHRI and CMDL with their hashes, `RldChar_ParseInfo`, `RldChar_CheckModel`, then the pointer map, then CICN when present (`RldChar_CheckIcon`; a broken CICN costs only the portrait), then CMSK when present (`RldChar_CheckMask`; a broken CMSK costs only the own mask), then CVOI when present (`RldChar_CheckVoices`; a broken CVOI costs only the voices). CPRM is not read |
 | a broken file | skipped with one log line `[CTR Char] REFUSED <file>: <kind> (<rule>) <detail>`; the game starts anyway |
 | the first 32 valid files | a tile each in the one-player ARCADE driver select, after the retail drivers (not for CRYSTAL and CTR under NITRO-PIT); a further valid file gets the log line `NO ID` and no tile |
-| menu and race | the driver select shows the own portrait (CICN, first 20 entries; else the template's, see CICN) and the name from CHRI; the race HUD, the arcade results and the cup standings show the own portrait too (see CICN). In the race seat 0 runs on the template's character id with the custom model, and the class in CHRI sets the physics values and the engine sound. Not from the template: its voice (neither in the race nor as the sample of the voice volume slider). Still the template's: the cup podium, high score lists and profiles. After the binding one line names every seat: `[CTR Char] seats: 0=<id> (<file>, map color <RRGGBB>\|map color of the template) 1=<id> ...`, ending in `... (cut at seat <n>)` when the line is full |
+| menu and race | the driver select shows the own portrait (CICN, first 20 entries; else the template's, see CICN) and the name from CHRI; the race HUD, the arcade results and the cup standings show the own portrait too (see CICN). In the race seat 0 runs on the template's character id with the custom model, and the class in CHRI sets the physics values and the engine sound. Not from the template: its voice - in the race the driver speaks its own clips from CVOI (see CVOI) or is silent, and the sample of the voice volume slider is never the template's. Still the template's: the cup podium, high score lists and profiles. After the binding one line names every seat: `[CTR Char] seats: 0=<id> (<file>, map color <RRGGBB>\|map color of the template) 1=<id> ...`, ending in `... (cut at seat <n>)` when the line is full |
 | draw memory | the game adds the draw memory of custom models on top of the frame's (`NativeChar_DrawReserve`), twice (the mirror floor draws a model again): on the main menu that of the largest model of the roster, in a race that of seat 0 drawn as an invisible driver (60 bytes a triangle without texture, 64 with one, instead of 28 and 40) plus its own mask; a race with a retail driver and every other menu load add nothing. One line per load when it adds something: `[CTR Char] draw memory: <n> bytes + <m> for custom models (...) = <sum>`. At start one line per file, `[CTR Char] draw bytes <file>: model <n>, own mask <m>`, and the memory window grows for it: `[CTR Native] characters/: mempack extra +<n> bytes for the draw memory of custom models, <m> in force`. Without a loaded file nothing of this changes |
 | minimap | with `RLDCHAR_FLAG_MAP_COLOR` the bound seat's marker on the minimap has the color at 0x20, else the template's (808080 for Fake Crash: the marker as drawn). The color tints the marker: 80 per channel is neutral, higher values are brighter. The player's white blink stays |
 | wheels | with `RLDCHAR_FLAG_NO_WHEELS` set in CHRI the game draws no kart wheels (and no wheel reflections) for the custom model - tyre dust and skid marks stay, they are effects at the wheel points, not wheels - and the load line `[CTR Char] loaded <file>: ...` adds `, wheels hidden` after the byte count; without the bit the wheels are drawn as for a retail driver |
@@ -831,6 +1001,11 @@ switch, a built `.rldchar` has the same bytes.
 | `RLDCHAR_DRAW_BYTES_MAX` | 201600 bytes of draw memory (7200 x 0x1C: 7200 triangles with vertex colors) |
 | `RLDCHAR_MASK_BYTES_MAX` | 16 KiB of CMSK (CMSK-3) |
 | `RLDCHAR_MASK_DRAW_BYTES_MAX` | 11200 bytes of draw memory of the own mask (400 x 0x1C: 400 triangles) |
+| `RLDCHAR_LIMIT_CVOI` | 6 MiB of CVOI (the envelope bound) |
+| `RLDCHAR_VOICE_BYTES_MAX` | 5293176 bytes: the largest CVOI the rules allow |
+| `RLDCHAR_VOICE_RATE` | 22050 Hz |
+| `RLDCHAR_VOICE_CLIPS_MAX`, `RLDCHAR_VOICE_PER_EVENT` | 40 clips, 4 per event |
+| `RLDCHAR_VOICE_LINE_FRAMES`, `RLDCHAR_VOICE_SHORT_FRAMES` | 77175 samples (3.5 s) for events 0..7, 22050 (1.0 s) for events 8 and 9 |
 
 `RLDCHAR_DRAW_BYTES_MAX` is the one place of the model limit: model-draw,
 the reduction of `rldpack make-char` (`RLDMK_REDUCE_LIMIT`, and
@@ -952,7 +1127,7 @@ CHRI rules (`RldChar_ParseInfo`). A finding refuses the file as DAMAGED.
 | a new minor version | nothing: a reader takes any minor, names it and never refuses because of it |
 | a new optional chunk | no bump: an older reader checks its position, type and overlap and skips it |
 | an optional chunk taken out of the format | no bump: older files keep loading, the chunk is skipped, its name is blocked |
-| a new layout inside SNDB, PARM or CICN | the chunk's own version field: an older reader drops only that chunk |
+| a new layout inside SNDB, PARM, CICN or CVOI | the chunk's own version field: an older reader drops only that chunk |
 | a new PARM key | no bump: unknown keys are skipped |
 | a new string in META or CHRI | appended at the end only |
 | a new field in CHRI | a longer fixedSize; an older reader skips the extra bytes. flags at 0x1C came this way (fixedSize 0x20, written only when a bit is set): an older reader skips it and draws the wheels. A new flag bit needs no bump: a reader ignores bits it does not know. The mask in bits 1-2 came this way: an older reader gives the driver the template's mask. mapColor at 0x20 came as the second field (fixedSize 0x24, written only with bit 3): an older reader shows the template's minimap color |
@@ -975,7 +1150,8 @@ Chunk names:
 | CICN | `.rldchar` | optional (portrait): written by `rldpack make-char --icon`, shown in the game's driver select grid and race |
 | CMSK | `.rldchar` | optional, experimental (own mask): written by `rldpack make-char --mask-model`, drawn in place of the retail mask |
 | CPRM | `.rldchar` | optional known type (values): not written by rldpack, content not interpreted yet |
-| CVOI, CTEX, CWHL | `.rldchar` | reserved, planned (voices, texture data, own wheels) |
+| CVOI | `.rldchar` | optional (voices): written by `rldpack make-char --voices`, spoken by the bound custom driver |
+| CTEX, CWHL | `.rldchar` | reserved, planned (texture data, own wheels) |
 | SIGN | blocked | signature, taken out of the format; skipped in older files |
 | MMAP | blocked | menu map, taken out with 4.1; skipped in older files |
 | THMB | blocked | preview image, dropped |
