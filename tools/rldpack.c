@@ -221,21 +221,63 @@ static void Rld_EmitNumber(const char *kind, const char *key, unsigned long long
 	Rld_Emit(kind, key, text, (const char *)NULL);
 }
 
+// The largest file Rld_ReadFile reads. Models, track files and sounds stay far
+// below it. Above it the 32-bit process would fail on its own - malloc from
+// about 1 GB, ftell (a 32-bit long) from 2 GB - and the caller could only say
+// "cannot be opened", which sends an author looking for a wrong path.
+#define RLD_READ_MAX (512ul * 1024ul * 1024ul)
+
+// Set by Rld_ReadFile when it refused a file for its size (and said so),
+// cleared on every call. A caller can leave out its own "cannot be opened".
+static int s_rldReadTooLarge;
+
+static void Rld_SayTooLarge(const char *path, const char *size)
+{
+	s_rldReadTooLarge = 1;
+	fprintf(stderr, "rldpack: %s is too large (%s, at most 512 MiB)\n", path, size);
+	Rld_Say("error", "file-too-large", size, "The file %s is too large: at most 512 MiB can be read.", path);
+}
+
 static int Rld_ReadFile(const char *path, u8 **dataOut, size_t *sizeOut)
 {
 	FILE *file = fopen(path, "rb");
-	long size;
+	long size = -1;
 	u8 *data;
 
 	*dataOut = NULL;
 	*sizeOut = 0;
+	s_rldReadTooLarge = 0;
 
 	if (file == NULL)
 	{
 		return 0;
 	}
 
-	if ((fseek(file, 0, SEEK_END) != 0) || ((size = ftell(file)) < 0) || (fseek(file, 0, SEEK_SET) != 0))
+	if ((fseek(file, 0, SEEK_END) != 0) || ((size = ftell(file)) < 0))
+	{
+		// No size - with a 32-bit long that is a file of 2 GB or more. One
+		// byte read behind the limit tells whether that is the reason.
+		int large = (fseek(file, (long)RLD_READ_MAX, SEEK_SET) == 0) && (fgetc(file) != EOF);
+
+		fclose(file);
+		if (large)
+		{
+			Rld_SayTooLarge(path, "size not determined, more than 536870912 bytes");
+		}
+		return 0;
+	}
+
+	if ((unsigned long)size > RLD_READ_MAX)
+	{
+		char text[48];
+
+		fclose(file);
+		snprintf(text, sizeof(text), "%ld bytes", size);
+		Rld_SayTooLarge(path, text);
+		return 0;
+	}
+
+	if (fseek(file, 0, SEEK_SET) != 0)
 	{
 		fclose(file);
 		return 0;
@@ -2267,15 +2309,21 @@ static int Rld_Pack(const struct RldPackJob *job)
 	// be read" sends an author looking for both.
 	if (!Rld_ReadFile(job->levPath, &lev, &levSize))
 	{
-		fprintf(stderr, "rldpack: cannot read %s\n", job->levPath);
-		Rld_Say("error", "lev-read", job->levPath, "The track geometry file (.lev) cannot be read.");
+		if (!s_rldReadTooLarge) // said already, with its reason
+		{
+			fprintf(stderr, "rldpack: cannot read %s\n", job->levPath);
+			Rld_Say("error", "lev-read", job->levPath, "The track geometry file (.lev) cannot be read.");
+		}
 		return 1;
 	}
 
 	if (!Rld_ReadFile(job->vrmPath, &vrm, &vrmSize))
 	{
-		fprintf(stderr, "rldpack: cannot read %s\n", job->vrmPath);
-		Rld_Say("error", "vrm-read", job->vrmPath, "The texture file (.vrm) cannot be read.");
+		if (!s_rldReadTooLarge) // said already, with its reason
+		{
+			fprintf(stderr, "rldpack: cannot read %s\n", job->vrmPath);
+			Rld_Say("error", "vrm-read", job->vrmPath, "The texture file (.vrm) cannot be read.");
+		}
 		return 1;
 	}
 
@@ -2378,8 +2426,11 @@ static int Rld_Pack(const struct RldPackJob *job)
 	{
 		if (!Rld_ReadFile(job->sndbPath, &sndbFile, &sndbSize))
 		{
-			fprintf(stderr, "rldpack: cannot read %s\n", job->sndbPath);
-			Rld_Say("error", "sndb-read", job->sndbPath, "The sound file cannot be read.");
+			if (!s_rldReadTooLarge) // said already, with its reason
+			{
+				fprintf(stderr, "rldpack: cannot read %s\n", job->sndbPath);
+				Rld_Say("error", "sndb-read", job->sndbPath, "The sound file cannot be read.");
+			}
 			return 1;
 		}
 
@@ -3789,6 +3840,13 @@ static u8 *Rld_FindHwl(const char *argv0, size_t *sizeOut, char *source, size_t 
 				return data;
 			}
 
+			// Refused for its size and said so: no quiet second source.
+			if (s_rldReadTooLarge)
+			{
+				snprintf(why, whySize, "%s is too large (at most 512 MiB)", loose);
+				return NULL;
+			}
+
 			if (Rld_FileExists(image))
 			{
 				int imageSize = 0;
@@ -4228,8 +4286,11 @@ static int Cmd_Make(int argc, char *argv[], const char *argv0)
 
 		if (!Rld_ReadFile(txtPath, &text, &textSize))
 		{
-			fprintf(stderr, "rldpack: cannot read %s\n", txtPath);
-			Rld_Say("error", "tracktxt-read", txtPath, "track.txt cannot be read.");
+			if (!s_rldReadTooLarge) // said already, with its reason
+			{
+				fprintf(stderr, "rldpack: cannot read %s\n", txtPath);
+				Rld_Say("error", "tracktxt-read", txtPath, "track.txt cannot be read.");
+			}
 			return 1;
 		}
 
@@ -4438,8 +4499,11 @@ static int Cmd_Make(int argc, char *argv[], const char *argv0)
 
 		if (!Rld_ReadFile(sndbPath, &sndb, &sndbSize))
 		{
-			fprintf(stderr, "rldpack: cannot read %s\n", sndbPath);
-			Rld_Say("error", "sndb-read", sndbPath, "The music file %s cannot be read.", folder.sndb.names[0]);
+			if (!s_rldReadTooLarge) // said already, with its reason
+			{
+				fprintf(stderr, "rldpack: cannot read %s\n", sndbPath);
+				Rld_Say("error", "sndb-read", sndbPath, "The music file %s cannot be read.", folder.sndb.names[0]);
+			}
 			RLD_MUSIC_FAILED();
 		}
 
@@ -4480,8 +4544,11 @@ static int Cmd_Make(int argc, char *argv[], const char *argv0)
 
 		if (!Rld_ReadFile(scaPath, &scaData, &scaSize))
 		{
-			fprintf(stderr, "rldpack: cannot read %s\n", scaPath);
-			Rld_Say("error", "sca-read", scaPath, "The music file (.sca) cannot be read.");
+			if (!s_rldReadTooLarge) // said already, with its reason
+			{
+				fprintf(stderr, "rldpack: cannot read %s\n", scaPath);
+				Rld_Say("error", "sca-read", scaPath, "The music file (.sca) cannot be read.");
+			}
 			RLD_MUSIC_FAILED();
 		}
 
@@ -4514,8 +4581,11 @@ static int Cmd_Make(int argc, char *argv[], const char *argv0)
 		{
 			if (!Rld_ReadFile(hwlArg, &hwlData, &hwlSize))
 			{
-				fprintf(stderr, "rldpack: cannot read %s\n", hwlArg);
-				Rld_Say("error", "hwl-read", hwlArg, "The game's sound table (KART.HWL) cannot be read.");
+				if (!s_rldReadTooLarge) // said already, with its reason
+				{
+					fprintf(stderr, "rldpack: cannot read %s\n", hwlArg);
+					Rld_Say("error", "hwl-read", hwlArg, "The game's sound table (KART.HWL) cannot be read.");
+				}
 				RLD_MUSIC_FAILED();
 			}
 
