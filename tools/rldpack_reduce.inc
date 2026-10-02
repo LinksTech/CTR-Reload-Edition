@@ -2,7 +2,8 @@
 //
 // Part of the packer, never of the game. Self-contained: it needs only the C
 // standard library (stdlib, string, stdio, stdarg), the types u8 and u32,
-// s_machine and Rld_Say of tools/rldpack.c, and RldMk_Progress of
+// s_machine, Rld_Say and CTR_NATIVE_BUILD_ID of tools/rldpack.c, the SHA-256
+// of include/rldtrack.inc (THE CACHE), and RldMk_Progress of
 // tools/rldpack_char.inc (progress lines for Reload Studio, which never change
 // a result), so it can be included anywhere after those.
 //
@@ -2007,6 +2008,232 @@ static int RldRed_Run(const RldRedMesh *mesh, RldRedResult *out, char *why, size
 	return 1;
 }
 
+//========================================================================================
+// THE CACHE
+//========================================================================================
+//
+// Reload Studio checks a model again after every change of a field, and one
+// make-char run reduces the same model several times (a silent try, the
+// build, and both again for "built twice"). With the cache on
+// (s_rldRedCache; make-char sets it unless --no-cache) a reduced mesh is kept
+// in the folder for temporary files (TEMP, else TMP) as
+// rldpack-reduce-<slot>.bin and taken from there when the same input comes
+// again.
+//   - THE KEY is the SHA-256 of everything the result depends on: the build
+//     ID of the program (another state of the code may reduce differently;
+//     without a build ID that tells states apart - "unknown" or a dirty tree
+//     without its hash - there is no cache), every input array, the group
+//     targets and the shared budget. Unused positions are part of it too:
+//     a key that changes for nothing only costs a reduction.
+//   - THE FILE: "RLDREDC1", the key, the result (triangleCount, stage, the
+//     collapses of the second phase, maxError, the three arrays as the
+//     program holds them in memory) and the SHA-256 of all before it. It is
+//     read only by the build that wrote it (the key says so), so the bytes
+//     need no fixed order. A file that is missing, short, longer, of another
+//     key, damaged or not plausible (an index out of range, sourceTriangle
+//     not rising) counts as not there.
+//   - EVERY ERROR of the cache (no folder, no memory, a file that cannot be
+//     written) only means that the reduction runs as without it. A file is
+//     written as <name>.part and then renamed, so a run that is stopped
+//     leaves no half file under the name.
+//   - RLDRED_CACHE_SLOTS files at most: the first byte of the key picks the
+//     slot, a new model takes the place of an old one there. A file has
+//     about 28 bytes per kept triangle (200 KB for a driver of 7200).
+//   - Only reductions that reach the target are kept.
+// The cache never changes a result: a hit gives the bytes the reduction of
+// the same input gives in the same program. It only skips the work.
+
+#define RLDRED_CACHE_SLOTS 16u
+#define RLDRED_CACHE_MAGIC "RLDREDC1"
+#define RLDRED_CACHE_HEAD (8u + 32u + 3u * 4u + 8u)
+
+// 1 = on; make-char sets it, the self-tests leave it off (except the test of
+// the cache itself).
+static int s_rldRedCache;
+
+// What the cache did, for the self-test: files read, files written.
+static u32 s_rldRedCacheHits;
+static u32 s_rldRedCacheWrites;
+
+// The file of a slot; 0 = no folder for temporary files or the path too long.
+static int RldRed_CachePath(const u8 *key, char *path, size_t pathSize)
+{
+	const char *folder = getenv("TEMP");
+	size_t length;
+	int written;
+
+	if ((folder == NULL) || (folder[0] == '\0'))
+	{
+		folder = getenv("TMP");
+	}
+	if ((folder == NULL) || (folder[0] == '\0'))
+	{
+		return 0;
+	}
+	length = strlen(folder);
+	written = snprintf(path, pathSize, "%s%srldpack-reduce-%02u.bin", folder, ((folder[length - 1u] == '/') || (folder[length - 1u] == '\\')) ? "" : "/",
+	                   (u32)key[0] % RLDRED_CACHE_SLOTS);
+	return (written > 0) && ((size_t)written < pathSize);
+}
+
+static void RldRed_CacheU32(struct Sha256 *sha, u32 value)
+{
+	Sha256_Update(sha, &value, sizeof(value));
+}
+
+// The key of an input that RldRed_CheckInput accepted. 0 = no build ID that
+// tells states of the code apart: no cache.
+static int RldRed_CacheKey(const RldRedMesh *mesh, u8 key[32])
+{
+	static const char id[] = CTR_NATIVE_BUILD_ID;
+	const size_t idLength = strlen(id);
+	struct Sha256 sha;
+
+	if ((strcmp(id, "unknown") == 0) || ((idLength >= 6u) && (strcmp(&id[idLength - 6u], "-dirty") == 0)))
+	{
+		return 0;
+	}
+
+	Sha256_Init(&sha);
+	Sha256_Update(&sha, RLDRED_CACHE_MAGIC, 8u);
+	Sha256_Update(&sha, id, idLength + 1u);
+	RldRed_CacheU32(&sha, mesh->positionCount);
+	Sha256_Update(&sha, mesh->position, (size_t)mesh->positionCount * 3u * sizeof(double));
+	RldRed_CacheU32(&sha, mesh->triangleCount);
+	Sha256_Update(&sha, mesh->triangle, (size_t)mesh->triangleCount * 3u * sizeof(u32));
+	Sha256_Update(&sha, mesh->triangleGroup, (size_t)mesh->triangleCount);
+	RldRed_CacheU32(&sha, mesh->groupCount);
+	Sha256_Update(&sha, mesh->groupTarget, (size_t)mesh->groupCount * sizeof(u32));
+	RldRed_CacheU32(&sha, (mesh->cornerColor != NULL) ? 1u : 0u);
+	if (mesh->cornerColor != NULL)
+	{
+		Sha256_Update(&sha, mesh->cornerColor, (size_t)mesh->triangleCount * 3u * sizeof(u32));
+	}
+	RldRed_CacheU32(&sha, mesh->totalTarget);
+	Sha256_Final(&sha, key);
+	return 1;
+}
+
+// 1 = out filled from the file of the key (free with RldRed_Free); 0 = not
+// there, out empty.
+static int RldRed_CacheRead(const RldRedMesh *mesh, const u8 *key, RldRedResult *out)
+{
+	char path[1024];
+	u8 head[RLDRED_CACHE_HEAD];
+	u8 digest[32];
+	u8 *data = NULL;
+	struct Sha256 sha;
+	FILE *file;
+	size_t size;
+	u32 count;
+	u32 late;
+	u32 i;
+	int ok;
+
+	if (!RldRed_CachePath(key, path, sizeof(path)) || ((file = fopen(path, "rb")) == NULL))
+	{
+		return 0;
+	}
+	ok = (fread(head, 1u, sizeof(head), file) == sizeof(head)) && (memcmp(head, RLDRED_CACHE_MAGIC, 8u) == 0) && (memcmp(&head[8], key, 32u) == 0);
+	memcpy(&count, &head[40], 4u);
+	ok = ok && (count != 0u) && (count <= mesh->triangleCount);
+	size = ok ? ((size_t)count * 7u * sizeof(u32) + 32u) : 0u;
+	data = ok ? (u8 *)malloc(size) : NULL;
+	ok = ok && (data != NULL) && (fread(data, 1u, size, file) == size) && (fgetc(file) == EOF);
+	fclose(file);
+	if (ok)
+	{
+		Sha256_Init(&sha);
+		Sha256_Update(&sha, head, sizeof(head));
+		Sha256_Update(&sha, data, size - 32u);
+		Sha256_Final(&sha, digest);
+		ok = (memcmp(digest, &data[size - 32u], 32u) == 0);
+	}
+	if (ok)
+	{
+		out->triangleCount = count;
+		memcpy(&out->stage, &head[44], 4u);
+		memcpy(&late, &head[48], 4u);
+		memcpy(&out->maxError, &head[52], 8u);
+		out->triangle = (u32 *)malloc(((size_t)count + 1u) * 3u * sizeof(u32));
+		out->sourceTriangle = (u32 *)malloc(((size_t)count + 1u) * sizeof(u32));
+		out->sourceCorner = (u32 *)malloc(((size_t)count + 1u) * 3u * sizeof(u32));
+		ok = (out->stage < 3u) && (out->triangle != NULL) && (out->sourceTriangle != NULL) && (out->sourceCorner != NULL);
+	}
+	if (ok)
+	{
+		memcpy(out->triangle, data, (size_t)count * 3u * sizeof(u32));
+		memcpy(out->sourceTriangle, &data[(size_t)count * 3u * sizeof(u32)], (size_t)count * sizeof(u32));
+		memcpy(out->sourceCorner, &data[(size_t)count * 4u * sizeof(u32)], (size_t)count * 3u * sizeof(u32));
+		for (i = 0; ok && (i < count); i++)
+		{
+			ok = (out->triangle[3u * i + 0u] < mesh->positionCount) && (out->triangle[3u * i + 1u] < mesh->positionCount) &&
+			     (out->triangle[3u * i + 2u] < mesh->positionCount) && (out->sourceTriangle[i] < mesh->triangleCount) &&
+			     ((i == 0u) || (out->sourceTriangle[i] > out->sourceTriangle[i - 1u])) && (out->sourceCorner[3u * i + 0u] < 3u * mesh->triangleCount) &&
+			     (out->sourceCorner[3u * i + 1u] < 3u * mesh->triangleCount) && (out->sourceCorner[3u * i + 2u] < 3u * mesh->triangleCount);
+		}
+	}
+	free(data);
+	if (!ok)
+	{
+		RldRed_Free(out);
+		return 0;
+	}
+	s_rldRedLateCollapses = late;
+	s_rldRedCacheHits++;
+	return 1;
+}
+
+// Keeps a result under its key; every failure is silent.
+static void RldRed_CacheWrite(const u8 *key, const RldRedResult *r)
+{
+	char path[1024];
+	char part[1040];
+	u8 head[RLDRED_CACHE_HEAD];
+	u8 digest[32];
+	struct Sha256 sha;
+	FILE *file;
+	const size_t n = r->triangleCount;
+	int ok;
+
+	if (!RldRed_CachePath(key, path, sizeof(path)) || (snprintf(part, sizeof(part), "%s.part", path) >= (int)sizeof(part)))
+	{
+		return;
+	}
+	memcpy(head, RLDRED_CACHE_MAGIC, 8u);
+	memcpy(&head[8], key, 32u);
+	memcpy(&head[40], &r->triangleCount, 4u);
+	memcpy(&head[44], &r->stage, 4u);
+	memcpy(&head[48], &s_rldRedLateCollapses, 4u);
+	memcpy(&head[52], &r->maxError, 8u);
+	Sha256_Init(&sha);
+	Sha256_Update(&sha, head, sizeof(head));
+	Sha256_Update(&sha, r->triangle, n * 3u * sizeof(u32));
+	Sha256_Update(&sha, r->sourceTriangle, n * sizeof(u32));
+	Sha256_Update(&sha, r->sourceCorner, n * 3u * sizeof(u32));
+	Sha256_Final(&sha, digest);
+
+	if ((file = fopen(part, "wb")) == NULL)
+	{
+		return;
+	}
+	ok = (fwrite(head, 1u, sizeof(head), file) == sizeof(head)) && (fwrite(r->triangle, sizeof(u32), n * 3u, file) == (n * 3u)) &&
+	     (fwrite(r->sourceTriangle, sizeof(u32), n, file) == n) && (fwrite(r->sourceCorner, sizeof(u32), n * 3u, file) == (n * 3u)) &&
+	     (fwrite(digest, 1u, 32u, file) == 32u);
+	ok = (fclose(file) == 0) && ok;
+	if (ok)
+	{
+		remove(path);
+		ok = (rename(part, path) == 0);
+	}
+	if (!ok)
+	{
+		remove(part);
+		return;
+	}
+	s_rldRedCacheWrites++;
+}
+
 // THE NOTE BEFORE A LONG REDUCTION. The time grows a little faster than the
 // triangles. Measured: make-char --check of a closed sphere with colors
 // (Reload Studio's Check with Reduce to fit), the whole run, which reduces
@@ -2051,12 +2278,16 @@ static u32 s_rldRedSlowSaid;
 // did not make the model that big, --remesh did.
 #define RLDRED_SLOW_SAME 1000u
 
+// The reductions of one make-char run in the curve; with the cache on, the
+// passes after the first read the file (THE CACHE).
+#define RLDRED_SLOW_PASSES 4u
+
 static u32 s_rldRedSlowHull;
 
 static void RldRed_SaySlow(u32 triangles)
 {
 	const int remesh = (s_rldRedSlowHull != 0u) && (triangles >= s_rldRedSlowHull) && ((triangles - s_rldRedSlowHull) <= RLDRED_SLOW_SAME);
-	const u32 seconds = RldRed_SlowSeconds(triangles);
+	const u32 seconds = s_rldRedCache ? ((RldRed_SlowSeconds(triangles) + RLDRED_SLOW_PASSES - 1u) / RLDRED_SLOW_PASSES) : RldRed_SlowSeconds(triangles);
 	char text[256];
 	char when[32];
 
@@ -2107,6 +2338,8 @@ static void RldRed_SaySlow(u32 triangles)
 int RldRed_Reduce(const RldRedMesh *mesh, RldRedResult *out, char *why, size_t whySize)
 {
 	char spare[4];
+	u8 key[32];
+	int cached;
 	int done = 0;
 	u32 stage;
 
@@ -2126,6 +2359,11 @@ int RldRed_Reduce(const RldRedMesh *mesh, RldRedResult *out, char *why, size_t w
 	{
 		return 0;
 	}
+	cached = s_rldRedCache && RldRed_CacheKey(mesh, key);
+	if (cached && RldRed_CacheRead(mesh, key, out))
+	{
+		return 1;
+	}
 	RldRed_SaySlow(mesh->triangleCount);
 
 	for (stage = 0; stage < 3u; stage++)
@@ -2140,6 +2378,10 @@ int RldRed_Reduce(const RldRedMesh *mesh, RldRedResult *out, char *why, size_t w
 	{
 		why[0] = '\0';
 		out->stage = stage;
+		if (cached)
+		{
+			RldRed_CacheWrite(key, out);
+		}
 	}
 	return done == 1;
 }
@@ -4079,6 +4321,119 @@ static void RldRed_TestShared(struct RldRedTest *test)
 
 // The number of failed cases; 0 = passed. Each case reports one line (no
 // line break at the end) through report, which may be NULL.
+// The cache (on only here): the sphere of 16 x 16 squares per side (3072
+// triangles) reduced to 400 without the cache, then twice with it - the
+// first run writes the file, the second reads it - then with the file
+// damaged (one byte changed) and cut short: each time the same result as
+// without the cache, and the bad files are not taken. Without a build ID
+// that tells states of the code apart there is no cache; the case says so.
+static int RldRed_TestSame(const RldRedResult *a, const RldRedResult *b)
+{
+	const size_t n = a->triangleCount;
+
+	return (a->triangleCount == b->triangleCount) && (a->stage == b->stage) && (memcmp(&a->maxError, &b->maxError, sizeof(double)) == 0) &&
+	       (memcmp(a->triangle, b->triangle, n * 3u * sizeof(u32)) == 0) && (memcmp(a->sourceTriangle, b->sourceTriangle, n * sizeof(u32)) == 0) &&
+	       (memcmp(a->sourceCorner, b->sourceCorner, n * 3u * sizeof(u32)) == 0);
+}
+
+static void RldRed_TestCache(struct RldRedTest *test)
+{
+	struct RldRedTestMesh t;
+	RldRedResult plain;
+	RldRedResult r;
+	RldRedMesh mesh;
+	char why[200];
+	char path[1024];
+	u8 key[32];
+	const u32 target = 400u;
+	const int before = s_rldRedCache;
+	u32 hits;
+	u32 writes;
+	int ok;
+	int i;
+
+	memset(&t, 0, sizeof(t));
+	memset(&plain, 0, sizeof(plain));
+	memset(&r, 0, sizeof(r));
+	RldRed_TestCube(&t, 16u, 64.0, 1, 0.0, 0u);
+	mesh = RldRed_TestView(&t, 1u, &target);
+	if (t.failed || !RldRed_Reduce(&mesh, &plain, why, sizeof(why)))
+	{
+		RldRed_TestLine(test, 0, "cache", "no result without the cache: %s", t.failed ? "out of memory" : why);
+		RldRed_Free(&plain);
+		RldRed_TestFree(&t);
+		return;
+	}
+	if (!RldRed_CacheKey(&mesh, key) || !RldRed_CachePath(key, path, sizeof(path)))
+	{
+		RldRed_TestLine(test, 1, "cache: off without a build ID that tells states apart or without TEMP", "%s", CTR_NATIVE_BUILD_ID);
+		RldRed_Free(&plain);
+		RldRed_TestFree(&t);
+		return;
+	}
+
+	s_rldRedCache = 1;
+	remove(path);
+	hits = s_rldRedCacheHits;
+	writes = s_rldRedCacheWrites;
+	ok = RldRed_Reduce(&mesh, &r, why, sizeof(why)) && RldRed_TestSame(&plain, &r) && (s_rldRedCacheHits == hits) && (s_rldRedCacheWrites == writes + 1u);
+	RldRed_Free(&r);
+	ok = ok && RldRed_Reduce(&mesh, &r, why, sizeof(why)) && RldRed_TestSame(&plain, &r) && (s_rldRedCacheHits == hits + 1u) &&
+	     (s_rldRedCacheWrites == writes + 1u);
+	RldRed_Free(&r);
+	RldRed_TestLine(test, ok, "cache: written once, then read - the same bytes as without it", "hits %u, writes %u", s_rldRedCacheHits - hits,
+	                s_rldRedCacheWrites - writes);
+
+	// Damaged: one byte in the middle of the result, then the file cut short.
+	for (i = 0; i < 2; i++)
+	{
+		FILE *file = fopen(path, "r+b");
+		long size = 0;
+
+		ok = (file != NULL);
+		if (ok)
+		{
+			ok = (fseek(file, 0, SEEK_END) == 0) && ((size = ftell(file)) > 100);
+			if (ok && (i == 0))
+			{
+				int byte;
+
+				ok = (fseek(file, size / 2, SEEK_SET) == 0) && ((byte = fgetc(file)) != EOF) && (fseek(file, size / 2, SEEK_SET) == 0) &&
+				     (fputc(byte ^ 0xFF, file) != EOF);
+			}
+			fclose(file);
+		}
+		if (ok && (i == 1))
+		{
+			u8 *data = (u8 *)malloc((size_t)size);
+
+			file = fopen(path, "rb");
+			ok = (data != NULL) && (file != NULL) && (fread(data, 1u, (size_t)size, file) == (size_t)size);
+			if (file != NULL)
+			{
+				fclose(file);
+			}
+			file = ok ? fopen(path, "wb") : NULL;
+			ok = ok && (file != NULL) && (fwrite(data, 1u, (size_t)size - 1u, file) == (size_t)size - 1u);
+			if (file != NULL)
+			{
+				fclose(file);
+			}
+			free(data);
+		}
+		hits = s_rldRedCacheHits;
+		ok = ok && RldRed_Reduce(&mesh, &r, why, sizeof(why)) && RldRed_TestSame(&plain, &r) && (s_rldRedCacheHits == hits);
+		RldRed_Free(&r);
+		RldRed_TestLine(test, ok, (i == 0) ? "cache: a damaged file is not taken, the result the same" : "cache: a file cut short is not taken, the result the same",
+		                "hits %u", s_rldRedCacheHits - hits);
+	}
+
+	remove(path);
+	s_rldRedCache = before;
+	RldRed_Free(&plain);
+	RldRed_TestFree(&t);
+}
+
 int RldRed_SelfTest(void (*report)(const char *line))
 {
 	struct RldRedTest test;
@@ -4099,5 +4454,6 @@ int RldRed_SelfTest(void (*report)(const char *line))
 	RldRed_TestColors(&test, 1, 100u, "cube with a red side and a green stripe 768 -> 100: colors and their areas kept");
 	RldRed_TestColors(&test, 2, 60u, "two-colored open grid 512 -> 60: the seam stays, both areas kept");
 	RldRed_TestShared(&test);
+	RldRed_TestCache(&test);
 	return test.failures;
 }
