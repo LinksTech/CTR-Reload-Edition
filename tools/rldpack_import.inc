@@ -468,19 +468,28 @@ static int RldMk_LoadModel(const char *path, struct RldMkPly *ply, struct RldMkM
 
 	if (!Rld_ReadFile(path, &data, &size))
 	{
-		if (role == RLDMK_ROLE_MASK)
+		const char *kind = (role == RLDMK_ROLE_MASK) ? "mask-model" : (((role == RLDMK_ROLE_MAIN) && Rld_EndsWithNoCase(path, ".obj")) ? "obj" : "ply");
+
+		if (s_rldReadTooLarge)
 		{
-			Rld_Emit("file", "mask-model", "missing", path, "0", (const char *)NULL);
+			// Rld_ReadFile said why (file-too-large); not "cannot be opened"
+			// as well, but counted like every error of make-char.
+			Rld_Emit("file", kind, "missing", path, "0", (const char *)NULL);
+			s_rldMkErrors++;
+		}
+		else if (role == RLDMK_ROLE_MASK)
+		{
+			Rld_Emit("file", kind, "missing", path, "0", (const char *)NULL);
 			RldMk_Say("error", "mask-open", path, "The mask model file %s cannot be opened.", path);
 		}
 		else if ((role == RLDMK_ROLE_MAIN) && Rld_EndsWithNoCase(path, ".obj"))
 		{
-			Rld_Emit("file", "obj", "missing", path, "0", (const char *)NULL);
+			Rld_Emit("file", kind, "missing", path, "0", (const char *)NULL);
 			RldMk_Say("error", "model-open", path, "The model file %s cannot be opened.", path);
 		}
 		else
 		{
-			Rld_Emit("file", "ply", "missing", path, "0", (const char *)NULL);
+			Rld_Emit("file", kind, "missing", path, "0", (const char *)NULL);
 			RldMk_Say("error", "ply-open", path, "The model file %s cannot be opened.", path);
 		}
 		return 0;
