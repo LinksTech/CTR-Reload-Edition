@@ -2,9 +2,12 @@
 
 // From platform/native_chars.c, further down in the translation unit: the mask
 // of a seat (the mask the CHRI of a bound custom character chooses, else
-// retailGood unchanged) and the log line of a bound seat's first mask.
+// retailGood unchanged) and the log line of a bound seat's first mask; the
+// own mask model of a bound seat (NULL for every other) and its log line.
 int NativeChar_SeatMaskGood(int seat, int retailGood);
 void NativeChar_NoteMask(const struct Driver *d, int modelID);
+struct Model *NativeChar_SeatMaskModel(int seat);
+void NativeChar_NoteOwnMask(const struct Driver *d);
 
 #if defined(CTR_NATIVE)
 void INSTANCE_NativeBirthSkipped(const char *what);
@@ -244,6 +247,20 @@ struct MaskHeadWeapon *VehPickupItem_MaskUseWeapon(struct Driver *driver, b32 bo
 		return NULL;
 	}
 #endif
+
+	// A bound custom seat may draw its own mask model (CMSK). Only the model of
+	// the instance changes: the thread keeps modelIndex STATIC_AKUAKU or
+	// STATIC_UKAUKA, and everything that tells the mask by it - invincibility,
+	// refresh, sound, music, the beam - stays. NULL for every other seat.
+	{
+		struct Model *ownMask = NativeChar_SeatMaskModel(driver->driverID);
+
+		if (ownMask != NULL)
+		{
+			instance->model = ownMask;
+			NativeChar_NoteOwnMask(driver);
+		}
+	}
 
 	soundID = modelID + MASK_SOUND_ID_OFFSET_FROM_MODEL;
 

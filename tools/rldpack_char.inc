@@ -80,6 +80,23 @@
 #define RLDMK_HI_TRIANGLES_MAX 564u  // the most triangles of an original driver (N. Oxide, HI model)
 #define RLDMK_GT3_BYTES 40u       // one textured triangle in draw memory, RB:3088-3090
 
+// THE OWN MASK (--mask-model, chunk CMSK: include/rldchar.inc). Measured once
+// on the retail mask akumouth (model 0x39, frame 0) - only the numbers are
+// here: x -35.1..33.2, y -30.7..55.4, z -14.7..9.7 in model units, so 86.1
+// tall about the center (-0.95, 12.35, -2.5); 49 textured triangles = 1960
+// bytes of draw memory per frame. An own mask is fitted to that height
+// (--mask-size scales it) and that center, and may cost no more: 70 triangles
+// with vertex colors (RLDCHAR_MASK_DRAW_BYTES_MAX).
+#define RLDMK_MASK_HEIGHT 86.1
+#define RLDMK_MASK_CENTER {-0.95, 12.35, -2.5}
+#define RLDMK_MASK_TRIANGLES_MAX (RLDCHAR_MASK_DRAW_BYTES_MAX / RLDCHAR_DRAW_BYTES_G3)   // 70
+#define RLDMK_MASK_CMDL_MAX (RLDCHAR_MASK_BYTES_MAX - RLDCHAR_MASK_HEAD_BYTES)           // the model frame in CMSK
+#define RLDMK_MASK_SIZE_MIN 50u
+#define RLDMK_MASK_SIZE_MAX 150u
+#define RLDMK_MASK_ORBIT 64.0     // the mask circles the driver at this radius (game/231/RB_MaskShieldCloud.c)
+#define RLDMK_MASK_MODEL_NAME_TEXT "ownmask"
+#define RLDMK_MASK_HEADER_NAME_TEXT "ownmask_hi"
+
 // The layout of a model, written as bytes. struct Model, ModelHeader, ModelAnim
 // and ModelFrame: include/namespace_Instance.h:304-421, offsets asserted in
 // game/RenderBucket/RenderBucket_QueueExecute.c:47-70. Never through the game's
@@ -1248,6 +1265,8 @@ struct RldMkOptions
 	u32 remeshResolution;  // --remesh-resolution, cells along a group's longest side; 0 = 64
 	int diagnose;     // --diagnose: the last build keeps what RldMk_Diagnosis writes, the limits
 	                  // of draw memory and file size lifted; such a build is never a character
+	int maskModel;    // the own mask (--mask-model): the profile of RldMk_BuildMaskOnce, sizePercent
+	                  // is --mask-size then
 };
 
 struct RldMkPart
@@ -1344,6 +1363,8 @@ struct RldMkBuild
 	u32 fanSteps;
 
 	// the result
+	int maskModel;             // built as the own mask (RldMk_BuildMaskOnce): one animation of one frame
+	u32 framesWritten;         // frames in the written model: RLDMK_FRAMES_TOTAL, 1 for the mask
 	u8 *cmdl;
 	size_t cmdlSize;
 	u32 frameSize;
@@ -3546,7 +3567,7 @@ static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, co
 
 	b->reduceFrom = triangles;
 	b->reduceTo = triangles;
-	if (!opt->reduce || (triangles <= target) || (!opt->reduceForce && (triangles <= RLDMK_REDUCE_LIMIT)))
+	if (!opt->reduce || (triangles <= target) || (!opt->reduceForce && (triangles <= (opt->maskModel ? RLDMK_MASK_TRIANGLES_MAX : RLDMK_REDUCE_LIMIT))))
 	{
 		return 1;
 	}
@@ -3838,8 +3859,9 @@ static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, co
 	}
 	else
 	{
-		RldMk_Say("info", "model-reduced", NULL, "Reduced automatically: %u -> %u triangles, draw memory %u -> %u bytes (limit %u).", triangles,
-		          b->triangleCount, triangles * RLDCHAR_DRAW_BYTES_G3, b->triangleCount * RLDCHAR_DRAW_BYTES_G3, RLDCHAR_DRAW_BYTES_MAX);
+		RldMk_Say("info", opt->maskModel ? "mask-reduced" : "model-reduced", NULL, "Reduced automatically: %u -> %u triangles, draw memory %u -> %u bytes (limit %u).",
+		          triangles, b->triangleCount, triangles * RLDCHAR_DRAW_BYTES_G3, b->triangleCount * RLDCHAR_DRAW_BYTES_G3,
+		          opt->maskModel ? (u32)RLDCHAR_MASK_DRAW_BYTES_MAX : (u32)RLDCHAR_DRAW_BYTES_MAX);
 	}
 	return 1;
 }
@@ -5661,8 +5683,13 @@ struct RldMkLayout
 	const u32 *commands;
 	u32 recordCount;
 	int scale[3];
-	const int *origin;      // 3 per frame, RLDMK_FRAMES_TOTAL frames
+	const int *origin;      // 3 per frame, RLDMK_FRAMES_TOTAL frames (or those of `frames`)
 	const u8 *records;      // per frame recordCount x 3 bytes: X, Z, Y
+	u32 animCount;          // 0: a character - RLDCHAR_ANIM_COUNT animations of s_rldCharFrames
+	const u16 *frames;      // with animCount: frames per animation
+	const char *const *animNames;
+	const char *modelName;  // with animCount: Model.name and ModelHeader.name
+	const char *headerName;
 };
 
 static u32 RldMk_FrameSize(u32 records)
@@ -5670,20 +5697,20 @@ static u32 RldMk_FrameSize(u32 records)
 	return (RLDMK_FRAME_HEADER + RLDMK_RECORD_BYTES * records + 3u) & ~3u;
 }
 
+// The model body as the renderer reads it. A character has the 4 animations
+// of the templates (layout animCount 0); the own mask passes its own one
+// animation: the command list then starts right behind its shorter table.
 static u8 *RldMk_WriteCmdl(const struct RldMkLayout *in, size_t *sizeOut)
 {
-	static const u32 mapEntries[RLDMK_MAP_ENTRIES] = {
-		RLDMK_MODEL_HEADERS,
-		RLDMK_BODY_HEADER + RLDMK_HEADER_COMMANDS,
-		RLDMK_BODY_HEADER + RLDMK_HEADER_COLORS,
-		RLDMK_BODY_HEADER + RLDMK_HEADER_ANIMS,
-		RLDMK_BODY_ANIM_TABLE + 0u,
-		RLDMK_BODY_ANIM_TABLE + 4u,
-		RLDMK_BODY_ANIM_TABLE + 8u,
-		RLDMK_BODY_ANIM_TABLE + 12u,
-	};
+	const u32 animCount = (in->animCount != 0u) ? in->animCount : (u32)RLDCHAR_ANIM_COUNT;
+	const u16 *frames = (in->animCount != 0u) ? in->frames : s_rldCharFrames;
+	const char *const *animNames = (in->animCount != 0u) ? in->animNames : s_rldMkAnimNames;
+	const char *modelName = (in->animCount != 0u) ? in->modelName : RLDMK_MODEL_NAME_TEXT;
+	const char *headerName = (in->animCount != 0u) ? in->headerName : RLDMK_HEADER_NAME_TEXT;
+	const u32 commandsAt = RLDMK_BODY_ANIM_TABLE + 4u * animCount;
+	const u32 mapEntries = 4u + animCount;
 	const u32 frameSize = RldMk_FrameSize(in->recordCount);
-	const u32 colorsAt = RLDMK_BODY_COMMANDS + 4u * (in->commandCount + 2u);
+	const u32 colorsAt = commandsAt + 4u * (in->commandCount + 2u);
 	u32 animAt[RLDCHAR_ANIM_COUNT + 1];
 	u32 bodySize;
 	u32 frameIndex = 0;
@@ -5696,15 +5723,19 @@ static u8 *RldMk_WriteCmdl(const struct RldMkLayout *in, size_t *sizeOut)
 	int a;
 
 	*sizeOut = 0;
+	if (animCount > (u32)RLDCHAR_ANIM_COUNT)
+	{
+		return NULL;
+	}
 
 	animAt[0] = colorsAt + 4u * in->colorCount;
-	for (a = 0; a < RLDCHAR_ANIM_COUNT; a++)
+	for (a = 0; a < (int)animCount; a++)
 	{
-		animAt[a + 1] = animAt[a] + RLDMK_ANIM_BYTES + (u32)s_rldCharFrames[a] * frameSize;
+		animAt[a + 1] = animAt[a] + RLDMK_ANIM_BYTES + (u32)frames[a] * frameSize;
 	}
-	bodySize = animAt[RLDCHAR_ANIM_COUNT];
+	bodySize = animAt[animCount];
 
-	size = 8u + (size_t)bodySize + 4u * RLDMK_MAP_ENTRIES;
+	size = 8u + (size_t)bodySize + 4u * mapEntries;
 	out = (u8 *)calloc(1, size);
 	if (out == NULL)
 	{
@@ -5715,7 +5746,7 @@ static u8 *RldMk_WriteCmdl(const struct RldMkLayout *in, size_t *sizeOut)
 	body = &out[4];
 
 	// Model (model-head): a name of its own, id -1, one header.
-	memcpy(&body[0], RLDMK_MODEL_NAME_TEXT, strlen(RLDMK_MODEL_NAME_TEXT));
+	memcpy(&body[0], modelName, strlen(modelName));
 	Rld_WriteLE16(&body[RLDMK_MODEL_ID], 0xFFFFu);
 	Rld_WriteLE16(&body[RLDMK_MODEL_NUM_HEADERS], 1u);
 	Rld_WriteLE32(&body[RLDMK_MODEL_HEADERS], RLDMK_BODY_HEADER);
@@ -5723,44 +5754,44 @@ static u8 *RldMk_WriteCmdl(const struct RldMkLayout *in, size_t *sizeOut)
 	// ModelHeader (model-headers, model-lod, model-zero): maxDistanceLOD 8192 as the retail drivers,
 	// flags 0, no static frame, no texture table, no texture animation.
 	header = &body[RLDMK_BODY_HEADER];
-	memcpy(&header[0], RLDMK_HEADER_NAME_TEXT, strlen(RLDMK_HEADER_NAME_TEXT));
+	memcpy(&header[0], headerName, strlen(headerName));
 	Rld_WriteLE16(&header[RLDMK_HEADER_LOD], (u32)RLDCHAR_LOD_MIN);
 	for (a = 0; a < 3; a++)
 	{
 		Rld_WriteLE16(&header[RLDMK_HEADER_SCALE + 2u * (u32)a], (u32)in->scale[a]);
 	}
-	Rld_WriteLE32(&header[RLDMK_HEADER_COMMANDS], RLDMK_BODY_COMMANDS);
+	Rld_WriteLE32(&header[RLDMK_HEADER_COMMANDS], commandsAt);
 	Rld_WriteLE32(&header[RLDMK_HEADER_COLORS], colorsAt);
-	Rld_WriteLE32(&header[RLDMK_HEADER_NUM_ANIMS], (u32)RLDCHAR_ANIM_COUNT);
+	Rld_WriteLE32(&header[RLDMK_HEADER_NUM_ANIMS], animCount);
 	Rld_WriteLE32(&header[RLDMK_HEADER_ANIMS], RLDMK_BODY_ANIM_TABLE);
 
-	for (a = 0; a < RLDCHAR_ANIM_COUNT; a++)
+	for (a = 0; a < (int)animCount; a++)
 	{
 		Rld_WriteLE32(&body[RLDMK_BODY_ANIM_TABLE + 4u * (u32)a], animAt[a]);
 	}
 
-	Rld_WriteLE32(&body[RLDMK_BODY_COMMANDS], in->colorCount);
+	Rld_WriteLE32(&body[commandsAt], in->colorCount);
 	for (i = 0; i < in->commandCount; i++)
 	{
-		Rld_WriteLE32(&body[RLDMK_BODY_COMMANDS + 4u + 4u * i], in->commands[i]);
+		Rld_WriteLE32(&body[commandsAt + 4u + 4u * i], in->commands[i]);
 	}
-	Rld_WriteLE32(&body[RLDMK_BODY_COMMANDS + 4u + 4u * in->commandCount], RLDMK_CMD_END);
+	Rld_WriteLE32(&body[commandsAt + 4u + 4u * in->commandCount], RLDMK_CMD_END);
 
 	for (i = 0; i < in->colorCount; i++)
 	{
 		Rld_WriteLE32(&body[colorsAt + 4u * i], in->colors[i]);
 	}
 
-	for (a = 0; a < RLDCHAR_ANIM_COUNT; a++)
+	for (a = 0; a < (int)animCount; a++)
 	{
 		u8 *anim = &body[animAt[a]];
 		u32 k;
 
-		memcpy(anim, s_rldMkAnimNames[a], strlen(s_rldMkAnimNames[a]));
-		Rld_WriteLE16(&anim[RLDMK_ANIM_NUM_FRAMES], (u32)s_rldCharFrames[a]);
+		memcpy(anim, animNames[a], strlen(animNames[a]));
+		Rld_WriteLE16(&anim[RLDMK_ANIM_NUM_FRAMES], (u32)frames[a]);
 		Rld_WriteLE16(&anim[RLDMK_ANIM_FRAME_SIZE], frameSize);
 
-		for (k = 0; k < (u32)s_rldCharFrames[a]; k++)
+		for (k = 0; k < (u32)frames[a]; k++)
 		{
 			u8 *frame = &anim[RLDMK_ANIM_BYTES + k * frameSize];
 			const int *origin = &in->origin[3u * frameIndex];
@@ -5777,24 +5808,35 @@ static u8 *RldMk_WriteCmdl(const struct RldMkLayout *in, size_t *sizeOut)
 		}
 	}
 
+	// The map: headers, ptrCommandList, ptrColors, ptrAnimations, then one
+	// ModelAnim* per animation.
 	map = &out[4u + (size_t)bodySize];
-	Rld_WriteLE32(&map[0], 4u * RLDMK_MAP_ENTRIES);
-	for (i = 0; i < RLDMK_MAP_ENTRIES; i++)
+	Rld_WriteLE32(&map[0], 4u * mapEntries);
+	Rld_WriteLE32(&map[4u], RLDMK_MODEL_HEADERS);
+	Rld_WriteLE32(&map[8u], RLDMK_BODY_HEADER + RLDMK_HEADER_COMMANDS);
+	Rld_WriteLE32(&map[12u], RLDMK_BODY_HEADER + RLDMK_HEADER_COLORS);
+	Rld_WriteLE32(&map[16u], RLDMK_BODY_HEADER + RLDMK_HEADER_ANIMS);
+	for (i = 0; i < animCount; i++)
 	{
-		Rld_WriteLE32(&map[4u + 4u * i], mapEntries[i]);
+		Rld_WriteLE32(&map[20u + 4u * i], RLDMK_BODY_ANIM_TABLE + 4u * i);
 	}
 
 	*sizeOut = size;
 	return out;
 }
 
+static const char *const s_rldMkMaskAnimNames[RLDCHAR_MASK_ANIM_COUNT] = {"still"};
+
 static int RldMk_StepWrite(struct RldMkBuild *b)
 {
 	struct RldMkLayout layout;
 	int origins[3 * RLDMK_FRAMES_TOTAL];
+	const size_t limit = b->maskModel ? (size_t)RLDMK_MASK_CMDL_MAX : (size_t)RLDCHAR_LIMIT_CMDL;
 	u8 *records;
 	u32 f;
 	u32 r;
+
+	b->framesWritten = b->maskModel ? 1u : (u32)RLDMK_FRAMES_TOTAL;
 
 	b->frameSize = RldMk_FrameSize(b->recordCount);
 	if (b->frameSize > 0xFFFFu)
@@ -5810,7 +5852,7 @@ static int RldMk_StepWrite(struct RldMkBuild *b)
 		return RldMk_OutOfMemory();
 	}
 
-	for (f = 0; f < RLDMK_FRAMES_TOTAL; f++)
+	for (f = 0; f < b->framesWritten; f++)
 	{
 		origins[3u * f + 0u] = b->origin[0];
 		origins[3u * f + 1u] = b->origin[1];
@@ -5833,6 +5875,14 @@ static int RldMk_StepWrite(struct RldMkBuild *b)
 	layout.scale[2] = b->scale[2];
 	layout.origin = origins;
 	layout.records = records;
+	if (b->maskModel)
+	{
+		layout.animCount = (u32)RLDCHAR_MASK_ANIM_COUNT;
+		layout.frames = s_rldCharMaskFrames;
+		layout.animNames = s_rldMkMaskAnimNames;
+		layout.modelName = RLDMK_MASK_MODEL_NAME_TEXT;
+		layout.headerName = RLDMK_MASK_HEADER_NAME_TEXT;
+	}
 
 	b->cmdl = RldMk_WriteCmdl(&layout, &b->cmdlSize);
 	free(records);
@@ -5843,11 +5893,17 @@ static int RldMk_StepWrite(struct RldMkBuild *b)
 
 	b->drawBytes = b->drawCount * RLDCHAR_DRAW_BYTES_G3;
 
-	if ((b->cmdlSize > RLDCHAR_LIMIT_CMDL) && b->diagnose)
+	if ((b->cmdlSize > limit) && b->diagnose)
 	{
 		RldMk_Say("info", "diagnose-lifted", "mem-model", "Lifted for the diagnosis: the model is %u KB, at most 256 KB.", (u32)((b->cmdlSize + 1023u) / 1024u));
 	}
-	else if (b->cmdlSize > RLDCHAR_LIMIT_CMDL)
+	else if ((b->cmdlSize > limit) && b->maskModel)
+	{
+		RldMk_Say("error", "mask-memory", NULL, "The mask model is %u bytes; a mask may be at most %u. Reduce its triangles.", (u32)b->cmdlSize, (u32)limit);
+		b->recordLimit = 1;
+		return 0;
+	}
+	else if (b->cmdlSize > limit)
 	{
 		RldMk_Say("error", "mem-model", NULL, "The model is %u KB; a character model may be at most 256 KB. Reduce the triangles.",
 		          (u32)((b->cmdlSize + 1023u) / 1024u));
@@ -5913,7 +5969,7 @@ static int RldMk_ReadBack(const struct RldMkBuild *b, u32 *badOut)
 	*badOut = 0;
 	RldMk_ModelScale(b->cmdl, scale);
 
-	for (a = 0; a < RLDCHAR_ANIM_COUNT; a++)
+	for (a = 0; a < (int)Rld_ReadLE32(&body[header + RLDMK_HEADER_NUM_ANIMS]); a++)
 	{
 		const u32 anim = Rld_ReadLE32(&body[table + 4u * (u32)a]);
 		const u32 frames = Rld_ReadLE16(&body[anim + RLDMK_ANIM_NUM_FRAMES]) & 0x7FFFu;
@@ -6203,15 +6259,17 @@ static int RldMk_Winding(const struct RldMkBuild *b, int twoSided, u32 *badOut)
 	return 1;
 }
 
-// The ModelFrame of frame `index` (0..46, the animations one after the other).
+// The ModelFrame of frame `index` (0..46, the animations one after the other;
+// 0 alone for the own mask).
 static const u8 *RldMk_FrameAt(const u8 *cmdl, u32 index)
 {
 	const u8 *body = &cmdl[4];
 	const u32 header = Rld_ReadLE32(&body[RLDMK_MODEL_HEADERS]);
 	const u32 table = Rld_ReadLE32(&body[header + RLDMK_HEADER_ANIMS]);
-	int a;
+	const u32 anims = Rld_ReadLE32(&body[header + RLDMK_HEADER_NUM_ANIMS]);
+	u32 a;
 
-	for (a = 0; a < RLDCHAR_ANIM_COUNT; a++)
+	for (a = 0; (a < anims) && (a < (u32)RLDCHAR_ANIM_COUNT); a++)
 	{
 		const u32 anim = Rld_ReadLE32(&body[table + 4u * (u32)a]);
 		const u32 frames = Rld_ReadLE16(&body[anim + RLDMK_ANIM_NUM_FRAMES]) & 0x7FFFu;
@@ -6245,7 +6303,7 @@ static int RldMk_ReplayFrames(const struct RldMkBuild *b, int twoSided, u32 *bad
 	*badTriangle = 0;
 	RldMk_ModelScale(b->cmdl, scale);
 
-	for (f = 0; f < RLDMK_FRAMES_TOTAL; f++)
+	for (f = 0; f < b->framesWritten; f++)
 	{
 		const u8 *frame = RldMk_FrameAt(b->cmdl, f);
 		const double tolerance[3] = {(0.5 + 1.0e-6) * (double)scale[0] / 4096.0, (1.0 + 1.0e-6) * (double)scale[1] / 4096.0,
@@ -6412,6 +6470,11 @@ static int RldMk_CheckBuilt(struct RldMkBuild *b, const struct RldMkOptions *opt
 	{
 		RldChar_CheckModel(b->cmdl, b->cmdlSize, &first, RldMk_DiagFinding, &found, &facts);
 		ok = (found == 0u);
+	}
+	else if (b->maskModel)
+	{
+		// the model frame of CMSK, by the game's own rules for it
+		ok = (RldChar_CheckProfile(&s_rldCharProfileMask, b->cmdl, b->cmdlSize, &first, RldMk_ReportFinding, NULL, &facts) == RLDCHAR_VERDICT_OK);
 	}
 	else if (RldChar_CheckModel(b->cmdl, b->cmdlSize, &first, RldMk_ReportFinding, NULL, &facts) != RLDCHAR_VERDICT_OK)
 	{
@@ -6638,6 +6701,177 @@ static int RldMk_BuildOnce(const struct RldMkPly *ply, const struct RldMkOptions
 	return RldMk_CheckBuilt(b, opt);
 }
 
+//========================================================================================
+// THE OWN MASK (--mask-model): THE CHAIN WITH THE PROFILE OF A MASK
+//========================================================================================
+//
+// The same steps as a character, with these differences: the fit brings the
+// model to the height of the retail mask (RLDMK_MASK_HEIGHT x --mask-size);
+// there are no parts (no kart, no driver, no steering wheel), no dummy, no
+// --remesh and no poses; the reduction aims at RLDMK_MASK_TRIANGLES_MAX; after
+// it the model is centered where the retail mask's center lies; the draw
+// memory may be RLDCHAR_MASK_DRAW_BYTES_MAX; one animation of one frame is
+// written, and the check is the game's own for CMSK (RldChar_CheckProfile with
+// s_rldCharProfileMask on the model frame).
+
+// The fit: the height at scale 1, then the factor (4 significant digits, as
+// --fit crash) that makes it RLDMK_MASK_HEIGHT x sizePercent / 100. 0 = the
+// probe did not get through: nothing is fitted, the real pass says why.
+static int RldMk_StepMaskFit(const struct RldMkPly *ply, const struct RldMkOptions *opt, struct RldMkBuild *b, double *scale)
+{
+	struct RldMkOptions at = *opt;
+	struct RldMkBuild probe;
+	double lo[3];
+	double hi[3];
+	double f = 0.0;
+
+	at.scale = 1.0;
+	if (!RldMk_FitProbe(ply, &at, &probe, 0))
+	{
+		RldMk_FreeBuild(&probe);
+		return 0;
+	}
+	RldMk_Bounds(&probe, -1, lo, hi);
+	RldMk_FreeBuild(&probe);
+
+	b->fitted = 1;
+	b->fitBefore[0] = hi[2] - lo[2];
+	b->fitBefore[1] = hi[1] - lo[1];
+	if (b->fitBefore[1] > 0.0)
+	{
+		f = RLDMK_MASK_HEIGHT * (double)opt->sizePercent / 100.0 / b->fitBefore[1];
+	}
+	b->fitFactor = (f > 0.0) ? RldMk_FitRound(f) : 1.0;
+	b->fitAfter[0] = b->fitBefore[0] * b->fitFactor;
+	b->fitAfter[1] = b->fitBefore[1] * b->fitFactor;
+	*scale = b->fitFactor;
+	return 1;
+}
+
+// One part, of the kart group: it stays still in every frame.
+static int RldMk_StepMaskPart(struct RldMkBuild *b)
+{
+	u32 p;
+
+	b->positionPart = (u32 *)calloc((size_t)b->positionCount + 1u, sizeof(u32));
+	b->positionGroup = (u8 *)calloc((size_t)b->positionCount + 1u, 1u);
+	b->parts = (struct RldMkPart *)calloc(2u, sizeof(struct RldMkPart));
+	if ((b->positionPart == NULL) || (b->positionGroup == NULL) || (b->parts == NULL))
+	{
+		return RldMk_OutOfMemory();
+	}
+
+	for (p = 0; p < b->positionCount; p++)
+	{
+		b->positionGroup[p] = (u8)RLDMK_GROUP_KART;
+	}
+	b->partCount = 1u;
+	b->parts[0].triangles = b->triangleCount;
+	b->parts[0].group = RLDMK_GROUP_KART;
+	RldMk_Bounds(b, 0, b->parts[0].lo, b->parts[0].hi);
+	b->kartPart = 0;
+	b->driverPart = -1;
+	b->groupTriangles[RLDMK_GROUP_KART] = b->triangleCount;
+	b->posed = 0;
+	return 1;
+}
+
+// After the reduction: the center of the model's box onto the retail mask's;
+// size[] = length (z), width (x), height (y) in game units, size[3] 0.
+static int RldMk_StepMaskPlace(struct RldMkBuild *b)
+{
+	static const double center[3] = RLDMK_MASK_CENTER;
+	double lo[3];
+	double hi[3];
+	double shift[3];
+	u32 p;
+	int a;
+
+	RldMk_Bounds(b, -1, lo, hi);
+	for (a = 0; a < 3; a++)
+	{
+		shift[a] = center[a] - 0.5 * (lo[a] + hi[a]);
+	}
+	for (p = 0; p < b->positionCount; p++)
+	{
+		for (a = 0; a < 3; a++)
+		{
+			b->position[3u * p + (u32)a] += shift[a];
+		}
+	}
+	RldMk_Bounds(b, 0, b->parts[0].lo, b->parts[0].hi);
+
+	b->size[0] = hi[2] - lo[2];
+	b->size[1] = hi[0] - lo[0];
+	b->size[2] = hi[1] - lo[1];
+	b->size[3] = 0.0;
+
+	if (b->size[1] > (2.0 * RLDMK_MASK_ORBIT))
+	{
+		RldMk_Say("note", "mask-wide", NULL,
+		          "The mask is %.1f units wide; it circles the driver at %.0f, so a mask wider than %.0f cuts through him. Choose a smaller --mask-size.",
+		          b->size[1], RLDMK_MASK_ORBIT, 2.0 * RLDMK_MASK_ORBIT);
+	}
+	return 1;
+}
+
+// Step 6 for the mask: at most the draw memory of the retail mask.
+static int RldMk_StepMaskBudget(const struct RldMkBuild *b)
+{
+	const u32 bytes = b->triangleCount * RLDCHAR_DRAW_BYTES_G3;
+
+	if ((b->triangleCount > RLDMK_MASK_TRIANGLES_MAX) || (bytes > RLDCHAR_MASK_DRAW_BYTES_MAX))
+	{
+		RldMk_Say("error", "mask-tris", NULL,
+		          "The mask needs %u bytes of draw memory per frame (%u triangles); a mask may use %u, as much as Aku Aku: %u triangles. Reduce it in Blender (Decimate modifier).",
+		          bytes, b->triangleCount, (u32)RLDCHAR_MASK_DRAW_BYTES_MAX, (u32)RLDMK_MASK_TRIANGLES_MAX);
+		return 0;
+	}
+	return 1;
+}
+
+// Steps 2-13 and 15 of the own mask, once. 0 = it cannot be built; every reason was said.
+static int RldMk_BuildMaskOnce(const struct RldMkPly *ply, const struct RldMkOptions *opt, struct RldMkBuild *b)
+{
+	struct RldMkOptions fitted = *opt;
+	u32 keyCount = 0;
+
+	memset(b, 0, sizeof(*b));
+	b->vertexCount = ply->vertexCount;
+	b->faceCount = ply->faceCount;
+	b->kartPart = -1;
+	b->driverPart = -1;
+	b->maskModel = 1;
+
+	(void)RldMk_StepMaskFit(ply, opt, b, &fitted.scale);
+	opt = &fitted;
+
+	if (!RldMk_StepWeld(ply, opt, b, &keyCount) || !RldMk_StepTriangles(ply, b, keyCount))
+	{
+		return 0;
+	}
+	RldMk_StepOpenEdges(b);
+
+	if (!RldMk_StepRepair(ply, b, opt) || !RldMk_StepOpenParts(b, opt) || !RldMk_StepMaskPart(b) || !RldMk_StepReduce(ply, b, opt))
+	{
+		return 0;
+	}
+
+	if (!RldMk_StepMaskPlace(b) || !RldMk_StepMaskBudget(b) || !RldMk_StepPoses(b) || !RldMk_StepQuantize(b) || !RldMk_StepCollapse(b) ||
+	    !RldMk_StepFlips(b, opt) || !RldMk_StepColors(ply, opt, b) || !RldMk_StepCommands(b, opt) || !RldMk_StepWrite(b))
+	{
+		return 0;
+	}
+
+	return RldMk_CheckBuilt(b, opt);
+}
+
+// A character or the own mask, by the profile of `opt`.
+static int RldMk_BuildPass(const struct RldMkPly *ply, const struct RldMkOptions *opt, struct RldMkBuild *b)
+{
+	return opt->maskModel ? RldMk_BuildMaskOnce(ply, opt, b) : RldMk_BuildOnce(ply, opt, b);
+}
+
 // Steps 2-13 and 15, with the retries of step 4r: with --reduce auto the model
 // is first built without a word. When that build fails mem-model or
 // model-frame (too many records, RldMk_StepWrite), the target is lowered by
@@ -6655,7 +6889,7 @@ static int RldMk_BuildModel(const struct RldMkPly *ply, const struct RldMkOption
 	struct RldMkOptions speak;
 	int tries;
 
-	at.reduceTarget = RLDMK_REDUCE_TARGET;
+	at.reduceTarget = opt->maskModel ? (u32)RLDMK_MASK_TRIANGLES_MAX : RLDMK_REDUCE_TARGET;
 	at.reduceForce = 0;
 	at.reduceWhy = NULL;
 	at.diagnose = 0;  // the tries see the limits: --diagnose shows the build make-char would make
@@ -6670,12 +6904,17 @@ static int RldMk_BuildModel(const struct RldMkPly *ply, const struct RldMkOption
 		u32 next;
 
 		s_rldMkQuiet = 1;
-		limit = !RldMk_BuildOnce(ply, &at, b) && b->recordLimit;
+		limit = !RldMk_BuildPass(ply, &at, b) && b->recordLimit;
 		reduced = b->reduced;
 		next = ((b->reduceFrom < at.reduceTarget) ? b->reduceFrom : at.reduceTarget) * 95u / 100u;
 		if (limit && (b->frameSize > 0xFFFFu))
 		{
 			snprintf(why[tries], sizeof(why[tries]), "at %u triangles one animation frame would need %u bytes, at most 65535", b->reduceTo, b->frameSize);
+		}
+		else if (limit && opt->maskModel)
+		{
+			snprintf(why[tries], sizeof(why[tries]), "at %u triangles the mask would need %u bytes, at most %u", b->reduceTo, (u32)b->cmdlSize,
+			         (u32)RLDMK_MASK_CMDL_MAX);
 		}
 		else if (limit)
 		{
@@ -6707,7 +6946,7 @@ static int RldMk_BuildModel(const struct RldMkPly *ply, const struct RldMkOption
 	}
 
 	speak.diagnose = opt->diagnose;
-	return RldMk_BuildOnce(ply, &speak, b);
+	return RldMk_BuildPass(ply, &speak, b);
 }
 
 //========================================================================================
@@ -7298,7 +7537,9 @@ static u8 *RldMk_BuildChri(u32 templateId, u32 classId, const u8 name[RLDCHAR_NA
 
 // CHRI, CMDL and - with --icon - CICN through the shared envelope
 // (Rld_WriteEnvelope, rldtrack.inc). cicn NULL: two chunks, as before CICN existed.
-static u8 *RldMk_Container(const u8 *chri, size_t chriSize, const u8 *cmdl, size_t cmdlSize, const u8 *cicn, size_t *sizeOut)
+// CHRI, CMDL, then CICN and CMSK (the own mask) when there are any.
+static u8 *RldMk_ContainerMask(const u8 *chri, size_t chriSize, const u8 *cmdl, size_t cmdlSize, const u8 *cicn, const u8 *cmsk, size_t cmskSize,
+                               size_t *sizeOut)
 {
 	struct RldContainer container;
 	u8 *out;
@@ -7311,6 +7552,10 @@ static u8 *RldMk_Container(const u8 *chri, size_t chriSize, const u8 *cmdl, size
 	{
 		Rld_AddChunk(&container, "CICN", cicn, RLDCHAR_ICON_BYTES, RLD_COMPRESSION_NONE);
 	}
+	if (cmsk != NULL)
+	{
+		Rld_AddChunk(&container, "CMSK", cmsk, cmskSize, RLD_COMPRESSION_NONE);
+	}
 
 	out = Rld_WriteEnvelope(&s_rldCharFormat, 0u, &container, sizeOut);
 
@@ -7320,6 +7565,11 @@ static u8 *RldMk_Container(const u8 *chri, size_t chriSize, const u8 *cmdl, size
 	}
 
 	return out;
+}
+
+static u8 *RldMk_Container(const u8 *chri, size_t chriSize, const u8 *cmdl, size_t cmdlSize, const u8 *cicn, size_t *sizeOut)
+{
+	return RldMk_ContainerMask(chri, chriSize, cmdl, cmdlSize, cicn, NULL, 0u, sizeOut);
 }
 
 //========================================================================================
@@ -9044,6 +9294,109 @@ static int RldMk_WriteDiagnosis(const struct RldMkBuild *b, const struct RldMkOp
 	return 0;
 }
 
+// --mask-model: the own mask's PLY through the chain with the profile of a
+// mask (RldMk_BuildMaskOnce), built twice, then CMSK: version, flags 0 and the
+// model frame, checked with the game's RldChar_CheckMask. NULL = no mask; the
+// reason was said.
+static u8 *RldMk_MaskStep(const char *path, const struct RldMkOptions *opt, size_t *sizeOut)
+{
+	struct RldMkPly ply;
+	struct RldMkBuild build;
+	u8 *data = NULL;
+	size_t size = 0;
+	u8 *cmsk = NULL;
+	char number[32];
+	int built;
+
+	*sizeOut = 0;
+	if (!Rld_ReadFile(path, &data, &size))
+	{
+		Rld_Emit("file", "mask-model", "missing", path, "0", (const char *)NULL);
+		RldMk_Say("error", "mask-open", path, "The mask model file %s cannot be opened.", path);
+		return NULL;
+	}
+	snprintf(number, sizeof(number), "%u", (u32)size);
+	Rld_Emit("file", "mask-model", "ok", path, number, (const char *)NULL);
+
+	printf("rldpack make-char --mask-model %s\n", path);
+	memset(&ply, 0, sizeof(ply));
+	if (!RldMk_ParsePly(data, size, &ply))
+	{
+		free(data);
+		return NULL;
+	}
+	free(data);
+
+	built = RldMk_BuildModel(&ply, opt, &build);
+	if (built)
+	{
+		struct RldMkBuild again;
+		const int quiet = s_rldMkQuiet;
+		const int errorsBefore = s_rldMkErrors;
+		int same;
+
+		s_rldMkQuiet = 1;
+		same = RldMk_BuildModel(&ply, opt, &again) && (again.cmdlSize == build.cmdlSize) && (memcmp(again.cmdl, build.cmdl, build.cmdlSize) == 0);
+		s_rldMkQuiet = quiet;
+		s_rldMkErrors = errorsBefore;
+		RldMk_FreeBuild(&again);
+		if (!same)
+		{
+			RldMk_Say("error", "model-roundtrip", "two builds of the same mask differ",
+			          "Internal error: the packed model does not read back the same (vertex %u). Please report it.", 0u);
+			built = 0;
+		}
+	}
+
+	if (built)
+	{
+		cmsk = (u8 *)malloc(RLDCHAR_MASK_HEAD_BYTES + build.cmdlSize);
+		if (cmsk == NULL)
+		{
+			RldMk_OutOfMemory();
+		}
+		else
+		{
+			Rld_WriteLE16(&cmsk[0x00], RLDCHAR_MASK_VERSION);
+			Rld_WriteLE16(&cmsk[0x02], 0u);
+			memcpy(&cmsk[RLDCHAR_MASK_HEAD_BYTES], build.cmdl, build.cmdlSize);
+			*sizeOut = RLDCHAR_MASK_HEAD_BYTES + build.cmdlSize;
+			if (RldChar_CheckMask(cmsk, *sizeOut, NULL, NULL, NULL, NULL) != RLDCHAR_VERDICT_OK)
+			{
+				RldMk_Say("error", "model-roundtrip", "CMSK", "Internal error: the packed model does not read back the same (vertex %u). Please report it.", 0u);
+				free(cmsk);
+				cmsk = NULL;
+				*sizeOut = 0;
+			}
+		}
+	}
+
+	if (cmsk != NULL)
+	{
+		char reduced[48];
+
+		reduced[0] = '\0';
+		if (build.reduced)
+		{
+			snprintf(reduced, sizeof(reduced), " (reduced from %u)", build.reduceFrom);
+		}
+		printf("  own mask      %u triangles%s, draw memory %u bytes per frame (at most %u), %u colors\n", build.drawCount, reduced, build.drawBytes,
+		       (u32)RLDCHAR_MASK_DRAW_BYTES_MAX, build.colorCount);
+		printf("                x%.4g: %.1f tall (--mask-size %u%% of the retail mask's %.1f), %.1f wide, %.1f deep; checks: the game's mask rules, built twice\n",
+		       build.fitFactor, build.size[2], opt->sizePercent, RLDMK_MASK_HEIGHT, build.size[1], build.size[0]);
+		snprintf(number, sizeof(number), "%u", build.drawCount);
+		Rld_Emit("value", "mask-triangles", number, "built", (const char *)NULL);
+		snprintf(number, sizeof(number), "%u", build.drawBytes);
+		Rld_Emit("value", "mask-draw-bytes", number, "built", (const char *)NULL);
+		snprintf(number, sizeof(number), "%u", build.colorCount);
+		Rld_Emit("value", "mask-colors", number, "built", (const char *)NULL);
+	}
+
+	RldMk_FreeBuild(&build);
+	RldMk_FreePly(&ply);
+	return cmsk;
+}
+
 static int RldChar_MakeCommand(int argc, char **argv)
 {
 	static char outPath[RLD_PATH_MAX + 16];
@@ -9063,6 +9416,13 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	const char *reduceArg = NULL;
 	const char *wheelsArg = NULL;
 	const char *maskArg = NULL;
+	const char *maskModelArg = NULL;
+	const char *maskSizeArg = NULL;
+	const char *maskUpArg = NULL;
+	const char *maskForwardArg = NULL;
+	struct RldMkOptions maskOpt;
+	u8 *cmsk = NULL;
+	size_t cmskSize = 0;
 	const char *outArg = NULL;
 	const char *sizeArg = NULL;
 	const char *iconArg = NULL;
@@ -9167,6 +9527,22 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		else if ((strcmp(arg, "--mask") == 0) && hasValue)
 		{
 			maskArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--mask-model") == 0) && hasValue)
+		{
+			maskModelArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--mask-size") == 0) && hasValue)
+		{
+			maskSizeArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--mask-up") == 0) && hasValue)
+		{
+			maskUpArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--mask-forward") == 0) && hasValue)
+		{
+			maskForwardArg = argv[++i];
 		}
 		else if ((strcmp(arg, "--out") == 0) && hasValue)
 		{
@@ -9318,6 +9694,47 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		}
 	}
 	(void)RldMk_MaskSwitch(maskArg, &opt.mask);
+
+	// THE OWN MASK: its own options, the profile of a mask (RldMk_BuildMaskOnce).
+	RldMk_DefaultOptions(&maskOpt);
+	maskOpt.maskModel = 1;
+	maskOpt.still = 1;
+	if ((maskModelArg == NULL) && ((maskSizeArg != NULL) || (maskUpArg != NULL) || (maskForwardArg != NULL)))
+	{
+		RldMk_Say("error", "usage", "--mask-size", "--mask-size, --mask-up and --mask-forward need --mask-model <ply>.");
+	}
+	if ((maskSizeArg != NULL) && (!RldMk_ParseWhole(maskSizeArg, 100000u, &maskOpt.sizePercent) || (maskOpt.sizePercent < RLDMK_MASK_SIZE_MIN) ||
+	                              (maskOpt.sizePercent > RLDMK_MASK_SIZE_MAX)))
+	{
+		RldMk_Say("error", "mask-size", maskSizeArg, "The mask size \"%s\" must be a whole number from 50 to 150 (percent of the retail mask's height).",
+		          maskSizeArg);
+		maskOpt.sizePercent = 100u;
+	}
+	if (maskUpArg != NULL)
+	{
+		char word[8];
+		const int known = RldMk_Lower(maskUpArg, word, sizeof(word));
+
+		if (known && (strcmp(word, "z") == 0))
+		{
+			maskOpt.upZ = 1;
+		}
+		else if (!known || (strcmp(word, "y") != 0))
+		{
+			RldMk_Say("error", "mask-up", maskUpArg, "The up axis of the mask must be y or z.");
+		}
+	}
+	if (maskForwardArg != NULL)
+	{
+		if (strcmp(maskForwardArg, "-z") == 0)
+		{
+			maskOpt.backwards = 1;
+		}
+		else if ((strcmp(maskForwardArg, "z") != 0) && (strcmp(maskForwardArg, "+z") != 0))
+		{
+			RldMk_Say("error", "mask-forward", maskForwardArg, "Forward of the mask must be z or -z.");
+		}
+	}
 
 	if (reduceArg != NULL)
 	{
@@ -9522,6 +9939,12 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		Rld_Emit("value", "reduce", opt.reduce ? "auto" : "off", (reduceArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "wheels", opt.noWheels ? "off" : "on", (wheelsArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "mask", RldMk_MaskWord(opt.mask, templateId), (opt.mask != RLDCHAR_MASK_LIKE) ? "switch" : "template", (const char *)NULL);
+		if (maskModelArg != NULL)
+		{
+			Rld_Emit("value", "mask-model", maskModelArg, "switch", (const char *)NULL);
+			snprintf(number, sizeof(number), "%u", maskOpt.sizePercent);
+			Rld_Emit("value", "mask-size", number, (maskSizeArg != NULL) ? "switch" : "default", (const char *)NULL);
+		}
 		Rld_Emit("value", "remesh", opt.remesh ? "on" : "off", (remeshArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "repair", opt.repair ? "auto" : "off", (repairArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "open-parts", opt.openOneSided ? "one-sided" : "two-sided", (openArg != NULL) ? "switch" : "default", (const char *)NULL);
@@ -9628,6 +10051,11 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		}
 	}
 
+	if (maskModelArg != NULL)
+	{
+		cmsk = RldMk_MaskStep(maskModelArg, &maskOpt, &cmskSize);
+	}
+
 	// THE PREVIEW of a model that was built, whatever else is wrong: Reload
 	// Studio shows it while the author fixes the name.
 	if (built && (previewArg != NULL))
@@ -9673,14 +10101,16 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	{
 		const int code = RldMk_WriteDiagnosis(&build, &opt, built, diagnoseArg);
 
+		free(cmsk);
 		RldMk_FreeBuild(&build);
 		RldMk_FreePly(&ply);
 		return code;
 	}
 
-	if (!built || (s_rldMkErrors != 0))
+	if (!built || (s_rldMkErrors != 0) || ((maskModelArg != NULL) && (cmsk == NULL)))
 	{
 		printf("\nnothing written - see the errors above\n");
+		free(cmsk);
 		RldMk_FreeBuild(&build);
 		RldMk_FreePly(&ply);
 		return RldMk_Fail(1);
@@ -9707,7 +10137,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 
 	if (chri != NULL)
 	{
-		container = RldMk_Container(chri, chriSize, build.cmdl, build.cmdlSize, haveIcon ? icon.cicn : NULL, &containerSize);
+		container = RldMk_ContainerMask(chri, chriSize, build.cmdl, build.cmdlSize, haveIcon ? icon.cicn : NULL, cmsk, cmskSize, &containerSize);
 	}
 
 	if (container == NULL)
@@ -9716,6 +10146,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		{
 			RldMk_OutOfMemory();
 		}
+		free(cmsk);
 		free(chri);
 		RldMk_FreeBuild(&build);
 		RldMk_FreePly(&ply);
@@ -9741,6 +10172,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		{
 			RldMk_Say("error", "write", outPath,
 			          "The character file cannot be written. Is the folder write-protected, or is the file open in another program?");
+			free(cmsk);
 			free(chri);
 			free(container);
 			RldMk_FreeBuild(&build);
@@ -9757,6 +10189,10 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	{
 		printf("  CICN          %u bytes (the portrait)\n", (u32)RLDCHAR_ICON_BYTES);
 	}
+	if (cmsk != NULL)
+	{
+		printf("  CMSK          %u bytes (the own mask)\n", (u32)cmskSize);
+	}
 	printf("  sha256        %s\n", digestText);
 	printf("  format        %d.%d%s\n", RLDCHAR_VERSION_MAJOR, RLDCHAR_VERSION_MINOR, (RLDCHAR_VERSION_MINOR == 0) ? " (draft)" : "");
 
@@ -9768,6 +10204,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		s_machineResult = 1;
 	}
 
+	free(cmsk);
 	free(chri);
 	free(container);
 	RldMk_FreeBuild(&build);
@@ -9850,6 +10287,10 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 	int iconIndex = -1;
 	const char *iconState = "none";
 	const char *iconWhy = "";
+	int maskIndex = -1;
+	const char *maskState = "none";
+	struct RldCharFinding maskFirst;
+	struct RldCharModelFacts maskFacts;
 	int failed = 0;
 	char text[256];
 	int i;
@@ -9857,6 +10298,8 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 	memset(&reader, 0, sizeof(reader));
 	memset(&facts, 0, sizeof(facts));
 	memset(&first, 0, sizeof(first));
+	memset(&maskFirst, 0, sizeof(maskFirst));
+	memset(&maskFacts, 0, sizeof(maskFacts));
 	listing.printed = 0;
 
 	error = Rld_OpenAs(&reader, path, &s_rldCharFormat);
@@ -9942,6 +10385,27 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		free(iconData);
 	}
 
+	// The own mask: optional, and a broken one drops only itself (CMSK-1..3 and
+	// the model rules) - the game then shows the retail mask.
+	if (Rld_FindEntry(&reader, "CMSK", &maskIndex) != NULL)
+	{
+		size_t maskSize = 0;
+		const char *maskError = NULL;
+		u8 *maskData = Rld_ReadChunk(&reader, maskIndex, &maskSize, &maskError);
+
+		maskState = "ignored";
+		if (maskData == NULL)
+		{
+			maskFirst.rule = "CMSK";
+			snprintf(maskFirst.detail, sizeof(maskFirst.detail), "%s", (maskError != NULL) ? maskError : "CMSK cannot be read");
+		}
+		else if (RldChar_CheckMask(maskData, maskSize, &maskFirst, NULL, NULL, &maskFacts) == RLDCHAR_VERDICT_OK)
+		{
+			maskState = "own";
+		}
+		free(maskData);
+	}
+
 	if (!machine)
 	{
 		printf("%s\n", path);
@@ -9983,6 +10447,19 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		else
 		{
 			printf("  portrait      the template's - CICN ignored: %s\n", iconWhy);
+		}
+		if (strcmp(maskState, "own") == 0)
+		{
+			printf("  own mask      %u triangles, %u bytes of draw memory per frame (at most %u), %u colors (CMSK)\n", maskFacts.triangles,
+			       maskFacts.drawBytes, (u32)RLDCHAR_MASK_DRAW_BYTES_MAX, maskFacts.colorCount);
+		}
+		else if (strcmp(maskState, "none") == 0)
+		{
+			printf("  own mask      none - the retail mask (no CMSK)\n");
+		}
+		else
+		{
+			printf("  own mask      the retail mask - CMSK ignored: %s %s\n", (maskFirst.rule != NULL) ? maskFirst.rule : "", maskFirst.detail);
 		}
 		if (full)
 		{
@@ -10036,6 +10513,22 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		Rld_Emit("char", "draw_bytes", number, (const char *)NULL);
 		Rld_Emit("char", "verdict", RldChar_VerdictWord(verdict), (first.rule != NULL) ? first.rule : "", first.detail, (const char *)NULL);
 		Rld_Emit("char", "icon", iconState, iconWhy, (const char *)NULL);
+		if (strcmp(maskState, "ignored") == 0)
+		{
+			snprintf(text, sizeof(text), "%s %s", (maskFirst.rule != NULL) ? maskFirst.rule : "", maskFirst.detail);
+			Rld_Emit("value", "own-mask", "ignored", text, (const char *)NULL);
+		}
+		else
+		{
+			Rld_Emit("value", "own-mask", maskState, "container", (const char *)NULL);
+		}
+		if (strcmp(maskState, "own") == 0)
+		{
+			snprintf(number, sizeof(number), "%u", maskFacts.triangles);
+			Rld_Emit("value", "mask-triangles", number, "container", (const char *)NULL);
+			snprintf(number, sizeof(number), "%u", maskFacts.drawBytes);
+			Rld_Emit("value", "mask-draw-bytes", number, "container", (const char *)NULL);
+		}
 	}
 	else
 	{
@@ -10098,6 +10591,10 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 			if ((i == iconIndex) && (RldChar_CheckIcon(data, size) != NULL))
 			{
 				printf("  IGNORED CICN  %s - the game shows the template's portrait\n", RldChar_CheckIcon(data, size));
+			}
+			else if ((i == maskIndex) && (strcmp(maskState, "own") != 0))
+			{
+				printf("  IGNORED CMSK  %s %s - the game shows the retail mask\n", (maskFirst.rule != NULL) ? maskFirst.rule : "", maskFirst.detail);
 			}
 			else
 			{
@@ -10202,6 +10699,15 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "                              rescue after a fall, its sound and music and\n");
 	fprintf(out, "                              the HUD icon; like (default): the template's\n");
 	fprintf(out, "                              (Fake Crash: Uka Uka); aku: Aku Aku; uka: Uka Uka\n");
+	fprintf(out, "  --mask-model <ply>          an own mask drawn in place of Aku Aku / Uka Uka\n");
+	fprintf(out, "                              (--mask still decides which of the two it is:\n");
+	fprintf(out, "                              sound, music, beam): a PLY with vertex colors,\n");
+	fprintf(out, "                              fitted to the retail mask's height (%.1f),\n", RLDMK_MASK_HEIGHT);
+	fprintf(out, "                              reduced to at most %u triangles\n", (u32)RLDMK_MASK_TRIANGLES_MAX);
+	fprintf(out, "  --mask-size <50..150>       the own mask's height in percent of the retail\n");
+	fprintf(out, "                              mask's (default 100)\n");
+	fprintf(out, "  --mask-up y|z               the up axis of the mask's PLY, as --up\n");
+	fprintf(out, "  --mask-forward z|-z         the front of the mask's PLY, as --forward\n");
 	fprintf(out, "  --reduce auto|off           auto (default): a model of more than %u\n", (u32)RLDMK_REDUCE_LIMIT);
 	fprintf(out, "                              triangles is reduced to at most %u, one budget\n", RLDMK_REDUCE_TARGET);
 	fprintf(out, "                              shared by kart, driver and steering wheel, each\n");
@@ -14420,6 +14926,175 @@ static void RldMk_SelfTestGolden(struct RldMkTestMesh *mesh, const struct RldPng
 	free(chriNoWheels);
 }
 
+// THE OWN MASK (--mask-model): a box as the mask - fitted to the retail mask's
+// height and centered on its center, one animation of one frame, CMSK by the
+// game's rules, built twice the same; a finer box reduced to at most 70
+// triangles; the rules CMSK-1..3 and model-anims on a broken copy; a container
+// with CMSK last and its golden hash. Without --mask-model nothing changes:
+// the five golden hashes above.
+#define RLDMK_GOLDEN_MASK "bddb29319b18eace9a99be406977fbf0b5f6d2e31fa7d432059bd23ed49e3a32"
+
+static void RldMk_SelfTestMask(struct RldMkTestMesh *mesh)
+{
+	static const double lo[3] = {-0.5, 0.0, -0.1};
+	static const double hi[3] = {0.5, 1.3, 0.1};
+	static const double center[3] = RLDMK_MASK_CENTER;
+	u8 *cmsk = NULL;
+	size_t cmskSize = 0;
+	int k;
+
+	// The large box first: the CMSK of the small one stays for the rules below.
+	for (k = 0; k < 2; k++)
+	{
+		const u32 n = (k == 0) ? 3u : 1u;
+		struct RldMkOptions opt;
+		struct RldMkPly ply;
+		struct RldMkPly plyAgain;
+		struct RldMkBuild b;
+		struct RldMkBuild again;
+		struct RldCharModelFacts facts;
+		int ok;
+
+		RldMk_TestOptions(&opt);
+		opt.maskModel = 1;
+		opt.still = 1;
+		opt.reduce = 1;
+		opt.repair = 1;
+		mesh->vertexCount = 0;
+		mesh->faceCount = 0;
+		RldMk_TestBox(mesh, lo, hi, n, 30u, 0, -1);
+
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again) && (b.cmdlSize == again.cmdlSize) &&
+		     (memcmp(b.cmdl, again.cmdl, b.cmdlSize) == 0);
+		if (ok)
+		{
+			const u8 *body = &b.cmdl[4];
+			const u32 header = Rld_ReadLE32(&body[RLDMK_MODEL_HEADERS]);
+			const u32 anim = Rld_ReadLE32(&body[Rld_ReadLE32(&body[header + RLDMK_HEADER_ANIMS])]);
+			double boxLo[3];
+			double boxHi[3];
+
+			RldMk_Bounds(&b, -1, boxLo, boxHi);
+			free(cmsk);
+			cmskSize = RLDCHAR_MASK_HEAD_BYTES + b.cmdlSize;
+			cmsk = (u8 *)malloc(cmskSize);
+			ok = (cmsk != NULL);
+			if (ok)
+			{
+				Rld_WriteLE16(&cmsk[0x00], RLDCHAR_MASK_VERSION);
+				Rld_WriteLE16(&cmsk[0x02], 0u);
+				memcpy(&cmsk[RLDCHAR_MASK_HEAD_BYTES], b.cmdl, b.cmdlSize);
+			}
+			ok = ok && (RldChar_CheckMask(cmsk, cmskSize, NULL, NULL, NULL, &facts) == RLDCHAR_VERDICT_OK) &&
+			     (Rld_ReadLE32(&body[header + RLDMK_HEADER_NUM_ANIMS]) == 1u) && ((Rld_ReadLE16(&body[anim + RLDMK_ANIM_NUM_FRAMES]) & 0x7FFFu) == 1u) &&
+			     (facts.triangles == b.drawCount) && (facts.drawBytes <= RLDCHAR_MASK_DRAW_BYTES_MAX) && (b.framesWritten == 1u);
+			ok = ok && ((0.5 * (boxLo[0] + boxHi[0]) - center[0]) < 1.0e-9) && ((0.5 * (boxLo[0] + boxHi[0]) - center[0]) > -1.0e-9) &&
+			     ((0.5 * (boxLo[1] + boxHi[1]) - center[1]) < 1.0e-9) && ((0.5 * (boxLo[1] + boxHi[1]) - center[1]) > -1.0e-9) &&
+			     ((0.5 * (boxLo[2] + boxHi[2]) - center[2]) < 1.0e-9) && ((0.5 * (boxLo[2] + boxHi[2]) - center[2]) > -1.0e-9) &&
+			     ((boxHi[1] - boxLo[1]) > 85.0) && ((boxHi[1] - boxLo[1]) < 87.2);
+			if (n == 3u)
+			{
+				ok = ok && b.reduced && (b.reduceFrom == 108u) && (b.triangleCount <= RLDMK_MASK_TRIANGLES_MAX);
+			}
+		}
+		RldMk_Test(ok, (n == 1u) ? "mask: a box of 12 triangles - 1 x 1 frame, 86.1 tall on the retail center, CMSK passes, built twice the same"
+		                         : "mask: a box of 108 triangles reduced to at most 70, CMSK passes",
+		           "not so");
+
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+		RldMk_FreeBuild(&again);
+		RldMk_FreePly(&plyAgain);
+	}
+
+	if (cmsk == NULL)
+	{
+		RldMk_Test(0, "mask: the rules", "no mask built");
+		return;
+	}
+
+	// The rules on broken copies.
+	{
+		static u8 big[RLDCHAR_MASK_BYTES_MAX + 8u];
+		struct RldCharFinding first;
+		u8 *m = RldMk_TestCopy(cmsk, cmskSize);
+
+		if (m != NULL)
+		{
+			const u8 *body = &m[RLDCHAR_MASK_HEAD_BYTES + 4u];
+			const u32 header = Rld_ReadLE32(&body[RLDMK_MODEL_HEADERS]);
+
+			Rld_WriteLE16(&m[0x00], 2u);
+			RldMk_Test((RldChar_CheckMask(m, cmskSize, &first, NULL, NULL, NULL) != RLDCHAR_VERDICT_OK) && (strcmp(first.rule, "CMSK-1") == 0),
+			           "mask: version 2 ignored (CMSK-1)", "not so");
+			Rld_WriteLE16(&m[0x00], RLDCHAR_MASK_VERSION);
+			Rld_WriteLE16(&m[0x02], 1u);
+			RldMk_Test((RldChar_CheckMask(m, cmskSize, &first, NULL, NULL, NULL) != RLDCHAR_VERDICT_OK) && (strcmp(first.rule, "CMSK-2") == 0),
+			           "mask: flags 1 ignored (CMSK-2)", "not so");
+			Rld_WriteLE16(&m[0x02], 0u);
+			Rld_WriteLE32(&m[RLDCHAR_MASK_HEAD_BYTES + 4u + header + RLDMK_HEADER_NUM_ANIMS], 2u);
+			RldMk_Test((RldChar_CheckMask(m, cmskSize, &first, NULL, NULL, NULL) != RLDCHAR_VERDICT_OK) && (first.rule != NULL) &&
+			               (strncmp(first.rule, "model-", 6) == 0),
+			           "mask: two animations ignored (model rules)", "rule %s", (first.rule != NULL) ? first.rule : "none");
+			free(m);
+		}
+
+		memset(big, 0, sizeof(big));
+		memcpy(big, cmsk, cmskSize);
+		RldMk_Test((RldChar_CheckMask(big, RLDCHAR_MASK_BYTES_MAX + 4u, &first, NULL, NULL, NULL) == RLDCHAR_VERDICT_MODEL_LIMIT) &&
+		               (strcmp(first.rule, "CMSK-3") == 0),
+		           "mask: CMSK over 16 KiB ignored (CMSK-3)", "not so");
+	}
+
+	// A container with CMSK: three chunks (no portrait), CMSK last with its
+	// hash; the golden.
+	{
+		u8 field[RLDCHAR_NAME_FIELD];
+		struct RldMkOptions opt;
+		struct RldMkPly ply;
+		struct RldMkBuild b;
+		size_t chriSize = 0;
+		size_t size = 0;
+		u8 *chri;
+		u8 *file = NULL;
+		int ok;
+
+		memset(field, 0, sizeof(field));
+		memcpy(field, "SELF TEST", 9u);
+		chri = RldMk_BuildChri(14u, 0u, field, 1u, "", 0u, &chriSize);
+		RldMk_TestOptions(&opt);
+		RldMk_TestStandard(mesh, 2u, 0, 0.0, -1);
+		ok = (chri != NULL) && RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+		if (ok)
+		{
+			file = RldMk_ContainerMask(chri, chriSize, b.cmdl, b.cmdlSize, NULL, cmsk, cmskSize, &size);
+		}
+		ok = ok && (file != NULL);
+		if (ok)
+		{
+			const u64 dirAt = Rld_ReadLE64(&file[0x18]);
+			const u8 *entry = &file[(size_t)dirAt + 2u * RLD_DIR_ENTRY_SIZE];
+			u8 digest[32];
+
+			Sha256(&file[(size_t)Rld_ReadLE64(&entry[0x08])], cmskSize, digest);
+			ok = (Rld_ReadLE32(&file[0x10]) == 3u) && (memcmp(entry, "CMSK", 4u) == 0) && (Rld_ReadLE64(&entry[0x10]) == (u64)cmskSize) &&
+			     (memcmp(&entry[RLD_DIR_HASH_OFFSET], digest, 32u) == 0) && (RldChar_ChunkLimit(entry) == RLDCHAR_LIMIT_CMSK);
+		}
+		RldMk_Test(ok, "mask: container with CMSK last, its hash in the directory", "not so");
+		if (Rld_CheckGolden("make-char --fit none --mask-model (a box)", file, size, RLDMK_GOLDEN_MASK) != 0)
+		{
+			s_rldMkTestFailed++;
+		}
+
+		free(file);
+		free(chri);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+	}
+
+	free(cmsk);
+}
+
 // The number of failed cases; 0 = passed.
 static int RldChar_SelfTest(void)
 {
@@ -14459,6 +15134,7 @@ static int RldChar_SelfTest(void)
 	s_rldMkTestFailed += RldDum_SelfTest(RldMk_TestReport);
 	RldMk_SelfTestPng();
 	RldMk_SelfTestVoices();
+	RldMk_SelfTestMask(mesh);
 	{
 		struct RldPngImage pictureA;
 

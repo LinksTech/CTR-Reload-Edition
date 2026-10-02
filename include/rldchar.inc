@@ -48,6 +48,7 @@
 #define RLDCHAR_LIMIT_CMDL (256u * 1024u)
 #define RLDCHAR_LIMIT_CICN (4u * 1024u)    // the portrait, exactly RLDCHAR_ICON_BYTES (CICN-3)
 #define RLDCHAR_LIMIT_CPRM (4u * 1024u)    // known type, not written yet
+#define RLDCHAR_LIMIT_CMSK (256u * 1024u)  // the own mask; the envelope bound only - version 1 holds CMSK-3 (16 KiB)
 #define RLDCHAR_INFO_FIXED_SIZE 0x1Cu
 #define RLDCHAR_CHRI_FLAGS_OFFSET 0x1Cu    // u32 flags, present when fixedSize >= RLDCHAR_CHRI_SIZE_FLAGS
 #define RLDCHAR_CHRI_SIZE_FLAGS 0x20u
@@ -105,12 +106,18 @@ static u64 RldChar_ChunkLimit(const u8 *type)
 	{
 		return RLDCHAR_LIMIT_CPRM;
 	}
+	if (memcmp(type, "CMSK", 4) == 0)
+	{
+		return RLDCHAR_LIMIT_CMSK;
+	}
 	return 0;
 }
 
 // OPTIONAL: CICN (portrait, RldChar_CheckIcon below) is written by rldpack
 // make-char --icon; the game shows it in the driver select grid
-// (platform/native_chars.c). CPRM (values) has a size limit above, but
+// (platform/native_chars.c). CMSK (the own mask, RldChar_CheckMask below) is
+// written by rldpack make-char --mask-model; the game draws it in place of
+// the Aku Aku / Uka Uka model. CPRM (values) has a size limit above, but
 // rldpack does not write it and nothing interprets it yet.
 // RESERVED NAMES: CVOI (voices) and CTEX (texture data) are planned; until then
 // they have no limit here and are skipped like any unknown chunk.
@@ -454,6 +461,9 @@ static const char *RldChar_CheckIcon(const u8 *bytes, size_t size)
 //             model-coords        -8192 <= pos and pos + 255 <= 8191         (per frame and axis)
 //   stage 4   model-draw          draw memory of the model <= 22560 bytes
 //
+// The own mask (CMSK) runs the same rules with its own profile: 1 animation
+// of 1 frame, at most 1960 bytes of draw memory (RldChar_CheckMask).
+//
 // A model whose command list has no end word has no known record count:
 // everything that needs it (stage 3 sizes, stage 4) is not checked then.
 // Stage 3 covers animations 0..3, the ones the game uses.
@@ -579,8 +589,34 @@ struct RldCharModelFacts           // filled as far as the check got
 static u8 s_rldCharListed[RLDCHAR_WORD_BITS_BYTES];
 static u8 s_rldCharKnown[RLDCHAR_WORD_BITS_BYTES];
 
+// What a model is checked against: a character (CMDL) or the own mask (CMSK).
+// Every other rule is the same for both. The texts of the character profile
+// are the ones the check always had.
+struct RldCharProfile
+{
+	const char *chunk;      // the chunk the model frame lies in, for the texts
+	const char *what;       // "a character" / "a mask"
+	u32 sizeMax;            // model-size
+	u32 animCount;          // model-anims: exactly this many
+	const u16 *frames;      // model-anim-frames, per animation
+	const char *framesWho;  // model-anim-frames: whose counts these are
+	u32 drawMax;            // model-draw
+};
+
+static const struct RldCharProfile s_rldCharProfileModel = {
+    "CMDL",                  // chunk
+    "a character",           // what
+    RLDCHAR_LIMIT_CMDL,      // sizeMax
+    RLDCHAR_ANIM_COUNT,      // animCount
+    s_rldCharFrames,         // frames
+    "every template has",    // framesWho
+    RLDCHAR_DRAW_BYTES_MAX,  // drawMax
+};
+
 struct RldCharCheck
 {
+	const struct RldCharProfile *profile;
+
 	const u8 *body;
 	u32 bodyBytes;          // G
 	const u8 *map;          // the first map entry
@@ -686,15 +722,15 @@ static int RldChar_CheckBounds(struct RldCharCheck *check, const u8 *cmdl, size_
 	// :153-168): G, the body, then the map, and nothing behind it.
 	if ((cmdl == NULL) || (size < 8u))
 	{
-		RldChar_Find(check, rule, RLDCHAR_VERDICT_BAD_MODEL, "CMDL is %u bytes - shorter than its two length words", (unsigned)size);
+		RldChar_Find(check, rule, RLDCHAR_VERDICT_BAD_MODEL, "%s is %u bytes - shorter than its two length words", check->profile->chunk, (unsigned)size);
 		return 0;
 	}
 
 	bodyBytes = Rld_ReadLE32(&cmdl[0]);
 	if ((u64)bodyBytes > ((u64)size - 8u))
 	{
-		RldChar_Find(check, rule, RLDCHAR_VERDICT_BAD_MODEL, "the body is %u bytes, CMDL (%u bytes) has room for %u", (unsigned)bodyBytes, (unsigned)size,
-		             (unsigned)(size - 8u));
+		RldChar_Find(check, rule, RLDCHAR_VERDICT_BAD_MODEL, "the body is %u bytes, %s (%u bytes) has room for %u", (unsigned)bodyBytes, check->profile->chunk,
+		             (unsigned)size, (unsigned)(size - 8u));
 		return 0;
 	}
 
@@ -707,8 +743,8 @@ static int RldChar_CheckBounds(struct RldCharCheck *check, const u8 *cmdl, size_
 
 	if ((8u + (u64)bodyBytes + (u64)mapBytes) != (u64)size)
 	{
-		RldChar_Find(check, rule, RLDCHAR_VERDICT_BAD_MODEL, "body and pointer map end at %llu, CMDL is %u bytes - it must end right behind the map",
-		             (unsigned long long)(8u + (u64)bodyBytes + (u64)mapBytes), (unsigned)size);
+		RldChar_Find(check, rule, RLDCHAR_VERDICT_BAD_MODEL, "body and pointer map end at %llu, %s is %u bytes - it must end right behind the map",
+		             (unsigned long long)(8u + (u64)bodyBytes + (u64)mapBytes), check->profile->chunk, (unsigned)size);
 		return 0;
 	}
 
@@ -1018,7 +1054,7 @@ static int RldChar_CheckHead(struct RldCharCheck *check)
 
 		if (id != -1)
 		{
-			RldChar_Find(check, "model-head", RLDCHAR_VERDICT_BAD_MODEL, "Model.id is %d - a character model has -1", id);
+			RldChar_Find(check, "model-head", RLDCHAR_VERDICT_BAD_MODEL, "Model.id is %d - %s model has -1", id, check->profile->what);
 		}
 
 		while ((nameLength < RLDCHAR_MODEL_NAME_BYTES) && (check->body[nameLength] != 0))
@@ -1074,7 +1110,8 @@ static int RldChar_CheckHead(struct RldCharCheck *check)
 	}
 	if (check->anims == 0u)
 	{
-		RldChar_Find(check, "model-headers", RLDCHAR_VERDICT_BAD_MODEL, "ModelHeader.ptrAnimations is NULL - a character needs its 4 animations");
+		RldChar_Find(check, "model-headers", RLDCHAR_VERDICT_BAD_MODEL, "ModelHeader.ptrAnimations is NULL - %s needs its %u animation%s",
+		             check->profile->what, (unsigned)check->profile->animCount, (check->profile->animCount == 1u) ? "" : "s");
 	}
 
 	// model-zero. The static frame and its delta table (RB:2160-2164), the
@@ -1121,10 +1158,10 @@ static int RldChar_CheckHead(struct RldCharCheck *check)
 	{
 		const u32 numAnimations = RldChar_Word(check, header + RLDCHAR_HEADER_NUM_ANIMS);
 
-		if (numAnimations != RLDCHAR_ANIM_COUNT)
+		if (numAnimations != check->profile->animCount)
 		{
-			RldChar_Find(check, "model-anims", RLDCHAR_VERDICT_BAD_MODEL, "ModelHeader.numAnimations is %u - a character has exactly 4",
-			             (unsigned)numAnimations);
+			RldChar_Find(check, "model-anims", RLDCHAR_VERDICT_BAD_MODEL, "ModelHeader.numAnimations is %u - %s has exactly %u",
+			             (unsigned)numAnimations, check->profile->what, (unsigned)check->profile->animCount);
 		}
 
 		for (i = 0; i < check->animCount; i++)
@@ -1360,7 +1397,7 @@ static void RldChar_CheckFrames(struct RldCharCheck *check)
 	static const char axisNames[3] = {'x', 'y', 'z'};
 	const u64 records = check->records;
 	const int recordsKnown = check->listComplete;
-	const u32 animCount = (check->animCount < RLDCHAR_ANIM_COUNT) ? check->animCount : RLDCHAR_ANIM_COUNT;
+	const u32 animCount = (check->animCount < check->profile->animCount) ? check->animCount : check->profile->animCount;
 	u64 frameBytes = 0;
 	u32 a;
 
@@ -1408,10 +1445,10 @@ static void RldChar_CheckFrames(struct RldCharCheck *check)
 
 		// model-anim-frames, counted like the game counts them (mask 0x7fff,
 		// game/Vehicle/VehFrame.c:83).
-		if (numFrames != s_rldCharFrames[a])
+		if (numFrames != check->profile->frames[a])
 		{
-			RldChar_Find(check, "model-anim-frames", RLDCHAR_VERDICT_MODEL_LIMIT, "animation %u has %u frames - every template has %u", (unsigned)a,
-			             (unsigned)numFrames, (unsigned)s_rldCharFrames[a]);
+			RldChar_Find(check, "model-anim-frames", RLDCHAR_VERDICT_MODEL_LIMIT, "animation %u has %u frames - %s %u", (unsigned)a,
+			             (unsigned)numFrames, check->profile->framesWho, (unsigned)check->profile->frames[a]);
 		}
 
 		// model-verts: all frames of the animation lie in the body. The frame
@@ -1475,21 +1512,16 @@ static void RldChar_CheckFrames(struct RldCharCheck *check)
 //----------------------------------------------------------------------------------------
 // THE CHECK
 
-// The CMDL chunk exactly as stored in the file. The FIRST violation decides
-// the verdict and is copied to *first (may be NULL). report is called for
-// every violation in check order (may be NULL: then the check ends at the
-// first). facts (may be NULL) is filled as far as the check got.
-//
-// NOT REENTRANT: the pointer-map check works in the static bit maps
-// s_rldCharListed and s_rldCharKnown. Never run two checks at once (two
-// threads, or a check from inside the report callback).
-static enum RldCharVerdict RldChar_CheckModel(const u8 *cmdl, size_t size, struct RldCharFinding *first, RldCharReport report, void *context,
-                                              struct RldCharModelFacts *facts)
+// A model frame (u32 G, body, u32 mapBytes, map) against a profile; see
+// RldChar_CheckModel for the contract.
+static enum RldCharVerdict RldChar_CheckProfile(const struct RldCharProfile *profile, const u8 *cmdl, size_t size, struct RldCharFinding *first,
+                                                RldCharReport report, void *context, struct RldCharModelFacts *facts)
 {
 	struct RldCharCheck check;
 	struct RldCharModelFacts localFacts;
 
 	memset(&check, 0, sizeof(check));
+	check.profile = profile;
 	check.first = first;
 	check.report = report;
 	check.context = context;
@@ -1505,10 +1537,11 @@ static enum RldCharVerdict RldChar_CheckModel(const u8 *cmdl, size_t size, struc
 
 	// model-size. The envelope refuses a larger CMDL before anything is read
 	// (Rld_OpenAs with RldChar_ChunkLimit); here it bounds every offset below
-	// and the static bit maps.
-	if (size > RLDCHAR_LIMIT_CMDL)
+	// and the static bit maps (sized for CMDL, which no profile exceeds).
+	if (size > profile->sizeMax)
 	{
-		RldChar_Find(&check, "model-size", RLDCHAR_VERDICT_DAMAGED, "CMDL is %llu bytes, at most %u", (unsigned long long)size, (unsigned)RLDCHAR_LIMIT_CMDL);
+		RldChar_Find(&check, "model-size", RLDCHAR_VERDICT_DAMAGED, "%s is %llu bytes, at most %u", profile->chunk, (unsigned long long)size,
+		             (unsigned)profile->sizeMax);
 		return check.verdict;
 	}
 
@@ -1539,14 +1572,132 @@ static enum RldCharVerdict RldChar_CheckModel(const u8 *cmdl, size_t size, struc
 
 	// Stage 4: model-draw. The draw memory of one frame is shared by HUD,
 	// particles, every instance and the track (game/MAIN/MainInit.c:83-141); a
-	// character costs at most what retail's largest, oxide_hi, costs.
-	if (check.listComplete && !check.stop && (check.facts->drawBytes > RLDCHAR_DRAW_BYTES_MAX))
+	// character costs at most what retail's largest, oxide_hi, costs, the own
+	// mask what the retail mask akumouth costs.
+	if (check.listComplete && !check.stop && (check.facts->drawBytes > profile->drawMax))
 	{
-		RldChar_Find(&check, "model-draw", RLDCHAR_VERDICT_MODEL_LIMIT, "%u triangles (%u G3 x 28 + %u GT3 x 40) cost %u bytes of draw memory, at most 22560",
-		             (unsigned)check.facts->triangles, (unsigned)check.trianglesG3, (unsigned)check.trianglesGT3, (unsigned)check.facts->drawBytes);
+		RldChar_Find(&check, "model-draw", RLDCHAR_VERDICT_MODEL_LIMIT, "%u triangles (%u G3 x 28 + %u GT3 x 40) cost %u bytes of draw memory, at most %u",
+		             (unsigned)check.facts->triangles, (unsigned)check.trianglesG3, (unsigned)check.trianglesGT3, (unsigned)check.facts->drawBytes,
+		             (unsigned)profile->drawMax);
 	}
 
 	return check.verdict;
+}
+
+// The CMDL chunk exactly as stored in the file. The FIRST violation decides
+// the verdict and is copied to *first (may be NULL). report is called for
+// every violation in check order (may be NULL: then the check ends at the
+// first). facts (may be NULL) is filled as far as the check got.
+//
+// NOT REENTRANT: the pointer-map check works in the static bit maps
+// s_rldCharListed and s_rldCharKnown. Never run two checks at once (two
+// threads, or a check from inside the report callback).
+static enum RldCharVerdict RldChar_CheckModel(const u8 *cmdl, size_t size, struct RldCharFinding *first, RldCharReport report, void *context,
+                                              struct RldCharModelFacts *facts)
+{
+	return RldChar_CheckProfile(&s_rldCharProfileModel, cmdl, size, first, report, context, facts);
+}
+
+//========================================================================================
+// CMSK - THE OWN MASK
+//========================================================================================
+//
+// 0x00 u16 version      1
+// 0x02 u16 flags        0 (reserved, e.g. for a textured mask later)
+// 0x04 ...              the model in the frame of CMDL: u32 G, body, u32 mapBytes, map
+//
+// OPTIONAL. In a race the game draws this model instead of the Aku Aku / Uka
+// Uka model of the bound seat's mask item; everything else of the mask - which
+// of the two it is (CHRI flags bits 1-2), the beam, the sound, the music, the
+// invincibility - stays (game/Vehicle/VehPickupItem.c). The retail mask is
+// rigid in a race (its "speak" animation only moves in the adventure hints),
+// so the own mask has one animation of one frame.
+//
+// THE RULES, in the order they are checked:
+//
+//   CMSK-1   version 1 (a reader that does not know the version drops CMSK)
+//   CMSK-2   flags 0
+//   CMSK-3   CMSK <= 16 KiB
+//   then     every model-* rule of CMDL on the model frame at 0x04, with
+//            these differences: exactly 1 animation of 1 frame, and the draw
+//            memory at most 1960 bytes - what the retail mask akumouth costs
+//            (49 textured triangles x 40), so 70 triangles with vertex colors.
+//
+// A finding NEVER refuses the file: it costs only the own mask, and the game
+// shows the retail mask (like a broken CICN). The envelope bound of CMSK
+// (RLDCHAR_LIMIT_CMSK) is wider than CMSK-3 on purpose: a later, larger
+// version is dropped as a mask, not as a file.
+
+#define RLDCHAR_MASK_VERSION 1u
+#define RLDCHAR_MASK_HEAD_BYTES 4u                 // version and flags, then the model frame
+#define RLDCHAR_MASK_BYTES_MAX (16u * 1024u)       // CMSK-3
+#define RLDCHAR_MASK_DRAW_BYTES_MAX 1960u          // 49 x 0x28 (akumouth)
+#define RLDCHAR_MASK_ANIM_COUNT 1
+
+static const u16 s_rldCharMaskFrames[RLDCHAR_MASK_ANIM_COUNT] = {1};
+
+static const struct RldCharProfile s_rldCharProfileMask = {
+    "CMSK",                       // chunk
+    "a mask",                     // what
+    RLDCHAR_MASK_BYTES_MAX,       // sizeMax
+    RLDCHAR_MASK_ANIM_COUNT,      // animCount
+    s_rldCharMaskFrames,          // frames
+    "a mask has",                 // framesWho
+    RLDCHAR_MASK_DRAW_BYTES_MAX,  // drawMax
+};
+
+// The CMSK chunk exactly as stored in the file; the contract of
+// RldChar_CheckModel, and NOT REENTRANT the same way. CMSK-1..3 come as
+// findings with that rule (verdict BAD MODEL, CMSK-3 MODEL LIMIT) before the
+// model rules. facts describe the model frame.
+static enum RldCharVerdict RldChar_CheckMask(const u8 *cmsk, size_t size, struct RldCharFinding *first, RldCharReport report, void *context,
+                                             struct RldCharModelFacts *facts)
+{
+	struct RldCharFinding finding;
+	const char *rule = NULL;
+	enum RldCharVerdict verdict = RLDCHAR_VERDICT_BAD_MODEL;
+
+	memset(&finding, 0, sizeof(finding));
+	if (facts != NULL)
+	{
+		memset(facts, 0, sizeof(*facts));
+	}
+
+	if ((cmsk == NULL) || (size < RLDCHAR_MASK_HEAD_BYTES) || (Rld_ReadLE16(&cmsk[0x00]) != RLDCHAR_MASK_VERSION))
+	{
+		rule = "CMSK-1";
+		snprintf(finding.detail, sizeof(finding.detail), "CMSK is not version 1 (%u bytes)", (unsigned)size);
+	}
+	else if (Rld_ReadLE16(&cmsk[0x02]) != 0u)
+	{
+		rule = "CMSK-2";
+		snprintf(finding.detail, sizeof(finding.detail), "CMSK flags are 0x%04x - version 1 has 0", (unsigned)Rld_ReadLE16(&cmsk[0x02]));
+	}
+	else if (size > RLDCHAR_MASK_BYTES_MAX)
+	{
+		rule = "CMSK-3";
+		verdict = RLDCHAR_VERDICT_MODEL_LIMIT;
+		snprintf(finding.detail, sizeof(finding.detail), "CMSK is %llu bytes, at most %u", (unsigned long long)size, (unsigned)RLDCHAR_MASK_BYTES_MAX);
+	}
+
+	// The head decides alone: without it the model frame is not where 1.0
+	// says. One finding, then the check ends - for the packer as well.
+	if (rule != NULL)
+	{
+		finding.rule = rule;
+		finding.verdict = verdict;
+		if (first != NULL)
+		{
+			*first = finding;
+		}
+		if (report != NULL)
+		{
+			(void)report(context, &finding);
+		}
+		return verdict;
+	}
+
+	return RldChar_CheckProfile(&s_rldCharProfileMask, &cmsk[RLDCHAR_MASK_HEAD_BYTES], size - RLDCHAR_MASK_HEAD_BYTES, first, report, context, facts);
 }
 
 #endif // RLDCHAR_INC

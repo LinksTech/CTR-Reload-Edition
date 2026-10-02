@@ -51,8 +51,10 @@ int NativeChar_ArgsUsable(void);
 // CMDL size against RLDCHAR_LIMIT_CMDL before any malloc, CMDL read whole
 // (hash per chunk), RldChar_CheckModel on the UNRELOCATED bytes, then
 // LOAD_RunPtrMap once on the host copy (0 -> refused "PTRMAP"), then CICN when
-// present (RldChar_CheckIcon; a broken CICN costs only the portrait). One line
-// "loaded" or "REFUSED" per file, after "loaded" one line "portrait"; a
+// present (RldChar_CheckIcon; a broken CICN costs only the portrait), then CMSK
+// when present (RldChar_CheckMask and one LOAD_RunPtrMap; a broken CMSK costs
+// only the own mask). One line "loaded" or "REFUSED" per file, after "loaded"
+// one line "portrait" and, for a file with CMSK, one line "mask"; a
 // refused file is skipped and the game starts. From the 33rd valid file on: a
 // loud "NO ID" line, no entry. Then one summary line ("characters: N loaded,
 // M refused (<folder>)", or one line for a missing folder), and the roster is
@@ -170,6 +172,16 @@ int NativeChar_SeatMaskGood(int seat, int retailGood);
 // line "mask seat <n>: <aku|uka> from the <file|template> (...)" for a bound
 // seat, once per load; nothing for any other seat.
 void NativeChar_NoteMask(const struct Driver *d, int modelID);
+
+// game/Vehicle/VehPickupItem.c, right after the mask instance is born: the own
+// mask model (CMSK, checked and relocated at start) of a bound seat whose
+// guard holds, else NULL - every other seat, every bot, and a file without a
+// usable CMSK keep the retail model. The caller swaps only instance->model.
+struct Model *NativeChar_SeatMaskModel(int seat);
+
+// Right after that swap: one line "mask seat <n>: own model from the file
+// (<n> triangles)" per load, only for a bound seat with an own mask.
+void NativeChar_NoteOwnMask(const struct Driver *d);
 
 // The mask cases of the CHRI flags and of the seat decision, without data or
 // window: adds to *checks and *failures and prints one line per failure. Part

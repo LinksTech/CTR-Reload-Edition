@@ -339,16 +339,19 @@ is frozen. Source: `include/rldchar.inc`.
 | CHRI | required | 4 KiB | template, class, name, version, flags, author |
 | CMDL | required | 256 KiB | the model, in the game's native model format |
 | CICN | optional, written by `rldpack make-char --icon` | 4 KiB | the portrait, exactly 612 bytes (rules CICN-1..3); the game shows it in the driver select grid |
+| CMSK | optional, experimental, written by `rldpack make-char --mask-model` | 256 KiB (rule CMSK-3: 16 KiB) | an own mask model, drawn in place of Aku Aku / Uka Uka (rules CMSK-1..3) |
 | CPRM | optional, known type: not written by rldpack, content not interpreted yet | 4 KiB | values; layout not fixed (draft) |
 | CVOI | reserved name, planned | none (unknown, skipped) | voices; layout not defined |
 | CTEX | reserved name, planned | none (unknown, skipped) | texture data; layout not defined |
 
-`rldpack make-char` writes CHRI, CMDL and, with `--icon`, CICN, in this order.
-CICN and CPRM are known types. When present, the envelope checks them
-(compression, sizes, limit) and `rldpack verify` checks their hash. A CICN
-that breaks an envelope rule (steps 14-19, e.g. larger than 4 KiB) refuses the
-whole file; a CICN that breaks CICN-1..3 only loses the portrait (see CICN
-below). Nothing interprets CPRM yet.
+`rldpack make-char` writes CHRI, CMDL, then CICN with `--icon` and CMSK with
+`--mask-model`, in this order. CICN, CMSK and CPRM are known types. When
+present, the envelope checks them (compression, sizes, limit) and `rldpack
+verify` checks their hash. A CICN or CMSK that breaks an envelope rule (steps
+14-19, e.g. a CICN larger than 4 KiB or a CMSK larger than 256 KiB) refuses
+the whole file; a CICN that breaks CICN-1..3 only loses the portrait, a CMSK
+that breaks CMSK-1..3 or a model rule only loses the own mask (see CICN and
+CMSK below). Nothing interprets CPRM yet.
 
 ### CHRI (`RldChar_ParseInfo`)
 
@@ -590,6 +593,67 @@ template's. After the load line the game logs one line per file,
 `[CTR Char] portrait <file>: own (slot <n>)` or the reason followed by
 `the template's` (for example `CICN ignored - <reason> - the template's`).
 
+### CMSK (`RldChar_CheckMask`) - experimental
+
+An own mask model, drawn in place of the Aku Aku / Uka Uka model. Experimental:
+`rldpack make-char --mask-model` writes it, Reload Studio has no field for it
+yet. Source: the CMSK section of `include/rldchar.inc`.
+
+| Offset | Type | Field | 1 |
+|---|---|---|---|
+| 0x00 | u16 | version | 1 |
+| 0x02 | u16 | flags | 0 (reserved) |
+| 0x04 | | model | the model in the frame of CMDL: u32 G, the body, u32 mapBytes, the pointer map |
+
+Rules, in order:
+
+| Rule | What must hold |
+|---|---|
+| CMSK-1 | at least 4 bytes and version 1 (a reader that does not know the version drops CMSK) |
+| CMSK-2 | flags 0 |
+| CMSK-3 | at most 16 KiB (verdict MODEL LIMIT) |
+| then | every model rule of CMDL (section 4) on the model at 0x04, with these differences: exactly 1 animation of 1 frame, and at most 1960 bytes of draw memory - what the retail mask costs (49 textured triangles x 40), so 70 triangles with vertex colors |
+
+The retail mask is rigid in a race, so the own mask has one frame and no
+poses. It has vertex colors only, no texture.
+
+A CMSK that breaks a rule, has a wrong hash or a pointer map the game cannot
+apply never refuses the file: only the own mask is dropped, and the retail
+mask is shown (as for a broken CICN). The envelope bound of 256 KiB is wider
+than CMSK-3 on purpose: a later, larger version is dropped as a mask, not as
+a file. A CMSK that breaks an envelope rule (larger than 256 KiB, compressed,
+size_stored not size_raw) refuses the whole file.
+
+What `rldpack make-char --mask-model <ply>` does (`RldMk_BuildMaskOnce`,
+`RldMk_MaskStep`): the steps of a character, with these differences. The PLY
+(vertex colors, `--mask-up y|z` and `--mask-forward z|-z` as `--up` and
+`--forward`) is one part: no kart, driver or steering wheel, no dummy, no
+`--remesh`, no poses. It is fitted to the height of the retail mask (86.1
+game units) times `--mask-size` (50..150 percent, default 100), reduced to at
+most 70 triangles and centered where the retail mask's center lies. The chunk
+is built twice, compared and checked with `RldChar_CheckMask`. `--mask` still
+decides which of the two masks it is. `--mask-size`, `--mask-up` and
+`--mask-forward` need `--mask-model`. Without `--mask-model` the file has no
+CMSK and the same bytes as before.
+
+`rldpack info` names it: `own mask <n> triangles, ... (CMSK)`, `none - the
+retail mask (no CMSK)` or `the retail mask - CMSK ignored: <rule> <detail>`;
+with `--machine` `@value own-mask`. `rldpack verify` prints `IGNORED CMSK`
+for a rule finding; a CMSK whose hash does not match fails the file in
+`rldpack verify`, while the game drops only the own mask.
+
+What the game does with it (`platform/native_chars.c`, `NativeChar_ReadMask`):
+at start it reads the CMSK of every file it loads, checks it with
+`RldChar_CheckMask` and applies its pointer map; after the portrait line it
+logs `[CTR Char] mask <file>: own (<n> triangles)` or
+`[CTR Char] mask <file>: CMSK ignored - <reason> - retail` (only for a file
+with CMSK). In a race only the model of the bound custom seat's mask is
+swapped (`game/Vehicle/VehPickupItem.c`): the mask keeps its model index
+(Aku Aku or Uka Uka, CHRI flags bits 1-2), so the beam, the sound, the music
+and the invincibility stay retail, and the bots wear the retail masks. The
+first own mask of each load logs
+`[CTR Char] mask seat 0: own model from the file (<n> triangles)`.
+
 ### Voices: checked, not packed
 
 `rldpack make-char --voices <folder>` reads the voice files (boost1/2, hit1/2,
@@ -602,7 +666,7 @@ file: CVOI stays a reserved name, and a custom driver is silent in the game.
 | When | What |
 |---|---|
 | start | every `*.rldchar` in the `characters` folder next to the game (the extension in any case, subfolders skipped): the names are sorted first, then the files are read in that order |
-| per file | envelope (`Rld_OpenAs`), the CMDL size before any memory is taken, CHRI and CMDL with their hashes, `RldChar_ParseInfo`, `RldChar_CheckModel`, then the pointer map, then CICN when present (`RldChar_CheckIcon`; a broken CICN costs only the portrait). CPRM is not read |
+| per file | envelope (`Rld_OpenAs`), the CMDL size before any memory is taken, CHRI and CMDL with their hashes, `RldChar_ParseInfo`, `RldChar_CheckModel`, then the pointer map, then CICN when present (`RldChar_CheckIcon`; a broken CICN costs only the portrait), then CMSK when present (`RldChar_CheckMask`; a broken CMSK costs only the own mask). CPRM is not read |
 | a broken file | skipped with one log line `[CTR Char] REFUSED <file>: <kind> (<rule>) <detail>`; the game starts anyway |
 | the first 32 valid files | a tile each in the one-player ARCADE driver select, after the retail drivers (not for CRYSTAL and CTR under NITRO-PIT); a further valid file gets the log line `NO ID` and no tile |
 | menu and race | the driver select shows the own portrait (CICN, first 20 entries; else the template's, see CICN) and the name from CHRI; the race HUD, the results and the cup standings show the template's portrait; in the race seat 0 runs on the template's character id with the custom model, the class in CHRI sets the physics values and the engine sound, and the template's voice is not played |
@@ -630,6 +694,8 @@ file: CVOI stays a reserved name, and a custom driver is silent in the game.
 | `RLDCHAR_FRAME_SIZE_MAX` | 65535 bytes per frame |
 | `RLDCHAR_COORD_MIN`, `RLDCHAR_COORD_MAX` | -8192 <= pos and pos + 255 <= 8191 |
 | `RLDCHAR_DRAW_BYTES_MAX` | 22560 bytes of draw memory (564 x 0x28) |
+| `RLDCHAR_MASK_BYTES_MAX` | 16 KiB of CMSK (CMSK-3) |
+| `RLDCHAR_MASK_DRAW_BYTES_MAX` | 1960 bytes of draw memory of the own mask (49 x 0x28) |
 
 ## 4. Model rules (`RldChar_CheckModel`)
 
@@ -743,6 +809,7 @@ Chunk names:
 | SNDB, PARM | `.rldtrack` | optional |
 | CHRI, CMDL | `.rldchar` | required |
 | CICN | `.rldchar` | optional (portrait): written by `rldpack make-char --icon`, shown in the game's driver select grid |
+| CMSK | `.rldchar` | optional, experimental (own mask): written by `rldpack make-char --mask-model`, drawn in place of the retail mask |
 | CPRM | `.rldchar` | optional known type (values): not written by rldpack, content not interpreted yet |
 | CVOI, CTEX | `.rldchar` | reserved, planned (voices, texture data) |
 | SIGN | blocked | signature, taken out of the format; skipped in older files |

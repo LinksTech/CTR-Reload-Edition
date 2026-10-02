@@ -61,7 +61,10 @@
 //   mask     NativeChar_SeatMaskGood (game/Vehicle/VehPickupItem.c and the
 //            HUD icon, game/UI/UI_Weapon.c): a bound seat whose CHRI flags
 //            choose Aku Aku or Uka Uka wears that mask while its model and
-//            beam are loaded, else the template's.
+//            beam are loaded, else the template's. A file with a usable CMSK
+//            (read at start like CMDL, NativeChar_ReadMask) gives the mask
+//            instance of the bound seat its own model
+//            (NativeChar_SeatMaskModel); a broken CMSK costs only that.
 //   grid     NativeChar_EntryPortrait (game/230/MM_NativeCharGrid.c): the
 //            CICN of a file, read at start, is uploaded into its slot of the
 //            portrait strip at the first draw after every entering of the
@@ -87,7 +90,9 @@
 // read by a measuring tool and keep their wording.
 //
 // QUICK STATES hold host pointers and a model outside the MEMPACK: they are
-// refused while NativeChar_Active() says a custom character is in play.
+// refused while NativeChar_Active() says a custom character is in play. The
+// own mask is one more such host pointer (in the mask instance) and needs
+// nothing else.
 // ===========================================================================
 
 #include <platform/native_chars.h>
@@ -133,6 +138,14 @@ enum
 
 #define NATIVE_CHAR_ICON_WORDS (RLDCHAR_ICON_BYTES / 2u)
 
+// What a file's CMSK gave (NativeChar_ReadMask).
+enum
+{
+	NATIVE_CHAR_MASK_NONE = 0,    // no CMSK: the retail mask
+	NATIVE_CHAR_MASK_OWN = 1,     // cmsk and mask hold a checked, relocated model
+	NATIVE_CHAR_MASK_IGNORED = 2, // CMSK present but unusable (maskWhy): the retail mask
+};
+
 // One loaded file: its name on disk (the identity, owned here for the whole
 // run), the CMDL chunk (relocated, never freed - instances point into it),
 // what CHRI said and the portrait of CICN as 16-bit words (word 0x04 the CLUT,
@@ -148,6 +161,11 @@ struct NativeCharFile
 	int icon;
 	const char *iconWhy;
 	u16 iconWords[NATIVE_CHAR_ICON_WORDS];
+	u8 *cmsk;                   // the CMSK chunk, relocated, never freed while in the roster; NULL without own mask
+	struct Model *mask;         // the own mask model inside cmsk, NULL = the retail mask
+	u32 maskTriangles;
+	int maskState;              // NATIVE_CHAR_MASK_*
+	char maskWhy[192];          // NATIVE_CHAR_MASK_IGNORED: the rule and its detail
 };
 
 // The files of the roster, in sorted order: entry e < s_charRosterFiles is
@@ -157,7 +175,8 @@ global_variable struct NativeCharFile s_charFiles[NATIVE_CHAR_ROSTER_MAX];
 // The overlay per seat. Only seat 0 is ever armed so far. entry is the roster
 // entry it was armed with, motorId the character id the engine runs the seat
 // on - the template. maskNoted and maskMissingNoted keep the mask lines of
-// NativeChar_NoteMask and NativeChar_SeatMaskGood to one per load.
+// NativeChar_NoteMask and NativeChar_SeatMaskGood to one per load; ownMask is
+// the file's own mask model (NULL = retail), ownMaskNoted its line.
 global_variable struct
 {
 	struct Model *model;
@@ -165,6 +184,8 @@ global_variable struct
 	int motorId;
 	int maskNoted;
 	int maskMissingNoted;
+	struct Model *ownMask;
+	int ownMaskNoted;
 } s_seat[NATIVE_CHAR_SEATS];
 
 // --dev-grid-fill, as main.c passed it on (0 = none).
@@ -354,6 +375,98 @@ internal void NativeChar_ReadIcon(struct RldReader *reader, struct NativeCharFil
 	out->icon = NATIVE_CHAR_ICON_OWN;
 }
 
+// CMSK as stored against RldChar_CheckMask: 1 with out->maskTriangles set,
+// else 0 with out->maskState IGNORED and the rule in out->maskWhy. Pure (the
+// self-test runs it); the bytes stay the caller's.
+internal int NativeChar_CheckMaskBytes(struct NativeCharFile *out, const u8 *bytes, size_t size)
+{
+	struct RldCharFinding finding;
+	struct RldCharModelFacts facts;
+	enum RldCharVerdict verdict;
+
+	verdict = RldChar_CheckMask(bytes, size, &finding, NULL, NULL, &facts);
+	if (verdict != RLDCHAR_VERDICT_OK)
+	{
+		out->maskState = NATIVE_CHAR_MASK_IGNORED;
+		snprintf(out->maskWhy, sizeof(out->maskWhy), "%s (%s) %s", RldChar_VerdictWord(verdict), (finding.rule != NULL) ? finding.rule : "model",
+		         finding.detail);
+		return 0;
+	}
+
+	out->maskTriangles = facts.triangles;
+	return 1;
+}
+
+// The own mask (CMSK, optional): RldChar_CheckMask on the bytes as stored, then
+// ONE LOAD_RunPtrMap on the host copy, the way CMDL goes. Whatever is wrong
+// with it - unreadable, hash, CMSK-1..3, a model rule, the pointer map - costs
+// only the own mask, never the file. No line here: NativeChar_Admit names the
+// outcome once the entry is known. The reader is still open; the model check
+// runs here, before CMDL's (both are sequential, the check is not reentrant).
+internal void NativeChar_ReadMask(struct RldReader *reader, struct NativeCharFile *out)
+{
+	const char *why = NULL;
+	size_t size = 0;
+	int index = -1;
+	u8 *bytes;
+
+	out->cmsk = NULL;
+	out->mask = NULL;
+	out->maskTriangles = 0;
+	out->maskState = NATIVE_CHAR_MASK_NONE;
+	out->maskWhy[0] = '\0';
+
+	if ((Rld_FindEntry(reader, "CMSK", &index) == NULL) || (index < 0))
+	{
+		return;
+	}
+
+	out->maskState = NATIVE_CHAR_MASK_IGNORED;
+
+	bytes = Rld_ReadChunk(reader, index, &size, &why);
+	if (bytes == NULL)
+	{
+		snprintf(out->maskWhy, sizeof(out->maskWhy), "%s", (why != NULL) ? why : "CMSK cannot be read");
+		return;
+	}
+
+	if (!NativeChar_CheckMaskBytes(out, bytes, size))
+	{
+		free(bytes);
+		return;
+	}
+
+	// The model frame starts behind version and flags; its body 4 bytes later,
+	// as LOAD_DramFileCallback passes it. CMSK-1 and model-bounds have held all
+	// of it to the chunk and to 4-byte alignment.
+	{
+		u8 *frame = &bytes[RLDCHAR_MASK_HEAD_BYTES];
+		const u32 bodyBytes = Rld_ReadLE32(&frame[0]);
+		const u32 mapBytes = Rld_ReadLE32(&frame[4u + bodyBytes]);
+		char *body = (char *)&frame[4];
+		int *map = (int *)&frame[8u + bodyBytes];
+
+		if (LOAD_RunPtrMap(body, (int)bodyBytes, map, (int)(mapBytes / 4u)) == 0)
+		{
+			free(bytes);
+			snprintf(out->maskWhy, sizeof(out->maskWhy), "%s", "PTRMAP (ptrmap) LOAD_RunPtrMap refused the pointer map - nothing patched");
+			return;
+		}
+
+		out->cmsk = bytes;
+		out->mask = (struct Model *)body;
+		out->maskState = NATIVE_CHAR_MASK_OWN;
+	}
+}
+
+// A file that is let go after its CMSK was read.
+internal void NativeChar_DropMask(struct NativeCharFile *f)
+{
+	free(f->cmsk);
+	f->cmsk = NULL;
+	f->mask = NULL;
+}
+
 // One file: read, checked, relocated into *out. 0 after a REFUSED line (named
 // by file), with nothing left allocated; 1 with out->cmdl and out->model set.
 // out->file is the caller's.
@@ -424,6 +537,7 @@ internal int NativeChar_ReadFile(const char *path, const char *file, struct Nati
 	if (cmdl != NULL)
 	{
 		NativeChar_ReadIcon(&reader, out);
+		NativeChar_ReadMask(&reader, out);
 	}
 
 	Rld_Close(&reader);
@@ -444,6 +558,7 @@ internal int NativeChar_ReadFile(const char *path, const char *file, struct Nati
 
 		snprintf(rule, sizeof(rule), "%.*s", (colon != NULL) ? (int)(colon - why) : 0, why);
 		free(cmdl);
+		NativeChar_DropMask(out);
 		NativeChar_Refuse(file, "DAMAGED", (rule[0] != '\0') ? rule : "CHRI", "%s", (colon != NULL) ? (colon + 2) : why);
 		return 0;
 	}
@@ -456,6 +571,7 @@ internal int NativeChar_ReadFile(const char *path, const char *file, struct Nati
 	if (verdict != RLDCHAR_VERDICT_OK)
 	{
 		free(cmdl);
+		NativeChar_DropMask(out);
 		NativeChar_Refuse(file, RldChar_VerdictWord(verdict), (finding.rule != NULL) ? finding.rule : "model", "%s", finding.detail);
 		return 0;
 	}
@@ -472,6 +588,7 @@ internal int NativeChar_ReadFile(const char *path, const char *file, struct Nati
 		if (LOAD_RunPtrMap(body, (int)bodyBytes, map, (int)(mapBytes / 4u)) == 0)
 		{
 			free(cmdl);
+			NativeChar_DropMask(out);
 			NativeChar_Refuse(file, "PTRMAP", "ptrmap", "%s", "LOAD_RunPtrMap refused the pointer map - nothing patched");
 			return 0;
 		}
@@ -523,6 +640,22 @@ internal void NativeChar_LogPortrait(int entry)
 	}
 }
 
+// The own mask of an admitted entry, one line of its own after "portrait",
+// only for a file with CMSK (a file without keeps its lines as they were).
+internal void NativeChar_LogMask(int entry)
+{
+	const struct NativeCharFile *f = &s_charFiles[entry];
+
+	if (f->maskState == NATIVE_CHAR_MASK_OWN)
+	{
+		Platform_Log("[CTR Char] mask %s: own (%u triangles)\n", f->file, (unsigned)f->maskTriangles);
+	}
+	else if (f->maskState == NATIVE_CHAR_MASK_IGNORED)
+	{
+		Platform_Log("[CTR Char] mask %s: CMSK ignored - %s - retail\n", f->file, f->maskWhy);
+	}
+}
+
 // A valid file becomes the next entry while there is an id for it; after
 // that it is named loudly and let go. 1 = it got an entry (and keeps file).
 internal int NativeChar_Admit(struct NativeCharFile *loaded, char *file)
@@ -532,6 +665,7 @@ internal int NativeChar_Admit(struct NativeCharFile *loaded, char *file)
 		Platform_LogWarn("[CTR Char] NO ID %s: all %d custom character ids are taken - the file is valid but not in the driver select\n", file,
 		                 NATIVE_CHAR_ROSTER_MAX);
 		free(loaded->cmdl);
+		NativeChar_DropMask(loaded);
 		return 0;
 	}
 
@@ -540,6 +674,7 @@ internal int NativeChar_Admit(struct NativeCharFile *loaded, char *file)
 	s_charRosterFiles++;
 	NativeChar_LogLoaded(loaded);
 	NativeChar_LogPortrait(s_charRosterFiles - 1);
+	NativeChar_LogMask(s_charRosterFiles - 1);
 	return 1;
 }
 
@@ -1444,6 +1579,7 @@ void NativeChar_ArmSeats(void)
 	s_seat[0].model = model;
 	s_seat[0].entry = pick;
 	s_seat[0].motorId = templateId;
+	s_seat[0].ownMask = s_charFiles[pick].mask;
 	Platform_Log("[CTR Char] seat 0 = %s on template %d\n", s_charFiles[pick].file, templateId);
 }
 
@@ -1601,6 +1737,36 @@ void NativeChar_NoteMask(const struct Driver *d, int modelID)
 	             (unsigned)(good ? STATIC_AKUBEAM : STATIC_UKABEAM), (unsigned)(modelID + NATIVE_CHAR_MASK_SOUND_OFFSET), song);
 }
 
+struct Model *NativeChar_SeatMaskModel(int seat)
+{
+	// The guard of NativeChar_SeatModel; a file without a usable CMSK has none.
+	if (NativeChar_SeatModel(seat) == NULL)
+	{
+		return NULL;
+	}
+
+	return s_seat[seat].ownMask;
+}
+
+void NativeChar_NoteOwnMask(const struct Driver *d)
+{
+	int seat;
+
+	if (d == NULL)
+	{
+		return;
+	}
+
+	seat = (int)d->driverID;
+	if ((NativeChar_SeatMaskModel(seat) == NULL) || (s_seat[seat].ownMaskNoted != 0))
+	{
+		return;
+	}
+	s_seat[seat].ownMaskNoted = 1;
+
+	Platform_Log("[CTR Char] mask seat %d: own model from the file (%u triangles)\n", seat, (unsigned)s_charFiles[s_seat[seat].entry].maskTriangles);
+}
+
 void NativeChar_NoteDriveValues(const struct Driver *d, int seat)
 {
 	int classId;
@@ -1731,6 +1897,208 @@ internal void NativeChar_MaskExpect(int *checks, int *failures, int ok, const ch
 	}
 }
 
+// A CMSK with a rigid mask model of 'triangles' triangles in one strip of
+// vertex-color commands, built the way the rules of include/rldchar.inc read
+// it: Model 0x00, header 0x18, animation table 0x58, ModelAnim 0x5C with its
+// one frame at 0x74, then the command list and one color. 'damage' breaks one
+// thing on purpose (NATIVE_CHAR_TEST_MASK_*). Returns the size, 0 when buf
+// (bufSize bytes) is too small.
+enum
+{
+	NATIVE_CHAR_TEST_MASK_GOOD = 0,
+	NATIVE_CHAR_TEST_MASK_VERSION,   // version 2
+	NATIVE_CHAR_TEST_MASK_FLAGS,     // flags 1
+	NATIVE_CHAR_TEST_MASK_FRAMES,    // 2 frames
+	NATIVE_CHAR_TEST_MASK_ANIMS,     // numAnimations 2
+	NATIVE_CHAR_TEST_MASK_MAP,       // a map entry on the model name
+	NATIVE_CHAR_TEST_MASK_TEXTURE,   // a command with texture 1
+};
+
+internal void NativeChar_TestPut32(u8 *at, u32 value)
+{
+	at[0] = (u8)(value & 0xffu);
+	at[1] = (u8)((value >> 8) & 0xffu);
+	at[2] = (u8)((value >> 16) & 0xffu);
+	at[3] = (u8)((value >> 24) & 0xffu);
+}
+
+internal size_t NativeChar_TestMask(u8 *buf, size_t bufSize, u32 triangles, int damage)
+{
+	const u32 records = triangles + 2u;
+	const u32 frameSize = (RLDCHAR_FRAME_BYTES + (records * RLDCHAR_RECORD_BYTES) + 3u) & ~3u;
+	const u32 header = 0x18u;
+	const u32 animTable = 0x58u;
+	const u32 anim = 0x5cu;
+	const u32 frame = anim + RLDCHAR_ANIM_BYTES;
+	const u32 commands = frame + frameSize;
+	const u32 colors = commands + 4u + (records * 4u) + 4u;
+	const u32 bodyBytes = colors + 4u;
+	const u32 mapCount = 5u;
+	const size_t size = RLDCHAR_MASK_HEAD_BYTES + 4u + bodyBytes + 4u + (mapCount * 4u);
+	u8 *body;
+	u8 *map;
+	u32 i;
+
+	if (size > bufSize)
+	{
+		return 0;
+	}
+	memset(buf, 0, size);
+
+	buf[0x00] = (u8)((damage == NATIVE_CHAR_TEST_MASK_VERSION) ? 2u : RLDCHAR_MASK_VERSION);
+	buf[0x02] = (u8)((damage == NATIVE_CHAR_TEST_MASK_FLAGS) ? 1u : 0u);
+	NativeChar_TestPut32(&buf[RLDCHAR_MASK_HEAD_BYTES], bodyBytes);
+	body = &buf[RLDCHAR_MASK_HEAD_BYTES + 4u];
+	map = &body[bodyBytes + 4u];
+	NativeChar_TestPut32(&body[bodyBytes], mapCount * 4u);
+
+	// Model: name, id -1, one header.
+	memcpy(body, "ownmask", 7);
+	body[RLDCHAR_MODEL_ID] = 0xff;
+	body[RLDCHAR_MODEL_ID + 1u] = 0xff;
+	body[RLDCHAR_MODEL_NUM_HEADERS] = 1;
+	NativeChar_TestPut32(&body[RLDCHAR_MODEL_HEADERS], header);
+
+	// The header: LOD 20000 like akumouth, the scale 0x1000.
+	body[header + RLDCHAR_HEADER_LOD] = (u8)(20000u & 0xffu);
+	body[header + RLDCHAR_HEADER_LOD + 1u] = (u8)(20000u >> 8);
+	for (i = 0; i < 3u; i++)
+	{
+		body[header + RLDCHAR_HEADER_SCALE + (i * 2u) + 1u] = 0x10;
+	}
+	NativeChar_TestPut32(&body[header + RLDCHAR_HEADER_COMMANDS], commands);
+	NativeChar_TestPut32(&body[header + RLDCHAR_HEADER_COLORS], colors);
+	NativeChar_TestPut32(&body[header + RLDCHAR_HEADER_NUM_ANIMS], (damage == NATIVE_CHAR_TEST_MASK_ANIMS) ? 2u : 1u);
+	NativeChar_TestPut32(&body[header + RLDCHAR_HEADER_ANIMS], animTable);
+	NativeChar_TestPut32(&body[animTable], anim);
+
+	// The animation: 1 raw frame (2 with the damage, which still lie in the
+	// body - the command list follows), records right behind the frame head.
+	body[anim + RLDCHAR_ANIM_NUM_FRAMES] = (u8)((damage == NATIVE_CHAR_TEST_MASK_FRAMES) ? 2u : 1u);
+	body[anim + RLDCHAR_ANIM_FRAME_SIZE] = (u8)(frameSize & 0xffu);
+	body[anim + RLDCHAR_ANIM_FRAME_SIZE + 1u] = (u8)(frameSize >> 8);
+	NativeChar_TestPut32(&body[frame + RLDCHAR_FRAME_VERTEX_OFF], RLDCHAR_FRAME_BYTES);
+
+	// One color, one strip: every command a new record in slot 1..80, color 0,
+	// texture 0 (G3); the first one starts the strip.
+	NativeChar_TestPut32(&body[commands], 1u);
+	for (i = 0; i < records; i++)
+	{
+		u32 command = ((i % 80u) + 1u) << 16;
+
+		if (i == 0u)
+		{
+			command |= RLDCHAR_CMD_NEW_STRIP;
+		}
+		if ((damage == NATIVE_CHAR_TEST_MASK_TEXTURE) && (i == 2u))
+		{
+			command |= 1u;
+		}
+		NativeChar_TestPut32(&body[commands + 4u + (i * 4u)], command);
+	}
+	NativeChar_TestPut32(&body[commands + 4u + (records * 4u)], RLDCHAR_CMD_END);
+	NativeChar_TestPut32(&body[colors], 0x00808080u);
+
+	// The pointer map: the five pointer fields that are set.
+	NativeChar_TestPut32(&map[0], (damage == NATIVE_CHAR_TEST_MASK_MAP) ? 0x04u : RLDCHAR_MODEL_HEADERS);
+	NativeChar_TestPut32(&map[4], header + RLDCHAR_HEADER_COMMANDS);
+	NativeChar_TestPut32(&map[8], header + RLDCHAR_HEADER_COLORS);
+	NativeChar_TestPut32(&map[12], header + RLDCHAR_HEADER_ANIMS);
+	NativeChar_TestPut32(&map[16], animTable);
+
+	return size;
+}
+
+// One CMSK through the game's check: usable or not, and the rule that said no.
+internal void NativeChar_TestMaskCase(int *checks, int *failures, const char *name, const u8 *bytes, size_t size, int usable, const char *rule,
+                                      u32 triangles)
+{
+	struct NativeCharFile f;
+	char what[256];
+	int got;
+
+	memset(&f, 0, sizeof(f));
+	got = NativeChar_CheckMaskBytes(&f, bytes, size);
+
+	snprintf(what, sizeof(what), "own mask %s: usable %d, not %d (%s)", name, got, usable, f.maskWhy);
+	NativeChar_MaskExpect(checks, failures, got == usable, what);
+
+	if (usable)
+	{
+		snprintf(what, sizeof(what), "own mask %s: %u triangles, not %u", name, (unsigned)f.maskTriangles, (unsigned)triangles);
+		NativeChar_MaskExpect(checks, failures, f.maskTriangles == triangles, what);
+	}
+	else
+	{
+		snprintf(what, sizeof(what), "own mask %s: ignored as '%s', not by %s", name, f.maskWhy, rule);
+		NativeChar_MaskExpect(checks, failures, (f.maskState == NATIVE_CHAR_MASK_IGNORED) && (strstr(f.maskWhy, rule) != NULL), what);
+	}
+}
+
+// The own mask (CMSK): good ones, too large ones and broken ones. A broken
+// one is only "not usable" - the file around it is not part of the check, so
+// it cannot be refused by it.
+internal void NativeChar_OwnMaskSelfTest(int *checks, int *failures)
+{
+	static u8 buf[RLDCHAR_MASK_BYTES_MAX + 64u];
+	struct RldCharFinding finding;
+	size_t size;
+	int seat;
+
+	size = NativeChar_TestMask(buf, sizeof(buf), 56u, NATIVE_CHAR_TEST_MASK_GOOD);
+	NativeChar_TestMaskCase(checks, failures, "56 triangles", buf, size, 1, NULL, 56u);
+
+	size = NativeChar_TestMask(buf, sizeof(buf), 70u, NATIVE_CHAR_TEST_MASK_GOOD);
+	NativeChar_TestMaskCase(checks, failures, "70 triangles (1960 bytes)", buf, size, 1, NULL, 70u);
+
+	// The same model is no character: the profiles stay apart, and the
+	// character texts are the ones they were.
+	(void)RldChar_CheckModel(&buf[RLDCHAR_MASK_HEAD_BYTES], size - RLDCHAR_MASK_HEAD_BYTES, &finding, NULL, NULL, NULL);
+	NativeChar_MaskExpect(checks, failures,
+	                      (finding.rule != NULL) && (strcmp(finding.detail, "ModelHeader.numAnimations is 1 - a character has exactly 4") == 0),
+	                      "own mask as CMDL: not 'a character has exactly 4'");
+
+	size = NativeChar_TestMask(buf, sizeof(buf), 71u, NATIVE_CHAR_TEST_MASK_GOOD);
+	NativeChar_TestMaskCase(checks, failures, "71 triangles", buf, size, 0, "model-draw", 0u);
+
+	// CMSK-3 before any model rule: a good head, 16 KiB + 4 bytes.
+	size = NativeChar_TestMask(buf, sizeof(buf), 56u, NATIVE_CHAR_TEST_MASK_GOOD);
+	NativeChar_TestMaskCase(checks, failures, "over 16 KiB", buf, RLDCHAR_MASK_BYTES_MAX + 4u, 0, "CMSK-3", 0u);
+
+	size = NativeChar_TestMask(buf, sizeof(buf), 56u, NATIVE_CHAR_TEST_MASK_VERSION);
+	NativeChar_TestMaskCase(checks, failures, "version 2", buf, size, 0, "CMSK-1", 0u);
+
+	NativeChar_TestMaskCase(checks, failures, "3 bytes", buf, 3u, 0, "CMSK-1", 0u);
+
+	size = NativeChar_TestMask(buf, sizeof(buf), 56u, NATIVE_CHAR_TEST_MASK_FLAGS);
+	NativeChar_TestMaskCase(checks, failures, "flags 1", buf, size, 0, "CMSK-2", 0u);
+
+	size = NativeChar_TestMask(buf, sizeof(buf), 56u, NATIVE_CHAR_TEST_MASK_FRAMES);
+	NativeChar_TestMaskCase(checks, failures, "2 frames", buf, size, 0, "model-anim-frames", 0u);
+
+	size = NativeChar_TestMask(buf, sizeof(buf), 56u, NATIVE_CHAR_TEST_MASK_ANIMS);
+	NativeChar_TestMaskCase(checks, failures, "2 animations", buf, size, 0, "model-anims", 0u);
+
+	size = NativeChar_TestMask(buf, sizeof(buf), 56u, NATIVE_CHAR_TEST_MASK_MAP);
+	NativeChar_TestMaskCase(checks, failures, "map on the name", buf, size, 0, "model-map", 0u);
+
+	size = NativeChar_TestMask(buf, sizeof(buf), 56u, NATIVE_CHAR_TEST_MASK_TEXTURE);
+	NativeChar_TestMaskCase(checks, failures, "texture 1", buf, size, 0, "model-tex", 0u);
+
+	// The body cut short: the frame says more than the chunk holds.
+	size = NativeChar_TestMask(buf, sizeof(buf), 56u, NATIVE_CHAR_TEST_MASK_GOOD);
+	NativeChar_TestMaskCase(checks, failures, "cut short", buf, size - 8u, 0, "model-bounds", 0u);
+
+	// No seat is armed: no own mask anywhere.
+	for (seat = -1; seat <= NATIVE_CHAR_SEATS; seat++)
+	{
+		char what[96];
+
+		snprintf(what, sizeof(what), "unbound seat %d: has an own mask", seat);
+		NativeChar_MaskExpect(checks, failures, NativeChar_SeatMaskModel(seat) == NULL, what);
+	}
+}
+
 void NativeChar_MaskSelfTest(int *checks, int *failures)
 {
 	// One case per file: hasFlags, flags, the mask RldChar_Mask must give, and
@@ -1809,4 +2177,6 @@ void NativeChar_MaskSelfTest(int *checks, int *failures)
 		snprintf(what, sizeof(what), "RLDCHAR_TEMPLATE_WEARS_AKU(%d) is not %d", t, aku);
 		NativeChar_MaskExpect(checks, failures, (RLDCHAR_TEMPLATE_WEARS_AKU(t) ? 1 : 0) == aku, what);
 	}
+
+	NativeChar_OwnMaskSelfTest(checks, failures);
 }
