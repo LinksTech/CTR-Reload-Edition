@@ -799,6 +799,7 @@ struct RldObjModel
 	u32 *faceFirst;
 	u32 *faceCorners;
 	u32 *faceName;     // into names, RLDMK_NONE = no usemtl
+	u32 *faceSource;   // after the split (RldObj_Detail): per face the first piece of its triangle; NULL = none
 	u32 faceCount;
 	u32 faceCapacity;
 	struct RldObjNames names;          // usemtl, in the order of first use
@@ -850,6 +851,7 @@ static void RldObj_FreeModel(struct RldObjModel *m)
 	free(m->faceFirst);
 	free(m->faceCorners);
 	free(m->faceName);
+	free(m->faceSource);
 	free(m->nameMaterial);
 	RldObj_FreeNames(&m->names);
 	for (i = 0; i < m->groupCount; i++)
@@ -3328,6 +3330,9 @@ static int RldObj_Textures(struct RldObjModel *m, const char *objPath, char (*li
 // Textures kept for the split are read texel by texel (RldObj_SampleNearest),
 // as the PS1 drew them: a piece that ends at texel edges shows its texels
 // exactly (a checker of 8 x 8 texels on a square: 128 triangles).
+// The pieces of one triangle share a number (ply->faceSource): step 4 counts
+// them once when it picks the driver, so a steering wheel cut for its
+// texture stays the steering wheel.
 // Everything runs in a fixed order: the same file gives the same points.
 
 #define RLDOBJ_DETAIL_DEPTH 8                               // longest edge propagation
@@ -3341,6 +3346,7 @@ struct RldObjDetailTri
 	u32 vt[3];
 	u32 face;      // the face it comes from
 	u32 texture;   // its kept texture with vt at all corners, RLDMK_NONE = none
+	u32 source;    // the triangle it was cut from (the first ones: their own number)
 	int alive;
 };
 
@@ -3388,15 +3394,11 @@ struct RldObjDetail
 	u32 target;
 	u32 splits;
 	double height;                    // the lowest half allowed
-	u32 *posPart;                     // per welded position: its part (joined by faces)
-	u32 posPartCapacity;
-	u32 *partTriangles;               // per part: its triangles now
-	u32 *partAbove;                   // per part: the one with the next more triangles, RLDMK_NONE = none
-	u8 *partFixed;                    // per part: as many triangles as another one - not split
 	s64 *place;                       // the points on the 1e-5 grid, 3 per slot (open addressing)
 	u8 *placeUsed;
 	u32 placeSlots;                   // a power of two, at least twice placeCount
 	u32 placeCount;
+	u32 sources;                      // the triangles before the split
 	int failed;                       // out of memory
 };
 
@@ -3818,7 +3820,7 @@ static void RldObj_DetailRate(struct RldObjDetail *d, u32 t)
 }
 
 // A triangle more, its edges known. 0 = out of memory.
-static int RldObj_DetailAdd(struct RldObjDetail *d, const u32 v[3], const u32 vt[3], u32 face, u32 texture, int rate)
+static int RldObj_DetailAdd(struct RldObjDetail *d, const u32 v[3], const u32 vt[3], u32 face, u32 texture, u32 source, int rate)
 {
 	const u32 t = d->triCount;
 	int k;
@@ -3832,6 +3834,7 @@ static int RldObj_DetailAdd(struct RldObjDetail *d, const u32 v[3], const u32 vt
 	memcpy(d->tri[t].vt, vt, sizeof(d->tri[t].vt));
 	d->tri[t].face = face;
 	d->tri[t].texture = texture;
+	d->tri[t].source = (source != RLDMK_NONE) ? source : t;
 	d->tri[t].alive = 1;
 	d->triCount++;
 
@@ -4021,18 +4024,6 @@ static int RldObj_DetailSplit(struct RldObjDetail *d, u32 a, u32 b, u32 depth)
 	{
 		return 0;
 	}
-	// Step 4 takes the part with the most triangles (after the kart) for
-	// the driver: a part stays below the one it must stay below
-	// (RldObj_DetailParts), so that the same part becomes the driver.
-	{
-		const u32 part = d->posPart[a];
-		const u32 above = d->partAbove[part];
-
-		if (d->partFixed[part] || ((above != RLDMK_NONE) && ((d->partTriangles[part] + count) >= d->partTriangles[above])))
-		{
-			return 0;
-		}
-	}
 	RldObj_DetailMid(d, a, b, mid);
 	if (RldObj_DetailPlace(d, mid, 0))
 	{
@@ -4065,15 +4056,8 @@ static int RldObj_DetailSplit(struct RldObjDetail *d, u32 a, u32 b, u32 depth)
 		d->failed = 1;
 		return -1;
 	}
-	if (!RldObj_Grow((void **)&d->posPart, d->posCount, &d->posPartCapacity, sizeof(u32)))
-	{
-		d->failed = 1;
-		return -1;
-	}
 	w = d->posCount++;
 	memcpy(&d->pos[3u * w], mid, sizeof(mid));
-	d->posPart[w] = d->posPart[a];
-	d->partTriangles[d->posPart[a]] += count;
 
 	for (i = 0; i < count; i++)
 	{
@@ -4161,7 +4145,7 @@ static int RldObj_DetailSplit(struct RldObjDetail *d, u32 a, u32 b, u32 depth)
 			vt[1][c0] = nt;
 		}
 		d->tri[list[i]].alive = 0;
-		if (!RldObj_DetailAdd(d, v[0], vt[0], x.face, x.texture, 1) || !RldObj_DetailAdd(d, v[1], vt[1], x.face, x.texture, 1))
+		if (!RldObj_DetailAdd(d, v[0], vt[0], x.face, x.texture, x.source, 1) || !RldObj_DetailAdd(d, v[1], vt[1], x.face, x.texture, x.source, 1))
 		{
 			return -1;
 		}
@@ -4201,6 +4185,8 @@ static int RldObj_DetailFaces(struct RldObjDetail *d, const u8 *made)
 	u32 *faceFirst = NULL;
 	u32 *faceCorners = NULL;
 	u32 *faceName = NULL;
+	u32 *faceSource = NULL;
+	u32 *first = NULL;
 	u32 alive = 0;
 	u32 corners = 0;
 	u32 faces = 0;
@@ -4239,7 +4225,10 @@ static int RldObj_DetailFaces(struct RldObjDetail *d, const u8 *made)
 	faceFirst = (u32 *)malloc((size_t)faces * sizeof(u32) + 4u);
 	faceCorners = (u32 *)malloc((size_t)faces * sizeof(u32) + 4u);
 	faceName = (u32 *)malloc((size_t)faces * sizeof(u32) + 4u);
-	if ((cornerV == NULL) || (cornerT == NULL) || (faceFirst == NULL) || (faceCorners == NULL) || (faceName == NULL))
+	faceSource = (u32 *)malloc((size_t)faces * sizeof(u32) + 4u);
+	first = (u32 *)malloc((size_t)d->sources * sizeof(u32) + 4u);
+	if ((cornerV == NULL) || (cornerT == NULL) || (faceFirst == NULL) || (faceCorners == NULL) || (faceName == NULL) || (faceSource == NULL) ||
+	    (first == NULL))
 	{
 		free(order);
 		free(cornerV);
@@ -4247,8 +4236,11 @@ static int RldObj_DetailFaces(struct RldObjDetail *d, const u8 *made)
 		free(faceFirst);
 		free(faceCorners);
 		free(faceName);
+		free(faceSource);
+		free(first);
 		return 0;
 	}
+	memset(first, 0xFF, (size_t)d->sources * sizeof(u32));
 
 	corners = 0;
 	faces = 0;
@@ -4261,6 +4253,7 @@ static int RldObj_DetailFaces(struct RldObjDetail *d, const u8 *made)
 			faceFirst[faces] = corners;
 			faceCorners[faces] = m->faceCorners[f];
 			faceName[faces] = m->faceName[f];
+			faceSource[faces] = faces;
 			corners += m->faceCorners[f];
 			faces++;
 			continue;
@@ -4272,11 +4265,18 @@ static int RldObj_DetailFaces(struct RldObjDetail *d, const u8 *made)
 			faceFirst[faces] = corners;
 			faceCorners[faces] = 3u;
 			faceName[faces] = m->faceName[f];
+			// The pieces of one triangle: the number of the first of them.
+			if (first[d->tri[order[at]].source] == RLDMK_NONE)
+			{
+				first[d->tri[order[at]].source] = faces;
+			}
+			faceSource[faces] = first[d->tri[order[at]].source];
 			corners += 3u;
 			faces++;
 		}
 	}
 	free(order);
+	free(first);
 
 	free(m->cornerV);
 	free(m->cornerT);
@@ -4288,124 +4288,11 @@ static int RldObj_DetailFaces(struct RldObjDetail *d, const u8 *made)
 	m->faceFirst = faceFirst;
 	m->faceCorners = faceCorners;
 	m->faceName = faceName;
+	m->faceSource = faceSource;
 	m->cornerCount = corners;
 	m->cornerCapacity = corners;
 	m->faceCount = faces;
 	m->faceCapacity = faces;
-	return 1;
-}
-
-static const u32 *s_rldObjDetailCount;
-
-// More triangles first, equal ones in the order of the parts.
-static int RldObj_CompareDetailPart(const void *pa, const void *pb)
-{
-	const u32 a = *(const u32 *)pa;
-	const u32 b = *(const u32 *)pb;
-
-	if (s_rldObjDetailCount[a] != s_rldObjDetailCount[b])
-	{
-		return (s_rldObjDetailCount[a] > s_rldObjDetailCount[b]) ? -1 : 1;
-	}
-	return (a < b) ? -1 : ((a > b) ? 1 : 0);
-}
-
-static u32 RldObj_DetailRoot(u32 *parent, u32 i)
-{
-	while (parent[i] != i)
-	{
-		parent[i] = parent[parent[i]];
-		i = parent[i];
-	}
-	return i;
-}
-
-// The parts as step 4 joins them (faces that share a position), their
-// triangles, the part each must stay below and the ones that stay as they
-// are. 0 = out of memory.
-static int RldObj_DetailParts(struct RldObjDetail *d)
-{
-	const struct RldObjModel *m = d->m;
-	u32 *parent = (u32 *)malloc(((size_t)d->posCount + 1u) * sizeof(u32));
-	u32 *order = (u32 *)malloc(((size_t)d->posCount + 1u) * sizeof(u32));
-	u32 parts = 0;
-	u32 f;
-	u32 i;
-
-	d->posPartCapacity = d->posCount + 1u;
-	d->posPart = (u32 *)malloc((size_t)d->posPartCapacity * sizeof(u32));
-	if ((parent == NULL) || (order == NULL) || (d->posPart == NULL))
-	{
-		free(parent);
-		free(order);
-		return 0;
-	}
-	for (i = 0; i < d->posCount; i++)
-	{
-		parent[i] = i;
-	}
-	for (f = 0; f < m->faceCount; f++)
-	{
-		const u32 *cv = &m->cornerV[m->faceFirst[f]];
-		u32 k;
-
-		for (k = 1; (m->faceCorners[f] >= 3u) && (k < m->faceCorners[f]); k++)
-		{
-			const u32 r0 = RldObj_DetailRoot(parent, d->weld[cv[0]]);
-			const u32 r1 = RldObj_DetailRoot(parent, d->weld[cv[k]]);
-
-			parent[(r0 < r1) ? r1 : r0] = (r0 < r1) ? r0 : r1;
-		}
-	}
-	for (i = 0; i < d->posCount; i++)
-	{
-		const u32 r = RldObj_DetailRoot(parent, i);
-
-		if (r == i)
-		{
-			order[i] = parts++;
-		}
-		d->posPart[i] = order[r];
-	}
-
-	d->partTriangles = (u32 *)calloc((size_t)parts + 1u, sizeof(u32));
-	d->partAbove = (u32 *)malloc(((size_t)parts + 1u) * sizeof(u32));
-	d->partFixed = (u8 *)calloc((size_t)parts + 1u, 1u);
-	if ((d->partTriangles == NULL) || (d->partAbove == NULL) || (d->partFixed == NULL))
-	{
-		free(parent);
-		free(order);
-		return 0;
-	}
-	for (f = 0; f < m->faceCount; f++)
-	{
-		if (m->faceCorners[f] >= 3u)
-		{
-			d->partTriangles[d->posPart[d->weld[m->cornerV[m->faceFirst[f]]]]] += m->faceCorners[f] - 2u;
-		}
-	}
-	for (i = 0; i < parts; i++)
-	{
-		order[i] = i;
-	}
-	s_rldObjDetailCount = d->partTriangles;
-	qsort(order, parts, sizeof(u32), RldObj_CompareDetailPart);
-	s_rldObjDetailCount = NULL;
-	// The first stays above the second, the second above all others: then
-	// whichever part is the kart (found by its shape), the largest of the
-	// others stays the driver. Parts with as many triangles as the second
-	// one (a tie step 4 decides by its own order) stay as they are.
-	for (i = 0; i < parts; i++)
-	{
-		d->partAbove[order[i]] = (i == 0u) ? RLDMK_NONE : ((i == 1u) ? order[0] : order[1]);
-		if ((parts >= 2u) && (i != 1u) && (d->partTriangles[order[i]] == d->partTriangles[order[1]]))
-		{
-			d->partFixed[order[i]] = 1u;
-			d->partFixed[order[1]] = 1u;
-		}
-	}
-	free(parent);
-	free(order);
 	return 1;
 }
 
@@ -4477,7 +4364,6 @@ static int RldObj_Detail(struct RldObjModel *m)
 			RldObj_DetailPlace(&d, &d.pos[3u * i], 1);
 			ok = !d.failed;
 		}
-		ok = ok && RldObj_DetailParts(&d);
 		for (f = 0; f < m->faceCount; f++)
 		{
 			u32 k;
@@ -4524,7 +4410,7 @@ static int RldObj_Detail(struct RldObjModel *m)
 		if (n == 3u)
 		{
 			made[f] = 1u;
-			ok = RldObj_DetailAdd(&d, cv, ct, f, texture, 0);
+			ok = RldObj_DetailAdd(&d, cv, ct, f, texture, RLDMK_NONE, 0);
 		}
 		else if ((n == 4u) && (texture != RLDMK_NONE))
 		{
@@ -4546,13 +4432,13 @@ static int RldObj_Detail(struct RldObjModel *m)
 				v[k] = cv[first[s][k]];
 				vt[k] = ct[first[s][k]];
 			}
-			ok = RldObj_DetailAdd(&d, v, vt, f, texture, 0);
+			ok = RldObj_DetailAdd(&d, v, vt, f, texture, RLDMK_NONE, 0);
 			for (k = 0; ok && (k < 3u); k++)
 			{
 				v[k] = cv[second[s][k]];
 				vt[k] = ct[second[s][k]];
 			}
-			ok = ok && RldObj_DetailAdd(&d, v, vt, f, texture, 0);
+			ok = ok && RldObj_DetailAdd(&d, v, vt, f, texture, RLDMK_NONE, 0);
 		}
 		else if (n >= 4u)
 		{
@@ -4585,6 +4471,7 @@ static int RldObj_Detail(struct RldObjModel *m)
 			d.edge[i].locked = 1;
 		}
 	}
+	d.sources = d.triCount;
 
 	// Rated once all edges are known (locked ones too), then split, the
 	// worst first.
@@ -4645,10 +4532,6 @@ static int RldObj_Detail(struct RldObjModel *m)
 	free(d.heap);
 	free(d.place);
 	free(d.placeUsed);
-	free(d.posPart);
-	free(d.partTriangles);
-	free(d.partAbove);
-	free(d.partFixed);
 	if (!ok)
 	{
 		RldObj_Memory();
@@ -4742,6 +4625,21 @@ static int RldObj_Points(const struct RldObjModel *m, const u8 *cornerRgb, struc
 		{
 			RldObj_Memory();
 			ok = 0;
+		}
+	}
+	// Split triangles: their pieces count once when step 4 picks the
+	// driver (a steering wheel cut for its texture stays one).
+	if (ok && (m->faceSource != NULL))
+	{
+		ply->faceSource = (u32 *)malloc((size_t)m->faceCount * sizeof(u32) + 4u);
+		if (ply->faceSource == NULL)
+		{
+			RldObj_Memory();
+			ok = 0;
+		}
+		else
+		{
+			memcpy(ply->faceSource, m->faceSource, (size_t)m->faceCount * sizeof(u32));
 		}
 	}
 

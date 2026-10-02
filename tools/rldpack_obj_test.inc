@@ -1294,11 +1294,27 @@ static void RldMk_SelfTestObjDetail(void)
 	           "OBJ --texture-detail auto: a checker of 8 x 8 texels exact in at most 200 triangles, its neighbor split along without a crack",
 	           "read %d, %u triangles in the square, %u in all, error %.3f, cracks %u, said: %s", ok, faces, ok ? ply[0].faceCount : 0u, error,
 	           ok ? RldMk_TestCracks(&ply[0]) : 0u, s_rldMkCodes);
+	// The pieces keep the triangle they were cut from (ply.faceSource):
+	// 7 triangles before, each number one of the faces, the first piece.
+	{
+		u32 sources = 0;
+		u32 f;
+		int valid = ok && (ply[0].faceSource != NULL);
+
+		for (f = 0; valid && (f < ply[0].faceCount); f++)
+		{
+			valid = (ply[0].faceSource[f] <= f) && (ply[0].faceSource[ply[0].faceSource[f]] == ply[0].faceSource[f]);
+			sources += (ply[0].faceSource[f] == f) ? 1u : 0u;
+		}
+		RldMk_Test(valid && (sources == 7u), "OBJ --texture-detail auto: the pieces of a triangle share its number (faceSource), 7 triangles",
+		           "valid %d, %u numbers", valid, sources);
+	}
 	RldMk_FreePly(&ply[0]);
 
 	// Off and n = 1 (fewer than the model has): as before the split.
 	ok = RldMk_TestDetailRead(&b, "off", &ply[0]) && RldMk_TestDetailRead(&b, "1", &ply[1]);
-	RldMk_Test(ok && (ply[0].faceCount == 7u) && RldMk_TestSamePly(&ply[0], &ply[1]) && !RldMk_Said("obj-texture-detail"),
+	RldMk_Test(ok && (ply[0].faceCount == 7u) && RldMk_TestSamePly(&ply[0], &ply[1]) && !RldMk_Said("obj-texture-detail") && (ply[0].faceSource == NULL) &&
+	               (ply[1].faceSource == NULL),
 	           "OBJ --texture-detail off and 1: three colors per triangle, as without the split", "read %d, %u and %u faces", ok, ok ? ply[0].faceCount : 0u,
 	           ok ? ply[1].faceCount : 0u);
 	RldMk_FreePly(&ply[0]);
