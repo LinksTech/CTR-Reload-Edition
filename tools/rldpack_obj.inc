@@ -414,6 +414,8 @@ struct RldObjTexture
 	u32 width;
 	u32 height;
 	u8 *rgba;
+	u32 library;     // the MTL file of the first material that uses it
+	int nearby;      // missing: also looked for next to that MTL file
 };
 
 struct RldObjModel
@@ -1906,6 +1908,110 @@ static u32 RldObj_ApplyTexture(const struct RldObjModel *m, u32 texture, u8 *cor
 	return noUv;
 }
 
+// The name a missing texture should have: as the material file writes it
+// when that is relative to the material file, else the file name alone.
+static const char *RldObj_MissingName(const struct RldObjModel *m, u32 texture)
+{
+	const struct RldObjTexture *t = &m->textures[texture];
+	u32 n;
+
+	if (!t->nearby)
+	{
+		for (n = 0; n < m->materialNames.count; n++)
+		{
+			if ((m->materials[n].texture == texture) && (m->materials[n].map != NULL) && !RldObj_IsAbsolute(m->materials[n].map))
+			{
+				return m->materials[n].map;
+			}
+		}
+	}
+	return Rld_LastComponent(t->path);
+}
+
+// All textures that were not found in one warning (tex-missing): which ones,
+// how many faces show their color without them, where they were looked for
+// and where to put them. The path of each is in its @model texture line.
+static void RldObj_SayMissing(const struct RldObjModel *m, char (*libraryPath)[RLD_PATH_MAX])
+{
+	u32 first = RLDMK_NONE;
+	char names[400];
+	char where[RLD_PATH_MAX + 64];
+	char more[32];
+	size_t used = 0;
+	u32 missing = 0;
+	u32 listed = 0;
+	u32 faces = 0;
+	u32 i;
+
+	names[0] = '\0';
+	more[0] = '\0';
+	for (i = 0; i < m->textureCount; i++)
+	{
+		if (m->textures[i].state != RLDMK_TEXTURE_MISSING)
+		{
+			continue;
+		}
+		first = (first == RLDMK_NONE) ? i : first;
+		missing++;
+		if (listed < 3u)
+		{
+			const int n = snprintf(&names[used], sizeof(names) - used, "%s%s", (used != 0u) ? ", " : "", RldObj_MissingName(m, i));
+
+			if ((n > 0) && ((size_t)n < (sizeof(names) - used)))
+			{
+				used += (size_t)n;
+				listed++;
+			}
+			else
+			{
+				names[used] = '\0';
+			}
+		}
+	}
+	if (first == RLDMK_NONE)
+	{
+		return;
+	}
+	for (i = 0; i < m->faceCount; i++)
+	{
+		const struct RldObjMaterial *material = RldObj_FaceMaterial(m, i);
+
+		if ((material != NULL) && (material->texture != RLDMK_NONE) && (m->textures[material->texture].state == RLDMK_TEXTURE_MISSING))
+		{
+			faces++;
+		}
+	}
+
+	// The technical line: where the first one was looked for.
+	if (m->textures[first].nearby)
+	{
+		char folder[RLD_PATH_MAX];
+
+		RldObj_Folder(libraryPath[m->textures[first].library], folder, sizeof(folder));
+		snprintf(where, sizeof(where), "looked for at %s and in %s", m->textures[first].path, (folder[0] != '\0') ? folder : "the current folder");
+	}
+	else
+	{
+		snprintf(where, sizeof(where), "looked for at %s", m->textures[first].path);
+	}
+
+	if (missing == 1u)
+	{
+		RldMk_Say("warning", "tex-missing", where,
+		          "The texture %s was not found: %u of %u faces %s only the vertex or material color. Put %s next to %s and check again.", names, faces,
+		          m->faceCount, (faces == 1u) ? "shows" : "show", names, Rld_LastComponent(libraryPath[m->textures[first].library]));
+		return;
+	}
+	if (missing > listed)
+	{
+		snprintf(more, sizeof(more), " and %u more", missing - listed);
+	}
+	RldMk_Say("warning", "tex-missing", where,
+	          "%u of %u textures were not found (%s%s): %u of %u faces %s only the vertex or material color. Put the files next to %s and check again.",
+	          missing, m->textureCount, names, more, faces, m->faceCount, (faces == 1u) ? "shows" : "show",
+	          Rld_LastComponent(libraryPath[m->textures[first].library]));
+}
+
 // The texture of a material in use: the file it names, found, read, applied
 // and freed again, one after the other. 0 = out of memory (said).
 static int RldObj_Textures(struct RldObjModel *m, char (*libraryPath)[RLD_PATH_MAX], const u8 *nameUsed, u8 *cornerRgb, u8 *cornerSource,
@@ -1953,6 +2059,7 @@ static int RldObj_Textures(struct RldObjModel *m, char (*libraryPath)[RLD_PATH_M
 		if (k == m->textureCount)
 		{
 			snprintf(m->textures[k].path, sizeof(m->textures[k].path), "%s", path);
+			m->textures[k].library = material->library;
 			m->textureCount++;
 		}
 		material->texture = k;
@@ -1975,17 +2082,10 @@ static int RldObj_Textures(struct RldObjModel *m, char (*libraryPath)[RLD_PATH_M
 		{
 			char folder[RLD_PATH_MAX];
 
-			folder[0] = '\0';
-			for (n = 0; n < m->materialNames.count; n++)
-			{
-				if (m->materials[n].texture == i)
-				{
-					RldObj_Folder(libraryPath[m->materials[n].library], folder, sizeof(folder));
-					break;
-				}
-			}
+			RldObj_Folder(libraryPath[t->library], folder, sizeof(folder));
 			if ((snprintf(nearby, sizeof(nearby), "%s%s", folder, Rld_LastComponent(t->path)) < (int)sizeof(nearby)) && (strcmp(nearby, t->path) != 0))
 			{
+				t->nearby = 1;
 				read = RldObj_ReadFile(nearby, RLDOBJ_TEXTURE_BYTES, &data, &size);
 				if (read == RLDOBJ_READ_OK)
 				{
@@ -2067,13 +2167,12 @@ static int RldObj_Textures(struct RldObjModel *m, char (*libraryPath)[RLD_PATH_M
 				unsaid++;
 				continue;
 			}
-			said++;
 			if (t->state == RLDMK_TEXTURE_MISSING)
 			{
-				RldMk_Say("warning", "tex-missing", shown, "The texture %s of the material \"%s\" was not found; its faces keep the vertex or material color.",
-				          Rld_LastComponent(shown), m->names.text[n]);
+				continue;   // all of them in one message (RldObj_SayMissing)
 			}
-			else if (t->state == RLDMK_TEXTURE_UNREADABLE)
+			said++;
+			if (t->state == RLDMK_TEXTURE_UNREADABLE)
 			{
 				RldMk_Say("warning", "tex-unreadable", why,
 				          "The texture %s of the material \"%s\" cannot be read (%s); its faces keep the vertex or material color.", Rld_LastComponent(shown),
@@ -2092,6 +2191,7 @@ static int RldObj_Textures(struct RldObjModel *m, char (*libraryPath)[RLD_PATH_M
 	{
 		RldMk_Say("warning", "tex-missing", NULL, "%u more textures cannot be used (see the list of textures).", unsaid);
 	}
+	RldObj_SayMissing(m, libraryPath);
 	return 1;
 }
 

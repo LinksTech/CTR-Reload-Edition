@@ -579,6 +579,29 @@ static void RldMk_SelfTestObjCases(struct RldMkTestMesh *mesh)
 		s_rldObjFileCount = 0;
 	}
 
+	// Three textures not found: one tex-missing for all of them, the faces
+	// keep their colors (Kd red, grey).
+	{
+		static const char three[] = "mtllib three.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0 0\n"
+		                            "usemtl a\nf 1/1 2/1 3/1\nusemtl b\nf 1/1 2/1 3/1\nf 1/1 2/1 3/1\nusemtl c\nf 1/1 2/1 3/1\nusemtl d\nf 1 2 3\n";
+		static const char mtl[] = "newmtl a\nKd 1 0 0\nmap_Kd C:/elsewhere/a.png\nnewmtl b\nmap_Kd b.png\nnewmtl c\nmap_Kd sub/c.png\nnewmtl d\nKd 0 0 1\n";
+
+		files[0].path = "selftest/three.mtl";
+		files[0].data = (const u8 *)mtl;
+		files[0].size = sizeof(mtl) - 1u;
+		s_rldObjFiles = files;
+		s_rldObjFileCount = 1u;
+		ok = RldMk_TestImport("selftest/three.obj", three, sizeof(three) - 1u, &ply, &info, RLDMK_ROLE_MAIN);
+		RldMk_Test(ok && (info.textures == 3u) && (info.texturesOk == 0u) && (RldMk_TestSaidCount("tex-missing") == 1u) && (s_rldMkWarnings == 1) &&
+		               (RldMk_TestCornerRgb(&ply, 0u, 0u) == 0xFF0000u) && (RldMk_TestCornerRgb(&ply, 1u, 0u) == 0x808080u) &&
+		               (RldMk_TestCornerRgb(&ply, 4u, 0u) == 0x0000FFu),
+		           "OBJ with three textures not found: one tex-missing for all, the faces keep Kd or grey", "read %d, textures %u/%u, said: %s", ok,
+		           info.texturesOk, info.textures, s_rldMkCodes);
+		RldMk_FreePly(&ply);
+		s_rldObjFiles = NULL;
+		s_rldObjFileCount = 0;
+	}
+
 	// Nothing but grey: obj-no-colors; a face of 5 and of 6 corners through more[].
 	{
 		static const char grey[] = "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0.5 1.5 0\nv 0 1 0\nv -0.5 0.5 0\n"
