@@ -33,34 +33,56 @@
 //      part becomes a closed hull that the reduction then brings back under
 //      the limit; @char remeshed gives the counts. The preview shows the
 //      result like every other build, so the author sees what it does. It
-//      needs "Reduce automatically": greyed out (and not passed) while that
-//      is off, with a line saying why
-//   "Reduce automatically" (default on, --reduce auto: a model over the
-//      game's draw memory loses triangles until it fits; @char reduced says
-//      how many)
+//      needs "Reduce to fit": greyed out (and not passed) while that is off
+//   "Reduce to fit" (default OFF, --reduce off; on = rldpack's default
+//      --reduce auto): only a model over the limit of triangles a driver may
+//      draw loses triangles until it fits, @char reduced says how many; a
+//      model under the limit is never reduced. Off and over the limit the
+//      check fails, the headline gives the triangles and the limit (@char
+//      budget) and the button "Reduce to fit" below it ticks the box and
+//      checks again
 //   "Show kart wheels" (default on, --wheels; off = the game draws no kart
 //      wheels for this driver, for models with wheels of their own; the
 //      preview's dummy follows at once)
 //
 // Mask: Aku Aku or Uka Uka, the mask the driver wears (the mask item, the
 // rescue after a fall, its sound and music, the HUD icon). The choice starts
-// at the mask of the template (Fake Crash: Uka Uka); --mask aku|uka is passed
-// only when it differs, so a file with the default stays the same bytes.
+// at the mask of the template (Fake Crash: Uka Uka); --mask aku|uka is always
+// passed, so the file carries the choice of its author (the game then says
+// "from the file", not "from the template").
 //
 // Minimap colour: like the template (Fake Crash: grey, nothing passed, the
 // file keeps its bytes) or a colour of your own from the colour dialog,
 // passed as --map-color RRGGBB. The swatch shows it; clicking it chooses.
 //
-// After a build the message names the kart wheels and the mask in the file
-// and says to restart the game: it reads its characters folder only when it
-// starts. The options are not remembered - every start of the Studio begins
-// with the defaults.
+// Icon: a PNG of any size; rldpack turns it into the game's 43 x 25 portrait
+// of 16 colours and keeps the PNG's transparency. "Framing" (--icon-fit): "Fit
+// like the game's heads" (the Studio's default, fit: the subject whole in the
+// head box of the game's portraits), "Fill the frame" (fill: cut at the sides
+// or the bottom) or "As is" (none, rldpack's default: cut to 43:25 in the
+// middle, as before);
+// never stretched. "Make background transparent" (default off, --icon-background
+// corners) takes away the colour that touches the corners - in any PNG, one
+// with transparency keeps a thin outline (@char icon_background says how many
+// pixels and which colour); "Retail frame" (default off, --icon-frame retail)
+// puts the frame and the dark box of the game's portraits behind it. Without
+// an icon none of them is passed. The second picture shows the portrait as the
+// game draws it, on a colour of the race, beside the template's portrait that
+// rldpack reads from the game's data; without them the measured frame stands
+// in as lines.
+//
+// After a build the headline names the mask and the kart wheels in the file,
+// where a wrong choice cannot be missed, and says to restart the game: it
+// reads its characters folder only when it starts. The options are not
+// remembered - every start of the Studio begins with the defaults.
 //
 // Split: on the left the character and the build, on the right icon and voices
 // and the 3D preview.
 
 #include "reloadstudio.h"
+#include "rs_anim.h"
 #include "rs_view.h"
+#include "rs_wheels.h"
 #include <commdlg.h>
 #include <shellapi.h>
 #include <stdarg.h>
@@ -89,6 +111,16 @@
 #define CHAR_IMAGE_MAX     16384  // largest edge of a picture the page shows
 #define CHAR_ICON_W        43     // the part of the icon the menu tile shows (--icon-preview)
 #define CHAR_ICON_H        25
+// The icon in the game (the second picture): a colour of the race (the mean of
+// the race beside the HUD ranking, measured once - only the numbers are here),
+// the template's portrait on the left, the own on the right. Without the game's
+// data the measured frame of the retail portraits (x 2..38, y 1..23) and their
+// head box (x 0..40, y 0..24, dotted) stand in as lines.
+#define CHAR_GAME_BG       RGB(107, 87, 78)
+#define CHAR_GAME_LINE     200    // grey of those lines, all three channels
+#define CHAR_GAME_GAP      4      // picture pixels around and between the portraits
+#define CHAR_GAME_W        (2 * CHAR_ICON_W + 3 * CHAR_GAME_GAP)
+#define CHAR_GAME_H        (CHAR_ICON_H + 2 * CHAR_GAME_GAP)
 #define CHAR_INFO_LINES    3      // lines of the model info at most
 #define CHAR_QUALITY_LINES 6      // lines of the repair / remesh note at most
 #define CHAR_NOTE_LINES    3      // lines of a note below a field at most (they wrap)
@@ -152,6 +184,11 @@
 #define CHAR_ID_MAPCOLOR_PICK  169
 #define CHAR_ID_MAPCOLOR_LIKE  170
 #define CHAR_ID_MAPCOLOR_HELP  171
+#define CHAR_ID_ICON_FIT_LABEL 172
+#define CHAR_ID_ICON_FIT       173
+#define CHAR_ID_ICON_CORNERS   174   // "Make background transparent"
+#define CHAR_ID_ICON_FRAME     175   // "Retail frame"
+#define CHAR_ID_REDUCE_FIT     176   // the button "Reduce to fit" below the headline
 
 enum { CHAR_JOB_NONE = 0, CHAR_JOB_CHECK, CHAR_JOB_BUILD };
 enum { CHAR_IMG_ORIGINAL = 0, CHAR_IMG_ICON, CHAR_IMG_COUNT };
@@ -186,9 +223,24 @@ struct CharMask {
 // wear Aku Aku (RLDCHAR_TEMPLATE_AKU_BITS), every other driver Uka Uka.
 static const struct CharMask g_charMasks[] = {
     { L"aku", L"Aku Aku", L"Aku Aku - like Crash, Coco, Polar, Pura, Penta" },
-    { L"uka", L"Uka Uka", L"Uka Uka - like Fake Crash, Cortex, Tiny and the rest" },
+    { L"uka", L"Uka Uka", L"Uka Uka - like the template (Fake Crash), Cortex, Tiny" },
 };
 #define CHAR_MASK_COUNT ((int)(sizeof(g_charMasks) / sizeof(g_charMasks[0])))
+
+struct CharFit {
+    const wchar_t *word;    // this is how the value goes to rldpack (--icon-fit)
+    const wchar_t *text;
+};
+
+// The framing of the icon, in the order of the combo box.
+static const struct CharFit g_charIconFits[] = {
+    { L"fit",  L"Fit like the game's heads" },
+    { L"fill", L"Fill the frame" },
+    { L"none", L"As is" },
+};
+#define CHAR_ICON_FIT_COUNT   ((int)(sizeof(g_charIconFits) / sizeof(g_charIconFits[0])))
+#define CHAR_ICON_FIT_DEFAULT 0   // what the page starts with
+#define CHAR_ICON_FIT_RLDPACK 2   // rldpack's default, not passed
 
 // Poses of the preview, in the order of the --preview file: anim 0 frame 10
 // (neutral), frame 0 (full steer left) and frame 20 (full steer right) - the
@@ -201,7 +253,7 @@ static const int g_charPoseView[CHAR_POSES] = { RS_VIEW_POSE_NEUTRAL, RS_VIEW_PO
 #define CHAR_NAME_RULE_TEXT L"1 to 17 characters: A-Z 0-9 space ! % ' + , - . / : < = > ? _"
 #define CHAR_VOICES_TEXT L"Voices are checked but not packed yet - the driver is silent in the game."
 #define CHAR_FIT_WAIT_TEXT L"The model is fitted to Crash size when it is checked."
-#define CHAR_REMESH_NEEDS_TEXT L"Closed hull needs Reduce automatically: the hulls have far more triangles than a driver may draw."
+#define CHAR_REMESH_NEEDS_TEXT L"Closed hull needs Reduce to fit: the hulls have far more triangles than a driver may draw."
 
 // ---------------------------------------------------------------------------
 // State
@@ -254,6 +306,11 @@ struct CharJobData {
     long remeshed[CHAR_REMESH_FIELDS];  // @char remeshed: triangles of the source, of the hulls, after;
                                         // open edges before, after
     int reducedSeen;
+    int budgetSeen;
+    int iconRetailOk;               // @file icon-retail ok: the template's portrait was written
+    wchar_t iconBackground[48];     // @char icon_background: "<pixels cleared> <RRGGBB>"
+    wchar_t iconPlace[48];          // @char icon_place: "<x> <y> <w> <h>" in the 43 x 25, 0 0 0 0 without fit
+    long budget[4];                 // @char budget: triangles, their limit, draw bytes, their limit
     long reduced[4];                // @char reduced: triangles before, after; draw bytes before, after
     int fitSeen;
     wchar_t fitFactor[16];          // @char fit: factor, length before/after, height before/after
@@ -285,9 +342,11 @@ static struct {
     HWND sizeLabel, size, sizeValue, sizeNote, sizeHint, sizeFit, sizeCrash;
     HWND optionsLabel, repair, openParts, remesh, reduce, wheels, quality;
     HWND iconLabel, icon, iconBrowse, iconClear, iconCaption[CHAR_IMG_COUNT], iconImage[CHAR_IMG_COUNT];
+    HWND iconFitLabel, iconFit, iconCorners, iconFrame;
     HWND voicesLabel, voices, voicesBrowse, voicesClear, voicesNote;
     HWND view, pose, viewNote;
     HWND outLabel, out, outBrowse, check, build, headline, msgs, raw, rawToggle, show;
+    HWND reduceFit;                 // "Reduce to fit" below the headline, only over the limit
 
     // colours of the labels, for the report
     COLORREF headColor, nameColor, sizeColor, infoColor, viewColor, fitColor, qualityColor;
@@ -317,15 +376,19 @@ static struct {
     int previewPoses;
     unsigned long previewTris[CHAR_POSES];
     struct CharImage image[CHAR_IMG_COUNT];
+    struct CharImage game;          // the second picture: both portraits on the race (Char_GameCompose)
+    int gameRetail;                 // 1 = the template's portrait came from the game's data
     int checked;                    // last check gave "checked"
     int checkAfterBuild;            // a check was asked for while building
     wchar_t checkedPath[CHAR_VAL];
+    wchar_t checkModel[CHAR_VAL];   // the model the running check was started with
     wchar_t built[CHAR_VAL];        // last built character
     long long builtBytes;
     wchar_t builtSha[80];
     wchar_t checkDefault[CHAR_VAL]; // the game's default output the last check used, "" = none
     int buildWheelsOff;             // what the running build passed, for its message
     int buildMask;                  // index into g_charMasks
+    int runReduce;                  // the running job got Reduce to fit (Char_MakeArgs)
     int buildMapSet;                // the minimap colour the running build passed, if any
     COLORREF buildMapColor;
     int showRaw;
@@ -990,6 +1053,8 @@ static void Char_ImagesClear(void)
         Char_ImageFree(&g_char.image[i]);
         InvalidateRect(g_char.iconImage[i], NULL, FALSE);
     }
+    Char_ImageFree(&g_char.game);
+    g_char.gameRetail = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -1007,16 +1072,19 @@ static void Char_TempBase(wchar_t *out, int cap, int seq)
     Rs_PathJoin(out, cap, dir, name);
 }
 
-// kind: L".rldpv" (model preview), L"-original.bmp", L"-icon.bmp", L"" (the
-// --icon-preview prefix).
+// kind: L".rldpv" (model preview), L"-original.bmp", L"-icon.bmp",
+// L"-retail.bmp", L"" (the --icon-preview prefix).
 static void Char_TempPath(wchar_t *out, int cap, int seq, const wchar_t *kind)
 {
     Char_TempBase(out, cap, seq);
     Char_Append(out, cap, kind);
 }
 
-// Every file a check leaves: the --preview file and the two of --icon-preview.
-static const wchar_t *const g_charTempKinds[3] = { L".rldpv", L"-original.bmp", L"-icon.bmp" };
+// Every file a check leaves: the --preview file and those of --icon-preview
+// (the template's portrait only when rldpack found the game's data).
+#define CHAR_TEMP_KINDS 4
+static const wchar_t *const g_charTempKinds[CHAR_TEMP_KINDS] = { L".rldpv", L"-original.bmp", L"-icon.bmp",
+                                                                 L"-retail.bmp" };
 
 static void Char_TempDelete(int seq)
 {
@@ -1024,7 +1092,7 @@ static void Char_TempDelete(int seq)
     int i;
     if (seq <= 0)
         return;
-    for (i = 0; i < 3; i++) {
+    for (i = 0; i < CHAR_TEMP_KINDS; i++) {
         Char_TempPath(path, CHAR_VAL, seq, g_charTempKinds[i]);
         DeleteFileW(path);
     }
@@ -1053,7 +1121,7 @@ static int Char_TempOwnName(const wchar_t *name, unsigned long *pid)
         p++;
     if (p == digits || p - digits > 10)
         return 0;
-    for (i = 0; i < 3; i++)
+    for (i = 0; i < CHAR_TEMP_KINDS; i++)
         if (wcscmp(p, g_charTempKinds[i]) == 0)
             return 1;
     return 0;
@@ -1237,6 +1305,8 @@ static void Char_ParseLine(wchar_t *line)
         j->protocolSeen = 1;
         j->protocol = _wtoi(Char_Field(f, n, 1));
     } else if (wcscmp(kind, L"file") == 0) {
+        if (wcscmp(Char_Field(f, n, 1), L"icon-retail") == 0)
+            j->iconRetailOk = wcscmp(Char_Field(f, n, 2), L"ok") == 0;
         if (wcscmp(Char_Field(f, n, 1), L"ply") == 0) {
             const wchar_t *bytes = Char_Field(f, n, 4);
             j->plySeen = 1;
@@ -1306,7 +1376,26 @@ static void Char_ParseLine(wchar_t *line)
             Char_Copy(j->parts, 160, Char_Field(f, n, 3));
         else if (wcscmp(key, L"voices") == 0)
             Char_Copy(j->voices, 32, Char_Field(f, n, 2));
-        else if (wcscmp(key, L"reduced") == 0 && n >= 6) {
+        else if (wcscmp(key, L"budget") == 0 && n >= 6) {
+            // <triangles> <limit> <draw bytes> <limit>, before any reduction
+            int i;
+            for (i = 0; i < 4; i++)
+                j->budget[i] = wcstol(Char_Field(f, n, 2 + i), NULL, 10);
+            j->budgetSeen = 1;
+            // It comes before the reduction, which takes minutes for a model
+            // of a million triangles: the headline says so meanwhile.
+            if (j->budget[0] > j->budget[1] && g_char.runReduce) {
+                wchar_t t[160], a[24], b[24];
+                Char_Grouped(a, 24, j->budget[0]);
+                Char_Grouped(b, 24, j->budget[1]);
+                swprintf(t, 160, L"Reducing %ls triangles to the limit of %ls - this can take minutes...", a, b);
+                Char_Headline(t, RS_COL_MUTED);
+            }
+        } else if (wcscmp(key, L"icon_background") == 0) {
+            Char_Copy(j->iconBackground, 48, Char_Field(f, n, 2));
+        } else if (wcscmp(key, L"icon_place") == 0) {
+            Char_Copy(j->iconPlace, 48, Char_Field(f, n, 2));
+        } else if (wcscmp(key, L"reduced") == 0 && n >= 6) {
             // <triangles before> <after> <draw bytes before> <after>
             int i;
             for (i = 0; i < 4; i++)
@@ -1595,12 +1684,12 @@ static void Char_ApplyModelInfo(void)
         int i;
         for (i = 0; i < 4; i++)
             Char_Grouped(n[i], 24, j->reduced[i]);
-        swprintf(t, 512, L"Triangles %ls -> %ls, draw memory %ls -> %ls bytes - reduced automatically%ls%ls (%ls)",
+        swprintf(t, 512, L"Triangles %ls -> %ls, draw memory %ls -> %ls bytes - reduced to fit%ls%ls (%ls)",
                  n[0], n[1], n[2], n[3], j->parts[0] ? L" - " : L"", j->parts, size);
     } else if (j->triangles[0] && j->parts[0])
-        swprintf(t, 512, L"%ls triangles - %ls  (%ls)", j->triangles, j->parts, size);
+        swprintf(t, 512, L"%ls triangles drawn - %ls  (%ls)", j->triangles, j->parts, size);
     else if (j->triangles[0])
-        swprintf(t, 512, L"%ls triangles  (%ls)", j->triangles, size);
+        swprintf(t, 512, L"%ls triangles drawn  (%ls)", j->triangles, size);
     else
         swprintf(t, 512, L"read, but not converted - see the messages  (%ls)", size);
     Char_SetInfo(t, j->parts[0] ? RS_COL_TEXT : RS_COL_WARNING);
@@ -1733,7 +1822,17 @@ static void Char_QualityText(wchar_t *out, int cap)
             Char_Append(out, cap, L"\r\n");
         Char_Append(out, cap, line);
     }
-    if (!Char_RemeshAllowed()) {
+    // Under the limit: the whole model, nothing taken away.
+    if (j->budgetSeen && !j->reducedSeen && j->budget[0] <= j->budget[1]) {
+        Char_Grouped(n[0], 24, j->budget[0]);
+        Char_Grouped(n[1], 24, j->budget[1]);
+        swprintf(line, 512, L"%ls triangles after the repair - within the limit of %ls for a driver. Nothing is reduced.", n[0], n[1]);
+        if (out[0])
+            Char_Append(out, cap, L"\r\n");
+        Char_Append(out, cap, line);
+    }
+    // Only while it matters: Closed hull ticked but greyed out.
+    if (!Char_RemeshAllowed() && Char_IsChecked(g_char.remesh)) {
         if (out[0])
             Char_Append(out, cap, L"\r\n");
         Char_Append(out, cap, CHAR_REMESH_NEEDS_TEXT);
@@ -1824,7 +1923,81 @@ static void Char_ApplyPreview(int seq)
                   RS_COL_MUTED);
 }
 
-// The icon as decoded and as converted, from the --icon-preview files.
+// One portrait into the game picture at x, y, with the alpha rldpack wrote:
+// 0 transparent (the race shows), 255 opaque, anything between a texel the
+// game draws at half (its 50 % mode: half the race, half the texel).
+static void Char_GameBlend(struct CharImage *game, const struct CharImage *icon, int at, int top)
+{
+    int x, y, c;
+    for (y = 0; y < CHAR_ICON_H && y < icon->h; y++) {
+        for (x = 0; x < CHAR_ICON_W && x < icon->w; x++) {
+            const unsigned char *src = icon->px + ((size_t)y * icon->w + x) * 4;
+            unsigned char *dst = game->px + ((size_t)(top + y) * game->w + at + x) * 4;
+            if (src[3] == 0)
+                continue;
+            for (c = 0; c < 3; c++)
+                dst[c] = (unsigned char)(src[3] == 255 ? src[c] : (src[c] + dst[c]) / 2);
+        }
+    }
+}
+
+// Without the game's data: the measured frame of the retail portraits and,
+// dotted, their head box, as lines in place of the template's portrait.
+static void Char_GameOutline(struct CharImage *game, int at, int top)
+{
+    int x, y;
+    for (y = 0; y < CHAR_ICON_H; y++) {
+        for (x = 0; x < CHAR_ICON_W; x++) {
+            unsigned char *dst = game->px + ((size_t)(top + y) * game->w + at + x) * 4;
+            int frame = ((x == 2 || x == 38) && y >= 1 && y <= 23) || ((y == 1 || y == 23) && x >= 2 && x <= 38);
+            int head = x <= 40 && (x == 0 || x == 40 || y == 0 || y == 24) && ((x + y) & 1);
+            if (frame || head) {
+                dst[0] = CHAR_GAME_LINE;
+                dst[1] = CHAR_GAME_LINE;
+                dst[2] = CHAR_GAME_LINE;
+            }
+        }
+    }
+}
+
+// The second picture: the race, the template's portrait on the left (from
+// <prefix>-retail.bmp, else the lines), the converted icon on the right.
+static void Char_GameCompose(int seq)
+{
+    struct CharImage retail = { 0, 0, NULL };
+    struct CharImage *game = &g_char.game;
+    wchar_t path[CHAR_VAL];
+    int i;
+
+    Char_ImageFree(game);
+    g_char.gameRetail = 0;
+    Rs_SetText(g_char.iconCaption[CHAR_IMG_ICON], L"In the game, beside Fake Crash");
+    if (!g_char.image[CHAR_IMG_ICON].px)
+        return;
+    game->px = Rs_Alloc((size_t)CHAR_GAME_W * CHAR_GAME_H * 4);
+    game->w = CHAR_GAME_W;
+    game->h = CHAR_GAME_H;
+    for (i = 0; i < CHAR_GAME_W * CHAR_GAME_H; i++) {
+        game->px[i * 4 + 0] = GetBValue(CHAR_GAME_BG);
+        game->px[i * 4 + 1] = GetGValue(CHAR_GAME_BG);
+        game->px[i * 4 + 2] = GetRValue(CHAR_GAME_BG);
+        game->px[i * 4 + 3] = 255;
+    }
+    Char_TempPath(path, CHAR_VAL, seq, L"-retail.bmp");
+    if (g_charJob.iconRetailOk && Rs_FileExists(path) && Char_LoadBmp(path, &retail)) {
+        Char_GameBlend(game, &retail, CHAR_GAME_GAP, CHAR_GAME_GAP);
+        g_char.gameRetail = 1;
+    } else {
+        Char_GameOutline(game, CHAR_GAME_GAP, CHAR_GAME_GAP);
+    }
+    Char_ImageFree(&retail);
+    Char_GameBlend(game, &g_char.image[CHAR_IMG_ICON], 2 * CHAR_GAME_GAP + CHAR_ICON_W, CHAR_GAME_GAP);
+    if (!g_char.gameRetail)
+        Rs_SetText(g_char.iconCaption[CHAR_IMG_ICON], L"Game data not found - frame only");
+}
+
+// The icon as decoded and as converted, from the --icon-preview files, and the
+// converted one in the game (Char_GameCompose).
 static void Char_ApplyIcon(int seq)
 {
     static const wchar_t *const kinds[CHAR_IMG_COUNT] = { L"-original.bmp", L"-icon.bmp" };
@@ -1842,7 +2015,67 @@ static void Char_ApplyIcon(int seq)
         Char_TempPath(path, CHAR_VAL, seq, kinds[i]);
         if (Rs_FileExists(path))
             Char_LoadBmp(path, &g_char.image[i]);
+    }
+    Char_GameCompose(seq);
+    for (i = 0; i < CHAR_IMG_COUNT; i++)
         InvalidateRect(g_char.iconImage[i], NULL, FALSE);
+}
+
+// The framing and the two options of the icon only with an icon: without one
+// they are not passed.
+static void Char_UpdateIconOptions(void)
+{
+    wchar_t icon[CHAR_VAL];
+    BOOL on;
+    Char_FieldPath(g_char.icon, icon, CHAR_VAL);
+    on = icon[0] != 0;
+    EnableWindow(g_char.iconFit, on);
+    EnableWindow(g_char.iconCorners, on);
+    EnableWindow(g_char.iconFrame, on);
+}
+
+// Index into g_charIconFits of the chosen framing.
+static int Char_IconFitIndex(void)
+{
+    LRESULT sel = SendMessageW(g_char.iconFit, CB_GETCURSEL, 0, 0);
+    if (sel < 0 || sel >= CHAR_ICON_FIT_COUNT)
+        sel = CHAR_ICON_FIT_DEFAULT;
+    return (int)sel;
+}
+
+// Over the limit of triangles (@char budget, or rldpack's model-tris without
+// it). 1 = over; the headline text then into out.
+static int Char_OverLimit(wchar_t *out, int cap)
+{
+    struct CharJobData *j = &g_charJob;
+    // budget is before the reduction: a model Reduce to fit brought under the
+    // limit is no longer over it.
+    int fits = j->reducedSeen && j->reduced[1] <= j->budget[1];
+    int over = (j->budgetSeen && j->budget[0] > j->budget[1] && !fits) || Char_FindMsg(L"model-tris") != NULL;
+    const wchar_t *what;
+
+    if (!over)
+        return 0;
+    what = Char_IsChecked(g_char.reduce) ? L"Reduce to fit could not bring it under the limit"
+                                         : L"tick Reduce to fit, or reduce it in Blender";
+    if (j->budgetSeen) {
+        wchar_t n[2][24];
+        Char_Grouped(n[0], 24, j->budget[0]);
+        Char_Grouped(n[1], 24, j->budget[1]);
+        swprintf(out, cap, L"Model has %ls triangles, the limit is %ls - %ls.", n[0], n[1], what);
+    } else {
+        swprintf(out, cap, L"Model has more triangles than a driver may draw - %ls.", what);
+    }
+    return 1;
+}
+
+// The button "Reduce to fit" only while the model is over the limit and the
+// box is off.
+static void Char_ReduceFitShow(HWND page, int show)
+{
+    if (Char_IsShown(g_char.reduceFit) != show) {
+        ShowWindow(g_char.reduceFit, show ? SW_SHOW : SW_HIDE);
+        Char_Relayout(page);
     }
 }
 
@@ -1851,7 +2084,7 @@ static void Char_ShowCheckResult(int exitCode)
     struct CharJobData *j = &g_charJob;
     int ok = j->resultSeen && wcscmp(j->resultState, L"checked") == 0;
     wchar_t t[256];
-    int errors;
+    int errors, over;
 
     g_char.checked = ok;
     Char_Copy(g_char.checkedPath, CHAR_VAL, j->resultPath);
@@ -1864,12 +2097,16 @@ static void Char_ShowCheckResult(int exitCode)
     Char_AddMsgs(RS_SEV_INFO);
     Char_AddMsgs(RS_SEV_OK);
     Char_EmptyText(L"rldpack reported nothing.");
+    over = !ok && Char_OverLimit(t, 256);
     if (ok) {
         Char_Headline(L"Ready to build", RS_COL_OK);
+    } else if (over) {
+        Char_Headline(t, RS_COL_ERROR);
     } else {
         swprintf(t, 256, L"Cannot build yet - %d problem(s)", errors);
         Char_Headline(t, RS_COL_ERROR);
     }
+    Char_ReduceFitShow(GetParent(g_char.headline), over && !Char_IsChecked(g_char.reduce));
     Char_UpdateButtons();
     if (Rs_Automating()) {
         if (ok)
@@ -1877,6 +2114,11 @@ static void Char_ShowCheckResult(int exitCode)
                        Char_CountMsgs(RS_SEV_WARNING), Char_CountMsgs(RS_SEV_NOTE));
         else
             Rs_AutoLog(L"  check: cannot build yet, %d problem(s)", errors);
+        if (over)
+            Rs_AutoLog(L"  check: %ls", t);
+        if (g_charJob.budgetSeen)
+            Rs_AutoLog(L"  budget: %ld triangles, limit %ld; %ld bytes of draw memory, limit %ld",
+                       g_charJob.budget[0], g_charJob.budget[1], g_charJob.budget[2], g_charJob.budget[3]);
         if (g_char.rangeNone)
             Rs_AutoLog(L"  size: %d %%, no size fits this model", g_char.sizeNow);
         else if (g_char.rangeKnown)
@@ -1911,6 +2153,11 @@ static void Char_ShowCheckResult(int exitCode)
             Rs_AutoLog(L"  icon: original %dx%d, converted %dx%d", g_char.image[CHAR_IMG_ORIGINAL].w,
                        g_char.image[CHAR_IMG_ORIGINAL].h, g_char.image[CHAR_IMG_ICON].w,
                        g_char.image[CHAR_IMG_ICON].h);
+        if (g_charJob.iconBackground[0] || g_charJob.iconPlace[0])
+            Rs_AutoLog(L"  icon: background cleared %ls, place %ls", g_charJob.iconBackground, g_charJob.iconPlace);
+        if (g_char.game.px)
+            Rs_AutoLog(L"  icon in the game: beside %ls", g_char.gameRetail ? L"the template's portrait (game data)"
+                                                                         : L"the frame lines (no game data)");
     }
 }
 
@@ -2081,7 +2328,8 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
         Char_ArgsAdd(a, L"--remesh");
         Char_ArgsAdd(a, L"on");
     }
-    if (!Char_IsChecked(g_char.reduce)) {
+    g_char.runReduce = Char_IsChecked(g_char.reduce);
+    if (!g_char.runReduce) {
         Char_ArgsAdd(a, L"--reduce");
         Char_ArgsAdd(a, L"off");
     }
@@ -2089,12 +2337,9 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
         Char_ArgsAdd(a, L"--wheels");
         Char_ArgsAdd(a, L"off");
     }
-    // The mask only when it is not the template's: a file with the default
-    // keeps its bytes (rldpack's --mask like).
-    if (Char_MaskIndex() != CHAR_TEMPLATE_MASK) {
-        Char_ArgsAdd(a, L"--mask");
-        Char_ArgsAdd(a, g_charMasks[Char_MaskIndex()].word);
-    }
+    // The mask always, also the template's: the file carries the choice.
+    Char_ArgsAdd(a, L"--mask");
+    Char_ArgsAdd(a, g_charMasks[Char_MaskIndex()].word);
     // The minimap colour only when one is chosen (rldpack: like the template).
     if (g_char.mapColorSet) {
         swprintf(a->mapColor, 8, L"%02X%02X%02X", GetRValue(g_char.mapColor), GetGValue(g_char.mapColor),
@@ -2105,6 +2350,20 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
     if (a->icon[0]) {
         Char_ArgsAdd(a, L"--icon");
         Char_ArgsAdd(a, a->icon);
+        // Framing, background and frame only when they differ from rldpack's
+        // defaults (fit none, background alpha, frame none).
+        if (Char_IconFitIndex() != CHAR_ICON_FIT_RLDPACK) {
+            Char_ArgsAdd(a, L"--icon-fit");
+            Char_ArgsAdd(a, g_charIconFits[Char_IconFitIndex()].word);
+        }
+        if (Char_IsChecked(g_char.iconCorners)) {
+            Char_ArgsAdd(a, L"--icon-background");
+            Char_ArgsAdd(a, L"corners");
+        }
+        if (Char_IsChecked(g_char.iconFrame)) {
+            Char_ArgsAdd(a, L"--icon-frame");
+            Char_ArgsAdd(a, L"retail");
+        }
         if (check) {
             Char_TempPath(a->iconPrefix, CHAR_VAL, seq, L"");
             Char_ArgsAdd(a, L"--icon-preview");
@@ -2155,7 +2414,7 @@ static int Char_StartJob(HWND page, int kind, const wchar_t *const *args, int ar
 }
 
 // Nothing to check: no model.
-static void Char_NoModel(void)
+static void Char_NoModel(HWND page)
 {
     Rs_MsgListClear(g_char.msgs);
     Char_JobReset();
@@ -2170,8 +2429,12 @@ static void Char_NoModel(void)
     Char_ApplyQuality();
     Char_SetInfo(L"-", RS_COL_MUTED);
     Char_Headline(L"Choose a PLY model to start", RS_COL_MUTED);
+    Char_ReduceFitShow(page, 0);
     Char_EmptyText(L"Choose a PLY model. What rldpack finds shows up here.");
     Char_UpdateButtons();
+    g_char.checkModel[0] = 0;
+    CharWheels_ModelChecked(page, L"", g_char.sizeNow, 0);
+    CharAnim_ModelChecked(page, L"", g_char.sizeNow, 0);
 }
 
 // Checks with the values of the fields. Return: 1 = rldpack running,
@@ -2197,9 +2460,10 @@ static int Char_Check(HWND page)
     seq = ++g_char.seq;
     if (!Char_MakeArgs(&a, 1, NULL, seq)) {
         Char_ArgsFree(&a);
-        Char_NoModel();
+        Char_NoModel(page);
         return -1;
     }
+    Char_Copy(g_char.checkModel, CHAR_VAL, a.model);
     Char_Headline(L"Checking...", RS_COL_MUTED);
     started = Char_StartJob(page, CHAR_JOB_CHECK, a.v, a.n, seq) != 0;
     Char_ArgsFree(&a);
@@ -2378,6 +2642,9 @@ static void Char_CheckDone(HWND page, int exitCode, int seq)
     Char_ApplyIcon(seq);
     Char_TempDelete(seq);
     Char_ShowCheckResult(exitCode);
+    // The cards of the preview features follow the model just checked.
+    CharWheels_ModelChecked(page, g_char.checkModel, g_char.sizeNow, g_char.checked);
+    CharAnim_ModelChecked(page, g_char.checkModel, g_char.sizeNow, g_char.checked);
 }
 
 static void Char_BuildDone(HWND page, int exitCode)
@@ -2408,8 +2675,10 @@ static void Char_BuildDone(HWND page, int exitCode)
         g_char.builtBytes = j->resultBytes;
         Char_Copy(g_char.builtSha, 80, j->resultSha);
         Char_SizeText(size, 32, j->resultBytes < 0 ? 0 : j->resultBytes);
-        swprintf(text, CHAR_VAL + 64, L"Character built: %ls (%ls) - restart the game to load it.",
-                 Rs_PathName(g_char.built), size);
+        // The mask and the wheels in the headline: a choice that did not come
+        // through (a combo turned by the mouse wheel) shows at once.
+        swprintf(text, CHAR_VAL + 64, L"Built: %ls (%ls) - mask %ls, kart wheels %ls%ls. Restart the game to load it.",
+                 Rs_PathName(g_char.built), size, mask, wheelsOff ? L"hidden" : L"shown", mapText);
         Char_Headline(text, RS_COL_OK);
         swprintf(text, CHAR_VAL + 64, L"Built %ls", g_char.built);
         swprintf(detail, 192, L"Kart wheels %ls, mask %ls%ls - SHA-256 %ls", wheelsOff ? L"hidden" : L"shown", mask, mapText,
@@ -2738,11 +3007,8 @@ static int Char_WriteReport(const wchar_t *path)
     Char_Put(f, L"driving style: %ls (passed as %ls)", text, Char_ClassWord());
     Rs_Free(text);
     Char_Put(f, L"template: %ls (fixed)", CHAR_TEMPLATE);
-    if (Char_MaskIndex() == CHAR_TEMPLATE_MASK)
-        Char_Put(f, L"mask: %ls (like the template, not passed)", g_charMasks[Char_MaskIndex()].name);
-    else
-        Char_Put(f, L"mask: %ls (passed as --mask %ls)", g_charMasks[Char_MaskIndex()].name,
-                 g_charMasks[Char_MaskIndex()].word);
+    Char_Put(f, L"mask: %ls (passed as --mask %ls%ls)", g_charMasks[Char_MaskIndex()].name,
+             g_charMasks[Char_MaskIndex()].word, Char_MaskIndex() == CHAR_TEMPLATE_MASK ? L", the template's" : L"");
     Char_Put(f, L"mask (last run): %ls", g_charJob.mask[0] ? g_charJob.mask : L"(not reported)");
     if (g_char.mapColorSet)
         Char_Put(f, L"minimap colour: %02X%02X%02X (passed as --map-color)", GetRValue(g_char.mapColor),
@@ -2768,8 +3034,13 @@ static int Char_WriteReport(const wchar_t *path)
                  g_charJob.fitBasis);
     else
         Char_Put(f, L"fitted: (not reported)");
-    Char_Put(f, L"option Reduce automatically: %ls (%ls)", Char_IsChecked(g_char.reduce) ? L"on" : L"off",
+    Char_Put(f, L"option Reduce to fit: %ls (%ls)", Char_IsChecked(g_char.reduce) ? L"on" : L"off",
              Char_IsChecked(g_char.reduce) ? L"rldpack's default" : L"passed as --reduce off");
+    if (g_charJob.budgetSeen)
+        Char_Put(f, L"budget: %ld triangles, limit %ld; %ld bytes of draw memory, limit %ld", g_charJob.budget[0],
+                 g_charJob.budget[1], g_charJob.budget[2], g_charJob.budget[3]);
+    else
+        Char_Put(f, L"budget: (not reported)");
     Char_Put(f, L"reduce (last run): %ls", g_charJob.reduce[0] ? g_charJob.reduce : L"(not reported)");
     if (g_charJob.reducedSeen)
         Char_Put(f, L"reduced: %ld -> %ld triangles, draw memory %ld -> %ld bytes", g_charJob.reduced[0],
@@ -2798,7 +3069,7 @@ static int Char_WriteReport(const wchar_t *path)
     else
         Char_Put(f, L"two-sided: (not reported)");
     Char_Put(f, L"option Closed hull (remesh): %ls (%ls)", Char_IsChecked(g_char.remesh) ? L"on" : L"off",
-             !Char_RemeshAllowed() ? L"greyed out, not passed - needs Reduce automatically"
+             !Char_RemeshAllowed() ? L"greyed out, not passed - needs Reduce to fit"
              : Char_RemeshOn()     ? L"passed as --remesh on"
                                    : L"rldpack's default");
     Char_Put(f, L"remesh (last run): %ls", g_charJob.remesh[0] ? g_charJob.remesh : L"(not reported)");
@@ -2823,6 +3094,20 @@ static int Char_WriteReport(const wchar_t *path)
         Rs_Free(note);
     }
     Char_PutText(f, L"icon", g_char.icon);
+    Char_Put(f, L"icon framing: %ls (%ls) [%ls]", g_charIconFits[Char_IconFitIndex()].text,
+             g_charIconFits[Char_IconFitIndex()].word, Char_EnabledWord(g_char.iconFit));
+    Char_Put(f, L"icon make background transparent: %ls [%ls]", Char_IsChecked(g_char.iconCorners) ? L"on" : L"off",
+             Char_EnabledWord(g_char.iconCorners));
+    Char_Put(f, L"icon retail frame: %ls [%ls]", Char_IsChecked(g_char.iconFrame) ? L"on" : L"off",
+             Char_EnabledWord(g_char.iconFrame));
+    Char_Put(f, L"icon background cleared (last run): %ls", g_charJob.iconBackground[0] ? g_charJob.iconBackground
+                                                                                     : L"(not reported)");
+    Char_Put(f, L"icon place (last run): %ls", g_charJob.iconPlace[0] ? g_charJob.iconPlace : L"(not reported)");
+    if (g_char.game.px)
+        Char_Put(f, L"icon in the game: %dx%d, beside %ls", g_char.game.w, g_char.game.h,
+                 g_char.gameRetail ? L"the template's portrait (game data)" : L"the frame lines (no game data)");
+    else
+        Char_Put(f, L"icon in the game: (none)");
     for (i = 0; i < CHAR_IMG_COUNT; i++) {
         const struct CharImage *img = &g_char.image[i];
         if (img->px)
@@ -2861,6 +3146,7 @@ static int Char_WriteReport(const wchar_t *path)
     Char_Put(f, L"button Check: %ls", Char_EnabledWord(g_char.check));
     Char_Put(f, L"button Build character: %ls", Char_EnabledWord(g_char.build));
     Char_Put(f, L"button Show in folder: %ls", Char_IsShown(g_char.show) ? L"shown" : L"hidden");
+    Char_Put(f, L"button Reduce to fit: %ls", Char_IsShown(g_char.reduceFit) ? L"shown" : L"hidden");
     if (g_char.built[0])
         Char_Put(f, L"last built: %ls, %lld bytes, SHA-256 %ls", g_char.built, g_char.builtBytes, g_char.builtSha);
     else
@@ -2878,6 +3164,8 @@ static int Char_WriteReport(const wchar_t *path)
         fputc('\n', f);
         Rs_Free(utf8);
     }
+    CharWheels_Report(f);
+    CharAnim_Report(f);
     fclose(f);
     return 1;
 }
@@ -3013,7 +3301,7 @@ static int Char_AutoOption(HWND page, HWND box, const wchar_t *verb, const wchar
         Char_ApplyQuality();
     Rs_AutoLog(L"  %ls: %ls", verb, on ? L"on" : L"off");
     if (box == g_char.remesh && on && !Char_RemeshAllowed())
-        Rs_AutoLog(L"  %ls: greyed out - needs Reduce automatically, not passed", verb);
+        Rs_AutoLog(L"  %ls: greyed out - needs Reduce to fit, not passed", verb);
     r = Char_Check(page);
     if (r > 0)
         return RS_AUTO_WAIT;
@@ -3021,6 +3309,28 @@ static int Char_AutoOption(HWND page, HWND box, const wchar_t *verb, const wchar
         Rs_AutoLog(L"  %ls: %ls", verb,
                    g_char.jobId ? L"checked after the running build" : L"not checked - no model is chosen");
     return RS_AUTO_DONE;
+}
+
+// "icon-fit fit|fill|none": the framing of the icon as when chosen, then the
+// check at once.
+static int Char_AutoIconFit(HWND page, const wchar_t *arg)
+{
+    int i, r;
+    for (i = 0; i < CHAR_ICON_FIT_COUNT; i++) {
+        if (_wcsicmp(arg, g_charIconFits[i].word) == 0) {
+            SendMessageW(g_char.iconFit, CB_SETCURSEL, (WPARAM)i, 0);
+            Rs_AutoLog(L"  icon-fit: %ls", g_charIconFits[i].text);
+            r = Char_Check(page);
+            if (r > 0)
+                return RS_AUTO_WAIT;
+            if (r < 0)
+                Rs_AutoLog(L"  icon-fit: %ls",
+                           g_char.jobId ? L"checked after the running build" : L"not checked - no model is chosen");
+            return RS_AUTO_DONE;
+        }
+    }
+    Rs_AutoLog(L"  icon-fit: '%ls' is not a framing - use fit, fill or none", arg);
+    return RS_AUTO_FAIL;
 }
 
 static int Char_AutoPose(const wchar_t *arg)
@@ -3152,12 +3462,16 @@ static void Char_Create(HWND page)
     g_char.repair = Rs_Check(page, CHAR_ID_REPAIR, L"Repair the model");
     g_char.openParts = Rs_Check(page, CHAR_ID_OPEN_PARTS, L"Draw open parts from both sides");
     g_char.remesh = Rs_Check(page, CHAR_ID_REMESH, L"Closed hull (remesh)");
-    g_char.reduce = Rs_Check(page, CHAR_ID_REDUCE, L"Reduce automatically");
+    g_char.reduce = Rs_Check(page, CHAR_ID_REDUCE, L"Reduce to fit");
+    Rs_SetTip(g_char.reduce, L"Only a model over the limit of triangles a driver may draw: rldpack takes triangles "
+                             L"away until it fits. A model under the limit is never reduced.");
+    Rs_SetTip(g_char.remesh, L"Makes every part a closed hull. Needs Reduce to fit: the hulls have far more "
+                             L"triangles than a driver may draw.");
     g_char.wheels = Rs_Check(page, CHAR_ID_WHEELS, L"Show kart wheels");
     Char_SetChecked(g_char.repair, 1);
     Char_SetChecked(g_char.openParts, 1);
     Char_SetChecked(g_char.remesh, 0);      // only on request
-    Char_SetChecked(g_char.reduce, 1);
+    Char_SetChecked(g_char.reduce, 0);      // a model under the limit is never reduced anyway
     Char_SetChecked(g_char.wheels, 1);
     Char_UpdateOptions();
     g_char.quality = Rs_Label(page, CHAR_ID_QUALITY, L"", RS_FONT_SMALL);   // wraps (Char_Layout)
@@ -3168,14 +3482,31 @@ static void Char_Create(HWND page)
     SendMessageW(g_char.icon, EM_SETCUEBANNER, FALSE, (LPARAM)L"Optional - without it the game shows the template's icon");
     g_char.iconBrowse = Rs_Button(page, CHAR_ID_ICON_BROWSE, L"Browse...");
     g_char.iconClear = Rs_Button(page, CHAR_ID_ICON_CLEAR, L"Clear");
+    g_char.iconFitLabel = Rs_Label(page, CHAR_ID_ICON_FIT_LABEL, L"Framing", RS_FONT_BOLD);
+    g_char.iconFit = Rs_Combo(page, CHAR_ID_ICON_FIT);
+    for (i = 0; i < CHAR_ICON_FIT_COUNT; i++)
+        SendMessageW(g_char.iconFit, CB_ADDSTRING, 0, (LPARAM)g_charIconFits[i].text);
+    SendMessageW(g_char.iconFit, CB_SETCURSEL, CHAR_ICON_FIT_DEFAULT, 0);
+    Rs_SetTip(g_char.iconFit, L"Fit: your subject whole, as large as the heads of the game's drivers. Fill: it fills "
+                              L"the frame, cut at the sides or the bottom. As is: cut to 43:25 in the middle, as before. "
+                              L"Never stretched.");
+    g_char.iconCorners = Rs_Check(page, CHAR_ID_ICON_CORNERS, L"Make background transparent");
+    Rs_SetTip(g_char.iconCorners, L"Removes the background colour that touches the corners - above all for pictures "
+                                  L"without transparency. Transparency in the PNG is always kept, a thin outline too.");
+    g_char.iconFrame = Rs_Check(page, CHAR_ID_ICON_FRAME, L"Retail frame");
+    Rs_SetTip(g_char.iconFrame, L"Puts the frame and the dark half-transparent box of the game's portraits behind "
+                                L"your picture.");
     g_char.iconCaption[CHAR_IMG_ORIGINAL] =
         Rs_Label(page, CHAR_ID_ICON_CAPTION, L"Your picture (PNG, any size)", RS_FONT_SMALL);
     g_char.iconCaption[CHAR_IMG_ICON] =
-        Rs_Label(page, CHAR_ID_ICON_CAPTION + 1, L"In the driver grid (43 x 25, 16 colours)", RS_FONT_SMALL);
+        Rs_Label(page, CHAR_ID_ICON_CAPTION + 1, L"In the game, beside Fake Crash", RS_FONT_SMALL);
+    // The second box shows the converted icon in the game (g_char.game).
     for (i = 0; i < CHAR_IMG_COUNT; i++) {
         Rs_SetTextColor(g_char.iconCaption[i], RS_COL_MUTED);
-        g_char.iconImage[i] = Char_ImageBox(page, CHAR_ID_ICON_IMAGE + i, &g_char.image[i]);
+        g_char.iconImage[i] = Char_ImageBox(page, CHAR_ID_ICON_IMAGE + i,
+                                            i == CHAR_IMG_ICON ? &g_char.game : &g_char.image[i]);
     }
+    Char_UpdateIconOptions();
 
     g_char.voicesLabel = Rs_Label(page, CHAR_ID_VOICES_LABEL, L"Voices", RS_FONT_BOLD);
     g_char.voices = Rs_Edit(page, CHAR_ID_VOICES, L"", 0);
@@ -3211,9 +3542,16 @@ static void Char_Create(HWND page)
     ShowWindow(g_char.raw, SW_HIDE);
     g_char.show = Rs_Button(page, CHAR_ID_SHOW, L"Show in folder");
     ShowWindow(g_char.show, SW_HIDE);
+    g_char.reduceFit = Rs_Button(page, CHAR_ID_REDUCE_FIT, L"Reduce to fit");
+    ShowWindow(g_char.reduceFit, SW_HIDE);
     // Tab order as the cards stand in one column: the pose choice of the
     // preview after the build (with two columns row by row).
     SetWindowPos(g_char.pose, g_char.show, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    SetWindowPos(g_char.reduceFit, g_char.headline, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    // The cards of the preview features below the preview, their controls
+    // after these in the tab order.
+    CharWheels_Create(page, g_char.view);
+    CharAnim_Create(page, g_char.view);
 
     DragAcceptFiles(page, TRUE);
     Char_TempSweep();
@@ -3224,7 +3562,7 @@ static void Char_Create(HWND page)
     Char_SizeForget();
     g_char.applying = 0;
     Char_ApplyIcon(0);
-    Char_NoModel();
+    Char_NoModel(page);
 }
 
 // Label left, field right of it.
@@ -3385,6 +3723,11 @@ static int Char_LayBuild(HWND page, const struct CharLay *k, int left, int right
     noteH = Char_NoteHeight(g_char.headline, width);
     MoveWindow(g_char.headline, in.left, y, width, noteH, TRUE);
     y += Rs_Px(6) + noteH;
+    if (Char_IsShown(g_char.reduceFit)) {
+        int bw = Char_TextWidth(g_char.reduceFit, L"Reduce to fit") + Rs_Px(32);
+        MoveWindow(g_char.reduceFit, in.left, y, bw < width ? bw : width, Rs_Px(32), TRUE);
+        y += Rs_Px(40);
+    }
     listBottom = in.bottom;
     // Room for the build message and the lines below it (restart, copy).
     if (listBottom < y + Rs_Px(CHAR_MSGS_MIN_H))
@@ -3417,17 +3760,51 @@ static int Char_LayIcon(HWND page, const struct CharLay *k, int left, int right,
     MoveWindow(g_char.iconBrowse, in.right - k->browseW - k->clearW - Rs_Px(8), y, k->browseW, Rs_Px(32), TRUE);
     MoveWindow(g_char.iconClear, in.right - k->clearW, y, k->clearW, Rs_Px(32), TRUE);
     y += Rs_Px(40);
-    // Whole steps of the icon, at most 4; the picture box beside it as large.
-    for (factor = 4; factor > 1 && 2 * Rs_Px(CHAR_ICON_W * factor + 8) + k->gap > width; factor--)
-        ;
-    boxW = Rs_Px(CHAR_ICON_W * factor + 8);
-    boxH = Rs_Px(CHAR_ICON_H * factor + 8);
-    for (i = 0; i < CHAR_IMG_COUNT; i++) {
-        int bx = in.left + i * (boxW + k->gap);
+    // The framing below the field, the two options in a row below it (a new
+    // row where the second does not fit).
+    MoveWindow(g_char.iconFitLabel, in.left, y + Rs_Px(4), k->labelW, Rs_Px(20), TRUE);
+    boxW = Char_ComboTextWidth(g_char.iconFit) + Rs_Px(28);
+    MoveWindow(g_char.iconFit, x, y, boxW < fieldW ? boxW : fieldW, Rs_Px(300), TRUE);
+    y += Rs_Px(36);
+    {
+        HWND boxes[2];
+        int cx = x;
+        boxes[0] = g_char.iconCorners;
+        boxes[1] = g_char.iconFrame;
+        for (i = 0; i < 2; i++) {
+            int bw = Char_CheckWidth(boxes[i]);
+            if (bw > fieldW)
+                bw = fieldW;
+            if (cx > x && cx + bw > x + fieldW) {
+                cx = x;
+                y += Rs_Px(26);
+            }
+            MoveWindow(boxes[i], cx, y, bw, Rs_Px(24), TRUE);
+            cx += bw + Rs_Px(12);
+        }
+    }
+    y += Rs_Px(24) + Rs_Px(12);
+    // Whole steps, at most 4: your picture, then the game picture (two
+    // portraits wide); the first column as wide as its caption needs.
+    {
+        wchar_t *text = Rs_GetText(g_char.iconCaption[CHAR_IMG_ORIGINAL]);
+        int capW = Char_TextWidth(g_char.iconCaption[CHAR_IMG_ORIGINAL], text) + Rs_Px(4);
+        int firstW = 0, gameW = 0, bx;
+        Rs_Free(text);
+        for (factor = 4; factor >= 1; factor--) {
+            boxW = Rs_Px(CHAR_ICON_W * factor + 8);
+            firstW = boxW > capW ? boxW : capW;
+            gameW = Rs_Px(CHAR_GAME_W * factor + 8);
+            if (factor == 1 || firstW + k->gap + gameW <= width)
+                break;
+        }
+        boxH = Rs_Px(CHAR_GAME_H * factor + 8);
+        MoveWindow(g_char.iconCaption[CHAR_IMG_ORIGINAL], in.left, y, firstW + k->gap, Rs_Px(18), TRUE);
+        MoveWindow(g_char.iconImage[CHAR_IMG_ORIGINAL], in.left, y + Rs_Px(20), boxW, boxH, TRUE);
         // The last caption may run on to the edge of the card.
-        MoveWindow(g_char.iconCaption[i], bx, y, i == CHAR_IMG_COUNT - 1 ? in.right - bx : boxW + k->gap, Rs_Px(18),
-                   TRUE);
-        MoveWindow(g_char.iconImage[i], bx, y + Rs_Px(20), boxW, boxH, TRUE);
+        bx = in.left + firstW + k->gap;
+        MoveWindow(g_char.iconCaption[CHAR_IMG_ICON], bx, y, in.right - bx, Rs_Px(18), TRUE);
+        MoveWindow(g_char.iconImage[CHAR_IMG_ICON], bx, y + Rs_Px(20), gameW, boxH, TRUE);
     }
     y += Rs_Px(20) + boxH + Rs_Px(12);
     Char_PlaceField(g_char.voicesLabel, g_char.voices, in.left, k->labelW, y + Rs_Px(2),
@@ -3446,8 +3823,8 @@ static int Char_LayIcon(HWND page, const struct CharLay *k, int left, int right,
 // Card "Preview": down to bottom (bottom <= top: as tall as the view allows),
 // but never taller than the visible part of the page, so that the whole
 // preview can be seen at once, and never lower than CHAR_VIEW_MIN_H. The pose
-// choice is in the title line of the card.
-static void Char_LayPreview(HWND page, const struct CharLay *k, int left, int right, int top, int bottom)
+// choice is in the title line of the card. Returns the bottom of the card.
+static int Char_LayPreview(HWND page, const struct CharLay *k, int left, int right, int top, int bottom)
 {
     RECT card, in;
     int y, width, viewBottom, noteH, most;
@@ -3473,6 +3850,7 @@ static void Char_LayPreview(HWND page, const struct CharLay *k, int left, int ri
     MoveWindow(g_char.viewNote, in.left, viewBottom + Rs_Px(6), width, noteH, TRUE);
     card.bottom = viewBottom + Rs_Px(6) + noteH + Rs_Px(16);
     Rs_CardAdd(page, &card, L"Preview");
+    return card.bottom;
 }
 
 static void Char_Layout(HWND page, int w, int h)
@@ -3481,7 +3859,7 @@ static void Char_Layout(HWND page, int w, int h)
     int left = Rs_Px(32), right = w - Rs_Px(32);
     int top = Rs_PageTop(), bottom = h - Rs_Px(24);
     int viewW = 0, leastLeft, leastRight, comboW, i, y;
-    HWND column[10];
+    HWND column[11];
 
     Rs_CardClear(page);
     k.viewH = 0;
@@ -3507,7 +3885,8 @@ static void Char_Layout(HWND page, int w, int h)
     column[7] = g_char.iconLabel;
     column[8] = g_char.voicesLabel;
     column[9] = g_char.mapLabel;
-    for (i = 0; i < 10; i++) {
+    column[10] = g_char.iconFitLabel;
+    for (i = 0; i < 11; i++) {
         wchar_t *text = Rs_GetText(column[i]);
         int tw = Char_TextWidth(column[i], text) + Rs_Px(4);
         if (tw > k.labelW)
@@ -3518,6 +3897,7 @@ static void Char_Layout(HWND page, int w, int h)
     SendMessageW(g_char.cls, CB_SETDROPPEDWIDTH, (WPARAM)(comboW + Rs_Px(16)), 0);
     i = Char_ComboTextWidth(g_char.mask);
     SendMessageW(g_char.mask, CB_SETDROPPEDWIDTH, (WPARAM)(i + Rs_Px(16)), 0);
+    SendMessageW(g_char.iconFit, CB_SETDROPPEDWIDTH, (WPARAM)(Char_ComboTextWidth(g_char.iconFit) + Rs_Px(16)), 0);
     if (i > comboW)
         comboW = i;
     comboW += Rs_Px(28);        // the margins and the arrow
@@ -3526,8 +3906,11 @@ static void Char_Layout(HWND page, int w, int h)
     leastRight = 2 * Rs_Px(18) + k.labelW + Rs_Px(8) + Rs_Px(CHAR_FIELD_MIN_W) + k.browseW + k.clearW + Rs_Px(16);
 
     if (left + leastLeft + k.gap + leastRight + Rs_Px(32) <= viewW) {
-        // Two columns: character and build on the left, icon and preview on
-        // the right; the left one at least as wide as it needs.
+        // Two columns: character and build on the left, icon, preview, wheels
+        // and animations on the right; the left one at least as wide as it
+        // needs. The preview is as tall as the view allows, not down to the
+        // bottom: the cards below it would else push the page longer with
+        // every layout.
         int leftW = (right - left - k.gap) / 2;
         if (leftW < leastLeft)
             leftW = leastLeft;
@@ -3536,7 +3919,9 @@ static void Char_Layout(HWND page, int w, int h)
         y = Char_LayCharacter(page, &k, left, left + leftW, top);
         Char_LayBuild(page, &k, left, left + leftW, y + k.gap, bottom);
         y = Char_LayIcon(page, &k, left + leftW + k.gap, right, top);
-        Char_LayPreview(page, &k, left + leftW + k.gap, right, y + k.gap, bottom);
+        y = Char_LayPreview(page, &k, left + leftW + k.gap, right, y + k.gap, y + k.gap);
+        y = CharWheels_Layout(page, left + leftW + k.gap, right, y + k.gap, k.labelW);
+        CharAnim_Layout(page, left + leftW + k.gap, right, y + k.gap, k.labelW);
     } else {
         // One column at full width, the cards below each other; only when even
         // that does not fit, the page gets wider and scrolls sideways.
@@ -3548,7 +3933,9 @@ static void Char_Layout(HWND page, int w, int h)
         y = Char_LayCharacter(page, &k, left, right, top);
         y = Char_LayIcon(page, &k, left, right, y + k.gap);
         y = Char_LayBuild(page, &k, left, right, y + k.gap, y + k.gap);
-        Char_LayPreview(page, &k, left, right, y + k.gap, y + k.gap);
+        y = Char_LayPreview(page, &k, left, right, y + k.gap, y + k.gap);
+        y = CharWheels_Layout(page, left, right, y + k.gap, k.labelW);
+        CharAnim_Layout(page, left, right, y + k.gap, k.labelW);
     }
 
     // After a DPI change the shell sets the base font; the raw output
@@ -3563,6 +3950,9 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
     int code = HIWORD(wParam);
     (void)lParam;
 
+    // The cards of the preview features handle their own controls.
+    if (CharAnim_Command(page, id, code) || CharWheels_Command(page, id, code))
+        return 0;
     switch (id) {
     case IDOK:
         Char_Enter(page);
@@ -3580,6 +3970,11 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
         }
         break;
     case CHAR_ID_ICON:
+        if (code == EN_CHANGE) {
+            Char_UpdateIconOptions();
+            Char_Changed(page);
+        }
+        break;
     case CHAR_ID_VOICES:
     case CHAR_ID_OUT:
         if (code == EN_CHANGE)
@@ -3587,7 +3982,13 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
         break;
     case CHAR_ID_CLASS:
     case CHAR_ID_MASK:
+    case CHAR_ID_ICON_FIT:
         if (code == CBN_SELCHANGE)
+            Char_Changed(page);
+        break;
+    case CHAR_ID_ICON_CORNERS:
+    case CHAR_ID_ICON_FRAME:
+        if (code == BN_CLICKED)
             Char_Changed(page);
         break;
     case CHAR_ID_MAPCOLOR_PICK:
@@ -3595,9 +3996,20 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
             Char_MapColorPick(page);
         break;
     case CHAR_ID_MAPCOLOR_LIKE:
-        if (code == BN_CLICKED)
+        if (code == BN_CLICKED) {
             Char_MapColorSet(page, 0, CHAR_TEMPLATE_MAP_COLOR);
             SetFocus(g_char.mapPick);   // the button just pressed is greyed out now
+        }
+        break;
+    case CHAR_ID_REDUCE_FIT:
+        // As ticking the box, then the check at once.
+        if (code == BN_CLICKED) {
+            Char_SetChecked(g_char.reduce, 1);
+            Char_UpdateOptions();
+            Char_ApplyQuality();
+            SetFocus(g_char.reduce);    // the button goes away with the check
+            Char_Check(page);
+        }
         break;
     case CHAR_ID_REDUCE:
         if (code == BN_CLICKED) {
@@ -3677,13 +4089,30 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
 
 static LRESULT Char_Notify(HWND page, NMHDR *hdr)
 {
-    (void)page;
-    (void)hdr;
-    return 0;
+    int handled = 0;
+    LRESULT r = CharAnim_Notify(page, hdr, &handled);
+    if (handled)
+        return r;
+    return CharWheels_Notify(page, hdr, &handled);
 }
 
 static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, int *handled)
 {
+    // The cards of the preview features first: they take only their own jobs
+    // and controls. WM_DESTROY goes to both and then on to the page's own.
+    if (msg == WM_DESTROY) {
+        int ignored = 0;
+        CharWheels_Message(page, msg, wParam, lParam, &ignored);
+        ignored = 0;
+        CharAnim_Message(page, msg, wParam, lParam, &ignored);
+    } else {
+        LRESULT r = CharAnim_Message(page, msg, wParam, lParam, handled);
+        if (*handled)
+            return r;
+        r = CharWheels_Message(page, msg, wParam, lParam, handled);
+        if (*handled)
+            return r;
+    }
     switch (msg) {
     case RS_WM_JOB_LINE: {
         wchar_t *line = (wchar_t *)lParam;
@@ -3808,8 +4237,27 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         return Char_AutoOption(page, g_char.remesh, verb, arg);
     if (wcscmp(verb, L"reduce") == 0)
         return Char_AutoOption(page, g_char.reduce, verb, arg);
+    // Like the button "Reduce to fit" below the headline (only while it is shown).
+    if (wcscmp(verb, L"reduce-to-fit") == 0) {
+        if (!Char_IsShown(g_char.reduceFit)) {
+            Rs_AutoLog(L"  reduce-to-fit: the button is not shown - the model is not over the limit");
+            return RS_AUTO_FAIL;
+        }
+        Rs_AutoLog(L"  reduce-to-fit: Reduce to fit on, check");
+        Char_SetChecked(g_char.reduce, 1);
+        Char_UpdateOptions();
+        Char_ApplyQuality();
+        r = Char_Check(page);
+        return r > 0 ? RS_AUTO_WAIT : RS_AUTO_DONE;
+    }
     if (wcscmp(verb, L"wheels") == 0)
         return Char_AutoOption(page, g_char.wheels, verb, arg);
+    if (wcscmp(verb, L"icon-fit") == 0)
+        return Char_AutoIconFit(page, arg);
+    if (wcscmp(verb, L"icon-transparent") == 0)
+        return Char_AutoOption(page, g_char.iconCorners, verb, arg);
+    if (wcscmp(verb, L"icon-frame") == 0)
+        return Char_AutoOption(page, g_char.iconFrame, verb, arg);
     if (wcscmp(verb, L"pose") == 0)
         return Char_AutoPose(arg);
     if (wcscmp(verb, L"turn") == 0)
@@ -3822,13 +4270,16 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         Rs_AutoLog(L"  report: %ls", arg);
         return RS_AUTO_DONE;
     }
-    return RS_AUTO_UNKNOWN;
+    r = CharAnim_Automate(page, verb, arg);
+    if (r != RS_AUTO_UNKNOWN)
+        return r;
+    return CharWheels_Automate(page, verb, arg);
 }
 
 static int Char_Busy(HWND page)
 {
     (void)page;
-    return g_char.jobId != 0 || g_char.timer;
+    return g_char.jobId != 0 || g_char.timer || CharAnim_Busy() || CharWheels_Busy();
 }
 
 const struct RsPageDef g_rsCharPage = {

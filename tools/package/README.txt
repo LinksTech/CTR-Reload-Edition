@@ -217,8 +217,8 @@ for the game (and for cups).
               it; parts to one side (shoes, hands) move with the driver.
               Faces with more than four corners are split into triangles.
               Small faults of the export are repaired (see "Repair the
-              model"), and a model with too many triangles is reduced by
-              itself (see "Reduce automatically"). You can also
+              model"); a model with more triangles than a driver may draw
+              is refused or reduced (see "Reduce to fit"). You can also
               drag files onto the page: a .ply is the model, a .png the
               icon, a folder the voices.
   Name        Shown in the driver select: 1 to 17 characters, capitals,
@@ -229,11 +229,11 @@ for the game (and for cups).
               original drivers that drive like it (default Balanced). This
               decides how the kart drives in the game.
   Mask        Aku Aku (like Crash, Coco, Polar, Pura, Penta) or Uka Uka
-              (like Fake Crash, Cortex, Tiny and the rest); default Uka Uka,
-              the mask of Fake Crash. Worn for the mask item and after a
-              fall, with its sound and music, and shown as its icon in the
-              race HUD. The choice is stored in the .rldchar; an older game
-              does not know it and gives the driver Uka Uka.
+              (like the template Fake Crash, Cortex, Tiny and the rest);
+              default Uka Uka, the mask of Fake Crash. Worn for the mask
+              item and after a fall, with its sound and music, and shown as
+              its icon in the race HUD. The choice is stored in the .rldchar;
+              an older game does not know it and gives the driver Uka Uka.
   Minimap colour
               The colour of your driver's marker on the minimap. "Choose..."
               (or a click on the colour field) picks one, "Like the
@@ -278,22 +278,24 @@ for the game (and for cups).
               each replaced by a closed hull of their surface (a part of at
               most 24 triangles stays as it is), which is then reduced; the
               colours are taken over from your model. The preview shows the
-              result. Needs "Reduce automatically": greyed out while that
-              is off.
-  Reduce automatically
-              On by default. The game has draw memory for 805 triangles per
-              driver (as much as N. Oxide, the most any original driver
-              uses). A model with more is reduced to at most 797 triangles,
-              only as far as needed: the shape and the colours stay, kart,
+              result. Needs "Reduce to fit": greyed out while that is off.
+  Reduce to fit
+              Off by default. A driver may draw a limited number of
+              triangles; a model under that limit is never reduced, and the
+              line below the options says so, with its count and the limit.
+              A model over it is refused: the line below the buttons gives
+              its triangles and the limit, and the button "Reduce to fit"
+              there ticks this box and checks again. With the box ticked a
+              model over the limit is reduced until it fits, only as far as
+              needed: the shape and the colours stay, kart,
               driver and steering wheel are reduced each on its own, and the
               same model always gives the same result. Colours always stay
               in their place and no face ever turns to the back. Colour
               borders and sharp edges are guarded as well; if the target
               cannot be reached that way, the reduction first drops these
               guards and then, if needed, its colour cost, and says so.
-              The page then shows both counts, for example "Triangles 987 ->
-              797, draw memory 27 636 -> 22 316 bytes - reduced
-              automatically". Off: such a model is refused; reduce it
+              The page then shows both counts, triangles and draw memory
+              before -> after, and "reduced to fit". Or reduce the model
               yourself in Blender (Decimate modifier).
   Show kart wheels
               On by default: the game draws its kart wheels on your kart, as
@@ -302,14 +304,28 @@ for the game (and for cups).
               (and no wheel reflections) for this driver; tyre dust and skid
               marks stay. The choice is stored in the .rldchar. An older
               game does not know it and draws the wheels.
-  Icon (PNG)  Optional. Any PNG, at any size. Your picture and how the
-              game will show it side by side: cut to 43:25 in the middle,
-              43 x 25 pixels (as much of a portrait as the game shows), 15
-              colours and transparent. A picture of exactly 43 x 25 is taken
-              pixel for pixel. The game shows it on the character's tile in
-              the driver select and in the race: the ranking, the results
-              and the cup standings (see 3.); without an icon these show the
-              portrait of Fake Crash.
+  Icon (PNG)  Optional. Any PNG, at any size. It becomes the 43 x 25
+              portrait of the game (as much of a portrait as the game shows)
+              of 15 colours; transparency in the PNG is always kept. The game
+              shows it on the character's tile in the driver select and in
+              the race: the ranking, the results and the cup standings (see
+              3.); without an icon these show the portrait of Fake Crash.
+              With an icon (greyed out without one):
+              Framing: "Fit like the game's heads" (default) puts your
+              subject whole into the head box of the original portraits,
+              "Fill the frame" fills it and cuts at the sides or the bottom,
+              "As is" takes the whole picture cut to 43:25 in the middle (a
+              picture of exactly 43 x 25 pixel for pixel). Never stretched.
+              "Make background transparent" (off by default) removes the
+              background colour that touches the corners - above all for a
+              picture without transparency; one with transparency keeps a
+              thin outline. "Retail frame" (off by default) puts the
+              frame and the dark half-transparent box of the original
+              portraits behind your picture.
+              Below: your picture, and the portrait as the game draws it on
+              a colour of the race, beside the portrait of Fake Crash (read
+              from the game's data next to Reload Studio; without them its
+              frame is drawn as lines). It follows every change at once.
   Voices      Optional. A folder with your voice lines as .wav or .vag:
               boost1, boost2, hit1, hit2, spin1, spin2, bigair1, bigair2,
               drop1, drop2, shield1, shield2, passing1, passing2, fire1,
@@ -333,12 +349,18 @@ for the game (and for cups).
               seconds after every change). The messages say what to fix.
   Build character
               Writes the .rldchar (asks before it replaces a file) and says
-              what is in it: the kart wheels hidden or shown, the mask, and
-              its SHA-256. Restart the game to load the new file - the game
+              what is in it in the green line below the buttons, e.g.
+              "Built: mydriver.rldchar (55 KB) - mask Aku Aku, kart wheels
+              hidden." - check the mask there. The message below adds its
+              SHA-256. Restart the game to load the new file - the game
               reads its "characters" folder only when it starts. "Show in
               folder" opens the folder.
   Show rldpack output
               The full checker log.
+  Wheels, Animations
+              Cards below the preview for wheels and poses of your own.
+              Their fields are marked "Coming soon" and greyed out; nothing
+              of them is written into a character yet.
 
 The file name is the character's identity in the game; the name in the menu
 lives inside the file. The fields and options of the page are not
