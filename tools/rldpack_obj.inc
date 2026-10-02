@@ -24,8 +24,11 @@
 //   2. otherwise the material: Kd times the texture; no Kd but a texture:
 //      the texture; neither: grey.
 //   3. grey is 0x80 per channel, like a PLY without colors.
-// The texture is sampled at the corner's vt (map_Kd -o and -s: offset +
-// scale x vt): bilinear, repeated (u and v modulo 1) - with the edges
+// The texture of a triangle is fitted over the whole triangle, its three
+// corner colors chosen so that their Gouraud mix comes closest to the texture
+// (RldObj_FitTriangle); a larger face, which the chain splits later, is
+// sampled at its corners' vt. Either way (map_Kd -o and -s: offset + scale x
+// vt): bilinear, repeated (u and v modulo 1) - with the edges
 // clamped on a face whose coordinates all lie in 0..1 or with -clamp on -,
 // v = 0 at the bottom of the picture, each texel by its alpha (a corner on
 // fully transparent texels keeps its color without the texture). PNG through
@@ -2504,17 +2507,106 @@ static void RldObj_VertexColors(struct RldObjModel *m)
 	RldMk_EmitModel("vertex-colors", s_rldObjVertexWords[s_rldObjOptions.vertexColors], rip ? "rip" : "plain", NULL, NULL);
 }
 
+// The three corner colors of a textured triangle that, mixed across it as the
+// game mixes them (Gouraud), come closest to the texture over the whole
+// triangle (least squares): c_k = 9 b_k - 3 (b_l + b_m), where b_i is the
+// mean of texture x barycentric weight i over a grid of sample points - the
+// centres of the N x N small triangles the triangle splits into, N about one
+// per texel along its longest side (4..32). A linear gradient comes out
+// exactly; a texel at a corner no longer decides alone. Every sum runs in a
+// fixed order. 0 = all corners at one texture coordinate, or a sample point
+// on fully transparent texels: the caller samples at the corners instead.
+static int RldObj_FitTriangle(const struct RldObjTexture *t, const double uv[3][2], int clamp, double fit[3][3])
+{
+	double b[3][3];
+	double extent = 0.0;
+	double count = 0.0;
+	u32 n;
+	u32 i;
+	u32 j;
+	int k;
+	int c;
+
+	for (k = 0; k < 3; k++)
+	{
+		const double du = (uv[(k + 1) % 3][0] - uv[k][0]) * (double)t->width;
+		const double dv = (uv[(k + 1) % 3][1] - uv[k][1]) * (double)t->height;
+		const double a = (du < 0.0) ? -du : du;
+		const double e = (dv < 0.0) ? -dv : dv;
+
+		extent = (a > extent) ? a : extent;
+		extent = (e > extent) ? e : extent;
+	}
+	// One texture coordinate for all corners: nothing to fit, the corners
+	// are sampled (and keep the bytes a sample gives exactly).
+	if (!(extent > 0.0))
+	{
+		return 0;
+	}
+	n = (extent < 4.0) ? 4u : ((extent >= 32.0) ? 32u : ((u32)RldMk_Floor(extent) + 1u));
+
+	memset(b, 0, sizeof(b));
+	for (i = 0; i < n; i++)
+	{
+		for (j = 0; (i + j) < n; j++)
+		{
+			int up;
+
+			// Up: (i + 1/3, j + 1/3) / n; down: (i + 2/3, j + 2/3) / n.
+			for (up = 0; up < 2; up++)
+			{
+				const double l1 = ((double)i + (up ? (1.0 / 3.0) : (2.0 / 3.0))) / (double)n;
+				const double l2 = ((double)j + (up ? (1.0 / 3.0) : (2.0 / 3.0))) / (double)n;
+				const double l0 = 1.0 - l1 - l2;
+				double f[3];
+
+				if (!up && ((i + j + 2u) > n))
+				{
+					continue;
+				}
+				if (!RldObj_Sample(t, l0 * uv[0][0] + l1 * uv[1][0] + l2 * uv[2][0], l0 * uv[0][1] + l1 * uv[1][1] + l2 * uv[2][1], clamp, f))
+				{
+					return 0;
+				}
+				for (c = 0; c < 3; c++)
+				{
+					b[0][c] += f[c] * l0;
+					b[1][c] += f[c] * l1;
+					b[2][c] += f[c] * l2;
+				}
+				count += 1.0;
+			}
+		}
+	}
+
+	for (k = 0; k < 3; k++)
+	{
+		for (c = 0; c < 3; c++)
+		{
+			const double v = (9.0 * b[k][c] - 3.0 * (b[(k + 1) % 3][c] + b[(k + 2) % 3][c])) / count;
+
+			fit[k][c] = (v < 0.0) ? 0.0 : ((v > 1.0) ? 1.0 : v);
+		}
+	}
+	return 1;
+}
+
 // One texture onto the corners of the faces whose material uses it: the
 // vertex color, or else Kd (1 without Kd), times the texture; a vertex color
-// x 255/128 (at most 1) when it modulates (RldObj_VertexColors). Returns the
-// corners that have no vt and keep their color; *clear counts those on fully
-// transparent texels, which keep it as well.
+// x 255/128 (at most 1) when it modulates (RldObj_VertexColors). The texture
+// of a triangle with vt at all corners is fitted over the whole triangle
+// (RldObj_FitTriangle); a larger face, which the chain splits later, is
+// sampled at its corners. Returns the corners that have no vt and keep their
+// color; *clear counts those on fully transparent texels, which keep it as
+// well.
 static u32 RldObj_ApplyTexture(struct RldObjModel *m, u32 texture, u8 *cornerRgb, u8 *cornerSource, u32 *clear)
 {
 	const struct RldObjTexture *t = &m->textures[texture];
 	u32 noUv = 0;
 	u32 f;
 	int clamp;
+	int fitted;
+	double fit[3][3];
 
 	for (f = 0; f < m->faceCount; f++)
 	{
@@ -2545,6 +2637,19 @@ static u32 RldObj_ApplyTexture(struct RldObjModel *m, u32 texture, u8 *cornerRgb
 			}
 		}
 
+		fitted = 0;
+		if ((m->faceCorners[f] == 3u) && (m->cornerT[m->faceFirst[f]] != RLDMK_NONE) && (m->cornerT[m->faceFirst[f] + 1u] != RLDMK_NONE) &&
+		    (m->cornerT[m->faceFirst[f] + 2u] != RLDMK_NONE))
+		{
+			double uv[3][2];
+
+			for (k = 0; k < 3u; k++)
+			{
+				RldObj_TextureUv(m, material, m->cornerT[m->faceFirst[f] + k], uv[k]);
+			}
+			fitted = RldObj_FitTriangle(t, uv, clamp, fit);
+		}
+
 		for (k = 0; k < m->faceCorners[f]; k++)
 		{
 			const u32 corner = m->faceFirst[f] + k;
@@ -2562,7 +2667,11 @@ static u32 RldObj_ApplyTexture(struct RldObjModel *m, u32 texture, u8 *cornerRgb
 			}
 
 			RldObj_TextureUv(m, material, vt, uv);
-			if (!RldObj_Sample(t, uv[0], uv[1], clamp, sample))
+			if (fitted)
+			{
+				memcpy(sample, fit[k], sizeof(sample));
+			}
+			else if (!RldObj_Sample(t, uv[0], uv[1], clamp, sample))
 			{
 				(*clear)++;
 				continue;

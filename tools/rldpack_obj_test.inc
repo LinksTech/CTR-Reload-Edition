@@ -443,8 +443,8 @@ static void RldMk_SelfTestObjColors(void)
 	                          "f 1 2 3\n"                    // 5: no vt - the color without the texture: grey
 	                          "f 1/3 2/3 3/3\n"              // 6: halfway between red and green
 	                          "f 1/4 2/4 3/4\n"              // 7: repeated: the red texel again
-	                          "usemtl tga\nf 1/1 2/2 3/1\n"  // 8: TGA, red and white
-	                          "usemtl jpeg\nf 1/1 2/2 3/1\n"; // 9: JPEG, about (200, 40, 40) and (230, 230, 230)
+	                          "usemtl tga\nf 1/1 2/2 3/1 4/1\n"  // 8: TGA, red and white (4 corners: sampled there)
+	                          "usemtl jpeg\nf 1/1 2/2 3/1 4/1\n"; // 9: JPEG, about (200, 40, 40) and (230, 230, 230)
 	static const u32 want[8][3] = {{0x808080u, 0x808080u, 0x808080u}, {0xFF0000u, 0xFF0000u, 0xFF0000u}, {0x8040FFu, 0x8040FFu, 0x8040FFu},
 	                               {0x336699u, 0x336699u, 0x336699u}, {0x800000u, 0xFF0000u, 0xFF0000u}, {0x808080u, 0x808080u, 0x808080u},
 	                               {0x808000u, 0x808000u, 0x808000u}, {0xFF0000u, 0xFF0000u, 0xFF0000u}};
@@ -522,10 +522,10 @@ static void RldMk_SelfTestObjEdges(void)
 {
 	static const char mtl[] = "newmtl edge\nmap_Kd edge.png\nnewmtl offs\nmap_Kd -o 0.75 0 0 edge.png\nnewmtl scal\nmap_Kd -s 0.25 1 1 edge.png\n"
 	                          "newmtl clmp\nmap_Kd -clamp on edge.png\n";
-	static const char obj[] = "mtllib edge.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\n"
+	static const char obj[] = "mtllib edge.mtl\nv 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\n"
 	                          "vt 0 0.5\nvt 1 0.5\nvt 0.5 0.5\nvt 0.1 0.5\nvt 0.9 0.5\nvt 2 0.5\nvt 1.5 0.5\nvt 0.125 0.5\nvt 1.2 0.5\nvt 1.4 0.5\n"
-	                          "usemtl edge\nf 1/1 2/2 3/3\nf 1/4 2/5 3/3\nf 1/1 2/6 3/7\n"
-	                          "usemtl offs\nf 1/8 2/8 3/8\nusemtl scal\nf 1/3 2/3 3/3\nusemtl clmp\nf 1/9 2/10 3/9\n";
+	                          "usemtl edge\nf 1/1 2/2 3/3 4/3\nf 1/4 2/5 3/3 4/3\nf 1/1 2/6 3/7 4/7\n"
+	                          "usemtl offs\nf 1/8 2/8 3/8 4/8\nusemtl scal\nf 1/3 2/3 3/3 4/3\nusemtl clmp\nf 1/9 2/10 3/9 4/9\n";
 	static const u32 want[6][3] = {{0xFF0000u, 0x00FF00u, 0xFFFFFFu}, {0xFF0000u, 0x00FF00u, 0xFFFFFFu}, {0x808000u, 0x808000u, 0xFFFFFFu},
 	                               {0x00FF00u, 0x00FF00u, 0x00FF00u}, {0xFF0000u, 0xFF0000u, 0xFF0000u}, {0x00FF00u, 0x00FF00u, 0x00FF00u}};
 	struct RldObjMemFile files[2];
@@ -954,8 +954,8 @@ static u8 *RldMk_TestBmp(u32 width, u32 height, const u8 *rgb, int top32, size_t
 static void RldMk_SelfTestObjBmp(void)
 {
 	static const char mtl[] = "newmtl b24\nmap_Kd b24.bmp\nnewmtl b32\nmap_Kd b32.bmp\nnewmtl cut\nKd 0 0 1\nmap_Kd cut.bmp\n";
-	static const char obj[] = "mtllib bmp.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0.25 0.75\nvt 0.75 0.25\nvt 0.75 0.75\n"
-	                          "usemtl b24\nf 1/1 2/2 3/3\nusemtl b32\nf 1/1 2/2 3/3\nusemtl cut\nf 1/1 2/2 3/3\n";
+	static const char obj[] = "mtllib bmp.mtl\nv 0 0 0\nv 1 0 0\nv 1 1 0\nv 0 1 0\nvt 0.25 0.75\nvt 0.75 0.25\nvt 0.75 0.75\n"
+	                          "usemtl b24\nf 1/1 2/2 3/3 4/3\nusemtl b32\nf 1/1 2/2 3/3 4/3\nusemtl cut\nf 1/1 2/2 3/3 4/3\n";
 	struct RldObjMemFile files[4];
 	struct RldMkPly ply;
 	struct RldMkModelInfo info;
@@ -995,6 +995,66 @@ static void RldMk_SelfTestObjBmp(void)
 	s_rldObjFileCount = 0;
 	free(b24);
 	free(b32);
+}
+
+// A textured triangle is fitted over its whole area: on a texture of 16 x 16
+// with a linear gradient (red = column x 17) the triangle from u 1/32 to
+// 31/32 gets its corners' colors (texel centres 0 and 255, within the step of
+// the sample grid); on a texture of 4 x 4 with one red texel in white the
+// corner over that texel is no longer plain red - the triangle's colors are
+// weighed over its area instead of one texel deciding a corner.
+static void RldMk_SelfTestObjFit(void)
+{
+	static const char mtl[] = "newmtl ramp\nmap_Kd ramp.png\nnewmtl dot\nmap_Kd dot.png\n";
+	static const char obj[] = "mtllib fit.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0.03125 0.5\nvt 0.96875 0.5\nvt 0.03125 0.96875\n"
+	                          "vt 0.125 0.125\nvt 0.875 0.125\nvt 0.125 0.875\nusemtl ramp\nf 1/1 2/2 3/3\nusemtl dot\nf 1/4 2/5 3/6\n";
+	struct RldObjMemFile files[3];
+	struct RldMkPly ply;
+	struct RldMkModelInfo info;
+	u8 ramp[16u * 16u * 3u];
+	u8 dot[4u * 4u * 3u];
+	size_t rampSize = 0;
+	size_t dotSize = 0;
+	u8 *rampPng;
+	u8 *dotPng;
+	u32 k;
+	int ok;
+
+	for (k = 0; k < 256u; k++)
+	{
+		ramp[3u * k + 0u] = (u8)((k % 16u) * 17u);
+		ramp[3u * k + 1u] = 0u;
+		ramp[3u * k + 2u] = 0u;
+	}
+	memset(dot, 255, sizeof(dot));
+	dot[3u * 12u + 1u] = 0u;   // row 3 (the bottom), column 0: red
+	dot[3u * 12u + 2u] = 0u;
+	rampPng = RldMk_TestPngRgb(16u, 16u, ramp, &rampSize);
+	dotPng = RldMk_TestPngRgb(4u, 4u, dot, &dotSize);
+	files[0].path = "selftest/fit.mtl";
+	files[0].data = (const u8 *)mtl;
+	files[0].size = sizeof(mtl) - 1u;
+	files[1].path = "selftest/ramp.png";
+	files[1].data = rampPng;
+	files[1].size = rampSize;
+	files[2].path = "selftest/dot.png";
+	files[2].data = dotPng;
+	files[2].size = dotSize;
+	s_rldObjFiles = files;
+	s_rldObjFileCount = 3u;
+	ok = (rampPng != NULL) && (dotPng != NULL) && RldMk_TestImport("selftest/fit.obj", obj, sizeof(obj) - 1u, &ply, &info, RLDMK_ROLE_MAIN);
+	RldMk_Test(ok && (RldMk_TestCornerRgb(&ply, 0u, 0u) == 0x000000u) && (RldMk_TestCornerRgb(&ply, 0u, 1u) >= 0xFE0000u) &&
+	               ((RldMk_TestCornerRgb(&ply, 0u, 1u) & 0xFFFFu) == 0u) && (RldMk_TestCornerRgb(&ply, 0u, 2u) == 0x000000u),
+	           "OBJ texture fitted over a triangle: a linear gradient", "read %d, %06X %06X %06X", ok, ok ? RldMk_TestCornerRgb(&ply, 0u, 0u) : 0u,
+	           ok ? RldMk_TestCornerRgb(&ply, 0u, 1u) : 0u, ok ? RldMk_TestCornerRgb(&ply, 0u, 2u) : 0u);
+	RldMk_Test(ok && (RldMk_TestCornerRgb(&ply, 1u, 0u) != 0xFF0000u) && ((RldMk_TestCornerRgb(&ply, 1u, 0u) & 0xFF0000u) == 0xFF0000u),
+	           "OBJ texture fitted over a triangle: one red texel does not decide its corner alone", "%06X %06X %06X", ok ? RldMk_TestCornerRgb(&ply, 1u, 0u) : 0u,
+	           ok ? RldMk_TestCornerRgb(&ply, 1u, 1u) : 0u, ok ? RldMk_TestCornerRgb(&ply, 1u, 2u) : 0u);
+	RldMk_FreePly(&ply);
+	s_rldObjFiles = NULL;
+	s_rldObjFileCount = 0;
+	free(rampPng);
+	free(dotPng);
 }
 
 // What falls back with a warning, what fails, and which format a file is.
@@ -1395,6 +1455,7 @@ static void RldMk_SelfTestObj(struct RldMkTestMesh *mesh)
 	RldMk_SelfTestObjAlpha();
 	RldMk_SelfTestObjTextureDirs();
 	RldMk_SelfTestObjBmp();
+	RldMk_SelfTestObjFit();
 	RldMk_SelfTestObjCases(mesh);
 	free(chri);
 }
