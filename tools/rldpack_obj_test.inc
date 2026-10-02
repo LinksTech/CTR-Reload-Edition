@@ -659,6 +659,78 @@ static void RldMk_SelfTestObjVertexColors(void)
 	free(png);
 }
 
+// One color for all vertices: exactly black or white while the materials have
+// colors (2 Kd, or a texture) gives the materials (obj-vertex-colors-uniform);
+// gold, or black with one Kd only, stays; --colors-from decides over it.
+static void RldMk_SelfTestObjUniform(void)
+{
+	static const char mtl[] = "newmtl red\nKd 1 0 0\nnewmtl blue\nKd 0 0 1\nnewmtl tex\nKd 0 1 0\nmap_Kd white.png\n";
+	static const u8 white[12] = {255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255};
+	// the vertex color, the second face's material, the switch, the colors
+	// of faces 0 and 1, warned
+	static const struct
+	{
+		const char *vertex;
+		const char *second;
+		const char *from;
+		u32 want[2];
+		int warned;
+	} cases[6] = {
+	    {"0 0 0", "blue", NULL, {0xFF0000u, 0x0000FFu}, 1},
+	    {"1 1 1", "tex", NULL, {0xFF0000u, 0x00FF00u}, 1},
+	    {"0.9 0.75 0.2", "blue", NULL, {0xE6BF33u, 0xE6BF33u}, 0},
+	    {"0 0 0", "red", NULL, {0x000000u, 0x000000u}, 0},
+	    {"0 0 0", "blue", "vertex", {0x000000u, 0x000000u}, 0},
+	    {"0.9 0.75 0.2", "blue", "material", {0xFF0000u, 0x0000FFu}, 0},
+	};
+	struct RldObjMemFile files[2];
+	size_t pngSize = 0;
+	u8 *png = RldMk_TestPngRgb(2u, 2u, white, &pngSize);
+	u32 c;
+
+	files[0].path = "selftest/uniform.mtl";
+	files[0].data = (const u8 *)mtl;
+	files[0].size = sizeof(mtl) - 1u;
+	files[1].path = "selftest/white.png";
+	files[1].data = png;
+	files[1].size = pngSize;
+	s_rldObjFiles = files;
+	s_rldObjFileCount = 2u;
+
+	for (c = 0; c < 6u; c++)
+	{
+		struct RldMkBuffer b;
+		struct RldMkPly ply;
+		struct RldMkModelInfo info;
+		char name[160];
+		int ok;
+
+		memset(&b, 0, sizeof(b));
+		RldMk_BufferText(&b, "mtllib uniform.mtl\nv 0 0 0 %s\nv 1 0 0 %s\nv 0 1 0 %s\nvt 0.5 0.5\nusemtl red\nf 1/1 2/1 3/1\nusemtl %s\nf 1/1 2/1 3/1\n",
+		                 cases[c].vertex, cases[c].vertex, cases[c].vertex, cases[c].second);
+		RldObj_ResetOptions();
+		RldMk_ResetSaid();
+		ok = (cases[c].from == NULL) || RldObj_Argument("--colors-from", cases[c].from);
+		ok = ok && (png != NULL) && (b.data != NULL) && RldMk_TestImport("selftest/uniform.obj", (const char *)b.data, b.size, &ply, &info, RLDMK_ROLE_MAIN);
+		snprintf(name, sizeof(name), "OBJ vertex colors all %s, faces red and %s%s%s: %06X %06X", cases[c].vertex, cases[c].second,
+		         (cases[c].from != NULL) ? ", --colors-from " : "", (cases[c].from != NULL) ? cases[c].from : "", cases[c].want[0], cases[c].want[1]);
+		RldMk_Test(ok && (RldMk_TestCornerRgb(&ply, 0u, 0u) == cases[c].want[0]) && (RldMk_TestCornerRgb(&ply, 1u, 0u) == cases[c].want[1]) &&
+		               (RldMk_Said("obj-vertex-colors-uniform") == cases[c].warned),
+		           name, "read %d, %06X %06X, said: %s", ok, ok ? RldMk_TestCornerRgb(&ply, 0u, 0u) : 0u, ok ? RldMk_TestCornerRgb(&ply, 1u, 0u) : 0u,
+		           s_rldMkCodes);
+		RldMk_FreePly(&ply);
+		free(b.data);
+	}
+
+	RldMk_ResetSaid();
+	RldMk_Test(RldObj_Argument("--colors-from", "both") && RldMk_Said("colors-from"), "--colors-from with a wrong value: colors-from", "said: %s",
+	           s_rldMkCodes);
+	RldObj_ResetOptions();
+	s_rldObjFiles = NULL;
+	s_rldObjFileCount = 0;
+	free(png);
+}
+
 // What falls back with a warning, what fails, and which format a file is.
 static void RldMk_SelfTestObjCases(struct RldMkTestMesh *mesh)
 {
@@ -1003,6 +1075,7 @@ static void RldMk_SelfTestObj(struct RldMkTestMesh *mesh)
 	RldMk_SelfTestObjColors();
 	RldMk_SelfTestObjVertexColors();
 	RldMk_SelfTestObjEdges();
+	RldMk_SelfTestObjUniform();
 	RldMk_SelfTestObjCases(mesh);
 	free(chri);
 }

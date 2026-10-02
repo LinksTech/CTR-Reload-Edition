@@ -65,6 +65,8 @@ void RldImg_Free(unsigned char *rgba);
 // (make-char calls it before its arguments, the self-test after its cases).
 //   --vertex-colors auto|modulate|color   how a vertex color meets a texture
 //                                         (RldObj_ApplyTexture); default auto
+//   --colors-from vertex|material         the vertex colors or the materials
+//                                         (RldObj_UniformColors); default auto
 
 enum
 {
@@ -75,10 +77,21 @@ enum
 
 static const char *const s_rldObjVertexWords[3] = {"auto", "modulate", "color"};
 
+enum
+{
+	RLDOBJ_FROM_AUTO = 0,
+	RLDOBJ_FROM_VERTEX,
+	RLDOBJ_FROM_MATERIAL
+};
+
+static const char *const s_rldObjFromWords[3] = {"auto", "vertex", "material"};
+
 struct RldObjOptions
 {
 	int vertexColors;      // RLDOBJ_VERTEX_*
 	int vertexColorsGiven;
+	int colorsFrom;        // RLDOBJ_FROM_*
+	int colorsFromGiven;
 };
 
 static struct RldObjOptions s_rldObjOptions;
@@ -109,6 +122,22 @@ static int RldObj_Argument(const char *arg, const char *value)
 		RldMk_Say("error", "vertex-colors", value, "The vertex colors must be auto, modulate or color.");
 		return 1;
 	}
+	if ((strcmp(arg, "--colors-from") == 0) && (value != NULL))
+	{
+		int k;
+
+		for (k = 0; k < 3; k++)
+		{
+			if (strcmp(value, s_rldObjFromWords[k]) == 0)
+			{
+				s_rldObjOptions.colorsFrom = k;
+				s_rldObjOptions.colorsFromGiven = 1;
+				return 1;
+			}
+		}
+		RldMk_Say("error", "colors-from", value, "The colors must come from vertex or material (or auto).");
+		return 1;
+	}
 	return 0;
 }
 
@@ -116,6 +145,8 @@ static int RldObj_Argument(const char *arg, const char *value)
 static void RldObj_EmitValues(void)
 {
 	Rld_Emit("value", "vertex-colors", s_rldObjVertexWords[s_rldObjOptions.vertexColors], s_rldObjOptions.vertexColorsGiven ? "switch" : "default",
+	         (const char *)NULL);
+	Rld_Emit("value", "colors-from", s_rldObjFromWords[s_rldObjOptions.colorsFrom], s_rldObjOptions.colorsFromGiven ? "switch" : "default",
 	         (const char *)NULL);
 }
 
@@ -131,6 +162,12 @@ static void RldObj_Usage(FILE *out)
 	fprintf(out, "                              colors of its textured corners have their\n");
 	fprintf(out, "                              median at 0x70..0x90, at least 5 %% exactly\n");
 	fprintf(out, "                              0x7F or 0x80 grey), else color\n");
+	fprintf(out, "  --colors-from vertex|material\n");
+	fprintf(out, "                              OBJ: the vertex colors or the materials' Kd\n");
+	fprintf(out, "                              (times their textures); without it the vertex\n");
+	fprintf(out, "                              colors count, unless all of them are exactly\n");
+	fprintf(out, "                              white or exactly black while the materials\n");
+	fprintf(out, "                              have colors (2 or more Kd, or a texture)\n");
 }
 
 // The keywords of the format that are read past (obj-ignored, one note each).
@@ -568,6 +605,7 @@ struct RldObjModel
 	u32 clamped;                       // color values clamped into 0..1
 	u32 ignored;                       // bit per s_rldObjIgnored entry already said
 	int modulate;                      // vertex colors modulate textures (RldObj_VertexColors)
+	int uniform;                       // the vertex colors are not used (RldObj_UniformColors)
 	u32 modulated;                     // corners where they did
 	char *line;                        // RLDOBJ_LINE_MAX + 1
 };
@@ -2030,6 +2068,81 @@ static void RldObj_BaseColors(const struct RldObjModel *m, u8 *cornerRgb, u8 *co
 	}
 }
 
+// Are the vertex colors only a fill? All vertices the faces use have the same
+// color, exactly white or exactly black (what an unpainted color attribute
+// holds), while the materials in use have colors of their own: 2 or more
+// different Kd, or a texture. Then the vertex colors are dropped and the
+// materials count (obj-vertex-colors-uniform); --colors-from decides over
+// it. Any other color, even one for all vertices, stays.
+static void RldObj_UniformColors(struct RldObjModel *m, const u8 *nameUsed)
+{
+	u8 first[3] = {0, 0, 0};
+	u8 kd[2][3];
+	u32 kds = 0;
+	int colored = 0;
+	int same = 1;
+	int textured = 0;
+	u32 c;
+	u32 i;
+
+	if (s_rldObjOptions.colorsFrom != RLDOBJ_FROM_AUTO)
+	{
+		m->uniform = (s_rldObjOptions.colorsFrom == RLDOBJ_FROM_MATERIAL) && (m->colored != 0u);
+		return;
+	}
+
+	for (c = 0; same && (c < m->cornerCount); c++)
+	{
+		const u32 v = m->cornerV[c];
+		u8 rgb[3];
+
+		if (!m->vColored[v])
+		{
+			continue;
+		}
+		RldObj_Store(rgb, &m->vrgb[3u * v]);
+		if (!colored)
+		{
+			memcpy(first, rgb, 3u);
+			colored = 1;
+		}
+		same = (memcmp(first, rgb, 3u) == 0);
+	}
+	if (!colored || !same || !(((first[0] == 0xFFu) && (first[1] == 0xFFu) && (first[2] == 0xFFu)) || ((first[0] | first[1] | first[2]) == 0u)))
+	{
+		return;
+	}
+
+	for (i = 0; i < m->names.count; i++)
+	{
+		const struct RldObjMaterial *material = (nameUsed[i] && (m->nameMaterial[i] != RLDMK_NONE)) ? &m->materials[m->nameMaterial[i]] : NULL;
+		u8 rgb[3];
+
+		if (material == NULL)
+		{
+			continue;
+		}
+		textured |= (material->map != NULL);
+		if (material->hasKd && (kds < 2u))
+		{
+			RldObj_Store(rgb, material->kd);
+			if ((kds == 0u) || (memcmp(kd[0], rgb, 3u) != 0))
+			{
+				memcpy(kd[kds], rgb, 3u);
+				kds++;
+			}
+		}
+	}
+	if (textured || (kds >= 2u))
+	{
+		m->uniform = 1;
+		RldMk_Say("warning", "obj-vertex-colors-uniform", (first[0] != 0u) ? "white" : "black",
+		          "All vertex colors of the model are exactly %s, as an unpainted color attribute is filled; the materials' colors are used instead "
+		          "(--colors-from vertex keeps the vertex colors).",
+		          (first[0] != 0u) ? "white" : "black");
+	}
+}
+
 // The texture coordinates of a corner as its material's map_Kd places them:
 // offset + scale x vt, clamped into 0..1 with -clamp on.
 static void RldObj_TextureUv(const struct RldObjModel *m, const struct RldObjMaterial *material, u32 vt, double uv[2])
@@ -2782,6 +2895,11 @@ static int RldObj_Parse(const char *path, const u8 *data, size_t size, struct Rl
 
 	if (ok)
 	{
+		RldObj_UniformColors(&m, nameUsed);
+		if (m.uniform)
+		{
+			memset(m.vColored, 0, m.vCount);
+		}
 		RldObj_VertexColors(&m);
 		RldObj_BaseColors(&m, cornerRgb, cornerSource);
 		ok = RldObj_Textures(&m, path, libraryPath, nameUsed, cornerRgb, cornerSource, info);
@@ -2802,7 +2920,7 @@ static int RldObj_Parse(const char *path, const u8 *data, size_t size, struct Rl
 			kdIgnored |= nameUsed[i] && (m.nameMaterial[i] != RLDMK_NONE) && m.materials[m.nameMaterial[i]].hasKd;
 		}
 
-		if ((m.colored != 0u) && kdIgnored)
+		if ((m.colored != 0u) && kdIgnored && !m.uniform)
 		{
 			RldMk_Say("info", "obj-vertex-colors", NULL, "The model has vertex colors: they are used, and the materials' Kd colors are ignored.");
 		}
