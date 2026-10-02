@@ -184,9 +184,16 @@ static const double s_rldDumRetailTurn[11] = {45.2, 44.65, 42.3, 38.3, 33.2, 28.
 //     edges of a kart model, 11 of the motorbike model (whose fork counts as
 //     its driver).
 // So: the wheel turns 30 degrees (two thirds of retail, clearly visible), the
-// driver rolls 8 degrees about the seat (his head still moves ~10 sideways),
-// both along the retail curve, and the hands follow the wheel.
-#define RLDDUM_TURN_ROLL 8.0
+// driver leans, both along the retail curve, and the hands follow the wheel.
+// The lean is a height profile (THE LEAN BENDS, below): the driver rolls up
+// to 16 degrees and turns into the curve up to 5 (yaw; retail rolls 14.0..
+// 46.6 and turns 6.7..21.2), a corner h above the pivot by the angles x
+// min(h / H, 1), H the driver's height above it - the hips some 2 degrees,
+// the hands (some 30 above the seat) some 6, the head the full angles. A
+// roll of 8 bent over the lowest 24 moved the heads of the test models only
+// 9.8..12.9 sideways (retail 15..39); the profile moves them 20.3..25.5.
+#define RLDDUM_TURN_ROLL 16.0
+#define RLDDUM_TURN_YAW 5.0
 #define RLDDUM_TURN_WHEEL 30.0
 
 // THE GRIP: a driver corner at distance d from the steering ring (a circle of
@@ -211,10 +218,13 @@ static const double s_rldDumRetailTurn[11] = {45.2, 44.65, 42.3, 38.3, 33.2, 28.
 // forward), the motorbike rider's shoes to -1.25 / -1.8 in frames 0 / 20.
 // No corner above the seat goes below it in any frame when tan(angle) <= H / d
 // for its distance d from the seat across (roll) or along (pitch): tan is
-// convex, so tan(angle x h / H) <= h / H x tan(angle) <= h / d. RldDum_Fit
-// takes H = RLDDUM_BEND_HEIGHT or, for a wider or longer driver, the H that
-// rule needs with the largest roll and pitch of the poses and the smallest
-// stretch. 24 is about the legs of a seated driver.
+// convex, so tan(angle x h / H) <= h / H x tan(angle) <= h / d. In reverse,
+// bump and jump RldDum_Fit takes H = RLDDUM_BEND_HEIGHT or, for a longer
+// driver, the H that rule needs with the largest pitch of the poses and the
+// smallest stretch; 24 is about the legs of a seated driver. In the turn H is
+// the driver's height above the pivot (its top), at least 24 and at least
+// what the rule needs with the roll - the yaw before it moves a corner across
+// by up to sin(yaw) x its distance along.
 // A DRIVER WITHOUT KART WHEELS (--wheels off) brings a vehicle of its own,
 // standing on the ground, and the dummy's seat is not where it sits (the
 // motorbike model's rider has his shoes at y 0.4 beside the bike, 10 below
@@ -418,6 +428,7 @@ struct RldDumFitResult
 	int hasWheel;             // the model has a steering wheel: it turns, the hands follow it
 	int wheelAsDriver;        // its steering wheel group leans with the driver instead (RldDum_Fit)
 	double bendHeight;        // > 0: the driver bends over this height above the seat (at 100 %)
+	double turnHeight;        // > 0: the same in the turn: the driver's height above the pivot
 	double wheelCenter[3];    // its column passes through here (after shift and size)
 	double wheelRadius;       // its ring: half its x extent (after size)
 	// For people and Reload Studio:
@@ -483,7 +494,7 @@ static int RldDum_Fit(const struct RldDumFitInput *in, struct RldDumFitResult *o
 		double pivot[3];
 		double across;
 		double along;
-		double roll = RLDDUM_TURN_ROLL;
+		double height;
 		double pitch = 8.0;   // reverse
 		double stretch = 1.0;
 		double sine;
@@ -551,12 +562,19 @@ static int RldDum_Fit(const struct RldDumFitInput *in, struct RldDumFitResult *o
 		along = (along < 0.0) ? -along : along;
 		along = ((body->hi[2] + out->shift[2] - pivot[2]) > along) ? (body->hi[2] + out->shift[2] - pivot[2]) : along;
 
-		RldDum_SinCos(roll, &sine, &cosine);
-		need = across * sine / cosine;
 		RldDum_SinCos(pitch, &sine, &cosine);
-		need = (along * sine / cosine > need) ? (along * sine / cosine) : need;
+		need = along * sine / cosine;
 		need /= stretch;
 		out->bendHeight = (need > RLDDUM_BEND_HEIGHT) ? need : RLDDUM_BEND_HEIGHT;
+
+		// the turn: over the driver's height, at least what the roll needs
+		RldDum_SinCos(RLDDUM_TURN_YAW, &sine, &cosine);
+		across += along * sine;
+		RldDum_SinCos(RLDDUM_TURN_ROLL, &sine, &cosine);
+		need = across * sine / cosine;
+		height = body->hi[1] + out->shift[1] - pivot[1];
+		need = (height > need) ? height : need;
+		out->turnHeight = (need > RLDDUM_BEND_HEIGHT) ? need : RLDDUM_BEND_HEIGHT;
 	}
 
 	// The steering column: the dummy's direction (+z), through the model's own
@@ -662,8 +680,9 @@ struct RldDumPose
 // the pivots onto a placed model.
 //   turn 0..20     frame 0 fully toward +X, 10 neutral, 20 mirrored, along
 //                  the retail curve (s_rldDumRetailTurn): driver roll
-//                  RLDDUM_TURN_ROLL, the steering wheel RLDDUM_TURN_WHEEL,
-//                  the hands with the wheel
+//                  RLDDUM_TURN_ROLL and yaw RLDDUM_TURN_YAW (the signs of
+//                  retail's lean), the steering wheel RLDDUM_TURN_WHEEL, the
+//                  hands with the wheel
 //   reverse 0..6   the driver alone turns up to 10 degrees toward +X and leans
 //                  8 back; the steering wheel stays
 //   bump 0..14     the driver nods along the retail course at about 2/3 of
@@ -698,6 +717,7 @@ static void RldDum_PoseFrame(u32 frame, struct RldDumPose *pose)
 				const double turn = (k <= (u32)RLDDUM_NEUTRAL_FRAME) ? s_rldDumRetailTurn[k] : -s_rldDumRetailTurn[2u * RLDDUM_NEUTRAL_FRAME - k];
 
 				pose->roll = RLDDUM_TURN_ROLL * (turn / RLDDUM_RETAIL_WHEEL_TURN);
+				pose->yaw = RLDDUM_TURN_YAW * (turn / RLDDUM_RETAIL_WHEEL_TURN);
 				pose->wheelTurn = RLDDUM_TURN_WHEEL * (turn / RLDDUM_RETAIL_WHEEL_TURN);
 				pose->grip = 1;
 			}
@@ -730,8 +750,8 @@ static void RldDum_PoseFrame(u32 frame, struct RldDumPose *pose)
 
 // The pivots of a placed model (after RldDum_PoseFrame): the seat (or the
 // model's own pivot), the column through the model's own steering wheel, the
-// grip on its ring, the bend - all at the model's --size. Without a steering
-// wheel there is no grip.
+// grip on its ring, the bend (in the turn over the driver's height) - all at
+// the model's --size. Without a steering wheel there is no grip.
 static void RldDum_PoseFit(struct RldDumPose *pose, const struct RldDumFitResult *fit)
 {
 	memcpy(pose->seat, fit->pivot, sizeof(pose->seat));
@@ -740,7 +760,7 @@ static void RldDum_PoseFit(struct RldDumPose *pose, const struct RldDumFitResult
 	pose->gripRadius = fit->hasWheel ? fit->wheelRadius : 0.0;
 	pose->gripNear = RLDDUM_GRIP_NEAR * fit->size;
 	pose->gripFar = RLDDUM_GRIP_FAR * fit->size;
-	pose->bendHeight = fit->bendHeight * fit->size;
+	pose->bendHeight = (pose->grip ? fit->turnHeight : fit->bendHeight) * fit->size;
 	pose->wheelAsDriver = fit->wheelAsDriver;
 }
 
@@ -1597,7 +1617,8 @@ static int RldDum_SelfTest(void (*report)(const char *line))
 		RldDum_PoseFit(&pose, &held);
 		RldDum_PoseFrame(20u, &pose20);
 		RldDum_PoseFit(&pose20, &held);
-		ok = (pose.roll == RLDDUM_TURN_ROLL) && (pose.wheelTurn == RLDDUM_TURN_WHEEL) && (pose20.roll == -RLDDUM_TURN_ROLL) && pose.grip;
+		ok = (pose.roll == RLDDUM_TURN_ROLL) && (pose.yaw == RLDDUM_TURN_YAW) && (pose.wheelTurn == RLDDUM_TURN_WHEEL) && (pose20.roll == -RLDDUM_TURN_ROLL) &&
+		     (pose20.yaw == -RLDDUM_TURN_YAW) && pose.grip;
 		for (group = 0; group < 3; group++)
 		{
 			for (i = 0; i < 5; i++)
@@ -1899,6 +1920,54 @@ static int RldDum_SelfTest(void (*report)(const char *line))
 		sit.positionGroup = NULL;
 		ok = ok && RldDum_Fit(&sit, &plain) && (memcmp(&fit, &plain, sizeof(fit)) == 0);
 		RldDum_Check(report, ok, "fit: a kart driver up to 8 above the dummy's seat keeps the dummy's seat");
+	}
+
+	// THE LEAN IN THE TURN: a kart driver 79.8 tall above the seat. In frame 0
+	// a corner above the seat at its full height rolls RLDDUM_TURN_ROLL, one
+	// at half the height half of it; in bump and jump the lean still bends
+	// over RLDDUM_BEND_HEIGHT.
+	{
+		struct RldDumFitInput tall;
+		double sine;
+		double cosine;
+
+		memset(&tall, 0, sizeof(tall));
+		tall.kart.valid = 1;
+		tall.driver.valid = 1;
+		tall.model.valid = 1;
+		tall.wheels = 1;
+		for (a = 0; a < 3; a++)
+		{
+			const double driverLo[3] = {-8.0, 12.0, -10.0};
+			const double driverHi[3] = {8.0, 90.0, 40.0};
+
+			tall.kart.lo[a] = (a == 0) ? -28.1 : kartBox[a];
+			tall.kart.hi[a] = (a == 0) ? 28.1 : kartBox[3 + a];
+			tall.driver.lo[a] = driverLo[a];
+			tall.driver.hi[a] = driverHi[a];
+			tall.model.lo[a] = tall.kart.lo[a];
+			tall.model.hi[a] = (driverHi[a] > tall.kart.hi[a]) ? driverHi[a] : tall.kart.hi[a];
+		}
+		ok = RldDum_Fit(&tall, &fit) && (fit.turnHeight > (90.0 - RLDDUM_SEAT_Y - 1.0e-9)) && (fit.turnHeight < (90.0 - RLDDUM_SEAT_Y + 1.0e-9)) &&
+		     (fit.bendHeight == RLDDUM_BEND_HEIGHT);
+		RldDum_PoseFrame(0u, &pose);
+		RldDum_PoseFit(&pose, &fit);
+		{
+			const double top[3] = {fit.pivot[0], fit.pivot[1] + fit.turnHeight, fit.pivot[2]};
+			const double half[3] = {fit.pivot[0], fit.pivot[1] + 0.5 * fit.turnHeight, fit.pivot[2]};
+			double out[3];
+
+			RldDum_ApplyPose(&pose, RLDDUM_GROUP_DRIVER, top, out);
+			RldDum_SinCos(RLDDUM_TURN_ROLL, &sine, &cosine);
+			ok = ok && ((out[0] - fit.pivot[0]) > (fit.turnHeight * sine - 1.0e-9)) && ((out[0] - fit.pivot[0]) < (fit.turnHeight * sine + 1.0e-9));
+			RldDum_ApplyPose(&pose, RLDDUM_GROUP_DRIVER, half, out);
+			RldDum_SinCos(0.5 * RLDDUM_TURN_ROLL, &sine, &cosine);
+			ok = ok && ((out[0] - fit.pivot[0]) > (0.5 * fit.turnHeight * sine - 1.0e-9)) && ((out[0] - fit.pivot[0]) < (0.5 * fit.turnHeight * sine + 1.0e-9));
+		}
+		RldDum_PoseFrame(36u, &pose);
+		RldDum_PoseFit(&pose, &fit);
+		ok = ok && (pose.bendHeight == RLDDUM_BEND_HEIGHT);
+		RldDum_Check(report, ok, "pose: in the turn the driver bends over its height, 16 degrees at the top, 8 at half of it");
 	}
 
 	// A steering wheel group without width, or far from where a kart driver
