@@ -44,7 +44,8 @@
 //    6  draw memory per frame: 28 bytes per untextured triangle
 //    7  colors -> a palette of 128 (or 64)
 //    8  the 47 frames 21/7/15/4: still, or the automatic poses
-//    9  quantization: one byte per axis, the up axis on even values
+//    9  quantization: one byte per axis, the up axis on even values (every
+//       value with --y-full, CHRI bit 4)
 //   10  command list: strips and fans, the vertex cache, cull bits per triangle
 //   11  raw frames, 12 model and header, 13 pointer map -> the CMDL chunk
 //   14  --icon: a PNG (include/rldpng.inc) -> the portrait CICN, 44 x 26, 16 colors
@@ -1395,6 +1396,7 @@ struct RldMkOptions
 	                  // of draw memory and file size lifted; such a build is never a character
 	int maskModel;    // the own mask (--mask-model): the profile of RldMk_BuildMaskOnce, sizePercent
 	                  // is --mask-size then
+	int yFull;        // --y-full: the up axis on every value 0..255, CHRI flag RLDCHAR_FLAG_FULL_HEIGHT
 };
 
 struct RldMkPart
@@ -1494,6 +1496,7 @@ struct RldMkBuild
 
 	// the result
 	int maskModel;             // built as the own mask (RldMk_BuildMaskOnce): one animation of one frame
+	int yFull;                 // --y-full: step 9 packs the up axis on every value (RldMk_QuantValue)
 	u32 framesWritten;         // frames in the written model: RLDMK_FRAMES_TOTAL, 1 for the mask
 	u8 *cmdl;
 	size_t cmdlSize;
@@ -4770,6 +4773,7 @@ struct RldMkSizeHull
 	double hi[3];
 	double neutralLo;   // z of driver and steering wheel in the neutral pose, for the length
 	double neutralHi;
+	int yFull;          // --y-full: the origin of the up axis as step 9 takes it (RldMk_OriginY)
 };
 
 // --size on a model that is only a vehicle (--wheels off, no driver, on the
@@ -4797,6 +4801,7 @@ static void RldMk_SizeHull(const struct RldMkBuild *b, struct RldMkSizeHull *hul
 	hull->neutralLo = 1.0e30;
 	hull->neutralHi = -1.0e30;
 	hull->ground = b->dummy;
+	hull->yFull = b->yFull;
 	if (b->dummy)
 	{
 		memcpy(hull->pivot, b->dumFit100.seat, sizeof(hull->pivot));
@@ -4928,7 +4933,7 @@ static int RldMk_SizeFits(const struct RldMkSizeHull *hull, u32 percent, char *w
 
 		scale = (needed < 1.0) ? 1 : (int)needed;
 		low = lo * 4096.0 / (double)scale;
-		origin = (a == 1) ? (2 * (int)RldMk_Round(low / 2.0)) : (int)RldMk_Round(low);
+		origin = (a == 1) ? RldMk_OriginY(low, hull->yFull) : (int)RldMk_Round(low);
 		if ((origin < RLDCHAR_COORD_MIN) || ((origin + RLDCHAR_RECORD_SPAN) > RLDCHAR_COORD_MAX))
 		{
 			snprintf(why, whySize, "the model would leave the game's coordinate range");
@@ -5157,8 +5162,13 @@ static int RldMk_StepMeasure(struct RldMkBuild *b, const struct RldMkOptions *op
 // (include/namespace_Instance.h:304-314, 357).
 //
 // THE UP AXIS HAS HALF THE RESOLUTION: the packed word is masked with 0xfff8ffff
-// after the shift (RB:2446, 2461), which clears bit 0 of pos.y + byte. So pos.y
-// and every Y byte are even, and scale.y spans 254 instead of 255.
+// after the shift (RenderBucket_PackModelVertexXY), which clears bit 0 of
+// pos.y + byte. So pos.y and every Y byte are even, and scale.y spans 254
+// instead of 255. --y-full sets CHRI bit 4 (RLDCHAR_FLAG_FULL_HEIGHT): the game
+// then masks with 0xfffcffff for this file's models and keeps that bit, and the
+// Y bytes take every value 0..255 - the same scale, half the step. pos.y stays
+// even either way: the bounding box (RenderBucket_ProjectFrameBounds) still
+// clears its bit 0 and spans 255 from there.
 //
 // ONE ORIGIN FOR ALL FRAMES: the hull is taken over all 47 frames together,
 // and every frame gets the same pos. The kart then stays byte for byte the same
@@ -5172,11 +5182,13 @@ static int RldMk_StepMeasure(struct RldMkBuild *b, const struct RldMkOptions *op
 // and pos is lo rounded, so the lowest value is at least -0.5 (Y -1) and the
 // highest below 255.5 (Y 255) - both round inside. Only rounding of the last
 // bit of a double could reach the ends, so it is still checked (model-quant).
-static s64 RldMk_QuantValue(double u, int axis, int *cut)
+// With --y-full (yFull) Y is packed like X and Z, on its even origin from
+// RldMk_OriginY.
+static s64 RldMk_QuantValue(double u, int axis, int yFull, int *cut)
 {
 	s64 q;
 
-	if (axis == 1)
+	if ((axis == 1) && !yFull)
 	{
 		q = RldMk_Round(u / 2.0);
 		*cut = (q < 0) || (q > 127);
@@ -5187,6 +5199,16 @@ static s64 RldMk_QuantValue(double u, int axis, int *cut)
 	q = RldMk_Round(u);
 	*cut = (q < 0) || (q > 255);
 	return (q < 0) ? 0 : ((q > 255) ? 255 : q);
+}
+
+// pos.y of the packed model, always even. Without --y-full twice the rounded
+// half of low: the values lie in -1..255 and their halves round to 0..127.
+// With it the even value at most half a step above low: low - origin is then
+// -0.5..1.5, the span 254 at most, so every value lies in -0.5..255.5 and
+// rounds to 0..255.
+static int RldMk_OriginY(double low, int yFull)
+{
+	return yFull ? (2 * (int)RldMk_Floor((low + 0.5) / 2.0)) : (2 * (int)RldMk_Round(low / 2.0));
 }
 
 // --diagnose: one more value cut off. 0 = out of memory.
@@ -5270,7 +5292,7 @@ static int RldMk_StepQuantize(struct RldMkBuild *b)
 
 		if (a == 1)
 		{
-			b->origin[a] = 2 * (int)RldMk_Round(low / 2.0);
+			b->origin[a] = RldMk_OriginY(low, b->yFull);
 		}
 		else
 		{
@@ -5296,7 +5318,7 @@ static int RldMk_StepQuantize(struct RldMkBuild *b)
 		{
 			const double u = b->frame[3u * i + (size_t)a] * 4096.0 / (double)b->scale[a] - (double)b->origin[a];
 			int cut;
-			const s64 q = RldMk_QuantValue(u, a, &cut);
+			const s64 q = RldMk_QuantValue(u, a, b->yFull, &cut);
 
 			if (cut)
 			{
@@ -6619,12 +6641,13 @@ static int RldMk_StepWrite(struct RldMkBuild *b)
 // STEP 15: THE COUNTER-CHECK
 //========================================================================================
 
-// One record of a frame as the renderer unpacks it (RB:2437-2467): X = (byte0 +
-// (pos.x & 0x7fff)) << 2 in 16 bits, Y = ((byte2 + pos.y) << 2) with bit 0 of the
-// sum cleared (mask 0xfff8ffff), Z = (pos.z + byte1) << 2. These are the 16-bit
-// values the GTE gets; game units = value x ModelHeader.scale / 16384. `frame`
-// points at the ModelFrame.
-static void RldMk_UnpackRecord(const u8 *frame, u32 record, int out[3])
+// One record of a frame as the renderer unpacks it (RenderBucket_PackModelVertexXY):
+// X = (byte0 + (pos.x & 0x7fff)) << 2 in 16 bits, Y = ((byte2 + pos.y) << 2) with
+// bit 0 of the sum cleared (mask 0xfff8ffff) - kept with fullHeight (CHRI bit 4,
+// mask 0xfffcffff) -, Z = (pos.z + byte1) << 2. These are the 16-bit values the
+// GTE gets; game units = value x ModelHeader.scale / 16384. `frame` points at
+// the ModelFrame.
+static void RldMk_UnpackRecord(const u8 *frame, int fullHeight, u32 record, int out[3])
 {
 	const u32 posX = Rld_ReadLE16(&frame[0]);
 	const u32 posY = Rld_ReadLE16(&frame[2]);
@@ -6632,7 +6655,7 @@ static void RldMk_UnpackRecord(const u8 *frame, u32 record, int out[3])
 	const u8 *q = &frame[Rld_ReadLE32(&frame[RLDMK_FRAME_VERTEX_OFFSET]) + 3u * record];
 	const u32 originXY = (posX & 0x7FFFu) | (posY << 16);
 	const u32 vertexXZ = (u32)q[0] | ((u32)q[2] << 16);
-	const u32 packedXY = ((vertexXZ + originXY) << 2) & 0xFFF8FFFFu;
+	const u32 packedXY = ((vertexXZ + originXY) << 2) & (fullHeight ? 0xFFFCFFFFu : 0xFFF8FFFFu);
 	const u32 packedZ = (posZ + (u32)q[1]) << 2;
 
 	out[0] = (int)(packedXY & 0xFFFFu) - (((packedXY & 0x8000u) != 0u) ? 0x10000 : 0);
@@ -6657,7 +6680,8 @@ static void RldMk_ModelScale(const u8 *cmdl, int scale[3])
 
 // Read back by the renderer's rule (RldMk_UnpackRecord). Each record against the
 // position it stands for, in every frame: X and Z within half a step, Y within
-// half a double step. 0 = a record is off, *badOut says which.
+// half a double step (half a step with --y-full). 0 = a record is off, *badOut
+// says which.
 static int RldMk_ReadBack(const struct RldMkBuild *b, u32 *badOut)
 {
 	const u8 *body = &b->cmdl[4];
@@ -6690,12 +6714,12 @@ static int RldMk_ReadBack(const struct RldMkBuild *b, u32 *badOut)
 				double tolerance[3];
 				int axis;
 
-				RldMk_UnpackRecord(frame, r, v);
+				RldMk_UnpackRecord(frame, b->yFull, r, v);
 				got[0] = (double)v[0] * (double)scale[0] / 16384.0;
 				got[1] = (double)v[1] * (double)scale[1] / 16384.0;
 				got[2] = (double)v[2] * (double)scale[2] / 16384.0;
 				tolerance[0] = (0.5 + 1.0e-6) * (double)scale[0] / 4096.0;
-				tolerance[1] = (1.0 + 1.0e-6) * (double)scale[1] / 4096.0;
+				tolerance[1] = ((b->yFull ? 0.5 : 1.0) + 1.0e-6) * (double)scale[1] / 4096.0;
 				tolerance[2] = (0.5 + 1.0e-6) * (double)scale[2] / 4096.0;
 
 				for (axis = 0; axis < 3; axis++)
@@ -7064,7 +7088,7 @@ static int RldMk_ReplayFrames(const struct RldMkBuild *b, int twoSided, u32 *bad
 				}
 
 				exact[k] = RldMk_At(b, f, position);
-				RldMk_UnpackRecord(frame, corner[k], v);
+				RldMk_UnpackRecord(frame, b->yFull, corner[k], v);
 				for (axis = 0; axis < 3; axis++)
 				{
 					double d;
@@ -7341,6 +7365,7 @@ static int RldMk_BuildOnce(const struct RldMkPly *ply, const struct RldMkOptions
 	b->kartPart = -1;
 	b->driverPart = -1;
 	b->diagnose = opt->diagnose;
+	b->yFull = opt->yFull;
 
 	// --fit crash: the scale first, then the chain with it (as --scale).
 	if (opt->fit)
@@ -7557,6 +7582,7 @@ static int RldMk_BuildMaskOnce(const struct RldMkPly *ply, const struct RldMkOpt
 	b->kartPart = -1;
 	b->driverPart = -1;
 	b->maskModel = 1;
+	b->yFull = opt->yFull;
 
 	(void)RldMk_StepMaskFit(ply, opt, b, &fitted.scale);
 	opt = &fitted;
@@ -7843,7 +7869,7 @@ static u8 *RldMk_PreviewAs(const struct RldMkBuild *b, size_t *sizeOut, int kart
 				const u32 index = color[from];
 				int v[3];
 
-				RldMk_UnpackRecord(frame, corner[from], v);
+				RldMk_UnpackRecord(frame, b->yFull, corner[from], v);
 				for (a = 0; a < 3; a++)
 				{
 					Rld_WriteLE16(&out[at + 2u * (u32)a], (u32)(sixteenths ? RldMk_PreviewSixteenth(v[a], scale[a]) : RldMk_PreviewUnit(v[a], scale[a])) & 0xFFFFu);
@@ -7886,7 +7912,7 @@ static u8 *RldMk_PreviewAs(const struct RldMkBuild *b, size_t *sizeOut, int kart
 			continue;
 		}
 
-		RldMk_UnpackRecord(frame, r, v);
+		RldMk_UnpackRecord(frame, b->yFull, r, v);
 		for (a = 0; a < 3; a++)
 		{
 			const int unit = RldMk_PreviewUnit(v[a], scale[a]);
@@ -8181,7 +8207,7 @@ static char *RldMk_Diagnosis(const struct RldMkBuild *b, const struct RldMkOptio
 			{
 				continue;
 			}
-			RldMk_UnpackRecord(frame, firstRecord[i], v);
+			RldMk_UnpackRecord(frame, b->yFull, firstRecord[i], v);
 			RldMk_TextAdd(&text, "x %u %u %.6f %.6f %.6f %.6f %.6f %.6f\n", f, b->diagPositionFrom[i], exact[0], exact[1], exact[2],
 			              (double)v[0] * (double)scale[0] / 16384.0, (double)v[1] * (double)scale[1] / 16384.0, (double)v[2] * (double)scale[2] / 16384.0);
 		}
@@ -11688,13 +11714,13 @@ static void RldMk_MapColorText(u32 color, char text[8])
 	snprintf(text, 8, "%02X%02X%02X", color & 0xFFu, (color >> 8) & 0xFFu, (color >> 16) & 0xFFu);
 }
 
-// The CHRI flags of a build: no wheels (bit 0), the mask (bits 1-2) and an
-// own map color (bit 3). All unset = 0, and CHRI keeps fixedSize 0x1C as
-// before the flags.
+// The CHRI flags of a build: no wheels (bit 0), the mask (bits 1-2), an own
+// map color (bit 3) and the full height (bit 4). All unset = 0, and CHRI keeps
+// fixedSize 0x1C as before the flags.
 static u32 RldMk_ChriFlags(const struct RldMkOptions *opt)
 {
 	return (opt->noWheels ? RLDCHAR_FLAG_NO_WHEELS : 0u) | ((opt->mask << RLDCHAR_FLAG_MASK_SHIFT) & RLDCHAR_FLAG_MASK_BITS) |
-	       (opt->hasMapColor ? RLDCHAR_FLAG_MAP_COLOR : 0u);
+	       (opt->hasMapColor ? RLDCHAR_FLAG_MAP_COLOR : 0u) | (opt->yFull ? RLDCHAR_FLAG_FULL_HEIGHT : 0u);
 }
 
 // The mask a driver wears, as a word: "aku" or "uka"; with RLDCHAR_MASK_LIKE
@@ -12390,6 +12416,10 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		{
 			opt.twoSided = 1;
 		}
+		else if (strcmp(arg, "--y-full") == 0)
+		{
+			opt.yFull = 1;
+		}
 		else if (strcmp(arg, "--check") == 0)
 		{
 			check = 1;
@@ -12504,6 +12534,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	RldMk_DefaultOptions(&maskOpt);
 	maskOpt.maskModel = 1;
 	maskOpt.still = 1;
+	maskOpt.yFull = opt.yFull;   // CHRI bit 4 is about every model of the file
 	if ((maskModelArg == NULL) && ((maskSizeArg != NULL) || (maskUpArg != NULL) || (maskForwardArg != NULL)))
 	{
 		RldMk_Say("error", "usage", "--mask-size", "--mask-size, --mask-up and --mask-forward need --mask-model <ply>.");
@@ -12769,6 +12800,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		Rld_Emit("value", "repair", opt.repair ? "auto" : "off", (repairArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "open-parts", opt.openOneSided ? "one-sided" : "two-sided", (openArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "two_sided", opt.twoSided ? "yes" : "no", opt.twoSided ? "switch" : "default", (const char *)NULL);
+		Rld_Emit("value", "y-full", opt.yFull ? "on" : "off", opt.yFull ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "out", opt.diagnose ? "none" : outPath, (outArg != NULL) ? "switch" : "default", (const char *)NULL);
 		snprintf(number, sizeof(number), "%u", opt.sizePercent);
 		Rld_Emit("value", "size", number, (sizeArg != NULL) ? "switch" : "default", (const char *)NULL);
@@ -13151,9 +13183,47 @@ static int RldMk_ListFinding(void *context, const struct RldCharFinding *finding
 	return 1;
 }
 
+// The packed heights of a checked model, all frames: how many pos.y + byte are
+// odd (*total = all of them). Without CHRI bit 4 the game draws each of them one
+// value lower.
+static u32 RldMk_OddHeights(const u8 *cmdl, u32 records, u32 *total)
+{
+	const u8 *body = &cmdl[4];
+	const u32 header = Rld_ReadLE32(&body[RLDMK_MODEL_HEADERS]);
+	const u32 table = Rld_ReadLE32(&body[header + RLDMK_HEADER_ANIMS]);
+	const u32 anims = Rld_ReadLE32(&body[header + RLDMK_HEADER_NUM_ANIMS]);
+	u32 odd = 0;
+	u32 a;
+
+	*total = 0;
+	for (a = 0; a < anims; a++)
+	{
+		const u32 anim = Rld_ReadLE32(&body[table + 4u * a]);
+		const u32 frames = Rld_ReadLE16(&body[anim + RLDMK_ANIM_NUM_FRAMES]) & 0x7FFFu;
+		const u32 frameSize = Rld_ReadLE16(&body[anim + RLDMK_ANIM_FRAME_SIZE]);
+		u32 k;
+
+		for (k = 0; k < frames; k++)
+		{
+			const u8 *frame = &body[anim + RLDMK_ANIM_BYTES + k * frameSize];
+			const u32 posY = Rld_ReadLE16(&frame[2]);
+			const u8 *q = &frame[Rld_ReadLE32(&frame[RLDMK_FRAME_VERTEX_OFFSET])];
+			u32 r;
+
+			for (r = 0; r < records; r++)
+			{
+				odd += (posY + (u32)q[3u * r + 2u]) & 1u;
+			}
+			*total += records;
+		}
+	}
+
+	return odd;
+}
+
 // Length (z) and height (y) of a checked model in the neutral turn frame, game
 // units as the renderer decodes them (RldMk_UnpackRecord) - next to Crash's.
-static void RldMk_ModelExtent(const u8 *cmdl, u32 records, double extent[2])
+static void RldMk_ModelExtent(const u8 *cmdl, u32 records, int fullHeight, double extent[2])
 {
 	const u8 *body = &cmdl[4];
 	const u32 header = Rld_ReadLE32(&body[RLDMK_MODEL_HEADERS]);
@@ -13173,7 +13243,7 @@ static void RldMk_ModelExtent(const u8 *cmdl, u32 records, double extent[2])
 	{
 		int v[3];
 
-		RldMk_UnpackRecord(frame, r, v);
+		RldMk_UnpackRecord(frame, fullHeight, r, v);
 		for (a = 0; a < 3; a++)
 		{
 			const double unit = (double)v[a] * (double)scale[a] / 16384.0;
@@ -13395,6 +13465,8 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 			printf("  mask          %s (%s)\n", RldMk_MaskName(RLDCHAR_MASK_LIKE, info.templateId),
 			       ((info.flags & RLDCHAR_FLAG_MASK_BITS) != 0u) ? "reserved value 3, read as like the template" : "like the template");
 		}
+		printf("  height        %s\n", ((info.flags & RLDCHAR_FLAG_FULL_HEIGHT) != 0u) ? "every value of the up axis (--y-full, CHRI bit 4)"
+		                                                                                 : "even values of the up axis, as retail");
 		if ((info.flags & ~(u32)RLDCHAR_FLAGS_KNOWN) != 0u)
 		{
 			printf("  flags         0x%08x (unknown bits ignored)\n", info.flags);
@@ -13488,6 +13560,7 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		snprintf(number, sizeof(number), "%u", info.classId);
 		Rld_Emit("value", "class", number, "container", (const char *)NULL);
 		Rld_Emit("value", "wheels", ((info.flags & RLDCHAR_FLAG_NO_WHEELS) != 0u) ? "off" : "on", "container", (const char *)NULL);
+		Rld_Emit("value", "y-full", ((info.flags & RLDCHAR_FLAG_FULL_HEIGHT) != 0u) ? "on" : "off", "container", (const char *)NULL);
 		Rld_Emit("value", "mask", RldMk_MaskWord(RldChar_Mask(info.flags), info.templateId),
 		         (RldChar_Mask(info.flags) != RLDCHAR_MASK_LIKE) ? "container" : "template", (const char *)NULL);
 		{
@@ -13559,11 +13632,16 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		printf("  draw memory   %u bytes per frame, at most %u\n", facts.drawBytes, RLDCHAR_DRAW_BYTES_MAX);
 		if (verdict == RLDCHAR_VERDICT_OK)
 		{
+			const int fullHeight = (info.flags & RLDCHAR_FLAG_FULL_HEIGHT) != 0u;
 			double extent[2];
+			u32 heights = 0;
+			const u32 odd = RldMk_OddHeights(cmdl, facts.records, &heights);
 
-			RldMk_ModelExtent(cmdl, facts.records, extent);
+			RldMk_ModelExtent(cmdl, facts.records, fullHeight, extent);
 			printf("  size          %.1f long, %.1f tall (game units, steering straight); Crash is %.1f long, %.1f tall\n", extent[0], extent[1],
 			       RLDMK_CRASH_LENGTH, RLDMK_CRASH_HEIGHT);
+			printf("  odd heights   %u of %u%s\n", odd, heights,
+			       ((odd != 0u) && !fullHeight) ? " - without CHRI bit 4 the game draws them one value lower" : "");
 			printf("  verdict       OK - the game loads it\n");
 		}
 		else
@@ -13801,6 +13879,9 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "  --scale <f>                 multiply the model (default 1), only with\n");
 	fprintf(out, "                              --fit none\n");
 	fprintf(out, "  --two-sided                 draw both sides of every triangle\n");
+	fprintf(out, "  --y-full                    the up axis on every value instead of the even\n");
+	fprintf(out, "                              ones: half the height step (CHRI bit 4; a game\n");
+	fprintf(out, "                              from before it draws odd heights one value lower)\n");
 	fprintf(out, "  --out <file>                somewhere else than next to the model\n");
 	fprintf(out, "  --check                     run every check and build in memory, write\n");
 	fprintf(out, "                              nothing (the previews are written)\n");
@@ -14761,6 +14842,69 @@ static void RldMk_SelfTestModel(struct RldMkTestMesh *mesh, u8 **goodOut, size_t
 			}
 		}
 		RldMk_Test(ok, "the up axis on even values", "pos.y %d", b.origin[1]);
+	}
+
+	// --y-full: the same model with every value of the up axis. pos.y stays even
+	// in every frame, scale and the other axes stay, odd heights appear, CHRI
+	// gets bit 4, and the largest height error is half a step instead of one.
+	{
+		struct RldMkOptions fullOpt = opt;
+		struct RldMkPly fullPly;
+		struct RldMkBuild full;
+		double errorEven = 0.0;
+		double errorFull = 0.0;
+		u32 odd = 0;
+		u32 heights = 0;
+		int built;
+
+		fullOpt.yFull = 1;
+		built = RldMk_TestBuild(mesh, 0, 1, &fullOpt, &fullPly, &full);
+		RldMk_Test(built && (s_rldMkErrors == 0), "--y-full: the standard model is built", "said: %s", s_rldMkCodes);
+		if (built)
+		{
+			const u8 *body = &full.cmdl[4];
+			int even = ((full.origin[1] & 1) == 0);
+
+			for (a = 0; a < RLDCHAR_ANIM_COUNT; a++)
+			{
+				for (f = 0; f < (u32)s_rldCharFrames[a]; f++)
+				{
+					even = even && ((Rld_ReadLE16(&body[RldMk_TestFrame(full.cmdl, a, f) + 2u]) & 1u) == 0u);
+				}
+			}
+			odd = RldMk_OddHeights(full.cmdl, full.recordCount, &heights);
+			RldMk_Test(even && (odd != 0u) && (full.scale[0] == b.scale[0]) && (full.scale[1] == b.scale[1]) && (full.scale[2] == b.scale[2]) &&
+			               (full.origin[0] == b.origin[0]) && (full.origin[2] == b.origin[2]),
+			           "--y-full: pos.y even, odd heights, the same scale", "pos.y %d, %u of %u odd, scale y %d / %d", full.origin[1], odd, heights,
+			           full.scale[1], b.scale[1]);
+			RldMk_Test(((RldMk_ChriFlags(&fullOpt) & RLDCHAR_FLAG_FULL_HEIGHT) != 0u) && ((RldMk_ChriFlags(&opt) & RLDCHAR_FLAG_FULL_HEIGHT) == 0u),
+			           "--y-full: CHRI bit 4 only with the switch", "flags 0x%x", RldMk_ChriFlags(&fullOpt));
+
+			for (i = 0; i < full.recordCount; i++)
+			{
+				int v[3];
+				const double exactFull = RldMk_At(&full, 0u, full.record[i])[1];
+				double d;
+
+				RldMk_UnpackRecord(&body[RldMk_TestFrame(full.cmdl, 0, 0)], 1, i, v);
+				d = (double)v[1] * (double)full.scale[1] / 16384.0 - exactFull;
+				errorFull = (d < 0.0) ? ((-d > errorFull) ? -d : errorFull) : ((d > errorFull) ? d : errorFull);
+			}
+			for (i = 0; i < b.recordCount; i++)
+			{
+				int v[3];
+				const double exactEven = RldMk_At(&b, 0u, b.record[i])[1];
+				double d;
+
+				RldMk_UnpackRecord(&b.cmdl[4u + RldMk_TestFrame(b.cmdl, 0, 0)], 0, i, v);
+				d = (double)v[1] * (double)b.scale[1] / 16384.0 - exactEven;
+				errorEven = (d < 0.0) ? ((-d > errorEven) ? -d : errorEven) : ((d > errorEven) ? d : errorEven);
+			}
+			RldMk_Test((errorFull <= ((0.5 + 1.0e-6) * (double)full.scale[1] / 4096.0)) && (errorFull < errorEven),
+			           "--y-full: the height error at most half a step, below the even one", "%.6f against %.6f game units", errorFull, errorEven);
+		}
+		RldMk_FreeBuild(&full);
+		RldMk_FreePly(&fullPly);
 	}
 
 	// Poses: the kart stays byte for byte, the driver leans toward +X in frame 0.
@@ -16507,10 +16651,20 @@ static void RldMk_SelfTestVehicle(struct RldMkTestMesh *mesh)
 
 	// THE PACKING: a value beyond its byte is cut off and says so; the ends
 	// themselves are not cut.
-	ok = (RldMk_QuantValue(-0.6, 0, &cut[0]) == 0) && (RldMk_QuantValue(255.6, 2, &cut[1]) == 255) && (RldMk_QuantValue(255.2, 1, &cut[2]) == 254) &&
-	     (RldMk_QuantValue(-0.5, 0, &cut[3]) == 0) && (RldMk_QuantValue(255.4, 2, &cut[4]) == 255) && (RldMk_QuantValue(254.9, 1, &cut[5]) == 254);
+	ok = (RldMk_QuantValue(-0.6, 0, 0, &cut[0]) == 0) && (RldMk_QuantValue(255.6, 2, 0, &cut[1]) == 255) &&
+	     (RldMk_QuantValue(255.2, 1, 0, &cut[2]) == 254) && (RldMk_QuantValue(-0.5, 0, 0, &cut[3]) == 0) &&
+	     (RldMk_QuantValue(255.4, 2, 0, &cut[4]) == 255) && (RldMk_QuantValue(254.9, 1, 0, &cut[5]) == 254);
 	RldMk_Test(ok && cut[0] && cut[1] && cut[2] && !cut[3] && !cut[4] && !cut[5], "packing: values beyond the byte are found, the ends are kept",
 	           "%d %d %d %d %d %d", cut[0], cut[1], cut[2], cut[3], cut[4], cut[5]);
+
+	// --y-full: the up axis like the others, 3 stays odd; the even origin keeps
+	// low - origin in -0.5..1.5.
+	ok = (RldMk_QuantValue(3.0, 1, 1, &cut[0]) == 3) && (RldMk_QuantValue(3.0, 1, 0, &cut[1]) == 4) && (RldMk_QuantValue(255.6, 1, 1, &cut[2]) == 255) &&
+	     (RldMk_QuantValue(-0.5, 1, 1, &cut[3]) == 0) && (RldMk_QuantValue(255.4, 1, 1, &cut[4]) == 255) && (RldMk_QuantValue(-0.6, 1, 1, &cut[5]) == 0);
+	RldMk_Test(ok && !cut[0] && !cut[1] && cut[2] && !cut[3] && !cut[4] && cut[5] && (RldMk_OriginY(-0.5, 1) == 0) && (RldMk_OriginY(1.4, 1) == 0) &&
+	               (RldMk_OriginY(1.5, 1) == 2) && (RldMk_OriginY(-2.6, 1) == -4) && (RldMk_OriginY(1.0, 0) == 2),
+	           "packing --y-full: every value of the up axis, pos.y even", "%d %d %d %d %d %d, origin %d %d %d %d", cut[0], cut[1], cut[2], cut[3], cut[4],
+	           cut[5], RldMk_OriginY(-0.5, 1), RldMk_OriginY(1.4, 1), RldMk_OriginY(1.5, 1), RldMk_OriginY(-2.6, 1));
 
 	// THE VEHICLE: the standard model with a front part across the middle of
 	// the kart's nose (0.05 to 0.8 above the ground) and a seat across the
