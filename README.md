@@ -138,8 +138,9 @@ Planned, in no particular order and without a date:
   Studio's Character page and a `characters` folder next to the game). It
   fits every model onto Crash's kart at his size, repairs common export
   faults, reduces a model with too many triangles by itself and can leave
-  out the kart wheels for a model with its own. A character's icon shows in
-  the driver select. Their voices come next
+  out the kart wheels for a model with its own. You choose whether it wears
+  Aku Aku or Uka Uka, and a character's icon shows in the driver select.
+  Their voices come next
 - Skin support for the drivers
 - ...and more
 

@@ -359,22 +359,32 @@ below). Nothing interprets CPRM yet.
 | 0x03 | u8 | class | engine class 0..3: balanced, acceleration, speed, turning; the game drives the character with it |
 | 0x04 | char[20] | name | display name, see the name rule |
 | 0x18 | u32 | charVersion | for humans; the CMDL hash, not this number, is meant to tell versions apart |
-| 0x1C | u32 | flags | only when fixedSize >= 0x20, else 0; bit 0 (`RLDCHAR_FLAG_NO_WHEELS`): the game draws no kart wheels for this driver (tyre dust and skid marks stay: they are effects at the wheel points, not wheels); further bits are reserved |
+| 0x1C | u32 | flags | only when fixedSize >= 0x20, else 0; bit 0 (`RLDCHAR_FLAG_NO_WHEELS`): the game draws no kart wheels for this driver (tyre dust and skid marks stay: they are effects at the wheel points, not wheels); bits 1-2 (`RLDCHAR_FLAG_MASK_BITS`): the mask the driver wears - 0 like the template, 1 Aku Aku, 2 Uka Uka, 3 reserved (read as 0, no finding); further bits are reserved |
 | fixedSize | u32 | stringCount | then per string: u32 length, bytes |
 | | | string 0 | author, at most 64 bytes; "" when absent |
 
 - `rldpack` writes fixedSize 0x1C and one string, the author (UTF-8; the packer
-  checks it). Only when flags is not 0 (`rldpack make-char --wheels off`) does it
-  write fixedSize 0x20 with flags at 0x1C, so a file without flags has the same
-  bytes as before the field existed.
+  checks it). Only when flags is not 0 (`rldpack make-char --wheels off`,
+  `--mask aku` or `--mask uka`) does it write fixedSize 0x20 with flags at
+  0x1C, so a file without flags has the same bytes as before the field existed.
 - A reader skips numeric bytes beyond the fields it knows and strings beyond the
-  first. A reader from before flags skips it and draws the wheels.
+  first. A reader from before flags skips it, draws the wheels and gives the
+  driver the template's mask.
 - Flag bits a reader does not know are ignored: they are no finding and never
-  refuse the file.
+  refuse the file. A reader from before the mask field ignores bits 1-2 and
+  gives the driver the template's mask.
 - `rldpack make-char --template` sets the template, `--class` the class
-  (default: the template's own class). Reload Studio asks for no template: it
-  always passes `--template 14` and the driving style the author chose
-  (default balanced).
+  (default: the template's own class), `--mask aku|uka|like` the mask (default
+  `like`: bits 1-2 stay 0 and the driver wears the template's mask; `aku` and
+  `uka` are written as chosen, even when the template wears that mask).
+  Reload Studio asks for no template: it always passes `--template 14` and the
+  driving style the author chose (default balanced). Its Mask choice (Aku Aku
+  or Uka Uka) starts at the mask of Fake Crash, Uka Uka; only a different
+  choice passes `--mask aku`, so a file built with the default has the same
+  bytes as before the field existed.
+- `rldpack info` and `rldpack verify` name the mask and whether it is the
+  template's or chosen in the file; the reserved value 3 is named as read like
+  the template.
 
 Name rule (`RldChar_NameValid`, one function for packer and reader):
 
@@ -543,16 +553,24 @@ only the portrait (log line `CICN ignored`).
 What `rldpack make-char --icon <png>` does (`RldMk_MakeIcon`):
 
 1. Reads the PNG with its own reader (`include/rldpng.inc`): color types 0,
-   2, 3, 4 and 6, bit depths 1 to 16, not interlaced, at most 4096 x 4096
-   pixels.
-2. Cuts it to 44:26 in the middle; the longer side loses the same on both
-   ends (one pixel more at the end when the difference is odd).
-3. Scales it to 44 x 26 with a box filter in integers, the colors weighted by
+   2, 3, 4 and 6, bit depths 1 to 16, interlaced (Adam7) or not, at most
+   4096 x 4096 pixels.
+2. Cuts it to 43:25 in the middle; the longer side loses the same on both
+   ends (one pixel more at the end when the difference is odd). The menu
+   tile shows only the top left 43 x 25 of the 44 x 26 texels: it draws the
+   own portrait at the size of the template's (log line
+   `[CTR Char] portrait geometry`).
+3. Scales it to 43 x 25 with a box filter in integers, the colors weighted by
    their alpha. A texel that is less than half covered is transparent.
+   Column 43 repeats column 42 and row 25 repeats row 24. A picture of
+   exactly 43 x 25 is taken texel for texel; one of exactly 44 x 26 fills
+   the whole chunk texel for texel, without the cut. A smaller picture is
+   enlarged (rldpack notes `icon-small`).
 4. Reduces the opaque texels to at most 15 colors (the same median cut and
    k-means as the model's palette). Entry 0 is transparent; a color that
    rounds to 0x0000 is written as 0x0421.
-5. Builds the chunk twice, compares the bytes and runs CICN-1..3 on it.
+5. Builds the chunk twice, compares the bytes and runs CICN-1..3 on it. The
+   chunk stays 44 x 26 (612 bytes).
 
 Without `--icon` the file has no CICN, and the game shows the template's
 portrait.
@@ -565,7 +583,7 @@ loaded files in sorted order) own a portrait slot in a strip of VRAM that no
 retail or track path writes (x 256..511, y 266..295; layout in
 `include/platform/native_chars.h`). Each time the driver select grid is
 entered, the usable portraits are uploaded there, and a custom tile draws its
-own portrait in the size of the template's. A tile without a usable CICN or
+own portrait in the size of the template's (43 x 25 of the 44 x 26). A tile without a usable CICN or
 beyond the 20 slots shows the template's portrait. Only the grid shows the
 own portrait: the race HUD, the results and the cup standings show the
 template's. After the load line the game logs one line per file,
@@ -588,7 +606,8 @@ file: CVOI stays a reserved name, and a custom driver is silent in the game.
 | a broken file | skipped with one log line `[CTR Char] REFUSED <file>: <kind> (<rule>) <detail>`; the game starts anyway |
 | the first 32 valid files | a tile each in the one-player ARCADE driver select, after the retail drivers (not for CRYSTAL and CTR under NITRO-PIT); a further valid file gets the log line `NO ID` and no tile |
 | menu and race | the driver select shows the own portrait (CICN, first 20 entries; else the template's, see CICN) and the name from CHRI; the race HUD, the results and the cup standings show the template's portrait; in the race seat 0 runs on the template's character id with the custom model, the class in CHRI sets the physics values and the engine sound, and the template's voice is not played |
-| wheels | with `RLDCHAR_FLAG_NO_WHEELS` set in CHRI the game draws no kart wheels (and no wheel reflections) for the custom model - tyre dust and skid marks stay, they are effects at the wheel points, not wheels - and the load line `[CTR Char] loaded <file>: ...` ends in `, wheels hidden`; without the bit the wheels are drawn as for a retail driver |
+| wheels | with `RLDCHAR_FLAG_NO_WHEELS` set in CHRI the game draws no kart wheels (and no wheel reflections) for the custom model - tyre dust and skid marks stay, they are effects at the wheel points, not wheels - and the load line `[CTR Char] loaded <file>: ...` adds `, wheels hidden` after the byte count; without the bit the wheels are drawn as for a retail driver |
+| mask | CHRI flags bits 1-2 choose the mask the custom driver wears: Aku Aku or Uka Uka for the mask item and the rescue after a fall, with that mask's model, beam, sound and music, the mask's wrong-way voice in a one-player race and the mask's icon in the HUD weapon slot. 0 (or 3) keeps the template's mask: Aku Aku for Crash, Coco, Polar, Pura and Penta, Uka Uka for every other template, Fake Crash included; the HUD icon then follows the retail icon table, in which Penta shows the Uka Uka icon. When the race has not loaded the chosen mask's model or beam, the template's mask stays. With Aku Aku or Uka Uka chosen the load line ends in `, mask aku` or `, mask uka` (after `, wheels hidden` when both are set); with 0 or 3 nothing is added. The first mask born for the seat in each load logs `[CTR Char] mask seat 0: <aku\|uka> from the <file\|template> (model 0x.., beam 0x.., sound 0x.., song <aku\|uka\|none>)`; a chosen mask that is not loaded logs `[CTR Char] mask seat 0: <aku\|uka> wanted, not loaded - the template's mask stays` once per load |
 
 - The model's frame counts must match those of the template's retail model;
   otherwise seat 0 stays retail (log line `not bound: frames`).
@@ -706,7 +725,7 @@ CHRI rules (`RldChar_ParseInfo`). A finding refuses the file as DAMAGED.
 | a new layout inside SNDB, PARM or CICN | the chunk's own version field: an older reader drops only that chunk |
 | a new PARM key | no bump: unknown keys are skipped |
 | a new string in META or CHRI | appended at the end only |
-| a new field in CHRI | a longer fixedSize; an older reader skips the extra bytes. flags at 0x1C came this way (fixedSize 0x20, written only when a bit is set): an older reader skips it and draws the wheels. A new flag bit needs no bump: a reader ignores bits it does not know |
+| a new field in CHRI | a longer fixedSize; an older reader skips the extra bytes. flags at 0x1C came this way (fixedSize 0x20, written only when a bit is set): an older reader skips it and draws the wheels. A new flag bit needs no bump: a reader ignores bits it does not know. The mask in bits 1-2 came this way: an older reader gives the driver the template's mask |
 | a new number in META | not possible without a new major: META's numeric part has no length field. New things go into optional chunks |
 | something without which the content is wrong | a required-feature bit in header field 0x0C; a reader that does not know it refuses (NEEDS NEWER) |
 | a change an older reader would misread | a new major: older readers say NEEDS NEWER, newer readers say OLD FORMAT for the old files |

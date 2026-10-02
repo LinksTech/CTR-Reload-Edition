@@ -104,18 +104,23 @@ Custom tracks start without the camera fly-in before the countdown, even if
 the track has its own camera path. The original tracks keep their fly-in.
 
 Custom characters: the game reads every .rldchar file in its "characters"
-folder at start (make them on Reload Studio's "Character" page, 4.3). Each
-gets a tile in the one-player ARCADE driver select, after the original
-drivers; the tiles are sorted by file name, at most 32 get one. Not in
-NITRO-PIT CRYSTAL or CTR, not in Time Trial, Adventure, Battle or with two
-players.
+folder at start (make them on Reload Studio's "Character" page, 4.3). It
+reads the folder only then: after you build or replace a character,
+restart the game. Each gets a tile in the one-player ARCADE driver select,
+after the original drivers; the tiles are sorted by file name, at most 32
+get one. Not in NITRO-PIT CRYSTAL or CTR, not in Time Trial, Adventure,
+Battle or with two players.
 - A broken file is skipped and the game starts anyway; the log says why (a
   line starting with "[CTR Char] REFUSED").
 - The driving style chosen in Reload Studio decides how the kart drives
   (speed, acceleration, turning) and its engine sound.
 - A character built with "Show kart wheels" off (4.3) drives without the
   game's kart wheels - its model brings its own. Tyre dust and skid marks
-  stay. The log line "[CTR Char] loaded ..." then ends in ", wheels hidden".
+  stay. The log line "[CTR Char] loaded ..." then contains ", wheels hidden".
+- The mask chosen in Reload Studio (4.3) is the one the driver wears: the
+  mask item, the rescue after a fall, its sound and music, its voice when
+  you drive the wrong way and its icon in the race HUD. With Aku Aku the
+  log line "[CTR Char] loaded ..." ends in ", mask aku".
 - A character built with an icon (4.3) shows it on its tile in the driver
   select, for the first 20 files the game loads (sorted by file name; a
   refused file does not count). Without an icon, with a broken one and from
@@ -134,6 +139,11 @@ game and its data there, and your music needs the game's sound data.
 
 Colours in all messages: green = done, amber = works, but read this,
 red = stopped.
+
+The window follows the display scale of the monitor it is on (also when you
+move it to another one) and opens inside the screen. It can be made small;
+a page that does not fit then scrolls (scroll bars, mouse wheel). In a
+narrow window the sidebar shows only its icons.
 
 4.1 Page "Track" - build a track container
   Track       The folder with your export: .lev (geometry), .vrm (textures),
@@ -210,6 +220,12 @@ for the game (and for cups).
               Balanced, Acceleration, Speed or Turning, each with the
               original drivers that drive like it (default Balanced). This
               decides how the kart drives in the game.
+  Mask        Aku Aku (like Crash, Coco, Polar, Pura, Penta) or Uka Uka
+              (like Fake Crash, Cortex, Tiny and the rest); default Uka Uka,
+              the mask of Fake Crash. Worn for the mask item and after a
+              fall, with its sound and music, and shown as its icon in the
+              race HUD. The choice is stored in the .rldchar; an older game
+              does not know it and gives the driver Uka Uka.
   Size        50 to 200 % (default 100). 100 % = Crash size: every model is
               first fitted to the size of Crash with his kart. Its kart gets
               the length of Crash's kart (112.4 game units); with "Show kart
@@ -270,11 +286,13 @@ for the game (and for cups).
               (and no wheel reflections) for this driver; tyre dust and skid
               marks stay. The choice is stored in the .rldchar. An older
               game does not know it and draws the wheels.
-  Icon (PNG)  Optional. Your picture and how the game will have it (cut to
-              44:26 in the middle, 44 x 26 pixels, 15 colours and
-              transparent) side by side. The game shows it on the
-              character's tile in the driver select (see 3.); without an
-              icon the tile shows the portrait of Fake Crash.
+  Icon (PNG)  Optional. Any PNG, at any size. Your picture and how the
+              game will show it side by side: cut to 43:25 in the middle,
+              43 x 25 pixels (as much of a portrait as the driver select
+              shows), 15 colours and transparent. A picture of exactly 43 x 25 is
+              taken pixel for pixel. The game shows it on the character's
+              tile in the driver select (see 3.); without an icon the tile
+              shows the portrait of Fake Crash.
   Voices      Optional. A folder with your voice lines as .wav or .vag:
               boost1, boost2, hit1, hit2, spin1, spin2, bigair1, bigair2,
               drop1, drop2, shield1, shield2, passing1, passing2, fire1,
@@ -283,25 +301,32 @@ for the game (and for cups).
               silent in the game.
   Preview     The model as the game will draw it. Drag to turn it; the list
               at the top right of the card picks Neutral, Steering left or
-              Steering right. Under your model stands the reference: an
-              original kart at Crash's size with his seat, his steering wheel
-              and the kart wheels the game draws (none with "Show kart
-              wheels" off). Your model is fitted onto it and always drawn in
-              front of it, so the grey reference shows only where your model
-              leaves a gap. The dashed box is Crash size.
-  Output      Where the .rldchar is written; empty = next to the model. Best:
-              the game's "characters" folder, then the game finds it at its
-              next start.
+              Steering right. On the left your model, with the kart wheels
+              the game draws under it (none with "Show kart wheels" off). On
+              the right, in grey and in the same scale on the same floor,
+              "Crash size": the original kart at Crash's size, the size your
+              model is fitted to, with a plain driver figure as tall as
+              Crash. Both turn together.
+  Output      Where the .rldchar is written. Empty: the game's "characters"
+              folder when Reload Studio knows the game (the one on the page
+              "Test in game", else the one in its own folder), else next to
+              the model. A file outside the game's "characters" folder must
+              be copied there; the build message says so.
   Check       Checks everything without writing (also runs by itself 0.6
               seconds after every change). The messages say what to fix.
   Build character
-              Writes the .rldchar (asks before it replaces a file) and shows
-              its SHA-256. "Show in folder" opens the folder.
+              Writes the .rldchar (asks before it replaces a file) and says
+              what is in it: the kart wheels hidden or shown, the mask, and
+              its SHA-256. Restart the game to load the new file - the game
+              reads its "characters" folder only when it starts. "Show in
+              folder" opens the folder.
   Show rldpack output
               The full checker log.
 
 The file name is the character's identity in the game; the name in the menu
-lives inside the file.
+lives inside the file. The fields and options of the page are not
+remembered: every start of Reload Studio begins with the defaults (only the
+folders the file dialogs open in are).
 
 4.4 Page "Test in game" - start the game on your track
   Game program    ctr_native.exe. Reload Studio takes the one you chose here
@@ -366,8 +391,11 @@ Reload Studio
     NITRO-PIT -> CUP. Try a cup with problems and read the check list.
 [ ] Character page: build a character from your model, with and without
     an icon, at a few sizes. The preview matches what you see in the game.
+    With the game known, the file lands in its "characters" folder; restart
+    the game to see it.
 [ ] Character page: a model exported at any scale comes out at Crash size
-    (100 %) on the grey reference kart, inside the dashed box. A model of
+    (100 %): the same size as the grey "Crash size" kart and driver beside
+    it. A model of
     more than 805 triangles is "reduced automatically" and still looks like
     itself in the game: colours in their place, no holes, no faces missing.
 [ ] Character page: a model with holes, split corners or open parts -
@@ -375,11 +403,18 @@ Reload Studio
     Try "Closed hull (remesh)" on a model the repair cannot fix.
 [ ] Character page: a model with its own wheels or vehicle, "Show kart
     wheels" off - the game draws no kart wheels for it.
+[ ] Character page: Mask Aku Aku and Uka Uka - with OPTIONS -> CHEATS ->
+    MASKS on, the driver wears the chosen mask in the race and the HUD shows
+    its icon.
+[ ] Character page: an icon of any size and shape (also an interlaced PNG)
+    - the picture on the page matches the tile in the driver select.
 [ ] Break the character on purpose: a model without kart, a very large
     model, a broken PNG, a voice file in a wrong format. Reload Studio must
     say what is wrong, never crash.
-[ ] Dark mode / light mode (bottom left), resizing the window: everything
-    stays readable.
+[ ] Dark mode / light mode (bottom left), resizing the window, a display
+    scale of 150 % or more, a small screen, moving the window to a monitor
+    with another scale: everything stays readable, and what does not fit
+    can be scrolled to.
 
 In the game
 [ ] NITRO-PIT -> RACE: your track is listed, the preview plays, the race
@@ -516,6 +551,11 @@ Reload Studio remembers its settings in %APPDATA%\CTR Reload\reloadstudio.ini.
 For automation and tests, "ReloadStudio.exe --settings <file.ini>" keeps
 its settings in that file instead, and its logs and temporary files in the
 folder of that file; nothing is then written to %APPDATA% or %TEMP%.
+"--ui-scale <percent>" (75 to 300) lays the window out at that display scale
+instead of the monitor's, and "--screen <w>x<h>" as if the screen were that
+size - for screenshots of other setups. "--do" plays back steps (among them
+"scroll top|bottom|<x> <y>" and "controls <file>", a list of what the window
+shows); "ReloadStudio.exe --help" lists every switch and step.
 To update, replace ctr_native.exe, ctr_native.pdb and ReloadStudio.exe; keep
 the rest.
 
