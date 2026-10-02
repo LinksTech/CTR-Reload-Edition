@@ -58,6 +58,10 @@
 //   draw     NativeChar_ModelHidesWheels (game/DrawTires.c): a file whose
 //            CHRI flags set RLDCHAR_FLAG_NO_WHEELS is drawn without the kart
 //            wheels and their reflection, wherever its model is drawn.
+//   mask     NativeChar_SeatMaskGood (game/Vehicle/VehPickupItem.c and the
+//            HUD icon, game/UI/UI_Weapon.c): a bound seat whose CHRI flags
+//            choose Aku Aku or Uka Uka wears that mask while its model and
+//            beam are loaded, else the template's.
 //   grid     NativeChar_EntryPortrait (game/230/MM_NativeCharGrid.c): the
 //            CICN of a file, read at start, is uploaded into its slot of the
 //            portrait strip at the first draw after every entering of the
@@ -107,6 +111,10 @@
 // The mask the game counts animation frames with (game/Vehicle/VehFrame.c:11).
 #define NATIVE_CHAR_FRAME_MASK 0x7fffu
 
+// The mask sound is the mask model id plus this (MASK_SOUND_ID_OFFSET_FROM_MODEL,
+// game/Vehicle/VehPickupItem.c): 0x53 Aku Aku, 0x54 Uka Uka.
+#define NATIVE_CHAR_MASK_SOUND_OFFSET 0x1a
+
 // --dev, main.c. Defined further down in the same build.
 extern int g_cfg_dev;
 
@@ -148,12 +156,15 @@ global_variable struct NativeCharFile s_charFiles[NATIVE_CHAR_ROSTER_MAX];
 
 // The overlay per seat. Only seat 0 is ever armed so far. entry is the roster
 // entry it was armed with, motorId the character id the engine runs the seat
-// on - the template.
+// on - the template. maskNoted and maskMissingNoted keep the mask lines of
+// NativeChar_NoteMask and NativeChar_SeatMaskGood to one per load.
 global_variable struct
 {
 	struct Model *model;
 	int entry;
 	int motorId;
+	int maskNoted;
+	int maskMissingNoted;
 } s_seat[NATIVE_CHAR_SEATS];
 
 // --dev-grid-fill, as main.c passed it on (0 = none).
@@ -476,12 +487,16 @@ internal int NativeChar_ReadFile(const char *path, const char *file, struct Nati
 internal void NativeChar_LogLoaded(const struct NativeCharFile *entry)
 {
 	// The CHRI flags only add to the line when a known bit is set; a file
-	// without flags keeps the line as it always was.
+	// without flags keeps the line as it always was. The mask only when the
+	// file chooses one (not for "like the template" or the reserved value).
 	const char *wheels = ((entry->info.flags & RLDCHAR_FLAG_NO_WHEELS) != 0) ? ", wheels hidden" : "";
+	const u32 mask = RldChar_Mask(entry->info.flags);
+	const char *maskText = (mask == RLDCHAR_MASK_AKU) ? ", mask aku" : ((mask == RLDCHAR_MASK_UKA) ? ", mask uka" : "");
 
-	Platform_Log("[CTR Char] loaded %s: template %u, class %u, CMDL %02x%02x%02x%02x%02x%02x, %llu bytes%s\n", entry->file, (unsigned)entry->info.templateId,
-	             (unsigned)entry->info.classId, (unsigned)entry->cmdlHash[0], (unsigned)entry->cmdlHash[1], (unsigned)entry->cmdlHash[2],
-	             (unsigned)entry->cmdlHash[3], (unsigned)entry->cmdlHash[4], (unsigned)entry->cmdlHash[5], (unsigned long long)entry->fileBytes, wheels);
+	Platform_Log("[CTR Char] loaded %s: template %u, class %u, CMDL %02x%02x%02x%02x%02x%02x, %llu bytes%s%s\n", entry->file,
+	             (unsigned)entry->info.templateId, (unsigned)entry->info.classId, (unsigned)entry->cmdlHash[0], (unsigned)entry->cmdlHash[1],
+	             (unsigned)entry->cmdlHash[2], (unsigned)entry->cmdlHash[3], (unsigned)entry->cmdlHash[4], (unsigned)entry->cmdlHash[5],
+	             (unsigned long long)entry->fileBytes, wheels, maskText);
 }
 
 // The portrait of an admitted entry, one line of its own after "loaded" (that
@@ -1472,6 +1487,120 @@ int NativeChar_SeatSilent(int seat)
 	return NativeChar_SeatModel(seat) != NULL;
 }
 
+// Whether the level holds the mask (1 Aku Aku, 0 Uka Uka): its model and its
+// beam, the two VehPickupItem_MaskUseWeapon births. INSTANCE_BirthWithThread
+// gives NULL for a missing model, INSTANCE_Birth3D does not check at all.
+internal int NativeChar_MaskLoaded(int good)
+{
+	const struct GameTracker *gGT = sdata->gGT;
+
+	if (gGT == NULL)
+	{
+		return 0;
+	}
+
+	return (gGT->modelPtr[good ? STATIC_AKUAKU : STATIC_UKAUKA] != NULL) && (gGT->modelPtr[good ? STATIC_AKUBEAM : STATIC_UKABEAM] != NULL);
+}
+
+// The mask decision itself, pure: the CHRI flags of a bound seat, the
+// caller's retail value and whether each mask is loaded. 1 Aku Aku, 0 Uka
+// Uka. *missing = 1 when the file chooses a mask the level does not hold -
+// then the template's, retailGood, as for "like the template".
+internal int NativeChar_MaskGoodOf(u32 flags, int retailGood, int akuLoaded, int ukaLoaded, int *missing)
+{
+	const u32 mask = RldChar_Mask(flags);
+	int want;
+
+	*missing = 0;
+
+	if (mask == RLDCHAR_MASK_LIKE)
+	{
+		return retailGood;
+	}
+
+	want = (mask == RLDCHAR_MASK_AKU) ? 1 : 0;
+	if ((want ? akuLoaded : ukaLoaded) == 0)
+	{
+		*missing = 1;
+		return retailGood;
+	}
+
+	return want;
+}
+
+int NativeChar_SeatMaskGood(int seat, int retailGood)
+{
+	u32 flags;
+	int missing;
+	int good;
+
+	if (NativeChar_SeatModel(seat) == NULL)
+	{
+		return retailGood;
+	}
+
+	flags = s_charFiles[s_seat[seat].entry].info.flags;
+	good = NativeChar_MaskGoodOf(flags, retailGood, NativeChar_MaskLoaded(1), NativeChar_MaskLoaded(0), &missing);
+
+	// The HUD asks in every frame with the mask item: one line per load.
+	if ((missing != 0) && (s_seat[seat].maskMissingNoted == 0))
+	{
+		s_seat[seat].maskMissingNoted = 1;
+		Platform_Log("[CTR Char] mask seat %d: %s wanted, not loaded - the template's mask stays\n", seat,
+		             (RldChar_Mask(flags) == RLDCHAR_MASK_AKU) ? "aku" : "uka");
+	}
+
+	return good;
+}
+
+void NativeChar_NoteMask(const struct Driver *d, int modelID)
+{
+	const struct GameTracker *gGT = sdata->gGT;
+	const char *song = "none";
+	u32 mask;
+	int seat;
+	int good;
+	int missing;
+
+	if ((d == NULL) || (gGT == NULL))
+	{
+		return;
+	}
+
+	seat = (int)d->driverID;
+	if ((NativeChar_SeatModel(seat) == NULL) || (s_seat[seat].maskNoted != 0))
+	{
+		return;
+	}
+	s_seat[seat].maskNoted = 1;
+
+	// The mask VehPickupItem_MaskUseWeapon has just created, and where the
+	// choice came from: the file, or the template (like the template, or the file's
+	// mask is not loaded).
+	good = (modelID == STATIC_AKUAKU) ? 1 : 0;
+	mask = RldChar_Mask(s_charFiles[s_seat[seat].entry].info.flags);
+	(void)NativeChar_MaskGoodOf(s_charFiles[s_seat[seat].entry].info.flags, good, NativeChar_MaskLoaded(1), NativeChar_MaskLoaded(0), &missing);
+
+	// The song is only set for a human outside KS_ENGINE_REVVING and
+	// KS_MASK_GRABBED (VehPickupItem_MaskUseWeapon).
+	if (((d->actionsFlagSet & ACTION_BOT) == 0) && (d->kartState != KS_ENGINE_REVVING) && (d->kartState != KS_MASK_GRABBED))
+	{
+		if ((gGT->gameMode1 & AKU_SONG) != 0)
+		{
+			song = "aku";
+		}
+		else if ((gGT->gameMode1 & UKA_SONG) != 0)
+		{
+			song = "uka";
+		}
+	}
+
+	Platform_Log("[CTR Char] mask seat %d: %s from the %s%s (model 0x%02x, beam 0x%02x, sound 0x%02x, song %s)\n", seat, good ? "aku" : "uka",
+	             ((mask != RLDCHAR_MASK_LIKE) && (missing == 0)) ? "file" : "template",
+	             (missing != 0) ? ((mask == RLDCHAR_MASK_AKU) ? " - aku not loaded" : " - uka not loaded") : "", (unsigned)modelID,
+	             (unsigned)(good ? STATIC_AKUBEAM : STATIC_UKABEAM), (unsigned)(modelID + NATIVE_CHAR_MASK_SOUND_OFFSET), song);
+}
+
 void NativeChar_NoteDriveValues(const struct Driver *d, int seat)
 {
 	int classId;
@@ -1560,4 +1689,124 @@ void NativeChar_NoteVBlank(int vblank)
 	// :594), the ones the renderer picks the frame by.
 	inst = gGT->drivers[0]->instSelf;
 	Platform_Log("[CTR Char] vblank %d: seat 0 anim %d frame %d\n", vblank, (int)inst->animIndex, (int)inst->animFrame);
+}
+
+// ---------------------------------------------------------------------------
+// THE MASK SELF-TEST, part of --char-grid-selftest (MM_NativeCharGrid_SelfTest).
+// Pure like the rest of that test: CHRI bytes built here, read back with
+// RldChar_ParseInfo, and the mask decision of a bound seat with each mask
+// loaded or not. No roster, no seat is armed, no sdata is read.
+// ---------------------------------------------------------------------------
+
+// A CHRI chunk on template 14: fixedSize 0x1C (a file from before the flags)
+// when hasFlags is 0, else 0x20 with flags; no strings. Returns its size.
+internal size_t NativeChar_TestChri(u8 *bytes, int hasFlags, u32 flags)
+{
+	const u32 fixedSize = hasFlags ? RLDCHAR_CHRI_SIZE_FLAGS : RLDCHAR_INFO_FIXED_SIZE;
+
+	memset(bytes, 0, RLDCHAR_CHRI_SIZE_FLAGS + 4u);
+	bytes[0x00] = (u8)fixedSize;
+	bytes[0x02] = RLDCHAR_TEMPLATE_MAX;
+	memcpy(&bytes[0x04], "MASK", 4);
+	bytes[0x18] = 1;
+	if (hasFlags)
+	{
+		bytes[RLDCHAR_CHRI_FLAGS_OFFSET + 0] = (u8)(flags & 0xffu);
+		bytes[RLDCHAR_CHRI_FLAGS_OFFSET + 1] = (u8)((flags >> 8) & 0xffu);
+		bytes[RLDCHAR_CHRI_FLAGS_OFFSET + 2] = (u8)((flags >> 16) & 0xffu);
+		bytes[RLDCHAR_CHRI_FLAGS_OFFSET + 3] = (u8)((flags >> 24) & 0xffu);
+	}
+
+	return (size_t)fixedSize + 4u;
+}
+
+internal void NativeChar_MaskExpect(int *checks, int *failures, int ok, const char *what)
+{
+	(*checks)++;
+
+	if (!ok)
+	{
+		(*failures)++;
+		printf("char mask selftest FAILED: %s\n", what);
+	}
+}
+
+void NativeChar_MaskSelfTest(int *checks, int *failures)
+{
+	// One case per file: hasFlags, flags, the mask RldChar_Mask must give, and
+	// what a bound seat wears with both masks loaded for a retail value of 0
+	// (Uka Uka) and of 1 (Aku Aku).
+	static const struct
+	{
+		const char *name;
+		int hasFlags;
+		u32 flags;
+		u32 mask;
+		int good0;
+		int good1;
+	} cases[] = {
+	    {"old file without flags", 0, 0u, RLDCHAR_MASK_LIKE, 0, 1},
+	    {"flags 0 (like the template)", 1, 0u, RLDCHAR_MASK_LIKE, 0, 1},
+	    {"aku", 1, 0x2u, RLDCHAR_MASK_AKU, 1, 1},
+	    {"uka", 1, 0x4u, RLDCHAR_MASK_UKA, 0, 0},
+	    {"reserved 3", 1, 0x6u, RLDCHAR_MASK_LIKE, 0, 1},
+	    {"wheels off and uka", 1, 0x5u, RLDCHAR_MASK_UKA, 0, 0},
+	    {"wheels off and aku", 1, 0x3u, RLDCHAR_MASK_AKU, 1, 1},
+	    {"unknown bit 3 and aku", 1, 0xau, RLDCHAR_MASK_AKU, 1, 1},
+	};
+	u8 bytes[RLDCHAR_CHRI_SIZE_FLAGS + 4u];
+	struct RldCharInfo info;
+	char what[160];
+	size_t size;
+	int missing;
+	int c;
+	int t;
+
+	for (c = 0; c < (int)(sizeof(cases) / sizeof(cases[0])); c++)
+	{
+		size = NativeChar_TestChri(bytes, cases[c].hasFlags, cases[c].flags);
+
+		snprintf(what, sizeof(what), "%s: CHRI refused", cases[c].name);
+		NativeChar_MaskExpect(checks, failures, RldChar_ParseInfo(&info, bytes, size) == NULL, what);
+
+		snprintf(what, sizeof(what), "%s: flags 0x%x read back", cases[c].name, (unsigned)info.flags);
+		NativeChar_MaskExpect(checks, failures, info.flags == cases[c].flags, what);
+
+		snprintf(what, sizeof(what), "%s: mask %u, not %u", cases[c].name, (unsigned)RldChar_Mask(info.flags), (unsigned)cases[c].mask);
+		NativeChar_MaskExpect(checks, failures, RldChar_Mask(info.flags) == cases[c].mask, what);
+
+		snprintf(what, sizeof(what), "%s: wheels bit lost", cases[c].name);
+		NativeChar_MaskExpect(checks, failures, (info.flags & RLDCHAR_FLAG_NO_WHEELS) == (cases[c].flags & RLDCHAR_FLAG_NO_WHEELS), what);
+
+		snprintf(what, sizeof(what), "%s: wears %d on a template with retail 0", cases[c].name, NativeChar_MaskGoodOf(info.flags, 0, 1, 1, &missing));
+		NativeChar_MaskExpect(checks, failures, (NativeChar_MaskGoodOf(info.flags, 0, 1, 1, &missing) == cases[c].good0) && (missing == 0), what);
+
+		snprintf(what, sizeof(what), "%s: wears %d on a template with retail 1", cases[c].name, NativeChar_MaskGoodOf(info.flags, 1, 1, 1, &missing));
+		NativeChar_MaskExpect(checks, failures, (NativeChar_MaskGoodOf(info.flags, 1, 1, 1, &missing) == cases[c].good1) && (missing == 0), what);
+	}
+
+	// The chosen mask not loaded: the template's, and missing says so. The
+	// other mask missing changes nothing.
+	NativeChar_MaskExpect(checks, failures, (NativeChar_MaskGoodOf(0x2u, 0, 0, 1, &missing) == 0) && (missing == 1), "aku not loaded: not the template's");
+	NativeChar_MaskExpect(checks, failures, (NativeChar_MaskGoodOf(0x4u, 1, 1, 0, &missing) == 1) && (missing == 1), "uka not loaded: not the template's");
+	NativeChar_MaskExpect(checks, failures, (NativeChar_MaskGoodOf(0x2u, 0, 1, 0, &missing) == 1) && (missing == 0), "aku with uka not loaded: not aku");
+	NativeChar_MaskExpect(checks, failures, (NativeChar_MaskGoodOf(0x0u, 1, 0, 0, &missing) == 1) && (missing == 0),
+	                      "like the template with nothing loaded: not the retail value");
+
+	// No seat is armed: every seat, also outside 0..7, gives the retail value.
+	for (t = -1; t <= NATIVE_CHAR_SEATS; t++)
+	{
+		snprintf(what, sizeof(what), "unbound seat %d: not the retail value", t);
+		NativeChar_MaskExpect(checks, failures, (NativeChar_SeatMaskGood(t, 0) == 0) && (NativeChar_SeatMaskGood(t, 1) == 1), what);
+	}
+
+	// The templates that wear Aku Aku: Crash, Coco, Polar, Pura, Penta; 15 is
+	// never a template.
+	for (t = 0; t <= RLDCHAR_TEMPLATE_MAX + 1; t++)
+	{
+		const int aku = (t == 0) || (t == 3) || (t == 6) || (t == 7) || (t == 13);
+
+		snprintf(what, sizeof(what), "RLDCHAR_TEMPLATE_WEARS_AKU(%d) is not %d", t, aku);
+		NativeChar_MaskExpect(checks, failures, (RLDCHAR_TEMPLATE_WEARS_AKU(t) ? 1 : 0) == aku, what);
+	}
 }

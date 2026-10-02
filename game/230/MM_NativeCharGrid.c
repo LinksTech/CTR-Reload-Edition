@@ -1392,7 +1392,7 @@ const char *MM_NativeCharGrid_SeatName(int index)
 //  layout rule, written out here on purpose: the grid derives them from the
 //  table, the test holds them against it. The portrait slots of the roster
 //  (NativeChar_PortraitSlot, NativeChar_PortraitLayout) are pure as well and
-//  checked at the end.
+//  checked at the end, and so are the mask cases of NativeChar_MaskSelfTest.
 // ===========================================================================
 
 struct MM_NativeGridTest
@@ -2311,6 +2311,9 @@ int MM_NativeCharGrid_SelfTest(void)
 	test.entries = 0;
 	MM_NativeCharGrid_TestArrows(&test);
 	MM_NativeCharGrid_TestPortraits(&test);
+
+	// The mask of the CHRI flags and of a bound seat (platform/native_chars.c).
+	NativeChar_MaskSelfTest(&test.checks, &test.failures);
 
 	if (test.failures != 0)
 	{

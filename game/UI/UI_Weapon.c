@@ -1,5 +1,9 @@
 #include <common.h>
 
+// From platform/native_chars.c, further down in the translation unit: the mask
+// of a seat, retailGood unchanged for every seat without a custom character.
+int NativeChar_SeatMaskGood(int seat, int retailGood);
+
 enum UIWeaponConstants
 {
 	UI_WEAPON_ITEM_TURBO = HELD_ITEM_TURBO,
@@ -66,8 +70,10 @@ void UI_Weapon_DrawSelf(s16 posX, s16 posY, s16 scale, struct Driver *d)
 			// Crash, Coco, Pura, Polar, NO Penta
 			u32 goodMaskCharacterBits = UI_WEAPON_MASK_GOOD_CHARACTER_BITS;
 
-			// This is a bad guy, change icon to Uka
-			if (((goodMaskCharacterBits >> characterID) & 1) == 0)
+			// This is a bad guy, change icon to Uka. A bound custom seat
+			// shows the icon of the mask its file chooses
+			// (platform/native_chars.c); like the template keeps this table.
+			if (NativeChar_SeatMaskGood(d->driverID, (goodMaskCharacterBits >> characterID) & 1) == 0)
 			{
 				iconID = UI_WEAPON_MASK_UKA_ICON;
 			}

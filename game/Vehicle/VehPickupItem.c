@@ -1,5 +1,11 @@
 #include <common.h>
 
+// From platform/native_chars.c, further down in the translation unit: the mask
+// of a seat (the mask the CHRI of a bound custom character chooses, else
+// retailGood unchanged) and the log line of a bound seat's first mask.
+int NativeChar_SeatMaskGood(int seat, int retailGood);
+void NativeChar_NoteMask(const struct Driver *d, int modelID);
+
 #if defined(CTR_NATIVE)
 void INSTANCE_NativeBirthSkipped(const char *what);
 #endif
@@ -155,7 +161,8 @@ b32 VehPickupItem_MaskBoolGoodGuy(struct Driver *d)
 	// Crash, Coco, Pura, Polar, Penta
 	u32 maskBits = MASK_GOOD_GUY_CHARACTER_BITS;
 
-	return (maskBits >> charID) & 1;
+	// A bound custom seat may wear the mask its file chooses (platform/native_chars.c).
+	return NativeChar_SeatMaskGood(d->driverID, (maskBits >> charID) & 1);
 }
 
 // boolPlaySound only gates sound when refreshing an existing mask object.
@@ -285,6 +292,8 @@ struct MaskHeadWeapon *VehPickupItem_MaskUseWeapon(struct Driver *driver, b32 bo
 	maskObj->rot.y = 0;
 	maskObj->rot.z = 0;
 	maskObj->scale = MASK_HEAD_SCALE_NORMAL;
+
+	NativeChar_NoteMask(driver, modelID);
 
 	return maskObj;
 }

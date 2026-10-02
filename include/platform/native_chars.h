@@ -158,6 +158,24 @@ int NativeChar_SeatEngineClass(int seat, int retailClass);
 // silent), else 0.
 int NativeChar_SeatSilent(int seat);
 
+// The mask of a seat, for VehPickupItem_MaskBoolGoodGuy and the HUD icon
+// (game/UI/UI_Weapon.c): 1 Aku Aku, 0 Uka Uka. A bound seat whose guard holds
+// (NativeChar_SeatModel != NULL) and whose CHRI flags choose a mask
+// (RldChar_Mask) gets that mask - but only while gGT->modelPtr holds that
+// mask and its beam, else (one log line per load) and for every other seat
+// retailGood, the caller's unchanged retail expression.
+int NativeChar_SeatMaskGood(int seat, int retailGood);
+
+// game/Vehicle/VehPickupItem.c, right after a mask and its beam are born: one
+// line "mask seat <n>: <aku|uka> from the <file|template> (...)" for a bound
+// seat, once per load; nothing for any other seat.
+void NativeChar_NoteMask(const struct Driver *d, int modelID);
+
+// The mask cases of the CHRI flags and of the seat decision, without data or
+// window: adds to *checks and *failures and prints one line per failure. Part
+// of --char-grid-selftest (MM_NativeCharGrid_SelfTest).
+void NativeChar_MaskSelfTest(int *checks, int *failures);
+
 // game/DrawTires.c, the solid wheels and their reflection: 1 when model is the
 // model of a loaded file whose CHRI flags set RLDCHAR_FLAG_NO_WHEELS (the race
 // seat and the driver select preview alike), else 0 - also for NULL, retail

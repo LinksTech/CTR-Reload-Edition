@@ -52,11 +52,21 @@
 #define RLDCHAR_CHRI_FLAGS_OFFSET 0x1Cu    // u32 flags, present when fixedSize >= RLDCHAR_CHRI_SIZE_FLAGS
 #define RLDCHAR_CHRI_SIZE_FLAGS 0x20u
 #define RLDCHAR_FLAG_NO_WHEELS 0x1u        // CHRI flags bit 0: the game draws no kart wheels for this driver
-#define RLDCHAR_FLAGS_KNOWN RLDCHAR_FLAG_NO_WHEELS   // the CHRI flag bits this reader understands
+#define RLDCHAR_FLAG_MASK_BITS 0x6u        // CHRI flags bits 1-2: the mask the driver wears, RLDCHAR_MASK_*
+#define RLDCHAR_FLAG_MASK_SHIFT 1u
+#define RLDCHAR_MASK_LIKE 0u               // like the template - every file from before the field
+#define RLDCHAR_MASK_AKU 1u                // Aku Aku
+#define RLDCHAR_MASK_UKA 2u                // Uka Uka; 3 is reserved and read as RLDCHAR_MASK_LIKE
+#define RLDCHAR_FLAGS_KNOWN (RLDCHAR_FLAG_NO_WHEELS | RLDCHAR_FLAG_MASK_BITS)   // the CHRI flag bits this reader understands
 #define RLDCHAR_NAME_FIELD 20
 #define RLDCHAR_NAME_MAX 17
 #define RLDCHAR_AUTHOR_MAX 64
 #define RLDCHAR_TEMPLATE_MAX 14            // 15 (N. Oxide) is never a template
+// The templates that wear Aku Aku in retail: Crash, Coco, Polar, Pura, Penta
+// (MASK_GOOD_GUY_CHARACTER_BITS, game/Vehicle/VehPickupItem.c:39). The HUD icon
+// keeps its own table without Penta (game/UI/UI_Weapon.c:22).
+#define RLDCHAR_TEMPLATE_AKU_BITS 0x20C9u
+#define RLDCHAR_TEMPLATE_WEARS_AKU(t) ((((u32)(t)) <= RLDCHAR_TEMPLATE_MAX) && (((RLDCHAR_TEMPLATE_AKU_BITS >> (u32)(t)) & 1u) != 0u))
 #define RLDCHAR_CLASS_MAX 3
 #define RLDCHAR_TNT_HEIGHT_MIN 16
 #define RLDCHAR_TNT_HEIGHT_MAX 96
@@ -133,7 +143,8 @@ static const struct RldFormat s_rldCharFormat = {
 // 0x03 u8  class        engine class 0..3
 // 0x04 char[20] name    the display name, see RldChar_NameValid
 // 0x18 u32 charVersion  the version for humans; the game tells versions apart by the CMDL hash
-// 0x1C u32 flags        only when fixedSize >= 0x20, else 0; bit 0 RLDCHAR_FLAG_NO_WHEELS
+// 0x1C u32 flags        only when fixedSize >= 0x20, else 0; bit 0 RLDCHAR_FLAG_NO_WHEELS,
+//                       bits 1-2 the mask (RLDCHAR_MASK_*, RldChar_Mask)
 // fixedSize: u32 stringCount, then per string u32 length + bytes; string 0 is the author
 //
 // A new field only ever lengthens fixedSize, a new string is only ever
@@ -234,6 +245,15 @@ struct RldCharInfo
 	u32 stringCount;
 	char author[RLDCHAR_AUTHOR_MAX + 1];   // "" when absent
 };
+
+// The mask of CHRI flags: RLDCHAR_MASK_LIKE, _AKU or _UKA. The reserved value 3
+// reads as RLDCHAR_MASK_LIKE, so a newer packer never refuses a file here.
+static u32 RldChar_Mask(u32 flags)
+{
+	const u32 mask = (flags & RLDCHAR_FLAG_MASK_BITS) >> RLDCHAR_FLAG_MASK_SHIFT;
+
+	return (mask > RLDCHAR_MASK_UKA) ? RLDCHAR_MASK_LIKE : mask;
+}
 
 // CHRI-1..5. NULL = valid, else a fixed text that starts with the rule; the
 // caller refuses with DAMAGED. UTF-8 of the author is checked by the packer
