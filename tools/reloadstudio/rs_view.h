@@ -72,8 +72,9 @@ enum RsViewPose {
 // Registers the window class. TRUE if it is registered (also when it already was).
 BOOL RsView_Register(HINSTANCE instance);
 
-// Reads a preview file (format "RLDPV1", written by rldpack make-char --preview
-// and described there in tools/rldpack_char.inc).
+// Reads a preview file (format "RLDPV2", written by rldpack make-char --preview
+// and described there in tools/rldpack_char.inc: positions in 1/16 game units;
+// the older "RLDPV1" with whole game units is read as well).
 // A missing or damaged file leaves an empty view with a message saying why.
 // Pose and yaw stay as they are.
 void RsView_LoadPreview(HWND view, const wchar_t *path);

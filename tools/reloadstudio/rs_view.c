@@ -30,8 +30,10 @@
 //
 // THE AXES
 //
-// The preview carries model coordinates in game units, as rldpack builds them
-// (the file format is described at "--preview" in tools/rldpack_char.inc:
+// The preview carries model coordinates in 1/16 game units ("RLDPV2"; the
+// older "RLDPV1" in whole game units is still read and taken x16), as rldpack
+// builds them (the file format is described at "--preview" in
+// tools/rldpack_char.inc:
 // "+Y up, +Z forward, +X the driver's left"; RldMk_Axes maps the PLY axes by a
 // proper rotation; the records are "X, Z (forward), Y (up)"): the ground is
 // y = 0; with --fit crash the kart's bottom stands at y = 5.6 like the
@@ -157,6 +159,7 @@ static const int s_rsViewCrashDefault[6] = {
 };
 
 static const unsigned char s_rsViewMagic[RS_VIEW_MAGIC_BYTES] = { 'R', 'L', 'D', 'P', 'V', '1', 0, 0 };
+static const unsigned char s_rsViewMagic2[RS_VIEW_MAGIC_BYTES] = { 'R', 'L', 'D', 'P', 'V', '2', 0, 0 };
 static const unsigned char s_rsViewSetMagic[RS_VIEW_MAGIC_BYTES] = { 'R', 'L', 'D', 'P', 'S', '1', 0, 0 };
 static const unsigned char s_rsViewWheelMagic[RS_VIEW_MAGIC_BYTES] = { 'R', 'L', 'D', 'P', 'W', '1', 0, 0 };
 
@@ -182,6 +185,7 @@ static const short s_rsViewSin[91] = {
 struct RsViewPoseData {
     const unsigned char *tris;   // into RsView.data, RS_VIEW_TRI_BYTES each
     int count;
+    int sub;                     // 1/16 units per file unit: RS_VIEW_SUB (whole units) or 1 (RLDPV2)
 };
 
 struct RsView {
@@ -189,8 +193,8 @@ struct RsView {
     unsigned char *data;
     struct RsViewPoseData poses[RS_VIEW_POSE_COUNT];
     int loaded;
-    long long radius2;         // largest x*x + z*z over all poses (game units)
-    int ymin, ymax;            // over all poses
+    long long radius2;         // largest x*x + z*z over all poses (whole game units, rounded up)
+    int ymin, ymax;            // over all poses (whole game units, rounded outwards)
     wchar_t message[RS_VIEW_MESSAGE_CAP];
 
     // The dummy (Rs_DummyMesh with its wheels), built again on every render:
@@ -477,6 +481,25 @@ static void RsView_DropModel(struct RsView *v)
     v->ymax = 0;
 }
 
+// One corner of a pose into the extents of the framing: radius2 the largest
+// x*x + z*z in whole game units (rounded up), ymin/ymax in whole game units
+// (rounded outwards). sub: 1/16 units per file unit (RsViewPoseData.sub); for
+// whole units (sub = RS_VIEW_SUB) the numbers are the file's own.
+static void RsView_ExtentAdd(const unsigned char *q, int sub, long long *radius2, int *ymin, int *ymax, int *any)
+{
+    const long long x = (long long)RsView_ReadS16(q) * sub, z = (long long)RsView_ReadS16(q + 4) * sub;
+    const long long y = (long long)RsView_ReadS16(q + 2) * sub;
+    const long long r2 = (x * x + z * z + RS_VIEW_SUB * RS_VIEW_SUB - 1) / (RS_VIEW_SUB * RS_VIEW_SUB);
+    const int lo = (int)RsView_FloorDiv16(y), hi = (int)-RsView_FloorDiv16(-y);
+    if (r2 > *radius2)
+        *radius2 = r2;
+    if (!*any || lo < *ymin)
+        *ymin = lo;
+    if (!*any || hi > *ymax)
+        *ymax = hi;
+    *any = 1;
+}
+
 // Checks every length before it is used; takes data on success (then it belongs
 // to v), leaves v untouched and why filled otherwise.
 static int RsView_Parse(struct RsView *v, unsigned char *data, size_t bytes, wchar_t *why, int whyCap)
@@ -484,7 +507,7 @@ static int RsView_Parse(struct RsView *v, unsigned char *data, size_t bytes, wch
     struct RsViewPoseData poses[RS_VIEW_POSE_COUNT];
     size_t at;
     unsigned int count;
-    int p, i, c;
+    int p, i, c, sub;
     long long radius2 = 0;
     int ymin = 0, ymax = 0, any = 0;
 
@@ -492,8 +515,13 @@ static int RsView_Parse(struct RsView *v, unsigned char *data, size_t bytes, wch
         swprintf(why, whyCap, L"the file is too short (%u bytes)", (unsigned)bytes);
         return 0;
     }
-    if (memcmp(data, s_rsViewMagic, RS_VIEW_MAGIC_BYTES) != 0) {
-        swprintf(why, whyCap, L"it is not a preview file (it does not start with RLDPV1)");
+    // RLDPV2: positions in 1/16 game units; RLDPV1 (older): in whole game units.
+    if (memcmp(data, s_rsViewMagic2, RS_VIEW_MAGIC_BYTES) == 0)
+        sub = 1;
+    else if (memcmp(data, s_rsViewMagic, RS_VIEW_MAGIC_BYTES) == 0)
+        sub = RS_VIEW_SUB;
+    else {
+        swprintf(why, whyCap, L"it is not a preview file (it does not start with RLDPV2 or RLDPV1)");
         return 0;
     }
     count = RsView_ReadU32(data + RS_VIEW_MAGIC_BYTES);
@@ -517,6 +545,7 @@ static int RsView_Parse(struct RsView *v, unsigned char *data, size_t bytes, wch
         }
         poses[p].tris = data + at;
         poses[p].count = (int)tris;
+        poses[p].sub = sub;
         at += (size_t)tris * RS_VIEW_TRI_BYTES;
     }
     if (at != bytes) {
@@ -525,23 +554,11 @@ static int RsView_Parse(struct RsView *v, unsigned char *data, size_t bytes, wch
     }
 
     // Extent over all poses, for a framing that does not change with the pose.
-    for (p = 0; p < RS_VIEW_POSE_COUNT; p++) {
-        for (i = 0; i < poses[p].count; i++) {
-            const unsigned char *t = poses[p].tris + (size_t)i * RS_VIEW_TRI_BYTES;
-            for (c = 0; c < 3; c++) {
-                const unsigned char *q = t + c * RS_VIEW_CORNER_BYTES;
-                long long x = RsView_ReadS16(q), y = RsView_ReadS16(q + 2), z = RsView_ReadS16(q + 4);
-                long long r2 = x * x + z * z;
-                if (r2 > radius2)
-                    radius2 = r2;
-                if (!any || y < ymin)
-                    ymin = (int)y;
-                if (!any || y > ymax)
-                    ymax = (int)y;
-                any = 1;
-            }
-        }
-    }
+    for (p = 0; p < RS_VIEW_POSE_COUNT; p++)
+        for (i = 0; i < poses[p].count; i++)
+            for (c = 0; c < 3; c++)
+                RsView_ExtentAdd(poses[p].tris + (size_t)i * RS_VIEW_TRI_BYTES + c * RS_VIEW_CORNER_BYTES, sub,
+                                 &radius2, &ymin, &ymax, &any);
 
     RsView_DropModel(v);
     v->data = data;
@@ -565,7 +582,7 @@ static void RsView_Changed(HWND view, struct RsView *v)
 // ---------------------------------------------------------------------------
 //
 // Both files carry the triangle records of RLDPV1 (RsView_Parse): a pose set
-// ("RLDPS1") in whole game units like the model, a wheel model ("RLDPW1") in
+// ("RLDPS1") in whole game units like an RLDPV1 model, a wheel model ("RLDPW1") in
 // 1/16 game units about its axle. Without them nothing below is used and the
 // view draws as before.
 
@@ -581,6 +598,7 @@ static int RsView_ParseTris(const unsigned char *data, size_t bytes, size_t *at,
         return 0;
     out->tris = data + *at;
     out->count = (int)tris;
+    out->sub = RS_VIEW_SUB;   // whole game units
     *at += (size_t)tris * RS_VIEW_TRI_BYTES;
     return 1;
 }
@@ -755,8 +773,8 @@ static void RsView_ModelSpans(struct RsView *v)
             const unsigned char *t = v->poses[p].tris + (size_t)i * RS_VIEW_TRI_BYTES;
             for (c = 0; c < 3; c++) {
                 const unsigned char *q = t + c * RS_VIEW_CORNER_BYTES;
-                RsView_SpanAdd(&tr, v->modelLo, v->modelHi, (long long)RsView_ReadS16(q) * RS_VIEW_SUB,
-                               (long long)RsView_ReadS16(q + 4) * RS_VIEW_SUB);
+                RsView_SpanAdd(&tr, v->modelLo, v->modelHi, (long long)RsView_ReadS16(q) * v->poses[p].sub,
+                               (long long)RsView_ReadS16(q + 4) * v->poses[p].sub);
             }
         }
     }
@@ -773,8 +791,8 @@ static void RsView_ModelSpans(struct RsView *v)
             const unsigned char *t = v->setPoses[p].tris + (size_t)i * RS_VIEW_TRI_BYTES;
             for (c = 0; c < 3; c++) {
                 const unsigned char *q = t + c * RS_VIEW_CORNER_BYTES;
-                RsView_SpanAdd(&tr, v->modelLo, v->modelHi, (long long)RsView_ReadS16(q) * RS_VIEW_SUB,
-                               (long long)RsView_ReadS16(q + 4) * RS_VIEW_SUB);
+                RsView_SpanAdd(&tr, v->modelLo, v->modelHi, (long long)RsView_ReadS16(q) * v->setPoses[p].sub,
+                               (long long)RsView_ReadS16(q + 4) * v->setPoses[p].sub);
             }
         }
     }
@@ -1532,9 +1550,9 @@ static void RsView_Render(HWND view, struct RsView *v)
             struct RsViewVert vert[3];
             for (c = 0; c < 3; c++) {
                 const unsigned char *q = p + c * RS_VIEW_CORNER_BYTES;
-                RsView_Project(&s.cam, (long long)RsView_ReadS16(q) * RS_VIEW_SUB,
-                               (long long)RsView_ReadS16(q + 2) * RS_VIEW_SUB,
-                               (long long)RsView_ReadS16(q + 4) * RS_VIEW_SUB, s.offModel, 1, &vert[c]);
+                RsView_Project(&s.cam, (long long)RsView_ReadS16(q) * pose->sub,
+                               (long long)RsView_ReadS16(q + 2) * pose->sub,
+                               (long long)RsView_ReadS16(q + 4) * pose->sub, s.offModel, 1, &vert[c]);
                 vert[c].r = q[6];
                 vert[c].g = q[7];
                 vert[c].b = q[8];
