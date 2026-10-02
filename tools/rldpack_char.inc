@@ -16885,6 +16885,14 @@ static void RldMk_SelfTestRepair(struct RldMkTestMesh *mesh)
 
 // --- --remesh ------------------------------------------------------------------------
 
+// REMESH: the container of the open driver below, remeshed and reduced
+// (--fit none --remesh on, CHRI as for the goldens above). A doubled build
+// on one machine is always the same; this one shows a drift of the remesher
+// or the reducer between compilers, runtimes or machines. It follows
+// deliberate changes of tools/rldpack_remesh.inc and _reduce.inc and of the
+// remesh target (RldMk_RemeshTarget), on purpose and in the same change.
+#define RLDMK_GOLDEN_REMESH "da53778c21848ffcaf148a5d11ddb2400b53e15fe5944d81215f29e375725e09"
+
 static void RldMk_SelfTestRemesh(struct RldMkTestMesh *mesh)
 {
 	struct RldMkOptions opt;
@@ -16929,6 +16937,27 @@ static void RldMk_SelfTestRemesh(struct RldMkTestMesh *mesh)
 	           b.remeshOpenBefore, b.openEdges, b.groupTriangles[RLDMK_GROUP_KART], b.groupTriangles[RLDMK_GROUP_WHEEL], s_rldMkCodes);
 	same = ok && RldMk_TestBuild(mesh, 0, 1, &opt, &plyAgain, &again) && (again.cmdlSize == b.cmdlSize) && (memcmp(again.cmdl, b.cmdl, b.cmdlSize) == 0);
 	RldMk_Test(same, "--remesh on built twice: the same bytes", "differ");
+	{
+		u8 field[RLDCHAR_NAME_FIELD];
+		size_t chriSize = 0;
+		size_t size = 0;
+		u8 *chri;
+		u8 *file = NULL;
+
+		memset(field, 0, sizeof(field));
+		memcpy(field, "SELF TEST", 9u);
+		chri = RldMk_BuildChri(14u, 0u, field, 1u, "", 0u, &chriSize);
+		if (ok && (chri != NULL))
+		{
+			file = RldMk_Container(chri, chriSize, b.cmdl, b.cmdlSize, NULL, &size);
+		}
+		if (Rld_CheckGolden("make-char --fit none --remesh on (an open driver)", file, size, RLDMK_GOLDEN_REMESH) != 0)
+		{
+			s_rldMkTestFailed++;
+		}
+		free(file);
+		free(chri);
+	}
 	RldMk_FreeBuild(&again);
 	RldMk_FreePly(&plyAgain);
 	RldMk_FreeBuild(&b);
