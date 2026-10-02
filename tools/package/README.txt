@@ -461,6 +461,9 @@ Tab 5 Extras
               the front at -Y ("--up z"). Forward: "-Z" for a model that
               looks backwards; it is turned round ("--forward -z"). rldpack
               says "set Up to Z" when a model only fits that way.
+              Colors: the palette of the model - "128 (default)" keeps up to
+              128 colours, "64" as many as the original drivers have
+              ("--colors 64").
               Vertex colors (an OBJ only): how a vertex colour meets the
               texture of its face. "Auto (default)": an OBJ ripped from a
               PS1 game (the vertex colours of its textured faces lie around

@@ -323,6 +323,7 @@
 //             [--map-color RRGGBB]   (only when a colour was chosen)
 //             [--up z] [--forward -z]   (when the card Import of the tab Extras
 //             says Up Z or Forward -Z; +Y up and +Z forward are the defaults)
+//             [--colors 64]   (when the card says Colors 64; 128 is the default)
 //             [--vertex-colors modulate|color]   (an OBJ only, when the card
 //             Import of the tab Extras does not say Auto)
 //             --preview <file> [--out <f>]      check; writes only the preview files
@@ -350,7 +351,7 @@
 //   icon-transparent on|off, icon-frame on|off, repair|open-parts|remesh|reduce|
 //   wheels on|off, reduce-to-fit, out <file|none>, check, build, pose
 //   neutral|left|right, turn <degrees>, tab <1..5|name>, extras
-//   import|wheels|animations, up y|z, forward z|-z, vertex-colors
+//   import|wheels|animations, up y|z, forward z|-z, colors 128|64, vertex-colors
 //   auto|modulate|color (the card Import; the last passed for an OBJ only),
 //   problem <n> (as a click on message n), report <file>, the verbs of the cards
 //   Wheels and Animations (rs_wheels.c, rs_anim.c), and for the tab Voices:

@@ -124,8 +124,8 @@
 //   4 Voices        the folder, its files and their events, Play, the ten
 //                   events at a glance
 //   5 Extras        the cards Import (how rldpack reads the model: its up and
-//                   forward axes; for an OBJ how its vertex colours meet its
-//                   textures), Wheels and
+//                   forward axes, the colours of its palette; for an OBJ how
+//                   its vertex colours meet its textures), Wheels and
 //                   Animations (rs_wheels.c, rs_anim.c), one at a time; the
 //                   last two locked without --enable-preview-features. Import
 //                   lives here, not on the tab Model: there an OBJ leaves no
@@ -303,9 +303,12 @@
 #define CHAR_ID_FORWARD_LABEL  384   // Forward: +Z | -Z
 #define CHAR_ID_FORWARD        385
 #define CHAR_ID_FORWARD_HELP   386
-#define CHAR_ID_VCOLORS_LABEL  389   // Vertex colors (an OBJ only)
-#define CHAR_ID_VCOLORS        390
-#define CHAR_ID_VCOLORS_HELP   391
+#define CHAR_ID_COLORS_LABEL   387   // Colors: 128 | 64
+#define CHAR_ID_COLORS         388
+#define CHAR_ID_COLORS_HELP    389
+#define CHAR_ID_VCOLORS_LABEL  390   // Vertex colors (an OBJ only)
+#define CHAR_ID_VCOLORS        391
+#define CHAR_ID_VCOLORS_HELP   392
 #define CHAR_ID_IMPORT_LAST    399
 
 // CHAR_JOB_META: rldpack checks only the name, the driving style, the mask,
@@ -380,6 +383,11 @@ static const wchar_t *const g_charForwardWords[] = { L"z", L"-z" };
 static const wchar_t *const g_charForwardTexts[] = { L"+Z (default)", L"-Z" };
 #define CHAR_UP_COUNT      2
 #define CHAR_FORWARD_COUNT 2
+// The colours of the model's palette (--colors): 128, rldpack's default, is
+// not passed.
+static const wchar_t *const g_charColorsWords[] = { L"128", L"64" };
+static const wchar_t *const g_charColorsTexts[] = { L"128 (default)", L"64" };
+#define CHAR_COLORS_COUNT  2
 
 // How the vertex colours of an OBJ meet its textures (--vertex-colors), in the
 // order of the list on the card Import; only what is not auto is passed. The
@@ -594,7 +602,7 @@ static struct {
     int qualityOn;                  // the note below the options has text (shown on the tab Model)
     HWND tabHead[CHAR_TABS], back, next, extrasSwitch[CHAR_EXTRAS_COUNT];
     HWND importNote, vcolorsLabel, vcolors, vcolorsHelp;  // the card Import of the tab Extras
-    HWND upLabel, up, upHelp, forwardLabel, forward, forwardHelp;
+    HWND upLabel, up, upHelp, forwardLabel, forward, forwardHelp, colorsLabel, colors, colorsHelp;
     int objOn;                      // the model is an OBJ: its own choices are shown (Char_ObjUpdate)
     int tab;                        // CHAR_TAB_*
     int extrasCard;                 // CHAR_EXTRAS_*
@@ -2079,13 +2087,14 @@ static int Char_TabOfId(int id, int *card)
 }
 
 // The card of the tab Extras an @msg id belongs to, -1 = none: the choices of
-// the card Import (the axes, the vertex colours of an OBJ).
+// the card Import (the axes, the palette, the vertex colours of an OBJ).
 static int Char_CardOfCode(const wchar_t *code)
 {
     if (!code)
         return -1;
     if (wcscmp(code, L"vertex-colors") == 0 || wcscmp(code, L"obj-vertex-modulation") == 0 ||
-        wcscmp(code, L"up") == 0 || wcscmp(code, L"forward") == 0 || wcscmp(code, L"ply-up-axis") == 0)
+        wcscmp(code, L"up") == 0 || wcscmp(code, L"forward") == 0 || wcscmp(code, L"ply-up-axis") == 0 ||
+        wcscmp(code, L"colors") == 0)
         return CHAR_EXTRAS_IMPORT;
     if (wcsncmp(code, L"pose", 4) == 0)
         return CHAR_EXTRAS_ANIM;
@@ -4394,6 +4403,11 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
         Char_ArgsAdd(a, L"--forward");
         Char_ArgsAdd(a, g_charForwardWords[Char_ListIndex(g_char.forward, CHAR_FORWARD_COUNT)]);
     }
+    // The palette: 64 colours instead of rldpack's 128.
+    if (Char_ListIndex(g_char.colors, CHAR_COLORS_COUNT) != 0) {
+        Char_ArgsAdd(a, L"--colors");
+        Char_ArgsAdd(a, g_charColorsWords[Char_ListIndex(g_char.colors, CHAR_COLORS_COUNT)]);
+    }
     // An OBJ: how its vertex colours meet its textures, when not auto.
     if (g_char.objOn && Char_VColorIndex() != 0) {
         Char_ArgsAdd(a, L"--vertex-colors");
@@ -5763,6 +5777,8 @@ static int Char_WriteReport(const wchar_t *path)
              Char_ListIndex(g_char.up, CHAR_UP_COUNT) ? L"passed as --up" : L"rldpack's default");
     Char_Put(f, L"forward: %ls (%ls)", g_charForwardTexts[Char_ListIndex(g_char.forward, CHAR_FORWARD_COUNT)],
              Char_ListIndex(g_char.forward, CHAR_FORWARD_COUNT) ? L"passed as --forward" : L"rldpack's default");
+    Char_Put(f, L"colors: %ls (%ls)", g_charColorsTexts[Char_ListIndex(g_char.colors, CHAR_COLORS_COUNT)],
+             Char_ListIndex(g_char.colors, CHAR_COLORS_COUNT) ? L"passed as --colors" : L"rldpack's default");
     Char_Put(f, L"vertex colors: %ls (%ls) [%ls]", g_charVColorTexts[Char_VColorIndex()],
              !g_char.objOn ? L"not passed - no OBJ" : Char_VColorIndex() ? L"passed as --vertex-colors" : L"rldpack's default",
              g_char.objOn ? L"shown" : L"hidden");
@@ -6490,6 +6506,14 @@ static void Char_Create(HWND page)
     g_char.forwardHelp = Rs_Label(page, CHAR_ID_FORWARD_HELP, L"-Z: the model looks backwards and is turned round.",
                                   RS_FONT_SMALL);
     Rs_SetTextColor(g_char.forwardHelp, RS_COL_MUTED);
+    g_char.colorsLabel = Rs_Label(page, CHAR_ID_COLORS_LABEL, L"Colors", RS_FONT_BOLD);
+    g_char.colors = Rs_Combo(page, CHAR_ID_COLORS);
+    for (i = 0; i < CHAR_COLORS_COUNT; i++)
+        SendMessageW(g_char.colors, CB_ADDSTRING, 0, (LPARAM)g_charColorsTexts[i]);
+    SendMessageW(g_char.colors, CB_SETCURSEL, 0, 0);
+    g_char.colorsHelp = Rs_Label(page, CHAR_ID_COLORS_HELP, L"The palette of the model: up to 128 colours, or 64 as the "
+                                 L"original drivers have.", RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.colorsHelp, RS_COL_MUTED);
     g_char.vcolorsLabel = Rs_Label(page, CHAR_ID_VCOLORS_LABEL, L"Vertex colors", RS_FONT_BOLD);
     g_char.vcolors = Rs_Combo(page, CHAR_ID_VCOLORS);
     for (i = 0; i < CHAR_VCOLORS_COUNT; i++)
@@ -6892,6 +6916,7 @@ static int Char_LayImport(const struct CharLay *k, int left, int right, int top)
     y += noteH + Rs_Px(12);
     y = Char_LayChoice(k, &in, y, g_char.upLabel, g_char.up, g_char.upHelp);
     y = Char_LayChoice(k, &in, y, g_char.forwardLabel, g_char.forward, g_char.forwardHelp);
+    y = Char_LayChoice(k, &in, y, g_char.colorsLabel, g_char.colors, g_char.colorsHelp);
     if (g_char.objOn)
         y = Char_LayChoice(k, &in, y, g_char.vcolorsLabel, g_char.vcolors, g_char.vcolorsHelp);
     return y + Rs_Px(16);
@@ -7027,7 +7052,7 @@ static void Char_Layout(HWND page, int w, int h)
     int vgap = Rs_Px(12), avail, leftW, least, comboW, contentTop, extrasBottom[CHAR_EXTRAS_COUNT];
     int barH, barTop, upperBottom, need, t, i;
     RECT card, in;
-    HWND column[16];
+    HWND column[17];
 
     Rs_CardClear(page);
     k.gap = Rs_Px(16);
@@ -7053,7 +7078,8 @@ static void Char_Layout(HWND page, int w, int h)
     column[13] = g_char.vcolorsLabel;
     column[14] = g_char.upLabel;
     column[15] = g_char.forwardLabel;
-    for (i = 0; i < 16; i++) {
+    column[16] = g_char.colorsLabel;
+    for (i = 0; i < 17; i++) {
         wchar_t *text = Rs_GetText(column[i]);
         int tw = Char_TextWidth(column[i], text) + Rs_Px(4);
         if (tw > k.labelW)
@@ -7273,6 +7299,7 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
     case CHAR_ID_VCOLORS:
     case CHAR_ID_UP:
     case CHAR_ID_FORWARD:
+    case CHAR_ID_COLORS:
         if (code == CBN_SELCHANGE)
             Char_ChangedSoon(page);
         break;
@@ -7674,6 +7701,8 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         return Char_AutoList(page, g_char.up, verb, arg, g_charUpWords, g_charUpTexts, CHAR_UP_COUNT);
     if (wcscmp(verb, L"forward") == 0)
         return Char_AutoList(page, g_char.forward, verb, arg, g_charForwardWords, g_charForwardTexts, CHAR_FORWARD_COUNT);
+    if (wcscmp(verb, L"colors") == 0)
+        return Char_AutoList(page, g_char.colors, verb, arg, g_charColorsWords, g_charColorsTexts, CHAR_COLORS_COUNT);
     if (wcscmp(verb, L"icon-transparent") == 0)
         return Char_AutoOption(page, g_char.iconCorners, verb, arg);
     if (wcscmp(verb, L"icon-frame") == 0)
