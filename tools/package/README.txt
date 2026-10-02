@@ -125,9 +125,17 @@ Battle or with two players.
   select, for the first 20 files the game loads (sorted by file name; a
   refused file does not count). Without an icon, with a broken one and from
   the 21st loaded file on, the tile shows the portrait of Fake Crash; a log
-  line starting with "[CTR Char] portrait" says which. The race HUD, the
-  results and the cup standings still show the portrait of Fake Crash.
-- For now a custom driver is silent.
+  line starting with "[CTR Char] portrait" says which. In the race the
+  ranking on the left, the results after the race and the cup standings
+  show the same icon (log line "[CTR Char] hud portrait seat 0: ...").
+  High score lists and profiles show the portrait of Fake Crash.
+- A character built with a minimap colour (4.3) shows its marker on the
+  minimap in that colour; without one it has the colour of Fake Crash
+  (808080: the marker as drawn). Your own marker still blinks white.
+- For now a custom driver is silent: no voice in the race, and the voice
+  volume slider plays no sample of Fake Crash for it. The game logs who
+  sits where at the start of a race ("[CTR Char] seats: ...").
+- The cup podium still shows Fake Crash.
 
 
 4. RELOAD STUDIO
@@ -226,6 +234,14 @@ for the game (and for cups).
               fall, with its sound and music, and shown as its icon in the
               race HUD. The choice is stored in the .rldchar; an older game
               does not know it and gives the driver Uka Uka.
+  Minimap colour
+              The colour of your driver's marker on the minimap. "Choose..."
+              (or a click on the colour field) picks one, "Like the
+              template" goes back to the default, the colour of Fake Crash
+              (808080: the marker as drawn). 80 per channel is neutral,
+              higher values are brighter. The choice is stored in the
+              .rldchar; an older game does not know it and shows the
+              colour of Fake Crash.
   Size        50 to 200 % (default 100). 100 % = Crash size: every model is
               first fitted to the size of Crash with his kart. Its kart gets
               the length of Crash's kart (112.4 game units); with "Show kart
@@ -288,11 +304,12 @@ for the game (and for cups).
               game does not know it and draws the wheels.
   Icon (PNG)  Optional. Any PNG, at any size. Your picture and how the
               game will show it side by side: cut to 43:25 in the middle,
-              43 x 25 pixels (as much of a portrait as the driver select
-              shows), 15 colours and transparent. A picture of exactly 43 x 25 is
-              taken pixel for pixel. The game shows it on the character's
-              tile in the driver select (see 3.); without an icon the tile
-              shows the portrait of Fake Crash.
+              43 x 25 pixels (as much of a portrait as the game shows), 15
+              colours and transparent. A picture of exactly 43 x 25 is taken
+              pixel for pixel. The game shows it on the character's tile in
+              the driver select and in the race: the ranking, the results
+              and the cup standings (see 3.); without an icon these show the
+              portrait of Fake Crash.
   Voices      Optional. A folder with your voice lines as .wav or .vag:
               boost1, boost2, hit1, hit2, spin1, spin2, bigair1, bigair2,
               drop1, drop2, shield1, shield2, passing1, passing2, fire1,
@@ -407,7 +424,9 @@ Reload Studio
     MASKS on, the driver wears the chosen mask in the race and the HUD shows
     its icon.
 [ ] Character page: an icon of any size and shape (also an interlaced PNG)
-    - the picture on the page matches the tile in the driver select.
+    - the picture on the page matches the tile in the driver select, the
+    ranking in the race, the results and the cup standings.
+[ ] Character page: a minimap colour - the marker on the minimap has it.
 [ ] Break the character on purpose: a model without kart, a very large
     model, a broken PNG, a voice file in a wrong format. Reload Studio must
     say what is wrong, never crash.
@@ -450,9 +469,9 @@ Modes and menus
 
 Characters
 - A custom driver is silent: voices are checked, but not packed yet.
-- The character's own icon shows only in the driver select, and only for
-  the first 20 loaded files; the race HUD, the results and the cup
-  standings show the portrait of Fake Crash.
+- The character's own icon shows only for the first 20 loaded files; high
+  score lists and profiles show the portrait of Fake Crash.
+- The cup podium shows Fake Crash.
 - Only in the one-player ARCADE driver select; not in NITRO-PIT CRYSTAL or
   CTR, Time Trial, Adventure, Battle or with two players.
 - The size is visual only - physics and collision follow the driving style.

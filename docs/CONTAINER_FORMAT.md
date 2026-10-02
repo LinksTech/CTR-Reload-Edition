@@ -338,7 +338,7 @@ is frozen. Source: `include/rldchar.inc`.
 |---|---|---|---|
 | CHRI | required | 4 KiB | template, class, name, version, flags, author |
 | CMDL | required | 256 KiB | the model, in the game's native model format |
-| CICN | optional, written by `rldpack make-char --icon` | 4 KiB | the portrait, exactly 612 bytes (rules CICN-1..3); the game shows it in the driver select grid |
+| CICN | optional, written by `rldpack make-char --icon` | 4 KiB | the portrait, exactly 612 bytes (rules CICN-1..3); the game shows it in the driver select grid, the race HUD, the results and the cup standings |
 | CMSK | optional, experimental, written by `rldpack make-char --mask-model` | 256 KiB (rule CMSK-3: 16 KiB) | an own mask model, drawn in place of Aku Aku / Uka Uka (rules CMSK-1..3) |
 | CPRM | optional, known type: not written by rldpack, content not interpreted yet | 4 KiB | values; layout not fixed (draft) |
 | CVOI | reserved name, planned | none (unknown, skipped) | voices; layout not defined |
@@ -362,7 +362,8 @@ CMSK below). Nothing interprets CPRM yet.
 | 0x03 | u8 | class | engine class 0..3: balanced, acceleration, speed, turning; the game drives the character with it |
 | 0x04 | char[20] | name | display name, see the name rule |
 | 0x18 | u32 | charVersion | for humans; the CMDL hash, not this number, is meant to tell versions apart |
-| 0x1C | u32 | flags | only when fixedSize >= 0x20, else 0; bit 0 (`RLDCHAR_FLAG_NO_WHEELS`): the game draws no kart wheels for this driver (tyre dust and skid marks stay: they are effects at the wheel points, not wheels); bits 1-2 (`RLDCHAR_FLAG_MASK_BITS`): the mask the driver wears - 0 like the template, 1 Aku Aku, 2 Uka Uka, 3 reserved (read as 0, no finding); further bits are reserved |
+| 0x1C | u32 | flags | only when fixedSize >= 0x20, else 0; bit 0 (`RLDCHAR_FLAG_NO_WHEELS`): the game draws no kart wheels for this driver (tyre dust and skid marks stay: they are effects at the wheel points, not wheels); bits 1-2 (`RLDCHAR_FLAG_MASK_BITS`): the mask the driver wears - 0 like the template, 1 Aku Aku, 2 Uka Uka, 3 reserved (read as 0, no finding); bit 3 (`RLDCHAR_FLAG_MAP_COLOR`): the minimap marker has the color at 0x20; further bits are reserved |
+| 0x20 | u8[4] | mapColor | only when fixedSize >= 0x24, else absent: red, green, blue of the minimap marker, then 0; used only with bit 3 set (bit 3 without the field, or the field without bit 3: the template's color, no finding) |
 | fixedSize | u32 | stringCount | then per string: u32 length, bytes |
 | | | string 0 | author, at most 64 bytes; "" when absent |
 
@@ -370,9 +371,12 @@ CMSK below). Nothing interprets CPRM yet.
   checks it). Only when flags is not 0 (`rldpack make-char --wheels off`,
   `--mask aku` or `--mask uka`) does it write fixedSize 0x20 with flags at
   0x1C, so a file without flags has the same bytes as before the field existed.
+  Only with `--map-color` does it write fixedSize 0x24, bit 3 and the color at
+  0x20.
 - A reader skips numeric bytes beyond the fields it knows and strings beyond the
   first. A reader from before flags skips it, draws the wheels and gives the
-  driver the template's mask.
+  driver the template's mask; a reader from before mapColor shows the
+  template's minimap color.
 - Flag bits a reader does not know are ignored: they are no finding and never
   refuse the file. A reader from before the mask field ignores bits 1-2 and
   gives the driver the template's mask.
@@ -388,6 +392,14 @@ CMSK below). Nothing interprets CPRM yet.
 - `rldpack info` and `rldpack verify` name the mask and whether it is the
   template's or chosen in the file; the reserved value 3 is named as read like
   the template.
+- `rldpack make-char --map-color RRGGBB` (six hex digits, any case, a leading
+  `#` allowed) sets the minimap color; without it the template's color stays
+  and nothing is written. `rldpack info` and `rldpack verify` print
+  `map color RRGGBB` or `map color the template's`; with `--machine`
+  `@value map-color <RRGGBB|template> <switch|template|container>`. Reload
+  Studio's field "Minimap colour" (Choose... / Like the template) starts at
+  the template's colour (808080 for Fake Crash: the marker as drawn) and
+  passes `--map-color` only when a colour is chosen.
 
 Name rule (`RldChar_NameValid`, one function for packer and reader):
 
@@ -586,12 +598,19 @@ loaded files in sorted order) own a portrait slot in a strip of VRAM that no
 retail or track path writes (x 256..511, y 266..295; layout in
 `include/platform/native_chars.h`). Each time the driver select grid is
 entered, the usable portraits are uploaded there, and a custom tile draws its
-own portrait in the size of the template's (43 x 25 of the 44 x 26). A tile without a usable CICN or
-beyond the 20 slots shows the template's portrait. Only the grid shows the
-own portrait: the race HUD, the results and the cup standings show the
-template's. After the load line the game logs one line per file,
+own portrait in the size of the template's (43 x 25 of the 44 x 26). A tile
+without a usable CICN or beyond the 20 slots shows the template's portrait.
+After the load line the game logs one line per file,
 `[CTR Char] portrait <file>: own (slot <n>)` or the reason followed by
 `the template's` (for example `CICN ignored - <reason> - the template's`).
+
+In a race the portraits are uploaded to the same strip again
+(`[CTR Char] portraits: <n> uploaded ...`), and the bound seat shows its own
+portrait in the race HUD's ranking, the arcade results and the cup standings
+(`NativeChar_SeatPortrait`); without a usable CICN these show the template's.
+One line per load: `[CTR Char] hud portrait seat 0: own (slot <n>, <file>, tpage 0x<template's> -> 0x<own>)` or
+`[CTR Char] hud portrait seat 0: the template's (<reason>, <file>)`. High
+score lists and profiles keep the template's portrait.
 
 ### CMSK (`RldChar_CheckMask`) - experimental
 
@@ -669,7 +688,8 @@ file: CVOI stays a reserved name, and a custom driver is silent in the game.
 | per file | envelope (`Rld_OpenAs`), the CMDL size before any memory is taken, CHRI and CMDL with their hashes, `RldChar_ParseInfo`, `RldChar_CheckModel`, then the pointer map, then CICN when present (`RldChar_CheckIcon`; a broken CICN costs only the portrait), then CMSK when present (`RldChar_CheckMask`; a broken CMSK costs only the own mask). CPRM is not read |
 | a broken file | skipped with one log line `[CTR Char] REFUSED <file>: <kind> (<rule>) <detail>`; the game starts anyway |
 | the first 32 valid files | a tile each in the one-player ARCADE driver select, after the retail drivers (not for CRYSTAL and CTR under NITRO-PIT); a further valid file gets the log line `NO ID` and no tile |
-| menu and race | the driver select shows the own portrait (CICN, first 20 entries; else the template's, see CICN) and the name from CHRI; the race HUD, the results and the cup standings show the template's portrait; in the race seat 0 runs on the template's character id with the custom model, the class in CHRI sets the physics values and the engine sound, and the template's voice is not played |
+| menu and race | the driver select shows the own portrait (CICN, first 20 entries; else the template's, see CICN) and the name from CHRI; the race HUD, the arcade results and the cup standings show the own portrait too (see CICN). In the race seat 0 runs on the template's character id with the custom model, and the class in CHRI sets the physics values and the engine sound. Not from the template: its voice (neither in the race nor as the sample of the voice volume slider). Still the template's: the cup podium, high score lists and profiles. After the binding one line names every seat: `[CTR Char] seats: 0=<id> (<file>, map color <RRGGBB>\|map color of the template) 1=<id> ...`, ending in `... (cut at seat <n>)` when the line is full |
+| minimap | with `RLDCHAR_FLAG_MAP_COLOR` the bound seat's marker on the minimap has the color at 0x20, else the template's (808080 for Fake Crash: the marker as drawn). The color tints the marker: 80 per channel is neutral, higher values are brighter. The player's white blink stays |
 | wheels | with `RLDCHAR_FLAG_NO_WHEELS` set in CHRI the game draws no kart wheels (and no wheel reflections) for the custom model - tyre dust and skid marks stay, they are effects at the wheel points, not wheels - and the load line `[CTR Char] loaded <file>: ...` adds `, wheels hidden` after the byte count; without the bit the wheels are drawn as for a retail driver |
 | mask | CHRI flags bits 1-2 choose the mask the custom driver wears: Aku Aku or Uka Uka for the mask item and the rescue after a fall, with that mask's model, beam, sound and music, the mask's wrong-way voice in a one-player race and the mask's icon in the HUD weapon slot. 0 (or 3) keeps the template's mask: Aku Aku for Crash, Coco, Polar, Pura and Penta, Uka Uka for every other template, Fake Crash included; the HUD icon then follows the retail icon table, in which Penta shows the Uka Uka icon. When the race has not loaded the chosen mask's model or beam, the template's mask stays. With Aku Aku or Uka Uka chosen the load line ends in `, mask aku` or `, mask uka` (after `, wheels hidden` when both are set); with 0 or 3 nothing is added. The first mask born for the seat in each load logs `[CTR Char] mask seat 0: <aku\|uka> from the <file\|template> (model 0x.., beam 0x.., sound 0x.., song <aku\|uka\|none>)`; a chosen mask that is not loaded logs `[CTR Char] mask seat 0: <aku\|uka> wanted, not loaded - the template's mask stays` once per load |
 
@@ -791,7 +811,7 @@ CHRI rules (`RldChar_ParseInfo`). A finding refuses the file as DAMAGED.
 | a new layout inside SNDB, PARM or CICN | the chunk's own version field: an older reader drops only that chunk |
 | a new PARM key | no bump: unknown keys are skipped |
 | a new string in META or CHRI | appended at the end only |
-| a new field in CHRI | a longer fixedSize; an older reader skips the extra bytes. flags at 0x1C came this way (fixedSize 0x20, written only when a bit is set): an older reader skips it and draws the wheels. A new flag bit needs no bump: a reader ignores bits it does not know. The mask in bits 1-2 came this way: an older reader gives the driver the template's mask |
+| a new field in CHRI | a longer fixedSize; an older reader skips the extra bytes. flags at 0x1C came this way (fixedSize 0x20, written only when a bit is set): an older reader skips it and draws the wheels. A new flag bit needs no bump: a reader ignores bits it does not know. The mask in bits 1-2 came this way: an older reader gives the driver the template's mask. mapColor at 0x20 came as the second field (fixedSize 0x24, written only with bit 3): an older reader shows the template's minimap color |
 | a new number in META | not possible without a new major: META's numeric part has no length field. New things go into optional chunks |
 | something without which the content is wrong | a required-feature bit in header field 0x0C; a reader that does not know it refuses (NEEDS NEWER) |
 | a change an older reader would misread | a new major: older readers say NEEDS NEWER, newer readers say OLD FORMAT for the old files |
@@ -808,7 +828,7 @@ Chunk names:
 | META, LEVD, VRMD | `.rldtrack` | required |
 | SNDB, PARM | `.rldtrack` | optional |
 | CHRI, CMDL | `.rldchar` | required |
-| CICN | `.rldchar` | optional (portrait): written by `rldpack make-char --icon`, shown in the game's driver select grid |
+| CICN | `.rldchar` | optional (portrait): written by `rldpack make-char --icon`, shown in the game's driver select grid and race |
 | CMSK | `.rldchar` | optional, experimental (own mask): written by `rldpack make-char --mask-model`, drawn in place of the retail mask |
 | CPRM | `.rldchar` | optional known type (values): not written by rldpack, content not interpreted yet |
 | CVOI, CTEX | `.rldchar` | reserved, planned (voices, texture data) |
