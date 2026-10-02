@@ -512,6 +512,13 @@ static int RldWheel_Command(int argc, char **argv)
 		printf("rldpack char-wheel %s\n", modelArg);
 	}
 
+	// PLY only (tools/rldpack_import.inc: an OBJ is model-ply-only).
+	if (!RldMk_ModelAllowed(modelArg, data, size, RLDMK_ROLE_WHEEL))
+	{
+		free(data);
+		return 1;
+	}
+
 	built = RldWheel_Build(data, size, &wo, &res);
 	free(data);
 

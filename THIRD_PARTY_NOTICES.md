@@ -8,8 +8,8 @@ The release downloads contain two programs. `ctr_native.exe` carries SDL3
 (with the components compiled into it), the PsyCross-derived platform layer
 with the code that came in through PsyCross (TOMB5, MAME, PCSX, one PSn00bSDK
 table and material from Sony's Psy-Q SDK), and the Sunset Vista compatibility
-layer. `ReloadStudio.exe` carries only this project's own code and the Microsoft
-C runtime.
+layer. `ReloadStudio.exe` carries this project's own code, the JPEG and TGA
+decoders of [stb_image](#stb_image) and the Microsoft C runtime.
 
 ## PsyCross / Psy-X
 
@@ -301,7 +301,8 @@ SDL3 provides windowing, input, timing and audio for `ctr_native.exe`, finds
 the Vulkan loader, and draws the first-start screen with its 2D renderer and
 file dialog. It is built as a static library and linked only into
 `ctr_native.exe`; no `SDL3.dll` is built, shipped or needed. `ReloadStudio.exe`
-contains no SDL code.
+contains no SDL code; of SDL's tree it carries only the JPEG and TGA decoders
+of [stb_image](#stb_image).
 
 License: zlib
 
@@ -393,6 +394,11 @@ SOFTWARE.
 The JPEG decoder of stb_image contains an integer IDCT derived from the
 Independent JPEG Group's software: This software is based in part on the work
 of the Independent JPEG Group.
+
+rldpack and `ReloadStudio.exe` compile the JPEG and TGA decoders of the same
+file, and nothing else of SDL, in `tools/rldpack_image.c`: they read the JPEG
+and TGA textures of OBJ models (`rldpack make-char`). The MIT notice and the
+Independent JPEG Group notice above apply to those programs as well.
 
 #### miniz
 

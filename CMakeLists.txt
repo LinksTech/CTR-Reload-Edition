@@ -166,7 +166,11 @@ target_include_directories(ctr_native PRIVATE ${CMAKE_SOURCE_DIR}/include)
 # The same reader instead of a second one - it only depends on Platform_Log, and
 # rldpack.c provides that as a silent stub. CTR_NATIVE, because without it macros.h
 # assumes the PSX side and defines size_t itself.
-add_executable(rldpack tools/rldpack.c platform/native_disc_image.c)
+#
+# tools/rldpack_image.c carries the JPEG and TGA decoders of stb_image (the copy
+# in SDL's tree, MIT) for the textures of OBJ models - a translation unit of
+# its own, so that nothing else of SDL comes along.
+add_executable(rldpack tools/rldpack.c tools/rldpack_image.c platform/native_disc_image.c)
 target_compile_definitions(rldpack PRIVATE CTR_NATIVE
     CTR_NATIVE_VERSION=\"${CTR_NATIVE_VERSION}\")
 # Build ID from generated/ctr_build_id.h (target ctr_build_id, above).
@@ -211,6 +215,7 @@ if(MSVC)
         tools/reloadstudio/rs_anim.c
         tools/reloadstudio/rs_wheels.c
         tools/reloadstudio/rs_rldpack.c
+        tools/rldpack_image.c
         platform/native_disc_image.c
         tools/reloadstudio/reloadstudio.rc
         tools/reloadstudio/reloadstudio.manifest

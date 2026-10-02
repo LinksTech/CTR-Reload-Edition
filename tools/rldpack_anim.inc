@@ -797,8 +797,7 @@ static int RldAnim_PosesCommand(int argc, char **argv)
 	struct RldMkOptions opt;
 	struct RldMkPly ply;
 	struct RldAnimModel model;
-	u8 *plyData = NULL;
-	size_t plySize = 0;
+	struct RldMkModelInfo info;
 	u32 found = 0;
 	u32 shown = 0;
 	u32 i;
@@ -1003,25 +1002,12 @@ static int RldAnim_PosesCommand(int argc, char **argv)
 	}
 
 	// THE MODEL, read aloud: what its reader finds is said as for make-char.
-	if (!Rld_ReadFile(modelArg, &plyData, &plySize))
+	// PLY only (tools/rldpack_import.inc: an OBJ is model-ply-only) - the
+	// poses must have its points in the order of the file.
+	if (!RldMk_LoadModel(modelArg, &ply, &info, RLDMK_ROLE_POSE))
 	{
-		Rld_Emit("file", "ply", "missing", modelArg, "0", (const char *)NULL);
-		RldMk_Say("error", "ply-open", modelArg, "The model file %s cannot be opened.", modelArg);
 		return 1;
 	}
-	{
-		char bytes[24];
-
-		snprintf(bytes, sizeof(bytes), "%u", (u32)plySize);
-		Rld_Emit("file", "ply", "ok", modelArg, bytes, (const char *)NULL);
-	}
-	printf("rldpack char-poses %s\n", modelArg);
-	if (!RldMk_ParsePly(plyData, plySize, &ply))
-	{
-		free(plyData);
-		return 1;
-	}
-	free(plyData);
 
 	if (!RldAnim_PrepareModel(&model, &ply, &opt, why, sizeof(why)))
 	{

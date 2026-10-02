@@ -20,7 +20,10 @@
 // SHA-256 is in include/rldtrack.inc in full. No library, no
 // vendoring - this tree has neither zlib nor libsodium, and a dependency
 // an author first has to obtain is a hurdle in front of the tool that is
-// meant to remove the hurdles.
+// meant to remove the hurdles. The one piece taken from elsewhere is a
+// reader, not a check: the JPEG and TGA decoders of stb_image for the
+// textures of OBJ models (tools/rldpack_image.c, from the SDL copy in this
+// tree, so nothing has to be obtained either).
 //
 // The game pulls in the same file to read containers. Written once,
 // used by two sides: if the hash path existed here and there once each,
@@ -6093,7 +6096,7 @@ static int Cmd_Selftest(void)
 	// MAKE: model ID, spawn table, SCA -> SNDB, track.txt.
 	failed |= Rld_SelftestMake();
 
-	// MAKE-CHAR: PLY, the chain, the model rules, CHRI (tools/rldpack_char.inc).
+	// MAKE-CHAR: PLY and OBJ, the chain, the model rules, CHRI (tools/rldpack_char.inc).
 	// It counts its failed cases; here only "any" matters.
 	failed |= (RldChar_SelfTest() != 0);
 
@@ -6131,7 +6134,8 @@ static void Rld_Usage(void)
 	printf("COMMANDS\n");
 	printf("  make     <folder>           build a container from a track folder, see below\n");
 	printf("  build    ...                build a container from single files, see below\n");
-	printf("  make-char ...               build a character (.rldchar) from a PLY model, see below\n");
+	printf("  make-char ...               build a character (.rldchar) from a PLY or OBJ model,\n");
+	printf("                              see below\n");
 	printf("  char-poses ...              check pose PLYs against a character model and\n");
 	printf("                              write them for the preview, see below\n");
 	printf("  char-wheel ...              read a wheel PLY of one's own and write it for\n");

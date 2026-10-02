@@ -513,6 +513,67 @@ What `rldpack make-char` writes (`RldMk_WriteCmdl`):
 The pointer map has 8 entries: Model.headers, ptrCommandList, ptrColors,
 ptrAnimations, and the 4 table entries.
 
+### The model rldpack make-char reads (PLY or OBJ)
+
+The container does not record what the model was made from: `--model` (and
+`--mask-model`) take a PLY or an OBJ file, and both end in the same chain
+(`tools/rldpack_import.inc`). The content decides the format, not the name:
+a file that starts with the line `ply` is PLY; text whose lines are comments
+and OBJ keywords, with at least one `v`, is OBJ. A file named for the other
+format is read as what it is (warning `model-misnamed`); files of other 3D
+programs and pictures (FBX, glTF, GLB, STL, Blender, 3DS, PNG, JPEG, ZIP and
+more) are named and refused (`model-unsupported`), anything else is
+`model-unknown` - except a file named `.ply`, which the PLY reader reads and
+refuses with its own message (`ply-format`), as before OBJ. The poses and the
+wheel (`char-poses`, `char-wheel`) read PLY only (`model-ply-only`).
+
+- PLY: `format ascii 1.0` or `binary_little_endian 1.0`, the vertex colors
+  `red green blue` (bytes as they are, floats x 255 rounded).
+- OBJ: `v` (an optional `w`, or `x y z r g b` with vertex colors 0..1), `vt`,
+  `vn`, `f` in the forms `v`, `v/vt`, `v//vn` and `v/vt/vn`, negative indices,
+  faces of 3 to 1024 corners, `o` and `g` (only listed), `usemtl` and
+  `mtllib`; the other keywords of the format are read past with a note.
+  Anything else stops the reader with the line number (`obj-syntax`,
+  `obj-index`, `obj-number`, `obj-face`, `obj-empty`).
+- The color of each corner of an OBJ, as bytes floor(c x 255 + 0.5) like a
+  PLY's float colors (no color space conversion): its vertex color, when the
+  vertex has one - the material's Kd is then not used, Blender writes Kd 0.8
+  for every material; otherwise the material's Kd. The rule goes by vertex: in
+  a file where only some `v` have a color, the others take the Kd rule. Either
+  is multiplied by the material's `map_Kd` texture (PNG, JPEG or TGA, at most
+  4096 pixels a side), sampled at the corner's `vt`: bilinear, repeated, `v` =
+  0 at the bottom of the picture, alpha not used. A texture without Kd counts
+  with Kd 1; neither vertex color nor Kd nor texture gives grey (0x80 per
+  channel; `obj-no-colors` when the whole model is grey). Only the textures of
+  materials that faces use are read. Every missing piece falls back with a
+  warning: an MTL file not found (`mtl-missing`) or not readable (`mtl-bad`),
+  a material it lacks (`mtl-material`), a texture not found, broken or of
+  another format (`tex-missing`, `tex-unreadable`, `tex-unsupported`), a
+  textured corner without `vt` (`tex-no-uv`). Paths of `mtllib` and `map_Kd`
+  are relative to the OBJ and MTL file; an absolute texture path that does not
+  exist is also looked for next to the MTL file (`tex-found-nearby`). The
+  texture and material warnings are said one by one for the first 16, the rest
+  in one more.
+- The chain keeps one color per vertex, so an OBJ becomes one vertex per
+  pair of `v` and color, in the order the faces first use it. Welding by
+  position joins them again where the colors meet.
+- Limits, as for PLY: 1000000 vertices, texture coordinates and faces, 1024
+  corners a face, 4000000 face corners (`obj-big`), a line of 256 KiB.
+- With `--machine` the model is described in `@model` lines: `format`,
+  `mtl`, `texture`, `group` and `colors` (the head of
+  `tools/rldpack_import.inc`); for `--mask-model` they follow its
+  `@file mask-model` line. A missing `.obj` is `model-open` (a PLY keeps
+  `ply-open`).
+- The kart is the longest part at the bottom of the model (after the fit,
+  0.15 below to 0.3 above the ground) that is 1.25 to 2.5 long (Blender
+  units, `ply-no-kart` without one). With `--wheels off` the model brings
+  its own vehicle, which may be shorter: when no part is a kart long, the
+  longest such part that is still a vehicle is the kart (`ply-kart-short`):
+  at least 0.6 long, longer than it is tall, and not the only part of the
+  model. A figure standing on its feet has none - a separate shoe is too
+  short, a figure or legs of one piece are taller than long. With the wheels
+  on `ply-no-kart` stays; its message names such a part when there is one.
+
 ### The size of the driver
 
 The format has no size field. `rldpack make-char --size <percent>` (50..200,
@@ -675,10 +736,10 @@ than CMSK-3 on purpose: a later, larger version is dropped as a mask, not as
 a file. A CMSK that breaks an envelope rule (larger than 256 KiB, compressed,
 size_stored not size_raw) refuses the whole file.
 
-What `rldpack make-char --mask-model <ply>` does (`RldMk_BuildMaskOnce`,
-`RldMk_MaskStep`): the steps of a character, with these differences. The PLY
-(vertex colors, `--mask-up y|z` and `--mask-forward z|-z` as `--up` and
-`--forward`) is one part: no kart, driver or steering wheel, no dummy, no
+What `rldpack make-char --mask-model <model>` does (`RldMk_BuildMaskOnce`,
+`RldMk_MaskStep`): the steps of a character, with these differences. The model
+(PLY or OBJ as for `--model`, `--mask-up y|z` and `--mask-forward z|-z` as
+`--up` and `--forward`) is one part: no kart, driver or steering wheel, no dummy, no
 `--remesh`, no poses. It is fitted to the height of the retail mask (86.1
 game units) times `--mask-size` (50..150 percent, default 100), reduced to at
 most the triangles `RLDCHAR_MASK_DRAW_BYTES_MAX` allows (see Limits) and
@@ -1026,9 +1087,9 @@ without a frame running out of draw memory and without a dropped instance.
   with its triangles and draw bytes and the limit). With `--machine` it
   reports the model against the limit before anything is reduced:
   `@char budget <triangles> <limit> <draw bytes> <limit in bytes>`.
-- `rldpack make-char` reads a PLY of at most 1000000 vertices and faces
-  each (`RLDMK_PLY_MAX`, `ply-big`): a guard of the tool, not a format
-  limit, so that a large export is reduced instead of refused.
+- `rldpack make-char` reads a PLY or OBJ of at most 1000000 vertices and
+  faces each (`RLDMK_PLY_MAX`, `ply-big`, `obj-big`): a guard of the tool,
+  not a format limit, so that a large export is reduced instead of refused.
 - Reload Studio passes `--reduce off` unless its "Reduce to fit" is ticked
   (off by default). A model over the limit shows its triangles, the limit
   and a button "Reduce to fit", which ticks the box and checks again.
