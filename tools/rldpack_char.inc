@@ -7388,6 +7388,40 @@ static int RldMk_BuildPass(const struct RldMkPly *ply, const struct RldMkOptions
 	return opt->maskModel ? RldMk_BuildMaskOnce(ply, opt, b) : RldMk_BuildOnce(ply, opt, b);
 }
 
+// THE OTHER UP AXIS: no kart found, or a size that does not look like a
+// driver (ply-no-kart, ply-axes) - a model exported with +Z up (Blender's own
+// axes) and read as +Y up lies on its back. One quiet build with the other up
+// axis: when it gets through without either, say so. Only then, so a model
+// that is wrong either way gets no advice that does not help.
+static void RldMk_UpHint(const struct RldMkPly *ply, const struct RldMkOptions *opt)
+{
+	struct RldMkOptions other = *opt;
+	struct RldMkBuild trial;
+	const int quiet = s_rldMkQuiet;
+	const int errors = s_rldMkErrors;
+	const int warnings = s_rldMkWarnings;
+	const size_t said = strlen(s_rldMkCodes);
+	int good;
+
+	other.upZ = !opt->upZ;
+	other.diagnose = 0;
+	memset(&trial, 0, sizeof(trial));
+	s_rldMkQuiet = 1;
+	good = RldMk_BuildPass(ply, &other, &trial) && !RldMk_SaidFrom(&s_rldMkCodes[said], "ply-axes") &&
+	       !RldMk_SaidFrom(&s_rldMkCodes[said], "ply-no-kart");
+	RldMk_FreeBuild(&trial);
+	s_rldMkQuiet = quiet;
+	s_rldMkErrors = errors;
+	s_rldMkWarnings = warnings;
+	s_rldMkCodes[said] = '\0';
+
+	if (good)
+	{
+		RldMk_Say("note", "ply-up-axis", NULL, other.upZ ? "The model seems to be Z up: set Up to Z (--up z; Reload Studio: Up Z)."
+		                                                 : "The model seems to be Y up: set Up to Y (--up y; Reload Studio: Up Y).");
+	}
+}
+
 // Steps 2-13 and 15, with the retries of step 4r: with --reduce auto the model
 // is first built without a word. When that build fails mem-model or
 // model-frame (too many records, RldMk_StepWrite) and the model has more
@@ -7469,7 +7503,19 @@ static int RldMk_BuildModel(const struct RldMkPly *ply, const struct RldMkOption
 	}
 
 	speak.diagnose = opt->diagnose;
-	return RldMk_BuildPass(ply, &speak, b);
+	if (RldMk_BuildPass(ply, &speak, b))
+	{
+		if (!opt->maskModel && RldMk_Said("ply-axes"))
+		{
+			RldMk_UpHint(ply, &speak);
+		}
+		return 1;
+	}
+	if (!opt->maskModel && (RldMk_Said("ply-no-kart") || RldMk_Said("ply-axes")))
+	{
+		RldMk_UpHint(ply, &speak);
+	}
+	return 0;
 }
 
 //========================================================================================
@@ -19475,6 +19521,55 @@ static void RldMk_SelfTestVehicleOnly(struct RldMkTestMesh *mesh)
 	}
 }
 
+// PLY-UP-AXIS: the standard model exported with +Z up (Blender's own axes,
+// the front along -Y) and read as +Y up finds no kart: the build says to set
+// Up to Z, and with --up z it builds. The model as it should be says nothing.
+static void RldMk_SelfTestUpHint(struct RldMkTestMesh *mesh)
+{
+	struct RldMkOptions opt;
+	struct RldMkPly ply;
+	struct RldMkBuild b;
+	int run;
+
+	for (run = 0; run < 3; run++)
+	{
+		int ok;
+
+		RldMk_TestStandard(mesh, 2u, 0, 0.0, -1);
+		if (run != 0)
+		{
+			u32 v;
+
+			for (v = 0; v < mesh->vertexCount; v++)
+			{
+				const double y = mesh->xyz[v][1];
+
+				mesh->xyz[v][1] = -mesh->xyz[v][2];
+				mesh->xyz[v][2] = y;
+			}
+		}
+		RldMk_TestOptions(&opt);
+		opt.fit = 1;
+		opt.upZ = (run == 2);
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+		if (run == 0)
+		{
+			RldMk_Test(ok && !RldMk_Said("ply-up-axis"), "the standard model (+Y up): no ply-up-axis", "built %d, said: %s", ok, s_rldMkCodes);
+		}
+		else if (run == 1)
+		{
+			RldMk_Test(!ok && RldMk_Said("ply-no-kart") && RldMk_Said("ply-up-axis"), "a model with +Z up read as +Y up: ply-no-kart and ply-up-axis",
+			           "built %d, said: %s", ok, s_rldMkCodes);
+		}
+		else
+		{
+			RldMk_Test(ok && !RldMk_Said("ply-up-axis"), "the same with --up z: built, no ply-up-axis", "built %d, said: %s", ok, s_rldMkCodes);
+		}
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+	}
+}
+
 static int RldChar_SelfTest(void)
 {
 	struct RldMkTestMesh *mesh = (struct RldMkTestMesh *)calloc(1, sizeof(struct RldMkTestMesh));
@@ -19535,6 +19630,7 @@ static int RldChar_SelfTest(void)
 	RldMk_SelfTestUnderDriver(mesh);
 	RldMk_SelfTestFitSeams(mesh);
 	RldMk_SelfTestVehicleOnly(mesh);
+	RldMk_SelfTestUpHint(mesh);
 	s_rldMkQuiet = quietBefore;
 	RldMk_ResetSaid();
 
