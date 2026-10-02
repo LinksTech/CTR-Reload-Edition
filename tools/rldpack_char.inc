@@ -7632,14 +7632,24 @@ static int RldMk_BuildModel(const struct RldMkPly *ply, const struct RldMkOption
 // the corners unpacked from the frame records (RldMk_UnpackRecord), the
 // triangles and their colors from the replayed command list (RldMk_ReplayNext).
 //
-// THE FILE, little endian:
-//   "RLDPV1\0\0"               8 bytes
-//   u32 poses                  3: turn frame 10 (neutral), turn frame 0, turn frame 20
-//   per pose: u32 triangles, then per triangle 3 corners of
-//     s16 x, s16 y, s16 z      game units in model space (rounded): +Y up,
-//                              +Z forward, +X the driver's left
+// THE FILE, little endian, no padding (RLDPV2):
+//   offset 0  "RLDPV2\0\0"     8 bytes
+//   offset 8  u32 poses        3: turn frame 10 (neutral), turn frame 0, turn frame 20
+//   offset 12 per pose: u32 triangles (the same in every pose), then per
+//             triangle 3 corners of 10 bytes:
+//     s16 x, s16 y, s16 z      1/16 game units in model space: value x scale /
+//                              1024 rounded half up, kept in 16 bits (+-2047.9
+//                              units; a driver spans some 300): +Y up, +Z
+//                              forward, +X the driver's left
 //     u8 r, u8 g, u8 b         the vertex color as the model stores it
-//     u8 pad                   bit 0 = 1: drawn from both sides (no cull bit)
+//     u8 flags                 bit 0 = 1: drawn from both sides (no cull bit);
+//                              bits 1-7 are 0
+//   size = 12 + 3 x (4 + triangles x 30)
+// The game draws a corner at value x scale / 16384 units, steps of 0.2 to 0.6
+// units; whole units would put the preview up to 0.5 off it, sixteenths at
+// most 1/32. The older RLDPV1 is the same with "RLDPV1" and whole game units
+// (value x scale / 16384, rounded half up); Reload Studio reads both
+// (tools/reloadstudio/rs_view.c). @value kart-box stays in whole units.
 // The corners of a triangle run counter-clockwise seen from the side the game
 // draws: the right-hand normal (b - a) x (c - a) points to the viewer who sees
 // it. A triangle with bit 0 of pad set is seen from both sides.
@@ -7653,6 +7663,16 @@ static int RldMk_BuildModel(const struct RldMkPly *ply, const struct RldMkOption
 #define RLDMK_PREVIEW_CORNER_BYTES 10u
 
 static const u32 s_rldMkPreviewFrames[RLDMK_PREVIEW_POSES] = {RLDMK_NEUTRAL_FRAME, 0u, 20u};
+
+// A GTE value -> 1/16 game units: value x scale / 1024, rounded half up, kept in 16 bits.
+static int RldMk_PreviewSixteenth(int value, int scale)
+{
+	const s64 shifted = (s64)value * (s64)scale + 512;
+	s64 units = (shifted >= 0) ? (shifted / 1024) : -((-shifted + 1023) / 1024);
+
+	units = (units < -32768) ? -32768 : ((units > 32767) ? 32767 : units);
+	return (int)units;
+}
 
 // A GTE value -> game units: value x scale / 16384, rounded half up, kept in 16 bits.
 static int RldMk_PreviewUnit(int value, int scale)
@@ -7668,7 +7688,7 @@ static int RldMk_PreviewUnit(int value, int scale)
 // in the neutral frame (x0 y0 z0 x1 y1 z1, the same units). NULL = out of
 // memory, or the list does not replay - neither happens to a model that passed
 // step 15.
-static u8 *RldMk_Preview(const struct RldMkBuild *b, size_t *sizeOut, int kartBox[6])
+static u8 *RldMk_PreviewAs(const struct RldMkBuild *b, size_t *sizeOut, int kartBox[6], int sixteenths)
 {
 	const u8 *body = &b->cmdl[4];
 	const u32 header = Rld_ReadLE32(&body[RLDMK_MODEL_HEADERS]);
@@ -7692,7 +7712,7 @@ static u8 *RldMk_Preview(const struct RldMkBuild *b, size_t *sizeOut, int kartBo
 	{
 		return NULL;
 	}
-	memcpy(out, "RLDPV1\0\0", 8u);
+	memcpy(out, sixteenths ? "RLDPV2\0\0" : "RLDPV1\0\0", 8u);
 	Rld_WriteLE32(&out[8], RLDMK_PREVIEW_POSES);
 
 	for (pose = 0; pose < RLDMK_PREVIEW_POSES; pose++)
@@ -7732,7 +7752,7 @@ static u8 *RldMk_Preview(const struct RldMkBuild *b, size_t *sizeOut, int kartBo
 				RldMk_UnpackRecord(frame, corner[from], v);
 				for (a = 0; a < 3; a++)
 				{
-					Rld_WriteLE16(&out[at + 2u * (u32)a], (u32)RldMk_PreviewUnit(v[a], scale[a]) & 0xFFFFu);
+					Rld_WriteLE16(&out[at + 2u * (u32)a], (u32)(sixteenths ? RldMk_PreviewSixteenth(v[a], scale[a]) : RldMk_PreviewUnit(v[a], scale[a])) & 0xFFFFu);
 				}
 
 				if (index < b->colorCount)
@@ -7786,13 +7806,25 @@ static u8 *RldMk_Preview(const struct RldMkBuild *b, size_t *sizeOut, int kartBo
 	return out;
 }
 
+// The file --preview writes (RLDPV2), and RLDPV1 in whole units for the
+// checks that compare whole units (tools/rldpack_anim.inc).
+static u8 *RldMk_PreviewV2(const struct RldMkBuild *b, size_t *sizeOut, int kartBox[6])
+{
+	return RldMk_PreviewAs(b, sizeOut, kartBox, 1);
+}
+
+static u8 *RldMk_Preview(const struct RldMkBuild *b, size_t *sizeOut, int kartBox[6])
+{
+	return RldMk_PreviewAs(b, sizeOut, kartBox, 0);
+}
+
 // Writes the preview next to the build; a failure is a warning: the character
 // itself is not touched by it.
 static void RldMk_WritePreview(const struct RldMkBuild *b, const char *path)
 {
 	int box[6];
 	size_t size = 0;
-	u8 *data = RldMk_Preview(b, &size, box);
+	u8 *data = RldMk_PreviewV2(b, &size, box);
 	FILE *file;
 	int openError;
 
@@ -16071,10 +16103,10 @@ static void RldMk_SelfTestPreview(struct RldMkTestMesh *mesh)
 	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
 	if (ok)
 	{
-		data = RldMk_Preview(&b, &size, box);
+		data = RldMk_PreviewV2(&b, &size, box);
 	}
 
-	ok = (data != NULL) && (size == (12u + 3u * (4u + (size_t)b.drawCount * 30u))) && (memcmp(data, "RLDPV1\0\0", 8u) == 0) && (Rld_ReadLE32(&data[8]) == 3u);
+	ok = (data != NULL) && (size == (12u + 3u * (4u + (size_t)b.drawCount * 30u))) && (memcmp(data, "RLDPV2\0\0", 8u) == 0) && (Rld_ReadLE32(&data[8]) == 3u);
 	if (ok)
 	{
 		u32 pose;
@@ -16084,7 +16116,7 @@ static void RldMk_SelfTestPreview(struct RldMkTestMesh *mesh)
 			ok = ok && (Rld_ReadLE32(&data[12u + (size_t)pose * (4u + (size_t)b.drawCount * 30u)]) == b.drawCount);
 		}
 	}
-	RldMk_Test(ok, "preview: RLDPV1, 3 poses, every triangle", "size %u, %u triangles", (u32)size, b.drawCount);
+	RldMk_Test(ok, "preview: RLDPV2, 3 poses, every triangle", "size %u, %u triangles", (u32)size, b.drawCount);
 
 	// The kart box: 0.9 x 0.25 x 1.8 at 0.1 above the ground, in game units.
 	RldMk_Test(ok && (box[0] >= -30) && (box[0] <= -28) && (box[3] >= 28) && (box[3] <= 30) && (box[1] >= 5) && (box[1] <= 8) && (box[4] >= 21) &&
@@ -16096,11 +16128,13 @@ static void RldMk_SelfTestPreview(struct RldMkTestMesh *mesh)
 	// toward +X in turn frame 0 (pose 1) and the other way in frame 20 (pose 2).
 	if (ok)
 	{
-		const int middle[3] = {(box[0] + box[3]) / 2, (box[1] + box[4]) / 2, (box[2] + box[5]) / 2};
+		// the corners are in 1/16 units, the box in whole ones (rounded: half a unit of room)
+		const int middle[3] = {8 * (box[0] + box[3]), 8 * (box[1] + box[4]), 8 * (box[2] + box[5])};
 		s64 lean[3] = {0, 0, 0};
 		u32 kartTriangles = 0;
 		u32 inward = 0;
 		u32 bothSides = 0;
+		u32 fine = 0;
 		u32 pose;
 		u32 t;
 
@@ -16121,15 +16155,16 @@ static void RldMk_SelfTestPreview(struct RldMkTestMesh *mesh)
 					for (a = 0; a < 3; a++)
 					{
 						c[k][a] = RldMk_TestPreviewCorner(data, at + 10u * (u32)k, a);
-						if ((c[k][a] < box[a]) || (c[k][a] > box[3 + a]))
+						if ((c[k][a] < (16 * box[a] - 8)) || (c[k][a] > (16 * box[3 + a] + 8)))
 						{
 							inKart = 0;
 						}
+						fine += ((c[k][a] % 16) != 0) ? 1u : 0u;
 					}
 					bothSides += ((data[at + 10u * (u32)k + 9u] & 1u) != 0u) ? 1u : 0u;
 
 					// The same corners in every pose: those high up in the neutral one.
-					if (RldMk_TestPreviewCorner(data, 16u + (size_t)t * 30u + 10u * (u32)k, 1) > 30)
+					if (RldMk_TestPreviewCorner(data, 16u + (size_t)t * 30u + 10u * (u32)k, 1) > (30 * 16))
 					{
 						lean[pose] += c[k][0];
 					}
@@ -16156,6 +16191,7 @@ static void RldMk_SelfTestPreview(struct RldMkTestMesh *mesh)
 		           "%u kart triangles, %u inward, %u both-sides corners", kartTriangles, inward, bothSides);
 		RldMk_Test((lean[1] > lean[0]) && (lean[0] > lean[2]), "preview: turn frame 0 leans toward +X, frame 20 the other way", "x sums %lld %lld %lld",
 		           (long long)lean[0], (long long)lean[1], (long long)lean[2]);
+		RldMk_Test(fine != 0u, "preview: positions in sixteenths of a game unit, not whole units", "every coordinate a whole unit");
 	}
 	free(data);
 	data = NULL;
@@ -16167,7 +16203,7 @@ static void RldMk_SelfTestPreview(struct RldMkTestMesh *mesh)
 	ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
 	if (ok)
 	{
-		data = RldMk_Preview(&b, &size, box);
+		data = RldMk_PreviewV2(&b, &size, box);
 	}
 	if (data != NULL)
 	{
