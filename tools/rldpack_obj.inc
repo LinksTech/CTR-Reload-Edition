@@ -299,6 +299,32 @@ static int RldObj_Is(const struct RldObjWord *word, const char *keyword)
 	return (word->length == n) && (memcmp(word->text, keyword, n) == 0);
 }
 
+// The same in any letter case: the keywords of an MTL file (some exporters
+// write map_kd or kd).
+static int RldObj_IsNoCase(const struct RldObjWord *word, const char *keyword)
+{
+	const size_t n = strlen(keyword);
+	size_t i;
+
+	if (word->length != n)
+	{
+		return 0;
+	}
+	for (i = 0; i < n; i++)
+	{
+		char a = word->text[i];
+		char b = keyword[i];
+
+		a = ((a >= 'A') && (a <= 'Z')) ? (char)(a - 'A' + 'a') : a;
+		b = ((b >= 'A') && (b <= 'Z')) ? (char)(b - 'A' + 'a') : b;
+		if (a != b)
+		{
+			return 0;
+		}
+	}
+	return 1;
+}
+
 // The rest of a line after *at, without the spaces around it.
 static void RldObj_Rest(const char *line, size_t length, size_t at, struct RldObjWord *rest)
 {
@@ -1232,7 +1258,7 @@ static int RldObj_Detect(const u8 *data, size_t size)
 //========================================================================================
 
 // The values an option of map_Kd takes: -o, -s and -t up to three numbers,
-// -mm two, the others one; an unknown option none.
+// -mm two, the others one; 0 = not an option of the format.
 static u32 RldObj_OptionValues(const struct RldObjWord *option, int *numbers)
 {
 	static const char *const one[] = {"-blendu", "-blendv", "-bm", "-boost", "-cc", "-clamp", "-imfchan", "-texres", "-type"};
@@ -1259,7 +1285,8 @@ static u32 RldObj_OptionValues(const struct RldObjWord *option, int *numbers)
 }
 
 // The file name of a map_Kd line: the options before it skipped, the rest of
-// the line (spaces allowed), without quotes around it.
+// the line (spaces allowed), without quotes around it. A word that starts
+// with '-' but is no option of the format starts the name (-face.png).
 static void RldObj_MapName(const char *line, size_t length, size_t at, struct RldObjWord *name)
 {
 	struct RldObjWord word;
@@ -1278,6 +1305,11 @@ static void RldObj_MapName(const char *line, size_t length, size_t at, struct Rl
 		}
 
 		values = RldObj_OptionValues(&word, &numbers);
+		if (values == 0u)
+		{
+			at = before;
+			break;
+		}
 		for (i = 0; i < values; i++)
 		{
 			double value;
@@ -1306,6 +1338,7 @@ static int RldObj_ReadLibrary(struct RldObjModel *m, u32 library, const u8 *data
 	u32 current = RLDMK_NONE;
 	u32 defined = 0;
 	u32 badLine = 0;
+	u32 badMap = 0;
 	int got;
 
 	if (memchr(data, 0, size) != NULL)
@@ -1325,7 +1358,7 @@ static int RldObj_ReadLibrary(struct RldObjModel *m, u32 library, const u8 *data
 			continue;
 		}
 
-		if (RldObj_Is(&keyword, "newmtl"))
+		if (RldObj_IsNoCase(&keyword, "newmtl"))
 		{
 			const u32 before = m->materialNames.count;
 			u32 index;
@@ -1361,7 +1394,7 @@ static int RldObj_ReadLibrary(struct RldObjModel *m, u32 library, const u8 *data
 			continue;
 		}
 
-		if (RldObj_Is(&keyword, "Kd"))
+		if (RldObj_IsNoCase(&keyword, "Kd"))
 		{
 			struct RldObjMaterial *material = &m->materials[current];
 			struct RldObjWord word;
@@ -1371,7 +1404,7 @@ static int RldObj_ReadLibrary(struct RldObjModel *m, u32 library, const u8 *data
 
 			while (ok && RldObj_Word(text.buffer, text.length, &at, &word))
 			{
-				if ((n == 0) && (RldObj_Is(&word, "spectral") || RldObj_Is(&word, "xyz")))
+				if ((n == 0) && (RldObj_IsNoCase(&word, "spectral") || RldObj_IsNoCase(&word, "xyz")))
 				{
 					n = -1;
 					break;
@@ -1406,7 +1439,7 @@ static int RldObj_ReadLibrary(struct RldObjModel *m, u32 library, const u8 *data
 			continue;
 		}
 
-		if (RldObj_Is(&keyword, "map_Kd"))
+		if (RldObj_IsNoCase(&keyword, "map_Kd"))
 		{
 			struct RldObjMaterial *material = &m->materials[current];
 
@@ -1417,6 +1450,10 @@ static int RldObj_ReadLibrary(struct RldObjModel *m, u32 library, const u8 *data
 			{
 				material->map = RldObj_Copy(rest.text, rest.length, RLD_PATH_MAX - 1u);
 			}
+			else
+			{
+				badMap = (badMap != 0u) ? badMap : text.line;
+			}
 			continue;
 		}
 	}
@@ -1425,6 +1462,11 @@ static int RldObj_ReadLibrary(struct RldObjModel *m, u32 library, const u8 *data
 	{
 		RldMk_Say("warning", "mtl-bad", "a Kd line that is not 1 or 3 numbers", "Line %u of the material file %s cannot be read; that color is not used.",
 		          badLine, path);
+	}
+	if (badMap != 0u)
+	{
+		RldMk_Say("warning", "mtl-bad", "map_Kd without a file name",
+		          "Line %u of the material file %s names no texture after map_Kd; that material is drawn without a texture.", badMap, path);
 	}
 	return (got >= 0) && (defined != 0u);
 }

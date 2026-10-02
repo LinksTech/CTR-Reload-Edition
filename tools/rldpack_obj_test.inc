@@ -651,6 +651,35 @@ static void RldMk_SelfTestObjCases(struct RldMkTestMesh *mesh)
 		free(bluePng);
 	}
 
+	// MTL keywords in any letter case, a texture whose name starts with '-',
+	// map_Kd without a name: mtl-bad, the material keeps its Kd.
+	{
+		static const char cases[] = "mtllib cases.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0.5 0.5\n"
+		                            "usemtl a\nf 1/1 2/1 3/1\nusemtl b\nf 1/1 2/1 3/1\nusemtl c\nf 1/1 2/1 3/1\n";
+		static const char mtl[] = "NEWMTL a\nkd 1 0 0\nNewMtl b\nMAP_KD -face.png\nnewmtl c\nKD 0 0 1\nmap_Kd -s 1 1 1\n";
+		static const u8 green[12] = {0, 255, 0, 0, 255, 0, 0, 255, 0, 0, 255, 0};
+		size_t greenSize = 0;
+		u8 *greenPng = RldMk_TestPngRgb(2u, 2u, green, &greenSize);
+
+		files[0].path = "selftest/cases.mtl";
+		files[0].data = (const u8 *)mtl;
+		files[0].size = sizeof(mtl) - 1u;
+		files[1].path = "selftest/-face.png";
+		files[1].data = greenPng;
+		files[1].size = greenSize;
+		s_rldObjFiles = files;
+		s_rldObjFileCount = 2u;
+		ok = (greenPng != NULL) && RldMk_TestImport("selftest/cases.obj", cases, sizeof(cases) - 1u, &ply, &info, RLDMK_ROLE_MAIN);
+		RldMk_Test(ok && (info.texturesOk == 1u) && (RldMk_TestCornerRgb(&ply, 0u, 0u) == 0xFF0000u) && (RldMk_TestCornerRgb(&ply, 1u, 0u) == 0x00FF00u) &&
+		               (RldMk_TestCornerRgb(&ply, 2u, 0u) == 0x0000FFu) && (RldMk_TestSaidCount("mtl-bad") == 1u) && (s_rldMkWarnings == 1),
+		           "MTL keywords in any letter case, a texture named -face.png, map_Kd without a name (mtl-bad)", "read %d, textures %u/%u, said: %s", ok,
+		           info.texturesOk, info.textures, s_rldMkCodes);
+		RldMk_FreePly(&ply);
+		s_rldObjFiles = NULL;
+		s_rldObjFileCount = 0;
+		free(greenPng);
+	}
+
 	// Nothing but grey: obj-no-colors; a face of 5 and of 6 corners through more[].
 	{
 		static const char grey[] = "v 0 0 0\nv 1 0 0\nv 1 1 0\nv 0.5 1.5 0\nv 0 1 0\nv -0.5 0.5 0\n"
