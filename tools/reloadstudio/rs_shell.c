@@ -1690,16 +1690,18 @@ HWND Rs_Check(HWND page, int id, const wchar_t *text)
     return Rs_Themed(h);
 }
 
-// A closed combo box without the focus hands the mouse wheel to the page
-// (and so to the scrolling view): otherwise scrolling the page over it would
-// change its choice.
+// A closed combo box hands the mouse wheel to the page (and so to the
+// scrolling view), also while it has the focus: a box keeps the focus after a
+// choice made with the mouse, and scrolling the page over it would quietly
+// change that choice (one notch down picks the next entry). Only the open
+// list takes the wheel; the keys still change a closed box.
 static LRESULT CALLBACK Rs_ComboSub(HWND h, UINT msg, WPARAM wParam, LPARAM lParam,
                                     UINT_PTR id, DWORD_PTR ref)
 {
     (void)ref;
     if (msg == WM_NCDESTROY) {
         RemoveWindowSubclass(h, Rs_ComboSub, id);
-    } else if ((msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL) && g_host && GetFocus() != h &&
+    } else if ((msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL) && g_host &&
                !SendMessageW(h, CB_GETDROPPEDSTATE, 0, 0)) {
         return SendMessageW(g_host, msg, wParam, lParam);
     }
@@ -4080,10 +4082,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
         HWND page = g_current >= 0 ? g_pages[g_current] : NULL;
         int key = msg.message >= WM_KEYFIRST && msg.message <= WM_KEYLAST;
-        // A slider without the focus hands the mouse wheel to the scrolling view
-        // (like Rs_ComboSub): scrolling the page over it must not move it.
-        if ((msg.message == WM_MOUSEWHEEL || msg.message == WM_MOUSEHWHEEL) && g_host &&
-            msg.hwnd != GetFocus()) {
+        // A slider hands the mouse wheel to the scrolling view, also while it
+        // has the focus (like Rs_ComboSub): scrolling the page over it must not
+        // move it. The keys still move it.
+        if ((msg.message == WM_MOUSEWHEEL || msg.message == WM_MOUSEHWHEEL) && g_host) {
             wchar_t cls[32];
             if (GetClassNameW(msg.hwnd, cls, 32) && _wcsicmp(cls, TRACKBAR_CLASSW) == 0) {
                 SendMessageW(g_host, msg.message, msg.wParam, msg.lParam);
