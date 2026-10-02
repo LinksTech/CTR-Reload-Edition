@@ -766,6 +766,77 @@ static void RldMk_SelfTestObjEmission(void)
 	s_rldObjFileCount = 0;
 }
 
+// Texture alpha, and names that start with '#' (not a comment after mtllib
+// and map_Kd): a 4 x 4 texture with its outer columns transparent black and
+// the inner ones red. Between a transparent and a red texel the corner is
+// red, not dark red; on transparent texels only it keeps Kd (yellow).
+static void RldMk_SelfTestObjAlpha(void)
+{
+	static const char mtl[] = "newmtl cut\nKd 1 1 0\nmap_Kd #cut.png\n";
+	static const char obj[] = "mtllib #alpha.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\nvt 0.25 0.5\nvt 0.75 0.5\nvt 0.5 0.5\nvt 0.125 0.5\n"
+	                          "usemtl cut\nf 1/1 2/2 3/3\nf 1/4 2/4 3/4\n";
+	struct RldObjMemFile files[2];
+	struct RldMkPly ply;
+	struct RldMkModelInfo info;
+	struct RldMkBuffer idat;
+	struct RldMkBuffer png;
+	u8 raw[4u * (1u + 16u)];
+	u8 head[13];
+	u32 x;
+	u32 y;
+	int ok;
+
+	// The PNG: RGBA, rows with filter 0.
+	for (y = 0; y < 4u; y++)
+	{
+		raw[y * 17u] = 0;
+		for (x = 0; x < 4u; x++)
+		{
+			const int inner = (x == 1u) || (x == 2u);
+
+			raw[y * 17u + 1u + 4u * x + 0u] = inner ? 255u : 0u;
+			raw[y * 17u + 1u + 4u * x + 1u] = 0u;
+			raw[y * 17u + 1u + 4u * x + 2u] = 0u;
+			raw[y * 17u + 1u + 4u * x + 3u] = inner ? 255u : 0u;
+		}
+	}
+	memset(&idat, 0, sizeof(idat));
+	memset(&png, 0, sizeof(png));
+	RldMk_TestDeflate(&idat, raw, sizeof(raw), 0, 17u, 0);
+	RldMk_BufferBytes(&png, s_rldPngSignature, 8u);
+	RldMk_PutBE32(&head[0], 4u);
+	RldMk_PutBE32(&head[4], 4u);
+	head[8] = 8;
+	head[9] = 6;
+	head[10] = 0;
+	head[11] = 0;
+	head[12] = 0;
+	RldMk_TestChunk(&png, "IHDR", head, 13u);
+	RldMk_TestChunk(&png, "IDAT", idat.data, (u32)idat.size);
+	RldMk_TestChunk(&png, "IEND", NULL, 0u);
+	free(idat.data);
+
+	files[0].path = "selftest/#alpha.mtl";
+	files[0].data = (const u8 *)mtl;
+	files[0].size = sizeof(mtl) - 1u;
+	files[1].path = "selftest/#cut.png";
+	files[1].data = png.data;
+	files[1].size = png.size;
+	s_rldObjFiles = files;
+	s_rldObjFileCount = 2u;
+	ok = (png.data != NULL) && RldMk_TestImport("selftest/alpha.obj", obj, sizeof(obj) - 1u, &ply, &info, RLDMK_ROLE_MAIN);
+	RldMk_Test(ok && (info.mtl == RLDMK_MTL_OK) && (info.texturesOk == 1u) && (RldMk_TestCornerRgb(&ply, 0u, 0u) == 0xFF0000u) &&
+	               (RldMk_TestCornerRgb(&ply, 0u, 1u) == 0xFF0000u) && (RldMk_TestCornerRgb(&ply, 1u, 0u) == 0xFFFF00u) && RldMk_Said("tex-alpha") &&
+	               (s_rldMkWarnings == 0),
+	           "OBJ #alpha.mtl and #cut.png read; texture alpha: red beside transparent texels, Kd on transparent ones", "read %d, %06X %06X %06X, said: %s",
+	           ok, ok ? RldMk_TestCornerRgb(&ply, 0u, 0u) : 0u, ok ? RldMk_TestCornerRgb(&ply, 0u, 1u) : 0u, ok ? RldMk_TestCornerRgb(&ply, 1u, 0u) : 0u,
+	           s_rldMkCodes);
+	RldMk_FreePly(&ply);
+	s_rldObjFiles = NULL;
+	s_rldObjFileCount = 0;
+	free(png.data);
+}
+
 // What falls back with a warning, what fails, and which format a file is.
 static void RldMk_SelfTestObjCases(struct RldMkTestMesh *mesh)
 {
@@ -1112,6 +1183,7 @@ static void RldMk_SelfTestObj(struct RldMkTestMesh *mesh)
 	RldMk_SelfTestObjEdges();
 	RldMk_SelfTestObjUniform();
 	RldMk_SelfTestObjEmission();
+	RldMk_SelfTestObjAlpha();
 	RldMk_SelfTestObjCases(mesh);
 	free(chri);
 }

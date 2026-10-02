@@ -27,7 +27,8 @@
 // The texture is sampled at the corner's vt (map_Kd -o and -s: offset +
 // scale x vt): bilinear, repeated (u and v modulo 1) - with the edges
 // clamped on a face whose coordinates all lie in 0..1 or with -clamp on -,
-// v = 0 at the bottom of the picture, alpha not used. PNG through
+// v = 0 at the bottom of the picture, each texel by its alpha (a corner on
+// fully transparent texels keeps its color without the texture). PNG through
 // include/rldpng.inc, JPEG and TGA through tools/rldpack_image.c. A texture
 // that is not at its path is looked for at a fixed list of other places
 // (RldObj_SearchTexture); @model texture names the file used.
@@ -2005,7 +2006,9 @@ static int RldObj_Decode(const char *path, const u8 *data, size_t size, struct R
 // the bottom row. 0..1 per channel. Repeated (u and v modulo 1), or with
 // clamp (u and v in 0..1) the texels at the edge are the last ones: within
 // half a texel of the edge the other side of the picture is never mixed in.
-static void RldObj_Sample(const struct RldObjTexture *t, double u, double v, int clamp, double out[3])
+// Each texel counts by its alpha: a transparent one (often black in its RGB)
+// adds nothing. 0 = all four are transparent, *out not set.
+static int RldObj_Sample(const struct RldObjTexture *t, double u, double v, int clamp, double out[3])
 {
 	const s64 w = (s64)t->width;
 	const s64 h = (s64)t->height;
@@ -2056,17 +2059,43 @@ static void RldObj_Sample(const struct RldObjTexture *t, double u, double v, int
 		y1 = (u32)((y0 + 1) % h);
 	}
 
-	for (c = 0; c < 3; c++)
 	{
-		const double p00 = (double)t->rgba[4u * ((u32)y0 * t->width + (u32)x0) + (u32)c];
-		const double p10 = (double)t->rgba[4u * ((u32)y0 * t->width + x1) + (u32)c];
-		const double p01 = (double)t->rgba[4u * (y1 * t->width + (u32)x0) + (u32)c];
-		const double p11 = (double)t->rgba[4u * (y1 * t->width + x1) + (u32)c];
-		const double top = p00 + (p10 - p00) * ax;
-		const double bottom = p01 + (p11 - p01) * ax;
+		const u8 *q00 = &t->rgba[4u * ((u32)y0 * t->width + (u32)x0)];
+		const u8 *q10 = &t->rgba[4u * ((u32)y0 * t->width + x1)];
+		const u8 *q01 = &t->rgba[4u * (y1 * t->width + (u32)x0)];
+		const u8 *q11 = &t->rgba[4u * (y1 * t->width + x1)];
 
-		out[c] = (top + (bottom - top) * ay) / 255.0;
+		if ((q00[3] & q10[3] & q01[3] & q11[3]) != 255u)
+		{
+			const double w00 = (1.0 - ax) * (1.0 - ay) * (double)q00[3];
+			const double w10 = ax * (1.0 - ay) * (double)q10[3];
+			const double w01 = (1.0 - ax) * ay * (double)q01[3];
+			const double w11 = ax * ay * (double)q11[3];
+			const double total = w00 + w10 + w01 + w11;
+
+			if (!(total > 0.0))
+			{
+				return 0;
+			}
+			for (c = 0; c < 3; c++)
+			{
+				out[c] = (w00 * (double)q00[c] + w10 * (double)q10[c] + w01 * (double)q01[c] + w11 * (double)q11[c]) / total / 255.0;
+			}
+			return 1;
+		}
+		for (c = 0; c < 3; c++)
+		{
+			const double p00 = (double)q00[c];
+			const double p10 = (double)q10[c];
+			const double p01 = (double)q01[c];
+			const double p11 = (double)q11[c];
+			const double top = p00 + (p10 - p00) * ax;
+			const double bottom = p01 + (p11 - p01) * ax;
+
+			out[c] = (top + (bottom - top) * ay) / 255.0;
+		}
 	}
+	return 1;
 }
 
 static const char *const s_rldObjTextureWords[4] = {"ok", "missing", "unreadable", "unsupported"};
@@ -2293,8 +2322,9 @@ static void RldObj_VertexColors(struct RldObjModel *m)
 // One texture onto the corners of the faces whose material uses it: the
 // vertex color, or else Kd (1 without Kd), times the texture; a vertex color
 // x 255/128 (at most 1) when it modulates (RldObj_VertexColors). Returns the
-// corners that have no vt and keep their color.
-static u32 RldObj_ApplyTexture(struct RldObjModel *m, u32 texture, u8 *cornerRgb, u8 *cornerSource)
+// corners that have no vt and keep their color; *clear counts those on fully
+// transparent texels, which keep it as well.
+static u32 RldObj_ApplyTexture(struct RldObjModel *m, u32 texture, u8 *cornerRgb, u8 *cornerSource, u32 *clear)
 {
 	const struct RldObjTexture *t = &m->textures[texture];
 	u32 noUv = 0;
@@ -2347,7 +2377,11 @@ static u32 RldObj_ApplyTexture(struct RldObjModel *m, u32 texture, u8 *cornerRgb
 			}
 
 			RldObj_TextureUv(m, material, vt, uv);
-			RldObj_Sample(t, uv[0], uv[1], clamp, sample);
+			if (!RldObj_Sample(t, uv[0], uv[1], clamp, sample))
+			{
+				(*clear)++;
+				continue;
+			}
 			for (n = 0; n < 3; n++)
 			{
 				double base = m->vColored[v] ? m->vrgb[3u * v + (u32)n] : (material->hasKd ? material->kd[n] : 1.0);
@@ -2663,16 +2697,28 @@ static int RldObj_Textures(struct RldObjModel *m, const char *objPath, char (*li
 		{
 			const size_t texels = (size_t)t->width * t->height;
 			size_t p;
+			u32 clear = 0;
 
+			info->noUv += RldObj_ApplyTexture(m, i, cornerRgb, cornerSource, &clear);
 			for (p = 0; p < texels; p++)
 			{
 				if (t->rgba[4u * p + 3u] != 255u)
 				{
-					RldMk_Say("info", "tex-alpha", shown, "The texture %s has transparency; it is not used.", Rld_LastComponent(shown));
+					if (clear == 0u)
+					{
+						RldMk_Say("info", "tex-alpha", shown, "The texture %s has transparency: transparent texels add nothing to the colors.",
+						          Rld_LastComponent(shown));
+					}
+					else
+					{
+						RldMk_Say("info", "tex-alpha", shown,
+						          "The texture %s has transparency: transparent texels add nothing to the colors; %u corners on fully transparent "
+						          "texels keep the vertex or material color.",
+						          Rld_LastComponent(shown), clear);
+					}
 					break;
 				}
 			}
-			info->noUv += RldObj_ApplyTexture(m, i, cornerRgb, cornerSource);
 			if (fromImg)
 			{
 				RldImg_Free(t->rgba);
