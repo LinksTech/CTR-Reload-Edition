@@ -1112,6 +1112,20 @@ static int RldMk_ParsePly(const u8 *data, size_t size, struct RldMkPly *ply)
 	ply->faceCount = elements[faceElement].count;
 	ply->binary = (format == 2);
 
+	// Other elements (edges, materials, whatever an exporter adds) are read
+	// past, so they are held to the same limit: 2^32 - 1 entries of a list
+	// would take minutes. An element without properties has nothing in the
+	// data at all and is skipped below, whatever its count.
+	for (e = 0; e < elementCount; e++)
+	{
+		if ((e != vertexElement) && (e != faceElement) && (elements[e].propertyCount != 0) && (elements[e].count > RLDMK_PLY_MAX))
+		{
+			RldMk_Say("error", "ply-big", NULL, "The model has an element \"%s\" of %u entries; rldpack reads at most %u. Export only the mesh (vertices and faces).",
+			          elements[e].name, elements[e].count, RLDMK_PLY_MAX);
+			return 0;
+		}
+	}
+
 	if (ply->vertexCount > RLDMK_PLY_MAX)
 	{
 		RldMk_Say("error", "ply-big", NULL, "The model has %u vertices; rldpack reads at most %u. Reduce it in Blender (Decimate modifier).",
@@ -1150,7 +1164,7 @@ static int RldMk_ParsePly(const u8 *data, size_t size, struct RldMkPly *ply)
 		const int isFace = (e == faceElement);
 		u32 i;
 
-		for (i = 0; i < element->count; i++)
+		for (i = 0; (element->propertyCount != 0) && (i < element->count); i++)
 		{
 			int p;
 
@@ -19640,6 +19654,49 @@ static void RldMk_SelfTestUpHint(struct RldMkTestMesh *mesh)
 	}
 }
 
+// PLY ELEMENTS BEYOND VERTEX AND FACE: six elements without properties that
+// claim 2^32 - 1 entries are skipped (no data) - the model reads at once; an
+// element with a property and 2^31 entries is refused as too big.
+static void RldMk_SelfTestPlyElements(void)
+{
+	static const char *const head = "ply\nformat ascii 1.0\n";
+	static const char *const body =
+	    "element vertex 3\nproperty float x\nproperty float y\nproperty float z\nelement face 1\nproperty list uchar uint vertex_indices\n";
+	static const char *const data = "end_header\n0 0 0\n1 0 0\n0 1 0\n3 0 1 2\n";
+	struct RldMkBuffer text;
+	struct RldMkPly ply;
+	int k;
+	int read;
+
+	memset(&text, 0, sizeof(text));
+	RldMk_BufferText(&text, "%s", head);
+	for (k = 0; k < 3; k++)
+	{
+		RldMk_BufferText(&text, "element empty%d 4294967295\n", k);
+	}
+	RldMk_BufferText(&text, "%s", body);
+	for (k = 3; k < 6; k++)
+	{
+		RldMk_BufferText(&text, "element empty%d 4294967295\n", k);
+	}
+	RldMk_BufferText(&text, "%s", data);
+	RldMk_ResetSaid();
+	read = (text.data != NULL) && RldMk_ParsePly(text.data, text.size, &ply);
+	RldMk_Test(read && (ply.vertexCount == 3u) && (ply.faceCount == 1u), "PLY: six elements without properties of 2^32 - 1 entries are skipped",
+	           "read %d, said: %s", read, s_rldMkCodes);
+	if (read)
+	{
+		RldMk_FreePly(&ply);
+	}
+	free(text.data);
+
+	memset(&text, 0, sizeof(text));
+	RldMk_BufferText(&text, "%s%selement edge 2147483648\nproperty int vertex1\n%s", head, body, data);
+	RldMk_Test((text.data != NULL) && RldMk_TestPlyText((const char *)text.data, "ply-big"), "PLY: an element with a property and 2^31 entries is refused (ply-big)",
+	           "said: %s", s_rldMkCodes);
+	free(text.data);
+}
+
 static int RldChar_SelfTest(void)
 {
 	struct RldMkTestMesh *mesh = (struct RldMkTestMesh *)calloc(1, sizeof(struct RldMkTestMesh));
@@ -19701,6 +19758,7 @@ static int RldChar_SelfTest(void)
 	RldMk_SelfTestFitSeams(mesh);
 	RldMk_SelfTestVehicleOnly(mesh);
 	RldMk_SelfTestUpHint(mesh);
+	RldMk_SelfTestPlyElements();
 	s_rldMkQuiet = quietBefore;
 	RldMk_ResetSaid();
 
