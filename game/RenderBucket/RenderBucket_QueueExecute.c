@@ -20,6 +20,12 @@ void NativeTrackMod_NoteDrawExit(struct Instance *inst, int reason, u32 detail);
 // seat 0. Only a counter - no picture changes.
 void NativeChar_NoteDroppedInstance(const struct Instance *inst);
 
+// From platform/native_chars.c as well. 1 for the model of a custom character
+// file that is packed with odd heights (CHRI flag RLDCHAR_FLAG_FULL_HEIGHT,
+// include/rldchar.inc), else 0. Asked once per instance draw by
+// RenderBucket_PrepareDrawContext; every retail model gets the retail mask.
+int NativeChar_ModelFullHeight(const struct Model *model);
+
 struct RenderBucketEntry
 {
 	struct Instance *inst;
@@ -398,7 +404,16 @@ struct RenderBucketDrawContext
 	int vertexIndex;
 	int splitPlane;
 	int waterSplitSide;
+	u32 packMaskXY;
 };
+
+// The mask of a packed model vertex (RenderBucket_PackModelVertexXY). Retail
+// clears bits 16-18 after the << 2: bits 16-17 are bits 14-15 of the X sum and
+// must not reach the up half, bit 18 is bit 0 of the up sum (pos.y + byte), so
+// retail models have even heights only. A custom model packed with odd heights
+// keeps bit 18 (NativeChar_ModelFullHeight).
+#define RENDER_BUCKET_PACK_MASK_XY 0xfff8ffffu
+#define RENDER_BUCKET_PACK_MASK_XY_FULL_HEIGHT 0xfffcffffu
 
 enum
 {
@@ -2449,7 +2464,9 @@ static u32 RenderBucket_PackModelVertexXY(struct RenderBucketDrawContext *ctx, c
 	// `((vertex & 0x00ff00ff) + frameOriginXY) << 2`, so preserve possible
 	// carry from the low X half into the packed Z half. Execute masks frame X
 	// with 0x7fff before writing the non-interpolated origin scratch word.
-	return ((vertexXZ + frameOriginXY) << 2) & 0xfff8ffff;
+	// The X sum stays below 0x10000 that way, so nothing carries into bit 18
+	// and the full height mask keeps exactly bit 0 of the up sum.
+	return ((vertexXZ + frameOriginXY) << 2) & ctx->packMaskXY;
 }
 
 static u32 RenderBucket_PackInterpolatedModelVertexXY(struct RenderBucketDrawContext *ctx, const RenderBucketVertex *curr, const RenderBucketVertex *next)
@@ -2464,7 +2481,11 @@ static u32 RenderBucket_PackInterpolatedModelVertexXY(struct RenderBucketDrawCon
 	// NOTE(aalhendi): Source-backs retail next-frame decoder 0x8006b464-
 	// 0x8006b480: current and next vertex X/Z bytes are added with the summed
 	// frame origin, then shifted by one instead of the non-interpolated << 2.
-	return ((currXZ + nextXZ + frameOriginXY) << 1) & 0xfff8ffff;
+	// The retail mask for every model: here the X sum is not masked with
+	// 0x7fff and may carry into bit 16, which the mask catches together with
+	// bit 0 of the up sum. Keeping that bit would need the halves packed apart.
+	// No custom model gets here - its half frames are refused (model-anims).
+	return ((currXZ + nextXZ + frameOriginXY) << 1) & RENDER_BUCKET_PACK_MASK_XY;
 }
 
 static u32 RenderBucket_ModelVertexZ(struct RenderBucketDrawContext *ctx, const RenderBucketVertex *vertex)
@@ -5539,6 +5560,7 @@ static int RenderBucket_PrepareDrawContext(struct RenderBucketDrawContext *ctx, 
 	ctx->anim = anim;
 	ctx->vertData = MODELFRAME_GETVERT(mf);
 	ctx->waterSplitSide = -1;
+	ctx->packMaskXY = NativeChar_ModelFullHeight(inst->model) ? RENDER_BUCKET_PACK_MASK_XY_FULL_HEIGHT : RENDER_BUCKET_PACK_MASK_XY;
 	if (nextFrame != 0)
 	{
 		ctx->nextVertData = (char *)nextFrame + mf->vertexOffset;

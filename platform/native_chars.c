@@ -68,6 +68,9 @@
 //   draw     NativeChar_ModelHidesWheels (game/DrawTires.c): a file whose
 //            CHRI flags set RLDCHAR_FLAG_NO_WHEELS is drawn without the kart
 //            wheels and their reflection, wherever its model is drawn.
+//            NativeChar_ModelFullHeight (game/RenderBucket/
+//            RenderBucket_QueueExecute.c): the models of a file whose CHRI
+//            flags set RLDCHAR_FLAG_FULL_HEIGHT keep bit 0 of the height.
 //   mask     NativeChar_SeatMaskGood (game/Vehicle/VehPickupItem.c and the
 //            HUD icon, game/UI/UI_Weapon.c): a bound seat whose CHRI flags
 //            choose Aku Aku or Uka Uka wears that mask while its model and
@@ -247,6 +250,10 @@ global_variable s64 s_charDevDroppedBound;
 // (1-based) is entry s_charRosterFiles + n - 1.
 global_variable int s_charRosterCount;
 global_variable int s_charRosterFiles;
+
+// The entries whose CHRI flags set RLDCHAR_FLAG_FULL_HEIGHT. 0 - every run
+// without such a file - lets NativeChar_ModelFullHeight answer at once.
+global_variable int s_charFullHeightFiles;
 
 // Capitals, a space and digits: inside the CHRI name rule (RldChar_NameCheck),
 // so whatever draws the name of a file draws these too.
@@ -729,11 +736,12 @@ internal void NativeChar_LogLoaded(const struct NativeCharFile *entry)
 	const char *wheels = ((entry->info.flags & RLDCHAR_FLAG_NO_WHEELS) != 0) ? ", wheels hidden" : "";
 	const u32 mask = RldChar_Mask(entry->info.flags);
 	const char *maskText = (mask == RLDCHAR_MASK_AKU) ? ", mask aku" : ((mask == RLDCHAR_MASK_UKA) ? ", mask uka" : "");
+	const char *height = ((entry->info.flags & RLDCHAR_FLAG_FULL_HEIGHT) != 0) ? ", full height" : "";
 
-	Platform_Log("[CTR Char] loaded %s: template %u, class %u, CMDL %02x%02x%02x%02x%02x%02x, %llu bytes%s%s\n", entry->file,
+	Platform_Log("[CTR Char] loaded %s: template %u, class %u, CMDL %02x%02x%02x%02x%02x%02x, %llu bytes%s%s%s\n", entry->file,
 	             (unsigned)entry->info.templateId, (unsigned)entry->info.classId, (unsigned)entry->cmdlHash[0], (unsigned)entry->cmdlHash[1],
 	             (unsigned)entry->cmdlHash[2], (unsigned)entry->cmdlHash[3], (unsigned)entry->cmdlHash[4], (unsigned)entry->cmdlHash[5],
-	             (unsigned long long)entry->fileBytes, wheels, maskText);
+	             (unsigned long long)entry->fileBytes, wheels, maskText, height);
 }
 
 // The portrait of an admitted entry, one line of its own after "loaded" (that
@@ -831,6 +839,10 @@ internal int NativeChar_Admit(struct NativeCharFile *loaded, char *file, const c
 	loaded->path = SDL_strdup(path);
 	s_charFiles[s_charRosterFiles] = *loaded;
 	s_charRosterFiles++;
+	if ((loaded->info.flags & RLDCHAR_FLAG_FULL_HEIGHT) != 0)
+	{
+		s_charFullHeightFiles++;
+	}
 	NativeChar_LogLoaded(loaded);
 	NativeChar_LogPortrait(s_charRosterFiles - 1);
 	NativeChar_LogMask(s_charRosterFiles - 1);
@@ -1704,6 +1716,30 @@ int NativeChar_ModelHidesWheels(const struct Model *model)
 		if (s_charFiles[entry].model == model)
 		{
 			return (s_charFiles[entry].info.flags & RLDCHAR_FLAG_NO_WHEELS) != 0;
+		}
+	}
+
+	return 0;
+}
+
+// Keyed on the model like NativeChar_ModelHidesWheels, and the own mask of a
+// file counts as its model: the bit is about every model in the file. Called
+// once per instance draw, not per vertex. Without a file that sets the bit -
+// a retail run, or custom files from before the bit - it answers 0 at once.
+int NativeChar_ModelFullHeight(const struct Model *model)
+{
+	int entry;
+
+	if ((s_charFullHeightFiles == 0) || (model == NULL))
+	{
+		return 0;
+	}
+
+	for (entry = 0; (entry < s_charRosterFiles) && (entry < NATIVE_CHAR_ROSTER_MAX); entry++)
+	{
+		if ((s_charFiles[entry].model == model) || (s_charFiles[entry].mask == model))
+		{
+			return (s_charFiles[entry].info.flags & RLDCHAR_FLAG_FULL_HEIGHT) != 0;
 		}
 	}
 
@@ -2990,7 +3026,8 @@ void NativeChar_MaskSelfTest(int *checks, int *failures)
 	    {"wheels off and uka", 1, 0x5u, RLDCHAR_MASK_UKA, 0, 0},
 	    {"wheels off and aku", 1, 0x3u, RLDCHAR_MASK_AKU, 1, 1},
 	    {"map color bit 3 without the field and aku", 1, 0xau, RLDCHAR_MASK_AKU, 1, 1},
-	    {"unknown bit 4 and aku", 1, 0x12u, RLDCHAR_MASK_AKU, 1, 1},
+	    {"full height bit 4 and aku", 1, 0x12u, RLDCHAR_MASK_AKU, 1, 1},
+	    {"unknown bit 5 and uka", 1, 0x24u, RLDCHAR_MASK_UKA, 0, 0},
 	};
 	u8 bytes[RLDCHAR_CHRI_SIZE_FLAGS + 4u];
 	struct RldCharInfo info;
@@ -3016,6 +3053,9 @@ void NativeChar_MaskSelfTest(int *checks, int *failures)
 		snprintf(what, sizeof(what), "%s: wheels bit lost", cases[c].name);
 		NativeChar_MaskExpect(checks, failures, (info.flags & RLDCHAR_FLAG_NO_WHEELS) == (cases[c].flags & RLDCHAR_FLAG_NO_WHEELS), what);
 
+		snprintf(what, sizeof(what), "%s: full height bit lost", cases[c].name);
+		NativeChar_MaskExpect(checks, failures, (info.flags & RLDCHAR_FLAG_FULL_HEIGHT) == (cases[c].flags & RLDCHAR_FLAG_FULL_HEIGHT), what);
+
 		snprintf(what, sizeof(what), "%s: wears %d on a template with retail 0", cases[c].name, NativeChar_MaskGoodOf(info.flags, 0, 1, 1, &missing));
 		NativeChar_MaskExpect(checks, failures, (NativeChar_MaskGoodOf(info.flags, 0, 1, 1, &missing) == cases[c].good0) && (missing == 0), what);
 
@@ -3037,6 +3077,11 @@ void NativeChar_MaskSelfTest(int *checks, int *failures)
 		snprintf(what, sizeof(what), "unbound seat %d: not the retail value", t);
 		NativeChar_MaskExpect(checks, failures, (NativeChar_SeatMaskGood(t, 0) == 0) && (NativeChar_SeatMaskGood(t, 1) == 1), what);
 	}
+
+	// Only a model of the roster has full height: never NULL, never a model
+	// that no file holds (bytes stands in for one, it is no roster model).
+	NativeChar_MaskExpect(checks, failures, NativeChar_ModelFullHeight(NULL) == 0, "full height for NULL");
+	NativeChar_MaskExpect(checks, failures, NativeChar_ModelFullHeight((const struct Model *)(const void *)bytes) == 0, "full height for a model of no file");
 
 	// The templates that wear Aku Aku: Crash, Coco, Polar, Pura, Penta; 15 is
 	// never a template.

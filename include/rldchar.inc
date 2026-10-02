@@ -60,7 +60,8 @@
 #define RLDCHAR_MASK_AKU 1u                // Aku Aku
 #define RLDCHAR_MASK_UKA 2u                // Uka Uka; 3 is reserved and read as RLDCHAR_MASK_LIKE
 #define RLDCHAR_FLAG_MAP_COLOR 0x8u        // CHRI flags bit 3: the minimap marker has the color at 0x20 (RldChar_MapColor)
-#define RLDCHAR_FLAGS_KNOWN (RLDCHAR_FLAG_NO_WHEELS | RLDCHAR_FLAG_MASK_BITS | RLDCHAR_FLAG_MAP_COLOR)   // the CHRI flag bits this reader understands
+#define RLDCHAR_FLAG_FULL_HEIGHT 0x10u     // CHRI flags bit 4: the up axis uses odd values too, the game keeps bit 0 of the height
+#define RLDCHAR_FLAGS_KNOWN (RLDCHAR_FLAG_NO_WHEELS | RLDCHAR_FLAG_MASK_BITS | RLDCHAR_FLAG_MAP_COLOR | RLDCHAR_FLAG_FULL_HEIGHT)   // the CHRI flag bits this reader understands
 #define RLDCHAR_CHRI_MAP_COLOR_OFFSET 0x20u   // u8 r, g, b, 0 - present when fixedSize >= RLDCHAR_CHRI_SIZE_MAP_COLOR
 #define RLDCHAR_CHRI_SIZE_MAP_COLOR 0x24u
 #define RLDCHAR_NAME_FIELD 20
@@ -162,7 +163,7 @@ static const struct RldFormat s_rldCharFormat = {
 // 0x18 u32 charVersion  the version for humans; the game tells versions apart by the CMDL hash
 // 0x1C u32 flags        only when fixedSize >= 0x20, else 0; bit 0 RLDCHAR_FLAG_NO_WHEELS,
 //                       bits 1-2 the mask (RLDCHAR_MASK_*, RldChar_Mask),
-//                       bit 3 RLDCHAR_FLAG_MAP_COLOR
+//                       bit 3 RLDCHAR_FLAG_MAP_COLOR, bit 4 RLDCHAR_FLAG_FULL_HEIGHT
 // 0x20 u8[4] mapColor   only when fixedSize >= 0x24: red, green, blue of the
 //                       minimap marker, then 0; used only with bit 3 set
 // fixedSize: u32 stringCount, then per string u32 length + bytes; string 0 is the author
@@ -176,6 +177,18 @@ static const struct RldFormat s_rldCharFormat = {
 // chosen (flags then holds RLDCHAR_FLAG_MAP_COLOR), and a reader from before
 // it accepts the file (bit 3 is an unknown bit there, the 4 bytes lie behind
 // the fields it reads) and shows the template's color.
+//
+// RLDCHAR_FLAG_FULL_HEIGHT (bit 4) is about the bytes of CMDL and CMSK. The
+// renderer packs the up axis as (pos.y + byte) << 2 and the retail path clears
+// bit 0 of that sum (mask 0xfff8ffff, RenderBucket_PackModelVertexXY), so a
+// retail model has 128 heights, every one even. With the bit, the game draws
+// the models of this file with mask 0xfffcffff: odd heights stay, and the Y
+// bytes can take all 256 values at the same scale. The contract of the bit:
+// pos.y even in every frame, so the bounding box (RenderBucket_ProjectFrameBounds,
+// which still clears bit 0 of pos.y and spans 255 from there) holds every
+// vertex. Half frames, the only other path that clears the bit, are refused by
+// model-anims anyway. A reader from before the bit draws an odd height one
+// value lower.
 
 // The menu font: A-Z, 0-9, space and ! % ' + , - . / : < = > ? _
 // (font_characterIconID, game/zGlobal_DATA.c:2597-2703). Upper case only -

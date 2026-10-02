@@ -263,6 +263,12 @@ void NativeChar_MaskSelfTest(int *checks, int *failures);
 // models and an empty roster.
 int NativeChar_ModelHidesWheels(const struct Model *model);
 
+// game/RenderBucket/RenderBucket_QueueExecute.c, once per instance draw: 1 when
+// model is the model or the own mask of a loaded file whose CHRI flags set
+// RLDCHAR_FLAG_FULL_HEIGHT - the renderer then keeps bit 0 of the height -,
+// else 0: NULL, retail models, files without the bit and an empty roster.
+int NativeChar_ModelFullHeight(const struct Model *model);
+
 // Right after VehBirth_SetConsts on the birth path: one line "drive values"
 // with the values just written, only for a bound seat.
 void NativeChar_NoteDriveValues(const struct Driver *d, int seat);
