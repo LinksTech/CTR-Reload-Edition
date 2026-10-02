@@ -2647,19 +2647,33 @@ static void Rs_PostLine(struct RsJob *job, const char *line, int len)
         Rs_Free(w);
 }
 
-static void Rs_JobSlotAdd(int id, HANDLE process)
+// A free slot for the job id, taken before its process starts (under
+// g_jobLock). Return: slot index, or -1 when all are taken.
+static int Rs_JobSlotTake(int id)
 {
     int i;
-
-    EnterCriticalSection(&g_jobLock);
     for (i = 0; i < RS_JOB_SLOTS; i++) {
         if (!g_jobSlots[i].id) {
             g_jobSlots[i].id = id;
-            g_jobSlots[i].process = process;
-            break;
+            g_jobSlots[i].process = NULL;
+            return i;
         }
     }
-    LeaveCriticalSection(&g_jobLock);
+    return -1;
+}
+
+// All slots taken: no process starts, and notify hears why.
+static void Rs_JobBusy(HWND notify)
+{
+    wchar_t text[64];
+    swprintf(text, 64, L"busy: %d jobs running", RS_JOB_SLOTS);
+    if (g_automating)
+        Rs_AutoLog(L"  %ls", text);
+    {
+        wchar_t *w = Rs_Dup(text);
+        if (!PostMessageW(notify, RS_WM_JOB_BUSY, (WPARAM)RS_JOB_SLOTS, (LPARAM)w))
+            Rs_Free(w);
+    }
 }
 
 static void Rs_JobSlotRemove(int id)
@@ -2794,6 +2808,7 @@ static int Rs_Launch(HWND notify, const wchar_t *exe, wchar_t *cmd, const wchar_
     BOOL ok;
     struct RsJob *job;
     HANDLE thread;
+    int id, slot;
 
     memset(&sa, 0, sizeof(sa));
     sa.nLength = sizeof(sa);
@@ -2804,10 +2819,19 @@ static int Rs_Launch(HWND notify, const wchar_t *exe, wchar_t *cmd, const wchar_
 
     // The lock keeps the inheritable ends of one job away from the children of
     // another: otherwise the first reader would only get its end of file when
-    // the second child is done too.
+    // the second child is done too. The slot is taken first: a process without
+    // one could not be ended.
+    id = (int)InterlockedIncrement(&g_nextJob);
     EnterCriticalSection(&g_jobLock);
+    slot = Rs_JobSlotTake(id);
+    if (slot < 0) {
+        LeaveCriticalSection(&g_jobLock);
+        Rs_JobBusy(notify);
+        return 0;
+    }
     if (capture) {
         if (!CreatePipe(&rd, &wr, &sa, 0)) {
+            g_jobSlots[slot].id = 0;
             LeaveCriticalSection(&g_jobLock);
             return 0;
         }
@@ -2825,6 +2849,10 @@ static int Rs_Launch(HWND notify, const wchar_t *exe, wchar_t *cmd, const wchar_
         CloseHandle(wr);
     if (nul != INVALID_HANDLE_VALUE)
         CloseHandle(nul);
+    if (ok)
+        g_jobSlots[slot].process = pi.hProcess;
+    else
+        g_jobSlots[slot].id = 0;
     LeaveCriticalSection(&g_jobLock);
     if (!ok) {
         if (rd)
@@ -2834,26 +2862,22 @@ static int Rs_Launch(HWND notify, const wchar_t *exe, wchar_t *cmd, const wchar_
     CloseHandle(pi.hThread);
 
     job = Rs_Alloc(sizeof(*job));
-    job->id = (int)InterlockedIncrement(&g_nextJob);
+    job->id = id;
     job->notify = notify;
     job->process = pi.hProcess;
     job->read = rd;
-    {
-        int id = job->id;
-        Rs_JobSlotAdd(id, pi.hProcess);
-        thread = CreateThread(NULL, 0, Rs_JobThread, job, 0, NULL);
-        if (!thread) {
-            Rs_JobSlotRemove(id);
-            TerminateProcess(pi.hProcess, 1);
-            CloseHandle(pi.hProcess);
-            if (rd)
-                CloseHandle(rd);
-            Rs_Free(job);
-            return 0;
-        }
-        CloseHandle(thread);
-        return id;
+    thread = CreateThread(NULL, 0, Rs_JobThread, job, 0, NULL);
+    if (!thread) {
+        Rs_JobSlotRemove(id);
+        TerminateProcess(pi.hProcess, 1);
+        CloseHandle(pi.hProcess);
+        if (rd)
+            CloseHandle(rd);
+        Rs_Free(job);
+        return 0;
     }
+    CloseHandle(thread);
+    return id;
 }
 
 int Rs_RunRldpack(HWND notify, const wchar_t *const *args, int argc)
@@ -3030,7 +3054,7 @@ static LRESULT CALLBACK Rs_PageProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         if (handled)
             return r;
     }
-    if (msg == RS_WM_JOB_LINE) {
+    if (msg == RS_WM_JOB_LINE || msg == RS_WM_JOB_BUSY) {
         Rs_Free((void *)lParam);
         return 0;
     }
