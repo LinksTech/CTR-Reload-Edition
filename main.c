@@ -222,7 +222,7 @@ static const NativeSwitch s_playerSwitches[] = {
 };
 
 static const NativeSwitch s_devSwitches[] = {
-    {"--deterministic", "", "measuring mode: VSync emits only the VBlanks the game asks for and never catches up by wall clock, lateness is dropped; audio is rendered per VBlank"},
+    {"--deterministic", "", "measuring mode: VSync emits only the VBlanks the game asks for and never catches up by wall clock, lateness is dropped; audio is rendered per VBlank; keyboard, mouse, pads (buttons, triggers and sticks) and window focus do not reach the game, what is kept away is counted at exit except pad axes (closing the window still ends the run)"},
     {"--inject-delay", "<seed>", "disturbs the clock: about every 8th frame and boot VSync call is held 20..80 ms, which ones purely from the seed (0 = off)"},
     {"--frame-log", "", "frame log, one line per frame"},
     {"--shot", "<vblanks>", "snapshot of the internal frame at this VBlank, or an ascending list 131,133,140 (up to 128)"},
@@ -243,7 +243,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--record-preview", "", "with --autoload-track records the track preview (10 s from the driver camera, the AI drives invisibly, 150 frames, game window hidden) and writes tracks/vorschau/<container>.rldprev"},
     {"--weapon-pool-empty", "", "empties the pool for missiles, bombs, shields and warpballs at race start (crash probe for the weapon fix)"},
     {"--unlock-scrapbook", "", "unlocks the Scrapbook for this session; a save made meanwhile keeps it"},
-    {"--focus-pause", "", "pause on minimise/focus loss even with --dev (test of that pause)"},
+    {"--focus-pause", "", "pause on minimise/focus loss even with --dev (test of that pause); never with --deterministic"},
     {"--autoload-track", "<file>", "load this track container (file name in tracks/) as soon as the main menu is up"},
     {"--exit-after-frames", "<n>", "end after n frames in the race"},
     {"--instance-pool", "<n>", "instance pool in a race at n slots, only below the retail size (probe for a full pool)"},
@@ -2921,12 +2921,17 @@ int main(int argc, char *argv[])
 				// (native_platform.c, g_cfg_deterministic). Audio renders as in a
 				// replay per VBlank on the game thread, so that the XA state
 				// that CDSYS reads also depends on VBlanks and not on the audio thread.
+				// And the run belongs to its script alone: keyboard, mouse, pads and
+				// window focus are sealed off (native_platform.c, the measuring mode
+				// seal). The line goes to the log, which is open by now.
 				// A run value like --msaa: never in ctr-settings.cfg.
 				extern int g_cfg_deterministic;
 
 				g_cfg_deterministic = 1;
 				NativeAudio_SetDeterministicRenderMode(1);
 				printf("[CTR Native] deterministic: VBlanks only by frames, no catching up by wall clock\n");
+				Platform_Log("[CTR Input] measuring mode: keyboard, mouse, pads and window focus do not reach the game - only the script "
+				             "drives it (--menu-keys, --level, --autoload-demo, --autopilot, a replay); what is kept away is counted at exit\n");
 			}
 			else if (strcmp(argv[argIndex], "--frame-log") == 0)
 			{

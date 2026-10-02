@@ -2185,7 +2185,11 @@ void Platform_PinVRAMDisplayRect(int x, int y, int w, int h, int frameCount)
 // --focus-pause switches it on anyway to test it.
 // Off as long as a replay is prepared, recording or playing: a
 // pause that does not come from the input would make the playback diverge.
+// Never in measuring mode (--deterministic), not even with --focus-pause:
+// there no window event and no real input reaches the game (the seal below).
 int g_cfg_focusPause = 0;
+
+extern int g_cfg_deterministic; // measuring mode, at the VBlank clock below
 
 global_variable int s_awayMinimized = 0;
 global_variable int s_awayUnfocused = 0;
@@ -2196,6 +2200,11 @@ global_variable int s_awayRefusedLogged = 0;
 internal const char *Platform_FocusPauseBlocked(void)
 {
 	extern int g_cfg_dev;
+
+	if (g_cfg_deterministic)
+	{
+		return "--deterministic (measuring mode: no window event and no real input reaches the game)";
+	}
 
 	if (g_cfg_dev && !g_cfg_focusPause)
 	{
@@ -2286,6 +2295,79 @@ void Platform_NoteFocusPause(int outcome, int levelID, unsigned int gameMode1, i
 	             (outcome == PLATFORM_FOCUS_PAUSE_OPENED) ? "the pause menu is open (the same path as Start)" : "the game was paused already");
 }
 
+// THE MEASURING MODE SEAL (--deterministic). A measuring run is driven by its
+// script alone: --menu-keys, --level, --autoload-demo, --autopilot, a replay.
+// Whatever happens on the desk next to it is not part of the run - and it
+// reached the game: a pad button held at boot ended a demo race, and the rest
+// of the run was another run. So in measuring mode the keyboard and the pads
+// are not read (Platform_InputUpdate, native_input.c) - buttons and axes
+// alike, the triggers L2/R2 and the sticks included -, no key event goes
+// anywhere - the debug keys, F11, Alt+Enter and Ctrl+Q included - focus loss
+// or minimise never pause (Platform_FocusPauseBlocked), and a display change
+// does not change the aspect. The mouse is read nowhere anyway. The window
+// itself still follows what is done to it: resize and minimise reach the
+// renderer, which only concerns the output to the window, and the close
+// button still ends the run. --shot hangs on the VBlank, not on a key.
+//
+// What was kept away is counted and said at exit, one line per kind and
+// only for a kind that came at all; the report is registered on the first
+// one, so an undisturbed run keeps its exit reports as they were. Pad axes
+// (triggers, sticks) are kept away as well but not counted: they move
+// without a hand on them, and a count of that would say nothing.
+
+global_variable int s_sealedKeys = 0;
+global_variable int s_sealedMouse = 0;
+global_variable int s_sealedPadButtons = 0;
+global_variable int s_sealedFocusLosses = 0;
+global_variable int s_sealedMinimizes = 0;
+global_variable int s_sealedDisplayChanges = 0;
+global_variable int s_sealReportArmed = 0;
+
+internal void Platform_ReportSealedInput(void)
+{
+	if (s_sealedKeys > 0)
+	{
+		Platform_Log("[CTR Input] at exit: measuring mode kept %d key press(es) away from the game\n", s_sealedKeys);
+	}
+
+	if (s_sealedMouse > 0)
+	{
+		Platform_Log("[CTR Input] at exit: measuring mode kept %d mouse click(s) and wheel turn(s) away from the game\n", s_sealedMouse);
+	}
+
+	if (s_sealedPadButtons > 0)
+	{
+		Platform_Log("[CTR Input] at exit: measuring mode kept %d pad button press(es) away from the game\n", s_sealedPadButtons);
+	}
+
+	if (s_sealedFocusLosses > 0)
+	{
+		Platform_Log("[CTR Input] at exit: measuring mode kept %d focus loss(es) away from the game (no pause)\n", s_sealedFocusLosses);
+	}
+
+	if (s_sealedMinimizes > 0)
+	{
+		Platform_Log("[CTR Input] at exit: measuring mode kept %d minimise(s) away from the game (no pause)\n", s_sealedMinimizes);
+	}
+
+	if (s_sealedDisplayChanges > 0)
+	{
+		Platform_Log("[CTR Input] at exit: measuring mode kept %d display change(s) away from the game (the aspect stays)\n",
+		             s_sealedDisplayChanges);
+	}
+}
+
+internal void Platform_NoteSealed(int *counter)
+{
+	(*counter)++;
+
+	if (!s_sealReportArmed)
+	{
+		s_sealReportArmed = 1;
+		Platform_AtExitReport(Platform_ReportSealedInput);
+	}
+}
+
 void Platform_PollHostEvents(void)
 {
 	SDL_Event event;
@@ -2325,15 +2407,44 @@ void Platform_PollHostEvents(void)
 			Platform_HandleWindowResize();
 			break;
 		case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
-			// Dragged onto another monitor. The shape of the picture follows it.
+			// Dragged onto another monitor. The shape of the picture follows it -
+			// in measuring mode it stays the one the run started with.
+			if (g_cfg_deterministic)
+			{
+				Platform_NoteSealed(&s_sealedDisplayChanges);
+				break;
+			}
 			Platform_DetectDisplayAspect("window moved");
 			break;
 		case SDL_EVENT_DISPLAY_DESKTOP_MODE_CHANGED:
 		case SDL_EVENT_DISPLAY_ADDED:
 		case SDL_EVENT_DISPLAY_REMOVED:
 			// The desktop resolution changed under us, or the monitor the window was
-			// on went away and it landed somewhere else.
+			// on went away and it landed somewhere else. Not in measuring mode, as above.
+			if (g_cfg_deterministic)
+			{
+				Platform_NoteSealed(&s_sealedDisplayChanges);
+				break;
+			}
 			Platform_DetectDisplayAspect("display changed");
+			break;
+		case SDL_EVENT_MOUSE_BUTTON_DOWN:
+		case SDL_EVENT_MOUSE_WHEEL:
+			// The game reads no mouse. Counted in measuring mode only, so that a
+			// disturbance is seen to have arrived.
+			if (g_cfg_deterministic)
+			{
+				Platform_NoteSealed(&s_sealedMouse);
+			}
+			break;
+		case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+			// Read through the pad state (native_input.c), not through this event;
+			// in measuring mode that state is not read, and the press is counted.
+			// Axis motion (triggers L2/R2, sticks) is not read either, but not counted.
+			if (g_cfg_deterministic)
+			{
+				Platform_NoteSealed(&s_sealedPadButtons);
+			}
 			break;
 		case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
 		case SDL_EVENT_WINDOW_LEAVE_FULLSCREEN:
@@ -2361,6 +2472,11 @@ void Platform_PollHostEvents(void)
 
 			if (event.type == SDL_EVENT_WINDOW_MINIMIZED)
 			{
+				if (g_cfg_deterministic)
+				{
+					Platform_NoteSealed(&s_sealedMinimizes);
+				}
+
 				Platform_NoteWindowAway(1, s_awayUnfocused);
 			}
 			else if (event.type == SDL_EVENT_WINDOW_RESTORED)
@@ -2377,6 +2493,11 @@ void Platform_PollHostEvents(void)
 			Platform_Log("[CTR Window] focus %s at vblank %d (t %.3f s)\n", lost ? "lost" : "gained", Platform_GetVBlankCount(),
 			             (double)SDL_GetTicks() / 1000.0);
 
+			if (lost && g_cfg_deterministic)
+			{
+				Platform_NoteSealed(&s_sealedFocusLosses);
+			}
+
 			Platform_NoteWindowAway(s_awayMinimized, lost);
 			break;
 		}
@@ -2388,6 +2509,16 @@ void Platform_PollHostEvents(void)
 		{
 			int key = event.key.scancode;
 			char down = (event.type == SDL_EVENT_KEY_UP) ? 0 : 1;
+
+			// MEASURING MODE: no key reaches anything, see the seal above.
+			if (g_cfg_deterministic)
+			{
+				if ((down != 0) && (event.key.repeat == 0))
+				{
+					Platform_NoteSealed(&s_sealedKeys);
+				}
+				break;
+			}
 
 			Platform_UpdateHostAltKeyState(key, down);
 
@@ -2474,6 +2605,13 @@ int Platform_PollInput(void)
 
 int NikoGetEnterKey(void)
 {
+	// MEASURING MODE: the name entry reads the host keyboard past the pad bus;
+	// sealed like the rest of it.
+	if (g_cfg_deterministic)
+	{
+		return 0;
+	}
+
 	const bool *kb = SDL_GetKeyboardState(NULL);
 	return (kb && kb[SDL_SCANCODE_RETURN]) ? 1 : 0;
 }

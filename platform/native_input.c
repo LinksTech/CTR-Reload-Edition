@@ -102,6 +102,7 @@ global_variable s32 s_keyboardControllerSlot = NATIVE_INPUT_DEFAULT_KEYBOARD_SLO
 global_variable s32 s_lastActiveControllerSlot = -1;
 
 extern s32 g_padCommEnable;
+extern int g_cfg_deterministic; // --deterministic, native_platform.c
 
 internal u16 NativeInput_GetSnapshotButtons(const struct PlatformInputPadSnapshot *snapshot)
 {
@@ -886,6 +887,24 @@ void Platform_InputUpdate(void)
 	}
 
 	SDL_PumpEvents();
+
+	// MEASURING MODE (--deterministic, the seal in native_platform.c): neither
+	// the keyboard nor a pad is read - no button and no axis, the triggers
+	// L2/R2 and the sticks included. Every slot keeps the state it has with
+	// nothing plugged in and nothing pressed - slot 0 a connected digital pad
+	// with all buttons up, the others empty - whatever lies on the desk.
+	// Scripted input still arrives: --menu-keys and replays install their pad
+	// bytes above.
+	if (g_cfg_deterministic)
+	{
+		for (s32 slot = 0; slot < NATIVE_INPUT_MAX_CONTROLLERS; slot++)
+		{
+			NativeInput_ResetSnapshot(slot);
+		}
+		NativeInput_WritePadBus();
+		return;
+	}
+
 	u16 keyboardButtons = NativeInput_KeyboardSuppressed() ? 0xffff : NativeInput_ReadKeyboard();
 
 	for (s32 slot = 0; slot < NATIVE_INPUT_MAX_CONTROLLERS; slot++)
