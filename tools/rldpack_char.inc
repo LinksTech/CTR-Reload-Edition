@@ -114,6 +114,12 @@ static void RldMk_Progress(const char *step, u32 done, u32 total)
 	fflush(stdout);
 }
 
+// How many reductions one make-char run makes of the same model, for the
+// time reduce-slow says beforehand (tools/rldpack_reduce.inc): a build with
+// --reduce auto reduces in a silent try and in the build that speaks, and
+// builds twice - 4; --check builds once (RldChar_MakeCommand) - 2.
+static u32 s_rldRedSlowPasses = 4u;
+
 #include "rldpack_reduce.inc"
 #include "rldpack_remesh.inc"
 #include "rldpack_repair.inc"
@@ -13047,6 +13053,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	// reduces, so that "built twice" builds twice; --no-cache turns the cache
 	// off for --check as well. The self-tests never use it.
 	s_rldRedCache = check && !noCache;
+	s_rldRedSlowPasses = check ? 2u : 4u;
 
 	// THE MODEL: PLY or OBJ, by its content (tools/rldpack_import.inc).
 	if (!RldMk_LoadModel(modelArg, &ply, &modelInfo, RLDMK_ROLE_MAIN))
