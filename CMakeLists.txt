@@ -198,6 +198,20 @@ set_target_properties(rldpack PROPERTIES
     C_EXTENSIONS OFF
 )
 
+# FLOATING POINT, PINNED for rldpack and Reload Studio (which carries the same
+# code). make-char computes in double, and a container must come out byte for
+# byte the same on every machine - the goldens in tools/rldpack_char.inc check
+# exactly that. It holds as long as every + - * / is rounded to double on its
+# own: SSE2, no contraction into FMA, no reordering. /fp:precise and
+# /arch:SSE2 are what MSVC does for x86 anyway; they are written down here so
+# that a global /fp:fast or a changed default cannot change containers without
+# a word. tools/rldpack.c stops the build with #error if they are overridden
+# anyway.
+if(CTR_NATIVE_MSVC_FRONTEND)
+    set(CTR_RLDPACK_FP_OPTIONS /fp:precise /arch:SSE2)
+endif()
+target_compile_options(rldpack PRIVATE ${CTR_RLDPACK_FP_OPTIONS})
+
 # Reload Studio: the front end for track authors, see the header of
 # tools/reloadstudio/reloadstudio.h. ONE exe that carries rldpack inside
 # (rs_rldpack.c: the same tools/rldpack.c with a renamed main) and starts itself
@@ -227,6 +241,8 @@ if(MSVC)
         CTR_NATIVE_VERSION=\"${CTR_NATIVE_VERSION}\")
     target_include_directories(ReloadStudio PRIVATE ${CMAKE_SOURCE_DIR}/include ${CTR_BUILD_ID_DIR})
     add_dependencies(ReloadStudio ctr_build_id)
+    # The same floating point flags as rldpack (see there).
+    target_compile_options(ReloadStudio PRIVATE ${CTR_RLDPACK_FP_OPTIONS})
     target_link_libraries(ReloadStudio PRIVATE comctl32 comdlg32 shell32 ole32 uuid uxtheme)
     set_target_properties(ReloadStudio PROPERTIES
         OUTPUT_NAME ReloadStudio

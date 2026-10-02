@@ -46,6 +46,28 @@
 #include <stdarg.h>
 #include <errno.h>
 
+// FLOATING POINT: STOP THE BUILD, NOT THE BYTES.
+//
+// make-char computes in double, and a container must come out byte for byte
+// the same on every machine (the goldens in tools/rldpack_char.inc). That
+// holds when every + - * / is rounded to double on its own: SSE2, no
+// contraction into FMA, no reordering, no 80-bit x87 intermediates.
+// CMakeLists.txt pins the compiler flags for that. These checks only end a
+// build in which something overrode them anyway - a build that passes them
+// compiles exactly the same code, there is no second path behind them.
+#if defined(_M_FP_FAST) || defined(__FAST_MATH__)
+#error "rldpack must not be built with fast math (/fp:fast, -ffast-math): it changes the bytes of containers"
+#endif
+#if defined(_M_FP_CONTRACT)
+#error "rldpack must not be built with /fp:contract: FMA contraction changes the bytes of containers"
+#endif
+#if defined(_M_IX86_FP) && (_M_IX86_FP < 2)
+#error "rldpack needs /arch:SSE2: x87 arithmetic changes the bytes of containers"
+#endif
+#if defined(__FLT_EVAL_METHOD__) && (__FLT_EVAL_METHOD__ != 0)
+#error "rldpack needs double evaluated as double (-msse2 -mfpmath=sse): x87 intermediates change the bytes of containers"
+#endif
+
 // For make: list the track folder and resolve paths.
 #if defined(_WIN32)
 #include <io.h>
