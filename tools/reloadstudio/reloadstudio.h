@@ -372,11 +372,13 @@
 //   voiceplay <file>              as choosing the file and pressing Play; in
 //                                 automation only logged (preview path, rate,
 //                                 channels, frames), never played
-// The --preview file (little endian): "RLDPV1\0\0", u32 poses = 3 (turn frame 10
+// The --preview file (little endian): "RLDPV2\0\0", u32 poses = 3 (turn frame 10
 // neutral, frame 0 full steer left, frame 20 full steer right), per pose u32
-// triangles and per triangle 3 corners of s16 x, y, z (game units, +Y up, +Z
-// forward, +X the driver's left), u8 r, g, b, u8 pad (bit 0: drawn from both
-// sides). Corners counter-clockwise seen from the side the game draws.
+// triangles and per triangle 3 corners of s16 x, y, z (1/16 game units, +Y up,
+// +Z forward, +X the driver's left), u8 r, g, b, u8 pad (bit 0: drawn from both
+// sides). Corners counter-clockwise seen from the side the game draws. The
+// older "RLDPV1\0\0" is the same with x, y, z in whole game units; rs_view.c
+// reads both (writer: RldMk_Preview in tools/rldpack_char.inc).
 //
 // char-poses (the card "Animations" of the page "Character", rs_anim.c; only
 // with --enable-preview-features) - poses of one's own for the preview, never a
