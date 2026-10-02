@@ -657,15 +657,116 @@ wheel (`char-poses`, `char-wheel`) read PLY only (`model-ply-only`).
   `@file mask-model` line. The switches are reported as
   `@value vertex-colors`, `@value colors-from` and `@value textures`. A
   missing `.obj` is `model-open` (a PLY keeps `ply-open`).
+- Faces of four corners are split at the shorter diagonal, unless the quad
+  is concave and the shorter diagonal runs outside it: then one of its
+  triangles turns against the quad's normal (Newell's) while both of the
+  other diagonal turn with it, and the other diagonal is taken.
+
+### Fit, parts and poses
+
+`rldpack make-char` places the model by its parts; the container records
+none of it, only the result in CMDL and the no-wheels flag in CHRI. Sizes
+are in game units (64 per model unit; Blender: meters), measured on the
+retail drivers: Crash with his kart is 112.4 long, 68.1 wide and 82.7 tall,
+the tallest retail driver 142.5 tall.
+
+The fit (`--fit crash`, the default; `RldMk_StepFit`). Silent passes measure
+the model on the repaired mesh (welded and cleaned as the real pass does it,
+so an export with split seams does not fall apart into fragments), then the
+chain runs again with the factor, rounded to 4 significant digits, as
+`--scale` - `--fit crash` gives the bytes of `--fit none --scale <f>`.
+
+- With the kart wheels (the default): the kart is brought to Crash's
+  length, 112.4, and the whole model is capped at 142.5 tall. When the
+  height decides, the kart comes out shorter than Crash's and the game's
+  wheel sprites do not sit on it: warning `fit-capped`, which names the
+  height the driver would have and how far to shrink it in the model (or
+  to hide the kart wheels).
+- Without them (`--wheels off`): the whole model, one factor, within
+  Crash with his kart in every direction - the smallest of 112.4 / length,
+  68.1 / width and 82.7 / height. The size is measured without stray
+  pieces: the pieces (positions joined by triangles) are taken by their
+  surface area, the largest first, until they hold 90 % of the area; any
+  other piece counts only when it lies within that core's box grown by
+  half its size on every side. With this fit the "far taller than long"
+  check (`model-scale`) and `ply-axes` do not judge the size.
+
+The parts (`RldMk_StepParts`):
+
 - The kart is the longest part at the bottom of the model (after the fit,
-  0.15 below to 0.3 above the ground) that is 1.25 to 2.5 long (Blender
-  units, `ply-no-kart` without one). With `--wheels off` the model brings
-  its own vehicle, which may be shorter: when no part is a kart long, the
-  longest such part that is still a vehicle is the kart (`ply-kart-short`):
-  at least 0.6 long, longer than it is tall, and not the only part of the
+  0.15 below to 0.3 above the ground) that is 1.25 to 2.5 model units
+  long and lies under the driver: the middle of the part with the most
+  triangles besides it is over the kart seen from above, within its
+  extent in x and z and an eighth of it more. A long part beside or behind
+  the figure (a sword, a tail) is not the kart; `ply-no-kart` names it.
+  With `--wheels off` the model brings its own vehicle, which may be
+  shorter: when no part is a kart long, the longest such part that is
+  still a vehicle is the kart (`ply-kart-short`, info): at least 0.6 long,
+  longer than it is tall, under the driver, and not the only part of the
   model. A figure standing on its feet has none - a separate shoe is too
-  short, a figure or legs of one piece are taller than long. With the wheels
-  on `ply-no-kart` stays; its message names such a part when there is one.
+  short, a figure or legs of one piece are taller than long. With the
+  wheels on `ply-no-kart` stays; its message names such a part when there
+  is one.
+- The driver is the largest other part. With `--wheels off` it is the
+  largest part above the vehicle (its middle in height above the
+  vehicle's top) and over it seen from above (an eighth more, as for the
+  kart), with at least 1 % of the triangles: a car's wheels or mirrors or
+  a stray piece are no driver. The steering wheel: small parts (at most
+  0.6 model units across) in front of the driver - except on a vehicle
+  shorter than a kart (`ply-kart-short`), which has no retail steering
+  wheel: there a small part above the vehicle leans with the driver (a
+  tank driver's arms), one below its top belongs to the vehicle.
+- What belongs to the vehicle stands still with the kart. With the kart
+  wheels, a part that is not a steering wheel, reaches across the kart's
+  middle in x, lies over the kart and reaches down to the kart's top (at
+  or below it: a hull exported on its chassis starts exactly there); then,
+  repeated until nothing changes, a part across the kart's middle whose
+  bottom lies within 1.0 game units of the top of a vehicle part, the two
+  over each other (a turret on a hull, a box on a seat). A part that
+  starts deeper inside another stays with the driver. With `--wheels off`
+  everything that is not the driver, not a steering wheel and not above
+  the vehicle is vehicle (a motorbike's footrests and the shoes on them).
+- No driver above the vehicle (`--wheels off`): the whole model is the
+  vehicle and stands still in every pose, without poses (`ply-vehicle-only`,
+  info; also for a vehicle of one piece). `--size` then scales the whole
+  model about the point on the ground under its middle.
+- Warning `ply-driver`: the driver was taken by its triangles, but a larger
+  part reaching higher stays still with the kart - if that part is the
+  driver, the vehicle's own parts belong into the kart's mesh. Large means
+  wider than a steering wheel and not a stick (as wide and as deep as an
+  eighth of its height).
+- `ply-center`: the kart's middle more than 0.08 model units off x = 0
+  after the fit; the message gives the distance in the units of the file.
+  Fitted onto the dummy it is an info - the kart is centered for the game
+  anyway; with `--fit none` a warning.
+- `ply-up-axis` (note): after `ply-no-kart` or `ply-axes`, a silent build
+  with the other up axis; when that one gets through without either, the
+  note says to set it (`--up z` or `--up y`).
+
+The place (`--fit crash`, `RldDum_Fit` in `tools/rldpack_dummy.inc`): with
+the kart wheels the kart part alone goes onto the dummy's kart - x middle 0,
+bottom 5.6, z middle 2.1; with `--wheels off` the measured box of the whole
+model goes onto the ground, its x and z middle onto the same point. One
+shift for every position.
+
+The poses (the 47 frames, `RldDum_PoseFrame`):
+
+- The turn: the steering wheel turns 30 degrees about the dummy's column,
+  the driver rolls up to 16 degrees and turns into the curve up to 5
+  (yaw), along the retail curve. The lean is a height profile: a corner h
+  above the pivot turns by the angles x min(h / H, 1), H the driver's
+  height above the pivot (at least 24): the hips barely move, the head
+  takes the full angles. Driver corners near the steering ring (the hands)
+  go with the wheel. Reverse, bump and jump keep their own values, about
+  the same pivot.
+- The pivot: for a kart driver the dummy's seat (0, 10.2, 0.9). A kart
+  driver sitting higher, whose lowest corner in the seat zone (z below 15)
+  lies more than 8 above the seat, turns about that point instead (x and z
+  of the seat). With `--wheels off` the driver turns about the bottom of
+  the driver part. Below a pivot of its own the poses leave the driver as
+  it is: feet and shoes stay where they stand.
+- With `--fit none` nothing is placed, and `--size` and the poses turn
+  about the hip (0, 16, 0).
 
 ### The size of the driver
 
@@ -678,8 +779,11 @@ default 100) bakes the size into the vertices before the poses are made
   placed onto the reference dummy (`tools/rldpack_dummy.inc`, the retail kart
   at Crash's size) and P is the dummy's seat (0, 10.2, 0.9) game units; with
   `--wheels off` it is the middle of the driver's bottom. With `--fit none`
-  P is the hip (0, 16, 0) (0.25 Blender units above the ground). The driver
-  leans about the same point when steering.
+  P is the hip (0, 16, 0) (0.25 Blender units above the ground). The poses
+  turn about the same point, or about a pivot of the driver's own (see "Fit,
+  parts and poses"), which moves with the size. A model that is only a
+  vehicle (`ply-vehicle-only`) scales as a whole, about the point on the
+  ground under its middle.
 - The kart is not scaled: the game draws the wheels as sprites at fixed
   points of the kart (unless the CHRI flags hide them, bit 0), so it stays as
   large as the model has it (about a retail kart).
