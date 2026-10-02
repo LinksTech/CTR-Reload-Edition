@@ -1243,10 +1243,10 @@ static int RldMk_TestSamePly(const struct RldMkPly *a, const struct RldMkPly *b)
 // positions, another material) split along without a crack; a picture of
 // 32 x 32 texels in noise up to 500 triangles, with the edge of a quad that
 // stays a quad never split; 64 x 64 texels with auto up to 6000, the same
-// twice; n = 1 (the model has more) and off as before; a square far smaller
-// than the model (its halves would be lower than 1/125 of it) not split, nor
-// an edge with a point of another part at its middle; the values of the
-// switch.
+// twice; n = 1 (the model has more), off and an own mask as before; a
+// square far smaller than the model (its halves would be lower than 1/125
+// of it) not split, nor an edge with a point of another part at its
+// middle; the values of the switch.
 static void RldMk_SelfTestObjDetail(void)
 {
 	static const char mtl[] = "newmtl tex\nmap_Kd detail.png\nnewmtl grey\nKd 0.5 0.5 0.5\n";
@@ -1303,6 +1303,17 @@ static void RldMk_SelfTestObjDetail(void)
 	           ok ? ply[1].faceCount : 0u);
 	RldMk_FreePly(&ply[0]);
 	RldMk_FreePly(&ply[1]);
+
+	// The same as an own mask (--mask-model, auto): never split.
+	{
+		struct RldMkModelInfo info;
+
+		RldObj_ResetOptions();
+		ok = RldMk_TestImport("selftest/detail.obj", (const char *)b.data, b.size, &ply[0], &info, RLDMK_ROLE_MASK);
+		RldMk_Test(ok && (ply[0].faceCount == 7u) && !RldMk_Said("obj-texture-detail"), "OBJ --texture-detail auto: an own mask (--mask-model) is not split",
+		           "read %d, %u faces, said: %s", ok, ok ? ply[0].faceCount : 0u, s_rldMkCodes);
+		RldMk_FreePly(&ply[0]);
+	}
 	free(b.data);
 
 	// Far smaller than the model: not split (model-collapse).

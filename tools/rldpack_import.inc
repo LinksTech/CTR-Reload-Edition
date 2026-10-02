@@ -77,6 +77,7 @@ struct RldMkModelInfo
 	u32 noUv;         // corners of textured faces without vt
 	u32 groups;       // o/g lines
 	u32 points;       // points made (OBJ: one per vertex and color)
+	u32 role;         // RLDMK_ROLE_* it is read for (set before the reader runs)
 };
 
 // @model <key> <fields> (up to four, the first NULL ends them) - not while
@@ -435,6 +436,7 @@ static int RldMk_ImportModel(const char *path, const u8 *data, size_t size, stru
 	}
 
 	info->format = reader->format;
+	info->role = role;
 	if (!reader->read(path, data, size, ply, info))
 	{
 		RldMk_FreePly(ply);

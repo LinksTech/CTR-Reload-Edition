@@ -3231,9 +3231,11 @@ static int RldObj_Textures(struct RldObjModel *m, const char *objPath, char (*li
 
 			t->fromImg = fromImg;
 			// Kept for the split while the kept ones stay within
-			// RLDOBJ_DETAIL_BYTES; the others as without it.
-			if ((s_rldObjOptions.textureDetail != RLDOBJ_DETAIL_OFF) && (bytes <= (RLDOBJ_DETAIL_BYTES - *kept)) &&
-			    ((shown == t->path) || ((t->shown = RldObj_Copy(shown, strlen(shown), RLD_PATH_MAX)) != NULL)))
+			// RLDOBJ_DETAIL_BYTES; the others as without it. Only for the
+			// model itself: an own mask (--mask-model) has a budget of its
+			// own and is never split.
+			if ((s_rldObjOptions.textureDetail != RLDOBJ_DETAIL_OFF) && (info->role == RLDMK_ROLE_MAIN) &&
+			    (bytes <= (RLDOBJ_DETAIL_BYTES - *kept)) && ((shown == t->path) || ((t->shown = RldObj_Copy(shown, strlen(shown), RLD_PATH_MAX)) != NULL)))
 			{
 				*kept += bytes;
 				t->kept = 1;
@@ -3299,7 +3301,8 @@ static int RldObj_Textures(struct RldObjModel *m, const char *objPath, char (*li
 //========================================================================================
 //
 // Three corner colors show a texture only as a gradient. With textures read
-// and --texture-detail not off, textured triangles are split in two at their
+// for the model itself (not an own mask, info->role RLDMK_ROLE_MAIN) and
+// --texture-detail not off, textured triangles are split in two at their
 // longest edge, the one whose texture its fitted corners miss most first
 // (mean square per channel x area in model units; equal ones by the order
 // they were made), until the model has RLDOBJ_DETAIL_AUTO_TRIANGLES (or the
