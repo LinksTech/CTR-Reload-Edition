@@ -234,11 +234,12 @@ static wchar_t g_autoLogPath[MAX_PATH];
 // Child processes.
 static CRITICAL_SECTION g_jobLock;
 static LONG g_nextJob;
-// Running processes per job ID, for Rs_KillJob. Entry and handle
-// belong together under g_jobLock: the job thread removes the entry
-// before it closes the handle.
+// Running processes per job ID, for Rs_KillJob and Rs_JobCancel. Entry and
+// handles belong together under g_jobLock: the job thread removes the entry
+// before it closes the handles. group is the job object of an rldpack job
+// (NULL for the game, or when it could not be made).
 #define RS_JOB_SLOTS 16
-static struct { int id; HANDLE process; } g_jobSlots[RS_JOB_SLOTS];
+static struct { int id; HANDLE process; HANDLE group; } g_jobSlots[RS_JOB_SLOTS];
 
 // ---------------------------------------------------------------------------
 // Memory, text, files
@@ -2634,6 +2635,7 @@ struct RsJob {
     int id;
     HWND notify;
     HANDLE process;
+    HANDLE group;
     HANDLE read;
 };
 
@@ -2656,6 +2658,7 @@ static int Rs_JobSlotTake(int id)
         if (!g_jobSlots[i].id) {
             g_jobSlots[i].id = id;
             g_jobSlots[i].process = NULL;
+            g_jobSlots[i].group = NULL;
             return i;
         }
     }
@@ -2685,26 +2688,66 @@ static void Rs_JobSlotRemove(int id)
         if (g_jobSlots[i].id == id) {
             g_jobSlots[i].id = 0;
             g_jobSlots[i].process = NULL;
+            g_jobSlots[i].group = NULL;
         }
     }
     LeaveCriticalSection(&g_jobLock);
 }
 
-int Rs_KillJob(int id)
+// Ends the process of a running job with the exit code code; an rldpack job
+// with every process in its job object. 1 = ended, 0 = no running job.
+static int Rs_JobEnd(int id, UINT code)
 {
-    int i, killed = 0;
+    int i, ended = 0;
 
     if (id <= 0)
         return 0;
     EnterCriticalSection(&g_jobLock);
     for (i = 0; i < RS_JOB_SLOTS; i++) {
         if (g_jobSlots[i].id == id && g_jobSlots[i].process) {
-            killed = TerminateProcess(g_jobSlots[i].process, 1) ? 1 : 0;
+            // Ended by itself already: it keeps its own exit code.
+            if (WaitForSingleObject(g_jobSlots[i].process, 0) != WAIT_TIMEOUT)
+                break;
+            if (g_jobSlots[i].group && TerminateJobObject(g_jobSlots[i].group, code))
+                ended = 1;
+            else
+                ended = TerminateProcess(g_jobSlots[i].process, code) ? 1 : 0;
             break;
         }
     }
     LeaveCriticalSection(&g_jobLock);
-    return killed;
+    return ended;
+}
+
+int Rs_KillJob(int id)
+{
+    return Rs_JobEnd(id, 1);
+}
+
+int Rs_JobCancel(int id)
+{
+    int ended = Rs_JobEnd(id, (UINT)RS_JOB_CANCELLED);
+    if (g_automating)
+        Rs_AutoLog(L"  job %d: %ls", id, ended ? L"cancelled" : L"not running");
+    return ended;
+}
+
+// A job object that ends its processes when its last handle closes: when
+// Reload Studio closes or crashes, no rldpack runs on. NULL if not possible.
+static HANDLE Rs_JobGroup(void)
+{
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION li;
+    HANDLE group = CreateJobObjectW(NULL, NULL);
+
+    if (!group)
+        return NULL;
+    memset(&li, 0, sizeof(li));
+    li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!SetInformationJobObject(group, JobObjectExtendedLimitInformation, &li, sizeof(li))) {
+        CloseHandle(group);
+        return NULL;
+    }
+    return group;
 }
 
 static DWORD WINAPI Rs_JobThread(LPVOID param)
@@ -2740,10 +2783,14 @@ static DWORD WINAPI Rs_JobThread(LPVOID param)
         Rs_Free(acc);
         CloseHandle(job->read);
     }
+    // This is the job's own thread, not the window's: the window goes on.
+    // The wait ends with the process, also after Rs_JobCancel.
     WaitForSingleObject(job->process, INFINITE);
     GetExitCodeProcess(job->process, &code);
     Rs_JobSlotRemove(job->id);
     CloseHandle(job->process);
+    if (job->group)
+        CloseHandle(job->group);
     PostMessageW(job->notify, RS_WM_JOB_DONE, (WPARAM)job->id, (LPARAM)code);
     Rs_Free(job);
     return 0;
@@ -2799,10 +2846,12 @@ void Rs_AppendArg(wchar_t *cmdline, size_t cap, const wchar_t *arg)
 }
 
 static int Rs_Launch(HWND notify, const wchar_t *exe, wchar_t *cmd, const wchar_t *cwd,
-                     int capture, int noWindow)
+                     int capture, int noWindow, int grouped)
 {
     SECURITY_ATTRIBUTES sa;
     HANDLE rd = NULL, wr = NULL, nul = INVALID_HANDLE_VALUE;
+    HANDLE group = grouped ? Rs_JobGroup() : NULL;
+    DWORD held = group ? CREATE_SUSPENDED : 0;
     STARTUPINFOW si;
     PROCESS_INFORMATION pi;
     BOOL ok;
@@ -2826,6 +2875,8 @@ static int Rs_Launch(HWND notify, const wchar_t *exe, wchar_t *cmd, const wchar_
     slot = Rs_JobSlotTake(id);
     if (slot < 0) {
         LeaveCriticalSection(&g_jobLock);
+        if (group)
+            CloseHandle(group);
         Rs_JobBusy(notify);
         return 0;
     }
@@ -2833,6 +2884,8 @@ static int Rs_Launch(HWND notify, const wchar_t *exe, wchar_t *cmd, const wchar_
         if (!CreatePipe(&rd, &wr, &sa, 0)) {
             g_jobSlots[slot].id = 0;
             LeaveCriticalSection(&g_jobLock);
+            if (group)
+                CloseHandle(group);
             return 0;
         }
         SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
@@ -2843,34 +2896,50 @@ static int Rs_Launch(HWND notify, const wchar_t *exe, wchar_t *cmd, const wchar_
         si.hStdOutput = wr;
         si.hStdError = wr;
     }
+    // In a job object the process starts held, so that it cannot start
+    // anything outside before it is in there. Without one it runs as before.
     ok = CreateProcessW(exe, cmd, NULL, NULL, capture ? TRUE : FALSE,
-                        noWindow ? CREATE_NO_WINDOW : 0, NULL, cwd, &si, &pi);
+                        (noWindow ? CREATE_NO_WINDOW : 0) | held,
+                        NULL, cwd, &si, &pi);
     if (wr)
         CloseHandle(wr);
     if (nul != INVALID_HANDLE_VALUE)
         CloseHandle(nul);
-    if (ok)
+    if (ok && group && !AssignProcessToJobObject(group, pi.hProcess)) {
+        CloseHandle(group);
+        group = NULL;
+    }
+    if (ok) {
         g_jobSlots[slot].process = pi.hProcess;
-    else
+        g_jobSlots[slot].group = group;
+    } else {
         g_jobSlots[slot].id = 0;
+    }
     LeaveCriticalSection(&g_jobLock);
     if (!ok) {
         if (rd)
             CloseHandle(rd);
+        if (group)
+            CloseHandle(group);
         return 0;
     }
+    if (held)
+        ResumeThread(pi.hThread);
     CloseHandle(pi.hThread);
 
     job = Rs_Alloc(sizeof(*job));
     job->id = id;
     job->notify = notify;
     job->process = pi.hProcess;
+    job->group = group;
     job->read = rd;
     thread = CreateThread(NULL, 0, Rs_JobThread, job, 0, NULL);
     if (!thread) {
         Rs_JobSlotRemove(id);
         TerminateProcess(pi.hProcess, 1);
         CloseHandle(pi.hProcess);
+        if (group)
+            CloseHandle(group);
         if (rd)
             CloseHandle(rd);
         Rs_Free(job);
@@ -2895,7 +2964,7 @@ int Rs_RunRldpack(HWND notify, const wchar_t *const *args, int argc)
         Rs_AutoLog(L"  rldpack %ls", shown);
         Rs_Free(shown);
     }
-    id = Rs_Launch(notify, g_exePath, cmd, NULL, 1, 1);
+    id = Rs_Launch(notify, g_exePath, cmd, NULL, 1, 1, 1);
     Rs_Free(cmd);
     return id;
 }
@@ -2918,7 +2987,7 @@ int Rs_RunProcess(HWND notify, const wchar_t *exe, const wchar_t *cmdline,
     // With redirection without a console window: the game is a console program,
     // and without a window it also does not wait for Enter on an error exit
     // (NativeConsole_ShouldPauseOnError in main.c asks GetConsoleWindow).
-    id = Rs_Launch(notify, exe, cmd, cwd, capture, capture);
+    id = Rs_Launch(notify, exe, cmd, cwd, capture, capture, 0);
     Rs_Free(cmd);
     return id;
 }
