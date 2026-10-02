@@ -20218,6 +20218,44 @@ static void RldMk_SelfTestRemeshTarget(void)
 	RldMk_Test(ok, "--remesh target: twice the source, at least 1000, at most the limit", "%u %u %u %u", got[0], got[1], got[2], got[3]);
 }
 
+// THE NUMBERS OF ASCII PLY AND OBJ go through the C library's strtod, and
+// every position is rounded from them: a runtime that does not round a
+// decimal number correctly to the nearest double (ties to even) gives other
+// bytes. Halfway cases - exactly between two doubles - and their neighbors
+// show it (UCRT and glibc round them right; an old msvcrt may not).
+static void RldMk_SelfTestStrtod(void)
+{
+	static const struct
+	{
+		const char *text;
+		u32 hi;
+		u32 lo;
+	} cases[7] = {
+	    {"0.1", 0x3FB99999u, 0x9999999Au},
+	    {"9007199254740993", 0x43400000u, 0x00000000u},
+	    {"9007199254740995", 0x43400000u, 0x00000002u},
+	    {"1.00000000000000011102230246251565404236316680908203125", 0x3FF00000u, 0x00000000u},
+	    {"1.00000000000000011102230246251565404236316680908203126", 0x3FF00000u, 0x00000001u},
+	    {"1.00000000000000033306690738754696212708950042724609375", 0x3FF00000u, 0x00000002u},
+	    {"0.30000000000000004", 0x3FD33333u, 0x33333334u},
+	};
+	int k;
+	int bad = -1;
+
+	for (k = 0; k < 7; k++)
+	{
+		const double value = strtod(cases[k].text, NULL);
+		u64 bits;
+
+		memcpy(&bits, &value, sizeof(bits));
+		if ((bad < 0) && (bits != (((u64)cases[k].hi << 32) | (u64)cases[k].lo)))
+		{
+			bad = k;
+		}
+	}
+	RldMk_Test(bad < 0, "strtod rounds decimal numbers to the nearest double, ties to even", "case %d: %s", bad, (bad >= 0) ? cases[bad].text : "");
+}
+
 static int RldChar_SelfTest(void)
 {
 	struct RldMkTestMesh *mesh = (struct RldMkTestMesh *)calloc(1, sizeof(struct RldMkTestMesh));
@@ -20282,6 +20320,7 @@ static int RldChar_SelfTest(void)
 	RldMk_SelfTestPlyElements();
 	RldMk_SelfTestPaletteFull();
 	RldMk_SelfTestRemeshTarget();
+	RldMk_SelfTestStrtod();
 	s_rldMkQuiet = quietBefore;
 	RldMk_ResetSaid();
 
