@@ -14,7 +14,7 @@
 // It follows deliberate changes of the chain like the hashes above, and of
 // the color rule of the OBJ reader (tools/rldpack_obj.inc); nothing else may
 // change it.
-#define RLDMK_GOLDEN_OBJ "8da0e186e1849c0b891ac2e0d810a4d01747ab64046344d77b4125e19a5f8f23"
+#define RLDMK_GOLDEN_OBJ "03f73080168ecc7ac50076496400f594c5b27da5cdc86f3792f577c06b586c5d"
 
 // A JPEG of 16 x 16 pixels in four squares of 8 x 8: (200, 40, 40) and
 // (40, 200, 40) at the top, (40, 40, 200) and (230, 230, 230) below; quality
@@ -512,6 +512,65 @@ static void RldMk_SelfTestObjColors(void)
 	free(tga);
 }
 
+// The edges of a texture of 4 x 4 (left column red, right column green, the
+// rest white): a face whose vt all lie in 0..1 is clamped, u = 0 is red and
+// u = 1 green, also half a texel inside; a face tiled over u 0..2 repeats,
+// u = 0 and u = 2 mix both edges as before.
+static void RldMk_SelfTestObjEdges(void)
+{
+	static const char mtl[] = "newmtl edge\nmap_Kd edge.png\n";
+	static const char obj[] = "mtllib edge.mtl\nv 0 0 0\nv 1 0 0\nv 0 1 0\n"
+	                          "vt 0 0.5\nvt 1 0.5\nvt 0.5 0.5\nvt 0.1 0.5\nvt 0.9 0.5\nvt 2 0.5\nvt 1.5 0.5\n"
+	                          "usemtl edge\nf 1/1 2/2 3/3\nf 1/4 2/5 3/3\nf 1/1 2/6 3/7\n";
+	static const u32 want[3][3] = {{0xFF0000u, 0x00FF00u, 0xFFFFFFu}, {0xFF0000u, 0x00FF00u, 0xFFFFFFu}, {0x808000u, 0x808000u, 0xFFFFFFu}};
+	struct RldObjMemFile files[2];
+	struct RldMkPly ply;
+	struct RldMkModelInfo info;
+	u8 rgb[48];
+	u8 *png;
+	size_t pngSize = 0;
+	u32 f;
+	u32 k;
+	int ok;
+	int same = 1;
+
+	for (k = 0; k < 16u; k++)
+	{
+		const u32 x = k % 4u;
+
+		rgb[3u * k + 0u] = (x == 3u) ? 0u : 255u;
+		rgb[3u * k + 1u] = (x == 0u) ? 0u : 255u;
+		rgb[3u * k + 2u] = ((x == 0u) || (x == 3u)) ? 0u : 255u;
+	}
+	png = RldMk_TestPngRgb(4u, 4u, rgb, &pngSize);
+	files[0].path = "selftest/edge.mtl";
+	files[0].data = (const u8 *)mtl;
+	files[0].size = sizeof(mtl) - 1u;
+	files[1].path = "selftest/edge.png";
+	files[1].data = png;
+	files[1].size = pngSize;
+	s_rldObjFiles = files;
+	s_rldObjFileCount = 2u;
+
+	ok = (png != NULL) && RldMk_TestImport("selftest/edge.obj", obj, sizeof(obj) - 1u, &ply, &info, RLDMK_ROLE_MAIN);
+	for (f = 0; ok && (f < 3u); f++)
+	{
+		for (k = 0; k < 3u; k++)
+		{
+			same = same && (RldMk_TestCornerRgb(&ply, f, k) == want[f][k]);
+		}
+	}
+	RldMk_Test(ok && same, "OBJ texture edges: vt in 0..1 clamped (u 0 red, u 1 green, also near the edge), tiled vt repeated",
+	           "read %d, %06X %06X | %06X %06X | %06X %06X", ok, ok ? RldMk_TestCornerRgb(&ply, 0u, 0u) : 0u, ok ? RldMk_TestCornerRgb(&ply, 0u, 1u) : 0u,
+	           ok ? RldMk_TestCornerRgb(&ply, 1u, 0u) : 0u, ok ? RldMk_TestCornerRgb(&ply, 1u, 1u) : 0u, ok ? RldMk_TestCornerRgb(&ply, 2u, 0u) : 0u,
+	           ok ? RldMk_TestCornerRgb(&ply, 2u, 1u) : 0u);
+	RldMk_FreePly(&ply);
+
+	s_rldObjFiles = NULL;
+	s_rldObjFileCount = 0;
+	free(png);
+}
+
 // --vertex-colors: a PS1 rip (vertex colors 0x80 on textured faces) shows its
 // texture as it is (texel 0xC0 x 0x80 = 0xC0), a face without texture and a
 // texture not found keep the vertex color; color gives texel x color/255;
@@ -937,6 +996,7 @@ static void RldMk_SelfTestObj(struct RldMkTestMesh *mesh)
 	RldMk_SelfTestObjGolden(mesh, chri, chriSize);
 	RldMk_SelfTestObjColors();
 	RldMk_SelfTestObjVertexColors();
+	RldMk_SelfTestObjEdges();
 	RldMk_SelfTestObjCases(mesh);
 	free(chri);
 }

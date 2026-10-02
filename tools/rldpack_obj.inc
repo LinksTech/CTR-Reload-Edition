@@ -25,7 +25,8 @@
 //      the texture; neither: grey.
 //   3. grey is 0x80 per channel, like a PLY without colors.
 // The texture is sampled at the corner's vt: bilinear, repeated (u and v
-// modulo 1), v = 0 at the bottom of the picture, alpha not used. PNG through
+// modulo 1) - with the edges clamped on a face whose vt all lie in 0..1 -,
+// v = 0 at the bottom of the picture, alpha not used. PNG through
 // include/rldpng.inc, JPEG and TGA through tools/rldpack_image.c. A texture
 // that is not at its path is looked for at a fixed list of other places
 // (RldObj_SearchTexture); @model texture names the file used.
@@ -1875,9 +1876,11 @@ static int RldObj_Decode(const char *path, const u8 *data, size_t size, struct R
 	return RLDMK_TEXTURE_UNSUPPORTED;
 }
 
-// The texture at (u, v): bilinear between the four nearest texels, repeated,
-// v = 0 at the bottom row. 0..1 per channel.
-static void RldObj_Sample(const struct RldObjTexture *t, double u, double v, double out[3])
+// The texture at (u, v): bilinear between the four nearest texels, v = 0 at
+// the bottom row. 0..1 per channel. Repeated (u and v modulo 1), or with
+// clamp (u and v in 0..1) the texels at the edge are the last ones: within
+// half a texel of the edge the other side of the picture is never mixed in.
+static void RldObj_Sample(const struct RldObjTexture *t, double u, double v, int clamp, double out[3])
 {
 	const s64 w = (s64)t->width;
 	const s64 h = (s64)t->height;
@@ -1903,14 +1906,30 @@ static void RldObj_Sample(const struct RldObjTexture *t, double u, double v, dou
 		fv = 0.0;
 	}
 
-	x = fu * (double)w - 0.5;
-	y = (1.0 - fv) * (double)h - 0.5;
-	ax = x - RldMk_Floor(x);
-	ay = y - RldMk_Floor(y);
-	x0 = (((s64)RldMk_Floor(x) % w) + w) % w;
-	y0 = (((s64)RldMk_Floor(y) % h) + h) % h;
-	x1 = (u32)((x0 + 1) % w);
-	y1 = (u32)((y0 + 1) % h);
+	if (clamp)
+	{
+		x = u * (double)w - 0.5;
+		y = (1.0 - v) * (double)h - 0.5;
+		x = (x < 0.0) ? 0.0 : ((x > (double)(w - 1)) ? (double)(w - 1) : x);
+		y = (y < 0.0) ? 0.0 : ((y > (double)(h - 1)) ? (double)(h - 1) : y);
+		x0 = (s64)RldMk_Floor(x);
+		y0 = (s64)RldMk_Floor(y);
+		ax = x - (double)x0;
+		ay = y - (double)y0;
+		x1 = (u32)((x0 + 1 < w) ? (x0 + 1) : x0);
+		y1 = (u32)((y0 + 1 < h) ? (y0 + 1) : y0);
+	}
+	else
+	{
+		x = fu * (double)w - 0.5;
+		y = (1.0 - fv) * (double)h - 0.5;
+		ax = x - RldMk_Floor(x);
+		ay = y - RldMk_Floor(y);
+		x0 = (((s64)RldMk_Floor(x) % w) + w) % w;
+		y0 = (((s64)RldMk_Floor(y) % h) + h) % h;
+		x1 = (u32)((x0 + 1) % w);
+		y1 = (u32)((y0 + 1) % h);
+	}
 
 	for (c = 0; c < 3; c++)
 	{
@@ -2064,6 +2083,7 @@ static u32 RldObj_ApplyTexture(struct RldObjModel *m, u32 texture, u8 *cornerRgb
 	const struct RldObjTexture *t = &m->textures[texture];
 	u32 noUv = 0;
 	u32 f;
+	int clamp;
 
 	for (f = 0; f < m->faceCount; f++)
 	{
@@ -2073,6 +2093,19 @@ static u32 RldObj_ApplyTexture(struct RldObjModel *m, u32 texture, u8 *cornerRgb
 		if ((material == NULL) || (material->texture != texture))
 		{
 			continue;
+		}
+
+		// A face whose texture coordinates all lie in 0..1 shows one piece
+		// of the picture: sampled with its edges clamped, not repeated.
+		clamp = 1;
+		for (k = 0; k < m->faceCorners[f]; k++)
+		{
+			const u32 vt = m->cornerT[m->faceFirst[f] + k];
+
+			if ((vt != RLDMK_NONE) && !((m->uv[2u * vt] >= 0.0) && (m->uv[2u * vt] <= 1.0) && (m->uv[2u * vt + 1u] >= 0.0) && (m->uv[2u * vt + 1u] <= 1.0)))
+			{
+				clamp = 0;
+			}
 		}
 
 		for (k = 0; k < m->faceCorners[f]; k++)
@@ -2090,7 +2123,7 @@ static u32 RldObj_ApplyTexture(struct RldObjModel *m, u32 texture, u8 *cornerRgb
 				continue;
 			}
 
-			RldObj_Sample(t, m->uv[2u * vt + 0u], m->uv[2u * vt + 1u], sample);
+			RldObj_Sample(t, m->uv[2u * vt + 0u], m->uv[2u * vt + 1u], clamp, sample);
 			for (n = 0; n < 3; n++)
 			{
 				double base = m->vColored[v] ? m->vrgb[3u * v + (u32)n] : (material->hasKd ? material->kd[n] : 1.0);
