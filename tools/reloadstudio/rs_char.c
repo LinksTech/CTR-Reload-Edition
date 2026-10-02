@@ -92,7 +92,13 @@
 // says what it read in @model lines: the format, the MTL, every texture with
 // its material, the groups (o, g) and where the colours came from. For an OBJ
 // the tab Model shows them below the model field: one line with the summary
-// and a small list (MTL, textures, groups) that scrolls in itself. A PLY shows
+// and a small list (MTL, textures, groups) that scrolls in itself - where the
+// tab has no room for it, no list (Char_Layout) - and below them the field
+// "Textures folder" (--textures: a folder rldpack looks in first for a
+// texture that is not at its path; empty = not passed), shown when the last
+// check missed a texture or a folder is set (Char_TexturesUpdate): an OBJ
+// whose textures were all found needs none, and the room is the list's. A
+// PLY shows
 // the line only when the file is not named .ply. What went wrong (mtl-*,
 // tex-*, obj-*, model-*) is in the message list like every message about the
 // model; an error there stops the build as always.
@@ -288,6 +294,10 @@
 #define CHAR_ID_VOICE_EVENTS   193   // the ten events at a glance
 #define CHAR_ID_MODEL_IMPORT   194   // the line of what rldpack read (format, MTL, textures, colours)
 #define CHAR_ID_MODEL_FILES    195   // the list of the MTL, the textures and the groups of an OBJ
+#define CHAR_ID_TEXTURES_LABEL 196   // Textures folder (an OBJ only)
+#define CHAR_ID_TEXTURES       197
+#define CHAR_ID_TEXTURES_BROWSE 198
+#define CHAR_ID_TEXTURES_CLEAR 199
 // The controls of the cards Wheels and Animations (WH_ID_FIRST..WH_ID_LAST in
 // rs_wheels.c, AN_ID_FIRST..AN_ID_LAST in rs_anim.c): the tab Extras shows them.
 // The card Import (380..399) is the page's own.
@@ -563,7 +573,9 @@ static struct {
     wchar_t importFormat[8], importColors[16];
     COLORREF importColor;
     int filesW;                     // width of the list, for its columns
-    int filesLeast;                 // rows the list shows at least (Char_Layout)
+    int filesLeast;                 // rows the list shows at least (Char_Layout), 0 = no list
+    HWND texturesLabel, textures, texturesBrowse, texturesClear;  // an OBJ only
+    int texturesOn;                 // they are shown (Char_TexturesUpdate)
     HWND nameLabel, name, nameNote;
     HWND classLabel, cls, classHelp;
     HWND maskLabel, mask, maskHelp;
@@ -2060,7 +2072,7 @@ static int Char_TabOfId(int id, int *card)
     *card = -1;
     if ((id >= CHAR_ID_MODEL_LABEL && id <= CHAR_ID_MODEL_INFO) || (id >= CHAR_ID_SIZE_LABEL && id <= CHAR_ID_OPTIONS_LABEL) ||
         (id >= CHAR_ID_REPAIR && id <= CHAR_ID_QUALITY) || id == CHAR_ID_REDUCE_FIT || id == CHAR_ID_MODEL_IMPORT ||
-        id == CHAR_ID_MODEL_FILES)
+        (id >= CHAR_ID_MODEL_FILES && id <= CHAR_ID_TEXTURES_CLEAR))
         return CHAR_TAB_MODEL;
     if ((id >= CHAR_ID_NAME_LABEL && id <= CHAR_ID_CLASS_HELP) || (id >= CHAR_ID_MASK_LABEL && id <= CHAR_ID_MASK_HELP))
         return CHAR_TAB_DRIVER;
@@ -2511,6 +2523,7 @@ static void Char_UpdateButtons(void)
     EnableWindow(g_char.modelBrowse, !building);
     EnableWindow(g_char.iconBrowse, !building);
     EnableWindow(g_char.voicesBrowse, !building);
+    EnableWindow(g_char.texturesBrowse, !building);
     EnableWindow(g_char.outBrowse, !building);
     EnableWindow(g_char.show, !building);
     Char_VoiceSelShow();
@@ -2928,17 +2941,42 @@ static int Char_VColorIndex(void)
 
 static void Char_ChangedSoon(HWND page);
 
+// The field Textures folder: for an OBJ whose last check missed a texture,
+// or with a folder set (a field being typed in is never taken away: this
+// runs when the model changes and when a check ends).
+static void Char_TexturesUpdate(HWND page)
+{
+    wchar_t dir[CHAR_VAL];
+    int on = 0, i;
+
+    Char_FieldPath(g_char.textures, dir, CHAR_VAL);
+    if (g_char.objOn) {
+        on = dir[0] != 0;
+        for (i = 0; i < g_char.importRowCount && !on; i++)
+            on = g_char.importRow[i].kind == CHAR_IMPORT_TEXTURE && wcscmp(g_char.importRow[i].state, L"missing") == 0;
+    }
+    if (on != g_char.texturesOn) {
+        g_char.texturesOn = on;
+        Char_Relayout(page);
+    }
+}
+
 // The choices of an OBJ are shown only for an OBJ; the page is laid out
 // again when that changes. A choice not passed so far (the model turned out
 // an OBJ by its content) is checked with.
 static void Char_ObjUpdate(HWND page)
 {
     int obj = Char_ModelIsObj();
-    if (obj == g_char.objOn)
+    wchar_t dir[CHAR_VAL];
+    if (obj == g_char.objOn) {
+        Char_TexturesUpdate(page);
         return;
+    }
     g_char.objOn = obj;
+    Char_TexturesUpdate(page);
     Char_Relayout(page);
-    if (obj && Char_VColorIndex() != 0)
+    Char_FieldPath(g_char.textures, dir, CHAR_VAL);
+    if (obj && (Char_VColorIndex() != 0 || dir[0]))
         Char_ChangedSoon(page);
 }
 
@@ -3060,31 +3098,70 @@ static void Char_ListAdd(wchar_t **list, size_t *len, size_t *cap, const wchar_t
     (*list)[*len] = 0;
 }
 
+// The places rldpack looks for a texture that is not at its path, by its
+// name, into the list: in dir and its folders textures, tex, images and maps,
+// with its own ending and as .png, .jpg, .jpeg, .tga and .bmp.
+static void Char_ListPlaces(wchar_t **list, size_t *len, size_t *cap, const wchar_t *dir, const wchar_t *name)
+{
+    static const wchar_t *const subs[] = { L"", L"textures", L"tex", L"images", L"maps" };
+    static const wchar_t *const ends[] = { L"", L".png", L".jpg", L".jpeg", L".tga", L".bmp" };
+    wchar_t base[CHAR_VAL], folder[CHAR_VAL], file[CHAR_VAL], path[CHAR_VAL];
+    wchar_t *dot;
+    int s, e;
+
+    Char_Copy(base, CHAR_VAL, name);
+    dot = wcsrchr(base, L'.');
+    for (s = 0; s < (int)(sizeof(subs) / sizeof(subs[0])); s++) {
+        if (subs[s][0])
+            Rs_PathJoin(folder, CHAR_VAL, dir, subs[s]);
+        else
+            Char_Copy(folder, CHAR_VAL, dir);
+        for (e = 0; e < (int)(sizeof(ends) / sizeof(ends[0])); e++) {
+            Char_Copy(file, CHAR_VAL, base);
+            if (ends[e][0]) {
+                if (dot)
+                    file[dot - base] = 0;
+                Char_Append(file, CHAR_VAL, ends[e]);
+            }
+            Rs_PathJoin(path, CHAR_VAL, folder, file);
+            Char_ListAdd(list, len, cap, path);
+        }
+    }
+}
+
 // The MTL and texture files of the last check (g_char.importRow): each MTL,
-// each texture as rldpack names it and, by its name, next to each MTL (where
-// a texture delivered later is put). "a\0b\0\0", Rs_Free; NULL = none.
+// each texture as rldpack names it and, for a texture not found, the places
+// rldpack looks for it by its name (Char_ListPlaces) - next to each MTL and
+// the model, in the textures folder of the field - where a texture delivered
+// later is put. "a\0b\0\0", Rs_Free; NULL = none.
 static wchar_t *Char_ImportFiles(void)
 {
     wchar_t *list = NULL;
     size_t len = 0, cap = 0;
-    wchar_t dir[CHAR_VAL], beside[CHAR_VAL];
+    wchar_t dir[CHAR_VAL], model[CHAR_VAL], textures[CHAR_VAL];
     int i, k;
 
+    Char_FieldPath(g_char.model, model, CHAR_VAL);
+    Rs_PathDir(model, CHAR_VAL, model);
+    Char_FieldPath(g_char.textures, textures, CHAR_VAL);
     for (i = 0; i < g_char.importRowCount; i++) {
         const struct CharImport *r = &g_char.importRow[i];
         if (r->kind == CHAR_IMPORT_GROUP || !r->path[0])
             continue;
         Char_ListAdd(&list, &len, &cap, r->path);
-        if (r->kind != CHAR_IMPORT_TEXTURE)
+        if (r->kind != CHAR_IMPORT_TEXTURE || wcscmp(r->state, L"ok") == 0)
             continue;
         for (k = 0; k < g_char.importRowCount; k++) {
             const struct CharImport *m = &g_char.importRow[k];
             if (m->kind != CHAR_IMPORT_MTL || !m->path[0])
                 continue;
             Rs_PathDir(dir, CHAR_VAL, m->path);
-            Rs_PathJoin(beside, CHAR_VAL, dir, Rs_PathName(r->path));
-            Char_ListAdd(&list, &len, &cap, beside);
+            Char_ListPlaces(&list, &len, &cap, dir, Rs_PathName(r->path));
         }
+        if (model[0])
+            Char_ListPlaces(&list, &len, &cap, model, Rs_PathName(r->path));
+        if (textures[0])
+            Char_ListPlaces(&list, &len, &cap, textures, Rs_PathName(r->path));
     }
     return list;
 }
@@ -4232,6 +4309,7 @@ struct CharArgs {
     wchar_t model[CHAR_VAL];
     wchar_t icon[CHAR_VAL];
     wchar_t voices[CHAR_VAL];
+    wchar_t textures[CHAR_VAL];
     wchar_t out[CHAR_VAL];
     wchar_t preview[CHAR_VAL];
     wchar_t iconPrefix[CHAR_VAL];
@@ -4407,6 +4485,12 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
     if (Char_ListIndex(g_char.colors, CHAR_COLORS_COUNT) != 0) {
         Char_ArgsAdd(a, L"--colors");
         Char_ArgsAdd(a, g_charColorsWords[Char_ListIndex(g_char.colors, CHAR_COLORS_COUNT)]);
+    }
+    // An OBJ: the textures folder, when one is given.
+    Char_FieldPath(g_char.textures, a->textures, CHAR_VAL);
+    if (g_char.objOn && a->textures[0]) {
+        Char_ArgsAdd(a, L"--textures");
+        Char_ArgsAdd(a, a->textures);
     }
     // An OBJ: how its vertex colours meet its textures, when not auto.
     if (g_char.objOn && Char_VColorIndex() != 0) {
@@ -5368,6 +5452,15 @@ static void Char_BrowseVoices(void)
         Rs_SetText(g_char.voices, pick);
 }
 
+static void Char_BrowseTextures(void)
+{
+    wchar_t start[CHAR_VAL];
+    wchar_t pick[CHAR_VAL];
+    Char_DialogStart(g_char.textures, start, CHAR_VAL);
+    if (Rs_BrowseFolder(Rs_MainWindow(), L"Choose the folder of the textures", start, pick, CHAR_VAL))
+        Rs_SetText(g_char.textures, pick);      // EN_CHANGE schedules the check
+}
+
 static void Char_BrowseOut(void)
 {
     wchar_t start[CHAR_VAL];
@@ -5499,6 +5592,7 @@ static void Char_Enter(HWND page)
     HWND focus = GetFocus();
     if (focus == g_char.modelBrowse || focus == g_char.iconBrowse || focus == g_char.iconClear ||
         focus == g_char.voicesBrowse || focus == g_char.voicesClear || focus == g_char.voicePlay ||
+        focus == g_char.texturesBrowse || focus == g_char.texturesClear ||
         focus == g_char.outBrowse ||
         focus == g_char.check || focus == g_char.build || focus == g_char.rawToggle || focus == g_char.show ||
         focus == g_char.back || focus == g_char.next || (focus && GetDlgCtrlID(focus) >= CHAR_ID_TAB &&
@@ -5566,7 +5660,8 @@ static int Char_WriteReport(const wchar_t *path)
         Char_Put(f, L"model read: (hidden)");
     Char_Put(f, L"model format (last check): %ls", g_char.importFormat[0] ? g_char.importFormat : L"(not reported)");
     Char_Put(f, L"model colours (last check): %ls", g_char.importColors[0] ? g_char.importColors : L"(not reported)");
-    Char_Put(f, L"model files list: %ls, %d row(s); MTL %d, textures %d, groups %d in all", g_char.filesOn ? L"shown" : L"hidden",
+    Char_Put(f, L"model files list: %ls, %d row(s); MTL %d, textures %d, groups %d in all",
+             g_char.filesOn && g_char.filesLeast > 0 ? L"shown" : g_char.filesOn ? L"hidden - no room" : L"hidden",
              g_char.importRowCount, g_char.importTotal[CHAR_IMPORT_MTL], g_char.importTotal[CHAR_IMPORT_TEXTURE],
              g_char.importTotal[CHAR_IMPORT_GROUP]);
     for (i = 0; i < g_char.importRowCount; i++) {
@@ -5576,6 +5671,13 @@ static int Char_WriteReport(const wchar_t *path)
         Char_Put(f, L"model file: %ls | %ls | %ls | %ls%ls | %ls", g_charImportKinds[r->kind], name,
                  r->material[0] ? r->material : L"-", state, Char_ImportProblem(r) ? L" [amber]" : L"",
                  r->path[0] ? r->path : L"-");
+    }
+    {
+        wchar_t dir[CHAR_VAL];
+        Char_FieldPath(g_char.textures, dir, CHAR_VAL);
+        Char_Put(f, L"textures folder: %ls (%ls) [%ls]", dir[0] ? dir : L"(none)",
+                 !g_char.objOn ? L"not passed - no OBJ" : dir[0] ? L"passed as --textures" : L"not passed",
+                 g_char.texturesOn ? L"shown" : L"hidden");
     }
     Char_PutText(f, L"name", g_char.name);
     Char_PutLabel(f, L"name note", g_char.nameNote, g_char.nameColor);
@@ -6272,6 +6374,15 @@ static void Char_Create(HWND page)
         ShowWindow(g_char.modelImport, SW_HIDE);
         ShowWindow(g_char.modelFiles, SW_HIDE);
     }
+    g_char.texturesLabel = Rs_Label(page, CHAR_ID_TEXTURES_LABEL, L"Textures folder", RS_FONT_BOLD);
+    g_char.textures = Rs_Edit(page, CHAR_ID_TEXTURES, L"", 0);
+    SendMessageW(g_char.textures, EM_SETCUEBANNER, FALSE,
+                 (LPARAM)L"Optional - a folder with the textures");
+    Rs_SetTip(g_char.textures, L"rldpack looks here first for a texture of the material file that is not at its "
+                               L"path (by its name, also in the folders textures, tex, images and maps), then next "
+                               L"to the material file and the model.");
+    g_char.texturesBrowse = Rs_Button(page, CHAR_ID_TEXTURES_BROWSE, L"Browse...");
+    g_char.texturesClear = Rs_Button(page, CHAR_ID_TEXTURES_CLEAR, L"Clear");
 
     g_char.nameLabel = Rs_Label(page, CHAR_ID_NAME_LABEL, L"Name", RS_FONT_BOLD);
     g_char.name = Rs_Edit(page, CHAR_ID_NAME, L"", ES_UPPERCASE);
@@ -6630,10 +6741,18 @@ static int Char_LayModelAt(const struct CharLay *k, const RECT *in, int filesH)
         MoveWindow(g_char.modelImport, x, y - Rs_Px(6), fieldW, noteH, TRUE);
         y += noteH + Rs_Px(2);
     }
-    if (g_char.filesOn) {
+    if (g_char.filesOn && g_char.filesLeast > 0) {
         MoveWindow(g_char.modelFiles, in->left, y, in->right - in->left, filesH, TRUE);
         Char_ImportColumns(in->right - in->left);
         y += filesH + Rs_Px(8);
+    }
+    // An OBJ: the textures folder, as the icon and the voices folder are laid out.
+    if (g_char.texturesOn) {
+        Char_PlaceField(g_char.texturesLabel, g_char.textures, in->left, k->labelW, y + Rs_Px(2),
+                        fieldW - k->browseW - k->clearW - Rs_Px(16));
+        MoveWindow(g_char.texturesBrowse, in->right - k->browseW - k->clearW - Rs_Px(8), y, k->browseW, Rs_Px(32), TRUE);
+        MoveWindow(g_char.texturesClear, in->right - k->clearW, y, k->clearW, Rs_Px(32), TRUE);
+        y += Rs_Px(40);
     }
     MoveWindow(g_char.sizeLabel, in->left, y + Rs_Px(4), k->labelW, Rs_Px(20), TRUE);
     MoveWindow(g_char.size, x - Rs_Px(4), y, fieldW - Rs_Px(64), Rs_Px(30), TRUE);
@@ -6697,7 +6816,7 @@ static int Char_LayModel(const struct CharLay *k, const RECT *in)
 {
     int least, most, end;
 
-    if (!g_char.filesOn)
+    if (!g_char.filesOn || g_char.filesLeast == 0)
         return Char_LayModelAt(k, in, 0);
     least = Char_ImportListHeight(g_char.importRowCount < g_char.filesLeast ? g_char.importRowCount
                                                                              : g_char.filesLeast);
@@ -7035,9 +7154,12 @@ static void Char_TabApply(HWND page)
         else if (c == g_char.modelImport)
             want = want && g_char.importOn;
         else if (c == g_char.modelFiles)
-            want = want && g_char.filesOn;
+            want = want && g_char.filesOn && g_char.filesLeast > 0;
         else if (c == g_char.vcolorsLabel || c == g_char.vcolors || c == g_char.vcolorsHelp)
             want = want && g_char.objOn;
+        else if (c == g_char.texturesLabel || c == g_char.textures || c == g_char.texturesBrowse ||
+                 c == g_char.texturesClear)
+            want = want && g_char.texturesOn;
         if (want != Char_IsShown(c))
             ShowWindow(c, want ? SW_SHOWNA : SW_HIDE);
     }
@@ -7052,7 +7174,7 @@ static void Char_Layout(HWND page, int w, int h)
     int vgap = Rs_Px(12), avail, leftW, least, comboW, contentTop, extrasBottom[CHAR_EXTRAS_COUNT];
     int barH, barTop, upperBottom, need, t, i;
     RECT card, in;
-    HWND column[17];
+    HWND column[18];
 
     Rs_CardClear(page);
     k.gap = Rs_Px(16);
@@ -7079,7 +7201,8 @@ static void Char_Layout(HWND page, int w, int h)
     column[14] = g_char.upLabel;
     column[15] = g_char.forwardLabel;
     column[16] = g_char.colorsLabel;
-    for (i = 0; i < 17; i++) {
+    column[17] = g_char.texturesLabel;
+    for (i = 0; i < 18; i++) {
         wchar_t *text = Rs_GetText(column[i]);
         int tw = Char_TextWidth(column[i], text) + Rs_Px(4);
         if (tw > k.labelW)
@@ -7148,6 +7271,12 @@ static void Char_Layout(HWND page, int w, int h)
         if (t == CHAR_TAB_MODEL && g_char.filesOn && bottom - end - vgap < Rs_Px(CHAR_BAR_MIN_H)) {
             g_char.filesLeast = 1;
             end = Char_LayModel(&k, &in) + Rs_Px(16);
+            // Still too tall (the field Textures folder below it): no list -
+            // the line above it says what was found.
+            if (bottom - end - vgap < Rs_Px(CHAR_BAR_MIN_H)) {
+                g_char.filesLeast = 0;
+                end = Char_LayModel(&k, &in) + Rs_Px(16);
+            }
         }
         if (end > need)
             need = end;
@@ -7266,8 +7395,17 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
         }
         break;
     case CHAR_ID_OUT:
+    case CHAR_ID_TEXTURES:
         if (code == EN_CHANGE)
             Char_Changed(page);
+        break;
+    case CHAR_ID_TEXTURES_BROWSE:
+        if (code == BN_CLICKED)
+            Char_BrowseTextures();
+        break;
+    case CHAR_ID_TEXTURES_CLEAR:
+        if (code == BN_CLICKED)
+            Rs_SetText(g_char.textures, L"");
         break;
     case CHAR_ID_VOICE_EVENT:
         // The event of the file chosen, from the next check on.
@@ -7641,6 +7779,8 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         return Char_AutoText(g_char.icon, verb, arg, 1);
     if (wcscmp(verb, L"voices") == 0)
         return Char_AutoText(g_char.voices, verb, arg, 1);
+    if (wcscmp(verb, L"textures") == 0)
+        return Char_AutoText(g_char.textures, verb, arg, 1);
     if (wcscmp(verb, L"voice") == 0)
         return Char_AutoVoice(page, arg);
     if (wcscmp(verb, L"voicenorm") == 0)

@@ -324,6 +324,8 @@
 //             [--up z] [--forward -z]   (when the card Import of the tab Extras
 //             says Up Z or Forward -Z; +Y up and +Z forward are the defaults)
 //             [--colors 64]   (when the card says Colors 64; 128 is the default)
+//             [--textures <folder>]   (an OBJ only, when the field Textures
+//             folder of the tab Model is not empty)
 //             [--vertex-colors modulate|color]   (an OBJ only, when the card
 //             Import of the tab Extras does not say Auto)
 //             --preview <file> [--out <f>]      check; writes only the preview files
@@ -346,6 +348,7 @@
 //   onto the page together: a folder is the voices, a .ply or .obj the model,
 //   a .png the icon only when no .obj came with it, another 3D file
 //   the model only when neither came with it),
+//   textures <folder|none> (the field Textures folder; passed for an OBJ only),
 //   name <text>, class <word>, mask aku|uka, mapcolor
 //   template|RRGGBB, size <percent>, icon <png|none>, icon-fit fit|fill|none,
 //   icon-transparent on|off, icon-frame on|off, repair|open-parts|remesh|reduce|

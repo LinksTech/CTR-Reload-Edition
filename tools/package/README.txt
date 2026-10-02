@@ -288,6 +288,15 @@ Tab 1 Model
               none, a corner that does not exist, no faces) is refused with
               the line it found it in. Poses and wheels of your own (tab
               Extras) are read from PLY only for now.
+              Textures folder (an OBJ that missed a texture, or with a
+              folder set): a folder where rldpack looks
+              first for a texture that is not at the path the material file
+              gives - by its name, also in its folders textures, tex, images
+              and maps ("--textures <folder>"). Empty: not passed; rldpack
+              then looks next to the material file and the model as above.
+              Where the tab has no room for the list as well (at 1366 x 768
+              or with a large text size), the line above it says what was
+              found and the list is left out.
               On the command line an OBJ goes where a PLY goes:
               "ReloadStudio.exe --rldpack make-char --model <file.obj> ...";
               the material file and the textures are looked for as above.
