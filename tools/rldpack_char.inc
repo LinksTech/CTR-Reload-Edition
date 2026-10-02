@@ -2459,14 +2459,64 @@ static int RldMk_StepOpenParts(struct RldMkBuild *b, const struct RldMkOptions *
 	return 1;
 }
 
+// THE VEHICLE LIES UNDER THE DRIVER: is the middle of the driver - the part
+// with the most triangles besides `vehicle` (ties: the first) - over the
+// vehicle seen from above, x and z each within the vehicle's extent and an
+// eighth of it more? A sword beside a figure or a tail behind it is long and
+// low like a vehicle but not under the driver. The eighth lets a figure on a
+// board reach a little past its end (a test model: 5 % of the board's length
+// behind it); the tails and swords measured lie 25 % and more outside. With
+// no other part there is no driver: 1.
+static int RldMk_UnderDriver(const struct RldMkBuild *b, u32 vehicle)
+{
+	const struct RldMkPart *v = &b->parts[vehicle];
+	const struct RldMkPart *driver;
+	int d = -1;
+	u32 i;
+	int a;
+
+	for (i = 0; i < b->partCount; i++)
+	{
+		if ((i != vehicle) && ((d < 0) || (b->parts[i].triangles > b->parts[d].triangles)))
+		{
+			d = (int)i;
+		}
+	}
+	if (d < 0)
+	{
+		return 1;
+	}
+
+	driver = &b->parts[d];
+	for (a = 0; a < 3; a += 2)
+	{
+		const double middle = 0.5 * (driver->lo[a] + driver->hi[a]);
+		const double margin = 0.125 * (v->hi[a] - v->lo[a]);
+
+		if ((middle < (v->lo[a] - margin)) || (middle > (v->hi[a] + margin)))
+		{
+			return 0;
+		}
+	}
+	return 1;
+}
+
 // A vehicle shorter than a kart (--wheels off): of a model of two parts or
 // more, the longest part with its bottom in the kart's range, a length of
-// RLDMK_VEHICLE_LENGTH_MIN up to RLDMK_KART_LENGTH_MAX and longer than it is
-// tall; ties as for the kart: the lower bottom. -1 = none.
-static int RldMk_ShortVehicle(const struct RldMkBuild *b)
+// RLDMK_VEHICLE_LENGTH_MIN up to RLDMK_KART_LENGTH_MAX, longer than it is
+// tall and under the driver (RldMk_UnderDriver); ties as for the kart: the
+// lower bottom. -1 = none; *aside (may be NULL) the longest part that was all
+// of that but not under the driver, -1 = none.
+static int RldMk_ShortVehicleAside(const struct RldMkBuild *b, int *aside)
 {
 	int best = -1;
+	int away = -1;
 	u32 i;
+
+	if (aside != NULL)
+	{
+		*aside = -1;
+	}
 
 	if (b->partCount < 2u)
 	{
@@ -2485,13 +2535,31 @@ static int RldMk_ShortVehicle(const struct RldMkBuild *b)
 			continue;
 		}
 
+		if (!RldMk_UnderDriver(b, i))
+		{
+			if ((away < 0) || ((part->hi[2] - part->lo[2]) > (b->parts[away].hi[2] - b->parts[away].lo[2])))
+			{
+				away = (int)i;
+			}
+			continue;
+		}
+
 		if ((best < 0) || ((part->hi[2] - part->lo[2]) > (b->parts[best].hi[2] - b->parts[best].lo[2])) ||
 		    (((part->hi[2] - part->lo[2]) == (b->parts[best].hi[2] - b->parts[best].lo[2])) && (part->lo[1] < b->parts[best].lo[1])))
 		{
 			best = (int)i;
 		}
 	}
+	if (aside != NULL)
+	{
+		*aside = away;
+	}
 	return best;
+}
+
+static int RldMk_ShortVehicle(const struct RldMkBuild *b)
+{
+	return RldMk_ShortVehicleAside(b, NULL);
 }
 
 // Steps 4 and 5: which part is the kart, which the driver and the steering
@@ -2507,6 +2575,7 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 	u32 t;
 	u32 i;
 	int best = -1;
+	int aside = -1;
 
 	parent = (u32 *)malloc(((size_t)b->positionCount + 1u) * sizeof(u32));
 	partOfRoot = (u32 *)malloc(((size_t)b->positionCount + 1u) * sizeof(u32));
@@ -2583,8 +2652,8 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 		return 0;
 	}
 
-	// THE KART: a part at the bottom, as long as a kart. With one part the
-	// whole mesh has to be it.
+	// THE KART: a part at the bottom, as long as a kart, under the driver
+	// (RldMk_UnderDriver). With one part the whole mesh has to be it.
 	for (i = 0; i < b->partCount; i++)
 	{
 		const struct RldMkPart *part = &b->parts[i];
@@ -2593,6 +2662,15 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 
 		if ((bottom < RLDMK_KART_BOTTOM_MIN) || (bottom > RLDMK_KART_BOTTOM_MAX) || (partLength < RLDMK_KART_LENGTH_MIN) || (partLength > RLDMK_KART_LENGTH_MAX))
 		{
+			continue;
+		}
+
+		if (!RldMk_UnderDriver(b, i))
+		{
+			if ((aside < 0) || ((part->hi[2] - part->lo[2]) > (b->parts[aside].hi[2] - b->parts[aside].lo[2])))
+			{
+				aside = (int)i;
+			}
 			continue;
 		}
 
@@ -2609,7 +2687,8 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 	// kart stays required; the error names such a part, and only then.
 	if (best < 0)
 	{
-		const int vehicle = RldMk_ShortVehicle(b);
+		int shortAside = -1;
+		const int vehicle = RldMk_ShortVehicleAside(b, &shortAside);
 		const double vehicleLength = (vehicle >= 0) ? ((b->parts[vehicle].hi[2] - b->parts[vehicle].lo[2]) / RLDMK_UNITS) : 0.0;
 		char also[224];
 
@@ -2626,6 +2705,14 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 				snprintf(also, sizeof(also),
 				         " The vehicle at the bottom (%.2f model units long) is shorter than a kart; with the kart wheels hidden it is taken as the kart (--wheels off; Reload Studio: untick Show kart wheels).",
 				         vehicleLength);
+			}
+			else if ((aside >= 0) || (shortAside >= 0))
+			{
+				const int away = (aside >= 0) ? aside : shortAside;
+
+				snprintf(also, sizeof(also),
+				         " A long part at the bottom (%.2f model units long) is not under the driver - beside or behind him - so it is not taken as the kart.",
+				         (b->parts[away].hi[2] - b->parts[away].lo[2]) / RLDMK_UNITS);
 			}
 			if (b->fitted)
 			{
@@ -18969,6 +19056,51 @@ static void RldMk_SelfTestParts(struct RldMkTestMesh *mesh)
 	}
 }
 
+// THE VEHICLE UNDER THE DRIVER: a sword beside a figure (wheels on and off)
+// and a tail behind it are no kart; a board a figure reaches a little past is.
+static void RldMk_SelfTestUnderDriver(struct RldMkTestMesh *mesh)
+{
+	static const double boxes[3][2][6] = {
+	    {{-0.04, 0.00, -0.80, 0.04, 0.05, 0.80}, {-0.90, 0.00, -0.20, -0.40, 1.80, 0.20}},
+	    {{-0.05, 0.00, -1.00, 0.05, 0.08, 0.00}, {-0.25, 0.00, 0.05, 0.25, 1.80, 0.55}},
+	    {{-0.20, 0.00, -0.15, 0.20, 0.05, 0.85}, {-0.15, 0.06, -0.70, 0.15, 1.80, 0.30}}};
+	static const char *const names[3] = {"a sword beside a figure", "a tail behind a figure", "a board a figure reaches 5 % past"};
+	struct RldMkOptions opt;
+	struct RldMkPly ply;
+	struct RldMkBuild b;
+	int model;
+	int wheelsOff;
+
+	for (model = 0; model < 3; model++)
+	{
+		mesh->vertexCount = 0;
+		mesh->faceCount = 0;
+		RldMk_TestBox(mesh, &boxes[model][0][0], &boxes[model][0][3], 1u, 0u, 0, -1);
+		RldMk_TestBox(mesh, &boxes[model][1][0], &boxes[model][1][3], 2u, 10u, 0, -1);
+		for (wheelsOff = 1; wheelsOff >= ((model == 0) ? 0 : 1); wheelsOff--)
+		{
+			char name[128];
+			int ok;
+
+			RldMk_TestOptions(&opt);
+			opt.fit = 1;
+			opt.noWheels = wheelsOff;
+			ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+			snprintf(name, sizeof(name), "--wheels %s, %s: %s", wheelsOff ? "off" : "on", names[model], (model == 2) ? "the board is the kart" : "no kart (ply-no-kart)");
+			if (model == 2)
+			{
+				RldMk_Test(ok && (b.kartPart >= 0) && (b.parts[b.kartPart].triangles == 12u), name, "built %d, said: %s", ok, s_rldMkCodes);
+			}
+			else
+			{
+				RldMk_Test(!ok && RldMk_Said("ply-no-kart") && !RldMk_Said("ply-kart-short"), name, "built %d, said: %s", ok, s_rldMkCodes);
+			}
+			RldMk_FreeBuild(&b);
+			RldMk_FreePly(&ply);
+		}
+	}
+}
+
 static int RldChar_SelfTest(void)
 {
 	struct RldMkTestMesh *mesh = (struct RldMkTestMesh *)calloc(1, sizeof(struct RldMkTestMesh));
@@ -19026,6 +19158,7 @@ static int RldChar_SelfTest(void)
 	RldMk_SelfTestObj(mesh);
 	RldMk_SelfTestShortVehicle(mesh);
 	RldMk_SelfTestParts(mesh);
+	RldMk_SelfTestUnderDriver(mesh);
 	s_rldMkQuiet = quietBefore;
 	RldMk_ResetSaid();
 
