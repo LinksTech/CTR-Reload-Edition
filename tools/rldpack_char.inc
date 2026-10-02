@@ -3511,6 +3511,18 @@ static int RldMk_StepDummy(struct RldMkBuild *b, const struct RldMkOptions *opt)
 	{
 		RldMk_DummyBox(&in.kart, b->parts[b->kartPart].lo, b->parts[b->kartPart].hi);
 	}
+	// The driver part alone: with --wheels off the poses turn about its
+	// bottom, not about the bottom of everything in the driver group (shoes
+	// beside a motorbike). The positions with their groups: a kart driver
+	// sitting higher than the dummy's seat turns about its own bottom
+	// (RldDum_Fit).
+	if ((b->driverPart >= 0) && (b->parts[b->driverPart].triangles != 0u) && (b->parts[b->driverPart].group == RLDMK_GROUP_DRIVER))
+	{
+		RldMk_DummyBox(&in.driverPart, b->parts[b->driverPart].lo, b->parts[b->driverPart].hi);
+	}
+	in.position = b->position;
+	in.positionGroup = b->positionGroup;
+	in.positionCount = b->positionCount;
 	in.wheels = !opt->noWheels;
 	in.sizePercent = 100u;
 	if (!RldDum_Fit(&in, &b->dumFit100))
@@ -15461,6 +15473,9 @@ static void RldMk_SelfTestChri(const u8 *good, size_t goodSize)
 // update them to make the test pass.
 // NO_WHEELS with --fit none and --wheels off: the CMDL of PLAIN, the CHRI with
 // fixedSize 0x20 and the flag RLDCHAR_FLAG_NO_WHEELS - frozen like those.
+// FIT also follows deliberate changes of the dummy's fit and poses
+// (tools/rldpack_dummy.inc): such a change updates it, on purpose and in the
+// same change; nothing else may.
 // SIZE_ICON last changed on 2026-10-02 with the fit of the portrait to the
 // 43 x 25 the menu shows (RldMk_MakeIcon): only its CICN changed, CHRI and CMDL
 // stayed. A deliberate change of the portrait conversion updates it the same
@@ -15474,7 +15489,7 @@ static void RldMk_SelfTestChri(const u8 *good, size_t goodSize)
 // limit 805 -> 7200 triangles (it was split 9, 996 triangles -> 797).
 #define RLDMK_GOLDEN_PLAIN "ba7e3208bc98b2af5460110ae6d7d64afe888771b76747a74ae30f3190ce3186"
 #define RLDMK_GOLDEN_SIZE_ICON "61960b1c58d8a38e9728d891799fad7d53f8682864c44ede49f9e61f42e536d7"
-#define RLDMK_GOLDEN_FIT "73695623084cc66c55b389df5f2db169ffc1066431695a6d05558ad0a1102231"
+#define RLDMK_GOLDEN_FIT "04afccc63f6db122d512b67c8a8446ebdd0e8ee7cfa3aea10d605e4e2536829a"
 #define RLDMK_GOLDEN_NO_WHEELS "0427aee8b259b0f0076efc6f8cba195fff3b105c8b7216992056bb4ee333b0fe"
 #define RLDMK_GOLDEN_REDUCED "b602e356987fc179466d0bffa3481470da83e26815e40727bd82b3dfb7d3abe2"
 
