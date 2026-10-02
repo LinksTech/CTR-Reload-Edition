@@ -137,10 +137,16 @@ Planned, in no particular order and without a date:
 - Custom characters - a first version is in the nightly build (Reload
   Studio's Character page and a `characters` folder next to the game). It
   fits every model onto Crash's kart at his size, repairs common export
-  faults, reduces a model with too many triangles by itself and can leave
-  out the kart wheels for a model with its own. You choose whether it wears
-  Aku Aku or Uka Uka and its colour on the minimap, and a character's icon
-  shows in the driver select and in the race.
+  faults and can leave out the kart wheels for a model with its own. A model
+  under the triangle limit is never reduced; for one above it, "Reduce to
+  fit" reduces it until it fits. You choose whether it wears Aku Aku or Uka
+  Uka and its colour on the minimap; after a build the green line names the
+  mask that is in the file. A character's icon shows in the driver select
+  and in the race: transparency in the PNG is kept, and it can be framed
+  like the original heads, get a transparent background or the original
+  frame. Wheels and animations of your own are shown as "Coming soon" cards;
+  `ReloadStudio.exe --enable-preview-features` unlocks their unfinished
+  preview, which writes nothing into the character file.
   Their voices come next
 - Skin support for the drivers
 - ...and more
@@ -165,6 +171,20 @@ self-tests. Requirements, results, tests and packaging are described in
 
 Quick states and replays exist only behind the developer switch `--dev`. They
 are raw memory snapshots of the game: load only files you made yourself.
+
+`--dev --deterministic` is the measuring mode of the reference runs. VSync
+emits only the VBlanks the game asks for and never catches up by wall clock,
+and audio is rendered per VBlank. Only the script drives the game
+(`--menu-keys`, `--level`, `--autoload-demo`, `--autopilot`, a replay):
+keyboard, mouse, pads and window focus do not reach it. Losing focus or
+minimising never pauses, a display change keeps the aspect, and the debug
+keys, F11, Alt+Enter, Ctrl+Q and the name-entry keys do nothing; closing the
+window still ends the run. The log names this once at start, and at exit
+one line per kind counts what was kept away, only when something was (pad
+triggers and sticks are kept away but not counted). Without `--deterministic` nothing
+changes. Reload Studio records a track preview this way too. The window size
+still reaches the renderer: with `--res-scale native` the picture, and so a
+`--shot`, depends on the size of the window.
 
 </details>
 

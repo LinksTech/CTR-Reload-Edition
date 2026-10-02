@@ -55,7 +55,7 @@ Header field 0x08 is the content major of each magic; the envelope itself never 
 | known required-feature bits | none | none |
 | chunk_count | 3..64 | 2..64 |
 | required chunks | META, LEVD, VRMD | CHRI, CMDL |
-| known chunks and size limits | META 64 KiB, LEVD 16 MiB, VRMD 4 MiB, SNDB 4 MiB, PARM 4 KiB (`Rld_ChunkLimit`) | CHRI 4 KiB, CMDL 256 KiB, CICN 4 KiB, CPRM 4 KiB (`RldChar_ChunkLimit`) |
+| known chunks and size limits | META 64 KiB, LEVD 16 MiB, VRMD 4 MiB, SNDB 4 MiB, PARM 4 KiB (`Rld_ChunkLimit`) | CHRI 4 KiB, CMDL 4 MiB, CICN 4 KiB, CMSK 256 KiB, CPRM 4 KiB (`RldChar_ChunkLimit`) |
 
 Each type has its own table of known chunks: a CMDL inside a `.rldtrack` and a
 META inside a `.rldchar` are unknown chunks and are skipped.
@@ -337,12 +337,13 @@ is frozen. Source: `include/rldchar.inc`.
 | Chunk | Status | Limit | Content |
 |---|---|---|---|
 | CHRI | required | 4 KiB | template, class, name, version, flags, author |
-| CMDL | required | 256 KiB | the model, in the game's native model format |
+| CMDL | required | 4 MiB | the model, in the game's native model format |
 | CICN | optional, written by `rldpack make-char --icon` | 4 KiB | the portrait, exactly 612 bytes (rules CICN-1..3); the game shows it in the driver select grid, the race HUD, the results and the cup standings |
 | CMSK | optional, experimental, written by `rldpack make-char --mask-model` | 256 KiB (rule CMSK-3: 16 KiB) | an own mask model, drawn in place of Aku Aku / Uka Uka (rules CMSK-1..3) |
 | CPRM | optional, known type: not written by rldpack, content not interpreted yet | 4 KiB | values; layout not fixed (draft) |
 | CVOI | reserved name, planned | none (unknown, skipped) | voices; layout not defined |
 | CTEX | reserved name, planned | none (unknown, skipped) | texture data; layout not defined |
+| CWHL | reserved name, planned | none (unknown, skipped) | own wheels; planned layout below ("Planned: CWHL, own wheels"), not read and not written |
 
 `rldpack make-char` writes CHRI, CMDL, then CICN with `--icon` and CMSK with
 `--mask-model`, in this order. CICN, CMSK and CPRM are known types. When
@@ -388,7 +389,9 @@ CMSK below). Nothing interprets CPRM yet.
   driving style the author chose (default balanced). Its Mask choice (Aku Aku
   or Uka Uka) starts at the mask of Fake Crash, Uka Uka; only a different
   choice passes `--mask aku`, so a file built with the default has the same
-  bytes as before the field existed.
+  bytes as before the field existed. After a build its green line names the
+  mask that is in the file (from `@value mask`), for example
+  `Built: mydriver.rldchar (55 KB) - mask Aku Aku, kart wheels hidden. Restart the game to load it.`
 - `rldpack info` and `rldpack verify` name the mask and whether it is the
   template's or chosen in the file; the reserved value 3 is named as read like
   the template.
@@ -546,7 +549,9 @@ The portrait in the driver select, in the retail portrait format:
 | 0x08 | u16[16] | clut | RGB555 and the STP bit 15, red in bits 0-4; the value 0x0000 is transparent, so black is 0x0421 |
 | 0x28 | u16[26][11] | texels | the rows from the top; 4 texels per word, the lowest nibble is the leftmost |
 
-612 bytes, nothing else; there is no VRAM position in the chunk.
+612 bytes, nothing else; there is no VRAM position in the chunk. Every
+portrait is drawn semi-transparent: a CLUT word with the STP bit (0x8000)
+halves what lies behind it, one without is opaque.
 
 Rules, in order. Each one gives a fixed text that starts with the rule:
 
@@ -586,6 +591,31 @@ What `rldpack make-char --icon <png>` does (`RldMk_MakeIcon`):
    rounds to 0x0000 is written as 0x0421.
 5. Builds the chunk twice, compares the bytes and runs CICN-1..3 on it. The
    chunk stays 44 x 26 (612 bytes).
+
+Transparency in the PNG always arrives: the alpha of RGBA and gray+alpha
+pixels, the tRNS alpha per palette index, and the tRNS color key of RGB and
+gray pictures. A texel less than half covered becomes index 0 (transparent);
+opaque black stays opaque (0x0421). A black box that is opaque in the PNG
+is not background to this rule - `--icon-background corners` removes it.
+
+Four options, each with a default that gives the same CICN as without it:
+
+| Option | Values (default first) | What it does |
+|---|---|---|
+| `--icon-background` | `alpha`, `corners`, `auto` | `alpha`: the PNG's transparency only. `corners`: before step 2 the plain color around the subject also becomes transparent, filled from the four corners; the same color inside the subject, or closed off by its outline, stays, and so does a thin outline at the alpha edge. `auto`: `corners` only for a PNG without any transparent pixel |
+| `--icon-tolerance` | `24`, 0..128 | how far a color may be from the background color, per channel, and still count as it |
+| `--icon-fit` | `none`, `fit`, `fill` | `none`: the whole picture cut to 43:25 as above. `fit`: the subject (the pixels at least half opaque) whole, as large as a retail head (41 x 25, standing on the bottom row, centered across). `fill`: the subject fills that box, cut at the sides or above and below the face. One factor for both axes: never stretched |
+| `--icon-frame` | `none`, `retail` | `retail`: after step 3, the retail frame and its dark half-transparent box (STP) behind the subject, where the subject leaves the texels transparent; two CLUT entries, so 13 colors for the subject |
+
+All four need `--icon`. `rldpack make-char --machine` reports each with
+`@value icon-background|icon-tolerance|icon-fit|icon-frame <word> <switch|default>`,
+the removed background as `@char icon_background <pixels> <RRGGBB>` and the
+place of the subject as `@char icon_place <x> <y> <w> <h>` (0 0 0 0 without
+`--icon-fit`). `--icon-preview <prefix>` also writes `<prefix>-retail.bmp`,
+the template's portrait, when the game's data is found next to the tool.
+Reload Studio passes `--icon-fit fit` by default ("Fit like the game's
+heads"); its "Make background transparent" passes `--icon-background corners`
+and "Retail frame" `--icon-frame retail`, both off by default.
 
 Without `--icon` the file has no CICN, and the game shows the template's
 portrait.
@@ -631,7 +661,7 @@ Rules, in order:
 | CMSK-1 | at least 4 bytes and version 1 (a reader that does not know the version drops CMSK) |
 | CMSK-2 | flags 0 |
 | CMSK-3 | at most 16 KiB (verdict MODEL LIMIT) |
-| then | every model rule of CMDL (section 4) on the model at 0x04, with these differences: exactly 1 animation of 1 frame, and at most 1960 bytes of draw memory - what the retail mask costs (49 textured triangles x 40), so 70 triangles with vertex colors |
+| then | every model rule of CMDL (section 4) on the model at 0x04, with these differences: exactly 1 animation of 1 frame, and at most `RLDCHAR_MASK_DRAW_BYTES_MAX` bytes of draw memory (see Limits) |
 
 The retail mask is rigid in a race, so the own mask has one frame and no
 poses. It has vertex colors only, no texture.
@@ -649,9 +679,10 @@ What `rldpack make-char --mask-model <ply>` does (`RldMk_BuildMaskOnce`,
 `--forward`) is one part: no kart, driver or steering wheel, no dummy, no
 `--remesh`, no poses. It is fitted to the height of the retail mask (86.1
 game units) times `--mask-size` (50..150 percent, default 100), reduced to at
-most 70 triangles and centered where the retail mask's center lies. The chunk
-is built twice, compared and checked with `RldChar_CheckMask`. `--mask` still
-decides which of the two masks it is. `--mask-size`, `--mask-up` and
+most the triangles `RLDCHAR_MASK_DRAW_BYTES_MAX` allows (see Limits) and
+centered where the retail mask's center lies. The chunk is built twice,
+compared and checked with `RldChar_CheckMask`. `--mask` still decides which
+of the two masks it is. `--mask-size`, `--mask-up` and
 `--mask-forward` need `--mask-model`. Without `--mask-model` the file has no
 CMSK and the same bytes as before.
 
@@ -680,6 +711,89 @@ spin1/2, bigair1/2, drop1/2, shield1/2, passing1/2, fire1/2, yes, hit; .wav or
 .vag), assigns them to their places and checks them. Nothing goes into the
 file: CVOI stays a reserved name, and a custom driver is silent in the game.
 
+### Planned: driver animations from pose models
+
+Planned, not part of 1.0 as written today: the game reads nothing new, and
+neither `rldpack make-char` nor Reload Studio writes anything of it.
+
+- The author exports the same mesh once at rest (the model) and once per
+  pose: `turn_left.ply`, `turn_right.ply`, `reverse.ply`, `bump.ply`,
+  `jump.ply` in one folder (`idle.ply` is checked but has no slot in the
+  race). Every pose has the same vertices in the same order and the same
+  faces; only the positions differ, colors come from the model.
+- rldpack turns them into the frames of the four retail slots, along curves
+  measured on the retail drivers: turn 21 frames (frame 0 full left, 10 the
+  model, 20 full right), reverse 7, bump 15 (a held pose), jump 4. The kart
+  stays as in the model. A slot without its pose (turn needs both) keeps
+  today's automatic poses.
+- No new chunk and no new field: the frames go into CMDL exactly as today
+  (4 animations, raw frames, the counts that model-anim-frames demands). The
+  pose files are never packed. Without a pose folder the file is byte for
+  byte the same.
+
+`rldpack char-poses --model <ply> --pose-dir <folder>` already checks a
+pose folder (rules `pose-*`) and writes only a preview file for Reload
+Studio; it refuses `--out` and never writes a container.
+
+### Planned: CWHL, own wheels (reserved)
+
+`CWHL` is a reserved, planned chunk name: no reader knows it (an older
+reader skips it as an unknown chunk), and rldpack and Reload Studio do not
+write it. Planned layout of version 1, little-endian, in 1/16 model units
+(the units of CMDL, without the game's instance scale). The wheel lies with
+its center at the origin, the axle along X, the outside towards +X, Y up,
+Z forward; the right-hand wheels (-X) are the same model turned 180 degrees
+about Y.
+
+| Offset | Type | Field | Meaning |
+|---|---|---|---|
+| 0x00 | u16 | version | 1 |
+| 0x02 | u16 | flags | bit 0 STEER (the front pair steers), bit 1 SPIN (the wheels roll); further bits 0 |
+| 0x04 | u8 | wheelMask | bit 0 front +X, bit 1 front -X, bit 2 rear +X, bit 3 rear -X (the order of `DrawTires`); at least one bit |
+| 0x05 | u8 | reserved | 0 |
+| 0x06 | u16 | reserved | 0 |
+| 0x08 | 3 x s16 | front | center of the front wheel on +X (the other one: x mirrored) |
+| 0x0E | 3 x s16 | rear | center of the rear wheel on +X |
+| 0x14 | u16 | radius | rolling radius |
+| 0x16 | u16 | halfWidth | half the width |
+| 0x18 | u16 | vertexCount N | 0 = sprite mode (the retail wheel pictures at these points and this size), else 3..384 |
+| 0x1A | u16 | triangleCount T | 0 = sprite mode, else 1..128 |
+| 0x1C | N x 12 bytes | vertices | s16 x, y, z; u16 0; u8 r, g, b; u8 0 |
+| then | T x 8 bytes | triangles | u16 a, b, c; u16 flags (bit 0 = two-sided, further bits 0); wound counter-clockwise seen from outside |
+
+Size = 0x1C + 12 N + 8 T, at most 5660 bytes.
+
+| Rule | What must hold |
+|---|---|
+| CWHL-1 | at least 0x1C bytes, version 1 |
+| CWHL-2 | only known flag bits (0x3), reserved fields 0, wheelMask 1..0xF |
+| CWHL-3 | size exactly 0x1C + 12 N + 8 T, at most 16 KiB |
+| CWHL-4 | N = T = 0 (sprite mode), or 3 <= N <= 384 and 1 <= T <= 128 |
+| CWHL-5 | radius 128..512 (8..32 model units), halfWidth 1..radius |
+| CWHL-6 | every vertex inside the declared cylinder: \|x\| <= halfWidth + 1, y^2 + z^2 <= (radius + 1)^2 |
+| CWHL-7 | indices < N, no triangle with a vertex twice, the padding of vertices and triangles 0 |
+| CWHL-8 | wheel points: \|x\| 0..96, y 0..64, z -128..128, front.z > rear.z |
+
+- A finding is planned to cost only the own wheels, never the file: the
+  game then draws the retail wheels (as for a broken CMSK).
+- CHRI flags bit 0 (no wheels) together with a CWHL: rldpack refuses the
+  combination; in the game bit 0 wins (no wheels at all).
+- Bounds: 128 triangles per wheel, 512 per kart. The draw memory they cost
+  is planned as an addition on top of the frame's draw memory, only while a
+  file with CWHL is loaded. 128 is a starting value, to be measured like the
+  model limit.
+
+`rldpack char-wheel --model <ply>` already fits, repairs and reduces a wheel
+model (at most 128 triangles) and writes only a preview file for Reload
+Studio; it refuses `--out` and never writes a container.
+
+Reload Studio shows both as cards on its Character page, "Animations" and
+"Wheels", greyed out and marked "Coming soon". Started with
+`--enable-preview-features` (a switch of that run, never saved) the cards
+show the poses and the wheel in the preview, marked "Preview feature"; they
+are unfinished and write nothing into the container. With or without the
+switch, a built `.rldchar` has the same bytes.
+
 ### What the game does
 
 | When | What |
@@ -689,6 +803,7 @@ file: CVOI stays a reserved name, and a custom driver is silent in the game.
 | a broken file | skipped with one log line `[CTR Char] REFUSED <file>: <kind> (<rule>) <detail>`; the game starts anyway |
 | the first 32 valid files | a tile each in the one-player ARCADE driver select, after the retail drivers (not for CRYSTAL and CTR under NITRO-PIT); a further valid file gets the log line `NO ID` and no tile |
 | menu and race | the driver select shows the own portrait (CICN, first 20 entries; else the template's, see CICN) and the name from CHRI; the race HUD, the arcade results and the cup standings show the own portrait too (see CICN). In the race seat 0 runs on the template's character id with the custom model, and the class in CHRI sets the physics values and the engine sound. Not from the template: its voice (neither in the race nor as the sample of the voice volume slider). Still the template's: the cup podium, high score lists and profiles. After the binding one line names every seat: `[CTR Char] seats: 0=<id> (<file>, map color <RRGGBB>\|map color of the template) 1=<id> ...`, ending in `... (cut at seat <n>)` when the line is full |
+| draw memory | the game adds the draw memory of custom models on top of the frame's (`NativeChar_DrawReserve`), twice (the mirror floor draws a model again): on the main menu that of the largest model of the roster, in a race that of seat 0 drawn as an invisible driver (60 bytes a triangle without texture, 64 with one, instead of 28 and 40) plus its own mask; a race with a retail driver and every other menu load add nothing. One line per load when it adds something: `[CTR Char] draw memory: <n> bytes + <m> for custom models (...) = <sum>`. At start one line per file, `[CTR Char] draw bytes <file>: model <n>, own mask <m>`, and the memory window grows for it: `[CTR Native] characters/: mempack extra +<n> bytes for the draw memory of custom models, <m> in force`. Without a loaded file nothing of this changes |
 | minimap | with `RLDCHAR_FLAG_MAP_COLOR` the bound seat's marker on the minimap has the color at 0x20, else the template's (808080 for Fake Crash: the marker as drawn). The color tints the marker: 80 per channel is neutral, higher values are brighter. The player's white blink stays |
 | wheels | with `RLDCHAR_FLAG_NO_WHEELS` set in CHRI the game draws no kart wheels (and no wheel reflections) for the custom model - tyre dust and skid marks stay, they are effects at the wheel points, not wheels - and the load line `[CTR Char] loaded <file>: ...` adds `, wheels hidden` after the byte count; without the bit the wheels are drawn as for a retail driver |
 | mask | CHRI flags bits 1-2 choose the mask the custom driver wears: Aku Aku or Uka Uka for the mask item and the rescue after a fall, with that mask's model, beam, sound and music, the mask's wrong-way voice in a one-player race and the mask's icon in the HUD weapon slot. 0 (or 3) keeps the template's mask: Aku Aku for Crash, Coco, Polar, Pura and Penta, Uka Uka for every other template, Fake Crash included; the HUD icon then follows the retail icon table, in which Penta shows the Uka Uka icon. When the race has not loaded the chosen mask's model or beam, the template's mask stays. With Aku Aku or Uka Uka chosen the load line ends in `, mask aku` or `, mask uka` (after `, wheels hidden` when both are set); with 0 or 3 nothing is added. The first mask born for the seat in each load logs `[CTR Char] mask seat 0: <aku\|uka> from the <file\|template> (model 0x.., beam 0x.., sound 0x.., song <aku\|uka\|none>)`; a chosen mask that is not loaded logs `[CTR Char] mask seat 0: <aku\|uka> wanted, not loaded - the template's mask stays` once per load |
@@ -713,9 +828,38 @@ file: CVOI stays a reserved name, and a custom driver is silent in the game.
 | `RLDCHAR_LOD_MIN` | 8192 |
 | `RLDCHAR_FRAME_SIZE_MAX` | 65535 bytes per frame |
 | `RLDCHAR_COORD_MIN`, `RLDCHAR_COORD_MAX` | -8192 <= pos and pos + 255 <= 8191 |
-| `RLDCHAR_DRAW_BYTES_MAX` | 22560 bytes of draw memory (564 x 0x28) |
+| `RLDCHAR_DRAW_BYTES_MAX` | 201600 bytes of draw memory (7200 x 0x1C: 7200 triangles with vertex colors) |
 | `RLDCHAR_MASK_BYTES_MAX` | 16 KiB of CMSK (CMSK-3) |
-| `RLDCHAR_MASK_DRAW_BYTES_MAX` | 1960 bytes of draw memory of the own mask (49 x 0x28) |
+| `RLDCHAR_MASK_DRAW_BYTES_MAX` | 11200 bytes of draw memory of the own mask (400 x 0x1C: 400 triangles) |
+
+`RLDCHAR_DRAW_BYTES_MAX` is the one place of the model limit: model-draw,
+the reduction of `rldpack make-char` (`RLDMK_REDUCE_LIMIT`, and
+`RLDMK_REDUCE_TARGET`, the limit less 1 %) and the messages of Reload Studio
+follow it. The draw-memory bounds and the CMDL limit are budgets of the PC,
+not of the PS1 or of a retail model. 7200 is the most triangles at which
+every mesh can be built: a frame is at most 65535 bytes, and at three records
+per triangle (the worst case of the command list) 7278 triangles fit, so 7200
+always fits; CMDL 4 MiB holds the 47 raw frames of such a model. A custom
+model does not take draw memory from the track: the game adds what it may
+draw on top (see "What the game does"). Eight drivers of 7000 triangles each
+in one race, on retail tracks and on a large custom track, were measured
+without a frame running out of draw memory and without a dropped instance.
+
+- `rldpack make-char` never reduces a model at or below the limit. Above it,
+  `--reduce auto` (rldpack's default) reduces it to at most
+  `RLDMK_REDUCE_TARGET` triangles; `--reduce off` refuses it (`model-tris`,
+  with its triangles and draw bytes and the limit). With `--machine` it
+  reports the model against the limit before anything is reduced:
+  `@char budget <triangles> <limit> <draw bytes> <limit in bytes>`.
+- `rldpack make-char` reads a PLY of at most 1000000 vertices and faces
+  each (`RLDMK_PLY_MAX`, `ply-big`): a guard of the tool, not a format
+  limit, so that a large export is reduced instead of refused.
+- Reload Studio passes `--reduce off` unless its "Reduce to fit" is ticked
+  (off by default). A model over the limit shows its triangles, the limit
+  and a button "Reduce to fit", which ticks the box and checks again.
+- A game from before these bounds knows 22560 bytes of draw memory and a
+  CMDL of 256 KiB: it refuses a larger model as MODEL LIMIT, and a CMDL
+  above 256 KiB as DAMAGED.
 
 ## 4. Model rules (`RldChar_CheckModel`)
 
@@ -730,7 +874,7 @@ Verdicts: BAD MODEL, MODEL LIMIT, and DAMAGED for model-size only.
 
 | Stage | Rule | What must hold | Verdict | Scope |
 |---|---|---|---|---|
-| before | model-size | CMDL <= 256 KiB; the envelope refuses a larger one first | DAMAGED | once |
+| before | model-size | CMDL <= 4 MiB; the envelope refuses a larger one first | DAMAGED | once |
 | 1 | model-bounds | see below; a finding ends the check | BAD MODEL | once |
 | 1 | model-map | the pointer map is exact, see below | BAD MODEL | per entry and field |
 | 1 | model-head | Model.id -1; name 1..12 characters, NUL, 0 up to byte 15; numHeaders 1; headers not NULL (else the check ends) | BAD MODEL | once |
@@ -755,7 +899,7 @@ Verdicts: BAD MODEL, MODEL LIMIT, and DAMAGED for model-size only.
 | 3 | model-frame-layout | vertexOffset == 0x1C | BAD MODEL | per frame |
 | 3 | model-verts | vertexOffset < 0x80000000 and vertexOffset + 3 x R <= frameSize | BAD MODEL | per frame |
 | 3 | model-coords | per axis: pos >= -8192 and pos + 255 <= 8191 | BAD MODEL | per frame and axis |
-| 4 | model-draw | 28 x G3 triangles + 40 x GT3 triangles <= 22560 | MODEL LIMIT | once |
+| 4 | model-draw | 28 x G3 triangles + 40 x GT3 triangles <= `RLDCHAR_DRAW_BYTES_MAX` (see Limits) | MODEL LIMIT | once |
 
 model-bounds, in order:
 
@@ -831,7 +975,7 @@ Chunk names:
 | CICN | `.rldchar` | optional (portrait): written by `rldpack make-char --icon`, shown in the game's driver select grid and race |
 | CMSK | `.rldchar` | optional, experimental (own mask): written by `rldpack make-char --mask-model`, drawn in place of the retail mask |
 | CPRM | `.rldchar` | optional known type (values): not written by rldpack, content not interpreted yet |
-| CVOI, CTEX | `.rldchar` | reserved, planned (voices, texture data) |
+| CVOI, CTEX, CWHL | `.rldchar` | reserved, planned (voices, texture data, own wheels) |
 | SIGN | blocked | signature, taken out of the format; skipped in older files |
 | MMAP | blocked | menu map, taken out with 4.1; skipped in older files |
 | THMB | blocked | preview image, dropped |
