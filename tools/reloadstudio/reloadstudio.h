@@ -186,7 +186,8 @@
 //             icon-original ok | failed           <prefix>-original.bmp, the PNG as read
 //             icon-preview  ok | failed           <prefix>-icon.bmp, 43 x 25 as the menu tile
 //                                                 shows it (the CICN chunk stays 44 x 26)
-//             voice         ok | bad | unused | unknown | ignored   per file of the folder
+//             voice         ok | bad | unused | unknown | ignored | cut   per file of the folder
+//             (the page reads @voice below instead)
 //             preview       ok | failed           --preview (failed: warning, build unaffected)
 //             The BMPs are 32 bit BI_RGB, bottom-up, B G R A (A = 0 transparent).
 //   @char     <fact> <value> [<detail>]       for the display, not in the file:
@@ -198,7 +199,8 @@
 //             icon_crop <x> <y> <w> <h>, icon_scaled <w> <h> (the texels the cut
 //             was scaled to: 43 x 25, or 44 x 26 for a picture of exactly that
 //             size), icon_colors, icon_opaque (of 1144),
-//             voices <"n of 18">,
+//             voices <clips> <events filled>: the clips packed as CVOI and how
+//             many of the ten events have one (with --voices),
 //             fit <factor> <length before> <after> <height before> <after>
 //             <kart | model>: the --fit crash factor (4 significant digits,
 //             %.4g), the lengths and heights in game units (1 decimal; below 1
@@ -222,6 +224,18 @@
 //             two-sided),
 //             remeshed <triangles of the source> <of the hulls> <after the
 //             reduction> <open edges before> <after>: only with --remesh on
+//   @voice    <file> <state> <event | -> <ms> <bytes> <rate> <channels> <peak> <preview | ->
+//             with --voices, one per file of the folder, by name: state ok |
+//             bad | unknown | ignored | unused | cut (packed, but cut to the
+//             longest length); event the key it fills (below), - = none; ms the
+//             length of the sound in the file; bytes the size of the file; rate and
+//             channels as in the file; peak in per mille of full scale (ms, rate,
+//             channels and peak 0 for a file that was not read); preview
+//             the WAV of --voice-preview (22050 Hz mono as the game hears it),
+//             - = none
+//   @voiceevent <event> <clips>   with --voices, always all ten, in the order
+//             boost hit spin bigair drop shield passing fire short-yes short-hit
+//             (the events of CVOI, s_rldCharVoiceEvents in include/rldchar.inc)
 //   @msg      as above. ids the page reads itself: char-size (error,
 //             "Size N% is outside lo..hi% for this model: <why>. Choose a size in
 //             that range."). Others of make-char, shown as they come: icon-file,
@@ -229,14 +243,22 @@
 //             voice-folder, voice-other, voice-unknown, voice-double, voice-wav,
 //             voice-vag, voice-stereo, voice-silent, voice-clip,
 //             voice-length-line, voice-length-short, voice-source, voice-same,
-//             voice-template, voice-missing, voice-later (always with --voices),
+//             voice-missing, voice-too-many (error: more than 4 clips for an
+//             event), voice-assign (error: --voice for a file that is no voice
+//             or not in the folder), voice-preview (a --voice-preview file could
+//             not be written), voice-pack (error: the packed CVOI fails
+//             RldChar_CheckVoices - an internal error),
+//             - all of them only with --voices; the page shows every voice-*
+//             under the tab Voices -
 //             preview, model-reduced (info, with every reduction),
 //             model-reduce-fallback (info, the reduction reached its target only
 //             without some of its guards), model-repaired (info),
 //             model-remeshed (info), model-quant-flip (note), and the
 //             ply-*, model-*, name*, usage ... of before
 //   @result   <ok | failed | checked> <output path> <bytes> <sha256>
-//             with --icon the container has a third chunk CICN (612 bytes)
+//             with --icon the container has a third chunk CICN (612 bytes), with
+//             --voices and at least one clip a chunk CVOI (the voices,
+//             include/rldchar.inc; the order of the chunks in docs/CONTAINER_FORMAT.md)
 //   @end      <exit code>
 //
 // info --machine <file.rldchar> (rldpack; the page does not call it yet):
@@ -256,11 +278,33 @@
 //             --remesh off, --reduce auto, --wheels on, --fit crash, the mask of
 //             the template); --remesh on is passed
 //             only with --reduce auto (the page greys the option out otherwise)
-//             [--icon <png> --icon-preview <prefix>] [--voices <dir>]
+//             [--icon <png> --icon-preview <prefix>]
+//             [--voices <dir> [--voice-normalize] [--voice <file>=<event|none> ...]
+//             --voice-preview <prefix>]   (all of them only with a folder; without
+//             one the command is that of a driver without voices. --voice-normalize
+//             while "Normalize volume" is ticked, the default; one --voice per file
+//             given an event of its own; event: boost hit spin bigair drop shield
+//             passing fire short-yes short-hit, none = left out)
 //             [--map-color RRGGBB]   (only when a colour was chosen)
 //             --preview <file> [--out <f>]      check; writes only the preview files
 //   make-char --machine --model ... --out <f>  build: the same switches without
-//             --check, --preview and --icon-preview
+//             --check, --preview, --icon-preview and --voice-preview
+//
+// Automation verbs of the page "Character" (--do, besides those of the shell):
+//   model <ply|none>, name <text>, class <word>, mask aku|uka, mapcolor
+//   template|RRGGBB, size <percent>, icon <png|none>, icon-fit fit|fill|none,
+//   icon-transparent on|off, icon-frame on|off, repair|open-parts|remesh|reduce|
+//   wheels on|off, reduce-to-fit, out <file|none>, check, build, pose
+//   neutral|left|right, turn <degrees>, tab <1..5|name>, extras wheels|animations,
+//   problem <n> (as a click on message n), report <file>, the verbs of the cards
+//   Wheels and Animations (rs_wheels.c, rs_anim.c), and for the tab Voices:
+//   voices <folder|none>          the folder (the check follows)
+//   voice <file>=<event|none>     as choosing the file in the list and its event
+//                                 (the file must be in the list of the last check)
+//   voicenorm on|off              "Normalize volume"
+//   voiceplay <file>              as choosing the file and pressing Play; in
+//                                 automation only logged (preview path, rate,
+//                                 channels, frames), never played
 // The --preview file (little endian): "RLDPV1\0\0", u32 poses = 3 (turn frame 10
 // neutral, frame 0 full steer left, frame 20 full steer right), per pose u32
 // triangles and per triangle 3 corners of s16 x, y, z (game units, +Y up, +Z

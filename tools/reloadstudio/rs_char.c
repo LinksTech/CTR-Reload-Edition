@@ -71,6 +71,18 @@
 // rldpack reads from the game's data; without them the measured frame stands
 // in as lines.
 //
+// Voices (tab 4): a folder of WAV or VAG files, --voices. rldpack names every
+// file of it (@voice: length, size, the event it fills or none) and counts the
+// clips of the ten events (@voiceevent, in the order of s_rldCharVoiceEvents in
+// include/rldchar.inc); the file names pick the event (boost1..boost4 ... fire4,
+// yes, hit). The list shows the files; the choice "Event" below it gives the
+// file chosen an event of its own or none (--voice <file>=<event|none>, kept
+// until the folder changes), "Play" plays the file as the game will hear it
+// (the WAV of --voice-preview, also for a VAG). "Normalize volume" (default on,
+// --voice-normalize) brings every clip to the same peak. Without a folder none
+// of these switches is passed: the command is the one of a driver without
+// voices, and the driver is silent in the game.
+//
 // After a build the headline names the mask and the kart wheels in the file,
 // where a wrong choice cannot be missed, and says to restart the game: it
 // reads its characters folder only when it starts. The options are not
@@ -82,7 +94,8 @@
 //   2 Driver        name, driving style, mask
 //   3 In-game look  icon (framing, transparency, frame, the game's view of it)
 //                   and minimap colour
-//   4 Voices        the folder and what rldpack found in it
+//   4 Voices        the folder, its files and their events, Play, the ten
+//                   events at a glance
 //   5 Extras        the cards Wheels and Animations (rs_wheels.c, rs_anim.c),
 //                   one at a time, locked without --enable-preview-features
 // The head of a tab shows its number in a circle: green done, red problem (an
@@ -98,6 +111,7 @@
 #include "rs_view.h"
 #include "rs_wheels.h"
 #include <commdlg.h>
+#include <mmsystem.h>
 #include <shellapi.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -107,7 +121,8 @@
 #define CHAR_TIMER_CHECK   1
 #define CHAR_CHECK_DELAY   600
 #define CHAR_VAL           1024   // length of a value or path
-#define CHAR_MAX_ARGS      48
+#define CHAR_VOICE_SET_MAX 64     // files with an event of their own (--voice), at most
+#define CHAR_MAX_ARGS      (48 + 2 * CHAR_VOICE_SET_MAX)
 #define CHAR_NAME_MAX      17     // RLDCHAR_NAME_MAX in include/rldchar.inc
 #define CHAR_SIZE_MIN      50     // range of the --size switch
 #define CHAR_SIZE_MAX      200
@@ -140,6 +155,14 @@
 #define CHAR_NOTE_LINES    3      // lines of a note below a field at most (they wrap)
 #define CHAR_REPAIR_FIELDS 10     // numbers of @char repaired
 #define CHAR_REMESH_FIELDS 5      // numbers of @char remeshed
+#define CHAR_VOICE_EVENTS  10     // RLDCHAR_VOICE_EVENTS in include/rldchar.inc
+#define CHAR_VOICE_NONE    CHAR_VOICE_EVENTS   // index of "Unassigned" in g_charVoiceEvents
+#define CHAR_VOICE_PASSING 6      // the event never heard (g_charVoiceEvents)
+#define CHAR_VOICE_PER_EVENT 4    // RLDCHAR_VOICE_PER_EVENT: more is an error of rldpack
+#define CHAR_VOICE_NAME    260    // length of a file name of the voices folder
+#define CHAR_VOICE_CLASS   L"RsCharVoiceEvents"
+#define CHAR_VOICE_CELL_H  22     // a row of the overview of the events
+#define CHAR_VOICE_LIST_MIN_H 96  // the file list, at least: its head and three rows
 
 // Controls
 #define CHAR_ID_MODEL_LABEL    100
@@ -173,6 +196,11 @@
 #define CHAR_ID_VOICES_BROWSE  132
 #define CHAR_ID_VOICES_CLEAR   133
 #define CHAR_ID_VOICES_NOTE    134
+#define CHAR_ID_VOICE_LIST     135   // the files of the folder
+#define CHAR_ID_VOICE_EVENT_LABEL 136
+#define CHAR_ID_VOICE_EVENT    137   // the event of the file chosen
+#define CHAR_ID_VOICE_PLAY     138
+#define CHAR_ID_VOICE_NORMALIZE 139
 #define CHAR_ID_VIEW           140
 #define CHAR_ID_POSE           141
 #define CHAR_ID_VIEW_NOTE      142
@@ -207,6 +235,9 @@
 #define CHAR_ID_BACK           185
 #define CHAR_ID_NEXT           186
 #define CHAR_ID_EXTRAS         187   // 187..188: Wheels | Animations in the tab Extras
+#define CHAR_ID_VOICE_RULE     191   // the line with the file names (tab Voices)
+#define CHAR_ID_VOICE_EVENTS_LABEL 192
+#define CHAR_ID_VOICE_EVENTS   193   // the ten events at a glance
 // The controls of the cards Wheels and Animations (WH_ID_FIRST..WH_ID_LAST in
 // rs_wheels.c, AN_ID_FIRST..AN_ID_LAST in rs_anim.c): the tab Extras shows them.
 #define CHAR_ID_WHEELS_FIRST   300
@@ -273,6 +304,26 @@ static const struct CharFit g_charIconFits[] = {
 #define CHAR_ICON_FIT_DEFAULT 0   // what the page starts with
 #define CHAR_ICON_FIT_RLDPACK 2   // rldpack's default, not passed
 
+struct CharVoiceEvent {
+    const wchar_t *word;    // this is how the value goes to rldpack (--voice <file>=<word>)
+    const wchar_t *text;
+};
+
+// The events of the voices in the order of the CVOI event table
+// (s_rldCharVoiceEvents in include/rldchar.inc): 0..7 the retail voice sets,
+// 8 and 9 the two short sounds; then "none", a file that fills no event.
+// Passing is said by the driver who has just passed the player
+// (game/PlayLevel.c): the player's own driver never says it, and a custom
+// driver is only ever the player's (one-player ARCADE) - its passing clips
+// are packed, but never heard.
+// Fire is also the warp orb and the clock (game/Vehicle/VehPickupItem.c).
+static const struct CharVoiceEvent g_charVoiceEvents[CHAR_VOICE_EVENTS + 1] = {
+    { L"boost", L"Boost" },          { L"hit", L"Hit" },         { L"spin", L"Spin out" },
+    { L"bigair", L"Big air" },       { L"drop", L"Drop" },       { L"shield", L"Shield" },
+    { L"passing", L"Passing - never heard" },      { L"fire", L"Fire" },       { L"short-yes", L"Short: yes" },
+    { L"short-hit", L"Short: hit" }, { L"none", L"Unassigned" },
+};
+
 // Poses of the preview, in the order of the --preview file: anim 0 frame 10
 // (neutral), frame 0 (full steer left) and frame 20 (full steer right) - the
 // game maps a left steer to frame 0 (game/Vehicle/VehFrame.c, VehPhysProc.c).
@@ -291,7 +342,8 @@ static const int g_charPoseView[CHAR_POSES] = { RS_VIEW_POSE_NEUTRAL, RS_VIEW_PO
 #define CHAR_START_TEXT L"Pick a PLY model of driver, steering wheel and kart. rldpack converts and checks it and builds the .rldchar."
 #define CHAR_SIZE_HINT_TEXT L"Visual size only - physics and collision follow the driving style."
 #define CHAR_NAME_RULE_TEXT L"1 to 17 characters: A-Z 0-9 space ! % ' + , - . / : < = > ? _"
-#define CHAR_VOICES_TEXT L"Voices are checked but not packed yet - the driver is silent in the game."
+#define CHAR_VOICES_TEXT L"Optional - without voices the driver is silent in the game."
+#define CHAR_VOICE_RULE_TEXT L"File names: boost1-4 hit1-4 spin1-4 bigair1-4 drop1-4 shield1-4 passing1-4 fire1-4, yes, hit (.wav, .vag)"
 #define CHAR_FIT_WAIT_TEXT L"The model is fitted to Crash size when it is checked."
 #define CHAR_REMESH_NEEDS_TEXT L"Closed hull needs Reduce to fit: the hulls have far more triangles than a driver may draw."
 
@@ -310,6 +362,19 @@ struct CharMsg {
 struct CharImage {
     int w, h;
     unsigned char *px;
+};
+
+// A file of the voices folder, one @voice line.
+struct CharVoice {
+    wchar_t name[CHAR_VOICE_NAME];  // the file name, as --voice takes it
+    wchar_t state[16];              // ok | bad | unknown | ignored | unused | cut
+    int event;                      // index into g_charVoiceEvents, CHAR_VOICE_NONE = none
+    long ms;                        // length of the sound in the file, -1 = not reported
+    long long bytes;                // size of the file, -1 = not reported
+    long rate;
+    int channels;
+    int peak;                       // per mille of full scale, -1 = not reported
+    wchar_t *preview;               // the --voice-preview WAV (Rs_Free), NULL = none
 };
 
 // What the running (or last) rldpack run reported.
@@ -359,7 +424,12 @@ struct CharJobData {
     wchar_t fitBasis[16];           // kart | model: what was matched to Crash's length
     wchar_t triangles[32];          // @char triangles (or faces)
     wchar_t parts[160];             // @char parts: "kart 1, driver 2, steering wheel 3"
-    wchar_t voices[32];             // @char voices: "<n> of 18"
+    int voicesSeen;                 // @char voices <clips> <events filled>
+    int voiceClips, voiceFilled;
+    int voiceEventSeen;             // @voiceevent <event> <clips>, all ten
+    int voiceEvent[CHAR_VOICE_EVENTS];
+    struct CharVoice *voice;        // @voice, one per file of the folder
+    int voiceCount, voiceCap;
     struct CharMsg *msgs;
     int msgCount, msgCap;
     int resultSeen;
@@ -384,6 +454,25 @@ static struct {
     HWND iconLabel, icon, iconBrowse, iconClear, iconCaption[CHAR_IMG_COUNT], iconImage[CHAR_IMG_COUNT];
     HWND iconFitLabel, iconFit, iconCorners, iconFrame;
     HWND voicesLabel, voices, voicesBrowse, voicesClear, voicesNote;
+    HWND voiceList, voiceEventLabel, voiceEvent, voicePlay, voiceNorm, voiceRule, voiceEventsLabel, voiceEvents;
+    // The voices of the last check (taken over from g_charJob when it ends).
+    struct CharVoice *voiceRow;
+    int voiceRowCount;
+    int voiceKnown;                 // the last check reported the voices (@char voices)
+    int voiceClips, voiceFilled;
+    int voiceEventCount[CHAR_VOICE_EVENTS];
+    int voiceSeq;                   // temp number of the --voice-preview files shown, 0 = none
+    wchar_t voiceSel[CHAR_VOICE_NAME];  // the file chosen in the list, "" = none
+    // Files given an event of their own (--voice), for the folder voiceSetDir:
+    // event = what goes to rldpack, named = the event rldpack reported for the
+    // file before (by its name; CHAR_VOICE_NONE for a file it leaves out).
+    struct { wchar_t name[CHAR_VOICE_NAME]; int event, named; } voiceSet[CHAR_VOICE_SET_MAX];
+    int voiceSetCount;
+    wchar_t voiceSetDir[CHAR_VAL];
+    unsigned char *voiceSound;      // the WAV playing (PlaySound, SND_MEMORY), Rs_Free
+    int voiceFilling;               // the list is being filled: its changes are no choice
+    int voiceListW;                 // width of the list, for its columns
+    COLORREF voicesColor;
     HWND view, pose, viewNote;
     HWND outLabel, out, outBrowse, check, build, headline, msgs, raw, rawToggle, show;
     HWND reduceFit;                 // "Reduce to fit" below the options, only over the limit
@@ -452,6 +541,9 @@ static struct CharJobData g_charJob;
 
 static void Char_Layout(HWND page, int w, int h);
 static int Char_Check(HWND page);
+static void Char_VoiceSelShow(void);
+static int Char_VoicesHeard(int *clips, int *events);
+static void Char_VoiceColumns(int width);
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -515,7 +607,7 @@ static void Char_Relayout(HWND page);
 static int Char_IsNote(HWND label)
 {
     return label && (label == g_char.nameNote || label == g_char.sizeFit || label == g_char.sizeNote ||
-                     label == g_char.viewNote || label == g_char.voicesNote);
+                     label == g_char.viewNote || label == g_char.voicesNote || label == g_char.voiceRule);
 }
 
 // Height of a note (or the headline) at this width: its lines, at least one,
@@ -1140,23 +1232,12 @@ static void Char_TempPath(wchar_t *out, int cap, int seq, const wchar_t *kind)
 static const wchar_t *const g_charTempKinds[CHAR_TEMP_KINDS] = { L".rldpv", L"-original.bmp", L"-icon.bmp",
                                                                  L"-retail.bmp" };
 
-static void Char_TempDelete(int seq)
-{
-    wchar_t path[CHAR_VAL];
-    int i;
-    if (seq <= 0)
-        return;
-    for (i = 0; i < CHAR_TEMP_KINDS; i++) {
-        Char_TempPath(path, CHAR_VAL, seq, g_charTempKinds[i]);
-        DeleteFileW(path);
-    }
-}
-
 // 1 if name is exactly one of the page's own temp files,
-// "char-<digits>-<digits><kind>" with a kind of g_charTempKinds; *pid = the
-// first number. Nothing else in the folder is the page's to delete - with
+// "char-<digits>-<digits><kind>" with a kind of g_charTempKinds or
+// "-voice-<digits>.wav" (--voice-preview); *pid = the first number, *seq the
+// second. Nothing else in the folder is the page's to delete - with
 // --settings it is a folder of the user.
-static int Char_TempOwnName(const wchar_t *name, unsigned long *pid)
+static int Char_TempOwnName(const wchar_t *name, unsigned long *pid, int *seq)
 {
     const wchar_t *p = name + 5;
     const wchar_t *digits;
@@ -1175,10 +1256,65 @@ static int Char_TempOwnName(const wchar_t *name, unsigned long *pid)
         p++;
     if (p == digits || p - digits > 10)
         return 0;
+    *seq = (int)wcstol(digits, NULL, 10);
     for (i = 0; i < CHAR_TEMP_KINDS; i++)
         if (wcscmp(p, g_charTempKinds[i]) == 0)
             return 1;
-    return 0;
+    if (wcsncmp(p, L"-voice-", 7) != 0)
+        return 0;
+    p += 7;
+    digits = p;
+    while (*p >= L'0' && *p <= L'9')
+        p++;
+    return p != digits && p - digits <= 10 && wcscmp(p, L".wav") == 0;
+}
+
+// The --voice-preview files of check seq: "<prefix>-voice-<n>.wav".
+static void Char_TempDeleteVoices(int seq)
+{
+    wchar_t pattern[CHAR_VAL];
+    wchar_t dir[CHAR_VAL];
+    wchar_t path[CHAR_VAL];
+    WIN32_FIND_DATAW fd;
+    HANDLE find;
+
+    if (seq <= 0)
+        return;
+    Char_TempPath(pattern, CHAR_VAL, seq, L"-voice-*.wav");
+    Rs_PathDir(dir, CHAR_VAL, pattern);
+    find = FindFirstFileW(pattern, &fd);
+    if (find == INVALID_HANDLE_VALUE)
+        return;
+    do {
+        unsigned long pid = 0;
+        int own = 0;
+        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) && Char_TempOwnName(fd.cFileName, &pid, &own) &&
+            pid == GetCurrentProcessId() && own == seq) {
+            Rs_PathJoin(path, CHAR_VAL, dir, fd.cFileName);
+            DeleteFileW(path);
+        }
+    } while (FindNextFileW(find, &fd));
+    FindClose(find);
+}
+
+// keepVoices = 1: the --voice-preview files stay (the list plays them).
+static void Char_TempDeleteKeep(int seq, int keepVoices)
+{
+    wchar_t path[CHAR_VAL];
+    int i;
+    if (seq <= 0)
+        return;
+    for (i = 0; i < CHAR_TEMP_KINDS; i++) {
+        Char_TempPath(path, CHAR_VAL, seq, g_charTempKinds[i]);
+        DeleteFileW(path);
+    }
+    if (!keepVoices)
+        Char_TempDeleteVoices(seq);
+}
+
+static void Char_TempDelete(int seq)
+{
+    Char_TempDeleteKeep(seq, 0);
 }
 
 // An outdated check is ended; its files are deleted when it has gone.
@@ -1225,11 +1361,12 @@ static void Char_TempSweep(void)
         return;
     do {
         unsigned long pid = 0;
+        int seq = 0;
         HANDLE proc;
         int alive = 0;
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
             continue;
-        if (!Char_TempOwnName(fd.cFileName, &pid))
+        if (!Char_TempOwnName(fd.cFileName, &pid, &seq))
             continue;
         if (pid == 0 || pid == GetCurrentProcessId())
             continue;
@@ -1264,6 +1401,14 @@ static void Char_PendingDone(int id)
 // The pipe from rldpack
 // ---------------------------------------------------------------------------
 
+static void Char_VoicesFree(struct CharVoice *v, int count)
+{
+    int i;
+    for (i = 0; i < count; i++)
+        Rs_Free(v[i].preview);
+    Rs_Free(v);
+}
+
 static void Char_JobReset(void)
 {
     int i;
@@ -1273,6 +1418,7 @@ static void Char_JobReset(void)
         Rs_Free(g_charJob.msgs[i].detail);
     }
     Rs_Free(g_charJob.msgs);
+    Char_VoicesFree(g_charJob.voice, g_charJob.voiceCount);
     memset(&g_charJob, 0, sizeof(g_charJob));
     g_char.rawLen = 0;
     g_char.rawLines = 0;
@@ -1341,6 +1487,56 @@ static void Char_JoinFields(wchar_t **f, int n, wchar_t *out, int cap)
             Char_Append(out, cap, L" ");
         Char_Append(out, cap, Char_Field(f, n, i));
     }
+}
+
+// Index into g_charVoiceEvents of an event word of rldpack ("-" and "none" =
+// CHAR_VOICE_NONE); -1 = not an event.
+static int Char_VoiceEventIndex(const wchar_t *word)
+{
+    int e;
+    if (wcscmp(word, L"-") == 0)
+        return CHAR_VOICE_NONE;
+    for (e = 0; e <= CHAR_VOICE_NONE; e++)
+        if (_wcsicmp(word, g_charVoiceEvents[e].word) == 0)
+            return e;
+    return -1;
+}
+
+// @voice <name> <state> <event|-> <ms> <bytes> <rate> <channels> <peak per mille> <preview|->
+static void Char_VoiceLine(wchar_t **f, int n)
+{
+    struct CharJobData *j = &g_charJob;
+    struct CharVoice *v;
+    const wchar_t *field;
+    int e;
+
+    if (!Char_Field(f, n, 1)[0])
+        return;
+    if (j->voiceCount == j->voiceCap) {
+        int cap = j->voiceCap ? j->voiceCap * 2 : 32;
+        struct CharVoice *grown = Rs_Alloc((size_t)cap * sizeof(*grown));
+        if (j->voiceCount)
+            memcpy(grown, j->voice, (size_t)j->voiceCount * sizeof(*grown));
+        Rs_Free(j->voice);
+        j->voice = grown;
+        j->voiceCap = cap;
+    }
+    v = &j->voice[j->voiceCount++];
+    memset(v, 0, sizeof(*v));
+    Char_Copy(v->name, CHAR_VOICE_NAME, Char_Field(f, n, 1));
+    Char_Copy(v->state, 16, Char_Field(f, n, 2));
+    e = Char_VoiceEventIndex(Char_Field(f, n, 3));
+    v->event = e < 0 ? CHAR_VOICE_NONE : e;
+    field = Char_Field(f, n, 4);
+    v->ms = *field ? wcstol(field, NULL, 10) : -1;
+    field = Char_Field(f, n, 5);
+    v->bytes = *field ? wcstoll(field, NULL, 10) : -1;
+    v->rate = wcstol(Char_Field(f, n, 6), NULL, 10);
+    v->channels = _wtoi(Char_Field(f, n, 7));
+    field = Char_Field(f, n, 8);
+    v->peak = *field ? _wtoi(field) : -1;
+    field = Char_Field(f, n, 9);
+    v->preview = (*field && wcscmp(field, L"-") != 0) ? Rs_Dup(field) : NULL;
 }
 
 // One line of the current run. Human lines and unknown kinds stay only in
@@ -1428,9 +1624,11 @@ static void Char_ParseLine(wchar_t *line)
             Char_Copy(j->triangles, 32, Char_Field(f, n, 2));
         else if (wcscmp(key, L"parts") == 0)
             Char_Copy(j->parts, 160, Char_Field(f, n, 3));
-        else if (wcscmp(key, L"voices") == 0)
-            Char_Copy(j->voices, 32, Char_Field(f, n, 2));
-        else if (wcscmp(key, L"budget") == 0 && n >= 6) {
+        else if (wcscmp(key, L"voices") == 0) {
+            j->voicesSeen = 1;
+            j->voiceClips = _wtoi(Char_Field(f, n, 2));
+            j->voiceFilled = _wtoi(Char_Field(f, n, 3));
+        } else if (wcscmp(key, L"budget") == 0 && n >= 6) {
             // <triangles> <limit> <draw bytes> <limit>, before any reduction
             int i;
             for (i = 0; i < 4; i++)
@@ -1479,6 +1677,14 @@ static void Char_ParseLine(wchar_t *line)
             Char_Copy(j->fitHeight[1], 16, Char_Field(f, n, 6));
             Char_Copy(j->fitBasis, 16, Char_Field(f, n, 7));
         }
+    } else if (wcscmp(kind, L"voice") == 0) {
+        Char_VoiceLine(f, n);
+    } else if (wcscmp(kind, L"voiceevent") == 0) {
+        int e = Char_VoiceEventIndex(Char_Field(f, n, 1));
+        if (e >= 0 && e < CHAR_VOICE_EVENTS) {
+            j->voiceEventSeen = 1;
+            j->voiceEvent[e] = _wtoi(Char_Field(f, n, 2));
+        }
     } else if (wcscmp(kind, L"msg") == 0) {
         const wchar_t *text = Char_Field(f, n, 3);
         const wchar_t *detail = Char_Field(f, n, 4);
@@ -1525,7 +1731,8 @@ static int Char_TabOfId(int id, int *card)
         return CHAR_TAB_DRIVER;
     if ((id >= CHAR_ID_ICON_LABEL && id <= CHAR_ID_ICON_IMAGE + 1) || (id >= CHAR_ID_MAPCOLOR_LABEL && id <= CHAR_ID_ICON_FRAME))
         return CHAR_TAB_LOOK;
-    if (id >= CHAR_ID_VOICES_LABEL && id <= CHAR_ID_VOICES_NOTE)
+    if ((id >= CHAR_ID_VOICES_LABEL && id <= CHAR_ID_VOICE_NORMALIZE) ||
+        (id >= CHAR_ID_VOICE_RULE && id <= CHAR_ID_VOICE_EVENTS))
         return CHAR_TAB_VOICES;
     if (id >= CHAR_ID_EXTRAS && id < CHAR_ID_EXTRAS + CHAR_EXTRAS_COUNT)
         return CHAR_TAB_EXTRAS;
@@ -1624,8 +1831,17 @@ static void Char_TabsUpdate(void)
             step = name[0] ? CHAR_STEP_DONE : CHAR_STEP_TODO;
         else if (t == CHAR_TAB_LOOK)
             step = (icon[0] || g_char.mapColorSet) ? CHAR_STEP_DONE : CHAR_STEP_OPTIONAL;
-        else if (t == CHAR_TAB_VOICES)
-            step = voices[0] ? CHAR_STEP_DONE : CHAR_STEP_OPTIONAL;
+        else if (t == CHAR_TAB_VOICES) {
+            // Done only when the driver says at least one clip; a folder not
+            // read yet is still to do, one without such a clip a warning.
+            int heard, events;
+            if (!voices[0])
+                step = CHAR_STEP_OPTIONAL;
+            else if (!g_char.voiceKnown)
+                step = CHAR_STEP_TODO;
+            else
+                step = Char_VoicesHeard(&heard, &events) > 0 ? CHAR_STEP_DONE : CHAR_STEP_WARNING;
+        }
         else
             step = CHAR_STEP_OPTIONAL;
         if (step != g_char.step[t] || !g_char.stepShown) {
@@ -1911,6 +2127,7 @@ static void Char_UpdateButtons(void)
     EnableWindow(g_char.voicesBrowse, !building);
     EnableWindow(g_char.outBrowse, !building);
     EnableWindow(g_char.show, !building);
+    Char_VoiceSelShow();
     Char_TabsUpdate();
 }
 
@@ -2062,19 +2279,572 @@ static void Char_ApplyFit(void)
     }
 }
 
-// The line below the voices folder: how many places rldpack filled.
-static void Char_ApplyVoices(void)
+// ---------------------------------------------------------------------------
+// Voices (tab 4): the files of the folder as the last check reported them
+// ---------------------------------------------------------------------------
+
+// What a state of @voice means, for the column Event; NULL = ok.
+static const wchar_t *Char_VoiceStateText(const wchar_t *state)
 {
-    wchar_t t[256];
+    if (wcscmp(state, L"ok") == 0)
+        return NULL;
+    if (wcscmp(state, L"cut") == 0)
+        return L"cut";
+    if (wcscmp(state, L"bad") == 0)
+        return L"cannot be read";
+    if (wcscmp(state, L"unknown") == 0)
+        return L"name not known";
+    if (wcscmp(state, L"ignored") == 0)
+        return L"not a voice file";
+    if (wcscmp(state, L"unused") == 0)
+        return L"not used";
+    return state;
+}
+
+// The column Event of a row: the event (or "-"), and what is wrong with the file.
+static void Char_VoiceEventText(const struct CharVoice *v, wchar_t *out, int cap)
+{
+    const wchar_t *state = Char_VoiceStateText(v->state);
+    const wchar_t *event = v->event == CHAR_VOICE_NONE ? L"-" : g_charVoiceEvents[v->event].text;
+    if (state)
+        swprintf(out, cap, L"%ls (%ls)", event, state);
+    else
+        Char_Copy(out, cap, event);
+}
+
+static void Char_VoiceLengthText(const struct CharVoice *v, wchar_t *out, int cap)
+{
+    if (v->ms < 0 || v->rate <= 0)     // not read
+        Char_Copy(out, cap, L"-");
+    else
+        swprintf(out, cap, L"%ld.%02ld s", v->ms / 1000, (v->ms % 1000) / 10);
+}
+
+// Row of the file name (case does not matter, as for rldpack), -1 = not there.
+static int Char_VoiceFind(const wchar_t *name)
+{
+    int i;
+    for (i = 0; i < g_char.voiceRowCount; i++)
+        if (_wcsicmp(g_char.voiceRow[i].name, name) == 0)
+            return i;
+    return -1;
+}
+
+// The row chosen in the list, -1 = none.
+static int Char_VoiceSelected(void)
+{
+    int item = ListView_GetNextItem(g_char.voiceList, -1, LVNI_SELECTED);
+    LVITEMW it;
+    if (item < 0)
+        return -1;
+    memset(&it, 0, sizeof(it));
+    it.mask = LVIF_PARAM;
+    it.iItem = item;
+    if (!ListView_GetItem(g_char.voiceList, &it) || it.lParam < 0 || it.lParam >= g_char.voiceRowCount)
+        return -1;
+    return (int)it.lParam;
+}
+
+// The files given an event of their own (--voice), kept only while they are
+// in the folder of the last check.
+static int Char_VoiceSetFind(const wchar_t *name)
+{
+    int i;
+    for (i = 0; i < g_char.voiceSetCount; i++)
+        if (_wcsicmp(g_char.voiceSet[i].name, name) == 0)
+            return i;
+    return -1;
+}
+
+// The event of row as the page will pass it: its own (--voice), else the one
+// rldpack reported by its name.
+static int Char_VoiceOwnEvent(int row)
+{
+    int i = Char_VoiceSetFind(g_char.voiceRow[row].name);
+    return i >= 0 ? g_char.voiceSet[i].event : g_char.voiceRow[row].event;
+}
+
+// A file rldpack does not take as a voice at all (not a .wav or .vag) gets no
+// event: the choice stays grey - unless it has one of its own, to take it back.
+static int Char_VoiceCanChoose(int row)
+{
+    return wcscmp(g_char.voiceRow[row].state, L"ignored") != 0 || Char_VoiceSetFind(g_char.voiceRow[row].name) >= 0;
+}
+
+// "Event" and "Play" follow the row chosen: greyed out without one, Play also
+// without a preview file of it.
+static void Char_VoiceSelShow(void)
+{
+    int row = Char_VoiceSelected();
+    int building = g_char.jobId && g_char.jobKind == CHAR_JOB_BUILD;
+    if (row >= 0) {
+        Char_Copy(g_char.voiceSel, CHAR_VOICE_NAME, g_char.voiceRow[row].name);
+        SendMessageW(g_char.voiceEvent, CB_SETCURSEL, (WPARAM)Char_VoiceOwnEvent(row), 0);
+    } else {
+        g_char.voiceSel[0] = 0;
+        SendMessageW(g_char.voiceEvent, CB_SETCURSEL, (WPARAM)-1, 0);
+    }
+    EnableWindow(g_char.voiceEvent, row >= 0 && !building && Char_VoiceCanChoose(row));
+    EnableWindow(g_char.voicePlay, row >= 0 && g_char.voiceRow[row].preview != NULL);
+}
+
+static void Char_VoiceSelect(int row)
+{
+    int i, n = ListView_GetItemCount(g_char.voiceList);
+    ListView_SetItemState(g_char.voiceList, -1, 0, LVIS_SELECTED);
+    for (i = 0; i < n; i++) {
+        LVITEMW it;
+        memset(&it, 0, sizeof(it));
+        it.mask = LVIF_PARAM;
+        it.iItem = i;
+        if (ListView_GetItem(g_char.voiceList, &it) && it.lParam == row) {
+            ListView_SetItemState(g_char.voiceList, i, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED);
+            ListView_EnsureVisible(g_char.voiceList, i, FALSE);
+            break;
+        }
+    }
+    Char_VoiceSelShow();
+}
+
+// The list anew from g_char.voiceRow; the file chosen before stays chosen.
+static void Char_VoiceFill(void)
+{
+    wchar_t keep[CHAR_VOICE_NAME];
+    int i, again = -1;
+
+    Char_Copy(keep, CHAR_VOICE_NAME, g_char.voiceSel);
+    g_char.voiceFilling = 1;
+    SendMessageW(g_char.voiceList, WM_SETREDRAW, FALSE, 0);
+    ListView_DeleteAllItems(g_char.voiceList);
+    for (i = 0; i < g_char.voiceRowCount; i++) {
+        const struct CharVoice *v = &g_char.voiceRow[i];
+        wchar_t length[32], size[32], event[96];
+        LVITEMW it;
+        memset(&it, 0, sizeof(it));
+        it.mask = LVIF_TEXT | LVIF_PARAM;
+        it.iItem = i;
+        it.pszText = (LPWSTR)v->name;
+        it.lParam = i;
+        ListView_InsertItem(g_char.voiceList, &it);
+        Char_VoiceLengthText(v, length, 32);
+        if (v->bytes < 0)
+            Char_Copy(size, 32, L"-");
+        else
+            Char_SizeText(size, 32, v->bytes);
+        Char_VoiceEventText(v, event, 96);
+        ListView_SetItemText(g_char.voiceList, i, 1, length);
+        ListView_SetItemText(g_char.voiceList, i, 2, size);
+        ListView_SetItemText(g_char.voiceList, i, 3, event);
+        if (keep[0] && _wcsicmp(keep, v->name) == 0)
+            again = i;
+    }
+    if (g_char.voiceListW > 0)
+        Char_VoiceColumns(g_char.voiceListW);
+    SendMessageW(g_char.voiceList, WM_SETREDRAW, TRUE, 0);
+    InvalidateRect(g_char.voiceList, NULL, TRUE);
+    g_char.voiceFilling = 0;
+    if (again >= 0)
+        Char_VoiceSelect(again);
+    else
+        Char_VoiceSelShow();
+}
+
+// The overview of the ten events: its text (the controls list and the report
+// read it) and its picture.
+static void Char_VoiceEventsShow(void)
+{
+    wchar_t t[512];
+    int e;
+    t[0] = 0;
+    for (e = 0; e < CHAR_VOICE_EVENTS; e++) {
+        wchar_t one[48];
+        int n = g_char.voiceKnown ? g_char.voiceEventCount[e] : 0;
+        if (n > CHAR_VOICE_PER_EVENT)
+            swprintf(one, 48, L"%ls%ls %d too many", e ? L", " : L"", g_charVoiceEvents[e].text, n);
+        else if (n > 0)
+            swprintf(one, 48, L"%ls%ls %d", e ? L", " : L"", g_charVoiceEvents[e].text, n);
+        else
+            swprintf(one, 48, L"%ls%ls silent", e ? L", " : L"", g_charVoiceEvents[e].text);
+        Char_Append(t, 512, one);
+    }
+    SetWindowTextW(g_char.voiceEvents, t);
+    InvalidateRect(g_char.voiceEvents, NULL, FALSE);
+}
+
+// The ten events in two rows of five: a green circle with the number of
+// clips, or a grey ring and a grey name for an event that stays silent.
+static void Char_VoiceEventsPaint(HWND hwnd)
+{
+    PAINTSTRUCT ps;
+    HDC dc = BeginPaint(hwnd, &ps);
+    RECT rc, cell, r;
+    HBRUSH br;
+    HGDIOBJ oldFont;
+    int e, c, rowH, d = Rs_Px(16), left[6], need = 0;
+
+    GetClientRect(hwnd, &rc);
+    br = CreateSolidBrush(RS_COL_CARD);
+    FillRect(dc, &rc, br);
+    DeleteObject(br);
+    rowH = rc.bottom / 2;
+    SetBkMode(dc, TRANSPARENT);
+    oldFont = SelectObject(dc, Rs_Font(RS_FONT_SMALL));
+    // Each column as wide as its longer name needs, the rest shared out;
+    // equal columns (names cut with "...") where even that does not fit.
+    for (c = 0; c < 5; c++) {
+        SIZE a, b;
+        GetTextExtentPoint32W(dc, g_charVoiceEvents[c].text, (int)wcslen(g_charVoiceEvents[c].text), &a);
+        GetTextExtentPoint32W(dc, g_charVoiceEvents[c + 5].text, (int)wcslen(g_charVoiceEvents[c + 5].text), &b);
+        left[c + 1] = d + Rs_Px(6 + 10) + (a.cx > b.cx ? a.cx : b.cx);
+        need += left[c + 1];
+    }
+    left[0] = 0;
+    for (c = 0; c < 5; c++)
+        left[c + 1] = left[c] + (need <= rc.right ? left[c + 1] + (rc.right - need) / 5 : rc.right / 5);
+    for (e = 0; e < CHAR_VOICE_EVENTS; e++) {
+        int n = g_char.voiceKnown ? g_char.voiceEventCount[e] : 0;
+        // Green: said in the game; red: more clips than an event takes (the
+        // build stops); grey: silent, or Passing, never heard.
+        COLORREF fill = n > CHAR_VOICE_PER_EVENT ? RS_COL_ERROR
+                        : (n > 0 && e != CHAR_VOICE_PASSING) ? RS_COL_OK
+                                                             : RS_COL_CARD;
+        COLORREF ring = fill == RS_COL_CARD ? RS_COL_MUTED : fill;
+        HPEN pen = CreatePen(PS_SOLID, Rs_Px(1) > 1 ? Rs_Px(1) : 1, ring);
+        HGDIOBJ oldBr, oldPen;
+        int cx, cy;
+        SetRect(&cell, left[e % 5], (e / 5) * rowH, left[e % 5 + 1], (e / 5) * rowH + rowH);
+        cx = cell.left;
+        cy = (cell.top + cell.bottom - d) / 2;
+        br = CreateSolidBrush(fill);
+        oldBr = SelectObject(dc, br);
+        oldPen = SelectObject(dc, pen);
+        Ellipse(dc, cx, cy, cx + d + 1, cy + d + 1);
+        SelectObject(dc, oldBr);
+        SelectObject(dc, oldPen);
+        DeleteObject(br);
+        DeleteObject(pen);
+        if (n > 0) {
+            wchar_t num[8];
+            swprintf(num, 8, L"%d", n);
+            SetTextColor(dc, fill == RS_COL_CARD ? RS_COL_MUTED : RS_COL_CARD);
+            SetRect(&r, cx, cy, cx + d + 1, cy + d + 1);
+            DrawTextW(dc, num, -1, &r, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        }
+        SetTextColor(dc, fill == RS_COL_CARD ? RS_COL_MUTED : fill == RS_COL_ERROR ? RS_COL_ERROR : RS_COL_TEXT);
+        SetRect(&r, cx + d + Rs_Px(6), cell.top, cell.right - Rs_Px(2), cell.bottom);
+        DrawTextW(dc, g_charVoiceEvents[e].text, -1, &r,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+    }
+    SelectObject(dc, oldFont);
+    EndPaint(hwnd, &ps);
+}
+
+static LRESULT CALLBACK Char_VoiceEventsProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_PAINT) {
+        Char_VoiceEventsPaint(hwnd);
+        return 0;
+    }
+    if (msg == WM_ERASEBKGND)
+        return 1;
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+// The clips of the last check the driver says in the game (Passing is never
+// heard) and the events they fill. Returns the clips.
+static int Char_VoicesHeard(int *clips, int *events)
+{
+    int e;
+    *clips = 0;
+    *events = 0;
+    if (!g_char.voiceKnown)
+        return 0;
+    for (e = 0; e < CHAR_VOICE_EVENTS; e++) {
+        if (e == CHAR_VOICE_PASSING || g_char.voiceEventCount[e] <= 0)
+            continue;
+        *clips += g_char.voiceEventCount[e];
+        (*events)++;
+    }
+    return *clips;
+}
+
+// The line below the folder: what the last check found in it.
+static void Char_VoiceNote(void)
+{
     wchar_t voices[CHAR_VAL];
+    wchar_t t[256];
+    COLORREF color = RS_COL_MUTED;
+    int heard, events;
 
     Char_FieldPath(g_char.voices, voices, CHAR_VAL);
-    if (voices[0] && g_charJob.voices[0])
-        swprintf(t, 256, L"%ls voice places filled - checked but not packed yet, the driver is silent in the game.",
-                 g_charJob.voices);
-    else
+    if (!voices[0]) {
         Char_Copy(t, 256, CHAR_VOICES_TEXT);
-    Char_SetLabel(g_char.voicesNote, t, RS_COL_MUTED, NULL);
+    } else if (!g_char.modelRead && !g_char.voiceKnown) {
+        Char_Copy(t, 256, L"Choose a PLY model on the tab Model: its check reads the voice files.");
+    } else if (!g_char.voiceKnown) {
+        Char_Copy(t, 256, L"The voice folder was not read - see the messages.");
+        color = RS_COL_WARNING;
+    } else if (g_char.tabErrors[CHAR_TAB_VOICES] > 0) {
+        Char_Copy(t, 256, L"The voices cannot be packed - see the messages in red.");
+        color = RS_COL_ERROR;
+    } else if (Char_VoicesHeard(&heard, &events) == 0) {
+        Char_Copy(t, 256, L"No clip the driver says in the game - it stays silent. See the messages.");
+        color = RS_COL_WARNING;
+    } else {
+        swprintf(t, 256, L"%d clip%ls for %d of %d events the driver says in the game; grey ones stay silent.",
+                 heard, heard == 1 ? L"" : L"s", events, CHAR_VOICE_EVENTS - 1);
+    }
+    Char_SetLabel(g_char.voicesNote, t, color, &g_char.voicesColor);
+}
+
+// No voices to show (no folder, no model): the list empties, the preview
+// files of the last check go.
+static void Char_VoicesClear(void)
+{
+    Char_VoicesFree(g_char.voiceRow, g_char.voiceRowCount);
+    g_char.voiceRow = NULL;
+    g_char.voiceRowCount = 0;
+    g_char.voiceKnown = 0;
+    g_char.voiceClips = g_char.voiceFilled = 0;
+    memset(g_char.voiceEventCount, 0, sizeof(g_char.voiceEventCount));
+    Char_TempDeleteVoices(g_char.voiceSeq);
+    g_char.voiceSeq = 0;
+    Char_VoiceFill();
+    Char_VoiceEventsShow();
+    Char_VoiceNote();
+}
+
+// The end of a check: its voices into the tab. seq: its temp number - its
+// preview files stay while the list shows them.
+static void Char_ApplyVoices(int seq)
+{
+    struct CharJobData *j = &g_charJob;
+    int i;
+
+    Char_VoicesFree(g_char.voiceRow, g_char.voiceRowCount);
+    g_char.voiceRow = j->voice;
+    g_char.voiceRowCount = j->voiceCount;
+    j->voice = NULL;
+    j->voiceCount = j->voiceCap = 0;
+    g_char.voiceKnown = j->voicesSeen;
+    g_char.voiceClips = j->voiceClips;
+    g_char.voiceFilled = j->voiceFilled;
+    if (j->voiceEventSeen)
+        memcpy(g_char.voiceEventCount, j->voiceEvent, sizeof(g_char.voiceEventCount));
+    else
+        memset(g_char.voiceEventCount, 0, sizeof(g_char.voiceEventCount));
+    if (g_char.voiceSeq != seq)
+        Char_TempDeleteVoices(g_char.voiceSeq);
+    g_char.voiceSeq = seq;
+    // A file that has gone from the folder keeps no event of its own.
+    if (j->voicesSeen) {
+        for (i = g_char.voiceSetCount - 1; i >= 0; i--) {
+            if (Char_VoiceFind(g_char.voiceSet[i].name) < 0) {
+                memmove(&g_char.voiceSet[i], &g_char.voiceSet[i + 1],
+                        sizeof(g_char.voiceSet[0]) * (size_t)(g_char.voiceSetCount - i - 1));
+                g_char.voiceSetCount--;
+            }
+        }
+    }
+    Char_VoiceFill();
+    Char_VoiceEventsShow();
+    Char_VoiceNote();
+}
+
+// Gives the file of row its own event e (CHAR_VOICE_NONE: none), passed as
+// --voice <file>=<event> from the next check on. Back to the event of its name
+// (for a file rldpack leaves out: back to none) the --voice line goes away.
+// Returns 1 = changed, 0 = no change (the event it has), -1 = not possible
+// (no room for another, a file that is no voice).
+static int Char_VoiceAssign(int row, int e)
+{
+    struct CharVoice *v;
+    wchar_t event[96];
+    int i, item;
+
+    if (row < 0 || row >= g_char.voiceRowCount || e < 0 || e > CHAR_VOICE_NONE)
+        return -1;
+    if (e == Char_VoiceOwnEvent(row))
+        return 0;
+    if (!Char_VoiceCanChoose(row) || (wcscmp(g_char.voiceRow[row].state, L"ignored") == 0 && e != CHAR_VOICE_NONE))
+        return -1;
+    v = &g_char.voiceRow[row];
+    i = Char_VoiceSetFind(v->name);
+    if (i < 0) {
+        if (g_char.voiceSetCount >= CHAR_VOICE_SET_MAX)
+            return -1;
+        i = g_char.voiceSetCount++;
+        Char_Copy(g_char.voiceSet[i].name, CHAR_VOICE_NAME, v->name);
+        g_char.voiceSet[i].named = v->event;
+    }
+    if (e == g_char.voiceSet[i].named) {
+        memmove(&g_char.voiceSet[i], &g_char.voiceSet[i + 1],
+                sizeof(g_char.voiceSet[0]) * (size_t)(g_char.voiceSetCount - i - 1));
+        g_char.voiceSetCount--;
+    } else {
+        g_char.voiceSet[i].event = e;
+    }
+    // The list says it at once; the check that follows reports the file anew.
+    v->event = e;
+    Char_VoiceEventText(v, event, 96);
+    for (item = ListView_GetItemCount(g_char.voiceList) - 1; item >= 0; item--) {
+        LVITEMW it;
+        memset(&it, 0, sizeof(it));
+        it.mask = LVIF_PARAM;
+        it.iItem = item;
+        if (ListView_GetItem(g_char.voiceList, &it) && it.lParam == row)
+            ListView_SetItemText(g_char.voiceList, item, 3, event);
+    }
+    return 1;
+}
+
+// Play: PlaySoundW of winmm, loaded only here (LoadLibrary) - the exe needs no
+// further library for it.
+typedef BOOL (WINAPI *CharPlaySound)(LPCWSTR, HMODULE, DWORD);
+
+static CharPlaySound Char_PlaySoundFn(void)
+{
+    static int tried;
+    static CharPlaySound play;
+    if (!tried) {
+        HMODULE winmm = LoadLibraryExW(L"winmm.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        tried = 1;
+        if (winmm)
+            play = (CharPlaySound)GetProcAddress(winmm, "PlaySoundW");
+    }
+    return play;
+}
+
+// Stops what Play plays and frees its bytes.
+static void Char_VoiceStop(void)
+{
+    if (g_char.voiceSound) {
+        CharPlaySound play = Char_PlaySoundFn();
+        if (play)
+            play(NULL, NULL, 0);
+    }
+    Rs_Free(g_char.voiceSound);
+    g_char.voiceSound = NULL;
+}
+
+// Play did not work: the line below the folder says why (until the next check),
+// the automation log too.
+static void Char_VoicePlayFailed(const struct CharVoice *v, const wchar_t *why)
+{
+    wchar_t t[CHAR_VOICE_NAME + 128];
+    swprintf(t, CHAR_VOICE_NAME + 128, L"Cannot play %ls - %ls.", v->name, why);
+    Char_SetLabel(g_char.voicesNote, t, RS_COL_WARNING, &g_char.voicesColor);
+    if (Rs_Automating())
+        Rs_AutoLog(L"  voiceplay: %ls", t);
+}
+
+// Plays the preview WAV of row: the file as the game will hear it (22050 Hz
+// mono, normalized or not, cut to the longest length). It is read into memory,
+// so the check may delete it meanwhile. In automation it is only read and
+// described in the log, not played. 1 = played (or described).
+static int Char_VoicePlay(int row)
+{
+    const struct CharVoice *v;
+    FILE *f;
+    long size;
+    unsigned char *bytes;
+    unsigned long rate = 0, data = 0, at;
+    unsigned channels = 0, bits = 0;
+    CharPlaySound play;
+
+    if (row < 0 || row >= g_char.voiceRowCount)
+        return 0;
+    v = &g_char.voiceRow[row];
+    if (!v->preview) {
+        Char_VoicePlayFailed(v, L"rldpack could not read it");
+        return 0;
+    }
+    Char_VoiceStop();
+    f = _wfopen(v->preview, L"rb");
+    if (!f) {
+        Char_VoicePlayFailed(v, L"its preview file is gone, check again");
+        return 0;
+    }
+    fseek(f, 0, SEEK_END);
+    size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (size < 12 || size > 16L * 1024L * 1024L) {
+        fclose(f);
+        Char_VoicePlayFailed(v, L"its preview file has a wrong size");
+        return 0;
+    }
+    bytes = Rs_Alloc((size_t)size);
+    if (fread(bytes, 1, (size_t)size, f) != (size_t)size || memcmp(bytes, "RIFF", 4) != 0 ||
+        memcmp(bytes + 8, "WAVE", 4) != 0) {
+        fclose(f);
+        Rs_Free(bytes);
+        Char_VoicePlayFailed(v, L"its preview is not a WAV file");
+        return 0;
+    }
+    fclose(f);
+    // The format and the length of the samples, for the log.
+    for (at = 12; at + 8 <= (unsigned long)size;) {
+        unsigned long len = Char_Le32(bytes + at + 4);
+        if (memcmp(bytes + at, "fmt ", 4) == 0 && len >= 16 && at + 8 + 16 <= (unsigned long)size) {
+            channels = Char_Le16(bytes + at + 10);
+            rate = Char_Le32(bytes + at + 12);
+            bits = Char_Le16(bytes + at + 22);
+        } else if (memcmp(bytes + at, "data", 4) == 0) {
+            data = len;
+        }
+        if (len > (unsigned long)size - at - 8)
+            break;
+        at += 8 + len + (len & 1);
+    }
+    if (Rs_Automating()) {
+        unsigned long frames = (channels && bits >= 8) ? data / (channels * (bits / 8)) : 0;
+        Rs_AutoLog(L"  voiceplay: %ls -> %ls, %ld bytes, %lu Hz, %u channel(s), %u bit, %lu frames (%lu ms) - "
+                   L"not played (automation)",
+                   v->name, v->preview, size, rate, channels, bits, frames, rate ? frames * 1000 / rate : 0);
+        Rs_Free(bytes);
+        return 1;
+    }
+    play = Char_PlaySoundFn();
+    if (!play) {
+        Rs_Free(bytes);
+        Char_VoicePlayFailed(v, L"Windows offers no way to play sounds here (winmm)");
+        return 0;
+    }
+    g_char.voiceSound = bytes;
+    if (!play((LPCWSTR)bytes, NULL, SND_MEMORY | SND_ASYNC | SND_NODEFAULT)) {
+        Rs_Free(g_char.voiceSound);
+        g_char.voiceSound = NULL;
+        Char_VoicePlayFailed(v, L"Windows did not play it (no sound device?)");
+        return 0;
+    }
+    return 1;
+}
+
+// The columns of the list: Event as wide as its longest text needs (the state
+// in it is what a row has to say), the name the rest - at least 120.
+static void Char_VoiceColumns(int width)
+{
+    int w = width - Rs_Metric(g_char.voiceList, SM_CXVSCROLL) - Rs_Px(4);
+    int length = Rs_Px(64), size = Rs_Px(64), event = Char_TextWidth(g_char.voiceList, L"Event") + Rs_Px(16);
+    int name, i;
+    g_char.voiceListW = width;
+    for (i = 0; i < g_char.voiceRowCount; i++) {
+        wchar_t text[96];
+        int tw;
+        Char_VoiceEventText(&g_char.voiceRow[i], text, 96);
+        tw = Char_TextWidth(g_char.voiceList, text) + Rs_Px(16);
+        if (tw > event)
+            event = tw;
+    }
+    name = w - length - size - event;
+    if (name < Rs_Px(120)) {
+        event -= Rs_Px(120) - name;
+        name = Rs_Px(120);
+    }
+    ListView_SetColumnWidth(g_char.voiceList, 0, name);
+    ListView_SetColumnWidth(g_char.voiceList, 1, length);
+    ListView_SetColumnWidth(g_char.voiceList, 2, size);
+    ListView_SetColumnWidth(g_char.voiceList, 3, event);
 }
 
 // "Closed hull (remesh)" works only with "Reduce automatically" (make-char:
@@ -2429,6 +3199,7 @@ static void Char_ShowCheckResult(int exitCode)
     g_char.checked = ok;
     Char_Copy(g_char.checkedPath, CHAR_VAL, j->resultPath);
     Char_CountTabs();
+    Char_VoiceNote();           // it says an error of the voices
     Char_MsgClear();
     errors = Char_AddRunProblems(exitCode, ok);
     errors += Char_CountMsgs(RS_SEV_ERROR);
@@ -2527,9 +3298,11 @@ struct CharArgs {
     wchar_t out[CHAR_VAL];
     wchar_t preview[CHAR_VAL];
     wchar_t iconPrefix[CHAR_VAL];
+    wchar_t voicePrefix[CHAR_VAL];
     wchar_t size[16];
     wchar_t mapColor[8];    // RRGGBB
     wchar_t *name;          // Rs_Free
+    wchar_t *voiceSet[CHAR_VOICE_SET_MAX];   // "<file>=<event>" of --voice, Rs_Free
 };
 
 static void Char_ArgsAdd(struct CharArgs *a, const wchar_t *s)
@@ -2540,8 +3313,13 @@ static void Char_ArgsAdd(struct CharArgs *a, const wchar_t *s)
 
 static void Char_ArgsFree(struct CharArgs *a)
 {
+    int i;
     Rs_Free(a->name);
     a->name = NULL;
+    for (i = 0; i < CHAR_VOICE_SET_MAX; i++) {
+        Rs_Free(a->voiceSet[i]);
+        a->voiceSet[i] = NULL;
+    }
 }
 
 static const wchar_t *Char_ClassWord(void)
@@ -2712,8 +3490,26 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
         }
     }
     if (a->voices[0]) {
+        int i;
         Char_ArgsAdd(a, L"--voices");
         Char_ArgsAdd(a, a->voices);
+        // Only with a folder: without one the command stays that of a driver
+        // without voices.
+        if (Char_IsChecked(g_char.voiceNorm))
+            Char_ArgsAdd(a, L"--voice-normalize");
+        for (i = 0; i < g_char.voiceSetCount; i++) {
+            size_t n = wcslen(g_char.voiceSet[i].name) + 16;
+            a->voiceSet[i] = Rs_Alloc(n * sizeof(wchar_t));
+            swprintf(a->voiceSet[i], n, L"%ls=%ls", g_char.voiceSet[i].name,
+                     g_charVoiceEvents[g_char.voiceSet[i].event].word);
+            Char_ArgsAdd(a, L"--voice");
+            Char_ArgsAdd(a, a->voiceSet[i]);
+        }
+        if (check) {
+            Char_TempPath(a->voicePrefix, CHAR_VAL, seq, L"");
+            Char_ArgsAdd(a, L"--voice-preview");
+            Char_ArgsAdd(a, a->voicePrefix);
+        }
     }
     if (check) {
         Char_TempPath(a->preview, CHAR_VAL, seq, L".rldpv");
@@ -2774,6 +3570,7 @@ static void Char_NoModel(HWND page)
     Char_SetInfo(CHAR_START_TEXT, RS_COL_MUTED);
     Char_Headline(L"Choose a PLY model to start", RS_COL_MUTED);
     Char_ReduceFitShow(page, 0);
+    Char_VoicesClear();
     Char_EmptyText(L"Choose a PLY model. What rldpack finds shows up here.");
     Char_UpdateButtons();
     g_char.checkModel[0] = 0;
@@ -2981,11 +3778,11 @@ static void Char_CheckDone(HWND page, int exitCode, int seq)
     g_char.modelRead = j->plySeen && wcscmp(j->plyState, L"ok") == 0;
     Char_ApplyModelInfo();
     Char_ApplyFit();
-    Char_ApplyVoices();
+    Char_ApplyVoices(seq);
     Char_ApplyQuality();
     Char_ApplyPreview(seq);
     Char_ApplyIcon(seq);
-    Char_TempDelete(seq);
+    Char_TempDeleteKeep(seq, 1);      // the voice previews go with the next check
     Char_ShowCheckResult(exitCode);
     // The cards of the preview features follow the model just checked.
     CharWheels_ModelChecked(page, g_char.checkModel, g_char.sizeNow, g_char.checked);
@@ -3010,13 +3807,19 @@ static void Char_BuildDone(HWND page, int exitCode)
                               : wcsncmp(j->mask, L"uka", 3) == 0 ? g_charMasks[1].name
                                                                  : g_charMasks[g_char.buildMask].name;
         // The minimap colour only when one is in the file: rldpack's word, else what the build passed.
-        wchar_t mapText[24];
+        wchar_t mapText[64];
         mapText[0] = 0;
         if (j->mapColor[0] && wcsncmp(j->mapColor, L"template", 8) != 0)
-            swprintf(mapText, 24, L", map colour %.6ls", j->mapColor);
+            swprintf(mapText, 64, L", map colour %.6ls", j->mapColor);
         else if (!j->mapColor[0] && g_char.buildMapSet)
-            swprintf(mapText, 24, L", map colour %02X%02X%02X", GetRValue(g_char.buildMapColor),
+            swprintf(mapText, 64, L", map colour %02X%02X%02X", GetRValue(g_char.buildMapColor),
                      GetGValue(g_char.buildMapColor), GetBValue(g_char.buildMapColor));
+        // The voices only when a folder was given: how many clips are in the file.
+        if (j->voicesSeen) {
+            wchar_t voiceText[40];
+            swprintf(voiceText, 40, L", %d voice clip%ls", j->voiceClips, j->voiceClips == 1 ? L"" : L"s");
+            Char_Append(mapText, 64, voiceText);
+        }
         Char_Copy(g_char.built, CHAR_VAL, j->resultPath);
         g_char.builtBytes = j->resultBytes;
         Char_Copy(g_char.builtSha, 80, j->resultSha);
@@ -3301,7 +4104,8 @@ static void Char_Enter(HWND page)
 {
     HWND focus = GetFocus();
     if (focus == g_char.modelBrowse || focus == g_char.iconBrowse || focus == g_char.iconClear ||
-        focus == g_char.voicesBrowse || focus == g_char.voicesClear || focus == g_char.outBrowse ||
+        focus == g_char.voicesBrowse || focus == g_char.voicesClear || focus == g_char.voicePlay ||
+        focus == g_char.outBrowse ||
         focus == g_char.check || focus == g_char.build || focus == g_char.rawToggle || focus == g_char.show ||
         focus == g_char.back || focus == g_char.next || (focus && GetDlgCtrlID(focus) >= CHAR_ID_TAB &&
                                                          GetDlgCtrlID(focus) < CHAR_ID_EXTRAS + CHAR_EXTRAS_COUNT)) {
@@ -3477,7 +4281,48 @@ static int Char_WriteReport(const wchar_t *path)
             Char_Put(f, L"icon %ls: (none)", i == CHAR_IMG_ORIGINAL ? L"original" : L"converted");
     }
     Char_PutText(f, L"voices", g_char.voices);
-    Char_PutText(f, L"voices note", g_char.voicesNote);
+    Char_PutLabel(f, L"voices note", g_char.voicesNote, g_char.voicesColor);
+    Char_Put(f, L"voices normalize: %ls (%ls)", Char_IsChecked(g_char.voiceNorm) ? L"on" : L"off",
+             Char_IsChecked(g_char.voiceNorm) ? L"passed as --voice-normalize with a folder" : L"not passed");
+    if (g_char.voiceKnown)
+        Char_Put(f, L"voices (last check): %d clip(s), %d of %d events", g_char.voiceClips, g_char.voiceFilled,
+                 CHAR_VOICE_EVENTS);
+    else
+        Char_Put(f, L"voices (last check): (not reported)");
+    {
+        wchar_t *events = Rs_GetText(g_char.voiceEvents);
+        Char_Put(f, L"voice events: %ls", events);
+        Rs_Free(events);
+    }
+    Char_Put(f, L"voice files: %d", g_char.voiceRowCount);
+    for (i = 0; i < g_char.voiceRowCount; i++) {
+        const struct CharVoice *v = &g_char.voiceRow[i];
+        wchar_t length[32], event[96];
+        Char_VoiceLengthText(v, length, 32);
+        Char_VoiceEventText(v, event, 96);
+        Char_Put(f, L"voice file: %ls | %ls | %ls | %lld bytes | %ld Hz | %d channel(s) | peak %d | %ls | preview %ls",
+                 v->name, v->state, length, v->bytes, v->rate, v->channels, v->peak, event,
+                 v->preview ? L"yes" : L"none");
+    }
+    Char_Put(f, L"voice chosen: %ls", g_char.voiceSel[0] ? g_char.voiceSel : L"(none)");
+    {
+        wchar_t *event = Rs_GetText(g_char.voiceEvent);
+        Char_Put(f, L"voice event choice: %ls [%ls]", event[0] ? event : L"(none)", Char_EnabledWord(g_char.voiceEvent));
+        Rs_Free(event);
+    }
+    Char_Put(f, L"button Play: %ls", Char_EnabledWord(g_char.voicePlay));
+    {
+        wchar_t line[CHAR_VAL];
+        line[0] = 0;
+        for (i = 0; i < g_char.voiceSetCount; i++) {
+            wchar_t one[CHAR_VOICE_NAME + 32];
+            swprintf(one, CHAR_VOICE_NAME + 32, L"%ls%ls=%ls", i ? L" " : L"", g_char.voiceSet[i].name,
+                     g_charVoiceEvents[g_char.voiceSet[i].event].word);
+            Char_Append(line, CHAR_VAL, one);
+        }
+        Char_Put(f, L"voice events chosen (--voice): %ls", line[0] ? line : L"(none)");
+    }
+    Char_PutText(f, L"voice names", g_char.voiceRule);
     Char_PutText(f, L"output", g_char.out);
     if (g_char.kartKnown)
         Char_Put(f, L"kart box: %d %d %d %d %d %d", g_char.kart[0], g_char.kart[1], g_char.kart[2],
@@ -3778,6 +4623,75 @@ static int Char_AutoProblem(HWND page, const wchar_t *arg)
     return RS_AUTO_DONE;
 }
 
+// "voice <file>=<event|none>": as choosing the file in the list and the event
+// below it, then the check at once. The file must be in the list of the last
+// check; the event is a word of g_charVoiceEvents (boost ... short-hit, none).
+static int Char_AutoVoice(HWND page, const wchar_t *arg)
+{
+    wchar_t name[CHAR_VOICE_NAME];
+    const wchar_t *eq = wcsrchr(arg, L'=');
+    int row, e, r;
+
+    if (!eq || eq == arg || (size_t)(eq - arg) >= CHAR_VOICE_NAME) {
+        Rs_AutoLog(L"  voice: say <file>=<event>, the event one of boost, hit, spin, bigair, drop, shield, passing, "
+                   L"fire, short-yes, short-hit or none");
+        return RS_AUTO_FAIL;
+    }
+    memcpy(name, arg, (size_t)(eq - arg) * sizeof(wchar_t));
+    name[eq - arg] = 0;
+    e = Char_VoiceEventIndex(eq + 1);
+    if (e < 0 || wcscmp(eq + 1, L"-") == 0) {
+        Rs_AutoLog(L"  voice: '%ls' is not an event - use boost, hit, spin, bigair, drop, shield, passing, fire, "
+                   L"short-yes, short-hit or none", eq + 1);
+        return RS_AUTO_FAIL;
+    }
+    row = Char_VoiceFind(name);
+    if (row < 0) {
+        Rs_AutoLog(L"  voice: %ls is not in the list (%d file(s) of the last check)", name, g_char.voiceRowCount);
+        return RS_AUTO_FAIL;
+    }
+    Char_VoiceSelect(row);
+    if (!IsWindowEnabled(g_char.voiceEvent)) {
+        Rs_AutoLog(L"  voice: %ls is no voice file - the choice Event is greyed out", g_char.voiceRow[row].name);
+        return RS_AUTO_FAIL;
+    }
+    // As the mouse: the choice, then its notification to the page.
+    SendMessageW(g_char.voiceEvent, CB_SETCURSEL, (WPARAM)e, 0);
+    r = Char_VoiceAssign(row, e);
+    if (r < 0) {
+        Rs_AutoLog(L"  voice: %ls cannot take %ls (a file that is no voice, or more than %d files given an event)",
+                   g_char.voiceRow[row].name, g_charVoiceEvents[e].text, CHAR_VOICE_SET_MAX);
+        Char_VoiceSelShow();
+        return RS_AUTO_FAIL;
+    }
+    if (r == 0) {
+        Rs_AutoLog(L"  voice: %ls is %ls already", g_char.voiceRow[row].name, g_charVoiceEvents[e].text);
+        return RS_AUTO_DONE;
+    }
+    Rs_AutoLog(L"  voice: %ls -> %ls%ls", g_char.voiceRow[row].name, g_charVoiceEvents[e].text,
+               Char_VoiceSetFind(g_char.voiceRow[row].name) >= 0 ? L"" : L" (by its name, no --voice)");
+    r = Char_Check(page);
+    if (r > 0)
+        return RS_AUTO_WAIT;
+    if (r < 0)
+        Rs_AutoLog(L"  voice: %ls", g_char.jobId ? L"checked after the running build" : L"not checked - no model is chosen");
+    return RS_AUTO_DONE;
+}
+
+// "voiceplay <file>": as choosing the file and pressing Play - in automation
+// the preview is only read and described in the log, never played.
+static int Char_AutoVoicePlay(const wchar_t *arg)
+{
+    int row = Char_VoiceFind(arg);
+    if (row < 0) {
+        Rs_AutoLog(L"  voiceplay: %ls is not in the list (%d file(s) of the last check)", arg, g_char.voiceRowCount);
+        return RS_AUTO_FAIL;
+    }
+    Char_VoiceSelect(row);
+    UpdateWindow(GetParent(g_char.voiceList));     // painted before a following "shot"
+    return Char_VoicePlay(row) ? RS_AUTO_DONE : RS_AUTO_FAIL;
+}
+
 static int Char_AutoTurn(const wchar_t *arg)
 {
     wchar_t *end;
@@ -3953,7 +4867,57 @@ static void Char_Create(HWND page)
     g_char.voicesBrowse = Rs_Button(page, CHAR_ID_VOICES_BROWSE, L"Browse...");
     g_char.voicesClear = Rs_Button(page, CHAR_ID_VOICES_CLEAR, L"Clear");
     g_char.voicesNote = Rs_Label(page, CHAR_ID_VOICES_NOTE, CHAR_VOICES_TEXT, RS_FONT_SMALL);
+    g_char.voicesColor = RS_COL_MUTED;
     Rs_SetTextColor(g_char.voicesNote, RS_COL_MUTED);
+    {
+        static const wchar_t *const heads[4] = { L"File", L"Length", L"Size", L"Event" };
+        LVCOLUMNW col;
+        g_char.voiceList = Rs_ListView(page, CHAR_ID_VOICE_LIST, LVS_NOSORTHEADER);
+        ListView_SetExtendedListViewStyleEx(g_char.voiceList, LVS_EX_INFOTIP, LVS_EX_INFOTIP);
+        for (i = 0; i < 4; i++) {
+            memset(&col, 0, sizeof(col));
+            col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT;
+            col.fmt = (i == 1 || i == 2) ? LVCFMT_RIGHT : LVCFMT_LEFT;
+            col.pszText = (LPWSTR)heads[i];
+            col.cx = Rs_Px(80);
+            col.iSubItem = i;
+            ListView_InsertColumn(g_char.voiceList, i, &col);
+        }
+    }
+    g_char.voiceEventLabel = Rs_Label(page, CHAR_ID_VOICE_EVENT_LABEL, L"Event", RS_FONT_BOLD);
+    g_char.voiceEvent = Rs_Combo(page, CHAR_ID_VOICE_EVENT);
+    for (i = 0; i <= CHAR_VOICE_NONE; i++)
+        SendMessageW(g_char.voiceEvent, CB_ADDSTRING, 0, (LPARAM)g_charVoiceEvents[i].text);
+    Rs_SetTip(g_char.voiceEvent, L"The event the file chosen in the list is said at. Its name chooses one by itself; "
+                                 L"this choice goes over the name. Unassigned: the file is not packed.");
+    g_char.voicePlay = Rs_Button(page, CHAR_ID_VOICE_PLAY, L"Play");
+    Rs_SetTip(g_char.voicePlay, L"Plays the file chosen as the game will play it: 22050 Hz mono, cut where it is "
+                                L"too long, normalized when that is ticked. A double click on a file plays it too.");
+    g_char.voiceNorm = Rs_Check(page, CHAR_ID_VOICE_NORMALIZE, L"Normalize volume");
+    Rs_SetTip(g_char.voiceNorm, L"Brings every clip to the same peak (-1 dB), so that no line is much louder or "
+                                L"quieter than the others. Off: the files as recorded.");
+    Char_SetChecked(g_char.voiceNorm, 1);
+    g_char.voiceEventsLabel = Rs_Label(page, CHAR_ID_VOICE_EVENTS_LABEL, L"Events", RS_FONT_BOLD);
+    memset(&wc, 0, sizeof(wc));
+    wc.cbSize = sizeof(wc);
+    wc.hInstance = inst;
+    wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+    wc.lpfnWndProc = Char_VoiceEventsProc;
+    wc.lpszClassName = CHAR_VOICE_CLASS;
+    RegisterClassExW(&wc);
+    g_char.voiceEvents = CreateWindowExW(0, CHAR_VOICE_CLASS, L"", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, page,
+                                         (HMENU)(INT_PTR)CHAR_ID_VOICE_EVENTS, inst, NULL);
+    Rs_SetTip(g_char.voiceEvents, L"The ten events of a race the driver speaks at, with the number of clips for "
+                                  L"each - the game picks one of them as for the original drivers. Grey: no clip, "
+                                  L"the driver stays silent there; red: more than 4, the build stops. Fire: a "
+                                  L"missile, a bomb, the warp orb, the clock or a mask. Passing is said by a driver "
+                                  L"who has just passed the player - a custom driver is always the player, so it is "
+                                  L"never heard.");
+    g_char.voiceRule = Rs_Label(page, CHAR_ID_VOICE_RULE, CHAR_VOICE_RULE_TEXT, RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.voiceRule, RS_COL_MUTED);
+    Rs_SetTip(g_char.voiceRule, L"A file named boost1 to boost4 is said at a boost, hit1 to hit4 when hit, and so on "
+                                L"(up to 4 clips each, case does not matter); yes and hit are the two short sounds. "
+                                L"WAV (8 to 48 kHz) or PS1 VAG; a WAV goes before a VAG of the same name.");
 
     g_char.view = CreateWindowExW(0, RS_VIEW_CLASS, L"No model yet", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, page,
                                   (HMENU)(INT_PTR)CHAR_ID_VIEW, inst, NULL);
@@ -4248,10 +5212,15 @@ static int Char_LayLook(const struct CharLay *k, const RECT *in)
     return y + noteH;
 }
 
-// Tab 4 Voices: the folder and what rldpack found.
+// Tab 4 Voices: the folder, the line of what was found, the list of its files
+// (as tall as the room allows, at least CHAR_VOICE_LIST_MIN_H), below it the
+// event of the file chosen with Play and "Normalize volume", the ten events,
+// the line with the file names. Laid out with in->bottom at in->top it says
+// how much it needs at least.
 static int Char_LayVoices(const struct CharLay *k, const RECT *in)
 {
-    int x = in->left + k->labelW + Rs_Px(8), fieldW = in->right - x, y = in->top, noteH;
+    int x = in->left + k->labelW + Rs_Px(8), fieldW = in->right - x, width = in->right - in->left, y = in->top;
+    int noteH, ruleH, listH, eventsH, comboW, playW, normW, rowH, tail;
 
     Char_PlaceField(g_char.voicesLabel, g_char.voices, in->left, k->labelW, y + Rs_Px(2),
                     fieldW - k->browseW - k->clearW - Rs_Px(16));
@@ -4260,7 +5229,43 @@ static int Char_LayVoices(const struct CharLay *k, const RECT *in)
     y += Rs_Px(36);
     noteH = Char_NoteHeight(g_char.voicesNote, fieldW);
     MoveWindow(g_char.voicesNote, x, y, fieldW, noteH, TRUE);
-    return y + noteH;
+    y += noteH + Rs_Px(8);
+
+    // The row below the list: Event, Play, Normalize volume - the check box on
+    // a row of its own where it does not fit beside them.
+    comboW = Char_ComboTextWidth(g_char.voiceEvent) + Rs_Px(28);
+    playW = Char_TextWidth(g_char.voicePlay, L"Play") + Rs_Px(40);
+    normW = Char_CheckWidth(g_char.voiceNorm);
+    if (comboW > fieldW - playW - Rs_Px(8))
+        comboW = fieldW - playW - Rs_Px(8);
+    rowH = Rs_Px(32);
+    if (x + comboW + Rs_Px(8) + playW + Rs_Px(16) + normW > in->right)
+        rowH += Rs_Px(36);
+    eventsH = Rs_Px(2 * CHAR_VOICE_CELL_H);
+    ruleH = Char_NoteHeight(g_char.voiceRule, width);
+    tail = Rs_Px(8) + rowH + Rs_Px(10) + eventsH + Rs_Px(8) + ruleH;
+
+    listH = in->bottom - tail - y;
+    if (listH < Rs_Px(CHAR_VOICE_LIST_MIN_H))
+        listH = Rs_Px(CHAR_VOICE_LIST_MIN_H);
+    MoveWindow(g_char.voiceList, in->left, y, width, listH, TRUE);
+    Char_VoiceColumns(width);
+    y += listH + Rs_Px(8);
+
+    MoveWindow(g_char.voiceEventLabel, in->left, y + Rs_Px(6), k->labelW, Rs_Px(20), TRUE);
+    MoveWindow(g_char.voiceEvent, x, y + Rs_Px(1), comboW, Rs_Px(300), TRUE);
+    MoveWindow(g_char.voicePlay, x + comboW + Rs_Px(8), y, playW, Rs_Px(30), TRUE);
+    if (rowH > Rs_Px(32))
+        MoveWindow(g_char.voiceNorm, x, y + Rs_Px(42), normW < fieldW ? normW : fieldW, Rs_Px(24), TRUE);
+    else
+        MoveWindow(g_char.voiceNorm, in->right - normW, y + Rs_Px(3), normW, Rs_Px(24), TRUE);
+    y += rowH + Rs_Px(10);
+
+    MoveWindow(g_char.voiceEventsLabel, in->left, y + Rs_Px(1), k->labelW, Rs_Px(20), TRUE);
+    MoveWindow(g_char.voiceEvents, x, y, fieldW, eventsH, TRUE);
+    y += eventsH + Rs_Px(8);
+    MoveWindow(g_char.voiceRule, in->left, y, width, ruleH, TRUE);
+    return y + ruleH;
 }
 
 // Tab 5 Extras: Wheels | Animations in the title line of the card (the card
@@ -4386,7 +5391,7 @@ static void Char_Layout(HWND page, int w, int h)
     int vgap = Rs_Px(12), avail, leftW, least, comboW, contentTop, extrasBottom[CHAR_EXTRAS_COUNT];
     int barH, barTop, upperBottom, need, t, i;
     RECT card, in;
-    HWND column[11];
+    HWND column[13];
 
     Rs_CardClear(page);
     k.gap = Rs_Px(16);
@@ -4407,7 +5412,9 @@ static void Char_Layout(HWND page, int w, int h)
     column[8] = g_char.voicesLabel;
     column[9] = g_char.mapLabel;
     column[10] = g_char.iconFitLabel;
-    for (i = 0; i < 11; i++) {
+    column[11] = g_char.voiceEventLabel;
+    column[12] = g_char.voiceEventsLabel;
+    for (i = 0; i < 13; i++) {
         wchar_t *text = Rs_GetText(column[i]);
         int tw = Char_TextWidth(column[i], text) + Rs_Px(4);
         if (tw > k.labelW)
@@ -4419,6 +5426,7 @@ static void Char_Layout(HWND page, int w, int h)
     i = Char_ComboTextWidth(g_char.mask);
     SendMessageW(g_char.mask, CB_SETDROPPEDWIDTH, (WPARAM)(i + Rs_Px(16)), 0);
     SendMessageW(g_char.iconFit, CB_SETDROPPEDWIDTH, (WPARAM)(Char_ComboTextWidth(g_char.iconFit) + Rs_Px(16)), 0);
+    SendMessageW(g_char.voiceEvent, CB_SETDROPPEDWIDTH, (WPARAM)(Char_ComboTextWidth(g_char.voiceEvent) + Rs_Px(16)), 0);
     if (i > comboW)
         comboW = i;
     comboW += Rs_Px(28);        // the margins and the arrow
@@ -4450,7 +5458,8 @@ static void Char_Layout(HWND page, int w, int h)
 
     // Every tab is laid out (the hidden ones too, so that their notes have
     // their width), and the tallest sets the room above the bar for all of
-    // them - In-game look last: its pictures take the room there is.
+    // them - In-game look and Voices last: their pictures and their list take
+    // the room there is (Voices here with its least height).
     card.left = left;
     card.top = contentTop;
     card.right = left + leftW;
@@ -4475,12 +5484,16 @@ static void Char_Layout(HWND page, int w, int h)
         barTop = need + vgap;
     upperBottom = barTop - vgap;
 
-    // In-game look in the room above the bar; only its smallest pictures may
-    // still push the bar lower.
+    // In-game look and Voices in the room above the bar; only the smallest
+    // pictures may still push the bar lower (the list of Voices never does:
+    // its least height is in need above).
     card.bottom = upperBottom;
     in = Rs_CardInner(&card, 0);
     t = Char_LayLook(&k, &in) + Rs_Px(16);
     if (g_char.tab == CHAR_TAB_LOOK && t > upperBottom)
+        upperBottom = t;
+    t = Char_LayVoices(&k, &in) + Rs_Px(16);
+    if (g_char.tab == CHAR_TAB_VOICES && t > upperBottom)
         upperBottom = t;
     Char_LayExtrasSwitch(&card);
     if (g_char.tab == CHAR_TAB_EXTRAS && extrasBottom[g_char.extrasCard] > upperBottom)
@@ -4557,8 +5570,49 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
         }
         break;
     case CHAR_ID_VOICES:
+        if (code == EN_CHANGE) {
+            // Another folder (or Clear): the events chosen per file were for
+            // the old one. The same folder written another way (a slash at
+            // the end, other capitals, / for \) and a path still being typed
+            // (no folder) keep them.
+            wchar_t dir[CHAR_VAL], full[CHAR_VAL];
+            Char_FieldPath(g_char.voices, dir, CHAR_VAL);
+            if (dir[0] && GetFullPathNameW(dir, CHAR_VAL, full, NULL))
+                Char_CleanPath(dir, CHAR_VAL, full);
+            if ((!dir[0] || Rs_DirExists(dir)) && _wcsicmp(dir, g_char.voiceSetDir) != 0) {
+                g_char.voiceSetCount = 0;
+                Char_Copy(g_char.voiceSetDir, CHAR_VAL, dir);
+            }
+            Char_VoiceNote();
+            Char_Changed(page);
+        }
+        break;
     case CHAR_ID_OUT:
         if (code == EN_CHANGE)
+            Char_Changed(page);
+        break;
+    case CHAR_ID_VOICE_EVENT:
+        // The event of the file chosen, from the next check on.
+        if (code == CBN_SELCHANGE) {
+            LRESULT sel = SendMessageW(g_char.voiceEvent, CB_GETCURSEL, 0, 0);
+            int row = Char_VoiceSelected();
+            if (row >= 0 && sel >= 0 && sel <= CHAR_VOICE_NONE) {
+                int r = Char_VoiceAssign(row, (int)sel);
+                if (r > 0)
+                    Char_Changed(page);
+                else if (r < 0) {
+                    MessageBeep(MB_ICONWARNING);
+                    Char_VoiceSelShow();    // the choice goes back to what is passed
+                }
+            }
+        }
+        break;
+    case CHAR_ID_VOICE_PLAY:
+        if (code == BN_CLICKED)
+            Char_VoicePlay(Char_VoiceSelected());      // a failure says why below the folder
+        break;
+    case CHAR_ID_VOICE_NORMALIZE:
+        if (code == BN_CLICKED)
             Char_Changed(page);
         break;
     case CHAR_ID_CLASS:
@@ -4668,10 +5722,67 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
     return 0;
 }
 
+// The list of the voice files: a choice shows its event, a double click plays
+// it, a tooltip says all rldpack reported about it.
+static LRESULT Char_VoiceNotify(NMHDR *hdr)
+{
+    switch (hdr->code) {
+    case LVN_ITEMCHANGED: {
+        const NMLISTVIEW *lv = (const NMLISTVIEW *)hdr;
+        if (!g_char.voiceFilling && (lv->uChanged & LVIF_STATE) && ((lv->uNewState ^ lv->uOldState) & LVIS_SELECTED))
+            Char_VoiceSelShow();
+        return 0;
+    }
+    case NM_DBLCLK: {
+        const NMITEMACTIVATE *act = (const NMITEMACTIVATE *)hdr;
+        if (act->iItem >= 0)
+            Char_VoicePlay(Char_VoiceSelected());
+        return 0;
+    }
+    case LVN_GETINFOTIPW: {
+        NMLVGETINFOTIPW *tip = (NMLVGETINFOTIPW *)hdr;
+        LVITEMW it;
+        memset(&it, 0, sizeof(it));
+        it.mask = LVIF_PARAM;
+        it.iItem = tip->iItem;
+        if (tip->pszText && tip->cchTextMax > 0 && ListView_GetItem(g_char.voiceList, &it) && it.lParam >= 0 &&
+            it.lParam < g_char.voiceRowCount) {
+            const struct CharVoice *v = &g_char.voiceRow[it.lParam];
+            wchar_t length[32], event[96], peak[32];
+            Char_VoiceLengthText(v, length, 32);
+            Char_VoiceEventText(v, event, 96);
+            if (v->peak >= 0 && v->rate > 0)
+                swprintf(peak, 32, L", peak %d.%d %%", v->peak / 10, v->peak % 10);
+            else
+                peak[0] = 0;
+            swprintf(tip->pszText, (size_t)tip->cchTextMax, L"%ls\n%ls, %ld Hz, %d channel(s)%ls\nEvent: %ls",
+                     v->name, length, v->rate, v->channels, peak, event);
+            tip->pszText[tip->cchTextMax - 1] = 0;
+        }
+        return 0;
+    }
+    case LVN_GETEMPTYMARKUP: {
+        NMLVEMPTYMARKUP *em = (NMLVEMPTYMARKUP *)hdr;
+        wchar_t dir[CHAR_VAL];
+        Char_FieldPath(g_char.voices, dir, CHAR_VAL);
+        em->dwFlags = EMF_CENTERED;
+        Char_Copy(em->szMarkup, L_MAX_URL_LENGTH,
+                  !dir[0]             ? L"Choose a folder with WAV or VAG files."
+                  : g_char.voiceKnown ? L"No files in this folder."
+                                      : L"The files show up with the next check of a model.");
+        return TRUE;
+    }
+    }
+    return 0;
+}
+
 static LRESULT Char_Notify(HWND page, NMHDR *hdr)
 {
     int handled = 0;
-    LRESULT r = CharAnim_Notify(page, hdr, &handled);
+    LRESULT r;
+    if (hdr && hdr->idFrom == CHAR_ID_VOICE_LIST && hdr->hwndFrom == g_char.voiceList)
+        return Char_VoiceNotify(hdr);
+    r = CharAnim_Notify(page, hdr, &handled);
     if (handled)
         return r;
     return CharWheels_Notify(page, hdr, &handled);
@@ -4766,6 +5877,12 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
         Char_Abandon();
         for (i = 0; i < CHAR_PENDING; i++)
             Char_TempDelete(g_char.pending[i].seq);
+        Char_VoiceStop();
+        Char_TempDeleteVoices(g_char.voiceSeq);
+        g_char.voiceSeq = 0;
+        Char_VoicesFree(g_char.voiceRow, g_char.voiceRowCount);
+        g_char.voiceRow = NULL;
+        g_char.voiceRowCount = 0;
         Char_ImagesClear();
         Rs_Free(g_char.msgTab);
         g_char.msgTab = NULL;
@@ -4812,6 +5929,12 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         return Char_AutoText(g_char.icon, verb, arg, 1);
     if (wcscmp(verb, L"voices") == 0)
         return Char_AutoText(g_char.voices, verb, arg, 1);
+    if (wcscmp(verb, L"voice") == 0)
+        return Char_AutoVoice(page, arg);
+    if (wcscmp(verb, L"voicenorm") == 0)
+        return Char_AutoOption(page, g_char.voiceNorm, verb, arg);
+    if (wcscmp(verb, L"voiceplay") == 0)
+        return Char_AutoVoicePlay(arg);
     if (wcscmp(verb, L"out") == 0)
         return Char_AutoText(g_char.out, verb, arg, 1);
     if (wcscmp(verb, L"check") == 0) {

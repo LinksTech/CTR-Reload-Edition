@@ -143,9 +143,13 @@ Adventure, Battle or with two players (the NITRO-PIT time trial takes them).
 - A character built with a minimap colour (4.3) shows its marker on the
   minimap in that colour; without one it has the colour of Fake Crash
   (808080: the marker as drawn). Your own marker still blinks white.
-- For now a custom driver is silent: no voice in the race, and the voice
-  volume slider plays no sample of Fake Crash for it. The game logs who
-  sits where at the start of a race ("[CTR Char] seats: ...").
+- A custom driver without voices is silent: no voice in the race, and the
+  voice volume slider plays no sample of Fake Crash for it. With voices
+  (4.3, tab 4) it says its own clips at the same moments as the original
+  drivers, picked the same way; an event without a clip stays silent -
+  never the voice of Fake Crash. The game logs who sits where at the start
+  of a race ("[CTR Char] seats: ...") and the clips of each file (a line
+  starting with "[CTR Char] voices").
 - The cup podium still shows Fake Crash.
 
 
@@ -352,12 +356,53 @@ Tab 3 In-game look
               colour of Fake Crash.
 
 Tab 4 Voices
-  Voices      Optional. A folder with your voice lines as .wav or .vag:
-              boost1, boost2, hit1, hit2, spin1, spin2, bigair1, bigair2,
-              drop1, drop2, shield1, shield2, passing1, passing2, fire1,
-              fire2, yes, hit. They are checked (format, length, level, and
-              which places are empty), but not packed yet - the driver is
-              silent in the game.
+  Voices      Optional. A folder with your voice clips as .wav (8 to 48 kHz,
+              mono or stereo) or .vag (PS1). Without voices the driver is
+              silent in the race; with them it says your clips at the same
+              moments as the original drivers. The line below the folder
+              says how many clips were found for how many of the ten events.
+              The file names choose the event (the line at the bottom of the
+              tab; case does not matter, a .wav goes before a .vag of the
+              same name): boost1 to boost4 (a fast boost), hit1 to hit4 (hit
+              by a weapon, squashed, a crash), spin1 to spin4 (spinning out),
+              bigair1 to bigair4 (a boost on landing a jump), drop1 to drop4
+              (laying a mine or a potion), shield1 to shield4 (an attack the
+              mask takes), passing1 to passing4 (said by a driver who has
+              just passed the player; a custom driver is always the player,
+              so these are packed but never heard - the page shows "Passing
+              - never heard"), fire1 to
+              fire4 (firing a missile or a bomb, the warp orb, the clock,
+              using a mask), and yes and hit, the two short sounds. Up to 4
+              clips per event; the game picks one of them as it does for the
+              original drivers. An event without a clip stays silent.
+  Files       The files of the folder: name, length, size and event. A file
+              whose name fits no event says "name not known" and is left out;
+              one that is too long is cut (3.5 s for the events, 1 s for yes
+              and hit). Choose a file and its event below the list ("Event"),
+              or "Unassigned" to leave it out - the choice goes over its name
+              and is kept until you choose another folder ("Clear" forgets it
+              too). A file that is no .wav or .vag gets no event. "Play" (or a double
+              click on the file) plays it as the game will: 22050 Hz mono, cut
+              and normalized as it will be packed.
+  Normalize volume
+              On by default: every clip is brought to the same peak, just
+              below full level, so that no line is much louder or quieter
+              than the others. Off: the clips as recorded.
+  Events      The ten events at a glance: a green number is the clips of the
+              event, a grey one stays silent (Passing: never heard), a red
+              one has more than 4 clips.
+  Warnings about the files (too long, clipped, silent, a name that fits no
+  event) and errors (more than 4 clips for an event - this stops the build -
+  or a file that cannot be read) are in the message list of the bar; a
+  click on one opens this tab. The circle of the tab is green only when the
+  driver says at least one clip.
+  The switches of rldpack for this, as Reload Studio passes them (for the
+  command line: "ReloadStudio.exe --rldpack make-char ..."): --voices
+  <folder>; --voice <file>=<event> gives a file its event (boost, hit, spin,
+  bigair, drop, shield, passing, fire, short-yes, short-hit) or leaves it out
+  (none), once per file; --voice-normalize; --voice-preview <prefix> writes
+  every file as the game will hear it, as <prefix>-voice-<n>.wav. Without
+  --voices none of them is passed and the driver is silent.
 
 Tab 5 Extras
   Wheels, Animations
@@ -489,6 +534,9 @@ Reload Studio
     - the picture on the page matches the tile in the driver select, the
     ranking in the race, the results and the cup standings.
 [ ] Character page: a minimap colour - the marker on the minimap has it.
+[ ] Character page: a voices folder - every file is listed with its event,
+    "Play" plays it, a file given another event counts there; in the race
+    the driver says its clips. Without a folder it stays silent.
 [ ] Break the character on purpose: a model without kart, a very large
     model, a broken PNG, a voice file in a wrong format. Reload Studio must
     say what is wrong, never crash.
@@ -535,7 +583,8 @@ Modes and menus
   on top of each other after you scroll it.
 
 Characters
-- A custom driver is silent: voices are checked, but not packed yet.
+- A custom driver without voices is silent; with voices it says nothing at
+  an event it has no clip for.
 - The character's own icon shows only for the first 20 loaded files; high
   score lists and profiles show the portrait of Fake Crash.
 - The cup podium shows Fake Crash.
