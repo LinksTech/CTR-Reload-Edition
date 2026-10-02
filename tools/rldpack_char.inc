@@ -2579,6 +2579,25 @@ static int RldMk_AboveVehicle(const struct RldMkPart *part, const struct RldMkPa
 	return (0.5 * (part->lo[1] + part->hi[1])) > vehicle->hi[1];
 }
 
+// --wheels off: is the middle of `part` over the vehicle seen from above - x
+// and z within its box and an eighth of its size more (as RldMk_UnderDriver)?
+static int RldMk_OverVehicle(const struct RldMkPart *part, const struct RldMkPart *vehicle)
+{
+	int a;
+
+	for (a = 0; a < 3; a += 2)
+	{
+		const double middle = 0.5 * (part->lo[a] + part->hi[a]);
+		const double margin = 0.125 * (vehicle->hi[a] - vehicle->lo[a]);
+
+		if ((middle < (vehicle->lo[a] - margin)) || (middle > (vehicle->hi[a] + margin)))
+		{
+			return 0;
+		}
+	}
+	return 1;
+}
+
 // THE VEHICLE LIES UNDER THE DRIVER: is the middle of the driver - the part
 // with the most triangles besides `vehicle` (ties: the first) - over the
 // vehicle seen from above, x and z each within the vehicle's extent and an
@@ -2749,10 +2768,13 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 	}
 
 	// The size first: a model exported in centimeters has no kart of 1.8 m,
-	// and "no kart" would send the author looking in the wrong place.
+	// and "no kart" would send the author looking in the wrong place. Not
+	// with --wheels off and --fit crash: the whole model was fitted within
+	// Crash, so its size is right whatever its shape - a tall figure without
+	// a vehicle is told so by the kart search below.
 	RldMk_Bounds(b, -1, lo, hi);
 	length = (hi[2] - lo[2]) / RLDMK_UNITS;
-	if ((length < (RLDMK_DRIVER_LENGTH / 5.0)) || (length > (RLDMK_DRIVER_LENGTH * 5.0)))
+	if (((length < (RLDMK_DRIVER_LENGTH / 5.0)) || (length > (RLDMK_DRIVER_LENGTH * 5.0))) && !(b->fitted && opt->noWheels))
 	{
 		const double factor = (length > RLDMK_DRIVER_LENGTH) ? (length / RLDMK_DRIVER_LENGTH) : (RLDMK_DRIVER_LENGTH / ((length > 0.0) ? length : 1.0e-9));
 
@@ -2853,16 +2875,17 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 	b->parts[best].group = RLDMK_GROUP_KART;
 
 	// THE DRIVER: the largest other part - with --wheels off the largest of
-	// the parts above the vehicle (RldMk_AboveVehicle) with 1 % of the
-	// triangles or more (as RldMk_RobustBox): a car's wheels or mirrors, or a
-	// stray triangle, are no driver. The steering wheel: small parts in front of it.
+	// the parts above the vehicle (RldMk_AboveVehicle) and over it seen from
+	// above (RldMk_OverVehicle) with 1 % of the triangles or more: a car's
+	// wheels or mirrors, or a stray piece off to the side, are no driver. The steering wheel: small parts in front of it.
 	// Everything else moves with the driver, except the parts that belong to
 	// the vehicle (next).
 	b->driverPart = -1;
 	for (i = 0; i < b->partCount; i++)
 	{
 		if (((int)i != best) &&
-		    (!opt->noWheels || (RldMk_AboveVehicle(&b->parts[i], &b->parts[best]) && (((u64)b->parts[i].triangles * 100u) >= (u64)b->triangleCount))) &&
+		    (!opt->noWheels || (RldMk_AboveVehicle(&b->parts[i], &b->parts[best]) && RldMk_OverVehicle(&b->parts[i], &b->parts[best]) &&
+		                        (((u64)b->parts[i].triangles * 100u) >= (u64)b->triangleCount))) &&
 		    ((b->driverPart < 0) || (b->parts[i].triangles > b->parts[b->driverPart].triangles)))
 		{
 			b->driverPart = (int)i;
@@ -3062,7 +3085,7 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 	}
 
 	b->posed = !opt->still && (b->driverPart >= 0);
-	if (b->vehicleOnly && (b->partCount > 1u))
+	if (b->vehicleOnly)
 	{
 		RldMk_Say("info", "ply-vehicle-only", NULL,
 		          "Kart wheels hidden and no part above the vehicle: the whole model is the vehicle and stands still in every pose. A driver would be a separate part above it.");
@@ -3184,9 +3207,10 @@ static double RldMk_FitModel(double length, double height, int *capped)
 
 // --wheels off: the factor that brings the whole model, aspect kept, within
 // Crash with his kart - RLDMK_CRASH_LENGTH long, RLDMK_CRASH_WIDTH wide and
-// RLDMK_RETAIL_HEIGHT_MAX tall (the tallest retail driver) - the smallest of
-// the three, not rounded; 0 for a model without extent. *capped: 0 the
-// length decided, 1 the height, 2 the width.
+// RLDMK_CRASH_HEIGHT tall (his own measures, RLDMK_CRASH_BOX: at most as
+// large as Crash, driver with kart) - the smallest of the three, not
+// rounded; 0 for a model without extent. *capped: 0 the length decided, 1
+// the height, 2 the width.
 static double RldMk_FitWhole(double length, double height, double width, int *capped)
 {
 	double f = 0.0;
@@ -3196,9 +3220,9 @@ static double RldMk_FitWhole(double length, double height, double width, int *ca
 	{
 		f = RLDMK_CRASH_LENGTH / length;
 	}
-	if ((height > 0.0) && ((f == 0.0) || ((RLDMK_RETAIL_HEIGHT_MAX / height) < f)))
+	if ((height > 0.0) && ((f == 0.0) || ((RLDMK_CRASH_HEIGHT / height) < f)))
 	{
-		f = RLDMK_RETAIL_HEIGHT_MAX / height;
+		f = RLDMK_CRASH_HEIGHT / height;
 		*capped = 1;
 	}
 	if ((width > 0.0) && ((f == 0.0) || ((RLDMK_CRASH_WIDTH / width) < f)))
@@ -3209,33 +3233,46 @@ static double RldMk_FitWhole(double length, double height, double width, int *ca
 	return f;
 }
 
-// THE MEASURE OF A MODEL WITHOUT KART WHEELS: the box of the pieces (positions
-// joined by triangles, as the parts of step 4) that carry at least 1 % of the
-// triangles each. A stray triangle or a small piece far off - a leftover of
-// the export, a light flare - would otherwise decide the size and the place of
-// the whole model; a part of 1 % and more is modeled on purpose (the smallest
-// parts of the measured vehicles: a mirror 3.4 %, a number plate 1.1 %, a
-// motorbike's handlebar 1.6 %). No such piece (a model of more than 100
-// pieces of equal size): the box of all. 0 = no triangle.
+// THE MEASURE OF A MODEL WITHOUT KART WHEELS. A stray triangle or a small
+// piece far off - a leftover of the export, a light flare - must not decide
+// the size and the place of the whole model. The pieces (positions joined by
+// triangles, as the parts of step 4) are taken by their surface area, the
+// largest first (ties: the first piece), until they hold 90 % of the area:
+// the core. Area, not triangles: a finely modeled spoiler can hold 95 % of
+// the triangles of a model whose kart is a dozen. Each other piece counts
+// only when it lies near the core - within the core's box grown by half its
+// size on every side, as the wheels, mirrors and number plates of the
+// measured vehicles do; one farther off is left out (a piece of 3
+// triangles, 1 % of a car, made it 3 times as small). 0 = no triangle.
 static int RldMk_RobustBox(const struct RldMkBuild *b, double lo[3], double hi[3])
 {
-	u32 *parent = (u32 *)malloc(((size_t)b->positionCount + 1u) * sizeof(u32));
-	u32 *count = (u32 *)calloc((size_t)b->positionCount + 1u, sizeof(u32));
+	const u32 n = b->positionCount;
+	u32 *parent = (u32 *)malloc(((size_t)n + 1u) * sizeof(u32));
+	double *count = (double *)calloc((size_t)n + 1u, sizeof(double));
+	u8 *core = (u8 *)calloc((size_t)n + 1u, 1u);
+	double *box = (double *)malloc(((size_t)n + 1u) * 6u * sizeof(double));
+	u8 *seen = (u8 *)calloc((size_t)n + 1u, 1u);
+	double coreLo[3];
+	double coreHi[3];
+	double total = 0.0;
+	double taken = 0.0;
 	int found = 0;
-	int pass;
 	u32 p;
 	u32 t;
 	int a;
 
-	if ((parent == NULL) || (count == NULL) || (b->triangleCount == 0u))
+	if ((parent == NULL) || (count == NULL) || (core == NULL) || (box == NULL) || (seen == NULL) || (b->triangleCount == 0u))
 	{
 		free(parent);
 		free(count);
+		free(core);
+		free(box);
+		free(seen);
 		RldMk_Bounds(b, -1, lo, hi);
 		return (b->triangleCount != 0u);
 	}
 
-	for (p = 0; p < b->positionCount; p++)
+	for (p = 0; p < n; p++)
 	{
 		parent[p] = p;
 	}
@@ -3248,37 +3285,81 @@ static int RldMk_RobustBox(const struct RldMkBuild *b, double lo[3], double hi[3
 	}
 	for (t = 0; t < b->triangleCount; t++)
 	{
-		count[RldMk_Root(parent, b->vertexPosition[b->triangle[3u * t]])]++;
+		const u32 root = RldMk_Root(parent, b->vertexPosition[b->triangle[3u * t]]);
+		double normal[3];
+		u32 k;
+
+		RldMk_Cross(&b->position[3u * b->vertexPosition[b->triangle[3u * t + 0u]]], &b->position[3u * b->vertexPosition[b->triangle[3u * t + 1u]]],
+		            &b->position[3u * b->vertexPosition[b->triangle[3u * t + 2u]]], normal);
+		count[root] += RldMk_Sqrt(RldMk_Dot(normal, normal));
+		total += RldMk_Sqrt(RldMk_Dot(normal, normal));
+		for (k = 0; k < 3u; k++)
+		{
+			const double *v = &b->position[3u * b->vertexPosition[b->triangle[3u * t + k]]];
+
+			for (a = 0; a < 3; a++)
+			{
+				box[6u * root + (u32)a] = (!seen[root] || (v[a] < box[6u * root + (u32)a])) ? v[a] : box[6u * root + (u32)a];
+				box[6u * root + 3u + (u32)a] = (!seen[root] || (v[a] > box[6u * root + 3u + (u32)a])) ? v[a] : box[6u * root + 3u + (u32)a];
+			}
+			seen[root] = 1;
+		}
 	}
 
-	// pass 0: the pieces of 1 % and more; pass 1 (none of them): every piece
-	for (pass = 0; (pass < 2) && !found; pass++)
+	// the core: the largest pieces until 90 % of the area, at least one
+	while (((taken * 10.0) < (total * 9.0)) || !found)
 	{
-		for (t = 0; t < b->triangleCount; t++)
+		u32 best = RLDMK_NONE;
+
+		for (p = 0; p < n; p++)
 		{
-			const u32 root = RldMk_Root(parent, b->vertexPosition[b->triangle[3u * t]]);
-			u32 k;
-
-			if ((pass == 0) && (((u64)count[root] * 100u) < (u64)b->triangleCount))
+			if (seen[p] && !core[p] && ((best == RLDMK_NONE) || (count[p] > count[best])))
 			{
-				continue;
+				best = p;
 			}
-			for (k = 0; k < 3u; k++)
-			{
-				const double *v = &b->position[3u * b->vertexPosition[b->triangle[3u * t + k]]];
+		}
+		if (best == RLDMK_NONE)
+		{
+			break;
+		}
+		core[best] = 1;
+		taken += count[best];
+		for (a = 0; a < 3; a++)
+		{
+			coreLo[a] = (!found || (box[6u * best + (u32)a] < coreLo[a])) ? box[6u * best + (u32)a] : coreLo[a];
+			coreHi[a] = (!found || (box[6u * best + 3u + (u32)a] > coreHi[a])) ? box[6u * best + 3u + (u32)a] : coreHi[a];
+		}
+		found = 1;
+	}
 
-				for (a = 0; a < 3; a++)
-				{
-					lo[a] = (!found || (v[a] < lo[a])) ? v[a] : lo[a];
-					hi[a] = (!found || (v[a] > hi[a])) ? v[a] : hi[a];
-				}
-				found = 1;
-			}
+	memcpy(lo, coreLo, sizeof(coreLo));
+	memcpy(hi, coreHi, sizeof(coreHi));
+	for (p = 0; found && (p < n); p++)
+	{
+		int near = 1;
+
+		if (!seen[p] || core[p])
+		{
+			continue;
+		}
+		for (a = 0; a < 3; a++)
+		{
+			const double grow = 0.5 * (coreHi[a] - coreLo[a]);
+
+			near = near && (box[6u * p + (u32)a] >= (coreLo[a] - grow)) && (box[6u * p + 3u + (u32)a] <= (coreHi[a] + grow));
+		}
+		for (a = 0; near && (a < 3); a++)
+		{
+			lo[a] = (box[6u * p + (u32)a] < lo[a]) ? box[6u * p + (u32)a] : lo[a];
+			hi[a] = (box[6u * p + 3u + (u32)a] > hi[a]) ? box[6u * p + 3u + (u32)a] : hi[a];
 		}
 	}
 
 	free(parent);
 	free(count);
+	free(core);
+	free(box);
+	free(seen);
 	return found;
 }
 
@@ -3374,8 +3455,7 @@ static int RldMk_StepFit(const struct RldMkPly *ply, const struct RldMkOptions *
 
 	// 1: the whole model at scale 1. Without kart wheels that is all there is:
 	// the model, measured on the repaired mesh without stray pieces
-	// (RldMk_RobustBox), within Crash's length, width and the tallest
-	// driver's height.
+	// (RldMk_RobustBox), within Crash's own length, width and height.
 	at.scale = 1.0;
 	if (!RldMk_FitProbe(ply, &at, &probe, opt->noWheels ? 2 : 0))
 	{
@@ -5150,9 +5230,14 @@ static int RldMk_StepMeasure(struct RldMkBuild *b, const struct RldMkOptions *op
 		const int narrow = !opt->noWheels && ((e[1] < 0.8) || (e[1] > 1.0));
 		const int low = (e[2] < 0.6) && !b->vehicleOnly;
 
-		if (((e[0] < RLDMK_KART_LENGTH_MIN) || (e[0] > RLDMK_KART_LENGTH_MAX) || narrow || low || (e[2] > 2.7) ||
-		     (e[3] < RLDMK_KART_BOTTOM_MIN) || (e[3] > RLDMK_KART_BOTTOM_MAX)) &&
-		    b->fitted)
+		if (b->fitted && opt->noWheels)
+		{
+			// The whole model was fitted within Crash: its measures are the
+			// fit's own, there is nothing left to compare.
+		}
+		else if (((e[0] < RLDMK_KART_LENGTH_MIN) || (e[0] > RLDMK_KART_LENGTH_MAX) || narrow || low || (e[2] > 2.7) ||
+		          (e[3] < RLDMK_KART_BOTTOM_MIN) || (e[3] > RLDMK_KART_BOTTOM_MAX)) &&
+		         b->fitted)
 		{
 			// The scale is the fit's own: only the shape and the axes are left to check.
 			RldMk_Say("warning", "ply-axes", NULL,
@@ -13876,7 +13961,9 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "                              (%.1f game units; the whole model with\n", RLDMK_CRASH_LENGTH);
 	fprintf(out, "                              --wheels off or when no kart is found), at\n");
 	fprintf(out, "                              most as tall as the tallest driver\n");
-	fprintf(out, "                              (%.1f), the factor rounded to 4 significant\n", RLDMK_RETAIL_HEIGHT_MAX);
+	fprintf(out, "                              (%.1f; with --wheels off within Crash's own\n", RLDMK_RETAIL_HEIGHT_MAX);
+	fprintf(out, "                              %.1f x %.1f x %.1f), the factor rounded to 4\n", RLDMK_CRASH_LENGTH, RLDMK_CRASH_WIDTH, RLDMK_CRASH_HEIGHT);
+	fprintf(out, "                              significant\n");
 	fprintf(out, "                              digits; none: as exported, in meters\n");
 	fprintf(out, "  --wheels on|off             on (default): the game draws its kart wheels at\n");
 	fprintf(out, "                              the points of a retail kart; off: no wheels -\n");
@@ -19997,8 +20084,8 @@ static void RldMk_SelfTestFitSeams(struct RldMkTestMesh *mesh)
 
 // A VEHICLE WITHOUT A DRIVER, --wheels off: a body and four wheels below its
 // top. The whole model is the vehicle and stands still, fitted within Crash
-// (here the length decides), its bottom on the ground; a stray triangle far
-// off (under 1 % of the triangles) changes nothing of that; --size 150 scales
+// (here the length decides), its bottom on the ground; a stray piece far off
+// (3 triangles, 1.9 %) changes nothing of that; --size 150 scales
 // the whole vehicle. A vehicle wider than long: the width decides.
 static void RldMk_SelfTestVehicleOnly(struct RldMkTestMesh *mesh)
 {
@@ -20041,11 +20128,15 @@ static void RldMk_SelfTestVehicleOnly(struct RldMkTestMesh *mesh)
 		}
 		if (run == 1)
 		{
+			// a piece of 3 triangles (1.9 % of the model) 2 units off
 			const u32 a = RldMk_TestVertex(mesh, 2.0, 1.5, 0.0, 30u);
 			const u32 c = RldMk_TestVertex(mesh, 2.1, 1.5, 0.0, 30u);
 			const u32 d = RldMk_TestVertex(mesh, 2.0, 1.6, 0.0, 30u);
+			const u32 e = RldMk_TestVertex(mesh, 2.0, 1.5, 0.1, 30u);
 
 			RldMk_TestFace(mesh, 3u, a, c, d, 0u, 0u);
+			RldMk_TestFace(mesh, 3u, a, d, e, 0u, 0u);
+			RldMk_TestFace(mesh, 3u, a, e, c, 0u, 0u);
 		}
 
 		RldMk_TestOptions(&opt);
@@ -20064,13 +20155,13 @@ static void RldMk_SelfTestVehicleOnly(struct RldMkTestMesh *mesh)
 			factor = b.fitFactor;
 			length[0] = ok ? (hi[2] - lo[2]) : 0.0;
 			RldMk_Test(ok && (b.fitCapped == 0) && (b.fitFactor == RldMk_FitRound(RLDMK_CRASH_LENGTH / b.fitBefore[0])) && (lo[1] > -1.0e-9) && (lo[1] < 1.0e-9) &&
-			               ((hi[2] - lo[2]) < (RLDMK_CRASH_LENGTH + 0.1)) && ((hi[0] - lo[0]) < RLDMK_CRASH_WIDTH) && ((hi[1] - lo[1]) < RLDMK_RETAIL_HEIGHT_MAX),
+			               ((hi[2] - lo[2]) < (RLDMK_CRASH_LENGTH + 0.1)) && ((hi[0] - lo[0]) < RLDMK_CRASH_WIDTH) && ((hi[1] - lo[1]) < (RLDMK_CRASH_HEIGHT + 0.1)),
 			           "--wheels off, a vehicle without a driver: stands still, within Crash, on the ground", "built %d, x%.4g, capped %d, box %.2f..%.2f, said: %s",
 			           ok, b.fitFactor, b.fitCapped, ok ? lo[1] : 0.0, ok ? hi[1] : 0.0, s_rldMkCodes);
 		}
 		else if (run == 1)
 		{
-			RldMk_Test(ok && (b.fitFactor == factor), "--wheels off: a stray triangle far off (under 1 %) does not change the size", "built %d, x%.4g, not x%.4g",
+			RldMk_Test(ok && (b.fitFactor == factor), "--wheels off: a stray piece far off (3 triangles, 1.9 %) does not change the size", "built %d, x%.4g, not x%.4g",
 			           ok, b.fitFactor, factor);
 		}
 		else if (run == 2)
@@ -20089,6 +20180,22 @@ static void RldMk_SelfTestVehicleOnly(struct RldMkTestMesh *mesh)
 		RldMk_FreeBuild(&b);
 		RldMk_FreePly(&ply);
 	}
+
+	// A vehicle of one piece: the same info, not ply-parts.
+	mesh->vertexCount = 0;
+	mesh->faceCount = 0;
+	RldMk_TestBox(mesh, bodyLo, bodyHi, 3u, 0u, 0, -1);
+	RldMk_TestOptions(&opt);
+	opt.fit = 1;
+	opt.noWheels = 1;
+	opt.repair = 1;
+	{
+		const int ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b) && b.vehicleOnly && RldMk_Said("ply-vehicle-only") && !RldMk_Said("ply-parts");
+
+		RldMk_Test(ok, "--wheels off, a vehicle of one piece: ply-vehicle-only, not ply-parts", "built %d, said: %s", ok, s_rldMkCodes);
+	}
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
 }
 
 // PLY-UP-AXIS: the standard model exported with +Z up (Blender's own axes,
