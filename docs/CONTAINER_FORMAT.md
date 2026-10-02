@@ -566,34 +566,97 @@ wheel (`char-poses`, `char-wheel`) read PLY only (`model-ply-only`).
   Anything else stops the reader with the line number (`obj-syntax`,
   `obj-index`, `obj-number`, `obj-face`, `obj-empty`).
 - The color of each corner of an OBJ, as bytes floor(c x 255 + 0.5) like a
-  PLY's float colors (no color space conversion): its vertex color, when the
-  vertex has one - the material's Kd is then not used, Blender writes Kd 0.8
-  for every material; otherwise the material's Kd. The rule goes by vertex: in
-  a file where only some `v` have a color, the others take the Kd rule. Either
-  is multiplied by the material's `map_Kd` texture (PNG, JPEG or TGA, at most
-  4096 pixels a side), sampled at the corner's `vt`: bilinear, repeated, `v` =
-  0 at the bottom of the picture, alpha not used. A texture without Kd counts
-  with Kd 1; neither vertex color nor Kd nor texture gives grey (0x80 per
-  channel; `obj-no-colors` when the whole model is grey). Only the textures of
-  materials that faces use are read. Every missing piece falls back with a
-  warning: an MTL file not found (`mtl-missing`) or not readable (`mtl-bad`),
-  a material it lacks (`mtl-material`), a texture not found, broken or of
-  another format (`tex-missing`, `tex-unreadable`, `tex-unsupported`), a
-  textured corner without `vt` (`tex-no-uv`). Paths of `mtllib` and `map_Kd`
-  are relative to the OBJ and MTL file; an absolute texture path that does not
-  exist is also looked for next to the MTL file (`tex-found-nearby`). The
-  texture and material warnings are said one by one for the first 16, the rest
-  in one more.
+  PLY's float colors (no color space conversion), in this order
+  (`tools/rldpack_obj.inc`):
+  1. its vertex color, when the vertex has one - the material's Kd is then
+     not used (Blender writes Kd 0.8 for every material); the rule goes by
+     vertex: in a file where only some `v` have a color, the others take the
+     material rule;
+  2. otherwise the material: Kd times its `map_Kd` texture, the texture
+     alone without Kd, Kd alone without a texture;
+  3. neither: grey, 0x80 per channel (`obj-no-colors` when the whole model
+     is grey).
+  A material that lights itself (`Ke`) takes the brighter of Kd and Ke per
+  channel, since the game draws without light. The MTL keywords are read in
+  any letter case (`map_kd`, `kd`); a material that is transparent (`d`
+  below 1, `Tr` above 0 or a `map_d`) is drawn opaque (`obj-transparency`).
+- A vertex color on a textured face: the vertex color times the texture.
+  `--vertex-colors auto|modulate|color` (default `auto`) says how:
+  `modulate` as the PS1 draws it, the vertex color x 255/128 and at most 1,
+  so 0x80 shows the texture as it is; `color` the vertex color as it is.
+  `auto` modulates when the model is a PS1 rip: the vertex colors of the
+  corners of faces whose material has a `map_Kd` (found or not; the
+  brightest channel, a corner without a vertex color counts as white) have
+  their median at 0x70..0x90 and at least 5 % of them are exactly 0x7F or
+  0x80 grey; else it is `color`. Modulation needs the texture file: without
+  it the vertex color stays as it is, and a face without a texture is never
+  brightened. When modulation applies, `obj-vertex-modulation` (info) says
+  on how many corners.
+- Vertex colors that are only a fill: when every vertex the faces use has
+  the same color, exactly white or exactly black (what an unpainted color
+  attribute holds), and the materials in use have colors of their own (2
+  or more different Kd, or a texture), the vertex colors are dropped and
+  the materials count (`obj-vertex-colors-uniform`, a warning). Any other
+  color, even one for all vertices, stays. `--colors-from vertex|material`
+  decides instead of this rule (default `auto`).
+- The texture (`map_Kd`): PNG (`include/rldpng.inc`), JPEG, TGA and BMP
+  (`tools/rldpack_image.c`; a BMP needs a header of at least 34 bytes), at
+  most 4096 pixels a side and 64 MiB a file. The options `-o` and `-s`
+  place it (offset + scale x `vt`, u and v; w is not used), `-clamp on`
+  clamps the coordinates into 0..1; a word that starts with `-` but is no
+  option of the format starts the file name (`-face.png`). Sampling is
+  bilinear with `v` = 0 at the bottom of the picture, repeated (u and v
+  modulo 1), but with the edges clamped on a face whose coordinates all lie
+  in 0..1 and with `-clamp on`: there the other side of the picture is
+  never mixed in at the edge. Each texel counts by its alpha: transparent
+  texels add nothing, and a corner on fully transparent texels keeps its
+  color without the texture (`tex-alpha`, info).
+- The texture of a triangle with `vt` at all three corners is fitted over
+  the whole triangle: its three corner colors are the ones whose Gouraud
+  mix comes closest to the texture (least squares over a grid of sample
+  points, about one per texel along the longest side, 4..32). A face of
+  more corners, which the chain splits later, is sampled at its corners'
+  `vt`.
+- Finding the files: `mtllib` and `map_Kd` paths are relative to the OBJ
+  and MTL file. A texture that is not at its path is looked for at a fixed
+  list of other places, never by listing a folder: first in each folder
+  given with `--textures <folder>` (up to 8 times), then in the MTL file's
+  folder and the OBJ file's - each time the last two parts of the path
+  (`textures/a.png` of a project moved to another computer), the file
+  name, the file name in a subfolder `textures`, `tex`, `images` or `maps`,
+  then the same with the other file types `.png`, `.jpg`, `.jpeg`, `.tga`,
+  `.bmp`. The first file found counts (`tex-found-nearby`, info, names
+  it). One texture file is read once however its path is written
+  (`./t.png`, `a/../t.png`, `T.PNG`).
+- Every missing piece falls back with a warning: an MTL file not found
+  (`mtl-missing`) or not readable (`mtl-bad`, also for a Kd line that is
+  not 1 or 3 numbers and a `map_Kd` without a file name), a material it
+  lacks (`mtl-material`), a texture broken or of another format
+  (`tex-unreadable`, `tex-unsupported`), a textured corner without `vt`
+  (`tex-no-uv`), a color value outside 0..1 (`obj-color-range`, clamped).
+  The textures that were not found are said in one `tex-missing` warning:
+  how many of how many, the first three names, how many faces show only
+  the vertex or material color, and where to put the files; its technical
+  line says where the first one was looked for. The other texture and
+  material warnings are said one by one for the first 16, the rest in one
+  more. Only the textures of materials that faces use are read.
 - The chain keeps one color per vertex, so an OBJ becomes one vertex per
   pair of `v` and color, in the order the faces first use it. Welding by
   position joins them again where the colors meet.
 - Limits, as for PLY: 1000000 vertices, texture coordinates and faces, 1024
-  corners a face, 4000000 face corners (`obj-big`), a line of 256 KiB.
-- With `--machine` the model is described in `@model` lines: `format`,
-  `mtl`, `texture`, `group` and `colors` (the head of
-  `tools/rldpack_import.inc`); for `--mask-model` they follow its
-  `@file mask-model` line. A missing `.obj` is `model-open` (a PLY keeps
-  `ply-open`).
+  corners a face, 4000000 face corners (`obj-big`), a line of 256 KiB, an
+  MTL file of 16 MiB. A model file larger than 512 MiB is refused before it
+  is read (`file-too-large`, the only message for it).
+- With `--machine` the model is described in `@model` lines (the head of
+  `tools/rldpack_import.inc`): `format`, `mtl`, `texture <state> <material>
+  <path> <sha256|->` (one per material in use with a `map_Kd`: the file
+  that was used, found at its path or elsewhere, and the SHA-256 of its
+  bytes, `-` when none was read), `vertex-colors <auto|modulate|color>
+  <rip|plain>` (the `--vertex-colors` mode and what the model was taken
+  for), `group` and `colors`; for `--mask-model` they follow its
+  `@file mask-model` line. The switches are reported as
+  `@value vertex-colors`, `@value colors-from` and `@value textures`. A
+  missing `.obj` is `model-open` (a PLY keeps `ply-open`).
 - The kart is the longest part at the bottom of the model (after the fit,
   0.15 below to 0.3 above the ground) that is 1.25 to 2.5 long (Blender
   units, `ply-no-kart` without one). With `--wheels off` the model brings
