@@ -666,10 +666,14 @@ struct RldMkPly
 	int hasColors;
 	int hasUv;
 	u32 alphaBelow;    // vertices whose alpha is below 255
+	u32 *faceSource;   // per face: the face of the model before a reader split it (the OBJ reader's texture
+	                   // detail), as an index of the faces it was given; NULL = no face was split. Step 4
+	                   // counts the pieces of one split face as one triangle when it picks the driver.
 };
 
 static void RldMk_FreePly(struct RldMkPly *ply)
 {
+	free(ply->faceSource);
 	free(ply->xyz);
 	free(ply->rgb);
 	free(ply->corners);
@@ -1409,6 +1413,7 @@ struct RldMkOptions
 struct RldMkPart
 {
 	u32 triangles;
+	u32 weight;       // what the driver is picked by: its triangles, the pieces of a split face counted once (RldMk_PartWeights)
 	double lo[3];
 	double hi[3];
 	int group;
@@ -1546,7 +1551,9 @@ struct RldMkBuild
 	// --diagnose (RldMk_Diagnosis): the model as the steps saw it. "diag"
 	// numbers are those of the positions after welding and fitting.
 	int diagnose;              // limits lifted, the fields below kept
-	u32 *diagFace;             // per triangle: its PLY face (steps 2 to 4)
+	u32 *diagFace;             // per triangle: its PLY face (steps 2 to 4); with --diagnose, or when ply->faceSource is set
+	const u32 *faceSource;     // ply->faceSource (steps 2 to 4)
+	u32 faceCount2;            // ply->faceCount, for faceSource
 	u32 diagFaceNow;           // the face RldMk_AddTriangle is splitting
 	u32 *diagPlyPosition;      // per PLY vertex: its diag position, RLDMK_NONE when dropped
 	u32 diagPositionCount;     // after welding and fitting, before the reduction and --size
@@ -1957,7 +1964,9 @@ static int RldMk_StepTriangles(const struct RldMkPly *ply, struct RldMkBuild *b,
 	{
 		return RldMk_OutOfMemory();
 	}
-	if (b->diagnose)
+	b->faceSource = ply->faceSource;
+	b->faceCount2 = ply->faceCount;
+	if (b->diagnose || (ply->faceSource != NULL))
 	{
 		b->diagFace = (u32 *)malloc((room + 1u) * sizeof(u32));
 		if (b->diagFace == NULL)
@@ -2297,13 +2306,16 @@ static int RldMk_StepRepair(const struct RldMkPly *ply, struct RldMkBuild *b, co
 	vertexPosition = (u32 *)malloc(((size_t)r.triangleCount * 3u + 1u) * sizeof(u32));
 	vertexRgb = (u8 *)malloc(((size_t)r.triangleCount * 3u + 1u) * 3u);
 	triangle = (u32 *)malloc(((size_t)r.triangleCount * 3u + 1u) * sizeof(u32));
-	if (b->diagnose)
+	if (b->diagnose || (b->diagFace != NULL))
 	{
 		diagFace = (u32 *)malloc(((size_t)r.triangleCount + 1u) * sizeof(u32));
+	}
+	if (b->diagnose)
+	{
 		plyPosition = (u32 *)malloc(((size_t)ply->vertexCount + 1u) * sizeof(u32));
 	}
 	if ((renumber == NULL) || (position == NULL) || (vertexPosition == NULL) || (vertexRgb == NULL) || (triangle == NULL) ||
-	    (b->diagnose && ((diagFace == NULL) || (plyPosition == NULL))))
+	    ((b->diagnose || (b->diagFace != NULL)) && (diagFace == NULL)) || (b->diagnose && (plyPosition == NULL)))
 	{
 		free(renumber);
 		free(position);
@@ -2359,16 +2371,19 @@ static int RldMk_StepRepair(const struct RldMkPly *ply, struct RldMkBuild *b, co
 		{
 			diagFace[i] = (r.added[i] || (b->diagFace == NULL)) ? RLDMK_NONE : b->diagFace[r.sourceCorner[3u * i] / 3u];
 		}
-		for (i = 0; i < ply->vertexCount; i++)
+		for (i = 0; (plyPosition != NULL) && (i < ply->vertexCount); i++)
 		{
 			const u32 p = (b->diagPlyPosition != NULL) ? b->diagPlyPosition[i] : b->vertexPosition[i];
 
 			plyPosition[i] = (p != RLDMK_NONE) ? renumber[r.positionMap[p]] : RLDMK_NONE;
 		}
 		free(b->diagFace);
-		free(b->diagPlyPosition);
 		b->diagFace = diagFace;
-		b->diagPlyPosition = plyPosition;
+		if (plyPosition != NULL)
+		{
+			free(b->diagPlyPosition);
+			b->diagPlyPosition = plyPosition;
+		}
 	}
 
 	free(renumber);
@@ -2605,7 +2620,7 @@ static int RldMk_OverVehicle(const struct RldMkPart *part, const struct RldMkPar
 }
 
 // THE VEHICLE LIES UNDER THE DRIVER: is the middle of the driver - the part
-// with the most triangles besides `vehicle` (ties: the first) - over the
+// with the most triangles besides `vehicle` (RldMk_PartWeights; ties: the first) - over the
 // vehicle seen from above, x and z each within the vehicle's extent and an
 // eighth of it more? A sword beside a figure or a tail behind it is long and
 // low like a vehicle but not under the driver. The eighth lets a figure on a
@@ -2622,7 +2637,7 @@ static int RldMk_UnderDriver(const struct RldMkBuild *b, u32 vehicle)
 
 	for (i = 0; i < b->partCount; i++)
 	{
-		if ((i != vehicle) && ((d < 0) || (b->parts[i].triangles > b->parts[d].triangles)))
+		if ((i != vehicle) && ((d < 0) || (b->parts[i].weight > b->parts[d].weight)))
 		{
 			d = (int)i;
 		}
@@ -2736,6 +2751,72 @@ static int RldMk_SteeringOnVehicle(const struct RldMkBuild *b, u32 i, int kart)
 	return 0;
 }
 
+// THE WEIGHT OF A PART for picking the driver: its triangles - but the pieces
+// of a face a reader split (ply->faceSource: the OBJ reader cuts textured
+// triangles for their texture detail) count once, as the triangle they were.
+// A steering wheel cut into many pieces for its texture stays a steering
+// wheel. Faces nobody split, and triangles repair added, count as before, so
+// a model without faceSource keeps exactly its triangle counts. 0 = out of
+// memory.
+static int RldMk_PartWeights(struct RldMkBuild *b)
+{
+	u32 *uses;
+	u64 *keys;
+	u32 keyCount = 0;
+	u32 t;
+	u32 i;
+
+	for (i = 0; i < b->partCount; i++)
+	{
+		b->parts[i].weight = b->parts[i].triangles;
+	}
+	if ((b->faceSource == NULL) || (b->diagFace == NULL))
+	{
+		return 1;
+	}
+
+	uses = (u32 *)calloc((size_t)b->faceCount2 + 1u, sizeof(u32));
+	keys = (u64 *)malloc(((size_t)b->triangleCount + 1u) * sizeof(u64));
+	if ((uses == NULL) || (keys == NULL))
+	{
+		free(uses);
+		free(keys);
+		return 0;
+	}
+	for (i = 0; i < b->faceCount2; i++)
+	{
+		if (b->faceSource[i] < b->faceCount2)
+		{
+			uses[b->faceSource[i]]++;
+		}
+	}
+
+	// the triangles of split faces: (part, source) once each
+	for (t = 0; t < b->triangleCount; t++)
+	{
+		const u32 face = b->diagFace[t];
+		const u32 part = b->positionPart[b->vertexPosition[b->triangle[3u * t]]];
+
+		if ((face < b->faceCount2) && (b->faceSource[face] < b->faceCount2) && (uses[b->faceSource[face]] > 1u))
+		{
+			keys[keyCount++] = ((u64)part << 32) | (u64)b->faceSource[face];
+			b->parts[part].weight--;
+		}
+	}
+	qsort(keys, keyCount, sizeof(u64), RldMk_CompareU64);
+	for (i = 0; i < keyCount; i++)
+	{
+		if ((i == 0u) || (keys[i] != keys[i - 1u]))
+		{
+			b->parts[(u32)(keys[i] >> 32)].weight++;
+		}
+	}
+
+	free(uses);
+	free(keys);
+	return 1;
+}
+
 // Steps 4 and 5: which part is the kart, which the driver and the steering
 // wheel, and whether the model is the size and the way round of a driver.
 static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
@@ -2801,6 +2882,10 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 	{
 		RldMk_Bounds(b, (int)i, b->parts[i].lo, b->parts[i].hi);
 		b->parts[i].group = RLDMK_GROUP_DRIVER;
+	}
+	if (!RldMk_PartWeights(b))
+	{
+		return RldMk_OutOfMemory();
 	}
 
 	// The size first: a model exported in centimeters has no kart of 1.8 m,
@@ -2928,7 +3013,7 @@ static int RldMk_StepParts(struct RldMkBuild *b, const struct RldMkOptions *opt)
 		if (((int)i != best) &&
 		    (!opt->noWheels || (RldMk_AboveVehicle(&b->parts[i], &b->parts[best]) && RldMk_OverVehicle(&b->parts[i], &b->parts[best]) &&
 		                        (((u64)b->parts[i].triangles * 100u) >= (u64)b->triangleCount))) &&
-		    ((b->driverPart < 0) || (b->parts[i].triangles > b->parts[b->driverPart].triangles)))
+		    ((b->driverPart < 0) || (b->parts[i].weight > b->parts[b->driverPart].weight)))
 		{
 			b->driverPart = (int)i;
 		}
@@ -20602,6 +20687,71 @@ static void RldMk_SelfTestNoSteering(struct RldMkTestMesh *mesh)
 	}
 }
 
+// A STEERING WHEEL SPLIT BY A READER: kart, a driver of 12 triangles and a
+// steering wheel of 108 whose 54 faces are pieces of 3 faces of the model
+// (ply.faceSource, as the OBJ reader's texture detail leaves it). With the
+// sources the driver is the driver and the wheel a steering wheel; without
+// them the wheel has the most triangles and is taken as the driver.
+static void RldMk_SelfTestFaceSource(struct RldMkTestMesh *mesh)
+{
+	static const double kartLo[3] = {-0.45, 0.10, -0.90};
+	static const double kartHi[3] = {0.45, 0.35, 0.90};
+	static const double driverLo[3] = {-0.25, 0.40, -0.40};
+	static const double driverHi[3] = {0.25, 1.00, 0.10};
+	static const double wheelLo[3] = {-0.15, 0.50, 0.30};
+	static const double wheelHi[3] = {0.15, 0.60, 0.36};
+	int withSource;
+
+	mesh->vertexCount = 0;
+	mesh->faceCount = 0;
+	RldMk_TestBox(mesh, kartLo, kartHi, 1u, 0u, 0, -1);
+	RldMk_TestBox(mesh, driverLo, driverHi, 1u, 10u, 0, -1);
+	RldMk_TestBox(mesh, wheelLo, wheelHi, 3u, 20u, 0, -1);
+
+	for (withSource = 1; withSource >= 0; withSource--)
+	{
+		struct RldMkOptions opt;
+		struct RldMkPly ply;
+		struct RldMkBuild b;
+		size_t size = 0;
+		u8 *data = RldMk_TestPly(mesh, 0, 1, 0, &size);
+		int ok;
+
+		memset(&ply, 0, sizeof(ply));
+		memset(&b, 0, sizeof(b));
+		RldMk_ResetSaid();
+		RldMk_TestOptions(&opt);
+		opt.repair = 1;  // the faces carried through the repair, which welds and renumbers
+		ok = (data != NULL) && RldMk_ParsePly(data, size, &ply);
+		if (ok && withSource)
+		{
+			u32 f;
+
+			ply.faceSource = (u32 *)malloc(((size_t)ply.faceCount + 1u) * sizeof(u32));
+			ok = (ply.faceSource != NULL);
+			for (f = 0; ok && (f < ply.faceCount); f++)
+			{
+				ply.faceSource[f] = (f < 12u) ? f : (12u + (f - 12u) / 18u);
+			}
+		}
+		ok = ok && RldMk_BuildModel(&ply, &opt, &b);
+		if (withSource)
+		{
+			RldMk_Test(ok && (b.driverPart >= 0) && (b.parts[b.driverPart].triangles == 12u) && (b.groupTriangles[RLDMK_GROUP_WHEEL] == 108u),
+			           "parts: a steering wheel split into pieces of 3 faces (faceSource) stays the steering wheel", "built %d, driver %u, wheel %u", ok,
+			           b.groupTriangles[RLDMK_GROUP_DRIVER], b.groupTriangles[RLDMK_GROUP_WHEEL]);
+		}
+		else
+		{
+			RldMk_Test(ok && (b.driverPart >= 0) && (b.parts[b.driverPart].triangles == 108u), "parts: without faceSource the same wheel has the most triangles",
+			           "built %d, driver %u, wheel %u", ok, b.groupTriangles[RLDMK_GROUP_DRIVER], b.groupTriangles[RLDMK_GROUP_WHEEL]);
+		}
+		free(data);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+	}
+}
+
 static int RldChar_SelfTest(void)
 {
 	struct RldMkTestMesh *mesh = (struct RldMkTestMesh *)calloc(1, sizeof(struct RldMkTestMesh));
@@ -20669,6 +20819,7 @@ static int RldChar_SelfTest(void)
 	RldMk_SelfTestStrtod();
 	RldMk_SelfTestTurret(mesh);
 	RldMk_SelfTestNoSteering(mesh);
+	RldMk_SelfTestFaceSource(mesh);
 	s_rldMkQuiet = quietBefore;
 	RldMk_ResetSaid();
 
