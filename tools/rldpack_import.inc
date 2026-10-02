@@ -339,7 +339,8 @@ static const struct RldMkReader *RldMk_Choose(const char *path, const struct Rld
 		}
 		else if (c->other != NULL)
 		{
-			RldMk_Say("error", "model-unsupported", c->other, "%s is %s %s file. Reload Studio reads PLY and OBJ models.", file, c->article, c->other);
+			RldMk_Say("error", "model-unsupported", c->other, "%s is %s %s file. rldpack and Reload Studio read PLY and OBJ models.", file, c->article,
+			          c->other);
 			return NULL;
 		}
 		else
