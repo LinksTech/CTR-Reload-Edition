@@ -221,6 +221,7 @@ static const struct RsShellColors g_rsShellColors[2] = {
 struct RsAutoStep {
     wchar_t *verb;
     wchar_t *arg;
+    int now;        // "now <verb> <arg>": does not wait until the pages are idle
 };
 static struct RsAutoStep g_auto[RS_MAX_AUTO];
 static int g_autoCount;
@@ -2781,6 +2782,22 @@ int Rs_JobCancel(int id)
     return ended;
 }
 
+// Every running job cancelled (automation "cancel-jobs"). Return: how many.
+static int Rs_JobCancelAll(void)
+{
+    int ids[RS_JOB_SLOTS];
+    int i, n = 0, ended = 0;
+
+    EnterCriticalSection(&g_jobLock);
+    for (i = 0; i < RS_JOB_SLOTS; i++)
+        if (g_jobSlots[i].id && g_jobSlots[i].process)
+            ids[n++] = g_jobSlots[i].id;
+    LeaveCriticalSection(&g_jobLock);
+    for (i = 0; i < n; i++)
+        ended += Rs_JobCancel(ids[i]);
+    return ended;
+}
+
 // A job object that ends its processes when its last handle closes: when
 // Reload Studio closes or crashes, no rldpack runs on. NULL if not possible.
 static HANDLE Rs_JobGroup(void)
@@ -4159,6 +4176,13 @@ static void Rs_AutoQueue(const wchar_t *step)
     while (*step == L' ')
         step++;
     s = &g_auto[g_autoCount++];
+    s->now = 0;
+    if (wcsncmp(step, L"now ", 4) == 0) {
+        s->now = 1;
+        step += 4;
+        while (*step == L' ')
+            step++;
+    }
     sp = wcschr(step, L' ');
     if (sp) {
         size_t n = (size_t)(sp - step);
@@ -4191,17 +4215,20 @@ static void Rs_AutoTick(void)
 {
     struct RsAutoStep *s;
     int i, busy = 0;
+    // A step "now ..." runs while a check or build is going on (to look at
+    // the window then, or to cancel); every other step waits for the end.
+    int now = g_autoNext < g_autoCount && g_auto[g_autoNext].now;
 
     for (i = 0; i < RS_PAGE_COUNT; i++)
         busy |= Rs_PageBusy(i);
-    if (g_autoWaiting) {
+    if (g_autoWaiting && !now) {
         if (busy)
             return;
         g_autoWaiting = 0;
         g_autoSettleUntil = GetTickCount() + 200;
         return;
     }
-    if (busy || GetTickCount() < g_autoSettleUntil)
+    if ((busy && !now) || GetTickCount() < g_autoSettleUntil)
         return;
     if (g_autoNext >= g_autoCount) {
         KillTimer(g_main, RS_TIMER_AUTO);
@@ -4209,7 +4236,10 @@ static void Rs_AutoTick(void)
         return;
     }
     s = &g_auto[g_autoNext++];
-    Rs_AutoLog(L"> %ls %ls", s->verb, s->arg);
+    if (s->now)
+        Rs_AutoLog(L"> now %ls %ls (%ls)", s->verb, s->arg, busy ? L"busy" : L"idle");
+    else
+        Rs_AutoLog(L"> %ls %ls", s->verb, s->arg);
 
     if (wcscmp(s->verb, L"page") == 0) {
         int id = Rs_PageByWord(s->arg);
@@ -4283,6 +4313,12 @@ static void Rs_AutoTick(void)
             Rs_ApplyTheme(Rs_ThemeWantsDark(mode), 0);
         }
         g_autoSettleUntil = GetTickCount() + 200;
+        return;
+    }
+    // "cancel-jobs": every running job cancelled (Rs_JobCancel), mostly as
+    // "now cancel-jobs" while a check or build runs.
+    if (wcscmp(s->verb, L"cancel-jobs") == 0) {
+        Rs_AutoLog(L"  cancel-jobs: %d job(s) ended", Rs_JobCancelAll());
         return;
     }
     if (wcscmp(s->verb, L"quit") == 0) {
@@ -4573,8 +4609,9 @@ static const wchar_t g_helpText[] =
     L"Automation verbs of the window: page track|cups|char|test, shot <file.bmp>\n"
     L"(the client area), wait <ms>, size <w> <h> (client area), scroll top|bottom|\n"
     L"<x> <y> (the page shown), controls <file> (every control of the page with its\n"
-    L"rectangle, see rs_shell.c), theme dark|light|system, quit. Every other verb\n"
-    L"goes to the page shown.\n";
+    L"rectangle, see rs_shell.c), theme dark|light|system, cancel-jobs (every\n"
+    L"running rldpack job), quit. Every other verb goes to the page shown. A step\n"
+    L"waits until no check or build runs; \"now <verb> <arg>\" runs at once.\n";
 
 // --help: to stdout where it is redirected into a file or a pipe, otherwise in
 // a message box (a window program has no console of its own).
