@@ -2,9 +2,10 @@
 //
 // Part of the packer, never of the game. Self-contained: it needs only the C
 // standard library (stdlib, string, stdio, stdarg), the types u8, u32 and u64
-// of tools/rldpack.c and RldMk_Progress of tools/rldpack_char.inc (progress
-// lines for Reload Studio, which never change a result), so it can be
-// included anywhere after those.
+// of tools/rldpack.c, RldMk_Progress of tools/rldpack_char.inc (progress
+// lines for Reload Studio, which never change a result) and s_rldRedSlowHull
+// of tools/rldpack_reduce.inc (for the note before a long reduction), so it
+// can be included anywhere after those.
 //
 // WHAT IT DOES. A model whose surface is open, doubled or tangled (holes,
 // loose sheets, parts stuck into each other) is replaced, group by group, by
@@ -2480,6 +2481,10 @@ int RldRem_Remesh(const RldRemInput *in, RldRemResult *out, char *why, size_t wh
 		s_rldRemProgressAt += RLDREM_PROGRESS_PHASES;
 	}
 	free(list);
+
+	// The hulls are reduced next; a note before a long reduction names them
+	// (tools/rldpack_reduce.inc, RldRed_SaySlow).
+	s_rldRedSlowHull = out->triangleCount;
 	return 1;
 }
 

@@ -1,10 +1,10 @@
 // rldpack_reduce.inc - automatic mesh reduction for make-char
 //
 // Part of the packer, never of the game. Self-contained: it needs only the C
-// standard library (stdlib, string, stdio, stdarg), the types u8 and u32 of
-// tools/rldpack.c and RldMk_Progress of tools/rldpack_char.inc (progress
-// lines for Reload Studio, which never change a result), so it can be
-// included anywhere after those.
+// standard library (stdlib, string, stdio, stdarg), the types u8 and u32,
+// s_machine and Rld_Say of tools/rldpack.c, and RldMk_Progress of
+// tools/rldpack_char.inc (progress lines for Reload Studio, which never change
+// a result), so it can be included anywhere after those.
 //
 // WHAT IT DOES. A model with more triangles than the draw memory of a driver
 // allows is reduced to a target per group (kart, driver, steering wheel), or
@@ -263,7 +263,14 @@ typedef struct RldRedResult
 #define RLDRED_QUALITY_MIN 0.15
 
 // A guard against overflow of the corner arithmetic, far above any model.
+// Not a guard against long runs: reducing that many takes minutes, not hours
+// (25 closed spheres, 855,668 triangles after repair: make-char --check took
+// 303 s, two passes of all three stages, the target not reached).
 #define RLDRED_INPUT_MAX 0x00100000u
+
+// Above this many input triangles make-char says beforehand how long the
+// reduction will take (reduce-slow, RldRed_SaySlow).
+#define RLDRED_SLOW_INPUT 60000u
 
 // Positions must be finite and within this many units on every axis.
 #define RLDRED_COORD_MAX 1000000.0
@@ -2000,6 +2007,85 @@ static int RldRed_Run(const RldRedMesh *mesh, RldRedResult *out, char *why, size
 	return 1;
 }
 
+// THE NOTE BEFORE A LONG REDUCTION. The time grows a little faster than the
+// triangles. Measured: make-char --check of a closed sphere with colors
+// (Reload Studio's Check with Reduce to fit), the whole run, which reduces
+// the same model four times (a silent try, the build, and both again for
+// "built twice"): triangles after repair -> seconds; the last point is 10
+// such spheres side by side. Between the points the time is interpolated,
+// beyond the last one the last step goes on (a million triangles: 330 s; see
+// RLDRED_INPUT_MAX for a measurement there).
+static const u32 s_rldRedSlowCurve[][2] = {
+	{0u, 0u}, {19036u, 4u}, {45624u, 12u}, {87352u, 26u}, {162780u, 49u}, {344604u, 110u},
+};
+
+static u32 RldRed_SlowSeconds(u32 triangles)
+{
+	const u32 count = (u32)(sizeof(s_rldRedSlowCurve) / sizeof(s_rldRedSlowCurve[0]));
+	u32 i = 1;
+
+	while (((i + 1u) < count) && (triangles > s_rldRedSlowCurve[i][0]))
+	{
+		i++;
+	}
+	{
+		const double x0 = (double)s_rldRedSlowCurve[i - 1u][0];
+		const double y0 = (double)s_rldRedSlowCurve[i - 1u][1];
+		const double x1 = (double)s_rldRedSlowCurve[i][0];
+		const double y1 = (double)s_rldRedSlowCurve[i][1];
+
+		return (u32)(y0 + (y1 - y0) * ((double)triangles - x0) / (x1 - x0) + 0.5);
+	}
+}
+
+// The triangles the note was said for last (0 = none): make-char reduces the
+// same model in several passes, some of them silent; the note comes in the
+// first one, once per model. Only with --machine (Reload Studio, which shows
+// nothing else while it waits): a @msg line and the line on stderr; without
+// it the self-test, whose remeshed models are that big, would print it.
+static u32 s_rldRedSlowSaid;
+
+// The triangles of the hulls tools/rldpack_remesh.inc made last (0 = none).
+// A reduction of them and of the small groups kept beside them (a few dozen
+// triangles, up to RLDRED_SLOW_SAME more) gets a note of its own: the author
+// did not make the model that big, --remesh did.
+#define RLDRED_SLOW_SAME 1000u
+
+static u32 s_rldRedSlowHull;
+
+static void RldRed_SaySlow(u32 triangles)
+{
+	const int remesh = (s_rldRedSlowHull != 0u) && (triangles >= s_rldRedSlowHull) && ((triangles - s_rldRedSlowHull) <= RLDRED_SLOW_SAME);
+	const u32 seconds = RldRed_SlowSeconds(triangles);
+	char text[256];
+	char when[32];
+
+	if (!s_machine || (triangles <= RLDRED_SLOW_INPUT) || (triangles == s_rldRedSlowSaid))
+	{
+		return;
+	}
+	s_rldRedSlowSaid = triangles;
+
+	if (seconds < 120u)
+	{
+		snprintf(when, sizeof(when), "%u s", seconds);
+	}
+	else
+	{
+		snprintf(when, sizeof(when), "%u min", (seconds + 30u) / 60u);
+	}
+	if (remesh)
+	{
+		snprintf(text, sizeof(text), "The closed hulls give %u triangles; reducing them takes about %s.", triangles, when);
+	}
+	else
+	{
+		snprintf(text, sizeof(text), "Reducing %u triangles takes about %s; decimate the model in the modeling tool first to save time.", triangles, when);
+	}
+	fprintf(stderr, "info: %s\n", text);
+	Rld_Say("info", "reduce-slow", NULL, "%s", text);
+}
+
 // 1 = the target is reached (every group at or below its target, or with
 // totalTarget all groups together at or below it); out holds the kept
 // triangles in the order of the input (free with RldRed_Free). 0 = not
@@ -2040,6 +2126,7 @@ int RldRed_Reduce(const RldRedMesh *mesh, RldRedResult *out, char *why, size_t w
 	{
 		return 0;
 	}
+	RldRed_SaySlow(mesh->triangleCount);
 
 	for (stage = 0; stage < 3u; stage++)
 	{
