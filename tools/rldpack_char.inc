@@ -15,7 +15,8 @@
 //    1  read the model: PLY (ascii 1.0 or binary_little_endian 1.0) or OBJ with
 //       its MTL materials and textures, told apart by the content
 //       (tools/rldpack_import.inc, tools/rldpack_obj.inc)
-//    2  faces -> triangles: quads split at the shorter diagonal, faces of 5 to
+//    2  faces -> triangles: quads split at the shorter diagonal (the other one
+//       when the shorter runs outside a concave quad), faces of 5 to
 //       1024 corners by ear clipping (degenerate ones refused)
 //    3  weld the corners to positions (1e-5); the color stays per corner
 //    3r --repair auto (default): weld split corners, drop degenerate and doubled
@@ -1909,12 +1910,54 @@ static int RldMk_StepTriangles(const struct RldMkPly *ply, struct RldMkBuild *b,
 		}
 		else if (n == 4u)
 		{
-			// The shorter diagonal: a quad that is not flat bends less there.
-			const double d02 = RldMk_Distance2(&b->position[3u * b->vertexPosition[c[0]]], &b->position[3u * b->vertexPosition[c[2]]]);
-			const double d13 = RldMk_Distance2(&b->position[3u * b->vertexPosition[c[1]]], &b->position[3u * b->vertexPosition[c[3]]]);
+			// The shorter diagonal: a quad that is not flat bends less there -
+			// unless the quad is concave (an arrow, a notch) and the shorter
+			// diagonal runs outside it: then one of its triangles turns against
+			// the quad's normal (Newell's) and covers what the quad does not,
+			// while the other diagonal gives two triangles that both turn with
+			// it. Only then the other diagonal; a flat or convex quad is split as
+			// before.
+			const double *p[4];
+			double normal[3] = {0.0, 0.0, 0.0};
+			double t[4][3];
+			double d02;
+			double d13;
+			int shorter02;
+			int k;
+
+			for (k = 0; k < 4; k++)
+			{
+				p[k] = &b->position[3u * b->vertexPosition[c[k]]];
+			}
+			for (k = 0; k < 4; k++)
+			{
+				const double *a = p[k];
+				const double *q = p[(k + 1) % 4];
+
+				normal[0] += (a[1] - q[1]) * (a[2] + q[2]);
+				normal[1] += (a[2] - q[2]) * (a[0] + q[0]);
+				normal[2] += (a[0] - q[0]) * (a[1] + q[1]);
+			}
+			d02 = RldMk_Distance2(p[0], p[2]);
+			d13 = RldMk_Distance2(p[1], p[3]);
+			shorter02 = (d02 <= d13);
+			RldMk_Cross(p[0], p[1], p[2], t[0]);
+			RldMk_Cross(p[0], p[2], p[3], t[1]);
+			RldMk_Cross(p[0], p[1], p[3], t[2]);
+			RldMk_Cross(p[1], p[2], p[3], t[3]);
+			if (shorter02 && ((RldMk_Dot(t[0], normal) < 0.0) || (RldMk_Dot(t[1], normal) < 0.0)) && (RldMk_Dot(t[2], normal) > 0.0) &&
+			    (RldMk_Dot(t[3], normal) > 0.0))
+			{
+				shorter02 = 0;
+			}
+			else if (!shorter02 && ((RldMk_Dot(t[2], normal) < 0.0) || (RldMk_Dot(t[3], normal) < 0.0)) && (RldMk_Dot(t[0], normal) > 0.0) &&
+			         (RldMk_Dot(t[1], normal) > 0.0))
+			{
+				shorter02 = 1;
+			}
 
 			b->quads++;
-			if (d02 <= d13)
+			if (shorter02)
 			{
 				RldMk_AddTriangle(b, c[0], c[1], c[2]);
 				RldMk_AddTriangle(b, c[0], c[2], c[3]);
@@ -14230,6 +14273,33 @@ static void RldMk_SelfTestChain(struct RldMkTestMesh *mesh)
 		}
 		RldMk_Test(ok && (found == 2u), "a quad is split at its shorter diagonal", "%u of 2 triangles found", found);
 		RldMk_Test(ok && (b.degenerate == 1u) && RldMk_Said("ply-degenerate"), "a face without area is left out", "%u left out", b.degenerate);
+	}
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+
+	// An arrow: its notch makes the shorter diagonal (0-2) run outside the quad,
+	// one of its triangles would turn against the quad. Split at 1-3 instead.
+	RldMk_TestStandard(mesh, 1u, 0, 0.0, -1);
+	{
+		const u32 v = RldMk_TestVertex(mesh, 0.0, 0.40, -0.6, 51u);
+		u32 found = 0;
+
+		RldMk_TestVertex(mesh, 0.30, 0.50, -0.6, 51u);
+		RldMk_TestVertex(mesh, 0.0, 0.60, -0.6, 51u);
+		RldMk_TestVertex(mesh, 0.05, 0.50, -0.6, 51u);
+		RldMk_TestFace(mesh, 4u, v, v + 1u, v + 2u, v + 3u, 0u);
+
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+		for (i = 0; ok && (i < b.triangleCount); i++)
+		{
+			const u32 *t = &b.triangle[3u * i];
+
+			if (((t[0] == v) && (t[1] == (v + 1u)) && (t[2] == (v + 3u))) || ((t[0] == (v + 1u)) && (t[1] == (v + 2u)) && (t[2] == (v + 3u))))
+			{
+				found++;
+			}
+		}
+		RldMk_Test(ok && (found == 2u), "an arrow quad is split at the diagonal inside it, not the shorter one", "%u of 2 triangles found", found);
 	}
 	RldMk_FreeBuild(&b);
 	RldMk_FreePly(&ply);
