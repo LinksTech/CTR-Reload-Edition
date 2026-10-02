@@ -159,7 +159,9 @@
 //                  (auto | off), wheels (on | off), repair (auto | off),
 //                  open-parts (two-sided | one-sided), remesh (on | off),
 //                  mask (aku | uka, "none" when the template is not usable;
-//                  origin switch with --mask aku|uka, otherwise template)
+//                  origin switch with --mask aku|uka, otherwise template),
+//                  map-color (RRGGBB | template; origin switch with
+//                  --map-color, otherwise template)
 //   @value    size-range <lo> <hi>          (no origin)
 //             the --size percentages this model takes, whole numbers inside
 //             50..200, the run around 100; "0 0" = no size fits (the model
@@ -252,6 +254,7 @@
 //             the template); --remesh on is passed
 //             only with --reduce auto (the page greys the option out otherwise)
 //             [--icon <png> --icon-preview <prefix>] [--voices <dir>]
+//             [--map-color RRGGBB]   (only when a colour was chosen)
 //             --preview <file> [--out <f>]      check; writes only the preview files
 //   make-char --machine --model ... --out <f>  build: the same switches without
 //             --check, --preview and --icon-preview

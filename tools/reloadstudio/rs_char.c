@@ -47,6 +47,10 @@
 // at the mask of the template (Fake Crash: Uka Uka); --mask aku|uka is passed
 // only when it differs, so a file with the default stays the same bytes.
 //
+// Minimap colour: like the template (Fake Crash: grey, nothing passed, the
+// file keeps its bytes) or a colour of your own from the colour dialog,
+// passed as --map-color RRGGBB. The swatch shows it; clicking it chooses.
+//
 // After a build the message names the kart wheels and the mask in the file
 // and says to restart the game: it reads its characters folder only when it
 // starts. The options are not remembered - every start of the Studio begins
@@ -57,6 +61,7 @@
 
 #include "reloadstudio.h"
 #include "rs_view.h"
+#include <commdlg.h>
 #include <shellapi.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -66,7 +71,7 @@
 #define CHAR_TIMER_CHECK   1
 #define CHAR_CHECK_DELAY   600
 #define CHAR_VAL           1024   // length of a value or path
-#define CHAR_MAX_ARGS      40
+#define CHAR_MAX_ARGS      48
 #define CHAR_NAME_MAX      17     // RLDCHAR_NAME_MAX in include/rldchar.inc
 #define CHAR_SIZE_MIN      50     // range of the --size switch
 #define CHAR_SIZE_MAX      200
@@ -79,6 +84,8 @@
 #define CHAR_PENDING       16     // outdated checks whose temp files wait for their end
 #define CHAR_POSES         3      // poses in a --preview file
 #define CHAR_IMAGE_CLASS   L"RsCharImage"
+#define CHAR_SWATCH_CLASS  L"RsCharSwatch"
+#define CHAR_TEMPLATE_MAP_COLOR RGB(0x80, 0x80, 0x80)   // Fake Crash's minimap colour (data.colors, 0x808080)
 #define CHAR_IMAGE_MAX     16384  // largest edge of a picture the page shows
 #define CHAR_ICON_W        43     // the part of the icon the menu tile shows (--icon-preview)
 #define CHAR_ICON_H        25
@@ -140,6 +147,11 @@
 #define CHAR_ID_MASK_LABEL     164
 #define CHAR_ID_MASK           165
 #define CHAR_ID_MASK_HELP      166
+#define CHAR_ID_MAPCOLOR_LABEL 167
+#define CHAR_ID_MAPCOLOR       168   // the swatch
+#define CHAR_ID_MAPCOLOR_PICK  169
+#define CHAR_ID_MAPCOLOR_LIKE  170
+#define CHAR_ID_MAPCOLOR_HELP  171
 
 enum { CHAR_JOB_NONE = 0, CHAR_JOB_CHECK, CHAR_JOB_BUILD };
 enum { CHAR_IMG_ORIGINAL = 0, CHAR_IMG_ICON, CHAR_IMG_COUNT };
@@ -231,6 +243,7 @@ struct CharJobData {
     wchar_t openParts[48];          // @value open-parts: "<two-sided|one-sided> <origin>"
     wchar_t remesh[48];             // @value remesh: "<on|off> <origin>"
     wchar_t mask[48];               // @value mask: "<aku|uka|none> <origin>"
+    wchar_t mapColor[48];           // @value map-color: "<RRGGBB|template> <origin>"
     int repairedSeen;
     long repaired[CHAR_REPAIR_FIELDS];  // @char repaired: welded, degenerate, duplicate, flipped, holes
                                         // closed, hole triangles, holes left, open edges before, after,
@@ -265,6 +278,10 @@ static struct {
     HWND nameLabel, name, nameNote;
     HWND classLabel, cls, classHelp;
     HWND maskLabel, mask, maskHelp;
+    HWND mapLabel, mapSwatch, mapPick, mapLike, mapHelp;
+    int mapColorSet;                // 0 = like the template
+    COLORREF mapColor;              // the chosen colour when mapColorSet
+    COLORREF mapCustom[16];         // the custom colours of the colour dialog
     HWND sizeLabel, size, sizeValue, sizeNote, sizeHint, sizeFit, sizeCrash;
     HWND optionsLabel, repair, openParts, remesh, reduce, wheels, quality;
     HWND iconLabel, icon, iconBrowse, iconClear, iconCaption[CHAR_IMG_COUNT], iconImage[CHAR_IMG_COUNT];
@@ -309,6 +326,8 @@ static struct {
     wchar_t checkDefault[CHAR_VAL]; // the game's default output the last check used, "" = none
     int buildWheelsOff;             // what the running build passed, for its message
     int buildMask;                  // index into g_charMasks
+    int buildMapSet;                // the minimap colour the running build passed, if any
+    COLORREF buildMapColor;
     int showRaw;
     wchar_t *rawText;               // all lines of the last run
     size_t rawLen, rawCap;
@@ -630,8 +649,11 @@ static int Char_ComboTextWidth(HWND combo)
         if (SendMessageW(combo, CB_GETLBTEXTLEN, (WPARAM)i, 0) >= 256)
             continue;
         SendMessageW(combo, CB_GETLBTEXT, (WPARAM)i, (LPARAM)text);
-        if (Char_TextWidth(combo, text) > most)
-            most = Char_TextWidth(combo, text);
+        {
+            int tw = Char_TextWidth(combo, text);
+            if (tw > most)
+                most = tw;
+        }
     }
     return most;
 }
@@ -914,6 +936,43 @@ static LRESULT CALLBACK Char_ImageProc(HWND hwnd, UINT msg, WPARAM wParam, LPARA
     }
     return DefWindowProcW(hwnd, msg, wParam, lParam);
 }
+
+// The swatch of the minimap colour: the chosen colour, or the template's
+// grey. A click chooses, like the button "Choose...".
+static LRESULT CALLBACK Char_SwatchProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_PAINT) {
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(hwnd, &ps);
+        RECT rc;
+        HBRUSH br;
+        GetClientRect(hwnd, &rc);
+        br = CreateSolidBrush(g_char.mapColorSet ? g_char.mapColor : CHAR_TEMPLATE_MAP_COLOR);
+        FillRect(dc, &rc, br);
+        DeleteObject(br);
+        br = CreateSolidBrush(RS_COL_BORDER);
+        FrameRect(dc, &rc, br);
+        DeleteObject(br);
+        EndPaint(hwnd, &ps);
+        return 0;
+    }
+    if (msg == WM_LBUTTONUP) {
+        HWND page = GetParent(hwnd);
+        SendMessageW(page, WM_COMMAND, MAKEWPARAM(CHAR_ID_MAPCOLOR_PICK, BN_CLICKED), (LPARAM)g_char.mapPick);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+// Shows the minimap colour: swatch, "Like the template" only while a colour is set.
+static void Char_MapColorShow(void)
+{
+    InvalidateRect(g_char.mapSwatch, NULL, TRUE);
+    EnableWindow(g_char.mapLike, g_char.mapColorSet);
+}
+
+// Sets the minimap colour (set = 0: like the template) and checks again.
+static void Char_MapColorSet(HWND page, int set, COLORREF color);
 
 static HWND Char_ImageBox(HWND page, int id, struct CharImage *img)
 {
@@ -1236,6 +1295,8 @@ static void Char_ParseLine(wchar_t *line)
             Char_JoinFields(f, n, j->remesh, 48);
         } else if (wcscmp(key, L"mask") == 0) {
             Char_JoinFields(f, n, j->mask, 48);
+        } else if (wcscmp(key, L"map-color") == 0) {
+            Char_JoinFields(f, n, j->mapColor, 48);
         }
     } else if (wcscmp(kind, L"char") == 0) {
         const wchar_t *key = Char_Field(f, n, 1);
@@ -1879,6 +1940,7 @@ struct CharArgs {
     wchar_t preview[CHAR_VAL];
     wchar_t iconPrefix[CHAR_VAL];
     wchar_t size[16];
+    wchar_t mapColor[8];    // RRGGBB
     wchar_t *name;          // Rs_Free
 };
 
@@ -2032,6 +2094,13 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
     if (Char_MaskIndex() != CHAR_TEMPLATE_MASK) {
         Char_ArgsAdd(a, L"--mask");
         Char_ArgsAdd(a, g_charMasks[Char_MaskIndex()].word);
+    }
+    // The minimap colour only when one is chosen (rldpack: like the template).
+    if (g_char.mapColorSet) {
+        swprintf(a->mapColor, 8, L"%02X%02X%02X", GetRValue(g_char.mapColor), GetGValue(g_char.mapColor),
+                 GetBValue(g_char.mapColor));
+        Char_ArgsAdd(a, L"--map-color");
+        Char_ArgsAdd(a, a->mapColor);
     }
     if (a->icon[0]) {
         Char_ArgsAdd(a, L"--icon");
@@ -2194,6 +2263,8 @@ static int Char_Build(HWND page)
     }
     g_char.buildWheelsOff = !Char_IsChecked(g_char.wheels);
     g_char.buildMask = Char_MaskIndex();
+    g_char.buildMapSet = g_char.mapColorSet;
+    g_char.buildMapColor = g_char.mapColor;
     Char_Headline(L"Building...", RS_COL_MUTED);
     started = Char_StartJob(page, CHAR_JOB_BUILD, a.v, a.n, 0) != 0;
     Char_ArgsFree(&a);
@@ -2213,6 +2284,28 @@ static void Char_Changed(HWND page)
     SetTimer(page, CHAR_TIMER_CHECK, CHAR_CHECK_DELAY, NULL);
     g_char.timer = 1;
     Char_UpdateButtons();
+}
+
+static void Char_MapColorSet(HWND page, int set, COLORREF color)
+{
+    g_char.mapColorSet = set;
+    g_char.mapColor = color;
+    Char_MapColorShow();
+    Char_Changed(page);
+}
+
+// "Choose...": the colour dialog, starting at the colour shown.
+static void Char_MapColorPick(HWND page)
+{
+    CHOOSECOLORW cc;
+    memset(&cc, 0, sizeof(cc));
+    cc.lStructSize = sizeof(cc);
+    cc.hwndOwner = Rs_MainWindow();
+    cc.rgbResult = g_char.mapColorSet ? g_char.mapColor : CHAR_TEMPLATE_MAP_COLOR;
+    cc.lpCustColors = g_char.mapCustom;
+    cc.Flags = CC_RGBINIT | CC_FULLOPEN;
+    if (ChooseColorW(&cc))
+        Char_MapColorSet(page, 1, cc.rgbResult);
 }
 
 // End of a check: range, model facts, preview and icon into the page. If the
@@ -2303,6 +2396,14 @@ static void Char_BuildDone(HWND page, int exitCode)
         const wchar_t *mask = wcsncmp(j->mask, L"aku", 3) == 0   ? g_charMasks[0].name
                               : wcsncmp(j->mask, L"uka", 3) == 0 ? g_charMasks[1].name
                                                                  : g_charMasks[g_char.buildMask].name;
+        // The minimap colour only when one is in the file: rldpack's word, else what the build passed.
+        wchar_t mapText[24];
+        mapText[0] = 0;
+        if (j->mapColor[0] && wcsncmp(j->mapColor, L"template", 8) != 0)
+            swprintf(mapText, 24, L", map colour %.6ls", j->mapColor);
+        else if (!j->mapColor[0] && g_char.buildMapSet)
+            swprintf(mapText, 24, L", map colour %02X%02X%02X", GetRValue(g_char.buildMapColor),
+                     GetGValue(g_char.buildMapColor), GetBValue(g_char.buildMapColor));
         Char_Copy(g_char.built, CHAR_VAL, j->resultPath);
         g_char.builtBytes = j->resultBytes;
         Char_Copy(g_char.builtSha, 80, j->resultSha);
@@ -2311,7 +2412,7 @@ static void Char_BuildDone(HWND page, int exitCode)
                  Rs_PathName(g_char.built), size);
         Char_Headline(text, RS_COL_OK);
         swprintf(text, CHAR_VAL + 64, L"Built %ls", g_char.built);
-        swprintf(detail, 192, L"Kart wheels %ls, mask %ls - SHA-256 %ls", wheelsOff ? L"hidden" : L"shown", mask,
+        swprintf(detail, 192, L"Kart wheels %ls, mask %ls%ls - SHA-256 %ls", wheelsOff ? L"hidden" : L"shown", mask, mapText,
                  g_char.builtSha);
         Rs_MsgListAdd(g_char.msgs, RS_SEV_OK, text, detail);
         // The game loads characters only from the folder characters next to
@@ -2337,7 +2438,7 @@ static void Char_BuildDone(HWND page, int exitCode)
         Rs_ConfigSet(L"char.out", g_char.built);
         if (Rs_Automating()) {
             Rs_AutoLog(L"  build: ok %ls %lld bytes sha256 %ls", g_char.built, g_char.builtBytes, g_char.builtSha);
-            Rs_AutoLog(L"  build: kart wheels %ls, mask %ls", wheelsOff ? L"hidden" : L"shown", mask);
+            Rs_AutoLog(L"  build: kart wheels %ls, mask %ls%ls", wheelsOff ? L"hidden" : L"shown", mask, mapText);
         }
     } else {
         int errors;
@@ -2643,6 +2744,12 @@ static int Char_WriteReport(const wchar_t *path)
         Char_Put(f, L"mask: %ls (passed as --mask %ls)", g_charMasks[Char_MaskIndex()].name,
                  g_charMasks[Char_MaskIndex()].word);
     Char_Put(f, L"mask (last run): %ls", g_charJob.mask[0] ? g_charJob.mask : L"(not reported)");
+    if (g_char.mapColorSet)
+        Char_Put(f, L"minimap colour: %02X%02X%02X (passed as --map-color)", GetRValue(g_char.mapColor),
+                 GetGValue(g_char.mapColor), GetBValue(g_char.mapColor));
+    else
+        Char_Put(f, L"minimap colour: like the template (not passed)");
+    Char_Put(f, L"minimap colour (last run): %ls", g_charJob.mapColor[0] ? g_charJob.mapColor : L"(not reported)");
     Char_Put(f, L"size: %d %%", g_char.sizeNow);
     if (g_char.rangeNone)
         Char_Put(f, L"size range: none fits this model");
@@ -2806,6 +2913,39 @@ static int Char_AutoClass(HWND page, const wchar_t *arg)
     return RS_AUTO_FAIL;
 }
 
+// "mapcolor template|RRGGBB" (a leading # is allowed): as the dialog or the
+// button "Like the template", then the check at once.
+static int Char_AutoMapColor(HWND page, const wchar_t *arg)
+{
+    const wchar_t *hex = arg[0] == L'#' ? arg + 1 : arg;
+    wchar_t *end;
+    unsigned long v;
+    int r;
+
+    if (_wcsicmp(arg, L"template") == 0) {
+        Char_MapColorSet(page, 0, CHAR_TEMPLATE_MAP_COLOR);
+        Rs_AutoLog(L"  mapcolor: like the template");
+    } else {
+        int digits = 0;
+        while (digits < 6 && iswxdigit(hex[digits]))
+            digits++;
+        v = wcstoul(hex, &end, 16);
+        if (digits != 6 || hex[6] || *end) {
+            Rs_AutoLog(L"  mapcolor: '%ls' is not a colour - use template or RRGGBB", arg);
+            return RS_AUTO_FAIL;
+        }
+        Char_MapColorSet(page, 1, RGB((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF));
+        Rs_AutoLog(L"  mapcolor: %06lX", v);
+    }
+    UpdateWindow(g_char.mapSwatch);     // painted before a following "shot"
+    r = Char_Check(page);
+    if (r > 0)
+        return RS_AUTO_WAIT;
+    if (r < 0)
+        Rs_AutoLog(L"  mapcolor: %ls", g_char.jobId ? L"checked after the running build" : L"not checked - no model is chosen");
+    return RS_AUTO_DONE;
+}
+
 static int Char_AutoMask(HWND page, const wchar_t *arg)
 {
     int i;
@@ -2967,6 +3107,28 @@ static void Char_Create(HWND page)
                                RS_FONT_SMALL);
     Rs_SetTextColor(g_char.maskHelp, RS_COL_MUTED);
 
+    g_char.mapLabel = Rs_Label(page, CHAR_ID_MAPCOLOR_LABEL, L"Minimap colour", RS_FONT_BOLD);
+    memset(&wc, 0, sizeof(wc));
+    wc.cbSize = sizeof(wc);
+    wc.hInstance = inst;
+    wc.hCursor = LoadCursor(NULL, IDC_HAND);
+    wc.lpfnWndProc = Char_SwatchProc;
+    wc.lpszClassName = CHAR_SWATCH_CLASS;
+    RegisterClassExW(&wc);
+    g_char.mapSwatch = CreateWindowExW(0, CHAR_SWATCH_CLASS, L"", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, page,
+                                       (HMENU)(INT_PTR)CHAR_ID_MAPCOLOR, inst, NULL);
+    g_char.mapPick = Rs_Button(page, CHAR_ID_MAPCOLOR_PICK, L"Choose...");
+    g_char.mapLike = Rs_Button(page, CHAR_ID_MAPCOLOR_LIKE, L"Like the template");
+    g_char.mapHelp = Rs_Label(page, CHAR_ID_MAPCOLOR_HELP, L"The driver's marker on the minimap. Like the template: as Fake Crash shows it. "
+                              L"80 per channel is the icon as drawn, higher is brighter.",
+                              RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.mapHelp, RS_COL_MUTED);
+    for (i = 0; i < 16; i++)
+        g_char.mapCustom[i] = RGB(255, 255, 255);
+    g_char.mapColorSet = 0;
+    g_char.mapColor = CHAR_TEMPLATE_MAP_COLOR;
+    Char_MapColorShow();
+
     g_char.sizeLabel = Rs_Label(page, CHAR_ID_SIZE_LABEL, L"Size", RS_FONT_BOLD);
     g_char.size = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBS_HORZ | TBS_NOTICKS | TBS_ENABLESELRANGE,
@@ -3049,6 +3211,9 @@ static void Char_Create(HWND page)
     ShowWindow(g_char.raw, SW_HIDE);
     g_char.show = Rs_Button(page, CHAR_ID_SHOW, L"Show in folder");
     ShowWindow(g_char.show, SW_HIDE);
+    // Tab order as the cards stand in one column: the pose choice of the
+    // preview after the build (with two columns row by row).
+    SetWindowPos(g_char.pose, g_char.show, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 
     DragAcceptFiles(page, TRUE);
     Char_TempSweep();
@@ -3128,6 +3293,18 @@ static int Char_LayCharacter(HWND page, const struct CharLay *k, int left, int r
     y += Rs_Px(30);
     noteH = Char_NoteHeight(g_char.maskHelp, fieldW);
     MoveWindow(g_char.maskHelp, x, y, fieldW, noteH, TRUE);
+    y += Rs_Px(8) + noteH;
+    MoveWindow(g_char.mapLabel, in.left, y + Rs_Px(6), k->labelW, Rs_Px(20), TRUE);
+    MoveWindow(g_char.mapSwatch, x, y, Rs_Px(48), Rs_Px(32), TRUE);
+    {
+        int pickW = Char_CheckWidth(g_char.mapPick) + Rs_Px(8);
+        int likeW = Char_CheckWidth(g_char.mapLike) + Rs_Px(8);
+        MoveWindow(g_char.mapPick, x + Rs_Px(56), y, pickW, Rs_Px(32), TRUE);
+        MoveWindow(g_char.mapLike, x + Rs_Px(64) + pickW, y, likeW, Rs_Px(32), TRUE);
+    }
+    y += Rs_Px(36);
+    noteH = Char_NoteHeight(g_char.mapHelp, fieldW);
+    MoveWindow(g_char.mapHelp, x, y, fieldW, noteH, TRUE);
     y += Rs_Px(8) + noteH;
     MoveWindow(g_char.sizeLabel, in.left, y + Rs_Px(4), k->labelW, Rs_Px(20), TRUE);
     MoveWindow(g_char.size, x - Rs_Px(4), y, fieldW - Rs_Px(64), Rs_Px(30), TRUE);
@@ -3304,7 +3481,7 @@ static void Char_Layout(HWND page, int w, int h)
     int left = Rs_Px(32), right = w - Rs_Px(32);
     int top = Rs_PageTop(), bottom = h - Rs_Px(24);
     int viewW = 0, leastLeft, leastRight, comboW, i, y;
-    HWND column[9];
+    HWND column[10];
 
     Rs_CardClear(page);
     k.viewH = 0;
@@ -3329,7 +3506,8 @@ static void Char_Layout(HWND page, int w, int h)
     column[6] = g_char.optionsLabel;
     column[7] = g_char.iconLabel;
     column[8] = g_char.voicesLabel;
-    for (i = 0; i < 9; i++) {
+    column[9] = g_char.mapLabel;
+    for (i = 0; i < 10; i++) {
         wchar_t *text = Rs_GetText(column[i]);
         int tw = Char_TextWidth(column[i], text) + Rs_Px(4);
         if (tw > k.labelW)
@@ -3353,6 +3531,8 @@ static void Char_Layout(HWND page, int w, int h)
         int leftW = (right - left - k.gap) / 2;
         if (leftW < leastLeft)
             leftW = leastLeft;
+        if (right - left - k.gap - leftW < leastRight)
+            leftW = right - left - k.gap - leastRight;
         y = Char_LayCharacter(page, &k, left, left + leftW, top);
         Char_LayBuild(page, &k, left, left + leftW, y + k.gap, bottom);
         y = Char_LayIcon(page, &k, left + leftW + k.gap, right, top);
@@ -3409,6 +3589,15 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
     case CHAR_ID_MASK:
         if (code == CBN_SELCHANGE)
             Char_Changed(page);
+        break;
+    case CHAR_ID_MAPCOLOR_PICK:
+        if (code == BN_CLICKED)
+            Char_MapColorPick(page);
+        break;
+    case CHAR_ID_MAPCOLOR_LIKE:
+        if (code == BN_CLICKED)
+            Char_MapColorSet(page, 0, CHAR_TEMPLATE_MAP_COLOR);
+            SetFocus(g_char.mapPick);   // the button just pressed is greyed out now
         break;
     case CHAR_ID_REDUCE:
         if (code == BN_CLICKED) {
@@ -3539,6 +3728,7 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
             Char_OutCue();
         else if (_wcsicmp(def, g_char.checkDefault) != 0)
             Char_Changed(page);
+        *handled = 1;
         return 0;
     }
     case WM_DROPFILES:
@@ -3579,6 +3769,8 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         return Char_AutoClass(page, arg);
     if (wcscmp(verb, L"mask") == 0)
         return Char_AutoMask(page, arg);
+    if (wcscmp(verb, L"mapcolor") == 0)
+        return Char_AutoMapColor(page, arg);
     if (wcscmp(verb, L"size") == 0)
         return Char_AutoSize(page, arg);
     if (wcscmp(verb, L"icon") == 0)
