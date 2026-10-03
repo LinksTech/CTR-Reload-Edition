@@ -169,45 +169,57 @@ NEW IN BETA 0
 
 KNOWN ISSUES
 ------------
-- Custom tracks: Race, Crystal Challenge and CTR Challenge. Time Trial and
-  Battle are planned. Best times on custom tracks are not saved.
+Modes and menus
+- Custom tracks play Race (also as Time Trial), Crystal Challenge and CTR
+  Challenge. Battle is planned.
+- Time trial: the HUD keeps TIME at the top left, the rank column and the
+  wumpa counter. A new record and a new best lap in one run show only NEW
+  RECORD; the best lap is in the file. There is no ghost.
+- Multiplayer (VS., BATTLE, 2 players) is locked.
 - A track that offers both Race and Crystal Challenge is not tested yet: no
   test track has both restart points and crystals.
-- A track with only Crystal Challenge cannot get a preview; the preview is
-  recorded in a race.
+- Crystal Challenge has a fixed time limit of 3:00 for every track for now.
 - CTR Challenge: letters that the exporter wrote without a collision hitbox
   cannot be collected, so the challenge cannot be won. Reload Studio does
   not check this yet.
-- Crystal Challenge: the time limit is fixed at 3:00 for every track for now.
 - No bots and no auto drive on tracks without nav paths. In a CTR Challenge
   1st place is then easy.
-- Multiplayer (VS., BATTLE, 2 players) is locked.
-- Custom characters are silent: Reload Studio checks voice files, but does
-  not pack them yet.
-- A custom character's icon shows only in the driver select, and only for
-  the first 20 loaded files; the race HUD, the results and the cup
-  standings show the portrait of Fake Crash.
-- Custom characters only in the one-player ARCADE driver select; not in
-  NITRO-PIT CRYSTAL or CTR, Time Trial, Adventure, Battle or with two
-  players.
-- Custom characters with "Show kart wheels" off: tyre dust and skid marks
-  still show where the game's wheels would be.
+- With exactly two tracks in the folder, the track wheel can show two names
+  on top of each other after you scroll it.
+
+Characters
+- A custom driver without voices is silent; with voices it says nothing at
+  an event it has no clip for.
+- The character's own icon shows only for the first 20 loaded files; high
+  score lists and profiles show the portrait of Fake Crash.
+- The cup podium shows Fake Crash.
+- Only in the one-player ARCADE driver select; not in NITRO-PIT CRYSTAL or
+  CTR, the original Time Trial, Adventure, Battle or with two players.
+- The size is visual only - physics and collision follow the driving style.
+- With "Show kart wheels" off, tyre dust and skid marks still show where the
+  game's wheels would be.
+
+Previews
+- The invisible kart still hits crates and fruit, so they break in the
+  preview. If it falls off, the mask carries it back.
+- Without nav paths the camera flies along the restart points; it does not
+  avoid walls and ceilings and may pass through a tunnel roof.
+- A track with only Crystal Challenge gets no preview.
+
+Tracks and sound
 - Very large tracks: flickering holes near the camera are possible when a
-  track has very coarse BSP leaves. The log then contains
-  "rendered list full" - please report it, with the track's file name and
-  SHA-256.
-- Track previews: the invisible kart still hits crates and fruit, so they
-  break in the preview. If it falls off, the mask carries it back.
-- Track previews without nav paths: the camera does not avoid walls and
-  ceilings; it may pass through a tunnel roof.
+  track has very coarse BSP leaves. The log then contains "rendered list
+  full" - please report it, with the track's file name and SHA-256.
 - Tracks exported with Saphi: a hit may be missed where hitboxes are
   duplicated, and some floors may be black. Always build with "Build
-  container" (make); it fixes wrong model ids.
+  container"; it fixes wrong model ids.
 - Music banks above 512 KB load, but their playback is not fully tested yet.
-  The ambient sound set in the track options is not tested either.
-- Reload Studio starts the game in developer mode for "Test in game" and
-  for the preview recording. The "extra arguments" field accepts developer
-  switches; you do not need it.
-- The executables are not signed. Some virus scanners may warn about them.
-- Retail cheat codes that unlock drivers are not saved to the memory card any
-  more; all drivers are available from the start anyway.
+  The ambient sound set under "Advanced" is not tested either.
+
+Programs
+- Reload Studio starts the game in developer mode for "Start game" and for
+  the preview recording. That is intended.
+- The programs are not signed. Some virus scanners may warn about them or
+  move them to quarantine; then allow them in your scanner.
+- Retail cheat codes that unlock drivers are not saved to the memory card;
+  all drivers are available from the start anyway.
