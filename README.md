@@ -34,6 +34,7 @@
   <a href="#building-from-source">Building</a> &middot;
   <a href="#reporting-bugs">Bugs</a> &middot;
   <a href="#credits">Credits</a> &middot;
+  <a href="#always-up-to-date">Up to date</a> &middot;
   <a href="#license-and-disclaimer">License</a>
 </p>
 
@@ -298,6 +299,14 @@ name out of the log if you mind.
 
 Other components (PsyCross, SDL3 and more), the banner font and their licenses
 are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## Always up to date
+
+This repository is kept up to date with the help of Claude Code
+(Anthropic): the README, the guide in the package, the release notes and the
+automatic builds are brought in line with the code as the project grows, so
+what you read here matches what the newest version does. Every change is
+reviewed by us before it lands.
 
 ## License and disclaimer
 
