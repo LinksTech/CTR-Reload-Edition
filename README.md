@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <b>A PC edition of Crash Team Racing built for custom content — custom tracks today, custom characters Soon™.<br>
+  <b>A PC edition of Crash Team Racing built for custom content — custom tracks and custom characters.<br>
   Built on <a href="https://github.com/CTR-tools/ctr-native">ctr-native</a>.</b>
 </p>
 
@@ -29,6 +29,7 @@
   <a href="#features">Features</a> &middot;
   <a href="#getting-started">Getting started</a> &middot;
   <a href="#custom-tracks">Custom tracks</a> &middot;
+  <a href="#custom-characters">Custom characters</a> &middot;
   <a href="#whats-next">What's next</a> &middot;
   <a href="#building-from-source">Building</a> &middot;
   <a href="#reporting-bugs">Bugs</a> &middot;
@@ -37,7 +38,8 @@
 </p>
 
 CTR Reload Edition runs *Crash Team Racing* (PS1, 1999) natively on Windows,
-without an emulator, and plays custom tracks next to the original ones.
+without an emulator, and plays custom tracks and custom characters next to
+the original ones.
 
 > [!IMPORTANT]
 > You need **your own disc image** of the game, NTSC-U (SCUS-94426), as
@@ -47,7 +49,7 @@ without an emulator, and plays custom tracks next to the original ones.
 > or images made by other people either.
 
 > [!WARNING]
-> This is a **pre-release** for testing. Expect bugs - and please
+> This is a **beta** for testing. Expect bugs - and please
 > [report them](#reporting-bugs).
 
 ## Features
@@ -67,8 +69,20 @@ without an emulator, and plays custom tracks next to the original ones.
   automatically for the track screen
 - Fixes for crashes found in community tracks, and broken track data
   gets caught before you race, not mid-race
+- Time Trial on custom tracks, with your best times kept per track and
+  lap count
 - Reload Studio: turns your track data into a ready-to-play file — no
   command line, no scripts, no patching, just a window
+
+### 🧑‍🚀 Custom characters
+- Build your own driver from a PLY or OBJ model (OBJ with its MTL and
+  PNG/JPG/TGA/BMP textures)
+- The model is fitted to Crash's size, repaired and, above the triangle
+  limit, reduced automatically
+- Your own icon, mask (Aku Aku or Uka Uka), minimap colour, voice clips
+  and driving style; kart wheels drawn or hidden
+- Drop a .rldchar file into the characters folder and it gets its own tile
+  in the driver select
 
 ### ⚙️ Under the hood
 - Custom memory budget: big custom tracks get extra room (up to 32 MB),
@@ -100,6 +114,12 @@ without an emulator, and plays custom tracks next to the original ones.
 4. Create a folder `tracks` next to the game and put `.rldtrack` files into it.
 5. Race them: ARCADE → NITRO-PIT → RACE, CUP, CRYSTAL or CTR. Under RACE, the
    MODE box below the laps offers TIME TRIAL.
+6. For custom characters, create a folder `characters` next to the game and
+   put `.rldchar` files into it. They show up in the one-player ARCADE driver
+   select, after the original drivers.
+
+The game reads both folders when it starts: after a new track or character,
+restart the game.
 
 Windows 10 (1903 or newer) or Windows 11 and a graphics driver with Vulkan 1.0.
 
@@ -126,8 +146,36 @@ model); above 90 Reload Studio warns.
 
 </details>
 
+## Custom characters
+
+On its Character page, Reload Studio builds a `.rldchar` driver from one PLY
+or OBJ model of driver, steering wheel and kart, in five steps: model,
+driver, in-game look, voices and extras. The model can be exported at any
+scale - it is fitted to Crash with his kart, repaired (split corners, holes,
+faces turned inward) and, if it has more triangles than a driver may draw,
+reduced until it fits. The preview shows it next to Crash and in the
+steering poses, the way the game will draw it.
+
+You choose the driving style (Balanced, Acceleration, Speed, Turning), the
+mask, an icon for the driver select and the race HUD, a minimap colour and a
+folder of voice clips. Switch off "Show kart wheels" for a model that brings
+its own wheels or vehicle.
+
+<details>
+<summary>Current limits</summary>
+
+- Only in the one-player ARCADE driver select and the NITRO-PIT time trial;
+  not in NITRO-PIT CRYSTAL or CTR, Adventure, Battle or with two players
+- At most 32 characters get a tile; their own icon shows for the first 20
+- The size is visual only - physics and collision follow the driving style
+- The cup podium, high score lists and profiles still show Fake Crash
+- A driver without voice clips is silent
+
+</details>
+
 Every page and message of Reload Studio is explained in section 4 of the
-[Reload Studio guide](tools/package/README.txt).
+[Reload Studio guide](tools/package/README.txt); what is new in each version
+is in the [release notes](tools/package/RELEASE-NOTES.txt).
 
 ## What's next
 
@@ -135,20 +183,12 @@ Planned, in no particular order and without a date:
 
 - Battle on custom tracks
 - Boss races and race modifiers in NITRO-PIT
-- Custom characters - a first version is in the nightly build (Reload
-  Studio's Character page and a `characters` folder next to the game). It
-  fits every model onto Crash's kart at his size, repairs common export
-  faults and can leave out the kart wheels for a model with its own. A model
-  under the triangle limit is never reduced; for one above it, "Reduce to
-  fit" reduces it until it fits. You choose whether it wears Aku Aku or Uka
-  Uka and its colour on the minimap; after a build the green line names the
-  mask that is in the file. A character's icon shows in the driver select
-  and in the race: transparency in the PNG is kept, and it can be framed
-  like the original heads, get a transparent background or the original
-  frame. Wheels and animations of your own are shown as "Coming soon" cards;
-  `ReloadStudio.exe --enable-preview-features` unlocks their unfinished
-  preview, which writes nothing into the character file.
-  Their voices come next
+- Custom characters in more modes: two players, Adventure and the NITRO-PIT
+  challenges
+- Wheels and animations of your own for custom characters - Reload Studio
+  shows them as "Coming soon" cards; `ReloadStudio.exe
+  --enable-preview-features` unlocks their unfinished preview, which writes
+  nothing into the character file
 - Skin support for the drivers
 - ...and more
 
@@ -200,10 +240,12 @@ the bug report template, one issue per problem.
 - The version: `ctr_native.exe --version`
 - What happened, what you expected, and the steps to get there
 - The newest log from the `logs` folder next to the game
-- For a custom track: its file name and the SHA-256 Reload Studio shows
+- For a custom track or character: its file name and the SHA-256 Reload
+  Studio shows
 
-Issues are public: never attach disc images, the `assets` folder, memory cards
-or other game data, and edit your Windows user name out of the log if you mind.
+Issues are public: never attach disc images, the `assets` folder, memory cards,
+`.rldtrack`/`.rldchar` files or other game data, and edit your Windows user
+name out of the log if you mind.
 
 </details>
 
