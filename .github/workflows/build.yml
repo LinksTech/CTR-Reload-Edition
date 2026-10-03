@@ -11,6 +11,9 @@
 # .github/release-body.txt, the release title from the version in
 # CMakeLists.txt. A tag without "beta" or "alpha" in its name is a full
 # release and becomes the latest one; the nightly build never does.
+# A manual run with the input "tag" (an existing version tag) builds that
+# tag's commit and makes its release with this workflow - for a tag whose own
+# release run failed. The tag is never moved or created.
 # Every pull request into main: build, self-tests and package check only.
 # No package download, no release, no cache writes, read-only token.
 #
@@ -39,6 +42,14 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: >-
+          An existing version tag (e.g. v0.0.5) to build and release again,
+          for a tag whose release failed. Empty = build the chosen ref.
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -52,27 +63,53 @@ concurrency:
 
 jobs:
   # The build itself lives in build-job.yml, shared with the nightly build.
+  # A manual run with "tag" builds that tag's commit; every other run builds
+  # the commit that started it.
   build:
     uses: ./.github/workflows/build-job.yml
+    with:
+      ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || '' }}
     permissions:
       contents: read
 
   release:
     # Only a version tag in this repository, pushed or run by hand - never a
-    # pull request, never a fork.
+    # pull request, never a fork. A manual run may name the tag in "tag":
+    # the release workflow of the tag's own commit may be the broken one,
+    # so this one releases it (the tag itself is never moved or created).
     if: >-
       github.repository == 'LinksTech/CTR-Reload-Edition'
-      && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
-      && startsWith(github.ref, 'refs/tags/v')
+      && ((github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v'))
+          || (github.event_name == 'workflow_dispatch'
+              && (startsWith(github.ref, 'refs/tags/v') || startsWith(inputs.tag, 'v'))))
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
       contents: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     steps:
+      # A tag named by hand must exist and be the commit that was built.
+      - name: Check the tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILT: ${{ needs.build.outputs.sha }}
+        run: |
+          set -e
+          case "$RELEASE_TAG" in v*) ;; *) echo "not a version tag: $RELEASE_TAG"; exit 1 ;; esac
+          case "$RELEASE_TAG" in *[!A-Za-z0-9._-]*) echo "unexpected tag name: $RELEASE_TAG"; exit 1 ;; esac
+          gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --silent \
+            || { echo "no tag $RELEASE_TAG in this repository"; exit 1; }
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/refs/tags/$RELEASE_TAG" --jq .sha)
+          [ "$sha" = "$BUILT" ] || { echo "tag $RELEASE_TAG is $sha, but $BUILT was built"; exit 1; }
+          echo "Release for $RELEASE_TAG ($sha)"
+
       - name: Check out the release text
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
+          ref: ${{ needs.build.outputs.sha }}
           fetch-depth: 1
           persist-credentials: false
           sparse-checkout: |
@@ -129,6 +166,7 @@ jobs:
       - name: Create release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           name: CTR Reload ${{ steps.files.outputs.version }}
           body_path: src/.github/release-body.txt
           files: |
@@ -138,6 +176,6 @@ jobs:
             out/THIRD_PARTY_NOTICES.md
             out/README.txt
           fail_on_unmatched_files: true
-          prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
-          make_latest: ${{ !(contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha')) }}
+          prerelease: ${{ contains(env.RELEASE_TAG, 'beta') || contains(env.RELEASE_TAG, 'alpha') }}
+          make_latest: ${{ !(contains(env.RELEASE_TAG, 'beta') || contains(env.RELEASE_TAG, 'alpha')) }}
           generate_release_notes: false
