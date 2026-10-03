@@ -117,10 +117,14 @@ trial package anyway) and refuses to package a file type that
 
 ## Automatic builds
 
-- `.github/workflows/build.yml`: every push to `main` and every pull
-  request builds and runs the self-tests; a version tag (`v*`) also makes the
-  release with `ctr_native.exe`, `ReloadStudio.exe`, `LICENSE` and
-  `THIRD_PARTY_NOTICES.md`.
+- `.github/workflows/build.yml`: every pull request builds and runs the
+  self-tests. Nothing else starts by itself: a push to `main` builds only in
+  the nightly. Releases are made by hand: Actions -> Build -> Run workflow on
+  `main`, with the version tag (for example `v0.0.6`) in the field `tag`.
+  A new tag is created on the commit that was built; an existing tag is built
+  as it is and never moved. The release carries `ctr_native.exe`,
+  `ReloadStudio.exe`, `LICENSE`, `THIRD_PARTY_NOTICES.md` and `README.txt`.
+  Without a tag, the run only builds and attaches the package.
 - `.github/workflows/nightly.yml`: every day at 21:00 UTC (and by hand) the
   pre-release `nightly-builds` is replaced with a build of `main` that carries
   the same four files - only when `main` has changed since the last one. The

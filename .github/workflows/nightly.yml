@@ -1,6 +1,6 @@
 # CTR Reload Edition - nightly build of main.
 #
-# Every day at 21:00 UTC, and by hand (Actions -> Nightly -> Run workflow):
+# The only automatic build of main. Every day at 21:00 UTC, and by hand (Actions -> Nightly -> Run workflow):
 # builds main and replaces the one pre-release "nightly-builds" with exactly
 # the four files of every release (see build.yml): the programs
 # ctr_native.exe and ReloadStudio.exe, and LICENSE and THIRD_PARTY_NOTICES.md,
@@ -24,7 +24,8 @@
 # - It runs only in LinksTech/CTR-Reload-Edition itself and only from main:
 #   in a fork with Actions switched on, or by hand from another branch,
 #   every job is skipped.
-# - The build is build-job.yml, the same job as for every push. No game data.
+# - The build is build-job.yml, the same job as for pull requests and
+#   releases. No game data.
 
 name: Nightly
 
