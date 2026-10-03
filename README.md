@@ -60,29 +60,49 @@ the original ones.
 - Real widescreen: 4:3, 16:9 and 21:9 — the view gets wider, nothing
   is stretched
 - Menus stay nicely centered on ultrawide screens
+- OPTIONS → GRAPHICS: display mode, aspect ratio, resolution and
+  anti-aliasing, saved for the next start
 
 ### 🏁 Custom tracks — our main focus
 - Drop a .rldtrack file into the tracks folder and it shows up in game
-- New NITRO-PIT mode under Arcade: race custom tracks or build your own
-  custom cups
+- New NITRO-PIT mode under Arcade with everything for custom tracks:
+  - **Race**, with bots on tracks that have nav paths
+  - **Time Trial** with your best times per track and lap count
+  - **Custom cups** of four tracks each
+  - **Crystal Challenge**: collect every crystal before the time runs out
+  - **CTR Challenge**: finish 1st and collect C, T and R
+- A track is listed under every mode it has the data for
+- A preview video of each track plays in the track selection
 - Tracks bring their own music and their own minimap, scaled
   automatically for the track screen
 - Fixes for crashes found in community tracks, and broken track data
   gets caught before you race, not mid-race
-- Time Trial on custom tracks, with your best times kept per track and
-  lap count
-- Reload Studio: turns your track data into a ready-to-play file — no
-  command line, no scripts, no patching, just a window
 
 ### 🧑‍🚀 Custom characters
 - Build your own driver from a PLY or OBJ model (OBJ with its MTL and
-  PNG/JPG/TGA/BMP textures)
+  PNG/JPG/TGA/BMP textures), exported at any scale
 - The model is fitted to Crash's size, repaired and, above the triangle
-  limit, reduced automatically
-- Your own icon, mask (Aku Aku or Uka Uka), minimap colour, voice clips
-  and driving style; kart wheels drawn or hidden
+  limit, reduced automatically - the shape and the colours stay
+- Your own icon in the driver select and the race HUD, mask (Aku Aku or
+  Uka Uka), minimap colour and voice clips
+- The driving style (Balanced, Acceleration, Speed, Turning) decides how
+  the kart drives and sounds
+- Kart wheels drawn or hidden, for models that bring their own vehicle
 - Drop a .rldchar file into the characters folder and it gets its own tile
-  in the driver select
+  in the driver select - up to 32 of them
+
+### 🛠️ Reload Studio
+- One window for tracks, cups and characters — no command line, no
+  scripts, no patching
+- Checks while you work and says in plain words what is wrong and how to
+  fix it
+- "Build container" also records the track's preview in the background
+- Character preview next to Crash and in the steering poses, the way the
+  game will draw it
+- Notices a new export by itself and checks again; long builds show their
+  progress and can be cancelled
+- "Test in game" starts a race on your track straight away
+- Dark and light mode, follows the Windows display scale
 
 ### ⚙️ Under the hood
 - Custom memory budget: big custom tracks get extra room (up to 32 MB),
@@ -93,6 +113,8 @@ the original ones.
   higher-res textures later
 - Less emulation where it doesn't matter: several PS1 rendering steps
   now run natively, like transparency in a single pass
+- Runs out of room gracefully: an effect is left out and logged instead
+  of a crash
 
 ### ✨ Quality of life
 - First-start window: just drag in your disc image
@@ -100,6 +122,9 @@ the original ones.
 - Race pauses when you alt-tab or minimize
 - New main menu with Options (cheats, scrapbook) and Exit
 - All characters unlocked from the start — your save stays untouched
+- F12 saves a screenshot; F11 or Alt+Enter toggles full screen
+- A log with date and time for every start, the last five are kept
+- Folder and user names with any characters work (accents, Cyrillic ...)
 
 ## Getting started
 
