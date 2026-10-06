@@ -132,6 +132,15 @@ global_variable char *s_playbackMemcardPath;
 global_variable s32 s_memcardSandboxActive;
 global_variable s32 s_recordStartDeferredLogged;
 
+// --record from boot and --replay are set up before CTR_Main, but the
+// checkpoint size (NativeCheckpoint_GetSize) holds only after MEMPACK_Init:
+// it contains the MEMPACK window, and that window is laid out there. So the
+// part that needs the size waits for the first frame (BeginFrame), the frame
+// whose start the bootstrap checkpoint is taken at and restored at.
+global_variable s32 s_recordOpenPending;
+global_variable s32 s_playbackIdentityPending;
+global_variable s32 s_playbackBypassHeaderIdentity;
+
 internal void NativeReplayScheduler_ResetVSyncPackets(void)
 {
 	s_frameVBlankTotal = 0;
@@ -933,10 +942,16 @@ internal void NativeReplayScheduler_CloseFiles(void)
 {
 	if (s_file == NULL)
 	{
+		if (s_recordOpenPending != 0)
+		{
+			Platform_Log("[CTR Replay] recording from boot ended before replay frame 0, no replay written\n");
+		}
 		NativeReplayScheduler_CloseCheckpointFile();
 		NativeAudio_SetDeterministicRenderMode(0);
 		s_mode = NATIVE_REPLAY_MODE_NONE;
 		s_stopRequested = 0;
+		s_recordOpenPending = 0;
+		s_playbackIdentityPending = 0;
 		return;
 	}
 
@@ -959,6 +974,8 @@ internal void NativeReplayScheduler_CloseFiles(void)
 		s_reportCompleted = 1;
 	}
 	s_stopRequested = 0;
+	s_recordOpenPending = 0;
+	s_playbackIdentityPending = 0;
 	s_mode = NATIVE_REPLAY_MODE_NONE;
 }
 
@@ -1139,14 +1156,12 @@ cleanup:
 	return ok;
 }
 
-internal s32 NativeReplayScheduler_OpenRecord(const char *replayPath, const char *checkpointPath)
+// The replay file, its header and the checkpoint file. The header carries the
+// checkpoint size, so this runs only once MEMPACK_Init has laid out the window.
+// The memcard sandbox must already be active.
+internal s32 NativeReplayScheduler_OpenRecordFiles(const char *replayPath, const char *checkpointPath)
 {
 	NativeReplayScheduler_InitHeader(&s_header);
-	if (!NativeReplayScheduler_ActivateRecordMemcardSandbox())
-	{
-		return 0;
-	}
-
 	s_file = fopen(replayPath, "wb+");
 	if (s_file == NULL)
 	{
@@ -1174,8 +1189,43 @@ internal s32 NativeReplayScheduler_OpenRecord(const char *replayPath, const char
 		return 0;
 	}
 
+	s_recordOpenPending = 0;
 	NativeReplayScheduler_WriteReportMetadata(0);
 	Platform_Log("[CTR Replay] recording input replay: %s\n", replayPath);
+	return 1;
+}
+
+internal s32 NativeReplayScheduler_OpenRecord(const char *replayPath, const char *checkpointPath)
+{
+	if (!NativeReplayScheduler_ActivateRecordMemcardSandbox())
+	{
+		return 0;
+	}
+
+	return NativeReplayScheduler_OpenRecordFiles(replayPath, checkpointPath);
+}
+
+// --record without --toggle, before CTR_Main. Everything that does not need
+// the checkpoint size happens here, at the same point as on --replay: the
+// memcard sandbox and the deterministic audio. The mode is RECORD from here
+// on (focus pause off; F9 reports the recording as active, F10 ends it after
+// the current frame); the files are opened by the first BeginFrame, right
+// before it takes the bootstrap checkpoint and records replay frame 0.
+internal s32 NativeReplayScheduler_RequestRecordFromBoot(void)
+{
+	if ((s_reportEnabled == 0) || (s_reportReplayPath == NULL) || (s_reportCheckpointPath == NULL))
+	{
+		return 0;
+	}
+	if (!NativeReplayScheduler_ActivateRecordMemcardSandbox())
+	{
+		return 0;
+	}
+
+	s_mode = NATIVE_REPLAY_MODE_RECORD;
+	s_recordOpenPending = 1;
+	NativeAudio_SetDeterministicRenderMode(1);
+	Platform_Log("[CTR Replay] recording from boot, the replay opens at the first frame: %s\n", s_reportReplayPath);
 	return 1;
 }
 
@@ -1245,17 +1295,12 @@ internal s32 NativeReplayScheduler_OpenPlayback(const char *path, s32 bypassHead
 		NativeReplayScheduler_CloseFiles();
 		return 0;
 	}
-	if (!NativeReplayScheduler_HeaderIdentityValid(&s_header))
-	{
-		NativeReplayScheduler_LogHeaderIdentityMismatch(&s_header);
-		if (bypassHeaderIdentity == 0)
-		{
-			Platform_Log("[CTR Replay] invalid replay header: %s\n", path);
-			NativeReplayScheduler_CloseFiles();
-			return 0;
-		}
-		Platform_Log("[CTR Replay] bypassing replay header identity mismatch: %s\n", path);
-	}
+
+	// The identity holds the checkpoint size, which is still 0 here (see
+	// s_recordOpenPending). It is compared by the first BeginFrame, against the
+	// same live size the recording wrote into its header.
+	s_playbackIdentityPending = 1;
+	s_playbackBypassHeaderIdentity = bypassHeaderIdentity;
 
 	if (!NativeReplayScheduler_PrepareBootstrapCheckpoint(path))
 	{
@@ -1272,6 +1317,30 @@ internal s32 NativeReplayScheduler_OpenPlayback(const char *path, s32 bypassHead
 	s_mode = NATIVE_REPLAY_MODE_PLAYBACK;
 	NativeAudio_SetDeterministicRenderMode(1);
 	Platform_Log("[CTR Replay] playing input replay: %s frames=%u\n", path, s_header.frameCount);
+	return 1;
+}
+
+// The header identity check of --replay, run by the first BeginFrame before
+// the bootstrap checkpoint is restored. 0 ends the playback.
+internal s32 NativeReplayScheduler_CheckPlaybackIdentity(void)
+{
+	if (s_playbackIdentityPending == 0)
+	{
+		return 1;
+	}
+
+	s_playbackIdentityPending = 0;
+	if (!NativeReplayScheduler_HeaderIdentityValid(&s_header))
+	{
+		NativeReplayScheduler_LogHeaderIdentityMismatch(&s_header);
+		if (s_playbackBypassHeaderIdentity == 0)
+		{
+			Platform_Log("[CTR Replay] invalid replay header, playback stopped before replay frame 0\n");
+			return 0;
+		}
+		Platform_Log("[CTR Replay] bypassing replay header identity mismatch\n");
+	}
+
 	return 1;
 }
 
@@ -1367,7 +1436,7 @@ int NativeReplayScheduler_ConfigureFromArgs(int argc, char **argv)
 	{
 		if (toggle == 0)
 		{
-			return NativeReplayScheduler_OpenRecord(s_reportReplayPath, s_reportCheckpointPath) ? 0 : 1;
+			return NativeReplayScheduler_RequestRecordFromBoot() ? 0 : 1;
 		}
 
 		return NativeReplayScheduler_ArmReport() ? 0 : 1;
@@ -1485,6 +1554,13 @@ int NativeReplayScheduler_BeginFrame(const struct NativeReplaySchedulerFrameInfo
 
 	if (s_mode == NATIVE_REPLAY_MODE_RECORD)
 	{
+		if ((s_recordOpenPending != 0) && !NativeReplayScheduler_OpenRecordFiles(s_reportReplayPath, s_reportCheckpointPath))
+		{
+			// Most of its paths have closed already; the one that has not (the
+			// replay file did not open) leaves RECORD with no file behind.
+			NativeReplayScheduler_CloseFiles();
+			return 1;
+		}
 		if (!NativeReplayScheduler_WriteCheckpointIfDue())
 		{
 			return 1;
@@ -1508,6 +1584,10 @@ int NativeReplayScheduler_BeginFrame(const struct NativeReplaySchedulerFrameInfo
 
 	if (s_mode == NATIVE_REPLAY_MODE_PLAYBACK)
 	{
+		if (!NativeReplayScheduler_CheckPlaybackIdentity())
+		{
+			return 1;
+		}
 		if (!NativeReplayScheduler_RestoreBootstrapCheckpoint())
 		{
 			return 1;
