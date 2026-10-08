@@ -113,6 +113,10 @@ static void Wh_FieldPath(wchar_t *out, int cap)
 
 // Height of a wrapping label at this width: its lines, at least one, at most
 // WH_NOTE_LINES.
+// The compact layout of the page (rs_char.c, CharWheels_Layout): notes on one line, the
+// whole text as the tooltip (Rs_LabelOneLine).
+static int s_whCompact;
+
 static int Wh_TextHeight(HWND label, int width)
 {
     wchar_t *text = Rs_GetText(label);
@@ -132,6 +136,9 @@ static int Wh_TextHeight(HWND label, int width)
         rc.bottom = 0;
         DrawTextW(dc, text ? text : L"", -1, &rc, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX | DT_EXPANDTABS);
         h = rc.bottom;
+        Rs_LabelOneLine(label, s_whCompact && tm.tmHeight > 0 && h > tm.tmHeight);
+        if (s_whCompact && tm.tmHeight > 0 && h > tm.tmHeight)
+            h = tm.tmHeight;
         if (tm.tmHeight > 0 && h > tm.tmHeight * WH_NOTE_LINES)
             h = tm.tmHeight * WH_NOTE_LINES;
         SelectObject(dc, old);
@@ -424,13 +431,14 @@ void CharWheels_Create(HWND page, HWND view)
 
 // Card "Wheels" from top between left and right, its fields beside a label
 // column at least labelW wide (the page's). Returns the bottom of the card.
-int CharWheels_Layout(HWND page, int left, int right, int top, int labelW)
+int CharWheels_Layout(HWND page, int left, int right, int top, int labelW, int compact)
 {
     RECT card, in;
     int x, y, h, w, fieldW, width;
     const int browseW = Rs_Px(100), clearW = Rs_Px(72);
     wchar_t *text;
 
+    s_whCompact = compact;
     if (!g_wh.created)
         return top;
     // Nothing is cut short: the label column holds this card's labels too.

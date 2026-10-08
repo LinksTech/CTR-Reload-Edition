@@ -300,6 +300,19 @@ struct RsView {
     int dragging;
     int dragX;
     int dragYaw;
+    int downX, downY;          // where the left button went down (a click picks, RsView_PickBegin)
+
+    // The look (RsView_SetLook; the tab In-game look of the page): the
+    // shadow quad on the floor under the model, the exhaust points over it.
+    int lookShadow;            // 0 none, 1 drawn
+    int lookQuad[4];           // x0 x1 z0 z1, 1/16 units
+    int lookCount;             // exhaust points drawn, 0..2
+    int lookPoint[2][3];       // 1/16 units
+    int lookGrey;              // the points are the retail ones: grey
+    int pick;                  // 1 or 2 while that point is picked by a click; 0 = none
+    int pickDone;              // the point the last pick was for
+    int pickHit;               // it hit the model
+    int pickAt[3];             // where, 1/16 units
 
     // The picture: a top-down 32-bit DIB selected into mem, and its depth buffer.
     HBITMAP dib;
@@ -1755,6 +1768,24 @@ static const struct RsViewPoseData *RsView_ShownPose(const struct RsView *v)
     return &v->poses[v->pose];
 }
 
+// A marker of the look at pixel (x, y): a ring of radius Rs_Px(5) and a
+// cross through it, two pixels wide - integers only.
+static void RsView_Marker(struct RsView *v, int x, int y, unsigned int rgb)
+{
+    const int r = Rs_Px(5), r2o = (r + 1) * (r + 1), r2i = (r - 1) * (r - 1);
+    int dx, dy;
+    for (dy = -r - 3; dy <= r + 3; dy++)
+        for (dx = -r - 3; dx <= r + 3; dx++) {
+            const int d2 = dx * dx + dy * dy;
+            const int px = x + dx, py = y + dy;
+            if (px < 0 || py < 0 || px >= v->w || py >= v->h)
+                continue;
+            if ((d2 <= r2o && d2 >= r2i) || ((dx == 0 || dx == 1) && dy >= -r - 3 && dy <= r + 3) ||
+                ((dy == 0 || dy == 1) && dx >= -r - 3 && dx <= r + 3))
+                v->pixels[(size_t)py * (size_t)v->w + (size_t)px] = rgb;
+        }
+}
+
 static void RsView_Render(HWND view, struct RsView *v)
 {
     struct RsViewTarget t;
@@ -1819,6 +1850,24 @@ static void RsView_Render(HWND view, struct RsView *v)
         RsView_Triangle(&t, tri, 0);
     }
 
+    // The shadow of the look (RsView_SetLook): the quad on the floor under
+    // the model, turned with it, the floor's colour at half; a hair above
+    // the floor, so the model's faces on the ground still win.
+    if (v->loaded && v->lookShadow) {
+        struct RsViewVert q[4], tri[3];
+        const COLORREF fc = RS_COL_BORDER;
+        for (k = 0; k < 4; k++) {
+            RsView_Project(&s.cam, v->lookQuad[(k & 1) ? 1 : 0], s.floorY + 1, v->lookQuad[(k & 2) ? 3 : 2], s.offModel, 1, &q[k]);
+            q[k].r = GetRValue(fc) / 2;
+            q[k].g = GetGValue(fc) / 2;
+            q[k].b = GetBValue(fc) / 2;
+        }
+        tri[0] = q[0]; tri[1] = q[1]; tri[2] = q[3];
+        RsView_Triangle(&t, tri, 0);
+        tri[0] = q[0]; tri[1] = q[3]; tri[2] = q[2];
+        RsView_Triangle(&t, tri, 0);
+    }
+
     // The model, in file order; it marks its pixels. The native model
     // (preview feature) in its place while there is one and no pose of a
     // pose set is chosen.
@@ -1871,6 +1920,16 @@ static void RsView_Render(HWND view, struct RsView *v)
     // The game's wheels under the model (never over it), the dummy beside it.
     t.maskMode = RS_VIEW_MASK_NONE;
     RsView_DrawDummy(v, &t, &s);
+
+    // The exhaust points of the look, always on top: a ring with a cross,
+    // point 1 in the accent colour, point 2 in the note colour, the retail
+    // points grey.
+    for (k = 0; v->loaded && k < v->lookCount && k < 2; k++) {
+        struct RsViewVert c;
+        const COLORREF col = v->lookGrey ? RS_COL_MUTED : (k == 0 ? RS_COL_ACCENT : RS_COL_NOTE);
+        RsView_Project(&s.cam, v->lookPoint[k][0], v->lookPoint[k][1], v->lookPoint[k][2], s.offModel, 1, &c);
+        RsView_Marker(v, (int)(c.x >> 4), (int)(c.y >> 4), RsView_Pixel(col));
+    }
 
     GdiFlush();   // the bits are done; GDI writes the text on top
     {
@@ -2113,6 +2172,111 @@ static void RsView_SetYawFrom(HWND view, struct RsView *v, int degrees, int noti
     }
 }
 
+// THE PICK of the look: the point of the model's surface under pixel (px,
+// py) of the last picture, in model units (1/16), the pose shown. The ray
+// of the pixel's centre through the inverse of RsView_Project, against every
+// triangle of the model drawn (the native one when it is drawn), the nearest
+// hit. 1 = a hit (out set), 0 = the pixel shows no model. Doubles only here:
+// it picks a point, it draws nothing.
+static int RsView_PickRay(struct RsView *v, int px, int py, int out[3])
+{
+    struct RsViewScene s;
+    const int labelH = Rs_Px(20);
+    const int topH = v->loaded ? labelH : labelH + Rs_Px(36);
+    const struct RsViewCam *c;
+    double o[3], dir[3], best = -1.0;
+    int k, tri, found = 0;
+
+    if (!v->loaded || v->w < 8 || v->h < 8 || px < 0 || py < 0 || px >= v->w || py >= v->h)
+        return 0;
+    RsView_Scene(v, v->w, v->h, topH, &s);
+    c = &s.cam;
+    // P(d) for the camera depth d = 1 and d = 2: origin and direction (linear in d).
+    for (k = 0; k < 2; k++) {
+        const double d = (double)(k + 1);
+        const double a = ((double)px * RS_VIEW_SUB + 8.0 - (double)c->cxq) / (double)c->fq;
+        const double b = ((double)c->cyq - ((double)py * RS_VIEW_SUB + 8.0)) / (double)c->fq;
+        const double x1 = a * d, y2 = b * d, z2 = (double)c->dq - d;
+        const double y = (y2 * c->pitchCos + z2 * c->pitchSin) / 16384.0;
+        const double z1 = (-y2 * c->pitchSin + z2 * c->pitchCos) / 16384.0;
+        const double xr = x1 - (double)s.offModel;
+        const double p[3] = { (xr * c->yawCos - z1 * c->yawSin) / 16384.0, y + (double)c->ycq, (xr * c->yawSin + z1 * c->yawCos) / 16384.0 };
+        int a3;
+        for (a3 = 0; a3 < 3; a3++) {
+            if (k == 0)
+                o[a3] = p[a3];
+            else
+                dir[a3] = p[a3] - o[a3];
+        }
+    }
+    for (k = 0; k < 3; k++)
+        o[k] -= dir[k];   // d = 0: the camera
+    {
+        const int native = v->native.count > 0 && !(v->setIndex >= 0 && v->setIndex < v->setCount);
+        const int pose = (v->pose >= 0 && v->pose < RS_VIEW_POSE_COUNT) ? v->pose : RS_VIEW_POSE_NEUTRAL;
+        const struct RsViewPoseData *pd = RsView_ShownPose(v);
+        const int count = native ? v->native.count : pd->count;
+        for (tri = 0; tri < count; tri++) {
+            double q[3][3], e1[3], e2[3], h[3], sv[3], qv[3], det, f, u, w, t;
+            int i;
+            for (i = 0; i < 3; i++) {
+                const unsigned char *p = native ? v->native.pos[pose] + (size_t)tri * RS_VIEW_NATIVE_POS_BYTES + (size_t)i * 6
+                                                : pd->tris + (size_t)tri * RS_VIEW_TRI_BYTES + (size_t)i * RS_VIEW_CORNER_BYTES;
+                const int sub = native ? 1 : pd->sub;
+                q[i][0] = (double)RsView_ReadS16(p) * sub;
+                q[i][1] = (double)RsView_ReadS16(p + 2) * sub;
+                q[i][2] = (double)RsView_ReadS16(p + 4) * sub;
+            }
+            for (i = 0; i < 3; i++) {
+                e1[i] = q[1][i] - q[0][i];
+                e2[i] = q[2][i] - q[0][i];
+            }
+            h[0] = dir[1] * e2[2] - dir[2] * e2[1];
+            h[1] = dir[2] * e2[0] - dir[0] * e2[2];
+            h[2] = dir[0] * e2[1] - dir[1] * e2[0];
+            det = e1[0] * h[0] + e1[1] * h[1] + e1[2] * h[2];
+            if (det > -1e-9 && det < 1e-9)
+                continue;
+            f = 1.0 / det;
+            for (i = 0; i < 3; i++)
+                sv[i] = o[i] - q[0][i];
+            u = f * (sv[0] * h[0] + sv[1] * h[1] + sv[2] * h[2]);
+            if (u < 0.0 || u > 1.0)
+                continue;
+            qv[0] = sv[1] * e1[2] - sv[2] * e1[1];
+            qv[1] = sv[2] * e1[0] - sv[0] * e1[2];
+            qv[2] = sv[0] * e1[1] - sv[1] * e1[0];
+            w = f * (dir[0] * qv[0] + dir[1] * qv[1] + dir[2] * qv[2]);
+            if (w < 0.0 || u + w > 1.0)
+                continue;
+            t = f * (e2[0] * qv[0] + e2[1] * qv[1] + e2[2] * qv[2]);
+            if (t > 0.0 && (!found || t < best)) {
+                best = t;
+                found = 1;
+            }
+        }
+    }
+    if (!found)
+        return 0;
+    for (k = 0; k < 3; k++) {
+        const double value = o[k] + best * dir[k];
+        out[k] = (int)(value < 0.0 ? value - 0.5 : value + 0.5);
+    }
+    return 1;
+}
+
+// A pick ends: the point (x >= 0: the pixel clicked) and WM_COMMAND
+// RS_VIEW_N_PICK to the parent - RsView_PickResult says whether it hit.
+static void RsView_PickNotify(HWND view, struct RsView *v, int x, int y)
+{
+    HWND parent = GetParent(view);
+    v->pickHit = x >= 0 && RsView_PickRay(v, x, y, v->pickAt);
+    v->pickDone = v->pick ? v->pick : v->pickDone;
+    v->pick = 0;
+    if (parent)
+        SendMessageW(parent, WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(view), RS_VIEW_N_PICK), (LPARAM)view);
+}
+
 // The view's own timer for the wheel animation (another window than the
 // page's timers, so no ID can clash).
 static void RsView_WheelTimer(HWND view, struct RsView *v, int run)
@@ -2228,6 +2392,8 @@ static LRESULT CALLBACK RsView_Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             v->dragging = 1;
             v->dragX = (short)LOWORD(lParam);
             v->dragYaw = v->yaw;
+            v->downX = (short)LOWORD(lParam);
+            v->downY = (short)HIWORD(lParam);
             SetCapture(hwnd);
         }
         return 0;
@@ -2240,8 +2406,23 @@ static LRESULT CALLBACK RsView_Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         }
         return 0;
     case WM_LBUTTONUP:
-        if (v && v->dragging)
+        if (v && v->dragging) {
+            const int dx = (short)LOWORD(lParam) - v->downX, dy = (short)HIWORD(lParam) - v->downY;
             ReleaseCapture();
+            // A click (less than 4 pixels at 96 dpi) while a point is picked:
+            // the surface under it, the turn as before the click.
+            if (v->pick && dx * dx + dy * dy < Rs_Px(4) * Rs_Px(4)) {
+                RsView_SetYawFrom(hwnd, v, v->dragYaw, 1);
+                RsView_PickNotify(hwnd, v, v->downX, v->downY);
+            }
+        }
+        return 0;
+    case WM_RBUTTONUP:
+        // A right click ends a pick without a point.
+        if (v && v->pick) {
+            v->pick = 0;
+            RsView_PickNotify(hwnd, v, -1, -1);
+        }
         return 0;
     case WM_CAPTURECHANGED:
         if (v)
@@ -2618,4 +2799,66 @@ void RsView_SetWheelAnimation(HWND view, int on)
         return;
     v->wheelAnim = on != 0;
     RsView_WheelTimer(view, v, v->wheelAnim && v->wheelCount && IsWindowVisible(view));
+}
+
+// ---------------------------------------------------------------------------
+// The look (the tab In-game look of the page Character)
+// ---------------------------------------------------------------------------
+
+void RsView_SetLook(HWND view, int shadow, const int quad[4], int count, const int point[2][3], int grey)
+{
+    struct RsView *v = RsView_Data(view);
+    int k, a;
+    if (!v)
+        return;
+    v->lookShadow = shadow && quad != NULL;
+    for (k = 0; k < 4; k++)
+        v->lookQuad[k] = (quad != NULL) ? quad[k] : 0;
+    v->lookCount = (point != NULL) ? (count < 0 ? 0 : (count > 2 ? 2 : count)) : 0;
+    for (k = 0; k < 2; k++)
+        for (a = 0; a < 3; a++)
+            v->lookPoint[k][a] = (point != NULL && k < v->lookCount) ? point[k][a] : 0;
+    v->lookGrey = grey != 0;
+    RsView_Changed(view, v);
+}
+
+void RsView_PickBegin(HWND view, int n)
+{
+    struct RsView *v = RsView_Data(view);
+    if (v)
+        v->pick = (n == 1 || n == 2) ? n : 0;
+}
+
+int RsView_Picking(HWND view)
+{
+    struct RsView *v = RsView_Data(view);
+    return v ? v->pick : 0;
+}
+
+int RsView_PickResult(HWND view, int *n, int out[3])
+{
+    struct RsView *v = RsView_Data(view);
+    int k;
+    if (!v)
+        return 0;
+    if (n)
+        *n = v->pickDone;
+    for (k = 0; k < 3; k++)
+        out[k] = v->pickAt[k];
+    return v->pickHit;
+}
+
+int RsView_PickPixel(HWND view, int n, int px, int py)
+{
+    struct RsView *v = RsView_Data(view);
+    if (!v)
+        return 0;
+    {
+        RECT rc;
+        GetClientRect(view, &rc);
+        RsView_EnsureFrame(v, rc.right, rc.bottom);
+    }
+    v->pick = (n == 1 || n == 2) ? n : 0;
+    RsView_PickNotify(view, v, px, py);
+    return v->pickHit;
 }

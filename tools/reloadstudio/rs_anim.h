@@ -3,7 +3,8 @@
 #define RS_ANIM_H
 #include "reloadstudio.h"
 void CharAnim_Create(HWND page, HWND view);                         // after the page's own controls
-int  CharAnim_Layout(HWND page, int left, int right, int top, int labelW);  // adds its card, returns its bottom
+int  CharAnim_Layout(HWND page, int left, int right, int top, int labelW, int compact);  // adds its card, returns its bottom;
+                                                                    // compact: the compact layout of the page (rs_char.c)
 int  CharAnim_Command(HWND page, int id, int code);                 // 1 = its control, handled
 LRESULT CharAnim_Notify(HWND page, NMHDR *hdr, int *handled);
 LRESULT CharAnim_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, int *handled);

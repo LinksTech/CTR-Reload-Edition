@@ -127,6 +127,7 @@ struct RsPageState {
     int fitting;
     int fitPosted;
     int headW;          // the width the heading was measured for (Rs_TopUpdate)
+    int compactHead;    // Rs_PageSetCompactHead: the title small and on one line
 };
 
 static HINSTANCE g_inst;
@@ -1603,16 +1604,21 @@ static void Rs_Layout(int relayout);
 // page is narrower than their line. *titleBottom and *subBottom are the lower
 // edges of both (on one line each: 68 and 92 at 96 dpi, as always). A page
 // without a subtitle ("") ends at its title: *subBottom = *titleBottom.
-static void Rs_HeadMetrics(const struct RsPageDef *def, int w, int *titleBottom, int *subBottom)
+static void Rs_HeadMetrics(const struct RsPageDef *def, int compact, int w, int *titleBottom, int *subBottom)
 {
     HDC dc = GetDC(NULL);
     int room = w - Rs_Px(64), th, sh;
     if (room < Rs_Px(100))
         room = Rs_Px(100);
-    th = Rs_TextSize(dc, Rs_Font(RS_FONT_TITLE), def->title, room, DT_WORDBREAK | DT_NOPREFIX).cy;
+    th = Rs_TextSize(dc, Rs_Font(compact ? RS_FONT_SECTION : RS_FONT_TITLE), def->title, room,
+                     compact ? DT_SINGLELINE | DT_NOPREFIX : DT_WORDBREAK | DT_NOPREFIX).cy;
     sh = Rs_TextSize(dc, Rs_Font(RS_FONT_BODY), def->subtitle, room, DT_WORDBREAK | DT_NOPREFIX).cy;
     ReleaseDC(NULL, dc);
-    *titleBottom = Rs_Px(24) + (th > Rs_Px(44) ? th : Rs_Px(44));
+    // Compact (Rs_PageSetCompactHead): one line of the section font from y 4.
+    if (compact)
+        *titleBottom = Rs_Px(4) + (th > Rs_Px(20) ? th : Rs_Px(20));
+    else
+        *titleBottom = Rs_Px(24) + (th > Rs_Px(44) ? th : Rs_Px(44));
     *subBottom = def->subtitle[0] ? *titleBottom + (sh > Rs_Px(24) ? sh : Rs_Px(24)) : *titleBottom;
 }
 
@@ -1622,7 +1628,7 @@ int Rs_PageHeadBottom(HWND page, int w)
     int tb, sb;
     if (!st || !st->def)
         return Rs_PageTop();
-    Rs_HeadMetrics(st->def, w, &tb, &sb);
+    Rs_HeadMetrics(st->def, st->compactHead, w, &tb, &sb);
     return sb;
 }
 
@@ -1637,7 +1643,7 @@ static int Rs_TopUpdate(void)
         int tb, sb;
         if (!st || st->headW <= 0)
             continue;
-        Rs_HeadMetrics(st->def, st->headW, &tb, &sb);
+        Rs_HeadMetrics(st->def, st->compactHead, st->headW, &tb, &sb);
         if (sb + Rs_Px(12) > top)
             top = sb + Rs_Px(12);
     }
@@ -1879,7 +1885,7 @@ int g_rsPreviewFeatures;
 // gets no mouse messages, they go to the page - and one on the control itself
 // (TTF_IDISHWND) for when it is enabled and takes the mouse. Only one of them
 // ever sees the mouse. The table keeps the texts for the verb "controls".
-#define RS_MAX_PAGE_TIPS 64
+#define RS_MAX_PAGE_TIPS 128
 struct RsPageTip {
     HWND page;
     HWND control;
@@ -1991,6 +1997,48 @@ static void Rs_TipsSyncPage(HWND page)
         onPage.rect = Rs_PageTipRect(&g_pageTip[i]);
         SendMessageW(g_pageTips, TTM_NEWTOOLRECTW, 0, (LPARAM)&onPage);
     }
+}
+
+int Rs_NativeForUsers(void)
+{
+    return g_rsPreviewFeatures;
+}
+
+void Rs_PageSetCompactHead(HWND page, int on)
+{
+    struct RsPageState *st = page ? Rs_State(page) : NULL;
+    if (!st || st->compactHead == (on != 0))
+        return;
+    st->compactHead = on != 0;
+    if (Rs_TopUpdate())
+        g_topChanged = 1;
+    InvalidateRect(page, NULL, TRUE);
+}
+
+void Rs_LabelOneLine(HWND label, int on)
+{
+    LONG_PTR style;
+    wchar_t *text;
+    if (!label)
+        return;
+    style = GetWindowLongPtrW(label, GWL_STYLE);
+    if (!on) {
+        if (!GetPropW(label, L"RsOneLine"))
+            return;
+        RemovePropW(label, L"RsOneLine");
+        SetWindowLongPtrW(label, GWL_STYLE, style & ~(LONG_PTR)SS_ELLIPSISMASK);
+        Rs_SetTip(label, NULL);
+        InvalidateRect(label, NULL, TRUE);
+        return;
+    }
+    SetPropW(label, L"RsOneLine", (HANDLE)1);
+    if ((style & SS_ELLIPSISMASK) != SS_ENDELLIPSIS) {
+        SetWindowLongPtrW(label, GWL_STYLE, (style & ~(LONG_PTR)SS_ELLIPSISMASK) | SS_ENDELLIPSIS);
+        InvalidateRect(label, NULL, TRUE);
+    }
+    text = Rs_GetText(label);
+    Rs_SetTip(label, text);
+    Rs_Free(text);
 }
 
 HWND Rs_ComingSoon(HWND page, int id)
@@ -3095,11 +3143,11 @@ static void Rs_PagePaint(HWND hwnd)
     if (st && st->def) {
         RECT t;
         int tb, sb;
-        Rs_HeadMetrics(st->def, rc.right, &tb, &sb);
-        SetRect(&t, Rs_Px(32), Rs_Px(24), rc.right - Rs_Px(32), tb);
-        oldFont = SelectObject(dc, Rs_Font(RS_FONT_TITLE));
+        Rs_HeadMetrics(st->def, st->compactHead, rc.right, &tb, &sb);
+        SetRect(&t, Rs_Px(32), Rs_Px(st->compactHead ? 4 : 24), rc.right - Rs_Px(32), tb);
+        oldFont = SelectObject(dc, Rs_Font(st->compactHead ? RS_FONT_SECTION : RS_FONT_TITLE));
         SetTextColor(dc, RS_COL_TEXT);
-        DrawTextW(dc, st->def->title, -1, &t, DT_WORDBREAK | DT_NOPREFIX);
+        DrawTextW(dc, st->def->title, -1, &t, st->compactHead ? DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS : DT_WORDBREAK | DT_NOPREFIX);
         t.top = tb;
         t.bottom = sb;
         SelectObject(dc, Rs_Font(RS_FONT_BODY));
@@ -4111,7 +4159,7 @@ static int Rs_DumpControls(const wchar_t *path)
             st->scrollX, st->scrollY, Rs_PageMin(st).cx, Rs_PageMin(st).cy);
     {
         int tb, sb;
-        Rs_HeadMetrics(st->def, pr.right, &tb, &sb);
+        Rs_HeadMetrics(st->def, st->compactHead, pr.right, &tb, &sb);
         fprintf(f, "header\t%ld\t%ld\t%ld\t%d\t%d\n",
                 Rs_TextSize(dc, Rs_Font(RS_FONT_TITLE), st->def->title, 0, DT_SINGLELINE | DT_NOPREFIX).cx,
                 Rs_TextSize(dc, Rs_Font(RS_FONT_BODY), st->def->subtitle, 0, DT_SINGLELINE | DT_NOPREFIX).cx,
@@ -4398,15 +4446,30 @@ static RECT Rs_WorkArea(HWND hwnd)
 }
 
 // The window at start: RS_START_W x RS_START_H client area, but inside the work
-// area (moved there, and made smaller where it is larger). With --screen it
-// fills that work area, as a maximized window would.
+// area (moved there, and made smaller where it is larger). With --screen the
+// window a user gets at start on that screen: the client area of the start
+// window there, inside the simulated work area less the frame the window has
+// at the simulated dpi (AdjustWindowRectExForDpi with g_dpi - at 150 % the
+// title bar and the borders are larger than on the real monitor); the real
+// frame is put around that client area, so the page sees the user's size.
 static void Rs_PlaceWindow(void)
 {
     RECT work = Rs_WorkArea(g_main), wr, r = { 0, 0, Rs_Px(RS_START_W), Rs_Px(RS_START_H) };
     int ww = work.right - work.left, wh = work.bottom - work.top, w, h, x, y;
 
     if (g_screenW > 0) {
-        SetWindowPos(g_main, NULL, work.left, work.top, ww, wh, SWP_NOZORDER | SWP_NOACTIVATE);
+        RECT frame = { 0, 0, 0, 0 }, real = { 0, 0, 0, 0 };
+        int cw, ch;
+        AdjustWindowRectExForDpi(&frame, WS_OVERLAPPEDWINDOW, FALSE, 0, (UINT)g_dpi);
+        AdjustWindowRectExForDpi(&real, WS_OVERLAPPEDWINDOW, FALSE, 0, GetDpiForWindow(g_main));
+        cw = ww - (frame.right - frame.left);
+        ch = wh - (frame.bottom - frame.top);
+        if (cw > r.right)
+            cw = r.right;
+        if (ch > r.bottom)
+            ch = r.bottom;
+        SetWindowPos(g_main, NULL, work.left, work.top, cw + (real.right - real.left), ch + (real.bottom - real.top),
+                     SWP_NOZORDER | SWP_NOACTIVATE);
         return;
     }
     AdjustWindowRectExForDpi(&r, WS_OVERLAPPEDWINDOW, FALSE, 0, GetDpiForWindow(g_main));

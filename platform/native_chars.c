@@ -91,7 +91,13 @@
 //            (NativeChar_SeatNative) - one line "native model ready",
 //            "native model refused (<rule>), using CMDL" or "native model
 //            none". A broken native part costs only itself: the driver keeps
-//            its CMDL. Without --native-preview nothing of this runs: the
+//            its CMDL. A native part is held only with the kart wheels
+//            hidden (CHRI RLDCHAR_FLAG_NO_WHEELS): a file that shows them is
+//            refused with the rule native-wheels and drives with its CMDL
+//            and the retail wheels, so the test wheel of its WHLS is never
+//            uploaded or drawn (NativeChar_RefuseShownWheels). The same
+//            holds for the driver select preview (NativeChar_HoldPreview).
+//            Without --native-preview nothing of this runs: the
 //            roster read above never looks at CNET or CTXT, so the path of a
 //            file, its checks and its lines are those of a build without them.
 //   stage 0  NativeChar_ClearSeats: the next load starts with empty seats.
@@ -1508,11 +1514,33 @@ internal void NativeChar_LogNative(const char *who, const struct NativeCharFile 
 	}
 }
 
-// At the binding of a seat (load stage 5), only with --native-preview: the
-// native part of the file, read, checked and held in host memory until the
-// seats are cleared. Nothing is uploaded and nothing drawn here (step 4c).
-// One line per binding. A file held already (several dev seats) is not read
-// again.
+// THE KART WHEELS RULE (renderer concept C.12): the game draws a native body
+// only with the kart wheels hidden. A ready part of a file whose CHRI does not
+// set RLDCHAR_FLAG_NO_WHEELS carries a WHLS section - for a file of rldpack
+// the test wheel (a grey cylinder at the retail wheel points,
+// tools/rldpack_native.inc) - and would be drawn with it in place of the
+// sprite wheels. Such a part is refused here with the rule native-wheels and
+// let go: the driver keeps its CMDL with the retail wheels. The reader
+// (RldChar_ReadNative, CNET-10) stays as it is, it is shared with the packer.
+// 1 when refused; any other part is left as it is.
+internal int NativeChar_RefuseShownWheels(const struct NativeCharFile *f, struct RldCharNative *n)
+{
+	if ((n->state != RLDCHAR_NATIVE_READY) || (((f->info.flags & RLDCHAR_FLAG_NO_WHEELS) != 0u) && (n->wheel == NULL)))
+	{
+		return 0;
+	}
+
+	RldChar_NativeFail(n, "native-wheels", "%s", "the kart wheels are shown - a native model is drawn only with the wheels hidden");
+	RldChar_NativeDrop(n);
+	return 1;
+}
+
+// At the binding of a seat (load stage 5) and for the driver select preview,
+// only with --native-preview: the native part of the file, read, checked
+// against the kart wheels rule (NativeChar_RefuseShownWheels) and held in host
+// memory until the seats are cleared. Nothing is uploaded and nothing drawn
+// here (step 4c). One line per binding. A file held already (several dev
+// seats) is not read again.
 internal void NativeChar_HoldNative(int entry, const char *who)
 {
 	struct NativeCharFile *f = &s_charFiles[entry];
@@ -1531,6 +1559,7 @@ internal void NativeChar_HoldNative(int entry, const char *who)
 	}
 
 	(void)NativeChar_ReadNative(f, 1, n);
+	(void)NativeChar_RefuseShownWheels(f, n);
 	NativeChar_LogNative(who, f, n);
 	if (n->state == RLDCHAR_NATIVE_READY)
 	{
@@ -4434,10 +4463,12 @@ void NativeChar_LookSelfTest(int *checks, int *failures)
 //   3. with --native-preview: read and checked against the expectation the
 //      name gives (step 4 below repeats 2 and 3 through the real switch,
 //      g_cfg_nativePreview in NativeChar_HoldNative, with ReleaseNative and
-//      SeatNative), "<kind>_<rest>.rldchar":
+//      SeatNative; step 5 the same for the driver select preview, step 6
+//      the kart wheels rule on the part of step 3), "<kind>_<rest>.rldchar":
 //        old_      no CNET/CTXT: the roster read loads it, native NONE
 //        none_     CTXT without CNET: loaded, native NONE (CTXT not read)
-//        good_     loaded, native READY
+//        good_     loaded, native READY; held only when CHRI hides the
+//                  kart wheels, else refused by native-wheels at the hold
 //        bad_<RULE>_  loaded with its CMDL, native REFUSED by exactly <RULE>
 //        damaged_  the whole file refused by the roster read, as today
 //      any other name is only reported.
@@ -4633,12 +4664,22 @@ int NativeChar_NativeSelfTest(const char *dir)
 		//    itself. The file stands in as roster entry 0 with seat 0 bound
 		//    to it, as NativeChar_ArmSeats leaves them; without the switch
 		//    nothing is opened and nothing held, with it the part is held
-		//    exactly when it is ready, NativeChar_SeatNative hands it out for
-		//    seat 0 only, and NativeChar_ReleaseNative lets it go. Then the
-		//    roster and the seats are empty again.
+		//    exactly when it is ready and CHRI hides the kart wheels (the
+		//    kart wheels rule, NativeChar_RefuseShownWheels), SeatNative hands
+		//    it out for seat 0 only, and NativeChar_ReleaseNative lets it go.
+		// 5. The driver select preview, with no seat bound: NativeChar_HoldPreview
+		//    reads the file once and holds the same as a seat would, and
+		//    NativeChar_ReleasePreview lets it go. Then the roster and the
+		//    seats are empty again.
+		// 6. The kart wheels rule on the part of step 3: refused by
+		//    native-wheels exactly when it is ready and CHRI shows the kart
+		//    wheels, with nothing held after it (no WHLS); any other part
+		//    keeps its state.
 		{
 			const int previewBefore = g_cfg_nativePreview;
 			const int ready = (n.state == RLDCHAR_NATIVE_READY);
+			const int held = ready && ((f.info.flags & RLDCHAR_FLAG_NO_WHEELS) != 0u);
+			const int stateBefore = (int)n.state;
 			int pass;
 
 			s_charFiles[0] = f;
@@ -4661,8 +4702,10 @@ int NativeChar_NativeSelfTest(const char *dir)
 				}
 				else
 				{
-					NativeChar_NativeExpect(&checks, &failures, (s_nativeLooks == (looks + 1)) && ((s_charFiles[0].native != NULL) == ready), name,
-					                        "HoldNative with --native-preview did not hold exactly a ready part");
+					NativeChar_NativeExpect(&checks, &failures, (s_nativeLooks == (looks + 1)) && ((s_charFiles[0].native != NULL) == held), name,
+					                        "HoldNative with --native-preview did not hold exactly a ready part with the kart wheels hidden");
+					NativeChar_NativeExpect(&checks, &failures, (s_charFiles[0].native == NULL) || (s_charFiles[0].native->wheel == NULL), name,
+					                        "HoldNative held a part with a WHLS wheel");
 					NativeChar_NativeExpect(&checks, &failures,
 					                        (NativeChar_SeatNative(0) == s_charFiles[0].native) && (NativeChar_SeatNative(1) == NULL) &&
 					                            (NativeChar_SeatNative(-1) == NULL) && (NativeChar_SeatNative(NATIVE_CHAR_SEATS) == NULL),
@@ -4673,6 +4716,37 @@ int NativeChar_NativeSelfTest(const char *dir)
 			NativeChar_ReleaseNative();
 			NativeChar_NativeExpect(&checks, &failures, (s_charFiles[0].native == NULL) && (NativeChar_SeatNative(0) == NULL), name,
 			                        "ReleaseNative kept the native part");
+
+			// 5. The preview: no seat bound, as in the driver select.
+			memset(s_seat, 0, sizeof(s_seat));
+			g_cfg_nativePreview = 1;
+			looks = s_nativeLooks;
+			NativeChar_HoldPreview(0);
+			NativeChar_NativeExpect(&checks, &failures,
+			                        (s_nativeLooks == (looks + 1)) && (NativeChar_PreviewEntry() == 0) && ((NativeChar_PreviewNative(0) != NULL) == held) &&
+			                            (NativeChar_PreviewNative(0) == s_charFiles[0].native),
+			                        name, "HoldPreview did not hold exactly a ready part with the kart wheels hidden");
+			NativeChar_NativeExpect(&checks, &failures, (NativeChar_PreviewNative(0) == NULL) || (NativeChar_PreviewNative(0)->wheel == NULL), name,
+			                        "HoldPreview held a part with a WHLS wheel");
+			NativeChar_ReleasePreview();
+			NativeChar_NativeExpect(&checks, &failures,
+			                        (s_charFiles[0].native == NULL) && (NativeChar_PreviewNative(0) == NULL) && (NativeChar_PreviewEntry() == -1), name,
+			                        "ReleasePreview kept the native part");
+
+			// 6. The rule itself, on the part of step 3.
+			if (NativeChar_RefuseShownWheels(&f, &n))
+			{
+				NativeChar_NativeExpect(&checks, &failures,
+				                        ready && !held && (n.state == RLDCHAR_NATIVE_REFUSED) && (n.rule != NULL) &&
+				                            (strcmp(n.rule, "native-wheels") == 0) && (n.cnet == NULL) && (n.wheel == NULL),
+				                        name, "refused by the kart wheels rule, but not a ready part showing the kart wheels, or something kept");
+				printf("char native selftest: %s: held: refused (native-wheels) %s - the driver keeps its CMDL\n", name, n.detail);
+			}
+			else
+			{
+				NativeChar_NativeExpect(&checks, &failures, !(ready && !held) && ((int)n.state == stateBefore), name,
+				                        "a ready part showing the kart wheels passed the kart wheels rule");
+			}
 
 			g_cfg_nativePreview = previewBefore;
 			memset(&s_charFiles[0], 0, sizeof(s_charFiles[0]));

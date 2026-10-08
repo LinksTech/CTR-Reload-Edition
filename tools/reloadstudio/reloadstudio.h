@@ -343,6 +343,13 @@
 //             given an event of its own; event: boost hit spin bigair drop shield
 //             passing fire short-yes short-hit, none = left out)
 //             [--map-color RRGGBB]   (only when a colour was chosen)
+//             [--shadow retail|auto|off] [--exhaust retail|off|x,y,z[;x,y,z]]
+//             (the look, tab In-game look, card In the race; preview feature:
+//             with --enable-preview-features only where it differs from
+//             rldpack's default - retail/retail with the kart wheels, auto/off
+//             without them; without the switch "--shadow retail --exhaust
+//             retail" with the wheels hidden, so the bytes stay those of before
+//             the look, and nothing with them)
 //             [--up z] [--forward -z]   (when the card Import of the tab Extras
 //             says Up Z or Forward -Z; +Y up and +Z forward are the defaults)
 //             [--colors 64]   (when the card says Colors 64; 128 is the default)
@@ -354,6 +361,12 @@
 //             --enable-preview-features, an OBJ, and "Native model" ticked on
 //             the card Import; never otherwise, so without the switch the
 //             command and the character's bytes are those of before)
+//             THE USER MODE (Rs_NativeForUsers, today with the switch): no
+//             --repair, --open-parts, --remesh, --reduce or --colors (rldpack's
+//             defaults, the choices hidden), --native-model on for every OBJ
+//             with Show kart wheels off, without a tick box (never beside the
+//             kart wheels: rldpack refuses it); with the kart wheels and for a
+//             PLY none (classic model only)
 //             --preview <file> [--out <f>]      check; writes only the preview files
 //   make-char --machine --model ... --out <f>  build: the same switches without
 //             --check, --preview, --icon-preview and --voice-preview
@@ -384,7 +397,17 @@
 //   import|wheels|animations, up y|z, forward z|-z, colors 128|64, vertex-colors
 //   auto|modulate|color (the card Import; the last passed for an OBJ only),
 //   native-model on|off (the card Import; preview feature: "locked - coming
-//   soon" without --enable-preview-features, passed for an OBJ only),
+//   soon" without --enable-preview-features, passed for an OBJ only; in the
+//   user mode "on" only logs that it is always on for an OBJ), fallback on|off
+//   ("Include classic fallback model": always "locked - coming soon"),
+//   look portrait|race (the card of the tab In-game look), shadow
+//   retail|auto|off, exhaust retail|custom|off, exhaust-point <1|2> <x> <y> <z>
+//   (game units of the built model; custom follows) or <1|2> none,
+//   exhaust-pick <1|2> <x pixel> <y pixel> (as Pick and a click at that pixel
+//   of the preview; pose Neutral) - the last four "locked - coming soon"
+//   without --enable-preview-features; in the
+//   user mode repair, open-parts, remesh, reduce, reduce-to-fit and colors
+//   fail with "hidden",
 //   problem <n> (as a click on message n), report <file>, the verbs of the cards
 //   Wheels and Animations (rs_wheels.c, rs_anim.c), and for the tab Voices:
 //   voices <folder|none>          the folder (the check follows)
@@ -489,6 +512,18 @@ void Rs_PageViewSize(HWND page, int *w, int *h);
 // line for every page (the deepest heading of all); a page without a subtitle
 // may start its cards higher, at this line plus a margin.
 int Rs_PageHeadBottom(HWND page, int w);
+
+// A compact heading for a page laid out in little room (1366 x 768 at 150 %):
+// the title one line in the section font (12 pt) close to the top, so that
+// Rs_PageHeadBottom is about 32 instead of 68. A layout sets it before it asks
+// Rs_PageHeadBottom; 0 = the heading as always. Only rs_char.c uses it.
+void Rs_PageSetCompactHead(HWND page, int on);
+
+// Compact layouts: a label on one line, cut with "..." where its text is
+// longer, the whole text as its tooltip (refreshed by every call); on = 0
+// takes back what an earlier call did (a label it never touched stays as it
+// is, its own tooltip too). For notes without a tooltip of their own.
+void Rs_LabelOneLine(HWND label, int on);
 
 // Minimum size of a page in 96-dpi pixels when its definition says 0.
 #define RS_PAGE_MIN_W 964
@@ -683,6 +718,15 @@ int Rs_TextWidth(HWND h, const wchar_t *text);
 // stored in the settings. Every command and automation path of a locked field
 // checks it first - EnableWindow alone does not stop a posted WM_COMMAND.
 extern int g_rsPreviewFeatures;
+
+// The native model for users (renderer step 6): 1 = the page Character is
+// what users get once the native model is released - every OBJ is built
+// with its own mesh and textures beside the classic model, the reduction and
+// palette choices are fixed defaults and hidden, the preview shows the native
+// model. Today the same as g_rsPreviewFeatures; the release turns only this
+// one on. Without it the page, its command and its bytes are those of before.
+// The cards Wheels and Animations stay on g_rsPreviewFeatures itself.
+int Rs_NativeForUsers(void);
 
 // Tooltip for a control of a page, NULL or "" removes it. The tool sits on the
 // page window over the control's rectangle, so it also shows for a disabled

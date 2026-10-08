@@ -477,7 +477,9 @@ static int RldMk_NativeMakeSet(struct RldMkNativeSet *set)
 // built with --fit none (RldMk_TestOptions). The cases: the automatic poses
 // with the test wheel (47 poses, WHLS), --poses still with --wheels off (one
 // still pose, no WHLS), a face turned inside out with --repair auto (the
-// repair turns it: RldMkBuild.plyPosition), and the refusals.
+// repair turns it: RldMkBuild.plyPosition), the driver split until the chain
+// reduces the CMDL (the native model keeps every face:
+// RldMkBuild.nativePosition), and the refusals.
 
 // make-char --fit none --native-model on of the mini OBJ: CNET and CTXT of
 // the automatic poses with the test wheel, and of --poses still --wheels off.
@@ -493,6 +495,10 @@ static int RldMk_NativeMakeSet(struct RldMkNativeSet *set)
 // The preview block of that native model (RLDPN1, THE NATIVE MODEL IN THE
 // PREVIEW), as make-char --preview appends it for Reload Studio.
 #define RLDMK_GOLDEN_NATIVE_OBJ_PREVIEW "1c87b550ff8f8a4dc2b98788031daefb298caba0ed2ebcd6f5a3213e6b71d895"
+// The mini OBJ with the driver split until the model is over the reduction
+// limit (RldMk_TestSplitOver), --reduce auto: the CMDL reduced, the native
+// model with every face, inside the CMDL's hull (RldMkBuild.nativePosition).
+#define RLDMK_GOLDEN_NATIVE_OBJ_REDUCED "97e4bba36c58c780eace78faa0017a91b00faca2f89b0e51708776f24d98a9bc"
 
 #define RLDMK_NATIVE_OBJ_FILES (4u + RLDCHAR_TEX_COUNT_MAX + 1u)
 
@@ -512,6 +518,9 @@ struct RldMkNativeObjCase
 	int missing;               // driver.png not there
 	u32 textures;              // > 0: every triangle its own material, the first `textures` with a picture of their own
 	u32 materials;             // > 0: every triangle its own material, `materials` of them in turn
+	u32 driverSplit;           // the driver box split n x n per side (RldMk_TestStandard); 0 = 2
+	int reduce;                // --reduce auto (the self-test's options have it off)
+	int blenderKe;             // the driver's material as Blender 5.2 writes it, with Ke 0.2 (no Kd): white x texture still
 };
 
 struct RldMkNativeObjResult
@@ -529,6 +538,9 @@ struct RldMkNativeObjResult
 	size_t plySize;
 	int captured;              // the reader kept the faces (RldObj_CaptureNative)
 	int plyPosition;           // the build kept RldMkBuild.plyPosition (the repair changed the model)
+	int reduced;               // the chain reduced the CMDL (RldMkBuild.reduced)
+	u32 reduceFrom;            // its triangles before and after
+	u32 reduceTo;
 	struct RldMkNativeFacts facts;
 };
 
@@ -585,6 +597,8 @@ static int RldMk_NativeObjMake(const struct RldMkNativeObjCase *k, struct RldMkN
 	struct RldMkModelInfo info;
 	struct RldMkPly ply;
 	struct RldMkBuild b;
+	const u32 driverSplit = (k->driverSplit != 0u) ? k->driverSplit : 2u;
+	const u32 driverEnd = 6u + 6u * driverSplit * driverSplit;  // kart faces 0..5, driver faces 6..driverEnd - 1, then the steering wheel
 	u32 fileCount = 0;
 	u32 i;
 	u32 j;
@@ -600,16 +614,19 @@ static int RldMk_NativeObjMake(const struct RldMkNativeObjCase *k, struct RldMkN
 	{
 		return 0;
 	}
-	RldMk_TestStandard(mesh, 2u, 0, 0.0, -1);
+	RldMk_TestStandard(mesh, driverSplit, 0, 0.0, -1);
 	RldMk_TestOptions(&opt);
 	opt.still = k->still;
 	opt.noWheels = k->wheelsOff;
 	opt.repair = k->repair;
 	opt.twoSided = k->twoSided;
+	opt.reduce = k->reduce;
+	opt.nativeKeep = k->want;  // as make-char --native-model on
 
 	// The MTL file and its pictures.
 	RldMk_BufferText(&mtl, "# made by the rldpack self-test\nnewmtl kart\nKd 0.8 0.2 0.1\n");
-	RldMk_BufferText(&mtl, "newmtl driver\nmap_Kd driver.png\nnewmtl face\nmap_Kd -s 2 2 1 face.png\n");
+	RldMk_BufferText(&mtl, "newmtl driver\n%smap_Kd driver.png\nnewmtl face\nmap_Kd -s 2 2 1 face.png\n",
+	                 k->blenderKe ? "Ns 250\nKa 1 1 1\nKs 0.5 0.5 0.5\nKe 0.2 0.2 0.2\nNi 1.5\nd 1\nillum 2\n" : "");
 	files[fileCount].path = "selftest/native.mtl";
 	fileCount++;
 	if (!k->missing)
@@ -685,7 +702,7 @@ static int RldMk_NativeObjMake(const struct RldMkNativeObjCase *k, struct RldMkN
 		{
 			continue;
 		}
-		if (!split && ((i == 0u) || (i == 6u) || (i == 30u)))
+		if (!split && ((i == 0u) || (i == 6u) || (i == driverEnd)))
 		{
 			RldMk_BufferText(&obj, "usemtl %s\n", (i == 0u) ? "kart" : ((i == 6u) ? "driver" : "face"));
 		}
@@ -713,7 +730,7 @@ static int RldMk_NativeObjMake(const struct RldMkNativeObjCase *k, struct RldMkN
 				const u32 at = split ? ((j == 0u) ? 0u : (piece + j)) : (((i == 3u) && k->repair) ? (count - 1u - j) : j);
 				const u32 v = mesh->corners[i][at] + 1u;
 
-				if (k->noVt && (i >= 6u) && (i < 30u))
+				if (k->noVt && (i >= 6u) && (i < driverEnd))
 				{
 					RldMk_BufferText(&obj, " %u//%u", v, vn);
 				}
@@ -761,6 +778,9 @@ static int RldMk_NativeObjMake(const struct RldMkNativeObjCase *k, struct RldMkN
 		r->cmdl = RldMk_NativeCopy(b.cmdl, b.cmdlSize);
 		r->cmdlSize = b.cmdlSize;
 		r->plyPosition = (b.plyPosition != NULL);
+		r->reduced = b.reduced;
+		r->reduceFrom = b.reduceFrom;
+		r->reduceTo = b.reduceTo;
 		r->chriFlags = k->wheelsOff ? RLDCHAR_FLAG_NO_WHEELS : 0u;
 		RldMk_ResetSaid();
 		r->made = RldMk_NativeModel(&s_rldObjNative, &ply, &b, &opt, !k->wheelsOff, &r->cnet, &r->cnetSize, &r->ctxt, &r->ctxtSize, &r->facts);
@@ -900,6 +920,7 @@ static void RldMk_SelfTestNativeObj(void)
 	struct RldMkNativeObjResult again;
 	struct RldMkNativeObjResult off;
 	struct RldCharNative native;
+	u32 over = 0;
 
 	// 1. The automatic poses with the test wheel: golden, ready, twice the same.
 	memset(&k, 0, sizeof(k));
@@ -925,6 +946,7 @@ static void RldMk_SelfTestNativeObj(void)
 
 		// driver: white, texture 0, mask (a transparent texel); face: texture 1, opaque; kart: Kd, none
 		RldMk_Test((m[0] == 204u) && (m[1] == 51u) && (m[2] == 26u) && (Rld_ReadLE16(&m[4]) == 0xFFFFu) && (m[6] == 0u) && (m[16] == 255u) &&
+		               (m[17] == 255u) && (m[18] == 255u) &&
 		               (Rld_ReadLE16(&m[20]) == 0u) && (m[22] == 1u) && (Rld_ReadLE16(&m[36]) == 1u) && (m[38] == 0u) &&
 		               ((native.texture[0].flags & 0xFFu) == ((1u << RLDCHAR_TEX_ALPHA_SHIFT) | (1u << RLDCHAR_TEX_WRAP_U_SHIFT) | (1u << RLDCHAR_TEX_WRAP_V_SHIFT))) &&
 		               ((native.texture[1].flags & 0xFFu) == 0u),
@@ -1172,6 +1194,66 @@ static void RldMk_SelfTestNativeObj(void)
 	}
 	RldMk_NativeObjFree(&a);
 
+	// 5b. A model the chain reduces (more than RLDMK_REDUCE_LIMIT triangles,
+	//     --reduce auto): the CMDL is the reduced fallback, the native model
+	//     keeps every face as written (RldMkBuild.nativePosition), the CMDL's
+	//     hull holds its 47 poses (no internal error, the game's rules take
+	//     it), built twice the same; golden.
+	memset(&k, 0, sizeof(k));
+	k.want = 1;
+	k.reduce = 1;
+	k.driverSplit = RldMk_TestSplitOver(RLDMK_REDUCE_LIMIT, &over);
+	if (RldMk_NativeObjMake(&k, &a) && a.made)
+	{
+		RldMk_CheckNativeBytes(a.cmdl, a.cmdlSize, a.chriFlags, a.cnet, a.cnetSize, a.ctxt, a.ctxtSize, &native);
+		RldMk_Test((native.state == RLDCHAR_NATIVE_READY) && (native.poseCount == RLDCHAR_NET_POSES) && (native.triangleCount == over) &&
+		               a.reduced && (a.reduceFrom == over) && (a.reduceTo <= RLDMK_REDUCE_LIMIT) && (a.facts.dropped == 0u) && RldMk_Said("native-full"),
+		           "native OBJ: a model the chain reduces keeps every face in the native model, ready",
+		           "state %d (%s) %s, poses %u, native triangles %u of %u, reduced %d %u -> %u, dropped %u, said: %s", native.state,
+		           (native.rule != NULL) ? native.rule : "", native.detail, native.poseCount, native.triangleCount, over, a.reduced, a.reduceFrom,
+		           a.reduceTo, a.facts.dropped, s_rldMkCodes);
+		RldChar_FreeNative(&native);
+		if (Rld_CheckGolden("make-char --fit none --reduce auto --native-model on of the mini OBJ over the reduction limit: CNET", a.cnet, a.cnetSize,
+		                    RLDMK_GOLDEN_NATIVE_OBJ_REDUCED) != 0)
+		{
+			s_rldMkTestFailed++;
+		}
+		{
+			const int ran = RldMk_NativeObjMake(&k, &again) && again.made;
+
+			RldMk_Test(ran && (again.cnetSize == a.cnetSize) && (memcmp(again.cnet, a.cnet, a.cnetSize) == 0) && (again.ctxtSize == a.ctxtSize) &&
+			               (memcmp(again.ctxt, a.ctxt, a.ctxtSize) == 0) && (again.cmdlSize == a.cmdlSize) && (memcmp(again.cmdl, a.cmdl, a.cmdlSize) == 0),
+			           "native OBJ: a model the chain reduces, built twice: the same CMDL, CNET and CTXT", "differ");
+			RldMk_NativeObjFree(&again);
+		}
+	}
+	else
+	{
+		RldMk_Test(0, "native OBJ: a model the chain reduces", "not made (built %d, said: %s)", a.built, s_rldMkCodes);
+	}
+	RldMk_NativeObjFree(&a);
+
+	// 5c. The driver's material as Blender 5.2 writes it (Ns, Ka, Ks, Ke 0.2,
+	//     Ni, d, illum, map_Kd, no Kd): white x texture, as without Ke.
+	memset(&k, 0, sizeof(k));
+	k.want = 1;
+	k.blenderKe = 1;
+	if (RldMk_NativeObjMake(&k, &a) && a.made)
+	{
+		RldMk_CheckNativeBytes(a.cmdl, a.cmdlSize, a.chriFlags, a.cnet, a.cnetSize, a.ctxt, a.ctxtSize, &native);
+		RldMk_Test((native.state == RLDCHAR_NATIVE_READY) && (native.materials != NULL) && (native.materials[16] == 255u) &&
+		               (native.materials[17] == 255u) && (native.materials[18] == 255u),
+		           "native OBJ: a textured material with Ke and no Kd (Blender 5.2) is white x texture",
+		           "state %d, driver material %u %u %u", native.state, (native.materials != NULL) ? native.materials[16] : 0u,
+		           (native.materials != NULL) ? native.materials[17] : 0u, (native.materials != NULL) ? native.materials[18] : 0u);
+		RldChar_FreeNative(&native);
+	}
+	else
+	{
+		RldMk_Test(0, "native OBJ: Blender 5.2 material with Ke", "not made (said: %s)", s_rldMkCodes);
+	}
+	RldMk_NativeObjFree(&a);
+
 	// 6. The refusals: nothing comes back, the reason is said.
 	memset(&k, 0, sizeof(k));
 	k.want = 1;
@@ -1201,9 +1283,10 @@ static void RldMk_SelfTestNativeObj(void)
 	k.ply = 1;
 	RldMk_NativeObjRefused(&k, "native-model", "native OBJ refused: a PLY model");
 
-	// A model the chain reduced: refused (the native vertices would not find
-	// their positions). Reduced for real it takes some 7000 triangles; the
-	// flag of the build is set by hand here.
+	// A reduced build that lost its positions from before the reduction
+	// (RldMkBuild.nativePosition; make-char always keeps them under
+	// --native-model on): refused as an internal error, never placed on the
+	// reduced positions. The flag of the build is set by hand here.
 	memset(&k, 0, sizeof(k));
 	k.want = 1;
 	{
@@ -1237,8 +1320,8 @@ static void RldMk_SelfTestNativeObj(void)
 			RldMk_FreeBuild(&b);
 			RldMk_FreePly(&ply);
 		}
-		RldMk_Test(ok && !r.made && (cnet == NULL) && RldMk_Said("native-model"), "native OBJ refused: a model the chain reduced", "built %d, made %d, said: %s", ok,
-		           r.made, s_rldMkCodes);
+		RldMk_Test(ok && !r.made && (cnet == NULL) && RldMk_Said("native-model"), "native OBJ refused: a reduced build without its positions from before",
+		           "built %d, made %d, said: %s", ok, r.made, s_rldMkCodes);
 		free(cnet);
 		free(ctxt);
 		free(mesh);

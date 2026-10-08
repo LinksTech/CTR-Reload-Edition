@@ -13,7 +13,8 @@
 //       CMDL that make-char built.
 //   --native-model on             the author's own OBJ, its materials and
 //       texture files (renderer concept C.11), placed by the same chain as
-//       its CMDL: THE NATIVE MODEL OF AN OBJ below.
+//       its CMDL: THE NATIVE MODEL OF AN OBJ below. Only with --wheels off
+//       (make-char refuses it otherwise), so never with the test wheel.
 // Without either switch no byte of a container changes (the golden hashes
 // of the self-test); the two switches exclude each other.
 //
@@ -531,8 +532,10 @@ static u8 *RldMk_NativeCnet(const u8 *cmdl, size_t cmdlSize, int poses, int whee
 // CNET and CTXT from the author's own OBJ, its materials and texture files
 // (renderer concept C.11), next to the CMDL the chain built from the same
 // file. The OBJ reader keeps the faces as written (RldObj_CaptureNative); the
-// chain builds the CMDL exactly as without the switch; then this part reads
-// both and changes neither.
+// chain builds the CMDL exactly as without the switch, except that after a
+// reduction the CMDL's hull, its size range and its ground check also hold
+// the native frames (THE REDUCTION below); then this part reads both and
+// changes neither.
 //
 // THE PLACE of every vertex is the chain's own: the OBJ v is found by its
 // weld key (RldMk_StepWeld: x y z on a 1e-5 grid) among the PLY points, and
@@ -571,9 +574,17 @@ static u8 *RldMk_NativeCnet(const u8 *cmdl, size_t cmdlSize, int poses, int whee
 // way, with vertices of their own (their normals point the other way). With
 // --two-sided every triangle gets one; with --open-parts one-sided none.
 // --repair off: the faces as written, no second triangles but those of
-// --two-sided. Reduction and remesh of the chain are not followed: a model the
-// chain reduced or remeshed is refused, because its native vertices would not
-// find their positions.
+// --two-sided.
+//
+// THE REDUCTION of the chain (a CMDL over RLDMK_REDUCE_LIMIT triangles) is
+// not followed: the chain keeps its positions from before it
+// (RldMkBuild.nativePosition, with every PLY vertex's position among them),
+// moves them by --size and the poses as it moves its own
+// (RldMkBuild.nativeFrame), and its step 9 takes those frames into the CMDL's
+// hull (renderer concept C.4.3, C.11). So the native model keeps the faces as
+// written, up to its own limits below, while the CMDL is the reduced
+// fallback. A model the chain remeshed (--remesh on) is refused: its hulls
+// replace the faces, and the native vertices would not find their positions.
 //
 // VERTICES: one per different (v, vt, vn, material), in the order the faces
 // first use them. Normals per pose from the geometry: the area-weighted sum
@@ -604,10 +615,14 @@ static u8 *RldMk_NativeCnet(const u8 *cmdl, size_t cmdlSize, int poses, int whee
 // reader could not use (missing, unreadable) is drawn untextured in its
 // color, as the CMDL draws it (warning native-texture).
 //
-// WHEELS: CHRI hides the wheels (--wheels off): no WHLS. Otherwise the test
-// wheel of the probe at the retail wheel points (RldMk_NativeWheel) in dark
-// grey, because the game never draws a native body with the sprite wheels
-// (CNET-10, renderer concept C.12) and an OBJ has no wheel mesh of its own.
+// WHEELS: CHRI hides the wheels (--wheels off): no WHLS. make-char passes
+// --native-model on only with --wheels off (it refuses the switch beside
+// the kart wheels, and the game refuses such a native part and draws the
+// CMDL), so a character never gets the test wheel any more. The branch
+// below that writes it (wheels 1: the test wheel of the probe at the retail
+// wheel points, RldMk_NativeWheel, in dark grey, for CNET-10: a native body
+// is never drawn with the sprite wheels) stays for the self-test's files
+// (rldpack_native_test.inc, good_obj-native) and is not reached by make-char.
 //
 // LIMITS (renderer concept C.10; the reader's RLDCHAR_*): 20000 vertices,
 // 30000 triangles, 64 materials (the wheel's included), 16 textures, 64 MiB
@@ -985,7 +1000,9 @@ static void RldMk_NativeColor(const struct RldObjNative *src, const struct RldOb
 
 // CNET and CTXT (NULL and 0 when no material has a texture) of the OBJ read
 // with --native-model on, for the CMDL of build b made from ply; wheels 0:
-// CHRI hides the wheels. 0 = refused, every reason said, nothing returned.
+// CHRI hides the wheels (make-char always: --wheels off), 1: with the test
+// wheel (only the self-test's files). 0 = refused, every reason said,
+// nothing returned.
 static int RldMk_NativeModel(const struct RldObjNative *src, const struct RldMkPly *ply, const struct RldMkBuild *b, const struct RldMkOptions *opt,
                              int wheels, u8 **cnetOut, size_t *cnetSizeOut, u8 **ctxtOut, size_t *ctxtSizeOut, struct RldMkNativeFacts *facts)
 {
@@ -1025,6 +1042,14 @@ static int RldMk_NativeModel(const struct RldObjNative *src, const struct RldMkP
 	int colors = 0;
 	float hullMin[3];
 	float hullMax[3];
+	// The chain's positions; after a reduction of the CMDL those it had before
+	// (RldMkBuild.nativePosition: the faces as written, the CMDL's hull holds
+	// their frames).
+	const int kept = (b->nativeFrame != NULL);
+	const u32 chainCount = kept ? b->nativePositionCount : b->positionCount;
+	const double *chainPosition = kept ? b->nativePosition : b->position;
+	const double *chainFrame = kept ? b->nativeFrame : b->frame;
+	const u32 *chainPly = kept ? b->nativePlyPosition : ((b->plyPosition != NULL) ? b->plyPosition : b->vertexPosition);
 
 	*cnetOut = NULL;
 	*cnetSizeOut = 0;
@@ -1042,16 +1067,25 @@ static int RldMk_NativeModel(const struct RldObjNative *src, const struct RldMkP
 		          "--native-model needs an OBJ model with its materials; a PLY has no texture coordinates. Export the model as OBJ.");
 		return 0;
 	}
-	if (b->reduced || b->remeshed)
+	if (b->remeshed)
 	{
-		RldMk_Say("error", "native-model", b->reduced ? "reduced" : "remeshed",
-		          "The model was %s for the game's own model (%u -> %u triangles); the native model keeps the faces as written and cannot follow "
-		          "that yet. Use a model the game's own model takes as it is (up to about 7000 triangles), or build without --native-model.",
-		          b->reduced ? "reduced" : "remeshed", b->reduced ? b->reduceFrom : b->remeshFrom, b->triangleCount);
+		RldMk_Say("error", "native-model", "remeshed",
+		          "The model was remeshed for the game's own model (%u -> %u triangles); the native model keeps the faces as written and cannot follow "
+		          "that. Build without --remesh, or without --native-model.",
+		          b->remeshFrom, b->triangleCount);
 		return 0;
 	}
-	if ((b->cmdl == NULL) || (b->cmdlSize < 8u) || (b->frame == NULL) || ((b->plyPosition == NULL) && (b->vertexPosition == NULL)) ||
-	    (b->framesWritten != RLDMK_FRAMES_TOTAL) ||
+	if (b->reduced && ((b->nativePosition == NULL) || (b->nativeFrame == NULL) || (b->nativePlyPosition == NULL)))
+	{
+		RldMk_Say("error", "native-model", NULL, "Internal error: the model was reduced, but its positions before that were not kept. Please report it.");
+		return 0;
+	}
+	if (kept)
+	{
+		RldMk_Say("info", "native-full", NULL,
+		          "The game's own model was reduced (%u -> %u triangles); the native model keeps the faces as written.", b->reduceFrom, b->reduceTo);
+	}
+	if ((b->cmdl == NULL) || (b->cmdlSize < 8u) || (chainFrame == NULL) || (chainPly == NULL) || (b->framesWritten != RLDMK_FRAMES_TOTAL) ||
 	    !RldChar_FrameHulls(&b->cmdl[4], Rld_ReadLE32(&b->cmdl[0]), 0u, hulls))
 	{
 		RldMk_Say("error", "native-model", NULL, "Internal error: the frames of the built model cannot be read. Please report it.");
@@ -1077,12 +1111,12 @@ static int RldMk_NativeModel(const struct RldObjNative *src, const struct RldMkP
 	// 1. The welded position of every OBJ v: that of the PLY points with its weld key.
 	for (i = 0; ok && (i < ply->vertexCount); i++)
 	{
-		const u32 position = (b->plyPosition != NULL) ? b->plyPosition[i] : b->vertexPosition[i];
+		const u32 position = chainPly[i];
 		u32 key[RLDMK_NATIVE_KEY];
 		int added;
 		u32 at;
 
-		if ((position == RLDMK_NONE) || (position >= b->positionCount))
+		if ((position == RLDMK_NONE) || (position >= chainCount))
 		{
 			continue;
 		}
@@ -1189,9 +1223,9 @@ static int RldMk_NativeModel(const struct RldObjNative *src, const struct RldMkP
 			}
 			if (!skip)
 			{
-				const double *a = &b->position[3u * p[0]];
-				const double *bb = &b->position[3u * p[1]];
-				const double *cc = &b->position[3u * p[2]];
+				const double *a = &chainPosition[3u * p[0]];
+				const double *bb = &chainPosition[3u * p[1]];
+				const double *cc = &chainPosition[3u * p[2]];
 				const double e1[3] = {bb[0] - a[0], bb[1] - a[1], bb[2] - a[2]};
 				const double e2[3] = {cc[0] - a[0], cc[1] - a[1], cc[2] - a[2]};
 				const double n[3] = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]};
@@ -1274,12 +1308,12 @@ static int RldMk_NativeModel(const struct RldObjNative *src, const struct RldMkP
 		if (ok && opt->repair)
 		{
 			memset(&in, 0, sizeof(in));
-			in.positionCount = b->positionCount;
-			in.position = b->position;
+			in.positionCount = chainCount;
+			in.position = chainPosition;
 			in.triangleCount = triCount;
 			in.triangle = corner;
 			in.cornerColor = NULL;
-			in.weldDistance = RldRep_DefaultWeld(b->positionCount, b->position);
+			in.weldDistance = RldRep_DefaultWeld(chainCount, chainPosition);
 			in.holeMaxEdges = RLDREP_HOLE_MAX_EDGES_DEFAULT;
 			why[0] = '\0';
 			if (!RldRep_Repair(&in, &r, why, sizeof(why)))
@@ -1467,7 +1501,7 @@ static int RldMk_NativeModel(const struct RldObjNative *src, const struct RldMkP
 
 			for (f = 1; !moves && (f < RLDMK_FRAMES_TOTAL); f++)
 			{
-				moves = (memcmp(&b->frame[((size_t)f * b->positionCount + p) * 3u], &b->frame[(size_t)p * 3u], 3u * sizeof(double)) != 0);
+				moves = (memcmp(&chainFrame[((size_t)f * chainCount + p) * 3u], &chainFrame[(size_t)p * 3u], 3u * sizeof(double)) != 0);
 			}
 		}
 		poses = moves ? RLDCHAR_NET_POSES : 0u;
@@ -1511,7 +1545,7 @@ static int RldMk_NativeModel(const struct RldObjNative *src, const struct RldMkP
 		}
 		for (i = 0; ok && (i < vertexCount); i++)
 		{
-			const double *at = &b->frame[((size_t)s * b->positionCount + vertex[i].position) * 3u];
+			const double *at = &chainFrame[((size_t)s * chainCount + vertex[i].position) * 3u];
 
 			for (axis = 0; axis < 3; axis++)
 			{
@@ -1609,7 +1643,7 @@ static int RldMk_NativeModel(const struct RldObjNative *src, const struct RldMkP
 			RldMk_NativeSection(&cnet[table], "TRIS", 6u, trisAt, trisSize);
 			RldMk_NativeSection(&cnet[table + RLDCHAR_NET_SECTION_BYTES], "TMAT", 2u, tmatAt, tmatSize);
 			RldMk_NativeSection(&cnet[table + (2u * RLDCHAR_NET_SECTION_BYTES)], "MATL", RLDCHAR_NET_MATERIAL_BYTES, matlAt, matlSize);
-			if (wheels)
+			if (wheels)   // the self-test's files only; make-char passes wheels 0 (see WHEELS above)
 			{
 				RldMk_NativeSection(&cnet[table + (3u * RLDCHAR_NET_SECTION_BYTES)], "WHLS", 0u, whlsAt, RLDMK_NATIVE_WHEEL_BYTES);
 				RldMk_NativeWheel(&cnet[whlsAt], materialCount);

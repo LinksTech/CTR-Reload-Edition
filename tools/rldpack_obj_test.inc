@@ -431,6 +431,64 @@ static void RldMk_SelfTestObjGolden(struct RldMkTestMesh *mesh, const u8 *chri, 
 	free(tga);
 }
 
+// Kd, Ke and map_Kd as Blender 5.2 writes them: a texture without Kd is
+// white times the texture, with or without Ke (Blender writes Ke 0 0 0, and
+// a Ke above 0 must not darken it); Ke brightens a Kd channel by channel and
+// stands in for a missing Kd only without a texture.
+static void RldMk_SelfTestObjKe(void)
+{
+	static const char mtl[] = "newmtl b52\nNs 250\nKa 1 1 1\nKs 0.5 0.5 0.5\nKe 0 0 0\nNi 1.5\nd 1\nillum 2\nmap_Kd checker.png\n"
+	                          "newmtl ketex\nKe 0.2 0.2 0.2\nmap_Kd checker.png\n"
+	                          "newmtl kdke\nKd 0.2 0.4 0.6\nKe 0.5 0.5 0.5\n"
+	                          "newmtl keonly\nKe 0.2 0.4 0.6\n";
+	static const char obj[] = "mtllib \"ke.mtl\"\n"
+	                          "v 0 0 0\nv 1 0 0\nv 0 1 0\n"
+	                          "vt 0.25 0.75\n"
+	                          "usemtl b52\nf 1/1 2/1 3/1\n"    // 0: the red texel, white x texture
+	                          "usemtl ketex\nf 1/1 2/1 3/1\n"  // 1: the same - Ke does not darken a texture
+	                          "usemtl kdke\nf 1 2 3\n"         // 2: the brighter of Kd and Ke per channel
+	                          "usemtl keonly\nf 1 2 3\n";      // 3: Ke in place of a missing Kd
+	static const u32 want[4] = {0xFF0000u, 0xFF0000u, 0x808099u, 0x336699u};
+	struct RldObjMemFile files[2];
+	struct RldMkPly ply;
+	struct RldMkModelInfo info;
+	u8 *png;
+	size_t pngSize = 0;
+	u32 got[4] = {0u, 0u, 0u, 0u};
+	u32 f;
+	u32 k;
+	int ok;
+	int same = 1;
+
+	memset(&ply, 0, sizeof(ply));
+	png = RldMk_TestPngRgb(2u, 2u, s_rldMkTestChecker, &pngSize);
+	files[0].path = "selftest/ke.mtl";
+	files[0].data = (const u8 *)mtl;
+	files[0].size = sizeof(mtl) - 1u;
+	files[1].path = "selftest/checker.png";
+	files[1].data = png;
+	files[1].size = pngSize;
+	s_rldObjFiles = files;
+	s_rldObjFileCount = 2u;
+
+	ok = (png != NULL) && RldMk_TestImport("selftest/ke.obj", obj, sizeof(obj) - 1u, &ply, &info, RLDMK_ROLE_MAIN);
+	for (f = 0; ok && (f < 4u); f++)
+	{
+		got[f] = RldMk_TestCornerRgb(&ply, f, 0u);
+		for (k = 0; k < 3u; k++)
+		{
+			same = same && (RldMk_TestCornerRgb(&ply, f, k) == want[f]);
+		}
+	}
+	RldMk_Test(ok && same, "OBJ colors: map_Kd without Kd as Blender 5.2 writes it (Ke 0, Ke 0.2) white x texture; Ke brightens Kd, Ke without Kd",
+	           "read %d, same %d, colors %06X %06X %06X %06X", ok, same, got[0], got[1], got[2], got[3]);
+	RldMk_FreePly(&ply);
+
+	s_rldObjFiles = NULL;
+	s_rldObjFileCount = 0;
+	free(png);
+}
+
 // The color rule, corner by corner, and the pictures as decoded.
 static void RldMk_SelfTestObjColors(void)
 {
@@ -1846,6 +1904,7 @@ static void RldMk_SelfTestObj(struct RldMkTestMesh *mesh)
 	RldMk_SelfTestObjSame(mesh, chri, chriSize);
 	RldMk_SelfTestObjGolden(mesh, chri, chriSize);
 	RldMk_SelfTestObjColors();
+	RldMk_SelfTestObjKe();
 	RldMk_SelfTestObjVertexColors();
 	RldMk_SelfTestObjEdges();
 	RldMk_SelfTestObjUniform();

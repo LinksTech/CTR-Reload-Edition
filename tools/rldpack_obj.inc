@@ -22,7 +22,7 @@
 //      texture as it is; RldObj_VertexColors, --vertex-colors). Without the
 //      texture file the vertex color stays as it is.
 //   2. otherwise the material: Kd times the texture; no Kd but a texture:
-//      the texture; neither: grey.
+//      the texture (also with a Ke, which only brightens a Kd); neither: grey.
 //   3. grey is 0x80 per channel, like a PLY without colors.
 // The texture of a triangle is fitted over the whole triangle, its three
 // corner colors chosen so that their Gouraud mix comes closest to the texture
@@ -1906,6 +1906,11 @@ static int RldObj_ReadLibrary(struct RldObjModel *m, u32 library, const u8 *data
 
 	// A material that lights itself (Ke): the game draws without light, so
 	// its color is the brighter of Kd and Ke per channel (Ke without Kd: Ke).
+	// Not a material with a texture and no Kd of its own: its color is
+	// white times the texture, and white is already the brightest - Ke in
+	// place of the missing Kd would only darken the texture (Blender writes Ke
+	// beside map_Kd). Its texture not found, such a material is grey 0x80 as
+	// any material without a color.
 	{
 		u32 i;
 
@@ -1914,7 +1919,8 @@ static int RldObj_ReadLibrary(struct RldObjModel *m, u32 library, const u8 *data
 			struct RldObjMaterial *material = &m->materials[i];
 			int k;
 
-			if ((material->library != library) || !((material->ke[0] > 0.0) || (material->ke[1] > 0.0) || (material->ke[2] > 0.0)))
+			if ((material->library != library) || !((material->ke[0] > 0.0) || (material->ke[1] > 0.0) || (material->ke[2] > 0.0)) ||
+			    ((material->map != NULL) && !material->hasKd))
 			{
 				continue;
 			}

@@ -3,7 +3,8 @@
 #define RS_WHEELS_H
 #include "reloadstudio.h"
 void CharWheels_Create(HWND page, HWND view);                         // after the page's own controls
-int  CharWheels_Layout(HWND page, int left, int right, int top, int labelW);  // adds its card, returns its bottom
+int  CharWheels_Layout(HWND page, int left, int right, int top, int labelW, int compact);  // adds its card, returns its bottom;
+                                                                    // compact: the compact layout of the page (rs_char.c)
 int  CharWheels_Command(HWND page, int id, int code);                 // 1 = its control, handled
 LRESULT CharWheels_Notify(HWND page, NMHDR *hdr, int *handled);
 LRESULT CharWheels_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, int *handled);

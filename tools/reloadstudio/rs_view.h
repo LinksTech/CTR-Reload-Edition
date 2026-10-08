@@ -151,6 +151,28 @@ void RsView_SetWheelAnimation(HWND view, int on);   // own WM_TIMER on the view;
 // Loading and the scale may change the framing; pose, spin and steering never.
 #define RS_VIEW_WHEEL_STEER_MAX 22   // the game's full lock, 22.5 degrees (game/DrawTires.c, wheelRotation)
 
+// The look of the driver (the tab In-game look; preview feature): positions
+// in 1/16 game units of the model, as the preview file.
+// shadow 1: quad x0 x1 z0 z1 drawn on the floor under the model, turned with
+// it, the floor's colour at half - the model's pixels stay as they are.
+// count 0..2 exhaust points, always on top: a ring with a cross, point 1 in
+// the accent colour, point 2 in the note colour; grey 1: all grey (the
+// retail points). NULL quad or points: none.
+void RsView_SetLook(HWND view, int shadow, const int quad[4], int count, const int point[2][3], int grey);
+
+// Picking a point of the model's surface: after RsView_PickBegin(view, n)
+// (n 1 or 2; 0 ends it) a click (less than 4 pixels of movement; a drag
+// still turns) or a right click (no point) ends the pick, and the parent
+// gets WM_COMMAND with HIWORD(wParam) = RS_VIEW_N_PICK. RsView_PickResult
+// then gives the point it was for (*n) and the surface point under the
+// click in the pose shown (1/16 game units); 0 = the click missed the model.
+// RsView_PickPixel does the same for a pixel of the view (automation).
+#define RS_VIEW_N_PICK 0x0102
+void RsView_PickBegin(HWND view, int n);
+int  RsView_Picking(HWND view);                                 // the point being picked, 0 = none
+int  RsView_PickResult(HWND view, int *n, int out[3]);
+int  RsView_PickPixel(HWND view, int n, int px, int py);        // 1 = hit; notifies as a click
+
 // The reference dummy (RldDum_Mesh of tools/rldpack_dummy.inc), defined in
 // rs_rldpack.c - the translation unit that carries rldpack. Positions in 1/16
 // game units (rounded), 3 per position; triangles as 3 position indices,

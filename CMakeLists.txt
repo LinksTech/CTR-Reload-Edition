@@ -595,6 +595,45 @@ if(BUILD_TESTING)
         PASS_REGULAR_EXPRESSION "native twin selftest passed: 1 of 1 file read, 36 checks, 0 failures, sha256 vertices 44191f9ea764dd3122e950b578316f47535bd834ef700152033fa080e8989b36 rgba 986d4c3a10b4bd36478d8d875dbe3f48519c00ba15fd26b8fc00b2f5050ce533 full height e4b47ceaf474380c77c2f2a4dfb7f8851a2a4b8a28b78c86a27d3dde59bf026b"
         FIXTURES_REQUIRED native_char_files
     )
+    # make-char --native-model on needs --wheels off (the game draws a native
+    # model only with the kart wheels hidden): without it rldpack refuses the
+    # switch - exit not 0, the message, no file; with it the same box builds.
+    # The script and the box OBJ are written here into the build folder.
+    file(WRITE ${CMAKE_BINARY_DIR}/rldpack_native_wheels_test.cmake [=[
+file(REMOVE_RECURSE "${DIR}")
+file(MAKE_DIRECTORY "${DIR}")
+file(WRITE "${DIR}/box.obj" "v -0.5 0 -1\nv 0.5 0 -1\nv 0.5 0 1\nv -0.5 0 1\nv -0.5 0.5 -1\nv 0.5 0.5 -1\nv 0.5 0.5 1\nv -0.5 0.5 1\nf 1 2 3 4\nf 5 8 7 6\nf 1 5 6 2\nf 2 6 7 3\nf 3 7 8 4\nf 4 8 5 1\n")
+execute_process(COMMAND "${PACKER}" make-char --model "${DIR}/box.obj" --name T --template 14 --native-model on --out "${DIR}/refused.rldchar"
+    RESULT_VARIABLE refusedResult OUTPUT_VARIABLE refusedOut ERROR_VARIABLE refusedOut)
+message("${refusedOut}")
+if(refusedResult EQUAL 0)
+    message(FATAL_ERROR "rldpack native wheels test: --native-model on without --wheels off was not refused (exit 0)")
+endif()
+if(NOT refusedOut MATCHES "--native-model on needs --wheels off")
+    message(FATAL_ERROR "rldpack native wheels test: the refusal does not name --wheels off")
+endif()
+if(EXISTS "${DIR}/refused.rldchar")
+    message(FATAL_ERROR "rldpack native wheels test: a file was written although the switch was refused")
+endif()
+execute_process(COMMAND "${PACKER}" make-char --model "${DIR}/box.obj" --name T --template 14 --wheels off --native-model on --out "${DIR}/built.rldchar"
+    RESULT_VARIABLE builtResult OUTPUT_VARIABLE builtOut ERROR_VARIABLE builtOut)
+if(NOT builtResult EQUAL 0 OR NOT EXISTS "${DIR}/built.rldchar")
+    message("${builtOut}")
+    message(FATAL_ERROR "rldpack native wheels test: the same box with --wheels off did not build (exit ${builtResult})")
+endif()
+message("rldpack native wheels test passed: refused without --wheels off (exit ${refusedResult}, no file), built with it")
+]=])
+    add_test(NAME rldpack_native_wheels_refused
+        COMMAND ${CMAKE_COMMAND}
+            -DPACKER=$<TARGET_FILE:rldpack>
+            -DDIR=${CMAKE_BINARY_DIR}/selftest/native-wheels
+            -P ${CMAKE_BINARY_DIR}/rldpack_native_wheels_test.cmake
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+    set_tests_properties(rldpack_native_wheels_refused PROPERTIES
+        PASS_REGULAR_EXPRESSION "rldpack native wheels test passed: refused without --wheels off \\(exit [1-9][0-9]*, no file\\), built with it"
+        TIMEOUT 120
+    )
 
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_test(
