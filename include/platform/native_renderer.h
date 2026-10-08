@@ -216,6 +216,12 @@ struct NativeMeshRangeDraw
 	int srgb;
 	float tint[4];
 	float alphaCutoff;
+	// The retail twin's look (step 4d Z1, only with look = 1 in the draw): the
+	// modulation (2 textured, 1 untextured), the dither weight, and the UV
+	// fudge in units of the texture.
+	float modulation;
+	float ditherWeight;
+	float uvFudge[2];
 };
 
 struct NativeMeshDraw
@@ -229,7 +235,17 @@ struct NativeMeshDraw
 	int rangeCount;
 	const struct NativeMeshRangeDraw *ranges;
 	float depthTint; // as in struct NativeLayerDraw
+	// 1 = the retail twin (step 4d Z1): drawn with its own program "nrt",
+	// toned by tone toward far (DPCT). 0, as every other draw writes: the
+	// program "nr" of before.
+	int look;
+	float tone;
+	float far[4];
 };
+
+// What psxDitherAmount of the PSX block would be for a draw into the target in
+// force now (the expression of NativeRenderer_SetTexture). Step 4d Z1.
+float NativeRenderer_PsxDitherAmountNow(void);
 
 // The same place, clip, projection, depth rule and state reset as
 // NativeRenderer_DrawNativeProbe, with the caller's buffers and ranges. Needs
@@ -241,6 +257,10 @@ int NativeRenderer_DrawNativeMesh(const struct NativeMeshDraw *draw, const RECT1
 // through NativeGfx_UpdateVertexBuffer when initial is NULL). Only with
 // --native-preview; NATIVE_GFX_INVALID otherwise.
 NativeGfxBuffer NativeRenderer_CreateNativeMeshVertexBuffer(int bytes, const void *initial);
+
+// The CPU mirror of VRAM (VRAM_WIDTH x VRAM_HEIGHT u16), for the retail twin
+// (step 4d) to decode the pages of a model at a loading screen. Only read.
+const u16 *NativeRenderer_VramMirror(void);
 
 // 1 once the probe mesh buffers exist (only with --native-preview and --native-probe),
 // and for the form texture its texture as well.

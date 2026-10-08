@@ -2854,6 +2854,25 @@ struct Model *NativeChar_SeatModel(int index)
 	return s_seat[index].model;
 }
 
+// The retail model a seat's birth will find for data.characterIDs[seat] in the
+// driver pack of this load (the search of VehBirth_GetModelByName; valid from
+// load stage 5 on), NULL when there is none. For the retail twin (step 4d).
+const struct Model *NativeChar_RetailSeatModel(int seat)
+{
+	int templateId;
+
+	if ((seat < 0) || (seat >= NATIVE_CHAR_SEATS))
+	{
+		return NULL;
+	}
+	templateId = (int)data.characterIDs[seat];
+	if ((templateId < 0) || (templateId > RLDCHAR_TEMPLATE_MAX))
+	{
+		return NULL;
+	}
+	return NativeChar_DonorModel(templateId);
+}
+
 const char *NativeChar_SeatFile(int seat)
 {
 	if (NativeChar_SeatModel(seat) == NULL)

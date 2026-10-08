@@ -466,6 +466,12 @@ if(BUILD_TESTING)
     set_tests_properties(native_split_report_once PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-split-report is given 2 times - once only")
     add_test(NAME native_split_report_needs_dev COMMAND $<TARGET_FILE:ctr_native> --native-split-report)
     set_tests_properties(native_split_report_needs_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-split-report requires --dev")
+    # --native-twin (main.c, step 4d): without --native-preview, or given twice,
+    # it ends the start with exit code 64 and its reason.
+    add_test(NAME native_twin_needs_preview COMMAND $<TARGET_FILE:ctr_native> --dev --native-twin)
+    set_tests_properties(native_twin_needs_preview PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-twin only acts together with --native-preview")
+    add_test(NAME native_twin_once COMMAND $<TARGET_FILE:ctr_native> --dev --native-preview --native-twin --native-twin)
+    set_tests_properties(native_twin_once PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-twin is given 2 times - once only")
     # --native-filter (main.c, the first loop of main): a value other than
     # nearest or linear, the switch given twice, or no --native-preview end the
     # start with exit code 64 and their reason, before any window or data; so
@@ -568,6 +574,16 @@ if(BUILD_TESTING)
     set_tests_properties(char_native_obj_selftest PROPERTIES
         PASS_REGULAR_EXPRESSION "char native selftest passed: 3 files, [0-9]+ checks, 0 failures"
         TIMEOUT 300
+    )
+    # THE RETAIL TWIN (step 4d, platform/native_twin.c), without a device: a
+    # retail model and a VRAM made in memory through the converter (golden
+    # SHA-256 of the vertex bytes of every pose and of the RGBA8, computed
+    # apart), the winding against the retail sign test, two refusals; then
+    # old_plain of the files above: every pose point equal to its record.
+    add_test(NAME native_twin_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --native-twin-selftest ${CMAKE_BINARY_DIR}/selftest/native-chars)
+    set_tests_properties(native_twin_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "native twin selftest passed: 1 of 1 file read, [0-9]+ checks, 0 failures, sha256 vertices 44191f9ea764dd3122e950b578316f47535bd834ef700152033fa080e8989b36 rgba 986d4c3a10b4bd36478d8d875dbe3f48519c00ba15fd26b8fc00b2f5050ce533 full height e4b47ceaf474380c77c2f2a4dfb7f8851a2a4b8a28b78c86a27d3dde59bf026b"
+        FIXTURES_REQUIRED native_char_files
     )
 
     find_package(Python3 REQUIRED COMPONENTS Interpreter)

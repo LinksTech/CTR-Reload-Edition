@@ -80,6 +80,7 @@
 #include "platform/native_testfiles.c"
 #include "platform/native_chars.c"
 #include "platform/native_char_gpu.c"
+#include "platform/native_twin.c"
 #include "platform/native_wheels.c"
 #include "platform/native_render_layer.c"
 #include "platform/native_probe.c"
@@ -251,6 +252,8 @@ static const NativeSwitch s_devSwitches[] = {
     {"--native-depth-tint", "", "only with --native-preview: every native draw is coloured by its depth (red and blue full, green = 1024 / w) instead of its colours - the seam at view z 0x1000 made visible (measuring only)"},
     {"--native-char-gpu-selftest", "<dir>", "the good .rldchar files of dir (written by rldpack make-native-tests) through the native read and the GPU set build of a custom character without a device, then end (ctest native_char_gpu_selftest)"},
     {"--native-split-report", "", "measuring only: per water line view of seat 0 drawn as a custom character (SPLIT, and SPECIAL with the split line), the raw values the queue split it with - the first four, then every 30th VBlank"},
+    {"--native-twin-selftest", "<dir>", "the retail twin (step 4d, platform/native_twin.c) without a device: a retail model and a VRAM made in memory, then old_plain.rldchar of dir (written by rldpack make-native-tests), through the converter, then end (ctest native_twin_selftest)"},
+    {"--native-twin", "", "only with --native-preview, measuring only: seat 0's retail model drawn natively as its retail twin (made at the race's loading screen from the model and the VRAM mirror), its retail wheels on"},
     {"--native-hide-exhaust", "", "measuring only: the exhaust particles of every seat (and the burn smoke, same icons) are moved and counted as always but not drawn, with or without --native-preview; the count comes at exit"},
     {"--native-probe-selftest", "", "check the bytes of the generated probe mesh against their hash (ctest native_probe_selftest)"},
     {"--native-depth-selftest", "", "check that a native draw keeps its depth across view z 0x1000 (ctest native_depth_selftest)"},
@@ -2117,6 +2120,14 @@ int main(int argc, char *argv[])
 			return NativeCharGpu_SelfTest(argv[argIndex + 1]);
 		}
 
+		// The retail twin without a device (step 4d, platform/native_twin.c,
+		// ctest native_twin_selftest). Up here for the same reason: it only
+		// reads files and memory it makes itself.
+		if ((strcmp(argv[argIndex], "--native-twin-selftest") == 0) && ((argIndex + 1) < argc))
+		{
+			return NativeTwin_SelfTest(argv[argIndex + 1]);
+		}
+
 		// The container self-test, up here for the same reason: it only reads
 		// files - no platform, window, audio or asset folder, no disc image,
 		// no GPU - so it runs on CI (ctest selftest_bad_containers).
@@ -2537,7 +2548,8 @@ int main(int argc, char *argv[])
 
 			g_cfg_nativeWheelReport = 1;
 		}
-		else if ((strcmp(argv[argIndex], "--native-seam-report") == 0) || (strcmp(argv[argIndex], "--native-depth-tint") == 0))
+		else if ((strcmp(argv[argIndex], "--native-seam-report") == 0) || (strcmp(argv[argIndex], "--native-depth-tint") == 0) ||
+		         (strcmp(argv[argIndex], "--native-twin") == 0))
 		{
 			// The two measuring switches of the seam at view z 0x1000 (step 4c,
 			// platform/native_render_layer.c). Without --native-preview there is
@@ -2580,6 +2592,10 @@ int main(int argc, char *argv[])
 			if (strcmp(name, "--native-seam-report") == 0)
 			{
 				g_cfg_nativeSeamReport = 1;
+			}
+			else if (strcmp(name, "--native-twin") == 0)
+			{
+				g_cfg_nativeTwin = 1;
 			}
 			else
 			{
@@ -3180,6 +3196,12 @@ int main(int argc, char *argv[])
 				Platform_Log("[CTR Native] native wheel report on: per tick the float, the exact and the retail wheel middles of seat %d, "
 				             "whose retail wheels stay on; sign check from |move| >= %.4f world units\n",
 				             g_cfg_nativeProbeSeat, NATIVE_WHEELS_MOVING);
+			}
+			else if (strcmp(argv[argIndex], "--native-twin") == 0)
+			{
+				// Set in the first loop of main, which also refused it without
+				// --native-preview or given twice.
+				Platform_Log("[CTR Native] native twin on (measurement only): seat 0's retail model drawn natively as its retail twin, its retail wheels on\n");
 			}
 			else if (strcmp(argv[argIndex], "--native-split-report") == 0)
 			{

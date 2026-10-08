@@ -783,6 +783,93 @@ global_variable const char *ctr_native_layer_shader =
     "}\n"
     "#endif\n";
 
+// The program of the retail twin, "nrt" (step 4d, Z1: the retail look V1). It
+// becomes a program only with --native-preview --native-twin
+// (native_renderer.c); every other native draw keeps "nr", so the probe and
+// the custom characters are untouched by it.
+//
+// The retail look of one twin triangle, from what the PSX path does with the
+// same packet:
+//   tint        the vertex colour toned toward the far colour F by a =
+//               alphaScale / 4096 (the DPCT of RenderBucket_LoadPrimColors, in
+//               float; nrFar, nrLook.x; a = 0: no tone), per corner;
+//   modulation  textured: texel x colour x nrLook.y (2 for retail data, the
+//               bright factor of the PSX path); untextured: the colour;
+//   mask        a texel with alpha below nrParams.w (the clear word 0x0000) is
+//               not drawn - before the modulation;
+//   dither      the PSX matrix itself (GPU_DITHERING, the same macro, not a
+//               copy), weight nrLook.z, on the PSX pixel grid: v_ditherCoord is
+//               the PSX pixel the fragment lies in, from the clip position
+//               through the inverse of the PSX projection (nrProj). The clip
+//               position already carries the -0.5 px of the twin's geometry,
+//               and the fragment's own place is what the grid needs, so
+//               nothing is added (nrDither.x stays 0);
+//   affine      UV, colour and the dither coordinate interpolated without
+//               perspective (noperspective), as the PSX path draws with w = 1;
+//   UV fudge    nrDither.zw added to the texture coordinate: the 0.00025
+//               texels the PSX path adds to its page origin (c_UVFudge), in
+//               units of this texture.
+// nrParams.z > 0: --native-depth-tint, as in "nr".
+// The block is struct NativeTwinUniforms in native_renderer.c field for field.
+global_variable const char *ctr_native_twin_shader =
+    "#ifdef VERTEX\n"
+    "layout(location = 0) in vec3 a_position;\n"
+    "layout(location = 1) in vec2 a_texcoord;\n"
+    "layout(location = 2) in vec4 a_color;\n"
+    "VARYING_LOC0 noperspective out vec2 v_uv;\n"
+    "VARYING_LOC1 noperspective out vec4 v_color;\n"
+    "VARYING_LOC2 noperspective out vec2 v_ditherCoord;\n"
+    "UBO_QUALIFIER uniform NrtBlock {\n"
+    "	mat4 nrClipFromModel;\n"
+    "	vec4 nrTint;\n"
+    "	vec4 nrParams;\n"
+    "	vec4 nrFar;\n"
+    "	vec4 nrLook;\n"
+    "	vec4 nrDither;\n"
+    "	vec4 nrProj;\n"
+    "};\n"
+    "void main() {\n"
+    "	vec4 c = a_color * nrTint;\n"
+    "	c.rgb = c.rgb + nrLook.x * (nrFar.rgb - c.rgb);\n"
+    "	v_color = c;\n"
+    "	v_uv = a_texcoord + nrDither.zw;\n"
+    "	gl_Position = nrClipFromModel * vec4(a_position, 1.0);\n"
+    "	vec2 ndc = gl_Position.xy / gl_Position.w;\n"
+    "	v_ditherCoord = vec2((ndc.x - nrProj.y) / nrProj.x, (ndc.y - nrProj.w) / nrProj.z);\n"
+    "}\n"
+    "#endif\n"
+    "#ifdef FRAGMENT\n"
+    "VARYING_LOC0 noperspective in vec2 v_uv;\n"
+    "VARYING_LOC1 noperspective in vec4 v_color;\n"
+    "VARYING_LOC2 noperspective in vec2 v_ditherCoord;\n"
+    "SAMPLER_SLOT0 uniform sampler2D s_texture;\n"
+    "UBO_QUALIFIER uniform NrtBlock {\n"
+    "	mat4 nrClipFromModel;\n"
+    "	vec4 nrTint;\n"
+    "	vec4 nrParams;\n"
+    "	vec4 nrFar;\n"
+    "	vec4 nrLook;\n"
+    "	vec4 nrDither;\n"
+    "	vec4 nrProj;\n"
+    "};\n"
+    "vec4 v_texcoord;\n"
+    "float psxDitherAmount;\n"
+    GPU_DITHERING
+    "void main() {\n"
+    "	vec4 colour = v_color;\n"
+    "	if (nrParams.x > 0.5) {\n"
+    "		vec4 texel = texture(s_texture, v_uv);\n"
+    "		if ((nrParams.w > 0.0) && (texel.a < nrParams.w)) { discard; }\n"
+    "		colour = vec4(texel.rgb * v_color.rgb * nrLook.y, texel.a * v_color.a);\n"
+    "	} else if ((nrParams.w > 0.0) && (colour.a < nrParams.w)) { discard; }\n"
+    "	v_texcoord = vec4(0.0, 0.0, 0.0, 1.0);\n"
+    "	psxDitherAmount = nrLook.z;\n"
+    "	colour = dither(colour);\n"
+    "	if (nrParams.z > 0.0) { colour = vec4(1.0, clamp(nrParams.z * gl_FragCoord.z, 0.0, 1.0), 1.0, 1.0); }\n"
+    "	fragColor = colour;\n"
+    "}\n"
+    "#endif\n";
+
 // The blit shaders by name, in one place.
 //
 // Two readers: native_renderer.c, to find the prebuilt SPIR-V module that goes
@@ -831,6 +918,10 @@ internal int CtrBlitShader_Get(int index, const char **outName, const char **out
 	case 4:
 		name = "nr";
 		body = ctr_native_layer_shader;
+		break;
+	case 5:
+		name = "nrt";
+		body = ctr_native_twin_shader;
 		break;
 	default:
 		return 0;

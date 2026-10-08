@@ -101,6 +101,7 @@
 #include "platform/native_renderer.h"
 #include "platform/native_wheels.h"
 #include "platform/native_char_gpu.h"
+#include "platform/native_twin.h"
 
 int g_cfg_nativeLayerReport = 0;
 
@@ -587,7 +588,13 @@ struct NrDrawItem
 	// (16384 / mh->scale), the origin of the model units being the model's own.
 	u8 kind;
 	u8 seat;
+	u8 twin; // the retail twin (step 4d): its own cull, pose table, no wheels
 	u16 pose;
+	// The retail look of the twin (step 4d Z1): the tone a = alphaScale / 4096
+	// of this view (0 = none) and the far colour F (0..1) of the instance's
+	// setup callback, as RenderBucket_RunInstanceSetupCallback loads it.
+	float tone;
+	float far[3];
 	const struct NativeCharGpu *gpu;
 	double unitScale[3];
 };
@@ -2621,6 +2628,7 @@ struct NrChar
 {
 	const struct Model *model;
 	const struct NativeCharGpu *gpu;
+	u8 twin; // the retail twin of seat 0 (step 4d), not a custom model
 };
 
 internal struct NrChar s_nrChar[NATIVE_RENDER_LAYER_DRIVERS];
@@ -3082,6 +3090,7 @@ internal void NativeRenderLayer_BindChars(const struct GameTracker *gGT)
 		{
 			s_nrChar[s_nrCharCount].model = model;
 			s_nrChar[s_nrCharCount].gpu = gpu;
+			s_nrChar[s_nrCharCount].twin = 0;
 			s_nrCharCount++;
 		}
 
@@ -3218,6 +3227,7 @@ internal void NativeRenderLayer_BindPreview(const struct GameTracker *gGT)
 			{
 				s_nrChar[s_nrCharCount].model = model;
 				s_nrChar[s_nrCharCount].gpu = gpu;
+				s_nrChar[s_nrCharCount].twin = 0;
 				s_nrCharCount++;
 			}
 			s_nrPreviewCnt.frames++;
@@ -3244,6 +3254,99 @@ internal void NativeRenderLayer_BindPreview(const struct GameTracker *gGT)
 		Platform_Log("[CTR RenderLayer] native char preview not bound: entry %d (%s) at vblank %d\n", current, why, Platform_GetVBlankCount());
 		s_nrPreviewWhyEntry = current;
 	}
+}
+
+// --- Step 4d: the retail twin of seat 0 (--native-twin) --------------------------
+//
+// THE TWIN (NativeRenderLayer_BindTwin, every frame from the pull after the
+// chars and the preview, only with --native-twin): seat 0's retail model, made
+// into a GPU set at load stage 5 (NativeCharGpu_LoadTwin), is bound like a
+// custom model while seat 0's instance carries the very model the set was made
+// from, in a race the funnel would bind in, and the probe is not on seat 0. The
+// route then takes its views through the gates of 4c (kind CHAR, twin 1) with
+// three differences: the cull follows REVERSE_CULL_DIRECTION of the view, not
+// the determinant (retail decides by the screen sign and bit 29 alone, the
+// twin's winding is written for that, platform/native_twin.c); the pose comes
+// from the twin's pose table (NativeTwin_PoseIndex with the pulled animation
+// word); and the twin has no wheels and sets no wheel stamp - the retail wheels
+// stay on.
+
+internal int s_nrTwinBound = 0;
+
+internal struct
+{
+	unsigned long long boundFrames;
+	unsigned long long routed;
+	unsigned long long draws;
+	unsigned long long notDrawn;
+	unsigned long long poseWithoutPull;
+	unsigned long long poseOutOfRange;
+	unsigned long long toned;      // draws with a tone a != 0
+	unsigned long long farZero;    // routed views whose setup loads F = 0
+	unsigned long long setupOther; // routed views with a setup callback the twin does not know (F = 0 taken)
+	unsigned long long dithered;   // draws with a dither weight > 0 on a range
+} s_nrTwinCnt;
+
+internal void NativeRenderLayer_BindTwin(const struct GameTracker *gGT)
+{
+	const struct NativeCharGpu *gpu = NativeCharGpu_ForTwin();
+	const struct Model *model = NativeCharGpu_TwinModel();
+	const char *why = NULL;
+
+	if (gpu == NULL)
+	{
+		why = "no twin set";
+	}
+	else if ((gGT == NULL) || (((u32)gGT->gameMode1 & MAIN_MENU) != 0))
+	{
+		why = "main menu";
+	}
+	else if ((why = NativeChar_ModeRefusal(gGT)) != NULL)
+	{
+	}
+	else if ((s_nrSeatState[0] != NR_SEAT_READY) || (s_nrSeatInst[0] == NULL))
+	{
+		why = (s_nrSeatState[0] == NR_SEAT_LOADING) ? "loading" : "seat not ready";
+	}
+	else if (s_nrSeatInst[0]->model != model)
+	{
+		why = "the instance has another model";
+	}
+	else if ((g_cfg_nativeProbe != NATIVE_PROBE_NONE) && (g_cfg_nativeProbeSeat == 0))
+	{
+		why = "probe on seat 0";
+	}
+	else if (NativeRenderLayer_CharIndex(model) >= 0)
+	{
+		why = "model bound already";
+	}
+
+	if (why != NULL)
+	{
+		if (s_nrTwinBound)
+		{
+			Platform_Log("[CTR RenderLayer] native twin unbound (%s) at vblank %d\n", why, Platform_GetVBlankCount());
+			s_nrTwinBound = 0;
+		}
+		return;
+	}
+
+	if (!s_nrTwinBound)
+	{
+		Platform_Log("[CTR RenderLayer] native twin bound: seat 0 model id %d at vblank %d\n", (int)model->id, Platform_GetVBlankCount());
+		s_nrCharSeam[0].haveLast = 0;
+		s_nrTwinBound = 1;
+	}
+	if (s_nrCharCount < NATIVE_RENDER_LAYER_DRIVERS)
+	{
+		s_nrChar[s_nrCharCount].model = model;
+		s_nrChar[s_nrCharCount].gpu = gpu;
+		s_nrChar[s_nrCharCount].twin = 1;
+		s_nrCharCount++;
+	}
+	s_nrTwinCnt.boundFrames++;
+	s_nrCharSeatFrame[0].live = (gGT->renderFlags & RENDER_FLAG_RENDER_BUCKET) != 0;
+	s_nrCharFrame0.live = s_nrCharSeatFrame[0].live;
 }
 
 // The char part of the route, for an instance view of a bound custom model:
@@ -3410,7 +3513,7 @@ internal int NativeRenderLayer_RouteChar(int k, const struct Instance *inst, con
 
 	// Only the instance of a bound seat; any other instance with the model
 	// (none is known) stays retail without a count.
-	if ((gGT == NULL) || (seat < 0) || (!s_nrCharSeatBound[seat] && !(s_nrPreviewBound && (seat == 0))))
+	if ((gGT == NULL) || (seat < 0) || (!s_nrCharSeatBound[seat] && !((s_nrPreviewBound || s_nrTwinBound) && (seat == 0))))
 	{
 		return 0;
 	}
@@ -3523,6 +3626,47 @@ internal int NativeRenderLayer_RouteChar(int k, const struct Instance *inst, con
 	it->kind = NR_ITEM_CHAR;
 	it->seat = (u8)seat;
 	it->gpu = s_nrChar[k].gpu;
+	it->twin = s_nrChar[k].twin;
+	if (it->twin)
+	{
+		const u32 setup = (u32)(size_t)inst->funcPtr[0];
+		const s32 alpha = (s32)idpp->alphaScale;
+
+		// Retail keeps a one-sided triangle by its screen sign and bit 29 xor
+		// bit 15 of the view's flags (REVERSE_CULL_DIRECTION); the twin's
+		// winding is written for that, not for det(mvp).
+		it->cull = (u8)(((idpp->instFlags & REVERSE_CULL_DIRECTION) != 0) ? NATIVE_GFX_CULL_FRONT : NATIVE_GFX_CULL_BACK);
+
+		// The look (Z1): the DPCT tone of RenderBucket_LoadPrimColors, a =
+		// idpp->alphaScale / 4096 (held to 0..1 as IR0 is), toward the far
+		// colour the setup callback loads - (colorRGBA >> 16, >> 8, >> 0) &
+		// 0xff0 into RFC/GFC/BFC, so F = bits 20-27, 12-19, 4-11 over 255;
+		// the zero-colour setup loads 0. The OT gate of the DPCT is not
+		// rebuilt (taken as always open).
+		it->tone = (alpha <= 0) ? 0.0f : ((alpha >= 0x1000) ? 1.0f : ((float)alpha / 4096.0f));
+		if ((setup == RB_RETAIL_INST_SETUP_LIGHT_COLOR) || (setup == RB_RETAIL_INST_SETUP_COLOR) || (setup == RB_RETAIL_INST_SETUP_FADE_COLOR))
+		{
+			const u32 color = inst->colorRGBA;
+
+			it->far[0] = (float)((color >> 20) & 0xffu) / 255.0f;
+			it->far[1] = (float)((color >> 12) & 0xffu) / 255.0f;
+			it->far[2] = (float)((color >> 4) & 0xffu) / 255.0f;
+		}
+		else
+		{
+			it->far[0] = 0.0f;
+			it->far[1] = 0.0f;
+			it->far[2] = 0.0f;
+			if (setup == RB_RETAIL_INST_SETUP_ZERO_COLOR)
+			{
+				s_nrTwinCnt.farZero++;
+			}
+			else
+			{
+				s_nrTwinCnt.setupOther++;
+			}
+		}
+	}
 	it->unitScale[0] = 16384.0 / (double)mh->scale.x;
 	it->unitScale[1] = 16384.0 / (double)mh->scale.y;
 	it->unitScale[2] = 16384.0 / (double)(u16)mh->scale.z;
@@ -3539,11 +3683,38 @@ internal int NativeRenderLayer_RouteChar(int k, const struct Instance *inst, con
 			anim = it->poseCurrentAnim;
 			frame = it->poseCurrent;
 		}
-		pose = NativeCharGpu_PoseIndex(it->gpu->netPoseCount, anim, frame);
-		if (pose < 0)
+		if (it->twin)
 		{
-			pose = 0;
-			s_nrCharCnt.poseOutOfRange++;
+			// The twin's own table, keyed by the animation word as the pull
+			// took it before the queue (else the instance's word now).
+			const struct NativeTwinSource *src = NativeCharGpu_TwinSource();
+			int word = (int)(u16)inst->animFrame;
+
+			anim = (int)inst->animIndex;
+			if ((it->object < NATIVE_RENDER_LAYER_SLOTS) && s_nrObjects[it->object].live && (s_nrObjects[it->object].inst == inst))
+			{
+				anim = (int)s_nrObjects[it->object].curr.animIndex;
+				word = (int)s_nrObjects[it->object].curr.animFrame;
+			}
+			else
+			{
+				s_nrTwinCnt.poseWithoutPull++;
+			}
+			pose = (src != NULL) ? NativeTwin_PoseIndex(src, anim, word) : -1;
+			if (pose < 0)
+			{
+				pose = 0;
+				s_nrTwinCnt.poseOutOfRange++;
+			}
+		}
+		else
+		{
+			pose = NativeCharGpu_PoseIndex(it->gpu->netPoseCount, anim, frame);
+			if (pose < 0)
+			{
+				pose = 0;
+				s_nrCharCnt.poseOutOfRange++;
+			}
 		}
 		it->pose = (u16)pose;
 	}
@@ -3593,8 +3764,12 @@ internal int NativeRenderLayer_RouteChar(int k, const struct Instance *inst, con
 	}
 
 	// The stamp the retail wheels of this view read (DrawTires runs after the
-	// queue in the same frame).
-	if (it->object < NATIVE_RENDER_LAYER_SLOTS)
+	// queue in the same frame). Not for the twin: its retail wheels stay on.
+	if (it->twin)
+	{
+		s_nrTwinCnt.routed++;
+	}
+	else if (it->object < NATIVE_RENDER_LAYER_SLOTS)
 	{
 		s_nrCharViewFrame[it->object][view] = s_nrFrame;
 		s_nrCharViewWheels[it->object][view] = it->nativeWheels;
@@ -3916,6 +4091,7 @@ void NativeRenderLayer_NoteRestore(void)
 		memset(s_nrCharSeatBound, 0, sizeof(s_nrCharSeatBound));
 		s_nrPreviewBound = 0;
 		s_nrPreviewBoundEntry = -1;
+		s_nrTwinBound = 0;
 	}
 
 	// The seats of the pool before the restore are none of the restored pool:
@@ -4026,6 +4202,10 @@ void NativeRenderLayer_Pull(struct GameTracker *gGT)
 	{
 		NativeRenderLayer_BindChars(gGT);
 		NativeRenderLayer_BindPreview(gGT);
+		if (g_cfg_nativeTwin)
+		{
+			NativeRenderLayer_BindTwin(gGT);
+		}
 	}
 
 	if (g_cfg_nativeProbe != NATIVE_PROBE_NONE)
@@ -4513,6 +4693,17 @@ void NativeRenderLayer_Report(void)
 		Platform_Log("[CTR RenderLayer] at exit: native char split shift: 1 %llu, other %llu; second range of its own %llu, shared %llu\n",
 		             s_nrCharSplit.shift1, s_nrCharSplit.shiftOther, s_nrCharSplit.secondaryOwn, s_nrCharSplit.secondaryShared);
 
+		// Step 4d: the retail twin, only in a run with --native-twin.
+		if (g_cfg_nativeTwin)
+		{
+			Platform_Log("[CTR RenderLayer] at exit: native twin bound %llu frame(s), routed %llu, native draws %llu, not drawn %llu, "
+			             "poses without a pull value %llu, out of range %llu\n",
+			             s_nrTwinCnt.boundFrames, s_nrTwinCnt.routed, s_nrTwinCnt.draws, s_nrTwinCnt.notDrawn, s_nrTwinCnt.poseWithoutPull,
+			             s_nrTwinCnt.poseOutOfRange);
+			Platform_Log("[CTR RenderLayer] at exit: native twin look: toned draws %llu, dithered draws %llu, far colour zero %llu, setup unknown %llu\n",
+			             s_nrTwinCnt.toned, s_nrTwinCnt.dithered, s_nrTwinCnt.farZero, s_nrTwinCnt.setupOther);
+		}
+
 		// Step 5a/5c: where native characters were bound.
 		Platform_Log("[CTR RenderLayer] at exit: native char binds by mode: race %llu, preview %llu, refused adventure %llu, cutscene %llu, other %llu; "
 		             "preview outside the driver select %llu, preview box outside the clip %llu\n",
@@ -4620,7 +4811,8 @@ void NativeRenderLayer_TiresBegin(const struct Instance *inst, const struct Push
 	// Step 4c: the retail wheels of a custom character drawn natively,
 	// counted per kind of view; 0 at once without one.
 	s_nrCharTiresActive = 0;
-	if ((s_nrCharCount != 0) && (inst != NULL) && (NativeRenderLayer_CharIndex(inst->model) >= 0) && (NativeRenderLayer_SeatOfInst(inst) >= 0))
+	if ((s_nrCharCount != 0) && (inst != NULL) && (NativeRenderLayer_CharIndex(inst->model) >= 0) && !s_nrChar[NativeRenderLayer_CharIndex(inst->model)].twin &&
+	    (NativeRenderLayer_SeatOfInst(inst) >= 0))
 	{
 		int wheels = 0;
 
@@ -5231,6 +5423,10 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 	double S[4][4];
 	u32 r;
 	int firstInFrame;
+	double twinShift = 0.0;
+	const struct NativeTwinSource *twinSrc = it->twin ? NativeCharGpu_TwinSource() : NULL;
+	const float ditherAmount = it->twin ? NativeRenderer_PsxDitherAmountNow() : 0.0f;
+	int dithered = 0;
 
 	if ((gpu == NULL) || (gpu->state != NATIVE_CHAR_GPU_READY) || (seat >= NATIVE_RENDER_LAYER_DRIVERS))
 	{
@@ -5242,13 +5438,40 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 		return;
 	}
 
-	NativeRenderLayer_CharItemMatrix(it, (double)ofsX, (double)ofsY, S);
+	// The twin (Z1): moved by -0.5 px as the retail corners are cut, while
+	// --subpixel is off. The dither grid is the fragment's own place (nrt), so
+	// it needs nothing of this shift.
+	if (it->twin && !g_cfg_subpixel)
+	{
+		twinShift = 0.5;
+	}
 
+	NativeRenderLayer_CharItemMatrix(it, (double)ofsX - twinShift, (double)ofsY - twinShift, S);
+
+	memset(ranges, 0, sizeof(ranges));
 	for (r = 0; r < gpu->rangeCount; r++)
 	{
 		const struct NativeCharRange *range = &gpu->range[r];
 		const int texture = gpu->materialTexture[range->material];
 		struct NativeMeshRangeDraw *out = &ranges[r];
+
+		if (it->twin && (twinSrc != NULL))
+		{
+			const struct NativeTwinMaterial *look = &twinSrc->material[range->material];
+
+			out->modulation = (float)look->modulation;
+			out->ditherWeight = (look->dither || activeDrawEnv.dtd) ? ditherAmount : 0.0f;
+			if ((texture >= 0) && ((u32)texture < twinSrc->native.textureCount) && (twinSrc->native.texture[texture].width > 0u) &&
+			    (twinSrc->native.texture[texture].height > 0u))
+			{
+				out->uvFudge[0] = 0.00025f / (float)twinSrc->native.texture[texture].width;
+				out->uvFudge[1] = 0.00025f / (float)twinSrc->native.texture[texture].height;
+			}
+			if (out->ditherWeight > 0.0f)
+			{
+				dithered = 1;
+			}
+		}
 
 		out->firstIndex = range->firstIndex;
 		out->indexCount = range->indexCount;
@@ -5268,16 +5491,41 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 	mesh.rangeCount = (int)gpu->rangeCount;
 	mesh.ranges = ranges;
 	mesh.depthTint = NativeRenderLayer_DepthTint(it);
+	if (it->twin)
+	{
+		mesh.look = 1;
+		mesh.tone = it->tone;
+		mesh.far[0] = it->far[0];
+		mesh.far[1] = it->far[1];
+		mesh.far[2] = it->far[2];
+		mesh.far[3] = 1.0f;
+	}
 
 	if (NativeRenderer_DrawNativeMesh(&mesh, clip, dispenv, onScreen) == 0)
 	{
 		s_nrCharCnt.notDrawn++;
 		s_nrCharSeatCnt[seat].notDrawn++;
+		if (it->twin)
+		{
+			s_nrTwinCnt.notDrawn++;
+		}
 		return;
 	}
 
 	s_nrCharCnt.draws++;
 	s_nrCharSeatCnt[seat].draws++;
+	if (it->twin)
+	{
+		s_nrTwinCnt.draws++;
+		if (it->tone > 0.0f)
+		{
+			s_nrTwinCnt.toned++;
+		}
+		if (dithered)
+		{
+			s_nrTwinCnt.dithered++;
+		}
+	}
 
 	// The preview window: its body box has to lie in the clip of the split
 	// (step 5a), in the same pixels (draw offset included) - counted only while

@@ -16,6 +16,11 @@ int NativeRenderer_LoadProbeMipsTexture(int levelID);
 // Returns at once without --native-preview or without a held native part.
 void NativeCharGpu_LoadSeats(int levelID);
 
+// From platform/native_char_gpu.c as well: the retail twin of seat 0 (step 4d,
+// --native-twin), built and uploaded at this loading screen right after the
+// seats. Returns at once without the switch.
+void NativeCharGpu_LoadTwin(int levelID);
+
 #ifdef CTR_NATIVE
 // See game/LOAD/LOAD_File.c: declaration instead of a platform header, because this
 // file is part of the game's unity build.
@@ -551,6 +556,7 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 		// Their native models go up right after, at the same loading screen:
 		// every pose, the indices and the textures of a bound seat (step 4c).
 		NativeCharGpu_LoadSeats(gGT->levelID);
+		NativeCharGpu_LoadTwin(gGT->levelID);
 
 		// The driver's native texture goes up here, with the drivers of the
 		// race being loaded: the flag covers the screen, no race frame is

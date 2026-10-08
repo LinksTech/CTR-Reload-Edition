@@ -155,6 +155,21 @@ void NativeCharGpu_LoadPreview(int entry, u64 started);
 void NativeCharGpu_ReleasePreview(void);
 const struct NativeCharGpu *NativeCharGpu_ForPreview(int entry);
 
+// STEP 4D, the retail twin (--native-twin, only with --dev and
+// --native-preview): a place of its own beside the seats and the preview.
+// LoadTwin in load stage 5 after LoadSeats (game/LOAD/LOAD_TenStages.c): seat
+// 0's retail model through platform/native_twin.c and its pages from the VRAM
+// mirror, uploaded with NativeTwin_TextureFlags. ReleaseTwin with the seats.
+// ForTwin: the ready set, TwinSource: its source (pose table), TwinModel: the
+// retail model it was made from - NULL while there is none.
+struct NativeTwinSource;
+extern int g_cfg_nativeTwin;
+void NativeCharGpu_LoadTwin(int levelID);
+void NativeCharGpu_ReleaseTwin(void);
+const struct NativeCharGpu *NativeCharGpu_ForTwin(void);
+const struct NativeTwinSource *NativeCharGpu_TwinSource(void);
+const struct Model *NativeCharGpu_TwinModel(void);
+
 // The ready set of a seat whose native part is still the one it was made from,
 // else NULL.
 const struct NativeCharGpu *NativeCharGpu_ForSeat(int seat);

@@ -28,8 +28,14 @@
 #include "platform/native_probe.h"
 #include "platform/native_renderer.h"
 #include "platform/native_tex.h"
+#include "platform/native_twin.h"
 
 extern int g_cfg_nativePreview;
+
+// --native-twin (main.c, only with --dev and --native-preview; measuring only):
+// seat 0's retail model drawn through the native path as its retail twin
+// (step 4d, platform/native_twin.c). Set in the first loop of main.
+int g_cfg_nativeTwin = 0;
 
 CTR_STATIC_ASSERT(NATIVE_CHAR_GPU_MATERIALS == RLDCHAR_NET_MATERIALS_MAX);
 CTR_STATIC_ASSERT(NATIVE_CHAR_GPU_TEXTURES == RLDCHAR_TEX_COUNT_MAX);
@@ -54,6 +60,14 @@ internal struct NativeCharGpu s_ncgSets[NATIVE_CHAR_GPU_SETS];
 // The preview's set (step 5a) and the entry it was made for (-1: none).
 internal struct NativeCharGpu s_ncgPreview;
 internal int s_ncgPreviewEntry = -1;
+
+// The retail twin (step 4d, --native-twin): its source (platform/
+// native_twin.c - the key of the set is &s_ncgTwinSource.native, so it lives
+// until the set is let go), its set, and the retail model it was made from.
+internal struct NativeTwinSource s_ncgTwinSource;
+internal int s_ncgTwinHeld = 0;
+internal struct NativeCharGpu s_ncgTwin;
+internal const struct Model *s_ncgTwinModel = NULL;
 internal int s_ncgSetCount = 0;
 internal int s_ncgSeatSet[NATIVE_CHAR_GPU_SETS] = {-1, -1, -1, -1, -1, -1, -1, -1};
 
@@ -440,6 +454,7 @@ void NativeCharGpu_ReleaseAll(void)
 		s_ncgSeatSet[i] = -1;
 	}
 	NativeCharGpu_ReleasePreview();
+	NativeCharGpu_ReleaseTwin();
 }
 
 internal int NativeCharGpu_Refuse(struct NativeCharGpu *set, const char *why)
@@ -451,7 +466,11 @@ internal int NativeCharGpu_Refuse(struct NativeCharGpu *set, const char *why)
 
 // The device objects of one set; 0 with set->why. Everything made so far is
 // let go again on a refusal.
-internal int NativeCharGpu_Upload(struct NativeCharGpu *set, const struct RldCharNative *n, int seat, const char *file)
+// seat >= 0: a seat's set; else tag names the place ("preview", "twin") in the
+// lines. extraTexFlags go onto every texture (the twin: NativeTwin_TextureFlags,
+// ONE_LEVEL above all); 0 for the sets of CNET/CTXT, which take their flags from
+// CTXT alone as before.
+internal int NativeCharGpu_Upload(struct NativeCharGpu *set, const struct RldCharNative *n, int seat, const char *file, const char *tag, u32 extraTexFlags)
 {
 	struct NativeCharGpuCpu cpu;
 	u32 stagingBefore;
@@ -604,7 +623,7 @@ internal int NativeCharGpu_Upload(struct NativeCharGpu *set, const struct RldCha
 		desc.height = (int)src->height;
 		desc.rgba = src->rgba;
 		desc.flags = (((src->flags & RLDCHAR_TEX_LINEAR) != 0u) ? NATIVE_TEX_FLAG_LINEAR_DATA : 0u) |
-		             (cpu.textureNearest[t] ? NATIVE_TEX_FLAG_ALWAYS_NEAREST : 0u);
+		             (cpu.textureNearest[t] ? NATIVE_TEX_FLAG_ALWAYS_NEAREST : 0u) | extraTexFlags;
 		desc.wrapU = (wrapU == 1u) ? NATIVE_GFX_WRAP_CLAMP : ((wrapU == 2u) ? NATIVE_GFX_WRAP_MIRROR : NATIVE_GFX_WRAP_REPEAT);
 		desc.wrapV = (wrapV == 1u) ? NATIVE_GFX_WRAP_CLAMP : ((wrapV == 2u) ? NATIVE_GFX_WRAP_MIRROR : NATIVE_GFX_WRAP_REPEAT);
 		desc.name = name;
@@ -617,7 +636,7 @@ internal int NativeCharGpu_Upload(struct NativeCharGpu *set, const struct RldCha
 			}
 			else
 			{
-				Platform_Log("[CTR NativeChar] preview: %s texture %u is used with and without the nearest flag - drawn nearest\n", file, (unsigned)t);
+				Platform_Log("[CTR NativeChar] %s: %s texture %u is used with and without the nearest flag - drawn nearest\n", tag, file, (unsigned)t);
 			}
 		}
 
@@ -632,7 +651,8 @@ internal int NativeCharGpu_Upload(struct NativeCharGpu *set, const struct RldCha
 			goto out;
 		}
 		set->textureSrgb[t] = (u8)NativeTex_IsSrgb(set->texture[t]);
-		set->textureBytes += (u32)NativeTex_ChainBytes((int)src->width, (int)src->height, NativeTex_LevelCount((int)src->width, (int)src->height));
+		set->textureBytes += (u32)NativeTex_ChainBytes((int)src->width, (int)src->height,
+		                                               ((desc.flags & NATIVE_TEX_FLAG_ONE_LEVEL) != 0u) ? 1 : NativeTex_LevelCount((int)src->width, (int)src->height));
 	}
 
 	set->state = NATIVE_CHAR_GPU_READY;
@@ -758,7 +778,7 @@ void NativeCharGpu_LoadSeats(int levelID)
 		s_ncgSeatSet[seat] = s_ncgSetCount;
 		s_ncgSetCount++;
 
-		if (!NativeCharGpu_Upload(set, n, seat, file))
+		if (!NativeCharGpu_Upload(set, n, seat, file, "seat", 0u))
 		{
 			s_ncgCount.refused++;
 			Platform_Log("[CTR NativeChar] seat %d: %s not uploaded (%s), using CMDL\n", seat, file, set->why);
@@ -831,7 +851,7 @@ void NativeCharGpu_LoadPreview(int entry, u64 started)
 
 	NativeCharGpu_Release(&s_ncgPreview, 0);
 	s_ncgPreviewEntry = entry;
-	if (!NativeCharGpu_Upload(&s_ncgPreview, n, -1, file))
+	if (!NativeCharGpu_Upload(&s_ncgPreview, n, -1, file, "preview", 0u))
 	{
 		s_ncgCount.refused++;
 		Platform_Log("[CTR NativeChar] preview: %s not uploaded (%s), using CMDL\n", file, s_ncgPreview.why);
@@ -868,6 +888,144 @@ const struct NativeCharGpu *NativeCharGpu_ForPreview(int entry)
 	return &s_ncgPreview;
 }
 
+// --- The retail twin (step 4d) ---------------------------------------------------
+
+void NativeCharGpu_ReleaseTwin(void)
+{
+	if (!s_ncgTwinHeld)
+	{
+		return;
+	}
+	if (s_ncgTwin.state == NATIVE_CHAR_GPU_READY)
+	{
+		s_ncgCount.released++;
+	}
+	NativeCharGpu_Release(&s_ncgTwin, 1);
+	NativeTwin_Free(&s_ncgTwinSource);
+	memset(&s_ncgTwinSource, 0, sizeof(s_ncgTwinSource));
+	s_ncgTwinHeld = 0;
+	s_ncgTwinModel = NULL;
+}
+
+// Load stage 5, right after the seats (game/LOAD/LOAD_TenStages.c), only with
+// --native-twin: the twin of seat 0's retail model - the model the birth will
+// look up for data.characterIDs[0] in the driver pack of this load
+// (NativeChar_RetailSeatModel) - built on the CPU (NativeTwin_FromModel,
+// header 0), its pages decoded from the VRAM mirror (NativeTwin_DecodeVram),
+// then uploaded like a seat's set with NativeTwin_TextureFlags on every texture
+// (linear, nearest, one level). Only for a race the custom funnel would bind in
+// (one-player arcade), never with a custom character on seat 0; silent for a
+// menu load. One line "[CTR Twin] ..." (NativeTwin_Describe) and one line
+// "twin: ... uploaded" or "not built/uploaded (why)".
+void NativeCharGpu_LoadTwin(int levelID)
+{
+	const struct GameTracker *gGT = sdata->gGT;
+	const struct Model *model;
+	const char *modeWhy;
+	char why[160];
+	char line[1024];
+
+	(void)levelID;
+	if (!g_cfg_nativePreview || !g_cfg_nativeTwin || (gGT == NULL) || (((u32)gGT->gameMode1 & MAIN_MENU) != 0))
+	{
+		return;
+	}
+
+	NativeCharGpu_ReleaseTwin();
+	NativeCharGpu_EmptyGrave();
+
+	modeWhy = NativeChar_ModeRefusal(gGT);
+	if (modeWhy != NULL)
+	{
+		Platform_Log("[CTR NativeChar] twin: not built (%s)\n", modeWhy);
+		return;
+	}
+	if (NativeChar_SeatModel(0) != NULL)
+	{
+		Platform_Log("[CTR NativeChar] twin: not built (custom character on seat 0)\n");
+		return;
+	}
+	model = NativeChar_RetailSeatModel(0);
+	if (model == NULL)
+	{
+		Platform_Log("[CTR NativeChar] twin: not built (no retail model for seat 0 in the driver pack)\n");
+		return;
+	}
+
+	memset(&s_ncgTwinSource, 0, sizeof(s_ncgTwinSource));
+	why[0] = '\0';
+	s_ncgTwinHeld = 1;
+	s_ncgTwinModel = model;
+	NativeCharGpu_Release(&s_ncgTwin, 0);
+
+	if (!NativeTwin_FromModel(model, 0, &s_ncgTwinSource, why, sizeof(why)))
+	{
+		s_ncgCount.refused++;
+		Platform_Log("[CTR NativeChar] twin: not built (%s)\n", why);
+		NativeTwin_Free(&s_ncgTwinSource);
+		memset(&s_ncgTwinSource, 0, sizeof(s_ncgTwinSource));
+		s_ncgTwinHeld = 0;
+		s_ncgTwinModel = NULL;
+		return;
+	}
+
+	if (s_ncgTwinSource.native.state != RLDCHAR_NATIVE_READY)
+	{
+		const u16 *vram = NativeRenderer_VramMirror();
+
+		if ((vram == NULL) || !NativeTwin_DecodeVram(vram, &s_ncgTwinSource))
+		{
+			NativeTwin_Describe(&s_ncgTwinSource, line, sizeof(line));
+			Platform_Log("%s\n", line);
+			s_ncgCount.refused++;
+			Platform_Log("[CTR NativeChar] twin: not built (the pages could not be decoded from the VRAM mirror)\n");
+			NativeCharGpu_ReleaseTwin();
+			return;
+		}
+	}
+
+	NativeTwin_Describe(&s_ncgTwinSource, line, sizeof(line));
+	Platform_Log("%s\n", line);
+
+	if (!NativeCharGpu_Upload(&s_ncgTwin, &s_ncgTwinSource.native, -1, s_ncgTwinSource.model, "twin", NativeTwin_TextureFlags()))
+	{
+		s_ncgCount.refused++;
+		Platform_Log("[CTR NativeChar] twin: %s not uploaded (%s), the seat stays retail\n", s_ncgTwinSource.model, s_ncgTwin.why);
+		return;
+	}
+
+	s_ncgCount.made++;
+	s_ncgCount.vertexBytes += s_ncgTwin.vertexBytes;
+	s_ncgCount.indexBytes += s_ncgTwin.indexBytes;
+	s_ncgCount.textures += s_ncgTwin.textureCount;
+	s_ncgCount.textureBytes += s_ncgTwin.textureBytes;
+	Platform_Log("[CTR NativeChar] twin: %s uploaded: %u vertices x %u pose(s) (%u KB), %u triangles in %u material range(s), %u texture(s) "
+	             "(%u KB, one level), no wheels (the retail wheels stay on)\n",
+	             s_ncgTwinSource.model, (unsigned)s_ncgTwin.vertexCount, (unsigned)s_ncgTwin.poseCount,
+	             (unsigned)((s_ncgTwin.poseCount * s_ncgTwin.vertexCount * (u32)sizeof(struct NativeProbeVertex)) / 1024u), (unsigned)s_ncgTwin.triangleCount,
+	             (unsigned)s_ncgTwin.rangeCount, (unsigned)s_ncgTwin.textureCount, (unsigned)(s_ncgTwin.textureBytes / 1024u));
+	NativeCharGpu_LogMaterials("twin", s_ncgTwinSource.model, &s_ncgTwin, &s_ncgTwinSource.native);
+}
+
+const struct NativeCharGpu *NativeCharGpu_ForTwin(void)
+{
+	if (!s_ncgTwinHeld || (s_ncgTwin.state != NATIVE_CHAR_GPU_READY) || (s_ncgTwin.key != &s_ncgTwinSource.native))
+	{
+		return NULL;
+	}
+	return &s_ncgTwin;
+}
+
+const struct NativeTwinSource *NativeCharGpu_TwinSource(void)
+{
+	return (NativeCharGpu_ForTwin() != NULL) ? &s_ncgTwinSource : NULL;
+}
+
+const struct Model *NativeCharGpu_TwinModel(void)
+{
+	return (NativeCharGpu_ForTwin() != NULL) ? s_ncgTwinModel : NULL;
+}
+
 const struct NativeCharGpu *NativeCharGpu_ForSeat(int seat)
 {
 	const struct NativeCharGpu *set;
@@ -900,6 +1058,7 @@ void NativeCharGpu_ReportLine(void)
 		live += (s_ncgSets[i].state == NATIVE_CHAR_GPU_READY) ? 1u : 0u;
 	}
 	live += ((s_ncgPreviewEntry >= 0) && (s_ncgPreview.state == NATIVE_CHAR_GPU_READY)) ? 1u : 0u;
+	live += (s_ncgTwinHeld && (s_ncgTwin.state == NATIVE_CHAR_GPU_READY)) ? 1u : 0u;
 
 	Platform_Log("[CTR NativeChar] at exit: sets made %u, refused %u, released %u, live %u; vertex %u KB, index %u KB, textures %u (%u KB with levels); "
 	             "uploads %u, uploads during a race frame %u\n",

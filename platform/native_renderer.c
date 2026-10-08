@@ -9,11 +9,13 @@
 #include <SDL3/SDL.h>
 
 #include "platform/native_gfx.h"
+#include "platform/native_char_gpu.h"
 #include "platform/native_gpu.h"
 #include "platform/native_log.h"
 #include "platform/native_perf.h"
 #include "platform/native_probe.h"
 #include "platform/native_tex.h"
+#include "platform/native_twin.h"
 #include "platform/native_renderer.h"
 
 #include <assert.h>
@@ -640,6 +642,25 @@ CTR_STATIC_ASSERT(offsetof(struct NativeLayerUniforms, params) == 80);
 
 global_variable ShaderID s_nativeLayerShader = NATIVE_GFX_INVALID;
 
+// The program of the retail twin ("nrt", step 4d Z1), only with --native-preview
+// --native-twin; its block, std140, field for field the NrtBlock of the shader.
+struct NativeTwinUniforms
+{
+	float clipFromModel[16];
+	float tint[4];
+	float params[4];
+	float far[4];
+	float look[4];
+	float dither[4];
+	float proj[4];
+};
+
+CTR_STATIC_ASSERT(sizeof(struct NativeTwinUniforms) == 160);
+CTR_STATIC_ASSERT(offsetof(struct NativeTwinUniforms, far) == 96);
+CTR_STATIC_ASSERT(offsetof(struct NativeTwinUniforms, proj) == 144);
+
+global_variable ShaderID s_nativeTwinShader = NATIVE_GFX_INVALID;
+
 // The generated probe mesh, made only with --native-preview and --native-probe
 // (NativeRenderer_InitNativeLayer), static from then on. Without both switches
 // they stay INVALID and NativeRenderer_NativeProbeReady answers 0.
@@ -888,6 +909,11 @@ void NativeRenderer_Shutdown(void)
 	{
 		NativeGfx_DestroyProgram(s_nativeLayerShader);
 		s_nativeLayerShader = NATIVE_GFX_INVALID;
+	}
+	if (s_nativeTwinShader != NATIVE_GFX_INVALID)
+	{
+		NativeGfx_DestroyProgram(s_nativeTwinShader);
+		s_nativeTwinShader = NATIVE_GFX_INVALID;
 	}
 	if (s_probeVertexBuffer != NATIVE_GFX_INVALID)
 	{
@@ -2164,6 +2190,18 @@ internal void NativeRenderer_InitNativeLayer(void)
 	Platform_Log("[CTR Res] native preview: program 'nr' %s, main target depth on demand (only while a native object is bound)\n",
 	             (s_nativeLayerShader != NATIVE_GFX_INVALID) ? "ready" : "missing");
 
+	// The retail twin's own program, only with --native-twin (step 4d Z1).
+	{
+		extern int g_cfg_nativeTwin;
+
+		if (g_cfg_nativeTwin)
+		{
+			s_nativeTwinShader = NativeRenderer_Shader_CompileWithUniforms(ctr_native_twin_shader, NULL, 0, "NrtBlock", (int)sizeof(struct NativeTwinUniforms),
+			                                                              NATIVE_UNIFORM_BLOCK_BINDING);
+			Platform_Log("[CTR Res] native twin: program 'nrt' %s (the retail look V1)\n", (s_nativeTwinShader != NATIVE_GFX_INVALID) ? "ready" : "missing");
+		}
+	}
+
 	// The probe mesh, only when asked for. Made here, in the load phase, because
 	// a static buffer is filled through a one-shot that waits for the queue - a
 	// frame never makes one. The layout is the one nr.vert reads: position at
@@ -2549,6 +2587,29 @@ int NativeRenderer_DrawNativeProbe(const struct NativeLayerDraw *draw, const REC
 	return 1;
 }
 
+// What psxDitherAmount of the PSX block would be for a draw into the target in
+// force now: the expression of NativeRenderer_SetTexture, asked again (it is
+// not kept per draw). For the retail twin's dither weight (step 4d Z1).
+float NativeRenderer_PsxDitherAmountNow(void)
+{
+	int ditherW = 0;
+	int ditherH = 0;
+	int displayW = 0;
+	int displayH = 0;
+
+	NativeRenderer_ActiveViewportSize(&ditherW, &ditherH);
+	NativeRenderer_GetDisplaySize(&displayW, &displayH);
+	return ((g_cfg_dither == NATIVE_DITHER_ALWAYS) || ((g_cfg_dither == NATIVE_DITHER_PACKED) && (ditherW == displayW) && (ditherH == displayH))) ? 1.0f
+	                                                                                                                                         : 0.0f;
+}
+
+// The VRAM mirror (VRAM_WIDTH x VRAM_HEIGHT words), read by the retail twin
+// (step 4d, platform/native_twin.c) at a loading screen. Only reading.
+const u16 *NativeRenderer_VramMirror(void)
+{
+	return s_vram.cpuPixels;
+}
+
 // A static vertex buffer of the "nr" layout, for the native meshes of step 4c
 // (platform/native_char_gpu.c). The layout is the probe's.
 NativeGfxBuffer NativeRenderer_CreateNativeMeshVertexBuffer(int bytes, const void *initial)
@@ -2574,13 +2635,108 @@ NativeGfxBuffer NativeRenderer_CreateNativeMeshVertexBuffer(int bytes, const voi
 	return NativeGfx_CreateVertexBuffer(&desc);
 }
 
+// THE PAINT ORDER OF THE RETAIL TWIN (step 4d, only for a draw with look = 1).
+// Retail has no depth buffer: it sorts every triangle of the model into the
+// ordering table by its mean depth (bins of MAC0 >> 17) and paints far bins
+// first, and in one bin the later command first (NativeTwin_PaintOrder,
+// include/platform/native_twin.h). Where a part of the model sticks out in
+// front of another but lies in the same or a farther bin - the red zigzag on
+// the back of the head of the fake driver (triangles 139-141 rooted in the fur
+// triangles 46 and 112, which come first in the list) - retail paints it over,
+// a depth test does not. So the twin draws its triangles one by one in that
+// order with the depth compare ALWAYS: within the model the last painted wins,
+// as on the PSX. Towards the scene nothing changes: the twin is the only
+// native draw and clears the depth of its box first.
+//
+// The keys live here (grown, never shrunk); 0 = no order (no twin source, the
+// ranges do not hold every triangle, a pose that is not a whole multiple), and
+// the draw keeps its ranges and the depth test.
+global_variable u64 *s_twinPaintKeys;
+global_variable u32 s_twinPaintKeyMax;
+global_variable int s_twinPaintNoted;
+
+internal u32 NativeRenderer_TwinPaintOrder(const struct NativeMeshDraw *draw)
+{
+	const struct NativeTwinSource *src = NativeCharGpu_TwinSource();
+	u32 indices = 0;
+	u32 n;
+	int i;
+
+	if ((src == NULL) || (src->native.vertexCount == 0u) || (draw->vertexOffset < 0) || (((u32)draw->vertexOffset % src->native.vertexCount) != 0u))
+	{
+		return 0;
+	}
+	for (i = 0; i < draw->rangeCount; i++)
+	{
+		indices += draw->ranges[i].indexCount;
+	}
+	if (indices != (src->native.triangleCount * 3u))
+	{
+		return 0;
+	}
+	if (s_twinPaintKeyMax < src->native.triangleCount)
+	{
+		u64 *grown = (u64 *)realloc(s_twinPaintKeys, (size_t)src->native.triangleCount * sizeof(u64));
+
+		if (grown == NULL)
+		{
+			return 0;
+		}
+		s_twinPaintKeys = grown;
+		s_twinPaintKeyMax = src->native.triangleCount;
+	}
+
+	n = NativeTwin_PaintOrder(src, (u32)draw->vertexOffset / src->native.vertexCount, draw->screenFromModel, s_twinPaintKeys, s_twinPaintKeyMax);
+	if (!s_twinPaintNoted)
+	{
+		s_twinPaintNoted = 1;
+		Platform_Log("[CTR Twin] paint order: %s\n", (n > 0u) ? "retail ordering-table bins (MAC0 >> 17, far first, the later command first in a bin), depth compare always"
+		                                                       : "not available, drawn by ranges with the depth test");
+	}
+	return n;
+}
+
+// The block of one twin range (step 4d Z1): its own program "nrt".
+internal void NativeRenderer_TwinRangeBlock(const struct NativeMeshDraw *draw, const struct NativeMeshRangeDraw *range, const float clipFromModel[16],
+                                            struct NativeTwinUniforms *twin)
+{
+	const int textured = (range->texture != NATIVE_GFX_INVALID);
+	int k;
+
+	memcpy(twin->clipFromModel, clipFromModel, sizeof(twin->clipFromModel));
+	for (k = 0; k < 4; k++)
+	{
+		twin->tint[k] = range->tint[k];
+		twin->far[k] = draw->far[k];
+	}
+	twin->params[0] = textured ? 1.0f : 0.0f;
+	twin->params[1] = 0.0f;
+	twin->params[2] = draw->depthTint;
+	twin->params[3] = range->alphaCutoff;
+	twin->look[0] = draw->tone;
+	twin->look[1] = range->modulation;
+	twin->look[2] = range->ditherWeight;
+	twin->look[3] = 0.0f;
+	twin->dither[0] = 0.0f;
+	twin->dither[1] = 0.0f;
+	twin->dither[2] = range->uvFudge[0];
+	twin->dither[3] = range->uvFudge[1];
+	// The inverse of the PSX projection for the dither grid: ndc x
+	// = p0 * x + p12, ndc y = p5 * y + p13 (w is 1 in the PSX map).
+	twin->proj[0] = s_psxUniforms.projection[0];
+	twin->proj[1] = s_psxUniforms.projection[12];
+	twin->proj[2] = s_psxUniforms.projection[5];
+	twin->proj[3] = s_psxUniforms.projection[13];
+}
+
 // ONE NATIVE MESH (step 4c), drawn into the split's place as the probe is -
 // the same calls in the same order as NativeRenderer_DrawNativeProbe (clip,
 // projection, the block's matrix, the depth clear of the split's box, draw
 // state, program), then one indexed draw per range with its own block (the
 // block is copied per draw into the frame's ring, so every draw keeps its own
 // tint and texture), and afterwards the same state reset. Slot 0 is put back
-// when a range bound a texture there.
+// when a range bound a texture there. The retail twin (look = 1) draws one
+// triangle per draw in the retail paint order instead (above), when it has it.
 int NativeRenderer_DrawNativeMesh(const struct NativeMeshDraw *draw, const RECT16 *clip, const DISPENV *dispenv, int onScreen)
 {
 	struct NativeLayerUniforms block;
@@ -2590,6 +2746,10 @@ int NativeRenderer_DrawNativeMesh(const struct NativeMeshDraw *draw, const RECT1
 
 	if ((draw == NULL) || (s_nativeLayerShader == NATIVE_GFX_INVALID) || (clip->w <= 0) || (clip->h <= 0) || (draw->rangeCount <= 0) ||
 	    (draw->vertexBuffer == NATIVE_GFX_INVALID) || (draw->indexBuffer == NATIVE_GFX_INVALID))
+	{
+		return 0;
+	}
+	if (draw->look && (s_nativeTwinShader == NATIVE_GFX_INVALID))
 	{
 		return 0;
 	}
@@ -2632,22 +2792,95 @@ int NativeRenderer_DrawNativeMesh(const struct NativeMeshDraw *draw, const RECT1
 	}
 
 	{
+		// The retail twin draws in the retail paint order when it has it.
+		const u32 paintCount = draw->look ? NativeRenderer_TwinPaintOrder(draw) : 0u;
 		const NativeGfxDrawState state = {
 		    .depthTest = 1,
 		    .depthWrite = 1,
-		    .depthCompare = NATIVE_GFX_COMPARE_GREATER_OR_EQUAL,
+		    .depthCompare = (paintCount > 0u) ? NATIVE_GFX_COMPARE_ALWAYS : NATIVE_GFX_COMPARE_GREATER_OR_EQUAL,
 		    .cull = (NativeGfxCull)draw->cull,
 		    .colorWriteOff = NATIVE_GFX_COLOR_A,
 		};
 
 		NativeGfx_SetBlendMode(BM_NONE);
 		NativeGfx_SetDrawState(&state);
-		NativeGfx_BindProgram(s_nativeLayerShader);
+		NativeGfx_BindProgram(draw->look ? s_nativeTwinShader : s_nativeLayerShader);
 		NativeGfx_BindVertexBuffer(draw->vertexBuffer);
 		NativeGfx_BindIndexBuffer(draw->indexBuffer);
 
-		for (i = 0; i < draw->rangeCount; i++)
+		// One triangle per draw; the block and texture change only when the
+		// range does. drawn counts the ranges that drew a triangle.
+		if (paintCount > 0u)
 		{
+			int current = -1;
+			u64 used = 0;
+			u32 k;
+
+			for (k = 0; k < paintCount; k++)
+			{
+				const u32 first = NATIVE_TWIN_PAINT_PLACE(s_twinPaintKeys[k]) * 3u;
+				int r = -1;
+
+				for (i = 0; i < draw->rangeCount; i++)
+				{
+					if ((first >= draw->ranges[i].firstIndex) && ((first - draw->ranges[i].firstIndex) < draw->ranges[i].indexCount))
+					{
+						r = i;
+						break;
+					}
+				}
+				if (r < 0)
+				{
+					continue;
+				}
+				if (r != current)
+				{
+					const struct NativeMeshRangeDraw *range = &draw->ranges[r];
+					struct NativeTwinUniforms twin;
+
+					if (range->texture != NATIVE_GFX_INVALID)
+					{
+						NativeGfx_BindTexture(0, range->texture, NATIVE_GFX_FILTER_KEEP);
+						textureBound = 1;
+					}
+					NativeRenderer_TwinRangeBlock(draw, range, block.clipFromModel, &twin);
+					NativeGfx_UpdateUniforms(s_nativeTwinShader, &twin);
+					current = r;
+				}
+				NativeGfx_DrawIndexed((int)first, 3, draw->vertexOffset);
+				if ((used & ((u64)1 << (r & 63))) == 0u)
+				{
+					used |= (u64)1 << (r & 63);
+					drawn++;
+				}
+			}
+		}
+
+		for (i = 0; (paintCount == 0u) && (i < draw->rangeCount); i++)
+		{
+			// The retail twin (step 4d Z1): its own program and block.
+			if (draw->look)
+			{
+				const struct NativeMeshRangeDraw *range = &draw->ranges[i];
+				struct NativeTwinUniforms twin;
+
+				if ((range->indexCount == 0u) || (range->indexCount > 0x7FFFFFFFu))
+				{
+					continue;
+				}
+				if (range->texture != NATIVE_GFX_INVALID)
+				{
+					NativeGfx_BindTexture(0, range->texture, NATIVE_GFX_FILTER_KEEP);
+					textureBound = 1;
+				}
+
+				NativeRenderer_TwinRangeBlock(draw, range, block.clipFromModel, &twin);
+				NativeGfx_UpdateUniforms(s_nativeTwinShader, &twin);
+				NativeGfx_DrawIndexed((int)range->firstIndex, (int)range->indexCount, draw->vertexOffset);
+				drawn++;
+				continue;
+			}
+
 			const struct NativeMeshRangeDraw *range = &draw->ranges[i];
 			const int textured = (range->texture != NATIVE_GFX_INVALID);
 

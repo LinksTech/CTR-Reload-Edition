@@ -292,6 +292,11 @@ const struct RldCharNative *NativeChar_SeatNative(int seat);
 // The file name of a bound seat whose guard holds, "" for every other seat.
 const char *NativeChar_SeatFile(int seat);
 
+// The retail model the birth of a seat will find for its character id in the
+// driver pack of this load (load stage 5 on), NULL for none; the retail twin
+// (step 4d) is made from it.
+const struct Model *NativeChar_RetailSeatModel(int seat);
+
 // STEP 5A, the native part of the driver select preview (platform/
 // native_render_layer.c, the pull, at a change of the wanted tile; only with
 // --native-preview): held for one entry at a time, in the file's own slot as a
