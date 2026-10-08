@@ -1305,11 +1305,16 @@ internal int NativeVk_LoadDeviceFunctions(void)
 // on, with the same synchronization validation as before.
 int g_cfg_vkValidation = 0;
 
-// --native-preview, a development switch: the native program, and depth on the
-// main target while a native object is bound (NativeRenderer_WantNativeDepth).
-// Fixed for the whole run - main.c reads it before Platform_Init, because the
-// programs come into being there. Never in ctr-settings.cfg: the file only knows s_videoSettings and the
-// views. Here it is only a guard: without it NativeGfxVK_SetTargetDepth never
+// The native preview: the native program, and depth on the main target while a
+// native object is bound (NativeRenderer_WantNativeDepth). Set by the switch
+// --native-preview (main.c, NativeArgs_ReadDisplayFlags, before Platform_Init)
+// or by NATIVE DRIVERS set to PREVIEW on the GRAPHICS page (ctr-settings.cfg,
+// "video nativedrivers", read by Platform_SettingsPreloadDisplay before the
+// window). Fixed for the whole run, because the device and the programs come
+// into being in Platform_Init: a change on the page applies at the next start.
+// The switch itself is never saved. Where a comment says "with
+// --native-preview", it means this run state, whichever of the two set it.
+// Here it is only a guard: without it NativeGfxVK_SetTargetDepth never
 // creates a depth image, whoever asks.
 int g_cfg_nativePreview = 0;
 

@@ -240,7 +240,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--menu-keys-from", "<vblank>", "first step of the sequence at this VBlank (default 300)"},
     {"--menu-pads", "<n>", "the key sequence reports this many connected pads, 1 to 4 (default 1)"},
     {"--vk-validation", "", "Vulkan validation layer on"},
-    {"--native-preview", "", "native render layer preview for the whole run: the native program, and depth on the main target while a native object is bound, never saved; custom characters are drawn natively only at an internal resolution of x2 or more (at x1 the retail path draws them)"},
+    {"--native-preview", "", "native render layer preview for the whole run: the native program, and depth on the main target while a native object is bound, never saved; custom characters are drawn natively only at an internal resolution of x2 or more (at x1 the retail path draws them); the same run state as NATIVE DRIVERS PREVIEW on the GRAPHICS page (saved, from the next start), on whatever is chosen there; the measuring switches that need it want it on the command line"},
     {"--native-empty-markers", "", "with --native-preview: an empty native marker at every driver instance, retail keeps drawing (self-test of the marker channel)"},
     {"--dump-vram", "<vblanks>", "VRAM dumps <prefix>-<vblank>.tga at these VBlanks (comma list, up to 8)"},
     {"--dump-prefix", "<name>", "file prefix of the VRAM dumps (default dump)"},
@@ -693,7 +693,10 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 			// into being in Platform_Init (NativeRenderer_InitialisePSX), the
 			// big loop runs afterwards - set only there, none of them would be
 			// made. Nothing is printed here, the log is not open yet; the late
-			// place sets the same value once more and says so.
+			// place sets the same value once more and says so. NATIVE DRIVERS
+			// on the GRAPHICS page sets the same value from ctr-settings.cfg,
+			// also before the window (Platform_SettingsPreloadDisplay); it never
+			// turns off what this set.
 			extern int g_cfg_nativePreview;
 
 			g_cfg_nativePreview = 1;
@@ -3292,6 +3295,9 @@ int main(int argc, char *argv[])
 				// A run value like --msaa, fixed for the whole run and never
 				// written to ctr-settings.cfg. NativeArgs_ReadDisplayFlags already set
 				// it before Platform_Init; this is where the log learns of it.
+				// NATIVE DRIVERS (GRAPHICS page) sets the same value from the file,
+				// and this switch wins over its OFF; a run with both says this line
+				// only.
 				extern int g_cfg_nativePreview;
 
 				g_cfg_nativePreview = 1;
@@ -3356,8 +3362,9 @@ int main(int argc, char *argv[])
 			else if (strcmp(argv[argIndex], "--native-empty-markers") == 0)
 			{
 				// A self-test of the marker channel: an empty marker at every driver
-				// instance, retail keeps drawing. Only with --native-preview, which the
-				// early reader (NativeArgs_ReadDisplayFlags) set before Platform_Init -
+				// instance, retail keeps drawing. Only with the native preview, which the
+				// early reader (NativeArgs_ReadDisplayFlags) or NATIVE DRIVERS PREVIEW
+				// (Platform_SettingsPreloadDisplay) set before the window -
 				// so the order of the two switches on the command line does not matter.
 				// Not needed before the first frame, so there is no early reader.
 				// Never in ctr-settings.cfg, like --native-preview.
@@ -3389,7 +3396,8 @@ int main(int argc, char *argv[])
 			{
 				// The early reader (NativeArgs_ReadDisplayFlags) already set the
 				// value before Platform_Init; this is where the log learns of it.
-				// Only with --native-preview, which the early reader set as well -
+				// Only with the native preview, which the early reader (or NATIVE
+				// DRIVERS PREVIEW, Platform_SettingsPreloadDisplay) set as well -
 				// so the order of the two switches does not matter. Never in
 				// ctr-settings.cfg, like --native-preview.
 				extern int g_cfg_nativePreview;
@@ -4237,6 +4245,21 @@ int main(int argc, char *argv[])
 		return NativeConsole_Return(1);
 	}
 #endif
+
+	// NATIVE DRIVERS on the GRAPHICS page turned the native preview on before
+	// the window without --native-preview (Platform_SettingsPreloadDisplay):
+	// its marker channel reports at exit as in a run with the switch. With the
+	// switch the report is already registered above and this adds nothing
+	// (Platform_AtExitReport ignores a second registration); without either
+	// nothing is registered.
+	{
+		extern int g_cfg_nativePreview;
+
+		if (g_cfg_nativePreview)
+		{
+			Platform_AtExitReport(NativeRenderLayer_MarkerReport);
+		}
+	}
 
 	// THE FOLDER IS READ ON EVERY START (unless --no-tracks).
 	//

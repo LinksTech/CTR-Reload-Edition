@@ -8,9 +8,9 @@
 //   ASPECT RATIO     AUTO / 4:3 / 16:9 / 21:9     at the next load of a level
 //   RESOLUTION       NATIVE / 1X ... 8X           at once
 //   ANTI-ALIASING    OFF / 2X / 4X                at the next frame end
-//   DRIVER TEXTURES  COMING SOON                  locked (see below)
-// Up/down chooses the row, left/right the value, triangle goes back.
-// The cursor skips a locked row.
+//   NATIVE DRIVERS   OFF / PREVIEW                at the next start (see below)
+// Up/down chooses the row (around the ends), left/right the value, triangle
+// goes back.
 //
 // A SCREEN OF ITS OWN, NOT A BOX OF THE CHAIN. "DISPLAY MODE  FULLSCREEN" is
 // 312 points wide in FONT_SMALL; the chain allows 219 (otherwise the
@@ -40,11 +40,14 @@ int Platform_GetResolutionScaleSetting(void);
 int Platform_GetResolutionNativePosition(void);
 int Platform_GetResolutionScaleMax(void);
 int Platform_GetMsaaRequested(void);
+int Platform_GetNativeDriversSetting(void);
+int Platform_GetNativeDriversPending(void);
 int Platform_SettingsLocked(void);
 void Platform_GraphicsSetFullscreen(int on);
 void Platform_GraphicsSetAspect(int setting);
 void Platform_GraphicsSetResolution(int scale);
 void Platform_GraphicsSetMsaa(int samples);
+void Platform_GraphicsSetNativeDrivers(int on);
 
 // A title route that MM_Title.c does not know (0..5 are retail).
 #define NATIVE_GRAPHICS_ROUTE 0x40
@@ -55,12 +58,13 @@ void Platform_GraphicsSetMsaa(int samples);
 #define NATIVE_GRAPHICS_LABEL_X      76
 #define NATIVE_GRAPHICS_VALUE_X      436
 // Everything below the rows moves with the number of rows: the first hint
-// starts 8 below the pitch of the last row, the background ends 27 below it.
+// starts 8 below the pitch of the last row, the background ends 27 below it -
+// room for two hints. A third one (all three at once only under
+// --settings-defaults) moves the end down by one hint pitch.
 #define NATIVE_GRAPHICS_HINT_Y       (NATIVE_GRAPHICS_ROW_Y + (NATIVE_GRAPHICS_ROWS * NATIVE_GRAPHICS_ROW_PITCH) + 8)
+#define NATIVE_GRAPHICS_HINT_PITCH   10
 #define NATIVE_GRAPHICS_BACK_Y       20
 #define NATIVE_GRAPHICS_BACK_BOTTOM  (NATIVE_GRAPHICS_HINT_Y + 27)
-// The lock style of the grey rows of the boxes (0x17, RECTMENU.c:101).
-#define NATIVE_GRAPHICS_LOCKED_STYLE GRAY
 // Fullscreen changes between two frames; until the window reports the new state,
 // the row accepts no second change (like DebugMenu.c:381).
 #define NATIVE_GRAPHICS_MODE_COOLDOWN 45
@@ -71,11 +75,11 @@ enum
 	NATIVE_GRAPHICS_ASPECT,
 	NATIVE_GRAPHICS_RESOLUTION,
 	NATIVE_GRAPHICS_AA,
-	NATIVE_GRAPHICS_DRIVER_TEXTURES,
+	NATIVE_GRAPHICS_NATIVE_DRIVERS,
 };
 
 global_variable const char *const s_nativeGraphicsLabels[NATIVE_GRAPHICS_ROWS] = {"DISPLAY MODE", "ASPECT RATIO", "RESOLUTION", "ANTI-ALIASING",
-                                                                                  "DRIVER TEXTURES"};
+                                                                                  "NATIVE DRIVERS"};
 global_variable const char *const s_nativeGraphicsAspects[4] = {"AUTO", "4:3", "16:9", "21:9"};
 
 global_variable int s_nativeGraphicsRow = 0;
@@ -84,29 +88,42 @@ global_variable int s_nativeGraphicsCooldown = 0;
 internal void NativeGraphics_Proc(struct RectMenu *menu);
 
 // ---------------------------------------------------------------------------
-// DRIVER TEXTURES: the filter setting for the textures of native drivers
-// (PIXELATED / FILTERED), a setting of its own next to the PSX filtering.
-// Until the native driver is released for players, the row stands locked:
-// grey, "COMING SOON", the cursor skips it, nothing is set and nothing is
-// saved. Everything the release changes on this page is in this block.
+// NATIVE DRIVERS: the native preview for players, saved as "video
+// nativedrivers" in ctr-settings.cfg. PREVIEW is the run state of
+// --native-preview: custom characters with a native part are drawn natively
+// at an internal resolution of 2X or more; at 1X, and for every other driver,
+// the retail path draws. OFF is the default and what every file without the
+// key reads as - the retail path.
+//
+// At the next start: the device and the native program are made once, before
+// the window (platform/native_platform.c, Platform_SettingsPreloadDisplay).
+// Until then the hint below the rows says so. --native-preview turns the
+// preview on for one run whatever is chosen here and is never saved.
+//
+// The value is PREVIEW and not "ON (PREVIEW)": FONT_SMALL has no brackets
+// (zGlobal_DATA.c, font_characterIconID: '(' and ')' are 0xFF, an empty
+// advance). Widths in FONT_SMALL (13 a character, 7 for ':' and '.',
+// DecalFont.c, DecalFont_GetLineWidthStrlen): the label is 14 x 13 = 182 from
+// 76 to 258, PREVIEW 7 x 13 = 91 right-aligned at 436 from 345, OFF from 397 -
+// 87 apart at the least. The hint is 14 x 13 + 7 + 14 x 13 = 371, centred
+// from 71 to 442, inside the separator (66 to 446).
 // ---------------------------------------------------------------------------
-#define NATIVE_GRAPHICS_DRIVER_TEXTURES_LOCKED 1
-
-internal const char *NativeGraphics_DriverTexturesValue(void)
+internal const char *NativeGraphics_NativeDriversValue(void)
 {
-	return "COMING SOON";
+	return Platform_GetNativeDriversSetting() ? "PREVIEW" : "OFF";
 }
 
-// Left (-1) or right (+1); 0 if nothing changes.
-internal int NativeGraphics_DriverTexturesChange(int dir)
+// OFF on the left, PREVIEW on the right; 0 if nothing changes.
+internal int NativeGraphics_NativeDriversChange(int dir)
 {
-	(void)dir;
-	return 0;
-}
+	const int value = (dir > 0) ? 1 : 0;
 
-internal int NativeGraphics_RowLocked(int row)
-{
-	return (row == NATIVE_GRAPHICS_DRIVER_TEXTURES) && NATIVE_GRAPHICS_DRIVER_TEXTURES_LOCKED;
+	if (value == Platform_GetNativeDriversSetting())
+	{
+		return 0;
+	}
+	Platform_GraphicsSetNativeDrivers(value);
+	return 1;
 }
 // ---------------------------------------------------------------------------
 
@@ -171,8 +188,8 @@ internal const char *NativeGraphics_Value(int row, char *text, int size)
 		snprintf(text, size, "%dX", value);
 		return text;
 
-	case NATIVE_GRAPHICS_DRIVER_TEXTURES:
-		return NativeGraphics_DriverTexturesValue();
+	case NATIVE_GRAPHICS_NATIVE_DRIVERS:
+		return NativeGraphics_NativeDriversValue();
 
 	default:
 		value = Platform_GetMsaaRequested();
@@ -228,8 +245,8 @@ internal int NativeGraphics_Change(int row, int dir)
 		return 1;
 	}
 
-	case NATIVE_GRAPHICS_DRIVER_TEXTURES:
-		return NativeGraphics_DriverTexturesChange(dir);
+	case NATIVE_GRAPHICS_NATIVE_DRIVERS:
+		return NativeGraphics_NativeDriversChange(dir);
 
 	default:
 	{
@@ -267,23 +284,27 @@ internal void NativeGraphics_Draw(void)
 	for (row = 0; row < NATIVE_GRAPHICS_ROWS; row++)
 	{
 		const int y = NATIVE_GRAPHICS_ROW_Y + (row * NATIVE_GRAPHICS_ROW_PITCH);
-		const int locked = NativeGraphics_RowLocked(row);
 
-		DecalFont_DrawLine((char *)s_nativeGraphicsLabels[row], NATIVE_GRAPHICS_LABEL_X, y, FONT_SMALL,
-		                   (locked ? NATIVE_GRAPHICS_LOCKED_STYLE : ORANGE));
-		DecalFont_DrawLine((char *)NativeGraphics_Value(row, text, sizeof(text)), NATIVE_GRAPHICS_VALUE_X, y, FONT_SMALL,
-		                   (JUSTIFY_RIGHT | (locked ? NATIVE_GRAPHICS_LOCKED_STYLE : WHITE)));
+		DecalFont_DrawLine((char *)s_nativeGraphicsLabels[row], NATIVE_GRAPHICS_LABEL_X, y, FONT_SMALL, ORANGE);
+		DecalFont_DrawLine((char *)NativeGraphics_Value(row, text, sizeof(text)), NATIVE_GRAPHICS_VALUE_X, y, FONT_SMALL, (JUSTIFY_RIGHT | WHITE));
 	}
 
 	if (Platform_GetAspectPending() >= 0)
 	{
 		DecalFont_DrawLine("ASPECT: APPLIES AT NEXT RACE", 256, hintY, FONT_SMALL, (JUSTIFY_CENTER | WHITE));
-		hintY += 10;
+		hintY += NATIVE_GRAPHICS_HINT_PITCH;
+	}
+
+	if (Platform_GetNativeDriversPending())
+	{
+		DecalFont_DrawLine("NATIVE DRIVERS: AFTER RESTART", 256, hintY, FONT_SMALL, (JUSTIFY_CENTER | WHITE));
+		hintY += NATIVE_GRAPHICS_HINT_PITCH;
 	}
 
 	if (Platform_SettingsLocked())
 	{
 		DecalFont_DrawLine("NOT SAVED IN THIS RUN", 256, hintY, FONT_SMALL, (JUSTIFY_CENTER | WHITE));
+		hintY += NATIVE_GRAPHICS_HINT_PITCH;
 	}
 
 	{
@@ -300,26 +321,19 @@ internal void NativeGraphics_Draw(void)
 	}
 
 	{
-		RECT background = {.x = 56, .y = NATIVE_GRAPHICS_BACK_Y, .w = 400, .h = NATIVE_GRAPHICS_BACK_BOTTOM - NATIVE_GRAPHICS_BACK_Y};
+		// Up to two hints the end stays at NATIVE_GRAPHICS_BACK_BOTTOM; a third
+		// one moves it down by its pitch.
+		const int bottom = (hintY + 7 > NATIVE_GRAPHICS_BACK_BOTTOM) ? (hintY + 7) : NATIVE_GRAPHICS_BACK_BOTTOM;
+		RECT background = {.x = 56, .y = NATIVE_GRAPHICS_BACK_Y, .w = 400, .h = bottom - NATIVE_GRAPHICS_BACK_Y};
 
 		RECTMENU_DrawInnerRect(&background, 4, ot);
 	}
 }
 
-// Up (-1) or down (+1) from a row, around the ends, over locked rows.
+// Up (-1) or down (+1) from a row, around the ends.
 internal int NativeGraphics_NextRow(int row, int dir)
 {
-	int i;
-
-	for (i = 0; i < NATIVE_GRAPHICS_ROWS; i++)
-	{
-		row = (row + NATIVE_GRAPHICS_ROWS + dir) % NATIVE_GRAPHICS_ROWS;
-		if (!NativeGraphics_RowLocked(row))
-		{
-			break;
-		}
-	}
-	return row;
+	return (row + NATIVE_GRAPHICS_ROWS + dir) % NATIVE_GRAPHICS_ROWS;
 }
 
 // DISABLE_INPUT_ALLOW_FUNCPTRS: the proc runs every frame, reads the keys

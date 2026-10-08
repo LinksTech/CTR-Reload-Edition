@@ -2174,7 +2174,9 @@ internal void NativeRenderer_InitRG8LUT(void)
 // the native program, and with --native-probe as well the probe mesh that
 // NativeRenderer_DrawNativeProbe draws (and for the form texture its texture).
 // The switch exists so all of it can be checked to leave every PSX pixel as it
-// was before anything draws with it.
+// was before anything draws with it. NATIVE DRIVERS PREVIEW on the GRAPHICS
+// page sets the same run value from ctr-settings.cfg, before the window
+// (Platform_SettingsPreloadDisplay); "the switch" below means either.
 //
 // Without the switch this returns in its first line, so a run without it makes
 // no program, no buffer, no texture and no log line it did not make before.
