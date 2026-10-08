@@ -1428,7 +1428,7 @@ kinds apart; the layout is the same byte for byte (`RLDCHAR_WHEEL_VERSION_*`):
 
 Drawing the wheels, the turn of version 1 and the mirror of version 2, is the
 game's part; the reader only checks. A reader from before version 2 (before
-v0.0.75) refuses a version 2 section by CNET-10 (`WHLS has version 2 - this
+v0.7.5) refuses a version 2 section by CNET-10 (`WHLS has version 2 - this
 reader knows 1`) and keeps the CMDL: the file stays valid and safe.
 
 
@@ -1491,7 +1491,7 @@ player never sees the grey test wheel on a driver of a file:
 | wheels shown, no WHLS | CNET-10 refuses the native part: CMDL with the retail kart wheels |
 | wheels shown, WHLS version 1 (the test wheel; old files of the preview) | the game refuses the native part (`native-wheels`): CMDL with the retail kart wheels |
 | WHLS version 2 breaks CNET-10 or CNET-12, its texture over 1024 or broken (CTXT-n) | the whole native part is refused (all or nothing): CMDL with the retail kart wheels |
-| an older reader (before v0.0.75) and WHLS version 2 | CNET-10 (version): CMDL with the retail kart wheels |
+| an older reader (before v0.7.5) and WHLS version 2 | CNET-10 (version): CMDL with the retail kart wheels |
 | `make-char` | never writes version 1 for a character; `--native-model on` with the kart wheels shown needs `--wheel-model`; a wheel over a bound is an error and no file |
 | the game without the native preview (NATIVE DRIVERS OFF, no `--native-preview`), or at a resolution of 1X | CNET and CTXT are not used: CMDL with the retail kart wheels |
 | a view that has no wheel pose for the driver (the game) | that view: CMDL with the retail kart wheels |

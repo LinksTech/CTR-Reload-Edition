@@ -69,14 +69,14 @@
 // ---------------------------------------------------------------------------
 #include "ctr_build_id.h"
 #ifndef CTR_NATIVE_VERSION
-#define CTR_NATIVE_VERSION "0.0.75 Beta"
+#define CTR_NATIVE_VERSION "0.7.5 Beta"
 #endif
 #ifndef CTR_NATIVE_BUILD_ID
 #define CTR_NATIVE_BUILD_ID "unknown"
 #endif
 #define RS_WIDEN2(x) L##x
 #define RS_WIDEN(x)  RS_WIDEN2(x)
-#define RS_VERSION_W  RS_WIDEN(CTR_NATIVE_VERSION)     // L"0.0.75 Beta"
+#define RS_VERSION_W  RS_WIDEN(CTR_NATIVE_VERSION)     // L"0.7.5 Beta"
 #define RS_BUILD_ID_W RS_WIDEN(CTR_NATIVE_BUILD_ID)    // L"<12 hex>" or L"<12 hex>-dirty-<6 hex>"
 
 // Message when there is no game data next to the game (pages Track and Test).

@@ -1121,7 +1121,7 @@ static const struct NativeSetupColor s_setupErrBack = {58, 24, 20};     // backg
 // "CTR Reload <version>" plus the build id. CTR_RELOAD_VERSION is the
 // upper-case form of CTR_NATIVE_VERSION for the debug font and is NOT taken
 // from the build - it has to be changed together with CMakeLists.txt.
-#define CTR_RELOAD_VERSION "0.0.75 BETA"
+#define CTR_RELOAD_VERSION "0.7.5 BETA"
 
 // One line, horizontally centred, at the largest integer scale up to
 // `scale` that still fits into the window. Stepping down is not a luxury: the

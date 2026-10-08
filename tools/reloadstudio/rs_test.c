@@ -1028,7 +1028,7 @@ static int Test_ExeApply(HWND page)
     return started;
 }
 
-// First line of --version: "CTR Reload Beta 0 (<build id>)". Old builds
+// First line of --version: "CTR Reload 0.7.5 Beta (<build id>)". Old builds
 // write "CTR Native 0.1.0-... (<id>)" - the line is remembered so that
 // the message can name it, but it does not count.
 static void Test_VersionLine(const wchar_t *line)
