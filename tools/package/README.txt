@@ -711,8 +711,10 @@ Modes and menus
   on top of each other after you scroll it.
 
 Characters
-- A custom driver without voices is silent; with voices it says nothing at
-  an event it has no clip for.
+- Custom drivers without their own voice lines are silent. With voices a
+  driver says nothing at an event it has no clip for.
+- At top speed the tread of custom wheels can look still or turning
+  backwards (a stroboscope effect of the frame rate).
 - The character's own icon shows only for the first 20 loaded files; high
   score lists and profiles show the portrait of Fake Crash.
 - The cup podium shows Fake Crash.

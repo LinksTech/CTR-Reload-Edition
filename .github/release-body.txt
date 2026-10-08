@@ -1,11 +1,27 @@
-CTR Reload 0.0.5 Beta is a native Windows version of Crash Team Racing (PS1, 1999) that loads custom tracks and custom characters. It contains no game data: you need your own NTSC-U disc image (SCUS-94426, .cue/.bin). Download ctr_native.exe and ReloadStudio.exe into one folder you can write to; the game asks for the disc image on the first start. README.txt explains the rest.
+CTR Reload 0.7.5 Beta is a native Windows version of Crash Team Racing (PS1, 1999) that loads custom tracks and custom characters. It contains no game data: you need your own NTSC-U disc image (SCUS-94426, .cue/.bin). Download ctr_native.exe and ReloadStudio.exe into one folder you can write to; the game asks for the disc image on the first start. README.txt explains the rest.
 
-New in 0.0.5
-- Custom characters with Reload Studio: build a driver from a PLY or OBJ model (OBJ with MTL and PNG/JPG/TGA/BMP textures), with your own portrait, mask (Aku Aku or Uka Uka), voice clips, and the kart wheels drawn or hidden. The model is fitted to Crash's size, repaired and reduced automatically; the preview shows it next to Crash and in the steering poses.
-- NITRO-PIT: the MODE panel on the laps box, and Time Trial with its own best times.
-- Reload Studio scales with the Windows display setting (100 %, 125 %, 150 %), shows what it reads from a model, and can cancel a long check or build.
-- Fixes: concave quads are split correctly; a model with seams between its parts is fitted to the right size; the preview matches the game's rounding; more colors per character (128); large models say beforehand how long their reduction takes.
+Versioning reset: 0.7.5 follows 0.0.5. From now on versions count 0.x.y in steps of 0.0.5 (0.7.5, 0.8.0, 0.8.5 ...).
+
+New in 0.7.5
+- Custom characters can bring their own ground shadow and exhaust: a shadow fitted to the model's footprint (or none), and the exhaust at one or two points of the model (or none). The exhaust smoke and the turbo flames follow these points. Characters built before keep the original shadow, smoke and flames.
+- Reload Studio: the Character page fits smaller screens without scrolling (for example 1366 x 768 at 150 %).
+- Fix: in an arcade cup the custom driver is no longer dropped at the podium.
+- Fix: an OBJ material with a texture and an emission colour (Ke) but no diffuse colour is no longer drawn darker. Characters built from such a model get other colours when you build them again.
+
+Preview: high-detail custom characters
+- A custom character can carry a second, high-detail model with its real textures, drawn by a new native render path: up to 20,000 vertices, 30,000 triangles and 16 textures (up to 2048 x 2048), sharp at every resolution, also in water, in mud and in the mirror on ice, and in the driver select. Eight different drivers of 30,000 triangles each in one race run smoothly.
+- The high-detail model is drawn with the kart wheels hidden ("Show kart wheels" off) or with wheels of its own (see below). A model that shows the kart wheels and has no wheel model keeps its classic model and the game's own wheels.
+- Switch it on in the game: OPTIONS -> GRAPHICS -> NATIVE DRIVERS, OFF or PREVIEW (OFF by default). The choice is saved and applies at the next start; until then the page says "NATIVE DRIVERS: AFTER RESTART". The high-detail model is drawn from a resolution of 2x; at 1x, and for every other driver, the game draws as before. For tests, `ctr_native.exe --dev --native-preview` still switches it on for one run.
+- By default nothing changes: every file also holds the classic model, and that is what the game draws with NATIVE DRIVERS off.
+- Wheels of their own: a character with a high-detail model can bring one wheel model for all four wheels - an OBJ (with its MTL file and one texture of up to 1024 x 1024) or a PLY, up to 1024 triangles. The right wheels are its mirror image, the front wheels steer, all four roll with the speed, and the wheel size (50 to 200 %) keeps the bottom of the wheel on the ground. Where the high-detail model is not drawn (NATIVE DRIVERS off, resolution 1x, an older version), the character drives its classic model with the game's own wheels.
+- Reload Studio builds the high-detail model without a start switch: tick "Native model" (tab Extras, card Import, marked "Preview feature"); it needs "Show kart wheels" off or a wheel model. The new card Wheels takes the wheel model and its size and shows the wheels steering and spinning in the preview. The card "In the race" (shadow and exhaust) is open to everyone as well. Without the tick, Reload Studio builds the same file as before.
+
+Known issues
+- Custom drivers without their own voice lines are silent.
+- Stroboscope effect: at top speed the tread of custom wheels can look still or as if it turns backwards.
 
 Good to know
 - Characters go into the characters folder next to the game, tracks into tracks. The game reads both folders when it starts: after a new driver or track, restart the game.
+- The format of the high-detail model is a preview and may still change; a later version may ask you to build such a character again.
+- Wheels of their own need this version: an older version refuses that part of the file and drives the character's classic model with the game's own wheels.
 - This is a beta: expect rough edges. Report bugs as GitHub issues: https://github.com/LinksTech/CTR-Reload-Edition/issues

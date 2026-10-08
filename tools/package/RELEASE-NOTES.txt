@@ -16,6 +16,93 @@ DECISIONS
   built into Reload Studio and is not a separate program in the package.
 
 
+NEW IN 0.7.5 BETA
+-----------------
+- Version numbers: 0.7.5 follows 0.0.5. From now on versions count 0.x.y
+  in steps of 0.0.5 (0.7.5, 0.8.0, 0.8.5 ...).
+- Shadow and exhaust per character: a .rldchar can say how its ground
+  shadow and its exhaust look - the original ones, a shadow fitted to the
+  model's footprint, no shadow, the exhaust at one or two points of the
+  model, or none. The exhaust smoke and the turbo flames follow these
+  points; with no exhaust both are hidden. A file without these values -
+  every file built before - is drawn as before, and a value the game
+  cannot use only brings back the original look. Only the drawing
+  changes: a race runs the same with and without them.
+- For scripts: rldpack make-char --shadow retail|auto|off and
+  --exhaust retail|off|x,y,z[;x,y,z] (points in game units of the
+  finished model). rldpack info names the look.
+- Reload Studio: the Character page switches to a compact layout when
+  the window is small and fits 1366 x 768 at 150 % without scrolling.
+- Fix: in an arcade cup the custom driver is kept at the podium instead
+  of being dropped with a warning. After the cup the game returns to the
+  title, and the driver select starts on the template's tile, as after
+  any race.
+- Fix: an OBJ material with map_Kd and an emission colour (Ke) but no
+  Kd of its own keeps its texture colours (Ke used to darken it). This
+  also changes the file of such a model built without preview features:
+  build it again to get the right colours.
+- For scripts: a switch value longer than its buffer is refused instead
+  of cut, before the first window, with exit code 64. --shot takes up to
+  128 entries of any length (a list used to be cut after 511 characters),
+  --shot-name and --dump-prefix up to 1023 characters (was 255). A --log
+  path over 511 characters now ends the start instead of falling back to
+  the standard log. A shot or dump file that cannot be written says so in
+  the log.
+
+PREVIEW: HIGH-DETAIL CUSTOM CHARACTERS (off by default)
+- A new native render path draws a custom character from a second,
+  high-detail model in the .rldchar (chunks CNET and CTXT, see
+  docs/CONTAINER_FORMAT.md in the source code): up to 20000 vertices,
+  30000 triangles, 64 materials and 16 textures (PNG, 16 to 2048), in
+  all 47 animation frames, with mipmaps.
+- It draws the driver in the race (one-player ARCADE, your seat), in
+  water and mud, with its mirror image on ice, and in the driver select.
+  Eight different drivers of 30000 triangles each in one race at 4x
+  resolution: 12.3 ms CPU and 1.3 ms GPU per frame at the 99th
+  percentile, at most 587 MiB of memory.
+- With the kart wheels hidden or with wheels of its own: a file that
+  shows the kart wheels and has no wheel model keeps its classic model
+  (the log says why). rldpack make-char --native-model on needs
+  --wheel-model or --wheels off; Reload Studio builds the high-detail
+  model only with "Show kart wheels" off or a wheel model and says so.
+- OPTIONS -> GRAPHICS -> NATIVE DRIVERS: OFF or PREVIEW, OFF by
+  default. PREVIEW switches the high-detail model on without a start
+  switch. The choice is saved in ctr-settings.cfg (video nativedrivers)
+  and applies at the next start; until then the page says "NATIVE
+  DRIVERS: AFTER RESTART". It draws from RESOLUTION 2x; at 1x the
+  classic model is drawn.
+- For tests, switched on for one run and never saved: ctr_native.exe
+  --dev --native-preview (--native-filter nearest|linear for the
+  textures), and ReloadStudio.exe --enable-preview-features, which
+  builds it for every OBJ with the kart wheels hidden.
+- The classic model is always in the file as well. A game with NATIVE
+  DRIVERS off and without --native-preview, and every older version,
+  draws the classic model; a fault in the high-detail part never
+  refuses the file.
+- Wheels of their own (WHLS version 2 in the CNET chunk): one wheel
+  model for all four wheels, an OBJ (with its MTL file and one texture,
+  each side a power of two up to 1024) or a PLY, at most 1024 triangles
+  and 2048 vertices, one material. The right wheels are drawn as its
+  mirror image, the front wheels steer, all four roll with the speed;
+  their tint follows the body, also in water and in the mirror.
+- For scripts: rldpack make-char --wheel-model <obj|ply> and
+  --wheel-size 50..200 (percent of the game's wheel; the bottom of the
+  wheel stays on the ground). --native-model on needs --wheel-model or
+  --wheels off. Too many triangles or a texture over 1024 is an error:
+  a wheel is never reduced or scaled. rldpack info names the wheels
+  (WHLS version 2, triangles, radius).
+- With --wheel-model the classic model keeps the kart wheels: where the
+  high-detail model is not drawn (NATIVE DRIVERS off, 1x, an older
+  version) the character drives its classic model with the game's own
+  wheels. Older versions refuse a version 2 wheel and draw the classic
+  model.
+- Reload Studio: "Native model" (tab Extras, card Import) and the card
+  "In the race" are open without a start switch, marked "Preview
+  feature". The new card Wheels takes a wheel model (OBJ or PLY) and its
+  size and spins and steers the wheels in the preview. Without the tick
+  Reload Studio builds the same file as before.
+
+
 NEW IN 0.0.5 BETA
 -----------------
 - Custom characters: Reload Studio (page Character) builds a driver from a
@@ -188,8 +275,8 @@ Modes and menus
   on top of each other after you scroll it.
 
 Characters
-- A custom driver without voices is silent; with voices it says nothing at
-  an event it has no clip for.
+- Custom drivers without their own voice lines are silent. With voices a
+  driver says nothing at an event it has no clip for.
 - The character's own icon shows only for the first 20 loaded files; high
   score lists and profiles show the portrait of Fake Crash.
 - The cup podium shows Fake Crash.
@@ -198,6 +285,31 @@ Characters
 - The size is visual only - physics and collision follow the driving style.
 - With "Show kart wheels" off, tyre dust and skid marks still show where the
   game's wheels would be.
+- High-detail model (preview): drawn only with NATIVE DRIVERS set to
+  PREVIEW (or --native-preview) and only from an internal resolution of
+  2x; at 1x the classic model is drawn.
+- NATIVE DRIVERS applies at the next start, not right away.
+- High-detail model: a file that shows the kart wheels and has no wheel
+  model gets the classic model only.
+- High-detail model: a semi-transparent (blend) material makes the game
+  draw the classic model for that driver.
+- High-detail model: only from an OBJ. A PLY names no texture file, so it
+  gets the classic model only (Reload Studio says so).
+- The format of the high-detail model is a preview and may change.
+- Exhaust points belong to the model as it was fitted. After a change of
+  size or fit, set them again.
+- The fitted shadow is computed from the model's footprint with start
+  values; it may cover a little more or less than the model.
+- Wheels of their own: at top speed the tread can look still or as if it
+  turns backwards (a stroboscope effect).
+- Wheels of their own are always drawn, also where the game leaves its
+  own wheels out (lower level of detail), and in the mirror and under
+  water they are darkened like the body.
+- A wheel size other than 100 % shows only on the high-detail model; the
+  classic model drives with the game's wheels at their normal size.
+- The wheel points do not follow the size of the driver (--size).
+- Reload Studio notices a wheel model that was exported again only after
+  a change in the field Wheel model.
 
 Previews
 - The invisible kart still hits crates and fruit, so they break in the
