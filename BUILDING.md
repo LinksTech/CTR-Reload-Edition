@@ -53,7 +53,7 @@ In `build-msvc-x86\Release\`:
 - `shader_spirv_probe.exe`: a build helper that writes the shader sources
 
 `ctr_native.exe --version` reports the version and the build ID, for example
-`CTR Reload 0.0.5 Beta (a1b2c3d4e5f6)`; Reload Studio shows the same in its
+`CTR Reload 0.0.75 Beta (a1b2c3d4e5f6)`; Reload Studio shows the same in its
 title bar. The build ID is the commit, with `-dirty-<hash>` appended when
 tracked files differ from it.
 
@@ -103,7 +103,7 @@ In Git Bash, from a clean working tree (all changes committed), after
 `ctr_native` and `ReloadStudio` there again (output in `dist-build.log`), checks
 that both carry the same build ID, and writes
 `dist\CTR-Reload-<version>-<build id>.zip`, for example
-`CTR-Reload-Beta0-a1b2c3d4e5f6.zip`. The version is `CTR_NATIVE_VERSION` from
+`CTR-Reload-0.0.75Beta-a1b2c3d4e5f6.zip`. The version is `CTR_NATIVE_VERSION` from
 `CMakeLists.txt` without spaces. The zip holds one folder of the same name with:
 
 - `ctr_native.exe`, `ctr_native.pdb`, `ReloadStudio.exe`

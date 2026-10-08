@@ -6211,7 +6211,7 @@ static int Cmd_Selftest(void)
 static void Rld_Usage(void)
 {
 #ifndef CTR_NATIVE_VERSION
-#define CTR_NATIVE_VERSION "Beta 0"
+#define CTR_NATIVE_VERSION "0.0.75 Beta"
 #endif
 #ifndef CTR_NATIVE_BUILD_ID
 #define CTR_NATIVE_BUILD_ID "unknown"

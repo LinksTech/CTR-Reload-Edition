@@ -6,7 +6,7 @@ include(CheckCCompilerFlag)
 # screen, in --version, in Reload Studio and in the log. The upstream
 # ctr-native version number is not shown to players.
 # tools/package/package.sh reads this line to name the package.
-set(CTR_NATIVE_VERSION "0.0.5 Beta")
+set(CTR_NATIVE_VERSION "0.0.75 Beta")
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR
