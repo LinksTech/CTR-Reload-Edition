@@ -342,7 +342,7 @@ is frozen. Source: `include/rldchar.inc`.
 | CMSK | optional, experimental, written by `rldpack make-char --mask-model` | 256 KiB (rule CMSK-3: 16 KiB) | an own mask model, drawn in place of Aku Aku / Uka Uka (rules CMSK-1..3) |
 | CPRM | optional, known type: not written by rldpack, content not interpreted yet | 4 KiB | values; layout not fixed (draft) |
 | CVOI | optional, written by `rldpack make-char --voices` | 6 MiB (the rules allow at most 5293176 bytes) | the driver's voice: up to 4 clips for each of 10 events, mono 16 bit at 22050 Hz (rules CVOI-1..4) |
-| CNET | optional, PREVIEW, written by `rldpack make-char --native-model on` (an OBJ) or `--native-probe` (tests) | 32 MiB, checked only by the reader of the native part (unknown to the envelope) | the native model: a mesh in floats with materials, texture indices and wheels; read only with `--dev --native-preview` (see "Preview, planned: CNET and CTXT") |
+| CNET | optional, PREVIEW, written by `rldpack make-char --native-model on` (an OBJ) or `--native-probe` (tests) | 32 MiB, checked only by the reader of the native part (unknown to the envelope) | the native model: a mesh in floats with materials, texture indices and wheels; read only with the native preview (NATIVE DRIVERS set to PREVIEW on the GRAPHICS page, or `--native-preview`) (see "Preview, planned: CNET and CTXT") |
 | CTXT | optional, PREVIEW, written with CNET | 32 MiB, as CNET | the textures of CNET as PNG, decoded to RGBA8 (see the same section) |
 | CTEX | reserved name, not assigned | none (unknown, skipped) | once planned for texture data; the textures of the native model are CTXT, so the name stays unused |
 | CWHL | reserved name, not assigned | none (unknown, skipped) | own wheels; the wheels of the native model are a part of CNET, so CWHL stays reserved and unassigned (its old plan below) |
@@ -494,13 +494,14 @@ ground shadow and the exhaust of the driver, fitted to the model.
   once the model is built, the quad auto writes for it (also while another
   mode is chosen, for the preview), from info only with auto; and from info
   `@value look retail <reason>` for a look the game reads as retail.
-- Reload Studio (only with `--enable-preview-features`, else greyed "Coming
-  soon"): the card "In the race" of the tab "In-game look" chooses Shadow and
-  Exhaust and the two points (fields, or Pick on the model); it starts at
-  rldpack's defaults and passes the switches only when the choice differs.
-  Without the preview features and with "Show kart wheels" off it passes
-  `--shadow retail --exhaust retail`, so the file keeps the bytes it had
-  before the look.
+- Reload Studio (a preview feature open to everyone, marked "Preview
+  feature"): the card "In the race" of the tab "In-game look" chooses Shadow
+  and Exhaust and the two points (fields, or Pick on the model); it starts at
+  retail and retail (in the user mode of `--enable-preview-features` at
+  rldpack's defaults) and passes the switches only when the choice differs
+  from rldpack's defaults. Without a choice and with "Show kart wheels" off
+  it passes `--shadow retail --exhaust retail`, so the file keeps the bytes
+  it had before the look.
 - What the game draws: see the line "look" under "What the game does".
 
 Name rule (`RldChar_NameValid`, one function for packer and reader):
@@ -643,8 +644,10 @@ format is read as what it is (warning `model-misnamed`); files of other 3D
 programs and pictures (FBX, glTF, GLB, STL, Blender, 3DS, PNG, JPEG, ZIP and
 more) are named and refused (`model-unsupported`), anything else is
 `model-unknown` - except a file named `.ply`, which the PLY reader reads and
-refuses with its own message (`ply-format`), as before OBJ. The poses and the
-wheel (`char-poses`, `char-wheel`) read PLY only (`model-ply-only`).
+refuses with its own message (`ply-format`), as before OBJ. The poses
+(`char-poses`) read PLY only (`model-ply-only`); the wheel preview
+(`char-wheel`) and `make-char --wheel-model` read PLY or OBJ (see "A wheel of
+one's own").
 
 - PLY: `format ascii 1.0` or `binary_little_endian 1.0`, the vertex colors
   `red green blue` (bytes as they are, floats x 255 rounded).
@@ -1331,13 +1334,19 @@ Studio; it refuses `--out` and never writes a container.
 PREVIEW. Two optional chunks for the native render path of a custom
 character: `CNET`, a mesh in floats (positions, normals, UV, materials,
 texture indices, wheels), and `CTXT`, the table of its textures (PNG, decoded
-to RGBA8). The game reads them only with `--dev --native-preview`: it reads,
-checks and holds them in host memory, makes them into GPU objects at the
-load and draws them in place of the CMDL where its native route allows
-(`platform/native_char_gpu.c`, `platform/native_render_layer.c`), and only
-with the kart wheels hidden (see "What the game does with them"). The
-layout is a draft and may change until the native path is released. Source:
-the section CNET AND CTXT at the end of `include/rldchar.inc`.
+to RGBA8). The game reads them only with the native preview: NATIVE DRIVERS
+set to PREVIEW on the GRAPHICS page (OPTIONS; saved in `ctr-settings.cfg` as
+`video nativedrivers 1`, default OFF, applies at the next start) or the start
+switch `--native-preview` (for that run, never saved). Below, "with
+`--native-preview`" means either. It reads, checks and holds them in host
+memory, makes them into GPU objects at the load and draws them in place of
+the CMDL where its native route allows (`platform/native_char_gpu.c`,
+`platform/native_render_layer.c`), at an internal resolution (RESOLUTION) of
+2X or more - at 1X the CMDL draws - and only with the kart wheels hidden or
+with wheels of its own (WHLS version 2; see "What the game does with
+them"). The layout is a draft and may change until the native path is
+released. Source: the section CNET AND CTXT at the end of
+`include/rldchar.inc`.
 
 No feature bit, no new major, no new minor: an older reader skips both as
 unknown chunks, and every `.rldchar` without them loads as before.
@@ -1362,7 +1371,7 @@ bound:
 |---|---|---|
 | compression method not 0, size_stored != size_raw, larger than `RLDCHAR_LIMIT_CNET` / `RLDCHAR_LIMIT_CTXT` (32 MiB), unreadable, hash mismatch | `native-chunk` | native part refused, CMDL drawn |
 | the file changed since the start (its CMDL hash), the file cannot be opened | `native-file` | native part refused, CMDL drawn |
-| any rule CNET-1..11, CTXT-1..8 below | the rule | native part refused, CMDL drawn |
+| any rule CNET-1..12, CTXT-1..8 below | the rule | native part refused, CMDL drawn |
 
 Without `--native-preview` CNET and CTXT are not read and not checked at all,
 not even a broken one: the roster read at start never opens them, and its
@@ -1408,8 +1417,20 @@ u32 size. An unknown tag is skipped.
 | COL0 | optional | 4 | N x RGBA8 |
 | WHLS | required unless CHRI hides the wheels (flags bit 0) | 0 | the wheels, below |
 
-WHLS, the wheels (one mesh for all four; the -X wheels are the same mesh
-turned 180 degrees about Y, never mirrored). Size exactly 0x30 + 32 Nw + 6 Tw:
+WHLS, the wheels (one mesh for all four). Size exactly 0x30 + 32 Nw + 6 Tw.
+The version of its section entry (not a field of the section) tells two
+kinds apart; the layout is the same byte for byte (`RLDCHAR_WHEEL_VERSION_*`):
+
+| Version | Kind | The -X wheels | Written by |
+|---|---|---|---|
+| 1 | the test wheel (a grey cylinder of 64 triangles) | the same mesh turned 180 degrees about Y, never mirrored | the self-test's files and `--native-probe` only; `make-char` never writes it for a character |
+| 2 | an author's wheel | the mirror image of the mesh: x negated, the normals mirrored (nx negated), the winding turned - the outer side (+X) is outside on both sides, and a tread runs mirrored | `make-char --wheel-model` |
+
+Drawing the wheels, the turn of version 1 and the mirror of version 2, is the
+game's part; the reader only checks. A reader from before version 2 (before
+v0.0.75) refuses a version 2 section by CNET-10 (`WHLS has version 2 - this
+reader knows 1`) and keeps the CMDL: the file stays valid and safe.
+
 
 | Offset | Type | Field |
 |---|---|---|
@@ -1436,13 +1457,77 @@ turned 180 degrees about Y, never mirrored). Size exactly 0x30 + 32 Nw + 6 Tw:
 | CNET-7 | every index < N, no triangle with a vertex twice, every triangle material < M |
 | CNET-8 | materials: alphaMode <= 2, flags bit 0 only, reserved bytes 0, texture -1 or < textureCount; UV00 present when a material has a texture |
 | CNET-9 | every pose inside the hull of its CMDL frame (a still pose inside all 47): per axis pos..pos + 255 of the frame (pos.y with bit 0 cleared) times scale / 4096 |
-| CNET-10 | CHRI hides the wheels: WHLS is not looked at. Else WHLS is there and holds: version 1, stride 0, its counts and exact size, material < M, flags and reserved 0, radius and halfWidth in range, the wheel points finite, within 256 model units, on +X and front before rear, every vertex finite and inside the cylinder (with 1e-4 of room), unit normals, every index < Nw and no vertex twice |
+| CNET-10 | CHRI hides the wheels: WHLS is not looked at. Else WHLS is there and holds: version 1 or 2, stride 0, its counts and exact size, material < M, flags and reserved 0, radius and halfWidth in range, the wheel points finite, within 256 model units, on +X and front before rear, every vertex finite and inside the cylinder (with 1e-4 of room), unit normals, every index < Nw and no vertex twice |
 | CNET-11 | textureCount equals the entries of CTXT; textureCount 0 needs no CTXT, and a CTXT then is a finding |
+| CNET-12 | WHLS version 2 only (an author's wheel), checked after CTXT-1..8: its one material (the field at 0x08) has no texture - the wheel is one color - or a texture of at most 1024 x 1024 (`RLDCHAR_WHEEL_TEXTURE_EDGE_MAX`). The material and its texture may be the body's as well; the bound then holds for that texture. Version 1 is not held to it |
+
+The reader hands the version on: `struct RldCharNative.wheelVersion` is
+`RLDCHAR_WHEEL_VERSION_TEST` (1) or `RLDCHAR_WHEEL_VERSION_USER` (2) when
+`wheel` is set, 0 when there is no wheel (none, or CHRI hides them).
+
+THE BUDGET OF AN AUTHOR'S WHEEL (version 2): one mesh of at most 1024
+triangles and 2048 vertices (CNET-10, the same as version 1), drawn four
+times; one material; a texture of at most 1024 on each side (CNET-12). The
+wheel's texture is one of the 16 entries of CTXT and counts to the 64 MiB of
+RGBA8 with every mip level (CTXT-6), together with the body's; a texture of
+the same bytes as one of the body shares its entry. Over any bound the packer
+refuses with a message and writes no file - it never reduces a wheel or
+scales its texture.
 
 A native body is never drawn with the sprite wheels: without a usable WHLS
 (and without CHRI flags bit 0) the whole native part is refused. The game
 goes one step further (see "What the game does with them"): it uses a native
-part only when CHRI hides the kart wheels, so a WHLS wheel is never drawn.
+part only when CHRI hides the kart wheels or when WHLS is an author's wheel
+(version 2), so the test wheel (version 1) is never drawn on a driver of a
+file.
+
+THE FALLBACK CHAIN of the wheels (renderer wheel concept, section 6). A
+player never sees the grey test wheel on a driver of a file:
+
+| Case | Result |
+|---|---|
+| CHRI hides the wheels (flags bit 0) | native body without wheels; WHLS is not read |
+| wheels shown, WHLS version 2 valid (CNET-10, CNET-12) | the reader hands on the native body with the author's wheels (`wheelVersion` 2); the game draws the body with them (below) |
+| wheels shown, no WHLS | CNET-10 refuses the native part: CMDL with the retail kart wheels |
+| wheels shown, WHLS version 1 (the test wheel; old files of the preview) | the game refuses the native part (`native-wheels`): CMDL with the retail kart wheels |
+| WHLS version 2 breaks CNET-10 or CNET-12, its texture over 1024 or broken (CTXT-n) | the whole native part is refused (all or nothing): CMDL with the retail kart wheels |
+| an older reader (before v0.0.75) and WHLS version 2 | CNET-10 (version): CMDL with the retail kart wheels |
+| `make-char` | never writes version 1 for a character; `--native-model on` with the kart wheels shown needs `--wheel-model`; a wheel over a bound is an error and no file |
+| the game without the native preview (NATIVE DRIVERS OFF, no `--native-preview`), or at a resolution of 1X | CNET and CTXT are not used: CMDL with the retail kart wheels |
+| a view that has no wheel pose for the driver (the game) | that view: CMDL with the retail kart wheels |
+
+Old files load unchanged: a file without CNET, with CNET and the wheels
+hidden, or with the test wheel (version 1) is read exactly as before.
+
+THE GAME DRAWS an author's wheel (WHLS version 2) in the item of the native
+body, right after it and with its depth: the mesh in model units scaled by
+driver->wheelSize / 4096 (the size the retail wheel has, radius 16 model
+units at 100 %; at rest the same scale as the body), its middles through
+the body's matrix (they follow squash and stretch, the mesh keeps its size),
+turned by the steering of the front wheels, the wobble and the roll of the
+retail values; the roll uses the wheel's own radius. The -X wheels are drawn
+from the mirror image of the mesh (x negated, winding turned), the +X ones
+from the mesh. Its material, texture (with mip levels) and tint follow the
+body, also on the two sides of a water line and in a mirror. A view that has
+no wheel pose for the driver is drawn by the CMDL with the retail wheels; a
+native body is never drawn with the sprite wheels. Without the native
+preview, or at factor 1, the driver drives its CMDL with the retail wheels.
+Sources: `platform/native_wheels.c`, `platform/native_char_gpu.c`
+(the mirrored half), `platform/native_render_layer.c`.
+
+Deliberate differences from the retail wheels:
+
+- No LOD: retail leaves the tyres out past the LOD threshold
+  (`game/DrawTires.c:829-850`; with three or four players already from the
+  first coarser header). An author's wheels are always drawn, like the
+  native body, which is not reduced either.
+- Dimmed with the body: the retail tyre sprites keep their tyre colour in a
+  mirror and under water (`scratch->tireColor`, `game/DrawTires.c:867`).
+  An author's wheels follow the tint of the body, so in a mirror and below
+  a water line they are as dark as the body there - darker than retail
+  tyres would be.
+- The tyre flicker of the bots (a darker tyre colour) is not rebuilt: an
+  author's wheels roll.
 
 #### CTXT version 1
 
@@ -1487,23 +1572,26 @@ last, one texture after the other.
 | When | What |
 |---|---|
 | start (roster) | nothing: CNET and CTXT are not opened, with or without `--native-preview` |
-| a seat is bound (load stage 5: seat 0, and every seat of `--dev-char-seats`), only with `--dev --native-preview` | the file is opened again from its path: its CMDL hash must still be the loaded one; CNET is read and checked (CNET-1..10) against the 47 frame hulls of the model in memory, then CTXT (CNET-11, CTXT-1..8), the textures decoded to RGBA8; all of it is held in host memory until the seats are cleared (next load). In load stage 5, right after the seats are armed, a held part is made into GPU objects (`platform/native_char_gpu.c`; a blend material refuses the whole set and the seat draws its CMDL); the render layer then draws it in place of the CMDL where its native route allows |
-| the driver select preview, only with `--dev --native-preview` | the file of the custom tile under the cursor is read and checked the same way and held for the preview window (one line with `<who>` `preview`) |
+| a seat is bound (load stage 5: seat 0, and every seat of `--dev-char-seats`), only with the native preview (NATIVE DRIVERS set to PREVIEW on the GRAPHICS page, or `--native-preview`) | the file is opened again from its path: its CMDL hash must still be the loaded one; CNET is read and checked (CNET-1..10) against the 47 frame hulls of the model in memory, then CTXT (CNET-11, CTXT-1..8, then CNET-12), the textures decoded to RGBA8; all of it is held in host memory until the seats are cleared (next load). In load stage 5, right after the seats are armed, a held part is made into GPU objects (`platform/native_char_gpu.c`; a blend material refuses the whole set and the seat draws its CMDL); the render layer then draws it in place of the CMDL where its native route allows |
+| the driver select preview, only with the native preview | the file of the custom tile under the cursor is read and checked the same way and held for the preview window (one line with `<who>` `preview`) |
 | a broken native part | one line, the driver keeps its CMDL |
-| a native part that passes CNET-1..11 and CTXT-1..8 while CHRI shows the kart wheels (flags bit 0 clear) | refused with the rule `native-wheels` and let go (`NativeChar_RefuseShownWheels`): the driver keeps its CMDL and the retail kart wheels. The game draws a native body only with the kart wheels hidden, so the WHLS wheel (for a file of rldpack the grey test wheel) is never uploaded or drawn - on a seat, on the dev seats and in the preview alike, also with `--dev`. Files from before the rule (a native part with the test wheel) drive as CMDL drivers |
+| a native part that passes CNET-1..12 and CTXT-1..8 while CHRI shows the kart wheels (flags bit 0 clear) and WHLS is an author's wheel (version 2) | held with its own wheels and drawn natively with them (see "THE GAME DRAWS" above); its CMDL with the retail kart wheels stays the fallback |
+| a native part that passes CNET-1..11 and CTXT-1..8 while CHRI shows the kart wheels (flags bit 0 clear) with the test wheel (WHLS version 1) | refused with the rule `native-wheels` and let go (`NativeChar_RefuseShownWheels`): the driver keeps its CMDL and the retail kart wheels. The game draws a native body only with the kart wheels hidden or with an author's wheel, so the grey test wheel is never uploaded or drawn - on a seat, on the dev seats and in the preview alike, also with `--dev`. Files from before the rule (a native part with the test wheel) drive as CMDL drivers |
 
 The lines, exactly (`<who>` is `seat 0`, `dev seats`, `dev seat files` or
 `preview`):
 
 ```
 [CTR Char] native model ready: <who>, <file>, <N> vertices, <T> triangles, <P> poses, <M> materials, <K> textures (<B> bytes RGBA8), wheels hidden
-[CTR Char] native model refused (native-wheels), using CMDL: <who>, <file>: the kart wheels are shown - a native model is drawn only with the wheels hidden
+[CTR Char] native model ready: <who>, <file>, <N> vertices, <T> triangles, <P> poses, <M> materials, <K> textures (<B> bytes RGBA8), wheels own v2, <Tw> triangles, <Nw> vertices, radius <r>, texture <i> <W>x<H>
+[CTR Char] native model refused (native-wheels), using CMDL: <who>, <file>: the kart wheels are shown with the test wheel (WHLS version 1) - a native model is drawn only with the wheels hidden or its own wheels (WHLS version 2)
 [CTR Char] native model refused (<rule>), using CMDL: <who>, <file>: <detail>
 [CTR Char] native model none: <who>, <file> (no CNET), using CMDL
 ```
 
-A ready line always ends in `wheels hidden`: a part with WHLS is refused
-before its line. The generated test body of the game switch
+A ready line ends in `wheels hidden` or in `wheels own v2, ...` (with `one
+colour` in place of the texture for a wheel without one): a part with the
+test wheel is refused before its line. The generated test body of the game switch
 `--native-probe` is no file and not touched by this rule (its wheels are a
 measuring form of the probe).
 
@@ -1524,11 +1612,13 @@ the game did not load.
   changes.
 - `rldpack make-char ... --native-model on` (preview) writes, after CVOI, the
   native model of the author's own OBJ (below). Not with `--native-probe`.
-  It needs `--wheels off`: the game draws a native model only with the kart
-  wheels hidden. With the kart wheels shown make-char refuses the switch
-  (error `native-model`, nothing written). Without the switch (or with
-  `--native-model off`) no byte of a container changes: the OBJ reader hands
-  the chain the same model either way, and the CMDL is the same.
+  It needs `--wheels off` or `--wheel-model`: the game draws a native model
+  only with the kart wheels hidden or with wheels of its own (WHLS version
+  2, "A wheel of one's own" below). With the kart wheels shown and no
+  `--wheel-model` make-char refuses the switch (error `native-model`,
+  nothing written). Without the switch (or with `--native-model off`) no
+  byte of a container changes: the OBJ reader hands the chain the same model
+  either way, and the CMDL is the same.
 - `rldpack make-native-tests <folder>` writes the test characters of the
   self-test (old_, none_, good_, bad_<rule>_, damaged_) into a folder that
   must lie inside a CMake build folder; the game judges them with
@@ -1541,6 +1631,9 @@ the game did not load.
   chunk list and add a line `native model` (`ready: ...`, `refused (<rule>)
   ... - the game draws the CMDL`, or `none`), only for a file that has one of
   them; `--machine` adds `@value native-model <ready|refused|none> <text>`.
+  A ready line ends in `wheels hidden` or names the wheel: `wheels: WHLS
+  version 2 (its own, <T> triangles, radius <r>)`, or `version 1 (the test
+  wheel, ...)`.
   `verify` fails the file when a native chunk cannot be read or its hash does
   not match (as for CMSK), and says `IGNORED` for a rule finding.
 
@@ -1613,12 +1706,12 @@ frames (see below).
   texel has alpha below 255 (the material too). A texture the reader could
   not use (missing, unreadable) leaves its material untextured in its color,
   as the CMDL draws it (warning `native-texture`).
-- Wheels: `--native-model on` needs `--wheels off` (CHRI `NO_WHEELS`), so
-  the native model of an OBJ has no WHLS. The game refuses a native part
-  beside the kart wheels (`native-wheels`) and draws the CMDL with them. The
-  probe's test wheel at the retail wheel points (64 triangles, dark grey) is
-  written only by `--native-probe` without `--wheels off` and by the
-  self-test's files (`good_obj-native`); an own wheel mesh: not yet.
+- Wheels: `--native-model on` needs `--wheels off` (CHRI `NO_WHEELS`, no
+  WHLS) or `--wheel-model` (the wheels shown, WHLS version 2: "A wheel of
+  one's own" below). The probe's test wheel at the retail wheel points (64
+  triangles, dark grey, WHLS version 1) is written only by `--native-probe`
+  without `--wheels off` and by the self-test's files (`good_obj-native`),
+  never for a character.
 - Limits: 20000 vertices, 30000 triangles, 64 materials (with the wheel's),
   16 textures, 64 MiB RGBA8 with mip levels, 32 MiB per chunk; over one:
   `native-model` error with the numbers, nothing written.
@@ -1626,12 +1719,90 @@ frames (see below).
   of triangles left out and coordinates moved; `--machine` adds
   `@char native-model <vertices> <triangles> <poses> <materials> <textures>
   <wheels|hidden> <bytes of CNET and CTXT>`.
-- Reload Studio: the card Import of the tab Extras, row "Native model"
-  (preview feature; "Coming soon" and greyed out without
-  `--enable-preview-features`, and then never passed). In the user mode
-  (`--enable-preview-features`) an OBJ is built with `--native-model on` only
-  while Show kart wheels is off; with the kart wheels it is the classic model
-  only, and the line below the options says so.
+- Reload Studio: the card Import of the tab Extras, row "Native model", a
+  preview feature open to everyone (marked "Preview feature"; a tick, empty
+  at the start). Ticked, an OBJ is built with `--native-model on` while Show
+  kart wheels is off or a wheel model is chosen (card Wheels, then with
+  `--wheel-model`); with the kart wheels and no wheel model it is the classic
+  model only, and the line below the options says so. In the user mode
+  (`--enable-preview-features`) the same holds without the tick. Unticked,
+  the command is the one from before, so the classic export keeps its
+  bytes. The notes tell the author that the game draws the native model with
+  NATIVE DRIVERS set to PREVIEW (OPTIONS, GRAPHICS).
+
+#### A wheel of one's own (`make-char --wheel-model`, WHLS version 2)
+
+Source: `tools/rldpack_native.inc`, section A WHEEL OF ONE'S OWN. Preview,
+like the native model it belongs to.
+
+- `--wheel-model <file.obj|file.ply>`: one wheel for all four. The format by
+  the content, as `--model`: an OBJ with its MTL file and texture through the
+  same OBJ reader (its faces as written), a PLY as make-char reads one (no
+  texture coordinates: one color). `--wheel-size <50..200>`: the radius in
+  percent of the game's wheel (16 model units, `RLDDUM_TIRE_HALF_SIZE`;
+  default 100). It lives only in WHLS (its radius): CHRI carries no wheel
+  size (its layout above has none), and the game's own `wheelSize` is set
+  alike for every driver (`game/Vehicle/VehBirth.c:624`,
+  `VEH_BIRTH_WHEEL_SIZE` 0xccc; Oxide 0, :637).
+- The switches: `--wheel-model` needs `--native-model on` and the wheels
+  shown (error `wheel-model` beside `--wheels off`: a contradiction; error
+  `wheel-model` without `--native-model on`); `--wheel-size` needs
+  `--wheel-model` (error `usage`), a whole number 50..200 (error
+  `wheel-size`). With `--wheel-model` CHRI keeps the wheels shown (no
+  `NO_WHEELS`), so the CMDL - the fallback - drives with the game's kart
+  wheels. Without the two switches no byte and no line of make-char changes.
+- The wheel's axes (as `char-wheel`, `tools/rldpack_wheel.inc`): centre in
+  the origin, the axle along X, the outer side toward +X, +Y up, +Z forward,
+  after `--up` and `--forward` of the model (the same switches turn both).
+  The mesh is centred on the middle of its box and scaled by one factor so
+  that its farthest vertex from the axle lies at the radius r = 16 x
+  `--wheel-size` / 100. It is not reduced and not repaired; a triangle
+  without area is left out (counted).
+- The wheel points are the retail ones (`game/DrawTires.c:338-367`, in model
+  units: x 0x90 / 4 = 36, z 0xc7 / 4 = 49.75 in front and -0x60 / 4 = -24
+  behind), the height r instead of 0x40 / 4 = 16: the bottom of the wheel
+  stays on y 0, where the retail wheel (half size 16 at y 16) touches the
+  ground - a larger wheel lifts its middle by the change of its radius
+  (r 24 at 150 %: the middle at y 24, the bottom at 0). `--size` does not
+  move them (it scales driver and steering wheel, never the kart), and the
+  game's instance scale reaches them through the body's matrix as it reaches
+  the retail points.
+- The right-hand wheels (-X) are the mirror image of the mesh (WHLS version
+  2): the game negates x and the normals' x and turns the winding, so the
+  outer side (+X) is outside on both sides and a tread runs mirrored. The
+  test wheel (version 1) stays turned about Y. Drawing is the game's part.
+- One material (rule CNET-12): every face of an OBJ wheel has the same
+  `usemtl` name, else error `wheel-materials`. Its texture is an entry of
+  CTXT of at most 1024 on each side, a power of two from 16 (else
+  `wheel-texture-size`, never scaled); a file of the same bytes as a body
+  texture shares that entry. It counts to the 16 entries and the 64 MiB. Its
+  color: Kd, else white with a texture, else grey 0x80. A missing texture
+  leaves the wheel in that color (warning `wheel-texture`); one that is there
+  but cannot be used - unreadable, not a PNG, JPEG, TGA or BMP, over 4096
+  pixels on a side or 64 MiB - is an error (`wheel-texture-file`) and no file,
+  never the color. A PLY wheel takes
+  the mean of its vertex colors (info `wheel-colors`); vertex colors are not
+  drawn. The wheel's material is the last of MATL; its texture makes UV00
+  present for the body too (CNET-8).
+- Limits: 1024 triangles (`wheel-triangles`), 2048 vertices - one per corner
+  with its own v, vt and vn (`wheel-vertices`), vt at every corner of a
+  textured wheel (`wheel-uv`), a wheel with area across and width
+  (`wheel-flat`), at most as wide as across (`wheel-wide`; warning
+  `wheel-off-axis` when its height and length differ by more than a fifth).
+  Over a limit: the error, no file - never reduced, never scaled.
+- Normals from the geometry (area-weighted, per v and vn; a PLY: per v), UV
+  as the body's (`-o`, `-s`, `-clamp`, v turned).
+- The wheel is built twice and compared, like the CMDL; then the whole native
+  part is held to the game's rules (CNET-1..12, CTXT-1..8) before anything is
+  written.
+- Output: a line `wheel <file>: <T> triangles, <N> vertices, radius <r>
+  (<p>% of the game's wheel), <w> wide, texture <i> (<W> x <H>) | one color
+  <RRGGBB>; at x 36.00, y <r>, z 49.75 / -24.00 (the bottom on the ground),
+  the right side mirrored`; `--machine`: `@value wheel-model <file> switch`,
+  `@value wheel-size <p> switch|default`, `@file wheel-model ok|missing
+  <file> <bytes>` and `@char native-wheel <triangles> <vertices> <radius>
+  <half width> <percent> <WxH|color-RRGGBB>`. The OBJ reader's `@model`
+  lines are those of the model only.
 
 ### Planned once: CWHL, own wheels (reserved, not assigned)
 
@@ -1688,16 +1859,26 @@ Size = 0x1C + 12 N + 8 T, at most 5660 bytes.
   file with CWHL is loaded. 128 is a starting value, to be measured like the
   model limit.
 
-`rldpack char-wheel --model <ply>` already fits, repairs and reduces a wheel
-model (at most 128 triangles) and writes only a preview file for Reload
-Studio; it refuses `--out` and never writes a container.
+`rldpack char-wheel --model <obj|ply>` reads an author's wheel by the rules
+of `make-char --wheel-model` (the same budget and message codes; never
+repaired or reduced, its texture never scaled), fits it to the size of the
+game's wheel and writes only a preview file for Reload Studio (`RLDPW2`: the
+texture and the textured triangles; the layout is at the head of
+`tools/rldpack_wheel.inc`); it refuses `--out` and never writes a container.
+The wheel reaches the container only through `make-char --wheel-model`
+(WHLS version 2 in CNET, "A wheel of one's own").
 
-Reload Studio shows both as cards on its Character page, "Animations" and
-"Wheels", greyed out and marked "Coming soon". Started with
-`--enable-preview-features` (a switch of that run, never saved) the cards
-show the poses and the wheel in the preview, marked "Preview feature"; they
-are unfinished and write nothing into the container. With or without the
-switch, a built `.rldchar` has the same bytes.
+Reload Studio shows both as cards on its Character page (tab Extras).
+"Animations" is greyed out and marked "Coming soon"; started with
+`--enable-preview-features` (a switch of that run, never saved) it shows the
+poses in the preview, unfinished, and writes nothing into the container.
+Card Wheels (Extras): an OBJ or PLY of one wheel and its size; passed as
+`--wheel-model`/`--wheel-size` (the size only when it is not 100 %) with the
+native model and Show kart wheels on; a preview feature open to everyone
+(marked "Preview feature"). The preview draws the wheel textured at the four
+wheel points, the right ones mirrored, and "Animate in the preview (spin and
+steer)" turns it. Without a wheel model the command is the one from before,
+so a built `.rldchar` without one has the same bytes.
 
 ### What the game does
 
@@ -1705,7 +1886,7 @@ switch, a built `.rldchar` has the same bytes.
 |---|---|
 | start | every `*.rldchar` in the `characters` folder next to the game (the extension in any case, subfolders skipped): the names are sorted first, then the files are read in that order |
 | per file | envelope (`Rld_OpenAs`), the CMDL size before any memory is taken, CHRI and CMDL with their hashes, `RldChar_ParseInfo` and `RldChar_ParseLook`, `RldChar_CheckModel`, then the pointer map, then CICN when present (`RldChar_CheckIcon`; a broken CICN costs only the portrait), then CMSK when present (`RldChar_CheckMask`; a broken CMSK costs only the own mask), then CVOI when present (`RldChar_CheckVoices`; a broken CVOI costs only the voices). CPRM is not read. CNET and CTXT are not read at start, with or without `--native-preview` |
-| a bound seat, only with `--dev --native-preview` (preview) | CNET and CTXT read again from the file and checked (`RldChar_ReadNative`), held in host memory until the next load, one line `native model ready`, `native model refused (<rule>), using CMDL` or `native model none`; held only when CHRI hides the kart wheels, else refused with the rule `native-wheels` and the driver keeps its CMDL with the retail wheels (see "Preview, planned: CNET and CTXT") |
+| a bound seat, only with the native preview (NATIVE DRIVERS set to PREVIEW on the GRAPHICS page, or `--native-preview`) | CNET and CTXT read again from the file and checked (`RldChar_ReadNative`), held in host memory until the next load, one line `native model ready`, `native model refused (<rule>), using CMDL` or `native model none`; held only when CHRI hides the kart wheels or the file has wheels of its own (WHLS version 2), else refused with the rule `native-wheels` and the driver keeps its CMDL with the retail wheels (see "Preview, planned: CNET and CTXT") |
 | a broken file | skipped with one log line `[CTR Char] REFUSED <file>: <kind> (<rule>) <detail>`; the game starts anyway |
 | the first 32 valid files | a tile each in the one-player ARCADE driver select, after the retail drivers (not for CRYSTAL and CTR under NITRO-PIT); a further valid file gets the log line `NO ID` and no tile |
 | menu and race | the driver select shows the own portrait (CICN, first 20 entries; else the template's, see CICN) and the name from CHRI; the race HUD, the arcade results and the cup standings show the own portrait too (see CICN). In the race seat 0 runs on the template's character id with the custom model, and the class in CHRI sets the physics values and the engine sound. Not from the template: its voice - in the race the driver speaks its own clips from CVOI (see CVOI) or is silent, and the sample of the voice volume slider is never the template's. Still the template's: the cup podium, high score lists and profiles. After the binding one line names every seat: `[CTR Char] seats: 0=<id> (<file>, map color <RRGGBB>\|map color of the template) 1=<id> ...`, ending in `... (cut at seat <n>)` when the line is full |
@@ -1906,7 +2087,7 @@ Chunk names:
 | CMSK | `.rldchar` | optional, experimental (own mask): written by `rldpack make-char --mask-model`, drawn in place of the retail mask |
 | CPRM | `.rldchar` | optional known type (values): not written by rldpack, content not interpreted yet |
 | CVOI | `.rldchar` | optional (voices): written by `rldpack make-char --voices`, spoken by the bound custom driver |
-| CNET, CTXT | `.rldchar` | optional, PREVIEW (the native model and its textures): written by `rldpack make-char --native-model on` (an OBJ) or `--native-probe` (tests), read by the game only with `--dev --native-preview`; unknown to the envelope |
+| CNET, CTXT | `.rldchar` | optional, PREVIEW (the native model and its textures): written by `rldpack make-char --native-model on` (an OBJ) or `--native-probe` (tests), read by the game only with the native preview (NATIVE DRIVERS set to PREVIEW on the GRAPHICS page, or `--native-preview`); unknown to the envelope |
 | CTEX, CWHL | `.rldchar` | reserved, not assigned (the textures of the native model are CTXT, its wheels a part of CNET) |
 | SIGN | blocked | signature, taken out of the format; skipped in older files |
 | MMAP | blocked | menu map, taken out with 4.1; skipped in older files |
