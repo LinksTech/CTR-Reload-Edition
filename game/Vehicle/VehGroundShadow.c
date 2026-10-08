@@ -1,5 +1,14 @@
 #include <common.h>
 
+// From platform/native_chars.c (include/platform/native_chars.h, word for
+// word): the shadow of a custom character with a look (CHRI), keyed on the
+// model - 0 retail (every retail model, every run without a look), 1 auto
+// with quad (1/16 model units), 2 off; the vectors of an auto shadow before
+// the axis rotation; and a counter for the exit line.
+int NativeChar_ModelShadow(const struct Model *model, s16 quad[4]);
+void NativeChar_NoteShadow(int mode);
+void NativeChar_ShadowAxes(const s16 quad[4], int scaleX, int scaleZ, int height, s16 out[4][3]);
+
 enum
 {
 	VEH_GROUND_SHADOW_MAX_DRIVERS = 8,
@@ -48,6 +57,11 @@ enum
 
 	VEH_GROUND_SHADOW_ICON_LEFT = 0,
 	VEH_GROUND_SHADOW_ICON_RIGHT = 1,
+
+	// The look of a custom character (RLDCHAR_LOOK_*, include/rldchar.inc).
+	VEH_GROUND_SHADOW_LOOK_RETAIL = 0,
+	VEH_GROUND_SHADOW_LOOK_AUTO = 1,
+	VEH_GROUND_SHADOW_LOOK_OFF = 2,
 };
 
 /// @brief Copies texture layout data from icon to arbitrary mem address. Particularly used to copy kart shadow textures to scratchpad.
@@ -258,6 +272,50 @@ static void VehGroundShadow_TransformLocalAxes(struct VehGroundShadowEntry *entr
 	entry->state = VEH_GROUND_SHADOW_STATE_READY;
 }
 
+// THE LOOK, auto: the four vectors of the file's quad (NativeChar_ShadowAxes)
+// through the same axis matrix as VehGroundShadow_TransformLocalAxes, into
+// centre and local[3] - local variables of the caller, the scratchpad entry
+// is left as the retail code wrote it. Called only for an entry that is
+// READY, so the height lies in the retail range; it is clamped the same way.
+// Leaves the axis matrix in the light matrix, as the retail transform does.
+// Like the retail transform it also changes the ROTATION matrix:
+// VehPhysForce_RotAxisAngle writes R11, R22 and R33 (CTC2 0, 2, 4, for
+// gte_op12). The caller loads the view again before anything is projected.
+static void VehGroundShadow_TransformLookAxes(const struct VehGroundShadowEntry *entry, const s16 quad[4], SVec3 *centre, SVec3 local[3])
+{
+	struct Driver *driver = entry->driver;
+	struct Instance *inst = entry->inst;
+	MATRIX axisMatrix;
+	s16 axes[4][3];
+	int height =
+	    CTR_MipsSubLo(VEH_GROUND_SHADOW_HEIGHT_BASE, CTR_MipsSra(CTR_MipsSubLo(driver->posCurr.y, driver->quadBlockHeight), VEH_GROUND_SHADOW_WORLD_POS_SHIFT));
+
+	if (height > VEH_GROUND_SHADOW_HEIGHT_BASE)
+	{
+		height = VEH_GROUND_SHADOW_HEIGHT_BASE;
+	}
+
+	VehPhysForce_RotAxisAngle(&axisMatrix, CTR_VECTOR_DATA(&(driver->AxisAngle3_normalVec)), driver->rotCurr.y);
+	VehGroundShadow_LoadGteLightMatrix(&axisMatrix);
+	NativeChar_ShadowAxes(quad, inst->scale.x, inst->scale.z, height, axes);
+
+	for (int i = 0; i < 4; i++)
+	{
+		SVec3 v;
+		SVec3 *out = (i == 0) ? centre : &local[i - 1];
+
+		v.x = axes[i][0];
+		v.y = axes[i][1];
+		v.z = axes[i][2];
+		CTR_GteLoadSVec3V0(&v);
+		gte_llv0_b();
+
+		out->x = (s16)MFC2(25);
+		out->y = (s16)MFC2(26);
+		out->z = (s16)MFC2(27);
+	}
+}
+
 static void VehGroundShadow_BuildProjectionPoints(struct VehGroundShadowEntry *entry, s32 baseX, s32 baseY, s32 baseZ,
                                                   SVec3 points[VEH_GROUND_SHADOW_NUM_POINTS])
 {
@@ -353,6 +411,12 @@ void VehGroundShadow_Main(void)
 	struct TextureLayout *shadowTex1 = &scratch->shadowTex[1];
 	struct VehGroundShadowEntry *entries = scratch->entries;
 	int numPlayers;
+	// The look per driver (NativeChar_ModelShadow), and for auto its vectors
+	// once the entry is READY - on the stack, never in the scratchpad.
+	int lookMode[VEH_GROUND_SHADOW_MAX_DRIVERS];
+	s16 lookQuad[VEH_GROUND_SHADOW_MAX_DRIVERS][4];
+	SVec3 lookCentre[VEH_GROUND_SHADOW_MAX_DRIVERS];
+	SVec3 lookLocal[VEH_GROUND_SHADOW_MAX_DRIVERS][3];
 
 	if (!VehGroundShadow_Subset1(shadowTex0, VEH_GROUND_SHADOW_ICON_LEFT))
 	{
@@ -382,9 +446,12 @@ void VehGroundShadow_Main(void)
 		struct VehGroundShadowEntry *entry = &entries[driverIndex];
 		struct Driver *driver = gGT->drivers[driverIndex];
 
+		lookMode[driverIndex] = VEH_GROUND_SHADOW_LOOK_RETAIL;
+
 		if (driver != NULL)
 		{
 			VehGroundShadow_BuildEntry(entry, driver, numPlayers);
+			lookMode[driverIndex] = NativeChar_ModelShadow(entry->inst->model, lookQuad[driverIndex]);
 		}
 		else
 		{
@@ -516,9 +583,39 @@ void VehGroundShadow_Main(void)
 				{
 					continue;
 				}
+
+				if (lookMode[driverIndex] == VEH_GROUND_SHADOW_LOOK_AUTO)
+				{
+					VehGroundShadow_TransformLookAxes(entry, lookQuad[driverIndex], &lookCentre[driverIndex], lookLocal[driverIndex]);
+					// VehPhysForce_RotAxisAngle writes R11, R22 and R33 (gte_op12):
+					// the view again, as after VehGroundShadow_TransformLocalAxes.
+					VehGroundShadow_LoadGteRotMatrix(&pb->matrix_ViewProj);
+				}
 			}
 
-			VehGroundShadow_BuildProjectionPoints(entry, scaledX, scaledY, scaledZ, points);
+			if (lookMode[driverIndex] == VEH_GROUND_SHADOW_LOOK_RETAIL)
+			{
+				VehGroundShadow_BuildProjectionPoints(entry, scaledX, scaledY, scaledZ, points);
+			}
+			else if (lookMode[driverIndex] == VEH_GROUND_SHADOW_LOOK_AUTO)
+			{
+				// The same nine points, quads, icons and depth rule, from the
+				// file's quad: point 0 (the depth of all four quads) is the
+				// centre of the quad on the seam.
+				struct VehGroundShadowEntry lookEntry = *entry;
+
+				memcpy(lookEntry.local, lookLocal[driverIndex], sizeof(lookEntry.local));
+				VehGroundShadow_BuildProjectionPoints(&lookEntry, scaledX + lookCentre[driverIndex].x, scaledY + lookCentre[driverIndex].y,
+				                                      scaledZ + lookCentre[driverIndex].z, points);
+				NativeChar_NoteShadow(VEH_GROUND_SHADOW_LOOK_AUTO);
+			}
+			else
+			{
+				// off: after every check the retail code makes, so the entry
+				// in the scratchpad holds what it would hold; no quad.
+				NativeChar_NoteShadow(VEH_GROUND_SHADOW_LOOK_OFF);
+				continue;
+			}
 			VehGroundShadow_ProjectPoints(points, sxy, depth);
 
 			for (int quadIndex = 0; quadIndex < VEH_GROUND_SHADOW_NUM_QUADS; quadIndex++)

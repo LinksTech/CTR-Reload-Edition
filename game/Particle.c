@@ -1120,6 +1120,13 @@ void NativeRenderLayer_NoteParticleQuad(const struct Particle *particle, const s
 // and counts; without the switch always 0.
 int NativeRenderLayer_HideExhaustQuad(const struct Particle *particle);
 
+// From platform/native_chars.c (include/platform/native_chars.h, word for
+// word): the exhaust of a custom character with a look (CHRI) - moves the
+// drawn position (the world times 4) to its own point, or 1 = leave the quad
+// out. 0 and nothing moved for every other particle and in every run without
+// a look. Only the drawing; the particle stays as it is.
+int NativeChar_ExhaustDraw(const struct Particle *particle, s32 *posX, s32 *posY, s32 *posZ);
+
 void Particle_RenderList(struct PushBuffer *pb, void *particleList)
 {
 	struct GameTracker *gGT = sdata->gGT;
@@ -1173,6 +1180,7 @@ void Particle_RenderList(struct PushBuffer *pb, void *particleList)
 			s32 posZ;
 			s32 depth;
 			u32 color;
+			int lookHide = 0;
 
 			prim = primCursor;
 			driverID = (s8)particle->driverID;
@@ -1247,6 +1255,9 @@ void Particle_RenderList(struct PushBuffer *pb, void *particleList)
 				}
 				posZ += CTR_MipsSll(inst->matrix.t[2], 2);
 
+				// The look of a custom character (CHRI): its own exhaust point.
+				lookHide = NativeChar_ExhaustDraw(particle, &posX, &posY, &posZ);
+
 				if ((idppFlags & PUSHBUFFER_EXISTS) != 0)
 				{
 					idpp = NULL;
@@ -1302,7 +1313,9 @@ void Particle_RenderList(struct PushBuffer *pb, void *particleList)
 			struct ParticleRenderListMatrix matrix = Particle_RenderList_BuildNormalMatrix(particle, flagsAxis);
 
 			Particle_RenderList_WriteNormalPrimitive((POLY_FT4 *)prim, icon, flagsAxis, flagsSetColor, color, &matrix, &scratch->depth);
-			if (NativeRenderLayer_HideExhaustQuad(particle))
+			// The measuring switch asks first, so that its counters stay what
+			// they were; a look that leaves the exhaust out joins it.
+			if (NativeRenderLayer_HideExhaustQuad(particle) | lookHide)
 			{
 				// Written and projected like every quad; only the link into the
 				// OT is left out (and with it the exhaust box of the probe).

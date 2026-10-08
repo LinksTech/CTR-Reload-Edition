@@ -64,6 +64,20 @@
 #define RLDCHAR_FLAGS_KNOWN (RLDCHAR_FLAG_NO_WHEELS | RLDCHAR_FLAG_MASK_BITS | RLDCHAR_FLAG_MAP_COLOR | RLDCHAR_FLAG_FULL_HEIGHT)   // the CHRI flag bits this reader understands
 #define RLDCHAR_CHRI_MAP_COLOR_OFFSET 0x20u   // u8 r, g, b, 0 - present when fixedSize >= RLDCHAR_CHRI_SIZE_MAP_COLOR
 #define RLDCHAR_CHRI_SIZE_MAP_COLOR 0x24u
+#define RLDCHAR_CHRI_LOOK_OFFSET 0x24u     // the look (shadow and exhaust, RldChar_ParseLook) - present when fixedSize >= RLDCHAR_CHRI_SIZE_LOOK
+#define RLDCHAR_CHRI_SIZE_LOOK 0x3Cu
+#define RLDCHAR_CHRI_SHADOW_MODE 0x24u     // u8 RLDCHAR_LOOK_RETAIL / _AUTO / _OFF
+#define RLDCHAR_CHRI_EXHAUST_MODE 0x25u    // u8 RLDCHAR_LOOK_RETAIL / _CUSTOM / _OFF
+#define RLDCHAR_CHRI_EXHAUST_COUNT 0x26u   // u8 1 or 2 with custom, else 0; 0x27 is reserved (0)
+#define RLDCHAR_CHRI_SHADOW_QUAD 0x28u     // s16 xMin, xMax, zMin, zMax
+#define RLDCHAR_CHRI_EXHAUST_POINTS 0x30u  // s16 x, y, z of point 0, then of point 1
+#define RLDCHAR_LOOK_RETAIL 0u             // shadowMode / exhaustMode 0: what retail draws - every file from before the field
+#define RLDCHAR_LOOK_AUTO 1u               // shadowMode 1: the quad at 0x28
+#define RLDCHAR_LOOK_CUSTOM 1u             // exhaustMode 1: the points at 0x30
+#define RLDCHAR_LOOK_OFF 2u                // shadowMode / exhaustMode 2: none drawn
+#define RLDCHAR_LOOK_COORD_MAX 4096        // |value| of a look coordinate in 1/16 model units (256 model units, as RLDCHAR_WHEEL_POINT_MAX)
+#define RLDCHAR_LOOK_Y_MIN (-256)          // the lowest exhaust height, 1/16 model units (16 model units below the origin)
+#define RLDCHAR_LOOK_EDGE_MIN 16           // the shortest side of the shadow quad, 1/16 model units (1 model unit)
 #define RLDCHAR_NAME_FIELD 20
 #define RLDCHAR_NAME_MAX 17
 #define RLDCHAR_AUTHOR_MAX 64
@@ -172,6 +186,14 @@ static const struct RldFormat s_rldCharFormat = {
 //                       bit 3 RLDCHAR_FLAG_MAP_COLOR, bit 4 RLDCHAR_FLAG_FULL_HEIGHT
 // 0x20 u8[4] mapColor   only when fixedSize >= 0x24: red, green, blue of the
 //                       minimap marker, then 0; used only with bit 3 set
+// The look, only when fixedSize >= 0x3C (RldChar_ParseLook):
+// 0x24 u8  shadowMode   RLDCHAR_LOOK_RETAIL 0, _AUTO 1 (the quad at 0x28), _OFF 2
+// 0x25 u8  exhaustMode  RLDCHAR_LOOK_RETAIL 0, _CUSTOM 1 (the points at 0x30), _OFF 2
+// 0x26 u8  exhaustCount 1 or 2 with custom, else 0
+// 0x27 u8  reserved     written 0, not checked
+// 0x28 s16[4] shadowQuad    xMin, xMax, zMin, zMax, 1/16 model units; only with shadow auto
+// 0x30 s16[3] exhaust0      x, y, z, 1/16 model units; in place of retail source 0 (+X, left)
+// 0x36 s16[3] exhaust1      x, y, z; in place of retail source 1 (-X, right), only with count 2, else 0
 // fixedSize: u32 stringCount, then per string u32 length + bytes; string 0 is the author
 //
 // A new field only ever lengthens fixedSize, a new string is only ever
@@ -183,6 +205,20 @@ static const struct RldFormat s_rldCharFormat = {
 // chosen (flags then holds RLDCHAR_FLAG_MAP_COLOR), and a reader from before
 // it accepts the file (bit 3 is an unknown bit there, the 4 bytes lie behind
 // the fields it reads) and shows the template's color.
+//
+// The look is the third: the ground shadow and the exhaust of the driver,
+// fitted to the model. fixedSize 0x3C only when a mode is not retail (the
+// 4 bytes of mapColor are then written as 0 without bit 3), so a file
+// without a look keeps its bytes, and a reader from before the look skips
+// the 24 bytes and draws the retail shadow and exhaust. The look has NO
+// CHRI rule - a CHRI finding refuses the whole file. An unknown mode or a
+// value outside the limits only makes that one effect retail (RldChar_ParseLook
+// names the reason in look.why). The space is the model's own: model units
+// (CMDL without the instance scale = CNET, Blender 1 m = 64), origin = the
+// model's origin, +X left seen from behind, +Y up, +Z forward. The game
+// keys the look on the model, so CMDL and native drawing read the same values.
+// Retail in these units: exhaust smoke (+-288, 896, -896), shadow quad
+// x -800..800, z -820..1040.
 //
 // RLDCHAR_FLAG_FULL_HEIGHT (bit 4) is about the bytes of CMDL and CMSK. The
 // renderer packs the up axis as (pos.y + byte) << 2 and the retail path clears
@@ -411,6 +447,156 @@ static const char *RldChar_ParseInfo(struct RldCharInfo *out, const u8 *bytes, s
 	}
 
 	return NULL;
+}
+
+// The look of CHRI (0x24..0x3B), as RldChar_ParseLook read it. shadow is
+// RLDCHAR_LOOK_RETAIL, _AUTO or _OFF; exhaust RLDCHAR_LOOK_RETAIL, _CUSTOM or
+// _OFF; count 1 or 2 with custom, else 0. quad (xMin, xMax, zMin, zMax) only
+// with auto, point[0] with custom, point[1] with custom and count 2; every
+// unused value is 0. All in 1/16 model units. why: NULL, or the fixed text
+// of the first effect that fell back to retail (shadow before exhaust).
+struct RldCharLook
+{
+	u32 shadow;
+	u32 exhaust;
+	u32 count;
+	s16 quad[4];
+	s16 point[2][3];
+	const char *why;
+};
+
+static int RldChar_LookValue(const u8 *chri, u32 offset)
+{
+	const u32 value = Rld_ReadLE16(&chri[offset]);
+
+	return (value >= 0x8000u) ? ((int)value - 0x10000) : (int)value;
+}
+
+// The look of a CHRI that RldChar_ParseInfo has accepted (info is its
+// result, chri and size the same chunk). Without the field (fixedSize below
+// 0x3C) everything is retail and why stays NULL. NO RULE: an unknown mode or
+// a value outside the limits makes only that effect retail and names it in
+// why, the file stays valid - wheels hidden or not.
+//   shadow auto: every |value| <= RLDCHAR_LOOK_COORD_MAX, xMin < xMax and
+//                zMin < zMax, each side at least RLDCHAR_LOOK_EDGE_MIN.
+//   exhaust custom: count 1 or 2; per used point |x|, |z| <= RLDCHAR_LOOK_COORD_MAX
+//                and RLDCHAR_LOOK_Y_MIN <= y <= RLDCHAR_LOOK_COORD_MAX.
+// The reserved byte 0x27, the count without custom and the unused values are
+// not checked.
+static void RldChar_ParseLook(const struct RldCharInfo *info, const u8 *chri, size_t size, struct RldCharLook *out)
+{
+	u32 shadow;
+	u32 exhaust;
+	u32 count;
+	int v[4];
+	int p[2][3];
+	int i;
+	int k;
+
+	memset(out, 0, sizeof(*out));
+
+	if ((info == NULL) || (chri == NULL) || (info->fixedSize < RLDCHAR_CHRI_SIZE_LOOK) || (size < (size_t)RLDCHAR_CHRI_SIZE_LOOK))
+	{
+		return;
+	}
+
+	shadow = chri[RLDCHAR_CHRI_SHADOW_MODE];
+	exhaust = chri[RLDCHAR_CHRI_EXHAUST_MODE];
+	count = chri[RLDCHAR_CHRI_EXHAUST_COUNT];
+
+	if (shadow == RLDCHAR_LOOK_AUTO)
+	{
+		int beyond = 0;
+
+		for (i = 0; i < 4; i++)
+		{
+			v[i] = RldChar_LookValue(chri, RLDCHAR_CHRI_SHADOW_QUAD + (2u * (u32)i));
+			if ((v[i] < -RLDCHAR_LOOK_COORD_MAX) || (v[i] > RLDCHAR_LOOK_COORD_MAX))
+			{
+				beyond = 1;
+			}
+		}
+
+		if (beyond)
+		{
+			out->why = "shadow quad beyond 256 model units";
+		}
+		else if (((v[1] - v[0]) < RLDCHAR_LOOK_EDGE_MIN) || ((v[3] - v[2]) < RLDCHAR_LOOK_EDGE_MIN))
+		{
+			out->why = "shadow quad narrower or shorter than 1 model unit";
+		}
+		else
+		{
+			out->shadow = RLDCHAR_LOOK_AUTO;
+			for (i = 0; i < 4; i++)
+			{
+				out->quad[i] = (s16)v[i];
+			}
+		}
+	}
+	else if (shadow == RLDCHAR_LOOK_OFF)
+	{
+		out->shadow = RLDCHAR_LOOK_OFF;
+	}
+	else if (shadow != RLDCHAR_LOOK_RETAIL)
+	{
+		out->why = "shadow mode unknown";
+	}
+
+	if (exhaust == RLDCHAR_LOOK_CUSTOM)
+	{
+		int bad = 0;
+
+		if ((count < 1u) || (count > 2u))
+		{
+			if (out->why == NULL)
+			{
+				out->why = "exhaust count not 1 or 2";
+			}
+			return;
+		}
+
+		for (k = 0; k < (int)count; k++)
+		{
+			for (i = 0; i < 3; i++)
+			{
+				p[k][i] = RldChar_LookValue(chri, RLDCHAR_CHRI_EXHAUST_POINTS + (6u * (u32)k) + (2u * (u32)i));
+			}
+
+			if ((p[k][0] < -RLDCHAR_LOOK_COORD_MAX) || (p[k][0] > RLDCHAR_LOOK_COORD_MAX) || (p[k][1] < RLDCHAR_LOOK_Y_MIN) ||
+			    (p[k][1] > RLDCHAR_LOOK_COORD_MAX) || (p[k][2] < -RLDCHAR_LOOK_COORD_MAX) || (p[k][2] > RLDCHAR_LOOK_COORD_MAX))
+			{
+				bad = 1;
+			}
+		}
+
+		if (bad)
+		{
+			if (out->why == NULL)
+			{
+				out->why = "exhaust point beyond the limits";
+			}
+			return;
+		}
+
+		out->exhaust = RLDCHAR_LOOK_CUSTOM;
+		out->count = count;
+		for (k = 0; k < (int)count; k++)
+		{
+			for (i = 0; i < 3; i++)
+			{
+				out->point[k][i] = (s16)p[k][i];
+			}
+		}
+	}
+	else if (exhaust == RLDCHAR_LOOK_OFF)
+	{
+		out->exhaust = RLDCHAR_LOOK_OFF;
+	}
+	else if ((exhaust != RLDCHAR_LOOK_RETAIL) && (out->why == NULL))
+	{
+		out->why = "exhaust mode unknown";
+	}
 }
 
 //========================================================================================

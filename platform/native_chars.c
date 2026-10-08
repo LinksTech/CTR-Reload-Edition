@@ -219,6 +219,7 @@ struct NativeCharFile
 	int voiceState;             // NATIVE_CHAR_VOICES_*
 	const char *voiceWhy;       // NATIVE_CHAR_VOICES_IGNORED: the reader's or the check's fixed text
 	struct RldCharNative *native; // CNET/CTXT, READY, held only while a seat is bound and only with --native-preview; else NULL
+	struct RldCharLook look;    // the shadow and exhaust of CHRI (RldChar_ParseLook); all retail for a file without the field
 };
 
 // The files of the roster, in sorted order: entry e < s_charRosterFiles is
@@ -280,6 +281,25 @@ global_variable int s_charRosterFiles;
 // The entries whose CHRI flags set RLDCHAR_FLAG_FULL_HEIGHT. 0 - every run
 // without such a file - lets NativeChar_ModelFullHeight answer at once.
 global_variable int s_charFullHeightFiles;
+
+// 1 once an admitted file has a look that is not retail (shadow or exhaust,
+// RldChar_ParseLook). 0 - every retail run and every run with files from
+// before the field - lets the look functions (NativeChar_ModelShadow,
+// NativeChar_ExhaustDraw) answer at once and keeps the exit line away.
+global_variable int s_charLookAny;
+
+// What the look changed, for the exit line: shadows drawn auto and left out
+// (per driver and view), exhaust quads moved and left out (per particle and
+// view, counted where the decision falls, before the camera cull).
+global_variable struct
+{
+	s64 shadowAuto;
+	s64 shadowOff;
+	s64 exhaustMoved;
+	s64 exhaustHidden;
+	s64 flamesMoved;
+	s64 flamesHidden;
+} s_charLookCount;
 
 // Capitals, a space and digits: inside the CHRI name rule (RldChar_NameCheck),
 // so whatever draws the name of a file draws these too.
@@ -530,6 +550,14 @@ internal void NativeChar_ReportAtExit(void)
 {
 	NativeChar_FlushDevLoad();
 	Platform_Log("[CTR Char] at exit: instances dropped %lld total, %lld seat 0\n", (long long)s_droppedTotal, (long long)s_droppedSeat0);
+
+	// Only in a run where a file had a look: every other run keeps its lines.
+	if (s_charLookAny)
+	{
+		Platform_Log("[CTR Char] at exit: look shadows auto %lld, off %lld; exhaust quads moved %lld, hidden %lld; turbo flames moved %lld, hidden %lld\n",
+		             (long long)s_charLookCount.shadowAuto, (long long)s_charLookCount.shadowOff, (long long)s_charLookCount.exhaustMoved,
+		             (long long)s_charLookCount.exhaustHidden, (long long)s_charLookCount.flamesMoved, (long long)s_charLookCount.flamesHidden);
+	}
 }
 
 // The portrait (CICN, optional): checked with RldChar_CheckIcon and kept as
@@ -800,6 +828,11 @@ internal int NativeChar_ReadFile(const char *path, const char *file, struct Nati
 	}
 
 	why = RldChar_ParseInfo(&info, infoBytes, infoSize);
+	if (why == NULL)
+	{
+		// The look has no rule: whatever it holds, the file stays (RldChar_ParseLook).
+		RldChar_ParseLook(&info, infoBytes, infoSize, &out->look);
+	}
 	free(infoBytes);
 	if (why != NULL)
 	{
@@ -863,11 +896,30 @@ internal void NativeChar_LogLoaded(const struct NativeCharFile *entry)
 	const u32 mask = RldChar_Mask(entry->info.flags);
 	const char *maskText = (mask == RLDCHAR_MASK_AKU) ? ", mask aku" : ((mask == RLDCHAR_MASK_UKA) ? ", mask uka" : "");
 	const char *height = ((entry->info.flags & RLDCHAR_FLAG_FULL_HEIGHT) != 0) ? ", full height" : "";
+	// The look the same way: only what is not retail, after the flags.
+	const char *shadow = (entry->look.shadow == RLDCHAR_LOOK_AUTO) ? ", shadow auto" : ((entry->look.shadow == RLDCHAR_LOOK_OFF) ? ", shadow off" : "");
+	char exhaust[32];
 
-	Platform_Log("[CTR Char] loaded %s: template %u, class %u, CMDL %02x%02x%02x%02x%02x%02x, %llu bytes%s%s%s\n", entry->file,
+	exhaust[0] = '\0';
+	if (entry->look.exhaust == RLDCHAR_LOOK_CUSTOM)
+	{
+		snprintf(exhaust, sizeof(exhaust), ", exhaust custom %u", (unsigned)entry->look.count);
+	}
+	else if (entry->look.exhaust == RLDCHAR_LOOK_OFF)
+	{
+		snprintf(exhaust, sizeof(exhaust), "%s", ", exhaust off");
+	}
+
+	Platform_Log("[CTR Char] loaded %s: template %u, class %u, CMDL %02x%02x%02x%02x%02x%02x, %llu bytes%s%s%s%s%s\n", entry->file,
 	             (unsigned)entry->info.templateId, (unsigned)entry->info.classId, (unsigned)entry->cmdlHash[0], (unsigned)entry->cmdlHash[1],
 	             (unsigned)entry->cmdlHash[2], (unsigned)entry->cmdlHash[3], (unsigned)entry->cmdlHash[4], (unsigned)entry->cmdlHash[5],
-	             (unsigned long long)entry->fileBytes, wheels, maskText, height);
+	             (unsigned long long)entry->fileBytes, wheels, maskText, height, shadow, exhaust);
+
+	// A look that fell back (RldChar_ParseLook): one line, the file stays.
+	if (entry->look.why != NULL)
+	{
+		Platform_Log("[CTR Char] look %s: %s - retail\n", entry->file, entry->look.why);
+	}
 }
 
 // The portrait of an admitted entry, one line of its own after "loaded" (that
@@ -968,6 +1020,10 @@ internal int NativeChar_Admit(struct NativeCharFile *loaded, char *file, const c
 	if ((loaded->info.flags & RLDCHAR_FLAG_FULL_HEIGHT) != 0)
 	{
 		s_charFullHeightFiles++;
+	}
+	if ((loaded->look.shadow != RLDCHAR_LOOK_RETAIL) || (loaded->look.exhaust != RLDCHAR_LOOK_RETAIL))
+	{
+		s_charLookAny = 1;
 	}
 	NativeChar_LogLoaded(loaded);
 	NativeChar_LogPortrait(s_charRosterFiles - 1);
@@ -2151,6 +2207,255 @@ int NativeChar_ModelFullHeight(const struct Model *model)
 		}
 	}
 
+	return 0;
+}
+
+// ---------------------------------------------------------------------------
+// THE LOOK (CHRI 0x24..0x3B, RldChar_ParseLook): the ground shadow and the
+// exhaust smoke of a custom character. Both are PS1 primitives in the
+// ordering table, drawn the same way for a CMDL character and a natively
+// drawn one, so the key is the model of the instance (VehBirth_NonGhost
+// births the driver instance with the file's CMDL model, NativeChar_SeatModel,
+// and the render layer finds its character by that model too). The look is
+// read with CHRI when the roster is read - no --native-preview needed.
+//
+// Only the DRAWING changes. The exhaust particles are born where retail
+// births them (game/Vehicle/VehEmitter.c, untouched): the underwater bubbles
+// call MixRNG_Scramble when they reach the surface (game/Particle.c,
+// Particle_FuncPtr_ExhaustUnderwater), and that random number is the item
+// roll of every driver - a particle born elsewhere would change the race.
+// ---------------------------------------------------------------------------
+
+// The retail exhaust sources in 1/16 model units: source 0 (+X, left) and
+// source 1 (-X, right), VEH_EMITTER_EXHAUST_POS_* of game/Vehicle/VehEmitter.c
+// (x scale * 9 >> 3 and scale * -18 >> 4, y scale * 7 >> 1, z scale * -56 >> 4,
+// in 1/256 world = (value * scale) >> 8 here - the same numbers exactly).
+#define NATIVE_CHAR_EXHAUST_RETAIL_X 288
+#define NATIVE_CHAR_EXHAUST_RETAIL_Y 896
+#define NATIVE_CHAR_EXHAUST_RETAIL_Z (-896)
+
+// The shadow seam: the retail axes are 0x29 to the rear and 0x34 to the
+// front (game/Vehicle/VehGroundShadow.c), icon 0 behind it and icon 1 before.
+#define NATIVE_CHAR_SHADOW_REAR 41
+#define NATIVE_CHAR_SHADOW_LENGTH 93
+
+// The look of a model, NULL for every model of no file, for a file with an
+// all-retail look and at once in a run without a look.
+internal const struct RldCharLook *NativeChar_ModelLook(const struct Model *model)
+{
+	int entry;
+
+	if (!s_charLookAny || (model == NULL))
+	{
+		return NULL;
+	}
+
+	for (entry = 0; (entry < s_charRosterFiles) && (entry < NATIVE_CHAR_ROSTER_MAX); entry++)
+	{
+		if (s_charFiles[entry].model == model)
+		{
+			const struct RldCharLook *look = &s_charFiles[entry].look;
+
+			return ((look->shadow != RLDCHAR_LOOK_RETAIL) || (look->exhaust != RLDCHAR_LOOK_RETAIL)) ? look : NULL;
+		}
+	}
+
+	return NULL;
+}
+
+int NativeChar_ModelShadow(const struct Model *model, s16 quad[4])
+{
+	const struct RldCharLook *look = NativeChar_ModelLook(model);
+
+	if ((look == NULL) || (look->shadow == RLDCHAR_LOOK_RETAIL))
+	{
+		return (int)RLDCHAR_LOOK_RETAIL;
+	}
+
+	if ((look->shadow == RLDCHAR_LOOK_AUTO) && (quad != NULL))
+	{
+		quad[0] = look->quad[0];
+		quad[1] = look->quad[1];
+		quad[2] = look->quad[2];
+		quad[3] = look->quad[3];
+	}
+
+	return (int)look->shadow;
+}
+
+int NativeChar_ModelExhaust(const struct Model *model, s16 point[2][3], int *count)
+{
+	const struct RldCharLook *look = NativeChar_ModelLook(model);
+
+	if ((look == NULL) || (look->exhaust == RLDCHAR_LOOK_RETAIL))
+	{
+		return (int)RLDCHAR_LOOK_RETAIL;
+	}
+
+	if (look->exhaust == RLDCHAR_LOOK_CUSTOM)
+	{
+		if (point != NULL)
+		{
+			memcpy(point, look->point, sizeof(look->point));
+		}
+		if (count != NULL)
+		{
+			*count = (int)look->count;
+		}
+	}
+
+	return (int)look->exhaust;
+}
+
+void NativeChar_NoteTurboFlames(int moved, int hidden)
+{
+	s_charLookCount.flamesMoved += moved;
+	s_charLookCount.flamesHidden += hidden;
+}
+
+void NativeChar_NoteShadow(int mode)
+{
+	if (mode == (int)RLDCHAR_LOOK_AUTO)
+	{
+		s_charLookCount.shadowAuto++;
+	}
+	else if (mode == (int)RLDCHAR_LOOK_OFF)
+	{
+		s_charLookCount.shadowOff++;
+	}
+}
+
+// 1/16 model units -> the shadow space: (v * scale) >> 12 is 1/16 world,
+// times height >> 10 is the world times 4 at the height factor (256 = on the
+// ground, the retail axes are (height * factor) >> 6 in the same space).
+internal s16 NativeChar_ShadowUnit(int value, int scale, int height)
+{
+	const s32 w = ((s32)value * (s32)scale) >> 12;
+
+	return (s16)((w * (s32)height) >> 10);
+}
+
+void NativeChar_ShadowAxes(const s16 quad[4], int scaleX, int scaleZ, int height, s16 out[4][3])
+{
+	const int xMid = ((int)quad[0] + (int)quad[1]) >> 1;
+	const int zSeam = (int)quad[2] + ((((int)quad[3] - (int)quad[2]) * NATIVE_CHAR_SHADOW_REAR) / NATIVE_CHAR_SHADOW_LENGTH);
+
+	memset(out, 0, sizeof(s16) * 4u * 3u);
+	out[0][0] = NativeChar_ShadowUnit(xMid, scaleX, height);
+	out[0][2] = NativeChar_ShadowUnit(zSeam, scaleZ, height);
+	out[1][0] = NativeChar_ShadowUnit((int)quad[1] - xMid, scaleX, height);
+	out[2][2] = NativeChar_ShadowUnit(zSeam - (int)quad[2], scaleZ, height);
+	out[3][2] = NativeChar_ShadowUnit((int)quad[3] - zSeam, scaleZ, height);
+}
+
+// The move of one exhaust particle to its own point, pure: source 0 or 1 of
+// retail, the look's point of the same index; m the rotation of the
+// instance (4096 = 1), scale its scale. *add gets the offset in the world
+// times 4 (the space of the drawn position): ((P - R) * scale) >> 14 per
+// axis, then rotated, (M * offset) >> 12. 1 = the particle is left out
+// (exhaust off, or custom with one point and source 1), else 0.
+internal int NativeChar_ExhaustMove(const struct RldCharLook *look, int source, const s16 m[3][3], const s16 scale[3], s32 add[3])
+{
+	s32 offset[3];
+	int i;
+
+	add[0] = 0;
+	add[1] = 0;
+	add[2] = 0;
+
+	if (look->exhaust == RLDCHAR_LOOK_OFF)
+	{
+		return 1;
+	}
+	if ((look->exhaust != RLDCHAR_LOOK_CUSTOM) || (source < 0) || (source > 1))
+	{
+		return 0;
+	}
+	if ((u32)source >= look->count)
+	{
+		return 1;
+	}
+
+	offset[0] = (((s32)look->point[source][0] - ((source == 0) ? NATIVE_CHAR_EXHAUST_RETAIL_X : -NATIVE_CHAR_EXHAUST_RETAIL_X)) * (s32)scale[0]) >> 14;
+	offset[1] = (((s32)look->point[source][1] - NATIVE_CHAR_EXHAUST_RETAIL_Y) * (s32)scale[1]) >> 14;
+	offset[2] = (((s32)look->point[source][2] - NATIVE_CHAR_EXHAUST_RETAIL_Z) * (s32)scale[2]) >> 14;
+
+	for (i = 0; i < 3; i++)
+	{
+		add[i] = (((s32)m[i][0] * offset[0]) + ((s32)m[i][1] * offset[1]) + ((s32)m[i][2] * offset[2])) >> 12;
+	}
+
+	return 0;
+}
+
+// The retail source of a particle: its position relative to the instance
+// (startVal, 1/256 world, rotated with the instance at birth) along the
+// instance's local X axis, column 0 of the rotation. >= 0 is source 0 (+X).
+// The smoke lives a few frames and drifts far less than the 14 world units
+// between the sources; a long-lived underwater bubble could cross - only the
+// picture would differ.
+internal int NativeChar_ExhaustSource(const struct Particle *particle, const s16 m[3][3])
+{
+	const s64 side = ((s64)particle->axis[0].startVal * (s64)m[0][0]) + ((s64)particle->axis[1].startVal * (s64)m[1][0]) +
+	                 ((s64)particle->axis[2].startVal * (s64)m[2][0]);
+
+	return (side >= 0) ? 0 : 1;
+}
+
+int NativeChar_ExhaustDraw(const struct Particle *particle, s32 *posX, s32 *posY, s32 *posZ)
+{
+	const struct GameTracker *gGT;
+	const struct IconGroup *group;
+	const struct Instance *inst;
+	const struct RldCharLook *look;
+	s16 m[3][3];
+	s16 scale[3];
+	s32 add[3];
+	int i;
+
+	if (!s_charLookAny || (particle == NULL) || ((particle->flagsSetColor & PARTICLE_SET_COLOR_FLAG_DRIVER_LOCAL) == 0) ||
+	    (particle->owner.driverInst == NULL) || (particle->driverID != -1) || (particle->ptrIconGroup == NULL))
+	{
+		return 0;
+	}
+
+	// The exhaust groups of VehEmitter_Exhaust and the bubble pop
+	// (NativeRenderLayer_HideExhaustQuad tells them apart the same way);
+	// burning smoke has a driverID and never gets here.
+	gGT = sdata->gGT;
+	group = particle->ptrIconGroup;
+	if ((gGT == NULL) || ((group != gGT->iconGroup[1]) && (group != gGT->iconGroup[7]) && (group != gGT->iconGroup[8])))
+	{
+		return 0;
+	}
+
+	inst = particle->owner.driverInst;
+	look = NativeChar_ModelLook(inst->model);
+	if ((look == NULL) || (look->exhaust == RLDCHAR_LOOK_RETAIL))
+	{
+		return 0;
+	}
+
+	for (i = 0; i < 3; i++)
+	{
+		m[i][0] = inst->matrix.m[i][0];
+		m[i][1] = inst->matrix.m[i][1];
+		m[i][2] = inst->matrix.m[i][2];
+	}
+	scale[0] = inst->scale.x;
+	scale[1] = inst->scale.y;
+	scale[2] = inst->scale.z;
+
+	if (NativeChar_ExhaustMove(look, NativeChar_ExhaustSource(particle, m), m, scale, add))
+	{
+		s_charLookCount.exhaustHidden++;
+		return 1;
+	}
+
+	*posX += add[0];
+	*posY += add[1];
+	*posZ += add[2];
+	s_charLookCount.exhaustMoved++;
 	return 0;
 }
 
@@ -3687,6 +3992,434 @@ void NativeChar_MaskSelfTest(int *checks, int *failures)
 
 	NativeChar_OwnMaskSelfTest(checks, failures);
 	NativeChar_MapColorSelfTest(checks, failures);
+}
+
+// ---------------------------------------------------------------------------
+// THE LOOK SELF-TEST, part of --char-grid-selftest (MM_NativeCharGrid_SelfTest).
+// Pure like the mask test: CHRI bytes built here, read back with
+// RldChar_ParseInfo and RldChar_ParseLook; the unit probes against the retail
+// constants of game/Vehicle/VehEmitter.c and game/Vehicle/VehGroundShadow.c;
+// the move of an exhaust particle and the shadow vectors. The roster is lent
+// for one case and given back; no counter of the exit line moves.
+// ---------------------------------------------------------------------------
+
+enum
+{
+	NATIVE_CHAR_TEST_WHY_NONE = 0,
+	NATIVE_CHAR_TEST_WHY_SHADOW,
+	NATIVE_CHAR_TEST_WHY_EXHAUST,
+};
+
+internal void NativeChar_TestPut16(u8 *at, int value)
+{
+	at[0] = (u8)(value & 0xff);
+	at[1] = (u8)((value >> 8) & 0xff);
+}
+
+internal void NativeChar_LookExpect(int *checks, int *failures, int ok, const char *what)
+{
+	(*checks)++;
+
+	if (!ok)
+	{
+		(*failures)++;
+		printf("char look selftest FAILED: %s\n", what);
+	}
+}
+
+internal void NativeChar_LookParseSelfTest(int *checks, int *failures)
+{
+	// The look bytes are written at 0x24..0x3B in every case. Below 0x3C they
+	// lie behind the fields (0x1C, 0x20: behind the string count, which is
+	// 0) and must not be read; 0x24 holds the string count itself, so that
+	// case writes no look.
+	static const struct
+	{
+		const char *name;
+		u32 fixedSize;
+		u32 flags;
+		u8 shadow;
+		u8 exhaust;
+		u8 count;
+		u8 reserved;
+		s16 quad[4];
+		s16 point[2][3];
+		u32 expShadow;
+		u32 expExhaust;
+		int why;
+	} cases[] = {
+	    {"0x1C, look bytes behind the fields", 0x1Cu, 0u, 1, 1, 2, 0, {-500, 500, -800, 900}, {{100, 300, -900}, {-100, 300, -900}}, 0u, 0u, 0},
+	    {"0x20, look bytes behind the fields", 0x20u, 1u, 1, 2, 0, 0, {-500, 500, -800, 900}, {{0}}, 0u, 0u, 0},
+	    {"0x24 map color, no look", 0x24u, 0x8u, 0, 0, 0, 0, {0}, {{0}}, 0u, 0u, 0},
+	    {"0x3C all zero", 0x3Cu, 0u, 0, 0, 0, 0, {0}, {{0}}, 0u, 0u, 0},
+	    {"0x3C retail with values", 0x3Cu, 0u, 0, 0, 2, 0, {-500, 500, -800, 900}, {{100, 300, -900}, {-100, 300, -900}}, 0u, 0u, 0},
+	    {"auto", 0x3Cu, 1u, 1, 0, 0, 0, {-517, 517, -866, 931}, {{0}}, 1u, 0u, 0},
+	    {"auto, the retail quad", 0x3Cu, 1u, 1, 0, 0, 0, {-800, 800, -820, 1040}, {{0}}, 1u, 0u, 0},
+	    {"auto at the limit 4096", 0x3Cu, 0u, 1, 0, 0, 0, {-4096, 4096, -4096, 4096}, {{0}}, 1u, 0u, 0},
+	    {"auto 16 by 16", 0x3Cu, 0u, 1, 0, 0, 0, {0, 16, -16, 0}, {{0}}, 1u, 0u, 0},
+	    {"auto xMin == xMax", 0x3Cu, 0u, 1, 0, 0, 0, {100, 100, -10, 10}, {{0}}, 0u, 0u, 1},
+	    {"auto xMin > xMax", 0x3Cu, 0u, 1, 0, 0, 0, {200, 100, -100, 100}, {{0}}, 0u, 0u, 1},
+	    {"auto zMin > zMax", 0x3Cu, 0u, 1, 0, 0, 0, {-100, 100, 100, -100}, {{0}}, 0u, 0u, 1},
+	    {"auto 15 wide", 0x3Cu, 0u, 1, 0, 0, 0, {0, 15, 0, 100}, {{0}}, 0u, 0u, 1},
+	    {"auto 15 long", 0x3Cu, 0u, 1, 0, 0, 0, {0, 100, 0, 15}, {{0}}, 0u, 0u, 1},
+	    {"auto xMin -4097", 0x3Cu, 0u, 1, 0, 0, 0, {-4097, 100, 0, 100}, {{0}}, 0u, 0u, 1},
+	    {"auto zMax 4097", 0x3Cu, 0u, 1, 0, 0, 0, {0, 100, 0, 4097}, {{0}}, 0u, 0u, 1},
+	    {"shadow off", 0x3Cu, 1u, 2, 0, 0, 0, {0}, {{0}}, 2u, 0u, 0},
+	    {"shadow off, a broken quad", 0x3Cu, 0u, 2, 0, 0, 0, {300, -300, 9000, -9000}, {{0}}, 2u, 0u, 0},
+	    {"shadow mode 3", 0x3Cu, 0u, 3, 0, 0, 0, {-500, 500, -800, 900}, {{0}}, 0u, 0u, 1},
+	    {"shadow mode 255", 0x3Cu, 0u, 255, 0, 0, 0, {-500, 500, -800, 900}, {{0}}, 0u, 0u, 1},
+	    {"exhaust off", 0x3Cu, 1u, 0, 2, 0, 0, {0}, {{0}}, 0u, 2u, 0},
+	    {"exhaust off, count 5", 0x3Cu, 0u, 0, 2, 5, 0, {0}, {{9000, 9000, 9000}}, 0u, 2u, 0},
+	    {"custom 1", 0x3Cu, 0u, 0, 1, 1, 0, {0}, {{0, 320, -900}, {9000, -9000, 9000}}, 0u, 1u, 0},
+	    {"custom 2", 0x3Cu, 0u, 0, 1, 2, 0, {0}, {{200, 300, -900}, {-200, 300, -900}}, 0u, 1u, 0},
+	    {"custom count 0", 0x3Cu, 0u, 0, 1, 0, 0, {0}, {{200, 300, -900}, {-200, 300, -900}}, 0u, 0u, 2},
+	    {"custom count 3", 0x3Cu, 0u, 0, 1, 3, 0, {0}, {{200, 300, -900}, {-200, 300, -900}}, 0u, 0u, 2},
+	    {"custom y -256", 0x3Cu, 0u, 0, 1, 1, 0, {0}, {{0, -256, 0}}, 0u, 1u, 0},
+	    {"custom y -257", 0x3Cu, 0u, 0, 1, 1, 0, {0}, {{0, -257, 0}}, 0u, 0u, 2},
+	    {"custom y 4097", 0x3Cu, 0u, 0, 1, 1, 0, {0}, {{0, 4097, 0}}, 0u, 0u, 2},
+	    {"custom x 4097", 0x3Cu, 0u, 0, 1, 1, 0, {0}, {{4097, 0, 0}}, 0u, 0u, 2},
+	    {"custom z -4097", 0x3Cu, 0u, 0, 1, 1, 0, {0}, {{0, 0, -4097}}, 0u, 0u, 2},
+	    {"custom 2, point 1 beyond", 0x3Cu, 0u, 0, 1, 2, 0, {0}, {{0, 0, 0}, {-4097, 0, 0}}, 0u, 0u, 2},
+	    {"custom 1, point 1 beyond is not read", 0x3Cu, 0u, 0, 1, 1, 0, {0}, {{0, 0, 0}, {-4097, 0, 0}}, 0u, 1u, 0},
+	    {"exhaust mode 3", 0x3Cu, 0u, 0, 3, 1, 0, {0}, {{0}}, 0u, 0u, 2},
+	    {"reserved 0xff", 0x3Cu, 1u, 1, 2, 0, 0xff, {-517, 517, -866, 931}, {{0}}, 1u, 2u, 0},
+	    {"longer fixedSize 0x40", 0x40u, 1u, 1, 2, 0, 0, {-517, 517, -866, 931}, {{0}}, 1u, 2u, 0},
+	    {"both modes unknown: shadow named", 0x3Cu, 0u, 7, 9, 0, 0, {0}, {{0}}, 0u, 0u, 1},
+	    {"shadow broken, exhaust custom", 0x3Cu, 0u, 1, 1, 2, 0, {5, 5, 5, 5}, {{200, 300, -900}, {-200, 300, -900}}, 0u, 1u, 1},
+	    {"shadow auto, exhaust broken", 0x3Cu, 0u, 1, 1, 0, 0, {-517, 517, -866, 931}, {{0}}, 1u, 0u, 2},
+	    {"wheels hidden, auto and off (the packer default)", 0x3Cu, 1u, 1, 2, 0, 0, {-517, 517, -866, 931}, {{0}}, 1u, 2u, 0},
+	};
+	u8 bytes[0x48u];
+	struct RldCharInfo info;
+	struct RldCharLook look;
+	char what[192];
+	int c;
+
+	for (c = 0; c < (int)(sizeof(cases) / sizeof(cases[0])); c++)
+	{
+		const u32 fixedSize = cases[c].fixedSize;
+		const size_t size = (fixedSize >= RLDCHAR_CHRI_SIZE_LOOK) ? ((size_t)fixedSize + 4u) : 0x40u;
+		const char *why;
+		int ok;
+		int i;
+		int k;
+
+		memset(bytes, 0, sizeof(bytes));
+		bytes[0x00] = (u8)fixedSize;
+		bytes[0x02] = RLDCHAR_TEMPLATE_MAX;
+		memcpy(&bytes[0x04], "LOOK", 4);
+		bytes[0x18] = 1;
+		if (fixedSize >= RLDCHAR_CHRI_SIZE_FLAGS)
+		{
+			NativeChar_TestPut32(&bytes[RLDCHAR_CHRI_FLAGS_OFFSET], cases[c].flags);
+		}
+		if (fixedSize != RLDCHAR_CHRI_SIZE_MAP_COLOR)
+		{
+			bytes[RLDCHAR_CHRI_SHADOW_MODE] = cases[c].shadow;
+			bytes[RLDCHAR_CHRI_EXHAUST_MODE] = cases[c].exhaust;
+			bytes[RLDCHAR_CHRI_EXHAUST_COUNT] = cases[c].count;
+			bytes[RLDCHAR_CHRI_EXHAUST_COUNT + 1u] = cases[c].reserved;
+			for (i = 0; i < 4; i++)
+			{
+				NativeChar_TestPut16(&bytes[RLDCHAR_CHRI_SHADOW_QUAD + (2u * (u32)i)], cases[c].quad[i]);
+			}
+			for (k = 0; k < 2; k++)
+			{
+				for (i = 0; i < 3; i++)
+				{
+					NativeChar_TestPut16(&bytes[RLDCHAR_CHRI_EXHAUST_POINTS + (6u * (u32)k) + (2u * (u32)i)], cases[c].point[k][i]);
+				}
+			}
+		}
+
+		// The string count at fixedSize: 0 (0x24 is the only case where it
+		// overlaps the look, and that case writes none).
+		NativeChar_TestPut32(&bytes[fixedSize], 0u);
+
+		why = RldChar_ParseInfo(&info, bytes, size);
+		snprintf(what, sizeof(what), "look %s: CHRI refused (%s)", cases[c].name, (why != NULL) ? why : "");
+		NativeChar_LookExpect(checks, failures, why == NULL, what);
+
+		snprintf(what, sizeof(what), "look %s: the flags moved", cases[c].name);
+		NativeChar_LookExpect(checks, failures, (fixedSize < RLDCHAR_CHRI_SIZE_FLAGS) || (info.flags == cases[c].flags), what);
+
+		memset(&look, 0x5a, sizeof(look));
+		RldChar_ParseLook(&info, bytes, size, &look);
+
+		snprintf(what, sizeof(what), "look %s: shadow %u exhaust %u count %u, not %u %u", cases[c].name, (unsigned)look.shadow, (unsigned)look.exhaust,
+		         (unsigned)look.count, (unsigned)cases[c].expShadow, (unsigned)cases[c].expExhaust);
+		NativeChar_LookExpect(checks, failures, (look.shadow == cases[c].expShadow) && (look.exhaust == cases[c].expExhaust), what);
+
+		snprintf(what, sizeof(what), "look %s: why \"%s\"", cases[c].name, (look.why != NULL) ? look.why : "(none)");
+		if (cases[c].why == NATIVE_CHAR_TEST_WHY_NONE)
+		{
+			ok = (look.why == NULL);
+		}
+		else
+		{
+			const char *word = (cases[c].why == NATIVE_CHAR_TEST_WHY_SHADOW) ? "shadow " : "exhaust ";
+
+			ok = (look.why != NULL) && (strncmp(look.why, word, strlen(word)) == 0);
+		}
+		NativeChar_LookExpect(checks, failures, ok, what);
+
+		// The values: the quad only with auto, the points only with custom
+		// (point 1 only with count 2), every other value 0.
+		ok = 1;
+		for (i = 0; i < 4; i++)
+		{
+			ok &= (look.quad[i] == ((look.shadow == RLDCHAR_LOOK_AUTO) ? cases[c].quad[i] : 0));
+		}
+		ok &= (look.count == ((look.exhaust == RLDCHAR_LOOK_CUSTOM) ? (u32)cases[c].count : 0u));
+		for (k = 0; k < 2; k++)
+		{
+			for (i = 0; i < 3; i++)
+			{
+				ok &= (look.point[k][i] == (((look.exhaust == RLDCHAR_LOOK_CUSTOM) && ((u32)k < look.count)) ? cases[c].point[k][i] : 0));
+			}
+		}
+		snprintf(what, sizeof(what), "look %s: values not as stored, or not 0 where unused", cases[c].name);
+		NativeChar_LookExpect(checks, failures, ok, what);
+	}
+
+	// A CHRI that is too short for its fixedSize never reaches here (CHRI-1);
+	// ParseLook holds the size anyway, and NULL is retail.
+	memset(bytes, 0, sizeof(bytes));
+	bytes[0x00] = (u8)RLDCHAR_CHRI_SIZE_LOOK;
+	bytes[RLDCHAR_CHRI_SHADOW_MODE] = (u8)RLDCHAR_LOOK_OFF;
+	info.fixedSize = RLDCHAR_CHRI_SIZE_LOOK;
+	RldChar_ParseLook(&info, bytes, RLDCHAR_CHRI_SIZE_LOOK - 1u, &look);
+	NativeChar_LookExpect(checks, failures, (look.shadow == RLDCHAR_LOOK_RETAIL) && (look.why == NULL), "look: a chunk shorter than 0x3C was read");
+	RldChar_ParseLook(NULL, bytes, sizeof(bytes), &look);
+	NativeChar_LookExpect(checks, failures, (look.shadow == RLDCHAR_LOOK_RETAIL) && (look.why == NULL), "look: no info was read");
+	RldChar_ParseLook(&info, NULL, sizeof(bytes), &look);
+	NativeChar_LookExpect(checks, failures, (look.shadow == RLDCHAR_LOOK_RETAIL) && (look.why == NULL), "look: no bytes were read");
+}
+
+// The units: every look formula, fed the retail point, gives the retail
+// number - for the scale of a driver (0xCCC) and for others.
+internal void NativeChar_LookUnitSelfTest(int *checks, int *failures)
+{
+	static const s16 scales[] = {0x800, 0xAAA, 0xCCC, 0x1000, 0x1333, 0x2000};
+	static const s16 identity[3][3] = {{0x1000, 0, 0}, {0, 0x1000, 0}, {0, 0, 0x1000}};
+	// 90 degrees about Y: local X (column 0) points to world -Z.
+	static const s16 turned[3][3] = {{0, 0, 0x1000}, {0, 0x1000, 0}, {-0x1000, 0, 0}};
+	struct RldCharLook look;
+	struct Particle particle;
+	s16 scale[3];
+	s32 add[3];
+	s16 axes[4][3];
+	char what[192];
+	int hide;
+	int i;
+	int h;
+
+	for (i = 0; i < (int)(sizeof(scales) / sizeof(scales[0])); i++)
+	{
+		const s32 sc = scales[i];
+		const s32 x0 = (sc * VEH_EMITTER_EXHAUST_POS_X_NUM) >> VEH_EMITTER_EXHAUST_POS_X_SHIFT;
+		const s32 x1 = (sc * VEH_EMITTER_EXHAUST_POS_SECOND_X_NUM) >> VEH_EMITTER_EXHAUST_POS_SECOND_X_SHIFT;
+		const s32 y = (sc * VEH_EMITTER_EXHAUST_POS_Y_NUM) >> VEH_EMITTER_EXHAUST_POS_Y_SHIFT;
+		const s32 z = (sc * VEH_EMITTER_EXHAUST_POS_Z_NUM) >> VEH_EMITTER_EXHAUST_POS_Z_SHIFT;
+
+		// 1/16 model units -> 1/256 world: (value * scale) >> 8.
+		snprintf(what, sizeof(what), "units: smoke at scale 0x%x is %d %d %d %d, not %d %d %d %d", (unsigned)sc, (int)((NATIVE_CHAR_EXHAUST_RETAIL_X * sc) >> 8),
+		         (int)((-NATIVE_CHAR_EXHAUST_RETAIL_X * sc) >> 8), (int)((NATIVE_CHAR_EXHAUST_RETAIL_Y * sc) >> 8), (int)((NATIVE_CHAR_EXHAUST_RETAIL_Z * sc) >> 8),
+		         (int)x0, (int)x1, (int)y, (int)z);
+		NativeChar_LookExpect(checks, failures,
+		                      (((NATIVE_CHAR_EXHAUST_RETAIL_X * sc) >> 8) == x0) && (((-NATIVE_CHAR_EXHAUST_RETAIL_X * sc) >> 8) == x1) &&
+		                          (((NATIVE_CHAR_EXHAUST_RETAIL_Y * sc) >> 8) == y) && (((NATIVE_CHAR_EXHAUST_RETAIL_Z * sc) >> 8) == z),
+		                      what);
+
+		if (sc == 0xCCC)
+		{
+			snprintf(what, sizeof(what), "units: retail smoke at 0xCCC is %d %d %d %d, not 3685 -3686 11466 -11466", (int)x0, (int)x1, (int)y, (int)z);
+			NativeChar_LookExpect(checks, failures, (x0 == 3685) && (x1 == -3686) && (y == 11466) && (z == -11466), what);
+		}
+
+		// The turbo flames (game/Vehicle/VehTurbo.c): (scale * point) >> 16 in
+		// the world on the retail flame points (+-288, 768, -832).
+		{
+			const s32 f0 = (sc * TURBO_FIRE_LEFT_X_NUMERATOR) >> TURBO_FIRE_LEFT_X_SHIFT;
+			const s32 f1 = (sc * TURBO_FIRE_RIGHT_X_NUMERATOR) >> TURBO_FIRE_RIGHT_X_SHIFT;
+			const s32 fy = (sc * TURBO_FIRE_Y_NUMERATOR) >> TURBO_FIRE_Y_SHIFT;
+			const s32 fz = (sc * TURBO_FIRE_Z_NUMERATOR) >> TURBO_FIRE_Z_SHIFT;
+
+			snprintf(what, sizeof(what), "units: flames at scale 0x%x are %d %d %d %d, not %d %d %d %d", (unsigned)sc, (int)((sc * 288) >> 16),
+			         (int)((sc * -288) >> 16), (int)((sc * 768) >> 16), (int)((sc * -832) >> 16), (int)f0, (int)f1, (int)fy, (int)fz);
+			NativeChar_LookExpect(checks, failures,
+			                      (((sc * 288) >> 16) == f0) && (((sc * -288) >> 16) == f1) && (((sc * 768) >> 16) == fy) && (((sc * -832) >> 16) == fz), what);
+
+			if (sc == 0xCCC)
+			{
+				snprintf(what, sizeof(what), "units: retail flames at 0xCCC are %d %d %d %d, not 14 -15 38 -42", (int)f0, (int)f1, (int)fy, (int)fz);
+				NativeChar_LookExpect(checks, failures, (f0 == 14) && (f1 == -15) && (fy == 38) && (fz == -42), what);
+			}
+		}
+	}
+
+	// The move: the retail point moves nothing, from either source and turned.
+	memset(&look, 0, sizeof(look));
+	look.exhaust = RLDCHAR_LOOK_CUSTOM;
+	look.count = 2u;
+	look.point[0][0] = NATIVE_CHAR_EXHAUST_RETAIL_X;
+	look.point[0][1] = NATIVE_CHAR_EXHAUST_RETAIL_Y;
+	look.point[0][2] = NATIVE_CHAR_EXHAUST_RETAIL_Z;
+	look.point[1][0] = -NATIVE_CHAR_EXHAUST_RETAIL_X;
+	look.point[1][1] = NATIVE_CHAR_EXHAUST_RETAIL_Y;
+	look.point[1][2] = NATIVE_CHAR_EXHAUST_RETAIL_Z;
+	scale[0] = 0xCCC;
+	scale[1] = 0xCCC;
+	scale[2] = 0xCCC;
+	for (i = 0; i < 2; i++)
+	{
+		hide = NativeChar_ExhaustMove(&look, i, (i == 0) ? identity : turned, scale, add);
+		snprintf(what, sizeof(what), "move: the retail point of source %d moved by %d %d %d (hide %d)", i, (int)add[0], (int)add[1], (int)add[2], hide);
+		NativeChar_LookExpect(checks, failures, (hide == 0) && (add[0] == 0) && (add[1] == 0) && (add[2] == 0), what);
+	}
+
+	// 16 model units out, 10 down, 4 back from source 0: ((256, -160, 64) *
+	// 0xCCC) >> 14 = (51, -32, 12) in the world times 4; turned 90 degrees
+	// about Y that is (12, -32, -51).
+	look.point[0][0] = NATIVE_CHAR_EXHAUST_RETAIL_X + 256;
+	look.point[0][1] = NATIVE_CHAR_EXHAUST_RETAIL_Y - 160;
+	look.point[0][2] = NATIVE_CHAR_EXHAUST_RETAIL_Z + 64;
+	hide = NativeChar_ExhaustMove(&look, 0, identity, scale, add);
+	snprintf(what, sizeof(what), "move: source 0 by %d %d %d, not 51 -32 12", (int)add[0], (int)add[1], (int)add[2]);
+	NativeChar_LookExpect(checks, failures, (hide == 0) && (add[0] == 51) && (add[1] == -32) && (add[2] == 12), what);
+	hide = NativeChar_ExhaustMove(&look, 0, turned, scale, add);
+	snprintf(what, sizeof(what), "move: turned source 0 by %d %d %d, not 12 -32 -51", (int)add[0], (int)add[1], (int)add[2]);
+	NativeChar_LookExpect(checks, failures, (hide == 0) && (add[0] == 12) && (add[1] == -32) && (add[2] == -51), what);
+
+	// One point: source 1 is left out, source 0 moves. Off: both left out.
+	// Retail: nothing.
+	look.count = 1u;
+	NativeChar_LookExpect(checks, failures, NativeChar_ExhaustMove(&look, 1, identity, scale, add) == 1, "move: custom 1 kept source 1");
+	NativeChar_LookExpect(checks, failures, (NativeChar_ExhaustMove(&look, 0, identity, scale, add) == 0) && (add[0] == 51), "move: custom 1 lost source 0");
+	look.exhaust = RLDCHAR_LOOK_OFF;
+	NativeChar_LookExpect(checks, failures,
+	                      (NativeChar_ExhaustMove(&look, 0, identity, scale, add) == 1) && (NativeChar_ExhaustMove(&look, 1, identity, scale, add) == 1),
+	                      "move: off kept a source");
+	look.exhaust = RLDCHAR_LOOK_RETAIL;
+	NativeChar_LookExpect(checks, failures, (NativeChar_ExhaustMove(&look, 0, identity, scale, add) == 0) && (add[0] == 0) && (add[1] == 0) && (add[2] == 0),
+	                      "move: retail moved");
+
+	// The source of a particle: the side of the instance's local X axis.
+	memset(&particle, 0, sizeof(particle));
+	particle.axis[0].startVal = 3685;
+	NativeChar_LookExpect(checks, failures, NativeChar_ExhaustSource(&particle, identity) == 0, "source: +X is not source 0");
+	particle.axis[0].startVal = -3686;
+	NativeChar_LookExpect(checks, failures, NativeChar_ExhaustSource(&particle, identity) == 1, "source: -X is not source 1");
+	particle.axis[0].startVal = 0;
+	particle.axis[2].startVal = -3685;
+	NativeChar_LookExpect(checks, failures, NativeChar_ExhaustSource(&particle, turned) == 0, "source: turned, world -Z is not source 0");
+	particle.axis[2].startVal = 3686;
+	NativeChar_LookExpect(checks, failures, NativeChar_ExhaustSource(&particle, turned) == 1, "source: turned, world +Z is not source 1");
+
+	// The shadow: the retail quad at the driver scale gives the retail axes
+	// within 1 (50 model units x 0.8 is 159.75, retail says 160 at height
+	// 256) and its centre on the origin, at every height.
+	{
+		static const s16 retailQuad[4] = {-800, 800, -820, 1040};
+		static const s16 ownQuad[4] = {-200, 600, -500, 430};
+
+		for (h = 1; h <= 256; h++)
+		{
+			const int localX = (h * 0x28) >> 6;
+			const int localZ0 = (h * 0x29) >> 6;
+			const int localZ1 = (h * 0x34) >> 6;
+
+			NativeChar_ShadowAxes(retailQuad, 0xCCC, 0xCCC, h, axes);
+			if ((axes[0][0] != 0) || (axes[0][1] != 0) || (axes[0][2] != 0) || (axes[1][1] != 0) || (axes[1][2] != 0) || (axes[2][0] != 0) ||
+			    (axes[3][0] != 0) || (abs(axes[1][0] - localX) > 1) || (abs(axes[2][2] - localZ0) > 1) || (abs(axes[3][2] - localZ1) > 1))
+			{
+				snprintf(what, sizeof(what), "shadow: retail quad at height %d gives centre %d %d, axes %d %d %d, not 0 0, %d %d %d", h, (int)axes[0][0],
+				         (int)axes[0][2], (int)axes[1][0], (int)axes[2][2], (int)axes[3][2], localX, localZ0, localZ1);
+				NativeChar_LookExpect(checks, failures, 0, what);
+				break;
+			}
+		}
+		NativeChar_LookExpect(checks, failures, h > 256, "shadow: the retail quad left the retail axes");
+
+		// An own quad at scale 1: xMid 200, half 400, zSeam -500 + 930 * 41 / 93
+		// = -90, rear 410, front 520; on the ground a quarter of each, rounded
+		// down: 50, 100, -23, 102, 130.
+		NativeChar_ShadowAxes(ownQuad, 0x1000, 0x1000, 256, axes);
+		snprintf(what, sizeof(what), "shadow: own quad gives %d %d %d %d %d, not 50 -23 100 102 130", (int)axes[0][0], (int)axes[0][2], (int)axes[1][0],
+		         (int)axes[2][2], (int)axes[3][2]);
+		NativeChar_LookExpect(checks, failures,
+		                      (axes[0][0] == 50) && (axes[0][1] == 0) && (axes[0][2] == -23) && (axes[1][0] == 100) && (axes[2][2] == 102) &&
+		                          (axes[3][2] == 130),
+		                      what);
+	}
+}
+
+void NativeChar_LookSelfTest(int *checks, int *failures)
+{
+	const struct NativeCharFile keepFile = s_charFiles[0];
+	const int keepFiles = s_charRosterFiles;
+	const int keepAny = s_charLookAny;
+	u8 model[16];
+	s16 quad[4] = {1, 2, 3, 4};
+	s32 pos[3] = {7, 8, 9};
+
+	NativeChar_LookParseSelfTest(checks, failures);
+	NativeChar_LookUnitSelfTest(checks, failures);
+
+	// No look in the run: retail at once, nothing moved.
+	s_charLookAny = 0;
+	NativeChar_LookExpect(checks, failures, NativeChar_ModelShadow(NULL, quad) == (int)RLDCHAR_LOOK_RETAIL, "model: a shadow look for NULL");
+	NativeChar_LookExpect(checks, failures, NativeChar_ModelShadow((const struct Model *)(const void *)model, quad) == (int)RLDCHAR_LOOK_RETAIL,
+	                      "model: a shadow look without a look in the run");
+	NativeChar_LookExpect(checks, failures, (NativeChar_ExhaustDraw(NULL, &pos[0], &pos[1], &pos[2]) == 0) && (pos[0] == 7) && (pos[1] == 8) && (pos[2] == 9),
+	                      "exhaust: moved or hid without a particle");
+	NativeChar_LookExpect(checks, failures, (quad[0] == 1) && (quad[3] == 4), "model: the quad was written for retail");
+
+	// One file lent as roster entry 0: its model answers, any other does not.
+	memset(&s_charFiles[0], 0, sizeof(s_charFiles[0]));
+	s_charFiles[0].model = (struct Model *)(void *)model;
+	s_charFiles[0].look.shadow = RLDCHAR_LOOK_AUTO;
+	s_charFiles[0].look.quad[0] = -517;
+	s_charFiles[0].look.quad[1] = 517;
+	s_charFiles[0].look.quad[2] = -866;
+	s_charFiles[0].look.quad[3] = 931;
+	s_charFiles[0].look.exhaust = RLDCHAR_LOOK_OFF;
+	s_charRosterFiles = 1;
+	s_charLookAny = 1;
+	NativeChar_LookExpect(checks, failures,
+	                      (NativeChar_ModelShadow((const struct Model *)(const void *)model, quad) == (int)RLDCHAR_LOOK_AUTO) && (quad[0] == -517) &&
+	                          (quad[1] == 517) && (quad[2] == -866) && (quad[3] == 931),
+	                      "model: the lent file's auto shadow");
+	NativeChar_LookExpect(checks, failures, NativeChar_ModelShadow((const struct Model *)(const void *)&model[8], quad) == (int)RLDCHAR_LOOK_RETAIL,
+	                      "model: a shadow look for a model of no file");
+	s_charFiles[0].look.shadow = RLDCHAR_LOOK_OFF;
+	NativeChar_LookExpect(checks, failures, NativeChar_ModelShadow((const struct Model *)(const void *)model, quad) == (int)RLDCHAR_LOOK_OFF,
+	                      "model: the lent file's shadow off");
+	NativeChar_LookExpect(checks, failures, NativeChar_ModelLook((const struct Model *)(const void *)model) == &s_charFiles[0].look,
+	                      "model: the lent file's look not found");
+	{
+		s16 point[2][3] = {{1, 1, 1}, {1, 1, 1}};
+		int count = 9;
+
+		NativeChar_LookExpect(checks, failures,
+		                      (NativeChar_ModelExhaust((const struct Model *)(const void *)model, point, &count) == (int)RLDCHAR_LOOK_OFF) && (count == 9),
+		                      "model: the lent file's exhaust off");
+		s_charFiles[0].look.exhaust = RLDCHAR_LOOK_CUSTOM;
+		s_charFiles[0].look.count = 1u;
+		s_charFiles[0].look.point[0][1] = 320;
+		NativeChar_LookExpect(checks, failures,
+		                      (NativeChar_ModelExhaust((const struct Model *)(const void *)model, point, &count) == (int)RLDCHAR_LOOK_CUSTOM) && (count == 1) &&
+		                          (point[0][0] == 0) && (point[0][1] == 320) && (point[1][0] == 0),
+		                      "model: the lent file's exhaust custom 1");
+		NativeChar_LookExpect(checks, failures, NativeChar_ModelExhaust(NULL, point, &count) == (int)RLDCHAR_LOOK_RETAIL, "model: an exhaust look for NULL");
+	}
+	s_charFiles[0].look.shadow = RLDCHAR_LOOK_RETAIL;
+	s_charFiles[0].look.exhaust = RLDCHAR_LOOK_RETAIL;
+	NativeChar_LookExpect(checks, failures, NativeChar_ModelLook((const struct Model *)(const void *)model) == NULL, "model: an all-retail look found");
+
+	s_charFiles[0] = keepFile;
+	s_charRosterFiles = keepFiles;
+	s_charLookAny = keepAny;
 }
 
 // ---------------------------------------------------------------------------

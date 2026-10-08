@@ -2368,6 +2368,9 @@ int MM_NativeCharGrid_SelfTest(void)
 	// The mask of the CHRI flags and of a bound seat (platform/native_chars.c).
 	NativeChar_MaskSelfTest(&test.checks, &test.failures);
 
+	// The look of CHRI: shadow and exhaust (platform/native_chars.c).
+	NativeChar_LookSelfTest(&test.checks, &test.failures);
+
 	if (test.failures != 0)
 	{
 		printf("char grid selftest FAILED: %d of %d checks\n", test.failures, test.checks);

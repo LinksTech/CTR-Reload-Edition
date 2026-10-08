@@ -340,6 +340,59 @@ int NativeChar_ViewHidesWheels(const struct Instance *inst, const struct PushBuf
 // else 0: NULL, retail models, files without the bit and an empty roster.
 int NativeChar_ModelFullHeight(const struct Model *model);
 
+// THE LOOK (CHRI 0x24..0x3B, include/rldchar.inc RldChar_ParseLook): the
+// ground shadow and the exhaust smoke of a custom character, keyed on the
+// model like NativeChar_ModelHidesWheels - the CMDL drawing and the native
+// drawing alike, at every scale factor, with or without --native-preview
+// (the look is read with CHRI when the roster is read). Without a file
+// whose look is not retail every function below answers at its first
+// comparison and changes nothing.
+
+// game/Vehicle/VehGroundShadow.c, once per driver and frame: RLDCHAR_LOOK_RETAIL
+// (0; also NULL, retail models, an empty roster), RLDCHAR_LOOK_AUTO with
+// quad = xMin, xMax, zMin, zMax in 1/16 model units, or RLDCHAR_LOOK_OFF.
+int NativeChar_ModelShadow(const struct Model *model, s16 quad[4]);
+
+// The same file, per shadow drawn auto or left out (off) in a view: only
+// counts, for the exit line.
+void NativeChar_NoteShadow(int mode);
+
+// The four vectors of an auto shadow before the axis rotation, in the space
+// of game/Vehicle/VehGroundShadow.c (the world times 4, scaled by the height
+// factor 1..256 like the retail axes): out[0] the centre (xMid, 0, zSeam),
+// out[1] the half width (x), out[2] the rear (z, zSeam - zMin), out[3] the
+// front (z, zMax - zSeam). zSeam splits the quad 41 : 52 like the retail
+// axes. scaleX, scaleZ: the instance scale (0x1000 = 1). Pure.
+void NativeChar_ShadowAxes(const s16 quad[4], int scaleX, int scaleZ, int height, s16 out[4][3]);
+
+// game/Particle.c, Particle_RenderList, per particle in the driver-local
+// block once the instance position is added (positions in the world times
+// 4): for the exhaust of a driver whose model has a look (own instance,
+// driverID -1, icon group 1, 7 or 8) it moves the drawn position to the own
+// point (exhaust custom) and answers 0, or answers 1 = leave the quad out of
+// the ordering table (exhaust off, or custom with one point and a particle
+// of retail source 1). Every other particle: 0, nothing moved. Only the
+// DRAWING changes; the particle itself, its birth and the random numbers stay
+// (game/Vehicle/VehEmitter.c is not touched).
+struct Particle;
+int NativeChar_ExhaustDraw(const struct Particle *particle, s32 *posX, s32 *posY, s32 *posZ);
+
+// game/Vehicle/VehTurbo.c, per turbo tick: RLDCHAR_LOOK_RETAIL (0; also NULL,
+// retail models, an empty roster), RLDCHAR_LOOK_CUSTOM with *count points
+// (1/16 model units; the turbo flames sit exactly at them, the second flame
+// is hidden with one point), or RLDCHAR_LOOK_OFF (both flames hidden).
+int NativeChar_ModelExhaust(const struct Model *model, s16 point[2][3], int *count);
+
+// The same, per tick: flames placed at own points and flames hidden while
+// retail would show them. Only counts, for the exit line.
+void NativeChar_NoteTurboFlames(int moved, int hidden);
+
+// The look cases of RldChar_ParseLook, the unit probes against the retail
+// constants and the pure helpers above, without data or window: adds to
+// *checks and *failures, one line per failure. Part of --char-grid-selftest
+// (MM_NativeCharGrid_SelfTest).
+void NativeChar_LookSelfTest(int *checks, int *failures);
+
 // Right after VehBirth_SetConsts on the birth path: one line "drive values"
 // with the values just written, only for a bound seat.
 void NativeChar_NoteDriveValues(const struct Driver *d, int seat);

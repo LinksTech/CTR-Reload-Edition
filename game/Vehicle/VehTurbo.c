@@ -1,5 +1,12 @@
 #include <common.h>
 
+// From platform/native_chars.c (include/platform/native_chars.h, word for
+// word): the exhaust of a custom character with a look (CHRI), keyed on the
+// model - 0 retail (every retail model, every run without a look), 1 custom
+// with count points (1/16 model units), 2 off; and a counter for the exit line.
+int NativeChar_ModelExhaust(const struct Model *model, s16 point[2][3], int *count);
+void NativeChar_NoteTurboFlames(int moved, int hidden);
+
 enum
 {
 	TURBO_FIRE_SIZE_MIN = 4,
@@ -181,9 +188,25 @@ void VehTurbo_ThTick(struct Thread *turboThread)
 	instance->matrix.m[2][1] = (s16)(instanceDriver->matrix.m[2][1] * fireSize >> TURBO_FIRE_MATRIX_SCALE_SHIFT);
 	instance->matrix.m[2][2] = (s16)(instanceDriver->matrix.m[2][2] * fireSize >> TURBO_FIRE_MATRIX_SCALE_SHIFT);
 
-	VehTurbo_TransformOffset(instanceDriver, instanceDriver->scale.x * TURBO_FIRE_LEFT_X_NUMERATOR >> TURBO_FIRE_LEFT_X_SHIFT,
-	                         instanceDriver->scale.y * TURBO_FIRE_Y_NUMERATOR >> TURBO_FIRE_Y_SHIFT,
-	                         instanceDriver->scale.z * TURBO_FIRE_Z_NUMERATOR >> TURBO_FIRE_Z_SHIFT, &instance->matrix.t[0]);
+	// The look of a custom character (CHRI): with exhaust custom the flames
+	// sit exactly at its points, (scale * point) >> 16 in the world - the
+	// retail expressions are the same formula on the retail points (288, 768,
+	// -832) and (-288, 768, -832). No look: the retail code below as it was.
+	s16 lookPoint[2][3];
+	int lookCount = 0;
+	int lookExhaust = NativeChar_ModelExhaust(instanceDriver->model, lookPoint, &lookCount);
+
+	if (lookExhaust == 1)
+	{
+		VehTurbo_TransformOffset(instanceDriver, (s16)((instanceDriver->scale.x * lookPoint[0][0]) >> 16), (s16)((instanceDriver->scale.y * lookPoint[0][1]) >> 16),
+		                         (s16)((instanceDriver->scale.z * lookPoint[0][2]) >> 16), &instance->matrix.t[0]);
+	}
+	else
+	{
+		VehTurbo_TransformOffset(instanceDriver, instanceDriver->scale.x * TURBO_FIRE_LEFT_X_NUMERATOR >> TURBO_FIRE_LEFT_X_SHIFT,
+		                         instanceDriver->scale.y * TURBO_FIRE_Y_NUMERATOR >> TURBO_FIRE_Y_SHIFT,
+		                         instanceDriver->scale.z * TURBO_FIRE_Z_NUMERATOR >> TURBO_FIRE_Z_SHIFT, &instance->matrix.t[0]);
+	}
 
 	// matrix of second turbo instance, negate X axis
 	turbo->inst->matrix.m[0][0] = (s16)(-(int)instanceDriver->matrix.m[0][0] * fireSize >> TURBO_FIRE_MATRIX_SCALE_SHIFT);
@@ -196,9 +219,17 @@ void VehTurbo_ThTick(struct Thread *turboThread)
 	turbo->inst->matrix.m[2][1] = (s16)(instanceDriver->matrix.m[2][1] * fireSize >> TURBO_FIRE_MATRIX_SCALE_SHIFT);
 	turbo->inst->matrix.m[2][2] = (s16)(instanceDriver->matrix.m[2][2] * fireSize >> TURBO_FIRE_MATRIX_SCALE_SHIFT);
 
-	VehTurbo_TransformOffset(instanceDriver, instanceDriver->scale.x * TURBO_FIRE_RIGHT_X_NUMERATOR >> TURBO_FIRE_RIGHT_X_SHIFT,
-	                         instanceDriver->scale.y * TURBO_FIRE_Y_NUMERATOR >> TURBO_FIRE_Y_SHIFT,
-	                         instanceDriver->scale.z * TURBO_FIRE_Z_NUMERATOR >> TURBO_FIRE_Z_SHIFT, &turbo->inst->matrix.t[0]);
+	if ((lookExhaust == 1) && (lookCount == 2))
+	{
+		VehTurbo_TransformOffset(instanceDriver, (s16)((instanceDriver->scale.x * lookPoint[1][0]) >> 16), (s16)((instanceDriver->scale.y * lookPoint[1][1]) >> 16),
+		                         (s16)((instanceDriver->scale.z * lookPoint[1][2]) >> 16), &turbo->inst->matrix.t[0]);
+	}
+	else
+	{
+		VehTurbo_TransformOffset(instanceDriver, instanceDriver->scale.x * TURBO_FIRE_RIGHT_X_NUMERATOR >> TURBO_FIRE_RIGHT_X_SHIFT,
+		                         instanceDriver->scale.y * TURBO_FIRE_Y_NUMERATOR >> TURBO_FIRE_Y_SHIFT,
+		                         instanceDriver->scale.z * TURBO_FIRE_Z_NUMERATOR >> TURBO_FIRE_Z_SHIFT, &turbo->inst->matrix.t[0]);
+	}
 
 	// decrease turbo visibility cooldown by elapsed milliseconds per frame, ~32
 	s16 elapsedTime = turbo->fireVisibilityCooldown - gGT->elapsedTimeMS;
@@ -215,6 +246,24 @@ void VehTurbo_ThTick(struct Thread *turboThread)
 		// make fire visible now that there's no cooldown
 		instance->flags &= ~HIDE_MODEL;
 		turbo->inst->flags &= ~HIDE_MODEL;
+	}
+
+	// The look: exhaust off hides both flames, custom with one point the
+	// second. Only the drawing reads these flags (game/native_flyin.c hides
+	// them the same way); the turbo itself, its sound and its timers run on.
+	if (lookExhaust == 2)
+	{
+		instance->flags |= HIDE_MODEL;
+		turbo->inst->flags |= HIDE_MODEL;
+		NativeChar_NoteTurboFlames(0, (turbo->fireVisibilityCooldown == 0) ? 2 : 0);
+	}
+	else if (lookExhaust == 1)
+	{
+		if (lookCount == 1)
+		{
+			turbo->inst->flags |= HIDE_MODEL;
+		}
+		NativeChar_NoteTurboFlames((turbo->fireVisibilityCooldown == 0) ? lookCount : 0, ((turbo->fireVisibilityCooldown == 0) && (lookCount == 1)) ? 1 : 0);
 	}
 
 	if (instance->alphaScale < TURBO_ALPHA_RUMBLE_THRESHOLD)

@@ -372,6 +372,13 @@ for any unknown chunk; everything else about them costs only the native part
 | 0x18 | u32 | charVersion | for humans; the CMDL hash, not this number, is meant to tell versions apart |
 | 0x1C | u32 | flags | only when fixedSize >= 0x20, else 0; bit 0 (`RLDCHAR_FLAG_NO_WHEELS`): the game draws no kart wheels for this driver (tyre dust and skid marks stay: they are effects at the wheel points, not wheels); bits 1-2 (`RLDCHAR_FLAG_MASK_BITS`): the mask the driver wears - 0 like the template, 1 Aku Aku, 2 Uka Uka, 3 reserved (read as 0, no finding); bit 3 (`RLDCHAR_FLAG_MAP_COLOR`): the minimap marker has the color at 0x20; bit 4 (`RLDCHAR_FLAG_FULL_HEIGHT`): the models of the file (CMDL and CMSK) use odd heights too - the game draws them with the vertex mask 0xfffcffff instead of the retail 0xfff8ffff, which clears bit 0 of pos.y + byte, so the Y bytes can take all 256 values instead of 128 even ones; the file keeps pos.y even in every frame (the bounding box still clears bit 0 of pos.y and spans 255 from there), the load line adds `, full height`, and a game from before the bit draws an odd height one value lower; further bits are reserved |
 | 0x20 | u8[4] | mapColor | only when fixedSize >= 0x24, else absent: red, green, blue of the minimap marker, then 0; used only with bit 3 set (bit 3 without the field, or the field without bit 3: the template's color, no finding) |
+| 0x24 | u8 | shadowMode | the look, only when fixedSize >= 0x3C, else retail: 0 retail, 1 auto (the quad at 0x28), 2 off; any other value is read as retail |
+| 0x25 | u8 | exhaustMode | 0 retail, 1 custom (the points at 0x30), 2 off; any other value is read as retail |
+| 0x26 | u8 | exhaustCount | 1 or 2 with custom, else 0; custom with 0 or more than 2 is read as retail |
+| 0x27 | u8 | reserved | written 0, not checked |
+| 0x28 | s16[4] | shadowQuad | xMin, xMax, zMin, zMax in 1/16 game units; only with shadow auto, else 0 |
+| 0x30 | s16[3] | exhaust0 | x, y, z in 1/16 game units: the exhaust in place of retail source 0 (+X, the driver's left); only with exhaust custom, else 0 |
+| 0x36 | s16[3] | exhaust1 | x, y, z in 1/16 game units: in place of retail source 1 (-X, the right); only with custom and count 2, else 0 |
 | fixedSize | u32 | stringCount | then per string: u32 length, bytes |
 | | | string 0 | author, at most 64 bytes; "" when absent |
 
@@ -392,7 +399,8 @@ for any unknown chunk; everything else about them costs only the native part
 - A reader skips numeric bytes beyond the fields it knows and strings beyond the
   first. A reader from before flags skips it, draws the wheels and gives the
   driver the template's mask; a reader from before mapColor shows the
-  template's minimap color.
+  template's minimap color; a reader from before the look draws the retail
+  shadow and exhaust.
 - Flag bits a reader does not know are ignored: they are no finding and never
   refuse the file. A reader from before the mask field ignores bits 1-2 and
   gives the driver the template's mask.
@@ -418,6 +426,30 @@ for any unknown chunk; everything else about them costs only the native part
   Studio's field "Minimap colour" (Choose... / Like the template) starts at
   the template's colour (808080 for Fake Crash: the marker as drawn) and
   passes `--map-color` only when a colour is chosen.
+
+The look (`RldChar_ParseLook`, one function for packer and reader): the
+ground shadow and the exhaust of the driver, fitted to the model.
+
+- Space: game units of the model (CMDL without the instance scale, the same
+  units as CNET; Blender 1 m = 64), origin = the model's origin, +X the
+  driver's left seen from behind, +Y up, +Z forward; stored in 1/16 game
+  units. CMDL and CNET share the origin, so the values mean the same for
+  the drawn CMDL and the native model. Retail in these units: the exhaust
+  smoke at (+-288, 896, -896) (18, 56, -56 game units), the turbo flames at
+  (+-288, 768, -832), the shadow quad x -800..800, z -820..1040.
+- NO RULE: the look never refuses a file, whatever it holds. A value outside
+  the limits only makes that one effect retail, with one load line
+  `[CTR Char] look <file>: <why> - retail` (the first effect that falls
+  back, the shadow before the exhaust):
+  - shadow auto: every value within -4096..4096 (256 game units), xMin < xMax
+    and zMin < zMax, each side at least 16 (1 game unit);
+  - exhaust custom: count 1 or 2; per used point x and z within -4096..4096,
+    y within -256..4096;
+  - an unknown mode is read as retail. The reserved byte, the count without
+    custom and every unused value are not checked.
+- A file from before the field (fixedSize below 0x3C) is retail/retail -
+  also with the wheels hidden.
+- What the game draws: see the line "look" under "What the game does".
 
 Name rule (`RldChar_NameValid`, one function for packer and reader):
 
@@ -1581,7 +1613,7 @@ switch, a built `.rldchar` has the same bytes.
 | When | What |
 |---|---|
 | start | every `*.rldchar` in the `characters` folder next to the game (the extension in any case, subfolders skipped): the names are sorted first, then the files are read in that order |
-| per file | envelope (`Rld_OpenAs`), the CMDL size before any memory is taken, CHRI and CMDL with their hashes, `RldChar_ParseInfo`, `RldChar_CheckModel`, then the pointer map, then CICN when present (`RldChar_CheckIcon`; a broken CICN costs only the portrait), then CMSK when present (`RldChar_CheckMask`; a broken CMSK costs only the own mask), then CVOI when present (`RldChar_CheckVoices`; a broken CVOI costs only the voices). CPRM is not read. CNET and CTXT are not read at start, with or without `--native-preview` |
+| per file | envelope (`Rld_OpenAs`), the CMDL size before any memory is taken, CHRI and CMDL with their hashes, `RldChar_ParseInfo` and `RldChar_ParseLook`, `RldChar_CheckModel`, then the pointer map, then CICN when present (`RldChar_CheckIcon`; a broken CICN costs only the portrait), then CMSK when present (`RldChar_CheckMask`; a broken CMSK costs only the own mask), then CVOI when present (`RldChar_CheckVoices`; a broken CVOI costs only the voices). CPRM is not read. CNET and CTXT are not read at start, with or without `--native-preview` |
 | a bound seat, only with `--dev --native-preview` (preview) | CNET and CTXT read again from the file and checked (`RldChar_ReadNative`), held in host memory until the next load, one line `native model ready`, `native model refused (<rule>), using CMDL` or `native model none`; nothing drawn yet (see "Preview, planned: CNET and CTXT") |
 | a broken file | skipped with one log line `[CTR Char] REFUSED <file>: <kind> (<rule>) <detail>`; the game starts anyway |
 | the first 32 valid files | a tile each in the one-player ARCADE driver select, after the retail drivers (not for CRYSTAL and CTR under NITRO-PIT); a further valid file gets the log line `NO ID` and no tile |
@@ -1589,6 +1621,7 @@ switch, a built `.rldchar` has the same bytes.
 | draw memory | the game adds the draw memory of custom models on top of the frame's (`NativeChar_DrawReserve`), twice (the mirror floor draws a model again): on the main menu that of the largest model of the roster, in a race that of seat 0 drawn as an invisible driver (60 bytes a triangle without texture, 64 with one, instead of 28 and 40) plus its own mask; a race with a retail driver and every other menu load add nothing. One line per load when it adds something: `[CTR Char] draw memory: <n> bytes + <m> for custom models (...) = <sum>`. At start one line per file, `[CTR Char] draw bytes <file>: model <n>, own mask <m>`, and the memory window grows for it: `[CTR Native] characters/: mempack extra +<n> bytes for the draw memory of custom models, <m> in force`. Without a loaded file nothing of this changes |
 | minimap | with `RLDCHAR_FLAG_MAP_COLOR` the bound seat's marker on the minimap has the color at 0x20, else the template's (808080 for Fake Crash: the marker as drawn). The color tints the marker: 80 per channel is neutral, higher values are brighter. The player's white blink stays |
 | wheels | with `RLDCHAR_FLAG_NO_WHEELS` set in CHRI the game draws no kart wheels (and no wheel reflections) for the custom model - tyre dust and skid marks stay, they are effects at the wheel points, not wheels - and the load line `[CTR Char] loaded <file>: ...` adds `, wheels hidden` after the byte count; without the bit the wheels are drawn as for a retail driver |
+| look | the ground shadow and the exhaust smoke of the custom model follow the look of CHRI (0x24..0x3B). The key is the model of the instance: the same for a CMDL driver and a natively drawn one, at every scale factor, with or without `--native-preview` (the look is read with CHRI at start). Shadow auto: the retail shadow (the same two icons, four quads, blend, intensity, height factor and depth rule) on the file's quad - the 3x3 grid runs x over xMin, middle, xMax and z over zMin, the seam, zMax, with the seam at 41/93 of the length (the retail rear : front); scaled with the instance scale, which the retail shadow ignores. Shadow off: no shadow. Exhaust custom: each smoke quad is drawn moved by (point - retail source) x the instance scale, turned with the driver; with one point the quads of retail source 1 are left out. Exhaust off: no smoke quads. Only the DRAWING changes: the smoke is born where retail births it, with the same random numbers (the underwater bubbles feed the random number of the item roll), so a race runs the same with and without a look. The turbo flames follow the exhaust: custom puts flame 1 exactly at point 0 and the mirrored flame 2 at point 1 (with one point flame 2 is hidden), off hides both; the turbo itself, its sound and its timers stay. A driver without a look - every retail driver, every file from before the field - is drawn by the unchanged retail code. The load line adds `, shadow auto` or `, shadow off` and `, exhaust custom <n>` or `, exhaust off` after the flags, only for what is not retail; a look that falls back logs `[CTR Char] look <file>: <why> - retail`. With `--dev`, when a file had a look, the exit adds `[CTR Char] at exit: look shadows auto <n>, off <n>; exhaust quads moved <n>, hidden <n>; turbo flames moved <n>, hidden <n>` (per driver or particle and view; flames per tick) |
 | mask | CHRI flags bits 1-2 choose the mask the custom driver wears: Aku Aku or Uka Uka for the mask item and the rescue after a fall, with that mask's model, beam, sound and music, the mask's wrong-way voice in a one-player race and the mask's icon in the HUD weapon slot. 0 (or 3) keeps the template's mask: Aku Aku for Crash, Coco, Polar, Pura and Penta, Uka Uka for every other template, Fake Crash included; the HUD icon then follows the retail icon table, in which Penta shows the Uka Uka icon. When the race has not loaded the chosen mask's model or beam, the template's mask stays. With Aku Aku or Uka Uka chosen the load line ends in `, mask aku` or `, mask uka` (after `, wheels hidden` when both are set); with 0 or 3 nothing is added. The first mask born for the seat in each load logs `[CTR Char] mask seat 0: <aku\|uka> from the <file\|template> (model 0x.., beam 0x.., sound 0x.., song <aku\|uka\|none>)`; a chosen mask that is not loaded logs `[CTR Char] mask seat 0: <aku\|uka> wanted, not loaded - the template's mask stays` once per load |
 
 - The model's frame counts must match those of the template's retail model;
@@ -1615,6 +1648,9 @@ switch, a built `.rldchar` has the same bytes.
 | `RLDCHAR_MASK_BYTES_MAX` | 16 KiB of CMSK (CMSK-3) |
 | `RLDCHAR_MASK_DRAW_BYTES_MAX` | 11200 bytes of draw memory of the own mask (400 x 0x1C: 400 triangles) |
 | `RLDCHAR_LIMIT_CVOI` | 6 MiB of CVOI (the envelope bound) |
+| `RLDCHAR_LOOK_COORD_MAX` | 4096 (256 game units): every value of the look, in 1/16 game units |
+| `RLDCHAR_LOOK_Y_MIN` | -256 (16 game units below the origin): the lowest exhaust point |
+| `RLDCHAR_LOOK_EDGE_MIN` | 16 (1 game unit): the shortest side of the shadow quad |
 | `RLDCHAR_VOICE_BYTES_MAX` | 5293176 bytes: the largest CVOI the rules allow |
 | `RLDCHAR_VOICE_RATE` | 22050 Hz |
 | `RLDCHAR_VOICE_CLIPS_MAX`, `RLDCHAR_VOICE_PER_EVENT` | 40 clips, 4 per event |
