@@ -3,12 +3,14 @@
 // ===========================================================================
 // GRAPHICS PAGE IN THE OPTIONS BOX (Beta 0).
 //
-// Exactly four rows, in English:
-//   DISPLAY MODE   FULLSCREEN / WINDOWED          at once (between two frames)
-//   ASPECT RATIO   AUTO / 4:3 / 16:9 / 21:9       at the next load of a level
-//   RESOLUTION     NATIVE / 1X ... 8X             at once
-//   ANTI-ALIASING  OFF / 2X / 4X                  at the next frame end
+// Exactly five rows, in English:
+//   DISPLAY MODE     FULLSCREEN / WINDOWED        at once (between two frames)
+//   ASPECT RATIO     AUTO / 4:3 / 16:9 / 21:9     at the next load of a level
+//   RESOLUTION       NATIVE / 1X ... 8X           at once
+//   ANTI-ALIASING    OFF / 2X / 4X                at the next frame end
+//   DRIVER TEXTURES  COMING SOON                  locked (see below)
 // Up/down chooses the row, left/right the value, triangle goes back.
+// The cursor skips a locked row.
 //
 // A SCREEN OF ITS OWN, NOT A BOX OF THE CHAIN. "DISPLAY MODE  FULLSCREEN" is
 // 312 points wide in FONT_SMALL; the chain allows 219 (otherwise the
@@ -47,12 +49,18 @@ void Platform_GraphicsSetMsaa(int samples);
 // A title route that MM_Title.c does not know (0..5 are retail).
 #define NATIVE_GRAPHICS_ROUTE 0x40
 
-#define NATIVE_GRAPHICS_ROWS         4
+#define NATIVE_GRAPHICS_ROWS         5
 #define NATIVE_GRAPHICS_ROW_Y        58
 #define NATIVE_GRAPHICS_ROW_PITCH    18
 #define NATIVE_GRAPHICS_LABEL_X      76
 #define NATIVE_GRAPHICS_VALUE_X      436
-#define NATIVE_GRAPHICS_HINT_Y       138
+// Everything below the rows moves with the number of rows: the first hint
+// starts 8 below the pitch of the last row, the background ends 27 below it.
+#define NATIVE_GRAPHICS_HINT_Y       (NATIVE_GRAPHICS_ROW_Y + (NATIVE_GRAPHICS_ROWS * NATIVE_GRAPHICS_ROW_PITCH) + 8)
+#define NATIVE_GRAPHICS_BACK_Y       20
+#define NATIVE_GRAPHICS_BACK_BOTTOM  (NATIVE_GRAPHICS_HINT_Y + 27)
+// The lock style of the grey rows of the boxes (0x17, RECTMENU.c:101).
+#define NATIVE_GRAPHICS_LOCKED_STYLE GRAY
 // Fullscreen changes between two frames; until the window reports the new state,
 // the row accepts no second change (like DebugMenu.c:381).
 #define NATIVE_GRAPHICS_MODE_COOLDOWN 45
@@ -63,15 +71,44 @@ enum
 	NATIVE_GRAPHICS_ASPECT,
 	NATIVE_GRAPHICS_RESOLUTION,
 	NATIVE_GRAPHICS_AA,
+	NATIVE_GRAPHICS_DRIVER_TEXTURES,
 };
 
-global_variable const char *const s_nativeGraphicsLabels[NATIVE_GRAPHICS_ROWS] = {"DISPLAY MODE", "ASPECT RATIO", "RESOLUTION", "ANTI-ALIASING"};
+global_variable const char *const s_nativeGraphicsLabels[NATIVE_GRAPHICS_ROWS] = {"DISPLAY MODE", "ASPECT RATIO", "RESOLUTION", "ANTI-ALIASING",
+                                                                                  "DRIVER TEXTURES"};
 global_variable const char *const s_nativeGraphicsAspects[4] = {"AUTO", "4:3", "16:9", "21:9"};
 
 global_variable int s_nativeGraphicsRow = 0;
 global_variable int s_nativeGraphicsCooldown = 0;
 
 internal void NativeGraphics_Proc(struct RectMenu *menu);
+
+// ---------------------------------------------------------------------------
+// DRIVER TEXTURES: the filter setting for the textures of native drivers
+// (PIXELATED / FILTERED), a setting of its own next to the PSX filtering.
+// Until the native driver is released for players, the row stands locked:
+// grey, "COMING SOON", the cursor skips it, nothing is set and nothing is
+// saved. Everything the release changes on this page is in this block.
+// ---------------------------------------------------------------------------
+#define NATIVE_GRAPHICS_DRIVER_TEXTURES_LOCKED 1
+
+internal const char *NativeGraphics_DriverTexturesValue(void)
+{
+	return "COMING SOON";
+}
+
+// Left (-1) or right (+1); 0 if nothing changes.
+internal int NativeGraphics_DriverTexturesChange(int dir)
+{
+	(void)dir;
+	return 0;
+}
+
+internal int NativeGraphics_RowLocked(int row)
+{
+	return (row == NATIVE_GRAPHICS_DRIVER_TEXTURES) && NATIVE_GRAPHICS_DRIVER_TEXTURES_LOCKED;
+}
+// ---------------------------------------------------------------------------
 
 global_variable struct RectMenu s_nativeGraphicsMenu = {
     .stringIndexTitle = RECTMENU_STRING_NONE,
@@ -134,6 +171,9 @@ internal const char *NativeGraphics_Value(int row, char *text, int size)
 		snprintf(text, size, "%dX", value);
 		return text;
 
+	case NATIVE_GRAPHICS_DRIVER_TEXTURES:
+		return NativeGraphics_DriverTexturesValue();
+
 	default:
 		value = Platform_GetMsaaRequested();
 		return (value >= 4) ? "4X" : ((value >= 2) ? "2X" : "OFF");
@@ -188,6 +228,9 @@ internal int NativeGraphics_Change(int row, int dir)
 		return 1;
 	}
 
+	case NATIVE_GRAPHICS_DRIVER_TEXTURES:
+		return NativeGraphics_DriverTexturesChange(dir);
+
 	default:
 	{
 		static const int levels[3] = {1, 2, 4};
@@ -224,9 +267,12 @@ internal void NativeGraphics_Draw(void)
 	for (row = 0; row < NATIVE_GRAPHICS_ROWS; row++)
 	{
 		const int y = NATIVE_GRAPHICS_ROW_Y + (row * NATIVE_GRAPHICS_ROW_PITCH);
+		const int locked = NativeGraphics_RowLocked(row);
 
-		DecalFont_DrawLine((char *)s_nativeGraphicsLabels[row], NATIVE_GRAPHICS_LABEL_X, y, FONT_SMALL, ORANGE);
-		DecalFont_DrawLine((char *)NativeGraphics_Value(row, text, sizeof(text)), NATIVE_GRAPHICS_VALUE_X, y, FONT_SMALL, (JUSTIFY_RIGHT | WHITE));
+		DecalFont_DrawLine((char *)s_nativeGraphicsLabels[row], NATIVE_GRAPHICS_LABEL_X, y, FONT_SMALL,
+		                   (locked ? NATIVE_GRAPHICS_LOCKED_STYLE : ORANGE));
+		DecalFont_DrawLine((char *)NativeGraphics_Value(row, text, sizeof(text)), NATIVE_GRAPHICS_VALUE_X, y, FONT_SMALL,
+		                   (JUSTIFY_RIGHT | (locked ? NATIVE_GRAPHICS_LOCKED_STYLE : WHITE)));
 	}
 
 	if (Platform_GetAspectPending() >= 0)
@@ -254,10 +300,26 @@ internal void NativeGraphics_Draw(void)
 	}
 
 	{
-		RECT background = {.x = 56, .y = 20, .w = 400, .h = 145};
+		RECT background = {.x = 56, .y = NATIVE_GRAPHICS_BACK_Y, .w = 400, .h = NATIVE_GRAPHICS_BACK_BOTTOM - NATIVE_GRAPHICS_BACK_Y};
 
 		RECTMENU_DrawInnerRect(&background, 4, ot);
 	}
+}
+
+// Up (-1) or down (+1) from a row, around the ends, over locked rows.
+internal int NativeGraphics_NextRow(int row, int dir)
+{
+	int i;
+
+	for (i = 0; i < NATIVE_GRAPHICS_ROWS; i++)
+	{
+		row = (row + NATIVE_GRAPHICS_ROWS + dir) % NATIVE_GRAPHICS_ROWS;
+		if (!NativeGraphics_RowLocked(row))
+		{
+			break;
+		}
+	}
+	return row;
 }
 
 // DISABLE_INPUT_ALLOW_FUNCPTRS: the proc runs every frame, reads the keys
@@ -272,12 +334,12 @@ internal void NativeGraphics_Proc(struct RectMenu *menu)
 	{
 		if ((tapped & BTN_UP) != 0)
 		{
-			s_nativeGraphicsRow = (s_nativeGraphicsRow + NATIVE_GRAPHICS_ROWS - 1) % NATIVE_GRAPHICS_ROWS;
+			s_nativeGraphicsRow = NativeGraphics_NextRow(s_nativeGraphicsRow, -1);
 			OtherFX_Play(0, 1);
 		}
 		else if ((tapped & BTN_DOWN) != 0)
 		{
-			s_nativeGraphicsRow = (s_nativeGraphicsRow + 1) % NATIVE_GRAPHICS_ROWS;
+			s_nativeGraphicsRow = NativeGraphics_NextRow(s_nativeGraphicsRow, 1);
 			OtherFX_Play(0, 1);
 		}
 		else if ((tapped & (BTN_LEFT | BTN_RIGHT)) != 0)
