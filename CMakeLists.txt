@@ -411,6 +411,35 @@ if(BUILD_TESTING)
         PASS_REGULAR_EXPRESSION "char grid selftest passed: [0-9]+ checks, 0 failures"
     )
 
+    # VALUES ARE REFUSED, NEVER CUT (main.c, NativeArgs_ValueFits). A path one
+    # character too long for --shot-name and a --shot list with one entry too
+    # many end the start in the switch gate, before the GTE self-test behind
+    # them can run; a list of 128 entries and 767 characters - past the 511 at
+    # which it was cut before - passes the gate. No window, no data.
+    string(REPEAT "a" 1024 CTR_TEST_LONG_NAME)
+    set(CTR_TEST_SHOTS_128 "10000")
+    foreach(CTR_TEST_SHOT RANGE 10001 10127)
+        string(APPEND CTR_TEST_SHOTS_128 ",${CTR_TEST_SHOT}")
+    endforeach()
+    add_test(NAME args_refuse_long_shot_name
+        COMMAND $<TARGET_FILE:ctr_native> --dev --shot-name ${CTR_TEST_LONG_NAME} --gte-selftest)
+    set_tests_properties(args_refuse_long_shot_name PROPERTIES
+        PASS_REGULAR_EXPRESSION "switch --shot-name takes at most 1023 characters, got 1024 - refused, never cut"
+        FAIL_REGULAR_EXPRESSION "selftest passed"
+    )
+    add_test(NAME args_refuse_shot_list_129
+        COMMAND $<TARGET_FILE:ctr_native> --dev --shot ${CTR_TEST_SHOTS_128},10128 --gte-selftest)
+    set_tests_properties(args_refuse_shot_list_129 PROPERTIES
+        PASS_REGULAR_EXPRESSION "switch --shot takes at most 128 entries, got 129 - refused, never cut"
+        FAIL_REGULAR_EXPRESSION "selftest passed"
+    )
+    add_test(NAME args_accept_shot_list_128
+        COMMAND $<TARGET_FILE:ctr_native> --dev --shot ${CTR_TEST_SHOTS_128} --gte-selftest)
+    set_tests_properties(args_accept_shot_list_128 PROPERTIES
+        PASS_REGULAR_EXPRESSION "selftest passed: [0-9]+ operations, 0 differences"
+        FAIL_REGULAR_EXPRESSION "refused"
+    )
+
     # FOREIGN INPUT, REFUSED CLEANLY. A container (.rldtrack) and a disc image
     # come from strangers: every length, offset and index in them is checked
     # before it is used. These two tests feed the game made-up files - good-*

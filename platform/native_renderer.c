@@ -3974,6 +3974,9 @@ void NativeRenderer_SaveVRAM(const char *outputFileName, int x, int y, int width
 	FILE *fp = fopen(outputFileName, "wb");
 	if (fp == NULL)
 	{
+		// A missing folder, or a path past MAX_PATH without long paths on
+		// Windows: said, so that the dump line after it is not taken for a file.
+		Platform_LogWarn("[CTR Dump] %s: NOT WRITTEN, the file does not open\n", outputFileName);
 		return;
 	}
 
