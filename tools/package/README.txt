@@ -76,7 +76,19 @@ Graphics: OPTIONS -> GRAPHICS. Up/down picks a row, left/right changes it.
   ASPECT RATIO   Auto / 4:3 / 16:9 / 21:9       (from the next race on)
   RESOLUTION     Native / 1x ... 8x             (right away)
   ANTI-ALIASING  Off / 2x / 4x                  (right away)
+  NATIVE DRIVERS Off / Preview                  (from the next start)
 The choices are saved in ctr-settings.cfg and are there after a restart.
+
+NATIVE DRIVERS is a preview and Off by default. Preview draws a custom
+character that was built with a native model (Reload Studio, tab Extras,
+card Import, "Native model") with that model and its textures, and with its
+own wheels when it has them (card Wheels). It does so at a RESOLUTION of 2x
+or more (Native counts when the window is at least twice the game's size);
+at 1x, and for every other driver, the game draws as before. The choice
+applies at the next start; until then the page shows "NATIVE DRIVERS: AFTER
+RESTART". To turn it off, set it to Off on the page and restart. If the game
+does not start after choosing Preview, delete the line
+"video nativedrivers 1" from ctr-settings.cfg (next to ctr_native.exe).
 
 
 3. CUSTOM TRACKS AND CHARACTERS IN THE GAME
@@ -87,7 +99,7 @@ tracks are under ARCADE -> NITRO-PIT:
   RACE         single race on a custom track (with bots if it has nav paths);
                below the laps the MODE box: RACE or TIME TRIAL
   CUP          custom cups from tracks\cups.txt (made on the Cups page)
-  TIME TRIAL   grey, "COMING IN BETA 2" - the time trial is under RACE, MODE
+  TIME TRIAL   grey, "COMING SOON" - the time trial is under RACE, MODE
   CRYSTAL      crystal challenge: collect every crystal in 3:00
   CTR          CTR challenge: finish 1st and collect C, T and R
 
@@ -177,7 +189,7 @@ narrow window the sidebar shows only its icons.
               Shown in the game's track list.
   Modes       One box per mode. A mode your track has the data for is ticked
               and says "Playable". A mode without data is grey and says what
-              is missing. Time Trial and Battle say "Coming soon in Beta 2".
+              is missing. Time Trial and Battle say "Coming soon".
   Sound       "Use the music in the folder", and under "Advanced": reverb,
               how fast the bots drive (like an original track), and the
               background sound.
@@ -286,8 +298,9 @@ Tab 1 Model
               with more than four corners are split into triangles; lines,
               points and curves are left out. A broken OBJ (a number that is
               none, a corner that does not exist, no faces) is refused with
-              the line it found it in. Poses and wheels of your own (tab
-              Extras) are read from PLY only for now.
+              the line it found it in. Poses of your own (tab Extras) are
+              read from PLY only for now; a wheel model (card Wheels) may be
+              an OBJ or a PLY.
               Textures folder (an OBJ that missed a texture, or with a
               folder set): a folder where rldpack looks
               first for a texture that is not at the path the material file
@@ -481,10 +494,29 @@ Tab 5 Extras
               colour. "Texture modulation (PS1)" and "Plain color" choose one
               of the two for every model ("--vertex-colors modulate|color" on
               the command line; Auto passes nothing).
-  Wheels, Animations
-              Wheels and poses of your own. Their fields are marked "Coming
-              soon" and greyed out; nothing of them is written into a
-              character yet.
+              Native model (an OBJ only, marked "Preview feature"): tick it
+              to write the OBJ's own mesh, UVs and textures into the
+              character beside the classic model. It needs "Show kart
+              wheels" off or a wheel model (card Wheels). The game draws it
+              with NATIVE DRIVERS set to Preview (OPTIONS -> GRAPHICS);
+              otherwise it draws the classic model as before.
+  Wheels      Wheels of your own on the native model (marked "Preview
+              feature"). Wheel model: an OBJ (with its MTL file and one
+              texture of at most 1024 x 1024) or a PLY of one wheel - axle
+              along X, outer side toward +X, in the axes of the model (Up
+              and Forward on the card Import), like the body; at most 1024
+              triangles, never reduced. A texture that is there but cannot
+              be read or is too large stops the build; a missing one leaves
+              the wheel in its colour. The right wheels are its mirror
+              image. Wheel size:
+              100 % is the game's wheel; the bottom stays on the ground.
+              "Animate in the preview" spins and steers them in the
+              preview. The wheels are built with "Native model" ticked and
+              "Show kart wheels" on; the classic model keeps the game's
+              wheels as the fallback. The line below the options says
+              whether your wheels are used.
+  Animations  Poses of your own. Its fields are marked "Coming soon" and
+              greyed out; nothing of them is written into a character yet.
 
 On the right
   Preview     The model as the game will draw it. Drag to turn it; the list
@@ -679,8 +711,10 @@ Modes and menus
   on top of each other after you scroll it.
 
 Characters
-- A custom driver without voices is silent; with voices it says nothing at
-  an event it has no clip for.
+- Custom drivers without their own voice lines are silent. With voices a
+  driver says nothing at an event it has no clip for.
+- At top speed the tread of custom wheels can look still or turning
+  backwards (a stroboscope effect of the frame rate).
 - The character's own icon shows only for the first 20 loaded files; high
   score lists and profiles show the portrait of Fake Crash.
 - The cup podium shows Fake Crash.

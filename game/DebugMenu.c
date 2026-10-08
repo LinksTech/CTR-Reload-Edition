@@ -383,6 +383,12 @@ global_variable const struct DebugLevel s_levels[] = {
 // input buffer from reading as SELECT+START and opening the menu by itself.
 #define DBG_MAX_PLAUSIBLE_BUTTONS 7
 
+// A stick at rest. The axes run 0..0xff with the middle at 0x80 (GAMEPAD.c
+// resets them there), so 0 is not "nothing" but a stick held fully up or left:
+// the right stick up is analog gas (VehPhysProc.c, stickRY) and the left stick
+// left is a full turn (stickLX).
+#define DBG_STICK_REST 0x80
+
 global_variable int s_debugMenuOpen = 0;
 
 // Whether the panel is on screen, asked from outside.
@@ -2326,6 +2332,8 @@ void DebugMenu_Frame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 	// filled in the VSync callback, before this runs, and nothing reads the host
 	// again for the rest of the frame - so clearing them here holds. Without it
 	// the menu opens over a race and the kart keeps steering underneath it.
+	// Cleared means at rest, DBG_STICK_REST, not 0: with 0 the kart under an
+	// open menu got full gas and a full left turn and drove off on its own.
 	//
 	// The menu itself has already read what it needed, above.
 	{
@@ -2340,12 +2348,12 @@ void DebugMenu_Frame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 			seat->buttonsReleased = 0;
 			seat->buttonsHeldPrevFrame = 0;
 
-			seat->stickLX = 0;
-			seat->stickLY = 0;
-			seat->stickLX_dontUse1 = 0;
-			seat->stickLY_dontUse1 = 0;
-			seat->stickRX = 0;
-			seat->stickRY = 0;
+			seat->stickLX = DBG_STICK_REST;
+			seat->stickLY = DBG_STICK_REST;
+			seat->stickLX_dontUse1 = DBG_STICK_REST;
+			seat->stickLY_dontUse1 = DBG_STICK_REST;
+			seat->stickRX = DBG_STICK_REST;
+			seat->stickRY = DBG_STICK_REST;
 		}
 	}
 

@@ -2,6 +2,7 @@
 #define NATIVE_RENDERER_H
 
 #include <platform/native_renderer_types.h>
+#include <platform/native_gfx.h>
 
 int NativeRenderer_InitialiseRender(char *windowName, int width, int height, int fullscreen);
 int NativeRenderer_InitialisePSX(void);
@@ -167,5 +168,139 @@ void NativeRenderer_UpdateVertexBuffer(const GrVertex *vertices, int count);
 void NativeRenderer_DrawTriangles(int startVertex, int triangles);
 void NativeRenderer_PushDebugLabel(const char *label);
 void NativeRenderer_PopDebugLabel(void);
+
+// One draw of the native probe. screenFromModel is column-major (as a GLSL
+// mat4 reads it) and maps the unit probe body to (sx*w, sy*w, zNear, w): sx, sy
+// in PSX screen pixels of the split, offsets included, w = view depth.
+struct NativeLayerDraw
+{
+	float screenFromModel[16];
+	int cull;       // NativeGfxCull for this draw
+	int clearDepth; // 1 = clear the depth of the split's clip rectangle first
+
+	// The form pose: the morphed vertices of this draw (NATIVE_PROBE_VERTEX_COUNT
+	// of them) and the region of the pose buffer they are written into. NULL
+	// draws the static probe mesh, as every other form does.
+	const struct NativeProbeVertex *vertices;
+	int vertexRegion;
+
+	// --native-depth-tint: 1024 / zNear, and the body is coloured by its depth
+	// (params.z of the "nr" block); 0, the value every other draw has, keeps
+	// its colours.
+	float depthTint;
+};
+
+// THE POSE BUFFER of the form pose: one region of a whole probe mesh per frame
+// in work and native item, NATIVE_LAYER_POSE_FRAMES x NATIVE_LAYER_POSE_SLOTS
+// regions. A region is written only in its own frame and is next written
+// NATIVE_LAYER_POSE_FRAMES frames later, when the frames in flight that read
+// it are done; one object per slot, so no draw reads what another one wrote.
+#define NATIVE_LAYER_POSE_FRAMES 3
+#define NATIVE_LAYER_POSE_SLOTS  128
+
+// Draws the probe mesh into the split's place, then puts every renderer and
+// device state back that the PSX path relies on. 0 = nothing drawn.
+int NativeRenderer_DrawNativeProbe(const struct NativeLayerDraw *draw, const RECT16 *clip, const DISPENV *dispenv, int onScreen);
+
+// ONE DRAW OF A NATIVE MESH (step 4c, a custom character): a static vertex
+// buffer of the "nr" layout (struct NativeProbeVertex) and a u16 index buffer,
+// drawn range by range. screenFromModel as in struct NativeLayerDraw, for
+// points in the units of the mesh. Per range: the texture in slot 0 (or none),
+// whether it is sRGB, the tint, and the alpha below which a fragment is
+// discarded (0 = none). The vertex offset picks the pose of the body.
+struct NativeMeshRangeDraw
+{
+	u32 firstIndex;
+	u32 indexCount;
+	TextureID texture; // NATIVE_GFX_INVALID: no texture
+	int srgb;
+	float tint[4];
+	float alphaCutoff;
+	// The retail twin's look (step 4d Z1, only with look = 1 in the draw): the
+	// modulation (2 textured, 1 untextured), the dither weight, and the UV
+	// fudge in units of the texture.
+	float modulation;
+	float ditherWeight;
+	float uvFudge[2];
+};
+
+struct NativeMeshDraw
+{
+	float screenFromModel[16];
+	int cull;
+	int clearDepth;
+	NativeGfxBuffer vertexBuffer;
+	NativeGfxBuffer indexBuffer;
+	int vertexOffset;
+	int rangeCount;
+	const struct NativeMeshRangeDraw *ranges;
+	float depthTint; // as in struct NativeLayerDraw
+	// 1 = the retail twin (step 4d Z1): drawn with its own program "nrt",
+	// toned by tone toward far (DPCT). 0, as every other draw writes: the
+	// program "nr" of before.
+	int look;
+	float tone;
+	float far[4];
+	// The water line (step 4e): one side of the plane d = split[3] -
+	// (split[0] x + split[1] y + split[2] z), points in the units of the mesh.
+	// splitKeep 1 keeps d >= 0 (the side below), -1 keeps d < 0 (the side
+	// above), 0 - what memset gives every other draw - keeps the whole mesh.
+	// The colour of a side (the halving of the queue) comes in the tint of the
+	// ranges; nothing else of the draw changes.
+	float split[4];
+	int splitKeep;
+	// The paint order of the retail twin (look = 1, NativeTwin_PaintOrder):
+	// the queue's scale of the view depth, 2^mvpShift of the item (x 4 near,
+	// / 4 DRAW_HUGE; 0 = no paint order, the draw keeps its ranges and the
+	// depth test), and the range every bin is held to (twinBinLow <=
+	// twinBinHigh: the writer CLAMP_DEPTH, the depthOffset of the view; else
+	// not held).
+	float twinDepthScale;
+	int twinBinLow;
+	int twinBinHigh;
+	// One marker per occupied bin (the twin, look = 1): the keys of the paint
+	// order this draw paints, in their order - one cell of the item, worked out
+	// by the render layer when it linked the marker (NativeTwin_PaintRuns). NULL,
+	// what memset gives every other draw: the renderer works the whole order out
+	// itself, as above.
+	const u64 *twinKeys;
+	u32 twinKeyCount;
+};
+
+// What psxDitherAmount of the PSX block would be for a draw into the target in
+// force now (the expression of NativeRenderer_SetTexture). Step 4d Z1.
+float NativeRenderer_PsxDitherAmountNow(void);
+
+// The draws of the retail twin in its paint order and the ones that fell back
+// to its ranges with the depth test (no order), for the exit report.
+void NativeRenderer_TwinPaintCounts(unsigned long long *ordered, unsigned long long *fallback);
+
+// The same place, clip, projection, depth rule and state reset as
+// NativeRenderer_DrawNativeProbe, with the caller's buffers and ranges. Needs
+// the "nr" program and the depth of the main target, not the probe mesh.
+// Returns the ranges drawn (0 = nothing drawn).
+int NativeRenderer_DrawNativeMesh(const struct NativeMeshDraw *draw, const RECT16 *clip, const DISPENV *dispenv, int onScreen);
+
+// A static vertex buffer of the "nr" layout for a native mesh (filled later
+// through NativeGfx_UpdateVertexBuffer when initial is NULL). Only with
+// --native-preview; NATIVE_GFX_INVALID otherwise.
+NativeGfxBuffer NativeRenderer_CreateNativeMeshVertexBuffer(int bytes, const void *initial);
+
+// The CPU mirror of VRAM (VRAM_WIDTH x VRAM_HEIGHT u16), for the retail twin
+// (step 4d) to decode the pages of a model at a loading screen. Only read.
+const u16 *NativeRenderer_VramMirror(void);
+
+// 1 once the probe mesh buffers exist (only with --native-preview and --native-probe),
+// and for the form texture its texture as well.
+int NativeRenderer_NativeProbeReady(void);
+
+// THE DEPTH OF THE MAIN TARGET, for native draws only. The render layer asks for
+// it (1) in every frame a native object is bound and lets it go (0) when none
+// is; only a change does anything. Without --native-preview nothing at all.
+void NativeRenderer_WantNativeDepth(int want);
+
+// The uploads of native textures in this run, and how many of them came after
+// the first frame was drawn or into a frame that already had draws.
+void NativeRenderer_NativeTextureUploads(unsigned int *uploads, unsigned int *duringFrame);
 
 #endif

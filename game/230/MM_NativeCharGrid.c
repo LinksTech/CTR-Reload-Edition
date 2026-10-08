@@ -1356,6 +1356,37 @@ int MM_NativeCharGrid_PreviewCustom(void)
 	return NativeChar_EntryModel(MM_NativeCharGrid_EntryOf(s_gridPreviewCurrentTile)) != NULL;
 }
 
+// STEP 5A, the native driver select preview (platform/native_render_layer.c,
+// the pull): which roster entry the preview window wants and which it shows.
+// Only reading. -2 while the driver select does not run (the same condition
+// as MM_NativeCharGrid_PreviewCustom), -1 for a tile without a model of the
+// roster (retail or placeholder), else the entry.
+int MM_NativeCharGrid_PreviewDesiredEntry(void)
+{
+	int entry;
+
+	if (!MM_NativeCharGrid_Active() || (sdata->ptrActiveMenu != &D230.menuCharacterSelect))
+	{
+		return -2;
+	}
+
+	entry = MM_NativeCharGrid_EntryOf(s_gridPreviewDesiredTile);
+	return (NativeChar_EntryModel(entry) != NULL) ? entry : -1;
+}
+
+int MM_NativeCharGrid_PreviewCurrentEntry(void)
+{
+	int entry;
+
+	if (!MM_NativeCharGrid_Active() || (sdata->ptrActiveMenu != &D230.menuCharacterSelect))
+	{
+		return -2;
+	}
+
+	entry = MM_NativeCharGrid_EntryOf(s_gridPreviewCurrentTile);
+	return (NativeChar_EntryModel(entry) != NULL) ? entry : -1;
+}
+
 int MM_NativeCharGrid_NameShown(int playerIndex)
 {
 	if (!MM_NativeCharGrid_Active() || (playerIndex != 0))
@@ -2336,6 +2367,9 @@ int MM_NativeCharGrid_SelfTest(void)
 
 	// The mask of the CHRI flags and of a bound seat (platform/native_chars.c).
 	NativeChar_MaskSelfTest(&test.checks, &test.failures);
+
+	// The look of CHRI: shadow and exhaust (platform/native_chars.c).
+	NativeChar_LookSelfTest(&test.checks, &test.failures);
 
 	if (test.failures != 0)
 	{

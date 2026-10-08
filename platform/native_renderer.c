@@ -9,9 +9,13 @@
 #include <SDL3/SDL.h>
 
 #include "platform/native_gfx.h"
+#include "platform/native_char_gpu.h"
 #include "platform/native_gpu.h"
 #include "platform/native_log.h"
 #include "platform/native_perf.h"
+#include "platform/native_probe.h"
+#include "platform/native_tex.h"
+#include "platform/native_twin.h"
 #include "platform/native_renderer.h"
 
 #include <assert.h>
@@ -615,6 +619,90 @@ global_variable ShaderID s_presentTargetShader = 0;
 global_variable ShaderID s_packPagesShader = 0;
 global_variable NativeGfxBuffer s_vramQuadBuffer = NATIVE_GFX_INVALID;
 
+// The native program ("nr"), made only with --native-preview - see
+// NativeRenderer_InitNativeLayer. Without the switch it stays INVALID and
+// nothing below ever touches it.
+//
+// Its block, std140: one finished clip-from-model matrix (the depth mapping is
+// already in it - see "DEPTH." in native_gfx.h), a tint, and parameters whose
+// x > 0.5 means "sample slot 0"; then the water line of step 4e - the plane in
+// the units of the mesh and the side kept (splitMode.x: 1 d >= 0, -1 d < 0, 0
+// all; see the "nr" shader in native_shaders.inc).
+//
+// clipFromModel is stored column-major, the way a GLSL mat4 in a std140 block
+// reads it: clipFromModel[column * 4 + row].
+struct NativeLayerUniforms
+{
+	float clipFromModel[16];
+	float tint[4];
+	float params[4];
+	float split[4];
+	float splitMode[4];
+};
+
+CTR_STATIC_ASSERT(sizeof(struct NativeLayerUniforms) == 128);
+CTR_STATIC_ASSERT(offsetof(struct NativeLayerUniforms, tint) == 64);
+CTR_STATIC_ASSERT(offsetof(struct NativeLayerUniforms, params) == 80);
+CTR_STATIC_ASSERT(offsetof(struct NativeLayerUniforms, split) == 96);
+CTR_STATIC_ASSERT(offsetof(struct NativeLayerUniforms, splitMode) == 112);
+
+global_variable ShaderID s_nativeLayerShader = NATIVE_GFX_INVALID;
+
+// The program of the retail twin ("nrt", step 4d Z1), only with --native-preview
+// --native-twin; its block, std140, field for field the NrtBlock of the shader.
+struct NativeTwinUniforms
+{
+	float clipFromModel[16];
+	float tint[4];
+	float params[4];
+	float far[4];
+	float look[4];
+	float dither[4];
+	float proj[4];
+	float split[4];     // the water line of step 4e, as in "nr"
+	float splitMode[4];
+};
+
+CTR_STATIC_ASSERT(sizeof(struct NativeTwinUniforms) == 192);
+CTR_STATIC_ASSERT(offsetof(struct NativeTwinUniforms, far) == 96);
+CTR_STATIC_ASSERT(offsetof(struct NativeTwinUniforms, proj) == 144);
+CTR_STATIC_ASSERT(offsetof(struct NativeTwinUniforms, split) == 160);
+CTR_STATIC_ASSERT(offsetof(struct NativeTwinUniforms, splitMode) == 176);
+
+global_variable ShaderID s_nativeTwinShader = NATIVE_GFX_INVALID;
+
+// The generated probe mesh, made only with --native-preview and --native-probe
+// (NativeRenderer_InitNativeLayer), static from then on. Without both switches
+// they stay INVALID and NativeRenderer_NativeProbeReady answers 0.
+global_variable NativeGfxBuffer s_probeVertexBuffer = NATIVE_GFX_INVALID;
+global_variable NativeGfxBuffer s_probeIndexBuffer = NATIVE_GFX_INVALID;
+
+// The texture of the form texture, made with the mesh and only for that form;
+// without it INVALID, and no image, memory or sampler exists for it.
+global_variable TextureID s_probeTexture = NATIVE_GFX_INVALID;
+
+// The form mips: its texture is made by the native texture manager while the
+// race loads (NativeRenderer_LoadProbeMipsTexture), not here at start-up, and
+// it is sRGB - the "nr" block then says so in params[1]. 0 for every other
+// form, whose texture stays the one-level UNORM texture it always was.
+global_variable int s_probeTextureManaged = 0;
+global_variable int s_probeTextureSrgb = 0;
+
+// The probe texture of the forms texture, pose and wheels uploaded in a race
+// frame (platform/native_tex.c, NativeTex_InRaceFrame): it goes up once at
+// start-up, before the game's first state, so this stays 0. Counted all the
+// same, so the exit line of the render layer holds for every form.
+global_variable unsigned int s_probeUploadsInRaceFrame = 0;
+
+// The pose buffer of the form pose (see NATIVE_LAYER_POSE_FRAMES): a dynamic
+// vertex buffer, host-visible and written straight into its mapping - no
+// transfer, nothing that counts as a texture upload. Only for that form.
+global_variable NativeGfxBuffer s_probePoseBuffer = NATIVE_GFX_INVALID;
+
+// What NativeRenderer_WantNativeDepth was last asked: the main target has its
+// depth image while this is 1 (the backend follows sizes and sample counts).
+global_variable int s_nativeDepthWanted = 0;
+
 // Experiment, off unless asked for: a partial fill rectangle becomes a drawn
 // quad instead of a scissored clear.
 //
@@ -827,6 +915,45 @@ void NativeRenderer_Shutdown(void)
 	NativeGfx_DestroyProgram(s_presentVramShader);
 	NativeGfx_DestroyProgram(s_presentTargetShader);
 	NativeGfx_DestroyProgram(s_packPagesShader);
+	if (s_nativeLayerShader != NATIVE_GFX_INVALID)
+	{
+		NativeGfx_DestroyProgram(s_nativeLayerShader);
+		s_nativeLayerShader = NATIVE_GFX_INVALID;
+	}
+	if (s_nativeTwinShader != NATIVE_GFX_INVALID)
+	{
+		NativeGfx_DestroyProgram(s_nativeTwinShader);
+		s_nativeTwinShader = NATIVE_GFX_INVALID;
+	}
+	if (s_probeVertexBuffer != NATIVE_GFX_INVALID)
+	{
+		NativeGfx_DestroyVertexBuffer(s_probeVertexBuffer);
+		s_probeVertexBuffer = NATIVE_GFX_INVALID;
+	}
+	if (s_probeIndexBuffer != NATIVE_GFX_INVALID)
+	{
+		NativeGfx_DestroyIndexBuffer(s_probeIndexBuffer);
+		s_probeIndexBuffer = NATIVE_GFX_INVALID;
+	}
+	if (s_probeTexture != NATIVE_GFX_INVALID)
+	{
+		if (s_probeTextureManaged)
+		{
+			NativeTex_Destroy(s_probeTexture);
+		}
+		else
+		{
+			NativeGfx_DestroyTexture(s_probeTexture);
+		}
+		s_probeTexture = NATIVE_GFX_INVALID;
+		s_probeTextureManaged = 0;
+		s_probeTextureSrgb = 0;
+	}
+	if (s_probePoseBuffer != NATIVE_GFX_INVALID)
+	{
+		NativeGfx_DestroyVertexBuffer(s_probePoseBuffer);
+		s_probePoseBuffer = NATIVE_GFX_INVALID;
+	}
 	NativeGfx_DestroyVertexBuffer(s_vramQuadBuffer);
 
 	// Last, after every object above has been handed back. This also runs when
@@ -2043,6 +2170,853 @@ internal void NativeRenderer_InitRG8LUT(void)
 	}
 }
 
+// The native render layer, as far as it exists so far: with --native-preview,
+// the native program, and with --native-probe as well the probe mesh that
+// NativeRenderer_DrawNativeProbe draws (and for the form texture its texture).
+// The switch exists so all of it can be checked to leave every PSX pixel as it
+// was before anything draws with it. NATIVE DRIVERS PREVIEW on the GRAPHICS
+// page sets the same run value from ctr-settings.cfg, before the window
+// (Platform_SettingsPreloadDisplay); "the switch" below means either.
+//
+// Without the switch this returns in its first line, so a run without it makes
+// no program, no buffer, no texture and no log line it did not make before.
+//
+// No depth image here. The main target gets one only while a native object is
+// bound - NativeRenderer_WantNativeDepth, asked by the render layer - so a
+// target nothing native is drawn into (the boot target, the menus, a run with
+// --native-preview but without a probe) never carries one.
+//
+// Called once, after NativeRenderer_ApplyMsaa, at start-up: the first frame is
+// open but nothing has been drawn into it yet (see the texture below).
+internal void NativeRenderer_InitNativeLayer(void)
+{
+	extern int g_cfg_nativePreview;
+	if (!g_cfg_nativePreview)
+	{
+		return;
+	}
+
+	s_nativeLayerShader = NativeRenderer_Shader_CompileWithUniforms(ctr_native_layer_shader, NULL, 0, "NrBlock", (int)sizeof(struct NativeLayerUniforms),
+	                                                               NATIVE_UNIFORM_BLOCK_BINDING);
+
+	Platform_Log("[CTR Res] native preview: program 'nr' %s, main target depth on demand (only while a native object is bound)\n",
+	             (s_nativeLayerShader != NATIVE_GFX_INVALID) ? "ready" : "missing");
+
+	// The retail twin's own program, only with --native-twin (step 4d Z1).
+	{
+		extern int g_cfg_nativeTwin;
+
+		if (g_cfg_nativeTwin)
+		{
+			s_nativeTwinShader = NativeRenderer_Shader_CompileWithUniforms(ctr_native_twin_shader, NULL, 0, "NrtBlock", (int)sizeof(struct NativeTwinUniforms),
+			                                                              NATIVE_UNIFORM_BLOCK_BINDING);
+			Platform_Log("[CTR Res] native twin: program 'nrt' %s (the retail look V1)\n", (s_nativeTwinShader != NATIVE_GFX_INVALID) ? "ready" : "missing");
+		}
+	}
+
+	// The probe mesh, only when asked for. Made here, in the load phase, because
+	// a static buffer is filled through a one-shot that waits for the queue - a
+	// frame never makes one. The layout is the one nr.vert reads: position at
+	// location 0, texture coordinate at 1, colour at 2. The form texture has the
+	// same positions and indices, white vertices and texture coordinates.
+	if (g_cfg_nativeProbe != NATIVE_PROBE_NONE)
+	{
+		const NativeGfxVertexBufferDesc probeVertexDesc = {
+		    .bytes = NATIVE_PROBE_VERTEX_COUNT * (int)sizeof(struct NativeProbeVertex),
+		    .dynamic = 0,
+		    .initial = NATIVE_PROBE_TEXTURED(g_cfg_nativeProbe) ? NativeProbe_TexturedVertices() : NativeProbe_Vertices(),
+		    .stride = (int)sizeof(struct NativeProbeVertex),
+		    .attribCount = 3,
+		    .attribs = {
+		        {.slot = a_position, .components = 3, .type = NATIVE_GFX_ATTR_FLOAT32, .offset = offsetof(struct NativeProbeVertex, position)},
+		        {.slot = a_texcoord, .components = 2, .type = NATIVE_GFX_ATTR_FLOAT32, .offset = offsetof(struct NativeProbeVertex, texcoord)},
+		        {.slot = a_color, .components = 4, .type = NATIVE_GFX_ATTR_UNORM8, .offset = offsetof(struct NativeProbeVertex, color)},
+		    },
+		};
+		const NativeGfxIndexBufferDesc probeIndexDesc = {
+		    .bytes = NATIVE_PROBE_INDEX_COUNT * (int)sizeof(u16),
+		    .type = NATIVE_GFX_INDEX_U16,
+		    .initial = NativeProbe_Indices(),
+		};
+
+		s_probeVertexBuffer = NativeGfx_CreateVertexBuffer(&probeVertexDesc);
+		s_probeIndexBuffer = NativeGfx_CreateIndexBuffer(&probeIndexDesc);
+
+		// The form pose draws its morphed mesh from a dynamic buffer of the
+		// same layout, one region per frame in work and item; nothing is
+		// written into it before the first draw.
+		if (g_cfg_nativeProbe == NATIVE_PROBE_POSE)
+		{
+			NativeGfxVertexBufferDesc poseDesc = probeVertexDesc;
+
+			poseDesc.bytes = NATIVE_LAYER_POSE_FRAMES * NATIVE_LAYER_POSE_SLOTS * NATIVE_PROBE_VERTEX_COUNT * (int)sizeof(struct NativeProbeVertex);
+			poseDesc.dynamic = 1;
+			poseDesc.initial = NULL;
+			s_probePoseBuffer = NativeGfx_CreateVertexBuffer(&poseDesc);
+		}
+	}
+
+	// THE PROBE TEXTURE, only for the form texture. RGBA8 UNORM, the format the
+	// main target has as well: a texel read with NEAREST is the stored byte over
+	// 255, the shader multiplies it by the white vertex colour (exactly 1.0) and
+	// the UNORM target stores the same byte again - no conversion anywhere in
+	// between. An sRGB texture would hand the shader the linear value (128
+	// becomes about 55) and the UNORM target would keep that darker value.
+	//
+	// nativeLayer gives it a sampler of its own (nearest, clamped, one level),
+	// never one of the samplers the PSX textures share, and makes the backend
+	// upload it through a one-shot transfer instead of into the open frame. That
+	// happens here and only here, once per run: at start-up, in the first frame,
+	// before the game has drawn anything into it. Like every one-shot it first
+	// submits what the frame holds so far (here only the uploads of the
+	// renderer's own start-up textures) and waits. Kept for the whole run; the
+	// texture never changes. These forms stay at start-up so that their pictures
+	// stay the ones measured before (round 3 and step 3b).
+	//
+	// The form mips is the one exception: its texture is made at the race's
+	// loading screen, in stage 5 of the ten loading stages right after the
+	// custom seats are armed (game/LOAD/LOAD_TenStages.c, after
+	// NativeChar_ArmSeats; NativeRenderer_LoadProbeMipsTexture), as every
+	// native driver texture will be. The frame is open there with the draws of
+	// the loading screen recorded; the waited one-shot of the texture manager
+	// first submits them and waits (NativeGfxVK_CreateTextureLevels), so the
+	// pass ends in the middle of that picture and the next draw opens it again
+	// with LOAD - no pixel already drawn changes, and no race frame is drawn.
+	if (NATIVE_PROBE_TEXTURED(g_cfg_nativeProbe) && !g_cfg_nativeProbeMips)
+	{
+		const NativeGfxTextureDesc probeTextureDesc = {
+		    .width = NATIVE_PROBE_TEXTURE_SIZE,
+		    .height = NATIVE_PROBE_TEXTURE_SIZE,
+		    .format = NATIVE_GFX_TEXFMT_RGBA8,
+		    .filter = NATIVE_GFX_FILTER_NEAREST,
+		    .wrap = NATIVE_GFX_WRAP_CLAMP,
+		    .pixels = NativeProbe_TexturePixels(),
+		    .nativeLayer = 1,
+		};
+
+		if (NativeTex_InRaceFrame())
+		{
+			s_probeUploadsInRaceFrame++;
+		}
+		s_probeTexture = NativeGfx_CreateTexture(&probeTextureDesc);
+		Platform_Log("[CTR Res] native probe texture: %dx%d RGBA8 UNORM, nearest, %s\n", NATIVE_PROBE_TEXTURE_SIZE, NATIVE_PROBE_TEXTURE_SIZE,
+		             (s_probeTexture != NATIVE_GFX_INVALID) ? "uploaded" : "missing");
+	}
+}
+
+// THE TEXTURE OF THE FORM MIPS (renderer plan D.4, step 4a): 256x256 with its 9
+// levels, each one colour (platform/native_probe.c), sRGB, through the native
+// texture manager (platform/native_tex.c) - sampled as --native-filter says,
+// uploaded through the waited one-shot, the staging growth given back after it.
+// Called at stage 5 of the ten loading stages, right after the custom seats
+// are armed (game/LOAD/LOAD_TenStages.c, after NativeChar_ArmSeats): a loading
+// screen, never a race frame. Only for a race track (levelID below
+// NITRO_COURT, the arcade tracks the probe binds on); the boot crate and the
+// menu levels load without it. Once per run: a texture that is there already
+// is not made again, and it is kept until shutdown. Until it exists,
+// NativeRenderer_NativeProbeReady answers 0, so the probe is not bound and the
+// render layer names "probe mesh not ready" as the reason (in the menu frames
+// before the race as well, where it named "main menu" before). Returns 1 when
+// the texture exists afterwards.
+int NativeRenderer_LoadProbeMipsTexture(int levelID)
+{
+	extern int g_cfg_nativePreview;
+	const u8 *levels[NATIVE_PROBE_MIPS_LEVELS];
+	NativeTexDesc desc;
+	NativeTexResult result = NATIVE_TEX_OK;
+	int level;
+
+	if (!g_cfg_nativePreview || !g_cfg_nativeProbeMips || (s_probeTexture != NATIVE_GFX_INVALID))
+	{
+		return (s_probeTexture != NATIVE_GFX_INVALID) ? 1 : 0;
+	}
+	if ((levelID < 0) || (levelID >= NITRO_COURT))
+	{
+		return 0;
+	}
+
+	for (level = 0; level < NATIVE_PROBE_MIPS_LEVELS; level++)
+	{
+		levels[level] = NativeProbe_MipsLevel(level);
+	}
+
+	memset(&desc, 0, sizeof(desc));
+	desc.width = NATIVE_PROBE_TEXTURE_SIZE;
+	desc.height = NATIVE_PROBE_TEXTURE_SIZE;
+	desc.flags = 0u; // sRGB colour, levels as given
+	desc.wrapU = NATIVE_GFX_WRAP_CLAMP;
+	desc.wrapV = NATIVE_GFX_WRAP_CLAMP;
+	desc.name = "probe mips";
+
+	s_probeTexture = NativeTex_CreateFromLevels(&desc, levels, NATIVE_PROBE_MIPS_LEVELS, &result);
+	s_probeTextureManaged = (s_probeTexture != NATIVE_GFX_INVALID) ? 1 : 0;
+	s_probeTextureSrgb = s_probeTextureManaged ? NativeTex_IsSrgb(s_probeTexture) : 0;
+
+	Platform_Log("[CTR Res] native probe mips texture: %dx%d RGBA8 SRGB, %d levels, filter %s, %s\n", NATIVE_PROBE_TEXTURE_SIZE,
+	             NATIVE_PROBE_TEXTURE_SIZE, NATIVE_PROBE_MIPS_LEVELS, NativeTex_FilterName(g_cfg_nativeFilter),
+	             s_probeTextureManaged ? "uploaded" : NativeTex_ResultName(result));
+
+	return s_probeTextureManaged;
+}
+
+// Probe texture uploads in a race frame, every form: the start-up texture of
+// the forms texture, pose and wheels, and every upload of the manager (the form
+// mips). The render layer's exit line.
+unsigned int NativeRenderer_ProbeUploadsInRaceFrame(void)
+{
+	return s_probeUploadsInRaceFrame + (unsigned int)NativeTex_UploadsInRaceFrame();
+}
+
+int NativeRenderer_NativeProbeReady(void)
+{
+	if (NATIVE_PROBE_TEXTURED(g_cfg_nativeProbe) && (s_probeTexture == NATIVE_GFX_INVALID))
+	{
+		return 0;
+	}
+	if ((g_cfg_nativeProbe == NATIVE_PROBE_POSE) && (s_probePoseBuffer == NATIVE_GFX_INVALID))
+	{
+		return 0;
+	}
+
+	return (s_probeVertexBuffer != NATIVE_GFX_INVALID) && (s_probeIndexBuffer != NATIVE_GFX_INVALID) && (s_nativeLayerShader != NATIVE_GFX_INVALID);
+}
+
+// The depth image of the main target, only while something native is drawn
+// into it. Called by the render layer once per frame from its pull, which runs
+// in the game's frame before the queue and before the ordering table of the
+// frame is parsed and drawn; only a change of the wish does anything.
+//
+// WHEN THE IMAGE IS MADE, AND WHY NO PIXEL CHANGES: NativeGfx_SetTargetDepth
+// ends a pass that is open on the main target (stored, as at every target
+// switch of a frame), makes the image and clears it to far through a one-shot
+// of its own that touches nothing but the new image, and the next draw opens
+// the pass again with LOAD and the depth attachment beside the colour. The
+// colour of everything drawn so far is loaded as it was stored, and the PSX
+// draws keep depth test and write off - the same pipelines they had in every
+// run with --native-preview before, in which every pass had depth from the
+// start. Letting go (0) defers the destruction until no frame in flight can
+// name the image.
+void NativeRenderer_WantNativeDepth(int want)
+{
+	extern int g_cfg_nativePreview;
+
+	want = (want != 0) ? 1 : 0;
+	if (!g_cfg_nativePreview || (want == s_nativeDepthWanted))
+	{
+		return;
+	}
+
+	s_nativeDepthWanted = want;
+	NativeGfx_SetTargetDepth(s_mainRenderTarget, want);
+}
+
+void NativeRenderer_NativeTextureUploads(unsigned int *uploads, unsigned int *duringFrame)
+{
+	void NativeGfxVK_NativeTextureUploads(unsigned int *uploads, unsigned int *duringFrame);
+
+	NativeGfxVK_NativeTextureUploads(uploads, duringFrame);
+}
+
+// The scissor box in force, in the convention NativeRenderer_SetScissorRect
+// takes (target pixels, rows from the bottom), or the whole main target when
+// the scissor is off. Read from the record rather than computed a second time:
+// right after NativeRenderer_SetupClipMode the record IS the box that function
+// worked out, so the two cannot disagree by a rounding.
+internal void NativeRenderer_ScissorBoxInForce(int *outX, int *outY, int *outW, int *outH)
+{
+	if (s_previousScissorState)
+	{
+		*outX = s_scissorRect[0];
+		*outY = s_scissorRect[1];
+		*outW = s_scissorRect[2];
+		*outH = s_scissorRect[3];
+		return;
+	}
+
+	*outX = 0;
+	*outY = 0;
+	*outW = NativeGfx_TargetWidth(s_mainRenderTarget);
+	*outH = NativeGfx_TargetHeight(s_mainRenderTarget);
+}
+
+// The probe drawn as one split of its own, in the place of its marker in the
+// ordering table.
+//
+// Target, scissor and projection come from the same three calls a PSX split
+// makes, so the probe lands on the same grid as the triangles around it. Its
+// matrix is the caller's screenFromModel with that projection in front:
+// screenFromModel gives (sx*w, sy*w, zNear, w) with sx, sy in PSX screen pixels,
+// and the PSX projection is an orthographic map of those pixels - x and y scale
+// and move, z is left as zNear, w stays the view depth. So depth = zNear / w,
+// the convention of the "DEPTH." block in native_gfx.h.
+//
+// Afterwards every state this changed behind the renderer's back is put back
+// or marked unknown, so the next PSX split cannot draw with any of it:
+//   draw state      NULL - depth, cull and colour mask as every PSX draw has them
+//   vertex buffer   the PSX buffer bound again, as after the other detours
+//   program         unknown, so the next NativeRenderer_SetShader binds again
+//   blend           BM_NONE, which is what the device has now
+//   PSX uniforms    dirty, so the next PSX draw uploads its block again
+//   slot 0          only for the form texture, which binds its texture there:
+//                   the texture of the renderer's record again
+// Sample shading is not touched here. Scissor, viewport and target are the
+// ones a PSX split of this clip has, and the next split sets its own anyway.
+int NativeRenderer_DrawNativeProbe(const struct NativeLayerDraw *draw, const RECT16 *clip, const DISPENV *dispenv, int onScreen)
+{
+	if (!NativeRenderer_NativeProbeReady() || (clip->w <= 0) || (clip->h <= 0))
+	{
+		return 0;
+	}
+
+	// Only into the main target with its depth image. Offscreen (dfe = 0) or
+	// without depth the body would be drawn without a depth test, inside out -
+	// so nothing is drawn, and the caller counts it as not drawn.
+	if (!onScreen || !NativeGfx_TargetDepth(s_mainRenderTarget))
+	{
+		return 0;
+	}
+
+	NativeRenderer_SetupClipMode(clip, dispenv, onScreen);
+	NativeRenderer_SetOffscreenState(clip, !onScreen);
+	NativeRenderer_SetProjection(clip, dispenv, !onScreen);
+
+	// Both matrices column-major: element (row, column) at column * 4 + row. The
+	// projection is {a,0,0,0, 0,b,0,0, 0,0,c,0, tx,ty,tz,1}; its z row is not
+	// used, the depth row of screenFromModel passes through unchanged.
+	struct NativeLayerUniforms block;
+	{
+		const float *p = s_psxUniforms.projection;
+		const float *s = draw->screenFromModel;
+
+		for (int column = 0; column < 4; column++)
+		{
+			const double s0 = (double)s[column * 4 + 0];
+			const double s1 = (double)s[column * 4 + 1];
+			const double s2 = (double)s[column * 4 + 2];
+			const double s3 = (double)s[column * 4 + 3];
+
+			block.clipFromModel[column * 4 + 0] = (float)((double)p[0] * s0 + (double)p[12] * s3);
+			block.clipFromModel[column * 4 + 1] = (float)((double)p[5] * s1 + (double)p[13] * s3);
+			block.clipFromModel[column * 4 + 2] = (float)s2;
+			block.clipFromModel[column * 4 + 3] = (float)s3;
+		}
+
+		block.tint[0] = 1.0f;
+		block.tint[1] = 1.0f;
+		block.tint[2] = 1.0f;
+		block.tint[3] = 1.0f;
+
+		// params.x = 1 lets the texture in slot 0 colour the body (form
+		// texture); 0 keeps the sampler out of the colour. params.y = 1 says
+		// the texture is sRGB (only the form mips): the shader turns its sample
+		// back to gamma first. 0, as before, for every other form.
+		block.params[0] = (s_probeTexture != NATIVE_GFX_INVALID) ? 1.0f : 0.0f;
+		block.params[1] = s_probeTextureSrgb ? 1.0f : 0.0f;
+		// params.z > 0: --native-depth-tint (0 for every other draw).
+		block.params[2] = draw->depthTint;
+		block.params[3] = 0.0f;
+
+		// No water line for the probe: the whole body, as before.
+		memset(block.split, 0, sizeof(block.split));
+		memset(block.splitMode, 0, sizeof(block.splitMode));
+	}
+
+	// The first native draw of a view in a frame starts from far: what an
+	// earlier view left in the depth image is not this view's. Only inside the
+	// split's own box, so no other view loses its depth.
+	if (draw->clearDepth)
+	{
+		int boxX = 0;
+		int boxY = 0;
+		int boxW = 0;
+		int boxH = 0;
+
+		NativeRenderer_ScissorBoxInForce(&boxX, &boxY, &boxW, &boxH);
+		NativeGfx_ClearDepth(boxX, boxY, boxW, boxH);
+	}
+
+	{
+		const NativeGfxDrawState state = {
+		    .depthTest = 1,
+		    .depthWrite = 1,
+		    .depthCompare = NATIVE_GFX_COMPARE_GREATER_OR_EQUAL,
+		    .cull = (NativeGfxCull)draw->cull,
+		    .colorWriteOff = NATIVE_GFX_COLOR_A,
+		};
+
+		NativeGfx_SetBlendMode(BM_NONE);
+		NativeGfx_SetDrawState(&state);
+		if (s_probeTexture != NATIVE_GFX_INVALID)
+		{
+			// Its own filter stands (nearest); the sampler is the native one -
+			// for the form mips the one of its sampling (--native-filter).
+			NativeGfx_BindTexture(0, s_probeTexture, NATIVE_GFX_FILTER_KEEP);
+		}
+		NativeGfx_BindProgram(s_nativeLayerShader);
+		NativeGfx_UpdateUniforms(s_nativeLayerShader, &block);
+
+		// The form pose: the morphed mesh into its own region of the pose
+		// buffer (frame in work and item), drawn from there through the same
+		// indices with the region as vertex offset. Writing does not bind with
+		// the explicit binding the renderer uses, and the PSX buffer is bound
+		// again below in any case.
+		if ((draw->vertices != NULL) && (s_probePoseBuffer != NATIVE_GFX_INVALID) && (draw->vertexRegion >= 0) &&
+		    (draw->vertexRegion < (NATIVE_LAYER_POSE_FRAMES * NATIVE_LAYER_POSE_SLOTS)))
+		{
+			const int meshBytes = NATIVE_PROBE_VERTEX_COUNT * (int)sizeof(struct NativeProbeVertex);
+
+			NativeGfx_UpdateVertexBuffer(s_probePoseBuffer, draw->vertexRegion * meshBytes, meshBytes, draw->vertices);
+			NativeGfx_BindVertexBuffer(s_probePoseBuffer);
+			NativeGfx_BindIndexBuffer(s_probeIndexBuffer);
+			NativeGfx_DrawIndexed(0, NATIVE_PROBE_INDEX_COUNT, draw->vertexRegion * NATIVE_PROBE_VERTEX_COUNT);
+		}
+		else
+		{
+			NativeGfx_BindVertexBuffer(s_probeVertexBuffer);
+			NativeGfx_BindIndexBuffer(s_probeIndexBuffer);
+			NativeGfx_DrawIndexed(0, NATIVE_PROBE_INDEX_COUNT, 0);
+		}
+	}
+
+	// Back to what the PSX path relies on - in this order, see the note above.
+	NativeGfx_SetDrawState(NULL);
+	if (s_boundVertexBuffer >= 0)
+	{
+		NativeGfx_BindVertexBuffer(s_vertexBuffer[s_boundVertexBuffer]);
+	}
+	else
+	{
+		NativeGfx_BindVertexBuffer(NATIVE_GFX_INVALID);
+	}
+	s_previousShader = (ShaderID)-1;
+	s_previousBlendMode = BM_NONE;
+	NativeRenderer_MarkPSXUniformsDirty();
+
+	// Slot 0 back to the PSX texture of the renderer's record, as after the
+	// other detours that bind a texture of their own (LoadRenderTargetFromVRAM);
+	// the record itself stays, because slot 0 holds that texture again.
+	if (s_probeTexture != NATIVE_GFX_INVALID)
+	{
+		NativeGfx_BindTexture(0, (s_lastBoundTexture == (TextureID)-1) ? 0 : s_lastBoundTexture, NATIVE_GFX_FILTER_KEEP);
+	}
+
+	return 1;
+}
+
+// What psxDitherAmount of the PSX block would be for a draw into the target in
+// force now: the expression of NativeRenderer_SetTexture, asked again (it is
+// not kept per draw). For the retail twin's dither weight (step 4d Z1).
+float NativeRenderer_PsxDitherAmountNow(void)
+{
+	int ditherW = 0;
+	int ditherH = 0;
+	int displayW = 0;
+	int displayH = 0;
+
+	NativeRenderer_ActiveViewportSize(&ditherW, &ditherH);
+	NativeRenderer_GetDisplaySize(&displayW, &displayH);
+	return ((g_cfg_dither == NATIVE_DITHER_ALWAYS) || ((g_cfg_dither == NATIVE_DITHER_PACKED) && (ditherW == displayW) && (ditherH == displayH))) ? 1.0f
+	                                                                                                                                         : 0.0f;
+}
+
+// The VRAM mirror (VRAM_WIDTH x VRAM_HEIGHT words), read by the retail twin
+// (step 4d, platform/native_twin.c) at a loading screen. Only reading.
+const u16 *NativeRenderer_VramMirror(void)
+{
+	return s_vram.cpuPixels;
+}
+
+// A static vertex buffer of the "nr" layout, for the native meshes of step 4c
+// (platform/native_char_gpu.c). The layout is the probe's.
+NativeGfxBuffer NativeRenderer_CreateNativeMeshVertexBuffer(int bytes, const void *initial)
+{
+	extern int g_cfg_nativePreview;
+	const NativeGfxVertexBufferDesc desc = {
+	    .bytes = bytes,
+	    .dynamic = 0,
+	    .initial = initial,
+	    .stride = (int)sizeof(struct NativeProbeVertex),
+	    .attribCount = 3,
+	    .attribs = {
+	        {.slot = a_position, .components = 3, .type = NATIVE_GFX_ATTR_FLOAT32, .offset = offsetof(struct NativeProbeVertex, position)},
+	        {.slot = a_texcoord, .components = 2, .type = NATIVE_GFX_ATTR_FLOAT32, .offset = offsetof(struct NativeProbeVertex, texcoord)},
+	        {.slot = a_color, .components = 4, .type = NATIVE_GFX_ATTR_UNORM8, .offset = offsetof(struct NativeProbeVertex, color)},
+	    },
+	};
+
+	if (!g_cfg_nativePreview || (bytes <= 0))
+	{
+		return NATIVE_GFX_INVALID;
+	}
+	return NativeGfx_CreateVertexBuffer(&desc);
+}
+
+// THE PAINT ORDER OF THE RETAIL TWIN (step 4d, only for a draw with look = 1).
+// Retail has no depth buffer: it sorts every triangle of the model into the
+// ordering table by its mean depth (bins of MAC0 >> 17) and paints far bins
+// first, and in one bin the later command first (NativeTwin_PaintOrder,
+// include/platform/native_twin.h). Where a part of the model sticks out in
+// front of another but lies in the same or a farther bin - the red zigzag on
+// the back of the head of the fake driver (triangles 139-141 rooted in the fur
+// triangles 46 and 112, which come first in the list) - retail paints it over,
+// a depth test does not. So the twin draws its triangles one by one in that
+// order with the depth compare ALWAYS: within the model the last painted wins,
+// as on the PSX. Towards the scene nothing changes: the PSX scene neither
+// tests nor writes depth (its draws run with the draw state NULL), so only the
+// place of the twin's marker in the OT orders it against the scene, as before.
+// The depth of a view is cleared once per frame, by the first native item of
+// that view - not necessarily the twin's; custom seats and the second items of
+// step 4e (the side below the water line, the mirror) are native draws too.
+// The depth the twin leaves is that of the triangle painted last.
+//
+// The depth scale and the bin range come with the draw (twinDepthScale,
+// twinBinLow / twinBinHigh): the queue scales both copies of a mirror by the
+// view depth of the instance, which the matrix of the mirror item does not
+// carry. Every draw is counted: in the paint order, or fallen back.
+//
+// With one marker per occupied bin (native_render_layer.c, NR_SLICE_MARKER)
+// the twin is drawn once per cell of its range, and each draw brings the keys
+// of its cell (twinKeys), worked out once when the markers were linked; the
+// counts then go per cell, not per item.
+//
+// The keys live here (grown, never shrunk); 0 = no order (no twin source, the
+// ranges do not hold every triangle, a pose that is not a whole multiple), and
+// the draw keeps its ranges and the depth test.
+global_variable u64 *s_twinPaintKeys;
+global_variable u32 s_twinPaintKeyMax;
+global_variable int s_twinPaintNoted;
+global_variable unsigned long long s_twinPaintOrdered;
+global_variable unsigned long long s_twinPaintFallback;
+
+void NativeRenderer_TwinPaintCounts(unsigned long long *ordered, unsigned long long *fallback)
+{
+	*ordered = s_twinPaintOrdered;
+	*fallback = s_twinPaintFallback;
+}
+
+// Counts a twin draw with n keys of a paint order (0 = none) and writes the
+// line of the first one.
+internal void NativeRenderer_TwinPaintNote(u32 n)
+{
+	if (n > 0u)
+	{
+		s_twinPaintOrdered++;
+	}
+	else
+	{
+		s_twinPaintFallback++;
+	}
+	if (!s_twinPaintNoted)
+	{
+		s_twinPaintNoted = 1;
+		Platform_Log("[CTR Twin] paint order: %s\n", (n > 0u) ? "retail ordering-table bins (MAC0 >> 17, far first, the later command first in a bin), depth compare always"
+		                                                       : "not available, drawn by ranges with the depth test");
+	}
+}
+
+internal u32 NativeRenderer_TwinPaintOrder(const struct NativeMeshDraw *draw)
+{
+	const struct NativeTwinSource *src = NativeCharGpu_TwinSource();
+	u32 indices = 0;
+	u32 n;
+	int i;
+
+	if ((src == NULL) || (src->native.vertexCount == 0u) || (draw->vertexOffset < 0) || (((u32)draw->vertexOffset % src->native.vertexCount) != 0u))
+	{
+		s_twinPaintFallback++;
+		return 0;
+	}
+	for (i = 0; i < draw->rangeCount; i++)
+	{
+		indices += draw->ranges[i].indexCount;
+	}
+	if (indices != (src->native.triangleCount * 3u))
+	{
+		s_twinPaintFallback++;
+		return 0;
+	}
+	if (s_twinPaintKeyMax < src->native.triangleCount)
+	{
+		u64 *grown = (u64 *)realloc(s_twinPaintKeys, (size_t)src->native.triangleCount * sizeof(u64));
+
+		if (grown == NULL)
+		{
+			s_twinPaintFallback++;
+			return 0;
+		}
+		s_twinPaintKeys = grown;
+		s_twinPaintKeyMax = src->native.triangleCount;
+	}
+
+	n = NativeTwin_PaintOrder(src, (u32)draw->vertexOffset / src->native.vertexCount, draw->screenFromModel, (double)draw->twinDepthScale, draw->twinBinLow,
+	                          draw->twinBinHigh, s_twinPaintKeys, s_twinPaintKeyMax);
+	NativeRenderer_TwinPaintNote(n);
+	return n;
+}
+
+// One marker per occupied bin (draw->twinKeys set): the keys of one cell come
+// with the draw, worked out by the render layer; counted like an order of
+// their own. A draw handed no keys paints nothing (never the whole model).
+internal u32 NativeRenderer_TwinGivenOrder(const struct NativeMeshDraw *draw)
+{
+	NativeRenderer_TwinPaintNote(draw->twinKeyCount);
+	return draw->twinKeyCount;
+}
+
+// The block of one twin range (step 4d Z1): its own program "nrt".
+internal void NativeRenderer_TwinRangeBlock(const struct NativeMeshDraw *draw, const struct NativeMeshRangeDraw *range, const float clipFromModel[16],
+                                            struct NativeTwinUniforms *twin)
+{
+	const int textured = (range->texture != NATIVE_GFX_INVALID);
+	int k;
+
+	memcpy(twin->clipFromModel, clipFromModel, sizeof(twin->clipFromModel));
+	for (k = 0; k < 4; k++)
+	{
+		twin->tint[k] = range->tint[k];
+		twin->far[k] = draw->far[k];
+	}
+	twin->params[0] = textured ? 1.0f : 0.0f;
+	twin->params[1] = 0.0f;
+	twin->params[2] = draw->depthTint;
+	twin->params[3] = range->alphaCutoff;
+	twin->look[0] = draw->tone;
+	twin->look[1] = range->modulation;
+	twin->look[2] = range->ditherWeight;
+	twin->look[3] = 0.0f;
+	twin->dither[0] = 0.0f;
+	twin->dither[1] = 0.0f;
+	twin->dither[2] = range->uvFudge[0];
+	twin->dither[3] = range->uvFudge[1];
+	// The inverse of the PSX projection for the dither grid: ndc x
+	// = p0 * x + p12, ndc y = p5 * y + p13 (w is 1 in the PSX map).
+	twin->proj[0] = s_psxUniforms.projection[0];
+	twin->proj[1] = s_psxUniforms.projection[12];
+	twin->proj[2] = s_psxUniforms.projection[5];
+	twin->proj[3] = s_psxUniforms.projection[13];
+	// The water line (step 4e): the side of the plane this draw keeps.
+	for (k = 0; k < 4; k++)
+	{
+		twin->split[k] = draw->split[k];
+		twin->splitMode[k] = 0.0f;
+	}
+	twin->splitMode[0] = (float)draw->splitKeep;
+}
+
+// ONE NATIVE MESH (step 4c), drawn into the split's place as the probe is -
+// the same calls in the same order as NativeRenderer_DrawNativeProbe (clip,
+// projection, the block's matrix, the depth clear of the split's box, draw
+// state, program), then one indexed draw per range with its own block (the
+// block is copied per draw into the frame's ring, so every draw keeps its own
+// tint and texture), and afterwards the same state reset. Slot 0 is put back
+// when a range bound a texture there. The retail twin (look = 1) draws one
+// triangle per draw in the retail paint order instead (above), when it has it.
+int NativeRenderer_DrawNativeMesh(const struct NativeMeshDraw *draw, const RECT16 *clip, const DISPENV *dispenv, int onScreen)
+{
+	struct NativeLayerUniforms block;
+	int textureBound = 0;
+	int drawn = 0;
+	int i;
+
+	if ((draw == NULL) || (s_nativeLayerShader == NATIVE_GFX_INVALID) || (clip->w <= 0) || (clip->h <= 0) || (draw->rangeCount <= 0) ||
+	    (draw->vertexBuffer == NATIVE_GFX_INVALID) || (draw->indexBuffer == NATIVE_GFX_INVALID))
+	{
+		return 0;
+	}
+	if (draw->look && (s_nativeTwinShader == NATIVE_GFX_INVALID))
+	{
+		return 0;
+	}
+	if (!onScreen || !NativeGfx_TargetDepth(s_mainRenderTarget))
+	{
+		return 0;
+	}
+
+	NativeRenderer_SetupClipMode(clip, dispenv, onScreen);
+	NativeRenderer_SetOffscreenState(clip, !onScreen);
+	NativeRenderer_SetProjection(clip, dispenv, !onScreen);
+
+	{
+		const float *p = s_psxUniforms.projection;
+		const float *s = draw->screenFromModel;
+
+		for (int column = 0; column < 4; column++)
+		{
+			const double s0 = (double)s[column * 4 + 0];
+			const double s1 = (double)s[column * 4 + 1];
+			const double s2 = (double)s[column * 4 + 2];
+			const double s3 = (double)s[column * 4 + 3];
+
+			block.clipFromModel[column * 4 + 0] = (float)((double)p[0] * s0 + (double)p[12] * s3);
+			block.clipFromModel[column * 4 + 1] = (float)((double)p[5] * s1 + (double)p[13] * s3);
+			block.clipFromModel[column * 4 + 2] = (float)s2;
+			block.clipFromModel[column * 4 + 3] = (float)s3;
+		}
+	}
+
+	// The water line (step 4e): the side of the plane this draw keeps, the
+	// same for every range (0 = the whole mesh, what every other draw has).
+	for (i = 0; i < 4; i++)
+	{
+		block.split[i] = draw->split[i];
+		block.splitMode[i] = 0.0f;
+	}
+	block.splitMode[0] = (float)draw->splitKeep;
+
+	if (draw->clearDepth)
+	{
+		int boxX = 0;
+		int boxY = 0;
+		int boxW = 0;
+		int boxH = 0;
+
+		NativeRenderer_ScissorBoxInForce(&boxX, &boxY, &boxW, &boxH);
+		NativeGfx_ClearDepth(boxX, boxY, boxW, boxH);
+	}
+
+	{
+		// The retail twin draws in the retail paint order when it has it: the
+		// keys of one cell when they come with the draw (a bin marker), else
+		// the whole order worked out here.
+		const u32 paintCount = draw->look ? ((draw->twinKeys != NULL) ? NativeRenderer_TwinGivenOrder(draw) : NativeRenderer_TwinPaintOrder(draw)) : 0u;
+		const u64 *paintKeys = (draw->twinKeys != NULL) ? draw->twinKeys : s_twinPaintKeys;
+		const NativeGfxDrawState state = {
+		    .depthTest = 1,
+		    .depthWrite = 1,
+		    .depthCompare = (paintCount > 0u) ? NATIVE_GFX_COMPARE_ALWAYS : NATIVE_GFX_COMPARE_GREATER_OR_EQUAL,
+		    .cull = (NativeGfxCull)draw->cull,
+		    .colorWriteOff = NATIVE_GFX_COLOR_A,
+		};
+
+		NativeGfx_SetBlendMode(BM_NONE);
+		NativeGfx_SetDrawState(&state);
+		NativeGfx_BindProgram(draw->look ? s_nativeTwinShader : s_nativeLayerShader);
+		NativeGfx_BindVertexBuffer(draw->vertexBuffer);
+		NativeGfx_BindIndexBuffer(draw->indexBuffer);
+
+		// One triangle per draw; the block and texture change only when the
+		// range does. drawn counts the ranges that drew a triangle.
+		if (paintCount > 0u)
+		{
+			int current = -1;
+			u64 used = 0;
+			u32 k;
+
+			for (k = 0; k < paintCount; k++)
+			{
+				const u32 first = NATIVE_TWIN_PAINT_PLACE(paintKeys[k]) * 3u;
+				int r = -1;
+
+				for (i = 0; i < draw->rangeCount; i++)
+				{
+					if ((first >= draw->ranges[i].firstIndex) && ((first - draw->ranges[i].firstIndex) < draw->ranges[i].indexCount))
+					{
+						r = i;
+						break;
+					}
+				}
+				if (r < 0)
+				{
+					continue;
+				}
+				if (r != current)
+				{
+					const struct NativeMeshRangeDraw *range = &draw->ranges[r];
+					struct NativeTwinUniforms twin;
+
+					if (range->texture != NATIVE_GFX_INVALID)
+					{
+						NativeGfx_BindTexture(0, range->texture, NATIVE_GFX_FILTER_KEEP);
+						textureBound = 1;
+					}
+					NativeRenderer_TwinRangeBlock(draw, range, block.clipFromModel, &twin);
+					NativeGfx_UpdateUniforms(s_nativeTwinShader, &twin);
+					current = r;
+				}
+				NativeGfx_DrawIndexed((int)first, 3, draw->vertexOffset);
+				if ((used & ((u64)1 << (r & 63))) == 0u)
+				{
+					used |= (u64)1 << (r & 63);
+					drawn++;
+				}
+			}
+		}
+
+		for (i = 0; (paintCount == 0u) && (draw->twinKeys == NULL) && (i < draw->rangeCount); i++)
+		{
+			// The retail twin (step 4d Z1): its own program and block.
+			if (draw->look)
+			{
+				const struct NativeMeshRangeDraw *range = &draw->ranges[i];
+				struct NativeTwinUniforms twin;
+
+				if ((range->indexCount == 0u) || (range->indexCount > 0x7FFFFFFFu))
+				{
+					continue;
+				}
+				if (range->texture != NATIVE_GFX_INVALID)
+				{
+					NativeGfx_BindTexture(0, range->texture, NATIVE_GFX_FILTER_KEEP);
+					textureBound = 1;
+				}
+
+				NativeRenderer_TwinRangeBlock(draw, range, block.clipFromModel, &twin);
+				NativeGfx_UpdateUniforms(s_nativeTwinShader, &twin);
+				NativeGfx_DrawIndexed((int)range->firstIndex, (int)range->indexCount, draw->vertexOffset);
+				drawn++;
+				continue;
+			}
+
+			const struct NativeMeshRangeDraw *range = &draw->ranges[i];
+			const int textured = (range->texture != NATIVE_GFX_INVALID);
+
+			if ((range->indexCount == 0u) || (range->indexCount > 0x7FFFFFFFu))
+			{
+				continue;
+			}
+			if (textured)
+			{
+				NativeGfx_BindTexture(0, range->texture, NATIVE_GFX_FILTER_KEEP);
+				textureBound = 1;
+			}
+
+			block.tint[0] = range->tint[0];
+			block.tint[1] = range->tint[1];
+			block.tint[2] = range->tint[2];
+			block.tint[3] = range->tint[3];
+			block.params[0] = textured ? 1.0f : 0.0f;
+			block.params[1] = (textured && range->srgb) ? 1.0f : 0.0f;
+			block.params[2] = draw->depthTint;
+			block.params[3] = range->alphaCutoff;
+
+			NativeGfx_UpdateUniforms(s_nativeLayerShader, &block);
+			NativeGfx_DrawIndexed((int)range->firstIndex, (int)range->indexCount, draw->vertexOffset);
+			drawn++;
+		}
+	}
+
+	// Back to what the PSX path relies on, as after the probe.
+	NativeGfx_SetDrawState(NULL);
+	if (s_boundVertexBuffer >= 0)
+	{
+		NativeGfx_BindVertexBuffer(s_vertexBuffer[s_boundVertexBuffer]);
+	}
+	else
+	{
+		NativeGfx_BindVertexBuffer(NATIVE_GFX_INVALID);
+	}
+	s_previousShader = (ShaderID)-1;
+	s_previousBlendMode = BM_NONE;
+	NativeRenderer_MarkPSXUniformsDirty();
+
+	if (textureBound)
+	{
+		NativeGfx_BindTexture(0, (s_lastBoundTexture == (TextureID)-1) ? 0 : s_lastBoundTexture, NATIVE_GFX_FILTER_KEEP);
+	}
+
+	return drawn;
+}
+
 int NativeRenderer_InitialisePSX(void)
 {
 	SDL_memset(s_vram.cpuPixels, 0, sizeof(s_vram.cpuPixels));
@@ -2101,6 +3075,7 @@ int NativeRenderer_InitialisePSX(void)
 	// and would not get one anyway. The level is already fixed here - file and
 	// --msaa have been read -, and it is applied like every later one.
 	NativeRenderer_ApplyMsaa();
+	NativeRenderer_InitNativeLayer();
 
 	// gen VRAM texture (single, persistent - mirrors PS1's single 1MB VRAM)
 	{
@@ -3974,6 +4949,9 @@ void NativeRenderer_SaveVRAM(const char *outputFileName, int x, int y, int width
 	FILE *fp = fopen(outputFileName, "wb");
 	if (fp == NULL)
 	{
+		// A missing folder, or a path past MAX_PATH without long paths on
+		// Windows: said, so that the dump line after it is not taken for a file.
+		Platform_LogWarn("[CTR Dump] %s: NOT WRITTEN, the file does not open\n", outputFileName);
 		return;
 	}
 
@@ -5054,10 +6032,12 @@ void NativeRenderer_SwapWindow(void)
 //
 // WHY IT NEVER WORKED, two independent reasons:
 //
-//   1. The Vulkan back end attaches no depth/stencil attachment to its
-//      render pass. pDepthStencilAttachment does not occur in the whole file.
+//   1. The Vulkan back end attached no depth/stencil attachment to its
+//      render pass. pDepthStencilAttachment did not occur in the whole file.
 //      Without an attachment Vulkan ignores the stencil state, and every fragment
-//      passes the test.
+//      passes the test. (With --native-preview the main target now carries a
+//      depth attachment - see the end of this note. It has no stencil aspect,
+//      and stencil stays unused.)
 //
 //   2. Even with an attachment it would have done nothing. The mode comes from
 //      split->drawPrimMode, which stems from the singlePrimitive argument of
@@ -5083,6 +6063,15 @@ void NativeRenderer_SwapWindow(void)
 // flag that forced the back end to 0 and that would have been ignored without an attachment
 // anyway. The PSX has no depth buffer; it sorts through the
 // ordering table. There was nothing to test and there is nothing.
+//
+// WHAT STANDS NOW. With --native-preview the main target carries a depth
+// attachment again while a native object is bound
+// (NativeRenderer_WantNativeDepth), for native draws only.
+// The PSX draws in such a pass keep depth test and depth write off - the draw
+// state they have always had - so they neither read nor write it; the stencil
+// stays unused. Without the switch no target has one, as before. The attempt
+// above is the reason the switch exists: whether an attachment alone changes a
+// PSX pixel is answered by comparing a run with it against a run without.
 
 void NativeRenderer_SetBlendMode(BlendMode blendMode)
 {

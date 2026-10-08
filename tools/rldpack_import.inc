@@ -24,8 +24,11 @@
 //   @model group <faces> <name>                OBJ: one per o/g line, in file order
 //   @model colors vertex|material|texture|grey|mixed
 //                                              where the colors of the corners came from
-// char-poses and char-wheel keep their lines (@file ply, no @model); an OBJ
-// there is model-ply-only.
+// char-poses keeps its lines (@file ply, no @model); an OBJ there is
+// model-ply-only. char-wheel reads PLY or OBJ by itself
+// (tools/rldpack_wheel.inc, @file wheel). make-char --wheel-model reads PLY or OBJ
+// (RLDMK_ROLE_CHAR_WHEEL): @file wheel-model <state> <path> <bytes>, no
+// @model lines (they are about the model itself).
 
 enum
 {
@@ -35,11 +38,18 @@ enum
 };
 
 // Who reads a model: make-char and --diagnose (main), --mask-model (mask);
-// the poses and the wheel read PLY only.
+// the poses read PLY only; make-char --wheel-model (a wheel of one's own for
+// the native model) PLY or OBJ. RLDMK_ROLE_WHEEL is no longer passed by
+// anyone (char-wheel reads PLY or OBJ by itself, tools/rldpack_wheel.inc); it
+// stays only in the table of readers below.
 #define RLDMK_ROLE_MAIN 1u
 #define RLDMK_ROLE_MASK 2u
 #define RLDMK_ROLE_POSE 4u
 #define RLDMK_ROLE_WHEEL 8u
+#define RLDMK_ROLE_CHAR_WHEEL 16u
+
+// Set while make-char reads its --wheel-model: no @model lines.
+static int s_rldMkEmitModelOff;
 
 // Where the color of a corner came from (bits: a model may mix them).
 #define RLDMK_COLORS_VERTEX 1u
@@ -84,7 +94,7 @@ struct RldMkModelInfo
 // the self-test runs quietly.
 static void RldMk_EmitModel(const char *key, const char *a, const char *b, const char *c, const char *d)
 {
-	if (!s_machine || s_rldMkQuiet)
+	if (!s_machine || s_rldMkQuiet || s_rldMkEmitModelOff)
 	{
 		return;
 	}
@@ -142,9 +152,10 @@ struct RldMkReader
 };
 
 static const struct RldMkReader s_rldMkReaders[] = {
-	{RLDMK_FORMAT_PLY, "PLY", "a", "ply", {".ply", NULL, NULL, NULL}, RLDMK_ROLE_MAIN | RLDMK_ROLE_MASK | RLDMK_ROLE_POSE | RLDMK_ROLE_WHEEL,
-	 RldMk_DetectPly, RldMk_ReadPlyModel},
-	{RLDMK_FORMAT_OBJ, "OBJ", "an", "obj", {".obj", NULL, NULL, NULL}, RLDMK_ROLE_MAIN | RLDMK_ROLE_MASK, RldObj_Detect, RldObj_Parse},
+	{RLDMK_FORMAT_PLY, "PLY", "a", "ply", {".ply", NULL, NULL, NULL},
+	 RLDMK_ROLE_MAIN | RLDMK_ROLE_MASK | RLDMK_ROLE_POSE | RLDMK_ROLE_WHEEL | RLDMK_ROLE_CHAR_WHEEL, RldMk_DetectPly, RldMk_ReadPlyModel},
+	{RLDMK_FORMAT_OBJ, "OBJ", "an", "obj", {".obj", NULL, NULL, NULL}, RLDMK_ROLE_MAIN | RLDMK_ROLE_MASK | RLDMK_ROLE_CHAR_WHEEL, RldObj_Detect,
+	 RldObj_Parse},
 };
 
 #define RLDMK_READER_COUNT (sizeof(s_rldMkReaders) / sizeof(s_rldMkReaders[0]))
@@ -369,7 +380,7 @@ static const struct RldMkReader *RldMk_Choose(const char *path, const struct Rld
 
 	if ((reader->roles & role) == 0u)
 	{
-		RldMk_Say("error", "model-ply-only", reader->name, "Poses/wheels are read from PLY only for now.");
+		RldMk_Say("error", "model-ply-only", reader->name, "Poses are read from PLY only for now.");
 		return NULL;
 	}
 	return reader;
@@ -404,11 +415,12 @@ static int RldMk_ImportModel(const char *path, const u8 *data, size_t size, stru
 	snprintf(bytes, sizeof(bytes), "%u", (u32)size);
 	if (!s_rldMkQuiet)
 	{
-		const char *kind = (role == RLDMK_ROLE_MASK) ? "mask-model"
-		                   : !described              ? "ply"
-		                   : (choice.reader != NULL) ? choice.reader->word
-		                   : (choice.named != NULL)  ? choice.named->word
-		                                             : "ply";
+		const char *kind = (role == RLDMK_ROLE_MASK)         ? "mask-model"
+		                   : (role == RLDMK_ROLE_CHAR_WHEEL) ? "wheel-model"
+		                   : !described                      ? "ply"
+		                   : (choice.reader != NULL)         ? choice.reader->word
+		                   : (choice.named != NULL)          ? choice.named->word
+		                                                     : "ply";
 
 		Rld_Emit("file", kind, "ok", path, bytes, (const char *)NULL);
 		if (described && (choice.reader != NULL))
@@ -426,6 +438,10 @@ static int RldMk_ImportModel(const char *path, const u8 *data, size_t size, stru
 		else if (role == RLDMK_ROLE_POSE)
 		{
 			printf("rldpack char-poses %s\n", path);
+		}
+		else if (role == RLDMK_ROLE_CHAR_WHEEL)
+		{
+			printf("rldpack make-char --wheel-model %s\n", path);
 		}
 	}
 
@@ -470,7 +486,9 @@ static int RldMk_LoadModel(const char *path, struct RldMkPly *ply, struct RldMkM
 
 	if (!Rld_ReadFile(path, &data, &size))
 	{
-		const char *kind = (role == RLDMK_ROLE_MASK) ? "mask-model" : (((role == RLDMK_ROLE_MAIN) && Rld_EndsWithNoCase(path, ".obj")) ? "obj" : "ply");
+		const char *kind = (role == RLDMK_ROLE_MASK)         ? "mask-model"
+		                   : (role == RLDMK_ROLE_CHAR_WHEEL) ? "wheel-model"
+		                                                     : (((role == RLDMK_ROLE_MAIN) && Rld_EndsWithNoCase(path, ".obj")) ? "obj" : "ply");
 
 		if (s_rldReadTooLarge)
 		{
@@ -488,6 +506,11 @@ static int RldMk_LoadModel(const char *path, struct RldMkPly *ply, struct RldMkM
 		{
 			Rld_Emit("file", kind, "missing", path, "0", (const char *)NULL);
 			RldMk_Say("error", "model-open", path, "The model file %s cannot be opened.", path);
+		}
+		else if (role == RLDMK_ROLE_CHAR_WHEEL)
+		{
+			Rld_Emit("file", kind, "missing", path, "0", (const char *)NULL);
+			RldMk_Say("error", "wheel-open", path, "The wheel model file %s cannot be opened.", path);
 		}
 		else
 		{

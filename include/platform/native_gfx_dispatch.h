@@ -49,11 +49,19 @@
 	X(void, destroyTexture, (TextureID texture))                                                                                                   \
 	X(void, bindTexture, (int slot, TextureID texture, NativeGfxFilter filter))                                                                     \
 	X(NativeGfxFilter, textureFilter, (TextureID texture))                                                                                         \
+	X(TextureID, createTextureLevels, (const NativeGfxTextureLevelsDesc *desc))                                                                    \
+	X(void, setTextureSampling, (TextureID texture, const NativeGfxSampling *sampling))                                                           \
+	X(void, textureLimits, (NativeGfxTextureLimits *out))                                                                                          \
+	X(u32, shrinkStaging, (u32 keepBytes))                                                                                                         \
+	X(u32, stagingBytes, (void))                                                                                                                   \
                                                                                                                                                    \
 	X(NativeGfxBuffer, createVertexBuffer, (const NativeGfxVertexBufferDesc *desc))                                                                 \
 	X(void, destroyVertexBuffer, (NativeGfxBuffer buffer))                                                                                          \
 	X(void, bindVertexBuffer, (NativeGfxBuffer buffer))                                                                                             \
 	X(void, updateVertexBuffer, (NativeGfxBuffer buffer, int offset, int bytes, const void *source))                                                \
+	X(NativeGfxBuffer, createIndexBuffer, (const NativeGfxIndexBufferDesc *desc))                                                                   \
+	X(void, destroyIndexBuffer, (NativeGfxBuffer buffer))                                                                                           \
+	X(void, bindIndexBuffer, (NativeGfxBuffer buffer))                                                                                              \
                                                                                                                                                    \
 	X(NativeGfxTarget, createTarget, (const NativeGfxTargetDesc *desc))                                                                             \
 	X(void, resizeTarget, (NativeGfxTarget target, int width, int height))                                                                          \
@@ -64,6 +72,8 @@
 	X(int, targetHeight, (NativeGfxTarget target))                                                                                                  \
 	X(void, setTargetSamples, (NativeGfxTarget target, int samples))                                                                                \
 	X(int, targetSamples, (NativeGfxTarget target))                                                                                                 \
+	X(void, setTargetDepth, (NativeGfxTarget target, int enable))                                                                                   \
+	X(int, targetDepth, (NativeGfxTarget target))                                                                                                   \
 	X(void, setSampleShading, (int enable))                                                                                                         \
                                                                                                                                                    \
 	X(ShaderID, createProgram, (const NativeGfxProgramDesc *desc))                                                                                  \
@@ -77,9 +87,12 @@
 	X(int, setWireframe, (int enable))                                                                                                              \
                                                                                                                                                    \
 	X(void, setBlendMode, (BlendMode blend))                                                                                                        \
+	X(void, setDrawState, (const NativeGfxDrawState *state))                                                                                        \
 	X(void, clearColor, (float r, float g, float b, float a))                                                                                       \
 	X(void, clearColorBuffer, (void))                                                                                                               \
+	X(void, clearDepth, (int x, int y, int width, int height))                                                                                      \
 	X(void, draw, (int firstVertex, int vertexCount))                                                                                               \
+	X(void, drawIndexed, (int firstIndex, int indexCount, int vertexOffset))                                                                        \
 	X(void, readPixels, (int x, int y, int width, int height, NativeGfxTextureFormat format, void *dst, int rowPixels))                             \
                                                                                                                                                    \
 	X(int, timersSupported, (void))                                                                                                                 \

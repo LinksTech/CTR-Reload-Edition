@@ -63,6 +63,7 @@
 #define AN_VAL              1024
 #define AN_POSES            6       // in the order of the preview file (RLDPS1)
 #define AN_LIST_ROWS        4       // rows of the pose list shown at once
+#define AN_LIST_ROWS_COMPACT 2      // the same in the compact layout of the page
 #define AN_NOTE_LINES       3
 
 #define AN_TEXT_NOTE        L"Poses of your own for steering and the other animations."
@@ -138,6 +139,10 @@ static void An_FieldPath(wchar_t *out, int cap)
 
 // Height of a wrapping label at this width: its lines, at least one, at most
 // AN_NOTE_LINES.
+// The compact layout of the page (rs_char.c, CharAnim_Layout): notes on one line, the
+// whole text as the tooltip (Rs_LabelOneLine).
+static int s_anCompact;
+
 static int An_TextHeight(HWND label, int width)
 {
     wchar_t *text = Rs_GetText(label);
@@ -157,6 +162,9 @@ static int An_TextHeight(HWND label, int width)
         rc.bottom = 0;
         DrawTextW(dc, text ? text : L"", -1, &rc, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX | DT_EXPANDTABS);
         h = rc.bottom;
+        Rs_LabelOneLine(label, s_anCompact && tm.tmHeight > 0 && h > tm.tmHeight);
+        if (s_anCompact && tm.tmHeight > 0 && h > tm.tmHeight)
+            h = tm.tmHeight;
         if (tm.tmHeight > 0 && h > tm.tmHeight * AN_NOTE_LINES)
             h = tm.tmHeight * AN_NOTE_LINES;
         SelectObject(dc, old);
@@ -571,7 +579,7 @@ void CharAnim_Create(HWND page, HWND view)
 
 // Card "Animations" from top between left and right, its fields beside a
 // label column at least labelW wide (the page's). Returns the bottom of the card.
-int CharAnim_Layout(HWND page, int left, int right, int top, int labelW)
+int CharAnim_Layout(HWND page, int left, int right, int top, int labelW, int compact)
 {
     RECT card, in;
     int x, y, h, w, fieldW, width, itemH;
@@ -580,6 +588,7 @@ int CharAnim_Layout(HWND page, int left, int right, int top, int labelW)
     wchar_t *text;
     int i;
 
+    s_anCompact = compact;
     if (!g_an.created)
         return top;
     // Nothing is cut short: the label column holds this card's labels too.
@@ -613,26 +622,26 @@ int CharAnim_Layout(HWND page, int left, int right, int top, int labelW)
     y = in.top;
     h = An_TextHeight(g_an.note, width);
     MoveWindow(g_an.note, in.left, y, width, h, TRUE);
-    y += h + Rs_Px(10);
+    y += h + Rs_Px(compact ? 6 : 10);
     MoveWindow(g_an.folderLabel, in.left, y + Rs_Px(6), labelW, Rs_Px(20), TRUE);
     w = fieldW - browseW - clearW - Rs_Px(16);
     MoveWindow(g_an.folder, x, y + Rs_Px(2), w > Rs_Px(24) ? w : Rs_Px(24), Rs_Px(28), TRUE);
     MoveWindow(g_an.browse, in.right - browseW - clearW - Rs_Px(8), y, browseW, Rs_Px(32), TRUE);
     MoveWindow(g_an.clear, in.right - clearW, y, clearW, Rs_Px(32), TRUE);
-    y += Rs_Px(40);
+    y += Rs_Px(compact ? 36 : 40);
 
     // The six poses, one line each, the whole width of the card; AN_LIST_ROWS
     // of them at once, the list scrolls (the card fits beside the bar of the page).
     itemH = (int)SendMessageW(g_an.list, LB_GETITEMHEIGHT, 0, 0);
     if (itemH <= 0)
         itemH = Rs_Px(18);
-    h = AN_LIST_ROWS * itemH + 2 * Rs_Metric(g_an.list, SM_CYBORDER) + Rs_Px(4);
+    h = (compact ? AN_LIST_ROWS_COMPACT : AN_LIST_ROWS) * itemH + 2 * Rs_Metric(g_an.list, SM_CYBORDER) + Rs_Px(4);
     MoveWindow(g_an.list, in.left, y, width, h, TRUE);
-    y += h + Rs_Px(10);
+    y += h + Rs_Px(compact ? 6 : 10);
 
     // The pose choice, "Mark body parts..." beside it where it fits.
     MoveWindow(g_an.showLabel, in.left, y + Rs_Px(6), labelW, Rs_Px(20), TRUE);
-    w = Rs_Px(240) < fieldW ? Rs_Px(240) : fieldW;
+    w = Rs_Px(compact ? 180 : 240) < fieldW ? Rs_Px(compact ? 180 : 240) : fieldW;
     MoveWindow(g_an.show, x, y + Rs_Px(2), w, Rs_Px(200), TRUE);
     text = Rs_GetText(g_an.mark);
     h = Rs_TextWidth(g_an.mark, text) + Rs_Px(32);
@@ -643,7 +652,7 @@ int CharAnim_Layout(HWND page, int left, int right, int top, int labelW)
         y += Rs_Px(38);
         MoveWindow(g_an.mark, x, y, h < fieldW ? h : fieldW, Rs_Px(32), TRUE);
     }
-    y += Rs_Px(40);
+    y += Rs_Px(compact ? 36 : 40);
 
     h = An_TextHeight(g_an.before, width);
     MoveWindow(g_an.before, in.left, y, width, h, TRUE);

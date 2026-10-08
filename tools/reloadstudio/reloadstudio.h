@@ -69,14 +69,14 @@
 // ---------------------------------------------------------------------------
 #include "ctr_build_id.h"
 #ifndef CTR_NATIVE_VERSION
-#define CTR_NATIVE_VERSION "0.0.5 Beta"
+#define CTR_NATIVE_VERSION "0.7.5 Beta"
 #endif
 #ifndef CTR_NATIVE_BUILD_ID
 #define CTR_NATIVE_BUILD_ID "unknown"
 #endif
 #define RS_WIDEN2(x) L##x
 #define RS_WIDEN(x)  RS_WIDEN2(x)
-#define RS_VERSION_W  RS_WIDEN(CTR_NATIVE_VERSION)     // L"0.0.5 Beta"
+#define RS_VERSION_W  RS_WIDEN(CTR_NATIVE_VERSION)     // L"0.7.5 Beta"
 #define RS_BUILD_ID_W RS_WIDEN(CTR_NATIVE_BUILD_ID)    // L"<12 hex>" or L"<12 hex>-dirty-<6 hex>"
 
 // Message when there is no game data next to the game (pages Track and Test).
@@ -227,7 +227,14 @@
 //             some pose and are therefore drawn from both sides (always next to
 //             two-sided),
 //             remeshed <triangles of the source> <of the hulls> <after the
-//             reduction> <open edges before> <after>: only with --remesh on
+//             reduction> <open edges before> <after>: only with --remesh on,
+//             native-model <vertices> <triangles> <poses 0|47> <materials>
+//             <textures> <wheels | hidden> <bytes of CNET and CTXT>: only with
+//             --native-model on, when the native model was made (preview;
+//             tools/rldpack_native.inc); its findings are @msg native-model,
+//             native-texture (warning: a material drawn without its texture)
+//             and native-texture-size (error: a side not a power of two
+//             16..2048), shown under the card Import
 //   @model    what rldpack read of the model, after @file ply | obj:
 //             format <ply | obj>     the format, told by the content (the file
 //                                    ending only has to agree: model-misnamed)
@@ -336,6 +343,14 @@
 //             given an event of its own; event: boost hit spin bigair drop shield
 //             passing fire short-yes short-hit, none = left out)
 //             [--map-color RRGGBB]   (only when a colour was chosen)
+//             [--shadow retail|auto|off] [--exhaust retail|off|x,y,z[;x,y,z]]
+//             (the look, tab In-game look, card In the race; preview feature,
+//             open to everyone: only where it differs from rldpack's default -
+//             retail/retail with the kart wheels, auto/off without them. The
+//             choices start at retail/retail, so with the wheels hidden
+//             "--shadow retail --exhaust retail" until the author chooses: the
+//             bytes stay those of before the look, and nothing with the wheels;
+//             in the user mode they start at rldpack's defaults)
 //             [--up z] [--forward -z]   (when the card Import of the tab Extras
 //             says Up Z or Forward -Z; +Y up and +Z forward are the defaults)
 //             [--colors 64]   (when the card says Colors 64; 128 is the default)
@@ -343,6 +358,20 @@
 //             folder of the tab Model is not empty)
 //             [--vertex-colors modulate|color]   (an OBJ only, when the card
 //             Import of the tab Extras does not say Auto)
+//             [--native-model on]   (preview feature, open to everyone: an
+//             OBJ, "Native model" ticked on the card Import and Show kart
+//             wheels off - or on with a wheel model of the card Wheels; never
+//             otherwise, so without the tick the command and the character's
+//             bytes are those of before)
+//             [--wheel-model <obj|ply> [--wheel-size <50..200>]]   (the card
+//             Wheels, preview feature: with --native-model on and Show kart
+//             wheels on; --wheel-size only when it is not 100)
+//             THE USER MODE (Rs_NativeForUsers, today with the switch): no
+//             --repair, --open-parts, --remesh, --reduce or --colors (rldpack's
+//             defaults, the choices hidden), --native-model on for every OBJ
+//             with Show kart wheels off or a wheel model, without a tick box
+//             (never beside the kart wheels without one: rldpack refuses it);
+//             otherwise and for a PLY none (classic model only)
 //             --preview <file> [--out <f>]      check; writes only the preview files
 //   make-char --machine --model ... --out <f>  build: the same switches without
 //             --check, --preview, --icon-preview and --voice-preview
@@ -372,6 +401,18 @@
 //   neutral|left|right, turn <degrees>, tab <1..5|name>, extras
 //   import|wheels|animations, up y|z, forward z|-z, colors 128|64, vertex-colors
 //   auto|modulate|color (the card Import; the last passed for an OBJ only),
+//   native-model on|off (the card Import; preview feature: "locked - coming
+//   soon" without --enable-preview-features, passed for an OBJ only; in the
+//   user mode "on" only logs that it is always on for an OBJ), fallback on|off
+//   ("Include classic fallback model": always "locked - coming soon"),
+//   look portrait|race (the card of the tab In-game look), shadow
+//   retail|auto|off, exhaust retail|custom|off, exhaust-point <1|2> <x> <y> <z>
+//   (game units of the built model; custom follows) or <1|2> none,
+//   exhaust-pick <1|2> <x pixel> <y pixel> (as Pick and a click at that pixel
+//   of the preview; pose Neutral) - the last four "locked - coming soon"
+//   without --enable-preview-features; in the
+//   user mode repair, open-parts, remesh, reduce, reduce-to-fit and colors
+//   fail with "hidden",
 //   problem <n> (as a click on message n), report <file>, the verbs of the cards
 //   Wheels and Animations (rs_wheels.c, rs_anim.c), and for the tab Voices:
 //   voices <folder|none>          the folder (the check follows)
@@ -388,6 +429,10 @@
 // sides). Corners counter-clockwise seen from the side the game draws. The
 // older "RLDPV1\0\0" is the same with x, y, z in whole game units; rs_view.c
 // reads both (writer: RldMk_Preview in tools/rldpack_char.inc).
+// With --native-model on (preview feature) the native model follows: "RLDPN1",
+// its textures decoded, its triangles in the same three poses (THE NATIVE
+// MODEL IN THE PREVIEW, tools/rldpack_native.inc); rs_view.c reads it only with
+// --enable-preview-features and draws it in place of the model.
 //
 // char-poses (the card "Animations" of the page "Character", rs_anim.c; only
 // with --enable-preview-features) - poses of one's own for the preview, never a
@@ -410,23 +455,28 @@
 // the triangle records of RLDPV1 (the faces before repair and reduction, drawn
 // from both sides).
 //
-// char-wheel (the card "Wheels" of the page "Character", rs_wheels.c; only with
-// --enable-preview-features) - a wheel of one's own for the preview, never a
-// container (tools/rldpack_wheel.inc):
-//   char-wheel --machine --model <ply> --preview <file>
+// char-wheel (the card "Wheels" of the page "Character", rs_wheels.c; a preview
+// feature open to everyone) - a wheel of one's own for the preview, never a
+// container (tools/rldpack_wheel.inc; the rules of make-char --wheel-model):
+//   char-wheel --machine --model <obj|ply> [--up z] [--forward -z] --preview <file>
 //   @rldpack  1  char-wheel
-//   @value    model, up, forward, repair, reduce, preview  <value> <origin>
-//   @file     ply ok | missing <name> <bytes>
-//   @msg      as make-char; own ids: wheel-tris (error, more than 128 triangles
-//             after the reduction), wheel-flat (error), wheel-off-axis (warning)
-//   @char     repaired (as make-char), fit <factor> <across before> <after>,
-//             reduced <before> <after>, wheel <triangles> <across> <wide> <two-sided>
+//   @value    model, up, forward, preview  <value> <origin>
+//   @file     wheel ok | missing <name> <bytes>
+//   @msg      as make-char --wheel-model: wheel-triangles, wheel-vertices,
+//             wheel-materials, wheel-texture-size, wheel-texture-file,
+//             wheel-uv, wheel-flat, wheel-wide (errors), wheel-texture,
+//             wheel-off-axis (warnings)
+//   @char     wheel-mesh <obj|ply> <points> <materials>, wheel-texture <width>
+//             <height> <file> | none, fit <factor> <across before> <after>,
+//             wheel <triangles> <across> <wide> 0
 //   @value    wheel-size <across> built
 //   @file     preview ok | failed <name> <bytes>
 //   @end      <exit code>   (no @result: nothing is built)
-// The --preview file (little endian): "RLDPW1\0\0", u32 triangles, per triangle
-// 3 corners as in RLDPV1 but in 1/16 game units, wheel-local: the axle centre in
-// the origin, the axle along X, the outer side +X, 32 game units across.
+// The --preview file (little endian): "RLDPW2\0\0", the texture (RGBA, a side
+// above the preview edge halved as in RLDPN1), then the triangles: per corner
+// s16 x y z in 1/16 game units, Q16 u v and the wheel's one color; wheel-local:
+// the axle centre in the origin, the axle along X, the outer side +X, 32 game
+// units across. The layout: the head of tools/rldpack_wheel.inc.
 // ---------------------------------------------------------------------------
 
 #define RS_PROTOCOL 1
@@ -472,6 +522,18 @@ void Rs_PageViewSize(HWND page, int *w, int *h);
 // line for every page (the deepest heading of all); a page without a subtitle
 // may start its cards higher, at this line plus a margin.
 int Rs_PageHeadBottom(HWND page, int w);
+
+// A compact heading for a page laid out in little room (1366 x 768 at 150 %):
+// the title one line in the section font (12 pt) close to the top, so that
+// Rs_PageHeadBottom is about 32 instead of 68. A layout sets it before it asks
+// Rs_PageHeadBottom; 0 = the heading as always. Only rs_char.c uses it.
+void Rs_PageSetCompactHead(HWND page, int on);
+
+// Compact layouts: a label on one line, cut with "..." where its text is
+// longer, the whole text as its tooltip (refreshed by every call); on = 0
+// takes back what an earlier call did (a label it never touched stays as it
+// is, its own tooltip too). For notes without a tooltip of their own.
+void Rs_LabelOneLine(HWND label, int on);
 
 // Minimum size of a page in 96-dpi pixels when its definition says 0.
 #define RS_PAGE_MIN_W 964
@@ -667,6 +729,19 @@ int Rs_TextWidth(HWND h, const wchar_t *text);
 // checks it first - EnableWindow alone does not stop a posted WM_COMMAND.
 extern int g_rsPreviewFeatures;
 
+// The native model for users (renderer step 6): 1 = the page Character is
+// what users get once the native model is released - every OBJ is built
+// with its own mesh and textures beside the classic model, the reduction and
+// palette choices are fixed defaults and hidden, the preview shows the native
+// model. Today the same as g_rsPreviewFeatures. It changes the command of a
+// classic export too (no --reduce off; the look at rldpack's defaults), so it
+// is not the release of the native model itself: that is open to everyone
+// without it, marked "Preview feature" (Rs_PreviewMark) - the tick box Native
+// model of the card Import, the look, the native model in the preview - and
+// an export without the native part keeps its command and its bytes.
+// The card Animations stays on g_rsPreviewFeatures itself.
+int Rs_NativeForUsers(void);
+
 // Tooltip for a control of a page, NULL or "" removes it. The tool sits on the
 // page window over the control's rectangle, so it also shows for a disabled
 // control (those get no mouse messages). The shell moves the rectangles after
@@ -677,6 +752,10 @@ void Rs_SetTip(HWND control, const wchar_t *text);
 // with --enable-preview-features "Preview feature" (note colour). Position it in
 // layout() like any label.
 HWND Rs_ComingSoon(HWND page, int id);
+
+// The same place for a field open to everyone that is still a preview:
+// "Preview feature" (note colour), with and without the switch.
+HWND Rs_PreviewMark(HWND page, int id);
 
 // ---------------------------------------------------------------------------
 // Message list: own control with wrapping. Every line has a

@@ -1421,6 +1421,8 @@ struct RldMkOptions
 	int maskModel;    // the own mask (--mask-model): the profile of RldMk_BuildMaskOnce, sizePercent
 	                  // is --mask-size then
 	int yFull;        // --y-full: the up axis on every value 0..255, CHRI flag RLDCHAR_FLAG_FULL_HEIGHT
+	int nativeKeep;   // --native-model on: a reduction keeps the positions before it for the native
+	                  // model (RldMkBuild.nativePosition); without a reduction nothing changes
 };
 
 struct RldMkPart
@@ -1571,6 +1573,9 @@ struct RldMkBuild
 	u32 faceCount2;            // ply->faceCount, for faceSource
 	u32 diagFaceNow;           // the face RldMk_AddTriangle is splitting
 	u32 *diagPlyPosition;      // per PLY vertex: its diag position, RLDMK_NONE when dropped
+	u32 *plyPosition;          // per PLY vertex: its position, RLDMK_NONE when dropped - set once the repair has
+	                           // made the corners vertices of their own (vertexPosition is per corner then);
+	                           // NULL: vertexPosition is still per PLY vertex. Read by --native-model only.
 	u32 diagPositionCount;     // after welding and fitting, before the reduction and --size
 	double *diagPosition;      // 3 per diag position, game units
 	u8 *diagPositionGroup;
@@ -1584,6 +1589,19 @@ struct RldMkBuild
 	u32 diagClampCount;        // every value step 9 cut off at 0 or 255 (254)
 	u32 diagClampRoom;
 	struct RldMkClamp *diagClamp;
+
+	// --native-model on (RldMkOptions.nativeKeep) and a reduction: the positions
+	// as they were before it, for the native model (RldMk_NativeModel), which
+	// keeps the faces as written. --size and the poses move them as they move
+	// the positions above (RldMk_StepSize, RldMk_StepPoses), and step 9 takes
+	// their frames into the hull of the CMDL (RldMk_StepQuantize): the CMDL
+	// carries the hull of every native pose (renderer concept C.4.3, C.11).
+	// All NULL and 0 when nothing was reduced or the switch is off.
+	u32 nativePositionCount;
+	double *nativePosition;    // 3 per position, game units, neutral pose
+	u8 *nativePositionGroup;
+	u32 *nativePlyPosition;    // per PLY vertex: its position here, RLDMK_NONE when dropped
+	double *nativeFrame;       // RLDMK_FRAMES_TOTAL x nativePositionCount x 3, game units
 };
 
 static void RldMk_FreeBuild(struct RldMkBuild *b)
@@ -1596,6 +1614,7 @@ static void RldMk_FreeBuild(struct RldMkBuild *b)
 	free(b->remGroup);
 	free(b->diagFace);
 	free(b->diagPlyPosition);
+	free(b->plyPosition);
 	free(b->diagPosition);
 	free(b->diagPositionGroup);
 	free(b->diagTriangle);
@@ -1619,6 +1638,10 @@ static void RldMk_FreeBuild(struct RldMkBuild *b)
 	free(b->drawTriangle);
 	free(b->drawOrder);
 	free(b->cmdl);
+	free(b->nativePosition);
+	free(b->nativePositionGroup);
+	free(b->nativePlyPosition);
+	free(b->nativeFrame);
 	memset(b, 0, sizeof(*b));
 }
 
@@ -2399,6 +2422,27 @@ static int RldMk_StepRepair(const struct RldMkPly *ply, struct RldMkBuild *b, co
 			free(b->diagPlyPosition);
 			b->diagPlyPosition = plyPosition;
 		}
+	}
+
+	// Where each PLY vertex went (RldMkBuild.plyPosition): vertexPosition
+	// is per corner from here on. Nothing of the model depends on it.
+	free(b->plyPosition);
+	b->plyPosition = (u32 *)malloc(((size_t)ply->vertexCount + 1u) * sizeof(u32));
+	if (b->plyPosition == NULL)
+	{
+		free(renumber);
+		free(position);
+		free(vertexPosition);
+		free(vertexRgb);
+		free(triangle);
+		RldRep_Free(&r);
+		return RldMk_OutOfMemory();
+	}
+	for (i = 0; i < ply->vertexCount; i++)
+	{
+		const u32 p = b->vertexPosition[i];
+
+		b->plyPosition[i] = ((p != RLDMK_NONE) && (r.positionMap[p] != RLDMK_NONE)) ? renumber[r.positionMap[p]] : RLDMK_NONE;
 	}
 
 	free(renumber);
@@ -4859,12 +4903,38 @@ static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, co
 		b->diagPositionFrom = diagFrom;
 	}
 
+	// --native-model on: the positions before the reduction stay for the
+	// native model (RldMkBuild.nativePosition), with the position of every PLY
+	// vertex among them (after the repair plyPosition, else vertexPosition,
+	// which is still per PLY vertex then).
+	if (opt->nativeKeep && !opt->maskModel)
+	{
+		free(b->nativePosition);
+		free(b->nativePositionGroup);
+		free(b->nativePlyPosition);
+		b->nativePositionCount = b->positionCount;
+		b->nativePosition = b->position;
+		b->nativePositionGroup = b->positionGroup;
+		if (b->plyPosition != NULL)
+		{
+			b->nativePlyPosition = b->plyPosition;
+			b->plyPosition = NULL;
+			free(b->vertexPosition);
+		}
+		else
+		{
+			b->nativePlyPosition = b->vertexPosition;
+		}
+	}
+	else
+	{
+		free(b->vertexPosition);
+		free(b->position);
+		free(b->positionGroup);
+	}
 	free(b->triangle);
-	free(b->vertexPosition);
 	free(b->vertexRgb);
-	free(b->position);
 	free(b->positionPart);
-	free(b->positionGroup);
 	free(renumber);
 	b->triangle = triangle;
 	b->vertexPosition = vertexPosition;
@@ -5119,15 +5189,35 @@ static void RldMk_ApplyPose(const struct RldMkPose *pose, const double in[3], do
 	RldMk_ApplyPoseTrig(pose, trig, in, out);
 }
 
+// The positions --size and the poses move: set 0 those of the CMDL, set 1
+// those kept for the native model (RldMkBuild.nativePosition, 0 of them
+// without a reduction under --native-model on).
+static u32 RldMk_PositionSet(const struct RldMkBuild *b, int set, double **position, u8 **group)
+{
+	*position = (set == 0) ? b->position : b->nativePosition;
+	*group = (set == 0) ? b->positionGroup : b->nativePositionGroup;
+	return (set == 0) ? b->positionCount : ((b->nativePosition != NULL) ? b->nativePositionCount : 0u);
+}
+
 static int RldMk_StepPoses(struct RldMkBuild *b)
 {
 	u32 f;
 	u32 p;
+	int set;
 
 	b->frame = (double *)malloc((size_t)RLDMK_FRAMES_TOTAL * ((size_t)b->positionCount + 1u) * 3u * sizeof(double));
 	if (b->frame == NULL)
 	{
 		return RldMk_OutOfMemory();
+	}
+	if (b->nativePosition != NULL)
+	{
+		free(b->nativeFrame);
+		b->nativeFrame = (double *)malloc((size_t)RLDMK_FRAMES_TOTAL * ((size_t)b->nativePositionCount + 1u) * 3u * sizeof(double));
+		if (b->nativeFrame == NULL)
+		{
+			return RldMk_OutOfMemory();
+		}
 	}
 
 	for (f = 0; f < RLDMK_FRAMES_TOTAL; f++)
@@ -5142,24 +5232,33 @@ static int RldMk_StepPoses(struct RldMkBuild *b)
 			RldDum_PoseFit(&dummyPose, &b->dumFit);
 		}
 
-		for (p = 0; p < b->positionCount; p++)
+		// set 1: the native model's positions, by the same rules (RldMkBuild.nativeFrame)
+		for (set = 0; set < 2; set++)
 		{
-			const double *neutral = &b->position[3u * p];
-			double *out = &b->frame[((size_t)f * b->positionCount + p) * 3u];
-			const int group = b->positionGroup[p];
+			double *position;
+			u8 *positionGroup;
+			const u32 count = RldMk_PositionSet(b, set, &position, &positionGroup);
+			double *frame = (set == 0) ? b->frame : b->nativeFrame;
 
-			if (!b->posed || (group == RLDMK_GROUP_KART) || (!b->dummy && (group == RLDMK_GROUP_WHEEL) && !pose.wheel))
+			for (p = 0; p < count; p++)
 			{
-				memcpy(out, neutral, 3u * sizeof(double));
-			}
-			else if (b->dummy)
-			{
-				// on the dummy: about its seat and steering column (RldDum_ApplyPose)
-				RldDum_ApplyPose(&dummyPose, group, neutral, out);
-			}
-			else
-			{
-				RldMk_ApplyPose(&pose, neutral, out);
+				const double *neutral = &position[3u * p];
+				double *out = &frame[((size_t)f * count + p) * 3u];
+				const int group = positionGroup[p];
+
+				if (!b->posed || (group == RLDMK_GROUP_KART) || (!b->dummy && (group == RLDMK_GROUP_WHEEL) && !pose.wheel))
+				{
+					memcpy(out, neutral, 3u * sizeof(double));
+				}
+				else if (b->dummy)
+				{
+					// on the dummy: about its seat and steering column (RldDum_ApplyPose)
+					RldDum_ApplyPose(&dummyPose, group, neutral, out);
+				}
+				else
+				{
+					RldMk_ApplyPose(&pose, neutral, out);
+				}
 			}
 		}
 	}
@@ -5223,6 +5322,7 @@ static void RldMk_SizeHull(const struct RldMkBuild *b, struct RldMkSizeHull *hul
 	u32 f;
 	u32 p;
 	int a;
+	int set;
 
 	memset(hull, 0, sizeof(*hull));
 	for (a = 0; a < 3; a++)
@@ -5245,23 +5345,31 @@ static void RldMk_SizeHull(const struct RldMkBuild *b, struct RldMkSizeHull *hul
 		hull->pivot[1] = RLDMK_HIP_Y;
 	}
 
-	for (p = 0; p < b->positionCount; p++)
+	// Both sets: the CMDL must hold the native model's poses too.
+	for (set = 0; set < 2; set++)
 	{
-		const double *v = &b->position[3u * p];
+		double *position;
+		u8 *positionGroup;
+		const u32 count = RldMk_PositionSet(b, set, &position, &positionGroup);
 
-		if ((b->positionGroup[p] == RLDMK_GROUP_KART) && !RldMk_SizesVehicle(b))
+		for (p = 0; p < count; p++)
 		{
-			for (a = 0; a < 3; a++)
+			const double *v = &position[3u * p];
+
+			if ((positionGroup[p] == RLDMK_GROUP_KART) && !RldMk_SizesVehicle(b))
 			{
-				hull->kartLo[a] = (v[a] < hull->kartLo[a]) ? v[a] : hull->kartLo[a];
-				hull->kartHi[a] = (v[a] > hull->kartHi[a]) ? v[a] : hull->kartHi[a];
+				for (a = 0; a < 3; a++)
+				{
+					hull->kartLo[a] = (v[a] < hull->kartLo[a]) ? v[a] : hull->kartLo[a];
+					hull->kartHi[a] = (v[a] > hull->kartHi[a]) ? v[a] : hull->kartHi[a];
+				}
 			}
-		}
-		else
-		{
-			hull->moves = 1;
-			hull->neutralLo = ((v[2] - hull->pivot[2]) < hull->neutralLo) ? (v[2] - hull->pivot[2]) : hull->neutralLo;
-			hull->neutralHi = ((v[2] - hull->pivot[2]) > hull->neutralHi) ? (v[2] - hull->pivot[2]) : hull->neutralHi;
+			else
+			{
+				hull->moves = 1;
+				hull->neutralLo = ((v[2] - hull->pivot[2]) < hull->neutralLo) ? (v[2] - hull->pivot[2]) : hull->neutralLo;
+				hull->neutralHi = ((v[2] - hull->pivot[2]) > hull->neutralHi) ? (v[2] - hull->pivot[2]) : hull->neutralHi;
+			}
 		}
 	}
 
@@ -5286,38 +5394,45 @@ static void RldMk_SizeHull(const struct RldMkBuild *b, struct RldMkSizeHull *hul
 			RldDum_PoseFit(&dummyPose, &b->dumFit100);
 		}
 
-		for (p = 0; p < b->positionCount; p++)
+		for (set = 0; set < 2; set++)
 		{
-			const double *neutral = &b->position[3u * p];
-			const int group = b->positionGroup[p];
-			double moved[3];
+			double *position;
+			u8 *positionGroup;
+			const u32 count = RldMk_PositionSet(b, set, &position, &positionGroup);
 
-			if ((group == RLDMK_GROUP_KART) && !RldMk_SizesVehicle(b))
+			for (p = 0; p < count; p++)
 			{
-				continue;
-			}
+				const double *neutral = &position[3u * p];
+				const int group = positionGroup[p];
+				double moved[3];
 
-			if (!b->posed || (!b->dummy && (group == RLDMK_GROUP_WHEEL) && !pose.wheel))
-			{
-				memcpy(moved, neutral, sizeof(moved));
-			}
-			else if (b->dummy)
-			{
-				RldDum_ApplyPose(&dummyPose, group, neutral, moved);
-			}
-			else
-			{
-				RldMk_ApplyPoseTrig(&pose, trig, neutral, moved);
-			}
+				if ((group == RLDMK_GROUP_KART) && !RldMk_SizesVehicle(b))
+				{
+					continue;
+				}
 
-			for (a = 0; a < 3; a++)
-			{
-				moved[a] -= hull->pivot[a];
-			}
-			for (a = 0; a < 3; a++)
-			{
-				hull->lo[a] = (moved[a] < hull->lo[a]) ? moved[a] : hull->lo[a];
-				hull->hi[a] = (moved[a] > hull->hi[a]) ? moved[a] : hull->hi[a];
+				if (!b->posed || (!b->dummy && (group == RLDMK_GROUP_WHEEL) && !pose.wheel))
+				{
+					memcpy(moved, neutral, sizeof(moved));
+				}
+				else if (b->dummy)
+				{
+					RldDum_ApplyPose(&dummyPose, group, neutral, moved);
+				}
+				else
+				{
+					RldMk_ApplyPoseTrig(&pose, trig, neutral, moved);
+				}
+
+				for (a = 0; a < 3; a++)
+				{
+					moved[a] -= hull->pivot[a];
+				}
+				for (a = 0; a < 3; a++)
+				{
+					hull->lo[a] = (moved[a] < hull->lo[a]) ? moved[a] : hull->lo[a];
+					hull->hi[a] = (moved[a] > hull->hi[a]) ? moved[a] : hull->hi[a];
+				}
 			}
 		}
 	}
@@ -5402,6 +5517,7 @@ static int RldMk_StepSize(struct RldMkBuild *b, const struct RldMkOptions *opt)
 	u32 low = 0;
 	u32 high = 0;
 	u32 p;
+	int set;
 	double s;
 
 	// The measures as exported, for ply-axes in RldMk_StepMeasure (the same
@@ -5487,19 +5603,26 @@ static int RldMk_StepSize(struct RldMkBuild *b, const struct RldMkOptions *opt)
 	}
 
 	s = (double)percent / 100.0;
-	for (p = 0; p < b->positionCount; p++)
+	for (set = 0; set < 2; set++)
 	{
-		double *v = &b->position[3u * p];
-		int a;
+		double *position;
+		u8 *positionGroup;
+		const u32 count = RldMk_PositionSet(b, set, &position, &positionGroup);
 
-		if ((b->positionGroup[p] == RLDMK_GROUP_KART) && !RldMk_SizesVehicle(b))
+		for (p = 0; p < count; p++)
 		{
-			continue;
-		}
+			double *v = &position[3u * p];
+			int a;
 
-		for (a = 0; a < 3; a++)
-		{
-			v[a] = hull.pivot[a] + s * (v[a] - hull.pivot[a]);
+			if ((positionGroup[p] == RLDMK_GROUP_KART) && !RldMk_SizesVehicle(b))
+			{
+				continue;
+			}
+
+			for (a = 0; a < 3; a++)
+			{
+				v[a] = hull.pivot[a] + s * (v[a] - hull.pivot[a]);
+			}
 		}
 	}
 
@@ -5712,6 +5835,19 @@ static int RldMk_StepQuantize(struct RldMkBuild *b)
 			{
 				hi[a] = v;
 			}
+		}
+	}
+	// --native-model on after a reduction: the hull holds every native pose
+	// too (RldMkBuild.nativeFrame), so the native model needs no clamping
+	// beyond the CMDL's own rounding (RldMk_NativeModel).
+	for (i = 0; (b->nativeFrame != NULL) && (i < ((size_t)RLDMK_FRAMES_TOTAL * b->nativePositionCount)); i++)
+	{
+		for (a = 0; a < 3; a++)
+		{
+			const double v = b->nativeFrame[3u * i + (size_t)a];
+
+			lo[a] = (v < lo[a]) ? v : lo[a];
+			hi[a] = (v > hi[a]) ? v : hi[a];
 		}
 	}
 
@@ -8819,6 +8955,451 @@ static u8 *RldMk_BuildChri(u32 templateId, u32 classId, const u8 name[RLDCHAR_NA
                            size_t *sizeOut)
 {
 	return RldMk_BuildChriColor(templateId, classId, name, charVersion, author, flags, 0u, sizeOut);
+}
+
+//========================================================================================
+// THE LOOK: THE SHADOW AND THE EXHAUST OF THE DRIVER (CHRI 0x24..0x3B)
+//========================================================================================
+//
+// The layout, the limits and how the game reads it: include/rldchar.inc (CHRI,
+// RldChar_ParseLook) and docs/CONTAINER_FORMAT.md ("The look"). Here only what
+// make-char writes:
+//   --shadow retail|auto|off    auto: the quad below (RldMk_LookShadowQuad)
+//   --exhaust retail|off|x,y,z[;x,y,z]   custom: one or two points in game
+//       units of the finished model - after --fit and the shift onto the
+//       reference dummy, the units rldpack info and the preview of Reload
+//       Studio show (+X left seen from behind, +Y up, +Z forward, the model's
+//       origin). Point 1 stands in for the retail source on the left (+X),
+//       point 2 for the one on the right. Stored in 1/16 game units, rounded.
+// Without the switches: retail/retail with the kart wheels, auto/off with
+// --wheels off. fixedSize 0x3C only when a mode is not retail, so every file
+// without a look keeps the bytes it had before the look existed.
+
+static int RldMk_Lower(const char *text, char *word, size_t size);
+
+#define RLDMK_LOOK_FRAME 10u            // animation 0, frame 10: the neutral pose (the size line, Studio pose 0)
+#define RLDMK_LOOK_LOWER 0.5            // the footprint: vertices in the lower half of the height
+#define RLDMK_LOOK_WIDEN 1.25           // half width of the quad = half width of the footprint x this
+#define RLDMK_LOOK_HALF_MIN 8.0         // game units: at least this on each side
+#define RLDMK_LOOK_LENGTH_MIN 16.0      // game units: at least this long
+// The retail quad x0 x1 z0 z1 (game/Vehicle/VehGroundShadow.c) and the retail
+// smoke source 0 (game/Vehicle/VehEmitter.c), game units, for @value.
+static const char *const s_rldMkLookRetailShadow[4] = {"-50", "50", "-51.25", "65"};
+static const char *const s_rldMkLookRetailExhaust[3] = {"18", "56", "-56"};
+
+static const char *const s_rldMkShadowWords[3] = {"retail", "auto", "off"};
+static const char *const s_rldMkExhaustWords[3] = {"retail", "custom", "off"};
+
+// A value in game units as 1/16, rounded; *ok = 0 beyond the s16 range.
+static s16 RldMk_LookUnits(double value, int *ok)
+{
+	const s64 v = RldMk_Round(value * 16.0);
+
+	if ((v < -32768) || (v > 32767))
+	{
+		*ok = 0;
+		return 0;
+	}
+	return (s16)v;
+}
+
+// "x,y,z" in game units -> 1/16. 0 = not three numbers or beyond the limits
+// of the look (RLDCHAR_LOOK_COORD_MAX, RLDCHAR_LOOK_Y_MIN); why says which.
+static int RldMk_LookPoint(const char *text, size_t length, s16 out[3], char *why, size_t whySize)
+{
+	char buffer[96];
+	const char *at = buffer;
+	int k;
+	int ok = 1;
+
+	if ((length == 0u) || (length >= sizeof(buffer)))
+	{
+		snprintf(why, whySize, "a point must be three numbers x,y,z");
+		return 0;
+	}
+	memcpy(buffer, text, length);
+	buffer[length] = '\0';
+	for (k = 0; k < 3; k++)
+	{
+		char *end = NULL;
+		const double value = strtod(at, &end);
+
+		if ((end == at) || !(value == value) || ((k < 2) && (*end != ',')) || ((k == 2) && (*end != '\0')))
+		{
+			snprintf(why, whySize, "\"%s\" is not three numbers x,y,z", buffer);
+			return 0;
+		}
+		out[k] = RldMk_LookUnits(value, &ok);
+		if (!ok || (out[k] < -RLDCHAR_LOOK_COORD_MAX) || (out[k] > RLDCHAR_LOOK_COORD_MAX) || ((k == 1) && (out[k] < RLDCHAR_LOOK_Y_MIN)))
+		{
+			snprintf(why, whySize, "%c %.2f of \"%s\" lies outside %s game units", "xyz"[k], value, buffer, (k == 1) ? "-16..256" : "-256..256");
+			return 0;
+		}
+		at = end + 1;
+	}
+	return 1;
+}
+
+// --shadow and --exhaust (NULL = not given) with the defaults of the wheels:
+// the modes and the points of the look; *shadowSwitch, *exhaustSwitch 1 =
+// given. 0 = refused, every reason said (codes shadow, exhaust).
+static int RldMk_LookResolve(const char *shadowArg, const char *exhaustArg, int noWheels, struct RldCharLook *look, int *shadowSwitch,
+                             int *exhaustSwitch)
+{
+	char word[16];
+	int ok = 1;
+
+	memset(look, 0, sizeof(*look));
+	*shadowSwitch = (shadowArg != NULL);
+	*exhaustSwitch = (exhaustArg != NULL);
+	look->shadow = noWheels ? RLDCHAR_LOOK_AUTO : RLDCHAR_LOOK_RETAIL;
+	look->exhaust = noWheels ? RLDCHAR_LOOK_OFF : RLDCHAR_LOOK_RETAIL;
+
+	if (shadowArg != NULL)
+	{
+		u32 m = 3u;
+
+		if (RldMk_Lower(shadowArg, word, sizeof(word)))
+		{
+			for (m = 0; (m < 3u) && (strcmp(word, s_rldMkShadowWords[m]) != 0); m++)
+			{
+			}
+		}
+		if (m < 3u)
+		{
+			look->shadow = m;
+		}
+		else
+		{
+			RldMk_Say("error", "shadow", shadowArg, "--shadow must be retail, auto or off.");
+			ok = 0;
+		}
+	}
+
+	if (exhaustArg != NULL)
+	{
+		const int known = RldMk_Lower(exhaustArg, word, sizeof(word));
+
+		if (known && (strcmp(word, "retail") == 0))
+		{
+			look->exhaust = RLDCHAR_LOOK_RETAIL;
+		}
+		else if (known && (strcmp(word, "off") == 0))
+		{
+			look->exhaust = RLDCHAR_LOOK_OFF;
+		}
+		else
+		{
+			const char *split = strchr(exhaustArg, ';');
+			const size_t first = (split != NULL) ? (size_t)(split - exhaustArg) : strlen(exhaustArg);
+			const int third = (split != NULL) && (strchr(split + 1, ';') != NULL);
+			char why[160];
+
+			why[0] = '\0';
+			look->exhaust = RLDCHAR_LOOK_CUSTOM;
+			look->count = (split != NULL) ? 2u : 1u;
+			if (third)
+			{
+				snprintf(why, sizeof(why), "at most two points x,y,z;x,y,z");
+			}
+			if (third || !RldMk_LookPoint(exhaustArg, first, look->point[0], why, sizeof(why)) ||
+			    ((split != NULL) && !RldMk_LookPoint(split + 1, strlen(split + 1), look->point[1], why, sizeof(why))))
+			{
+				RldMk_Say("error", "exhaust", why,
+				          "--exhaust must be retail, off or one or two points x,y,z[;x,y,z] in game units of the finished model (%s).", why);
+				memset(look->point, 0, sizeof(look->point));
+				look->exhaust = RLDCHAR_LOOK_RETAIL;
+				look->count = 0u;
+				ok = 0;
+			}
+		}
+	}
+	return ok;
+}
+
+// THE AUTO SHADOW: the quad the game draws its shadow on, from the built
+// model as the game draws it (the decoded positions of RLDMK_LOOK_FRAME, game
+// units). The footprint is the XZ box of the positions in the lower half of
+// the height (a spoiler or raised arms stay out); fewer than 3 there: of all.
+// The quad keeps the middle of the footprint across, its half width times
+// RLDMK_LOOK_WIDEN, its length as it is; at least RLDMK_LOOK_HALF_MIN on each
+// side and RLDMK_LOOK_LENGTH_MIN long, within 256 of the origin; 1/16 game
+// units, rounded. The factors are a start value: what the retail shadow
+// icons cover is not measured, and a better rule needs only this function.
+static void RldMk_LookShadowQuad(const struct RldMkBuild *b, s16 quad[4])
+{
+	const double limit = (double)RLDCHAR_LOOK_COORD_MAX / 16.0;
+	double yLo = 1.0e30;
+	double yHi = -1.0e30;
+	double lo[2] = {1.0e30, 1.0e30};
+	double hi[2] = {-1.0e30, -1.0e30};
+	double box[4];
+	double cut;
+	u32 lower = 0;
+	u32 p;
+	int all;
+	int k;
+	int ok = 1;
+
+	for (p = 0; p < b->positionCount; p++)
+	{
+		double v[3];
+
+		RldMk_Decoded(b, RLDMK_LOOK_FRAME, p, v);
+		yLo = (v[1] < yLo) ? v[1] : yLo;
+		yHi = (v[1] > yHi) ? v[1] : yHi;
+	}
+	cut = yLo + RLDMK_LOOK_LOWER * (yHi - yLo);
+	for (p = 0; p < b->positionCount; p++)
+	{
+		double v[3];
+
+		RldMk_Decoded(b, RLDMK_LOOK_FRAME, p, v);
+		lower += (v[1] <= cut) ? 1u : 0u;
+	}
+	all = (lower < 3u);
+	for (p = 0; p < b->positionCount; p++)
+	{
+		double v[3];
+
+		RldMk_Decoded(b, RLDMK_LOOK_FRAME, p, v);
+		if (!all && (v[1] > cut))
+		{
+			continue;
+		}
+		lo[0] = (v[0] < lo[0]) ? v[0] : lo[0];
+		hi[0] = (v[0] > hi[0]) ? v[0] : hi[0];
+		lo[1] = (v[2] < lo[1]) ? v[2] : lo[1];
+		hi[1] = (v[2] > hi[1]) ? v[2] : hi[1];
+	}
+	if (lo[0] > hi[0])
+	{
+		lo[0] = 0.0;
+		hi[0] = 0.0;
+		lo[1] = 0.0;
+		hi[1] = 0.0;
+	}
+	{
+		const double middle = 0.5 * (lo[0] + hi[0]);
+		double half = 0.5 * (hi[0] - lo[0]) * RLDMK_LOOK_WIDEN;
+
+		half = (half < RLDMK_LOOK_HALF_MIN) ? RLDMK_LOOK_HALF_MIN : half;
+		box[0] = middle - half;
+		box[1] = middle + half;
+		box[2] = lo[1];
+		box[3] = hi[1];
+		if ((hi[1] - lo[1]) < RLDMK_LOOK_LENGTH_MIN)
+		{
+			const double centre = 0.5 * (lo[1] + hi[1]);
+
+			box[2] = centre - 0.5 * RLDMK_LOOK_LENGTH_MIN;
+			box[3] = centre + 0.5 * RLDMK_LOOK_LENGTH_MIN;
+		}
+	}
+	for (k = 0; k < 4; k++)
+	{
+		box[k] = (box[k] < -limit) ? -limit : ((box[k] > limit) ? limit : box[k]);
+		quad[k] = RldMk_LookUnits(box[k], &ok);
+	}
+	// Clamped against the limit a side may have shrunk below its least length.
+	for (k = 0; k < 4; k += 2)
+	{
+		if ((quad[k + 1] - quad[k]) < RLDCHAR_LOOK_EDGE_MIN)
+		{
+			if ((quad[k + 1] - RLDCHAR_LOOK_EDGE_MIN) >= -RLDCHAR_LOOK_COORD_MAX)
+			{
+				quad[k] = (s16)(quad[k + 1] - RLDCHAR_LOOK_EDGE_MIN);
+			}
+			else
+			{
+				quad[k] = (s16)(-RLDCHAR_LOOK_COORD_MAX);
+				quad[k + 1] = (s16)(quad[k] + RLDCHAR_LOOK_EDGE_MIN);
+			}
+		}
+	}
+}
+
+// A look that is not retail/retail (fixedSize 0x3C).
+static int RldMk_LookWritten(const struct RldCharLook *look)
+{
+	return (look != NULL) && ((look->shadow != RLDCHAR_LOOK_RETAIL) || (look->exhaust != RLDCHAR_LOOK_RETAIL));
+}
+
+// 1/16 game units as the shortest exact text ("%g" of value / 16).
+static void RldMk_LookText(int value, char *text, size_t size)
+{
+	snprintf(text, size, "%g", (double)value / 16.0);
+}
+
+// @value shadow-quad x0 x1 z0 z1 (game units): the quad of the shadow. From
+// make-char the quad auto writes for the model built - also while another
+// mode is chosen, so that Reload Studio can show it at once; from info the
+// one in the container (auto only).
+static void RldMk_LookEmitQuad(const s16 quad[4])
+{
+	char t[4][24];
+	int k;
+
+	for (k = 0; k < 4; k++)
+	{
+		RldMk_LookText(quad[k], t[k], sizeof(t[k]));
+	}
+	Rld_Emit("value", "shadow-quad", t[0], t[1], t[2], t[3], (const char *)NULL);
+}
+
+// @value shadow, retail-shadow, exhaust, exhaust-point, retail-exhaust
+// (game units) - for Reload Studio; origin "switch", "default" or
+// "container".
+static void RldMk_LookEmit(const struct RldCharLook *look, const char *shadowOrigin, const char *exhaustOrigin)
+{
+	char t[4][24];
+	u32 i;
+	int k;
+
+	Rld_Emit("value", "shadow", s_rldMkShadowWords[(look->shadow < 3u) ? look->shadow : 0u], shadowOrigin, (const char *)NULL);
+	Rld_Emit("value", "retail-shadow", s_rldMkLookRetailShadow[0], s_rldMkLookRetailShadow[1], s_rldMkLookRetailShadow[2], s_rldMkLookRetailShadow[3],
+	         (const char *)NULL);
+	Rld_Emit("value", "exhaust", s_rldMkExhaustWords[(look->exhaust < 3u) ? look->exhaust : 0u], exhaustOrigin, (const char *)NULL);
+	for (i = 0; (look->exhaust == RLDCHAR_LOOK_CUSTOM) && (i < look->count) && (i < 2u); i++)
+	{
+		snprintf(t[3], sizeof(t[3]), "%u", i + 1u);
+		for (k = 0; k < 3; k++)
+		{
+			RldMk_LookText(look->point[i][k], t[k], sizeof(t[k]));
+		}
+		Rld_Emit("value", "exhaust-point", t[3], t[0], t[1], t[2], (const char *)NULL);
+	}
+	Rld_Emit("value", "retail-exhaust", s_rldMkLookRetailExhaust[0], s_rldMkLookRetailExhaust[1], s_rldMkLookRetailExhaust[2], (const char *)NULL);
+}
+
+// The two lines of the look for people (make-char, info, verify).
+static void RldMk_LookPrint(const struct RldCharLook *look)
+{
+	u32 i;
+
+	if (look->shadow == RLDCHAR_LOOK_AUTO)
+	{
+		printf("  shadow        auto: x %.1f..%.1f, z %.1f..%.1f (game units)\n", (double)look->quad[0] / 16.0, (double)look->quad[1] / 16.0,
+		       (double)look->quad[2] / 16.0, (double)look->quad[3] / 16.0);
+	}
+	else
+	{
+		printf("  shadow        %s\n", (look->shadow == RLDCHAR_LOOK_OFF) ? "off - the game draws none" : "retail");
+	}
+	if (look->exhaust == RLDCHAR_LOOK_CUSTOM)
+	{
+		printf("  exhaust       custom:");
+		for (i = 0; (i < look->count) && (i < 2u); i++)
+		{
+			printf("%s (%.2f, %.2f, %.2f)", (i > 0u) ? "," : "", (double)look->point[i][0] / 16.0, (double)look->point[i][1] / 16.0,
+			       (double)look->point[i][2] / 16.0);
+		}
+		printf(" (game units)%s\n", (look->count == 1u) ? " - the right source drawn as none" : "");
+	}
+	else
+	{
+		printf("  exhaust       %s\n", (look->exhaust == RLDCHAR_LOOK_OFF) ? "off - the game draws none" : "retail");
+	}
+}
+
+// CHRI with the look (NULL or retail/retail: the bytes of RldMk_BuildChriColor
+// as before the look). With a look: fixedSize 0x3C, flags at 0x1C (also 0),
+// mapColor at 0x20 only with RLDCHAR_FLAG_MAP_COLOR, else 0.
+static u8 *RldMk_BuildChriLook(u32 templateId, u32 classId, const u8 name[RLDCHAR_NAME_FIELD], u32 charVersion, const char *author, u32 flags,
+                               u32 mapColor, const struct RldCharLook *look, size_t *sizeOut)
+{
+	const size_t length = strlen(author);
+	const u32 fixedSize = RLDCHAR_CHRI_SIZE_LOOK;
+	const size_t size = fixedSize + 4u + 4u + length;
+	u8 *data;
+	u32 i;
+	int k;
+
+	if (!RldMk_LookWritten(look))
+	{
+		return RldMk_BuildChriColor(templateId, classId, name, charVersion, author, flags, mapColor, sizeOut);
+	}
+	*sizeOut = 0;
+	data = (u8 *)calloc(1, size);
+	if (data == NULL)
+	{
+		return NULL;
+	}
+	Rld_WriteLE16(&data[0x00], fixedSize);
+	data[0x02] = (u8)templateId;
+	data[0x03] = (u8)classId;
+	memcpy(&data[0x04], name, RLDCHAR_NAME_FIELD);
+	Rld_WriteLE32(&data[0x18], charVersion);
+	Rld_WriteLE32(&data[RLDCHAR_CHRI_FLAGS_OFFSET], flags);
+	if ((flags & RLDCHAR_FLAG_MAP_COLOR) != 0u)
+	{
+		Rld_WriteLE32(&data[RLDCHAR_CHRI_MAP_COLOR_OFFSET], mapColor & 0x00FFFFFFu);
+	}
+	data[RLDCHAR_CHRI_SHADOW_MODE] = (u8)look->shadow;
+	data[RLDCHAR_CHRI_EXHAUST_MODE] = (u8)look->exhaust;
+	data[RLDCHAR_CHRI_EXHAUST_COUNT] = (u8)((look->exhaust == RLDCHAR_LOOK_CUSTOM) ? look->count : 0u);
+	for (k = 0; (look->shadow == RLDCHAR_LOOK_AUTO) && (k < 4); k++)
+	{
+		Rld_WriteLE16(&data[RLDCHAR_CHRI_SHADOW_QUAD + 2u * (u32)k], (u32)(u16)look->quad[k]);
+	}
+	for (i = 0; (look->exhaust == RLDCHAR_LOOK_CUSTOM) && (i < look->count) && (i < 2u); i++)
+	{
+		for (k = 0; k < 3; k++)
+		{
+			Rld_WriteLE16(&data[RLDCHAR_CHRI_EXHAUST_POINTS + 6u * i + 2u * (u32)k], (u32)(u16)look->point[i][k]);
+		}
+	}
+	Rld_WriteLE32(&data[fixedSize], 1u);
+	Rld_WriteLE32(&data[fixedSize + 4u], (u32)length);
+	memcpy(&data[fixedSize + 8u], author, length);
+
+	*sizeOut = size;
+	return data;
+}
+
+// Does the look of a CHRI read back as written? NULL = yes, else what differs.
+static const char *RldMk_LookReadsBack(const u8 *chri, size_t chriSize, const struct RldCharLook *look)
+{
+	struct RldCharInfo info;
+	struct RldCharLook back;
+	u32 i;
+	int k;
+
+	if (RldChar_ParseInfo(&info, chri, chriSize) != NULL)
+	{
+		return "the character info";
+	}
+	RldChar_ParseLook(&info, chri, chriSize, &back);
+	if (back.why != NULL)
+	{
+		return back.why;
+	}
+	if ((back.shadow != look->shadow) || (back.exhaust != look->exhaust))
+	{
+		return "the modes of the look differ";
+	}
+	for (k = 0; (look->shadow == RLDCHAR_LOOK_AUTO) && (k < 4); k++)
+	{
+		if (back.quad[k] != look->quad[k])
+		{
+			return "the shadow quad differs";
+		}
+	}
+	if ((look->exhaust == RLDCHAR_LOOK_CUSTOM) && (back.count != look->count))
+	{
+		return "the exhaust count differs";
+	}
+	for (i = 0; (look->exhaust == RLDCHAR_LOOK_CUSTOM) && (i < look->count) && (i < 2u); i++)
+	{
+		for (k = 0; k < 3; k++)
+		{
+			if (back.point[i][k] != look->point[i][k])
+			{
+				return "the exhaust points differ";
+			}
+		}
+	}
+	return NULL;
 }
 
 // CHRI, CMDL, then CICN (--icon), CMSK (--mask-model) and CVOI (--voices) when
@@ -12604,6 +13185,9 @@ static u8 *RldMk_MaskStep(const char *path, const struct RldMkOptions *opt, size
 	return cmsk;
 }
 
+// CNET and CTXT, the native model (PREVIEW): --native-probe.
+#include "rldpack_native.inc"
+
 static int RldChar_MakeCommand(int argc, char **argv)
 {
 	static char outPath[RLD_PATH_MAX + 16];
@@ -12625,6 +13209,11 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	const char *maskArg = NULL;
 	const char *maskModelArg = NULL;
 	const char *mapColorArg = NULL;
+	const char *shadowArg = NULL;
+	const char *exhaustArg = NULL;
+	struct RldCharLook look;
+	int shadowSwitch = 0;
+	int exhaustSwitch = 0;
 	const char *maskSizeArg = NULL;
 	const char *maskUpArg = NULL;
 	const char *maskForwardArg = NULL;
@@ -12647,6 +13236,20 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	const char *voicePreviewArg = NULL;
 	u8 *cvoi = NULL;
 	size_t cvoiSize = 0;
+	const char *nativeProbeArg = NULL;
+	int nativePoses = 0;
+	const char *nativeModelArg = NULL;
+	int nativeModel = 0;
+	const char *wheelModelArg = NULL;
+	const char *wheelSizeArg = NULL;
+	u32 wheelSize = 100u;
+	struct RldMkUserWheel userWheel;
+	int haveWheel = 0;
+	struct RldMkNativeFacts nativeFacts;
+	u8 *cnet = NULL;
+	size_t cnetSize = 0;
+	u8 *ctxt = NULL;
+	size_t ctxtSize = 0;
 	const char *previewArg = NULL;
 	const char *diagnoseArg = NULL;
 	const char *remeshArg = NULL;
@@ -12676,6 +13279,8 @@ static int RldChar_MakeCommand(int argc, char **argv)
 
 	RldMk_DefaultOptions(&opt);
 	RldObj_ResetOptions();
+	memset(&nativeFacts, 0, sizeof(nativeFacts));
+	memset(&userWheel, 0, sizeof(userWheel));
 	memset(&ply, 0, sizeof(ply));
 	memset(&build, 0, sizeof(build));
 	memset(nameField, 0, sizeof(nameField));
@@ -12757,6 +13362,14 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		{
 			maskModelArg = argv[++i];
 		}
+		else if ((strcmp(arg, "--shadow") == 0) && hasValue)
+		{
+			shadowArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--exhaust") == 0) && hasValue)
+		{
+			exhaustArg = argv[++i];
+		}
 		else if ((strcmp(arg, "--map-color") == 0) && hasValue)
 		{
 			mapColorArg = argv[++i];
@@ -12832,6 +13445,22 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		else if ((strcmp(arg, "--preview") == 0) && hasValue)
 		{
 			previewArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--native-probe") == 0) && hasValue)
+		{
+			nativeProbeArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--native-model") == 0) && hasValue)
+		{
+			nativeModelArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--wheel-model") == 0) && hasValue)
+		{
+			wheelModelArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--wheel-size") == 0) && hasValue)
+		{
+			wheelSizeArg = argv[++i];
 		}
 		else if ((strcmp(arg, "--repair") == 0) && hasValue)
 		{
@@ -12967,9 +13596,86 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		}
 	}
 	(void)RldMk_MaskSwitch(maskArg, &opt.mask);
+	// THE LOOK (--shadow, --exhaust): its defaults follow the wheels.
+	RldMk_LookResolve(shadowArg, exhaustArg, opt.noWheels, &look, &shadowSwitch, &exhaustSwitch);
 	if (mapColorArg != NULL)
 	{
 		opt.hasMapColor = RldMk_MapColorSwitch(mapColorArg, &opt.mapColor);
+	}
+	if (nativeProbeArg != NULL)
+	{
+		char word[8];
+		const int known = RldMk_Lower(nativeProbeArg, word, sizeof(word));
+
+		if (known && (strcmp(word, "poses") == 0))
+		{
+			nativePoses = 1;
+		}
+		else if (!known || (strcmp(word, "still") != 0))
+		{
+			RldMk_Say("error", "native-probe", nativeProbeArg, "--native-probe must be still or poses.");
+		}
+	}
+	if (nativeModelArg != NULL)
+	{
+		char word[8];
+		const int known = RldMk_Lower(nativeModelArg, word, sizeof(word));
+
+		if (known && (strcmp(word, "on") == 0))
+		{
+			nativeModel = 1;
+			// the native model keeps the faces as written when the chain
+			// reduces the CMDL (RldMkBuild.nativePosition)
+			opt.nativeKeep = 1;
+		}
+		else if (!known || (strcmp(word, "off") != 0))
+		{
+			RldMk_Say("error", "native-model", nativeModelArg, "--native-model must be on or off.");
+		}
+	}
+	if (nativeModel && (nativeProbeArg != NULL))
+	{
+		RldMk_Say("error", "usage", "--native-model", "--native-model and --native-probe exclude each other: a file has one native model.");
+	}
+	// THE WHEELS OF THE NATIVE MODEL. The game draws a native model only with
+	// wheels of its own (--wheel-model: WHLS version 2) or with the kart
+	// wheels hidden - never beside the sprites of the kart wheels, and a
+	// character never gets the test wheel (WHLS version 1, RldMk_NativeWheel;
+	// --native-probe is a test body and keeps it). So --native-model on with
+	// the wheels shown needs --wheel-model, and --wheel-model needs
+	// --native-model on and the wheels shown. CHRI keeps the wheels shown
+	// with --wheel-model: the classic model (CMDL), the fallback, drives with
+	// the game's kart wheels. Nothing is written against these rules.
+	if ((wheelSizeArg != NULL) && (!RldMk_ParseWhole(wheelSizeArg, 100000u, &wheelSize) || (wheelSize < RLDMK_WHEEL_SIZE_MIN) ||
+	                               (wheelSize > RLDMK_WHEEL_SIZE_MAX)))
+	{
+		RldMk_Say("error", "wheel-size", wheelSizeArg,
+		          "The wheel size \"%s\" must be a whole number from %u to %u (percent of the radius of the game's wheel).", wheelSizeArg,
+		          RLDMK_WHEEL_SIZE_MIN, RLDMK_WHEEL_SIZE_MAX);
+		wheelSize = 100u;
+	}
+	if ((wheelSizeArg != NULL) && (wheelModelArg == NULL))
+	{
+		RldMk_Say("error", "usage", "--wheel-size", "--wheel-size needs --wheel-model <obj|ply>: it is the size of a wheel of your own.");
+	}
+	if ((wheelModelArg != NULL) && opt.noWheels)
+	{
+		RldMk_Say("error", "wheel-model", "--wheels",
+		          "--wheel-model and --wheels off contradict each other: a wheel of your own needs the wheels shown. Build without --wheels off, or "
+		          "without --wheel-model for a character without wheels.");
+	}
+	else if ((wheelModelArg != NULL) && !nativeModel)
+	{
+		RldMk_Say("error", "wheel-model", "--native-model",
+		          "--wheel-model needs --native-model on: a wheel of your own is a part of the native model (preview). The classic model always "
+		          "drives with the game's kart wheels.");
+	}
+	if (nativeModel && !opt.noWheels && (wheelModelArg == NULL))
+	{
+		RldMk_Say("error", "native-model", "--wheels",
+		          "--native-model on needs --wheel-model <obj|ply> or --wheels off: the game draws a native model only with wheels of its own or "
+		          "with the kart wheels hidden. Build with --wheel-model, with --wheels off, or without --native-model for the classic model with "
+		          "the kart wheels.");
 	}
 
 	// THE OWN MASK: its own options, the profile of a mask (RldMk_BuildMaskOnce).
@@ -13246,6 +13952,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		Rld_Emit("value", "out", opt.diagnose ? "none" : outPath, (outArg != NULL) ? "switch" : "default", (const char *)NULL);
 		snprintf(number, sizeof(number), "%u", opt.sizePercent);
 		Rld_Emit("value", "size", number, (sizeArg != NULL) ? "switch" : "default", (const char *)NULL);
+		RldMk_LookEmit(&look, shadowSwitch ? "switch" : "default", exhaustSwitch ? "switch" : "default");
 		Rld_Emit("value", "icon", (iconArg != NULL) ? iconArg : "", (iconArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "icon-background", s_rldMkIconBackgroundWords[iconOptions.background], (iconBackgroundArg != NULL) ? "switch" : "default",
 		         (const char *)NULL);
@@ -13255,6 +13962,17 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		Rld_Emit("value", "icon-frame", s_rldMkIconFrameWords[iconOptions.frame], (iconFrameArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "voices", (voicesArg != NULL) ? voicesArg : "", (voicesArg != NULL) ? "switch" : "default", (const char *)NULL);
 		RldObj_EmitValues();
+		// Only when given: without it the lines are those of before.
+		if (nativeModelArg != NULL)
+		{
+			Rld_Emit("value", "native-model", nativeModel ? "on" : "off", "switch", (const char *)NULL);
+		}
+		if (wheelModelArg != NULL)
+		{
+			Rld_Emit("value", "wheel-model", wheelModelArg, "switch", (const char *)NULL);
+			snprintf(number, sizeof(number), "%u", wheelSize);
+			Rld_Emit("value", "wheel-size", number, (wheelSizeArg != NULL) ? "switch" : "default", (const char *)NULL);
+		}
 		if (voicesArg != NULL)
 		{
 			Rld_Emit("value", "voice-normalize", voiceNormalize ? "on" : "off", voiceNormalize ? "switch" : "default", (const char *)NULL);
@@ -13315,12 +14033,19 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	s_rldRedCache = check && !noCache;
 	s_rldRedSlowPasses = check ? 2u : 4u;
 
-	// THE MODEL: PLY or OBJ, by its content (tools/rldpack_import.inc).
+	// THE MODEL: PLY or OBJ, by its content (tools/rldpack_import.inc). With
+	// --native-model on the OBJ reader also keeps the faces as written
+	// (RldObj_CaptureNative); what it hands the chain stays the same.
+	RldObj_FreeNative(&s_rldObjNative);
+	s_rldObjNativeWant = nativeModel;
 	if (!RldMk_LoadModel(modelArg, &ply, &modelInfo, RLDMK_ROLE_MAIN))
 	{
+		s_rldObjNativeWant = 0;
+		RldObj_FreeNative(&s_rldObjNative);
 		free(cvoi);
 		return RldMk_Fail(1);
 	}
+	s_rldObjNativeWant = 0;
 
 	built = RldMk_BuildModel(&ply, &opt, &build);
 	RldMk_EmitFacts(&build, templateId);
@@ -13358,6 +14083,14 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		}
 	}
 
+	// THE WHEEL OF ONE'S OWN (--wheel-model, PREVIEW): read and built twice
+	// here, so that --check shows its findings too; only when the switches
+	// agree (said above otherwise). Nothing of it reaches the CMDL.
+	if ((wheelModelArg != NULL) && nativeModel && !opt.noWheels && built)
+	{
+		haveWheel = RldMk_UserWheelLoad(wheelModelArg, NULL, 0u, &opt, wheelSize, &userWheel);
+	}
+
 	if (maskModelArg != NULL)
 	{
 		cmsk = RldMk_MaskStep(maskModelArg, &maskOpt, &cmskSize);
@@ -13368,6 +14101,20 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	if (built && (previewArg != NULL))
 	{
 		RldMk_WritePreview(&build, previewArg);
+	}
+
+	// THE LOOK of the model that was built: the auto shadow from its frames
+	// (shown to Reload Studio whatever the mode, its preview draws it).
+	if (built)
+	{
+		s16 quad[4];
+
+		RldMk_LookShadowQuad(&build, quad);
+		RldMk_LookEmitQuad(quad);
+		if (look.shadow == RLDCHAR_LOOK_AUTO)
+		{
+			memcpy(look.quad, quad, sizeof(quad));
+		}
 	}
 
 	if (!s_rldMkQuiet)
@@ -13403,7 +14150,9 @@ static int RldChar_MakeCommand(int argc, char **argv)
 			printf("  class         %u %s%s\n", classId, s_rldMkClassNames[classId],
 			       ((classArg == NULL) || (strcmp(classArg, "like") == 0)) ? " (like the template)" : "");
 		}
-		printf("  wheels        %s\n", opt.noWheels ? "hidden - the game draws no kart wheels (--wheels off)" : "shown - the game draws its kart wheels");
+		printf("  wheels        %s\n", opt.noWheels                 ? "hidden - the game draws no kart wheels (--wheels off)"
+		                               : (wheelModelArg != NULL) ? "shown - the native model: your own (--wheel-model); the classic model: the game's kart wheels"
+		                                                         : "shown - the game draws its kart wheels");
 		if (templateId < RLDMK_TEMPLATE_COUNT)
 		{
 			printf("  mask          %s (%s)\n", RldMk_MaskName(opt.mask, templateId),
@@ -13420,6 +14169,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		{
 			printf("  map color     the template's\n");
 		}
+		RldMk_LookPrint(&look);
 	}
 
 	// THE DIAGNOSIS ends here: a build with lifted limits never becomes a
@@ -13428,6 +14178,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	{
 		const int code = RldMk_WriteDiagnosis(&build, &opt, built, diagnoseArg);
 
+		RldMk_UserWheelFree(&userWheel);
 		free(cmsk);
 		free(cvoi);
 		RldMk_FreeBuild(&build);
@@ -13438,6 +14189,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	if (!built || (s_rldMkErrors != 0) || ((maskModelArg != NULL) && (cmsk == NULL)))
 	{
 		printf("\nnothing written - see the errors above\n");
+		RldMk_UserWheelFree(&userWheel);
 		free(cmsk);
 		free(cvoi);
 		RldMk_FreeBuild(&build);
@@ -13446,13 +14198,17 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	}
 
 	// CHRI, checked with the reader the game runs, and the container.
-	chri = RldMk_BuildChriColor(templateId, classId, nameField, charVersion, authorArg, RldMk_ChriFlags(&opt), opt.mapColor, &chriSize);
+	chri = RldMk_BuildChriLook(templateId, classId, nameField, charVersion, authorArg, RldMk_ChriFlags(&opt), opt.mapColor, &look, &chriSize);
 	if (chri != NULL)
 	{
 		struct RldCharInfo back;
 		const char *why = RldChar_ParseInfo(&back, chri, chriSize);
 		u32 color = 0;
 
+		if ((why == NULL) && RldMk_LookWritten(&look))
+		{
+			why = RldMk_LookReadsBack(chri, chriSize, &look);
+		}
 		if ((why == NULL) && (back.flags != RldMk_ChriFlags(&opt)))
 		{
 			why = "the flags differ";
@@ -13473,7 +14229,85 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		}
 	}
 
-	if (chri != NULL)
+	// --native-probe (PREVIEW): the probe body as CNET and CTXT, fitted into
+	// the frames just built and held to the game's rules before anything is
+	// written. Without the switch none of this runs and the bytes stay those
+	// of RldMk_ContainerVoices.
+	if ((chri != NULL) && (nativeProbeArg != NULL))
+	{
+		struct RldCharNative native;
+		const char *why = NULL;
+
+		cnet = RldMk_NativeCnet(build.cmdl, build.cmdlSize, nativePoses, !opt.noWheels, &cnetSize, &why);
+		ctxt = (cnet != NULL) ? RldMk_NativeCtxt(&ctxtSize) : NULL;
+		if ((cnet == NULL) || (ctxt == NULL))
+		{
+			RldMk_Say("error", "native-probe", why, "The native test body cannot be made (%s).", (why != NULL) ? why : "out of memory");
+		}
+		else
+		{
+			RldMk_CheckNativeBytes(build.cmdl, build.cmdlSize, RldMk_ChriFlags(&opt), cnet, cnetSize, ctxt, ctxtSize, &native);
+			if (native.state != RLDCHAR_NATIVE_READY)
+			{
+				RldMk_Say("error", "native-probe", native.detail, "Internal error: the native test body breaks %s (%s). Please report it.",
+				          (native.rule != NULL) ? native.rule : "a rule", native.detail);
+			}
+			RldChar_FreeNative(&native);
+		}
+		if (s_rldMkErrors != 0)
+		{
+			free(chri);
+			chri = NULL;
+		}
+	}
+
+	// --native-model on (PREVIEW): CNET and CTXT of the OBJ itself, placed by
+	// the frames just built (THE NATIVE MODEL OF AN OBJ, rldpack_native.inc),
+	// held to the game's rules before anything is written. Without the
+	// switch none of this runs and the bytes stay those of
+	// RldMk_ContainerVoices. With --wheels off no WHLS; with the wheels shown
+	// only with the wheel of one's own (WHLS version 2, refused above
+	// otherwise), never the test wheel.
+	if ((chri != NULL) && nativeModel && (opt.noWheels || haveWheel))
+	{
+		struct RldCharNative native;
+
+		if (RldMk_NativeModel(&s_rldObjNative, &ply, &build, &opt, !opt.noWheels, haveWheel ? &userWheel : NULL, &cnet, &cnetSize, &ctxt, &ctxtSize,
+		                      &nativeFacts))
+		{
+			RldMk_CheckNativeBytes(build.cmdl, build.cmdlSize, RldMk_ChriFlags(&opt), cnet, cnetSize, ctxt, ctxtSize, &native);
+			if (native.state != RLDCHAR_NATIVE_READY)
+			{
+				RldMk_Say("error", "native-model", native.detail, "Internal error: the native model breaks %s (%s). Please report it.",
+				          (native.rule != NULL) ? native.rule : "a rule", native.detail);
+			}
+			// The preview (Reload Studio) shows it too: appended to the
+			// RLDPV2 data written above (THE NATIVE MODEL IN THE PREVIEW).
+			else if (built && (previewArg != NULL) && !RldMk_NativePreviewAppend(previewArg, &native))
+			{
+				RldMk_Say("warning", "preview", previewArg, "The native model could not be added to the preview file %s; the preview shows the game's own model.",
+				          previewArg);
+			}
+			RldChar_FreeNative(&native);
+		}
+		if (s_rldMkErrors != 0)
+		{
+			free(cnet);
+			free(ctxt);
+			cnet = NULL;
+			ctxt = NULL;
+			free(chri);
+			chri = NULL;
+		}
+	}
+	RldObj_FreeNative(&s_rldObjNative);
+
+	if ((chri != NULL) && (cnet != NULL))
+	{
+		container = RldMk_ContainerNative(chri, chriSize, build.cmdl, build.cmdlSize, haveIcon ? icon.cicn : NULL, cmsk, cmskSize, cvoi, cvoiSize, cnet,
+		                                  cnetSize, ctxt, ctxtSize, &containerSize);
+	}
+	else if (chri != NULL)
 	{
 		container = RldMk_ContainerVoices(chri, chriSize, build.cmdl, build.cmdlSize, haveIcon ? icon.cicn : NULL, cmsk, cmskSize, cvoi, cvoiSize,
 		                                  &containerSize);
@@ -13485,6 +14319,9 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		{
 			RldMk_OutOfMemory();
 		}
+		RldMk_UserWheelFree(&userWheel);
+		free(cnet);
+		free(ctxt);
 		free(cmsk);
 		free(cvoi);
 		free(chri);
@@ -13565,6 +14402,9 @@ static int RldChar_MakeCommand(int argc, char **argv)
 				RldMk_Say("error", "write", outPath,
 				          "The character file cannot be written. Is the folder write-protected, or is the file open in another program?");
 			}
+			RldMk_UserWheelFree(&userWheel);
+			free(cnet);
+			free(ctxt);
 			free(cmsk);
 			free(cvoi);
 			free(chri);
@@ -13608,6 +14448,94 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		       RLDCHAR_VOICE_EVENTS, frames / RLDCHAR_VOICE_RATE, (frames % RLDCHAR_VOICE_RATE) * 100u / RLDCHAR_VOICE_RATE,
 		       voiceNormalize ? ", normalized" : "");
 	}
+	if ((cnet != NULL) && nativeModel)
+	{
+		char text[6][16];
+		u32 t;
+
+		printf("  CNET          %u bytes (preview: the native model of the OBJ, %u vertices, %u triangles, %s, %u materials, %u textures%s, %s - the game "
+		       "reads it only with NATIVE DRIVERS set to PREVIEW (GRAPHICS) or --native-preview)\n",
+		       (u32)cnetSize, nativeFacts.vertices, nativeFacts.triangles, nativeFacts.poses ? "47 poses" : "one still pose", nativeFacts.materials,
+		       nativeFacts.textures, nativeFacts.colors ? ", vertex colors" : "",
+		       (nativeFacts.wheelVersion == RLDCHAR_WHEEL_VERSION_USER) ? "its own wheels (WHLS version 2)"
+		                                                                : (nativeFacts.wheels ? "the test wheel" : "no wheels"));
+		if (haveWheel && (nativeFacts.wheelVersion == RLDCHAR_WHEEL_VERSION_USER))
+		{
+			char color[8];
+			char look[48];
+			char wheelText[6][24];
+
+			snprintf(color, sizeof(color), "%02X%02X%02X", userWheel.rgba[0], userWheel.rgba[1], userWheel.rgba[2]);
+			if (userWheel.textured)
+			{
+				snprintf(look, sizeof(look), "texture %u (%u x %u)", nativeFacts.wheelTexture, userWheel.texture.width, userWheel.texture.height);
+			}
+			else
+			{
+				snprintf(look, sizeof(look), "one color %s", color);
+			}
+			printf("  wheel         %s: %u triangles, %u vertices, radius %.2f (%u%% of the game's wheel), %.2f wide, %s; at x %.2f, y %.2f, "
+			       "z %.2f / %.2f (the bottom on the ground), the right side mirrored\n",
+			       wheelModelArg, userWheel.triangles, userWheel.vertices, userWheel.radius, userWheel.sizePercent, 2.0 * userWheel.halfWidth, look,
+			       RLDDUM_TIRE_X, userWheel.radius, RLDDUM_TIRE_FRONT_Z, RLDDUM_TIRE_REAR_Z);
+			if (userWheel.dropped != 0u)
+			{
+				printf("  wheel         %u triangles without area left out\n", userWheel.dropped);
+			}
+			snprintf(wheelText[0], sizeof(wheelText[0]), "%u", userWheel.triangles);
+			snprintf(wheelText[1], sizeof(wheelText[1]), "%u", userWheel.vertices);
+			snprintf(wheelText[2], sizeof(wheelText[2]), "%.4f", userWheel.radius);
+			snprintf(wheelText[3], sizeof(wheelText[3]), "%.4f", userWheel.halfWidth);
+			snprintf(wheelText[4], sizeof(wheelText[4]), "%u", userWheel.sizePercent);
+			if (userWheel.textured)
+			{
+				snprintf(wheelText[5], sizeof(wheelText[5]), "%ux%u", userWheel.texture.width, userWheel.texture.height);
+			}
+			else
+			{
+				snprintf(wheelText[5], sizeof(wheelText[5]), "color-%s", color);
+			}
+			Rld_Emit("char", "native-wheel", wheelText[0], wheelText[1], wheelText[2], wheelText[3], wheelText[4], wheelText[5], (const char *)NULL);
+		}
+		if (ctxt != NULL)
+		{
+			printf("  CTXT          %u bytes (preview: %u textures)\n", (u32)ctxtSize, nativeFacts.textures);
+		}
+		for (t = 0; t < nativeFacts.textures; t++)
+		{
+			printf("  texture %-2u    %u x %u%s\n", t, nativeFacts.width[t], nativeFacts.height[t],
+			       nativeFacts.converted[t] ? " (written again as a PNG of 8-bit RGBA)" : " (the PNG as it is)");
+		}
+		if (nativeFacts.repaired)
+		{
+			printf("  native repair %u triangles turned outward, %u added to close holes, open edges %u, %u second triangles (the other side of open parts)%s\n",
+			       nativeFacts.flipped, nativeFacts.lids, nativeFacts.openEdges, nativeFacts.backFaces,
+			       (nativeFacts.shared != 0u) ? "; texture files with the same bytes share an entry" : "");
+		}
+		else if ((nativeFacts.backFaces != 0u) || (nativeFacts.shared != 0u))
+		{
+			printf("  native        %u second triangles (--two-sided), %u texture files share an entry\n", nativeFacts.backFaces, nativeFacts.shared);
+		}
+		if ((nativeFacts.dropped != 0u) || (nativeFacts.clamped != 0u) || (nativeFacts.flat != 0u))
+		{
+			printf("  native        %u triangles left out (no area, or not in the game's own model), %u coordinates moved onto a frame's hull, %u "
+			       "normals (0, 1, 0)\n",
+			       nativeFacts.dropped, nativeFacts.clamped, nativeFacts.flat);
+		}
+		snprintf(text[0], sizeof(text[0]), "%u", nativeFacts.vertices);
+		snprintf(text[1], sizeof(text[1]), "%u", nativeFacts.triangles);
+		snprintf(text[2], sizeof(text[2]), "%u", nativeFacts.poses);
+		snprintf(text[3], sizeof(text[3]), "%u", nativeFacts.materials);
+		snprintf(text[4], sizeof(text[4]), "%u", nativeFacts.textures);
+		snprintf(text[5], sizeof(text[5]), "%u", (u32)(cnetSize + ctxtSize));
+		Rld_Emit("char", "native-model", text[0], text[1], text[2], text[3], text[4], nativeFacts.wheels ? "wheels" : "hidden", text[5], (const char *)NULL);
+	}
+	else if (cnet != NULL)
+	{
+		printf("  CNET          %u bytes (preview: the native test body, %s, %s - the game reads it only with NATIVE DRIVERS set to PREVIEW (GRAPHICS) or --native-preview)\n", (u32)cnetSize,
+		       nativePoses ? "47 poses" : "one still pose", opt.noWheels ? "no wheels" : "with wheels");
+		printf("  CTXT          %u bytes (preview: one texture 256 x 256)\n", (u32)ctxtSize);
+	}
 	printf("  sha256        %s\n", digestText);
 	printf("  format        %d.%d%s\n", RLDCHAR_VERSION_MAJOR, RLDCHAR_VERSION_MINOR, (RLDCHAR_VERSION_MINOR == 0) ? " (draft)" : "");
 
@@ -13619,6 +14547,9 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		s_machineResult = 1;
 	}
 
+	RldMk_UserWheelFree(&userWheel);
+	free(cnet);
+	free(ctxt);
 	free(cmsk);
 	free(cvoi);
 	free(chri);
@@ -13777,11 +14708,18 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 	const char *voiceWhy = "";
 	struct RldCharVoices voices;
 	char voiceText[256];
+	struct RldCharNative native;
+	int hasNative = 0;
+	char nativeText[320];
+	struct RldCharLook look;
 	int failed = 0;
 	char text[256];
 	int i;
 
 	memset(&reader, 0, sizeof(reader));
+	memset(&look, 0, sizeof(look));
+	memset(&native, 0, sizeof(native));
+	nativeText[0] = '\0';
 	memset(&facts, 0, sizeof(facts));
 	memset(&first, 0, sizeof(first));
 	memset(&maskFirst, 0, sizeof(maskFirst));
@@ -13912,6 +14850,54 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		free(voiceData);
 	}
 
+	// The native model (CNET, CTXT; preview): only when the file has one of
+	// them, so the report of every other file stays as it was. The game's
+	// reader, against the hulls of the model - which needs a model that
+	// passes its check.
+	if ((Rld_FindEntry(&reader, "CNET", NULL) != NULL) || (Rld_FindEntry(&reader, "CTXT", NULL) != NULL))
+	{
+		struct RldCharHull hulls[RLDCHAR_NET_POSES];
+		struct RldCharFinding quiet;
+
+		hasNative = 1;
+		if ((RldChar_CheckModel(cmdl, cmdlSize, &quiet, NULL, NULL, NULL) == RLDCHAR_VERDICT_OK) &&
+		    RldChar_FrameHulls(&cmdl[4], Rld_ReadLE32(&cmdl[0]), 0u, hulls))
+		{
+			RldChar_ReadNative(&reader, info.flags, hulls, &native);
+		}
+		else
+		{
+			RldChar_NativeFail(&native, "model", "the model does not pass its own check");
+		}
+
+		if (native.state == RLDCHAR_NATIVE_READY)
+		{
+			char wheelText[96];
+
+			if (native.wheel == NULL)
+			{
+				snprintf(wheelText, sizeof(wheelText), "%s", "wheels hidden");
+			}
+			else
+			{
+				snprintf(wheelText, sizeof(wheelText), "wheels: WHLS version %u (%s, %u triangles, radius %.2f)", (unsigned)native.wheelVersion,
+				         (native.wheelVersion == RLDCHAR_WHEEL_VERSION_USER) ? "its own" : "the test wheel", (unsigned)native.wheelTriangleCount,
+				         (double)RldChar_F32(&native.wheel[0x0C]));
+			}
+			snprintf(nativeText, sizeof(nativeText), "ready: %u vertices, %u triangles, %u poses, %u materials, %u textures (%llu bytes RGBA8), %s",
+			         native.vertexCount, native.triangleCount, native.poseCount, native.materialCount, native.textureCount,
+			         (unsigned long long)native.textureBytes, wheelText);
+		}
+		else if (native.state == RLDCHAR_NATIVE_REFUSED)
+		{
+			snprintf(nativeText, sizeof(nativeText), "refused (%s) %s", (native.rule != NULL) ? native.rule : "", native.detail);
+		}
+		else
+		{
+			snprintf(nativeText, sizeof(nativeText), "%s", "none - a CTXT without CNET is not read");
+		}
+	}
+
 	if (!machine)
 	{
 		printf("%s\n", path);
@@ -13942,7 +14928,9 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		{
 			const u8 *entry = &reader.directory[i * RLD_DIR_ENTRY_SIZE];
 
-			printf("%.4s%s%s", (const char *)entry, (RldChar_ChunkLimit(entry) != 0u) ? "" : " (skipped)", ((i + 1) < reader.chunkCount) ? " " : "\n");
+			printf("%.4s%s%s", (const char *)entry,
+			       (RldChar_ChunkLimit(entry) != 0u) ? "" : ((RldChar_NativeLimit(entry) != 0u) ? " (preview)" : " (skipped)"),
+			       ((i + 1) < reader.chunkCount) ? " " : "\n");
 		}
 		if (strcmp(iconState, "ok") == 0)
 		{
@@ -13970,6 +14958,17 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 				printf("  map color     the template's\n");
 			}
 		}
+		// The look: a value the game reads as retail is no refusal (no CHRI rule).
+		RldChar_ParseLook(&info, chri, chriSize, &look);
+		RldMk_LookPrint(&look);
+		if (look.why != NULL)
+		{
+			printf("  look          %s - the game draws the retail look\n", look.why);
+			if (full)
+			{
+				fprintf(stderr, "WARNING: the look of %s: %s - the game draws the retail look.\n", path, look.why);
+			}
+		}
 		if (strcmp(maskState, "own") == 0)
 		{
 			printf("  own mask      %u triangles, %u bytes of draw memory per frame (at most %u), %u colors (CMSK)\n", maskFacts.triangles,
@@ -13994,6 +14993,11 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		else
 		{
 			printf("  voices        none - the driver is silent; CVOI ignored: %s\n", voiceWhy);
+		}
+		if (hasNative)
+		{
+			printf("  native model  preview, read by the game only with NATIVE DRIVERS set to PREVIEW (GRAPHICS) or --native-preview - %s%s\n", nativeText,
+			       (native.state == RLDCHAR_NATIVE_REFUSED) ? " - the game draws the CMDL" : "");
 		}
 		if (full)
 		{
@@ -14037,6 +15041,16 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 			RldMk_MapColorText(mapColor, color);
 			Rld_Emit("value", "map-color", own ? color : "template", own ? "container" : "template", (const char *)NULL);
 		}
+		RldChar_ParseLook(&info, chri, chriSize, &look);
+		RldMk_LookEmit(&look, "container", "container");
+		if (look.shadow == RLDCHAR_LOOK_AUTO)
+		{
+			RldMk_LookEmitQuad(look.quad);
+		}
+		if (look.why != NULL)
+		{
+			Rld_Emit("value", "look", "retail", look.why, (const char *)NULL);
+		}
 		if ((info.flags & ~(u32)RLDCHAR_FLAGS_KNOWN) != 0u)
 		{
 			snprintf(number, sizeof(number), "0x%08x", info.flags);
@@ -14074,6 +15088,11 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		}
 		Rld_Emit("value", "own-voices", voiceState, (strcmp(voiceState, "ok") == 0) ? voiceText : ((strcmp(voiceState, "none") == 0) ? "container" : voiceWhy),
 		         (const char *)NULL);
+		if (hasNative)
+		{
+			Rld_Emit("value", "native-model", (native.state == RLDCHAR_NATIVE_READY) ? "ready" : ((native.state == RLDCHAR_NATIVE_REFUSED) ? "refused" : "none"),
+			         nativeText, (const char *)NULL);
+		}
 		if (strcmp(voiceState, "ok") == 0)
 		{
 			u32 events = 0;
@@ -14139,6 +15158,37 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 				printf("  ok     CMDL   %u bytes\n", (u32)cmdlSize);
 				continue;
 			}
+			if (RldChar_NativeLimit(entry) != 0u)
+			{
+				// Every native chunk against its hash and sizes, as the game's
+				// reader of the native part takes it: a chunk it cannot take
+				// fails the file here, as a CMSK does. A rule costs only the
+				// native part in the game.
+				size_t nativeSize = 0;
+				const char *nativeWhy = NULL;
+				u8 *nativeData = RldChar_ReadNativeChunk(&reader, i, &nativeSize, &nativeWhy);
+
+				free(nativeData);
+				if (nativeData == NULL)
+				{
+					printf("  FAILED %.4s   %s\n", (const char *)entry, (nativeWhy != NULL) ? nativeWhy : "cannot be read");
+					failed = 1;
+				}
+				else if (native.state == RLDCHAR_NATIVE_REFUSED)
+				{
+					printf("  IGNORED %.4s  %s %s - the game draws the CMDL (preview)\n", (const char *)entry, (native.rule != NULL) ? native.rule : "",
+					       native.detail);
+				}
+				else if (native.state == RLDCHAR_NATIVE_NONE)
+				{
+					printf("  skip   %.4s   not read without a CNET (preview)\n", (const char *)entry);
+				}
+				else
+				{
+					printf("  ok     %.4s   %u bytes (preview)\n", (const char *)entry, (u32)nativeSize);
+				}
+				continue;
+			}
 			if (RldChar_ChunkLimit(entry) == 0u)
 			{
 				printf("  skip   %.4s   not a chunk type of this format - left alone, as the game does\n", (const char *)entry);
@@ -14183,6 +15233,7 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		}
 	}
 
+	RldChar_FreeNative(&native);
 	free(chri);
 	free(cmdl);
 	Rld_Close(&reader);
@@ -14303,6 +15354,15 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "                              the points of a retail kart; off: no wheels -\n");
 	fprintf(out, "                              for a model with its own (a motorbike, say);\n");
 	fprintf(out, "                              --fit then measures the whole model\n");
+	fprintf(out, "  --shadow retail|auto|off    the driver's shadow: retail (default with the\n");
+	fprintf(out, "                              kart wheels), auto (default with --wheels off:\n");
+	fprintf(out, "                              fitted to the model's footprint) or off\n");
+	fprintf(out, "  --exhaust retail|off|x,y,z[;x,y,z]   where smoke and glow leave the\n");
+	fprintf(out, "                              kart: retail (default with the kart wheels),\n");
+	fprintf(out, "                              off (default with --wheels off) or one or two\n");
+	fprintf(out, "                              points in game units of the built model (as\n");
+	fprintf(out, "                              rldpack info shows it; +X left, +Y up, +Z\n");
+	fprintf(out, "                              forward), point 1 left, point 2 right\n");
 	fprintf(out, "  --mask aku|uka|like         the mask the driver wears: the mask item, the\n");
 	fprintf(out, "                              rescue after a fall, its sound and music and\n");
 	fprintf(out, "                              the HUD icon; like (default): the template's\n");
@@ -14361,6 +15421,34 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "                              RLDDIAG 1) and never a character: the limits of\n");
 	fprintf(out, "                              draw memory and file size are lifted for the\n");
 	fprintf(out, "                              measurement; --preview is written, --out ignored\n");
+	fprintf(out, "  --native-probe <still|poses>\n");
+	fprintf(out, "                              PREVIEW, for tests: also write the native test\n");
+	fprintf(out, "                              body (CNET) with its texture (CTXT), fitted into\n");
+	fprintf(out, "                              the model's frames; poses: 47 poses. The game reads\n");
+	fprintf(out, "                              them only with NATIVE DRIVERS set to PREVIEW (or\n");
+	fprintf(out, "                              --native-preview) and draws the model as before.\n");
+	fprintf(out, "                              Without it nothing changes\n");
+	fprintf(out, "  --native-model <on|off>     PREVIEW: also write the native model of an OBJ\n");
+	fprintf(out, "                              (CNET: its own faces in floats with UVs and\n");
+	fprintf(out, "                              materials; CTXT: its texture files, each side a\n");
+	fprintf(out, "                              power of two 16..2048), placed like its CMDL.\n");
+	fprintf(out, "                              Needs --wheel-model or --wheels off: the game\n");
+	fprintf(out, "                              draws a native model only with wheels of its own\n");
+	fprintf(out, "                              or with the kart wheels hidden. Not with\n");
+	fprintf(out, "                              --native-probe. Default off: nothing changes\n");
+	fprintf(out, "  --wheel-model <obj|ply>     PREVIEW, with --native-model on and the wheels\n");
+	fprintf(out, "                              shown: one wheel of your own for all four (WHLS\n");
+	fprintf(out, "                              version 2) - axle along X, outer side +X, centre\n");
+	fprintf(out, "                              in the origin, the axes of --up/--forward; an OBJ\n");
+	fprintf(out, "                              with one material (a texture up to %u x %u, or\n", RLDCHAR_WHEEL_TEXTURE_EDGE_MAX,
+	        RLDCHAR_WHEEL_TEXTURE_EDGE_MAX);
+	fprintf(out, "                              one color) or a PLY (one color); at most %u\n", RLDCHAR_WHEEL_TRIANGLES_MAX);
+	fprintf(out, "                              triangles and %u vertices, never reduced. Placed\n", RLDCHAR_WHEEL_VERTICES_MAX);
+	fprintf(out, "                              at the game's wheel points, the bottom on the\n");
+	fprintf(out, "                              ground; the right side is its mirror image. The\n");
+	fprintf(out, "                              classic model keeps the game's kart wheels\n");
+	fprintf(out, "  --wheel-size <50..200>      the radius of that wheel in percent of the\n");
+	fprintf(out, "                              game's wheel (%.0f model units; default 100)\n", RLDDUM_TIRE_HALF_SIZE);
 	fprintf(out, "\n");
 	fprintf(out, "  rldpack make-char --model driver.ply --name \"MY DRIVER\" --template 14\n");
 	fprintf(out, "  rldpack make-char --model driver.obj --name \"MY DRIVER\" --template 14\n");
@@ -16227,6 +17315,11 @@ static void RldMk_SelfTestChri(const u8 *good, size_t goodSize)
 #define RLDMK_GOLDEN_SIZE_ICON "12f8880b561f2c5fb6dabfa2ae3a0f1f8d14f7e3bca1a07a1db9c526e56e50c7"
 #define RLDMK_GOLDEN_FIT "fed8b96dcba705b150ee8ca109d5fd17ebfa70e9a11767a292a1a8b03bac3e08"
 #define RLDMK_GOLDEN_NO_WHEELS "4d80fa05dfd7539318fce7e7e1dd88fe2d49ba723fa8c7accdbccba45cfd9b2d"
+// NO_WHEELS_LOOK: the same model with the default look of --wheels off
+// (shadow auto with the quad of RldMk_LookShadowQuad, exhaust off; CHRI 0x3C).
+// NO_WHEELS itself is built with --shadow retail --exhaust retail and keeps
+// its bytes. NO_WHEELS_LOOK follows deliberate changes of the auto quad.
+#define RLDMK_GOLDEN_NO_WHEELS_LOOK "c15a7893300cb187e1e697baae8a944ac3e027064412e2a9689c33ff2af10a86"
 #define RLDMK_GOLDEN_REDUCED "f29726b550d8436c84f0d5bc47f2854843d9d81aec39c3a61071e6932fd69dd6"
 
 // --- --size --------------------------------------------------------------------------
@@ -19828,6 +20921,154 @@ static void RldMk_SelfTestVoices(const u8 *good, size_t goodSize)
 	free(cvoi);
 }
 
+// THE LOOK (--shadow, --exhaust, CHRI 0x24..0x3B): the defaults of the wheels,
+// the switches and their refusals, the bytes (retail/retail as before the
+// look), CHRI read back by the game's reader (RldChar_ParseLook), the auto
+// quad of the standard model.
+static void RldMk_SelfTestLook(struct RldMkTestMesh *mesh)
+{
+	struct RldCharLook look;
+	struct RldCharLook back;
+	struct RldCharInfo info;
+	u8 field[RLDCHAR_NAME_FIELD];
+	int shadowSwitch = 0;
+	int exhaustSwitch = 0;
+	int ok;
+
+	memset(field, 0, sizeof(field));
+	memcpy(field, "SELF TEST", 9u);
+
+	// The defaults follow the wheels; the switches name the mode.
+	RldMk_ResetSaid();
+	ok = RldMk_LookResolve(NULL, NULL, 0, &look, &shadowSwitch, &exhaustSwitch) && (look.shadow == RLDCHAR_LOOK_RETAIL) &&
+	     (look.exhaust == RLDCHAR_LOOK_RETAIL) && !shadowSwitch && !exhaustSwitch && !RldMk_LookWritten(&look);
+	ok = ok && RldMk_LookResolve(NULL, NULL, 1, &look, &shadowSwitch, &exhaustSwitch) && (look.shadow == RLDCHAR_LOOK_AUTO) &&
+	     (look.exhaust == RLDCHAR_LOOK_OFF);
+	ok = ok && RldMk_LookResolve("Retail", "RETAIL", 1, &look, &shadowSwitch, &exhaustSwitch) && (look.shadow == RLDCHAR_LOOK_RETAIL) &&
+	     (look.exhaust == RLDCHAR_LOOK_RETAIL) && shadowSwitch && exhaustSwitch;
+	ok = ok && RldMk_LookResolve("off", "7.68,23.04,-54.10;-7.68,23.04,-54.1", 0, &look, &shadowSwitch, &exhaustSwitch) &&
+	     (look.shadow == RLDCHAR_LOOK_OFF) && (look.exhaust == RLDCHAR_LOOK_CUSTOM) && (look.count == 2u) && (look.point[0][0] == 123) &&
+	     (look.point[0][1] == 369) && (look.point[0][2] == -866) && (look.point[1][0] == -123) && (look.point[1][2] == -866);
+	ok = ok && RldMk_LookResolve("auto", "0,-16,256", 0, &look, &shadowSwitch, &exhaustSwitch) && (look.count == 1u) && (look.point[0][1] == -256) &&
+	     (look.point[0][2] == 4096) && (s_rldMkErrors == 0);
+	RldMk_Test(ok, "look: defaults (retail/retail, --wheels off auto/off), --shadow, --exhaust one or two points in 1/16 game units",
+	           "said: %s", s_rldMkCodes);
+
+	{
+		static const char *const bad[5] = {"0,300,0", "0,-17,0", "1,2", "1,2,3;4,5,6;7,8,9", "257,0,0"};
+		int k;
+
+		ok = 1;
+		for (k = 0; k < 5; k++)
+		{
+			RldMk_ResetSaid();
+			ok = ok && !RldMk_LookResolve(NULL, bad[k], 0, &look, &shadowSwitch, &exhaustSwitch) && RldMk_Said("exhaust") &&
+			     (look.exhaust == RLDCHAR_LOOK_RETAIL);
+		}
+		RldMk_ResetSaid();
+		ok = ok && !RldMk_LookResolve("sideways", NULL, 0, &look, &shadowSwitch, &exhaustSwitch) && RldMk_Said("shadow");
+		RldMk_Test(ok, "look: refused with the reason - a height of 300 or -17, two numbers, three points, x 257, --shadow sideways", "said: %s",
+		           s_rldMkCodes);
+		RldMk_ResetSaid();
+	}
+
+	// Retail/retail: the bytes from before the look, with and without flags.
+	{
+		static const u32 flags[3] = {0u, RLDCHAR_FLAG_NO_WHEELS, RLDCHAR_FLAG_NO_WHEELS | RLDCHAR_FLAG_MAP_COLOR};
+		int k;
+
+		ok = 1;
+		memset(&look, 0, sizeof(look));
+		for (k = 0; k < 3; k++)
+		{
+			size_t aSize = 0;
+			size_t bSize = 0;
+			u8 *a = RldMk_BuildChriColor(14u, 0u, field, 1u, "self-test", flags[k], 0x00336699u, &aSize);
+			u8 *b = RldMk_BuildChriLook(14u, 0u, field, 1u, "self-test", flags[k], 0x00336699u, &look, &bSize);
+
+			ok = ok && (a != NULL) && (b != NULL) && (aSize == bSize) && (memcmp(a, b, aSize) == 0) && (Rld_ReadLE16(&a[0]) < RLDCHAR_CHRI_SIZE_LOOK);
+			free(a);
+			free(b);
+		}
+		RldMk_Test(ok, "look: retail/retail writes the CHRI from before the look (0x1C, 0x20, 0x24)", "differs");
+	}
+
+	// A look: fixedSize 0x3C, read back by the game's reader, no finding.
+	{
+		static const s16 quad[4] = {-517, 517, -866, 930};
+		static const u32 flags[2] = {RLDCHAR_FLAG_NO_WHEELS, RLDCHAR_FLAG_NO_WHEELS | RLDCHAR_FLAG_MAP_COLOR};
+		int k;
+
+		ok = 1;
+		for (k = 0; k < 2; k++)
+		{
+			size_t size = 0;
+			u8 *chri;
+			u32 color = 0;
+			const char *why;
+
+			memset(&look, 0, sizeof(look));
+			look.shadow = RLDCHAR_LOOK_AUTO;
+			look.exhaust = RLDCHAR_LOOK_CUSTOM;
+			look.count = 2u;
+			memcpy(look.quad, quad, sizeof(quad));
+			look.point[0][0] = 123;
+			look.point[0][1] = 369;
+			look.point[0][2] = -866;
+			look.point[1][0] = -123;
+			look.point[1][1] = 369;
+			look.point[1][2] = -866;
+			chri = RldMk_BuildChriLook(14u, 2u, field, 1u, "self-test", flags[k], 0x00336699u, &look, &size);
+			why = (chri != NULL) ? RldChar_ParseInfo(&info, chri, size) : "out of memory";
+			if (why == NULL)
+			{
+				RldChar_ParseLook(&info, chri, size, &back);
+			}
+			ok = ok && (why == NULL) && (Rld_ReadLE16(&chri[0]) == RLDCHAR_CHRI_SIZE_LOOK) && (info.fixedSize == RLDCHAR_CHRI_SIZE_LOOK) &&
+			     (info.flags == flags[k]) && (RldChar_MapColor(&info, &color) == (k == 1)) && ((k == 0) || (color == 0x00336699u)) &&
+			     ((k == 1) || (Rld_ReadLE32(&chri[RLDCHAR_CHRI_MAP_COLOR_OFFSET]) == 0u)) && (chri[0x27] == 0u) && (back.why == NULL) &&
+			     (RldMk_LookReadsBack(chri, size, &look) == NULL) && (back.quad[0] == -517) && (back.point[1][0] == -123) &&
+			     (strcmp(info.author, "self-test") == 0);
+			// one point: the second stays 0
+			look.count = 1u;
+			free(chri);
+			chri = RldMk_BuildChriLook(14u, 2u, field, 1u, "self-test", flags[k], 0x00336699u, &look, &size);
+			ok = ok && (chri != NULL) && (chri[RLDCHAR_CHRI_EXHAUST_COUNT] == 1u) && (Rld_ReadLE16(&chri[RLDCHAR_CHRI_EXHAUST_POINTS + 6u]) == 0u) &&
+			     (RldMk_LookReadsBack(chri, size, &look) == NULL);
+			free(chri);
+		}
+		RldMk_Test(ok, "look: CHRI 0x3C (auto quad, two and one exhaust points, with and without the map color) read back by the game's reader",
+		           "differs");
+	}
+
+	// The auto quad of the standard model (--fit none, --wheels off): the
+	// kart box +-28.8 x -57.6..57.6 at the bottom, the driver above half the
+	// height left out: x +-36 (28.8 x 1.25), z as the kart, within a step
+	// of the packed model (1/16 rounding of the decoded positions).
+	{
+		struct RldMkOptions opt;
+		struct RldMkPly ply;
+		struct RldMkBuild b;
+		s16 quad[4] = {0, 0, 0, 0};
+
+		RldMk_TestOptions(&opt);
+		opt.noWheels = 1;
+		RldMk_TestStandard(mesh, 2u, 0, 0.0, -1);
+		ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+		if (ok)
+		{
+			RldMk_LookShadowQuad(&b, quad);
+		}
+		ok = ok && (quad[0] >= (-576 - 8)) && (quad[0] <= (-576 + 8)) && (quad[1] >= (576 - 8)) && (quad[1] <= (576 + 8)) &&
+		     (quad[2] >= (-922 - 8)) && (quad[2] <= (-922 + 8)) && (quad[3] >= (922 - 8)) && (quad[3] <= (922 + 8));
+		RldMk_Test(ok, "look: the auto quad of the standard model is the kart's footprint, 1.25 times as wide", "quad %d %d %d %d (1/16)", quad[0],
+		           quad[1], quad[2], quad[3]);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+	}
+	RldMk_ResetSaid();
+}
+
 // --- Golden hashes -------------------------------------------------------------------
 
 static void RldMk_SelfTestGolden(struct RldMkTestMesh *mesh, const struct RldPngImage *a)
@@ -19844,7 +21085,15 @@ static void RldMk_SelfTestGolden(struct RldMkTestMesh *mesh, const struct RldPng
 	memset(field, 0, sizeof(field));
 	memcpy(field, "SELF TEST", 9u);
 	chri = RldMk_BuildChri(14u, 0u, field, 1u, "", 0u, &chriSize);
-	chriNoWheels = RldMk_BuildChri(14u, 0u, field, 1u, "", RLDCHAR_FLAG_NO_WHEELS, &chriNoWheelsSize);
+	// --wheels off with --shadow retail --exhaust retail, as make-char builds it
+	{
+		struct RldCharLook look;
+		int shadowSwitch;
+		int exhaustSwitch;
+
+		RldMk_LookResolve("retail", "retail", 1, &look, &shadowSwitch, &exhaustSwitch);
+		chriNoWheels = RldMk_BuildChriLook(14u, 0u, field, 1u, "", RLDCHAR_FLAG_NO_WHEELS, 0u, &look, &chriNoWheelsSize);
+	}
 	if ((chri == NULL) || (chriNoWheels == NULL) || !RldMk_MakeIcon(a, &icon))
 	{
 		RldMk_Test(0, "golden hashes", "out of memory");
@@ -19915,6 +21164,51 @@ static void RldMk_SelfTestGolden(struct RldMkTestMesh *mesh, const struct RldPng
 		RldMk_FreePly(&ply);
 		RldMk_FreeBuild(&again);
 		RldMk_FreePly(&plyAgain);
+	}
+
+	// NO_WHEELS_LOOK: --wheels off with the default look, built twice the same.
+	{
+		struct RldCharLook look;
+		struct RldMkOptions opt;
+		struct RldMkPly ply;
+		struct RldMkBuild b;
+		u8 *look1 = NULL;
+		u8 *look2 = NULL;
+		u8 *file = NULL;
+		u8 *fileAgain = NULL;
+		size_t size1 = 0;
+		size_t size2 = 0;
+		size_t size = 0;
+		size_t sizeAgain = 0;
+		int shadowSwitch;
+		int exhaustSwitch;
+		int ok;
+
+		RldMk_TestOptions(&opt);
+		opt.noWheels = 1;
+		RldMk_TestStandard(mesh, 2u, 0, 0.0, -1);
+		ok = RldMk_LookResolve(NULL, NULL, 1, &look, &shadowSwitch, &exhaustSwitch) && RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+		if (ok)
+		{
+			RldMk_LookShadowQuad(&b, look.quad);
+			look1 = RldMk_BuildChriLook(14u, 0u, field, 1u, "", RLDCHAR_FLAG_NO_WHEELS, 0u, &look, &size1);
+			look2 = RldMk_BuildChriLook(14u, 0u, field, 1u, "", RLDCHAR_FLAG_NO_WHEELS, 0u, &look, &size2);
+			file = (look1 != NULL) ? RldMk_Container(look1, size1, b.cmdl, b.cmdlSize, NULL, &size) : NULL;
+			fileAgain = (look2 != NULL) ? RldMk_Container(look2, size2, b.cmdl, b.cmdlSize, NULL, &sizeAgain) : NULL;
+		}
+		ok = ok && (file != NULL) && (fileAgain != NULL) && (size == sizeAgain) && (memcmp(file, fileAgain, size) == 0) &&
+		     (look.shadow == RLDCHAR_LOOK_AUTO) && (look.exhaust == RLDCHAR_LOOK_OFF) && (Rld_ReadLE16(&look1[0]) == RLDCHAR_CHRI_SIZE_LOOK);
+		RldMk_Test(ok, "golden model, --wheels off with its default look (shadow auto, exhaust off), built twice: the same bytes", "differ");
+		if (Rld_CheckGolden("make-char --fit none --wheels off (look auto/off)", file, size, RLDMK_GOLDEN_NO_WHEELS_LOOK) != 0)
+		{
+			s_rldMkTestFailed++;
+		}
+		free(file);
+		free(fileAgain);
+		free(look1);
+		free(look2);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
 	}
 
 	free(chri);
@@ -21057,6 +22351,9 @@ static void RldMk_SelfTestSplitVehicle(struct RldMkTestMesh *mesh)
 	}
 }
 
+// CNET and CTXT: the test set, its self-test and make-native-tests.
+#include "rldpack_native_test.inc"
+
 static int RldChar_SelfTest(void)
 {
 	struct RldMkTestMesh *mesh = (struct RldMkTestMesh *)calloc(1, sizeof(struct RldMkTestMesh));
@@ -21096,6 +22393,7 @@ static int RldChar_SelfTest(void)
 	RldMk_SelfTestPng();
 	RldMk_SelfTestVoices(good, goodSize);
 	RldMk_SelfTestMask(mesh);
+	RldMk_SelfTestNative();
 	{
 		struct RldPngImage pictureA;
 
@@ -21104,6 +22402,7 @@ static int RldChar_SelfTest(void)
 			RldMk_SelfTestIcon(&pictureA);
 			RldMk_SelfTestIconOptions(&pictureA);
 			RldMk_SelfTestGolden(mesh, &pictureA);
+			RldMk_SelfTestLook(mesh);
 		}
 		else
 		{

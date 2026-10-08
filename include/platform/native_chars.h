@@ -45,6 +45,25 @@ void NativeChar_SetGridFill(int count);
 #define NATIVE_CHAR_DEV_SEATS_CYCLE 2
 void NativeChar_SetDevSeats(int mode);
 
+// --dev-char-seat-files <f0,f1,...> (main.c, only with --dev, never with
+// --dev-char-seats or --char): like ALL, but seat s < n drives the file fs of
+// the roster and every seat from n on the first file of the roster (as ALL);
+// each bot seat is put on the template of its own file. 1 to
+// NATIVE_CHAR_DEV_SEAT_FILES_MAX names separated by commas, each a file name
+// of the folder (no path). Only remembered: 0 when the list is not of that
+// form (nothing remembered), else 1.
+#define NATIVE_CHAR_DEV_SEATS_FILES 3
+#define NATIVE_CHAR_DEV_SEAT_FILES_MAX 8
+int NativeChar_SetDevSeatFiles(const char *list);
+
+// main.c, right after NativeChar_LoadRoster: each name of
+// --dev-char-seat-files looked up among the files of the roster (letter case
+// ignored, as the folder scan takes the extension). 1 when every name is a file
+// of the roster (or the switch is off), with one line per seat in the log; 0
+// for the first name that is not, with its message on stderr and in the log -
+// main.c then ends the start with exit code 64.
+int NativeChar_DevSeatFilesResolve(void);
+
 // main.c, before any window: 0 when --char names a file that is neither in a
 // --chars-dir nor an absolute path (the message is then on stderr), else 1.
 int NativeChar_ArgsUsable(void);
@@ -257,17 +276,124 @@ void NativeChar_NoteOwnMask(const struct Driver *d);
 // of --char-grid-selftest (MM_NativeCharGrid_SelfTest).
 void NativeChar_MaskSelfTest(int *checks, int *failures);
 
+// THE NATIVE MODEL (CNET, CTXT; PREVIEW). Only with the native preview
+// (NATIVE DRIVERS set to PREVIEW on the GRAPHICS page, or --native-preview):
+// when a seat is bound (NativeChar_ArmSeats, and --dev-char-seats), the
+// file's CNET and CTXT are read again from its path, checked with
+// RldChar_ReadNative (include/rldchar.inc) and held in host memory until the
+// seats are cleared, with one line "native model ready: ...", "native model
+// refused (<rule>), using CMDL: ..." or "native model none: ...". The upload
+// and the drawing are platform/native_char_gpu.c and
+// platform/native_render_layer.c. This is the held part of a bound seat whose guard
+// holds (NativeChar_SeatModel != NULL), NULL for every other seat, without
+// --native-preview, and for a file whose native part is missing or refused -
+// the seat then draws its CMDL.
+struct RldCharNative;
+const struct RldCharNative *NativeChar_SeatNative(int seat);
+
+// The file name of a bound seat whose guard holds, "" for every other seat.
+const char *NativeChar_SeatFile(int seat);
+
+// The retail model the birth of a seat will find for its character id in the
+// driver pack of this load (load stage 5 on), NULL for none; the retail twin
+// (step 4d) is made from it.
+const struct Model *NativeChar_RetailSeatModel(int seat);
+
+// STEP 5A, the native part of the driver select preview (platform/
+// native_render_layer.c, the pull, at a change of the wanted tile; only with
+// --native-preview): held for one entry at a time, in the file's own slot as a
+// bound seat holds it; let go when the driver select ends and in
+// NativeChar_ClearSeats. PreviewNative: the ready part held for entry, else
+// NULL. PreviewEntry: the entry held, -1 for none. EntryFile: the file name of
+// a roster entry, "" outside the files.
+void NativeChar_HoldPreview(int entry);
+void NativeChar_ReleasePreview(void);
+const struct RldCharNative *NativeChar_PreviewNative(int entry);
+int NativeChar_PreviewEntry(void);
+const char *NativeChar_EntryFile(int entry);
+
+// The GPU self-test (platform/native_char_gpu.c): one file through the roster
+// read and the native read with the preview; 1 when the part is ready. The
+// caller frees the part (RldChar_FreeNative).
+int NativeChar_ReadNativeFile(const char *path, const char *name, struct RldCharNative *out);
+
+// --char-native-selftest <folder> (main.c, ctest char_native_selftest): the
+// files rldpack make-native-tests wrote, through the roster read and the
+// native read without and with --native-preview, each against the
+// expectation its name gives. No window, no data. 0 = passed.
+int NativeChar_NativeSelfTest(const char *dir);
+
 // game/DrawTires.c, the solid wheels and their reflection: 1 when model is the
 // model of a loaded file whose CHRI flags set RLDCHAR_FLAG_NO_WHEELS (the race
 // seat and the driver select preview alike), else 0 - also for NULL, retail
 // models and an empty roster.
 int NativeChar_ModelHidesWheels(const struct Model *model);
 
+// The same per instance and view (both passes of game/DrawTires.c): the answer
+// of the model, or 1 for a view of a custom character the render layer drew
+// natively with its own wheels in this frame (step 4c; a fallback view keeps
+// the retail wheels of its CMDL).
+struct PushBuffer;
+int NativeChar_ViewHidesWheels(const struct Instance *inst, const struct PushBuffer *pb);
+
 // game/RenderBucket/RenderBucket_QueueExecute.c, once per instance draw: 1 when
 // model is the model or the own mask of a loaded file whose CHRI flags set
 // RLDCHAR_FLAG_FULL_HEIGHT - the renderer then keeps bit 0 of the height -,
 // else 0: NULL, retail models, files without the bit and an empty roster.
 int NativeChar_ModelFullHeight(const struct Model *model);
+
+// THE LOOK (CHRI 0x24..0x3B, include/rldchar.inc RldChar_ParseLook): the
+// ground shadow and the exhaust smoke of a custom character, keyed on the
+// model like NativeChar_ModelHidesWheels - the CMDL drawing and the native
+// drawing alike, at every scale factor, with or without --native-preview
+// (the look is read with CHRI when the roster is read). Without a file
+// whose look is not retail every function below answers at its first
+// comparison and changes nothing.
+
+// game/Vehicle/VehGroundShadow.c, once per driver and frame: RLDCHAR_LOOK_RETAIL
+// (0; also NULL, retail models, an empty roster), RLDCHAR_LOOK_AUTO with
+// quad = xMin, xMax, zMin, zMax in 1/16 model units, or RLDCHAR_LOOK_OFF.
+int NativeChar_ModelShadow(const struct Model *model, s16 quad[4]);
+
+// The same file, per shadow drawn auto or left out (off) in a view: only
+// counts, for the exit line.
+void NativeChar_NoteShadow(int mode);
+
+// The four vectors of an auto shadow before the axis rotation, in the space
+// of game/Vehicle/VehGroundShadow.c (the world times 4, scaled by the height
+// factor 1..256 like the retail axes): out[0] the centre (xMid, 0, zSeam),
+// out[1] the half width (x), out[2] the rear (z, zSeam - zMin), out[3] the
+// front (z, zMax - zSeam). zSeam splits the quad 41 : 52 like the retail
+// axes. scaleX, scaleZ: the instance scale (0x1000 = 1). Pure.
+void NativeChar_ShadowAxes(const s16 quad[4], int scaleX, int scaleZ, int height, s16 out[4][3]);
+
+// game/Particle.c, Particle_RenderList, per particle in the driver-local
+// block once the instance position is added (positions in the world times
+// 4): for the exhaust of a driver whose model has a look (own instance,
+// driverID -1, icon group 1, 7 or 8) it moves the drawn position to the own
+// point (exhaust custom) and answers 0, or answers 1 = leave the quad out of
+// the ordering table (exhaust off, or custom with one point and a particle
+// of retail source 1). Every other particle: 0, nothing moved. Only the
+// DRAWING changes; the particle itself, its birth and the random numbers stay
+// (game/Vehicle/VehEmitter.c is not touched).
+struct Particle;
+int NativeChar_ExhaustDraw(const struct Particle *particle, s32 *posX, s32 *posY, s32 *posZ);
+
+// game/Vehicle/VehTurbo.c, per turbo tick: RLDCHAR_LOOK_RETAIL (0; also NULL,
+// retail models, an empty roster), RLDCHAR_LOOK_CUSTOM with *count points
+// (1/16 model units; the turbo flames sit exactly at them, the second flame
+// is hidden with one point), or RLDCHAR_LOOK_OFF (both flames hidden).
+int NativeChar_ModelExhaust(const struct Model *model, s16 point[2][3], int *count);
+
+// The same, per tick: flames placed at own points and flames hidden while
+// retail would show them. Only counts, for the exit line.
+void NativeChar_NoteTurboFlames(int moved, int hidden);
+
+// The look cases of RldChar_ParseLook, the unit probes against the retail
+// constants and the pure helpers above, without data or window: adds to
+// *checks and *failures, one line per failure. Part of --char-grid-selftest
+// (MM_NativeCharGrid_SelfTest).
+void NativeChar_LookSelfTest(int *checks, int *failures);
 
 // Right after VehBirth_SetConsts on the birth path: one line "drive values"
 // with the values just written, only for a bound seat.

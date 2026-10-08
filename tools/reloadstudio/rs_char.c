@@ -60,6 +60,31 @@
 //   "Show kart wheels" (default on, --wheels; off = the game draws no kart
 //      wheels for this driver, for models with wheels of their own; the
 //      preview's dummy follows at once)
+// THE NATIVE MODEL (PREVIEW, open to everyone): an OBJ gets its own mesh,
+// UVs and textures beside the classic model (--native-model on) when
+// "Native model" on the card Import is ticked and Show kart wheels is off -
+// or on, with a wheel model of the card Wheels (rs_wheels.c): then
+// --wheel-model <file> [--wheel-size <percent>] as well, and the native model
+// drives on the author's wheels while the classic model keeps the game's
+// (Char_NativePassed, Char_WheelPassed). Not ticked (the start) the command
+// and the bytes are those of before. The look (tab In-game look), the native
+// model in the preview and the card Wheels are open as well; each is marked
+// "Preview feature".
+// THE USER MODE (Rs_NativeForUsers: today --enable-preview-features, later
+// perhaps the release of the native model): the first four options and Colors (card
+// Import) are hidden and stay rldpack's defaults - nothing of them is passed,
+// so a model over the limit is reduced for the classic model (CMDL) while
+// the native model keeps every face. An OBJ with Show kart wheels off is
+// built with --native-model on (no tick box). The game draws a native model
+// only with the kart wheels hidden, so with the kart wheels an OBJ is built
+// as the classic model only (no CNET, no test wheel, no dialog), and so is a
+// PLY, which names no texture file; the line below the options says which
+// and follows Show kart wheels at once (Char_NativeUpdate). Beside Show kart
+// wheels "Include classic fallback model", ticked and greyed out, "Coming
+// soon": the classic model is always built. The preview shows the native
+// model with its textures when one is built (else the classic model with the
+// game's wheels, as without the switch); an error of the native part stops
+// the check and the build as every error does (its message names the cause).
 //
 // Mask: Aku Aku or Uka Uka, the mask the driver wears (the mask item, the
 // rescue after a fall, its sound and music, the HUD icon). The choice starts
@@ -125,15 +150,19 @@
 //   1 Model         the PLY or OBJ, its size, the options and what rldpack did
 //                   to it
 //   2 Driver        name, driving style, mask
-//   3 In-game look  icon (framing, transparency, frame, the game's view of it)
-//                   and minimap colour
+//   3 In-game look  two cards, switched in the title line: Portrait (icon,
+//                   framing, transparency, frame, the game's view of it) and
+//                   In the race (minimap colour; shadow and exhaust of the
+//                   driver with two points and Pick - preview feature, see
+//                   THE LOOK OF THE DRIVER)
 //   4 Voices        the folder, its files and their events, Play, the ten
 //                   events at a glance
 //   5 Extras        the cards Import (how rldpack reads the model: its up and
 //                   forward axes, the colours of its palette; for an OBJ how
 //                   its vertex colours meet its textures), Wheels and
-//                   Animations (rs_wheels.c, rs_anim.c), one at a time; the
-//                   last two locked without --enable-preview-features. Import
+//                   Animations (rs_wheels.c, rs_anim.c), one at a time;
+//                   Wheels a preview feature open to everyone, Animations
+//                   locked without --enable-preview-features. Import
 //                   lives here, not on the tab Model: there an OBJ leaves no
 //                   room at 1366 x 768 and at 1920 x 1080 with 150 % (the bar
 //                   is at its least height), and its choices are rarely
@@ -173,7 +202,7 @@
 #define CHAR_CLICK_DELAY   100
 #define CHAR_VAL           1024   // length of a value or path
 #define CHAR_VOICE_SET_MAX 64     // files with an event of their own (--voice), at most
-#define CHAR_MAX_ARGS      (48 + 2 * CHAR_VOICE_SET_MAX)
+#define CHAR_MAX_ARGS      (56 + 2 * CHAR_VOICE_SET_MAX)
 #define CHAR_CMD_CAP       32768  // the command in the raw output, at most (the shell's RS_CMD_CAP)
 #define CHAR_NAME_MAX      17     // RLDCHAR_NAME_MAX in include/rldchar.inc
 #define CHAR_SIZE_MIN      50     // range of the --size switch
@@ -307,6 +336,9 @@
 #define CHAR_ID_TEXTURES       197
 #define CHAR_ID_TEXTURES_BROWSE 198
 #define CHAR_ID_TEXTURES_CLEAR 199
+#define CHAR_ID_FALLBACK       200   // "Include classic fallback model" (tab Model, Rs_NativeForUsers only)
+#define CHAR_ID_FALLBACK_HINT  201   // its "Coming soon"
+#define CHAR_ID_NATIVE_LINE    202   // the native model's result or why there is none (tab Model, Rs_NativeForUsers only)
 // The controls of the cards Wheels and Animations (WH_ID_FIRST..WH_ID_LAST in
 // rs_wheels.c, AN_ID_FIRST..AN_ID_LAST in rs_anim.c): the tab Extras shows them.
 // The card Import (380..399) is the page's own.
@@ -328,7 +360,25 @@
 #define CHAR_ID_VCOLORS_LABEL  390   // Vertex colors (an OBJ only)
 #define CHAR_ID_VCOLORS        391
 #define CHAR_ID_VCOLORS_HELP   392
+#define CHAR_ID_NATIVE_LABEL   393   // Native model (preview feature): the tick box, the hint, the note
+#define CHAR_ID_NATIVE         394
+#define CHAR_ID_NATIVE_HINT    395
+#define CHAR_ID_NATIVE_HELP    396
 #define CHAR_ID_IMPORT_LAST    399
+#define CHAR_ID_LOOK_SWITCH    400   // 400..401: Portrait | In the race in the title line of the tab In-game look
+#define CHAR_ID_LOOK_HINT      402   // "Preview feature" right in that line (card In the race)
+#define CHAR_ID_SHADOW_LABEL   403   // the card In the race: shadow and exhaust of the driver (renderer package A)
+#define CHAR_ID_SHADOW         404
+#define CHAR_ID_SHADOW_HELP    405
+#define CHAR_ID_EXHAUST_LABEL  406
+#define CHAR_ID_EXHAUST        407
+#define CHAR_ID_EXHAUST_HELP   408
+#define CHAR_ID_POINT          409   // 409..418: per exhaust point its label, x, y, z and Pick (CHAR_POINT_IDS each)
+#define CHAR_ID_LOOK_NOTE      419
+#define CHAR_POINT_IDS         5
+#define CHAR_LOOK_PORTRAIT     0     // the cards of the tab In-game look
+#define CHAR_LOOK_RACE         1
+#define CHAR_LOOK_CARDS        2
 
 // CHAR_JOB_META: rldpack checks only the name, the driving style, the mask,
 // the minimap colour and the output (Char_MetaStart).
@@ -444,6 +494,18 @@ static const wchar_t *const g_charTabTexts[CHAR_TABS] = { L"Model", L"Driver", L
 static const wchar_t *const g_charStepWords[] = { L"to do", L"optional", L"done", L"warning", L"problem" };
 static const wchar_t *const g_charExtrasWords[CHAR_EXTRAS_COUNT] = { L"import", L"wheels", L"animations" };
 static const wchar_t *const g_charExtrasTexts[CHAR_EXTRAS_COUNT] = { L"Import", L"Wheels", L"Animations" };
+static const wchar_t *const g_charLookTexts[CHAR_LOOK_CARDS] = { L"Portrait", L"In the race" };
+static const wchar_t *const g_charLookWords[CHAR_LOOK_CARDS] = { L"portrait", L"race" };
+// The look of the driver (make-char --shadow, --exhaust; the order of the
+// modes in CHRI: retail 0, auto/custom 1, off 2).
+static const wchar_t *const g_charShadowTexts[3] = { L"Retail", L"Auto", L"Off" };
+static const wchar_t *const g_charShadowWords[3] = { L"retail", L"auto", L"off" };
+static const wchar_t *const g_charExhaustTexts[3] = { L"Retail", L"Custom", L"Off" };
+static const wchar_t *const g_charExhaustWords[3] = { L"retail", L"custom", L"off" };
+// The retail look in 1/16 game units (as rldpack's @value retail-shadow and
+// retail-exhaust): the shadow quad x0 x1 z0 z1 and the two smoke sources.
+static const int g_charRetailQuad[4] = { -800, 800, -820, 1040 };
+static const int g_charRetailPoints[2][3] = { { 288, 896, -896 }, { -288, 896, -896 } };
 
 static const wchar_t *const g_charPoseWords[CHAR_POSES] = { L"neutral", L"left", L"right" };
 static const wchar_t *const g_charPoseTexts[CHAR_POSES] = { L"Neutral", L"Steering left", L"Steering right" };
@@ -568,6 +630,9 @@ struct CharJobData {
     long long resultBytes;
     wchar_t resultSha[80];
     int endSeen, endCode;
+    wchar_t nativeText[256];        // @char native-model as the note says it, "" = none (Char_NativeResult)
+    int lookQuadSeen;               // @value shadow-quad x0 x1 z0 z1 (game units) -> 1/16
+    int lookQuad[4];
 };
 
 static struct {
@@ -629,6 +694,17 @@ static struct {
     int qualityOn;                  // the note below the options has text (shown on the tab Model)
     HWND tabHead[CHAR_TABS], back, next, extrasSwitch[CHAR_EXTRAS_COUNT];
     HWND importNote, vcolorsLabel, vcolors, vcolorsHelp;  // the card Import of the tab Extras
+    HWND nativeLabel, native, nativeHint, nativeHelp;    // its row "Native model" (preview feature, Char_NativeUpdate)
+    HWND fallback, fallbackHint, nativeLine;  // tab Model, Rs_NativeForUsers only (Char_UserHidden)
+    // The tab In-game look: Portrait | In the race (lookCard), and on the card
+    // In the race the shadow and the exhaust (preview feature, open to everyone).
+    HWND lookSwitch[CHAR_LOOK_CARDS], lookHint, lookNote;
+    HWND shadowLabel, shadow, shadowHelp, exhaustLabel, exhaust, exhaustHelp;
+    HWND pointLabel[2], point[2][3], pointPick[2];
+    int lookCard;                   // CHAR_LOOK_*
+    int shadowSet, exhaustSet;      // the author chose them (else they follow the wheels: Char_LookDefaults)
+    int lookQuadKnown;              // the last check said the auto quad (@value shadow-quad)
+    int lookQuad[4];                // x0 x1 z0 z1, 1/16 game units
     HWND upLabel, up, upHelp, forwardLabel, forward, forwardHelp, colorsLabel, colors, colorsHelp;
     int objOn;                      // the model is an OBJ: its own choices are shown (Char_ObjUpdate)
     int tab;                        // CHAR_TAB_*
@@ -639,6 +715,7 @@ static struct {
     int *msgCard;                   // and its card in the tab Extras, -1 = none
     int msgTabCount, msgTabCap;
     int modelRead;                  // the last run read the model in the field
+    int compact;                    // the compact layout (Char_Layout, CHAR_FULL_W/H): notes on one line
     int stepShown;                  // the heads were drawn once (Char_TabsUpdate)
 
     // colours of the labels, for the report
@@ -722,6 +799,7 @@ static struct CharJobData g_charJob;
 static void Char_Layout(HWND page, int w, int h);
 static int Char_Check(HWND page);
 static void Char_ObjUpdate(HWND page);
+static void Char_NativeResult(wchar_t **f, int n);
 static void Char_VoiceSelShow(void);
 static int Char_VoicesHeard(int *clips, int *events);
 static void Char_VoiceColumns(int width);
@@ -944,6 +1022,15 @@ static int Char_TextHeight(HWND label, int width, int maxLines)
         rc.bottom = 0;
         DrawTextW(dc, text, -1, &rc, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX | DT_EXPANDTABS);
         h = rc.bottom;
+        // The compact layout: one line, cut with "...", the whole text as
+        // the tooltip (Rs_LabelOneLine) - no word is lost, it is a hover away.
+        if (g_char.compact && lineH > 0 && label != g_char.headline) {
+            Rs_LabelOneLine(label, h > lineH);
+            if (h > lineH)
+                h = lineH;
+        } else {
+            Rs_LabelOneLine(label, 0);
+        }
         if (lineH > 0 && h > lineH * maxLines)
             h = lineH * maxLines;
         SelectObject(dc, old);
@@ -1926,12 +2013,21 @@ static void Char_ParseLine(wchar_t *line)
             Char_JoinFields(f, n, j->remesh, 48);
         } else if (wcscmp(key, L"mask") == 0) {
             Char_JoinFields(f, n, j->mask, 48);
+        } else if (wcscmp(key, L"shadow-quad") == 0 && n >= 6) {
+            int q;
+            for (q = 0; q < 4; q++) {
+                const double value = wcstod(Char_Field(f, n, 2 + q), NULL) * 16.0;
+                j->lookQuad[q] = (int)(value < 0.0 ? value - 0.5 : value + 0.5);
+            }
+            j->lookQuadSeen = 1;
         } else if (wcscmp(key, L"map-color") == 0) {
             Char_JoinFields(f, n, j->mapColor, 48);
         }
     } else if (wcscmp(kind, L"char") == 0) {
         const wchar_t *key = Char_Field(f, n, 1);
-        if (wcscmp(key, L"triangles") == 0 || (wcscmp(key, L"faces") == 0 && !j->triangles[0]))
+        if (wcscmp(key, L"native-model") == 0)
+            Char_NativeResult(f, n);
+        else if (wcscmp(key, L"triangles") == 0 || (wcscmp(key, L"faces") == 0 && !j->triangles[0]))
             Char_Copy(j->triangles, 32, Char_Field(f, n, 2));
         else if (wcscmp(key, L"parts") == 0)
             Char_Copy(j->parts, 160, Char_Field(f, n, 3));
@@ -2104,11 +2200,19 @@ static int Char_TabOfId(int id, int *card)
     *card = -1;
     if ((id >= CHAR_ID_MODEL_LABEL && id <= CHAR_ID_MODEL_INFO) || (id >= CHAR_ID_SIZE_LABEL && id <= CHAR_ID_OPTIONS_LABEL) ||
         (id >= CHAR_ID_REPAIR && id <= CHAR_ID_QUALITY) || id == CHAR_ID_REDUCE_FIT || id == CHAR_ID_MODEL_IMPORT ||
-        (id >= CHAR_ID_MODEL_FILES && id <= CHAR_ID_TEXTURES_CLEAR))
+        (id >= CHAR_ID_MODEL_FILES && id <= CHAR_ID_TEXTURES_CLEAR) || (id >= CHAR_ID_FALLBACK && id <= CHAR_ID_NATIVE_LINE))
         return CHAR_TAB_MODEL;
     if ((id >= CHAR_ID_NAME_LABEL && id <= CHAR_ID_CLASS_HELP) || (id >= CHAR_ID_MASK_LABEL && id <= CHAR_ID_MASK_HELP))
         return CHAR_TAB_DRIVER;
-    if ((id >= CHAR_ID_ICON_LABEL && id <= CHAR_ID_ICON_IMAGE + 1) || (id >= CHAR_ID_MAPCOLOR_LABEL && id <= CHAR_ID_ICON_FRAME))
+    if ((id >= CHAR_ID_ICON_LABEL && id <= CHAR_ID_ICON_IMAGE + 1) || (id >= CHAR_ID_ICON_FIT_LABEL && id <= CHAR_ID_ICON_FRAME)) {
+        *card = CHAR_LOOK_PORTRAIT;
+        return CHAR_TAB_LOOK;
+    }
+    if ((id >= CHAR_ID_MAPCOLOR_LABEL && id <= CHAR_ID_MAPCOLOR_HELP) || (id >= CHAR_ID_LOOK_HINT && id <= CHAR_ID_LOOK_NOTE)) {
+        *card = CHAR_LOOK_RACE;
+        return CHAR_TAB_LOOK;
+    }
+    if (id >= CHAR_ID_LOOK_SWITCH && id < CHAR_ID_LOOK_SWITCH + CHAR_LOOK_CARDS)
         return CHAR_TAB_LOOK;
     if ((id >= CHAR_ID_VOICES_LABEL && id <= CHAR_ID_VOICE_NORMALIZE) ||
         (id >= CHAR_ID_VOICE_RULE && id <= CHAR_ID_VOICE_EVENTS))
@@ -2131,20 +2235,27 @@ static int Char_TabOfId(int id, int *card)
 }
 
 // The card of the tab Extras an @msg id belongs to, -1 = none: the choices of
-// the card Import (the axes, the palette, the vertex colours of an OBJ).
+// the card Import (the axes, the palette, the vertex colours of an OBJ; the
+// native model, which the user mode shows on the tab Model).
 static int Char_CardOfCode(const wchar_t *code)
 {
     if (!code)
         return -1;
     if (wcscmp(code, L"vertex-colors") == 0 || wcscmp(code, L"obj-vertex-modulation") == 0 ||
         wcscmp(code, L"up") == 0 || wcscmp(code, L"forward") == 0 || wcscmp(code, L"ply-up-axis") == 0 ||
-        wcscmp(code, L"colors") == 0)
+        wcscmp(code, L"colors") == 0 || (wcsncmp(code, L"native-", 7) == 0 && !Rs_NativeForUsers()))
         return CHAR_EXTRAS_IMPORT;
     if (wcsncmp(code, L"pose", 4) == 0)
         return CHAR_EXTRAS_ANIM;
     if (wcsncmp(code, L"wheel-", 6) == 0)
         return CHAR_EXTRAS_WHEELS;
     return -1;
+}
+
+// The card of the tab In-game look an @msg id belongs to.
+static int Char_LookCardOfCode(const wchar_t *code)
+{
+    return (code && wcsncmp(code, L"icon", 4) == 0) ? CHAR_LOOK_PORTRAIT : CHAR_LOOK_RACE;
 }
 
 // The tab an @msg id of make-char belongs to (the ids in reloadstudio.h and
@@ -2154,7 +2265,8 @@ static int Char_TabOfCode(const wchar_t *code)
 {
     if (!code || !code[0] || wcscmp(code, L"write") == 0)
         return -1;
-    if (wcsncmp(code, L"icon", 4) == 0 || wcscmp(code, L"map-color") == 0)
+    if (wcsncmp(code, L"icon", 4) == 0 || wcscmp(code, L"map-color") == 0 || wcscmp(code, L"shadow") == 0 ||
+        wcscmp(code, L"exhaust") == 0)
         return CHAR_TAB_LOOK;
     if (wcsncmp(code, L"voice", 5) == 0)
         return CHAR_TAB_VOICES;
@@ -2193,7 +2305,7 @@ static void Char_MsgAddCard(int tab, int card, int severity, const wchar_t *text
         g_char.msgTabCap = cap;
     }
     g_char.msgTab[g_char.msgTabCount] = tab;
-    g_char.msgCard[g_char.msgTabCount++] = tab == CHAR_TAB_EXTRAS ? card : -1;
+    g_char.msgCard[g_char.msgTabCount++] = (tab == CHAR_TAB_EXTRAS || tab == CHAR_TAB_LOOK) ? card : -1;
     Rs_MsgListAdd(g_char.msgs, severity, text, detail);
 }
 
@@ -2347,13 +2459,13 @@ static void Char_DrawTab(const DRAWITEMSTRUCT *di, int t)
     }
 }
 
-// Wheels | Animations in the tab Extras: the card shown in the text colour
-// with an orange line below, the other muted.
-static void Char_DrawExtrasSwitch(const DRAWITEMSTRUCT *di, int c)
+// Import | Wheels | Animations in the tab Extras, Portrait | In the race in
+// the tab In-game look: the card shown in the text colour with an orange line
+// below, the other muted.
+static void Char_DrawSwitch(const DRAWITEMSTRUCT *di, const wchar_t *text, int shown)
 {
     HDC dc = di->hDC;
     RECT rc = di->rcItem, r;
-    int shown = c == g_char.extrasCard;
     HBRUSH br = CreateSolidBrush(RS_COL_CARD);
     HGDIOBJ oldFont;
 
@@ -2362,7 +2474,7 @@ static void Char_DrawExtrasSwitch(const DRAWITEMSTRUCT *di, int c)
     SetBkMode(dc, TRANSPARENT);
     oldFont = SelectObject(dc, Rs_Font(RS_FONT_SECTION));
     SetTextColor(dc, shown ? RS_COL_TEXT : RS_COL_MUTED);
-    DrawTextW(dc, g_charExtrasTexts[c], -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+    DrawTextW(dc, text, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
     SelectObject(dc, oldFont);
     if (shown) {
         SetRect(&r, rc.left + Rs_Px(8), rc.bottom - Rs_Px(3), rc.right - Rs_Px(8), rc.bottom);
@@ -2400,6 +2512,8 @@ static void Char_SelectTab(HWND page, int t, int focus)
     HWND f;
     int i;
 
+    RsView_PickBegin(g_char.view, 0);   // a pick ends with the tab (no stray click sets a point later)
+
     if (t < 0 || t >= CHAR_TABS)
         return;
     g_char.tab = t;
@@ -2430,7 +2544,12 @@ static void Char_MsgOpen(HWND page, int i)
 {
     if (i < 0 || i >= g_char.msgTabCount || g_char.msgTab[i] < 0)
         return;
-    if (g_char.msgCard[i] >= 0 && g_char.msgCard[i] != g_char.extrasCard) {
+    if (g_char.msgTab[i] == CHAR_TAB_LOOK && g_char.msgCard[i] >= 0) {
+        int c;
+        g_char.lookCard = g_char.msgCard[i];
+        for (c = 0; c < CHAR_LOOK_CARDS; c++)
+            InvalidateRect(g_char.lookSwitch[c], NULL, FALSE);
+    } else if (g_char.msgCard[i] >= 0 && g_char.msgCard[i] != g_char.extrasCard) {
         int c;
         g_char.extrasCard = g_char.msgCard[i];
         for (c = 0; c < CHAR_EXTRAS_COUNT; c++)
@@ -2617,7 +2736,10 @@ static void Char_AddMsgs(int severity)
     int i;
     for (i = 0; i < g_charJob.msgCount; i++)
         if (g_charJob.msgs[i].severity == severity)
-            Char_MsgAddCard(Char_TabOfCode(g_charJob.msgs[i].code), Char_CardOfCode(g_charJob.msgs[i].code), severity,
+            Char_MsgAddCard(Char_TabOfCode(g_charJob.msgs[i].code),
+                            Char_TabOfCode(g_charJob.msgs[i].code) == CHAR_TAB_LOOK ? Char_LookCardOfCode(g_charJob.msgs[i].code)
+                                                                                     : Char_CardOfCode(g_charJob.msgs[i].code),
+                            severity,
                             g_charJob.msgs[i].text, g_charJob.msgs[i].detail);
 }
 
@@ -2993,6 +3115,341 @@ static void Char_TexturesUpdate(HWND page)
     }
 }
 
+// The row "Native model" of the card Import. PREVIEW, open to everyone
+// ("Preview feature" at the right, with and without --enable-preview-features;
+// the user mode has no tick box, Char_UserHidden): enabled for an OBJ, empty
+// at the start - not ticked, the command and the bytes of the character are
+// those of before. Ticked, Char_MakeArgs passes --native-model on for an OBJ
+// with Show kart wheels off (rldpack refuses it beside the kart wheels); the
+// note says what the last check made of it (@char native-model,
+// Char_NativeResult) or why it is not passed. Never stored in the settings.
+#define CHAR_NATIVE_TEXT_ON  L"Preview: also writes the OBJ's own mesh, UVs and textures (CNET, CTXT; each texture a power of two from 16 to 2048) beside the classic model; needs Show kart wheels off or a wheel model (Extras, Wheels). The game draws it with NATIVE DRIVERS set to PREVIEW (OPTIONS, GRAPHICS)."
+#define CHAR_NATIVE_TEXT_OBJ L"Only for an OBJ model with its materials."
+// ---------------------------------------------------------------------------
+// THE LOOK OF THE DRIVER (tab In-game look, card In the race; renderer package A)
+// ---------------------------------------------------------------------------
+//
+// make-char --shadow retail|auto|off and --exhaust retail|off|x,y,z[;x,y,z]
+// (tools/rldpack_char.inc, THE LOOK). PREVIEW, open to everyone ("Preview
+// feature" in the title line of the card, with and without
+// --enable-preview-features). rldpack's defaults follow the wheels
+// (retail/retail with them, auto/off without them); the page passes what
+// differs from them. Without the user mode the choices start at retail/retail
+// whatever the wheels, so with the wheels hidden the page passes --shadow
+// retail --exhaust retail until the author chooses: a character keeps the
+// command and the bytes it had before the look. In the user mode
+// (Rs_NativeForUsers) the choices start at rldpack's defaults and follow
+// "Show kart wheels" until the author changes them. The
+// points are game units of the built model, as rldpack info and @value
+// exhaust-point give them; Pick takes the surface point under a click in
+// the preview (pose Neutral, RsView_PickBegin). The preview draws the shadow
+// quad (auto: @value shadow-quad of the last check; retail: the retail quad)
+// and the points (retail: grey) at once from the fields; rldpack checks them.
+
+#define CHAR_LOOK_NOTE_TEXT L"Points in game units of the built model (x left, y up, z forward), as rldpack info shows them. Pick: click the model in the preview."
+
+static void Char_Changed(HWND page);
+
+// The choices the author has not set: retail/retail; in the user mode
+// rldpack's defaults (retail/retail, without the wheels auto/off).
+static void Char_LookDefaults(void)
+{
+    const int follow = Rs_NativeForUsers() && !Char_IsChecked(g_char.wheels);
+    if (!g_char.shadow)
+        return;
+    if (!g_char.shadowSet)
+        SendMessageW(g_char.shadow, CB_SETCURSEL, follow ? 1 : 0, 0);
+    if (!g_char.exhaustSet)
+        SendMessageW(g_char.exhaust, CB_SETCURSEL, follow ? 2 : 0, 0);
+}
+
+// The point fields only for custom points.
+static void Char_LookEnable(void)
+{
+    const int custom = Char_ListIndex(g_char.exhaust, 3) == 1;
+    int i, a;
+    for (i = 0; i < 2; i++) {
+        Rs_SetTextColor(g_char.pointLabel[i], custom ? RS_COL_TEXT : RS_COL_MUTED);
+        for (a = 0; a < 3; a++)
+            EnableWindow(g_char.point[i][a], custom);
+        EnableWindow(g_char.pointPick[i], custom);
+    }
+}
+
+// A point of the fields in 1/16 game units: 1 = all three are numbers.
+static int Char_LookPointValue(int i, int out[3])
+{
+    int a;
+    for (a = 0; a < 3; a++) {
+        wchar_t *text = Rs_GetText(g_char.point[i][a]);
+        wchar_t *end = NULL;
+        const double value = wcstod(text, &end);
+        const int ok = end != text && *end == 0;
+        Rs_Free(text);
+        if (!ok)
+            return 0;
+        out[a] = (int)(value * 16.0 < 0.0 ? value * 16.0 - 0.5 : value * 16.0 + 0.5);
+    }
+    return 1;
+}
+
+// A point's fields are empty.
+static int Char_LookPointEmpty(int i)
+{
+    int a, empty = 1;
+    for (a = 0; a < 3; a++) {
+        wchar_t *text = Rs_GetText(g_char.point[i][a]);
+        empty = empty && !text[0];
+        Rs_Free(text);
+    }
+    return empty;
+}
+
+// The fields of point i, from 1/16 game units (two decimals), as typed.
+static void Char_LookPointSet(int i, const int v[3])
+{
+    wchar_t text[32];
+    int a;
+    g_char.applying = 1;
+    for (a = 0; a < 3; a++) {
+        swprintf(text, 32, L"%.2f", (double)v[a] / 16.0);
+        Rs_SetText(g_char.point[i][a], text);
+    }
+    g_char.applying = 0;
+}
+
+// The preview follows the fields at once.
+static void Char_LookPreview(void)
+{
+    int quad[4], pts[2][3], count = 0, shadow = 0, i;
+    if (!g_char.view)
+        return;
+    switch (Char_ListIndex(g_char.shadow, 3)) {
+    case 0:
+        memcpy(quad, g_charRetailQuad, sizeof(quad));
+        shadow = 1;
+        break;
+    case 1:
+        memcpy(quad, g_char.lookQuad, sizeof(quad));
+        shadow = g_char.lookQuadKnown;
+        break;
+    default:
+        break;
+    }
+    switch (Char_ListIndex(g_char.exhaust, 3)) {
+    case 0:
+        memcpy(pts, g_charRetailPoints, sizeof(pts));
+        count = 2;
+        break;
+    case 1:
+        for (i = 0; i < 2; i++)
+            if (Char_LookPointValue(i, pts[count]))
+                count++;
+        break;
+    default:
+        break;
+    }
+    RsView_SetLook(g_char.view, shadow, quad, count, pts, Char_ListIndex(g_char.exhaust, 3) == 0);
+}
+
+// Custom points for the first time: the fields start at the retail points.
+static void Char_LookCustomStart(void)
+{
+    int i;
+    for (i = 0; i < 2; i++)
+        if (Char_LookPointEmpty(i))
+            Char_LookPointSet(i, g_charRetailPoints[i]);
+}
+
+// The --exhaust value of the custom points: "x,y,z" or "x,y,z;x,y,z" as typed
+// (point 2 only when it is not empty); rldpack says what is wrong with it.
+static void Char_LookExhaustArg(wchar_t *out, int cap)
+{
+    int i, a;
+    out[0] = 0;
+    for (i = 0; i < 2; i++) {
+        if (i == 1 && Char_LookPointEmpty(1))
+            break;
+        if (i == 1)
+            Char_Append(out, cap, L";");
+        for (a = 0; a < 3; a++) {
+            wchar_t *text = Rs_GetText(g_char.point[i][a]);
+            wchar_t clean[48];
+            int n = 0, c;
+            for (c = 0; text[c] && n < 47; c++)
+                if (text[c] != L' ')
+                    clean[n++] = text[c];
+            clean[n] = 0;
+            Rs_Free(text);
+            if (a)
+                Char_Append(out, cap, L",");
+            Char_Append(out, cap, clean);
+        }
+    }
+}
+
+// The card of the tab In-game look.
+static void Char_SelectLook(HWND page, int c)
+{
+    int i;
+    if (c < 0 || c >= CHAR_LOOK_CARDS)
+        return;
+    g_char.lookCard = c;
+    RsView_PickBegin(g_char.view, 0);
+    for (i = 0; i < CHAR_LOOK_CARDS; i++)
+        InvalidateRect(g_char.lookSwitch[i], NULL, FALSE);
+    Char_Relayout(page);
+}
+
+// Pick point n (1 or 2) in the preview: pose Neutral, the note says how.
+static void Char_LookPickStart(int n)
+{
+    wchar_t text[160];
+    if (Char_ListIndex(g_char.exhaust, 3) != 1)
+        return;
+    SendMessageW(g_char.pose, CB_SETCURSEL, RS_VIEW_POSE_NEUTRAL, 0);
+    g_char.poseNow = RS_VIEW_POSE_NEUTRAL;
+    RsView_SetPose(g_char.view, RS_VIEW_POSE_NEUTRAL);
+    RsView_PickBegin(g_char.view, n);
+    swprintf(text, 160, L"Click the model in the preview where point %d goes (a right click cancels).", n);
+    Rs_SetText(g_char.lookNote, text);
+}
+
+// The end of a pick (RS_VIEW_N_PICK): the point into its fields.
+static void Char_LookPicked(HWND page)
+{
+    int v[3], n = 0;
+    const int hit = RsView_PickResult(g_char.view, &n, v);
+    if (n == 1 || n == 2) {
+        if (hit) {
+            Char_LookPointSet(n - 1, v);
+            Rs_SetText(g_char.lookNote, CHAR_LOOK_NOTE_TEXT);
+            if (Rs_Automating())
+                Rs_AutoLog(L"  exhaust-pick: point %d at %.2f %.2f %.2f", n, (double)v[0] / 16.0, (double)v[1] / 16.0,
+                           (double)v[2] / 16.0);
+            Char_LookPreview();
+            Char_Changed(page);
+        } else {
+            Rs_SetText(g_char.lookNote, L"The click missed the model - the point stays as it was. Pick again to try once more.");
+            if (Rs_Automating())
+                Rs_AutoLog(L"  exhaust-pick: point %d - the click missed the model", n);
+        }
+    }
+}
+
+// THE USER MODE (Rs_NativeForUsers, renderer step 6): no tick box - an OBJ
+// with Show kart wheels off gets its native model beside the classic one.
+// The game draws a native model only with the kart wheels hidden (rldpack
+// refuses --native-model on beside them), so with the kart wheels an OBJ is
+// built as the classic model only - no dialog, the line below the options
+// says so; a PLY names no texture file and is the classic model only too.
+#define CHAR_NATIVE_TEXT_USER   L"Native model: the OBJ's own mesh, UVs and textures, built beside the classic model (preview: the game draws it with NATIVE DRIVERS set to PREVIEW)."
+#define CHAR_NATIVE_TEXT_PLY    L"Classic model only: a PLY names no texture file. Export the model as OBJ with its textures for the native model."
+#define CHAR_NATIVE_TEXT_WHEELS L"Classic model only: the native model needs Show kart wheels off or a wheel model (Extras, Wheels)."
+
+// The native model is built for an OBJ (ticked, or in the user mode) with
+// Show kart wheels off, or with them and a wheel model of the card Wheels
+// (its wheels then stand in for the kart wheels on the native model).
+static int Char_NativeOn(void)
+{
+    return g_char.objOn && g_char.wheels && (Rs_NativeForUsers() || Char_IsChecked(g_char.native));
+}
+
+static int Char_NativePassed(void)
+{
+    return Char_NativeOn() && (!Char_IsChecked(g_char.wheels) || CharWheels_ModelPath(NULL, 0));
+}
+
+// The wheel model of the card Wheels goes to make-char (--wheel-model): with
+// the native model and Show kart wheels on - off, there are no wheels at all.
+static int Char_WheelPassed(wchar_t *path, int cap)
+{
+    return Char_NativePassed() && Char_IsChecked(g_char.wheels) && CharWheels_ModelPath(path, cap);
+}
+
+static void Char_NativeNote(const wchar_t *text)
+{
+    if (g_char.nativeHelp) {
+        RECT rc;
+        Rs_SetText(g_char.nativeHelp, text);
+        // Compact: one line, cut with "..." and the whole text as the tooltip
+        // when it is longer (Char_TextHeight sets both; the height stays).
+        GetWindowRect(g_char.nativeHelp, &rc);
+        if (g_char.compact && rc.right > rc.left)
+            Char_TextHeight(g_char.nativeHelp, rc.right - rc.left, 3);
+    }
+    if (g_char.nativeLine && Rs_NativeForUsers())
+        Rs_SetText(g_char.nativeLine, text);
+}
+
+// After every change of the model and before every run: enabled or not, and
+// the note of what will be passed.
+static void Char_NativeUpdate(void)
+{
+    const int on = g_char.objOn;
+    if (!g_char.native)
+        return;
+    CharWheels_PageState(g_char.objOn, Char_IsChecked(g_char.wheels), Char_NativeOn(), Char_WheelPassed(NULL, 0),
+                         Char_ListIndex(g_char.up, CHAR_UP_COUNT) != 0, Char_ListIndex(g_char.forward, CHAR_FORWARD_COUNT) != 0);
+    EnableWindow(g_char.native, on ? TRUE : FALSE);
+    Rs_SetTextColor(g_char.nativeLabel, on ? RS_COL_TEXT : RS_COL_MUTED);
+    if (Char_NativePassed() && g_charJob.nativeText[0])
+        Char_NativeNote(g_charJob.nativeText);
+    else if (Rs_NativeForUsers())
+        Char_NativeNote(!g_char.objOn ? CHAR_NATIVE_TEXT_PLY : Char_NativePassed() ? CHAR_NATIVE_TEXT_USER : CHAR_NATIVE_TEXT_WHEELS);
+    else if (g_char.objOn && Char_IsChecked(g_char.native) && Char_IsChecked(g_char.wheels))
+        Char_NativeNote(CHAR_NATIVE_TEXT_WHEELS);
+    else if (!g_char.objOn)
+        Char_NativeNote(CHAR_NATIVE_TEXT_OBJ);
+    else
+        Char_NativeNote(CHAR_NATIVE_TEXT_ON);
+}
+
+// The user mode (Rs_NativeForUsers): the hidden choices back at rldpack's
+// defaults, Reduce to fit on (nothing passed: --reduce auto).
+static void Char_UserDefaults(void)
+{
+    if (!Rs_NativeForUsers())
+        return;
+    Char_SetChecked(g_char.repair, 1);
+    Char_SetChecked(g_char.openParts, 1);
+    Char_SetChecked(g_char.remesh, 0);
+    Char_SetChecked(g_char.reduce, 1);
+    Char_SetChecked(g_char.native, 0);
+    SendMessageW(g_char.colors, CB_SETCURSEL, 0, 0);
+}
+
+// Controls the user mode hides (Rs_NativeForUsers): the choices it fixes to
+// rldpack's defaults (repair, open parts two-sided, no remesh, reduce auto,
+// 128 colours) and the tick box of the native model; and those it alone
+// shows. 1 = hidden in the mode the page runs in.
+static int Char_UserHidden(HWND c)
+{
+    if (c == g_char.fallback || c == g_char.fallbackHint || c == g_char.nativeLine)
+        return !Rs_NativeForUsers();
+    if (!Rs_NativeForUsers())
+        return 0;
+    return c == g_char.repair || c == g_char.openParts || c == g_char.remesh || c == g_char.reduce ||
+           c == g_char.quality || c == g_char.reduceFit || c == g_char.colorsLabel || c == g_char.colors ||
+           c == g_char.colorsHelp || c == g_char.native;
+}
+
+// @char native-model <vertices> <triangles> <poses> <materials> <textures>
+// <wheels|hidden> <bytes> of the run shown (always hidden: the page passes
+// --native-model on only with the kart wheels hidden).
+// Kept with the run (g_charJob.nativeText): the first check of a model learns
+// only at its end that the model is an OBJ (Char_ObjUpdate), and the note
+// written then (Char_NativeUpdate) shows the result kept.
+static void Char_NativeResult(wchar_t **f, int n)
+{
+    if (n < 9)
+        return;
+    swprintf(g_charJob.nativeText, 256, L"Native model: %ls vertices, %ls triangles, %ls poses, %ls materials, %ls textures, %ls - %ls bytes (preview).",
+             f[2], f[3], f[4], f[5], f[6], wcscmp(f[7], L"wheels") == 0 ? L"with wheels" : L"no wheels", f[8]);
+    if (Char_NativePassed())
+        Char_NativeNote(g_charJob.nativeText);
+}
+
 // The choices of an OBJ are shown only for an OBJ; the page is laid out
 // again when that changes. A choice not passed so far (the model turned out
 // an OBJ by its content) is checked with.
@@ -3005,6 +3462,7 @@ static void Char_ObjUpdate(HWND page)
         return;
     }
     g_char.objOn = obj;
+    Char_NativeUpdate();
     Char_TexturesUpdate(page);
     Char_Relayout(page);
     Char_FieldPath(g_char.textures, dir, CHAR_VAL);
@@ -4440,6 +4898,9 @@ struct CharArgs {
     wchar_t voicePrefix[CHAR_VAL];
     wchar_t size[16];
     wchar_t mapColor[8];    // RRGGBB
+    wchar_t exhaust[160];   // --exhaust x,y,z[;x,y,z]
+    wchar_t wheel[CHAR_VAL];      // --wheel-model (the card Wheels)
+    wchar_t wheelSize[16];        // --wheel-size
     wchar_t *name;          // Rs_Free
     wchar_t *voiceSet[CHAR_VOICE_SET_MAX];   // "<file>=<event>" of --voice, Rs_Free
 };
@@ -4550,6 +5011,8 @@ static void Char_OutCue(void)
 // Returns 0 if there is no model.
 static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int seq)
 {
+    const int user = Rs_NativeForUsers();
+
     memset(a, 0, sizeof(*a));
     Char_FieldPath(g_char.model, a->model, CHAR_VAL);
     if (!a->model[0])
@@ -4574,20 +5037,23 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
     Char_ArgsAdd(a, L"--size");
     Char_ArgsAdd(a, a->size);
     // Only what differs from rldpack's defaults (--repair auto, --open-parts
-    // two-sided, --remesh off, --reduce auto, --wheels on).
-    if (!Char_IsChecked(g_char.repair)) {
+    // two-sided, --remesh off, --reduce auto, --wheels on). The user mode
+    // (Rs_NativeForUsers) passes none of the four: they stay rldpack's
+    // defaults, hidden - a model over the limit is reduced for the classic
+    // model, the native model keeps it as it is.
+    if (!user && !Char_IsChecked(g_char.repair)) {
         Char_ArgsAdd(a, L"--repair");
         Char_ArgsAdd(a, L"off");
     }
-    if (!Char_IsChecked(g_char.openParts)) {
+    if (!user && !Char_IsChecked(g_char.openParts)) {
         Char_ArgsAdd(a, L"--open-parts");
         Char_ArgsAdd(a, L"one-sided");
     }
-    if (Char_RemeshOn()) {
+    if (!user && Char_RemeshOn()) {
         Char_ArgsAdd(a, L"--remesh");
         Char_ArgsAdd(a, L"on");
     }
-    g_char.runReduce = Char_IsChecked(g_char.reduce);
+    g_char.runReduce = user || Char_IsChecked(g_char.reduce);
     if (!g_char.runReduce) {
         Char_ArgsAdd(a, L"--reduce");
         Char_ArgsAdd(a, L"off");
@@ -4595,6 +5061,28 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
     if (!Char_IsChecked(g_char.wheels)) {
         Char_ArgsAdd(a, L"--wheels");
         Char_ArgsAdd(a, L"off");
+    }
+    // The look (tab In-game look, In the race; preview feature). rldpack's
+    // defaults follow the wheels (retail/retail with them, auto/off without);
+    // only what differs is passed. The choices start at retail/retail
+    // (Char_LookDefaults; in the user mode at rldpack's defaults): with the
+    // wheels hidden --shadow retail --exhaust retail keeps the command and the
+    // bytes of a character from before the look (with them nothing is passed).
+    {
+        const int wheels = Char_IsChecked(g_char.wheels);
+        const int sh = Char_ListIndex(g_char.shadow, 3), ex = Char_ListIndex(g_char.exhaust, 3);
+        if (sh != (wheels ? 0 : 1)) {
+            Char_ArgsAdd(a, L"--shadow");
+            Char_ArgsAdd(a, g_charShadowWords[sh]);
+        }
+        if (ex == 1) {
+            Char_LookExhaustArg(a->exhaust, 160);
+            Char_ArgsAdd(a, L"--exhaust");
+            Char_ArgsAdd(a, a->exhaust);
+        } else if (ex != (wheels ? 0 : 2)) {
+            Char_ArgsAdd(a, L"--exhaust");
+            Char_ArgsAdd(a, g_charExhaustWords[ex]);
+        }
     }
     // The axes, when not the defaults (+Y up, +Z forward).
     if (Char_ListIndex(g_char.up, CHAR_UP_COUNT) != 0) {
@@ -4605,8 +5093,8 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
         Char_ArgsAdd(a, L"--forward");
         Char_ArgsAdd(a, g_charForwardWords[Char_ListIndex(g_char.forward, CHAR_FORWARD_COUNT)]);
     }
-    // The palette: 64 colours instead of rldpack's 128.
-    if (Char_ListIndex(g_char.colors, CHAR_COLORS_COUNT) != 0) {
+    // The palette: 64 colours instead of rldpack's 128 (not in the user mode).
+    if (!user && Char_ListIndex(g_char.colors, CHAR_COLORS_COUNT) != 0) {
         Char_ArgsAdd(a, L"--colors");
         Char_ArgsAdd(a, g_charColorsWords[Char_ListIndex(g_char.colors, CHAR_COLORS_COUNT)]);
     }
@@ -4620,6 +5108,28 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
     if (g_char.objOn && Char_VColorIndex() != 0) {
         Char_ArgsAdd(a, L"--vertex-colors");
         Char_ArgsAdd(a, g_charVColorWords[Char_VColorIndex()]);
+    }
+    // An OBJ, preview features only: its own mesh and textures as well
+    // (Char_NativeUpdate); in the user mode for every OBJ with Show kart
+    // wheels off (rldpack refuses it beside the kart wheels). Without the
+    // switch never passed.
+    Char_NativeUpdate();
+    if (Char_NativePassed()) {
+        Char_ArgsAdd(a, L"--native-model");
+        Char_ArgsAdd(a, L"on");
+    }
+    // The card Wheels (rs_wheels.c, preview feature): an author's wheel model
+    // with the native model and the kart wheels shown (make-char writes WHLS
+    // version 2; the classic model keeps the game's wheels), its size only
+    // when it is not 100 %.
+    if (Char_WheelPassed(a->wheel, CHAR_VAL)) {
+        Char_ArgsAdd(a, L"--wheel-model");
+        Char_ArgsAdd(a, a->wheel);
+        if (CharWheels_SizePercent() != 100) {
+            swprintf(a->wheelSize, 16, L"%d", CharWheels_SizePercent());
+            Char_ArgsAdd(a, L"--wheel-size");
+            Char_ArgsAdd(a, a->wheelSize);
+        }
     }
     // The mask always, also the template's: the file carries the choice.
     Char_ArgsAdd(a, L"--mask");
@@ -4774,7 +5284,8 @@ static void Char_NoModel(HWND page)
 static int Char_IsMetaSwitch(const wchar_t *arg)
 {
     return wcscmp(arg, L"--name") == 0 || wcscmp(arg, L"--class") == 0 || wcscmp(arg, L"--mask") == 0 ||
-           wcscmp(arg, L"--map-color") == 0 || wcscmp(arg, L"--out") == 0;
+           wcscmp(arg, L"--map-color") == 0 || wcscmp(arg, L"--out") == 0 || wcscmp(arg, L"--shadow") == 0 ||
+           wcscmp(arg, L"--exhaust") == 0;
 }
 
 // The command of a check without its temp files (the values of --preview,
@@ -4877,7 +5388,7 @@ static void Char_CacheShow(HWND page, int i, const wchar_t *model, unsigned long
 static int Char_IsMetaCode(const wchar_t *code)
 {
     static const wchar_t *const codes[] = { L"name", L"name-upper", L"name-chars", L"name-long", L"class", L"mask",
-                                            L"map-color", L"template", L"author", L"version" };
+                                            L"map-color", L"template", L"author", L"version", L"shadow", L"exhaust" };
     int i;
     for (i = 0; i < (int)(sizeof(codes) / sizeof(codes[0])); i++)
         if (wcscmp(code, codes[i]) == 0)
@@ -4888,7 +5399,7 @@ static int Char_IsMetaCode(const wchar_t *code)
 static int Char_IsMetaValue(const wchar_t *key)
 {
     static const wchar_t *const keys[] = { L"name", L"author", L"char_version", L"template", L"class", L"mask",
-                                           L"map-color", L"out" };
+                                           L"map-color", L"out", L"shadow", L"exhaust", L"exhaust-point" };
     int i;
     for (i = 0; i < (int)(sizeof(keys) / sizeof(keys[0])); i++)
         if (wcscmp(key, keys[i]) == 0)
@@ -4931,6 +5442,11 @@ static int Char_MetaStart(HWND page, const struct CharArgs *a, int base, unsigne
     wchar_t none[CHAR_VAL];
     int n = 0, i, out = 0, started;
 
+    // A result kept without the native part (a check that stopped at the name
+    // leaves it out) is no base when the native model is passed: rldpack
+    // checks everything, so an error of the native part is not missed.
+    if (Char_NativePassed() && (!g_char.cache[base].feed || !wcsstr(g_char.cache[base].feed, L"@char\tnative-model\t")))
+        return 0;
     Char_TempPath(none, CHAR_VAL, 0, L"-none.ply");
     v[n++] = L"make-char";
     v[n++] = L"--machine";
@@ -4938,7 +5454,8 @@ static int Char_MetaStart(HWND page, const struct CharArgs *a, int base, unsigne
     v[n++] = L"--model";
     v[n++] = none;
     for (i = 0; i + 1 < a->n && n + 2 <= 22; i++) {
-        if (Char_IsMetaSwitch(a->v[i]) || wcscmp(a->v[i], L"--template") == 0) {
+        // --wheels too: the defaults of the look follow it (it stops at the model all the same)
+        if (Char_IsMetaSwitch(a->v[i]) || wcscmp(a->v[i], L"--template") == 0 || wcscmp(a->v[i], L"--wheels") == 0) {
             out |= wcscmp(a->v[i], L"--out") == 0;
             v[n++] = a->v[i];
             v[n++] = a->v[++i];
@@ -5232,6 +5749,22 @@ static void Char_ChangedSoon(HWND page)
     Char_ChangedAfter(page, CHAR_CLICK_DELAY);
 }
 
+// The card Wheels changed its model or its size (CharWheels_ExportChanged):
+// the note of the native model, and a check like a typed field or a click.
+static void Char_WheelsFollow(HWND page)
+{
+    const int changed = CharWheels_ExportChanged();
+    if (!changed)
+        return;
+    Char_NativeUpdate();
+    if (g_char.model) {
+        wchar_t model[CHAR_VAL];
+        Char_FieldPath(g_char.model, model, CHAR_VAL);
+        if (model[0])
+            Char_ChangedAfter(page, changed == 1 ? CHAR_CHECK_DELAY : CHAR_CLICK_DELAY);
+    }
+}
+
 static void Char_MapColorSet(HWND page, int set, COLORREF color)
 {
     g_char.mapColorSet = set;
@@ -5318,12 +5851,16 @@ static int Char_CheckDone(HWND page, int exitCode, int seq)
         Char_SizeForget();
     }
     g_char.modelRead = j->modelSeen && wcscmp(j->modelState, L"ok") == 0;
+    g_char.lookQuadKnown = j->lookQuadSeen;
+    if (j->lookQuadSeen)
+        memcpy(g_char.lookQuad, j->lookQuad, sizeof(g_char.lookQuad));
     Char_ApplyModelInfo();
     Char_ApplyImport();
     Char_ApplyFit();
     Char_ApplyVoices(seq);
     Char_ApplyQuality();
     Char_ApplyPreview(seq);
+    Char_LookPreview();
     Char_ApplyIcon(seq);
     // The temp files stay with the result kept (Char_CacheStore).
     Char_StampShown();
@@ -6073,6 +6610,31 @@ static int Char_WriteReport(const wchar_t *path)
     for (i = 0; i < CHAR_TABS; i++)
         Char_Put(f, L"tab %d %ls: %ls", i + 1, g_charTabTexts[i], g_charStepWords[g_char.step[i]]);
     Char_Put(f, L"extras card: %ls", g_charExtrasTexts[g_char.extrasCard]);
+    Char_Put(f, L"look card: %ls", g_charLookTexts[g_char.lookCard]);
+    {
+        wchar_t args[160];
+        int pts[3], i;
+        Char_Put(f, L"look: %ls (%ls)", L"enabled (preview feature)",
+                 IsWindowEnabled(g_char.shadow) ? L"enabled" : L"greyed out");
+        Char_Put(f, L"shadow: %ls (%ls)", g_charShadowWords[Char_ListIndex(g_char.shadow, 3)],
+                 g_char.shadowSet ? L"chosen" : L"follows the wheels");
+        Char_Put(f, L"exhaust: %ls (%ls)", g_charExhaustWords[Char_ListIndex(g_char.exhaust, 3)],
+                 g_char.exhaustSet ? L"chosen" : L"follows the wheels");
+        for (i = 0; i < 2; i++) {
+            if (Char_LookPointValue(i, pts))
+                Char_Put(f, L"exhaust point %d: %.2f %.2f %.2f (%ls)", i + 1, (double)pts[0] / 16.0, (double)pts[1] / 16.0,
+                         (double)pts[2] / 16.0, IsWindowEnabled(g_char.point[i][0]) ? L"enabled" : L"greyed out");
+            else
+                Char_Put(f, L"exhaust point %d: %ls", i + 1, Char_LookPointEmpty(i) ? L"empty" : L"not three numbers");
+        }
+        if (g_char.lookQuadKnown)
+            Char_Put(f, L"shadow quad (auto, last check): x %.2f..%.2f, z %.2f..%.2f", (double)g_char.lookQuad[0] / 16.0,
+                     (double)g_char.lookQuad[1] / 16.0, (double)g_char.lookQuad[2] / 16.0, (double)g_char.lookQuad[3] / 16.0);
+        else
+            Char_Put(f, L"shadow quad (auto, last check): (not reported)");
+        Char_LookExhaustArg(args, 160);
+        Char_Put(f, L"exhaust argument (custom): %ls", Char_ListIndex(g_char.exhaust, 3) == 1 ? args : L"(not passed)");
+    }
     Char_Put(f, L"up: %ls (%ls)", g_charUpTexts[Char_ListIndex(g_char.up, CHAR_UP_COUNT)],
              Char_ListIndex(g_char.up, CHAR_UP_COUNT) ? L"passed as --up" : L"rldpack's default");
     Char_Put(f, L"forward: %ls (%ls)", g_charForwardTexts[Char_ListIndex(g_char.forward, CHAR_FORWARD_COUNT)],
@@ -6082,6 +6644,32 @@ static int Char_WriteReport(const wchar_t *path)
     Char_Put(f, L"vertex colors: %ls (%ls) [%ls]", g_charVColorTexts[Char_VColorIndex()],
              !g_char.objOn ? L"not passed - no OBJ" : Char_VColorIndex() ? L"passed as --vertex-colors" : L"rldpack's default",
              g_char.objOn ? L"shown" : L"hidden");
+    {
+        wchar_t *hint = Rs_GetText(g_char.nativeHint);
+        wchar_t *note = Rs_GetText(g_char.nativeHelp);
+        Char_Put(f, L"native model: %ls, %ls, %ls (%ls)", L"enabled (preview feature)",
+                 IsWindowEnabled(g_char.native) ? L"enabled" : L"greyed out", Char_IsChecked(g_char.native) ? L"on" : L"off",
+                 Char_NativePassed() ? L"passed as --native-model on" : L"not passed");
+        Char_Put(f, L"native model hint: %ls", hint ? hint : L"");
+        Char_Put(f, L"native model note: %ls", note ? note : L"");
+        Rs_Free(hint);
+        Rs_Free(note);
+    }
+    // The user mode only (the report without it stays as it was).
+    if (Rs_NativeForUsers()) {
+        wchar_t *line = Rs_GetText(g_char.nativeLine);
+        Char_Put(f, L"user mode: on - Repair the model, Draw open parts, Closed hull, Reduce to fit, Colors and the native tick box "
+                    L"hidden (rldpack's defaults, nothing passed)");
+        Char_Put(f, L"hidden: repair %ls, open parts %ls, remesh %ls, reduce %ls, reduce button %ls, colors %ls, native box %ls",
+                 Char_IsShown(g_char.repair) ? L"shown" : L"hidden", Char_IsShown(g_char.openParts) ? L"shown" : L"hidden",
+                 Char_IsShown(g_char.remesh) ? L"shown" : L"hidden", Char_IsShown(g_char.reduce) ? L"shown" : L"hidden",
+                 Char_IsShown(g_char.reduceFit) ? L"shown" : L"hidden", Char_IsShown(g_char.colors) ? L"shown" : L"hidden",
+                 Char_IsShown(g_char.native) ? L"shown" : L"hidden");
+        Char_Put(f, L"option Include classic fallback model: %ls, %ls, locked - coming soon (always built)",
+                 Char_IsChecked(g_char.fallback) ? L"on" : L"off", IsWindowEnabled(g_char.fallback) ? L"enabled" : L"greyed out");
+        Char_Put(f, L"native line: %ls", line ? line : L"");
+        Rs_Free(line);
+    }
     {
         // The tab of every message, in the order of the list ("-" = none).
         wchar_t line[CHAR_VAL];
@@ -6242,8 +6830,13 @@ static int Char_AutoOption(HWND page, HWND box, const wchar_t *verb, const wchar
         return RS_AUTO_FAIL;
     }
     Char_SetChecked(box, on);
-    if (box == g_char.wheels)
+    if (box == g_char.wheels) {
         RsView_SetWheels(g_char.view, on);
+        Char_NativeUpdate();
+        Char_LookDefaults();
+        Char_LookEnable();
+        Char_LookPreview();
+    }
     Char_UpdateOptions();
     if (box == g_char.reduce)
         Char_ApplyQuality();
@@ -6629,6 +7222,41 @@ static void Char_Create(HWND page)
     g_char.mapColor = CHAR_TEMPLATE_MAP_COLOR;
     Char_MapColorShow();
 
+    // The tab In-game look: Portrait | In the race, and on In the race the
+    // shadow and the exhaust (preview feature, open to everyone).
+    for (i = 0; i < CHAR_LOOK_CARDS; i++)
+        g_char.lookSwitch[i] = Char_TabButton(page, CHAR_ID_LOOK_SWITCH + i, g_charLookTexts[i], RS_FONT_SECTION);
+    g_char.lookCard = CHAR_LOOK_PORTRAIT;
+    g_char.lookHint = Rs_PreviewMark(page, CHAR_ID_LOOK_HINT);
+    SetWindowLongPtrW(g_char.lookHint, GWL_STYLE, GetWindowLongPtrW(g_char.lookHint, GWL_STYLE) | SS_RIGHT);
+    Rs_SetTip(g_char.lookHint, L"Preview: shadow and exhaust fitted to the model, for the classic and the native model.");
+    g_char.shadowLabel = Rs_Label(page, CHAR_ID_SHADOW_LABEL, L"Shadow", RS_FONT_BOLD);
+    g_char.shadow = Rs_Combo(page, CHAR_ID_SHADOW);
+    for (i = 0; i < 3; i++)
+        SendMessageW(g_char.shadow, CB_ADDSTRING, 0, (LPARAM)g_charShadowTexts[i]);
+    g_char.shadowHelp = Rs_Label(page, CHAR_ID_SHADOW_HELP, L"Auto: fitted to the model's footprint by rldpack. Retail: the kart's.", RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.shadowHelp, RS_COL_MUTED);
+    g_char.exhaustLabel = Rs_Label(page, CHAR_ID_EXHAUST_LABEL, L"Exhaust", RS_FONT_BOLD);
+    g_char.exhaust = Rs_Combo(page, CHAR_ID_EXHAUST);
+    for (i = 0; i < 3; i++)
+        SendMessageW(g_char.exhaust, CB_ADDSTRING, 0, (LPARAM)g_charExhaustTexts[i]);
+    g_char.exhaustHelp = Rs_Label(page, CHAR_ID_EXHAUST_HELP, L"Smoke and glow. Custom: the two points below.", RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.exhaustHelp, RS_COL_MUTED);
+    for (i = 0; i < 2; i++) {
+        static const wchar_t *const cues[3] = { L"x", L"y", L"z" };
+        int a;
+        g_char.pointLabel[i] = Rs_Label(page, CHAR_ID_POINT + i * CHAR_POINT_IDS, i ? L"Point 2 (right)" : L"Point 1 (left)",
+                                        RS_FONT_BOLD);
+        for (a = 0; a < 3; a++) {
+            g_char.point[i][a] = Rs_Edit(page, CHAR_ID_POINT + i * CHAR_POINT_IDS + 1 + a, L"", 0);
+            SendMessageW(g_char.point[i][a], EM_SETCUEBANNER, FALSE, (LPARAM)cues[a]);
+        }
+        g_char.pointPick[i] = Rs_Button(page, CHAR_ID_POINT + i * CHAR_POINT_IDS + 4, L"Pick");
+        Rs_SetTip(g_char.pointPick[i], L"Then click the model in the preview (pose Neutral): the point of its surface under the click.");
+    }
+    g_char.lookNote = Rs_Label(page, CHAR_ID_LOOK_NOTE, CHAR_LOOK_NOTE_TEXT, RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.lookNote, RS_COL_MUTED);
+
     g_char.sizeLabel = Rs_Label(page, CHAR_ID_SIZE_LABEL, L"Size", RS_FONT_BOLD);
     g_char.size = CreateWindowExW(0, TRACKBAR_CLASSW, L"",
                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBS_HORZ | TBS_NOTICKS | TBS_ENABLESELRANGE,
@@ -6663,6 +7291,28 @@ static void Char_Create(HWND page)
     Char_SetChecked(g_char.remesh, 0);      // only on request
     Char_SetChecked(g_char.reduce, 0);      // a model under the limit is never reduced anyway
     Char_SetChecked(g_char.wheels, 1);
+    Char_LookDefaults();
+    Char_LookEnable();
+    // The user mode (Rs_NativeForUsers): rldpack's defaults, hidden
+    // (Char_UserHidden) - Reduce to fit on, so that everything that asks the
+    // box sees what is passed (nothing: --reduce auto).
+    if (Rs_NativeForUsers())
+        Char_SetChecked(g_char.reduce, 1);
+    // Only in the user mode: the classic model (CMDL) is always built - the
+    // box says so, ticked and greyed out until leaving it out is possible.
+    g_char.fallback = Rs_Check(page, CHAR_ID_FALLBACK, L"Include classic fallback model");
+    Char_SetChecked(g_char.fallback, 1);
+    EnableWindow(g_char.fallback, FALSE);
+    Rs_SetTip(g_char.fallback, L"Always built: the game's own model of the driver, for every view the native model "
+                               L"does not draw yet. Leaving it out comes later.");
+    g_char.fallbackHint = Rs_Label(page, CHAR_ID_FALLBACK_HINT, L"Coming soon", RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.fallbackHint, RS_COL_MUTED);
+    g_char.nativeLine = Rs_Label(page, CHAR_ID_NATIVE_LINE, L"", RS_FONT_SMALL);
+    if (!Rs_NativeForUsers()) {
+        ShowWindow(g_char.fallback, SW_HIDE);
+        ShowWindow(g_char.fallbackHint, SW_HIDE);
+        ShowWindow(g_char.nativeLine, SW_HIDE);
+    }
     Char_UpdateOptions();
     g_char.quality = Rs_Label(page, CHAR_ID_QUALITY, L"", RS_FONT_SMALL);   // wraps (Char_Layout)
     g_char.qualityColor = RS_COL_TEXT;
@@ -6848,6 +7498,20 @@ static void Char_Create(HWND page)
     g_char.vcolorsHelp = Rs_Label(page, CHAR_ID_VCOLORS_HELP, L"OBJ: how a vertex colour meets the texture of its face.",
                                   RS_FONT_SMALL);
     Rs_SetTextColor(g_char.vcolorsHelp, RS_COL_MUTED);
+    g_char.nativeLabel = Rs_Label(page, CHAR_ID_NATIVE_LABEL, L"Native model", RS_FONT_BOLD);
+    g_char.native = Rs_Check(page, CHAR_ID_NATIVE, L"Also write the mesh and textures as they are");
+    g_char.nativeHint = Rs_PreviewMark(page, CHAR_ID_NATIVE_HINT);
+    // right-aligned in a box as wide as the longer of "Coming soon" and
+    // "Preview feature" (Char_LayNative)
+    SetWindowLongPtrW(g_char.nativeHint, GWL_STYLE, GetWindowLongPtrW(g_char.nativeHint, GWL_STYLE) | SS_RIGHT);
+    g_char.nativeHelp = Rs_Label(page, CHAR_ID_NATIVE_HELP, CHAR_NATIVE_TEXT_OBJ, RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.nativeHelp, RS_COL_MUTED);
+    Rs_SetTip(g_char.native, L"Preview: rldpack also writes the OBJ's own triangles, UVs, materials and texture files (CNET, CTXT) into the "
+                             L"character, beside the classic model; it needs Show kart wheels off or a wheel model of your own (Extras, "
+                             L"Wheels). The game draws them with NATIVE DRIVERS "
+                             L"set to PREVIEW (OPTIONS, GRAPHICS); otherwise it draws the classic model as before.");
+    Rs_SetTip(g_char.nativeHint, L"Preview: the game draws the native model with NATIVE DRIVERS set to PREVIEW (OPTIONS, GRAPHICS).");
+    Char_NativeUpdate();
     CharWheels_Create(page, g_char.view);
     CharAnim_Create(page, g_char.view);
     // Tab order: the heads, the tab shown (Reduce to fit after the options),
@@ -6888,9 +7552,27 @@ static void Char_PlaceField(HWND label, HWND field, int x, int labelW, int y, in
 // card Animations of the tab Extras), between CHAR_BAR_MIN_H and
 // CHAR_BAR_MAX_H. Only where even CHAR_BAR_MIN_H does not fit below a tab, the
 // bar goes lower than the page and the shell scrolls it (reloadstudio.h,
-// "Pages") - at 1366 x 768 and at 1920 x 1080 with 100 % or 150 % it does not.
-#define CHAR_PAGE_MIN_W  920    // the two columns below: narrower windows scroll sideways
-#define CHAR_PAGE_MIN_H  560
+// "Pages").
+// THE COMPACT LAYOUT: a page narrower than CHAR_FULL_W or lower than
+// CHAR_FULL_H (the start window on 1366 x 768 at 150 %: 1344 x 640 pixels
+// of client, about 836 x 426 left for the page) gets a
+// one-line heading (Rs_PageSetCompactHead), lower tab heads, notes on one line
+// with their whole text as the tooltip (Char_TextHeight), the bar in two rows
+// without Back and Next (Ctrl+Tab and the heads step through the tabs) and
+// the preview without its title line. Measured with the automation verb
+// "controls" (--screen simulates the start window with the frame of the
+// simulated dpi, Rs_PlaceWindow): at 1366 x 768 and 1920 x 1080, 100 % and
+// 150 %, nothing of the page scrolls, with --enable-preview-features and
+// without; without it a model over the limit (the button Reduce to fit) or
+// with a texture missing (the field Textures folder) may still push the bar
+// down at 1366 x 768 with 150 % (only up and down).
+#define CHAR_FULL_W      920    // the layout as always from here on
+#define CHAR_FULL_H      560
+#define CHAR_PAGE_MIN_W  800    // below: the view scrolls (the compact layout needs about this)
+#define CHAR_PAGE_MIN_H  400
+#define CHAR_COMPACT_STRIP_H 28
+#define CHAR_COMPACT_BAR_H   78 // headline and output; messages (two whole lines), Check and Build
+#define CHAR_COMPACT_VIEW_MIN_W 200
 #define CHAR_LEFT_MIN_W  540    // the column of the tabs, at least
 #define CHAR_LEFT_MAX_W  760    // and at most: the rest goes to the preview
 #define CHAR_VIEW_MIN_W  300    // the column of the preview, at least
@@ -6910,7 +7592,7 @@ struct CharLay {
 static int Char_LayStrip(int left, int right, int top)
 {
     int widths[CHAR_TABS];
-    int x = left + Rs_Px(12), h = Rs_Px(CHAR_STRIP_H), total = 0, room = right - left - Rs_Px(24), t;
+    int x = left + Rs_Px(12), h = Rs_Px(g_char.compact ? CHAR_COMPACT_STRIP_H : CHAR_STRIP_H), total = 0, room = right - left - Rs_Px(24), t;
 
     for (t = 0; t < CHAR_TABS; t++) {
         widths[t] = Rs_Px(12 + 20 + 8 + 16) + Char_TextWidth(g_char.tabHead[t], g_charTabTexts[t]);
@@ -6932,19 +7614,20 @@ static int Char_LayStrip(int left, int right, int top)
 // options, what rldpack did. Returns the bottom of what it placed.
 static int Char_LayModelAt(const struct CharLay *k, const RECT *in, int filesH)
 {
-    HWND options[5];
-    int x = in->left + k->labelW + Rs_Px(8), fieldW = in->right - x, y = in->top, infoH, qualityH, noteH, i;
+    HWND options[6];
+    int x = in->left + k->labelW + Rs_Px(8), fieldW = in->right - x, y = in->top, infoH, qualityH, noteH, i, count;
 
     Char_PlaceField(g_char.modelLabel, g_char.model, in->left, k->labelW, y + Rs_Px(2), fieldW - k->browseW - Rs_Px(8));
     MoveWindow(g_char.modelBrowse, in->right - k->browseW, y, k->browseW, Rs_Px(32), TRUE);
     y += Rs_Px(34);
     // One line, or up to CHAR_INFO_LINES when the text needs them.
-    Char_FitLines(g_char.modelInfo, g_char.infoFull, fieldW, CHAR_INFO_LINES);
+    Char_FitLines(g_char.modelInfo, g_char.infoFull, fieldW, g_char.compact ? 1 : CHAR_INFO_LINES);
     infoH = Char_TextHeight(g_char.modelInfo, fieldW, CHAR_INFO_LINES);
+    Rs_SetTip(g_char.modelInfo, g_char.compact && wcscmp(g_char.infoFull, L"") != 0 ? g_char.infoFull : NULL);
     if (infoH < Rs_Px(18))
         infoH = Rs_Px(18);
     MoveWindow(g_char.modelInfo, x, y, fieldW, infoH, TRUE);
-    y += infoH + Rs_Px(8);
+    y += infoH + Rs_Px(g_char.compact ? 4 : 8);
     // An OBJ (or a model not named .ply): the line of what was read right
     // below, then the list of its MTL, textures and groups over the width
     // of the card.
@@ -6964,12 +7647,12 @@ static int Char_LayModelAt(const struct CharLay *k, const RECT *in, int filesH)
                         fieldW - k->browseW - k->clearW - Rs_Px(16));
         MoveWindow(g_char.texturesBrowse, in->right - k->browseW - k->clearW - Rs_Px(8), y, k->browseW, Rs_Px(32), TRUE);
         MoveWindow(g_char.texturesClear, in->right - k->clearW, y, k->clearW, Rs_Px(32), TRUE);
-        y += Rs_Px(40);
+        y += Rs_Px(g_char.compact ? 34 : 40);
     }
     MoveWindow(g_char.sizeLabel, in->left, y + Rs_Px(4), k->labelW, Rs_Px(20), TRUE);
     MoveWindow(g_char.size, x - Rs_Px(4), y, fieldW - Rs_Px(64), Rs_Px(30), TRUE);
     MoveWindow(g_char.sizeValue, in->right - Rs_Px(60), y + Rs_Px(4), Rs_Px(60), Rs_Px(20), TRUE);
-    y += Rs_Px(32);
+    y += Rs_Px(g_char.compact ? 30 : 32);
     // What 100 % is: in the label column under "Size", the fit beside it.
     MoveWindow(g_char.sizeCrash, in->left, y, k->labelW, Rs_Px(18), TRUE);
     noteH = Char_NoteHeight(g_char.sizeFit, fieldW);
@@ -6978,31 +7661,60 @@ static int Char_LayModelAt(const struct CharLay *k, const RECT *in, int filesH)
     noteH = Char_NoteHeight(g_char.sizeNote, fieldW);
     MoveWindow(g_char.sizeNote, x, y, fieldW, noteH, TRUE);
     y += Rs_Px(2) + noteH;
-    noteH = Char_NoteHeight(g_char.sizeHint, fieldW);
-    MoveWindow(g_char.sizeHint, x, y, fieldW, noteH, TRUE);
-    y += Rs_Px(8) + noteH;
+    // Compact: the hint that the size is a look only is the slider's tooltip
+    // (Char_TabApply hides the line).
+    Rs_SetTip(g_char.size, g_char.compact ? CHAR_SIZE_HINT_TEXT : NULL);
+    if (g_char.compact) {
+        y += Rs_Px(6);
+    } else {
+        noteH = Char_NoteHeight(g_char.sizeHint, fieldW);
+        MoveWindow(g_char.sizeHint, x, y, fieldW, noteH, TRUE);
+        y += Rs_Px(8) + noteH;
+    }
     // The check boxes left to right, a new row where the next one does not fit.
-    options[0] = g_char.repair;
-    options[1] = g_char.openParts;
-    options[2] = g_char.remesh;
-    options[3] = g_char.reduce;
-    options[4] = g_char.wheels;
+    // The user mode (Rs_NativeForUsers): only Show kart wheels and the classic
+    // fallback (ticked, greyed out, "Coming soon" right of it).
+    count = 0;
+    if (!Rs_NativeForUsers()) {
+        options[count++] = g_char.repair;
+        options[count++] = g_char.openParts;
+        options[count++] = g_char.remesh;
+        options[count++] = g_char.reduce;
+    }
+    options[count++] = g_char.wheels;
+    if (Rs_NativeForUsers())
+        options[count++] = g_char.fallback;
     MoveWindow(g_char.optionsLabel, in->left, y + Rs_Px(2), k->labelW, Rs_Px(20), TRUE);
+    // Compact: the boxes (and "Coming soon") from the left edge of the card,
+    // without the label (Char_TabApply hides it) - in the user mode one row.
+    if (g_char.compact) {
+        x = in->left;
+        fieldW = in->right - in->left;
+    }
     {
         int cx = x;
-        for (i = 0; i < 5; i++) {
+        for (i = 0; i < count; i++) {
             int bw = Char_CheckWidth(options[i]);
-            if (bw > fieldW)
-                bw = fieldW;
-            if (cx > x && cx + bw > x + fieldW) {
+            int extra = options[i] == g_char.fallback ? Rs_Px(8) + Char_TextWidth(g_char.fallbackHint, L"Coming soon") + Rs_Px(4) : 0;
+            if (bw > fieldW - extra)
+                bw = fieldW - extra;
+            if (cx > x && cx + bw + extra > x + fieldW) {
                 cx = x;
                 y += Rs_Px(26);
             }
             MoveWindow(options[i], cx, y, bw, Rs_Px(24), TRUE);
-            cx += bw + Rs_Px(12);
+            if (extra)
+                MoveWindow(g_char.fallbackHint, cx + bw + Rs_Px(8), y + Rs_Px(4), extra - Rs_Px(8), Rs_Px(18), TRUE);
+            cx += bw + extra + Rs_Px(12);
         }
     }
     y += Rs_Px(24);
+    // The user mode: what the native model came to, or why there is none.
+    if (Rs_NativeForUsers()) {
+        noteH = Char_NoteHeight(g_char.nativeLine, fieldW);
+        MoveWindow(g_char.nativeLine, x, y + Rs_Px(4), fieldW, noteH, TRUE);
+        return y + Rs_Px(4) + noteH;
+    }
     // What the repair, the open parts and the remesh did (Char_ApplyQuality).
     MoveWindow(g_char.quality, x, y + Rs_Px(4), fieldW, Rs_Px(18), FALSE);
     qualityH = Char_QualityHeight(fieldW);
@@ -7067,10 +7779,10 @@ static int Char_LayDriver(const struct CharLay *k, const RECT *in)
 
 // Tab 3 In-game look: icon with its options and pictures, minimap colour. The
 // pictures as large as the room allows, at most 4 times.
-static int Char_LayLook(const struct CharLay *k, const RECT *in)
+static int Char_LayLookPortrait(const struct CharLay *k, const RECT *in)
 {
     int x = in->left + k->labelW + Rs_Px(8), fieldW = in->right - x, width = in->right - in->left, y = in->top;
-    int factor, boxW, boxH, noteH, mapH, i;
+    int factor, boxW, boxH, mapH = 0, i;
 
     Char_PlaceField(g_char.iconLabel, g_char.icon, in->left, k->labelW, y + Rs_Px(2),
                     fieldW - k->browseW - k->clearW - Rs_Px(16));
@@ -7107,10 +7819,7 @@ static int Char_LayLook(const struct CharLay *k, const RECT *in)
             cx += bw + Rs_Px(12);
         }
     }
-    y += Rs_Px(24) + Rs_Px(14);
-    // The minimap colour below the pictures: its height first, so that the
-    // pictures take what is left.
-    mapH = Rs_Px(36) + Char_NoteHeight(g_char.mapHelp, fieldW) + Rs_Px(14);
+    y += Rs_Px(24) + Rs_Px(g_char.compact ? 6 : 14);
     // Whole steps, at most 4: your picture, then the game picture (two
     // portraits wide); the first column as wide as its caption needs.
     {
@@ -7133,7 +7842,16 @@ static int Char_LayLook(const struct CharLay *k, const RECT *in)
         MoveWindow(g_char.iconCaption[CHAR_IMG_ICON], bx, y, in->right - bx, Rs_Px(18), TRUE);
         MoveWindow(g_char.iconImage[CHAR_IMG_ICON], bx, y + Rs_Px(20), gameW, boxH, TRUE);
     }
-    y += Rs_Px(20) + boxH + Rs_Px(14);
+    return y + Rs_Px(20) + boxH;
+}
+
+// Tab 3 In-game look, card In the race: the minimap colour, the shadow and
+// the exhaust (preview feature), the two points with Pick, a note.
+static int Char_LayLookRace(const struct CharLay *k, const RECT *in)
+{
+    int x = in->left + k->labelW + Rs_Px(8), fieldW = in->right - x, y = in->top, noteH, i, a;
+    const int rowH = Rs_Px(g_char.compact ? 28 : 36);
+
     MoveWindow(g_char.mapLabel, in->left, y + Rs_Px(6), k->labelW, Rs_Px(20), TRUE);
     MoveWindow(g_char.mapSwatch, x, y, Rs_Px(48), Rs_Px(32), TRUE);
     {
@@ -7142,10 +7860,58 @@ static int Char_LayLook(const struct CharLay *k, const RECT *in)
         MoveWindow(g_char.mapPick, x + Rs_Px(56), y, pickW, Rs_Px(32), TRUE);
         MoveWindow(g_char.mapLike, x + Rs_Px(64) + pickW, y, likeW, Rs_Px(32), TRUE);
     }
-    y += Rs_Px(36);
+    y += Rs_Px(g_char.compact ? 32 : 36);
     noteH = Char_NoteHeight(g_char.mapHelp, fieldW);
     MoveWindow(g_char.mapHelp, x, y, fieldW, noteH, TRUE);
+    y += noteH + Rs_Px(g_char.compact ? 2 : 14);
+    // "Coming soon" / "Preview feature" right on the row Shadow: it is about
+    // shadow and exhaust, not about the minimap colour above, which works
+    // without the switch too.
+    {
+        const int rowTop = y;
+        int hintW = Char_TextWidth(g_char.lookHint, L"Preview feature"), h;
+        h = Char_TextWidth(g_char.lookHint, L"Coming soon");
+        hintW = (h > hintW ? h : hintW) + Rs_Px(4);
+        y = Char_LayChoice(k, in, y, g_char.shadowLabel, g_char.shadow, g_char.shadowHelp);
+        MoveWindow(g_char.lookHint, in->right - hintW, rowTop + Rs_Px(5), hintW, Rs_Px(18), TRUE);
+        {
+            RECT hr;
+            GetWindowRect(g_char.shadowHelp, &hr);
+            MapWindowPoints(NULL, GetParent(g_char.shadowHelp), (POINT *)&hr, 2);
+            if (hr.right > in->right - hintW - Rs_Px(8)) {
+                const int helpW = in->right - hintW - Rs_Px(8) - hr.left;
+                h = Char_TextHeight(g_char.shadowHelp, helpW, 2);
+                MoveWindow(g_char.shadowHelp, hr.left, hr.top, helpW, h, TRUE);
+                if (hr.top + h + Rs_Px(8) > y)
+                    y = hr.top + h + Rs_Px(8);
+            }
+        }
+    }
+    y = Char_LayChoice(k, in, y, g_char.exhaustLabel, g_char.exhaust, g_char.exhaustHelp);
+    for (i = 0; i < 2; i++) {
+        int ex = x, ew = Rs_Px(72), pw = Char_TextWidth(g_char.pointPick[i], L"Pick") + Rs_Px(32);
+        MoveWindow(g_char.pointLabel[i], in->left, y + Rs_Px(4), k->labelW, Rs_Px(20), TRUE);
+        for (a = 0; a < 3; a++) {
+            MoveWindow(g_char.point[i][a], ex, y, ew, Rs_Px(28), TRUE);
+            ex += ew + Rs_Px(6);
+        }
+        MoveWindow(g_char.pointPick[i], ex + Rs_Px(6), y - Rs_Px(1), pw, Rs_Px(g_char.compact ? 28 : 30), TRUE);
+        y += rowH;
+    }
+    noteH = Char_NoteHeight(g_char.lookNote, in->right - in->left);
+    MoveWindow(g_char.lookNote, in->left, y, in->right - in->left, noteH, TRUE);
     return y + noteH;
+}
+
+// Portrait | In the race in the title line of the tab In-game look.
+static void Char_LayLookSwitch(const RECT *card)
+{
+    int x = card->left + Rs_Px(10), c;
+    for (c = 0; c < CHAR_LOOK_CARDS; c++) {
+        int bw = Char_TextWidth(g_char.lookSwitch[c], g_charLookTexts[c]) + Rs_Px(20);
+        MoveWindow(g_char.lookSwitch[c], x, card->top + Rs_Px(8), bw, Rs_Px(36), TRUE);
+        x += bw + Rs_Px(4);
+    }
 }
 
 // Tab 4 Voices: the folder, the line of what was found, the list of its files
@@ -7174,16 +7940,23 @@ static int Char_LayVoices(const struct CharLay *k, const RECT *in)
     normW = Char_CheckWidth(g_char.voiceNorm);
     if (comboW > fieldW - playW - Rs_Px(8))
         comboW = fieldW - playW - Rs_Px(8);
+    // Compact: the list of events narrower (its drop-down keeps its width),
+    // so that Normalize volume stays on the row.
+    if (g_char.compact && x + comboW + Rs_Px(8) + playW + Rs_Px(16) + normW > in->right) {
+        comboW = in->right - x - Rs_Px(8) - playW - Rs_Px(16) - normW;
+        if (comboW < Rs_Px(100))
+            comboW = Rs_Px(100);
+    }
     rowH = Rs_Px(32);
     if (x + comboW + Rs_Px(8) + playW + Rs_Px(16) + normW > in->right)
         rowH += Rs_Px(36);
     eventsH = Rs_Px(2 * CHAR_VOICE_CELL_H);
     ruleH = Char_NoteHeight(g_char.voiceRule, width);
-    tail = Rs_Px(8) + rowH + Rs_Px(10) + eventsH + Rs_Px(8) + ruleH;
+    tail = Rs_Px(8) + rowH + Rs_Px(g_char.compact ? 6 : 10) + eventsH + Rs_Px(g_char.compact ? 4 : 8) + ruleH;
 
     listH = in->bottom - tail - y;
-    if (listH < Rs_Px(CHAR_VOICE_LIST_MIN_H))
-        listH = Rs_Px(CHAR_VOICE_LIST_MIN_H);
+    if (listH < Rs_Px(g_char.compact ? CHAR_VOICE_LIST_MIN_H * 5 / 12 : CHAR_VOICE_LIST_MIN_H))
+        listH = Rs_Px(g_char.compact ? CHAR_VOICE_LIST_MIN_H * 5 / 12 : CHAR_VOICE_LIST_MIN_H);
     MoveWindow(g_char.voiceList, in->left, y, width, listH, TRUE);
     Char_VoiceColumns(width);
     y += listH + Rs_Px(8);
@@ -7195,11 +7968,11 @@ static int Char_LayVoices(const struct CharLay *k, const RECT *in)
         MoveWindow(g_char.voiceNorm, x, y + Rs_Px(42), normW < fieldW ? normW : fieldW, Rs_Px(24), TRUE);
     else
         MoveWindow(g_char.voiceNorm, in->right - normW, y + Rs_Px(3), normW, Rs_Px(24), TRUE);
-    y += rowH + Rs_Px(10);
+    y += rowH + Rs_Px(g_char.compact ? 6 : 10);
 
     MoveWindow(g_char.voiceEventsLabel, in->left, y + Rs_Px(1), k->labelW, Rs_Px(20), TRUE);
     MoveWindow(g_char.voiceEvents, x, y, fieldW, eventsH, TRUE);
-    y += eventsH + Rs_Px(8);
+    y += eventsH + Rs_Px(g_char.compact ? 4 : 8);
     MoveWindow(g_char.voiceRule, in->left, y, width, ruleH, TRUE);
     return y + ruleH;
 }
@@ -7222,11 +7995,43 @@ static int Char_LayChoice(const struct CharLay *k, const RECT *in, int y, HWND l
         h = Char_TextHeight(help, helpW, 2);
         MoveWindow(help, helpX, y + Rs_Px(5), helpW, h, TRUE);
         h += Rs_Px(5);
-        return y + (h > Rs_Px(30) ? h : Rs_Px(30)) + Rs_Px(8);
+        return y + (h > Rs_Px(30) ? h : Rs_Px(30)) + Rs_Px(g_char.compact ? 2 : 8);
     }
     h = Char_TextHeight(help, fieldW, 2);
     MoveWindow(help, x, y + Rs_Px(30), fieldW, h, TRUE);
-    return y + Rs_Px(30) + h + Rs_Px(8);
+    return y + Rs_Px(30) + h + Rs_Px(g_char.compact ? 2 : 8);
+}
+
+// The row "Native model" of the card Import: label, tick box, the hint at the
+// right (the same box with and without the switch), the note below the box.
+// Returns the top of the next row.
+static int Char_LayNative(const struct CharLay *k, const RECT *in, int y)
+{
+    int x = in->left + k->labelW + Rs_Px(8), fieldW = in->right - x, hintW, boxW, h;
+
+    hintW = Char_TextWidth(g_char.nativeHint, L"Coming soon");
+    h = Char_TextWidth(g_char.nativeHint, L"Preview feature");
+    hintW = (h > hintW ? h : hintW) + Rs_Px(4);
+    boxW = Rs_CheckBoxWidth(g_char.native);
+    if (boxW > fieldW - hintW - Rs_Px(8))
+        boxW = fieldW - hintW - Rs_Px(8);
+    if (boxW < Rs_Px(40))
+        boxW = Rs_Px(40);
+    MoveWindow(g_char.nativeLabel, in->left, y + Rs_Px(3), k->labelW, Rs_Px(20), TRUE);
+    MoveWindow(g_char.native, x, y, boxW, Rs_Px(24), TRUE);
+    MoveWindow(g_char.nativeHint, in->right - hintW, y + Rs_Px(3), hintW, Rs_Px(18), TRUE);
+    // The user mode has no tick box (Char_UserHidden): the note in its place.
+    if (Rs_NativeForUsers()) {
+        h = Char_TextHeight(g_char.nativeHelp, fieldW - hintW - Rs_Px(8), 3);
+        MoveWindow(g_char.nativeHelp, x, y + Rs_Px(4), fieldW - hintW - Rs_Px(8), h, TRUE);
+        h += Rs_Px(4);
+        return y + (h > Rs_Px(24) ? h : Rs_Px(24)) + Rs_Px(8);
+    }
+    y += Rs_Px(g_char.compact ? 26 : 28);
+    // Compact: the note on one line, the whole text its tooltip (Char_TextHeight).
+    h = Char_TextHeight(g_char.nativeHelp, fieldW, 3);
+    MoveWindow(g_char.nativeHelp, x, y, fieldW, h, TRUE);
+    return y + h + Rs_Px(g_char.compact ? 2 : 8);
 }
 
 // Tab 5 Extras, the card Import: a note, then the choices (those of an OBJ
@@ -7244,12 +8049,14 @@ static int Char_LayImport(const struct CharLay *k, int left, int right, int top)
     y = in.top;
     noteH = Char_TextHeight(g_char.importNote, in.right - in.left, CHAR_NOTE_LINES);
     MoveWindow(g_char.importNote, in.left, y, in.right - in.left, noteH, TRUE);
-    y += noteH + Rs_Px(12);
+    y += noteH + Rs_Px(g_char.compact ? 6 : 12);
     y = Char_LayChoice(k, &in, y, g_char.upLabel, g_char.up, g_char.upHelp);
     y = Char_LayChoice(k, &in, y, g_char.forwardLabel, g_char.forward, g_char.forwardHelp);
-    y = Char_LayChoice(k, &in, y, g_char.colorsLabel, g_char.colors, g_char.colorsHelp);
+    if (!Rs_NativeForUsers())
+        y = Char_LayChoice(k, &in, y, g_char.colorsLabel, g_char.colors, g_char.colorsHelp);
     if (g_char.objOn)
         y = Char_LayChoice(k, &in, y, g_char.vcolorsLabel, g_char.vcolors, g_char.vcolorsHelp);
+    y = Char_LayNative(k, &in, y);
     return y + Rs_Px(16);
 }
 
@@ -7277,6 +8084,26 @@ static void Char_LayPreview(HWND page, int left, int right, int top, int bottom)
     card.top = top;
     card.right = right;
     card.bottom = bottom;
+    // Compact: no title line - the pose choice on a row of its own, the note
+    // on one line below the view.
+    if (g_char.compact) {
+        int poseW = Rs_Px(150);
+        in = Rs_CardInner(&card, 0);
+        width = in.right - in.left;
+        if (poseW > width)
+            poseW = width;
+        MoveWindow(g_char.pose, in.right - poseW, in.top, poseW, Rs_Px(200), TRUE);
+        noteH = Char_NoteHeight(g_char.viewNote, width);
+        viewBottom = in.bottom - Rs_Px(4) - noteH;
+        if (viewBottom < in.top + Rs_Px(32) + Rs_Px(CHAR_VIEW_MIN_H))
+            viewBottom = in.top + Rs_Px(32) + Rs_Px(CHAR_VIEW_MIN_H);
+        MoveWindow(g_char.view, in.left, in.top + Rs_Px(32), width, viewBottom - in.top - Rs_Px(32), TRUE);
+        MoveWindow(g_char.viewNote, in.left, viewBottom + Rs_Px(4), width, noteH, TRUE);
+        if (card.bottom < viewBottom + Rs_Px(4) + noteH + Rs_Px(16))
+            card.bottom = viewBottom + Rs_Px(4) + noteH + Rs_Px(16);
+        Rs_CardAdd(page, &card, NULL);
+        return;
+    }
     in = Rs_CardInner(&card, 1);
     width = in.right - in.left;
     MoveWindow(g_char.pose, in.right - Rs_Px(168), card.top + Rs_Px(10), Rs_Px(168), Rs_Px(200), TRUE);
@@ -7289,6 +8116,59 @@ static void Char_LayPreview(HWND page, int left, int right, int top, int bottom)
     if (card.bottom < viewBottom + Rs_Px(6) + noteH + Rs_Px(16))
         card.bottom = viewBottom + Rs_Px(6) + noteH + Rs_Px(16);
     Rs_CardAdd(page, &card, L"Preview");
+}
+
+// The compact bar (Char_Layout): row 1 the headline (one line, the rest as its
+// tooltip), the progress and Cancel while rldpack runs, Output, Browse and the
+// toggle of the raw output; row 2 the message list (or the raw output), Show
+// in folder after a build, Check and Build. No Back and Next. Returns its bottom.
+static int Char_LayBarCompact(HWND page, const struct CharLay *k, RECT *card, const RECT *in, int rawW)
+{
+    int y2 = in->top + Rs_Px(26), rowH = in->bottom - y2, labelW, fieldW = Rs_Px(200), x, headR, buildW = Rs_Px(140), checkW = Rs_Px(84);
+    int showW = g_char.built[0] ? Rs_Px(136) : 0, listR;
+    wchar_t *text;
+
+    if (rowH < Rs_Px(28))
+        rowH = Rs_Px(28);
+    text = Rs_GetText(g_char.outLabel);
+    labelW = Char_TextWidth(g_char.outLabel, text) + Rs_Px(4);
+    Rs_Free(text);
+    MoveWindow(g_char.rawToggle, in->right - rawW, in->top, rawW, Rs_Px(24), TRUE);
+    x = in->right - rawW - Rs_Px(12) - k->browseW;
+    MoveWindow(g_char.outBrowse, x, in->top - Rs_Px(3), k->browseW, Rs_Px(30), TRUE);
+    x -= Rs_Px(8) + fieldW;
+    MoveWindow(g_char.out, x, in->top - Rs_Px(2), fieldW, Rs_Px(28), TRUE);
+    x -= Rs_Px(8) + labelW;
+    MoveWindow(g_char.outLabel, x, in->top + Rs_Px(2), labelW, Rs_Px(20), TRUE);
+    headR = x - Rs_Px(12);
+    if (g_char.progressOn) {
+        int cancelW = Char_TextWidth(g_char.cancel, L"Cancel") + Rs_Px(32);
+        int progW = Rs_Px(120);
+        MoveWindow(g_char.cancel, headR - cancelW, in->top, cancelW, Rs_Px(24), TRUE);
+        MoveWindow(g_char.progress, headR - cancelW - Rs_Px(8) - progW, in->top + Rs_Px(3), progW, Rs_Px(18), TRUE);
+        headR -= cancelW + progW + Rs_Px(20);
+    }
+    ShowWindow(g_char.cancel, g_char.progressOn ? SW_SHOWNA : SW_HIDE);
+    ShowWindow(g_char.progress, g_char.progressOn ? SW_SHOWNA : SW_HIDE);
+    if (headR < in->left + Rs_Px(40))
+        headR = in->left + Rs_Px(40);
+    MoveWindow(g_char.headline, in->left, in->top + Rs_Px(2), headR - in->left, Rs_Px(22), TRUE);
+
+    MoveWindow(g_char.build, in->right - buildW, y2, buildW, Rs_Px(28), TRUE);
+    MoveWindow(g_char.check, in->right - buildW - Rs_Px(8) - checkW, y2, checkW, Rs_Px(28), TRUE);
+    listR = in->right - buildW - Rs_Px(8) - checkW - Rs_Px(12);
+    if (showW) {
+        MoveWindow(g_char.show, listR - showW, y2, showW, Rs_Px(28), TRUE);
+        listR -= showW + Rs_Px(8);
+    }
+    ShowWindow(g_char.show, showW ? SW_SHOW : SW_HIDE);
+    ShowWindow(g_char.back, SW_HIDE);
+    ShowWindow(g_char.next, SW_HIDE);
+    MoveWindow(g_char.msgs, in->left, y2, listR - in->left, rowH, TRUE);
+    MoveWindow(g_char.raw, in->left, y2, listR - in->left, rowH, TRUE);
+    card->bottom = y2 + rowH + Rs_Px(6);
+    Rs_CardAdd(page, card, NULL);
+    return card->bottom;
 }
 
 // The bar from top to bottom over the whole width: the headline with the
@@ -7312,6 +8192,8 @@ static int Char_LayBar(HWND page, const struct CharLay *k, int left, int right, 
     width = in.right - in.left;
     rawW = Char_TextWidth(g_char.rawToggle, L"Show rldpack output") + Rs_Px(28);
     headW = width - rawW - Rs_Px(12);
+    if (g_char.compact)
+        return Char_LayBarCompact(page, k, &card, &in, rawW);
     // While rldpack runs: the bar of its progress and Cancel, left of the
     // toggle; the headline gives them its room.
     if (g_char.progressOn) {
@@ -7347,6 +8229,11 @@ static int Char_LayBar(HWND page, const struct CharLay *k, int left, int right, 
     ShowWindow(g_char.show, g_char.built[0] ? SW_SHOW : SW_HIDE);
     MoveWindow(g_char.back, rx, y + Rs_Px(34), Rs_Px(84), Rs_Px(30), TRUE);
     MoveWindow(g_char.next, rx + Rs_Px(92), y + Rs_Px(34), Rs_Px(84), Rs_Px(30), TRUE);
+    if (!Char_IsShown(g_char.back))
+        ShowWindow(g_char.back, SW_SHOWNA);
+    if (!Char_IsShown(g_char.next))
+        ShowWindow(g_char.next, SW_SHOWNA);
+
     MoveWindow(g_char.build, in.right - Rs_Px(156), y + Rs_Px(34), Rs_Px(156), Rs_Px(30), TRUE);
     MoveWindow(g_char.check, in.right - Rs_Px(156 + 8 + 96), y + Rs_Px(34), Rs_Px(96), Rs_Px(30), TRUE);
 
@@ -7370,11 +8257,14 @@ static void Char_TabApply(HWND page)
         int card, tab = Char_TabOfId(GetDlgCtrlID(c), &card), want;
         if (tab < 0)
             continue;
-        want = tab == g_char.tab && (card < 0 || card == g_char.extrasCard);
+        want = tab == g_char.tab && (card < 0 || card == (tab == CHAR_TAB_LOOK ? g_char.lookCard : g_char.extrasCard)) &&
+               !Char_UserHidden(c);
         if (c == g_char.reduceFit)
             want = want && g_char.reduceFitOn;
         else if (c == g_char.quality)
             want = want && g_char.qualityOn;
+        else if (c == g_char.sizeHint || c == g_char.optionsLabel)
+            want = want && !g_char.compact;
         else if (c == g_char.modelImport)
             want = want && g_char.importOn;
         else if (c == g_char.modelFiles)
@@ -7392,14 +8282,19 @@ static void Char_TabApply(HWND page)
 static void Char_Layout(HWND page, int w, int h)
 {
     struct CharLay k;
-    int left = Rs_Px(32), right = w - Rs_Px(32);
-    // The page has no subtitle: the cards start right below its title.
-    int top = Rs_PageHeadBottom(page, w) + Rs_Px(8), bottom = h - Rs_Px(24);
-    int vgap = Rs_Px(12), avail, leftW, least, comboW, contentTop, extrasBottom[CHAR_EXTRAS_COUNT];
-    int barH, barTop, upperBottom, need, t, i;
+    // The compact layout (CHAR_FULL_W, CHAR_FULL_H) first: it decides the heading.
+    const int compact = w < Rs_Px(CHAR_FULL_W) || h < Rs_Px(CHAR_FULL_H);
+    int left, right = w - Rs_Px(32), top, bottom = h - Rs_Px(24);
+    int vgap = Rs_Px(compact ? 6 : 12), avail, leftW, least, comboW, contentTop, extrasBottom[CHAR_EXTRAS_COUNT];
+    int barH, barTop, upperBottom, need, t, i, viewMinW = Rs_Px(compact ? CHAR_COMPACT_VIEW_MIN_W : CHAR_VIEW_MIN_W);
     RECT card, in;
-    HWND column[18];
+    HWND column[19];
 
+    g_char.compact = compact;
+    Rs_PageSetCompactHead(page, compact);
+    left = Rs_Px(compact ? 16 : 32);
+    // The page has no subtitle: the cards start right below its title.
+    top = Rs_PageHeadBottom(page, w) + Rs_Px(compact ? 2 : 8);
     Rs_CardClear(page);
     k.gap = Rs_Px(16);
     k.browseW = Rs_Px(100);
@@ -7426,7 +8321,8 @@ static void Char_Layout(HWND page, int w, int h)
     column[15] = g_char.forwardLabel;
     column[16] = g_char.colorsLabel;
     column[17] = g_char.texturesLabel;
-    for (i = 0; i < 18; i++) {
+    column[18] = g_char.nativeLabel;
+    for (i = 0; i < 19; i++) {
         wchar_t *text = Rs_GetText(column[i]);
         int tw = Char_TextWidth(column[i], text) + Rs_Px(4);
         if (tw > k.labelW)
@@ -7446,6 +8342,8 @@ static void Char_Layout(HWND page, int w, int h)
 
     // The columns: the tabs about 58 % (CHAR_LEFT_MIN_W..CHAR_LEFT_MAX_W, and
     // as wide as the label column and the combos need), the preview the rest.
+    if (compact)
+        k.gap = Rs_Px(12);
     avail = right - left - k.gap;
     least = 2 * Rs_Px(18) + k.labelW + Rs_Px(8) + comboW;
     if (least < Rs_Px(CHAR_LEFT_MIN_W))
@@ -7453,19 +8351,19 @@ static void Char_Layout(HWND page, int w, int h)
     leftW = avail * 58 / 100;
     if (leftW > Rs_Px(CHAR_LEFT_MAX_W))
         leftW = Rs_Px(CHAR_LEFT_MAX_W);
-    if (avail - leftW < Rs_Px(CHAR_VIEW_MIN_W))
-        leftW = avail - Rs_Px(CHAR_VIEW_MIN_W);
+    if (avail - leftW < viewMinW)
+        leftW = avail - viewMinW;
     if (leftW < least)
         leftW = least;
-    if (right < left + leftW + k.gap + Rs_Px(CHAR_VIEW_MIN_W))
-        right = left + leftW + k.gap + Rs_Px(CHAR_VIEW_MIN_W);    // the page grows and scrolls sideways
+    if (right < left + leftW + k.gap + viewMinW)
+        right = left + leftW + k.gap + viewMinW;    // the page grows and scrolls sideways
 
     contentTop = Char_LayStrip(left, left + leftW, top);
 
     // The cards of the tab Extras lay themselves out (and report their cards,
     // taken back here: the page reports the card of the tab shown below).
-    extrasBottom[CHAR_EXTRAS_WHEELS] = CharWheels_Layout(page, left, left + leftW, contentTop, k.labelW);
-    extrasBottom[CHAR_EXTRAS_ANIM] = CharAnim_Layout(page, left, left + leftW, contentTop, k.labelW);
+    extrasBottom[CHAR_EXTRAS_WHEELS] = CharWheels_Layout(page, left, left + leftW, contentTop, k.labelW, compact);
+    extrasBottom[CHAR_EXTRAS_ANIM] = CharAnim_Layout(page, left, left + leftW, contentTop, k.labelW, compact);
     Rs_CardClear(page);
     extrasBottom[CHAR_EXTRAS_IMPORT] = Char_LayImport(&k, left, left + leftW, contentTop);
     need = 0;
@@ -7484,15 +8382,23 @@ static void Char_Layout(HWND page, int w, int h)
     card.bottom = contentTop;
     in = Rs_CardInner(&card, 0);
     // The list of Model shows one row less where it would push the bar
-    // below its least height.
-    g_char.filesLeast = CHAR_IMPORT_MIN_ROWS;
+    // below its least height; the compact layout has no room for it (the
+    // line above it says what was found).
+    g_char.filesLeast = compact ? 0 : CHAR_IMPORT_MIN_ROWS;
     for (t = 0; t < CHAR_TAB_EXTRAS; t++) {
         int end;
-        if (t == CHAR_TAB_LOOK)
+        if (t == CHAR_TAB_LOOK) {
+            // Its card In the race has nothing that gives way (the pictures
+            // of Portrait do); below the title line of its switch.
+            const RECT inLook = Rs_CardInner(&card, 1);
+            end = Char_LayLookRace(&k, &inLook) + Rs_Px(16);
+            if (end > need)
+                need = end;
             continue;
+        }
         end = (t == CHAR_TAB_MODEL ? Char_LayModel(&k, &in) : t == CHAR_TAB_DRIVER ? Char_LayDriver(&k, &in)
                                                                                  : Char_LayVoices(&k, &in)) + Rs_Px(16);
-        if (t == CHAR_TAB_MODEL && g_char.filesOn && bottom - end - vgap < Rs_Px(CHAR_BAR_MIN_H)) {
+        if (t == CHAR_TAB_MODEL && g_char.filesOn && g_char.filesLeast > 0 && bottom - end - vgap < Rs_Px(CHAR_BAR_MIN_H)) {
             g_char.filesLeast = 1;
             end = Char_LayModel(&k, &in) + Rs_Px(16);
             // Still too tall (the field Textures folder below it): no list -
@@ -7510,6 +8416,8 @@ static void Char_Layout(HWND page, int w, int h)
         barH = Rs_Px(CHAR_BAR_MAX_H);
     if (barH < Rs_Px(CHAR_BAR_MIN_H))
         barH = Rs_Px(CHAR_BAR_MIN_H);
+    if (compact)
+        barH = Rs_Px(CHAR_COMPACT_BAR_H);
     barTop = bottom - barH;
     if (barTop < need + vgap)
         barTop = need + vgap;
@@ -7523,9 +8431,17 @@ static void Char_Layout(HWND page, int w, int h)
     t = Char_LayModel(&k, &in) + Rs_Px(16);
     if (g_char.tab == CHAR_TAB_MODEL && t > upperBottom)
         upperBottom = t;
-    t = Char_LayLook(&k, &in) + Rs_Px(16);
-    if (g_char.tab == CHAR_TAB_LOOK && t > upperBottom)
-        upperBottom = t;
+    {
+        // The tab In-game look: its switch in the title line of the card.
+        const RECT inLook = Rs_CardInner(&card, 1);
+        const int race = Char_LayLookRace(&k, &inLook) + Rs_Px(16);
+        t = Char_LayLookPortrait(&k, &inLook) + Rs_Px(16);
+        if (g_char.lookCard == CHAR_LOOK_RACE)
+            t = race;
+        Char_LayLookSwitch(&card);
+        if (g_char.tab == CHAR_TAB_LOOK && t > upperBottom)
+            upperBottom = t;
+    }
     t = Char_LayVoices(&k, &in) + Rs_Px(16);
     if (g_char.tab == CHAR_TAB_VOICES && t > upperBottom)
         upperBottom = t;
@@ -7534,7 +8450,7 @@ static void Char_Layout(HWND page, int w, int h)
         upperBottom = extrasBottom[g_char.extrasCard];
     if (barTop < upperBottom + vgap) {
         barTop = upperBottom + vgap;
-        barH = Rs_Px(CHAR_BAR_MIN_H);
+        barH = Rs_Px(compact ? CHAR_COMPACT_BAR_H : CHAR_BAR_MIN_H);
     }
     card.bottom = upperBottom;
     Rs_CardAdd(page, &card, NULL);
@@ -7555,9 +8471,25 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
     int code = HIWORD(wParam);
     (void)lParam;
 
-    // The cards of the preview features handle their own controls.
-    if (CharAnim_Command(page, id, code) || CharWheels_Command(page, id, code))
+    // The cards of the preview features handle their own controls; a change
+    // of the wheel model or its size is a change of the command (Char_WheelsFollow).
+    if (CharAnim_Command(page, id, code))
         return 0;
+    if (CharWheels_Command(page, id, code)) {
+        Char_WheelsFollow(page);
+        return 0;
+    }
+    // The user mode fixes these to rldpack's defaults (Char_UserHidden):
+    // taken and dropped, whatever sent it; the fallback stays ticked.
+    if (id == CHAR_ID_FALLBACK) {
+        Char_SetChecked(g_char.fallback, 1);
+        return 0;
+    }
+    if (Rs_NativeForUsers() && (id == CHAR_ID_REPAIR || id == CHAR_ID_OPEN_PARTS || id == CHAR_ID_REMESH || id == CHAR_ID_REDUCE ||
+                                id == CHAR_ID_REDUCE_FIT || id == CHAR_ID_COLORS || id == CHAR_ID_NATIVE)) {
+        Char_UserDefaults();
+        return 0;
+    }
     if (id >= CHAR_ID_TAB && id < CHAR_ID_TAB + CHAR_TABS) {
         if (code == BN_CLICKED)
             Char_SelectTab(page, id - CHAR_ID_TAB, 0);
@@ -7566,6 +8498,36 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
     if (id >= CHAR_ID_EXTRAS && id < CHAR_ID_EXTRAS + CHAR_EXTRAS_COUNT) {
         if (code == BN_CLICKED)
             Char_SelectExtras(page, id - CHAR_ID_EXTRAS);
+        return 0;
+    }
+    if (id >= CHAR_ID_LOOK_SWITCH && id < CHAR_ID_LOOK_SWITCH + CHAR_LOOK_CARDS) {
+        if (code == BN_CLICKED)
+            Char_SelectLook(page, id - CHAR_ID_LOOK_SWITCH);
+        return 0;
+    }
+    // The look.
+    if (id >= CHAR_ID_SHADOW && id <= CHAR_ID_LOOK_NOTE) {
+        if ((id == CHAR_ID_SHADOW || id == CHAR_ID_EXHAUST) && code == CBN_SELCHANGE) {
+            if (id == CHAR_ID_SHADOW)
+                g_char.shadowSet = 1;
+            else
+                g_char.exhaustSet = 1;
+            if (id == CHAR_ID_EXHAUST)
+                RsView_PickBegin(g_char.view, 0);
+            if (id == CHAR_ID_EXHAUST && Char_ListIndex(g_char.exhaust, 3) == 1)
+                Char_LookCustomStart();
+            Char_LookEnable();
+            Char_LookPreview();
+            Char_ChangedSoon(page);
+        } else if (id >= CHAR_ID_POINT && id < CHAR_ID_POINT + 2 * CHAR_POINT_IDS) {
+            const int i = (id - CHAR_ID_POINT) / CHAR_POINT_IDS, k = (id - CHAR_ID_POINT) % CHAR_POINT_IDS;
+            if (k == 4 && code == BN_CLICKED)
+                Char_LookPickStart(i + 1);
+            else if (k >= 1 && k <= 3 && code == EN_CHANGE && !g_char.applying) {
+                Char_LookPreview();
+                Char_Changed(page);
+            }
+        }
         return 0;
     }
     switch (id) {
@@ -7710,16 +8672,30 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
         if (code == BN_CLICKED)
             Char_ChangedSoon(page);
         break;
+    case CHAR_ID_NATIVE:
+        if (code == BN_CLICKED) {
+            Char_NativeUpdate();
+            Char_ChangedSoon(page);
+        }
+        break;
     case CHAR_ID_WHEELS:
-        // The preview follows at once; the check follows as for every click.
+        // The preview follows at once, and in the user mode the line of the
+        // native model (built only with the wheels hidden); the check follows
+        // as for every click.
         if (code == BN_CLICKED) {
             RsView_SetWheels(g_char.view, Char_IsChecked(g_char.wheels));
+            Char_NativeUpdate();
+            Char_LookDefaults();
+            Char_LookEnable();
+            Char_LookPreview();
             Char_ChangedSoon(page);
         }
         break;
     case CHAR_ID_VIEW:
         if (code == RS_VIEW_N_YAW)
             g_char.yawNow = RsView_GetYaw(g_char.view);
+        else if (code == RS_VIEW_N_PICK)
+            Char_LookPicked(page);
         break;
     case CHAR_ID_POSE:
         if (code == CBN_SELCHANGE) {
@@ -7855,8 +8831,10 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
         if (*handled)
             return r;
         r = CharWheels_Message(page, msg, wParam, lParam, handled);
-        if (*handled)
+        if (*handled) {
+            Char_WheelsFollow(page);
             return r;
+        }
     }
     switch (msg) {
     case WM_DRAWITEM: {
@@ -7865,7 +8843,9 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
         if (id >= CHAR_ID_TAB && id < CHAR_ID_TAB + CHAR_TABS)
             Char_DrawTab(di, id - CHAR_ID_TAB);
         else if (id >= CHAR_ID_EXTRAS && id < CHAR_ID_EXTRAS + CHAR_EXTRAS_COUNT)
-            Char_DrawExtrasSwitch(di, id - CHAR_ID_EXTRAS);
+            Char_DrawSwitch(di, g_charExtrasTexts[id - CHAR_ID_EXTRAS], id - CHAR_ID_EXTRAS == g_char.extrasCard);
+        else if (id >= CHAR_ID_LOOK_SWITCH && id < CHAR_ID_LOOK_SWITCH + CHAR_LOOK_CARDS)
+            Char_DrawSwitch(di, g_charLookTexts[id - CHAR_ID_LOOK_SWITCH], id - CHAR_ID_LOOK_SWITCH == g_char.lookCard);
         else
             return 0;
         *handled = 1;
@@ -8078,6 +9058,16 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         Rs_AutoLog(L"  build: not started");
         return RS_AUTO_FAIL;
     }
+    // The user mode: the choices it fixes are not there to set.
+    if (Rs_NativeForUsers() && (wcscmp(verb, L"repair") == 0 || wcscmp(verb, L"open-parts") == 0 || wcscmp(verb, L"remesh") == 0 ||
+                                wcscmp(verb, L"reduce") == 0 || wcscmp(verb, L"reduce-to-fit") == 0 || wcscmp(verb, L"colors") == 0)) {
+        Rs_AutoLog(L"  %ls: hidden - the user mode keeps rldpack's default", verb);
+        return RS_AUTO_FAIL;
+    }
+    if (wcscmp(verb, L"fallback") == 0) {
+        Rs_AutoLog(L"  fallback: locked - coming soon (the classic model is always built)");
+        return RS_AUTO_FAIL;
+    }
     if (wcscmp(verb, L"repair") == 0)
         return Char_AutoOption(page, g_char.repair, verb, arg);
     if (wcscmp(verb, L"open-parts") == 0)
@@ -8101,10 +9091,114 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
     }
     if (wcscmp(verb, L"wheels") == 0)
         return Char_AutoOption(page, g_char.wheels, verb, arg);
+    // The tab In-game look: its card; the look (preview feature).
+    if (wcscmp(verb, L"look") == 0) {
+        int c;
+        for (c = 0; c < CHAR_LOOK_CARDS && _wcsicmp(arg, g_charLookWords[c]) != 0; c++) {
+        }
+        if (c >= CHAR_LOOK_CARDS) {
+            Rs_AutoLog(L"  look: say portrait or race");
+            return RS_AUTO_FAIL;
+        }
+        Char_SelectLook(page, c);
+        Rs_AutoLog(L"  look: %ls", g_charLookTexts[c]);
+        return RS_AUTO_DONE;
+    }
+    if (wcscmp(verb, L"shadow") == 0 || wcscmp(verb, L"exhaust") == 0 || wcscmp(verb, L"exhaust-point") == 0 ||
+        wcscmp(verb, L"exhaust-pick") == 0) {
+        if (wcscmp(verb, L"shadow") == 0 || wcscmp(verb, L"exhaust") == 0) {
+            const int isShadow = wcscmp(verb, L"shadow") == 0;
+            const wchar_t *const *words = isShadow ? g_charShadowWords : g_charExhaustWords;
+            int m;
+            for (m = 0; m < 3 && _wcsicmp(arg, words[m]) != 0; m++) {
+            }
+            if (m >= 3) {
+                Rs_AutoLog(L"  %ls: say %ls, %ls or %ls", verb, words[0], words[1], words[2]);
+                return RS_AUTO_FAIL;
+            }
+            SendMessageW(isShadow ? g_char.shadow : g_char.exhaust, CB_SETCURSEL, m, 0);
+            if (isShadow)
+                g_char.shadowSet = 1;
+            else
+                g_char.exhaustSet = 1;
+            if (!isShadow && m == 1)
+                Char_LookCustomStart();
+            Char_LookEnable();
+            Char_LookPreview();
+            Rs_AutoLog(L"  %ls: %ls", verb, words[m]);
+            r = Char_Check(page);
+            return r > 0 ? RS_AUTO_WAIT : RS_AUTO_DONE;
+        }
+        if (wcscmp(verb, L"exhaust-point") == 0) {
+            // "<n> <x> <y> <z>" in game units, or "<n> none" (the fields emptied)
+            int n = 0, a;
+            double v[3];
+            wchar_t rest[16];
+            if (swscanf(arg, L"%d %15ls", &n, rest) == 2 && (n == 1 || n == 2) && _wcsicmp(rest, L"none") == 0) {
+                g_char.applying = 1;
+                for (a = 0; a < 3; a++)
+                    Rs_SetText(g_char.point[n - 1][a], L"");
+                g_char.applying = 0;
+                Rs_AutoLog(L"  exhaust-point: %d none", n);
+            } else if (swscanf(arg, L"%d %lf %lf %lf", &n, &v[0], &v[1], &v[2]) == 4 && (n == 1 || n == 2)) {
+                int q[3];
+                for (a = 0; a < 3; a++)
+                    q[a] = (int)(v[a] * 16.0 < 0.0 ? v[a] * 16.0 - 0.5 : v[a] * 16.0 + 0.5);
+                if (Char_ListIndex(g_char.exhaust, 3) != 1) {
+                    SendMessageW(g_char.exhaust, CB_SETCURSEL, 1, 0);
+                    g_char.exhaustSet = 1;
+                    Char_LookCustomStart();
+                    Char_LookEnable();
+                }
+                Char_LookPointSet(n - 1, q);
+                Rs_AutoLog(L"  exhaust-point: %d at %.2f %.2f %.2f", n, (double)q[0] / 16.0, (double)q[1] / 16.0, (double)q[2] / 16.0);
+            } else {
+                Rs_AutoLog(L"  exhaust-point: say <1|2> <x> <y> <z> or <1|2> none");
+                return RS_AUTO_FAIL;
+            }
+            Char_LookPreview();
+            r = Char_Check(page);
+            return r > 0 ? RS_AUTO_WAIT : RS_AUTO_DONE;
+        }
+        {
+            // exhaust-pick <n> <px> <py>: as a click at that pixel of the view
+            int n = 0, px = 0, py = 0;
+            if (swscanf(arg, L"%d %d %d", &n, &px, &py) != 3 || (n != 1 && n != 2)) {
+                Rs_AutoLog(L"  exhaust-pick: say <1|2> <x pixel> <y pixel> of the preview");
+                return RS_AUTO_FAIL;
+            }
+            if (Char_ListIndex(g_char.exhaust, 3) != 1) {
+                SendMessageW(g_char.exhaust, CB_SETCURSEL, 1, 0);
+                g_char.exhaustSet = 1;
+                Char_LookCustomStart();
+                Char_LookEnable();
+            }
+            Char_LookPickStart(n);
+            RsView_PickPixel(g_char.view, n, px, py);   // RS_VIEW_N_PICK -> Char_LookPicked
+            r = Char_Check(page);
+            return r > 0 ? RS_AUTO_WAIT : RS_AUTO_DONE;
+        }
+    }
     if (wcscmp(verb, L"icon-fit") == 0)
         return Char_AutoIconFit(page, arg);
     if (wcscmp(verb, L"vertex-colors") == 0)
         return Char_AutoVColors(page, arg);
+    if (wcscmp(verb, L"native-model") == 0) {
+        if (Rs_NativeForUsers()) {
+            Rs_AutoLog(L"  native-model: no tick box - the user mode builds it for an OBJ with Show kart wheels off or a wheel model%ls",
+                       !g_char.objOn ? L" (this model is no OBJ: classic model only)"
+                       : Char_NativePassed() ? L" (passed)"
+                                             : L" (Show kart wheels is on and no wheel model: classic model only, not passed)");
+            return _wcsicmp(arg, L"on") == 0 ? RS_AUTO_DONE : RS_AUTO_FAIL;
+        }
+        r = Char_AutoOption(page, g_char.native, verb, arg);
+        Char_NativeUpdate();
+        if (!g_char.objOn)
+            Rs_AutoLog(L"  native-model: greyed out - no OBJ, not passed");
+        else if (Char_IsChecked(g_char.native) && !Char_NativePassed())
+            Rs_AutoLog(L"  native-model: not passed - Show kart wheels is on and no wheel model is chosen (classic model only)");
+        return r;
+    }
     if (wcscmp(verb, L"up") == 0)
         return Char_AutoList(page, g_char.up, verb, arg, g_charUpWords, g_charUpTexts, CHAR_UP_COUNT);
     if (wcscmp(verb, L"forward") == 0)
@@ -8130,7 +9224,9 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
     r = CharAnim_Automate(page, verb, arg);
     if (r != RS_AUTO_UNKNOWN)
         return r;
-    return CharWheels_Automate(page, verb, arg);
+    r = CharWheels_Automate(page, verb, arg);
+    Char_WheelsFollow(page);
+    return r;
 }
 
 static int Char_Busy(HWND page)

@@ -347,20 +347,29 @@ struct NativeVideoSetting
 	int (*get)(void);
 };
 
-// THE GRAPHICS PAGE: Display mode, Aspect ratio, Resolution, Anti-aliasing
-// in the OPTIONS box (game/native_graphics.c).
+// THE GRAPHICS PAGE: Display mode, Aspect ratio, Resolution, Anti-aliasing,
+// Native drivers in the OPTIONS box (game/native_graphics.c).
 //
 // What is in the file is always the choice from the menu or from the file -
-// never a command-line switch. --fullscreen/--windowed, --aspect, --res-scale
-// and --msaa apply to the session and are not written.
+// never a command-line switch. --fullscreen/--windowed, --aspect, --res-scale,
+// --msaa and --native-preview apply to the session and are not written.
 //
-// Fullscreen and aspect ratio are read BEFORE the window
+// Fullscreen, aspect ratio and native drivers are read BEFORE the window
 // (Platform_SettingsPreloadDisplay), the rest afterwards as before.
 global_variable int s_fullscreenSetting = 1; // video fullscreen 0|1
 global_variable int s_aspectSetting = 0;     // video aspect 0 Auto, 1 4:3, 2 16:9, 3 21:9 (43:18)
 global_variable int s_aspectPending = -1;    // chosen, applies at the next load
 global_variable int s_resScaleFromFlag = 0;
 global_variable int s_resScaleFile = 4;
+
+// video nativedrivers 0|1, NATIVE DRIVERS (PREVIEW) on the GRAPHICS page: on
+// is the run state of --native-preview (g_cfg_nativePreview). Only the choice
+// is kept here; the run value is decided once, before the window
+// (Platform_SettingsPreloadDisplay), because the device and the native program
+// are made in Platform_Init and never again - a change in the menu applies at
+// the next start. Off, and every file without the key, leaves the run value
+// alone: without --native-preview it stays 0, the retail path.
+global_variable int s_nativeDriversSetting = 0;
 
 internal void Platform_StoreFullscreenSetting(int value)
 {
@@ -385,6 +394,25 @@ int Platform_GetAspectSetting(void)
 int Platform_GetAspectPending(void)
 {
 	return s_aspectPending;
+}
+
+internal void Platform_StoreNativeDriversSetting(int value)
+{
+	s_nativeDriversSetting = (value != 0);
+}
+
+int Platform_GetNativeDriversSetting(void)
+{
+	return s_nativeDriversSetting;
+}
+
+// 1 while the choice is not what this run draws with: chosen in the menu and
+// waiting for the next start, or --native-preview on with the choice off.
+int Platform_GetNativeDriversPending(void)
+{
+	extern int g_cfg_nativePreview;
+
+	return s_nativeDriversSetting != (g_cfg_nativePreview != 0);
 }
 
 // The resolution for the file: with --res-scale the number from before.
@@ -421,6 +449,10 @@ global_variable const struct NativeVideoSetting s_videoSettings[] = {
     // one run and is never written here, nor is --msaa-at - see
     // Platform_SetMsaaRun.
     {"msaa", Platform_SetMsaaSetting, Platform_GetMsaaSetting},
+    // NATIVE DRIVERS, the choice and never the run value: --native-preview is
+    // not written. Last, so the lines above keep their places. A file without
+    // the key leaves it off, as for nolod.
+    {"nativedrivers", Platform_StoreNativeDriversSetting, Platform_GetNativeDriversSetting},
 };
 
 #define NATIVE_VIDEO_SETTING_COUNT ((int)(sizeof(s_videoSettings) / sizeof(s_videoSettings[0])))
@@ -581,12 +613,20 @@ void Platform_SettingsLoad(void)
 
 internal const int s_aspectSettingShape[4][2] = {{0, 0}, {4, 3}, {16, 9}, {43, 18}};
 
-// Before the window (Platform_Init): only "video fullscreen" and "video aspect".
-// A command-line switch wins; under --settings-defaults nothing is
-// read.
+// Before the window (Platform_Init): only "video fullscreen", "video aspect"
+// and "video nativedrivers". A command-line switch wins; under
+// --settings-defaults nothing is read.
+//
+// Native drivers here and not in Platform_SettingsLoad: the device is made with
+// the window (NativeRenderer_InitialiseRender, the anisotropy of the native
+// textures) - read afterwards, the run would have the native program without
+// the device it was made for. On turns g_cfg_nativePreview on for the run, as
+// --native-preview does (NativeArgs_ReadDisplayFlags, main.c, before
+// Platform_Init); off leaves it as the command line set it.
 internal void Platform_SettingsPreloadDisplay(int *fullscreen)
 {
 	extern int g_cfg_fullscreenFromFlag;
+	extern int g_cfg_nativePreview;
 	char line[128];
 	char sectionName[24];
 	char keyName[24];
@@ -619,9 +659,20 @@ internal void Platform_SettingsPreloadDisplay(int *fullscreen)
 		{
 			Platform_StoreAspectSetting(value);
 		}
+		else if (strcmp(keyName, "nativedrivers") == 0)
+		{
+			Platform_StoreNativeDriversSetting(value);
+		}
 	}
 
 	fclose(file);
+
+	if (s_nativeDriversSetting && !g_cfg_nativePreview)
+	{
+		g_cfg_nativePreview = 1;
+		Platform_Log("[CTR Native] settings: native drivers (preview) on for this run: native program 'nr', "
+		             "depth on the main target only while a native object is bound\n");
+	}
 
 	if (!g_cfg_fullscreenFromFlag)
 	{
@@ -638,7 +689,7 @@ internal void Platform_SettingsPreloadDisplay(int *fullscreen)
 	             s_aspectFromFlag && (s_aspectSetting == 0) ? " (the command line wins this run)" : "");
 }
 
-// The four setters of the GRAPHICS page. Each one saves at once; under
+// The five setters of the GRAPHICS page. Each one saves at once; under
 // --settings-defaults Platform_SettingsSave does nothing.
 void Platform_GraphicsSetFullscreen(int on)
 {
@@ -701,6 +752,15 @@ void Platform_GraphicsSetMsaa(int samples)
 
 	Platform_SettingsSave();
 	Platform_Log("[CTR Graphics] anti-aliasing: %s\n", Platform_MsaaName(samples));
+}
+
+// Only the choice: the run keeps the native state it started with
+// (Platform_SettingsPreloadDisplay); the page says so while the two differ.
+void Platform_GraphicsSetNativeDrivers(int on)
+{
+	Platform_StoreNativeDriversSetting(on);
+	Platform_SettingsSave();
+	Platform_Log("[CTR Graphics] native drivers (preview): %s - applies at the next start\n", s_nativeDriversSetting ? "on" : "off");
 }
 
 void Platform_DetectDisplayAspect(const char *why)
@@ -1067,10 +1127,20 @@ internal void Platform_TakeScreenshot(const char *path)
 	{
 		SDL_Surface *surface = SDL_CreateSurfaceFrom(width, height, SDL_PIXELFORMAT_BGRX32, pixels, width * 4);
 
+		// A file that does not open (a missing folder, or a path past MAX_PATH
+		// without long paths on Windows) is said, not announced as a shot.
+		const int saved = (surface != NULL) && SDL_SaveBMP(surface, name);
+
 		if (surface != NULL)
 		{
-			SDL_SaveBMP(surface, name);
 			SDL_DestroySurface(surface);
+		}
+
+		if (!saved)
+		{
+			Platform_LogWarn("[CTR Native] shot %s: NOT WRITTEN (%s)\n", name, SDL_GetError());
+			free(pixels);
+			return;
 		}
 	}
 
@@ -1100,10 +1170,10 @@ internal void Platform_TakeScreenshot(const char *path)
 // A shot at a named VBlank, so two runs catch the same moment of an animating
 // screen. A hand on F12 twice does not.
 int g_cfg_shotAt = 0;
-char g_cfg_shotName[256] = {0};
+char g_cfg_shotName[PLATFORM_ARG_PATH_MAX] = {0};
 // Several snapshots per run. g_cfg_shotAt is always the next one due;
 // with more than one entry the file is called <name without .bmp>-<vblank>.bmp.
-int g_cfg_shotList[128];
+int g_cfg_shotList[PLATFORM_SHOT_MAX];
 int g_cfg_shotCount = 0;
 global_variable int s_shotNext = 0;
 #endif
@@ -1506,7 +1576,8 @@ void Platform_Init(const char *title, int width, int height, int fullscreen)
 	// reads the primary display - which is where SDL puts a window it was given
 	// no position for.
 	// Fullscreen and aspect ratio from the file, before the window comes into
-	// being - applied afterwards they visibly jumped.
+	// being - applied afterwards they visibly jumped. Native drivers as well:
+	// the device is made with the window.
 	Platform_SettingsPreloadDisplay(&fullscreen);
 
 	Platform_DetectDisplayAspect("start");
@@ -1600,10 +1671,12 @@ void Platform_Init(const char *title, int width, int height, int fullscreen)
 // Platform_Shutdown, through atexit or directly, and s_platformInitialized makes sure
 // that it happens once.
 //
-// 32 places, 16 before: a menu run over container tracks with anti-aliasing
-// already filled all 16, and the next report would have been lost. Function
-// pointers only - nothing else depends on the size.
-#define PLATFORM_EXIT_REPORT_MAX 32
+// 64 places, 32 and 16 before: a menu run over container tracks with
+// anti-aliasing already filled all 16, and a render layer run with every
+// report switch took 31 of 32 - the next steps of the render layer register
+// more. Function pointers only - nothing else depends on the size: the table
+// is filled in order, each report at most once, and run in that order.
+#define PLATFORM_EXIT_REPORT_MAX 64
 
 global_variable void (*s_exitReports[PLATFORM_EXIT_REPORT_MAX])(void);
 global_variable int s_exitReportCount = 0;
@@ -1948,8 +2021,9 @@ internal void Platform_ShotIfDue(void)
 
 	if (g_cfg_shotCount > 1)
 	{
-		char path[320];
-		char base[256];
+		// Room for the whole name of --shot-name and "-<vblank>.bmp".
+		char path[PLATFORM_ARG_PATH_MAX + 32];
+		char base[PLATFORM_ARG_PATH_MAX];
 		size_t len;
 
 		snprintf(base, sizeof(base), "%s", (g_cfg_shotName[0] != '\0') ? g_cfg_shotName : "SCREENSHOT.BMP");
@@ -2021,7 +2095,8 @@ internal void Platform_DumpIfDue(void)
 	// and needs none: the list can end the run, the request never does.
 	if (s_dumpRequestName[0] != '\0')
 	{
-		char path[256];
+		// Room for the whole --dump-prefix, the name and "-" ".tga".
+		char path[PLATFORM_ARG_PATH_MAX + sizeof(s_dumpRequestName) + 8];
 
 		snprintf(path, sizeof(path), "%s-%s.tga", s_dumpPrefix, s_dumpRequestName);
 		s_dumpRequestName[0] = '\0';
@@ -2046,7 +2121,8 @@ internal void Platform_DumpIfDue(void)
 
 		if (vblank >= s_dumpPoints[i])
 		{
-			char path[256];
+			// Room for the whole --dump-prefix and "-<vblank>.tga".
+			char path[PLATFORM_ARG_PATH_MAX + 32];
 
 			snprintf(path, sizeof(path), "%s-%06d.tga", s_dumpPrefix, s_dumpPoints[i]);
 			NativeRenderer_SaveVRAM(path, 0, 0, VRAM_WIDTH, VRAM_HEIGHT, 1);

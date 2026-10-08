@@ -77,6 +77,11 @@ BOOL RsView_Register(HINSTANCE instance);
 // the older "RLDPV1" with whole game units is read as well).
 // A missing or damaged file leaves an empty view with a message saying why.
 // Pose and yaw stay as they are.
+// Preview feature (open to everyone): the file may go on with the native
+// model ("RLDPN1", make-char --native-model on; THE NATIVE MODEL IN THE
+// PREVIEW in tools/rldpack_native.inc), which the view then draws, textured,
+// in place of the model (rs_view.c, THE NATIVE MODEL). Anything else after
+// the last pose is refused as before ("bytes follow after the last pose").
 void RsView_LoadPreview(HWND view, const wchar_t *path);
 
 // The same from memory (the bytes are copied). TRUE if the model is shown.
@@ -111,8 +116,9 @@ void RsView_Clear(HWND view, const wchar_t *message);
 BOOL RsView_Loaded(HWND view);
 int  RsView_TriangleCount(HWND view, int pose);
 
-// Preview features (only called with --enable-preview-features). Without
-// them nothing below is loaded and the view draws exactly as described above.
+// Preview features (the pose set only with --enable-preview-features; the
+// wheel model with every start, card Wheels). Nothing of them loaded: the
+// view draws exactly as described above.
 //
 // A set of extra poses of the same model (rldpack char-poses --preview,
 // "RLDPS1\0\0", u32 count, per pose u32 triangles + the triangle records of
@@ -123,20 +129,23 @@ int  RsView_PoseSetCount(HWND view);
 void RsView_ShowPoseSet(HWND view, int index);     // -1 = the built model again (RsView_SetPose applies)
 void RsView_DropPoseSet(HWND view);
 
-// A wheel model (rldpack char-wheel --preview, "RLDPW1\0\0", u32 triangles +
-// the records of RLDPV1, centred on its axle, sized like the game's wheel).
-// Drawn at the dummy's four wheel points instead of the game's wheels, only
-// while RsView_SetWheels is on; the dummy beside the model keeps the game's
-// wheels.
+// A wheel model (rldpack char-wheel --preview, "RLDPW2\0\0": its texture and
+// its triangles with UV, centred on its axle, sized like the game's wheel;
+// tools/rldpack_wheel.inc). Drawn at the dummy's four wheel points instead of
+// the game's wheels, only while RsView_SetWheels is on, textured, and by depth
+// against the model (the game draws them in the native model's item); the
+// dummy beside the model keeps the game's wheels.
 BOOL RsView_LoadWheelModel(HWND view, const wchar_t *path);
 void RsView_DropWheelModel(HWND view);
-void RsView_SetWheelScale(HWND view, int percent);  // 50..200, integer scaling
+void RsView_SetWheelScale(HWND view, int percent);  // 50..200, integer scaling; the centres rise by the radius grown
 void RsView_SetWheelTurn(HWND view, int spinDegrees, int steerDegrees);  // spin about the axle, steer the front pair
 void RsView_SetWheelAnimation(HWND view, int on);   // own WM_TIMER on the view; never on by itself
 //
 // The wheel file (1/16 game units): axle along X through the origin, the rim
 // (outer side) toward +X - as on the driver's left. The -X pair is drawn
-// mirrored. Spin: + rolls forward (the top toward +Z), any integer taken
+// mirrored (x negated, the winding turned: WHLS version 2). The bottom of a
+// scaled wheel stays on the ground of the game's wheel: its centre rises by
+// the radius it grew. Spin: + rolls forward (the top toward +Z), any integer taken
 // modulo 360. Steer: + steers left (the front edge toward +X), clamped to
 // +-RS_VIEW_WHEEL_STEER_MAX, the front pair only. The animation turns both by
 // fixed steps per tick of the view's own timer (not by the clock); it stops
@@ -144,6 +153,36 @@ void RsView_SetWheelAnimation(HWND view, int on);   // own WM_TIMER on the view;
 // wheel model the angles change nothing.
 // Loading and the scale may change the framing; pose, spin and steering never.
 #define RS_VIEW_WHEEL_STEER_MAX 22   // the game's full lock, 22.5 degrees (game/DrawTires.c, wheelRotation)
+
+// The cost of the animation: the picture `frames` times, each one tick of the
+// animation further (as its timer would), timed; the average and the longest
+// picture and the part of the four wheels in it, in microseconds. Returns the
+// pictures drawn (0: no wheel model). RsView_WheelPixels: the size of the
+// picture, and 1 while the wheel model is drawn in it.
+int RsView_WheelBench(HWND view, int frames, int *wholeAvgUs, int *wholeMaxUs, int *wheelsAvgUs, int *wheelsMaxUs);
+int RsView_WheelPixels(HWND view, int *w, int *h);
+
+// The look of the driver (the tab In-game look; preview feature): positions
+// in 1/16 game units of the model, as the preview file.
+// shadow 1: quad x0 x1 z0 z1 drawn on the floor under the model, turned with
+// it, the floor's colour at half - the model's pixels stay as they are.
+// count 0..2 exhaust points, always on top: a ring with a cross, point 1 in
+// the accent colour, point 2 in the note colour; grey 1: all grey (the
+// retail points). NULL quad or points: none.
+void RsView_SetLook(HWND view, int shadow, const int quad[4], int count, const int point[2][3], int grey);
+
+// Picking a point of the model's surface: after RsView_PickBegin(view, n)
+// (n 1 or 2; 0 ends it) a click (less than 4 pixels of movement; a drag
+// still turns) or a right click (no point) ends the pick, and the parent
+// gets WM_COMMAND with HIWORD(wParam) = RS_VIEW_N_PICK. RsView_PickResult
+// then gives the point it was for (*n) and the surface point under the
+// click in the pose shown (1/16 game units); 0 = the click missed the model.
+// RsView_PickPixel does the same for a pixel of the view (automation).
+#define RS_VIEW_N_PICK 0x0102
+void RsView_PickBegin(HWND view, int n);
+int  RsView_Picking(HWND view);                                 // the point being picked, 0 = none
+int  RsView_PickResult(HWND view, int *n, int out[3]);
+int  RsView_PickPixel(HWND view, int n, int px, int py);        // 1 = hit; notifies as a click
 
 // The reference dummy (RldDum_Mesh of tools/rldpack_dummy.inc), defined in
 // rs_rldpack.c - the translation unit that carries rldpack. Positions in 1/16

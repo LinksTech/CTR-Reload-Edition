@@ -82,12 +82,24 @@ typedef enum
 	// Readback only, for host-side images that want the channel order the
 	// window system already uses.
 	NATIVE_GFX_TEXFMT_BGRA8,
+
+	// RGBA8 whose colour channels are sRGB encoded: a sample hands the shader
+	// LINEAR light, and filtering happens in linear light. Appended after the
+	// others so that no existing value moves. Only the native texture manager
+	// (platform/native_tex.c) asks for it; a shader that samples it converts
+	// back to gamma itself (the "nr" program does when its block says so).
+	NATIVE_GFX_TEXFMT_RGBA8_SRGB,
 } NativeGfxTextureFormat;
 
 typedef enum
 {
 	NATIVE_GFX_WRAP_REPEAT = 0,
 	NATIVE_GFX_WRAP_CLAMP,
+
+	// Appended. Only the sampling of a texture with levels
+	// (NativeGfx_CreateTextureLevels) understands it; the four shared samplers
+	// of the other textures know REPEAT and CLAMP alone, as before.
+	NATIVE_GFX_WRAP_MIRROR,
 } NativeGfxWrap;
 
 typedef struct
@@ -100,6 +112,13 @@ typedef struct
 
 	// NULL allocates storage without initialising it.
 	const void *pixels;
+
+	// 1 = a texture of the native layer. It is sampled through a sampler of its
+	// own (nearest, clamped to the edge, one level), never through one of the
+	// samplers the other textures share, and its pixels go up through a
+	// transfer the device waits for, never into an open frame. Zero, the value
+	// of every desc that does not name the field, is every texture as before.
+	int nativeLayer;
 } NativeGfxTextureDesc;
 
 TextureID NativeGfx_CreateTexture(const NativeGfxTextureDesc *desc);
@@ -112,6 +131,94 @@ void NativeGfx_BindTexture(int slot, TextureID texture, NativeGfxFilter filter);
 // format, so callers do not carry it.
 void NativeGfx_UpdateTexture(TextureID texture, int x, int y, int width, int height, NativeGfxTextureFormat format, const void *pixels,
                              int rowPixels);
+
+// --- Textures with levels --------------------------------------------------
+//
+// A second road beside the one above, for the native texture manager
+// (platform/native_tex.c) only. Everything above stays a texture of one level,
+// and every VRAM upload keeps going through it unchanged; nothing here is used
+// by a texture made there.
+//
+// A texture made here: every level is given at creation, as finished bytes -
+// the device computes no level (no blit, no driver mip generation), so the
+// picture is the same on every machine. Level n is max(1, width >> n) by
+// max(1, height >> n) texels, tightly packed. The pixels go up through a
+// transfer the device waits for, never into the ring of an open frame: if a
+// frame is open with work recorded, that work is submitted and waited for
+// first (the pass is stored and the next draw loads it again), so creating one
+// at a loading screen is legal and changes no pixel already drawn. Sampled
+// through a sampler of its own sampling, never one the other textures share.
+// The limits (edge length, maxImageDimension2D) are the manager's business and
+// are not checked here.
+
+#define NATIVE_GFX_MAX_TEXTURE_LEVELS 12 // 2048 down to 1
+
+typedef enum
+{
+	NATIVE_GFX_MIP_NONE = 0, // level 0 only (maxLod 0)
+	NATIVE_GFX_MIP_NEAREST,
+	NATIVE_GFX_MIP_LINEAR,
+} NativeGfxMipMode;
+
+// Zero is nearest, nearest, level 0 only, no anisotropy, repeat.
+typedef struct
+{
+	NativeGfxFilter magFilter; // NEAREST or LINEAR; KEEP counts as NEAREST
+	NativeGfxFilter minFilter;
+	NativeGfxMipMode mipMode;
+
+	// 0 or 1 = off. More is a wish: the device grants it only when anisotropy
+	// was requested at device creation (--native-preview at start) and clamps it
+	// to its own limit (NativeGfxTextureLimits).
+	int anisotropy;
+
+	NativeGfxWrap wrapU;
+	NativeGfxWrap wrapV;
+} NativeGfxSampling;
+
+typedef struct
+{
+	int width; // of level 0
+	int height;
+
+	// NATIVE_GFX_TEXFMT_RGBA8 or NATIVE_GFX_TEXFMT_RGBA8_SRGB.
+	NativeGfxTextureFormat format;
+
+	// 1 .. NATIVE_GFX_MAX_TEXTURE_LEVELS, at most the full chain down to 1x1.
+	int levelCount;
+	const void *levels[NATIVE_GFX_MAX_TEXTURE_LEVELS];
+
+	NativeGfxSampling sampling;
+} NativeGfxTextureLevelsDesc;
+
+// NATIVE_GFX_INVALID when the desc is not usable or the device refuses.
+TextureID NativeGfx_CreateTextureLevels(const NativeGfxTextureLevelsDesc *desc);
+
+// Changes how a texture made by NativeGfx_CreateTextureLevels is sampled (the
+// filter option). Ignored for any other texture. Applies from the next draw.
+void NativeGfx_SetTextureSampling(TextureID texture, const NativeGfxSampling *sampling);
+
+typedef struct
+{
+	int maxImageDimension2D;
+	int anisotropyEnabled;      // 1 = requested at device creation and granted
+	float maxSamplerAnisotropy; // the device limit, 0 when anisotropy is off
+} NativeGfxTextureLimits;
+
+void NativeGfx_TextureLimits(NativeGfxTextureLimits *out);
+
+// THE STAGING BUFFER BACK. Every one-shot transfer goes through one shared,
+// mapped staging buffer that only ever grows (a 2048x2048 texture with its
+// levels leaves 32 MB behind). When it is larger than keepBytes it is made
+// again at keepBytes (0: freed outright) and the bytes given back are
+// returned. The native texture manager passes NativeGfx_StagingBytes() from
+// before its upload, so only the growth of that upload goes back and a buffer
+// grown for VRAM fallbacks stays standing. Safe between any two calls: every
+// user of the buffer waits for its transfer.
+u32 NativeGfx_ShrinkStaging(u32 keepBytes);
+
+// The staging buffer's size right now, 0 when there is none.
+u32 NativeGfx_StagingBytes(void);
 
 // --- Vertex buffers --------------------------------------------------------
 //
@@ -160,6 +267,32 @@ NativeGfxBuffer NativeGfx_CreateVertexBuffer(const NativeGfxVertexBufferDesc *de
 void NativeGfx_DestroyVertexBuffer(NativeGfxBuffer buffer);
 void NativeGfx_BindVertexBuffer(NativeGfxBuffer buffer);
 void NativeGfx_UpdateVertexBuffer(NativeGfxBuffer buffer, int offset, int bytes, const void *source);
+
+// --- Index buffers ---------------------------------------------------------
+//
+// For indexed draws (NativeGfx_DrawIndexed). The index type is declared once at
+// creation and owned by the handle, as the layout is for a vertex buffer.
+
+typedef enum
+{
+	NATIVE_GFX_INDEX_U16 = 0,
+	NATIVE_GFX_INDEX_U32,
+} NativeGfxIndexType;
+
+typedef struct
+{
+	int bytes;
+	NativeGfxIndexType type;
+
+	// Required. An index buffer is static: device-local, filled once here.
+	const void *initial;
+} NativeGfxIndexBufferDesc;
+
+// Handles of their own: an index buffer handle is never a vertex buffer handle.
+// Bind only remembers the buffer; the next indexed draw uses it.
+NativeGfxBuffer NativeGfx_CreateIndexBuffer(const NativeGfxIndexBufferDesc *desc);
+void NativeGfx_DestroyIndexBuffer(NativeGfxBuffer buffer);
+void NativeGfx_BindIndexBuffer(NativeGfxBuffer buffer);
 
 // --- Render targets --------------------------------------------------------
 //
@@ -215,6 +348,19 @@ int NativeGfx_TargetHeight(NativeGfxTarget target);
 // multisampled. TargetSamples says what currently applies.
 void NativeGfx_SetTargetSamples(NativeGfxTarget target, int samples);
 int NativeGfx_TargetSamples(NativeGfxTarget target);
+
+// DEPTH ON A TARGET. SetTargetDepth(target, 1) gives the target a depth image
+// of the same size and the same sample count, and the image follows every
+// later size and sample change; 0 takes it away again. Between two draws of a
+// frame as well: a pass open on the target ends there (its colour stored, as at
+// any target switch) and the next draw opens it again with LOAD and the new set
+// of attachments; the image is made and cleared by a transfer of its own. A
+// borrowed target never gets one. Without --native-preview this does nothing at all, so a stray call
+// cannot put depth into a run that did not ask for it. TargetDepth is 1 when the
+// target has a depth image right now - a device without a usable depth format
+// leaves the wish standing and the target without one.
+void NativeGfx_SetTargetDepth(NativeGfxTarget target, int enable);
+int NativeGfx_TargetDepth(NativeGfxTarget target);
 
 // Sample shading for the following draws: in a pass with more than one
 // sample, programs with a sample version (psx, psx32) then draw with it
@@ -316,16 +462,98 @@ void NativeGfx_SetScissorRect(int x, int y, int width, int height);
 int NativeGfx_SetWireframe(int enable);
 void NativeGfx_SetBlendMode(BlendMode blend);
 
-// No depth test and no stencil in this interface. Both stood
-// here, both never worked - see the note at NativeRenderer_SetBlendMode in
-// platform/native_renderer.c, which says what it was, why it did nothing and where
-// the one attempt lies.
+// No stencil in this interface, and no depth for the PSX draws. An older depth
+// test and stencil mode stood here and never worked - see the note at
+// NativeRenderer_SetBlendMode in platform/native_renderer.c, which says what
+// they were, why they did nothing and where the one attempt lies. The depth
+// below is a different thing: it exists for native draws only, on a target that
+// asked for it (NativeGfx_SetTargetDepth), and the PSX draws keep test and write
+// off.
+//
+// DEPTH. The convention every user of depth here follows:
+//
+//   format       D32_SFLOAT; X8_D24_UNORM_PACK32 where D32 is not usable at the
+//                target's sample count; with neither, the target draws without
+//                depth and says so in the log. --native-depth-d24 turns the
+//                order round, to measure the two. The colour sample count is
+//                never lowered for the sake of depth. Reverse Z needs no float
+//                format: depth = zNear / zView lies in 0..1, which UNORM holds,
+//                only with even steps of 2^-24 instead of the finer steps a
+//                float has near 0 (far away).
+//   direction    reverse Z. Cleared to 0.0 = infinitely far, nearer = larger,
+//                compared with NATIVE_GFX_COMPARE_GREATER_OR_EQUAL.
+//   projection   far plane at infinity: clip.z = zNear and clip.w = zView, so
+//                depth = zNear / zView: 1.0 on the near plane, towards 0 in the
+//                distance. The viewport keeps minDepth 0 and maxDepth 1.
+//   near plane   zNear = H / 8 in view units, H being the view's distance to
+//                its screen plane. A choice, not a measurement: whether the original
+//                ever draws nearer than H / 8 is not known yet.
+//   mvpShift     view xyz is divided by 2^mvpShift before the mapping - near
+//                instances are queued scaled up by 4, huge ones down by 4.
+//   colour mask  native draws write RGB only (colorWriteOff =
+//                NATIVE_GFX_COLOR_A): the alpha of the main target is the mask
+//                bit and becomes bit 15 when the target is packed.
+//
+// The mapping is the caller's arithmetic in C; a native program takes one
+// finished matrix and does no depth arithmetic of its own.
+
+typedef enum
+{
+	NATIVE_GFX_COMPARE_ALWAYS = 0,
+	NATIVE_GFX_COMPARE_GREATER_OR_EQUAL,
+	NATIVE_GFX_COMPARE_GREATER,
+	NATIVE_GFX_COMPARE_LESS_OR_EQUAL,
+	NATIVE_GFX_COMPARE_LESS,
+	NATIVE_GFX_COMPARE_EQUAL,
+} NativeGfxCompare;
+
+// Front = counter-clockwise in normalised device coordinates with y up - the
+// GL convention this whole interface speaks, whichever way up a backend stores
+// its targets.
+typedef enum
+{
+	NATIVE_GFX_CULL_NONE = 0,
+	NATIVE_GFX_CULL_BACK,
+	NATIVE_GFX_CULL_FRONT,
+} NativeGfxCull;
+
+#define NATIVE_GFX_COLOR_R 1u
+#define NATIVE_GFX_COLOR_G 2u
+#define NATIVE_GFX_COLOR_B 4u
+#define NATIVE_GFX_COLOR_A 8u
+
+typedef struct
+{
+	int depthTest;                // 0 = off
+	int depthWrite;               // only with depthTest
+	NativeGfxCompare depthCompare;
+	NativeGfxCull cull;
+	u32 colorWriteOff;            // channels NOT written; 0 = all four
+} NativeGfxDrawState;
+
+// NULL = all zero = the state every PSX draw has always had.
+//
+// State like the blend mode: it applies to every following draw, PSX and blit
+// draws included, until it is set again. Whoever sets it sets it back with
+// NativeGfx_SetDrawState(NULL). depthTest only has an effect in a pass whose
+// target has a depth image.
+void NativeGfx_SetDrawState(const NativeGfxDrawState *state);
 
 // --- Drawing ---------------------------------------------------------------
 
 void NativeGfx_ClearColor(float r, float g, float b, float a);
 void NativeGfx_ClearColorBuffer(void);
 void NativeGfx_Draw(int firstVertex, int vertexCount);
+
+// Clears a rectangle of the bound target's depth image to far (0.0). The
+// rectangle follows the convention of NativeGfx_SetScissorRect (GL, rows
+// counted from the bottom) and is clipped to the pass. Without a depth image on
+// the bound target, or with width or height <= 0, nothing happens.
+void NativeGfx_ClearDepth(int x, int y, int width, int height);
+
+// Like NativeGfx_Draw, through the bound index buffer; vertexOffset is added to
+// every index.
+void NativeGfx_DrawIndexed(int firstIndex, int indexCount, int vertexOffset);
 // Reads from whatever target is currently bound. rowPixels works as it does
 // for NativeGfx_UpdateTexture.
 void NativeGfx_ReadPixels(int x, int y, int width, int height, NativeGfxTextureFormat format, void *dst, int rowPixels);

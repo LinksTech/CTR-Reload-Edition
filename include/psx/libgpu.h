@@ -608,6 +608,19 @@ typedef struct
 	const char *text;
 } DR_PSYX_DBGMARKER;
 
+// A native object in the ordering table (sub-form 3 of the Psy-X packets).
+// code[0]: item index in bits 0..23, 0xB3 in bits 24..31 - the top byte IS the
+// primitive code (byte 7 of the packet), as with DR_PSYX_TEX. code[1]: flags.
+// Payload first, tag and code last (see SetPsyXTexture, native_libgpu.c).
+typedef struct
+{
+	DECLARE_P_ADDR
+	u32 code[2];
+} DR_PSYX_NATIVE;
+
+#define PSYX_NATIVE_CODE       0xB3
+#define PSYX_NATIVE_FLAG_EMPTY 0x1u // nothing to draw: tests the channel only
+
 /*
  * Environment
  */

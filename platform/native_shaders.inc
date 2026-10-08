@@ -709,6 +709,213 @@ global_variable const char *ctr_pack_pages_shader =
     "}\n"
     "#endif\n";
 
+// The native layer program, "nr". It becomes a program only with
+// --native-preview (native_renderer.c, NativeRenderer_InitNativeLayer); without
+// the switch the build still compiles it into a module, and nothing creates it.
+//
+// Float vertices in model space and one matrix for all of it. The matrix is the
+// whole projection including the depth mapping, worked out by the caller in C -
+// see the "DEPTH." block in include/platform/native_gfx.h. Nothing is snapped
+// to fixed point or to the screen grid here.
+//
+// The block is 128 bytes std140 and is struct NativeLayerUniforms in
+// native_renderer.c field for field: the matrix at 0, the tint at 64, the
+// parameters at 80, the split plane at 96 and the split mode at 112. Both
+// stages declare it the same way.
+//
+// The fragment stage is a placeholder: vertex colour times tint, times the
+// texture in slot 0 when params.x says so. It has no second colour output, so
+// this program must never draw with a blend mode that needs one.
+//
+// params.y > 0.5: the texture is NATIVE_GFX_TEXFMT_RGBA8_SRGB (a texture of the
+// native texture manager, platform/native_tex.c). Its sample arrives in linear
+// light and goes straight back to gamma with the sRGB encoding, so the
+// modulation after it happens in gamma as before - the main target and the
+// swapchain are UNORM (renderer plan C.6.2). For an 8-bit texel and NEAREST the
+// round trip is exact: decode, this encoding and the UNORM store give the
+// stored byte again for all 256 values, with almost half a step to spare
+// (checked in float32 by --native-tex-selftest). params.y = 0, the value every
+// existing caller writes, takes the other branch - the old statement, unchanged.
+//
+// params.w > 0: a masked material (step 4c) - a fragment whose alpha is below it
+// is discarded. params.z > 0: --native-depth-tint - the colour becomes (1, G, 1)
+// with G = params.z x depth = 1024 / w for params.z = 1024 / zNear, so a jump of
+// the depth shows as a jump of G. Both 0, as every draw writes without them:
+// neither branch is taken and the colour is the one of before.
+//
+// THE SPLIT (step 4e, the water line of a custom character): the queue cuts a
+// model at a plane and draws the two sides into two OT ranges. A native view
+// of such a model is two draws of the same mesh, one per side, each keeping
+// only its own side. The plane is in model units: d = nrSplit.w -
+// dot(nrSplit.xyz, position), the retail splitDist (splitLine minus the height
+// of the point in the queue's split space), interpolated with perspective -
+// the queue cuts in 3D and projects afterwards, so this is the same line.
+// nrSplitMode.x > 0.5 keeps d >= 0 (below the plane), < -0.5 keeps d < 0
+// (above); 0, as every other draw writes, keeps everything. d = 0 goes to the
+// side below, as in the queue, so no pixel of the line is drawn twice or not
+// at all. The texture is read before the cut, so its level of detail at the
+// line comes from derivatives every fragment of the quad has.
+global_variable const char *ctr_native_layer_shader =
+    "#ifdef VERTEX\n"
+    "layout(location = 0) in vec3 a_position;\n"
+    "layout(location = 1) in vec2 a_texcoord;\n"
+    "layout(location = 2) in vec4 a_color;\n"
+    "VARYING_LOC0 out vec2 v_uv;\n"
+    "VARYING_LOC1 out vec4 v_color;\n"
+    "VARYING_LOC2 out float v_split;\n"
+    "UBO_QUALIFIER uniform NrBlock {\n"
+    "	mat4 nrClipFromModel;\n"
+    "	vec4 nrTint;\n"
+    "	vec4 nrParams;\n"
+    "	vec4 nrSplit;\n"
+    "	vec4 nrSplitMode;\n"
+    "};\n"
+    "void main() {\n"
+    "	v_uv = a_texcoord;\n"
+    "	v_color = a_color * nrTint;\n"
+    "	v_split = nrSplit.w - dot(nrSplit.xyz, a_position);\n"
+    "	gl_Position = nrClipFromModel * vec4(a_position, 1.0);\n"
+    "}\n"
+    "#endif\n"
+    "#ifdef FRAGMENT\n"
+    "VARYING_LOC0 in vec2 v_uv;\n"
+    "VARYING_LOC1 in vec4 v_color;\n"
+    "VARYING_LOC2 in float v_split;\n"
+    "SAMPLER_SLOT0 uniform sampler2D s_texture;\n"
+    "UBO_QUALIFIER uniform NrBlock {\n"
+    "	mat4 nrClipFromModel;\n"
+    "	vec4 nrTint;\n"
+    "	vec4 nrParams;\n"
+    "	vec4 nrSplit;\n"
+    "	vec4 nrSplitMode;\n"
+    "};\n"
+    "void main() {\n"
+    "	vec4 colour = v_color;\n"
+    "	if (nrParams.x > 0.5) {\n"
+    "		if (nrParams.y > 0.5) {\n"
+    "			vec4 texel = texture(s_texture, v_uv);\n"
+    "			vec3 encoded = mix(1.055 * pow(texel.rgb, vec3(1.0 / 2.4)) - 0.055, texel.rgb * 12.92, lessThan(texel.rgb, vec3(0.0031308)));\n"
+    "			colour *= vec4(encoded, texel.a);\n"
+    "		} else { colour *= texture(s_texture, v_uv); }\n"
+    "	}\n"
+    "	if ((nrSplitMode.x > 0.5) && (v_split < 0.0)) { discard; }\n"
+    "	if ((nrSplitMode.x < -0.5) && (v_split >= 0.0)) { discard; }\n"
+    "	if ((nrParams.w > 0.0) && (colour.a < nrParams.w)) { discard; }\n"
+    "	if (nrParams.z > 0.0) { colour = vec4(1.0, clamp(nrParams.z * gl_FragCoord.z, 0.0, 1.0), 1.0, 1.0); }\n"
+    "	fragColor = colour;\n"
+    "}\n"
+    "#endif\n";
+
+// The program of the retail twin, "nrt" (step 4d, Z1: the retail look V1). It
+// becomes a program only with --native-preview --native-twin
+// (native_renderer.c); every other native draw keeps "nr", so the probe and
+// the custom characters are untouched by it.
+//
+// The retail look of one twin triangle, from what the PSX path does with the
+// same packet:
+//   tint        the vertex colour toned toward the far colour F by a =
+//               alphaScale / 4096 (the DPCT of RenderBucket_LoadPrimColors, in
+//               float; nrFar, nrLook.x; a = 0: no tone), per corner;
+//   modulation  textured: texel x colour x nrLook.y (2 for retail data, the
+//               bright factor of the PSX path); untextured: the colour x
+//               248 / 255. The PSX path draws a flat polygon through the same
+//               lookup as a textured one, with the white texture bound
+//               (native_gpu.c, AddSplit): the word it reads there is 0xffff,
+//               and the 5:5:5 LUT turns that into 31 << 3 = 248 per channel
+//               (NativeRenderer_InitRG8LUT), which then multiplies the colour
+//               (bright 1). Without the factor every untextured twin surface
+//               came out 255 / 248 = 2.8 % too bright (the orange of the head:
+//               255,49 where retail has 248,48);
+//   mask        a texel with alpha below nrParams.w (the clear word 0x0000) is
+//               not drawn - before the modulation;
+//   dither      the PSX matrix itself (GPU_DITHERING, the same macro, not a
+//               copy), weight nrLook.z, on the PSX pixel grid: v_ditherCoord is
+//               the PSX pixel the fragment lies in, from the clip position
+//               through the inverse of the PSX projection (nrProj). The clip
+//               position already carries the -0.5 px of the twin's geometry,
+//               and the fragment's own place is what the grid needs, so
+//               nothing is added (nrDither.x stays 0);
+//   affine      UV, colour and the dither coordinate interpolated without
+//               perspective (noperspective), as the PSX path draws with w = 1;
+//   UV fudge    nrDither.zw added to the texture coordinate: the 0.00025
+//               texels the PSX path adds to its page origin (c_UVFudge), in
+//               units of this texture.
+// nrParams.z > 0: --native-depth-tint, as in "nr".
+// nrSplit, nrSplitMode: the water line of step 4e, as in "nr"; the split
+// distance is interpolated with perspective here too (the queue cuts in 3D).
+// The block is struct NativeTwinUniforms in native_renderer.c field for field,
+// 192 bytes std140.
+global_variable const char *ctr_native_twin_shader =
+    "#ifdef VERTEX\n"
+    "layout(location = 0) in vec3 a_position;\n"
+    "layout(location = 1) in vec2 a_texcoord;\n"
+    "layout(location = 2) in vec4 a_color;\n"
+    "VARYING_LOC0 noperspective out vec2 v_uv;\n"
+    "VARYING_LOC1 noperspective out vec4 v_color;\n"
+    "VARYING_LOC2 noperspective out vec2 v_ditherCoord;\n"
+    "VARYING_LOC3 out float v_split;\n"
+    "UBO_QUALIFIER uniform NrtBlock {\n"
+    "	mat4 nrClipFromModel;\n"
+    "	vec4 nrTint;\n"
+    "	vec4 nrParams;\n"
+    "	vec4 nrFar;\n"
+    "	vec4 nrLook;\n"
+    "	vec4 nrDither;\n"
+    "	vec4 nrProj;\n"
+    "	vec4 nrSplit;\n"
+    "	vec4 nrSplitMode;\n"
+    "};\n"
+    "void main() {\n"
+    "	v_split = nrSplit.w - dot(nrSplit.xyz, a_position);\n"
+    "	vec4 c = a_color * nrTint;\n"
+    "	c.rgb = c.rgb + nrLook.x * (nrFar.rgb - c.rgb);\n"
+    "	v_color = c;\n"
+    "	v_uv = a_texcoord + nrDither.zw;\n"
+    "	gl_Position = nrClipFromModel * vec4(a_position, 1.0);\n"
+    "	vec2 ndc = gl_Position.xy / gl_Position.w;\n"
+    "	v_ditherCoord = vec2((ndc.x - nrProj.y) / nrProj.x, (ndc.y - nrProj.w) / nrProj.z);\n"
+    "}\n"
+    "#endif\n"
+    "#ifdef FRAGMENT\n"
+    "VARYING_LOC0 noperspective in vec2 v_uv;\n"
+    "VARYING_LOC1 noperspective in vec4 v_color;\n"
+    "VARYING_LOC2 noperspective in vec2 v_ditherCoord;\n"
+    "VARYING_LOC3 in float v_split;\n"
+    "SAMPLER_SLOT0 uniform sampler2D s_texture;\n"
+    "UBO_QUALIFIER uniform NrtBlock {\n"
+    "	mat4 nrClipFromModel;\n"
+    "	vec4 nrTint;\n"
+    "	vec4 nrParams;\n"
+    "	vec4 nrFar;\n"
+    "	vec4 nrLook;\n"
+    "	vec4 nrDither;\n"
+    "	vec4 nrProj;\n"
+    "	vec4 nrSplit;\n"
+    "	vec4 nrSplitMode;\n"
+    "};\n"
+    "vec4 v_texcoord;\n"
+    "float psxDitherAmount;\n"
+    GPU_DITHERING
+    "void main() {\n"
+    "	if ((nrSplitMode.x > 0.5) && (v_split < 0.0)) { discard; }\n"
+    "	if ((nrSplitMode.x < -0.5) && (v_split >= 0.0)) { discard; }\n"
+    "	vec4 colour = v_color;\n"
+    "	if (nrParams.x > 0.5) {\n"
+    "		vec4 texel = texture(s_texture, v_uv);\n"
+    "		if ((nrParams.w > 0.0) && (texel.a < nrParams.w)) { discard; }\n"
+    "		colour = vec4(texel.rgb * v_color.rgb * nrLook.y, texel.a * v_color.a);\n"
+    "	} else {\n"
+    "		if ((nrParams.w > 0.0) && (colour.a < nrParams.w)) { discard; }\n"
+    "		colour.rgb *= 248.0 / 255.0;\n"
+    "	}\n"
+    "	v_texcoord = vec4(0.0, 0.0, 0.0, 1.0);\n"
+    "	psxDitherAmount = nrLook.z;\n"
+    "	colour = dither(colour);\n"
+    "	if (nrParams.z > 0.0) { colour = vec4(1.0, clamp(nrParams.z * gl_FragCoord.z, 0.0, 1.0), 1.0, 1.0); }\n"
+    "	fragColor = colour;\n"
+    "}\n"
+    "#endif\n";
+
 // The blit shaders by name, in one place.
 //
 // Two readers: native_renderer.c, to find the prebuilt SPIR-V module that goes
@@ -753,6 +960,14 @@ internal int CtrBlitShader_Get(int index, const char **outName, const char **out
 	case 3:
 		name = "pack_pages";
 		body = ctr_pack_pages_shader;
+		break;
+	case 4:
+		name = "nr";
+		body = ctr_native_layer_shader;
+		break;
+	case 5:
+		name = "nrt";
+		body = ctr_native_twin_shader;
 		break;
 	default:
 		return 0;

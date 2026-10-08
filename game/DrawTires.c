@@ -3,6 +3,7 @@
 // From platform/native_chars.c: 1 for the model of a custom character whose
 // file asks for no kart wheels, else 0 (every retail model, NULL).
 int NativeChar_ModelHidesWheels(const struct Model *model);
+int NativeChar_ViewHidesWheels(const struct Instance *inst, const struct PushBuffer *pb);
 
 static const u32 sDrawTiresSolidJumpTable[8] = {
     0x8006ed7c, 0x8006ed98, 0x8006edb4, 0x8006edcc, 0x8006ede4, 0x8006ee00, 0x8006ee1c, 0x8006ee3c,
@@ -714,6 +715,16 @@ static void DrawTiresSolid_LinkPrimitive(struct DrawTiresScratch *scratch, POLY_
 	*otSlot = (u32)CtrGpu_PrimToOTLink24(p);
 }
 
+// From platform/native_render_layer.c (include/platform/native_render_layer.h,
+// word for word): the render layer reads the wheel sets of the seat the native
+// probe is bound to - the projected corners and every quad written - and counts
+// them; for any other instance Begin leaves at once. They only read: no value
+// of this file, no coprocessor register and no game memory is written.
+void NativeRenderLayer_TiresBegin(const struct Instance *inst, const struct PushBuffer *pb, int reflection);
+void NativeRenderLayer_TiresCorners(int wheelIndex, const s32 sxy[4]);
+void NativeRenderLayer_TiresPrimitive(void);
+void NativeRenderLayer_TiresEnd(void);
+
 static int DrawTiresSolid_EmitProjectedWheel(struct DrawTiresScratch *scratch, struct DrawTiresSolidProjectedWheel *selected, struct PrimMem *primMem,
                                              int *primCount)
 {
@@ -744,6 +755,7 @@ static int DrawTiresSolid_EmitProjectedWheel(struct DrawTiresScratch *scratch, s
 	DrawTiresSolid_LinkPrimitive(scratch, p, selectedOTSlot);
 	primMem->cursor = (char *)primMem->cursor + sizeof(POLY_FT4);
 	(*primCount)++;
+	NativeRenderLayer_TiresPrimitive();
 
 	return 1;
 }
@@ -773,6 +785,8 @@ static int DrawTiresSolid_ProjectWheelQuads(struct DrawTiresScratch *scratch, st
 		{
 			continue;
 		}
+
+		NativeRenderLayer_TiresCorners(wheelIndex, scratch->projectedSxy);
 
 		struct DrawTiresSolidProjectedWheel projectedWheel = DrawTiresSolid_SelectProjectedWheel(scratch, wheelIndex);
 
@@ -808,7 +822,7 @@ static int DrawTiresSolid_StagePlayer(struct DrawTiresScratch *scratch, struct D
 		return 0;
 	}
 
-	if (NativeChar_ModelHidesWheels(inst->model))
+	if (NativeChar_ViewHidesWheels(inst, pb))
 	{
 		return 0;
 	}
@@ -866,7 +880,9 @@ static int DrawTiresSolid_StagePlayer(struct DrawTiresScratch *scratch, struct D
 	DrawTiresSolid_SetupGteState(scratch, inst, idpp, pb);
 	DrawTiresSolid_BuildWheelAxes(scratch);
 	DrawTiresSolid_SetupProjectionState(pb);
+	NativeRenderLayer_TiresBegin(inst, pb, 0);
 	DrawTiresSolid_ProjectWheelQuads(scratch, primMem, primCount);
+	NativeRenderLayer_TiresEnd();
 
 	return 1;
 }
@@ -1356,6 +1372,7 @@ static void DrawTiresReflection_EmitProjectedWheel(struct DrawTiresScratch *scra
 	DrawTiresReflection_LinkPrimitive(scratch, p, selectedOTSlot);
 	primMem->cursor = (char *)primMem->cursor + sizeof(POLY_FT4);
 	(*primCount)++;
+	NativeRenderLayer_TiresPrimitive();
 }
 
 static int DrawTiresReflection_ProjectWheelQuads(struct DrawTiresScratch *scratch, struct PrimMem *primMem, int *primCount)
@@ -1414,7 +1431,7 @@ static int DrawTiresReflection_StagePlayer(struct DrawTiresScratch *scratch, str
 		return 0;
 	}
 
-	if (NativeChar_ModelHidesWheels(inst->model))
+	if (NativeChar_ViewHidesWheels(inst, pb))
 	{
 		return 0;
 	}
@@ -1467,7 +1484,9 @@ static int DrawTiresReflection_StagePlayer(struct DrawTiresScratch *scratch, str
 	DrawTiresReflection_SetupGteState(scratch, inst, idpp, pb);
 	DrawTiresReflection_BuildWheelAxes(scratch);
 	DrawTiresReflection_SetupProjectionState(pb);
+	NativeRenderLayer_TiresBegin(inst, pb, 1);
 	DrawTiresReflection_ProjectWheelQuads(scratch, primMem, primCount);
+	NativeRenderLayer_TiresEnd();
 
 	return 1;
 }

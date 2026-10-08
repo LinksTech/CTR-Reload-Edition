@@ -6,7 +6,7 @@ include(CheckCCompilerFlag)
 # screen, in --version, in Reload Studio and in the log. The upstream
 # ctr-native version number is not shown to players.
 # tools/package/package.sh reads this line to name the package.
-set(CTR_NATIVE_VERSION "0.0.5 Beta")
+set(CTR_NATIVE_VERSION "0.7.5 Beta")
 
 if(NOT CMAKE_SIZEOF_VOID_P EQUAL 4)
     message(FATAL_ERROR
@@ -410,6 +410,131 @@ if(BUILD_TESTING)
     set_tests_properties(char_grid_selftest PROPERTIES
         PASS_REGULAR_EXPRESSION "char grid selftest passed: [0-9]+ checks, 0 failures"
     )
+    # --dev-char-seat-files (main.c, the first loop of main): given twice,
+    # together with --dev-char-seats or --char, or with a list not of the form,
+    # it ends the start with exit code 64 and its reason, before any window or
+    # data; so does the switch without --dev. A name that is not a file of the
+    # roster ends it only after the roster is read (game data, not in ctest).
+    add_test(NAME dev_char_seat_files_once COMMAND $<TARGET_FILE:ctr_native> --dev --dev-char-seat-files a.rldchar --dev-char-seat-files b.rldchar)
+    set_tests_properties(dev_char_seat_files_once PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-char-seat-files is given 2 times - once only")
+    add_test(NAME dev_char_seat_files_not_with_seats COMMAND $<TARGET_FILE:ctr_native> --dev --dev-char-seats all --dev-char-seat-files a.rldchar)
+    set_tests_properties(dev_char_seat_files_not_with_seats PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-char-seat-files does not go with --dev-char-seats")
+    add_test(NAME dev_char_seat_files_not_with_char COMMAND $<TARGET_FILE:ctr_native> --dev --char a.rldchar --dev-char-seat-files a.rldchar)
+    set_tests_properties(dev_char_seat_files_not_with_char PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-char-seat-files does not go with --char")
+    add_test(NAME dev_char_seat_files_form COMMAND $<TARGET_FILE:ctr_native> --dev --dev-char-seat-files a.rldchar,,b.rldchar)
+    set_tests_properties(dev_char_seat_files_form PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-char-seat-files expects 1 to 8 file names of the folder, commas between, got a.rldchar,,b.rldchar")
+    add_test(NAME dev_char_seat_files_nine COMMAND $<TARGET_FILE:ctr_native> --dev --dev-char-seat-files a,b,c,d,e,f,g,h,i)
+    set_tests_properties(dev_char_seat_files_nine PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-char-seat-files expects 1 to 8 file names")
+    add_test(NAME dev_char_seat_files_needs_dev COMMAND $<TARGET_FILE:ctr_native> --dev-char-seat-files a.rldchar)
+    set_tests_properties(dev_char_seat_files_needs_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-char-seat-files requires --dev")
+    # The bytes of the generated native probe meshes, texture, pose meshes, wheel
+    # mesh, wheel texture and mips texture (platform/native_probe.c) against
+    # their golden SHA-256. Only hashes tables.
+    add_test(NAME native_probe_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --native-probe-selftest)
+    set_tests_properties(native_probe_selftest PROPERTIES PASS_REGULAR_EXPRESSION "native probe selftest passed: 36 vertices, 54 indices, sha256 87ded398127ef569456a9760ad0d8d7938c96f2db1e0d66a818bcd7865971373, textured mesh sha256 1948ecd790f9518408f043329ce36461d52cc6bc11dccd939a5f5d6dd4e3241a, texture 256x256 sha256 91a84b2163c3ec26e128e4d17ebc15b063b496055f830afc28341c20252cea4f, 8 pose meshes sha256 1033d715c90b852b4bd487a81b4f8b1c8002f635ffc70fc65e3814788ff55e6b, 2 wheel halves sha256 136fb282e11273f06882a4217c755c2a033d8c4871bfddbfef3746a2a80e2190, wheel texture sha256 21d43021f3bad68dcbb515b38b82f00b12ed7e2fdbcda0ebd3ecc9f8871740a6, mips texture 9 levels sha256 f581d2705016ddd01ec899b3eef7c82886f9730c2b5a92ef4ddd69c66382ad1a")
+    # --native-wheel-report without the probe on measures nothing: the start
+    # has to end with exit code 64 and its reason, before any window or data
+    # (main.c, the first loop of main). The exit code itself is not what ctest
+    # checks here, the line is.
+    add_test(NAME native_wheel_report_needs_probe COMMAND $<TARGET_FILE:ctr_native> --dev --native-wheel-report)
+    set_tests_properties(native_wheel_report_needs_probe PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-wheel-report only acts with the probe on")
+    # Given twice it ends the start the same way (as --native-probe-seat); no
+    # probe on the line, so even a reader that let it through could not start a race.
+    add_test(NAME native_wheel_report_once COMMAND $<TARGET_FILE:ctr_native> --dev --native-wheel-report --native-wheel-report)
+    set_tests_properties(native_wheel_report_once PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-wheel-report is given 2 times - once only")
+    # --native-hide-exhaust (main.c, the first loop of main): given twice it ends
+    # the start with exit code 64 and its reason, before any window or data; so
+    # does the switch without --dev (the gate of the developer switches).
+    add_test(NAME native_hide_exhaust_once COMMAND $<TARGET_FILE:ctr_native> --dev --native-hide-exhaust --native-hide-exhaust)
+    set_tests_properties(native_hide_exhaust_once PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-hide-exhaust is given 2 times - once only")
+    add_test(NAME native_hide_exhaust_needs_dev COMMAND $<TARGET_FILE:ctr_native> --native-hide-exhaust)
+    set_tests_properties(native_hide_exhaust_needs_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-hide-exhaust requires --dev")
+    # --native-seam-report and --native-depth-tint (main.c, the first loop of
+    # main, step 4c): without --native-preview, or given twice, they end the
+    # start with exit code 64 and their reason, before any window or data.
+    add_test(NAME native_seam_report_needs_preview COMMAND $<TARGET_FILE:ctr_native> --dev --native-seam-report)
+    set_tests_properties(native_seam_report_needs_preview PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-seam-report only acts together with --native-preview")
+    add_test(NAME native_seam_report_once COMMAND $<TARGET_FILE:ctr_native> --dev --native-preview --native-seam-report --native-seam-report)
+    set_tests_properties(native_seam_report_once PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-seam-report is given 2 times - once only")
+    add_test(NAME native_depth_tint_needs_preview COMMAND $<TARGET_FILE:ctr_native> --dev --native-depth-tint)
+    set_tests_properties(native_depth_tint_needs_preview PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-depth-tint only acts together with --native-preview")
+    add_test(NAME native_depth_tint_once COMMAND $<TARGET_FILE:ctr_native> --dev --native-preview --native-depth-tint --native-depth-tint)
+    set_tests_properties(native_depth_tint_once PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-depth-tint is given 2 times - once only")
+    # --native-split-report (main.c, step 4e-1b): given twice it ends the start
+    # with exit code 64 and its reason; without --dev the gate does.
+    add_test(NAME native_split_report_once COMMAND $<TARGET_FILE:ctr_native> --dev --native-split-report --native-split-report)
+    set_tests_properties(native_split_report_once PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-split-report is given 2 times - once only")
+    add_test(NAME native_split_report_needs_dev COMMAND $<TARGET_FILE:ctr_native> --native-split-report)
+    set_tests_properties(native_split_report_needs_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-split-report requires --dev")
+    # --native-twin (main.c, step 4d): without --native-preview, or given twice,
+    # it ends the start with exit code 64 and its reason.
+    add_test(NAME native_twin_needs_preview COMMAND $<TARGET_FILE:ctr_native> --dev --native-twin)
+    set_tests_properties(native_twin_needs_preview PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-twin only acts together with --native-preview")
+    add_test(NAME native_twin_once COMMAND $<TARGET_FILE:ctr_native> --dev --native-preview --native-twin --native-twin)
+    set_tests_properties(native_twin_once PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-twin is given 2 times - once only")
+    # --native-filter (main.c, the first loop of main): a value other than
+    # nearest or linear, the switch given twice, or no --native-preview end the
+    # start with exit code 64 and their reason, before any window or data; so
+    # does the switch without --dev (the gate of the developer switches). The
+    # lines are what ctest checks.
+    add_test(NAME native_filter_value COMMAND $<TARGET_FILE:ctr_native> --dev --native-preview --native-filter bilinear)
+    set_tests_properties(native_filter_value PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-filter expects nearest or linear, got bilinear")
+    add_test(NAME native_filter_once COMMAND $<TARGET_FILE:ctr_native> --dev --native-preview --native-filter nearest --native-filter linear)
+    set_tests_properties(native_filter_once PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-filter is given 2 times - once only")
+    add_test(NAME native_filter_needs_preview COMMAND $<TARGET_FILE:ctr_native> --dev --native-filter linear)
+    set_tests_properties(native_filter_needs_preview PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-filter only acts together with --native-preview")
+    add_test(NAME native_filter_needs_dev COMMAND $<TARGET_FILE:ctr_native> --native-filter linear)
+    set_tests_properties(native_filter_needs_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-filter requires --dev")
+    # The native texture manager (platform/native_tex.c): its tables, the
+    # shader's way back to gamma, the edge rule and the levels of a fixed image
+    # against their golden SHA-256. Computes only; no window, no device.
+    add_test(NAME native_tex_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --native-tex-selftest)
+    set_tests_properties(native_tex_selftest PROPERTIES PASS_REGULAR_EXPRESSION "native tex selftest passed: table round trip 256 of 256, shader round trip 256 of 256 margin 0.50 of 0.50, 10 edge checks, 12 uniform chains, tables sha256 f0af3130ba0f9051eb58eb97eca390622a3ab0c7633d2d3deba5c54a9572598b, 32x16 chain 6 levels 2732 bytes sha256 srgb a5a29bd35b804143de9d5d2d906be0dce6d804724b5f1a1206d1477590dee862 linear 35f614f4e3eb7d1eab2b6fd0fe77469e628aaf1d3c2e6d45f289b36a89e18680")
+    # The depth of a native draw across view z 0x1000, through the queue's own
+    # matrix steps (platform/native_depth_check.c). One made-up instance; the
+    # values are deterministic, so the whole line is pinned. Appended (step 4e):
+    # the water line against the queue's own split steps, the side selectors
+    # against the queue's own selector, and the factor rule of the native chars;
+    # on a second line the mirror (REFLECTION, SPECIAL, the mirrored wheels); on a
+    # third the checks of the review of stage a (a nodding kart, the items of a
+    # split view, the wheels against DrawTires, the classes of the colour factor);
+    # on a fourth the bin markers of the twin (cells, the link, the limits, row w
+    # of the paint order without the draw offset, the fallbacks of a twin view).
+    add_test(NAME native_depth_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --native-depth-selftest)
+    set_tests_properties(native_depth_selftest PROPERTIES PASS_REGULAR_EXPRESSION "native depth selftest passed: normal shift 2 to 0, w 4164.0625 to 4165.0391, step 0.0235 percent, rest 0.0006 percent, matrix part 0.0339 percent, wrong shift 299.9 and 75.0 percent, matrix 300.1 and 75.0 percent, huge shift 0 to -2, w 4371.2500 to 4372.1562, step 0.0207 percent, rest 0.0021 percent, matrix part 0.0339 percent, wrong shift 299.9 and 75.0 percent, matrix 300.1 and 75.0 percent, shift checks held, char scale 0x1000 shift 2 to 0, w 4095.0000 to 4096.0000, step 0.0244 percent, rest 0.0000 percent, matrix part 0.1119 percent, wrong shift 299.9 and 75.0 percent, matrix 300.4 and 75.0 percent, char scale 0x0ccd shift 2 to 0, w 4095.0000 to 4096.0000, step 0.0244 percent, rest 0.0000 percent, matrix part 0.3077 percent, wrong shift 299.9 and 75.0 percent, matrix 301.2 and 75.1 percent, char passed, split R near: handler split, selector both-mask, composed same, splitLine 2112, 729 points .360 below, 369 above., 0 differ, level plane 72 differ, split R far: handler split, selector both-mask, composed same, splitLine 528, 720 points .360 below, 360 above., 0 differ, level plane 36 differ, split P near: handler split, selector both-mask, composed same, splitLine 1200, 648 points .324 below, 324 above., 0 differ, level plane 0 differ, selector sides 20 cases 0 differ, shift/mask error max 0.50, dim error max 1.25, labels held, factor rule 8 cases 0 differ, split passed[
+]+native depth selftest mirror, reflection R near: handler reflection, selector negative, splitLine 2112, 125 corners, error max 0.839, winding turned, reflection R far: handler reflection, selector negative, splitLine 528, 125 corners, error max 0.961, winding turned, special: handler special, selector both-mask, splitLine -8000, 125 corners, error max 0.000, winding turned, wheels error max 0.000000000, reflection selectors 5 cases 0 differ, mirror passed[
+]+native depth selftest split items, split R near nodding: handler split, splitLine 2112, 729 points .360 below, 369 above., 0 differ, level plane 72 differ, items of a split view held, wheels against DrawTires 640 cases 0 differ, shift/mask classes 8 cases 0 differ, marker bin of depth range 10..31 middle 20 nearest 10, items passed[
+]+native depth selftest twin bin markers: bins 40 33 33 25 12 9 2 in the cells 10..31 give the cells 31 25 12 10, 5 keys held, linked into those cells only, arena keeps 128, paint runs report 65 cells as over 64, row w same with the draw offset .near, far, mirror., view: items without a body one middle marker each in their ranges, no paint order and a full arena link nothing .held., bins passed[
+]+native depth selftest own wheels: mirror error max 0.003906, steer error max 0.001953, rim 12.796875 world units .16 model units x 0x0ccc / 4096., roll error 0, rotations 8 of 8, wheelSize 0 held, own wheels passed")
+
+    # VALUES ARE REFUSED, NEVER CUT (main.c, NativeArgs_ValueFits). A path one
+    # character too long for --shot-name and a --shot list with one entry too
+    # many end the start in the switch gate, before the GTE self-test behind
+    # them can run; a list of 128 entries and 767 characters - past the 511 at
+    # which it was cut before - passes the gate. No window, no data.
+    string(REPEAT "a" 1024 CTR_TEST_LONG_NAME)
+    set(CTR_TEST_SHOTS_128 "10000")
+    foreach(CTR_TEST_SHOT RANGE 10001 10127)
+        string(APPEND CTR_TEST_SHOTS_128 ",${CTR_TEST_SHOT}")
+    endforeach()
+    add_test(NAME args_refuse_long_shot_name
+        COMMAND $<TARGET_FILE:ctr_native> --dev --shot-name ${CTR_TEST_LONG_NAME} --gte-selftest)
+    set_tests_properties(args_refuse_long_shot_name PROPERTIES
+        PASS_REGULAR_EXPRESSION "switch --shot-name takes at most 1023 characters, got 1024 - refused, never cut"
+        FAIL_REGULAR_EXPRESSION "selftest passed"
+    )
+    add_test(NAME args_refuse_shot_list_129
+        COMMAND $<TARGET_FILE:ctr_native> --dev --shot ${CTR_TEST_SHOTS_128},10128 --gte-selftest)
+    set_tests_properties(args_refuse_shot_list_129 PROPERTIES
+        PASS_REGULAR_EXPRESSION "switch --shot takes at most 128 entries, got 129 - refused, never cut"
+        FAIL_REGULAR_EXPRESSION "selftest passed"
+    )
+    add_test(NAME args_accept_shot_list_128
+        COMMAND $<TARGET_FILE:ctr_native> --dev --shot ${CTR_TEST_SHOTS_128} --gte-selftest)
+    set_tests_properties(args_accept_shot_list_128 PROPERTIES
+        PASS_REGULAR_EXPRESSION "selftest passed: [0-9]+ operations, 0 differences"
+        FAIL_REGULAR_EXPRESSION "refused"
+    )
 
     # FOREIGN INPUT, REFUSED CLEANLY. A container (.rldtrack) and a disc image
     # come from strangers: every length, offset and index in them is checked
@@ -441,6 +566,119 @@ if(BUILD_TESTING)
     # A directory that points back at the root must not hang the reader; if it
     # does, the timeout ends the test instead of the build.
     set_tests_properties(selftest_bad_containers selftest_bad_disc PROPERTIES TIMEOUT 300)
+
+    # THE NATIVE MODEL OF A CUSTOM CHARACTER (CNET, CTXT; preview). rldpack
+    # writes its test characters into the build folder (never into the
+    # source tree), the game reads each through the roster read and the
+    # native read without and with --native-preview: an old file loads as
+    # before, a good one is ready only with the preview, a broken one costs
+    # only the native part (the driver keeps its CMDL), and without the
+    # preview not one of them is looked at.
+    add_test(NAME char_native_selftest
+        COMMAND ${CMAKE_COMMAND}
+            -DPACKER=$<TARGET_FILE:rldpack>
+            -DGAME=$<TARGET_FILE:ctr_native>
+            -DDIR=${CMAKE_BINARY_DIR}/selftest/native-chars
+            -DESCAPE=${CMAKE_BINARY_DIR}/../tools
+            -P ${CMAKE_SOURCE_DIR}/cmake/run_char_native_selftest.cmake
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+    set_tests_properties(char_native_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "char native selftest passed: 42 files, [0-9]+ checks, 0 failures"
+        TIMEOUT 300
+        FIXTURES_SETUP native_char_files
+    )
+    # THE GPU SET OF A CUSTOM CHARACTER (step 4c, platform/native_char_gpu.c),
+    # without a device: the good files the test above had rldpack write go
+    # through the native read and the set build - ranges, index sort, the
+    # vertex bytes of every pose (one SHA-256 over all four files), the pose
+    # index of all 47 frames, the wheel middles and the refusal of a blend
+    # material.
+    add_test(NAME native_char_gpu_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --native-char-gpu-selftest ${CMAKE_BINARY_DIR}/selftest/native-chars)
+    set_tests_properties(native_char_gpu_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "native char gpu selftest passed: 4 files, 40 checks, 0 failures, sha256 efc584b94d73f6708bed71ff81c89a533479566755edebea6b47735a9cb16497"
+        FIXTURES_REQUIRED native_char_files
+    )
+    # The same for the native model of an OBJ (make-char --native-model on):
+    # rldpack make-native-tests --obj writes the self-test's mini OBJ without
+    # and with its native model (one CMDL), the game reads them as above.
+    add_test(NAME char_native_obj_selftest
+        COMMAND ${CMAKE_COMMAND}
+            -DPACKER=$<TARGET_FILE:rldpack>
+            -DGAME=$<TARGET_FILE:ctr_native>
+            -DDIR=${CMAKE_BINARY_DIR}/selftest/native-obj
+            -DSET=obj
+            -P ${CMAKE_SOURCE_DIR}/cmake/run_char_native_selftest.cmake
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+    set_tests_properties(char_native_obj_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "char native selftest passed: 3 files, [0-9]+ checks, 0 failures"
+        TIMEOUT 300
+    )
+    # THE RETAIL TWIN (step 4d, platform/native_twin.c), without a device: a
+    # retail model and a VRAM made in memory through the converter (golden
+    # SHA-256 of the vertex bytes of every pose and of the RGBA8, computed
+    # apart), the winding against the retail sign test, two refusals; then
+    # old_plain of the files above: every pose point equal to its record.
+    add_test(NAME native_twin_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --native-twin-selftest ${CMAKE_BINARY_DIR}/selftest/native-chars)
+    set_tests_properties(native_twin_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "native twin selftest passed: 1 of 1 file read, 36 checks, 0 failures, sha256 vertices 44191f9ea764dd3122e950b578316f47535bd834ef700152033fa080e8989b36 rgba 986d4c3a10b4bd36478d8d875dbe3f48519c00ba15fd26b8fc00b2f5050ce533 full height e4b47ceaf474380c77c2f2a4dfb7f8851a2a4b8a28b78c86a27d3dde59bf026b"
+        FIXTURES_REQUIRED native_char_files
+    )
+    # make-char --native-model on needs --wheel-model or --wheels off (the game
+    # draws a native model only with wheels of its own or with the kart wheels
+    # hidden): without either rldpack refuses the switch - exit not 0, the
+    # message, no file; with --wheels off the same box builds. --wheel-model
+    # beside --wheels off, and --wheel-model without --native-model on, are
+    # refused the same way (the wheel itself: the self-test, rldpack_selftest).
+    # The script and the box OBJ are written here into the build folder.
+    file(WRITE ${CMAKE_BINARY_DIR}/rldpack_native_wheels_test.cmake [=[
+file(REMOVE_RECURSE "${DIR}")
+file(MAKE_DIRECTORY "${DIR}")
+file(WRITE "${DIR}/box.obj" "v -0.5 0 -1\nv 0.5 0 -1\nv 0.5 0 1\nv -0.5 0 1\nv -0.5 0.5 -1\nv 0.5 0.5 -1\nv 0.5 0.5 1\nv -0.5 0.5 1\nf 1 2 3 4\nf 5 8 7 6\nf 1 5 6 2\nf 2 6 7 3\nf 3 7 8 4\nf 4 8 5 1\n")
+execute_process(COMMAND "${PACKER}" make-char --model "${DIR}/box.obj" --name T --template 14 --native-model on --out "${DIR}/refused.rldchar"
+    RESULT_VARIABLE refusedResult OUTPUT_VARIABLE refusedOut ERROR_VARIABLE refusedOut)
+message("${refusedOut}")
+if(refusedResult EQUAL 0)
+    message(FATAL_ERROR "rldpack native wheels test: --native-model on without --wheels off was not refused (exit 0)")
+endif()
+if(NOT refusedOut MATCHES "--native-model on needs --wheel-model")
+    message(FATAL_ERROR "rldpack native wheels test: the refusal does not name --wheel-model and --wheels off")
+endif()
+if(EXISTS "${DIR}/refused.rldchar")
+    message(FATAL_ERROR "rldpack native wheels test: a file was written although the switch was refused")
+endif()
+execute_process(COMMAND "${PACKER}" make-char --model "${DIR}/box.obj" --name T --template 14 --wheels off --native-model on --wheel-model "${DIR}/box.obj" --out "${DIR}/contradict.rldchar"
+    RESULT_VARIABLE contradictResult OUTPUT_VARIABLE contradictOut ERROR_VARIABLE contradictOut)
+if(contradictResult EQUAL 0 OR NOT contradictOut MATCHES "--wheel-model and --wheels off contradict each other" OR EXISTS "${DIR}/contradict.rldchar")
+    message("${contradictOut}")
+    message(FATAL_ERROR "rldpack native wheels test: --wheel-model beside --wheels off was not refused, or not said, or a file was written")
+endif()
+execute_process(COMMAND "${PACKER}" make-char --model "${DIR}/box.obj" --name T --template 14 --wheel-model "${DIR}/box.obj" --out "${DIR}/alone.rldchar"
+    RESULT_VARIABLE aloneResult OUTPUT_VARIABLE aloneOut ERROR_VARIABLE aloneOut)
+if(aloneResult EQUAL 0 OR NOT aloneOut MATCHES "--wheel-model needs --native-model on" OR EXISTS "${DIR}/alone.rldchar")
+    message("${aloneOut}")
+    message(FATAL_ERROR "rldpack native wheels test: --wheel-model without --native-model on was not refused, or not said, or a file was written")
+endif()
+execute_process(COMMAND "${PACKER}" make-char --model "${DIR}/box.obj" --name T --template 14 --wheels off --native-model on --out "${DIR}/built.rldchar"
+    RESULT_VARIABLE builtResult OUTPUT_VARIABLE builtOut ERROR_VARIABLE builtOut)
+if(NOT builtResult EQUAL 0 OR NOT EXISTS "${DIR}/built.rldchar")
+    message("${builtOut}")
+    message(FATAL_ERROR "rldpack native wheels test: the same box with --wheels off did not build (exit ${builtResult})")
+endif()
+message("rldpack native wheels test passed: refused without --wheels off (exit ${refusedResult}, no file), built with it; --wheel-model refused beside --wheels off and without --native-model on")
+]=])
+    add_test(NAME rldpack_native_wheels_refused
+        COMMAND ${CMAKE_COMMAND}
+            -DPACKER=$<TARGET_FILE:rldpack>
+            -DDIR=${CMAKE_BINARY_DIR}/selftest/native-wheels
+            -P ${CMAKE_BINARY_DIR}/rldpack_native_wheels_test.cmake
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+    set_tests_properties(rldpack_native_wheels_refused PROPERTIES
+        PASS_REGULAR_EXPRESSION "rldpack native wheels test passed: refused without --wheels off \\(exit [1-9][0-9]*, no file\\), built with it; --wheel-model refused beside --wheels off and without --native-model on"
+        TIMEOUT 120
+    )
 
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_test(

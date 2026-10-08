@@ -64,6 +64,20 @@
 #define RLDCHAR_FLAGS_KNOWN (RLDCHAR_FLAG_NO_WHEELS | RLDCHAR_FLAG_MASK_BITS | RLDCHAR_FLAG_MAP_COLOR | RLDCHAR_FLAG_FULL_HEIGHT)   // the CHRI flag bits this reader understands
 #define RLDCHAR_CHRI_MAP_COLOR_OFFSET 0x20u   // u8 r, g, b, 0 - present when fixedSize >= RLDCHAR_CHRI_SIZE_MAP_COLOR
 #define RLDCHAR_CHRI_SIZE_MAP_COLOR 0x24u
+#define RLDCHAR_CHRI_LOOK_OFFSET 0x24u     // the look (shadow and exhaust, RldChar_ParseLook) - present when fixedSize >= RLDCHAR_CHRI_SIZE_LOOK
+#define RLDCHAR_CHRI_SIZE_LOOK 0x3Cu
+#define RLDCHAR_CHRI_SHADOW_MODE 0x24u     // u8 RLDCHAR_LOOK_RETAIL / _AUTO / _OFF
+#define RLDCHAR_CHRI_EXHAUST_MODE 0x25u    // u8 RLDCHAR_LOOK_RETAIL / _CUSTOM / _OFF
+#define RLDCHAR_CHRI_EXHAUST_COUNT 0x26u   // u8 1 or 2 with custom, else 0; 0x27 is reserved (0)
+#define RLDCHAR_CHRI_SHADOW_QUAD 0x28u     // s16 xMin, xMax, zMin, zMax
+#define RLDCHAR_CHRI_EXHAUST_POINTS 0x30u  // s16 x, y, z of point 0, then of point 1
+#define RLDCHAR_LOOK_RETAIL 0u             // shadowMode / exhaustMode 0: what retail draws - every file from before the field
+#define RLDCHAR_LOOK_AUTO 1u               // shadowMode 1: the quad at 0x28
+#define RLDCHAR_LOOK_CUSTOM 1u             // exhaustMode 1: the points at 0x30
+#define RLDCHAR_LOOK_OFF 2u                // shadowMode / exhaustMode 2: none drawn
+#define RLDCHAR_LOOK_COORD_MAX 4096        // |value| of a look coordinate in 1/16 model units (256 model units, as RLDCHAR_WHEEL_POINT_MAX)
+#define RLDCHAR_LOOK_Y_MIN (-256)          // the lowest exhaust height, 1/16 model units (16 model units below the origin)
+#define RLDCHAR_LOOK_EDGE_MIN 16           // the shortest side of the shadow quad, 1/16 model units (1 model unit)
 #define RLDCHAR_NAME_FIELD 20
 #define RLDCHAR_NAME_MAX 17
 #define RLDCHAR_AUTHOR_MAX 64
@@ -92,7 +106,10 @@ static const u16 s_rldCharFrames[RLDCHAR_ANIM_COUNT] = {21, 7, 15, 4};
 
 // The limit of a KNOWN type, 0 for any other - the same contract as
 // Rld_ChunkLimit, but its own table: a CMDL inside a .rldtrack stays an unknown
-// chunk that is skipped, and a META inside a .rldchar the same.
+// chunk that is skipped, and a META inside a .rldchar the same. CNET and CTXT
+// are not in it on purpose: the envelope treats them as unknown chunks, and
+// only the reader of the native part (RldChar_ReadNative, behind
+// --native-preview) checks them, with RldChar_NativeLimit.
 static u64 RldChar_ChunkLimit(const u8 *type)
 {
 	if (memcmp(type, "CHRI", 4) == 0)
@@ -130,8 +147,11 @@ static u64 RldChar_ChunkLimit(const u8 *type)
 // written by rldpack make-char --voices; the game plays its clips for the
 // bound seat. CPRM (values) has a size limit above, but rldpack does not
 // write it and nothing interprets it yet.
-// RESERVED NAME: CTEX (texture data) is planned; until then it has no limit
-// here and is skipped like any unknown chunk.
+// PREVIEW: CNET (the native model) and CTXT (its textures), see the section
+// CNET AND CTXT at the end of this file. RESERVED NAMES: CTEX (once planned
+// for texture data; the textures of the native model are CTXT) and CWHL
+// (own wheels; the native wheels are a part of CNET) - both stay unassigned
+// and are skipped like any unknown chunk.
 
 // The required chunks: CHRI and CMDL. CICN and CPRM are optional - a required
 // chunk could never become optional again within major 1.
@@ -166,6 +186,14 @@ static const struct RldFormat s_rldCharFormat = {
 //                       bit 3 RLDCHAR_FLAG_MAP_COLOR, bit 4 RLDCHAR_FLAG_FULL_HEIGHT
 // 0x20 u8[4] mapColor   only when fixedSize >= 0x24: red, green, blue of the
 //                       minimap marker, then 0; used only with bit 3 set
+// The look, only when fixedSize >= 0x3C (RldChar_ParseLook):
+// 0x24 u8  shadowMode   RLDCHAR_LOOK_RETAIL 0, _AUTO 1 (the quad at 0x28), _OFF 2
+// 0x25 u8  exhaustMode  RLDCHAR_LOOK_RETAIL 0, _CUSTOM 1 (the points at 0x30), _OFF 2
+// 0x26 u8  exhaustCount 1 or 2 with custom, else 0
+// 0x27 u8  reserved     written 0, not checked
+// 0x28 s16[4] shadowQuad    xMin, xMax, zMin, zMax, 1/16 model units; only with shadow auto
+// 0x30 s16[3] exhaust0      x, y, z, 1/16 model units; in place of retail source 0 (+X, left)
+// 0x36 s16[3] exhaust1      x, y, z; in place of retail source 1 (-X, right), only with count 2, else 0
 // fixedSize: u32 stringCount, then per string u32 length + bytes; string 0 is the author
 //
 // A new field only ever lengthens fixedSize, a new string is only ever
@@ -177,6 +205,20 @@ static const struct RldFormat s_rldCharFormat = {
 // chosen (flags then holds RLDCHAR_FLAG_MAP_COLOR), and a reader from before
 // it accepts the file (bit 3 is an unknown bit there, the 4 bytes lie behind
 // the fields it reads) and shows the template's color.
+//
+// The look is the third: the ground shadow and the exhaust of the driver,
+// fitted to the model. fixedSize 0x3C only when a mode is not retail (the
+// 4 bytes of mapColor are then written as 0 without bit 3), so a file
+// without a look keeps its bytes, and a reader from before the look skips
+// the 24 bytes and draws the retail shadow and exhaust. The look has NO
+// CHRI rule - a CHRI finding refuses the whole file. An unknown mode or a
+// value outside the limits only makes that one effect retail (RldChar_ParseLook
+// names the reason in look.why). The space is the model's own: model units
+// (CMDL without the instance scale = CNET, Blender 1 m = 64), origin = the
+// model's origin, +X left seen from behind, +Y up, +Z forward. The game
+// keys the look on the model, so CMDL and native drawing read the same values.
+// Retail in these units: exhaust smoke (+-288, 896, -896), shadow quad
+// x -800..800, z -820..1040.
 //
 // RLDCHAR_FLAG_FULL_HEIGHT (bit 4) is about the bytes of CMDL and CMSK. The
 // renderer packs the up axis as (pos.y + byte) << 2 and the retail path clears
@@ -405,6 +447,156 @@ static const char *RldChar_ParseInfo(struct RldCharInfo *out, const u8 *bytes, s
 	}
 
 	return NULL;
+}
+
+// The look of CHRI (0x24..0x3B), as RldChar_ParseLook read it. shadow is
+// RLDCHAR_LOOK_RETAIL, _AUTO or _OFF; exhaust RLDCHAR_LOOK_RETAIL, _CUSTOM or
+// _OFF; count 1 or 2 with custom, else 0. quad (xMin, xMax, zMin, zMax) only
+// with auto, point[0] with custom, point[1] with custom and count 2; every
+// unused value is 0. All in 1/16 model units. why: NULL, or the fixed text
+// of the first effect that fell back to retail (shadow before exhaust).
+struct RldCharLook
+{
+	u32 shadow;
+	u32 exhaust;
+	u32 count;
+	s16 quad[4];
+	s16 point[2][3];
+	const char *why;
+};
+
+static int RldChar_LookValue(const u8 *chri, u32 offset)
+{
+	const u32 value = Rld_ReadLE16(&chri[offset]);
+
+	return (value >= 0x8000u) ? ((int)value - 0x10000) : (int)value;
+}
+
+// The look of a CHRI that RldChar_ParseInfo has accepted (info is its
+// result, chri and size the same chunk). Without the field (fixedSize below
+// 0x3C) everything is retail and why stays NULL. NO RULE: an unknown mode or
+// a value outside the limits makes only that effect retail and names it in
+// why, the file stays valid - wheels hidden or not.
+//   shadow auto: every |value| <= RLDCHAR_LOOK_COORD_MAX, xMin < xMax and
+//                zMin < zMax, each side at least RLDCHAR_LOOK_EDGE_MIN.
+//   exhaust custom: count 1 or 2; per used point |x|, |z| <= RLDCHAR_LOOK_COORD_MAX
+//                and RLDCHAR_LOOK_Y_MIN <= y <= RLDCHAR_LOOK_COORD_MAX.
+// The reserved byte 0x27, the count without custom and the unused values are
+// not checked.
+static void RldChar_ParseLook(const struct RldCharInfo *info, const u8 *chri, size_t size, struct RldCharLook *out)
+{
+	u32 shadow;
+	u32 exhaust;
+	u32 count;
+	int v[4];
+	int p[2][3];
+	int i;
+	int k;
+
+	memset(out, 0, sizeof(*out));
+
+	if ((info == NULL) || (chri == NULL) || (info->fixedSize < RLDCHAR_CHRI_SIZE_LOOK) || (size < (size_t)RLDCHAR_CHRI_SIZE_LOOK))
+	{
+		return;
+	}
+
+	shadow = chri[RLDCHAR_CHRI_SHADOW_MODE];
+	exhaust = chri[RLDCHAR_CHRI_EXHAUST_MODE];
+	count = chri[RLDCHAR_CHRI_EXHAUST_COUNT];
+
+	if (shadow == RLDCHAR_LOOK_AUTO)
+	{
+		int beyond = 0;
+
+		for (i = 0; i < 4; i++)
+		{
+			v[i] = RldChar_LookValue(chri, RLDCHAR_CHRI_SHADOW_QUAD + (2u * (u32)i));
+			if ((v[i] < -RLDCHAR_LOOK_COORD_MAX) || (v[i] > RLDCHAR_LOOK_COORD_MAX))
+			{
+				beyond = 1;
+			}
+		}
+
+		if (beyond)
+		{
+			out->why = "shadow quad beyond 256 model units";
+		}
+		else if (((v[1] - v[0]) < RLDCHAR_LOOK_EDGE_MIN) || ((v[3] - v[2]) < RLDCHAR_LOOK_EDGE_MIN))
+		{
+			out->why = "shadow quad narrower or shorter than 1 model unit";
+		}
+		else
+		{
+			out->shadow = RLDCHAR_LOOK_AUTO;
+			for (i = 0; i < 4; i++)
+			{
+				out->quad[i] = (s16)v[i];
+			}
+		}
+	}
+	else if (shadow == RLDCHAR_LOOK_OFF)
+	{
+		out->shadow = RLDCHAR_LOOK_OFF;
+	}
+	else if (shadow != RLDCHAR_LOOK_RETAIL)
+	{
+		out->why = "shadow mode unknown";
+	}
+
+	if (exhaust == RLDCHAR_LOOK_CUSTOM)
+	{
+		int bad = 0;
+
+		if ((count < 1u) || (count > 2u))
+		{
+			if (out->why == NULL)
+			{
+				out->why = "exhaust count not 1 or 2";
+			}
+			return;
+		}
+
+		for (k = 0; k < (int)count; k++)
+		{
+			for (i = 0; i < 3; i++)
+			{
+				p[k][i] = RldChar_LookValue(chri, RLDCHAR_CHRI_EXHAUST_POINTS + (6u * (u32)k) + (2u * (u32)i));
+			}
+
+			if ((p[k][0] < -RLDCHAR_LOOK_COORD_MAX) || (p[k][0] > RLDCHAR_LOOK_COORD_MAX) || (p[k][1] < RLDCHAR_LOOK_Y_MIN) ||
+			    (p[k][1] > RLDCHAR_LOOK_COORD_MAX) || (p[k][2] < -RLDCHAR_LOOK_COORD_MAX) || (p[k][2] > RLDCHAR_LOOK_COORD_MAX))
+			{
+				bad = 1;
+			}
+		}
+
+		if (bad)
+		{
+			if (out->why == NULL)
+			{
+				out->why = "exhaust point beyond the limits";
+			}
+			return;
+		}
+
+		out->exhaust = RLDCHAR_LOOK_CUSTOM;
+		out->count = count;
+		for (k = 0; k < (int)count; k++)
+		{
+			for (i = 0; i < 3; i++)
+			{
+				out->point[k][i] = (s16)p[k][i];
+			}
+		}
+	}
+	else if (exhaust == RLDCHAR_LOOK_OFF)
+	{
+		out->exhaust = RLDCHAR_LOOK_OFF;
+	}
+	else if ((exhaust != RLDCHAR_LOOK_RETAIL) && (out->why == NULL))
+	{
+		out->why = "exhaust mode unknown";
+	}
 }
 
 //========================================================================================
@@ -1349,7 +1541,10 @@ static void RldChar_CheckCommands(struct RldCharCheck *check)
 		}
 
 		// model-tex. 1.0 draws vertex colors only; index 0 is the G3 path
-		// (RB:2989-2992). A texture table is a later required feature.
+		// (RB:2989-2992). A texture table INSIDE CMDL (texture indices here)
+		// would still be a later required feature: a reader of 1.0 refuses
+		// such a model right here. The textures of the native model are
+		// another thing - CTXT, an optional chunk, no feature bit.
 		if (RLDCHAR_CMD_TEXTURE(command) != 0u)
 		{
 			RldChar_Find(check, "model-tex", RLDCHAR_VERDICT_BAD_MODEL, "command %u uses texture %u - format 1.0 has texture index 0 only", (unsigned)index,
@@ -2009,6 +2204,1171 @@ static const char *RldChar_CheckVoices(const u8 *bytes, u64 size, struct RldChar
 		*out = voices;
 	}
 	return NULL;
+}
+
+//========================================================================================
+// CNET AND CTXT - THE NATIVE MODEL (PREVIEW, PLANNED)
+//========================================================================================
+//
+// Two optional chunks for the native render path: CNET, a mesh in floats
+// (positions, normals, UV, materials, texture indices, optional wheels), and
+// CTXT, the table of its textures (PNG, decoded to RGBA8). PREVIEW: the game
+// reads and draws them only with the native preview (NATIVE DRIVERS set to
+// PREVIEW on the GRAPHICS page, or --native-preview) at a resolution of 2X or
+// more; otherwise it draws the CMDL.
+//
+// NOT KNOWN TO THE ENVELOPE. RldChar_ChunkLimit above does not name CNET and
+// CTXT, so Rld_OpenAs treats them as unknown chunks: it checks only their
+// position, a doubled type and an overlap (envelope steps 14, 18, 19) - the
+// same an older reader checks. A file with CNET/CTXT therefore opens, is
+// refused or loads exactly as it would without them, in this build and in
+// every build before it. Only those three generic findings refuse the whole
+// file (DAMAGED); everything below - compression, sizes, the limits
+// RLDCHAR_LIMIT_CNET/CTXT, the hashes, every rule CNET-1..12 and CTXT-1..8 -
+// costs only the native part: the driver keeps its CMDL. This replaces the
+// earlier plan of a required feature bit for a texture table.
+//
+// THE UNITS are those of CMDL without the instance scale: game units
+// ((pos + byte) x ModelHeader.scale / 4096), +X left seen from behind, +Y up,
+// +Z forward, triangles wound counter-clockwise seen from outside. Every
+// number little-endian; floats are IEEE 754 binary32.
+//
+// RldChar_ReadNative is the one entry: the game (platform/native_chars.c,
+// only for a bound seat and only with --native-preview) and rldpack (info,
+// verify, the self-test) run it. Nothing here prints.
+//
+// CNET version 1:
+//   0x00 u16 version          1
+//   0x02 u16 flags            0
+//   0x04 u16 headerBytes      >= 0x40, a multiple of 4; the section table follows
+//   0x06 u16 sectionCount     1..16
+//   0x08 u32 vertexCount N    3..RLDCHAR_NET_VERTICES_MAX
+//   0x0C u32 triangleCount T  1..RLDCHAR_NET_TRIANGLES_MAX
+//   0x10 u16 indexSize        2 or 4 (bytes per index)
+//   0x12 u16 materialCount M  1..RLDCHAR_NET_MATERIALS_MAX
+//   0x14 u16 poseCount        0 (one still pose for every frame) or 47 (21/7/15/4, the CMDL frames in order)
+//   0x16 u16 poseEncoding     1 = float position and float normal per vertex (24 bytes)
+//   0x18 f32[3] hullMin, 0x24 f32[3] hullMax - every pose position lies inside
+//   0x30 u16 textureCount     the entries CTXT must have; 0 = no CTXT
+//   0x32 u16 reserved 0, 0x34 u32[3] reserved 0
+// Section table at headerBytes, sectionCount x 16 bytes:
+//   char[4] tag, u16 version, u16 stride, u32 offset (from the chunk start, a multiple of 4), u32 size
+// Sections of version 1 (an unknown tag is skipped):
+//   POSN required  stride 24  max(1, poseCount) x N x {f32 position[3], f32 normal[3]}
+//   TRIS required  stride 3 x indexSize, T x 3 indices
+//   TMAT required  stride 2   T x u16 material
+//   MATL required  stride 16  M x {u8 rgba[4], s16 texture (-1 none), u8 alphaMode 0 opaque 1 mask 2 blend,
+//                             u8 flags (bit 0: always nearest), u8 reserved[8] 0}
+//   UV00 optional  stride 8   N x f32[2]; required when a material has a texture
+//   COL0 optional  stride 4   N x RGBA8
+//   WHLS optional  stride 0   the wheels (C.7.4), see RLDCHAR_WHEEL_*; required unless CHRI hides the wheels.
+//                             Its own version: 1 the test wheel, 2 an author's wheel (rule CNET-12)
+//
+// CTXT version 1:
+//   0x00 u16 version 1, 0x02 u16 flags 0, 0x04 u16 count 1..16, 0x06 u16 entryBytes 0x40, 0x08 u32[2] reserved 0
+//   0x10 count x 0x40 entries:
+//     0x00 u8 format 1 (PNG), 0x01 u8 reserved 0, 0x02 u16 flags (RLDCHAR_TEX_*),
+//     0x04 u16 width, 0x06 u16 height (powers of two 16..2048),
+//     0x08 u32 offset, 0x0C u32 size (the PNG bytes, from the chunk start),
+//     0x10 u8[32] SHA-256 of those bytes, 0x30 u8[16] reserved 0
+
+#include <rldpng.inc>
+
+#define RLDCHAR_LIMIT_CNET (32u * 1024u * 1024u)   // the bound of the chunk; a larger one costs only the native part
+#define RLDCHAR_LIMIT_CTXT (32u * 1024u * 1024u)
+#define RLDCHAR_NET_VERSION 1u
+#define RLDCHAR_NET_HEAD_BYTES 0x40u
+#define RLDCHAR_NET_SECTION_BYTES 16u
+#define RLDCHAR_NET_SECTIONS_MAX 16u
+#define RLDCHAR_NET_VERTICES_MAX 20000u            // budgets of the PC (renderer concept C.10), start values
+#define RLDCHAR_NET_TRIANGLES_MAX 30000u
+#define RLDCHAR_NET_MATERIALS_MAX 64u
+#define RLDCHAR_NET_POSES 47u                      // 21 + 7 + 15 + 4, the frames of a character
+#define RLDCHAR_NET_POSE_FLOAT 1u                  // poseEncoding 1
+#define RLDCHAR_NET_VERTEX_BYTES 24u
+#define RLDCHAR_NET_MATERIAL_BYTES 16u
+#define RLDCHAR_NET_ALPHA_MAX 2u                   // 0 opaque, 1 mask, 2 blend
+#define RLDCHAR_NET_MATERIAL_NEAREST 0x1u
+#define RLDCHAR_NET_NORMAL_MIN 0.98                // |normal|^2 of a unit normal, with float rounding room
+#define RLDCHAR_NET_NORMAL_MAX 1.02
+
+#define RLDCHAR_WHEEL_HEAD_BYTES 0x30u
+#define RLDCHAR_WHEEL_VERTEX_BYTES 32u             // f32 position[3], f32 normal[3], f32 uv[2]
+#define RLDCHAR_WHEEL_VERTICES_MAX 2048u
+#define RLDCHAR_WHEEL_TRIANGLES_MAX 1024u          // one mesh for all four wheels (renderer concept C.10)
+#define RLDCHAR_WHEEL_RADIUS_MAX 64.0              // model units
+#define RLDCHAR_WHEEL_POINT_MAX 256.0              // |x|, |y|, |z| of a wheel point, model units
+#define RLDCHAR_WHEEL_SLACK 1.0e-4                 // relative and absolute room of the cylinder test
+#define RLDCHAR_WHEEL_VERSION_TEST 1u              // WHLS version 1: the test wheel (self-tests, --native-probe)
+#define RLDCHAR_WHEEL_VERSION_USER 2u              // WHLS version 2: an author's wheel (make-char --wheel-model), rule CNET-12
+#define RLDCHAR_WHEEL_TEXTURE_EDGE_MAX 1024u       // CNET-12: each side of the texture of a version 2 wheel
+
+#define RLDCHAR_TEX_VERSION 1u
+#define RLDCHAR_TEX_HEAD_BYTES 0x10u
+#define RLDCHAR_TEX_ENTRY_BYTES 0x40u
+#define RLDCHAR_TEX_COUNT_MAX 16u
+#define RLDCHAR_TEX_EDGE_MIN 16u
+#define RLDCHAR_TEX_EDGE_MAX 2048u
+#define RLDCHAR_TEX_GPU_BYTES_MAX (64u * 1024u * 1024u)   // RGBA8 with every mip level, all textures of a file
+#define RLDCHAR_TEX_FORMAT_PNG 1u
+#define RLDCHAR_TEX_LINEAR 0x1u                    // flags bit 0: linear; clear = sRGB
+#define RLDCHAR_TEX_WRAP_U_SHIFT 1u                // bits 1-2: 0 repeat, 1 clamp, 2 mirror
+#define RLDCHAR_TEX_WRAP_V_SHIFT 3u                // bits 3-4: the same for V
+#define RLDCHAR_TEX_NEAREST 0x20u                  // bit 5: always nearest
+#define RLDCHAR_TEX_ALPHA_SHIFT 6u                 // bits 6-7: 0 opaque, 1 mask, 2 blend
+#define RLDCHAR_TEX_FLAGS_KNOWN 0xFFu
+
+// What RldChar_ReadNative found.
+enum
+{
+	RLDCHAR_NATIVE_NONE = 0,    // no CNET: nothing native (a CTXT alone is not read)
+	RLDCHAR_NATIVE_READY = 1,   // CNET and CTXT checked, the textures decoded
+	RLDCHAR_NATIVE_REFUSED = 2, // rule and detail say why; the driver keeps its CMDL
+};
+
+// The hull of one CMDL frame in model units, as the renderer bounds it: per
+// axis pos..pos + 255 (pos.y with bit 0 cleared) times scale / 4096.
+struct RldCharHull
+{
+	double lo[3];
+	double hi[3];
+};
+
+struct RldCharTexture
+{
+	u32 width;
+	u32 height;
+	u32 flags;                  // RLDCHAR_TEX_*
+	u8 *rgba;                   // width x height x 4, rows from the top, straight alpha; owned
+};
+
+// The checked mesh: counts and pointers into cnet (the chunk as stored,
+// little-endian, 4-byte aligned sections).
+struct RldCharNative
+{
+	int state;                  // RLDCHAR_NATIVE_*
+	const char *rule;           // REFUSED: "CNET-7", "CTXT-4", "native-chunk", ...
+	char detail[192];           // REFUSED: English, with the numbers
+
+	u8 *cnet;                   // owned
+	size_t cnetSize;
+	u32 vertexCount;
+	u32 triangleCount;
+	u32 indexSize;
+	u32 materialCount;
+	u32 poseCount;              // 0 or RLDCHAR_NET_POSES
+	u32 textureCount;
+	float hullMin[3];
+	float hullMax[3];
+	const u8 *poses;            // max(1, poseCount) x vertexCount x 24 bytes
+	const u8 *uv;               // vertexCount x 8 bytes, or NULL
+	const u8 *colors;           // vertexCount x 4 bytes, or NULL
+	const u8 *indices;          // triangleCount x 3 x indexSize bytes
+	const u8 *triangleMaterials;// triangleCount x 2 bytes
+	const u8 *materials;        // materialCount x 16 bytes
+	const u8 *wheel;            // the WHLS section, or NULL (none, or hidden by CHRI)
+	u32 wheelVersion;           // its version: RLDCHAR_WHEEL_VERSION_TEST (1) or _USER (2); 0 = no wheel
+	u32 wheelVertexCount;
+	u32 wheelTriangleCount;
+
+	struct RldCharTexture texture[RLDCHAR_TEX_COUNT_MAX];
+	u64 textureBytes;           // sum of width x height x 4 over the decoded textures
+};
+
+static float RldChar_F32(const u8 *at)
+{
+	const u32 bits = Rld_ReadLE32(at);
+	float value;
+
+	memcpy(&value, &bits, sizeof(value));
+	return value;
+}
+
+static int RldChar_F32Finite(const u8 *at)
+{
+	return (Rld_ReadLE32(at) & 0x7F800000u) != 0x7F800000u;
+}
+
+static int RldChar_NativeFail(struct RldCharNative *out, const char *rule, const char *format, ...)
+{
+	va_list args;
+
+	out->state = RLDCHAR_NATIVE_REFUSED;
+	out->rule = rule;
+	va_start(args, format);
+	vsnprintf(out->detail, sizeof(out->detail), format, args);
+	va_end(args);
+	out->detail[sizeof(out->detail) - 1u] = '\0';
+	return 0;
+}
+
+static void RldChar_FreeNative(struct RldCharNative *n)
+{
+	u32 t;
+
+	free(n->cnet);
+	for (t = 0; t < RLDCHAR_TEX_COUNT_MAX; t++)
+	{
+		free(n->texture[t].rgba);
+	}
+	memset(n, 0, sizeof(*n));
+}
+
+// The bound of CNET and CTXT, 0 for any other type. Apart from
+// RldChar_ChunkLimit on purpose: see the head of this section.
+static u64 RldChar_NativeLimit(const u8 *type)
+{
+	if (memcmp(type, "CNET", 4) == 0)
+	{
+		return RLDCHAR_LIMIT_CNET;
+	}
+	if (memcmp(type, "CTXT", 4) == 0)
+	{
+		return RLDCHAR_LIMIT_CTXT;
+	}
+	return 0;
+}
+
+// Rld_ReadChunk for CNET and CTXT, with their bound: compression 0,
+// size_stored == size_raw and the bound before the malloc, then the bytes and
+// their hash. NULL with a fixed text in *errorOut.
+static u8 *RldChar_ReadNativeChunk(struct RldReader *reader, int index, size_t *sizeOut, const char **errorOut)
+{
+	const u8 *entry = &reader->directory[index * RLD_DIR_ENTRY_SIZE];
+	const u64 offset = Rld_ReadLE64(&entry[0x08]);
+	const u64 stored = Rld_ReadLE64(&entry[0x10]);
+	const u64 raw = Rld_ReadLE64(&entry[0x18]);
+	const u32 method = Rld_ReadLE32(&entry[0x04]) & 0x0fu;
+	const u64 limit = RldChar_NativeLimit(entry);
+	u8 digest[32];
+	u8 *bytes;
+
+	*sizeOut = 0;
+	*errorOut = NULL;
+
+	if (limit == 0u)
+	{
+		*errorOut = "not a native chunk";
+		return NULL;
+	}
+	if (method != RLD_COMPRESSION_NONE)
+	{
+		*errorOut = "the chunk is compressed - compression is not part of the format";
+		return NULL;
+	}
+	if (stored != raw)
+	{
+		*errorOut = "size_stored and size_raw of the chunk differ";
+		return NULL;
+	}
+	if (raw > limit)
+	{
+		*errorOut = "the chunk is larger than its bound (32 MiB)";
+		return NULL;
+	}
+
+	bytes = (u8 *)malloc((size_t)raw ? (size_t)raw : 1u);
+	if (bytes == NULL)
+	{
+		*errorOut = "out of memory";
+		return NULL;
+	}
+	if (!Rld_ReadAt(reader, offset, bytes, (size_t)raw))
+	{
+		free(bytes);
+		*errorOut = "the chunk cannot be read - the file is shorter than its own directory says";
+		return NULL;
+	}
+
+	Sha256(bytes, (size_t)raw, digest);
+	if (memcmp(digest, &entry[RLD_DIR_HASH_OFFSET], 32) != 0)
+	{
+		free(bytes);
+		*errorOut = "hash mismatch - the chunk is altered or damaged";
+		return NULL;
+	}
+
+	*sizeOut = (size_t)raw;
+	return bytes;
+}
+
+// The hulls of the 47 frames of a model that passed RldChar_CheckModel (so
+// every offset below lies in the body). body is the model body (4 bytes into
+// CMDL), base what a pointer field holds for body offset 0: 0 before the
+// relocation (the packer), the address of the body after it (the game, whose
+// pointers are 32 bits). 1 = all 47 written.
+static int RldChar_FrameHulls(const u8 *body, u32 bodyBytes, u32 base, struct RldCharHull hulls[RLDCHAR_NET_POSES])
+{
+	u32 header;
+	u32 anims;
+	int scale[3];
+	u32 slot = 0;
+	u32 a;
+	int axis;
+
+	if (bodyBytes < RLDCHAR_MODEL_BYTES)
+	{
+		return 0;
+	}
+	header = Rld_ReadLE32(&body[RLDCHAR_MODEL_HEADERS]) - base;
+	if (((u64)header + RLDCHAR_HEADER_BYTES) > bodyBytes)
+	{
+		return 0;
+	}
+	anims = Rld_ReadLE32(&body[header + RLDCHAR_HEADER_ANIMS]) - base;
+	if (((u64)anims + (4u * RLDCHAR_ANIM_COUNT)) > bodyBytes)
+	{
+		return 0;
+	}
+	for (axis = 0; axis < 3; axis++)
+	{
+		scale[axis] = RldChar_SignedHalf(Rld_ReadLE16(&body[header + RLDCHAR_HEADER_SCALE + (2u * (u32)axis)]));
+	}
+
+	for (a = 0; a < RLDCHAR_ANIM_COUNT; a++)
+	{
+		const u32 anim = Rld_ReadLE32(&body[anims + (4u * a)]) - base;
+		u32 numFrames;
+		u32 frameSize;
+		u32 f;
+
+		if (((u64)anim + RLDCHAR_ANIM_BYTES) > bodyBytes)
+		{
+			return 0;
+		}
+		numFrames = Rld_ReadLE16(&body[anim + RLDCHAR_ANIM_NUM_FRAMES]) & 0x7fffu;
+		frameSize = Rld_ReadLE16(&body[anim + RLDCHAR_ANIM_FRAME_SIZE]);
+		if (numFrames != s_rldCharFrames[a])
+		{
+			return 0;
+		}
+
+		for (f = 0; f < numFrames; f++)
+		{
+			const u64 frame = (u64)anim + RLDCHAR_ANIM_BYTES + ((u64)f * frameSize);
+
+			if ((frame + RLDCHAR_FRAME_BYTES) > bodyBytes)
+			{
+				return 0;
+			}
+			for (axis = 0; axis < 3; axis++)
+			{
+				int pos = RldChar_SignedHalf(Rld_ReadLE16(&body[(size_t)frame + (2u * (u32)axis)]));
+				double one;
+				double two;
+
+				if (axis == 1)
+				{
+					pos &= ~1;
+				}
+				one = ((double)pos * (double)scale[axis]) / 4096.0;
+				two = ((double)(pos + RLDCHAR_RECORD_SPAN) * (double)scale[axis]) / 4096.0;
+				hulls[slot].lo[axis] = (one < two) ? one : two;
+				hulls[slot].hi[axis] = (one < two) ? two : one;
+			}
+			slot++;
+		}
+	}
+
+	return slot == RLDCHAR_NET_POSES;
+}
+
+// A section of the table, by tag. 1 = found (and *at its entry).
+static int RldChar_NetSection(const u8 *cnet, u32 table, u32 count, const char tag[4], const u8 **at)
+{
+	u32 s;
+
+	for (s = 0; s < count; s++)
+	{
+		const u8 *entry = &cnet[table + (s * RLDCHAR_NET_SECTION_BYTES)];
+
+		if (memcmp(entry, tag, 4) == 0)
+		{
+			*at = entry;
+			return 1;
+		}
+	}
+	return 0;
+}
+
+// The fixed layout of a known section: version 1, its stride and its size.
+// 1 = the section is there and fits (*dataOut set), 0 = absent (*dataOut NULL), -1 =
+// a finding (said).
+static int RldChar_NetKnown(const u8 *cnet, u32 table, u32 count, const char tag[4], u32 stride, u64 size, struct RldCharNative *out, const u8 **dataOut)
+{
+	const u8 *entry = NULL;
+
+	*dataOut = NULL;
+	if (!RldChar_NetSection(cnet, table, count, tag, &entry))
+	{
+		return 0;
+	}
+	if (Rld_ReadLE16(&entry[4]) != 1u)
+	{
+		RldChar_NativeFail(out, "CNET-5", "section %.4s has version %u - this reader knows 1", tag, (unsigned)Rld_ReadLE16(&entry[4]));
+		return -1;
+	}
+	if (Rld_ReadLE16(&entry[6]) != stride)
+	{
+		RldChar_NativeFail(out, "CNET-5", "section %.4s has stride %u, not %u", tag, (unsigned)Rld_ReadLE16(&entry[6]), (unsigned)stride);
+		return -1;
+	}
+	if ((u64)Rld_ReadLE32(&entry[12]) != size)
+	{
+		RldChar_NativeFail(out, "CNET-5", "section %.4s has %u bytes, its counts need %llu", tag, (unsigned)Rld_ReadLE32(&entry[12]),
+		                   (unsigned long long)size);
+		return -1;
+	}
+
+	*dataOut = &cnet[Rld_ReadLE32(&entry[8])];
+	return 1;
+}
+
+// The wheels (WHLS, renderer concept C.7.4): rule CNET-10.
+//   0x00 u32 vertexCount Nw 3..2048, 0x04 u32 triangleCount Tw 1..1024,
+//   0x08 u16 material (< M), 0x0A u16 flags 0, 0x0C f32 radius (0..64),
+//   0x10 f32 halfWidth (0..radius), 0x14 f32[3] front, 0x20 f32[3] rear
+//   (the wheel centers on +X, model units), 0x2C u32 reserved 0,
+//   0x30 Nw x {f32 position[3], f32 normal[3], f32 uv[2]} (center at the
+//   origin, axle along X, outside +X), then Tw x 3 u16 indices.
+//   Size exactly 0x30 + 32 Nw + 6 Tw.
+// The version of the section entry tells the two kinds apart; the layout is
+// the same byte for byte:
+//   1  the test wheel (the self-test's files, --native-probe): the -X wheels
+//      are the same mesh turned 180 degrees about Y, never mirrored.
+//   2  an author's wheel (make-char --wheel-model): the -X wheels are its
+//      mirror image (x negated, the normals mirrored, the winding turned), so
+//      that the outer side is outside on both sides. Rule CNET-12 below
+//      holds its texture to RLDCHAR_WHEEL_TEXTURE_EDGE_MAX.
+// A reader before version 2 refuses such a section by CNET-10 (version), and
+// the driver keeps its CMDL. Drawing either version is the game's part.
+static int RldChar_CheckWheels(const u8 *cnet, const u8 *entry, struct RldCharNative *out)
+{
+	const u32 size = Rld_ReadLE32(&entry[12]);
+	const u8 *w = &cnet[Rld_ReadLE32(&entry[8])];
+	u32 nw;
+	u32 tw;
+	double radius;
+	double halfWidth;
+	double point[2][3];
+	u32 i;
+	int k;
+	int axis;
+
+	if ((Rld_ReadLE16(&entry[4]) != RLDCHAR_WHEEL_VERSION_TEST) && (Rld_ReadLE16(&entry[4]) != RLDCHAR_WHEEL_VERSION_USER))
+	{
+		return RldChar_NativeFail(out, "CNET-10", "WHLS has version %u - this reader knows 1 and 2", (unsigned)Rld_ReadLE16(&entry[4]));
+	}
+	if (Rld_ReadLE16(&entry[6]) != 0u)
+	{
+		return RldChar_NativeFail(out, "CNET-10", "WHLS has stride %u, not 0 (its layout is its own)", (unsigned)Rld_ReadLE16(&entry[6]));
+	}
+	if (size < RLDCHAR_WHEEL_HEAD_BYTES)
+	{
+		return RldChar_NativeFail(out, "CNET-10", "WHLS has %u bytes, its head alone needs %u", (unsigned)size, (unsigned)RLDCHAR_WHEEL_HEAD_BYTES);
+	}
+	nw = Rld_ReadLE32(&w[0x00]);
+	tw = Rld_ReadLE32(&w[0x04]);
+	if ((nw < 3u) || (nw > RLDCHAR_WHEEL_VERTICES_MAX) || (tw < 1u) || (tw > RLDCHAR_WHEEL_TRIANGLES_MAX))
+	{
+		return RldChar_NativeFail(out, "CNET-10", "WHLS has %u vertices and %u triangles - it may have 3..%u and 1..%u", (unsigned)nw, (unsigned)tw,
+		                          (unsigned)RLDCHAR_WHEEL_VERTICES_MAX, (unsigned)RLDCHAR_WHEEL_TRIANGLES_MAX);
+	}
+	if ((u64)size != ((u64)RLDCHAR_WHEEL_HEAD_BYTES + ((u64)nw * RLDCHAR_WHEEL_VERTEX_BYTES) + ((u64)tw * 6u)))
+	{
+		return RldChar_NativeFail(out, "CNET-10", "WHLS has %u bytes, %u vertices and %u triangles need %u", (unsigned)size, (unsigned)nw, (unsigned)tw,
+		                          (unsigned)(RLDCHAR_WHEEL_HEAD_BYTES + (nw * RLDCHAR_WHEEL_VERTEX_BYTES) + (tw * 6u)));
+	}
+	if (Rld_ReadLE16(&w[0x08]) >= out->materialCount)
+	{
+		return RldChar_NativeFail(out, "CNET-10", "WHLS names material %u - there are %u", (unsigned)Rld_ReadLE16(&w[0x08]), (unsigned)out->materialCount);
+	}
+	if ((Rld_ReadLE16(&w[0x0A]) != 0u) || (Rld_ReadLE32(&w[0x2C]) != 0u))
+	{
+		return RldChar_NativeFail(out, "CNET-10", "WHLS flags or reserved field not 0");
+	}
+	for (i = 0; i < 9u; i++)
+	{
+		if (!RldChar_F32Finite(&w[0x0C + (4u * i)]))
+		{
+			return RldChar_NativeFail(out, "CNET-10", "WHLS: radius, width or a wheel point is not a finite number");
+		}
+	}
+	radius = RldChar_F32(&w[0x0C]);
+	halfWidth = RldChar_F32(&w[0x10]);
+	if ((radius <= 0.0) || (radius > RLDCHAR_WHEEL_RADIUS_MAX) || (halfWidth <= 0.0) || (halfWidth > radius))
+	{
+		return RldChar_NativeFail(out, "CNET-10", "WHLS: radius %.3f and half width %.3f - the radius may be 0..%.0f, the half width 0..radius", radius, halfWidth,
+		                          RLDCHAR_WHEEL_RADIUS_MAX);
+	}
+	for (k = 0; k < 2; k++)
+	{
+		for (axis = 0; axis < 3; axis++)
+		{
+			point[k][axis] = RldChar_F32(&w[0x14 + (12u * (u32)k) + (4u * (u32)axis)]);
+			if ((point[k][axis] < -RLDCHAR_WHEEL_POINT_MAX) || (point[k][axis] > RLDCHAR_WHEEL_POINT_MAX))
+			{
+				return RldChar_NativeFail(out, "CNET-10", "WHLS: a wheel point lies beyond %.0f model units", RLDCHAR_WHEEL_POINT_MAX);
+			}
+		}
+	}
+	if ((point[0][0] <= 0.0) || (point[1][0] <= 0.0) || (point[0][2] <= point[1][2]))
+	{
+		return RldChar_NativeFail(out, "CNET-10", "WHLS: the wheel points are the +X wheels, front before rear (front x %.3f z %.3f, rear x %.3f z %.3f)",
+		                          point[0][0], point[0][2], point[1][0], point[1][2]);
+	}
+
+	for (i = 0; i < nw; i++)
+	{
+		const u8 *v = &w[RLDCHAR_WHEEL_HEAD_BYTES + (i * RLDCHAR_WHEEL_VERTEX_BYTES)];
+		const double x = RldChar_F32(&v[0]);
+		const double y = RldChar_F32(&v[4]);
+		const double z = RldChar_F32(&v[8]);
+		const double nx = RldChar_F32(&v[12]);
+		const double ny = RldChar_F32(&v[16]);
+		const double nz = RldChar_F32(&v[20]);
+		const double n2 = (nx * nx) + (ny * ny) + (nz * nz);
+		const double r = (radius * (1.0 + RLDCHAR_WHEEL_SLACK)) + RLDCHAR_WHEEL_SLACK;
+		const double h = (halfWidth * (1.0 + RLDCHAR_WHEEL_SLACK)) + RLDCHAR_WHEEL_SLACK;
+		u32 c;
+
+		for (c = 0; c < 8u; c++)
+		{
+			if (!RldChar_F32Finite(&v[4u * c]))
+			{
+				return RldChar_NativeFail(out, "CNET-10", "WHLS vertex %u is not a finite number", (unsigned)i);
+			}
+		}
+		if ((x < -h) || (x > h) || (((y * y) + (z * z)) > (r * r)))
+		{
+			return RldChar_NativeFail(out, "CNET-10", "WHLS vertex %u (%.3f %.3f %.3f) lies outside the wheel's cylinder", (unsigned)i, x, y, z);
+		}
+		if ((n2 < RLDCHAR_NET_NORMAL_MIN) || (n2 > RLDCHAR_NET_NORMAL_MAX))
+		{
+			return RldChar_NativeFail(out, "CNET-10", "WHLS vertex %u: the normal is not of length 1", (unsigned)i);
+		}
+	}
+	for (i = 0; i < tw; i++)
+	{
+		const u8 *t = &w[RLDCHAR_WHEEL_HEAD_BYTES + (nw * RLDCHAR_WHEEL_VERTEX_BYTES) + (i * 6u)];
+		const u32 a = Rld_ReadLE16(&t[0]);
+		const u32 b = Rld_ReadLE16(&t[2]);
+		const u32 c = Rld_ReadLE16(&t[4]);
+
+		if ((a >= nw) || (b >= nw) || (c >= nw) || (a == b) || (b == c) || (a == c))
+		{
+			return RldChar_NativeFail(out, "CNET-10", "WHLS triangle %u (%u %u %u): an index >= %u or a vertex twice", (unsigned)i, (unsigned)a, (unsigned)b,
+			                          (unsigned)c, (unsigned)nw);
+		}
+	}
+
+	out->wheel = w;
+	out->wheelVersion = Rld_ReadLE16(&entry[4]);
+	out->wheelVertexCount = nw;
+	out->wheelTriangleCount = tw;
+	return 1;
+}
+
+// CNET-1..10 on the chunk as stored; fills the counts and pointers of out.
+// chriFlags: RLDCHAR_FLAG_NO_WHEELS makes WHLS irrelevant (not checked, not
+// used). hulls: the 47 CMDL frames (RldChar_FrameHulls). 1 = passed.
+static int RldChar_CheckNet(const u8 *cnet, size_t size, u32 chriFlags, const struct RldCharHull hulls[RLDCHAR_NET_POSES], struct RldCharNative *out)
+{
+	u32 headerBytes;
+	u32 sectionCount;
+	u32 table;
+	u32 tableEnd;
+	u32 poseEncoding;
+	u32 slots;
+	u32 i;
+	u32 j;
+	int axis;
+	int textured = 0;
+	const u8 *entry = NULL;
+	int r;
+
+	// CNET-1: a head this reader knows.
+	if ((size < RLDCHAR_NET_HEAD_BYTES) || (Rld_ReadLE16(&cnet[0x00]) != RLDCHAR_NET_VERSION))
+	{
+		return RldChar_NativeFail(out, "CNET-1", "%s", (size < RLDCHAR_NET_HEAD_BYTES) ? "CNET is shorter than its 64-byte head" : "CNET has a version this reader does not know (1)");
+	}
+
+	// CNET-2: the fixed fields.
+	headerBytes = Rld_ReadLE16(&cnet[0x04]);
+	poseEncoding = Rld_ReadLE16(&cnet[0x16]);
+	if ((Rld_ReadLE16(&cnet[0x02]) != 0u) || (Rld_ReadLE16(&cnet[0x32]) != 0u) || (Rld_ReadLE32(&cnet[0x34]) != 0u) || (Rld_ReadLE32(&cnet[0x38]) != 0u) ||
+	    (Rld_ReadLE32(&cnet[0x3C]) != 0u))
+	{
+		return RldChar_NativeFail(out, "CNET-2", "flags or a reserved field of the head is not 0");
+	}
+	if ((headerBytes < RLDCHAR_NET_HEAD_BYTES) || ((headerBytes & 3u) != 0u) || (headerBytes > size))
+	{
+		return RldChar_NativeFail(out, "CNET-2", "headerBytes is %u - at least 64, a multiple of 4, inside the chunk", (unsigned)headerBytes);
+	}
+	out->indexSize = Rld_ReadLE16(&cnet[0x10]);
+	if ((poseEncoding != RLDCHAR_NET_POSE_FLOAT) || ((out->indexSize != 2u) && (out->indexSize != 4u)))
+	{
+		return RldChar_NativeFail(out, "CNET-2", "pose encoding %u and index size %u - this reader knows encoding 1 and sizes 2 and 4", (unsigned)poseEncoding,
+		                          (unsigned)out->indexSize);
+	}
+
+	// CNET-3: counts and budget.
+	out->vertexCount = Rld_ReadLE32(&cnet[0x08]);
+	out->triangleCount = Rld_ReadLE32(&cnet[0x0C]);
+	out->materialCount = Rld_ReadLE16(&cnet[0x12]);
+	out->poseCount = Rld_ReadLE16(&cnet[0x14]);
+	out->textureCount = Rld_ReadLE16(&cnet[0x30]);
+	if ((out->vertexCount < 3u) || (out->vertexCount > RLDCHAR_NET_VERTICES_MAX) || (out->triangleCount < 1u) ||
+	    (out->triangleCount > RLDCHAR_NET_TRIANGLES_MAX) || (out->materialCount < 1u) || (out->materialCount > RLDCHAR_NET_MATERIALS_MAX))
+	{
+		return RldChar_NativeFail(out, "CNET-3", "%u vertices, %u triangles, %u materials - allowed 3..%u, 1..%u, 1..%u", (unsigned)out->vertexCount,
+		                          (unsigned)out->triangleCount, (unsigned)out->materialCount, (unsigned)RLDCHAR_NET_VERTICES_MAX,
+		                          (unsigned)RLDCHAR_NET_TRIANGLES_MAX, (unsigned)RLDCHAR_NET_MATERIALS_MAX);
+	}
+	if (((out->poseCount != 0u) && (out->poseCount != RLDCHAR_NET_POSES)) || (out->textureCount > RLDCHAR_TEX_COUNT_MAX))
+	{
+		return RldChar_NativeFail(out, "CNET-3", "%u poses and %u textures - a character has 0 or 47 poses and at most %u textures", (unsigned)out->poseCount,
+		                          (unsigned)out->textureCount, (unsigned)RLDCHAR_TEX_COUNT_MAX);
+	}
+	if ((out->indexSize == 2u) && (out->vertexCount > 65536u))
+	{
+		return RldChar_NativeFail(out, "CNET-3", "%u vertices do not fit 16-bit indices", (unsigned)out->vertexCount);
+	}
+
+	// CNET-4: the section table.
+	sectionCount = Rld_ReadLE16(&cnet[0x06]);
+	table = headerBytes;
+	tableEnd = table + (sectionCount * RLDCHAR_NET_SECTION_BYTES);
+	if ((sectionCount < 1u) || (sectionCount > RLDCHAR_NET_SECTIONS_MAX) || (tableEnd > size))
+	{
+		return RldChar_NativeFail(out, "CNET-4", "%u sections - 1..%u, and the table inside the chunk", (unsigned)sectionCount, (unsigned)RLDCHAR_NET_SECTIONS_MAX);
+	}
+	for (i = 0; i < sectionCount; i++)
+	{
+		const u8 *e = &cnet[table + (i * RLDCHAR_NET_SECTION_BYTES)];
+		const u32 offset = Rld_ReadLE32(&e[8]);
+		const u32 bytes = Rld_ReadLE32(&e[12]);
+
+		if (((offset & 3u) != 0u) || (offset < tableEnd) || (offset > size) || (bytes > (size - offset)))
+		{
+			return RldChar_NativeFail(out, "CNET-4", "section %.4s lies at %u with %u bytes - 4-aligned, behind the table, inside the chunk", (const char *)e,
+			                          (unsigned)offset, (unsigned)bytes);
+		}
+		for (j = 0; j < i; j++)
+		{
+			const u8 *o = &cnet[table + (j * RLDCHAR_NET_SECTION_BYTES)];
+			const u32 otherOffset = Rld_ReadLE32(&o[8]);
+			const u32 otherBytes = Rld_ReadLE32(&o[12]);
+
+			if (memcmp(e, o, 4) == 0)
+			{
+				return RldChar_NativeFail(out, "CNET-4", "section %.4s appears twice", (const char *)e);
+			}
+			if ((bytes != 0u) && (otherBytes != 0u) && (offset < (otherOffset + otherBytes)) && (otherOffset < (offset + bytes)))
+			{
+				return RldChar_NativeFail(out, "CNET-4", "sections %.4s and %.4s overlap", (const char *)o, (const char *)e);
+			}
+		}
+	}
+
+	// CNET-5: the known sections, their layout and the required ones.
+	slots = (out->poseCount == 0u) ? 1u : out->poseCount;
+	if (((r = RldChar_NetKnown(cnet, table, sectionCount, "POSN", RLDCHAR_NET_VERTEX_BYTES, (u64)slots * out->vertexCount * RLDCHAR_NET_VERTEX_BYTES, out,
+	                           &out->poses)) < 0) ||
+	    ((r == 0) && !RldChar_NativeFail(out, "CNET-5", "the required section POSN is missing")))
+	{
+		return 0;
+	}
+	if (((r = RldChar_NetKnown(cnet, table, sectionCount, "TRIS", 3u * out->indexSize, (u64)out->triangleCount * 3u * out->indexSize, out,
+	                           &out->indices)) < 0) ||
+	    ((r == 0) && !RldChar_NativeFail(out, "CNET-5", "the required section TRIS is missing")))
+	{
+		return 0;
+	}
+	if (((r = RldChar_NetKnown(cnet, table, sectionCount, "TMAT", 2u, (u64)out->triangleCount * 2u, out, &out->triangleMaterials)) < 0) ||
+	    ((r == 0) && !RldChar_NativeFail(out, "CNET-5", "the required section TMAT is missing")))
+	{
+		return 0;
+	}
+	if (((r = RldChar_NetKnown(cnet, table, sectionCount, "MATL", RLDCHAR_NET_MATERIAL_BYTES, (u64)out->materialCount * RLDCHAR_NET_MATERIAL_BYTES, out,
+	                           &out->materials)) < 0) ||
+	    ((r == 0) && !RldChar_NativeFail(out, "CNET-5", "the required section MATL is missing")))
+	{
+		return 0;
+	}
+	if ((RldChar_NetKnown(cnet, table, sectionCount, "UV00", 8u, (u64)out->vertexCount * 8u, out, &out->uv) < 0) ||
+	    (RldChar_NetKnown(cnet, table, sectionCount, "COL0", 4u, (u64)out->vertexCount * 4u, out, &out->colors) < 0))
+	{
+		return 0;
+	}
+
+	// CNET-6: numbers. The head's hull, then every pose position inside it,
+	// every normal of length 1, every UV finite.
+	for (axis = 0; axis < 3; axis++)
+	{
+		if (!RldChar_F32Finite(&cnet[0x18 + (4 * axis)]) || !RldChar_F32Finite(&cnet[0x24 + (4 * axis)]))
+		{
+			return RldChar_NativeFail(out, "CNET-6", "the hull of the head is not a finite number");
+		}
+		out->hullMin[axis] = RldChar_F32(&cnet[0x18 + (4 * axis)]);
+		out->hullMax[axis] = RldChar_F32(&cnet[0x24 + (4 * axis)]);
+		if (out->hullMin[axis] > out->hullMax[axis])
+		{
+			return RldChar_NativeFail(out, "CNET-6", "the hull of the head is turned inside out on axis %d", axis);
+		}
+	}
+	for (i = 0; i < (slots * out->vertexCount); i++)
+	{
+		const u8 *v = &out->poses[i * RLDCHAR_NET_VERTEX_BYTES];
+		double n2 = 0.0;
+		u32 c;
+
+		for (c = 0; c < 6u; c++)
+		{
+			if (!RldChar_F32Finite(&v[4u * c]))
+			{
+				return RldChar_NativeFail(out, "CNET-6", "pose %u vertex %u is not a finite number", (unsigned)(i / out->vertexCount),
+				                          (unsigned)(i % out->vertexCount));
+			}
+		}
+		for (axis = 0; axis < 3; axis++)
+		{
+			const float p = RldChar_F32(&v[4 * axis]);
+			const double n = RldChar_F32(&v[12 + (4 * axis)]);
+
+			if ((p < out->hullMin[axis]) || (p > out->hullMax[axis]))
+			{
+				return RldChar_NativeFail(out, "CNET-6", "pose %u vertex %u lies outside the hull of the head", (unsigned)(i / out->vertexCount),
+				                          (unsigned)(i % out->vertexCount));
+			}
+			n2 += n * n;
+		}
+		if ((n2 < RLDCHAR_NET_NORMAL_MIN) || (n2 > RLDCHAR_NET_NORMAL_MAX))
+		{
+			return RldChar_NativeFail(out, "CNET-6", "pose %u vertex %u: the normal is not of length 1 (length^2 %.4f)", (unsigned)(i / out->vertexCount),
+			                          (unsigned)(i % out->vertexCount), n2);
+		}
+	}
+	if (out->uv != NULL)
+	{
+		for (i = 0; i < (2u * out->vertexCount); i++)
+		{
+			if (!RldChar_F32Finite(&out->uv[4u * i]))
+			{
+				return RldChar_NativeFail(out, "CNET-6", "the UV of vertex %u is not a finite number", (unsigned)(i / 2u));
+			}
+		}
+	}
+
+	// CNET-7: topology.
+	for (i = 0; i < out->triangleCount; i++)
+	{
+		u32 idx[3];
+		u32 c;
+
+		for (c = 0; c < 3u; c++)
+		{
+			const u8 *at = &out->indices[((i * 3u) + c) * out->indexSize];
+
+			idx[c] = (out->indexSize == 2u) ? Rld_ReadLE16(at) : Rld_ReadLE32(at);
+		}
+		if ((idx[0] >= out->vertexCount) || (idx[1] >= out->vertexCount) || (idx[2] >= out->vertexCount))
+		{
+			return RldChar_NativeFail(out, "CNET-7", "triangle %u names vertex %u - there are %u", (unsigned)i,
+			                          (unsigned)((idx[0] >= out->vertexCount) ? idx[0] : ((idx[1] >= out->vertexCount) ? idx[1] : idx[2])),
+			                          (unsigned)out->vertexCount);
+		}
+		if ((idx[0] == idx[1]) || (idx[1] == idx[2]) || (idx[0] == idx[2]))
+		{
+			return RldChar_NativeFail(out, "CNET-7", "triangle %u names a vertex twice", (unsigned)i);
+		}
+		if (Rld_ReadLE16(&out->triangleMaterials[2u * i]) >= out->materialCount)
+		{
+			return RldChar_NativeFail(out, "CNET-7", "triangle %u has material %u - there are %u", (unsigned)i,
+			                          (unsigned)Rld_ReadLE16(&out->triangleMaterials[2u * i]), (unsigned)out->materialCount);
+		}
+	}
+
+	// CNET-8: materials.
+	for (i = 0; i < out->materialCount; i++)
+	{
+		const u8 *m = &out->materials[i * RLDCHAR_NET_MATERIAL_BYTES];
+		const int texture = RldChar_SignedHalf(Rld_ReadLE16(&m[4]));
+
+		for (j = 8; j < RLDCHAR_NET_MATERIAL_BYTES; j++)
+		{
+			if (m[j] != 0u)
+			{
+				return RldChar_NativeFail(out, "CNET-8", "material %u: a reserved byte is not 0", (unsigned)i);
+			}
+		}
+		if ((m[6] > RLDCHAR_NET_ALPHA_MAX) || ((m[7] & ~RLDCHAR_NET_MATERIAL_NEAREST) != 0u))
+		{
+			return RldChar_NativeFail(out, "CNET-8", "material %u: alpha mode %u, flags 0x%02x - modes 0 opaque, 1 mask, 2 blend; flag bit 0 only", (unsigned)i,
+			                          (unsigned)m[6], (unsigned)m[7]);
+		}
+		if ((texture < -1) || (texture >= (int)out->textureCount))
+		{
+			return RldChar_NativeFail(out, "CNET-8", "material %u names texture %d - the head names %u", (unsigned)i, texture, (unsigned)out->textureCount);
+		}
+		textured |= (texture >= 0);
+	}
+	if (textured && (out->uv == NULL))
+	{
+		return RldChar_NativeFail(out, "CNET-8", "a material has a texture, but there is no UV00 section");
+	}
+
+	// CNET-9: every pose inside the hull of its CMDL frame - a still pose
+	// inside every frame. Else the renderer culls too early at the screen's
+	// edge and the ordering range is wrong (renderer concept C.4.3).
+	for (i = 0; i < RLDCHAR_NET_POSES; i++)
+	{
+		const u8 *pose = &out->poses[((out->poseCount == 0u) ? 0u : i) * out->vertexCount * RLDCHAR_NET_VERTEX_BYTES];
+
+		for (j = 0; j < out->vertexCount; j++)
+		{
+			for (axis = 0; axis < 3; axis++)
+			{
+				const double p = RldChar_F32(&pose[(j * RLDCHAR_NET_VERTEX_BYTES) + (4u * (u32)axis)]);
+
+				if ((p < hulls[i].lo[axis]) || (p > hulls[i].hi[axis]))
+				{
+					return RldChar_NativeFail(out, "CNET-9", "pose %u vertex %u lies outside CMDL frame %u (axis %d: %.3f, frame %.3f..%.3f)",
+					                          (unsigned)((out->poseCount == 0u) ? 0u : i), (unsigned)j, (unsigned)i, axis, p, hulls[i].lo[axis],
+					                          hulls[i].hi[axis]);
+				}
+			}
+		}
+	}
+
+	// CNET-10: the wheels. Hidden by CHRI: not looked at. Else required - a
+	// native body is never drawn with the sprite wheels (renderer concept C.12).
+	if ((chriFlags & RLDCHAR_FLAG_NO_WHEELS) == 0u)
+	{
+		if (!RldChar_NetSection(cnet, table, sectionCount, "WHLS", &entry))
+		{
+			return RldChar_NativeFail(out, "CNET-10", "no WHLS section, and CHRI does not hide the wheels");
+		}
+		if (!RldChar_CheckWheels(cnet, entry, out))
+		{
+			return 0;
+		}
+	}
+
+	return 1;
+}
+
+// A power of two in RLDCHAR_TEX_EDGE_MIN..MAX.
+static int RldChar_TexEdge(u32 edge)
+{
+	return (edge >= RLDCHAR_TEX_EDGE_MIN) && (edge <= RLDCHAR_TEX_EDGE_MAX) && ((edge & (edge - 1u)) == 0u);
+}
+
+// RGBA8 bytes of a texture with every mip level (max(1, w >> n) x max(1, h >> n)).
+static u64 RldChar_TexMipBytes(u32 width, u32 height)
+{
+	u64 sum = 0;
+
+	for (;;)
+	{
+		sum += (u64)width * height * 4u;
+		if ((width == 1u) && (height == 1u))
+		{
+			return sum;
+		}
+		width = (width > 1u) ? (width >> 1) : 1u;
+		height = (height > 1u) ? (height >> 1) : 1u;
+	}
+}
+
+// CTXT-1..8 on the chunk as stored, then every texture decoded into
+// out->texture[] (one after the other; a PNG is freed right after its
+// pixels exist). 1 = passed.
+static int RldChar_CheckTextures(const u8 *ctxt, size_t size, struct RldCharNative *out)
+{
+	u32 count;
+	u32 tableEnd;
+	u64 budget = 0;
+	u32 i;
+	u32 j;
+
+	// CTXT-1
+	if ((size < RLDCHAR_TEX_HEAD_BYTES) || (Rld_ReadLE16(&ctxt[0x00]) != RLDCHAR_TEX_VERSION))
+	{
+		return RldChar_NativeFail(out, "CTXT-1", "%s", (size < RLDCHAR_TEX_HEAD_BYTES) ? "CTXT is shorter than its 16-byte head" : "CTXT has a version this reader does not know (1)");
+	}
+
+	// CTXT-2
+	count = Rld_ReadLE16(&ctxt[0x04]);
+	tableEnd = RLDCHAR_TEX_HEAD_BYTES + (count * RLDCHAR_TEX_ENTRY_BYTES);
+	if ((Rld_ReadLE16(&ctxt[0x02]) != 0u) || (Rld_ReadLE16(&ctxt[0x06]) != RLDCHAR_TEX_ENTRY_BYTES) || (Rld_ReadLE32(&ctxt[0x08]) != 0u) ||
+	    (Rld_ReadLE32(&ctxt[0x0C]) != 0u))
+	{
+		return RldChar_NativeFail(out, "CTXT-2", "flags, entry size (64) or a reserved field of the head");
+	}
+	if ((count < 1u) || (count > RLDCHAR_TEX_COUNT_MAX) || (tableEnd > size))
+	{
+		return RldChar_NativeFail(out, "CTXT-2", "%u entries - 1..%u, and the table inside the chunk", (unsigned)count, (unsigned)RLDCHAR_TEX_COUNT_MAX);
+	}
+
+	for (i = 0; i < count; i++)
+	{
+		const u8 *e = &ctxt[RLDCHAR_TEX_HEAD_BYTES + (i * RLDCHAR_TEX_ENTRY_BYTES)];
+		const u32 flags = Rld_ReadLE16(&e[0x02]);
+		const u32 width = Rld_ReadLE16(&e[0x04]);
+		const u32 height = Rld_ReadLE16(&e[0x06]);
+		const u32 offset = Rld_ReadLE32(&e[0x08]);
+		const u32 bytes = Rld_ReadLE32(&e[0x0C]);
+
+		// CTXT-3
+		for (j = 0x30; j < RLDCHAR_TEX_ENTRY_BYTES; j++)
+		{
+			if (e[j] != 0u)
+			{
+				return RldChar_NativeFail(out, "CTXT-3", "texture %u: a reserved byte is not 0", (unsigned)i);
+			}
+		}
+		if ((e[0x00] != RLDCHAR_TEX_FORMAT_PNG) || (e[0x01] != 0u))
+		{
+			return RldChar_NativeFail(out, "CTXT-3", "texture %u has format %u - this reader knows 1 (PNG)", (unsigned)i, (unsigned)e[0x00]);
+		}
+		if (((flags & ~RLDCHAR_TEX_FLAGS_KNOWN) != 0u) || (((flags >> RLDCHAR_TEX_WRAP_U_SHIFT) & 3u) == 3u) || (((flags >> RLDCHAR_TEX_WRAP_V_SHIFT) & 3u) == 3u) ||
+		    (((flags >> RLDCHAR_TEX_ALPHA_SHIFT) & 3u) == 3u))
+		{
+			return RldChar_NativeFail(out, "CTXT-3", "texture %u has flags 0x%04x - an unknown bit or a reserved wrap or alpha value", (unsigned)i, (unsigned)flags);
+		}
+
+		// CTXT-4
+		if (!RldChar_TexEdge(width) || !RldChar_TexEdge(height))
+		{
+			return RldChar_NativeFail(out, "CTXT-4", "texture %u is %u x %u - each side a power of two from %u to %u", (unsigned)i, (unsigned)width,
+			                          (unsigned)height, (unsigned)RLDCHAR_TEX_EDGE_MIN, (unsigned)RLDCHAR_TEX_EDGE_MAX);
+		}
+
+		// CTXT-5
+		if ((offset < tableEnd) || (offset > size) || (bytes < 8u) || (bytes > (size - offset)))
+		{
+			return RldChar_NativeFail(out, "CTXT-5", "texture %u: %u bytes at %u - behind the table and inside the chunk", (unsigned)i, (unsigned)bytes,
+			                          (unsigned)offset);
+		}
+		for (j = 0; j < i; j++)
+		{
+			const u8 *o = &ctxt[RLDCHAR_TEX_HEAD_BYTES + (j * RLDCHAR_TEX_ENTRY_BYTES)];
+			const u32 otherOffset = Rld_ReadLE32(&o[0x08]);
+			const u32 otherBytes = Rld_ReadLE32(&o[0x0C]);
+
+			if ((offset < (otherOffset + otherBytes)) && (otherOffset < (offset + bytes)))
+			{
+				return RldChar_NativeFail(out, "CTXT-5", "the bytes of textures %u and %u overlap", (unsigned)j, (unsigned)i);
+			}
+		}
+
+		// CTXT-6
+		budget += RldChar_TexMipBytes(width, height);
+		if (budget > RLDCHAR_TEX_GPU_BYTES_MAX)
+		{
+			return RldChar_NativeFail(out, "CTXT-6", "the textures up to %u need %llu bytes with their mip levels - at most %u", (unsigned)i,
+			                          (unsigned long long)budget, (unsigned)RLDCHAR_TEX_GPU_BYTES_MAX);
+		}
+	}
+
+	// CTXT-7
+	for (i = 0; i < count; i++)
+	{
+		const u8 *e = &ctxt[RLDCHAR_TEX_HEAD_BYTES + (i * RLDCHAR_TEX_ENTRY_BYTES)];
+		u8 digest[32];
+
+		Sha256(&ctxt[Rld_ReadLE32(&e[0x08])], Rld_ReadLE32(&e[0x0C]), digest);
+		if (memcmp(digest, &e[0x10], 32) != 0)
+		{
+			return RldChar_NativeFail(out, "CTXT-7", "texture %u: hash mismatch - its bytes are altered or damaged", (unsigned)i);
+		}
+	}
+
+	// CTXT-8: decode, one after the other. First the PNG's own head (the
+	// signature, IHDR as the first chunk: width, height, depth, color type)
+	// against the entry, so that a PNG larger than its entry is refused
+	// before a byte is inflated: the decoder alone takes up to 4096 x 4096 at
+	// 16 bits, far beyond the budget CTXT-6 counted from the entries.
+	for (i = 0; i < count; i++)
+	{
+		static const u8 signature[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+		const u8 *e = &ctxt[RLDCHAR_TEX_HEAD_BYTES + (i * RLDCHAR_TEX_ENTRY_BYTES)];
+		const u32 width = Rld_ReadLE16(&e[0x04]);
+		const u32 height = Rld_ReadLE16(&e[0x06]);
+		const u8 *png = &ctxt[Rld_ReadLE32(&e[0x08])];
+		const u32 pngBytes = Rld_ReadLE32(&e[0x0C]);
+		struct RldPngImage image;
+		const char *why = NULL;
+		int result;
+
+		if ((pngBytes < 33u) || (memcmp(png, signature, 8u) != 0) || (RldPng_BE32(&png[8]) != 13u) || (memcmp(&png[12], "IHDR", 4u) != 0))
+		{
+			return RldChar_NativeFail(out, "CTXT-8", "texture %u: not a PNG that starts with its IHDR", (unsigned)i);
+		}
+		if ((RldPng_BE32(&png[16]) != width) || (RldPng_BE32(&png[20]) != height) || (png[24] != 8u) || (png[25] != 6u))
+		{
+			return RldChar_NativeFail(out, "CTXT-8",
+			                          "texture %u: the PNG head says %u x %u, color type %u, depth %u - the entry says %u x %u, and CTXT holds 8-bit RGBA "
+			                          "(not decoded)",
+			                          (unsigned)i, (unsigned)RldPng_BE32(&png[16]), (unsigned)RldPng_BE32(&png[20]), (unsigned)png[25],
+			                          (unsigned)png[24], (unsigned)width, (unsigned)height);
+		}
+
+		memset(&image, 0, sizeof(image));
+		result = RldPng_Decode(&ctxt[Rld_ReadLE32(&e[0x08])], Rld_ReadLE32(&e[0x0C]), &image, &why);
+		if (result != RLDPNG_OK)
+		{
+			RldPng_Free(&image);
+			return RldChar_NativeFail(out, "CTXT-8", "texture %u: %s", (unsigned)i, (why != NULL) ? why : "the PNG cannot be read");
+		}
+		if ((image.width != width) || (image.height != height) || (image.bitDepth != 8u) || (image.colorType != 6u))
+		{
+			RldChar_NativeFail(out, "CTXT-8", "texture %u: the PNG is %u x %u, color type %u, depth %u - the entry says %u x %u, and CTXT holds 8-bit RGBA",
+			                   (unsigned)i, (unsigned)image.width, (unsigned)image.height, (unsigned)image.colorType, (unsigned)image.bitDepth,
+			                   (unsigned)width, (unsigned)height);
+			RldPng_Free(&image);
+			return 0;
+		}
+
+		out->texture[i].width = width;
+		out->texture[i].height = height;
+		out->texture[i].flags = Rld_ReadLE16(&e[0x02]);
+		out->texture[i].rgba = image.rgba;
+		out->textureBytes += (u64)width * height * 4u;
+	}
+
+	return (int)count;
+}
+
+// A refusal keeps only its rule and detail: everything held is let go.
+static void RldChar_NativeDrop(struct RldCharNative *out)
+{
+	const char *rule = out->rule;
+	char detail[sizeof(out->detail)];
+
+	memcpy(detail, out->detail, sizeof(detail));
+	RldChar_FreeNative(out);
+	out->state = RLDCHAR_NATIVE_REFUSED;
+	out->rule = rule;
+	memcpy(out->detail, detail, sizeof(detail));
+}
+
+// Step 1 of the native part: out->cnet (owned, as stored) against CNET-1..10.
+// 1 = passed; else out is REFUSED and holds nothing.
+static int RldChar_NativeNet(struct RldCharNative *out, u32 chriFlags, const struct RldCharHull hulls[RLDCHAR_NET_POSES])
+{
+	if (!RldChar_CheckNet(out->cnet, out->cnetSize, chriFlags, hulls, out))
+	{
+		RldChar_NativeDrop(out);
+		return 0;
+	}
+	return 1;
+}
+
+// CNET-12, an author's wheel (WHLS version 2) only: its one material (the
+// field of WHLS) has no texture - one color - or a texture whose sides are at
+// most RLDCHAR_WHEEL_TEXTURE_EDGE_MAX. The material and the texture may be
+// the body's as well; the bound then holds for that texture. Run once the
+// textures are decoded (their sides are known). 1 = passed.
+static int RldChar_CheckUserWheel(struct RldCharNative *out)
+{
+	const u8 *m;
+	int texture;
+
+	if ((out->wheel == NULL) || (out->wheelVersion != RLDCHAR_WHEEL_VERSION_USER))
+	{
+		return 1;
+	}
+	m = &out->materials[(size_t)Rld_ReadLE16(&out->wheel[0x08]) * RLDCHAR_NET_MATERIAL_BYTES];
+	texture = RldChar_SignedHalf(Rld_ReadLE16(&m[4]));
+	if ((texture >= 0) && ((out->texture[texture].width > RLDCHAR_WHEEL_TEXTURE_EDGE_MAX) || (out->texture[texture].height > RLDCHAR_WHEEL_TEXTURE_EDGE_MAX)))
+	{
+		return RldChar_NativeFail(out, "CNET-12", "the wheel (WHLS version 2) has texture %d of %u x %u - a wheel's texture may have %u on each side",
+		                          texture, (unsigned)out->texture[texture].width, (unsigned)out->texture[texture].height,
+		                          (unsigned)RLDCHAR_WHEEL_TEXTURE_EDGE_MAX);
+	}
+	return 1;
+}
+
+// Step 2: CNET-11 (the textures CNET names are the ones CTXT holds), then
+// CTXT-1..8 on the chunk as stored (the caller's; present 0 = no CTXT), then
+// CNET-12 (an author's wheel and its texture).
+// out READY, or REFUSED and holding nothing.
+static void RldChar_NativeTextures(struct RldCharNative *out, const u8 *ctxt, size_t size, int present)
+{
+	if ((out->textureCount == 0u) && !present)
+	{
+		// no texture at all: an author's wheel is one color, CNET-12 holds
+		out->state = RLDCHAR_NATIVE_READY;
+		return;
+	}
+	if ((out->textureCount == 0u) || !present)
+	{
+		RldChar_NativeFail(out, "CNET-11", "CNET names %u textures, %s", (unsigned)out->textureCount, present ? "but there is a CTXT" : "but there is no CTXT");
+		RldChar_NativeDrop(out);
+		return;
+	}
+	if ((size >= RLDCHAR_TEX_HEAD_BYTES) && (Rld_ReadLE16(&ctxt[0x00]) == RLDCHAR_TEX_VERSION) && (Rld_ReadLE16(&ctxt[0x04]) != out->textureCount))
+	{
+		RldChar_NativeFail(out, "CNET-11", "CNET names %u textures, CTXT holds %u", (unsigned)out->textureCount, (unsigned)Rld_ReadLE16(&ctxt[0x04]));
+		RldChar_NativeDrop(out);
+		return;
+	}
+	if ((RldChar_CheckTextures(ctxt, size, out) == 0) || !RldChar_CheckUserWheel(out))
+	{
+		RldChar_NativeDrop(out);
+		return;
+	}
+	out->state = RLDCHAR_NATIVE_READY;
+}
+
+// THE ENTRY. reader is open (Rld_OpenAs with s_rldCharFormat); chriFlags the
+// flags of its CHRI; hulls the 47 frames of its CMDL (RldChar_FrameHulls).
+// out is written in full: NONE without CNET, READY, or REFUSED with the rule.
+// A REFUSED out holds nothing; a READY one owns cnet and the decoded
+// textures (RldChar_FreeNative). CTXT is read only after CNET passed, and
+// only when there is one.
+static void RldChar_ReadNative(struct RldReader *reader, u32 chriFlags, const struct RldCharHull hulls[RLDCHAR_NET_POSES], struct RldCharNative *out)
+{
+	const char *why = NULL;
+	size_t size = 0;
+	int netIndex = -1;
+	int texIndex = -1;
+	u8 *ctxt = NULL;
+
+	memset(out, 0, sizeof(*out));
+	out->state = RLDCHAR_NATIVE_NONE;
+
+	if ((Rld_FindEntry(reader, "CNET", &netIndex) == NULL) || (netIndex < 0))
+	{
+		return;
+	}
+
+	out->cnet = RldChar_ReadNativeChunk(reader, netIndex, &out->cnetSize, &why);
+	if (out->cnet == NULL)
+	{
+		RldChar_NativeFail(out, "native-chunk", "CNET: %s", (why != NULL) ? why : "cannot be read");
+		return;
+	}
+	if (!RldChar_NativeNet(out, chriFlags, hulls))
+	{
+		return;
+	}
+
+	if ((Rld_FindEntry(reader, "CTXT", &texIndex) != NULL) && (texIndex >= 0) && (out->textureCount != 0u))
+	{
+		ctxt = RldChar_ReadNativeChunk(reader, texIndex, &size, &why);
+		if (ctxt == NULL)
+		{
+			RldChar_NativeFail(out, "native-chunk", "CTXT: %s", (why != NULL) ? why : "cannot be read");
+			RldChar_NativeDrop(out);
+			return;
+		}
+	}
+
+	RldChar_NativeTextures(out, ctxt, size, texIndex >= 0);
+	free(ctxt);
 }
 
 #endif // RLDCHAR_INC

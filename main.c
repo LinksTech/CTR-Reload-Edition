@@ -71,6 +71,7 @@
 #include "platform/native_replay_scheduler.c"
 #include "platform/native_gfx_vk.c"
 #include "platform/native_gfx.c"
+#include "platform/native_tex.c"
 #include "platform/native_renderer.c"
 #include "platform/native_savestate.c"
 #include "platform/native_state.c"
@@ -78,6 +79,12 @@
 #include "platform/native_preview.c"
 #include "platform/native_testfiles.c"
 #include "platform/native_chars.c"
+#include "platform/native_char_gpu.c"
+#include "platform/native_twin.c"
+#include "platform/native_wheels.c"
+#include "platform/native_render_layer.c"
+#include "platform/native_probe.c"
+#include "platform/native_depth_check.c"
 
 #ifndef CC
 #if defined(__GNUC__)
@@ -225,7 +232,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--deterministic", "", "measuring mode: VSync emits only the VBlanks the game asks for and never catches up by wall clock, lateness is dropped; audio is rendered per VBlank; keyboard, mouse, pads (buttons, triggers and sticks) and window focus do not reach the game, what is kept away is counted at exit except pad axes (closing the window still ends the run)"},
     {"--inject-delay", "<seed>", "disturbs the clock: about every 8th frame and boot VSync call is held 20..80 ms, which ones purely from the seed (0 = off)"},
     {"--frame-log", "", "frame log, one line per frame"},
-    {"--shot", "<vblanks>", "snapshot of the internal frame at this VBlank, or an ascending list 131,133,140 (up to 128)"},
+    {"--shot", "<vblanks>", "snapshot of the internal frame at this VBlank, or an ascending list 131,133,140 (up to 128, more ends the start)"},
     {"--shot-name", "<file>", "file name of the snapshot (default SCREENSHOT.BMP); with a list, <name>-<vblank>.bmp per snapshot"},
     {"--menu-keys", "<sequence>", "scripted pad steps, e.g. down,cross or l1+r1+down (up to 256; keys up down left right cross circle square triangle start select l1 r1 l2 r2 none)"},
     {"--menu-keys-quit", "<vblanks>", "end this many VBlanks after the last step (default 120, 0 = do not end)"},
@@ -233,9 +240,26 @@ static const NativeSwitch s_devSwitches[] = {
     {"--menu-keys-from", "<vblank>", "first step of the sequence at this VBlank (default 300)"},
     {"--menu-pads", "<n>", "the key sequence reports this many connected pads, 1 to 4 (default 1)"},
     {"--vk-validation", "", "Vulkan validation layer on"},
+    {"--native-preview", "", "native render layer preview for the whole run: the native program, and depth on the main target while a native object is bound, never saved; custom characters are drawn natively only at an internal resolution of x2 or more (at x1 the retail path draws them); the same run state as NATIVE DRIVERS PREVIEW on the GRAPHICS page (saved, from the next start), on whatever is chosen there; the measuring switches that need it want it on the command line"},
+    {"--native-empty-markers", "", "with --native-preview: an empty native marker at every driver instance, retail keeps drawing (self-test of the marker channel)"},
     {"--dump-vram", "<vblanks>", "VRAM dumps <prefix>-<vblank>.tga at these VBlanks (comma list, up to 8)"},
     {"--dump-prefix", "<name>", "file prefix of the VRAM dumps (default dump)"},
     {"--dump-exit", "", "end after the last VRAM dump"},
+    {"--native-probe", "<form>", "with --native-preview: seat 0 of a one-player arcade race draws a generated test body natively (body; texture: the same body coloured by a texture; pose: textured, its top shaped by the retail animation frame; wheels: pose with four generated wheels in place of the retail wheels; mips: pose coloured by an sRGB texture with 9 levels, one colour each, uploaded while the race loads)"},
+    {"--native-filter", "<nearest|linear>", "with --native-preview: how textures of the native texture manager are sampled - nearest (pixelated, the default) or linear (trilinear, with anisotropy up to the device limit); never saved"},
+    {"--native-wheel-report", "", "only with --native-preview --native-probe: per tick the float wheel middles, roll phase and speed of the probe seat beside the middles of its retail wheels, which stay on for that seat (measuring the wheel poses)"},
+    {"--native-seam-report", "", "only with --native-preview: one line per frame and native item of view 0 (probe or custom character) with its view z, shift, depth and box - the seam at view z 0x1000 (measuring only)"},
+    {"--native-depth-tint", "", "only with --native-preview: every native draw is coloured by its depth (red and blue full, green = 1024 / w) instead of its colours - the seam at view z 0x1000 made visible (measuring only)"},
+    {"--native-char-gpu-selftest", "<dir>", "the good .rldchar files of dir (written by rldpack make-native-tests) through the native read and the GPU set build of a custom character without a device, then end (ctest native_char_gpu_selftest)"},
+    {"--native-split-report", "", "measuring only: per water line view of seat 0 drawn as a custom character (SPLIT, and SPECIAL with the split line), the raw values the queue split it with - the first four, then every 30th VBlank"},
+    {"--native-twin-selftest", "<dir>", "the retail twin (step 4d, platform/native_twin.c) without a device: a retail model and a VRAM made in memory, then old_plain.rldchar of dir (written by rldpack make-native-tests), through the converter, then end (ctest native_twin_selftest)"},
+    {"--native-twin", "", "only with --native-preview, measuring only: seat 0's retail model drawn natively as its retail twin (made at the race's loading screen from the model and the VRAM mirror), its retail wheels on"},
+    {"--native-hide-exhaust", "", "measuring only: the exhaust particles of every seat (and the burn smoke, same icons) are moved and counted as always but not drawn, with or without --native-preview; the count comes at exit"},
+    {"--native-probe-selftest", "", "check the bytes of the generated probe mesh against their hash (ctest native_probe_selftest)"},
+    {"--native-depth-selftest", "", "check that a native draw keeps its depth across view z 0x1000 (ctest native_depth_selftest)"},
+    {"--native-tex-selftest", "", "check the native texture manager: tables, the shader round trip, the edge rule and the levels of a fixed image (ctest native_tex_selftest)"},
+    {"--native-probe-seat", "<n>", "only with --native-probe: the probe takes the model of seat n (0 to 7) instead of seat 0 (default 0)"},
+    {"--native-depth-d24", "", "with --native-preview: depth images as X8_D24_UNORM_PACK32 instead of D32_SFLOAT (measuring the two)"},
     {"--perf", "", "perf recording per frame into debug/perf/perf-latest"},
     {"--perf-dir", "<folder>", "target folder of the perf recording, switches it on"},
     {"--autoload-demo", "", "with --autoload-track or --level: demo race, the bots drive every seat (HUD off, no time limit)"},
@@ -268,6 +292,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--legacy-boot-logos", "", "old boot logos (comparison)"},
     {"--keep-intro-level", "", "keep the intro track (comparison)"},
     {"--disc-report", "", "disc read counters, report at exit"},
+    {"--native-layer-report", "", "render layer counters, report at exit"},
     {"--near-report", "", "report of the near-plane probe"},
     {"--gte-report", "[n]", "GTE count, every n frames, without a number only the total at the end"},
     {"--subpixel-report", "[n]", "count vertices with a fractional part, every n frames, without a number at the end"},
@@ -310,6 +335,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--char", "<file>", "only this .rldchar (in --chars-dir, or an absolute path) and no folder: a tile in the one-player arcade driver select right after the retail drivers, or with --level and --driver <its template> straight on seat 0"},
     {"--dev-grid-fill", "<n>", "n placeholder tiles, 1 to 32, after the custom character tiles in the one-player arcade driver select (rows and scrolling with many entries); a placeholder cannot be chosen"},
     {"--dev-char-seats", "<all|cycle>", "every seat of a one-player arcade race drives a custom model, the bots put on the file's template (give --driver <that template> for seat 0), with the template's class: all =the first file of the roster, cycle = the next file at every race load (several models measured in one run); draw memory and mempack grow by eight models"},
+    {"--dev-char-seat-files", "<f0,f1,...>", "as --dev-char-seats all, but seat 0, 1, ... drives the roster file f0, f1, ... (1 to 8 file names of the folder, commas between), every further seat the first file of the roster, each bot on its own file's template; not with --dev-char-seats or --char"},
     {"--ui-safe-area-off", "", "UI safe area off"},
     {"--ui-declarations-off", "", "UI declarations off"},
     {"--ui-floor-off", "", "UI floor off"},
@@ -318,6 +344,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--selftest-disc", "<dir>", "unpack the test images in <dir> (good-*/bad-*.bin), then end"},
     {"--gte-selftest", "", "both GTE paths against each other, then end"},
     {"--char-grid-selftest", "", "layout, navigation and scrolling of the driver select grid for 0 to 32 custom entries, then end; no window, no data needed"},
+    {"--char-native-selftest", "<dir>", "every .rldchar of dir (written by rldpack make-native-tests) through the roster read and the native read (CNET, CTXT) without and with --native-preview, each against the expectation its name gives, then end; no window, no data needed"},
     {"--selftest-containers", "<dir>", "every check the game runs on a container, on every *.rldtrack in dir (good-* must load, bad-* must be refused), then end; no window, no data needed"},
     {"--make-test-containers", "<dir>", "write the synthetic good-*/bad-* containers of the container self-test into dir, then end"},
     {"--make-test-disc", "<dir>", "write the synthetic good-*/bad-* disc images of the disc self-test into dir, then end"},
@@ -411,6 +438,98 @@ static void NativeArgs_PrintDevHelp(void)
 	printf("game folder, not the current directory.\n");
 }
 
+// The bytes of a list switch that is cut into its entries in a copy (--msaa-at).
+#define NATIVE_ARG_LIST_MAX 512
+
+// The values that are kept in a buffer of fixed size, or counted into a table:
+// at most bytes - 1 characters (0 = any length) and at most entries
+// comma-separated entries (0 = any number). A value past either ends the start
+// in the gate below, before the first window, and is never cut: a cut path
+// names another file or folder, a cut list other moments, and the run would
+// measure something else than its command line says.
+typedef struct
+{
+	const char *name;
+	size_t bytes;
+	int entries;
+} NativeValueLimit;
+
+static const NativeValueLimit s_valueLimits[] = {
+    {"--log", sizeof(s_logPath), 0},
+    {"--shot", 0, PLATFORM_SHOT_MAX},
+    {"--shot-name", PLATFORM_ARG_PATH_MAX, 0},
+    {"--dump-prefix", PLATFORM_ARG_PATH_MAX, 0},
+    {"--msaa-at", NATIVE_ARG_LIST_MAX, 0},
+    {"--perf-dir", NATIVE_PERF_PATH_MAX, 0},
+    {"--tracks-dir", sizeof(s_nativeTrackFolder), 0},
+    {"--chars-dir", NATIVE_CHAR_PATH_MAX, 0},
+    {"--char", NATIVE_CHAR_PATH_MAX, 0},
+    {"--autoload-track", sizeof(g_cfg_autoloadTrack), 0},
+    {"--level-tour", sizeof(g_cfg_levelTour), 0},
+};
+
+// The entries of a comma list as the readers count them: empty ones (",,")
+// are skipped.
+static int NativeArgs_ListEntries(const char *value)
+{
+	int entries = 0;
+	int inEntry = 0;
+
+	for (; *value != '\0'; value++)
+	{
+		if (*value == ',')
+		{
+			inEntry = 0;
+		}
+		else if (!inEntry)
+		{
+			inEntry = 1;
+			entries++;
+		}
+	}
+
+	return entries;
+}
+
+// 0 = the value fits (or the switch keeps no fixed buffer). Otherwise
+// NATIVE_EXIT_DEV_REQUIRED, with the message on stderr.
+static int NativeArgs_ValueFits(const char *arg, const char *value)
+{
+	for (size_t i = 0; i < sizeof(s_valueLimits) / sizeof(s_valueLimits[0]); i++)
+	{
+		const NativeValueLimit *limit = &s_valueLimits[i];
+		size_t length;
+		int entries;
+
+		if (strcmp(arg, limit->name) != 0)
+		{
+			continue;
+		}
+
+		length = strlen(value);
+		if ((limit->bytes > 0) && (length >= limit->bytes))
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch %s takes at most %u characters, got %u - refused, never cut\n", arg, (unsigned)(limit->bytes - 1), (unsigned)length);
+			fflush(stderr);
+			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+
+		entries = (limit->entries > 0) ? NativeArgs_ListEntries(value) : 0;
+		if (entries > limit->entries)
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch %s takes at most %d entries, got %d - refused, never cut\n", arg, limit->entries, entries);
+			fflush(stderr);
+			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+
+		return 0;
+	}
+
+	return 0;
+}
+
 // 0 = go on. Otherwise the exit code with which main ends at once; the message
 // is then already on stderr. Called before everything else, see above.
 static int NativeArgs_GateDevSwitches(int argc, char *argv[])
@@ -493,6 +612,16 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 				fflush(stderr);
 				return NATIVE_EXIT_DEV_REQUIRED;
 			}
+
+			// A value too long for its buffer, or a list with too many entries.
+			{
+				const int fits = NativeArgs_ValueFits(arg, value);
+
+				if (fits != 0)
+				{
+					return fits;
+				}
+			}
 		}
 	}
 
@@ -556,6 +685,40 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 			extern int g_cfg_vkValidation;
 
 			g_cfg_vkValidation = 1;
+		}
+		else if (strcmp(argv[argIndex], "--native-preview") == 0)
+		{
+			// UP HERE, NOT ONLY IN THE BIG LOOP.
+			// The native program, the probe mesh and the probe texture come
+			// into being in Platform_Init (NativeRenderer_InitialisePSX), the
+			// big loop runs afterwards - set only there, none of them would be
+			// made. Nothing is printed here, the log is not open yet; the late
+			// place sets the same value once more and says so. NATIVE DRIVERS
+			// on the GRAPHICS page sets the same value from ctr-settings.cfg,
+			// also before the window (Platform_SettingsPreloadDisplay); it never
+			// turns off what this set.
+			extern int g_cfg_nativePreview;
+
+			g_cfg_nativePreview = 1;
+		}
+		else if ((strcmp(argv[argIndex], "--native-probe") == 0) && ((argIndex + 1) < argc))
+		{
+			// UP HERE as well: the probe mesh buffers come into being with the
+			// native program in Platform_Init (NativeRenderer_InitialisePSX).
+			// Silent like --native-preview; the late place checks the value and
+			// the pairing with --native-preview and says so.
+			extern int g_cfg_nativeProbe;
+			const char *form = argv[++argIndex];
+
+			g_cfg_nativeProbe = NativeProbe_FormFromName(form);
+
+			// The form wheels is the form pose plus the wheels; its texture
+			// carries the wheel texel and is made in Platform_Init as well.
+			g_cfg_nativeProbeWheels = (g_cfg_nativeProbe != NATIVE_PROBE_NONE) && NativeProbe_FormHasWheels(form);
+
+			// The form mips is the form pose with the mips texture, made at the
+			// race's loading screen rather than in Platform_Init.
+			g_cfg_nativeProbeMips = (g_cfg_nativeProbe != NATIVE_PROBE_NONE) && NativeProbe_FormHasMips(form);
 		}
 		else if ((strcmp(argv[argIndex], "--msaa") == 0) && ((argIndex + 1) < argc))
 		{
@@ -958,7 +1121,7 @@ static const struct NativeSetupColor s_setupErrBack = {58, 24, 20};     // backg
 // "CTR Reload <version>" plus the build id. CTR_RELOAD_VERSION is the
 // upper-case form of CTR_NATIVE_VERSION for the debug font and is NOT taken
 // from the build - it has to be changed together with CMakeLists.txt.
-#define CTR_RELOAD_VERSION "BETA 0"
+#define CTR_RELOAD_VERSION "0.7.5 BETA"
 
 // One line, horizontally centred, at the largest integer scale up to
 // `scale` that still fits into the window. Stepping down is not a luxury: the
@@ -2009,6 +2172,32 @@ int main(int argc, char *argv[])
 			return NativeGteCheck_Run();
 		}
 
+		// The bytes of the native probe mesh against their hash
+		// (platform/native_probe.c, ctest native_probe_selftest). Up here for the
+		// same reason: it only hashes a table in the exe, no window, no data.
+		if (strcmp(argv[argIndex], "--native-probe-selftest") == 0)
+		{
+			return NativeProbe_SelfTest();
+		}
+
+		// The depth of a native draw across view z 0x1000, through the queue's
+		// own matrix steps and the render layer (platform/native_depth_check.c,
+		// ctest native_depth_selftest). Up here for the same reason: it computes
+		// on one made-up instance, no window, no data.
+		if (strcmp(argv[argIndex], "--native-depth-selftest") == 0)
+		{
+			return NativeDepthCheck_Run();
+		}
+
+		// The native texture manager without a device (platform/native_tex.c,
+		// ctest native_tex_selftest): tables, the shader round trip, the edge
+		// rule and the levels of a fixed image against their golden. Up here for
+		// the same reason: it computes on tables in the exe, no window, no data.
+		if (strcmp(argv[argIndex], "--native-tex-selftest") == 0)
+		{
+			return NativeTex_SelfTest();
+		}
+
 		// The driver select grid (game/230/MM_NativeCharGrid.c) for every count of
 		// custom entries: layout, navigation and scrolling against the D230
 		// tables. Up here for the same reason: it computes on tables that are in
@@ -2017,6 +2206,31 @@ int main(int argc, char *argv[])
 		if (strcmp(argv[argIndex], "--char-grid-selftest") == 0)
 		{
 			return MM_NativeCharGrid_SelfTest();
+		}
+
+		// The native part of custom characters (CNET, CTXT), up here for the
+		// same reason: it only reads the files rldpack wrote into a build
+		// folder (ctest char_native_selftest, platform/native_chars.c).
+		if ((strcmp(argv[argIndex], "--char-native-selftest") == 0) && ((argIndex + 1) < argc))
+		{
+			return NativeChar_NativeSelfTest(argv[argIndex + 1]);
+		}
+
+		// The GPU set of a custom character without a device (step 4c,
+		// platform/native_char_gpu.c, ctest native_char_gpu_selftest): the
+		// same files, through the native read and the set build. Up here for
+		// the same reason: it only reads files.
+		if ((strcmp(argv[argIndex], "--native-char-gpu-selftest") == 0) && ((argIndex + 1) < argc))
+		{
+			return NativeCharGpu_SelfTest(argv[argIndex + 1]);
+		}
+
+		// The retail twin without a device (step 4d, platform/native_twin.c,
+		// ctest native_twin_selftest). Up here for the same reason: it only
+		// reads files and memory it makes itself.
+		if ((strcmp(argv[argIndex], "--native-twin-selftest") == 0) && ((argIndex + 1) < argc))
+		{
+			return NativeTwin_SelfTest(argv[argIndex + 1]);
 		}
 
 		// The container self-test, up here for the same reason: it only reads
@@ -2261,6 +2475,377 @@ int main(int argc, char *argv[])
 				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
 			}
 		}
+		else if ((strcmp(argv[argIndex], "--dev-char-seat-files") == 0) && ((argIndex + 1) < argc))
+		{
+			// A measuring switch (several custom models in one race,
+			// platform/native_chars.c): given twice, together with
+			// --dev-char-seats (two answers to who sits where) or with --char
+			// (which reads no folder, so the roster holds one file), or with a
+			// list not of the form, it ends the start here, before the first
+			// window. A name that is not a loaded file of the roster ends it right
+			// after the roster is read (NativeChar_DevSeatFilesResolve).
+			const char *value = argv[++argIndex];
+			int filesGiven = 0;
+			int seatsGiven = 0;
+			int charGiven = 0;
+
+			for (int scanIndex = 1; scanIndex < argc; scanIndex++)
+			{
+				if (strcmp(argv[scanIndex], "--dev-char-seat-files") == 0)
+				{
+					filesGiven++;
+				}
+				else if (strcmp(argv[scanIndex], "--dev-char-seats") == 0)
+				{
+					seatsGiven = 1;
+				}
+				else if (strcmp(argv[scanIndex], "--char") == 0)
+				{
+					charGiven = 1;
+				}
+			}
+
+			if (filesGiven > 1)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --dev-char-seat-files is given %d times - once only\n", filesGiven);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			if (seatsGiven || charGiven)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --dev-char-seat-files does not go with %s\n", seatsGiven ? "--dev-char-seats" : "--char");
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			if (!NativeChar_SetDevSeatFiles(value))
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --dev-char-seat-files expects 1 to %d file names of the folder, commas between, got %s\n",
+				        NATIVE_CHAR_DEV_SEAT_FILES_MAX, value);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+		}
+		else if ((strcmp(argv[argIndex], "--native-probe-seat") == 0) && ((argIndex + 1) < argc))
+		{
+			// The seat whose model the native probe takes (platform/
+			// native_render_layer.c binds it every frame). A measuring switch:
+			// a seat outside 0..NATIVE_PROBE_SEATS - 1, a word that is not a
+			// number, the switch given twice, or a probe that will not be on
+			// (no --native-probe with a known form, or no --native-preview) ends the start
+			// here, before the first window - a run in which the seat silently
+			// does nothing would measure something else. Digits only, as for
+			// --dev-grid-fill. The probe is on exactly when the late reader of
+			// --native-probe says so: the last --native-probe has the form
+			// body, texture or pose and --native-preview is given (a value is never a switch
+			// name, the gate saw to that, so a plain scan finds the switches).
+			// Nothing is needed before Platform_Init, so there is no early
+			// reader; the late reader of --native-probe names the seat in the log.
+			const char *value = argv[++argIndex];
+			int digitsOnly = (value[0] >= '0') && (value[0] <= '9');
+			const char *probeForm = NULL;
+			int previewGiven = 0;
+			int seatGiven = 0;
+			long seat = -1;
+
+			for (size_t i = 1; digitsOnly && (value[i] != '\0'); i++)
+			{
+				digitsOnly = (value[i] >= '0') && (value[i] <= '9');
+			}
+
+			// Too many digits saturate at LONG_MAX, which is out of range as well.
+			if (digitsOnly)
+			{
+				seat = strtol(value, NULL, 10);
+			}
+
+			for (int scanIndex = 1; scanIndex < argc; scanIndex++)
+			{
+				if (strcmp(argv[scanIndex], "--native-probe-seat") == 0)
+				{
+					seatGiven++;
+				}
+				else if (strcmp(argv[scanIndex], "--native-preview") == 0)
+				{
+					previewGiven = 1;
+				}
+				else if ((strcmp(argv[scanIndex], "--native-probe") == 0) && ((scanIndex + 1) < argc))
+				{
+					probeForm = argv[++scanIndex];
+				}
+			}
+
+			if (!digitsOnly || (seat < 0) || (seat >= NATIVE_PROBE_SEATS))
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --native-probe-seat expects a seat from 0 to %d, got %s\n", NATIVE_PROBE_SEATS - 1, value);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			if (seatGiven > 1)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --native-probe-seat is given %d times - once only\n", seatGiven);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			if ((NativeProbe_FormFromName(probeForm) == NATIVE_PROBE_NONE) || !previewGiven)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --native-probe-seat only acts with the probe on: --native-preview --native-probe body|texture|pose|wheels|mips\n");
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			g_cfg_nativeProbeSeat = (int)seat;
+		}
+		else if (strcmp(argv[argIndex], "--native-wheel-report") == 0)
+		{
+			// The wheel report of the native probe (platform/native_wheels.c,
+			// platform/native_render_layer.c). A measuring switch: without the
+			// probe on - the last --native-probe with a known form and
+			// --native-preview, as for --native-probe-seat - it would measure
+			// nothing, so the start ends here, before the first window; so does
+			// the switch given more than once (as --native-probe-seat). Nothing
+			// is needed before Platform_Init; the big loop below names it in the
+			// log. Never in ctr-settings.cfg.
+			const char *probeForm = NULL;
+			int previewGiven = 0;
+			int reportGiven = 0;
+
+			for (int scanIndex = 1; scanIndex < argc; scanIndex++)
+			{
+				if (strcmp(argv[scanIndex], "--native-wheel-report") == 0)
+				{
+					reportGiven++;
+				}
+				else if (strcmp(argv[scanIndex], "--native-preview") == 0)
+				{
+					previewGiven = 1;
+				}
+				else if ((strcmp(argv[scanIndex], "--native-probe") == 0) && ((scanIndex + 1) < argc))
+				{
+					probeForm = argv[++scanIndex];
+				}
+			}
+
+			if (reportGiven > 1)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --native-wheel-report is given %d times - once only\n", reportGiven);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			if ((NativeProbe_FormFromName(probeForm) == NATIVE_PROBE_NONE) || !previewGiven)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --native-wheel-report only acts with the probe on: --native-preview --native-probe body|texture|pose|wheels|mips\n");
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			g_cfg_nativeWheelReport = 1;
+		}
+		else if ((strcmp(argv[argIndex], "--native-seam-report") == 0) || (strcmp(argv[argIndex], "--native-depth-tint") == 0) ||
+		         (strcmp(argv[argIndex], "--native-twin") == 0))
+		{
+			// The two measuring switches of the seam at view z 0x1000 (step 4c,
+			// platform/native_render_layer.c). Without --native-preview there is
+			// no native draw to report or colour, so the start ends here, before
+			// the first window; so does a switch given twice (as
+			// --native-hide-exhaust). The big loop below names them in the log.
+			// Never in ctr-settings.cfg.
+			const char *name = argv[argIndex];
+			int given = 0;
+			int previewGiven = 0;
+
+			for (int scanIndex = 1; scanIndex < argc; scanIndex++)
+			{
+				if (strcmp(argv[scanIndex], name) == 0)
+				{
+					given++;
+				}
+				else if (strcmp(argv[scanIndex], "--native-preview") == 0)
+				{
+					previewGiven = 1;
+				}
+			}
+
+			if (given > 1)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch %s is given %d times - once only\n", name, given);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			if (!previewGiven)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch %s only acts together with --native-preview\n", name);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			if (strcmp(name, "--native-seam-report") == 0)
+			{
+				g_cfg_nativeSeamReport = 1;
+			}
+			else if (strcmp(name, "--native-twin") == 0)
+			{
+				g_cfg_nativeTwin = 1;
+			}
+			else
+			{
+				g_cfg_nativeDepthTint = 1;
+			}
+		}
+		else if (strcmp(argv[argIndex], "--native-split-report") == 0)
+		{
+			// The raw values of the water line (step 4e-1b,
+			// platform/native_render_layer.c). Given twice it ends the start here,
+			// before the first window (as --native-hide-exhaust). The big loop
+			// below names it in the log. Never in ctr-settings.cfg.
+			int given = 0;
+
+			for (int scanIndex = 1; scanIndex < argc; scanIndex++)
+			{
+				if (strcmp(argv[scanIndex], "--native-split-report") == 0)
+				{
+					given++;
+				}
+			}
+
+			if (given > 1)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --native-split-report is given %d times - once only\n", given);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			g_cfg_nativeSplitReport = 1;
+		}
+		else if (strcmp(argv[argIndex], "--native-hide-exhaust") == 0)
+		{
+			// Leaves the exhaust quads out of the ordering table
+			// (platform/native_render_layer.c, NativeRenderLayer_HideExhaustQuad;
+			// game/Particle.c, Particle_RenderList), for the colour checks of the
+			// native probe without the exhaust glow. A measuring switch that also
+			// acts without --native-preview: the reference run without the probe
+			// needs it as much as the probe run. Given more than once it ends the
+			// start here, before the first window (as --native-wheel-report). The
+			// big loop below names it in the log. Never in ctr-settings.cfg.
+			int hideGiven = 0;
+
+			for (int scanIndex = 1; scanIndex < argc; scanIndex++)
+			{
+				if (strcmp(argv[scanIndex], "--native-hide-exhaust") == 0)
+				{
+					hideGiven++;
+				}
+			}
+
+			if (hideGiven > 1)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --native-hide-exhaust is given %d times - once only\n", hideGiven);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			g_cfg_nativeHideExhaust = 1;
+		}
+		else if ((strcmp(argv[argIndex], "--native-filter") == 0) && ((argIndex + 1) < argc))
+		{
+			// The filter option of the native texture manager for this run
+			// (platform/native_tex.c, renderer plan C.6.3): nearest (pixelated,
+			// the default) or linear (trilinear, anisotropy up to the device
+			// limit, granted only because --native-preview requested it when
+			// the device was made). A measuring switch: a value other than
+			// nearest or linear, the switch given twice, or no --native-preview
+			// - without which the manager makes nothing to sample - ends the
+			// start here, before the first window, as --native-probe-seat does.
+			// Read before the first texture of the manager; the big loop below
+			// names it in the log. Never in ctr-settings.cfg.
+			const char *value = argv[++argIndex];
+			const int filter = NativeTex_FilterFromName(value);
+			int previewGiven = 0;
+			int filterGiven = 0;
+
+			for (int scanIndex = 1; scanIndex < argc; scanIndex++)
+			{
+				if (strcmp(argv[scanIndex], "--native-filter") == 0)
+				{
+					filterGiven++;
+				}
+				else if (strcmp(argv[scanIndex], "--native-preview") == 0)
+				{
+					previewGiven = 1;
+				}
+			}
+
+			if (filter < 0)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --native-filter expects nearest or linear, got %s\n", value);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			if (filterGiven > 1)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --native-filter is given %d times - once only\n", filterGiven);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			if (!previewGiven)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --native-filter only acts together with --native-preview\n");
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			g_cfg_nativeFilter = filter;
+		}
+		else if (strcmp(argv[argIndex], "--native-depth-d24") == 0)
+		{
+			// The depth format of the native layer for this run: X8_D24_UNORM_PACK32
+			// instead of D32_SFLOAT, to measure the two against each other. Only
+			// with --native-preview, which alone makes depth images - without it
+			// the switch would do nothing, so the start ends here instead
+			// (platform/native_gfx_vk.c, NativeVk_PickDepthFormat, reads it).
+			extern int g_cfg_nativeDepthD24;
+			int previewGiven = 0;
+
+			for (int scanIndex = 1; scanIndex < argc; scanIndex++)
+			{
+				if (strcmp(argv[scanIndex], "--native-preview") == 0)
+				{
+					previewGiven = 1;
+				}
+			}
+
+			if (!previewGiven)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --native-depth-d24 only acts together with --native-preview\n");
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			g_cfg_nativeDepthD24 = 1;
+		}
 	}
 
 	if (!NativeChar_ArgsUsable())
@@ -2320,6 +2905,19 @@ int main(int argc, char *argv[])
 			Platform_AtExitReport(NativeDiscImage_PrintReport);
 
 			printf("[CTR Disc] read counters on. The report comes at exit.\n");
+			fflush(stdout);
+		}
+		else if (strcmp(argv[argIndex], "--native-layer-report") == 0)
+		{
+			// The counters of platform/native_render_layer.c run in every run;
+			// the switch only lets them into the log at exit, through the same
+			// door as the disc report for the same reason. A run value only:
+			// never in ctr-settings.cfg, the file only knows s_videoSettings
+			// and the views.
+			g_cfg_nativeLayerReport = 1;
+			Platform_AtExitReport(NativeRenderLayer_Report);
+
+			printf("[CTR RenderLayer] render layer counters on. The report comes at exit.\n");
 			fflush(stdout);
 		}
 	}
@@ -2565,25 +3163,34 @@ int main(int argc, char *argv[])
 				// dumps cannot answer a question about the upscaled picture - the
 				// displayed VRAM area is 512x216 at factor one.
 				extern int g_cfg_shotAt;
-				extern int g_cfg_shotList[128];
+				extern int g_cfg_shotList[PLATFORM_SHOT_MAX];
 				extern int g_cfg_shotCount;
 
 				// Also a list "131,133,140" - one run, many snapshots, each
 				// as <name>-<vblank>.bmp. A single value writes <name> as given.
 				// The list is taken in the order given, so it has to ascend.
+				// Read where it stands, not from a copy: a copy of 512 bytes cut
+				// a long list after 511 characters without a word. More than
+				// PLATFORM_SHOT_MAX entries never get here (NativeArgs_ValueFits).
 				{
 					const char *spec = argv[++argIndex];
-					char buffer[512];
-					char *cursor;
-					char *token;
+					const char *cursor = spec;
 
-					snprintf(buffer, sizeof(buffer), "%s", spec);
 					g_cfg_shotCount = 0;
-					cursor = buffer;
-					while (((token = strtok(cursor, ",")) != NULL) && (g_cfg_shotCount < 128))
+					while ((*cursor != '\0') && (g_cfg_shotCount < PLATFORM_SHOT_MAX))
 					{
-						cursor = NULL;
-						g_cfg_shotList[g_cfg_shotCount++] = atoi(token);
+						// Empty entries (",,") are skipped, as strtok skipped them.
+						if (*cursor == ',')
+						{
+							cursor++;
+							continue;
+						}
+
+						g_cfg_shotList[g_cfg_shotCount++] = atoi(cursor);
+						while ((*cursor != '\0') && (*cursor != ','))
+						{
+							cursor++;
+						}
 					}
 					g_cfg_shotAt = (g_cfg_shotCount > 0) ? g_cfg_shotList[0] : atoi(spec);
 					if (g_cfg_shotCount > 1)
@@ -2628,7 +3235,7 @@ int main(int argc, char *argv[])
 			else if ((strcmp(argv[argIndex], "--shot-name") == 0) && ((argIndex + 1) < argc))
 			{
 				// Its own file per run. SCREENSHOT.BMP was one name for every shot.
-				extern char g_cfg_shotName[256];
+				extern char g_cfg_shotName[PLATFORM_ARG_PATH_MAX];
 
 				snprintf(g_cfg_shotName, sizeof(g_cfg_shotName), "%s", argv[++argIndex]);
 				printf("[CTR Native] window shot: %s\n", g_cfg_shotName);
@@ -2683,6 +3290,97 @@ int main(int argc, char *argv[])
 				g_cfg_vkValidation = 1;
 				printf("[CTR Native] Vulkan validation layer wanted (with synchronization validation)\n");
 			}
+			else if (strcmp(argv[argIndex], "--native-preview") == 0)
+			{
+				// A run value like --msaa, fixed for the whole run and never
+				// written to ctr-settings.cfg. NativeArgs_ReadDisplayFlags already set
+				// it before Platform_Init; this is where the log learns of it.
+				// NATIVE DRIVERS (GRAPHICS page) sets the same value from the file,
+				// and this switch wins over its OFF; a run with both says this line
+				// only.
+				extern int g_cfg_nativePreview;
+
+				g_cfg_nativePreview = 1;
+				Platform_Log("[CTR Native] native preview on for this run: native program 'nr', depth on the main target only while a native object is bound - never saved\n");
+
+				// The marker channel reports at exit only in a run that has it.
+				Platform_AtExitReport(NativeRenderLayer_MarkerReport);
+			}
+			else if (strcmp(argv[argIndex], "--native-wheel-report") == 0)
+			{
+				// Set in the first loop of main, which also refused it without the
+				// probe on; this is where the log learns of it.
+				Platform_Log("[CTR Native] native wheel report on: per tick the float, the exact and the retail wheel middles of seat %d, "
+				             "whose retail wheels stay on; sign check from |move| >= %.4f world units\n",
+				             g_cfg_nativeProbeSeat, NATIVE_WHEELS_MOVING);
+			}
+			else if (strcmp(argv[argIndex], "--native-twin") == 0)
+			{
+				// Set in the first loop of main, which also refused it without
+				// --native-preview or given twice.
+				Platform_Log("[CTR Native] native twin on (measurement only): seat 0's retail model drawn natively as its retail twin, its retail wheels on\n");
+			}
+			else if (strcmp(argv[argIndex], "--native-split-report") == 0)
+			{
+				// Set in the first loop of main, which also refused it given twice.
+				Platform_Log("[CTR Native] native split report on (measurement only): the raw water line values of seat 0, the first four, then every 30th VBlank\n");
+			}
+			else if (strcmp(argv[argIndex], "--native-seam-report") == 0)
+			{
+				// Set in the first loop of main, which also refused it without
+				// --native-preview or given twice; this is where the log learns of it.
+				Platform_Log("[CTR Native] native seam report on (measurement only): one line per frame and native item of view 0\n");
+			}
+			else if (strcmp(argv[argIndex], "--native-depth-tint") == 0)
+			{
+				// As above.
+				Platform_Log("[CTR Native] native depth tint on (measurement only): every native draw is coloured by its depth, green = 1024 / w\n");
+			}
+			else if (strcmp(argv[argIndex], "--native-hide-exhaust") == 0)
+			{
+				// Set in the first loop of main, which also refused it given twice;
+				// this is where the log learns of it, and the count comes at exit.
+				Platform_Log("[CTR Native] exhaust particles hidden (measurement only): the exhaust and burn smoke quads of every seat are not drawn, "
+				             "the particles live as always\n");
+				Platform_AtExitReport(NativeRenderLayer_HideExhaustReport);
+			}
+			else if ((strcmp(argv[argIndex], "--native-filter") == 0) && ((argIndex + 1) < argc))
+			{
+				// Set in the first loop of main, which also refused a wrong value,
+				// a second one and a run without --native-preview; this is where
+				// the log learns of it.
+				argIndex++;
+				Platform_Log("[CTR Native] native texture filter for this run: %s (--native-filter) - never saved\n",
+				             NativeTex_FilterName(g_cfg_nativeFilter));
+			}
+			else if (strcmp(argv[argIndex], "--native-depth-d24") == 0)
+			{
+				// Set in the first loop of main, which also refused it without
+				// --native-preview; this is where the log learns of it.
+				Platform_Log("[CTR Native] native depth format for this run: X8_D24_UNORM_PACK32 where usable (--native-depth-d24)\n");
+			}
+			else if (strcmp(argv[argIndex], "--native-empty-markers") == 0)
+			{
+				// A self-test of the marker channel: an empty marker at every driver
+				// instance, retail keeps drawing. Only with the native preview, which the
+				// early reader (NativeArgs_ReadDisplayFlags) or NATIVE DRIVERS PREVIEW
+				// (Platform_SettingsPreloadDisplay) set before the window -
+				// so the order of the two switches on the command line does not matter.
+				// Not needed before the first frame, so there is no early reader.
+				// Never in ctr-settings.cfg, like --native-preview.
+				extern int g_cfg_nativePreview;
+				extern int g_cfg_nativeEmptyMarkers;
+
+				if (g_cfg_nativePreview)
+				{
+					g_cfg_nativeEmptyMarkers = 1;
+					Platform_Log("[CTR Native] empty native markers on: one at every driver instance, retail keeps drawing\n");
+				}
+				else
+				{
+					Platform_Log("[CTR Native] --native-empty-markers needs --native-preview - off for this run\n");
+				}
+			}
 			else if (strcmp(argv[argIndex], "--split-audit") == 0)
 			{
 				// The box check (native_gpu.c, NativeGpu_SplitAuditBatch):
@@ -2693,6 +3391,70 @@ int main(int argc, char *argv[])
 
 				g_cfg_splitAudit = 1;
 				printf("[CTR Native] split audit on: boxes checked in every 30th frame\n");
+			}
+			else if ((strcmp(argv[argIndex], "--native-probe") == 0) && ((argIndex + 1) < argc))
+			{
+				// The early reader (NativeArgs_ReadDisplayFlags) already set the
+				// value before Platform_Init; this is where the log learns of it.
+				// Only with the native preview, which the early reader (or NATIVE
+				// DRIVERS PREVIEW, Platform_SettingsPreloadDisplay) set as well -
+				// so the order of the two switches does not matter. Never in
+				// ctr-settings.cfg, like --native-preview.
+				extern int g_cfg_nativePreview;
+				extern int g_cfg_nativeProbe;
+				const char *form = argv[++argIndex];
+
+				if (NativeProbe_FormFromName(form) == NATIVE_PROBE_NONE)
+				{
+					g_cfg_nativeProbe = NATIVE_PROBE_NONE;
+					g_cfg_nativeProbeWheels = 0;
+					g_cfg_nativeProbeMips = 0;
+					Platform_Log("[CTR Native] --native-probe: unknown form %s (known: body, texture, pose, wheels, mips) - off\n", form);
+				}
+				else if (!g_cfg_nativePreview)
+				{
+					g_cfg_nativeProbe = NATIVE_PROBE_NONE;
+					g_cfg_nativeProbeWheels = 0;
+					g_cfg_nativeProbeMips = 0;
+					Platform_Log("[CTR Native] --native-probe needs --native-preview - off for this run\n");
+				}
+				else
+				{
+					// The seat came from --native-probe-seat in the first loop of
+					// main (default 0, the line as before).
+					g_cfg_nativeProbe = NativeProbe_FormFromName(form);
+					if (g_cfg_nativeProbeMips)
+					{
+						Platform_Log("[CTR Native] native probe on: seat %d of a one-player arcade race draws a generated test body natively, "
+						             "its top shaped by the retail animation frame, coloured by an sRGB texture with 9 levels of one colour each, "
+						             "made while the race loads, sampled %s\n",
+						             g_cfg_nativeProbeSeat, NativeTex_FilterName(g_cfg_nativeFilter));
+					}
+					else if (g_cfg_nativeProbeWheels)
+					{
+						Platform_Log("[CTR Native] native probe on: seat %d of a one-player arcade race draws a generated test body natively, "
+						             "coloured by a generated texture, its top shaped by the retail animation frame, with four generated wheels "
+						             "in place of the retail wheels\n",
+						             g_cfg_nativeProbeSeat);
+					}
+					else if (g_cfg_nativeProbe == NATIVE_PROBE_POSE)
+					{
+						Platform_Log("[CTR Native] native probe on: seat %d of a one-player arcade race draws a generated test body natively, "
+						             "coloured by a generated texture, its top shaped by the retail animation frame\n",
+						             g_cfg_nativeProbeSeat);
+					}
+					else if (g_cfg_nativeProbe == NATIVE_PROBE_TEXTURE)
+					{
+						Platform_Log("[CTR Native] native probe on: seat %d of a one-player arcade race draws a generated test body natively, "
+						             "coloured by a generated texture\n",
+						             g_cfg_nativeProbeSeat);
+					}
+					else
+					{
+						Platform_Log("[CTR Native] native probe on: seat %d of a one-player arcade race draws a generated test body natively\n",
+						             g_cfg_nativeProbeSeat);
+					}
+				}
 			}
 			else if (strcmp(argv[argIndex], "--rank-report") == 0)
 			{
@@ -2834,7 +3596,8 @@ int main(int argc, char *argv[])
 				extern int g_cfg_msaaAtCount;
 				extern int g_cfg_msaaAtVBlank[PLATFORM_MSAA_AT_MAX];
 				extern int g_cfg_msaaAtLevel[PLATFORM_MSAA_AT_MAX];
-				char buffer[512];
+				// A longer value never gets here (NativeArgs_ValueFits).
+				char buffer[NATIVE_ARG_LIST_MAX];
 				char *cursor;
 				char *token;
 
@@ -3483,6 +4246,21 @@ int main(int argc, char *argv[])
 	}
 #endif
 
+	// NATIVE DRIVERS on the GRAPHICS page turned the native preview on before
+	// the window without --native-preview (Platform_SettingsPreloadDisplay):
+	// its marker channel reports at exit as in a run with the switch. With the
+	// switch the report is already registered above and this adds nothing
+	// (Platform_AtExitReport ignores a second registration); without either
+	// nothing is registered.
+	{
+		extern int g_cfg_nativePreview;
+
+		if (g_cfg_nativePreview)
+		{
+			Platform_AtExitReport(NativeRenderLayer_MarkerReport);
+		}
+	}
+
 	// THE FOLDER IS READ ON EVERY START (unless --no-tracks).
 	//
 	// This used to hang on --tracks. That worked as long as the containers could only be reached
@@ -3542,6 +4320,17 @@ int main(int argc, char *argv[])
 	// the exit line of the instance counter is registered either way. Then the
 	// roster of the driver select is built from the files and --dev-grid-fill.
 	NativeChar_LoadRoster();
+
+	// --dev-char-seat-files: a name that is not a loaded file of the roster
+	// ends the start here (exit code 64, the message on stderr and in the log)
+	// - a measuring run that left a seat retail would measure another race.
+	// Without the switch this does nothing.
+	if (!NativeChar_DevSeatFilesResolve())
+	{
+		Platform_LogFlush();
+		Platform_Shutdown();
+		return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+	}
 
 	// The draw memory of custom models (NativeChar_DrawReserve) lies in the
 	// MEMPACK like the rest of the draw memory, so the window grows by what

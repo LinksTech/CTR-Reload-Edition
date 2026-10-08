@@ -73,6 +73,17 @@ const char *Platform_MsaaName(int samples);
 // --msaa-at: how many VBlank/level pairs a run can carry.
 #define PLATFORM_MSAA_AT_MAX 32
 
+// --shot: how many VBlanks one list can name.
+#define PLATFORM_SHOT_MAX 128
+
+// The bytes of a file or folder name given to --shot-name or --dump-prefix,
+// with the terminating zero, as the other path switches have them. A longer
+// value ends the start (main.c, NativeArgs_ValueFits): a cut path names another
+// file. Paths past the 260 characters of MAX_PATH open on Windows only with
+// long paths enabled (platform/ctr_native.manifest); a file that does not open
+// says so in the log.
+#define PLATFORM_ARG_PATH_MAX 1024
+
 void Platform_Shutdown(void);
 
 // A report that is meant to go into the log at exit. Platform_Shutdown calls all

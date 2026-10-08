@@ -83,6 +83,26 @@
 //            portrait strip at the first draw after every entering of the
 //            driver select and drawn on its tile. Only there - see THE
 //            PORTRAITS.
+//   native   only with the native preview (PREVIEW: NATIVE DRIVERS set to
+//            PREVIEW on the GRAPHICS page, or --native-preview; no --dev):
+//            when a seat is bound, NativeChar_HoldNative reads the file's
+//            CNET and CTXT again from its path, checks them
+//            (RldChar_ReadNative, include/rldchar.inc) against the CMDL in
+//            memory, decodes the textures and holds all of it in host memory
+//            (NativeChar_SeatNative) - one line "native model ready",
+//            "native model refused (<rule>), using CMDL" or "native model
+//            none". A broken native part costs only itself: the driver keeps
+//            its CMDL. A native part is held only with the kart wheels
+//            hidden (CHRI RLDCHAR_FLAG_NO_WHEELS) or with its own wheels (an
+//            author's wheel, WHLS version 2): a file that shows the kart
+//            wheels with the test wheel (WHLS version 1) is refused with the
+//            rule native-wheels and drives with its CMDL and the retail
+//            wheels, so the test wheel is never uploaded or drawn
+//            (NativeChar_RefuseShownWheels). The same holds for the driver
+//            select preview (NativeChar_HoldPreview).
+//            Without --native-preview nothing of this runs: the
+//            roster read above never looks at CNET or CTXT, so the path of a
+//            file, its checks and its lines are those of a build without them.
 //   stage 0  NativeChar_ClearSeats: the next load starts with empty seats.
 //
 // THE MODEL IS THE NATIVE ONE. CMDL is framed like a model file of the BIGFILE
@@ -111,6 +131,8 @@
 #include <platform/native_chars.h>
 #include <platform/native_audio.h>
 #include <platform/native_path.h>
+#include <platform/native_render_layer.h>
+#include <platform/native_char_gpu.h>
 
 #include <SDL3/SDL.h>
 
@@ -136,6 +158,11 @@
 
 // --dev, main.c. Defined further down in the same build.
 extern int g_cfg_dev;
+
+// The native preview (--native-preview or NATIVE DRIVERS set to PREVIEW, see
+// platform/native_gfx_vk.c, which defines it). Only read here: without it
+// CNET and CTXT are never opened.
+extern int g_cfg_nativePreview;
 
 global_variable char s_charFolder[NATIVE_CHAR_PATH_MAX];
 global_variable char s_charFile[NATIVE_CHAR_PATH_MAX];
@@ -201,6 +228,8 @@ struct NativeCharFile
 	struct RldCharVoices voices; // what RldChar_CheckVoices read (at start, and again from cvoi)
 	int voiceState;             // NATIVE_CHAR_VOICES_*
 	const char *voiceWhy;       // NATIVE_CHAR_VOICES_IGNORED: the reader's or the check's fixed text
+	struct RldCharNative *native; // CNET/CTXT, READY, held only while a seat is bound and only with --native-preview; else NULL
+	struct RldCharLook look;    // the shadow and exhaust of CHRI (RldChar_ParseLook); all retail for a file without the field
 };
 
 // The files of the roster, in sorted order: entry e < s_charRosterFiles is
@@ -245,6 +274,14 @@ global_variable s64 s_charDevDroppedTotal;
 global_variable s64 s_charDevDroppedSeat0;
 global_variable s64 s_charDevDroppedBound;
 
+// --dev-char-seat-files (NATIVE_CHAR_DEV_SEATS_FILES): the names as main.c
+// passed them on, their count, and the roster entry of every seat once
+// NativeChar_DevSeatFilesResolve has found them (seats from the count on:
+// entry 0, the first file of the roster, as ALL).
+global_variable char s_charDevSeatName[NATIVE_CHAR_DEV_SEAT_FILES_MAX][NATIVE_CHAR_PATH_MAX];
+global_variable int s_charDevSeatNames;
+global_variable int s_charDevSeatEntry[NATIVE_CHAR_SEATS];
+
 // The roster, built once by NativeChar_LoadRoster: s_charRosterFiles entries
 // are files, the rest up to s_charRosterCount are placeholders. Placeholder n
 // (1-based) is entry s_charRosterFiles + n - 1.
@@ -255,6 +292,25 @@ global_variable int s_charRosterFiles;
 // without such a file - lets NativeChar_ModelFullHeight answer at once.
 global_variable int s_charFullHeightFiles;
 
+// 1 once an admitted file has a look that is not retail (shadow or exhaust,
+// RldChar_ParseLook). 0 - every retail run and every run with files from
+// before the field - lets the look functions (NativeChar_ModelShadow,
+// NativeChar_ExhaustDraw) answer at once and keeps the exit line away.
+global_variable int s_charLookAny;
+
+// What the look changed, for the exit line: shadows drawn auto and left out
+// (per driver and view), exhaust quads moved and left out (per particle and
+// view, counted where the decision falls, before the camera cull).
+global_variable struct
+{
+	s64 shadowAuto;
+	s64 shadowOff;
+	s64 exhaustMoved;
+	s64 exhaustHidden;
+	s64 flamesMoved;
+	s64 flamesHidden;
+} s_charLookCount;
+
 // Capitals, a space and digits: inside the CHRI name rule (RldChar_NameCheck),
 // so whatever draws the name of a file draws these too.
 global_variable char s_charPlaceholderName[NATIVE_CHAR_ROSTER_MAX][RLDCHAR_NAME_FIELD + 1];
@@ -264,6 +320,10 @@ global_variable int s_charPick = -1;
 
 global_variable s64 s_droppedTotal;
 global_variable s64 s_droppedSeat0;
+
+// How often a file was opened for its native part (NativeChar_ReadNative).
+// Only the self-test reads it: without --native-preview it never moves.
+global_variable int s_nativeLooks;
 
 internal int NativeChar_IsAbsolute(const char *path)
 {
@@ -298,6 +358,102 @@ void NativeChar_SetFile(const char *file)
 void NativeChar_SetDevSeats(int mode)
 {
 	s_charDevSeats = ((mode == NATIVE_CHAR_DEV_SEATS_ALL) || (mode == NATIVE_CHAR_DEV_SEATS_CYCLE)) ? mode : NATIVE_CHAR_DEV_SEATS_OFF;
+}
+
+int NativeChar_SetDevSeatFiles(const char *list)
+{
+	const char *p = list;
+	int count = 0;
+
+	s_charDevSeatNames = 0;
+	if (list == NULL)
+	{
+		return 0;
+	}
+
+	for (;;)
+	{
+		const char *comma = strchr(p, ',');
+		const size_t length = (comma != NULL) ? (size_t)(comma - p) : strlen(p);
+		char *name;
+
+		// An empty name, a cut one, a ninth one or one with a path: not the form.
+		if ((length == 0) || (length >= NATIVE_CHAR_PATH_MAX) || (count >= NATIVE_CHAR_DEV_SEAT_FILES_MAX))
+		{
+			return 0;
+		}
+
+		name = s_charDevSeatName[count];
+		memcpy(name, p, length);
+		name[length] = '\0';
+		if ((strchr(name, '/') != NULL) || (strchr(name, '\\') != NULL) || (strchr(name, ':') != NULL))
+		{
+			return 0;
+		}
+
+		count++;
+		if (comma == NULL)
+		{
+			break;
+		}
+		p = comma + 1;
+	}
+
+	s_charDevSeatNames = count;
+	s_charDevSeats = NATIVE_CHAR_DEV_SEATS_FILES;
+	return 1;
+}
+
+int NativeChar_DevSeatFilesResolve(void)
+{
+	int seat;
+
+	if (s_charDevSeats != NATIVE_CHAR_DEV_SEATS_FILES)
+	{
+		return 1;
+	}
+
+	for (seat = 0; seat < s_charDevSeatNames; seat++)
+	{
+		int found = -1;
+		int e;
+
+		for (e = 0; (e < s_charRosterFiles) && (found < 0); e++)
+		{
+			if ((s_charFiles[e].file != NULL) && (SDL_strcasecmp(s_charFiles[e].file, s_charDevSeatName[seat]) == 0))
+			{
+				found = e;
+			}
+		}
+
+		if (found < 0)
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch --dev-char-seat-files names %s for seat %d, which is not a loaded file of the roster (%d loaded)\n",
+			        s_charDevSeatName[seat], seat, s_charRosterFiles);
+			fflush(stderr);
+			Platform_Log("[CTR Char] dev seat files: %s for seat %d is not a loaded file of the roster (%d loaded) - the start ends\n",
+			             s_charDevSeatName[seat], seat, s_charRosterFiles);
+			return 0;
+		}
+
+		s_charDevSeatEntry[seat] = found;
+	}
+
+	for (seat = s_charDevSeatNames; seat < NATIVE_CHAR_SEATS; seat++)
+	{
+		s_charDevSeatEntry[seat] = 0;
+	}
+
+	for (seat = 0; seat < NATIVE_CHAR_SEATS; seat++)
+	{
+		const struct NativeCharFile *f = &s_charFiles[s_charDevSeatEntry[seat]];
+
+		Platform_Log("[CTR Char] dev seat files: seat %d takes %s (template %d)%s\n", seat, f->file, (int)f->info.templateId,
+		             (seat < s_charDevSeatNames) ? "" : ", the first file of the roster");
+	}
+
+	return 1;
 }
 
 void NativeChar_SetGridFill(int count)
@@ -404,6 +560,14 @@ internal void NativeChar_ReportAtExit(void)
 {
 	NativeChar_FlushDevLoad();
 	Platform_Log("[CTR Char] at exit: instances dropped %lld total, %lld seat 0\n", (long long)s_droppedTotal, (long long)s_droppedSeat0);
+
+	// Only in a run where a file had a look: every other run keeps its lines.
+	if (s_charLookAny)
+	{
+		Platform_Log("[CTR Char] at exit: look shadows auto %lld, off %lld; exhaust quads moved %lld, hidden %lld; turbo flames moved %lld, hidden %lld\n",
+		             (long long)s_charLookCount.shadowAuto, (long long)s_charLookCount.shadowOff, (long long)s_charLookCount.exhaustMoved,
+		             (long long)s_charLookCount.exhaustHidden, (long long)s_charLookCount.flamesMoved, (long long)s_charLookCount.flamesHidden);
+	}
 }
 
 // The portrait (CICN, optional): checked with RldChar_CheckIcon and kept as
@@ -674,6 +838,11 @@ internal int NativeChar_ReadFile(const char *path, const char *file, struct Nati
 	}
 
 	why = RldChar_ParseInfo(&info, infoBytes, infoSize);
+	if (why == NULL)
+	{
+		// The look has no rule: whatever it holds, the file stays (RldChar_ParseLook).
+		RldChar_ParseLook(&info, infoBytes, infoSize, &out->look);
+	}
 	free(infoBytes);
 	if (why != NULL)
 	{
@@ -737,11 +906,30 @@ internal void NativeChar_LogLoaded(const struct NativeCharFile *entry)
 	const u32 mask = RldChar_Mask(entry->info.flags);
 	const char *maskText = (mask == RLDCHAR_MASK_AKU) ? ", mask aku" : ((mask == RLDCHAR_MASK_UKA) ? ", mask uka" : "");
 	const char *height = ((entry->info.flags & RLDCHAR_FLAG_FULL_HEIGHT) != 0) ? ", full height" : "";
+	// The look the same way: only what is not retail, after the flags.
+	const char *shadow = (entry->look.shadow == RLDCHAR_LOOK_AUTO) ? ", shadow auto" : ((entry->look.shadow == RLDCHAR_LOOK_OFF) ? ", shadow off" : "");
+	char exhaust[32];
 
-	Platform_Log("[CTR Char] loaded %s: template %u, class %u, CMDL %02x%02x%02x%02x%02x%02x, %llu bytes%s%s%s\n", entry->file,
+	exhaust[0] = '\0';
+	if (entry->look.exhaust == RLDCHAR_LOOK_CUSTOM)
+	{
+		snprintf(exhaust, sizeof(exhaust), ", exhaust custom %u", (unsigned)entry->look.count);
+	}
+	else if (entry->look.exhaust == RLDCHAR_LOOK_OFF)
+	{
+		snprintf(exhaust, sizeof(exhaust), "%s", ", exhaust off");
+	}
+
+	Platform_Log("[CTR Char] loaded %s: template %u, class %u, CMDL %02x%02x%02x%02x%02x%02x, %llu bytes%s%s%s%s%s\n", entry->file,
 	             (unsigned)entry->info.templateId, (unsigned)entry->info.classId, (unsigned)entry->cmdlHash[0], (unsigned)entry->cmdlHash[1],
 	             (unsigned)entry->cmdlHash[2], (unsigned)entry->cmdlHash[3], (unsigned)entry->cmdlHash[4], (unsigned)entry->cmdlHash[5],
-	             (unsigned long long)entry->fileBytes, wheels, maskText, height);
+	             (unsigned long long)entry->fileBytes, wheels, maskText, height, shadow, exhaust);
+
+	// A look that fell back (RldChar_ParseLook): one line, the file stays.
+	if (entry->look.why != NULL)
+	{
+		Platform_Log("[CTR Char] look %s: %s - retail\n", entry->file, entry->look.why);
+	}
 }
 
 // The portrait of an admitted entry, one line of its own after "loaded" (that
@@ -842,6 +1030,10 @@ internal int NativeChar_Admit(struct NativeCharFile *loaded, char *file, const c
 	if ((loaded->info.flags & RLDCHAR_FLAG_FULL_HEIGHT) != 0)
 	{
 		s_charFullHeightFiles++;
+	}
+	if ((loaded->look.shadow != RLDCHAR_LOOK_RETAIL) || (loaded->look.exhaust != RLDCHAR_LOOK_RETAIL))
+	{
+		s_charLookAny = 1;
 	}
 	NativeChar_LogLoaded(loaded);
 	NativeChar_LogPortrait(s_charRosterFiles - 1);
@@ -1249,10 +1441,279 @@ internal void NativeChar_ReleaseVoices(void)
 	}
 }
 
+// THE NATIVE PART (CNET, CTXT) of a file, read again from its path: 0 and
+// nothing touched without preview - not opened, not looked at. Else 1, and
+// out says NONE, READY or REFUSED (rule, detail). The file must still carry
+// the CMDL that was loaded at start (its hash), and the poses are held to the
+// hulls of the frames of that model in memory (relocated: its pointer fields
+// hold addresses, RldChar_FrameHulls takes the body's address as base).
+internal int NativeChar_ReadNative(const struct NativeCharFile *f, int preview, struct RldCharNative *out)
+{
+	struct RldReader reader;
+	struct RldCharHull hulls[RLDCHAR_NET_POSES];
+	const u8 *modelEntry;
+	const char *why;
+
+	memset(out, 0, sizeof(*out));
+	if (!preview)
+	{
+		return 0;
+	}
+
+	s_nativeLooks++;
+	why = (f->path != NULL) ? Rld_OpenAs(&reader, f->path, &s_rldCharFormat) : "the path of the file was not kept";
+	if (why != NULL)
+	{
+		RldChar_NativeFail(out, "native-file", "%s", why);
+		return 1;
+	}
+
+	modelEntry = Rld_FindEntry(&reader, "CMDL", NULL);
+	if ((modelEntry == NULL) || (memcmp(&modelEntry[RLD_DIR_HASH_OFFSET], f->cmdlHash, sizeof(f->cmdlHash)) != 0))
+	{
+		Rld_Close(&reader);
+		RldChar_NativeFail(out, "native-file", "%s", "the file changed since the start - its CMDL is not the loaded one");
+		return 1;
+	}
+
+	if ((f->cmdl == NULL) || !RldChar_FrameHulls(&f->cmdl[4], Rld_ReadLE32(&f->cmdl[0]), (u32)(size_t)&f->cmdl[4], hulls))
+	{
+		Rld_Close(&reader);
+		RldChar_NativeFail(out, "native-file", "%s", "the frames of the loaded model cannot be read");
+		return 1;
+	}
+
+	RldChar_ReadNative(&reader, f->info.flags, hulls, out);
+	Rld_Close(&reader);
+	return 1;
+}
+
+// One line about the native part of a bound file, the words a measuring tool
+// reads. who: "seat 0" or "dev seats".
+internal void NativeChar_LogNative(const char *who, const struct NativeCharFile *f, const struct RldCharNative *n)
+{
+	if (n->state == RLDCHAR_NATIVE_READY)
+	{
+		char wheels[128];
+
+		if ((n->wheel != NULL) && (n->wheelVersion == RLDCHAR_WHEEL_VERSION_USER))
+		{
+			// An author's wheel: its mesh, its size and its texture (or one
+			// colour), the words a measuring tool reads.
+			const u32 material = Rld_ReadLE16(&n->wheel[0x08]);
+			const s16 texture = (s16)Rld_ReadLE16(&n->materials[((size_t)material * RLDCHAR_NET_MATERIAL_BYTES) + 4u]);
+
+			if ((texture >= 0) && ((u32)texture < n->textureCount))
+			{
+				snprintf(wheels, sizeof(wheels), "wheels own v2, %u triangles, %u vertices, radius %.3f, texture %d %ux%u", (unsigned)n->wheelTriangleCount,
+				         (unsigned)n->wheelVertexCount, (double)RldChar_F32(&n->wheel[0x0C]), (int)texture, (unsigned)n->texture[texture].width,
+				         (unsigned)n->texture[texture].height);
+			}
+			else
+			{
+				snprintf(wheels, sizeof(wheels), "wheels own v2, %u triangles, %u vertices, radius %.3f, one colour", (unsigned)n->wheelTriangleCount,
+				         (unsigned)n->wheelVertexCount, (double)RldChar_F32(&n->wheel[0x0C]));
+			}
+		}
+		else if (n->wheel != NULL)
+		{
+			snprintf(wheels, sizeof(wheels), "wheels %u triangles", (unsigned)n->wheelTriangleCount);
+		}
+		else
+		{
+			snprintf(wheels, sizeof(wheels), "%s", "wheels hidden");
+		}
+		Platform_Log("[CTR Char] native model ready: %s, %s, %u vertices, %u triangles, %u poses, %u materials, %u textures (%llu bytes RGBA8), %s\n", who,
+		             f->file, (unsigned)n->vertexCount, (unsigned)n->triangleCount, (unsigned)n->poseCount, (unsigned)n->materialCount,
+		             (unsigned)n->textureCount, (unsigned long long)n->textureBytes, wheels);
+	}
+	else if (n->state == RLDCHAR_NATIVE_REFUSED)
+	{
+		Platform_Log("[CTR Char] native model refused (%s), using CMDL: %s, %s: %s\n", (n->rule != NULL) ? n->rule : "native", who, f->file, n->detail);
+	}
+	else
+	{
+		Platform_Log("[CTR Char] native model none: %s, %s (no CNET), using CMDL\n", who, f->file);
+	}
+}
+
+// THE KART WHEELS RULE (renderer concept C.12 and the wheel concept, section
+// 6): the game never draws a native body with the sprite wheels. A ready part
+// is held when CHRI hides the kart wheels (RLDCHAR_FLAG_NO_WHEELS; the reader
+// then reads no WHLS) or when its WHLS is an author's wheel (version 2, CNET-10
+// and CNET-12 held by the reader): the body is drawn with its own wheels
+// (platform/native_render_layer.c). A part that shows the kart wheels with
+// the test wheel (WHLS version 1 - a grey cylinder at the retail wheel points,
+// tools/rldpack_native.inc; old files of the preview) or with no WHLS at all
+// is refused here with the rule native-wheels and let go: the driver keeps its
+// CMDL with the retail wheels, and the test wheel never reaches a driver of a
+// file. The reader (RldChar_ReadNative) stays as it is, it is shared with the
+// packer. 1 when refused; any other part is left as it is.
+internal int NativeChar_RefuseShownWheels(const struct NativeCharFile *f, struct RldCharNative *n)
+{
+	if (n->state != RLDCHAR_NATIVE_READY)
+	{
+		return 0;
+	}
+	if (((f->info.flags & RLDCHAR_FLAG_NO_WHEELS) != 0u) && (n->wheel == NULL))
+	{
+		return 0;
+	}
+	if (((f->info.flags & RLDCHAR_FLAG_NO_WHEELS) == 0u) && (n->wheel != NULL) && (n->wheelVersion == RLDCHAR_WHEEL_VERSION_USER))
+	{
+		return 0;
+	}
+
+	RldChar_NativeFail(n, "native-wheels", "%s",
+	                   "the kart wheels are shown with the test wheel (WHLS version 1) - a native model is drawn only with the wheels hidden or its own wheels "
+	                   "(WHLS version 2)");
+	RldChar_NativeDrop(n);
+	return 1;
+}
+
+// At the binding of a seat (load stage 5) and for the driver select preview,
+// only with --native-preview: the native part of the file, read, checked
+// against the kart wheels rule (NativeChar_RefuseShownWheels) and held in host
+// memory until the seats are cleared. Nothing is uploaded and nothing drawn
+// here (step 4c). One line per binding. A file held already (several dev
+// seats) is not read again.
+internal void NativeChar_HoldNative(int entry, const char *who)
+{
+	struct NativeCharFile *f = &s_charFiles[entry];
+	struct RldCharNative *n;
+
+	if (!g_cfg_nativePreview || (f->native != NULL))
+	{
+		return;
+	}
+
+	n = (struct RldCharNative *)calloc(1, sizeof(*n));
+	if (n == NULL)
+	{
+		Platform_Log("[CTR Char] native model refused (memory), using CMDL: %s, %s: out of memory\n", who, f->file);
+		return;
+	}
+
+	(void)NativeChar_ReadNative(f, 1, n);
+	(void)NativeChar_RefuseShownWheels(f, n);
+	NativeChar_LogNative(who, f, n);
+	if (n->state == RLDCHAR_NATIVE_READY)
+	{
+		f->native = n;
+		return;
+	}
+
+	RldChar_FreeNative(n);
+	free(n);
+}
+
+// Every held native part is let go with the seats. Nothing without one.
+internal void NativeChar_ReleaseNative(void)
+{
+	int e;
+
+	for (e = 0; e < s_charRosterFiles; e++)
+	{
+		if (s_charFiles[e].native != NULL)
+		{
+			RldChar_FreeNative(s_charFiles[e].native);
+			free(s_charFiles[e].native);
+			s_charFiles[e].native = NULL;
+		}
+	}
+}
+
+// THE NATIVE PART OF THE DRIVER SELECT PREVIEW (step 5a): the roster entry
+// whose native part is held for the preview window, -1 for none. Held in the
+// file's own slot (native), as a bound seat holds it.
+global_variable int s_previewEntry = -1;
+
 void NativeChar_ClearSeats(void)
 {
 	memset(s_seat, 0, sizeof(s_seat));
 	NativeChar_ReleaseVoices();
+
+	// The GPU sets of step 4c first (platform/native_char_gpu.c), while the
+	// native parts they were made from are still held; nothing without one.
+	// The preview's set goes with them (step 5a).
+	NativeCharGpu_ReleaseAll();
+	NativeChar_ReleaseNative();
+	s_previewEntry = -1;
+}
+
+// Step 5a, from the pull of the render layer at a change of the wanted preview
+// tile, only with --native-preview: the native part of entry for the preview
+// window, read as a seat reads it (NativeChar_HoldNative, one line "native
+// model ...: preview, ..."). The part held for another entry before is let go
+// first. An entry held already is not read again.
+void NativeChar_HoldPreview(int entry)
+{
+	if (!g_cfg_nativePreview || (entry < 0) || (entry >= s_charRosterFiles) || (entry == s_previewEntry))
+	{
+		return;
+	}
+
+	NativeChar_ReleasePreview();
+	NativeChar_HoldNative(entry, "preview");
+	s_previewEntry = entry;
+}
+
+// The preview's part let go (its GPU set first), unless a bound seat holds the
+// same file. Nothing without one.
+void NativeChar_ReleasePreview(void)
+{
+	struct NativeCharFile *f;
+	int seat;
+
+	if ((s_previewEntry < 0) || (s_previewEntry >= s_charRosterFiles))
+	{
+		s_previewEntry = -1;
+		return;
+	}
+
+	NativeCharGpu_ReleasePreview();
+
+	f = &s_charFiles[s_previewEntry];
+	for (seat = 0; seat < NATIVE_CHAR_SEATS; seat++)
+	{
+		if ((s_seat[seat].model != NULL) && (s_seat[seat].entry == s_previewEntry))
+		{
+			s_previewEntry = -1;
+			return;
+		}
+	}
+	if (f->native != NULL)
+	{
+		RldChar_FreeNative(f->native);
+		free(f->native);
+		f->native = NULL;
+	}
+	s_previewEntry = -1;
+}
+
+// The ready native part held for the preview of entry, NULL for any other.
+const struct RldCharNative *NativeChar_PreviewNative(int entry)
+{
+	if ((entry < 0) || (entry != s_previewEntry) || (entry >= s_charRosterFiles))
+	{
+		return NULL;
+	}
+	return s_charFiles[entry].native;
+}
+
+int NativeChar_PreviewEntry(void)
+{
+	return s_previewEntry;
+}
+
+// The file name of a roster entry, "" outside the files.
+const char *NativeChar_EntryFile(int entry)
+{
+	if ((entry < 0) || (entry >= s_charRosterFiles) || (s_charFiles[entry].file == NULL))
+	{
+		return "";
+	}
+	return s_charFiles[entry].file;
 }
 
 // The first reason why this race is not one the funnel binds in, NULL when it
@@ -1299,6 +1760,21 @@ internal const char *NativeChar_ModeRefusal(const struct GameTracker *gGT)
 	}
 
 	return NULL;
+}
+
+// The load of the podium at the end of an arcade cup: UI_CupStandings sets the
+// empty reward STATIC_BIG1 and loads Gem Stone Valley (game/UI/
+// UI_CupStandings.c), the hub detection of the load adds ADVENTURE_ARENA to the
+// arcade bits (game/LOAD/LOAD_TenStages.c). A regular way with the pick still
+// set, refused as "adventure" by NativeChar_ModeRefusal. The adventure sets
+// STATIC_BIG1 too (Oxide, game/222.c), but never without ADVENTURE_MODE.
+internal int NativeChar_ArcadeCupPodium(const struct GameTracker *gGT)
+{
+	const u32 mode1 = (u32)gGT->gameMode1;
+
+	return ((mode1 & ARCADE_MODE) != 0) && ((mode1 & ADVENTURE_ARENA) != 0) &&
+	       ((mode1 & (ADVENTURE_MODE | ADVENTURE_CUP | ADVENTURE_BOSS)) == 0) && (gGT->levelID == GEM_STONE_VALLEY) &&
+	       (gGT->podiumRewardID == STATIC_BIG1);
 }
 
 // The model retail gives seat 0 on this template: the one in the driver pack
@@ -1509,6 +1985,30 @@ internal int NativeChar_LargestEntry(int kind)
 	return found;
 }
 
+// --dev-char-seat-files: one buffer, one pass - seat 0 as a ghost of its file,
+// every other seat at the draw bytes of its own file (as LoadBytes for a load
+// of NATIVE_CHAR_LOAD_DEV with one file). 0 without a file.
+internal u32 NativeChar_DevSeatFilesBytes(u32 *seat0, u32 *other)
+{
+	int seat;
+
+	*seat0 = 0;
+	*other = 0;
+
+	if (s_charRosterFiles == 0)
+	{
+		return 0;
+	}
+
+	*seat0 = NativeChar_FileGhostBytes(&s_charFiles[s_charDevSeatEntry[0]]);
+	for (seat = 1; seat < NATIVE_CHAR_SEATS; seat++)
+	{
+		*other += s_charFiles[s_charDevSeatEntry[seat]].drawBytes;
+	}
+
+	return *seat0 + *other;
+}
+
 u32 NativeChar_DrawReserve(int tableBytes)
 {
 	const struct GameTracker *gGT = sdata->gGT;
@@ -1539,6 +2039,22 @@ u32 NativeChar_DrawReserve(int tableBytes)
 	else if (NativeChar_ModeRefusal(gGT) != NULL)
 	{
 		return 0;
+	}
+	else if (s_charDevSeats == NATIVE_CHAR_DEV_SEATS_FILES)
+	{
+		// Every seat on its own file (NativeChar_ArmDevSeatFiles); a dev seat
+		// wears the retail mask.
+		bytes = NativeChar_DevSeatFilesBytes(&seat0, &other) * NATIVE_CHAR_DRAW_PASSES;
+		if (bytes == 0u)
+		{
+			return 0;
+		}
+
+		Platform_Log("[CTR Char] draw memory: %d bytes + %u for custom models (race, --dev-char-seat-files: seat 0 %u bytes as a ghost + %u bytes "
+		             "for seats 1 to %d, x %u passes, seat 0 %s) = %d\n",
+		             tableBytes, (unsigned)bytes, (unsigned)seat0, (unsigned)other, NATIVE_CHAR_SEATS - 1, (unsigned)NATIVE_CHAR_DRAW_PASSES,
+		             s_charFiles[s_charDevSeatEntry[0]].file, tableBytes + (int)bytes);
+		return bytes;
 	}
 	else if (s_charDevSeats != NATIVE_CHAR_DEV_SEATS_OFF)
 	{
@@ -1602,7 +2118,14 @@ u32 NativeChar_MempackExtraNeeded(void)
 			continue;
 		}
 
-		bytes = NativeChar_LoadBytes(kind, NativeChar_LargestEntry(kind), &seat0, &other);
+		if ((kind == NATIVE_CHAR_LOAD_DEV) && (s_charDevSeats == NATIVE_CHAR_DEV_SEATS_FILES))
+		{
+			bytes = NativeChar_DevSeatFilesBytes(&seat0, &other);
+		}
+		else
+		{
+			bytes = NativeChar_LoadBytes(kind, NativeChar_LargestEntry(kind), &seat0, &other);
+		}
 		largest = (bytes > largest) ? bytes : largest;
 	}
 
@@ -1701,7 +2224,10 @@ int NativeChar_EntryMenuFrame(int entry)
 // Keyed on the model, not on a seat: whatever instance draws the model of a
 // file asks here - seat 0 in a race and the driver instance of the driver
 // select preview alike. Called per instance and frame, so no log line. An
-// empty roster never enters the loop: 0, the retail wheels.
+// empty roster never enters the loop: 0, the retail wheels. The model the
+// native probe is bound to (--native-probe, platform/native_render_layer.c)
+// hides its retail wheels too, in every view and also in a frame where the
+// route falls back to retail; without a bound probe that answer is 0.
 int NativeChar_ModelHidesWheels(const struct Model *model)
 {
 	int entry;
@@ -1709,6 +2235,11 @@ int NativeChar_ModelHidesWheels(const struct Model *model)
 	if (model == NULL)
 	{
 		return 0;
+	}
+
+	if (NativeRenderLayer_ModelHidesWheels(model))
+	{
+		return 1;
 	}
 
 	for (entry = 0; (entry < s_charRosterFiles) && (entry < NATIVE_CHAR_ROSTER_MAX); entry++)
@@ -1720,6 +2251,19 @@ int NativeChar_ModelHidesWheels(const struct Model *model)
 	}
 
 	return 0;
+}
+
+// Per instance and view (game/DrawTires.c, both passes): the answer of the
+// model, or 1 when the render layer drew this view of a custom character
+// natively with its own wheels in this frame (step 4c). Without a native
+// custom character the second part answers 0 at its first comparison.
+int NativeChar_ViewHidesWheels(const struct Instance *inst, const struct PushBuffer *pb)
+{
+	if (inst == NULL)
+	{
+		return 0;
+	}
+	return NativeChar_ModelHidesWheels(inst->model) || NativeRenderLayer_CharViewNativeWheels(inst, pb);
 }
 
 // Keyed on the model like NativeChar_ModelHidesWheels, and the own mask of a
@@ -1743,6 +2287,255 @@ int NativeChar_ModelFullHeight(const struct Model *model)
 		}
 	}
 
+	return 0;
+}
+
+// ---------------------------------------------------------------------------
+// THE LOOK (CHRI 0x24..0x3B, RldChar_ParseLook): the ground shadow and the
+// exhaust smoke of a custom character. Both are PS1 primitives in the
+// ordering table, drawn the same way for a CMDL character and a natively
+// drawn one, so the key is the model of the instance (VehBirth_NonGhost
+// births the driver instance with the file's CMDL model, NativeChar_SeatModel,
+// and the render layer finds its character by that model too). The look is
+// read with CHRI when the roster is read - no --native-preview needed.
+//
+// Only the DRAWING changes. The exhaust particles are born where retail
+// births them (game/Vehicle/VehEmitter.c, untouched): the underwater bubbles
+// call MixRNG_Scramble when they reach the surface (game/Particle.c,
+// Particle_FuncPtr_ExhaustUnderwater), and that random number is the item
+// roll of every driver - a particle born elsewhere would change the race.
+// ---------------------------------------------------------------------------
+
+// The retail exhaust sources in 1/16 model units: source 0 (+X, left) and
+// source 1 (-X, right), VEH_EMITTER_EXHAUST_POS_* of game/Vehicle/VehEmitter.c
+// (x scale * 9 >> 3 and scale * -18 >> 4, y scale * 7 >> 1, z scale * -56 >> 4,
+// in 1/256 world = (value * scale) >> 8 here - the same numbers exactly).
+#define NATIVE_CHAR_EXHAUST_RETAIL_X 288
+#define NATIVE_CHAR_EXHAUST_RETAIL_Y 896
+#define NATIVE_CHAR_EXHAUST_RETAIL_Z (-896)
+
+// The shadow seam: the retail axes are 0x29 to the rear and 0x34 to the
+// front (game/Vehicle/VehGroundShadow.c), icon 0 behind it and icon 1 before.
+#define NATIVE_CHAR_SHADOW_REAR 41
+#define NATIVE_CHAR_SHADOW_LENGTH 93
+
+// The look of a model, NULL for every model of no file, for a file with an
+// all-retail look and at once in a run without a look.
+internal const struct RldCharLook *NativeChar_ModelLook(const struct Model *model)
+{
+	int entry;
+
+	if (!s_charLookAny || (model == NULL))
+	{
+		return NULL;
+	}
+
+	for (entry = 0; (entry < s_charRosterFiles) && (entry < NATIVE_CHAR_ROSTER_MAX); entry++)
+	{
+		if (s_charFiles[entry].model == model)
+		{
+			const struct RldCharLook *look = &s_charFiles[entry].look;
+
+			return ((look->shadow != RLDCHAR_LOOK_RETAIL) || (look->exhaust != RLDCHAR_LOOK_RETAIL)) ? look : NULL;
+		}
+	}
+
+	return NULL;
+}
+
+int NativeChar_ModelShadow(const struct Model *model, s16 quad[4])
+{
+	const struct RldCharLook *look = NativeChar_ModelLook(model);
+
+	if ((look == NULL) || (look->shadow == RLDCHAR_LOOK_RETAIL))
+	{
+		return (int)RLDCHAR_LOOK_RETAIL;
+	}
+
+	if ((look->shadow == RLDCHAR_LOOK_AUTO) && (quad != NULL))
+	{
+		quad[0] = look->quad[0];
+		quad[1] = look->quad[1];
+		quad[2] = look->quad[2];
+		quad[3] = look->quad[3];
+	}
+
+	return (int)look->shadow;
+}
+
+int NativeChar_ModelExhaust(const struct Model *model, s16 point[2][3], int *count)
+{
+	const struct RldCharLook *look = NativeChar_ModelLook(model);
+
+	if ((look == NULL) || (look->exhaust == RLDCHAR_LOOK_RETAIL))
+	{
+		return (int)RLDCHAR_LOOK_RETAIL;
+	}
+
+	if (look->exhaust == RLDCHAR_LOOK_CUSTOM)
+	{
+		if (point != NULL)
+		{
+			memcpy(point, look->point, sizeof(look->point));
+		}
+		if (count != NULL)
+		{
+			*count = (int)look->count;
+		}
+	}
+
+	return (int)look->exhaust;
+}
+
+void NativeChar_NoteTurboFlames(int moved, int hidden)
+{
+	s_charLookCount.flamesMoved += moved;
+	s_charLookCount.flamesHidden += hidden;
+}
+
+void NativeChar_NoteShadow(int mode)
+{
+	if (mode == (int)RLDCHAR_LOOK_AUTO)
+	{
+		s_charLookCount.shadowAuto++;
+	}
+	else if (mode == (int)RLDCHAR_LOOK_OFF)
+	{
+		s_charLookCount.shadowOff++;
+	}
+}
+
+// 1/16 model units -> the shadow space: (v * scale) >> 12 is 1/16 world,
+// times height >> 10 is the world times 4 at the height factor (256 = on the
+// ground, the retail axes are (height * factor) >> 6 in the same space).
+internal s16 NativeChar_ShadowUnit(int value, int scale, int height)
+{
+	const s32 w = ((s32)value * (s32)scale) >> 12;
+
+	return (s16)((w * (s32)height) >> 10);
+}
+
+void NativeChar_ShadowAxes(const s16 quad[4], int scaleX, int scaleZ, int height, s16 out[4][3])
+{
+	const int xMid = ((int)quad[0] + (int)quad[1]) >> 1;
+	const int zSeam = (int)quad[2] + ((((int)quad[3] - (int)quad[2]) * NATIVE_CHAR_SHADOW_REAR) / NATIVE_CHAR_SHADOW_LENGTH);
+
+	memset(out, 0, sizeof(s16) * 4u * 3u);
+	out[0][0] = NativeChar_ShadowUnit(xMid, scaleX, height);
+	out[0][2] = NativeChar_ShadowUnit(zSeam, scaleZ, height);
+	out[1][0] = NativeChar_ShadowUnit((int)quad[1] - xMid, scaleX, height);
+	out[2][2] = NativeChar_ShadowUnit(zSeam - (int)quad[2], scaleZ, height);
+	out[3][2] = NativeChar_ShadowUnit((int)quad[3] - zSeam, scaleZ, height);
+}
+
+// The move of one exhaust particle to its own point, pure: source 0 or 1 of
+// retail, the look's point of the same index; m the rotation of the
+// instance (4096 = 1), scale its scale. *add gets the offset in the world
+// times 4 (the space of the drawn position): ((P - R) * scale) >> 14 per
+// axis, then rotated, (M * offset) >> 12. 1 = the particle is left out
+// (exhaust off, or custom with one point and source 1), else 0.
+internal int NativeChar_ExhaustMove(const struct RldCharLook *look, int source, const s16 m[3][3], const s16 scale[3], s32 add[3])
+{
+	s32 offset[3];
+	int i;
+
+	add[0] = 0;
+	add[1] = 0;
+	add[2] = 0;
+
+	if (look->exhaust == RLDCHAR_LOOK_OFF)
+	{
+		return 1;
+	}
+	if ((look->exhaust != RLDCHAR_LOOK_CUSTOM) || (source < 0) || (source > 1))
+	{
+		return 0;
+	}
+	if ((u32)source >= look->count)
+	{
+		return 1;
+	}
+
+	offset[0] = (((s32)look->point[source][0] - ((source == 0) ? NATIVE_CHAR_EXHAUST_RETAIL_X : -NATIVE_CHAR_EXHAUST_RETAIL_X)) * (s32)scale[0]) >> 14;
+	offset[1] = (((s32)look->point[source][1] - NATIVE_CHAR_EXHAUST_RETAIL_Y) * (s32)scale[1]) >> 14;
+	offset[2] = (((s32)look->point[source][2] - NATIVE_CHAR_EXHAUST_RETAIL_Z) * (s32)scale[2]) >> 14;
+
+	for (i = 0; i < 3; i++)
+	{
+		add[i] = (((s32)m[i][0] * offset[0]) + ((s32)m[i][1] * offset[1]) + ((s32)m[i][2] * offset[2])) >> 12;
+	}
+
+	return 0;
+}
+
+// The retail source of a particle: its position relative to the instance
+// (startVal, 1/256 world, rotated with the instance at birth) along the
+// instance's local X axis, column 0 of the rotation. >= 0 is source 0 (+X).
+// The smoke lives a few frames and drifts far less than the 14 world units
+// between the sources; a long-lived underwater bubble could cross - only the
+// picture would differ.
+internal int NativeChar_ExhaustSource(const struct Particle *particle, const s16 m[3][3])
+{
+	const s64 side = ((s64)particle->axis[0].startVal * (s64)m[0][0]) + ((s64)particle->axis[1].startVal * (s64)m[1][0]) +
+	                 ((s64)particle->axis[2].startVal * (s64)m[2][0]);
+
+	return (side >= 0) ? 0 : 1;
+}
+
+int NativeChar_ExhaustDraw(const struct Particle *particle, s32 *posX, s32 *posY, s32 *posZ)
+{
+	const struct GameTracker *gGT;
+	const struct IconGroup *group;
+	const struct Instance *inst;
+	const struct RldCharLook *look;
+	s16 m[3][3];
+	s16 scale[3];
+	s32 add[3];
+	int i;
+
+	if (!s_charLookAny || (particle == NULL) || ((particle->flagsSetColor & PARTICLE_SET_COLOR_FLAG_DRIVER_LOCAL) == 0) ||
+	    (particle->owner.driverInst == NULL) || (particle->driverID != -1) || (particle->ptrIconGroup == NULL))
+	{
+		return 0;
+	}
+
+	// The exhaust groups of VehEmitter_Exhaust and the bubble pop
+	// (NativeRenderLayer_HideExhaustQuad tells them apart the same way);
+	// burning smoke has a driverID and never gets here.
+	gGT = sdata->gGT;
+	group = particle->ptrIconGroup;
+	if ((gGT == NULL) || ((group != gGT->iconGroup[1]) && (group != gGT->iconGroup[7]) && (group != gGT->iconGroup[8])))
+	{
+		return 0;
+	}
+
+	inst = particle->owner.driverInst;
+	look = NativeChar_ModelLook(inst->model);
+	if ((look == NULL) || (look->exhaust == RLDCHAR_LOOK_RETAIL))
+	{
+		return 0;
+	}
+
+	for (i = 0; i < 3; i++)
+	{
+		m[i][0] = inst->matrix.m[i][0];
+		m[i][1] = inst->matrix.m[i][1];
+		m[i][2] = inst->matrix.m[i][2];
+	}
+	scale[0] = inst->scale.x;
+	scale[1] = inst->scale.y;
+	scale[2] = inst->scale.z;
+
+	if (NativeChar_ExhaustMove(look, NativeChar_ExhaustSource(particle, m), m, scale, add))
+	{
+		s_charLookCount.exhaustHidden++;
+		return 1;
+	}
+
+	*posX += add[0];
+	*posY += add[1];
+	*posZ += add[2];
+	s_charLookCount.exhaustMoved++;
 	return 0;
 }
 
@@ -2160,6 +2953,7 @@ internal void NativeChar_ArmDevSeats(struct GameTracker *gGT)
 	if (bound > 0)
 	{
 		NativeChar_HoldVoices(entry);
+		NativeChar_HoldNative(entry, "dev seats");
 	}
 
 	// From here until the next load arms its seats, drops count for this one.
@@ -2173,6 +2967,118 @@ internal void NativeChar_ArmDevSeats(struct GameTracker *gGT)
 	Platform_Log("[CTR Char] dev seats: %s, load %d on level %d, %d of %d seats = %s (%u draw bytes), bots on template %d\n",
 	             (s_charDevSeats == NATIVE_CHAR_DEV_SEATS_CYCLE) ? "cycle" : "all", s_charDevLoads, gGT->levelID, bound, NATIVE_CHAR_SEATS,
 	             s_charFiles[entry].file, (unsigned)s_charFiles[entry].drawBytes, fileTemplate);
+	NativeChar_LogSeats();
+}
+
+// --dev-char-seat-files: as NativeChar_ArmDevSeats, but every seat on the file
+// NativeChar_DevSeatFilesResolve gave it, and every bot seat put on the
+// template of its own file. Seat 0 keeps --driver's template and binds only
+// when its donor's frame counts are those of its file. One line per seat.
+internal void NativeChar_ArmDevSeatFiles(struct GameTracker *gGT)
+{
+	const char *modeWhy = NativeChar_ModeRefusal(gGT);
+	int noDonor[NATIVE_CHAR_SEATS];
+	int bound = 0;
+	int seat;
+
+	if ((gGT->boolDemoMode != 0) || (modeWhy != NULL))
+	{
+		Platform_Log("[CTR Char] dev seats: not bound (%s)\n", (modeWhy != NULL) ? modeWhy : "demo");
+		return;
+	}
+
+	s_charDevLoads++;
+
+	// Stage 5, as NativeChar_ArmDevSeats: the bots of stage 4 are put on the
+	// templates of their files before VehBirth reads characterIDs - but only
+	// on a template the driver pack of this load has a model for. A bot put on
+	// a template without one would be born without a model
+	// (VehBirth_GetModelByName finds nothing); such a seat keeps the template
+	// stage 4 gave it and stays retail, loudly.
+	memset(noDonor, 0, sizeof(noDonor));
+	for (seat = 1; seat < NATIVE_CHAR_SEATS; seat++)
+	{
+		const int fileTemplate = (int)s_charFiles[s_charDevSeatEntry[seat]].info.templateId;
+
+		if ((fileTemplate >= 0) && (fileTemplate <= RLDCHAR_TEMPLATE_MAX) && (NativeChar_DonorModel(fileTemplate) != NULL))
+		{
+			data.characterIDs[seat] = (s16)fileTemplate;
+		}
+		else
+		{
+			noDonor[seat] = 1;
+		}
+	}
+
+	for (seat = 0; seat < NATIVE_CHAR_SEATS; seat++)
+	{
+		const int entry = s_charDevSeatEntry[seat];
+		const int templateId = (int)data.characterIDs[seat];
+		const struct Model *donor = ((templateId >= 0) && (templateId <= RLDCHAR_TEMPLATE_MAX)) ? NativeChar_DonorModel(templateId) : NULL;
+		int same = (donor != NULL);
+		int a;
+
+		if (noDonor[seat])
+		{
+			Platform_LogWarn("[CTR Char] dev seat files: load %d seat %d stays retail (%s, template %d has no donor in the driver pack, "
+			                 "the bot keeps template %d)\n",
+			                 s_charDevLoads, seat, s_charFiles[entry].file, (int)s_charFiles[entry].info.templateId, templateId);
+			continue;
+		}
+
+		for (a = 0; same && (a < RLDCHAR_ANIM_COUNT); a++)
+		{
+			same = (NativeChar_AnimFrames(s_charFiles[entry].model, a) == NativeChar_AnimFrames(donor, a));
+		}
+
+		if (!same)
+		{
+			Platform_Log("[CTR Char] dev seat files: load %d seat %d stays retail (%s, template %d, %s)\n", s_charDevLoads, seat, s_charFiles[entry].file,
+			             templateId, (donor == NULL) ? "no donor in the driver pack" : "other frame counts");
+			continue;
+		}
+
+		s_seat[seat].model = s_charFiles[entry].model;
+		s_seat[seat].entry = entry;
+		s_seat[seat].motorId = templateId;
+		s_seat[seat].devSeat = 1;
+		bound++;
+		Platform_Log("[CTR Char] dev seat files: load %d seat %d = %s (template %d, %u draw bytes)\n", s_charDevLoads, seat, s_charFiles[entry].file,
+		             templateId, (unsigned)s_charFiles[entry].drawBytes);
+	}
+
+	// What a bound file holds, once per file.
+	for (seat = 0; seat < NATIVE_CHAR_SEATS; seat++)
+	{
+		int earlier = 0;
+		int s;
+
+		if (s_seat[seat].model == NULL)
+		{
+			continue;
+		}
+
+		for (s = 0; s < seat; s++)
+		{
+			earlier |= (s_seat[s].model != NULL) && (s_seat[s].entry == s_seat[seat].entry);
+		}
+
+		if (!earlier)
+		{
+			NativeChar_HoldVoices(s_seat[seat].entry);
+			NativeChar_HoldNative(s_seat[seat].entry, "dev seat files");
+		}
+	}
+
+	// From here until the next load arms its seats, drops count for this one.
+	s_charDevLoadOpen = 1;
+	s_charDevLoadLevel = gGT->levelID;
+	s_charDevDroppedTotal = 0;
+	s_charDevDroppedSeat0 = 0;
+	s_charDevDroppedBound = 0;
+
+	NativeChar_PortraitsDirty();
+	Platform_Log("[CTR Char] dev seats: files, load %d on level %d, %d of %d seats bound\n", s_charDevLoads, gGT->levelID, bound, NATIVE_CHAR_SEATS);
 	NativeChar_LogSeats();
 }
 
@@ -2215,6 +3121,11 @@ void NativeChar_ArmSeats(void)
 
 	// 2b. --dev-char-seats (developer switch, measuring): every seat, the pick
 	//     does not count.
+	if (s_charDevSeats == NATIVE_CHAR_DEV_SEATS_FILES)
+	{
+		NativeChar_ArmDevSeatFiles(gGT);
+		return;
+	}
 	if (s_charDevSeats != NATIVE_CHAR_DEV_SEATS_OFF)
 	{
 		NativeChar_ArmDevSeats(gGT);
@@ -2231,6 +3142,17 @@ void NativeChar_ArmSeats(void)
 	if (gGT->boolDemoMode != 0)
 	{
 		Platform_Log("[CTR Char] not bound: demo\n");
+		return;
+	}
+
+	// 4b. The podium at the end of an arcade cup: nothing to bind - the podium
+	//     shows the dance models of the templates (game/Podium.c) - and no gap
+	//     in the mode rule, so not loud, and the pick stays. The way on from the
+	//     podium loads the title (game/233/CS_Camera.c), and step 1 drops the
+	//     pick there as on every way back to the title.
+	if (NativeChar_ArcadeCupPodium(gGT))
+	{
+		Platform_Log("[CTR Char] seat 0 empty: podium of an arcade cup, the pick stays\n");
 		return;
 	}
 
@@ -2292,6 +3214,7 @@ void NativeChar_ArmSeats(void)
 	NativeChar_PortraitsDirty();
 	Platform_Log("[CTR Char] seat 0 = %s on template %d\n", s_charFiles[pick].file, templateId);
 	NativeChar_HoldVoices(pick);
+	NativeChar_HoldNative(pick, "seat 0");
 
 	// The marker of the minimap: one flat color like the retail driver colors
 	// (data.colors, ALL4), or the template's.
@@ -2325,6 +3248,71 @@ struct Model *NativeChar_SeatModel(int index)
 	}
 
 	return s_seat[index].model;
+}
+
+// The retail model a seat's birth will find for data.characterIDs[seat] in the
+// driver pack of this load (the search of VehBirth_GetModelByName; valid from
+// load stage 5 on), NULL when there is none. For the retail twin (step 4d).
+const struct Model *NativeChar_RetailSeatModel(int seat)
+{
+	int templateId;
+
+	if ((seat < 0) || (seat >= NATIVE_CHAR_SEATS))
+	{
+		return NULL;
+	}
+	templateId = (int)data.characterIDs[seat];
+	if ((templateId < 0) || (templateId > RLDCHAR_TEMPLATE_MAX))
+	{
+		return NULL;
+	}
+	return NativeChar_DonorModel(templateId);
+}
+
+const char *NativeChar_SeatFile(int seat)
+{
+	if (NativeChar_SeatModel(seat) == NULL)
+	{
+		return "";
+	}
+
+	return (s_charFiles[s_seat[seat].entry].file != NULL) ? s_charFiles[s_seat[seat].entry].file : "";
+}
+
+// The self-test of the GPU sets (platform/native_char_gpu.c): one file read as
+// the roster reads it, then its native part as a bound seat reads it with
+// --native-preview. The CMDL and the mask are let go again; the native part is
+// the caller's (RldChar_FreeNative). 1 when the part is ready.
+int NativeChar_ReadNativeFile(const char *path, const char *name, struct RldCharNative *out)
+{
+	struct NativeCharFile f;
+	int ready;
+
+	memset(out, 0, sizeof(*out));
+	memset(&f, 0, sizeof(f));
+	if (!NativeChar_ReadFile(path, name, &f))
+	{
+		return 0;
+	}
+	f.file = (char *)name;
+	f.path = (char *)path;
+
+	(void)NativeChar_ReadNative(&f, 1, out);
+	ready = (out->state == RLDCHAR_NATIVE_READY);
+
+	free(f.cmdl);
+	NativeChar_DropMask(&f);
+	return ready;
+}
+
+const struct RldCharNative *NativeChar_SeatNative(int seat)
+{
+	if (NativeChar_SeatModel(seat) == NULL)
+	{
+		return NULL;
+	}
+
+	return s_charFiles[s_seat[seat].entry].native;
 }
 
 // ---------------------------------------------------------------------------
@@ -3095,4 +4083,777 @@ void NativeChar_MaskSelfTest(int *checks, int *failures)
 
 	NativeChar_OwnMaskSelfTest(checks, failures);
 	NativeChar_MapColorSelfTest(checks, failures);
+}
+
+// ---------------------------------------------------------------------------
+// THE LOOK SELF-TEST, part of --char-grid-selftest (MM_NativeCharGrid_SelfTest).
+// Pure like the mask test: CHRI bytes built here, read back with
+// RldChar_ParseInfo and RldChar_ParseLook; the unit probes against the retail
+// constants of game/Vehicle/VehEmitter.c and game/Vehicle/VehGroundShadow.c;
+// the move of an exhaust particle and the shadow vectors. The roster is lent
+// for one case and given back; no counter of the exit line moves.
+// ---------------------------------------------------------------------------
+
+enum
+{
+	NATIVE_CHAR_TEST_WHY_NONE = 0,
+	NATIVE_CHAR_TEST_WHY_SHADOW,
+	NATIVE_CHAR_TEST_WHY_EXHAUST,
+};
+
+internal void NativeChar_TestPut16(u8 *at, int value)
+{
+	at[0] = (u8)(value & 0xff);
+	at[1] = (u8)((value >> 8) & 0xff);
+}
+
+internal void NativeChar_LookExpect(int *checks, int *failures, int ok, const char *what)
+{
+	(*checks)++;
+
+	if (!ok)
+	{
+		(*failures)++;
+		printf("char look selftest FAILED: %s\n", what);
+	}
+}
+
+internal void NativeChar_LookParseSelfTest(int *checks, int *failures)
+{
+	// The look bytes are written at 0x24..0x3B in every case. Below 0x3C they
+	// lie behind the fields (0x1C, 0x20: behind the string count, which is
+	// 0) and must not be read; 0x24 holds the string count itself, so that
+	// case writes no look.
+	static const struct
+	{
+		const char *name;
+		u32 fixedSize;
+		u32 flags;
+		u8 shadow;
+		u8 exhaust;
+		u8 count;
+		u8 reserved;
+		s16 quad[4];
+		s16 point[2][3];
+		u32 expShadow;
+		u32 expExhaust;
+		int why;
+	} cases[] = {
+	    {"0x1C, look bytes behind the fields", 0x1Cu, 0u, 1, 1, 2, 0, {-500, 500, -800, 900}, {{100, 300, -900}, {-100, 300, -900}}, 0u, 0u, 0},
+	    {"0x20, look bytes behind the fields", 0x20u, 1u, 1, 2, 0, 0, {-500, 500, -800, 900}, {{0}}, 0u, 0u, 0},
+	    {"0x24 map color, no look", 0x24u, 0x8u, 0, 0, 0, 0, {0}, {{0}}, 0u, 0u, 0},
+	    {"0x3C all zero", 0x3Cu, 0u, 0, 0, 0, 0, {0}, {{0}}, 0u, 0u, 0},
+	    {"0x3C retail with values", 0x3Cu, 0u, 0, 0, 2, 0, {-500, 500, -800, 900}, {{100, 300, -900}, {-100, 300, -900}}, 0u, 0u, 0},
+	    {"auto", 0x3Cu, 1u, 1, 0, 0, 0, {-517, 517, -866, 931}, {{0}}, 1u, 0u, 0},
+	    {"auto, the retail quad", 0x3Cu, 1u, 1, 0, 0, 0, {-800, 800, -820, 1040}, {{0}}, 1u, 0u, 0},
+	    {"auto at the limit 4096", 0x3Cu, 0u, 1, 0, 0, 0, {-4096, 4096, -4096, 4096}, {{0}}, 1u, 0u, 0},
+	    {"auto 16 by 16", 0x3Cu, 0u, 1, 0, 0, 0, {0, 16, -16, 0}, {{0}}, 1u, 0u, 0},
+	    {"auto xMin == xMax", 0x3Cu, 0u, 1, 0, 0, 0, {100, 100, -10, 10}, {{0}}, 0u, 0u, 1},
+	    {"auto xMin > xMax", 0x3Cu, 0u, 1, 0, 0, 0, {200, 100, -100, 100}, {{0}}, 0u, 0u, 1},
+	    {"auto zMin > zMax", 0x3Cu, 0u, 1, 0, 0, 0, {-100, 100, 100, -100}, {{0}}, 0u, 0u, 1},
+	    {"auto 15 wide", 0x3Cu, 0u, 1, 0, 0, 0, {0, 15, 0, 100}, {{0}}, 0u, 0u, 1},
+	    {"auto 15 long", 0x3Cu, 0u, 1, 0, 0, 0, {0, 100, 0, 15}, {{0}}, 0u, 0u, 1},
+	    {"auto xMin -4097", 0x3Cu, 0u, 1, 0, 0, 0, {-4097, 100, 0, 100}, {{0}}, 0u, 0u, 1},
+	    {"auto zMax 4097", 0x3Cu, 0u, 1, 0, 0, 0, {0, 100, 0, 4097}, {{0}}, 0u, 0u, 1},
+	    {"shadow off", 0x3Cu, 1u, 2, 0, 0, 0, {0}, {{0}}, 2u, 0u, 0},
+	    {"shadow off, a broken quad", 0x3Cu, 0u, 2, 0, 0, 0, {300, -300, 9000, -9000}, {{0}}, 2u, 0u, 0},
+	    {"shadow mode 3", 0x3Cu, 0u, 3, 0, 0, 0, {-500, 500, -800, 900}, {{0}}, 0u, 0u, 1},
+	    {"shadow mode 255", 0x3Cu, 0u, 255, 0, 0, 0, {-500, 500, -800, 900}, {{0}}, 0u, 0u, 1},
+	    {"exhaust off", 0x3Cu, 1u, 0, 2, 0, 0, {0}, {{0}}, 0u, 2u, 0},
+	    {"exhaust off, count 5", 0x3Cu, 0u, 0, 2, 5, 0, {0}, {{9000, 9000, 9000}}, 0u, 2u, 0},
+	    {"custom 1", 0x3Cu, 0u, 0, 1, 1, 0, {0}, {{0, 320, -900}, {9000, -9000, 9000}}, 0u, 1u, 0},
+	    {"custom 2", 0x3Cu, 0u, 0, 1, 2, 0, {0}, {{200, 300, -900}, {-200, 300, -900}}, 0u, 1u, 0},
+	    {"custom count 0", 0x3Cu, 0u, 0, 1, 0, 0, {0}, {{200, 300, -900}, {-200, 300, -900}}, 0u, 0u, 2},
+	    {"custom count 3", 0x3Cu, 0u, 0, 1, 3, 0, {0}, {{200, 300, -900}, {-200, 300, -900}}, 0u, 0u, 2},
+	    {"custom y -256", 0x3Cu, 0u, 0, 1, 1, 0, {0}, {{0, -256, 0}}, 0u, 1u, 0},
+	    {"custom y -257", 0x3Cu, 0u, 0, 1, 1, 0, {0}, {{0, -257, 0}}, 0u, 0u, 2},
+	    {"custom y 4097", 0x3Cu, 0u, 0, 1, 1, 0, {0}, {{0, 4097, 0}}, 0u, 0u, 2},
+	    {"custom x 4097", 0x3Cu, 0u, 0, 1, 1, 0, {0}, {{4097, 0, 0}}, 0u, 0u, 2},
+	    {"custom z -4097", 0x3Cu, 0u, 0, 1, 1, 0, {0}, {{0, 0, -4097}}, 0u, 0u, 2},
+	    {"custom 2, point 1 beyond", 0x3Cu, 0u, 0, 1, 2, 0, {0}, {{0, 0, 0}, {-4097, 0, 0}}, 0u, 0u, 2},
+	    {"custom 1, point 1 beyond is not read", 0x3Cu, 0u, 0, 1, 1, 0, {0}, {{0, 0, 0}, {-4097, 0, 0}}, 0u, 1u, 0},
+	    {"exhaust mode 3", 0x3Cu, 0u, 0, 3, 1, 0, {0}, {{0}}, 0u, 0u, 2},
+	    {"reserved 0xff", 0x3Cu, 1u, 1, 2, 0, 0xff, {-517, 517, -866, 931}, {{0}}, 1u, 2u, 0},
+	    {"longer fixedSize 0x40", 0x40u, 1u, 1, 2, 0, 0, {-517, 517, -866, 931}, {{0}}, 1u, 2u, 0},
+	    {"both modes unknown: shadow named", 0x3Cu, 0u, 7, 9, 0, 0, {0}, {{0}}, 0u, 0u, 1},
+	    {"shadow broken, exhaust custom", 0x3Cu, 0u, 1, 1, 2, 0, {5, 5, 5, 5}, {{200, 300, -900}, {-200, 300, -900}}, 0u, 1u, 1},
+	    {"shadow auto, exhaust broken", 0x3Cu, 0u, 1, 1, 0, 0, {-517, 517, -866, 931}, {{0}}, 1u, 0u, 2},
+	    {"wheels hidden, auto and off (the packer default)", 0x3Cu, 1u, 1, 2, 0, 0, {-517, 517, -866, 931}, {{0}}, 1u, 2u, 0},
+	};
+	u8 bytes[0x48u];
+	struct RldCharInfo info;
+	struct RldCharLook look;
+	char what[192];
+	int c;
+
+	for (c = 0; c < (int)(sizeof(cases) / sizeof(cases[0])); c++)
+	{
+		const u32 fixedSize = cases[c].fixedSize;
+		const size_t size = (fixedSize >= RLDCHAR_CHRI_SIZE_LOOK) ? ((size_t)fixedSize + 4u) : 0x40u;
+		const char *why;
+		int ok;
+		int i;
+		int k;
+
+		memset(bytes, 0, sizeof(bytes));
+		bytes[0x00] = (u8)fixedSize;
+		bytes[0x02] = RLDCHAR_TEMPLATE_MAX;
+		memcpy(&bytes[0x04], "LOOK", 4);
+		bytes[0x18] = 1;
+		if (fixedSize >= RLDCHAR_CHRI_SIZE_FLAGS)
+		{
+			NativeChar_TestPut32(&bytes[RLDCHAR_CHRI_FLAGS_OFFSET], cases[c].flags);
+		}
+		if (fixedSize != RLDCHAR_CHRI_SIZE_MAP_COLOR)
+		{
+			bytes[RLDCHAR_CHRI_SHADOW_MODE] = cases[c].shadow;
+			bytes[RLDCHAR_CHRI_EXHAUST_MODE] = cases[c].exhaust;
+			bytes[RLDCHAR_CHRI_EXHAUST_COUNT] = cases[c].count;
+			bytes[RLDCHAR_CHRI_EXHAUST_COUNT + 1u] = cases[c].reserved;
+			for (i = 0; i < 4; i++)
+			{
+				NativeChar_TestPut16(&bytes[RLDCHAR_CHRI_SHADOW_QUAD + (2u * (u32)i)], cases[c].quad[i]);
+			}
+			for (k = 0; k < 2; k++)
+			{
+				for (i = 0; i < 3; i++)
+				{
+					NativeChar_TestPut16(&bytes[RLDCHAR_CHRI_EXHAUST_POINTS + (6u * (u32)k) + (2u * (u32)i)], cases[c].point[k][i]);
+				}
+			}
+		}
+
+		// The string count at fixedSize: 0 (0x24 is the only case where it
+		// overlaps the look, and that case writes none).
+		NativeChar_TestPut32(&bytes[fixedSize], 0u);
+
+		why = RldChar_ParseInfo(&info, bytes, size);
+		snprintf(what, sizeof(what), "look %s: CHRI refused (%s)", cases[c].name, (why != NULL) ? why : "");
+		NativeChar_LookExpect(checks, failures, why == NULL, what);
+
+		snprintf(what, sizeof(what), "look %s: the flags moved", cases[c].name);
+		NativeChar_LookExpect(checks, failures, (fixedSize < RLDCHAR_CHRI_SIZE_FLAGS) || (info.flags == cases[c].flags), what);
+
+		memset(&look, 0x5a, sizeof(look));
+		RldChar_ParseLook(&info, bytes, size, &look);
+
+		snprintf(what, sizeof(what), "look %s: shadow %u exhaust %u count %u, not %u %u", cases[c].name, (unsigned)look.shadow, (unsigned)look.exhaust,
+		         (unsigned)look.count, (unsigned)cases[c].expShadow, (unsigned)cases[c].expExhaust);
+		NativeChar_LookExpect(checks, failures, (look.shadow == cases[c].expShadow) && (look.exhaust == cases[c].expExhaust), what);
+
+		snprintf(what, sizeof(what), "look %s: why \"%s\"", cases[c].name, (look.why != NULL) ? look.why : "(none)");
+		if (cases[c].why == NATIVE_CHAR_TEST_WHY_NONE)
+		{
+			ok = (look.why == NULL);
+		}
+		else
+		{
+			const char *word = (cases[c].why == NATIVE_CHAR_TEST_WHY_SHADOW) ? "shadow " : "exhaust ";
+
+			ok = (look.why != NULL) && (strncmp(look.why, word, strlen(word)) == 0);
+		}
+		NativeChar_LookExpect(checks, failures, ok, what);
+
+		// The values: the quad only with auto, the points only with custom
+		// (point 1 only with count 2), every other value 0.
+		ok = 1;
+		for (i = 0; i < 4; i++)
+		{
+			ok &= (look.quad[i] == ((look.shadow == RLDCHAR_LOOK_AUTO) ? cases[c].quad[i] : 0));
+		}
+		ok &= (look.count == ((look.exhaust == RLDCHAR_LOOK_CUSTOM) ? (u32)cases[c].count : 0u));
+		for (k = 0; k < 2; k++)
+		{
+			for (i = 0; i < 3; i++)
+			{
+				ok &= (look.point[k][i] == (((look.exhaust == RLDCHAR_LOOK_CUSTOM) && ((u32)k < look.count)) ? cases[c].point[k][i] : 0));
+			}
+		}
+		snprintf(what, sizeof(what), "look %s: values not as stored, or not 0 where unused", cases[c].name);
+		NativeChar_LookExpect(checks, failures, ok, what);
+	}
+
+	// A CHRI that is too short for its fixedSize never reaches here (CHRI-1);
+	// ParseLook holds the size anyway, and NULL is retail.
+	memset(bytes, 0, sizeof(bytes));
+	bytes[0x00] = (u8)RLDCHAR_CHRI_SIZE_LOOK;
+	bytes[RLDCHAR_CHRI_SHADOW_MODE] = (u8)RLDCHAR_LOOK_OFF;
+	info.fixedSize = RLDCHAR_CHRI_SIZE_LOOK;
+	RldChar_ParseLook(&info, bytes, RLDCHAR_CHRI_SIZE_LOOK - 1u, &look);
+	NativeChar_LookExpect(checks, failures, (look.shadow == RLDCHAR_LOOK_RETAIL) && (look.why == NULL), "look: a chunk shorter than 0x3C was read");
+	RldChar_ParseLook(NULL, bytes, sizeof(bytes), &look);
+	NativeChar_LookExpect(checks, failures, (look.shadow == RLDCHAR_LOOK_RETAIL) && (look.why == NULL), "look: no info was read");
+	RldChar_ParseLook(&info, NULL, sizeof(bytes), &look);
+	NativeChar_LookExpect(checks, failures, (look.shadow == RLDCHAR_LOOK_RETAIL) && (look.why == NULL), "look: no bytes were read");
+}
+
+// The units: every look formula, fed the retail point, gives the retail
+// number - for the scale of a driver (0xCCC) and for others.
+internal void NativeChar_LookUnitSelfTest(int *checks, int *failures)
+{
+	static const s16 scales[] = {0x800, 0xAAA, 0xCCC, 0x1000, 0x1333, 0x2000};
+	static const s16 identity[3][3] = {{0x1000, 0, 0}, {0, 0x1000, 0}, {0, 0, 0x1000}};
+	// 90 degrees about Y: local X (column 0) points to world -Z.
+	static const s16 turned[3][3] = {{0, 0, 0x1000}, {0, 0x1000, 0}, {-0x1000, 0, 0}};
+	struct RldCharLook look;
+	struct Particle particle;
+	s16 scale[3];
+	s32 add[3];
+	s16 axes[4][3];
+	char what[192];
+	int hide;
+	int i;
+	int h;
+
+	for (i = 0; i < (int)(sizeof(scales) / sizeof(scales[0])); i++)
+	{
+		const s32 sc = scales[i];
+		const s32 x0 = (sc * VEH_EMITTER_EXHAUST_POS_X_NUM) >> VEH_EMITTER_EXHAUST_POS_X_SHIFT;
+		const s32 x1 = (sc * VEH_EMITTER_EXHAUST_POS_SECOND_X_NUM) >> VEH_EMITTER_EXHAUST_POS_SECOND_X_SHIFT;
+		const s32 y = (sc * VEH_EMITTER_EXHAUST_POS_Y_NUM) >> VEH_EMITTER_EXHAUST_POS_Y_SHIFT;
+		const s32 z = (sc * VEH_EMITTER_EXHAUST_POS_Z_NUM) >> VEH_EMITTER_EXHAUST_POS_Z_SHIFT;
+
+		// 1/16 model units -> 1/256 world: (value * scale) >> 8.
+		snprintf(what, sizeof(what), "units: smoke at scale 0x%x is %d %d %d %d, not %d %d %d %d", (unsigned)sc, (int)((NATIVE_CHAR_EXHAUST_RETAIL_X * sc) >> 8),
+		         (int)((-NATIVE_CHAR_EXHAUST_RETAIL_X * sc) >> 8), (int)((NATIVE_CHAR_EXHAUST_RETAIL_Y * sc) >> 8), (int)((NATIVE_CHAR_EXHAUST_RETAIL_Z * sc) >> 8),
+		         (int)x0, (int)x1, (int)y, (int)z);
+		NativeChar_LookExpect(checks, failures,
+		                      (((NATIVE_CHAR_EXHAUST_RETAIL_X * sc) >> 8) == x0) && (((-NATIVE_CHAR_EXHAUST_RETAIL_X * sc) >> 8) == x1) &&
+		                          (((NATIVE_CHAR_EXHAUST_RETAIL_Y * sc) >> 8) == y) && (((NATIVE_CHAR_EXHAUST_RETAIL_Z * sc) >> 8) == z),
+		                      what);
+
+		if (sc == 0xCCC)
+		{
+			snprintf(what, sizeof(what), "units: retail smoke at 0xCCC is %d %d %d %d, not 3685 -3686 11466 -11466", (int)x0, (int)x1, (int)y, (int)z);
+			NativeChar_LookExpect(checks, failures, (x0 == 3685) && (x1 == -3686) && (y == 11466) && (z == -11466), what);
+		}
+
+		// The turbo flames (game/Vehicle/VehTurbo.c): (scale * point) >> 16 in
+		// the world on the retail flame points (+-288, 768, -832).
+		{
+			const s32 f0 = (sc * TURBO_FIRE_LEFT_X_NUMERATOR) >> TURBO_FIRE_LEFT_X_SHIFT;
+			const s32 f1 = (sc * TURBO_FIRE_RIGHT_X_NUMERATOR) >> TURBO_FIRE_RIGHT_X_SHIFT;
+			const s32 fy = (sc * TURBO_FIRE_Y_NUMERATOR) >> TURBO_FIRE_Y_SHIFT;
+			const s32 fz = (sc * TURBO_FIRE_Z_NUMERATOR) >> TURBO_FIRE_Z_SHIFT;
+
+			snprintf(what, sizeof(what), "units: flames at scale 0x%x are %d %d %d %d, not %d %d %d %d", (unsigned)sc, (int)((sc * 288) >> 16),
+			         (int)((sc * -288) >> 16), (int)((sc * 768) >> 16), (int)((sc * -832) >> 16), (int)f0, (int)f1, (int)fy, (int)fz);
+			NativeChar_LookExpect(checks, failures,
+			                      (((sc * 288) >> 16) == f0) && (((sc * -288) >> 16) == f1) && (((sc * 768) >> 16) == fy) && (((sc * -832) >> 16) == fz), what);
+
+			if (sc == 0xCCC)
+			{
+				snprintf(what, sizeof(what), "units: retail flames at 0xCCC are %d %d %d %d, not 14 -15 38 -42", (int)f0, (int)f1, (int)fy, (int)fz);
+				NativeChar_LookExpect(checks, failures, (f0 == 14) && (f1 == -15) && (fy == 38) && (fz == -42), what);
+			}
+		}
+	}
+
+	// The move: the retail point moves nothing, from either source and turned.
+	memset(&look, 0, sizeof(look));
+	look.exhaust = RLDCHAR_LOOK_CUSTOM;
+	look.count = 2u;
+	look.point[0][0] = NATIVE_CHAR_EXHAUST_RETAIL_X;
+	look.point[0][1] = NATIVE_CHAR_EXHAUST_RETAIL_Y;
+	look.point[0][2] = NATIVE_CHAR_EXHAUST_RETAIL_Z;
+	look.point[1][0] = -NATIVE_CHAR_EXHAUST_RETAIL_X;
+	look.point[1][1] = NATIVE_CHAR_EXHAUST_RETAIL_Y;
+	look.point[1][2] = NATIVE_CHAR_EXHAUST_RETAIL_Z;
+	scale[0] = 0xCCC;
+	scale[1] = 0xCCC;
+	scale[2] = 0xCCC;
+	for (i = 0; i < 2; i++)
+	{
+		hide = NativeChar_ExhaustMove(&look, i, (i == 0) ? identity : turned, scale, add);
+		snprintf(what, sizeof(what), "move: the retail point of source %d moved by %d %d %d (hide %d)", i, (int)add[0], (int)add[1], (int)add[2], hide);
+		NativeChar_LookExpect(checks, failures, (hide == 0) && (add[0] == 0) && (add[1] == 0) && (add[2] == 0), what);
+	}
+
+	// 16 model units out, 10 down, 4 back from source 0: ((256, -160, 64) *
+	// 0xCCC) >> 14 = (51, -32, 12) in the world times 4; turned 90 degrees
+	// about Y that is (12, -32, -51).
+	look.point[0][0] = NATIVE_CHAR_EXHAUST_RETAIL_X + 256;
+	look.point[0][1] = NATIVE_CHAR_EXHAUST_RETAIL_Y - 160;
+	look.point[0][2] = NATIVE_CHAR_EXHAUST_RETAIL_Z + 64;
+	hide = NativeChar_ExhaustMove(&look, 0, identity, scale, add);
+	snprintf(what, sizeof(what), "move: source 0 by %d %d %d, not 51 -32 12", (int)add[0], (int)add[1], (int)add[2]);
+	NativeChar_LookExpect(checks, failures, (hide == 0) && (add[0] == 51) && (add[1] == -32) && (add[2] == 12), what);
+	hide = NativeChar_ExhaustMove(&look, 0, turned, scale, add);
+	snprintf(what, sizeof(what), "move: turned source 0 by %d %d %d, not 12 -32 -51", (int)add[0], (int)add[1], (int)add[2]);
+	NativeChar_LookExpect(checks, failures, (hide == 0) && (add[0] == 12) && (add[1] == -32) && (add[2] == -51), what);
+
+	// One point: source 1 is left out, source 0 moves. Off: both left out.
+	// Retail: nothing.
+	look.count = 1u;
+	NativeChar_LookExpect(checks, failures, NativeChar_ExhaustMove(&look, 1, identity, scale, add) == 1, "move: custom 1 kept source 1");
+	NativeChar_LookExpect(checks, failures, (NativeChar_ExhaustMove(&look, 0, identity, scale, add) == 0) && (add[0] == 51), "move: custom 1 lost source 0");
+	look.exhaust = RLDCHAR_LOOK_OFF;
+	NativeChar_LookExpect(checks, failures,
+	                      (NativeChar_ExhaustMove(&look, 0, identity, scale, add) == 1) && (NativeChar_ExhaustMove(&look, 1, identity, scale, add) == 1),
+	                      "move: off kept a source");
+	look.exhaust = RLDCHAR_LOOK_RETAIL;
+	NativeChar_LookExpect(checks, failures, (NativeChar_ExhaustMove(&look, 0, identity, scale, add) == 0) && (add[0] == 0) && (add[1] == 0) && (add[2] == 0),
+	                      "move: retail moved");
+
+	// The source of a particle: the side of the instance's local X axis.
+	memset(&particle, 0, sizeof(particle));
+	particle.axis[0].startVal = 3685;
+	NativeChar_LookExpect(checks, failures, NativeChar_ExhaustSource(&particle, identity) == 0, "source: +X is not source 0");
+	particle.axis[0].startVal = -3686;
+	NativeChar_LookExpect(checks, failures, NativeChar_ExhaustSource(&particle, identity) == 1, "source: -X is not source 1");
+	particle.axis[0].startVal = 0;
+	particle.axis[2].startVal = -3685;
+	NativeChar_LookExpect(checks, failures, NativeChar_ExhaustSource(&particle, turned) == 0, "source: turned, world -Z is not source 0");
+	particle.axis[2].startVal = 3686;
+	NativeChar_LookExpect(checks, failures, NativeChar_ExhaustSource(&particle, turned) == 1, "source: turned, world +Z is not source 1");
+
+	// The shadow: the retail quad at the driver scale gives the retail axes
+	// within 1 (50 model units x 0.8 is 159.75, retail says 160 at height
+	// 256) and its centre on the origin, at every height.
+	{
+		static const s16 retailQuad[4] = {-800, 800, -820, 1040};
+		static const s16 ownQuad[4] = {-200, 600, -500, 430};
+
+		for (h = 1; h <= 256; h++)
+		{
+			const int localX = (h * 0x28) >> 6;
+			const int localZ0 = (h * 0x29) >> 6;
+			const int localZ1 = (h * 0x34) >> 6;
+
+			NativeChar_ShadowAxes(retailQuad, 0xCCC, 0xCCC, h, axes);
+			if ((axes[0][0] != 0) || (axes[0][1] != 0) || (axes[0][2] != 0) || (axes[1][1] != 0) || (axes[1][2] != 0) || (axes[2][0] != 0) ||
+			    (axes[3][0] != 0) || (abs(axes[1][0] - localX) > 1) || (abs(axes[2][2] - localZ0) > 1) || (abs(axes[3][2] - localZ1) > 1))
+			{
+				snprintf(what, sizeof(what), "shadow: retail quad at height %d gives centre %d %d, axes %d %d %d, not 0 0, %d %d %d", h, (int)axes[0][0],
+				         (int)axes[0][2], (int)axes[1][0], (int)axes[2][2], (int)axes[3][2], localX, localZ0, localZ1);
+				NativeChar_LookExpect(checks, failures, 0, what);
+				break;
+			}
+		}
+		NativeChar_LookExpect(checks, failures, h > 256, "shadow: the retail quad left the retail axes");
+
+		// An own quad at scale 1: xMid 200, half 400, zSeam -500 + 930 * 41 / 93
+		// = -90, rear 410, front 520; on the ground a quarter of each, rounded
+		// down: 50, 100, -23, 102, 130.
+		NativeChar_ShadowAxes(ownQuad, 0x1000, 0x1000, 256, axes);
+		snprintf(what, sizeof(what), "shadow: own quad gives %d %d %d %d %d, not 50 -23 100 102 130", (int)axes[0][0], (int)axes[0][2], (int)axes[1][0],
+		         (int)axes[2][2], (int)axes[3][2]);
+		NativeChar_LookExpect(checks, failures,
+		                      (axes[0][0] == 50) && (axes[0][1] == 0) && (axes[0][2] == -23) && (axes[1][0] == 100) && (axes[2][2] == 102) &&
+		                          (axes[3][2] == 130),
+		                      what);
+	}
+}
+
+void NativeChar_LookSelfTest(int *checks, int *failures)
+{
+	const struct NativeCharFile keepFile = s_charFiles[0];
+	const int keepFiles = s_charRosterFiles;
+	const int keepAny = s_charLookAny;
+	u8 model[16];
+	s16 quad[4] = {1, 2, 3, 4};
+	s32 pos[3] = {7, 8, 9};
+
+	NativeChar_LookParseSelfTest(checks, failures);
+	NativeChar_LookUnitSelfTest(checks, failures);
+
+	// No look in the run: retail at once, nothing moved.
+	s_charLookAny = 0;
+	NativeChar_LookExpect(checks, failures, NativeChar_ModelShadow(NULL, quad) == (int)RLDCHAR_LOOK_RETAIL, "model: a shadow look for NULL");
+	NativeChar_LookExpect(checks, failures, NativeChar_ModelShadow((const struct Model *)(const void *)model, quad) == (int)RLDCHAR_LOOK_RETAIL,
+	                      "model: a shadow look without a look in the run");
+	NativeChar_LookExpect(checks, failures, (NativeChar_ExhaustDraw(NULL, &pos[0], &pos[1], &pos[2]) == 0) && (pos[0] == 7) && (pos[1] == 8) && (pos[2] == 9),
+	                      "exhaust: moved or hid without a particle");
+	NativeChar_LookExpect(checks, failures, (quad[0] == 1) && (quad[3] == 4), "model: the quad was written for retail");
+
+	// One file lent as roster entry 0: its model answers, any other does not.
+	memset(&s_charFiles[0], 0, sizeof(s_charFiles[0]));
+	s_charFiles[0].model = (struct Model *)(void *)model;
+	s_charFiles[0].look.shadow = RLDCHAR_LOOK_AUTO;
+	s_charFiles[0].look.quad[0] = -517;
+	s_charFiles[0].look.quad[1] = 517;
+	s_charFiles[0].look.quad[2] = -866;
+	s_charFiles[0].look.quad[3] = 931;
+	s_charFiles[0].look.exhaust = RLDCHAR_LOOK_OFF;
+	s_charRosterFiles = 1;
+	s_charLookAny = 1;
+	NativeChar_LookExpect(checks, failures,
+	                      (NativeChar_ModelShadow((const struct Model *)(const void *)model, quad) == (int)RLDCHAR_LOOK_AUTO) && (quad[0] == -517) &&
+	                          (quad[1] == 517) && (quad[2] == -866) && (quad[3] == 931),
+	                      "model: the lent file's auto shadow");
+	NativeChar_LookExpect(checks, failures, NativeChar_ModelShadow((const struct Model *)(const void *)&model[8], quad) == (int)RLDCHAR_LOOK_RETAIL,
+	                      "model: a shadow look for a model of no file");
+	s_charFiles[0].look.shadow = RLDCHAR_LOOK_OFF;
+	NativeChar_LookExpect(checks, failures, NativeChar_ModelShadow((const struct Model *)(const void *)model, quad) == (int)RLDCHAR_LOOK_OFF,
+	                      "model: the lent file's shadow off");
+	NativeChar_LookExpect(checks, failures, NativeChar_ModelLook((const struct Model *)(const void *)model) == &s_charFiles[0].look,
+	                      "model: the lent file's look not found");
+	{
+		s16 point[2][3] = {{1, 1, 1}, {1, 1, 1}};
+		int count = 9;
+
+		NativeChar_LookExpect(checks, failures,
+		                      (NativeChar_ModelExhaust((const struct Model *)(const void *)model, point, &count) == (int)RLDCHAR_LOOK_OFF) && (count == 9),
+		                      "model: the lent file's exhaust off");
+		s_charFiles[0].look.exhaust = RLDCHAR_LOOK_CUSTOM;
+		s_charFiles[0].look.count = 1u;
+		s_charFiles[0].look.point[0][1] = 320;
+		NativeChar_LookExpect(checks, failures,
+		                      (NativeChar_ModelExhaust((const struct Model *)(const void *)model, point, &count) == (int)RLDCHAR_LOOK_CUSTOM) && (count == 1) &&
+		                          (point[0][0] == 0) && (point[0][1] == 320) && (point[1][0] == 0),
+		                      "model: the lent file's exhaust custom 1");
+		NativeChar_LookExpect(checks, failures, NativeChar_ModelExhaust(NULL, point, &count) == (int)RLDCHAR_LOOK_RETAIL, "model: an exhaust look for NULL");
+	}
+	s_charFiles[0].look.shadow = RLDCHAR_LOOK_RETAIL;
+	s_charFiles[0].look.exhaust = RLDCHAR_LOOK_RETAIL;
+	NativeChar_LookExpect(checks, failures, NativeChar_ModelLook((const struct Model *)(const void *)model) == NULL, "model: an all-retail look found");
+
+	s_charFiles[0] = keepFile;
+	s_charRosterFiles = keepFiles;
+	s_charLookAny = keepAny;
+}
+
+// ---------------------------------------------------------------------------
+// THE NATIVE PART SELF-TEST, --char-native-selftest <folder> (main.c, ctest
+// char_native_selftest; rldpack make-native-tests writes the files into a
+// build folder). Every *.rldchar of the folder, in the roster's order, goes
+// through the game's own reading:
+//   1. the roster read (NativeChar_ReadFile, as at start), which must never
+//      open the native part: the look counter does not move;
+//   2. without --native-preview: NativeChar_ReadNative reads nothing and the
+//      counter does not move - a broken CNET/CTXT is not even looked at;
+//   3. with --native-preview: read and checked against the expectation the
+//      name gives (step 4 below repeats 2 and 3 through the real switch,
+//      g_cfg_nativePreview in NativeChar_HoldNative, with ReleaseNative and
+//      SeatNative; step 5 the same for the driver select preview, step 6
+//      the kart wheels rule on the part of step 3), "<kind>_<rest>.rldchar":
+//        old_      no CNET/CTXT: the roster read loads it, native NONE
+//        none_     CTXT without CNET: loaded, native NONE (CTXT not read)
+//        good_     loaded, native READY; held only when CHRI hides the
+//                  kart wheels or the WHLS is an author's wheel (version 2),
+//                  else refused by native-wheels at the hold
+//        bad_<RULE>_  loaded with its CMDL, native REFUSED by exactly <RULE>
+//        damaged_  the whole file refused by the roster read, as today
+//      any other name is only reported.
+// Every loaded file of the set must carry the CMDL of the first old_ file
+// (the same hash, triangles and draw bytes): a native part never changes
+// the driver. No window, no game data, no GPU. One line per file and one
+// verdict line; 0 = passed.
+// ---------------------------------------------------------------------------
+
+internal void NativeChar_NativeExpect(int *checks, int *failures, int ok, const char *name, const char *what)
+{
+	(*checks)++;
+
+	if (!ok)
+	{
+		(*failures)++;
+		printf("char native selftest FAILED: %s: %s\n", name, what);
+	}
+}
+
+int NativeChar_NativeSelfTest(const char *dir)
+{
+	struct NativeCharNameList list;
+	struct NativeCharFile reference;
+	int haveReference = 0;
+	int named = 0;
+	int checks = 0;
+	int failures = 0;
+	int files = 0;
+	int i;
+
+	memset(&list, 0, sizeof(list));
+	memset(&reference, 0, sizeof(reference));
+	list.folder = dir;
+
+	if (!SDL_EnumerateDirectory(dir, NativeChar_CollectName, &list) || (list.count == 0))
+	{
+		printf("char native selftest FAILED: no .rldchar file can be listed in %s\n", dir);
+		for (i = 0; i < list.count; i++)
+		{
+			free(list.names[i]);
+		}
+		free(list.names);
+		return 1;
+	}
+
+	if (list.count > 1)
+	{
+		qsort(list.names, (size_t)list.count, sizeof(list.names[0]), NativeChar_CompareNameEntries);
+	}
+
+	// The reference first: the first old_ file, whatever sorts before it.
+	for (i = 0; (i < list.count) && !haveReference; i++)
+	{
+		char path[NATIVE_CHAR_PATH_MAX];
+
+		if ((strncmp(list.names[i], "old_", 4u) == 0) &&
+		    NativePath_Join(path, sizeof(path), NativeStr8_FromCString(dir), NativeStr8_FromCString(list.names[i])))
+		{
+			haveReference = NativeChar_ReadFile(path, list.names[i], &reference);
+		}
+	}
+
+	for (i = 0; i < list.count; i++)
+	{
+		const char *name = list.names[i];
+		const char *underscore = strchr(name, '_');
+		const size_t kindLength = (underscore != NULL) ? (size_t)(underscore - name) : 0u;
+		char kind[16];
+		char rule[32];
+		char path[NATIVE_CHAR_PATH_MAX];
+		char what[384];
+		struct NativeCharFile f;
+		struct RldCharNative n;
+		int looks;
+		int loaded;
+		int read;
+
+		kind[0] = '\0';
+		rule[0] = '\0';
+		if ((underscore != NULL) && (kindLength < sizeof(kind)))
+		{
+			memcpy(kind, name, kindLength);
+			kind[kindLength] = '\0';
+		}
+		if (strcmp(kind, "bad") == 0)
+		{
+			const char *end = strchr(underscore + 1, '_');
+			const size_t ruleLength = (end != NULL) ? (size_t)(end - (underscore + 1)) : 0u;
+
+			if ((ruleLength > 0u) && (ruleLength < sizeof(rule)))
+			{
+				memcpy(rule, underscore + 1, ruleLength);
+				rule[ruleLength] = '\0';
+			}
+		}
+
+		files++;
+		named += (kind[0] != '\0') ? 1 : 0;
+		memset(&f, 0, sizeof(f));
+		if (!NativePath_Join(path, sizeof(path), NativeStr8_FromCString(dir), NativeStr8_FromCString(name)))
+		{
+			NativeChar_NativeExpect(&checks, &failures, 0, name, "the path is too long");
+			continue;
+		}
+
+		// 1. The roster read, as at start: never a look at CNET or CTXT.
+		looks = s_nativeLooks;
+		loaded = NativeChar_ReadFile(path, name, &f);
+		NativeChar_NativeExpect(&checks, &failures, s_nativeLooks == looks, name, "the roster read opened the native part");
+
+		if (strcmp(kind, "damaged") == 0)
+		{
+			NativeChar_NativeExpect(&checks, &failures, !loaded, name, "loaded - a generic envelope finding must refuse the whole file");
+			printf("char native selftest: %s: refused as a whole (as before CNET/CTXT existed)\n", name);
+			if (loaded)
+			{
+				free(f.cmdl);
+				NativeChar_DropMask(&f);
+			}
+			continue;
+		}
+
+		if (kind[0] != '\0')
+		{
+			NativeChar_NativeExpect(&checks, &failures, loaded, name, "refused by the roster read - the driver is lost");
+		}
+		if (!loaded)
+		{
+			printf("char native selftest: %s: refused by the roster read\n", name);
+			continue;
+		}
+		f.file = list.names[i];
+		f.path = path;
+
+		// The same driver in every file of the set: the CMDL of the first old_ one.
+		if (haveReference && (kind[0] != '\0'))
+		{
+			NativeChar_NativeExpect(&checks, &failures,
+			                        (memcmp(f.cmdlHash, reference.cmdlHash, sizeof(f.cmdlHash)) == 0) && (f.triangles == reference.triangles) &&
+			                            (f.drawBytes == reference.drawBytes) && (f.info.templateId == reference.info.templateId) &&
+			                            (f.info.classId == reference.info.classId),
+			                        name, "another CMDL than the old_ file - the native part changed the driver");
+		}
+
+		// 2. Without --native-preview: not read, not looked at.
+		looks = s_nativeLooks;
+		read = NativeChar_ReadNative(&f, 0, &n);
+		NativeChar_NativeExpect(&checks, &failures, (read == 0) && (s_nativeLooks == looks) && (n.state == RLDCHAR_NATIVE_NONE) && (n.cnet == NULL), name,
+		                        "without --native-preview the native part was looked at");
+
+		// 3. With --native-preview: the expectation of the name.
+		read = NativeChar_ReadNative(&f, 1, &n);
+		NativeChar_NativeExpect(&checks, &failures, (read == 1) && (s_nativeLooks == (looks + 1)), name, "with --native-preview the native part was not read");
+
+		if ((strcmp(kind, "old") == 0) || (strcmp(kind, "none") == 0))
+		{
+			NativeChar_NativeExpect(&checks, &failures, n.state == RLDCHAR_NATIVE_NONE, name, "a native part where there is none");
+		}
+		else if (strcmp(kind, "good") == 0)
+		{
+			snprintf(what, sizeof(what), "not ready: %s %s", (n.rule != NULL) ? n.rule : "", n.detail);
+			NativeChar_NativeExpect(&checks, &failures, n.state == RLDCHAR_NATIVE_READY, name, what);
+		}
+		else if (strcmp(kind, "bad") == 0)
+		{
+			snprintf(what, sizeof(what), "expected refused by %s, got state %d %s %s", rule, n.state, (n.rule != NULL) ? n.rule : "", n.detail);
+			NativeChar_NativeExpect(&checks, &failures, (n.state == RLDCHAR_NATIVE_REFUSED) && (n.rule != NULL) && (strcmp(n.rule, rule) == 0), name, what);
+		}
+
+		if (n.state == RLDCHAR_NATIVE_READY)
+		{
+			printf("char native selftest: %s: CMDL %02x%02x%02x%02x%02x%02x kept; preview off: not read; preview on: ready, %u vertices, %u triangles, %u poses, "
+			       "%u materials, %u textures (%llu bytes RGBA8), %s\n",
+			       name, (unsigned)f.cmdlHash[0], (unsigned)f.cmdlHash[1], (unsigned)f.cmdlHash[2], (unsigned)f.cmdlHash[3], (unsigned)f.cmdlHash[4],
+			       (unsigned)f.cmdlHash[5], (unsigned)n.vertexCount, (unsigned)n.triangleCount, (unsigned)n.poseCount, (unsigned)n.materialCount,
+			       (unsigned)n.textureCount, (unsigned long long)n.textureBytes, (n.wheel != NULL) ? "wheels" : "wheels hidden");
+		}
+		else if (n.state == RLDCHAR_NATIVE_REFUSED)
+		{
+			printf("char native selftest: %s: CMDL %02x%02x%02x%02x%02x%02x kept; preview off: not read; preview on: refused (%s) %s\n", name,
+			       (unsigned)f.cmdlHash[0], (unsigned)f.cmdlHash[1], (unsigned)f.cmdlHash[2], (unsigned)f.cmdlHash[3], (unsigned)f.cmdlHash[4],
+			       (unsigned)f.cmdlHash[5], (n.rule != NULL) ? n.rule : "", n.detail);
+		}
+		else
+		{
+			printf("char native selftest: %s: CMDL %02x%02x%02x%02x%02x%02x kept; preview off: not read; preview on: none (no CNET)\n", name,
+			       (unsigned)f.cmdlHash[0], (unsigned)f.cmdlHash[1], (unsigned)f.cmdlHash[2], (unsigned)f.cmdlHash[3], (unsigned)f.cmdlHash[4],
+			       (unsigned)f.cmdlHash[5]);
+		}
+
+		// 4. The real switch: NativeChar_HoldNative reads g_cfg_nativePreview
+		//    itself. The file stands in as roster entry 0 with seat 0 bound
+		//    to it, as NativeChar_ArmSeats leaves them; without the switch
+		//    nothing is opened and nothing held, with it the part is held
+		//    exactly when it is ready and CHRI hides the kart wheels or its
+		//    WHLS is an author's wheel (the kart wheels rule,
+		//    NativeChar_RefuseShownWheels) - never with the test wheel (WHLS
+		//    version 1) -, SeatNative hands it out for seat 0 only, and
+		//    NativeChar_ReleaseNative lets it go.
+		// 5. The driver select preview, with no seat bound: NativeChar_HoldPreview
+		//    reads the file once and holds the same as a seat would, and
+		//    NativeChar_ReleasePreview lets it go. Then the roster and the
+		//    seats are empty again.
+		// 6. The kart wheels rule on the part of step 3: refused by
+		//    native-wheels exactly when it is ready, CHRI shows the kart
+		//    wheels and the WHLS is not an author's wheel, with nothing held
+		//    after it (no WHLS); any other part keeps its state.
+		{
+			const int previewBefore = g_cfg_nativePreview;
+			const int ready = (n.state == RLDCHAR_NATIVE_READY);
+			const int own = (n.wheel != NULL) && (n.wheelVersion == RLDCHAR_WHEEL_VERSION_USER);
+			const int held = ready && (((f.info.flags & RLDCHAR_FLAG_NO_WHEELS) != 0u) ? (n.wheel == NULL) : own);
+			const int stateBefore = (int)n.state;
+			int pass;
+
+			s_charFiles[0] = f;
+			s_charRosterFiles = 1;
+			memset(s_seat, 0, sizeof(s_seat));
+			s_seat[0].model = f.model;
+			s_seat[0].entry = 0;
+			s_seat[0].motorId = (int)data.characterIDs[0];
+
+			for (pass = 0; pass < 2; pass++)
+			{
+				g_cfg_nativePreview = pass;
+				looks = s_nativeLooks;
+				NativeChar_HoldNative(0, "self test");
+				if (pass == 0)
+				{
+					NativeChar_NativeExpect(&checks, &failures,
+					                        (s_nativeLooks == looks) && (s_charFiles[0].native == NULL) && (NativeChar_SeatNative(0) == NULL), name,
+					                        "HoldNative without --native-preview looked at or held the native part");
+				}
+				else
+				{
+					NativeChar_NativeExpect(&checks, &failures, (s_nativeLooks == (looks + 1)) && ((s_charFiles[0].native != NULL) == held), name,
+					                        "HoldNative with --native-preview did not hold exactly a ready part with the kart wheels hidden or its own wheels");
+					NativeChar_NativeExpect(&checks, &failures,
+					                        (s_charFiles[0].native == NULL) || (s_charFiles[0].native->wheel == NULL) ||
+					                            (s_charFiles[0].native->wheelVersion == RLDCHAR_WHEEL_VERSION_USER),
+					                        name, "HoldNative held a part with the test wheel (WHLS version 1)");
+					NativeChar_NativeExpect(&checks, &failures,
+					                        (NativeChar_SeatNative(0) == s_charFiles[0].native) && (NativeChar_SeatNative(1) == NULL) &&
+					                            (NativeChar_SeatNative(-1) == NULL) && (NativeChar_SeatNative(NATIVE_CHAR_SEATS) == NULL),
+					                        name, "SeatNative hands out another part than the one of bound seat 0");
+				}
+			}
+
+			NativeChar_ReleaseNative();
+			NativeChar_NativeExpect(&checks, &failures, (s_charFiles[0].native == NULL) && (NativeChar_SeatNative(0) == NULL), name,
+			                        "ReleaseNative kept the native part");
+			if (held && own)
+			{
+				printf("char native selftest: %s: held with its own wheels (WHLS version 2, %u triangles)\n", name, (unsigned)n.wheelTriangleCount);
+			}
+
+			// 5. The preview: no seat bound, as in the driver select.
+			memset(s_seat, 0, sizeof(s_seat));
+			g_cfg_nativePreview = 1;
+			looks = s_nativeLooks;
+			NativeChar_HoldPreview(0);
+			NativeChar_NativeExpect(&checks, &failures,
+			                        (s_nativeLooks == (looks + 1)) && (NativeChar_PreviewEntry() == 0) && ((NativeChar_PreviewNative(0) != NULL) == held) &&
+			                            (NativeChar_PreviewNative(0) == s_charFiles[0].native),
+			                        name, "HoldPreview did not hold exactly a ready part with the kart wheels hidden or its own wheels");
+			NativeChar_NativeExpect(&checks, &failures,
+			                        (NativeChar_PreviewNative(0) == NULL) || (NativeChar_PreviewNative(0)->wheel == NULL) ||
+			                            (NativeChar_PreviewNative(0)->wheelVersion == RLDCHAR_WHEEL_VERSION_USER),
+			                        name, "HoldPreview held a part with the test wheel (WHLS version 1)");
+			NativeChar_ReleasePreview();
+			NativeChar_NativeExpect(&checks, &failures,
+			                        (s_charFiles[0].native == NULL) && (NativeChar_PreviewNative(0) == NULL) && (NativeChar_PreviewEntry() == -1), name,
+			                        "ReleasePreview kept the native part");
+
+			// 6. The rule itself, on the part of step 3.
+			if (NativeChar_RefuseShownWheels(&f, &n))
+			{
+				NativeChar_NativeExpect(&checks, &failures,
+				                        ready && !held && (n.state == RLDCHAR_NATIVE_REFUSED) && (n.rule != NULL) &&
+				                            (strcmp(n.rule, "native-wheels") == 0) && (n.cnet == NULL) && (n.wheel == NULL),
+				                        name, "refused by the kart wheels rule, but not a ready part showing the kart wheels, or something kept");
+				printf("char native selftest: %s: held: refused (native-wheels) %s - the driver keeps its CMDL\n", name, n.detail);
+			}
+			else
+			{
+				NativeChar_NativeExpect(&checks, &failures, !(ready && !held) && ((int)n.state == stateBefore), name,
+				                        "a ready part showing the kart wheels with the test wheel passed the kart wheels rule");
+			}
+
+			g_cfg_nativePreview = previewBefore;
+			memset(&s_charFiles[0], 0, sizeof(s_charFiles[0]));
+			s_charRosterFiles = 0;
+			memset(s_seat, 0, sizeof(s_seat));
+		}
+
+		RldChar_FreeNative(&n);
+		free(f.cmdl);
+		NativeChar_DropMask(&f);
+	}
+
+	if (haveReference)
+	{
+		free(reference.cmdl);
+		NativeChar_DropMask(&reference);
+	}
+	// A folder of named cases needs its old_ file; a folder of other files
+	// (only reported) does not.
+	NativeChar_NativeExpect(&checks, &failures, haveReference || (named == 0), dir, "no old_ file - nothing to hold the CMDL of the others against");
+
+	for (i = 0; i < list.count; i++)
+	{
+		free(list.names[i]);
+	}
+	free(list.names);
+
+	if (failures != 0)
+	{
+		printf("char native selftest FAILED: %d files, %d checks, %d failures\n", files, checks, failures);
+		return 1;
+	}
+
+	printf("char native selftest passed: %d files, %d checks, 0 failures\n", files, checks);
+	return 0;
 }

@@ -6,6 +6,7 @@
 #include <platform.h>
 #include "ctr_scratchpad.h"
 #include "platform/native_memory.h"
+#include "platform/native_render_layer.h"
 #include "platform/native_state.h"
 
 #include <string.h>
@@ -2157,6 +2158,14 @@ int NativeCheckpoint_Restore(const void *src, int srcSize)
 	{
 		return 0;
 	}
+
+	// From here on the restore writes game memory, the instance pool among it
+	// (NativeCheckpoint_RelocateInstancesInPool) - with no INSTANCE_Birth and no
+	// INSTANCE_Death, so the render layer would keep the previous state of a
+	// slot across the jump. Told before the first write, so that even a restore
+	// that stops halfway leaves the layer starting over. Host tables only; it
+	// changes nothing that is restored here.
+	NativeRenderLayer_NoteRestore();
 
 	// NOTE(aalhendi): 233 checkpoints store only mutable overlay state. Restore
 	// the source-owned static image first, then overlay the captured runtime

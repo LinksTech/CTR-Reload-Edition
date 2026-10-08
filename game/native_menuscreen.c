@@ -472,7 +472,7 @@ internal const char *NativeMenuRaceType_Reason(int row)
 		return (NativeTrack_CountOffered(NATIVE_TRACK_MODE_CRYSTAL) <= 0) ? "NO CRYSTAL TRACKS" : NULL;
 	// TIME TRIAL comes in Beta 2.
 	case NATIVE_PIT_ROW_TIME_TRIAL:
-		return "COMING IN BETA 2";
+		return "COMING SOON";
 	// CTR is released for Beta 0 - white as soon as a
 	// container offers CTR (MM_NativeCtr.c).
 	case NATIVE_PIT_ROW_CTR:

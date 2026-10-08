@@ -141,15 +141,18 @@
 	X(vkCmdCopyBufferToImage)      \
 	X(vkCmdBindPipeline)           \
 	X(vkCmdBindVertexBuffers)      \
+	X(vkCmdBindIndexBuffer)        \
 	X(vkCmdBindDescriptorSets)     \
 	X(vkCmdSetViewport)            \
 	X(vkCmdSetScissor)             \
 	X(vkCmdClearAttachments)       \
 	X(vkCmdClearColorImage)        \
+	X(vkCmdClearDepthStencilImage) \
 	X(vkCmdCopyImageToBuffer)      \
 	X(vkResetDescriptorPool)       \
 	X(vkCmdCopyBuffer)             \
 	X(vkCmdDraw)                   \
+	X(vkCmdDrawIndexed)            \
 	X(vkCreateQueryPool)           \
 	X(vkDestroyQueryPool)          \
 	X(vkCmdResetQueryPool)         \
@@ -239,7 +242,24 @@ struct NativeVkPipelineKey
 	// for rasterizationSamples and cannot read it off a
 	// handle.
 	uint8_t pad[2];
+
+	// DRAW STATE (NativeGfxVK_SetDrawState), all zero for every draw that never
+	// set it - so the key of such a draw is the old one plus eight zero bytes.
+	// depthTest only where the pass has a depth attachment; without it
+	// depthWrite and depthCompare stay zero as well, so one pipeline has one key.
+	// depthCompare is a NativeGfxCompare. cull: bits 0-1 the mode (1 back,
+	// 2 front), bit 7 set when the viewport of the pass is flipped, because the
+	// flip turns the winding over. colorWriteOff: the channels NOT written, in
+	// the bits of VkColorComponentFlagBits, so zero writes all four.
+	// reserved stays zero; it is written out so that the key has no padding.
+	uint8_t depthTest;
+	uint8_t depthWrite;
+	uint8_t depthCompare;
+	uint8_t cull;
+	uint8_t colorWriteOff;
+	uint8_t reserved[3];
 };
+CTR_STATIC_ASSERT(sizeof(struct NativeVkPipelineKey) == 48);
 
 struct NativeVkPipelineSlot
 {
@@ -258,7 +278,30 @@ struct NativeVkPipelineSlot
 // got the blank fallback instead - a texture that reads as 1.0 everywhere, so
 // every index came out as 255. Four now, so the next slot does not repeat this.
 #define NATIVE_VK_MAX_TEXTURE_SLOTS 4
-#define NATIVE_VK_SAMPLER_COUNT     4 // nearest/linear x repeat/clamp
+#define NATIVE_VK_SAMPLER_COUNT     5 // nearest/linear x repeat/clamp, then the native one
+#define NATIVE_VK_SAMPLER_NATIVE    4 // textures of the native layer only (nativeLayer in the desc)
+
+// THE SAMPLER KEY OF A TEXTURE WITH LEVELS (NativeGfxVK_CreateTextureLevels).
+// A cache of its own beside the five samplers above, so that none of those
+// changes by a bit: the four PSX samplers keep mipmapMode NEAREST and maxLod 0
+// (NativeVk_GetSampler), the native one keeps nearest, clamped, level 0
+// (NativeVk_GetNativeSampler). Eight bytes, no padding, compared as a whole.
+// anisotropy is what the device grants (0 = off), not what was wished for.
+struct NativeVkSamplerKey
+{
+	uint8_t magLinear;
+	uint8_t minLinear;
+	uint8_t mipMode; // NativeGfxMipMode
+	uint8_t anisotropy;
+	uint8_t wrapU; // NativeGfxWrap
+	uint8_t wrapV;
+	uint8_t reserved[2];
+};
+CTR_STATIC_ASSERT(sizeof(struct NativeVkSamplerKey) == 8);
+
+// Two filter options times wrap and anisotropy steps is a handful; 32 leaves
+// room and a full table says so in the log instead of growing.
+#define NATIVE_VK_MAX_KEYED_SAMPLERS 32
 
 struct NativeVkTexture
 {
@@ -278,11 +321,25 @@ struct NativeVkTexture
 
 	NativeGfxFilter filter;
 	NativeGfxWrap wrap;
+
+	// A texture of the native layer (NativeGfxTextureDesc.nativeLayer): its own
+	// sampler, uploads only through the waited one-shot.
+	int nativeLayer;
+
+	// A texture with levels (NativeGfxVK_CreateTextureLevels): how many, and
+	// the key of its sampler. keyed is 0 for every texture made by
+	// NativeGfxVK_CreateTexture, which then samples exactly as before.
+	uint32_t levels;
+	int keyed;
+	struct NativeVkSamplerKey samplerKey;
 };
 
 // --- Vertex buffers ---------------------------------------------------------
 
 #define NATIVE_VK_MAX_BUFFERS 512
+
+// Read ranges kept per buffer for the overwrite measurement (pendingRanges).
+#define NATIVE_VK_PENDING_RANGES 8
 
 struct NativeVkBuffer
 {
@@ -317,10 +374,27 @@ struct NativeVkBuffer
 	// on Sunset Vista 4,107 lines '1 vertex write(s) overwrote data 1710
 	// recorded draw(s) still need', with 0 ring wraps. A log line that
 	// claims an action that did not take place is a bug. Now only
-	// an upload counts whose bytes intersect the range [pendingLo, pendingHi)
-	// that the pending draws really read.
-	VkDeviceSize pendingLo;
-	VkDeviceSize pendingHi;
+	// an upload counts whose bytes intersect the bytes the pending draws
+	// really read.
+	//
+	// RANGE BY RANGE, NOT ONE HULL (renderer plan, step 4a, L7.4). An indexed
+	// draw used to count the WHOLE buffer as read, and the hull of all pending
+	// draws then covered every region in between: the probe writes the pose of
+	// the body and of each wheel into regions of its own of one dynamic buffer
+	// and draws each right after writing it, so every wheel write after the
+	// body's draw was reported as an overwrite although no draw reads its
+	// bytes. Now every draw notes the bytes it reads - a plain draw its vertex
+	// range, an indexed draw the vertices its indices reach (smallest to
+	// largest index of the index buffer, plus the vertex offset) - into a list
+	// of up to NATIVE_VK_PENDING_RANGES ranges; a range that overlaps or
+	// touches one already listed is merged into it, and once the list is full a
+	// new range is merged into the last one. Every byte a pending draw reads is
+	// therefore always inside a listed range (the list can only say too much,
+	// never too little), so a write into bytes a recorded draw still needs is
+	// counted exactly as before; only bytes no pending draw reads no longer
+	// count. Measurement only: nothing of this reaches a command buffer.
+	VkDeviceSize pendingRanges[NATIVE_VK_PENDING_RANGES][2];
+	uint32_t pendingRangeCount;
 };
 
 // --- Render passes, opened lazily -------------------------------------------
@@ -369,7 +443,13 @@ struct NativeVkRenderPassKey
 	// COLOR_ATTACHMENT_OPTIMAL), attachment 1 the resolve target (DONT_CARE, STORE,
 	// layouts as above).
 	uint32_t samples;
+
+	// The VkFormat of a depth attachment behind the colour ones, 0
+	// (VK_FORMAT_UNDEFINED) without - and without, the pass is the old one.
+	// Only a target that was given depth (NativeGfxVK_SetTargetDepth) has one.
+	uint32_t depthFormat;
 };
+CTR_STATIC_ASSERT(sizeof(struct NativeVkRenderPassKey) == 24);
 
 struct NativeVkRenderPassSlot
 {
@@ -389,7 +469,12 @@ struct NativeVkFramebufferKey
 	// so that InvalidateFramebuffers also hits a framebuffer when only
 	// the resolve target dies.
 	uint64_t resolveView;
+
+	// The view of the depth image, 0 without - in the key for the same reason
+	// as resolveView.
+	uint64_t depthView;
 };
+CTR_STATIC_ASSERT(sizeof(struct NativeVkFramebufferKey) == 40);
 
 struct NativeVkFramebufferSlot
 {
@@ -440,14 +525,56 @@ struct NativeVkTarget
 	VkDeviceMemory msaaMemory;
 	VkImageView msaaView;
 	VkDeviceSize msaaBytes;
+
+	// DEPTH. depthWanted is what the caller asked for (NativeGfxVK_SetTargetDepth)
+	// and survives a failed creation, so the next resize or sample change tries
+	// again. The image has the size of the target and the samples of the
+	// attachment it sits next to - target->samples with a multisampled image, 1
+	// without. Cleared once to 0.0 (far, reverse Z) and kept in
+	// DEPTH_STENCIL_ATTACHMENT_OPTIMAL for its whole life, like msaaImage; every
+	// pass loads and stores it. All zero for a target without depth.
+	int depthWanted;
+	VkFormat depthFormat;
+	VkImage depthImage;
+	VkDeviceMemory depthMemory;
+	VkImageView depthView;
+	VkDeviceSize depthBytes;
+	uint32_t depthSamples;
+};
+
+// --- Index buffers ----------------------------------------------------------
+//
+// A pool of their own, so an index buffer handle can never be taken for a
+// vertex buffer one. Static only: device-local, filled once at creation.
+// Handles are index + 1, as with every other pool here.
+#define NATIVE_VK_MAX_INDEX_BUFFERS 64
+
+struct NativeVkIndexBuffer
+{
+	int used;
+
+	VkBuffer buffer;
+	VkDeviceMemory memory;
+	VkDeviceSize bytes;
+	VkIndexType type;
+
+	// The smallest and the largest index in the buffer, read once from its
+	// initial bytes (it is static): the vertices an indexed draw through it
+	// can reach, for the overwrite measurement (NativeVk_NotePendingRange).
+	// Over the whole buffer, so a draw of only part of it is covered too.
+	uint32_t minIndex;
+	uint32_t maxIndex;
 };
 
 // --- Programs ---------------------------------------------------------------
 
 #define NATIVE_VK_MAX_PROGRAMS 32
 
-// The largest uniform block any of our programs declares is 144 bytes (the PSX
-// block, struct NativePSXUniforms). Rounded well up, and checked rather than assumed at program
+// The largest uniform block any of our programs declares is 192 bytes (the
+// block of the retail twin's program "nrt", struct NativeTwinUniforms; the PSX
+// block, struct NativePSXUniforms, is 144, the native layer's "nr", struct
+// NativeLayerUniforms, 128 - all three pinned by static asserts in
+// native_renderer.c). Rounded up, and checked rather than assumed at program
 // creation, so a block that outgrows it is refused loudly instead of writing
 // past the end of one.
 #define NATIVE_VK_MAX_UNIFORM_BYTES 256
@@ -623,6 +750,9 @@ global_variable struct
 
 	struct NativeVkBuffer buffers[NATIVE_VK_MAX_BUFFERS];
 	NativeGfxBuffer boundBuffer;
+
+	struct NativeVkIndexBuffer indexBuffers[NATIVE_VK_MAX_INDEX_BUFFERS];
+	NativeGfxBuffer boundIndexBuffer;
 
 	struct NativeVkProgram programs[NATIVE_VK_MAX_PROGRAMS];
 	ShaderID boundProgram;
@@ -824,6 +954,12 @@ global_variable struct
 	VkImageView passResolveView;
 	uint32_t passSamples;
 
+	// Depth: the view of the bound target's depth image and its format, set
+	// wherever passResolveView is. VK_NULL_HANDLE and 0 for a target without
+	// one and always for the window.
+	VkImageView passDepthView;
+	VkFormat passDepthFormat;
+
 	// A clear asked for while no pass was open. Becomes the loadOp of the next
 	// one rather than a command, which is both correct and cheaper.
 	//
@@ -860,6 +996,23 @@ global_variable struct
 	uint32_t transferGrowths;
 	double transferWaitMs;
 	double transferWorstMs;
+
+	// NativeGfxVK_ShrinkStaging: how often the staging buffer was given back,
+	// and how many bytes that was in total.
+	uint32_t stagingShrinks;
+	uint64_t stagingShrunkBytes;
+
+	// TEXTURES WITH LEVELS. The samplers of their keys, made on demand; the
+	// device limits the manager checks against; and whether anisotropy was
+	// requested at device creation - only with --native-preview, see
+	// NativeVk_CreateDevice. Without it canAnisotropy stays 0 and every key
+	// carries anisotropy 0.
+	VkSampler keyedSamplers[NATIVE_VK_MAX_KEYED_SAMPLERS];
+	struct NativeVkSamplerKey keyedSamplerKeys[NATIVE_VK_MAX_KEYED_SAMPLERS];
+	uint32_t keyedSamplerCount;
+	int canAnisotropy;
+	float maxSamplerAnisotropy;
+	uint32_t maxImageDimension2D;
 
 	// Where the start of a frame actually blocks.
 	//
@@ -902,6 +1055,14 @@ global_variable struct
 		int viewportX, viewportY, viewportWidth, viewportHeight;
 		int scissorX, scissorY, scissorWidth, scissorHeight;
 		int scissorEnabled;
+
+		// NativeGfxVK_SetDrawState. Zero is the state every draw has always
+		// had: no depth test, no culling, all four channels written.
+		int depthTest;
+		int depthWrite;
+		int depthCompare;
+		int cull;
+		uint32_t colorWriteOff;
 	} state;
 
 	// WHAT THE COMMAND BUFFER ALREADY HAS.
@@ -930,10 +1091,18 @@ global_variable struct
 		VkRect2D scissor;
 		int viewportValid;
 		int scissorValid;
+
+		// Only drawIndexed binds these.
+		VkBuffer indexBuffer;
+		uint32_t indexType;
 	} recorded;
 
 	// Counted per frame, so that the saving is in the [CTR Vk] frame line.
 	uint32_t frameBindsSkipped;
+
+	// Framebuffers still cached on an image view that was about to be destroyed
+	// (NativeVk_DropFramebuffersOnRetiredView). Counted over the run.
+	uint32_t framebuffersOnRetiredViews;
 } s_vk;
 
 internal void NativeVk_ForgetRecordedState(void)
@@ -1135,6 +1304,19 @@ internal int NativeVk_LoadDeviceFunctions(void)
 // measured, because there never was a run without it. --vk-validation switches it
 // on, with the same synchronization validation as before.
 int g_cfg_vkValidation = 0;
+
+// The native preview: the native program, and depth on the main target while a
+// native object is bound (NativeRenderer_WantNativeDepth). Set by the switch
+// --native-preview (main.c, NativeArgs_ReadDisplayFlags, before Platform_Init)
+// or by NATIVE DRIVERS set to PREVIEW on the GRAPHICS page (ctr-settings.cfg,
+// "video nativedrivers", read by Platform_SettingsPreloadDisplay before the
+// window). Fixed for the whole run, because the device and the programs come
+// into being in Platform_Init: a change on the page applies at the next start.
+// The switch itself is never saved. Where a comment says "with
+// --native-preview", it means this run state, whichever of the two set it.
+// Here it is only a guard: without it NativeGfxVK_SetTargetDepth never
+// creates a depth image, whoever asks.
+int g_cfg_nativePreview = 0;
 
 internal int NativeVk_HasLayerManifest(const char *folder)
 {
@@ -1738,9 +1920,11 @@ internal int NativeVk_CreateDevice(void)
 	// dualSrcBlend and sampleRateShading, each only when the device has it.
 	//
 	// The rest of the structure stays at VK_FALSE through the initialisation. That
-	// is the promise: nothing else is used - no anisotropy (anisotropyEnable is
-	// not set in NativeVk_GetSampler), no logicOp, no geometry shaders,
-	// one view, line width 1.
+	// is the promise: nothing else is used - no logicOp, no geometry shaders,
+	// one view, line width 1. And no anisotropy, with one exception further down:
+	// with --native-preview samplerAnisotropy is requested for the textures of
+	// the native texture manager (NativeVk_GetKeyedSampler); anisotropyEnable is
+	// never set in NativeVk_GetSampler or NativeVk_GetNativeSampler.
 	VkPhysicalDeviceFeatures available;
 	VkPhysicalDeviceFeatures enabled = {0};
 
@@ -1827,6 +2011,32 @@ internal int NativeVk_CreateDevice(void)
 			s_vk.canSampleShading = 0;
 			Platform_Log("[CTR MSAA] this device has no sampleRateShading - 2x and 4x draw without sample shading\n");
 		}
+	}
+
+	// ANISOTROPY FOR THE NATIVE TEXTURES (renderer plan C.6.3), and the limits the
+	// native texture manager checks against. Only with --native-preview, which
+	// main.c sets before Platform_Init: the device is made once, a feature cannot
+	// be requested afterwards, and a run without the switch makes the device
+	// exactly as before - not one call more, not one field different. With it,
+	// the feature is requested when the device has it; whether any sampler uses
+	// it is decided per texture (NativeVk_GetKeyedSampler). The PSX samplers
+	// never do, so no PSX pixel can change by it.
+	if (g_cfg_nativePreview)
+	{
+		VkPhysicalDeviceProperties properties;
+
+		vkGetPhysicalDeviceProperties_fn(s_vk.physical, &properties);
+		s_vk.maxImageDimension2D = properties.limits.maxImageDimension2D;
+
+		if (available.samplerAnisotropy == VK_TRUE)
+		{
+			enabled.samplerAnisotropy = VK_TRUE;
+			s_vk.canAnisotropy = 1;
+			s_vk.maxSamplerAnisotropy = properties.limits.maxSamplerAnisotropy;
+		}
+
+		Platform_Log("[CTR Vk] native preview: samplerAnisotropy %s (limit %.1f), maxImageDimension2D %u\n",
+		             s_vk.canAnisotropy ? "requested" : "not available", (double)s_vk.maxSamplerAnisotropy, s_vk.maxImageDimension2D);
 	}
 
 	const VkDeviceCreateInfo info = {
@@ -2416,9 +2626,10 @@ internal int NativeVk_FinishOneShot(VkCommandBuffer commands)
 // --- Textures ---------------------------------------------------------------
 //
 // One image plus its memory and view per texture. Samplers are NOT per texture:
-// there are four combinations of filter and wrap in the whole interface, so they
-// are created once and shared, which is what Vulkan expects and what keeps the
-// descriptor writes cheap.
+// there are four combinations of filter and wrap in the whole interface, plus
+// one for the textures of the native layer, so they are created once and
+// shared, which is what Vulkan expects and what keeps the descriptor writes
+// cheap.
 //
 // Binding a texture does not touch the GPU. It records which texture belongs in
 // which slot; the descriptor set is assembled at draw time, because that is the
@@ -2434,6 +2645,8 @@ internal VkFormat NativeVk_TextureFormat(NativeGfxTextureFormat format)
 		return VK_FORMAT_R8_UNORM;
 	case NATIVE_GFX_TEXFMT_BGRA8:
 		return VK_FORMAT_B8G8R8A8_UNORM;
+	case NATIVE_GFX_TEXFMT_RGBA8_SRGB:
+		return VK_FORMAT_R8G8B8A8_SRGB;
 	case NATIVE_GFX_TEXFMT_RGBA8:
 	default:
 		return VK_FORMAT_R8G8B8A8_UNORM;
@@ -2500,6 +2713,176 @@ internal VkSampler NativeVk_GetSampler(NativeGfxFilter filter, NativeGfxWrap wra
 	}
 
 	return s_vk.samplers[index];
+}
+
+// THE SAMPLER OF THE NATIVE LAYER, a key of its own beside the four above, so
+// that none of those changes by a bit when the native layer later asks for mip
+// levels or anisotropy. Today: nearest for both filters and between levels,
+// clamped to the edge, level 0 only. Made at the first draw that samples a
+// native texture - in a run without one, never.
+internal VkSampler NativeVk_GetNativeSampler(void)
+{
+	if (s_vk.samplers[NATIVE_VK_SAMPLER_NATIVE] != VK_NULL_HANDLE)
+	{
+		return s_vk.samplers[NATIVE_VK_SAMPLER_NATIVE];
+	}
+
+	const VkSamplerCreateInfo info = {
+	    .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+	    .magFilter = VK_FILTER_NEAREST,
+	    .minFilter = VK_FILTER_NEAREST,
+	    .mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST,
+	    .addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+	    .addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+	    .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+	    .minLod = 0.0f,
+	    .maxLod = 0.0f,
+	    .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+	};
+
+	if (vkCreateSampler_fn(s_vk.device, &info, NULL, &s_vk.samplers[NATIVE_VK_SAMPLER_NATIVE]) != VK_SUCCESS)
+	{
+		Platform_LogError("[CTR Vk] native sampler could not be created\n");
+		return VK_NULL_HANDLE;
+	}
+
+	return s_vk.samplers[NATIVE_VK_SAMPLER_NATIVE];
+}
+
+internal VkSamplerAddressMode NativeVk_KeyedAddressMode(uint8_t wrap)
+{
+	switch (wrap)
+	{
+	case NATIVE_GFX_WRAP_CLAMP:
+		return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+	case NATIVE_GFX_WRAP_MIRROR:
+		return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+	case NATIVE_GFX_WRAP_REPEAT:
+	default:
+		return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+	}
+}
+
+// The key of a sampling wish, with the anisotropy the device grants: 0 when
+// anisotropy was not requested at device creation (no --native-preview at
+// start, or a device without the feature), otherwise the wish clamped to the
+// device limit and to 16. A wish of 0 or 1 is off.
+internal struct NativeVkSamplerKey NativeVk_SamplerKey(const NativeGfxSampling *sampling)
+{
+	struct NativeVkSamplerKey key;
+
+	memset(&key, 0, sizeof(key));
+
+	if (sampling == NULL)
+	{
+		return key;
+	}
+
+	key.magLinear = (sampling->magFilter == NATIVE_GFX_FILTER_LINEAR) ? 1u : 0u;
+	key.minLinear = (sampling->minFilter == NATIVE_GFX_FILTER_LINEAR) ? 1u : 0u;
+	key.mipMode = ((sampling->mipMode == NATIVE_GFX_MIP_NEAREST) || (sampling->mipMode == NATIVE_GFX_MIP_LINEAR)) ? (uint8_t)sampling->mipMode
+	                                                                                                             : (uint8_t)NATIVE_GFX_MIP_NONE;
+	key.wrapU = ((sampling->wrapU == NATIVE_GFX_WRAP_CLAMP) || (sampling->wrapU == NATIVE_GFX_WRAP_MIRROR)) ? (uint8_t)sampling->wrapU
+	                                                                                                     : (uint8_t)NATIVE_GFX_WRAP_REPEAT;
+	key.wrapV = ((sampling->wrapV == NATIVE_GFX_WRAP_CLAMP) || (sampling->wrapV == NATIVE_GFX_WRAP_MIRROR)) ? (uint8_t)sampling->wrapV
+	                                                                                                     : (uint8_t)NATIVE_GFX_WRAP_REPEAT;
+
+	if (s_vk.canAnisotropy && (sampling->anisotropy > 1))
+	{
+		int granted = sampling->anisotropy;
+		const int limit = (int)s_vk.maxSamplerAnisotropy;
+
+		if (granted > limit)
+		{
+			granted = limit;
+		}
+		if (granted > 16)
+		{
+			granted = 16;
+		}
+
+		key.anisotropy = (granted > 1) ? (uint8_t)granted : 0u;
+	}
+
+	return key;
+}
+
+// The sampler of a key, made at the first draw that needs it and kept for the
+// run. maxLod is 0 for MIP_NONE and unclamped otherwise: how many levels there
+// are is the view's business, so one sampler serves textures of any size.
+internal VkSampler NativeVk_GetKeyedSampler(const struct NativeVkSamplerKey *key)
+{
+	for (uint32_t i = 0; i < s_vk.keyedSamplerCount; i++)
+	{
+		if (memcmp(&s_vk.keyedSamplerKeys[i], key, sizeof(*key)) == 0)
+		{
+			return s_vk.keyedSamplers[i];
+		}
+	}
+
+	if (s_vk.keyedSamplerCount >= NATIVE_VK_MAX_KEYED_SAMPLERS)
+	{
+		static int reported = 0;
+
+		if (!reported)
+		{
+			reported = 1;
+			Platform_LogError("[CTR Vk] keyed sampler table full (%d) - the native sampler stands in\n", NATIVE_VK_MAX_KEYED_SAMPLERS);
+		}
+
+		return NativeVk_GetNativeSampler();
+	}
+
+	const VkSamplerCreateInfo info = {
+	    .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
+	    .magFilter = key->magLinear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
+	    .minFilter = key->minLinear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST,
+	    .mipmapMode = (key->mipMode == NATIVE_GFX_MIP_LINEAR) ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST,
+	    .addressModeU = NativeVk_KeyedAddressMode(key->wrapU),
+	    .addressModeV = NativeVk_KeyedAddressMode(key->wrapV),
+	    .addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+	    .anisotropyEnable = (key->anisotropy > 1) ? VK_TRUE : VK_FALSE,
+	    .maxAnisotropy = (key->anisotropy > 1) ? (float)key->anisotropy : 1.0f,
+	    .minLod = 0.0f,
+	    .maxLod = (key->mipMode == NATIVE_GFX_MIP_NONE) ? 0.0f : VK_LOD_CLAMP_NONE,
+	    .borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK,
+	};
+
+	const uint32_t index = s_vk.keyedSamplerCount;
+
+	if (vkCreateSampler_fn(s_vk.device, &info, NULL, &s_vk.keyedSamplers[index]) != VK_SUCCESS)
+	{
+		Platform_LogError("[CTR Vk] keyed sampler could not be created - the native sampler stands in\n");
+		return NativeVk_GetNativeSampler();
+	}
+
+	s_vk.keyedSamplerKeys[index] = *key;
+	s_vk.keyedSamplerCount++;
+
+	Platform_Log("[CTR Vk] keyed sampler %u: mag %s, min %s, mip %s, anisotropy %u, wrap %u/%u\n", index, key->magLinear ? "linear" : "nearest",
+	             key->minLinear ? "linear" : "nearest",
+	             (key->mipMode == NATIVE_GFX_MIP_LINEAR) ? "linear" : ((key->mipMode == NATIVE_GFX_MIP_NEAREST) ? "nearest" : "none"),
+	             (unsigned int)key->anisotropy, (unsigned int)key->wrapU, (unsigned int)key->wrapV);
+
+	return s_vk.keyedSamplers[index];
+}
+
+// The sampler a texture is drawn with: the keyed one for a texture with
+// levels, the native one for a texture of the native layer, otherwise the
+// shared one of its filter and wrap as always.
+internal VkSampler NativeVk_TextureSampler(const struct NativeVkTexture *texture)
+{
+	if (texture->keyed)
+	{
+		return NativeVk_GetKeyedSampler(&texture->samplerKey);
+	}
+
+	if (texture->nativeLayer)
+	{
+		return NativeVk_GetNativeSampler();
+	}
+
+	return NativeVk_GetSampler(texture->filter, texture->wrap);
 }
 
 // Moves an image between layouts. Vulkan has no notion of "the layout it
@@ -2606,6 +2989,7 @@ internal TextureID NativeGfxVK_CreateTexture(const NativeGfxTextureDesc *desc)
 	texture->height = (uint32_t)desc->height;
 	texture->filter = desc->filter;
 	texture->wrap = desc->wrap;
+	texture->nativeLayer = (desc->nativeLayer != 0) ? 1 : 0;
 	texture->layout = VK_IMAGE_LAYOUT_UNDEFINED;
 
 	// TRANSFER_SRC because readPixels reads back through a copy, TRANSFER_DST
@@ -2801,6 +3185,28 @@ internal void NativeVk_RecordImageBarrier(VkCommandBuffer commands, VkImage imag
 	vkCmdPipelineBarrier_fn(commands, sourceStage, destinationStage, 0, 0, NULL, 0, NULL, 1, &barrier);
 }
 
+// The same with the aspect named, for the depth image. A second function rather
+// than a parameter on the first, so that every existing barrier stays the call
+// it was.
+internal void NativeVk_RecordImageBarrierAspect(VkCommandBuffer commands, VkImage image, VkImageAspectFlags aspect, VkImageLayout from, VkImageLayout to,
+                                                VkPipelineStageFlags sourceStage, VkAccessFlags sourceAccess, VkPipelineStageFlags destinationStage,
+                                                VkAccessFlags destinationAccess)
+{
+	const VkImageMemoryBarrier barrier = {
+	    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+	    .srcAccessMask = sourceAccess,
+	    .dstAccessMask = destinationAccess,
+	    .oldLayout = from,
+	    .newLayout = to,
+	    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+	    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+	    .image = image,
+	    .subresourceRange = {aspect, 0, 1, 0, 1},
+	};
+
+	vkCmdPipelineBarrier_fn(commands, sourceStage, destinationStage, 0, 0, NULL, 0, NULL, 1, &barrier);
+}
+
 internal int NativeVk_RecordUploadInFrame(struct NativeVkTexture *texture, int x, int y, int width, int height, uint32_t bpp, const void *pixels,
                                           int rowPixels, VkDeviceSize bytes)
 {
@@ -2897,6 +3303,20 @@ internal int NativeVk_RecordUploadInFrame(struct NativeVkTexture *texture, int x
 	return 1;
 }
 
+// The uploads into textures of the native layer, and how many of them came
+// after the first frame was presented (frameCounter counts the frame opened at
+// start-up as 1) or into a frame with draws already recorded (all draws of the
+// open frame, also those already submitted in its middle). Read by the exit
+// report of the render layer; 0 and 0 in a run without such a texture.
+global_variable unsigned int s_vkNativeUploads = 0;
+global_variable unsigned int s_vkNativeUploadsDuringFrame = 0;
+
+void NativeGfxVK_NativeTextureUploads(unsigned int *uploads, unsigned int *duringFrame)
+{
+	*uploads = s_vkNativeUploads;
+	*duringFrame = s_vkNativeUploadsDuringFrame;
+}
+
 internal void NativeGfxVK_UpdateTexture(TextureID id, int x, int y, int width, int height, NativeGfxTextureFormat format, const void *pixels,
                                         int rowPixels)
 {
@@ -2904,6 +3324,28 @@ internal void NativeGfxVK_UpdateTexture(TextureID id, int x, int y, int width, i
 
 	if ((texture == NULL) || (pixels == NULL) || (width <= 0) || (height <= 0))
 	{
+		return;
+	}
+
+	// A texture with levels (NativeGfxVK_CreateTextureLevels) is not updated
+	// here: the copy below writes level 0 only and would leave levels 1 and up
+	// stale, and an sRGB one expects sRGB bytes, not what this caller has. Its
+	// levels are given once, at creation. Retail cannot reach this: keyed is set
+	// by CreateTextureLevels alone, which only the native texture manager calls
+	// and only with --native-preview; every texture made by CreateTexture has
+	// keyed 0 (memset there, and again in DestroyTexture), so every existing
+	// upload goes on exactly as before.
+	if (texture->keyed)
+	{
+		static int reported = 0;
+
+		if (!reported)
+		{
+			reported = 1;
+			Platform_LogError("[CTR Vk] updateTexture refused for texture %u: it has %u level(s), given at creation only\n", id,
+			                  texture->levels);
+		}
+
 		return;
 	}
 
@@ -2915,8 +3357,19 @@ internal void NativeGfxVK_UpdateTexture(TextureID id, int x, int y, int width, i
 	const uint32_t bpp = NativeVk_TextureBytesPerPixel(format);
 	const VkDeviceSize bytes = (VkDeviceSize)width * (VkDeviceSize)height * bpp;
 
+	// A texture of the native layer never goes into the open frame: its upload
+	// is the waited one-shot below, and counted (NativeGfxVK_NativeTextureUploads).
+	if (texture->nativeLayer)
+	{
+		s_vkNativeUploads++;
+		if ((s_vk.frameCounter > 1u) || (s_vk.frameDraws > 0u))
+		{
+			s_vkNativeUploadsDuringFrame++;
+		}
+	}
+
 	// The normal case: recorded in the frame, see above.
-	if (NativeVk_RecordUploadInFrame(texture, x, y, width, height, bpp, pixels, rowPixels, bytes))
+	if (!texture->nativeLayer && NativeVk_RecordUploadInFrame(texture, x, y, width, height, bpp, pixels, rowPixels, bytes))
 	{
 		return;
 	}
@@ -2997,6 +3450,388 @@ internal void NativeGfxVK_UpdateTexture(TextureID id, int x, int y, int width, i
 		NativeVk_FinishOneShot(commands);
 		texture->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	}
+}
+
+internal void NativeGfxVK_DestroyTexture(TextureID id);
+
+// --- Textures with levels ------------------------------------------------------
+//
+// The road of the native texture manager (platform/native_tex.c), beside
+// NativeGfxVK_CreateTexture and NativeGfxVK_UpdateTexture, which stay what they
+// were: one level, subresource level 0, and every VRAM upload on them. See the
+// block "Textures with levels" in include/platform/native_gfx.h.
+
+// NativeVk_TransitionImage over every level of an image, for the two moves a
+// texture with levels makes: UNDEFINED to TRANSFER_DST before its upload, and
+// TRANSFER_DST to SHADER_READ_ONLY after it. A function of its own, so that
+// every existing barrier stays the call it was.
+internal void NativeVk_TransitionImageLevels(VkCommandBuffer commands, VkImage image, VkImageLayout from, VkImageLayout to, uint32_t levels)
+{
+	VkPipelineStageFlags sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+	VkAccessFlags sourceAccess = 0;
+	VkPipelineStageFlags destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+	VkAccessFlags destinationAccess = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+	if (from == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL)
+	{
+		sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+		sourceAccess = VK_ACCESS_TRANSFER_WRITE_BIT;
+		destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+		destinationAccess = VK_ACCESS_SHADER_READ_BIT;
+	}
+
+	const VkImageMemoryBarrier barrier = {
+	    .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+	    .srcAccessMask = sourceAccess,
+	    .dstAccessMask = destinationAccess,
+	    .oldLayout = from,
+	    .newLayout = to,
+	    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+	    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+	    .image = image,
+	    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, 1},
+	};
+
+	vkCmdPipelineBarrier_fn(commands, sourceStage, destinationStage, 0, 0, NULL, 0, NULL, 1, &barrier);
+}
+
+// The full chain of an image down to 1x1: floor(log2(max(w, h))) + 1.
+internal uint32_t NativeVk_FullLevelCount(uint32_t width, uint32_t height)
+{
+	uint32_t edge = (width > height) ? width : height;
+	uint32_t levels = 1;
+
+	while (edge > 1u)
+	{
+		edge >>= 1;
+		levels++;
+	}
+
+	return levels;
+}
+
+internal TextureID NativeGfxVK_CreateTextureLevels(const NativeGfxTextureLevelsDesc *desc)
+{
+	if ((desc == NULL) || (s_vk.device == VK_NULL_HANDLE) || (desc->width <= 0) || (desc->height <= 0) ||
+	    ((desc->format != NATIVE_GFX_TEXFMT_RGBA8) && (desc->format != NATIVE_GFX_TEXFMT_RGBA8_SRGB)) || (desc->levelCount < 1) ||
+	    (desc->levelCount > NATIVE_GFX_MAX_TEXTURE_LEVELS) ||
+	    ((uint32_t)desc->levelCount > NativeVk_FullLevelCount((uint32_t)desc->width, (uint32_t)desc->height)))
+	{
+		Platform_LogError("[CTR Vk] texture with levels refused: %dx%d, format %d, %d level(s)\n", (desc != NULL) ? desc->width : 0,
+		                  (desc != NULL) ? desc->height : 0, (desc != NULL) ? (int)desc->format : -1, (desc != NULL) ? desc->levelCount : 0);
+		return NATIVE_GFX_INVALID;
+	}
+
+	const uint32_t levels = (uint32_t)desc->levelCount;
+	VkDeviceSize offsets[NATIVE_GFX_MAX_TEXTURE_LEVELS];
+	VkDeviceSize total = 0;
+
+	for (uint32_t level = 0; level < levels; level++)
+	{
+		const uint32_t w = ((uint32_t)desc->width >> level) ? ((uint32_t)desc->width >> level) : 1u;
+		const uint32_t h = ((uint32_t)desc->height >> level) ? ((uint32_t)desc->height >> level) : 1u;
+
+		if (desc->levels[level] == NULL)
+		{
+			Platform_LogError("[CTR Vk] texture with levels refused: level %u has no pixels\n", level);
+			return NATIVE_GFX_INVALID;
+		}
+
+		// A copy's buffer offset is a multiple of 4 and of the texel size; 16
+		// covers both, as in the upload ring.
+		total = (total + 15u) & ~(VkDeviceSize)15u;
+		offsets[level] = total;
+		total += (VkDeviceSize)w * (VkDeviceSize)h * 4u;
+	}
+
+	uint32_t index = 0;
+
+	while ((index < NATIVE_VK_MAX_TEXTURES) && s_vk.textures[index].used)
+	{
+		index++;
+	}
+
+	if (index >= NATIVE_VK_MAX_TEXTURES)
+	{
+		Platform_LogError("[CTR Vk] out of texture slots (%d)\n", NATIVE_VK_MAX_TEXTURES);
+		return NATIVE_GFX_INVALID;
+	}
+
+	struct NativeVkTexture *texture = &s_vk.textures[index];
+	memset(texture, 0, sizeof(*texture));
+
+	texture->format = NativeVk_TextureFormat(desc->format);
+	texture->width = (uint32_t)desc->width;
+	texture->height = (uint32_t)desc->height;
+	texture->filter = (desc->sampling.magFilter == NATIVE_GFX_FILTER_LINEAR) ? NATIVE_GFX_FILTER_LINEAR : NATIVE_GFX_FILTER_NEAREST;
+	texture->wrap = (desc->sampling.wrapU == NATIVE_GFX_WRAP_CLAMP) ? NATIVE_GFX_WRAP_CLAMP : NATIVE_GFX_WRAP_REPEAT;
+	texture->nativeLayer = 1;
+	texture->levels = levels;
+	texture->keyed = 1;
+	texture->samplerKey = NativeVk_SamplerKey(&desc->sampling);
+	texture->layout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+	// Sampled, uploaded, and readable back through a copy like every texture;
+	// never a render target, so no COLOR_ATTACHMENT.
+	const VkImageCreateInfo imageInfo = {
+	    .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+	    .imageType = VK_IMAGE_TYPE_2D,
+	    .format = texture->format,
+	    .extent = {texture->width, texture->height, 1},
+	    .mipLevels = levels,
+	    .arrayLayers = 1,
+	    .samples = VK_SAMPLE_COUNT_1_BIT,
+	    .tiling = VK_IMAGE_TILING_OPTIMAL,
+	    .usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+	    .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+	    .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+	};
+
+	if (vkCreateImage_fn(s_vk.device, &imageInfo, NULL, &texture->image) != VK_SUCCESS)
+	{
+		Platform_LogError("[CTR Vk] texture image %dx%d with %u level(s) could not be created\n", desc->width, desc->height, levels);
+		memset(texture, 0, sizeof(*texture));
+		return NATIVE_GFX_INVALID;
+	}
+
+	VkMemoryRequirements requirements;
+	vkGetImageMemoryRequirements_fn(s_vk.device, texture->image, &requirements);
+
+	uint32_t typeIndex = 0;
+	if (!NativeVk_FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &typeIndex))
+	{
+		vkDestroyImage_fn(s_vk.device, texture->image, NULL);
+		memset(texture, 0, sizeof(*texture));
+		return NATIVE_GFX_INVALID;
+	}
+
+	const VkMemoryAllocateInfo alloc = {
+	    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+	    .allocationSize = requirements.size,
+	    .memoryTypeIndex = typeIndex,
+	};
+
+	if (vkAllocateMemory_fn(s_vk.device, &alloc, NULL, &texture->memory) != VK_SUCCESS)
+	{
+		Platform_LogError("[CTR Vk] texture memory with levels could not be allocated\n");
+		vkDestroyImage_fn(s_vk.device, texture->image, NULL);
+		memset(texture, 0, sizeof(*texture));
+		return NATIVE_GFX_INVALID;
+	}
+
+	if (vkBindImageMemory_fn(s_vk.device, texture->image, texture->memory, 0) != VK_SUCCESS)
+	{
+		Platform_LogError("[CTR Vk] texture memory with levels could not be bound\n");
+		vkDestroyImage_fn(s_vk.device, texture->image, NULL);
+		vkFreeMemory_fn(s_vk.device, texture->memory, NULL);
+		memset(texture, 0, sizeof(*texture));
+		return NATIVE_GFX_INVALID;
+	}
+
+	NativeVk_NoteAllocation(requirements.size);
+
+	const VkImageViewCreateInfo viewInfo = {
+	    .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+	    .image = texture->image,
+	    .viewType = VK_IMAGE_VIEW_TYPE_2D,
+	    .format = texture->format,
+	    .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, 1},
+	};
+
+	if (vkCreateImageView_fn(s_vk.device, &viewInfo, NULL, &texture->view) != VK_SUCCESS)
+	{
+		Platform_LogError("[CTR Vk] texture view with levels could not be created\n");
+		vkDestroyImage_fn(s_vk.device, texture->image, NULL);
+		vkFreeMemory_fn(s_vk.device, texture->memory, NULL);
+		memset(texture, 0, sizeof(*texture));
+		return NATIVE_GFX_INVALID;
+	}
+
+	texture->used = 1;
+	s_vkTexturesCreated++;
+
+	const TextureID id = (TextureID)(index + 1);
+
+	// Counted like every upload into a texture of the native layer
+	// (NativeGfxVK_NativeTextureUploads): one per texture, all levels together.
+	s_vkNativeUploads++;
+	if ((s_vk.frameCounter > 1u) || (s_vk.frameDraws > 0u))
+	{
+		s_vkNativeUploadsDuringFrame++;
+	}
+
+	s_vk.frameUploadsOneShot++;
+
+	if (!NativeVk_EnsureStaging(total))
+	{
+		// The texture stays, in UNDEFINED, and is no use; give it back.
+		NativeGfxVK_DestroyTexture(id);
+		return NATIVE_GFX_INVALID;
+	}
+
+	for (uint32_t level = 0; level < levels; level++)
+	{
+		const uint32_t w = ((uint32_t)desc->width >> level) ? ((uint32_t)desc->width >> level) : 1u;
+		const uint32_t h = ((uint32_t)desc->height >> level) ? ((uint32_t)desc->height >> level) : 1u;
+
+		memcpy((unsigned char *)s_vk.stagingMapped + offsets[level], desc->levels[level], (size_t)w * (size_t)h * 4u);
+	}
+
+	// What the open frame recorded so far runs first - the order the caller
+	// wrote it in, exactly as the one-shot fallback of NativeGfxVK_UpdateTexture
+	// keeps it. At a loading screen this ends the pass in the middle of a
+	// picture; the next draw opens it again with LOAD, so no pixel already
+	// drawn changes.
+	if ((s_vk.drawsSinceSubmit > 0) || (s_vk.uploadsSinceSubmit > 0))
+	{
+		if (!NativeVk_SubmitFrameSoFarAndWait())
+		{
+			s_vk.frameUploadsAfterDraws++;
+			s_vk.frameDrawsJumped += s_vk.drawsSinceSubmit;
+		}
+	}
+
+	VkCommandBuffer commands = VK_NULL_HANDLE;
+
+	if (!NativeVk_RunOneShot(&commands))
+	{
+		NativeGfxVK_DestroyTexture(id);
+		return NATIVE_GFX_INVALID;
+	}
+
+	NativeVk_TransitionImageLevels(commands, texture->image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, levels);
+
+	{
+		VkBufferImageCopy regions[NATIVE_GFX_MAX_TEXTURE_LEVELS];
+
+		memset(regions, 0, sizeof(regions));
+
+		for (uint32_t level = 0; level < levels; level++)
+		{
+			const uint32_t w = ((uint32_t)desc->width >> level) ? ((uint32_t)desc->width >> level) : 1u;
+			const uint32_t h = ((uint32_t)desc->height >> level) ? ((uint32_t)desc->height >> level) : 1u;
+
+			regions[level].bufferOffset = offsets[level];
+			regions[level].imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+			regions[level].imageSubresource.mipLevel = level;
+			regions[level].imageSubresource.baseArrayLayer = 0;
+			regions[level].imageSubresource.layerCount = 1;
+			regions[level].imageExtent.width = w;
+			regions[level].imageExtent.height = h;
+			regions[level].imageExtent.depth = 1;
+		}
+
+		vkCmdCopyBufferToImage_fn(commands, s_vk.stagingBuffer, texture->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, levels, regions);
+	}
+
+	NativeVk_TransitionImageLevels(commands, texture->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, levels);
+
+	if (!NativeVk_FinishOneShot(commands))
+	{
+		NativeGfxVK_DestroyTexture(id);
+		return NATIVE_GFX_INVALID;
+	}
+
+	texture->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+	return id;
+}
+
+internal void NativeGfxVK_SetTextureSampling(TextureID id, const NativeGfxSampling *sampling)
+{
+	struct NativeVkTexture *texture = NativeVk_Texture(id);
+
+	if ((texture == NULL) || !texture->keyed || (sampling == NULL))
+	{
+		return;
+	}
+
+	texture->samplerKey = NativeVk_SamplerKey(sampling);
+	texture->filter = (sampling->magFilter == NATIVE_GFX_FILTER_LINEAR) ? NATIVE_GFX_FILTER_LINEAR : NATIVE_GFX_FILTER_NEAREST;
+}
+
+// maxImageDimension2D is read at device creation with --native-preview; without
+// it, here, on first ask - a query that changes nothing on the device.
+internal void NativeGfxVK_TextureLimits(NativeGfxTextureLimits *out)
+{
+	if (out == NULL)
+	{
+		return;
+	}
+
+	if ((s_vk.maxImageDimension2D == 0u) && (s_vk.physical != VK_NULL_HANDLE))
+	{
+		VkPhysicalDeviceProperties properties;
+
+		vkGetPhysicalDeviceProperties_fn(s_vk.physical, &properties);
+		s_vk.maxImageDimension2D = properties.limits.maxImageDimension2D;
+	}
+
+	out->maxImageDimension2D = (int)s_vk.maxImageDimension2D;
+	out->anisotropyEnabled = s_vk.canAnisotropy;
+	out->maxSamplerAnisotropy = s_vk.canAnisotropy ? s_vk.maxSamplerAnisotropy : 0.0f;
+}
+
+// THE STAGING BUFFER GIVEN BACK (renderer plan C.6.4). NativeVk_EnsureStaging only
+// grows it. Every user of it - the one-shot uploads, the static buffers, the
+// readback - waits for its transfer before it returns, so between two calls the
+// buffer is never in use and can go.
+//
+// BACK TO keepBytes, NOT TO ZERO. The native texture manager passes the size the
+// buffer had before its own upload (NativeGfxVK_StagingBytes), so only the
+// growth of that upload goes back. A buffer the VRAM fallback or a readback had
+// grown before stays as large as it was: otherwise the next such fallback - in
+// a race frame, perhaps - would have to make it again (create, allocate, map),
+// a stall a run without the manager does not have. The smaller buffer is made
+// right here, still at the manager's loading screen, by NativeVk_EnsureStaging:
+// from 64 KB doubling, which lands on keepBytes exactly when keepBytes is a size
+// that function made before (its log line "grown" appears with it). keepBytes
+// 0 frees the buffer outright. Returns the bytes given back: the old size minus
+// the new.
+internal u32 NativeGfxVK_ShrinkStaging(u32 keepBytes)
+{
+	if ((s_vk.stagingBuffer == VK_NULL_HANDLE) || (s_vk.stagingBytes <= (VkDeviceSize)keepBytes))
+	{
+		return 0;
+	}
+
+	const VkDeviceSize before = s_vk.stagingBytes;
+
+	if (s_vk.stagingMapped != NULL)
+	{
+		vkUnmapMemory_fn(s_vk.device, s_vk.stagingMemory);
+		s_vk.stagingMapped = NULL;
+	}
+
+	vkDestroyBuffer_fn(s_vk.device, s_vk.stagingBuffer, NULL);
+	vkFreeMemory_fn(s_vk.device, s_vk.stagingMemory, NULL);
+
+	s_vk.stagingBuffer = VK_NULL_HANDLE;
+	s_vk.stagingMemory = VK_NULL_HANDLE;
+	s_vk.stagingBytes = 0;
+
+	if (keepBytes > 0u)
+	{
+		// A failure leaves no buffer, as keepBytes 0 would; the next transfer
+		// that needs one tries again and says so.
+		NativeVk_EnsureStaging((VkDeviceSize)keepBytes);
+	}
+
+	const VkDeviceSize freed = before - s_vk.stagingBytes;
+
+	s_vk.stagingShrinks++;
+	s_vk.stagingShrunkBytes += (uint64_t)freed;
+
+	Platform_Log("[CTR Vk] staging buffer of %u KB given back to %u KB (shrink %u)\n", (unsigned int)(before / 1024u),
+	             (unsigned int)(s_vk.stagingBytes / 1024u), s_vk.stagingShrinks);
+
+	return (u32)freed;
+}
+
+// The staging buffer's size right now, 0 when there is none.
+internal u32 NativeGfxVK_StagingBytes(void)
+{
+	return (s_vk.stagingBuffer != VK_NULL_HANDLE) ? (u32)s_vk.stagingBytes : 0u;
 }
 
 internal void NativeGfxVK_DestroyTexture(TextureID id)
@@ -3219,6 +4054,69 @@ internal NativeGfxBuffer NativeGfxVK_CreateVertexBuffer(const NativeGfxVertexBuf
 	return id;
 }
 
+// THE READ RANGES of a buffer's pending draws (see pendingRanges). A draw that
+// opens a new round - nothing pending, the list from before is stale since the
+// last submit or the last counted overwrite - starts the list afresh.
+internal void NativeVk_NotePendingRange(struct NativeVkBuffer *buffer, VkDeviceSize lo, VkDeviceSize hi)
+{
+	uint32_t i;
+
+	if (buffer->pendingDraws == 0)
+	{
+		buffer->pendingRangeCount = 0;
+	}
+
+	buffer->pendingDraws++;
+
+	for (i = 0; i < buffer->pendingRangeCount; i++)
+	{
+		VkDeviceSize *range = buffer->pendingRanges[i];
+
+		if ((lo <= range[1]) && (hi >= range[0]))
+		{
+			range[0] = (lo < range[0]) ? lo : range[0];
+			range[1] = (hi > range[1]) ? hi : range[1];
+			return;
+		}
+	}
+
+	if (buffer->pendingRangeCount < NATIVE_VK_PENDING_RANGES)
+	{
+		buffer->pendingRanges[buffer->pendingRangeCount][0] = lo;
+		buffer->pendingRanges[buffer->pendingRangeCount][1] = hi;
+		buffer->pendingRangeCount++;
+		return;
+	}
+
+	{
+		VkDeviceSize *last = buffer->pendingRanges[NATIVE_VK_PENDING_RANGES - 1];
+
+		last[0] = (lo < last[0]) ? lo : last[0];
+		last[1] = (hi > last[1]) ? hi : last[1];
+	}
+}
+
+// Whether the bytes [lo, hi) a write replaces are read by a pending draw.
+internal int NativeVk_PendingRangeHit(const struct NativeVkBuffer *buffer, VkDeviceSize lo, VkDeviceSize hi)
+{
+	uint32_t i;
+
+	if (buffer->pendingDraws == 0)
+	{
+		return 0;
+	}
+
+	for (i = 0; i < buffer->pendingRangeCount; i++)
+	{
+		if ((lo < buffer->pendingRanges[i][1]) && (hi > buffer->pendingRanges[i][0]))
+		{
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
 internal void NativeGfxVK_UpdateVertexBuffer(NativeGfxBuffer id, int offset, int bytes, const void *source)
 {
 	struct NativeVkBuffer *buffer = NativeVk_Buffer(id);
@@ -3261,9 +4159,9 @@ internal void NativeGfxVK_UpdateVertexBuffer(NativeGfxBuffer id, int offset, int
 
 	if (buffer->dynamic && (buffer->mapped != NULL))
 	{
-		// It is only an overwrite if the new bytes fall into the range
-		// that recorded draws still read (see pendingLo/Hi).
-		if ((buffer->pendingDraws > 0) && ((VkDeviceSize)offset < buffer->pendingHi) && (((VkDeviceSize)offset + (VkDeviceSize)bytes) > buffer->pendingLo))
+		// It is only an overwrite if the new bytes fall into a range that
+		// recorded draws still read (see pendingRanges).
+		if (NativeVk_PendingRangeHit(buffer, (VkDeviceSize)offset, (VkDeviceSize)offset + (VkDeviceSize)bytes))
 		{
 			s_vk.frameBufferClobbers++;
 			s_vk.frameDrawsClobbered += buffer->pendingDraws;
@@ -3330,10 +4228,184 @@ internal void NativeGfxVK_DestroyVertexBuffer(NativeGfxBuffer id)
 	}
 }
 
+// --- Index buffers ----------------------------------------------------------
+
+internal struct NativeVkIndexBuffer *NativeVk_IndexBuffer(NativeGfxBuffer id)
+{
+	if ((id == 0) || (id == NATIVE_GFX_INVALID) || (id > NATIVE_VK_MAX_INDEX_BUFFERS))
+	{
+		return NULL;
+	}
+
+	struct NativeVkIndexBuffer *buffer = &s_vk.indexBuffers[id - 1];
+
+	return buffer->used ? buffer : NULL;
+}
+
+// Static only: device-local memory, filled once through the staging buffer the
+// way a static vertex buffer is (NativeGfxVK_UpdateVertexBuffer). The one-shot
+// runs outside the frame's command buffer, so this is legal in an open frame,
+// but it waits for the queue - creation belongs in a load phase.
+internal NativeGfxBuffer NativeGfxVK_CreateIndexBuffer(const NativeGfxIndexBufferDesc *desc)
+{
+	if ((desc == NULL) || (desc->bytes <= 0) || (desc->initial == NULL) || (s_vk.device == VK_NULL_HANDLE))
+	{
+		return NATIVE_GFX_INVALID;
+	}
+
+	if ((desc->type != NATIVE_GFX_INDEX_U16) && (desc->type != NATIVE_GFX_INDEX_U32))
+	{
+		Platform_Log("[CTR Vk] index buffer with unknown index type %d - not created\n", (int)desc->type);
+		return NATIVE_GFX_INVALID;
+	}
+
+	uint32_t index = 0;
+
+	while ((index < NATIVE_VK_MAX_INDEX_BUFFERS) && s_vk.indexBuffers[index].used)
+	{
+		index++;
+	}
+
+	if (index >= NATIVE_VK_MAX_INDEX_BUFFERS)
+	{
+		Platform_Log("[CTR Vk] out of index buffer slots (%d)\n", NATIVE_VK_MAX_INDEX_BUFFERS);
+		return NATIVE_GFX_INVALID;
+	}
+
+	struct NativeVkIndexBuffer *buffer = &s_vk.indexBuffers[index];
+	memset(buffer, 0, sizeof(*buffer));
+
+	buffer->bytes = (VkDeviceSize)desc->bytes;
+	buffer->type = (desc->type == NATIVE_GFX_INDEX_U32) ? VK_INDEX_TYPE_UINT32 : VK_INDEX_TYPE_UINT16;
+
+	{
+		const size_t count = (size_t)desc->bytes / ((desc->type == NATIVE_GFX_INDEX_U32) ? 4u : 2u);
+		uint32_t lowest = 0xFFFFFFFFu;
+		uint32_t highest = 0u;
+
+		for (size_t i = 0; i < count; i++)
+		{
+			const uint32_t value = (desc->type == NATIVE_GFX_INDEX_U32) ? ((const uint32_t *)desc->initial)[i] : (uint32_t)((const uint16_t *)desc->initial)[i];
+
+			lowest = (value < lowest) ? value : lowest;
+			highest = (value > highest) ? value : highest;
+		}
+
+		buffer->minIndex = (count > 0) ? lowest : 0u;
+		buffer->maxIndex = highest;
+	}
+
+	if (!NativeVk_CreateBuffer(buffer->bytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT,
+	                           &buffer->buffer, &buffer->memory))
+	{
+		// As with a vertex buffer: CreateBuffer has said it, and a handle it
+		// handed out with a failure is not one to destroy.
+		memset(buffer, 0, sizeof(*buffer));
+		return NATIVE_GFX_INVALID;
+	}
+
+	if (!NativeVk_EnsureStaging(buffer->bytes))
+	{
+		vkDestroyBuffer_fn(s_vk.device, buffer->buffer, NULL);
+		vkFreeMemory_fn(s_vk.device, buffer->memory, NULL);
+		memset(buffer, 0, sizeof(*buffer));
+		return NATIVE_GFX_INVALID;
+	}
+
+	memcpy(s_vk.stagingMapped, desc->initial, (size_t)desc->bytes);
+
+	{
+		VkCommandBuffer commands = VK_NULL_HANDLE;
+
+		if (!NativeVk_RunOneShot(&commands))
+		{
+			vkDestroyBuffer_fn(s_vk.device, buffer->buffer, NULL);
+			vkFreeMemory_fn(s_vk.device, buffer->memory, NULL);
+			memset(buffer, 0, sizeof(*buffer));
+			return NATIVE_GFX_INVALID;
+		}
+
+		const VkBufferCopy region = {
+		    .srcOffset = 0,
+		    .dstOffset = 0,
+		    .size = buffer->bytes,
+		};
+
+		vkCmdCopyBuffer_fn(commands, s_vk.stagingBuffer, buffer->buffer, 1, &region);
+
+		// The wait for the queue orders the copy before every later draw, but
+		// does not make its write visible to the index fetch; this does.
+		{
+			const VkMemoryBarrier barrier = {
+			    .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+			    .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+			    .dstAccessMask = VK_ACCESS_INDEX_READ_BIT,
+			};
+
+			vkCmdPipelineBarrier_fn(commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 1, &barrier, 0, NULL, 0, NULL);
+		}
+
+		if (!NativeVk_FinishOneShot(commands))
+		{
+			// The copy may still be running if only the wait went wrong.
+			vkDeviceWaitIdle_fn(s_vk.device);
+			vkDestroyBuffer_fn(s_vk.device, buffer->buffer, NULL);
+			vkFreeMemory_fn(s_vk.device, buffer->memory, NULL);
+			memset(buffer, 0, sizeof(*buffer));
+			return NATIVE_GFX_INVALID;
+		}
+	}
+
+	buffer->used = 1;
+
+	return (NativeGfxBuffer)(index + 1);
+}
+
+// As NativeGfxVK_DestroyVertexBuffer: a recorded draw may still read it, so the
+// device is drained first. Only call it outside a frame: in the middle of one, a
+// command buffer that is still recording names this buffer, and
+// vkDeviceWaitIdle does nothing for that - it waits for the GPU, not for the
+// CPU to finish recording. The same holds for DestroyVertexBuffer.
+internal void NativeGfxVK_DestroyIndexBuffer(NativeGfxBuffer id)
+{
+	struct NativeVkIndexBuffer *buffer = NativeVk_IndexBuffer(id);
+
+	if (buffer == NULL)
+	{
+		return;
+	}
+
+	vkDeviceWaitIdle_fn(s_vk.device);
+
+	if (buffer->buffer != VK_NULL_HANDLE) { vkDestroyBuffer_fn(s_vk.device, buffer->buffer, NULL); }
+	if (buffer->memory != VK_NULL_HANDLE) { vkFreeMemory_fn(s_vk.device, buffer->memory, NULL); }
+
+	// A later buffer can get the same VkBuffer handle; the next indexed draw
+	// must bind it again rather than trust the recorded one.
+	if (s_vk.recorded.indexBuffer == buffer->buffer)
+	{
+		s_vk.recorded.indexBuffer = VK_NULL_HANDLE;
+	}
+
+	memset(buffer, 0, sizeof(*buffer));
+
+	if (s_vk.boundIndexBuffer == id)
+	{
+		s_vk.boundIndexBuffer = NATIVE_GFX_INVALID;
+	}
+}
+
+// Only recorded, like BindVertexBuffer; vkCmdBindIndexBuffer happens in the
+// indexed draw.
+internal void NativeGfxVK_BindIndexBuffer(NativeGfxBuffer id)
+{
+	s_vk.boundIndexBuffer = id;
+}
+
 // --- Render passes, opened lazily -------------------------------------------
 
 internal VkRenderPass NativeVk_GetRenderPass(VkFormat format, VkAttachmentLoadOp loadOp, VkImageLayout initialLayout, VkImageLayout finalLayout,
-                                             uint32_t samples)
+                                             uint32_t samples, VkFormat depthFormat)
 {
 	struct NativeVkRenderPassKey key;
 	memset(&key, 0, sizeof(key));
@@ -3343,6 +4415,7 @@ internal VkRenderPass NativeVk_GetRenderPass(VkFormat format, VkAttachmentLoadOp
 	key.initialLayout = (uint32_t)initialLayout;
 	key.finalLayout = (uint32_t)finalLayout;
 	key.samples = (samples > 1) ? samples : 1u;
+	key.depthFormat = (uint32_t)depthFormat;
 
 	for (uint32_t i = 0; i < NATIVE_VK_MAX_RENDER_PASSES; i++)
 	{
@@ -3478,6 +4551,86 @@ internal VkRenderPass NativeVk_GetRenderPass(VkFormat format, VkAttachmentLoadOp
 	    .pDependencies = dependencies,
 	};
 
+	// DEPTH: the same pass with one attachment more, behind the colour ones -
+	// index 1, or 2 behind a resolve target. Its own arrays, built from the ones
+	// above, so the pass without depth stays exactly the structure it was.
+	//
+	// Loaded and stored, never cleared as a loadOp: the depth image is cleared
+	// once when it is made and afterwards only by NativeGfxVK_ClearDepth, so the
+	// key needs no depth loadOp and clearValueCount stays 1. Its layout never
+	// changes, like the multisampled image's. Both dependencies carry the depth
+	// stages as well, because consecutive passes load what the previous one
+	// stored into the same image.
+	if (key.depthFormat != 0)
+	{
+		const VkAttachmentDescription depth = {
+		    .format = depthFormat,
+		    .samples = (VkSampleCountFlagBits)key.samples,
+		    .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+		    .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+		    .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+		    .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+		    .initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+		    .finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+		};
+
+		VkAttachmentDescription withDepth[3];
+		uint32_t attachmentCount = 0;
+
+		if (isMultisampled)
+		{
+			withDepth[attachmentCount++] = multisampled[0];
+			withDepth[attachmentCount++] = multisampled[1];
+		}
+		else
+		{
+			withDepth[attachmentCount++] = colour;
+		}
+
+		const VkAttachmentReference depthRef = {
+		    .attachment = attachmentCount,
+		    .layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+		};
+
+		withDepth[attachmentCount++] = depth;
+
+		VkSubpassDescription depthSubpass = isMultisampled ? multisampledSubpass : subpass;
+		depthSubpass.pDepthStencilAttachment = &depthRef;
+
+		VkSubpassDependency depthDependencies[2];
+		depthDependencies[0] = dependencies[0];
+		depthDependencies[1] = dependencies[1];
+
+		for (uint32_t i = 0; i < 2; i++)
+		{
+			depthDependencies[i].srcStageMask |= VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+			depthDependencies[i].srcAccessMask |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+			depthDependencies[i].dstStageMask |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+			depthDependencies[i].dstAccessMask |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+		}
+
+		const VkRenderPassCreateInfo depthInfo = {
+		    .sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
+		    .attachmentCount = attachmentCount,
+		    .pAttachments = withDepth,
+		    .subpassCount = 1,
+		    .pSubpasses = &depthSubpass,
+		    .dependencyCount = 2,
+		    .pDependencies = depthDependencies,
+		};
+
+		if (vkCreateRenderPass_fn(s_vk.device, &depthInfo, NULL, &s_vk.renderPasses[slot].pass) != VK_SUCCESS)
+		{
+			Platform_Log("[CTR Vk] render pass (format %u, load %u, depth %u) could not be created\n", key.format, key.loadOp, key.depthFormat);
+			return VK_NULL_HANDLE;
+		}
+
+		s_vk.renderPasses[slot].used = 1;
+		s_vk.renderPasses[slot].key = key;
+
+		return s_vk.renderPasses[slot].pass;
+	}
+
 	if (vkCreateRenderPass_fn(s_vk.device, &info, NULL, &s_vk.renderPasses[slot].pass) != VK_SUCCESS)
 	{
 		Platform_LogError("[CTR Vk] render pass (format %u, load %u) could not be created\n", key.format, key.loadOp);
@@ -3490,7 +4643,8 @@ internal VkRenderPass NativeVk_GetRenderPass(VkFormat format, VkAttachmentLoadOp
 	return s_vk.renderPasses[slot].pass;
 }
 
-internal VkFramebuffer NativeVk_GetFramebuffer(VkRenderPass pass, VkImageView view, VkImageView resolveView, uint32_t width, uint32_t height)
+internal VkFramebuffer NativeVk_GetFramebuffer(VkRenderPass pass, VkImageView view, VkImageView resolveView, VkImageView depthView, uint32_t width,
+                                               uint32_t height)
 {
 	struct NativeVkFramebufferKey key;
 	memset(&key, 0, sizeof(key));
@@ -3500,6 +4654,7 @@ internal VkFramebuffer NativeVk_GetFramebuffer(VkRenderPass pass, VkImageView vi
 	key.width = width;
 	key.height = height;
 	key.resolveView = (uint64_t)resolveView;
+	key.depthView = (uint64_t)depthView;
 
 	for (uint32_t i = 0; i < NATIVE_VK_MAX_FRAMEBUFFERS; i++)
 	{
@@ -3522,13 +4677,27 @@ internal VkFramebuffer NativeVk_GetFramebuffer(VkRenderPass pass, VkImageView vi
 	}
 
 	// Anti-aliasing: in the order of the pass's attachments - multisampled image,
-	// then resolve target.
-	const VkImageView views[2] = {view, resolveView};
+	// then resolve target. Depth, if any, behind them, packed: index 1 without
+	// a resolve target, 2 with one.
+	VkImageView views[3];
+	uint32_t viewCount = 0;
+
+	views[viewCount++] = view;
+
+	if (resolveView != VK_NULL_HANDLE)
+	{
+		views[viewCount++] = resolveView;
+	}
+
+	if (depthView != VK_NULL_HANDLE)
+	{
+		views[viewCount++] = depthView;
+	}
 
 	const VkFramebufferCreateInfo info = {
 	    .sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
 	    .renderPass = pass,
-	    .attachmentCount = (resolveView != VK_NULL_HANDLE) ? 2u : 1u,
+	    .attachmentCount = viewCount,
 	    .pAttachments = views,
 	    .width = width,
 	    .height = height,
@@ -3643,14 +4812,14 @@ internal int NativeVk_BeginPassIfNeeded(void)
 		NativeVk_NoteDirectResolveWrite("render pass");
 	}
 
-	const VkRenderPass pass = NativeVk_GetRenderPass(s_vk.passFormat, loadOp, initialLayout, s_vk.passFinalLayout, s_vk.passSamples);
+	const VkRenderPass pass = NativeVk_GetRenderPass(s_vk.passFormat, loadOp, initialLayout, s_vk.passFinalLayout, s_vk.passSamples, s_vk.passDepthFormat);
 
 	if (pass == VK_NULL_HANDLE)
 	{
 		return 0;
 	}
 
-	const VkFramebuffer framebuffer = NativeVk_GetFramebuffer(pass, s_vk.passView, s_vk.passResolveView, s_vk.passWidth, s_vk.passHeight);
+	const VkFramebuffer framebuffer = NativeVk_GetFramebuffer(pass, s_vk.passView, s_vk.passResolveView, s_vk.passDepthView, s_vk.passWidth, s_vk.passHeight);
 
 	if (framebuffer == VK_NULL_HANDLE)
 	{
@@ -3817,9 +4986,9 @@ internal void NativeVk_InvalidateFramebuffers(VkImageView view)
 		}
 
 		// Anti-aliasing: a framebuffer stands on two views if it has a
-		// resolve target, and dies with either of them.
-		if ((view != VK_NULL_HANDLE) && (s_vk.framebuffers[i].key.view != (uint64_t)view) &&
-		    (s_vk.framebuffers[i].key.resolveView != (uint64_t)view))
+		// resolve target, and dies with either of them. With depth, three.
+		if ((view != VK_NULL_HANDLE) && (s_vk.framebuffers[i].key.view != (uint64_t)view) && (s_vk.framebuffers[i].key.resolveView != (uint64_t)view) &&
+		    (s_vk.framebuffers[i].key.depthView != (uint64_t)view))
 		{
 			continue;
 		}
@@ -3839,6 +5008,58 @@ internal void NativeVk_InvalidateFramebuffers(VkImageView view)
 		}
 
 		memset(&s_vk.framebuffers[i], 0, sizeof(s_vk.framebuffers[i]));
+	}
+}
+
+// A FRAMEBUFFER BUILT ON A VIEW AFTER THE VIEW WAS RETIRED. Retiring a view
+// invalidates the framebuffers standing on it at that moment - but a bound
+// target with one sample keeps drawing into its old views after a resize until
+// the next bind (see NativeVk_RepointBoundTarget), and a pass that ends and
+// opens again in that frame builds a new framebuffer on them and caches it.
+// Nothing would ever take that entry out again: it would hold one of the slots
+// for good and stand on a destroyed handle, whose value a later view may get.
+//
+// So right before a retired view is destroyed, whatever is still cached on it
+// goes the way InvalidateFramebuffers sends it: onto the pending list, destroyed
+// at a later frame start. It was only used in the frame it was built in, which
+// is long finished by now. No command of any frame changes; when the case does
+// not occur, this finds nothing and does nothing.
+internal void NativeVk_DropFramebuffersOnRetiredView(VkImageView view)
+{
+	for (uint32_t i = 0; i < NATIVE_VK_MAX_FRAMEBUFFERS; i++)
+	{
+		const struct NativeVkFramebufferSlot *slot = &s_vk.framebuffers[i];
+
+		if (!slot->used)
+		{
+			continue;
+		}
+
+		if ((slot->key.view != (uint64_t)view) && (slot->key.resolveView != (uint64_t)view) && (slot->key.depthView != (uint64_t)view))
+		{
+			continue;
+		}
+
+		if (s_vk.pendingFramebufferCount < NATIVE_VK_MAX_PENDING_FRAMEBUFFERS)
+		{
+			const uint32_t pending = s_vk.pendingFramebufferCount++;
+
+			s_vk.pendingFramebuffers[pending].framebuffer = slot->framebuffer;
+			s_vk.pendingFramebuffers[pending].retiredAt = s_vk.frameCounter;
+		}
+		else
+		{
+			Platform_Log("[CTR Vk] pending framebuffer list full - leaking one rather than risking a recording buffer\n");
+		}
+
+		memset(&s_vk.framebuffers[i], 0, sizeof(s_vk.framebuffers[i]));
+
+		s_vk.framebuffersOnRetiredViews++;
+
+		if (s_vk.framebuffersOnRetiredViews == 1u)
+		{
+			Platform_Log("[CTR Vk] a framebuffer on a retired image view was still cached - dropped (said once, counted)\n");
+		}
 	}
 }
 
@@ -3884,6 +5105,12 @@ internal void NativeVk_FlushPendingFramebuffers(void)
 		{
 			s_vk.pendingImages[kept++] = s_vk.pendingImages[i];
 			continue;
+		}
+
+		// A framebuffer may have been built on the view after it was retired.
+		if (s_vk.pendingImages[i].view != VK_NULL_HANDLE)
+		{
+			NativeVk_DropFramebuffersOnRetiredView(s_vk.pendingImages[i].view);
 		}
 
 		if (s_vk.pendingImages[i].view != VK_NULL_HANDLE) { vkDestroyImageView_fn(s_vk.device, s_vk.pendingImages[i].view, NULL); }
@@ -4079,6 +5306,99 @@ internal void NativeGfxVK_ClearColorBuffer(void)
 	};
 
 	vkCmdClearAttachments_fn(s_vk.frameCommands, 1, &attachment, 1, &rect);
+}
+
+// Depth back to the far plane (0.0, reverse Z) inside a rectangle given the
+// way SetScissorRect takes one - GL-style, rows from the bottom - and turned
+// over and clipped by the same rules as NativeVk_CurrentScissorRect. Always a
+// command, never a loadOp: the depth attachment always loads (NativeVk_GetRenderPass).
+// Touches no scissor or viewport state. Nothing at all on a target without depth.
+internal void NativeGfxVK_ClearDepth(int x, int y, int width, int height)
+{
+	// The depth check before the pass is opened, not after: opening one is an
+	// effect of its own (a pending colour clear becomes its loadOp), and on a
+	// target without depth this call is to have none. Opening a pass does not
+	// change passDepthView.
+	if ((width <= 0) || (height <= 0) || (s_vk.passDepthView == VK_NULL_HANDLE))
+	{
+		return;
+	}
+
+	if (!NativeVk_BeginPassIfNeeded())
+	{
+		return;
+	}
+
+	const int flip = s_vk.canFlipViewport && (s_vk.passView == s_vk.frameView);
+	int left = x;
+	int top = flip ? (int)s_vk.passHeight - y - height : y;
+	int rectWidth = width;
+	int rectHeight = height;
+
+	// Inside the render area on both axes (VUID-vkCmdClearAttachments-pRects-00016).
+	if (left < 0)
+	{
+		rectWidth += left;
+		left = 0;
+	}
+
+	if (top < 0)
+	{
+		rectHeight += top;
+		top = 0;
+	}
+
+	if (left + rectWidth > (int)s_vk.passWidth)
+	{
+		rectWidth = (int)s_vk.passWidth - left;
+	}
+
+	if (top + rectHeight > (int)s_vk.passHeight)
+	{
+		rectHeight = (int)s_vk.passHeight - top;
+	}
+
+	if ((rectWidth <= 0) || (rectHeight <= 0))
+	{
+		return;
+	}
+
+	const VkClearAttachment attachment = {
+	    .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
+	    .colorAttachment = 0,
+	    .clearValue = {.depthStencil = {0.0f, 0}},
+	};
+
+	const VkClearRect rect = {
+	    .rect = {{left, top}, {(uint32_t)rectWidth, (uint32_t)rectHeight}},
+	    .baseArrayLayer = 0,
+	    .layerCount = 1,
+	};
+
+	vkCmdClearAttachments_fn(s_vk.frameCommands, 1, &attachment, 1, &rect);
+}
+
+// Depth test, culling and write mask for every following draw, PSX and blit
+// draws included - the same reach as SetBlendMode, and the same duty: whoever
+// sets it puts it back (NULL). Only recorded; the draw turns it into pipeline
+// key bytes (NativeVk_KeyDrawState). Out-of-range values fall back to zero.
+internal void NativeGfxVK_SetDrawState(const NativeGfxDrawState *state)
+{
+	if (state == NULL)
+	{
+		s_vk.state.depthTest = 0;
+		s_vk.state.depthWrite = 0;
+		s_vk.state.depthCompare = 0;
+		s_vk.state.cull = 0;
+		s_vk.state.colorWriteOff = 0;
+		return;
+	}
+
+	s_vk.state.depthTest = state->depthTest ? 1 : 0;
+	s_vk.state.depthWrite = state->depthWrite ? 1 : 0;
+	s_vk.state.depthCompare = (((int)state->depthCompare >= 0) && ((int)state->depthCompare <= (int)NATIVE_GFX_COMPARE_EQUAL)) ? (int)state->depthCompare : 0;
+	s_vk.state.cull = (((int)state->cull >= 0) && ((int)state->cull <= (int)NATIVE_GFX_CULL_FRONT)) ? (int)state->cull : 0;
+	s_vk.state.colorWriteOff = state->colorWriteOff & 0x0Fu;
 }
 
 // --- Render targets ---------------------------------------------------------
@@ -4354,6 +5674,10 @@ internal void NativeVk_RetireTargetMsaa(struct NativeVkTarget *target)
 // at ResizeTarget. Called after the resize of a target with a multisampled image and
 // after every change of the sample count; the resize of a target with one sample
 // stays as it was (the finding still stands there, see ResizeTarget).
+// Of that finding only the cache remnant is gone: a framebuffer built on the old
+// views no longer stays cached once they are destroyed
+// (NativeVk_DropFramebuffersOnRetiredView). Drawing on into the old pair until
+// the next bind is kept on purpose.
 internal void NativeVk_RepointBoundTarget(NativeGfxTarget id)
 {
 	struct NativeVkTarget *target = NativeVk_Target(id);
@@ -4373,12 +5697,16 @@ internal void NativeVk_RepointBoundTarget(NativeGfxTarget id)
 		s_vk.passView = VK_NULL_HANDLE;
 		s_vk.passResolveView = VK_NULL_HANDLE;
 		s_vk.passSamples = 1;
+		s_vk.passDepthView = VK_NULL_HANDLE;
+		s_vk.passDepthFormat = VK_FORMAT_UNDEFINED;
 		return;
 	}
 
 	s_vk.passView = (target->msaaView != VK_NULL_HANDLE) ? target->msaaView : texture->view;
 	s_vk.passResolveView = (target->msaaView != VK_NULL_HANDLE) ? texture->view : VK_NULL_HANDLE;
 	s_vk.passSamples = (target->msaaView != VK_NULL_HANDLE) ? target->samples : 1u;
+	s_vk.passDepthView = target->depthView;
+	s_vk.passDepthFormat = (target->depthView != VK_NULL_HANDLE) ? target->depthFormat : VK_FORMAT_UNDEFINED;
 	s_vk.passFormat = texture->format;
 	s_vk.passFinalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 	s_vk.passWidth = target->width;
@@ -4458,7 +5786,8 @@ internal uint32_t NativeVk_DestroyFramebuffersNow(VkImageView view, VkRenderPass
 			continue;
 		}
 
-		const int onView = (view != VK_NULL_HANDLE) && ((slot->key.view == (uint64_t)view) || (slot->key.resolveView == (uint64_t)view));
+		const int onView = (view != VK_NULL_HANDLE) &&
+		                   ((slot->key.view == (uint64_t)view) || (slot->key.resolveView == (uint64_t)view) || (slot->key.depthView == (uint64_t)view));
 		const int onPass = (pass != VK_NULL_HANDLE) && (slot->key.pass == (uint64_t)pass);
 
 		if (!onView && !onPass)
@@ -4496,6 +5825,390 @@ internal uint32_t NativeVk_DestroyTargetMsaaNow(struct NativeVkTarget *target)
 	target->msaaView = VK_NULL_HANDLE;
 
 	return framebuffers;
+}
+
+// --- Depth: the depth image of a target -------------------------------------
+//
+// Only with --native-preview, and only for a target that asked
+// (NativeGfxVK_SetTargetDepth). Same size as the target, and the samples of the
+// colour attachment it sits next to, so it is created, replaced and destroyed in
+// lockstep with the multisampled image - the same places, the same order.
+// Reverse Z: cleared to 0.0, which is infinitely far; nearer is greater.
+
+// Whether a depth format can be the depth attachment here at this sample
+// count: as an optimal-tiling attachment, as the target of the one clear
+// (TRANSFER_DST - a format feature of its own once VK_KHR_maintenance1 is on),
+// with this many samples for the image and for a framebuffer.
+internal int NativeVk_DepthFormatUsable(VkFormat format, uint32_t samples, const VkPhysicalDeviceProperties *properties)
+{
+	VkFormatProperties formatProperties;
+	vkGetPhysicalDeviceFormatProperties_fn(s_vk.physical, format, &formatProperties);
+
+	VkFormatFeatureFlags needed = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT;
+
+	if (s_vk.canFlipViewport)
+	{
+		needed |= VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+	}
+
+	if ((formatProperties.optimalTilingFeatures & needed) != needed)
+	{
+		return 0;
+	}
+
+	VkImageFormatProperties imageProperties;
+
+	if (vkGetPhysicalDeviceImageFormatProperties_fn(s_vk.physical, format, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL,
+	                                               VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT, 0,
+	                                               &imageProperties) != VK_SUCCESS)
+	{
+		return 0;
+	}
+
+	return ((imageProperties.sampleCounts & samples) != 0) && ((properties->limits.framebufferDepthSampleCounts & samples) != 0);
+}
+
+// --native-depth-d24, set by main.c only together with --native-preview: the
+// depth images of this run as X8_D24_UNORM_PACK32 where that format is usable,
+// to measure it against D32_SFLOAT. Never in ctr-settings.cfg.
+int g_cfg_nativeDepthD24 = 0;
+
+// D32_SFLOAT, else X8_D24_UNORM_PACK32 - Vulkan guarantees one of the two as a
+// depth attachment, not which, and not at every sample count. Asked when a depth
+// image is made, not at device creation, so a run without depth asks nothing.
+// The colour sample count is never lowered for depth; without a format the
+// target draws without depth. VK_FORMAT_UNDEFINED for none.
+//
+// With --native-depth-d24 the order is turned round: X8_D24_UNORM_PACK32 first,
+// D32_SFLOAT where it is not usable. Reverse Z holds for UNORM as well: depth is
+// zNear / zView, from 1.0 on the near plane down towards 0.0 far away, cleared
+// to 0.0 and compared GREATER_OR_EQUAL - all inside the 0..1 an UNORM format
+// stores, and the viewport keeps minDepth 0 and maxDepth 1. What changes is the
+// step: 2^-24 everywhere instead of the float's steps, which get finer towards
+// 0, so the far distance is resolved more coarsely - the step in view z is
+// zView^2 / (zNear * 2^24).
+internal VkFormat NativeVk_PickDepthFormat(uint32_t samples)
+{
+	static uint32_t saidFallback = 0;
+	static uint32_t saidD32Instead = 0;
+	VkPhysicalDeviceProperties properties;
+
+	vkGetPhysicalDeviceProperties_fn(s_vk.physical, &properties);
+
+	if (g_cfg_nativeDepthD24)
+	{
+		if (NativeVk_DepthFormatUsable(VK_FORMAT_X8_D24_UNORM_PACK32, samples, &properties))
+		{
+			return VK_FORMAT_X8_D24_UNORM_PACK32;
+		}
+
+		if (NativeVk_DepthFormatUsable(VK_FORMAT_D32_SFLOAT, samples, &properties))
+		{
+			if ((saidD32Instead & samples) == 0)
+			{
+				saidD32Instead |= samples;
+				Platform_Log("[CTR Vk] native preview: X8_D24_UNORM_PACK32 is not usable as a %u-sample depth attachment here - D32_SFLOAT instead\n",
+				             samples);
+			}
+
+			return VK_FORMAT_D32_SFLOAT;
+		}
+
+		return VK_FORMAT_UNDEFINED;
+	}
+
+	if (NativeVk_DepthFormatUsable(VK_FORMAT_D32_SFLOAT, samples, &properties))
+	{
+		return VK_FORMAT_D32_SFLOAT;
+	}
+
+	if (NativeVk_DepthFormatUsable(VK_FORMAT_X8_D24_UNORM_PACK32, samples, &properties))
+	{
+		// Once per sample count, not at every resize.
+		if ((saidFallback & samples) == 0)
+		{
+			saidFallback |= samples;
+			Platform_Log("[CTR Vk] native preview: D32_SFLOAT is not usable as a %u-sample depth attachment here - X8_D24_UNORM_PACK32 instead\n", samples);
+		}
+
+		return VK_FORMAT_X8_D24_UNORM_PACK32;
+	}
+
+	return VK_FORMAT_UNDEFINED;
+}
+
+internal const char *NativeVk_DepthFormatName(VkFormat format)
+{
+	switch (format)
+	{
+	case VK_FORMAT_D32_SFLOAT:
+		return "D32_SFLOAT";
+	case VK_FORMAT_X8_D24_UNORM_PACK32:
+		return "X8_D24_UNORM_PACK32";
+	default:
+		return "none";
+	}
+}
+
+// THE OTHER FORMAT, measured beside every depth image, only with
+// --native-layer-report: the memory the same image would take in the format
+// that was not picked, asked of vkGetImageMemoryRequirements for an image that
+// is only created - no memory is allocated or bound for it - and destroyed
+// right after. So every run with a depth image says what the other format
+// would have cost, without a second run. Nothing is recorded or submitted.
+internal void NativeVk_ReportOtherDepthFormat(VkFormat picked, uint32_t width, uint32_t height, uint32_t samples)
+{
+	extern int g_cfg_nativeLayerReport;
+	const VkFormat other = (picked == VK_FORMAT_D32_SFLOAT) ? VK_FORMAT_X8_D24_UNORM_PACK32 : VK_FORMAT_D32_SFLOAT;
+	VkPhysicalDeviceProperties properties;
+	VkImage image = VK_NULL_HANDLE;
+
+	if (!g_cfg_nativeLayerReport)
+	{
+		return;
+	}
+
+	vkGetPhysicalDeviceProperties_fn(s_vk.physical, &properties);
+
+	if (!NativeVk_DepthFormatUsable(other, samples, &properties))
+	{
+		Platform_Log("[CTR Vk] native preview: depth %s for comparison: not usable as a %u-sample depth attachment here\n",
+		             NativeVk_DepthFormatName(other), samples);
+		return;
+	}
+
+	{
+		const VkImageCreateInfo imageInfo = {
+		    .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+		    .imageType = VK_IMAGE_TYPE_2D,
+		    .format = other,
+		    .extent = {width, height, 1},
+		    .mipLevels = 1,
+		    .arrayLayers = 1,
+		    .samples = (VkSampleCountFlagBits)samples,
+		    .tiling = VK_IMAGE_TILING_OPTIMAL,
+		    .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+		    .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+		    .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+		};
+
+		if (vkCreateImage_fn(s_vk.device, &imageInfo, NULL, &image) != VK_SUCCESS)
+		{
+			Platform_Log("[CTR Vk] native preview: depth %s for comparison: no image %ux%u x%u here\n", NativeVk_DepthFormatName(other), width,
+			             height, samples);
+			return;
+		}
+	}
+
+	{
+		VkMemoryRequirements requirements;
+
+		vkGetImageMemoryRequirements_fn(s_vk.device, image, &requirements);
+		Platform_Log("[CTR Vk] native preview: depth %s for comparison, samples %u, %ux%u (%u KB), not allocated\n", NativeVk_DepthFormatName(other),
+		             samples, width, height, (unsigned int)(requirements.size / 1024u));
+	}
+
+	vkDestroyImage_fn(s_vk.device, image, NULL);
+}
+
+// At once, not deferred - for the change of the sample count and shutdown, where
+// the device is idle, and for a creation that went wrong halfway, where nothing
+// but the waited one-shot ever named the image. The framebuffers on its view go
+// with it; returns their number. depthWanted stays: it is the wish, not the image.
+internal uint32_t NativeVk_DestroyTargetDepthNow(struct NativeVkTarget *target)
+{
+	uint32_t framebuffers = 0;
+
+	if (target->depthView != VK_NULL_HANDLE)
+	{
+		framebuffers = NativeVk_DestroyFramebuffersNow(target->depthView, VK_NULL_HANDLE);
+		vkDestroyImageView_fn(s_vk.device, target->depthView, NULL);
+	}
+
+	if (target->depthImage != VK_NULL_HANDLE) { vkDestroyImage_fn(s_vk.device, target->depthImage, NULL); }
+	if (target->depthMemory != VK_NULL_HANDLE) { vkFreeMemory_fn(s_vk.device, target->depthMemory, NULL); }
+
+	target->depthFormat = VK_FORMAT_UNDEFINED;
+	target->depthImage = VK_NULL_HANDLE;
+	target->depthMemory = VK_NULL_HANDLE;
+	target->depthView = VK_NULL_HANDLE;
+	target->depthBytes = 0;
+	target->depthSamples = 0;
+
+	return framebuffers;
+}
+
+// Creates the depth image in the target's current size and samples. Cleared
+// once through a one-shot, UNDEFINED -> TRANSFER_DST -> 0.0 ->
+// DEPTH_STENCIL_ATTACHMENT_OPTIMAL, so the first pass loads a known far plane
+// instead of undefined contents; the image never leaves that layout afterwards.
+// Anything that goes wrong takes the half-made image away again and leaves the
+// target without depth - depthWanted stays, so the next resize or sample change
+// tries again.
+internal int NativeVk_CreateTargetDepth(struct NativeVkTarget *target)
+{
+	const uint32_t id = (uint32_t)(target - s_vk.targets) + 1u;
+	const uint32_t samples = (target->msaaImage != VK_NULL_HANDLE) ? target->samples : 1u;
+	const VkFormat format = NativeVk_PickDepthFormat(samples);
+
+	if (format == VK_FORMAT_UNDEFINED)
+	{
+		Platform_Log("[CTR Vk] native preview: no depth format for %u sample(s) - target %u draws without depth\n", samples, id);
+		return 0;
+	}
+
+	const VkImageCreateInfo imageInfo = {
+	    .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+	    .imageType = VK_IMAGE_TYPE_2D,
+	    .format = format,
+	    .extent = {target->width, target->height, 1},
+	    .mipLevels = 1,
+	    .arrayLayers = 1,
+	    .samples = (VkSampleCountFlagBits)samples,
+	    .tiling = VK_IMAGE_TILING_OPTIMAL,
+	    .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+	    .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+	    .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+	};
+
+	int made = 0;
+
+	if (vkCreateImage_fn(s_vk.device, &imageInfo, NULL, &target->depthImage) != VK_SUCCESS)
+	{
+		// A handle handed out together with a failure is not one to destroy.
+		target->depthImage = VK_NULL_HANDLE;
+	}
+	else
+	{
+		VkMemoryRequirements requirements;
+		vkGetImageMemoryRequirements_fn(s_vk.device, target->depthImage, &requirements);
+
+		uint32_t typeIndex = 0;
+
+		if (NativeVk_FindMemoryType(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &typeIndex))
+		{
+			const VkMemoryAllocateInfo alloc = {
+			    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+			    .allocationSize = requirements.size,
+			    .memoryTypeIndex = typeIndex,
+			};
+
+			if (vkAllocateMemory_fn(s_vk.device, &alloc, NULL, &target->depthMemory) != VK_SUCCESS)
+			{
+				target->depthMemory = VK_NULL_HANDLE;
+			}
+			else if (vkBindImageMemory_fn(s_vk.device, target->depthImage, target->depthMemory, 0) == VK_SUCCESS)
+			{
+				NativeVk_NoteAllocation(requirements.size);
+				target->depthBytes = requirements.size;
+
+				const VkImageViewCreateInfo viewInfo = {
+				    .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+				    .image = target->depthImage,
+				    .viewType = VK_IMAGE_VIEW_TYPE_2D,
+				    .format = format,
+				    .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1},
+				};
+
+				if (vkCreateImageView_fn(s_vk.device, &viewInfo, NULL, &target->depthView) != VK_SUCCESS)
+				{
+					target->depthView = VK_NULL_HANDLE;
+				}
+				else
+				{
+					made = 1;
+				}
+			}
+		}
+	}
+
+	// The one clear. If it was submitted and only the wait for it went wrong, it
+	// could still be running - so a failed finish waits once more before the
+	// image is thrown away below.
+	if (made)
+	{
+		VkCommandBuffer commands = VK_NULL_HANDLE;
+
+		made = NativeVk_RunOneShot(&commands);
+
+		if (made)
+		{
+			const VkClearDepthStencilValue farPlane = {0.0f, 0};
+			const VkImageSubresourceRange range = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+
+			NativeVk_RecordImageBarrierAspect(commands, target->depthImage, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
+			                                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_TRANSFER_BIT,
+			                                  VK_ACCESS_TRANSFER_WRITE_BIT);
+			vkCmdClearDepthStencilImage_fn(commands, target->depthImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &farPlane, 1, &range);
+			NativeVk_RecordImageBarrierAspect(commands, target->depthImage, VK_IMAGE_ASPECT_DEPTH_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+			                                  VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+			                                  VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+			                                  VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT);
+
+			made = NativeVk_FinishOneShot(commands);
+
+			if (!made)
+			{
+				vkDeviceWaitIdle_fn(s_vk.device);
+			}
+		}
+	}
+
+	if (!made)
+	{
+		Platform_Log("[CTR Vk] native preview: depth image %ux%u x%u could not be created - target %u draws without depth\n", target->width, target->height,
+		             samples, id);
+		NativeVk_DestroyTargetDepthNow(target);
+		return 0;
+	}
+
+	target->depthFormat = format;
+	target->depthSamples = samples;
+
+	// The memory is what vkGetImageMemoryRequirements asked for this image.
+	Platform_Log("[CTR Vk] native preview: depth %s reverse-Z, samples %u, %ux%u (%u KB)\n", NativeVk_DepthFormatName(format), samples,
+	             target->width, target->height, (unsigned int)(target->depthBytes / 1024u));
+
+	NativeVk_ReportOtherDepthFormat(format, target->width, target->height, samples);
+
+	return 1;
+}
+
+// Deferred, not destroyed - as NativeVk_RetireTargetMsaa: a recording command
+// buffer can hold a framebuffer on this view. depthWanted stays.
+internal void NativeVk_RetireTargetDepth(struct NativeVkTarget *target)
+{
+	if (target->depthImage == VK_NULL_HANDLE)
+	{
+		return;
+	}
+
+	// Only with a view - VK_NULL_HANDLE would mean "all framebuffers" there.
+	if (target->depthView != VK_NULL_HANDLE)
+	{
+		NativeVk_InvalidateFramebuffers(target->depthView);
+	}
+
+	if (s_vk.pendingImageCount < NATIVE_VK_MAX_PENDING_FRAMEBUFFERS)
+	{
+		const uint32_t slot = s_vk.pendingImageCount++;
+
+		s_vk.pendingImages[slot].image = target->depthImage;
+		s_vk.pendingImages[slot].memory = target->depthMemory;
+		s_vk.pendingImages[slot].view = target->depthView;
+		s_vk.pendingImages[slot].retiredAt = s_vk.frameCounter;
+	}
+	else
+	{
+		Platform_Log("[CTR Vk] pending image list full - leaking a depth image rather than risking a recording buffer\n");
+	}
+
+	target->depthFormat = VK_FORMAT_UNDEFINED;
+	target->depthImage = VK_NULL_HANDLE;
+	target->depthMemory = VK_NULL_HANDLE;
+	target->depthView = VK_NULL_HANDLE;
+	target->depthBytes = 0;
+	target->depthSamples = 0;
 }
 
 // The pipelines of a pass that is about to be destroyed leave the
@@ -4643,6 +6356,13 @@ internal void NativeGfxVK_SetTargetSamples(NativeGfxTarget id, int samples)
 	uint32_t passes = 0;
 	uint32_t pipelines = 0;
 
+	// Depth has the samples of the old attachment and goes with it, at once
+	// for the same reason.
+	if (target->depthImage != VK_NULL_HANDLE)
+	{
+		framebuffers += NativeVk_DestroyTargetDepthNow(target);
+	}
+
 	NativeVk_DestroyMultisampledPasses(&passes, &pipelines, &framebuffers);
 
 	target->samples = next;
@@ -4656,6 +6376,13 @@ internal void NativeGfxVK_SetTargetSamples(NativeGfxTarget id, int samples)
 		vkDeviceWaitIdle_fn(s_vk.device);
 		NativeVk_DestroyTargetMsaaNow(target);
 		target->samples = 1;
+	}
+
+	// Depth anew, with the samples that apply now - one if the multisampled
+	// image could not be made. The colour count is never lowered for it.
+	if (target->depthWanted)
+	{
+		NativeVk_CreateTargetDepth(target);
 	}
 
 	NativeVk_RepointBoundTarget(id);
@@ -4683,6 +6410,82 @@ internal int NativeGfxVK_TargetSamples(NativeGfxTarget id)
 	const struct NativeVkTarget *target = NativeVk_Target(id);
 
 	return ((target != NULL) && (target->msaaImage != VK_NULL_HANDLE)) ? (int)target->samples : 1;
+}
+
+// DEPTH ON A TARGET. Asked for at any point between two draws (the renderer
+// asks while a native object is bound, NativeRenderer_WantNativeDepth): an open
+// pass on the target ends here and the next draw opens it again with LOAD;
+// from then on the depth image follows every resize and
+// sample change by itself. Without --native-preview a request for depth does
+// nothing at all, so no stray call can put a depth attachment into a run that
+// did not ask for one. A borrowed target never gets one - VRAM and the page
+// atlas are not drawn in depth.
+internal void NativeGfxVK_SetTargetDepth(NativeGfxTarget id, int enable)
+{
+	struct NativeVkTarget *target = NativeVk_Target(id);
+
+	if ((target == NULL) || (s_vk.device == VK_NULL_HANDLE))
+	{
+		return;
+	}
+
+	if (enable && !g_cfg_nativePreview)
+	{
+		return;
+	}
+
+	if (target->borrowed)
+	{
+		if (enable)
+		{
+			Platform_Log("[CTR Vk] native preview: target %u borrows its texture - no depth\n", id);
+		}
+
+		return;
+	}
+
+	// Nothing to change: switching on what is there, or off what never was.
+	if (enable && target->depthWanted && (target->depthView != VK_NULL_HANDLE))
+	{
+		return;
+	}
+
+	if (!enable && !target->depthWanted && (target->depthImage == VK_NULL_HANDLE))
+	{
+		return;
+	}
+
+	target->depthWanted = enable ? 1 : 0;
+
+	// A pass open on this target holds the old attachments; it ends here, and
+	// the next draw opens one with the new set.
+	const int bound = (s_vk.boundTarget == id);
+
+	if (bound)
+	{
+		NativeVk_EndPassIfOpen();
+	}
+
+	if (enable)
+	{
+		NativeVk_CreateTargetDepth(target);
+	}
+	else
+	{
+		NativeVk_RetireTargetDepth(target);
+	}
+
+	if (bound)
+	{
+		NativeVk_RepointBoundTarget(id);
+	}
+}
+
+internal int NativeGfxVK_TargetDepth(NativeGfxTarget id)
+{
+	const struct NativeVkTarget *target = NativeVk_Target(id);
+
+	return ((target != NULL) && (target->depthView != VK_NULL_HANDLE)) ? 1 : 0;
 }
 
 internal NativeGfxTarget NativeGfxVK_CreateTarget(const NativeGfxTargetDesc *desc)
@@ -4809,8 +6612,26 @@ internal void NativeGfxVK_ResizeTarget(NativeGfxTarget id, int width, int height
 			target->samples = 1;
 		}
 
+		// Depth in the same lockstep, with the samples that apply now.
+		if (target->depthWanted)
+		{
+			NativeVk_RetireTargetDepth(target);
+			NativeVk_CreateTargetDepth(target);
+		}
+
 		NativeVk_RepointBoundTarget(id);
 		NativeVk_NoteMsaaState();
+	}
+
+	// Depth with one sample: replaced like the texture above and nothing more -
+	// no pass end, no repointing, because the colour route with one sample does
+	// neither (see the note at NativeVk_RepointBoundTarget). A bound target
+	// keeps drawing into the deferred old pair, which still match each other in
+	// size, until the next bind.
+	if (!multisampled && target->depthWanted)
+	{
+		NativeVk_RetireTargetDepth(target);
+		NativeVk_CreateTargetDepth(target);
 	}
 }
 
@@ -4843,6 +6664,9 @@ internal void NativeGfxVK_DestroyTarget(NativeGfxTarget id)
 	const int multisampled = (target->msaaImage != VK_NULL_HANDLE);
 
 	NativeVk_RetireTargetMsaa(target);
+
+	// Depth likewise; nothing happens for a target without it.
+	NativeVk_RetireTargetDepth(target);
 
 	memset(target, 0, sizeof(*target));
 
@@ -4892,6 +6716,8 @@ internal void NativeGfxVK_BindTarget(NativeGfxTarget id)
 	// sets it differently below.
 	s_vk.passResolveView = VK_NULL_HANDLE;
 	s_vk.passSamples = 1;
+	s_vk.passDepthView = VK_NULL_HANDLE;
+	s_vk.passDepthFormat = VK_FORMAT_UNDEFINED;
 
 	if (id == NATIVE_GFX_TARGET_DEFAULT)
 	{
@@ -4927,6 +6753,11 @@ internal void NativeGfxVK_BindTarget(NativeGfxTarget id)
 		// The render pass will move it there, so the texture's own record of its
 		// layout has to agree or the next upload would name the wrong old layout.
 		texture->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+		// Depth: its samples follow the multisampled image or its absence
+		// (NativeVk_CreateTargetDepth), so it fits either branch below.
+		s_vk.passDepthView = target->depthView;
+		s_vk.passDepthFormat = (target->depthView != VK_NULL_HANDLE) ? target->depthFormat : VK_FORMAT_UNDEFINED;
 
 		// Anti-aliasing: drawing goes into the multisampled image, the texture becomes the
 		// resolve target. Format, size and layouts above still apply to it.
@@ -5202,7 +7033,7 @@ internal int NativeVk_WriteDescriptorSet(struct NativeVkProgram *program, VkDesc
 			return 0;
 		}
 
-		images[slot].sampler = NativeVk_GetSampler(texture->filter, texture->wrap);
+		images[slot].sampler = NativeVk_TextureSampler(texture);
 		images[slot].imageView = texture->view;
 		images[slot].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
@@ -5290,7 +7121,7 @@ internal int NativeVk_FrameDescriptorSet(struct NativeVkProgram *program, VkDesc
 			// on. This is the difference between a set that is still correct
 			// and one that samples whatever now lives in that slot.
 			part ^= (uint64_t)texture->view;
-			part ^= (uint64_t)NativeVk_GetSampler(texture->filter, texture->wrap) * 31u;
+			part ^= (uint64_t)NativeVk_TextureSampler(texture) * 31u;
 		}
 
 		key = (key ^ part) * 1099511628211ull;
@@ -5331,33 +7162,40 @@ internal int NativeVk_FrameDescriptorSet(struct NativeVkProgram *program, VkDesc
 	return NativeVk_WriteDescriptorSet(program, out);
 }
 
-// Where all the deferred state finally becomes commands. Everything the setters
-// recorded turns into a pipeline key here; everything Vulkan lets stay dynamic
-// is set on the command buffer instead, which is what keeps the pipeline count
-// down to the combinations that actually differ.
-internal void NativeGfxVK_Draw(int firstVertex, int vertexCount)
+// The draw state as pipeline key bytes. Writes nothing but zeros while the state
+// is zero, so the key of every draw that never set one is the old key plus
+// zero bytes. Normalised: the depth fields only count in a pass with a depth
+// attachment and with the test on, so one pipeline never gets two keys.
+// Called after BeginPassIfNeeded, where passDepthView and the flip are settled.
+internal void NativeVk_KeyDrawState(struct NativeVkPipelineKey *key)
 {
-	struct NativeVkProgram *program = NativeVk_Program(s_vk.boundProgram);
-	struct NativeVkBuffer *buffer = NativeVk_Buffer(s_vk.boundBuffer);
-
-	if (program == NULL)
+	if ((s_vk.state.depthTest != 0) && (s_vk.passDepthView != VK_NULL_HANDLE))
 	{
-		s_vk.skipNoProgram++;
-		return;
+		key->depthTest = 1;
+		key->depthWrite = (uint8_t)(s_vk.state.depthWrite ? 1 : 0);
+		key->depthCompare = (uint8_t)s_vk.state.depthCompare;
 	}
 
-	if (buffer == NULL)
+	// The flip of the viewport turns the winding over, so it belongs in the
+	// key as soon as anything is culled. Same condition as the viewport's in
+	// NativeVk_RecordDrawSetup.
+	if (s_vk.state.cull != 0)
 	{
-		s_vk.skipNoBuffer++;
-		return;
+		const int flip = s_vk.canFlipViewport && (s_vk.passView == s_vk.frameView);
+
+		key->cull = (uint8_t)(((uint32_t)s_vk.state.cull & 3u) | (flip ? 0x80u : 0u));
 	}
 
-	if (vertexCount <= 0)
-	{
-		s_vk.skipNoVertices++;
-		return;
-	}
+	key->colorWriteOff = (uint8_t)(s_vk.state.colorWriteOff & 0x0Fu);
+}
 
+// EVERYTHING BEFORE THE DRAW COMMAND, shared by draw and drawIndexed: the
+// pass, the pipeline, the descriptors, viewport, scissor and vertex buffer.
+// Moved here unchanged out of NativeGfxVK_Draw, so the two draw the same way.
+// Returns 0 where the draw turns back, with the reason already counted;
+// outKey receives the pipeline key, which the caller's accounting reads.
+internal int NativeVk_RecordDrawSetup(struct NativeVkProgram *program, struct NativeVkBuffer *buffer, struct NativeVkPipelineKey *outKey)
+{
 	// THE FALLBACK TEXTURE BEFORE THE PASS. It comes into being at the
 	// first draw that leaves a sampler slot unbound - and only in
 	// NativeVk_WriteDescriptorSet, that is AFTER BeginPassIfNeeded. Creating it uploads
@@ -5378,11 +7216,11 @@ internal void NativeGfxVK_Draw(int firstVertex, int vertexCount)
 		{
 			s_vk.windowDrawsSkipped++;
 			s_vk.windowPauseDrawsSkipped++;
-			return;
+			return 0;
 		}
 
 		s_vk.skipNoPass++;
-		return;
+		return 0;
 	}
 
 	struct NativeVkPipelineKey key;
@@ -5395,6 +7233,10 @@ internal void NativeGfxVK_Draw(int firstVertex, int vertexCount)
 	key.vertexLayout = buffer->vertexLayout;
 	key.blend = (uint8_t)s_vk.state.blend;
 	key.wireframe = (uint8_t)(s_vk.state.wireframe ? 1 : 0);
+
+	// Draw state (NativeGfxVK_SetDrawState): eight more bytes, all zero for
+	// every draw that never set one.
+	NativeVk_KeyDrawState(&key);
 
 	// Anti-aliasing: the sample count of the pass, so that the pipeline fits it.
 	// With one sample pad[] stays zero and the key the old one.
@@ -5423,7 +7265,7 @@ internal void NativeGfxVK_Draw(int firstVertex, int vertexCount)
 	if (pipeline == VK_NULL_HANDLE)
 	{
 		s_vk.skipNoPipeline++;
-		return;
+		return 0;
 	}
 
 	VkDescriptorSet set = VK_NULL_HANDLE;
@@ -5445,7 +7287,7 @@ internal void NativeGfxVK_Draw(int firstVertex, int vertexCount)
 	if (!descriptorsReady)
 	{
 		s_vk.skipNoDescriptors++;
-		return;
+		return 0;
 	}
 
 	// Only what differs from the last draw recorded into this command buffer
@@ -5600,6 +7442,45 @@ internal void NativeGfxVK_Draw(int firstVertex, int vertexCount)
 		}
 	}
 
+	*outKey = key;
+
+	return 1;
+}
+
+// Where all the deferred state finally becomes commands. Everything the setters
+// recorded turns into a pipeline key here; everything Vulkan lets stay dynamic
+// is set on the command buffer instead, which is what keeps the pipeline count
+// down to the combinations that actually differ.
+internal void NativeGfxVK_Draw(int firstVertex, int vertexCount)
+{
+	struct NativeVkProgram *program = NativeVk_Program(s_vk.boundProgram);
+	struct NativeVkBuffer *buffer = NativeVk_Buffer(s_vk.boundBuffer);
+
+	if (program == NULL)
+	{
+		s_vk.skipNoProgram++;
+		return;
+	}
+
+	if (buffer == NULL)
+	{
+		s_vk.skipNoBuffer++;
+		return;
+	}
+
+	if (vertexCount <= 0)
+	{
+		s_vk.skipNoVertices++;
+		return;
+	}
+
+	struct NativeVkPipelineKey key;
+
+	if (!NativeVk_RecordDrawSetup(program, buffer, &key))
+	{
+		return;
+	}
+
 	vkCmdDraw_fn(s_vk.frameCommands, (uint32_t)vertexCount, 1, (uint32_t)firstVertex, 0);
 
 	s_vk.frameDraws++;
@@ -5622,18 +7503,89 @@ internal void NativeGfxVK_Draw(int firstVertex, int vertexCount)
 		const VkDeviceSize lo = (VkDeviceSize)firstVertex * stride;
 		const VkDeviceSize hi = ((VkDeviceSize)firstVertex + (VkDeviceSize)vertexCount) * stride;
 
-		if (buffer->pendingDraws == 0)
+		NativeVk_NotePendingRange(buffer, lo, hi);
+	}
+
+	if (s_vk.passView == s_vk.frameView)
+	{
+		s_vk.frameDrawsToWindow++;
+	}
+}
+
+// As NativeGfxVK_Draw, with the bound index buffer: vertexOffset is added to
+// every index. The same setup, the same accounting - the measured range of the
+// vertex buffer is the vertices from the smallest to the largest index of the
+// index buffer, moved by vertexOffset (see pendingRanges).
+internal void NativeGfxVK_DrawIndexed(int firstIndex, int indexCount, int vertexOffset)
+{
+	struct NativeVkProgram *program = NativeVk_Program(s_vk.boundProgram);
+	struct NativeVkBuffer *buffer = NativeVk_Buffer(s_vk.boundBuffer);
+	struct NativeVkIndexBuffer *indices = NativeVk_IndexBuffer(s_vk.boundIndexBuffer);
+
+	if (program == NULL)
+	{
+		s_vk.skipNoProgram++;
+		return;
+	}
+
+	if ((buffer == NULL) || (indices == NULL))
+	{
+		s_vk.skipNoBuffer++;
+		return;
+	}
+
+	// Indices past the end of the buffer are not a draw Vulkan allows.
+	{
+		const VkDeviceSize indexBytes = (indices->type == VK_INDEX_TYPE_UINT32) ? 4u : 2u;
+
+		if ((indexCount <= 0) || (firstIndex < 0) || ((((VkDeviceSize)firstIndex + (VkDeviceSize)indexCount) * indexBytes) > indices->bytes))
 		{
-			buffer->pendingLo = lo;
-			buffer->pendingHi = hi;
-		}
-		else
-		{
-			if (lo < buffer->pendingLo) { buffer->pendingLo = lo; }
-			if (hi > buffer->pendingHi) { buffer->pendingHi = hi; }
+			s_vk.skipNoVertices++;
+			return;
 		}
 	}
-	buffer->pendingDraws++;
+
+	struct NativeVkPipelineKey key;
+
+	if (!NativeVk_RecordDrawSetup(program, buffer, &key))
+	{
+		return;
+	}
+
+	if ((s_vk.recorded.indexBuffer != indices->buffer) || (s_vk.recorded.indexType != (uint32_t)indices->type))
+	{
+		vkCmdBindIndexBuffer_fn(s_vk.frameCommands, indices->buffer, 0, indices->type);
+		s_vk.recorded.indexBuffer = indices->buffer;
+		s_vk.recorded.indexType = (uint32_t)indices->type;
+	}
+	else
+	{
+		s_vk.frameBindsSkipped++;
+	}
+
+	vkCmdDrawIndexed_fn(s_vk.frameCommands, (uint32_t)indexCount, 1, (uint32_t)firstIndex, (int32_t)vertexOffset, 0);
+
+	s_vk.frameDraws++;
+	s_vk.drawsSinceSubmit++;
+
+	if (key.pad[1] > 1)
+	{
+		s_vk.msaaDraws++;
+		s_vk.msaaSampleShadedDraws += key.pad[0] ? 1u : 0u;
+	}
+
+	// The vertices the indices can reach. A negative offset below vertex 0 is
+	// not a draw Vulkan allows; it is clamped here only so the measurement
+	// stays a range.
+	{
+		const VkDeviceSize stride = (VkDeviceSize)s_vk.vertexLayouts[buffer->vertexLayout].stride;
+		const int64_t first = (int64_t)vertexOffset + (int64_t)indices->minIndex;
+		const int64_t last = (int64_t)vertexOffset + (int64_t)indices->maxIndex + 1;
+		const VkDeviceSize lo = (first > 0) ? ((VkDeviceSize)first * stride) : 0u;
+		const VkDeviceSize hi = (last > 0) ? ((VkDeviceSize)last * stride) : 0u;
+
+		NativeVk_NotePendingRange(buffer, lo, (hi > lo) ? hi : lo);
+	}
 
 	if (s_vk.passView == s_vk.frameView)
 	{
@@ -5653,6 +7605,17 @@ internal void NativeGfxVK_ReadPixels(int x, int y, int width, int height, Native
 		// The window itself is not readable this way - the swapchain image is
 		// not one of our textures. Saying so beats returning stale bytes.
 		Platform_LogError("[CTR Vk] readPixels needs a bound offscreen target\n");
+		return;
+	}
+
+	// Not from a texture with levels: the copy and its barriers below name
+	// level 0 alone. Only a target that borrowed such a texture could get here,
+	// and none does. Retail-neutral for the same reason as in
+	// NativeGfxVK_UpdateTexture: keyed is 0 for every texture CreateTexture
+	// makes, so every existing readback takes the path below unchanged.
+	if (texture->keyed)
+	{
+		Platform_LogError("[CTR Vk] readPixels refused: the bound target's texture has %u level(s)\n", texture->levels);
 		return;
 	}
 
@@ -6411,12 +8374,24 @@ internal VkPipeline NativeVk_BuildPipeline(const struct NativeVkPipelineKey *key
 	    .pDynamicStates = dynamicStates,
 	};
 
+	// CULLING, only for draws that ask for it (key->cull, NativeGfxVK_SetDrawState);
+	// a zero byte is the old structure. The front face is counter-clockwise in
+	// GL terms, y up. An unflipped target lies in memory as GL lays it out (see
+	// the flip in NativeVk_RecordDrawSetup), and Vulkan judges the winding in
+	// framebuffer coordinates with the opposite sign to GL - so GL's
+	// counter-clockwise is Vulkan's CLOCKWISE there, and COUNTER_CLOCKWISE again
+	// on the flipped window (bit 7).
+	const uint32_t cullMode = (uint32_t)key->cull & 3u;
+	const VkCullModeFlags cullFlags = (cullMode == 1u) ? VK_CULL_MODE_BACK_BIT : ((cullMode == 2u) ? VK_CULL_MODE_FRONT_BIT : VK_CULL_MODE_NONE);
+	const VkFrontFace frontFace =
+	    (cullMode == 0u) ? VK_FRONT_FACE_COUNTER_CLOCKWISE : ((key->cull & 0x80u) ? VK_FRONT_FACE_COUNTER_CLOCKWISE : VK_FRONT_FACE_CLOCKWISE);
+
 	const VkPipelineRasterizationStateCreateInfo raster = {
 	    .sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
 	    .polygonMode = key->wireframe ? VK_POLYGON_MODE_LINE : VK_POLYGON_MODE_FILL,
-	    // No culling. The PSX had no winding convention worth honouring.
-	    .cullMode = VK_CULL_MODE_NONE,
-	    .frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE,
+	    // No culling for the PSX draws. The PSX had no winding convention worth honouring.
+	    .cullMode = cullFlags,
+	    .frontFace = frontFace,
 	    .lineWidth = 1.0f,
 	};
 
@@ -6432,20 +8407,63 @@ internal VkPipeline NativeVk_BuildPipeline(const struct NativeVkPipelineKey *key
 	};
 
 
-	// Off, and written out instead of left out. The subpass attaches no
-	// depth/stencil attachment, so Vulkan ignores this state anyway -
-	// but "off" written down is a promise, and a pointer left out
-	// would be one that has to be looked up. Why there is no attachment is
+	// Off, and written out instead of left out, for every draw that did not
+	// ask for depth - PSX draws included. Without a depth attachment in the
+	// subpass Vulkan ignores this state anyway; with one (the main target under
+	// --native-preview) "off" means exactly that: the depth image is neither
+	// read nor written. "Off" written down is a promise, and a pointer left out
+	// would be one that has to be looked up. Why the PSX draws have no depth is
 	// at NativeRenderer_SetBlendMode in platform/native_renderer.c.
+	//
+	// depthCompare is a NativeGfxCompare and only read with the test on; with
+	// it off the op stays NEVER, the zero the structure always had.
+	VkCompareOp compareOp = VK_COMPARE_OP_NEVER;
+
+	if (key->depthTest)
+	{
+		switch ((NativeGfxCompare)key->depthCompare)
+		{
+		case NATIVE_GFX_COMPARE_GREATER_OR_EQUAL:
+			compareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
+			break;
+
+		case NATIVE_GFX_COMPARE_GREATER:
+			compareOp = VK_COMPARE_OP_GREATER;
+			break;
+
+		case NATIVE_GFX_COMPARE_LESS_OR_EQUAL:
+			compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+			break;
+
+		case NATIVE_GFX_COMPARE_LESS:
+			compareOp = VK_COMPARE_OP_LESS;
+			break;
+
+		case NATIVE_GFX_COMPARE_EQUAL:
+			compareOp = VK_COMPARE_OP_EQUAL;
+			break;
+
+		case NATIVE_GFX_COMPARE_ALWAYS:
+		default:
+			compareOp = VK_COMPARE_OP_ALWAYS;
+			break;
+		}
+	}
+
 	const VkPipelineDepthStencilStateCreateInfo depthStencil = {
 	    .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-	    .depthTestEnable = VK_FALSE,
-	    .depthWriteEnable = VK_FALSE,
+	    .depthTestEnable = key->depthTest ? VK_TRUE : VK_FALSE,
+	    .depthWriteEnable = key->depthWrite ? VK_TRUE : VK_FALSE,
+	    .depthCompareOp = compareOp,
 	    .stencilTestEnable = VK_FALSE,
 	};
 
 	VkPipelineColorBlendAttachmentState blendAttachment;
 	NativeVk_BlendAttachment((BlendMode)key->blend, &blendAttachment);
+
+	// The write mask: channels a draw asked to leave alone (key->colorWriteOff,
+	// zero for all four written - the old mask, unchanged).
+	blendAttachment.colorWriteMask &= ~(VkColorComponentFlags)key->colorWriteOff;
 
 	const VkPipelineColorBlendStateCreateInfo blend = {
 	    .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
@@ -6511,7 +8529,15 @@ internal VkPipeline NativeVk_GetPipeline(const struct NativeVkPipelineKey *key)
 			entry->pipeline = built;
 			s_vk.pipelineCount++;
 
-			if (key->pad[1] > 1)
+			// A draw state of its own gets a line of its own; every other key
+			// says what it always said.
+			if ((key->depthTest | key->cull | key->colorWriteOff) != 0)
+			{
+				Platform_Log("[CTR Vk] pipeline built: blend %u wire %u depth %u write %u compare %u cull 0x%x write-off 0x%x samples %u (%u in cache)\n",
+				             key->blend, key->wireframe, key->depthTest, key->depthWrite, key->depthCompare, key->cull, key->colorWriteOff,
+				             (key->pad[1] > 1) ? key->pad[1] : 1u, s_vk.pipelineCount);
+			}
+			else if (key->pad[1] > 1)
 			{
 				Platform_Log("[CTR Vk] pipeline built: blend %u wire %u samples %u sample-shading %u (%u in cache)\n", key->blend, key->wireframe,
 				             key->pad[1], key->pad[0], s_vk.pipelineCount);
@@ -6648,6 +8674,12 @@ void NativeGfxVK_Shutdown(void)
 				// already emptied here, and the device is idle.
 				NativeVk_DestroyTargetMsaaNow(&s_vk.targets[i]);
 
+				// And its depth image, the same way.
+				if (s_vk.targets[i].depthImage != VK_NULL_HANDLE)
+				{
+					NativeVk_DestroyTargetDepthNow(&s_vk.targets[i]);
+				}
+
 				memset(&s_vk.targets[i], 0, sizeof(s_vk.targets[i]));
 			}
 		}
@@ -6685,6 +8717,16 @@ void NativeGfxVK_Shutdown(void)
 			}
 		}
 
+		for (uint32_t i = 0; i < s_vk.keyedSamplerCount; i++)
+		{
+			if (s_vk.keyedSamplers[i] != VK_NULL_HANDLE)
+			{
+				vkDestroySampler_fn(s_vk.device, s_vk.keyedSamplers[i], NULL);
+				s_vk.keyedSamplers[i] = VK_NULL_HANDLE;
+			}
+		}
+		s_vk.keyedSamplerCount = 0;
+
 		for (uint32_t i = 0; i < NATIVE_VK_MAX_PROGRAMS; i++)
 		{
 			struct NativeVkProgram *program = &s_vk.programs[i];
@@ -6713,6 +8755,17 @@ void NativeGfxVK_Shutdown(void)
 				if (s_vk.buffers[i].memory != VK_NULL_HANDLE) { vkFreeMemory_fn(s_vk.device, s_vk.buffers[i].memory, NULL); }
 
 				s_vk.buffers[i].used = 0;
+			}
+		}
+
+		for (uint32_t i = 0; i < NATIVE_VK_MAX_INDEX_BUFFERS; i++)
+		{
+			if (s_vk.indexBuffers[i].used)
+			{
+				if (s_vk.indexBuffers[i].buffer != VK_NULL_HANDLE) { vkDestroyBuffer_fn(s_vk.device, s_vk.indexBuffers[i].buffer, NULL); }
+				if (s_vk.indexBuffers[i].memory != VK_NULL_HANDLE) { vkFreeMemory_fn(s_vk.device, s_vk.indexBuffers[i].memory, NULL); }
+
+				s_vk.indexBuffers[i].used = 0;
 			}
 		}
 
@@ -7281,6 +9334,8 @@ internal int NativeGfxVK_BeginFrame(void)
 	s_vk.passHeight = s_vk.swapchain.extent.height;
 	s_vk.passResolveView = VK_NULL_HANDLE;
 	s_vk.passSamples = 1;
+	s_vk.passDepthView = VK_NULL_HANDLE;
+	s_vk.passDepthFormat = VK_FORMAT_UNDEFINED;
 
 	return 1;
 }
@@ -7402,11 +9457,20 @@ global_variable const struct NativeGfxDispatch s_gfxVK = {
     .updateTexture = NativeGfxVK_UpdateTexture,
     .destroyTexture = NativeGfxVK_DestroyTexture,
     .bindTexture = NativeGfxVK_BindTexture,
+    .createTextureLevels = NativeGfxVK_CreateTextureLevels,
+    .setTextureSampling = NativeGfxVK_SetTextureSampling,
+    .textureLimits = NativeGfxVK_TextureLimits,
+    .shrinkStaging = NativeGfxVK_ShrinkStaging,
+    .stagingBytes = NativeGfxVK_StagingBytes,
 
     .createVertexBuffer = NativeGfxVK_CreateVertexBuffer,
     .destroyVertexBuffer = NativeGfxVK_DestroyVertexBuffer,
     .bindVertexBuffer = NativeGfxVK_BindVertexBuffer,
     .updateVertexBuffer = NativeGfxVK_UpdateVertexBuffer,
+
+    .createIndexBuffer = NativeGfxVK_CreateIndexBuffer,
+    .destroyIndexBuffer = NativeGfxVK_DestroyIndexBuffer,
+    .bindIndexBuffer = NativeGfxVK_BindIndexBuffer,
 
     .createTarget = NativeGfxVK_CreateTarget,
     .resizeTarget = NativeGfxVK_ResizeTarget,
@@ -7418,6 +9482,8 @@ global_variable const struct NativeGfxDispatch s_gfxVK = {
     .targetHeight = NativeGfxVK_TargetHeight,
     .setTargetSamples = NativeGfxVK_SetTargetSamples,
     .targetSamples = NativeGfxVK_TargetSamples,
+    .setTargetDepth = NativeGfxVK_SetTargetDepth,
+    .targetDepth = NativeGfxVK_TargetDepth,
     .setSampleShading = NativeGfxVK_SetSampleShading,
 
     .createProgram = NativeGfxVK_CreateProgram,
@@ -7431,10 +9497,13 @@ global_variable const struct NativeGfxDispatch s_gfxVK = {
     .setWireframe = NativeGfxVK_SetWireframe,
 
     .setBlendMode = NativeGfxVK_SetBlendMode,
+    .setDrawState = NativeGfxVK_SetDrawState,
 
     .clearColor = NativeGfxVK_ClearColor,
     .clearColorBuffer = NativeGfxVK_ClearColorBuffer,
+    .clearDepth = NativeGfxVK_ClearDepth,
     .draw = NativeGfxVK_Draw,
+    .drawIndexed = NativeGfxVK_DrawIndexed,
     .readPixels = NativeGfxVK_ReadPixels,
 
     .timersSupported = NativeGfxVK_TimersSupported,

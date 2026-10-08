@@ -26,6 +26,16 @@ void NativeChar_NoteDroppedInstance(const struct Instance *inst);
 // RenderBucket_PrepareDrawContext; every retail model gets the retail mask.
 int NativeChar_ModelFullHeight(const struct Model *model);
 
+// From platform/native_render_layer.c, also further down. The switch in
+// RenderBucket_DispatchDrawFunc asks Route first: non-zero means the render
+// layer draws this instance itself and the retail draw handler is skipped;
+// zero means retail draws as before. While the layer has no models of its
+// own, Route always returns zero, so every instance takes the retail path.
+// NoteSwitchEntry then counts which handler the instance enters - counters
+// only, no picture changes. Neither touches GTE registers or scratchpad.
+int NativeRenderLayer_Route(const struct Instance *inst, const struct InstDrawPerPlayer *idpp, const struct PushBuffer *pb);
+void NativeRenderLayer_NoteSwitchEntry(const struct Instance *inst, const struct InstDrawPerPlayer *idpp, const struct PushBuffer *pb, u32 handler);
+
 struct RenderBucketEntry
 {
 	struct Instance *inst;
@@ -5408,6 +5418,15 @@ static void RenderBucket_DispatchDrawFunc(struct RenderBucketDrawContext *ctx)
 		NativeTrackMod_NoteDrawExit(ctx->inst, 5, (u32)(u32)ctx->inst->funcPtr[0]);
 		return;
 	}
+
+	// The render layer decides here: after every visibility exit of
+	// PrepareDrawContext and after the setup callback, so it only sees
+	// instances that retail would really draw now. Non-zero = drawn natively.
+	if (NativeRenderLayer_Route(ctx->inst, ctx->idpp, ctx->pb) != 0)
+	{
+		return;
+	}
+	NativeRenderLayer_NoteSwitchEntry(ctx->inst, ctx->idpp, ctx->pb, (u32)ctx->idpp->unkEC);
 
 	switch ((u32)ctx->idpp->unkEC)
 	{

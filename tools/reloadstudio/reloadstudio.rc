@@ -4,15 +4,15 @@
 // that is handed to strangers should say what it is called, where it comes from
 // and which version it is. A code signature is still missing.
 //
-// The strings FileVersion/ProductVersion say "0.0.5 Beta" like the game
+// The strings FileVersion/ProductVersion say "0.7.5 Beta" like the game
 // (CTR_NATIVE_VERSION in CMakeLists.txt, kept in step here by hand). The
 // build ID is in the window title, not here.
 
 #include <winver.h>
 
 #define RELOADSTUDIO_VERSION_MAJOR 0
-#define RELOADSTUDIO_VERSION_MINOR 1
-#define RELOADSTUDIO_VERSION_PATCH 0
+#define RELOADSTUDIO_VERSION_MINOR 7
+#define RELOADSTUDIO_VERSION_PATCH 5
 #define RELOADSTUDIO_VERSION_BUILD 0
 
 VS_VERSION_INFO VERSIONINFO
@@ -30,12 +30,12 @@ BEGIN
 		BEGIN
 			VALUE "CompanyName",      "CTR Reload"
 			VALUE "FileDescription",  "Reload Studio - track containers and cups"
-			VALUE "FileVersion",      "0.0.5 Beta"
+			VALUE "FileVersion",      "0.7.5 Beta"
 			VALUE "InternalName",     "ReloadStudio"
 			VALUE "LegalCopyright",   "CTR Reload"
 			VALUE "OriginalFilename", "ReloadStudio.exe"
 			VALUE "ProductName",      "CTR Reload"
-			VALUE "ProductVersion",   "0.0.5 Beta"
+			VALUE "ProductVersion",   "0.7.5 Beta"
 			VALUE "Comments",         "Builds .rldtrack containers with rldpack (format 4.1), edits cups.txt, tests tracks in the game."
 		END
 	END

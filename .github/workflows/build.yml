@@ -9,7 +9,7 @@
 # By hand (Actions -> Build -> Run workflow):
 # - without "tag": build the chosen branch, run the self-tests, package, and
 #   attach the package to the run as a download. No release.
-# - with "tag" (a version tag, e.g. v0.0.6 or v0.1.0-beta1): a GitHub release
+# - with "tag" (a version tag, e.g. v0.8.0 or v0.8.0-beta1): a GitHub release
 #   for that tag. If the tag exists, its commit is built; if not, the commit
 #   of the chosen branch (run it on main) is built and the release creates
 #   the tag on exactly that commit. An existing tag is never moved. The
@@ -48,7 +48,7 @@ on:
     inputs:
       tag:
         description: >-
-          Version tag to release (e.g. v0.0.6). An existing tag is built as
+          Version tag to release (e.g. v0.8.0). An existing tag is built as
           it is; a new one is created on the commit of the chosen branch.
           Empty = build only, no release.
         type: string
