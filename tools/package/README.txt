@@ -99,7 +99,7 @@ tracks are under ARCADE -> NITRO-PIT:
   RACE         single race on a custom track (with bots if it has nav paths);
                below the laps the MODE box: RACE or TIME TRIAL
   CUP          custom cups from tracks\cups.txt (made on the Cups page)
-  TIME TRIAL   grey, "COMING IN BETA 2" - the time trial is under RACE, MODE
+  TIME TRIAL   grey, "COMING SOON" - the time trial is under RACE, MODE
   CRYSTAL      crystal challenge: collect every crystal in 3:00
   CTR          CTR challenge: finish 1st and collect C, T and R
 
@@ -189,7 +189,7 @@ narrow window the sidebar shows only its icons.
               Shown in the game's track list.
   Modes       One box per mode. A mode your track has the data for is ticked
               and says "Playable". A mode without data is grey and says what
-              is missing. Time Trial and Battle say "Coming soon in Beta 2".
+              is missing. Time Trial and Battle say "Coming soon".
   Sound       "Use the music in the folder", and under "Advanced": reverb,
               how fast the bots drive (like an original track), and the
               background sound.

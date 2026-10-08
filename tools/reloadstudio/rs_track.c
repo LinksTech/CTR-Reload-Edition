@@ -990,7 +990,7 @@ static int Track_ApplyLev(void)
 // data the track has, and never in the container - neither through track.txt
 // nor through a switch from the front end: Track_MakeArgs only takes
 // free, ticked boxes. rldpack on the command line stays as it is.
-#define TRACK_COMING_SOON_TEXT L"Coming soon in Beta 2"
+#define TRACK_COMING_SOON_TEXT L"Coming soon"
 
 static int Track_ModeComingSoon(int mode)
 {
@@ -1055,7 +1055,7 @@ static void Track_AddAdjustment(int mode)
     if (g_track.adjustCount >= TRACK_MODES)
         return;
     if (Track_ModeComingSoon(mode))
-        Track_Copy(reason, 512, L"it is coming soon in Beta 2.");
+        Track_Copy(reason, 512, L"it is coming soon.");
     else
         Track_Copy(reason, 512, m->reason[0] ? m->reason : L"this track has no data for it.");
     // "Needs" -> "needs"; "N. Tropy" and "CTR" stay
