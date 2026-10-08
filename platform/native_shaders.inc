@@ -709,6 +709,56 @@ global_variable const char *ctr_pack_pages_shader =
     "}\n"
     "#endif\n";
 
+// The native layer program, "nr". It becomes a program only with
+// --native-preview (native_renderer.c, NativeRenderer_InitNativeLayer); without
+// the switch the build still compiles it into a module, and nothing creates it.
+//
+// Float vertices in model space and one matrix for all of it. The matrix is the
+// whole projection including the depth mapping, worked out by the caller in C -
+// see the "DEPTH." block in include/platform/native_gfx.h. Nothing is snapped
+// to fixed point or to the screen grid here.
+//
+// The block is 96 bytes std140 and is struct NativeLayerUniforms in
+// native_renderer.c field for field: the matrix at 0, the tint at 64, the
+// parameters at 80. Both stages declare it the same way.
+//
+// The fragment stage is a placeholder: vertex colour times tint, times the
+// texture in slot 0 when params.x says so. It has no second colour output, so
+// this program must never draw with a blend mode that needs one.
+global_variable const char *ctr_native_layer_shader =
+    "#ifdef VERTEX\n"
+    "layout(location = 0) in vec3 a_position;\n"
+    "layout(location = 1) in vec2 a_texcoord;\n"
+    "layout(location = 2) in vec4 a_color;\n"
+    "VARYING_LOC0 out vec2 v_uv;\n"
+    "VARYING_LOC1 out vec4 v_color;\n"
+    "UBO_QUALIFIER uniform NrBlock {\n"
+    "	mat4 nrClipFromModel;\n"
+    "	vec4 nrTint;\n"
+    "	vec4 nrParams;\n"
+    "};\n"
+    "void main() {\n"
+    "	v_uv = a_texcoord;\n"
+    "	v_color = a_color * nrTint;\n"
+    "	gl_Position = nrClipFromModel * vec4(a_position, 1.0);\n"
+    "}\n"
+    "#endif\n"
+    "#ifdef FRAGMENT\n"
+    "VARYING_LOC0 in vec2 v_uv;\n"
+    "VARYING_LOC1 in vec4 v_color;\n"
+    "SAMPLER_SLOT0 uniform sampler2D s_texture;\n"
+    "UBO_QUALIFIER uniform NrBlock {\n"
+    "	mat4 nrClipFromModel;\n"
+    "	vec4 nrTint;\n"
+    "	vec4 nrParams;\n"
+    "};\n"
+    "void main() {\n"
+    "	vec4 colour = v_color;\n"
+    "	if (nrParams.x > 0.5) { colour *= texture(s_texture, v_uv); }\n"
+    "	fragColor = colour;\n"
+    "}\n"
+    "#endif\n";
+
 // The blit shaders by name, in one place.
 //
 // Two readers: native_renderer.c, to find the prebuilt SPIR-V module that goes
@@ -753,6 +803,10 @@ internal int CtrBlitShader_Get(int index, const char **outName, const char **out
 	case 3:
 		name = "pack_pages";
 		body = ctr_pack_pages_shader;
+		break;
+	case 4:
+		name = "nr";
+		body = ctr_native_layer_shader;
 		break;
 	default:
 		return 0;

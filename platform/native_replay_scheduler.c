@@ -10,6 +10,7 @@
 #include "platform/native_log.h"
 #include "platform/native_memcard.h"
 #include "platform/native_path.h"
+#include "platform/native_render_layer.h"
 #include "platform/native_state.h"
 #include "ctr_build_id.h" // CTR_NATIVE_BUILD_ID, generated on every build
 
@@ -1542,6 +1543,15 @@ int NativeReplayScheduler_BeginFrame(const struct NativeReplaySchedulerFrameInfo
 		if (NativeChar_Active())
 		{
 			Platform_LogWarn("[CTR Replay] report recording refused: a custom character is active (a recording that starts mid-run cannot "
+			                 "restore it; --record without --toggle records from boot)\n");
+			return 0;
+		}
+
+		// The same for the native probe (--native-probe): its state lives in host
+		// tables for the whole run. --record from boot stays allowed.
+		if (NativeRenderLayer_ProbeActive())
+		{
+			Platform_LogWarn("[CTR Replay] report recording refused: the native probe is on (a recording that starts mid-run cannot "
 			                 "restore it; --record without --toggle records from boot)\n");
 			return 0;
 		}

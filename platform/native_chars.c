@@ -111,6 +111,7 @@
 #include <platform/native_chars.h>
 #include <platform/native_audio.h>
 #include <platform/native_path.h>
+#include <platform/native_render_layer.h>
 
 #include <SDL3/SDL.h>
 
@@ -1701,7 +1702,10 @@ int NativeChar_EntryMenuFrame(int entry)
 // Keyed on the model, not on a seat: whatever instance draws the model of a
 // file asks here - seat 0 in a race and the driver instance of the driver
 // select preview alike. Called per instance and frame, so no log line. An
-// empty roster never enters the loop: 0, the retail wheels.
+// empty roster never enters the loop: 0, the retail wheels. The model the
+// native probe is bound to (--native-probe, platform/native_render_layer.c)
+// hides its retail wheels too, in every view and also in a frame where the
+// route falls back to retail; without a bound probe that answer is 0.
 int NativeChar_ModelHidesWheels(const struct Model *model)
 {
 	int entry;
@@ -1709,6 +1713,11 @@ int NativeChar_ModelHidesWheels(const struct Model *model)
 	if (model == NULL)
 	{
 		return 0;
+	}
+
+	if (NativeRenderLayer_ModelHidesWheels(model))
+	{
+		return 1;
 	}
 
 	for (entry = 0; (entry < s_charRosterFiles) && (entry < NATIVE_CHAR_ROSTER_MAX); entry++)

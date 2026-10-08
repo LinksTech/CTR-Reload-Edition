@@ -339,6 +339,26 @@ void NativeGfx_UpdateVertexBuffer(NativeGfxBuffer buffer, int offset, int bytes,
 	s_gfx->updateVertexBuffer(buffer, offset, bytes, source);
 }
 
+NativeGfxBuffer NativeGfx_CreateIndexBuffer(const NativeGfxIndexBufferDesc *desc)
+{
+	return s_gfx->createIndexBuffer(desc);
+}
+
+void NativeGfx_DestroyIndexBuffer(NativeGfxBuffer buffer)
+{
+	s_gfx->destroyIndexBuffer(buffer);
+}
+
+void NativeGfx_BindIndexBuffer(NativeGfxBuffer buffer)
+{
+	if (NativeGfx_Tracing())
+	{
+		Platform_Log("[CTR Trace]   bindIndexBuffer %u\n", buffer);
+	}
+
+	s_gfx->bindIndexBuffer(buffer);
+}
+
 NativeGfxTarget NativeGfx_CreateTarget(const NativeGfxTargetDesc *desc)
 {
 	return s_gfx->createTarget(desc);
@@ -399,6 +419,16 @@ void NativeGfx_SetTargetSamples(NativeGfxTarget target, int samples)
 int NativeGfx_TargetSamples(NativeGfxTarget target)
 {
 	return s_gfx->targetSamples(target);
+}
+
+void NativeGfx_SetTargetDepth(NativeGfxTarget target, int enable)
+{
+	s_gfx->setTargetDepth(target, enable);
+}
+
+int NativeGfx_TargetDepth(NativeGfxTarget target)
+{
+	return s_gfx->targetDepth(target);
 }
 
 void NativeGfx_SetSampleShading(int enable)
@@ -474,6 +504,13 @@ void NativeGfx_SetBlendMode(BlendMode blend)
 	s_gfx->setBlendMode(blend);
 }
 
+// NULL is passed through as it is: it means "all zero", and the backend is the
+// one place that turns it into state.
+void NativeGfx_SetDrawState(const NativeGfxDrawState *state)
+{
+	s_gfx->setDrawState(state);
+}
+
 void NativeGfx_ClearColor(float r, float g, float b, float a)
 {
 	s_gfx->clearColor(r, g, b, a);
@@ -487,6 +524,16 @@ void NativeGfx_ClearColorBuffer(void)
 	}
 
 	s_gfx->clearColorBuffer();
+}
+
+void NativeGfx_ClearDepth(int x, int y, int width, int height)
+{
+	if (NativeGfx_Tracing())
+	{
+		Platform_Log("[CTR Trace] clearDepth %d,%d %dx%d on target %u\n", x, y, width, height, s_gfxCountedTarget);
+	}
+
+	s_gfx->clearDepth(x, y, width, height);
 }
 
 void NativeGfx_Draw(int firstVertex, int vertexCount)
@@ -505,6 +552,26 @@ void NativeGfx_Draw(int firstVertex, int vertexCount)
 	}
 
 	s_gfx->draw(firstVertex, vertexCount);
+}
+
+// Counted exactly like NativeGfx_Draw, so the frame report does not have to know
+// which of the two a draw came through; an index counts as one vertex.
+void NativeGfx_DrawIndexed(int firstIndex, int indexCount, int vertexOffset)
+{
+	s_gfxFrame.draws++;
+	s_gfxFrame.vertices += (unsigned int)((indexCount > 0) ? indexCount : 0);
+
+	if (s_gfxCountedTarget == NATIVE_GFX_TARGET_DEFAULT)
+	{
+		s_gfxFrame.drawsToWindow++;
+	}
+
+	if (NativeGfx_Tracing())
+	{
+		Platform_Log("[CTR Trace]     drawIndexed %d indices at %d (+%d) -> target %u\n", indexCount, firstIndex, vertexOffset, s_gfxCountedTarget);
+	}
+
+	s_gfx->drawIndexed(firstIndex, indexCount, vertexOffset);
 }
 
 void NativeGfx_ReadPixels(int x, int y, int width, int height, NativeGfxTextureFormat format, void *dst, int rowPixels)

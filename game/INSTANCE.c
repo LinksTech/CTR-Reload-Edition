@@ -11,11 +11,25 @@
 // track the call returns at once.
 void NativeTrackMod_LevInstanceBorn(struct Instance *inst, int modelID);
 
+// From platform/native_render_layer.c, also further down. The render layer
+// keeps a generation counter per instance pool slot in a host table of its
+// own; birth and death both step it. A slot that is freed and taken again in
+// the same frame then never inherits the previous position of the instance
+// that lived there before. An instance outside the pool is ignored.
+void NativeRenderLayer_NoteBirth(const struct Instance *inst);
+void NativeRenderLayer_NoteDeath(const struct Instance *inst);
+
 
 void INSTANCE_Birth(struct Instance *inst, struct Model *model, const char *name, struct Thread *th, int flags)
 {
 	int i;
 	struct GameTracker *gGT;
+
+	// First, before any field is written. Every caller hands in a slot that is
+	// already taken (INSTANCE_Birth3D/2D right after JitPool_Add, GhostReplay
+	// re-inits a living driver instance), so the pointer is valid from the
+	// first line. The render layer only uses the address to find the slot.
+	NativeRenderLayer_NoteBirth(inst);
 
 	gGT = sdata->gGT;
 
@@ -254,6 +268,10 @@ struct Instance *INSTANCE_BirthWithThread_Stack(int *spArr)
 
 void INSTANCE_Death(struct Instance *inst)
 {
+	// Before JitPool_Remove: afterwards the slot is on the free list and the
+	// next JitPool_Add may hand it out again.
+	NativeRenderLayer_NoteDeath(inst);
+
 	JitPool_Remove(&sdata->gGT->JitPools.instance, (struct Item *)inst);
 }
 

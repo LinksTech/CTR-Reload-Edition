@@ -410,6 +410,15 @@ if(BUILD_TESTING)
     set_tests_properties(char_grid_selftest PROPERTIES
         PASS_REGULAR_EXPRESSION "char grid selftest passed: [0-9]+ checks, 0 failures"
     )
+    # The bytes of the generated native probe meshes, texture and pose meshes
+    # (platform/native_probe.c) against their golden SHA-256. Only hashes tables.
+    add_test(NAME native_probe_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --native-probe-selftest)
+    set_tests_properties(native_probe_selftest PROPERTIES PASS_REGULAR_EXPRESSION "native probe selftest passed: 36 vertices, 54 indices, sha256 87ded398127ef569456a9760ad0d8d7938c96f2db1e0d66a818bcd7865971373, textured mesh sha256 1948ecd790f9518408f043329ce36461d52cc6bc11dccd939a5f5d6dd4e3241a, texture 256x256 sha256 91a84b2163c3ec26e128e4d17ebc15b063b496055f830afc28341c20252cea4f, 8 pose meshes sha256 1033d715c90b852b4bd487a81b4f8b1c8002f635ffc70fc65e3814788ff55e6b")
+    # The depth of a native draw across view z 0x1000, through the queue's own
+    # matrix steps (platform/native_depth_check.c). One made-up instance; the
+    # values are deterministic, so the whole line is pinned.
+    add_test(NAME native_depth_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --native-depth-selftest)
+    set_tests_properties(native_depth_selftest PROPERTIES PASS_REGULAR_EXPRESSION "native depth selftest passed: normal shift 2 to 0, w 4164.0625 to 4165.0391, step 0.0235 percent, rest 0.0006 percent, matrix part 0.0339 percent, wrong shift 299.9 and 75.0 percent, matrix 300.1 and 75.0 percent, huge shift 0 to -2, w 4371.2500 to 4372.1562, step 0.0207 percent, rest 0.0021 percent, matrix part 0.0339 percent, wrong shift 299.9 and 75.0 percent, matrix 300.1 and 75.0 percent, shift checks held")
 
     # FOREIGN INPUT, REFUSED CLEANLY. A container (.rldtrack) and a disc image
     # come from strangers: every length, offset and index in them is checked

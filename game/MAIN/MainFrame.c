@@ -2,6 +2,16 @@
 #include <ctr_subpixel.h>
 
 #if defined(CTR_NATIVE)
+// From platform/native_render_layer.c, which only comes further down in the
+// translation unit. Declared locally instead of pulled in through a header,
+// like RenderBucket_QueueExecute.c and MainFrame_RenderFrame.c do.
+//
+// WHAT FOR. The render layer puts its own packets into the ordering table and
+// needs a host arena for them that the link map knows. Registered last, so
+// every range above keeps the token it has today; without --native-preview it
+// registers nothing.
+void NativeRenderLayer_RegisterMarkerArenas(struct GameTracker *gGT);
+
 static void MainFrame_RegisterGpuLinkRanges(struct GameTracker *gGT)
 {
 	static const char *const primLabels[2] = {"db0 prim", "db1 prim"};
@@ -25,6 +35,8 @@ static void MainFrame_RegisterGpuLinkRanges(struct GameTracker *gGT)
 	{
 		NativeGpuLinks_RegisterRangeChecked(swapchainLabels[i], gGT->otSwapchainDB[i], swapchainOTBytes);
 	}
+
+	NativeRenderLayer_RegisterMarkerArenas(gGT);
 }
 #endif
 

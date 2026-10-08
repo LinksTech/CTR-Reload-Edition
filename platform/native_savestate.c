@@ -6,6 +6,7 @@
 #include "platform/native_checkpoint.h"
 #include "platform/native_checkpoint_file.h"
 #include "platform/native_log.h"
+#include "platform/native_render_layer.h"
 #include "ctr_build_id.h" // CTR_NATIVE_BUILD_ID, generated on every build
 
 #include <errno.h>
@@ -144,6 +145,14 @@ internal s32 NativeSaveState_SaveQuick(void)
 		return 0;
 	}
 
+	// The native probe (--native-probe) lives in host tables and buffers for
+	// the whole run, outside every region a quick state holds.
+	if (NativeRenderLayer_ProbeActive())
+	{
+		Platform_LogWarn("[CTR State] quick save refused: the native probe is on (a quick state cannot hold it)\n");
+		return 0;
+	}
+
 	if (!NativeSaveState_PrepareDir())
 	{
 		Platform_Log("[CTR State] failed to create quick state directory: %s\n", NATIVE_SAVESTATE_DIR);
@@ -197,6 +206,12 @@ internal s32 NativeSaveState_LoadQuick(void)
 	{
 		Platform_LogWarn("[CTR State] quick state %s not loaded: a custom character is active (a quick state cannot restore it)\n",
 		                 NATIVE_SAVESTATE_QUICK_PATH);
+		return 0;
+	}
+
+	if (NativeRenderLayer_ProbeActive())
+	{
+		Platform_LogWarn("[CTR State] quick state %s not loaded: the native probe is on\n", NATIVE_SAVESTATE_QUICK_PATH);
 		return 0;
 	}
 

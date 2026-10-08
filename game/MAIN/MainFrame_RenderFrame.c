@@ -13,6 +13,16 @@
 volatile int gCtrDebugSkipLevelGeometry = 0;
 #endif
 
+// From platform/native_render_layer.c, which only comes further down in the
+// translation unit. Declared locally instead of pulled in through a header -
+// RenderBucket_QueueExecute.c and INSTANCE.c do the same.
+//
+// WHAT FOR. Once per frame the render layer copies what it needs of every
+// living pool instance (position, rotation, scale, animation, colour) into a
+// table of its own on the host. It only reads the game state and writes
+// nothing back. It checks RENDER_FLAG_RENDER_BUCKET itself, like the queue.
+void NativeRenderLayer_Pull(struct GameTracker *gGT);
+
 void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 {
 	struct Level *lev = gGT->level1;
@@ -107,6 +117,13 @@ void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamep
 
 	RenderAllBoxSceneSplitLines(gGT);
 	MAINFRAME_PERF_END(NATIVE_PERF_BUCKET_MAINFRAME_EFFECTS);
+
+	// The render layer takes its copy here: after the frame's logic and the menu
+	// writes, and before the queue below, because RenderBucket_QueueAllInstances
+	// advances inst->animFrame. A few later writers (the flag 0x40 model swap,
+	// the title DPP, the pickup bots) are accepted on purpose.
+	// Outside the perf scope, so the queue bucket still measures only the queue.
+	NativeRenderLayer_Pull(gGT);
 
 	MAINFRAME_PERF_BEGIN(NATIVE_PERF_BUCKET_MAINFRAME_QUEUE_INSTANCES);
 	RenderBucket_QueueAllInstances(gGT);

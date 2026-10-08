@@ -168,4 +168,45 @@ void NativeRenderer_DrawTriangles(int startVertex, int triangles);
 void NativeRenderer_PushDebugLabel(const char *label);
 void NativeRenderer_PopDebugLabel(void);
 
+// One draw of the native probe. screenFromModel is column-major (as a GLSL
+// mat4 reads it) and maps the unit probe body to (sx*w, sy*w, zNear, w): sx, sy
+// in PSX screen pixels of the split, offsets included, w = view depth.
+struct NativeLayerDraw
+{
+	float screenFromModel[16];
+	int cull;       // NativeGfxCull for this draw
+	int clearDepth; // 1 = clear the depth of the split's clip rectangle first
+
+	// The form pose: the morphed vertices of this draw (NATIVE_PROBE_VERTEX_COUNT
+	// of them) and the region of the pose buffer they are written into. NULL
+	// draws the static probe mesh, as every other form does.
+	const struct NativeProbeVertex *vertices;
+	int vertexRegion;
+};
+
+// THE POSE BUFFER of the form pose: one region of a whole probe mesh per frame
+// in work and native item, NATIVE_LAYER_POSE_FRAMES x NATIVE_LAYER_POSE_SLOTS
+// regions. A region is written only in its own frame and is next written
+// NATIVE_LAYER_POSE_FRAMES frames later, when the frames in flight that read
+// it are done; one object per slot, so no draw reads what another one wrote.
+#define NATIVE_LAYER_POSE_FRAMES 3
+#define NATIVE_LAYER_POSE_SLOTS  64
+
+// Draws the probe mesh into the split's place, then puts every renderer and
+// device state back that the PSX path relies on. 0 = nothing drawn.
+int NativeRenderer_DrawNativeProbe(const struct NativeLayerDraw *draw, const RECT16 *clip, const DISPENV *dispenv, int onScreen);
+
+// 1 once the probe mesh buffers exist (only with --native-preview and --native-probe),
+// and for the form texture its texture as well.
+int NativeRenderer_NativeProbeReady(void);
+
+// THE DEPTH OF THE MAIN TARGET, for native draws only. The render layer asks for
+// it (1) in every frame a native object is bound and lets it go (0) when none
+// is; only a change does anything. Without --native-preview nothing at all.
+void NativeRenderer_WantNativeDepth(int want);
+
+// The uploads of native textures in this run, and how many of them came after
+// the first frame was drawn or into a frame that already had draws.
+void NativeRenderer_NativeTextureUploads(unsigned int *uploads, unsigned int *duringFrame);
+
 #endif

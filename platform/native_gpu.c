@@ -14,6 +14,7 @@
 
 #include "platform/native_log.h"
 #include "platform/native_perf.h"
+#include "platform/native_render_layer.h"
 #include "platform/native_renderer.h"
 
 #include <assert.h>
@@ -151,10 +152,22 @@ typedef struct
 	// (NativeGpu_JoinSemiSplit). Empty means x0 > x1.
 	s16 boxX0, boxY0, boxX1, boxY1;
 
+	// What the split is. A native split carries no vertices of its own: it
+	// stands for one object of the native layer at its place in the ordering
+	// table, so that the order between it and the PSX primitives around it
+	// stays the order of the table. Set on every split that is created,
+	// because the slots are reused from batch to batch.
+	u8 kind;
+	u32 nativeItem;
+	u32 nativeFlags;
+
 	const char *debugText;
 } GPUDrawSplit;
 
 #define MAX_DRAW_SPLITS 4096
+
+#define NATIVE_GPU_SPLIT_PSX    0
+#define NATIVE_GPU_SPLIT_NATIVE 1
 
 // WRITE LIMIT OF THE VERTEX BUFFER.
 //
@@ -327,6 +340,14 @@ global_variable unsigned long long s_splitReturns = 0;
 global_variable unsigned long long s_splitTableFull = 0;
 global_variable int s_splitDistinctPeak = 0;
 global_variable unsigned int s_splitPagesUsed[3];
+
+// The native marker channel (Psy-X sub-form 3). Read out only by
+// NativeGpu_MarkerCounts; without markers in the table they all stay 0.
+global_variable unsigned long long s_gpuNativeParsed = 0;
+global_variable unsigned long long s_gpuNativeSplits = 0;
+global_variable unsigned long long s_gpuNativeRefused = 0;
+global_variable unsigned long long s_gpuNativeDrawCalls = 0;
+global_variable unsigned long long s_gpuSplitsAfterNative = 0;
 
 global_variable unsigned long long s_auditBatches = 0;
 global_variable unsigned long long s_auditSplits = 0;
@@ -874,6 +895,12 @@ internal void NativeGpu_SplitAuditBatch(void)
 		int blocked = 0;
 		int blockedOpaque = 0;
 
+		// A native split has no state of the PSX comparison and no vertices,
+		// so it is neither a split that could join nor one that blocks.
+		if (s_gpu.splits[i].kind != NATIVE_GPU_SPLIT_PSX)
+		{
+			continue;
+		}
 		s_auditSplits++;
 		if (opaque)
 		{
@@ -1003,6 +1030,7 @@ void ClearSplits(void)
 	s_gpu.vertexIndex = 0;
 	s_gpu.splitIndex = 0;
 	NativeGpu_SplitBatchReset();
+	s_gpu.splits[0].kind = NATIVE_GPU_SPLIT_PSX;
 	s_gpu.splits[0].texFormat = (TexFormat)0xFFFF;
 	s_gpu.splits[0].psxTexturedSemiTrans = false;
 	s_gpu.splits[0].psxTextureOutputSTP = false;
@@ -1946,7 +1974,10 @@ internal void AddSplit(bool semiTrans, bool textured, bool framebufferFeedback)
 	// ONE comparison for measurement and decision: the chain of twelve fields
 	// is evaluated once per primitive, and the measured value decides - the
 	// same fields, the same order.
-	const int sameState = curSplit->blendMode == blendMode && curSplit->textureId == textureId &&
+	//
+	// A native split is never the same state: the PSX primitive after it
+	// always opens a split of its own, so nothing is drawn across the marker.
+	const int sameState = (curSplit->kind == NATIVE_GPU_SPLIT_PSX) && curSplit->blendMode == blendMode && curSplit->textureId == textureId &&
 	                      curSplit->drawPrimMode == s_gpu.drawPrimMode && curSplit->psxTexturedSemiTrans == psxTexturedSemiTrans &&
 	                      curSplit->psxTextureOutputSTP == psxTextureOutputSTP && curSplit->psxDrawMaskSet == s_gpu.psxDrawMaskSet &&
 	                      curSplit->drawenv.clip.x == activeDrawEnv.clip.x && curSplit->drawenv.clip.y == activeDrawEnv.clip.y &&
@@ -1972,6 +2003,12 @@ internal void AddSplit(bool semiTrans, bool textured, bool framebufferFeedback)
 		else if (sameState)
 		{
 			splitReason = -1;
+		}
+		else if (curSplit->kind != NATIVE_GPU_SPLIT_PSX)
+		{
+			// Not a state change, so no reason of the PSX chain counts it.
+			splitReason = -1;
+			s_gpuSplitsAfterNative++;
 		}
 		else if (s_gpu.splitIndex == 0)
 		{
@@ -2071,6 +2108,9 @@ internal void AddSplit(bool semiTrans, bool textured, bool framebufferFeedback)
 	split->drawenv = activeDrawEnv;
 	split->dispenv = activeDispEnv;
 	split->debugText = s_gpu.currentSplitDebugText;
+	split->kind = NATIVE_GPU_SPLIT_PSX;
+	split->nativeItem = 0;
+	split->nativeFlags = 0;
 
 	split->drawenv.tw.w = s_gpu.overrideTextureWidth;
 	split->drawenv.tw.h = s_gpu.overrideTextureHeight;
@@ -2091,8 +2131,64 @@ internal void AddSplit(bool semiTrans, bool textured, bool framebufferFeedback)
 	NativeGpu_SplitNoteState(s_gpu.splitIndex);
 }
 
+// The draw offset of a split, worked out as DrawEnvOffset works it out, but
+// from the environments the split recorded rather than from the ones in force
+// now: a split is drawn after the whole table is parsed, when activeDrawEnv may
+// already belong to a later environment. DrawEnvOffset stays as it is for the
+// PSX primitives, which are offset while they are parsed.
+internal void NativeGpu_SplitDrawOffset(const GPUDrawSplit *split, float *ofsX, float *ofsY)
+{
+	if (split->drawenv.dfe)
+	{
+		*ofsX = split->drawenv.ofs[0] - split->dispenv.disp.x;
+		*ofsY = split->drawenv.ofs[1] - split->dispenv.disp.y;
+	}
+	else
+	{
+		*ofsX = split->drawenv.ofs[0] - split->drawenv.clip.x;
+		*ofsY = split->drawenv.ofs[1] - split->drawenv.clip.y;
+	}
+}
+
+// The native object of a native split. An empty marker only proves that it
+// went through the table in its place and draws nothing; any other is drawn by
+// the render layer here, in the order of the table. Only the clip, the display
+// environment and the on-screen flag are handed over: the texture window of a
+// native split was never set (no override is recorded for it), so it is not
+// read.
+internal void NativeGpu_DrawNativeSplit(const GPUDrawSplit *split)
+{
+	s_gpuNativeDrawCalls++;
+
+	if ((split->nativeFlags & PSYX_NATIVE_FLAG_EMPTY) != 0)
+	{
+		return;
+	}
+
+	float ofsX = 0.0f;
+	float ofsY = 0.0f;
+	NativeGpu_SplitDrawOffset(split, &ofsX, &ofsY);
+
+	NativeRenderLayer_DrawNativeItem(split->nativeItem, &split->drawenv.clip, &split->dispenv, split->drawenv.dfe, ofsX, ofsY);
+}
+
+void NativeGpu_MarkerCounts(struct NativeGpuMarkerCounts *out)
+{
+	out->parsed = s_gpuNativeParsed;
+	out->splits = s_gpuNativeSplits;
+	out->refused = s_gpuNativeRefused;
+	out->drawCalls = s_gpuNativeDrawCalls;
+	out->afterNative = s_gpuSplitsAfterNative;
+}
+
 void DrawSplit(const GPUDrawSplit *split)
 {
+	if (split->kind != NATIVE_GPU_SPLIT_PSX)
+	{
+		NativeGpu_DrawNativeSplit(split);
+		return;
+	}
+
 	if (split->debugText)
 	{
 		NativeRenderer_PushDebugLabel(split->debugText);
@@ -4804,6 +4900,55 @@ internal void ProcessDrawEnvCommand(u32 code)
 	}
 }
 
+// A native marker becomes a split of its own, between the PSX splits around
+// it. Never a batch cut: a full split table drops the marker (counted), the
+// PSX primitives keep their batch exactly as without the marker.
+internal void NativeGpu_AddNativeSplit(u32 item, u32 flags)
+{
+	if ((s_gpu.splitIndex + 1) >= MAX_DRAW_SPLITS)
+	{
+		s_gpuNativeRefused++;
+		return;
+	}
+
+	GPUDrawSplit *curSplit = &s_gpu.splits[s_gpu.splitIndex];
+	curSplit->numVerts = s_gpu.vertexIndex - curSplit->startVertex;
+
+	GPUDrawSplit *split = &s_gpu.splits[++s_gpu.splitIndex];
+	split->kind = NATIVE_GPU_SPLIT_NATIVE;
+	split->nativeItem = item;
+	split->nativeFlags = flags;
+	split->blendMode = BM_NONE;
+	split->texFormat = (TexFormat)0xFFFF;
+	split->textureId = 0;
+	split->drawPrimMode = s_gpu.drawPrimMode;
+	split->psxTexturedSemiTrans = false;
+	split->psxTextureOutputSTP = false;
+	split->psxDrawMaskSet = s_gpu.psxDrawMaskSet;
+	split->sampleShading = false;
+	split->drawenv = activeDrawEnv;
+	split->dispenv = activeDispEnv;
+	split->debugText = s_gpu.currentSplitDebugText;
+	split->startVertex = s_gpu.vertexIndex;
+	split->numVerts = 0;
+	split->boxX0 = 32767;
+	split->boxY0 = 32767;
+	split->boxX1 = -32768;
+	split->boxY1 = -32768;
+
+	// No state of the PSX comparison: the measurement table does not know it.
+	s_splitStateId[s_gpu.splitIndex] = -1;
+
+	// An empty marker draws nothing, so a run of screen copies goes on across
+	// it. A marker that draws ends the run, like any split that draws.
+	if ((flags & PSYX_NATIVE_FLAG_EMPTY) == 0)
+	{
+		s_gpu.framebufferFeedbackRunActive = false;
+	}
+
+	s_gpuNativeSplits++;
+}
+
 internal int ProcessPsyXPrims(P_TAG *polyTag)
 {
 	const int primSubType = polyTag->code & 0x0F;
@@ -4823,6 +4968,17 @@ internal int ProcessPsyXPrims(P_TAG *polyTag)
 		// [A] Psy-X custom debug marker packet
 		DR_PSYX_DBGMARKER *psydbg = (DR_PSYX_DBGMARKER *)polyTag;
 		s_gpu.currentSplitDebugText = psydbg->text;
+		return 2;
+	}
+	case 0x03:
+	{
+		// A native object in the ordering table (DR_PSYX_NATIVE).
+		const DR_PSYX_NATIVE *marker = (const DR_PSYX_NATIVE *)polyTag;
+		const u32 item = marker->code[0] & 0xFFFFFF;
+		const u32 flags = marker->code[1];
+
+		s_gpuNativeParsed++;
+		NativeGpu_AddNativeSplit(item, flags);
 		return 2;
 	}
 	}
