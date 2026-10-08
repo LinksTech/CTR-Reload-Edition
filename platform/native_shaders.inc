@@ -725,6 +725,16 @@ global_variable const char *ctr_pack_pages_shader =
 // The fragment stage is a placeholder: vertex colour times tint, times the
 // texture in slot 0 when params.x says so. It has no second colour output, so
 // this program must never draw with a blend mode that needs one.
+//
+// params.y > 0.5: the texture is NATIVE_GFX_TEXFMT_RGBA8_SRGB (a texture of the
+// native texture manager, platform/native_tex.c). Its sample arrives in linear
+// light and goes straight back to gamma with the sRGB encoding, so the
+// modulation after it happens in gamma as before - the main target and the
+// swapchain are UNORM (renderer plan C.6.2). For an 8-bit texel and NEAREST the
+// round trip is exact: decode, this encoding and the UNORM store give the
+// stored byte again for all 256 values, with almost half a step to spare
+// (checked in float32 by --native-tex-selftest). params.y = 0, the value every
+// existing caller writes, takes the other branch - the old statement, unchanged.
 global_variable const char *ctr_native_layer_shader =
     "#ifdef VERTEX\n"
     "layout(location = 0) in vec3 a_position;\n"
@@ -754,7 +764,13 @@ global_variable const char *ctr_native_layer_shader =
     "};\n"
     "void main() {\n"
     "	vec4 colour = v_color;\n"
-    "	if (nrParams.x > 0.5) { colour *= texture(s_texture, v_uv); }\n"
+    "	if (nrParams.x > 0.5) {\n"
+    "		if (nrParams.y > 0.5) {\n"
+    "			vec4 texel = texture(s_texture, v_uv);\n"
+    "			vec3 encoded = mix(1.055 * pow(texel.rgb, vec3(1.0 / 2.4)) - 0.055, texel.rgb * 12.92, lessThan(texel.rgb, vec3(0.0031308)));\n"
+    "			colour *= vec4(encoded, texel.a);\n"
+    "		} else { colour *= texture(s_texture, v_uv); }\n"
+    "	}\n"
     "	fragColor = colour;\n"
     "}\n"
     "#endif\n";

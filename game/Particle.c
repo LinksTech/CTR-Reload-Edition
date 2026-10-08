@@ -1098,6 +1098,12 @@ static void Particle_RenderList_WriteNormalPrimitive(POLY_FT4 *poly, struct Icon
 	CtrGpu_WritePackedXY(&poly->x3, MFC2(14));
 }
 
+// From platform/native_render_layer.c (include/platform/native_render_layer.h,
+// word for word): reads the corners of a particle quad just written, for the
+// exhaust box of the seat the native probe is bound to (--native-layer-report).
+// Writes nothing; leaves at once for every other particle.
+void NativeRenderLayer_NoteParticleQuad(const struct Particle *particle, const struct PushBuffer *pb, const POLY_FT4 *poly);
+
 void Particle_RenderList(struct PushBuffer *pb, void *particleList)
 {
 	struct GameTracker *gGT = sdata->gGT;
@@ -1281,6 +1287,7 @@ void Particle_RenderList(struct PushBuffer *pb, void *particleList)
 
 			Particle_RenderList_WriteNormalPrimitive((POLY_FT4 *)prim, icon, flagsAxis, flagsSetColor, color, &matrix, &scratch->depth);
 			Particle_RenderList_LinkAndAdvance(&primCursor, &payloadCursor, particle, idpp, flagsSetColor, scratch->depth, scratch->ot);
+			NativeRenderLayer_NoteParticleQuad(particle, pb, (const POLY_FT4 *)prim);
 			prim = primCursor;
 
 		next_particle:

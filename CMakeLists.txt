@@ -410,10 +410,39 @@ if(BUILD_TESTING)
     set_tests_properties(char_grid_selftest PROPERTIES
         PASS_REGULAR_EXPRESSION "char grid selftest passed: [0-9]+ checks, 0 failures"
     )
-    # The bytes of the generated native probe meshes, texture and pose meshes
-    # (platform/native_probe.c) against their golden SHA-256. Only hashes tables.
+    # The bytes of the generated native probe meshes, texture, pose meshes, wheel
+    # mesh, wheel texture and mips texture (platform/native_probe.c) against
+    # their golden SHA-256. Only hashes tables.
     add_test(NAME native_probe_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --native-probe-selftest)
-    set_tests_properties(native_probe_selftest PROPERTIES PASS_REGULAR_EXPRESSION "native probe selftest passed: 36 vertices, 54 indices, sha256 87ded398127ef569456a9760ad0d8d7938c96f2db1e0d66a818bcd7865971373, textured mesh sha256 1948ecd790f9518408f043329ce36461d52cc6bc11dccd939a5f5d6dd4e3241a, texture 256x256 sha256 91a84b2163c3ec26e128e4d17ebc15b063b496055f830afc28341c20252cea4f, 8 pose meshes sha256 1033d715c90b852b4bd487a81b4f8b1c8002f635ffc70fc65e3814788ff55e6b")
+    set_tests_properties(native_probe_selftest PROPERTIES PASS_REGULAR_EXPRESSION "native probe selftest passed: 36 vertices, 54 indices, sha256 87ded398127ef569456a9760ad0d8d7938c96f2db1e0d66a818bcd7865971373, textured mesh sha256 1948ecd790f9518408f043329ce36461d52cc6bc11dccd939a5f5d6dd4e3241a, texture 256x256 sha256 91a84b2163c3ec26e128e4d17ebc15b063b496055f830afc28341c20252cea4f, 8 pose meshes sha256 1033d715c90b852b4bd487a81b4f8b1c8002f635ffc70fc65e3814788ff55e6b, 2 wheel halves sha256 136fb282e11273f06882a4217c755c2a033d8c4871bfddbfef3746a2a80e2190, wheel texture sha256 21d43021f3bad68dcbb515b38b82f00b12ed7e2fdbcda0ebd3ecc9f8871740a6, mips texture 9 levels sha256 f581d2705016ddd01ec899b3eef7c82886f9730c2b5a92ef4ddd69c66382ad1a")
+    # --native-wheel-report without the probe on measures nothing: the start
+    # has to end with exit code 64 and its reason, before any window or data
+    # (main.c, the first loop of main). The exit code itself is not what ctest
+    # checks here, the line is.
+    add_test(NAME native_wheel_report_needs_probe COMMAND $<TARGET_FILE:ctr_native> --dev --native-wheel-report)
+    set_tests_properties(native_wheel_report_needs_probe PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-wheel-report only acts with the probe on")
+    # Given twice it ends the start the same way (as --native-probe-seat); no
+    # probe on the line, so even a reader that let it through could not start a race.
+    add_test(NAME native_wheel_report_once COMMAND $<TARGET_FILE:ctr_native> --dev --native-wheel-report --native-wheel-report)
+    set_tests_properties(native_wheel_report_once PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-wheel-report is given 2 times - once only")
+    # --native-filter (main.c, the first loop of main): a value other than
+    # nearest or linear, the switch given twice, or no --native-preview end the
+    # start with exit code 64 and their reason, before any window or data; so
+    # does the switch without --dev (the gate of the developer switches). The
+    # lines are what ctest checks.
+    add_test(NAME native_filter_value COMMAND $<TARGET_FILE:ctr_native> --dev --native-preview --native-filter bilinear)
+    set_tests_properties(native_filter_value PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-filter expects nearest or linear, got bilinear")
+    add_test(NAME native_filter_once COMMAND $<TARGET_FILE:ctr_native> --dev --native-preview --native-filter nearest --native-filter linear)
+    set_tests_properties(native_filter_once PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-filter is given 2 times - once only")
+    add_test(NAME native_filter_needs_preview COMMAND $<TARGET_FILE:ctr_native> --dev --native-filter linear)
+    set_tests_properties(native_filter_needs_preview PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-filter only acts together with --native-preview")
+    add_test(NAME native_filter_needs_dev COMMAND $<TARGET_FILE:ctr_native> --native-filter linear)
+    set_tests_properties(native_filter_needs_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-filter requires --dev")
+    # The native texture manager (platform/native_tex.c): its tables, the
+    # shader's way back to gamma, the edge rule and the levels of a fixed image
+    # against their golden SHA-256. Computes only; no window, no device.
+    add_test(NAME native_tex_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --native-tex-selftest)
+    set_tests_properties(native_tex_selftest PROPERTIES PASS_REGULAR_EXPRESSION "native tex selftest passed: table round trip 256 of 256, shader round trip 256 of 256 margin 0.50 of 0.50, 10 edge checks, 12 uniform chains, tables sha256 f0af3130ba0f9051eb58eb97eca390622a3ab0c7633d2d3deba5c54a9572598b, 32x16 chain 6 levels 2732 bytes sha256 srgb a5a29bd35b804143de9d5d2d906be0dce6d804724b5f1a1206d1477590dee862 linear 35f614f4e3eb7d1eab2b6fd0fe77469e628aaf1d3c2e6d45f289b36a89e18680")
     # The depth of a native draw across view z 0x1000, through the queue's own
     # matrix steps (platform/native_depth_check.c). One made-up instance; the
     # values are deterministic, so the whole line is pinned.

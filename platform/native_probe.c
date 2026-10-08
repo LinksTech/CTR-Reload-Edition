@@ -6,7 +6,8 @@
 // retail model, through the native split of the render layer
 // (platform/native_render_layer.c binds it and routes, platform/
 // native_renderer.c holds the buffers and draws). With --native-probe texture
-// the same body takes every colour from a texture made here as well. This
+// the same body takes every colour from a texture made here as well; with
+// --native-probe wheels (the form pose) four wheels made here go with it. This
 // file only owns the meshes, the texture, the switch values and the self-test
 // of their bytes.
 //
@@ -42,6 +43,8 @@
 
 int g_cfg_nativeProbe = NATIVE_PROBE_NONE;
 int g_cfg_nativeProbeSeat = 0;
+int g_cfg_nativeProbeWheels = 0;
+int g_cfg_nativeProbeMips = 0;
 
 CTR_STATIC_ASSERT(sizeof(struct NativeProbeVertex) == 24);
 
@@ -59,11 +62,21 @@ int NativeProbe_FormFromName(const char *name)
 	{
 		return NATIVE_PROBE_TEXTURE;
 	}
-	if (strcmp(name, "pose") == 0)
+	if ((strcmp(name, "pose") == 0) || (strcmp(name, "wheels") == 0) || (strcmp(name, "mips") == 0))
 	{
 		return NATIVE_PROBE_POSE;
 	}
 	return NATIVE_PROBE_NONE;
+}
+
+int NativeProbe_FormHasWheels(const char *name)
+{
+	return (name != NULL) && (strcmp(name, "wheels") == 0);
+}
+
+int NativeProbe_FormHasMips(const char *name)
+{
+	return (name != NULL) && (strcmp(name, "mips") == 0);
 }
 
 #define NATIVE_PROBE_BYTES ((NATIVE_PROBE_VERTEX_COUNT * 24) + (NATIVE_PROBE_INDEX_COUNT * 2))
@@ -82,6 +95,18 @@ int NativeProbe_FormFromName(const char *name)
 // after the other (8 x 864 bytes), computed apart from this file from the rule
 // at NativeProbe_PoseVertices.
 #define NATIVE_PROBE_POSE_GOLDEN     "1033d715c90b852b4bd487a81b4f8b1c8002f635ffc70fc65e3814788ff55e6b"
+
+// The two halves of the wheel mesh, their vertex bytes one after the other
+// (2 x 864 bytes), and the 262144 texture bytes of the form wheels, computed
+// apart from this file from the rules at s_nativeProbeDecagon and
+// NativeProbe_MakeTexture.
+#define NATIVE_PROBE_WHEEL_GOLDEN         "136fb282e11273f06882a4217c755c2a033d8c4871bfddbfef3746a2a80e2190"
+#define NATIVE_PROBE_WHEEL_TEXTURE_GOLDEN "21d43021f3bad68dcbb515b38b82f00b12ed7e2fdbcda0ebd3ecc9f8871740a6"
+
+// The 9 levels of the mips texture, their bytes one after the other (349524
+// bytes), computed apart from this file from the colour table in
+// include/platform/native_probe.h.
+#define NATIVE_PROBE_MIPS_GOLDEN "f581d2705016ddd01ec899b3eef7c82886f9730c2b5a92ef4ddd69c66382ad1a"
 
 #define NATIVE_PROBE_GREEN {0, 255, 0, 255}
 #define NATIVE_PROBE_BLUE  {0, 0, 255, 255}
@@ -232,7 +257,13 @@ const struct NativeProbeVertex *NativeProbe_TexturedVertices(void)
 	return s_nativeProbeTexturedVertices;
 }
 
-const u8 *NativeProbe_TexturePixels(void)
+// The texels of the form texture into out; wheels != 0 makes the one wheel
+// texel (NATIVE_PROBE_WHEEL_TEXEL, NATIVE_PROBE_WHEEL_TEXEL) white. That texel
+// lies in the green region, two texels past the last one a face of the body can
+// reach (the body samples texel x and y 4 to 124 there), and two before the
+// blue and the checker regions begin - the body samples the same texels as in
+// every other form. Without wheels every texel is the one it always was.
+internal void NativeProbe_MakeTexture(u8 *out, int wheels)
 {
 	static const u8 green[4] = {0, 255, 0, 255};
 	static const u8 blue[4] = {0, 0, 255, 255};
@@ -240,13 +271,9 @@ const u8 *NativeProbe_TexturePixels(void)
 	static const u8 checkerB[4] = {0, 255, 128, 255};
 	static const u8 red[4] = {255, 0, 0, 255};
 	static const u8 grey[4] = {128, 128, 128, 255};
+	static const u8 white[4] = {255, 255, 255, 255};
 	int x;
 	int y;
-
-	if (s_nativeProbeTextureMade)
-	{
-		return s_nativeProbeTexture;
-	}
 
 	for (y = 0; y < NATIVE_PROBE_TEXTURE_SIZE; y++)
 	{
@@ -267,12 +294,175 @@ const u8 *NativeProbe_TexturePixels(void)
 				colour = (y < 192) ? red : grey;
 			}
 
-			memcpy(&s_nativeProbeTexture[((y * NATIVE_PROBE_TEXTURE_SIZE) + x) * 4], colour, 4);
+			if (wheels && (x == NATIVE_PROBE_WHEEL_TEXEL) && (y == NATIVE_PROBE_WHEEL_TEXEL))
+			{
+				colour = white;
+			}
+
+			memcpy(&out[((y * NATIVE_PROBE_TEXTURE_SIZE) + x) * 4], colour, 4);
 		}
 	}
+}
 
-	s_nativeProbeTextureMade = 1;
+// THE MIPS TEXTURE: the 9 levels one after the other, each filled with its
+// colour. Static host memory, written at the first call.
+#define NATIVE_PROBE_MIPS_BYTES 349524 // 4 * (256^2 + 128^2 + ... + 1^2)
+
+static u8 s_nativeProbeMips[NATIVE_PROBE_MIPS_BYTES];
+static int s_nativeProbeMipsMade = 0;
+
+internal void NativeProbe_MakeMips(u8 *out)
+{
+	static const u8 colours[NATIVE_PROBE_MIPS_LEVELS][4] = {
+	    {255, 64, 255, 255}, {0, 255, 64, 255}, {160, 64, 255, 255}, {224, 32, 160, 255}, {192, 0, 96, 255},
+	    {64, 0, 255, 255},   {0, 192, 96, 255}, {0, 255, 192, 255},  {160, 32, 192, 255},
+	};
+	size_t at = 0;
+	int level;
+
+	for (level = 0; level < NATIVE_PROBE_MIPS_LEVELS; level++)
+	{
+		const int edge = NATIVE_PROBE_TEXTURE_SIZE >> level;
+		int texel;
+
+		for (texel = 0; texel < edge * edge; texel++)
+		{
+			memcpy(&out[at], colours[level], 4);
+			at += 4;
+		}
+	}
+}
+
+const u8 *NativeProbe_MipsLevel(int level)
+{
+	size_t at = 0;
+	int n;
+
+	if ((level < 0) || (level >= NATIVE_PROBE_MIPS_LEVELS))
+	{
+		return NULL;
+	}
+
+	if (!s_nativeProbeMipsMade)
+	{
+		NativeProbe_MakeMips(s_nativeProbeMips);
+		s_nativeProbeMipsMade = 1;
+	}
+
+	for (n = 0; n < level; n++)
+	{
+		const size_t edge = (size_t)(NATIVE_PROBE_TEXTURE_SIZE >> n);
+
+		at += edge * edge * 4u;
+	}
+
+	return &s_nativeProbeMips[at];
+}
+
+const u8 *NativeProbe_TexturePixels(void)
+{
+	if (!s_nativeProbeTextureMade)
+	{
+		NativeProbe_MakeTexture(s_nativeProbeTexture, g_cfg_nativeProbeWheels);
+		s_nativeProbeTextureMade = 1;
+	}
 	return s_nativeProbeTexture;
+}
+
+// THE WHEEL MESH. The ten corners of the rim, cosine and sine of k times 36
+// degrees, written down to six places (not computed, so the bytes are the same
+// with every compiler and C library); a point is (x, cosine, sine), x = 1 the
+// outer side. Built by placing these numbers only - no arithmetic on them - so
+// the hash below depends on the table alone.
+//
+// Every quad keeps the rule of the body: its right-hand normal (v1 - v0) x
+// (v2 - v0) points outwards. Tread quad k runs from corner k to corner k + 1 as
+// (+1, k), (-1, k), (-1, k + 1), (+1, k + 1); the outer cap is the fan of quads
+// (0, 2j + 1, 2j + 2, 2j + 3), j = 0..3, at x = +1, the inner cap the same four
+// quads in the opposite order at x = -1 - together they close the ten-sided
+// disc. Stripes: tread quads 0 and 5 (opposite each other, so rolling shows from
+// any side) and the first quad of either cap. The texture coordinate is the
+// middle of the white wheel texel, 126.5 / 256, exact in float32.
+#define NATIVE_PROBE_WHEEL_CORNERS 10
+#define NATIVE_PROBE_WHEEL_UV      (((float)NATIVE_PROBE_WHEEL_TEXEL + 0.5f) / (float)NATIVE_PROBE_TEXTURE_SIZE)
+
+// clang-format off
+static const float s_nativeProbeDecagon[NATIVE_PROBE_WHEEL_CORNERS][2] = {
+	{ 1.0f,       0.0f},
+	{ 0.809017f,  0.587785f},
+	{ 0.309017f,  0.951057f},
+	{-0.309017f,  0.951057f},
+	{-0.809017f,  0.587785f},
+	{-1.0f,       0.0f},
+	{-0.809017f, -0.587785f},
+	{-0.309017f, -0.951057f},
+	{ 0.309017f, -0.951057f},
+	{ 0.809017f, -0.587785f},
+};
+// clang-format on
+
+static struct NativeProbeVertex s_nativeProbeWheel[NATIVE_PROBE_WHEEL_HALVES][NATIVE_PROBE_VERTEX_COUNT];
+static int s_nativeProbeWheelMade = 0;
+
+internal void NativeProbe_WheelPoint(struct NativeProbeVertex *v, float x, int corner, int stripe)
+{
+	static const u8 tyre[4] = {255, 0, 128, 255};
+	static const u8 stripes[4] = {160, 0, 80, 255};
+
+	corner %= NATIVE_PROBE_WHEEL_CORNERS;
+	v->position[0] = x;
+	v->position[1] = s_nativeProbeDecagon[corner][0];
+	v->position[2] = s_nativeProbeDecagon[corner][1];
+	v->texcoord[0] = NATIVE_PROBE_WHEEL_UV;
+	v->texcoord[1] = NATIVE_PROBE_WHEEL_UV;
+	memcpy(v->color, stripe ? stripes : tyre, 4);
+}
+
+const struct NativeProbeVertex *NativeProbe_WheelVertices(int half)
+{
+	int h;
+	int q;
+
+	if ((half < 0) || (half >= NATIVE_PROBE_WHEEL_HALVES))
+	{
+		return NULL;
+	}
+
+	if (!s_nativeProbeWheelMade)
+	{
+		for (h = 0; h < NATIVE_PROBE_WHEEL_HALVES; h++)
+		{
+			struct NativeProbeVertex *out = s_nativeProbeWheel[h];
+			const float capX = (h == 0) ? 1.0f : -1.0f;
+
+			// Five tread quads: corners 0..5 in half 0, 5..10 (10 is 0) in half 1.
+			for (q = 0; q < 5; q++)
+			{
+				const int k = (h * 5) + q;
+				const int stripe = (q == 0);
+
+				NativeProbe_WheelPoint(&out[(q * 4) + 0], 1.0f, k, stripe);
+				NativeProbe_WheelPoint(&out[(q * 4) + 1], -1.0f, k, stripe);
+				NativeProbe_WheelPoint(&out[(q * 4) + 2], -1.0f, k + 1, stripe);
+				NativeProbe_WheelPoint(&out[(q * 4) + 3], 1.0f, k + 1, stripe);
+			}
+
+			// Four cap quads: the outer cap in half 0, the inner one in half 1.
+			for (q = 0; q < 4; q++)
+			{
+				struct NativeProbeVertex *quad = &out[(5 + q) * 4];
+				const int stripe = (q == 0);
+
+				NativeProbe_WheelPoint(&quad[0], capX, 0, stripe);
+				NativeProbe_WheelPoint(&quad[1], capX, (h == 0) ? ((2 * q) + 1) : ((2 * q) + 3), stripe);
+				NativeProbe_WheelPoint(&quad[2], capX, (2 * q) + 2, stripe);
+				NativeProbe_WheelPoint(&quad[3], capX, (h == 0) ? ((2 * q) + 3) : ((2 * q) + 1), stripe);
+			}
+		}
+		s_nativeProbeWheelMade = 1;
+	}
+
+	return s_nativeProbeWheel[half];
 }
 
 // THE FORM POSE. The top of the textured body is lowered as a wedge. Of the
@@ -391,8 +581,14 @@ int NativeProbe_SelfTest(void)
 	char textured[65];
 	char texture[65];
 	char pose[65];
+	char wheel[65];
+	char wheelTexture[65];
+	char mips[65];
 	static struct NativeProbeVertex poses[NATIVE_PROBE_POSE_PHASES][NATIVE_PROBE_VERTEX_COUNT];
+	static struct NativeProbeVertex wheels[NATIVE_PROBE_WHEEL_HALVES][NATIVE_PROBE_VERTEX_COUNT];
+	static u8 textures[2][NATIVE_PROBE_TEXTURE_BYTES];
 	int phase;
+	int half;
 
 	memcpy(bytes, s_nativeProbeVertices, sizeof(s_nativeProbeVertices));
 	memcpy(bytes + sizeof(s_nativeProbeVertices), s_nativeProbeIndices, sizeof(s_nativeProbeIndices));
@@ -402,7 +598,18 @@ int NativeProbe_SelfTest(void)
 	memcpy(bytes + sizeof(s_nativeProbeTexturedVertices), s_nativeProbeIndices, sizeof(s_nativeProbeIndices));
 	NativeProbe_HashHex(bytes, sizeof(bytes), textured);
 
-	NativeProbe_HashHex(NativeProbe_TexturePixels(), NATIVE_PROBE_TEXTURE_BYTES, texture);
+	// Both textures made here, apart from the one a run uploads: the hash of
+	// the form texture is the one without the wheel texel in any run.
+	NativeProbe_MakeTexture(textures[0], 0);
+	NativeProbe_MakeTexture(textures[1], 1);
+	NativeProbe_HashHex(textures[0], NATIVE_PROBE_TEXTURE_BYTES, texture);
+	NativeProbe_HashHex(textures[1], NATIVE_PROBE_TEXTURE_BYTES, wheelTexture);
+
+	for (half = 0; half < NATIVE_PROBE_WHEEL_HALVES; half++)
+	{
+		memcpy(wheels[half], NativeProbe_WheelVertices(half), sizeof(wheels[half]));
+	}
+	NativeProbe_HashHex(wheels, sizeof(wheels), wheel);
 
 	for (phase = 0; phase < NATIVE_PROBE_POSE_PHASES; phase++)
 	{
@@ -410,17 +617,30 @@ int NativeProbe_SelfTest(void)
 	}
 	NativeProbe_HashHex(poses, sizeof(poses), pose);
 
-	if ((strcmp(body, NATIVE_PROBE_GOLDEN) != 0) || (strcmp(textured, NATIVE_PROBE_TEXTURED_GOLDEN) != 0) ||
-	    (strcmp(texture, NATIVE_PROBE_TEXTURE_GOLDEN) != 0) || (strcmp(pose, NATIVE_PROBE_POSE_GOLDEN) != 0))
+	// The mips texture made here as well, apart from the one a run uploads.
 	{
-		printf("native probe selftest: sha256 %s, textured mesh %s, texture %s, pose meshes %s differ from the golden %s, %s, %s, %s\n", body,
-		       textured, texture, pose, NATIVE_PROBE_GOLDEN, NATIVE_PROBE_TEXTURED_GOLDEN, NATIVE_PROBE_TEXTURE_GOLDEN, NATIVE_PROBE_POSE_GOLDEN);
+		static u8 levels[NATIVE_PROBE_MIPS_BYTES];
+
+		NativeProbe_MakeMips(levels);
+		NativeProbe_HashHex(levels, sizeof(levels), mips);
+	}
+
+	if ((strcmp(body, NATIVE_PROBE_GOLDEN) != 0) || (strcmp(textured, NATIVE_PROBE_TEXTURED_GOLDEN) != 0) ||
+	    (strcmp(texture, NATIVE_PROBE_TEXTURE_GOLDEN) != 0) || (strcmp(pose, NATIVE_PROBE_POSE_GOLDEN) != 0) ||
+	    (strcmp(wheel, NATIVE_PROBE_WHEEL_GOLDEN) != 0) || (strcmp(wheelTexture, NATIVE_PROBE_WHEEL_TEXTURE_GOLDEN) != 0) ||
+	    (strcmp(mips, NATIVE_PROBE_MIPS_GOLDEN) != 0))
+	{
+		printf("native probe selftest: sha256 %s, textured mesh %s, texture %s, pose meshes %s, wheel halves %s, wheel texture %s, mips texture %s "
+		       "differ from the golden %s, %s, %s, %s, %s, %s, %s\n",
+		       body, textured, texture, pose, wheel, wheelTexture, mips, NATIVE_PROBE_GOLDEN, NATIVE_PROBE_TEXTURED_GOLDEN, NATIVE_PROBE_TEXTURE_GOLDEN,
+		       NATIVE_PROBE_POSE_GOLDEN, NATIVE_PROBE_WHEEL_GOLDEN, NATIVE_PROBE_WHEEL_TEXTURE_GOLDEN, NATIVE_PROBE_MIPS_GOLDEN);
 		return 1;
 	}
 
+	// The line of before first, word for word, then the mips texture.
 	printf("native probe selftest passed: %d vertices, %d indices, sha256 %s, textured mesh sha256 %s, texture %dx%d sha256 %s, "
-	       "%d pose meshes sha256 %s\n",
+	       "%d pose meshes sha256 %s, %d wheel halves sha256 %s, wheel texture sha256 %s, mips texture %d levels sha256 %s\n",
 	       NATIVE_PROBE_VERTEX_COUNT, NATIVE_PROBE_INDEX_COUNT, body, textured, NATIVE_PROBE_TEXTURE_SIZE, NATIVE_PROBE_TEXTURE_SIZE, texture,
-	       NATIVE_PROBE_POSE_PHASES, pose);
+	       NATIVE_PROBE_POSE_PHASES, pose, NATIVE_PROBE_WHEEL_HALVES, wheel, wheelTexture, NATIVE_PROBE_MIPS_LEVELS, mips);
 	return 0;
 }

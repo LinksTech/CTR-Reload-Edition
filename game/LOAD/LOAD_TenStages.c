@@ -6,6 +6,11 @@
 void NativeChar_ArmSeats(void);
 void NativeChar_ClearSeats(void);
 
+// From platform/native_renderer.c, further down as well: the texture of the
+// native probe form mips, uploaded at this loading screen (stage 5), never in a
+// race frame. Returns at once without --native-preview --native-probe mips.
+int NativeRenderer_LoadProbeMipsTexture(int levelID);
+
 #ifdef CTR_NATIVE
 // See game/LOAD/LOAD_File.c: declaration instead of a platform header, because this
 // file is part of the game's unity build.
@@ -537,6 +542,11 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 		// (PLYROBJECTLIST) are final here, and the drivers are born only after
 		// the load.
 		NativeChar_ArmSeats();
+
+		// The driver's native texture goes up here, with the drivers of the
+		// race being loaded: the flag covers the screen, no race frame is
+		// drawn. Only the probe form mips has one; once per run.
+		NativeRenderer_LoadProbeMipsTexture(gGT->levelID);
 
 		DecalGlobal_Clear(gGT);
 

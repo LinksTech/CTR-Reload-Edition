@@ -76,8 +76,25 @@ void NativeRenderLayer_MarkerReport(void);
 int NativeRenderLayer_ProbeActive(void);
 
 // game/DrawTires.c through NativeChar_ModelHidesWheels: 1 for the model the
-// probe is bound to - its retail wheels are off, like RLDCHAR_FLAG_NO_WHEELS.
+// probe is bound to - its retail wheels are off, like RLDCHAR_FLAG_NO_WHEELS -
+// unless --native-wheel-report keeps them on.
 int NativeRenderLayer_ModelHidesWheels(const struct Model *model);
+
+// game/DrawTires.c, around the wheel set of one instance view (solid pass:
+// reflection 0, reflection pass: 1): the projected corners of each wheel as
+// DrawTires read them from the GTE, and each wheel quad it wrote. Only read and
+// counted, and only for the instance the probe is bound to; with
+// --native-wheel-report the solid pass of view 0 gives the retail line.
+void NativeRenderLayer_TiresBegin(const struct Instance *inst, const struct PushBuffer *pb, int reflection);
+void NativeRenderLayer_TiresCorners(int wheelIndex, const s32 sxy[4]);
+void NativeRenderLayer_TiresPrimitive(void);
+void NativeRenderLayer_TiresEnd(void);
+
+// game/Particle.c, Particle_RenderList, after a particle quad is written and
+// linked: its corners are read for the exhaust box of the probe seat
+// (--native-layer-report). Nothing is written.
+struct Particle;
+void NativeRenderLayer_NoteParticleQuad(const struct Particle *particle, const struct PushBuffer *pb, const POLY_FT4 *poly);
 
 // native_gpu.c, NativeGpu_DrawNativeSplit, for a native split with drawing.
 // ofsX/ofsY: the draw offset of the split, computed as DrawEnvOffset does.

@@ -82,12 +82,24 @@ typedef enum
 	// Readback only, for host-side images that want the channel order the
 	// window system already uses.
 	NATIVE_GFX_TEXFMT_BGRA8,
+
+	// RGBA8 whose colour channels are sRGB encoded: a sample hands the shader
+	// LINEAR light, and filtering happens in linear light. Appended after the
+	// others so that no existing value moves. Only the native texture manager
+	// (platform/native_tex.c) asks for it; a shader that samples it converts
+	// back to gamma itself (the "nr" program does when its block says so).
+	NATIVE_GFX_TEXFMT_RGBA8_SRGB,
 } NativeGfxTextureFormat;
 
 typedef enum
 {
 	NATIVE_GFX_WRAP_REPEAT = 0,
 	NATIVE_GFX_WRAP_CLAMP,
+
+	// Appended. Only the sampling of a texture with levels
+	// (NativeGfx_CreateTextureLevels) understands it; the four shared samplers
+	// of the other textures know REPEAT and CLAMP alone, as before.
+	NATIVE_GFX_WRAP_MIRROR,
 } NativeGfxWrap;
 
 typedef struct
@@ -119,6 +131,94 @@ void NativeGfx_BindTexture(int slot, TextureID texture, NativeGfxFilter filter);
 // format, so callers do not carry it.
 void NativeGfx_UpdateTexture(TextureID texture, int x, int y, int width, int height, NativeGfxTextureFormat format, const void *pixels,
                              int rowPixels);
+
+// --- Textures with levels --------------------------------------------------
+//
+// A second road beside the one above, for the native texture manager
+// (platform/native_tex.c) only. Everything above stays a texture of one level,
+// and every VRAM upload keeps going through it unchanged; nothing here is used
+// by a texture made there.
+//
+// A texture made here: every level is given at creation, as finished bytes -
+// the device computes no level (no blit, no driver mip generation), so the
+// picture is the same on every machine. Level n is max(1, width >> n) by
+// max(1, height >> n) texels, tightly packed. The pixels go up through a
+// transfer the device waits for, never into the ring of an open frame: if a
+// frame is open with work recorded, that work is submitted and waited for
+// first (the pass is stored and the next draw loads it again), so creating one
+// at a loading screen is legal and changes no pixel already drawn. Sampled
+// through a sampler of its own sampling, never one the other textures share.
+// The limits (edge length, maxImageDimension2D) are the manager's business and
+// are not checked here.
+
+#define NATIVE_GFX_MAX_TEXTURE_LEVELS 12 // 2048 down to 1
+
+typedef enum
+{
+	NATIVE_GFX_MIP_NONE = 0, // level 0 only (maxLod 0)
+	NATIVE_GFX_MIP_NEAREST,
+	NATIVE_GFX_MIP_LINEAR,
+} NativeGfxMipMode;
+
+// Zero is nearest, nearest, level 0 only, no anisotropy, repeat.
+typedef struct
+{
+	NativeGfxFilter magFilter; // NEAREST or LINEAR; KEEP counts as NEAREST
+	NativeGfxFilter minFilter;
+	NativeGfxMipMode mipMode;
+
+	// 0 or 1 = off. More is a wish: the device grants it only when anisotropy
+	// was requested at device creation (--native-preview at start) and clamps it
+	// to its own limit (NativeGfxTextureLimits).
+	int anisotropy;
+
+	NativeGfxWrap wrapU;
+	NativeGfxWrap wrapV;
+} NativeGfxSampling;
+
+typedef struct
+{
+	int width; // of level 0
+	int height;
+
+	// NATIVE_GFX_TEXFMT_RGBA8 or NATIVE_GFX_TEXFMT_RGBA8_SRGB.
+	NativeGfxTextureFormat format;
+
+	// 1 .. NATIVE_GFX_MAX_TEXTURE_LEVELS, at most the full chain down to 1x1.
+	int levelCount;
+	const void *levels[NATIVE_GFX_MAX_TEXTURE_LEVELS];
+
+	NativeGfxSampling sampling;
+} NativeGfxTextureLevelsDesc;
+
+// NATIVE_GFX_INVALID when the desc is not usable or the device refuses.
+TextureID NativeGfx_CreateTextureLevels(const NativeGfxTextureLevelsDesc *desc);
+
+// Changes how a texture made by NativeGfx_CreateTextureLevels is sampled (the
+// filter option). Ignored for any other texture. Applies from the next draw.
+void NativeGfx_SetTextureSampling(TextureID texture, const NativeGfxSampling *sampling);
+
+typedef struct
+{
+	int maxImageDimension2D;
+	int anisotropyEnabled;      // 1 = requested at device creation and granted
+	float maxSamplerAnisotropy; // the device limit, 0 when anisotropy is off
+} NativeGfxTextureLimits;
+
+void NativeGfx_TextureLimits(NativeGfxTextureLimits *out);
+
+// THE STAGING BUFFER BACK. Every one-shot transfer goes through one shared,
+// mapped staging buffer that only ever grows (a 2048x2048 texture with its
+// levels leaves 32 MB behind). When it is larger than keepBytes it is made
+// again at keepBytes (0: freed outright) and the bytes given back are
+// returned. The native texture manager passes NativeGfx_StagingBytes() from
+// before its upload, so only the growth of that upload goes back and a buffer
+// grown for VRAM fallbacks stays standing. Safe between any two calls: every
+// user of the buffer waits for its transfer.
+u32 NativeGfx_ShrinkStaging(u32 keepBytes);
+
+// The staging buffer's size right now, 0 when there is none.
+u32 NativeGfx_StagingBytes(void);
 
 // --- Vertex buffers --------------------------------------------------------
 //

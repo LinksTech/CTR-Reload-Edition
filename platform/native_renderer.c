@@ -13,6 +13,7 @@
 #include "platform/native_log.h"
 #include "platform/native_perf.h"
 #include "platform/native_probe.h"
+#include "platform/native_tex.h"
 #include "platform/native_renderer.h"
 
 #include <assert.h>
@@ -649,6 +650,19 @@ global_variable NativeGfxBuffer s_probeIndexBuffer = NATIVE_GFX_INVALID;
 // without it INVALID, and no image, memory or sampler exists for it.
 global_variable TextureID s_probeTexture = NATIVE_GFX_INVALID;
 
+// The form mips: its texture is made by the native texture manager while the
+// race loads (NativeRenderer_LoadProbeMipsTexture), not here at start-up, and
+// it is sRGB - the "nr" block then says so in params[1]. 0 for every other
+// form, whose texture stays the one-level UNORM texture it always was.
+global_variable int s_probeTextureManaged = 0;
+global_variable int s_probeTextureSrgb = 0;
+
+// The probe texture of the forms texture, pose and wheels uploaded in a race
+// frame (platform/native_tex.c, NativeTex_InRaceFrame): it goes up once at
+// start-up, before the game's first state, so this stays 0. Counted all the
+// same, so the exit line of the render layer holds for every form.
+global_variable unsigned int s_probeUploadsInRaceFrame = 0;
+
 // The pose buffer of the form pose (see NATIVE_LAYER_POSE_FRAMES): a dynamic
 // vertex buffer, host-visible and written straight into its mapping - no
 // transfer, nothing that counts as a texture upload. Only for that form.
@@ -887,8 +901,17 @@ void NativeRenderer_Shutdown(void)
 	}
 	if (s_probeTexture != NATIVE_GFX_INVALID)
 	{
-		NativeGfx_DestroyTexture(s_probeTexture);
+		if (s_probeTextureManaged)
+		{
+			NativeTex_Destroy(s_probeTexture);
+		}
+		else
+		{
+			NativeGfx_DestroyTexture(s_probeTexture);
+		}
 		s_probeTexture = NATIVE_GFX_INVALID;
+		s_probeTextureManaged = 0;
+		s_probeTextureSrgb = 0;
 	}
 	if (s_probePoseBuffer != NATIVE_GFX_INVALID)
 	{
@@ -2197,10 +2220,19 @@ internal void NativeRenderer_InitNativeLayer(void)
 	// before the game has drawn anything into it. Like every one-shot it first
 	// submits what the frame holds so far (here only the uploads of the
 	// renderer's own start-up textures) and waits. Kept for the whole run; the
-	// texture never changes. Not at a level load (LOAD_TenStages.c stage 5): the
-	// frame is always open there and holds the draws of the loading screen, so
-	// the one-shot would end a pass in the middle of a picture.
-	if (NATIVE_PROBE_TEXTURED(g_cfg_nativeProbe))
+	// texture never changes. These forms stay at start-up so that their pictures
+	// stay the ones measured before (round 3 and step 3b).
+	//
+	// The form mips is the one exception: its texture is made at the race's
+	// loading screen, in stage 5 of the ten loading stages right after the
+	// custom seats are armed (game/LOAD/LOAD_TenStages.c, after
+	// NativeChar_ArmSeats; NativeRenderer_LoadProbeMipsTexture), as every
+	// native driver texture will be. The frame is open there with the draws of
+	// the loading screen recorded; the waited one-shot of the texture manager
+	// first submits them and waits (NativeGfxVK_CreateTextureLevels), so the
+	// pass ends in the middle of that picture and the next draw opens it again
+	// with LOAD - no pixel already drawn changes, and no race frame is drawn.
+	if (NATIVE_PROBE_TEXTURED(g_cfg_nativeProbe) && !g_cfg_nativeProbeMips)
 	{
 		const NativeGfxTextureDesc probeTextureDesc = {
 		    .width = NATIVE_PROBE_TEXTURE_SIZE,
@@ -2212,10 +2244,77 @@ internal void NativeRenderer_InitNativeLayer(void)
 		    .nativeLayer = 1,
 		};
 
+		if (NativeTex_InRaceFrame())
+		{
+			s_probeUploadsInRaceFrame++;
+		}
 		s_probeTexture = NativeGfx_CreateTexture(&probeTextureDesc);
 		Platform_Log("[CTR Res] native probe texture: %dx%d RGBA8 UNORM, nearest, %s\n", NATIVE_PROBE_TEXTURE_SIZE, NATIVE_PROBE_TEXTURE_SIZE,
 		             (s_probeTexture != NATIVE_GFX_INVALID) ? "uploaded" : "missing");
 	}
+}
+
+// THE TEXTURE OF THE FORM MIPS (renderer plan D.4, step 4a): 256x256 with its 9
+// levels, each one colour (platform/native_probe.c), sRGB, through the native
+// texture manager (platform/native_tex.c) - sampled as --native-filter says,
+// uploaded through the waited one-shot, the staging growth given back after it.
+// Called at stage 5 of the ten loading stages, right after the custom seats
+// are armed (game/LOAD/LOAD_TenStages.c, after NativeChar_ArmSeats): a loading
+// screen, never a race frame. Only for a race track (levelID below
+// NITRO_COURT, the arcade tracks the probe binds on); the boot crate and the
+// menu levels load without it. Once per run: a texture that is there already
+// is not made again, and it is kept until shutdown. Until it exists,
+// NativeRenderer_NativeProbeReady answers 0, so the probe is not bound and the
+// render layer names "probe mesh not ready" as the reason (in the menu frames
+// before the race as well, where it named "main menu" before). Returns 1 when
+// the texture exists afterwards.
+int NativeRenderer_LoadProbeMipsTexture(int levelID)
+{
+	extern int g_cfg_nativePreview;
+	const u8 *levels[NATIVE_PROBE_MIPS_LEVELS];
+	NativeTexDesc desc;
+	NativeTexResult result = NATIVE_TEX_OK;
+	int level;
+
+	if (!g_cfg_nativePreview || !g_cfg_nativeProbeMips || (s_probeTexture != NATIVE_GFX_INVALID))
+	{
+		return (s_probeTexture != NATIVE_GFX_INVALID) ? 1 : 0;
+	}
+	if ((levelID < 0) || (levelID >= NITRO_COURT))
+	{
+		return 0;
+	}
+
+	for (level = 0; level < NATIVE_PROBE_MIPS_LEVELS; level++)
+	{
+		levels[level] = NativeProbe_MipsLevel(level);
+	}
+
+	memset(&desc, 0, sizeof(desc));
+	desc.width = NATIVE_PROBE_TEXTURE_SIZE;
+	desc.height = NATIVE_PROBE_TEXTURE_SIZE;
+	desc.flags = 0u; // sRGB colour, levels as given
+	desc.wrapU = NATIVE_GFX_WRAP_CLAMP;
+	desc.wrapV = NATIVE_GFX_WRAP_CLAMP;
+	desc.name = "probe mips";
+
+	s_probeTexture = NativeTex_CreateFromLevels(&desc, levels, NATIVE_PROBE_MIPS_LEVELS, &result);
+	s_probeTextureManaged = (s_probeTexture != NATIVE_GFX_INVALID) ? 1 : 0;
+	s_probeTextureSrgb = s_probeTextureManaged ? NativeTex_IsSrgb(s_probeTexture) : 0;
+
+	Platform_Log("[CTR Res] native probe mips texture: %dx%d RGBA8 SRGB, %d levels, filter %s, %s\n", NATIVE_PROBE_TEXTURE_SIZE,
+	             NATIVE_PROBE_TEXTURE_SIZE, NATIVE_PROBE_MIPS_LEVELS, NativeTex_FilterName(g_cfg_nativeFilter),
+	             s_probeTextureManaged ? "uploaded" : NativeTex_ResultName(result));
+
+	return s_probeTextureManaged;
+}
+
+// Probe texture uploads in a race frame, every form: the start-up texture of
+// the forms texture, pose and wheels, and every upload of the manager (the form
+// mips). The render layer's exit line.
+unsigned int NativeRenderer_ProbeUploadsInRaceFrame(void)
+{
+	return s_probeUploadsInRaceFrame + (unsigned int)NativeTex_UploadsInRaceFrame();
 }
 
 int NativeRenderer_NativeProbeReady(void)
@@ -2358,9 +2457,11 @@ int NativeRenderer_DrawNativeProbe(const struct NativeLayerDraw *draw, const REC
 		block.tint[3] = 1.0f;
 
 		// params.x = 1 lets the texture in slot 0 colour the body (form
-		// texture); 0 keeps the sampler out of the colour.
+		// texture); 0 keeps the sampler out of the colour. params.y = 1 says
+		// the texture is sRGB (only the form mips): the shader turns its sample
+		// back to gamma first. 0, as before, for every other form.
 		block.params[0] = (s_probeTexture != NATIVE_GFX_INVALID) ? 1.0f : 0.0f;
-		block.params[1] = 0.0f;
+		block.params[1] = s_probeTextureSrgb ? 1.0f : 0.0f;
 		block.params[2] = 0.0f;
 		block.params[3] = 0.0f;
 	}
@@ -2392,7 +2493,8 @@ int NativeRenderer_DrawNativeProbe(const struct NativeLayerDraw *draw, const REC
 		NativeGfx_SetDrawState(&state);
 		if (s_probeTexture != NATIVE_GFX_INVALID)
 		{
-			// Its own filter stands (nearest); the sampler is the native one.
+			// Its own filter stands (nearest); the sampler is the native one -
+			// for the form mips the one of its sampling (--native-filter).
 			NativeGfx_BindTexture(0, s_probeTexture, NATIVE_GFX_FILTER_KEEP);
 		}
 		NativeGfx_BindProgram(s_nativeLayerShader);

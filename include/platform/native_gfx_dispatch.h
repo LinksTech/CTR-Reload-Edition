@@ -49,6 +49,11 @@
 	X(void, destroyTexture, (TextureID texture))                                                                                                   \
 	X(void, bindTexture, (int slot, TextureID texture, NativeGfxFilter filter))                                                                     \
 	X(NativeGfxFilter, textureFilter, (TextureID texture))                                                                                         \
+	X(TextureID, createTextureLevels, (const NativeGfxTextureLevelsDesc *desc))                                                                    \
+	X(void, setTextureSampling, (TextureID texture, const NativeGfxSampling *sampling))                                                           \
+	X(void, textureLimits, (NativeGfxTextureLimits *out))                                                                                          \
+	X(u32, shrinkStaging, (u32 keepBytes))                                                                                                         \
+	X(u32, stagingBytes, (void))                                                                                                                   \
                                                                                                                                                    \
 	X(NativeGfxBuffer, createVertexBuffer, (const NativeGfxVertexBufferDesc *desc))                                                                 \
 	X(void, destroyVertexBuffer, (NativeGfxBuffer buffer))                                                                                          \

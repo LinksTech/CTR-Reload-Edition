@@ -69,6 +69,20 @@
 // measures the position source FLOAT beside KONGRUENZ in the same frames.
 // Without the switches nothing binds, the route keeps its one-comparison exit,
 // and the log has no line it did not have before.
+//
+// THE WHEELS (step 3a/3b). While the probe is on, the pull moves the float wheel
+// poses of every seat on once per tick (platform/native_wheels.c). The form
+// wheels (--native-probe wheels: the form pose plus native wheels) draws four
+// generated wheels in the same item and the same depth as the body, right after
+// it; the retail wheels of the bound model stay off as in every probe form.
+// --native-wheel-report keeps the retail wheels of the probe seat on and writes,
+// per tick, the float wheel middles through the matrix of the body beside the
+// middles game/DrawTires.c used (NativeRenderLayer_Tires*, which only read what
+// DrawTires computed). The retail wheel quads of the probe seat are counted
+// either way. Under --native-layer-report the exhaust quads of the probe seat
+// (game/Particle.c) give one screen box per frame (NativeRenderLayer_NoteParticleQuad),
+// and a second line with the box of every single quad (the mask of the
+// measuring tools: the hull of all of them covers the whole body).
 // ===========================================================================
 
 #include <math.h>
@@ -85,11 +99,16 @@
 #include "platform/native_probe.h"
 #include "platform/native_render_layer.h"
 #include "platform/native_renderer.h"
+#include "platform/native_wheels.h"
 
 int g_cfg_nativeLayerReport = 0;
 
 // platform/native_gfx_vk.c, set by main.c before Platform_Init.
 extern int g_cfg_nativePreview;
+
+// The race-frame count of the probe texture (platform/native_renderer.c),
+// declared here rather than in its header.
+unsigned int NativeRenderer_ProbeUploadsInRaceFrame(void);
 
 // --native-empty-markers, set by main.c only together with --native-preview.
 // Never in ctr-settings.cfg: the file only knows s_videoSettings and the views.
@@ -432,6 +451,24 @@ struct NativeRenderLayerCounters
 	double floatDistanceSum;
 	double floatDistanceTMax;
 	double floatDistanceTSum;
+
+	// The wheels: retail wheel quads game/DrawTires.c wrote for the seat the probe
+	// is bound to (solid and reflection pass), items that got native wheels, the
+	// wheel draws of the form wheels and the ones the renderer refused, and the
+	// lines of --native-wheel-report.
+	unsigned long long tiresSolidFt4;
+	unsigned long long tiresReflectionFt4;
+	unsigned long long wheelItems;
+	unsigned long long wheelDraws;
+	unsigned long long wheelNotDrawn;
+	unsigned long long wheelFloatLines;
+	unsigned long long wheelExactLines;
+	unsigned long long wheelRetailLines;
+
+	// The exhaust quads of the probe seat in view 0 (game/Particle.c): frames
+	// that had any, and all of them.
+	unsigned long long exhaustFrames;
+	unsigned long long exhaustQuads;
 };
 
 internal struct NativeRenderLayerCounters s_nrCount;
@@ -517,12 +554,38 @@ struct NrDrawItem
 	u8 wheels;         // 1 = the two fields below are set
 	float wheelView[4][3];
 	float wheelExt[3];
+	// The native wheels (form wheels, --native-wheel-report): per wheel the map
+	// from the unit wheel mesh (platform/native_probe.c) to view space, true
+	// units (the shift of the queue taken out): view = wheelA * u + wheelB.
+	// wheelB is the wheel middle. Set only when nativeWheels is 1.
+	u8 nativeWheels;
+	double wheelA[4][3][3];
+	double wheelB[4][3];
+	// The wheel middles once more with the exact translation, only for the
+	// report: (inst->matrix.t - pb->pos) in double, the source of the position
+	// FLOAT of the form pose (NativeRenderLayer_FillPose), plus the retail middle
+	// turned by inst->matrix - no whole-unit cut of mvp.t (render plan L4). View
+	// space, world units, not shifted.
+	double wheelExact[4][3];
 };
 
 internal struct NrDrawItem s_nrItems[2][NATIVE_RENDER_LAYER_ITEMS];
 
+// THE POSE BUFFER WITH WHEELS. The form wheels draws the body and two halves of
+// each of the four wheels per item, every one from a region of the pose buffer
+// of its own: nine regions per item, so at most NATIVE_LAYER_POSE_SLOTS / 9
+// items per frame (one is all a one-player race needs). The other forms keep
+// one region per item, as before.
+#define NR_WHEEL_REGIONS (1 + (NATIVE_WHEELS_COUNT * NATIVE_PROBE_WHEEL_HALVES))
+CTR_STATIC_ASSERT((NATIVE_LAYER_POSE_SLOTS / NR_WHEEL_REGIONS) >= 1);
+CTR_STATIC_ASSERT((NATIVE_LAYER_POSE_SLOTS / NR_WHEEL_REGIONS) <= NATIVE_RENDER_LAYER_ITEMS);
+
 // The form pose: every item has a region of its own in the pose buffer.
 CTR_STATIC_ASSERT(NATIVE_RENDER_LAYER_ITEMS <= NATIVE_LAYER_POSE_SLOTS);
+
+// The pull hands the wheel table (platform/native_wheels.c) the seats of this
+// file by the same index.
+CTR_STATIC_ASSERT(NATIVE_WHEELS_SEATS == NATIVE_RENDER_LAYER_DRIVERS);
 
 // The morphed mesh of the draw in progress; the renderer copies it into the
 // pose buffer before the next one is made.
@@ -594,6 +657,50 @@ internal char s_nrProbeWhy[64];
 
 // The VBlank of the last probe line, so a VBlank never gets two.
 internal int s_nrProbeLineVBlank = -1;
+
+// --native-wheel-report: 1 in a frame whose pull saw a new tick; each of the two
+// lines is written at most once in such a frame.
+internal int s_nrWheelSample = 0;
+internal u32 s_nrWheelSampleTimer = 0;
+internal int s_nrWheelFloatDone = 0;
+internal int s_nrWheelRetailDone = 0;
+
+// One wheel set of game/DrawTires.c between NativeRenderLayer_TiresBegin and
+// _TiresEnd: whether it is the probe seat, which pass, the corners it projected
+// (screen x and y, the packed words of the GTE split up) and which wheels it
+// emitted a quad for.
+struct NrTires
+{
+	int active;
+	int reflection;
+	int view0;
+	int wheel;
+	int emitted[4];
+	int corners[4][4][2];
+};
+
+internal struct NrTires s_nrTires;
+
+// The exhaust quads of the probe seat in view 0 in this frame (screen pixels of
+// the GTE, before the draw offset), and the buffer they were written for: the
+// hull of all of them (box) and, for the quad line, the box of each of the
+// first NR_EXHAUST_QUADS_LISTED (quadBox, x0 y0 x1 y1). Quads beyond that go
+// into the hull and the count and are named as not listed in the line.
+#define NR_EXHAUST_QUADS_LISTED 96
+
+struct NrExhaust
+{
+	int quads;
+	int db;
+	int box[4];
+	int quadBox[NR_EXHAUST_QUADS_LISTED][4];
+};
+
+internal struct NrExhaust s_nrExhaust;
+
+// The VBlank of the last exhaust line, so a VBlank never gets two (like the
+// probe lines).
+internal int s_nrExhaustLineVBlank = -1;
 
 // --- Helpers ---------------------------------------------------------------
 
@@ -1295,6 +1402,125 @@ internal const char *NativeRenderLayer_ProbeRefusal(const struct GameTracker *gG
 internal void NativeRenderLayer_ItemMatrix(const struct NrDrawItem *it, double ofsX, double ofsY, double S[4][4]);
 internal void NativeRenderLayer_ProbeBoxLine(int vblank, const char *what, const struct NrDrawItem *it, const double S[4][4], double ofsX, double ofsY);
 
+// THE EXHAUST LINE of the frame that is closed, only with --native-layer-report:
+// the box of every exhaust quad of the probe seat in view 0, as game/Particle.c
+// wrote their corners (gathered by NativeRenderLayer_NoteParticleQuad), plus the
+// draw offset of the buffer the frame was drawn in - the offset the probe lines
+// add as well, so both are in the same pixels of the internal picture at scale
+// 1. One line per frame the probe was bound in, at most one per VBlank (a second
+// frame closed at the same VBlank count gets none): "box none" without a quad,
+// "box unknown" while the buffer has no draw offset yet (no native draw in it
+// so far). The gathered box is emptied in any case.
+//
+// THE QUAD LINE, right after the hull line of the same VBlank and only then -
+// the hull line stays word for word as it was:
+//   [CTR RenderLayer] probe at vblank V: exhaust glow quads N: x0 y0 x1 y1; x0 y0 x1 y1; ...
+// one "x0 y0 x1 y1" per quad, in the order game/Particle.c wrote them, rounded
+// outward like the hull (floor of the smaller corner, ceil of the larger) in
+// the same pixels with the same draw offset, so the hull is exactly the box
+// around them. More than NR_EXHAUST_QUADS_LISTED quads: the first ones are
+// listed, then "; (K not listed)". Without a quad "quads 0", while the offset
+// is not known "quads N unknown" - each where the hull line says none or
+// unknown.
+internal void NativeRenderLayer_ExhaustQuadLine(int vblank, const struct NrExhaust *exhaust, int ofsKnown, double ofsX, double ofsY)
+{
+	char line[3072];
+	size_t used;
+	int listed;
+	int q;
+
+	if (exhaust->quads <= 0)
+	{
+		Platform_Log("[CTR RenderLayer] probe at vblank %d: exhaust glow quads 0\n", vblank);
+		return;
+	}
+	if (!ofsKnown)
+	{
+		Platform_Log("[CTR RenderLayer] probe at vblank %d: exhaust glow quads %d unknown\n", vblank, exhaust->quads);
+		return;
+	}
+
+	listed = (exhaust->quads < NR_EXHAUST_QUADS_LISTED) ? exhaust->quads : NR_EXHAUST_QUADS_LISTED;
+	line[0] = '\0';
+	used = 0;
+
+	for (q = 0; q < listed; q++)
+	{
+		const int *b = exhaust->quadBox[q];
+		const int written = snprintf(line + used, sizeof(line) - used, "%s%d %d %d %d", (q == 0) ? "" : "; ", (int)floor((double)b[0] + ofsX),
+		                             (int)floor((double)b[1] + ofsY), (int)ceil((double)b[2] + ofsX), (int)ceil((double)b[3] + ofsY));
+
+		if ((written < 0) || ((size_t)written >= (sizeof(line) - used)))
+		{
+			// Screen coordinates have at most five characters, so 96 quads take
+			// at most 96 * 25 characters; should a line still run full (the log
+			// takes 4096), the rest counts as not listed rather than cut in half.
+			line[used] = '\0';
+			listed = q;
+			break;
+		}
+		used += (size_t)written;
+	}
+
+	if (listed < exhaust->quads)
+	{
+		Platform_Log("[CTR RenderLayer] probe at vblank %d: exhaust glow quads %d: %s; (%d not listed)\n", vblank, exhaust->quads, line,
+		             exhaust->quads - listed);
+	}
+	else
+	{
+		Platform_Log("[CTR RenderLayer] probe at vblank %d: exhaust glow quads %d: %s\n", vblank, exhaust->quads, line);
+	}
+}
+
+internal void NativeRenderLayer_ExhaustLine(void)
+{
+	const struct NrExhaust exhaust = s_nrExhaust;
+
+	memset(&s_nrExhaust, 0, sizeof(s_nrExhaust));
+
+	if (exhaust.quads > 0)
+	{
+		s_nrCount.exhaustFrames++;
+	}
+
+	if (!g_cfg_nativeLayerReport)
+	{
+		return;
+	}
+
+	{
+		const int vblank = Platform_GetVBlankCount();
+
+		if (vblank == s_nrExhaustLineVBlank)
+		{
+			return;
+		}
+		s_nrExhaustLineVBlank = vblank;
+
+		if (exhaust.quads <= 0)
+		{
+			Platform_Log("[CTR RenderLayer] probe at vblank %d: exhaust glow box none\n", vblank);
+			NativeRenderLayer_ExhaustQuadLine(vblank, &exhaust, 0, 0.0, 0.0);
+		}
+		else if ((exhaust.db < 0) || (exhaust.db > 1) || !s_nrLastOfsKnown[exhaust.db])
+		{
+			Platform_Log("[CTR RenderLayer] probe at vblank %d: exhaust glow box unknown\n", vblank);
+			NativeRenderLayer_ExhaustQuadLine(vblank, &exhaust, 0, 0.0, 0.0);
+		}
+		else
+		{
+			const double ofsX = s_nrLastOfs[exhaust.db][0];
+			const double ofsY = s_nrLastOfs[exhaust.db][1];
+
+			Platform_Log("[CTR RenderLayer] probe at vblank %d: exhaust glow box %d %d %d %d\n", vblank,
+			             (int)floor((double)exhaust.box[0] + ofsX), (int)floor((double)exhaust.box[1] + ofsY), (int)ceil((double)exhaust.box[2] + ofsX),
+			             (int)ceil((double)exhaust.box[3] + ofsY));
+			NativeRenderLayer_ExhaustQuadLine(vblank, &exhaust, 1, ofsX, ofsY);
+		}
+	}
+}
+
 // The bound frame before this one, now that it is over (its OT was parsed and
 // drawn): the probe seat without a dispatch in view 0 is counted (hull cull,
 // blinking, invisibility, a full OT - all decided in the queue, which this
@@ -1310,6 +1536,8 @@ internal void NativeRenderLayer_CloseProbeFrame(void)
 
 	if (!frame.live)
 	{
+		// No queue, no exhaust line: what was gathered is dropped.
+		memset(&s_nrExhaust, 0, sizeof(s_nrExhaust));
 		return;
 	}
 
@@ -1325,6 +1553,8 @@ internal void NativeRenderLayer_CloseProbeFrame(void)
 	{
 		s_nrDepthPrevValid = 0;
 	}
+
+	NativeRenderLayer_ExhaustLine();
 
 	if (g_cfg_nativeLayerReport && !frame.drawn)
 	{
@@ -1393,11 +1623,17 @@ internal void NativeRenderLayer_BindProbe(const struct GameTracker *gGT)
 		if (s_nativeModelCount != 0)
 		{
 			Platform_Log("[CTR RenderLayer] probe unbound (%s)\n", why);
+
+			// The probe lets go: the wheel poses start anew at the next binding,
+			// so a restart never carries the old position or roll phase into
+			// its first tick.
+			NativeWheels_Forget();
 		}
 		s_probeModel = NULL;
 		s_probeInst = NULL;
 		s_nativeModelCount = 0;
 		NativeRenderLayer_ForgetDepth();
+		memset(&s_nrExhaust, 0, sizeof(s_nrExhaust));
 
 		// No native object, so no native draw: the main target lets its depth
 		// image go (nothing happens when it has none).
@@ -1627,6 +1863,136 @@ internal void NativeRenderLayer_ComposeModelView(const MATRIX *vp, const MATRIX 
 	}
 }
 
+// THE NATIVE WHEELS of one item, from the pose of the seat (platform/
+// native_wheels.c) and the values the body is drawn with. Plain float
+// arithmetic in C, only reading.
+//
+// THE MIDDLE goes through the matrix of the body (KONGRUENZ, idpp->mvp): the
+// retail middle (NativeWheels_LocalMiddle, DrawTires.c:338-366, in the
+// four-times units of DrawTires) in the vertex units of the model, which the
+// queue maps with m3x3 = inst->matrix times the scale ((mh->scale >> 2) times
+// inst->scale, RenderBucket_QueueExecute.c, the m3x3 build): retail turns
+// inst->scale * D / 4096 by inst->matrix in four-times units, the queue turns
+// g * (mh->scale / 16384) * (inst->scale / 4096) - so g = D * 4096 / mh->scale for
+// every axis, and inst->scale (squash and stretch) moves the middles exactly as
+// it moves the body. Then view = (mvp.m * g / 4096 + mvp.t) / 2^shift, the true
+// view point as NativeRenderLayer_ItemMatrix has it.
+//
+// THE WHEEL around it keeps its size (DrawTires.c:351, 370): it is turned into
+// the view by the view matrix and the rotation of the instance alone (the same
+// two matrices DrawTires uses, DrawTires.c:393-407, 514-533), without the scale:
+// view offset = vp * inst->matrix * (frame * size) / 4096^2, world units, with
+// the frame of the wheel from the pose and size = half width, radius, radius.
+internal void NativeRenderLayer_FillNativeWheels(struct NrDrawItem *it, const struct Instance *inst, const struct InstDrawPerPlayer *idpp,
+                                                 const struct PushBuffer *pb)
+{
+	const struct NativeWheelPose *pose = NativeWheels_PoseOf(inst);
+	const struct ModelHeader *mh = idpp->mh;
+	const MATRIX *vp = &pb->matrix_ViewProj;
+	const double s = ldexp(1.0, (int)it->mvpShift);
+	double modelScale[3];
+	double turn[3][3];
+	double size[3];
+	int wheel;
+	int r;
+	int c;
+	int k;
+
+	it->nativeWheels = 0;
+
+	if ((pose == NULL) || (mh == NULL) || (pose->wheelSize == 0))
+	{
+		return;
+	}
+
+	modelScale[0] = (double)mh->scale.x;
+	modelScale[1] = (double)mh->scale.y;
+	modelScale[2] = (double)(u16)mh->scale.z;
+	if ((modelScale[0] == 0.0) || (modelScale[1] == 0.0) || (modelScale[2] == 0.0))
+	{
+		return;
+	}
+
+	for (r = 0; r < 3; r++)
+	{
+		for (c = 0; c < 3; c++)
+		{
+			double sum = 0.0;
+
+			for (k = 0; k < 3; k++)
+			{
+				sum += (double)vp->m[r][k] * (double)inst->matrix.m[k][c];
+			}
+			turn[r][c] = sum / (4096.0 * 4096.0);
+		}
+	}
+
+	size[0] = NativeWheels_HalfWidth(pose);
+	size[1] = NativeWheels_Radius(pose);
+	size[2] = size[1];
+
+	for (wheel = 0; wheel < NATIVE_WHEELS_COUNT; wheel++)
+	{
+		double d[3];
+		double g[3];
+
+		NativeWheels_LocalMiddle(wheel, d);
+		for (c = 0; c < 3; c++)
+		{
+			g[c] = (d[c] * 4096.0) / modelScale[c];
+		}
+
+		// The exact middle: world offset = inst->matrix * (inst->scale * D /
+		// 4096) / 4 / 4096 (DrawTires.c:338-366 and :393-397 without the
+		// integer cuts), plus the exact camera-relative position, through vp.
+		{
+			const double scale[3] = {(double)inst->scale.x, (double)inst->scale.y, (double)inst->scale.z};
+			double world[3];
+
+			for (r = 0; r < 3; r++)
+			{
+				world[r] = (double)inst->matrix.t[r] - (double)((r == 0) ? pb->pos.x : ((r == 1) ? pb->pos.y : pb->pos.z));
+				for (c = 0; c < 3; c++)
+				{
+					world[r] += ((double)inst->matrix.m[r][c] / 4096.0) * ((scale[c] * d[c]) / (4096.0 * 4.0));
+				}
+			}
+			for (r = 0; r < 3; r++)
+			{
+				it->wheelExact[wheel][r] = 0.0;
+				for (c = 0; c < 3; c++)
+				{
+					it->wheelExact[wheel][r] += ((double)vp->m[r][c] / 4096.0) * world[c];
+				}
+			}
+		}
+
+		for (r = 0; r < 3; r++)
+		{
+			double t = (double)it->mvpT[r];
+
+			for (c = 0; c < 3; c++)
+			{
+				t += ((double)it->mvp[r][c] / 4096.0) * g[c];
+			}
+			it->wheelB[wheel][r] = t / s;
+
+			for (c = 0; c < 3; c++)
+			{
+				double sum = 0.0;
+
+				for (k = 0; k < 3; k++)
+				{
+					sum += turn[r][k] * pose->axis[wheel][k][c];
+				}
+				it->wheelA[wheel][r][c] = sum * size[c];
+			}
+		}
+	}
+
+	it->nativeWheels = 1;
+}
+
 // One item from the values of this instance view, as the handler NORMAL would
 // have drawn it. Plain integer and float arithmetic in C; the frame helpers of
 // the queue it calls only read the frame headers and shift words.
@@ -1742,6 +2108,12 @@ internal int NativeRenderLayer_FillItem(struct NrDrawItem *it, const struct Game
 	it->rectH = pb->rect.h;
 
 	NativeRenderLayer_FillWheels(it, gGT, inst, pb);
+
+	// The native wheels only where they are drawn or measured.
+	if (g_cfg_nativeProbeWheels || g_cfg_nativeWheelReport)
+	{
+		NativeRenderLayer_FillNativeWheels(it, inst, idpp, pb);
+	}
 
 	return notes;
 }
@@ -1982,6 +2354,76 @@ internal void NativeRenderLayer_FillPose(struct NrDrawItem *it, const struct Ins
 	}
 }
 
+// THE FLOAT LINE of --native-wheel-report, once in a frame whose pull saw a new
+// tick, for the item of view 0: the pose of the tick and the four float wheel
+// middles through the matrix of the body, projected as the GTE projects the
+// retail wheel corners - half the view plus H x / z, without the draw offset of
+// the split (DrawTires.c:514-533: OFX = rect.w << 15, OFY = rect.h << 15, H),
+// so the line beside it (NativeRenderLayer_TiresEnd) is in the same pixels.
+internal void NativeRenderLayer_WheelFloatLine(const struct NrDrawItem *it, const struct Instance *inst)
+{
+	const struct NativeWheelPose *pose = NativeWheels_PoseOf(inst);
+	const double H = (double)it->H;
+	const double ofx = (double)it->rectW / 2.0;
+	const double ofy = (double)it->rectH / 2.0;
+	char move[32];
+	char wheels[4][48];
+	char exact[4][48];
+	int wheel;
+
+	if (!g_cfg_nativeWheelReport || !s_nrWheelSample || s_nrWheelFloatDone || (pose == NULL))
+	{
+		return;
+	}
+	s_nrWheelFloatDone = 1;
+	s_nrCount.wheelFloatLines++;
+
+	if (pose->moveKnown)
+	{
+		snprintf(move, sizeof(move), "%.4f", pose->move);
+	}
+	else
+	{
+		snprintf(move, sizeof(move), "none");
+	}
+
+	for (wheel = 0; wheel < NATIVE_WHEELS_COUNT; wheel++)
+	{
+		const double *b = it->wheelB[wheel];
+		const double *e = it->wheelExact[wheel];
+
+		if (b[2] <= 0.0)
+		{
+			snprintf(wheels[wheel], sizeof(wheels[wheel]), "behind");
+		}
+		else
+		{
+			snprintf(wheels[wheel], sizeof(wheels[wheel]), "%.3f %.3f", ofx + ((H * b[0]) / b[2]), ofy + ((H * b[1]) / b[2]));
+		}
+
+		if (e[2] <= 0.0)
+		{
+			snprintf(exact[wheel], sizeof(exact[wheel]), "behind");
+		}
+		else
+		{
+			snprintf(exact[wheel], sizeof(exact[wheel]), "%.3f %.3f", ofx + ((H * e[0]) / e[2]), ofy + ((H * e[1]) / e[2]));
+		}
+	}
+
+	// The line of the pose and the KONGRUENZ middles (as the wheels are drawn),
+	// its last field the sign class of the tick (platform/native_wheels.h).
+	Platform_Log("[CTR RenderLayer] wheel float at vblank %d tick %u: speed %d, move %s, roll step %.6f, roll %.6f, steer %d, "
+	             "w0 %s, w1 %s, w2 %s, w3 %s, sign %s\n",
+	             Platform_GetVBlankCount(), s_nrWheelSampleTimer, (int)pose->speed, move, pose->rollStep, pose->roll, (int)pose->wheelRotation,
+	             wheels[0], wheels[1], wheels[2], wheels[3], NativeWheels_SignName(pose->sign));
+
+	// The same middles with the exact translation, the ones DE4 is measured on.
+	s_nrCount.wheelExactLines++;
+	Platform_Log("[CTR RenderLayer] wheel exact at vblank %d tick %u: w0 %s, w1 %s, w2 %s, w3 %s\n", Platform_GetVBlankCount(), s_nrWheelSampleTimer,
+	             exact[0], exact[1], exact[2], exact[3]);
+}
+
 // The probe part of the route, for an instance view of the bound model. 1 =
 // native: the item is in the list and its marker in the own OT range, and the
 // retail handler is skipped. 0 = retail, with the first reason counted.
@@ -2061,7 +2503,7 @@ internal int NativeRenderLayer_RouteProbe(const struct Instance *inst, const str
 		return NativeRenderLayer_ProbeFallback(NR_PROBE_FALLBACK_NO_RANGE);
 	}
 
-	if (s_nrItemCount[db] >= NATIVE_RENDER_LAYER_ITEMS)
+	if (s_nrItemCount[db] >= (g_cfg_nativeProbeWheels ? (NATIVE_LAYER_POSE_SLOTS / NR_WHEEL_REGIONS) : NATIVE_RENDER_LAYER_ITEMS))
 	{
 		return NativeRenderLayer_ProbeFallback(NR_PROBE_FALLBACK_ITEM_LIST_FULL);
 	}
@@ -2113,6 +2555,15 @@ internal int NativeRenderLayer_RouteProbe(const struct Instance *inst, const str
 		if (memcmp(composed, it->mvp, sizeof(composed)) != 0)
 		{
 			s_nrCount.probeComposedOff++;
+		}
+	}
+
+	if (it->nativeWheels)
+	{
+		s_nrCount.wheelItems++;
+		if (view == 0)
+		{
+			NativeRenderLayer_WheelFloatLine(it, inst);
 		}
 	}
 
@@ -2420,6 +2871,9 @@ void NativeRenderLayer_NoteRestore(void)
 	// The seats of the pool before the restore are none of the restored pool:
 	// until the next pull reads them anew, no hook finds a seat.
 	NativeRenderLayer_ClearSeats();
+
+	// The wheel poses jump with the restore: every seat starts anew.
+	NativeWheels_Forget();
 }
 
 // The first pull after a restore: every object it meets has to be new - a
@@ -2507,6 +2961,12 @@ void NativeRenderLayer_Pull(struct GameTracker *gGT)
 	// them, and a loading frame has to leave the table empty.
 	NativeRenderLayer_ReadSeats(gGT);
 
+	// The lines of --native-wheel-report belong to a frame that starts a tick;
+	// set further down, once the tick is known.
+	s_nrWheelSample = 0;
+	s_nrWheelFloatDone = 0;
+	s_nrWheelRetailDone = 0;
+
 	// The probe binding, before the gate below: the retail wheels ask for the
 	// bound model in frames without the queue too, so a stale binding must not
 	// outlive the race (main menu, a load). Without --native-probe never runs.
@@ -2549,6 +3009,21 @@ void NativeRenderLayer_Pull(struct GameTracker *gGT)
 		s_nrTick.hostTimeUs = 0;
 		s_nrHaveTick = 1;
 		s_nrCount.ticks++;
+	}
+
+	// THE WHEEL POSES, only while the probe is on: every seat of this frame,
+	// moved on once per tick (platform/native_wheels.c). Reads the drivers the
+	// seat table checked; writes only that file's table.
+	if (NativeRenderLayer_ProbeActive())
+	{
+		for (seat = 0; seat < NATIVE_RENDER_LAYER_DRIVERS; seat++)
+		{
+			NativeWheels_Pull(seat, s_nrSeatDriver[seat], s_nrSeatInst[seat], tick, (u32)gGT->timer, (int)gGT->elapsedTimeMS,
+			                  seat == g_cfg_nativeProbeSeat);
+		}
+
+		s_nrWheelSample = g_cfg_nativeWheelReport && tick;
+		s_nrWheelSampleTimer = (u32)gGT->timer;
 	}
 
 	for (slot = 0; slot < NATIVE_RENDER_LAYER_SLOTS; slot++)
@@ -2832,6 +3307,12 @@ void NativeRenderLayer_Report(void)
 			NativeRenderer_NativeTextureUploads(&uploads, &duringFrame);
 			Platform_Log("[CTR RenderLayer] at exit: probe texture uploads %u, uploads during a frame %u\n", uploads, duringFrame);
 		}
+		// The upload rule in one number, for every form: probe texture uploads
+		// that came in a race frame (platform/native_tex.c, NativeTex_InRaceFrame)
+		// - the start-up texture of texture, pose and wheels and the loading
+		// screen texture of mips alike. 0 expected. The line above stays as it
+		// was; for mips it counts the loading-screen upload as "during a frame".
+		Platform_Log("[CTR RenderLayer] at exit: probe texture uploads during a race frame %u\n", NativeRenderer_ProbeUploadsInRaceFrame());
 
 		// The form pose only, so the report of the other forms stays as it was.
 		if (g_cfg_nativeProbe == NATIVE_PROBE_POSE)
@@ -2849,6 +3330,30 @@ void NativeRenderLayer_Report(void)
 		}
 		Platform_Log("[CTR RenderLayer] at exit: seat %d frames without a dispatch while bound %llu\n", g_cfg_nativeProbeSeat,
 		             s_nrCount.probeSeat0NoDispatch);
+
+		// The wheels and the exhaust: new lines after the ones of before.
+		{
+			unsigned long long ticks = 0;
+			unsigned long long starts = 0;
+			unsigned long long signs[NATIVE_WHEEL_SIGNS];
+
+			NativeWheels_Counts(&ticks, &starts, signs);
+			Platform_Log("[CTR RenderLayer] at exit: probe seat %d retail wheel FT4: solid %llu, reflection %llu\n", g_cfg_nativeProbeSeat,
+			             s_nrCount.tiresSolidFt4, s_nrCount.tiresReflectionFt4);
+			Platform_Log("[CTR RenderLayer] at exit: probe native wheels: items %llu, wheel draws %llu, not drawn %llu; report lines float %llu, "
+			             "exact %llu, retail %llu\n",
+			             s_nrCount.wheelItems, s_nrCount.wheelDraws, s_nrCount.wheelNotDrawn, s_nrCount.wheelFloatLines, s_nrCount.wheelExactLines,
+			             s_nrCount.wheelRetailLines);
+			// The sign check of the probe seat alone: the ticks with motion fall
+			// into agree, disagree and zero (roll step 0); still and none are
+			// the ticks it does not count.
+			Platform_Log("[CTR RenderLayer] at exit: probe seat %d wheel pose ticks %llu, starts %llu; sign check |move| >= %.4f world units: "
+			             "agree %llu, disagree %llu, zero %llu; not counted: still %llu, none %llu\n",
+			             g_cfg_nativeProbeSeat, ticks, starts, NATIVE_WHEELS_MOVING, signs[NATIVE_WHEEL_SIGN_AGREE], signs[NATIVE_WHEEL_SIGN_DISAGREE],
+			             signs[NATIVE_WHEEL_SIGN_ZERO], signs[NATIVE_WHEEL_SIGN_STILL], signs[NATIVE_WHEEL_SIGN_NONE]);
+			Platform_Log("[CTR RenderLayer] at exit: probe exhaust: frames with quads %llu, quads %llu\n", s_nrCount.exhaustFrames,
+			             s_nrCount.exhaustQuads);
+		}
 	}
 }
 
@@ -2918,9 +3423,252 @@ int NativeRenderLayer_ProbeActive(void)
 }
 
 // Called per wheel set and frame, so one comparison while nothing is bound.
+// --native-wheel-report keeps the retail wheels of the bound model on: the
+// measuring set-up "probe with retail wheels" (render plan D.4, step 3a).
 int NativeRenderLayer_ModelHidesWheels(const struct Model *model)
 {
-	return (s_nativeModelCount != 0) && (model == s_probeModel);
+	return (s_nativeModelCount != 0) && (model == s_probeModel) && !g_cfg_nativeWheelReport;
+}
+
+// THE RETAIL WHEELS OF THE PROBE SEAT, from game/DrawTires.c. Begin and End
+// frame one wheel set of one view; Corners hands over the four projected
+// corners of a wheel (the packed screen words DrawTires read from the GTE,
+// nothing computed anew), Primitive says that DrawTires wrote and linked the quad
+// of that wheel. Only for the instance the probe is bound to; for every other
+// one Begin leaves at its first comparison. Nothing is written but this file's
+// statics.
+void NativeRenderLayer_TiresBegin(const struct Instance *inst, const struct PushBuffer *pb, int reflection)
+{
+	const struct GameTracker *gGT = sdata->gGT;
+
+	s_nrTires.active = 0;
+	if ((s_nativeModelCount == 0) || (inst == NULL) || (inst != s_probeInst) || (gGT == NULL))
+	{
+		return;
+	}
+
+	memset(&s_nrTires, 0, sizeof(s_nrTires));
+	s_nrTires.active = 1;
+	s_nrTires.reflection = reflection;
+	s_nrTires.view0 = (pb == &gGT->pushBuffer[0]);
+	s_nrTires.wheel = -1;
+}
+
+void NativeRenderLayer_TiresCorners(int wheelIndex, const s32 sxy[4])
+{
+	int corner;
+
+	if (!s_nrTires.active || (wheelIndex < 0) || (wheelIndex > 3))
+	{
+		return;
+	}
+
+	s_nrTires.wheel = wheelIndex;
+	for (corner = 0; corner < 4; corner++)
+	{
+		s_nrTires.corners[wheelIndex][corner][0] = (s16)((u32)sxy[corner] & 0xffffu);
+		s_nrTires.corners[wheelIndex][corner][1] = (s16)((u32)sxy[corner] >> 16);
+	}
+}
+
+void NativeRenderLayer_TiresPrimitive(void)
+{
+	if (!s_nrTires.active)
+	{
+		return;
+	}
+
+	if (s_nrTires.reflection)
+	{
+		s_nrCount.tiresReflectionFt4++;
+		return;
+	}
+
+	s_nrCount.tiresSolidFt4++;
+	if ((s_nrTires.wheel >= 0) && (s_nrTires.wheel <= 3))
+	{
+		s_nrTires.emitted[s_nrTires.wheel] = 1;
+	}
+}
+
+// THE RETAIL LINE of --native-wheel-report: in the frame of the float line, for
+// the solid pass of view 0, the middle of every wheel quad DrawTires emitted -
+// the mean of its four projected corners (GTE screen pixels, integers, before
+// the draw offset) - and "none" for a wheel without a quad.
+void NativeRenderLayer_TiresEnd(void)
+{
+	const struct NrTires tires = s_nrTires;
+	char wheels[4][48];
+	int wheel;
+
+	s_nrTires.active = 0;
+
+	if (!tires.active || tires.reflection || !tires.view0 || !g_cfg_nativeWheelReport || !s_nrWheelSample || s_nrWheelRetailDone)
+	{
+		return;
+	}
+	s_nrWheelRetailDone = 1;
+	s_nrCount.wheelRetailLines++;
+
+	for (wheel = 0; wheel < 4; wheel++)
+	{
+		if (!tires.emitted[wheel])
+		{
+			snprintf(wheels[wheel], sizeof(wheels[wheel]), "none");
+			continue;
+		}
+
+		snprintf(wheels[wheel], sizeof(wheels[wheel]), "%.2f %.2f",
+		         (double)(tires.corners[wheel][0][0] + tires.corners[wheel][1][0] + tires.corners[wheel][2][0] + tires.corners[wheel][3][0]) / 4.0,
+		         (double)(tires.corners[wheel][0][1] + tires.corners[wheel][1][1] + tires.corners[wheel][2][1] + tires.corners[wheel][3][1]) / 4.0);
+	}
+
+	Platform_Log("[CTR RenderLayer] wheel retail at vblank %d tick %u: w0 %s, w1 %s, w2 %s, w3 %s\n", Platform_GetVBlankCount(), s_nrWheelSampleTimer,
+	             wheels[0], wheels[1], wheels[2], wheels[3]);
+}
+
+// THE EXHAUST OF THE PROBE SEAT, from game/Particle.c, Particle_RenderList, for
+// every quad it has just written and linked: only its four corners are read
+// (the screen words the GTE gave, written into the quad). Kept are the quads of
+// view 0 of a particle that belongs to the bound instance and draws in its
+// range (PARTICLE_SET_COLOR_FLAG_DRIVER_LOCAL), with the icons of the exhaust:
+// icon group 1, or 7 under water (game/Vehicle/VehEmitter.c:6-7, 102, 128,
+// 132, 146). The burn smoke (game/Vehicle/VehFrame.c:88-95) has the same icon
+// group and owner and is kept with it - for a mask the larger box is the safe
+// side. One box per frame, written when the frame is closed.
+void NativeRenderLayer_NoteParticleQuad(const struct Particle *particle, const struct PushBuffer *pb, const POLY_FT4 *poly)
+{
+	const struct GameTracker *gGT = sdata->gGT;
+	int x[4];
+	int y[4];
+	int corner;
+
+	if ((s_nativeModelCount == 0) || (particle == NULL) || (poly == NULL) || (gGT == NULL) || (particle->owner.driverInst != s_probeInst) ||
+	    (pb != &gGT->pushBuffer[0]) || ((particle->flagsSetColor & PARTICLE_SET_COLOR_FLAG_DRIVER_LOCAL) == 0) ||
+	    ((particle->ptrIconGroup != gGT->iconGroup[1]) && (particle->ptrIconGroup != gGT->iconGroup[7])))
+	{
+		return;
+	}
+
+	x[0] = poly->x0;
+	y[0] = poly->y0;
+	x[1] = poly->x1;
+	y[1] = poly->y1;
+	x[2] = poly->x2;
+	y[2] = poly->y2;
+	x[3] = poly->x3;
+	y[3] = poly->y3;
+
+	for (corner = 0; corner < 4; corner++)
+	{
+		const int first = (s_nrExhaust.quads == 0) && (corner == 0);
+
+		if (first || (x[corner] < s_nrExhaust.box[0]))
+		{
+			s_nrExhaust.box[0] = x[corner];
+		}
+		if (first || (y[corner] < s_nrExhaust.box[1]))
+		{
+			s_nrExhaust.box[1] = y[corner];
+		}
+		if (first || (x[corner] > s_nrExhaust.box[2]))
+		{
+			s_nrExhaust.box[2] = x[corner];
+		}
+		if (first || (y[corner] > s_nrExhaust.box[3]))
+		{
+			s_nrExhaust.box[3] = y[corner];
+		}
+	}
+
+	// The box of this quad alone, for the quad line.
+	if (s_nrExhaust.quads < NR_EXHAUST_QUADS_LISTED)
+	{
+		int *b = s_nrExhaust.quadBox[s_nrExhaust.quads];
+
+		b[0] = x[0];
+		b[1] = y[0];
+		b[2] = x[0];
+		b[3] = y[0];
+		for (corner = 1; corner < 4; corner++)
+		{
+			b[0] = (x[corner] < b[0]) ? x[corner] : b[0];
+			b[1] = (y[corner] < b[1]) ? y[corner] : b[1];
+			b[2] = (x[corner] > b[2]) ? x[corner] : b[2];
+			b[3] = (y[corner] > b[3]) ? y[corner] : b[3];
+		}
+	}
+
+	s_nrExhaust.quads++;
+	s_nrExhaust.db = s_nrMarkerDb;
+	s_nrCount.exhaustQuads++;
+}
+
+// THE WHEEL DRAWS of the form wheels: per wheel its two halves (platform/
+// native_probe.c), each through the renderer's probe draw with a matrix of its
+// own - the screen mapping of NativeRenderLayer_ItemMatrix (H, half the view
+// plus the draw offset, zNear = H / 8) applied to view = wheelA * u + wheelB -
+// and a region of the pose buffer of its own (the body's region + 1 + 2 * wheel
+// + half). The right-hand wheels are the left-hand mesh turned by 180 degrees
+// about y (their frame, platform/native_wheels.c), never mirrored, so the cull
+// of the body holds for them.
+internal void NativeRenderLayer_DrawWheels(const struct NrDrawItem *it, int bodyRegion, const RECT16 *clip, const DISPENV *dispenv, int onScreen,
+                                           double ofsX, double ofsY)
+{
+	const double H = (double)it->H;
+	const double ofx = (double)(it->rectW >> 1) + ofsX;
+	const double ofy = (double)(it->rectH >> 1) + ofsY;
+	const double zNear = H / 8.0;
+	int wheel;
+	int half;
+
+	for (wheel = 0; wheel < NATIVE_WHEELS_COUNT; wheel++)
+	{
+		const double(*A)[3] = it->wheelA[wheel];
+		const double *b = it->wheelB[wheel];
+		double S[4][4];
+		int r;
+		int c;
+
+		for (c = 0; c < 3; c++)
+		{
+			S[0][c] = (H * A[0][c]) + (ofx * A[2][c]);
+			S[1][c] = (H * A[1][c]) + (ofy * A[2][c]);
+			S[2][c] = 0.0;
+			S[3][c] = A[2][c];
+		}
+		S[0][3] = (H * b[0]) + (ofx * b[2]);
+		S[1][3] = (H * b[1]) + (ofy * b[2]);
+		S[2][3] = zNear;
+		S[3][3] = b[2];
+
+		for (half = 0; half < NATIVE_PROBE_WHEEL_HALVES; half++)
+		{
+			struct NativeLayerDraw draw;
+
+			memset(&draw, 0, sizeof(draw));
+			for (c = 0; c < 4; c++)
+			{
+				for (r = 0; r < 4; r++)
+				{
+					draw.screenFromModel[(c * 4) + r] = (float)S[r][c];
+				}
+			}
+			draw.cull = (int)it->cull;
+			draw.clearDepth = 0;
+			draw.vertices = NativeProbe_WheelVertices(half);
+			draw.vertexRegion = bodyRegion + 1 + (wheel * NATIVE_PROBE_WHEEL_HALVES) + half;
+
+			if (NativeRenderer_DrawNativeProbe(&draw, clip, dispenv, onScreen))
+			{
+				s_nrCount.wheelDraws++;
+			}
+			else
+			{
+				s_nrCount.wheelNotDrawn++;
+			}
+		}
+	}
 }
 
 // THE NATIVE DRAW of one item, from NativeGpu_DrawNativeSplit in the order of
@@ -2968,7 +3716,7 @@ void NativeRenderLayer_DrawNativeItem(u32 item, const RECT16 *clip, const DISPEN
 	{
 		NativeProbe_PoseVertices((it->poseDrawn >= 0) ? (int)it->poseDrawn : 0, s_nrPoseVertices);
 		draw.vertices = s_nrPoseVertices;
-		draw.vertexRegion = ((int)(s_nrFrame % NATIVE_LAYER_POSE_FRAMES) * NATIVE_LAYER_POSE_SLOTS) + (int)item;
+		draw.vertexRegion = ((int)(s_nrFrame % NATIVE_LAYER_POSE_FRAMES) * NATIVE_LAYER_POSE_SLOTS) + ((int)item * (g_cfg_nativeProbeWheels ? NR_WHEEL_REGIONS : 1));
 	}
 
 	if (!NativeRenderer_DrawNativeProbe(&draw, clip, dispenv, onScreen))
@@ -2983,6 +3731,13 @@ void NativeRenderLayer_DrawNativeItem(u32 item, const RECT16 *clip, const DISPEN
 		s_nrCount.poseVertexWrites++;
 	}
 	s_nrProbeFrame.drawn = 1;
+
+	// The form wheels: the four wheels right after the body, in the same split,
+	// the same depth (not cleared again) and the same cull.
+	if (g_cfg_nativeProbeWheels && it->nativeWheels && (draw.vertices != NULL))
+	{
+		NativeRenderLayer_DrawWheels(it, draw.vertexRegion, clip, dispenv, onScreen, (double)ofsX, (double)ofsY);
+	}
 
 	if (draw.clearDepth)
 	{

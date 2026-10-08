@@ -312,6 +312,36 @@ NativeGfxFilter NativeGfx_TextureFilter(TextureID texture)
 	return s_gfx->textureFilter(texture);
 }
 
+// Counted as one texture upload: unlike NativeGfx_CreateTexture, every call
+// here uploads, and the frame line says how many uploads a frame asked for,
+// not how many levels they had. Only the native texture manager calls it, so a
+// run without --native-preview counts what it always counted.
+TextureID NativeGfx_CreateTextureLevels(const NativeGfxTextureLevelsDesc *desc)
+{
+	s_gfxFrame.textureUploads++;
+	return s_gfx->createTextureLevels(desc);
+}
+
+void NativeGfx_SetTextureSampling(TextureID texture, const NativeGfxSampling *sampling)
+{
+	s_gfx->setTextureSampling(texture, sampling);
+}
+
+void NativeGfx_TextureLimits(NativeGfxTextureLimits *out)
+{
+	s_gfx->textureLimits(out);
+}
+
+u32 NativeGfx_ShrinkStaging(u32 keepBytes)
+{
+	return s_gfx->shrinkStaging(keepBytes);
+}
+
+u32 NativeGfx_StagingBytes(void)
+{
+	return s_gfx->stagingBytes();
+}
+
 NativeGfxBuffer NativeGfx_CreateVertexBuffer(const NativeGfxVertexBufferDesc *desc)
 {
 	return s_gfx->createVertexBuffer(desc);

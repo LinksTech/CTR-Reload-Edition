@@ -71,6 +71,7 @@
 #include "platform/native_replay_scheduler.c"
 #include "platform/native_gfx_vk.c"
 #include "platform/native_gfx.c"
+#include "platform/native_tex.c"
 #include "platform/native_renderer.c"
 #include "platform/native_savestate.c"
 #include "platform/native_state.c"
@@ -78,6 +79,7 @@
 #include "platform/native_preview.c"
 #include "platform/native_testfiles.c"
 #include "platform/native_chars.c"
+#include "platform/native_wheels.c"
 #include "platform/native_render_layer.c"
 #include "platform/native_probe.c"
 #include "platform/native_depth_check.c"
@@ -241,9 +243,12 @@ static const NativeSwitch s_devSwitches[] = {
     {"--dump-vram", "<vblanks>", "VRAM dumps <prefix>-<vblank>.tga at these VBlanks (comma list, up to 8)"},
     {"--dump-prefix", "<name>", "file prefix of the VRAM dumps (default dump)"},
     {"--dump-exit", "", "end after the last VRAM dump"},
-    {"--native-probe", "<form>", "with --native-preview: seat 0 of a one-player arcade race draws a generated test body natively (body; texture: the same body coloured by a texture; pose: textured, its top shaped by the retail animation frame)"},
+    {"--native-probe", "<form>", "with --native-preview: seat 0 of a one-player arcade race draws a generated test body natively (body; texture: the same body coloured by a texture; pose: textured, its top shaped by the retail animation frame; wheels: pose with four generated wheels in place of the retail wheels; mips: pose coloured by an sRGB texture with 9 levels, one colour each, uploaded while the race loads)"},
+    {"--native-filter", "<nearest|linear>", "with --native-preview: how textures of the native texture manager are sampled - nearest (pixelated, the default) or linear (trilinear, with anisotropy up to the device limit); never saved"},
+    {"--native-wheel-report", "", "only with --native-preview --native-probe: per tick the float wheel middles, roll phase and speed of the probe seat beside the middles of its retail wheels, which stay on for that seat (measuring the wheel poses)"},
     {"--native-probe-selftest", "", "check the bytes of the generated probe mesh against their hash (ctest native_probe_selftest)"},
     {"--native-depth-selftest", "", "check that a native draw keeps its depth across view z 0x1000 (ctest native_depth_selftest)"},
+    {"--native-tex-selftest", "", "check the native texture manager: tables, the shader round trip, the edge rule and the levels of a fixed image (ctest native_tex_selftest)"},
     {"--native-probe-seat", "<n>", "only with --native-probe: the probe takes the model of seat n (0 to 7) instead of seat 0 (default 0)"},
     {"--native-depth-d24", "", "with --native-preview: depth images as X8_D24_UNORM_PACK32 instead of D32_SFLOAT (measuring the two)"},
     {"--perf", "", "perf recording per frame into debug/perf/perf-latest"},
@@ -587,8 +592,17 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 			// Silent like --native-preview; the late place checks the value and
 			// the pairing with --native-preview and says so.
 			extern int g_cfg_nativeProbe;
+			const char *form = argv[++argIndex];
 
-			g_cfg_nativeProbe = NativeProbe_FormFromName(argv[++argIndex]);
+			g_cfg_nativeProbe = NativeProbe_FormFromName(form);
+
+			// The form wheels is the form pose plus the wheels; its texture
+			// carries the wheel texel and is made in Platform_Init as well.
+			g_cfg_nativeProbeWheels = (g_cfg_nativeProbe != NATIVE_PROBE_NONE) && NativeProbe_FormHasWheels(form);
+
+			// The form mips is the form pose with the mips texture, made at the
+			// race's loading screen rather than in Platform_Init.
+			g_cfg_nativeProbeMips = (g_cfg_nativeProbe != NATIVE_PROBE_NONE) && NativeProbe_FormHasMips(form);
 		}
 		else if ((strcmp(argv[argIndex], "--msaa") == 0) && ((argIndex + 1) < argc))
 		{
@@ -2059,6 +2073,15 @@ int main(int argc, char *argv[])
 			return NativeDepthCheck_Run();
 		}
 
+		// The native texture manager without a device (platform/native_tex.c,
+		// ctest native_tex_selftest): tables, the shader round trip, the edge
+		// rule and the levels of a fixed image against their golden. Up here for
+		// the same reason: it computes on tables in the exe, no window, no data.
+		if (strcmp(argv[argIndex], "--native-tex-selftest") == 0)
+		{
+			return NativeTex_SelfTest();
+		}
+
 		// The driver select grid (game/230/MM_NativeCharGrid.c) for every count of
 		// custom entries: layout, navigation and scrolling against the D230
 		// tables. Up here for the same reason: it computes on tables that are in
@@ -2379,12 +2402,115 @@ int main(int argc, char *argv[])
 			if ((NativeProbe_FormFromName(probeForm) == NATIVE_PROBE_NONE) || !previewGiven)
 			{
 				fflush(stdout);
-				fprintf(stderr, "switch --native-probe-seat only acts with the probe on: --native-preview --native-probe body|texture|pose\n");
+				fprintf(stderr, "switch --native-probe-seat only acts with the probe on: --native-preview --native-probe body|texture|pose|wheels|mips\n");
 				fflush(stderr);
 				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
 			}
 
 			g_cfg_nativeProbeSeat = (int)seat;
+		}
+		else if (strcmp(argv[argIndex], "--native-wheel-report") == 0)
+		{
+			// The wheel report of the native probe (platform/native_wheels.c,
+			// platform/native_render_layer.c). A measuring switch: without the
+			// probe on - the last --native-probe with a known form and
+			// --native-preview, as for --native-probe-seat - it would measure
+			// nothing, so the start ends here, before the first window; so does
+			// the switch given more than once (as --native-probe-seat). Nothing
+			// is needed before Platform_Init; the big loop below names it in the
+			// log. Never in ctr-settings.cfg.
+			const char *probeForm = NULL;
+			int previewGiven = 0;
+			int reportGiven = 0;
+
+			for (int scanIndex = 1; scanIndex < argc; scanIndex++)
+			{
+				if (strcmp(argv[scanIndex], "--native-wheel-report") == 0)
+				{
+					reportGiven++;
+				}
+				else if (strcmp(argv[scanIndex], "--native-preview") == 0)
+				{
+					previewGiven = 1;
+				}
+				else if ((strcmp(argv[scanIndex], "--native-probe") == 0) && ((scanIndex + 1) < argc))
+				{
+					probeForm = argv[++scanIndex];
+				}
+			}
+
+			if (reportGiven > 1)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --native-wheel-report is given %d times - once only\n", reportGiven);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			if ((NativeProbe_FormFromName(probeForm) == NATIVE_PROBE_NONE) || !previewGiven)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --native-wheel-report only acts with the probe on: --native-preview --native-probe body|texture|pose|wheels|mips\n");
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			g_cfg_nativeWheelReport = 1;
+		}
+		else if ((strcmp(argv[argIndex], "--native-filter") == 0) && ((argIndex + 1) < argc))
+		{
+			// The filter option of the native texture manager for this run
+			// (platform/native_tex.c, renderer plan C.6.3): nearest (pixelated,
+			// the default) or linear (trilinear, anisotropy up to the device
+			// limit, granted only because --native-preview requested it when
+			// the device was made). A measuring switch: a value other than
+			// nearest or linear, the switch given twice, or no --native-preview
+			// - without which the manager makes nothing to sample - ends the
+			// start here, before the first window, as --native-probe-seat does.
+			// Read before the first texture of the manager; the big loop below
+			// names it in the log. Never in ctr-settings.cfg.
+			const char *value = argv[++argIndex];
+			const int filter = NativeTex_FilterFromName(value);
+			int previewGiven = 0;
+			int filterGiven = 0;
+
+			for (int scanIndex = 1; scanIndex < argc; scanIndex++)
+			{
+				if (strcmp(argv[scanIndex], "--native-filter") == 0)
+				{
+					filterGiven++;
+				}
+				else if (strcmp(argv[scanIndex], "--native-preview") == 0)
+				{
+					previewGiven = 1;
+				}
+			}
+
+			if (filter < 0)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --native-filter expects nearest or linear, got %s\n", value);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			if (filterGiven > 1)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --native-filter is given %d times - once only\n", filterGiven);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			if (!previewGiven)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --native-filter only acts together with --native-preview\n");
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			g_cfg_nativeFilter = filter;
 		}
 		else if (strcmp(argv[argIndex], "--native-depth-d24") == 0)
 		{
@@ -2862,6 +2988,23 @@ int main(int argc, char *argv[])
 				// The marker channel reports at exit only in a run that has it.
 				Platform_AtExitReport(NativeRenderLayer_MarkerReport);
 			}
+			else if (strcmp(argv[argIndex], "--native-wheel-report") == 0)
+			{
+				// Set in the first loop of main, which also refused it without the
+				// probe on; this is where the log learns of it.
+				Platform_Log("[CTR Native] native wheel report on: per tick the float, the exact and the retail wheel middles of seat %d, "
+				             "whose retail wheels stay on; sign check from |move| >= %.4f world units\n",
+				             g_cfg_nativeProbeSeat, NATIVE_WHEELS_MOVING);
+			}
+			else if ((strcmp(argv[argIndex], "--native-filter") == 0) && ((argIndex + 1) < argc))
+			{
+				// Set in the first loop of main, which also refused a wrong value,
+				// a second one and a run without --native-preview; this is where
+				// the log learns of it.
+				argIndex++;
+				Platform_Log("[CTR Native] native texture filter for this run: %s (--native-filter) - never saved\n",
+				             NativeTex_FilterName(g_cfg_nativeFilter));
+			}
 			else if (strcmp(argv[argIndex], "--native-depth-d24") == 0)
 			{
 				// Set in the first loop of main, which also refused it without
@@ -2914,11 +3057,15 @@ int main(int argc, char *argv[])
 				if (NativeProbe_FormFromName(form) == NATIVE_PROBE_NONE)
 				{
 					g_cfg_nativeProbe = NATIVE_PROBE_NONE;
-					Platform_Log("[CTR Native] --native-probe: unknown form %s (known: body, texture, pose) - off\n", form);
+					g_cfg_nativeProbeWheels = 0;
+					g_cfg_nativeProbeMips = 0;
+					Platform_Log("[CTR Native] --native-probe: unknown form %s (known: body, texture, pose, wheels, mips) - off\n", form);
 				}
 				else if (!g_cfg_nativePreview)
 				{
 					g_cfg_nativeProbe = NATIVE_PROBE_NONE;
+					g_cfg_nativeProbeWheels = 0;
+					g_cfg_nativeProbeMips = 0;
 					Platform_Log("[CTR Native] --native-probe needs --native-preview - off for this run\n");
 				}
 				else
@@ -2926,7 +3073,21 @@ int main(int argc, char *argv[])
 					// The seat came from --native-probe-seat in the first loop of
 					// main (default 0, the line as before).
 					g_cfg_nativeProbe = NativeProbe_FormFromName(form);
-					if (g_cfg_nativeProbe == NATIVE_PROBE_POSE)
+					if (g_cfg_nativeProbeMips)
+					{
+						Platform_Log("[CTR Native] native probe on: seat %d of a one-player arcade race draws a generated test body natively, "
+						             "its top shaped by the retail animation frame, coloured by an sRGB texture with 9 levels of one colour each, "
+						             "made while the race loads, sampled %s\n",
+						             g_cfg_nativeProbeSeat, NativeTex_FilterName(g_cfg_nativeFilter));
+					}
+					else if (g_cfg_nativeProbeWheels)
+					{
+						Platform_Log("[CTR Native] native probe on: seat %d of a one-player arcade race draws a generated test body natively, "
+						             "coloured by a generated texture, its top shaped by the retail animation frame, with four generated wheels "
+						             "in place of the retail wheels\n",
+						             g_cfg_nativeProbeSeat);
+					}
+					else if (g_cfg_nativeProbe == NATIVE_PROBE_POSE)
 					{
 						Platform_Log("[CTR Native] native probe on: seat %d of a one-player arcade race draws a generated test body natively, "
 						             "coloured by a generated texture, its top shaped by the retail animation frame\n",
