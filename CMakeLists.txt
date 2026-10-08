@@ -497,11 +497,14 @@ if(BUILD_TESTING)
     # against the queue's own selector, and the factor rule of the native chars;
     # on a second line the mirror (REFLECTION, SPECIAL, the mirrored wheels); on a
     # third the checks of the review of stage a (a nodding kart, the items of a
-    # split view, the wheels against DrawTires, the classes of the colour factor).
+    # split view, the wheels against DrawTires, the classes of the colour factor);
+    # on a fourth the bin markers of the twin (cells, the link, the limits, row w
+    # of the paint order without the draw offset, the fallbacks of a twin view).
     add_test(NAME native_depth_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --native-depth-selftest)
     set_tests_properties(native_depth_selftest PROPERTIES PASS_REGULAR_EXPRESSION "native depth selftest passed: normal shift 2 to 0, w 4164.0625 to 4165.0391, step 0.0235 percent, rest 0.0006 percent, matrix part 0.0339 percent, wrong shift 299.9 and 75.0 percent, matrix 300.1 and 75.0 percent, huge shift 0 to -2, w 4371.2500 to 4372.1562, step 0.0207 percent, rest 0.0021 percent, matrix part 0.0339 percent, wrong shift 299.9 and 75.0 percent, matrix 300.1 and 75.0 percent, shift checks held, char scale 0x1000 shift 2 to 0, w 4095.0000 to 4096.0000, step 0.0244 percent, rest 0.0000 percent, matrix part 0.1119 percent, wrong shift 299.9 and 75.0 percent, matrix 300.4 and 75.0 percent, char scale 0x0ccd shift 2 to 0, w 4095.0000 to 4096.0000, step 0.0244 percent, rest 0.0000 percent, matrix part 0.3077 percent, wrong shift 299.9 and 75.0 percent, matrix 301.2 and 75.1 percent, char passed, split R near: handler split, selector both-mask, composed same, splitLine 2112, 729 points .360 below, 369 above., 0 differ, level plane 72 differ, split R far: handler split, selector both-mask, composed same, splitLine 528, 720 points .360 below, 360 above., 0 differ, level plane 36 differ, split P near: handler split, selector both-mask, composed same, splitLine 1200, 648 points .324 below, 324 above., 0 differ, level plane 0 differ, selector sides 20 cases 0 differ, shift/mask error max 0.50, dim error max 1.25, labels held, factor rule 8 cases 0 differ, split passed[
 ]+native depth selftest mirror, reflection R near: handler reflection, selector negative, splitLine 2112, 125 corners, error max 0.839, winding turned, reflection R far: handler reflection, selector negative, splitLine 528, 125 corners, error max 0.961, winding turned, special: handler special, selector both-mask, splitLine -8000, 125 corners, error max 0.000, winding turned, wheels error max 0.000000000, reflection selectors 5 cases 0 differ, mirror passed[
-]+native depth selftest split items, split R near nodding: handler split, splitLine 2112, 729 points .360 below, 369 above., 0 differ, level plane 72 differ, items of a split view held, wheels against DrawTires 640 cases 0 differ, shift/mask classes 8 cases 0 differ, items passed")
+]+native depth selftest split items, split R near nodding: handler split, splitLine 2112, 729 points .360 below, 369 above., 0 differ, level plane 72 differ, items of a split view held, wheels against DrawTires 640 cases 0 differ, shift/mask classes 8 cases 0 differ, marker bin of depth range 10..31 middle 20 nearest 10, items passed[
+]+native depth selftest twin bin markers: bins 40 33 33 25 12 9 2 in the cells 10..31 give the cells 31 25 12 10, 5 keys held, linked into those cells only, arena keeps 128, paint runs report 65 cells as over 64, row w same with the draw offset .near, far, mirror., view: items without a body one middle marker each in their ranges, no paint order and a full arena link nothing .held., bins passed")
 
     # FOREIGN INPUT, REFUSED CLEANLY. A container (.rldtrack) and a disc image
     # come from strangers: every length, offset and index in them is checked
@@ -589,7 +592,7 @@ if(BUILD_TESTING)
     # old_plain of the files above: every pose point equal to its record.
     add_test(NAME native_twin_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --native-twin-selftest ${CMAKE_BINARY_DIR}/selftest/native-chars)
     set_tests_properties(native_twin_selftest PROPERTIES
-        PASS_REGULAR_EXPRESSION "native twin selftest passed: 1 of 1 file read, 32 checks, 0 failures, sha256 vertices 44191f9ea764dd3122e950b578316f47535bd834ef700152033fa080e8989b36 rgba 986d4c3a10b4bd36478d8d875dbe3f48519c00ba15fd26b8fc00b2f5050ce533 full height e4b47ceaf474380c77c2f2a4dfb7f8851a2a4b8a28b78c86a27d3dde59bf026b"
+        PASS_REGULAR_EXPRESSION "native twin selftest passed: 1 of 1 file read, 36 checks, 0 failures, sha256 vertices 44191f9ea764dd3122e950b578316f47535bd834ef700152033fa080e8989b36 rgba 986d4c3a10b4bd36478d8d875dbe3f48519c00ba15fd26b8fc00b2f5050ce533 full height e4b47ceaf474380c77c2f2a4dfb7f8851a2a4b8a28b78c86a27d3dde59bf026b"
         FIXTURES_REQUIRED native_char_files
     )
 

@@ -502,6 +502,62 @@ internal DR_PSYX_NATIVE s_nrMarkers[2][NATIVE_RENDER_LAYER_MARKERS];
 internal int s_nrMarkerCount[2];
 internal int s_nrMarkerDb = 0;
 
+// THE BIN MARKERS OF THE TWIN (one marker per occupied bin). Retail sorts every
+// triangle of the model into the cell of its own bin in the range of the
+// instance, between whatever else lands there: the retail wheels of the kart
+// (DrawTires, the solid pass in otRangeNormal, the reflection pass in
+// otRangeSecondary), the turbo flames, which take both ranges and depthOffset
+// of the driver in a one-player race (game/Vehicle/VehTurbo.c). One marker for
+// the whole twin put every one of those either over or under all of it. So
+// every item of the twin with a body links one marker into every cell its
+// triangles occupy (NativeTwin_PaintRuns), and that marker paints only the
+// triangles of its cell, in their retail order: a slice of the item. The item
+// field of such a marker is NR_SLICE_MARKER plus the index of the slice in the
+// list of the buffer; every other marker keeps the index of its item, which is
+// always below NATIVE_RENDER_LAYER_ITEMS.
+//
+// THE LIMITS. An item with more than NR_TWIN_BINS_MAX cells, or a view whose
+// bin markers would leave fewer than NR_TWIN_ARENA_KEEP markers of the arena
+// free, takes the markers of before (one per item, see
+// NativeRenderLayer_MarkerBin), counted: the arena always keeps one marker for
+// every item the list can still hold, so no other view falls back because of
+// the twin. The paint order of an item is worked out once, when its markers
+// are linked, into the key pool of the buffer; its slices are runs of that pool.
+#define NR_SLICE_MARKER     0x800000u
+#define NR_TWIN_BINS_MAX    64
+#define NR_TWIN_ARENA_KEEP  NATIVE_RENDER_LAYER_ITEMS
+CTR_STATIC_ASSERT(NATIVE_RENDER_LAYER_MARKERS < (int)NR_SLICE_MARKER);
+
+struct NrTwinSlice
+{
+	u16 item;     // the item in the native list of the buffer
+	u8 lead;      // 1 = the first slice of the item: its draw is the item's draw
+	s16 cell;     // the cell (bin) of the range its marker lies in
+	u32 keyFirst; // its keys in the key pool of the buffer
+	u32 keyCount;
+};
+
+internal struct NrTwinSlice s_nrSlices[2][NATIVE_RENDER_LAYER_MARKERS];
+internal int s_nrSliceCount[2];
+internal u64 *s_nrTwinKeys[2];
+internal u32 s_nrTwinKeyMax[2];
+internal u32 s_nrTwinKeyCount[2];
+
+internal struct
+{
+	unsigned long long items;      // twin items painted by bin markers
+	unsigned long long markers;    // bin markers written
+	unsigned long long mostOfItem; // most bin markers of one item
+	unsigned long long held;       // triangles whose bin lies outside depthOffset, painted in the end cell of the range next to it
+	unsigned long long drawn;      // bin markers drawn
+	unsigned long long notDrawn;   // bin markers not drawn
+	unsigned long long stale;      // bin markers whose slice is not of this frame
+	unsigned long long lost;       // bin markers that could not be linked after the check (expected 0)
+	unsigned long long viewsTooMany; // views back on one marker per item: an item with more than NR_TWIN_BINS_MAX cells
+	unsigned long long viewsArena;   // ... the arena would keep fewer than NR_TWIN_ARENA_KEEP free
+	unsigned long long viewsNoOrder; // ... no paint order (no source, a set that does not hold it, no key memory)
+} s_nrTwinBins;
+
 // --- The native list and the probe -----------------------------------------
 
 // THE NATIVE LIST. What a marker that draws stands for: the item of the marker
@@ -513,6 +569,11 @@ internal int s_nrMarkerDb = 0;
 // water, so 128 leave room. A full list falls back to retail for the whole
 // view (the items of a view are reserved before the first is written).
 #define NATIVE_RENDER_LAYER_ITEMS 128
+
+// The bin markers of the twin always leave a marker for every item (see
+// NR_TWIN_ARENA_KEEP), and an item index never reaches the slice bit.
+CTR_STATIC_ASSERT(NR_TWIN_ARENA_KEEP < NATIVE_RENDER_LAYER_MARKERS);
+CTR_STATIC_ASSERT(NATIVE_RENDER_LAYER_ITEMS < (int)NR_SLICE_MARKER);
 
 // The probe lines of the report come every 30th VBlank, the spacing of the
 // shots of an autopilot run.
@@ -1146,12 +1207,54 @@ internal void NativeRenderLayer_NoteUi(const struct Instance *inst, int byPushBu
 //
 // The second range is allocated by the queue with the same minDepth and
 // maxDepth (RenderBucket_BuildDepthRange), so the same bin holds for it.
-internal int NativeRenderLayer_LinkMarker(const struct InstDrawPerPlayer *idpp, int range, u32 item, u32 flags)
+//
+// The retail twin does not use this bin while its bin markers fit (see
+// NR_SLICE_MARKER): every slice goes into the cell of its own triangles
+// (NativeRenderLayer_LinkMarkerInCell). The middle and the nearest bin below
+// are what it falls back to.
+//
+// THE NEAREST BIN (nearest = 1, only the mirror item of the retail twin in a
+// REFLECTION view with a second range of its own, when its bin markers do not
+// fit, see the route): depthOffset[0].
+// The table of a range is painted from its far end to its near one, so a
+// marker there paints after every other primitive of the range. In that range
+// lie the mirror of the twin and the retail mirror wheels of the same instance
+// (game/DrawTires.c, the reflection pass, linked after the queue ran:
+// MainFrame_RenderFrame runs RenderBucket_Execute before DrawTires_Reflection),
+// which retail puts on the middle line under the body (DrawTires.c:988). In
+// retail the mirrored triangles of the body are sorted one by one and the
+// nearer ones - the back plate - paint over those wheels; one marker in the
+// middle let every wheel quad with a nearer bin paint over the whole mirror.
+// The twin paints its own triangles in their retail order within the marker,
+// so the nearest bin keeps that order and puts the body over the wheels.
+// THE LIMIT: in a one-player race the turbo flames of the driver share its
+// second range and depthOffset as well and are REFLECTIVE too (the turbo
+// instances of game/Vehicle/VehFire.c and VehTurbo.c); in this fallback the
+// mirror of the twin paints over a mirrored flame too, where retail mostly
+// paints the flame over it. The bin markers, which paint only the triangles of
+// their cell, do not have this limit.
+internal int NativeRenderLayer_MarkerBin(const struct InstDrawPerPlayer *idpp, int nearest)
+{
+	int bin = nearest ? (int)idpp->depthOffset[0] : (((int)idpp->depthOffset[0] + (int)idpp->depthOffset[1]) / 2);
+
+	if (bin < idpp->depthOffset[0])
+	{
+		bin = idpp->depthOffset[0];
+	}
+	if (bin > idpp->depthOffset[1])
+	{
+		bin = idpp->depthOffset[1];
+	}
+	return bin;
+}
+
+// The marker into the given cell (bin) of the range, which the caller holds to
+// depthOffset; the body of every link.
+internal int NativeRenderLayer_LinkMarkerInCell(int range, u32 item, u32 flags, int bin)
 {
 	const int db = s_nrMarkerDb;
 	DR_PSYX_NATIVE *m;
 	u32 *entry;
-	int bin;
 
 	if (range == 0)
 	{
@@ -1162,16 +1265,6 @@ internal int NativeRenderLayer_LinkMarker(const struct InstDrawPerPlayer *idpp, 
 	{
 		s_nrCount.markerArenaFull++;
 		return 0;
-	}
-
-	bin = ((int)idpp->depthOffset[0] + (int)idpp->depthOffset[1]) / 2;
-	if (bin < idpp->depthOffset[0])
-	{
-		bin = idpp->depthOffset[0];
-	}
-	if (bin > idpp->depthOffset[1])
-	{
-		bin = idpp->depthOffset[1];
 	}
 
 	entry = (u32 *)range + bin;
@@ -1186,6 +1279,21 @@ internal int NativeRenderLayer_LinkMarker(const struct InstDrawPerPlayer *idpp, 
 	s_nrMarkerCount[db]++;
 	s_nrCount.markersWritten++;
 	return 1;
+}
+
+internal int NativeRenderLayer_LinkMarkerAt(const struct InstDrawPerPlayer *idpp, int range, u32 item, u32 flags, int nearest)
+{
+	if (range == 0)
+	{
+		return 0;
+	}
+	return NativeRenderLayer_LinkMarkerInCell(range, item, flags, NativeRenderLayer_MarkerBin(idpp, nearest));
+}
+
+// The marker in the middle bin, as every native item but one has it.
+internal int NativeRenderLayer_LinkMarker(const struct InstDrawPerPlayer *idpp, int range, u32 item, u32 flags)
+{
+	return NativeRenderLayer_LinkMarkerAt(idpp, range, item, flags, 0);
 }
 
 // --native-empty-markers: one empty marker at every view of a driver instance
@@ -4422,6 +4530,210 @@ internal void NativeRenderLayer_SplitLine(int handler, const struct Instance *in
 	             ((idpp->otRangeSecondary != 0) && (idpp->otRangeSecondary != idpp->otRangeNormal)) ? "own" : "shared");
 }
 
+// --- The bin markers of the twin (see NR_SLICE_MARKER) ----------------------
+
+internal void NativeRenderLayer_CharItemMatrix(const struct NrDrawItem *it, double ofsX, double ofsY, double S[4][4]);
+internal void NativeRenderLayer_MatrixToDraw(const double S[4][4], float out[16]);
+
+// The paint order of a twin item into the key pool of buffer db: the same
+// source, pose, row w of the screen matrix, depth scale and bin range the
+// draw hands NativeTwin_PaintOrder when it works the order out itself
+// (NativeRenderLayer_DrawCharItem, native_renderer.c) - row w does not depend
+// on the draw offset, so the matrix without one gives the same keys; and the
+// same refusals (the set must hold every triangle of the source, the pose the
+// whole vertex count of the source). Returns the key count (the triangle
+// count), *keyFirst its place in the pool; 0 = no order.
+internal u32 NativeRenderLayer_TwinItemOrder(const struct NrDrawItem *it, int db, u32 *keyFirst)
+{
+	const struct NativeTwinSource *src = NativeCharGpu_TwinSource();
+	const struct NativeCharGpu *gpu = it->gpu;
+	double S[4][4];
+	float s[16];
+	u32 indices = 0;
+	u32 T;
+	u32 r;
+
+	if ((src == NULL) || (gpu == NULL) || (src->native.vertexCount == 0u) || (gpu->vertexCount != src->native.vertexCount))
+	{
+		return 0;
+	}
+	for (r = 0; r < gpu->rangeCount; r++)
+	{
+		indices += gpu->range[r].indexCount;
+	}
+	T = src->native.triangleCount;
+	if ((T == 0u) || (indices != (T * 3u)) || (s_nrTwinKeyCount[db] > (0xFFFFFFFFu - T)))
+	{
+		return 0;
+	}
+
+	// The pool grows (never shrinks) to hold every item of the twin in a
+	// four-view frame at once: host memory, no upload.
+	if ((s_nrTwinKeyCount[db] + T) > s_nrTwinKeyMax[db])
+	{
+		u32 want = T * 2u * (u32)NATIVE_RENDER_LAYER_VIEWS;
+		u64 *grown;
+
+		if (want < (s_nrTwinKeyCount[db] + T))
+		{
+			want = s_nrTwinKeyCount[db] + T;
+		}
+		grown = (u64 *)realloc(s_nrTwinKeys[db], (size_t)want * sizeof(u64));
+		if (grown == NULL)
+		{
+			return 0;
+		}
+		s_nrTwinKeys[db] = grown;
+		s_nrTwinKeyMax[db] = want;
+	}
+
+	NativeRenderLayer_CharItemMatrix(it, 0.0, 0.0, S);
+	NativeRenderLayer_MatrixToDraw(S, s);
+	if (NativeTwin_PaintOrder(src, (u32)it->pose, s, (double)(float)ldexp(1.0, (int)it->mvpShift), it->binClamp ? (int)it->binLow : 0,
+	                          it->binClamp ? (int)it->binHigh : -1, &s_nrTwinKeys[db][s_nrTwinKeyCount[db]], T) != T)
+	{
+		return 0;
+	}
+	*keyFirst = s_nrTwinKeyCount[db];
+	s_nrTwinKeyCount[db] += T;
+	return T;
+}
+
+// 1 when bin markers of this many leave the arena of this buffer at least
+// NR_TWIN_ARENA_KEEP free after the markersWritten already there.
+internal int NativeRenderLayer_TwinBinsFit(int markersWritten, int needed)
+{
+	return (needed >= 0) && ((markersWritten + needed) <= (NATIVE_RENDER_LAYER_MARKERS - NR_TWIN_ARENA_KEEP));
+}
+
+// The slices of one item: run i is the keys [keyFirst + runFirst[i], +
+// runCount[i]) of the pool, its marker goes into cell runCell[i] of range; the
+// first run is the lead. Returns the markers written.
+internal int NativeRenderLayer_LinkTwinRuns(int range, int item, u32 keyFirst, const u32 *runFirst, const u32 *runCount, const s16 *runCell, u32 runs)
+{
+	const int db = s_nrMarkerDb;
+	int written = 0;
+	u32 r;
+
+	for (r = 0; r < runs; r++)
+	{
+		struct NrTwinSlice *slice;
+
+		if (s_nrSliceCount[db] >= NATIVE_RENDER_LAYER_MARKERS)
+		{
+			s_nrTwinBins.lost++;
+			continue;
+		}
+		slice = &s_nrSlices[db][s_nrSliceCount[db]];
+		slice->item = (u16)item;
+		slice->lead = (r == 0u) ? 1u : 0u;
+		slice->cell = runCell[r];
+		slice->keyFirst = keyFirst + runFirst[r];
+		slice->keyCount = runCount[r];
+		if (!NativeRenderLayer_LinkMarkerInCell(range, NR_SLICE_MARKER | (u32)s_nrSliceCount[db], 0, (int)runCell[r]))
+		{
+			s_nrTwinBins.lost++;
+			continue;
+		}
+		s_nrSliceCount[db]++;
+		written++;
+	}
+	s_nrTwinBins.markers += (unsigned long long)written;
+	return written;
+}
+
+// THE MARKERS OF A TWIN VIEW (n items from index, written already): every item
+// with a body gets its bin markers - the first item in otRangeNormal, the
+// second in otRangeSecondary, in that order, as the markers of before - and an
+// item without a body (a side of the water line the selector leaves out) its
+// one marker in the middle bin, as before. Everything is worked out and checked
+// before the first marker is linked: 1 = the view has its markers; 0 = nothing
+// was linked (the pool is put back) and the view takes the markers of before,
+// with the reason counted.
+//
+// THE LIMIT OF A SHARED SECOND RANGE. When otRangeSecondary is otRangeNormal (a
+// SPECIAL view without a second range, or a SPLIT view whose second range is
+// shared), both items link into the same cells. Retail interleaves the two
+// sides triangle by triangle within a cell; here a cell holds the slice of the
+// first item and the slice of the second, each as one block (the later linked
+// one painted first). Not rebuilt: SPECIAL does not occur for drivers, and the
+// twin runs counted no shared second range for SPLIT (the split line "second
+// range of its own ..., shared ..." of the report).
+internal int NativeRenderLayer_TwinBinMarkers(const struct InstDrawPerPlayer *idpp, int index, int n)
+{
+	const int db = s_nrMarkerDb;
+	const u32 poolBefore = s_nrTwinKeyCount[db];
+	u32 runFirst[2][NR_TWIN_BINS_MAX];
+	u32 runCount[2][NR_TWIN_BINS_MAX];
+	s16 runCell[2][NR_TWIN_BINS_MAX];
+	u32 runs[2] = {0, 0};
+	u32 keyFirst[2] = {0, 0};
+	u32 held[2] = {0, 0};
+	int needed = 0;
+	int i;
+
+	if ((n < 1) || (n > 2))
+	{
+		return 0;
+	}
+	for (i = 0; i < n; i++)
+	{
+		const struct NrDrawItem *it = &s_nrItems[db][index + i];
+		u32 T;
+
+		if (!it->bodyOn)
+		{
+			needed++;
+			continue;
+		}
+		T = NativeRenderLayer_TwinItemOrder(it, db, &keyFirst[i]);
+		runs[i] = (T > 0u) ? NativeTwin_PaintRuns(&s_nrTwinKeys[db][keyFirst[i]], T, (int)it->binLow, (int)it->binHigh, runFirst[i], runCount[i],
+		                                          runCell[i], NR_TWIN_BINS_MAX, &held[i])
+		                   : 0u;
+		if (runs[i] == 0u)
+		{
+			s_nrTwinKeyCount[db] = poolBefore;
+			s_nrTwinBins.viewsNoOrder++;
+			return 0;
+		}
+		if (runs[i] > NR_TWIN_BINS_MAX)
+		{
+			s_nrTwinKeyCount[db] = poolBefore;
+			s_nrTwinBins.viewsTooMany++;
+			return 0;
+		}
+		needed += (int)runs[i];
+	}
+	if (!NativeRenderLayer_TwinBinsFit(s_nrMarkerCount[db], needed))
+	{
+		s_nrTwinKeyCount[db] = poolBefore;
+		s_nrTwinBins.viewsArena++;
+		return 0;
+	}
+
+	for (i = 0; i < n; i++)
+	{
+		const int range = (i == 0) ? idpp->otRangeNormal : idpp->otRangeSecondary;
+
+		if (runs[i] == 0u)
+		{
+			if (!NativeRenderLayer_LinkMarker(idpp, range, (u32)(index + i), 0))
+			{
+				s_nrTwinBins.lost++;
+			}
+			continue;
+		}
+		NativeRenderLayer_LinkTwinRuns(range, index + i, keyFirst[i], runFirst[i], runCount[i], runCell[i], runs[i]);
+		s_nrTwinBins.items++;
+		s_nrTwinBins.held += held[i];
+		if ((unsigned long long)runs[i] > s_nrTwinBins.mostOfItem)
+		{
+			s_nrTwinBins.mostOfItem = runs[i];
+		}
+	}
+	return 1;
+}
+
 internal int NativeRenderLayer_RouteCharView(int k, const struct Instance *inst, const struct InstDrawPerPlayer *idpp, const struct PushBuffer *pb)
 {
 	const struct GameTracker *gGT = sdata->gGT;
@@ -4786,19 +5098,29 @@ internal int NativeRenderLayer_RouteCharView(int k, const struct Instance *inst,
 	}
 	s_nrItemCount[db] += n;
 
-	if (!NativeRenderLayer_LinkMarker(idpp, idpp->otRangeNormal, (u32)index, 0))
+	// The retail twin: one marker per occupied bin of each item (see
+	// NR_SLICE_MARKER), in the same order of the items as below. When they do
+	// not fit, nothing is linked there and the twin takes the markers below.
+	if (!(it->twin && NativeRenderLayer_TwinBinMarkers(idpp, index, n)))
 	{
-		s_nrItemCount[db] -= n;
-		return NativeRenderLayer_CharFallback(seat, NR_PROBE_FALLBACK_ARENA_FULL);
-	}
-	// The side below (the mirror), last: the parser meets a marker linked
-	// later first in the same cell (a SPECIAL without a second range: the
-	// mirror before the original, as the queue writes each mirrored triangle
-	// before its original), and a second range lies further back anyway.
-	// Reserved above, so it cannot fail; counted if it ever did.
-	if ((n == 2) && !NativeRenderLayer_LinkMarker(idpp, idpp->otRangeSecondary, (u32)(index + 1), 0))
-	{
-		s_nrCharWater.linkLost++;
+		if (!NativeRenderLayer_LinkMarker(idpp, idpp->otRangeNormal, (u32)index, 0))
+		{
+			s_nrItemCount[db] -= n;
+			return NativeRenderLayer_CharFallback(seat, NR_PROBE_FALLBACK_ARENA_FULL);
+		}
+		// The side below (the mirror), last: the parser meets a marker linked
+		// later first in the same cell (a SPECIAL without a second range: the
+		// mirror before the original, as the queue writes each mirrored triangle
+		// before its original), and a second range lies further back anyway.
+		// Reserved above, so it cannot fail; counted if it ever did.
+		// The mirror of the retail twin in a REFLECTION view with a second range
+		// of its own goes into the nearest bin of that range (see
+		// NativeRenderLayer_MarkerBin); every other second item keeps the middle.
+		if ((n == 2) && !NativeRenderLayer_LinkMarkerAt(idpp, idpp->otRangeSecondary, (u32)(index + 1), 0,
+		                                                (mirror == 1) && it->twin && (idpp->otRangeSecondary != idpp->otRangeNormal)))
+		{
+			s_nrCharWater.linkLost++;
+		}
 	}
 
 	seam = &s_nrCharSeam[seat];
@@ -5926,6 +6248,15 @@ void NativeRenderLayer_Report(void)
 				NativeRenderer_TwinPaintCounts(&ordered, &fallback);
 				Platform_Log("[CTR RenderLayer] at exit: native twin paint order: draws %llu, fallback %llu\n", ordered, fallback);
 			}
+			// The bin markers (one per occupied bin): items and markers, the
+			// views that kept one marker per item and why, the triangles held
+			// to the cells of the range.
+			Platform_Log("[CTR RenderLayer] at exit: native twin bin markers: items %llu, markers %llu, drawn %llu, not drawn %llu, stale %llu, "
+			             "lost %llu, most of one item %llu, triangles held to the range %llu; views on one marker per item: over %d bins %llu, "
+			             "arena %llu, no order %llu\n",
+			             s_nrTwinBins.items, s_nrTwinBins.markers, s_nrTwinBins.drawn, s_nrTwinBins.notDrawn, s_nrTwinBins.stale, s_nrTwinBins.lost,
+			             s_nrTwinBins.mostOfItem, s_nrTwinBins.held, NR_TWIN_BINS_MAX, s_nrTwinBins.viewsTooMany, s_nrTwinBins.viewsArena,
+			             s_nrTwinBins.viewsNoOrder);
 		}
 
 		// Step 5a/5c: where native characters were bound.
@@ -5971,6 +6302,9 @@ void NativeRenderLayer_RegisterMarkerArenas(struct GameTracker *gGT)
 	// The native list of that buffer goes with its arena, and a new frame
 	// starts for the stamps of the native draws.
 	s_nrItemCount[s_nrMarkerDb] = 0;
+	// So do the slices of the twin's bin markers and their keys.
+	s_nrSliceCount[s_nrMarkerDb] = 0;
+	s_nrTwinKeyCount[s_nrMarkerDb] = 0;
 	s_nrFrame++;
 }
 
@@ -6665,7 +6999,13 @@ internal void NativeRenderLayer_SecondNotDrawn(const struct NrDrawItem *it)
 // draw in every counter, line and stamp; the item below counts as "water
 // drawn" (or "not drawn") alone. The depth of the view is cleared by whichever
 // draw comes first in the frame.
-internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const RECT16 *clip, const DISPENV *dispenv, int onScreen, float ofsX, float ofsY)
+//
+// A slice of the twin (a bin marker, slice != NULL; NULL for every other
+// draw): the body paints only the keys of the slice. The lead slice is the
+// item's draw in every counter, line and stamp, as the one marker was; any
+// other slice draws its triangles and counts in the bin markers alone.
+internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const RECT16 *clip, const DISPENV *dispenv, int onScreen, float ofsX, float ofsY,
+                                             const struct NrTwinSlice *slice)
 {
 	const struct NativeCharGpu *gpu = it->gpu;
 	const int view = (int)it->view;
@@ -6684,6 +7024,14 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 
 	if ((gpu == NULL) || (gpu->state != NATIVE_CHAR_GPU_READY) || (seat >= NATIVE_RENDER_LAYER_DRIVERS))
 	{
+		if (slice != NULL)
+		{
+			s_nrTwinBins.notDrawn++;
+			if (!slice->lead)
+			{
+				return;
+			}
+		}
 		// The second item of a view counts in its own "not drawn" only; the
 		// view's counters belong to the item above (or the original).
 		if (!primary)
@@ -6771,6 +7119,12 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 		mesh.twinDepthScale = (float)ldexp(1.0, (int)it->mvpShift);
 		mesh.twinBinLow = it->binClamp ? (int)it->binLow : 0;
 		mesh.twinBinHigh = it->binClamp ? (int)it->binHigh : -1;
+		// A bin marker: only the keys of its cell, worked out at the route.
+		if (slice != NULL)
+		{
+			mesh.twinKeys = &s_nrTwinKeys[s_nrMarkerDb][slice->keyFirst];
+			mesh.twinKeyCount = slice->keyCount;
+		}
 	}
 	mesh.split[0] = (float)it->split[0];
 	mesh.split[1] = (float)it->split[1];
@@ -6783,6 +7137,14 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 	{
 		if (NativeRenderer_DrawNativeMesh(&mesh, clip, dispenv, onScreen) == 0)
 		{
+			if (slice != NULL)
+			{
+				s_nrTwinBins.notDrawn++;
+				if (!slice->lead)
+				{
+					return;
+				}
+			}
 			if (!primary)
 			{
 				NativeRenderLayer_SecondNotDrawn(it);
@@ -6800,6 +7162,16 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 		{
 			s_nrDepthClearFrame[view] = s_nrFrame;
 			clearDepth = 0;
+		}
+	}
+
+	// A bin marker that is not the lead: its triangles are all it adds.
+	if (slice != NULL)
+	{
+		s_nrTwinBins.drawn++;
+		if (!slice->lead)
+		{
+			return;
 		}
 	}
 
@@ -7104,7 +7476,8 @@ int NativeRenderLayer_CharViewNativeWheels(const struct Instance *inst, const st
 // the OT. An item is only good in the frame its marker was written in; any
 // other index is counted and left. The depth of a view is cleared before its
 // first native draw in the frame (only inside the split's clip): what an
-// earlier view or frame left there is not this view's.
+// earlier view or frame left there is not this view's. A bin marker of the
+// twin (NR_SLICE_MARKER) names a slice of an item instead.
 void NativeRenderLayer_DrawNativeItem(u32 item, const RECT16 *clip, const DISPENV *dispenv, int onScreen, float ofsX, float ofsY)
 {
 	const int db = s_nrMarkerDb;
@@ -7115,6 +7488,21 @@ void NativeRenderLayer_DrawNativeItem(u32 item, const RECT16 *clip, const DISPEN
 	int firstInFrame;
 	int r;
 	int c;
+
+	if ((item & NR_SLICE_MARKER) != 0u)
+	{
+		const u32 k = item & ~NR_SLICE_MARKER;
+		const struct NrTwinSlice *slice = (k < (u32)s_nrSliceCount[db]) ? &s_nrSlices[db][k] : NULL;
+
+		if ((slice == NULL) || ((int)slice->item >= s_nrItemCount[db]) || (slice->keyCount == 0u) ||
+		    (slice->keyFirst > s_nrTwinKeyCount[db]) || (slice->keyCount > (s_nrTwinKeyCount[db] - slice->keyFirst)))
+		{
+			s_nrTwinBins.stale++;
+			return;
+		}
+		NativeRenderLayer_DrawCharItem(&s_nrItems[db][slice->item], clip, dispenv, onScreen, ofsX, ofsY, slice);
+		return;
+	}
 
 	if (item >= (u32)s_nrItemCount[db])
 	{
@@ -7127,7 +7515,7 @@ void NativeRenderLayer_DrawNativeItem(u32 item, const RECT16 *clip, const DISPEN
 
 	if (it->kind == NR_ITEM_CHAR)
 	{
-		NativeRenderLayer_DrawCharItem(it, clip, dispenv, onScreen, ofsX, ofsY);
+		NativeRenderLayer_DrawCharItem(it, clip, dispenv, onScreen, ofsX, ofsY, NULL);
 		return;
 	}
 

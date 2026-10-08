@@ -230,6 +230,18 @@ u32 NativeTwin_PaintBin(int sz0, int sz1, int sz2);
 u32 NativeTwin_PaintOrder(const struct NativeTwinSource *src, u32 pose, const float screenFromModel[16], double depthScale, int binLow, int binHigh,
                           u64 *keys, u32 keyMax);
 
+// THE CELLS OF A PAINT ORDER (one marker per occupied bin, the twin only): the
+// keys of NativeTwin_PaintOrder cut into runs of one ordering-table cell each.
+// The cell of a key is its bin held to [low, high] - the depthOffset of the
+// view, the cells the instance owns in its range (retail writes a bin outside
+// them unheld into the table memory around the range, which a marker cannot
+// follow). The bins never rise along the keys, so every cell is one run and
+// the runs come in paint order, far first. Per run: its first key, its key
+// count and its cell; at most runMax runs are written. Returns the run count,
+// runMax + 1 when there are more, 0 for no keys, low > high, or keys whose bins
+// rise. *held: the keys whose bin lies outside [low, high].
+u32 NativeTwin_PaintRuns(const u64 *keys, u32 keyCount, int low, int high, u32 *runFirst, u32 *runCount, s16 *runCell, u32 runMax, u32 *held);
+
 // NativeTexDesc.flags every twin texture needs: linear data, nearest, and one
 // level - the PSX samples no level, and with levels a texture shrunk at x1
 // would read a mip. RldCharTexture.flags has no bit for the last one, so the

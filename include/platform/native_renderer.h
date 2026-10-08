@@ -258,6 +258,13 @@ struct NativeMeshDraw
 	float twinDepthScale;
 	int twinBinLow;
 	int twinBinHigh;
+	// One marker per occupied bin (the twin, look = 1): the keys of the paint
+	// order this draw paints, in their order - one cell of the item, worked out
+	// by the render layer when it linked the marker (NativeTwin_PaintRuns). NULL,
+	// what memset gives every other draw: the renderer works the whole order out
+	// itself, as above.
+	const u64 *twinKeys;
+	u32 twinKeyCount;
 };
 
 // What psxDitherAmount of the PSX block would be for a draw into the target in

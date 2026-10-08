@@ -2672,6 +2672,11 @@ NativeGfxBuffer NativeRenderer_CreateNativeMeshVertexBuffer(int bytes, const voi
 // view depth of the instance, which the matrix of the mirror item does not
 // carry. Every draw is counted: in the paint order, or fallen back.
 //
+// With one marker per occupied bin (native_render_layer.c, NR_SLICE_MARKER)
+// the twin is drawn once per cell of its range, and each draw brings the keys
+// of its cell (twinKeys), worked out once when the markers were linked; the
+// counts then go per cell, not per item.
+//
 // The keys live here (grown, never shrunk); 0 = no order (no twin source, the
 // ranges do not hold every triangle, a pose that is not a whole multiple), and
 // the draw keeps its ranges and the depth test.
@@ -2685,6 +2690,26 @@ void NativeRenderer_TwinPaintCounts(unsigned long long *ordered, unsigned long l
 {
 	*ordered = s_twinPaintOrdered;
 	*fallback = s_twinPaintFallback;
+}
+
+// Counts a twin draw with n keys of a paint order (0 = none) and writes the
+// line of the first one.
+internal void NativeRenderer_TwinPaintNote(u32 n)
+{
+	if (n > 0u)
+	{
+		s_twinPaintOrdered++;
+	}
+	else
+	{
+		s_twinPaintFallback++;
+	}
+	if (!s_twinPaintNoted)
+	{
+		s_twinPaintNoted = 1;
+		Platform_Log("[CTR Twin] paint order: %s\n", (n > 0u) ? "retail ordering-table bins (MAC0 >> 17, far first, the later command first in a bin), depth compare always"
+		                                                       : "not available, drawn by ranges with the depth test");
+	}
 }
 
 internal u32 NativeRenderer_TwinPaintOrder(const struct NativeMeshDraw *draw)
@@ -2723,21 +2748,17 @@ internal u32 NativeRenderer_TwinPaintOrder(const struct NativeMeshDraw *draw)
 
 	n = NativeTwin_PaintOrder(src, (u32)draw->vertexOffset / src->native.vertexCount, draw->screenFromModel, (double)draw->twinDepthScale, draw->twinBinLow,
 	                          draw->twinBinHigh, s_twinPaintKeys, s_twinPaintKeyMax);
-	if (n > 0u)
-	{
-		s_twinPaintOrdered++;
-	}
-	else
-	{
-		s_twinPaintFallback++;
-	}
-	if (!s_twinPaintNoted)
-	{
-		s_twinPaintNoted = 1;
-		Platform_Log("[CTR Twin] paint order: %s\n", (n > 0u) ? "retail ordering-table bins (MAC0 >> 17, far first, the later command first in a bin), depth compare always"
-		                                                       : "not available, drawn by ranges with the depth test");
-	}
+	NativeRenderer_TwinPaintNote(n);
 	return n;
+}
+
+// One marker per occupied bin (draw->twinKeys set): the keys of one cell come
+// with the draw, worked out by the render layer; counted like an order of
+// their own. A draw handed no keys paints nothing (never the whole model).
+internal u32 NativeRenderer_TwinGivenOrder(const struct NativeMeshDraw *draw)
+{
+	NativeRenderer_TwinPaintNote(draw->twinKeyCount);
+	return draw->twinKeyCount;
 }
 
 // The block of one twin range (step 4d Z1): its own program "nrt".
@@ -2852,8 +2873,11 @@ int NativeRenderer_DrawNativeMesh(const struct NativeMeshDraw *draw, const RECT1
 	}
 
 	{
-		// The retail twin draws in the retail paint order when it has it.
-		const u32 paintCount = draw->look ? NativeRenderer_TwinPaintOrder(draw) : 0u;
+		// The retail twin draws in the retail paint order when it has it: the
+		// keys of one cell when they come with the draw (a bin marker), else
+		// the whole order worked out here.
+		const u32 paintCount = draw->look ? ((draw->twinKeys != NULL) ? NativeRenderer_TwinGivenOrder(draw) : NativeRenderer_TwinPaintOrder(draw)) : 0u;
+		const u64 *paintKeys = (draw->twinKeys != NULL) ? draw->twinKeys : s_twinPaintKeys;
 		const NativeGfxDrawState state = {
 		    .depthTest = 1,
 		    .depthWrite = 1,
@@ -2878,7 +2902,7 @@ int NativeRenderer_DrawNativeMesh(const struct NativeMeshDraw *draw, const RECT1
 
 			for (k = 0; k < paintCount; k++)
 			{
-				const u32 first = NATIVE_TWIN_PAINT_PLACE(s_twinPaintKeys[k]) * 3u;
+				const u32 first = NATIVE_TWIN_PAINT_PLACE(paintKeys[k]) * 3u;
 				int r = -1;
 
 				for (i = 0; i < draw->rangeCount; i++)
@@ -2916,7 +2940,7 @@ int NativeRenderer_DrawNativeMesh(const struct NativeMeshDraw *draw, const RECT1
 			}
 		}
 
-		for (i = 0; (paintCount == 0u) && (i < draw->rangeCount); i++)
+		for (i = 0; (paintCount == 0u) && (draw->twinKeys == NULL) && (i < draw->rangeCount); i++)
 		{
 			// The retail twin (step 4d Z1): its own program and block.
 			if (draw->look)

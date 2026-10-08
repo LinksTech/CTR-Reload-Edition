@@ -1108,6 +1108,268 @@ static int NativeDepthCheck_RuleFactor(int *cases)
 	return failed;
 }
 
+// THE BIN MARKERS OF THE TWIN (one marker per occupied bin). Seven keys with
+// the bins 40 33 33 25 12 9 2 (the later command first, as a paint order has
+// them) against the cells 10..31 of a depth range: the runs are the cells 31 (3
+// keys, two of them held down from 33 and one from 40), 25, 12 and 10 (2 keys,
+// held up from 9 and 2), 5 keys held. Linked into a made-up range of those
+// cells (a guard word on each side): every slice heads the cell of its run and
+// no other word changes, its marker carries the slice bit and the slice index,
+// the first slice alone is the lead, and the keys of the slices follow one
+// another from the item's first key. The limits: 384 bin markers fit an empty
+// arena of 512 (128 kept for the items), 385 do not, nor one more after 384;
+// NativeTwin_PaintRuns reports 65 cells as runMax + 1 with runMax 64
+// (NR_TWIN_BINS_MAX), and 64 cells as 64. That the route then falls back to
+// one marker per item needs a paint order, so a twin source, and is not run
+// here (NativeDepthCheck_TwinView runs the fallbacks that need none). Returns
+// 1 when all held; cells and *held for the line.
+static int NativeDepthCheck_TwinBins(int cells[4], int *held)
+{
+	static const int bins[7] = {40, 33, 33, 25, 12, 9, 2};
+	static const int wantCell[4] = {31, 25, 12, 10};
+	static const u32 wantCount[4] = {3, 1, 1, 2};
+	static u32 table[24];
+	static u64 many[NR_TWIN_BINS_MAX + 1];
+	u64 keys[7];
+	u32 runFirst[NR_TWIN_BINS_MAX];
+	u32 runCount[NR_TWIN_BINS_MAX];
+	s16 runCell[NR_TWIN_BINS_MAX];
+	u32 heldKeys = 0;
+	u32 runs;
+	const int dbBefore = s_nrMarkerDb;
+	const int markersBefore = s_nrMarkerCount[0];
+	const int slicesBefore = s_nrSliceCount[0];
+	int ok = 1;
+	int written;
+	int range;
+	int i;
+	u32 r;
+
+	for (i = 0; i < 7; i++)
+	{
+		keys[i] = ((u64)(u32)bins[i] << 40) | ((u64)(u32)(6 - i) << 20) | (u64)(u32)i;
+	}
+	runs = NativeTwin_PaintRuns(keys, 7, 10, 31, runFirst, runCount, runCell, NR_TWIN_BINS_MAX, &heldKeys);
+	ok = (runs == 4u) && (heldKeys == 5u);
+	for (r = 0; ok && (r < runs); r++)
+	{
+		ok = ((int)runCell[r] == wantCell[r]) && (runCount[r] == wantCount[r]);
+		cells[r] = (int)runCell[r];
+	}
+	*held = (int)heldKeys;
+	if (!ok)
+	{
+		return 0;
+	}
+
+	// Into the made-up range: table[1 + (cell - 10)] is the cell, table[0] and
+	// table[23] the guards.
+	if (!NativeGpuLinks_IsRegisteredHostRange(s_nrMarkers[0], sizeof(s_nrMarkers[0])))
+	{
+		NativeGpuLinks_RegisterRangeChecked("selftest native markers", s_nrMarkers[0], sizeof(s_nrMarkers[0]));
+	}
+	for (i = 0; i < 24; i++)
+	{
+		table[i] = 0x00ABC000u + (u32)i;
+	}
+	s_nrMarkerDb = 0;
+	s_nrMarkerCount[0] = 0;
+	s_nrSliceCount[0] = 0;
+	range = (int)(size_t)&table[1] - (10 * 4);
+	written = NativeRenderLayer_LinkTwinRuns(range, 5, 100u, runFirst, runCount, runCell, runs);
+	ok = (written == 4) && (s_nrSliceCount[0] == 4) && (s_nrMarkerCount[0] == 4);
+	for (r = 0; ok && (r < runs); r++)
+	{
+		const struct NrTwinSlice *slice = &s_nrSlices[0][r];
+		const DR_PSYX_NATIVE *m = &s_nrMarkers[0][r];
+
+		ok = (slice->item == 5u) && (slice->lead == ((r == 0u) ? 1u : 0u)) && ((int)slice->cell == wantCell[r]) && (slice->keyFirst == (100u + runFirst[r])) &&
+		     (slice->keyCount == wantCount[r]) && ((r == 0u) || (slice->keyFirst == (s_nrSlices[0][r - 1u].keyFirst + s_nrSlices[0][r - 1u].keyCount))) &&
+		     ((m->code[0] >> 24) == (u32)PSYX_NATIVE_CODE) && ((m->code[0] & 0xFFFFFFu) == (NR_SLICE_MARKER | r)) && (m->code[1] == 0u) &&
+		     (table[1 + (wantCell[r] - 10)] == CtrGpu_PrimToOTLink24(m));
+	}
+	for (i = 0; ok && (i < 24); i++)
+	{
+		const int cell = i - 1 + 10;
+		const int linked = (cell == 31) || (cell == 25) || (cell == 12) || (cell == 10);
+
+		ok = linked || (table[i] == (0x00ABC000u + (u32)i));
+	}
+	s_nrMarkerDb = dbBefore;
+	s_nrMarkerCount[0] = markersBefore;
+	s_nrSliceCount[0] = slicesBefore;
+
+	// The limits.
+	for (i = 0; i <= NR_TWIN_BINS_MAX; i++)
+	{
+		many[i] = ((u64)(u32)(200 - i) << 40) | (u64)(u32)i;
+	}
+	ok = ok && NativeRenderLayer_TwinBinsFit(0, 384) && !NativeRenderLayer_TwinBinsFit(0, 385) && !NativeRenderLayer_TwinBinsFit(384, 1) &&
+	     NativeRenderLayer_TwinBinsFit(383, 1) &&
+	     (NativeTwin_PaintRuns(many, NR_TWIN_BINS_MAX + 1, 0, 1000, runFirst, runCount, runCell, NR_TWIN_BINS_MAX, NULL) == (u32)(NR_TWIN_BINS_MAX + 1)) &&
+	     (NativeTwin_PaintRuns(many, NR_TWIN_BINS_MAX, 0, 1000, runFirst, runCount, runCell, NR_TWIN_BINS_MAX, NULL) == (u32)NR_TWIN_BINS_MAX);
+	return ok;
+}
+
+// THE KEYS AT THE ROUTE ARE THE KEYS OF THE DRAW. The route works the paint
+// order of a twin item out with the screen matrix without a draw offset
+// (NativeRenderLayer_TwinItemOrder: CharItemMatrix(it, 0, 0)); the draw builds
+// it with ofsX + ofsXExtra - 0.5 and ofsY - 0.5 (NativeRenderLayer_DrawCharItem).
+// NativeTwin_PaintOrder reads only row w of that matrix (elements 3, 7, 11 and
+// 15 of the float matrix of the draw), so the keys are the same when those four
+// floats are the same bit for bit. Checked for a near item (shift 2), a far one
+// (shift 0) and a mirror item (its own map), each with an odd draw offset;
+// rows x and y must move with the offset, or the check would say nothing.
+static int NativeDepthCheck_TwinRowW(void)
+{
+	static struct NrDrawItem it;
+	static const s16 mvp[3][3] = {{3812, -410, 1490}, {260, 4021, -705}, {-1530, 640, 3790}};
+	const double ofsX = 37.0;
+	const double ofsY = -11.0;
+	int ok = 1;
+	int round;
+
+	for (round = 0; round < 3; round++)
+	{
+		double S0[4][4];
+		double S1[4][4];
+		float s0[16];
+		float s1[16];
+		int r;
+		int c;
+
+		memset(&it, 0, sizeof(it));
+		memcpy(it.mvp, mvp, sizeof(mvp));
+		it.mvpT[0] = -903;
+		it.mvpT[1] = 412;
+		it.mvpT[2] = (round == 0) ? 0x3a40 : 0x5c21;
+		it.mvpShift = (s8)((round == 0) ? 2 : 0);
+		it.unitScale[0] = 16384.0 / 5100.0;
+		it.unitScale[1] = 16384.0 / 4400.0;
+		it.unitScale[2] = 16384.0 / 6300.0;
+		it.H = 0x140;
+		it.rectW = 512;
+		it.rectH = 216;
+		it.ofsXExtra = 3;
+		it.twin = 1;
+		if (round == 2)
+		{
+			it.mirror = 1;
+			for (r = 0; r < 3; r++)
+			{
+				for (c = 0; c < 3; c++)
+				{
+					it.mirrorA[r][c] = ((double)mvp[r][c] / 4096.0) * ((c == 1) ? -1.0 : 1.0) * it.unitScale[c];
+				}
+			}
+			it.mirrorB[0] = -903.0;
+			it.mirrorB[1] = 1210.5;
+			it.mirrorB[2] = 5911.25;
+		}
+
+		NativeRenderLayer_CharItemMatrix(&it, 0.0, 0.0, S0);
+		NativeRenderLayer_CharItemMatrix(&it, (ofsX + (double)it.ofsXExtra) - 0.5, ofsY - 0.5, S1);
+		NativeRenderLayer_MatrixToDraw(S0, s0);
+		NativeRenderLayer_MatrixToDraw(S1, s1);
+		ok = ok && (memcmp(&s0[3], &s1[3], sizeof(float)) == 0) && (memcmp(&s0[7], &s1[7], sizeof(float)) == 0) &&
+		     (memcmp(&s0[11], &s1[11], sizeof(float)) == 0) && (memcmp(&s0[15], &s1[15], sizeof(float)) == 0) && (s0[12] != s1[12]) && (s0[13] != s1[13]);
+	}
+	return ok;
+}
+
+// THE MARKERS OF A TWIN VIEW (NativeRenderLayer_TwinBinMarkers) where no twin
+// source is needed - a selftest has none, so NativeRenderLayer_TwinItemOrder
+// finds no paint order. Two made-up ranges of the cells 10..31 (a guard word on
+// each side), depthOffset 10..31:
+// (a) two items without a body (the sides of a water line a selector leaves
+//     out): 1, one marker each in the middle cell 20, the first item in
+//     otRangeNormal, the second in otRangeSecondary, item fields 0 and 1, no
+//     slice, no other word changed;
+// (b) an item with a body and no paint order: 0, nothing linked, the key pool
+//     at its level before, counted as "no order";
+// (c) one item without a body when 384 markers are in use: 0, nothing linked,
+//     counted as "arena"; with 383 in use it gets its marker.
+// The fallback of an item over NR_TWIN_BINS_MAX cells needs a paint order and
+// is not run here. Every state of the layer it touches is put back.
+static int NativeDepthCheck_TwinView(void)
+{
+	static u32 normal[24];
+	static u32 second[24];
+	static struct InstDrawPerPlayer idpp;
+	const int dbBefore = s_nrMarkerDb;
+	const int markersBefore = s_nrMarkerCount[0];
+	const int slicesBefore = s_nrSliceCount[0];
+	const u32 keysBefore = s_nrTwinKeyCount[0];
+	const struct NrDrawItem itemsBefore[2] = {s_nrItems[0][0], s_nrItems[0][1]};
+	const unsigned long long noOrderBefore = s_nrTwinBins.viewsNoOrder;
+	const unsigned long long arenaBefore = s_nrTwinBins.viewsArena;
+	const unsigned long long countsBefore = s_nrCount.markersWritten;
+	int ok = (NativeCharGpu_TwinSource() == NULL);
+	int i;
+
+	if (!NativeGpuLinks_IsRegisteredHostRange(s_nrMarkers[0], sizeof(s_nrMarkers[0])))
+	{
+		NativeGpuLinks_RegisterRangeChecked("selftest native markers", s_nrMarkers[0], sizeof(s_nrMarkers[0]));
+	}
+	memset(&idpp, 0, sizeof(idpp));
+	idpp.depthOffset[0] = 10;
+	idpp.depthOffset[1] = 31;
+	idpp.otRangeNormal = (int)(size_t)&normal[1] - (10 * 4);
+	idpp.otRangeSecondary = (int)(size_t)&second[1] - (10 * 4);
+	s_nrMarkerDb = 0;
+	s_nrSliceCount[0] = 0;
+	s_nrTwinKeyCount[0] = 7;
+	memset(&s_nrItems[0][0], 0, sizeof(s_nrItems[0][0]) * 2u);
+	s_nrItems[0][0].twin = 1;
+	s_nrItems[0][1].twin = 1;
+
+	// (a)
+	for (i = 0; i < 24; i++)
+	{
+		normal[i] = 0x00ABD000u + (u32)i;
+		second[i] = 0x00ABE000u + (u32)i;
+	}
+	s_nrMarkerCount[0] = 0;
+	ok = ok && (NativeRenderLayer_TwinBinMarkers(&idpp, 0, 2) == 1) && (s_nrMarkerCount[0] == 2) && (s_nrSliceCount[0] == 0) &&
+	     ((s_nrMarkers[0][0].code[0] & 0xFFFFFFu) == 0u) && ((s_nrMarkers[0][1].code[0] & 0xFFFFFFu) == 1u) &&
+	     (normal[1 + (20 - 10)] == CtrGpu_PrimToOTLink24(&s_nrMarkers[0][0])) && (second[1 + (20 - 10)] == CtrGpu_PrimToOTLink24(&s_nrMarkers[0][1]));
+	for (i = 0; ok && (i < 24); i++)
+	{
+		ok = (i == (1 + (20 - 10))) || ((normal[i] == (0x00ABD000u + (u32)i)) && (second[i] == (0x00ABE000u + (u32)i)));
+	}
+
+	// (b)
+	for (i = 0; i < 24; i++)
+	{
+		normal[i] = 0x00ABD000u + (u32)i;
+		second[i] = 0x00ABE000u + (u32)i;
+	}
+	s_nrMarkerCount[0] = 0;
+	s_nrItems[0][0].bodyOn = 1;
+	ok = ok && (NativeRenderLayer_TwinBinMarkers(&idpp, 0, 1) == 0) && (s_nrMarkerCount[0] == 0) && (s_nrSliceCount[0] == 0) && (s_nrTwinKeyCount[0] == 7u) &&
+	     (s_nrTwinBins.viewsNoOrder == (noOrderBefore + 1u)) && (normal[1 + (20 - 10)] == (0x00ABD000u + 11u));
+
+	// (c)
+	s_nrItems[0][0].bodyOn = 0;
+	s_nrMarkerCount[0] = 384;
+	ok = ok && (NativeRenderLayer_TwinBinMarkers(&idpp, 0, 1) == 0) && (s_nrMarkerCount[0] == 384) && (s_nrTwinBins.viewsArena == (arenaBefore + 1u)) &&
+	     (normal[1 + (20 - 10)] == (0x00ABD000u + 11u));
+	s_nrMarkerCount[0] = 383;
+	ok = ok && (NativeRenderLayer_TwinBinMarkers(&idpp, 0, 1) == 1) && (s_nrMarkerCount[0] == 384) &&
+	     (normal[1 + (20 - 10)] == CtrGpu_PrimToOTLink24(&s_nrMarkers[0][383]));
+
+	s_nrMarkerDb = dbBefore;
+	s_nrMarkerCount[0] = markersBefore;
+	s_nrSliceCount[0] = slicesBefore;
+	s_nrTwinKeyCount[0] = keysBefore;
+	s_nrItems[0][0] = itemsBefore[0];
+	s_nrItems[0][1] = itemsBefore[1];
+	s_nrTwinBins.viewsNoOrder = noOrderBefore;
+	s_nrTwinBins.viewsArena = arenaBefore;
+	s_nrCount.markersWritten = countsBefore;
+	return ok;
+}
+
 int NativeDepthCheck_Run(void)
 {
 	static struct NativeDepthCheckPair normal;
@@ -1130,6 +1392,13 @@ int NativeDepthCheck_Run(void)
 	int classCases = 0;
 	int classesDiffer;
 	int itemsPassed;
+	int binMiddle;
+	int binNearest;
+	int twinCells[4] = {0, 0, 0, 0};
+	int twinHeld = 0;
+	int twinPassed;
+	int twinRowW;
+	int twinView;
 	int held;
 	int passed;
 	int charPassed;
@@ -1156,6 +1425,21 @@ int NativeDepthCheck_Run(void)
 	itemsHeld = NativeDepthCheck_SplitItems();
 	wheelsDiffer = NativeDepthCheck_WheelBelow(&wheelsCompared);
 	classesDiffer = NativeDepthCheck_ShiftMaskClasses(&classCases);
+	// The bin of a marker (K-A): the middle of depthOffset, or its nearest end
+	// for the mirror of the twin.
+	{
+		static struct InstDrawPerPlayer binView;
+
+		memset(&binView, 0, sizeof(binView));
+		binView.depthOffset[0] = 10;
+		binView.depthOffset[1] = 31;
+		binMiddle = NativeRenderLayer_MarkerBin(&binView, 0);
+		binNearest = NativeRenderLayer_MarkerBin(&binView, 1);
+	}
+	twinPassed = NativeDepthCheck_TwinBins(twinCells, &twinHeld);
+	twinRowW = NativeDepthCheck_TwinRowW();
+	twinView = NativeDepthCheck_TwinView();
+	twinPassed = twinPassed && twinRowW && twinView;
 	NativeDepthCheck_Sides(&sides);
 	ruleFailed = NativeDepthCheck_RuleFactor(&ruleCases);
 
@@ -1168,9 +1452,10 @@ int NativeDepthCheck_Run(void)
 	               NativeDepthCheck_MirrorPassed(&mirrorFar, RB_RETAIL_DRAWFUNC_REFLECTION, NR_SELECTOR_NEGATIVE) &&
 	               NativeDepthCheck_MirrorPassed(&mirrorSpecial, RB_RETAIL_DRAWFUNC_SPECIAL, NR_SELECTOR_BOTH_MASK) && (wheelError < 1e-6) &&
 	               (sides.reflectionDiffer == 0) && (sides.reflectionCases == 5);
-	itemsPassed = NativeDepthCheck_SplitPassed(&splitPitched, 1, 1) && itemsHeld && (wheelsCompared >= 600) && (wheelsDiffer == 0) && (classesDiffer == 0);
+	itemsPassed = NativeDepthCheck_SplitPassed(&splitPitched, 1, 1) && itemsHeld && (wheelsCompared >= 600) && (wheelsDiffer == 0) && (classesDiffer == 0) &&
+	              (binMiddle == 20) && (binNearest == 10);
 	passed = NativeDepthCheck_PairPassed(&normal, 2, 0) && NativeDepthCheck_PairPassed(&huge, 0, -2) && charPassed && splitPassed && mirrorPassed &&
-	         itemsPassed;
+	         itemsPassed && twinPassed;
 
 	printf("native depth selftest %s: normal shift %d to %d, w %.4f to %.4f, step %.4f percent, rest %.4f percent, matrix part %.4f percent, "
 	       "wrong shift %.1f and %.1f percent, matrix %.1f and %.1f percent, huge shift %d to %d, w %.4f to %.4f, step %.4f percent, rest %.4f percent, "
@@ -1241,10 +1526,18 @@ int NativeDepthCheck_Run(void)
 
 	// The checks of the review of stage a (G4ea S1-S3), on a third line.
 	printf("native depth selftest split items, split R near nodding: handler %s, splitLine %d, %d points (%d below, %d above), %d differ, level plane %d "
-	       "differ, items of a split view %s, wheels against DrawTires %d cases %d differ, shift/mask classes %d cases %d differ, items %s\n",
+	       "differ, items of a split view %s, wheels against DrawTires %d cases %d differ, shift/mask classes %d cases %d differ, "
+	       "marker bin of depth range 10..31 middle %d nearest %d, items %s\n",
 	       splitPitched.handlerSplit ? "split" : "other", splitPitched.splitLine, splitPitched.compared, splitPitched.below, splitPitched.above,
 	       splitPitched.differ, splitPitched.levelDiffer, itemsHeld ? "held" : "off", wheelsCompared, wheelsDiffer, classCases, classesDiffer,
-	       itemsPassed ? "passed" : "differs");
+	       binMiddle, binNearest, itemsPassed ? "passed" : "differs");
+
+	// The bin markers of the twin (one marker per occupied bin), on a fourth line.
+	printf("native depth selftest twin bin markers: bins 40 33 33 25 12 9 2 in the cells 10..31 give the cells %d %d %d %d, %d keys held, "
+	       "linked into those cells only, arena keeps %d, paint runs report %d cells as over %d, row w %s with the draw offset (near, far, mirror), "
+	       "view: items without a body one middle marker each in their ranges, no paint order and a full arena link nothing (%s), bins %s\n",
+	       twinCells[0], twinCells[1], twinCells[2], twinCells[3], twinHeld, NR_TWIN_ARENA_KEEP, NR_TWIN_BINS_MAX + 1, NR_TWIN_BINS_MAX,
+	       twinRowW ? "same" : "moved", twinView ? "held" : "off", twinPassed ? "passed" : "differ");
 
 	return passed ? 0 : 1;
 }

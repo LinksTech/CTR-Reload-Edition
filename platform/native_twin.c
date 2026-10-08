@@ -1293,6 +1293,63 @@ u32 NativeTwin_PaintOrder(const struct NativeTwinSource *src, u32 pose, const fl
 	return T;
 }
 
+u32 NativeTwin_PaintRuns(const u64 *keys, u32 keyCount, int low, int high, u32 *runFirst, u32 *runCount, s16 *runCell, u32 runMax, u32 *held)
+{
+	u32 runs = 0;
+	u32 outside = 0;
+	int lastCell = 0;
+	int lastBin = 0;
+	u32 k;
+
+	if (held != NULL)
+	{
+		*held = 0;
+	}
+	if ((keys == NULL) || (keyCount == 0u) || (low > high) || (low < -32768) || (high > 32767) || (runFirst == NULL) || (runCount == NULL) ||
+	    (runCell == NULL))
+	{
+		return 0;
+	}
+
+	for (k = 0; k < keyCount; k++)
+	{
+		const int bin = (int)(keys[k] >> 40);
+		const int cell = (bin < low) ? low : ((bin > high) ? high : bin);
+
+		// The keys come far first: a bin above the one before is no paint order.
+		if ((k > 0u) && (bin > lastBin))
+		{
+			return 0;
+		}
+		if ((bin < low) || (bin > high))
+		{
+			outside++;
+		}
+		if ((k == 0u) || (cell != lastCell))
+		{
+			if (runs < runMax)
+			{
+				runFirst[runs] = k;
+				runCount[runs] = 0;
+				runCell[runs] = (s16)cell;
+			}
+			runs++;
+		}
+		if (runs <= runMax)
+		{
+			runCount[runs - 1u]++;
+		}
+		lastBin = bin;
+		lastCell = cell;
+	}
+
+	if (held != NULL)
+	{
+		*held = outside;
+	}
+	return (runs > runMax) ? (runMax + 1u) : runs;
+}
+
 u32 NativeTwin_TextureFlags(void)
 {
 	return NATIVE_TEX_FLAG_LINEAR_DATA | NATIVE_TEX_FLAG_ALWAYS_NEAREST | NATIVE_TEX_FLAG_ONE_LEVEL;
@@ -2089,6 +2146,81 @@ internal void NativeTwin_TestPaint(const struct NativeTwinSource *src, const str
 	}
 	NativeTwin_Expect(checks, failures, bins && sorted, name,
 	                  "depth: a paint bin differs from MAC0 >> 17 of the corners (or from its range when held), or a far bin follows a nearer one");
+
+	// The cells of the bin markers (NativeTwin_PaintRuns) on the near order of
+	// above (w = z + 4000, x 4), with a cell range one bin inside the bins at
+	// both ends where the bins allow: every key lies in the run of its bin held
+	// to the range, the runs follow one another key for key, their cells fall,
+	// and the keys outside are counted. Then the limits: one run fewer allowed
+	// than needed gives the count + 1, rising bins and an empty range give 0.
+	{
+		u32 *runFirst = (u32 *)calloc((size_t)T + 1u, sizeof(u32));
+		u32 *runCount = (u32 *)calloc((size_t)T + 1u, sizeof(u32));
+		s16 *runCell = (s16 *)calloc((size_t)T + 1u, sizeof(s16));
+		int runsHeld = (runFirst != NULL) && (runCount != NULL) && (runCell != NULL);
+		int limitsHeld = runsHeld;
+		u32 runs = 0;
+		u32 held = 0;
+		u32 outside = 0;
+		int low = 0;
+		int high = 0;
+
+		memset(s, 0, sizeof(s));
+		s[11] = 1.0f;
+		s[15] = 4000.0f;
+		runsHeld = runsHeld && (NativeTwin_PaintOrder(src, pose, s, 4.0, 0, -1, keys, T) == T);
+		if (runsHeld)
+		{
+			const int maxBin = (int)(keys[0] >> 40);
+			const int minBin = (int)(keys[T - 1u] >> 40);
+			u32 r;
+
+			low = (maxBin - minBin >= 2) ? (minBin + 1) : minBin;
+			high = (maxBin - minBin >= 2) ? (maxBin - 1) : maxBin;
+			runs = NativeTwin_PaintRuns(keys, T, low, high, runFirst, runCount, runCell, T, &held);
+			runsHeld = (runs >= 1u) && (runs <= T);
+			for (r = 0; runsHeld && (r < runs); r++)
+			{
+				u32 k;
+
+				runsHeld = (runFirst[r] == ((r == 0u) ? 0u : (runFirst[r - 1u] + runCount[r - 1u]))) && (runCount[r] > 0u) &&
+				           ((r == 0u) || (runCell[r] < runCell[r - 1u]));
+				for (k = runFirst[r]; runsHeld && (k < (runFirst[r] + runCount[r])); k++)
+				{
+					const int bin = (int)(keys[k] >> 40);
+
+					runsHeld = ((int)runCell[r] == ((bin < low) ? low : ((bin > high) ? high : bin)));
+					outside += ((bin < low) || (bin > high)) ? 1u : 0u;
+				}
+			}
+			runsHeld = runsHeld && ((runFirst[runs - 1u] + runCount[runs - 1u]) == T) && (held == outside);
+		}
+		NativeTwin_Expect(checks, failures, runsHeld, name,
+		                  "bin markers: a key is not in the run of its bin held to the cells, the runs skip or repeat a key, or the held keys are miscounted");
+
+		if (limitsHeld && runsHeld)
+		{
+			u64 swap;
+
+			limitsHeld = (NativeTwin_PaintRuns(keys, T, low, high, runFirst, runCount, runCell, runs - 1u, NULL) == runs) &&
+			             (NativeTwin_PaintRuns(keys, T, high + 1, high, runFirst, runCount, runCell, T, NULL) == 0u) &&
+			             (NativeTwin_PaintRuns(keys, T, low, low, runFirst, runCount, runCell, T, NULL) == 1u);
+			if ((T > 1u) && ((keys[0] >> 40) != (keys[T - 1u] >> 40)))
+			{
+				swap = keys[0];
+				keys[0] = keys[T - 1u];
+				keys[T - 1u] = swap;
+				limitsHeld = limitsHeld && (NativeTwin_PaintRuns(keys, T, low, high, runFirst, runCount, runCell, T, NULL) == 0u);
+			}
+		}
+		NativeTwin_Expect(checks, failures, limitsHeld, name,
+		                  "bin markers: more runs than allowed, an empty cell range or rising bins are not refused, or one cell is not one run");
+		printf("native twin selftest: %s: bin markers of the near order: cells %d..%d, %u run(s), %u key(s) held to the cells\n", name, low, high,
+		       (unsigned)runs, (unsigned)held);
+		free(runFirst);
+		free(runCount);
+		free(runCell);
+	}
 	free(keys);
 }
 

@@ -817,7 +817,15 @@ global_variable const char *ctr_native_layer_shader =
 //               alphaScale / 4096 (the DPCT of RenderBucket_LoadPrimColors, in
 //               float; nrFar, nrLook.x; a = 0: no tone), per corner;
 //   modulation  textured: texel x colour x nrLook.y (2 for retail data, the
-//               bright factor of the PSX path); untextured: the colour;
+//               bright factor of the PSX path); untextured: the colour x
+//               248 / 255. The PSX path draws a flat polygon through the same
+//               lookup as a textured one, with the white texture bound
+//               (native_gpu.c, AddSplit): the word it reads there is 0xffff,
+//               and the 5:5:5 LUT turns that into 31 << 3 = 248 per channel
+//               (NativeRenderer_InitRG8LUT), which then multiplies the colour
+//               (bright 1). Without the factor every untextured twin surface
+//               came out 255 / 248 = 2.8 % too bright (the orange of the head:
+//               255,49 where retail has 248,48);
 //   mask        a texel with alpha below nrParams.w (the clear word 0x0000) is
 //               not drawn - before the modulation;
 //   dither      the PSX matrix itself (GPU_DITHERING, the same macro, not a
@@ -896,7 +904,10 @@ global_variable const char *ctr_native_twin_shader =
     "		vec4 texel = texture(s_texture, v_uv);\n"
     "		if ((nrParams.w > 0.0) && (texel.a < nrParams.w)) { discard; }\n"
     "		colour = vec4(texel.rgb * v_color.rgb * nrLook.y, texel.a * v_color.a);\n"
-    "	} else if ((nrParams.w > 0.0) && (colour.a < nrParams.w)) { discard; }\n"
+    "	} else {\n"
+    "		if ((nrParams.w > 0.0) && (colour.a < nrParams.w)) { discard; }\n"
+    "		colour.rgb *= 248.0 / 255.0;\n"
+    "	}\n"
     "	v_texcoord = vec4(0.0, 0.0, 0.0, 1.0);\n"
     "	psxDitherAmount = nrLook.z;\n"
     "	colour = dither(colour);\n"

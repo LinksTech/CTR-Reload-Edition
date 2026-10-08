@@ -570,8 +570,11 @@ struct NativeVkIndexBuffer
 
 #define NATIVE_VK_MAX_PROGRAMS 32
 
-// The largest uniform block any of our programs declares is 144 bytes (the PSX
-// block, struct NativePSXUniforms). Rounded well up, and checked rather than assumed at program
+// The largest uniform block any of our programs declares is 192 bytes (the
+// block of the retail twin's program "nrt", struct NativeTwinUniforms; the PSX
+// block, struct NativePSXUniforms, is 144, the native layer's "nr", struct
+// NativeLayerUniforms, 128 - all three pinned by static asserts in
+// native_renderer.c). Rounded up, and checked rather than assumed at program
 // creation, so a block that outgrows it is refused loudly instead of writing
 // past the end of one.
 #define NATIVE_VK_MAX_UNIFORM_BYTES 256
