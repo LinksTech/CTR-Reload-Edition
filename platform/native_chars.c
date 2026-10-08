@@ -1726,6 +1726,21 @@ internal const char *NativeChar_ModeRefusal(const struct GameTracker *gGT)
 	return NULL;
 }
 
+// The load of the podium at the end of an arcade cup: UI_CupStandings sets the
+// empty reward STATIC_BIG1 and loads Gem Stone Valley (game/UI/
+// UI_CupStandings.c), the hub detection of the load adds ADVENTURE_ARENA to the
+// arcade bits (game/LOAD/LOAD_TenStages.c). A regular way with the pick still
+// set, refused as "adventure" by NativeChar_ModeRefusal. The adventure sets
+// STATIC_BIG1 too (Oxide, game/222.c), but never without ADVENTURE_MODE.
+internal int NativeChar_ArcadeCupPodium(const struct GameTracker *gGT)
+{
+	const u32 mode1 = (u32)gGT->gameMode1;
+
+	return ((mode1 & ARCADE_MODE) != 0) && ((mode1 & ADVENTURE_ARENA) != 0) &&
+	       ((mode1 & (ADVENTURE_MODE | ADVENTURE_CUP | ADVENTURE_BOSS)) == 0) && (gGT->levelID == GEM_STONE_VALLEY) &&
+	       (gGT->podiumRewardID == STATIC_BIG1);
+}
+
 // The model retail gives seat 0 on this template: the one in the driver pack
 // whose 16-byte name is the template's debug name - the search of
 // VehBirth_GetModelByName (game/Vehicle/VehBirth.c) over sdata->PLYROBJECTLIST,
@@ -3091,6 +3106,17 @@ void NativeChar_ArmSeats(void)
 	if (gGT->boolDemoMode != 0)
 	{
 		Platform_Log("[CTR Char] not bound: demo\n");
+		return;
+	}
+
+	// 4b. The podium at the end of an arcade cup: nothing to bind - the podium
+	//     shows the dance models of the templates (game/Podium.c) - and no gap
+	//     in the mode rule, so not loud, and the pick stays. The way on from the
+	//     podium loads the title (game/233/CS_Camera.c), and step 1 drops the
+	//     pick there as on every way back to the title.
+	if (NativeChar_ArcadeCupPodium(gGT))
+	{
+		Platform_Log("[CTR Char] seat 0 empty: podium of an arcade cup, the pick stays\n");
 		return;
 	}
 

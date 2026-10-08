@@ -232,7 +232,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--deterministic", "", "measuring mode: VSync emits only the VBlanks the game asks for and never catches up by wall clock, lateness is dropped; audio is rendered per VBlank; keyboard, mouse, pads (buttons, triggers and sticks) and window focus do not reach the game, what is kept away is counted at exit except pad axes (closing the window still ends the run)"},
     {"--inject-delay", "<seed>", "disturbs the clock: about every 8th frame and boot VSync call is held 20..80 ms, which ones purely from the seed (0 = off)"},
     {"--frame-log", "", "frame log, one line per frame"},
-    {"--shot", "<vblanks>", "snapshot of the internal frame at this VBlank, or an ascending list 131,133,140 (up to 128)"},
+    {"--shot", "<vblanks>", "snapshot of the internal frame at this VBlank, or an ascending list 131,133,140 (up to 128, more ends the start)"},
     {"--shot-name", "<file>", "file name of the snapshot (default SCREENSHOT.BMP); with a list, <name>-<vblank>.bmp per snapshot"},
     {"--menu-keys", "<sequence>", "scripted pad steps, e.g. down,cross or l1+r1+down (up to 256; keys up down left right cross circle square triangle start select l1 r1 l2 r2 none)"},
     {"--menu-keys-quit", "<vblanks>", "end this many VBlanks after the last step (default 120, 0 = do not end)"},
@@ -438,6 +438,98 @@ static void NativeArgs_PrintDevHelp(void)
 	printf("game folder, not the current directory.\n");
 }
 
+// The bytes of a list switch that is cut into its entries in a copy (--msaa-at).
+#define NATIVE_ARG_LIST_MAX 512
+
+// The values that are kept in a buffer of fixed size, or counted into a table:
+// at most bytes - 1 characters (0 = any length) and at most entries
+// comma-separated entries (0 = any number). A value past either ends the start
+// in the gate below, before the first window, and is never cut: a cut path
+// names another file or folder, a cut list other moments, and the run would
+// measure something else than its command line says.
+typedef struct
+{
+	const char *name;
+	size_t bytes;
+	int entries;
+} NativeValueLimit;
+
+static const NativeValueLimit s_valueLimits[] = {
+    {"--log", sizeof(s_logPath), 0},
+    {"--shot", 0, PLATFORM_SHOT_MAX},
+    {"--shot-name", PLATFORM_ARG_PATH_MAX, 0},
+    {"--dump-prefix", PLATFORM_ARG_PATH_MAX, 0},
+    {"--msaa-at", NATIVE_ARG_LIST_MAX, 0},
+    {"--perf-dir", NATIVE_PERF_PATH_MAX, 0},
+    {"--tracks-dir", sizeof(s_nativeTrackFolder), 0},
+    {"--chars-dir", NATIVE_CHAR_PATH_MAX, 0},
+    {"--char", NATIVE_CHAR_PATH_MAX, 0},
+    {"--autoload-track", sizeof(g_cfg_autoloadTrack), 0},
+    {"--level-tour", sizeof(g_cfg_levelTour), 0},
+};
+
+// The entries of a comma list as the readers count them: empty ones (",,")
+// are skipped.
+static int NativeArgs_ListEntries(const char *value)
+{
+	int entries = 0;
+	int inEntry = 0;
+
+	for (; *value != '\0'; value++)
+	{
+		if (*value == ',')
+		{
+			inEntry = 0;
+		}
+		else if (!inEntry)
+		{
+			inEntry = 1;
+			entries++;
+		}
+	}
+
+	return entries;
+}
+
+// 0 = the value fits (or the switch keeps no fixed buffer). Otherwise
+// NATIVE_EXIT_DEV_REQUIRED, with the message on stderr.
+static int NativeArgs_ValueFits(const char *arg, const char *value)
+{
+	for (size_t i = 0; i < sizeof(s_valueLimits) / sizeof(s_valueLimits[0]); i++)
+	{
+		const NativeValueLimit *limit = &s_valueLimits[i];
+		size_t length;
+		int entries;
+
+		if (strcmp(arg, limit->name) != 0)
+		{
+			continue;
+		}
+
+		length = strlen(value);
+		if ((limit->bytes > 0) && (length >= limit->bytes))
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch %s takes at most %u characters, got %u - refused, never cut\n", arg, (unsigned)(limit->bytes - 1), (unsigned)length);
+			fflush(stderr);
+			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+
+		entries = (limit->entries > 0) ? NativeArgs_ListEntries(value) : 0;
+		if (entries > limit->entries)
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch %s takes at most %d entries, got %d - refused, never cut\n", arg, limit->entries, entries);
+			fflush(stderr);
+			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+
+		return 0;
+	}
+
+	return 0;
+}
+
 // 0 = go on. Otherwise the exit code with which main ends at once; the message
 // is then already on stderr. Called before everything else, see above.
 static int NativeArgs_GateDevSwitches(int argc, char *argv[])
@@ -519,6 +611,16 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 				fprintf(stderr, "[CTR Native] a switch name is never a value\n");
 				fflush(stderr);
 				return NATIVE_EXIT_DEV_REQUIRED;
+			}
+
+			// A value too long for its buffer, or a list with too many entries.
+			{
+				const int fits = NativeArgs_ValueFits(arg, value);
+
+				if (fits != 0)
+				{
+					return fits;
+				}
 			}
 		}
 	}
@@ -3058,25 +3160,34 @@ int main(int argc, char *argv[])
 				// dumps cannot answer a question about the upscaled picture - the
 				// displayed VRAM area is 512x216 at factor one.
 				extern int g_cfg_shotAt;
-				extern int g_cfg_shotList[128];
+				extern int g_cfg_shotList[PLATFORM_SHOT_MAX];
 				extern int g_cfg_shotCount;
 
 				// Also a list "131,133,140" - one run, many snapshots, each
 				// as <name>-<vblank>.bmp. A single value writes <name> as given.
 				// The list is taken in the order given, so it has to ascend.
+				// Read where it stands, not from a copy: a copy of 512 bytes cut
+				// a long list after 511 characters without a word. More than
+				// PLATFORM_SHOT_MAX entries never get here (NativeArgs_ValueFits).
 				{
 					const char *spec = argv[++argIndex];
-					char buffer[512];
-					char *cursor;
-					char *token;
+					const char *cursor = spec;
 
-					snprintf(buffer, sizeof(buffer), "%s", spec);
 					g_cfg_shotCount = 0;
-					cursor = buffer;
-					while (((token = strtok(cursor, ",")) != NULL) && (g_cfg_shotCount < 128))
+					while ((*cursor != '\0') && (g_cfg_shotCount < PLATFORM_SHOT_MAX))
 					{
-						cursor = NULL;
-						g_cfg_shotList[g_cfg_shotCount++] = atoi(token);
+						// Empty entries (",,") are skipped, as strtok skipped them.
+						if (*cursor == ',')
+						{
+							cursor++;
+							continue;
+						}
+
+						g_cfg_shotList[g_cfg_shotCount++] = atoi(cursor);
+						while ((*cursor != '\0') && (*cursor != ','))
+						{
+							cursor++;
+						}
 					}
 					g_cfg_shotAt = (g_cfg_shotCount > 0) ? g_cfg_shotList[0] : atoi(spec);
 					if (g_cfg_shotCount > 1)
@@ -3121,7 +3232,7 @@ int main(int argc, char *argv[])
 			else if ((strcmp(argv[argIndex], "--shot-name") == 0) && ((argIndex + 1) < argc))
 			{
 				// Its own file per run. SCREENSHOT.BMP was one name for every shot.
-				extern char g_cfg_shotName[256];
+				extern char g_cfg_shotName[PLATFORM_ARG_PATH_MAX];
 
 				snprintf(g_cfg_shotName, sizeof(g_cfg_shotName), "%s", argv[++argIndex]);
 				printf("[CTR Native] window shot: %s\n", g_cfg_shotName);
@@ -3477,7 +3588,8 @@ int main(int argc, char *argv[])
 				extern int g_cfg_msaaAtCount;
 				extern int g_cfg_msaaAtVBlank[PLATFORM_MSAA_AT_MAX];
 				extern int g_cfg_msaaAtLevel[PLATFORM_MSAA_AT_MAX];
-				char buffer[512];
+				// A longer value never gets here (NativeArgs_ValueFits).
+				char buffer[NATIVE_ARG_LIST_MAX];
 				char *cursor;
 				char *token;
 

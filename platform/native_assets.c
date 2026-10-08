@@ -2386,6 +2386,9 @@ int NativeTrack_Scan(void)
 	}
 	else if (!NativePath_Join(dirPath, sizeof(dirPath), NativeStr8_FromCString(s_nativeAssetsBaseDir), NativeStr8_FromCString(s_nativeTrackFolder)))
 	{
+		// Said: a run without containers that should have had them measures
+		// another menu.
+		Platform_LogWarn("[CTR Tracks] --tracks-dir %s under %s is too long - no containers\n", s_nativeTrackFolder, s_nativeAssetsBaseDir);
 		return 0;
 	}
 

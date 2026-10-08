@@ -1067,10 +1067,20 @@ internal void Platform_TakeScreenshot(const char *path)
 	{
 		SDL_Surface *surface = SDL_CreateSurfaceFrom(width, height, SDL_PIXELFORMAT_BGRX32, pixels, width * 4);
 
+		// A file that does not open (a missing folder, or a path past MAX_PATH
+		// without long paths on Windows) is said, not announced as a shot.
+		const int saved = (surface != NULL) && SDL_SaveBMP(surface, name);
+
 		if (surface != NULL)
 		{
-			SDL_SaveBMP(surface, name);
 			SDL_DestroySurface(surface);
+		}
+
+		if (!saved)
+		{
+			Platform_LogWarn("[CTR Native] shot %s: NOT WRITTEN (%s)\n", name, SDL_GetError());
+			free(pixels);
+			return;
 		}
 	}
 
@@ -1100,10 +1110,10 @@ internal void Platform_TakeScreenshot(const char *path)
 // A shot at a named VBlank, so two runs catch the same moment of an animating
 // screen. A hand on F12 twice does not.
 int g_cfg_shotAt = 0;
-char g_cfg_shotName[256] = {0};
+char g_cfg_shotName[PLATFORM_ARG_PATH_MAX] = {0};
 // Several snapshots per run. g_cfg_shotAt is always the next one due;
 // with more than one entry the file is called <name without .bmp>-<vblank>.bmp.
-int g_cfg_shotList[128];
+int g_cfg_shotList[PLATFORM_SHOT_MAX];
 int g_cfg_shotCount = 0;
 global_variable int s_shotNext = 0;
 #endif
@@ -1950,8 +1960,9 @@ internal void Platform_ShotIfDue(void)
 
 	if (g_cfg_shotCount > 1)
 	{
-		char path[320];
-		char base[256];
+		// Room for the whole name of --shot-name and "-<vblank>.bmp".
+		char path[PLATFORM_ARG_PATH_MAX + 32];
+		char base[PLATFORM_ARG_PATH_MAX];
 		size_t len;
 
 		snprintf(base, sizeof(base), "%s", (g_cfg_shotName[0] != '\0') ? g_cfg_shotName : "SCREENSHOT.BMP");
@@ -2023,7 +2034,8 @@ internal void Platform_DumpIfDue(void)
 	// and needs none: the list can end the run, the request never does.
 	if (s_dumpRequestName[0] != '\0')
 	{
-		char path[256];
+		// Room for the whole --dump-prefix, the name and "-" ".tga".
+		char path[PLATFORM_ARG_PATH_MAX + sizeof(s_dumpRequestName) + 8];
 
 		snprintf(path, sizeof(path), "%s-%s.tga", s_dumpPrefix, s_dumpRequestName);
 		s_dumpRequestName[0] = '\0';
@@ -2048,7 +2060,8 @@ internal void Platform_DumpIfDue(void)
 
 		if (vblank >= s_dumpPoints[i])
 		{
-			char path[256];
+			// Room for the whole --dump-prefix and "-<vblank>.tga".
+			char path[PLATFORM_ARG_PATH_MAX + 32];
 
 			snprintf(path, sizeof(path), "%s-%06d.tga", s_dumpPrefix, s_dumpPoints[i]);
 			NativeRenderer_SaveVRAM(path, 0, 0, VRAM_WIDTH, VRAM_HEIGHT, 1);
