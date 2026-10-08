@@ -625,7 +625,9 @@ global_variable NativeGfxBuffer s_vramQuadBuffer = NATIVE_GFX_INVALID;
 //
 // Its block, std140: one finished clip-from-model matrix (the depth mapping is
 // already in it - see "DEPTH." in native_gfx.h), a tint, and parameters whose
-// x > 0.5 means "sample slot 0".
+// x > 0.5 means "sample slot 0"; then the water line of step 4e - the plane in
+// the units of the mesh and the side kept (splitMode.x: 1 d >= 0, -1 d < 0, 0
+// all; see the "nr" shader in native_shaders.inc).
 //
 // clipFromModel is stored column-major, the way a GLSL mat4 in a std140 block
 // reads it: clipFromModel[column * 4 + row].
@@ -634,11 +636,15 @@ struct NativeLayerUniforms
 	float clipFromModel[16];
 	float tint[4];
 	float params[4];
+	float split[4];
+	float splitMode[4];
 };
 
-CTR_STATIC_ASSERT(sizeof(struct NativeLayerUniforms) == 96);
+CTR_STATIC_ASSERT(sizeof(struct NativeLayerUniforms) == 128);
 CTR_STATIC_ASSERT(offsetof(struct NativeLayerUniforms, tint) == 64);
 CTR_STATIC_ASSERT(offsetof(struct NativeLayerUniforms, params) == 80);
+CTR_STATIC_ASSERT(offsetof(struct NativeLayerUniforms, split) == 96);
+CTR_STATIC_ASSERT(offsetof(struct NativeLayerUniforms, splitMode) == 112);
 
 global_variable ShaderID s_nativeLayerShader = NATIVE_GFX_INVALID;
 
@@ -653,11 +659,15 @@ struct NativeTwinUniforms
 	float look[4];
 	float dither[4];
 	float proj[4];
+	float split[4];     // the water line of step 4e, as in "nr"
+	float splitMode[4];
 };
 
-CTR_STATIC_ASSERT(sizeof(struct NativeTwinUniforms) == 160);
+CTR_STATIC_ASSERT(sizeof(struct NativeTwinUniforms) == 192);
 CTR_STATIC_ASSERT(offsetof(struct NativeTwinUniforms, far) == 96);
 CTR_STATIC_ASSERT(offsetof(struct NativeTwinUniforms, proj) == 144);
+CTR_STATIC_ASSERT(offsetof(struct NativeTwinUniforms, split) == 160);
+CTR_STATIC_ASSERT(offsetof(struct NativeTwinUniforms, splitMode) == 176);
 
 global_variable ShaderID s_nativeTwinShader = NATIVE_GFX_INVALID;
 
@@ -2503,6 +2513,10 @@ int NativeRenderer_DrawNativeProbe(const struct NativeLayerDraw *draw, const REC
 		// params.z > 0: --native-depth-tint (0 for every other draw).
 		block.params[2] = draw->depthTint;
 		block.params[3] = 0.0f;
+
+		// No water line for the probe: the whole body, as before.
+		memset(block.split, 0, sizeof(block.split));
+		memset(block.splitMode, 0, sizeof(block.splitMode));
 	}
 
 	// The first native draw of a view in a frame starts from far: what an
@@ -2645,8 +2659,18 @@ NativeGfxBuffer NativeRenderer_CreateNativeMeshVertexBuffer(int bytes, const voi
 // triangles 46 and 112, which come first in the list) - retail paints it over,
 // a depth test does not. So the twin draws its triangles one by one in that
 // order with the depth compare ALWAYS: within the model the last painted wins,
-// as on the PSX. Towards the scene nothing changes: the twin is the only
-// native draw and clears the depth of its box first.
+// as on the PSX. Towards the scene nothing changes: the PSX scene neither
+// tests nor writes depth (its draws run with the draw state NULL), so only the
+// place of the twin's marker in the OT orders it against the scene, as before.
+// The depth of a view is cleared once per frame, by the first native item of
+// that view - not necessarily the twin's; custom seats and the second items of
+// step 4e (the side below the water line, the mirror) are native draws too.
+// The depth the twin leaves is that of the triangle painted last.
+//
+// The depth scale and the bin range come with the draw (twinDepthScale,
+// twinBinLow / twinBinHigh): the queue scales both copies of a mirror by the
+// view depth of the instance, which the matrix of the mirror item does not
+// carry. Every draw is counted: in the paint order, or fallen back.
 //
 // The keys live here (grown, never shrunk); 0 = no order (no twin source, the
 // ranges do not hold every triangle, a pose that is not a whole multiple), and
@@ -2654,6 +2678,14 @@ NativeGfxBuffer NativeRenderer_CreateNativeMeshVertexBuffer(int bytes, const voi
 global_variable u64 *s_twinPaintKeys;
 global_variable u32 s_twinPaintKeyMax;
 global_variable int s_twinPaintNoted;
+global_variable unsigned long long s_twinPaintOrdered;
+global_variable unsigned long long s_twinPaintFallback;
+
+void NativeRenderer_TwinPaintCounts(unsigned long long *ordered, unsigned long long *fallback)
+{
+	*ordered = s_twinPaintOrdered;
+	*fallback = s_twinPaintFallback;
+}
 
 internal u32 NativeRenderer_TwinPaintOrder(const struct NativeMeshDraw *draw)
 {
@@ -2664,6 +2696,7 @@ internal u32 NativeRenderer_TwinPaintOrder(const struct NativeMeshDraw *draw)
 
 	if ((src == NULL) || (src->native.vertexCount == 0u) || (draw->vertexOffset < 0) || (((u32)draw->vertexOffset % src->native.vertexCount) != 0u))
 	{
+		s_twinPaintFallback++;
 		return 0;
 	}
 	for (i = 0; i < draw->rangeCount; i++)
@@ -2672,6 +2705,7 @@ internal u32 NativeRenderer_TwinPaintOrder(const struct NativeMeshDraw *draw)
 	}
 	if (indices != (src->native.triangleCount * 3u))
 	{
+		s_twinPaintFallback++;
 		return 0;
 	}
 	if (s_twinPaintKeyMax < src->native.triangleCount)
@@ -2680,13 +2714,23 @@ internal u32 NativeRenderer_TwinPaintOrder(const struct NativeMeshDraw *draw)
 
 		if (grown == NULL)
 		{
+			s_twinPaintFallback++;
 			return 0;
 		}
 		s_twinPaintKeys = grown;
 		s_twinPaintKeyMax = src->native.triangleCount;
 	}
 
-	n = NativeTwin_PaintOrder(src, (u32)draw->vertexOffset / src->native.vertexCount, draw->screenFromModel, s_twinPaintKeys, s_twinPaintKeyMax);
+	n = NativeTwin_PaintOrder(src, (u32)draw->vertexOffset / src->native.vertexCount, draw->screenFromModel, (double)draw->twinDepthScale, draw->twinBinLow,
+	                          draw->twinBinHigh, s_twinPaintKeys, s_twinPaintKeyMax);
+	if (n > 0u)
+	{
+		s_twinPaintOrdered++;
+	}
+	else
+	{
+		s_twinPaintFallback++;
+	}
 	if (!s_twinPaintNoted)
 	{
 		s_twinPaintNoted = 1;
@@ -2727,6 +2771,13 @@ internal void NativeRenderer_TwinRangeBlock(const struct NativeMeshDraw *draw, c
 	twin->proj[1] = s_psxUniforms.projection[12];
 	twin->proj[2] = s_psxUniforms.projection[5];
 	twin->proj[3] = s_psxUniforms.projection[13];
+	// The water line (step 4e): the side of the plane this draw keeps.
+	for (k = 0; k < 4; k++)
+	{
+		twin->split[k] = draw->split[k];
+		twin->splitMode[k] = 0.0f;
+	}
+	twin->splitMode[0] = (float)draw->splitKeep;
 }
 
 // ONE NATIVE MESH (step 4c), drawn into the split's place as the probe is -
@@ -2779,6 +2830,15 @@ int NativeRenderer_DrawNativeMesh(const struct NativeMeshDraw *draw, const RECT1
 			block.clipFromModel[column * 4 + 3] = (float)s3;
 		}
 	}
+
+	// The water line (step 4e): the side of the plane this draw keeps, the
+	// same for every range (0 = the whole mesh, what every other draw has).
+	for (i = 0; i < 4; i++)
+	{
+		block.split[i] = draw->split[i];
+		block.splitMode[i] = 0.0f;
+	}
+	block.splitMode[0] = (float)draw->splitKeep;
 
 	if (draw->clearDepth)
 	{

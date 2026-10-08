@@ -1191,14 +1191,14 @@ u32 NativeTwin_PaintBin(int sz0, int sz1, int sz2)
 	return (NATIVE_TWIN_ZSF3 * sum) >> 17;
 }
 
-u32 NativeTwin_PaintOrder(const struct NativeTwinSource *src, u32 pose, const float screenFromModel[16], u64 *keys, u32 keyMax)
+u32 NativeTwin_PaintOrder(const struct NativeTwinSource *src, u32 pose, const float screenFromModel[16], double depthScale, int binLow, int binHigh,
+                          u64 *keys, u32 keyMax)
 {
 	u32 count[RLDCHAR_NET_MATERIALS_MAX];
 	u32 start[RLDCHAR_NET_MATERIALS_MAX];
 	const u32 T = (src != NULL) ? src->native.triangleCount : 0u;
 	const u32 N = (src != NULL) ? src->native.vertexCount : 0u;
 	const u32 poses = (src != NULL) ? ((src->native.poseCount == 0u) ? 1u : src->native.poseCount) : 0u;
-	double depthScale;
 	u32 next = 0;
 	u32 m;
 	u32 t;
@@ -1206,7 +1206,8 @@ u32 NativeTwin_PaintOrder(const struct NativeTwinSource *src, u32 pose, const fl
 
 	if ((src == NULL) || (screenFromModel == NULL) || (keys == NULL) || (T == 0u) || (T > keyMax) || (T > NATIVE_TWIN_PAINT_PLACE_MASK) ||
 	    (N != (T * 3u)) || (pose >= poses) || (src->native.poses == NULL) || (src->native.triangleMaterials == NULL) ||
-	    (src->native.materials == NULL) || (src->native.materialCount == 0u) || (src->native.materialCount > RLDCHAR_NET_MATERIALS_MAX))
+	    (src->native.materials == NULL) || (src->native.materialCount == 0u) || (src->native.materialCount > RLDCHAR_NET_MATERIALS_MAX) ||
+	    !(depthScale > 0.0))
 	{
 		return 0;
 	}
@@ -1244,11 +1245,9 @@ u32 NativeTwin_PaintOrder(const struct NativeTwinSource *src, u32 pose, const fl
 
 	// The depth the coprocessor gives a corner. Row w of the screen matrix is
 	// the view depth in true view units (NativeRenderLayer_CharItemMatrix
-	// divides by 2^shift), its last entry that of the model origin, the view
-	// depth the queue tests: nearer than 0x1000 it loads the matrix 4 times
-	// larger (RB:1614-1616, depthShift) and the translation with it, so SZ is
-	// 4 w there and w beyond.
-	depthScale = ((double)screenFromModel[15] < 4096.0) ? 4.0 : 1.0;
+	// divides by 2^shift); the queue loads the matrix and the translation
+	// scaled by that 2^shift (x 4 nearer than view z 0x1000, RB:1614-1616 and
+	// RB:1312-1317; / 4 for DRAW_HUGE), so SZ is w x depthScale, rounded down.
 
 	for (t = 0; t < T; t++)
 	{
@@ -1275,7 +1274,19 @@ u32 NativeTwin_PaintOrder(const struct NativeTwinSource *src, u32 pose, const fl
 			w = floor(w * depthScale);
 			sz[c] = (w < 0.0) ? 0 : ((w > 65535.0) ? 0xffff : (int)w);
 		}
-		keys[t] = ((u64)NativeTwin_PaintBin(sz[0], sz[1], sz[2]) << 40) | ((u64)t << 20) | (u64)start[material]++;
+		{
+			int bin = (int)NativeTwin_PaintBin(sz[0], sz[1], sz[2]);
+
+			if (binLow <= binHigh)
+			{
+				bin = (bin < binLow) ? binLow : ((bin > binHigh) ? binHigh : bin);
+			}
+			if (bin < 0)
+			{
+				bin = 0;
+			}
+			keys[t] = ((u64)(u32)bin << 40) | ((u64)t << 20) | (u64)start[material]++;
+		}
 	}
 
 	qsort(keys, T, sizeof(u64), NativeTwin_PaintKeyDescending);
@@ -2022,8 +2033,8 @@ internal void NativeTwin_TestPaint(const struct NativeTwinSource *src, const str
 	memset(s, 0, sizeof(s));
 	s[15] = 5000.0f;
 	// Refused: too few keys, a pose past the last one.
-	flat = (NativeTwin_PaintOrder(src, pose, s, keys, T - 1u) == 0u) && (NativeTwin_PaintOrder(src, pose + 1u, s, keys, T) == 0u) &&
-	       (NativeTwin_PaintOrder(src, pose, s, keys, T) == T);
+	flat = (NativeTwin_PaintOrder(src, pose, s, 1.0, 0, -1, keys, T - 1u) == 0u) && (NativeTwin_PaintOrder(src, pose + 1u, s, 1.0, 0, -1, keys, T) == 0u) &&
+	       (NativeTwin_PaintOrder(src, pose, s, 0.0, 0, -1, keys, T) == 0u) && (NativeTwin_PaintOrder(src, pose, s, 1.0, 0, -1, keys, T) == T);
 	for (i = 0; flat && (i < T); i++)
 	{
 		const u32 t = (u32)((keys[i] >> 20) & NATIVE_TWIN_PAINT_PLACE_MASK);
@@ -2040,7 +2051,7 @@ internal void NativeTwin_TestPaint(const struct NativeTwinSource *src, const str
 		memset(s, 0, sizeof(s));
 		s[11] = 1.0f;
 		s[15] = (round == 0) ? 4096.0f : 4000.0f;
-		if (NativeTwin_PaintOrder(src, pose, s, keys, T) != T)
+		if (NativeTwin_PaintOrder(src, pose, s, scale, 0, -1, keys, T) != T)
 		{
 			bins = 0;
 			break;
@@ -2064,7 +2075,20 @@ internal void NativeTwin_TestPaint(const struct NativeTwinSource *src, const str
 			sorted &= (i == 0u) || ((keys[i] >> 40) <= (keys[i - 1u] >> 40));
 		}
 	}
-	NativeTwin_Expect(checks, failures, bins && sorted, name, "depth: a paint bin differs from MAC0 >> 17 of the corners, or a far bin follows a nearer one");
+	// Held to a range (the writer CLAMP_DEPTH): every bin of a far model lands
+	// on the low end of a range above it.
+	memset(s, 0, sizeof(s));
+	s[15] = 5000.0f;
+	if (NativeTwin_PaintOrder(src, pose, s, 1.0, 900, 905, keys, T) != T)
+	{
+		bins = 0;
+	}
+	for (i = 0; bins && (i < T); i++)
+	{
+		bins = ((keys[i] >> 40) == 900u);
+	}
+	NativeTwin_Expect(checks, failures, bins && sorted, name,
+	                  "depth: a paint bin differs from MAC0 >> 17 of the corners (or from its range when held), or a far bin follows a nearer one");
 	free(keys);
 }
 

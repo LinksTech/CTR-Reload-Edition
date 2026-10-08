@@ -45,6 +45,40 @@
 // part below 0.1, 0.1 and 0.5 percent, a wrong shift about 300 and 75 percent.
 // Appended to the line; the part before it is word for word the old one.
 //
+// THE WATER LINE (step 4e, stage a), appended after that. Three made-up
+// instances with SPLIT_LINE go through the queue's own split steps
+// (RenderBucket_BuildSplitState, RenderBucket_SelectRetailHandlers,
+// RenderBucket_WriteInstanceCallbackLabels): turned about z and scaled, once
+// near (view z 0x0800) and once far (0x2000) - the branch R - and unturned at
+// unit scale near - the branch P. The plane lies through the middle of a hull
+// of 2400 x 2400 x 3200 input units. For 9 x 9 x 9 points of that hull the
+// side of the retail splitDist (the corner through the GTE as
+// RenderBucket_TransformSplitDecodedVertex does it, MVMVA sf = 1 with idpp->m3x3
+// as the light matrix, and splitLine minus its height as
+// RenderBucket_InitWaterSplitVertex) is compared with the side of the native
+// plane (NativeRenderLayer_SplitPlane, model units) wherever |d| > 1: 0
+// points may differ. Per case also: the handler is SPLIT, the branch the
+// expected one, the selector both-mask, and the composed model-view matrix of
+// the body equals the one RenderBucket_BuildMvp gives the same instance. A
+// level plane (row 1 without its x and z parts) must differ at some points of
+// the turned instances - the proof that the comparison can fail.
+//
+// THE SELECTORS. The retail side selector itself
+// (RenderBucket_ApplyWaterSplitSideSelector) for the four labels and an unknown
+// one, specLightX 1 and -1, a corner below (+5) and above (-5): drawn or not,
+// colour changed or not, SXY moved or not must be what
+// NativeRenderLayer_SplitSides says - 20 cases, 0 may differ. The colour
+// factor of the native side against the queue's own colour for every channel
+// value 0..255: shift and mask (specLightX 1, 0x7f7f7f) within 0.5, the 3/4 of
+// dim-xor within 1.25 (it rounds down twice). The labels of the instance flags
+// 0, REFLECTION_FUNC23, WATER_SPLIT_WHITE and both, as the queue writes them,
+// must be both-mask, negative, dim-xor and xor.
+//
+// THE FACTOR RULE (D1, NativeRenderLayer_RuleFactor): the factor in force 0, 1,
+// 2 and 4 gives 1, 1, 2, 4; at the native position a canvas 918 wide on a
+// display 216 high in a target of 1600 x 400, 1836 x 432 and 3440 x 1440 gives
+// 1, 2 and 3, and a display height of 0 gives 1.
+//
 // Its own file because it runs the queue's matrix steps, which use the
 // coprocessor: the render layer itself must not. Nothing of this runs in a
 // game; the switch returns before the window, like --gte-selftest. One line on
@@ -277,15 +311,831 @@ static int NativeDepthCheck_PairPassed(const struct NativeDepthCheckPair *pair, 
 	       (pair->matrixWrongFar > 50.0);
 }
 
+// --- Step 4e, stage a: the water line ----------------------------------------
+
+struct NativeDepthCheckSplit
+{
+	int found;
+	int handlerSplit;
+	int branch;
+	int selectorBoth;
+	int composedSame;
+	int splitLine;
+	int nearView;
+	int compared;
+	int differ;
+	int below;
+	int above;
+	int levelDiffer; // a level plane (row 1 without its x and z parts) - the proof the check can fail
+	// Step 4e, stage b (a REFLECTIVE instance, or a plane far below): the
+	// handler and selector the queue chose, the mirror against the queue's own
+	// mirrored corners in view space, and whether the mirror turns the
+	// winding (det < 0 against det > 0 of the body).
+	int drawFunc;
+	int selectorIndex;
+	int mirrorCompared;
+	double mirrorError;
+	int cullFlipped;
+};
+
+static double NativeDepthCheck_Det(const double m[3][3])
+{
+	return (m[0][0] * ((m[1][1] * m[2][2]) - (m[1][2] * m[2][1]))) - (m[0][1] * ((m[1][0] * m[2][2]) - (m[1][2] * m[2][0]))) +
+	       (m[0][2] * ((m[1][0] * m[2][1]) - (m[1][1] * m[2][0])));
+}
+
+static void NativeDepthCheck_Split(int viewZ, int turned, int modelScale, int instScale, u32 instFlags, int planeBelow, struct NativeDepthCheckSplit *out)
+{
+	static struct GameTracker tracker;
+	static struct Instance inst;
+	static struct PushBuffer pb;
+	static struct InstDrawPerPlayer idpp;
+	static struct InstDrawPerPlayer idppNormal;
+	static struct ModelHeader mh;
+	static struct ModelFrame frame;
+	static struct NrDrawItem item;
+	struct RenderBucketMatrixState matrixState;
+	struct RenderBucketSplitState split;
+	MATRIX projectionMvp;
+	MATRIX normalMvp;
+	VECTOR viewPos;
+	double plane[4];
+	u32 flags;
+	int drawFunc = 0;
+	int uncompressFunc = 0;
+	int viewDepth;
+	int z;
+	int ix;
+	int iy;
+	int iz;
+	int r;
+	int c;
+
+	memset(out, 0, sizeof(*out));
+	memset(&tracker, 0, sizeof(tracker));
+	memset(&inst, 0, sizeof(inst));
+	memset(&pb, 0, sizeof(pb));
+	memset(&idpp, 0, sizeof(idpp));
+	memset(&mh, 0, sizeof(mh));
+	memset(&frame, 0, sizeof(frame));
+	memset(&item, 0, sizeof(item));
+	memset(&matrixState, 0, sizeof(matrixState));
+	memset(&viewPos, 0, sizeof(viewPos));
+
+	// The camera of NativeDepthCheck_Place.
+	pb.matrix_ViewProj.m[0][0] = 3547;
+	pb.matrix_ViewProj.m[0][2] = -2048;
+	pb.matrix_ViewProj.m[1][1] = 0x1000;
+	pb.matrix_ViewProj.m[2][0] = 2048;
+	pb.matrix_ViewProj.m[2][2] = 3547;
+	pb.pos.x = 1000;
+	pb.pos.y = 200;
+	pb.pos.z = -3000;
+	pb.distanceToScreen_PREV = 256;
+	pb.rect.w = 512;
+	pb.rect.h = 240;
+
+	// turned 1: about z by about 20 degrees (0.94 and 0.34), the height in
+	// split space then takes x as well; turned 2: about x (a kart nodding on a
+	// slope), the height takes z; 0: the identity.
+	if (turned == 1)
+	{
+		inst.matrix.m[0][0] = 3849;
+		inst.matrix.m[0][1] = -1401;
+		inst.matrix.m[1][0] = 1401;
+		inst.matrix.m[1][1] = 3849;
+		inst.matrix.m[2][2] = 0x1000;
+	}
+	else if (turned == 2)
+	{
+		inst.matrix.m[0][0] = 0x1000;
+		inst.matrix.m[1][1] = 3849;
+		inst.matrix.m[1][2] = -1401;
+		inst.matrix.m[2][1] = 1401;
+		inst.matrix.m[2][2] = 3849;
+	}
+	else
+	{
+		inst.matrix.m[0][0] = 0x1000;
+		inst.matrix.m[1][1] = 0x1000;
+		inst.matrix.m[2][2] = 0x1000;
+	}
+	inst.matrix.t[0] = 1300;
+	inst.matrix.t[1] = 150;
+	inst.scale.x = (s16)instScale;
+	inst.scale.y = (s16)instScale;
+	inst.scale.z = (s16)instScale;
+	inst.flags = instFlags;
+	mh.scale.x = (s16)modelScale;
+	mh.scale.y = (s16)modelScale;
+	mh.scale.z = (s16)modelScale;
+	idpp.ptrCurrFrame = &frame;
+	idpp.ptrNextFrame = NULL;
+
+	for (z = -6000; z <= 12000; z++)
+	{
+		inst.matrix.t[2] = z;
+		RenderBucket_GetViewPosition(&inst, &pb, &viewPos);
+		if (viewPos.vz == viewZ)
+		{
+			out->found = 1;
+			break;
+		}
+	}
+	if (!out->found)
+	{
+		return;
+	}
+
+	// The queue, in the order of RenderBucket_QueueDraw.
+	viewDepth = viewPos.vz;
+	RenderBucket_AdjustViewPositionForMvp(&inst, &viewPos);
+	RenderBucket_StoreMvpTranslation(&idpp, &viewPos);
+	RenderBucket_BuildM3x3(&inst, &mh, viewDepth, &matrixState);
+	RenderBucket_StoreMatrixWords(&idpp.m3x3, matrixState.m0, matrixState.m1, matrixState.m2, matrixState.m3, matrixState.m4);
+
+	// The water through the middle of the hull (input y 0..2400): its height in
+	// split space is row 1 of m3x3 at y 1200, and splitLine = 4 x (vertSplit -
+	// t.y) in both branches here (the branch P divides by a scale of 0x1000).
+	// planeBelow (stage b): 2000 world units below the origin - beyond the 362
+	// split units of the branch R, so a plain SPLIT_LINE gets no split output
+	// and the handler SPECIAL.
+	inst.vertSplit = (s16)(planeBelow ? (inst.matrix.t[1] - 2000) : (inst.matrix.t[1] + ((((int)idpp.m3x3.m[1][1] * 1200) / 4096) / 4)));
+	idppNormal = idpp;
+
+	flags = inst.flags;
+	split = RenderBucket_BuildSplitState(&inst, &mh, &frame, NULL, &pb, &idpp, viewDepth, &flags, &matrixState, &projectionMvp);
+	RenderBucket_SelectRetailHandlers(&flags, &split, &drawFunc, &uncompressFunc);
+	idpp.unkEC = drawFunc;
+	idpp.unkF0 = uncompressFunc;
+	RenderBucket_CopyDispatchTables();
+	RenderBucket_WriteInstanceCallbackLabels(&inst, flags);
+
+	out->handlerSplit = (drawFunc == RB_RETAIL_DRAWFUNC_SPLIT);
+	out->drawFunc = drawFunc;
+	out->selectorIndex = NativeRenderLayer_SelectorIndex((u32)(size_t)inst.funcPtr[2]);
+	out->branch = NativeRenderLayer_SplitBranch(&idpp);
+	out->selectorBoth = (NativeRenderLayer_SelectorIndex((u32)(size_t)inst.funcPtr[2]) == NR_SELECTOR_BOTH_MASK);
+	out->splitLine = (int)idpp.splitLine;
+
+	// The render layer, as NativeRenderLayer_RouteCharView fills the item.
+	(void)NativeRenderLayer_FillItem(&item, &tracker, &inst, &idpp, &pb, 0);
+	out->nearView = item.nearView;
+	item.unitScale[0] = 16384.0 / (double)mh.scale.x;
+	item.unitScale[1] = 16384.0 / (double)mh.scale.y;
+	item.unitScale[2] = 16384.0 / (double)(u16)mh.scale.z;
+	if (out->branch == 1)
+	{
+		NativeRenderLayer_ComposeModelView(&pb.matrix_ViewProj, &idpp.m3x3, item.mvp);
+	}
+	RenderBucket_BuildMvp(&pb, &idppNormal, &normalMvp);
+	out->composedSame = 1;
+	for (r = 0; r < 3; r++)
+	{
+		for (c = 0; c < 3; c++)
+		{
+			if (item.mvp[r][c] != normalMvp.m[r][c])
+			{
+				out->composedSame = 0;
+			}
+		}
+	}
+	NativeRenderLayer_SplitPlane(&idpp, out->branch == 1, item.unitScale, plane);
+
+	// Both sides of every point.
+	RenderBucket_GteLoadLightMatrixWords(&idpp.m3x3);
+	for (ix = 0; ix < 9; ix++)
+	{
+		for (iy = 0; iy < 9; iy++)
+		{
+			for (iz = 0; iz < 9; iz++)
+			{
+				const int gx = -1200 + (ix * 300);
+				const int gy = iy * 300;
+				const int gz = -1600 + (iz * 400);
+				double nativeD;
+				int y;
+				int retailD;
+
+				if (out->branch == 1)
+				{
+					MTC2(CTR_PackS16Pair(gx, gy), 0);
+					MTC2(CTR_PackS16Pair(gz, 0), 1);
+					doCOP2(0x04a6012);
+					y = (s16)MFC2(10);
+				}
+				else
+				{
+					y = gy;
+				}
+				retailD = (s16)((int)(s16)idpp.splitLine - y);
+				nativeD = plane[3] - ((plane[0] * ((double)gx / item.unitScale[0])) + (plane[1] * ((double)gy / item.unitScale[1])) +
+				                      (plane[2] * ((double)gz / item.unitScale[2])));
+				if (fabs(nativeD) <= 1.0)
+				{
+					continue;
+				}
+				out->compared++;
+				if ((retailD >= 0) != (nativeD >= 0.0))
+				{
+					out->differ++;
+				}
+				{
+					const double levelD = plane[3] - (plane[1] * ((double)gy / item.unitScale[1]));
+
+					if ((fabs(levelD) > 1.0) && ((retailD >= 0) != (levelD >= 0.0)))
+					{
+						out->levelDiffer++;
+					}
+				}
+				if (nativeD >= 0.0)
+				{
+					out->below++;
+				}
+				else
+				{
+					out->above++;
+				}
+			}
+		}
+	}
+
+	// Stage b: the mirror of REFLECTION (split space in the branch R) or of
+	// SPECIAL (the input units), corner by corner as the queue mirrors it
+	// (RenderBucket_MirrorSpecialPackedXY on the packed corner) and turns it
+	// with the matrix of the view (idpp->mvp: the view matrix in the branch R,
+	// the model-view matrix otherwise), against the native mirror map.
+	if ((drawFunc == RB_RETAIL_DRAWFUNC_REFLECTION) || (drawFunc == RB_RETAIL_DRAWFUNC_SPECIAL))
+	{
+		static struct RenderBucketDrawContext ctx;
+		const int splitSpace = (drawFunc == RB_RETAIL_DRAWFUNC_REFLECTION) && (out->branch == 1);
+		const double scale = ldexp(1.0, (int)item.mvpShift);
+		double body[3][3];
+
+		memset(&ctx, 0, sizeof(ctx));
+		ctx.idpp = &idpp;
+		NativeRenderLayer_MirrorMatrix(&item, &idpp, &pb, splitSpace);
+		for (r = 0; r < 3; r++)
+		{
+			for (c = 0; c < 3; c++)
+			{
+				body[r][c] = (double)item.mvp[r][c];
+			}
+		}
+		out->cullFlipped = (NativeDepthCheck_Det((const double(*)[3])item.mirrorA) < 0.0) && (NativeDepthCheck_Det((const double(*)[3])body) > 0.0);
+
+		RenderBucket_GteLoadLightMatrixWords(&idpp.m3x3);
+		for (ix = 0; ix < 5; ix++)
+		{
+			for (iy = 0; iy < 5; iy++)
+			{
+				for (iz = 0; iz < 5; iz++)
+				{
+					const int gx = -1200 + (ix * 600);
+					const int gy = iy * 600;
+					const int gz = -1600 + (iz * 800);
+					const double p[3] = {(double)gx / item.unitScale[0], (double)gy / item.unitScale[1], (double)gz / item.unitScale[2]};
+					u32 packed;
+					int sigma[3];
+
+					if (splitSpace)
+					{
+						MTC2(CTR_PackS16Pair(gx, gy), 0);
+						MTC2(CTR_PackS16Pair(gz, 0), 1);
+						doCOP2(0x04a6012);
+						sigma[0] = (s16)MFC2(9);
+						sigma[1] = (s16)MFC2(10);
+						sigma[2] = (s16)MFC2(11);
+					}
+					else
+					{
+						sigma[0] = gx;
+						sigma[1] = gy;
+						sigma[2] = gz;
+					}
+					packed = RenderBucket_MirrorSpecialPackedXY(&ctx, CTR_PackS16Pair(sigma[0], sigma[1]));
+					sigma[0] = (s16)(packed & 0xffffu);
+					sigma[1] = (s16)(packed >> 16);
+					for (r = 0; r < 3; r++)
+					{
+						const double retail = ((((double)idpp.mvp.m[r][0] * sigma[0]) + ((double)idpp.mvp.m[r][1] * sigma[1]) +
+						                        ((double)idpp.mvp.m[r][2] * sigma[2])) /
+						                       4096.0) +
+						                      (double)idpp.mvp.t[r];
+						const double native =
+						    ((item.mirrorA[r][0] * p[0]) + (item.mirrorA[r][1] * p[1]) + (item.mirrorA[r][2] * p[2]) + item.mirrorB[r]) * scale;
+						const double error = fabs(retail - native);
+
+						out->mirrorError = (error > out->mirrorError) ? error : out->mirrorError;
+					}
+					out->mirrorCompared++;
+				}
+			}
+		}
+	}
+}
+
+// THE ITEMS OF A SPLIT VIEW (G4ea S2): NativeRenderLayer_SetUpSplit on a filled
+// item of a kart nodding nose down (about x, so the front wheels lie lower), the
+// plane through its origin, selector both-mask: the item above keeps d < 0
+// (-1) in otRangeNormal, untinted, with the rear wheels; the item below keeps
+// d >= 0 (+1) in otRangeSecondary, halved, with the front wheels; both bodies
+// on, both the same plane, the masks disjoint and together all four. 1 = held.
+static int NativeDepthCheck_SplitItems(void)
+{
+	static struct Instance inst;
+	static struct InstDrawPerPlayer idpp;
+	static struct NativeCharGpu gpu;
+	static struct NrDrawItem above;
+	static struct NrDrawItem below;
+	double plane[4];
+	int held = 1;
+	int k;
+
+	memset(&inst, 0, sizeof(inst));
+	memset(&idpp, 0, sizeof(idpp));
+	memset(&gpu, 0, sizeof(gpu));
+	memset(&above, 0, sizeof(above));
+	memset(&below, 0, sizeof(below));
+	inst.matrix.m[0][0] = 0x1000;
+	inst.matrix.m[1][1] = 3849;
+	inst.matrix.m[1][2] = -1401;
+	inst.matrix.m[2][1] = 1401;
+	inst.matrix.m[2][2] = 3849;
+	inst.matrix.t[1] = 150;
+	inst.vertSplit = 150;
+	inst.scale.x = 0x1000;
+	inst.scale.y = 0x1000;
+	inst.scale.z = 0x1000;
+	inst.funcPtr[2] = (void *)(size_t)RB_RETAIL_INST_FUNC2_SPLIT_BOTH_MASK;
+	inst.specLightX = 1;
+	inst.reflectionRGBA = 0x7f7f7fu;
+	idpp.m3x3 = inst.matrix;
+	idpp.splitLine = 0;
+	gpu.wheelFront[0] = 30.0f;
+	gpu.wheelFront[1] = 20.0f;
+	gpu.wheelFront[2] = 60.0f;
+	gpu.wheelRear[0] = 30.0f;
+	gpu.wheelRear[1] = 20.0f;
+	gpu.wheelRear[2] = -60.0f;
+	above.kind = NR_ITEM_CHAR;
+	above.gpu = &gpu;
+	above.nativeWheels = 1;
+	above.primary = 1;
+	above.bodyOn = 1;
+	above.wheelMask = NR_WHEEL_MASK_ALL;
+	above.unitScale[0] = 4.0;
+	above.unitScale[1] = 4.0;
+	above.unitScale[2] = 4.0;
+	above.tintScale[0] = 1.0f;
+	above.tintScale[1] = 1.0f;
+	above.tintScale[2] = 1.0f;
+
+	NativeRenderLayer_SetUpSplit(&above, &below, &inst, &idpp, 1);
+	NativeRenderLayer_SplitPlane(&idpp, 1, above.unitScale, plane);
+
+	held = held && (above.splitKeep == -1) && (below.splitKeep == 1) && (above.part == NR_PART_ABOVE) && (below.part == NR_PART_BELOW);
+	held = held && (above.primary == 1) && (below.primary == 0) && (above.secondRange == 0) && (below.secondRange == 1);
+	held = held && above.bodyOn && below.bodyOn && (above.ofsXExtra == 0) && (below.ofsXExtra == 0);
+	for (k = 0; k < 3; k++)
+	{
+		held = held && (above.tintScale[k] == 1.0f) && (below.tintScale[k] == 0.5f);
+	}
+	for (k = 0; k < 4; k++)
+	{
+		held = held && (above.split[k] == plane[k]) && (below.split[k] == plane[k]);
+	}
+	held = held && (below.wheelMask == 0x03u) && (above.wheelMask == 0x0Cu) && ((above.wheelMask & below.wheelMask) == 0u) &&
+	       ((above.wheelMask | below.wheelMask) == NR_WHEEL_MASK_ALL);
+	return held;
+}
+
+// NativeRenderLayer_WheelBelow against game/DrawTires.c's rule in its own
+// integer units (G4ea S2): the middle in four-times units (local = 4 m, as
+// NativeRenderLayer_FillNativeWheels has it), scaled by inst->scale >> 12,
+// turned by the rotation >> 12, plus (t.y - pos.y) << 2, against
+// splitCameraY = (vertSplit - pos.y) << 2 (DrawTiresSolid_SetupGteState,
+// DrawTiresSolid_SelectProjectedWheel: below when splitCameraY - y >= 0). For
+// the four wheels of a nodding kart and the plane at every height from 80
+// below to 80 above its origin; points within one four-times unit of the plane
+// are left out (the integer cuts). Returns the number that differ.
+static int NativeDepthCheck_WheelBelow(int *compared)
+{
+	static struct Instance inst;
+	static const double middles[4][3] = {{30.0, 20.0, 60.0}, {-30.0, 20.0, 60.0}, {30.0, 20.0, -60.0}, {-30.0, 20.0, -60.0}};
+	int differ = 0;
+	int h;
+	int wheel;
+
+	*compared = 0;
+	memset(&inst, 0, sizeof(inst));
+	inst.matrix.m[0][0] = 0x1000;
+	inst.matrix.m[1][1] = 3849;
+	inst.matrix.m[1][2] = -1401;
+	inst.matrix.m[2][1] = 1401;
+	inst.matrix.m[2][2] = 3849;
+	inst.matrix.t[1] = 150;
+	inst.scale.x = 0x1400;
+	inst.scale.y = 0x1400;
+	inst.scale.z = 0x1400;
+
+	for (h = -80; h <= 80; h++)
+	{
+		inst.vertSplit = (s16)(inst.matrix.t[1] + h);
+		for (wheel = 0; wheel < 4; wheel++)
+		{
+			const int splitCameraY = (int)inst.vertSplit << 2;
+			int local[3];
+			int y = (int)inst.matrix.t[1] << 2;
+			int c;
+			int retail;
+
+			for (c = 0; c < 3; c++)
+			{
+				const int scale = (c == 0) ? inst.scale.x : ((c == 1) ? inst.scale.y : inst.scale.z);
+
+				local[c] = ((int)(4.0 * middles[wheel][c]) * scale) >> 12;
+			}
+			y += (((int)inst.matrix.m[1][0] * local[0]) + ((int)inst.matrix.m[1][1] * local[1]) + ((int)inst.matrix.m[1][2] * local[2])) >> 12;
+			if (abs(splitCameraY - y) <= 1)
+			{
+				continue;
+			}
+			retail = (splitCameraY - y) >= 0;
+			(*compared)++;
+			if (retail != NativeRenderLayer_WheelBelow(&inst, middles[wheel]))
+			{
+				differ++;
+			}
+		}
+	}
+	return differ;
+}
+
+// The classes of the colour factor (G4ea S3): exact only when every channel
+// mask keeps all or none of the bits of 255 >> s and none above. Returns the
+// number of cases that differ.
+static int NativeDepthCheck_ShiftMaskClasses(int *cases)
+{
+	static const struct
+	{
+		int shift;
+		u32 mask;
+		int exact;
+	} table[] = {
+	    {1, 0x7f7f7fu, 1}, {1, 0xffffffu, 0}, {0, 0xffffffu, 1}, {1, 0x7f007fu, 1}, {2, 0x3f3f3fu, 1}, {2, 0x7f7f7fu, 0}, {1, 0x3f3f3fu, 0}, {8, 0x000000u, 1},
+	};
+	float factor[3];
+	int differ = 0;
+	int i;
+
+	*cases = (int)(sizeof(table) / sizeof(table[0]));
+	for (i = 0; i < *cases; i++)
+	{
+		if (NativeRenderLayer_ShiftMaskFactor(table[i].shift, table[i].mask, factor) != table[i].exact)
+		{
+			differ++;
+		}
+	}
+	return differ;
+}
+
+// Stage b: the mirrored native wheels (NativeRenderLayer_MirrorWheels) against
+// game/DrawTires.c's mirror in world units (the middle at 2 splitCameraY - y,
+// the rim with y negated): taken back to world units by the inverse view
+// matrix, x and z must stay and y must turn about the plane, the axes as well.
+// Returns the largest deviation.
+static double NativeDepthCheck_MirrorWheels(void)
+{
+	static struct Instance inst;
+	static struct PushBuffer pb;
+	static struct NrDrawItem item;
+	double Vd[3][3];
+	double Vi[3][3];
+	double before[4][3];
+	double beforeA[4][3][3];
+	const double rel[3] = {120.0, 40.0, 2600.0}; // t - pos, world units
+	double plane;
+	double worst = 0.0;
+	int wheel;
+	int r;
+	int c;
+	int k;
+
+	memset(&inst, 0, sizeof(inst));
+	memset(&pb, 0, sizeof(pb));
+	memset(&item, 0, sizeof(item));
+	pb.matrix_ViewProj.m[0][0] = 3547;
+	pb.matrix_ViewProj.m[0][2] = -2048;
+	pb.matrix_ViewProj.m[1][1] = 0x1000;
+	pb.matrix_ViewProj.m[2][0] = 2048;
+	pb.matrix_ViewProj.m[2][2] = 3547;
+	inst.matrix.t[1] = 150;
+	inst.vertSplit = 110; // the plane 40 units below the origin
+	for (r = 0; r < 3; r++)
+	{
+		for (c = 0; c < 3; c++)
+		{
+			Vd[r][c] = (double)pb.matrix_ViewProj.m[r][c] / 4096.0;
+		}
+	}
+	if (!NativeRenderLayer_Invert3((const double(*)[3])Vd, Vi))
+	{
+		return 1e9;
+	}
+	for (r = 0; r < 3; r++)
+	{
+		double t = 0.0;
+
+		for (k = 0; k < 3; k++)
+		{
+			t += Vd[r][k] * rel[k];
+		}
+		item.mvpT[r] = (s32)floor(t + 0.5);
+	}
+	item.mvpShift = 0;
+	for (wheel = 0; wheel < NATIVE_WHEELS_COUNT; wheel++)
+	{
+		for (r = 0; r < 3; r++)
+		{
+			item.wheelB[wheel][r] = (double)item.mvpT[r] + (Vd[r][0] * (30.0 * (double)(wheel + 1))) + (Vd[r][1] * (10.0 - (15.0 * (double)wheel))) +
+			                        (Vd[r][2] * (-20.0 * (double)wheel));
+			for (c = 0; c < 3; c++)
+			{
+				item.wheelA[wheel][r][c] = (Vd[r][c] * (1.0 + (0.25 * (double)c))) + ((r == c) ? 0.0 : (0.01 * (double)(wheel + 1)));
+			}
+		}
+	}
+	memcpy(before, item.wheelB, sizeof(before));
+	memcpy(beforeA, item.wheelA, sizeof(beforeA));
+	if (!NativeRenderLayer_MirrorWheels(&item, &inst, &pb))
+	{
+		return 1e9;
+	}
+
+	// The plane in world units relative to the camera, as the native map has
+	// it: the origin of the item (mvp.t, the view of t - pos) plus h.
+	plane = (double)(inst.vertSplit - inst.matrix.t[1]);
+	{
+		double origin = 0.0;
+
+		for (k = 0; k < 3; k++)
+		{
+			origin += Vi[1][k] * (double)item.mvpT[k];
+		}
+		plane += origin;
+	}
+	for (wheel = 0; wheel < NATIVE_WHEELS_COUNT; wheel++)
+	{
+		double w0[3];
+		double w1[3];
+
+		for (r = 0; r < 3; r++)
+		{
+			w0[r] = 0.0;
+			w1[r] = 0.0;
+			for (k = 0; k < 3; k++)
+			{
+				w0[r] += Vi[r][k] * before[wheel][k];
+				w1[r] += Vi[r][k] * item.wheelB[wheel][k];
+			}
+		}
+		worst = fmax(worst, fabs(w1[0] - w0[0]));
+		worst = fmax(worst, fabs(w1[2] - w0[2]));
+		worst = fmax(worst, fabs(w1[1] - ((2.0 * plane) - w0[1])));
+		for (c = 0; c < 3; c++)
+		{
+			double a0[3];
+			double a1[3];
+
+			for (r = 0; r < 3; r++)
+			{
+				a0[r] = 0.0;
+				a1[r] = 0.0;
+				for (k = 0; k < 3; k++)
+				{
+					a0[r] += Vi[r][k] * beforeA[wheel][k][c];
+					a1[r] += Vi[r][k] * item.wheelA[wheel][k][c];
+				}
+			}
+			worst = fmax(worst, fabs(a1[0] - a0[0]));
+			worst = fmax(worst, fabs(a1[1] + a0[1]));
+			worst = fmax(worst, fabs(a1[2] - a0[2]));
+		}
+	}
+	return worst;
+}
+
+// Stage b: the queue picked the handler and selector expected, the mirror lies
+// within 2 view units of the queue's mirrored corners (the GTE rounds the
+// split space down by up to one unit), and the mirror turns the winding.
+static int NativeDepthCheck_MirrorPassed(const struct NativeDepthCheckSplit *sp, int drawFunc, int selectorIndex)
+{
+	return sp->found && (sp->drawFunc == drawFunc) && (sp->selectorIndex == selectorIndex) && sp->composedSame && (sp->mirrorCompared == 125) &&
+	       (sp->mirrorError <= 2.0) && sp->cullFlipped;
+}
+
+static int NativeDepthCheck_SplitPassed(const struct NativeDepthCheckSplit *sp, int branch, int nearView)
+{
+	return sp->found && sp->handlerSplit && (sp->branch == branch) && sp->selectorBoth && sp->composedSame && (sp->nearView == nearView) &&
+	       (sp->compared > 100) && (sp->differ == 0) && (sp->below > 0) && (sp->above > 0) && ((branch == 0) || (sp->levelDiffer > 0));
+}
+
+struct NativeDepthCheckSides
+{
+	int cases;
+	int differ;
+	double shiftMaskError;
+	double dimError;
+	int labelsHeld;
+	int reflectionCases;
+	int reflectionDiffer;
+};
+
+static void NativeDepthCheck_Sides(struct NativeDepthCheckSides *out)
+{
+	static struct Instance inst;
+	static struct RenderBucketDrawContext ctx;
+	static const u32 labels[5] = {RB_RETAIL_INST_FUNC2_SPLIT_BOTH_MASK, RB_RETAIL_INST_FUNC2_SPLIT_NEGATIVE, RB_RETAIL_INST_FUNC2_SPLIT_XOR,
+	                              RB_RETAIL_INST_FUNC2_SPLIT_DIM_XOR, 0x8006d000u};
+	static const int lights[2] = {1, -1};
+	static const u32 flagSets[4] = {0, REFLECTION_FUNC23, WATER_SPLIT_WHITE, REFLECTION_FUNC23 | WATER_SPLIT_WHITE};
+	static const int expectedIndex[4] = {NR_SELECTOR_BOTH_MASK, NR_SELECTOR_NEGATIVE, NR_SELECTOR_DIM_XOR, NR_SELECTOR_XOR};
+	const u32 color = 0x00c08041u;
+	const u32 sxy = 0x00200010u;
+	int label;
+	int light;
+	int side;
+	int value;
+	int i;
+
+	memset(out, 0, sizeof(*out));
+
+	for (label = 0; label < 5; label++)
+	{
+		for (light = 0; light < 2; light++)
+		{
+			for (side = 0; side < 2; side++)
+			{
+				const int guard = (side == 0) ? 5 : -5; // 0: below, 1: above
+				struct RenderBucketSplitVertex v[3];
+				struct NrSplitSide above;
+				struct NrSplitSide below;
+				const struct NrSplitSide *mine;
+				int drawn;
+
+				memset(&inst, 0, sizeof(inst));
+				memset(&ctx, 0, sizeof(ctx));
+				memset(v, 0, sizeof(v));
+				inst.funcPtr[2] = (void *)(size_t)labels[label];
+				inst.specLightX = (s8)lights[light];
+				inst.reflectionRGBA = 0x7f7f7fu;
+				ctx.inst = &inst;
+				ctx.waterSplitSide = -1; // the handler SPLIT
+				for (i = 0; i < 3; i++)
+				{
+					v[i].color = color;
+					v[i].sxy = sxy;
+				}
+
+				drawn = RenderBucket_ApplyWaterSplitSideSelector(&ctx, guard, &v[0], &v[1], &v[2]);
+				(void)NativeRenderLayer_SplitSides(labels[label], lights[light], -1, &above, &below);
+				mine = (guard >= 0) ? &below : &above;
+				out->cases++;
+				if ((drawn != 0) != (mine->body != 0))
+				{
+					out->differ++;
+				}
+				else if (drawn && (((v[0].color != color) != (mine->dimmed != 0)) || ((v[0].sxy != sxy) != (mine->offset != 0))))
+				{
+					out->differ++;
+				}
+			}
+		}
+	}
+
+	// The colour factor against the queue's colour, every channel value.
+	memset(&inst, 0, sizeof(inst));
+	memset(&ctx, 0, sizeof(ctx));
+	inst.specLightX = 1;
+	inst.reflectionRGBA = 0x7f7f7fu;
+	ctx.inst = &inst;
+	{
+		float factor[3];
+
+		(void)NativeRenderLayer_ShiftMaskFactor(1, 0x7f7f7fu, factor);
+		for (value = 0; value < 256; value++)
+		{
+			const u32 word = (u32)value | ((u32)value << 8) | ((u32)value << 16);
+			const u32 halved = RenderBucket_WaterSplitShiftMaskColor(&ctx, word);
+			const u32 dimmed = RenderBucket_WaterSplitDimColor(word);
+			int ch;
+
+			for (ch = 0; ch < 3; ch++)
+			{
+				const double a = fabs(((double)factor[ch] * (double)value) - (double)((halved >> (8 * ch)) & 0xffu));
+				const double b = fabs((0.75 * (double)value) - (double)((dimmed >> (8 * ch)) & 0xffu));
+
+				out->shiftMaskError = (a > out->shiftMaskError) ? a : out->shiftMaskError;
+				out->dimError = (b > out->dimError) ? b : out->dimError;
+			}
+		}
+	}
+
+	// Stage b: the selectors a REFLECTION view can draw (the part above in both
+	// passes): negative (the mirror pass halved), an unknown label (neither);
+	// both-mask, xor and dim-xor are left to the CMDL.
+	{
+		static const int accepted[5] = {0, 1, 0, 0, 1};
+		static const int mirrorDim[5] = {0, 1, 0, 0, 0};
+
+		for (i = 0; i < 5; i++)
+		{
+			int originalDimmed = -1;
+			int mirrorDimmed = -1;
+			const int ok = NativeRenderLayer_ReflectionSides(labels[i], 1, &originalDimmed, &mirrorDimmed);
+
+			out->reflectionCases++;
+			if ((ok != accepted[i]) || (ok && ((originalDimmed != 0) || (mirrorDimmed != mirrorDim[i]))))
+			{
+				out->reflectionDiffer++;
+			}
+		}
+	}
+
+	// The labels as the queue writes them from the instance flags.
+	out->labelsHeld = 1;
+	for (i = 0; i < 4; i++)
+	{
+		memset(&inst, 0, sizeof(inst));
+		RenderBucket_CopyDispatchTables();
+		RenderBucket_WriteInstanceCallbackLabels(&inst, flagSets[i]);
+		if (NativeRenderLayer_SelectorIndex((u32)(size_t)inst.funcPtr[2]) != expectedIndex[i])
+		{
+			out->labelsHeld = 0;
+		}
+	}
+}
+
+// The factor rule (D1): the cases, 0 = all held.
+static int NativeDepthCheck_RuleFactor(int *cases)
+{
+	struct
+	{
+		int atNative;
+		int effective;
+		int targetW;
+		int targetH;
+		int canvasW;
+		int displayH;
+		int expected;
+	} const table[] = {
+	    {0, 0, 0, 0, 0, 0, 1},       {0, 1, 0, 0, 0, 0, 1},         {0, 2, 0, 0, 0, 0, 2},         {0, 4, 0, 0, 0, 0, 4},
+	    {1, 0, 1600, 400, 918, 216, 1}, {1, 0, 1836, 432, 918, 216, 2}, {1, 0, 3440, 1440, 918, 216, 3}, {1, 0, 3440, 1440, 918, 0, 1},
+	};
+	int failed = 0;
+	int i;
+
+	*cases = (int)(sizeof(table) / sizeof(table[0]));
+	for (i = 0; i < *cases; i++)
+	{
+		if (NativeRenderLayer_RuleFactor(table[i].atNative, table[i].effective, table[i].targetW, table[i].targetH, table[i].canvasW, table[i].displayH) !=
+		    table[i].expected)
+		{
+			failed++;
+		}
+	}
+	return failed;
+}
+
 int NativeDepthCheck_Run(void)
 {
 	static struct NativeDepthCheckPair normal;
 	static struct NativeDepthCheckPair huge;
 	static struct NativeDepthCheckPair charEven;
 	static struct NativeDepthCheckPair charOdd;
+	static struct NativeDepthCheckSplit splitNear;
+	static struct NativeDepthCheckSplit splitFar;
+	static struct NativeDepthCheckSplit splitP;
+	static struct NativeDepthCheckSides sides;
+	static struct NativeDepthCheckSplit mirrorNear;
+	static struct NativeDepthCheckSplit mirrorFar;
+	static struct NativeDepthCheckSplit mirrorSpecial;
+	double wheelError;
+	int mirrorPassed;
+	static struct NativeDepthCheckSplit splitPitched;
+	int itemsHeld;
+	int wheelsCompared = 0;
+	int wheelsDiffer;
+	int classCases = 0;
+	int classesDiffer;
+	int itemsPassed;
 	int held;
 	int passed;
 	int charPassed;
+	int splitPassed;
+	int ruleCases = 0;
+	int ruleFailed;
 
 	// The queue writes its scratch words; outside a game run the scratchpad
 	// has to be set up first.
@@ -295,10 +1145,32 @@ int NativeDepthCheck_Run(void)
 	NativeDepthCheck_Pair(1, &huge);
 	NativeDepthCheck_CharPair(0x1000, &charEven);
 	NativeDepthCheck_CharPair(0x0ccd, &charOdd);
+	NativeDepthCheck_Split(0x0800, 1, 0x1800, 0x1400, SPLIT_LINE, 0, &splitNear);
+	NativeDepthCheck_Split(0x2000, 1, 0x1800, 0x1400, SPLIT_LINE, 0, &splitFar);
+	NativeDepthCheck_Split(0x0800, 0, 0x1000, 0x1000, SPLIT_LINE, 0, &splitP);
+	NativeDepthCheck_Split(0x0800, 1, 0x1800, 0x1400, REFLECTIVE, 0, &mirrorNear);
+	NativeDepthCheck_Split(0x2000, 1, 0x1800, 0x1400, REFLECTIVE, 0, &mirrorFar);
+	NativeDepthCheck_Split(0x0800, 1, 0x1800, 0x1400, SPLIT_LINE, 1, &mirrorSpecial);
+	wheelError = NativeDepthCheck_MirrorWheels();
+	NativeDepthCheck_Split(0x0800, 2, 0x1800, 0x1400, SPLIT_LINE, 0, &splitPitched);
+	itemsHeld = NativeDepthCheck_SplitItems();
+	wheelsDiffer = NativeDepthCheck_WheelBelow(&wheelsCompared);
+	classesDiffer = NativeDepthCheck_ShiftMaskClasses(&classCases);
+	NativeDepthCheck_Sides(&sides);
+	ruleFailed = NativeDepthCheck_RuleFactor(&ruleCases);
 
 	held = normal.nearPoint.shiftHeld && normal.farPoint.shiftHeld && huge.nearPoint.shiftHeld && huge.farPoint.shiftHeld;
 	charPassed = NativeDepthCheck_PairPassed(&charEven, 2, 0) && NativeDepthCheck_PairPassed(&charOdd, 2, 0);
-	passed = NativeDepthCheck_PairPassed(&normal, 2, 0) && NativeDepthCheck_PairPassed(&huge, 0, -2) && charPassed;
+	splitPassed = NativeDepthCheck_SplitPassed(&splitNear, 1, 1) && NativeDepthCheck_SplitPassed(&splitFar, 1, 0) &&
+	              NativeDepthCheck_SplitPassed(&splitP, 0, 1) && (sides.differ == 0) && (sides.cases == 20) && (sides.shiftMaskError <= 0.5) &&
+	              (sides.dimError <= 1.25) && sides.labelsHeld && (ruleFailed == 0);
+	mirrorPassed = NativeDepthCheck_MirrorPassed(&mirrorNear, RB_RETAIL_DRAWFUNC_REFLECTION, NR_SELECTOR_NEGATIVE) &&
+	               NativeDepthCheck_MirrorPassed(&mirrorFar, RB_RETAIL_DRAWFUNC_REFLECTION, NR_SELECTOR_NEGATIVE) &&
+	               NativeDepthCheck_MirrorPassed(&mirrorSpecial, RB_RETAIL_DRAWFUNC_SPECIAL, NR_SELECTOR_BOTH_MASK) && (wheelError < 1e-6) &&
+	               (sides.reflectionDiffer == 0) && (sides.reflectionCases == 5);
+	itemsPassed = NativeDepthCheck_SplitPassed(&splitPitched, 1, 1) && itemsHeld && (wheelsCompared >= 600) && (wheelsDiffer == 0) && (classesDiffer == 0);
+	passed = NativeDepthCheck_PairPassed(&normal, 2, 0) && NativeDepthCheck_PairPassed(&huge, 0, -2) && charPassed && splitPassed && mirrorPassed &&
+	         itemsPassed;
 
 	printf("native depth selftest %s: normal shift %d to %d, w %.4f to %.4f, step %.4f percent, rest %.4f percent, matrix part %.4f percent, "
 	       "wrong shift %.1f and %.1f percent, matrix %.1f and %.1f percent, huge shift %d to %d, w %.4f to %.4f, step %.4f percent, rest %.4f percent, "
@@ -323,8 +1195,56 @@ int NativeDepthCheck_Run(void)
 			       scales[i], (int)c->nearPoint.item.mvpShift, (int)c->farPoint.item.mvpShift, c->nearPoint.w, c->farPoint.w, c->step, c->rest,
 			       c->matrixPart, c->wrongNear, c->wrongFar, c->matrixWrongNear, c->matrixWrongFar);
 		}
-		printf(", char %s\n", charPassed ? "passed" : "differs");
+		printf(", char %s", charPassed ? "passed" : "differs");
 	}
+
+	// The water line (step 4e, stage a), appended: the part above is the line
+	// of before.
+	{
+		const struct NativeDepthCheckSplit *cases[3] = {&splitNear, &splitFar, &splitP};
+		const char *names[3] = {"R near", "R far", "P near"};
+		int i;
+
+		for (i = 0; i < 3; i++)
+		{
+			const struct NativeDepthCheckSplit *sp = cases[i];
+
+			printf(", split %s: handler %s, selector %s, composed %s, splitLine %d, %d points (%d below, %d above), %d differ, level plane %d differ",
+			       names[i], sp->handlerSplit ? "split" : "other", sp->selectorBoth ? "both-mask" : "other", sp->composedSame ? "same" : "off",
+			       sp->splitLine, sp->compared, sp->below, sp->above, sp->differ, sp->levelDiffer);
+		}
+		printf(", selector sides %d cases %d differ, shift/mask error max %.2f, dim error max %.2f, labels %s, factor rule %d cases %d differ, "
+		       "split %s\n",
+		       sides.cases, sides.differ, sides.shiftMaskError, sides.dimError, sides.labelsHeld ? "held" : "off", ruleCases, ruleFailed,
+		       splitPassed ? "passed" : "differs");
+	}
+
+	// The mirror (step 4e, stage b), on a line of its own.
+	{
+		const struct NativeDepthCheckSplit *cases[3] = {&mirrorNear, &mirrorFar, &mirrorSpecial};
+		const char *names[3] = {"reflection R near", "reflection R far", "special"};
+		int i;
+
+		printf("native depth selftest mirror");
+		for (i = 0; i < 3; i++)
+		{
+			const struct NativeDepthCheckSplit *sp = cases[i];
+
+			printf(", %s: handler %s, selector %s, splitLine %d, %d corners, error max %.3f, winding %s", names[i],
+			       (sp->drawFunc == RB_RETAIL_DRAWFUNC_REFLECTION) ? "reflection" : ((sp->drawFunc == RB_RETAIL_DRAWFUNC_SPECIAL) ? "special" : "other"),
+			       NativeRenderLayer_SelectorName(sp->selectorIndex), sp->splitLine, sp->mirrorCompared, sp->mirrorError,
+			       sp->cullFlipped ? "turned" : "kept");
+		}
+		printf(", wheels error max %.9f, reflection selectors %d cases %d differ, mirror %s\n", wheelError, sides.reflectionCases, sides.reflectionDiffer,
+		       mirrorPassed ? "passed" : "differs");
+	}
+
+	// The checks of the review of stage a (G4ea S1-S3), on a third line.
+	printf("native depth selftest split items, split R near nodding: handler %s, splitLine %d, %d points (%d below, %d above), %d differ, level plane %d "
+	       "differ, items of a split view %s, wheels against DrawTires %d cases %d differ, shift/mask classes %d cases %d differ, items %s\n",
+	       splitPitched.handlerSplit ? "split" : "other", splitPitched.splitLine, splitPitched.compared, splitPitched.below, splitPitched.above,
+	       splitPitched.differ, splitPitched.levelDiffer, itemsHeld ? "held" : "off", wheelsCompared, wheelsDiffer, classCases, classesDiffer,
+	       itemsPassed ? "passed" : "differs");
 
 	return passed ? 0 : 1;
 }

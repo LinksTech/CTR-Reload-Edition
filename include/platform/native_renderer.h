@@ -196,7 +196,7 @@ struct NativeLayerDraw
 // NATIVE_LAYER_POSE_FRAMES frames later, when the frames in flight that read
 // it are done; one object per slot, so no draw reads what another one wrote.
 #define NATIVE_LAYER_POSE_FRAMES 3
-#define NATIVE_LAYER_POSE_SLOTS  64
+#define NATIVE_LAYER_POSE_SLOTS  128
 
 // Draws the probe mesh into the split's place, then puts every renderer and
 // device state back that the PSX path relies on. 0 = nothing drawn.
@@ -241,11 +241,32 @@ struct NativeMeshDraw
 	int look;
 	float tone;
 	float far[4];
+	// The water line (step 4e): one side of the plane d = split[3] -
+	// (split[0] x + split[1] y + split[2] z), points in the units of the mesh.
+	// splitKeep 1 keeps d >= 0 (the side below), -1 keeps d < 0 (the side
+	// above), 0 - what memset gives every other draw - keeps the whole mesh.
+	// The colour of a side (the halving of the queue) comes in the tint of the
+	// ranges; nothing else of the draw changes.
+	float split[4];
+	int splitKeep;
+	// The paint order of the retail twin (look = 1, NativeTwin_PaintOrder):
+	// the queue's scale of the view depth, 2^mvpShift of the item (x 4 near,
+	// / 4 DRAW_HUGE; 0 = no paint order, the draw keeps its ranges and the
+	// depth test), and the range every bin is held to (twinBinLow <=
+	// twinBinHigh: the writer CLAMP_DEPTH, the depthOffset of the view; else
+	// not held).
+	float twinDepthScale;
+	int twinBinLow;
+	int twinBinHigh;
 };
 
 // What psxDitherAmount of the PSX block would be for a draw into the target in
 // force now (the expression of NativeRenderer_SetTexture). Step 4d Z1.
 float NativeRenderer_PsxDitherAmountNow(void);
+
+// The draws of the retail twin in its paint order and the ones that fell back
+// to its ranges with the depth test (no order), for the exit report.
+void NativeRenderer_TwinPaintCounts(unsigned long long *ordered, unsigned long long *fallback);
 
 // The same place, clip, projection, depth rule and state reset as
 // NativeRenderer_DrawNativeProbe, with the caller's buffers and ranges. Needs

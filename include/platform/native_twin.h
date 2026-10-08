@@ -213,14 +213,22 @@ int NativeTwin_PoseIndex(const struct NativeTwinSource *src, int anim, int frame
 // to draw first; NATIVE_TWIN_PAINT_PLACE(key) is the triangle's place in the
 // index buffer of NativeCharGpu_Build (its 3 indices start at 3 x place).
 // Returns the number of keys (the triangle count), 0 when it cannot (no
-// source, keyMax too small, a pose out of range, a bad material).
-// SZ is the view depth w rounded down, times 4 for a model whose origin is
-// nearer than 0x1000 (the queue's near scale). Only read; host memory only.
+// source, keyMax too small, a pose out of range, a bad material, a depth scale
+// that is not above 0).
+// SZ is floor(w x depthScale): depthScale = 2^mvpShift of the item, the
+// queue's near (x 4) and DRAW_HUGE (/ 4) scale, handed over rather than told
+// from the depth of the origin - for the mirror item of step 4e the last
+// element of the matrix is not the view depth of the instance, while the
+// queue scales both copies by that one. binLow <= binHigh: every bin is held
+// to that range, as RenderBucket_GetClampedOTEntry does for the writer
+// CLAMP_DEPTH (depthOffset of the view); binLow > binHigh: not held, as
+// RenderBucket_GetNormalOTEntry. Only read; host memory only.
 #define NATIVE_TWIN_ZSF3 0x555u
 #define NATIVE_TWIN_PAINT_PLACE_MASK 0xFFFFFu
 #define NATIVE_TWIN_PAINT_PLACE(key) ((u32)((key) & (u64)NATIVE_TWIN_PAINT_PLACE_MASK))
 u32 NativeTwin_PaintBin(int sz0, int sz1, int sz2);
-u32 NativeTwin_PaintOrder(const struct NativeTwinSource *src, u32 pose, const float screenFromModel[16], u64 *keys, u32 keyMax);
+u32 NativeTwin_PaintOrder(const struct NativeTwinSource *src, u32 pose, const float screenFromModel[16], double depthScale, int binLow, int binHigh,
+                          u64 *keys, u32 keyMax);
 
 // NativeTexDesc.flags every twin texture needs: linear data, nearest, and one
 // level - the PSX samples no level, and with levels a texture shrunk at x1

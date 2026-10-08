@@ -508,8 +508,11 @@ internal int s_nrMarkerDb = 0;
 // is the index into the list of the buffer it was written in, and it is drawn
 // in the same frame (the OT is parsed after the queue has run). Emptied
 // together with the marker arena of that buffer. The probe needs one entry per
-// frame and view; 64 leave room, and a full list falls back to retail.
-#define NATIVE_RENDER_LAYER_ITEMS 64
+// frame and view; a custom character one per view, two for a view with the
+// water line (step 4e) - 8 seats x 4 views x 2 = 64 in a four-player race on
+// water, so 128 leave room. A full list falls back to retail for the whole
+// view (the items of a view are reserved before the first is written).
+#define NATIVE_RENDER_LAYER_ITEMS 128
 
 // The probe lines of the report come every 30th VBlank, the spacing of the
 // shots of an autopilot run.
@@ -595,12 +598,55 @@ struct NrDrawItem
 	// setup callback, as RenderBucket_RunInstanceSetupCallback loads it.
 	float tone;
 	float far[3];
+	// The paint order of the twin: its bins held to the depth range of the
+	// view (depthOffset) when the instance's writer is CLAMP_DEPTH
+	// (RenderBucket_GetClampedOTEntry), else not.
+	u8 binClamp;
+	s16 binLow;
+	s16 binHigh;
 	const struct NativeCharGpu *gpu;
 	double unitScale[3];
+	// STEP 4E, the water line (a char view of the handler SPLIT, see
+	// NativeRenderLayer_SetUpSplit): which part of the view the item is
+	// (NR_PART_WHOLE for every other view), whether its body is drawn at all,
+	// the native wheels it draws (one bit per wheel), the side of the plane it
+	// keeps (+1 d >= 0, -1 d < 0, 0 all), the SXY offset of dim-xor, the plane
+	// in model units (d = split[3] - split[0..2] . p, the retail splitDist) and
+	// the factor of its body colour per channel (1 = unchanged).
+	u8 part;
+	u8 bodyOn;
+	u8 wheelMask;
+	s8 splitKeep;
+	s8 ofsXExtra;
+	double split[4];
+	float tintScale[3];
+	// STEP 4E, stage b, the mirror (handlers REFLECTION and SPECIAL, see
+	// NativeRenderLayer_SetUpMirror): primary = the item is the view's draw
+	// (every counter, line and stamp of the view; 0 for the second item of a
+	// view), secondRange = its marker goes into otRangeSecondary, mirror = the
+	// body is drawn through mirrorA / mirrorB (view = mirrorA p + mirrorB, true
+	// units) instead of the matrix of the body. hasMirror: mirrorA / mirrorB
+	// are set (on both items of a mirror view, for the box of the path line).
+	u8 primary;
+	u8 secondRange;
+	u8 mirror;
+	u8 hasMirror;
+	double mirrorA[3][3];
+	double mirrorB[3];
 };
 
 #define NR_ITEM_PROBE 0
 #define NR_ITEM_CHAR  1
+
+// The part of a view an item draws (step 4e): the whole view, or the side
+// above the water line (otRangeNormal) or below it (otRangeSecondary).
+#define NR_PART_WHOLE 0
+#define NR_PART_ABOVE 1
+#define NR_PART_BELOW 2
+
+// Every native wheel in wheelMask (one bit per wheel, u8).
+#define NR_WHEEL_MASK_ALL ((u8)((1u << NATIVE_WHEELS_COUNT) - 1u))
+CTR_STATIC_ASSERT(NATIVE_WHEELS_COUNT <= 8);
 
 internal struct NrDrawItem s_nrItems[2][NATIVE_RENDER_LAYER_ITEMS];
 
@@ -1079,8 +1125,10 @@ internal void NativeRenderLayer_NoteUi(const struct Instance *inst, int byPushBu
 
 // --- The marker channel ----------------------------------------------------
 
-// Links one marker into the own OT range of an instance view. 1 = written,
-// 0 = not (no own range, or the arena of this buffer is full - counted).
+// Links one marker into an OT range of an instance view - its own range
+// (idpp->otRangeNormal) or, for the side below the water line of step 4e, its
+// second range (idpp->otRangeSecondary). 1 = written, 0 = not (no range, or the
+// arena of this buffer is full - counted).
 //
 // THE BIN. The middle of the depth range the queue gave the instance
 // (depthOffset[0..1]), clamped to that range. This is a choice of the layer:
@@ -1095,14 +1143,17 @@ internal void NativeRenderLayer_NoteUi(const struct Instance *inst, int byPushBu
 // THE ORDER. Payload first, then tag and head link, exactly as
 // RenderBucket_LinkPrimRaw hangs a primitive in: the parser can only reach the
 // marker after its head link is written, and by then the code words stand.
-internal int NativeRenderLayer_LinkMarker(const struct InstDrawPerPlayer *idpp, u32 item, u32 flags)
+//
+// The second range is allocated by the queue with the same minDepth and
+// maxDepth (RenderBucket_BuildDepthRange), so the same bin holds for it.
+internal int NativeRenderLayer_LinkMarker(const struct InstDrawPerPlayer *idpp, int range, u32 item, u32 flags)
 {
 	const int db = s_nrMarkerDb;
 	DR_PSYX_NATIVE *m;
 	u32 *entry;
 	int bin;
 
-	if (idpp->otRangeNormal == 0)
+	if (range == 0)
 	{
 		return 0;
 	}
@@ -1123,7 +1174,7 @@ internal int NativeRenderLayer_LinkMarker(const struct InstDrawPerPlayer *idpp, 
 		bin = idpp->depthOffset[1];
 	}
 
-	entry = (u32 *)idpp->otRangeNormal + bin;
+	entry = (u32 *)range + bin;
 	m = &s_nrMarkers[db][s_nrMarkerCount[db]];
 
 	m->code[1] = flags;
@@ -1197,7 +1248,7 @@ internal void NativeRenderLayer_EmptyMarker(const struct Instance *inst, const s
 		return;
 	}
 
-	if (!NativeRenderLayer_LinkMarker(idpp, (u32)s_nrMarkerCount[s_nrMarkerDb], PSYX_NATIVE_FLAG_EMPTY))
+	if (!NativeRenderLayer_LinkMarker(idpp, idpp->otRangeNormal, (u32)s_nrMarkerCount[s_nrMarkerDb], PSYX_NATIVE_FLAG_EMPTY))
 	{
 		// A full arena is counted by LinkMarker itself.
 		if (idpp->otRangeNormal == 0)
@@ -2554,7 +2605,7 @@ internal int NativeRenderLayer_RouteProbe(const struct Instance *inst, const str
 	}
 	s_nrItemCount[db]++;
 
-	if (!NativeRenderLayer_LinkMarker(idpp, (u32)index, 0))
+	if (!NativeRenderLayer_LinkMarker(idpp, idpp->otRangeNormal, (u32)index, 0))
 	{
 		s_nrItemCount[db]--;
 		return NativeRenderLayer_ProbeFallback(NR_PROBE_FALLBACK_ARENA_FULL);
@@ -2747,9 +2798,9 @@ internal unsigned long long s_nrCharFramesDrawsOff;
 // the instance (inst->funcPtr[2], one of four retail labels,
 // RenderBucket_ApplyWaterSplitSideSelector), its shift and mask
 // (specLightX & 31, reflectionRGBA) and whether the queue gave the view a
-// second OT range of its own. Counted in the fallback, so the first run names
-// the case a native water line has to rebuild. Nothing is drawn natively for
-// SPLIT yet ("accepted" stays 0).
+// second OT range of its own. Counted for every split view; "accepted" counts
+// the ones drawn natively (step 4e, stage a: all of them, see
+// NativeRenderLayer_SetUpSplit).
 // --native-split-report (main.c, only with --dev): the raw values of the
 // water line of seat 0 (step 4e-1b), one line per SPLIT view and per SPECIAL
 // view with SPLIT_LINE - the first four of the run, then on the line spacing
@@ -2773,6 +2824,177 @@ internal struct
 	unsigned long long secondaryOwn;
 	unsigned long long secondaryShared;
 } s_nrCharSplit;
+
+// STEP 4E, stage a: the water line drawn natively (NativeRenderLayer_SetUpSplit).
+// views: split views routed natively (every view), by branch (R: split space,
+// P: the input units of the queue) and how many were far (view z 0x1000 or
+// more); drawn / not drawn: their items below the line (the items above are
+// the view's draw in "native draws"); the native wheels put below and above
+// the line; the colour factor of a dimmed side, exact (a halving as the queue's
+// shift and mask, within half a step) or approximated; the views with the SXY
+// offset of dim-xor; and two cases that never occur for a driver: a view whose
+// second marker could not be linked after the first was (the reservation
+// rules it out) and a split view in the branch R with a custom matrix (falls
+// back as "other").
+internal struct
+{
+	unsigned long long views;
+	unsigned long long branchR;
+	unsigned long long branchP;
+	unsigned long long far;
+	unsigned long long drawn;
+	unsigned long long notDrawn;
+	unsigned long long wheelsBelow;
+	unsigned long long wheelsAbove;
+	unsigned long long exact;
+	unsigned long long approximated;
+	unsigned long long dimOffset;
+	unsigned long long linkLost;
+	unsigned long long customMatrix;
+} s_nrCharWater;
+
+// Per seat, view 0: the split views routed natively (beside "routed normal"),
+// the terrain of every split view of view 0 as the driver has it
+// (driver->currentTerrain: water, fast water, mud, anything else - the flag
+// then came from a water leaf of the BSP or an earlier frame, not determined
+// which), and THE PATH CHANGES: between two frames in which the seat was
+// routed in view 0 one after the other while it stayed bound, a change from
+// native to CMDL or back - also across frames in between in which its kart was
+// not routed in view 0 (out of sight: no dispatch); those changes are counted
+// once more apart ("across a gap"). A frame in which the seat is not bound
+// (factor 1, a load, a checkpoint restore) breaks the chain
+// (NativeRenderLayer_ForgetPath), so the factor rule never counts here. And
+// the first frame after such a gap or break that went to the CMDL ("first
+// frame after a gap cmdl"): a kart that comes into sight drawn by the CMDL
+// shows no change but is one. The first frame that went to the CMDL keeps its
+// reason and VBlank.
+#define NR_TERRAIN_WATER     0
+#define NR_TERRAIN_FASTWATER 1
+#define NR_TERRAIN_MUD       2
+#define NR_TERRAIN_OTHER     3
+#define NR_TERRAIN_KINDS     4
+
+struct NrCharSeatWater
+{
+	unsigned long long routedSplit;
+	unsigned long long routedReflection;
+	unsigned long long routedSpecial;
+	unsigned long long terrain[NR_TERRAIN_KINDS];
+	unsigned long long noDriver;
+	unsigned long long nativeToCmdl;
+	unsigned long long cmdlToNative;
+	unsigned long long acrossGap;
+	unsigned long long gapCmdl;
+	u32 lastFrame;
+	int haveLast;
+	int lastNative;
+	const char *firstCmdlReason;
+	int firstCmdlVBlank;
+};
+
+internal struct NrCharSeatWater s_nrCharSeatWater[NATIVE_RENDER_LAYER_DRIVERS];
+
+// A seat let go (unbound): its next routed frame starts a new chain of the
+// path changes. seat < 0: every seat.
+internal void NativeRenderLayer_ForgetPath(int seat)
+{
+	int k;
+
+	for (k = 0; k < NATIVE_RENDER_LAYER_DRIVERS; k++)
+	{
+		if ((seat < 0) || (seat == k))
+		{
+			s_nrCharSeatWater[k].haveLast = 0;
+		}
+	}
+}
+
+// STEP 4E, stage b: the mirror drawn natively (NativeRenderLayer_SetUpMirror).
+// Views of the handler REFLECTION and of the handler SPECIAL routed natively
+// (every view; SPECIAL views with SPLIT_LINE apart), the SPECIAL views of an
+// instance with SPLIT_SPECIAL left to the CMDL (their matrices are not the
+// ones of a mirror, RenderBucket_BuildSplitState), REFLECTION views whose
+// selector would draw the side below the plane (never for a driver: the queue
+// gives REFLECTIVE the selector negative) left to the CMDL; the mirror items
+// drawn and not drawn, the native wheels mirrored, the native wheels left out
+// below the plane (REFLECTIVE: game/DrawTires.c leaves them out of the solid
+// pass), and the colour factor of the mirror, exact or approximated.
+internal struct
+{
+	unsigned long long reflectionViews;
+	unsigned long long specialViews;
+	unsigned long long specialSplitLine;
+	unsigned long long splitSpecialLeft;
+	unsigned long long selectorLeft;
+	unsigned long long drawn;
+	unsigned long long notDrawn;
+	unsigned long long mirrorWheels;
+	unsigned long long wheelsLeftOut;
+	unsigned long long exact;
+	unsigned long long approximated;
+} s_nrCharMirror;
+
+// What the last call of NativeRenderLayer_RouteCharView did: the items it wrote
+// (0 for a fallback) and the reason of its fallback.
+internal int s_nrRouteItems = 0;
+internal const char *s_nrRouteReason = NULL;
+
+// THE PATH LINE of --native-split-report (seat 0, view 0): one per frame whose
+// view has a handler other than NORMAL, and one for the first NORMAL after such
+// a frame. A view drawn natively writes its line at its draw (the band of the
+// water line needs the draw offset of the split); a fallback writes it at the
+// route. A native view that was never drawn is written when the frame is
+// closed, as "native (not drawn)".
+internal struct
+{
+	int pending;
+	int lastNotNormal;
+	u32 frame;
+	int vblank;
+	const char *handler;
+	const char *selector;
+	const char *branch;
+	int items;
+	int splitLine;
+} s_nrPathLine;
+
+// The path line itself, from s_nrPathLine; band, box and mirror box NULL when
+// not known or not there (written as "none").
+internal void NativeRenderLayer_PathLine(const char *path, const int *band, const int *box, const int *mirrorBox)
+{
+	char bandText[32];
+	char boxText[64];
+	char mirrorText[64];
+
+	if (band != NULL)
+	{
+		snprintf(bandText, sizeof(bandText), "%d %d", band[0], band[1]);
+	}
+	else
+	{
+		snprintf(bandText, sizeof(bandText), "none");
+	}
+	if (box != NULL)
+	{
+		snprintf(boxText, sizeof(boxText), "%d %d %d %d", box[0], box[1], box[2], box[3]);
+	}
+	else
+	{
+		snprintf(boxText, sizeof(boxText), "none");
+	}
+	if (mirrorBox != NULL)
+	{
+		snprintf(mirrorText, sizeof(mirrorText), "%d %d %d %d", mirrorBox[0], mirrorBox[1], mirrorBox[2], mirrorBox[3]);
+	}
+	else
+	{
+		snprintf(mirrorText, sizeof(mirrorText), "none");
+	}
+	Platform_Log("[CTR RenderLayer] native char path seat 0 at vblank %d: handler %s, selector %s, branch %s, path %s, items %d, splitLine %d, "
+	             "band y %s, body box %s, mirror box %s\n",
+	             s_nrPathLine.vblank, s_nrPathLine.handler, s_nrPathLine.selector, s_nrPathLine.branch, path, s_nrPathLine.items,
+	             s_nrPathLine.splitLine, bandText, boxText, mirrorText);
+}
 
 // Step 5a: the driver select preview bound natively (NativeRenderLayer_BindPreview).
 internal int s_nrPreviewBound = 0;
@@ -2837,6 +3059,13 @@ internal void NativeRenderLayer_CloseCharFrames(void)
 {
 	const int vblank = Platform_GetVBlankCount();
 	int seat;
+
+	// A native path line of seat 0 whose view was never drawn (step 4e).
+	if (s_nrPathLine.pending)
+	{
+		s_nrPathLine.pending = 0;
+		NativeRenderLayer_PathLine("native (not drawn)", NULL, NULL, NULL);
+	}
 
 	// View 0 of the frame before (step 4f): native draws against the views the
 	// route took.
@@ -3075,6 +3304,7 @@ internal void NativeRenderLayer_BindChars(const struct GameTracker *gGT)
 				Platform_Log("[CTR RenderLayer] native char unbound: seat %d (%s)\n", seat, seatWhy);
 				s_nrCharSeatBound[seat] = 0;
 				s_nrCharSeam[seat].haveLast = 0;
+				NativeRenderLayer_ForgetPath(seat);
 			}
 			continue;
 		}
@@ -3245,6 +3475,7 @@ internal void NativeRenderLayer_BindPreview(const struct GameTracker *gGT)
 	{
 		Platform_Log("[CTR RenderLayer] native char preview unbound (%s) at vblank %d\n", why, Platform_GetVBlankCount());
 		s_nrPreviewBound = 0;
+		NativeRenderLayer_ForgetPath(0);
 		s_nrPreviewBoundEntry = -1;
 	}
 	else if ((current >= 0) && (current != s_nrPreviewWhyEntry))
@@ -3327,6 +3558,7 @@ internal void NativeRenderLayer_BindTwin(const struct GameTracker *gGT)
 		{
 			Platform_Log("[CTR RenderLayer] native twin unbound (%s) at vblank %d\n", why, Platform_GetVBlankCount());
 			s_nrTwinBound = 0;
+			NativeRenderLayer_ForgetPath(0);
 		}
 		return;
 	}
@@ -3355,6 +3587,7 @@ internal void NativeRenderLayer_BindTwin(const struct GameTracker *gGT)
 // and its marker. 1 = native, 0 = retail with the first reason counted.
 internal int NativeRenderLayer_CharFallback(int seat, enum NrProbeFallback reason)
 {
+	s_nrRouteReason = s_nrProbeFallbackNames[reason];
 	s_nrCharCnt.fallback[reason]++;
 	if ((seat >= 0) && (seat < NATIVE_RENDER_LAYER_DRIVERS))
 	{
@@ -3432,6 +3665,697 @@ internal void NativeRenderLayer_FillCharWheels(struct NrDrawItem *it, const stru
 	it->nativeWheels = 1;
 }
 
+// --- Step 4e, stage a: the water line (handler SPLIT) drawn natively ----------
+//
+// THE RETAIL WAY (game/RenderBucket/RenderBucket_QueueExecute.c). A driver in
+// water or mud carries SPLIT_LINE with vertSplit 0 (game/COLL.c, the quadblock
+// search; a water leaf of the BSP likewise). The queue then cuts the model at
+// a plane (RenderBucket_BuildSplitState) and the handler SPLIT draws every
+// triangle side by side: splitDist = splitLine - y of a corner, y its height in
+// split space (branch R: the corner turned by idpp->m3x3, MVMVA with sf = 1 in
+// RenderBucket_TransformSplitDecodedVertex; branch P, an unturned instance of
+// unit scale: the corner as it is). splitDist >= 0 is below the plane and goes
+// into otRangeSecondary, 12 bins further back; the rest into otRangeNormal; a
+// triangle across the plane is cut there (RenderBucket_DrawWaterSplitClipped).
+// The selector of the instance (inst->funcPtr[2],
+// RenderBucket_ApplyWaterSplitSideSelector) decides per side whether it is
+// drawn and how its colour changes; a driver has both-mask - the side below
+// halved, (c >> 1) & 0x7f7f7f - and the water surface, drawn between the two
+// ranges, covers it.
+//
+// THE NATIVE WAY. Two items and two markers per view: the side above in
+// otRangeNormal, the side below in otRangeSecondary, both the same mesh with
+// the same pose, matrix and depth; the shader keeps the side of its item at
+// the very plane of the queue (idpp->m3x3 row 1 and idpp->splitLine, so near,
+// far and the branch hold as in retail), the colour factor of a side goes
+// into the tint of its ranges. The native wheels are not cut: each goes whole
+// to the side its middle lies on, as game/DrawTires.c puts each retail wheel
+// (the middle against the plane in world units, splitCameraY - center.y >= 0
+// is below). Both items are reserved before the first is written, so a view
+// is native as a whole or not at all.
+//
+// In the branch R idpp->mvp holds the view matrix alone
+// (RenderBucket_BuildSplitViewMvp); the body takes the composed model-view
+// matrix instead (NativeRenderLayer_ComposeModelView, the GTE's rounding), and
+// its cull follows that matrix (the twin keeps its own rule).
+
+// The names of the four retail side selectors (RenderBucket_ApplyWaterSplitSideSelector).
+#define NR_SELECTOR_BOTH_MASK 0
+#define NR_SELECTOR_NEGATIVE  1
+#define NR_SELECTOR_XOR       2
+#define NR_SELECTOR_DIM_XOR   3
+#define NR_SELECTOR_OTHER     4
+
+internal int NativeRenderLayer_SelectorIndex(u32 selector)
+{
+	if (selector == RB_RETAIL_INST_FUNC2_SPLIT_BOTH_MASK)
+	{
+		return NR_SELECTOR_BOTH_MASK;
+	}
+	if (selector == RB_RETAIL_INST_FUNC2_SPLIT_NEGATIVE)
+	{
+		return NR_SELECTOR_NEGATIVE;
+	}
+	if (selector == RB_RETAIL_INST_FUNC2_SPLIT_XOR)
+	{
+		return NR_SELECTOR_XOR;
+	}
+	if (selector == RB_RETAIL_INST_FUNC2_SPLIT_DIM_XOR)
+	{
+		return NR_SELECTOR_DIM_XOR;
+	}
+	return NR_SELECTOR_OTHER;
+}
+
+internal const char *NativeRenderLayer_SelectorName(int index)
+{
+	static const char *const names[NR_SELECTOR_OTHER + 1] = {"both-mask", "negative", "xor", "dim-xor", "other"};
+
+	return ((index >= 0) && (index <= NR_SELECTOR_OTHER)) ? names[index] : "other";
+}
+
+// One side of a split view as the selector leaves it in the handler SPLIT:
+// drawn or not, its colour changed (shift and mask, or 3/4 for dim-xor) and
+// moved by SXY x + 3 (dim-xor).
+struct NrSplitSide
+{
+	u8 body;
+	u8 dimmed;
+	u8 offset;
+};
+
+// The rules of RenderBucket_ApplyWaterSplitSideSelector for the two sides,
+// guard >= 0 being the side below: both-mask draws both and changes the colour
+// below; negative draws only above and changes its colour only where the pass
+// has waterSplitSide >= 0 (the mirror pass of REFLECTION; the handler SPLIT
+// and the original pass of REFLECTION have -1); xor draws the side whose sign
+// agrees with specLightX, unchanged; dim-xor draws both and changes the one
+// whose sign agrees; an unknown label draws only above. Returns the
+// selector's index.
+internal int NativeRenderLayer_SplitSides(u32 selector, int specLightX, int waterSplitSide, struct NrSplitSide *above, struct NrSplitSide *below)
+{
+	const int index = NativeRenderLayer_SelectorIndex(selector);
+	const int belowAgrees = (specLightX >= 0); // (guard ^ specLightX) >= 0 for guard >= 0
+
+	memset(above, 0, sizeof(*above));
+	memset(below, 0, sizeof(*below));
+	switch (index)
+	{
+	case NR_SELECTOR_BOTH_MASK:
+		above->body = 1;
+		below->body = 1;
+		below->dimmed = 1;
+		break;
+	case NR_SELECTOR_XOR:
+		above->body = (u8)!belowAgrees;
+		below->body = (u8)belowAgrees;
+		break;
+	case NR_SELECTOR_DIM_XOR:
+		above->body = 1;
+		below->body = 1;
+		above->dimmed = (u8)!belowAgrees;
+		above->offset = (u8)!belowAgrees;
+		below->dimmed = (u8)belowAgrees;
+		below->offset = (u8)belowAgrees;
+		break;
+	case NR_SELECTOR_NEGATIVE:
+		above->body = 1;
+		above->dimmed = (u8)(waterSplitSide >= 0);
+		break;
+	default: // unknown
+		above->body = 1;
+		break;
+	}
+	return index;
+}
+
+// The colour factor per channel of the queue's (c >> s) & m (s = specLightX &
+// 31, m = reflectionRGBA; the colour word is 0x00BBGGRR): (c >> s) is c / 2^s
+// rounded down, and a mask that keeps every bit of 255 >> s or none of them
+// leaves that or 0 - exact within half a step (1 returned). A mask that keeps
+// a bit above 255 >> s lets the shift carry the next channel's low bits in
+// there, and any other mask keeps only a share of the bits: both are taken by
+// the share of the bits of 255 >> s it keeps (0 returned: approximated).
+internal int NativeRenderLayer_ShiftMaskFactor(int specLightX, u32 mask, float out[3])
+{
+	const int s = specLightX & 31;
+	const int top = (s >= 8) ? 0 : (255 >> s);
+	int exact = 1;
+	int ch;
+
+	for (ch = 0; ch < 3; ch++)
+	{
+		const int maskCh = (int)((mask >> (8 * ch)) & 0xffu);
+		const int kept = top & maskCh;
+
+		if ((maskCh & ~top) != 0)
+		{
+			exact = 0;
+		}
+		if (top == 0)
+		{
+			out[ch] = 0.0f;
+			continue;
+		}
+		out[ch] = (float)(((double)kept / (double)top) * ldexp(1.0, -s));
+		if ((kept != 0) && (kept != top))
+		{
+			exact = 0;
+		}
+	}
+	return exact;
+}
+
+// The branch of a split view by the uncompress label the queue chose: 1 = R
+// (split space, SPLIT/REFLECT), 0 = P (NORMAL/NEXTFRAME), -1 = neither.
+internal int NativeRenderLayer_SplitBranch(const struct InstDrawPerPlayer *idpp)
+{
+	if (((u32)idpp->unkF0 == (u32)RB_RETAIL_UNCOMPRESS_SPLIT) || ((u32)idpp->unkF0 == (u32)RB_RETAIL_UNCOMPRESS_REFLECT))
+	{
+		return 1;
+	}
+	if (((u32)idpp->unkF0 == (u32)RB_RETAIL_UNCOMPRESS_NORMAL) || ((u32)idpp->unkF0 == (u32)RB_RETAIL_UNCOMPRESS_NEXTFRAME))
+	{
+		return 0;
+	}
+	return -1;
+}
+
+// THE PLANE in model units: d(p) = out[3] - (out[0] p.x + out[1] p.y + out[2]
+// p.z), the retail splitDist of the point g = p x unitScale. Branch R: the
+// height in split space is row 1 of idpp->m3x3 (4.12) times g; branch P: g.y.
+// splitLine as the queue stored it for this very view. Nothing else: near and
+// far (m3x3 is 4 times larger near, splitLine is the same) and the branch hold
+// exactly as in retail, including that the line of a far driver lies 4 times
+// as high above its origin (RenderBucket_BuildM3x3, RenderBucket_BuildSplitState).
+internal void NativeRenderLayer_SplitPlane(const struct InstDrawPerPlayer *idpp, int branchR, const double unitScale[3], double out[4])
+{
+	int c;
+
+	for (c = 0; c < 3; c++)
+	{
+		out[c] = branchR ? (((double)idpp->m3x3.m[1][c] / 4096.0) * unitScale[c]) : ((c == 1) ? unitScale[1] : 0.0);
+	}
+	out[3] = (double)(s16)idpp->splitLine;
+}
+
+// The cull of a model-view matrix, as FillItem decides it (det >= 0: back).
+internal u8 NativeRenderLayer_CullOfMatrix(const s16 m[3][3])
+{
+	const s64 det = ((s64)m[0][0] * (((s64)m[1][1] * m[2][2]) - ((s64)m[1][2] * m[2][1]))) -
+	                ((s64)m[0][1] * (((s64)m[1][0] * m[2][2]) - ((s64)m[1][2] * m[2][0]))) +
+	                ((s64)m[0][2] * (((s64)m[1][0] * m[2][1]) - ((s64)m[1][1] * m[2][0])));
+
+	return (u8)((det >= 0) ? NATIVE_GFX_CULL_BACK : NATIVE_GFX_CULL_FRONT);
+}
+
+// 1 = the middle m (model units) of a native wheel lies on or below the plane
+// in world units, as game/DrawTires.c picks the range of a retail wheel
+// (DrawTiresSolid_SelectProjectedWheel: splitCameraY - center.y >= 0, both in
+// four-times camera-world units): the middle turned by the rotation of the
+// instance with its scale (model units are world units before the scale, see
+// NativeRenderLayer_FillNativeWheels), against vertSplit - t.y.
+internal int NativeRenderLayer_WheelBelow(const struct Instance *inst, const double m[3])
+{
+	const double scale[3] = {(double)inst->scale.x, (double)inst->scale.y, (double)inst->scale.z};
+	const double h = (double)inst->vertSplit - (double)inst->matrix.t[1];
+	double y = 0.0;
+	int c;
+
+	for (c = 0; c < 3; c++)
+	{
+		y += ((double)inst->matrix.m[1][c] / 4096.0) * ((scale[c] / 4096.0) * m[c]);
+	}
+	return ((4.0 * h) - (4.0 * y)) >= 0.0;
+}
+
+// The two items of a split view from the filled one: above = the item in
+// place (otRangeNormal), below = the next one (otRangeSecondary). Counts the
+// view.
+internal void NativeRenderLayer_SetUpSplit(struct NrDrawItem *above, struct NrDrawItem *below, const struct Instance *inst,
+                                           const struct InstDrawPerPlayer *idpp, int branchR)
+{
+	struct NrSplitSide sideAbove;
+	struct NrSplitSide sideBelow;
+	float shiftMask[3];
+	const int selector = NativeRenderLayer_SplitSides((u32)(size_t)inst->funcPtr[2], (int)inst->specLightX, -1, &sideAbove, &sideBelow);
+	const int exact = NativeRenderLayer_ShiftMaskFactor((int)inst->specLightX, inst->reflectionRGBA, shiftMask);
+	u8 wheelsBelow = 0;
+	int ch;
+	int wheel;
+
+	NativeRenderLayer_SplitPlane(idpp, branchR, above->unitScale, above->split);
+
+	if (above->nativeWheels && (above->gpu != NULL))
+	{
+		for (wheel = 0; wheel < NATIVE_WHEELS_COUNT; wheel++)
+		{
+			double m[3];
+
+			NativeCharGpu_WheelMiddle(above->gpu->wheelFront, above->gpu->wheelRear, wheel, m);
+			if (NativeRenderLayer_WheelBelow(inst, m))
+			{
+				wheelsBelow |= (u8)(1u << wheel);
+				s_nrCharWater.wheelsBelow++;
+			}
+			else
+			{
+				s_nrCharWater.wheelsAbove++;
+			}
+		}
+	}
+
+	*below = *above;
+
+	above->part = NR_PART_ABOVE;
+	above->primary = 1;
+	above->secondRange = 0;
+	above->splitKeep = -1;
+	above->bodyOn = sideAbove.body;
+	above->ofsXExtra = sideAbove.offset ? 3 : 0;
+	above->wheelMask = (u8)(above->wheelMask & ~wheelsBelow);
+
+	below->part = NR_PART_BELOW;
+	below->primary = 0;
+	below->secondRange = 1;
+	below->splitKeep = 1;
+	below->bodyOn = sideBelow.body;
+	below->ofsXExtra = sideBelow.offset ? 3 : 0;
+	below->wheelMask = (u8)(below->wheelMask & wheelsBelow);
+
+	for (ch = 0; ch < 3; ch++)
+	{
+		const float factor = (selector == NR_SELECTOR_DIM_XOR) ? 0.75f : shiftMask[ch];
+
+		above->tintScale[ch] = sideAbove.dimmed ? factor : 1.0f;
+		below->tintScale[ch] = sideBelow.dimmed ? factor : 1.0f;
+	}
+
+	s_nrCharWater.views++;
+	if (branchR)
+	{
+		s_nrCharWater.branchR++;
+	}
+	else
+	{
+		s_nrCharWater.branchP++;
+	}
+	if (!above->nearView)
+	{
+		s_nrCharWater.far++;
+	}
+	if (selector == NR_SELECTOR_DIM_XOR)
+	{
+		s_nrCharWater.dimOffset++;
+	}
+	else if ((sideAbove.dimmed && sideAbove.body) || (sideBelow.dimmed && sideBelow.body))
+	{
+		if (exact)
+		{
+			s_nrCharWater.exact++;
+		}
+		else
+		{
+			s_nrCharWater.approximated++;
+		}
+	}
+	s_nrCharSplit.accepted++;
+}
+
+// --- Step 4e, stage b: the mirror (handlers REFLECTION and SPECIAL) -----------
+//
+// THE RETAIL WAY. On ice in a one-player race a driver carries REFLECTIVE with
+// vertSplit = a split line of the level (game/COLL.c). The queue then picks
+// REFLECTION (split output: the branch R, or P with splitLine > 0) or SPECIAL
+// (P with splitLine < 0, or no output at all - also for a plain SPLIT_LINE
+// whose plane lies more than 362 split units below the origin), and REFLECTION
+// gets the selector negative (REFLECTION_FUNC23, RenderBucket_SelectRetailHandlers).
+//   REFLECTION (RenderBucket_DrawReflectionPrimitive): every triangle twice.
+//   The mirror pass mirrors the corners at the plane in split space (R) or in
+//   the input units (P) - y' = 2 splitLine - y, RenderBucket_MirrorSpecialPackedXY -
+//   projects them with the view's matrix, culls the other way round (0x8000),
+//   swaps the two ranges and draws with waterSplitSide 0; the original pass
+//   draws with -1. splitDist is taken from the original corner in both. With
+//   negative: only the part above the plane is drawn, the mirrored one halved
+//   into otRangeSecondary, the original one unchanged into otRangeNormal; the
+//   part below the plane is drawn in neither.
+//   SPECIAL (RenderBucket_DrawSpecialPrimitive): the mirror in the input units
+//   with the model-view matrix, no cut, halved by shift and mask into
+//   otRangeSecondary (which is otRangeNormal when the instance is not
+//   REFLECTIVE), the original uncut into otRangeNormal. In the branch R the
+//   split line is in split units and is used as input units (a retail quirk,
+//   kept: the native mirror reads the same idpp->splitLine).
+//   The wheels (game/DrawTires.c): with REFLECTIVE the solid pass leaves out
+//   the wheels whose middle lies below the plane, and the reflection pass
+//   draws all four mirrored at the plane in world units, unchanged in colour,
+//   into otRangeSecondary.
+//
+// THE NATIVE WAY. Two items: the original (the view's draw, otRangeNormal)
+// and the mirror (otRangeSecondary): the same mesh, pose and depth, the mirror
+// through its own matrix - the mirror of the view's split space or input
+// units, mirrorA = M R Ms / s, mirrorB = (mvp.t + M (0, 2L, 0)) / s with R =
+// diag(1, -1, 1), M the view matrix (R) or the model-view matrix (P,
+// SPECIAL), Ms the map from model units to that space - and the other cull.
+// REFLECTION keeps the part above the plane in both items (the plane of the
+// original, so the shader cuts by the unmirrored position); SPECIAL cuts
+// nothing. The colour factor of the pass goes into the tint. With REFLECTIVE
+// the original keeps its wheels above the plane and the mirror gets all four,
+// mirrored at the world plane; without it the original keeps all four.
+
+// 1 = the selector of a REFLECTION view draws the part above the plane only, in
+// both passes; *originalDimmed / *mirrorDimmed: the colour of that pass is
+// changed. The queue gives a REFLECTIVE instance negative (or xor with
+// WATER_SPLIT_WHITE, which no driver has); any other answer leaves the view
+// to the CMDL.
+internal int NativeRenderLayer_ReflectionSides(u32 selector, int specLightX, int *originalDimmed, int *mirrorDimmed)
+{
+	struct NrSplitSide above;
+	struct NrSplitSide below;
+
+	(void)NativeRenderLayer_SplitSides(selector, specLightX, 0, &above, &below);
+	if (!above.body || below.body || above.offset)
+	{
+		return 0;
+	}
+	*mirrorDimmed = above.dimmed;
+	(void)NativeRenderLayer_SplitSides(selector, specLightX, -1, &above, &below);
+	if (!above.body || below.body || above.offset)
+	{
+		return 0;
+	}
+	*originalDimmed = above.dimmed;
+	return 1;
+}
+
+// THE MIRROR MATRIX of an item: view = mirrorA p + mirrorB for a point p in
+// model units, true view units (the shift taken out as in
+// NativeRenderLayer_CharItemMatrix). splitSpace 1: the branch R of REFLECTION
+// (corners in split space: Ms = m3x3 / 4096 x unitScale, M = the view matrix,
+// which is what idpp->mvp holds there); 0: P and SPECIAL (corners in the input
+// units: Ms = unitScale, M = idpp->mvp, the model-view matrix).
+internal void NativeRenderLayer_MirrorMatrix(struct NrDrawItem *it, const struct InstDrawPerPlayer *idpp, const struct PushBuffer *pb, int splitSpace)
+{
+	const double s = ldexp(1.0, (int)it->mvpShift);
+	const double L = (double)(s16)idpp->splitLine;
+	const MATRIX *M = splitSpace ? &pb->matrix_ViewProj : &idpp->mvp;
+	double Ms[3][3];
+	int r;
+	int c;
+
+	for (r = 0; r < 3; r++)
+	{
+		for (c = 0; c < 3; c++)
+		{
+			Ms[r][c] = splitSpace ? (((double)idpp->m3x3.m[r][c] / 4096.0) * it->unitScale[c]) : ((r == c) ? it->unitScale[c] : 0.0);
+		}
+	}
+	for (r = 0; r < 3; r++)
+	{
+		for (c = 0; c < 3; c++)
+		{
+			it->mirrorA[r][c] = ((((double)M->m[r][0] * Ms[0][c]) - ((double)M->m[r][1] * Ms[1][c]) + ((double)M->m[r][2] * Ms[2][c])) / 4096.0) / s;
+		}
+		it->mirrorB[r] = ((double)it->mvpT[r] + (((double)M->m[r][1] / 4096.0) * 2.0 * L)) / s;
+	}
+	it->hasMirror = 1;
+}
+
+// The inverse of a 3x3 matrix; 0 when it has none.
+internal int NativeRenderLayer_Invert3(const double m[3][3], double out[3][3])
+{
+	const double det = (m[0][0] * ((m[1][1] * m[2][2]) - (m[1][2] * m[2][1]))) - (m[0][1] * ((m[1][0] * m[2][2]) - (m[1][2] * m[2][0]))) +
+	                   (m[0][2] * ((m[1][0] * m[2][1]) - (m[1][1] * m[2][0])));
+	int r;
+	int c;
+
+	if (fabs(det) < 1e-12)
+	{
+		return 0;
+	}
+	for (r = 0; r < 3; r++)
+	{
+		for (c = 0; c < 3; c++)
+		{
+			const int r1 = (c + 1) % 3;
+			const int r2 = (c + 2) % 3;
+			const int c1 = (r + 1) % 3;
+			const int c2 = (r + 2) % 3;
+
+			out[r][c] = ((m[r1][c1] * m[r2][c2]) - (m[r1][c2] * m[r2][c1])) / det;
+		}
+	}
+	return 1;
+}
+
+// THE MIRRORED WHEELS (game/DrawTires.c, the reflection pass: the middle at
+// 2 splitCameraY - y, the rim with y negated - a mirror at the plane y =
+// vertSplit in world units). In view space, true units: Q = Vd R Vd^-1 with
+// Vd = the view matrix / 4096, about the point P0 = mvp.t / s + Vd (0, h, 0) of
+// the plane, h = vertSplit - t.y: wheelA' = Q wheelA, wheelB' = Q (wheelB -
+// P0) + P0. 0 when the view matrix has no inverse.
+internal int NativeRenderLayer_MirrorWheels(struct NrDrawItem *it, const struct Instance *inst, const struct PushBuffer *pb)
+{
+	const double s = ldexp(1.0, (int)it->mvpShift);
+	const double h = (double)inst->vertSplit - (double)inst->matrix.t[1];
+	double Vd[3][3];
+	double Vi[3][3];
+	double Q[3][3];
+	double P0[3];
+	int wheel;
+	int r;
+	int c;
+	int k;
+
+	for (r = 0; r < 3; r++)
+	{
+		for (c = 0; c < 3; c++)
+		{
+			Vd[r][c] = (double)pb->matrix_ViewProj.m[r][c] / 4096.0;
+		}
+	}
+	if (!NativeRenderLayer_Invert3((const double(*)[3])Vd, Vi))
+	{
+		return 0;
+	}
+	for (r = 0; r < 3; r++)
+	{
+		for (c = 0; c < 3; c++)
+		{
+			Q[r][c] = (Vd[r][0] * Vi[0][c]) - (Vd[r][1] * Vi[1][c]) + (Vd[r][2] * Vi[2][c]);
+		}
+		P0[r] = ((double)it->mvpT[r] / s) + (Vd[r][1] * h);
+	}
+	for (wheel = 0; wheel < NATIVE_WHEELS_COUNT; wheel++)
+	{
+		double A[3][3];
+		double b[3];
+
+		for (r = 0; r < 3; r++)
+		{
+			b[r] = it->wheelB[wheel][r] - P0[r];
+			for (c = 0; c < 3; c++)
+			{
+				A[r][c] = it->wheelA[wheel][r][c];
+			}
+		}
+		for (r = 0; r < 3; r++)
+		{
+			double t = P0[r];
+
+			for (k = 0; k < 3; k++)
+			{
+				t += Q[r][k] * b[k];
+			}
+			it->wheelB[wheel][r] = t;
+			for (c = 0; c < 3; c++)
+			{
+				double sum = 0.0;
+
+				for (k = 0; k < 3; k++)
+				{
+					sum += Q[r][k] * A[k][c];
+				}
+				it->wheelA[wheel][r][c] = sum;
+			}
+		}
+	}
+	return 1;
+}
+
+// The two items of a mirror view (REFLECTION or SPECIAL) from the filled one:
+// original = the item in place (otRangeNormal), mirror = the next one
+// (otRangeSecondary). splitSpace as NativeRenderLayer_MirrorMatrix. The
+// selector was checked by the route (NativeRenderLayer_ReflectionSides).
+internal void NativeRenderLayer_SetUpMirror(struct NrDrawItem *original, struct NrDrawItem *mirror, const struct Instance *inst,
+                                            const struct InstDrawPerPlayer *idpp, const struct PushBuffer *pb, int reflection, int splitSpace)
+{
+	const int reflective = (((u32)idpp->instFlags & REFLECTIVE) != 0);
+	float shiftMask[3];
+	const int exact = NativeRenderLayer_ShiftMaskFactor((int)inst->specLightX, inst->reflectionRGBA, shiftMask);
+	int originalDimmed = 0;
+	int mirrorDimmed = 1; // SPECIAL halves its mirror always (RenderBucket_DrawSpecialMirroredPass)
+	u8 wheelsBelow = 0;
+	int ch;
+	int wheel;
+
+	if (reflection)
+	{
+		(void)NativeRenderLayer_ReflectionSides((u32)(size_t)inst->funcPtr[2], (int)inst->specLightX, &originalDimmed, &mirrorDimmed);
+	}
+
+	// The plane of the original (also for SPECIAL, which cuts nothing: the
+	// band of the path line), and the mirror matrix.
+	NativeRenderLayer_SplitPlane(idpp, splitSpace, original->unitScale, original->split);
+	NativeRenderLayer_MirrorMatrix(original, idpp, pb, splitSpace);
+
+	if (original->nativeWheels && (original->gpu != NULL))
+	{
+		for (wheel = 0; wheel < NATIVE_WHEELS_COUNT; wheel++)
+		{
+			double m[3];
+
+			NativeCharGpu_WheelMiddle(original->gpu->wheelFront, original->gpu->wheelRear, wheel, m);
+			if (NativeRenderLayer_WheelBelow(inst, m))
+			{
+				wheelsBelow |= (u8)(1u << wheel);
+			}
+		}
+	}
+
+	*mirror = *original;
+
+	original->part = NR_PART_ABOVE;
+	original->primary = 1;
+	original->secondRange = 0;
+	original->mirror = 0;
+	original->bodyOn = 1;
+	original->splitKeep = reflection ? -1 : 0;
+	if (reflective)
+	{
+		original->wheelMask = (u8)(original->wheelMask & ~wheelsBelow);
+	}
+
+	mirror->part = NR_PART_ABOVE;
+	mirror->primary = 0;
+	mirror->secondRange = 1;
+	mirror->mirror = 1;
+	mirror->bodyOn = 1;
+	mirror->splitKeep = reflection ? -1 : 0;
+	mirror->cull = (u8)((original->cull == (u8)NATIVE_GFX_CULL_BACK) ? NATIVE_GFX_CULL_FRONT : NATIVE_GFX_CULL_BACK);
+	mirror->wheelMask = 0;
+	if (reflective && mirror->nativeWheels && NativeRenderLayer_MirrorWheels(mirror, inst, pb))
+	{
+		mirror->wheelMask = NR_WHEEL_MASK_ALL;
+		s_nrCharMirror.mirrorWheels += NATIVE_WHEELS_COUNT;
+	}
+	if (reflective && original->nativeWheels)
+	{
+		for (wheel = 0; wheel < NATIVE_WHEELS_COUNT; wheel++)
+		{
+			if ((wheelsBelow & (1u << wheel)) != 0)
+			{
+				s_nrCharMirror.wheelsLeftOut++;
+			}
+		}
+	}
+
+	for (ch = 0; ch < 3; ch++)
+	{
+		original->tintScale[ch] = originalDimmed ? shiftMask[ch] : 1.0f;
+		mirror->tintScale[ch] = mirrorDimmed ? shiftMask[ch] : 1.0f;
+	}
+
+	if (reflection)
+	{
+		s_nrCharMirror.reflectionViews++;
+	}
+	else
+	{
+		s_nrCharMirror.specialViews++;
+		if (((u32)idpp->instFlags & SPLIT_LINE) != 0)
+		{
+			s_nrCharMirror.specialSplitLine++;
+		}
+	}
+	if (originalDimmed || mirrorDimmed)
+	{
+		if (exact)
+		{
+			s_nrCharMirror.exact++;
+		}
+		else
+		{
+			s_nrCharMirror.approximated++;
+		}
+	}
+}
+
+internal int NativeRenderLayer_ProjectUnit(const double S[4][4], double ux, double uy, double uz, double *sx, double *sy);
+
+// THE BAND of the water line on the screen (the path line): the plane cut
+// through the CNET hull of the item - the points where it crosses the 12 edges
+// of the hull box - through S, their smallest and largest y, in the units of
+// the box line. 0 when the plane misses the hull or a point has no screen point.
+internal int NativeRenderLayer_SplitBand(const struct NrDrawItem *it, const double S[4][4], int band[2])
+{
+	double corner[8][3];
+	double d[8];
+	double lo = 0.0;
+	double hi = 0.0;
+	int have = 0;
+	int a;
+	int bit;
+
+	if (it->gpu == NULL)
+	{
+		return 0;
+	}
+	for (a = 0; a < 8; a++)
+	{
+		corner[a][0] = (double)(((a & 1) != 0) ? it->gpu->hullMax[0] : it->gpu->hullMin[0]);
+		corner[a][1] = (double)(((a & 2) != 0) ? it->gpu->hullMax[1] : it->gpu->hullMin[1]);
+		corner[a][2] = (double)(((a & 4) != 0) ? it->gpu->hullMax[2] : it->gpu->hullMin[2]);
+		d[a] = it->split[3] - ((it->split[0] * corner[a][0]) + (it->split[1] * corner[a][1]) + (it->split[2] * corner[a][2]));
+	}
+	for (a = 0; a < 8; a++)
+	{
+		for (bit = 1; bit < 8; bit <<= 1)
+		{
+			const int b = a | bit;
+			double t;
+			double sx;
+			double sy;
+
+			if (((a & bit) != 0) || ((d[a] >= 0.0) == (d[b] >= 0.0)))
+			{
+				continue;
+			}
+			t = d[a] / (d[a] - d[b]);
+			if (!NativeRenderLayer_ProjectUnit(S, corner[a][0] + (t * (corner[b][0] - corner[a][0])), corner[a][1] + (t * (corner[b][1] - corner[a][1])),
+			                                   corner[a][2] + (t * (corner[b][2] - corner[a][2])), &sx, &sy))
+			{
+				return 0;
+			}
+			if (!have || (sy < lo))
+			{
+				lo = sy;
+			}
+			if (!have || (sy > hi))
+			{
+				hi = sy;
+			}
+			have = 1;
+		}
+	}
+	if (!have)
+	{
+		return 0;
+	}
+	band[0] = (int)floor(lo);
+	band[1] = (int)ceil(hi);
+	return 1;
+}
+
 // The line of --native-split-report (see above). frame y: the y half of the
 // packed frame origin, averaged with the next frame, as the split setup of
 // the queue reads it (RenderBucket_QueueExecute.c, the rawSplit setup).
@@ -3498,7 +4422,7 @@ internal void NativeRenderLayer_SplitLine(int handler, const struct Instance *in
 	             ((idpp->otRangeSecondary != 0) && (idpp->otRangeSecondary != idpp->otRangeNormal)) ? "own" : "shared");
 }
 
-internal int NativeRenderLayer_RouteChar(int k, const struct Instance *inst, const struct InstDrawPerPlayer *idpp, const struct PushBuffer *pb)
+internal int NativeRenderLayer_RouteCharView(int k, const struct Instance *inst, const struct InstDrawPerPlayer *idpp, const struct PushBuffer *pb)
 {
 	const struct GameTracker *gGT = sdata->gGT;
 	const int db = s_nrMarkerDb;
@@ -3510,6 +4434,13 @@ internal int NativeRenderLayer_RouteChar(int k, const struct Instance *inst, con
 	int index;
 	int notes;
 	int v;
+	int split = 0;
+	int mirror = 0; // 1 REFLECTION, 2 SPECIAL
+	int branchR = 0;
+	int n;
+
+	s_nrRouteItems = 0;
+	s_nrRouteReason = NULL;
 
 	// Only the instance of a bound seat; any other instance with the model
 	// (none is known) stays retail without a count.
@@ -3582,8 +4513,71 @@ internal int NativeRenderLayer_RouteChar(int k, const struct Instance *inst, con
 			{
 				s_nrCharSplit.secondaryShared++;
 			}
+
+			// Step 4e: the terrain under the driver of a split view of view 0.
+			if (pb == &gGT->pushBuffer[0])
+			{
+				const struct Driver *driver = s_nrSeatDriver[seat];
+				struct NrCharSeatWater *water = &s_nrCharSeatWater[seat];
+
+				if (driver == NULL)
+				{
+					water->noDriver++;
+				}
+				else if (driver->currentTerrain == TERRAIN_WATER)
+				{
+					water->terrain[NR_TERRAIN_WATER]++;
+				}
+				else if (driver->currentTerrain == TERRAIN_FASTWATER)
+				{
+					water->terrain[NR_TERRAIN_FASTWATER]++;
+				}
+				else if (driver->currentTerrain == TERRAIN_MUD)
+				{
+					water->terrain[NR_TERRAIN_MUD]++;
+				}
+				else
+				{
+					water->terrain[NR_TERRAIN_OTHER]++;
+				}
+			}
 		}
-		return NativeRenderLayer_CharFallback(seat, NativeRenderLayer_HandlerFallback(handler));
+
+		// Step 4e: SPLIT (stage a), REFLECTION and SPECIAL (stage b) go on to
+		// the gates below and become two items each; NORMAL_ALT and unknown
+		// handlers stay retail as before. SPECIAL of an instance with
+		// SPLIT_SPECIAL has the matrices of RenderBucket_BuildSplitState's own
+		// path (no mirror of the model) and stays retail too; so does a
+		// REFLECTION whose selector would draw below the plane (no driver).
+		if (handler == NATIVE_RENDER_LAYER_HANDLER_SPLIT)
+		{
+			split = 1;
+		}
+		else if (handler == NATIVE_RENDER_LAYER_HANDLER_REFLECTION)
+		{
+			int originalDimmed = 0;
+			int mirrorDimmed = 0;
+
+			if (!NativeRenderLayer_ReflectionSides((u32)(size_t)inst->funcPtr[2], (int)inst->specLightX, &originalDimmed, &mirrorDimmed))
+			{
+				s_nrCharMirror.selectorLeft++;
+				return NativeRenderLayer_CharFallback(seat, NR_PROBE_FALLBACK_REFLECTION);
+			}
+			mirror = 1;
+		}
+		else if (handler == NATIVE_RENDER_LAYER_HANDLER_SPECIAL)
+		{
+			if (((u32)idpp->instFlags & SPLIT_SPECIAL) != 0)
+			{
+				s_nrCharMirror.splitSpecialLeft++;
+				return NativeRenderLayer_CharFallback(seat, NR_PROBE_FALLBACK_SPECIAL);
+			}
+			mirror = 2;
+		}
+		else
+		{
+			return NativeRenderLayer_CharFallback(seat, NativeRenderLayer_HandlerFallback(handler));
+		}
 	}
 	if (((inst->flags >> 16) & 7) != 0)
 	{
@@ -3614,9 +4608,45 @@ internal int NativeRenderLayer_RouteChar(int k, const struct Instance *inst, con
 	{
 		return NativeRenderLayer_CharFallback(seat, NR_PROBE_FALLBACK_NO_RANGE);
 	}
-	if (s_nrItemCount[db] >= NATIVE_RENDER_LAYER_ITEMS)
+	if (split || (mirror == 1))
+	{
+		// The side below (the mirror) needs the second range of its own; the
+		// branch must be one of the two the queue knows, and the branch R one
+		// without a custom matrix (idpp->mvp is then that matrix, not the view
+		// matrix - never the case for a driver).
+		branchR = NativeRenderLayer_SplitBranch(idpp);
+		if (idpp->otRangeSecondary == 0)
+		{
+			return NativeRenderLayer_CharFallback(seat, NR_PROBE_FALLBACK_NO_RANGE);
+		}
+		if ((branchR < 0) || ((branchR == 1) && RenderBucket_NeedsCustomMatrix((u32)idpp->instFlags, idpp->mh)))
+		{
+			if (branchR == 1)
+			{
+				s_nrCharWater.customMatrix++;
+			}
+			return NativeRenderLayer_CharFallback(seat, NR_PROBE_FALLBACK_OTHER);
+		}
+	}
+
+	// SPECIAL: the mirror goes into otRangeSecondary, which the queue sets to
+	// otRangeNormal when it allocated no second range (not REFLECTIVE).
+	if ((mirror == 2) && (idpp->otRangeSecondary == 0))
+	{
+		return NativeRenderLayer_CharFallback(seat, NR_PROBE_FALLBACK_NO_RANGE);
+	}
+
+	// THE RESERVATION: every item and marker of the view before the first is
+	// written - the view is native as a whole or not at all.
+	n = (split || mirror) ? 2 : 1;
+	if ((s_nrItemCount[db] + n) > NATIVE_RENDER_LAYER_ITEMS)
 	{
 		return NativeRenderLayer_CharFallback(seat, NR_PROBE_FALLBACK_ITEM_LIST_FULL);
+	}
+	if ((s_nrMarkerCount[db] + n) > NATIVE_RENDER_LAYER_MARKERS)
+	{
+		s_nrCount.markerArenaFull++;
+		return NativeRenderLayer_CharFallback(seat, NR_PROBE_FALLBACK_ARENA_FULL);
 	}
 
 	index = s_nrItemCount[db];
@@ -3644,6 +4674,9 @@ internal int NativeRenderLayer_RouteChar(int k, const struct Instance *inst, con
 		// the zero-colour setup loads 0. The OT gate of the DPCT is not
 		// rebuilt (taken as always open).
 		it->tone = (alpha <= 0) ? 0.0f : ((alpha >= 0x1000) ? 1.0f : ((float)alpha / 4096.0f));
+		it->binClamp = ((u32)(size_t)inst->funcPtr[1] == RB_RETAIL_INST_PRIM_CLAMP_DEPTH) ? 1u : 0u;
+		it->binLow = (s16)idpp->depthOffset[0];
+		it->binHigh = (s16)idpp->depthOffset[1];
 		if ((setup == RB_RETAIL_INST_SETUP_LIGHT_COLOR) || (setup == RB_RETAIL_INST_SETUP_COLOR) || (setup == RB_RETAIL_INST_SETUP_FADE_COLOR))
 		{
 			const u32 color = inst->colorRGBA;
@@ -3719,13 +4752,53 @@ internal int NativeRenderLayer_RouteChar(int k, const struct Instance *inst, con
 		it->pose = (u16)pose;
 	}
 
-	NativeRenderLayer_FillCharWheels(it, inst, pb);
-	s_nrItemCount[db]++;
+	// A whole view: the body, all native wheels, no cut, its own colour.
+	it->part = NR_PART_WHOLE;
+	it->primary = 1;
+	it->bodyOn = 1;
+	it->wheelMask = NR_WHEEL_MASK_ALL;
+	it->splitKeep = 0;
+	it->ofsXExtra = 0;
+	it->tintScale[0] = 1.0f;
+	it->tintScale[1] = 1.0f;
+	it->tintScale[2] = 1.0f;
 
-	if (!NativeRenderLayer_LinkMarker(idpp, (u32)index, 0))
+	// Step 4e: in the branch R idpp->mvp is the view matrix alone; the body
+	// takes the composed model-view matrix and its cull (the twin keeps the
+	// rule of REVERSE_CULL_DIRECTION).
+	if ((split || (mirror == 1)) && branchR)
 	{
-		s_nrItemCount[db]--;
+		NativeRenderLayer_ComposeModelView(&pb->matrix_ViewProj, &idpp->m3x3, it->mvp);
+		if (!it->twin)
+		{
+			it->cull = NativeRenderLayer_CullOfMatrix(it->mvp);
+		}
+	}
+
+	NativeRenderLayer_FillCharWheels(it, inst, pb);
+	if (split)
+	{
+		NativeRenderLayer_SetUpSplit(it, &s_nrItems[db][index + 1], inst, idpp, branchR);
+	}
+	else if (mirror)
+	{
+		NativeRenderLayer_SetUpMirror(it, &s_nrItems[db][index + 1], inst, idpp, pb, mirror == 1, (mirror == 1) && branchR);
+	}
+	s_nrItemCount[db] += n;
+
+	if (!NativeRenderLayer_LinkMarker(idpp, idpp->otRangeNormal, (u32)index, 0))
+	{
+		s_nrItemCount[db] -= n;
 		return NativeRenderLayer_CharFallback(seat, NR_PROBE_FALLBACK_ARENA_FULL);
+	}
+	// The side below (the mirror), last: the parser meets a marker linked
+	// later first in the same cell (a SPECIAL without a second range: the
+	// mirror before the original, as the queue writes each mirrored triangle
+	// before its original), and a second range lies further back anyway.
+	// Reserved above, so it cannot fail; counted if it ever did.
+	if ((n == 2) && !NativeRenderLayer_LinkMarker(idpp, idpp->otRangeSecondary, (u32)(index + 1), 0))
+	{
+		s_nrCharWater.linkLost++;
 	}
 
 	seam = &s_nrCharSeam[seat];
@@ -3778,10 +4851,117 @@ internal int NativeRenderLayer_RouteChar(int k, const struct Instance *inst, con
 	s_nrCharSeatFrame[seat].routed = 1;
 	if (view == 0)
 	{
-		s_nrCharSeatCnt[seat].routedNormal++;
+		if (split)
+		{
+			s_nrCharSeatWater[seat].routedSplit++;
+		}
+		else if (mirror == 1)
+		{
+			s_nrCharSeatWater[seat].routedReflection++;
+		}
+		else if (mirror == 2)
+		{
+			s_nrCharSeatWater[seat].routedSpecial++;
+		}
+		else
+		{
+			s_nrCharSeatCnt[seat].routedNormal++;
+		}
 		s_nrCharFrame0.routed++;
 	}
+	s_nrRouteItems = n;
 	return 1;
+}
+
+// The route of a char view (NativeRenderLayer_RouteCharView), then for view 0
+// the path changes and the path line of --native-split-report (step 4e). Only
+// for an instance of a bound seat, as the route itself.
+internal int NativeRenderLayer_RouteChar(int k, const struct Instance *inst, const struct InstDrawPerPlayer *idpp, const struct PushBuffer *pb)
+{
+	const struct GameTracker *gGT = sdata->gGT;
+	const int seat = NativeRenderLayer_SeatOfInst(inst);
+	const int answer = NativeRenderLayer_RouteCharView(k, inst, idpp, pb);
+	struct NrCharSeatWater *water;
+	int handler;
+
+	if ((gGT == NULL) || (seat < 0) || (pb != &gGT->pushBuffer[0]) ||
+	    (!s_nrCharSeatBound[seat] && !((s_nrPreviewBound || s_nrTwinBound) && (seat == 0))))
+	{
+		return answer;
+	}
+
+	// The path changes: against the last routed frame of the seat while it
+	// stayed bound, neighbouring or not.
+	water = &s_nrCharSeatWater[seat];
+	if (!water->haveLast || (water->lastFrame != s_nrFrame))
+	{
+		const int gap = !water->haveLast || (water->lastFrame != (s_nrFrame - 1u));
+
+		if (water->haveLast && (water->lastNative != (answer != 0)))
+		{
+			if (answer != 0)
+			{
+				water->cmdlToNative++;
+			}
+			else
+			{
+				water->nativeToCmdl++;
+			}
+			if (gap)
+			{
+				water->acrossGap++;
+			}
+		}
+		if (gap && (answer == 0))
+		{
+			water->gapCmdl++;
+		}
+	}
+	if ((answer == 0) && (water->firstCmdlReason == NULL))
+	{
+		water->firstCmdlReason = (s_nrRouteReason != NULL) ? s_nrRouteReason : "unknown";
+		water->firstCmdlVBlank = Platform_GetVBlankCount();
+	}
+	if (!water->haveLast || (water->lastFrame != s_nrFrame))
+	{
+		water->haveLast = 1;
+		water->lastFrame = s_nrFrame;
+		water->lastNative = (answer != 0);
+	}
+
+	// The path line of seat 0.
+	handler = NativeRenderLayer_HandlerIndex((u32)idpp->unkEC);
+	if (g_cfg_nativeSplitReport && (seat == 0) && ((handler != NATIVE_RENDER_LAYER_HANDLER_NORMAL) || s_nrPathLine.lastNotNormal))
+	{
+		static const char *const handlerNames[NATIVE_RENDER_LAYER_HANDLERS] = {"normal", "normal alt", "split", "special", "reflection", "other"};
+		const int branch = NativeRenderLayer_SplitBranch(idpp);
+
+		if (s_nrPathLine.pending)
+		{
+			s_nrPathLine.pending = 0;
+			NativeRenderLayer_PathLine("native (not drawn)", NULL, NULL, NULL);
+		}
+		s_nrPathLine.lastNotNormal = (handler != NATIVE_RENDER_LAYER_HANDLER_NORMAL);
+		s_nrPathLine.frame = s_nrFrame;
+		s_nrPathLine.vblank = Platform_GetVBlankCount();
+		s_nrPathLine.handler = ((handler >= 0) && (handler < NATIVE_RENDER_LAYER_HANDLERS)) ? handlerNames[handler] : "other";
+		s_nrPathLine.selector = NativeRenderLayer_SelectorName(NativeRenderLayer_SelectorIndex((u32)(size_t)inst->funcPtr[2]));
+		s_nrPathLine.branch = (branch > 0) ? "R" : ((branch == 0) ? "P" : "?");
+		s_nrPathLine.items = s_nrRouteItems;
+		s_nrPathLine.splitLine = (int)idpp->splitLine;
+		if (answer != 0)
+		{
+			s_nrPathLine.pending = 1;
+		}
+		else
+		{
+			char path[64];
+
+			snprintf(path, sizeof(path), "cmdl (%s)", (s_nrRouteReason != NULL) ? s_nrRouteReason : "unknown");
+			NativeRenderLayer_PathLine(path, NULL, NULL, NULL);
+		}
+	}
+	return answer;
 }
 
 
@@ -4092,6 +5272,7 @@ void NativeRenderLayer_NoteRestore(void)
 		s_nrPreviewBound = 0;
 		s_nrPreviewBoundEntry = -1;
 		s_nrTwinBound = 0;
+		NativeRenderLayer_ForgetPath(-1);
 	}
 
 	// The seats of the pool before the restore are none of the restored pool:
@@ -4685,13 +5866,47 @@ void NativeRenderLayer_Report(void)
 		             s_nrCharFramesByDraws[0], s_nrCharFramesByDraws[1], s_nrCharFramesByDraws[2], s_nrCharFramesByDraws[3], s_nrCharFramesByDraws[4],
 		             s_nrCharFramesByDraws[5], s_nrCharFramesByDraws[6], s_nrCharFramesByDraws[7], s_nrCharFramesByDraws[8], s_nrCharFramesDrawsOff);
 
-		// Step 4e-1: the water line, counted in the fallback.
+		// Step 4e-1: what the split views carry (native or not).
 		Platform_Log("[CTR RenderLayer] at exit: native char split: frames %llu, accepted %llu, selector both-mask %llu, negative %llu, xor %llu, "
 		             "dim-xor %llu, other %llu, mask not 0x7f7f7f %llu\n",
 		             s_nrCharSplit.views, s_nrCharSplit.accepted, s_nrCharSplit.bothMask, s_nrCharSplit.negative, s_nrCharSplit.xorSide,
 		             s_nrCharSplit.dimXor, s_nrCharSplit.otherSelector, s_nrCharSplit.maskOff);
 		Platform_Log("[CTR RenderLayer] at exit: native char split shift: 1 %llu, other %llu; second range of its own %llu, shared %llu\n",
 		             s_nrCharSplit.shift1, s_nrCharSplit.shiftOther, s_nrCharSplit.secondaryOwn, s_nrCharSplit.secondaryShared);
+
+		// Step 4e, stage a: the water line drawn natively, then per seat the
+		// split views of view 0, their terrain and the path changes.
+		Platform_Log("[CTR RenderLayer] at exit: native char water: views %llu (branch R %llu, P %llu, far %llu), drawn %llu, wheels under %llu, "
+		             "above %llu, shift/mask exact %llu, approximated %llu, dim offset %llu, not drawn %llu, second marker lost %llu, custom matrix %llu\n",
+		             s_nrCharWater.views, s_nrCharWater.branchR, s_nrCharWater.branchP, s_nrCharWater.far, s_nrCharWater.drawn, s_nrCharWater.wheelsBelow,
+		             s_nrCharWater.wheelsAbove, s_nrCharWater.exact, s_nrCharWater.approximated, s_nrCharWater.dimOffset, s_nrCharWater.notDrawn,
+		             s_nrCharWater.linkLost, s_nrCharWater.customMatrix);
+		Platform_Log("[CTR RenderLayer] at exit: native char mirror: reflection views %llu, special views %llu (split line %llu, split special left %llu), "
+		             "drawn %llu, mirror wheels %llu, wheels below the plane left out %llu, not drawn %llu, shift/mask exact %llu, approximated %llu, "
+		             "reflection selector left %llu\n",
+		             s_nrCharMirror.reflectionViews, s_nrCharMirror.specialViews, s_nrCharMirror.specialSplitLine, s_nrCharMirror.splitSpecialLeft,
+		             s_nrCharMirror.drawn, s_nrCharMirror.mirrorWheels, s_nrCharMirror.wheelsLeftOut, s_nrCharMirror.notDrawn, s_nrCharMirror.exact,
+		             s_nrCharMirror.approximated, s_nrCharMirror.selectorLeft);
+		for (seat = 0; seat < NATIVE_RENDER_LAYER_DRIVERS; seat++)
+		{
+			const struct NrCharSeatCounters *c = &s_nrCharSeatCnt[seat];
+			const struct NrCharSeatWater *water = &s_nrCharSeatWater[seat];
+
+			if ((c->dispatched == 0) && (c->draws == 0) && (c->notDrawn == 0))
+			{
+				continue;
+			}
+			Platform_Log("[CTR RenderLayer] at exit: native char seat %d water and mirror: routed split %llu, reflection %llu, special %llu\n", seat,
+			             water->routedSplit, water->routedReflection, water->routedSpecial);
+			Platform_Log("[CTR RenderLayer] at exit: native char seat %d split terrain: water %llu, fast water %llu, mud %llu, other %llu (not determined), "
+			             "no driver %llu\n",
+			             seat, water->terrain[NR_TERRAIN_WATER], water->terrain[NR_TERRAIN_FASTWATER], water->terrain[NR_TERRAIN_MUD],
+			             water->terrain[NR_TERRAIN_OTHER], water->noDriver);
+			Platform_Log("[CTR RenderLayer] at exit: native char path changes: seat %d: native to cmdl %llu, cmdl to native %llu, first cmdl reason %s "
+			             "(vblank %d), of them across a gap %llu, first frame after a gap cmdl %llu\n",
+			             seat, water->nativeToCmdl, water->cmdlToNative, (water->firstCmdlReason != NULL) ? water->firstCmdlReason : "none",
+			             (water->firstCmdlReason != NULL) ? water->firstCmdlVBlank : -1, water->acrossGap, water->gapCmdl);
+		}
 
 		// Step 4d: the retail twin, only in a run with --native-twin.
 		if (g_cfg_nativeTwin)
@@ -4702,6 +5917,15 @@ void NativeRenderLayer_Report(void)
 			             s_nrTwinCnt.poseOutOfRange);
 			Platform_Log("[CTR RenderLayer] at exit: native twin look: toned draws %llu, dithered draws %llu, far colour zero %llu, setup unknown %llu\n",
 			             s_nrTwinCnt.toned, s_nrTwinCnt.dithered, s_nrTwinCnt.farZero, s_nrTwinCnt.setupOther);
+			// The paint order (native_renderer.c): every twin draw, ordered or
+			// fallen back to its ranges with the depth test (0 expected).
+			{
+				unsigned long long ordered = 0;
+				unsigned long long fallback = 0;
+
+				NativeRenderer_TwinPaintCounts(&ordered, &fallback);
+				Platform_Log("[CTR RenderLayer] at exit: native twin paint order: draws %llu, fallback %llu\n", ordered, fallback);
+			}
 		}
 
 		// Step 5a/5c: where native characters were bound.
@@ -5173,6 +6397,13 @@ internal void NativeRenderLayer_CharItemMatrix(const struct NrDrawItem *it, doub
 	int r;
 	int c;
 
+	// The mirror item of step 4e: its own map, already in true view units.
+	if (it->mirror)
+	{
+		NativeRenderLayer_ScreenFromView(it, (const double(*)[3])it->mirrorA, it->mirrorB, ofsX, ofsY, S);
+		return;
+	}
+
 	for (r = 0; r < 3; r++)
 	{
 		for (c = 0; c < 3; c++)
@@ -5410,19 +6641,42 @@ internal void NativeRenderLayer_MatrixToDraw(const double S[4][4], float out[16]
 	}
 }
 
+// The second item of a view (the side below, or the mirror) not drawn.
+internal void NativeRenderLayer_SecondNotDrawn(const struct NrDrawItem *it)
+{
+	if (it->mirror)
+	{
+		s_nrCharMirror.notDrawn++;
+	}
+	else
+	{
+		s_nrCharWater.notDrawn++;
+	}
+}
+
 // THE DRAW OF A CHAR ITEM: the body (every material range, the pose by vertex
 // offset), then its four native wheels in the same split, the same depth (not
 // cleared again) and the same cull; then the counters, the seam and the box line.
+//
+// Step 4e: an item of a split view draws its side of the water line only (the
+// plane and the side go to the shader, the colour factor of the side into the
+// tint of the ranges, dim-xor's SXY + 3 into the draw offset), and only the
+// native wheels of its side, whole and unchanged. The item above is the view's
+// draw in every counter, line and stamp; the item below counts as "water
+// drawn" (or "not drawn") alone. The depth of the view is cleared by whichever
+// draw comes first in the frame.
 internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const RECT16 *clip, const DISPENV *dispenv, int onScreen, float ofsX, float ofsY)
 {
 	const struct NativeCharGpu *gpu = it->gpu;
 	const int view = (int)it->view;
 	const int seat = (int)it->seat;
+	const int primary = (it->primary != 0);
 	struct NativeMeshRangeDraw ranges[NATIVE_CHAR_GPU_MATERIALS];
 	struct NativeMeshDraw mesh;
 	double S[4][4];
 	u32 r;
 	int firstInFrame;
+	int clearDepth;
 	double twinShift = 0.0;
 	const struct NativeTwinSource *twinSrc = it->twin ? NativeCharGpu_TwinSource() : NULL;
 	const float ditherAmount = it->twin ? NativeRenderer_PsxDitherAmountNow() : 0.0f;
@@ -5430,6 +6684,13 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 
 	if ((gpu == NULL) || (gpu->state != NATIVE_CHAR_GPU_READY) || (seat >= NATIVE_RENDER_LAYER_DRIVERS))
 	{
+		// The second item of a view counts in its own "not drawn" only; the
+		// view's counters belong to the item above (or the original).
+		if (!primary)
+		{
+			NativeRenderLayer_SecondNotDrawn(it);
+			return;
+		}
 		s_nrCharCnt.notDrawn++;
 		if (seat < NATIVE_RENDER_LAYER_DRIVERS)
 		{
@@ -5446,7 +6707,7 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 		twinShift = 0.5;
 	}
 
-	NativeRenderLayer_CharItemMatrix(it, (double)ofsX - twinShift, (double)ofsY - twinShift, S);
+	NativeRenderLayer_CharItemMatrix(it, ((double)ofsX + (double)it->ofsXExtra) - twinShift, (double)ofsY - twinShift, S);
 
 	memset(ranges, 0, sizeof(ranges));
 	for (r = 0; r < gpu->rangeCount; r++)
@@ -5478,13 +6739,19 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 		out->texture = (texture >= 0) ? gpu->texture[texture] : NATIVE_GFX_INVALID;
 		out->srgb = (texture >= 0) ? (int)gpu->textureSrgb[texture] : 0;
 		memcpy(out->tint, gpu->materialTint[range->material], sizeof(out->tint));
+		// Step 4e: the colour of a dimmed side, on the vertex colour before
+		// the texture and before the twin's tone, as the queue changes it.
+		out->tint[0] *= it->tintScale[0];
+		out->tint[1] *= it->tintScale[1];
+		out->tint[2] *= it->tintScale[2];
 		out->alphaCutoff = range->mask ? 0.5f : 0.0f;
 	}
 
+	clearDepth = (s_nrDepthClearFrame[view] != s_nrFrame) ? 1 : 0;
 	memset(&mesh, 0, sizeof(mesh));
 	NativeRenderLayer_MatrixToDraw(S, mesh.screenFromModel);
 	mesh.cull = (int)it->cull;
-	mesh.clearDepth = (s_nrDepthClearFrame[view] != s_nrFrame) ? 1 : 0;
+	mesh.clearDepth = clearDepth;
 	mesh.vertexBuffer = gpu->bodyVB;
 	mesh.indexBuffer = gpu->bodyIB;
 	mesh.vertexOffset = (int)((u32)it->pose * gpu->vertexCount);
@@ -5499,31 +6766,66 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 		mesh.far[1] = it->far[1];
 		mesh.far[2] = it->far[2];
 		mesh.far[3] = 1.0f;
+		// The paint order: the queue's depth scale of this view (for the
+		// mirror item too, whose matrix does not carry it) and the bin range.
+		mesh.twinDepthScale = (float)ldexp(1.0, (int)it->mvpShift);
+		mesh.twinBinLow = it->binClamp ? (int)it->binLow : 0;
+		mesh.twinBinHigh = it->binClamp ? (int)it->binHigh : -1;
+	}
+	mesh.split[0] = (float)it->split[0];
+	mesh.split[1] = (float)it->split[1];
+	mesh.split[2] = (float)it->split[2];
+	mesh.split[3] = (float)it->split[3];
+	mesh.splitKeep = (int)it->splitKeep;
+
+	// A side whose body the selector leaves out draws none (only its wheels).
+	if (it->bodyOn)
+	{
+		if (NativeRenderer_DrawNativeMesh(&mesh, clip, dispenv, onScreen) == 0)
+		{
+			if (!primary)
+			{
+				NativeRenderLayer_SecondNotDrawn(it);
+				return;
+			}
+			s_nrCharCnt.notDrawn++;
+			s_nrCharSeatCnt[seat].notDrawn++;
+			if (it->twin)
+			{
+				s_nrTwinCnt.notDrawn++;
+			}
+			return;
+		}
+		if (clearDepth)
+		{
+			s_nrDepthClearFrame[view] = s_nrFrame;
+			clearDepth = 0;
+		}
 	}
 
-	if (NativeRenderer_DrawNativeMesh(&mesh, clip, dispenv, onScreen) == 0)
+	if (!primary && it->mirror)
 	{
-		s_nrCharCnt.notDrawn++;
-		s_nrCharSeatCnt[seat].notDrawn++;
+		s_nrCharMirror.drawn++;
+	}
+	else if (!primary)
+	{
+		s_nrCharWater.drawn++;
+	}
+	else
+	{
+		s_nrCharCnt.draws++;
+		s_nrCharSeatCnt[seat].draws++;
 		if (it->twin)
 		{
-			s_nrTwinCnt.notDrawn++;
-		}
-		return;
-	}
-
-	s_nrCharCnt.draws++;
-	s_nrCharSeatCnt[seat].draws++;
-	if (it->twin)
-	{
-		s_nrTwinCnt.draws++;
-		if (it->tone > 0.0f)
-		{
-			s_nrTwinCnt.toned++;
-		}
-		if (dithered)
-		{
-			s_nrTwinCnt.dithered++;
+			s_nrTwinCnt.draws++;
+			if (it->tone > 0.0f)
+			{
+				s_nrTwinCnt.toned++;
+			}
+			if (dithered)
+			{
+				s_nrTwinCnt.dithered++;
+			}
 		}
 	}
 
@@ -5533,7 +6835,7 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 	// model flies out or in (game/230/MM_Characters.c:319-372 moves
 	// matrix.t[0] by the slide offset) and leaves the window on purpose. Only
 	// read.
-	if (s_nrPreviewBound && (seat == 0) && (clip != NULL) && (D230.characterSelectModelMoveTimer[0] == 0))
+	if (primary && it->bodyOn && s_nrPreviewBound && (seat == 0) && (clip != NULL) && (D230.characterSelectModelMoveTimer[0] == 0))
 	{
 		int box[4];
 
@@ -5543,18 +6845,14 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 			s_nrPreviewCnt.boxOutsideClip++;
 		}
 	}
-	if (view == 0)
+	if (primary && (view == 0))
 	{
 		s_nrCharFrame0.drawn++;
 	}
 	s_nrCharSeatFrame[seat].drawn = 1;
-	if (mesh.clearDepth)
-	{
-		s_nrDepthClearFrame[view] = s_nrFrame;
-	}
 
-	// The wheels.
-	if (it->nativeWheels && (gpu->wheelVB != NATIVE_GFX_INVALID) && (gpu->wheelIB != NATIVE_GFX_INVALID))
+	// The wheels (step 4e: only the ones of this item's side).
+	if (it->nativeWheels && (it->wheelMask != 0) && (gpu->wheelVB != NATIVE_GFX_INVALID) && (gpu->wheelIB != NATIVE_GFX_INVALID))
 	{
 		struct NativeMeshRangeDraw wheelRange;
 		const int texture = gpu->materialTexture[gpu->wheelMaterial];
@@ -5573,11 +6871,15 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 			struct NativeMeshDraw w;
 			double W[4][4];
 
+			if ((it->wheelMask & (1u << wheel)) == 0)
+			{
+				continue;
+			}
 			NativeRenderLayer_ScreenFromView(it, (const double(*)[3])it->wheelA[wheel], it->wheelB[wheel], (double)ofsX, (double)ofsY, W);
 			memset(&w, 0, sizeof(w));
 			NativeRenderLayer_MatrixToDraw(W, w.screenFromModel);
 			w.cull = (int)it->cull;
-			w.clearDepth = 0;
+			w.clearDepth = clearDepth;
 			w.vertexBuffer = gpu->wheelVB;
 			w.indexBuffer = gpu->wheelIB;
 			w.vertexOffset = 0;
@@ -5588,12 +6890,47 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 			if (NativeRenderer_DrawNativeMesh(&w, clip, dispenv, onScreen) != 0)
 			{
 				s_nrCharCnt.wheelDraws++;
+				if (clearDepth)
+				{
+					s_nrDepthClearFrame[view] = s_nrFrame;
+					clearDepth = 0;
+				}
 			}
 			else
 			{
 				s_nrCharCnt.wheelNotDrawn++;
 			}
 		}
+	}
+
+	// Everything below belongs to the view: the item above only.
+	if (!primary)
+	{
+		return;
+	}
+
+	// The path line of --native-split-report (seat 0, view 0), now that the
+	// draw offset is known.
+	if (s_nrPathLine.pending && (seat == 0) && (view == 0) && (s_nrPathLine.frame == s_nrFrame))
+	{
+		int band[2];
+		int box[4];
+		int mirrorBox[4];
+		const int haveBand = (it->part != NR_PART_WHOLE) && NativeRenderLayer_SplitBand(it, S, band);
+		const int haveBox = NativeRenderLayer_CharBodyBox(it, S, box);
+		int haveMirror = 0;
+
+		// The box of the mirror item, from the mirror map the original keeps
+		// (the same draw offset; dim-xor's offset never comes with a mirror).
+		if (it->hasMirror)
+		{
+			double M[4][4];
+
+			NativeRenderLayer_ScreenFromView(it, (const double(*)[3])it->mirrorA, it->mirrorB, (double)ofsX, (double)ofsY, M);
+			haveMirror = NativeRenderLayer_CharBodyBox(it, M, mirrorBox);
+		}
+		s_nrPathLine.pending = 0;
+		NativeRenderLayer_PathLine("native", haveBand ? band : NULL, haveBox ? box : NULL, haveMirror ? mirrorBox : NULL);
 	}
 
 	if (s_nrCharViewDrawFrame[view] != s_nrFrame)

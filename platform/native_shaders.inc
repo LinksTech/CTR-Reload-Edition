@@ -718,9 +718,10 @@ global_variable const char *ctr_pack_pages_shader =
 // see the "DEPTH." block in include/platform/native_gfx.h. Nothing is snapped
 // to fixed point or to the screen grid here.
 //
-// The block is 96 bytes std140 and is struct NativeLayerUniforms in
+// The block is 128 bytes std140 and is struct NativeLayerUniforms in
 // native_renderer.c field for field: the matrix at 0, the tint at 64, the
-// parameters at 80. Both stages declare it the same way.
+// parameters at 80, the split plane at 96 and the split mode at 112. Both
+// stages declare it the same way.
 //
 // The fragment stage is a placeholder: vertex colour times tint, times the
 // texture in slot 0 when params.x says so. It has no second colour output, so
@@ -741,6 +742,19 @@ global_variable const char *ctr_pack_pages_shader =
 // with G = params.z x depth = 1024 / w for params.z = 1024 / zNear, so a jump of
 // the depth shows as a jump of G. Both 0, as every draw writes without them:
 // neither branch is taken and the colour is the one of before.
+//
+// THE SPLIT (step 4e, the water line of a custom character): the queue cuts a
+// model at a plane and draws the two sides into two OT ranges. A native view
+// of such a model is two draws of the same mesh, one per side, each keeping
+// only its own side. The plane is in model units: d = nrSplit.w -
+// dot(nrSplit.xyz, position), the retail splitDist (splitLine minus the height
+// of the point in the queue's split space), interpolated with perspective -
+// the queue cuts in 3D and projects afterwards, so this is the same line.
+// nrSplitMode.x > 0.5 keeps d >= 0 (below the plane), < -0.5 keeps d < 0
+// (above); 0, as every other draw writes, keeps everything. d = 0 goes to the
+// side below, as in the queue, so no pixel of the line is drawn twice or not
+// at all. The texture is read before the cut, so its level of detail at the
+// line comes from derivatives every fragment of the quad has.
 global_variable const char *ctr_native_layer_shader =
     "#ifdef VERTEX\n"
     "layout(location = 0) in vec3 a_position;\n"
@@ -748,25 +762,32 @@ global_variable const char *ctr_native_layer_shader =
     "layout(location = 2) in vec4 a_color;\n"
     "VARYING_LOC0 out vec2 v_uv;\n"
     "VARYING_LOC1 out vec4 v_color;\n"
+    "VARYING_LOC2 out float v_split;\n"
     "UBO_QUALIFIER uniform NrBlock {\n"
     "	mat4 nrClipFromModel;\n"
     "	vec4 nrTint;\n"
     "	vec4 nrParams;\n"
+    "	vec4 nrSplit;\n"
+    "	vec4 nrSplitMode;\n"
     "};\n"
     "void main() {\n"
     "	v_uv = a_texcoord;\n"
     "	v_color = a_color * nrTint;\n"
+    "	v_split = nrSplit.w - dot(nrSplit.xyz, a_position);\n"
     "	gl_Position = nrClipFromModel * vec4(a_position, 1.0);\n"
     "}\n"
     "#endif\n"
     "#ifdef FRAGMENT\n"
     "VARYING_LOC0 in vec2 v_uv;\n"
     "VARYING_LOC1 in vec4 v_color;\n"
+    "VARYING_LOC2 in float v_split;\n"
     "SAMPLER_SLOT0 uniform sampler2D s_texture;\n"
     "UBO_QUALIFIER uniform NrBlock {\n"
     "	mat4 nrClipFromModel;\n"
     "	vec4 nrTint;\n"
     "	vec4 nrParams;\n"
+    "	vec4 nrSplit;\n"
+    "	vec4 nrSplitMode;\n"
     "};\n"
     "void main() {\n"
     "	vec4 colour = v_color;\n"
@@ -777,6 +798,8 @@ global_variable const char *ctr_native_layer_shader =
     "			colour *= vec4(encoded, texel.a);\n"
     "		} else { colour *= texture(s_texture, v_uv); }\n"
     "	}\n"
+    "	if ((nrSplitMode.x > 0.5) && (v_split < 0.0)) { discard; }\n"
+    "	if ((nrSplitMode.x < -0.5) && (v_split >= 0.0)) { discard; }\n"
     "	if ((nrParams.w > 0.0) && (colour.a < nrParams.w)) { discard; }\n"
     "	if (nrParams.z > 0.0) { colour = vec4(1.0, clamp(nrParams.z * gl_FragCoord.z, 0.0, 1.0), 1.0, 1.0); }\n"
     "	fragColor = colour;\n"
@@ -810,7 +833,10 @@ global_variable const char *ctr_native_layer_shader =
 //               texels the PSX path adds to its page origin (c_UVFudge), in
 //               units of this texture.
 // nrParams.z > 0: --native-depth-tint, as in "nr".
-// The block is struct NativeTwinUniforms in native_renderer.c field for field.
+// nrSplit, nrSplitMode: the water line of step 4e, as in "nr"; the split
+// distance is interpolated with perspective here too (the queue cuts in 3D).
+// The block is struct NativeTwinUniforms in native_renderer.c field for field,
+// 192 bytes std140.
 global_variable const char *ctr_native_twin_shader =
     "#ifdef VERTEX\n"
     "layout(location = 0) in vec3 a_position;\n"
@@ -819,6 +845,7 @@ global_variable const char *ctr_native_twin_shader =
     "VARYING_LOC0 noperspective out vec2 v_uv;\n"
     "VARYING_LOC1 noperspective out vec4 v_color;\n"
     "VARYING_LOC2 noperspective out vec2 v_ditherCoord;\n"
+    "VARYING_LOC3 out float v_split;\n"
     "UBO_QUALIFIER uniform NrtBlock {\n"
     "	mat4 nrClipFromModel;\n"
     "	vec4 nrTint;\n"
@@ -827,8 +854,11 @@ global_variable const char *ctr_native_twin_shader =
     "	vec4 nrLook;\n"
     "	vec4 nrDither;\n"
     "	vec4 nrProj;\n"
+    "	vec4 nrSplit;\n"
+    "	vec4 nrSplitMode;\n"
     "};\n"
     "void main() {\n"
+    "	v_split = nrSplit.w - dot(nrSplit.xyz, a_position);\n"
     "	vec4 c = a_color * nrTint;\n"
     "	c.rgb = c.rgb + nrLook.x * (nrFar.rgb - c.rgb);\n"
     "	v_color = c;\n"
@@ -842,6 +872,7 @@ global_variable const char *ctr_native_twin_shader =
     "VARYING_LOC0 noperspective in vec2 v_uv;\n"
     "VARYING_LOC1 noperspective in vec4 v_color;\n"
     "VARYING_LOC2 noperspective in vec2 v_ditherCoord;\n"
+    "VARYING_LOC3 in float v_split;\n"
     "SAMPLER_SLOT0 uniform sampler2D s_texture;\n"
     "UBO_QUALIFIER uniform NrtBlock {\n"
     "	mat4 nrClipFromModel;\n"
@@ -851,11 +882,15 @@ global_variable const char *ctr_native_twin_shader =
     "	vec4 nrLook;\n"
     "	vec4 nrDither;\n"
     "	vec4 nrProj;\n"
+    "	vec4 nrSplit;\n"
+    "	vec4 nrSplitMode;\n"
     "};\n"
     "vec4 v_texcoord;\n"
     "float psxDitherAmount;\n"
     GPU_DITHERING
     "void main() {\n"
+    "	if ((nrSplitMode.x > 0.5) && (v_split < 0.0)) { discard; }\n"
+    "	if ((nrSplitMode.x < -0.5) && (v_split >= 0.0)) { discard; }\n"
     "	vec4 colour = v_color;\n"
     "	if (nrParams.x > 0.5) {\n"
     "		vec4 texel = texture(s_texture, v_uv);\n"
