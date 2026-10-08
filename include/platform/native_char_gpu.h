@@ -17,7 +17,12 @@
 //            materials in ascending order, then the masked ones; one range
 //            {firstIndex, count} per material that has triangles.
 //   wheels   the WHLS mesh (model units, centre at the origin, axle along X,
-//            outside +X) in a static buffer of its own, white vertices.
+//            outside +X) in a static buffer of its own, white vertices. An
+//            author's wheel (WHLS version 2) holds it twice: the mesh as it
+//            is for the +X wheels, then its mirror image for the -X wheels (x
+//            negated, the winding turned, the same UV - a tread runs
+//            mirrored), indices from wheelMirrorFirst on. The test wheel
+//            (version 1) holds it once; its -X wheels are the mesh turned.
 //   textures every CTXT entry through the native texture manager
 //            (platform/native_tex.c) with its levels.
 // A blend material refuses the whole set: the seat draws its CMDL (renderer
@@ -76,8 +81,11 @@ struct NativeCharGpu
 	struct NativeCharRange range[NATIVE_CHAR_GPU_MATERIALS];
 
 	int hasWheels;
-	u32 wheelVertexCount;
-	u32 wheelIndexCount;
+	u8 wheelOwn;           // 1 = an author's wheel (WHLS version 2), 0 = the test wheel or none
+	u32 wheelVertexCount;  // in the buffer: Nw, or 2 Nw for an author's wheel
+	u32 wheelIndexCount;   // of one mesh: 3 Tw
+	u32 wheelIndexTotal;   // in the buffer: 3 Tw, or 6 Tw for an author's wheel
+	u32 wheelMirrorFirst;  // the first index of the mirrored mesh (an author's wheel), else 0
 	u16 wheelMaterial;
 	float wheelRadius;
 	float wheelHalfWidth;
@@ -122,8 +130,11 @@ struct NativeCharGpuCpu
 	u8 textureNearest[NATIVE_CHAR_GPU_TEXTURES]; // a material with the nearest flag uses it, or CTXT says so
 	u8 textureNearestMixed[NATIVE_CHAR_GPU_TEXTURES]; // used with and without the material flag
 	int hasWheels;
+	u8 wheelOwn;
 	u32 wheelVertexCount;
 	u32 wheelIndexCount;
+	u32 wheelIndexTotal;
+	u32 wheelMirrorFirst;
 	struct NativeProbeVertex *wheelVertices; // owned
 	u16 *wheelIndices;                       // owned
 	u16 wheelMaterial;

@@ -4,7 +4,8 @@
 // THE WHEEL POSES (platform/native_wheels.c): a float pose of the four kart
 // wheels per seat, kept in a host table beside the game and moved on once per
 // logic tick. Only reads the game; only runs while the native probe is on
-// (--native-preview --native-probe). See the file for the rules and the sources.
+// (--native-preview --native-probe) or a custom character is drawn natively
+// (--native-preview, a bound seat). See the file for the rules and the sources.
 
 #include <macros.h>
 
@@ -50,6 +51,7 @@ struct NativeWheelPose
 	s16 wheelRotation; // driver->wheelRotation of that tick
 	s16 hazardTimer;   // driver->hazardTimer of that tick
 	u16 wheelSize;     // driver->wheelSize (0: no wheel)
+	double ownRadius;  // the radius of the seat's own wheel (WHLS 2), model units; 0 = the retail size
 	int moveKnown;     // 1 = move holds the way of this tick
 	double move;       // way along the kart's forward axis in this tick, world units
 	double rollStep;   // roll phase added in this tick, radians (+ = rolling forward)
@@ -66,8 +68,11 @@ struct NativeWheelPose
 // instance of the seat (NULL when the seat is not ready), whether a new tick
 // started (gGT->timer changed) and the tick's values. Writes only the table.
 // counted: 1 for the seat the probe takes (--native-probe-seat), whose ticks
-// alone go into the counters of NativeWheels_Counts.
-void NativeWheels_Pull(int seat, const struct Driver *driver, const struct Instance *inst, int newTick, u32 timer, int elapsedTimeMS, int counted);
+// alone go into the counters of NativeWheels_Counts. ownRadius: the radius of
+// the WHLS 2 wheel of a custom character drawn natively on the seat, model
+// units; 0 for every other seat (the roll then follows the retail size).
+void NativeWheels_Pull(int seat, const struct Driver *driver, const struct Instance *inst, int newTick, u32 timer, int elapsedTimeMS, int counted,
+                       double ownRadius);
 
 // Empties the table (checkpoint restore, the probe let go): every seat starts
 // anew at its next pull.
@@ -87,6 +92,18 @@ void NativeWheels_LocalMiddle(int wheel, double out[3]);
 // (a choice, retail has no width).
 double NativeWheels_Radius(const struct NativeWheelPose *pose);
 double NativeWheels_HalfWidth(const struct NativeWheelPose *pose);
+
+// THE OWN WHEEL (WHLS 2) of a custom character: its mesh is in model units and
+// is drawn at the scale wheelSize / 4096 - the size retail gives its wheel
+// (DrawTires.c:370, 493-511: radius wheelSize / 256 world units = 16 model units
+// times wheelSize / 4096), which is the body's scale at rest (inst->scale and
+// wheelSize are both 0xccc, game/Vehicle/VehBirth.c:23, 31). Squash and stretch
+// move the middles (inst->scale) and leave the mesh as it is, as for the retail
+// wheels. OwnScale: that scale (0 without a wheel); RollRadius: the radius the
+// roll of the pose was integrated with, world units (the own radius times
+// OwnScale, else NativeWheels_Radius).
+double NativeWheels_OwnScale(const struct NativeWheelPose *pose);
+double NativeWheels_RollRadius(const struct NativeWheelPose *pose);
 
 // Counters for the exit report, of the counted seat only: ticks with a pose
 // after the first of an entry, entries started, and the ticks per sign class

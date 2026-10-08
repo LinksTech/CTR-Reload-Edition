@@ -276,13 +276,15 @@ void NativeChar_NoteOwnMask(const struct Driver *d);
 // of --char-grid-selftest (MM_NativeCharGrid_SelfTest).
 void NativeChar_MaskSelfTest(int *checks, int *failures);
 
-// THE NATIVE MODEL (CNET, CTXT; PREVIEW). Only with --dev --native-preview:
+// THE NATIVE MODEL (CNET, CTXT; PREVIEW). Only with the native preview
+// (NATIVE DRIVERS set to PREVIEW on the GRAPHICS page, or --native-preview):
 // when a seat is bound (NativeChar_ArmSeats, and --dev-char-seats), the
 // file's CNET and CTXT are read again from its path, checked with
 // RldChar_ReadNative (include/rldchar.inc) and held in host memory until the
 // seats are cleared, with one line "native model ready: ...", "native model
-// refused (<rule>), using CMDL: ..." or "native model none: ...". Nothing is
-// uploaded or drawn yet. This is the held part of a bound seat whose guard
+// refused (<rule>), using CMDL: ..." or "native model none: ...". The upload
+// and the drawing are platform/native_char_gpu.c and
+// platform/native_render_layer.c. This is the held part of a bound seat whose guard
 // holds (NativeChar_SeatModel != NULL), NULL for every other seat, without
 // --native-preview, and for a file whose native part is missing or refused -
 // the seat then draws its CMDL.

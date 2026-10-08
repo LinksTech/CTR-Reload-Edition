@@ -504,7 +504,8 @@ if(BUILD_TESTING)
     set_tests_properties(native_depth_selftest PROPERTIES PASS_REGULAR_EXPRESSION "native depth selftest passed: normal shift 2 to 0, w 4164.0625 to 4165.0391, step 0.0235 percent, rest 0.0006 percent, matrix part 0.0339 percent, wrong shift 299.9 and 75.0 percent, matrix 300.1 and 75.0 percent, huge shift 0 to -2, w 4371.2500 to 4372.1562, step 0.0207 percent, rest 0.0021 percent, matrix part 0.0339 percent, wrong shift 299.9 and 75.0 percent, matrix 300.1 and 75.0 percent, shift checks held, char scale 0x1000 shift 2 to 0, w 4095.0000 to 4096.0000, step 0.0244 percent, rest 0.0000 percent, matrix part 0.1119 percent, wrong shift 299.9 and 75.0 percent, matrix 300.4 and 75.0 percent, char scale 0x0ccd shift 2 to 0, w 4095.0000 to 4096.0000, step 0.0244 percent, rest 0.0000 percent, matrix part 0.3077 percent, wrong shift 299.9 and 75.0 percent, matrix 301.2 and 75.1 percent, char passed, split R near: handler split, selector both-mask, composed same, splitLine 2112, 729 points .360 below, 369 above., 0 differ, level plane 72 differ, split R far: handler split, selector both-mask, composed same, splitLine 528, 720 points .360 below, 360 above., 0 differ, level plane 36 differ, split P near: handler split, selector both-mask, composed same, splitLine 1200, 648 points .324 below, 324 above., 0 differ, level plane 0 differ, selector sides 20 cases 0 differ, shift/mask error max 0.50, dim error max 1.25, labels held, factor rule 8 cases 0 differ, split passed[
 ]+native depth selftest mirror, reflection R near: handler reflection, selector negative, splitLine 2112, 125 corners, error max 0.839, winding turned, reflection R far: handler reflection, selector negative, splitLine 528, 125 corners, error max 0.961, winding turned, special: handler special, selector both-mask, splitLine -8000, 125 corners, error max 0.000, winding turned, wheels error max 0.000000000, reflection selectors 5 cases 0 differ, mirror passed[
 ]+native depth selftest split items, split R near nodding: handler split, splitLine 2112, 729 points .360 below, 369 above., 0 differ, level plane 72 differ, items of a split view held, wheels against DrawTires 640 cases 0 differ, shift/mask classes 8 cases 0 differ, marker bin of depth range 10..31 middle 20 nearest 10, items passed[
-]+native depth selftest twin bin markers: bins 40 33 33 25 12 9 2 in the cells 10..31 give the cells 31 25 12 10, 5 keys held, linked into those cells only, arena keeps 128, paint runs report 65 cells as over 64, row w same with the draw offset .near, far, mirror., view: items without a body one middle marker each in their ranges, no paint order and a full arena link nothing .held., bins passed")
+]+native depth selftest twin bin markers: bins 40 33 33 25 12 9 2 in the cells 10..31 give the cells 31 25 12 10, 5 keys held, linked into those cells only, arena keeps 128, paint runs report 65 cells as over 64, row w same with the draw offset .near, far, mirror., view: items without a body one middle marker each in their ranges, no paint order and a full arena link nothing .held., bins passed[
+]+native depth selftest own wheels: mirror error max 0.003906, steer error max 0.001953, rim 12.796875 world units .16 model units x 0x0ccc / 4096., roll error 0, rotations 8 of 8, wheelSize 0 held, own wheels passed")
 
     # VALUES ARE REFUSED, NEVER CUT (main.c, NativeArgs_ValueFits). A path one
     # character too long for --shot-name and a --shot list with one entry too
@@ -583,7 +584,7 @@ if(BUILD_TESTING)
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     )
     set_tests_properties(char_native_selftest PROPERTIES
-        PASS_REGULAR_EXPRESSION "char native selftest passed: 36 files, [0-9]+ checks, 0 failures"
+        PASS_REGULAR_EXPRESSION "char native selftest passed: 42 files, [0-9]+ checks, 0 failures"
         TIMEOUT 300
         FIXTURES_SETUP native_char_files
     )
@@ -624,9 +625,12 @@ if(BUILD_TESTING)
         PASS_REGULAR_EXPRESSION "native twin selftest passed: 1 of 1 file read, 36 checks, 0 failures, sha256 vertices 44191f9ea764dd3122e950b578316f47535bd834ef700152033fa080e8989b36 rgba 986d4c3a10b4bd36478d8d875dbe3f48519c00ba15fd26b8fc00b2f5050ce533 full height e4b47ceaf474380c77c2f2a4dfb7f8851a2a4b8a28b78c86a27d3dde59bf026b"
         FIXTURES_REQUIRED native_char_files
     )
-    # make-char --native-model on needs --wheels off (the game draws a native
-    # model only with the kart wheels hidden): without it rldpack refuses the
-    # switch - exit not 0, the message, no file; with it the same box builds.
+    # make-char --native-model on needs --wheel-model or --wheels off (the game
+    # draws a native model only with wheels of its own or with the kart wheels
+    # hidden): without either rldpack refuses the switch - exit not 0, the
+    # message, no file; with --wheels off the same box builds. --wheel-model
+    # beside --wheels off, and --wheel-model without --native-model on, are
+    # refused the same way (the wheel itself: the self-test, rldpack_selftest).
     # The script and the box OBJ are written here into the build folder.
     file(WRITE ${CMAKE_BINARY_DIR}/rldpack_native_wheels_test.cmake [=[
 file(REMOVE_RECURSE "${DIR}")
@@ -638,11 +642,23 @@ message("${refusedOut}")
 if(refusedResult EQUAL 0)
     message(FATAL_ERROR "rldpack native wheels test: --native-model on without --wheels off was not refused (exit 0)")
 endif()
-if(NOT refusedOut MATCHES "--native-model on needs --wheels off")
-    message(FATAL_ERROR "rldpack native wheels test: the refusal does not name --wheels off")
+if(NOT refusedOut MATCHES "--native-model on needs --wheel-model")
+    message(FATAL_ERROR "rldpack native wheels test: the refusal does not name --wheel-model and --wheels off")
 endif()
 if(EXISTS "${DIR}/refused.rldchar")
     message(FATAL_ERROR "rldpack native wheels test: a file was written although the switch was refused")
+endif()
+execute_process(COMMAND "${PACKER}" make-char --model "${DIR}/box.obj" --name T --template 14 --wheels off --native-model on --wheel-model "${DIR}/box.obj" --out "${DIR}/contradict.rldchar"
+    RESULT_VARIABLE contradictResult OUTPUT_VARIABLE contradictOut ERROR_VARIABLE contradictOut)
+if(contradictResult EQUAL 0 OR NOT contradictOut MATCHES "--wheel-model and --wheels off contradict each other" OR EXISTS "${DIR}/contradict.rldchar")
+    message("${contradictOut}")
+    message(FATAL_ERROR "rldpack native wheels test: --wheel-model beside --wheels off was not refused, or not said, or a file was written")
+endif()
+execute_process(COMMAND "${PACKER}" make-char --model "${DIR}/box.obj" --name T --template 14 --wheel-model "${DIR}/box.obj" --out "${DIR}/alone.rldchar"
+    RESULT_VARIABLE aloneResult OUTPUT_VARIABLE aloneOut ERROR_VARIABLE aloneOut)
+if(aloneResult EQUAL 0 OR NOT aloneOut MATCHES "--wheel-model needs --native-model on" OR EXISTS "${DIR}/alone.rldchar")
+    message("${aloneOut}")
+    message(FATAL_ERROR "rldpack native wheels test: --wheel-model without --native-model on was not refused, or not said, or a file was written")
 endif()
 execute_process(COMMAND "${PACKER}" make-char --model "${DIR}/box.obj" --name T --template 14 --wheels off --native-model on --out "${DIR}/built.rldchar"
     RESULT_VARIABLE builtResult OUTPUT_VARIABLE builtOut ERROR_VARIABLE builtOut)
@@ -650,7 +666,7 @@ if(NOT builtResult EQUAL 0 OR NOT EXISTS "${DIR}/built.rldchar")
     message("${builtOut}")
     message(FATAL_ERROR "rldpack native wheels test: the same box with --wheels off did not build (exit ${builtResult})")
 endif()
-message("rldpack native wheels test passed: refused without --wheels off (exit ${refusedResult}, no file), built with it")
+message("rldpack native wheels test passed: refused without --wheels off (exit ${refusedResult}, no file), built with it; --wheel-model refused beside --wheels off and without --native-model on")
 ]=])
     add_test(NAME rldpack_native_wheels_refused
         COMMAND ${CMAKE_COMMAND}
@@ -660,7 +676,7 @@ message("rldpack native wheels test passed: refused without --wheels off (exit $
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     )
     set_tests_properties(rldpack_native_wheels_refused PROPERTIES
-        PASS_REGULAR_EXPRESSION "rldpack native wheels test passed: refused without --wheels off \\(exit [1-9][0-9]*, no file\\), built with it"
+        PASS_REGULAR_EXPRESSION "rldpack native wheels test passed: refused without --wheels off \\(exit [1-9][0-9]*, no file\\), built with it; --wheel-model refused beside --wheels off and without --native-model on"
         TIMEOUT 120
     )
 

@@ -11,6 +11,7 @@
 // refused, never made.
 // ===========================================================================
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -295,16 +296,23 @@ int NativeCharGpu_Build(const struct RldCharNative *n, struct NativeCharGpuCpu *
 		}
 	}
 
-	// The wheels (WHLS): white vertices of the "nr" layout, u16 indices.
+	// The wheels (WHLS): white vertices of the "nr" layout, u16 indices. An
+	// author's wheel (version 2) gets its mirror image behind the mesh for the
+	// -X wheels: x negated and every triangle's winding turned (a, c, b), so
+	// it is wound counter-clockwise from outside like the mesh and the cull of
+	// the body holds for both; the UV stays, so a tread runs mirrored. The
+	// normals of WHLS are not part of the "nr" layout (the native mesh is not
+	// lit), so nothing else changes. At most 2 x 2048 vertices: u16 holds them.
 	if (n->wheel != NULL)
 	{
 		const u8 *w = n->wheel;
 		const u32 nw = n->wheelVertexCount;
 		const u32 tw = n->wheelTriangleCount;
+		const u32 halves = (n->wheelVersion == RLDCHAR_WHEEL_VERSION_USER) ? 2u : 1u;
 		u32 i;
 
-		out->wheelVertices = (struct NativeProbeVertex *)malloc((size_t)nw * sizeof(struct NativeProbeVertex));
-		out->wheelIndices = (u16 *)malloc((size_t)tw * 3u * sizeof(u16));
+		out->wheelVertices = (struct NativeProbeVertex *)malloc((size_t)nw * halves * sizeof(struct NativeProbeVertex));
+		out->wheelIndices = (u16 *)malloc((size_t)tw * 3u * halves * sizeof(u16));
 		if ((out->wheelVertices == NULL) || (out->wheelIndices == NULL))
 		{
 			snprintf(out->why, sizeof(out->why), "memory");
@@ -330,10 +338,30 @@ int NativeCharGpu_Build(const struct RldCharNative *n, struct NativeCharGpuCpu *
 		{
 			out->wheelIndices[i] = Rld_ReadLE16(&w[RLDCHAR_WHEEL_HEAD_BYTES + (nw * RLDCHAR_WHEEL_VERTEX_BYTES) + (i * 2u)]);
 		}
+		if (halves == 2u)
+		{
+			for (i = 0; i < nw; i++)
+			{
+				out->wheelVertices[nw + i] = out->wheelVertices[i];
+				out->wheelVertices[nw + i].position[0] = -out->wheelVertices[i].position[0];
+			}
+			for (i = 0; i < tw; i++)
+			{
+				const u16 *src = &out->wheelIndices[i * 3u];
+				u16 *dst = &out->wheelIndices[(tw * 3u) + (i * 3u)];
+
+				dst[0] = (u16)(src[0] + nw);
+				dst[1] = (u16)(src[2] + nw);
+				dst[2] = (u16)(src[1] + nw);
+			}
+		}
 
 		out->hasWheels = 1;
-		out->wheelVertexCount = nw;
+		out->wheelOwn = (halves == 2u) ? 1u : 0u;
+		out->wheelVertexCount = nw * halves;
 		out->wheelIndexCount = tw * 3u;
+		out->wheelIndexTotal = tw * 3u * halves;
+		out->wheelMirrorFirst = (halves == 2u) ? (tw * 3u) : 0u;
 		out->wheelMaterial = Rld_ReadLE16(&w[0x08]);
 		out->wheelRadius = RldChar_F32(&w[0x0C]);
 		out->wheelHalfWidth = RldChar_F32(&w[0x10]);
@@ -507,8 +535,11 @@ internal int NativeCharGpu_Upload(struct NativeCharGpu *set, const struct RldCha
 	memcpy(set->hullMin, cpu.hullMin, sizeof(set->hullMin));
 	memcpy(set->hullMax, cpu.hullMax, sizeof(set->hullMax));
 	set->hasWheels = cpu.hasWheels;
+	set->wheelOwn = cpu.wheelOwn;
 	set->wheelVertexCount = cpu.wheelVertexCount;
 	set->wheelIndexCount = cpu.wheelIndexCount;
+	set->wheelIndexTotal = cpu.wheelIndexTotal;
+	set->wheelMirrorFirst = cpu.wheelMirrorFirst;
 	set->wheelMaterial = cpu.wheelMaterial;
 	set->wheelRadius = cpu.wheelRadius;
 	set->wheelHalfWidth = cpu.wheelHalfWidth;
@@ -592,7 +623,7 @@ internal int NativeCharGpu_Upload(struct NativeCharGpu *set, const struct RldCha
 		}
 		s_ncgCount.uploads++;
 		set->wheelIB = NativeGfx_CreateIndexBuffer(&(NativeGfxIndexBufferDesc){
-		    .bytes = (int)(set->wheelIndexCount * sizeof(u16)),
+		    .bytes = (int)(set->wheelIndexTotal * sizeof(u16)),
 		    .type = NATIVE_GFX_INDEX_U16,
 		    .initial = cpu.wheelIndices,
 		});
@@ -603,7 +634,7 @@ internal int NativeCharGpu_Upload(struct NativeCharGpu *set, const struct RldCha
 		}
 		s_ncgCount.uploads++;
 		set->vertexBytes += set->wheelVertexCount * (u32)sizeof(struct NativeProbeVertex);
-		set->indexBytes += set->wheelIndexCount * (u32)sizeof(u16);
+		set->indexBytes += set->wheelIndexTotal * (u32)sizeof(u16);
 	}
 
 	// The textures, with their levels, through the native texture manager.
@@ -701,10 +732,27 @@ internal void NativeCharGpu_LogMaterials(const char *who, const char *file, cons
 	}
 }
 
-// The wheels word of an upload line: "%u triangles" or "hidden".
-internal void NativeCharGpu_WheelsWord(const struct NativeCharGpu *set, char *out, size_t size)
+// The wheels word of an upload line: "%u triangles" (the test wheel),
+// "hidden", or for an author's wheel (WHLS version 2) "own %u triangles,
+// mirrored, material %u, texture %d WxH" (with levels, as every texture of the
+// set) or "..., one colour".
+internal void NativeCharGpu_WheelsWord(const struct NativeCharGpu *set, const struct RldCharNative *n, char *out, size_t size)
 {
-	if (set->hasWheels)
+	if (set->hasWheels && set->wheelOwn)
+	{
+		const int texture = set->materialTexture[set->wheelMaterial];
+
+		if ((texture >= 0) && ((u32)texture < n->textureCount))
+		{
+			snprintf(out, size, "own %u triangles, mirrored, material %u, texture %d %ux%u", (unsigned)(set->wheelIndexCount / 3u),
+			         (unsigned)set->wheelMaterial, texture, (unsigned)n->texture[texture].width, (unsigned)n->texture[texture].height);
+		}
+		else
+		{
+			snprintf(out, size, "own %u triangles, mirrored, material %u, one colour", (unsigned)(set->wheelIndexCount / 3u), (unsigned)set->wheelMaterial);
+		}
+	}
+	else if (set->hasWheels)
 	{
 		snprintf(out, size, "%u triangles", (unsigned)(set->wheelIndexCount / 3u));
 	}
@@ -793,16 +841,9 @@ void NativeCharGpu_LoadSeats(int levelID)
 		s_ncgCount.textureBytes += set->textureBytes;
 
 		{
-			char wheels[32];
+			char wheels[96];
 
-			if (set->hasWheels)
-			{
-				snprintf(wheels, sizeof(wheels), "%u triangles", (unsigned)(set->wheelIndexCount / 3u));
-			}
-			else
-			{
-				snprintf(wheels, sizeof(wheels), "hidden");
-			}
+			NativeCharGpu_WheelsWord(set, n, wheels, sizeof(wheels));
 			Platform_Log("[CTR NativeChar] seat %d: %s uploaded: %u vertices x %u pose(s) (%u KB), %u triangles in %u material range(s), %u texture(s) "
 			             "(%u KB with levels), wheels %s\n",
 			             seat, file, (unsigned)set->vertexCount, (unsigned)set->poseCount,
@@ -867,9 +908,9 @@ void NativeCharGpu_LoadPreview(int entry, u64 started)
 
 	{
 		const struct NativeCharGpu *set = &s_ncgPreview;
-		char wheels[32];
+		char wheels[96];
 
-		NativeCharGpu_WheelsWord(set, wheels, sizeof(wheels));
+		NativeCharGpu_WheelsWord(set, n, wheels, sizeof(wheels));
 		Platform_Log("[CTR NativeChar] preview: %s uploaded: %u vertices x %u pose(s) (%u KB), %u triangles in %u material range(s), %u texture(s) "
 		             "(%u KB with levels), wheels %s, took %u ms\n",
 		             file, (unsigned)set->vertexCount, (unsigned)set->poseCount,
@@ -1081,7 +1122,9 @@ void NativeCharGpu_ReportLine(void)
 //              one SHA-256 over all files in the verdict line (golden in ctest);
 //   poses      the pose index of all 47 (animation, frame) and of the first
 //              frame past each animation; a still file maps everything to 0;
-//   wheels     the -X middles are the +X ones mirrored in x;
+//   wheels     the -X middles are the +X ones mirrored in x, and the part's
+//              wheel taken as an author's (WHLS 2) gets its mirror image as
+//              the -X mesh (NativeCharGpu_TestOwnWheel);
 //   blend      the same part with material 0 made a blend material is refused
 //              with its reason.
 
@@ -1259,6 +1302,75 @@ done:
 	free(v);
 }
 
+// THE OWN WHEEL MADE IN MEMORY: the part of a file with the test wheel, its
+// WHLS taken as version 2 (an author's wheel). 1 when the set has the mesh as
+// it is and behind it its mirror image: x negated, y, z, UV and colour kept,
+// every triangle (a, b, c) as (c', b', a') turned to (a', c', b') with ' = + Nw,
+// so its face normal is the original's with x negated (outside stays outside);
+// the test wheel itself keeps one mesh. Prints one line.
+internal int NativeCharGpu_TestOwnWheel(const struct RldCharNative *n, const struct NativeCharGpuCpu *test, const char *name)
+{
+	struct RldCharNative copy = *n;
+	struct NativeCharGpuCpu own;
+	const u32 nw = n->wheelVertexCount;
+	const u32 tw = n->wheelTriangleCount;
+	int ok;
+	u32 i;
+
+	ok = (test->wheelOwn == 0u) && (test->wheelVertexCount == nw) && (test->wheelIndexTotal == (tw * 3u)) && (test->wheelMirrorFirst == 0u);
+
+	copy.wheelVersion = RLDCHAR_WHEEL_VERSION_USER;
+	if (!NativeCharGpu_Build(&copy, &own))
+	{
+		NativeCharGpu_FreeCpu(&own);
+		printf("native char gpu selftest: %s own wheel made in memory: refused (%s)\n", name, own.why);
+		return 0;
+	}
+
+	ok &= (own.wheelOwn == 1u) && (own.wheelVertexCount == (2u * nw)) && (own.wheelIndexCount == (tw * 3u)) && (own.wheelIndexTotal == (tw * 6u)) &&
+	      (own.wheelMirrorFirst == (tw * 3u));
+	for (i = 0; ok && (i < nw); i++)
+	{
+		const struct NativeProbeVertex *a = &own.wheelVertices[i];
+		const struct NativeProbeVertex *b = &own.wheelVertices[nw + i];
+
+		ok &= (memcmp(a, &test->wheelVertices[i], sizeof(*a)) == 0) && (b->position[0] == -a->position[0]) && (b->position[1] == a->position[1]) &&
+		      (b->position[2] == a->position[2]) && (b->texcoord[0] == a->texcoord[0]) && (b->texcoord[1] == a->texcoord[1]) &&
+		      (memcmp(b->color, a->color, sizeof(a->color)) == 0);
+	}
+	for (i = 0; ok && (i < tw); i++)
+	{
+		const u16 *src = &own.wheelIndices[i * 3u];
+		const u16 *dst = &own.wheelIndices[own.wheelMirrorFirst + (i * 3u)];
+		double face[2][3];
+		int side;
+
+		ok &= (memcmp(src, &test->wheelIndices[i * 3u], 3u * sizeof(u16)) == 0) && (dst[0] == (u16)(src[0] + nw)) && (dst[1] == (u16)(src[2] + nw)) &&
+		      (dst[2] == (u16)(src[1] + nw));
+		for (side = 0; ok && (side < 2); side++)
+		{
+			const u16 *t = side ? dst : src;
+			const float *p0 = own.wheelVertices[t[0]].position;
+			const float *p1 = own.wheelVertices[t[1]].position;
+			const float *p2 = own.wheelVertices[t[2]].position;
+			const double e1[3] = {(double)p1[0] - p0[0], (double)p1[1] - p0[1], (double)p1[2] - p0[2]};
+			const double e2[3] = {(double)p2[0] - p0[0], (double)p2[1] - p0[1], (double)p2[2] - p0[2]};
+
+			face[side][0] = (e1[1] * e2[2]) - (e1[2] * e2[1]);
+			face[side][1] = (e1[2] * e2[0]) - (e1[0] * e2[2]);
+			face[side][2] = (e1[0] * e2[1]) - (e1[1] * e2[0]);
+		}
+		ok &= (fabs(face[1][0] + face[0][0]) <= 1e-6 * (1.0 + fabs(face[0][0]))) && (fabs(face[1][1] - face[0][1]) <= 1e-6 * (1.0 + fabs(face[0][1]))) &&
+		      (fabs(face[1][2] - face[0][2]) <= 1e-6 * (1.0 + fabs(face[0][2])));
+	}
+
+	printf("native char gpu selftest: %s own wheel (WHLS 2) made in memory: %u + %u vertices, %u + %u indices, -X half %s\n", name, (unsigned)nw,
+	       (unsigned)(own.wheelVertexCount - nw), (unsigned)own.wheelIndexCount, (unsigned)(own.wheelIndexTotal - own.wheelIndexCount),
+	       ok ? "the mirror image" : "WRONG");
+	NativeCharGpu_FreeCpu(&own);
+	return ok;
+}
+
 internal void NativeCharGpu_TestFile(const char *dir, const char *name, struct Sha256 *all, int *files, int *checks, int *failures)
 {
 	char path[1024];
@@ -1426,7 +1538,10 @@ internal void NativeCharGpu_TestFile(const char *dir, const char *name, struct S
 		mirrored &= (m[0][0] == (double)cpu.wheelFront[0]) && (m[1][0] == -(double)cpu.wheelFront[0]) && (m[1][1] == m[0][1]) && (m[1][2] == m[0][2]);
 		mirrored &= (m[2][0] == (double)cpu.wheelRear[0]) && (m[3][0] == -(double)cpu.wheelRear[0]) && (m[3][1] == m[2][1]) && (m[3][2] == m[2][2]);
 		mirrored &= (cpu.wheelFront[0] > 0.0f) && (cpu.wheelRear[0] > 0.0f) && (cpu.wheelIndexCount == (n.wheelTriangleCount * 3u));
-		NativeCharGpu_Expect(checks, failures, mirrored, name, "the wheel middles are not +X and the -X ones mirrored");
+		// The same check holds the own wheel (WHLS 2) made from this part: the
+		// mesh, then its mirror image (NativeCharGpu_TestOwnWheel).
+		mirrored &= NativeCharGpu_TestOwnWheel(&n, &cpu, name);
+		NativeCharGpu_Expect(checks, failures, mirrored, name, "the wheel middles are not +X and the -X ones mirrored, or an own wheel (WHLS 2) is not mirrored");
 	}
 
 	// The cases the files of the set do not have, made in memory from this

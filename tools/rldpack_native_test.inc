@@ -10,6 +10,11 @@
 //   none_     CTXT without CNET: nothing native
 //   good_     the probe body still, with 47 poses, without wheels (CHRI
 //             hides them), and without a texture
+//   good_wheel-v2-*   the probe body still with its wheel as an author's
+//             wheel (WHLS version 2): one color, with the probe texture, with
+//             a second texture of 1024 x 16; good_wheel-v1-texture-2048 the
+//             test wheel (version 1) with a texture of 2048 x 16 - CNET-12 is
+//             about version 2 only
 //   bad_<RULE>_   one change that breaks exactly <RULE>; the driver keeps CMDL
 //   damaged_  a generic envelope finding (outside the data area, a type
 //             twice, two chunks overlapping): the whole file is refused, as
@@ -30,7 +35,7 @@
 #define RLDMK_GOLDEN_NATIVE_POSES "91a6634abbde504c9b8f3586abbfa55c78bf10ec50a8c78b1f81607f6533bc1f"
 #define RLDMK_GOLDEN_NATIVE_TEXTURE "91a84b2163c3ec26e128e4d17ebc15b063b496055f830afc28341c20252cea4f"
 
-#define RLDMK_NATIVE_CASES_MAX 40
+#define RLDMK_NATIVE_CASES_MAX 48
 
 struct RldMkNativeCase
 {
@@ -166,6 +171,71 @@ static u32 RldMk_NativeSectionAt(const u8 *cnet, const char tag[4], u32 *entryAt
 		}
 	}
 	return 0;
+}
+
+// CTXT with two textures: the probe texture, then a gradient of width x
+// height (a wheel's texture of the test set). NULL = out of memory.
+static u8 *RldMk_NativeCtxtTwo(u32 width, u32 height, size_t *sizeOut)
+{
+	u8 *rgba = (u8 *)malloc((size_t)RLDMK_NATIVE_TEXTURE * RLDMK_NATIVE_TEXTURE * 4u);
+	u8 *second = (u8 *)malloc((size_t)width * height * 4u);
+	u8 *png[2] = {NULL, NULL};
+	size_t pngSize[2] = {0, 0};
+	u8 *ctxt = NULL;
+	u32 at = RLDCHAR_TEX_HEAD_BYTES + (2u * RLDCHAR_TEX_ENTRY_BYTES);
+	u32 x;
+	u32 y;
+	u32 i;
+
+	*sizeOut = 0;
+	if ((rgba != NULL) && (second != NULL))
+	{
+		RldMk_NativeTexture(rgba);
+		for (y = 0; y < height; y++)
+		{
+			for (x = 0; x < width; x++)
+			{
+				u8 *p = &second[((size_t)y * width + x) * 4u];
+
+				p[0] = (u8)((x * 255u) / (width - 1u));
+				p[1] = (u8)((y * 255u) / (height - 1u));
+				p[2] = 96u;
+				p[3] = 255u;
+			}
+		}
+		png[0] = RldMk_PngRgba(rgba, RLDMK_NATIVE_TEXTURE, RLDMK_NATIVE_TEXTURE, &pngSize[0]);
+		png[1] = RldMk_PngRgba(second, width, height, &pngSize[1]);
+	}
+	if ((png[0] != NULL) && (png[1] != NULL))
+	{
+		ctxt = (u8 *)calloc(1, at + pngSize[0] + 4u + pngSize[1]);
+	}
+	if (ctxt != NULL)
+	{
+		Rld_WriteLE16(&ctxt[0x00], RLDCHAR_TEX_VERSION);
+		Rld_WriteLE16(&ctxt[0x04], 2u);
+		Rld_WriteLE16(&ctxt[0x06], RLDCHAR_TEX_ENTRY_BYTES);
+		for (i = 0; i < 2u; i++)
+		{
+			u8 *e = &ctxt[RLDCHAR_TEX_HEAD_BYTES + (i * RLDCHAR_TEX_ENTRY_BYTES)];
+
+			at = (at + 3u) & ~3u;
+			e[0x00] = RLDCHAR_TEX_FORMAT_PNG;
+			Rld_WriteLE16(&e[0x04], i ? width : RLDMK_NATIVE_TEXTURE);
+			Rld_WriteLE16(&e[0x06], i ? height : RLDMK_NATIVE_TEXTURE);
+			Rld_WriteLE32(&e[0x08], at);
+			Rld_WriteLE32(&e[0x0C], (u32)pngSize[i]);
+			Sha256(png[i], pngSize[i], &e[0x10]);
+			memcpy(&ctxt[at], png[i], pngSize[i]);
+			at += (u32)pngSize[i];
+		}
+		*sizeOut = at;
+	}
+	free(rgba);
+	free(second);
+	free(png[0]);
+	free(png[1]);
+	return ctxt;
 }
 
 // The whole set. 0 = out of memory or the standard model cannot be built.
@@ -310,6 +380,60 @@ static int RldMk_NativeMakeSet(struct RldMkNativeSet *set)
 
 	// Wheels are required unless CHRI hides them.
 	RldMk_NativeAdd(set, "bad_CNET-10_no-wheels", 0u, bare, bareSize, ctxt, ctxtSize);
+
+	// WHLS version 2, an author's wheel (rule CNET-12): the same layout as
+	// the test wheel, only the version of the section entry differs.
+	//   what 0  one color (material 1, no texture)
+	//        1  material 0, the probe texture (256 x 256)
+	//        2  material 1 with texture 1 of 1024 x 16: on the bound
+	//        3  version 1 with texture 1 of 2048 x 16: CNET-12 is not about it
+	//        4  version 3: CNET-10
+	//        5  material 1 with texture 1 of 2048 x 16: CNET-12
+	{
+		static const struct
+		{
+			const char *name;
+			u32 version;
+			u32 material;
+			u32 width;              // 0: the probe's CTXT alone, else a second texture of width x 16
+		} cases[] = {
+		    {"good_wheel-v2-plain", 2u, 1u, 0u},       {"good_wheel-v2-textured", 2u, 0u, 0u},       {"good_wheel-v2-texture-1024", 2u, 1u, 1024u},
+		    {"good_wheel-v1-texture-2048", 1u, 1u, 2048u}, {"bad_CNET-10_wheel-version-3", 3u, 1u, 0u}, {"bad_CNET-12_texture-2048", 2u, 1u, 2048u},
+		};
+		int k;
+
+		for (k = 0; k < (int)(sizeof(cases) / sizeof(cases[0])); k++)
+		{
+			u8 *c = RldMk_NativeCopy(still, stillSize);
+			u8 *two = NULL;
+			size_t twoSize = 0;
+			u32 entryAt = 0;
+			u32 at;
+
+			if (cases[k].width != 0u)
+			{
+				two = RldMk_NativeCtxtTwo(cases[k].width, 16u, &twoSize);
+			}
+			if ((c == NULL) || ((cases[k].width != 0u) && (two == NULL)))
+			{
+				set->failed = 1;
+				free(c);
+				free(two);
+				continue;
+			}
+			at = RldMk_NativeSectionAt(c, "WHLS", &entryAt);
+			Rld_WriteLE16(&c[entryAt + 4u], cases[k].version);
+			Rld_WriteLE16(&c[at + 0x08u], cases[k].material);
+			if (two != NULL)
+			{
+				Rld_WriteLE16(&c[0x30], 2u);
+				Rld_WriteLE16(&c[RldMk_NativeSectionAt(c, "MATL", NULL) + RLDCHAR_NET_MATERIAL_BYTES + 4u], 1u);
+			}
+			RldMk_NativeAdd(set, cases[k].name, 0u, c, stillSize, (two != NULL) ? two : ctxt, (two != NULL) ? twoSize : ctxtSize);
+			free(c);
+			free(two);
+		}
+	}
 
 	// The cases that change CTXT.
 	{
@@ -479,7 +603,10 @@ static int RldMk_NativeMakeSet(struct RldMkNativeSet *set)
 // still pose, no WHLS), a face turned inside out with --repair auto (the
 // repair turns it: RldMkBuild.plyPosition), the driver split until the chain
 // reduces the CMDL (the native model keeps every face:
-// RldMkBuild.nativePosition), and the refusals.
+// RldMkBuild.nativePosition), and the refusals. Then a wheel of one's own
+// (make-char --wheel-model, WHLS version 2): a cylinder made here as OBJ with
+// its MTL file and texture (or as PLY), read by RldMk_UserWheelLoad from
+// memory, and its refusals.
 
 // make-char --fit none --native-model on of the mini OBJ: CNET and CTXT of
 // the automatic poses with the test wheel, and of --poses still --wheels off.
@@ -499,8 +626,11 @@ static int RldMk_NativeMakeSet(struct RldMkNativeSet *set)
 // limit (RldMk_TestSplitOver), --reduce auto: the CMDL reduced, the native
 // model with every face, inside the CMDL's hull (RldMkBuild.nativePosition).
 #define RLDMK_GOLDEN_NATIVE_OBJ_REDUCED "97e4bba36c58c780eace78faa0017a91b00faca2f89b0e51708776f24d98a9bc"
+// The mini OBJ with the wheels shown and the test cylinder as its own wheel
+// (--wheel-model, 12 sides, a texture of 32 x 32): CNET with WHLS version 2.
+#define RLDMK_GOLDEN_NATIVE_OBJ_WHEEL "e02bd8d7b3c7bb73af88f2e429613355d05f5554c08b0ac7a20f366b01025402"
 
-#define RLDMK_NATIVE_OBJ_FILES (4u + RLDCHAR_TEX_COUNT_MAX + 1u)
+#define RLDMK_NATIVE_OBJ_FILES (6u + RLDCHAR_TEX_COUNT_MAX + 1u)
 
 struct RldMkNativeObjCase
 {
@@ -521,6 +651,16 @@ struct RldMkNativeObjCase
 	u32 driverSplit;           // the driver box split n x n per side (RldMk_TestStandard); 0 = 2
 	int reduce;                // --reduce auto (the self-test's options have it off)
 	int blenderKe;             // the driver's material as Blender 5.2 writes it, with Ke 0.2 (no Kd): white x texture still
+	int wheel;                 // a wheel of one's own (--wheel-model, the wheels shown): 1 the cylinder as OBJ, 2 as PLY
+	u32 wheelSides;            // its sides; 0 = 12 (4 triangles each)
+	u32 wheelTexWidth;         // its texture; 0 = 32 x 32
+	u32 wheelTexHeight;
+	int wheelTexCut;           // its texture cut to its first half (unreadable)
+	int wheelTexGone;          // its texture not there (missing)
+	int wheelTwoMaterials;     // its last face with a second material
+	int wheelNoVt;             // its corners without vt
+	int wheelWide;             // half as wide again as it is across
+	u32 wheelSize;             // --wheel-size; 0 = 100
 };
 
 struct RldMkNativeObjResult
@@ -541,6 +681,7 @@ struct RldMkNativeObjResult
 	int reduced;               // the chain reduced the CMDL (RldMkBuild.reduced)
 	u32 reduceFrom;            // its triangles before and after
 	u32 reduceTo;
+	int wheelLoaded;           // RldMk_UserWheelLoad returned 1
 	struct RldMkNativeFacts facts;
 };
 
@@ -593,6 +734,9 @@ static int RldMk_NativeObjMake(const struct RldMkNativeObjCase *k, struct RldMkN
 	u8 *pictures[RLDMK_NATIVE_OBJ_FILES];
 	struct RldMkBuffer obj;
 	struct RldMkBuffer mtl;
+	struct RldMkBuffer wheelFile;
+	struct RldMkBuffer wheelMtl;
+	struct RldMkUserWheel wheel;
 	struct RldMkOptions opt;
 	struct RldMkModelInfo info;
 	struct RldMkPly ply;
@@ -607,6 +751,9 @@ static int RldMk_NativeObjMake(const struct RldMkNativeObjCase *k, struct RldMkN
 	memset(r, 0, sizeof(*r));
 	memset(&obj, 0, sizeof(obj));
 	memset(&mtl, 0, sizeof(mtl));
+	memset(&wheelFile, 0, sizeof(wheelFile));
+	memset(&wheelMtl, 0, sizeof(wheelMtl));
+	memset(&wheel, 0, sizeof(wheel));
 	memset(&ply, 0, sizeof(ply));
 	memset(&b, 0, sizeof(b));
 	memset(pictures, 0, sizeof(pictures));
@@ -680,6 +827,102 @@ static int RldMk_NativeObjMake(const struct RldMkNativeObjCase *k, struct RldMkN
 	files[0].data = mtl.data;
 	files[0].size = mtl.size;
 	ok = ok && (mtl.data != NULL);
+
+	// A wheel of one's own: a cylinder about X of radius 0.3 and half width
+	// 0.1 (0.45 when wide), centre in the origin; its MTL file and its
+	// texture beside it. Tread a = +X at k, b = -X at k, c = -X at k + 1,
+	// d = +X at k + 1 as (a, b, c), (a, c, d); the caps as fans.
+	if (ok && (k->wheel != 0))
+	{
+		const u32 n = (k->wheelSides != 0u) ? k->wheelSides : 12u;
+		const double half = k->wheelWide ? 0.45 : 0.1;
+		size_t size = 0;
+
+		RldMk_BufferText(&wheelMtl, "newmtl wheel\nmap_Kd wheel.png\nnewmtl wheel2\nKd 1 0 0\n");
+		files[fileCount].path = "selftest/wheel.mtl";
+		files[fileCount].data = wheelMtl.data;
+		files[fileCount].size = wheelMtl.size;
+		fileCount++;
+		pictures[fileCount] = RldMk_NativeObjPng((k->wheelTexWidth != 0u) ? k->wheelTexWidth : 32u, (k->wheelTexHeight != 0u) ? k->wheelTexHeight : 32u, 0, 5u,
+		                                         &size);
+		files[fileCount].path = k->wheelTexGone ? "selftest/other.png" : "selftest/wheel.png";
+		files[fileCount].data = pictures[fileCount];
+		files[fileCount].size = k->wheelTexCut ? (size / 2u) : size;
+		ok = (pictures[fileCount] != NULL) && (wheelMtl.data != NULL);
+		fileCount++;
+
+		if (k->wheel == 2)
+		{
+			RldMk_BufferText(&wheelFile, "ply\nformat ascii 1.0\nelement vertex %u\nproperty float x\nproperty float y\nproperty float z\n", 2u * n + 2u);
+			RldMk_BufferText(&wheelFile, "property uchar red\nproperty uchar green\nproperty uchar blue\nelement face %u\n", 4u * n);
+			RldMk_BufferText(&wheelFile, "property list uchar int vertex_indices\nend_header\n");
+		}
+		else
+		{
+			RldMk_BufferText(&wheelFile, "# made by the rldpack self-test\nmtllib wheel.mtl\nusemtl wheel\n");
+		}
+		for (i = 0; i < n; i++)
+		{
+			double sine;
+			double cosine;
+
+			RldMk_SinCos((360.0 * (double)i) / (double)n, &sine, &cosine);
+			for (j = 0; j < 2u; j++)
+			{
+				if (k->wheel == 2)
+				{
+					RldMk_BufferText(&wheelFile, "%.6f %.6f %.6f 200 30 30\n", j ? -half : half, 0.3 * cosine, 0.3 * sine);
+				}
+				else
+				{
+					RldMk_BufferText(&wheelFile, "v %.6f %.6f %.6f\n", j ? -half : half, 0.3 * cosine, 0.3 * sine);
+				}
+			}
+		}
+		if (k->wheel == 2)
+		{
+			RldMk_BufferText(&wheelFile, "%.6f 0 0 200 30 30\n%.6f 0 0 200 30 30\n", half, -half);
+		}
+		else
+		{
+			RldMk_BufferText(&wheelFile, "v %.6f 0 0\nv %.6f 0 0\n", half, -half);
+			for (i = 0; i < n; i++)
+			{
+				RldMk_BufferText(&wheelFile, "vt %.4f 0.1\nvt %.4f 0.9\n", (double)i / (double)n, (double)i / (double)n);
+			}
+			RldMk_BufferText(&wheelFile, "vt 0.5 0.5\nvt 0.5 0.5\n");
+		}
+		for (i = 0; i < n; i++)
+		{
+			const u32 next = (i + 1u) % n;
+			const u32 tri[4][3] = {{2u * i, (2u * i) + 1u, (2u * next) + 1u},
+			                       {2u * i, (2u * next) + 1u, 2u * next},
+			                       {2u * n, 2u * i, 2u * next},
+			                       {(2u * n) + 1u, (2u * next) + 1u, (2u * i) + 1u}};
+
+			for (j = 0; j < 4u; j++)
+			{
+				if (k->wheelTwoMaterials && ((i + 1u) == n) && (j == 3u))
+				{
+					RldMk_BufferText(&wheelFile, "usemtl wheel2\n");
+				}
+				if (k->wheel == 2)
+				{
+					RldMk_BufferText(&wheelFile, "3 %u %u %u\n", tri[j][0], tri[j][1], tri[j][2]);
+				}
+				else if (k->wheelNoVt)
+				{
+					RldMk_BufferText(&wheelFile, "f %u %u %u\n", tri[j][0] + 1u, tri[j][1] + 1u, tri[j][2] + 1u);
+				}
+				else
+				{
+					RldMk_BufferText(&wheelFile, "f %u/%u %u/%u %u/%u\n", tri[j][0] + 1u, tri[j][0] + 1u, tri[j][1] + 1u, tri[j][1] + 1u, tri[j][2] + 1u,
+					                 tri[j][2] + 1u);
+				}
+			}
+		}
+		ok = ok && (wheelFile.data != NULL);
+	}
 
 	// The OBJ: v, vt, vn, and the faces.
 	RldMk_BufferText(&obj, "# made by the rldpack self-test\nmtllib native.mtl\n");
@@ -783,7 +1026,16 @@ static int RldMk_NativeObjMake(const struct RldMkNativeObjCase *k, struct RldMkN
 		r->reduceTo = b.reduceTo;
 		r->chriFlags = k->wheelsOff ? RLDCHAR_FLAG_NO_WHEELS : 0u;
 		RldMk_ResetSaid();
-		r->made = RldMk_NativeModel(&s_rldObjNative, &ply, &b, &opt, !k->wheelsOff, &r->cnet, &r->cnetSize, &r->ctxt, &r->ctxtSize, &r->facts);
+		if (k->wheel != 0)
+		{
+			r->wheelLoaded = RldMk_UserWheelLoad((k->wheel == 2) ? "selftest/wheel.ply" : "selftest/wheel.obj", wheelFile.data, wheelFile.size, &opt,
+			                                     (k->wheelSize != 0u) ? k->wheelSize : 100u, &wheel);
+		}
+		if ((k->wheel == 0) || r->wheelLoaded)
+		{
+			r->made = RldMk_NativeModel(&s_rldObjNative, &ply, &b, &opt, !k->wheelsOff, r->wheelLoaded ? &wheel : NULL, &r->cnet, &r->cnetSize, &r->ctxt,
+			                            &r->ctxtSize, &r->facts);
+		}
 	}
 	s_rldObjFiles = NULL;
 	s_rldObjFileCount = 0;
@@ -797,6 +1049,9 @@ static int RldMk_NativeObjMake(const struct RldMkNativeObjCase *k, struct RldMkN
 	}
 	free(obj.data);
 	free(mtl.data);
+	free(wheelFile.data);
+	free(wheelMtl.data);
+	RldMk_UserWheelFree(&wheel);
 	free(mesh);
 	return ok;
 }
@@ -1315,7 +1570,7 @@ static void RldMk_SelfTestNativeObj(void)
 		{
 			b.reduced = 1;
 			RldMk_ResetSaid();
-			r.made = RldMk_NativeModel(&fake, &ply, &b, &opt, 1, &cnet, &cnetSize, &ctxt, &ctxtSize, &r.facts);
+			r.made = RldMk_NativeModel(&fake, &ply, &b, &opt, 1, NULL, &cnet, &cnetSize, &ctxt, &ctxtSize, &r.facts);
 			b.reduced = 0;
 			RldMk_FreeBuild(&b);
 			RldMk_FreePly(&ply);
@@ -1326,6 +1581,146 @@ static void RldMk_SelfTestNativeObj(void)
 		free(ctxt);
 		free(mesh);
 	}
+
+	// 7. A wheel of one's own (--wheel-model, the wheels shown): WHLS version
+	//    2, its material the last, its texture the third entry; radius 16, the
+	//    retail wheel points at y 16 (the bottom on the ground); golden, built
+	//    twice the same.
+	memset(&k, 0, sizeof(k));
+	k.want = 1;
+	k.wheel = 1;
+	if (RldMk_NativeObjMake(&k, &a) && a.made)
+	{
+		RldMk_CheckNativeBytes(a.cmdl, a.cmdlSize, a.chriFlags, a.cnet, a.cnetSize, a.ctxt, a.ctxtSize, &native);
+		if (native.state == RLDCHAR_NATIVE_READY)
+		{
+			const u8 *w = native.wheel;
+			const u8 *m = &native.materials[(size_t)Rld_ReadLE16(&w[0x08]) * RLDCHAR_NET_MATERIAL_BYTES];
+
+			RldMk_Test((native.wheelVersion == RLDCHAR_WHEEL_VERSION_USER) && (native.wheelTriangleCount == 48u) && (native.wheelVertexCount == 26u) &&
+			               (Rld_ReadLE16(&w[0x08]) == (native.materialCount - 1u)) && (Rld_ReadLE16(&m[4]) == 2u) && (native.textureCount == 3u) &&
+			               (native.texture[2].width == 32u) && (RldChar_F32(&w[0x0C]) == 16.0f) && (RldChar_F32(&w[0x14]) == 36.0f) &&
+			               (RldChar_F32(&w[0x18]) == 16.0f) && (RldChar_F32(&w[0x1C]) == 49.75f) && (RldChar_F32(&w[0x24]) == 16.0f) &&
+			               (RldChar_F32(&w[0x28]) == -24.0f) && (a.facts.wheelVersion == RLDCHAR_WHEEL_VERSION_USER),
+			           "native OBJ with a wheel of its own: WHLS version 2, 48 triangles, its material last with texture 2, radius 16 at the retail points, ready",
+			           "version %u, triangles %u, vertices %u, material %u of %u, texture %u of %u, radius %.3f, front y %.3f", native.wheelVersion,
+			           native.wheelTriangleCount, native.wheelVertexCount, Rld_ReadLE16(&w[0x08]), native.materialCount, Rld_ReadLE16(&m[4]),
+			           native.textureCount, (double)RldChar_F32(&w[0x0C]), (double)RldChar_F32(&w[0x18]));
+		}
+		else
+		{
+			RldMk_Test(0, "native OBJ with a wheel of its own", "refused (%s) %s", (native.rule != NULL) ? native.rule : "", native.detail);
+		}
+		RldChar_FreeNative(&native);
+		if (Rld_CheckGolden("make-char --fit none --native-model on --wheel-model of the mini OBJ: CNET", a.cnet, a.cnetSize, RLDMK_GOLDEN_NATIVE_OBJ_WHEEL) !=
+		    0)
+		{
+			s_rldMkTestFailed++;
+		}
+		{
+			const int ran = RldMk_NativeObjMake(&k, &again) && again.made;
+
+			RldMk_Test(ran && (again.cnetSize == a.cnetSize) && (memcmp(again.cnet, a.cnet, a.cnetSize) == 0) && (again.ctxtSize == a.ctxtSize) &&
+			               (memcmp(again.ctxt, a.ctxt, a.ctxtSize) == 0),
+			           "native OBJ with a wheel of its own, built twice: the same CNET and CTXT", "differ");
+			RldMk_NativeObjFree(&again);
+		}
+	}
+	else
+	{
+		RldMk_Test(0, "native OBJ with a wheel of its own", "not made (loaded %d, said: %s)", a.wheelLoaded, s_rldMkCodes);
+	}
+	RldMk_NativeObjFree(&a);
+
+	// 7a. --wheel-size 150: radius 24, the wheel points at y 24.
+	k.wheelSize = 150u;
+	if (RldMk_NativeObjMake(&k, &a) && a.made)
+	{
+		RldMk_CheckNativeBytes(a.cmdl, a.cmdlSize, a.chriFlags, a.cnet, a.cnetSize, a.ctxt, a.ctxtSize, &native);
+		RldMk_Test((native.state == RLDCHAR_NATIVE_READY) && (native.wheel != NULL) && (RldChar_F32(&native.wheel[0x0C]) == 24.0f) &&
+		               (RldChar_F32(&native.wheel[0x18]) == 24.0f) && (RldChar_F32(&native.wheel[0x24]) == 24.0f),
+		           "native OBJ with a wheel of its own, --wheel-size 150: radius 24, the points at y 24 (the bottom on the ground), ready",
+		           "state %d (%s) %s", native.state, (native.rule != NULL) ? native.rule : "", native.detail);
+		RldChar_FreeNative(&native);
+	}
+	else
+	{
+		RldMk_Test(0, "native OBJ with a wheel of its own, --wheel-size 150", "not made (said: %s)", s_rldMkCodes);
+	}
+	RldMk_NativeObjFree(&a);
+
+	// 7b. The wheel as PLY: one color, the mean of its vertex colors.
+	memset(&k, 0, sizeof(k));
+	k.want = 1;
+	k.wheel = 2;
+	if (RldMk_NativeObjMake(&k, &a) && a.made)
+	{
+		RldMk_CheckNativeBytes(a.cmdl, a.cmdlSize, a.chriFlags, a.cnet, a.cnetSize, a.ctxt, a.ctxtSize, &native);
+		if (native.state == RLDCHAR_NATIVE_READY)
+		{
+			const u8 *m = &native.materials[(size_t)Rld_ReadLE16(&native.wheel[0x08]) * RLDCHAR_NET_MATERIAL_BYTES];
+
+			RldMk_Test((native.wheelVersion == RLDCHAR_WHEEL_VERSION_USER) && (Rld_ReadLE16(&m[4]) == 0xFFFFu) && (m[0] == 200u) && (m[1] == 30u) &&
+			               (m[2] == 30u) && (native.textureCount == 2u),
+			           "native OBJ with a PLY wheel: WHLS version 2 in one color (200 30 30), no texture of its own, ready",
+			           "version %u, texture %d, color %u %u %u, textures %u", native.wheelVersion, RldChar_SignedHalf(Rld_ReadLE16(&m[4])), m[0], m[1], m[2],
+			           native.textureCount);
+		}
+		else
+		{
+			RldMk_Test(0, "native OBJ with a PLY wheel", "refused (%s) %s", (native.rule != NULL) ? native.rule : "", native.detail);
+		}
+		RldChar_FreeNative(&native);
+	}
+	else
+	{
+		RldMk_Test(0, "native OBJ with a PLY wheel", "not made (said: %s)", s_rldMkCodes);
+	}
+	RldMk_NativeObjFree(&a);
+
+	// 7c. The refusals of a wheel: nothing comes back, the reason is said.
+	memset(&k, 0, sizeof(k));
+	k.want = 1;
+	k.wheel = 1;
+	k.wheelSides = 257u;
+	RldMk_NativeObjRefused(&k, "wheel-triangles", "native OBJ refused: a wheel of 1028 triangles (over 1024, never reduced)");
+	k.wheelSides = 0u;
+	k.wheelTexWidth = 2048u;
+	k.wheelTexHeight = 16u;
+	RldMk_NativeObjRefused(&k, "wheel-texture-size", "native OBJ refused: a wheel's texture of 2048 x 16 (over 1024, never scaled)");
+	k.wheelTexWidth = 4097u;
+	RldMk_NativeObjRefused(&k, "wheel-texture-file", "native OBJ refused: a wheel's texture of 4097 x 16 (over 4096, not the color)");
+	k.wheelTexWidth = 0u;
+	k.wheelTexHeight = 0u;
+	k.wheelTexCut = 1;
+	RldMk_NativeObjRefused(&k, "wheel-texture-file", "native OBJ refused: a wheel's texture cut short (unreadable, not the color)");
+	k.wheelTexCut = 0;
+	k.wheelTexGone = 1;
+	if (RldMk_NativeObjMake(&k, &a) && a.made)
+	{
+		const int warned = RldMk_Said("wheel-texture") && !RldMk_Said("wheel-texture-file");
+
+		RldMk_CheckNativeBytes(a.cmdl, a.cmdlSize, a.chriFlags, a.cnet, a.cnetSize, a.ctxt, a.ctxtSize, &native);
+		RldMk_Test(warned && (native.state == RLDCHAR_NATIVE_READY) && (native.wheel != NULL) &&
+		               (Rld_ReadLE16(&native.materials[(size_t)Rld_ReadLE16(&native.wheel[0x08]) * RLDCHAR_NET_MATERIAL_BYTES + 4u]) == 0xFFFFu),
+		           "native OBJ with a wheel whose texture is missing: a warning, the wheel in its color, ready", "warned %d, state %d (%s) %s", warned,
+		           native.state, (native.rule != NULL) ? native.rule : "", native.detail);
+		RldChar_FreeNative(&native);
+	}
+	else
+	{
+		RldMk_Test(0, "native OBJ with a wheel whose texture is missing", "not made (said: %s)", s_rldMkCodes);
+	}
+	RldMk_NativeObjFree(&a);
+	k.wheelTexGone = 0;
+	k.wheelTwoMaterials = 1;
+	RldMk_NativeObjRefused(&k, "wheel-materials", "native OBJ refused: a wheel of two materials");
+	k.wheelTwoMaterials = 0;
+	k.wheelNoVt = 1;
+	RldMk_NativeObjRefused(&k, "wheel-uv", "native OBJ refused: a textured wheel without vt");
+	k.wheelNoVt = 0;
+	k.wheelWide = 1;
+	RldMk_NativeObjRefused(&k, "wheel-wide", "native OBJ refused: a wheel wider than across (its axle not X)");
 	RldMk_ResetSaid();
 }
 
@@ -1424,7 +1819,14 @@ static void RldMk_SelfTestNative(void)
 		snprintf(label, sizeof(label), "native %s", c->name);
 		if (strncmp(c->name, "good_", 5u) == 0)
 		{
-			RldMk_Test(native.state == RLDCHAR_NATIVE_READY, label, "refused (%s) %s", (native.rule != NULL) ? native.rule : "", native.detail);
+			// the version of the wheel as the reader hands it on: 2 an author's wheel, 1 the test wheel, 0 none
+			const u32 version = (strncmp(c->name, "good_wheel-v2", 13u) == 0) ? RLDCHAR_WHEEL_VERSION_USER
+			                    : ((c->chriFlags & RLDCHAR_FLAG_NO_WHEELS) != 0u) ? 0u
+			                                                                       : RLDCHAR_WHEEL_VERSION_TEST;
+
+			RldMk_Test((native.state == RLDCHAR_NATIVE_READY) && (native.wheelVersion == version) && ((native.wheel != NULL) == (version != 0u)), label,
+			           "state %d (%s) %s, wheel version %u (want %u)", native.state, (native.rule != NULL) ? native.rule : "", native.detail,
+			           native.wheelVersion, version);
 		}
 		else if (strncmp(c->name, "none_", 5u) == 0)
 		{

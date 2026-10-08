@@ -1370,6 +1370,184 @@ static int NativeDepthCheck_TwinView(void)
 	return ok;
 }
 
+// THE OWN WHEELS (WHLS version 2, NativeRenderLayer_FillCharWheels), on a fifth
+// line. A made-up set (an author's wheel of radius 16 model units at the
+// retail points) and a made-up driver: the pose through NativeWheels_Pull (two
+// ticks, so it rolls), the item with the view and instance matrices 4096 x I,
+// so a map A of a wheel is its frame in kart space times the mesh scale.
+//   mirror     steer 0: the -X wheels (the mirrored mesh, P u with P = diag(-1,
+//              1, 1)) are the mirror image of the +X ones, A1 = P A0 P and B1 =
+//              P B0, up to the wobble of retail (its phases tilt the two sides
+//              by up to 2 / 512, DrawTires.c:378-388): within 0.01. The mesh
+//              merely turned (the frame of the pose as it is) misses by 2.
+//   steer      wheelRotation 64 (22.5 degrees): both front wheels turn the same
+//              way - the outer axles of the two are opposite, and the left one
+//              is (cos, 0, -sin): within 0.01. A mirrored steering misses by 0.77.
+//   size       the rim of a wheel: 16 x wheelSize / 4096 world units.
+//   roll       roll step x roll radius = the way of the tick (speed x 32 ms /
+//              8192), and with radius 16 the roll step of the retail size.
+//   turn       every A a rotation times the scale (determinant > 0): the cull of
+//              the body holds for all four.
+//   size 0     wheelSize 0 draws no wheel and still hides the retail ones.
+// Leaves the pose table empty again.
+static int NativeDepthCheck_OwnWheels(double *mirrorError, double *steerError, double *radius, double *rollError, int *proper, int *zeroHeld)
+{
+	static struct Driver driver;
+	static struct Instance inst;
+	static struct PushBuffer pb;
+	static struct NativeCharGpu gpu;
+	static struct NrDrawItem item;
+	static const double P[3] = {-1.0, 1.0, 1.0};
+	const double size = (double)0x0ccc / 4096.0;
+	const struct NativeWheelPose *pose;
+	int pass;
+	int r;
+	int c;
+
+	*mirrorError = 0.0;
+	*steerError = 0.0;
+	*radius = 0.0;
+	*rollError = 1.0;
+	*proper = 0;
+	*zeroHeld = 0;
+
+	memset(&driver, 0, sizeof(driver));
+	memset(&inst, 0, sizeof(inst));
+	memset(&pb, 0, sizeof(pb));
+	memset(&gpu, 0, sizeof(gpu));
+	for (r = 0; r < 3; r++)
+	{
+		pb.matrix_ViewProj.m[r][r] = 0x1000;
+		inst.matrix.m[r][r] = 0x1000;
+	}
+	inst.scale.x = 0x0ccc;
+	inst.scale.y = 0x0ccc;
+	inst.scale.z = 0x0ccc;
+	gpu.hasWheels = 1;
+	gpu.wheelOwn = 1;
+	gpu.wheelRadius = 16.0f;
+	gpu.wheelHalfWidth = 6.0f;
+	gpu.wheelFront[0] = 36.0f;
+	gpu.wheelFront[1] = 16.0f;
+	gpu.wheelFront[2] = 49.75f;
+	gpu.wheelRear[0] = 36.0f;
+	gpu.wheelRear[1] = 16.0f;
+	gpu.wheelRear[2] = -24.0f;
+
+	for (pass = 0; pass < 3; pass++)
+	{
+		NativeWheels_Forget();
+		driver.wheelSize = (pass == 2) ? 0 : 0x0ccc;
+		driver.wheelRotation = (pass == 1) ? 64 : 0;
+		driver.speedApprox = (pass == 0) ? 3000 : 0;
+		driver.hazardTimer = 0;
+		NativeWheels_Pull(0, &driver, &inst, 1, 1u, 32, 0, (double)gpu.wheelRadius);
+		NativeWheels_Pull(0, &driver, &inst, 1, 2u, 32, 0, (double)gpu.wheelRadius);
+		pose = NativeWheels_PoseOf(&inst);
+		if (pose == NULL)
+		{
+			NativeWheels_Forget();
+			return 0;
+		}
+
+		memset(&item, 0, sizeof(item));
+		item.gpu = &gpu;
+		item.mvpShift = 0;
+		item.mvpT[2] = 2000;
+		item.wheelMask = NR_WHEEL_MASK_ALL;
+		for (r = 0; r < 3; r++)
+		{
+			item.mvp[r][r] = 0x1000;
+			item.unitScale[r] = 1.0;
+		}
+		NativeRenderLayer_FillCharWheels(&item, &inst, &pb);
+
+		if (pass == 2)
+		{
+			*zeroHeld = item.nativeWheels && (item.wheelMask == 0);
+			continue;
+		}
+		if (!item.nativeWheels)
+		{
+			NativeWheels_Forget();
+			return 0;
+		}
+
+		if (pass == 0)
+		{
+			int pair;
+			int wheel;
+
+			// The mirror: A1 = P A0 P, B1 = P B0 (front and rear pair).
+			for (pair = 0; pair < 2; pair++)
+			{
+				const int left = pair * 2;
+				const int right = left + 1;
+
+				for (r = 0; r < 3; r++)
+				{
+					const double eb = fabs(item.wheelB[right][r] - (P[r] * item.wheelB[left][r]));
+
+					*mirrorError = (eb > *mirrorError) ? eb : *mirrorError;
+					for (c = 0; c < 3; c++)
+					{
+						const double ea = fabs(item.wheelA[right][r][c] - (P[r] * item.wheelA[left][r][c] * P[c])) / size;
+
+						*mirrorError = (ea > *mirrorError) ? ea : *mirrorError;
+					}
+				}
+			}
+
+			// The size and the roll.
+			*radius = 16.0 * sqrt((item.wheelA[0][0][1] * item.wheelA[0][0][1]) + (item.wheelA[0][1][1] * item.wheelA[0][1][1]) +
+			                      (item.wheelA[0][2][1] * item.wheelA[0][2][1]));
+			*rollError = fabs((pose->rollStep * NativeWheels_RollRadius(pose)) - ((3000.0 * 32.0) / 8192.0)) +
+			             fabs(pose->rollStep - ((3000.0 * 32.0) / (32.0 * (double)0x0ccc)));
+
+			// Every map a rotation times the scale.
+			for (wheel = 0; wheel < NATIVE_WHEELS_COUNT; wheel++)
+			{
+				double(*A)[3] = item.wheelA[wheel];
+				const double det = (A[0][0] * ((A[1][1] * A[2][2]) - (A[1][2] * A[2][1]))) - (A[0][1] * ((A[1][0] * A[2][2]) - (A[1][2] * A[2][0]))) +
+				                   (A[0][2] * ((A[1][0] * A[2][1]) - (A[1][1] * A[2][0])));
+
+				*proper += (det > 0.0) ? 1 : 0;
+			}
+		}
+		else
+		{
+			// The steer: the outer axle of wheel 0 is A0 (1, 0, 0), of wheel 1
+			// A1 (-1, 0, 0) (the outside of the mirrored mesh); opposite, and
+			// the left one yawed by 22.5 degrees about +y.
+			const double s = (64.0 * 4.0) * (6.283185307179586 / 4096.0);
+			const double expect[3] = {cos(s), 0.0, -sin(s)};
+			int wheel;
+
+			for (r = 0; r < 3; r++)
+			{
+				const double outLeft = item.wheelA[0][r][0] / size;
+				const double outRight = -item.wheelA[1][r][0] / size;
+				const double e1 = fabs(outLeft + outRight);
+				const double e2 = fabs(outLeft - expect[r]);
+
+				*steerError = (e1 > *steerError) ? e1 : *steerError;
+				*steerError = (e2 > *steerError) ? e2 : *steerError;
+			}
+			for (wheel = 0; wheel < NATIVE_WHEELS_COUNT; wheel++)
+			{
+				double(*A)[3] = item.wheelA[wheel];
+				const double det = (A[0][0] * ((A[1][1] * A[2][2]) - (A[1][2] * A[2][1]))) - (A[0][1] * ((A[1][0] * A[2][2]) - (A[1][2] * A[2][0]))) +
+				                   (A[0][2] * ((A[1][0] * A[2][1]) - (A[1][1] * A[2][0])));
+
+				*proper += (det > 0.0) ? 1 : 0;
+			}
+		}
+	}
+
+	NativeWheels_Forget();
+	return 1;
+}
+
 int NativeDepthCheck_Run(void)
 {
 	static struct NativeDepthCheckPair normal;
@@ -1405,6 +1583,14 @@ int NativeDepthCheck_Run(void)
 	int splitPassed;
 	int ruleCases = 0;
 	int ruleFailed;
+	double ownMirror;
+	double ownSteer;
+	double ownRadius;
+	double ownRoll;
+	int ownProper;
+	int ownZero;
+	int ownRan;
+	int ownPassed;
 
 	// The queue writes its scratch words; outside a game run the scratchpad
 	// has to be set up first.
@@ -1442,6 +1628,9 @@ int NativeDepthCheck_Run(void)
 	twinPassed = twinPassed && twinRowW && twinView;
 	NativeDepthCheck_Sides(&sides);
 	ruleFailed = NativeDepthCheck_RuleFactor(&ruleCases);
+	ownRan = NativeDepthCheck_OwnWheels(&ownMirror, &ownSteer, &ownRadius, &ownRoll, &ownProper, &ownZero);
+	ownPassed = ownRan && (ownMirror < 0.01) && (ownSteer < 0.01) && (fabs(ownRadius - (16.0 * (double)0x0ccc / 4096.0)) < 1e-9) && (ownRoll < 1e-9) &&
+	            (ownProper == 8) && ownZero;
 
 	held = normal.nearPoint.shiftHeld && normal.farPoint.shiftHeld && huge.nearPoint.shiftHeld && huge.farPoint.shiftHeld;
 	charPassed = NativeDepthCheck_PairPassed(&charEven, 2, 0) && NativeDepthCheck_PairPassed(&charOdd, 2, 0);
@@ -1455,7 +1644,7 @@ int NativeDepthCheck_Run(void)
 	itemsPassed = NativeDepthCheck_SplitPassed(&splitPitched, 1, 1) && itemsHeld && (wheelsCompared >= 600) && (wheelsDiffer == 0) && (classesDiffer == 0) &&
 	              (binMiddle == 20) && (binNearest == 10);
 	passed = NativeDepthCheck_PairPassed(&normal, 2, 0) && NativeDepthCheck_PairPassed(&huge, 0, -2) && charPassed && splitPassed && mirrorPassed &&
-	         itemsPassed && twinPassed;
+	         itemsPassed && twinPassed && ownPassed;
 
 	printf("native depth selftest %s: normal shift %d to %d, w %.4f to %.4f, step %.4f percent, rest %.4f percent, matrix part %.4f percent, "
 	       "wrong shift %.1f and %.1f percent, matrix %.1f and %.1f percent, huge shift %d to %d, w %.4f to %.4f, step %.4f percent, rest %.4f percent, "
@@ -1538,6 +1727,11 @@ int NativeDepthCheck_Run(void)
 	       "view: items without a body one middle marker each in their ranges, no paint order and a full arena link nothing (%s), bins %s\n",
 	       twinCells[0], twinCells[1], twinCells[2], twinCells[3], twinHeld, NR_TWIN_ARENA_KEEP, NR_TWIN_BINS_MAX + 1, NR_TWIN_BINS_MAX,
 	       twinRowW ? "same" : "moved", twinView ? "held" : "off", twinPassed ? "passed" : "differ");
+
+	// The own wheels (WHLS version 2), on a fifth line.
+	printf("native depth selftest own wheels: mirror error max %.6f, steer error max %.6f, rim %.6f world units (16 model units x 0x0ccc / 4096), "
+	       "roll error %.3g, rotations %d of 8, wheelSize 0 %s, own wheels %s\n",
+	       ownMirror, ownSteer, ownRadius, ownRoll, ownProper, ownZero ? "held" : "off", ownPassed ? "passed" : "differ");
 
 	return passed ? 0 : 1;
 }

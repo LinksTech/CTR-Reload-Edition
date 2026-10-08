@@ -2213,7 +2213,9 @@ static const char *RldChar_CheckVoices(const u8 *bytes, u64 size, struct RldChar
 // Two optional chunks for the native render path: CNET, a mesh in floats
 // (positions, normals, UV, materials, texture indices, optional wheels), and
 // CTXT, the table of its textures (PNG, decoded to RGBA8). PREVIEW: the game
-// reads them only with --dev --native-preview, and nothing draws them yet.
+// reads and draws them only with the native preview (NATIVE DRIVERS set to
+// PREVIEW on the GRAPHICS page, or --native-preview) at a resolution of 2X or
+// more; otherwise it draws the CMDL.
 //
 // NOT KNOWN TO THE ENVELOPE. RldChar_ChunkLimit above does not name CNET and
 // CTXT, so Rld_OpenAs treats them as unknown chunks: it checks only their
@@ -2222,7 +2224,7 @@ static const char *RldChar_CheckVoices(const u8 *bytes, u64 size, struct RldChar
 // refused or loads exactly as it would without them, in this build and in
 // every build before it. Only those three generic findings refuse the whole
 // file (DAMAGED); everything below - compression, sizes, the limits
-// RLDCHAR_LIMIT_CNET/CTXT, the hashes, every rule CNET-1..11 and CTXT-1..8 -
+// RLDCHAR_LIMIT_CNET/CTXT, the hashes, every rule CNET-1..12 and CTXT-1..8 -
 // costs only the native part: the driver keeps its CMDL. This replaces the
 // earlier plan of a required feature bit for a texture table.
 //
@@ -2259,7 +2261,8 @@ static const char *RldChar_CheckVoices(const u8 *bytes, u64 size, struct RldChar
 //                             u8 flags (bit 0: always nearest), u8 reserved[8] 0}
 //   UV00 optional  stride 8   N x f32[2]; required when a material has a texture
 //   COL0 optional  stride 4   N x RGBA8
-//   WHLS optional  stride 0   the wheels (C.7.4), see RLDCHAR_WHEEL_*; required unless CHRI hides the wheels
+//   WHLS optional  stride 0   the wheels (C.7.4), see RLDCHAR_WHEEL_*; required unless CHRI hides the wheels.
+//                             Its own version: 1 the test wheel, 2 an author's wheel (rule CNET-12)
 //
 // CTXT version 1:
 //   0x00 u16 version 1, 0x02 u16 flags 0, 0x04 u16 count 1..16, 0x06 u16 entryBytes 0x40, 0x08 u32[2] reserved 0
@@ -2296,6 +2299,9 @@ static const char *RldChar_CheckVoices(const u8 *bytes, u64 size, struct RldChar
 #define RLDCHAR_WHEEL_RADIUS_MAX 64.0              // model units
 #define RLDCHAR_WHEEL_POINT_MAX 256.0              // |x|, |y|, |z| of a wheel point, model units
 #define RLDCHAR_WHEEL_SLACK 1.0e-4                 // relative and absolute room of the cylinder test
+#define RLDCHAR_WHEEL_VERSION_TEST 1u              // WHLS version 1: the test wheel (self-tests, --native-probe)
+#define RLDCHAR_WHEEL_VERSION_USER 2u              // WHLS version 2: an author's wheel (make-char --wheel-model), rule CNET-12
+#define RLDCHAR_WHEEL_TEXTURE_EDGE_MAX 1024u       // CNET-12: each side of the texture of a version 2 wheel
 
 #define RLDCHAR_TEX_VERSION 1u
 #define RLDCHAR_TEX_HEAD_BYTES 0x10u
@@ -2361,6 +2367,7 @@ struct RldCharNative
 	const u8 *triangleMaterials;// triangleCount x 2 bytes
 	const u8 *materials;        // materialCount x 16 bytes
 	const u8 *wheel;            // the WHLS section, or NULL (none, or hidden by CHRI)
+	u32 wheelVersion;           // its version: RLDCHAR_WHEEL_VERSION_TEST (1) or _USER (2); 0 = no wheel
 	u32 wheelVertexCount;
 	u32 wheelTriangleCount;
 
@@ -2621,11 +2628,20 @@ static int RldChar_NetKnown(const u8 *cnet, u32 table, u32 count, const char tag
 //   0x00 u32 vertexCount Nw 3..2048, 0x04 u32 triangleCount Tw 1..1024,
 //   0x08 u16 material (< M), 0x0A u16 flags 0, 0x0C f32 radius (0..64),
 //   0x10 f32 halfWidth (0..radius), 0x14 f32[3] front, 0x20 f32[3] rear
-//   (the wheel centers on +X, model units; the -X wheels are the same mesh
-//   turned 180 degrees about Y, never mirrored), 0x2C u32 reserved 0,
+//   (the wheel centers on +X, model units), 0x2C u32 reserved 0,
 //   0x30 Nw x {f32 position[3], f32 normal[3], f32 uv[2]} (center at the
 //   origin, axle along X, outside +X), then Tw x 3 u16 indices.
 //   Size exactly 0x30 + 32 Nw + 6 Tw.
+// The version of the section entry tells the two kinds apart; the layout is
+// the same byte for byte:
+//   1  the test wheel (the self-test's files, --native-probe): the -X wheels
+//      are the same mesh turned 180 degrees about Y, never mirrored.
+//   2  an author's wheel (make-char --wheel-model): the -X wheels are its
+//      mirror image (x negated, the normals mirrored, the winding turned), so
+//      that the outer side is outside on both sides. Rule CNET-12 below
+//      holds its texture to RLDCHAR_WHEEL_TEXTURE_EDGE_MAX.
+// A reader before version 2 refuses such a section by CNET-10 (version), and
+// the driver keeps its CMDL. Drawing either version is the game's part.
 static int RldChar_CheckWheels(const u8 *cnet, const u8 *entry, struct RldCharNative *out)
 {
 	const u32 size = Rld_ReadLE32(&entry[12]);
@@ -2639,9 +2655,9 @@ static int RldChar_CheckWheels(const u8 *cnet, const u8 *entry, struct RldCharNa
 	int k;
 	int axis;
 
-	if (Rld_ReadLE16(&entry[4]) != 1u)
+	if ((Rld_ReadLE16(&entry[4]) != RLDCHAR_WHEEL_VERSION_TEST) && (Rld_ReadLE16(&entry[4]) != RLDCHAR_WHEEL_VERSION_USER))
 	{
-		return RldChar_NativeFail(out, "CNET-10", "WHLS has version %u - this reader knows 1", (unsigned)Rld_ReadLE16(&entry[4]));
+		return RldChar_NativeFail(out, "CNET-10", "WHLS has version %u - this reader knows 1 and 2", (unsigned)Rld_ReadLE16(&entry[4]));
 	}
 	if (Rld_ReadLE16(&entry[6]) != 0u)
 	{
@@ -2747,6 +2763,7 @@ static int RldChar_CheckWheels(const u8 *cnet, const u8 *entry, struct RldCharNa
 	}
 
 	out->wheel = w;
+	out->wheelVersion = Rld_ReadLE16(&entry[4]);
 	out->wheelVertexCount = nw;
 	out->wheelTriangleCount = tw;
 	return 1;
@@ -3249,13 +3266,40 @@ static int RldChar_NativeNet(struct RldCharNative *out, u32 chriFlags, const str
 	return 1;
 }
 
+// CNET-12, an author's wheel (WHLS version 2) only: its one material (the
+// field of WHLS) has no texture - one color - or a texture whose sides are at
+// most RLDCHAR_WHEEL_TEXTURE_EDGE_MAX. The material and the texture may be
+// the body's as well; the bound then holds for that texture. Run once the
+// textures are decoded (their sides are known). 1 = passed.
+static int RldChar_CheckUserWheel(struct RldCharNative *out)
+{
+	const u8 *m;
+	int texture;
+
+	if ((out->wheel == NULL) || (out->wheelVersion != RLDCHAR_WHEEL_VERSION_USER))
+	{
+		return 1;
+	}
+	m = &out->materials[(size_t)Rld_ReadLE16(&out->wheel[0x08]) * RLDCHAR_NET_MATERIAL_BYTES];
+	texture = RldChar_SignedHalf(Rld_ReadLE16(&m[4]));
+	if ((texture >= 0) && ((out->texture[texture].width > RLDCHAR_WHEEL_TEXTURE_EDGE_MAX) || (out->texture[texture].height > RLDCHAR_WHEEL_TEXTURE_EDGE_MAX)))
+	{
+		return RldChar_NativeFail(out, "CNET-12", "the wheel (WHLS version 2) has texture %d of %u x %u - a wheel's texture may have %u on each side",
+		                          texture, (unsigned)out->texture[texture].width, (unsigned)out->texture[texture].height,
+		                          (unsigned)RLDCHAR_WHEEL_TEXTURE_EDGE_MAX);
+	}
+	return 1;
+}
+
 // Step 2: CNET-11 (the textures CNET names are the ones CTXT holds), then
-// CTXT-1..8 on the chunk as stored (the caller's; present 0 = no CTXT).
+// CTXT-1..8 on the chunk as stored (the caller's; present 0 = no CTXT), then
+// CNET-12 (an author's wheel and its texture).
 // out READY, or REFUSED and holding nothing.
 static void RldChar_NativeTextures(struct RldCharNative *out, const u8 *ctxt, size_t size, int present)
 {
 	if ((out->textureCount == 0u) && !present)
 	{
+		// no texture at all: an author's wheel is one color, CNET-12 holds
 		out->state = RLDCHAR_NATIVE_READY;
 		return;
 	}
@@ -3271,7 +3315,7 @@ static void RldChar_NativeTextures(struct RldCharNative *out, const u8 *ctxt, si
 		RldChar_NativeDrop(out);
 		return;
 	}
-	if (RldChar_CheckTextures(ctxt, size, out) == 0)
+	if ((RldChar_CheckTextures(ctxt, size, out) == 0) || !RldChar_CheckUserWheel(out))
 	{
 		RldChar_NativeDrop(out);
 		return;

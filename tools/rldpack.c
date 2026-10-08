@@ -6232,8 +6232,9 @@ static void Rld_Usage(void)
 	printf("                              see below\n");
 	printf("  char-poses ...              check pose PLYs against a character model and\n");
 	printf("                              write them for the preview, see below\n");
-	printf("  char-wheel ...              read a wheel PLY of one's own and write it for\n");
-	printf("                              the preview, see below\n");
+	printf("  char-wheel ...              the preview of a wheel model (OBJ or PLY) for\n");
+	printf("                              Reload Studio, see below (the wheel of a character:\n");
+	printf("                              make-char --wheel-model, preview)\n");
 	printf("  info     <file>             show the format, META and PARM, leaves LEVD/VRMD untouched\n");
 	printf("  verify   <file>             check every chunk against its hash, SNDB and PARM\n");
 	printf("                              with the game's own reader, and warn if the track\n");
@@ -6453,7 +6454,8 @@ static int Cmd_InfoMachine(int argc, char *argv[])
 // the head of COMMANDS. The reader and the model check are include/rldchar.inc.
 #include "rldpack_char.inc"
 
-// char-poses and char-wheel: they use the PLY reader and the chain of make-char.
+// char-poses uses the PLY reader and the chain of make-char; char-wheel uses the
+// PLY and OBJ readers of make-char.
 #include "rldpack_anim.inc"
 #include "rldpack_wheel.inc"
 

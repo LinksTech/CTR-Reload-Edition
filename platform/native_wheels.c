@@ -6,7 +6,8 @@
 // instance it drives (a new driver or instance starts the entry anew), moved on
 // once per logic tick from the render layer's pull (platform/
 // native_render_layer.c, NativeRenderLayer_Pull, which sees the new tick on
-// gGT->timer). Only while the native probe is on; without it nothing here runs.
+// gGT->timer). Only while the native probe is on or a custom character is
+// drawn natively; without either nothing here runs.
 //
 // WHAT IT TAKES, all read from the driver of the seat in the tick:
 // - ROLLING. The game has none: the retail wheels are 17 sprites of views
@@ -24,6 +25,11 @@
 //   way of a tick is speedApprox * elapsedTimeMS / 32 / 256 world units, and the
 //   roll step is that way over the radius (wheelSize / 256, see
 //   NativeWheels_Radius): speedApprox * elapsedTimeMS / (32 * wheelSize) radians.
+//   The own wheel of a custom character (WHLS 2) rolls over its own radius in
+//   world units, ownRadius * wheelSize / 4096 (NativeWheels_OwnScale): the way
+//   over that, speedApprox * elapsedTimeMS / (8192 * ownRadius * wheelSize /
+//   4096) radians - the same as above for a radius of 16 model units, the
+//   retail size, so the wheel neither slips nor spins on the road.
 //   Ghosts would need the position instead (they write no speed, plan C.7.1);
 //   the probe binds only the seats of a race, never a ghost.
 // - STEERING, front wheels only: driver->wheelRotation << 2 in the angle unit of
@@ -106,6 +112,20 @@ double NativeWheels_Radius(const struct NativeWheelPose *pose)
 double NativeWheels_HalfWidth(const struct NativeWheelPose *pose)
 {
 	return NativeWheels_Radius(pose) * 0.5;
+}
+
+double NativeWheels_OwnScale(const struct NativeWheelPose *pose)
+{
+	return (double)pose->wheelSize / 4096.0;
+}
+
+double NativeWheels_RollRadius(const struct NativeWheelPose *pose)
+{
+	if (pose->ownRadius > 0.0)
+	{
+		return pose->ownRadius * NativeWheels_OwnScale(pose);
+	}
+	return NativeWheels_Radius(pose);
 }
 
 internal void NativeWheels_Normalize(double v[3])
@@ -201,7 +221,8 @@ internal void NativeWheels_Frames(struct NativeWheelPose *pose)
 	}
 }
 
-void NativeWheels_Pull(int seat, const struct Driver *driver, const struct Instance *inst, int newTick, u32 timer, int elapsedTimeMS, int counted)
+void NativeWheels_Pull(int seat, const struct Driver *driver, const struct Instance *inst, int newTick, u32 timer, int elapsedTimeMS, int counted,
+                       double ownRadius)
 {
 	struct NativeWheelEntry *e;
 	struct NativeWheelPose *pose;
@@ -244,13 +265,21 @@ void NativeWheels_Pull(int seat, const struct Driver *driver, const struct Insta
 	pose->wheelRotation = driver->wheelRotation;
 	pose->hazardTimer = driver->hazardTimer;
 	pose->wheelSize = driver->wheelSize;
+	pose->ownRadius = (ownRadius > 0.0) ? ownRadius : 0.0;
 	pose->steer = (double)((int)driver->wheelRotation * 4) * NATIVE_WHEELS_ANGLE;
 
 	// The roll step of this tick (see the head of the file). No wheel, no roll.
 	pose->rollStep = 0.0;
 	if ((pose->ticks > 0) && (pose->wheelSize != 0))
 	{
-		pose->rollStep = ((double)pose->speed * (double)elapsedTimeMS) / (32.0 * (double)pose->wheelSize);
+		if (pose->ownRadius > 0.0)
+		{
+			pose->rollStep = ((double)pose->speed * (double)elapsedTimeMS) / (8192.0 * NativeWheels_RollRadius(pose));
+		}
+		else
+		{
+			pose->rollStep = ((double)pose->speed * (double)elapsedTimeMS) / (32.0 * (double)pose->wheelSize);
+		}
 	}
 	pose->roll = fmod(pose->roll + pose->rollStep, NATIVE_WHEELS_TWO_PI);
 	if (pose->roll < 0.0)

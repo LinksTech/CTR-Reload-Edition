@@ -4727,6 +4727,9 @@ static int RldObj_Points(const struct RldObjModel *m, const u8 *cornerRgb, struc
 // (make-char --native-model on) and only for the model itself, never for an
 // own mask; it reads and changes nothing of the reader's own data, so the
 // points, faces and colors the chain gets are the same with and without it.
+// A wheel of one's own (make-char --wheel-model, RLDMK_ROLE_CHAR_WHEEL) is
+// taken the same way into s_rldObjWheel: the reader stops after the copy -
+// a wheel has no CMDL, so no split, no points and no messages about them.
 
 struct RldObjNativeTexture
 {
@@ -4775,6 +4778,7 @@ struct RldObjNative
 
 static int s_rldObjNativeWant;
 static struct RldObjNative s_rldObjNative;
+static struct RldObjNative s_rldObjWheel;
 
 static void RldObj_FreeNative(struct RldObjNative *n)
 {
@@ -4804,10 +4808,9 @@ static void *RldObj_CopyOf(const void *from, size_t bytes)
 	return to;
 }
 
-// The copy, after RldObj_Textures and before the split. 0 = out of memory (said).
-static int RldObj_CaptureNative(const struct RldObjModel *m)
+// The copy into n, after RldObj_Textures and before the split. 0 = out of memory (said).
+static int RldObj_CaptureNative(const struct RldObjModel *m, struct RldObjNative *n)
 {
-	struct RldObjNative *n = &s_rldObjNative;
 	u32 i;
 
 	RldObj_FreeNative(n);
@@ -4977,7 +4980,17 @@ static int RldObj_Parse(const char *path, const u8 *data, size_t size, struct Rl
 	// The native model's source (--native-model on): the faces as written, before the split.
 	if (ok && s_rldObjNativeWant && (info->role == RLDMK_ROLE_MAIN))
 	{
-		ok = RldObj_CaptureNative(&m);
+		ok = RldObj_CaptureNative(&m, &s_rldObjNative);
+	}
+	// A wheel of one's own: the copy is all (no CMDL, no points).
+	if (info->role == RLDMK_ROLE_CHAR_WHEEL)
+	{
+		ok = ok && RldObj_CaptureNative(&m, &s_rldObjWheel);
+		free(cornerRgb);
+		free(cornerSource);
+		free(nameUsed);
+		RldObj_FreeModel(&m);
+		return ok;
 	}
 
 	// Textures kept for the split: split, the colors again for the faces

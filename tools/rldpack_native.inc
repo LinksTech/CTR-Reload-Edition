@@ -13,8 +13,9 @@
 //       CMDL that make-char built.
 //   --native-model on             the author's own OBJ, its materials and
 //       texture files (renderer concept C.11), placed by the same chain as
-//       its CMDL: THE NATIVE MODEL OF AN OBJ below. Only with --wheels off
-//       (make-char refuses it otherwise), so never with the test wheel.
+//       its CMDL: THE NATIVE MODEL OF AN OBJ below. With --wheels off, or
+//       with a wheel of one's own (--wheel-model, WHLS version 2: A WHEEL OF
+//       ONE'S OWN below); never with the test wheel.
 // Without either switch no byte of a container changes (the golden hashes
 // of the self-test); the two switches exclude each other.
 //
@@ -615,14 +616,15 @@ static u8 *RldMk_NativeCnet(const u8 *cmdl, size_t cmdlSize, int poses, int whee
 // reader could not use (missing, unreadable) is drawn untextured in its
 // color, as the CMDL draws it (warning native-texture).
 //
-// WHEELS: CHRI hides the wheels (--wheels off): no WHLS. make-char passes
-// --native-model on only with --wheels off (it refuses the switch beside
-// the kart wheels, and the game refuses such a native part and draws the
-// CMDL), so a character never gets the test wheel any more. The branch
-// below that writes it (wheels 1: the test wheel of the probe at the retail
-// wheel points, RldMk_NativeWheel, in dark grey, for CNET-10: a native body
-// is never drawn with the sprite wheels) stays for the self-test's files
-// (rldpack_native_test.inc, good_obj-native) and is not reached by make-char.
+// WHEELS: CHRI hides the wheels (--wheels off): no WHLS. With the wheels
+// shown make-char passes --native-model on only with --wheel-model: the
+// wheel of one's own (A WHEEL OF ONE'S OWN below) becomes WHLS version 2,
+// its material the last of MATL, its texture an entry of CTXT. A character
+// never gets the test wheel: the branch that writes it (wheels 1 without a
+// wheel of one's own: the test wheel of the probe at the retail wheel
+// points, RldMk_NativeWheel, WHLS version 1, in dark grey) stays for the
+// self-test's files (rldpack_native_test.inc, good_obj-native) and is not
+// reached by make-char.
 //
 // LIMITS (renderer concept C.10; the reader's RLDCHAR_*): 20000 vertices,
 // 30000 triangles, 64 materials (the wheel's included), 16 textures, 64 MiB
@@ -648,6 +650,8 @@ struct RldMkNativeFacts
 	u32 shared;                // texture files that share a CTXT entry with an earlier one (the same bytes)
 	int colors;                // COL0 written
 	int wheels;                // WHLS written
+	u32 wheelVersion;          // its version: 1 the test wheel, 2 a wheel of one's own (--wheel-model); 0 none
+	u32 wheelTexture;          // the CTXT entry of a wheel of one's own, RLDMK_NONE = one color
 	u32 width[RLDCHAR_TEX_COUNT_MAX];
 	u32 height[RLDCHAR_TEX_COUNT_MAX];
 	int converted[RLDCHAR_TEX_COUNT_MAX];   // decoded and written again
@@ -857,7 +861,9 @@ static void RldMk_NativeFreePicture(struct RldObjTexture *t, int fromImg)
 
 // One texture file for CTXT: read again - the bytes the reader used, its
 // digest must match -, its sides checked, its PNG bytes kept or made. 0 = said.
-static int RldMk_NativeTextureFile(const struct RldObjNativeTexture *file, struct RldMkNativeTexture *out)
+// edgeMax: RLDCHAR_TEX_EDGE_MAX for the body, RLDCHAR_WHEEL_TEXTURE_EDGE_MAX
+// for a wheel of one's own (rule CNET-12; refused as wheel-texture-size).
+static int RldMk_NativeTextureFile(const struct RldObjNativeTexture *file, struct RldMkNativeTexture *out, u32 edgeMax)
 {
 	static const u8 signature[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
 	struct RldObjTexture decoded;
@@ -892,6 +898,21 @@ static int RldMk_NativeTextureFile(const struct RldObjNativeTexture *file, struc
 
 	out->width = decoded.width;
 	out->height = decoded.height;
+	if ((edgeMax < RLDCHAR_TEX_EDGE_MAX) && ((decoded.width > edgeMax) || (decoded.height > edgeMax) || !RldChar_TexEdge(decoded.width) ||
+	                                         !RldChar_TexEdge(decoded.height)))
+	{
+		const u32 wantWidth = RldMk_NativePowerNear(decoded.width);
+		const u32 wantHeight = RldMk_NativePowerNear(decoded.height);
+
+		RldMk_Say("error", "wheel-texture-size", file->path,
+		          "The wheel's texture %s is %u x %u pixels; a wheel's texture takes each side as a power of two from %u to %u (16, 32, 64, 128, 256, "
+		          "512, 1024). Scale it in an image editor, for example to %u x %u, and build again - rldpack never scales a texture.",
+		          Rld_LastComponent(file->path), decoded.width, decoded.height, RLDCHAR_TEX_EDGE_MIN, edgeMax, (wantWidth > edgeMax) ? edgeMax : wantWidth,
+		          (wantHeight > edgeMax) ? edgeMax : wantHeight);
+		free(data);
+		RldMk_NativeFreePicture(&decoded, fromImg);
+		return 0;
+	}
 	if (!RldChar_TexEdge(decoded.width) || !RldChar_TexEdge(decoded.height))
 	{
 		RldMk_Say("error", "native-texture-size", file->path,
@@ -998,13 +1019,577 @@ static void RldMk_NativeColor(const struct RldObjNative *src, const struct RldOb
 	rgba[3] = 255u;
 }
 
+//========================================================================================
+// A WHEEL OF ONE'S OWN (make-char --wheel-model, PREVIEW): WHLS VERSION 2
+//========================================================================================
+//
+// One mesh for all four wheels of the native model, from an OBJ (with its MTL
+// file and texture, read by the same OBJ reader as the model:
+// RLDMK_ROLE_CHAR_WHEEL, the faces as written in s_rldObjWheel) or a PLY (as
+// make-char reads one; it has no texture coordinates, so the wheel is one
+// color). The wheel's axes are those of tools/rldpack_wheel.inc: the centre
+// in the origin, the axle along X, the outer side toward +X, +Y up, +Z
+// forward, after --up and --forward of the model (the same switches turn
+// both). The game draws the mesh on the +X side as it is and on the -X side
+// as its mirror image (WHLS version 2, include/rldchar.inc).
+//
+// PLACE AND SIZE. The mesh is centred on the middle of its box (as char-wheel
+// centres its preview) and scaled by one factor so that its farthest vertex
+// from the axle lies at the radius r = RLDDUM_TIRE_HALF_SIZE (16 model units,
+// the retail wheel) x --wheel-size / 100 (50..200 %). The wheel points are the
+// retail ones (game/DrawTires.c:338-367, tools/rldpack_dummy.inc): x
+// RLDDUM_TIRE_X, z RLDDUM_TIRE_FRONT_Z and RLDDUM_TIRE_REAR_Z; their height is
+// r instead of RLDDUM_TIRE_Y, so that the bottom of the wheel stays on y 0
+// where the retail wheel touches the ground (16 - 16 = 0): a larger wheel
+// lifts its middle by the change of its radius. The kart is not scaled by
+// --size (tools/rldpack_char.inc, RldMk_StepSize: driver and steering wheel
+// only), and the game's instance scale reaches the points through the body's
+// matrix, so these are model units for every driver.
+//
+// NORMALS from the geometry, as the body's: the area-weighted sum of the
+// triangles around a vertex that share its v and its vn (a PLY: its v),
+// normalized. UV as the body's (RldMk_NativeUv: the map's -o, -s, -clamp, v
+// from the top).
+//
+// ONE MATERIAL (renderer wheel concept E2): every face of an OBJ wheel has
+// the same usemtl name (or none). Its texture, when the reader read it, is a
+// CTXT entry of at most RLDCHAR_WHEEL_TEXTURE_EDGE_MAX on each side (rule
+// CNET-12); its color Kd, else white with a texture, else grey 0x80. A PLY
+// wheel takes the mean of its vertex colors. Vertex colors are not drawn.
+//
+// LIMITS (rule CNET-10): RLDCHAR_WHEEL_TRIANGLES_MAX triangles and
+// RLDCHAR_WHEEL_VERTICES_MAX vertices (one per corner with its own v, vt and
+// vn); a texture over 1024; more than one material. Over a limit the wheel is
+// refused with a message and nothing is written - never reduced, never
+// scaled. Triangles without area are left out (counted).
+
+#define RLDMK_WHEEL_SIZE_MIN 50u
+#define RLDMK_WHEEL_SIZE_MAX 200u
+#define RLDMK_WHEEL_ROUND 0.8      // height and length within this ratio: round about X (as RLDWHEEL_ROUND)
+
+struct RldMkUserWheel
+{
+	u8 *whls;                  // the WHLS section; the material field is placed by RldMk_NativeModel
+	size_t whlsSize;
+	u8 rgba[4];                // the color of its material
+	int textured;              // texture is its CTXT picture
+	struct RldMkNativeTexture texture;
+	u32 vertices;
+	u32 triangles;
+	u32 dropped;               // triangles without area, left out
+	u32 flat;                  // normals (0, 1, 0) for want of area
+	u32 sizePercent;
+	double radius;             // model units
+	double halfWidth;
+	int fromPly;
+};
+
+static void RldMk_UserWheelFree(struct RldMkUserWheel *w)
+{
+	free(w->whls);
+	free(w->texture.png);
+	memset(w, 0, sizeof(*w));
+}
+
+// A wheel's texture that is there but cannot be used (state
+// RLDMK_TEXTURE_UNREADABLE or RLDMK_TEXTURE_UNSUPPORTED): an error, never the
+// material's color - only a missing texture leaves the wheel in its color
+// (warning wheel-texture). make-char and char-wheel say the same.
+static void RldMk_SayWheelTextureFile(const char *path, int state, const char *material)
+{
+	RldMk_Say("error", "wheel-texture-file", path,
+	          "The texture %s of the wheel's material \"%s\" %s. A wheel's texture is a PNG, JPEG, TGA or BMP, each side a power of two from %u to %u; "
+	          "save it as one and build again - a wheel is never drawn in its color in place of a texture that is there.",
+	          Rld_LastComponent(path), material,
+	          (state == RLDMK_TEXTURE_UNREADABLE) ? "cannot be read" : "is not a picture rldpack reads (PNG, JPEG, TGA or BMP up to 4096 pixels on a side)",
+	          RLDCHAR_TEX_EDGE_MIN, RLDCHAR_WHEEL_TEXTURE_EDGE_MAX);
+}
+
+// The corner c (0..n-1) of PLY face f.
+static u32 RldMk_UserWheelPlyCorner(const struct RldMkPly *ply, u32 f, u32 c)
+{
+	return (ply->cornerCount[f] <= 4u) ? ply->corners[4u * f + c] : ply->more[ply->moreStart[f] + c];
+}
+
+// The wheel of the file read (an OBJ: src captured; a PLY: ply), once.
+// 1 = usable (w filled); 0 = every reason said, w empty.
+static int RldMk_UserWheelBuild(const struct RldObjNative *src, const struct RldMkPly *ply, const struct RldMkOptions *bodyOpt, u32 sizePercent,
+                                struct RldMkUserWheel *w)
+{
+	struct RldMkOptions axes = *bodyOpt;
+	struct RldMkNativeTable vertices;
+	struct RldMkNativeTable groups;
+	const int fromPly = (src == NULL);
+	const u32 faceCount = fromPly ? ply->faceCount : src->faceCount;
+	const u32 vCount = fromPly ? ply->vertexCount : src->vCount;
+	const struct RldObjNativeMaterial *m = NULL;
+	const double radius = RLDDUM_TIRE_HALF_SIZE * (double)sizePercent / 100.0;
+	u32 cornerTotal = 0;
+	u32 slot = RLDMK_NONE;
+	u32 *vertexV = NULL;        // per wheel vertex: v, vt, group
+	u32 *vertexT = NULL;
+	u32 *vertexGroup = NULL;
+	u32 *tri = NULL;            // 3 per triangle
+	double *xyz = NULL;         // per v, in the game's axes
+	double *sum = NULL;         // per group
+	u32 triCount = 0;
+	u32 noUv = 0;
+	u32 colored = 0;
+	double lo[3] = {1.0e300, 1.0e300, 1.0e300};
+	double hi[3] = {-1.0e300, -1.0e300, -1.0e300};
+	double centre[3] = {0.0, 0.0, 0.0};
+	double far2 = 0.0;
+	double halfX = 0.0;
+	double factor = 1.0;
+	u32 f;
+	u32 i;
+	int axis;
+	int ok = 1;
+
+	memset(w, 0, sizeof(*w));
+	memset(&vertices, 0, sizeof(vertices));
+	memset(&groups, 0, sizeof(groups));
+	w->sizePercent = sizePercent;
+	w->fromPly = fromPly;
+	axes.scale = 1.0;
+
+	for (f = 0; f < faceCount; f++)
+	{
+		const u32 n = fromPly ? ply->cornerCount[f] : src->faceCorners[f];
+
+		cornerTotal += (n >= 3u) ? (3u * (n - 2u)) : 0u;
+	}
+
+	// One material: the usemtl name of every face (an OBJ).
+	for (f = 0; !fromPly && (f < faceCount); f++)
+	{
+		const u32 s = (src->faceName[f] != RLDMK_NONE) ? src->faceName[f] : src->nameCount;
+
+		if (slot == RLDMK_NONE)
+		{
+			slot = s;
+		}
+		else if (s != slot)
+		{
+			u32 names = 0;
+			u32 k;
+			u8 *seen = (u8 *)calloc((size_t)src->nameCount + 1u, 1u);
+
+			for (k = 0; (seen != NULL) && (k < faceCount); k++)
+			{
+				const u32 t = (src->faceName[k] != RLDMK_NONE) ? src->faceName[k] : src->nameCount;
+
+				names += seen[t] ? 0u : 1u;
+				seen[t] = 1u;
+			}
+			free(seen);
+			RldMk_Say("error", "wheel-materials", NULL,
+			          "The wheel uses %u materials; a wheel has one (one texture, or one color). Join them in Blender into one material with one "
+			          "texture (a texture atlas).",
+			          names);
+			return 0;
+		}
+	}
+	if (!fromPly && (slot != RLDMK_NONE) && (slot < src->nameCount))
+	{
+		m = &src->names[slot];
+	}
+
+	xyz = (double *)malloc(((size_t)vCount + 1u) * 3u * sizeof(double));
+	vertexV = (u32 *)malloc(((size_t)cornerTotal + 1u) * sizeof(u32));
+	vertexT = (u32 *)malloc(((size_t)cornerTotal + 1u) * sizeof(u32));
+	vertexGroup = (u32 *)malloc(((size_t)cornerTotal + 1u) * sizeof(u32));
+	tri = (u32 *)malloc(((size_t)cornerTotal + 1u) * sizeof(u32));
+	if ((xyz == NULL) || (vertexV == NULL) || (vertexT == NULL) || (vertexGroup == NULL) || (tri == NULL) ||
+	    !RldMk_NativeTableInit(&vertices, cornerTotal + 1u) || !RldMk_NativeTableInit(&groups, cornerTotal + 1u))
+	{
+		ok = RldMk_OutOfMemory();
+	}
+
+	// The color and the texture of the one material.
+	if (ok && fromPly)
+	{
+		u64 total[3] = {0, 0, 0};
+		int differ = 0;
+
+		for (i = 0; i < vCount; i++)
+		{
+			total[0] += ply->rgb[3u * i + 0u];
+			total[1] += ply->rgb[3u * i + 1u];
+			total[2] += ply->rgb[3u * i + 2u];
+			differ |= (memcmp(&ply->rgb[3u * i], &ply->rgb[0], 3u) != 0);
+		}
+		for (axis = 0; axis < 3; axis++)
+		{
+			w->rgba[axis] = (u8)((vCount != 0u) ? ((total[axis] + (vCount / 2u)) / vCount) : 128u);
+		}
+		w->rgba[3] = 255u;
+		if (ply->hasColors && differ)
+		{
+			RldMk_Say("info", "wheel-colors", NULL,
+			          "The wheel's vertex colors are taken as one color (%02X%02X%02X, their mean): a wheel has one material. For a picture on the wheel "
+			          "use an OBJ with a texture.",
+			          w->rgba[0], w->rgba[1], w->rgba[2]);
+		}
+	}
+	else if (ok)
+	{
+		double c[3];
+
+		if ((m != NULL) && (m->texture != RLDMK_NONE) && (m->texture < src->textureCount) && (src->textures[m->texture].state == RLDMK_TEXTURE_OK))
+		{
+			ok = RldMk_NativeTextureFile(&src->textures[m->texture], &w->texture, RLDCHAR_WHEEL_TEXTURE_EDGE_MAX);
+			w->textured = ok;
+		}
+		else if ((m != NULL) && m->hasMap && (m->texture != RLDMK_NONE) && (m->texture < src->textureCount) &&
+		         (src->textures[m->texture].state != RLDMK_TEXTURE_MISSING))
+		{
+			RldMk_SayWheelTextureFile(src->textures[m->texture].path, src->textures[m->texture].state, m->name);
+			ok = 0;
+		}
+		else if ((m != NULL) && m->hasMap)
+		{
+			RldMk_Say("warning", "wheel-texture", m->name,
+			          "The texture of the wheel's material \"%s\" is not there; the wheel is drawn in the material's color.", m->name);
+		}
+		for (axis = 0; axis < 3; axis++)
+		{
+			c[axis] = ((m != NULL) && m->hasKd) ? m->kd[axis] : (w->textured ? 1.0 : (128.0 / 255.0));
+		}
+		RldObj_Store(w->rgba, c);
+		w->rgba[3] = 255u;
+		for (i = 0; i < vCount; i++)
+		{
+			colored += src->vColored[i] ? 1u : 0u;
+		}
+		if (colored != 0u)
+		{
+			RldMk_Say("info", "wheel-colors", NULL, "The wheel's vertex colors are not drawn: a wheel has one material (its texture or its color).");
+		}
+	}
+
+	// The positions in the game's axes.
+	for (i = 0; ok && (i < vCount); i++)
+	{
+		RldMk_Axes(&axes, fromPly ? &ply->xyz[3u * i] : &src->xyz[3u * i], &xyz[3u * i]);
+	}
+
+	// The triangles: each face as a fan; one vertex per (v, vt, vn).
+	for (f = 0; ok && (f < faceCount); f++)
+	{
+		const u32 n = fromPly ? ply->cornerCount[f] : src->faceCorners[f];
+		u32 k;
+
+		for (k = 1; (k + 1u) < n; k++)
+		{
+			u32 v[3];
+			u32 vt[3];
+			u32 vn[3];
+			double e1[3];
+			double e2[3];
+			double cross[3];
+			int c;
+
+			for (c = 0; c < 3; c++)
+			{
+				const u32 at = (c == 0) ? 0u : (k + (u32)c - 1u);
+
+				if (fromPly)
+				{
+					v[c] = RldMk_UserWheelPlyCorner(ply, f, at);
+					vt[c] = RLDMK_NONE;
+					vn[c] = RLDMK_NONE;
+				}
+				else
+				{
+					v[c] = src->cornerV[src->faceFirst[f] + at];
+					vt[c] = src->cornerT[src->faceFirst[f] + at];
+					vn[c] = src->cornerN[src->faceFirst[f] + at];
+				}
+			}
+			for (axis = 0; axis < 3; axis++)
+			{
+				e1[axis] = xyz[3u * v[1] + (u32)axis] - xyz[3u * v[0] + (u32)axis];
+				e2[axis] = xyz[3u * v[2] + (u32)axis] - xyz[3u * v[0] + (u32)axis];
+			}
+			cross[0] = e1[1] * e2[2] - e1[2] * e2[1];
+			cross[1] = e1[2] * e2[0] - e1[0] * e2[2];
+			cross[2] = e1[0] * e2[1] - e1[1] * e2[0];
+			if ((v[0] == v[1]) || (v[1] == v[2]) || (v[0] == v[2]) || (((cross[0] * cross[0]) + (cross[1] * cross[1]) + (cross[2] * cross[2])) == 0.0))
+			{
+				w->dropped++;
+				continue;
+			}
+			for (c = 0; c < 3; c++)
+			{
+				const u32 key[RLDMK_NATIVE_KEY] = {v[c], vt[c], vn[c], 0u, 0u, 0u};
+				const u32 groupKey[RLDMK_NATIVE_KEY] = {v[c], vn[c], 0u, 0u, 0u, 0u};
+				int added;
+				int groupAdded;
+				const u32 index = RldMk_NativeFind(&vertices, key, 1, &added);
+
+				if (added)
+				{
+					vertexV[index] = v[c];
+					vertexT[index] = vt[c];
+					vertexGroup[index] = RldMk_NativeFind(&groups, groupKey, 1, &groupAdded);
+					noUv += (w->textured && (vt[c] == RLDMK_NONE)) ? 1u : 0u;
+					for (axis = 0; axis < 3; axis++)
+					{
+						lo[axis] = (xyz[3u * v[c] + (u32)axis] < lo[axis]) ? xyz[3u * v[c] + (u32)axis] : lo[axis];
+						hi[axis] = (xyz[3u * v[c] + (u32)axis] > hi[axis]) ? xyz[3u * v[c] + (u32)axis] : hi[axis];
+					}
+				}
+				tri[3u * triCount + (u32)c] = index;
+			}
+			triCount++;
+		}
+	}
+
+	// The limits; nothing is reduced.
+	if (ok && (triCount > RLDCHAR_WHEEL_TRIANGLES_MAX))
+	{
+		RldMk_Say("error", "wheel-triangles", NULL,
+		          "The wheel has %u triangles; a wheel may have at most %u (one mesh, drawn four times). Reduce it in Blender (Decimate modifier) - "
+		          "rldpack never reduces a wheel.",
+		          triCount, RLDCHAR_WHEEL_TRIANGLES_MAX);
+		ok = 0;
+	}
+	if (ok && (vertices.count > RLDCHAR_WHEEL_VERTICES_MAX))
+	{
+		RldMk_Say("error", "wheel-vertices", NULL,
+		          "The wheel has %u vertices (one per corner with its own v, vt and vn); a wheel may have at most %u. Reduce it in Blender (Decimate "
+		          "modifier), or merge its vertices (Merge by Distance).",
+		          vertices.count, RLDCHAR_WHEEL_VERTICES_MAX);
+		ok = 0;
+	}
+	if (ok && (noUv != 0u))
+	{
+		RldMk_Say("error", "wheel-uv", NULL,
+		          "%u corners of the textured wheel have no texture coordinates (vt). Unwrap the wheel (UV) in Blender.", noUv);
+		ok = 0;
+	}
+	if (ok && ((triCount == 0u) || (vertices.count < 3u)))
+	{
+		RldMk_Say("error", "wheel-flat", NULL, "The wheel has no triangle with an area. Export the whole wheel, round about its axle.");
+		ok = 0;
+	}
+
+	// The size: centred on its box, its farthest vertex from the axle at the radius.
+	if (ok)
+	{
+		for (axis = 0; axis < 3; axis++)
+		{
+			centre[axis] = 0.5 * (lo[axis] + hi[axis]);
+		}
+		for (i = 0; i < vertices.count; i++)
+		{
+			const double *p = &xyz[3u * vertexV[i]];
+			const double y = p[1] - centre[1];
+			const double z = p[2] - centre[2];
+			const double x = (p[0] < centre[0]) ? (centre[0] - p[0]) : (p[0] - centre[0]);
+
+			far2 = ((y * y) + (z * z) > far2) ? ((y * y) + (z * z)) : far2;
+			halfX = (x > halfX) ? x : halfX;
+		}
+		if (!(far2 > 0.0) || !(halfX > 0.0))
+		{
+			RldMk_Say("error", "wheel-flat", NULL,
+			          "The wheel has %s. Export the whole wheel: round about its axle, the axle along X (from left to right).",
+			          (far2 > 0.0) ? "no width along its axle (X)" : "no height and no length - all its corners lie on the axle");
+			ok = 0;
+		}
+	}
+	if (ok)
+	{
+		factor = radius / RldMk_Sqrt(far2);
+		w->radius = radius;
+		w->halfWidth = halfX * factor;
+		if (w->halfWidth > radius)
+		{
+			RldMk_Say("error", "wheel-wide", NULL,
+			          "The wheel is %.1f wide but only %.1f across: its axle is probably not the X axis. Turn it in Blender so that the axle runs from "
+			          "left to right (a wheel is at most as wide as it is across).",
+			          2.0 * w->halfWidth, 2.0 * radius);
+			ok = 0;
+		}
+		else if (((hi[1] - lo[1]) < (RLDMK_WHEEL_ROUND * (hi[2] - lo[2]))) || ((hi[2] - lo[2]) < (RLDMK_WHEEL_ROUND * (hi[1] - lo[1]))))
+		{
+			RldMk_Say("warning", "wheel-off-axis", NULL,
+			          "The wheel is %.1f high but %.1f long: it is not round about the X axis, so its axle is probably another one. Turn it in Blender so "
+			          "that the axle runs from left to right.",
+			          (hi[1] - lo[1]) * factor, (hi[2] - lo[2]) * factor);
+		}
+	}
+
+	// WHLS: the head, the vertices (the normals of their groups), the triangles.
+	if (ok)
+	{
+		const u32 nw = vertices.count;
+		u8 *out;
+
+		w->whlsSize = RLDCHAR_WHEEL_HEAD_BYTES + ((size_t)nw * RLDCHAR_WHEEL_VERTEX_BYTES) + ((size_t)triCount * 6u);
+		w->whls = (u8 *)calloc(1, w->whlsSize);
+		sum = (double *)calloc(((size_t)groups.count + 1u) * 3u, sizeof(double));
+		if ((w->whls == NULL) || (sum == NULL))
+		{
+			ok = RldMk_OutOfMemory();
+		}
+		out = w->whls;
+		if (ok)
+		{
+			Rld_WriteLE32(&out[0x00], nw);
+			Rld_WriteLE32(&out[0x04], triCount);
+			RldMk_PutF32(&out[0x0C], radius);
+			RldMk_PutF32(&out[0x10], w->halfWidth);
+			RldMk_PutF32(&out[0x14], RLDDUM_TIRE_X);
+			RldMk_PutF32(&out[0x18], radius);
+			RldMk_PutF32(&out[0x1C], RLDDUM_TIRE_FRONT_Z);
+			RldMk_PutF32(&out[0x20], RLDDUM_TIRE_X);
+			RldMk_PutF32(&out[0x24], radius);
+			RldMk_PutF32(&out[0x28], RLDDUM_TIRE_REAR_Z);
+
+			for (i = 0; i < triCount; i++)
+			{
+				const double *pa = &xyz[3u * vertexV[tri[3u * i + 0u]]];
+				const double *pb = &xyz[3u * vertexV[tri[3u * i + 1u]]];
+				const double *pc = &xyz[3u * vertexV[tri[3u * i + 2u]]];
+				const double e1[3] = {pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]};
+				const double e2[3] = {pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2]};
+				const double n[3] = {e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]};
+				int c;
+
+				for (c = 0; c < 3; c++)
+				{
+					double *g = &sum[(size_t)vertexGroup[tri[3u * i + (u32)c]] * 3u];
+
+					g[0] += n[0];
+					g[1] += n[1];
+					g[2] += n[2];
+				}
+				for (c = 0; c < 3; c++)
+				{
+					Rld_WriteLE16(&out[RLDCHAR_WHEEL_HEAD_BYTES + ((size_t)nw * RLDCHAR_WHEEL_VERTEX_BYTES) + (6u * i) + (2u * (u32)c)], tri[3u * i + (u32)c]);
+				}
+			}
+			for (i = 0; i < nw; i++)
+			{
+				u8 *v = &out[RLDCHAR_WHEEL_HEAD_BYTES + ((size_t)i * RLDCHAR_WHEEL_VERTEX_BYTES)];
+				const double *g = &sum[(size_t)vertexGroup[i] * 3u];
+				const double length = RldMk_Sqrt((g[0] * g[0]) + (g[1] * g[1]) + (g[2] * g[2]));
+
+				for (axis = 0; axis < 3; axis++)
+				{
+					RldMk_PutF32(&v[4 * axis], (xyz[3u * vertexV[i] + (u32)axis] - centre[axis]) * factor);
+				}
+				if (length > 1.0e-12)
+				{
+					RldMk_PutF32(&v[12], g[0] / length);
+					RldMk_PutF32(&v[16], g[1] / length);
+					RldMk_PutF32(&v[20], g[2] / length);
+				}
+				else
+				{
+					RldMk_PutF32(&v[16], 1.0);
+					w->flat++;
+				}
+				if (w->textured)
+				{
+					double uv[2];
+
+					RldMk_NativeUv(src, m, vertexT[i], uv);
+					RldMk_PutF32(&v[24], uv[0]);
+					RldMk_PutF32(&v[28], uv[1]);
+					w->texture.outside |= (uv[0] < 0.0) || (uv[0] > 1.0) || (uv[1] < 0.0) || (uv[1] > 1.0);
+				}
+			}
+			w->vertices = nw;
+			w->triangles = triCount;
+		}
+	}
+
+	RldMk_NativeTableFree(&vertices);
+	RldMk_NativeTableFree(&groups);
+	free(xyz);
+	free(vertexV);
+	free(vertexT);
+	free(vertexGroup);
+	free(tri);
+	free(sum);
+	if (!ok)
+	{
+		RldMk_UserWheelFree(w);
+	}
+	return ok;
+}
+
+// make-char --wheel-model: the file (data NULL: read from path; else its
+// bytes, the self-test's) read as PLY or OBJ by its content, and the wheel
+// built twice - the second time silent - and compared. 1 = usable; 0 = every
+// reason said, w empty.
+static int RldMk_UserWheelLoad(const char *path, const u8 *data, size_t size, const struct RldMkOptions *bodyOpt, u32 sizePercent,
+                               struct RldMkUserWheel *w)
+{
+	struct RldMkUserWheel again;
+	struct RldMkModelInfo info;
+	struct RldMkPly ply;
+	const int quiet = s_rldMkQuiet;
+	int errors;
+	int ok;
+	int same;
+
+	memset(w, 0, sizeof(*w));
+	memset(&info, 0, sizeof(info));
+	RldObj_FreeNative(&s_rldObjWheel);
+	s_rldMkEmitModelOff = 1;
+	ok = (data != NULL) ? RldMk_ImportModel(path, data, size, &ply, &info, RLDMK_ROLE_CHAR_WHEEL) : RldMk_LoadModel(path, &ply, &info, RLDMK_ROLE_CHAR_WHEEL);
+	s_rldMkEmitModelOff = 0;
+	if (!ok)
+	{
+		RldObj_FreeNative(&s_rldObjWheel);
+		return 0;
+	}
+	if ((info.format == RLDMK_FORMAT_OBJ) && !s_rldObjWheel.captured)
+	{
+		RldMk_Say("error", "wheel-model", path, "Internal error: the wheel model %s was read, but its faces were not kept. Please report it.", path);
+		RldMk_FreePly(&ply);
+		return 0;
+	}
+
+	ok = RldMk_UserWheelBuild((info.format == RLDMK_FORMAT_OBJ) ? &s_rldObjWheel : NULL, &ply, bodyOpt, sizePercent, w);
+	if (ok)
+	{
+		errors = s_rldMkErrors;
+		s_rldMkQuiet = 1;
+		same = RldMk_UserWheelBuild((info.format == RLDMK_FORMAT_OBJ) ? &s_rldObjWheel : NULL, &ply, bodyOpt, sizePercent, &again) &&
+		       (again.whlsSize == w->whlsSize) && (memcmp(again.whls, w->whls, w->whlsSize) == 0) && (memcmp(again.rgba, w->rgba, 4u) == 0) &&
+		       (again.textured == w->textured) && (again.texture.pngSize == w->texture.pngSize) &&
+		       ((w->texture.png == NULL) || (memcmp(again.texture.png, w->texture.png, w->texture.pngSize) == 0));
+		s_rldMkQuiet = quiet;
+		s_rldMkErrors = errors;
+		RldMk_UserWheelFree(&again);
+		if (!same)
+		{
+			RldMk_Say("error", "model-roundtrip", "two builds of the same wheel differ", "Internal error: two builds of the same wheel differ. Please report it.");
+			RldMk_UserWheelFree(w);
+			ok = 0;
+		}
+	}
+	RldMk_FreePly(&ply);
+	RldObj_FreeNative(&s_rldObjWheel);
+	return ok;
+}
+
 // CNET and CTXT (NULL and 0 when no material has a texture) of the OBJ read
 // with --native-model on, for the CMDL of build b made from ply; wheels 0:
-// CHRI hides the wheels (make-char always: --wheels off), 1: with the test
-// wheel (only the self-test's files). 0 = refused, every reason said,
-// nothing returned.
+// CHRI hides the wheels (--wheels off), 1: with wheels - userWheel the wheel
+// of one's own (--wheel-model, WHLS version 2: its material last, its texture
+// an entry of CTXT), NULL the test wheel (WHLS version 1, only the self-test's
+// files; make-char never writes it for a character). 0 = refused, every
+// reason said, nothing returned.
 static int RldMk_NativeModel(const struct RldObjNative *src, const struct RldMkPly *ply, const struct RldMkBuild *b, const struct RldMkOptions *opt,
-                             int wheels, u8 **cnetOut, size_t *cnetSizeOut, u8 **ctxtOut, size_t *ctxtSizeOut, struct RldMkNativeFacts *facts)
+                             int wheels, const struct RldMkUserWheel *userWheel, u8 **cnetOut, size_t *cnetSizeOut, u8 **ctxtOut, size_t *ctxtSizeOut,
+                             struct RldMkNativeFacts *facts)
 {
 	struct RldCharHull hulls[RLDCHAR_NET_POSES];
 	struct RldMkNativeTable points;
@@ -1030,6 +1615,7 @@ static int RldMk_NativeModel(const struct RldObjNative *src, const struct RldMkP
 	u32 materialCount = 0;
 	u32 textureCount = 0;
 	u32 noUv = 0;
+	u32 wheelTexture = RLDMK_NONE;
 	u32 slotCount;
 	u32 poses = 0;
 	u32 slots = 1;
@@ -1188,7 +1774,7 @@ static int RldMk_NativeModel(const struct RldObjNative *src, const struct RldMkP
 					else
 					{
 						sourceTexture[m->texture] = textureCount;
-						ok = RldMk_NativeTextureFile(&src->textures[m->texture], &texture[textureCount]);
+						ok = RldMk_NativeTextureFile(&src->textures[m->texture], &texture[textureCount], RLDCHAR_TEX_EDGE_MAX);
 						textureCount++;
 						if (!ok)
 						{
@@ -1447,6 +2033,48 @@ static int RldMk_NativeModel(const struct RldObjNative *src, const struct RldMkP
 	}
 	vertexCount = vertices.count;
 
+	// The texture of a wheel of one's own: an entry of its own, or the entry
+	// of a body texture with the same bytes. It counts to the 16 entries and
+	// the budget below.
+	if (ok && wheels && (userWheel != NULL) && userWheel->textured)
+	{
+		for (wheelTexture = 0; wheelTexture < textureCount; wheelTexture++)
+		{
+			if ((texture[wheelTexture].pngSize == userWheel->texture.pngSize) &&
+			    (memcmp(texture[wheelTexture].png, userWheel->texture.png, userWheel->texture.pngSize) == 0))
+			{
+				break;
+			}
+		}
+		if (wheelTexture < textureCount)
+		{
+			texture[wheelTexture].outside |= userWheel->texture.outside;
+			facts->shared++;
+		}
+		else if (textureCount >= RLDCHAR_TEX_COUNT_MAX)
+		{
+			RldMk_Say("error", "native-model", NULL,
+			          "The model and its wheel use more than %u texture files; the native model takes at most %u, the wheel's included.",
+			          RLDCHAR_TEX_COUNT_MAX, RLDCHAR_TEX_COUNT_MAX);
+			ok = 0;
+		}
+		else
+		{
+			texture[textureCount] = userWheel->texture;
+			texture[textureCount].png = (u8 *)malloc(userWheel->texture.pngSize ? userWheel->texture.pngSize : 1u);
+			if (texture[textureCount].png == NULL)
+			{
+				ok = RldMk_OutOfMemory();
+			}
+			else
+			{
+				memcpy(texture[textureCount].png, userWheel->texture.png, userWheel->texture.pngSize);
+				textureCount++;
+			}
+		}
+		textured = 1;   // the body's vertices get UV00 too (rule CNET-8)
+	}
+
 	// 3. The limits.
 	if (ok && (noUv != 0u))
 	{
@@ -1595,7 +2223,8 @@ static int RldMk_NativeModel(const struct RldObjNative *src, const struct RldMkP
 		const u32 matlAt = (tmatAt + tmatSize + 3u) & ~3u;
 		const u32 matlSize = materials * RLDCHAR_NET_MATERIAL_BYTES;
 		const u32 whlsAt = matlAt + matlSize;
-		const u64 size = (u64)whlsAt + (wheels ? RLDMK_NATIVE_WHEEL_BYTES : 0u);
+		const u32 whlsBytes = !wheels ? 0u : ((userWheel != NULL) ? (u32)userWheel->whlsSize : RLDMK_NATIVE_WHEEL_BYTES);
+		const u64 size = (u64)whlsAt + whlsBytes;
 		u32 table = tableAt;
 
 		if (size > RLDCHAR_LIMIT_CNET)
@@ -1643,10 +2272,21 @@ static int RldMk_NativeModel(const struct RldObjNative *src, const struct RldMkP
 			RldMk_NativeSection(&cnet[table], "TRIS", 6u, trisAt, trisSize);
 			RldMk_NativeSection(&cnet[table + RLDCHAR_NET_SECTION_BYTES], "TMAT", 2u, tmatAt, tmatSize);
 			RldMk_NativeSection(&cnet[table + (2u * RLDCHAR_NET_SECTION_BYTES)], "MATL", RLDCHAR_NET_MATERIAL_BYTES, matlAt, matlSize);
-			if (wheels)   // the self-test's files only; make-char passes wheels 0 (see WHEELS above)
+			if (wheels)
 			{
-				RldMk_NativeSection(&cnet[table + (3u * RLDCHAR_NET_SECTION_BYTES)], "WHLS", 0u, whlsAt, RLDMK_NATIVE_WHEEL_BYTES);
-				RldMk_NativeWheel(&cnet[whlsAt], materialCount);
+				u8 *entry = &cnet[table + (3u * RLDCHAR_NET_SECTION_BYTES)];
+
+				RldMk_NativeSection(entry, "WHLS", 0u, whlsAt, whlsBytes);
+				if (userWheel != NULL)   // --wheel-model: version 2, its material the last
+				{
+					Rld_WriteLE16(&entry[4], RLDCHAR_WHEEL_VERSION_USER);
+					memcpy(&cnet[whlsAt], userWheel->whls, whlsBytes);
+					Rld_WriteLE16(&cnet[whlsAt + 0x08u], materialCount);
+				}
+				else   // the test wheel: the self-test's files only (see WHEELS above)
+				{
+					RldMk_NativeWheel(&cnet[whlsAt], materialCount);
+				}
 			}
 
 			// POSN: the places, the normals of their smooth groups.
@@ -1753,7 +2393,15 @@ static int RldMk_NativeModel(const struct RldObjNative *src, const struct RldMkP
 				Rld_WriteLE16(&out[4], (tex != RLDMK_NONE) ? tex : 0xFFFFu);
 				out[6] = (u8)(((tex != RLDMK_NONE) && texture[tex].alpha) ? 1u : 0u);
 			}
-			if (wheels)
+			if (wheels && (userWheel != NULL))
+			{
+				u8 *out = &cnet[matlAt + (materialCount * RLDCHAR_NET_MATERIAL_BYTES)];
+
+				memcpy(out, userWheel->rgba, 4u);
+				Rld_WriteLE16(&out[4], (wheelTexture != RLDMK_NONE) ? wheelTexture : 0xFFFFu);
+				out[6] = (u8)(((wheelTexture != RLDMK_NONE) && texture[wheelTexture].alpha) ? 1u : 0u);
+			}
+			else if (wheels)
 			{
 				u8 *out = &cnet[matlAt + (materialCount * RLDCHAR_NET_MATERIAL_BYTES)];
 
@@ -1826,6 +2474,8 @@ static int RldMk_NativeModel(const struct RldObjNative *src, const struct RldMkP
 		facts->textures = textureCount;
 		facts->colors = colors;
 		facts->wheels = wheels;
+		facts->wheelVersion = !wheels ? 0u : ((userWheel != NULL) ? RLDCHAR_WHEEL_VERSION_USER : RLDCHAR_WHEEL_VERSION_TEST);
+		facts->wheelTexture = wheelTexture;
 		facts->cnetSize = cnetSize;
 		facts->ctxtSize = ctxtSize;
 		for (i = 0; i < textureCount; i++)

@@ -5,7 +5,8 @@
 // come from the including file. rldpack reads the portrait an author gives
 // make-char with --icon (tools/rldpack_char.inc turns it into the CICN chunk)
 // and the textures of CTXT; the game reads only the textures of CTXT, only
-// with --dev --native-preview (preview). No zlib and no other library - the
+// with the native preview (NATIVE DRIVERS set to PREVIEW, or --native-preview).
+// No zlib and no other library - the
 // reason is at the head of tools/rldpack.c. The inflate below is the one of RFC 1951, inside the zlib
 // wrapper of RFC 1950, read by the rules of the PNG specification (W3C,
 // second edition).

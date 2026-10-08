@@ -13240,6 +13240,11 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	int nativePoses = 0;
 	const char *nativeModelArg = NULL;
 	int nativeModel = 0;
+	const char *wheelModelArg = NULL;
+	const char *wheelSizeArg = NULL;
+	u32 wheelSize = 100u;
+	struct RldMkUserWheel userWheel;
+	int haveWheel = 0;
 	struct RldMkNativeFacts nativeFacts;
 	u8 *cnet = NULL;
 	size_t cnetSize = 0;
@@ -13275,6 +13280,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	RldMk_DefaultOptions(&opt);
 	RldObj_ResetOptions();
 	memset(&nativeFacts, 0, sizeof(nativeFacts));
+	memset(&userWheel, 0, sizeof(userWheel));
 	memset(&ply, 0, sizeof(ply));
 	memset(&build, 0, sizeof(build));
 	memset(nameField, 0, sizeof(nameField));
@@ -13447,6 +13453,14 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		else if ((strcmp(arg, "--native-model") == 0) && hasValue)
 		{
 			nativeModelArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--wheel-model") == 0) && hasValue)
+		{
+			wheelModelArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--wheel-size") == 0) && hasValue)
+		{
+			wheelSizeArg = argv[++i];
 		}
 		else if ((strcmp(arg, "--repair") == 0) && hasValue)
 		{
@@ -13623,16 +13637,45 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	{
 		RldMk_Say("error", "usage", "--native-model", "--native-model and --native-probe exclude each other: a file has one native model.");
 	}
-	// The game draws a native model only with the kart wheels hidden (it
-	// refuses a native part beside the kart wheels and draws the CMDL), so
-	// --native-model on needs --wheels off; nothing is written without it.
-	// The test wheel (WHLS, RldMk_NativeWheel) is no longer built for a
-	// character; --native-probe is a test body and keeps it.
-	if (nativeModel && !opt.noWheels)
+	// THE WHEELS OF THE NATIVE MODEL. The game draws a native model only with
+	// wheels of its own (--wheel-model: WHLS version 2) or with the kart
+	// wheels hidden - never beside the sprites of the kart wheels, and a
+	// character never gets the test wheel (WHLS version 1, RldMk_NativeWheel;
+	// --native-probe is a test body and keeps it). So --native-model on with
+	// the wheels shown needs --wheel-model, and --wheel-model needs
+	// --native-model on and the wheels shown. CHRI keeps the wheels shown
+	// with --wheel-model: the classic model (CMDL), the fallback, drives with
+	// the game's kart wheels. Nothing is written against these rules.
+	if ((wheelSizeArg != NULL) && (!RldMk_ParseWhole(wheelSizeArg, 100000u, &wheelSize) || (wheelSize < RLDMK_WHEEL_SIZE_MIN) ||
+	                               (wheelSize > RLDMK_WHEEL_SIZE_MAX)))
+	{
+		RldMk_Say("error", "wheel-size", wheelSizeArg,
+		          "The wheel size \"%s\" must be a whole number from %u to %u (percent of the radius of the game's wheel).", wheelSizeArg,
+		          RLDMK_WHEEL_SIZE_MIN, RLDMK_WHEEL_SIZE_MAX);
+		wheelSize = 100u;
+	}
+	if ((wheelSizeArg != NULL) && (wheelModelArg == NULL))
+	{
+		RldMk_Say("error", "usage", "--wheel-size", "--wheel-size needs --wheel-model <obj|ply>: it is the size of a wheel of your own.");
+	}
+	if ((wheelModelArg != NULL) && opt.noWheels)
+	{
+		RldMk_Say("error", "wheel-model", "--wheels",
+		          "--wheel-model and --wheels off contradict each other: a wheel of your own needs the wheels shown. Build without --wheels off, or "
+		          "without --wheel-model for a character without wheels.");
+	}
+	else if ((wheelModelArg != NULL) && !nativeModel)
+	{
+		RldMk_Say("error", "wheel-model", "--native-model",
+		          "--wheel-model needs --native-model on: a wheel of your own is a part of the native model (preview). The classic model always "
+		          "drives with the game's kart wheels.");
+	}
+	if (nativeModel && !opt.noWheels && (wheelModelArg == NULL))
 	{
 		RldMk_Say("error", "native-model", "--wheels",
-		          "--native-model on needs --wheels off: the game draws a native model only with the kart wheels hidden. Build with --wheels off, or "
-		          "without --native-model for the classic model with the kart wheels.");
+		          "--native-model on needs --wheel-model <obj|ply> or --wheels off: the game draws a native model only with wheels of its own or "
+		          "with the kart wheels hidden. Build with --wheel-model, with --wheels off, or without --native-model for the classic model with "
+		          "the kart wheels.");
 	}
 
 	// THE OWN MASK: its own options, the profile of a mask (RldMk_BuildMaskOnce).
@@ -13924,6 +13967,12 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		{
 			Rld_Emit("value", "native-model", nativeModel ? "on" : "off", "switch", (const char *)NULL);
 		}
+		if (wheelModelArg != NULL)
+		{
+			Rld_Emit("value", "wheel-model", wheelModelArg, "switch", (const char *)NULL);
+			snprintf(number, sizeof(number), "%u", wheelSize);
+			Rld_Emit("value", "wheel-size", number, (wheelSizeArg != NULL) ? "switch" : "default", (const char *)NULL);
+		}
 		if (voicesArg != NULL)
 		{
 			Rld_Emit("value", "voice-normalize", voiceNormalize ? "on" : "off", voiceNormalize ? "switch" : "default", (const char *)NULL);
@@ -14034,6 +14083,14 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		}
 	}
 
+	// THE WHEEL OF ONE'S OWN (--wheel-model, PREVIEW): read and built twice
+	// here, so that --check shows its findings too; only when the switches
+	// agree (said above otherwise). Nothing of it reaches the CMDL.
+	if ((wheelModelArg != NULL) && nativeModel && !opt.noWheels && built)
+	{
+		haveWheel = RldMk_UserWheelLoad(wheelModelArg, NULL, 0u, &opt, wheelSize, &userWheel);
+	}
+
 	if (maskModelArg != NULL)
 	{
 		cmsk = RldMk_MaskStep(maskModelArg, &maskOpt, &cmskSize);
@@ -14093,7 +14150,9 @@ static int RldChar_MakeCommand(int argc, char **argv)
 			printf("  class         %u %s%s\n", classId, s_rldMkClassNames[classId],
 			       ((classArg == NULL) || (strcmp(classArg, "like") == 0)) ? " (like the template)" : "");
 		}
-		printf("  wheels        %s\n", opt.noWheels ? "hidden - the game draws no kart wheels (--wheels off)" : "shown - the game draws its kart wheels");
+		printf("  wheels        %s\n", opt.noWheels                 ? "hidden - the game draws no kart wheels (--wheels off)"
+		                               : (wheelModelArg != NULL) ? "shown - the native model: your own (--wheel-model); the classic model: the game's kart wheels"
+		                                                         : "shown - the game draws its kart wheels");
 		if (templateId < RLDMK_TEMPLATE_COUNT)
 		{
 			printf("  mask          %s (%s)\n", RldMk_MaskName(opt.mask, templateId),
@@ -14119,6 +14178,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	{
 		const int code = RldMk_WriteDiagnosis(&build, &opt, built, diagnoseArg);
 
+		RldMk_UserWheelFree(&userWheel);
 		free(cmsk);
 		free(cvoi);
 		RldMk_FreeBuild(&build);
@@ -14129,6 +14189,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	if (!built || (s_rldMkErrors != 0) || ((maskModelArg != NULL) && (cmsk == NULL)))
 	{
 		printf("\nnothing written - see the errors above\n");
+		RldMk_UserWheelFree(&userWheel);
 		free(cmsk);
 		free(cvoi);
 		RldMk_FreeBuild(&build);
@@ -14204,13 +14265,15 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	// the frames just built (THE NATIVE MODEL OF AN OBJ, rldpack_native.inc),
 	// held to the game's rules before anything is written. Without the
 	// switch none of this runs and the bytes stay those of
-	// RldMk_ContainerVoices. Only with --wheels off (refused above
-	// otherwise): !opt.noWheels is 0 here, so no test wheel (WHLS).
-	if ((chri != NULL) && nativeModel)
+	// RldMk_ContainerVoices. With --wheels off no WHLS; with the wheels shown
+	// only with the wheel of one's own (WHLS version 2, refused above
+	// otherwise), never the test wheel.
+	if ((chri != NULL) && nativeModel && (opt.noWheels || haveWheel))
 	{
 		struct RldCharNative native;
 
-		if (RldMk_NativeModel(&s_rldObjNative, &ply, &build, &opt, !opt.noWheels, &cnet, &cnetSize, &ctxt, &ctxtSize, &nativeFacts))
+		if (RldMk_NativeModel(&s_rldObjNative, &ply, &build, &opt, !opt.noWheels, haveWheel ? &userWheel : NULL, &cnet, &cnetSize, &ctxt, &ctxtSize,
+		                      &nativeFacts))
 		{
 			RldMk_CheckNativeBytes(build.cmdl, build.cmdlSize, RldMk_ChriFlags(&opt), cnet, cnetSize, ctxt, ctxtSize, &native);
 			if (native.state != RLDCHAR_NATIVE_READY)
@@ -14256,6 +14319,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		{
 			RldMk_OutOfMemory();
 		}
+		RldMk_UserWheelFree(&userWheel);
 		free(cnet);
 		free(ctxt);
 		free(cmsk);
@@ -14338,6 +14402,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 				RldMk_Say("error", "write", outPath,
 				          "The character file cannot be written. Is the folder write-protected, or is the file open in another program?");
 			}
+			RldMk_UserWheelFree(&userWheel);
 			free(cnet);
 			free(ctxt);
 			free(cmsk);
@@ -14389,9 +14454,49 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		u32 t;
 
 		printf("  CNET          %u bytes (preview: the native model of the OBJ, %u vertices, %u triangles, %s, %u materials, %u textures%s, %s - the game "
-		       "reads it only with --dev --native-preview)\n",
+		       "reads it only with NATIVE DRIVERS set to PREVIEW (GRAPHICS) or --native-preview)\n",
 		       (u32)cnetSize, nativeFacts.vertices, nativeFacts.triangles, nativeFacts.poses ? "47 poses" : "one still pose", nativeFacts.materials,
-		       nativeFacts.textures, nativeFacts.colors ? ", vertex colors" : "", nativeFacts.wheels ? "the test wheel" : "no wheels");
+		       nativeFacts.textures, nativeFacts.colors ? ", vertex colors" : "",
+		       (nativeFacts.wheelVersion == RLDCHAR_WHEEL_VERSION_USER) ? "its own wheels (WHLS version 2)"
+		                                                                : (nativeFacts.wheels ? "the test wheel" : "no wheels"));
+		if (haveWheel && (nativeFacts.wheelVersion == RLDCHAR_WHEEL_VERSION_USER))
+		{
+			char color[8];
+			char look[48];
+			char wheelText[6][24];
+
+			snprintf(color, sizeof(color), "%02X%02X%02X", userWheel.rgba[0], userWheel.rgba[1], userWheel.rgba[2]);
+			if (userWheel.textured)
+			{
+				snprintf(look, sizeof(look), "texture %u (%u x %u)", nativeFacts.wheelTexture, userWheel.texture.width, userWheel.texture.height);
+			}
+			else
+			{
+				snprintf(look, sizeof(look), "one color %s", color);
+			}
+			printf("  wheel         %s: %u triangles, %u vertices, radius %.2f (%u%% of the game's wheel), %.2f wide, %s; at x %.2f, y %.2f, "
+			       "z %.2f / %.2f (the bottom on the ground), the right side mirrored\n",
+			       wheelModelArg, userWheel.triangles, userWheel.vertices, userWheel.radius, userWheel.sizePercent, 2.0 * userWheel.halfWidth, look,
+			       RLDDUM_TIRE_X, userWheel.radius, RLDDUM_TIRE_FRONT_Z, RLDDUM_TIRE_REAR_Z);
+			if (userWheel.dropped != 0u)
+			{
+				printf("  wheel         %u triangles without area left out\n", userWheel.dropped);
+			}
+			snprintf(wheelText[0], sizeof(wheelText[0]), "%u", userWheel.triangles);
+			snprintf(wheelText[1], sizeof(wheelText[1]), "%u", userWheel.vertices);
+			snprintf(wheelText[2], sizeof(wheelText[2]), "%.4f", userWheel.radius);
+			snprintf(wheelText[3], sizeof(wheelText[3]), "%.4f", userWheel.halfWidth);
+			snprintf(wheelText[4], sizeof(wheelText[4]), "%u", userWheel.sizePercent);
+			if (userWheel.textured)
+			{
+				snprintf(wheelText[5], sizeof(wheelText[5]), "%ux%u", userWheel.texture.width, userWheel.texture.height);
+			}
+			else
+			{
+				snprintf(wheelText[5], sizeof(wheelText[5]), "color-%s", color);
+			}
+			Rld_Emit("char", "native-wheel", wheelText[0], wheelText[1], wheelText[2], wheelText[3], wheelText[4], wheelText[5], (const char *)NULL);
+		}
 		if (ctxt != NULL)
 		{
 			printf("  CTXT          %u bytes (preview: %u textures)\n", (u32)ctxtSize, nativeFacts.textures);
@@ -14427,7 +14532,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	}
 	else if (cnet != NULL)
 	{
-		printf("  CNET          %u bytes (preview: the native test body, %s, %s - the game reads it only with --dev --native-preview)\n", (u32)cnetSize,
+		printf("  CNET          %u bytes (preview: the native test body, %s, %s - the game reads it only with NATIVE DRIVERS set to PREVIEW (GRAPHICS) or --native-preview)\n", (u32)cnetSize,
 		       nativePoses ? "47 poses" : "one still pose", opt.noWheels ? "no wheels" : "with wheels");
 		printf("  CTXT          %u bytes (preview: one texture 256 x 256)\n", (u32)ctxtSize);
 	}
@@ -14442,6 +14547,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		s_machineResult = 1;
 	}
 
+	RldMk_UserWheelFree(&userWheel);
 	free(cnet);
 	free(ctxt);
 	free(cmsk);
@@ -14766,9 +14872,21 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 
 		if (native.state == RLDCHAR_NATIVE_READY)
 		{
+			char wheelText[96];
+
+			if (native.wheel == NULL)
+			{
+				snprintf(wheelText, sizeof(wheelText), "%s", "wheels hidden");
+			}
+			else
+			{
+				snprintf(wheelText, sizeof(wheelText), "wheels: WHLS version %u (%s, %u triangles, radius %.2f)", (unsigned)native.wheelVersion,
+				         (native.wheelVersion == RLDCHAR_WHEEL_VERSION_USER) ? "its own" : "the test wheel", (unsigned)native.wheelTriangleCount,
+				         (double)RldChar_F32(&native.wheel[0x0C]));
+			}
 			snprintf(nativeText, sizeof(nativeText), "ready: %u vertices, %u triangles, %u poses, %u materials, %u textures (%llu bytes RGBA8), %s",
 			         native.vertexCount, native.triangleCount, native.poseCount, native.materialCount, native.textureCount,
-			         (unsigned long long)native.textureBytes, (native.wheel != NULL) ? "wheels" : "wheels hidden");
+			         (unsigned long long)native.textureBytes, wheelText);
 		}
 		else if (native.state == RLDCHAR_NATIVE_REFUSED)
 		{
@@ -14878,7 +14996,7 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		}
 		if (hasNative)
 		{
-			printf("  native model  preview, read by the game only with --dev --native-preview - %s%s\n", nativeText,
+			printf("  native model  preview, read by the game only with NATIVE DRIVERS set to PREVIEW (GRAPHICS) or --native-preview - %s%s\n", nativeText,
 			       (native.state == RLDCHAR_NATIVE_REFUSED) ? " - the game draws the CMDL" : "");
 		}
 		if (full)
@@ -15307,15 +15425,30 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "                              PREVIEW, for tests: also write the native test\n");
 	fprintf(out, "                              body (CNET) with its texture (CTXT), fitted into\n");
 	fprintf(out, "                              the model's frames; poses: 47 poses. The game reads\n");
-	fprintf(out, "                              them only with --dev --native-preview and draws\n");
-	fprintf(out, "                              the model as before. Without it nothing changes\n");
+	fprintf(out, "                              them only with NATIVE DRIVERS set to PREVIEW (or\n");
+	fprintf(out, "                              --native-preview) and draws the model as before.\n");
+	fprintf(out, "                              Without it nothing changes\n");
 	fprintf(out, "  --native-model <on|off>     PREVIEW: also write the native model of an OBJ\n");
 	fprintf(out, "                              (CNET: its own faces in floats with UVs and\n");
 	fprintf(out, "                              materials; CTXT: its texture files, each side a\n");
 	fprintf(out, "                              power of two 16..2048), placed like its CMDL.\n");
-	fprintf(out, "                              Needs --wheels off: the game draws a native\n");
-	fprintf(out, "                              model only with the kart wheels hidden. Not with\n");
+	fprintf(out, "                              Needs --wheel-model or --wheels off: the game\n");
+	fprintf(out, "                              draws a native model only with wheels of its own\n");
+	fprintf(out, "                              or with the kart wheels hidden. Not with\n");
 	fprintf(out, "                              --native-probe. Default off: nothing changes\n");
+	fprintf(out, "  --wheel-model <obj|ply>     PREVIEW, with --native-model on and the wheels\n");
+	fprintf(out, "                              shown: one wheel of your own for all four (WHLS\n");
+	fprintf(out, "                              version 2) - axle along X, outer side +X, centre\n");
+	fprintf(out, "                              in the origin, the axes of --up/--forward; an OBJ\n");
+	fprintf(out, "                              with one material (a texture up to %u x %u, or\n", RLDCHAR_WHEEL_TEXTURE_EDGE_MAX,
+	        RLDCHAR_WHEEL_TEXTURE_EDGE_MAX);
+	fprintf(out, "                              one color) or a PLY (one color); at most %u\n", RLDCHAR_WHEEL_TRIANGLES_MAX);
+	fprintf(out, "                              triangles and %u vertices, never reduced. Placed\n", RLDCHAR_WHEEL_VERTICES_MAX);
+	fprintf(out, "                              at the game's wheel points, the bottom on the\n");
+	fprintf(out, "                              ground; the right side is its mirror image. The\n");
+	fprintf(out, "                              classic model keeps the game's kart wheels\n");
+	fprintf(out, "  --wheel-size <50..200>      the radius of that wheel in percent of the\n");
+	fprintf(out, "                              game's wheel (%.0f model units; default 100)\n", RLDDUM_TIRE_HALF_SIZE);
 	fprintf(out, "\n");
 	fprintf(out, "  rldpack make-char --model driver.ply --name \"MY DRIVER\" --template 14\n");
 	fprintf(out, "  rldpack make-char --model driver.obj --name \"MY DRIVER\" --template 14\n");

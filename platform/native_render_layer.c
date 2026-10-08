@@ -83,6 +83,14 @@
 // (game/Particle.c) give one screen box per frame (NativeRenderLayer_NoteParticleQuad),
 // and a second line with the box of every single quad (the mask of the
 // measuring tools: the hull of all of them covers the whole body).
+//
+// THE OWN WHEELS of a custom character (the wheel concept, step R3): a file
+// whose kart wheels are shown is held natively only with an author's wheel
+// (WHLS version 2, platform/native_chars.c). Its seat's poses roll over that
+// wheel's radius, its four wheels are drawn in the body's item right after the
+// body (the -X pair the mirror image, NativeRenderLayer_FillCharWheels), and a
+// view without a wheel pose goes whole to the CMDL with the retail wheels
+// (the wheels rule of the route) - never the sprite wheels on a native body.
 // ===========================================================================
 
 #include <math.h>
@@ -175,12 +183,18 @@ enum NrProbeFallback
 	NR_PROBE_FALLBACK_NO_RANGE,
 	NR_PROBE_FALLBACK_ITEM_LIST_FULL,
 	NR_PROBE_FALLBACK_ARENA_FULL,
+	// Only for a custom character whose kart wheels are shown (the wheel
+	// concept, section 4): a view with no wheel pose for its instance, and a
+	// set with the test wheel (never held for a file, NativeChar_RefuseShownWheels).
+	NR_PROBE_FALLBACK_NO_WHEEL_POSE,
+	NR_PROBE_FALLBACK_TEST_WHEEL,
 	NR_PROBE_FALLBACKS
 };
 
 // The words of the report and of the probe lines, in the order of the enum.
 internal const char *const s_nrProbeFallbackNames[NR_PROBE_FALLBACKS] = {
     "normal alt", "split", "special", "reflection", "other", "writer", "decal view", "borrowed range", "ui", "no range", "item list full", "arena full",
+    "no wheel pose", "test wheel",
 };
 
 // --- The scene table -------------------------------------------------------
@@ -2871,9 +2885,22 @@ struct NrCharCounters
 	unsigned long long wheelNotDrawn;
 	unsigned long long tiresNative;
 	unsigned long long tiresFallback;
+	// The own wheels (WHLS version 2): items routed with them, wheel draws
+	// asked of the renderer (every kind: the original, the side of a split,
+	// the mirror), the ones of them with the mirrored mesh (-X), the wheels of
+	// a mirror item, and items whose driver has wheelSize 0 (no wheel drawn).
+	unsigned long long ownItems;
+	unsigned long long wheelDispatched;
+	unsigned long long ownMirroredDraws;
+	unsigned long long ownMirrorItemDraws;
+	unsigned long long ownZeroSize;
 };
 
 internal struct NrCharCounters s_nrCharCnt;
+
+// The line of the own wheels of a seat (NativeRenderLayer_OwnWheelLine), once
+// per binding: 1 = written.
+internal u8 s_nrCharOwnLine[NATIVE_RENDER_LAYER_DRIVERS];
 
 // STEP 4F, several native seats: the counters per seat, and per frame the
 // native draws of view 0 against the views of view 0 the route took (handler
@@ -2885,6 +2912,14 @@ struct NrCharSeatCounters
 	unsigned long long draws;        // every view
 	unsigned long long notDrawn;
 	unsigned long long fallback[NR_PROBE_FALLBACKS];
+	// The wheels of the seat, every view: native wheel draws asked, drawn and
+	// refused, and the retail wheel quads DrawTires wrote in a native view of
+	// the seat and in one it fell back on.
+	unsigned long long wheelDispatched;
+	unsigned long long wheelDraws;
+	unsigned long long wheelNotDrawn;
+	unsigned long long tiresNative;
+	unsigned long long tiresFallback;
 };
 
 internal struct NrCharSeatCounters s_nrCharSeatCnt[NATIVE_RENDER_LAYER_DRIVERS];
@@ -3129,6 +3164,7 @@ internal int s_nrProbeSeamVBlank = -1;
 // The retail wheels of a char instance between TiresBegin and TiresEnd.
 internal int s_nrCharTiresActive = 0;
 internal int s_nrCharTiresNative = 0;
+internal int s_nrCharTiresSeat = -1;
 
 internal int NativeRenderLayer_CharViewStamp(const struct Instance *inst, const struct PushBuffer *pb, int *wheels);
 
@@ -3422,6 +3458,7 @@ internal void NativeRenderLayer_BindChars(const struct GameTracker *gGT)
 			Platform_Log("[CTR RenderLayer] native char bound: seat %d model id %d (%s)\n", seat, (int)model->id, NativeChar_SeatFile(seat));
 			s_nrCharSeatBound[seat] = 1;
 			s_nrCharSeam[seat].haveLast = 0;
+			s_nrCharOwnLine[seat] = 0;
 		}
 
 		if (NativeRenderLayer_CharIndex(model) < 0)
@@ -3558,6 +3595,7 @@ internal void NativeRenderLayer_BindPreview(const struct GameTracker *gGT)
 				Platform_Log("[CTR RenderLayer] native char preview bound: entry %d model id %d (%s) at vblank %d\n", current, (int)model->id,
 				             NativeChar_EntryFile(current), Platform_GetVBlankCount());
 				s_nrCharSeam[0].haveLast = 0;
+				s_nrCharOwnLine[0] = 0;
 			}
 			s_nrPreviewBound = 1;
 			s_nrPreviewBoundEntry = current;
@@ -3708,8 +3746,37 @@ internal int NativeRenderLayer_CharFallback(int seat, enum NrProbeFallback reaso
 // The native wheels of a char item (WHLS): the middles of the file in model
 // units through the matrix of the body (KONGRUENZ), the mesh turned by the view
 // and the rotation of the instance and by the frame of the wheel pose
-// (platform/native_wheels.c, as the probe's wheels; the mesh has its size in
-// model units, no scale on it).
+// (platform/native_wheels.c, as the probe's wheels).
+//
+// THE TEST WHEEL (WHLS version 1; never held for a file, kept for the self-
+// tests): the mesh has its size in model units taken as world units, no scale
+// on it, and the -X wheels are the mesh turned by 180 degrees about y (the
+// frames of the pose).
+//
+// AN AUTHOR'S WHEEL (WHLS version 2, the player's own wheels):
+// - THE SIZE. Model units are world units before inst->scale (the queue's
+//   m3x3 = inst->matrix x (mh->scale / 4) x inst->scale / 4096,
+//   RenderBucket_QueueExecute.c:1614-1653, and the body's g = model x 16384 /
+//   mh->scale, NativeRenderLayer_CharItemMatrix: world = inst->matrix x model x
+//   inst->scale / 4096). The middles go through the body's matrix, so they
+//   follow inst->scale, squash and stretch included (the springing of retail,
+//   DrawTires.c:338-367). The mesh is scaled by wheelSize / 4096
+//   (NativeWheels_OwnScale): the retail wheel keeps the size wheelSize gives it
+//   whatever inst->scale does (DrawTires.c:370, 493-511), and at rest both are
+//   0xccc (game/Vehicle/VehBirth.c:23, 31) - the wheel stands to the body as
+//   it was modelled. The retail wheel is 16 model units in radius by that
+//   measure (wheelSize / 256 world units); the roll uses the same radius
+//   (NativeWheels_RollRadius), so the wheel neither slips nor spins.
+// - THE -X WHEELS are the mirror image (the mirrored half of the set,
+//   platform/native_char_gpu.c): the pose's frame F of a -X wheel maps the
+//   mesh turned by 180 degrees about y (F = H x Ry(180) with H the steer,
+//   wobble and roll of the wheel, platform/native_wheels.c), so the mirrored
+//   mesh takes H = F x diag(-1, 1, -1): the axle and front columns negated.
+//   H is a rotation and the mirrored mesh is wound counter-clockwise from
+//   outside, so the cull of the body holds for every wheel.
+// - wheelSize 0 (a driver without wheels, game/Vehicle/VehBirth.c:633-638):
+//   no wheel is drawn, as retail draws none of any size; the view still
+//   hides the retail ones.
 internal void NativeRenderLayer_FillCharWheels(struct NrDrawItem *it, const struct Instance *inst, const struct PushBuffer *pb)
 {
 	const struct NativeWheelPose *pose = NativeWheels_PoseOf(inst);
@@ -3717,6 +3784,7 @@ internal void NativeRenderLayer_FillCharWheels(struct NrDrawItem *it, const stru
 	const MATRIX *vp = &pb->matrix_ViewProj;
 	const double s = ldexp(1.0, (int)it->mvpShift);
 	double turn[3][3];
+	double size = 1.0;
 	int wheel;
 	int r;
 	int c;
@@ -3726,6 +3794,19 @@ internal void NativeRenderLayer_FillCharWheels(struct NrDrawItem *it, const stru
 	if ((pose == NULL) || (gpu == NULL) || !gpu->hasWheels)
 	{
 		return;
+	}
+
+	if (gpu->wheelOwn)
+	{
+		size = NativeWheels_OwnScale(pose);
+		s_nrCharCnt.ownItems++;
+		if (size <= 0.0)
+		{
+			it->nativeWheels = 1;
+			it->wheelMask = 0;
+			s_nrCharCnt.ownZeroSize++;
+			return;
+		}
 	}
 
 	for (r = 0; r < 3; r++)
@@ -3744,6 +3825,7 @@ internal void NativeRenderLayer_FillCharWheels(struct NrDrawItem *it, const stru
 
 	for (wheel = 0; wheel < NATIVE_WHEELS_COUNT; wheel++)
 	{
+		const int mirrored = gpu->wheelOwn && ((wheel & 1) != 0);
 		double m[3];
 
 		NativeCharGpu_WheelMiddle(gpu->wheelFront, gpu->wheelRear, wheel, m);
@@ -3765,12 +3847,48 @@ internal void NativeRenderLayer_FillCharWheels(struct NrDrawItem *it, const stru
 				{
 					sum += turn[r][k] * pose->axis[wheel][k][c];
 				}
-				it->wheelA[wheel][r][c] = sum;
+				if (mirrored && (c != 1))
+				{
+					sum = -sum;
+				}
+				it->wheelA[wheel][r][c] = sum * size;
 			}
 		}
 	}
 
 	it->nativeWheels = 1;
+}
+
+// THE LINE OF THE OWN WHEELS of a seat, once per binding, at its first item
+// with them: the numbers that turn the model units of WHLS into the world, to
+// be held against retail (DrawTires.c:338-370, 493-511) - the radius, the mesh
+// scale, the roll radius, and in kart space (before the rotation) the middle
+// of a front wheel and the lowest point of that wheel against the retail one.
+internal void NativeRenderLayer_OwnWheelLine(const struct NrDrawItem *it, const struct Instance *inst)
+{
+	const struct NativeWheelPose *pose = NativeWheels_PoseOf(inst);
+	const struct NativeCharGpu *gpu = it->gpu;
+	const int seat = (int)it->seat;
+	double scale;
+	double middleY;
+	double retailY;
+
+	if ((pose == NULL) || (gpu == NULL) || !gpu->wheelOwn || (seat < 0) || (seat >= NATIVE_RENDER_LAYER_DRIVERS) || s_nrCharOwnLine[seat])
+	{
+		return;
+	}
+	s_nrCharOwnLine[seat] = 1;
+
+	scale = NativeWheels_OwnScale(pose);
+	middleY = ((double)gpu->wheelFront[1] * (double)inst->scale.y) / 4096.0;
+	retailY = ((double)0x40 * (double)inst->scale.y) / (4096.0 * 4.0);
+	Platform_Log("[CTR RenderLayer] native char seat %d own wheels at vblank %d: radius %.3f model units x wheelSize %u / 4096 = %.3f world units "
+	             "(retail %.3f), roll radius %.3f; front middle %.3f %.3f %.3f model units, inst scale %d %d %d; lowest point %.3f world units over the "
+	             "kart origin (retail %.3f)\n",
+	             seat, Platform_GetVBlankCount(), (double)gpu->wheelRadius, (unsigned)pose->wheelSize, (double)gpu->wheelRadius * scale,
+	             NativeWheels_Radius(pose), NativeWheels_RollRadius(pose), (double)gpu->wheelFront[0], (double)gpu->wheelFront[1],
+	             (double)gpu->wheelFront[2], (int)inst->scale.x, (int)inst->scale.y, (int)inst->scale.z, middleY - ((double)gpu->wheelRadius * scale),
+	             retailY - NativeWheels_Radius(pose));
 }
 
 // --- Step 4e, stage a: the water line (handler SPLIT) drawn natively ----------
@@ -4303,6 +4421,7 @@ internal void NativeRenderLayer_SetUpMirror(struct NrDrawItem *original, struct 
 	int originalDimmed = 0;
 	int mirrorDimmed = 1; // SPECIAL halves its mirror always (RenderBucket_DrawSpecialMirroredPass)
 	u8 wheelsBelow = 0;
+	u8 shown;
 	int ch;
 	int wheel;
 
@@ -4350,8 +4469,11 @@ internal void NativeRenderLayer_SetUpMirror(struct NrDrawItem *original, struct 
 	mirror->bodyOn = 1;
 	mirror->splitKeep = reflection ? -1 : 0;
 	mirror->cull = (u8)((original->cull == (u8)NATIVE_GFX_CULL_BACK) ? NATIVE_GFX_CULL_FRONT : NATIVE_GFX_CULL_BACK);
+	// The mirror gets all four, of a wheel that is drawn at all (an own wheel
+	// of wheelSize 0 has no mask, NativeRenderLayer_FillCharWheels).
+	shown = mirror->wheelMask;
 	mirror->wheelMask = 0;
-	if (reflective && mirror->nativeWheels && NativeRenderLayer_MirrorWheels(mirror, inst, pb))
+	if (reflective && mirror->nativeWheels && (shown != 0) && NativeRenderLayer_MirrorWheels(mirror, inst, pb))
 	{
 		mirror->wheelMask = NR_WHEEL_MASK_ALL;
 		s_nrCharMirror.mirrorWheels += NATIVE_WHEELS_COUNT;
@@ -4948,6 +5070,24 @@ internal int NativeRenderLayer_RouteCharView(int k, const struct Instance *inst,
 		return NativeRenderLayer_CharFallback(seat, NR_PROBE_FALLBACK_NO_RANGE);
 	}
 
+	// THE WHEELS RULE OF THE ROUTE (the wheel concept, section 4): a native
+	// body is never drawn with the sprite wheels. A set whose kart wheels are
+	// shown (WHLS) draws its own wheels in the body's item; a view of it
+	// without a wheel pose for the instance, or with the test wheel (never held
+	// for a file), goes whole to the CMDL with its retail wheels. The twin has
+	// no wheels; a set with the wheels hidden has none to draw.
+	if (!s_nrChar[k].twin && (s_nrChar[k].gpu != NULL) && s_nrChar[k].gpu->hasWheels)
+	{
+		if (!s_nrChar[k].gpu->wheelOwn)
+		{
+			return NativeRenderLayer_CharFallback(seat, NR_PROBE_FALLBACK_TEST_WHEEL);
+		}
+		if (NativeWheels_PoseOf(inst) == NULL)
+		{
+			return NativeRenderLayer_CharFallback(seat, NR_PROBE_FALLBACK_NO_WHEEL_POSE);
+		}
+	}
+
 	// THE RESERVATION: every item and marker of the view before the first is
 	// written - the view is native as a whole or not at all.
 	n = (split || mirror) ? 2 : 1;
@@ -5088,6 +5228,7 @@ internal int NativeRenderLayer_RouteCharView(int k, const struct Instance *inst,
 	}
 
 	NativeRenderLayer_FillCharWheels(it, inst, pb);
+	NativeRenderLayer_OwnWheelLine(it, inst);
 	if (split)
 	{
 		NativeRenderLayer_SetUpSplit(it, &s_nrItems[db][index + 1], inst, idpp, branchR);
@@ -5759,15 +5900,29 @@ void NativeRenderLayer_Pull(struct GameTracker *gGT)
 		s_nrCount.ticks++;
 	}
 
-	// THE WHEEL POSES, only while the probe is on: every seat of this frame,
-	// moved on once per tick (platform/native_wheels.c). Reads the drivers the
-	// seat table checked; writes only that file's table.
+	// THE WHEEL POSES, only while the probe is on or a custom character is
+	// bound natively: every seat of this frame, moved on once per tick
+	// (platform/native_wheels.c). Reads the drivers the seat table checked;
+	// writes only that file's table. A seat whose instance carries a bound
+	// model with an author's wheel (WHLS version 2) rolls over that wheel's
+	// radius; every other seat as before.
 	if (NativeRenderLayer_ProbeActive() || (s_nrCharCount > 0))
 	{
 		for (seat = 0; seat < NATIVE_RENDER_LAYER_DRIVERS; seat++)
 		{
+			double ownRadius = 0.0;
+
+			if (s_nrSeatInst[seat] != NULL)
+			{
+				const int k = NativeRenderLayer_CharIndex(s_nrSeatInst[seat]->model);
+
+				if ((k >= 0) && !s_nrChar[k].twin && (s_nrChar[k].gpu != NULL) && s_nrChar[k].gpu->hasWheels && s_nrChar[k].gpu->wheelOwn)
+				{
+					ownRadius = (double)s_nrChar[k].gpu->wheelRadius;
+				}
+			}
 			NativeWheels_Pull(seat, s_nrSeatDriver[seat], s_nrSeatInst[seat], tick, (u32)gGT->timer, (int)gGT->elapsedTimeMS,
-			                  seat == g_cfg_nativeProbeSeat);
+			                  seat == g_cfg_nativeProbeSeat, ownRadius);
 		}
 
 		s_nrWheelSample = g_cfg_nativeWheelReport && tick;
@@ -6144,6 +6299,13 @@ void NativeRenderLayer_Report(void)
 		Platform_Log("[CTR RenderLayer] at exit: native char wheels: items %llu, wheel draws %llu, not drawn %llu; retail wheel FT4 in native views %llu, "
 		             "in fallback views %llu\n",
 		             s_nrCharCnt.wheelItems, s_nrCharCnt.wheelDraws, s_nrCharCnt.wheelNotDrawn, s_nrCharCnt.tiresNative, s_nrCharCnt.tiresFallback);
+		// The own wheels (WHLS version 2) and the wheels rule of the route, in
+		// a line of their own after the one before: every wheel draw asked of
+		// the renderer is drawn or not drawn (dispatched = draws + not drawn).
+		Platform_Log("[CTR RenderLayer] at exit: native char own wheels: items %llu, wheels dispatched %llu, wheel draws %llu, not drawn %llu, "
+		             "mirrored mesh %llu, in mirror items %llu, wheelSize 0 %llu; fallbacks no wheel pose %llu, test wheel %llu\n",
+		             s_nrCharCnt.ownItems, s_nrCharCnt.wheelDispatched, s_nrCharCnt.wheelDraws, s_nrCharCnt.wheelNotDrawn, s_nrCharCnt.ownMirroredDraws,
+		             s_nrCharCnt.ownMirrorItemDraws, s_nrCharCnt.ownZeroSize, fb[NR_PROBE_FALLBACK_NO_WHEEL_POSE], fb[NR_PROBE_FALLBACK_TEST_WHEEL]);
 		for (seat = 0; seat < NATIVE_RENDER_LAYER_DRIVERS; seat++)
 		{
 			const struct NrCharSeam *seam = &s_nrCharSeam[seat];
@@ -6182,6 +6344,11 @@ void NativeRenderLayer_Report(void)
 			             "fallbacks split %llu reflection %llu other %llu\n",
 			             seat, c->dispatched, c->routedNormal, c->draws, c->notDrawn, c->fallback[NR_PROBE_FALLBACK_SPLIT],
 			             c->fallback[NR_PROBE_FALLBACK_REFLECTION], other);
+			// The wheels of the seat, a line of its own after the one above.
+			Platform_Log("[CTR RenderLayer] at exit: native char seat %d wheels: dispatched %llu, drawn %llu, not drawn %llu; retail wheel FT4 in native "
+			             "views %llu, in fallback views %llu; fallbacks no wheel pose %llu, test wheel %llu\n",
+			             seat, c->wheelDispatched, c->wheelDraws, c->wheelNotDrawn, c->tiresNative, c->tiresFallback,
+			             c->fallback[NR_PROBE_FALLBACK_NO_WHEEL_POSE], c->fallback[NR_PROBE_FALLBACK_TEST_WHEEL]);
 		}
 		Platform_Log("[CTR RenderLayer] at exit: native char frames by native draws in view 0: 0 %llu, 1 %llu, 2 %llu, 3 %llu, 4 %llu, 5 %llu, 6 %llu, "
 		             "7 %llu, 8 %llu; frames where draws != routed %llu\n",
@@ -6377,6 +6544,7 @@ void NativeRenderLayer_TiresBegin(const struct Instance *inst, const struct Push
 		// "Native" by the stamp alone: a native view whose retail wheels get
 		// this far (its item had no native wheels) is one the counter names.
 		s_nrCharTiresActive = 1;
+		s_nrCharTiresSeat = NativeRenderLayer_SeatOfInst(inst);
 		s_nrCharTiresNative = NativeRenderLayer_CharViewStamp(inst, pb, &wheels);
 	}
 
@@ -6413,13 +6581,23 @@ void NativeRenderLayer_TiresPrimitive(void)
 {
 	if (s_nrCharTiresActive)
 	{
+		const int inSeat = (s_nrCharTiresSeat >= 0) && (s_nrCharTiresSeat < NATIVE_RENDER_LAYER_DRIVERS);
+
 		if (s_nrCharTiresNative)
 		{
 			s_nrCharCnt.tiresNative++;
+			if (inSeat)
+			{
+				s_nrCharSeatCnt[s_nrCharTiresSeat].tiresNative++;
+			}
 		}
 		else
 		{
 			s_nrCharCnt.tiresFallback++;
+			if (inSeat)
+			{
+				s_nrCharSeatCnt[s_nrCharTiresSeat].tiresFallback++;
+			}
 		}
 	}
 
@@ -7223,23 +7401,37 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 	}
 	s_nrCharSeatFrame[seat].drawn = 1;
 
-	// The wheels (step 4e: only the ones of this item's side).
+	// The wheels (step 4e: only the ones of this item's side). The material
+	// of the wheel with its texture and levels, its tint changed as the body's
+	// (the side of a split, the mirror: the wheels follow the body, wheel
+	// concept E7). An author's wheel (WHLS version 2) draws its -X wheels from
+	// the mirrored mesh (gpu->wheelMirrorFirst, NativeRenderLayer_FillCharWheels).
 	if (it->nativeWheels && (it->wheelMask != 0) && (gpu->wheelVB != NATIVE_GFX_INVALID) && (gpu->wheelIB != NATIVE_GFX_INVALID))
 	{
-		struct NativeMeshRangeDraw wheelRange;
+		struct NativeMeshRangeDraw wheelRange[2];
 		const int texture = gpu->materialTexture[gpu->wheelMaterial];
 		int wheel;
+		int half;
 
-		memset(&wheelRange, 0, sizeof(wheelRange));
-		wheelRange.firstIndex = 0;
-		wheelRange.indexCount = gpu->wheelIndexCount;
-		wheelRange.texture = (texture >= 0) ? gpu->texture[texture] : NATIVE_GFX_INVALID;
-		wheelRange.srgb = (texture >= 0) ? (int)gpu->textureSrgb[texture] : 0;
-		memcpy(wheelRange.tint, gpu->materialTint[gpu->wheelMaterial], sizeof(wheelRange.tint));
-		wheelRange.alphaCutoff = gpu->materialMask[gpu->wheelMaterial] ? 0.5f : 0.0f;
+		memset(wheelRange, 0, sizeof(wheelRange));
+		for (half = 0; half < 2; half++)
+		{
+			struct NativeMeshRangeDraw *range = &wheelRange[half];
+
+			range->firstIndex = (half != 0) ? gpu->wheelMirrorFirst : 0u;
+			range->indexCount = gpu->wheelIndexCount;
+			range->texture = (texture >= 0) ? gpu->texture[texture] : NATIVE_GFX_INVALID;
+			range->srgb = (texture >= 0) ? (int)gpu->textureSrgb[texture] : 0;
+			memcpy(range->tint, gpu->materialTint[gpu->wheelMaterial], sizeof(range->tint));
+			range->tint[0] *= it->tintScale[0];
+			range->tint[1] *= it->tintScale[1];
+			range->tint[2] *= it->tintScale[2];
+			range->alphaCutoff = gpu->materialMask[gpu->wheelMaterial] ? 0.5f : 0.0f;
+		}
 
 		for (wheel = 0; wheel < NATIVE_WHEELS_COUNT; wheel++)
 		{
+			const int mirrored = gpu->wheelOwn && ((wheel & 1) != 0);
 			struct NativeMeshDraw w;
 			double W[4][4];
 
@@ -7256,12 +7448,23 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 			w.indexBuffer = gpu->wheelIB;
 			w.vertexOffset = 0;
 			w.rangeCount = 1;
-			w.ranges = &wheelRange;
+			w.ranges = &wheelRange[mirrored ? 1 : 0];
 			w.depthTint = mesh.depthTint;
 
+			s_nrCharCnt.wheelDispatched++;
+			s_nrCharSeatCnt[seat].wheelDispatched++;
 			if (NativeRenderer_DrawNativeMesh(&w, clip, dispenv, onScreen) != 0)
 			{
 				s_nrCharCnt.wheelDraws++;
+				s_nrCharSeatCnt[seat].wheelDraws++;
+				if (mirrored)
+				{
+					s_nrCharCnt.ownMirroredDraws++;
+				}
+				if (gpu->wheelOwn && it->mirror)
+				{
+					s_nrCharCnt.ownMirrorItemDraws++;
+				}
 				if (clearDepth)
 				{
 					s_nrDepthClearFrame[view] = s_nrFrame;
@@ -7271,6 +7474,7 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 			else
 			{
 				s_nrCharCnt.wheelNotDrawn++;
+				s_nrCharSeatCnt[seat].wheelNotDrawn++;
 			}
 		}
 	}
@@ -7463,8 +7667,11 @@ internal int NativeRenderLayer_CharViewStamp(const struct Instance *inst, const 
 
 // Step 4c, from game/DrawTires.c through NativeChar_ViewHidesWheels: a view
 // drawn natively WITH native wheels hides the retail ones. A native view
-// without native wheels (no wheel pose) keeps them, and TiresBegin counts
-// them as retail wheels in a native view.
+// without native wheels keeps them, and TiresBegin counts them as retail
+// wheels in a native view; since the wheels rule of the route (a set with the
+// kart wheels shown is routed only with a wheel pose) that is only a file with
+// the wheels hidden, whose retail wheels NativeChar_ModelHidesWheels hides
+// before - so the count stays 0.
 int NativeRenderLayer_CharViewNativeWheels(const struct Instance *inst, const struct PushBuffer *pb)
 {
 	int wheels = 0;
