@@ -257,6 +257,25 @@ void NativeChar_NoteOwnMask(const struct Driver *d);
 // of --char-grid-selftest (MM_NativeCharGrid_SelfTest).
 void NativeChar_MaskSelfTest(int *checks, int *failures);
 
+// THE NATIVE MODEL (CNET, CTXT; PREVIEW). Only with --dev --native-preview:
+// when a seat is bound (NativeChar_ArmSeats, and --dev-char-seats), the
+// file's CNET and CTXT are read again from its path, checked with
+// RldChar_ReadNative (include/rldchar.inc) and held in host memory until the
+// seats are cleared, with one line "native model ready: ...", "native model
+// refused (<rule>), using CMDL: ..." or "native model none: ...". Nothing is
+// uploaded or drawn yet. This is the held part of a bound seat whose guard
+// holds (NativeChar_SeatModel != NULL), NULL for every other seat, without
+// --native-preview, and for a file whose native part is missing or refused -
+// the seat then draws its CMDL.
+struct RldCharNative;
+const struct RldCharNative *NativeChar_SeatNative(int seat);
+
+// --char-native-selftest <folder> (main.c, ctest char_native_selftest): the
+// files rldpack make-native-tests wrote, through the roster read and the
+// native read without and with --native-preview, each against the
+// expectation its name gives. No window, no data. 0 = passed.
+int NativeChar_NativeSelfTest(const char *dir);
+
 // game/DrawTires.c, the solid wheels and their reflection: 1 when model is the
 // model of a loaded file whose CHRI flags set RLDCHAR_FLAG_NO_WHEELS (the race
 // seat and the driver select preview alike), else 0 - also for NULL, retail

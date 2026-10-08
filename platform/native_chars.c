@@ -83,6 +83,17 @@
 //            portrait strip at the first draw after every entering of the
 //            driver select and drawn on its tile. Only there - see THE
 //            PORTRAITS.
+//   native   only with --dev --native-preview (PREVIEW, nothing draws it yet):
+//            when a seat is bound, NativeChar_HoldNative reads the file's
+//            CNET and CTXT again from its path, checks them
+//            (RldChar_ReadNative, include/rldchar.inc) against the CMDL in
+//            memory, decodes the textures and holds all of it in host memory
+//            (NativeChar_SeatNative) - one line "native model ready",
+//            "native model refused (<rule>), using CMDL" or "native model
+//            none". A broken native part costs only itself: the driver keeps
+//            its CMDL. Without --native-preview nothing of this runs: the
+//            roster read above never looks at CNET or CTXT, so the path of a
+//            file, its checks and its lines are those of a build without them.
 //   stage 0  NativeChar_ClearSeats: the next load starts with empty seats.
 //
 // THE MODEL IS THE NATIVE ONE. CMDL is framed like a model file of the BIGFILE
@@ -137,6 +148,10 @@
 
 // --dev, main.c. Defined further down in the same build.
 extern int g_cfg_dev;
+
+// --native-preview (main.c sets it, platform/native_gfx_vk.c defines it). Only
+// read here: without it CNET and CTXT are never opened.
+extern int g_cfg_nativePreview;
 
 global_variable char s_charFolder[NATIVE_CHAR_PATH_MAX];
 global_variable char s_charFile[NATIVE_CHAR_PATH_MAX];
@@ -202,6 +217,7 @@ struct NativeCharFile
 	struct RldCharVoices voices; // what RldChar_CheckVoices read (at start, and again from cvoi)
 	int voiceState;             // NATIVE_CHAR_VOICES_*
 	const char *voiceWhy;       // NATIVE_CHAR_VOICES_IGNORED: the reader's or the check's fixed text
+	struct RldCharNative *native; // CNET/CTXT, READY, held only while a seat is bound and only with --native-preview; else NULL
 };
 
 // The files of the roster, in sorted order: entry e < s_charRosterFiles is
@@ -265,6 +281,10 @@ global_variable int s_charPick = -1;
 
 global_variable s64 s_droppedTotal;
 global_variable s64 s_droppedSeat0;
+
+// How often a file was opened for its native part (NativeChar_ReadNative).
+// Only the self-test reads it: without --native-preview it never moves.
+global_variable int s_nativeLooks;
 
 internal int NativeChar_IsAbsolute(const char *path)
 {
@@ -1250,10 +1270,138 @@ internal void NativeChar_ReleaseVoices(void)
 	}
 }
 
+// THE NATIVE PART (CNET, CTXT) of a file, read again from its path: 0 and
+// nothing touched without preview - not opened, not looked at. Else 1, and
+// out says NONE, READY or REFUSED (rule, detail). The file must still carry
+// the CMDL that was loaded at start (its hash), and the poses are held to the
+// hulls of the frames of that model in memory (relocated: its pointer fields
+// hold addresses, RldChar_FrameHulls takes the body's address as base).
+internal int NativeChar_ReadNative(const struct NativeCharFile *f, int preview, struct RldCharNative *out)
+{
+	struct RldReader reader;
+	struct RldCharHull hulls[RLDCHAR_NET_POSES];
+	const u8 *modelEntry;
+	const char *why;
+
+	memset(out, 0, sizeof(*out));
+	if (!preview)
+	{
+		return 0;
+	}
+
+	s_nativeLooks++;
+	why = (f->path != NULL) ? Rld_OpenAs(&reader, f->path, &s_rldCharFormat) : "the path of the file was not kept";
+	if (why != NULL)
+	{
+		RldChar_NativeFail(out, "native-file", "%s", why);
+		return 1;
+	}
+
+	modelEntry = Rld_FindEntry(&reader, "CMDL", NULL);
+	if ((modelEntry == NULL) || (memcmp(&modelEntry[RLD_DIR_HASH_OFFSET], f->cmdlHash, sizeof(f->cmdlHash)) != 0))
+	{
+		Rld_Close(&reader);
+		RldChar_NativeFail(out, "native-file", "%s", "the file changed since the start - its CMDL is not the loaded one");
+		return 1;
+	}
+
+	if ((f->cmdl == NULL) || !RldChar_FrameHulls(&f->cmdl[4], Rld_ReadLE32(&f->cmdl[0]), (u32)(size_t)&f->cmdl[4], hulls))
+	{
+		Rld_Close(&reader);
+		RldChar_NativeFail(out, "native-file", "%s", "the frames of the loaded model cannot be read");
+		return 1;
+	}
+
+	RldChar_ReadNative(&reader, f->info.flags, hulls, out);
+	Rld_Close(&reader);
+	return 1;
+}
+
+// One line about the native part of a bound file, the words a measuring tool
+// reads. who: "seat 0" or "dev seats".
+internal void NativeChar_LogNative(const char *who, const struct NativeCharFile *f, const struct RldCharNative *n)
+{
+	if (n->state == RLDCHAR_NATIVE_READY)
+	{
+		char wheels[48];
+
+		if (n->wheel != NULL)
+		{
+			snprintf(wheels, sizeof(wheels), "wheels %u triangles", (unsigned)n->wheelTriangleCount);
+		}
+		else
+		{
+			snprintf(wheels, sizeof(wheels), "%s", "wheels hidden");
+		}
+		Platform_Log("[CTR Char] native model ready: %s, %s, %u vertices, %u triangles, %u poses, %u materials, %u textures (%llu bytes RGBA8), %s\n", who,
+		             f->file, (unsigned)n->vertexCount, (unsigned)n->triangleCount, (unsigned)n->poseCount, (unsigned)n->materialCount,
+		             (unsigned)n->textureCount, (unsigned long long)n->textureBytes, wheels);
+	}
+	else if (n->state == RLDCHAR_NATIVE_REFUSED)
+	{
+		Platform_Log("[CTR Char] native model refused (%s), using CMDL: %s, %s: %s\n", (n->rule != NULL) ? n->rule : "native", who, f->file, n->detail);
+	}
+	else
+	{
+		Platform_Log("[CTR Char] native model none: %s, %s (no CNET), using CMDL\n", who, f->file);
+	}
+}
+
+// At the binding of a seat (load stage 5), only with --native-preview: the
+// native part of the file, read, checked and held in host memory until the
+// seats are cleared. Nothing is uploaded and nothing drawn here (step 4c).
+// One line per binding. A file held already (several dev seats) is not read
+// again.
+internal void NativeChar_HoldNative(int entry, const char *who)
+{
+	struct NativeCharFile *f = &s_charFiles[entry];
+	struct RldCharNative *n;
+
+	if (!g_cfg_nativePreview || (f->native != NULL))
+	{
+		return;
+	}
+
+	n = (struct RldCharNative *)calloc(1, sizeof(*n));
+	if (n == NULL)
+	{
+		Platform_Log("[CTR Char] native model refused (memory), using CMDL: %s, %s: out of memory\n", who, f->file);
+		return;
+	}
+
+	(void)NativeChar_ReadNative(f, 1, n);
+	NativeChar_LogNative(who, f, n);
+	if (n->state == RLDCHAR_NATIVE_READY)
+	{
+		f->native = n;
+		return;
+	}
+
+	RldChar_FreeNative(n);
+	free(n);
+}
+
+// Every held native part is let go with the seats. Nothing without one.
+internal void NativeChar_ReleaseNative(void)
+{
+	int e;
+
+	for (e = 0; e < s_charRosterFiles; e++)
+	{
+		if (s_charFiles[e].native != NULL)
+		{
+			RldChar_FreeNative(s_charFiles[e].native);
+			free(s_charFiles[e].native);
+			s_charFiles[e].native = NULL;
+		}
+	}
+}
+
 void NativeChar_ClearSeats(void)
 {
 	memset(s_seat, 0, sizeof(s_seat));
 	NativeChar_ReleaseVoices();
+	NativeChar_ReleaseNative();
 }
 
 // The first reason why this race is not one the funnel binds in, NULL when it
@@ -2169,6 +2317,7 @@ internal void NativeChar_ArmDevSeats(struct GameTracker *gGT)
 	if (bound > 0)
 	{
 		NativeChar_HoldVoices(entry);
+		NativeChar_HoldNative(entry, "dev seats");
 	}
 
 	// From here until the next load arms its seats, drops count for this one.
@@ -2301,6 +2450,7 @@ void NativeChar_ArmSeats(void)
 	NativeChar_PortraitsDirty();
 	Platform_Log("[CTR Char] seat 0 = %s on template %d\n", s_charFiles[pick].file, templateId);
 	NativeChar_HoldVoices(pick);
+	NativeChar_HoldNative(pick, "seat 0");
 
 	// The marker of the minimap: one flat color like the retail driver colors
 	// (data.colors, ALL4), or the template's.
@@ -2334,6 +2484,16 @@ struct Model *NativeChar_SeatModel(int index)
 	}
 
 	return s_seat[index].model;
+}
+
+const struct RldCharNative *NativeChar_SeatNative(int seat)
+{
+	if (NativeChar_SeatModel(seat) == NULL)
+	{
+		return NULL;
+	}
+
+	return s_charFiles[s_seat[seat].entry].native;
 }
 
 // ---------------------------------------------------------------------------
@@ -3104,4 +3264,292 @@ void NativeChar_MaskSelfTest(int *checks, int *failures)
 
 	NativeChar_OwnMaskSelfTest(checks, failures);
 	NativeChar_MapColorSelfTest(checks, failures);
+}
+
+// ---------------------------------------------------------------------------
+// THE NATIVE PART SELF-TEST, --char-native-selftest <folder> (main.c, ctest
+// char_native_selftest; rldpack make-native-tests writes the files into a
+// build folder). Every *.rldchar of the folder, in the roster's order, goes
+// through the game's own reading:
+//   1. the roster read (NativeChar_ReadFile, as at start), which must never
+//      open the native part: the look counter does not move;
+//   2. without --native-preview: NativeChar_ReadNative reads nothing and the
+//      counter does not move - a broken CNET/CTXT is not even looked at;
+//   3. with --native-preview: read and checked against the expectation the
+//      name gives (step 4 below repeats 2 and 3 through the real switch,
+//      g_cfg_nativePreview in NativeChar_HoldNative, with ReleaseNative and
+//      SeatNative), "<kind>_<rest>.rldchar":
+//        old_      no CNET/CTXT: the roster read loads it, native NONE
+//        none_     CTXT without CNET: loaded, native NONE (CTXT not read)
+//        good_     loaded, native READY
+//        bad_<RULE>_  loaded with its CMDL, native REFUSED by exactly <RULE>
+//        damaged_  the whole file refused by the roster read, as today
+//      any other name is only reported.
+// Every loaded file of the set must carry the CMDL of the first old_ file
+// (the same hash, triangles and draw bytes): a native part never changes
+// the driver. No window, no game data, no GPU. One line per file and one
+// verdict line; 0 = passed.
+// ---------------------------------------------------------------------------
+
+internal void NativeChar_NativeExpect(int *checks, int *failures, int ok, const char *name, const char *what)
+{
+	(*checks)++;
+
+	if (!ok)
+	{
+		(*failures)++;
+		printf("char native selftest FAILED: %s: %s\n", name, what);
+	}
+}
+
+int NativeChar_NativeSelfTest(const char *dir)
+{
+	struct NativeCharNameList list;
+	struct NativeCharFile reference;
+	int haveReference = 0;
+	int named = 0;
+	int checks = 0;
+	int failures = 0;
+	int files = 0;
+	int i;
+
+	memset(&list, 0, sizeof(list));
+	memset(&reference, 0, sizeof(reference));
+	list.folder = dir;
+
+	if (!SDL_EnumerateDirectory(dir, NativeChar_CollectName, &list) || (list.count == 0))
+	{
+		printf("char native selftest FAILED: no .rldchar file can be listed in %s\n", dir);
+		for (i = 0; i < list.count; i++)
+		{
+			free(list.names[i]);
+		}
+		free(list.names);
+		return 1;
+	}
+
+	if (list.count > 1)
+	{
+		qsort(list.names, (size_t)list.count, sizeof(list.names[0]), NativeChar_CompareNameEntries);
+	}
+
+	// The reference first: the first old_ file, whatever sorts before it.
+	for (i = 0; (i < list.count) && !haveReference; i++)
+	{
+		char path[NATIVE_CHAR_PATH_MAX];
+
+		if ((strncmp(list.names[i], "old_", 4u) == 0) &&
+		    NativePath_Join(path, sizeof(path), NativeStr8_FromCString(dir), NativeStr8_FromCString(list.names[i])))
+		{
+			haveReference = NativeChar_ReadFile(path, list.names[i], &reference);
+		}
+	}
+
+	for (i = 0; i < list.count; i++)
+	{
+		const char *name = list.names[i];
+		const char *underscore = strchr(name, '_');
+		const size_t kindLength = (underscore != NULL) ? (size_t)(underscore - name) : 0u;
+		char kind[16];
+		char rule[32];
+		char path[NATIVE_CHAR_PATH_MAX];
+		char what[384];
+		struct NativeCharFile f;
+		struct RldCharNative n;
+		int looks;
+		int loaded;
+		int read;
+
+		kind[0] = '\0';
+		rule[0] = '\0';
+		if ((underscore != NULL) && (kindLength < sizeof(kind)))
+		{
+			memcpy(kind, name, kindLength);
+			kind[kindLength] = '\0';
+		}
+		if (strcmp(kind, "bad") == 0)
+		{
+			const char *end = strchr(underscore + 1, '_');
+			const size_t ruleLength = (end != NULL) ? (size_t)(end - (underscore + 1)) : 0u;
+
+			if ((ruleLength > 0u) && (ruleLength < sizeof(rule)))
+			{
+				memcpy(rule, underscore + 1, ruleLength);
+				rule[ruleLength] = '\0';
+			}
+		}
+
+		files++;
+		named += (kind[0] != '\0') ? 1 : 0;
+		memset(&f, 0, sizeof(f));
+		if (!NativePath_Join(path, sizeof(path), NativeStr8_FromCString(dir), NativeStr8_FromCString(name)))
+		{
+			NativeChar_NativeExpect(&checks, &failures, 0, name, "the path is too long");
+			continue;
+		}
+
+		// 1. The roster read, as at start: never a look at CNET or CTXT.
+		looks = s_nativeLooks;
+		loaded = NativeChar_ReadFile(path, name, &f);
+		NativeChar_NativeExpect(&checks, &failures, s_nativeLooks == looks, name, "the roster read opened the native part");
+
+		if (strcmp(kind, "damaged") == 0)
+		{
+			NativeChar_NativeExpect(&checks, &failures, !loaded, name, "loaded - a generic envelope finding must refuse the whole file");
+			printf("char native selftest: %s: refused as a whole (as before CNET/CTXT existed)\n", name);
+			if (loaded)
+			{
+				free(f.cmdl);
+				NativeChar_DropMask(&f);
+			}
+			continue;
+		}
+
+		if (kind[0] != '\0')
+		{
+			NativeChar_NativeExpect(&checks, &failures, loaded, name, "refused by the roster read - the driver is lost");
+		}
+		if (!loaded)
+		{
+			printf("char native selftest: %s: refused by the roster read\n", name);
+			continue;
+		}
+		f.file = list.names[i];
+		f.path = path;
+
+		// The same driver in every file of the set: the CMDL of the first old_ one.
+		if (haveReference && (kind[0] != '\0'))
+		{
+			NativeChar_NativeExpect(&checks, &failures,
+			                        (memcmp(f.cmdlHash, reference.cmdlHash, sizeof(f.cmdlHash)) == 0) && (f.triangles == reference.triangles) &&
+			                            (f.drawBytes == reference.drawBytes) && (f.info.templateId == reference.info.templateId) &&
+			                            (f.info.classId == reference.info.classId),
+			                        name, "another CMDL than the old_ file - the native part changed the driver");
+		}
+
+		// 2. Without --native-preview: not read, not looked at.
+		looks = s_nativeLooks;
+		read = NativeChar_ReadNative(&f, 0, &n);
+		NativeChar_NativeExpect(&checks, &failures, (read == 0) && (s_nativeLooks == looks) && (n.state == RLDCHAR_NATIVE_NONE) && (n.cnet == NULL), name,
+		                        "without --native-preview the native part was looked at");
+
+		// 3. With --native-preview: the expectation of the name.
+		read = NativeChar_ReadNative(&f, 1, &n);
+		NativeChar_NativeExpect(&checks, &failures, (read == 1) && (s_nativeLooks == (looks + 1)), name, "with --native-preview the native part was not read");
+
+		if ((strcmp(kind, "old") == 0) || (strcmp(kind, "none") == 0))
+		{
+			NativeChar_NativeExpect(&checks, &failures, n.state == RLDCHAR_NATIVE_NONE, name, "a native part where there is none");
+		}
+		else if (strcmp(kind, "good") == 0)
+		{
+			snprintf(what, sizeof(what), "not ready: %s %s", (n.rule != NULL) ? n.rule : "", n.detail);
+			NativeChar_NativeExpect(&checks, &failures, n.state == RLDCHAR_NATIVE_READY, name, what);
+		}
+		else if (strcmp(kind, "bad") == 0)
+		{
+			snprintf(what, sizeof(what), "expected refused by %s, got state %d %s %s", rule, n.state, (n.rule != NULL) ? n.rule : "", n.detail);
+			NativeChar_NativeExpect(&checks, &failures, (n.state == RLDCHAR_NATIVE_REFUSED) && (n.rule != NULL) && (strcmp(n.rule, rule) == 0), name, what);
+		}
+
+		if (n.state == RLDCHAR_NATIVE_READY)
+		{
+			printf("char native selftest: %s: CMDL %02x%02x%02x%02x%02x%02x kept; preview off: not read; preview on: ready, %u vertices, %u triangles, %u poses, "
+			       "%u materials, %u textures (%llu bytes RGBA8), %s\n",
+			       name, (unsigned)f.cmdlHash[0], (unsigned)f.cmdlHash[1], (unsigned)f.cmdlHash[2], (unsigned)f.cmdlHash[3], (unsigned)f.cmdlHash[4],
+			       (unsigned)f.cmdlHash[5], (unsigned)n.vertexCount, (unsigned)n.triangleCount, (unsigned)n.poseCount, (unsigned)n.materialCount,
+			       (unsigned)n.textureCount, (unsigned long long)n.textureBytes, (n.wheel != NULL) ? "wheels" : "wheels hidden");
+		}
+		else if (n.state == RLDCHAR_NATIVE_REFUSED)
+		{
+			printf("char native selftest: %s: CMDL %02x%02x%02x%02x%02x%02x kept; preview off: not read; preview on: refused (%s) %s\n", name,
+			       (unsigned)f.cmdlHash[0], (unsigned)f.cmdlHash[1], (unsigned)f.cmdlHash[2], (unsigned)f.cmdlHash[3], (unsigned)f.cmdlHash[4],
+			       (unsigned)f.cmdlHash[5], (n.rule != NULL) ? n.rule : "", n.detail);
+		}
+		else
+		{
+			printf("char native selftest: %s: CMDL %02x%02x%02x%02x%02x%02x kept; preview off: not read; preview on: none (no CNET)\n", name,
+			       (unsigned)f.cmdlHash[0], (unsigned)f.cmdlHash[1], (unsigned)f.cmdlHash[2], (unsigned)f.cmdlHash[3], (unsigned)f.cmdlHash[4],
+			       (unsigned)f.cmdlHash[5]);
+		}
+
+		// 4. The real switch: NativeChar_HoldNative reads g_cfg_nativePreview
+		//    itself. The file stands in as roster entry 0 with seat 0 bound
+		//    to it, as NativeChar_ArmSeats leaves them; without the switch
+		//    nothing is opened and nothing held, with it the part is held
+		//    exactly when it is ready, NativeChar_SeatNative hands it out for
+		//    seat 0 only, and NativeChar_ReleaseNative lets it go. Then the
+		//    roster and the seats are empty again.
+		{
+			const int previewBefore = g_cfg_nativePreview;
+			const int ready = (n.state == RLDCHAR_NATIVE_READY);
+			int pass;
+
+			s_charFiles[0] = f;
+			s_charRosterFiles = 1;
+			memset(s_seat, 0, sizeof(s_seat));
+			s_seat[0].model = f.model;
+			s_seat[0].entry = 0;
+			s_seat[0].motorId = (int)data.characterIDs[0];
+
+			for (pass = 0; pass < 2; pass++)
+			{
+				g_cfg_nativePreview = pass;
+				looks = s_nativeLooks;
+				NativeChar_HoldNative(0, "self test");
+				if (pass == 0)
+				{
+					NativeChar_NativeExpect(&checks, &failures,
+					                        (s_nativeLooks == looks) && (s_charFiles[0].native == NULL) && (NativeChar_SeatNative(0) == NULL), name,
+					                        "HoldNative without --native-preview looked at or held the native part");
+				}
+				else
+				{
+					NativeChar_NativeExpect(&checks, &failures, (s_nativeLooks == (looks + 1)) && ((s_charFiles[0].native != NULL) == ready), name,
+					                        "HoldNative with --native-preview did not hold exactly a ready part");
+					NativeChar_NativeExpect(&checks, &failures,
+					                        (NativeChar_SeatNative(0) == s_charFiles[0].native) && (NativeChar_SeatNative(1) == NULL) &&
+					                            (NativeChar_SeatNative(-1) == NULL) && (NativeChar_SeatNative(NATIVE_CHAR_SEATS) == NULL),
+					                        name, "SeatNative hands out another part than the one of bound seat 0");
+				}
+			}
+
+			NativeChar_ReleaseNative();
+			NativeChar_NativeExpect(&checks, &failures, (s_charFiles[0].native == NULL) && (NativeChar_SeatNative(0) == NULL), name,
+			                        "ReleaseNative kept the native part");
+
+			g_cfg_nativePreview = previewBefore;
+			memset(&s_charFiles[0], 0, sizeof(s_charFiles[0]));
+			s_charRosterFiles = 0;
+			memset(s_seat, 0, sizeof(s_seat));
+		}
+
+		RldChar_FreeNative(&n);
+		free(f.cmdl);
+		NativeChar_DropMask(&f);
+	}
+
+	if (haveReference)
+	{
+		free(reference.cmdl);
+		NativeChar_DropMask(&reference);
+	}
+	// A folder of named cases needs its old_ file; a folder of other files
+	// (only reported) does not.
+	NativeChar_NativeExpect(&checks, &failures, haveReference || (named == 0), dir, "no old_ file - nothing to hold the CMDL of the others against");
+
+	for (i = 0; i < list.count; i++)
+	{
+		free(list.names[i]);
+	}
+	free(list.names);
+
+	if (failures != 0)
+	{
+		printf("char native selftest FAILED: %d files, %d checks, %d failures\n", files, checks, failures);
+		return 1;
+	}
+
+	printf("char native selftest passed: %d files, %d checks, 0 failures\n", files, checks);
+	return 0;
 }

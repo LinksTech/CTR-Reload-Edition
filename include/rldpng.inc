@@ -1,10 +1,12 @@
-// rldpng.inc - a PNG reader for rldpack, written in-house
+// rldpng.inc - a PNG reader for rldpack and the game, written in-house
 //
-// AN INCLUDE, NOT A MODULE. tools/rldpack.c includes it; u8, u16, u32 and u64
-// come from the including file. rldpack reads one kind of PNG: the portrait an
-// author gives make-char with --icon (tools/rldpack_char.inc turns it into the
-// CICN chunk). No zlib and no other library - the reason is at the head of
-// tools/rldpack.c. The inflate below is the one of RFC 1951, inside the zlib
+// AN INCLUDE, NOT A MODULE. include/rldchar.inc includes it, and through it
+// tools/rldpack.c and the game (platform/native_chars.c); u8, u16, u32 and u64
+// come from the including file. rldpack reads the portrait an author gives
+// make-char with --icon (tools/rldpack_char.inc turns it into the CICN chunk)
+// and the textures of CTXT; the game reads only the textures of CTXT, only
+// with --dev --native-preview (preview). No zlib and no other library - the
+// reason is at the head of tools/rldpack.c. The inflate below is the one of RFC 1951, inside the zlib
 // wrapper of RFC 1950, read by the rules of the PNG specification (W3C,
 // second edition).
 //
@@ -778,7 +780,7 @@ static const u8 *RldPng_Pass(const struct RldPngImage *image, u32 pass, u32 *w, 
 
 // A PNG file in memory -> 8-bit RGBA in out->rgba. RLDPNG_OK, or a code and
 // *why (fixed text, or a text in a static buffer that the next call overwrites).
-static int RldPng_Decode(const u8 *data, size_t size, struct RldPngImage *out, const char **why)
+static int RldPng_Decode(const u8 *png, size_t size, struct RldPngImage *out, const char **why)
 {
 	static char text[160];
 	u8 palette[RLDPNG_PALETTE_MAX * 3u];
@@ -808,7 +810,7 @@ static int RldPng_Decode(const u8 *data, size_t size, struct RldPngImage *out, c
 	memset(palette, 0, sizeof(palette));
 	*why = NULL;
 
-	if ((data == NULL) || (size < 8u) || (memcmp(data, s_rldPngSignature, 8u) != 0))
+	if ((png == NULL) || (size < 8u) || (memcmp(png, s_rldPngSignature, 8u) != 0))
 	{
 		*why = "it does not start with the PNG signature - this is not a PNG file";
 		return RLDPNG_BAD;
@@ -828,9 +830,9 @@ static int RldPng_Decode(const u8 *data, size_t size, struct RldPngImage *out, c
 			return RLDPNG_BAD;
 		}
 
-		length = RldPng_BE32(&data[at]);
-		type = &data[at + 4u];
-		body = &data[at + 8u];
+		length = RldPng_BE32(&png[at]);
+		type = &png[at + 4u];
+		body = &png[at + 8u];
 
 		if ((length > 0x7FFFFFFFu) || ((size_t)length > (size - at - 12u)))
 		{

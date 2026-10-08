@@ -334,6 +334,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--selftest-disc", "<dir>", "unpack the test images in <dir> (good-*/bad-*.bin), then end"},
     {"--gte-selftest", "", "both GTE paths against each other, then end"},
     {"--char-grid-selftest", "", "layout, navigation and scrolling of the driver select grid for 0 to 32 custom entries, then end; no window, no data needed"},
+    {"--char-native-selftest", "<dir>", "every .rldchar of dir (written by rldpack make-native-tests) through the roster read and the native read (CNET, CTXT) without and with --native-preview, each against the expectation its name gives, then end; no window, no data needed"},
     {"--selftest-containers", "<dir>", "every check the game runs on a container, on every *.rldtrack in dir (good-* must load, bad-* must be refused), then end; no window, no data needed"},
     {"--make-test-containers", "<dir>", "write the synthetic good-*/bad-* containers of the container self-test into dir, then end"},
     {"--make-test-disc", "<dir>", "write the synthetic good-*/bad-* disc images of the disc self-test into dir, then end"},
@@ -2090,6 +2091,14 @@ int main(int argc, char *argv[])
 		if (strcmp(argv[argIndex], "--char-grid-selftest") == 0)
 		{
 			return MM_NativeCharGrid_SelfTest();
+		}
+
+		// The native part of custom characters (CNET, CTXT), up here for the
+		// same reason: it only reads the files rldpack wrote into a build
+		// folder (ctest char_native_selftest, platform/native_chars.c).
+		if ((strcmp(argv[argIndex], "--char-native-selftest") == 0) && ((argIndex + 1) < argc))
+		{
+			return NativeChar_NativeSelfTest(argv[argIndex + 1]);
 		}
 
 		// The container self-test, up here for the same reason: it only reads

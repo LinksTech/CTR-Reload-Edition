@@ -77,6 +77,12 @@ BOOL RsView_Register(HINSTANCE instance);
 // the older "RLDPV1" with whole game units is read as well).
 // A missing or damaged file leaves an empty view with a message saying why.
 // Pose and yaw stay as they are.
+// Preview feature: only with --enable-preview-features (g_rsPreviewFeatures)
+// the file may go on with the native model ("RLDPN1", make-char
+// --native-model on; THE NATIVE MODEL IN THE PREVIEW in
+// tools/rldpack_native.inc), which the view then draws, textured, in place of
+// the model (rs_view.c, THE NATIVE MODEL). Without the switch such a file is
+// refused as before ("bytes follow after the last pose").
 void RsView_LoadPreview(HWND view, const wchar_t *path);
 
 // The same from memory (the bytes are copied). TRUE if the model is shown.

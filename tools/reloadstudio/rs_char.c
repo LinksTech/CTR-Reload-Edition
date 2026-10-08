@@ -173,7 +173,7 @@
 #define CHAR_CLICK_DELAY   100
 #define CHAR_VAL           1024   // length of a value or path
 #define CHAR_VOICE_SET_MAX 64     // files with an event of their own (--voice), at most
-#define CHAR_MAX_ARGS      (48 + 2 * CHAR_VOICE_SET_MAX)
+#define CHAR_MAX_ARGS      (52 + 2 * CHAR_VOICE_SET_MAX)
 #define CHAR_CMD_CAP       32768  // the command in the raw output, at most (the shell's RS_CMD_CAP)
 #define CHAR_NAME_MAX      17     // RLDCHAR_NAME_MAX in include/rldchar.inc
 #define CHAR_SIZE_MIN      50     // range of the --size switch
@@ -328,6 +328,10 @@
 #define CHAR_ID_VCOLORS_LABEL  390   // Vertex colors (an OBJ only)
 #define CHAR_ID_VCOLORS        391
 #define CHAR_ID_VCOLORS_HELP   392
+#define CHAR_ID_NATIVE_LABEL   393   // Native model (preview feature): the tick box, the hint, the note
+#define CHAR_ID_NATIVE         394
+#define CHAR_ID_NATIVE_HINT    395
+#define CHAR_ID_NATIVE_HELP    396
 #define CHAR_ID_IMPORT_LAST    399
 
 // CHAR_JOB_META: rldpack checks only the name, the driving style, the mask,
@@ -629,6 +633,7 @@ static struct {
     int qualityOn;                  // the note below the options has text (shown on the tab Model)
     HWND tabHead[CHAR_TABS], back, next, extrasSwitch[CHAR_EXTRAS_COUNT];
     HWND importNote, vcolorsLabel, vcolors, vcolorsHelp;  // the card Import of the tab Extras
+    HWND nativeLabel, native, nativeHint, nativeHelp;    // its row "Native model" (preview feature, Char_NativeUpdate)
     HWND upLabel, up, upHelp, forwardLabel, forward, forwardHelp, colorsLabel, colors, colorsHelp;
     int objOn;                      // the model is an OBJ: its own choices are shown (Char_ObjUpdate)
     int tab;                        // CHAR_TAB_*
@@ -722,6 +727,7 @@ static struct CharJobData g_charJob;
 static void Char_Layout(HWND page, int w, int h);
 static int Char_Check(HWND page);
 static void Char_ObjUpdate(HWND page);
+static void Char_NativeResult(wchar_t **f, int n);
 static void Char_VoiceSelShow(void);
 static int Char_VoicesHeard(int *clips, int *events);
 static void Char_VoiceColumns(int width);
@@ -1931,7 +1937,9 @@ static void Char_ParseLine(wchar_t *line)
         }
     } else if (wcscmp(kind, L"char") == 0) {
         const wchar_t *key = Char_Field(f, n, 1);
-        if (wcscmp(key, L"triangles") == 0 || (wcscmp(key, L"faces") == 0 && !j->triangles[0]))
+        if (wcscmp(key, L"native-model") == 0)
+            Char_NativeResult(f, n);
+        else if (wcscmp(key, L"triangles") == 0 || (wcscmp(key, L"faces") == 0 && !j->triangles[0]))
             Char_Copy(j->triangles, 32, Char_Field(f, n, 2));
         else if (wcscmp(key, L"parts") == 0)
             Char_Copy(j->parts, 160, Char_Field(f, n, 3));
@@ -2138,7 +2146,7 @@ static int Char_CardOfCode(const wchar_t *code)
         return -1;
     if (wcscmp(code, L"vertex-colors") == 0 || wcscmp(code, L"obj-vertex-modulation") == 0 ||
         wcscmp(code, L"up") == 0 || wcscmp(code, L"forward") == 0 || wcscmp(code, L"ply-up-axis") == 0 ||
-        wcscmp(code, L"colors") == 0)
+        wcscmp(code, L"colors") == 0 || wcsncmp(code, L"native-", 7) == 0)
         return CHAR_EXTRAS_IMPORT;
     if (wcsncmp(code, L"pose", 4) == 0)
         return CHAR_EXTRAS_ANIM;
@@ -2993,6 +3001,60 @@ static void Char_TexturesUpdate(HWND page)
     }
 }
 
+// The row "Native model" of the card Import (preview feature). LOCKED without
+// --enable-preview-features (g_rsPreviewFeatures): shown, the tick box greyed
+// out and empty, "Coming soon" at the right; every path that could tick it
+// checks the switch itself, and Char_MakeArgs passes --native-model on only
+// with the switch, for an OBJ, ticked - so without the switch the command and
+// the bytes of the character are those of before. With the switch: enabled
+// for an OBJ; the note says what the last check made of it (@char
+// native-model, Char_NativeResult). Never stored in the settings.
+#define CHAR_NATIVE_TEXT_OFF L"Later: the OBJ's own mesh and textures for the native renderer, beside the game's own model."
+#define CHAR_NATIVE_TEXT_ON  L"Writes CNET and CTXT (preview): the OBJ's own mesh, UVs and textures, each texture a power of two from 16 to 2048. The game reads them only with --dev --native-preview; the driver keeps the model above."
+#define CHAR_NATIVE_TEXT_OBJ L"Only for an OBJ model with its materials."
+
+static int Char_NativePassed(void)
+{
+    return g_rsPreviewFeatures && g_char.objOn && Char_IsChecked(g_char.native);
+}
+
+static void Char_NativeNote(const wchar_t *text)
+{
+    if (g_char.nativeHelp)
+        Rs_SetText(g_char.nativeHelp, text);
+}
+
+// After every change of the model and before every run: enabled or not, and
+// the note of what will be passed.
+static void Char_NativeUpdate(void)
+{
+    const int on = g_rsPreviewFeatures && g_char.objOn;
+    if (!g_char.native)
+        return;
+    if (!g_rsPreviewFeatures)
+        Char_SetChecked(g_char.native, 0);
+    EnableWindow(g_char.native, on ? TRUE : FALSE);
+    Rs_SetTextColor(g_char.nativeLabel, on ? RS_COL_TEXT : RS_COL_MUTED);
+    if (!g_rsPreviewFeatures)
+        Char_NativeNote(CHAR_NATIVE_TEXT_OFF);
+    else if (!g_char.objOn)
+        Char_NativeNote(CHAR_NATIVE_TEXT_OBJ);
+    else
+        Char_NativeNote(CHAR_NATIVE_TEXT_ON);
+}
+
+// @char native-model <vertices> <triangles> <poses> <materials> <textures>
+// <wheels|hidden> <bytes> of the run shown.
+static void Char_NativeResult(wchar_t **f, int n)
+{
+    wchar_t text[256];
+    if (!Char_NativePassed() || n < 9)
+        return;
+    swprintf(text, 256, L"Native model: %ls vertices, %ls triangles, %ls poses, %ls materials, %ls textures, %ls - %ls bytes (preview).",
+             f[2], f[3], f[4], f[5], f[6], wcscmp(f[7], L"wheels") == 0 ? L"the test wheel" : L"no wheels", f[8]);
+    Char_NativeNote(text);
+}
+
 // The choices of an OBJ are shown only for an OBJ; the page is laid out
 // again when that changes. A choice not passed so far (the model turned out
 // an OBJ by its content) is checked with.
@@ -3005,6 +3067,7 @@ static void Char_ObjUpdate(HWND page)
         return;
     }
     g_char.objOn = obj;
+    Char_NativeUpdate();
     Char_TexturesUpdate(page);
     Char_Relayout(page);
     Char_FieldPath(g_char.textures, dir, CHAR_VAL);
@@ -4621,6 +4684,13 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
         Char_ArgsAdd(a, L"--vertex-colors");
         Char_ArgsAdd(a, g_charVColorWords[Char_VColorIndex()]);
     }
+    // An OBJ, preview features only: its own mesh and textures as well
+    // (Char_NativeUpdate). Without the switch never passed.
+    Char_NativeUpdate();
+    if (Char_NativePassed()) {
+        Char_ArgsAdd(a, L"--native-model");
+        Char_ArgsAdd(a, L"on");
+    }
     // The mask always, also the template's: the file carries the choice.
     Char_ArgsAdd(a, L"--mask");
     Char_ArgsAdd(a, g_charMasks[Char_MaskIndex()].word);
@@ -6083,6 +6153,17 @@ static int Char_WriteReport(const wchar_t *path)
              !g_char.objOn ? L"not passed - no OBJ" : Char_VColorIndex() ? L"passed as --vertex-colors" : L"rldpack's default",
              g_char.objOn ? L"shown" : L"hidden");
     {
+        wchar_t *hint = Rs_GetText(g_char.nativeHint);
+        wchar_t *note = Rs_GetText(g_char.nativeHelp);
+        Char_Put(f, L"native model: %ls, %ls, %ls (%ls)", !g_rsPreviewFeatures ? L"locked - coming soon" : L"enabled (preview feature)",
+                 IsWindowEnabled(g_char.native) ? L"enabled" : L"greyed out", Char_IsChecked(g_char.native) ? L"on" : L"off",
+                 Char_NativePassed() ? L"passed as --native-model on" : L"not passed");
+        Char_Put(f, L"native model hint: %ls", hint ? hint : L"");
+        Char_Put(f, L"native model note: %ls", note ? note : L"");
+        Rs_Free(hint);
+        Rs_Free(note);
+    }
+    {
         // The tab of every message, in the order of the list ("-" = none).
         wchar_t line[CHAR_VAL];
         line[0] = 0;
@@ -6848,6 +6929,22 @@ static void Char_Create(HWND page)
     g_char.vcolorsHelp = Rs_Label(page, CHAR_ID_VCOLORS_HELP, L"OBJ: how a vertex colour meets the texture of its face.",
                                   RS_FONT_SMALL);
     Rs_SetTextColor(g_char.vcolorsHelp, RS_COL_MUTED);
+    g_char.nativeLabel = Rs_Label(page, CHAR_ID_NATIVE_LABEL, L"Native model", RS_FONT_BOLD);
+    g_char.native = Rs_Check(page, CHAR_ID_NATIVE, L"Also write the mesh and textures as they are");
+    g_char.nativeHint = Rs_ComingSoon(page, CHAR_ID_NATIVE_HINT);
+    // right-aligned in a box as wide as the longer of its two texts: the same
+    // rectangle with and without the switch
+    SetWindowLongPtrW(g_char.nativeHint, GWL_STYLE, GetWindowLongPtrW(g_char.nativeHint, GWL_STYLE) | SS_RIGHT);
+    g_char.nativeHelp = Rs_Label(page, CHAR_ID_NATIVE_HELP, CHAR_NATIVE_TEXT_OFF, RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.nativeHelp, RS_COL_MUTED);
+    Rs_SetTip(g_char.native, g_rsPreviewFeatures
+                                 ? L"Preview: rldpack also writes the OBJ's own triangles, UVs, materials and texture files (CNET, CTXT) into the "
+                                   L"character. The game draws them only with --dev --native-preview; the model it draws otherwise stays as it is."
+                                 : L"Start Reload Studio with --enable-preview-features to try it. Nothing of it is written into a character "
+                                   L"without it.");
+    Rs_SetTip(g_char.nativeHint, g_rsPreviewFeatures ? L"Unfinished: the game reads it only with --dev --native-preview."
+                                                     : L"Start Reload Studio with --enable-preview-features to try it.");
+    Char_NativeUpdate();
     CharWheels_Create(page, g_char.view);
     CharAnim_Create(page, g_char.view);
     // Tab order: the heads, the tab shown (Reduce to fit after the options),
@@ -7229,6 +7326,30 @@ static int Char_LayChoice(const struct CharLay *k, const RECT *in, int y, HWND l
     return y + Rs_Px(30) + h + Rs_Px(8);
 }
 
+// The row "Native model" of the card Import: label, tick box, the hint at the
+// right (the same box with and without the switch), the note below the box.
+// Returns the top of the next row.
+static int Char_LayNative(const struct CharLay *k, const RECT *in, int y)
+{
+    int x = in->left + k->labelW + Rs_Px(8), fieldW = in->right - x, hintW, boxW, h;
+
+    hintW = Char_TextWidth(g_char.nativeHint, L"Coming soon");
+    h = Char_TextWidth(g_char.nativeHint, L"Preview feature");
+    hintW = (h > hintW ? h : hintW) + Rs_Px(4);
+    boxW = Rs_CheckBoxWidth(g_char.native);
+    if (boxW > fieldW - hintW - Rs_Px(8))
+        boxW = fieldW - hintW - Rs_Px(8);
+    if (boxW < Rs_Px(40))
+        boxW = Rs_Px(40);
+    MoveWindow(g_char.nativeLabel, in->left, y + Rs_Px(3), k->labelW, Rs_Px(20), TRUE);
+    MoveWindow(g_char.native, x, y, boxW, Rs_Px(24), TRUE);
+    MoveWindow(g_char.nativeHint, in->right - hintW, y + Rs_Px(3), hintW, Rs_Px(18), TRUE);
+    y += Rs_Px(28);
+    h = Char_TextHeight(g_char.nativeHelp, fieldW, 3);
+    MoveWindow(g_char.nativeHelp, x, y, fieldW, h, TRUE);
+    return y + h + Rs_Px(8);
+}
+
 // Tab 5 Extras, the card Import: a note, then the choices (those of an OBJ
 // only for an OBJ). Returns the bottom of the card.
 static int Char_LayImport(const struct CharLay *k, int left, int right, int top)
@@ -7250,6 +7371,7 @@ static int Char_LayImport(const struct CharLay *k, int left, int right, int top)
     y = Char_LayChoice(k, &in, y, g_char.colorsLabel, g_char.colors, g_char.colorsHelp);
     if (g_char.objOn)
         y = Char_LayChoice(k, &in, y, g_char.vcolorsLabel, g_char.vcolors, g_char.vcolorsHelp);
+    y = Char_LayNative(k, &in, y);
     return y + Rs_Px(16);
 }
 
@@ -7398,7 +7520,7 @@ static void Char_Layout(HWND page, int w, int h)
     int vgap = Rs_Px(12), avail, leftW, least, comboW, contentTop, extrasBottom[CHAR_EXTRAS_COUNT];
     int barH, barTop, upperBottom, need, t, i;
     RECT card, in;
-    HWND column[18];
+    HWND column[19];
 
     Rs_CardClear(page);
     k.gap = Rs_Px(16);
@@ -7426,7 +7548,8 @@ static void Char_Layout(HWND page, int w, int h)
     column[15] = g_char.forwardLabel;
     column[16] = g_char.colorsLabel;
     column[17] = g_char.texturesLabel;
-    for (i = 0; i < 18; i++) {
+    column[18] = g_char.nativeLabel;
+    for (i = 0; i < 19; i++) {
         wchar_t *text = Rs_GetText(column[i]);
         int tw = Char_TextWidth(column[i], text) + Rs_Px(4);
         if (tw > k.labelW)
@@ -7709,6 +7832,18 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
     case CHAR_ID_REMESH:
         if (code == BN_CLICKED)
             Char_ChangedSoon(page);
+        break;
+    case CHAR_ID_NATIVE:
+        // Locked: taken and dropped, whatever sent it (EnableWindow alone
+        // does not stop a posted WM_COMMAND).
+        if (!g_rsPreviewFeatures) {
+            Char_SetChecked(g_char.native, 0);
+            break;
+        }
+        if (code == BN_CLICKED) {
+            Char_NativeUpdate();
+            Char_ChangedSoon(page);
+        }
         break;
     case CHAR_ID_WHEELS:
         // The preview follows at once; the check follows as for every click.
@@ -8105,6 +8240,16 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         return Char_AutoIconFit(page, arg);
     if (wcscmp(verb, L"vertex-colors") == 0)
         return Char_AutoVColors(page, arg);
+    if (wcscmp(verb, L"native-model") == 0) {
+        if (!g_rsPreviewFeatures) {
+            Rs_AutoLog(L"  native-model: locked - coming soon");
+            return RS_AUTO_FAIL;
+        }
+        r = Char_AutoOption(page, g_char.native, verb, arg);
+        if (!g_char.objOn)
+            Rs_AutoLog(L"  native-model: greyed out - no OBJ, not passed");
+        return r;
+    }
     if (wcscmp(verb, L"up") == 0)
         return Char_AutoList(page, g_char.up, verb, arg, g_charUpWords, g_charUpTexts, CHAR_UP_COUNT);
     if (wcscmp(verb, L"forward") == 0)

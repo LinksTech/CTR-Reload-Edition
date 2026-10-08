@@ -783,6 +783,7 @@ struct RldObjTexture
 	int kept;        // rgba kept for the split (RldObj_Detail), applied after it
 	int nearest;     // fitted to the texel each point lies in (RldObj_FitTriangle)
 	char *shown;     // a kept texture found elsewhere: that file (NULL = path)
+	char *found;     // any texture found elsewhere: that file (NULL = path); for the native model
 };
 
 struct RldObjModel
@@ -798,6 +799,8 @@ struct RldObjModel
 	u32 vnCount;
 	u32 *cornerV;
 	u32 *cornerT;      // RLDMK_NONE = no vt
+	u32 *cornerN;      // the vn of a corner, RLDMK_NONE = none; only for the native model (RldObj_CaptureNative),
+	                   // dropped by the split (RldObj_Detail)
 	u32 cornerCount;
 	u32 cornerCapacity;
 	u32 *faceFirst;
@@ -852,6 +855,7 @@ static void RldObj_FreeModel(struct RldObjModel *m)
 	free(m->uv);
 	free(m->cornerV);
 	free(m->cornerT);
+	free(m->cornerN);
 	free(m->faceFirst);
 	free(m->faceCorners);
 	free(m->faceName);
@@ -884,6 +888,7 @@ static void RldObj_FreeModel(struct RldObjModel *m)
 			free(m->textures[i].rgba);
 		}
 		free(m->textures[i].shown);
+		free(m->textures[i].found);
 	}
 	free(m->textures);
 	free(m->line);
@@ -1325,9 +1330,10 @@ static int RldObj_Face(struct RldObjModel *m, u32 line, const char *text, size_t
 		{
 			u32 capacity = m->cornerCapacity;
 			u32 c2 = m->cornerCapacity;
+			u32 c3 = m->cornerCapacity;
 
 			if (!RldObj_Grow((void **)&m->cornerV, m->cornerCount, &capacity, sizeof(u32)) ||
-			    !RldObj_Grow((void **)&m->cornerT, m->cornerCount, &c2, sizeof(u32)))
+			    !RldObj_Grow((void **)&m->cornerT, m->cornerCount, &c2, sizeof(u32)) || !RldObj_Grow((void **)&m->cornerN, m->cornerCount, &c3, sizeof(u32)))
 			{
 				RldObj_Memory();
 				m->cornerCount = first;
@@ -1337,6 +1343,7 @@ static int RldObj_Face(struct RldObjModel *m, u32 line, const char *text, size_t
 		}
 		m->cornerV[m->cornerCount] = v;
 		m->cornerT[m->cornerCount] = t;
+		m->cornerN[m->cornerCount] = (cuts == 2) ? n : RLDMK_NONE;
 		m->cornerCount++;
 		count++;
 	}
@@ -3205,6 +3212,13 @@ static int RldObj_Textures(struct RldObjModel *m, const char *objPath, char (*li
 				RldMk_Say("info", "tex-found-nearby", t->path, "The texture %s is not at the path the material file gives; %s is used.",
 				          Rld_LastComponent(t->path), nearby);
 				shown = nearby;
+				t->found = RldObj_Copy(nearby, strlen(nearby), RLD_PATH_MAX);
+				if (t->found == NULL)
+				{
+					free(data);
+					RldObj_Memory();
+					return 0;
+				}
 			}
 		}
 
@@ -4285,6 +4299,8 @@ static int RldObj_DetailFaces(struct RldObjDetail *d, const u8 *made)
 
 	free(m->cornerV);
 	free(m->cornerT);
+	free(m->cornerN);
+	m->cornerN = NULL;
 	free(m->faceFirst);
 	free(m->faceCorners);
 	free(m->faceName);
@@ -4694,6 +4710,165 @@ static int RldObj_Points(const struct RldObjModel *m, const u8 *cornerRgb, struc
 }
 
 //========================================================================================
+// THE NATIVE MODEL'S SOURCE (make-char --native-model on, PREVIEW)
+//========================================================================================
+//
+// For the native model (CNET, CTXT; tools/rldpack_native.inc) the OBJ as the
+// author made it: the faces with their v, vt and vn as written - before the
+// split of textured triangles (RldObj_Detail), which only serves the vertex
+// colors of the CMDL - the materials of the usemtl names, and the texture
+// files as the reader found them. Taken only while s_rldObjNativeWant is set
+// (make-char --native-model on) and only for the model itself, never for an
+// own mask; it reads and changes nothing of the reader's own data, so the
+// points, faces and colors the chain gets are the same with and without it.
+
+struct RldObjNativeTexture
+{
+	char path[RLD_PATH_MAX];   // the file the reader read (found elsewhere: that one)
+	int state;                 // RLDMK_TEXTURE_*
+	char sha[65];              // SHA-256 of the file read, hex
+};
+
+struct RldObjNativeMaterial
+{
+	int defined;               // the name is in an MTL file
+	int hasKd;
+	double kd[3];
+	int transparent;
+	int hasMap;                // a map_Kd, found or not
+	double offset[2];
+	double scale[2];
+	int clampOn;
+	u32 texture;               // into textures[], RLDMK_NONE = none
+	char name[RLDOBJ_NAME_MAX + 1u];
+};
+
+struct RldObjNative
+{
+	int captured;
+	u32 vCount;
+	double *xyz;               // 3 per v, as written
+	double *vrgb;              // 3 per v, 0..1
+	u8 *vColored;              // per v: its color is used (not for a uniform fill)
+	int modulate;              // the vertex colors modulate textures as on the PS1 (RldObj_VertexColors)
+	u32 vtCount;
+	double *uv;                // 2 per vt
+	u32 cornerCount;
+	u32 *cornerV;
+	u32 *cornerT;              // RLDMK_NONE = no vt
+	u32 *cornerN;              // RLDMK_NONE = no vn
+	u32 faceCount;
+	u32 *faceFirst;
+	u32 *faceCorners;
+	u32 *faceName;             // into names, RLDMK_NONE = no usemtl
+	u32 nameCount;
+	struct RldObjNativeMaterial *names;   // per usemtl name, in the order of first use
+	u32 textureCount;
+	struct RldObjNativeTexture *textures;
+};
+
+static int s_rldObjNativeWant;
+static struct RldObjNative s_rldObjNative;
+
+static void RldObj_FreeNative(struct RldObjNative *n)
+{
+	free(n->xyz);
+	free(n->vrgb);
+	free(n->vColored);
+	free(n->uv);
+	free(n->cornerV);
+	free(n->cornerT);
+	free(n->cornerN);
+	free(n->faceFirst);
+	free(n->faceCorners);
+	free(n->faceName);
+	free(n->names);
+	free(n->textures);
+	memset(n, 0, sizeof(*n));
+}
+
+static void *RldObj_CopyOf(const void *from, size_t bytes)
+{
+	void *to = malloc(bytes ? bytes : 1u);
+
+	if ((to != NULL) && (bytes != 0u))
+	{
+		memcpy(to, from, bytes);
+	}
+	return to;
+}
+
+// The copy, after RldObj_Textures and before the split. 0 = out of memory (said).
+static int RldObj_CaptureNative(const struct RldObjModel *m)
+{
+	struct RldObjNative *n = &s_rldObjNative;
+	u32 i;
+
+	RldObj_FreeNative(n);
+	n->vCount = m->vCount;
+	n->vtCount = m->vtCount;
+	n->cornerCount = m->cornerCount;
+	n->faceCount = m->faceCount;
+	n->nameCount = m->names.count;
+	n->textureCount = m->textureCount;
+	n->modulate = m->modulate;
+	n->xyz = (double *)RldObj_CopyOf(m->xyz, (size_t)m->vCount * 3u * sizeof(double));
+	n->vrgb = (double *)RldObj_CopyOf(m->vrgb, (size_t)m->vCount * 3u * sizeof(double));
+	n->vColored = (u8 *)RldObj_CopyOf(m->vColored, (size_t)m->vCount);
+	n->uv = (double *)RldObj_CopyOf(m->uv, (size_t)m->vtCount * 2u * sizeof(double));
+	n->cornerV = (u32 *)RldObj_CopyOf(m->cornerV, (size_t)m->cornerCount * sizeof(u32));
+	n->cornerT = (u32 *)RldObj_CopyOf(m->cornerT, (size_t)m->cornerCount * sizeof(u32));
+	n->cornerN = (u32 *)RldObj_CopyOf(m->cornerN, (size_t)m->cornerCount * sizeof(u32));
+	n->faceFirst = (u32 *)RldObj_CopyOf(m->faceFirst, (size_t)m->faceCount * sizeof(u32));
+	n->faceCorners = (u32 *)RldObj_CopyOf(m->faceCorners, (size_t)m->faceCount * sizeof(u32));
+	n->faceName = (u32 *)RldObj_CopyOf(m->faceName, (size_t)m->faceCount * sizeof(u32));
+	n->names = (struct RldObjNativeMaterial *)calloc((size_t)m->names.count + 1u, sizeof(struct RldObjNativeMaterial));
+	n->textures = (struct RldObjNativeTexture *)calloc((size_t)m->textureCount + 1u, sizeof(struct RldObjNativeTexture));
+	if ((n->xyz == NULL) || (n->vrgb == NULL) || (n->vColored == NULL) || (n->uv == NULL) || (n->cornerV == NULL) || (n->cornerT == NULL) ||
+	    (n->cornerN == NULL) || (n->faceFirst == NULL) || (n->faceCorners == NULL) || (n->faceName == NULL) || (n->names == NULL) || (n->textures == NULL))
+	{
+		RldObj_FreeNative(n);
+		RldObj_Memory();
+		return 0;
+	}
+
+	for (i = 0; i < m->names.count; i++)
+	{
+		struct RldObjNativeMaterial *to = &n->names[i];
+		const u32 material = m->nameMaterial[i];
+
+		snprintf(to->name, sizeof(to->name), "%s", m->names.text[i]);
+		to->texture = RLDMK_NONE;
+		to->scale[0] = 1.0;
+		to->scale[1] = 1.0;
+		if (material != RLDMK_NONE)
+		{
+			const struct RldObjMaterial *from = &m->materials[material];
+
+			to->defined = 1;
+			to->hasKd = from->hasKd;
+			memcpy(to->kd, from->kd, sizeof(to->kd));
+			to->transparent = from->transparent;
+			to->hasMap = (from->map != NULL);
+			memcpy(to->offset, from->offset, sizeof(to->offset));
+			memcpy(to->scale, from->scale, sizeof(to->scale));
+			to->clampOn = from->clampOn;
+			to->texture = from->texture;
+		}
+	}
+	for (i = 0; i < m->textureCount; i++)
+	{
+		const struct RldObjTexture *from = &m->textures[i];
+
+		snprintf(n->textures[i].path, sizeof(n->textures[i].path), "%s", (from->found != NULL) ? from->found : from->path);
+		n->textures[i].state = from->state;
+		memcpy(n->textures[i].sha, from->sha, sizeof(n->textures[i].sha));
+	}
+	n->captured = 1;
+	return 1;
+}
+
+//========================================================================================
 // STEP 1 FOR OBJ
 //========================================================================================
 
@@ -4791,6 +4966,12 @@ static int RldObj_Parse(const char *path, const u8 *data, size_t size, struct Rl
 		RldObj_VertexColors(&m);
 		RldObj_BaseColors(&m, cornerRgb, cornerSource);
 		ok = RldObj_Textures(&m, path, libraryPath, nameUsed, cornerRgb, cornerSource, info, &kept);
+	}
+
+	// The native model's source (--native-model on): the faces as written, before the split.
+	if (ok && s_rldObjNativeWant && (info->role == RLDMK_ROLE_MAIN))
+	{
+		ok = RldObj_CaptureNative(&m);
 	}
 
 	// Textures kept for the split: split, the colors again for the faces

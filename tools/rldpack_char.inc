@@ -1571,6 +1571,9 @@ struct RldMkBuild
 	u32 faceCount2;            // ply->faceCount, for faceSource
 	u32 diagFaceNow;           // the face RldMk_AddTriangle is splitting
 	u32 *diagPlyPosition;      // per PLY vertex: its diag position, RLDMK_NONE when dropped
+	u32 *plyPosition;          // per PLY vertex: its position, RLDMK_NONE when dropped - set once the repair has
+	                           // made the corners vertices of their own (vertexPosition is per corner then);
+	                           // NULL: vertexPosition is still per PLY vertex. Read by --native-model only.
 	u32 diagPositionCount;     // after welding and fitting, before the reduction and --size
 	double *diagPosition;      // 3 per diag position, game units
 	u8 *diagPositionGroup;
@@ -1596,6 +1599,7 @@ static void RldMk_FreeBuild(struct RldMkBuild *b)
 	free(b->remGroup);
 	free(b->diagFace);
 	free(b->diagPlyPosition);
+	free(b->plyPosition);
 	free(b->diagPosition);
 	free(b->diagPositionGroup);
 	free(b->diagTriangle);
@@ -2399,6 +2403,27 @@ static int RldMk_StepRepair(const struct RldMkPly *ply, struct RldMkBuild *b, co
 			free(b->diagPlyPosition);
 			b->diagPlyPosition = plyPosition;
 		}
+	}
+
+	// Where each PLY vertex went (RldMkBuild.plyPosition): vertexPosition
+	// is per corner from here on. Nothing of the model depends on it.
+	free(b->plyPosition);
+	b->plyPosition = (u32 *)malloc(((size_t)ply->vertexCount + 1u) * sizeof(u32));
+	if (b->plyPosition == NULL)
+	{
+		free(renumber);
+		free(position);
+		free(vertexPosition);
+		free(vertexRgb);
+		free(triangle);
+		RldRep_Free(&r);
+		return RldMk_OutOfMemory();
+	}
+	for (i = 0; i < ply->vertexCount; i++)
+	{
+		const u32 p = b->vertexPosition[i];
+
+		b->plyPosition[i] = ((p != RLDMK_NONE) && (r.positionMap[p] != RLDMK_NONE)) ? renumber[r.positionMap[p]] : RLDMK_NONE;
 	}
 
 	free(renumber);
@@ -12604,6 +12629,9 @@ static u8 *RldMk_MaskStep(const char *path, const struct RldMkOptions *opt, size
 	return cmsk;
 }
 
+// CNET and CTXT, the native model (PREVIEW): --native-probe.
+#include "rldpack_native.inc"
+
 static int RldChar_MakeCommand(int argc, char **argv)
 {
 	static char outPath[RLD_PATH_MAX + 16];
@@ -12647,6 +12675,15 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	const char *voicePreviewArg = NULL;
 	u8 *cvoi = NULL;
 	size_t cvoiSize = 0;
+	const char *nativeProbeArg = NULL;
+	int nativePoses = 0;
+	const char *nativeModelArg = NULL;
+	int nativeModel = 0;
+	struct RldMkNativeFacts nativeFacts;
+	u8 *cnet = NULL;
+	size_t cnetSize = 0;
+	u8 *ctxt = NULL;
+	size_t ctxtSize = 0;
 	const char *previewArg = NULL;
 	const char *diagnoseArg = NULL;
 	const char *remeshArg = NULL;
@@ -12676,6 +12713,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 
 	RldMk_DefaultOptions(&opt);
 	RldObj_ResetOptions();
+	memset(&nativeFacts, 0, sizeof(nativeFacts));
 	memset(&ply, 0, sizeof(ply));
 	memset(&build, 0, sizeof(build));
 	memset(nameField, 0, sizeof(nameField));
@@ -12833,6 +12871,14 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		{
 			previewArg = argv[++i];
 		}
+		else if ((strcmp(arg, "--native-probe") == 0) && hasValue)
+		{
+			nativeProbeArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--native-model") == 0) && hasValue)
+		{
+			nativeModelArg = argv[++i];
+		}
 		else if ((strcmp(arg, "--repair") == 0) && hasValue)
 		{
 			repairArg = argv[++i];
@@ -12970,6 +13016,38 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	if (mapColorArg != NULL)
 	{
 		opt.hasMapColor = RldMk_MapColorSwitch(mapColorArg, &opt.mapColor);
+	}
+	if (nativeProbeArg != NULL)
+	{
+		char word[8];
+		const int known = RldMk_Lower(nativeProbeArg, word, sizeof(word));
+
+		if (known && (strcmp(word, "poses") == 0))
+		{
+			nativePoses = 1;
+		}
+		else if (!known || (strcmp(word, "still") != 0))
+		{
+			RldMk_Say("error", "native-probe", nativeProbeArg, "--native-probe must be still or poses.");
+		}
+	}
+	if (nativeModelArg != NULL)
+	{
+		char word[8];
+		const int known = RldMk_Lower(nativeModelArg, word, sizeof(word));
+
+		if (known && (strcmp(word, "on") == 0))
+		{
+			nativeModel = 1;
+		}
+		else if (!known || (strcmp(word, "off") != 0))
+		{
+			RldMk_Say("error", "native-model", nativeModelArg, "--native-model must be on or off.");
+		}
+	}
+	if (nativeModel && (nativeProbeArg != NULL))
+	{
+		RldMk_Say("error", "usage", "--native-model", "--native-model and --native-probe exclude each other: a file has one native model.");
 	}
 
 	// THE OWN MASK: its own options, the profile of a mask (RldMk_BuildMaskOnce).
@@ -13255,6 +13333,11 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		Rld_Emit("value", "icon-frame", s_rldMkIconFrameWords[iconOptions.frame], (iconFrameArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "voices", (voicesArg != NULL) ? voicesArg : "", (voicesArg != NULL) ? "switch" : "default", (const char *)NULL);
 		RldObj_EmitValues();
+		// Only when given: without it the lines are those of before.
+		if (nativeModelArg != NULL)
+		{
+			Rld_Emit("value", "native-model", nativeModel ? "on" : "off", "switch", (const char *)NULL);
+		}
 		if (voicesArg != NULL)
 		{
 			Rld_Emit("value", "voice-normalize", voiceNormalize ? "on" : "off", voiceNormalize ? "switch" : "default", (const char *)NULL);
@@ -13315,12 +13398,19 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	s_rldRedCache = check && !noCache;
 	s_rldRedSlowPasses = check ? 2u : 4u;
 
-	// THE MODEL: PLY or OBJ, by its content (tools/rldpack_import.inc).
+	// THE MODEL: PLY or OBJ, by its content (tools/rldpack_import.inc). With
+	// --native-model on the OBJ reader also keeps the faces as written
+	// (RldObj_CaptureNative); what it hands the chain stays the same.
+	RldObj_FreeNative(&s_rldObjNative);
+	s_rldObjNativeWant = nativeModel;
 	if (!RldMk_LoadModel(modelArg, &ply, &modelInfo, RLDMK_ROLE_MAIN))
 	{
+		s_rldObjNativeWant = 0;
+		RldObj_FreeNative(&s_rldObjNative);
 		free(cvoi);
 		return RldMk_Fail(1);
 	}
+	s_rldObjNativeWant = 0;
 
 	built = RldMk_BuildModel(&ply, &opt, &build);
 	RldMk_EmitFacts(&build, templateId);
@@ -13473,7 +13563,82 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		}
 	}
 
-	if (chri != NULL)
+	// --native-probe (PREVIEW): the probe body as CNET and CTXT, fitted into
+	// the frames just built and held to the game's rules before anything is
+	// written. Without the switch none of this runs and the bytes stay those
+	// of RldMk_ContainerVoices.
+	if ((chri != NULL) && (nativeProbeArg != NULL))
+	{
+		struct RldCharNative native;
+		const char *why = NULL;
+
+		cnet = RldMk_NativeCnet(build.cmdl, build.cmdlSize, nativePoses, !opt.noWheels, &cnetSize, &why);
+		ctxt = (cnet != NULL) ? RldMk_NativeCtxt(&ctxtSize) : NULL;
+		if ((cnet == NULL) || (ctxt == NULL))
+		{
+			RldMk_Say("error", "native-probe", why, "The native test body cannot be made (%s).", (why != NULL) ? why : "out of memory");
+		}
+		else
+		{
+			RldMk_CheckNativeBytes(build.cmdl, build.cmdlSize, RldMk_ChriFlags(&opt), cnet, cnetSize, ctxt, ctxtSize, &native);
+			if (native.state != RLDCHAR_NATIVE_READY)
+			{
+				RldMk_Say("error", "native-probe", native.detail, "Internal error: the native test body breaks %s (%s). Please report it.",
+				          (native.rule != NULL) ? native.rule : "a rule", native.detail);
+			}
+			RldChar_FreeNative(&native);
+		}
+		if (s_rldMkErrors != 0)
+		{
+			free(chri);
+			chri = NULL;
+		}
+	}
+
+	// --native-model on (PREVIEW): CNET and CTXT of the OBJ itself, placed by
+	// the frames just built (THE NATIVE MODEL OF AN OBJ, rldpack_native.inc),
+	// held to the game's rules before anything is written. Without the
+	// switch none of this runs and the bytes stay those of
+	// RldMk_ContainerVoices.
+	if ((chri != NULL) && nativeModel)
+	{
+		struct RldCharNative native;
+
+		if (RldMk_NativeModel(&s_rldObjNative, &ply, &build, &opt, !opt.noWheels, &cnet, &cnetSize, &ctxt, &ctxtSize, &nativeFacts))
+		{
+			RldMk_CheckNativeBytes(build.cmdl, build.cmdlSize, RldMk_ChriFlags(&opt), cnet, cnetSize, ctxt, ctxtSize, &native);
+			if (native.state != RLDCHAR_NATIVE_READY)
+			{
+				RldMk_Say("error", "native-model", native.detail, "Internal error: the native model breaks %s (%s). Please report it.",
+				          (native.rule != NULL) ? native.rule : "a rule", native.detail);
+			}
+			// The preview (Reload Studio) shows it too: appended to the
+			// RLDPV2 data written above (THE NATIVE MODEL IN THE PREVIEW).
+			else if (built && (previewArg != NULL) && !RldMk_NativePreviewAppend(previewArg, &native))
+			{
+				RldMk_Say("warning", "preview", previewArg, "The native model could not be added to the preview file %s; the preview shows the game's own model.",
+				          previewArg);
+			}
+			RldChar_FreeNative(&native);
+		}
+		if (s_rldMkErrors != 0)
+		{
+			free(cnet);
+			free(ctxt);
+			cnet = NULL;
+			ctxt = NULL;
+			free(chri);
+			chri = NULL;
+		}
+	}
+	RldObj_FreeNative(&s_rldObjNative);
+
+	if ((chri != NULL) && (cnet != NULL))
+	{
+		container = RldMk_ContainerNative(chri, chriSize, build.cmdl, build.cmdlSize, haveIcon ? icon.cicn : NULL, cmsk, cmskSize, cvoi, cvoiSize, cnet,
+		                                  cnetSize, ctxt, ctxtSize, &containerSize);
+	}
+	else if (chri != NULL)
 	{
 		container = RldMk_ContainerVoices(chri, chriSize, build.cmdl, build.cmdlSize, haveIcon ? icon.cicn : NULL, cmsk, cmskSize, cvoi, cvoiSize,
 		                                  &containerSize);
@@ -13485,6 +13650,8 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		{
 			RldMk_OutOfMemory();
 		}
+		free(cnet);
+		free(ctxt);
 		free(cmsk);
 		free(cvoi);
 		free(chri);
@@ -13565,6 +13732,8 @@ static int RldChar_MakeCommand(int argc, char **argv)
 				RldMk_Say("error", "write", outPath,
 				          "The character file cannot be written. Is the folder write-protected, or is the file open in another program?");
 			}
+			free(cnet);
+			free(ctxt);
 			free(cmsk);
 			free(cvoi);
 			free(chri);
@@ -13608,6 +13777,54 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		       RLDCHAR_VOICE_EVENTS, frames / RLDCHAR_VOICE_RATE, (frames % RLDCHAR_VOICE_RATE) * 100u / RLDCHAR_VOICE_RATE,
 		       voiceNormalize ? ", normalized" : "");
 	}
+	if ((cnet != NULL) && nativeModel)
+	{
+		char text[6][16];
+		u32 t;
+
+		printf("  CNET          %u bytes (preview: the native model of the OBJ, %u vertices, %u triangles, %s, %u materials, %u textures%s, %s - the game "
+		       "reads it only with --dev --native-preview)\n",
+		       (u32)cnetSize, nativeFacts.vertices, nativeFacts.triangles, nativeFacts.poses ? "47 poses" : "one still pose", nativeFacts.materials,
+		       nativeFacts.textures, nativeFacts.colors ? ", vertex colors" : "", nativeFacts.wheels ? "the test wheel" : "no wheels");
+		if (ctxt != NULL)
+		{
+			printf("  CTXT          %u bytes (preview: %u textures)\n", (u32)ctxtSize, nativeFacts.textures);
+		}
+		for (t = 0; t < nativeFacts.textures; t++)
+		{
+			printf("  texture %-2u    %u x %u%s\n", t, nativeFacts.width[t], nativeFacts.height[t],
+			       nativeFacts.converted[t] ? " (written again as a PNG of 8-bit RGBA)" : " (the PNG as it is)");
+		}
+		if (nativeFacts.repaired)
+		{
+			printf("  native repair %u triangles turned outward, %u added to close holes, open edges %u, %u second triangles (the other side of open parts)%s\n",
+			       nativeFacts.flipped, nativeFacts.lids, nativeFacts.openEdges, nativeFacts.backFaces,
+			       (nativeFacts.shared != 0u) ? "; texture files with the same bytes share an entry" : "");
+		}
+		else if ((nativeFacts.backFaces != 0u) || (nativeFacts.shared != 0u))
+		{
+			printf("  native        %u second triangles (--two-sided), %u texture files share an entry\n", nativeFacts.backFaces, nativeFacts.shared);
+		}
+		if ((nativeFacts.dropped != 0u) || (nativeFacts.clamped != 0u) || (nativeFacts.flat != 0u))
+		{
+			printf("  native        %u triangles left out (no area, or not in the game's own model), %u coordinates moved onto a frame's hull, %u "
+			       "normals (0, 1, 0)\n",
+			       nativeFacts.dropped, nativeFacts.clamped, nativeFacts.flat);
+		}
+		snprintf(text[0], sizeof(text[0]), "%u", nativeFacts.vertices);
+		snprintf(text[1], sizeof(text[1]), "%u", nativeFacts.triangles);
+		snprintf(text[2], sizeof(text[2]), "%u", nativeFacts.poses);
+		snprintf(text[3], sizeof(text[3]), "%u", nativeFacts.materials);
+		snprintf(text[4], sizeof(text[4]), "%u", nativeFacts.textures);
+		snprintf(text[5], sizeof(text[5]), "%u", (u32)(cnetSize + ctxtSize));
+		Rld_Emit("char", "native-model", text[0], text[1], text[2], text[3], text[4], nativeFacts.wheels ? "wheels" : "hidden", text[5], (const char *)NULL);
+	}
+	else if (cnet != NULL)
+	{
+		printf("  CNET          %u bytes (preview: the native test body, %s, %s - the game reads it only with --dev --native-preview)\n", (u32)cnetSize,
+		       nativePoses ? "47 poses" : "one still pose", opt.noWheels ? "no wheels" : "with wheels");
+		printf("  CTXT          %u bytes (preview: one texture 256 x 256)\n", (u32)ctxtSize);
+	}
 	printf("  sha256        %s\n", digestText);
 	printf("  format        %d.%d%s\n", RLDCHAR_VERSION_MAJOR, RLDCHAR_VERSION_MINOR, (RLDCHAR_VERSION_MINOR == 0) ? " (draft)" : "");
 
@@ -13619,6 +13836,8 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		s_machineResult = 1;
 	}
 
+	free(cnet);
+	free(ctxt);
 	free(cmsk);
 	free(cvoi);
 	free(chri);
@@ -13777,11 +13996,16 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 	const char *voiceWhy = "";
 	struct RldCharVoices voices;
 	char voiceText[256];
+	struct RldCharNative native;
+	int hasNative = 0;
+	char nativeText[320];
 	int failed = 0;
 	char text[256];
 	int i;
 
 	memset(&reader, 0, sizeof(reader));
+	memset(&native, 0, sizeof(native));
+	nativeText[0] = '\0';
 	memset(&facts, 0, sizeof(facts));
 	memset(&first, 0, sizeof(first));
 	memset(&maskFirst, 0, sizeof(maskFirst));
@@ -13912,6 +14136,42 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		free(voiceData);
 	}
 
+	// The native model (CNET, CTXT; preview): only when the file has one of
+	// them, so the report of every other file stays as it was. The game's
+	// reader, against the hulls of the model - which needs a model that
+	// passes its check.
+	if ((Rld_FindEntry(&reader, "CNET", NULL) != NULL) || (Rld_FindEntry(&reader, "CTXT", NULL) != NULL))
+	{
+		struct RldCharHull hulls[RLDCHAR_NET_POSES];
+		struct RldCharFinding quiet;
+
+		hasNative = 1;
+		if ((RldChar_CheckModel(cmdl, cmdlSize, &quiet, NULL, NULL, NULL) == RLDCHAR_VERDICT_OK) &&
+		    RldChar_FrameHulls(&cmdl[4], Rld_ReadLE32(&cmdl[0]), 0u, hulls))
+		{
+			RldChar_ReadNative(&reader, info.flags, hulls, &native);
+		}
+		else
+		{
+			RldChar_NativeFail(&native, "model", "the model does not pass its own check");
+		}
+
+		if (native.state == RLDCHAR_NATIVE_READY)
+		{
+			snprintf(nativeText, sizeof(nativeText), "ready: %u vertices, %u triangles, %u poses, %u materials, %u textures (%llu bytes RGBA8), %s",
+			         native.vertexCount, native.triangleCount, native.poseCount, native.materialCount, native.textureCount,
+			         (unsigned long long)native.textureBytes, (native.wheel != NULL) ? "wheels" : "wheels hidden");
+		}
+		else if (native.state == RLDCHAR_NATIVE_REFUSED)
+		{
+			snprintf(nativeText, sizeof(nativeText), "refused (%s) %s", (native.rule != NULL) ? native.rule : "", native.detail);
+		}
+		else
+		{
+			snprintf(nativeText, sizeof(nativeText), "%s", "none - a CTXT without CNET is not read");
+		}
+	}
+
 	if (!machine)
 	{
 		printf("%s\n", path);
@@ -13942,7 +14202,9 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		{
 			const u8 *entry = &reader.directory[i * RLD_DIR_ENTRY_SIZE];
 
-			printf("%.4s%s%s", (const char *)entry, (RldChar_ChunkLimit(entry) != 0u) ? "" : " (skipped)", ((i + 1) < reader.chunkCount) ? " " : "\n");
+			printf("%.4s%s%s", (const char *)entry,
+			       (RldChar_ChunkLimit(entry) != 0u) ? "" : ((RldChar_NativeLimit(entry) != 0u) ? " (preview)" : " (skipped)"),
+			       ((i + 1) < reader.chunkCount) ? " " : "\n");
 		}
 		if (strcmp(iconState, "ok") == 0)
 		{
@@ -13994,6 +14256,11 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		else
 		{
 			printf("  voices        none - the driver is silent; CVOI ignored: %s\n", voiceWhy);
+		}
+		if (hasNative)
+		{
+			printf("  native model  preview, read by the game only with --dev --native-preview - %s%s\n", nativeText,
+			       (native.state == RLDCHAR_NATIVE_REFUSED) ? " - the game draws the CMDL" : "");
 		}
 		if (full)
 		{
@@ -14074,6 +14341,11 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		}
 		Rld_Emit("value", "own-voices", voiceState, (strcmp(voiceState, "ok") == 0) ? voiceText : ((strcmp(voiceState, "none") == 0) ? "container" : voiceWhy),
 		         (const char *)NULL);
+		if (hasNative)
+		{
+			Rld_Emit("value", "native-model", (native.state == RLDCHAR_NATIVE_READY) ? "ready" : ((native.state == RLDCHAR_NATIVE_REFUSED) ? "refused" : "none"),
+			         nativeText, (const char *)NULL);
+		}
 		if (strcmp(voiceState, "ok") == 0)
 		{
 			u32 events = 0;
@@ -14139,6 +14411,37 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 				printf("  ok     CMDL   %u bytes\n", (u32)cmdlSize);
 				continue;
 			}
+			if (RldChar_NativeLimit(entry) != 0u)
+			{
+				// Every native chunk against its hash and sizes, as the game's
+				// reader of the native part takes it: a chunk it cannot take
+				// fails the file here, as a CMSK does. A rule costs only the
+				// native part in the game.
+				size_t nativeSize = 0;
+				const char *nativeWhy = NULL;
+				u8 *nativeData = RldChar_ReadNativeChunk(&reader, i, &nativeSize, &nativeWhy);
+
+				free(nativeData);
+				if (nativeData == NULL)
+				{
+					printf("  FAILED %.4s   %s\n", (const char *)entry, (nativeWhy != NULL) ? nativeWhy : "cannot be read");
+					failed = 1;
+				}
+				else if (native.state == RLDCHAR_NATIVE_REFUSED)
+				{
+					printf("  IGNORED %.4s  %s %s - the game draws the CMDL (preview)\n", (const char *)entry, (native.rule != NULL) ? native.rule : "",
+					       native.detail);
+				}
+				else if (native.state == RLDCHAR_NATIVE_NONE)
+				{
+					printf("  skip   %.4s   not read without a CNET (preview)\n", (const char *)entry);
+				}
+				else
+				{
+					printf("  ok     %.4s   %u bytes (preview)\n", (const char *)entry, (u32)nativeSize);
+				}
+				continue;
+			}
 			if (RldChar_ChunkLimit(entry) == 0u)
 			{
 				printf("  skip   %.4s   not a chunk type of this format - left alone, as the game does\n", (const char *)entry);
@@ -14183,6 +14486,7 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 		}
 	}
 
+	RldChar_FreeNative(&native);
 	free(chri);
 	free(cmdl);
 	Rld_Close(&reader);
@@ -14361,6 +14665,18 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "                              RLDDIAG 1) and never a character: the limits of\n");
 	fprintf(out, "                              draw memory and file size are lifted for the\n");
 	fprintf(out, "                              measurement; --preview is written, --out ignored\n");
+	fprintf(out, "  --native-probe <still|poses>\n");
+	fprintf(out, "                              PREVIEW, for tests: also write the native test\n");
+	fprintf(out, "                              body (CNET) with its texture (CTXT), fitted into\n");
+	fprintf(out, "                              the model's frames; poses: 47 poses. The game reads\n");
+	fprintf(out, "                              them only with --dev --native-preview and draws\n");
+	fprintf(out, "                              the model as before. Without it nothing changes\n");
+	fprintf(out, "  --native-model <on|off>     PREVIEW: also write the native model of an OBJ\n");
+	fprintf(out, "                              (CNET: its own faces in floats with UVs and\n");
+	fprintf(out, "                              materials; CTXT: its texture files, each side a\n");
+	fprintf(out, "                              power of two 16..2048), placed like its CMDL.\n");
+	fprintf(out, "                              Not with --native-probe. Default off: nothing\n");
+	fprintf(out, "                              changes\n");
 	fprintf(out, "\n");
 	fprintf(out, "  rldpack make-char --model driver.ply --name \"MY DRIVER\" --template 14\n");
 	fprintf(out, "  rldpack make-char --model driver.obj --name \"MY DRIVER\" --template 14\n");
@@ -21057,6 +21373,9 @@ static void RldMk_SelfTestSplitVehicle(struct RldMkTestMesh *mesh)
 	}
 }
 
+// CNET and CTXT: the test set, its self-test and make-native-tests.
+#include "rldpack_native_test.inc"
+
 static int RldChar_SelfTest(void)
 {
 	struct RldMkTestMesh *mesh = (struct RldMkTestMesh *)calloc(1, sizeof(struct RldMkTestMesh));
@@ -21096,6 +21415,7 @@ static int RldChar_SelfTest(void)
 	RldMk_SelfTestPng();
 	RldMk_SelfTestVoices(good, goodSize);
 	RldMk_SelfTestMask(mesh);
+	RldMk_SelfTestNative();
 	{
 		struct RldPngImage pictureA;
 

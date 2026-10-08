@@ -342,8 +342,10 @@ is frozen. Source: `include/rldchar.inc`.
 | CMSK | optional, experimental, written by `rldpack make-char --mask-model` | 256 KiB (rule CMSK-3: 16 KiB) | an own mask model, drawn in place of Aku Aku / Uka Uka (rules CMSK-1..3) |
 | CPRM | optional, known type: not written by rldpack, content not interpreted yet | 4 KiB | values; layout not fixed (draft) |
 | CVOI | optional, written by `rldpack make-char --voices` | 6 MiB (the rules allow at most 5293176 bytes) | the driver's voice: up to 4 clips for each of 10 events, mono 16 bit at 22050 Hz (rules CVOI-1..4) |
-| CTEX | reserved name, planned | none (unknown, skipped) | texture data; layout not defined |
-| CWHL | reserved name, planned | none (unknown, skipped) | own wheels; planned layout below ("Planned: CWHL, own wheels"), not read and not written |
+| CNET | optional, PREVIEW, written by `rldpack make-char --native-model on` (an OBJ) or `--native-probe` (tests) | 32 MiB, checked only by the reader of the native part (unknown to the envelope) | the native model: a mesh in floats with materials, texture indices and wheels; read only with `--dev --native-preview` (see "Preview, planned: CNET and CTXT") |
+| CTXT | optional, PREVIEW, written with CNET | 32 MiB, as CNET | the textures of CNET as PNG, decoded to RGBA8 (see the same section) |
+| CTEX | reserved name, not assigned | none (unknown, skipped) | once planned for texture data; the textures of the native model are CTXT, so the name stays unused |
+| CWHL | reserved name, not assigned | none (unknown, skipped) | own wheels; the wheels of the native model are a part of CNET, so CWHL stays reserved and unassigned (its old plan below) |
 
 `rldpack make-char` writes CHRI, CMDL, then CICN with `--icon`, CMSK with
 `--mask-model` and CVOI with `--voices`, in this order. CICN, CMSK, CVOI and
@@ -354,7 +356,10 @@ CMSK larger than 256 KiB or a CVOI larger than 6 MiB) refuses the whole file;
 a CICN that breaks CICN-1..3 only loses the portrait, a CMSK that breaks
 CMSK-1..3 or a model rule only loses the own mask, a CVOI that breaks
 CVOI-1..4 only loses the voices (see CICN, CMSK and CVOI below). Nothing
-interprets CPRM yet.
+interprets CPRM yet. CNET and CTXT (preview) are not known types of the
+envelope: it checks only their position, a doubled type and an overlap, as
+for any unknown chunk; everything else about them costs only the native part
+(see "Preview, planned: CNET and CTXT").
 
 ### CHRI (`RldChar_ParseInfo`)
 
@@ -1230,9 +1235,291 @@ neither `rldpack make-char` nor Reload Studio writes anything of it.
 pose folder (rules `pose-*`) and writes only a preview file for Reload
 Studio; it refuses `--out` and never writes a container.
 
-### Planned: CWHL, own wheels (reserved)
+### Preview, planned: CNET and CTXT, the native model
 
-`CWHL` is a reserved, planned chunk name: no reader knows it (an older
+PREVIEW. Two optional chunks for the native render path of a custom
+character: `CNET`, a mesh in floats (positions, normals, UV, materials,
+texture indices, wheels), and `CTXT`, the table of its textures (PNG, decoded
+to RGBA8). The game reads them only with `--dev --native-preview`, and
+nothing draws them yet: it reads, checks and holds them in host memory. The
+layout is a draft and may change until the native path is released. Source:
+the section CNET AND CTXT at the end of `include/rldchar.inc`.
+
+No feature bit, no new major, no new minor: an older reader skips both as
+unknown chunks, and every `.rldchar` without them loads as before.
+
+THE ENVELOPE DOES NOT KNOW THEM. `RldChar_ChunkLimit` does not name CNET and
+CTXT, so `Rld_OpenAs` treats them like any unknown chunk (steps 14, 18, 19).
+Only these findings refuse the whole file as DAMAGED - the same an older
+reader checks, with or without `--native-preview`:
+
+| Finding (envelope, every reader) | Text | Result |
+|---|---|---|
+| step 14: CNET or CTXT lies outside the data area | `a chunk lies outside the data area` | the file is refused (DAMAGED), as today |
+| step 18: CNET or CTXT twice (or another type twice) | `a chunk type appears twice` | the file is refused (DAMAGED), as today |
+| step 19: CNET or CTXT overlaps another chunk | `two chunks overlap` | the file is refused (DAMAGED), as today |
+
+Everything else costs only the native part: the driver keeps its CMDL and
+drives as before. This deviates on purpose from the earlier plan, in which a
+reader that knows CNET/CTXT would refuse the whole file for a chunk over its
+bound:
+
+| Finding (only the reader of the native part, only with `--native-preview`) | Rule | Result |
+|---|---|---|
+| compression method not 0, size_stored != size_raw, larger than `RLDCHAR_LIMIT_CNET` / `RLDCHAR_LIMIT_CTXT` (32 MiB), unreadable, hash mismatch | `native-chunk` | native part refused, CMDL drawn |
+| the file changed since the start (its CMDL hash), the file cannot be opened | `native-file` | native part refused, CMDL drawn |
+| any rule CNET-1..11, CTXT-1..8 below | the rule | native part refused, CMDL drawn |
+
+Without `--native-preview` CNET and CTXT are not read and not checked at all,
+not even a broken one: the roster read at start never opens them, and its
+checks, its log lines and the picture are those of a build without them.
+
+UNITS AND AXES of CNET: the model units of CMDL without the instance scale
+(game units: (pos + byte) x ModelHeader.scale / 4096), +X left seen from
+behind, +Y up, +Z forward, triangles counter-clockwise seen from outside. All
+numbers little-endian, floats IEEE 754 binary32. (Decision D17 of the
+renderer concept: this proposal is what the reader checks today.)
+
+#### CNET version 1
+
+| Offset | Type | Field | Version 1 |
+|---|---|---|---|
+| 0x00 | u16 | version | 1 |
+| 0x02 | u16 | flags | 0 |
+| 0x04 | u16 | headerBytes | >= 0x40, a multiple of 4; the section table follows |
+| 0x06 | u16 | sectionCount | 1..16 |
+| 0x08 | u32 | vertexCount N | 3..20000 |
+| 0x0C | u32 | triangleCount T | 1..30000 |
+| 0x10 | u16 | indexSize | 2 or 4 |
+| 0x12 | u16 | materialCount M | 1..64 |
+| 0x14 | u16 | poseCount | 0 (one still pose for every frame) or 47 (the CMDL frames in order: turn 21, reverse 7, bump 15, jump 4) |
+| 0x16 | u16 | poseEncoding | 1: float position and float normal per vertex |
+| 0x18 | f32[3] | hullMin | every pose position lies inside hullMin..hullMax |
+| 0x24 | f32[3] | hullMax | |
+| 0x30 | u16 | textureCount | the entries CTXT must hold; 0 = no CTXT |
+| 0x32 | u16 | reserved | 0 |
+| 0x34 | u32[3] | reserved | 0 |
+
+Section table at headerBytes, sectionCount entries of 16 bytes: char[4] tag,
+u16 version, u16 stride, u32 offset (from the start of CNET, a multiple of 4),
+u32 size. An unknown tag is skipped.
+
+| Tag | Status | Stride | Content |
+|---|---|---|---|
+| POSN | required | 24 | max(1, poseCount) x N x {f32 position[3], f32 normal[3]} |
+| TRIS | required | 3 x indexSize | T x 3 vertex indices |
+| TMAT | required | 2 | T x u16 material |
+| MATL | required | 16 | M x {u8 rgba[4], s16 texture (-1 = none), u8 alphaMode (0 opaque, 1 mask, 2 blend), u8 flags (bit 0: always nearest), u8 reserved[8] 0} |
+| UV00 | optional; required when a material has a texture | 8 | N x f32[2] |
+| COL0 | optional | 4 | N x RGBA8 |
+| WHLS | required unless CHRI hides the wheels (flags bit 0) | 0 | the wheels, below |
+
+WHLS, the wheels (one mesh for all four; the -X wheels are the same mesh
+turned 180 degrees about Y, never mirrored). Size exactly 0x30 + 32 Nw + 6 Tw:
+
+| Offset | Type | Field |
+|---|---|---|
+| 0x00 | u32 | vertexCount Nw, 3..2048 |
+| 0x04 | u32 | triangleCount Tw, 1..1024 |
+| 0x08 | u16 | material (< M) |
+| 0x0A | u16 | flags 0 |
+| 0x0C | f32 | radius, 0..64 model units |
+| 0x10 | f32 | halfWidth, 0..radius |
+| 0x14 | f32[3] | front: the center of the front wheel on +X, model units |
+| 0x20 | f32[3] | rear: the center of the rear wheel on +X |
+| 0x2C | u32 | reserved 0 |
+| 0x30 | Nw x 32 bytes | f32 position[3], f32 normal[3], f32 uv[2]: center at the origin, axle along X, outside +X |
+| then | Tw x 6 bytes | u16 a, b, c |
+
+| Rule | What must hold |
+|---|---|
+| CNET-1 | at least 0x40 bytes, version 1 (a reader that does not know the version drops the native part) |
+| CNET-2 | flags and reserved fields 0; headerBytes >= 0x40, a multiple of 4, inside CNET; poseEncoding 1; indexSize 2 or 4 |
+| CNET-3 | N 3..20000, T 1..30000, M 1..64, poseCount 0 or 47, textureCount <= 16, N fits indexSize |
+| CNET-4 | sectionCount 1..16, the table inside CNET; every section 4-aligned, behind the table, inside CNET; no tag twice; no two sections overlap |
+| CNET-5 | a known section has version 1, its stride and exactly the size its counts need; POSN, TRIS, TMAT and MATL are there |
+| CNET-6 | the head's hull finite and not inside out; every pose position finite and inside it; every normal finite and of length 1 (length^2 0.98..1.02); every UV finite |
+| CNET-7 | every index < N, no triangle with a vertex twice, every triangle material < M |
+| CNET-8 | materials: alphaMode <= 2, flags bit 0 only, reserved bytes 0, texture -1 or < textureCount; UV00 present when a material has a texture |
+| CNET-9 | every pose inside the hull of its CMDL frame (a still pose inside all 47): per axis pos..pos + 255 of the frame (pos.y with bit 0 cleared) times scale / 4096 |
+| CNET-10 | CHRI hides the wheels: WHLS is not looked at. Else WHLS is there and holds: version 1, stride 0, its counts and exact size, material < M, flags and reserved 0, radius and halfWidth in range, the wheel points finite, within 256 model units, on +X and front before rear, every vertex finite and inside the cylinder (with 1e-4 of room), unit normals, every index < Nw and no vertex twice |
+| CNET-11 | textureCount equals the entries of CTXT; textureCount 0 needs no CTXT, and a CTXT then is a finding |
+
+A native body is never drawn with the sprite wheels: without a usable WHLS
+(and without CHRI flags bit 0) the whole native part is refused.
+
+#### CTXT version 1
+
+| Offset | Type | Field |
+|---|---|---|
+| 0x00 | u16 | version 1 |
+| 0x02 | u16 | flags 0 |
+| 0x04 | u16 | count, 1..16 |
+| 0x06 | u16 | entryBytes, 0x40 |
+| 0x08 | u32[2] | reserved 0 |
+| 0x10 | count x 0x40 | the entries |
+
+| Entry offset | Type | Field |
+|---|---|---|
+| 0x00 | u8 | format: 1 = PNG |
+| 0x01 | u8 | reserved 0 |
+| 0x02 | u16 | flags: bit 0 linear (clear = sRGB); bits 1-2 wrap U, bits 3-4 wrap V (0 repeat, 1 clamp, 2 mirror); bit 5 always nearest; bits 6-7 alpha (0 opaque, 1 mask, 2 blend); bits 8-15 0 |
+| 0x04 | u16 | width, a power of two 16..2048 |
+| 0x06 | u16 | height, a power of two 16..2048 |
+| 0x08 | u32 | offset of the PNG bytes, from the start of CTXT |
+| 0x0C | u32 | size of the PNG bytes |
+| 0x10 | u8[32] | SHA-256 of the PNG bytes |
+| 0x30 | u8[16] | reserved 0 |
+
+| Rule | What must hold |
+|---|---|
+| CTXT-1 | at least 0x10 bytes, version 1 |
+| CTXT-2 | flags 0, entryBytes 0x40, reserved 0, count 1..16, the table inside CTXT |
+| CTXT-3 | format 1, reserved bytes 0, no unknown flag bit, no wrap or alpha value 3 |
+| CTXT-4 | width and height powers of two, 16..2048 |
+| CTXT-5 | the PNG bytes behind the table, at least 8, inside CTXT; no two entries overlap |
+| CTXT-6 | all textures with every mip level (max(1, w >> n) x max(1, h >> n) x 4) at most 64 MiB |
+| CTXT-7 | the SHA-256 of every entry's bytes |
+| CTXT-8 | the PNG starts with its IHDR, and that head says width x height, depth 8, color type 6 (RGBA) - checked before anything is inflated; then the PNG decodes (`include/rldpng.inc`) |
+
+CTXT-3 to CTXT-6 run entry by entry, then CTXT-7 over all entries, then
+CTXT-8: the budget is counted before any byte is hashed, the decoding comes
+last, one texture after the other.
+
+#### What the game does with them
+
+| When | What |
+|---|---|
+| start (roster) | nothing: CNET and CTXT are not opened, with or without `--native-preview` |
+| a seat is bound (load stage 5: seat 0, and every seat of `--dev-char-seats`), only with `--dev --native-preview` | the file is opened again from its path: its CMDL hash must still be the loaded one; CNET is read and checked (CNET-1..10) against the 47 frame hulls of the model in memory, then CTXT (CNET-11, CTXT-1..8), the textures decoded to RGBA8; all of it is held in host memory until the seats are cleared (next load). Nothing is uploaded or drawn yet |
+| a broken native part | one line, the driver keeps its CMDL |
+
+The lines, exactly (`<who>` is `seat 0` or `dev seats`):
+
+```
+[CTR Char] native model ready: <who>, <file>, <N> vertices, <T> triangles, <P> poses, <M> materials, <K> textures (<B> bytes RGBA8), wheels <Tw> triangles
+[CTR Char] native model ready: <who>, <file>, ..., wheels hidden
+[CTR Char] native model refused (<rule>), using CMDL: <who>, <file>: <detail>
+[CTR Char] native model none: <who>, <file> (no CNET), using CMDL
+```
+
+None of them starts with `[CTR Char] REFUSED`: that line still means a file
+the game did not load.
+
+#### What rldpack writes and reads
+
+- `rldpack make-char ... --native-probe <still|poses>` (preview, for tests)
+  writes, after CVOI, a CNET with the test body of the native probe
+  (`platform/native_probe.c`: 36 vertices, 18 triangles, its 256 x 256
+  texture) fitted into the common room of the 47 frames of the model just
+  built, with a wheel of 64 triangles (none with `--wheels off`), and a CTXT
+  with the texture as PNG (8-bit RGBA, stored deflate blocks). Both are held
+  to the game's rules before anything is written. Without the switch no byte
+  of a container changes.
+- `rldpack make-char ... --native-model on` (preview) writes, after CVOI, the
+  native model of the author's own OBJ (below). Not with `--native-probe`.
+  Without the switch (or with `--native-model off`) no byte of a container
+  changes: the OBJ reader hands the chain the same model either way, and the
+  CMDL is the same.
+- `rldpack make-native-tests <folder>` writes the test characters of the
+  self-test (old_, none_, good_, bad_<rule>_, damaged_) into a folder that
+  must lie inside a CMake build folder; the game judges them with
+  `--dev --char-native-selftest <folder>` (ctest `char_native_selftest`).
+  `rldpack make-native-tests --obj <folder>` writes the set of the self-test's
+  mini OBJ instead: `old_obj-plain` and its native model with and without the
+  test wheel (`good_obj-native`, `good_obj-native-wheels-hidden`), one CMDL
+  for all three.
+- `rldpack info` and `rldpack verify` name CNET and CTXT `(preview)` in the
+  chunk list and add a line `native model` (`ready: ...`, `refused (<rule>)
+  ... - the game draws the CMDL`, or `none`), only for a file that has one of
+  them; `--machine` adds `@value native-model <ready|refused|none> <text>`.
+  `verify` fails the file when a native chunk cannot be read or its hash does
+  not match (as for CMSK), and says `IGNORED` for a rule finding.
+
+#### The native model of an OBJ (`make-char --native-model on`)
+
+Source: `tools/rldpack_native.inc`, section THE NATIVE MODEL OF AN OBJ. The
+CMDL is built exactly as without the switch (the required fallback); CNET and
+CTXT are made from the same OBJ beside it and held to the game's rules before
+anything is written.
+
+- Only an OBJ (a PLY has no texture coordinates): refused otherwise. A model
+  the chain reduced (`--reduce auto` over the draw-memory limit) or remeshed
+  is refused too - the native mesh keeps the faces as written and cannot
+  follow a reduction yet.
+- Place, axes, scale: every vertex sits where the chain put it - the OBJ
+  vertex is found by its weld key among the points of the model, its welded
+  position (after the repair) gives the neutral pose and the 47 frames: the
+  axes of `--up`/`--forward`, the factor of `--fit crash` or `--scale`, the
+  shift onto the reference dummy, `--size` and the automatic poses. Units are
+  those of CMDL without the instance scale (game units), +X left seen from
+  behind, +Y up, +Z forward (renderer concept D17, proposed). The turns are
+  rotations, so the winding stays that of the OBJ (counter-clockwise seen
+  from outside).
+- Poses: 0 (one still pose) when every frame of the build is the neutral pose
+  for every vertex (a vehicle with `--wheels off` that stands still,
+  `--poses still`); 47 otherwise, frame by frame as the CMDL moves. A
+  coordinate up to two steps of the CMDL (hull / 255) outside the hull of its
+  frame - the CMDL rounds to those steps - is moved onto the hull (counted).
+- Triangles: each face as a fan; one left out (counted) when two corners
+  share a position or it has no area. The game culls back faces, so with
+  `--repair auto` (the default) the native triangles go through the same
+  repair as the CMDL's (`RldRep_Repair`, the chain's weld distance and hole
+  limit): turned outward, the same holes closed (the lids cover the same
+  loops; their diagonals may lie otherwise than the CMDL's, which was
+  repaired on its own triangles), degenerate and doubled triangles dropped.
+  A lid has the material of its corner 0 and, at every corner, the UV of
+  corner 0 - one spot of the texture, nothing smeared across the hole (the
+  CMDL colors its lids from the corner colors); position, normal and color
+  stay those of each corner. A part still open afterwards - drawn two-sided
+  in the CMDL - gets every triangle a second time, wound the other way with
+  vertices of its own (CNET has no two-sided material); with
+  `--open-parts one-sided` none. The open edges then match the CMDL's.
+  `--two-sided` gives every triangle a second one, with or without the
+  repair. `--repair off`: the faces as written and, but for `--two-sided`,
+  one-sided - also the open parts the CMDL then draws from both sides.
+  Vertices: one per (v, vt, vn, material). Normals per pose from the
+  geometry, averaged over the faces that share v and vn (a hard edge of the
+  OBJ keeps two vn).
+- UV00: `offset + scale x vt` of the material's `map_Kd` (`-o`, `-s`,
+  `-clamp on`), v turned (`1 - v`): CTXT rows run from the top.
+- Colors: by the OBJ reader's rules without the texture; with vertex colors a
+  COL0 (and every material white), else the material color is Kd, white with
+  a texture, grey 0x80 without. Alpha 255; `d`/`Tr` are not used.
+- CTXT: one entry per texture file in use (files with the same bytes share
+  one), each side a power of two 16..2048,
+  never scaled (refused, `native-texture-size`, with a hint). A PNG of 8-bit
+  RGBA keeps its bytes; another picture (PNG of another kind, JPEG, TGA, BMP)
+  is decoded and written as PNG of 8-bit RGBA. Flags: sRGB, wrap clamp when
+  every UV on the texture lies in 0..1 (else repeat), alpha mode mask when a
+  texel has alpha below 255 (the material too). A texture the reader could
+  not use (missing, unreadable) leaves its material untextured in its color,
+  as the CMDL draws it (warning `native-texture`).
+- Wheels: with `--wheels off` (CHRI `NO_WHEELS`) no WHLS. Otherwise the
+  probe's test wheel at the retail wheel points (64 triangles, dark grey):
+  the game never draws a native body with the sprite wheels (CNET-10) and an
+  OBJ has no wheel mesh of its own (an own wheel mesh: not yet).
+- Limits: 20000 vertices, 30000 triangles, 64 materials (with the wheel's),
+  16 textures, 64 MiB RGBA8 with mip levels, 32 MiB per chunk; over one:
+  `native-model` error with the numbers, nothing written.
+- rldpack prints the CNET and CTXT lines, one line per texture and the counts
+  of triangles left out and coordinates moved; `--machine` adds
+  `@char native-model <vertices> <triangles> <poses> <materials> <textures>
+  <wheels|hidden> <bytes of CNET and CTXT>`.
+- Reload Studio: the card Import of the tab Extras, row "Native model"
+  (preview feature; "Coming soon" and greyed out without
+  `--enable-preview-features`, and then never passed).
+
+### Planned once: CWHL, own wheels (reserved, not assigned)
+
+SUPERSEDED: the wheels of the native model are the section WHLS of CNET
+(floats, UV, material, texture index, wheel points in model units). CWHL
+stays a reserved name and is not assigned; the plan below is kept for its
+history only - its units (1/16 model unit with |x| <= 96, while the retail
+wheel center lies at x 36 model units, 576 in 1/16) and its PS1 form do not
+fit the native path.
+
+`CWHL` is a reserved chunk name: no reader knows it (an older
 reader skips it as an unknown chunk), and rldpack and Reload Studio do not
 write it. Planned layout of version 1, little-endian, in 1/16 model units
 (the units of CMDL, without the game's instance scale). The wheel lies with
@@ -1294,7 +1581,8 @@ switch, a built `.rldchar` has the same bytes.
 | When | What |
 |---|---|
 | start | every `*.rldchar` in the `characters` folder next to the game (the extension in any case, subfolders skipped): the names are sorted first, then the files are read in that order |
-| per file | envelope (`Rld_OpenAs`), the CMDL size before any memory is taken, CHRI and CMDL with their hashes, `RldChar_ParseInfo`, `RldChar_CheckModel`, then the pointer map, then CICN when present (`RldChar_CheckIcon`; a broken CICN costs only the portrait), then CMSK when present (`RldChar_CheckMask`; a broken CMSK costs only the own mask), then CVOI when present (`RldChar_CheckVoices`; a broken CVOI costs only the voices). CPRM is not read |
+| per file | envelope (`Rld_OpenAs`), the CMDL size before any memory is taken, CHRI and CMDL with their hashes, `RldChar_ParseInfo`, `RldChar_CheckModel`, then the pointer map, then CICN when present (`RldChar_CheckIcon`; a broken CICN costs only the portrait), then CMSK when present (`RldChar_CheckMask`; a broken CMSK costs only the own mask), then CVOI when present (`RldChar_CheckVoices`; a broken CVOI costs only the voices). CPRM is not read. CNET and CTXT are not read at start, with or without `--native-preview` |
+| a bound seat, only with `--dev --native-preview` (preview) | CNET and CTXT read again from the file and checked (`RldChar_ReadNative`), held in host memory until the next load, one line `native model ready`, `native model refused (<rule>), using CMDL` or `native model none`; nothing drawn yet (see "Preview, planned: CNET and CTXT") |
 | a broken file | skipped with one log line `[CTR Char] REFUSED <file>: <kind> (<rule>) <detail>`; the game starts anyway |
 | the first 32 valid files | a tile each in the one-player ARCADE driver select, after the retail drivers (not for CRYSTAL and CTR under NITRO-PIT); a further valid file gets the log line `NO ID` and no tile |
 | menu and race | the driver select shows the own portrait (CICN, first 20 entries; else the template's, see CICN) and the name from CHRI; the race HUD, the arcade results and the cup standings show the own portrait too (see CICN). In the race seat 0 runs on the template's character id with the custom model, and the class in CHRI sets the physics values and the engine sound. Not from the template: its voice - in the race the driver speaks its own clips from CVOI (see CVOI) or is silent, and the sample of the voice volume slider is never the template's. Still the template's: the cup podium, high score lists and profiles. After the binding one line names every seat: `[CTR Char] seats: 0=<id> (<file>, map color <RRGGBB>\|map color of the template) 1=<id> ...`, ending in `... (cut at seat <n>)` when the line is full |
@@ -1331,6 +1619,10 @@ switch, a built `.rldchar` has the same bytes.
 | `RLDCHAR_VOICE_RATE` | 22050 Hz |
 | `RLDCHAR_VOICE_CLIPS_MAX`, `RLDCHAR_VOICE_PER_EVENT` | 40 clips, 4 per event |
 | `RLDCHAR_VOICE_LINE_FRAMES`, `RLDCHAR_VOICE_SHORT_FRAMES` | 77175 samples (3.5 s) for events 0..7, 22050 (1.0 s) for events 8 and 9 |
+| `RLDCHAR_LIMIT_CNET`, `RLDCHAR_LIMIT_CTXT` | 32 MiB each (preview; a larger chunk costs only the native part) |
+| `RLDCHAR_NET_VERTICES_MAX`, `RLDCHAR_NET_TRIANGLES_MAX`, `RLDCHAR_NET_MATERIALS_MAX` | 20000 vertices, 30000 triangles, 64 materials (preview, start values) |
+| `RLDCHAR_WHEEL_VERTICES_MAX`, `RLDCHAR_WHEEL_TRIANGLES_MAX` | 2048 vertices, 1024 triangles of WHLS (preview) |
+| `RLDCHAR_TEX_COUNT_MAX`, `RLDCHAR_TEX_EDGE_MIN`..`MAX`, `RLDCHAR_TEX_GPU_BYTES_MAX` | 16 textures, sides 16..2048 (powers of two), 64 MiB of RGBA8 with every mip level (preview) |
 
 `RLDCHAR_DRAW_BYTES_MAX` is the one place of the model limit: model-draw,
 the reduction of `rldpack make-char` (`RLDMK_REDUCE_LIMIT`, and
@@ -1468,8 +1760,13 @@ CHRI rules (`RldChar_ParseInfo`). A finding refuses the file as DAMAGED.
 | a required chunk becoming optional | not possible within one major, in either format: an older reader refuses a file without one of its required chunks as DAMAGED (`Rld_OpenAs`) |
 | header or directory | never: one envelope for every container type |
 
-For `.rldchar`, a delta-coded model and a texture table are planned as
-required-feature bits. No bit value is assigned yet.
+For `.rldchar`, a delta-coded model and a texture table INSIDE CMDL (texture
+indices in its commands, refused today by model-tex) are planned as
+required-feature bits; no bit value is assigned yet. The texture table of the
+native model (CTXT) is NOT one: the native model (CNET, CTXT; preview) comes
+as optional chunks with their own version fields, because CMDL stays
+required and draws the character without them - the content is not wrong
+without them.
 
 Chunk names:
 
@@ -1482,7 +1779,8 @@ Chunk names:
 | CMSK | `.rldchar` | optional, experimental (own mask): written by `rldpack make-char --mask-model`, drawn in place of the retail mask |
 | CPRM | `.rldchar` | optional known type (values): not written by rldpack, content not interpreted yet |
 | CVOI | `.rldchar` | optional (voices): written by `rldpack make-char --voices`, spoken by the bound custom driver |
-| CTEX, CWHL | `.rldchar` | reserved, planned (texture data, own wheels) |
+| CNET, CTXT | `.rldchar` | optional, PREVIEW (the native model and its textures): written by `rldpack make-char --native-model on` (an OBJ) or `--native-probe` (tests), read by the game only with `--dev --native-preview`; unknown to the envelope |
+| CTEX, CWHL | `.rldchar` | reserved, not assigned (the textures of the native model are CTXT, its wheels a part of CNET) |
 | SIGN | blocked | signature, taken out of the format; skipped in older files |
 | MMAP | blocked | menu map, taken out with 4.1; skipped in older files |
 | THMB | blocked | preview image, dropped |

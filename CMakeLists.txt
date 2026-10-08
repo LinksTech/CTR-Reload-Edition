@@ -480,6 +480,27 @@ if(BUILD_TESTING)
     # does, the timeout ends the test instead of the build.
     set_tests_properties(selftest_bad_containers selftest_bad_disc PROPERTIES TIMEOUT 300)
 
+    # THE NATIVE MODEL OF A CUSTOM CHARACTER (CNET, CTXT; preview). rldpack
+    # writes its test characters into the build folder (never into the
+    # source tree), the game reads each through the roster read and the
+    # native read without and with --native-preview: an old file loads as
+    # before, a good one is ready only with the preview, a broken one costs
+    # only the native part (the driver keeps its CMDL), and without the
+    # preview not one of them is looked at.
+    add_test(NAME char_native_selftest
+        COMMAND ${CMAKE_COMMAND}
+            -DPACKER=$<TARGET_FILE:rldpack>
+            -DGAME=$<TARGET_FILE:ctr_native>
+            -DDIR=${CMAKE_BINARY_DIR}/selftest/native-chars
+            -DESCAPE=${CMAKE_BINARY_DIR}/../tools
+            -P ${CMAKE_SOURCE_DIR}/cmake/run_char_native_selftest.cmake
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+    set_tests_properties(char_native_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "char native selftest passed: 36 files, [0-9]+ checks, 0 failures"
+        TIMEOUT 300
+    )
+
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
     add_test(
         NAME ctr_match_unit

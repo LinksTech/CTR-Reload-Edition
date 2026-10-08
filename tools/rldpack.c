@@ -93,7 +93,8 @@ typedef signed int s32;
 #include <rldtrack.inc>
 #include <rldchar.inc>
 
-// The PNG reader for make-char --icon: packer only, the game reads no PNG.
+// The PNG reader for make-char --icon and CTXT. include/rldchar.inc pulls it
+// in already: the game decodes the textures of CTXT with it (preview).
 #include <rldpng.inc>
 
 // Build ID (CTR_NATIVE_BUILD_ID), generated on every build - see Rld_Usage.
@@ -659,6 +660,7 @@ static int RldChar_MakeCommand(int argc, char **argv);
 static int RldChar_InfoCommand(const char *path, int machine);
 static int RldChar_VerifyCommand(const char *path);
 static int RldChar_SelfTest(void);
+static int RldChar_NativeTestsCommand(int argc, char **argv);
 static void RldChar_Usage(FILE *out);
 
 // Previews for Reload Studio that never write a container: char-poses
@@ -6240,7 +6242,13 @@ static void Rld_Usage(void)
 	printf("                              by the first bytes, not by the name) and check\n");
 	printf("                              the model, the portrait, the own mask and the\n");
 	printf("                              voices with the game's own rules\n");
-	printf("  selftest                    check SHA-256 and the build against fixed cases\n\n");
+	printf("  selftest                    check SHA-256 and the build against fixed cases\n");
+	printf("  make-native-tests [--obj] <folder>\n");
+	printf("                              write the test characters of the native model\n");
+	printf("                              (CNET, CTXT; preview) into a folder of a CMake\n");
+	printf("                              build, for the game's --char-native-selftest;\n");
+	printf("                              --obj: those of the self-test's mini OBJ\n");
+	printf("                              (make-char --native-model on)\n\n");
 	printf("  --machine                   with any command: also print lines for a program\n");
 	printf("                              (Reload Studio), see tools/reloadstudio/reloadstudio.h.\n");
 	printf("                              info --machine takes several files and also reads\n");
@@ -6555,6 +6563,10 @@ static int Rld_MainCommand(int argc, char *argv[])
 	if (strcmp(argv[1], "selftest") == 0)
 	{
 		return Cmd_Selftest();
+	}
+	if (strcmp(argv[1], "make-native-tests") == 0)
+	{
+		return RldChar_NativeTestsCommand(argc - 2, &argv[2]);
 	}
 
 	Rld_Usage();

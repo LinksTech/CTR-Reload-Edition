@@ -227,7 +227,14 @@
 //             some pose and are therefore drawn from both sides (always next to
 //             two-sided),
 //             remeshed <triangles of the source> <of the hulls> <after the
-//             reduction> <open edges before> <after>: only with --remesh on
+//             reduction> <open edges before> <after>: only with --remesh on,
+//             native-model <vertices> <triangles> <poses 0|47> <materials>
+//             <textures> <wheels | hidden> <bytes of CNET and CTXT>: only with
+//             --native-model on, when the native model was made (preview;
+//             tools/rldpack_native.inc); its findings are @msg native-model,
+//             native-texture (warning: a material drawn without its texture)
+//             and native-texture-size (error: a side not a power of two
+//             16..2048), shown under the card Import
 //   @model    what rldpack read of the model, after @file ply | obj:
 //             format <ply | obj>     the format, told by the content (the file
 //                                    ending only has to agree: model-misnamed)
@@ -343,6 +350,10 @@
 //             folder of the tab Model is not empty)
 //             [--vertex-colors modulate|color]   (an OBJ only, when the card
 //             Import of the tab Extras does not say Auto)
+//             [--native-model on]   (preview feature: only with
+//             --enable-preview-features, an OBJ, and "Native model" ticked on
+//             the card Import; never otherwise, so without the switch the
+//             command and the character's bytes are those of before)
 //             --preview <file> [--out <f>]      check; writes only the preview files
 //   make-char --machine --model ... --out <f>  build: the same switches without
 //             --check, --preview, --icon-preview and --voice-preview
@@ -372,6 +383,8 @@
 //   neutral|left|right, turn <degrees>, tab <1..5|name>, extras
 //   import|wheels|animations, up y|z, forward z|-z, colors 128|64, vertex-colors
 //   auto|modulate|color (the card Import; the last passed for an OBJ only),
+//   native-model on|off (the card Import; preview feature: "locked - coming
+//   soon" without --enable-preview-features, passed for an OBJ only),
 //   problem <n> (as a click on message n), report <file>, the verbs of the cards
 //   Wheels and Animations (rs_wheels.c, rs_anim.c), and for the tab Voices:
 //   voices <folder|none>          the folder (the check follows)
@@ -388,6 +401,10 @@
 // sides). Corners counter-clockwise seen from the side the game draws. The
 // older "RLDPV1\0\0" is the same with x, y, z in whole game units; rs_view.c
 // reads both (writer: RldMk_Preview in tools/rldpack_char.inc).
+// With --native-model on (preview feature) the native model follows: "RLDPN1",
+// its textures decoded, its triangles in the same three poses (THE NATIVE
+// MODEL IN THE PREVIEW, tools/rldpack_native.inc); rs_view.c reads it only with
+// --enable-preview-features and draws it in place of the model.
 //
 // char-poses (the card "Animations" of the page "Character", rs_anim.c; only
 // with --enable-preview-features) - poses of one's own for the preview, never a
