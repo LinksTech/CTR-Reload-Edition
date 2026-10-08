@@ -2,6 +2,7 @@
 #define NATIVE_RENDERER_H
 
 #include <platform/native_renderer_types.h>
+#include <platform/native_gfx.h>
 
 int NativeRenderer_InitialiseRender(char *windowName, int width, int height, int fullscreen);
 int NativeRenderer_InitialisePSX(void);
@@ -182,6 +183,11 @@ struct NativeLayerDraw
 	// draws the static probe mesh, as every other form does.
 	const struct NativeProbeVertex *vertices;
 	int vertexRegion;
+
+	// --native-depth-tint: 1024 / zNear, and the body is coloured by its depth
+	// (params.z of the "nr" block); 0, the value every other draw has, keeps
+	// its colours.
+	float depthTint;
 };
 
 // THE POSE BUFFER of the form pose: one region of a whole probe mesh per frame
@@ -195,6 +201,46 @@ struct NativeLayerDraw
 // Draws the probe mesh into the split's place, then puts every renderer and
 // device state back that the PSX path relies on. 0 = nothing drawn.
 int NativeRenderer_DrawNativeProbe(const struct NativeLayerDraw *draw, const RECT16 *clip, const DISPENV *dispenv, int onScreen);
+
+// ONE DRAW OF A NATIVE MESH (step 4c, a custom character): a static vertex
+// buffer of the "nr" layout (struct NativeProbeVertex) and a u16 index buffer,
+// drawn range by range. screenFromModel as in struct NativeLayerDraw, for
+// points in the units of the mesh. Per range: the texture in slot 0 (or none),
+// whether it is sRGB, the tint, and the alpha below which a fragment is
+// discarded (0 = none). The vertex offset picks the pose of the body.
+struct NativeMeshRangeDraw
+{
+	u32 firstIndex;
+	u32 indexCount;
+	TextureID texture; // NATIVE_GFX_INVALID: no texture
+	int srgb;
+	float tint[4];
+	float alphaCutoff;
+};
+
+struct NativeMeshDraw
+{
+	float screenFromModel[16];
+	int cull;
+	int clearDepth;
+	NativeGfxBuffer vertexBuffer;
+	NativeGfxBuffer indexBuffer;
+	int vertexOffset;
+	int rangeCount;
+	const struct NativeMeshRangeDraw *ranges;
+	float depthTint; // as in struct NativeLayerDraw
+};
+
+// The same place, clip, projection, depth rule and state reset as
+// NativeRenderer_DrawNativeProbe, with the caller's buffers and ranges. Needs
+// the "nr" program and the depth of the main target, not the probe mesh.
+// Returns the ranges drawn (0 = nothing drawn).
+int NativeRenderer_DrawNativeMesh(const struct NativeMeshDraw *draw, const RECT16 *clip, const DISPENV *dispenv, int onScreen);
+
+// A static vertex buffer of the "nr" layout for a native mesh (filled later
+// through NativeGfx_UpdateVertexBuffer when initial is NULL). Only with
+// --native-preview; NATIVE_GFX_INVALID otherwise.
+NativeGfxBuffer NativeRenderer_CreateNativeMeshVertexBuffer(int bytes, const void *initial);
 
 // 1 once the probe mesh buffers exist (only with --native-preview and --native-probe),
 // and for the form texture its texture as well.

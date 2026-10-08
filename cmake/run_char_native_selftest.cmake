@@ -3,12 +3,15 @@
 # them.
 #
 #   cmake -DPACKER=<rldpack> -DGAME=<ctr_native> -DDIR=<folder> [-DESCAPE=<folder>]
-#         -P cmake/run_char_native_selftest.cmake
+#         [-DSET=obj] -P cmake/run_char_native_selftest.cmake
 #
 # 1. <folder> (inside the build folder) is removed and created empty - a file
 #    left over from an older run must never be judged.
 # 2. <PACKER> make-native-tests <folder> writes old_*, none_*, good_*, bad_*
-#    and damaged_* characters into it (tools/rldpack_native_test.inc).
+#    and damaged_* characters into it (tools/rldpack_native_test.inc); with
+#    SET=obj make-native-tests --obj <folder> writes the set of the mini OBJ
+#    instead (make-char --native-model on: old_obj-plain, good_obj-native,
+#    good_obj-native-wheels-hidden).
 # 3. <GAME> --dev --char-native-selftest <folder> reads every file through the
 #    roster read and the native read without and with --native-preview and
 #    exits 0 only if each did what its name says (platform/native_chars.c).
@@ -25,8 +28,15 @@ endforeach()
 file(REMOVE_RECURSE "${DIR}")
 file(MAKE_DIRECTORY "${DIR}")
 
+set(setSwitch "")
+if(DEFINED SET AND "${SET}" STREQUAL "obj")
+    set(setSwitch "--obj")
+elseif(DEFINED SET AND NOT "${SET}" STREQUAL "")
+    message(FATAL_ERROR "run_char_native_selftest.cmake: -DSET=${SET} - only obj is known")
+endif()
+
 execute_process(
-    COMMAND "${PACKER}" make-native-tests "${DIR}"
+    COMMAND "${PACKER}" make-native-tests ${setSwitch} "${DIR}"
     RESULT_VARIABLE makeResult
     OUTPUT_VARIABLE makeOut
     ERROR_VARIABLE makeOut

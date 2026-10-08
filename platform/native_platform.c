@@ -1600,10 +1600,12 @@ void Platform_Init(const char *title, int width, int height, int fullscreen)
 // Platform_Shutdown, through atexit or directly, and s_platformInitialized makes sure
 // that it happens once.
 //
-// 32 places, 16 before: a menu run over container tracks with anti-aliasing
-// already filled all 16, and the next report would have been lost. Function
-// pointers only - nothing else depends on the size.
-#define PLATFORM_EXIT_REPORT_MAX 32
+// 64 places, 32 and 16 before: a menu run over container tracks with
+// anti-aliasing already filled all 16, and a render layer run with every
+// report switch took 31 of 32 - the next steps of the render layer register
+// more. Function pointers only - nothing else depends on the size: the table
+// is filled in order, each report at most once, and run in that order.
+#define PLATFORM_EXIT_REPORT_MAX 64
 
 global_variable void (*s_exitReports[PLATFORM_EXIT_REPORT_MAX])(void);
 global_variable int s_exitReportCount = 0;

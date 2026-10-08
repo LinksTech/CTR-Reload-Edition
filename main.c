@@ -79,6 +79,7 @@
 #include "platform/native_preview.c"
 #include "platform/native_testfiles.c"
 #include "platform/native_chars.c"
+#include "platform/native_char_gpu.c"
 #include "platform/native_wheels.c"
 #include "platform/native_render_layer.c"
 #include "platform/native_probe.c"
@@ -238,7 +239,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--menu-keys-from", "<vblank>", "first step of the sequence at this VBlank (default 300)"},
     {"--menu-pads", "<n>", "the key sequence reports this many connected pads, 1 to 4 (default 1)"},
     {"--vk-validation", "", "Vulkan validation layer on"},
-    {"--native-preview", "", "native render layer preview for the whole run: the native program, and depth on the main target while a native object is bound, never saved"},
+    {"--native-preview", "", "native render layer preview for the whole run: the native program, and depth on the main target while a native object is bound, never saved; custom characters are drawn natively only at an internal resolution of x2 or more (at x1 the retail path draws them)"},
     {"--native-empty-markers", "", "with --native-preview: an empty native marker at every driver instance, retail keeps drawing (self-test of the marker channel)"},
     {"--dump-vram", "<vblanks>", "VRAM dumps <prefix>-<vblank>.tga at these VBlanks (comma list, up to 8)"},
     {"--dump-prefix", "<name>", "file prefix of the VRAM dumps (default dump)"},
@@ -246,6 +247,11 @@ static const NativeSwitch s_devSwitches[] = {
     {"--native-probe", "<form>", "with --native-preview: seat 0 of a one-player arcade race draws a generated test body natively (body; texture: the same body coloured by a texture; pose: textured, its top shaped by the retail animation frame; wheels: pose with four generated wheels in place of the retail wheels; mips: pose coloured by an sRGB texture with 9 levels, one colour each, uploaded while the race loads)"},
     {"--native-filter", "<nearest|linear>", "with --native-preview: how textures of the native texture manager are sampled - nearest (pixelated, the default) or linear (trilinear, with anisotropy up to the device limit); never saved"},
     {"--native-wheel-report", "", "only with --native-preview --native-probe: per tick the float wheel middles, roll phase and speed of the probe seat beside the middles of its retail wheels, which stay on for that seat (measuring the wheel poses)"},
+    {"--native-seam-report", "", "only with --native-preview: one line per frame and native item of view 0 (probe or custom character) with its view z, shift, depth and box - the seam at view z 0x1000 (measuring only)"},
+    {"--native-depth-tint", "", "only with --native-preview: every native draw is coloured by its depth (red and blue full, green = 1024 / w) instead of its colours - the seam at view z 0x1000 made visible (measuring only)"},
+    {"--native-char-gpu-selftest", "<dir>", "the good .rldchar files of dir (written by rldpack make-native-tests) through the native read and the GPU set build of a custom character without a device, then end (ctest native_char_gpu_selftest)"},
+    {"--native-split-report", "", "measuring only: per water line view of seat 0 drawn as a custom character (SPLIT, and SPECIAL with the split line), the raw values the queue split it with - the first four, then every 30th VBlank"},
+    {"--native-hide-exhaust", "", "measuring only: the exhaust particles of every seat (and the burn smoke, same icons) are moved and counted as always but not drawn, with or without --native-preview; the count comes at exit"},
     {"--native-probe-selftest", "", "check the bytes of the generated probe mesh against their hash (ctest native_probe_selftest)"},
     {"--native-depth-selftest", "", "check that a native draw keeps its depth across view z 0x1000 (ctest native_depth_selftest)"},
     {"--native-tex-selftest", "", "check the native texture manager: tables, the shader round trip, the edge rule and the levels of a fixed image (ctest native_tex_selftest)"},
@@ -326,6 +332,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--char", "<file>", "only this .rldchar (in --chars-dir, or an absolute path) and no folder: a tile in the one-player arcade driver select right after the retail drivers, or with --level and --driver <its template> straight on seat 0"},
     {"--dev-grid-fill", "<n>", "n placeholder tiles, 1 to 32, after the custom character tiles in the one-player arcade driver select (rows and scrolling with many entries); a placeholder cannot be chosen"},
     {"--dev-char-seats", "<all|cycle>", "every seat of a one-player arcade race drives a custom model, the bots put on the file's template (give --driver <that template> for seat 0), with the template's class: all =the first file of the roster, cycle = the next file at every race load (several models measured in one run); draw memory and mempack grow by eight models"},
+    {"--dev-char-seat-files", "<f0,f1,...>", "as --dev-char-seats all, but seat 0, 1, ... drives the roster file f0, f1, ... (1 to 8 file names of the folder, commas between), every further seat the first file of the roster, each bot on its own file's template; not with --dev-char-seats or --char"},
     {"--ui-safe-area-off", "", "UI safe area off"},
     {"--ui-declarations-off", "", "UI declarations off"},
     {"--ui-floor-off", "", "UI floor off"},
@@ -2101,6 +2108,15 @@ int main(int argc, char *argv[])
 			return NativeChar_NativeSelfTest(argv[argIndex + 1]);
 		}
 
+		// The GPU set of a custom character without a device (step 4c,
+		// platform/native_char_gpu.c, ctest native_char_gpu_selftest): the
+		// same files, through the native read and the set build. Up here for
+		// the same reason: it only reads files.
+		if ((strcmp(argv[argIndex], "--native-char-gpu-selftest") == 0) && ((argIndex + 1) < argc))
+		{
+			return NativeCharGpu_SelfTest(argv[argIndex + 1]);
+		}
+
 		// The container self-test, up here for the same reason: it only reads
 		// files - no platform, window, audio or asset folder, no disc image,
 		// no GPU - so it runs on CI (ctest selftest_bad_containers).
@@ -2343,6 +2359,61 @@ int main(int argc, char *argv[])
 				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
 			}
 		}
+		else if ((strcmp(argv[argIndex], "--dev-char-seat-files") == 0) && ((argIndex + 1) < argc))
+		{
+			// A measuring switch (several custom models in one race,
+			// platform/native_chars.c): given twice, together with
+			// --dev-char-seats (two answers to who sits where) or with --char
+			// (which reads no folder, so the roster holds one file), or with a
+			// list not of the form, it ends the start here, before the first
+			// window. A name that is not a loaded file of the roster ends it right
+			// after the roster is read (NativeChar_DevSeatFilesResolve).
+			const char *value = argv[++argIndex];
+			int filesGiven = 0;
+			int seatsGiven = 0;
+			int charGiven = 0;
+
+			for (int scanIndex = 1; scanIndex < argc; scanIndex++)
+			{
+				if (strcmp(argv[scanIndex], "--dev-char-seat-files") == 0)
+				{
+					filesGiven++;
+				}
+				else if (strcmp(argv[scanIndex], "--dev-char-seats") == 0)
+				{
+					seatsGiven = 1;
+				}
+				else if (strcmp(argv[scanIndex], "--char") == 0)
+				{
+					charGiven = 1;
+				}
+			}
+
+			if (filesGiven > 1)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --dev-char-seat-files is given %d times - once only\n", filesGiven);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			if (seatsGiven || charGiven)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --dev-char-seat-files does not go with %s\n", seatsGiven ? "--dev-char-seats" : "--char");
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			if (!NativeChar_SetDevSeatFiles(value))
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --dev-char-seat-files expects 1 to %d file names of the folder, commas between, got %s\n",
+				        NATIVE_CHAR_DEV_SEAT_FILES_MAX, value);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+		}
 		else if ((strcmp(argv[argIndex], "--native-probe-seat") == 0) && ((argIndex + 1) < argc))
 		{
 			// The seat whose model the native probe takes (platform/
@@ -2465,6 +2536,111 @@ int main(int argc, char *argv[])
 			}
 
 			g_cfg_nativeWheelReport = 1;
+		}
+		else if ((strcmp(argv[argIndex], "--native-seam-report") == 0) || (strcmp(argv[argIndex], "--native-depth-tint") == 0))
+		{
+			// The two measuring switches of the seam at view z 0x1000 (step 4c,
+			// platform/native_render_layer.c). Without --native-preview there is
+			// no native draw to report or colour, so the start ends here, before
+			// the first window; so does a switch given twice (as
+			// --native-hide-exhaust). The big loop below names them in the log.
+			// Never in ctr-settings.cfg.
+			const char *name = argv[argIndex];
+			int given = 0;
+			int previewGiven = 0;
+
+			for (int scanIndex = 1; scanIndex < argc; scanIndex++)
+			{
+				if (strcmp(argv[scanIndex], name) == 0)
+				{
+					given++;
+				}
+				else if (strcmp(argv[scanIndex], "--native-preview") == 0)
+				{
+					previewGiven = 1;
+				}
+			}
+
+			if (given > 1)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch %s is given %d times - once only\n", name, given);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			if (!previewGiven)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch %s only acts together with --native-preview\n", name);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			if (strcmp(name, "--native-seam-report") == 0)
+			{
+				g_cfg_nativeSeamReport = 1;
+			}
+			else
+			{
+				g_cfg_nativeDepthTint = 1;
+			}
+		}
+		else if (strcmp(argv[argIndex], "--native-split-report") == 0)
+		{
+			// The raw values of the water line (step 4e-1b,
+			// platform/native_render_layer.c). Given twice it ends the start here,
+			// before the first window (as --native-hide-exhaust). The big loop
+			// below names it in the log. Never in ctr-settings.cfg.
+			int given = 0;
+
+			for (int scanIndex = 1; scanIndex < argc; scanIndex++)
+			{
+				if (strcmp(argv[scanIndex], "--native-split-report") == 0)
+				{
+					given++;
+				}
+			}
+
+			if (given > 1)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --native-split-report is given %d times - once only\n", given);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			g_cfg_nativeSplitReport = 1;
+		}
+		else if (strcmp(argv[argIndex], "--native-hide-exhaust") == 0)
+		{
+			// Leaves the exhaust quads out of the ordering table
+			// (platform/native_render_layer.c, NativeRenderLayer_HideExhaustQuad;
+			// game/Particle.c, Particle_RenderList), for the colour checks of the
+			// native probe without the exhaust glow. A measuring switch that also
+			// acts without --native-preview: the reference run without the probe
+			// needs it as much as the probe run. Given more than once it ends the
+			// start here, before the first window (as --native-wheel-report). The
+			// big loop below names it in the log. Never in ctr-settings.cfg.
+			int hideGiven = 0;
+
+			for (int scanIndex = 1; scanIndex < argc; scanIndex++)
+			{
+				if (strcmp(argv[scanIndex], "--native-hide-exhaust") == 0)
+				{
+					hideGiven++;
+				}
+			}
+
+			if (hideGiven > 1)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --native-hide-exhaust is given %d times - once only\n", hideGiven);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			g_cfg_nativeHideExhaust = 1;
 		}
 		else if ((strcmp(argv[argIndex], "--native-filter") == 0) && ((argIndex + 1) < argc))
 		{
@@ -3004,6 +3180,30 @@ int main(int argc, char *argv[])
 				Platform_Log("[CTR Native] native wheel report on: per tick the float, the exact and the retail wheel middles of seat %d, "
 				             "whose retail wheels stay on; sign check from |move| >= %.4f world units\n",
 				             g_cfg_nativeProbeSeat, NATIVE_WHEELS_MOVING);
+			}
+			else if (strcmp(argv[argIndex], "--native-split-report") == 0)
+			{
+				// Set in the first loop of main, which also refused it given twice.
+				Platform_Log("[CTR Native] native split report on (measurement only): the raw water line values of seat 0, the first four, then every 30th VBlank\n");
+			}
+			else if (strcmp(argv[argIndex], "--native-seam-report") == 0)
+			{
+				// Set in the first loop of main, which also refused it without
+				// --native-preview or given twice; this is where the log learns of it.
+				Platform_Log("[CTR Native] native seam report on (measurement only): one line per frame and native item of view 0\n");
+			}
+			else if (strcmp(argv[argIndex], "--native-depth-tint") == 0)
+			{
+				// As above.
+				Platform_Log("[CTR Native] native depth tint on (measurement only): every native draw is coloured by its depth, green = 1024 / w\n");
+			}
+			else if (strcmp(argv[argIndex], "--native-hide-exhaust") == 0)
+			{
+				// Set in the first loop of main, which also refused it given twice;
+				// this is where the log learns of it, and the count comes at exit.
+				Platform_Log("[CTR Native] exhaust particles hidden (measurement only): the exhaust and burn smoke quads of every seat are not drawn, "
+				             "the particles live as always\n");
+				Platform_AtExitReport(NativeRenderLayer_HideExhaustReport);
 			}
 			else if ((strcmp(argv[argIndex], "--native-filter") == 0) && ((argIndex + 1) < argc))
 			{
@@ -3963,6 +4163,17 @@ int main(int argc, char *argv[])
 	// the exit line of the instance counter is registered either way. Then the
 	// roster of the driver select is built from the files and --dev-grid-fill.
 	NativeChar_LoadRoster();
+
+	// --dev-char-seat-files: a name that is not a loaded file of the roster
+	// ends the start here (exit code 64, the message on stderr and in the log)
+	// - a measuring run that left a seat retail would measure another race.
+	// Without the switch this does nothing.
+	if (!NativeChar_DevSeatFilesResolve())
+	{
+		Platform_LogFlush();
+		Platform_Shutdown();
+		return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+	}
 
 	// The draw memory of custom models (NativeChar_DrawReserve) lies in the
 	// MEMPACK like the rest of the draw memory, so the window grows by what

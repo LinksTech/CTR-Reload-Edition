@@ -45,6 +45,25 @@ void NativeChar_SetGridFill(int count);
 #define NATIVE_CHAR_DEV_SEATS_CYCLE 2
 void NativeChar_SetDevSeats(int mode);
 
+// --dev-char-seat-files <f0,f1,...> (main.c, only with --dev, never with
+// --dev-char-seats or --char): like ALL, but seat s < n drives the file fs of
+// the roster and every seat from n on the first file of the roster (as ALL);
+// each bot seat is put on the template of its own file. 1 to
+// NATIVE_CHAR_DEV_SEAT_FILES_MAX names separated by commas, each a file name
+// of the folder (no path). Only remembered: 0 when the list is not of that
+// form (nothing remembered), else 1.
+#define NATIVE_CHAR_DEV_SEATS_FILES 3
+#define NATIVE_CHAR_DEV_SEAT_FILES_MAX 8
+int NativeChar_SetDevSeatFiles(const char *list);
+
+// main.c, right after NativeChar_LoadRoster: each name of
+// --dev-char-seat-files looked up among the files of the roster (letter case
+// ignored, as the folder scan takes the extension). 1 when every name is a file
+// of the roster (or the switch is off), with one line per seat in the log; 0
+// for the first name that is not, with its message on stderr and in the log -
+// main.c then ends the start with exit code 64.
+int NativeChar_DevSeatFilesResolve(void);
+
 // main.c, before any window: 0 when --char names a file that is neither in a
 // --chars-dir nor an absolute path (the message is then on stderr), else 1.
 int NativeChar_ArgsUsable(void);
@@ -270,6 +289,27 @@ void NativeChar_MaskSelfTest(int *checks, int *failures);
 struct RldCharNative;
 const struct RldCharNative *NativeChar_SeatNative(int seat);
 
+// The file name of a bound seat whose guard holds, "" for every other seat.
+const char *NativeChar_SeatFile(int seat);
+
+// STEP 5A, the native part of the driver select preview (platform/
+// native_render_layer.c, the pull, at a change of the wanted tile; only with
+// --native-preview): held for one entry at a time, in the file's own slot as a
+// bound seat holds it; let go when the driver select ends and in
+// NativeChar_ClearSeats. PreviewNative: the ready part held for entry, else
+// NULL. PreviewEntry: the entry held, -1 for none. EntryFile: the file name of
+// a roster entry, "" outside the files.
+void NativeChar_HoldPreview(int entry);
+void NativeChar_ReleasePreview(void);
+const struct RldCharNative *NativeChar_PreviewNative(int entry);
+int NativeChar_PreviewEntry(void);
+const char *NativeChar_EntryFile(int entry);
+
+// The GPU self-test (platform/native_char_gpu.c): one file through the roster
+// read and the native read with the preview; 1 when the part is ready. The
+// caller frees the part (RldChar_FreeNative).
+int NativeChar_ReadNativeFile(const char *path, const char *name, struct RldCharNative *out);
+
 // --char-native-selftest <folder> (main.c, ctest char_native_selftest): the
 // files rldpack make-native-tests wrote, through the roster read and the
 // native read without and with --native-preview, each against the
@@ -281,6 +321,13 @@ int NativeChar_NativeSelfTest(const char *dir);
 // seat and the driver select preview alike), else 0 - also for NULL, retail
 // models and an empty roster.
 int NativeChar_ModelHidesWheels(const struct Model *model);
+
+// The same per instance and view (both passes of game/DrawTires.c): the answer
+// of the model, or 1 for a view of a custom character the render layer drew
+// natively with its own wheels in this frame (step 4c; a fallback view keeps
+// the retail wheels of its CMDL).
+struct PushBuffer;
+int NativeChar_ViewHidesWheels(const struct Instance *inst, const struct PushBuffer *pb);
 
 // game/RenderBucket/RenderBucket_QueueExecute.c, once per instance draw: 1 when
 // model is the model or the own mask of a loaded file whose CHRI flags set

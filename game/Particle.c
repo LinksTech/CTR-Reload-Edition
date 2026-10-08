@@ -782,6 +782,17 @@ static void Particle_RenderList_LinkAndAdvance(u32 **primCursor, u32 **payloadCu
 	}
 }
 
+// --native-hide-exhaust (measuring only, platform/native_render_layer.c): a
+// normal quad written as always but not linked into the ordering table, so it
+// is never drawn. The cursors move exactly as LinkAndAdvance moves them for a
+// POLY_FT4, so every later primitive lands where it lands without the switch;
+// only the quad's tag word and its OT entry stay unwritten.
+static void Particle_RenderList_AdvanceUnlinked(u32 **primCursor, u32 **payloadCursor)
+{
+	*primCursor = (u32 *)((POLY_FT4 *)*primCursor + 1);
+	*payloadCursor += 10;
+}
+
 static void Particle_RenderList_WriteSpecialPrimitive(struct ParticleSpecialPacket *packet, struct Particle *particle, u16 flagsAxis, u16 flagsSetColor,
                                                       u32 color, struct ParticleRenderListScratch *scratch)
 {
@@ -1104,6 +1115,11 @@ static void Particle_RenderList_WriteNormalPrimitive(POLY_FT4 *poly, struct Icon
 // Writes nothing; leaves at once for every other particle.
 void NativeRenderLayer_NoteParticleQuad(const struct Particle *particle, const struct PushBuffer *pb, const POLY_FT4 *poly);
 
+// From platform/native_render_layer.c: 1 = leave this exhaust quad out of the
+// ordering table (--native-hide-exhaust, measuring only). Reads the particle
+// and counts; without the switch always 0.
+int NativeRenderLayer_HideExhaustQuad(const struct Particle *particle);
+
 void Particle_RenderList(struct PushBuffer *pb, void *particleList)
 {
 	struct GameTracker *gGT = sdata->gGT;
@@ -1286,8 +1302,17 @@ void Particle_RenderList(struct PushBuffer *pb, void *particleList)
 			struct ParticleRenderListMatrix matrix = Particle_RenderList_BuildNormalMatrix(particle, flagsAxis);
 
 			Particle_RenderList_WriteNormalPrimitive((POLY_FT4 *)prim, icon, flagsAxis, flagsSetColor, color, &matrix, &scratch->depth);
-			Particle_RenderList_LinkAndAdvance(&primCursor, &payloadCursor, particle, idpp, flagsSetColor, scratch->depth, scratch->ot);
-			NativeRenderLayer_NoteParticleQuad(particle, pb, (const POLY_FT4 *)prim);
+			if (NativeRenderLayer_HideExhaustQuad(particle))
+			{
+				// Written and projected like every quad; only the link into the
+				// OT is left out (and with it the exhaust box of the probe).
+				Particle_RenderList_AdvanceUnlinked(&primCursor, &payloadCursor);
+			}
+			else
+			{
+				Particle_RenderList_LinkAndAdvance(&primCursor, &payloadCursor, particle, idpp, flagsSetColor, scratch->depth, scratch->ot);
+				NativeRenderLayer_NoteParticleQuad(particle, pb, (const POLY_FT4 *)prim);
+			}
 			prim = primCursor;
 
 		next_particle:

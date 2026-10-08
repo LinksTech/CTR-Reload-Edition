@@ -410,6 +410,23 @@ if(BUILD_TESTING)
     set_tests_properties(char_grid_selftest PROPERTIES
         PASS_REGULAR_EXPRESSION "char grid selftest passed: [0-9]+ checks, 0 failures"
     )
+    # --dev-char-seat-files (main.c, the first loop of main): given twice,
+    # together with --dev-char-seats or --char, or with a list not of the form,
+    # it ends the start with exit code 64 and its reason, before any window or
+    # data; so does the switch without --dev. A name that is not a file of the
+    # roster ends it only after the roster is read (game data, not in ctest).
+    add_test(NAME dev_char_seat_files_once COMMAND $<TARGET_FILE:ctr_native> --dev --dev-char-seat-files a.rldchar --dev-char-seat-files b.rldchar)
+    set_tests_properties(dev_char_seat_files_once PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-char-seat-files is given 2 times - once only")
+    add_test(NAME dev_char_seat_files_not_with_seats COMMAND $<TARGET_FILE:ctr_native> --dev --dev-char-seats all --dev-char-seat-files a.rldchar)
+    set_tests_properties(dev_char_seat_files_not_with_seats PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-char-seat-files does not go with --dev-char-seats")
+    add_test(NAME dev_char_seat_files_not_with_char COMMAND $<TARGET_FILE:ctr_native> --dev --char a.rldchar --dev-char-seat-files a.rldchar)
+    set_tests_properties(dev_char_seat_files_not_with_char PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-char-seat-files does not go with --char")
+    add_test(NAME dev_char_seat_files_form COMMAND $<TARGET_FILE:ctr_native> --dev --dev-char-seat-files a.rldchar,,b.rldchar)
+    set_tests_properties(dev_char_seat_files_form PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-char-seat-files expects 1 to 8 file names of the folder, commas between, got a.rldchar,,b.rldchar")
+    add_test(NAME dev_char_seat_files_nine COMMAND $<TARGET_FILE:ctr_native> --dev --dev-char-seat-files a,b,c,d,e,f,g,h,i)
+    set_tests_properties(dev_char_seat_files_nine PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-char-seat-files expects 1 to 8 file names")
+    add_test(NAME dev_char_seat_files_needs_dev COMMAND $<TARGET_FILE:ctr_native> --dev-char-seat-files a.rldchar)
+    set_tests_properties(dev_char_seat_files_needs_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-char-seat-files requires --dev")
     # The bytes of the generated native probe meshes, texture, pose meshes, wheel
     # mesh, wheel texture and mips texture (platform/native_probe.c) against
     # their golden SHA-256. Only hashes tables.
@@ -425,6 +442,30 @@ if(BUILD_TESTING)
     # probe on the line, so even a reader that let it through could not start a race.
     add_test(NAME native_wheel_report_once COMMAND $<TARGET_FILE:ctr_native> --dev --native-wheel-report --native-wheel-report)
     set_tests_properties(native_wheel_report_once PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-wheel-report is given 2 times - once only")
+    # --native-hide-exhaust (main.c, the first loop of main): given twice it ends
+    # the start with exit code 64 and its reason, before any window or data; so
+    # does the switch without --dev (the gate of the developer switches).
+    add_test(NAME native_hide_exhaust_once COMMAND $<TARGET_FILE:ctr_native> --dev --native-hide-exhaust --native-hide-exhaust)
+    set_tests_properties(native_hide_exhaust_once PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-hide-exhaust is given 2 times - once only")
+    add_test(NAME native_hide_exhaust_needs_dev COMMAND $<TARGET_FILE:ctr_native> --native-hide-exhaust)
+    set_tests_properties(native_hide_exhaust_needs_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-hide-exhaust requires --dev")
+    # --native-seam-report and --native-depth-tint (main.c, the first loop of
+    # main, step 4c): without --native-preview, or given twice, they end the
+    # start with exit code 64 and their reason, before any window or data.
+    add_test(NAME native_seam_report_needs_preview COMMAND $<TARGET_FILE:ctr_native> --dev --native-seam-report)
+    set_tests_properties(native_seam_report_needs_preview PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-seam-report only acts together with --native-preview")
+    add_test(NAME native_seam_report_once COMMAND $<TARGET_FILE:ctr_native> --dev --native-preview --native-seam-report --native-seam-report)
+    set_tests_properties(native_seam_report_once PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-seam-report is given 2 times - once only")
+    add_test(NAME native_depth_tint_needs_preview COMMAND $<TARGET_FILE:ctr_native> --dev --native-depth-tint)
+    set_tests_properties(native_depth_tint_needs_preview PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-depth-tint only acts together with --native-preview")
+    add_test(NAME native_depth_tint_once COMMAND $<TARGET_FILE:ctr_native> --dev --native-preview --native-depth-tint --native-depth-tint)
+    set_tests_properties(native_depth_tint_once PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-depth-tint is given 2 times - once only")
+    # --native-split-report (main.c, step 4e-1b): given twice it ends the start
+    # with exit code 64 and its reason; without --dev the gate does.
+    add_test(NAME native_split_report_once COMMAND $<TARGET_FILE:ctr_native> --dev --native-split-report --native-split-report)
+    set_tests_properties(native_split_report_once PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-split-report is given 2 times - once only")
+    add_test(NAME native_split_report_needs_dev COMMAND $<TARGET_FILE:ctr_native> --native-split-report)
+    set_tests_properties(native_split_report_needs_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --native-split-report requires --dev")
     # --native-filter (main.c, the first loop of main): a value other than
     # nearest or linear, the switch given twice, or no --native-preview end the
     # start with exit code 64 and their reason, before any window or data; so
@@ -447,7 +488,7 @@ if(BUILD_TESTING)
     # matrix steps (platform/native_depth_check.c). One made-up instance; the
     # values are deterministic, so the whole line is pinned.
     add_test(NAME native_depth_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --native-depth-selftest)
-    set_tests_properties(native_depth_selftest PROPERTIES PASS_REGULAR_EXPRESSION "native depth selftest passed: normal shift 2 to 0, w 4164.0625 to 4165.0391, step 0.0235 percent, rest 0.0006 percent, matrix part 0.0339 percent, wrong shift 299.9 and 75.0 percent, matrix 300.1 and 75.0 percent, huge shift 0 to -2, w 4371.2500 to 4372.1562, step 0.0207 percent, rest 0.0021 percent, matrix part 0.0339 percent, wrong shift 299.9 and 75.0 percent, matrix 300.1 and 75.0 percent, shift checks held")
+    set_tests_properties(native_depth_selftest PROPERTIES PASS_REGULAR_EXPRESSION "native depth selftest passed: normal shift 2 to 0, w 4164.0625 to 4165.0391, step 0.0235 percent, rest 0.0006 percent, matrix part 0.0339 percent, wrong shift 299.9 and 75.0 percent, matrix 300.1 and 75.0 percent, huge shift 0 to -2, w 4371.2500 to 4372.1562, step 0.0207 percent, rest 0.0021 percent, matrix part 0.0339 percent, wrong shift 299.9 and 75.0 percent, matrix 300.1 and 75.0 percent, shift checks held, char scale 0x1000 shift 2 to 0, w 4095.0000 to 4096.0000, step 0.0244 percent, rest 0.0000 percent, matrix part 0.1119 percent, wrong shift 299.9 and 75.0 percent, matrix 300.4 and 75.0 percent, char scale 0x0ccd shift 2 to 0, w 4095.0000 to 4096.0000, step 0.0244 percent, rest 0.0000 percent, matrix part 0.3077 percent, wrong shift 299.9 and 75.0 percent, matrix 301.2 and 75.1 percent, char passed")
 
     # FOREIGN INPUT, REFUSED CLEANLY. A container (.rldtrack) and a disc image
     # come from strangers: every length, offset and index in them is checked
@@ -498,6 +539,34 @@ if(BUILD_TESTING)
     )
     set_tests_properties(char_native_selftest PROPERTIES
         PASS_REGULAR_EXPRESSION "char native selftest passed: 36 files, [0-9]+ checks, 0 failures"
+        TIMEOUT 300
+        FIXTURES_SETUP native_char_files
+    )
+    # THE GPU SET OF A CUSTOM CHARACTER (step 4c, platform/native_char_gpu.c),
+    # without a device: the good files the test above had rldpack write go
+    # through the native read and the set build - ranges, index sort, the
+    # vertex bytes of every pose (one SHA-256 over all four files), the pose
+    # index of all 47 frames, the wheel middles and the refusal of a blend
+    # material.
+    add_test(NAME native_char_gpu_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --native-char-gpu-selftest ${CMAKE_BINARY_DIR}/selftest/native-chars)
+    set_tests_properties(native_char_gpu_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "native char gpu selftest passed: 4 files, 40 checks, 0 failures, sha256 efc584b94d73f6708bed71ff81c89a533479566755edebea6b47735a9cb16497"
+        FIXTURES_REQUIRED native_char_files
+    )
+    # The same for the native model of an OBJ (make-char --native-model on):
+    # rldpack make-native-tests --obj writes the self-test's mini OBJ without
+    # and with its native model (one CMDL), the game reads them as above.
+    add_test(NAME char_native_obj_selftest
+        COMMAND ${CMAKE_COMMAND}
+            -DPACKER=$<TARGET_FILE:rldpack>
+            -DGAME=$<TARGET_FILE:ctr_native>
+            -DDIR=${CMAKE_BINARY_DIR}/selftest/native-obj
+            -DSET=obj
+            -P ${CMAKE_SOURCE_DIR}/cmake/run_char_native_selftest.cmake
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+    set_tests_properties(char_native_obj_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "char native selftest passed: 3 files, [0-9]+ checks, 0 failures"
         TIMEOUT 300
     )
 

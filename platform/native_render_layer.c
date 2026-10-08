@@ -100,8 +100,15 @@
 #include "platform/native_render_layer.h"
 #include "platform/native_renderer.h"
 #include "platform/native_wheels.h"
+#include "platform/native_char_gpu.h"
 
 int g_cfg_nativeLayerReport = 0;
+
+// --native-seam-report and --native-depth-tint (main.c, only with --dev and
+// --native-preview; measuring only, never saved): the seam line per native
+// item of view 0 and frame, and the depth colour of every native draw.
+int g_cfg_nativeSeamReport = 0;
+int g_cfg_nativeDepthTint = 0;
 
 // platform/native_gfx_vk.c, set by main.c before Platform_Init.
 extern int g_cfg_nativePreview;
@@ -297,6 +304,11 @@ internal const struct Instance *s_nrInstBefore[NATIVE_RENDER_LAYER_SLOTS];
 // raises it (to 1, NativeRenderLayer_BindProbe); without --native-probe it
 // stays 0 for the whole run.
 internal int s_nativeModelCount = 0;
+
+// The same for the custom characters drawn natively (step 4c): the number of
+// their models bound this frame (NativeRenderLayer_BindChars). 0 for the whole
+// run without --native-preview or without a ready GPU set.
+internal int s_nrCharCount = 0;
 
 // THE SEATS OF THIS FRAME. gGT->drivers[] is only rebuilt in the first state
 // after a load, while the scene keeps being drawn through the load (see
@@ -567,7 +579,21 @@ struct NrDrawItem
 	// turned by inst->matrix - no whole-unit cut of mvp.t (render plan L4). View
 	// space, world units, not shifted.
 	double wheelExact[4][3];
+	// The view z the item was recomputed with (FillItem), for the seam line.
+	s32 viewZ;
+	// STEP 4C, a custom character (kind NR_ITEM_CHAR; 0 for the probe, which
+	// memset gives every probe item): its seat, its GPU set, the pose of the
+	// body, and per axis the vertex input units of the queue per model unit
+	// (16384 / mh->scale), the origin of the model units being the model's own.
+	u8 kind;
+	u8 seat;
+	u16 pose;
+	const struct NativeCharGpu *gpu;
+	double unitScale[3];
 };
+
+#define NR_ITEM_PROBE 0
+#define NR_ITEM_CHAR  1
 
 internal struct NrDrawItem s_nrItems[2][NATIVE_RENDER_LAYER_ITEMS];
 
@@ -1636,8 +1662,9 @@ internal void NativeRenderLayer_BindProbe(const struct GameTracker *gGT)
 		memset(&s_nrExhaust, 0, sizeof(s_nrExhaust));
 
 		// No native object, so no native draw: the main target lets its depth
-		// image go (nothing happens when it has none).
-		NativeRenderer_WantNativeDepth(0);
+		// image go (nothing happens when it has none) - unless a custom
+		// character is bound natively this frame (step 4c; 0 without one).
+		NativeRenderer_WantNativeDepth(s_nrCharCount > 0);
 		return;
 	}
 
@@ -2070,6 +2097,7 @@ internal int NativeRenderLayer_FillItem(struct NrDrawItem *it, const struct Game
 	}
 
 	expected = (s32)viewZ;
+	it->viewZ = (s32)viewZ;
 	if (viewZ < 0x1000)
 	{
 		shift += 2;
@@ -2571,6 +2599,1017 @@ internal int NativeRenderLayer_RouteProbe(const struct Instance *inst, const str
 	return 1;
 }
 
+// --- Step 4c: the custom characters drawn natively -------------------------
+//
+// THE BINDING (NativeRenderLayer_BindChars, every frame from the pull, before
+// the probe's): every seat whose custom model is bound (NativeChar_SeatModel)
+// and whose instance carries it, with a ready GPU set (platform/
+// native_char_gpu.c), puts its model into s_nrChar - a model the dev seats
+// share only once. The route then takes every view of such a model through
+// the same gates as the probe (NativeRenderLayer_RouteChar); a view that
+// cannot be taken stays retail - its CMDL with its retail wheels - with the
+// first reason counted. Without --native-preview, without a ready set, or at
+// factor 1 (NativeRenderLayer_CharFactorAllows), s_nrCharCount stays 0
+// and every hook leaves at its first comparison.
+//
+// THE PROBE STAYS AS IT WAS. None of its functions is changed for this; the
+// char items have their own matrix (NativeRenderLayer_CharItemMatrix), draw
+// (NativeRenderLayer_DrawCharItem), lines and counters. Both share the item
+// list, the markers, FillItem, FillPose and the depth clear of a view.
+
+struct NrChar
+{
+	const struct Model *model;
+	const struct NativeCharGpu *gpu;
+};
+
+internal struct NrChar s_nrChar[NATIVE_RENDER_LAYER_DRIVERS];
+internal int s_nrCharDepthWanted = 0;
+
+// The binding as last logged, per seat.
+internal u8 s_nrCharSeatBound[NATIVE_RENDER_LAYER_DRIVERS];
+
+// THE STAMPS of the retail wheels (game/DrawTires.c, NativeChar_ViewHidesWheels):
+// the frame a view of the instance in a pool slot was routed natively in, and
+// whether that item drew native wheels.
+internal u32 s_nrCharViewFrame[NATIVE_RENDER_LAYER_SLOTS][NATIVE_RENDER_LAYER_VIEWS];
+internal u8 s_nrCharViewWheels[NATIVE_RENDER_LAYER_SLOTS][NATIVE_RENDER_LAYER_VIEWS];
+
+// The draws per view and frame of the chars, apart from the probe's.
+internal u32 s_nrCharViewDrawFrame[NATIVE_RENDER_LAYER_VIEWS];
+internal int s_nrCharViewDraws[NATIVE_RENDER_LAYER_VIEWS];
+internal u32 s_nrCharDrawFrame = 0;
+
+// One bound frame per seat, looked at when the next frame starts (the retail
+// line of the box report).
+struct NrCharSeatFrame
+{
+	int live;
+	int dispatched;
+	int routed;
+	int drawn;
+	const char *lastFallback;
+};
+
+internal struct NrCharSeatFrame s_nrCharSeatFrame[NATIVE_RENDER_LAYER_DRIVERS];
+
+// The seam per seat (view 0): as the probe's, with neighbouring native frames
+// told by the layer's frame number.
+struct NrCharSeam
+{
+	unsigned long long nearDraws;
+	unsigned long long farDraws;
+	unsigned long long hugeDraws;
+	unsigned long long shiftOff;
+	unsigned long long mirrored;
+	unsigned long long composedOff;
+	unsigned long long changes;
+	unsigned long long nearToFar;
+	unsigned long long farToNear;
+	unsigned long long afterGap;
+	unsigned long long stepPairs;
+	unsigned long long view0Draws;
+	double jumpMax;
+	int jumpVBlank;
+	double jumpW0;
+	double jumpW1;
+	double stepMax;
+	u32 lastFrame;
+	int haveLast;
+	int lastShift;
+	int lastNear;
+	double lastW;
+	int seamLineVBlank;
+	int boxLineVBlank;
+};
+
+internal struct NrCharSeam s_nrCharSeam[NATIVE_RENDER_LAYER_DRIVERS];
+
+struct NrCharCounters
+{
+	unsigned long long boundFrames;
+	unsigned long long draws;
+	unsigned long long drawFrames;
+	int mostPerView;
+	unsigned long long notDrawn;
+	unsigned long long fallback[NR_PROBE_FALLBACKS];
+	unsigned long long poseDrawn;
+	unsigned long long poseMatched;
+	unsigned long long poseMismatched;
+	unsigned long long poseWithoutPull;
+	unsigned long long poseStill;
+	unsigned long long poseOutOfRange;
+	unsigned long long wheelItems;
+	unsigned long long wheelDraws;
+	unsigned long long wheelNotDrawn;
+	unsigned long long tiresNative;
+	unsigned long long tiresFallback;
+};
+
+internal struct NrCharCounters s_nrCharCnt;
+
+// STEP 4F, several native seats: the counters per seat, and per frame the
+// native draws of view 0 against the views of view 0 the route took (handler
+// NORMAL) - in every frame both are the same number.
+struct NrCharSeatCounters
+{
+	unsigned long long dispatched;   // view 0, any handler
+	unsigned long long routedNormal; // view 0, taken by the route
+	unsigned long long draws;        // every view
+	unsigned long long notDrawn;
+	unsigned long long fallback[NR_PROBE_FALLBACKS];
+};
+
+internal struct NrCharSeatCounters s_nrCharSeatCnt[NATIVE_RENDER_LAYER_DRIVERS];
+
+#define NR_CHAR_FRAME_DRAWS_LISTED 8
+
+internal struct
+{
+	int live;
+	int routed;
+	int drawn;
+} s_nrCharFrame0;
+
+internal unsigned long long s_nrCharFramesByDraws[NR_CHAR_FRAME_DRAWS_LISTED + 1];
+internal unsigned long long s_nrCharFramesDrawsOff;
+
+// STEP 4E-1, the water line (SPLIT), first part: what the views of a custom
+// character that fall back on the handler SPLIT carry - the side selector of
+// the instance (inst->funcPtr[2], one of four retail labels,
+// RenderBucket_ApplyWaterSplitSideSelector), its shift and mask
+// (specLightX & 31, reflectionRGBA) and whether the queue gave the view a
+// second OT range of its own. Counted in the fallback, so the first run names
+// the case a native water line has to rebuild. Nothing is drawn natively for
+// SPLIT yet ("accepted" stays 0).
+// --native-split-report (main.c, only with --dev): the raw values of the
+// water line of seat 0 (step 4e-1b), one line per SPLIT view and per SPECIAL
+// view with SPLIT_LINE - the first four of the run, then on the line spacing
+// of 30 VBlanks, at most one per VBlank. Only reading.
+int g_cfg_nativeSplitReport = 0;
+internal int s_nrSplitLines = 0;
+internal int s_nrSplitLineVBlank = -1;
+
+internal struct
+{
+	unsigned long long views;
+	unsigned long long accepted;
+	unsigned long long bothMask;
+	unsigned long long negative;
+	unsigned long long xorSide;
+	unsigned long long dimXor;
+	unsigned long long otherSelector;
+	unsigned long long maskOff;
+	unsigned long long shift1;
+	unsigned long long shiftOther;
+	unsigned long long secondaryOwn;
+	unsigned long long secondaryShared;
+} s_nrCharSplit;
+
+// Step 5a: the driver select preview bound natively (NativeRenderLayer_BindPreview).
+internal int s_nrPreviewBound = 0;
+internal int s_nrPreviewBoundEntry = -1;
+
+// The entry whose reason for not binding has been logged (once per tile and
+// visit of the driver select), -1 for none.
+internal int s_nrPreviewWhyEntry = -1;
+
+internal struct
+{
+	unsigned long long frames;        // frames the preview was bound in
+	unsigned long long outsideSelect; // of them while the driver select did not run (0 by construction)
+	unsigned long long boxOutsideClip; // native preview draws whose body box left the split's clip
+	unsigned long long raceFrames;    // frames with a bound race seat (4c)
+	unsigned long long refusedAdventure;
+	unsigned long long refusedCutscene;
+	unsigned long long refusedOther;
+} s_nrPreviewCnt;
+
+// The VBlank of the last probe seam line (one per VBlank).
+internal int s_nrProbeSeamVBlank = -1;
+
+// The retail wheels of a char instance between TiresBegin and TiresEnd.
+internal int s_nrCharTiresActive = 0;
+internal int s_nrCharTiresNative = 0;
+
+internal int NativeRenderLayer_CharViewStamp(const struct Instance *inst, const struct PushBuffer *pb, int *wheels);
+
+// The seat of an instance among the seats of this frame, -1 for none.
+internal int NativeRenderLayer_SeatOfInst(const struct Instance *inst)
+{
+	int seat;
+
+	for (seat = 0; seat < NATIVE_RENDER_LAYER_DRIVERS; seat++)
+	{
+		if ((s_nrSeatInst[seat] != NULL) && (s_nrSeatInst[seat] == inst))
+		{
+			return seat;
+		}
+	}
+	return -1;
+}
+
+internal int NativeRenderLayer_CharIndex(const struct Model *model)
+{
+	int k;
+
+	for (k = 0; k < s_nrCharCount; k++)
+	{
+		if (s_nrChar[k].model == model)
+		{
+			return k;
+		}
+	}
+	return -1;
+}
+
+// The frame before, now over: a bound seat whose frame drew nothing native
+// gets its retail line on the line spacing (--native-layer-report).
+internal void NativeRenderLayer_CloseCharFrames(void)
+{
+	const int vblank = Platform_GetVBlankCount();
+	int seat;
+
+	// View 0 of the frame before (step 4f): native draws against the views the
+	// route took.
+	if (s_nrCharFrame0.live)
+	{
+		const int drawn = s_nrCharFrame0.drawn;
+
+		s_nrCharFramesByDraws[(drawn > NR_CHAR_FRAME_DRAWS_LISTED) ? NR_CHAR_FRAME_DRAWS_LISTED : drawn]++;
+		if (drawn != s_nrCharFrame0.routed)
+		{
+			s_nrCharFramesDrawsOff++;
+		}
+	}
+	memset(&s_nrCharFrame0, 0, sizeof(s_nrCharFrame0));
+
+	for (seat = 0; seat < NATIVE_RENDER_LAYER_DRIVERS; seat++)
+	{
+		const struct NrCharSeatFrame frame = s_nrCharSeatFrame[seat];
+		struct NrCharSeam *seam = &s_nrCharSeam[seat];
+
+		memset(&s_nrCharSeatFrame[seat], 0, sizeof(s_nrCharSeatFrame[seat]));
+		if (!frame.live || frame.drawn || !g_cfg_nativeLayerReport)
+		{
+			continue;
+		}
+		if (((vblank % NATIVE_RENDER_LAYER_PROBE_LINE_STEP) != 0) || (vblank == seam->boxLineVBlank))
+		{
+			continue;
+		}
+		seam->boxLineVBlank = vblank;
+		Platform_Log("[CTR RenderLayer] native char seat %d at vblank %d: retail (%s)\n", seat, vblank,
+		             (frame.lastFallback != NULL) ? frame.lastFallback : (frame.routed ? "not drawn" : (frame.dispatched ? "not routed" : "no dispatch")));
+	}
+}
+
+// --- The factor rule: native characters from factor 2 on ----------------------
+//
+// THE RULE. A custom character (the race seats of 4c/4f and the driver select
+// preview of 5a) is drawn natively only while the internal resolution is
+// factor 2 or more. At factor 1 its seat is not bound: the model stays out of
+// s_nrChar, so the route answers 0 for every view of it and the retail handler
+// draws its CMDL with its retail wheels, exactly as without --native-preview.
+// The probe (--native-probe, every form) and the twin (--native-twin) are
+// measuring tools and do not ask this rule.
+//
+// THE FACTOR, read once per frame in BindChars (the first binding of the
+// pull): the factor in force (NativeRenderer_GetEffectiveResolutionScale), the
+// one the main target is allocated at. It is a setting (--res-scale,
+// ctr-settings.cfg, and at run time the INT RES rows of the debug menu's video
+// page), so it can change in the middle of a race; the binding follows from the
+// next pull on. The uploads do not ask the rule: the seat sets are made at the
+// loading screen and the preview set at the cursor step whatever the factor
+// is, so a later change of the factor never needs an upload in a race frame.
+//
+// THE NATIVE POSITION is not a factor: the target is the window's own pixel
+// grid. Its factor here is how many whole target pixels one game pixel gets -
+// the target size over the canvas width and over the display height, the
+// smaller of the two, rounded down, at least 1. A window less than twice the
+// game's size is therefore factor 1 and draws by CMDL. The window can change
+// size at run time; the binding follows like for a changed setting.
+//
+// THE LINES. One line whenever the factor the rule sees changes (and the first
+// time it decides a binding): "native chars off at factor 1" or "on at factor
+// N". Under --native-layer-report the frames in which the rule kept a seat or
+// the preview off are counted.
+
+int CTR_Canvas_ActiveWidth(void);
+
+internal int s_nrCharFactor = 1;          // this frame's, read in BindChars
+internal int s_nrCharFactorNative = 0;    // 1 at the native position
+internal int s_nrCharFactorTargetW = 0;
+internal int s_nrCharFactorTargetH = 0;
+internal int s_nrCharFactorLoggedKey = 0; // factor of the last line (+ 100 at the native position), 0 = no line yet
+internal int s_nrCharFactorHeldNow = 0;   // this frame already counted
+
+internal struct
+{
+	unsigned long long frames;        // frames in which the rule kept a seat or the preview off
+	unsigned long long seatFrames;    // seats kept off, summed over the frames
+	unsigned long long previewFrames; // frames with the preview kept off
+} s_nrCharFactorCnt;
+
+// The factor the rule reads, from its inputs alone (no state): the factor in
+// force, or at the native position the whole target pixels per game pixel.
+internal int NativeRenderLayer_RuleFactor(int atNative, int effective, int targetW, int targetH, int canvasW, int displayH)
+{
+	int byWidth;
+	int byHeight;
+	int factor;
+
+	if (!atNative)
+	{
+		return (effective < 1) ? 1 : effective;
+	}
+	if ((canvasW < 1) || (displayH < 1))
+	{
+		return 1;
+	}
+	byWidth = targetW / canvasW;
+	byHeight = targetH / displayH;
+	factor = (byWidth < byHeight) ? byWidth : byHeight;
+	return (factor < 1) ? 1 : factor;
+}
+
+// Once per frame, before the first binding: this frame's factor.
+internal void NativeRenderLayer_ReadCharFactor(void)
+{
+	int displayH = activeDispEnv.disp.h;
+
+	s_nrCharFactorHeldNow = 0;
+	s_nrCharFactorNative = NativeRenderer_ResolutionIsNative();
+	if (!s_nrCharFactorNative)
+	{
+		s_nrCharFactor = NativeRenderLayer_RuleFactor(0, NativeRenderer_GetEffectiveResolutionScale(), 0, 0, 0, 0);
+		s_nrCharFactorTargetW = 0;
+		s_nrCharFactorTargetH = 0;
+		return;
+	}
+
+	// The display height as the renderer takes it (the draw clip while no
+	// display environment exists yet).
+	if (displayH <= 0)
+	{
+		displayH = activeDrawEnv.clip.h;
+	}
+	NativeRenderer_GetMainTargetSize(&s_nrCharFactorTargetW, &s_nrCharFactorTargetH);
+	s_nrCharFactor = NativeRenderLayer_RuleFactor(1, 0, s_nrCharFactorTargetW, s_nrCharFactorTargetH, CTR_Canvas_ActiveWidth(), displayH);
+}
+
+// Asked by a seat or the preview that passed every other gate: 1 = bind it
+// natively, 0 = factor 1, leave it to the CMDL (counted).
+internal int NativeRenderLayer_CharFactorAllows(int preview)
+{
+	const int on = (s_nrCharFactor >= 2);
+	const int key = s_nrCharFactor + (s_nrCharFactorNative ? 100 : 0);
+
+	if (key != s_nrCharFactorLoggedKey)
+	{
+		s_nrCharFactorLoggedKey = key;
+		if (s_nrCharFactorNative)
+		{
+			Platform_Log("[CTR RenderLayer] native chars %s at factor %d (NATIVE, target %dx%d)%s at vblank %d\n", on ? "on" : "off", s_nrCharFactor,
+			             s_nrCharFactorTargetW, s_nrCharFactorTargetH, on ? "" : " (drawn by CMDL)", Platform_GetVBlankCount());
+		}
+		else
+		{
+			Platform_Log("[CTR RenderLayer] native chars %s at factor %d%s at vblank %d\n", on ? "on" : "off", s_nrCharFactor, on ? "" : " (drawn by CMDL)",
+			             Platform_GetVBlankCount());
+		}
+	}
+
+	if (on)
+	{
+		return 1;
+	}
+	if (!s_nrCharFactorHeldNow)
+	{
+		s_nrCharFactorHeldNow = 1;
+		s_nrCharFactorCnt.frames++;
+	}
+	if (preview)
+	{
+		s_nrCharFactorCnt.previewFrames++;
+	}
+	else
+	{
+		s_nrCharFactorCnt.seatFrames++;
+	}
+	return 0;
+}
+
+// Once per frame from the pull, before the probe's binding, only with
+// --native-preview: which custom models are drawn natively this frame. Every
+// change of a seat goes into the log once. Writes nothing but this file's
+// statics.
+internal void NativeRenderLayer_BindChars(const struct GameTracker *gGT)
+{
+	const char *why = NULL;
+	int seat;
+
+	NativeRenderLayer_CloseCharFrames();
+	NativeRenderLayer_ReadCharFactor();
+	s_nrCharCount = 0;
+
+	if (gGT == NULL)
+	{
+		why = "no game tracker";
+	}
+	else if (((u32)gGT->gameMode1 & MAIN_MENU) != 0)
+	{
+		why = "main menu";
+	}
+	else
+	{
+		why = NativeChar_ModeRefusal(gGT);
+	}
+
+	for (seat = 0; seat < NATIVE_RENDER_LAYER_DRIVERS; seat++)
+	{
+		const char *seatWhy = why;
+		const struct Model *model = NULL;
+		const struct NativeCharGpu *gpu = NULL;
+
+		if (seatWhy == NULL)
+		{
+			model = NativeChar_SeatModel(seat);
+			gpu = NativeCharGpu_ForSeat(seat);
+
+			if (model == NULL)
+			{
+				seatWhy = "no custom model";
+			}
+			else if (s_nrSeatState[seat] != NR_SEAT_READY)
+			{
+				seatWhy = (s_nrSeatState[seat] == NR_SEAT_LOADING) ? "loading" : "seat not ready";
+			}
+			else if (s_nrSeatInst[seat]->model != model)
+			{
+				seatWhy = "the instance has another model";
+			}
+			else if (gpu == NULL)
+			{
+				seatWhy = "no native set";
+			}
+			else if (!NativeRenderLayer_CharFactorAllows(0))
+			{
+				// Last, so the rule only speaks for a seat that would bind.
+				seatWhy = "factor 1";
+			}
+		}
+
+		if (seatWhy != NULL)
+		{
+			if (s_nrCharSeatBound[seat])
+			{
+				Platform_Log("[CTR RenderLayer] native char unbound: seat %d (%s)\n", seat, seatWhy);
+				s_nrCharSeatBound[seat] = 0;
+				s_nrCharSeam[seat].haveLast = 0;
+			}
+			continue;
+		}
+
+		if (!s_nrCharSeatBound[seat])
+		{
+			Platform_Log("[CTR RenderLayer] native char bound: seat %d model id %d (%s)\n", seat, (int)model->id, NativeChar_SeatFile(seat));
+			s_nrCharSeatBound[seat] = 1;
+			s_nrCharSeam[seat].haveLast = 0;
+		}
+
+		if (NativeRenderLayer_CharIndex(model) < 0)
+		{
+			s_nrChar[s_nrCharCount].model = model;
+			s_nrChar[s_nrCharCount].gpu = gpu;
+			s_nrCharCount++;
+		}
+
+		s_nrCharSeatFrame[seat].live = (gGT->renderFlags & RENDER_FLAG_RENDER_BUCKET) != 0;
+	}
+
+	if (s_nrCharCount > 0)
+	{
+		s_nrCharCnt.boundFrames++;
+		s_nrPreviewCnt.raceFrames++;
+		s_nrCharFrame0.live = (gGT != NULL) && ((gGT->renderFlags & RENDER_FLAG_RENDER_BUCKET) != 0);
+	}
+	else if ((gGT != NULL) && (why != NULL) && (((u32)gGT->gameMode1 & MAIN_MENU) == 0) && (strcmp(why, "no game tracker") != 0))
+	{
+		// A mode the funnel refuses, with a custom character in play: counted
+		// by kind (5c - no native driver there).
+		int any = 0;
+
+		for (seat = 0; seat < NATIVE_RENDER_LAYER_DRIVERS; seat++)
+		{
+			any |= (NativeChar_SeatModel(seat) != NULL);
+		}
+		if (any)
+		{
+			if (strcmp(why, "adventure") == 0)
+			{
+				s_nrPreviewCnt.refusedAdventure++;
+			}
+			else if (strcmp(why, "cutscene") == 0)
+			{
+				s_nrPreviewCnt.refusedCutscene++;
+			}
+			else
+			{
+				s_nrPreviewCnt.refusedOther++;
+			}
+		}
+	}
+}
+
+// --- Step 5a: the driver select preview drawn natively -------------------------
+//
+// THE PREVIEW (NativeRenderLayer_BindPreview, every frame from the pull right
+// after BindChars, only with --native-preview): in the main menu while the
+// driver select runs, a change of the wanted preview tile
+// (MM_NativeCharGrid_PreviewDesiredEntry) to a custom entry loads its native
+// part and its GPU set - the one loading point of the preview, at the cursor
+// step, in a menu frame, never in a race frame. The entry the preview window
+// shows (MM_NativeCharGrid_PreviewCurrentEntry) is bound like a seat model in
+// s_nrChar when its set is ready and seat 0's instance carries its model; the
+// route then takes it through the gates of 4c. Leaving the driver select (or
+// the menu) lets the preview go. No menu box, no game state: the two MMG
+// functions only read.
+
+int MM_NativeCharGrid_PreviewDesiredEntry(void);
+int MM_NativeCharGrid_PreviewCurrentEntry(void);
+
+
+internal void NativeRenderLayer_BindPreview(const struct GameTracker *gGT)
+{
+	const int inMenu = (gGT != NULL) && (((u32)gGT->gameMode1 & MAIN_MENU) != 0);
+	const int loading = (sdata->Loading.stage != LOAD_IDLE) || ((gGT != NULL) && (((u32)gGT->gameMode1 & LOADING) != 0));
+	const char *why = NULL;
+	int current = -2;
+
+	if (!inMenu)
+	{
+		why = "not in the menu";
+		NativeChar_ReleasePreview();
+	}
+	else if (loading)
+	{
+		// The menu overlay may be on its way; no question to the driver select.
+		why = "loading";
+	}
+	else
+	{
+		const int desired = MM_NativeCharGrid_PreviewDesiredEntry();
+
+		current = MM_NativeCharGrid_PreviewCurrentEntry();
+		if (desired == -2)
+		{
+			why = "driver select not running";
+			NativeChar_ReleasePreview();
+			s_nrPreviewWhyEntry = -1;
+		}
+		else if ((desired >= 0) && (desired != NativeChar_PreviewEntry()))
+		{
+			// The cursor stepped onto another custom tile: read and upload now,
+			// timed from here (the read and the upload, for the line).
+			const u64 started = SDL_GetPerformanceCounter();
+
+			NativeChar_HoldPreview(desired);
+			NativeCharGpu_LoadPreview(desired, started);
+		}
+	}
+
+	if (why == NULL)
+	{
+		const struct NativeCharGpu *gpu = NULL;
+		const struct Model *model = NULL;
+
+		if (current < 0)
+		{
+			why = "no custom tile";
+		}
+		else if ((gpu = NativeCharGpu_ForPreview(current)) == NULL)
+		{
+			why = "no native set";
+		}
+		else if ((s_nrSeatState[0] != NR_SEAT_READY) || (s_nrSeatInst[0] == NULL))
+		{
+			why = "seat not ready";
+		}
+		else if ((model = NativeChar_EntryModel(current)) != s_nrSeatInst[0]->model)
+		{
+			why = "the instance has another model";
+		}
+		else if (!NativeRenderLayer_CharFactorAllows(1))
+		{
+			why = "factor 1";
+		}
+		else
+		{
+			if (!s_nrPreviewBound || (s_nrPreviewBoundEntry != current))
+			{
+				Platform_Log("[CTR RenderLayer] native char preview bound: entry %d model id %d (%s) at vblank %d\n", current, (int)model->id,
+				             NativeChar_EntryFile(current), Platform_GetVBlankCount());
+				s_nrCharSeam[0].haveLast = 0;
+			}
+			s_nrPreviewBound = 1;
+			s_nrPreviewBoundEntry = current;
+			if ((NativeRenderLayer_CharIndex(model) < 0) && (s_nrCharCount < NATIVE_RENDER_LAYER_DRIVERS))
+			{
+				s_nrChar[s_nrCharCount].model = model;
+				s_nrChar[s_nrCharCount].gpu = gpu;
+				s_nrCharCount++;
+			}
+			s_nrPreviewCnt.frames++;
+			if (MM_NativeCharGrid_PreviewCurrentEntry() == -2)
+			{
+				s_nrPreviewCnt.outsideSelect++;
+			}
+			s_nrCharSeatFrame[0].live = (gGT->renderFlags & RENDER_FLAG_RENDER_BUCKET) != 0;
+			s_nrCharFrame0.live = s_nrCharSeatFrame[0].live;
+			return;
+		}
+	}
+
+	if (s_nrPreviewBound)
+	{
+		Platform_Log("[CTR RenderLayer] native char preview unbound (%s) at vblank %d\n", why, Platform_GetVBlankCount());
+		s_nrPreviewBound = 0;
+		s_nrPreviewBoundEntry = -1;
+	}
+	else if ((current >= 0) && (current != s_nrPreviewWhyEntry))
+	{
+		// A custom tile shown and not bound: the first reason, once per tile,
+		// so a preview that never binds says why.
+		Platform_Log("[CTR RenderLayer] native char preview not bound: entry %d (%s) at vblank %d\n", current, why, Platform_GetVBlankCount());
+		s_nrPreviewWhyEntry = current;
+	}
+}
+
+// The char part of the route, for an instance view of a bound custom model:
+// the gates of NativeRenderLayer_RouteProbe in the same order, then the item
+// (FillItem, FillPose, the units of the model, the pose, the native wheels)
+// and its marker. 1 = native, 0 = retail with the first reason counted.
+internal int NativeRenderLayer_CharFallback(int seat, enum NrProbeFallback reason)
+{
+	s_nrCharCnt.fallback[reason]++;
+	if ((seat >= 0) && (seat < NATIVE_RENDER_LAYER_DRIVERS))
+	{
+		s_nrCharSeatFrame[seat].lastFallback = s_nrProbeFallbackNames[reason];
+		s_nrCharSeatCnt[seat].fallback[reason]++;
+	}
+	return 0;
+}
+
+// The native wheels of a char item (WHLS): the middles of the file in model
+// units through the matrix of the body (KONGRUENZ), the mesh turned by the view
+// and the rotation of the instance and by the frame of the wheel pose
+// (platform/native_wheels.c, as the probe's wheels; the mesh has its size in
+// model units, no scale on it).
+internal void NativeRenderLayer_FillCharWheels(struct NrDrawItem *it, const struct Instance *inst, const struct PushBuffer *pb)
+{
+	const struct NativeWheelPose *pose = NativeWheels_PoseOf(inst);
+	const struct NativeCharGpu *gpu = it->gpu;
+	const MATRIX *vp = &pb->matrix_ViewProj;
+	const double s = ldexp(1.0, (int)it->mvpShift);
+	double turn[3][3];
+	int wheel;
+	int r;
+	int c;
+	int k;
+
+	it->nativeWheels = 0;
+	if ((pose == NULL) || (gpu == NULL) || !gpu->hasWheels)
+	{
+		return;
+	}
+
+	for (r = 0; r < 3; r++)
+	{
+		for (c = 0; c < 3; c++)
+		{
+			double sum = 0.0;
+
+			for (k = 0; k < 3; k++)
+			{
+				sum += (double)vp->m[r][k] * (double)inst->matrix.m[k][c];
+			}
+			turn[r][c] = sum / (4096.0 * 4096.0);
+		}
+	}
+
+	for (wheel = 0; wheel < NATIVE_WHEELS_COUNT; wheel++)
+	{
+		double m[3];
+
+		NativeCharGpu_WheelMiddle(gpu->wheelFront, gpu->wheelRear, wheel, m);
+		for (r = 0; r < 3; r++)
+		{
+			double t = (double)it->mvpT[r];
+
+			for (c = 0; c < 3; c++)
+			{
+				t += ((double)it->mvp[r][c] / 4096.0) * (m[c] * it->unitScale[c]);
+			}
+			it->wheelB[wheel][r] = t / s;
+
+			for (c = 0; c < 3; c++)
+			{
+				double sum = 0.0;
+
+				for (k = 0; k < 3; k++)
+				{
+					sum += turn[r][k] * pose->axis[wheel][k][c];
+				}
+				it->wheelA[wheel][r][c] = sum;
+			}
+		}
+	}
+
+	it->nativeWheels = 1;
+}
+
+// The line of --native-split-report (see above). frame y: the y half of the
+// packed frame origin, averaged with the next frame, as the split setup of
+// the queue reads it (RenderBucket_QueueExecute.c, the rawSplit setup).
+internal void NativeRenderLayer_SplitLine(int handler, const struct Instance *inst, const struct InstDrawPerPlayer *idpp)
+{
+	const int vblank = Platform_GetVBlankCount();
+	const struct ModelHeader *mh = idpp->mh;
+	const u32 selector = (u32)(size_t)inst->funcPtr[2];
+	const char *branch = "?";
+	const char *selectorName = "other";
+	int frameY = 0;
+
+	if (s_nrSplitLines >= 4)
+	{
+		if (((vblank % NATIVE_RENDER_LAYER_PROBE_LINE_STEP) != 0) || (vblank == s_nrSplitLineVBlank))
+		{
+			return;
+		}
+	}
+	else if (vblank == s_nrSplitLineVBlank)
+	{
+		return;
+	}
+	s_nrSplitLines++;
+	s_nrSplitLineVBlank = vblank;
+
+	if (((u32)idpp->unkF0 == (u32)RB_RETAIL_UNCOMPRESS_SPLIT) || ((u32)idpp->unkF0 == (u32)RB_RETAIL_UNCOMPRESS_REFLECT))
+	{
+		branch = "R";
+	}
+	else if (((u32)idpp->unkF0 == (u32)RB_RETAIL_UNCOMPRESS_NORMAL) || ((u32)idpp->unkF0 == (u32)RB_RETAIL_UNCOMPRESS_NEXTFRAME))
+	{
+		branch = "P";
+	}
+
+	if (selector == RB_RETAIL_INST_FUNC2_SPLIT_BOTH_MASK)
+	{
+		selectorName = "both-mask";
+	}
+	else if (selector == RB_RETAIL_INST_FUNC2_SPLIT_NEGATIVE)
+	{
+		selectorName = "negative";
+	}
+	else if (selector == RB_RETAIL_INST_FUNC2_SPLIT_XOR)
+	{
+		selectorName = "xor";
+	}
+	else if (selector == RB_RETAIL_INST_FUNC2_SPLIT_DIM_XOR)
+	{
+		selectorName = "dim-xor";
+	}
+
+	if (idpp->ptrCurrFrame != NULL)
+	{
+		frameY = (s16)(RenderBucket_PackedFrameXY(idpp->ptrCurrFrame, idpp->ptrNextFrame) >> 16);
+	}
+
+	Platform_Log("[CTR RenderLayer] native char split seat 0 at vblank %d: handler %s, branch %s, splitLine %d, vertSplit %d, t %d %d %d, up %d %d %d, "
+	             "inst scale %d %d %d, model scale %d %d %d, frame y %d, view z %d, selector %s, ranges %s\n",
+	             vblank, (handler == NATIVE_RENDER_LAYER_HANDLER_SPLIT) ? "split" : "special", branch, (int)idpp->splitLine, (int)inst->vertSplit,
+	             (int)inst->matrix.t[0], (int)inst->matrix.t[1], (int)inst->matrix.t[2], (int)inst->matrix.m[0][1], (int)inst->matrix.m[1][1],
+	             (int)inst->matrix.m[2][1], (int)inst->scale.x, (int)inst->scale.y, (int)inst->scale.z, (mh != NULL) ? (int)mh->scale.x : 0,
+	             (mh != NULL) ? (int)mh->scale.y : 0, (mh != NULL) ? (int)(u16)mh->scale.z : 0, frameY, (int)idpp->mvp.t[2], selectorName,
+	             ((idpp->otRangeSecondary != 0) && (idpp->otRangeSecondary != idpp->otRangeNormal)) ? "own" : "shared");
+}
+
+internal int NativeRenderLayer_RouteChar(int k, const struct Instance *inst, const struct InstDrawPerPlayer *idpp, const struct PushBuffer *pb)
+{
+	const struct GameTracker *gGT = sdata->gGT;
+	const int db = s_nrMarkerDb;
+	const int seat = NativeRenderLayer_SeatOfInst(inst);
+	const struct ModelHeader *mh = idpp->mh;
+	struct NrDrawItem *it;
+	struct NrCharSeam *seam;
+	int view = -1;
+	int index;
+	int notes;
+	int v;
+
+	// Only the instance of a bound seat; any other instance with the model
+	// (none is known) stays retail without a count.
+	if ((gGT == NULL) || (seat < 0) || (!s_nrCharSeatBound[seat] && !(s_nrPreviewBound && (seat == 0))))
+	{
+		return 0;
+	}
+
+	if (pb == &gGT->pushBuffer[0])
+	{
+		s_nrCharSeatFrame[seat].dispatched = 1;
+		s_nrCharSeatCnt[seat].dispatched++;
+	}
+
+	if ((u32)idpp->unkEC != (u32)RB_RETAIL_DRAWFUNC_NORMAL)
+	{
+		const int handler = NativeRenderLayer_HandlerIndex((u32)idpp->unkEC);
+
+		// Step 4e-1b: the raw values of the water line of seat 0.
+		if (g_cfg_nativeSplitReport && (seat == 0) &&
+		    ((handler == NATIVE_RENDER_LAYER_HANDLER_SPLIT) || ((handler == NATIVE_RENDER_LAYER_HANDLER_SPECIAL) && ((inst->flags & SPLIT_LINE) != 0))))
+		{
+			NativeRenderLayer_SplitLine(handler, inst, idpp);
+		}
+
+		// Step 4e-1: the water line, counted (only read: the labels the queue
+		// wrote, the instance's light words, the two ranges).
+		if (handler == NATIVE_RENDER_LAYER_HANDLER_SPLIT)
+		{
+			const u32 selector = (u32)(size_t)inst->funcPtr[2];
+
+			s_nrCharSplit.views++;
+			if (selector == RB_RETAIL_INST_FUNC2_SPLIT_BOTH_MASK)
+			{
+				s_nrCharSplit.bothMask++;
+			}
+			else if (selector == RB_RETAIL_INST_FUNC2_SPLIT_NEGATIVE)
+			{
+				s_nrCharSplit.negative++;
+			}
+			else if (selector == RB_RETAIL_INST_FUNC2_SPLIT_XOR)
+			{
+				s_nrCharSplit.xorSide++;
+			}
+			else if (selector == RB_RETAIL_INST_FUNC2_SPLIT_DIM_XOR)
+			{
+				s_nrCharSplit.dimXor++;
+			}
+			else
+			{
+				s_nrCharSplit.otherSelector++;
+			}
+			if ((inst->reflectionRGBA & 0x00ffffffu) != 0x7f7f7fu)
+			{
+				s_nrCharSplit.maskOff++;
+			}
+			if ((inst->specLightX & 31) == 1)
+			{
+				s_nrCharSplit.shift1++;
+			}
+			else
+			{
+				s_nrCharSplit.shiftOther++;
+			}
+			if ((idpp->otRangeSecondary != 0) && (idpp->otRangeSecondary != idpp->otRangeNormal))
+			{
+				s_nrCharSplit.secondaryOwn++;
+			}
+			else
+			{
+				s_nrCharSplit.secondaryShared++;
+			}
+		}
+		return NativeRenderLayer_CharFallback(seat, NativeRenderLayer_HandlerFallback(handler));
+	}
+	if (((inst->flags >> 16) & 7) != 0)
+	{
+		return NativeRenderLayer_CharFallback(seat, NR_PROBE_FALLBACK_WRITER);
+	}
+	if ((idpp->instFlags & PUSHBUFFER_EXISTS) != 0)
+	{
+		return NativeRenderLayer_CharFallback(seat, NR_PROBE_FALLBACK_DECAL_VIEW);
+	}
+	if (((u32)idpp->instFlags & RB_INSTANCE_SKIP_OT_RANGE) != 0)
+	{
+		return NativeRenderLayer_CharFallback(seat, NR_PROBE_FALLBACK_BORROWED_RANGE);
+	}
+	for (v = 0; v < NATIVE_RENDER_LAYER_VIEWS; v++)
+	{
+		if (pb == &gGT->pushBuffer[v])
+		{
+			view = v;
+			break;
+		}
+	}
+	if ((view < 0) || ((inst->flags & SCREENSPACE_INSTANCE) != 0))
+	{
+		return NativeRenderLayer_CharFallback(seat, NR_PROBE_FALLBACK_UI);
+	}
+	if ((idpp->otRangeNormal == 0) || (idpp->ptrCurrFrame == NULL) || (mh == NULL) || (mh->scale.x == 0) || (mh->scale.y == 0) ||
+	    ((u16)mh->scale.z == 0))
+	{
+		return NativeRenderLayer_CharFallback(seat, NR_PROBE_FALLBACK_NO_RANGE);
+	}
+	if (s_nrItemCount[db] >= NATIVE_RENDER_LAYER_ITEMS)
+	{
+		return NativeRenderLayer_CharFallback(seat, NR_PROBE_FALLBACK_ITEM_LIST_FULL);
+	}
+
+	index = s_nrItemCount[db];
+	it = &s_nrItems[db][index];
+	notes = NativeRenderLayer_FillItem(it, gGT, inst, idpp, pb, view);
+	NativeRenderLayer_FillPose(it, inst, idpp, pb);
+	it->kind = NR_ITEM_CHAR;
+	it->seat = (u8)seat;
+	it->gpu = s_nrChar[k].gpu;
+	it->unitScale[0] = 16384.0 / (double)mh->scale.x;
+	it->unitScale[1] = 16384.0 / (double)mh->scale.y;
+	it->unitScale[2] = 16384.0 / (double)(u16)mh->scale.z;
+
+	// The pose (renderer plan C.5.1): the frame the pull took, else the one
+	// idpp->ptrCurrFrame is.
+	{
+		int anim = it->poseDrawnAnim;
+		int frame = it->poseDrawn;
+		int pose;
+
+		if (!it->posePull || (frame < 0))
+		{
+			anim = it->poseCurrentAnim;
+			frame = it->poseCurrent;
+		}
+		pose = NativeCharGpu_PoseIndex(it->gpu->netPoseCount, anim, frame);
+		if (pose < 0)
+		{
+			pose = 0;
+			s_nrCharCnt.poseOutOfRange++;
+		}
+		it->pose = (u16)pose;
+	}
+
+	NativeRenderLayer_FillCharWheels(it, inst, pb);
+	s_nrItemCount[db]++;
+
+	if (!NativeRenderLayer_LinkMarker(idpp, (u32)index, 0))
+	{
+		s_nrItemCount[db]--;
+		return NativeRenderLayer_CharFallback(seat, NR_PROBE_FALLBACK_ARENA_FULL);
+	}
+
+	seam = &s_nrCharSeam[seat];
+	if ((notes & NR_ITEM_NEAR) != 0)
+	{
+		seam->nearDraws++;
+	}
+	else
+	{
+		seam->farDraws++;
+	}
+	if ((notes & NR_ITEM_HUGE) != 0)
+	{
+		seam->hugeDraws++;
+	}
+	if ((notes & NR_ITEM_SHIFT_OFF) != 0)
+	{
+		seam->shiftOff++;
+	}
+	if (it->cull != (u8)NATIVE_GFX_CULL_BACK)
+	{
+		seam->mirrored++;
+	}
+	{
+		s16 composed[3][3];
+
+		NativeRenderLayer_ComposeModelView(&pb->matrix_ViewProj, &idpp->m3x3, composed);
+		if (memcmp(composed, it->mvp, sizeof(composed)) != 0)
+		{
+			seam->composedOff++;
+		}
+	}
+	if (it->nativeWheels)
+	{
+		s_nrCharCnt.wheelItems++;
+	}
+
+	// The stamp the retail wheels of this view read (DrawTires runs after the
+	// queue in the same frame).
+	if (it->object < NATIVE_RENDER_LAYER_SLOTS)
+	{
+		s_nrCharViewFrame[it->object][view] = s_nrFrame;
+		s_nrCharViewWheels[it->object][view] = it->nativeWheels;
+	}
+
+	s_nrCharSeatFrame[seat].routed = 1;
+	if (view == 0)
+	{
+		s_nrCharSeatCnt[seat].routedNormal++;
+		s_nrCharFrame0.routed++;
+	}
+	return 1;
+}
+
+
 // THE MATRIX S, from the unit body to the PSX screen, homogeneous, rows in
 // S[row][column]. With view = (mvp.m / 4096 * g + mvp.t) / 2^shift for a point
 // g of the body, the rows give (H x + OFX z, H y + OFY z, zNear, z): divided by
@@ -2868,6 +3907,17 @@ void NativeRenderLayer_NoteRestore(void)
 		NativeRenderLayer_ForgetDepth();
 	}
 
+	// The custom characters let go as well (step 4c); the next pull binds
+	// anew. Only with one bound, so a run without one has no new line.
+	if (s_nrCharCount != 0)
+	{
+		Platform_Log("[CTR RenderLayer] native chars unbound (checkpoint restore)\n");
+		s_nrCharCount = 0;
+		memset(s_nrCharSeatBound, 0, sizeof(s_nrCharSeatBound));
+		s_nrPreviewBound = 0;
+		s_nrPreviewBoundEntry = -1;
+	}
+
 	// The seats of the pool before the restore are none of the restored pool:
 	// until the next pull reads them anew, no hook finds a seat.
 	NativeRenderLayer_ClearSeats();
@@ -2970,10 +4020,25 @@ void NativeRenderLayer_Pull(struct GameTracker *gGT)
 	// The probe binding, before the gate below: the retail wheels ask for the
 	// bound model in frames without the queue too, so a stale binding must not
 	// outlive the race (main menu, a load). Without --native-probe never runs.
+	// The custom characters drawn natively (step 4c), before the probe, whose
+	// depth wish then knows about them. Without --native-preview never runs.
+	if (g_cfg_nativePreview)
+	{
+		NativeRenderLayer_BindChars(gGT);
+		NativeRenderLayer_BindPreview(gGT);
+	}
+
 	if (g_cfg_nativeProbe != NATIVE_PROBE_NONE)
 	{
 		NativeRenderLayer_BindProbe(gGT);
 	}
+	else if ((s_nrCharCount > 0) || s_nrCharDepthWanted)
+	{
+		// Without the probe the depth of the main target follows the chars
+		// alone; only a change does anything.
+		NativeRenderer_WantNativeDepth(s_nrCharCount > 0);
+	}
+	s_nrCharDepthWanted = (s_nrCharCount > 0);
 
 	// The same gate as RenderBucket_QueueAllInstances: without the flag the
 	// queue does not run, and in a loading frame the pool may not be the one
@@ -3014,7 +4079,7 @@ void NativeRenderLayer_Pull(struct GameTracker *gGT)
 	// THE WHEEL POSES, only while the probe is on: every seat of this frame,
 	// moved on once per tick (platform/native_wheels.c). Reads the drivers the
 	// seat table checked; writes only that file's table.
-	if (NativeRenderLayer_ProbeActive())
+	if (NativeRenderLayer_ProbeActive() || (s_nrCharCount > 0))
 	{
 		for (seat = 0; seat < NATIVE_RENDER_LAYER_DRIVERS; seat++)
 		{
@@ -3158,21 +4223,38 @@ int NativeRenderLayer_Route(const struct Instance *inst, const struct InstDrawPe
 		NativeRenderLayer_EmptyMarker(inst, idpp, pb);
 	}
 
-	if (s_nativeModelCount == 0)
+	if ((s_nativeModelCount == 0) && (s_nrCharCount == 0))
 	{
 		return 0;
 	}
 
-	// The one native model is the bound probe; every other model is retail
-	// without a count. Counted on the way out, so "native" in the report
-	// counts exactly the answers that skip the retail handler, and route calls
-	// = switch entries + native.
-	if ((inst == NULL) || (idpp == NULL) || (pb == NULL) || (inst->model != s_probeModel))
+	// The native models are the bound probe and the bound custom models (step
+	// 4c); every other model is retail without a count. Counted on the way
+	// out, so "native" in the report counts exactly the answers that skip the
+	// retail handler, and route calls = switch entries + native.
+	if ((inst == NULL) || (idpp == NULL) || (pb == NULL))
 	{
 		return 0;
 	}
 
-	answer = NativeRenderLayer_RouteProbe(inst, idpp, pb);
+	if ((s_nativeModelCount != 0) && (inst->model == s_probeModel))
+	{
+		answer = NativeRenderLayer_RouteProbe(inst, idpp, pb);
+	}
+	else if (s_nrCharCount != 0)
+	{
+		const int k = NativeRenderLayer_CharIndex(inst->model);
+
+		if (k < 0)
+		{
+			return 0;
+		}
+		answer = NativeRenderLayer_RouteChar(k, inst, idpp, pb);
+	}
+	else
+	{
+		return 0;
+	}
 	if (answer != 0)
 	{
 		s_nrCount.native++;
@@ -3355,6 +4437,98 @@ void NativeRenderLayer_Report(void)
 			             s_nrCount.exhaustQuads);
 		}
 	}
+
+	// Step 4c, only in a run that made (or refused) a GPU set of a custom
+	// character: a run without one keeps the report it had.
+	if (NativeCharGpu_SetsMade() > 0u)
+	{
+		const unsigned long long *fb = s_nrCharCnt.fallback;
+		int seat;
+
+		Platform_Log("[CTR RenderLayer] at exit: native chars bound %llu frame(s), native draws %llu, frames with a native draw %llu, "
+		             "most in one frame and view %d, not drawn %llu, stale items %llu\n",
+		             s_nrCharCnt.boundFrames, s_nrCharCnt.draws, s_nrCharCnt.drawFrames, s_nrCharCnt.mostPerView, s_nrCharCnt.notDrawn,
+		             s_nrCount.probeStale);
+		Platform_Log("[CTR RenderLayer] at exit: native char fallbacks: normal alt %llu, split %llu, special %llu, reflection %llu, other %llu, "
+		             "writer %llu, decal view %llu, borrowed range %llu, ui %llu, no range %llu, item list full %llu, arena full %llu\n",
+		             fb[NR_PROBE_FALLBACK_NORMAL_ALT], fb[NR_PROBE_FALLBACK_SPLIT], fb[NR_PROBE_FALLBACK_SPECIAL], fb[NR_PROBE_FALLBACK_REFLECTION],
+		             fb[NR_PROBE_FALLBACK_OTHER], fb[NR_PROBE_FALLBACK_WRITER], fb[NR_PROBE_FALLBACK_DECAL_VIEW], fb[NR_PROBE_FALLBACK_BORROWED_RANGE],
+		             fb[NR_PROBE_FALLBACK_UI], fb[NR_PROBE_FALLBACK_NO_RANGE], fb[NR_PROBE_FALLBACK_ITEM_LIST_FULL], fb[NR_PROBE_FALLBACK_ARENA_FULL]);
+		Platform_Log("[CTR RenderLayer] at exit: native char poses: drawn %llu, drawn = current %llu, mismatched %llu, without a pull value %llu, "
+		             "still pose %llu, out of range %llu\n",
+		             s_nrCharCnt.poseDrawn, s_nrCharCnt.poseMatched, s_nrCharCnt.poseMismatched, s_nrCharCnt.poseWithoutPull, s_nrCharCnt.poseStill,
+		             s_nrCharCnt.poseOutOfRange);
+		Platform_Log("[CTR RenderLayer] at exit: native char wheels: items %llu, wheel draws %llu, not drawn %llu; retail wheel FT4 in native views %llu, "
+		             "in fallback views %llu\n",
+		             s_nrCharCnt.wheelItems, s_nrCharCnt.wheelDraws, s_nrCharCnt.wheelNotDrawn, s_nrCharCnt.tiresNative, s_nrCharCnt.tiresFallback);
+		for (seat = 0; seat < NATIVE_RENDER_LAYER_DRIVERS; seat++)
+		{
+			const struct NrCharSeam *seam = &s_nrCharSeam[seat];
+
+			if (seam->view0Draws == 0)
+			{
+				continue;
+			}
+			Platform_Log("[CTR RenderLayer] at exit: native char seat %d shift: near %llu, far %llu, huge %llu, shift check off %llu, mirrored %llu, "
+			             "composed matrix off %llu, changes between neighbouring native frames %llu (near to far %llu, far to near %llu), after a gap %llu, "
+			             "depth jump at a change max %.2f percent (vblank %d, w %.1f to %.1f, ratio %.4f), depth step without a change max %.2f percent "
+			             "over %llu pair(s)\n",
+			             seat, seam->nearDraws, seam->farDraws, seam->hugeDraws, seam->shiftOff, seam->mirrored, seam->composedOff, seam->changes,
+			             seam->nearToFar, seam->farToNear, seam->afterGap, seam->jumpMax, seam->jumpVBlank, seam->jumpW0, seam->jumpW1,
+			             (seam->jumpW0 > 0.0) ? (seam->jumpW1 / seam->jumpW0) : 0.0, seam->stepMax, seam->stepPairs);
+		}
+		// Step 4f: per seat, and the frames of view 0 by their native draws.
+		for (seat = 0; seat < NATIVE_RENDER_LAYER_DRIVERS; seat++)
+		{
+			const struct NrCharSeatCounters *c = &s_nrCharSeatCnt[seat];
+			unsigned long long other = 0;
+			int f;
+
+			if ((c->dispatched == 0) && (c->draws == 0) && (c->notDrawn == 0))
+			{
+				continue;
+			}
+			for (f = 0; f < NR_PROBE_FALLBACKS; f++)
+			{
+				if ((f != NR_PROBE_FALLBACK_SPLIT) && (f != NR_PROBE_FALLBACK_REFLECTION))
+				{
+					other += c->fallback[f];
+				}
+			}
+			Platform_Log("[CTR RenderLayer] at exit: native char seat %d: dispatched %llu, routed normal %llu, native draws %llu, not drawn %llu, "
+			             "fallbacks split %llu reflection %llu other %llu\n",
+			             seat, c->dispatched, c->routedNormal, c->draws, c->notDrawn, c->fallback[NR_PROBE_FALLBACK_SPLIT],
+			             c->fallback[NR_PROBE_FALLBACK_REFLECTION], other);
+		}
+		Platform_Log("[CTR RenderLayer] at exit: native char frames by native draws in view 0: 0 %llu, 1 %llu, 2 %llu, 3 %llu, 4 %llu, 5 %llu, 6 %llu, "
+		             "7 %llu, 8 %llu; frames where draws != routed %llu\n",
+		             s_nrCharFramesByDraws[0], s_nrCharFramesByDraws[1], s_nrCharFramesByDraws[2], s_nrCharFramesByDraws[3], s_nrCharFramesByDraws[4],
+		             s_nrCharFramesByDraws[5], s_nrCharFramesByDraws[6], s_nrCharFramesByDraws[7], s_nrCharFramesByDraws[8], s_nrCharFramesDrawsOff);
+
+		// Step 4e-1: the water line, counted in the fallback.
+		Platform_Log("[CTR RenderLayer] at exit: native char split: frames %llu, accepted %llu, selector both-mask %llu, negative %llu, xor %llu, "
+		             "dim-xor %llu, other %llu, mask not 0x7f7f7f %llu\n",
+		             s_nrCharSplit.views, s_nrCharSplit.accepted, s_nrCharSplit.bothMask, s_nrCharSplit.negative, s_nrCharSplit.xorSide,
+		             s_nrCharSplit.dimXor, s_nrCharSplit.otherSelector, s_nrCharSplit.maskOff);
+		Platform_Log("[CTR RenderLayer] at exit: native char split shift: 1 %llu, other %llu; second range of its own %llu, shared %llu\n",
+		             s_nrCharSplit.shift1, s_nrCharSplit.shiftOther, s_nrCharSplit.secondaryOwn, s_nrCharSplit.secondaryShared);
+
+		// Step 5a/5c: where native characters were bound.
+		Platform_Log("[CTR RenderLayer] at exit: native char binds by mode: race %llu, preview %llu, refused adventure %llu, cutscene %llu, other %llu; "
+		             "preview outside the driver select %llu, preview box outside the clip %llu\n",
+		             s_nrPreviewCnt.raceFrames, s_nrPreviewCnt.frames, s_nrPreviewCnt.refusedAdventure, s_nrPreviewCnt.refusedCutscene,
+		             s_nrPreviewCnt.refusedOther, s_nrPreviewCnt.outsideSelect, s_nrPreviewCnt.boxOutsideClip);
+
+		// The factor rule: frames in which a seat or the preview would have
+		// bound and factor 1 left it to the CMDL (none of them is in the lines
+		// above - not bound, not routed, no fallback).
+		Platform_Log("[CTR RenderLayer] at exit: native chars at factor 1: frames %llu (drawn by CMDL), seat frames %llu, preview frames %llu; "
+		             "factor at exit %d%s\n",
+		             s_nrCharFactorCnt.frames, s_nrCharFactorCnt.seatFrames, s_nrCharFactorCnt.previewFrames, s_nrCharFactor,
+		             s_nrCharFactorNative ? " (NATIVE)" : "");
+
+		NativeCharGpu_ReportLine();
+	}
 }
 
 // Every frame from MainFrame_RegisterGpuLinkRanges, after the six ranges of
@@ -3442,6 +4616,20 @@ void NativeRenderLayer_TiresBegin(const struct Instance *inst, const struct Push
 	const struct GameTracker *gGT = sdata->gGT;
 
 	s_nrTires.active = 0;
+
+	// Step 4c: the retail wheels of a custom character drawn natively,
+	// counted per kind of view; 0 at once without one.
+	s_nrCharTiresActive = 0;
+	if ((s_nrCharCount != 0) && (inst != NULL) && (NativeRenderLayer_CharIndex(inst->model) >= 0) && (NativeRenderLayer_SeatOfInst(inst) >= 0))
+	{
+		int wheels = 0;
+
+		// "Native" by the stamp alone: a native view whose retail wheels get
+		// this far (its item had no native wheels) is one the counter names.
+		s_nrCharTiresActive = 1;
+		s_nrCharTiresNative = NativeRenderLayer_CharViewStamp(inst, pb, &wheels);
+	}
+
 	if ((s_nativeModelCount == 0) || (inst == NULL) || (inst != s_probeInst) || (gGT == NULL))
 	{
 		return;
@@ -3473,6 +4661,18 @@ void NativeRenderLayer_TiresCorners(int wheelIndex, const s32 sxy[4])
 
 void NativeRenderLayer_TiresPrimitive(void)
 {
+	if (s_nrCharTiresActive)
+	{
+		if (s_nrCharTiresNative)
+		{
+			s_nrCharCnt.tiresNative++;
+		}
+		else
+		{
+			s_nrCharCnt.tiresFallback++;
+		}
+	}
+
 	if (!s_nrTires.active)
 	{
 		return;
@@ -3502,6 +4702,7 @@ void NativeRenderLayer_TiresEnd(void)
 	int wheel;
 
 	s_nrTires.active = 0;
+	s_nrCharTiresActive = 0;
 
 	if (!tires.active || tires.reflection || !tires.view0 || !g_cfg_nativeWheelReport || !s_nrWheelSample || s_nrWheelRetailDone)
 	{
@@ -3604,6 +4805,76 @@ void NativeRenderLayer_NoteParticleQuad(const struct Particle *particle, const s
 	s_nrCount.exhaustQuads++;
 }
 
+// --native-hide-exhaust (main.c, only with --dev; measuring only, never saved):
+// the colour checks of the native probe run once without the exhaust glow, the
+// reference run and the probe run alike. Set in the first loop of main.
+int g_cfg_nativeHideExhaust = 0;
+
+// Quads left out by --native-hide-exhaust, per icon group, for the exit line.
+static struct
+{
+	unsigned long long group1;
+	unsigned long long group7;
+	unsigned long long group8;
+} s_nrHiddenExhaust;
+
+// HIDING THE EXHAUST, from game/Particle.c, Particle_RenderList, for every
+// normal particle quad just written, before it is linked. 1 = the quad is not
+// linked into the ordering table (the caller still moves its cursors past it),
+// 0 = linked as always. Without the switch it is always 0 and nothing else
+// happens. With it, every seat and every view: a particle that draws in the
+// range of its driver (PARTICLE_SET_COLOR_FLAG_DRIVER_LOCAL, with an owner)
+// with the icons of the exhaust - icon group 1, or 7 under water
+// (game/Vehicle/VehEmitter.c:6-7, 102, 128, 132, 146), or 8, which an
+// underwater exhaust particle takes for its last bubble pop
+// (game/Particle.c, Particle_FuncPtr_ExhaustUnderwater). The burn smoke
+// (game/Vehicle/VehFrame.c:12, 88-95) has the same icon group, the same flag
+// and an owner and is hidden with it. Other particles of groups 1 and 7 (potion
+// shatter, orca splash, warp pad dust, tube bubbles) have no
+// PARTICLE_SET_COLOR_FLAG_DRIVER_LOCAL and stay. Only reads the particle and
+// counts in host memory.
+int NativeRenderLayer_HideExhaustQuad(const struct Particle *particle)
+{
+	const struct GameTracker *gGT = sdata->gGT;
+	const struct IconGroup *group;
+
+	if (!g_cfg_nativeHideExhaust || (particle == NULL) || (gGT == NULL) || ((particle->flagsSetColor & PARTICLE_SET_COLOR_FLAG_DRIVER_LOCAL) == 0) ||
+	    (particle->owner.driverInst == NULL) || (particle->ptrIconGroup == NULL))
+	{
+		return 0;
+	}
+
+	group = particle->ptrIconGroup;
+	if (group == gGT->iconGroup[1])
+	{
+		s_nrHiddenExhaust.group1++;
+	}
+	else if (group == gGT->iconGroup[7])
+	{
+		s_nrHiddenExhaust.group7++;
+	}
+	else if (group == gGT->iconGroup[8])
+	{
+		s_nrHiddenExhaust.group8++;
+	}
+	else
+	{
+		return 0;
+	}
+
+	return 1;
+}
+
+// At exit, only in a run with --native-hide-exhaust (main.c registers it).
+void NativeRenderLayer_HideExhaustReport(void)
+{
+	Platform_Log("[CTR RenderLayer] at exit: exhaust quads not drawn %llu (icon group 1: %llu, 7: %llu, 8: %llu)\n",
+	             s_nrHiddenExhaust.group1 + s_nrHiddenExhaust.group7 + s_nrHiddenExhaust.group8, s_nrHiddenExhaust.group1, s_nrHiddenExhaust.group7,
+	             s_nrHiddenExhaust.group8);
+}
+
+internal float NativeRenderLayer_DepthTint(const struct NrDrawItem *it);
+
 // THE WHEEL DRAWS of the form wheels: per wheel its two halves (platform/
 // native_probe.c), each through the renderer's probe draw with a matrix of its
 // own - the screen mapping of NativeRenderLayer_ItemMatrix (H, half the view
@@ -3656,6 +4927,7 @@ internal void NativeRenderLayer_DrawWheels(const struct NrDrawItem *it, int body
 			}
 			draw.cull = (int)it->cull;
 			draw.clearDepth = 0;
+			draw.depthTint = NativeRenderLayer_DepthTint(it);
 			draw.vertices = NativeProbe_WheelVertices(half);
 			draw.vertexRegion = bodyRegion + 1 + (wheel * NATIVE_PROBE_WHEEL_HALVES) + half;
 
@@ -3669,6 +4941,578 @@ internal void NativeRenderLayer_DrawWheels(const struct NrDrawItem *it, int body
 			}
 		}
 	}
+}
+
+
+// --- Step 4c: drawing a char item --------------------------------------------
+
+// The screen matrix of a map view = A u + b (true view units), as
+// NativeRenderLayer_ItemMatrix builds it for the probe body.
+internal void NativeRenderLayer_ScreenFromView(const struct NrDrawItem *it, const double A[3][3], const double b[3], double ofsX, double ofsY, double S[4][4])
+{
+	const double H = (double)it->H;
+	const double ofx = (double)(it->rectW >> 1) + ofsX;
+	const double ofy = (double)(it->rectH >> 1) + ofsY;
+	const double zNear = H / 8.0;
+	int c;
+
+	for (c = 0; c < 3; c++)
+	{
+		S[0][c] = (H * A[0][c]) + (ofx * A[2][c]);
+		S[1][c] = (H * A[1][c]) + (ofy * A[2][c]);
+		S[2][c] = 0.0;
+		S[3][c] = A[2][c];
+	}
+	S[0][3] = (H * b[0]) + (ofx * b[2]);
+	S[1][3] = (H * b[1]) + (ofy * b[2]);
+	S[2][3] = zNear;
+	S[3][3] = b[2];
+}
+
+// THE MATRIX OF A CHAR ITEM: from model units (the CNET positions) to the
+// screen. view = (mvp.m / 4096 * g + mvp.t) / 2^shift with g = model x 16384 /
+// mh->scale per axis, the vertex input units of the queue; the origin of the
+// model units is the model's own.
+internal void NativeRenderLayer_CharItemMatrix(const struct NrDrawItem *it, double ofsX, double ofsY, double S[4][4])
+{
+	const double s = ldexp(1.0, (int)it->mvpShift);
+	double A[3][3];
+	double b[3];
+	int r;
+	int c;
+
+	for (r = 0; r < 3; r++)
+	{
+		for (c = 0; c < 3; c++)
+		{
+			A[r][c] = (((double)it->mvp[r][c] / 4096.0) * it->unitScale[c]) / s;
+		}
+		b[r] = (double)it->mvpT[r] / s;
+	}
+	NativeRenderLayer_ScreenFromView(it, A, b, ofsX, ofsY, S);
+}
+
+internal void NativeRenderLayer_GrowBox(int box[4], const int add[4], int *have)
+{
+	if (!*have)
+	{
+		memcpy(box, add, sizeof(int) * 4u);
+		*have = 1;
+		return;
+	}
+	box[0] = (add[0] < box[0]) ? add[0] : box[0];
+	box[1] = (add[1] < box[1]) ? add[1] : box[1];
+	box[2] = (add[2] > box[2]) ? add[2] : box[2];
+	box[3] = (add[3] > box[3]) ? add[3] : box[3];
+}
+
+// A box in view space (middle +- extent per axis) through the screen mapping
+// of the split; 0 when a corner lies behind the eye.
+internal int NativeRenderLayer_ViewBox(const struct NrDrawItem *it, const double middle[3], const double extent[3], double ofsX, double ofsY, int box[4])
+{
+	const double H = (double)it->H;
+	const double ofx = (double)(it->rectW >> 1) + ofsX;
+	const double ofy = (double)(it->rectH >> 1) + ofsY;
+	double lo[2] = {0.0, 0.0};
+	double hi[2] = {0.0, 0.0};
+	int corner;
+
+	for (corner = 0; corner < 8; corner++)
+	{
+		const double x = middle[0] + ((((corner & 1) != 0) ? 1.0 : -1.0) * extent[0]);
+		const double y = middle[1] + ((((corner & 2) != 0) ? 1.0 : -1.0) * extent[1]);
+		const double z = middle[2] + ((((corner & 4) != 0) ? 1.0 : -1.0) * extent[2]);
+		double sx;
+		double sy;
+
+		if (z <= 0.0)
+		{
+			return 0;
+		}
+		sx = ofx + ((H * x) / z);
+		sy = ofy + ((H * y) / z);
+		if ((corner == 0) || (sx < lo[0]))
+		{
+			lo[0] = sx;
+		}
+		if ((corner == 0) || (sy < lo[1]))
+		{
+			lo[1] = sy;
+		}
+		if ((corner == 0) || (sx > hi[0]))
+		{
+			hi[0] = sx;
+		}
+		if ((corner == 0) || (sy > hi[1]))
+		{
+			hi[1] = sy;
+		}
+	}
+	box[0] = (int)floor(lo[0]);
+	box[1] = (int)floor(lo[1]);
+	box[2] = (int)ceil(hi[0]);
+	box[3] = (int)ceil(hi[1]);
+	return 1;
+}
+
+// The CNET hull of a char item on the screen (model units through S).
+internal int NativeRenderLayer_CharBodyBox(const struct NrDrawItem *it, const double S[4][4], int box[4])
+{
+	const double lo[3] = {(double)it->gpu->hullMin[0], (double)it->gpu->hullMin[1], (double)it->gpu->hullMin[2]};
+	const double hi[3] = {(double)it->gpu->hullMax[0], (double)it->gpu->hullMax[1], (double)it->gpu->hullMax[2]};
+
+	return NativeRenderLayer_ProjectBox(S, lo, hi, box);
+}
+
+// THE BOX LINE of a char item, on the line spacing, only with
+// --native-layer-report, one per seat and VBlank: the body (CNET hull), the
+// hull of the retail model, the retail wheels of the reference run, the native
+// wheels (middle +- radius + half width + 2 per axis in view space), their
+// union and the middle of the back of the body.
+internal void NativeRenderLayer_CharBoxLine(const struct NrDrawItem *it, const double S[4][4], double ofsX, double ofsY)
+{
+	const int vblank = Platform_GetVBlankCount();
+	struct NrCharSeam *seam = &s_nrCharSeam[it->seat];
+	double hullLo[3];
+	double hullHi[3];
+	int box[4];
+	int hull[4];
+	int wheels[4] = {0, 0, 0, 0};
+	int native[4] = {0, 0, 0, 0};
+	int all[4] = {0, 0, 0, 0};
+	int haveWheels = 0;
+	int haveNative = 0;
+	int haveAll = 0;
+	double centerX = 0.0;
+	double centerY = 0.0;
+	int known;
+	int axis;
+	int wheel;
+	char nativeText[64];
+
+	if (!g_cfg_nativeLayerReport || ((vblank % NATIVE_RENDER_LAYER_PROBE_LINE_STEP) != 0) || (vblank == seam->boxLineVBlank))
+	{
+		return;
+	}
+	seam->boxLineVBlank = vblank;
+
+	for (axis = 0; axis < 3; axis++)
+	{
+		hullLo[axis] = (double)it->hullMin[axis] / it->unitScale[axis];
+		hullHi[axis] = ((double)it->hullMin[axis] + (double)NATIVE_RENDER_LAYER_HULL_SIZE) / it->unitScale[axis];
+	}
+
+	known = NativeRenderLayer_CharBodyBox(it, S, box) && NativeRenderLayer_ProjectBox(S, hullLo, hullHi, hull) &&
+	        NativeRenderLayer_ProjectUnit(S, ((double)it->gpu->hullMin[0] + (double)it->gpu->hullMax[0]) * 0.5,
+	                                      ((double)it->gpu->hullMin[1] + (double)it->gpu->hullMax[1]) * 0.5, (double)it->gpu->hullMin[2], &centerX,
+	                                      &centerY) &&
+	        (it->wheels != 0);
+
+	for (wheel = 0; known && (wheel < 4); wheel++)
+	{
+		const double middle[3] = {(double)it->wheelView[wheel][0], (double)it->wheelView[wheel][1], (double)it->wheelView[wheel][2]};
+		const double extent[3] = {(double)it->wheelExt[0], (double)it->wheelExt[1], (double)it->wheelExt[2]};
+		int one[4];
+
+		known = NativeRenderLayer_ViewBox(it, middle, extent, ofsX, ofsY, one);
+		if (known)
+		{
+			NativeRenderLayer_GrowBox(wheels, one, &haveWheels);
+		}
+	}
+
+	if (!known)
+	{
+		Platform_Log("[CTR RenderLayer] native char seat %d at vblank %d: native, box unknown\n", (int)it->seat, vblank);
+		return;
+	}
+
+	NativeRenderLayer_GrowBox(all, box, &haveAll);
+	NativeRenderLayer_GrowBox(all, hull, &haveAll);
+	NativeRenderLayer_GrowBox(all, wheels, &haveAll);
+
+	if (it->nativeWheels)
+	{
+		const double r = (double)it->gpu->wheelRadius + (double)it->gpu->wheelHalfWidth + 2.0;
+		const double extent[3] = {r, r, r};
+		int ok = 1;
+
+		for (wheel = 0; ok && (wheel < NATIVE_WHEELS_COUNT); wheel++)
+		{
+			int one[4];
+
+			ok = NativeRenderLayer_ViewBox(it, it->wheelB[wheel], extent, ofsX, ofsY, one);
+			if (ok)
+			{
+				NativeRenderLayer_GrowBox(native, one, &haveNative);
+			}
+		}
+		haveNative = ok && haveNative;
+	}
+
+	if (haveNative)
+	{
+		NativeRenderLayer_GrowBox(all, native, &haveAll);
+		snprintf(nativeText, sizeof(nativeText), "%d %d %d %d", native[0], native[1], native[2], native[3]);
+	}
+	else
+	{
+		snprintf(nativeText, sizeof(nativeText), "none");
+	}
+
+	Platform_Log("[CTR RenderLayer] native char seat %d at vblank %d: native, box %d %d %d %d, hull %d %d %d %d, wheels %d %d %d %d, "
+	             "native wheels %s, union %d %d %d %d, center x %d\n",
+	             (int)it->seat, vblank, box[0], box[1], box[2], box[3], hull[0], hull[1], hull[2], hull[3], wheels[0], wheels[1], wheels[2], wheels[3],
+	             nativeText, all[0], all[1], all[2], all[3], (int)floor(centerX + 0.5));
+}
+
+// THE SEAM LINE (--native-seam-report): per native item of view 0, at most one
+// per seat and VBlank.
+internal void NativeRenderLayer_SeamLine(const char *kind, int seat, const struct NrDrawItem *it, double w, int knownBox, const int box[4], int *lastVBlank)
+{
+	const int vblank = Platform_GetVBlankCount();
+	const double zNear = (double)it->H / 8.0;
+	char side[16];
+	char boxText[64];
+
+	if (!g_cfg_nativeSeamReport || (vblank == *lastVBlank))
+	{
+		return;
+	}
+	*lastVBlank = vblank;
+
+	snprintf(side, sizeof(side), "%s%s", it->nearView ? "near" : "far", ((it->mvpShift == 0) && it->nearView) || (it->mvpShift < 0) ? " huge" : "");
+	if (knownBox)
+	{
+		snprintf(boxText, sizeof(boxText), "%d %d %d %d", box[0], box[1], box[2], box[3]);
+	}
+	else
+	{
+		snprintf(boxText, sizeof(boxText), "unknown");
+	}
+	Platform_Log("[CTR RenderLayer] seam at vblank %d: %s seat %d, view z %d, shift %d (%s), w %.3f, depth %.7f, box %s\n", vblank, kind, seat, (int)it->viewZ,
+	             (int)it->mvpShift, side, w, (w > 0.0) ? (zNear / w) : 0.0, boxText);
+}
+
+// The depth colour of --native-depth-tint for an item: 1024 / zNear.
+internal float NativeRenderLayer_DepthTint(const struct NrDrawItem *it)
+{
+	if (!g_cfg_nativeDepthTint || (it->H <= 0))
+	{
+		return 0.0f;
+	}
+	return (float)(1024.0 / ((double)it->H / 8.0));
+}
+
+internal void NativeRenderLayer_MatrixToDraw(const double S[4][4], float out[16])
+{
+	int r;
+	int c;
+
+	for (c = 0; c < 4; c++)
+	{
+		for (r = 0; r < 4; r++)
+		{
+			out[(c * 4) + r] = (float)S[r][c];
+		}
+	}
+}
+
+// THE DRAW OF A CHAR ITEM: the body (every material range, the pose by vertex
+// offset), then its four native wheels in the same split, the same depth (not
+// cleared again) and the same cull; then the counters, the seam and the box line.
+internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const RECT16 *clip, const DISPENV *dispenv, int onScreen, float ofsX, float ofsY)
+{
+	const struct NativeCharGpu *gpu = it->gpu;
+	const int view = (int)it->view;
+	const int seat = (int)it->seat;
+	struct NativeMeshRangeDraw ranges[NATIVE_CHAR_GPU_MATERIALS];
+	struct NativeMeshDraw mesh;
+	double S[4][4];
+	u32 r;
+	int firstInFrame;
+
+	if ((gpu == NULL) || (gpu->state != NATIVE_CHAR_GPU_READY) || (seat >= NATIVE_RENDER_LAYER_DRIVERS))
+	{
+		s_nrCharCnt.notDrawn++;
+		if (seat < NATIVE_RENDER_LAYER_DRIVERS)
+		{
+			s_nrCharSeatCnt[seat].notDrawn++;
+		}
+		return;
+	}
+
+	NativeRenderLayer_CharItemMatrix(it, (double)ofsX, (double)ofsY, S);
+
+	for (r = 0; r < gpu->rangeCount; r++)
+	{
+		const struct NativeCharRange *range = &gpu->range[r];
+		const int texture = gpu->materialTexture[range->material];
+		struct NativeMeshRangeDraw *out = &ranges[r];
+
+		out->firstIndex = range->firstIndex;
+		out->indexCount = range->indexCount;
+		out->texture = (texture >= 0) ? gpu->texture[texture] : NATIVE_GFX_INVALID;
+		out->srgb = (texture >= 0) ? (int)gpu->textureSrgb[texture] : 0;
+		memcpy(out->tint, gpu->materialTint[range->material], sizeof(out->tint));
+		out->alphaCutoff = range->mask ? 0.5f : 0.0f;
+	}
+
+	memset(&mesh, 0, sizeof(mesh));
+	NativeRenderLayer_MatrixToDraw(S, mesh.screenFromModel);
+	mesh.cull = (int)it->cull;
+	mesh.clearDepth = (s_nrDepthClearFrame[view] != s_nrFrame) ? 1 : 0;
+	mesh.vertexBuffer = gpu->bodyVB;
+	mesh.indexBuffer = gpu->bodyIB;
+	mesh.vertexOffset = (int)((u32)it->pose * gpu->vertexCount);
+	mesh.rangeCount = (int)gpu->rangeCount;
+	mesh.ranges = ranges;
+	mesh.depthTint = NativeRenderLayer_DepthTint(it);
+
+	if (NativeRenderer_DrawNativeMesh(&mesh, clip, dispenv, onScreen) == 0)
+	{
+		s_nrCharCnt.notDrawn++;
+		s_nrCharSeatCnt[seat].notDrawn++;
+		return;
+	}
+
+	s_nrCharCnt.draws++;
+	s_nrCharSeatCnt[seat].draws++;
+
+	// The preview window: its body box has to lie in the clip of the split
+	// (step 5a), in the same pixels (draw offset included) - counted only while
+	// the model rests: while D230.characterSelectModelMoveTimer[0] is not 0 the
+	// model flies out or in (game/230/MM_Characters.c:319-372 moves
+	// matrix.t[0] by the slide offset) and leaves the window on purpose. Only
+	// read.
+	if (s_nrPreviewBound && (seat == 0) && (clip != NULL) && (D230.characterSelectModelMoveTimer[0] == 0))
+	{
+		int box[4];
+
+		if (!NativeRenderLayer_CharBodyBox(it, S, box) || (box[0] < clip->x) || (box[1] < clip->y) || (box[2] > (clip->x + clip->w)) ||
+		    (box[3] > (clip->y + clip->h)))
+		{
+			s_nrPreviewCnt.boxOutsideClip++;
+		}
+	}
+	if (view == 0)
+	{
+		s_nrCharFrame0.drawn++;
+	}
+	s_nrCharSeatFrame[seat].drawn = 1;
+	if (mesh.clearDepth)
+	{
+		s_nrDepthClearFrame[view] = s_nrFrame;
+	}
+
+	// The wheels.
+	if (it->nativeWheels && (gpu->wheelVB != NATIVE_GFX_INVALID) && (gpu->wheelIB != NATIVE_GFX_INVALID))
+	{
+		struct NativeMeshRangeDraw wheelRange;
+		const int texture = gpu->materialTexture[gpu->wheelMaterial];
+		int wheel;
+
+		memset(&wheelRange, 0, sizeof(wheelRange));
+		wheelRange.firstIndex = 0;
+		wheelRange.indexCount = gpu->wheelIndexCount;
+		wheelRange.texture = (texture >= 0) ? gpu->texture[texture] : NATIVE_GFX_INVALID;
+		wheelRange.srgb = (texture >= 0) ? (int)gpu->textureSrgb[texture] : 0;
+		memcpy(wheelRange.tint, gpu->materialTint[gpu->wheelMaterial], sizeof(wheelRange.tint));
+		wheelRange.alphaCutoff = gpu->materialMask[gpu->wheelMaterial] ? 0.5f : 0.0f;
+
+		for (wheel = 0; wheel < NATIVE_WHEELS_COUNT; wheel++)
+		{
+			struct NativeMeshDraw w;
+			double W[4][4];
+
+			NativeRenderLayer_ScreenFromView(it, (const double(*)[3])it->wheelA[wheel], it->wheelB[wheel], (double)ofsX, (double)ofsY, W);
+			memset(&w, 0, sizeof(w));
+			NativeRenderLayer_MatrixToDraw(W, w.screenFromModel);
+			w.cull = (int)it->cull;
+			w.clearDepth = 0;
+			w.vertexBuffer = gpu->wheelVB;
+			w.indexBuffer = gpu->wheelIB;
+			w.vertexOffset = 0;
+			w.rangeCount = 1;
+			w.ranges = &wheelRange;
+			w.depthTint = mesh.depthTint;
+
+			if (NativeRenderer_DrawNativeMesh(&w, clip, dispenv, onScreen) != 0)
+			{
+				s_nrCharCnt.wheelDraws++;
+			}
+			else
+			{
+				s_nrCharCnt.wheelNotDrawn++;
+			}
+		}
+	}
+
+	if (s_nrCharViewDrawFrame[view] != s_nrFrame)
+	{
+		s_nrCharViewDrawFrame[view] = s_nrFrame;
+		s_nrCharViewDraws[view] = 0;
+	}
+	s_nrCharViewDraws[view]++;
+	if (s_nrCharViewDraws[view] > s_nrCharCnt.mostPerView)
+	{
+		s_nrCharCnt.mostPerView = s_nrCharViewDraws[view];
+	}
+
+	firstInFrame = (s_nrCharDrawFrame != s_nrFrame);
+	if (firstInFrame)
+	{
+		s_nrCharDrawFrame = s_nrFrame;
+		s_nrCharCnt.drawFrames++;
+	}
+
+	if (view == 0)
+	{
+		s_nrLastOfs[s_nrMarkerDb][0] = (double)ofsX;
+		s_nrLastOfs[s_nrMarkerDb][1] = (double)ofsY;
+		s_nrLastOfsKnown[s_nrMarkerDb] = 1;
+	}
+
+	// The poses and the seam, view 0, once per seat and frame.
+	if (view == 0)
+	{
+		struct NrCharSeam *seam = &s_nrCharSeam[seat];
+		const double mid[3] = {((double)gpu->hullMin[0] + (double)gpu->hullMax[0]) * 0.5, ((double)gpu->hullMin[1] + (double)gpu->hullMax[1]) * 0.5,
+		                       ((double)gpu->hullMin[2] + (double)gpu->hullMax[2]) * 0.5};
+		const double w = (S[3][0] * mid[0]) + (S[3][1] * mid[1]) + (S[3][2] * mid[2]) + S[3][3];
+		const int shift = (int)it->mvpShift;
+		const int neighbours = seam->haveLast && (seam->lastFrame == (s_nrFrame - 1u)) && (seam->lastW > 0.0);
+		int box[4];
+
+		if (seam->haveLast && (seam->lastFrame == s_nrFrame))
+		{
+			// A second item of the seat in the same frame and view: no new pair.
+		}
+		else
+		{
+			const int frameSame = (it->poseDrawn >= 0) && (it->poseDrawn == it->poseCurrent);
+			const int animSame = (it->poseDrawnAnim == it->poseCurrentAnim);
+
+			s_nrCharCnt.poseDrawn++;
+			if (!it->posePull)
+			{
+				s_nrCharCnt.poseWithoutPull++;
+			}
+			if (gpu->netPoseCount == 0u)
+			{
+				s_nrCharCnt.poseStill++;
+			}
+			if (it->posePull && frameSame && animSame)
+			{
+				s_nrCharCnt.poseMatched++;
+			}
+			else
+			{
+				s_nrCharCnt.poseMismatched++;
+			}
+
+			seam->view0Draws++;
+			if (seam->haveLast && (shift != seam->lastShift))
+			{
+				if (neighbours)
+				{
+					const double jump = (fabs(w - seam->lastW) / seam->lastW) * 100.0;
+
+					seam->changes++;
+					if (seam->lastNear && !it->nearView)
+					{
+						seam->nearToFar++;
+					}
+					else if (!seam->lastNear && it->nearView)
+					{
+						seam->farToNear++;
+					}
+					if (jump > seam->jumpMax)
+					{
+						seam->jumpMax = jump;
+						seam->jumpVBlank = Platform_GetVBlankCount();
+						seam->jumpW0 = seam->lastW;
+						seam->jumpW1 = w;
+					}
+				}
+				else
+				{
+					seam->afterGap++;
+				}
+			}
+			else if (neighbours && (shift == seam->lastShift) && (seam->lastW >= NR_DEPTH_STEP_LOW) && (seam->lastW <= NR_DEPTH_STEP_HIGH) &&
+			         (w >= NR_DEPTH_STEP_LOW) && (w <= NR_DEPTH_STEP_HIGH))
+			{
+				const double step = (fabs(w - seam->lastW) / seam->lastW) * 100.0;
+
+				seam->stepPairs++;
+				if (step > seam->stepMax)
+				{
+					seam->stepMax = step;
+				}
+			}
+
+			seam->lastFrame = s_nrFrame;
+			seam->haveLast = 1;
+			seam->lastShift = shift;
+			seam->lastNear = it->nearView;
+			seam->lastW = w;
+
+			NativeRenderLayer_SeamLine("char", seat, it, w, NativeRenderLayer_CharBodyBox(it, S, box), box, &seam->seamLineVBlank);
+			NativeRenderLayer_CharBoxLine(it, S, (double)ofsX, (double)ofsY);
+		}
+	}
+}
+
+// The stamp of this instance view: 1 when it was routed natively in this frame
+// (*wheels: whether that item drew native wheels), else 0. 0 at once while no
+// custom character is bound natively.
+internal int NativeRenderLayer_CharViewStamp(const struct Instance *inst, const struct PushBuffer *pb, int *wheels)
+{
+	const struct GameTracker *gGT;
+	int slot;
+	int view;
+
+	*wheels = 0;
+	if (s_nrCharCount == 0)
+	{
+		return 0;
+	}
+
+	gGT = sdata->gGT;
+	if ((gGT == NULL) || (inst == NULL) || (pb == NULL))
+	{
+		return 0;
+	}
+	slot = NativeRenderLayer_PoolSlot(&gGT->JitPools.instance, inst);
+	if ((slot < 0) || (slot >= NATIVE_RENDER_LAYER_SLOTS))
+	{
+		return 0;
+	}
+	for (view = 0; view < NATIVE_RENDER_LAYER_VIEWS; view++)
+	{
+		if (pb == &gGT->pushBuffer[view])
+		{
+			if (s_nrCharViewFrame[slot][view] != s_nrFrame)
+			{
+				return 0;
+			}
+			*wheels = s_nrCharViewWheels[slot][view];
+			return 1;
+		}
+	}
+	return 0;
+}
+
+// Step 4c, from game/DrawTires.c through NativeChar_ViewHidesWheels: a view
+// drawn natively WITH native wheels hides the retail ones. A native view
+// without native wheels (no wheel pose) keeps them, and TiresBegin counts
+// them as retail wheels in a native view.
+int NativeRenderLayer_CharViewNativeWheels(const struct Instance *inst, const struct PushBuffer *pb)
+{
+	int wheels = 0;
+
+	return NativeRenderLayer_CharViewStamp(inst, pb, &wheels) && wheels;
 }
 
 // THE NATIVE DRAW of one item, from NativeGpu_DrawNativeSplit in the order of
@@ -3696,6 +5540,12 @@ void NativeRenderLayer_DrawNativeItem(u32 item, const RECT16 *clip, const DISPEN
 	it = &s_nrItems[db][item];
 	view = (int)it->view;
 
+	if (it->kind == NR_ITEM_CHAR)
+	{
+		NativeRenderLayer_DrawCharItem(it, clip, dispenv, onScreen, ofsX, ofsY);
+		return;
+	}
+
 	NativeRenderLayer_ItemMatrix(it, (double)ofsX, (double)ofsY, S);
 
 	memset(&draw, 0, sizeof(draw));
@@ -3708,6 +5558,7 @@ void NativeRenderLayer_DrawNativeItem(u32 item, const RECT16 *clip, const DISPEN
 	}
 	draw.cull = (int)it->cull;
 	draw.clearDepth = (s_nrDepthClearFrame[view] != s_nrFrame) ? 1 : 0;
+	draw.depthTint = NativeRenderLayer_DepthTint(it);
 
 	// The form pose: the textured mesh shaped by the drawn frame (CPU morph into
 	// a static host array, read by the renderer at once), into the region of
@@ -3837,6 +5688,17 @@ void NativeRenderLayer_DrawNativeItem(u32 item, const RECT16 *clip, const DISPEN
 		s_nrDepthPrevValid = 1;
 		s_nrDepthLastShift = shift;
 		s_nrDepthHaveLast = 1;
+
+		// --native-seam-report: the line of this native frame of the probe.
+		if (g_cfg_nativeSeamReport)
+		{
+			const double bodyLo[3] = {-1.0, 0.0, -1.0};
+			const double bodyHi[3] = {1.0, 1.0, 1.0};
+			int box[4];
+			const int known = NativeRenderLayer_ProjectBox(S, bodyLo, bodyHi, box);
+
+			NativeRenderLayer_SeamLine("probe", g_cfg_nativeProbeSeat, it, z, known, box, &s_nrProbeSeamVBlank);
+		}
 
 		// The form pose, once per frame of view 0: was the frame drawn the
 		// frame of idpp->ptrCurrFrame, and how far FLOAT lies from KONGRUENZ.

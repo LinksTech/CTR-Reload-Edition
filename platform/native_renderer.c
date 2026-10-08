@@ -2462,7 +2462,8 @@ int NativeRenderer_DrawNativeProbe(const struct NativeLayerDraw *draw, const REC
 		// back to gamma first. 0, as before, for every other form.
 		block.params[0] = (s_probeTexture != NATIVE_GFX_INVALID) ? 1.0f : 0.0f;
 		block.params[1] = s_probeTextureSrgb ? 1.0f : 0.0f;
-		block.params[2] = 0.0f;
+		// params.z > 0: --native-depth-tint (0 for every other draw).
+		block.params[2] = draw->depthTint;
 		block.params[3] = 0.0f;
 	}
 
@@ -2546,6 +2547,155 @@ int NativeRenderer_DrawNativeProbe(const struct NativeLayerDraw *draw, const REC
 	}
 
 	return 1;
+}
+
+// A static vertex buffer of the "nr" layout, for the native meshes of step 4c
+// (platform/native_char_gpu.c). The layout is the probe's.
+NativeGfxBuffer NativeRenderer_CreateNativeMeshVertexBuffer(int bytes, const void *initial)
+{
+	extern int g_cfg_nativePreview;
+	const NativeGfxVertexBufferDesc desc = {
+	    .bytes = bytes,
+	    .dynamic = 0,
+	    .initial = initial,
+	    .stride = (int)sizeof(struct NativeProbeVertex),
+	    .attribCount = 3,
+	    .attribs = {
+	        {.slot = a_position, .components = 3, .type = NATIVE_GFX_ATTR_FLOAT32, .offset = offsetof(struct NativeProbeVertex, position)},
+	        {.slot = a_texcoord, .components = 2, .type = NATIVE_GFX_ATTR_FLOAT32, .offset = offsetof(struct NativeProbeVertex, texcoord)},
+	        {.slot = a_color, .components = 4, .type = NATIVE_GFX_ATTR_UNORM8, .offset = offsetof(struct NativeProbeVertex, color)},
+	    },
+	};
+
+	if (!g_cfg_nativePreview || (bytes <= 0))
+	{
+		return NATIVE_GFX_INVALID;
+	}
+	return NativeGfx_CreateVertexBuffer(&desc);
+}
+
+// ONE NATIVE MESH (step 4c), drawn into the split's place as the probe is -
+// the same calls in the same order as NativeRenderer_DrawNativeProbe (clip,
+// projection, the block's matrix, the depth clear of the split's box, draw
+// state, program), then one indexed draw per range with its own block (the
+// block is copied per draw into the frame's ring, so every draw keeps its own
+// tint and texture), and afterwards the same state reset. Slot 0 is put back
+// when a range bound a texture there.
+int NativeRenderer_DrawNativeMesh(const struct NativeMeshDraw *draw, const RECT16 *clip, const DISPENV *dispenv, int onScreen)
+{
+	struct NativeLayerUniforms block;
+	int textureBound = 0;
+	int drawn = 0;
+	int i;
+
+	if ((draw == NULL) || (s_nativeLayerShader == NATIVE_GFX_INVALID) || (clip->w <= 0) || (clip->h <= 0) || (draw->rangeCount <= 0) ||
+	    (draw->vertexBuffer == NATIVE_GFX_INVALID) || (draw->indexBuffer == NATIVE_GFX_INVALID))
+	{
+		return 0;
+	}
+	if (!onScreen || !NativeGfx_TargetDepth(s_mainRenderTarget))
+	{
+		return 0;
+	}
+
+	NativeRenderer_SetupClipMode(clip, dispenv, onScreen);
+	NativeRenderer_SetOffscreenState(clip, !onScreen);
+	NativeRenderer_SetProjection(clip, dispenv, !onScreen);
+
+	{
+		const float *p = s_psxUniforms.projection;
+		const float *s = draw->screenFromModel;
+
+		for (int column = 0; column < 4; column++)
+		{
+			const double s0 = (double)s[column * 4 + 0];
+			const double s1 = (double)s[column * 4 + 1];
+			const double s2 = (double)s[column * 4 + 2];
+			const double s3 = (double)s[column * 4 + 3];
+
+			block.clipFromModel[column * 4 + 0] = (float)((double)p[0] * s0 + (double)p[12] * s3);
+			block.clipFromModel[column * 4 + 1] = (float)((double)p[5] * s1 + (double)p[13] * s3);
+			block.clipFromModel[column * 4 + 2] = (float)s2;
+			block.clipFromModel[column * 4 + 3] = (float)s3;
+		}
+	}
+
+	if (draw->clearDepth)
+	{
+		int boxX = 0;
+		int boxY = 0;
+		int boxW = 0;
+		int boxH = 0;
+
+		NativeRenderer_ScissorBoxInForce(&boxX, &boxY, &boxW, &boxH);
+		NativeGfx_ClearDepth(boxX, boxY, boxW, boxH);
+	}
+
+	{
+		const NativeGfxDrawState state = {
+		    .depthTest = 1,
+		    .depthWrite = 1,
+		    .depthCompare = NATIVE_GFX_COMPARE_GREATER_OR_EQUAL,
+		    .cull = (NativeGfxCull)draw->cull,
+		    .colorWriteOff = NATIVE_GFX_COLOR_A,
+		};
+
+		NativeGfx_SetBlendMode(BM_NONE);
+		NativeGfx_SetDrawState(&state);
+		NativeGfx_BindProgram(s_nativeLayerShader);
+		NativeGfx_BindVertexBuffer(draw->vertexBuffer);
+		NativeGfx_BindIndexBuffer(draw->indexBuffer);
+
+		for (i = 0; i < draw->rangeCount; i++)
+		{
+			const struct NativeMeshRangeDraw *range = &draw->ranges[i];
+			const int textured = (range->texture != NATIVE_GFX_INVALID);
+
+			if ((range->indexCount == 0u) || (range->indexCount > 0x7FFFFFFFu))
+			{
+				continue;
+			}
+			if (textured)
+			{
+				NativeGfx_BindTexture(0, range->texture, NATIVE_GFX_FILTER_KEEP);
+				textureBound = 1;
+			}
+
+			block.tint[0] = range->tint[0];
+			block.tint[1] = range->tint[1];
+			block.tint[2] = range->tint[2];
+			block.tint[3] = range->tint[3];
+			block.params[0] = textured ? 1.0f : 0.0f;
+			block.params[1] = (textured && range->srgb) ? 1.0f : 0.0f;
+			block.params[2] = draw->depthTint;
+			block.params[3] = range->alphaCutoff;
+
+			NativeGfx_UpdateUniforms(s_nativeLayerShader, &block);
+			NativeGfx_DrawIndexed((int)range->firstIndex, (int)range->indexCount, draw->vertexOffset);
+			drawn++;
+		}
+	}
+
+	// Back to what the PSX path relies on, as after the probe.
+	NativeGfx_SetDrawState(NULL);
+	if (s_boundVertexBuffer >= 0)
+	{
+		NativeGfx_BindVertexBuffer(s_vertexBuffer[s_boundVertexBuffer]);
+	}
+	else
+	{
+		NativeGfx_BindVertexBuffer(NATIVE_GFX_INVALID);
+	}
+	s_previousShader = (ShaderID)-1;
+	s_previousBlendMode = BM_NONE;
+	NativeRenderer_MarkPSXUniformsDirty();
+
+	if (textureBound)
+	{
+		NativeGfx_BindTexture(0, (s_lastBoundTexture == (TextureID)-1) ? 0 : s_lastBoundTexture, NATIVE_GFX_FILTER_KEEP);
+	}
+
+	return drawn;
 }
 
 int NativeRenderer_InitialisePSX(void)

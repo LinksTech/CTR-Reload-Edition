@@ -735,6 +735,12 @@ global_variable const char *ctr_pack_pages_shader =
 // stored byte again for all 256 values, with almost half a step to spare
 // (checked in float32 by --native-tex-selftest). params.y = 0, the value every
 // existing caller writes, takes the other branch - the old statement, unchanged.
+//
+// params.w > 0: a masked material (step 4c) - a fragment whose alpha is below it
+// is discarded. params.z > 0: --native-depth-tint - the colour becomes (1, G, 1)
+// with G = params.z x depth = 1024 / w for params.z = 1024 / zNear, so a jump of
+// the depth shows as a jump of G. Both 0, as every draw writes without them:
+// neither branch is taken and the colour is the one of before.
 global_variable const char *ctr_native_layer_shader =
     "#ifdef VERTEX\n"
     "layout(location = 0) in vec3 a_position;\n"
@@ -771,6 +777,8 @@ global_variable const char *ctr_native_layer_shader =
     "			colour *= vec4(encoded, texel.a);\n"
     "		} else { colour *= texture(s_texture, v_uv); }\n"
     "	}\n"
+    "	if ((nrParams.w > 0.0) && (colour.a < nrParams.w)) { discard; }\n"
+    "	if (nrParams.z > 0.0) { colour = vec4(1.0, clamp(nrParams.z * gl_FragCoord.z, 0.0, 1.0), 1.0, 1.0); }\n"
     "	fragColor = colour;\n"
     "}\n"
     "#endif\n";

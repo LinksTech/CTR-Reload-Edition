@@ -11,6 +11,11 @@ void NativeChar_ClearSeats(void);
 // race frame. Returns at once without --native-preview --native-probe mips.
 int NativeRenderer_LoadProbeMipsTexture(int levelID);
 
+// From platform/native_char_gpu.c, further down as well: the GPU sets of the
+// custom seats armed just before (step 4c), uploaded at this loading screen.
+// Returns at once without --native-preview or without a held native part.
+void NativeCharGpu_LoadSeats(int levelID);
+
 #ifdef CTR_NATIVE
 // See game/LOAD/LOAD_File.c: declaration instead of a platform header, because this
 // file is part of the game's unity build.
@@ -542,6 +547,10 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 		// (PLYROBJECTLIST) are final here, and the drivers are born only after
 		// the load.
 		NativeChar_ArmSeats();
+
+		// Their native models go up right after, at the same loading screen:
+		// every pose, the indices and the textures of a bound seat (step 4c).
+		NativeCharGpu_LoadSeats(gGT->levelID);
 
 		// The driver's native texture goes up here, with the drivers of the
 		// race being loaded: the flag covers the screen, no race frame is

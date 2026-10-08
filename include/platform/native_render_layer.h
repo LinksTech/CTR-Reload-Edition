@@ -80,6 +80,11 @@ int NativeRenderLayer_ProbeActive(void);
 // unless --native-wheel-report keeps them on.
 int NativeRenderLayer_ModelHidesWheels(const struct Model *model);
 
+// Step 4c: 1 when this instance view (pb) of a custom character was drawn
+// natively in this frame with its own native wheels, else 0 - at once while
+// no custom character is bound natively.
+int NativeRenderLayer_CharViewNativeWheels(const struct Instance *inst, const struct PushBuffer *pb);
+
 // game/DrawTires.c, around the wheel set of one instance view (solid pass:
 // reflection 0, reflection pass: 1): the projected corners of each wheel as
 // DrawTires read them from the GTE, and each wheel quad it wrote. Only read and

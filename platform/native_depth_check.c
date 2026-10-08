@@ -36,6 +36,15 @@
 //                the seam a wrong shift leaves, and the proof that the test can
 //                fail.
 //
+// THE CUSTOM CHARACTER (step 4c). The same seam once more on the way of a
+// native custom character: the item filled the same way, its units the model's
+// (unitScale = 16384 / mh->scale per axis, NativeRenderLayer_RouteChar) and its
+// matrix NativeRenderLayer_CharItemMatrix, for two model scales - 0x1000 and an
+// odd one, 0x0ccd. Compared at a point of the model (0, 32, 0) and, for the
+// matrix part, the corners (+-20, 32, +-20) model units: step, rest and matrix
+// part below 0.1, 0.1 and 0.5 percent, a wrong shift about 300 and 75 percent.
+// Appended to the line; the part before it is word for word the old one.
+//
 // Its own file because it runs the queue's matrix steps, which use the
 // coprocessor: the render layer itself must not. Nothing of this runs in a
 // game; the switch returns before the window, like --gte-selftest. One line on
@@ -73,7 +82,7 @@ static double NativeDepthCheck_Matrix(const struct NrDrawItem *item, int shift)
 	return NativeDepthCheck_W(item, shift, 1.0, 0.5, 1.0) - NativeDepthCheck_W(item, shift, -1.0, 0.5, -1.0);
 }
 
-static void NativeDepthCheck_Place(int viewZ, int huge, struct NativeDepthCheckPoint *out)
+static void NativeDepthCheck_Place(int viewZ, int huge, int modelScale, struct NativeDepthCheckPoint *out)
 {
 	static struct GameTracker tracker;
 	static struct Instance inst;
@@ -124,9 +133,9 @@ static void NativeDepthCheck_Place(int viewZ, int huge, struct NativeDepthCheckP
 	inst.scale.y = 0x1400;
 	inst.scale.z = 0x1400;
 	inst.flags = huge ? DRAW_HUGE : 0;
-	mh.scale.x = 0x1800;
-	mh.scale.y = 0x1800;
-	mh.scale.z = 0x1800;
+	mh.scale.x = (s16)modelScale;
+	mh.scale.y = (s16)modelScale;
+	mh.scale.z = (s16)modelScale;
 
 	idpp.ptrCurrFrame = &frame;
 	idpp.ptrNextFrame = NULL;
@@ -158,8 +167,13 @@ static void NativeDepthCheck_Place(int viewZ, int huge, struct NativeDepthCheckP
 		RenderBucket_BuildMvp(&pb, &idpp, &projectionMvp);
 	}
 
-	// The render layer, as for a native draw in view 0 without a draw offset.
+	// The render layer, as for a native draw in view 0 without a draw offset;
+	// the units of a char item as NativeRenderLayer_RouteChar sets them (a
+	// probe item never reads them).
 	notes = NativeRenderLayer_FillItem(&out->item, &tracker, &inst, &idpp, &pb, 0);
+	out->item.unitScale[0] = 16384.0 / (double)mh.scale.x;
+	out->item.unitScale[1] = 16384.0 / (double)mh.scale.y;
+	out->item.unitScale[2] = 16384.0 / (double)(u16)mh.scale.z;
 	out->shiftHeld = (notes & NR_ITEM_SHIFT_OFF) == 0;
 	out->w = NativeDepthCheck_W(&out->item, out->item.mvpShift, 0.0, 0.5, 0.0);
 	out->matrix = NativeDepthCheck_Matrix(&out->item, out->item.mvpShift);
@@ -188,8 +202,8 @@ static void NativeDepthCheck_Pair(int huge, struct NativeDepthCheckPair *pair)
 	double nearW;
 	double farW;
 
-	NativeDepthCheck_Place(0x0FFF, huge, &pair->nearPoint);
-	NativeDepthCheck_Place(0x1000, huge, &pair->farPoint);
+	NativeDepthCheck_Place(0x0FFF, huge, 0x1800, &pair->nearPoint);
+	NativeDepthCheck_Place(0x1000, huge, 0x1800, &pair->farPoint);
 	nearItem = &pair->nearPoint.item;
 	farItem = &pair->farPoint.item;
 	nearW = pair->nearPoint.w;
@@ -206,6 +220,55 @@ static void NativeDepthCheck_Pair(int huge, struct NativeDepthCheckPair *pair)
 	pair->matrixWrongFar = (fabs(NativeDepthCheck_Matrix(farItem, nearShift) - pair->nearPoint.matrix) / fabs(pair->nearPoint.matrix)) * 100.0;
 }
 
+// w of a point of the model (model units) through the matrix of a char item,
+// with the shift given.
+static double NativeDepthCheck_CharW(const struct NrDrawItem *item, int shift, double mx, double my, double mz)
+{
+	struct NrDrawItem copy = *item;
+	double S[4][4];
+
+	copy.mvpShift = (s8)shift;
+	NativeRenderLayer_CharItemMatrix(&copy, 0.0, 0.0, S);
+	return (S[3][0] * mx) + (S[3][1] * my) + (S[3][2] * mz) + S[3][3];
+}
+
+static double NativeDepthCheck_CharMatrix(const struct NrDrawItem *item, int shift)
+{
+	return NativeDepthCheck_CharW(item, shift, 20.0, 32.0, 20.0) - NativeDepthCheck_CharW(item, shift, -20.0, 32.0, -20.0);
+}
+
+// The pair 0x0FFF / 0x1000 of a normal instance on the char way, model scale given.
+static void NativeDepthCheck_CharPair(int modelScale, struct NativeDepthCheckPair *pair)
+{
+	const struct NrDrawItem *nearItem;
+	const struct NrDrawItem *farItem;
+	double nearW;
+	double farW;
+	double nearM;
+	double farM;
+
+	NativeDepthCheck_Place(0x0FFF, 0, modelScale, &pair->nearPoint);
+	NativeDepthCheck_Place(0x1000, 0, modelScale, &pair->farPoint);
+	nearItem = &pair->nearPoint.item;
+	farItem = &pair->farPoint.item;
+	nearW = NativeDepthCheck_CharW(nearItem, nearItem->mvpShift, 0.0, 32.0, 0.0);
+	farW = NativeDepthCheck_CharW(farItem, farItem->mvpShift, 0.0, 32.0, 0.0);
+	nearM = NativeDepthCheck_CharMatrix(nearItem, nearItem->mvpShift);
+	farM = NativeDepthCheck_CharMatrix(farItem, farItem->mvpShift);
+	pair->nearPoint.w = nearW;
+	pair->farPoint.w = farW;
+	pair->nearPoint.matrix = nearM;
+	pair->farPoint.matrix = farM;
+
+	pair->step = (fabs(farW - nearW) / nearW) * 100.0;
+	pair->rest = (fabs((farW - nearW) - (pair->farPoint.originZ - pair->nearPoint.originZ)) / nearW) * 100.0;
+	pair->matrixPart = (fabs(farM - nearM) / fabs(nearM)) * 100.0;
+	pair->wrongNear = (fabs(NativeDepthCheck_CharW(nearItem, 0, 0.0, 32.0, 0.0) - farW) / farW) * 100.0;
+	pair->wrongFar = (fabs(NativeDepthCheck_CharW(farItem, 2, 0.0, 32.0, 0.0) - nearW) / nearW) * 100.0;
+	pair->matrixWrongNear = (fabs(NativeDepthCheck_CharMatrix(nearItem, 0) - farM) / fabs(farM)) * 100.0;
+	pair->matrixWrongFar = (fabs(NativeDepthCheck_CharMatrix(farItem, 2) - nearM) / fabs(nearM)) * 100.0;
+}
+
 static int NativeDepthCheck_PairPassed(const struct NativeDepthCheckPair *pair, int nearShift, int farShift)
 {
 	return pair->nearPoint.found && pair->farPoint.found && pair->nearPoint.shiftHeld && pair->farPoint.shiftHeld &&
@@ -218,8 +281,11 @@ int NativeDepthCheck_Run(void)
 {
 	static struct NativeDepthCheckPair normal;
 	static struct NativeDepthCheckPair huge;
+	static struct NativeDepthCheckPair charEven;
+	static struct NativeDepthCheckPair charOdd;
 	int held;
 	int passed;
+	int charPassed;
 
 	// The queue writes its scratch words; outside a game run the scratchpad
 	// has to be set up first.
@@ -227,17 +293,38 @@ int NativeDepthCheck_Run(void)
 
 	NativeDepthCheck_Pair(0, &normal);
 	NativeDepthCheck_Pair(1, &huge);
+	NativeDepthCheck_CharPair(0x1000, &charEven);
+	NativeDepthCheck_CharPair(0x0ccd, &charOdd);
 
 	held = normal.nearPoint.shiftHeld && normal.farPoint.shiftHeld && huge.nearPoint.shiftHeld && huge.farPoint.shiftHeld;
-	passed = NativeDepthCheck_PairPassed(&normal, 2, 0) && NativeDepthCheck_PairPassed(&huge, 0, -2);
+	charPassed = NativeDepthCheck_PairPassed(&charEven, 2, 0) && NativeDepthCheck_PairPassed(&charOdd, 2, 0);
+	passed = NativeDepthCheck_PairPassed(&normal, 2, 0) && NativeDepthCheck_PairPassed(&huge, 0, -2) && charPassed;
 
 	printf("native depth selftest %s: normal shift %d to %d, w %.4f to %.4f, step %.4f percent, rest %.4f percent, matrix part %.4f percent, "
 	       "wrong shift %.1f and %.1f percent, matrix %.1f and %.1f percent, huge shift %d to %d, w %.4f to %.4f, step %.4f percent, rest %.4f percent, "
-	       "matrix part %.4f percent, wrong shift %.1f and %.1f percent, matrix %.1f and %.1f percent, shift checks %s\n",
+	       "matrix part %.4f percent, wrong shift %.1f and %.1f percent, matrix %.1f and %.1f percent, shift checks %s",
 	       passed ? "passed" : "differs", (int)normal.nearPoint.item.mvpShift, (int)normal.farPoint.item.mvpShift, normal.nearPoint.w, normal.farPoint.w,
 	       normal.step, normal.rest, normal.matrixPart, normal.wrongNear, normal.wrongFar, normal.matrixWrongNear, normal.matrixWrongFar,
 	       (int)huge.nearPoint.item.mvpShift, (int)huge.farPoint.item.mvpShift, huge.nearPoint.w, huge.farPoint.w, huge.step, huge.rest,
 	       huge.matrixPart, huge.wrongNear, huge.wrongFar, huge.matrixWrongNear, huge.matrixWrongFar, held ? "held" : "off");
+
+	// The char way (step 4c), appended: the part above is the line of before.
+	{
+		const struct NativeDepthCheckPair *pairs[2] = {&charEven, &charOdd};
+		const int scales[2] = {0x1000, 0x0ccd};
+		int i;
+
+		for (i = 0; i < 2; i++)
+		{
+			const struct NativeDepthCheckPair *c = pairs[i];
+
+			printf(", char scale 0x%04x shift %d to %d, w %.4f to %.4f, step %.4f percent, rest %.4f percent, matrix part %.4f percent, "
+			       "wrong shift %.1f and %.1f percent, matrix %.1f and %.1f percent",
+			       scales[i], (int)c->nearPoint.item.mvpShift, (int)c->farPoint.item.mvpShift, c->nearPoint.w, c->farPoint.w, c->step, c->rest,
+			       c->matrixPart, c->wrongNear, c->wrongFar, c->matrixWrongNear, c->matrixWrongFar);
+		}
+		printf(", char %s\n", charPassed ? "passed" : "differs");
+	}
 
 	return passed ? 0 : 1;
 }

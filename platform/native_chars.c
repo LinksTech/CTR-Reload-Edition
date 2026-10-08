@@ -123,6 +123,7 @@
 #include <platform/native_audio.h>
 #include <platform/native_path.h>
 #include <platform/native_render_layer.h>
+#include <platform/native_char_gpu.h>
 
 #include <SDL3/SDL.h>
 
@@ -262,6 +263,14 @@ global_variable s64 s_charDevDroppedTotal;
 global_variable s64 s_charDevDroppedSeat0;
 global_variable s64 s_charDevDroppedBound;
 
+// --dev-char-seat-files (NATIVE_CHAR_DEV_SEATS_FILES): the names as main.c
+// passed them on, their count, and the roster entry of every seat once
+// NativeChar_DevSeatFilesResolve has found them (seats from the count on:
+// entry 0, the first file of the roster, as ALL).
+global_variable char s_charDevSeatName[NATIVE_CHAR_DEV_SEAT_FILES_MAX][NATIVE_CHAR_PATH_MAX];
+global_variable int s_charDevSeatNames;
+global_variable int s_charDevSeatEntry[NATIVE_CHAR_SEATS];
+
 // The roster, built once by NativeChar_LoadRoster: s_charRosterFiles entries
 // are files, the rest up to s_charRosterCount are placeholders. Placeholder n
 // (1-based) is entry s_charRosterFiles + n - 1.
@@ -319,6 +328,102 @@ void NativeChar_SetFile(const char *file)
 void NativeChar_SetDevSeats(int mode)
 {
 	s_charDevSeats = ((mode == NATIVE_CHAR_DEV_SEATS_ALL) || (mode == NATIVE_CHAR_DEV_SEATS_CYCLE)) ? mode : NATIVE_CHAR_DEV_SEATS_OFF;
+}
+
+int NativeChar_SetDevSeatFiles(const char *list)
+{
+	const char *p = list;
+	int count = 0;
+
+	s_charDevSeatNames = 0;
+	if (list == NULL)
+	{
+		return 0;
+	}
+
+	for (;;)
+	{
+		const char *comma = strchr(p, ',');
+		const size_t length = (comma != NULL) ? (size_t)(comma - p) : strlen(p);
+		char *name;
+
+		// An empty name, a cut one, a ninth one or one with a path: not the form.
+		if ((length == 0) || (length >= NATIVE_CHAR_PATH_MAX) || (count >= NATIVE_CHAR_DEV_SEAT_FILES_MAX))
+		{
+			return 0;
+		}
+
+		name = s_charDevSeatName[count];
+		memcpy(name, p, length);
+		name[length] = '\0';
+		if ((strchr(name, '/') != NULL) || (strchr(name, '\\') != NULL) || (strchr(name, ':') != NULL))
+		{
+			return 0;
+		}
+
+		count++;
+		if (comma == NULL)
+		{
+			break;
+		}
+		p = comma + 1;
+	}
+
+	s_charDevSeatNames = count;
+	s_charDevSeats = NATIVE_CHAR_DEV_SEATS_FILES;
+	return 1;
+}
+
+int NativeChar_DevSeatFilesResolve(void)
+{
+	int seat;
+
+	if (s_charDevSeats != NATIVE_CHAR_DEV_SEATS_FILES)
+	{
+		return 1;
+	}
+
+	for (seat = 0; seat < s_charDevSeatNames; seat++)
+	{
+		int found = -1;
+		int e;
+
+		for (e = 0; (e < s_charRosterFiles) && (found < 0); e++)
+		{
+			if ((s_charFiles[e].file != NULL) && (SDL_strcasecmp(s_charFiles[e].file, s_charDevSeatName[seat]) == 0))
+			{
+				found = e;
+			}
+		}
+
+		if (found < 0)
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch --dev-char-seat-files names %s for seat %d, which is not a loaded file of the roster (%d loaded)\n",
+			        s_charDevSeatName[seat], seat, s_charRosterFiles);
+			fflush(stderr);
+			Platform_Log("[CTR Char] dev seat files: %s for seat %d is not a loaded file of the roster (%d loaded) - the start ends\n",
+			             s_charDevSeatName[seat], seat, s_charRosterFiles);
+			return 0;
+		}
+
+		s_charDevSeatEntry[seat] = found;
+	}
+
+	for (seat = s_charDevSeatNames; seat < NATIVE_CHAR_SEATS; seat++)
+	{
+		s_charDevSeatEntry[seat] = 0;
+	}
+
+	for (seat = 0; seat < NATIVE_CHAR_SEATS; seat++)
+	{
+		const struct NativeCharFile *f = &s_charFiles[s_charDevSeatEntry[seat]];
+
+		Platform_Log("[CTR Char] dev seat files: seat %d takes %s (template %d)%s\n", seat, f->file, (int)f->info.templateId,
+		             (seat < s_charDevSeatNames) ? "" : ", the first file of the roster");
+	}
+
+	return 1;
 }
 
 void NativeChar_SetGridFill(int count)
@@ -1397,11 +1502,97 @@ internal void NativeChar_ReleaseNative(void)
 	}
 }
 
+// THE NATIVE PART OF THE DRIVER SELECT PREVIEW (step 5a): the roster entry
+// whose native part is held for the preview window, -1 for none. Held in the
+// file's own slot (native), as a bound seat holds it.
+global_variable int s_previewEntry = -1;
+
 void NativeChar_ClearSeats(void)
 {
 	memset(s_seat, 0, sizeof(s_seat));
 	NativeChar_ReleaseVoices();
+
+	// The GPU sets of step 4c first (platform/native_char_gpu.c), while the
+	// native parts they were made from are still held; nothing without one.
+	// The preview's set goes with them (step 5a).
+	NativeCharGpu_ReleaseAll();
 	NativeChar_ReleaseNative();
+	s_previewEntry = -1;
+}
+
+// Step 5a, from the pull of the render layer at a change of the wanted preview
+// tile, only with --native-preview: the native part of entry for the preview
+// window, read as a seat reads it (NativeChar_HoldNative, one line "native
+// model ...: preview, ..."). The part held for another entry before is let go
+// first. An entry held already is not read again.
+void NativeChar_HoldPreview(int entry)
+{
+	if (!g_cfg_nativePreview || (entry < 0) || (entry >= s_charRosterFiles) || (entry == s_previewEntry))
+	{
+		return;
+	}
+
+	NativeChar_ReleasePreview();
+	NativeChar_HoldNative(entry, "preview");
+	s_previewEntry = entry;
+}
+
+// The preview's part let go (its GPU set first), unless a bound seat holds the
+// same file. Nothing without one.
+void NativeChar_ReleasePreview(void)
+{
+	struct NativeCharFile *f;
+	int seat;
+
+	if ((s_previewEntry < 0) || (s_previewEntry >= s_charRosterFiles))
+	{
+		s_previewEntry = -1;
+		return;
+	}
+
+	NativeCharGpu_ReleasePreview();
+
+	f = &s_charFiles[s_previewEntry];
+	for (seat = 0; seat < NATIVE_CHAR_SEATS; seat++)
+	{
+		if ((s_seat[seat].model != NULL) && (s_seat[seat].entry == s_previewEntry))
+		{
+			s_previewEntry = -1;
+			return;
+		}
+	}
+	if (f->native != NULL)
+	{
+		RldChar_FreeNative(f->native);
+		free(f->native);
+		f->native = NULL;
+	}
+	s_previewEntry = -1;
+}
+
+// The ready native part held for the preview of entry, NULL for any other.
+const struct RldCharNative *NativeChar_PreviewNative(int entry)
+{
+	if ((entry < 0) || (entry != s_previewEntry) || (entry >= s_charRosterFiles))
+	{
+		return NULL;
+	}
+	return s_charFiles[entry].native;
+}
+
+int NativeChar_PreviewEntry(void)
+{
+	return s_previewEntry;
+}
+
+// The file name of a roster entry, "" outside the files.
+const char *NativeChar_EntryFile(int entry)
+{
+	if ((entry < 0) || (entry >= s_charRosterFiles) || (s_charFiles[entry].file == NULL))
+	{
+		return "";
+	}
+	return s_charFiles[entry].file;
 }
 
 // The first reason why this race is not one the funnel binds in, NULL when it
@@ -1658,6 +1849,30 @@ internal int NativeChar_LargestEntry(int kind)
 	return found;
 }
 
+// --dev-char-seat-files: one buffer, one pass - seat 0 as a ghost of its file,
+// every other seat at the draw bytes of its own file (as LoadBytes for a load
+// of NATIVE_CHAR_LOAD_DEV with one file). 0 without a file.
+internal u32 NativeChar_DevSeatFilesBytes(u32 *seat0, u32 *other)
+{
+	int seat;
+
+	*seat0 = 0;
+	*other = 0;
+
+	if (s_charRosterFiles == 0)
+	{
+		return 0;
+	}
+
+	*seat0 = NativeChar_FileGhostBytes(&s_charFiles[s_charDevSeatEntry[0]]);
+	for (seat = 1; seat < NATIVE_CHAR_SEATS; seat++)
+	{
+		*other += s_charFiles[s_charDevSeatEntry[seat]].drawBytes;
+	}
+
+	return *seat0 + *other;
+}
+
 u32 NativeChar_DrawReserve(int tableBytes)
 {
 	const struct GameTracker *gGT = sdata->gGT;
@@ -1688,6 +1903,22 @@ u32 NativeChar_DrawReserve(int tableBytes)
 	else if (NativeChar_ModeRefusal(gGT) != NULL)
 	{
 		return 0;
+	}
+	else if (s_charDevSeats == NATIVE_CHAR_DEV_SEATS_FILES)
+	{
+		// Every seat on its own file (NativeChar_ArmDevSeatFiles); a dev seat
+		// wears the retail mask.
+		bytes = NativeChar_DevSeatFilesBytes(&seat0, &other) * NATIVE_CHAR_DRAW_PASSES;
+		if (bytes == 0u)
+		{
+			return 0;
+		}
+
+		Platform_Log("[CTR Char] draw memory: %d bytes + %u for custom models (race, --dev-char-seat-files: seat 0 %u bytes as a ghost + %u bytes "
+		             "for seats 1 to %d, x %u passes, seat 0 %s) = %d\n",
+		             tableBytes, (unsigned)bytes, (unsigned)seat0, (unsigned)other, NATIVE_CHAR_SEATS - 1, (unsigned)NATIVE_CHAR_DRAW_PASSES,
+		             s_charFiles[s_charDevSeatEntry[0]].file, tableBytes + (int)bytes);
+		return bytes;
 	}
 	else if (s_charDevSeats != NATIVE_CHAR_DEV_SEATS_OFF)
 	{
@@ -1751,7 +1982,14 @@ u32 NativeChar_MempackExtraNeeded(void)
 			continue;
 		}
 
-		bytes = NativeChar_LoadBytes(kind, NativeChar_LargestEntry(kind), &seat0, &other);
+		if ((kind == NATIVE_CHAR_LOAD_DEV) && (s_charDevSeats == NATIVE_CHAR_DEV_SEATS_FILES))
+		{
+			bytes = NativeChar_DevSeatFilesBytes(&seat0, &other);
+		}
+		else
+		{
+			bytes = NativeChar_LoadBytes(kind, NativeChar_LargestEntry(kind), &seat0, &other);
+		}
 		largest = (bytes > largest) ? bytes : largest;
 	}
 
@@ -1877,6 +2115,19 @@ int NativeChar_ModelHidesWheels(const struct Model *model)
 	}
 
 	return 0;
+}
+
+// Per instance and view (game/DrawTires.c, both passes): the answer of the
+// model, or 1 when the render layer drew this view of a custom character
+// natively with its own wheels in this frame (step 4c). Without a native
+// custom character the second part answers 0 at its first comparison.
+int NativeChar_ViewHidesWheels(const struct Instance *inst, const struct PushBuffer *pb)
+{
+	if (inst == NULL)
+	{
+		return 0;
+	}
+	return NativeChar_ModelHidesWheels(inst->model) || NativeRenderLayer_CharViewNativeWheels(inst, pb);
 }
 
 // Keyed on the model like NativeChar_ModelHidesWheels, and the own mask of a
@@ -2334,6 +2585,118 @@ internal void NativeChar_ArmDevSeats(struct GameTracker *gGT)
 	NativeChar_LogSeats();
 }
 
+// --dev-char-seat-files: as NativeChar_ArmDevSeats, but every seat on the file
+// NativeChar_DevSeatFilesResolve gave it, and every bot seat put on the
+// template of its own file. Seat 0 keeps --driver's template and binds only
+// when its donor's frame counts are those of its file. One line per seat.
+internal void NativeChar_ArmDevSeatFiles(struct GameTracker *gGT)
+{
+	const char *modeWhy = NativeChar_ModeRefusal(gGT);
+	int noDonor[NATIVE_CHAR_SEATS];
+	int bound = 0;
+	int seat;
+
+	if ((gGT->boolDemoMode != 0) || (modeWhy != NULL))
+	{
+		Platform_Log("[CTR Char] dev seats: not bound (%s)\n", (modeWhy != NULL) ? modeWhy : "demo");
+		return;
+	}
+
+	s_charDevLoads++;
+
+	// Stage 5, as NativeChar_ArmDevSeats: the bots of stage 4 are put on the
+	// templates of their files before VehBirth reads characterIDs - but only
+	// on a template the driver pack of this load has a model for. A bot put on
+	// a template without one would be born without a model
+	// (VehBirth_GetModelByName finds nothing); such a seat keeps the template
+	// stage 4 gave it and stays retail, loudly.
+	memset(noDonor, 0, sizeof(noDonor));
+	for (seat = 1; seat < NATIVE_CHAR_SEATS; seat++)
+	{
+		const int fileTemplate = (int)s_charFiles[s_charDevSeatEntry[seat]].info.templateId;
+
+		if ((fileTemplate >= 0) && (fileTemplate <= RLDCHAR_TEMPLATE_MAX) && (NativeChar_DonorModel(fileTemplate) != NULL))
+		{
+			data.characterIDs[seat] = (s16)fileTemplate;
+		}
+		else
+		{
+			noDonor[seat] = 1;
+		}
+	}
+
+	for (seat = 0; seat < NATIVE_CHAR_SEATS; seat++)
+	{
+		const int entry = s_charDevSeatEntry[seat];
+		const int templateId = (int)data.characterIDs[seat];
+		const struct Model *donor = ((templateId >= 0) && (templateId <= RLDCHAR_TEMPLATE_MAX)) ? NativeChar_DonorModel(templateId) : NULL;
+		int same = (donor != NULL);
+		int a;
+
+		if (noDonor[seat])
+		{
+			Platform_LogWarn("[CTR Char] dev seat files: load %d seat %d stays retail (%s, template %d has no donor in the driver pack, "
+			                 "the bot keeps template %d)\n",
+			                 s_charDevLoads, seat, s_charFiles[entry].file, (int)s_charFiles[entry].info.templateId, templateId);
+			continue;
+		}
+
+		for (a = 0; same && (a < RLDCHAR_ANIM_COUNT); a++)
+		{
+			same = (NativeChar_AnimFrames(s_charFiles[entry].model, a) == NativeChar_AnimFrames(donor, a));
+		}
+
+		if (!same)
+		{
+			Platform_Log("[CTR Char] dev seat files: load %d seat %d stays retail (%s, template %d, %s)\n", s_charDevLoads, seat, s_charFiles[entry].file,
+			             templateId, (donor == NULL) ? "no donor in the driver pack" : "other frame counts");
+			continue;
+		}
+
+		s_seat[seat].model = s_charFiles[entry].model;
+		s_seat[seat].entry = entry;
+		s_seat[seat].motorId = templateId;
+		s_seat[seat].devSeat = 1;
+		bound++;
+		Platform_Log("[CTR Char] dev seat files: load %d seat %d = %s (template %d, %u draw bytes)\n", s_charDevLoads, seat, s_charFiles[entry].file,
+		             templateId, (unsigned)s_charFiles[entry].drawBytes);
+	}
+
+	// What a bound file holds, once per file.
+	for (seat = 0; seat < NATIVE_CHAR_SEATS; seat++)
+	{
+		int earlier = 0;
+		int s;
+
+		if (s_seat[seat].model == NULL)
+		{
+			continue;
+		}
+
+		for (s = 0; s < seat; s++)
+		{
+			earlier |= (s_seat[s].model != NULL) && (s_seat[s].entry == s_seat[seat].entry);
+		}
+
+		if (!earlier)
+		{
+			NativeChar_HoldVoices(s_seat[seat].entry);
+			NativeChar_HoldNative(s_seat[seat].entry, "dev seat files");
+		}
+	}
+
+	// From here until the next load arms its seats, drops count for this one.
+	s_charDevLoadOpen = 1;
+	s_charDevLoadLevel = gGT->levelID;
+	s_charDevDroppedTotal = 0;
+	s_charDevDroppedSeat0 = 0;
+	s_charDevDroppedBound = 0;
+
+	NativeChar_PortraitsDirty();
+	Platform_Log("[CTR Char] dev seats: files, load %d on level %d, %d of %d seats bound\n", s_charDevLoads, gGT->levelID, bound, NATIVE_CHAR_SEATS);
+	NativeChar_LogSeats();
+}
+
 void NativeChar_ArmSeats(void)
 {
 	struct GameTracker *gGT = sdata->gGT;
@@ -2373,6 +2736,11 @@ void NativeChar_ArmSeats(void)
 
 	// 2b. --dev-char-seats (developer switch, measuring): every seat, the pick
 	//     does not count.
+	if (s_charDevSeats == NATIVE_CHAR_DEV_SEATS_FILES)
+	{
+		NativeChar_ArmDevSeatFiles(gGT);
+		return;
+	}
 	if (s_charDevSeats != NATIVE_CHAR_DEV_SEATS_OFF)
 	{
 		NativeChar_ArmDevSeats(gGT);
@@ -2484,6 +2852,42 @@ struct Model *NativeChar_SeatModel(int index)
 	}
 
 	return s_seat[index].model;
+}
+
+const char *NativeChar_SeatFile(int seat)
+{
+	if (NativeChar_SeatModel(seat) == NULL)
+	{
+		return "";
+	}
+
+	return (s_charFiles[s_seat[seat].entry].file != NULL) ? s_charFiles[s_seat[seat].entry].file : "";
+}
+
+// The self-test of the GPU sets (platform/native_char_gpu.c): one file read as
+// the roster reads it, then its native part as a bound seat reads it with
+// --native-preview. The CMDL and the mask are let go again; the native part is
+// the caller's (RldChar_FreeNative). 1 when the part is ready.
+int NativeChar_ReadNativeFile(const char *path, const char *name, struct RldCharNative *out)
+{
+	struct NativeCharFile f;
+	int ready;
+
+	memset(out, 0, sizeof(*out));
+	memset(&f, 0, sizeof(f));
+	if (!NativeChar_ReadFile(path, name, &f))
+	{
+		return 0;
+	}
+	f.file = (char *)name;
+	f.path = (char *)path;
+
+	(void)NativeChar_ReadNative(&f, 1, out);
+	ready = (out->state == RLDCHAR_NATIVE_READY);
+
+	free(f.cmdl);
+	NativeChar_DropMask(&f);
+	return ready;
 }
 
 const struct RldCharNative *NativeChar_SeatNative(int seat)

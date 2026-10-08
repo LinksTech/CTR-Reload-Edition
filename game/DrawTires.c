@@ -3,6 +3,7 @@
 // From platform/native_chars.c: 1 for the model of a custom character whose
 // file asks for no kart wheels, else 0 (every retail model, NULL).
 int NativeChar_ModelHidesWheels(const struct Model *model);
+int NativeChar_ViewHidesWheels(const struct Instance *inst, const struct PushBuffer *pb);
 
 static const u32 sDrawTiresSolidJumpTable[8] = {
     0x8006ed7c, 0x8006ed98, 0x8006edb4, 0x8006edcc, 0x8006ede4, 0x8006ee00, 0x8006ee1c, 0x8006ee3c,
@@ -821,7 +822,7 @@ static int DrawTiresSolid_StagePlayer(struct DrawTiresScratch *scratch, struct D
 		return 0;
 	}
 
-	if (NativeChar_ModelHidesWheels(inst->model))
+	if (NativeChar_ViewHidesWheels(inst, pb))
 	{
 		return 0;
 	}
@@ -1430,7 +1431,7 @@ static int DrawTiresReflection_StagePlayer(struct DrawTiresScratch *scratch, str
 		return 0;
 	}
 
-	if (NativeChar_ModelHidesWheels(inst->model))
+	if (NativeChar_ViewHidesWheels(inst, pb))
 	{
 		return 0;
 	}
