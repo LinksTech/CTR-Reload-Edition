@@ -117,22 +117,24 @@
 //
 // PREVIEW FEATURES
 //
-// Only with --enable-preview-features does the page load more into the view:
-// a pose set (RLDPS1, drawn instead of the model's pose while one is chosen)
-// and a wheel model (RLDPW1, drawn under the model at the four wheel points
-// of Rs_DummyTires instead of the game's wheels, by the same rule: never over
-// the model). The dummy beside it keeps the game's wheels. The wheel turns by
-// whole degrees from the same sine table; its animation runs on the view's
-// own timer in fixed steps per tick. Nothing loaded: nothing of it is used,
-// and the picture is the same as without these features.
+// The page loads more into the view: with --enable-preview-features a pose
+// set (RLDPS1, drawn instead of the model's pose while one is chosen), and
+// always the wheel model of the card Wheels (RLDPW2, textured, drawn at the
+// four wheel points of Rs_DummyTires instead of the game's wheels - unlike
+// them by depth against the model, as the game draws an author's wheels in
+// the native model's item; the right pair mirrored, the centres raised by the
+// radius a larger wheel grew). The dummy beside it keeps the game's wheels.
+// The wheel turns by whole degrees from the same sine table; its animation
+// runs on the view's own timer in fixed steps per tick. Nothing loaded:
+// nothing of it is used, and the picture is the same as without them.
 //
-// THE NATIVE MODEL (preview feature, renderer step 5b)
+// THE NATIVE MODEL (preview feature, renderer step 5b; open to everyone)
 //
 // With make-char --native-model on, rldpack appends the native model (CNET
 // with its CTXT textures, checked and decoded by rldpack: "RLDPN1", described
 // at THE NATIVE MODEL IN THE PREVIEW in tools/rldpack_native.inc) to the
-// RLDPV2 data of --preview. Only with --enable-preview-features does the view
-// accept that block; it then draws the native model in place of the game's own
+// RLDPV2 data of --preview. The view accepts that block with and without
+// --enable-preview-features; it then draws the native model in place of the game's own
 // model (in the same pose, the turn frames 10, 0 and 20), with "Native model"
 // above it. The texture is sampled per pixel, nearest texel, perspective
 // correct, all in integers: the weights of the corners in Q16, u and v
@@ -141,8 +143,8 @@
 // corner colour (COL0 times the material colour). Alpha mode mask and blend:
 // a texel below alpha 128 is left out (no blending in the view). Back faces
 // are culled (CNET winds counter-clockwise from outside). No light, like the
-// model of the game. Without the block - and always without the switch - the
-// view parses, frames and draws exactly as before.
+// model of the game. Without the block the view parses, frames and draws
+// exactly as before.
 
 #include "reloadstudio.h"
 #include "rs_view.h"
@@ -170,7 +172,10 @@
 #define RS_VIEW_NATIVE_TRI_BYTES 40                     // per triangle: 3 x {s32 u, s32 v, u8 r, g, b, pad}, s16 texture, u8 alpha, pad
 #define RS_VIEW_NATIVE_POS_BYTES 18                     // per triangle and pose: 3 x s16 x, y, z
 #define RS_VIEW_NATIVE_EDGE_MAX 2048
-#define RS_VIEW_WHEEL_TRIS_MAX 16384                    // triangles of a wheel model (RLDPW1)
+#define RS_VIEW_WHEEL_TRIS_MAX 1024                     // triangles of a wheel model (RLDPW2; RLDCHAR_WHEEL_TRIANGLES_MAX)
+#define RS_VIEW_WHEEL_CORNER_BYTES 18                   // s16 x, y, z; s32 u, v; u8 r, g, b, pad
+#define RS_VIEW_WHEEL_TRI_BYTES (3 * RS_VIEW_WHEEL_CORNER_BYTES)
+#define RS_VIEW_WHEEL_HEAD_BYTES 20                     // magic, width, height, flags
 #define RS_VIEW_TIMER_WHEEL 1                           // the view's own timer: the wheel animation
 #define RS_VIEW_WHEEL_TICK_MS 33
 #define RS_VIEW_WHEEL_SPIN_STEP 12                      // degrees of spin per tick
@@ -186,7 +191,7 @@ static const int s_rsViewCrashDefault[6] = {
 static const unsigned char s_rsViewMagic[RS_VIEW_MAGIC_BYTES] = { 'R', 'L', 'D', 'P', 'V', '1', 0, 0 };
 static const unsigned char s_rsViewMagic2[RS_VIEW_MAGIC_BYTES] = { 'R', 'L', 'D', 'P', 'V', '2', 0, 0 };
 static const unsigned char s_rsViewSetMagic[RS_VIEW_MAGIC_BYTES] = { 'R', 'L', 'D', 'P', 'S', '1', 0, 0 };
-static const unsigned char s_rsViewWheelMagic[RS_VIEW_MAGIC_BYTES] = { 'R', 'L', 'D', 'P', 'W', '1', 0, 0 };
+static const unsigned char s_rsViewWheelMagic[RS_VIEW_MAGIC_BYTES] = { 'R', 'L', 'D', 'P', 'W', '2', 0, 0 };
 static const unsigned char s_rsViewNativeMagic[RS_VIEW_MAGIC_BYTES] = { 'R', 'L', 'D', 'P', 'N', '1', 0, 0 };
 
 // sin(0..90 degrees) * 16384, rounded half up. A table instead of sin(), so that
@@ -285,6 +290,10 @@ struct RsView {
     unsigned char *wheelData;
     const unsigned char *wheelTris;
     int wheelCount;
+    int wheelTextured;                  // wheelTex holds the texture of the file
+    struct RsViewNativeTex wheelTex;
+    long long wheelTicks;               // QueryPerformanceCounter ticks of the last RsView_DrawWheels
+    int benching;                       // RsView_WheelBench renders: no timing line per picture
     long long wheelR2;
     int wheelHalfW;
     int wheelScale;            // percent, 50..200
@@ -296,6 +305,7 @@ struct RsView {
     long long wheelRadius2;    // the framing of the wheel model, like tireRadius2
     int wheelYmin, wheelYmax;
     int tireAt[4][3];          // FL FR RL RR, 1/16 units
+    int tireHalf;              // the game's wheel: half its size (its radius), 1/16 units
 
     int dragging;
     int dragX;
@@ -682,14 +692,10 @@ static int RsView_Parse(struct RsView *v, unsigned char *data, size_t bytes, wch
         poses[p].sub = sub;
         at += (size_t)tris * RS_VIEW_TRI_BYTES;
     }
-    // Behind the poses only the native model, and only with the preview
-    // features; without them a byte more is an error as it always was.
+    // Behind the poses only the native model (preview feature, open to
+    // everyone); anything else is an error as it always was.
     memset(&native, 0, sizeof(native));
     if (at != bytes) {
-        if (!g_rsPreviewFeatures) {
-            swprintf(why, whyCap, L"%u bytes follow after the last pose", (unsigned)(bytes - at));
-            return 0;
-        }
         if (!RsView_ParseNative(data, bytes, at, &native, why, whyCap))
             return 0;
     }
@@ -727,10 +733,11 @@ static void RsView_Changed(HWND view, struct RsView *v)
 // Preview features: the pose set and the wheel model
 // ---------------------------------------------------------------------------
 //
-// Both files carry the triangle records of RLDPV1 (RsView_Parse): a pose set
-// ("RLDPS1") in whole game units like an RLDPV1 model, a wheel model ("RLDPW1") in
-// 1/16 game units about its axle. Without them nothing below is used and the
-// view draws as before.
+// A pose set ("RLDPS1") carries the triangle records of RLDPV1 (RsView_Parse)
+// in whole game units like an RLDPV1 model; a wheel model ("RLDPW2",
+// tools/rldpack_wheel.inc) its texture and corners with UV in 1/16 game units
+// about its axle. Without them nothing below is used and the view draws as
+// before.
 
 // One block "u32 triangles + records" at *at; checks its length first.
 static int RsView_ParseTris(const unsigned char *data, size_t bytes, size_t *at, struct RsViewPoseData *out)
@@ -819,6 +826,8 @@ static void RsView_DropWheel(struct RsView *v)
     v->wheelData = NULL;
     v->wheelTris = NULL;
     v->wheelCount = 0;
+    v->wheelTextured = 0;
+    memset(&v->wheelTex, 0, sizeof(v->wheelTex));
     v->wheelR2 = 0;
     v->wheelHalfW = 0;
     v->wheelRadius2 = 0;
@@ -826,29 +835,40 @@ static void RsView_DropWheel(struct RsView *v)
     v->wheelYmax = 0;
 }
 
-// A wheel model; takes data on success, leaves v untouched otherwise.
+// A wheel model (RLDPW2); takes data on success, leaves v untouched otherwise.
+// Every length is checked before it is used.
 static int RsView_ParseWheel(struct RsView *v, unsigned char *data, size_t bytes, wchar_t *why, int whyCap)
 {
-    struct RsViewPoseData tris;
-    size_t at = RS_VIEW_MAGIC_BYTES;
+    size_t at = RS_VIEW_WHEEL_HEAD_BYTES;
+    unsigned int tw, th, count;
     long long r2 = 0;
     int i, c, halfW = 0;
 
-    if (bytes < RS_VIEW_MAGIC_BYTES + 4 || memcmp(data, s_rsViewWheelMagic, RS_VIEW_MAGIC_BYTES) != 0) {
-        swprintf(why, whyCap, L"it is not a wheel model (it does not start with RLDPW1)");
+    if (bytes < RS_VIEW_WHEEL_HEAD_BYTES + 4 || memcmp(data, s_rsViewWheelMagic, RS_VIEW_MAGIC_BYTES) != 0) {
+        swprintf(why, whyCap, L"it is not a wheel model (it does not start with RLDPW2)");
         return 0;
     }
-    if (!RsView_ParseTris(data, bytes, &at, &tris) || at != bytes) {
+    tw = RsView_ReadU32(data + 8);
+    th = RsView_ReadU32(data + 12);
+    if ((tw == 0) != (th == 0) || tw > RS_VIEW_NATIVE_EDGE_MAX || th > RS_VIEW_NATIVE_EDGE_MAX ||
+        (size_t)tw * th * 4 > bytes - at - 4) {
+        swprintf(why, whyCap, L"its texture is %u x %u or ends early", tw, th);
+        return 0;
+    }
+    at += (size_t)tw * th * 4;
+    count = RsView_ReadU32(data + at);
+    at += 4;
+    if (count < 1 || count > RS_VIEW_WHEEL_TRIS_MAX) {
+        swprintf(why, whyCap, L"it has %u triangles, 1..%d are possible", count, RS_VIEW_WHEEL_TRIS_MAX);
+        return 0;
+    }
+    if (bytes - at != (size_t)count * RS_VIEW_WHEEL_TRI_BYTES) {
         swprintf(why, whyCap, L"its length does not match its triangle count");
         return 0;
     }
-    if (tris.count < 1 || tris.count > RS_VIEW_WHEEL_TRIS_MAX) {
-        swprintf(why, whyCap, L"it has %d triangles, 1..%d are possible", tris.count, RS_VIEW_WHEEL_TRIS_MAX);
-        return 0;
-    }
-    for (i = 0; i < tris.count; i++)
+    for (i = 0; i < (int)count; i++)
         for (c = 0; c < 3; c++) {
-            const unsigned char *q = tris.tris + (size_t)i * RS_VIEW_TRI_BYTES + c * RS_VIEW_CORNER_BYTES;
+            const unsigned char *q = data + at + (size_t)i * RS_VIEW_WHEEL_TRI_BYTES + c * RS_VIEW_WHEEL_CORNER_BYTES;
             const long long x = RsView_ReadS16(q), y = RsView_ReadS16(q + 2), z = RsView_ReadS16(q + 4);
             const long long ax = x < 0 ? -x : x;
             if (y * y + z * z > r2)
@@ -859,11 +879,24 @@ static int RsView_ParseWheel(struct RsView *v, unsigned char *data, size_t bytes
 
     RsView_DropWheel(v);
     v->wheelData = data;
-    v->wheelTris = tris.tris;
-    v->wheelCount = tris.count;
+    v->wheelTris = data + at;
+    v->wheelCount = (int)count;
+    v->wheelTextured = tw != 0;
+    v->wheelTex.w = (int)tw;
+    v->wheelTex.h = (int)th;
+    v->wheelTex.flags = RsView_ReadU32(data + 16);
+    v->wheelTex.rgba = data + RS_VIEW_WHEEL_HEAD_BYTES;
     v->wheelR2 = r2;
     v->wheelHalfW = halfW;
     return 1;
+}
+
+// How far the wheel points rise at the scale (1/16 units): the bottom of the
+// wheel stays where the game's wheel touches the ground, so the centre rises
+// by the radius grown (renderer SPEC P2: ground contact as retail).
+static long long RsView_WheelLift(const struct RsView *v)
+{
+    return (long long)v->tireHalf * (v->wheelScale - 100) / 100;
 }
 
 // The wheel model at its scale about a wheel point, 1/16 units: radius = how
@@ -889,7 +922,7 @@ static void RsView_WheelExtent(struct RsView *v)
         return;
     RsView_WheelReach(v, &r, &reach);
     for (i = 0; i < 4; i++) {
-        const long long x = v->tireAt[i][0], y = v->tireAt[i][1], z = v->tireAt[i][2];
+        const long long x = v->tireAt[i][0], y = v->tireAt[i][1] + RsView_WheelLift(v), z = v->tireAt[i][2];
         const long long ax = ((x < 0 ? -x : x) + reach) / RS_VIEW_SUB + 1;
         const long long az = ((z < 0 ? -z : z) + reach) / RS_VIEW_SUB + 1;
         const int ylo = (int)RsView_FloorDiv16(y - r), yhi = (int)-RsView_FloorDiv16(-(y + r));
@@ -1634,26 +1667,35 @@ static void RsView_DrawSolid(const struct RsViewTarget *t, const struct RsViewSc
     }
 }
 
-// The wheel model at the four wheel points under the model (instead of the
+// The wheel model at the four wheel points of the model (instead of the
 // game's wheels), each corner: spin about +X (rolling forward: the top goes
 // to +Z), on the -X side mirrored (x -> -x, corners 1 and 2 swapped, so the
-// rim faces outwards and the culling stays right), scaled, the front pair
-// steered about +Y (+ = left: the front edge toward +X), moved to its point.
-// Colours 1:1 as in the file, like the model; pad bit 0 = both sides.
-static void RsView_DrawWheels(const struct RsView *v, const struct RsViewTarget *t, const struct RsViewScene *s)
+// rim faces outwards, a tread runs mirrored and the culling stays right -
+// the right wheels of WHLS version 2), scaled, the front pair steered about
+// +Y (+ = left: the front edge toward +X), moved to its point, raised by the
+// radius it grew (RsView_WheelLift). Textured with its UVs (nearest texel,
+// as the native model), the corner colours as in the file. Unlike the
+// game's wheels the wheels of the model meet it by depth, as the game draws
+// them in the native model's item (pixel by pixel, renderer wheel concept 4).
+// The time it takes goes to wheelTicks (RsView_WheelBench).
+static void RsView_DrawWheels(struct RsView *v, const struct RsViewTarget *t, const struct RsViewScene *s)
 {
     const long long ss = RsView_Sin(v->wheelSpin), sc = RsView_Cos(v->wheelSpin);
     const long long ps = RsView_Sin(v->wheelSteer), pc = RsView_Cos(v->wheelSteer);
+    const long long lift = RsView_WheelLift(v);
+    const struct RsViewNativeTex *tex = v->wheelTextured ? &v->wheelTex : NULL;
+    LARGE_INTEGER start, end;
     int w, i, c;
 
+    QueryPerformanceCounter(&start);
     for (w = 0; w < 4; w++) {
         const int mirror = v->tireAt[w][0] < 0;
         const int front = w < 2;
         for (i = 0; i < v->wheelCount; i++) {
-            const unsigned char *p = v->wheelTris + (size_t)i * RS_VIEW_TRI_BYTES;
+            const unsigned char *p = v->wheelTris + (size_t)i * RS_VIEW_WHEEL_TRI_BYTES;
             struct RsViewVert vert[3];
             for (c = 0; c < 3; c++) {
-                const unsigned char *q = p + (mirror && c ? 3 - c : c) * RS_VIEW_CORNER_BYTES;
+                const unsigned char *q = p + (mirror && c ? 3 - c : c) * RS_VIEW_WHEEL_CORNER_BYTES;
                 const long long x0 = RsView_ReadS16(q), y0 = RsView_ReadS16(q + 2), z0 = RsView_ReadS16(q + 4);
                 long long x = mirror ? -x0 : x0;
                 long long y = (y0 * sc - z0 * ss) / 16384;
@@ -1666,15 +1708,19 @@ static void RsView_DrawWheels(const struct RsView *v, const struct RsViewTarget 
                     z = (z * pc - x * ps) / 16384;
                     x = xs;
                 }
-                RsView_Project(&s->cam, x + v->tireAt[w][0], y + v->tireAt[w][1], z + v->tireAt[w][2], s->offModel,
+                RsView_Project(&s->cam, x + v->tireAt[w][0], y + v->tireAt[w][1] + lift, z + v->tireAt[w][2], s->offModel,
                                1, &vert[c]);
-                vert[c].r = q[6];
-                vert[c].g = q[7];
-                vert[c].b = q[8];
+                vert[c].u = (long long)(int)RsView_ReadU32(q + 6);
+                vert[c].v = (long long)(int)RsView_ReadU32(q + 10);
+                vert[c].r = q[14];
+                vert[c].g = q[15];
+                vert[c].b = q[16];
             }
-            RsView_Triangle(t, vert, !(p[9] & 1));
+            RsView_TriangleTex(t, vert, !(p[17] & 1), tex, 0);
         }
     }
+    QueryPerformanceCounter(&end);
+    v->wheelTicks = end.QuadPart - start.QuadPart;
 }
 
 // The game's wheels under the model (only into pixels the model left free),
@@ -1688,7 +1734,7 @@ static void RsView_DrawDummy(struct RsView *v, const struct RsViewTarget *t, con
                                   RS_VIEW_DUMMY_TRI_MAX, &positions);
 
     if (v->loaded && v->wheels && v->wheelCount) {
-        own.maskMode = RS_VIEW_MASK_SKIP;
+        own.maskMode = RS_VIEW_MASK_NONE;   // by depth, as the game draws them
         RsView_DrawWheels(v, &own, s);
     } else if (v->loaded && v->wheels && v->tireEnd > v->tireFirst && v->tireEnd <= positions) {
         own.maskMode = RS_VIEW_MASK_SKIP;
@@ -1966,7 +2012,7 @@ static void RsView_Render(HWND view, struct RsView *v)
     } else if (RsView_ShownPose(v)->count == 0) {
         RsView_CenterText(v, L"This pose has no triangles.");
     }
-    if (nativeTimed && Rs_Automating()) {
+    if (nativeTimed && Rs_Automating() && !v->benching) {
         QueryPerformanceCounter(&renderEnd);
         QueryPerformanceFrequency(&freq);
         Rs_AutoLog(L"  view: native model %d triangles, pose %d, %d x %d pixels: triangles %lld us, whole picture %lld us",
@@ -2277,6 +2323,18 @@ static void RsView_PickNotify(HWND view, struct RsView *v, int x, int y)
         SendMessageW(parent, WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(view), RS_VIEW_N_PICK), (LPARAM)view);
 }
 
+// One tick of the wheel animation: fixed steps of spin and steering.
+static void RsView_WheelStep(struct RsView *v)
+{
+    v->wheelSpin = RsView_NormDeg(v->wheelSpin + RS_VIEW_WHEEL_SPIN_STEP);
+    if (v->wheelSteerStep == 0)
+        v->wheelSteerStep = RS_VIEW_WHEEL_STEER_STEP;
+    if (v->wheelSteer + v->wheelSteerStep > RS_VIEW_WHEEL_STEER_MAX ||
+        v->wheelSteer + v->wheelSteerStep < -RS_VIEW_WHEEL_STEER_MAX)
+        v->wheelSteerStep = -v->wheelSteerStep;
+    v->wheelSteer += v->wheelSteerStep;
+}
+
 // The view's own timer for the wheel animation (another window than the
 // page's timers, so no ID can clash).
 static void RsView_WheelTimer(HWND view, struct RsView *v, int run)
@@ -2309,7 +2367,7 @@ static LRESULT CALLBACK RsView_Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         RsView_DummyExtent(v);
         v->setIndex = -1;
         v->wheelScale = 100;
-        Rs_DummyTires(v->tireAt, NULL);
+        Rs_DummyTires(v->tireAt, &v->tireHalf);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)v);
         return 0;
     case WM_DESTROY:
@@ -2356,13 +2414,7 @@ static LRESULT CALLBACK RsView_Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                 RsView_WheelTimer(hwnd, v, 0);
                 return 0;
             }
-            v->wheelSpin = RsView_NormDeg(v->wheelSpin + RS_VIEW_WHEEL_SPIN_STEP);
-            if (v->wheelSteerStep == 0)
-                v->wheelSteerStep = RS_VIEW_WHEEL_STEER_STEP;
-            if (v->wheelSteer + v->wheelSteerStep > RS_VIEW_WHEEL_STEER_MAX ||
-                v->wheelSteer + v->wheelSteerStep < -RS_VIEW_WHEEL_STEER_MAX)
-                v->wheelSteerStep = -v->wheelSteerStep;
-            v->wheelSteer += v->wheelSteerStep;
+            RsView_WheelStep(v);
             if (v->wheelCount && v->loaded && v->wheels)
                 RsView_Changed(hwnd, v);
             return 0;
@@ -2799,6 +2851,59 @@ void RsView_SetWheelAnimation(HWND view, int on)
         return;
     v->wheelAnim = on != 0;
     RsView_WheelTimer(view, v, v->wheelAnim && v->wheelCount && IsWindowVisible(view));
+}
+
+// See rs_view.h: the picture `frames` times, each one tick of the animation
+// further, timed with QueryPerformanceCounter; spin and steering back after.
+int RsView_WheelBench(HWND view, int frames, int *wholeAvgUs, int *wholeMaxUs, int *wheelsAvgUs, int *wheelsMaxUs)
+{
+    struct RsView *v = RsView_Data(view);
+    LARGE_INTEGER freq, a, b;
+    long long whole = 0, wheels = 0, wholeMax = 0, wheelsMax = 0;
+    int spin, steer, step, i;
+    RECT rc;
+
+    if (!v || frames < 1 || !v->wheelCount)
+        return 0;
+    GetClientRect(view, &rc);
+    if (!RsView_EnsureFrame(v, rc.right, rc.bottom))
+        return 0;
+    spin = v->wheelSpin;
+    steer = v->wheelSteer;
+    step = v->wheelSteerStep;
+    QueryPerformanceFrequency(&freq);
+    v->benching = 1;
+    for (i = 0; i < frames; i++) {
+        RsView_WheelStep(v);
+        v->wheelTicks = 0;
+        QueryPerformanceCounter(&a);
+        RsView_Render(view, v);
+        QueryPerformanceCounter(&b);
+        whole += b.QuadPart - a.QuadPart;
+        wheels += v->wheelTicks;
+        if (b.QuadPart - a.QuadPart > wholeMax)
+            wholeMax = b.QuadPart - a.QuadPart;
+        if (v->wheelTicks > wheelsMax)
+            wheelsMax = v->wheelTicks;
+    }
+    v->benching = 0;
+    v->wheelSpin = spin;
+    v->wheelSteer = steer;
+    v->wheelSteerStep = step;
+    RsView_Changed(view, v);
+    *wholeAvgUs = (int)(whole * 1000000 / freq.QuadPart / frames);
+    *wholeMaxUs = (int)(wholeMax * 1000000 / freq.QuadPart);
+    *wheelsAvgUs = (int)(wheels * 1000000 / freq.QuadPart / frames);
+    *wheelsMaxUs = (int)(wheelsMax * 1000000 / freq.QuadPart);
+    return frames;
+}
+
+int RsView_WheelPixels(HWND view, int *w, int *h)
+{
+    struct RsView *v = RsView_Data(view);
+    *w = v ? v->w : 0;
+    *h = v ? v->h : 0;
+    return v && v->wheelCount && v->loaded && v->wheels;
 }
 
 // ---------------------------------------------------------------------------

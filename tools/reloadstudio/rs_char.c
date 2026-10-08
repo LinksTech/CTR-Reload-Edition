@@ -60,8 +60,18 @@
 //   "Show kart wheels" (default on, --wheels; off = the game draws no kart
 //      wheels for this driver, for models with wheels of their own; the
 //      preview's dummy follows at once)
+// THE NATIVE MODEL (PREVIEW, open to everyone): an OBJ gets its own mesh,
+// UVs and textures beside the classic model (--native-model on) when
+// "Native model" on the card Import is ticked and Show kart wheels is off -
+// or on, with a wheel model of the card Wheels (rs_wheels.c): then
+// --wheel-model <file> [--wheel-size <percent>] as well, and the native model
+// drives on the author's wheels while the classic model keeps the game's
+// (Char_NativePassed, Char_WheelPassed). Not ticked (the start) the command
+// and the bytes are those of before. The look (tab In-game look), the native
+// model in the preview and the card Wheels are open as well; each is marked
+// "Preview feature".
 // THE USER MODE (Rs_NativeForUsers: today --enable-preview-features, later
-// the release of the native model): the first four options and Colors (card
+// perhaps the release of the native model): the first four options and Colors (card
 // Import) are hidden and stay rldpack's defaults - nothing of them is passed,
 // so a model over the limit is reduced for the classic model (CMDL) while
 // the native model keeps every face. An OBJ with Show kart wheels off is
@@ -150,8 +160,9 @@
 //   5 Extras        the cards Import (how rldpack reads the model: its up and
 //                   forward axes, the colours of its palette; for an OBJ how
 //                   its vertex colours meet its textures), Wheels and
-//                   Animations (rs_wheels.c, rs_anim.c), one at a time; the
-//                   last two locked without --enable-preview-features. Import
+//                   Animations (rs_wheels.c, rs_anim.c), one at a time;
+//                   Wheels a preview feature open to everyone, Animations
+//                   locked without --enable-preview-features. Import
 //                   lives here, not on the tab Model: there an OBJ leaves no
 //                   room at 1366 x 768 and at 1920 x 1080 with 150 % (the bar
 //                   is at its least height), and its choices are rarely
@@ -191,7 +202,7 @@
 #define CHAR_CLICK_DELAY   100
 #define CHAR_VAL           1024   // length of a value or path
 #define CHAR_VOICE_SET_MAX 64     // files with an event of their own (--voice), at most
-#define CHAR_MAX_ARGS      (52 + 2 * CHAR_VOICE_SET_MAX)
+#define CHAR_MAX_ARGS      (56 + 2 * CHAR_VOICE_SET_MAX)
 #define CHAR_CMD_CAP       32768  // the command in the raw output, at most (the shell's RS_CMD_CAP)
 #define CHAR_NAME_MAX      17     // RLDCHAR_NAME_MAX in include/rldchar.inc
 #define CHAR_SIZE_MIN      50     // range of the --size switch
@@ -355,7 +366,7 @@
 #define CHAR_ID_NATIVE_HELP    396
 #define CHAR_ID_IMPORT_LAST    399
 #define CHAR_ID_LOOK_SWITCH    400   // 400..401: Portrait | In the race in the title line of the tab In-game look
-#define CHAR_ID_LOOK_HINT      402   // "Coming soon" / "Preview feature" right in that line (card In the race)
+#define CHAR_ID_LOOK_HINT      402   // "Preview feature" right in that line (card In the race)
 #define CHAR_ID_SHADOW_LABEL   403   // the card In the race: shadow and exhaust of the driver (renderer package A)
 #define CHAR_ID_SHADOW         404
 #define CHAR_ID_SHADOW_HELP    405
@@ -686,7 +697,7 @@ static struct {
     HWND nativeLabel, native, nativeHint, nativeHelp;    // its row "Native model" (preview feature, Char_NativeUpdate)
     HWND fallback, fallbackHint, nativeLine;  // tab Model, Rs_NativeForUsers only (Char_UserHidden)
     // The tab In-game look: Portrait | In the race (lookCard), and on the card
-    // In the race the shadow and the exhaust (preview feature, Char_LookOn).
+    // In the race the shadow and the exhaust (preview feature, open to everyone).
     HWND lookSwitch[CHAR_LOOK_CARDS], lookHint, lookNote;
     HWND shadowLabel, shadow, shadowHelp, exhaustLabel, exhaust, exhaustHelp;
     HWND pointLabel[2], point[2][3], pointPick[2];
@@ -3104,29 +3115,31 @@ static void Char_TexturesUpdate(HWND page)
     }
 }
 
-// The row "Native model" of the card Import (preview feature). LOCKED without
-// --enable-preview-features (g_rsPreviewFeatures): shown, the tick box greyed
-// out and empty, "Coming soon" at the right; every path that could tick it
-// checks the switch itself, and Char_MakeArgs passes --native-model on only
-// with the switch, for an OBJ, ticked - so without the switch the command and
-// the bytes of the character are those of before. With the switch: enabled
-// for an OBJ; the note says what the last check made of it (@char
-// native-model, Char_NativeResult). Never stored in the settings.
-#define CHAR_NATIVE_TEXT_OFF L"Later: the OBJ's own mesh and textures for the native renderer, beside the game's own model."
-#define CHAR_NATIVE_TEXT_ON  L"Writes CNET and CTXT (preview): the OBJ's own mesh, UVs and textures, each texture a power of two from 16 to 2048. The game reads them only with --dev --native-preview; the driver keeps the model above."
+// The row "Native model" of the card Import. PREVIEW, open to everyone
+// ("Preview feature" at the right, with and without --enable-preview-features;
+// the user mode has no tick box, Char_UserHidden): enabled for an OBJ, empty
+// at the start - not ticked, the command and the bytes of the character are
+// those of before. Ticked, Char_MakeArgs passes --native-model on for an OBJ
+// with Show kart wheels off (rldpack refuses it beside the kart wheels); the
+// note says what the last check made of it (@char native-model,
+// Char_NativeResult) or why it is not passed. Never stored in the settings.
+#define CHAR_NATIVE_TEXT_ON  L"Preview: also writes the OBJ's own mesh, UVs and textures (CNET, CTXT; each texture a power of two from 16 to 2048) beside the classic model; needs Show kart wheels off or a wheel model (Extras, Wheels). The game draws it with NATIVE DRIVERS set to PREVIEW (OPTIONS, GRAPHICS)."
 #define CHAR_NATIVE_TEXT_OBJ L"Only for an OBJ model with its materials."
 // ---------------------------------------------------------------------------
 // THE LOOK OF THE DRIVER (tab In-game look, card In the race; renderer package A)
 // ---------------------------------------------------------------------------
 //
 // make-char --shadow retail|auto|off and --exhaust retail|off|x,y,z[;x,y,z]
-// (tools/rldpack_char.inc, THE LOOK). PREVIEW FEATURE: without
-// --enable-preview-features the fields are greyed out with "Coming soon",
-// and with the wheels hidden the page passes --shadow retail --exhaust retail
-// - rldpack's defaults follow the wheels (auto/off without them), and so a
-// character keeps the bytes it had before the look. With the switch the
-// choices start at rldpack's defaults and follow "Show kart wheels" until the
-// author changes them; only what differs from the default is passed. The
+// (tools/rldpack_char.inc, THE LOOK). PREVIEW, open to everyone ("Preview
+// feature" in the title line of the card, with and without
+// --enable-preview-features). rldpack's defaults follow the wheels
+// (retail/retail with them, auto/off without them); the page passes what
+// differs from them. Without the user mode the choices start at retail/retail
+// whatever the wheels, so with the wheels hidden the page passes --shadow
+// retail --exhaust retail until the author chooses: a character keeps the
+// command and the bytes it had before the look. In the user mode
+// (Rs_NativeForUsers) the choices start at rldpack's defaults and follow
+// "Show kart wheels" until the author changes them. The
 // points are game units of the built model, as rldpack info and @value
 // exhaust-point give them; Pick takes the surface point under a click in
 // the preview (pose Neutral, RsView_PickBegin). The preview draws the shadow
@@ -3137,34 +3150,24 @@ static void Char_TexturesUpdate(HWND page)
 
 static void Char_Changed(HWND page);
 
-static int Char_LookOn(void)
-{
-    return g_rsPreviewFeatures;
-}
-
-// The choices that follow the wheels: rldpack's defaults (retail/retail,
-// without the wheels auto/off); without the switch retail/retail.
+// The choices the author has not set: retail/retail; in the user mode
+// rldpack's defaults (retail/retail, without the wheels auto/off).
 static void Char_LookDefaults(void)
 {
-    const int wheels = Char_IsChecked(g_char.wheels);
+    const int follow = Rs_NativeForUsers() && !Char_IsChecked(g_char.wheels);
     if (!g_char.shadow)
         return;
-    if (!Char_LookOn() || !g_char.shadowSet)
-        SendMessageW(g_char.shadow, CB_SETCURSEL, (!Char_LookOn() || wheels) ? 0 : 1, 0);
-    if (!Char_LookOn() || !g_char.exhaustSet)
-        SendMessageW(g_char.exhaust, CB_SETCURSEL, (!Char_LookOn() || wheels) ? 0 : 2, 0);
+    if (!g_char.shadowSet)
+        SendMessageW(g_char.shadow, CB_SETCURSEL, follow ? 1 : 0, 0);
+    if (!g_char.exhaustSet)
+        SendMessageW(g_char.exhaust, CB_SETCURSEL, follow ? 2 : 0, 0);
 }
 
-// The point fields only for custom points; everything only with the switch.
+// The point fields only for custom points.
 static void Char_LookEnable(void)
 {
-    const int on = Char_LookOn();
-    const int custom = on && Char_ListIndex(g_char.exhaust, 3) == 1;
+    const int custom = Char_ListIndex(g_char.exhaust, 3) == 1;
     int i, a;
-    EnableWindow(g_char.shadow, on);
-    EnableWindow(g_char.exhaust, on);
-    Rs_SetTextColor(g_char.shadowLabel, on ? RS_COL_TEXT : RS_COL_MUTED);
-    Rs_SetTextColor(g_char.exhaustLabel, on ? RS_COL_TEXT : RS_COL_MUTED);
     for (i = 0; i < 2; i++) {
         Rs_SetTextColor(g_char.pointLabel[i], custom ? RS_COL_TEXT : RS_COL_MUTED);
         for (a = 0; a < 3; a++)
@@ -3215,16 +3218,12 @@ static void Char_LookPointSet(int i, const int v[3])
     g_char.applying = 0;
 }
 
-// The preview follows the fields at once (only with the switch).
+// The preview follows the fields at once.
 static void Char_LookPreview(void)
 {
     int quad[4], pts[2][3], count = 0, shadow = 0, i;
     if (!g_char.view)
         return;
-    if (!Char_LookOn()) {
-        RsView_SetLook(g_char.view, 0, NULL, 0, NULL, 0);
-        return;
-    }
     switch (Char_ListIndex(g_char.shadow, 3)) {
     case 0:
         memcpy(quad, g_charRetailQuad, sizeof(quad));
@@ -3306,7 +3305,7 @@ static void Char_SelectLook(HWND page, int c)
 static void Char_LookPickStart(int n)
 {
     wchar_t text[160];
-    if (!Char_LookOn() || Char_ListIndex(g_char.exhaust, 3) != 1)
+    if (Char_ListIndex(g_char.exhaust, 3) != 1)
         return;
     SendMessageW(g_char.pose, CB_SETCURSEL, RS_VIEW_POSE_NEUTRAL, 0);
     g_char.poseNow = RS_VIEW_POSE_NEUTRAL;
@@ -3344,21 +3343,41 @@ static void Char_LookPicked(HWND page)
 // refuses --native-model on beside them), so with the kart wheels an OBJ is
 // built as the classic model only - no dialog, the line below the options
 // says so; a PLY names no texture file and is the classic model only too.
-#define CHAR_NATIVE_TEXT_USER   L"Native model: the OBJ's own mesh, UVs and textures, built beside the classic model (preview: the game reads it only with --dev --native-preview)."
+#define CHAR_NATIVE_TEXT_USER   L"Native model: the OBJ's own mesh, UVs and textures, built beside the classic model (preview: the game draws it with NATIVE DRIVERS set to PREVIEW)."
 #define CHAR_NATIVE_TEXT_PLY    L"Classic model only: a PLY names no texture file. Export the model as OBJ with its textures for the native model."
-#define CHAR_NATIVE_TEXT_WHEELS L"Classic model only: the native model needs Show kart wheels off."
+#define CHAR_NATIVE_TEXT_WHEELS L"Classic model only: the native model needs Show kart wheels off or a wheel model (Extras, Wheels)."
+
+// The native model is built for an OBJ (ticked, or in the user mode) with
+// Show kart wheels off, or with them and a wheel model of the card Wheels
+// (its wheels then stand in for the kart wheels on the native model).
+static int Char_NativeOn(void)
+{
+    return g_char.objOn && g_char.wheels && (Rs_NativeForUsers() || Char_IsChecked(g_char.native));
+}
 
 static int Char_NativePassed(void)
 {
-    if (Rs_NativeForUsers())
-        return g_char.objOn && g_char.wheels && !Char_IsChecked(g_char.wheels);
-    return g_rsPreviewFeatures && g_char.objOn && Char_IsChecked(g_char.native);
+    return Char_NativeOn() && (!Char_IsChecked(g_char.wheels) || CharWheels_ModelPath(NULL, 0));
+}
+
+// The wheel model of the card Wheels goes to make-char (--wheel-model): with
+// the native model and Show kart wheels on - off, there are no wheels at all.
+static int Char_WheelPassed(wchar_t *path, int cap)
+{
+    return Char_NativePassed() && Char_IsChecked(g_char.wheels) && CharWheels_ModelPath(path, cap);
 }
 
 static void Char_NativeNote(const wchar_t *text)
 {
-    if (g_char.nativeHelp)
+    if (g_char.nativeHelp) {
+        RECT rc;
         Rs_SetText(g_char.nativeHelp, text);
+        // Compact: one line, cut with "..." and the whole text as the tooltip
+        // when it is longer (Char_TextHeight sets both; the height stays).
+        GetWindowRect(g_char.nativeHelp, &rc);
+        if (g_char.compact && rc.right > rc.left)
+            Char_TextHeight(g_char.nativeHelp, rc.right - rc.left, 3);
+    }
     if (g_char.nativeLine && Rs_NativeForUsers())
         Rs_SetText(g_char.nativeLine, text);
 }
@@ -3367,19 +3386,19 @@ static void Char_NativeNote(const wchar_t *text)
 // the note of what will be passed.
 static void Char_NativeUpdate(void)
 {
-    const int on = g_rsPreviewFeatures && g_char.objOn;
+    const int on = g_char.objOn;
     if (!g_char.native)
         return;
-    if (!g_rsPreviewFeatures)
-        Char_SetChecked(g_char.native, 0);
+    CharWheels_PageState(g_char.objOn, Char_IsChecked(g_char.wheels), Char_NativeOn(), Char_WheelPassed(NULL, 0),
+                         Char_ListIndex(g_char.up, CHAR_UP_COUNT) != 0, Char_ListIndex(g_char.forward, CHAR_FORWARD_COUNT) != 0);
     EnableWindow(g_char.native, on ? TRUE : FALSE);
     Rs_SetTextColor(g_char.nativeLabel, on ? RS_COL_TEXT : RS_COL_MUTED);
     if (Char_NativePassed() && g_charJob.nativeText[0])
         Char_NativeNote(g_charJob.nativeText);
     else if (Rs_NativeForUsers())
         Char_NativeNote(!g_char.objOn ? CHAR_NATIVE_TEXT_PLY : Char_NativePassed() ? CHAR_NATIVE_TEXT_USER : CHAR_NATIVE_TEXT_WHEELS);
-    else if (!g_rsPreviewFeatures)
-        Char_NativeNote(CHAR_NATIVE_TEXT_OFF);
+    else if (g_char.objOn && Char_IsChecked(g_char.native) && Char_IsChecked(g_char.wheels))
+        Char_NativeNote(CHAR_NATIVE_TEXT_WHEELS);
     else if (!g_char.objOn)
         Char_NativeNote(CHAR_NATIVE_TEXT_OBJ);
     else
@@ -4880,6 +4899,8 @@ struct CharArgs {
     wchar_t size[16];
     wchar_t mapColor[8];    // RRGGBB
     wchar_t exhaust[160];   // --exhaust x,y,z[;x,y,z]
+    wchar_t wheel[CHAR_VAL];      // --wheel-model (the card Wheels)
+    wchar_t wheelSize[16];        // --wheel-size
     wchar_t *name;          // Rs_Free
     wchar_t *voiceSet[CHAR_VOICE_SET_MAX];   // "<file>=<event>" of --voice, Rs_Free
 };
@@ -5043,17 +5064,11 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
     }
     // The look (tab In-game look, In the race; preview feature). rldpack's
     // defaults follow the wheels (retail/retail with them, auto/off without);
-    // only what differs is passed. Without the switch the look stays retail:
-    // with the wheels hidden --shadow retail --exhaust retail keeps the bytes
-    // of a character from before the look (and with them nothing is passed).
-    if (!Char_LookOn()) {
-        if (!Char_IsChecked(g_char.wheels)) {
-            Char_ArgsAdd(a, L"--shadow");
-            Char_ArgsAdd(a, L"retail");
-            Char_ArgsAdd(a, L"--exhaust");
-            Char_ArgsAdd(a, L"retail");
-        }
-    } else {
+    // only what differs is passed. The choices start at retail/retail
+    // (Char_LookDefaults; in the user mode at rldpack's defaults): with the
+    // wheels hidden --shadow retail --exhaust retail keeps the command and the
+    // bytes of a character from before the look (with them nothing is passed).
+    {
         const int wheels = Char_IsChecked(g_char.wheels);
         const int sh = Char_ListIndex(g_char.shadow, 3), ex = Char_ListIndex(g_char.exhaust, 3);
         if (sh != (wheels ? 0 : 1)) {
@@ -5102,6 +5117,19 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
     if (Char_NativePassed()) {
         Char_ArgsAdd(a, L"--native-model");
         Char_ArgsAdd(a, L"on");
+    }
+    // The card Wheels (rs_wheels.c, preview feature): an author's wheel model
+    // with the native model and the kart wheels shown (make-char writes WHLS
+    // version 2; the classic model keeps the game's wheels), its size only
+    // when it is not 100 %.
+    if (Char_WheelPassed(a->wheel, CHAR_VAL)) {
+        Char_ArgsAdd(a, L"--wheel-model");
+        Char_ArgsAdd(a, a->wheel);
+        if (CharWheels_SizePercent() != 100) {
+            swprintf(a->wheelSize, 16, L"%d", CharWheels_SizePercent());
+            Char_ArgsAdd(a, L"--wheel-size");
+            Char_ArgsAdd(a, a->wheelSize);
+        }
     }
     // The mask always, also the template's: the file carries the choice.
     Char_ArgsAdd(a, L"--mask");
@@ -5719,6 +5747,22 @@ static void Char_Changed(HWND page)
 static void Char_ChangedSoon(HWND page)
 {
     Char_ChangedAfter(page, CHAR_CLICK_DELAY);
+}
+
+// The card Wheels changed its model or its size (CharWheels_ExportChanged):
+// the note of the native model, and a check like a typed field or a click.
+static void Char_WheelsFollow(HWND page)
+{
+    const int changed = CharWheels_ExportChanged();
+    if (!changed)
+        return;
+    Char_NativeUpdate();
+    if (g_char.model) {
+        wchar_t model[CHAR_VAL];
+        Char_FieldPath(g_char.model, model, CHAR_VAL);
+        if (model[0])
+            Char_ChangedAfter(page, changed == 1 ? CHAR_CHECK_DELAY : CHAR_CLICK_DELAY);
+    }
 }
 
 static void Char_MapColorSet(HWND page, int set, COLORREF color)
@@ -6570,7 +6614,7 @@ static int Char_WriteReport(const wchar_t *path)
     {
         wchar_t args[160];
         int pts[3], i;
-        Char_Put(f, L"look: %ls (%ls)", Char_LookOn() ? L"enabled (preview feature)" : L"locked - coming soon",
+        Char_Put(f, L"look: %ls (%ls)", L"enabled (preview feature)",
                  IsWindowEnabled(g_char.shadow) ? L"enabled" : L"greyed out");
         Char_Put(f, L"shadow: %ls (%ls)", g_charShadowWords[Char_ListIndex(g_char.shadow, 3)],
                  g_char.shadowSet ? L"chosen" : L"follows the wheels");
@@ -6603,7 +6647,7 @@ static int Char_WriteReport(const wchar_t *path)
     {
         wchar_t *hint = Rs_GetText(g_char.nativeHint);
         wchar_t *note = Rs_GetText(g_char.nativeHelp);
-        Char_Put(f, L"native model: %ls, %ls, %ls (%ls)", !g_rsPreviewFeatures ? L"locked - coming soon" : L"enabled (preview feature)",
+        Char_Put(f, L"native model: %ls, %ls, %ls (%ls)", L"enabled (preview feature)",
                  IsWindowEnabled(g_char.native) ? L"enabled" : L"greyed out", Char_IsChecked(g_char.native) ? L"on" : L"off",
                  Char_NativePassed() ? L"passed as --native-model on" : L"not passed");
         Char_Put(f, L"native model hint: %ls", hint ? hint : L"");
@@ -7179,14 +7223,13 @@ static void Char_Create(HWND page)
     Char_MapColorShow();
 
     // The tab In-game look: Portrait | In the race, and on In the race the
-    // shadow and the exhaust (preview feature, Char_LookOn).
+    // shadow and the exhaust (preview feature, open to everyone).
     for (i = 0; i < CHAR_LOOK_CARDS; i++)
         g_char.lookSwitch[i] = Char_TabButton(page, CHAR_ID_LOOK_SWITCH + i, g_charLookTexts[i], RS_FONT_SECTION);
     g_char.lookCard = CHAR_LOOK_PORTRAIT;
-    g_char.lookHint = Rs_ComingSoon(page, CHAR_ID_LOOK_HINT);
+    g_char.lookHint = Rs_PreviewMark(page, CHAR_ID_LOOK_HINT);
     SetWindowLongPtrW(g_char.lookHint, GWL_STYLE, GetWindowLongPtrW(g_char.lookHint, GWL_STYLE) | SS_RIGHT);
-    Rs_SetTip(g_char.lookHint, g_rsPreviewFeatures ? L"Unfinished: shadow and exhaust fitted to the model; the game draws them from the next version on."
-                                                   : L"Start Reload Studio with --enable-preview-features to try it.");
+    Rs_SetTip(g_char.lookHint, L"Preview: shadow and exhaust fitted to the model, for the classic and the native model.");
     g_char.shadowLabel = Rs_Label(page, CHAR_ID_SHADOW_LABEL, L"Shadow", RS_FONT_BOLD);
     g_char.shadow = Rs_Combo(page, CHAR_ID_SHADOW);
     for (i = 0; i < 3; i++)
@@ -7457,19 +7500,17 @@ static void Char_Create(HWND page)
     Rs_SetTextColor(g_char.vcolorsHelp, RS_COL_MUTED);
     g_char.nativeLabel = Rs_Label(page, CHAR_ID_NATIVE_LABEL, L"Native model", RS_FONT_BOLD);
     g_char.native = Rs_Check(page, CHAR_ID_NATIVE, L"Also write the mesh and textures as they are");
-    g_char.nativeHint = Rs_ComingSoon(page, CHAR_ID_NATIVE_HINT);
-    // right-aligned in a box as wide as the longer of its two texts: the same
-    // rectangle with and without the switch
+    g_char.nativeHint = Rs_PreviewMark(page, CHAR_ID_NATIVE_HINT);
+    // right-aligned in a box as wide as the longer of "Coming soon" and
+    // "Preview feature" (Char_LayNative)
     SetWindowLongPtrW(g_char.nativeHint, GWL_STYLE, GetWindowLongPtrW(g_char.nativeHint, GWL_STYLE) | SS_RIGHT);
-    g_char.nativeHelp = Rs_Label(page, CHAR_ID_NATIVE_HELP, CHAR_NATIVE_TEXT_OFF, RS_FONT_SMALL);
+    g_char.nativeHelp = Rs_Label(page, CHAR_ID_NATIVE_HELP, CHAR_NATIVE_TEXT_OBJ, RS_FONT_SMALL);
     Rs_SetTextColor(g_char.nativeHelp, RS_COL_MUTED);
-    Rs_SetTip(g_char.native, g_rsPreviewFeatures
-                                 ? L"Preview: rldpack also writes the OBJ's own triangles, UVs, materials and texture files (CNET, CTXT) into the "
-                                   L"character. The game draws them only with --dev --native-preview; the model it draws otherwise stays as it is."
-                                 : L"Start Reload Studio with --enable-preview-features to try it. Nothing of it is written into a character "
-                                   L"without it.");
-    Rs_SetTip(g_char.nativeHint, g_rsPreviewFeatures ? L"Unfinished: the game reads it only with --dev --native-preview."
-                                                     : L"Start Reload Studio with --enable-preview-features to try it.");
+    Rs_SetTip(g_char.native, L"Preview: rldpack also writes the OBJ's own triangles, UVs, materials and texture files (CNET, CTXT) into the "
+                             L"character, beside the classic model; it needs Show kart wheels off or a wheel model of your own (Extras, "
+                             L"Wheels). The game draws them with NATIVE DRIVERS "
+                             L"set to PREVIEW (OPTIONS, GRAPHICS); otherwise it draws the classic model as before.");
+    Rs_SetTip(g_char.nativeHint, L"Preview: the game draws the native model with NATIVE DRIVERS set to PREVIEW (OPTIONS, GRAPHICS).");
     Char_NativeUpdate();
     CharWheels_Create(page, g_char.view);
     CharAnim_Create(page, g_char.view);
@@ -7987,10 +8028,7 @@ static int Char_LayNative(const struct CharLay *k, const RECT *in, int y)
         return y + (h > Rs_Px(24) ? h : Rs_Px(24)) + Rs_Px(8);
     }
     y += Rs_Px(g_char.compact ? 26 : 28);
-    // Compact without the switch: the note is the tick box's tooltip anyway
-    // (Char_TabApply hides it).
-    if (g_char.compact)
-        return y + Rs_Px(2);
+    // Compact: the note on one line, the whole text its tooltip (Char_TextHeight).
     h = Char_TextHeight(g_char.nativeHelp, fieldW, 3);
     MoveWindow(g_char.nativeHelp, x, y, fieldW, h, TRUE);
     return y + h + Rs_Px(g_char.compact ? 2 : 8);
@@ -8225,8 +8263,6 @@ static void Char_TabApply(HWND page)
             want = want && g_char.reduceFitOn;
         else if (c == g_char.quality)
             want = want && g_char.qualityOn;
-        else if (c == g_char.nativeHelp && !Rs_NativeForUsers())
-            want = want && !g_char.compact;
         else if (c == g_char.sizeHint || c == g_char.optionsLabel)
             want = want && !g_char.compact;
         else if (c == g_char.modelImport)
@@ -8435,9 +8471,14 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
     int code = HIWORD(wParam);
     (void)lParam;
 
-    // The cards of the preview features handle their own controls.
-    if (CharAnim_Command(page, id, code) || CharWheels_Command(page, id, code))
+    // The cards of the preview features handle their own controls; a change
+    // of the wheel model or its size is a change of the command (Char_WheelsFollow).
+    if (CharAnim_Command(page, id, code))
         return 0;
+    if (CharWheels_Command(page, id, code)) {
+        Char_WheelsFollow(page);
+        return 0;
+    }
     // The user mode fixes these to rldpack's defaults (Char_UserHidden):
     // taken and dropped, whatever sent it; the fallback stays ticked.
     if (id == CHAR_ID_FALLBACK) {
@@ -8464,13 +8505,8 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
             Char_SelectLook(page, id - CHAR_ID_LOOK_SWITCH);
         return 0;
     }
-    // The look: locked without the switch - taken and dropped, the choices
-    // back where they were (EnableWindow alone does not stop a posted WM_COMMAND).
+    // The look.
     if (id >= CHAR_ID_SHADOW && id <= CHAR_ID_LOOK_NOTE) {
-        if (!Char_LookOn()) {
-            Char_LookDefaults();
-            return 0;
-        }
         if ((id == CHAR_ID_SHADOW || id == CHAR_ID_EXHAUST) && code == CBN_SELCHANGE) {
             if (id == CHAR_ID_SHADOW)
                 g_char.shadowSet = 1;
@@ -8637,12 +8673,6 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
             Char_ChangedSoon(page);
         break;
     case CHAR_ID_NATIVE:
-        // Locked: taken and dropped, whatever sent it (EnableWindow alone
-        // does not stop a posted WM_COMMAND).
-        if (!g_rsPreviewFeatures) {
-            Char_SetChecked(g_char.native, 0);
-            break;
-        }
         if (code == BN_CLICKED) {
             Char_NativeUpdate();
             Char_ChangedSoon(page);
@@ -8801,8 +8831,10 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
         if (*handled)
             return r;
         r = CharWheels_Message(page, msg, wParam, lParam, handled);
-        if (*handled)
+        if (*handled) {
+            Char_WheelsFollow(page);
             return r;
+        }
     }
     switch (msg) {
     case WM_DRAWITEM: {
@@ -9074,10 +9106,6 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
     }
     if (wcscmp(verb, L"shadow") == 0 || wcscmp(verb, L"exhaust") == 0 || wcscmp(verb, L"exhaust-point") == 0 ||
         wcscmp(verb, L"exhaust-pick") == 0) {
-        if (!Char_LookOn()) {
-            Rs_AutoLog(L"  %ls: locked - coming soon", verb);
-            return RS_AUTO_FAIL;
-        }
         if (wcscmp(verb, L"shadow") == 0 || wcscmp(verb, L"exhaust") == 0) {
             const int isShadow = wcscmp(verb, L"shadow") == 0;
             const wchar_t *const *words = isShadow ? g_charShadowWords : g_charExhaustWords;
@@ -9156,20 +9184,19 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
     if (wcscmp(verb, L"vertex-colors") == 0)
         return Char_AutoVColors(page, arg);
     if (wcscmp(verb, L"native-model") == 0) {
-        if (!g_rsPreviewFeatures) {
-            Rs_AutoLog(L"  native-model: locked - coming soon");
-            return RS_AUTO_FAIL;
-        }
         if (Rs_NativeForUsers()) {
-            Rs_AutoLog(L"  native-model: no tick box - the user mode builds it for an OBJ with Show kart wheels off%ls",
+            Rs_AutoLog(L"  native-model: no tick box - the user mode builds it for an OBJ with Show kart wheels off or a wheel model%ls",
                        !g_char.objOn ? L" (this model is no OBJ: classic model only)"
                        : Char_NativePassed() ? L" (passed)"
-                                             : L" (Show kart wheels is on: classic model only, not passed)");
+                                             : L" (Show kart wheels is on and no wheel model: classic model only, not passed)");
             return _wcsicmp(arg, L"on") == 0 ? RS_AUTO_DONE : RS_AUTO_FAIL;
         }
         r = Char_AutoOption(page, g_char.native, verb, arg);
+        Char_NativeUpdate();
         if (!g_char.objOn)
             Rs_AutoLog(L"  native-model: greyed out - no OBJ, not passed");
+        else if (Char_IsChecked(g_char.native) && !Char_NativePassed())
+            Rs_AutoLog(L"  native-model: not passed - Show kart wheels is on and no wheel model is chosen (classic model only)");
         return r;
     }
     if (wcscmp(verb, L"up") == 0)
@@ -9197,7 +9224,9 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
     r = CharAnim_Automate(page, verb, arg);
     if (r != RS_AUTO_UNKNOWN)
         return r;
-    return CharWheels_Automate(page, verb, arg);
+    r = CharWheels_Automate(page, verb, arg);
+    Char_WheelsFollow(page);
+    return r;
 }
 
 static int Char_Busy(HWND page)

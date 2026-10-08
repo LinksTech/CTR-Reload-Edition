@@ -12,4 +12,16 @@ int  CharWheels_Automate(HWND page, const wchar_t *verb, const wchar_t *arg);  /
 int  CharWheels_Busy(void);
 void CharWheels_ModelChecked(HWND page, const wchar_t *model, int sizePercent, int ok);  // after every check, "" = no model
 void CharWheels_Report(FILE *f);                                      // appended to "report"
+// The export (rs_char.c, Char_MakeArgs): the wheel model chosen (1, its path
+// into out) or none (0); its size in percent (100 = the game's wheel).
+int  CharWheels_ModelPath(wchar_t *out, int cap);
+int  CharWheels_SizePercent(void);
+// 0 = nothing of the export changed since the last call; 1 = the field was
+// typed in, 2 = clicked (Browse, Clear, the slider, automation). Cleared.
+int  CharWheels_ExportChanged(void);
+// The page's choices, after every change: an OBJ, Show kart wheels, the
+// native model on (ticked or the user mode), the wheel model passed, the axes
+// of the card Import (Up Z, Forward -Z; the wheel's as well). The line under
+// the card's options follows them; new axes read the wheel again.
+void CharWheels_PageState(int obj, int kartWheels, int nativeOn, int passed, int upZ, int backwards);
 #endif

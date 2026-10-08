@@ -2041,6 +2041,14 @@ void Rs_LabelOneLine(HWND label, int on)
     Rs_Free(text);
 }
 
+HWND Rs_PreviewMark(HWND page, int id)
+{
+    HWND h = Rs_Label(page, id, L"Preview feature", RS_FONT_SMALL);
+    if (h)
+        Rs_SetTextColor(h, RS_COL_NOTE);
+    return h;
+}
+
 HWND Rs_ComingSoon(HWND page, int id)
 {
     HWND h = Rs_Label(page, id, g_rsPreviewFeatures ? L"Preview feature" : L"Coming soon", RS_FONT_SMALL);
