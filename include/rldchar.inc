@@ -2307,7 +2307,7 @@ static const char *RldChar_CheckVoices(const u8 *bytes, u64 size, struct RldChar
 #define RLDCHAR_WHEEL_VERSION_USER 2u              // WHLS version 2: an author's wheel (make-char --wheel-model), rule CNET-12
 #define RLDCHAR_WHEEL_VERSION_USER3 3u             // WHLS version 3: version 2 and its extension (rear wheel, axles, flags)
 #define RLDCHAR_WHEEL_TEXTURE_EDGE_MAX 1024u       // CNET-12: each side of the texture of a version 2 or 3 wheel
-#define RLDCHAR_WHEEL_ALWAYS_DRAW 0x1u             // WHLS 3 flags bit 0: drawn at every level of detail
+#define RLDCHAR_WHEEL_ALWAYS_DRAW 0x1u             // WHLS 3 flags bit 0: reserved for the level of detail (no effect: own wheels are drawn at every distance)
 #define RLDCHAR_WHEEL_REAR_MESH 0x2u               // WHLS 3 flags bit 1: the rear wheels have a mesh of their own
 #define RLDCHAR_WHEEL_FLAGS_KNOWN 0x3u
 #define RLDCHAR_WHEEL_EXTRA_BYTES 0x30u            // the head of the WHLS 3 extension

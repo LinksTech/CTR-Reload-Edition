@@ -147,33 +147,46 @@ double NativeWheels_StrobeClamp(int treads);
 
 // The tread count of a wheel mesh (model units, centre at the origin, axle
 // along X), worked out once at load from the angles about the axle of its
-// outermost points (radius within NATIVE_WHEELS_TREAD_BAND of the largest):
-// the angles are merged within half a degree; a ring of evenly spaced angles
-// gives its count below 16 and the default above (a smooth tyre: its tread,
-// if any, is in the texture); any other set gives the smallest n in
-// NATIVE_WHEELS_TREADS_MIN..MAX whose n-fold periodicity |mean exp(i n
-// angle)| reaches NATIVE_WHEELS_TREAD_STRENGTH, else the default. positions:
-// the first float x of the first vertex, strideBytes between vertices.
+// outermost points (radius within NATIVE_WHEELS_TREAD_BAND of the largest),
+// merged within half a degree, and - with the triangles - from which gaps
+// between neighbouring angles an edge at full radius covers (a lug top, a
+// smooth tyre) and which are open (a groove, the gap beside a spike or a loose
+// part). A ring of evenly spaced angles: every gap open = spikes (their
+// count), every second gap open = lugs whose tops fill half the pitch (half
+// the count), none open = a smooth tyre (its count below 16, else the
+// default: a tread only painted in the texture is not seen). Any other set:
+// the smallest n in NATIVE_WHEELS_TREADS_MIN..MAX whose n-fold periodicity
+// |mean exp(i n angle)| reaches NATIVE_WHEELS_TREAD_STRENGTH - none open, or
+// n above 24 with fewer than n / 2 open gaps, is no tread (a smooth tyre with
+// a seam or a valve). A result outside NATIVE_WHEELS_TREADS_PLAUSIBLE_MIN..MAX
+// is not believed: the default. positions: the first float x of the first
+// vertex, strideBytes between vertices; indices: the triangles (indexCount
+// u16, a vertex at value - indexBase), or NULL.
 #define NATIVE_WHEELS_TREAD_BAND 0.03
 #define NATIVE_WHEELS_TREAD_STRENGTH 0.35
+#define NATIVE_WHEELS_TREADS_PLAUSIBLE_MIN 4
+#define NATIVE_WHEELS_TREADS_PLAUSIBLE_MAX 32
 struct NativeWheelTreads
 {
-	int treads;    // NATIVE_WHEELS_TREADS_MIN..MAX
-	int estimated; // 1 = from the mesh, 0 = the default
-	u32 outer;     // outermost points
-	u32 angles;    // their angles after merging
+	int treads;      // NATIVE_WHEELS_TREADS_PLAUSIBLE_MIN..MAX, or the default
+	int estimated;   // 1 = from the mesh, 0 = the default
+	u32 outer;       // outermost points
+	u32 angles;      // their angles after merging
+	int open;        // open gaps between them; -1 without the triangles
+	int implausible; // a count found and not believed (0 = none)
 	double strength; // the periodicity of the count taken (0 for the default)
 };
-void NativeWheels_EstimateTreads(const float *positions, size_t strideBytes, u32 count, struct NativeWheelTreads *out);
+void NativeWheels_EstimateTreads(const float *positions, size_t strideBytes, u32 count, const u16 *indices, u32 indexCount, u32 indexBase,
+                                 struct NativeWheelTreads *out);
 
 // The stroboscope counters of every seat with a clamp (an own wheel): ticks
 // with a roll step, ticks clamped, and the largest true and drawn steps in
 // tread pitches (the drawn one stays below 0.5).
 void NativeWheels_StrobeCounts(unsigned long long *ticks, unsigned long long *clamped, double *stepMax, double *drawnMax);
 
-// --native-depth-selftest, a line of its own: the estimate on made-up wheels
-// (8 lugs, 12 bevelled lugs, a smooth ring of 32, a ring of 10, none) and the
-// clamp on made-up ticks. 1 = passed; line gets the report.
+// --native-depth-selftest, a line of its own: the estimate on made-up tyres
+// (lugs, bevelled lugs, lugs of half the pitch, smooth, seam, valve, coarse
+// polygon, spikes, 3 lugs, none) and the clamp on made-up ticks. 1 = passed; line gets the report.
 int NativeWheels_StrobeSelfTest(char *line, size_t size);
 
 // Counters for the exit report, of the counted seat only: ticks with a pose

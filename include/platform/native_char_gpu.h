@@ -56,6 +56,7 @@
 #define NATIVE_CHAR_GPU_FINISH_LOSE 1 // RLDCHAR_MORPH_LOSE
 #define NATIVE_CHAR_GPU_FINISH_TARGETS 2
 #define NATIVE_CHAR_GPU_FINISH_WIN_RANKS 3 // places 1 to 3 win, 4 to 8 lose
+#define NATIVE_CHAR_GPU_FINISH_RANKS 8     // the places of a race (8 drivers)
 
 enum
 {
@@ -117,6 +118,9 @@ struct NativeCharGpu
 	u8 wheelTreadsEstimated; // 1 = from the mesh, 0 = the default
 	u32 wheelTreadOuter;     // its outermost points
 	u32 wheelTreadAngles;    // their angles after merging
+	int wheelTreadOpen;      // open gaps between them (NativeWheelTreads.open)
+	int wheelTreadImplausible; // a count found and not believed, 0 = none
+	float wheelTreadStrength; // the periodicity of the count taken
 	// WHLS version 3 (render plan A1, A2, A4). The rear wheel's own mesh sits
 	// behind the front one in the same buffers, laid out the same way (the
 	// mesh, then its mirror image); its middles come with the front ones
@@ -191,6 +195,9 @@ struct NativeCharGpuCpu
 	u8 wheelTreadsEstimated;
 	u32 wheelTreadOuter;
 	u32 wheelTreadAngles;
+	int wheelTreadOpen;
+	int wheelTreadImplausible;
+	float wheelTreadStrength;
 	u8 wheelAlways;
 	u8 wheelRearOwn;
 	u32 wheelRearFirst;
@@ -274,6 +281,10 @@ void NativeCharGpu_FinishLayout(const struct RldCharNative *n, u32 poseCount, in
 void NativeCharGpu_BufferVertices(const struct RldCharNative *n, u32 poseCount, const u32 first[NATIVE_CHAR_GPU_FINISH_TARGETS], u32 targets, u32 pose,
                                   u32 v0, u32 count, struct NativeProbeVertex *out);
 int NativeCharGpu_FinishTarget(int rank);
+// The race kinds with a real placing: NULL when win and lose are drawn, else
+// the reason they are not (the drawing stays as before). gameMode1 and
+// gameMode2 of the game tracker, only read.
+const char *NativeCharGpu_FinishModeRefusal(u32 gameMode1, u32 gameMode2);
 int NativeCharGpu_FinishStage(u32 ticksSinceFinish);
 int NativeCharGpu_FinishPose(const struct NativeCharGpu *set, int target, int stage);
 const char *NativeCharGpu_FinishName(int target);

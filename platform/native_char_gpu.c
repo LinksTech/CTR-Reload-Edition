@@ -204,11 +204,55 @@ void NativeCharGpu_BufferVertices(const struct RldCharNative *n, u32 poseCount, 
 
 int NativeCharGpu_FinishTarget(int rank)
 {
-	if ((rank < 0) || (rank >= NATIVE_CHAR_GPU_SETS))
+	if ((rank < 0) || (rank >= NATIVE_CHAR_GPU_FINISH_RANKS))
 	{
 		return -1;
 	}
 	return (rank < NATIVE_CHAR_GPU_FINISH_WIN_RANKS) ? NATIVE_CHAR_GPU_FINISH_WIN : NATIVE_CHAR_GPU_FINISH_LOSE;
+}
+
+// THE RACES WITH A PLACING. driverRank is the place only where the race is
+// run to the line: in battle it is a sort or start order (game/PlayLevel.c:
+// 416, 424) and the flag comes from being knocked out (game/231/RB_Player.c:87)
+// or the clock (RB_Player.c:61, 132; game/UI/UI_Clock.c:472); the crystal
+// challenge ends on the crystals or the clock (game/UI/UI_RenderFrame.c:1031,
+// UI_Clock.c:472); a boss race is won only in first place; the adventure
+// races, relic and CTR token races and time trial have rules of their own.
+// Those stay neutral (as before); arcade and versus races, single and cup,
+// take the place. The funnel binds custom characters in single arcade races
+// alone today (platform/native_chars.c, NativeChar_ModeRefusal); this rule
+// holds for whatever it lets through later.
+const char *NativeCharGpu_FinishModeRefusal(u32 gameMode1, u32 gameMode2)
+{
+	if ((gameMode1 & BATTLE_MODE) != 0u)
+	{
+		return "battle";
+	}
+	if ((gameMode1 & CRYSTAL_CHALLENGE) != 0u)
+	{
+		return "crystal challenge";
+	}
+	if ((gameMode1 & ADVENTURE_BOSS) != 0u)
+	{
+		return "boss race";
+	}
+	if ((gameMode1 & (ADVENTURE_MODE | ADVENTURE_ARENA | ADVENTURE_CUP)) != 0u)
+	{
+		return "adventure";
+	}
+	if ((gameMode1 & RELIC_RACE) != 0u)
+	{
+		return "relic race";
+	}
+	if ((gameMode2 & TOKEN_RACE) != 0u)
+	{
+		return "token race";
+	}
+	if ((gameMode1 & TIME_TRIAL) != 0u)
+	{
+		return "time trial";
+	}
+	return NULL;
 }
 
 int NativeCharGpu_FinishStage(u32 ticksSinceFinish)
@@ -473,13 +517,16 @@ int NativeCharGpu_Build(const struct RldCharNative *n, struct NativeCharGpuCpu *
 			{
 				struct NativeWheelTreads treads;
 
-				NativeWheels_EstimateTreads(&verts[0].position[0], sizeof(struct NativeProbeVertex), nw, &treads);
+				NativeWheels_EstimateTreads(&verts[0].position[0], sizeof(struct NativeProbeVertex), nw, idx, tw * 3u, vertexAt, &treads);
 				if (m == 0u)
 				{
 					out->wheelTreads = treads.treads;
 					out->wheelTreadsEstimated = (u8)treads.estimated;
 					out->wheelTreadOuter = treads.outer;
 					out->wheelTreadAngles = treads.angles;
+					out->wheelTreadOpen = treads.open;
+					out->wheelTreadImplausible = treads.implausible;
+					out->wheelTreadStrength = (float)treads.strength;
 				}
 				else
 				{
@@ -703,6 +750,9 @@ internal int NativeCharGpu_Upload(struct NativeCharGpu *set, const struct RldCha
 	set->wheelTreadsEstimated = cpu.wheelTreadsEstimated;
 	set->wheelTreadOuter = cpu.wheelTreadOuter;
 	set->wheelTreadAngles = cpu.wheelTreadAngles;
+	set->wheelTreadOpen = cpu.wheelTreadOpen;
+	set->wheelTreadImplausible = cpu.wheelTreadImplausible;
+	set->wheelTreadStrength = cpu.wheelTreadStrength;
 	set->wheelAlways = cpu.wheelAlways;
 	set->wheelRearOwn = cpu.wheelRearOwn;
 	set->wheelRearFirst = cpu.wheelRearFirst;
@@ -881,9 +931,11 @@ internal void NativeCharGpu_LogTreads(const char *who, const struct NativeCharGp
 	{
 		return;
 	}
-	Platform_Log("[CTR NativeChar] %s: own wheel treads %d (%s, %u outer points at %u angles), roll clamp %.4f rad per tick (half pitch %.4f)\n", who,
-	             set->wheelTreads, set->wheelTreadsEstimated ? "estimated" : "default", (unsigned)set->wheelTreadOuter, (unsigned)set->wheelTreadAngles,
-	             NativeWheels_StrobeClamp(set->wheelTreads), 3.141592653589793 / (double)set->wheelTreads);
+	Platform_Log("[CTR NativeChar] %s: own wheel treads %d (%s, %u outer points at %u angles, open gaps %d, strength %.2f, not believed %d), "
+	             "roll clamp %.4f rad per tick (half pitch %.4f)\n",
+	             who, set->wheelTreads, set->wheelTreadsEstimated ? "estimated" : "default", (unsigned)set->wheelTreadOuter, (unsigned)set->wheelTreadAngles,
+	             set->wheelTreadOpen, (double)set->wheelTreadStrength, set->wheelTreadImplausible, NativeWheels_StrobeClamp(set->wheelTreads),
+	             3.141592653589793 / (double)set->wheelTreads);
 
 	// WHLS version 3: the rear wheel, the middles with the axle offsets and the
 	// level of detail, a line of its own (a version 2 wheel keeps the lines of
@@ -1821,6 +1873,7 @@ internal int NativeCharGpu_TestFormatFiles(const char *dir, int *files, int *che
 
 		snprintf(path, sizeof(path), "%s/%s.rldchar", dir, name);
 		memset(&n, 0, sizeof(n));
+		memset(&cpu, 0, sizeof(cpu));
 		if (!NativeChar_ReadNativeFile(path, name, &n) || !NativeCharGpu_Build(&n, &cpu))
 		{
 			NativeCharGpu_Expect(checks, &failures, 0, name, "the file is missing, its native part is not ready or the set is refused");

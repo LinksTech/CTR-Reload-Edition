@@ -461,6 +461,7 @@ void NativeWheels_StrobeCounts(unsigned long long *ticks, unsigned long long *cl
 #define NATIVE_WHEELS_TREAD_MERGE ((0.5 * NATIVE_WHEELS_TWO_PI) / 360.0)
 #define NATIVE_WHEELS_TREAD_RING 1.25
 #define NATIVE_WHEELS_TREAD_RING_MAX 16
+#define NATIVE_WHEELS_TREAD_GROOVE_FREE 24
 
 internal int NativeWheels_CompareAngle(const void *a, const void *b)
 {
@@ -475,17 +476,72 @@ internal double NativeWheels_AxleRadius(const float *p)
 	return sqrt(((double)p[1] * (double)p[1]) + ((double)p[2] * (double)p[2]));
 }
 
-void NativeWheels_EstimateTreads(const float *positions, size_t strideBytes, u32 count, struct NativeWheelTreads *out)
+internal double NativeWheels_AxleAngle(const float *p)
+{
+	double a = atan2((double)p[2], (double)p[1]);
+
+	if (a < 0.0)
+	{
+		a += NATIVE_WHEELS_TWO_PI;
+	}
+	return a;
+}
+
+// The merged angle a point belongs to (within the merge distance, across
+// 2 pi as well), -1 for none.
+internal int NativeWheels_AngleSlot(const double *angle, u32 merged, double a)
+{
+	u32 i;
+
+	for (i = 0; i < merged; i++)
+	{
+		double d = fabs(a - angle[i]);
+
+		if (d > (NATIVE_WHEELS_TWO_PI * 0.5))
+		{
+			d = NATIVE_WHEELS_TWO_PI - d;
+		}
+		if (d <= NATIVE_WHEELS_TREAD_MERGE)
+		{
+			return (int)i;
+		}
+	}
+	return -1;
+}
+
+// The plausible range of a result: 4 to 32 treads, else the default.
+internal void NativeWheels_TreadsTake(struct NativeWheelTreads *out, int treads, double strength)
+{
+	if ((treads < NATIVE_WHEELS_TREADS_PLAUSIBLE_MIN) || (treads > NATIVE_WHEELS_TREADS_PLAUSIBLE_MAX))
+	{
+		out->treads = NATIVE_WHEELS_TREADS_DEFAULT;
+		out->estimated = 0;
+		out->strength = 0.0;
+		out->implausible = treads;
+		return;
+	}
+	out->treads = treads;
+	out->estimated = 1;
+	out->strength = strength;
+}
+
+void NativeWheels_EstimateTreads(const float *positions, size_t strideBytes, u32 count, const u16 *indices, u32 indexCount, u32 indexBase,
+                                 struct NativeWheelTreads *out)
 {
 	static double angle[NATIVE_WHEELS_TREAD_POINTS];
+	static u8 covered[NATIVE_WHEELS_TREAD_POINTS];
+	static int slot[NATIVE_WHEELS_TREAD_POINTS];
 	const u8 *base = (const u8 *)positions;
 	double rmax = 0.0;
 	u32 outer = 0;
 	u32 merged = 0;
+	u32 open = 0;
+	int alternating = 1;
 	u32 i;
 
 	memset(out, 0, sizeof(*out));
 	out->treads = NATIVE_WHEELS_TREADS_DEFAULT;
+	out->open = -1;
 	if ((positions == NULL) || (count == 0u))
 	{
 		return;
@@ -514,13 +570,7 @@ void NativeWheels_EstimateTreads(const float *positions, size_t strideBytes, u32
 
 		if (NativeWheels_AxleRadius(p) >= (rmax * (1.0 - NATIVE_WHEELS_TREAD_BAND)))
 		{
-			double a = atan2((double)p[2], (double)p[1]);
-
-			if (a < 0.0)
-			{
-				a += NATIVE_WHEELS_TWO_PI;
-			}
-			angle[outer++] = a;
+			angle[outer++] = NativeWheels_AxleAngle(p);
 		}
 	}
 	out->outer = outer;
@@ -543,7 +593,67 @@ void NativeWheels_EstimateTreads(const float *positions, size_t strideBytes, u32
 		return;
 	}
 
-	// A ring of evenly spaced angles: its count below 16, else a smooth tyre.
+	// THE GAPS between neighbouring outer angles: covered when an edge of a
+	// triangle joins two outermost points of those two angles (the tyre runs
+	// on at full radius - a lug top, a smooth tyre), open when none does (a
+	// groove, the gap beside a spike or a loose part). Only with the triangles.
+	if (indices != NULL)
+	{
+		memset(covered, 0, merged);
+		for (i = 0; i < count; i++)
+		{
+			const float *p = (const float *)(const void *)(base + ((size_t)i * strideBytes));
+
+			slot[i] = (NativeWheels_AxleRadius(p) >= (rmax * (1.0 - NATIVE_WHEELS_TREAD_BAND))) ? NativeWheels_AngleSlot(angle, merged, NativeWheels_AxleAngle(p))
+			                                                                                     : -1;
+		}
+		for (i = 0; (i + 2u) < indexCount; i += 3u)
+		{
+			int e;
+
+			for (e = 0; e < 3; e++)
+			{
+				const u32 a = (u32)indices[i + (u32)e] - indexBase;
+				const u32 b = (u32)indices[i + (u32)((e + 1) % 3)] - indexBase;
+				int sa;
+				int sb;
+
+				if ((a >= count) || (b >= count))
+				{
+					continue;
+				}
+				sa = slot[a];
+				sb = slot[b];
+				if ((sa < 0) || (sb < 0))
+				{
+					continue;
+				}
+				if ((u32)sb == (((u32)sa + 1u) % merged))
+				{
+					covered[sa] = 1;
+				}
+				else if ((u32)sa == (((u32)sb + 1u) % merged))
+				{
+					covered[sb] = 1;
+				}
+			}
+		}
+		for (i = 0; i < merged; i++)
+		{
+			open += covered[i] ? 0u : 1u;
+			if (covered[i] == covered[(i + 1u) % merged])
+			{
+				alternating = 0;
+			}
+		}
+		out->open = (int)open;
+	}
+
+	// A ring of evenly spaced angles. With the triangles: no open gap is a
+	// smooth tyre (its count below 16 - a coarse polygon -, else the default),
+	// every gap open are spikes (their count), every second gap open are lugs
+	// whose tops fill half the pitch (half the count); anything else the
+	// default. Without them: the count below 16, else the default.
 	{
 		double gapMin = 1e9;
 		double gapMax = 0.0;
@@ -557,20 +667,34 @@ void NativeWheels_EstimateTreads(const float *positions, size_t strideBytes, u32
 		}
 		if (gapMax <= (gapMin * NATIVE_WHEELS_TREAD_RING))
 		{
-			if (merged < (u32)NATIVE_WHEELS_TREAD_RING_MAX)
+			if ((out->open > 0) && (open == merged))
 			{
-				out->treads = (int)merged;
-				out->estimated = 1;
-				out->strength = 1.0;
+				NativeWheels_TreadsTake(out, (int)merged, 1.0);
+			}
+			else if ((out->open > 0) && alternating && ((merged & 1u) == 0u))
+			{
+				NativeWheels_TreadsTake(out, (int)(merged / 2u), 1.0);
+			}
+			else if ((out->open <= 0) && (merged < (u32)NATIVE_WHEELS_TREAD_RING_MAX))
+			{
+				NativeWheels_TreadsTake(out, (int)merged, 1.0);
 			}
 			return;
 		}
 	}
 
 	// Any other set: the smallest n-fold periodicity that is strong enough.
+	// Above NATIVE_WHEELS_TREAD_GROOVE_FREE treads only with open gaps for at
+	// least half of them (a smooth tyre with one extra point - a valve, a seam
+	// - is periodic in its own facets, not in a tread); with the triangles, no
+	// open gap at all is no tread either.
 	{
 		int n;
 
+		if (out->open == 0)
+		{
+			return;
+		}
 		for (n = NATIVE_WHEELS_TREADS_MIN; n <= NATIVE_WHEELS_TREADS_MAX; n++)
 		{
 			double c = 0.0;
@@ -585,70 +709,156 @@ void NativeWheels_EstimateTreads(const float *positions, size_t strideBytes, u32
 			strength = sqrt((c * c) + (s * s)) / (double)merged;
 			if (strength >= NATIVE_WHEELS_TREAD_STRENGTH)
 			{
-				out->treads = n;
-				out->estimated = 1;
-				out->strength = strength;
+				if ((n > NATIVE_WHEELS_TREAD_GROOVE_FREE) && ((out->open < 0) || ((u32)out->open < ((u32)n / 2u))))
+				{
+					out->implausible = n;
+					return;
+				}
+				NativeWheels_TreadsTake(out, n, strength);
 				return;
 			}
 		}
 	}
 }
 
-// THE SELF-TEST of the stroboscope. Made-up wheels of radius 16 (model units,
-// both sides x +-6; a groove ring at 14 and a hub at 8 that never count):
-//   lugs 8     8 lug tops of 16 degrees: 8
-//   lugs 12    12 lug tops with bevels (4 angles each, +-3 and +-6 degrees): 12
-//   smooth 32  an even ring of 32: the default 8
-//   ring 10    an even ring of 10 (a coarse polygon or 10 spikes): 10
-//   none       no point: the default 8
+// THE SELF-TEST of the stroboscope. Made-up tyres of radius 16 (model units):
+// a profile round the wheel - (angle in degrees, radius) points, a lug top at
+// 16, a groove floor at 14 - extruded from x -6 to x +6, two triangles per
+// step, so neighbouring points of the profile share an edge on each side:
+//   lugs 8        8 lug tops of 16 degrees, walls down to the grooves: 8
+//   lugs 12       12 lug tops with bevels (4 angles each): 12
+//   half 12       12 lug tops of half the pitch (15 degrees, 24 even angles,
+//                 every second gap a groove): 12
+//   smooth 32     an even ring of 32: the default 8
+//   seam 32       the ring of 32 with one more point on the rim: the default 8
+//   valve 32      the ring of 32 and a loose triangle with one point on the
+//                 rim: the default 8 (32 would need 16 open gaps)
+//   ring 10       an even ring of 10 (a coarse polygon): 10
+//   spikes 40     40 spikes: 40 is past 32, the default 8
+//   lugs 3        3 lugs: below 4, the default 8
+//   none          no point: the default 8
 // and two ticks of a made-up driver at radius 16, wheelSize 0x0ccc, 32 ms:
 // speed 3000 forward and backward with 8 treads (true step 0.916 rad, more
 // than half the pitch 0.785) are drawn clamped with the sign kept, speed 200
 // as it is, and treads 0 draws the true step. Leaves the pose table empty and
 // the counters as they were.
-#define NATIVE_WHEELS_TEST_POINTS 512
+#define NATIVE_WHEELS_TEST_PROFILE 160
+#define NATIVE_WHEELS_TEST_POINTS ((NATIVE_WHEELS_TEST_PROFILE * 2) + 3)
+#define NATIVE_WHEELS_TEST_INDICES ((NATIVE_WHEELS_TEST_PROFILE * 6) + 3)
 
-internal u32 NativeWheels_TestRing(float (*p)[3], u32 at, double radius, int steps, const double *offsets, int offsetCount)
+struct NativeWheelsTestMesh
 {
-	int k;
-	int o;
-	int side;
+	float p[NATIVE_WHEELS_TEST_POINTS][3];
+	u16 index[NATIVE_WHEELS_TEST_INDICES];
+	u32 points;
+	u32 indices;
+	double profile[NATIVE_WHEELS_TEST_PROFILE][2]; // degrees, radius
+	u32 profileCount;
+};
 
-	for (k = 0; k < steps; k++)
+internal void NativeWheels_TestPoint(struct NativeWheelsTestMesh *m, double degrees, double radius)
+{
+	if (m->profileCount < NATIVE_WHEELS_TEST_PROFILE)
 	{
-		for (o = 0; o < offsetCount; o++)
-		{
-			const double a = ((NATIVE_WHEELS_TWO_PI * (double)k) / (double)steps) + ((offsets[o] * NATIVE_WHEELS_TWO_PI) / 360.0);
+		m->profile[m->profileCount][0] = degrees;
+		m->profile[m->profileCount][1] = radius;
+		m->profileCount++;
+	}
+}
 
-			for (side = 0; side < 2; side++)
-			{
-				if (at < NATIVE_WHEELS_TEST_POINTS)
-				{
-					p[at][0] = (side == 0) ? 6.0f : -6.0f;
-					p[at][1] = (float)(radius * cos(a));
-					p[at][2] = (float)(radius * sin(a));
-					at++;
-				}
-			}
+// The profile extruded: point k on +x is 2k, on -x 2k + 1; step k to k + 1 two
+// triangles.
+internal void NativeWheels_TestExtrude(struct NativeWheelsTestMesh *m)
+{
+	u32 k;
+
+	m->points = 0;
+	m->indices = 0;
+	for (k = 0; k < m->profileCount; k++)
+	{
+		const double a = (m->profile[k][0] * NATIVE_WHEELS_TWO_PI) / 360.0;
+		int side;
+
+		for (side = 0; side < 2; side++)
+		{
+			m->p[m->points][0] = (side == 0) ? 6.0f : -6.0f;
+			m->p[m->points][1] = (float)(m->profile[k][1] * cos(a));
+			m->p[m->points][2] = (float)(m->profile[k][1] * sin(a));
+			m->points++;
 		}
 	}
-	return at;
+	for (k = 0; k < m->profileCount; k++)
+	{
+		const u16 a = (u16)(2u * k);
+		const u16 b = (u16)(2u * ((k + 1u) % m->profileCount));
+
+		m->index[m->indices++] = a;
+		m->index[m->indices++] = b;
+		m->index[m->indices++] = (u16)(a + 1u);
+		m->index[m->indices++] = b;
+		m->index[m->indices++] = (u16)(b + 1u);
+		m->index[m->indices++] = (u16)(a + 1u);
+	}
+}
+
+// count lugs, each of the given top angles (degrees about its middle) at 16,
+// the groove floor at 14 from the last top angle to the next lug's first.
+internal void NativeWheels_TestLugs(struct NativeWheelsTestMesh *m, int lugs, const double *top, int topCount)
+{
+	int l;
+	int t;
+
+	m->profileCount = 0;
+	for (l = 0; l < lugs; l++)
+	{
+		const double middle = (360.0 * (double)l) / (double)lugs;
+
+		for (t = 0; t < topCount; t++)
+		{
+			NativeWheels_TestPoint(m, middle + top[t], 16.0);
+		}
+		NativeWheels_TestPoint(m, middle + top[topCount - 1], 14.0);
+		NativeWheels_TestPoint(m, middle + (360.0 / (double)lugs) + top[0], 14.0);
+	}
+	NativeWheels_TestExtrude(m);
+}
+
+internal void NativeWheels_TestRingMesh(struct NativeWheelsTestMesh *m, int steps, int seam)
+{
+	int k;
+
+	m->profileCount = 0;
+	for (k = 0; k < steps; k++)
+	{
+		NativeWheels_TestPoint(m, (360.0 * (double)k) / (double)steps, 16.0);
+		if (seam && (k == 0))
+		{
+			NativeWheels_TestPoint(m, 180.0 / (double)steps, 16.0);
+		}
+	}
+	NativeWheels_TestExtrude(m);
 }
 
 int NativeWheels_StrobeSelfTest(char *line, size_t size)
 {
-	static float p[NATIVE_WHEELS_TEST_POINTS][3];
-	static const double lug8[2] = {-8.0, 8.0};
-	static const double lug12[4] = {-6.0, -3.0, 3.0, 6.0};
-	static const double one[1] = {0.0};
-	static const double groove[1] = {22.5};
+	enum
+	{
+		CASES = 10
+	};
+	static struct NativeWheelsTestMesh m;
 	static struct Driver driver;
 	static struct Instance inst;
-	static const int expect[5] = {8, 12, 8, 10, 8};
-	static const int expectEstimated[5] = {1, 1, 0, 1, 0};
+	static const char *const names[CASES] = {"lugs 8", "lugs 12", "half 12", "smooth 32", "seam 32", "valve 32", "ring 10", "spikes 40", "lugs 3", "none"};
+	static const int expect[CASES] = {8, 12, 12, 8, 8, 8, 10, 8, 8, 8};
+	static const int expectEstimated[CASES] = {1, 1, 1, 0, 0, 0, 1, 0, 0, 0};
+	static const double top8[2] = {-8.0, 8.0};
+	static const double top12[4] = {-6.0, -3.0, 3.0, 6.0};
+	static const double half12[2] = {-7.5, 7.5};
+	static const double spike[1] = {0.0};
+	static const double top3[2] = {-20.0, 20.0};
 	static const s16 speeds[4] = {3000, -3000, 200, 3000};
 	static const int treads[4] = {8, 8, 8, 0};
-	struct NativeWheelTreads t[5];
+	struct NativeWheelTreads t[CASES];
 	struct NativeWheelOwn own;
 	double drawn[4];
 	double step[4];
@@ -660,24 +870,71 @@ int NativeWheels_StrobeSelfTest(char *line, size_t size)
 	int estimatesHeld = 0;
 	int clampHeld = 1;
 	int c;
-	u32 n;
+	char *at = line;
+	size_t left = size;
+	int written;
 
 	// The meshes.
-	n = NativeWheels_TestRing(p, 0, 16.0, 8, lug8, 2);
-	n = NativeWheels_TestRing(p, n, 14.0, 8, groove, 1);
-	n = NativeWheels_TestRing(p, n, 8.0, 24, one, 1);
-	NativeWheels_EstimateTreads(&p[0][0], sizeof(p[0]), n, &t[0]);
-	n = NativeWheels_TestRing(p, 0, 16.0, 12, lug12, 4);
-	n = NativeWheels_TestRing(p, n, 14.0, 12, one, 1);
-	NativeWheels_EstimateTreads(&p[0][0], sizeof(p[0]), n, &t[1]);
-	n = NativeWheels_TestRing(p, 0, 16.0, 32, one, 1);
-	n = NativeWheels_TestRing(p, n, 8.0, 32, one, 1);
-	NativeWheels_EstimateTreads(&p[0][0], sizeof(p[0]), n, &t[2]);
-	n = NativeWheels_TestRing(p, 0, 16.0, 10, one, 1);
-	NativeWheels_EstimateTreads(&p[0][0], sizeof(p[0]), n, &t[3]);
-	NativeWheels_EstimateTreads(NULL, sizeof(p[0]), 0, &t[4]);
-	for (c = 0; c < 5; c++)
+	for (c = 0; c < CASES; c++)
 	{
+		memset(&m, 0, sizeof(m));
+		switch (c)
+		{
+		case 0:
+			NativeWheels_TestLugs(&m, 8, top8, 2);
+			break;
+		case 1:
+			NativeWheels_TestLugs(&m, 12, top12, 4);
+			break;
+		case 2:
+			NativeWheels_TestLugs(&m, 12, half12, 2);
+			break;
+		case 3:
+			NativeWheels_TestRingMesh(&m, 32, 0);
+			break;
+		case 4:
+			NativeWheels_TestRingMesh(&m, 32, 1);
+			break;
+		case 5:
+			// The ring and a loose triangle: one point on the rim between two
+			// facets, two below it.
+			NativeWheels_TestRingMesh(&m, 32, 0);
+			{
+				static const double valve[3][2] = {{5.625, 16.0}, {4.0, 15.0}, {7.0, 15.0}};
+				int v;
+
+				for (v = 0; v < 3; v++)
+				{
+					const double a = (valve[v][0] * NATIVE_WHEELS_TWO_PI) / 360.0;
+
+					m.p[m.points][0] = 6.0f;
+					m.p[m.points][1] = (float)(valve[v][1] * cos(a));
+					m.p[m.points][2] = (float)(valve[v][1] * sin(a));
+					m.index[m.indices++] = (u16)m.points;
+					m.points++;
+				}
+			}
+			break;
+		case 6:
+			NativeWheels_TestRingMesh(&m, 10, 0);
+			break;
+		case 7:
+			NativeWheels_TestLugs(&m, 40, spike, 1);
+			break;
+		case 8:
+			NativeWheels_TestLugs(&m, 3, top3, 2);
+			break;
+		default:
+			break;
+		}
+		if (c == (CASES - 1))
+		{
+			NativeWheels_EstimateTreads(NULL, sizeof(m.p[0]), 0, NULL, 0, 0, &t[c]);
+		}
+		else
+		{
+			NativeWheels_EstimateTreads(&m.p[0][0], sizeof(m.p[0]), m.points, m.index, m.indices, 0, &t[c]);
+		}
 		estimatesHeld += ((t[c].treads == expect[c]) && (t[c].estimated == expectEstimated[c])) ? 1 : 0;
 	}
 
@@ -731,13 +988,22 @@ int NativeWheels_StrobeSelfTest(char *line, size_t size)
 	s_nwStrobeStepMax = stepMaxBefore;
 	s_nwStrobeDrawnMax = drawnMaxBefore;
 
-	snprintf(line, size,
-	         "treads lugs 8 -> %d (%s, %.2f), lugs 12 -> %d (%s, %.2f), smooth 32 -> %d (%s), ring 10 -> %d (%s), none -> %d (%s), estimates %d of 5; "
-	         "clamp 8 treads %.4f rad (half pitch %.4f): forward step %.4f drawn %.4f, backward step %.4f drawn %.4f, slow step %.4f drawn %.4f, "
-	         "no clamp step %.4f drawn %.4f, clamp %s",
-	         t[0].treads, t[0].estimated ? "estimated" : "default", t[0].strength, t[1].treads, t[1].estimated ? "estimated" : "default", t[1].strength,
-	         t[2].treads, t[2].estimated ? "estimated" : "default", t[3].treads, t[3].estimated ? "estimated" : "default", t[4].treads,
-	         t[4].estimated ? "estimated" : "default", estimatesHeld, NativeWheels_StrobeClamp(8), halfPitch8, step[0], drawn[0], step[1], drawn[1], step[2],
-	         drawn[2], step[3], drawn[3], clampHeld ? "held" : "off");
-	return (estimatesHeld == 5) && clampHeld;
+	written = snprintf(at, left, "treads");
+	for (c = 0; (c < CASES) && (written > 0) && ((size_t)written < left); c++)
+	{
+		at += written;
+		left -= (size_t)written;
+		written = snprintf(at, left, "%s %s -> %d (%s)", (c == 0) ? "" : ",", names[c], t[c].treads, t[c].estimated ? "estimated" : "default");
+	}
+	if ((written > 0) && ((size_t)written < left))
+	{
+		at += written;
+		left -= (size_t)written;
+		snprintf(at, left,
+		         ", estimates %d of %d; clamp 8 treads %.4f rad (half pitch %.4f): forward step %.4f drawn %.4f, backward step %.4f drawn %.4f, "
+		         "slow step %.4f drawn %.4f, no clamp step %.4f drawn %.4f, clamp %s",
+		         estimatesHeld, CASES, NativeWheels_StrobeClamp(8), halfPitch8, step[0], drawn[0], step[1], drawn[1], step[2], drawn[2], step[3], drawn[3],
+		         clampHeld ? "held" : "off");
+	}
+	return (estimatesHeld == CASES) && clampHeld;
 }

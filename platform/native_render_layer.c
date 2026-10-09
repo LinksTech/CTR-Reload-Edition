@@ -2900,6 +2900,7 @@ struct NrCharCounters
 	unsigned long long finishItems[NATIVE_CHAR_GPU_FINISH_TARGETS];
 	unsigned long long finishes;
 	unsigned long long finishWithout;
+	unsigned long long finishModeNeutral;
 	unsigned long long finishStageLines;
 	// The own wheels of WHLS version 3 (render plan A1, A4): wheel draws of
 	// an own rear mesh; items whose wheels the retail tyre threshold hid,
@@ -3237,7 +3238,7 @@ internal int NativeRenderLayer_CharIndex(const struct Model *model)
 
 // WIN AND LOSE (see struct NrFinish): one tick of a seat. The set is the one
 // of the model the seat's instance carries (none: the entry is emptied).
-internal void NativeRenderLayer_PullFinish(int seat, u32 timer)
+internal void NativeRenderLayer_PullFinish(int seat, u32 timer, const char *modeRefusal)
 {
 	struct NrFinish *e = &s_nrFinish[seat];
 	const struct Driver *driver = s_nrSeatDriver[seat];
@@ -3278,13 +3279,23 @@ internal void NativeRenderLayer_PullFinish(int seat, u32 timer)
 		e->finished = 1;
 		e->target = NativeCharGpu_FinishTarget((int)driver->driverRank);
 		e->place = (int)driver->driverRank + 1;
-		e->has = NativeCharGpu_FinishPose(gpu, e->target, 0) >= 0;
+		e->has = (modeRefusal == NULL) && (NativeCharGpu_FinishPose(gpu, e->target, 0) >= 0);
 		// Seen already finished: the target at once.
 		e->startTimer = e->seen ? timer : (timer - (u32)(NATIVE_CHAR_GPU_FINISH_STAGES * NATIVE_CHAR_GPU_FINISH_TICKS));
 		s_nrCharCnt.finishes++;
-		s_nrCharCnt.finishWithout += e->has ? 0u : 1u;
-		Platform_Log("[CTR RenderLayer] native pose %s seat %d place %d at timer %u%s\n", NativeCharGpu_FinishName(e->target), seat, e->place,
-		             (unsigned)timer, e->has ? (e->seen ? "" : " (seen finished: the target at once)") : " - the file has no such shape key, drawn as before");
+		s_nrCharCnt.finishWithout += ((modeRefusal == NULL) && !e->has) ? 1u : 0u;
+		s_nrCharCnt.finishModeNeutral += (modeRefusal != NULL) ? 1u : 0u;
+		if (modeRefusal != NULL)
+		{
+			Platform_Log("[CTR RenderLayer] native pose none seat %d place %d at timer %u - %s has no placing, drawn as before\n", seat, e->place,
+			             (unsigned)timer, modeRefusal);
+		}
+		else
+		{
+			Platform_Log("[CTR RenderLayer] native pose %s seat %d place %d at timer %u%s\n", NativeCharGpu_FinishName(e->target), seat, e->place,
+			             (unsigned)timer,
+			             e->has ? (e->seen ? "" : " (seen finished: the target at once)") : " - the file has no such shape key, drawn as before");
+		}
 	}
 	e->seen = 1;
 
@@ -5912,6 +5923,15 @@ void NativeRenderLayer_NoteRestore(void)
 	// the finish of every seat (struct NrFinish).
 	NativeWheels_Forget();
 	memset(s_nrFinish, 0, sizeof(s_nrFinish));
+	{
+		int seat;
+
+		for (seat = 0; seat < NATIVE_RENDER_LAYER_DRIVERS; seat++)
+		{
+			s_nrFinish[seat].target = -1;
+			s_nrFinish[seat].stage = -1;
+		}
+	}
 }
 
 // The first pull after a restore: every object it meets has to be new - a
@@ -6113,7 +6133,7 @@ void NativeRenderLayer_Pull(struct GameTracker *gGT)
 	{
 		for (seat = 0; seat < NATIVE_RENDER_LAYER_DRIVERS; seat++)
 		{
-			NativeRenderLayer_PullFinish(seat, (u32)gGT->timer);
+			NativeRenderLayer_PullFinish(seat, (u32)gGT->timer, NativeCharGpu_FinishModeRefusal((u32)gGT->gameMode1, (u32)gGT->gameMode2));
 		}
 	}
 
@@ -6509,10 +6529,10 @@ void NativeRenderLayer_Report(void)
 		Platform_Log("[CTR RenderLayer] at exit: native char own wheels level of detail: items shown %llu, hidden past the threshold %llu, always drawn "
 		             "%llu; rear mesh draws %llu\n",
 		             s_nrCharCnt.lodShown, s_nrCharCnt.lodHidden, s_nrCharCnt.lodAlways, s_nrCharCnt.ownRearDraws);
-		Platform_Log("[CTR RenderLayer] at exit: native char win/lose: finishes %llu (without the shape key %llu), stage lines %llu, items win %llu, "
-		             "lose %llu\n",
-		             s_nrCharCnt.finishes, s_nrCharCnt.finishWithout, s_nrCharCnt.finishStageLines, s_nrCharCnt.finishItems[NATIVE_CHAR_GPU_FINISH_WIN],
-		             s_nrCharCnt.finishItems[NATIVE_CHAR_GPU_FINISH_LOSE]);
+		Platform_Log("[CTR RenderLayer] at exit: native char win/lose: finishes %llu (without the shape key %llu, in a race without placing %llu), "
+		             "stage lines %llu, items win %llu, lose %llu\n",
+		             s_nrCharCnt.finishes, s_nrCharCnt.finishWithout, s_nrCharCnt.finishModeNeutral, s_nrCharCnt.finishStageLines,
+		             s_nrCharCnt.finishItems[NATIVE_CHAR_GPU_FINISH_WIN], s_nrCharCnt.finishItems[NATIVE_CHAR_GPU_FINISH_LOSE]);
 		for (seat = 0; seat < NATIVE_RENDER_LAYER_DRIVERS; seat++)
 		{
 			const struct NrCharSeam *seam = &s_nrCharSeam[seat];

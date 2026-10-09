@@ -1716,6 +1716,20 @@ static int NativeDepthCheck_Finish(int *checks, double *errorMax)
 		failures += (NativeCharGpu_FinishStage(ticks[c]) == ticksStage[c]) ? 0 : 1;
 		(*checks)++;
 	}
+	// The races with a placing: arcade and versus; battle, crystal challenge,
+	// boss, adventure, relic, token race and time trial not.
+	{
+		static const u32 modes1[9] = {ARCADE_MODE, 0u, BATTLE_MODE, ARCADE_MODE | CRYSTAL_CHALLENGE, ADVENTURE_MODE | ADVENTURE_BOSS, ADVENTURE_MODE,
+		                              RELIC_RACE, ADVENTURE_MODE, TIME_TRIAL};
+		static const u32 modes2[9] = {0u, 0u, 0u, 0u, 0u, 0u, 0u, TOKEN_RACE, 0u};
+		static const int allowed[9] = {1, 1, 0, 0, 0, 0, 0, 0, 0};
+
+		for (c = 0; c < 9; c++)
+		{
+			failures += ((NativeCharGpu_FinishModeRefusal(modes1[c], modes2[c]) == NULL) == (allowed[c] != 0)) ? 0 : 1;
+			(*checks)++;
+		}
+	}
 	set.finishTargets = 1u << NATIVE_CHAR_GPU_FINISH_WIN;
 	set.finishFirst[NATIVE_CHAR_GPU_FINISH_WIN] = 47u;
 	failures += ((NativeCharGpu_FinishPose(&set, NATIVE_CHAR_GPU_FINISH_WIN, 7) == 54) && (NativeCharGpu_FinishPose(&set, NATIVE_CHAR_GPU_FINISH_LOSE, 0) == -1) &&
@@ -2010,7 +2024,7 @@ int NativeDepthCheck_Run(void)
 	int ownRan;
 	int ownPassed;
 	int strobePassed;
-	char strobeLine[640];
+	char strobeLine[1024];
 	int finishChecks;
 	double finishError;
 	int finishFailures;
