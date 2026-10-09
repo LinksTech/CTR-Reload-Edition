@@ -187,6 +187,18 @@ mask, an icon for the driver select and the race HUD, a minimap colour and a
 folder of voice clips. Switch off "Show kart wheels" for a model that brings
 its own wheels or vehicle.
 
+An OBJ can also keep its own mesh and textures ("Native model" on the
+Extras tab, a preview feature): the game draws it with NATIVE DRIVERS set to
+Preview, on wheels of your own if you give it a wheel model (card Wheels).
+
+In the preview, drag to turn the model, drag with the right mouse button to
+move it, use the mouse wheel to zoom and double-click to go back to the start
+view. The bar and the View menu in the preview (also on a right click) hold
+the fixed views (front, side, back, top, 3/4, race), a light or dark
+background, the Crash size reference, shadow and exhaust, and Native or
+Classic when the character has both. The line below the preview says which
+look you see, why, and which textures were not found.
+
 <details>
 <summary>Current limits</summary>
 
@@ -211,10 +223,8 @@ Planned, in no particular order and without a date:
 - Boss races and race modifiers in NITRO-PIT
 - Custom characters in more modes: two players, Adventure and the NITRO-PIT
   challenges
-- Wheels and animations of your own for custom characters - Reload Studio
-  shows them as "Coming soon" cards; `ReloadStudio.exe
-  --enable-preview-features` unlocks their unfinished preview, which writes
-  nothing into the character file
+- Animations of your own for custom characters - Reload Studio shows them
+  as a "Coming soon" card
 - Skin support for the drivers
 - ...and more
 

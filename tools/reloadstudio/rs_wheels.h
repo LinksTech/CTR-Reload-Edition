@@ -17,11 +17,31 @@ void CharWheels_Report(FILE *f);                                      // appende
 int  CharWheels_ModelPath(wchar_t *out, int cap);
 int  CharWheels_SizePercent(void);
 // 0 = nothing of the export changed since the last call; 1 = the field was
-// typed in, 2 = clicked (Browse, Clear, the slider, automation). Cleared.
+// typed in, 2 = clicked (Browse, Clear, the slider, automation, a wheel file
+// written since it was read). Cleared.
 int  CharWheels_ExportChanged(void);
+// When Reload Studio is active again or the page is shown again (the page's
+// Char_FilesChanged): a file the last char-wheel read (the OBJ or PLY, its MTL,
+// its texture, or a file in the folder of a texture not found) was written
+// since - the wheel is read again at once and CharWheels_ExportChanged says 2.
+// 1 = so; why goes into the automation log.
+int  CharWheels_FilesChanged(HWND page, const wchar_t *why);
+// Counts every wheel file written since (CharWheels_FilesChanged): the page
+// takes it into the stamp of its check while the wheel is passed, so that a
+// result kept is not shown for a wheel exported again.
+int  CharWheels_Generation(void);
+// The textures the last char-wheel did not find: their number, their file
+// names into out ("a.png, b.png"; out may be NULL).
+int  CharWheels_MissingTextures(wchar_t *out, int cap);
+// 1 while the wheel model is in the view (drawn where the kart wheels are
+// shown - also on a classic model, which is built without it).
+int  CharWheels_Shown(void);
 // The page's choices, after every change: an OBJ, Show kart wheels, the
 // native model on (ticked or the user mode), the wheel model passed, the axes
 // of the card Import (Up Z, Forward -Z; the wheel's as well). The line under
 // the card's options follows them; new axes read the wheel again.
 void CharWheels_PageState(int obj, int kartWheels, int nativeOn, int passed, int upZ, int backwards);
+// The page's Textures folder as make-char gets it (--textures; "" = none): it
+// goes to char-wheel as well, and another folder reads the wheel again.
+void CharWheels_SetTextures(const wchar_t *dir);
 #endif

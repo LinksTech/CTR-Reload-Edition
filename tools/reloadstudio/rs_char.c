@@ -86,6 +86,14 @@
 // game's wheels, as without the switch); an error of the native part stops
 // the check and the build as every error does (its message names the cause).
 //
+// THE PREVIEW (rs_view.c): its camera (drag, right drag, the mouse wheel, a
+// double click, the bar and the View menu in the view) and its display
+// toggles (background, Crash size, shadow, exhaust, Native or Classic) belong
+// to the view - nothing of them is built or stored, every start begins with
+// the start view; the verbs view-* set them (Char_AutoView). The note below
+// it says which look it shows, why, the textures not found and how to steer
+// it (Char_ViewNoteUpdate).
+//
 // Mask: Aku Aku or Uka Uka, the mask the driver wears (the mask item, the
 // rescue after a fall, its sound and music, the HUD icon). The choice starts
 // at the mask of the template (Fake Crash: Uka Uka); --mask aku|uka is always
@@ -235,6 +243,8 @@
 #define CHAR_INFO_LINES    3      // lines of the model info at most
 #define CHAR_QUALITY_LINES 6      // lines of the repair / remesh note at most
 #define CHAR_NOTE_LINES    3      // lines of a note below a field at most (they wrap)
+#define CHAR_VIEW_NOTE_LINES 5    // lines of the note below the preview at most (Char_ViewNoteFit)
+#define CHAR_VIEW_PARTS    6      // its sentences at most
 #define CHAR_REPAIR_FIELDS 10     // numbers of @char repaired
 #define CHAR_REMESH_FIELDS 5      // numbers of @char remeshed
 #define CHAR_VOICE_EVENTS  10     // RLDCHAR_VOICE_EVENTS in include/rldchar.inc
@@ -510,6 +520,9 @@ static const int g_charRetailPoints[2][3] = { { 288, 896, -896 }, { -288, 896, -
 static const wchar_t *const g_charPoseWords[CHAR_POSES] = { L"neutral", L"left", L"right" };
 static const wchar_t *const g_charPoseTexts[CHAR_POSES] = { L"Neutral", L"Steering left", L"Steering right" };
 static const int g_charPoseView[CHAR_POSES] = { RS_VIEW_POSE_NEUTRAL, RS_VIEW_POSE_FRAME0, RS_VIEW_POSE_FRAME20 };
+// The fixed views of the preview by the words of the verb view-preset and the
+// report, in the order of RS_VIEW_PRESET_* (rs_view.h).
+static const wchar_t *const g_charPresetWords[RS_VIEW_PRESET_COUNT] = { L"front", L"side", L"back", L"top", L"34", L"race" };
 
 // Before a model is chosen, below its field (the page has no subtitle).
 #define CHAR_START_TEXT L"Pick a PLY or OBJ model of driver, steering wheel and kart. rldpack converts and checks it and builds the .rldchar."
@@ -772,6 +785,17 @@ static struct {
     int previewShown;               // the view shows a model
     int previewPoses;
     unsigned long previewTris[CHAR_POSES];
+    // What the note below the preview says (Char_ViewNoteUpdate), from the
+    // check shown: its file carries the native model (RsView_HasNative), the
+    // OBJ names textures, the textures it did not find.
+    int previewNative, previewTextured, previewMissing;
+    wchar_t previewMissingNames[256];
+    wchar_t previewModel[CHAR_VAL]; // the model of the preview shown
+    // The note's sentences, the most important first; the layout shows as
+    // many as fit (Char_ViewNoteFit).
+    int viewPartCount;
+    int viewFirst;                  // the sentence the compact layout shows first (the textures not found), -1 = in order
+    wchar_t viewPart[CHAR_VIEW_PARTS][384];
     struct CharImage image[CHAR_IMG_COUNT];
     struct CharImage game;          // the second picture: both portraits on the race (Char_GameCompose)
     int gameRetail;                 // 1 = the template's portrait came from the game's data
@@ -875,7 +899,7 @@ static int Char_IsNote(HWND label)
 static int Char_NoteHeight(HWND label, int width)
 {
     int least = label == g_char.headline ? Rs_Px(22) : Rs_Px(18);
-    int h = Char_TextHeight(label, width, CHAR_NOTE_LINES);
+    int h = Char_TextHeight(label, width, label == g_char.viewNote ? CHAR_VIEW_NOTE_LINES : CHAR_NOTE_LINES);
     return h > least ? h : least;
 }
 
@@ -3391,6 +3415,13 @@ static void Char_NativeUpdate(void)
         return;
     CharWheels_PageState(g_char.objOn, Char_IsChecked(g_char.wheels), Char_NativeOn(), Char_WheelPassed(NULL, 0),
                          Char_ListIndex(g_char.up, CHAR_UP_COUNT) != 0, Char_ListIndex(g_char.forward, CHAR_FORWARD_COUNT) != 0);
+    // The Textures folder as Char_MakeArgs passes it (an OBJ only): char-wheel
+    // looks there for the wheel's texture as make-char does.
+    {
+        wchar_t dir[CHAR_VAL];
+        Char_FieldPath(g_char.textures, dir, CHAR_VAL);
+        CharWheels_SetTextures(g_char.objOn ? dir : L"");
+    }
     EnableWindow(g_char.native, on ? TRUE : FALSE);
     Rs_SetTextColor(g_char.nativeLabel, on ? RS_COL_TEXT : RS_COL_MUTED);
     if (Char_NativePassed() && g_charJob.nativeText[0])
@@ -3547,12 +3578,19 @@ static unsigned long long Char_StampFolder(unsigned long long h, const wchar_t *
     return Char_StampBytes(h, &count, sizeof(count));
 }
 
-// The files of the fields: the model, the icon, the voices folder.
+// The files of the fields: the model, the icon, the voices folder; and while
+// the wheel model of the card Wheels is passed, how often its files were
+// written since (CharWheels_Generation): a result kept is not shown again for
+// a wheel exported again.
 static unsigned long long Char_StampFields(const wchar_t *model, const wchar_t *icon, const wchar_t *voices)
 {
     unsigned long long h = CHAR_STAMP_START;
     h = Char_StampFile(h, model);
     h = Char_StampFile(h, icon);
+    if (Char_WheelPassed(NULL, 0)) {
+        const int generation = CharWheels_Generation();
+        h = Char_StampBytes(h, &generation, sizeof(generation));
+    }
     return Char_StampFolder(h, voices);
 }
 
@@ -3667,15 +3705,21 @@ static void Char_StampShown(void)
 }
 
 static void Char_ChangedSoon(HWND page);
+static void Char_WheelsFollow(HWND page);
 
 // When Reload Studio is active again or the page is shown again: a file the
 // check shown read has been written since (a model exported again, a texture
 // delivered) - check again. Not while a check waits or runs: it reads the
-// files anew anyway. Returns 1 if a check was asked for.
+// files anew anyway. The card Wheels compares the files of its wheel model
+// first (CharWheels_FilesChanged): one written since is read again at once,
+// and the page checks again as after a click. Returns 1 if a check was
+// asked for.
 static int Char_FilesChanged(HWND page, const wchar_t *why)
 {
     wchar_t model[CHAR_VAL], icon[CHAR_VAL], voices[CHAR_VAL];
 
+    if (CharWheels_FilesChanged(page, why))
+        Char_WheelsFollow(page);
     if (!g_char.stampKnown || g_char.jobId || g_char.timer)
         return 0;
     Char_FieldPath(g_char.model, model, CHAR_VAL);
@@ -4473,9 +4517,193 @@ static void Char_ApplyQuality(void)
         Char_Relayout(GetParent(g_char.quality));
 }
 
+// THE NOTE BELOW THE PREVIEW. The preview shows what the character file
+// holds: the native model when the check built one (NATIVE DRIVERS set to
+// PREVIEW in the game), else the classic model (what the game draws with
+// NATIVE DRIVERS OFF, and with every native model as its fallback); with
+// both, the View menu of the preview switches between Native and Classic
+// (RsView_SetShowNative; a new model starts at Native). The note says which
+// look is shown, why the native one is not (no OBJ, Native model not
+// ticked, the kart wheels without a wheel model), the textures not found by
+// their names (@model texture of the check, the card Wheels), wheels shown
+// that are not built, and how the mouse steers the view - in this order, as
+// many sentences as fit in CHAR_VIEW_NOTE_LINES (the compact layout: one
+// line, the whole note as its tooltip).
+#define CHAR_VIEW_MOUSE_TEXT L"Drag: turn - right drag: move - wheel: zoom - double-click: reset."
+#define CHAR_VIEW_NATIVE_TEXT L"Native look, as the game draws it with NATIVE DRIVERS set to PREVIEW (OPTIONS, GRAPHICS). The View menu shows the Classic fallback."
+#define CHAR_VIEW_FALLBACK_TEXT L"Classic look: the fallback the game draws with NATIVE DRIVERS OFF. The View menu shows the Native look."
+
+// Height of text in the note at this width, all its lines.
+static int Char_ViewNoteHeightOf(const wchar_t *text, int width, int *lineH)
+{
+    HDC dc = GetDC(g_char.viewNote);
+    HFONT font = (HFONT)SendMessageW(g_char.viewNote, WM_GETFONT, 0, 0);
+    HGDIOBJ old;
+    TEXTMETRICW tm;
+    RECT rc;
+    int h = 0;
+
+    *lineH = 0;
+    if (dc) {
+        old = SelectObject(dc, font ? font : Rs_Font(RS_FONT_SMALL));
+        GetTextMetricsW(dc, &tm);
+        *lineH = tm.tmHeight;
+        rc.left = 0;
+        rc.top = 0;
+        rc.right = width;
+        rc.bottom = 0;
+        DrawTextW(dc, text, -1, &rc, DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX | DT_EXPANDTABS);
+        h = rc.bottom;
+        SelectObject(dc, old);
+        ReleaseDC(g_char.viewNote, dc);
+    }
+    return h;
+}
+
+// The first count sentences of the note, one space between them; first >= 0:
+// that sentence before all others.
+static void Char_ViewNoteJoin(wchar_t *out, int cap, int count, int first)
+{
+    int i;
+    out[0] = 0;
+    if (first >= 0 && first < g_char.viewPartCount)
+        Char_Append(out, cap, g_char.viewPart[first]);
+    for (i = 0; i < count && i < g_char.viewPartCount; i++) {
+        if (i == first)
+            continue;
+        if (out[0])
+            Char_Append(out, cap, L" ");
+        Char_Append(out, cap, g_char.viewPart[i]);
+    }
+}
+
+// The note at this width: as many sentences as fit in CHAR_VIEW_NOTE_LINES,
+// at least the first; the compact layout takes all (one line and a tooltip),
+// the textures not found first - its one line shows them.
+static void Char_ViewNoteText(wchar_t *out, int cap, int width)
+{
+    int count = g_char.viewPartCount, lineH = 0;
+    if (g_char.compact) {
+        Char_ViewNoteJoin(out, cap, count, g_char.viewFirst);
+        return;
+    }
+    Char_ViewNoteJoin(out, cap, count, -1);
+    if (width <= 0)
+        return;
+    while (count > 1 && Char_ViewNoteHeightOf(out, width, &lineH) > lineH * CHAR_VIEW_NOTE_LINES && lineH > 0)
+        Char_ViewNoteJoin(out, cap, --count, -1);
+}
+
+// From Char_LayPreview, before the note is measured: the sentences that fit
+// its new width (no relayout from here).
+static void Char_ViewNoteFit(int width)
+{
+    wchar_t text[CHAR_VIEW_PARTS * 384 + CHAR_VIEW_PARTS], *now;
+    if (!g_char.viewNote || g_char.viewPartCount <= 0)
+        return;
+    Char_ViewNoteText(text, CHAR_VIEW_PARTS * 384 + CHAR_VIEW_PARTS, width);
+    now = Rs_GetText(g_char.viewNote);
+    if (wcscmp(now, text) != 0)
+        Rs_SetText(g_char.viewNote, text);
+    Rs_Free(now);
+}
+
+static void Char_ViewNoteShow(COLORREF color)
+{
+    wchar_t text[CHAR_VIEW_PARTS * 384 + CHAR_VIEW_PARTS];
+    RECT rc = { 0, 0, 0, 0 };
+    if (!g_char.viewNote || !GetWindowRect(g_char.viewNote, &rc))
+        rc.left = rc.right = 0;
+    Char_ViewNoteText(text, CHAR_VIEW_PARTS * 384 + CHAR_VIEW_PARTS, rc.right - rc.left);
+    Char_SetLabel(g_char.viewNote, text, color, &g_char.viewColor);
+}
+
 static void Char_ViewNote(const wchar_t *text, COLORREF color)
 {
-    Char_SetLabel(g_char.viewNote, text, color, &g_char.viewColor);
+    g_char.viewPartCount = 1;
+    g_char.viewFirst = -1;
+    Char_Copy(g_char.viewPart[0], 384, text);
+    Char_ViewNoteShow(color);
+}
+
+static void Char_ViewNotePart(const wchar_t *text)
+{
+    if (g_char.viewPartCount < CHAR_VIEW_PARTS)
+        Char_Copy(g_char.viewPart[g_char.viewPartCount++], 384, text);
+}
+
+// Which look the preview shows and why (the first sentence of the note).
+static const wchar_t *Char_ViewLookText(void)
+{
+    int native = 0;
+    if (g_char.previewNative) {
+        RsView_GetToggles(g_char.view, NULL, NULL, NULL, NULL, &native);
+        return native ? CHAR_VIEW_NATIVE_TEXT : CHAR_VIEW_FALLBACK_TEXT;
+    }
+    if (!g_char.objOn)
+        return L"Classic look, as the game draws it. Textures of your own need an OBJ model with its MTL file (Native model, Extras, Import).";
+    if (Char_NativePassed())
+        return L"Classic look: the check brought no native model - see the message list.";
+    if (Char_NativeOn())
+        return L"Classic look: the native model needs Show kart wheels off (tab Model) or a wheel model (Extras, Wheels).";
+    if (g_char.previewTextured)
+        return L"Classic look: your textures are only baked into the colours of the triangles. Tick Native model (Extras, Import) to build them.";
+    return L"Classic look, as the game draws it. Tick Native model (Extras, Import) for the native model.";
+}
+
+// The note after a check shown, a change of the card Wheels or of the view's
+// toggles. Only while a model is shown: the other notes (no model, errors)
+// stay as they are.
+static void Char_ViewNoteUpdate(void)
+{
+    wchar_t one[384], wheelNames[256];
+    int wheelMissing, native = 0, missing;
+
+    if (!g_char.viewNote || !g_char.previewShown)
+        return;
+    RsView_GetToggles(g_char.view, NULL, NULL, NULL, NULL, &native);
+    g_char.viewPartCount = 0;
+    g_char.viewFirst = -1;
+    Char_ViewNotePart(Char_ViewLookText());
+    // The textures not found: those of the model, then the wheel's.
+    wheelMissing = CharWheels_Shown() && Char_IsChecked(g_char.wheels) ? CharWheels_MissingTextures(wheelNames, 256) : 0;
+    missing = g_char.previewMissing + wheelMissing;
+    if (missing > 0) {
+        wchar_t names[512];
+        Char_Copy(names, 512, g_char.previewMissing ? g_char.previewMissingNames : L"");
+        if (wheelMissing) {
+            if (names[0])
+                Char_Append(names, 512, L", ");
+            Char_Append(names, 512, wheelNames);
+        }
+        // The first three names, the rest counted (the report has them all).
+        {
+            wchar_t *cut = names;
+            int k;
+            for (k = 0; k < 3 && cut; k++) {
+                cut = wcsstr(cut, L", ");
+                if (cut && k < 2)
+                    cut += 2;
+            }
+            if (cut && missing > 3)
+                swprintf(cut, 512 - (cut - names), L" and %d more", missing - 3);
+        }
+        swprintf(one, 384, L"%d texture%ls not found: %ls - drawn in %ls colour.", missing, missing == 1 ? L"" : L"s", names,
+                 missing == 1 ? L"its" : L"their");
+        g_char.viewFirst = g_char.viewPartCount;
+        Char_ViewNotePart(one);
+    }
+    // Wheels of the card Wheels in the preview that the character will not have.
+    if (CharWheels_Shown() && Char_IsChecked(g_char.wheels) && !Char_WheelPassed(NULL, 0))
+        Char_ViewNotePart(L"Your wheels show here but are not built (Extras, Wheels says why).");
+    Char_ViewNotePart(CHAR_VIEW_MOUSE_TEXT);
+    // The classic model in the race: shaded on dark ground (the native one:
+    // not determined).
+    if (!(g_char.previewNative && native))
+        Char_ViewNotePart(CHAR_VIEW_SHADE_TEXT);
+    Char_ViewNoteShow(missing > 0                                                           ? RS_COL_WARNING
+                      : !g_char.previewNative && g_char.objOn && g_char.previewTextured ? RS_COL_NOTE
+                                                                                        : RS_COL_MUTED);
 }
 
 // The converted model of the check into the 3D view, on the dummy it was
@@ -4517,6 +4745,14 @@ static void Char_ApplyPreview(int seq)
         Char_ViewNote(L"No preview - fix the errors in the message list first.", RS_COL_WARNING);
         return;
     }
+    // Another model than the one shown: the start view, and the native look
+    // when it has one (L1); the same model keeps the camera and the choice
+    // of the View menu.
+    if (_wcsicmp(g_char.previewModel, g_char.checkModel) != 0) {
+        Char_Copy(g_char.previewModel, CHAR_VAL, g_char.checkModel);
+        RsView_SetShowNative(g_char.view, 1);
+    }
+    RsView_SetModelKey(g_char.view, g_char.checkModel);
     // The view reads the file into memory; it is deleted right after.
     RsView_LoadPreview(g_char.view, path);
     if (!RsView_Loaded(g_char.view)) {
@@ -4533,8 +4769,33 @@ static void Char_ApplyPreview(int seq)
     // driver (game/COLL.c sets alphaScale from the track's colour there,
     // RenderBucket fades towards black): 0.25 + luma / 128 of the colour on
     // ground darker than luma 96, at most 75 % darker.
-    Char_ViewNote(L"Drag to turn. Right, grey: Crash and his kart - the size it is fitted to. " CHAR_VIEW_SHADE_TEXT,
-                  RS_COL_MUTED);
+    // The note (Char_ViewNoteUpdate): the textures of the model and those
+    // not found, by their file names, once each.
+    g_char.previewNative = RsView_HasNative(g_char.view);
+    g_char.previewTextured = 0;
+    g_char.previewMissing = 0;
+    g_char.previewMissingNames[0] = 0;
+    for (i = 0; i < g_char.importRowCount; i++) {
+        const struct CharImport *r = &g_char.importRow[i];
+        const wchar_t *name = Rs_PathName(r->path);
+        int k, seen = 0;
+        if (r->kind != CHAR_IMPORT_TEXTURE)
+            continue;
+        if (wcscmp(r->state, L"ok") == 0)
+            g_char.previewTextured = 1;
+        if (wcscmp(r->state, L"ok") == 0 || wcscmp(r->state, L"none") == 0 || !name[0])
+            continue;
+        for (k = 0; k < i && !seen; k++)
+            seen = g_char.importRow[k].kind == CHAR_IMPORT_TEXTURE && wcscmp(g_char.importRow[k].state, L"ok") != 0 &&
+                   _wcsicmp(Rs_PathName(g_char.importRow[k].path), name) == 0;
+        if (seen)
+            continue;
+        if (g_char.previewMissing)
+            Char_Append(g_char.previewMissingNames, 256, L", ");
+        Char_Append(g_char.previewMissingNames, 256, name);
+        g_char.previewMissing++;
+    }
+    Char_ViewNoteUpdate();
 }
 
 // One portrait into the game picture at x, y, with the alpha rldpack wrote:
@@ -5109,10 +5370,11 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
         Char_ArgsAdd(a, L"--vertex-colors");
         Char_ArgsAdd(a, g_charVColorWords[Char_VColorIndex()]);
     }
-    // An OBJ, preview features only: its own mesh and textures as well
-    // (Char_NativeUpdate); in the user mode for every OBJ with Show kart
-    // wheels off (rldpack refuses it beside the kart wheels). Without the
-    // switch never passed.
+    // An OBJ: its own mesh and textures as well (Char_NativePassed): with
+    // "Native model" ticked (card Import, a preview feature open to
+    // everyone; not ticked at the start) or in the user mode, and Show kart
+    // wheels off or a wheel model of the card Wheels (rldpack refuses it
+    // beside the kart wheels without one).
     Char_NativeUpdate();
     if (Char_NativePassed()) {
         Char_ArgsAdd(a, L"--native-model");
@@ -5259,8 +5521,11 @@ static void Char_NoModel(HWND page)
     g_char.previewShown = 0;
     g_char.previewPoses = 0;
     RsView_Clear(g_char.view, NULL);
-    Char_ViewNote(L"Grey: Crash with his kart - the size a model is fitted to. Choose a PLY or OBJ model.",
-                  RS_COL_MUTED);
+    g_char.viewPartCount = 0;
+    g_char.viewFirst = -1;
+    Char_ViewNotePart(L"Grey: Crash with his kart - the size a model is fitted to. Choose a PLY or OBJ model.");
+    Char_ViewNotePart(CHAR_VIEW_MOUSE_TEXT);
+    Char_ViewNoteShow(RS_COL_MUTED);
     Char_ApplyQuality();
     memset(g_char.tabErrors, 0, sizeof(g_char.tabErrors));
     memset(g_char.tabWarnings, 0, sizeof(g_char.tabWarnings));
@@ -6593,6 +6858,24 @@ static int Char_WriteReport(const wchar_t *path)
         Char_Put(f, L"preview: (none)");
     Char_Put(f, L"pose: %ls", g_charPoseWords[g_char.poseNow]);
     Char_Put(f, L"turn: %d degrees", g_char.yawNow);
+    {
+        // The camera and the display toggles of the preview (Char_AutoView).
+        int yaw, pitch, zoom, panX, panY, preset, light, crash, shadow, exhaust, native, drawn, k;
+        RsView_GetCamera(g_char.view, &yaw, &pitch, &zoom, &panX, &panY);
+        preset = RsView_GetPreset(g_char.view);
+        Char_Put(f, L"camera: %d %d %d %d %d %ls", yaw, pitch, zoom, panX, panY,
+                 preset >= 0 && preset < RS_VIEW_PRESET_COUNT ? g_charPresetWords[preset] : L"none");
+        drawn = RsView_GetToggles(g_char.view, &light, &crash, &shadow, &exhaust, &native);
+        Char_Put(f, L"view-look: %ls %ls %ls %ls %ls", light ? L"light" : L"dark", crash ? L"on" : L"off", shadow ? L"on" : L"off",
+                 exhaust ? L"on" : L"off", drawn ? L"native" : L"classic");
+        Char_Put(f, L"preview native model: %ls%ls", RsView_HasNative(g_char.view) ? L"in the preview" : L"none",
+                 RsView_HasNative(g_char.view) && !native ? L" (Classic chosen)" : L"");
+        Char_Put(f, L"preview textures missing: %d%ls%ls", g_char.previewMissing, g_char.previewMissing ? L" " : L"",
+                 g_char.previewMissingNames);
+        Char_Put(f, L"preview note sentences: %d", g_char.viewPartCount);
+        for (k = 0; k < g_char.viewPartCount; k++)
+            Char_Put(f, L"preview note %d: %ls", k + 1, g_char.viewPart[k]);
+    }
     Char_PutLabel(f, L"preview note", g_char.viewNote, g_char.viewColor);
     Char_PutLabel(f, L"headline", g_char.headline, g_char.headColor);
     Char_Put(f, L"button Check: %ls", Char_EnabledWord(g_char.check));
@@ -7090,6 +7373,142 @@ static int Char_AutoDrop(HWND page, const wchar_t *arg)
     if (!taken)
         return RS_AUTO_DONE;
     return RS_AUTO_WAIT;    // a model checks at once, the others after the delay
+}
+
+static int Char_AutoViewOnOff(const wchar_t *verb, const wchar_t *word, int *on)
+{
+    if (_wcsicmp(word, L"on") == 0)
+        *on = 1;
+    else if (_wcsicmp(word, L"off") == 0)
+        *on = 0;
+    else {
+        Rs_AutoLog(L"  %ls: say on or off", verb);
+        return 0;
+    }
+    return 1;
+}
+
+// After a step of the view: the turn and the note follow, painted before a
+// following "shot".
+static void Char_AutoViewDone(void)
+{
+    g_char.yawNow = RsView_GetYaw(g_char.view);
+    Char_ViewNoteUpdate();
+    UpdateWindow(g_char.view);
+}
+
+// The verbs of the preview's camera and display toggles (the mouse, the bar
+// and the View menu of the view do the same; nothing of them is built or
+// stored). RS_AUTO_UNKNOWN when verb is none of them.
+static int Char_AutoView(const wchar_t *verb, const wchar_t *arg)
+{
+    int yaw, pitch, zoom, panX, panY, on, i;
+    if (wcsncmp(verb, L"view-", 5) != 0)
+        return RS_AUTO_UNKNOWN;
+    if (wcscmp(verb, L"view-camera") == 0) {
+        // <yaw> <pitch> <zoom %> [<pan x> <pan y>]
+        int n;
+        wchar_t rest[8];
+        panX = panY = 0;
+        n = swscanf(arg, L"%d %d %d %d %d %7ls", &yaw, &pitch, &zoom, &panX, &panY, rest);
+        if (n != 3 && n != 5) {
+            Rs_AutoLog(L"  view-camera: say <yaw> <pitch> <zoom %%> [<pan x> <pan y>] in whole numbers");
+            return RS_AUTO_FAIL;
+        }
+        RsView_SetCamera(g_char.view, yaw, pitch, zoom, panX, panY);
+        RsView_GetCamera(g_char.view, &yaw, &pitch, &zoom, &panX, &panY);
+        Char_AutoViewDone();
+        Rs_AutoLog(L"  view-camera: yaw %d, pitch %d, zoom %d %%, pan %d %d", yaw, pitch, zoom, panX, panY);
+        return RS_AUTO_DONE;
+    }
+    if (wcscmp(verb, L"view-preset") == 0) {
+        for (i = 0; i < RS_VIEW_PRESET_COUNT && _wcsicmp(arg, g_charPresetWords[i]) != 0; i++)
+            ;
+        if (i >= RS_VIEW_PRESET_COUNT) {
+            Rs_AutoLog(L"  view-preset: say front, side, back, top, 34 or race");
+            return RS_AUTO_FAIL;
+        }
+        RsView_SetPreset(g_char.view, i);
+        Char_AutoViewDone();
+        Rs_AutoLog(L"  view-preset: %ls", g_charPresetWords[i]);
+        return RS_AUTO_DONE;
+    }
+    if (wcscmp(verb, L"view-reset") == 0) {
+        RsView_ResetCamera(g_char.view);
+        Char_AutoViewDone();
+        Rs_AutoLog(L"  view-reset: the start view");
+        return RS_AUTO_DONE;
+    }
+    if (wcscmp(verb, L"view-bg") == 0) {
+        const int light = _wcsicmp(arg, L"light") == 0;
+        if (!light && _wcsicmp(arg, L"dark") != 0) {
+            Rs_AutoLog(L"  view-bg: say dark or light");
+            return RS_AUTO_FAIL;
+        }
+        RsView_SetBackground(g_char.view, light);
+        Char_AutoViewDone();
+        Rs_AutoLog(L"  view-bg: %ls", light ? L"light" : L"dark");
+        return RS_AUTO_DONE;
+    }
+    if (wcscmp(verb, L"view-crash") == 0) {
+        if (!Char_AutoViewOnOff(verb, arg, &on))
+            return RS_AUTO_FAIL;
+        RsView_SetCrashRef(g_char.view, on);
+        Char_AutoViewDone();
+        Rs_AutoLog(L"  view-crash: %ls", on ? L"on" : L"off");
+        return RS_AUTO_DONE;
+    }
+    if (wcscmp(verb, L"view-overlay") == 0) {
+        // <shadow on|off> <exhaust on|off>: what the preview draws, not what is built
+        wchar_t a[8], b[8];
+        int shadow, exhaust;
+        if (swscanf(arg, L"%7ls %7ls", a, b) != 2 || !Char_AutoViewOnOff(verb, a, &shadow) ||
+            !Char_AutoViewOnOff(verb, b, &exhaust)) {
+            Rs_AutoLog(L"  view-overlay: say <shadow on|off> <exhaust on|off>");
+            return RS_AUTO_FAIL;
+        }
+        RsView_SetOverlays(g_char.view, shadow, exhaust);
+        Char_AutoViewDone();
+        Rs_AutoLog(L"  view-overlay: shadow %ls, exhaust %ls", shadow ? L"on" : L"off", exhaust ? L"on" : L"off");
+        return RS_AUTO_DONE;
+    }
+    if (wcscmp(verb, L"view-model") == 0) {
+        const int native = _wcsicmp(arg, L"native") == 0;
+        if (!native && _wcsicmp(arg, L"classic") != 0) {
+            Rs_AutoLog(L"  view-model: say native or classic");
+            return RS_AUTO_FAIL;
+        }
+        if (native && !RsView_HasNative(g_char.view)) {
+            Rs_AutoLog(L"  view-model: the preview has no native model - it shows the classic one");
+            return RS_AUTO_FAIL;
+        }
+        RsView_SetShowNative(g_char.view, native);
+        Char_AutoViewDone();
+        Rs_AutoLog(L"  view-model: %ls", native ? L"native" : L"classic");
+        return RS_AUTO_DONE;
+    }
+    if (wcscmp(verb, L"view-bench") == 0) {
+        int avg = 0, longest = 0, p95 = 0, w = 0, h = 0, n;
+        wchar_t *end;
+        long v = wcstol(arg, &end, 10);
+        while (*end == L' ')
+            end++;
+        if (end == arg || *end || v < 1 || v > 1000) {
+            Rs_AutoLog(L"  view-bench: say how many pictures, 1 to 1000");
+            return RS_AUTO_FAIL;
+        }
+        n = RsView_Bench(g_char.view, (int)v, &avg, &longest, &p95, &w, &h);
+        if (n <= 0) {
+            Rs_AutoLog(L"  view-bench: no picture drawn (%d x %d pixels)", w, h);
+            return RS_AUTO_FAIL;
+        }
+        UpdateWindow(g_char.view);
+        Rs_AutoLog(L"  view-bench: %d pictures of %d x %d pixels, %lu triangles in the pose shown: picture %d us on average, "
+                   L"p95 %d us, longest %d us",
+                   n, w, h, g_char.previewShown ? g_char.previewTris[g_char.poseNow] : 0ul, avg, p95, longest);
+        return RS_AUTO_DONE;
+    }
+    return RS_AUTO_UNKNOWN;
 }
 
 static int Char_AutoTurn(const wchar_t *arg)
@@ -8093,6 +8512,7 @@ static void Char_LayPreview(HWND page, int left, int right, int top, int bottom)
         if (poseW > width)
             poseW = width;
         MoveWindow(g_char.pose, in.right - poseW, in.top, poseW, Rs_Px(200), TRUE);
+        Char_ViewNoteFit(width);
         noteH = Char_NoteHeight(g_char.viewNote, width);
         viewBottom = in.bottom - Rs_Px(4) - noteH;
         if (viewBottom < in.top + Rs_Px(32) + Rs_Px(CHAR_VIEW_MIN_H))
@@ -8107,6 +8527,7 @@ static void Char_LayPreview(HWND page, int left, int right, int top, int bottom)
     in = Rs_CardInner(&card, 1);
     width = in.right - in.left;
     MoveWindow(g_char.pose, in.right - Rs_Px(168), card.top + Rs_Px(10), Rs_Px(168), Rs_Px(200), TRUE);
+    Char_ViewNoteFit(width);
     noteH = Char_NoteHeight(g_char.viewNote, width);
     viewBottom = in.bottom - Rs_Px(6) - noteH;
     if (viewBottom < in.top + Rs_Px(CHAR_VIEW_MIN_H))
@@ -8477,6 +8898,7 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
         return 0;
     if (CharWheels_Command(page, id, code)) {
         Char_WheelsFollow(page);
+        Char_ViewNoteUpdate();
         return 0;
     }
     // The user mode fixes these to rldpack's defaults (Char_UserHidden):
@@ -8692,10 +9114,12 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
         }
         break;
     case CHAR_ID_VIEW:
-        if (code == RS_VIEW_N_YAW)
+        if (code == RS_VIEW_N_YAW || code == RS_VIEW_N_CAMERA)
             g_char.yawNow = RsView_GetYaw(g_char.view);
         else if (code == RS_VIEW_N_PICK)
             Char_LookPicked(page);
+        else if (code == RS_VIEW_N_TOGGLES)
+            Char_ViewNoteUpdate();      // Native or Classic chosen in the View menu
         break;
     case CHAR_ID_POSE:
         if (code == CBN_SELCHANGE) {
@@ -8833,6 +9257,9 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
         r = CharWheels_Message(page, msg, wParam, lParam, handled);
         if (*handled) {
             Char_WheelsFollow(page);
+            // A wheel read (or dropped): the note below the preview follows.
+            if (msg == RS_WM_JOB_DONE)
+                Char_ViewNoteUpdate();
             return r;
         }
     }
@@ -9213,6 +9640,9 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         return Char_AutoPose(arg);
     if (wcscmp(verb, L"turn") == 0)
         return Char_AutoTurn(arg);
+    r = Char_AutoView(verb, arg);
+    if (r != RS_AUTO_UNKNOWN)
+        return r;
     if (wcscmp(verb, L"report") == 0) {
         if (!arg[0] || !Char_WriteReport(arg)) {
             Rs_AutoLog(L"  report: could not write '%ls'", arg);

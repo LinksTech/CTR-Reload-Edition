@@ -20,6 +20,7 @@
 //   rs_cups.c     page "Cups"
 //   rs_char.c     page "Character"
 //   rs_view.c     3D model view beside the reference dummy (window class RsModelView, rs_view.h)
+//   rs_tex.c      textures of the preview: RLDPN2 and RLDPW3 read, mip levels as in the game (rs_tex.h)
 //   rs_wheels.c   card "Wheels" of the page "Character" (preview feature, rs_wheels.h)
 //   rs_anim.c     card "Animations" of the page "Character" (preview feature, rs_anim.h)
 //   rs_test.c     page "Test in game"
@@ -401,18 +402,35 @@
 //   neutral|left|right, turn <degrees>, tab <1..5|name>, extras
 //   import|wheels|animations, up y|z, forward z|-z, colors 128|64, vertex-colors
 //   auto|modulate|color (the card Import; the last passed for an OBJ only),
-//   native-model on|off (the card Import; preview feature: "locked - coming
-//   soon" without --enable-preview-features, passed for an OBJ only; in the
+//   native-model on|off (the card Import; preview feature, open to everyone:
+//   passed for an OBJ with Show kart wheels off or a wheel model; in the
 //   user mode "on" only logs that it is always on for an OBJ), fallback on|off
 //   ("Include classic fallback model": always "locked - coming soon"),
 //   look portrait|race (the card of the tab In-game look), shadow
 //   retail|auto|off, exhaust retail|custom|off, exhaust-point <1|2> <x> <y> <z>
 //   (game units of the built model; custom follows) or <1|2> none,
 //   exhaust-pick <1|2> <x pixel> <y pixel> (as Pick and a click at that pixel
-//   of the preview; pose Neutral) - the last four "locked - coming soon"
-//   without --enable-preview-features; in the
+//   of the preview; pose Neutral) - the last four preview features open to
+//   everyone; in the
 //   user mode repair, open-parts, remesh, reduce, reduce-to-fit and colors
 //   fail with "hidden",
+//   the camera and the display toggles of the preview (as the mouse, the bar
+//   and the View menu of the view; nothing of them is built or stored):
+//   view-camera <yaw> <pitch> <zoom %> [<pan x> <pan y>]  whole numbers, clamped
+//                                 by the view (pitch -10..89, zoom 50..800)
+//   view-preset front|side|back|top|34|race   a fixed view (34 = the start view)
+//   view-reset                    the start view (yaw 35, pitch 20, zoom 100 %)
+//   view-bg dark|light            the background of the preview
+//   view-crash on|off             the reference dummy "Crash size"
+//   view-overlay <on|off> <on|off>  shadow and exhaust in the preview only
+//   view-model native|classic     the native model or its classic fallback
+//                                 (native only when the preview has one)
+//   view-bench <pictures>         the preview drawn that often along an orbit,
+//                                 timed: average, p95, longest, size - into the log
+//   ("turn <degrees>" sets the yaw alone, as before; "report" writes them as
+//   "camera: <yaw> <pitch> <zoom> <pan x> <pan y> <preset word|none>" and
+//   "view-look: <dark|light> <crash on|off> <shadow on|off> <exhaust on|off>
+//   <native|classic>"),
 //   problem <n> (as a click on message n), report <file>, the verbs of the cards
 //   Wheels and Animations (rs_wheels.c, rs_anim.c), and for the tab Voices:
 //   voices <folder|none>          the folder (the check follows)
@@ -429,10 +447,13 @@
 // sides). Corners counter-clockwise seen from the side the game draws. The
 // older "RLDPV1\0\0" is the same with x, y, z in whole game units; rs_view.c
 // reads both (writer: RldMk_Preview in tools/rldpack_char.inc).
-// With --native-model on (preview feature) the native model follows: "RLDPN1",
-// its textures decoded, its triangles in the same three poses (THE NATIVE
-// MODEL IN THE PREVIEW, tools/rldpack_native.inc); rs_view.c reads it only with
-// --enable-preview-features and draws it in place of the model.
+// With --native-model on (preview feature) the native model follows:
+// "RLDPN2", its textures decoded in full size (level 0 as in CTXT, never
+// halved; the Studio builds the mip levels as the game does, rs_tex.c), its
+// triangles in the same three poses (THE NATIVE MODEL IN THE PREVIEW,
+// tools/rldpack_native.inc, where its format is given); rs_view.c reads it
+// with and without --enable-preview-features and draws it in place of the
+// model (the View menu of the preview shows the classic one instead).
 //
 // char-poses (the card "Animations" of the page "Character", rs_anim.c; only
 // with --enable-preview-features) - poses of one's own for the preview, never a
@@ -458,25 +479,32 @@
 // char-wheel (the card "Wheels" of the page "Character", rs_wheels.c; a preview
 // feature open to everyone) - a wheel of one's own for the preview, never a
 // container (tools/rldpack_wheel.inc; the rules of make-char --wheel-model):
-//   char-wheel --machine --model <obj|ply> [--up z] [--forward -z] --preview <file>
+//   char-wheel --machine --model <obj|ply> [--up z] [--forward -z] [--textures <folder>]
+//              --preview <file>   (--textures: the page's Textures folder, as make-char gets it)
 //   @rldpack  1  char-wheel
 //   @value    model, up, forward, preview  <value> <origin>
 //   @file     wheel ok | missing <name> <bytes>
+//   @file, @model  of an OBJ the lines of the OBJ reader as make-char says them
+//             (@file mtl, @model mtl, texture, group, vertex-colors; the card
+//             keeps the stamp of the MTL and texture files they name, and the
+//             names of the textures not found)
 //   @msg      as make-char --wheel-model: wheel-triangles, wheel-vertices,
 //             wheel-materials, wheel-texture-size, wheel-texture-file,
 //             wheel-uv, wheel-flat, wheel-wide (errors), wheel-texture,
-//             wheel-off-axis (warnings)
+//             wheel-off-axis (warnings; a texture not found also tex-missing
+//             of the OBJ reader)
 //   @char     wheel-mesh <obj|ply> <points> <materials>, wheel-texture <width>
 //             <height> <file> | none, fit <factor> <across before> <after>,
 //             wheel <triangles> <across> <wide> 0
 //   @value    wheel-size <across> built
 //   @file     preview ok | failed <name> <bytes>
 //   @end      <exit code>   (no @result: nothing is built)
-// The --preview file (little endian): "RLDPW2\0\0", the texture (RGBA, a side
-// above the preview edge halved as in RLDPN1), then the triangles: per corner
-// s16 x y z in 1/16 game units, Q16 u v and the wheel's one color; wheel-local:
-// the axle centre in the origin, the axle along X, the outer side +X, 32 game
-// units across. The layout: the head of tools/rldpack_wheel.inc.
+// The --preview file (little endian): "RLDPW3", the texture of the wheel in
+// full size (at most 1024 on a side, never halved; the Studio builds the mip
+// levels as the game does, rs_tex.c), then its triangles: per corner s16 x y
+// z in 1/16 game units, Q16 u v and the wheel's one color; wheel-local: the
+// axle centre in the origin, the axle along X, the outer side +X, 32 game
+// units across. Its layout: the head of tools/rldpack_wheel.inc.
 // ---------------------------------------------------------------------------
 
 #define RS_PROTOCOL 1

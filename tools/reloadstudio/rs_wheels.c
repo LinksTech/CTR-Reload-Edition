@@ -8,19 +8,30 @@
 //
 // TWO JOBS. The preview: choosing a model runs `rldpack char-wheel` (600 ms
 // after the last change, like the page's own check; tools/rldpack_wheel.inc),
-// whose preview file (RLDPW2: the wheel with its UVs and texture, as large as
-// the game's wheel) goes to the view (RsView_LoadWheelModel) and is deleted at
-// once; the view draws it at the kart's four wheel points, the right ones
-// mirrored, textured, by depth against the model. Size, turn and animation
+// whose preview file (RLDPW3: the wheel with its UVs and its texture in full
+// size, mip levels as in the game; as large as the game's wheel) goes to the
+// view (RsView_LoadWheelModel) and is deleted at once; the view draws it at
+// the kart's four wheel points, the right ones mirrored, textured, by depth
+// against the model. Size, turn and animation
 // are view settings. Its messages (the budget: 1024 triangles, 2048 points, a
 // texture of at most 1024 x 1024; never cut short) are the status line under
-// the field. The export: the page (rs_char.c, Char_MakeArgs) passes
+// the field: an error says why the wheel is not shown, a warning (a texture
+// not found, an axle that is not X) follows the facts in the warning colour.
+// Browse and Clear are clicks: char-wheel runs at once. A wheel exported
+// again (its OBJ or PLY, its MTL, its texture; a texture put where rldpack
+// looks for it) is read again when Reload Studio becomes the active program
+// again or the page is shown again (CharWheels_FilesChanged): the card keeps
+// a stamp (size and time of writing) of every file the last char-wheel read,
+// like the page (rs_char.c, Char_StampFields). The export: the page
+// (rs_char.c, Char_MakeArgs) passes
 // `--wheel-model <file>` and, when it is not 100 %, `--wheel-size <percent>`
 // to make-char while the native model is built and Show kart wheels is on
 // (CharWheels_ModelPath, CharWheels_SizePercent); a change of either makes the
 // page check again (CharWheels_ExportChanged). The axes of the card Import
 // (--up, --forward) are the wheel's too: char-wheel gets them, and a change
-// reads the wheel again. make-char then writes WHLS
+// reads the wheel again; so does the Textures folder of the page (--textures,
+// an OBJ body only, CharWheels_SetTextures), where make-char looks for the
+// wheel's texture as well. make-char then writes WHLS
 // version 2 beside the native model; the classic model keeps the game's
 // wheels as its fallback.
 //
@@ -31,8 +42,9 @@
 //                                    model only, or the native-wheels rule)
 //   kart wheels off                  no wheels at all; a wheel model is not used
 // The line under the options of this card says which, with what is missing
-// (CharWheels_PageState, from the page after every change). Nothing of the
-// card is stored in the settings.
+// (CharWheels_PageState, from the page after every change); while the
+// preview shows wheels that are not built, it says so. Nothing of the card is
+// stored in the settings.
 //
 // Automation verbs:
 //   wheel-model <obj|ply|none>  (also "wheel") choose the wheel; waits for char-wheel
@@ -74,6 +86,9 @@
 #define WH_NOTE_LINES       3
 #define WH_ENDED            8       // jobs ended by a newer input whose end is still to come
 #define WH_BENCH_MAX        1000
+#define WH_FILES            8       // files of a char-wheel kept for the stamp (the model, MTLs, textures)
+#define WH_MISSING          4       // names of textures not found, kept for the notes
+#define WH_STAMP_START      14695981039346656037ULL   // FNV-1a, as Char_StampFields
 
 #define WH_TEXT_NOTE        L"Wheels of your own instead of the game's kart wheels, on the native model."
 #define WH_TEXT_NONE        L"No wheel model chosen."
@@ -82,6 +97,8 @@
 #define WH_TEXT_OWN_OFF     L"Not used: Show kart wheels is off (tab Model) - no wheels at all. Turn it on for your wheels."
 #define WH_TEXT_OWN_PLY     L"Not used: your wheels need the native model, which a PLY model has not (export the model as OBJ)."
 #define WH_TEXT_OWN_TICK    L"Not used yet: your wheels need the native model - tick Native model (Extras, Import)."
+// Appended to the two above while the preview draws the wheel all the same.
+#define WH_TEXT_PREVIEW_ONLY L" The preview shows them, the character will not have them."
 #define WH_TEXT_GAME        L"No wheel model: the kart keeps the game's wheels."
 #define WH_TEXT_GAME_OFF    L"Show kart wheels is off (tab Model): no wheels at all."
 
@@ -99,12 +116,26 @@ static struct {
     int exportChanged;          // CharWheels_ExportChanged: 1 typed, 2 clicked, 0 nothing
     int obj, kartWheels, nativeOn, passed;   // CharWheels_PageState
     int upZ, backwards;         // the page's axes (card Import): the wheel's as well
+    wchar_t textures[WH_VAL];   // the page's Textures folder as make-char gets it ("" = none)
     COLORREF statusColor;
     wchar_t checked[WH_VAL];    // the model of the last char-wheel
-    wchar_t statusText[512];
+    wchar_t statusText[1024];
+    // the files the last char-wheel read (CharWheels_FilesChanged): their stamp
+    // when it ended; the folders where a texture not found is looked for
+    unsigned long long stamp;
+    int stampKnown;
+    int generation;             // CharWheels_Generation: a file written since
+    int fileCount, folderCount;
+    wchar_t files[WH_FILES][WH_VAL], folders[WH_FILES][WH_VAL];
+    // the textures of the last char-wheel that are not there (CharWheels_MissingTextures)
+    int missingCount;
+    wchar_t missing[WH_MISSING][96];
     // the running job
     int previewOk, triangles, points, texW, texH;
-    wchar_t across[16], width[16], firstError[400], meshFormat[8];
+    int warnings;               // warnings of the job
+    wchar_t across[16], width[16], firstError[400], firstWarning[400], meshFormat[8];
+    int jobFileCount, jobFolderCount, jobMissingCount;
+    wchar_t jobFiles[WH_FILES][WH_VAL], jobFolders[WH_FILES][WH_VAL], jobMissing[WH_MISSING][96];
 } g_wh;
 
 // ---------------------------------------------------------------------------
@@ -203,7 +234,7 @@ static void Wh_SetNote(HWND label, const wchar_t *text)
 
 static void Wh_Status(const wchar_t *text, COLORREF color)
 {
-    Wh_Copy(g_wh.statusText, 512, text);
+    Wh_Copy(g_wh.statusText, 1024, text);
     g_wh.statusColor = color;
     Rs_SetTextColor(g_wh.status, color);
     Wh_SetNote(g_wh.status, text);
@@ -241,9 +272,110 @@ static void Wh_TempDelete(int seq)
     DeleteFileW(path);
 }
 
+// ---------------------------------------------------------------------------
+// Stamps of the files char-wheel read: a 64-bit FNV-1a hash over the path (in
+// small letters), the size and the time of writing of each file - the same as
+// the page's (rs_char.c, Char_StampFile, Char_StampFolder).
+// ---------------------------------------------------------------------------
+
+static unsigned long long Wh_StampBytes(unsigned long long h, const void *data, size_t n)
+{
+    const unsigned char *p = (const unsigned char *)data;
+    size_t i;
+    for (i = 0; i < n; i++) {
+        h ^= p[i];
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+static unsigned long long Wh_StampPath(unsigned long long h, const wchar_t *path)
+{
+    for (; *path; path++) {
+        wchar_t c = towlower(*path);
+        if (c == L'/')
+            c = L'\\';
+        h = Wh_StampBytes(h, &c, sizeof(c));
+    }
+    return Wh_StampBytes(h, L"", sizeof(wchar_t));
+}
+
+static unsigned long long Wh_StampFile(unsigned long long h, const wchar_t *path)
+{
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    h = Wh_StampPath(h, path);
+    if (path[0] && GetFileAttributesExW(path, GetFileExInfoStandard, &fa)) {
+        h = Wh_StampBytes(h, &fa.nFileSizeHigh, sizeof(fa.nFileSizeHigh));
+        h = Wh_StampBytes(h, &fa.nFileSizeLow, sizeof(fa.nFileSizeLow));
+        h = Wh_StampBytes(h, &fa.ftLastWriteTime, sizeof(fa.ftLastWriteTime));
+    } else {
+        h = Wh_StampBytes(h, "none", 4);
+    }
+    return h;
+}
+
+// A folder: every file in it (not below it), in any order - where a texture
+// that was not found may be put.
+static unsigned long long Wh_StampFolder(unsigned long long h, const wchar_t *dir)
+{
+    wchar_t pattern[WH_VAL];
+    WIN32_FIND_DATAW fd;
+    HANDLE find;
+    unsigned long long sum = 0, count = 0;
+
+    h = Wh_StampPath(h, dir);
+    if (!dir[0])
+        return h;
+    Rs_PathJoin(pattern, WH_VAL, dir, L"*");
+    find = FindFirstFileW(pattern, &fd);
+    if (find != INVALID_HANDLE_VALUE) {
+        do {
+            unsigned long long one;
+            if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+                continue;
+            one = Wh_StampPath(WH_STAMP_START, fd.cFileName);
+            one = Wh_StampBytes(one, &fd.nFileSizeHigh, sizeof(fd.nFileSizeHigh));
+            one = Wh_StampBytes(one, &fd.nFileSizeLow, sizeof(fd.nFileSizeLow));
+            one = Wh_StampBytes(one, &fd.ftLastWriteTime, sizeof(fd.ftLastWriteTime));
+            sum += one;
+            count++;
+        } while (FindNextFileW(find, &fd));
+        FindClose(find);
+    }
+    h = Wh_StampBytes(h, &sum, sizeof(sum));
+    return Wh_StampBytes(h, &count, sizeof(count));
+}
+
+// The files of the last char-wheel as they are now.
+static unsigned long long Wh_StampNow(void)
+{
+    unsigned long long h = Wh_StampFile(WH_STAMP_START, g_wh.checked);
+    int i;
+    for (i = 0; i < g_wh.fileCount; i++)
+        h = Wh_StampFile(h, g_wh.files[i]);
+    for (i = 0; i < g_wh.folderCount; i++)
+        h = Wh_StampFolder(h, g_wh.folders[i]);
+    return h;
+}
+
+// A path into a list of the running job, once.
+static void Wh_JobListAdd(wchar_t list[][WH_VAL], int *count, const wchar_t *path)
+{
+    int i;
+    if (!path[0] || *count >= WH_FILES)
+        return;
+    for (i = 0; i < *count; i++)
+        if (_wcsicmp(list[i], path) == 0)
+            return;
+    Wh_Copy(list[(*count)++], WH_VAL, path);
+}
+
 // The line under the options: what the page builds with the wheels.
+// The view draws a wheel model loaded wherever the kart wheels are shown -
+// also on a classic model, which is built without it (CharWheels_Shown).
 static const wchar_t *Wh_WheelsText(void)
 {
+    static wchar_t text[256];
     wchar_t path[WH_VAL];
     Wh_FieldPath(path, WH_VAL);
     if (!path[0])
@@ -252,7 +384,10 @@ static const wchar_t *Wh_WheelsText(void)
         return WH_TEXT_OWN_OFF;
     if (g_wh.passed)
         return WH_TEXT_OWN;
-    return !g_wh.obj ? WH_TEXT_OWN_PLY : WH_TEXT_OWN_TICK;
+    Wh_Copy(text, 256, !g_wh.obj ? WH_TEXT_OWN_PLY : WH_TEXT_OWN_TICK);
+    if (g_wh.loaded)
+        wcsncat(text, WH_TEXT_PREVIEW_ONLY, 255 - wcslen(text));
+    return text;
 }
 
 static void Wh_WheelsNote(void)
@@ -271,6 +406,7 @@ static void Wh_Drop(void)
     if (g_wh.loaded)
         RsView_DropWheelModel(g_wh.view);
     g_wh.loaded = 0;
+    Wh_WheelsNote();
 }
 
 // Starts char-wheel for the model in the field. 1 = started,
@@ -280,7 +416,7 @@ static void Wh_Drop(void)
 static int Wh_Check(HWND page)
 {
     wchar_t path[WH_VAL], preview[WH_VAL];
-    const wchar_t *args[12];
+    const wchar_t *args[14];
     int n;
 
     if (g_wh.timer) {
@@ -305,6 +441,11 @@ static int Wh_Check(HWND page)
     }
     Wh_FieldPath(path, WH_VAL);
     Wh_Copy(g_wh.checked, WH_VAL, path);
+    // The stamp is that of the run to come (Wh_JobDone); none while it runs.
+    g_wh.stampKnown = 0;
+    g_wh.fileCount = 0;
+    g_wh.folderCount = 0;
+    g_wh.missingCount = 0;
     if (!path[0]) {
         Wh_Drop();
         Wh_Status(WH_TEXT_NONE, RS_COL_MUTED);
@@ -330,6 +471,12 @@ static int Wh_Check(HWND page)
         args[n++] = L"--forward";
         args[n++] = L"-z";
     }
+    // The Textures folder of the page, where make-char looks for the wheel's
+    // texture too (CharWheels_SetTextures).
+    if (g_wh.textures[0]) {
+        args[n++] = L"--textures";
+        args[n++] = g_wh.textures;
+    }
     g_wh.previewOk = 0;
     g_wh.triangles = -1;
     g_wh.points = -1;
@@ -339,6 +486,11 @@ static int Wh_Check(HWND page)
     g_wh.width[0] = 0;
     g_wh.meshFormat[0] = 0;
     g_wh.firstError[0] = 0;
+    g_wh.firstWarning[0] = 0;
+    g_wh.warnings = 0;
+    g_wh.jobFileCount = 0;
+    g_wh.jobFolderCount = 0;
+    g_wh.jobMissingCount = 0;
     g_wh.jobId = Rs_RunRldpack(page, args, n);
     if (!g_wh.jobId) {
         g_wh.jobSeq = 0;
@@ -381,40 +533,90 @@ static void Wh_ParseLine(wchar_t *line)
         g_wh.texH = _wtoi(Wh_Field(f, n, 3));
     } else if (wcscmp(f[0], L"file") == 0 && wcscmp(Wh_Field(f, n, 1), L"preview") == 0) {
         g_wh.previewOk = wcscmp(Wh_Field(f, n, 2), L"ok") == 0;
+    } else if (wcscmp(f[0], L"file") == 0 && wcscmp(Wh_Field(f, n, 1), L"mtl") == 0) {
+        // @file mtl <state> <path> <bytes>: a file of the stamp
+        Wh_JobListAdd(g_wh.jobFiles, &g_wh.jobFileCount, Wh_Field(f, n, 3));
+    } else if (wcscmp(f[0], L"model") == 0 && wcscmp(Wh_Field(f, n, 1), L"texture") == 0) {
+        // @model texture <state> <material> <path> <sha256>: a file of the
+        // stamp; one not found also its folder and that of the model, where
+        // it may be put
+        const wchar_t *path = Wh_Field(f, n, 4);
+        Wh_JobListAdd(g_wh.jobFiles, &g_wh.jobFileCount, path);
+        if (wcscmp(Wh_Field(f, n, 2), L"ok") != 0 && path[0]) {
+            wchar_t dir[WH_VAL];
+            int i;
+            Rs_PathDir(dir, WH_VAL, path);
+            Wh_JobListAdd(g_wh.jobFolders, &g_wh.jobFolderCount, dir);
+            Rs_PathDir(dir, WH_VAL, g_wh.checked);
+            Wh_JobListAdd(g_wh.jobFolders, &g_wh.jobFolderCount, dir);
+            Wh_JobListAdd(g_wh.jobFolders, &g_wh.jobFolderCount, g_wh.textures);
+            for (i = 0; i < g_wh.jobMissingCount && _wcsicmp(g_wh.jobMissing[i], Rs_PathName(path)) != 0; i++)
+                ;
+            if (i == g_wh.jobMissingCount && i < WH_MISSING)
+                Wh_Copy(g_wh.jobMissing[g_wh.jobMissingCount++], 96, Rs_PathName(path));
+        }
     } else if (wcscmp(f[0], L"msg") == 0 && wcscmp(Wh_Field(f, n, 1), L"error") == 0 && !g_wh.firstError[0]) {
         Wh_Copy(g_wh.firstError, 400, Wh_Field(f, n, 3));
+    } else if (wcscmp(f[0], L"msg") == 0 && wcscmp(Wh_Field(f, n, 1), L"warning") == 0) {
+        // A texture not found is said by the facts (Wh_JobDone, its name);
+        // any other warning (wheel-off-axis) in rldpack's words.
+        g_wh.warnings++;
+        if (!g_wh.firstWarning[0] && wcscmp(Wh_Field(f, n, 2), L"tex-missing") != 0 &&
+            wcscmp(Wh_Field(f, n, 2), L"wheel-texture") != 0)
+            Wh_Copy(g_wh.firstWarning, 400, Wh_Field(f, n, 3));
     }
 }
 
 static void Wh_JobDone(HWND page, int code)
 {
-    wchar_t preview[WH_VAL], text[512], tex[48];
+    wchar_t preview[WH_VAL], text[1024], tex[48];
     int seq = g_wh.jobSeq;
 
     g_wh.jobId = 0;
     g_wh.jobSeq = 0;
     (void)page;
+    // The files it read, and their stamp now (CharWheels_FilesChanged).
+    memcpy(g_wh.files, g_wh.jobFiles, sizeof(g_wh.files));
+    memcpy(g_wh.folders, g_wh.jobFolders, sizeof(g_wh.folders));
+    memcpy(g_wh.missing, g_wh.jobMissing, sizeof(g_wh.missing));
+    g_wh.fileCount = g_wh.jobFileCount;
+    g_wh.folderCount = g_wh.jobFolderCount;
+    g_wh.missingCount = g_wh.jobMissingCount;
+    g_wh.stamp = Wh_StampNow();
+    g_wh.stampKnown = 1;
     Wh_TempPath(preview, WH_VAL, seq);
     if (code == 0 && g_wh.previewOk && RsView_LoadWheelModel(g_wh.view, preview)) {
+        wchar_t warn[440];
         g_wh.loaded = 1;
         RsView_SetWheelScale(g_wh.view, g_wh.sizeNow);
         RsView_SetWheelTurn(g_wh.view, g_wh.spin, g_wh.steer);
         RsView_SetWheelAnimation(g_wh.view, g_wh.anim);
         if (g_wh.texW > 0)
             swprintf(tex, 48, L"texture %d x %d", g_wh.texW, g_wh.texH);
+        else if (g_wh.missingCount > 0)
+            swprintf(tex, 48, L"texture not found");
         else
             swprintf(tex, 48, L"no texture");
-        swprintf(text, 512, L"%d triangles, %d vertices, %ls - in the preview at the four wheel points, the right ones mirrored.",
-                 g_wh.triangles, g_wh.points, tex);
-        Wh_Status(text, RS_COL_TEXT);
+        // What a warning says first: the texture not found (by its name), else
+        // rldpack's first other warning (an axle that is not X).
+        warn[0] = 0;
+        if (g_wh.missingCount > 0)
+            swprintf(warn, 440, L" Warning: %ls was not found - the wheel is drawn in its colour. Put it next to the MTL file.",
+                     g_wh.missing[0]);
+        else if (g_wh.firstWarning[0])
+            swprintf(warn, 440, L" Warning: %ls", g_wh.firstWarning);
+        swprintf(text, 1024, L"%d triangles, %d vertices, %ls - in the preview at the four wheel points, the right ones mirrored.%ls",
+                 g_wh.triangles, g_wh.points, tex, warn);
+        Wh_Status(text, warn[0] ? RS_COL_WARNING : RS_COL_TEXT);
+        Wh_WheelsNote();
     } else {
         Wh_Drop();
         if (g_wh.firstError[0])
-            swprintf(text, 512, L"Not shown: %ls", g_wh.firstError);
+            swprintf(text, 1024, L"Not shown: %ls", g_wh.firstError);
         else if (code == 0)
-            swprintf(text, 512, L"Not shown: the preview file could not be read.");
+            swprintf(text, 1024, L"Not shown: the preview file could not be read.");
         else
-            swprintf(text, 512, L"Not shown: rldpack ended with code %d.", code);
+            swprintf(text, 1024, L"Not shown: rldpack ended with code %d.", code);
         Wh_Status(text, RS_COL_ERROR);
     }
     Wh_TempDelete(seq);
@@ -467,7 +669,7 @@ void CharWheels_Create(HWND page, HWND view)
     g_wh.status = Rs_Label(page, WH_ID_STATUS, WH_TEXT_NONE, RS_FONT_SMALL);
     g_wh.statusColor = RS_COL_MUTED;
     Rs_SetTextColor(g_wh.status, g_wh.statusColor);
-    Wh_Copy(g_wh.statusText, 512, WH_TEXT_NONE);
+    Wh_Copy(g_wh.statusText, 1024, WH_TEXT_NONE);
     g_wh.sizeLabel = Rs_Label(page, WH_ID_SIZE_LABEL, L"Wheel size", RS_FONT_BOLD);
     g_wh.size = CreateWindowExW(0, TRACKBAR_CLASSW, L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBS_HORZ | TBS_NOTICKS, 0, 0, 10, 10, page,
                                 (HMENU)(INT_PTR)WH_ID_SIZE, GetModuleHandleW(NULL), NULL);
@@ -554,7 +756,20 @@ int CharWheels_Layout(HWND page, int left, int right, int top, int labelW, int c
     return card.bottom;
 }
 
-static void Wh_Browse(void)
+// A click (Browse, Clear) or automation set the field: char-wheel at once,
+// and the page checks after a click (CharWheels_ExportChanged 2). Returns as
+// Wh_Check.
+static int Wh_SetModelNow(HWND page, const wchar_t *path)
+{
+    g_wh.applying = 1;
+    Rs_SetText(g_wh.model, path);
+    g_wh.applying = 0;
+    g_wh.exportChanged = 2;
+    Wh_WheelsNote();
+    return Wh_Check(page);
+}
+
+static void Wh_Browse(HWND page)
 {
     wchar_t start[WH_VAL];
     wchar_t pick[WH_VAL];
@@ -562,7 +777,7 @@ static void Wh_Browse(void)
     if (Rs_BrowseOpenFile(Rs_MainWindow(), L"Choose the wheel model",
                           L"Wheel models (*.obj, *.ply)\0*.obj;*.ply\0OBJ models (*.obj)\0*.obj\0PLY models (*.ply)\0*.ply\0All files\0*.*\0\0",
                           start, pick, WH_VAL))
-        Rs_SetText(g_wh.model, pick);      // EN_CHANGE schedules the check
+        Wh_SetModelNow(page, pick);
 }
 
 static void Wh_SetAnimation(int on)
@@ -583,7 +798,7 @@ int CharWheels_Command(HWND page, int id, int code)
         return 1;
     switch (id) {
     case WH_ID_MODEL:
-        if (code == EN_CHANGE) {
+        if (code == EN_CHANGE && !g_wh.applying) {
             Wh_Schedule(page);
             g_wh.exportChanged = g_wh.exportChanged ? g_wh.exportChanged : 1;
             Wh_WheelsNote();
@@ -591,11 +806,11 @@ int CharWheels_Command(HWND page, int id, int code)
         break;
     case WH_ID_BROWSE:
         if (code == BN_CLICKED)
-            Wh_Browse();
+            Wh_Browse(page);
         break;
     case WH_ID_CLEAR:
         if (code == BN_CLICKED)
-            Rs_SetText(g_wh.model, L"");
+            Wh_SetModelNow(page, L"");
         break;
     case WH_ID_ANIMATE:
         if (code == BN_CLICKED)
@@ -756,12 +971,7 @@ int CharWheels_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
 
     if (wcscmp(verb, L"wheel-model") == 0 || wcscmp(verb, L"wheel") == 0) {
         int none = !arg[0] || _wcsicmp(arg, L"none") == 0;
-        g_wh.applying = 1;
-        Rs_SetText(g_wh.model, none ? L"" : arg);
-        g_wh.applying = 0;
-        g_wh.exportChanged = 2;
-        Wh_WheelsNote();
-        r = Wh_Check(page);
+        r = Wh_SetModelNow(page, none ? L"" : arg);
         if (r > 0) {
             Rs_AutoLog(L"  %ls: %ls", verb, arg);
             return RS_AUTO_WAIT;
@@ -844,6 +1054,45 @@ void CharWheels_ModelChecked(HWND page, const wchar_t *model, int sizePercent, i
     (void)ok;
 }
 
+int CharWheels_FilesChanged(HWND page, const wchar_t *why)
+{
+    if (!g_wh.created || !g_wh.stampKnown || g_wh.jobId || g_wh.timer || !g_wh.checked[0])
+        return 0;
+    if (Wh_StampNow() == g_wh.stamp)
+        return 0;
+    g_wh.generation++;
+    if (Rs_Automating())
+        Rs_AutoLog(L"  wheel files: written since the last reading (%ls) - reading the wheel again", why);
+    // As a click: the wheel is read at once, the page checks again.
+    g_wh.exportChanged = 2;
+    Wh_Check(page);
+    return 1;
+}
+
+int CharWheels_Generation(void)
+{
+    return g_wh.generation;
+}
+
+int CharWheels_MissingTextures(wchar_t *out, int cap)
+{
+    int i;
+    if (out && cap > 0) {
+        out[0] = 0;
+        for (i = 0; i < g_wh.missingCount; i++) {
+            if (i)
+                wcsncat(out, L", ", (size_t)cap - 1 - wcslen(out));
+            wcsncat(out, g_wh.missing[i], (size_t)cap - 1 - wcslen(out));
+        }
+    }
+    return g_wh.created ? g_wh.missingCount : 0;
+}
+
+int CharWheels_Shown(void)
+{
+    return g_wh.created && g_wh.loaded;
+}
+
 int CharWheels_ModelPath(wchar_t *out, int cap)
 {
     wchar_t path[WH_VAL];
@@ -883,6 +1132,16 @@ void CharWheels_PageState(int obj, int kartWheels, int nativeOn, int passed, int
     Wh_WheelsNote();
 }
 
+void CharWheels_SetTextures(const wchar_t *dir)
+{
+    if (!g_wh.created || wcscmp(dir ? dir : L"", g_wh.textures) == 0)
+        return;
+    Wh_Copy(g_wh.textures, WH_VAL, dir);
+    // Another folder may hold the wheel's texture: read the wheel again.
+    if (CharWheels_ModelPath(NULL, 0))
+        Wh_Schedule(g_wh.page);
+}
+
 static void Wh_Put(FILE *f, const wchar_t *fmt, ...)
 {
     wchar_t buf[1024];
@@ -920,11 +1179,21 @@ void CharWheels_Report(FILE *f)
     Wh_Put(f, L"wheel model: %ls", text && text[0] ? text : L"none");
     Rs_Free(text);
     Wh_Put(f, L"wheel model (last run): %ls", g_wh.checked[0] ? g_wh.checked : L"(none)");
+    Wh_Put(f, L"wheel textures folder: %ls", g_wh.textures[0] ? g_wh.textures : L"(none)");
     Wh_Put(f, L"wheel status: %ls", g_wh.statusText);
+    Wh_Put(f, L"wheel warnings: %d", g_wh.warnings);
+    {
+        wchar_t names[400];
+        int n = CharWheels_MissingTextures(names, 400);
+        Wh_Put(f, L"wheel textures missing: %d%ls%ls", n, n ? L" " : L"", names);
+    }
+    Wh_Put(f, L"wheel files stamped: %d files, %d folders%ls", g_wh.fileCount + (g_wh.checked[0] ? 1 : 0), g_wh.folderCount,
+           g_wh.stampKnown ? L"" : L" (no stamp)");
     Wh_Put(f, L"wheel in the preview: %ls", g_wh.loaded ? L"yes" : L"no");
     Wh_Put(f, L"wheel size: %d %%", g_wh.sizeNow);
     Wh_Put(f, L"wheel preview: spin %d, steer %d, animation %ls", g_wh.spin, g_wh.steer, g_wh.anim ? L"on" : L"off");
     Wh_Put(f, L"wheel export: %ls", g_wh.passed ? L"passed as --wheel-model (with the native model)" : L"not passed");
+    Wh_Put(f, L"wheel in the preview only: %ls", g_wh.loaded && g_wh.kartWheels && !g_wh.passed ? L"yes (shown, not built)" : L"no");
     text = Rs_GetText(g_wh.wheelsNote);
     Wh_Put(f, L"wheels note: %ls", text ? text : L"");
     Rs_Free(text);

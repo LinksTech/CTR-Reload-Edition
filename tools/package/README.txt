@@ -514,21 +514,40 @@ Tab 5 Extras
               preview. The wheels are built with "Native model" ticked and
               "Show kart wheels" on; the classic model keeps the game's
               wheels as the fallback. The line below the options says
-              whether your wheels are used.
+              whether your wheels are used - the preview shows them even
+              when they are not. The line below the field says what was
+              read, and in amber a warning (a texture not found, an axle
+              that is not X). Browse and Clear take effect at once; a wheel
+              exported again (or its texture put in place) is read again
+              when you come back to Reload Studio.
   Animations  Poses of your own. Its fields are marked "Coming soon" and
               greyed out; nothing of them is written into a character yet.
 
 On the right
-  Preview     The model as the game will draw it. Drag to turn it; the list
-              at the top right of the card picks Neutral, Steering left or
-              Steering right. On the left your model, with the kart wheels
-              the game draws under it (none with "Show kart wheels" off). On
-              the right, in grey and in the same scale on the same floor,
-              "Crash size": the original kart at Crash's size, the size your
-              model is fitted to, with a plain driver figure as tall as
-              Crash. Both turn together. The colours are those on a bright
-              road: on dark ground the game shades every driver, by up to
-              75 % (the line below the preview says so).
+  Preview     The model as the game will draw it. Drag to turn it (left
+              and right) and to look from higher or lower (up and down);
+              drag with the right mouse button to move it, turn the mouse
+              wheel to zoom, double-click for the start view again. The bar
+              in the preview has the fixed views; its button View (or a
+              right click) opens the menu with all of them, Reset view, a
+              dark or light background, Crash size, Shadow and Exhaust (shown
+              only - what is built is chosen on the tab In-game look) and,
+              when the character has both, Native or Classic. None of it is
+              built or remembered. The list at the top right of the card
+              picks Neutral, Steering left or Steering right. On the left
+              your model, with the kart wheels the game draws under it (none
+              with "Show kart wheels" off). On the right, in grey and in the
+              same scale on the same floor, "Crash size": the original kart
+              at Crash's size, the size your model is fitted to, with a
+              plain driver figure as tall as Crash. Both turn together.
+              The line below the preview says which look you see: Native
+              (NATIVE DRIVERS set to Preview) when the character has a
+              native model, else Classic, and why - with what to do for the
+              native look (tick "Native model", Show kart wheels off or a
+              wheel model, an OBJ instead of a PLY). It names the textures
+              that were not found, and says when your wheels show but are
+              not built. The classic colours are those on a bright road:
+              on dark ground the game shades every driver, by up to 75 %.
 
 The bar at the bottom
   Headline    What the last check or build says, e.g. "Ready to build" (one
