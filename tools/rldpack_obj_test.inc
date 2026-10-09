@@ -1848,6 +1848,9 @@ static void RldMk_SelfTestObjCases(struct RldMkTestMesh *mesh)
 // either way, and the error does not send them to --wheels off: on two
 // shoes, of one piece 1.8 tall and 0.5 deep, of one piece 1.0 tall and 0.3
 // deep, legs of one piece with a head apart.
+// The glTF reader: its tests use the pictures and helpers above.
+#include "rldpack_gltf_test.inc"
+
 static void RldMk_SelfTestObj(struct RldMkTestMesh *mesh)
 {
 	u8 field[RLDCHAR_NAME_FIELD];
@@ -1917,6 +1920,7 @@ static void RldMk_SelfTestObj(struct RldMkTestMesh *mesh)
 	s_rldObjDetailDefault = RLDOBJ_DETAIL_AUTO;
 	RldObj_ResetOptions();
 	RldMk_SelfTestObjDetail();
+	RldGltf_SelfTest(mesh, chri, chriSize);
 	free(chri);
 }
 

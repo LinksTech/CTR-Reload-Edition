@@ -187,6 +187,8 @@ endif()
 # include/rldtrack.inc - the format, written once, used from two sides.
 # The game pulls in the same file; see its header.
 target_include_directories(rldpack PRIVATE ${CMAKE_SOURCE_DIR}/include)
+# externals/cgltf/cgltf.h - the glTF parser of make-char (tools/rldpack_gltf.inc).
+target_include_directories(rldpack PRIVATE ${CMAKE_SOURCE_DIR}/externals/cgltf)
 
 if(MSVC)
     target_sources(rldpack PRIVATE tools/rldpack.rc platform/rldpack.manifest)
@@ -244,7 +246,7 @@ if(MSVC)
     # ctr_build_id).
     target_compile_definitions(ReloadStudio PRIVATE CTR_NATIVE
         CTR_NATIVE_VERSION=\"${CTR_NATIVE_VERSION}\")
-    target_include_directories(ReloadStudio PRIVATE ${CMAKE_SOURCE_DIR}/include ${CTR_BUILD_ID_DIR})
+    target_include_directories(ReloadStudio PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/externals/cgltf ${CTR_BUILD_ID_DIR})
     add_dependencies(ReloadStudio ctr_build_id)
     # The same floating point flags as rldpack (see there).
     target_compile_options(ReloadStudio PRIVATE ${CTR_RLDPACK_FP_OPTIONS})
@@ -390,7 +392,7 @@ if(BUILD_TESTING)
         )
         target_compile_definitions(rs_tex_selftest PRIVATE CTR_NATIVE
             CTR_NATIVE_VERSION=\"${CTR_NATIVE_VERSION}\")
-        target_include_directories(rs_tex_selftest PRIVATE ${CMAKE_SOURCE_DIR}/include ${CTR_BUILD_ID_DIR})
+        target_include_directories(rs_tex_selftest PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/externals/cgltf ${CTR_BUILD_ID_DIR})
         add_dependencies(rs_tex_selftest ctr_build_id)
         target_compile_options(rs_tex_selftest PRIVATE ${CTR_RLDPACK_FP_OPTIONS})
         set_target_properties(rs_tex_selftest PROPERTIES

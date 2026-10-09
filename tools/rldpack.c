@@ -102,6 +102,11 @@ typedef signed int s32;
 // levels Reload Studio builds for its preview are the game's.
 #include <rldmip.inc>
 
+// glTF models (tools/rldpack_gltf.inc): cgltf v1.15 (externals/cgltf/cgltf.h,
+// MIT, see THIRD_PARTY_NOTICES.md), its implementation compiled here, once.
+#define CGLTF_IMPLEMENTATION
+#include <cgltf.h>
+
 // Build ID (CTR_NATIVE_BUILD_ID), generated on every build - see Rld_Usage.
 #include "ctr_build_id.h"
 
