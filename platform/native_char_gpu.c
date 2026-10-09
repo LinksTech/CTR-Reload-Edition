@@ -30,6 +30,7 @@
 #include "platform/native_renderer.h"
 #include "platform/native_tex.h"
 #include "platform/native_twin.h"
+#include "platform/native_wheels.h"
 
 extern int g_cfg_nativePreview;
 
@@ -145,6 +146,93 @@ void NativeCharGpu_PoseVertices(const struct RldCharNative *n, u32 pose, u32 fir
 	}
 }
 
+void NativeCharGpu_FinishLayout(const struct RldCharNative *n, u32 poseCount, int withFinish, u32 *targets, u32 first[NATIVE_CHAR_GPU_FINISH_TARGETS],
+                                u32 *total)
+{
+	int target;
+
+	*targets = 0;
+	*total = poseCount;
+	for (target = 0; target < NATIVE_CHAR_GPU_FINISH_TARGETS; target++)
+	{
+		const u8 *positions = NULL;
+		const u8 *normals = NULL;
+
+		first[target] = 0;
+		if (!withFinish || (n == NULL) || (n->morph == NULL) || !RldChar_MorphTarget(n, target, &positions, &normals))
+		{
+			continue;
+		}
+		*targets |= 1u << target;
+		first[target] = *total;
+		*total += NATIVE_CHAR_GPU_FINISH_STAGES;
+	}
+}
+
+void NativeCharGpu_BufferVertices(const struct RldCharNative *n, u32 poseCount, const u32 first[NATIVE_CHAR_GPU_FINISH_TARGETS], u32 targets, u32 pose,
+                                  u32 v0, u32 count, struct NativeProbeVertex *out)
+{
+	int target;
+
+	if (pose < poseCount)
+	{
+		NativeCharGpu_PoseVertices(n, pose, v0, count, out);
+		return;
+	}
+
+	// A stage: the texture coordinates and colours of the neutral pose, the
+	// position of the blend (the normal is not part of the "nr" layout).
+	for (target = 0; target < NATIVE_CHAR_GPU_FINISH_TARGETS; target++)
+	{
+		if (((targets & (1u << target)) != 0u) && (pose >= first[target]) && (pose < (first[target] + NATIVE_CHAR_GPU_FINISH_STAGES)))
+		{
+			const float t = (float)(pose - first[target] + 1u) / (float)NATIVE_CHAR_GPU_FINISH_STAGES;
+			u32 i;
+
+			NativeCharGpu_PoseVertices(n, n->morphBasePose, v0, count, out);
+			for (i = 0; i < count; i++)
+			{
+				float normal[3];
+
+				RldChar_MorphVertex(n, target, t, v0 + i, out[i].position, normal);
+			}
+			return;
+		}
+	}
+	NativeCharGpu_PoseVertices(n, 0u, v0, count, out);
+}
+
+int NativeCharGpu_FinishTarget(int rank)
+{
+	if ((rank < 0) || (rank >= NATIVE_CHAR_GPU_SETS))
+	{
+		return -1;
+	}
+	return (rank < NATIVE_CHAR_GPU_FINISH_WIN_RANKS) ? NATIVE_CHAR_GPU_FINISH_WIN : NATIVE_CHAR_GPU_FINISH_LOSE;
+}
+
+int NativeCharGpu_FinishStage(u32 ticksSinceFinish)
+{
+	const u32 stage = ticksSinceFinish / NATIVE_CHAR_GPU_FINISH_TICKS;
+
+	return (stage >= NATIVE_CHAR_GPU_FINISH_STAGES) ? (NATIVE_CHAR_GPU_FINISH_STAGES - 1) : (int)stage;
+}
+
+int NativeCharGpu_FinishPose(const struct NativeCharGpu *set, int target, int stage)
+{
+	if ((set == NULL) || (target < 0) || (target >= NATIVE_CHAR_GPU_FINISH_TARGETS) || ((set->finishTargets & (1u << target)) == 0u) || (stage < 0) ||
+	    (stage >= NATIVE_CHAR_GPU_FINISH_STAGES))
+	{
+		return -1;
+	}
+	return (int)(set->finishFirst[target] + (u32)stage);
+}
+
+const char *NativeCharGpu_FinishName(int target)
+{
+	return (target == NATIVE_CHAR_GPU_FINISH_WIN) ? "win" : ((target == NATIVE_CHAR_GPU_FINISH_LOSE) ? "lose" : "none");
+}
+
 void NativeCharGpu_FreeCpu(struct NativeCharGpuCpu *cpu)
 {
 	free(cpu->indices);
@@ -189,6 +277,7 @@ int NativeCharGpu_Build(const struct RldCharNative *n, struct NativeCharGpuCpu *
 	out->vertexCount = n->vertexCount;
 	out->netPoseCount = n->poseCount;
 	out->poseCount = (n->poseCount == 0u) ? 1u : n->poseCount;
+	NativeCharGpu_FinishLayout(n, out->poseCount, 1, &out->finishTargets, out->finishFirst, &out->poseTotal);
 	out->triangleCount = n->triangleCount;
 	out->materialCount = n->materialCount;
 	for (t = 0; t < 3u; t++)
@@ -297,78 +386,141 @@ int NativeCharGpu_Build(const struct RldCharNative *n, struct NativeCharGpuCpu *
 	}
 
 	// The wheels (WHLS): white vertices of the "nr" layout, u16 indices. An
-	// author's wheel (version 2) gets its mirror image behind the mesh for the
-	// -X wheels: x negated and every triangle's winding turned (a, c, b), so
+	// author's wheel (version 2 or 3) gets its mirror image behind the mesh for
+	// the -X wheels: x negated and every triangle's winding turned (a, c, b), so
 	// it is wound counter-clockwise from outside like the mesh and the cull of
 	// the body holds for both; the UV stays, so a tread runs mirrored. The
 	// normals of WHLS are not part of the "nr" layout (the native mesh is not
-	// lit), so nothing else changes. At most 2 x 2048 vertices: u16 holds them.
+	// lit), so nothing else changes. A version 3 wheel with a rear mesh of its
+	// own puts that mesh and its mirror image behind, the same way. At most
+	// 4 x 2048 vertices: u16 holds them.
 	if (n->wheel != NULL)
 	{
-		const u8 *w = n->wheel;
-		const u32 nw = n->wheelVertexCount;
-		const u32 tw = n->wheelTriangleCount;
-		const u32 halves = (n->wheelVersion == RLDCHAR_WHEEL_VERSION_USER) ? 2u : 1u;
+		const int own = RldChar_WheelIsOwn(n);
+		const u32 halves = own ? 2u : 1u;
+		struct RldCharWheelMesh mesh[2];
+		u32 meshes = 1u;
+		u32 vertexTotal;
+		u32 indexTotal;
+		u32 vertexAt = 0;
+		u32 indexAt = 0;
 		u32 i;
 
-		out->wheelVertices = (struct NativeProbeVertex *)malloc((size_t)nw * halves * sizeof(struct NativeProbeVertex));
-		out->wheelIndices = (u16 *)malloc((size_t)tw * 3u * halves * sizeof(u16));
+		memset(mesh, 0, sizeof(mesh));
+		RldChar_WheelMesh(n, 0, &mesh[0]);
+		if (own && RldChar_WheelMesh(n, 1, &mesh[1]) && mesh[1].own)
+		{
+			meshes = 2u;
+		}
+		vertexTotal = (mesh[0].vertexCount + ((meshes == 2u) ? mesh[1].vertexCount : 0u)) * halves;
+		indexTotal = (mesh[0].triangleCount + ((meshes == 2u) ? mesh[1].triangleCount : 0u)) * 3u * halves;
+
+		out->wheelVertices = (struct NativeProbeVertex *)malloc((size_t)vertexTotal * sizeof(struct NativeProbeVertex));
+		out->wheelIndices = (u16 *)malloc((size_t)indexTotal * sizeof(u16));
 		if ((out->wheelVertices == NULL) || (out->wheelIndices == NULL))
 		{
 			snprintf(out->why, sizeof(out->why), "memory");
 			return 0;
 		}
 
-		for (i = 0; i < nw; i++)
+		for (m = 0; m < meshes; m++)
 		{
-			const u8 *v = &w[RLDCHAR_WHEEL_HEAD_BYTES + (i * RLDCHAR_WHEEL_VERTEX_BYTES)];
-			struct NativeProbeVertex *o = &out->wheelVertices[i];
+			const u32 nw = mesh[m].vertexCount;
+			const u32 tw = mesh[m].triangleCount;
+			struct NativeProbeVertex *verts = &out->wheelVertices[vertexAt];
+			u16 *idx = &out->wheelIndices[indexAt];
 
-			o->position[0] = RldChar_F32(&v[0]);
-			o->position[1] = RldChar_F32(&v[4]);
-			o->position[2] = RldChar_F32(&v[8]);
-			o->texcoord[0] = RldChar_F32(&v[24]);
-			o->texcoord[1] = RldChar_F32(&v[28]);
-			o->color[0] = 255;
-			o->color[1] = 255;
-			o->color[2] = 255;
-			o->color[3] = 255;
-		}
-		for (i = 0; i < (tw * 3u); i++)
-		{
-			out->wheelIndices[i] = Rld_ReadLE16(&w[RLDCHAR_WHEEL_HEAD_BYTES + (nw * RLDCHAR_WHEEL_VERTEX_BYTES) + (i * 2u)]);
-		}
-		if (halves == 2u)
-		{
 			for (i = 0; i < nw; i++)
 			{
-				out->wheelVertices[nw + i] = out->wheelVertices[i];
-				out->wheelVertices[nw + i].position[0] = -out->wheelVertices[i].position[0];
-			}
-			for (i = 0; i < tw; i++)
-			{
-				const u16 *src = &out->wheelIndices[i * 3u];
-				u16 *dst = &out->wheelIndices[(tw * 3u) + (i * 3u)];
+				const u8 *v = &mesh[m].vertices[i * RLDCHAR_WHEEL_VERTEX_BYTES];
+				struct NativeProbeVertex *o = &verts[i];
 
-				dst[0] = (u16)(src[0] + nw);
-				dst[1] = (u16)(src[2] + nw);
-				dst[2] = (u16)(src[1] + nw);
+				o->position[0] = RldChar_F32(&v[0]);
+				o->position[1] = RldChar_F32(&v[4]);
+				o->position[2] = RldChar_F32(&v[8]);
+				o->texcoord[0] = RldChar_F32(&v[24]);
+				o->texcoord[1] = RldChar_F32(&v[28]);
+				o->color[0] = 255;
+				o->color[1] = 255;
+				o->color[2] = 255;
+				o->color[3] = 255;
 			}
+			for (i = 0; i < (tw * 3u); i++)
+			{
+				idx[i] = (u16)(Rld_ReadLE16(&mesh[m].indices[i * 2u]) + vertexAt);
+			}
+			if (halves == 2u)
+			{
+				for (i = 0; i < nw; i++)
+				{
+					verts[nw + i] = verts[i];
+					verts[nw + i].position[0] = -verts[i].position[0];
+				}
+				for (i = 0; i < tw; i++)
+				{
+					const u16 *src = &idx[i * 3u];
+					u16 *dst = &idx[(tw * 3u) + (i * 3u)];
+
+					dst[0] = (u16)(src[0] + nw);
+					dst[1] = (u16)(src[2] + nw);
+					dst[2] = (u16)(src[1] + nw);
+				}
+			}
+
+			// The tread count of an author's wheel, from the mesh as it is (the
+			// first half): the stroboscope clamp of its drawn roll (render plan A3).
+			if (own)
+			{
+				struct NativeWheelTreads treads;
+
+				NativeWheels_EstimateTreads(&verts[0].position[0], sizeof(struct NativeProbeVertex), nw, &treads);
+				if (m == 0u)
+				{
+					out->wheelTreads = treads.treads;
+					out->wheelTreadsEstimated = (u8)treads.estimated;
+					out->wheelTreadOuter = treads.outer;
+					out->wheelTreadAngles = treads.angles;
+				}
+				else
+				{
+					out->wheelRearTreads = treads.treads;
+					out->wheelRearTreadsEstimated = (u8)treads.estimated;
+				}
+			}
+
+			if (m == 1u)
+			{
+				out->wheelRearOwn = 1u;
+				out->wheelRearFirst = indexAt;
+				out->wheelRearMirrorFirst = indexAt + (tw * 3u);
+				out->wheelRearIndexCount = tw * 3u;
+				out->wheelRearMaterial = (u16)mesh[1].material;
+				out->wheelRearRadius = mesh[1].radius;
+				out->wheelRearHalfWidth = mesh[1].halfWidth;
+				if (mesh[1].material >= n->materialCount)
+				{
+					snprintf(out->why, sizeof(out->why), "the rear wheels name material %u", (unsigned)mesh[1].material);
+					return 0;
+				}
+			}
+			vertexAt += nw * halves;
+			indexAt += tw * 3u * halves;
 		}
 
 		out->hasWheels = 1;
-		out->wheelOwn = (halves == 2u) ? 1u : 0u;
-		out->wheelVertexCount = nw * halves;
-		out->wheelIndexCount = tw * 3u;
-		out->wheelIndexTotal = tw * 3u * halves;
-		out->wheelMirrorFirst = (halves == 2u) ? (tw * 3u) : 0u;
-		out->wheelMaterial = Rld_ReadLE16(&w[0x08]);
-		out->wheelRadius = RldChar_F32(&w[0x0C]);
-		out->wheelHalfWidth = RldChar_F32(&w[0x10]);
+		out->wheelOwn = own ? 1u : 0u;
+		out->wheelVertexCount = vertexTotal;
+		out->wheelIndexCount = mesh[0].triangleCount * 3u;
+		out->wheelIndexTotal = indexTotal;
+		out->wheelMirrorFirst = (halves == 2u) ? (mesh[0].triangleCount * 3u) : 0u;
+		out->wheelMaterial = (u16)mesh[0].material;
+		out->wheelRadius = mesh[0].radius;
+		out->wheelHalfWidth = mesh[0].halfWidth;
+		out->wheelAlways = (own && ((n->wheelFlags & RLDCHAR_WHEEL_ALWAYS_DRAW) != 0u)) ? 1u : 0u;
 		for (i = 0; i < 3u; i++)
 		{
-			out->wheelFront[i] = RldChar_F32(&w[0x14 + (i * 4u)]);
-			out->wheelRear[i] = RldChar_F32(&w[0x20 + (i * 4u)]);
+			out->wheelFront[i] = RldChar_F32(&n->wheel[0x14 + (i * 4u)]);
+			out->wheelRear[i] = RldChar_F32(&n->wheel[0x20 + (i * 4u)]);
 		}
 		if (out->wheelMaterial >= n->materialCount)
 		{
@@ -525,6 +677,8 @@ internal int NativeCharGpu_Upload(struct NativeCharGpu *set, const struct RldCha
 	set->vertexCount = cpu.vertexCount;
 	set->poseCount = cpu.poseCount;
 	set->netPoseCount = cpu.netPoseCount;
+	// The win/lose stages only for a seat (never the preview or the twin).
+	NativeCharGpu_FinishLayout(n, cpu.poseCount, seat >= 0, &set->finishTargets, set->finishFirst, &set->poseTotal);
 	set->triangleCount = cpu.triangleCount;
 	set->rangeCount = cpu.rangeCount;
 	memcpy(set->range, cpu.range, sizeof(set->range));
@@ -545,12 +699,26 @@ internal int NativeCharGpu_Upload(struct NativeCharGpu *set, const struct RldCha
 	set->wheelHalfWidth = cpu.wheelHalfWidth;
 	memcpy(set->wheelFront, cpu.wheelFront, sizeof(set->wheelFront));
 	memcpy(set->wheelRear, cpu.wheelRear, sizeof(set->wheelRear));
+	set->wheelTreads = cpu.wheelTreads;
+	set->wheelTreadsEstimated = cpu.wheelTreadsEstimated;
+	set->wheelTreadOuter = cpu.wheelTreadOuter;
+	set->wheelTreadAngles = cpu.wheelTreadAngles;
+	set->wheelAlways = cpu.wheelAlways;
+	set->wheelRearOwn = cpu.wheelRearOwn;
+	set->wheelRearFirst = cpu.wheelRearFirst;
+	set->wheelRearMirrorFirst = cpu.wheelRearMirrorFirst;
+	set->wheelRearIndexCount = cpu.wheelRearIndexCount;
+	set->wheelRearMaterial = cpu.wheelRearMaterial;
+	set->wheelRearRadius = cpu.wheelRearRadius;
+	set->wheelRearHalfWidth = cpu.wheelRearHalfWidth;
+	set->wheelRearTreads = cpu.wheelRearTreads;
+	set->wheelRearTreadsEstimated = cpu.wheelRearTreadsEstimated;
 
 	stagingBefore = NativeGfx_StagingBytes();
 
-	// The body: every pose, in pieces of at most 1 MiB.
+	// The body: every pose and the win/lose stages, in pieces of at most 1 MiB.
 	{
-		const u64 vertices = (u64)set->poseCount * (u64)set->vertexCount;
+		const u64 vertices = (u64)set->poseTotal * (u64)set->vertexCount;
 		const u64 bytes = vertices * (u64)sizeof(struct NativeProbeVertex);
 		struct NativeProbeVertex *piece = (struct NativeProbeVertex *)malloc((size_t)NATIVE_CHAR_GPU_PIECE_VERTICES * sizeof(struct NativeProbeVertex));
 		u64 done = 0;
@@ -587,7 +755,7 @@ internal int NativeCharGpu_Upload(struct NativeCharGpu *set, const struct RldCha
 				{
 					run = NATIVE_CHAR_GPU_PIECE_VERTICES - filled;
 				}
-				NativeCharGpu_PoseVertices(n, pose, first, run, &piece[filled]);
+				NativeCharGpu_BufferVertices(n, set->poseCount, set->finishFirst, set->finishTargets, pose, first, run, &piece[filled]);
 				filled += run;
 			}
 
@@ -703,6 +871,44 @@ out:
 		NativeCharGpu_Refuse(set, why);
 	}
 	return ok;
+}
+
+// The stroboscope of an author's wheel (render plan A3), a line of its own
+// after the upload line: the tread count and the clamp of the drawn roll.
+internal void NativeCharGpu_LogTreads(const char *who, const struct NativeCharGpu *set)
+{
+	if (!set->hasWheels || !set->wheelOwn || (set->wheelTreads <= 0))
+	{
+		return;
+	}
+	Platform_Log("[CTR NativeChar] %s: own wheel treads %d (%s, %u outer points at %u angles), roll clamp %.4f rad per tick (half pitch %.4f)\n", who,
+	             set->wheelTreads, set->wheelTreadsEstimated ? "estimated" : "default", (unsigned)set->wheelTreadOuter, (unsigned)set->wheelTreadAngles,
+	             NativeWheels_StrobeClamp(set->wheelTreads), 3.141592653589793 / (double)set->wheelTreads);
+
+	// WHLS version 3: the rear wheel, the middles with the axle offsets and the
+	// level of detail, a line of its own (a version 2 wheel keeps the lines of
+	// before).
+	if (set->wheelRearOwn || set->wheelAlways || (set->key != NULL && set->key->wheelVersion == RLDCHAR_WHEEL_VERSION_USER3))
+	{
+		char rear[96];
+
+		if (set->wheelRearOwn)
+		{
+			snprintf(rear, sizeof(rear), "own %u triangles, material %u, radius %.3f, treads %d (%s)", (unsigned)(set->wheelRearIndexCount / 3u),
+			         (unsigned)set->wheelRearMaterial, (double)set->wheelRearRadius, set->wheelRearTreads,
+			         set->wheelRearTreadsEstimated ? "estimated" : "default");
+		}
+		else
+		{
+			snprintf(rear, sizeof(rear), "%s", "the front mesh");
+		}
+		Platform_Log("[CTR NativeChar] %s: own wheels v3: rear %s; middles front %.3f %.3f %.3f rear %.3f %.3f %.3f model units (axle offsets "
+		             "front %.3f %.3f %.3f rear %.3f %.3f %.3f included); level of detail %s\n",
+		             who, rear, (double)set->wheelFront[0], (double)set->wheelFront[1], (double)set->wheelFront[2], (double)set->wheelRear[0],
+		             (double)set->wheelRear[1], (double)set->wheelRear[2], (double)set->key->wheelAxle[0][0], (double)set->key->wheelAxle[0][1],
+		             (double)set->key->wheelAxle[0][2], (double)set->key->wheelAxle[1][0], (double)set->key->wheelAxle[1][1],
+		             (double)set->key->wheelAxle[1][2], set->wheelAlways ? "always drawn (ALWAYS_DRAW)" : "as the retail tyres");
+	}
 }
 
 // The materials as drawn - the palette source of the colour checks (the tint
@@ -849,6 +1055,15 @@ void NativeCharGpu_LoadSeats(int levelID)
 			             seat, file, (unsigned)set->vertexCount, (unsigned)set->poseCount,
 			             (unsigned)((set->poseCount * set->vertexCount * (u32)sizeof(struct NativeProbeVertex)) / 1024u), (unsigned)set->triangleCount,
 			             (unsigned)set->rangeCount, (unsigned)set->textureCount, (unsigned)(set->textureBytes / 1024u), wheels);
+		}
+		NativeCharGpu_LogTreads(who, set);
+		if (set->finishTargets != 0u)
+		{
+			Platform_Log("[CTR NativeChar] seat %d: win/lose poses: win %s, lose %s, %d stages each behind pose %u, %u poses in all (%u KB)\n", seat,
+			             ((set->finishTargets & (1u << NATIVE_CHAR_GPU_FINISH_WIN)) != 0u) ? "yes" : "no",
+			             ((set->finishTargets & (1u << NATIVE_CHAR_GPU_FINISH_LOSE)) != 0u) ? "yes" : "no", NATIVE_CHAR_GPU_FINISH_STAGES,
+			             (unsigned)(set->poseCount - 1u), (unsigned)set->poseTotal,
+			             (unsigned)(((set->poseTotal - set->poseCount) * set->vertexCount * (u32)sizeof(struct NativeProbeVertex)) / 1024u));
 		}
 
 		NativeCharGpu_LogMaterials(who, file, set, n);
@@ -1574,6 +1789,120 @@ internal void NativeCharGpu_TestFile(const char *dir, const char *name, struct S
 	RldChar_FreeNative(&n);
 }
 
+// THE FILES OF WHLS VERSION 3 AND MRPH (render plan A1, A4, B3), a second
+// line after the one above: the good files rldpack make-native-tests writes for
+// them, through the native read and NativeCharGpu_Build -
+//   good_mrph-win-lose     win and lose get 8 stages behind the poses; stage
+//                          s of each is RldChar_MorphVertex at (s + 1) / 8
+//   good_mrph-lose-only    lose alone, right behind the poses
+//   good_mrph-version-2... skipped section: no stages
+//   good_wheel-v3-rear     an own rear mesh behind the front one: its range,
+//                          its mirror, indices of its own points, its material
+//   good_wheel-v3-flags    ALWAYS_DRAW as the file says, the front mesh behind
+//   good_wheel-v2-textured as before: no rear mesh, not always drawn
+// Returns the failures.
+internal int NativeCharGpu_TestFormatFiles(const char *dir, int *files, int *checks)
+{
+	static const char *const names[] = {"good_mrph-win-lose", "good_mrph-lose-only", "good_mrph-version-2-skipped",
+	                                    "good_wheel-v3-rear", "good_wheel-v3-flags", "good_wheel-v2-textured"};
+	static struct NativeProbeVertex stage[64];
+	int failures = 0;
+	size_t f;
+
+	for (f = 0; f < (sizeof(names) / sizeof(names[0])); f++)
+	{
+		const char *name = names[f];
+		char path[1024];
+		struct RldCharNative n;
+		struct NativeCharGpuCpu cpu;
+		u32 targets = 0;
+		u32 first[NATIVE_CHAR_GPU_FINISH_TARGETS];
+		u32 total = 0;
+
+		snprintf(path, sizeof(path), "%s/%s.rldchar", dir, name);
+		memset(&n, 0, sizeof(n));
+		if (!NativeChar_ReadNativeFile(path, name, &n) || !NativeCharGpu_Build(&n, &cpu))
+		{
+			NativeCharGpu_Expect(checks, &failures, 0, name, "the file is missing, its native part is not ready or the set is refused");
+			NativeCharGpu_FreeCpu(&cpu);
+			RldChar_FreeNative(&n);
+			continue;
+		}
+		(*files)++;
+		NativeCharGpu_FinishLayout(&n, cpu.poseCount, 1, &targets, first, &total);
+
+		if (f == 0u)
+		{
+			int target;
+			int ok = (targets == 3u) && (first[0] == cpu.poseCount) && (first[1] == (cpu.poseCount + NATIVE_CHAR_GPU_FINISH_STAGES)) &&
+			         (total == (cpu.poseCount + (2u * NATIVE_CHAR_GPU_FINISH_STAGES))) && (cpu.poseTotal == total);
+
+			for (target = 0; ok && (target < NATIVE_CHAR_GPU_FINISH_TARGETS); target++)
+			{
+				int s;
+
+				for (s = 0; ok && (s < NATIVE_CHAR_GPU_FINISH_STAGES); s++)
+				{
+					const u32 count = (n.vertexCount < 64u) ? n.vertexCount : 64u;
+					u32 v;
+
+					NativeCharGpu_BufferVertices(&n, cpu.poseCount, first, targets, first[target] + (u32)s, 0u, count, stage);
+					for (v = 0; ok && (v < count); v++)
+					{
+						float position[3];
+						float normal[3];
+
+						RldChar_MorphVertex(&n, target, (float)(s + 1) / (float)NATIVE_CHAR_GPU_FINISH_STAGES, v, position, normal);
+						ok = (memcmp(stage[v].position, position, sizeof(position)) == 0);
+					}
+				}
+			}
+			NativeCharGpu_Expect(checks, &failures, ok, name, "the win and lose stages are not the blends of the file");
+		}
+		else if (f == 1u)
+		{
+			NativeCharGpu_Expect(checks, &failures,
+			                     (targets == (1u << NATIVE_CHAR_GPU_FINISH_LOSE)) && (first[NATIVE_CHAR_GPU_FINISH_LOSE] == cpu.poseCount) &&
+			                         (total == (cpu.poseCount + NATIVE_CHAR_GPU_FINISH_STAGES)),
+			                     name, "lose alone is not right behind the poses");
+		}
+		else if (f == 2u)
+		{
+			NativeCharGpu_Expect(checks, &failures, (targets == 0u) && (total == cpu.poseCount), name, "a skipped MRPH got stages");
+		}
+		else if (f == 3u)
+		{
+			int ok = cpu.hasWheels && cpu.wheelOwn && cpu.wheelRearOwn && (cpu.wheelRearFirst == (cpu.wheelIndexCount * 2u)) &&
+			         (cpu.wheelRearMirrorFirst == (cpu.wheelRearFirst + cpu.wheelRearIndexCount)) &&
+			         (cpu.wheelIndexTotal == (cpu.wheelRearMirrorFirst + cpu.wheelRearIndexCount)) && (cpu.wheelRearMaterial < cpu.materialCount) &&
+			         (cpu.wheelRearTreads >= NATIVE_WHEELS_TREADS_MIN) && (cpu.wheelAlways == (((n.wheelFlags & RLDCHAR_WHEEL_ALWAYS_DRAW) != 0u) ? 1u : 0u));
+			const u32 frontPoints = n.wheelVertexCount * 2u;
+			u32 i;
+
+			for (i = cpu.wheelRearFirst; ok && (i < cpu.wheelIndexTotal); i++)
+			{
+				ok = (cpu.wheelIndices[i] >= frontPoints) && (cpu.wheelIndices[i] < cpu.wheelVertexCount);
+			}
+			NativeCharGpu_Expect(checks, &failures, ok, name, "the rear mesh is not behind the front one with its own points and material");
+		}
+		else if (f == 4u)
+		{
+			NativeCharGpu_Expect(checks, &failures,
+			                     cpu.wheelOwn && (cpu.wheelAlways == (((n.wheelFlags & RLDCHAR_WHEEL_ALWAYS_DRAW) != 0u) ? 1u : 0u)) &&
+			                         (cpu.wheelRearOwn == (((n.wheelFlags & RLDCHAR_WHEEL_REAR_MESH) != 0u) ? 1u : 0u)),
+			                     name, "the flags of WHLS version 3 are not the ones of the file");
+		}
+		else
+		{
+			NativeCharGpu_Expect(checks, &failures, cpu.wheelOwn && !cpu.wheelRearOwn && !cpu.wheelAlways && (targets == 0u), name,
+			                     "a version 2 wheel got a rear mesh, ALWAYS_DRAW or stages");
+		}
+		NativeCharGpu_FreeCpu(&cpu);
+		RldChar_FreeNative(&n);
+	}
+	return failures;
+}
+
 int NativeCharGpu_SelfTest(const char *dir)
 {
 	static const char *const names[] = {"good_probe-still", "good_probe-poses", "good_probe-wheels-hidden", "good_untextured"};
@@ -1597,6 +1926,17 @@ int NativeCharGpu_SelfTest(const char *dir)
 		printf("%02x", digest[i]);
 	}
 	printf("\n");
+
+	// WHLS version 3 and MRPH, a line of their own after the one of before.
+	{
+		int formatFiles = 0;
+		int formatChecks = 0;
+		const int formatFailures = NativeCharGpu_TestFormatFiles(dir, &formatFiles, &formatChecks);
+
+		printf("native char gpu selftest wheels v3 and win lose %s: %d files, %d checks, %d failures\n", (formatFailures == 0) ? "passed" : "FAILED",
+		       formatFiles, formatChecks, formatFailures);
+		failures += formatFailures;
+	}
 
 	return (failures == 0) && (files == (int)(sizeof(names) / sizeof(names[0]))) ? 0 : 1;
 }

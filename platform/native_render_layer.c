@@ -2894,9 +2894,47 @@ struct NrCharCounters
 	unsigned long long ownMirroredDraws;
 	unsigned long long ownMirrorItemDraws;
 	unsigned long long ownZeroSize;
+	// Win and lose (render plan B3): items drawn with a stage of win / lose,
+	// finishes seen (a seat with stages), finishes whose target the set does
+	// not have (drawn as before), stage lines.
+	unsigned long long finishItems[NATIVE_CHAR_GPU_FINISH_TARGETS];
+	unsigned long long finishes;
+	unsigned long long finishWithout;
+	unsigned long long finishStageLines;
+	// The own wheels of WHLS version 3 (render plan A1, A4): wheel draws of
+	// an own rear mesh; items whose wheels the retail tyre threshold hid,
+	// showed, or the file's ALWAYS_DRAW kept.
+	unsigned long long ownRearDraws;
+	unsigned long long lodHidden;
+	unsigned long long lodShown;
+	unsigned long long lodAlways;
 };
 
 internal struct NrCharCounters s_nrCharCnt;
+
+// WIN AND LOSE (render plan B3, NATIVE_CHAR_GPU_FINISH_STAGES): per seat, the
+// finish as the pulls see it, read from the driver of the seat and kept here
+// alone. The finish is the tick ACTION_RACE_FINISHED is set
+// (game/PlayLevel.c:232-234, in the same move driverRank becomes the place,
+// PlayLevel.c:238-243, 0-based); places 1 to 3 blend to win, 4 to 8 to lose.
+// A seat first seen already finished (a restore after the finish, a binding
+// late in the race) draws the target at once. The flag gone again (a restart
+// with the same driver) or another driver or instance on the seat starts the
+// entry anew. Nothing of the game is written.
+struct NrFinish
+{
+	const struct Driver *driver; // only compared
+	const struct Instance *inst;
+	int seen;       // a tick of this driver and instance was pulled before
+	int finished;   // the finish was seen (with a rank)
+	int target;     // NATIVE_CHAR_GPU_FINISH_*, -1 before the finish
+	int place;      // driverRank + 1 at the finish
+	int has;        // the set of the seat has stages of the target
+	u32 startTimer; // gGT->timer of the finish tick
+	int stage;      // the stage of the current tick, -1 = none
+};
+
+internal struct NrFinish s_nrFinish[NATIVE_RENDER_LAYER_DRIVERS];
 
 // The line of the own wheels of a seat (NativeRenderLayer_OwnWheelLine), once
 // per binding: 1 = written.
@@ -3195,6 +3233,91 @@ internal int NativeRenderLayer_CharIndex(const struct Model *model)
 		}
 	}
 	return -1;
+}
+
+// WIN AND LOSE (see struct NrFinish): one tick of a seat. The set is the one
+// of the model the seat's instance carries (none: the entry is emptied).
+internal void NativeRenderLayer_PullFinish(int seat, u32 timer)
+{
+	struct NrFinish *e = &s_nrFinish[seat];
+	const struct Driver *driver = s_nrSeatDriver[seat];
+	const struct Instance *inst = s_nrSeatInst[seat];
+	const struct NativeCharGpu *gpu = NULL;
+	int k;
+	int finished;
+	int stage;
+
+	if ((driver != NULL) && (inst != NULL) && s_nrCharSeatBound[seat])
+	{
+		k = NativeRenderLayer_CharIndex(inst->model);
+		if ((k >= 0) && !s_nrChar[k].twin)
+		{
+			gpu = s_nrChar[k].gpu;
+		}
+	}
+	if ((gpu == NULL) || (gpu->finishTargets == 0u))
+	{
+		memset(e, 0, sizeof(*e));
+		e->target = -1;
+		e->stage = -1;
+		return;
+	}
+
+	finished = ((driver->actionsFlagSet & ACTION_RACE_FINISHED) != 0) && (NativeCharGpu_FinishTarget((int)driver->driverRank) >= 0);
+	if ((e->driver != driver) || (e->inst != inst) || (e->finished && !finished))
+	{
+		memset(e, 0, sizeof(*e));
+		e->driver = driver;
+		e->inst = inst;
+		e->target = -1;
+		e->stage = -1;
+	}
+
+	if (finished && !e->finished)
+	{
+		e->finished = 1;
+		e->target = NativeCharGpu_FinishTarget((int)driver->driverRank);
+		e->place = (int)driver->driverRank + 1;
+		e->has = NativeCharGpu_FinishPose(gpu, e->target, 0) >= 0;
+		// Seen already finished: the target at once.
+		e->startTimer = e->seen ? timer : (timer - (u32)(NATIVE_CHAR_GPU_FINISH_STAGES * NATIVE_CHAR_GPU_FINISH_TICKS));
+		s_nrCharCnt.finishes++;
+		s_nrCharCnt.finishWithout += e->has ? 0u : 1u;
+		Platform_Log("[CTR RenderLayer] native pose %s seat %d place %d at timer %u%s\n", NativeCharGpu_FinishName(e->target), seat, e->place,
+		             (unsigned)timer, e->has ? (e->seen ? "" : " (seen finished: the target at once)") : " - the file has no such shape key, drawn as before");
+	}
+	e->seen = 1;
+
+	if (!e->finished || !e->has)
+	{
+		e->stage = -1;
+		return;
+	}
+	stage = NativeCharGpu_FinishStage(timer - e->startTimer);
+	if (stage != e->stage)
+	{
+		e->stage = stage;
+		s_nrCharCnt.finishStageLines++;
+		Platform_Log("[CTR RenderLayer] native pose %s seat %d stage %d (pose %d) at timer %u\n", NativeCharGpu_FinishName(e->target), seat, stage,
+		             NativeCharGpu_FinishPose(gpu, e->target, stage), (unsigned)timer);
+	}
+}
+
+// The pose of a finished seat's item, -1 = the pose of the animation.
+internal int NativeRenderLayer_FinishPoseOf(const struct NrDrawItem *it)
+{
+	const struct NrFinish *e;
+
+	if (it->twin || (it->seat >= NATIVE_RENDER_LAYER_DRIVERS))
+	{
+		return -1;
+	}
+	e = &s_nrFinish[it->seat];
+	if ((e->stage < 0) || (e->inst != s_nrSeatInst[it->seat]))
+	{
+		return -1;
+	}
+	return NativeCharGpu_FinishPose(it->gpu, e->target, e->stage);
 }
 
 // The frame before, now over: a bound seat whose frame drew nothing native
@@ -3857,6 +3980,37 @@ internal void NativeRenderLayer_FillCharWheels(struct NrDrawItem *it, const stru
 	}
 
 	it->nativeWheels = 1;
+}
+
+// THE LEVEL OF DETAIL OF THE OWN WHEELS (render plan A4): they follow the
+// retail tyre rule of the view (game/DrawTires.c:269-272, 846-858): past the
+// header threshold - idpp->lodIndex above 2 with one or two players, above 0
+// with more - the wheels are not drawn, unless NO LOD forces the retail tyres
+// as well (CTR_Lod_TiresForced) or the file says ALWAYS_DRAW (WHLS 3). The
+// body is drawn either way, as retail draws its kart. Only the item's wheel
+// mask changes; the sides of a split and the mirror take it from there.
+internal void NativeRenderLayer_CharWheelLod(struct NrDrawItem *it, const struct InstDrawPerPlayer *idpp, const struct GameTracker *gGT)
+{
+	const struct NativeCharGpu *gpu = it->gpu;
+	int threshold;
+
+	if (!it->nativeWheels || (gpu == NULL) || !gpu->wheelOwn || (it->wheelMask == 0))
+	{
+		return;
+	}
+	if (gpu->wheelAlways)
+	{
+		s_nrCharCnt.lodAlways++;
+		return;
+	}
+	threshold = (((int)gGT->numPlyrCurrGame - 2) > 0) ? 0 : 2;
+	if (((idpp->lodIndex - threshold) > 0) && !CTR_Lod_TiresForced())
+	{
+		it->wheelMask = 0;
+		s_nrCharCnt.lodHidden++;
+		return;
+	}
+	s_nrCharCnt.lodShown++;
 }
 
 // THE LINE OF THE OWN WHEELS of a seat, once per binding, at its first item
@@ -5200,6 +5354,17 @@ internal int NativeRenderLayer_RouteCharView(int k, const struct Instance *inst,
 				pose = 0;
 				s_nrCharCnt.poseOutOfRange++;
 			}
+
+			// After the finish: a stage of win or lose (struct NrFinish).
+			{
+				const int finishPose = NativeRenderLayer_FinishPoseOf(it);
+
+				if (finishPose >= 0)
+				{
+					pose = finishPose;
+					s_nrCharCnt.finishItems[s_nrFinish[it->seat].target]++;
+				}
+			}
 		}
 		it->pose = (u16)pose;
 	}
@@ -5228,6 +5393,7 @@ internal int NativeRenderLayer_RouteCharView(int k, const struct Instance *inst,
 	}
 
 	NativeRenderLayer_FillCharWheels(it, inst, pb);
+	NativeRenderLayer_CharWheelLod(it, idpp, gGT);
 	NativeRenderLayer_OwnWheelLine(it, inst);
 	if (split)
 	{
@@ -5742,8 +5908,10 @@ void NativeRenderLayer_NoteRestore(void)
 	// until the next pull reads them anew, no hook finds a seat.
 	NativeRenderLayer_ClearSeats();
 
-	// The wheel poses jump with the restore: every seat starts anew.
+	// The wheel poses jump with the restore: every seat starts anew; so does
+	// the finish of every seat (struct NrFinish).
 	NativeWheels_Forget();
+	memset(s_nrFinish, 0, sizeof(s_nrFinish));
 }
 
 // The first pull after a restore: every object it meets has to be new - a
@@ -5910,7 +6078,8 @@ void NativeRenderLayer_Pull(struct GameTracker *gGT)
 	{
 		for (seat = 0; seat < NATIVE_RENDER_LAYER_DRIVERS; seat++)
 		{
-			double ownRadius = 0.0;
+			struct NativeWheelOwn own;
+			int hasOwn = 0;
 
 			if (s_nrSeatInst[seat] != NULL)
 			{
@@ -5918,15 +6087,34 @@ void NativeRenderLayer_Pull(struct GameTracker *gGT)
 
 				if ((k >= 0) && !s_nrChar[k].twin && (s_nrChar[k].gpu != NULL) && s_nrChar[k].gpu->hasWheels && s_nrChar[k].gpu->wheelOwn)
 				{
-					ownRadius = (double)s_nrChar[k].gpu->wheelRadius;
+					const struct NativeCharGpu *gpu = s_nrChar[k].gpu;
+
+					// Each axle over its own radius and with its own clamp; the
+					// rear takes the front's without a rear mesh of its own.
+					own.radius[0] = (double)gpu->wheelRadius;
+					own.treads[0] = gpu->wheelTreads;
+					own.rearOwn = gpu->wheelRearOwn ? 1 : 0;
+					own.radius[1] = own.rearOwn ? (double)gpu->wheelRearRadius : own.radius[0];
+					own.treads[1] = own.rearOwn ? gpu->wheelRearTreads : own.treads[0];
+					hasOwn = 1;
 				}
 			}
 			NativeWheels_Pull(seat, s_nrSeatDriver[seat], s_nrSeatInst[seat], tick, (u32)gGT->timer, (int)gGT->elapsedTimeMS,
-			                  seat == g_cfg_nativeProbeSeat, ownRadius);
+			                  seat == g_cfg_nativeProbeSeat, hasOwn ? &own : NULL);
 		}
 
 		s_nrWheelSample = g_cfg_nativeWheelReport && tick;
 		s_nrWheelSampleTimer = (u32)gGT->timer;
+	}
+
+	// WIN AND LOSE: the finish of every seat whose set has stages, once per
+	// tick (NativeRenderLayer_PullFinish).
+	if ((s_nrCharCount > 0) && tick)
+	{
+		for (seat = 0; seat < NATIVE_RENDER_LAYER_DRIVERS; seat++)
+		{
+			NativeRenderLayer_PullFinish(seat, (u32)gGT->timer);
+		}
 	}
 
 	for (slot = 0; slot < NATIVE_RENDER_LAYER_SLOTS; slot++)
@@ -6306,6 +6494,25 @@ void NativeRenderLayer_Report(void)
 		             "mirrored mesh %llu, in mirror items %llu, wheelSize 0 %llu; fallbacks no wheel pose %llu, test wheel %llu\n",
 		             s_nrCharCnt.ownItems, s_nrCharCnt.wheelDispatched, s_nrCharCnt.wheelDraws, s_nrCharCnt.wheelNotDrawn, s_nrCharCnt.ownMirroredDraws,
 		             s_nrCharCnt.ownMirrorItemDraws, s_nrCharCnt.ownZeroSize, fb[NR_PROBE_FALLBACK_NO_WHEEL_POSE], fb[NR_PROBE_FALLBACK_TEST_WHEEL]);
+		// The stroboscope of the own wheels (render plan A3), every seat: the
+		// drawn step stays below half a tread pitch.
+		{
+			unsigned long long strobeTicks = 0;
+			unsigned long long strobeClamped = 0;
+			double stepMax = 0.0;
+			double drawnMax = 0.0;
+
+			NativeWheels_StrobeCounts(&strobeTicks, &strobeClamped, &stepMax, &drawnMax);
+			Platform_Log("[CTR RenderLayer] at exit: native char wheel strobe: rolling ticks %llu, clamped %llu, step max %.3f pitch, drawn max %.3f pitch\n",
+			             strobeTicks, strobeClamped, stepMax, drawnMax);
+		}
+		Platform_Log("[CTR RenderLayer] at exit: native char own wheels level of detail: items shown %llu, hidden past the threshold %llu, always drawn "
+		             "%llu; rear mesh draws %llu\n",
+		             s_nrCharCnt.lodShown, s_nrCharCnt.lodHidden, s_nrCharCnt.lodAlways, s_nrCharCnt.ownRearDraws);
+		Platform_Log("[CTR RenderLayer] at exit: native char win/lose: finishes %llu (without the shape key %llu), stage lines %llu, items win %llu, "
+		             "lose %llu\n",
+		             s_nrCharCnt.finishes, s_nrCharCnt.finishWithout, s_nrCharCnt.finishStageLines, s_nrCharCnt.finishItems[NATIVE_CHAR_GPU_FINISH_WIN],
+		             s_nrCharCnt.finishItems[NATIVE_CHAR_GPU_FINISH_LOSE]);
 		for (seat = 0; seat < NATIVE_RENDER_LAYER_DRIVERS; seat++)
 		{
 			const struct NrCharSeam *seam = &s_nrCharSeam[seat];
@@ -7068,7 +7275,10 @@ internal void NativeRenderLayer_CharBoxLine(const struct NrDrawItem *it, const d
 
 	if (it->nativeWheels)
 	{
-		const double r = (double)it->gpu->wheelRadius + (double)it->gpu->wheelHalfWidth + 2.0;
+		// The larger of the front and an own rear wheel (WHLS version 3).
+		const double rFront = (double)it->gpu->wheelRadius + (double)it->gpu->wheelHalfWidth;
+		const double rRear = it->gpu->wheelRearOwn ? ((double)it->gpu->wheelRearRadius + (double)it->gpu->wheelRearHalfWidth) : rFront;
+		const double r = ((rRear > rFront) ? rRear : rFront) + 2.0;
 		const double extent[3] = {r, r, r};
 		int ok = 1;
 
@@ -7408,30 +7618,44 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 	// the mirrored mesh (gpu->wheelMirrorFirst, NativeRenderLayer_FillCharWheels).
 	if (it->nativeWheels && (it->wheelMask != 0) && (gpu->wheelVB != NATIVE_GFX_INVALID) && (gpu->wheelIB != NATIVE_GFX_INVALID))
 	{
-		struct NativeMeshRangeDraw wheelRange[2];
-		const int texture = gpu->materialTexture[gpu->wheelMaterial];
+		// The ranges: front mesh, its mirror image, and for an own rear wheel
+		// (WHLS version 3) the rear mesh and its mirror image with their own
+		// material.
+		struct NativeMeshRangeDraw wheelRange[4];
 		int wheel;
 		int half;
 
 		memset(wheelRange, 0, sizeof(wheelRange));
-		for (half = 0; half < 2; half++)
+		for (half = 0; half < 4; half++)
 		{
 			struct NativeMeshRangeDraw *range = &wheelRange[half];
+			const int rearMesh = (half >= 2) && gpu->wheelRearOwn;
+			const u16 material = rearMesh ? gpu->wheelRearMaterial : gpu->wheelMaterial;
+			const int texture = gpu->materialTexture[material];
 
-			range->firstIndex = (half != 0) ? gpu->wheelMirrorFirst : 0u;
-			range->indexCount = gpu->wheelIndexCount;
+			if (rearMesh)
+			{
+				range->firstIndex = ((half & 1) != 0) ? gpu->wheelRearMirrorFirst : gpu->wheelRearFirst;
+				range->indexCount = gpu->wheelRearIndexCount;
+			}
+			else
+			{
+				range->firstIndex = ((half & 1) != 0) ? gpu->wheelMirrorFirst : 0u;
+				range->indexCount = gpu->wheelIndexCount;
+			}
 			range->texture = (texture >= 0) ? gpu->texture[texture] : NATIVE_GFX_INVALID;
 			range->srgb = (texture >= 0) ? (int)gpu->textureSrgb[texture] : 0;
-			memcpy(range->tint, gpu->materialTint[gpu->wheelMaterial], sizeof(range->tint));
+			memcpy(range->tint, gpu->materialTint[material], sizeof(range->tint));
 			range->tint[0] *= it->tintScale[0];
 			range->tint[1] *= it->tintScale[1];
 			range->tint[2] *= it->tintScale[2];
-			range->alphaCutoff = gpu->materialMask[gpu->wheelMaterial] ? 0.5f : 0.0f;
+			range->alphaCutoff = gpu->materialMask[material] ? 0.5f : 0.0f;
 		}
 
 		for (wheel = 0; wheel < NATIVE_WHEELS_COUNT; wheel++)
 		{
 			const int mirrored = gpu->wheelOwn && ((wheel & 1) != 0);
+			const int rangeIndex = (mirrored ? 1 : 0) + ((wheel >= 2) ? 2 : 0);
 			struct NativeMeshDraw w;
 			double W[4][4];
 
@@ -7448,7 +7672,7 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 			w.indexBuffer = gpu->wheelIB;
 			w.vertexOffset = 0;
 			w.rangeCount = 1;
-			w.ranges = &wheelRange[mirrored ? 1 : 0];
+			w.ranges = &wheelRange[rangeIndex];
 			w.depthTint = mesh.depthTint;
 
 			s_nrCharCnt.wheelDispatched++;
@@ -7464,6 +7688,10 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 				if (gpu->wheelOwn && it->mirror)
 				{
 					s_nrCharCnt.ownMirrorItemDraws++;
+				}
+				if (gpu->wheelRearOwn && (wheel >= 2))
+				{
+					s_nrCharCnt.ownRearDraws++;
 				}
 				if (clearDepth)
 				{

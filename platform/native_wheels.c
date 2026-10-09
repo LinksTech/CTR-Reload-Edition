@@ -32,6 +32,14 @@
 //   retail size, so the wheel neither slips nor spins on the road.
 //   Ghosts would need the position instead (they write no speed, plan C.7.1);
 //   the probe binds only the seats of a race, never a ghost.
+// - THE STROBOSCOPE of an own wheel (render plan A3): the roll drawn in a tick
+//   is that step clamped to NATIVE_WHEELS_STROBE_FRACTION of a tread pitch,
+//   2 pi / treads (the count NativeWheels_EstimateTreads worked out at load);
+//   the step of the way (rollStep) stays for the sign check and the report.
+//   One tick is one change of the drawn pose (a frame without logic keeps the
+//   pose), so the tread never moves by half a pitch or more between two
+//   pictures and never seems to stand or to turn backwards. The probe and the
+//   test wheel are drawn without a clamp (treads 0), as before.
 // - STEERING, front wheels only: driver->wheelRotation << 2 in the angle unit of
 //   the game (4096 a full turn), taken 1:1 as the yaw of the axle - as
 //   DrawTiresSolid_BuildWheelLocalPairs turns the rim vector (DrawTires.c:372-376:
@@ -51,6 +59,8 @@
 // ===========================================================================
 
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <common.h>
@@ -80,6 +90,12 @@ internal struct NativeWheelEntry s_nwSeats[NATIVE_WHEELS_SEATS];
 internal unsigned long long s_nwTicks = 0;
 internal unsigned long long s_nwStarts = 0;
 internal unsigned long long s_nwSigns[NATIVE_WHEEL_SIGNS];
+
+// The stroboscope counters, of every seat with a clamp.
+internal unsigned long long s_nwStrobeTicks = 0;
+internal unsigned long long s_nwStrobeClamped = 0;
+internal double s_nwStrobeStepMax = 0.0;
+internal double s_nwStrobeDrawnMax = 0.0;
 
 const char *NativeWheels_SignName(int sign)
 {
@@ -186,7 +202,7 @@ internal void NativeWheels_Frames(struct NativeWheelPose *pose)
 		const double a = (double)(hazardAngle + phase[wheel]) * NATIVE_WHEELS_ANGLE;
 		const double wobble = 1.0 / (double)(1 << hazardShift);
 		const double side = ((wheel & 1) != 0) ? -1.0 : 1.0;
-		const double theta = side * pose->roll;
+		const double theta = side * ((wheel < 2) ? pose->roll : pose->rollRear);
 		double axle[3];
 		double front[3];
 		double rimUp[3];
@@ -222,10 +238,11 @@ internal void NativeWheels_Frames(struct NativeWheelPose *pose)
 }
 
 void NativeWheels_Pull(int seat, const struct Driver *driver, const struct Instance *inst, int newTick, u32 timer, int elapsedTimeMS, int counted,
-                       double ownRadius)
+                       const struct NativeWheelOwn *own)
 {
 	struct NativeWheelEntry *e;
 	struct NativeWheelPose *pose;
+	int axle;
 
 	if ((seat < 0) || (seat >= NATIVE_WHEELS_SEATS))
 	{
@@ -265,26 +282,77 @@ void NativeWheels_Pull(int seat, const struct Driver *driver, const struct Insta
 	pose->wheelRotation = driver->wheelRotation;
 	pose->hazardTimer = driver->hazardTimer;
 	pose->wheelSize = driver->wheelSize;
-	pose->ownRadius = (ownRadius > 0.0) ? ownRadius : 0.0;
+	pose->ownRadius = ((own != NULL) && (own->radius[0] > 0.0)) ? own->radius[0] : 0.0;
+	pose->ownRadiusRear = ((own != NULL) && (own->radius[1] > 0.0)) ? own->radius[1] : pose->ownRadius;
 	pose->steer = (double)((int)driver->wheelRotation * 4) * NATIVE_WHEELS_ANGLE;
 
-	// The roll step of this tick (see the head of the file). No wheel, no roll.
-	pose->rollStep = 0.0;
-	if ((pose->ticks > 0) && (pose->wheelSize != 0))
+	// The roll step of this tick per axle (see the head of the file), and the
+	// drawn step: the step of the way, clamped below half a tread pitch for an
+	// own wheel (THE STROBOSCOPE at the head of the file). No wheel, no roll.
+	// Without an own rear wheel the rear axle takes the front's values, so its
+	// roll is the front's.
+	for (axle = 0; axle < 2; axle++)
 	{
-		if (pose->ownRadius > 0.0)
+		const double radius = (axle == 0) ? pose->ownRadius : pose->ownRadiusRear;
+		const int treads = ((own != NULL) && (own->treads[axle] > 0)) ? own->treads[axle] : 0;
+		const int counts = (axle == 0) || ((own != NULL) && own->rearOwn);
+		double step = 0.0;
+		double drawn;
+		double *roll = (axle == 0) ? &pose->roll : &pose->rollRear;
+
+		if ((pose->ticks > 0) && (pose->wheelSize != 0))
 		{
-			pose->rollStep = ((double)pose->speed * (double)elapsedTimeMS) / (8192.0 * NativeWheels_RollRadius(pose));
+			if (radius > 0.0)
+			{
+				step = ((double)pose->speed * (double)elapsedTimeMS) / (8192.0 * (radius * NativeWheels_OwnScale(pose)));
+			}
+			else
+			{
+				step = ((double)pose->speed * (double)elapsedTimeMS) / (32.0 * (double)pose->wheelSize);
+			}
+		}
+		drawn = step;
+		if (treads > 0)
+		{
+			const double clamp = NativeWheels_StrobeClamp(treads);
+			const double pitch = NATIVE_WHEELS_TWO_PI / (double)treads;
+
+			if (drawn > clamp)
+			{
+				drawn = clamp;
+			}
+			else if (drawn < -clamp)
+			{
+				drawn = -clamp;
+			}
+			if ((step != 0.0) && counts)
+			{
+				const double stepPitch = fabs(step) / pitch;
+				const double drawnPitch = fabs(drawn) / pitch;
+
+				s_nwStrobeTicks++;
+				s_nwStrobeClamped += (drawn != step) ? 1u : 0u;
+				s_nwStrobeStepMax = (stepPitch > s_nwStrobeStepMax) ? stepPitch : s_nwStrobeStepMax;
+				s_nwStrobeDrawnMax = (drawnPitch > s_nwStrobeDrawnMax) ? drawnPitch : s_nwStrobeDrawnMax;
+			}
+		}
+		*roll = fmod(*roll + drawn, NATIVE_WHEELS_TWO_PI);
+		if (*roll < 0.0)
+		{
+			*roll += NATIVE_WHEELS_TWO_PI;
+		}
+		if (axle == 0)
+		{
+			pose->rollStep = step;
+			pose->treads = treads;
+			pose->drawStep = drawn;
 		}
 		else
 		{
-			pose->rollStep = ((double)pose->speed * (double)elapsedTimeMS) / (32.0 * (double)pose->wheelSize);
+			pose->rollStepRear = step;
+			pose->treadsRear = treads;
+			pose->drawStepRear = drawn;
 		}
-	}
-	pose->roll = fmod(pose->roll + pose->rollStep, NATIVE_WHEELS_TWO_PI);
-	if (pose->roll < 0.0)
-	{
-		pose->roll += NATIVE_WHEELS_TWO_PI;
 	}
 
 	// The way along the forward axis (the third column of the instance matrix,
@@ -368,4 +436,308 @@ void NativeWheels_Counts(unsigned long long *ticks, unsigned long long *starts, 
 	{
 		signs[sign] = s_nwSigns[sign];
 	}
+}
+
+double NativeWheels_StrobeClamp(int treads)
+{
+	if (treads <= 0)
+	{
+		return 0.0;
+	}
+	return (NATIVE_WHEELS_STROBE_FRACTION * NATIVE_WHEELS_TWO_PI) / (double)treads;
+}
+
+void NativeWheels_StrobeCounts(unsigned long long *ticks, unsigned long long *clamped, double *stepMax, double *drawnMax)
+{
+	*ticks = s_nwStrobeTicks;
+	*clamped = s_nwStrobeClamped;
+	*stepMax = s_nwStrobeStepMax;
+	*drawnMax = s_nwStrobeDrawnMax;
+}
+
+// THE TREAD ESTIMATE (see the header). At most 2 x 2048 points (WHLS holds at
+// most 2048); more are not looked at.
+#define NATIVE_WHEELS_TREAD_POINTS 4096
+#define NATIVE_WHEELS_TREAD_MERGE ((0.5 * NATIVE_WHEELS_TWO_PI) / 360.0)
+#define NATIVE_WHEELS_TREAD_RING 1.25
+#define NATIVE_WHEELS_TREAD_RING_MAX 16
+
+internal int NativeWheels_CompareAngle(const void *a, const void *b)
+{
+	const double x = *(const double *)a;
+	const double y = *(const double *)b;
+
+	return (x < y) ? -1 : ((x > y) ? 1 : 0);
+}
+
+internal double NativeWheels_AxleRadius(const float *p)
+{
+	return sqrt(((double)p[1] * (double)p[1]) + ((double)p[2] * (double)p[2]));
+}
+
+void NativeWheels_EstimateTreads(const float *positions, size_t strideBytes, u32 count, struct NativeWheelTreads *out)
+{
+	static double angle[NATIVE_WHEELS_TREAD_POINTS];
+	const u8 *base = (const u8 *)positions;
+	double rmax = 0.0;
+	u32 outer = 0;
+	u32 merged = 0;
+	u32 i;
+
+	memset(out, 0, sizeof(*out));
+	out->treads = NATIVE_WHEELS_TREADS_DEFAULT;
+	if ((positions == NULL) || (count == 0u))
+	{
+		return;
+	}
+	if (count > NATIVE_WHEELS_TREAD_POINTS)
+	{
+		count = NATIVE_WHEELS_TREAD_POINTS;
+	}
+
+	// The largest radius about the axle (X).
+	for (i = 0; i < count; i++)
+	{
+		const double r = NativeWheels_AxleRadius((const float *)(const void *)(base + ((size_t)i * strideBytes)));
+
+		rmax = (r > rmax) ? r : rmax;
+	}
+	if (rmax < 1e-6)
+	{
+		return;
+	}
+
+	// The angles of the outermost points, sorted and merged.
+	for (i = 0; i < count; i++)
+	{
+		const float *p = (const float *)(const void *)(base + ((size_t)i * strideBytes));
+
+		if (NativeWheels_AxleRadius(p) >= (rmax * (1.0 - NATIVE_WHEELS_TREAD_BAND)))
+		{
+			double a = atan2((double)p[2], (double)p[1]);
+
+			if (a < 0.0)
+			{
+				a += NATIVE_WHEELS_TWO_PI;
+			}
+			angle[outer++] = a;
+		}
+	}
+	out->outer = outer;
+	qsort(angle, outer, sizeof(angle[0]), NativeWheels_CompareAngle);
+	for (i = 0; i < outer; i++)
+	{
+		if ((merged == 0u) || ((angle[i] - angle[merged - 1u]) > NATIVE_WHEELS_TREAD_MERGE))
+		{
+			angle[merged++] = angle[i];
+		}
+	}
+	// Across 2 pi: the last angles merge into the first.
+	while ((merged > 1u) && (((angle[0] + NATIVE_WHEELS_TWO_PI) - angle[merged - 1u]) <= NATIVE_WHEELS_TREAD_MERGE))
+	{
+		merged--;
+	}
+	out->angles = merged;
+	if (merged < (u32)NATIVE_WHEELS_TREADS_MIN)
+	{
+		return;
+	}
+
+	// A ring of evenly spaced angles: its count below 16, else a smooth tyre.
+	{
+		double gapMin = 1e9;
+		double gapMax = 0.0;
+
+		for (i = 0; i < merged; i++)
+		{
+			const double gap = ((i + 1u) < merged) ? (angle[i + 1u] - angle[i]) : ((angle[0] + NATIVE_WHEELS_TWO_PI) - angle[i]);
+
+			gapMin = (gap < gapMin) ? gap : gapMin;
+			gapMax = (gap > gapMax) ? gap : gapMax;
+		}
+		if (gapMax <= (gapMin * NATIVE_WHEELS_TREAD_RING))
+		{
+			if (merged < (u32)NATIVE_WHEELS_TREAD_RING_MAX)
+			{
+				out->treads = (int)merged;
+				out->estimated = 1;
+				out->strength = 1.0;
+			}
+			return;
+		}
+	}
+
+	// Any other set: the smallest n-fold periodicity that is strong enough.
+	{
+		int n;
+
+		for (n = NATIVE_WHEELS_TREADS_MIN; n <= NATIVE_WHEELS_TREADS_MAX; n++)
+		{
+			double c = 0.0;
+			double s = 0.0;
+			double strength;
+
+			for (i = 0; i < merged; i++)
+			{
+				c += cos((double)n * angle[i]);
+				s += sin((double)n * angle[i]);
+			}
+			strength = sqrt((c * c) + (s * s)) / (double)merged;
+			if (strength >= NATIVE_WHEELS_TREAD_STRENGTH)
+			{
+				out->treads = n;
+				out->estimated = 1;
+				out->strength = strength;
+				return;
+			}
+		}
+	}
+}
+
+// THE SELF-TEST of the stroboscope. Made-up wheels of radius 16 (model units,
+// both sides x +-6; a groove ring at 14 and a hub at 8 that never count):
+//   lugs 8     8 lug tops of 16 degrees: 8
+//   lugs 12    12 lug tops with bevels (4 angles each, +-3 and +-6 degrees): 12
+//   smooth 32  an even ring of 32: the default 8
+//   ring 10    an even ring of 10 (a coarse polygon or 10 spikes): 10
+//   none       no point: the default 8
+// and two ticks of a made-up driver at radius 16, wheelSize 0x0ccc, 32 ms:
+// speed 3000 forward and backward with 8 treads (true step 0.916 rad, more
+// than half the pitch 0.785) are drawn clamped with the sign kept, speed 200
+// as it is, and treads 0 draws the true step. Leaves the pose table empty and
+// the counters as they were.
+#define NATIVE_WHEELS_TEST_POINTS 512
+
+internal u32 NativeWheels_TestRing(float (*p)[3], u32 at, double radius, int steps, const double *offsets, int offsetCount)
+{
+	int k;
+	int o;
+	int side;
+
+	for (k = 0; k < steps; k++)
+	{
+		for (o = 0; o < offsetCount; o++)
+		{
+			const double a = ((NATIVE_WHEELS_TWO_PI * (double)k) / (double)steps) + ((offsets[o] * NATIVE_WHEELS_TWO_PI) / 360.0);
+
+			for (side = 0; side < 2; side++)
+			{
+				if (at < NATIVE_WHEELS_TEST_POINTS)
+				{
+					p[at][0] = (side == 0) ? 6.0f : -6.0f;
+					p[at][1] = (float)(radius * cos(a));
+					p[at][2] = (float)(radius * sin(a));
+					at++;
+				}
+			}
+		}
+	}
+	return at;
+}
+
+int NativeWheels_StrobeSelfTest(char *line, size_t size)
+{
+	static float p[NATIVE_WHEELS_TEST_POINTS][3];
+	static const double lug8[2] = {-8.0, 8.0};
+	static const double lug12[4] = {-6.0, -3.0, 3.0, 6.0};
+	static const double one[1] = {0.0};
+	static const double groove[1] = {22.5};
+	static struct Driver driver;
+	static struct Instance inst;
+	static const int expect[5] = {8, 12, 8, 10, 8};
+	static const int expectEstimated[5] = {1, 1, 0, 1, 0};
+	static const s16 speeds[4] = {3000, -3000, 200, 3000};
+	static const int treads[4] = {8, 8, 8, 0};
+	struct NativeWheelTreads t[5];
+	struct NativeWheelOwn own;
+	double drawn[4];
+	double step[4];
+	const unsigned long long ticksBefore = s_nwStrobeTicks;
+	const unsigned long long clampedBefore = s_nwStrobeClamped;
+	const double stepMaxBefore = s_nwStrobeStepMax;
+	const double drawnMaxBefore = s_nwStrobeDrawnMax;
+	const double halfPitch8 = (0.5 * NATIVE_WHEELS_TWO_PI) / 8.0;
+	int estimatesHeld = 0;
+	int clampHeld = 1;
+	int c;
+	u32 n;
+
+	// The meshes.
+	n = NativeWheels_TestRing(p, 0, 16.0, 8, lug8, 2);
+	n = NativeWheels_TestRing(p, n, 14.0, 8, groove, 1);
+	n = NativeWheels_TestRing(p, n, 8.0, 24, one, 1);
+	NativeWheels_EstimateTreads(&p[0][0], sizeof(p[0]), n, &t[0]);
+	n = NativeWheels_TestRing(p, 0, 16.0, 12, lug12, 4);
+	n = NativeWheels_TestRing(p, n, 14.0, 12, one, 1);
+	NativeWheels_EstimateTreads(&p[0][0], sizeof(p[0]), n, &t[1]);
+	n = NativeWheels_TestRing(p, 0, 16.0, 32, one, 1);
+	n = NativeWheels_TestRing(p, n, 8.0, 32, one, 1);
+	NativeWheels_EstimateTreads(&p[0][0], sizeof(p[0]), n, &t[2]);
+	n = NativeWheels_TestRing(p, 0, 16.0, 10, one, 1);
+	NativeWheels_EstimateTreads(&p[0][0], sizeof(p[0]), n, &t[3]);
+	NativeWheels_EstimateTreads(NULL, sizeof(p[0]), 0, &t[4]);
+	for (c = 0; c < 5; c++)
+	{
+		estimatesHeld += ((t[c].treads == expect[c]) && (t[c].estimated == expectEstimated[c])) ? 1 : 0;
+	}
+
+	// The clamp, on the seat table.
+	memset(&driver, 0, sizeof(driver));
+	memset(&inst, 0, sizeof(inst));
+	driver.wheelSize = 0x0ccc;
+	for (c = 0; c < 4; c++)
+	{
+		const struct NativeWheelPose *pose;
+
+		NativeWheels_Forget();
+		driver.speedApprox = speeds[c];
+		own.radius[0] = 16.0;
+		own.radius[1] = 16.0;
+		own.treads[0] = treads[c];
+		own.treads[1] = treads[c];
+		own.rearOwn = 0;
+		NativeWheels_Pull(0, &driver, &inst, 1, 1u, 32, 0, &own);
+		NativeWheels_Pull(0, &driver, &inst, 1, 2u, 32, 0, &own);
+		pose = NativeWheels_PoseOf(&inst);
+		step[c] = 0.0;
+		drawn[c] = 0.0;
+		if (pose == NULL)
+		{
+			clampHeld = 0;
+			continue;
+		}
+		step[c] = pose->rollStep;
+		drawn[c] = pose->drawStep;
+		if (treads[c] == 0)
+		{
+			clampHeld = clampHeld && (pose->drawStep == pose->rollStep);
+			continue;
+		}
+		// Below half a pitch, the sign kept; as it is when small, else the clamp.
+		clampHeld = clampHeld && (fabs(pose->drawStep) < halfPitch8) && ((pose->drawStep > 0.0) == (pose->rollStep > 0.0));
+		if (fabs(pose->rollStep) <= NativeWheels_StrobeClamp(treads[c]))
+		{
+			clampHeld = clampHeld && (pose->drawStep == pose->rollStep);
+		}
+		else
+		{
+			clampHeld = clampHeld && (fabs(fabs(pose->drawStep) - NativeWheels_StrobeClamp(treads[c])) < 1e-12);
+		}
+	}
+	NativeWheels_Forget();
+	clampHeld = clampHeld && (fabs(step[0]) > halfPitch8) && (fabs(step[1]) > halfPitch8) && (fabs(step[2]) < halfPitch8);
+	s_nwStrobeTicks = ticksBefore;
+	s_nwStrobeClamped = clampedBefore;
+	s_nwStrobeStepMax = stepMaxBefore;
+	s_nwStrobeDrawnMax = drawnMaxBefore;
+
+	snprintf(line, size,
+	         "treads lugs 8 -> %d (%s, %.2f), lugs 12 -> %d (%s, %.2f), smooth 32 -> %d (%s), ring 10 -> %d (%s), none -> %d (%s), estimates %d of 5; "
+	         "clamp 8 treads %.4f rad (half pitch %.4f): forward step %.4f drawn %.4f, backward step %.4f drawn %.4f, slow step %.4f drawn %.4f, "
+	         "no clamp step %.4f drawn %.4f, clamp %s",
+	         t[0].treads, t[0].estimated ? "estimated" : "default", t[0].strength, t[1].treads, t[1].estimated ? "estimated" : "default", t[1].strength,
+	         t[2].treads, t[2].estimated ? "estimated" : "default", t[3].treads, t[3].estimated ? "estimated" : "default", t[4].treads,
+	         t[4].estimated ? "estimated" : "default", estimatesHeld, NativeWheels_StrobeClamp(8), halfPitch8, step[0], drawn[0], step[1], drawn[1], step[2],
+	         drawn[2], step[3], drawn[3], clampHeld ? "held" : "off");
+	return (estimatesHeld == 5) && clampHeld;
 }

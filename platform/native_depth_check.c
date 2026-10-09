@@ -1398,6 +1398,7 @@ static int NativeDepthCheck_OwnWheels(double *mirrorError, double *steerError, d
 	static struct NativeCharGpu gpu;
 	static struct NrDrawItem item;
 	static const double P[3] = {-1.0, 1.0, 1.0};
+	static struct NativeWheelOwn own;
 	const double size = (double)0x0ccc / 4096.0;
 	const struct NativeWheelPose *pose;
 	int pass;
@@ -1441,8 +1442,13 @@ static int NativeDepthCheck_OwnWheels(double *mirrorError, double *steerError, d
 		driver.wheelRotation = (pass == 1) ? 64 : 0;
 		driver.speedApprox = (pass == 0) ? 3000 : 0;
 		driver.hazardTimer = 0;
-		NativeWheels_Pull(0, &driver, &inst, 1, 1u, 32, 0, (double)gpu.wheelRadius);
-		NativeWheels_Pull(0, &driver, &inst, 1, 2u, 32, 0, (double)gpu.wheelRadius);
+		own.radius[0] = (double)gpu.wheelRadius;
+		own.radius[1] = (double)gpu.wheelRadius;
+		own.treads[0] = 0;
+		own.treads[1] = 0;
+		own.rearOwn = 0;
+		NativeWheels_Pull(0, &driver, &inst, 1, 1u, 32, 0, &own);
+		NativeWheels_Pull(0, &driver, &inst, 1, 2u, 32, 0, &own);
 		pose = NativeWheels_PoseOf(&inst);
 		if (pose == NULL)
 		{
@@ -1548,6 +1554,418 @@ static int NativeDepthCheck_OwnWheels(double *mirrorError, double *steerError, d
 	return 1;
 }
 
+// WIN AND LOSE (render plan B3, NATIVE_CHAR_GPU_FINISH_STAGES), on a seventh
+// line. A made-up native part of 4 points and 47 poses with an MRPH section
+// (version 1 layout: win and lose, no normals, base pose 10) in memory:
+//   layout   win and lose get 8 stages each behind the 47 poses (first 47
+//            and 55, 63 poses in all); without MRPH, or for the preview and
+//            the twin (withFinish 0), none.
+//   stages   every point of stage s of a target is pose 10 + (s + 1) / 8 x
+//            its delta (float), its UV and colour those of pose 10; pose 10
+//            itself as before.
+//   rule     ranks 0..2 win, 3..7 lose, -1 and 8 none; ticks 0, 1, 2, 15, 16,
+//            1000 give the stages 0, 0, 1, 7, 7, 7; a set with win alone has
+//            no pose for lose.
+// Returns the failures (0 = passed).
+static void NativeDepthCheck_PutF32(u8 *at, float value)
+{
+	u32 bits;
+
+	memcpy(&bits, &value, sizeof(bits));
+	at[0] = (u8)(bits & 0xffu);
+	at[1] = (u8)((bits >> 8) & 0xffu);
+	at[2] = (u8)((bits >> 16) & 0xffu);
+	at[3] = (u8)((bits >> 24) & 0xffu);
+}
+
+static int NativeDepthCheck_Finish(int *checks, double *errorMax)
+{
+	enum
+	{
+		FN = 4,
+		FP = 47
+	};
+	static u8 poses[FP * FN * 24];
+	static u8 uv[FN * 8];
+	static u8 colors[FN * 4];
+	static u8 morph[0x10 + (2 * FN * 12)];
+	static struct RldCharNative n;
+	static struct NativeCharGpu set;
+	static struct NativeProbeVertex out[FN];
+	static struct NativeProbeVertex base[FN];
+	static const int rankTarget[10] = {-1, 0, 0, 0, 1, 1, 1, 1, 1, -1}; // ranks -1..8
+	static const u32 ticks[6] = {0u, 1u, 2u, 15u, 16u, 1000u};
+	static const int ticksStage[6] = {0, 0, 1, 7, 7, 7};
+	u32 targets = 0;
+	u32 first[NATIVE_CHAR_GPU_FINISH_TARGETS];
+	u32 total = 0;
+	int failures = 0;
+	u32 p;
+	u32 v;
+	int c;
+	int target;
+	int stage;
+
+	*checks = 0;
+	*errorMax = 0.0;
+	memset(&n, 0, sizeof(n));
+	memset(&set, 0, sizeof(set));
+	for (p = 0; p < FP; p++)
+	{
+		for (v = 0; v < FN; v++)
+		{
+			u8 *at = &poses[((p * FN) + v) * 24u];
+
+			for (c = 0; c < 3; c++)
+			{
+				NativeDepthCheck_PutF32(&at[c * 4], (float)((int)(p * 10u) + (int)(v * 3u) + c) * 0.25f);
+				NativeDepthCheck_PutF32(&at[12 + (c * 4)], (c == 1) ? 1.0f : 0.0f);
+			}
+		}
+	}
+	for (v = 0; v < FN; v++)
+	{
+		NativeDepthCheck_PutF32(&uv[v * 8u], 0.125f * (float)v);
+		NativeDepthCheck_PutF32(&uv[(v * 8u) + 4u], 1.0f - (0.125f * (float)v));
+		colors[(v * 4u) + 0u] = (u8)(10u + v);
+		colors[(v * 4u) + 1u] = (u8)(20u + v);
+		colors[(v * 4u) + 2u] = (u8)(30u + v);
+		colors[(v * 4u) + 3u] = 255u;
+	}
+	memset(morph, 0, sizeof(morph));
+	morph[0x00] = 3u;       // win and lose
+	morph[0x04] = (u8)FN;   // vertexCount
+	morph[0x08] = 10u;      // basePose
+	for (target = 0; target < 2; target++)
+	{
+		for (v = 0; v < FN; v++)
+		{
+			for (c = 0; c < 3; c++)
+			{
+				NativeDepthCheck_PutF32(&morph[0x10 + (((u32)target * FN) + v) * 12u + ((u32)c * 4u)],
+				                        (target == 0) ? (2.0f + (float)v + (float)c) : -(1.0f + (0.5f * (float)c)));
+			}
+		}
+	}
+	n.state = RLDCHAR_NATIVE_READY;
+	n.vertexCount = FN;
+	n.poseCount = FP;
+	n.poses = poses;
+	n.uv = uv;
+	n.colors = colors;
+
+	// Without MRPH: no stages.
+	NativeCharGpu_FinishLayout(&n, FP, 1, &targets, first, &total);
+	failures += ((targets == 0u) && (total == FP)) ? 0 : 1;
+	(*checks)++;
+
+	n.morph = morph;
+	n.morphTargets = 3u;
+	n.morphNormals = 0u;
+	n.morphBasePose = 10u;
+
+	// The preview and the twin: none.
+	NativeCharGpu_FinishLayout(&n, FP, 0, &targets, first, &total);
+	failures += ((targets == 0u) && (total == FP)) ? 0 : 1;
+	(*checks)++;
+
+	// A seat.
+	NativeCharGpu_FinishLayout(&n, FP, 1, &targets, first, &total);
+	failures += ((targets == 3u) && (first[0] == 47u) && (first[1] == 55u) && (total == 63u)) ? 0 : 1;
+	(*checks)++;
+
+	// The stages.
+	NativeCharGpu_PoseVertices(&n, 10u, 0u, FN, base);
+	NativeCharGpu_BufferVertices(&n, FP, first, targets, 10u, 0u, FN, out);
+	failures += (memcmp(out, base, sizeof(out)) == 0) ? 0 : 1;
+	(*checks)++;
+	for (target = 0; target < 2; target++)
+	{
+		for (stage = 0; stage < NATIVE_CHAR_GPU_FINISH_STAGES; stage++)
+		{
+			const double t = (double)(stage + 1) / (double)NATIVE_CHAR_GPU_FINISH_STAGES;
+			int ok = 1;
+
+			NativeCharGpu_BufferVertices(&n, FP, first, targets, first[target] + (u32)stage, 0u, FN, out);
+			for (v = 0; v < FN; v++)
+			{
+				for (c = 0; c < 3; c++)
+				{
+					const double delta = (target == 0) ? (2.0 + (double)v + (double)c) : -(1.0 + (0.5 * (double)c));
+					const double e = fabs((double)out[v].position[c] - ((double)base[v].position[c] + (t * delta)));
+
+					*errorMax = (e > *errorMax) ? e : *errorMax;
+					ok = ok && (e < 1e-4);
+				}
+				ok = ok && (out[v].texcoord[0] == base[v].texcoord[0]) && (out[v].texcoord[1] == base[v].texcoord[1]) &&
+				     (memcmp(out[v].color, base[v].color, sizeof(out[v].color)) == 0);
+			}
+			failures += ok ? 0 : 1;
+			(*checks)++;
+		}
+	}
+
+	// The rule.
+	for (c = 0; c < 10; c++)
+	{
+		failures += (NativeCharGpu_FinishTarget(c - 1) == rankTarget[c]) ? 0 : 1;
+		(*checks)++;
+	}
+	for (c = 0; c < 6; c++)
+	{
+		failures += (NativeCharGpu_FinishStage(ticks[c]) == ticksStage[c]) ? 0 : 1;
+		(*checks)++;
+	}
+	set.finishTargets = 1u << NATIVE_CHAR_GPU_FINISH_WIN;
+	set.finishFirst[NATIVE_CHAR_GPU_FINISH_WIN] = 47u;
+	failures += ((NativeCharGpu_FinishPose(&set, NATIVE_CHAR_GPU_FINISH_WIN, 7) == 54) && (NativeCharGpu_FinishPose(&set, NATIVE_CHAR_GPU_FINISH_LOSE, 0) == -1) &&
+	             (NativeCharGpu_FinishPose(&set, NATIVE_CHAR_GPU_FINISH_WIN, 8) == -1))
+	                ? 0
+	                : 1;
+	(*checks)++;
+	return failures;
+}
+
+// THE OWN WHEELS OF WHLS VERSION 3 (render plan A1, A2, A4), on an eighth
+// line. A made-up native part (3 points, 1 triangle, 2 materials) with a
+// front wheel of 8 points at radius 16 (6 triangles) and, as version 3, a
+// rear wheel of its own: 10 points evenly round at radius 24 (8 triangles,
+// material 1) behind the WHLS head (n->wheelExtra), built without a device:
+//   v2       the wheel as before: 2 x 8 points, 6 x 6 indices, the mirror at
+//            18, no rear mesh, not always drawn.
+//   v3 rear  the rear mesh behind: points 16..35 (its mirror image x negated),
+//            its range at 36 and its mirror at 60, 24 indices each, all of
+//            them at 16 or more; material 1, radius 24, treads 10; ALWAYS_DRAW
+//            read. Without the rear mesh flag: the front mesh as in v2.
+//   roll     front radius 16, rear 24: the rear roll step is 16 / 24 of the
+//            front's; with the rear the front's, the same.
+//   level    the retail tyre threshold: 1 player lodIndex 2 shown, 3 hidden;
+//            3 players lodIndex 0 shown, 1 hidden; ALWAYS_DRAW shown at
+//            lodIndex 5 - with NO LOD off; with it on (the default, which
+//            forces the retail tyres too) all five shown.
+// Returns the failures.
+static void NativeDepthCheck_PutWheelVertex(u8 *at, double radius, double angle, double x)
+{
+	NativeDepthCheck_PutF32(&at[0], (float)x);
+	NativeDepthCheck_PutF32(&at[4], (float)(radius * cos(angle)));
+	NativeDepthCheck_PutF32(&at[8], (float)(radius * sin(angle)));
+	NativeDepthCheck_PutF32(&at[12], (x > 0.0) ? 1.0f : -1.0f);
+	NativeDepthCheck_PutF32(&at[16], 0.0f);
+	NativeDepthCheck_PutF32(&at[20], 0.0f);
+	NativeDepthCheck_PutF32(&at[24], (float)(angle / 6.283185307179586));
+	NativeDepthCheck_PutF32(&at[28], (x > 0.0) ? 0.0f : 1.0f);
+}
+
+static int NativeDepthCheck_WheelsV3(int *checks)
+{
+	enum
+	{
+		NW = 8,
+		TW = 6,
+		NR = 10,
+		TR = 8
+	};
+	static u8 poses[3 * 24];
+	static u8 materials[2 * 16];
+	static u8 indices[3 * 2];
+	static u8 triangleMaterials[2];
+	static u8 wheel[0x30 + (NW * 32) + (TW * 6) + 2];
+	static u8 extra[0x30 + (NR * 32) + (TR * 6)];
+	static struct RldCharNative n;
+	static struct NativeCharGpuCpu cpu;
+	static struct NativeCharGpu set;
+	static struct NrDrawItem item;
+	static struct InstDrawPerPlayer idpp;
+	static struct GameTracker tracker;
+	static struct Driver driver;
+	static struct Instance inst;
+	struct NativeWheelOwn own;
+	const struct NativeWheelPose *pose;
+	int failures = 0;
+	int pass;
+	u32 i;
+
+	*checks = 0;
+	memset(poses, 0, sizeof(poses));
+	memset(materials, 0, sizeof(materials));
+	memset(wheel, 0, sizeof(wheel));
+	memset(extra, 0, sizeof(extra));
+	for (i = 0; i < 2u; i++)
+	{
+		materials[(i * 16u) + 0u] = 200u;
+		materials[(i * 16u) + 1u] = 200u;
+		materials[(i * 16u) + 2u] = 200u;
+		materials[(i * 16u) + 3u] = 255u;
+		materials[(i * 16u) + 4u] = 0xffu; // texture -1
+		materials[(i * 16u) + 5u] = 0xffu;
+	}
+	indices[0] = 0u;
+	indices[2] = 1u;
+	indices[4] = 2u;
+	triangleMaterials[0] = 0u;
+	triangleMaterials[1] = 0u;
+	NativeDepthCheck_PutF32(&poses[24], 1.0f);
+	NativeDepthCheck_PutF32(&poses[48 + 4], 1.0f);
+
+	// WHLS head: the front material 0, radius 16, half width 6, the middles.
+	NativeDepthCheck_PutF32(&wheel[0x0C], 16.0f);
+	NativeDepthCheck_PutF32(&wheel[0x10], 6.0f);
+	NativeDepthCheck_PutF32(&wheel[0x14], 40.0f);
+	NativeDepthCheck_PutF32(&wheel[0x18], 18.0f);
+	NativeDepthCheck_PutF32(&wheel[0x1C], 52.0f);
+	NativeDepthCheck_PutF32(&wheel[0x20], 44.0f);
+	NativeDepthCheck_PutF32(&wheel[0x24], 24.0f);
+	NativeDepthCheck_PutF32(&wheel[0x28], -30.0f);
+	for (i = 0; i < (u32)NW; i++)
+	{
+		NativeDepthCheck_PutWheelVertex(&wheel[0x30 + (i * 32u)], 16.0, (6.283185307179586 * (double)(i / 2u)) / 4.0, ((i & 1u) != 0u) ? -6.0 : 6.0);
+	}
+	for (i = 0; i < (u32)(TW * 3); i++)
+	{
+		wheel[0x30 + (NW * 32) + (i * 2u)] = (u8)((i * 3u) % (u32)NW);
+	}
+	// The rear mesh: material 1, radius 24, half width 8.
+	extra[0x20] = 1u;
+	NativeDepthCheck_PutF32(&extra[0x24], 24.0f);
+	NativeDepthCheck_PutF32(&extra[0x28], 8.0f);
+	for (i = 0; i < (u32)NR; i++)
+	{
+		NativeDepthCheck_PutWheelVertex(&extra[0x30 + (i * 32u)], 24.0, (6.283185307179586 * (double)i) / (double)NR, 6.0);
+	}
+	for (i = 0; i < (u32)(TR * 3); i++)
+	{
+		extra[0x30 + (NR * 32) + (i * 2u)] = (u8)((i * 7u) % (u32)NR);
+	}
+
+	memset(&n, 0, sizeof(n));
+	n.state = RLDCHAR_NATIVE_READY;
+	n.vertexCount = 3u;
+	n.triangleCount = 1u;
+	n.indexSize = 2u;
+	n.materialCount = 2u;
+	n.poseCount = 0u;
+	n.poses = poses;
+	n.indices = indices;
+	n.triangleMaterials = triangleMaterials;
+	n.materials = materials;
+	n.wheel = wheel;
+	n.wheelVertexCount = NW;
+	n.wheelTriangleCount = TW;
+
+	for (pass = 0; pass < 3; pass++)
+	{
+		n.wheelVersion = (pass == 0) ? 2u : 3u;
+		n.wheelFlags = (pass == 0) ? 0u : ((pass == 1) ? (RLDCHAR_WHEEL_ALWAYS_DRAW | RLDCHAR_WHEEL_REAR_MESH) : RLDCHAR_WHEEL_ALWAYS_DRAW);
+		n.wheelExtra = (pass == 1) ? extra : NULL;
+		n.wheelRearVertexCount = (pass == 1) ? (u32)NR : 0u;
+		n.wheelRearTriangleCount = (pass == 1) ? (u32)TR : 0u;
+		if (!NativeCharGpu_Build(&n, &cpu))
+		{
+			NativeCharGpu_FreeCpu(&cpu);
+			failures++;
+			(*checks)++;
+			continue;
+		}
+		failures += ((cpu.wheelOwn == 1u) && (cpu.wheelMirrorFirst == (u32)(TW * 3)) && (cpu.wheelIndexCount == (u32)(TW * 3)) &&
+		             (cpu.wheelAlways == ((pass == 0) ? 0u : 1u)))
+		                ? 0
+		                : 1;
+		(*checks)++;
+		if (pass != 1)
+		{
+			failures += ((cpu.wheelRearOwn == 0u) && (cpu.wheelVertexCount == (u32)(2 * NW)) && (cpu.wheelIndexTotal == (u32)(6 * TW))) ? 0 : 1;
+			(*checks)++;
+		}
+		else
+		{
+			int ok = (cpu.wheelRearOwn == 1u) && (cpu.wheelVertexCount == (u32)((2 * NW) + (2 * NR))) &&
+			         (cpu.wheelIndexTotal == (u32)((6 * TW) + (6 * TR))) && (cpu.wheelRearFirst == (u32)(6 * TW)) &&
+			         (cpu.wheelRearMirrorFirst == (u32)((6 * TW) + (3 * TR))) && (cpu.wheelRearIndexCount == (u32)(3 * TR)) &&
+			         (cpu.wheelRearMaterial == 1u) && (cpu.wheelRearRadius == 24.0f) && (cpu.wheelRearHalfWidth == 8.0f) && (cpu.wheelRearTreads == 10) &&
+			         cpu.wheelRearTreadsEstimated;
+
+			(*checks)++;
+			for (i = 0; ok && (i < (u32)(6 * TR)); i++)
+			{
+				ok = cpu.wheelIndices[(6 * TW) + i] >= (u16)(2 * NW);
+			}
+			for (i = 0; ok && (i < (u32)NR); i++)
+			{
+				const struct NativeProbeVertex *a = &cpu.wheelVertices[(2 * NW) + i];
+				const struct NativeProbeVertex *b = &cpu.wheelVertices[(2 * NW) + NR + i];
+
+				ok = (a->position[0] == 6.0f) && (b->position[0] == -6.0f) && (a->position[1] == b->position[1]) && (a->position[2] == b->position[2]);
+			}
+			failures += ok ? 0 : 1;
+		}
+		NativeCharGpu_FreeCpu(&cpu);
+	}
+
+	// The roll per axle.
+	memset(&driver, 0, sizeof(driver));
+	memset(&inst, 0, sizeof(inst));
+	driver.wheelSize = 0x0ccc;
+	driver.speedApprox = 1000;
+	for (pass = 0; pass < 2; pass++)
+	{
+		NativeWheels_Forget();
+		own.radius[0] = 16.0;
+		own.radius[1] = (pass == 0) ? 24.0 : 16.0;
+		own.treads[0] = 0;
+		own.treads[1] = 0;
+		own.rearOwn = (pass == 0);
+		NativeWheels_Pull(0, &driver, &inst, 1, 1u, 32, 0, &own);
+		NativeWheels_Pull(0, &driver, &inst, 1, 2u, 32, 0, &own);
+		pose = NativeWheels_PoseOf(&inst);
+		failures += ((pose != NULL) && (pose->rollStep != 0.0) &&
+		             (fabs(pose->rollStepRear - (pose->rollStep * (own.radius[0] / own.radius[1]))) < 1e-12) &&
+		             ((pass == 0) || ((pose->rollStepRear == pose->rollStep) && (pose->rollRear == pose->roll))))
+		                ? 0
+		                : 1;
+		(*checks)++;
+	}
+	NativeWheels_Forget();
+
+	// The level of detail.
+	{
+		static const int players[5] = {1, 1, 3, 3, 1};
+		static const int lod[5] = {2, 3, 0, 1, 5};
+		static const int always[5] = {0, 0, 0, 0, 1};
+		static const int past[5] = {0, 1, 0, 1, 0};
+		int c;
+
+		const int noneBefore = CTR_Lod_NoneMode();
+
+		memset(&set, 0, sizeof(set));
+		set.hasWheels = 1;
+		set.wheelOwn = 1;
+		// Both settings of NO LOD (its tyre answer is the mode), the one of the
+		// run restored after.
+		for (c = 0; c < 10; c++)
+		{
+			int shown;
+
+			CTR_Lod_SetNoneMode(c >= 5);
+			shown = !past[c % 5] || CTR_Lod_TiresForced();
+
+			memset(&item, 0, sizeof(item));
+			memset(&idpp, 0, sizeof(idpp));
+			memset(&tracker, 0, sizeof(tracker));
+			set.wheelAlways = (u8)always[c % 5];
+			item.gpu = &set;
+			item.nativeWheels = 1;
+			item.wheelMask = NR_WHEEL_MASK_ALL;
+			idpp.lodIndex = lod[c % 5];
+			tracker.numPlyrCurrGame = (u8)players[c % 5];
+			NativeRenderLayer_CharWheelLod(&item, &idpp, &tracker);
+			failures += ((item.wheelMask == (shown ? NR_WHEEL_MASK_ALL : 0)) && (item.nativeWheels == 1)) ? 0 : 1;
+			(*checks)++;
+		}
+		CTR_Lod_SetNoneMode(noneBefore);
+	}
+	return failures;
+}
+
 int NativeDepthCheck_Run(void)
 {
 	static struct NativeDepthCheckPair normal;
@@ -1591,6 +2009,14 @@ int NativeDepthCheck_Run(void)
 	int ownZero;
 	int ownRan;
 	int ownPassed;
+	int strobePassed;
+	char strobeLine[640];
+	int finishChecks;
+	double finishError;
+	int finishFailures;
+	int v3Checks;
+	int v3Failures;
+	unsigned long long lodBefore[3];
 
 	// The queue writes its scratch words; outside a game run the scratchpad
 	// has to be set up first.
@@ -1631,6 +2057,15 @@ int NativeDepthCheck_Run(void)
 	ownRan = NativeDepthCheck_OwnWheels(&ownMirror, &ownSteer, &ownRadius, &ownRoll, &ownProper, &ownZero);
 	ownPassed = ownRan && (ownMirror < 0.01) && (ownSteer < 0.01) && (fabs(ownRadius - (16.0 * (double)0x0ccc / 4096.0)) < 1e-9) && (ownRoll < 1e-9) &&
 	            (ownProper == 8) && ownZero;
+	strobePassed = NativeWheels_StrobeSelfTest(strobeLine, sizeof(strobeLine));
+	finishFailures = NativeDepthCheck_Finish(&finishChecks, &finishError);
+	lodBefore[0] = s_nrCharCnt.lodShown;
+	lodBefore[1] = s_nrCharCnt.lodHidden;
+	lodBefore[2] = s_nrCharCnt.lodAlways;
+	v3Failures = NativeDepthCheck_WheelsV3(&v3Checks);
+	s_nrCharCnt.lodShown = lodBefore[0];
+	s_nrCharCnt.lodHidden = lodBefore[1];
+	s_nrCharCnt.lodAlways = lodBefore[2];
 
 	held = normal.nearPoint.shiftHeld && normal.farPoint.shiftHeld && huge.nearPoint.shiftHeld && huge.farPoint.shiftHeld;
 	charPassed = NativeDepthCheck_PairPassed(&charEven, 2, 0) && NativeDepthCheck_PairPassed(&charOdd, 2, 0);
@@ -1644,7 +2079,7 @@ int NativeDepthCheck_Run(void)
 	itemsPassed = NativeDepthCheck_SplitPassed(&splitPitched, 1, 1) && itemsHeld && (wheelsCompared >= 600) && (wheelsDiffer == 0) && (classesDiffer == 0) &&
 	              (binMiddle == 20) && (binNearest == 10);
 	passed = NativeDepthCheck_PairPassed(&normal, 2, 0) && NativeDepthCheck_PairPassed(&huge, 0, -2) && charPassed && splitPassed && mirrorPassed &&
-	         itemsPassed && twinPassed && ownPassed;
+	         itemsPassed && twinPassed && ownPassed && strobePassed && (finishFailures == 0) && (v3Failures == 0);
 
 	printf("native depth selftest %s: normal shift %d to %d, w %.4f to %.4f, step %.4f percent, rest %.4f percent, matrix part %.4f percent, "
 	       "wrong shift %.1f and %.1f percent, matrix %.1f and %.1f percent, huge shift %d to %d, w %.4f to %.4f, step %.4f percent, rest %.4f percent, "
@@ -1732,6 +2167,19 @@ int NativeDepthCheck_Run(void)
 	printf("native depth selftest own wheels: mirror error max %.6f, steer error max %.6f, rim %.6f world units (16 model units x 0x0ccc / 4096), "
 	       "roll error %.3g, rotations %d of 8, wheelSize 0 %s, own wheels %s\n",
 	       ownMirror, ownSteer, ownRadius, ownRoll, ownProper, ownZero ? "held" : "off", ownPassed ? "passed" : "differ");
+
+	// The stroboscope of the own wheels (render plan A3), on a sixth line.
+	printf("native depth selftest wheel strobe: %s, strobe %s\n", strobeLine, strobePassed ? "passed" : "differ");
+
+	// Win and lose (render plan B3), on a seventh line.
+	printf("native depth selftest win lose: %d stages per target behind the poses, %d ticks per stage, %d checks, %d failures, "
+	       "stage error max %.6f, win lose %s\n",
+	       NATIVE_CHAR_GPU_FINISH_STAGES, NATIVE_CHAR_GPU_FINISH_TICKS, finishChecks, finishFailures, finishError,
+	       (finishFailures == 0) ? "passed" : "differ");
+
+	// The own wheels of WHLS version 3 (render plan A1, A2, A4), on an eighth line.
+	printf("native depth selftest own wheels v3: rear mesh, axle roll, level of detail with NO LOD off and on, %d checks, %d failures, wheels v3 %s\n",
+	       v3Checks, v3Failures, (v3Failures == 0) ? "passed" : "differ");
 
 	return passed ? 0 : 1;
 }

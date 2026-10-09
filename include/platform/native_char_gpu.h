@@ -41,6 +41,22 @@
 #define NATIVE_CHAR_GPU_TEXTURES 16  // RLDCHAR_TEX_COUNT_MAX
 #define NATIVE_CHAR_GPU_POSES 47     // RLDCHAR_NET_POSES: 21 + 7 + 15 + 4
 
+// WIN AND LOSE (render plan B3). A seat's set whose file has the shape keys
+// win or lose (CNET MRPH) holds, behind the poses of the file, K =
+// NATIVE_CHAR_GPU_FINISH_STAGES poses per target, made at load: stage s is
+// the neutral pose blended towards the target at weight (s + 1) / K
+// (RldChar_MorphVertex), win first, then lose. After the finish of a native
+// seat the drawing takes pose finishFirst[target] + stage, the stage moving on
+// by one every NATIVE_CHAR_GPU_FINISH_TICKS logic ticks from the finish (16
+// ticks, about half a second) and then staying at K - 1, the target itself.
+// Nothing is uploaded in a race frame and nothing of the game is written.
+#define NATIVE_CHAR_GPU_FINISH_STAGES 8
+#define NATIVE_CHAR_GPU_FINISH_TICKS 2
+#define NATIVE_CHAR_GPU_FINISH_WIN 0  // RLDCHAR_MORPH_WIN
+#define NATIVE_CHAR_GPU_FINISH_LOSE 1 // RLDCHAR_MORPH_LOSE
+#define NATIVE_CHAR_GPU_FINISH_TARGETS 2
+#define NATIVE_CHAR_GPU_FINISH_WIN_RANKS 3 // places 1 to 3 win, 4 to 8 lose
+
 enum
 {
 	NATIVE_CHAR_GPU_NONE = 0,
@@ -76,21 +92,47 @@ struct NativeCharGpu
 	u32 vertexCount;   // N
 	u32 poseCount;     // max(1, the CNET pose count)
 	u32 netPoseCount;  // the CNET pose count: 0 or 47
+	u32 poseTotal;     // poses in the buffer: poseCount and the win/lose stages
+	u32 finishTargets; // bit (1 << NATIVE_CHAR_GPU_FINISH_*) per target with stages; 0 = none
+	u32 finishFirst[NATIVE_CHAR_GPU_FINISH_TARGETS]; // the pose of stage 0 per target
 	u32 triangleCount;
 	u32 rangeCount;
 	struct NativeCharRange range[NATIVE_CHAR_GPU_MATERIALS];
 
 	int hasWheels;
-	u8 wheelOwn;           // 1 = an author's wheel (WHLS version 2), 0 = the test wheel or none
-	u32 wheelVertexCount;  // in the buffer: Nw, or 2 Nw for an author's wheel
+	u8 wheelOwn;           // 1 = an author's wheel (WHLS version 2 or 3), 0 = the test wheel or none
+	u32 wheelVertexCount;  // in the buffer: Nw, or 2 Nw for an author's wheel (and 2 Nr with an own rear wheel)
 	u32 wheelIndexCount;   // of one mesh: 3 Tw
-	u32 wheelIndexTotal;   // in the buffer: 3 Tw, or 6 Tw for an author's wheel
+	u32 wheelIndexTotal;   // in the buffer: 3 Tw, or 6 Tw for an author's wheel (and 6 Tr with an own rear wheel)
 	u32 wheelMirrorFirst;  // the first index of the mirrored mesh (an author's wheel), else 0
 	u16 wheelMaterial;
 	float wheelRadius;
 	float wheelHalfWidth;
 	float wheelFront[3];
 	float wheelRear[3];
+	// The stroboscope of an author's wheel (render plan A3): its tread count,
+	// worked out at load (NativeWheels_EstimateTreads); 0 for the test wheel
+	// and none, which are drawn without a clamp.
+	int wheelTreads;
+	u8 wheelTreadsEstimated; // 1 = from the mesh, 0 = the default
+	u32 wheelTreadOuter;     // its outermost points
+	u32 wheelTreadAngles;    // their angles after merging
+	// WHLS version 3 (render plan A1, A2, A4). The rear wheel's own mesh sits
+	// behind the front one in the same buffers, laid out the same way (the
+	// mesh, then its mirror image); its middles come with the front ones
+	// (wheelFront, wheelRear: the axle offsets and the track are part of
+	// them). wheelAlways: the file's flag ALWAYS_DRAW - the own wheels are
+	// drawn past the retail tyre threshold as well.
+	u8 wheelAlways;
+	u8 wheelRearOwn;          // 1 = the rear wheels draw a mesh of their own
+	u32 wheelRearFirst;       // its first index
+	u32 wheelRearMirrorFirst; // the first index of its mirror image
+	u32 wheelRearIndexCount;  // of one rear mesh: 3 Tr
+	u16 wheelRearMaterial;
+	float wheelRearRadius;
+	float wheelRearHalfWidth;
+	int wheelRearTreads;
+	u8 wheelRearTreadsEstimated;
 
 	u32 textureCount;
 	TextureID texture[NATIVE_CHAR_GPU_TEXTURES];
@@ -118,6 +160,9 @@ struct NativeCharGpuCpu
 	u32 vertexCount;
 	u32 poseCount;     // max(1, P)
 	u32 netPoseCount;  // P
+	u32 poseTotal;     // poseCount and the win/lose stages
+	u32 finishTargets;
+	u32 finishFirst[NATIVE_CHAR_GPU_FINISH_TARGETS];
 	u32 triangleCount;
 	u16 *indices;      // triangleCount x 3, in range order (owned)
 	u32 *triangleOrder; // triangleCount: the CNET triangle at each sorted place (owned)
@@ -142,6 +187,20 @@ struct NativeCharGpuCpu
 	float wheelHalfWidth;
 	float wheelFront[3];
 	float wheelRear[3];
+	int wheelTreads;
+	u8 wheelTreadsEstimated;
+	u32 wheelTreadOuter;
+	u32 wheelTreadAngles;
+	u8 wheelAlways;
+	u8 wheelRearOwn;
+	u32 wheelRearFirst;
+	u32 wheelRearMirrorFirst;
+	u32 wheelRearIndexCount;
+	u16 wheelRearMaterial;
+	float wheelRearRadius;
+	float wheelRearHalfWidth;
+	int wheelRearTreads;
+	u8 wheelRearTreadsEstimated;
 	float hullMin[3];
 	float hullMax[3];
 };
@@ -201,6 +260,23 @@ void NativeCharGpu_FreeCpu(struct NativeCharGpuCpu *cpu);
 
 // count vertices of pose p from vertex first on, in the "nr" layout.
 void NativeCharGpu_PoseVertices(const struct RldCharNative *n, u32 pose, u32 first, u32 count, struct NativeProbeVertex *out);
+
+// WIN AND LOSE (see NATIVE_CHAR_GPU_FINISH_STAGES). FinishLayout: the targets
+// of n that get stages (none without MRPH or with withFinish 0), the pose of
+// their stage 0 and the poses in all. BufferVertices: as PoseVertices for
+// every pose of the buffer - below poseCount the file's pose, above it a
+// stage. FinishTarget: the target of a 0-based rank (driverRank), -1 for none.
+// FinishStage: the stage after that many ticks since the finish. FinishPose:
+// the pose of a set for a target and stage, -1 when the set has no stages of
+// that target.
+void NativeCharGpu_FinishLayout(const struct RldCharNative *n, u32 poseCount, int withFinish, u32 *targets, u32 first[NATIVE_CHAR_GPU_FINISH_TARGETS],
+                                u32 *total);
+void NativeCharGpu_BufferVertices(const struct RldCharNative *n, u32 poseCount, const u32 first[NATIVE_CHAR_GPU_FINISH_TARGETS], u32 targets, u32 pose,
+                                  u32 v0, u32 count, struct NativeProbeVertex *out);
+int NativeCharGpu_FinishTarget(int rank);
+int NativeCharGpu_FinishStage(u32 ticksSinceFinish);
+int NativeCharGpu_FinishPose(const struct NativeCharGpu *set, int target, int stage);
+const char *NativeCharGpu_FinishName(int target);
 
 // Sets made, refused, released and live, bytes, textures and uploads - the
 // exit line of the render layer report (only in a run that made a set).

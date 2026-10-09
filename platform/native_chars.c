@@ -1496,7 +1496,7 @@ internal void NativeChar_LogNative(const char *who, const struct NativeCharFile 
 	{
 		char wheels[128];
 
-		if ((n->wheel != NULL) && (n->wheelVersion == RLDCHAR_WHEEL_VERSION_USER))
+		if (RldChar_WheelIsOwn(n))
 		{
 			// An author's wheel: its mesh, its size and its texture (or one
 			// colour), the words a measuring tool reads.
@@ -1505,14 +1505,14 @@ internal void NativeChar_LogNative(const char *who, const struct NativeCharFile 
 
 			if ((texture >= 0) && ((u32)texture < n->textureCount))
 			{
-				snprintf(wheels, sizeof(wheels), "wheels own v2, %u triangles, %u vertices, radius %.3f, texture %d %ux%u", (unsigned)n->wheelTriangleCount,
-				         (unsigned)n->wheelVertexCount, (double)RldChar_F32(&n->wheel[0x0C]), (int)texture, (unsigned)n->texture[texture].width,
-				         (unsigned)n->texture[texture].height);
+				snprintf(wheels, sizeof(wheels), "wheels own v%u, %u triangles, %u vertices, radius %.3f, texture %d %ux%u", (unsigned)n->wheelVersion,
+				         (unsigned)n->wheelTriangleCount, (unsigned)n->wheelVertexCount, (double)RldChar_F32(&n->wheel[0x0C]), (int)texture,
+				         (unsigned)n->texture[texture].width, (unsigned)n->texture[texture].height);
 			}
 			else
 			{
-				snprintf(wheels, sizeof(wheels), "wheels own v2, %u triangles, %u vertices, radius %.3f, one colour", (unsigned)n->wheelTriangleCount,
-				         (unsigned)n->wheelVertexCount, (double)RldChar_F32(&n->wheel[0x0C]));
+				snprintf(wheels, sizeof(wheels), "wheels own v%u, %u triangles, %u vertices, radius %.3f, one colour", (unsigned)n->wheelVersion,
+				         (unsigned)n->wheelTriangleCount, (unsigned)n->wheelVertexCount, (double)RldChar_F32(&n->wheel[0x0C]));
 			}
 		}
 		else if (n->wheel != NULL)
@@ -1541,7 +1541,8 @@ internal void NativeChar_LogNative(const char *who, const struct NativeCharFile 
 // 6): the game never draws a native body with the sprite wheels. A ready part
 // is held when CHRI hides the kart wheels (RLDCHAR_FLAG_NO_WHEELS; the reader
 // then reads no WHLS) or when its WHLS is an author's wheel (version 2, CNET-10
-// and CNET-12 held by the reader): the body is drawn with its own wheels
+// and CNET-12 held by the reader; or version 3, the same with a rear wheel,
+// axle offsets or ALWAYS_DRAW): the body is drawn with its own wheels
 // (platform/native_render_layer.c). A part that shows the kart wheels with
 // the test wheel (WHLS version 1 - a grey cylinder at the retail wheel points,
 // tools/rldpack_native.inc; old files of the preview) or with no WHLS at all
@@ -1559,7 +1560,7 @@ internal int NativeChar_RefuseShownWheels(const struct NativeCharFile *f, struct
 	{
 		return 0;
 	}
-	if (((f->info.flags & RLDCHAR_FLAG_NO_WHEELS) == 0u) && (n->wheel != NULL) && (n->wheelVersion == RLDCHAR_WHEEL_VERSION_USER))
+	if (((f->info.flags & RLDCHAR_FLAG_NO_WHEELS) == 0u) && RldChar_WheelIsOwn(n))
 	{
 		return 0;
 	}
@@ -4743,7 +4744,7 @@ int NativeChar_NativeSelfTest(const char *dir)
 		{
 			const int previewBefore = g_cfg_nativePreview;
 			const int ready = (n.state == RLDCHAR_NATIVE_READY);
-			const int own = (n.wheel != NULL) && (n.wheelVersion == RLDCHAR_WHEEL_VERSION_USER);
+			const int own = RldChar_WheelIsOwn(&n);
 			const int held = ready && (((f.info.flags & RLDCHAR_FLAG_NO_WHEELS) != 0u) ? (n.wheel == NULL) : own);
 			const int stateBefore = (int)n.state;
 			int pass;
@@ -4772,7 +4773,7 @@ int NativeChar_NativeSelfTest(const char *dir)
 					                        "HoldNative with --native-preview did not hold exactly a ready part with the kart wheels hidden or its own wheels");
 					NativeChar_NativeExpect(&checks, &failures,
 					                        (s_charFiles[0].native == NULL) || (s_charFiles[0].native->wheel == NULL) ||
-					                            (s_charFiles[0].native->wheelVersion == RLDCHAR_WHEEL_VERSION_USER),
+					                            RldChar_WheelIsOwn(s_charFiles[0].native),
 					                        name, "HoldNative held a part with the test wheel (WHLS version 1)");
 					NativeChar_NativeExpect(&checks, &failures,
 					                        (NativeChar_SeatNative(0) == s_charFiles[0].native) && (NativeChar_SeatNative(1) == NULL) &&
@@ -4800,7 +4801,7 @@ int NativeChar_NativeSelfTest(const char *dir)
 			                        name, "HoldPreview did not hold exactly a ready part with the kart wheels hidden or its own wheels");
 			NativeChar_NativeExpect(&checks, &failures,
 			                        (NativeChar_PreviewNative(0) == NULL) || (NativeChar_PreviewNative(0)->wheel == NULL) ||
-			                            (NativeChar_PreviewNative(0)->wheelVersion == RLDCHAR_WHEEL_VERSION_USER),
+			                            RldChar_WheelIsOwn(NativeChar_PreviewNative(0)),
 			                        name, "HoldPreview held a part with the test wheel (WHLS version 1)");
 			NativeChar_ReleasePreview();
 			NativeChar_NativeExpect(&checks, &failures,

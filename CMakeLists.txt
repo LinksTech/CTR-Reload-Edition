@@ -628,6 +628,13 @@ if(BUILD_TESTING)
         PASS_REGULAR_EXPRESSION "native char gpu selftest passed: 4 files, 40 checks, 0 failures, sha256 efc584b94d73f6708bed71ff81c89a533479566755edebea6b47735a9cb16497"
         FIXTURES_REQUIRED native_char_files
     )
+    # The second line of the same self-test: wheels version 3 and the win and lose
+    # morph targets, on the files of the character native self-test.
+    add_test(NAME native_char_gpu_selftest_v3 COMMAND $<TARGET_FILE:ctr_native> --dev --native-char-gpu-selftest ${CMAKE_BINARY_DIR}/selftest/native-chars)
+    set_tests_properties(native_char_gpu_selftest_v3 PROPERTIES
+        PASS_REGULAR_EXPRESSION "native char gpu selftest wheels v3 and win lose passed: 6 files, 6 checks, 0 failures"
+        FIXTURES_REQUIRED native_char_files
+    )
     # The same for the native model of an OBJ (make-char --native-model on):
     # rldpack make-native-tests --obj writes the self-test's mini OBJ without
     # and with its native model (one CMDL), the game reads them as above.
