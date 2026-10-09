@@ -418,6 +418,10 @@
 //   and the View menu of the view; nothing of them is built or stored):
 //   view-camera <yaw> <pitch> <zoom %> [<pan x> <pan y>]  whole numbers, clamped
 //                                 by the view (pitch -10..89, zoom 50..800)
+//                                 (without a pan the pan stays and the model
+//                                 keeps its place in the picture)
+//   view-wheel <x pixel> <y pixel> <steps>  the mouse wheel over that pixel of
+//                                 the preview, a notch per step (+ in, - out)
 //   view-preset front|side|back|top|34|race   a fixed view (34 = the start view)
 //   view-reset                    the start view (yaw 35, pitch 20, zoom 100 %)
 //   view-bg dark|light            the background of the preview

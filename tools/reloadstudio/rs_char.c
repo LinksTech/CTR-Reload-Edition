@@ -7408,9 +7408,11 @@ static int Char_AutoView(const wchar_t *verb, const wchar_t *arg)
         return RS_AUTO_UNKNOWN;
     if (wcscmp(verb, L"view-camera") == 0) {
         // <yaw> <pitch> <zoom %> [<pan x> <pan y>]
+        // Without a pan the pan stays: the view zooms about the middle of
+        // the model (RsView_SetCamera).
         int n;
         wchar_t rest[8];
-        panX = panY = 0;
+        RsView_GetCamera(g_char.view, NULL, NULL, NULL, &panX, &panY);
         n = swscanf(arg, L"%d %d %d %d %d %7ls", &yaw, &pitch, &zoom, &panX, &panY, rest);
         if (n != 3 && n != 5) {
             Rs_AutoLog(L"  view-camera: say <yaw> <pitch> <zoom %%> [<pan x> <pan y>] in whole numbers");
@@ -7420,6 +7422,31 @@ static int Char_AutoView(const wchar_t *verb, const wchar_t *arg)
         RsView_GetCamera(g_char.view, &yaw, &pitch, &zoom, &panX, &panY);
         Char_AutoViewDone();
         Rs_AutoLog(L"  view-camera: yaw %d, pitch %d, zoom %d %%, pan %d %d", yaw, pitch, zoom, panX, panY);
+        return RS_AUTO_DONE;
+    }
+    if (wcscmp(verb, L"view-wheel") == 0) {
+        // <x pixel> <y pixel> <steps>: the mouse wheel over that pixel of the
+        // preview, one notch per step (+ zooms in, - out), as the real wheel.
+        int px, py, steps, n, k;
+        wchar_t rest[8];
+        RECT rc;
+        POINT pt;
+        n = swscanf(arg, L"%d %d %d %7ls", &px, &py, &steps, rest);
+        GetClientRect(g_char.view, &rc);
+        if (n != 3 || px < 0 || py < 0 || px >= rc.right || py >= rc.bottom || steps < -20 || steps > 20 || steps == 0) {
+            Rs_AutoLog(L"  view-wheel: say <x pixel> <y pixel> <steps> - a pixel of the preview (%d x %d), steps -20..20, not 0",
+                       (int)rc.right, (int)rc.bottom);
+            return RS_AUTO_FAIL;
+        }
+        pt.x = px;
+        pt.y = py;
+        ClientToScreen(g_char.view, &pt);
+        for (k = 0; k < (steps < 0 ? -steps : steps); k++)
+            SendMessageW(g_char.view, WM_MOUSEWHEEL, MAKEWPARAM(0, (WORD)(short)(steps < 0 ? -WHEEL_DELTA : WHEEL_DELTA)),
+                         MAKELPARAM(pt.x, pt.y));
+        RsView_GetCamera(g_char.view, &yaw, &pitch, &zoom, &panX, &panY);
+        Char_AutoViewDone();
+        Rs_AutoLog(L"  view-wheel: %d step(s) at %d %d: zoom %d %%, pan %d %d", steps, px, py, zoom, panX, panY);
         return RS_AUTO_DONE;
     }
     if (wcscmp(verb, L"view-preset") == 0) {

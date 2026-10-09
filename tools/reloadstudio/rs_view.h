@@ -78,8 +78,8 @@ enum RsViewPose {
 // view, limited so that the middle of the model stays in the picture). All
 // integers: the same camera gives the same pixels.
 // Mouse: left drag turns (across) and tilts (up and down), right or middle
-// drag pans, the wheel zooms in fixed steps (x 1.25) about the middle of the
-// picture, a double click resets the view, a right click (no drag) opens the
+// drag pans, the wheel zooms in fixed steps (x 1.25) about the point under
+// the mouse (it stays under the mouse), a double click resets the view, a right click (no drag) opens the
 // view's menu - or ends a pick. A small bar in the view (drawn by the view)
 // holds the fixed views and the button "View" with the same menu.
 // Every change by the user sends WM_COMMAND RS_VIEW_N_CAMERA (and
@@ -98,7 +98,10 @@ enum RsViewPreset {
     RS_VIEW_PRESET_RACE,           // the game's race camera behind the kart (its own distance and focal length)
     RS_VIEW_PRESET_COUNT
 };
-void RsView_SetCamera(HWND view, int yaw, int pitch, int zoomPercent, int panX, int panY);  // pan in pixels of the view; clamped
+// Pan in pixels of the view; clamped. The pan as it is (RsView_GetCamera):
+// a new zoom keeps the middle of the model where it is in the picture
+// (without a model the middle of the picture).
+void RsView_SetCamera(HWND view, int yaw, int pitch, int zoomPercent, int panX, int panY);
 void RsView_GetCamera(HWND view, int *yaw, int *pitch, int *zoomPercent, int *panX, int *panY);
 void RsView_ResetCamera(HWND view);               // the start view (RS_VIEW_PRESET_THREE_QUARTER)
 void RsView_SetPreset(HWND view, int preset);     // zoom 100, pan 0

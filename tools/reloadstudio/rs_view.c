@@ -2920,9 +2920,11 @@ static int RsView_ZoomStep(int zoom, int in)
     return RS_VIEW_ZOOM_MIN;
 }
 
-// A new zoom about the middle of the picture: the point there stays there,
-// so the pan grows and shrinks with the zoom.
-static void RsView_ZoomTo(struct RsView *v, int zoom)
+// A new zoom about the anchor (qx, qy), 1/16 pixels of the picture: the
+// point there stays there - the screen centre c moves to
+// q - (q - c) x new / old, so the pan grows and shrinks with the zoom (all
+// integers; the pan is then limited by RsView_Scene as always).
+static void RsView_ZoomAt(struct RsView *v, int zoom, long long qx, long long qy)
 {
     struct RsViewScene s;
     if (zoom < RS_VIEW_ZOOM_MIN)
@@ -2932,16 +2934,34 @@ static void RsView_ZoomTo(struct RsView *v, int zoom)
     if (zoom == v->zoom)
         return;
     if (v->w >= 8 && v->h >= 8) {
-        const long long midX = (long long)v->w * RS_VIEW_SUB / 2, midY = (long long)v->h * RS_VIEW_SUB / 2;
         long long cx, cy;
         RsView_Scene(v, v->w, v->h, RsView_TopRoom(v), &s);
-        cx = midX - (midX - s.cam.cxq) * zoom / v->zoom;
-        cy = midY - (midY - s.cam.cyq) * zoom / v->zoom;
+        cx = qx - (qx - s.cam.cxq) * zoom / v->zoom;
+        cy = qy - (qy - s.cam.cyq) * zoom / v->zoom;
         v->panX = (int)RsView_FloorDiv16(cx - s.baseCx + 8);
         v->panY = (int)RsView_FloorDiv16(cy - s.baseCy + 8);
     }
     v->zoom = zoom;
     v->preset = -1;
+}
+
+// The anchor of a zoom that names no point (RsView_SetCamera without a new
+// pan): where the middle of the model is in the picture now, so that the
+// model stays where it is; without a model the middle of the picture.
+static void RsView_ModelAnchor(struct RsView *v, long long *qx, long long *qy)
+{
+    struct RsViewScene s;
+    struct RsViewVert c;
+    *qx = (long long)v->w * RS_VIEW_SUB / 2;
+    *qy = (long long)v->h * RS_VIEW_SUB / 2;
+    if (!v->loaded || v->w < 8 || v->h < 8)
+        return;
+    RsView_Scene(v, v->w, v->h, RsView_TopRoom(v), &s);
+    RsView_Project(&s.cam, 0, (long long)(v->ymin + v->ymax) * RS_VIEW_SUB / 2, 0, s.offModel, 1, &c);
+    if (c.x >= 0 && c.x < (long long)v->w * RS_VIEW_SUB && c.y >= 0 && c.y < (long long)v->h * RS_VIEW_SUB) {
+        *qx = c.x;
+        *qy = c.y;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -3551,17 +3571,28 @@ static LRESULT CALLBACK RsView_Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         }
         return 0;
     case WM_MOUSEWHEEL:
-        // The wheel zooms in fixed steps about the middle of the picture
-        // (rs_shell.c hands it over while the mouse is over the view).
+        // The wheel zooms in fixed steps about the point under the mouse:
+        // that point of the picture stays under it (rs_shell.c hands the
+        // wheel over while the mouse is over the view). The pixel's centre,
+        // in 1/16 pixels.
         if (v && RsView_Turnable(v)) {
             const int oldZoom = v->zoom;
+            POINT pt;
+            long long qx, qy;
+            pt.x = (short)LOWORD(lParam);
+            pt.y = (short)HIWORD(lParam);
+            ScreenToClient(hwnd, &pt);
+            qx = (long long)pt.x * RS_VIEW_SUB + RS_VIEW_SUB / 2;
+            qy = (long long)pt.y * RS_VIEW_SUB + RS_VIEW_SUB / 2;
             v->wheelDelta += (short)HIWORD(wParam);
             while (v->wheelDelta >= WHEEL_DELTA) {
-                RsView_ZoomTo(v, RsView_ZoomStep(v->zoom, 1));
+                RsView_ZoomAt(v, RsView_ZoomStep(v->zoom, 1), qx, qy);
+                RsView_ClampCamera(v);
                 v->wheelDelta -= WHEEL_DELTA;
             }
             while (v->wheelDelta <= -WHEEL_DELTA) {
-                RsView_ZoomTo(v, RsView_ZoomStep(v->zoom, 0));
+                RsView_ZoomAt(v, RsView_ZoomStep(v->zoom, 0), qx, qy);
+                RsView_ClampCamera(v);
                 v->wheelDelta += WHEEL_DELTA;
             }
             if (v->zoom != oldZoom)
@@ -4081,12 +4112,25 @@ void RsView_SetCamera(HWND view, int yaw, int pitch, int zoomPercent, int panX, 
     struct RsView *v = RsView_Data(view);
     if (!v)
         return;
+    RsView_ClampCamera(v);   // the pan as drawn, to tell a new one from the old
     v->yaw = RsView_NormDeg(yaw);
     v->pitch = pitch < RS_VIEW_PITCH_MIN ? RS_VIEW_PITCH_MIN : (pitch > RS_VIEW_PITCH_MAX ? RS_VIEW_PITCH_MAX : pitch);
-    v->zoom = zoomPercent < RS_VIEW_ZOOM_MIN ? RS_VIEW_ZOOM_MIN
-            : (zoomPercent > RS_VIEW_ZOOM_MAX ? RS_VIEW_ZOOM_MAX : zoomPercent);
-    v->panX = panX;
-    v->panY = panY;
+    if (zoomPercent < RS_VIEW_ZOOM_MIN)
+        zoomPercent = RS_VIEW_ZOOM_MIN;
+    if (zoomPercent > RS_VIEW_ZOOM_MAX)
+        zoomPercent = RS_VIEW_ZOOM_MAX;
+    if (panX == v->panX && panY == v->panY) {
+        // The pan as it is: zoom about the middle of the model (it stays
+        // where it is in the picture), without a model about the middle of
+        // the picture.
+        long long qx, qy;
+        RsView_ModelAnchor(v, &qx, &qy);
+        RsView_ZoomAt(v, zoomPercent, qx, qy);
+    } else {
+        v->zoom = zoomPercent;
+        v->panX = panX;
+        v->panY = panY;
+    }
     v->preset = -1;
     RsView_ClampCamera(v);
     RsView_Changed(view, v);
