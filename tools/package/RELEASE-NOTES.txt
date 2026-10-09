@@ -33,6 +33,16 @@ NEW IN 0.7.5 BETA
   finished model). rldpack info names the look.
 - Reload Studio: the Character page switches to a compact layout when
   the window is small and fits 1366 x 768 at 150 % without scrolling.
+- Reload Studio: a new 3D preview on the Character page. Drag to turn
+  the model and to look from higher or lower, drag with the right or
+  middle mouse button to move it, turn the mouse wheel to zoom (50 to
+  800 %), double-click for the start view. A bar in the preview and its
+  View menu (also on a right click) hold the fixed views Front, Side,
+  Back, Top, 3/4 and Race (the chase camera of the race), Reset view, a
+  dark or light background, the Crash size reference, Shadow and
+  Exhaust. These switches only change what you see; what is built is
+  still chosen on the tab In-game look. None of them is remembered;
+  every start begins with the 3/4 view.
 - Fix: in an arcade cup the custom driver is kept at the podium instead
   of being dropped with a warning. After the cup the game returns to the
   title, and the driver select starts on the template's tile, as after
@@ -101,6 +111,22 @@ PREVIEW: HIGH-DETAIL CUSTOM CHARACTERS (off by default)
   feature". The new card Wheels takes a wheel model (OBJ or PLY) and its
   size and spins and steers the wheels in the preview. Without the tick
   Reload Studio builds the same file as before.
+- Reload Studio preview of the high-detail model: drawn as the game
+  draws it with NATIVE DRIVERS set to PREVIEW, with the real textures in
+  full size (up to the game's limit) and the same mipmaps as the game.
+  When the character has both models, the View menu switches between
+  Native and Classic (the model the game draws with NATIVE DRIVERS off).
+  The line below the preview says which look you see and why, and names
+  the texture files that were not found; such a material is drawn in its
+  colour.
+- Wheels of their own in the preview: at the kart's wheel points,
+  spinning and steering, also without a body model (then on the Crash
+  size kart). The card Wheels reads the wheel again when it was exported
+  again (or its texture was put in place), shows the reason for a
+  warning (a texture not found, an axle that is not X), takes Browse and
+  Clear at once, and finds the wheel texture in the Textures folder as
+  well. When the preview shows wheels the character will not have, the
+  card and the line below the preview say so.
 
 
 NEW IN 0.0.5 BETA
@@ -308,8 +334,13 @@ Characters
 - A wheel size other than 100 % shows only on the high-detail model; the
   classic model drives with the game's wheels at their normal size.
 - The wheel points do not follow the size of the driver (--size).
-- Reload Studio notices a wheel model that was exported again only after
-  a change in the field Wheel model.
+- Reload Studio's preview shows the poses Neutral, Steering left and
+  Steering right, but no animations. The card Animations (poses of your
+  own) stays "Coming soon".
+- The shadow in Reload Studio's preview is a soft rectangle; the game's
+  shadow can look a little different.
+- A wheel model dropped onto the Character page is taken as the body.
+  Choose a wheel model in the card Wheels.
 
 Previews
 - The invisible kart still hits crates and fruit, so they break in the

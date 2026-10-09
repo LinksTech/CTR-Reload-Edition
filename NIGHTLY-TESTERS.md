@@ -37,6 +37,14 @@ how to report what you find.
    wheels steer, all four roll, and the right side is the mirror image.
    With NATIVE DRIVERS off or at 1X the character must drive its classic
    model with the game's own wheels.
+4. **Reload Studio preview.** On the page Character, turn, move and zoom
+   the model with the mouse, try the fixed views (Front, Side, Back, Top,
+   3/4, Race) and the View menu (right click): background, Crash size,
+   Shadow, Exhaust and, for a character with a high-detail model, Native
+   or Classic. Compare the Native look and the Race view with the game
+   (NATIVE DRIVERS PREVIEW, 2X or higher). Check that the wheels of their
+   own spin and steer in place and that missing texture files are named
+   below the preview.
 
 ## Known issues
 
@@ -59,8 +67,9 @@ No need to report these:
   are darkened like the body.
 - A wheel size other than 100 % shows only on the high-detail model.
 - The wheel points do not follow the size of the driver.
-- Reload Studio notices a wheel model that was exported again only after a
-  change in the field Wheel model.
+- Reload Studio's preview shows no animations (only the poses Neutral,
+  Steering left and Steering right); the card Animations stays
+  "Coming soon". Its shadow is a soft rectangle.
 - Exhaust points belong to the model as it was fitted; after a change of
   size or fit, set them again. The fitted shadow may cover a little more
   or less than the model.
