@@ -1841,6 +1841,9 @@ static void RldMk_SelfTestObjCases(struct RldMkTestMesh *mesh)
 	free(png);
 }
 
+// The glTF reader: its tests use the pictures and helpers above.
+#include "rldpack_gltf_test.inc"
+
 // --wheels off and a vehicle shorter than a kart (ply-kart-short): a vehicle
 // 1.0 long under a driver 1.6 tall - the fit caps the height, the vehicle
 // stays under 1.25 long. Wheels off: it is the kart, the model builds.
@@ -1848,8 +1851,6 @@ static void RldMk_SelfTestObjCases(struct RldMkTestMesh *mesh)
 // either way, and the error does not send them to --wheels off: on two
 // shoes, of one piece 1.8 tall and 0.5 deep, of one piece 1.0 tall and 0.3
 // deep, legs of one piece with a head apart.
-// The glTF reader: its tests use the pictures and helpers above.
-#include "rldpack_gltf_test.inc"
 
 static void RldMk_SelfTestObj(struct RldMkTestMesh *mesh)
 {

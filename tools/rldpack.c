@@ -6200,7 +6200,7 @@ static int Cmd_Selftest(void)
 	// MAKE: model ID, spawn table, SCA -> SNDB, track.txt.
 	failed |= Rld_SelftestMake();
 
-	// MAKE-CHAR: PLY and OBJ, the chain, the model rules, CHRI (tools/rldpack_char.inc).
+	// MAKE-CHAR: glTF, OBJ and PLY, the chain, the model rules, CHRI (tools/rldpack_char.inc).
 	// It counts its failed cases; here only "any" matters.
 	failed |= (RldChar_SelfTest() != 0);
 
@@ -6238,11 +6238,12 @@ static void Rld_Usage(void)
 	printf("COMMANDS\n");
 	printf("  make     <folder>           build a container from a track folder, see below\n");
 	printf("  build    ...                build a container from single files, see below\n");
-	printf("  make-char ...               build a character (.rldchar) from a PLY or OBJ model,\n");
-	printf("                              see below\n");
+	printf("  make-char ...               build a character (.rldchar) from a glTF, OBJ or PLY\n");
+	printf("                              model, see below\n");
 	printf("  char-poses ...              check pose PLYs against a character model and\n");
-	printf("                              write them for the preview, see below\n");
-	printf("  char-wheel ...              the preview of a wheel model (OBJ or PLY) for\n");
+	printf("                              write them for the preview, or say the state of\n");
+	printf("                              a glTF's shape keys, see below\n");
+	printf("  char-wheel ...              the preview of a wheel model (glTF, OBJ or PLY) for\n");
 	printf("                              Reload Studio, see below (the wheel of a character:\n");
 	printf("                              make-char --wheel-model, preview)\n");
 	printf("  info     <file>             show the format, META and PARM, leaves LEVD/VRMD untouched\n");
@@ -6464,8 +6465,8 @@ static int Cmd_InfoMachine(int argc, char *argv[])
 // the head of COMMANDS. The reader and the model check are include/rldchar.inc.
 #include "rldpack_char.inc"
 
-// char-poses uses the PLY reader and the chain of make-char; char-wheel uses the
-// PLY and OBJ readers of make-char.
+// char-poses uses the PLY and glTF readers and the chain of make-char; char-wheel
+// uses the readers of make-char.
 #include "rldpack_anim.inc"
 #include "rldpack_wheel.inc"
 

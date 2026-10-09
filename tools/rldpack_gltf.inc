@@ -35,9 +35,11 @@
 //   baseColorTexture          map_Kd: the image's file next to the model, or
 //                             for an image in the file (bufferView, data:
 //                             URI) a copy in the folder for temporary files
-//                             (TEMP, else TMP) named rldpack-gltf-<digest>
-//                             (written once, kept; the self-test keeps it in
-//                             memory), which @model texture names
+//                             (TEMP, else TMP) named rldpack-gltf-<digest>-<n>
+//                             (made new by this run alone, removed when it
+//                             ends; the self-test keeps it in memory), which
+//                             @model texture names. No folder to write it to
+//                             is an error (model-gltf-temp)
 //   KHR_texture_transform     -o and -s (offset and scale; a rotation is
 //                             said and left out)
 //   a sampler CLAMP_TO_EDGE   -clamp on (on both axes)
@@ -78,11 +80,19 @@
 // Machine line per name (model and poses): @model shape-key <name> <key|unknown>.
 //
 // REFUSED (error, no file): a file cgltf cannot parse or whose buffers it
-// cannot load (model-gltf-broken, cgltf's reason as the technical line), no
-// mesh with triangles (model-gltf-empty), a primitive not of triangles
+// cannot load, a buffer file shorter than its byteLength, a bufferView,
+// accessor or sparse block that reaches past its buffer (each checked in 64
+// bits before cgltf_validate, whose sums in cgltf_size wrap in a 32-bit
+// program) (model-gltf-broken, the reason as the technical line); a buffer
+// or image URI that leaves the model's folder - absolute, with a drive, a
+// server or a ".." part; data: URIs stay (model-gltf-uri); no mesh with
+// triangles (model-gltf-empty), a primitive not of triangles
 // (model-gltf-mode), a skin or JOINTS_0 (model-rig), Draco or meshopt
-// compression (model-gltf-unsupported). The sizes of the OBJ reader hold
-// (obj-big).
+// compression (model-gltf-unsupported), a shape key delta that is not a
+// number or larger than four times the model (model-gltf-key). The sizes of
+// the OBJ reader hold (obj-big). Names (targets, materials, nodes) are
+// JSON-decoded (\u00e4 is an a with dots) and cut at a whole UTF-8
+// character.
 //
 // Every number is read as cgltf gives it (float) and computed in double in a
 // fixed order: the same file gives the same points and bytes.
@@ -266,6 +276,13 @@ static cgltf_result RldGltf_FileRead(const struct cgltf_memory_options *memory, 
 	{
 		return (read == RLDOBJ_READ_LARGE) ? cgltf_result_io_error : cgltf_result_file_not_found;
 	}
+	// cgltf asks for byteLength bytes and checks nothing after it: a file
+	// shorter than that would be read past its end.
+	if ((*size != 0u) && (length < *size))
+	{
+		free(bytes);
+		return cgltf_result_data_too_short;
+	}
 	*size = length;
 	*data = bytes;
 	return cgltf_result_success;
@@ -381,6 +398,13 @@ static int RldGltf_MemoryImage(const char *path, const u8 *bytes, size_t size)
 	return 1;
 }
 
+// The file refused as broken, `why` its reason.
+static void RldGltf_Broken(const char *file, const char *why)
+{
+	RldMk_Say("error", "model-gltf-broken", why, "%s cannot be read as glTF 2.0 (%s). Export it again from Blender (File > Export > glTF 2.0, .glb).", file,
+	          why);
+}
+
 // The folder for temporary files with its separator, or 0.
 static int RldGltf_TempFolder(char *out, size_t outSize)
 {
@@ -401,43 +425,185 @@ static int RldGltf_TempFolder(char *out, size_t outSize)
 	return (written > 0) && ((size_t)written < outSize);
 }
 
-// `bytes` at `path`, unless the file holds them already. Written as
-// <path>.part and renamed, so no half file stays under the name. 0 = not written.
-static int RldGltf_WriteTemp(const char *path, const u8 *bytes, size_t size)
-{
-	char part[RLD_PATH_MAX + 8];
-	u8 *there = NULL;
-	size_t thereSize = 0;
-	FILE *file;
-	int same;
+// The copies this run made, removed when it ends (atexit): every run makes
+// its own, so two runs never share, overwrite or remove each other's file.
+#define RLDGLTF_COPIES 64u
+#define RLDGLTF_COPY_TRIES 100u
 
-	if (RldObj_ReadFile(path, RLDOBJ_TEXTURE_BYTES, &there, &thereSize) == RLDOBJ_READ_OK)
+static char s_rldGltfCopy[RLDGLTF_COPIES][RLD_PATH_MAX];
+static char s_rldGltfCopyName[RLDGLTF_COPIES][32];
+static u32 s_rldGltfCopyCount;
+static int s_rldGltfCopyAtExit;
+
+static void RldGltf_RemoveCopies(void)
+{
+	u32 i;
+
+	for (i = 0; i < s_rldGltfCopyCount; i++)
 	{
-		same = (thereSize == size) && ((size == 0u) || (memcmp(there, bytes, size) == 0));
-		free(there);
-		if (same)
+		remove(s_rldGltfCopy[i]);
+	}
+	s_rldGltfCopyCount = 0;
+}
+
+// The image `bytes` as a file of this run: <folder><name>-<n><type>, made
+// new (fopen "wbx": the first n no other file has), or the copy this run
+// made already. 0 = no folder, or no file could be made there.
+static int RldGltf_TempCopy(const char *name, const char *type, const u8 *bytes, size_t size, char *out, size_t outSize)
+{
+	char folder[RLD_PATH_MAX];
+	u32 n;
+
+	for (n = 0; n < s_rldGltfCopyCount; n++)
+	{
+		if (strcmp(s_rldGltfCopyName[n], name) == 0)
 		{
+			snprintf(out, outSize, "%s", s_rldGltfCopy[n]);
 			return 1;
 		}
 	}
-	snprintf(part, sizeof(part), "%s.part", path);
-	file = fopen(part, "wb");
-	if (file == NULL)
+	if ((s_rldGltfCopyCount >= RLDGLTF_COPIES) || !RldGltf_TempFolder(folder, sizeof(folder)))
 	{
 		return 0;
 	}
-	same = (fwrite(bytes, 1, size, file) == size);
-	same = (fclose(file) == 0) && same;
-	if (!same)
+	if (!s_rldGltfCopyAtExit)
 	{
-		remove(part);
+		s_rldGltfCopyAtExit = (atexit(RldGltf_RemoveCopies) == 0);
+	}
+	for (n = 0; n < RLDGLTF_COPY_TRIES; n++)
+	{
+		const int written = snprintf(out, outSize, "%s%s-%u%s", folder, name, n, type);
+		FILE *file;
+		int ok;
+
+		if ((written <= 0) || ((size_t)written >= outSize) || ((size_t)written >= RLD_PATH_MAX))
+		{
+			return 0;
+		}
+		file = fopen(out, "wbx");
+		if (file == NULL)
+		{
+			continue;
+		}
+		ok = (fwrite(bytes, 1, size, file) == size);
+		ok = (fclose(file) == 0) && ok;
+		if (!ok)
+		{
+			remove(out);
+			return 0;
+		}
+		snprintf(s_rldGltfCopy[s_rldGltfCopyCount], sizeof(s_rldGltfCopy[0]), "%s", out);
+		snprintf(s_rldGltfCopyName[s_rldGltfCopyCount], sizeof(s_rldGltfCopyName[0]), "%s", name);
+		s_rldGltfCopyCount++;
+		return 1;
+	}
+	return 0;
+}
+
+// A glTF URI (decoded) that stays in the model's folder or below it: not
+// empty, not absolute, no drive or scheme (':'), no ".." part.
+static int RldGltf_UriInside(const char *uri)
+{
+	const char *at = uri;
+
+	if ((uri[0] == '\0') || Rld_IsSeparator(uri[0]) || (strchr(uri, ':') != NULL))
+	{
 		return 0;
 	}
-	remove(path);
-	if (rename(part, path) != 0)
+	while (*at != '\0')
 	{
-		remove(part);
-		return 0;
+		const char *end = at;
+
+		while ((*end != '\0') && !Rld_IsSeparator(*end))
+		{
+			end++;
+		}
+		if (((end - at) == 2) && (at[0] == '.') && (at[1] == '.'))
+		{
+			return 0;
+		}
+		at = (*end != '\0') ? (end + 1) : end;
+	}
+	return 1;
+}
+
+// A URI of the file refused: it leaves the model's folder.
+static void RldGltf_SayUri(const char *file, const char *uri)
+{
+	RldMk_Say("error", "model-gltf-uri", uri,
+	          "%s names the file \"%s\" outside its own folder; rldpack reads only files next to the model or in folders below it. Export the "
+	          "model as .glb (everything in one file) or put the files next to it.",
+	          file, uri);
+}
+
+// A name of the file as text: JSON-decoded (cgltf leaves \uXXXX and \n as
+// written), cut to outSize - 1 bytes at a whole UTF-8 character.
+static void RldGltf_Text(const char *raw, char *out, size_t outSize)
+{
+	char decoded[512];
+	size_t length;
+
+	snprintf(decoded, sizeof(decoded), "%s", (raw != NULL) ? raw : "");
+	cgltf_decode_string(decoded);
+	length = strlen(decoded);
+	if (length >= outSize)
+	{
+		length = outSize - 1u;
+		while ((length != 0u) && (((u8)decoded[length] & 0xC0u) == 0x80u))
+		{
+			length--;
+		}
+	}
+	memcpy(out, decoded, length);
+	out[length] = '\0';
+}
+
+// Every bufferView, accessor and sparse block within its buffer, computed in
+// 64 bits: cgltf_validate computes these sums in cgltf_size, which wraps in a
+// 32-bit program and lets a view or an index list point anywhere. 0 = said.
+static int RldGltf_CheckSizes(const cgltf_data *data, const char *file)
+{
+	u32 i;
+
+	for (i = 0; i < (u32)data->buffer_views_count; i++)
+	{
+		const cgltf_buffer_view *view = &data->buffer_views[i];
+
+		if ((view->buffer == NULL) || (view->buffer->data == NULL) || (((u64)view->offset + (u64)view->size) > (u64)view->buffer->size))
+		{
+			RldGltf_Broken(file, "a bufferView reaches past its buffer");
+			return 0;
+		}
+	}
+	for (i = 0; i < (u32)data->accessors_count; i++)
+	{
+		const cgltf_accessor *a = &data->accessors[i];
+		const u64 element = (u64)cgltf_calc_size(a->type, a->component_type);
+
+		if ((u64)a->count > (u64)RLDOBJ_CORNERS_MAX)
+		{
+			RldGltf_Broken(file, "an accessor has too many elements");
+			return 0;
+		}
+		if ((a->buffer_view != NULL) && (a->count != 0u) &&
+		    (((u64)a->offset + (u64)a->stride * ((u64)a->count - 1u) + element) > (u64)a->buffer_view->size))
+		{
+			RldGltf_Broken(file, "an accessor reaches past its bufferView");
+			return 0;
+		}
+		if (a->is_sparse)
+		{
+			const cgltf_accessor_sparse *sparse = &a->sparse;
+			const u64 index = (u64)cgltf_component_size(sparse->indices_component_type);
+
+			if (((u64)sparse->count > (u64)a->count) || (sparse->indices_buffer_view == NULL) || (sparse->values_buffer_view == NULL) ||
+			    (((u64)sparse->indices_byte_offset + index * (u64)sparse->count) > (u64)sparse->indices_buffer_view->size) ||
+			    (((u64)sparse->values_byte_offset + element * (u64)sparse->count) > (u64)sparse->values_buffer_view->size))
+			{
+				RldGltf_Broken(file, "a sparse accessor reaches past its bufferView");
+				return 0;
+			}
+		}
 	}
 	return 1;
 }
@@ -459,7 +625,7 @@ struct RldGltfRead
 	const char *path;
 	cgltf_data *data;
 	int morphs;                  // the shape keys are read (RLDMK_ROLE_MAIN, RLDMK_ROLE_POSE)
-	double *vDelta;              // 3 x RLDGLTF_KEY_COUNT per v; NULL = no key yet
+	double *vDelta[RLDGLTF_KEY_COUNT];  // per key 3 per v (vCapacity of them); NULL = not found yet
 	u32 present;                 // bit per key found
 	u32 *vnKey;                  // 3 per vn: its normal as the bits of 3 floats
 	u32 vnCapacity;
@@ -476,12 +642,6 @@ struct RldGltfRead
 	char said[RLDGLTF_UNKNOWN_KEPT * 2u][RLDGLTF_KEY_NAME_MAX + 1u];  // target names already listed
 	u32 saidCount;
 };
-
-static void RldGltf_Broken(const char *file, const char *why)
-{
-	RldMk_Say("error", "model-gltf-broken", why, "%s cannot be read as glTF 2.0 (%s). Export it again from Blender (File > Export > glTF 2.0, .glb).", file,
-	          why);
-}
 
 static const char *RldGltf_ResultWord(cgltf_result result)
 {
@@ -500,7 +660,7 @@ static const char *RldGltf_ResultWord(cgltf_result result)
 	case cgltf_result_file_not_found:
 		return "a buffer file was not found";
 	case cgltf_result_io_error:
-		return "a buffer file cannot be read";
+		return "a buffer cannot be read";
 	case cgltf_result_out_of_memory:
 		return "out of memory";
 	case cgltf_result_legacy_gltf:
@@ -542,11 +702,14 @@ static int RldGltf_Room(void **items, u32 need, u32 *capacity, size_t size)
 	return 1;
 }
 
-static int RldGltf_TableStart(struct RldGltfTable *t, u32 items)
+// A table for `items` (at most RLDMK_PLY_MAX count: more v are obj-big),
+// at least twice as many slots, so that a search always ends.
+static int RldGltf_TableStart(struct RldGltfTable *t, u64 items)
 {
+	const u64 want = 2u * ((items < (u64)RLDMK_PLY_MAX) ? items : (u64)RLDMK_PLY_MAX) + 2u;
 	u32 count = 1024u;
 
-	while ((count < (2u * items)) && (count < 0x40000000u))
+	while ((u64)count < want)
 	{
 		count *= 2u;
 	}
@@ -582,11 +745,12 @@ static u32 RldGltf_Hash(const void *bytes, size_t size)
 // not a key. Returns its key, -1 = none.
 static int RldGltf_SayName(struct RldGltfRead *r, const char *name)
 {
-	const int key = RldGltf_KeyOf(name);
 	char shown[RLDGLTF_KEY_NAME_MAX + 1u];
+	int key;
 	u32 i;
 
-	snprintf(shown, sizeof(shown), "%s", name);
+	RldGltf_Text(name, shown, sizeof(shown));
+	key = RldGltf_KeyOf(shown);
 	for (i = 0; i < r->saidCount; i++)
 	{
 		if (strcmp(r->said[i], shown) == 0)
@@ -613,9 +777,9 @@ static int RldGltf_SayName(struct RldGltfRead *r, const char *name)
 }
 
 // The image of a texture as a path for map_Kd: a file next to the model as
-// its URI names it, or the image in the file written once into the folder
-// for temporary files (the self-test: in memory next to the model). 0 = no
-// image to name (said).
+// its URI names it, or the image in the file copied into the folder for
+// temporary files (the self-test: in memory next to the model). 1 = named,
+// 0 = no image to name (a warning said), -1 = refused (an error said).
 static int RldGltf_ImagePath(struct RldGltfRead *r, const cgltf_image *image, char *out, size_t outSize)
 {
 	static const char *const hex = "0123456789abcdef";
@@ -639,6 +803,12 @@ static int RldGltf_ImagePath(struct RldGltfRead *r, const cgltf_image *image, ch
 			return 0;
 		}
 		cgltf_decode_uri(uri);
+		if (!RldGltf_UriInside(uri))
+		{
+			RldGltf_SayUri(Rld_LastComponent(r->path), uri);
+			free(uri);
+			return -1;
+		}
 		snprintf(out, outSize, "%s", uri);
 		free(uri);
 		return 1;
@@ -694,35 +864,36 @@ static int RldGltf_ImagePath(struct RldGltfRead *r, const cgltf_image *image, ch
 		name[13u + 2u * k] = hex[digest[k] >> 4];
 		name[14u + 2u * k] = hex[digest[k] & 15u];
 	}
-	snprintf(&name[29], sizeof(name) - 29u, "%s", type);
+	name[29] = '\0';
 
 	if (s_rldObjFiles != NULL)
 	{
 		// The self-test: next to the model, in memory.
 		RldObj_Folder(r->path, folder, sizeof(folder));
-		snprintf(out, outSize, "%s", name);
-		RldObj_Join(folder, name, folder, sizeof(folder));
+		snprintf(out, outSize, "%s%s", name, type);
+		RldObj_Join(folder, out, folder, sizeof(folder));
 		ok = RldGltf_MemoryImage(folder, bytes, size);
 		free(decoded);
 		if (!ok)
 		{
 			RldObj_Memory();
 		}
-		return ok;
+		return ok ? 1 : -1;
 	}
-	if (!RldGltf_TempFolder(folder, sizeof(folder)) || !RldObj_Join(folder, name, out, outSize) || !RldGltf_WriteTemp(out, bytes, size))
-	{
-		free(decoded);
-		snprintf(out, outSize, "%s", name);
-		RldMk_Say("warning", "tex-unreadable", name,
-		          "An image inside the glTF file cannot be copied to the folder for temporary files; its faces keep the vertex or material color.");
-		return 0;
-	}
+	ok = RldGltf_TempCopy(name, type, bytes, size, out, outSize);
 	free(decoded);
+	if (!ok)
+	{
+		RldMk_Say("error", "model-gltf-temp", out,
+		          "An image inside %s cannot be copied to the folder for temporary files (TEMP); rldpack needs it there to read the texture. Check that "
+		          "the folder exists and can be written to.",
+		          Rld_LastComponent(r->path));
+		return -1;
+	}
 	return 1;
 }
 
-// The name in m.names of a material of the file, made on its first use. RLDMK_NONE = out of memory (said).
+// The name in m.names of a material of the file, made on its first use. RLDMK_NONE = an error (said).
 static u32 RldGltf_Material(struct RldGltfRead *r, const cgltf_material *material)
 {
 	struct RldObjModel *m = &r->m;
@@ -733,6 +904,7 @@ static u32 RldGltf_Material(struct RldGltfRead *r, const cgltf_material *materia
 	u32 again = RLDMK_NONE;
 	int k;
 
+	name[0] = '\0';
 	if (r->materialName[index] != RLDMK_NONE)
 	{
 		return r->materialName[index];
@@ -741,9 +913,9 @@ static u32 RldGltf_Material(struct RldGltfRead *r, const cgltf_material *materia
 	// Its name, or its number; a name already taken gets its number.
 	if ((material->name != NULL) && (material->name[0] != '\0'))
 	{
-		snprintf(name, sizeof(name), "%s", material->name);
+		RldGltf_Text(material->name, name, sizeof(name));
 	}
-	else
+	if (name[0] == '\0')
 	{
 		snprintf(name, sizeof(name), "material %u", index);
 	}
@@ -825,13 +997,22 @@ static u32 RldGltf_Material(struct RldGltfRead *r, const cgltf_material *materia
 				          "material color.",
 				          name);
 			}
-			else if (RldGltf_ImagePath(r, image, map, sizeof(map)))
+			else
 			{
-				to->map = RldObj_Copy(map, strlen(map), RLD_PATH_MAX);
-				if (to->map == NULL)
+				const int named = RldGltf_ImagePath(r, image, map, sizeof(map));
+
+				if (named < 0)
 				{
-					RldObj_Memory();
 					return RLDMK_NONE;
+				}
+				if (named > 0)
+				{
+					to->map = RldObj_Copy(map, strlen(map), RLD_PATH_MAX);
+					if (to->map == NULL)
+					{
+						RldObj_Memory();
+						return RLDMK_NONE;
+					}
 				}
 			}
 		}
@@ -848,22 +1029,27 @@ static const double s_rldGltfZero[RLDGLTF_KEY_COUNT * 3] = {0.0};
 static u32 RldGltf_Vertex(struct RldGltfRead *r, struct RldGltfTable *t, const double xyz[3], const double rgb[3], int colored, const double *delta)
 {
 	struct RldObjModel *m = &r->m;
-	const size_t deltaBytes = (size_t)RLDGLTF_KEY_COUNT * 3u * sizeof(double);
+	const double *moves = (delta != NULL) ? delta : s_rldGltfZero;
 	u32 hash = RldGltf_Hash(xyz, 3u * sizeof(double));
 	u32 slot;
 	u32 v;
+	int k;
 
+	// The deltas of every key in the hash, 0 for a key not (yet) found, so
+	// that a v hashes the same before and after a key turns up.
 	hash = (hash * 31u) ^ RldGltf_Hash(rgb, 3u * sizeof(double)) ^ (u32)colored;
-	if (delta != NULL)
-	{
-		hash = (hash * 31u) ^ RldGltf_Hash(delta, deltaBytes);
-	}
+	hash = (hash * 31u) ^ RldGltf_Hash(moves, sizeof(s_rldGltfZero));
 	slot = hash & (t->slotCount - 1u);
 	while ((v = t->slots[slot]) != RLDMK_NONE)
 	{
-		if ((memcmp(&m->xyz[3u * v], xyz, 3u * sizeof(double)) == 0) && (m->vColored[v] == (u8)colored) &&
-		    (memcmp(&m->vrgb[3u * v], rgb, 3u * sizeof(double)) == 0) &&
-		    ((r->vDelta == NULL) || (memcmp(&r->vDelta[(size_t)v * RLDGLTF_KEY_COUNT * 3u], (delta != NULL) ? delta : s_rldGltfZero, deltaBytes) == 0)))
+		int same = (memcmp(&m->xyz[3u * v], xyz, 3u * sizeof(double)) == 0) && (m->vColored[v] == (u8)colored) &&
+		           (memcmp(&m->vrgb[3u * v], rgb, 3u * sizeof(double)) == 0);
+
+		for (k = 0; same && (k < RLDGLTF_KEY_COUNT); k++)
+		{
+			same = (memcmp((r->vDelta[k] != NULL) ? &r->vDelta[k][3u * v] : s_rldGltfZero, &moves[3 * k], 3u * sizeof(double)) == 0);
+		}
+		if (same)
 		{
 			return v;
 		}
@@ -904,16 +1090,21 @@ static u32 RldGltf_Vertex(struct RldGltfRead *r, struct RldGltfTable *t, const d
 			RldObj_Memory();
 			return RLDMK_NONE;
 		}
-		if (r->vDelta != NULL)
+		for (k = 0; k < RLDGLTF_KEY_COUNT; k++)
 		{
-			double *bigger = (double *)realloc(r->vDelta, (size_t)capacity * deltaBytes);
+			double *bigger;
 
+			if (r->vDelta[k] == NULL)
+			{
+				continue;
+			}
+			bigger = (double *)realloc(r->vDelta[k], (size_t)capacity * 3u * sizeof(double));
 			if (bigger == NULL)
 			{
 				RldObj_Memory();
 				return RLDMK_NONE;
 			}
-			r->vDelta = bigger;
+			r->vDelta[k] = bigger;
 		}
 		m->vCapacity = capacity;
 	}
@@ -921,9 +1112,12 @@ static u32 RldGltf_Vertex(struct RldGltfRead *r, struct RldGltfTable *t, const d
 	memcpy(&m->vrgb[3u * v], rgb, 3u * sizeof(double));
 	m->vColored[v] = (u8)colored;
 	m->colored += colored ? 1u : 0u;
-	if (r->vDelta != NULL)
+	for (k = 0; k < RLDGLTF_KEY_COUNT; k++)
 	{
-		memcpy(&r->vDelta[(size_t)v * RLDGLTF_KEY_COUNT * 3u], (delta != NULL) ? delta : s_rldGltfZero, deltaBytes);
+		if (r->vDelta[k] != NULL)
+		{
+			memcpy(&r->vDelta[k][3u * v], &moves[3 * k], 3u * sizeof(double));
+		}
 	}
 	m->vCount++;
 	t->slots[slot] = v;
@@ -1282,11 +1476,11 @@ static int RldGltf_Primitive(struct RldGltfRead *r, const cgltf_mesh *mesh, cons
 	}
 	for (k = 0; ok && (k < RLDGLTF_KEY_COUNT); k++)
 	{
-		if ((target[k] != NULL) && (r->vDelta == NULL))
+		if ((target[k] != NULL) && (r->vDelta[k] == NULL))
 		{
-			// The first key: every v made so far moves by 0.
-			r->vDelta = (double *)calloc((size_t)m->vCapacity * RLDGLTF_KEY_COUNT * 3u + 1u, sizeof(double));
-			if (r->vDelta == NULL)
+			// A key found: every v made so far moves by 0 with it.
+			r->vDelta[k] = (double *)calloc((size_t)m->vCapacity * 3u + 3u, sizeof(double));
+			if (r->vDelta[k] == NULL)
 			{
 				RldObj_Memory();
 				ok = 0;
@@ -1324,7 +1518,7 @@ static int RldGltf_Primitive(struct RldGltfRead *r, const cgltf_mesh *mesh, cons
 				}
 			}
 		}
-		if (r->vDelta != NULL)
+		if (r->present != 0u)
 		{
 			memset(delta, 0, sizeof(delta));
 			for (k = 0; k < RLDGLTF_KEY_COUNT; k++)
@@ -1340,7 +1534,7 @@ static int RldGltf_Primitive(struct RldGltfRead *r, const cgltf_mesh *mesh, cons
 				}
 			}
 		}
-		vOf[i] = RldGltf_Vertex(r, vTable, place, color3, colored, (r->vDelta != NULL) ? delta : NULL);
+		vOf[i] = RldGltf_Vertex(r, vTable, place, color3, colored, (r->present != 0u) ? delta : NULL);
 		ok = (vOf[i] != RLDMK_NONE);
 		vtOf[i] = RLDMK_NONE;
 		vnOf[i] = RLDMK_NONE;
@@ -1501,7 +1695,7 @@ static int RldGltf_Node(struct RldGltfRead *r, const cgltf_node *node, const dou
 	int *keys = NULL;
 	u32 targets = 0;
 	u32 faces = 0;
-	u32 vertices = 0;
+	u64 vertices = 0;
 	u32 i;
 	int ok = 1;
 
@@ -1517,9 +1711,9 @@ static int RldGltf_Node(struct RldGltfRead *r, const cgltf_node *node, const dou
 
 		for (n = 0; n < (u32)mesh->primitives[i].attributes_count; n++)
 		{
-			if ((a[n].type == cgltf_attribute_type_position) && (a[n].data != NULL) && (a[n].data->count <= RLDMK_PLY_MAX))
+			if ((a[n].type == cgltf_attribute_type_position) && (a[n].data != NULL))
 			{
-				vertices += (u32)a[n].data->count;
+				vertices += (u64)a[n].data->count;
 			}
 		}
 	}
@@ -1569,8 +1763,9 @@ static int RldGltf_Node(struct RldGltfRead *r, const cgltf_node *node, const dou
 
 	if (m->groupCount < RLDOBJ_GROUPS_LISTED)
 	{
-		const char *name = ((node->name != NULL) && (node->name[0] != '\0')) ? node->name : ((mesh->name != NULL) ? mesh->name : "");
+		char name[RLDOBJ_NAME_MAX + 1u];
 
+		RldGltf_Text(((node->name != NULL) && (node->name[0] != '\0')) ? node->name : mesh->name, name, sizeof(name));
 		ok = RldGltf_Room((void **)&m->groups, m->groupCount + 1u, &m->groupCapacity, sizeof(*m->groups));
 		if (ok)
 		{
@@ -1680,7 +1875,7 @@ static int RldGltf_Scene(struct RldGltfRead *r)
 // share their faceSource, so the runs of faceSource are the triangles in
 // order. A point at a corner takes that corner's delta, any other the
 // barycentric mix of the three. 0 = out of memory (said).
-static int RldGltf_PointDeltas(const struct RldMkPly *ply, const double *xyz, const u32 *triV, u32 triCount, const double *vDelta, u32 present)
+static int RldGltf_PointDeltas(const struct RldMkPly *ply, const double *xyz, const u32 *triV, u32 triCount, double *const *vDelta, u32 present)
 {
 	u8 *done = (u8 *)calloc((size_t)ply->vertexCount + 1u, 1u);
 	u32 run = RLDMK_NONE;
@@ -1786,9 +1981,9 @@ static int RldGltf_PointDeltas(const struct RldMkPly *ply, const double *xyz, co
 				}
 				for (axis = 0; axis < 3; axis++)
 				{
-					s_rldGltfMorphs.point[k][3u * point + (u32)axis] = weight[0] * vDelta[((size_t)v[0] * RLDGLTF_KEY_COUNT + (u32)k) * 3u + (u32)axis] +
-					                                                    weight[1] * vDelta[((size_t)v[1] * RLDGLTF_KEY_COUNT + (u32)k) * 3u + (u32)axis] +
-					                                                    weight[2] * vDelta[((size_t)v[2] * RLDGLTF_KEY_COUNT + (u32)k) * 3u + (u32)axis];
+					s_rldGltfMorphs.point[k][3u * point + (u32)axis] = weight[0] * vDelta[k][3u * v[0] + (u32)axis] +
+					                                                    weight[1] * vDelta[k][3u * v[1] + (u32)axis] +
+					                                                    weight[2] * vDelta[k][3u * v[2] + (u32)axis];
 				}
 			}
 		}
@@ -1903,9 +2098,9 @@ static int RldGltf_Finish(struct RldGltfRead *r, struct RldMkPly *ply, struct Rl
 			}
 			s_rldGltfMorphs.source[k] = (double *)malloc((size_t)vCount * 3u * sizeof(double) + sizeof(double));
 			ok = (s_rldGltfMorphs.source[k] != NULL);
-			for (i = 0; ok && (i < vCount); i++)
+			if (ok && (vCount != 0u))
 			{
-				memcpy(&s_rldGltfMorphs.source[k][3u * i], &r->vDelta[((size_t)i * RLDGLTF_KEY_COUNT + (u32)k) * 3u], 3u * sizeof(double));
+				memcpy(s_rldGltfMorphs.source[k], r->vDelta[k], (size_t)vCount * 3u * sizeof(double));
 			}
 			if (!ok)
 			{
@@ -1988,6 +2183,69 @@ static int RldGltf_Finish(struct RldGltfRead *r, struct RldMkPly *ply, struct Rl
 	return ok;
 }
 
+// Every delta a number, none larger than four times the model's largest
+// side (a key that throws points that far is broken, and POSE gets only
+// numbers it can draw). 0 = said (model-gltf-key).
+static int RldGltf_CheckDeltas(const struct RldGltfRead *r)
+{
+	const struct RldObjModel *m = &r->m;
+	double low[3];
+	double high[3];
+	double limit = 0.0;
+	u32 i;
+	int k;
+	int axis;
+
+	for (axis = 0; axis < 3; axis++)
+	{
+		low[axis] = (m->vCount != 0u) ? m->xyz[(u32)axis] : 0.0;
+		high[axis] = low[axis];
+	}
+	for (i = 0; i < m->vCount; i++)
+	{
+		for (axis = 0; axis < 3; axis++)
+		{
+			const double c = m->xyz[3u * i + (u32)axis];
+
+			low[axis] = (c < low[axis]) ? c : low[axis];
+			high[axis] = (c > high[axis]) ? c : high[axis];
+		}
+	}
+	for (axis = 0; axis < 3; axis++)
+	{
+		const double side = high[axis] - low[axis];
+
+		limit = (side > limit) ? side : limit;
+	}
+	limit *= 4.0;
+	// Positions that are no numbers: the chain says so (model-repair).
+	if ((limit - limit) != 0.0)
+	{
+		return 1;
+	}
+	for (k = 0; k < RLDGLTF_KEY_COUNT; k++)
+	{
+		if (r->vDelta[k] == NULL)
+		{
+			continue;
+		}
+		for (i = 0; i < 3u * m->vCount; i++)
+		{
+			const double d = r->vDelta[k][i];
+
+			// d - d is 0 for every number and NaN for NaN and the infinities.
+			if (((d - d) != 0.0) || (d > limit) || (d < -limit))
+			{
+				RldMk_Say("error", "model-gltf-key", s_rldGltfKeyNames[k],
+				          "The shape key %s moves points by %s; at most four times the model's size is read. Check the shape key in Blender.",
+				          s_rldGltfKeyNames[k], ((d - d) != 0.0) ? "a value that is not a number" : "more than four times the model's size");
+				return 0;
+			}
+		}
+	}
+	return 1;
+}
+
 //========================================================================================
 // STEP 1 FOR glTF
 //========================================================================================
@@ -2053,14 +2311,44 @@ static int RldGltf_Parse(const char *path, const u8 *data, size_t size, struct R
 		return 0;
 	}
 	result = cgltf_parse(&options, data, size, &r.data);
-	if (result == cgltf_result_success)
+	if (result != cgltf_result_success)
 	{
-		result = cgltf_load_buffers(&options, r.data, path);
+		RldGltf_Broken(file, RldGltf_ResultWord(result));
+		cgltf_free(r.data);
+		return 0;
 	}
-	if (result == cgltf_result_success)
+	// Buffer files only next to the model or below it (data: URIs stay).
+	for (i = 0; i < (u32)r.data->buffers_count; i++)
 	{
-		result = cgltf_validate(r.data);
+		const char *uri = r.data->buffers[i].uri;
+
+		if ((uri != NULL) && (strncmp(uri, "data:", 5) != 0))
+		{
+			char decoded[RLD_PATH_MAX];
+
+			snprintf(decoded, sizeof(decoded), "%s", uri);
+			cgltf_decode_uri(decoded);
+			if (!RldGltf_UriInside(decoded))
+			{
+				RldGltf_SayUri(file, decoded);
+				cgltf_free(r.data);
+				return 0;
+			}
+		}
 	}
+	result = cgltf_load_buffers(&options, r.data, path);
+	if (result != cgltf_result_success)
+	{
+		RldGltf_Broken(file, RldGltf_ResultWord(result));
+		cgltf_free(r.data);
+		return 0;
+	}
+	if (!RldGltf_CheckSizes(r.data, file))
+	{
+		cgltf_free(r.data);
+		return 0;
+	}
+	result = cgltf_validate(r.data);
 	if (result != cgltf_result_success)
 	{
 		RldGltf_Broken(file, RldGltf_ResultWord(result));
@@ -2100,7 +2388,7 @@ static int RldGltf_Parse(const char *path, const u8 *data, size_t size, struct R
 			memset(r.materialName, 0xFF, r.data->materials_count * sizeof(u32));
 		}
 	}
-	ok = ok && RldGltf_Scene(&r);
+	ok = ok && RldGltf_Scene(&r) && RldGltf_CheckDeltas(&r);
 	if (ok && (r.m.faceCount == 0u))
 	{
 		RldMk_Say("error", "model-gltf-empty", NULL, "%s has no mesh with triangles in its scene. Export the model again from Blender (glTF 2.0, .glb).", file);
@@ -2118,7 +2406,10 @@ static int RldGltf_Parse(const char *path, const u8 *data, size_t size, struct R
 	}
 
 	cgltf_free(r.data);
-	free(r.vDelta);
+	for (i = 0; i < (u32)RLDGLTF_KEY_COUNT; i++)
+	{
+		free(r.vDelta[i]);
+	}
 	free(r.vnKey);
 	free(r.vnNode);
 	free(r.vtSlots);

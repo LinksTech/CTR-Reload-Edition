@@ -479,8 +479,9 @@ static void RldGltf_SelfTestKeys(void)
 	static float left[GRID + 1][3];
 	static float lean[GRID + 1][3];
 	static float smile[GRID + 1][3];
+	static float bump[GRID + 1][3];
 	static const float factor[4] = {1.0f, 1.0f, 1.0f, 1.0f};
-	struct RldGltfTestTarget targets[3];
+	struct RldGltfTestTarget targets[4];
 	struct RldGltfTestModel t;
 	struct RldMkPly ply;
 	struct RldMkModelInfo info;
@@ -525,6 +526,9 @@ static void RldGltf_SelfTestKeys(void)
 	uv[GRID][1] = 0.5f;
 	lean[GRID][0] = 0.125f;
 	smile[0][1] = 0.5f;
+	// crash moves the inner point (2, 2) alone, by 0.5 up.
+	memset(bump, 0, sizeof(bump));
+	bump[2u * (CELLS + 1u) + 2u][1] = 0.5f;
 	for (j = 0; j < (u32)CELLS; j++)
 	{
 		for (i = 0; i < (u32)CELLS; i++)
@@ -571,6 +575,9 @@ static void RldGltf_SelfTestKeys(void)
 	targets[2].name = "smile";
 	targets[2].delta = &smile[0][0];
 	targets[2].sparse = 0;
+	targets[3].name = "Cr\\u0061sh";   // "Crash" as JSON may write it
+	targets[3].delta = &bump[0][0];
+	targets[3].sparse = 0;
 	memset(&t, 0, sizeof(t));
 	t.xyz = &xyz[0][0];
 	t.uv = &uv[0][0];
@@ -578,7 +585,7 @@ static void RldGltf_SelfTestKeys(void)
 	t.index = &index[0][0];
 	t.triangles = triangles;
 	t.targets = targets;
-	t.targetCount = 3u;
+	t.targetCount = 4u;
 	t.factor = factor;
 	t.png = png;
 	t.pngSize = pngSize;
@@ -598,10 +605,10 @@ static void RldGltf_SelfTestKeys(void)
 	ok = (png != NULL) && RldObj_Argument("--texture-detail", "500") && RldGltf_TestRead("selftest/keys.glb", &t, &ply, &info);
 	RldObj_ResetOptions();
 	RldMk_Test(ok && s_rldGltfMorphs.read &&
-	               (s_rldGltfMorphs.present == ((1u << RLDGLTF_KEY_STEER_LEFT) | (1u << RLDGLTF_KEY_JUMP))) && (s_rldGltfMorphs.unknownCount == 1u) &&
+	               (s_rldGltfMorphs.present == ((1u << RLDGLTF_KEY_STEER_LEFT) | (1u << RLDGLTF_KEY_JUMP) | (1u << RLDGLTF_KEY_CRASH))) && (s_rldGltfMorphs.unknownCount == 1u) &&
 	               (strcmp(s_rldGltfMorphs.unknown[0], "smile") == 0) && RldMk_Said("pose-unknown-key") && (s_rldGltfMorphs.pointCount == ply.vertexCount) &&
 	               (s_rldGltfMorphs.sourceCount == GRID + 1u) && (ply.faceCount > triangles) && (ply.faceSource != NULL),
-	           "glTF shape keys: Steer_Left (sparse) and JUMP are keys, smile is pose-unknown-key; the textured square was split",
+	           "glTF shape keys: Steer_Left (sparse), JUMP and Cr\\u0061sh are keys, smile is pose-unknown-key; the textured square was split",
 	           "read %d, present %x, unknown %u, %u points, %u faces, said: %s", ok, s_rldGltfMorphs.present, s_rldGltfMorphs.unknownCount, ply.vertexCount,
 	           ply.faceCount, s_rldMkCodes);
 
@@ -624,6 +631,26 @@ static void RldGltf_SelfTestKeys(void)
 		if (x == 0.0)
 		{
 			bad += ((steer[0] < -1e-9) || (steer[0] > 1e-9)) ? 1u : 0u;
+		}
+		// crash: the hat of the inner point over its six triangles (the
+		// diagonals run along +x +y): 1 - max(|dx|, |dy|, |dx - dy|) in
+		// cells, 0 outside and on the tent. A point of a split triangle
+		// placed in the wrong triangle would miss it.
+		{
+			const double *crash = &s_rldGltfMorphs.point[RLDGLTF_KEY_CRASH][3u * i];
+			const double dx = ply.xyz[3u * i] * (double)CELLS / 2.0 - 2.0;
+			const double dy = ply.xyz[3u * i + 1u] * (double)CELLS / 2.0 - 2.0;
+			const double ax = (dx < 0.0) ? -dx : dx;
+			const double ay = (dy < 0.0) ? -dy : dy;
+			const double axy = ((dx - dy) < 0.0) ? (dy - dx) : (dx - dy);
+			double far = (ax > ay) ? ax : ay;
+			double hat;
+
+			far = (axy > far) ? axy : far;
+			hat = (ply.xyz[3u * i + 2u] != 0.0) ? 0.0 : ((far >= 1.0) ? 0.0 : (1.0 - far));
+			d = crash[1] - hat;
+			d = (d < 0.0) ? -d : d;
+			bad += ((d > 1e-9) || (crash[0] != 0.0) || (crash[2] != 0.0)) ? 1u : 0u;
 		}
 	}
 	for (i = 0; ok && (i <= GRID); i++)
@@ -723,11 +750,163 @@ static void RldGltf_SelfTestRefused(void)
 	RldGltf_FreeFiles();
 }
 
+// A hand-made .gltf at selftest/h/m.gltf: three points, one triangle, its
+// buffer t.bin (44 bytes) or what `uri` names. The parts given are put in.
+static int RldGltf_TestHand(const char *prim, const char *top, const char *viewOffset, const char *indexCount, const char *accessor, const char *uri,
+                            struct RldMkPly *ply)
+{
+	struct RldMkModelInfo info;
+	struct RldMkBuffer json;
+	int read;
+
+	memset(&json, 0, sizeof(json));
+	// In pieces: RldMk_BufferText makes at most a line of text at a time.
+	RldMk_BufferText(&json, "{\"asset\":{\"version\":\"2.0\"},\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],");
+	RldMk_BufferText(&json, "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1");
+	RldMk_BufferBytes(&json, prim, strlen(prim));
+	RldMk_BufferText(&json, "}]}],");
+	RldMk_BufferBytes(&json, top, strlen(top));
+	RldMk_BufferText(&json, "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":%s,\"byteLength\":36},", viewOffset);
+	RldMk_BufferText(&json, "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":6},{\"buffer\":0,\"byteOffset\":0,\"byteLength\":8}],");
+	RldMk_BufferText(&json, "\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},");
+	RldMk_BufferText(&json, "{\"bufferView\":1,\"componentType\":5123,\"count\":%s,\"type\":\"SCALAR\"}", indexCount);
+	RldMk_BufferBytes(&json, accessor, strlen(accessor));
+	RldMk_BufferText(&json, "],\"buffers\":[{\"uri\":\"%s\",\"byteLength\":44}]}", uri);
+	read = (json.data != NULL) && RldMk_TestImport("selftest/h/m.gltf", (const char *)json.data, json.size, ply, &info, RLDMK_ROLE_MAIN);
+	free(json.data);
+	return read;
+}
+
+// What a file must not do: a buffer file shorter than it says, sizes that
+// wrap in 32 bits, URIs out of the model's folder, deltas that are no
+// numbers or far too large; the tables of v for any count of points.
+static void RldGltf_SelfTestGuards(void)
+{
+	static const char sparseWrap[] = ",{\"componentType\":5126,\"count\":3,\"type\":\"VEC3\",\"sparse\":{\"count\":1073741825,\"indices\":{\"bufferView\":2,"
+	                                 "\"componentType\":5125},\"values\":{\"bufferView\":0}}}";
+	static const char image[] = "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}}],\"textures\":[{\"source\":0}],"
+	                            "\"images\":[{\"uri\":\"%s\"}],";
+	static const char *const outside[] = {"../t.bin", "%2e%2e/t.bin", "a/../../t.bin", "C:/t.bin", "/t.bin", "//server/share/t.bin", "file:t.bin"};
+	u8 bin[44];
+	struct RldObjMemFile files[2];
+	struct RldMkPly ply;
+	struct RldGltfTable table;
+	char top[256];
+	u32 i;
+	int ok;
+
+	memset(bin, 0, sizeof(bin));
+	{
+		static const float xyz[9] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+		static const u16 index[3] = {0, 1, 2};
+
+		memcpy(bin, xyz, sizeof(xyz));
+		memcpy(&bin[36], index, sizeof(index));
+	}
+	files[0].path = "selftest/h/t.bin";
+	files[0].data = bin;
+	files[0].size = sizeof(bin);
+	files[1].path = "selftest/h/short.bin";
+	files[1].data = bin;
+	files[1].size = 20u;
+	s_rldObjFiles = files;
+	s_rldObjFileCount = 2u;
+
+	ok = RldGltf_TestHand("", "", "0", "3", "", "t.bin", &ply) && (ply.faceCount == 1u);
+	RldMk_FreePly(&ply);
+	RldMk_Test(ok, "glTF guards: the hand-made .gltf itself reads", "said: %s", s_rldMkCodes);
+
+	ok = !RldGltf_TestHand("", "", "0", "3", "", "short.bin", &ply) && RldMk_Said("model-gltf-broken");
+	RldMk_FreePly(&ply);
+	RldMk_Test(ok, "glTF guards: a buffer file shorter than its byteLength is refused (model-gltf-broken)", "said: %s", s_rldMkCodes);
+
+	ok = !RldGltf_TestHand("", "", "0", "2147483649", "", "t.bin", &ply) && RldMk_Said("model-gltf-broken");
+	RldMk_FreePly(&ply);
+	ok = ok && !RldGltf_TestHand(",\"targets\":[{\"POSITION\":2}]", "", "0", "3", sparseWrap, "t.bin", &ply) && RldMk_Said("model-gltf-broken");
+	RldMk_FreePly(&ply);
+	ok = ok && !RldGltf_TestHand("", "", "4294963200", "3", "", "t.bin", &ply) && RldMk_Said("model-gltf-broken");
+	RldMk_FreePly(&ply);
+	RldMk_Test(ok, "glTF guards: an index count, a sparse count and a view offset that wrap in 32 bits are refused (model-gltf-broken)", "said: %s",
+	           s_rldMkCodes);
+
+	for (i = 0; i < (u32)(sizeof(outside) / sizeof(outside[0])); i++)
+	{
+		const int refused = !RldGltf_TestHand("", "", "0", "3", "", outside[i], &ply) && RldMk_Said("model-gltf-uri");
+
+		RldMk_FreePly(&ply);
+		if (!refused)
+		{
+			RldMk_Test(0, "glTF guards: a buffer outside the model's folder", "%s read, said: %s", outside[i], s_rldMkCodes);
+		}
+		ok = ok && refused;
+	}
+	snprintf(top, sizeof(top), image, "../x.png");
+	ok = ok && !RldGltf_TestHand(",\"material\":0", top, "0", "3", "", "t.bin", &ply) && RldMk_Said("model-gltf-uri");
+	RldMk_FreePly(&ply);
+	snprintf(top, sizeof(top), image, "C:/x.png");
+	ok = ok && !RldGltf_TestHand(",\"material\":0", top, "0", "3", "", "t.bin", &ply) && RldMk_Said("model-gltf-uri");
+	RldMk_FreePly(&ply);
+	snprintf(top, sizeof(top), image, "maps/x%20y.png");
+	ok = ok && RldGltf_TestHand(",\"material\":0", top, "0", "3", "", "t.bin", &ply) && RldMk_Said("tex-missing") && !RldMk_Said("model-gltf-uri");
+	RldMk_FreePly(&ply);
+	RldMk_Test(ok, "glTF guards: buffer and image URIs out of the model's folder are refused (model-gltf-uri), one below it is read", "said: %s",
+	           s_rldMkCodes);
+
+	// Deltas that are no number, or far larger than the model.
+	{
+		static float delta[5][3];
+		const u32 nanBits = 0x7FC00000u;
+		struct RldGltfTestTarget target;
+		struct RldGltfTestModel t;
+		struct RldMkModelInfo info;
+
+		memset(delta, 0, sizeof(delta));
+		memcpy(&delta[1][0], &nanBits, sizeof(float));
+		target.name = "jump";
+		target.delta = &delta[0][0];
+		target.sparse = 0;
+		memset(&t, 0, sizeof(t));
+		t.xyz = &s_rldGltfTestXyz[0][0];
+		t.count = 5u;
+		t.index = &s_rldGltfTestIndex[0][0];
+		t.triangles = 6u;
+		t.targets = &target;
+		t.targetCount = 1u;
+		t.mode = 4;
+		ok = !RldGltf_TestRead("selftest/nan.glb", &t, &ply, &info) && RldMk_Said("model-gltf-key") && !s_rldGltfMorphs.read;
+		RldMk_FreePly(&ply);
+		delta[1][0] = 1e30f;
+		ok = ok && !RldGltf_TestRead("selftest/far.glb", &t, &ply, &info) && RldMk_Said("model-gltf-key");
+		RldMk_FreePly(&ply);
+		delta[1][0] = 3.0f;
+		ok = ok && RldGltf_TestRead("selftest/near.glb", &t, &ply, &info) && !RldMk_Said("model-gltf-key");
+		RldMk_FreePly(&ply);
+		RldMk_Test(ok, "glTF guards: a shape key that is not a number or moves points by more than four times the model is refused (model-gltf-key)",
+		           "said: %s", s_rldMkCodes);
+	}
+
+	// The table of v: sized in 64 bits, capped where obj-big begins, always
+	// twice the points it can get - no count of points wraps it into a
+	// table too small to find a free slot.
+	memset(&table, 0, sizeof(table));
+	ok = RldGltf_TableStart(&table, 0xFFFFFFFFull * 4296u) && (table.slotCount >= 2u * RLDMK_PLY_MAX) && ((table.slotCount & (table.slotCount - 1u)) == 0u);
+	free(table.slots);
+	memset(&table, 0, sizeof(table));
+	ok = ok && RldGltf_TableStart(&table, 0x80000001u) && (table.slotCount >= 2u * RLDMK_PLY_MAX);
+	free(table.slots);
+	RldMk_Test(ok, "glTF guards: the table of points stays twice as large as the points it can hold for any count", "slots %u", table.slotCount);
+
+	s_rldObjFiles = NULL;
+	s_rldObjFileCount = 0;
+	RldGltf_FreeFiles();
+}
+
 static void RldGltf_SelfTest(struct RldMkTestMesh *mesh, const u8 *chri, size_t chriSize)
 {
 	RldGltf_SelfTestSame(mesh, chri, chriSize);
 	RldGltf_SelfTestTextures();
 	RldGltf_SelfTestKeys();
 	RldGltf_SelfTestRefused();
+	RldGltf_SelfTestGuards();
 	RldGltf_FreeMorphs();
 }

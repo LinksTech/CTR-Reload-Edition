@@ -1,4 +1,4 @@
-// rldpack_char.inc - rldpack make-char: a character container (.rldchar) from a PLY or OBJ model
+// rldpack_char.inc - rldpack make-char: a character container (.rldchar) from a glTF, OBJ or PLY model
 //
 // Part of the packer, never of the game. tools/rldpack.c includes this file after
 // include/rldchar.inc (reader, CHRI parser and model check - the same lines the
@@ -1382,7 +1382,7 @@ static int RldMk_ParsePly(const u8 *data, size_t size, struct RldMkPly *ply)
 	return 1;
 }
 
-// The model file in front of the chain: which format, PLY or OBJ
+// The model file in front of the chain: which format, glTF, OBJ or PLY
 // (RldMk_LoadModel).
 #include "rldpack_import.inc"
 
@@ -13856,7 +13856,7 @@ static int RldMk_WriteDiagnosis(const struct RldMkBuild *b, const struct RldMkOp
 	return 0;
 }
 
-// --mask-model: the own mask's model (PLY or OBJ) through the chain with the
+// --mask-model: the own mask's model (glTF, OBJ or PLY) through the chain with the
 // profile of a mask (RldMk_BuildMaskOnce), built twice, then CMSK: version,
 // flags 0 and the model frame, checked with the game's RldChar_CheckMask.
 // NULL = no mask; the reason was said.
@@ -14423,7 +14423,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	}
 	if ((wheelSizeArg != NULL) && (wheelModelArg == NULL))
 	{
-		RldMk_Say("error", "usage", "--wheel-size", "--wheel-size needs --wheel-model <obj|ply>: it is the size of a wheel of your own.");
+		RldMk_Say("error", "usage", "--wheel-size", "--wheel-size needs --wheel-model <glb|obj|ply>: it is the size of a wheel of your own.");
 	}
 	if ((wheelModelArg != NULL) && opt.noWheels)
 	{
@@ -14441,7 +14441,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	if (nativeModel && !opt.noWheels && (wheelModelArg == NULL))
 	{
 		RldMk_Say("error", "native-model", "--wheels",
-		          "--native-model on needs --wheel-model <obj|ply> or --wheels off: the game draws a native model only with wheels of its own or "
+		          "--native-model on needs --wheel-model <glb|obj|ply> or --wheels off: the game draws a native model only with wheels of its own or "
 		          "with the kart wheels hidden. Build with --wheel-model, with --wheels off, or without --native-model for the classic model with "
 		          "the kart wheels.");
 	}
@@ -14801,7 +14801,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	s_rldRedCache = check && !noCache;
 	s_rldRedSlowPasses = check ? 2u : 4u;
 
-	// THE MODEL: PLY or OBJ, by its content (tools/rldpack_import.inc). With
+	// THE MODEL: glTF, OBJ or PLY, by its content (tools/rldpack_import.inc). With
 	// --native-model on the OBJ reader also keeps the faces as written
 	// (RldObj_CaptureNative); what it hands the chain stays the same.
 	RldObj_FreeNative(&s_rldObjNative);
@@ -15036,7 +15036,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		}
 	}
 
-	// --native-model on (PREVIEW): CNET and CTXT of the OBJ itself, placed by
+	// --native-model on (PREVIEW): CNET and CTXT of the model itself, placed by
 	// the frames just built (THE NATIVE MODEL OF AN OBJ, rldpack_native.inc),
 	// held to the game's rules before anything is written. Without the
 	// switch none of this runs and the bytes stay those of
@@ -15228,7 +15228,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		char text[6][16];
 		u32 t;
 
-		printf("  CNET          %u bytes (preview: the native model of the OBJ, %u vertices, %u triangles, %s, %u materials, %u textures%s, %s - the game "
+		printf("  CNET          %u bytes (preview: the native model of the model file, %u vertices, %u triangles, %s, %u materials, %u textures%s, %s - the game "
 		       "reads it only with NATIVE DRIVERS set to PREVIEW (GRAPHICS) or --native-preview)\n",
 		       (u32)cnetSize, nativeFacts.vertices, nativeFacts.triangles, nativeFacts.poses ? "47 poses" : "one still pose", nativeFacts.materials,
 		       nativeFacts.textures, nativeFacts.colors ? ", vertex colors" : "",
@@ -16033,14 +16033,16 @@ static void RldChar_Usage(FILE *out)
 
 	fprintf(out, "MAKE-CHAR\n");
 	fprintf(out, "  rldpack make-char --model <model> --name <text> --template <0..14> [switches]\n");
-	fprintf(out, "  Builds a character (.rldchar) from a PLY or OBJ model, +Y up and +Z\n");
+	fprintf(out, "  Builds a character (.rldchar) from a glTF, OBJ or PLY model, +Y up and +Z\n");
 	fprintf(out, "  forward, at any scale: it is fitted to Crash's\n");
 	fprintf(out, "  size (--fit). The model brings its kart: a part at the bottom, as long\n");
 	fprintf(out, "  as the kart of a driver; the game draws the wheels.\n");
 	fprintf(out, "  The file lands NEXT TO the model as <model>.rldchar.\n");
 	fprintf(out, "\n");
-	fprintf(out, "  --model <model>             the model (required), PLY or OBJ - the content\n");
-	fprintf(out, "                              decides. PLY: vertex colors, ASCII or binary.\n");
+	fprintf(out, "  --model <model>             the model (required), glTF 2.0 (.glb, .gltf),\n");
+	fprintf(out, "                              OBJ or PLY - the content decides. glTF: meshes,\n");
+	fprintf(out, "                              base color and texture, COLOR_0, shape keys\n");
+	fprintf(out, "                              (no rigs). PLY: vertex colors, ASCII or binary.\n");
 	fprintf(out, "                              OBJ: vertex colors (v x y z r g b) win over\n");
 	fprintf(out, "                              the MTL file; else Kd times the texture of\n");
 	fprintf(out, "                              map_Kd (PNG, JPEG, TGA, sampled at the vt of\n");
@@ -16148,7 +16150,7 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "                              (hex, as FF8000); default the template's\n");
 	fprintf(out, "  --mask-model <model>        an own mask drawn in place of Aku Aku / Uka Uka\n");
 	fprintf(out, "                              (--mask still decides which of the two it is:\n");
-	fprintf(out, "                              sound, music, beam): a PLY or OBJ as --model,\n");
+	fprintf(out, "                              sound, music, beam): a model as --model,\n");
 	fprintf(out, "                              fitted to the retail mask's height (%.1f),\n", RLDMK_MASK_HEIGHT);
 	fprintf(out, "                              reduced to at most %u triangles\n", (u32)RLDMK_MASK_TRIANGLES_MAX);
 	fprintf(out, "  --mask-size <50..150>       the own mask's height in percent of the retail\n");
@@ -16213,7 +16215,7 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "                              draws a native model only with wheels of its own\n");
 	fprintf(out, "                              or with the kart wheels hidden. Not with\n");
 	fprintf(out, "                              --native-probe. Default off: nothing changes\n");
-	fprintf(out, "  --wheel-model <obj|ply>     PREVIEW, with --native-model on and the wheels\n");
+	fprintf(out, "  --wheel-model <glb|obj|ply> PREVIEW, with --native-model on and the wheels\n");
 	fprintf(out, "                              shown: one wheel of your own for all four (WHLS\n");
 	fprintf(out, "                              version 2) - axle along X, outer side +X, centre\n");
 	fprintf(out, "                              in the origin, the axes of --up/--forward; an OBJ\n");
