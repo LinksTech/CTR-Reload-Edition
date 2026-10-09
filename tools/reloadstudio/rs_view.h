@@ -131,13 +131,16 @@ BOOL RsView_Register(HINSTANCE instance);
 
 // Reads a preview file (format "RLDPV2", written by rldpack make-char --preview
 // and described there in tools/rldpack_char.inc: positions in 1/16 game units;
-// the older "RLDPV1" with whole game units is read as well).
+// the older "RLDPV1" with whole game units is read as well), followed by
+// "RLDPC1" - all 47 frames of the classic model (THE ANIMATIONS below) -
+// when make-char wrote it.
 // A missing or damaged file leaves an empty view with a message saying why.
 // Pose and yaw stay as they are.
 // Preview feature (open to everyone): the file may go on with the native
-// model ("RLDPN2", make-char --native-model on; THE NATIVE MODEL IN THE
-// PREVIEW in tools/rldpack_native.inc; read by rs_tex.c with the game's mip
-// levels), which the view then draws, textured, in place of the model
+// model ("RLDPN3" with every frame and the end poses, or the older "RLDPN2",
+// make-char --native-model on; THE NATIVE MODEL IN THE PREVIEW in
+// tools/rldpack_native.inc; read by rs_tex.c with the game's mip levels),
+// which the view then draws, textured, in place of the model
 // (rs_view.c, THE NATIVE MODEL) - not with a blend material, which the game
 // refuses natively. Anything else after
 // the last pose is refused as before ("bytes follow after the last pose").
@@ -146,7 +149,8 @@ void RsView_LoadPreview(HWND view, const wchar_t *path);
 // The same from memory (the bytes are copied). TRUE if the model is shown.
 BOOL RsView_LoadPreviewData(HWND view, const void *data, size_t bytes);
 
-// Which pose to draw: RS_VIEW_POSE_* (other values are clamped to 0..2).
+// Which pose to draw: RS_VIEW_POSE_* (other values are clamped to 0..2) -
+// frame 10, 0 or 20 of animation 0, as RsView_SetAnimFrame.
 void RsView_SetPose(HWND view, int pose);
 
 // Turn about the vertical axis in degrees (any integer, taken modulo 360).
@@ -222,6 +226,124 @@ void RsView_SetWheelAnimation(HWND view, int on);   // own WM_TIMER on the view;
 // picture, and 1 while the wheel model is drawn in it.
 int RsView_WheelBench(HWND view, int frames, int *wholeAvgUs, int *wholeMaxUs, int *wheelsAvgUs, int *wheelsMaxUs);
 int RsView_WheelPixels(HWND view, int *w, int *h);
+
+// THE REAR WHEEL AND THE AXLES (card Wheels, WHLS version 3 of the game).
+// A rear wheel model (RLDPW3 like the wheel model, char-wheel --preview of
+// the rear wheel) is drawn at the two rear wheel points in place of the wheel
+// model; without one the rear pair shows the wheel model as before. It is
+// drawn only while a wheel model is loaded (the game has no rear wheel
+// without a front one). Each wheel keeps the game's ground contact: its
+// bottom stays on the ground of the game's wheel, so its centre rises by the
+// radius it has above the game's wheel (front and rear each by their own);
+// the -X wheel of each pair is drawn mirrored (WHLS: x negated, winding
+// turned). The scale (RsView_SetWheelScale) applies to both models. The rear
+// wheel model keeps its size against the wheel model, as make-char builds it
+// (rearRadius = radius x across of the rear file / across of the front file,
+// format of WHLS v3); char-wheel fits every file to the game's wheel, so the
+// page passes that ratio: RsView_SetRearWheelSize(view, 1000 x across rear /
+// across front, the "fit ... <across before>" of the two char-wheel runs),
+// RS_VIEW_REAR_SIZE_SAME (the start) = the same size. A larger rear wheel
+// rises by its own larger radius.
+// An axle offset moves the centres of one pair (axle RS_VIEW_AXLE_FRONT or
+// RS_VIEW_AXLE_REAR), in 1/16 model units: dz forward (+) or back (-), dy up
+// (+) or down (-), dtrack how far EACH wheel of the pair moves outward (+) or
+// inward (-). make-char --axle-front/-rear and WHLS version 3 count the
+// track as the whole width, each wheel half of it: dtrack here = 16 x track
+// / 2 = 8 x track (track in model units). Clamped to the bounds of WHLS v3
+// below. 0 0 0 = the retail points. Only the wheel models move; the game's wheels (no wheel
+// model) stay at the retail points, as in the game. Loading, dropping and
+// the offsets may change the framing; the steering and spin never.
+// "Always draw" (the flag of WHLS v3: no LOD for the wheels) changes nothing
+// in the preview - it draws every wheel at every distance anyway; it is only
+// kept, so that the page can read it back.
+#define RS_VIEW_AXLE_FRONT 0
+#define RS_VIEW_AXLE_REAR 1
+#define RS_VIEW_AXLE_DZ_MIN (-512)     // -32..+32 model units
+#define RS_VIEW_AXLE_DZ_MAX 512
+#define RS_VIEW_AXLE_DY_MIN (-256)     // -16..+32
+#define RS_VIEW_AXLE_DY_MAX 512
+#define RS_VIEW_AXLE_TRACK_MIN (-256)  // per wheel: the whole track -32..+64
+#define RS_VIEW_AXLE_TRACK_MAX 512
+#define RS_VIEW_AXLE_MAX 512           // the largest of them
+#define RS_VIEW_REAR_SIZE_SAME 1000
+#define RS_VIEW_REAR_SIZE_MIN 250      // a rear radius of 4..64 model units
+#define RS_VIEW_REAR_SIZE_MAX 4000
+BOOL RsView_LoadRearWheelModel(HWND view, const wchar_t *path);
+void RsView_DropRearWheelModel(HWND view);
+void RsView_SetAxle(HWND view, int axle, int dz, int dy, int dtrack);
+void RsView_GetAxle(HWND view, int axle, int *dz, int *dy, int *dtrack);
+void RsView_SetRearWheelSize(HWND view, int size);   // RS_VIEW_REAR_SIZE_MIN..MAX, per mille of the wheel model
+void RsView_SetWheelsAlways(HWND view, int on);
+int  RsView_GetWheelsAlways(HWND view);
+
+// THE ANIMATIONS (card Animations). The preview file of make-char carries
+// every frame the game can draw of the driver: the 47 frames of the four
+// animations of the CMDL ("RLDPC1"), the same of the native model's POSN and,
+// for the native model, the end poses win and lose of MRPH ("RLDPN3"). A
+// still native model has one pose for every frame. An older preview file
+// (RLDPV2 alone, RLDPN2) carries only the steering frames 10, 0 and 20: any
+// other frame of animation 0 then shows the nearest of them (0..4 -> 0,
+// 5..15 -> 10, 16..20 -> 20), the other animations frame 10.
+// Frames count from 0 within their animation; the steering value -10..+10
+// is frame 10 + value of animation 0 (-10 full lock left, +10 full lock
+// right, as RS_VIEW_POSE_FRAME0 / FRAME20).
+enum RsViewAnim {
+    RS_VIEW_ANIM_STEER = 0,      // 21 frames: 0 full lock left, 10 straight, 20 full lock right
+    RS_VIEW_ANIM_REVERSE,        // 7 frames
+    RS_VIEW_ANIM_CRASH,          // 15 frames
+    RS_VIEW_ANIM_JUMP,           // 4 frames
+    RS_VIEW_ANIM_COUNT
+};
+#define RS_VIEW_FRAMES 47          // all four animations, in this order
+#define RS_VIEW_STEER_MAX 10
+// The end poses: after the finish line the game blends the native model from
+// its pose toward win (place 1-3) or lose (4-8); the classic model (the
+// game's fallback) stays as it is. weight 0..100 is the part of the way: 0 =
+// the animation frame as set, 100 = the end pose. While weight > 0 the view
+// draws what the game draws after the finish: neutral + weight x (end pose -
+// neutral), integer, rounded half away from zero - the frame set is kept and
+// comes back at weight 0; setting a frame (RsView_SetAnimFrame, SetSteer,
+// SetPose) ends the end pose. The classic model ignores the end pose, like
+// the game; a native model without that pose shows its frame.
+enum RsViewEnd { RS_VIEW_END_NONE = 0, RS_VIEW_END_WIN, RS_VIEW_END_LOSE };
+// Playing in a loop (RsView_PlayAnim): on the view's own timer, a fixed step
+// per tick (not by the clock), so the same ticks give the same frames; the
+// timer stops while the view is hidden or minimized and goes on when it is
+// shown again. What:
+//   RS_VIEW_PLAY_STEER    animation 0: 10 -> 0 -> 20 -> 10, one frame per tick
+//   RS_VIEW_PLAY_REVERSE  animation 1 forward and back
+//   RS_VIEW_PLAY_CRASH    animation 2 from frame 0 to its last, again
+//   RS_VIEW_PLAY_JUMP     animation 3 forward and back
+//   RS_VIEW_PLAY_WIN/LOSE the end pose: weight up in RS_VIEW_END_STAGES
+//                         steps (as the game's stages), held, back down
+//   RS_VIEW_PLAY_ALL      all of them one after the other
+// on 0 stops and keeps the frame shown. RsView_SetAnimFrame, RsView_SetSteer,
+// RsView_SetPose and RsView_SetEndPose stop the playing.
+enum RsViewPlay {
+    RS_VIEW_PLAY_STEER = 0, RS_VIEW_PLAY_REVERSE, RS_VIEW_PLAY_CRASH, RS_VIEW_PLAY_JUMP,
+    RS_VIEW_PLAY_WIN, RS_VIEW_PLAY_LOSE, RS_VIEW_PLAY_ALL, RS_VIEW_PLAY_COUNT
+};
+#define RS_VIEW_END_STAGES 8
+#define RS_VIEW_ANIM_TICK_MS 33    // one tick; the game's animations run at 30 frames per second
+void RsView_SetAnimFrame(HWND view, int anim, int frame);   // clamped to the animation and its frames
+void RsView_SetSteer(HWND view, int steer);                 // -10..+10 = animation 0, frame 10 + steer
+void RsView_SetEndPose(HWND view, int end, int weight);     // RS_VIEW_END_*, 0..100
+void RsView_PlayAnim(HWND view, int what, int on);
+// The ticks of the playing at once, as the timer would (automation, bench):
+// returns the ticks done (0 while nothing plays).
+int  RsView_AnimTicks(HWND view, int ticks);
+// What the loaded preview has and what is shown. Returns 1 while a model is
+// loaded (0: all counts 0).
+struct RsViewAnimInfo {
+    int classicFrames;           // frames of the classic model: RS_VIEW_FRAMES, or 3 (older file)
+    int nativeFrames;            // the same of the native model, 0 without one
+    int nativeEnd;               // bit 0 win, bit 1 lose: end poses of the native model
+    int drawsNative;             // the native model is the one drawn
+    int anim, frame;             // the frame set
+    int end, weight;             // the end pose set
+    int playing;                 // RS_VIEW_PLAY_* while playing, -1 not
+};
+int  RsView_AnimInfo(HWND view, struct RsViewAnimInfo *info);
 
 // The look of the driver (the tab In-game look; preview feature): positions
 // in 1/16 game units of the model, as the preview file.

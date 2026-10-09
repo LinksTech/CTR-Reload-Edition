@@ -3,8 +3,8 @@
 // The writer and the reader of the preview's native model belong together:
 // this program builds the self-test's mini OBJ with rldpack's own make-char
 // code (tools/rldpack.c is included as rs_rldpack.c includes it, its main
-// renamed), writes RLDPN2 and RLDPW3 with it and reads them back with
-// rs_tex.c. Then:
+// renamed), writes RLDPN3 and RLDPW3 with it and reads them back with
+// rs_tex.c (RLDPN2, the older block, and RLDPN3 by hand as well). Then:
 //   - the levels rs_tex builds are the game's: the fixed image of the game's
 //     --native-tex-selftest gives its golden SHA-256, and every level of every
 //     texture equals RldMip_BuildLevels (include/rldmip.inc, the code
@@ -128,6 +128,67 @@ static u8 *RsTexTest_Block(int count, const u32 *w, const u32 *h, const u32 *fla
     return out;
 }
 
+// A RLDPN3 block by hand (format of the preview file, tools/rldpack_native.inc):
+// one texture of 16 x 16, two materials, 4 vertices, 2 triangles, `poses`
+// poses (47 or 1) with the given neutral, the end poses of `morphs`. Position
+// of vertex i in pose p, axis a: p * 100 + i * 10 + a (end pose e: 9000 + e
+// * 100 + i * 10 + a); u, v, colour of vertex i: i * 4096, i * 8192, i * 50 +
+// 1 .. + 4. NULL = no memory.
+static u8 *RsTexTest_Block3(u32 poses, u32 neutral, u32 morphs, size_t *sizeOut)
+{
+    const u32 n = 4, t = 2, k = (morphs & 1u) + ((morphs >> 1) & 1u);
+    const size_t size = 8 + 4 + 4 + 12 + 16 * 16 * 4 + 4 + 2 * 8 + 20 + 6 * (size_t)n * (poses + k) + 12 * (size_t)n + 8 * (size_t)t;
+    u8 *out = (u8 *)calloc(1, size);
+    size_t at;
+    u32 p, i, a, e;
+    if (!out)
+        return NULL;
+    memcpy(out, "RLDPN3", 6);
+    Rld_WriteLE32(&out[12], 1);
+    Rld_WriteLE32(&out[16], 16);
+    Rld_WriteLE32(&out[20], 16);
+    at = 28 + 16 * 16 * 4;
+    Rld_WriteLE32(&out[at], 2);
+    at += 4;
+    for (i = 0; i < 2; i++) {
+        memset(&out[at], 200, 4);
+        Rld_WriteLE16(&out[at + 4], i == 0 ? 0u : 0xFFFFu);
+        at += 8;
+    }
+    Rld_WriteLE32(&out[at], n);
+    Rld_WriteLE32(&out[at + 4], t);
+    Rld_WriteLE32(&out[at + 8], poses);
+    Rld_WriteLE32(&out[at + 12], neutral);
+    Rld_WriteLE32(&out[at + 16], morphs);
+    at += 20;
+    for (p = 0; p < poses; p++)
+        for (i = 0; i < n; i++)
+            for (a = 0; a < 3; a++, at += 2)
+                Rld_WriteLE16(&out[at], p * 100u + i * 10u + a);
+    for (e = 0; e < 2; e++)
+        if (morphs & (1u << e))
+            for (i = 0; i < n; i++)
+                for (a = 0; a < 3; a++, at += 2)
+                    Rld_WriteLE16(&out[at], 9000u + e * 100u + i * 10u + a);
+    for (i = 0; i < n; i++, at += 12) {
+        Rld_WriteLE32(&out[at], i * 4096u);
+        Rld_WriteLE32(&out[at + 4], i * 8192u);
+        for (a = 0; a < 4; a++)
+            out[at + 8 + a] = (u8)(i * 50u + a + 1u);
+    }
+    // triangle 0: 0 1 2 material 0; triangle 1: 2 1 3 material 1
+    Rld_WriteLE16(&out[at], 0);
+    Rld_WriteLE16(&out[at + 2], 1);
+    Rld_WriteLE16(&out[at + 4], 2);
+    Rld_WriteLE16(&out[at + 6], 0);
+    Rld_WriteLE16(&out[at + 8], 2);
+    Rld_WriteLE16(&out[at + 10], 1);
+    Rld_WriteLE16(&out[at + 12], 3);
+    Rld_WriteLE16(&out[at + 14], 1);
+    *sizeOut = size;
+    return out;
+}
+
 // The "nr" program in float32 (platform/native_shaders.inc): v_color =
 // a_color * nrTint in the vertex stage, colour = v_color * texel, the texel
 // of an sRGB texture decoded by the sampler and encoded again by the shader,
@@ -193,7 +254,7 @@ int main(void)
         free(block);
     }
 
-    // 2. The mini OBJ of the self-test through make-char, as RLDPN2.
+    // 2. The mini OBJ of the self-test through make-char, as RLDPN3.
     memset(&k, 0, sizeof(k));
     k.want = 1;
     memset(&native, 0, sizeof(native));
@@ -227,15 +288,18 @@ int main(void)
                 native.colors = colorsBefore;
                 native.materials = materialsBefore;
             }
-            block = RldMk_NativePreviewBlock(&native, &size);
+            block = RldMk_NativePreviewBlock3(&native, &size);
             if (!block || !RsTex_ParseNative(block, size, 0, &rn, why, 256)) {
-                RsTexTest(0, "RLDPN2 of the mini OBJ is read");
+                RsTexTest(0, "RLDPN3 of the mini OBJ is read");
                 free(block);
                 continue;
             }
-            RsTexTest(rn.textureCount == (int)native.textureCount && rn.materialCount == (int)native.materialCount &&
-                          rn.triangles == (int)native.triangleCount && (rn.flags == (pass == 1 ? RS_TEX_NATIVE_BLEND : 0u)),
-                      "RLDPN2 counts and the blend flag");
+            RsTexTest(rn.indexed && rn.textureCount == (int)native.textureCount && rn.materialCount == (int)native.materialCount &&
+                          rn.triangles == (int)native.triangleCount && rn.vertices == (int)native.vertexCount &&
+                          rn.poses == (native.poseCount == 0u ? 1 : (int)native.poseCount) &&
+                          rn.neutral == (native.poseCount == 0u ? 0 : RS_TEX_NEUTRAL_FRAME) &&
+                          (rn.flags == (pass == 1 ? RS_TEX_NATIVE_BLEND : 0u)),
+                      "RLDPN3 counts, poses, neutral and the blend flag");
             for (t = 0; t < rn.textureCount; t++)
                 RsTexTest(rn.tex[t].w == (int)native.texture[t].width && rn.tex[t].h == (int)native.texture[t].height &&
                               rn.tex[t].flags == native.texture[t].flags &&
@@ -256,6 +320,7 @@ int main(void)
                     struct RsTexCorner corner;
                     int xyz[3], p, ax;
                     RsTex_NativeCorner(&rn, tri, c, &corner);
+                    same = same && RsTex_NativeVertex(&rn, tri, c) == (int)vertex;
                     same = same && corner.u == RldMk_NativePreviewQ16(RldChar_F32(&native.uv[8u * vertex])) &&
                            corner.v == RldMk_NativePreviewQ16(RldChar_F32(&native.uv[8u * vertex + 4u]));
                     if (native.colors)
@@ -263,9 +328,8 @@ int main(void)
                                corner.b == native.colors[4u * vertex + 2u] && corner.a == native.colors[4u * vertex + 3u];
                     else
                         same = same && corner.r == 255 && corner.g == 255 && corner.b == 255 && corner.a == 255;
-                    for (p = 0; p < RS_TEX_POSES; p++) {
-                        const u32 slot = (native.poseCount == 0u) ? 0u : s_rldMkNativePreviewFrames[p];
-                        const u8 *pose = &native.poses[(size_t)slot * native.vertexCount * RLDCHAR_NET_VERTEX_BYTES];
+                    for (p = 0; p < rn.poses; p++) {
+                        const u8 *pose = &native.poses[(size_t)p * native.vertexCount * RLDCHAR_NET_VERTEX_BYTES];
                         RsTex_NativePosition(&rn, p, tri, c, xyz);
                         for (ax = 0; ax < 3; ax++)
                             same = same && xyz[ax] == RldMk_NativePreviewSixteenth(RldChar_F32(&pose[vertex * RLDCHAR_NET_VERTEX_BYTES + 4u * (u32)ax]));
@@ -485,11 +549,69 @@ int main(void)
         RsTexTest(ok, "RLDPW3 of char-wheel: textured OBJ and plain PLY");
     }
 
+    // 9. RLDPN3 by hand: 47 poses with both end poses, corners through the
+    // index, a still model, and refused blocks.
+    {
+        static const u32 tri3[2][4] = { { 0, 1, 2, 0 }, { 2, 1, 3, 1 } };
+        const size_t head3 = 28 + 16 * 16 * 4 + 4 + 2 * 8;   // where the counts of RLDPN3 start
+        size_t size = 0;
+        u8 *block = RsTexTest_Block3(RS_TEX_FRAMES, RS_TEX_NEUTRAL_FRAME, 3, &size);
+        int ok = block && RsTex_ParseNative(block, size, 0, &rn, why, 256);
+        ok = ok && rn.indexed && rn.vertices == 4 && rn.triangles == 2 && rn.poses == RS_TEX_FRAMES && rn.neutral == 10 && rn.end[0] &&
+             rn.end[1] && rn.textureCount == 1 && rn.materialCount == 2 && rn.mat[1].texture == -1;
+        for (tri = 0; ok && tri < 2; tri++) {
+            ok = RsTex_NativeMaterialOf(&rn, tri) == (int)tri3[tri][3];
+            for (c = 0; ok && c < 3; c++) {
+                const int vx = (int)tri3[tri][c];
+                struct RsTexCorner corner;
+                int xyz[3], p;
+                RsTex_NativeCorner(&rn, tri, c, &corner);
+                ok = RsTex_NativeVertex(&rn, tri, c) == vx && corner.u == vx * 4096 && corner.v == vx * 8192 && corner.r == vx * 50 + 1 &&
+                     corner.a == vx * 50 + 4;
+                for (p = 0; ok && p < RS_TEX_FRAMES; p += 23) {
+                    RsTex_NativePosition(&rn, p, tri, c, xyz);
+                    ok = xyz[0] == p * 100 + vx * 10 && xyz[2] == p * 100 + vx * 10 + 2;
+                }
+                RsTex_NativeEndPosition(&rn, RS_TEX_END_LOSE, tri, c, xyz);
+                ok = ok && xyz[1] == 9100 + vx * 10 + 1;
+            }
+        }
+        RsTex_FreeNative(&rn);
+        free(block);
+        RsTexTest(ok, "RLDPN3: 47 poses, win and lose, corners through the index");
+
+        block = RsTexTest_Block3(1, 0, 2, &size);
+        ok = block && RsTex_ParseNative(block, size, 0, &rn, why, 256) && rn.poses == 1 && rn.neutral == 0 && !rn.end[0] && rn.end[1];
+        RsTex_FreeNative(&rn);
+        free(block);
+        RsTexTest(ok, "RLDPN3: a still model with lose only");
+
+        ok = 0;
+        block = RsTexTest_Block3(RS_TEX_FRAMES, RS_TEX_NEUTRAL_FRAME, 0, &size);
+        if (block) {
+            const size_t idx = size - 16;
+            ok += !RsTex_ParseNative(block, size - 2, 0, &rn, why, 256) && rn.textureCount == 0 && wcsstr(why, L"bytes long") != NULL;
+            Rld_WriteLE16(&block[idx + 2], 4);   // corner 1 of triangle 0: vertex 4 of 4
+            ok += !RsTex_ParseNative(block, size, 0, &rn, why, 256) && rn.textureCount == 0 && wcsstr(why, L"names corners") != NULL;
+            Rld_WriteLE16(&block[idx + 2], 1);
+            Rld_WriteLE16(&block[idx + 14], 2);  // material 2 of 2
+            ok += !RsTex_ParseNative(block, size, 0, &rn, why, 256) && wcsstr(why, L"material 2") != NULL;
+            Rld_WriteLE16(&block[idx + 14], 1);
+            Rld_WriteLE32(&block[head3 + 12], 0);   // neutral 0 with 47 poses
+            ok += !RsTex_ParseNative(block, size, 0, &rn, why, 256) && wcsstr(why, L"as neutral") != NULL;
+            Rld_WriteLE32(&block[head3 + 12], RS_TEX_NEUTRAL_FRAME);
+            ok += RsTex_ParseNative(block, size, 0, &rn, why, 256);   // whole again
+            RsTex_FreeNative(&rn);
+            free(block);
+        }
+        RsTexTest(ok == 5, "RLDPN3 refused: cut short, a corner or material out of range, a wrong neutral");
+    }
+
     if (s_rsTexTestFailed) {
         printf("rs_tex selftest FAILED: %d case(s)\n", s_rsTexTestFailed);
         return 1;
     }
-    printf("rs_tex selftest passed: levels = the game's golden srgb %.16s linear %.16s, RLDPN2 and RLDPW3 read back, formula against float32: "
+    printf("rs_tex selftest passed: levels = the game's golden srgb %.16s linear %.16s, RLDPN2, RLDPN3 and RLDPW3 read back, formula against float32: "
            "%lld of %d off by 1 (linear), %lld of %d (sRGB round trip), max %lld, mask %lld differ\n",
            hexSrgb, hexLinear, formulaOff, 257 * 256 * 256, srgbOff, 256 * 256 * 256, formulaMax, maskOff);
     return 0;

@@ -129,7 +129,8 @@
 // four wheel points of Rs_DummyTires instead of the game's wheels - unlike
 // them by depth against the model, as the game draws an author's wheels in
 // the native model's item; the right pair mirrored, the centres raised by the
-// radius a larger wheel grew). The dummy beside it keeps the game's wheels.
+// radius a larger wheel grew, moved by the axle offsets of WHLS v3; a rear
+// wheel model at the rear pair). The dummy beside it keeps the game's wheels.
 // The wheel turns by whole degrees from the same sine table; its animation
 // runs on the view's own timer in fixed steps per tick. Nothing loaded:
 // nothing of it is used, and the picture is the same as without them.
@@ -137,12 +138,13 @@
 // THE NATIVE MODEL (preview feature, renderer step 5b; open to everyone)
 //
 // With make-char --native-model on, rldpack appends the native model (CNET
-// with its CTXT textures in full size and its materials: "RLDPN2", described
-// at THE NATIVE MODEL IN THE PREVIEW in tools/rldpack_native.inc) to the
-// RLDPV2 data of --preview; rs_tex.c reads it and builds the game's mip
-// levels (include/rldmip.inc). The view accepts that block with and without
-// --enable-preview-features; it then draws the native model in place of the
-// game's own model (in the same pose, the turn frames 10, 0 and 20), with
+// with its CTXT textures in full size and its materials: "RLDPN3", or the
+// older "RLDPN2", described at THE NATIVE MODEL IN THE PREVIEW in
+// tools/rldpack_native.inc) to the classic data of --preview; rs_tex.c reads
+// it and builds the game's mip levels (include/rldmip.inc). The view accepts
+// that block with and without --enable-preview-features; it then draws the
+// native model in place of the game's own model (in the same frame; THE
+// ANIMATIONS below), with
 // "Native model" above it - unless a material blends: the game then draws
 // the classic model, and so does the view. Per pixel the view does what the
 // game's "nr" program does (rs_tex.h): u, v and the corner colour
@@ -155,6 +157,20 @@
 // game. Without the block the view parses, frames and draws exactly as
 // before. An author's wheel (RLDPW3 of char-wheel) is read and drawn the
 // same way.
+//
+// THE ANIMATIONS (rs_view.h)
+//
+// The classic model carries its 47 frames in "RLDPC1" behind RLDPV2
+// (RsView_ParseFrames turns them into 47 poses of RLDPV2 records), the
+// native model its 47 poses and the end poses in RLDPN3 (rs_tex.c). The frame
+// set (anim, frame) picks the pose of each (RsView_FilePose; an older file
+// shows the nearest turn frame). The end poses are the game's: neutral +
+// weight x (end pose - neutral) on the native model only, in integers
+// (RsView_NativePos, built once per end pose and weight). The dummy's
+// steering wheel has three poses: the nearest turn frame. The framing holds
+// every pose and both end poses, so neither a frame nor the playing ever
+// zooms. The playing runs on the view's own timer, a fixed step per tick,
+// like the wheel animation: the same ticks give the same pictures.
 
 #include "reloadstudio.h"
 #include "rs_view.h"
@@ -180,6 +196,7 @@
 #define RS_VIEW_DRIVER_HEAD 0xB4B4B4u
 #define RS_VIEW_SET_POSES_MAX 16                        // poses of a pose set (RLDPS1)
 #define RS_VIEW_TIMER_WHEEL 1                           // the view's own timer: the wheel animation
+#define RS_VIEW_TIMER_ANIM 2                            // and the playing of the animations
 #define RS_VIEW_WHEEL_TICK_MS 33
 #define RS_VIEW_WHEEL_SPIN_STEP 12                      // degrees of spin per tick
 #define RS_VIEW_WHEEL_STEER_STEP 2                      // degrees of steering per tick
@@ -228,6 +245,7 @@ static const int s_rsViewCrashDefault[6] = {
 
 static const unsigned char s_rsViewMagic[RS_VIEW_MAGIC_BYTES] = { 'R', 'L', 'D', 'P', 'V', '1', 0, 0 };
 static const unsigned char s_rsViewMagic2[RS_VIEW_MAGIC_BYTES] = { 'R', 'L', 'D', 'P', 'V', '2', 0, 0 };
+static const unsigned char s_rsViewFramesMagic[RS_VIEW_MAGIC_BYTES] = { 'R', 'L', 'D', 'P', 'C', '1', 0, 0 };
 static const unsigned char s_rsViewSetMagic[RS_VIEW_MAGIC_BYTES] = { 'R', 'L', 'D', 'P', 'S', '1', 0, 0 };
 
 // sin(0..90 degrees) * 16384, rounded half up. A table instead of sin(), so that
@@ -271,8 +289,10 @@ enum { RS_VIEW_SOLID_KART = 0, RS_VIEW_SOLID_BARE = RS_VIEW_POSE_COUNT, RS_VIEW_
 struct RsView {
     // The model. data owns the bytes of the file; loaded = 0: none.
     unsigned char *data;
-    struct RsViewPoseData poses[RS_VIEW_POSE_COUNT];
-    struct RsTexNative native;    // RLDPN2 (rs_tex.c): drawn in place of the model while triangles > 0, no blend
+    struct RsViewPoseData poses[RS_VIEW_FRAMES];   // poseCount of them, in the file's order (RsView_FilePose)
+    int poseCount;             // RS_VIEW_FRAMES (RLDPC1), or RS_VIEW_POSE_COUNT (RLDPV2/RLDPV1 alone)
+    unsigned char *frames;     // RLDPC1: its 47 frames as RLDPV2 records (RsView_ParseFrames), owned
+    struct RsTexNative native;    // RLDPN3/RLDPN2 (rs_tex.c): drawn in place of the model while triangles > 0, no blend
     int loaded;
     long long radius2;         // largest x*x + z*z over all poses (whole game units, rounded up)
     int ymin, ymax;            // over all poses (whole game units, rounded outwards)
@@ -304,7 +324,6 @@ struct RsView {
     int hasCrash;
     int crash[6];              // x0 y0 z0 x1 y1 z1, lo <= hi
 
-    int pose;
     int yaw;                   // 0..359
 
     // THE CAMERA (rs_view.h): pitch in degrees down, zoom in percent of the
@@ -338,8 +357,15 @@ struct RsView {
     // new Crash box), each with the colour of every triangle already shaded.
     struct RsViewSolid *solids;
     int solidsValid;
-    // The box of the native model per pose (x0 y0 z0 x1 y1 z1, 1/16 units).
-    long long nativeBox[RS_VIEW_POSE_COUNT][6];
+    // The box of the native model per pose of the file (x0 y0 z0 x1 y1 z1,
+    // 1/16 units), and of the end pose blended (RsView_NativeBlend).
+    long long nativeBox[RS_TEX_POSES_MAX][6];
+    // The end pose blended (RsView_NativeBlend): the positions of the native
+    // model as the file has them per pose (s16 x, y, z per corner), for
+    // blendEnd at blendWeight; blendEnd 0 = not built.
+    unsigned char *blendPos;
+    int blendEnd, blendWeight;
+    long long blendBox[6];
     // THE DRAW LIST of the last picture and the threads that fill it.
     struct RsViewTri *tris;
     int *triRows;
@@ -378,6 +404,25 @@ struct RsView {
     int wheelYmin, wheelYmax;
     int tireAt[4][3];          // FL FR RL RR, 1/16 units
     int tireHalf;              // the game's wheel: half its size (its radius), 1/16 units
+    // THE REAR WHEEL AND THE AXLES (rs_view.h): the rear wheel model like
+    // the wheel model (rearData owns the bytes, rearCount = 0: none), the
+    // offsets per axle {dz, dy, dtrack} in 1/16 units, the flag "always draw".
+    unsigned char *rearData;
+    struct RsTexWheel rear;
+    int rearCount;
+    long long rearR2;
+    int rearHalfW;
+    int axle[2][3];
+    int rearSize;              // the rear wheel model's size, RS_VIEW_REAR_SIZE_SAME = as the wheel model
+    int wheelsAlways;
+
+    // THE ANIMATIONS (rs_view.h): the frame set (anim, frame), the end pose
+    // and its weight, the playing (RS_VIEW_PLAY_*, -1 none) with its step.
+    int anim, frame;
+    int endPose, endWeight;
+    int playing;
+    int playStep;
+    int animTimer;             // the timer runs (stopped while the view is hidden)
 
     int dragging;              // the left button turns and tilts
     int dragX, dragY;
@@ -534,6 +579,12 @@ static long long RsView_TenthsSub(int t)
     return (long long)t * RS_VIEW_SUB / 10;
 }
 
+// n / d rounded half away from zero, d > 0.
+static long long RsView_DivRound(long long n, long long d)
+{
+    return n >= 0 ? (n + d / 2) / d : -((-n + d / 2) / d);
+}
+
 static long long RsView_Min3(long long a, long long b, long long c)
 {
     long long m = a < b ? a : b;
@@ -628,8 +679,14 @@ static void RsView_DropModel(struct RsView *v)
     RsTex_FreeNative(&v->native);   // its levels; level 0 lies in data
     Rs_Free(v->data);
     v->data = NULL;
+    Rs_Free(v->frames);
+    v->frames = NULL;
     memset(v->poses, 0, sizeof(v->poses));
+    v->poseCount = 0;
     memset(&v->native, 0, sizeof(v->native));
+    Rs_Free(v->blendPos);
+    v->blendPos = NULL;
+    v->blendEnd = 0;
     v->loaded = 0;
     v->radius2 = 0;
     v->ymin = 0;
@@ -640,6 +697,22 @@ static void RsView_DropModel(struct RsView *v)
 // x*x + z*z in whole game units (rounded up), ymin/ymax in whole game units
 // (rounded outwards). sub: 1/16 units per file unit (RsViewPoseData.sub); for
 // whole units (sub = RS_VIEW_SUB) the numbers are the file's own.
+// The box of positions in the native layout (s16 x, y, z per corner,
+// RsTexNative.pos), 1/16 units: x0 y0 z0 x1 y1 z1; all 0 without corners.
+static void RsView_PosBox(const unsigned char *pos, int corners, long long box[6])
+{
+    int i, c;
+    memset(box, 0, 6 * sizeof(long long));
+    for (i = 0; i < corners; i++)
+        for (c = 0; c < 3; c++) {
+            const long long q = RsView_ReadS16(pos + (size_t)i * 6 + 2 * c);
+            if (i == 0 || q < box[c])
+                box[c] = q;
+            if (i == 0 || q > box[3 + c])
+                box[3 + c] = q;
+        }
+}
+
 static void RsView_ExtentAdd(const unsigned char *q, int sub, long long *radius2, int *ymin, int *ymax, int *any)
 {
     const long long x = (long long)RsView_ReadS16(q) * sub, z = (long long)RsView_ReadS16(q + 4) * sub;
@@ -655,12 +728,73 @@ static void RsView_ExtentAdd(const unsigned char *q, int sub, long long *radius2
     *any = 1;
 }
 
+// RLDPC1 at *at (tools/rldpack_native.inc, format of the preview file): every
+// frame of the classic model, indexed - per corner of each triangle of
+// RLDPV2 (same order, already wound) a record, per frame every record's
+// position (s16 x, y, z, 1/16 game units). Turned into 47 poses of RLDPV2
+// records (colour and flags from the neutral pose), so that the frames
+// draw, frame, pick like any pose. NULL = refused (why says why); else the
+// records (Rs_Alloc, the caller's) and *at behind the block.
+static unsigned char *RsView_ParseFrames(const unsigned char *data, size_t bytes, size_t *at, struct RsViewPoseData poses[RS_VIEW_FRAMES],
+                                         wchar_t *why, int whyCap)
+{
+    const struct RsViewPoseData neutralPose = poses[RS_VIEW_POSE_NEUTRAL];   // poses is overwritten below
+    const struct RsViewPoseData *neutral = &neutralPose;
+    const unsigned char *head = data + *at, *index, *pos;
+    unsigned int frames, records, tris;
+    unsigned char *out;
+    size_t rest = bytes - *at;
+    int f, i, c;
+
+    if (rest < RS_VIEW_MAGIC_BYTES + 12) {
+        swprintf(why, whyCap, L"the frames of the classic model end in their head");
+        return NULL;
+    }
+    frames = RsView_ReadU32(head + RS_VIEW_MAGIC_BYTES);
+    records = RsView_ReadU32(head + RS_VIEW_MAGIC_BYTES + 4);
+    tris = RsView_ReadU32(head + RS_VIEW_MAGIC_BYTES + 8);
+    rest -= RS_VIEW_MAGIC_BYTES + 12;
+    // Compared by division: a damaged count could wrap a product.
+    if (frames != RS_VIEW_FRAMES || tris != (unsigned int)neutral->count || records < 1 || records > 65536u ||
+        (size_t)tris > rest / 6 || (size_t)records > (rest - (size_t)tris * 6) / ((size_t)RS_VIEW_FRAMES * 6)) {
+        swprintf(why, whyCap, L"the frames of the classic model claim %u frames of %u records for %u triangles (the model has %d)", frames,
+                 records, tris, neutral->count);
+        return NULL;
+    }
+    index = head + RS_VIEW_MAGIC_BYTES + 12;
+    pos = index + (size_t)tris * 6;
+    for (i = 0; i < 3 * (int)tris; i++)
+        if ((unsigned int)(index[2 * i] | (index[2 * i + 1] << 8)) >= records) {
+            swprintf(why, whyCap, L"corner %d of the frames of the classic model names record %u of %u", i,
+                     (unsigned int)(index[2 * i] | (index[2 * i + 1] << 8)), records);
+            return NULL;
+        }
+    out = (unsigned char *)Rs_Alloc((size_t)RS_VIEW_FRAMES * tris * RS_VIEW_TRI_BYTES + 1);
+    for (f = 0; f < RS_VIEW_FRAMES; f++) {
+        unsigned char *t = out + (size_t)f * tris * RS_VIEW_TRI_BYTES;
+        const unsigned char *frame = pos + (size_t)f * records * 6;
+        for (i = 0; i < (int)tris; i++)
+            for (c = 0; c < 3; c++) {
+                const unsigned char *ix = index + (size_t)i * 6 + (size_t)c * 2;
+                unsigned char *q = t + (size_t)i * RS_VIEW_TRI_BYTES + (size_t)c * RS_VIEW_CORNER_BYTES;
+                memcpy(q, frame + (size_t)(ix[0] | (ix[1] << 8)) * 6, 6);
+                memcpy(q + 6, neutral->tris + (size_t)i * RS_VIEW_TRI_BYTES + (size_t)c * RS_VIEW_CORNER_BYTES + 6, 4);
+            }
+        poses[f].tris = t;
+        poses[f].count = (int)tris;
+        poses[f].sub = 1;
+    }
+    *at += RS_VIEW_MAGIC_BYTES + 12 + (size_t)tris * 6 + (size_t)RS_VIEW_FRAMES * records * 6;
+    return out;
+}
+
 // Checks every length before it is used; takes data on success (then it belongs
 // to v), leaves v untouched and why filled otherwise.
 static int RsView_Parse(struct RsView *v, unsigned char *data, size_t bytes, wchar_t *why, int whyCap)
 {
-    struct RsViewPoseData poses[RS_VIEW_POSE_COUNT];
+    struct RsViewPoseData poses[RS_VIEW_FRAMES];
     struct RsTexNative native;
+    unsigned char *frames = NULL;
     size_t at;
     unsigned int count;
     int p, i, c, sub;
@@ -686,7 +820,7 @@ static int RsView_Parse(struct RsView *v, unsigned char *data, size_t bytes, wch
         return 0;
     }
     at = RS_VIEW_MAGIC_BYTES + 4;
-    for (p = 0; p < RS_VIEW_POSE_COUNT; p++) {
+    for (p = 0; p < (int)count; p++) {
         unsigned int tris;
         if (bytes - at < 4) {
             swprintf(why, whyCap, L"it ends before pose %d", p);
@@ -704,39 +838,48 @@ static int RsView_Parse(struct RsView *v, unsigned char *data, size_t bytes, wch
         poses[p].sub = sub;
         at += (size_t)tris * RS_VIEW_TRI_BYTES;
     }
-    // Behind the poses only the native model (RLDPN2, read by rs_tex.c with
+    // Behind the poses every frame of the classic model (RLDPC1, behind
+    // RLDPV2 only; RsView_ParseFrames turns it into 47 poses like those
+    // above), then the native model (RLDPN3 or RLDPN2, read by rs_tex.c with
     // its mip levels; open to everyone); anything else is an error as it
-    // always was. From here nothing fails: native goes to v, with its levels.
+    // always was. From here nothing fails: native and the frames go to v.
+    if (sub == 1 && bytes - at >= RS_VIEW_MAGIC_BYTES && memcmp(data + at, s_rsViewFramesMagic, RS_VIEW_MAGIC_BYTES) == 0) {
+        frames = RsView_ParseFrames(data, bytes, &at, poses, why, whyCap);
+        if (!frames)
+            return 0;
+        count = RS_VIEW_FRAMES;
+    }
     memset(&native, 0, sizeof(native));
-    if (at != bytes && !RsTex_ParseNative(data, bytes, at, &native, why, whyCap))
+    if (at != bytes && !RsTex_ParseNative(data, bytes, at, &native, why, whyCap)) {
+        Rs_Free(frames);
         return 0;   // rs_tex keeps nothing of a refused block; v stays as it was
+    }
 
     // Extent over all poses, for a framing that does not change with the pose.
-    for (p = 0; p < RS_VIEW_POSE_COUNT; p++)
+    for (p = 0; p < (int)count; p++)
         for (i = 0; i < poses[p].count; i++)
             for (c = 0; c < 3; c++)
                 RsView_ExtentAdd(poses[p].tris + (size_t)i * RS_VIEW_TRI_BYTES + c * RS_VIEW_CORNER_BYTES, sub,
                                  &radius2, &ymin, &ymax, &any);
-    // The native model in it (its corners are s16 x, y, z as those of RLDPV2).
-    for (p = 0; p < RS_VIEW_POSE_COUNT; p++)
-        for (i = 0; i < 3 * native.triangles; i++)
-            RsView_ExtentAdd(native.pos[p] + (size_t)i * 6, 1, &radius2, &ymin, &ymax, &any);
+    // The native model in it (its corners are s16 x, y, z as those of RLDPV2),
+    // its end poses too: a blend lies between neutral and the end pose, so
+    // inside both extents.
+    for (p = 0; p < native.poses + 2; p++) {
+        const unsigned char *pos = p < native.poses ? native.pos[p] : native.end[p - native.poses];
+        for (i = 0; pos && i < native.vertices; i++)
+            RsView_ExtentAdd(pos + (size_t)i * 6, 1, &radius2, &ymin, &ymax, &any);
+    }
 
     RsView_DropModel(v);
     v->data = data;
-    memcpy(v->poses, poses, sizeof(poses));
+    v->frames = frames;
+    memcpy(v->poses, poses, (size_t)count * sizeof(poses[0]));
+    v->poseCount = (int)count;
     v->native = native;
     // The box of the native model per pose, for its label (not per picture).
     memset(v->nativeBox, 0, sizeof(v->nativeBox));
-    for (p = 0; p < RS_VIEW_POSE_COUNT; p++)
-        for (i = 0; i < 3 * native.triangles; i++)
-            for (c = 0; c < 3; c++) {
-                const long long q = RsView_ReadS16(native.pos[p] + (size_t)i * 6 + 2 * c);
-                if (i == 0 || q < v->nativeBox[p][c])
-                    v->nativeBox[p][c] = q;
-                if (i == 0 || q > v->nativeBox[p][3 + c])
-                    v->nativeBox[p][3 + c] = q;
-            }
+    for (p = 0; p < native.poses; p++)
+        RsView_PosBox(native.pos[p], native.vertices, v->nativeBox[p]);
     v->loaded = 1;
     v->radius2 = radius2;
     v->ymin = ymin;
@@ -856,9 +999,21 @@ static void RsView_DropWheel(struct RsView *v)
     v->wheelYmax = 0;
 }
 
-// A wheel model (RLDPW3, read by rs_tex.c with its mip levels); takes data
-// on success, leaves v untouched otherwise.
-static int RsView_ParseWheel(struct RsView *v, unsigned char *data, size_t bytes, wchar_t *why, int whyCap)
+static void RsView_DropRear(struct RsView *v)
+{
+    RsTex_FreeWheel(&v->rear);
+    memset(&v->rear, 0, sizeof(v->rear));
+    Rs_Free(v->rearData);
+    v->rearData = NULL;
+    v->rearCount = 0;
+    v->rearR2 = 0;
+    v->rearHalfW = 0;
+}
+
+// A wheel model (RLDPW3, read by rs_tex.c with its mip levels) - the wheel
+// model (rear 0) or the rear wheel model (rear 1); takes data on success,
+// leaves v untouched otherwise.
+static int RsView_ParseWheel(struct RsView *v, int rear, unsigned char *data, size_t bytes, wchar_t *why, int whyCap)
 {
     struct RsTexWheel w;
     long long r2 = 0;
@@ -882,31 +1037,91 @@ static int RsView_ParseWheel(struct RsView *v, unsigned char *data, size_t bytes
                 halfW = (int)ax;
         }
 
-    RsView_DropWheel(v);
-    v->wheelData = data;
-    v->wheel = w;
-    v->wheelCount = w.triangles;
-    v->wheelR2 = r2;
-    v->wheelHalfW = halfW;
+    if (rear) {
+        RsView_DropRear(v);
+        v->rearData = data;
+        v->rear = w;
+        v->rearCount = w.triangles;
+        v->rearR2 = r2;
+        v->rearHalfW = halfW;
+    } else {
+        RsView_DropWheel(v);
+        v->wheelData = data;
+        v->wheel = w;
+        v->wheelCount = w.triangles;
+        v->wheelR2 = r2;
+        v->wheelHalfW = halfW;
+    }
     return 1;
 }
 
-// How far the wheel points rise at the scale (1/16 units): the bottom of the
-// wheel stays where the game's wheel touches the ground, so the centre rises
-// by the radius grown (renderer SPEC P2: ground contact as retail).
-static long long RsView_WheelLift(const struct RsView *v)
+// THE REAR WHEEL AND THE AXLES (rs_view.h): the model of wheel point w (0
+// front left, 1 front right, 2 rear left, 3 rear right) - the rear wheel
+// model at the rear pair while there is one - and the triangles of all four.
+static const struct RsTexWheel *RsView_WheelOf(const struct RsView *v, int w)
 {
-    return (long long)v->tireHalf * (v->wheelScale - 100) / 100;
+    return w >= 2 && v->rearCount ? &v->rear : &v->wheel;
 }
 
-// The wheel model at its scale about a wheel point, 1/16 units: radius = how
-// far it reaches up and down, reach = across. Under every spin it stays in a
+static int RsView_WheelTris(const struct RsView *v)
+{
+    return v->wheelCount ? 2 * v->wheelCount + 2 * (v->rearCount ? v->rearCount : v->wheelCount) : 0;
+}
+
+// The scale of the model at wheel point w, num / den: the wheel scale, and
+// for the rear wheel model its size against the wheel model as well
+// (RsView_SetRearWheelSize).
+static void RsView_WheelScaleOf(const struct RsView *v, int w, long long *num, long long *den)
+{
+    if (w >= 2 && v->rearCount) {
+        *num = (long long)v->wheelScale * v->rearSize;
+        *den = 100LL * RS_VIEW_REAR_SIZE_SAME;
+    } else {
+        *num = v->wheelScale;
+        *den = 100;
+    }
+}
+
+// How far wheel point w rises at its scale (1/16 units): the bottom of the
+// wheel stays where the game's wheel touches the ground, so the centre rises
+// by the radius grown (renderer SPEC P2: ground contact as retail; WHLS v3:
+// each wheel's centre at its own radius).
+static long long RsView_WheelLift(const struct RsView *v, int w)
+{
+    long long num, den;
+    RsView_WheelScaleOf(v, w, &num, &den);
+    return (long long)v->tireHalf * (num - den) / den;
+}
+
+// The centre of wheel point w (1/16 units): the dummy's point, raised by
+// the lift, moved by the offset of its axle (dz forward, dy up, dtrack
+// outward: away from x = 0 on the side of the point) - the centre make-char
+// writes into WHLS v3 (front = (36 + track / 2, r + dy, 49.75 + dz)).
+static void RsView_WheelCentre(const struct RsView *v, int w, long long out[3])
+{
+    const int *o = v->axle[w < 2 ? RS_VIEW_AXLE_FRONT : RS_VIEW_AXLE_REAR];
+    out[0] = (long long)v->tireAt[w][0] + (v->tireAt[w][0] < 0 ? -o[2] : o[2]);
+    out[1] = (long long)v->tireAt[w][1] + RsView_WheelLift(v, w) + o[1];
+    out[2] = (long long)v->tireAt[w][2] + o[0];
+}
+
+// The wheel models at their scale about a wheel point, 1/16 units: radius =
+// how far they reach up and down, reach = across (the larger of the wheel
+// model and the rear wheel model). Under every spin a wheel stays in a
 // cylinder of its radius and half width; under every steering angle that
 // stays in a circle of radius reach about the point.
 static void RsView_WheelReach(const struct RsView *v, long long *radius, long long *reach)
 {
-    const long long r = ((long long)RsView_Isqrt((unsigned long long)v->wheelR2) + 1) * v->wheelScale / 100 + 1;
-    const long long hw = (long long)v->wheelHalfW * v->wheelScale / 100 + 1;
+    long long r = ((long long)RsView_Isqrt((unsigned long long)v->wheelR2) + 1) * v->wheelScale / 100 + 1;
+    long long hw = (long long)v->wheelHalfW * v->wheelScale / 100 + 1;
+    if (v->rearCount) {
+        long long num, den, rr, rhw;
+        RsView_WheelScaleOf(v, 2, &num, &den);
+        rr = ((long long)RsView_Isqrt((unsigned long long)v->rearR2) + 1) * num / den + 1;
+        rhw = (long long)v->rearHalfW * num / den + 1;
+        r = rr > r ? rr : r;
+        hw = rhw > hw ? rhw : hw;
+    }
     *radius = r;
     *reach = (long long)RsView_Isqrt((unsigned long long)(r * r + hw * hw)) + 1;
 }
@@ -922,7 +1137,9 @@ static void RsView_WheelExtent(struct RsView *v)
         return;
     RsView_WheelReach(v, &r, &reach);
     for (i = 0; i < 4; i++) {
-        const long long x = v->tireAt[i][0], y = v->tireAt[i][1] + RsView_WheelLift(v), z = v->tireAt[i][2];
+        long long at[3];
+        RsView_WheelCentre(v, i, at);
+        const long long x = at[0], y = at[1], z = at[2];
         const long long ax = ((x < 0 ? -x : x) + reach) / RS_VIEW_SUB + 1;
         const long long az = ((z < 0 ? -z : z) + reach) / RS_VIEW_SUB + 1;
         const int ylo = (int)RsView_FloorDiv16(y - r), yhi = (int)-RsView_FloorDiv16(-(y + r));
@@ -938,6 +1155,22 @@ static void RsView_WheelExtent(struct RsView *v)
     v->wheelYmax = ymax;
 }
 
+// One corner (s16 x, y, z) into the z range of its x (RsView_ModelSpans).
+static void RsView_ZRange(short *zLo, short *zHi, unsigned char *has, const unsigned char *q)
+{
+    const int x = RsView_ReadS16(q) + 32768;
+    const short z = (short)RsView_ReadS16(q + 4);
+    if (!has[x]) {
+        has[x] = 1;
+        zLo[x] = z;
+        zHi[x] = z;
+    } else if (z < zLo[x]) {
+        zLo[x] = z;
+    } else if (z > zHi[x]) {
+        zHi[x] = z;
+    }
+}
+
 // The model's span across the picture (all poses) with the game's wheels
 // under it - whether they are shown or not, so that switching them never zooms.
 static void RsView_ModelSpans(struct RsView *v)
@@ -947,21 +1180,45 @@ static void RsView_ModelSpans(struct RsView *v)
 
     RsView_TrigFill(&tr);
     RsView_SpanReset(v->modelLo, v->modelHi);
-    for (p = 0; p < RS_VIEW_POSE_COUNT; p++) {
-        for (i = 0; i < v->poses[p].count; i++) {
-            const unsigned char *t = v->poses[p].tris + (size_t)i * RS_VIEW_TRI_BYTES;
-            for (c = 0; c < 3; c++) {
-                const unsigned char *q = t + c * RS_VIEW_CORNER_BYTES;
-                RsView_SpanAdd(&tr, v->modelLo, v->modelHi, (long long)RsView_ReadS16(q) * v->poses[p].sub,
-                               (long long)RsView_ReadS16(q + 4) * v->poses[p].sub);
+    // The poses of the file and of the native model: up to 49 poses of 30 000
+    // triangles are millions of corners, each of 360 products in the span.
+    // The span takes only the largest and smallest value per yaw, and for
+    // one x the smallest and the largest z give them (x cos + z sin is
+    // linear in z): so per x of the file (an s16) only those two go in -
+    // the same span, exactly. RLDPV1 (whole units) the old way.
+    {
+        short *zLo = (short *)Rs_Alloc(65536 * sizeof(short));
+        short *zHi = (short *)Rs_Alloc(65536 * sizeof(short));
+        unsigned char *has = (unsigned char *)Rs_Alloc(65536);
+        int x;
+        for (p = 0; p < v->poseCount; p++) {
+            for (i = 0; i < v->poses[p].count; i++) {
+                const unsigned char *t = v->poses[p].tris + (size_t)i * RS_VIEW_TRI_BYTES;
+                for (c = 0; c < 3; c++) {
+                    const unsigned char *q = t + c * RS_VIEW_CORNER_BYTES;
+                    if (v->poses[p].sub != 1)
+                        RsView_SpanAdd(&tr, v->modelLo, v->modelHi, (long long)RsView_ReadS16(q) * v->poses[p].sub,
+                                       (long long)RsView_ReadS16(q + 4) * v->poses[p].sub);
+                    else
+                        RsView_ZRange(zLo, zHi, has, q);
+                }
             }
         }
-    }
-    for (p = 0; p < RS_VIEW_POSE_COUNT; p++)
-        for (i = 0; i < 3 * v->native.triangles; i++) {
-            const unsigned char *q = v->native.pos[p] + (size_t)i * 6;
-            RsView_SpanAdd(&tr, v->modelLo, v->modelHi, RsView_ReadS16(q), RsView_ReadS16(q + 4));
+        for (p = 0; p < v->native.poses + 2; p++) {
+            const unsigned char *pos = p < v->native.poses ? v->native.pos[p] : v->native.end[p - v->native.poses];
+            for (i = 0; pos && i < v->native.vertices; i++)
+                RsView_ZRange(zLo, zHi, has, pos + (size_t)i * 6);
         }
+        for (x = 0; x < 65536; x++)
+            if (has[x]) {
+                RsView_SpanAdd(&tr, v->modelLo, v->modelHi, x - 32768, zLo[x]);
+                if (zHi[x] != zLo[x])
+                    RsView_SpanAdd(&tr, v->modelLo, v->modelHi, x - 32768, zHi[x]);
+            }
+        Rs_Free(zLo);
+        Rs_Free(zHi);
+        Rs_Free(has);
+    }
     if (v->tireEnd > v->tireFirst &&
         Rs_DummyMesh(1, RS_VIEW_POSE_NEUTRAL, v->dumPos, RS_VIEW_DUMMY_POS_MAX, v->dumTri, v->dumColor,
                      RS_VIEW_DUMMY_TRI_MAX, &positions) &&
@@ -983,10 +1240,12 @@ static void RsView_ModelSpans(struct RsView *v)
     if (v->wheelCount) {
         long long r, reach;
         RsView_WheelReach(v, &r, &reach);
-        for (i = 0; i < 4; i++)
+        for (i = 0; i < 4; i++) {
+            long long at[3];
+            RsView_WheelCentre(v, i, at);
             for (c = 0; c < 4; c++)
-                RsView_SpanAdd(&tr, v->modelLo, v->modelHi, v->tireAt[i][0] + ((c & 1) ? reach : -reach),
-                               v->tireAt[i][2] + ((c & 2) ? reach : -reach));
+                RsView_SpanAdd(&tr, v->modelLo, v->modelHi, at[0] + ((c & 1) ? reach : -reach), at[2] + ((c & 2) ? reach : -reach));
+        }
     }
     if (v->modelLo[0] > v->modelHi[0]) {
         // Nothing at all: a point at the origin.
@@ -2034,7 +2293,7 @@ struct RsViewGen {
     int maskMode;
     long long off;                      // sideways after the turn (model or dummy)
     const struct RsViewPoseData *pose;  // RS_VIEW_GEN_CLASSIC
-    int nativePose;                     // RS_VIEW_GEN_NATIVE
+    const unsigned char *nativePos;     // RS_VIEW_GEN_NATIVE: RsView_NativePos
     const struct RsViewSolid *solid;    // RS_VIEW_GEN_SOLID: its triangles with all corners in lo..hi-1
     int lo, hi;
 };
@@ -2051,9 +2310,8 @@ static void RsView_GenNative(const struct RsViewGen *g, int first, int end)
         struct RsViewVert vert[3];
         for (c = 0; c < 3; c++) {
             struct RsTexCorner k;
-            int xyz[3];
-            RsTex_NativePosition(nm, g->nativePose, tri, c, xyz);
-            RsView_Project(&g->s->cam, xyz[0], xyz[1], xyz[2], g->off, 1, &vert[c]);
+            const unsigned char *q = g->nativePos + (size_t)RsTex_NativeVertex(nm, tri, c) * RS_TEX_NATIVE_POS3_BYTES;
+            RsView_Project(&g->s->cam, RsView_ReadS16(q), RsView_ReadS16(q + 2), RsView_ReadS16(q + 4), g->off, 1, &vert[c]);
             RsTex_NativeCorner(nm, tri, c, &k);
             vert[c].u = k.u;
             vert[c].v = k.v;
@@ -2089,14 +2347,16 @@ static void RsView_GenClassic(const struct RsViewGen *g, int first, int end)
     }
 }
 
-// The wheel model at the four wheel points (instead of the game's wheels);
-// index = wheel x count + triangle. Each corner: spin about +X (rolling
+// The wheel model at the four wheel points (instead of the game's wheels),
+// the rear wheel model at the rear pair while there is one; index = the
+// front pair's triangles (wheel x count + triangle), then the rear pair's.
+// Each corner: spin about +X (rolling
 // forward: the top goes to +Z), on the -X side mirrored (x -> -x, corners 1
 // and 2 swapped, so the rim faces outwards, a tread runs mirrored and the
 // culling stays right - the right wheels of WHLS version 2), scaled, the
 // front pair steered about +Y (+ = left: the front edge toward +X), moved
-// to its point, raised by the radius it grew (RsView_WheelLift), moved
-// sideways by off (the model's, or the dummy's while there is no model).
+// to its point, raised by the radius it grew (RsView_WheelLift) and moved
+// by the offset of its axle (RsView_WheelCentre), moved sideways by off (the model's, or the dummy's while there is no model).
 // Textured with its UVs and its material as the native model (rs_tex.h),
 // the corner colour 255 as in the game. Unlike the game's wheels the wheels of the model
 // meet it by depth, as the game draws them in the native model's item
@@ -2106,36 +2366,40 @@ static void RsView_GenWheels(const struct RsViewGen *g, int first, int end)
     const struct RsView *v = g->v;
     const long long ss = RsView_Sin(v->wheelSpin), sc = RsView_Cos(v->wheelSpin);
     const long long ps = RsView_Sin(v->wheelSteer), pc = RsView_Cos(v->wheelSteer);
-    const long long lift = RsView_WheelLift(v);
-    const struct RsTexImage *img = v->wheel.textured ? &v->wheel.tex : NULL;
+    const int frontTris = 2 * v->wheelCount, rearCount = v->rearCount ? v->rearCount : v->wheelCount;
     int at, c;
 
     for (at = first; at < end; at++) {
-        const int w = at / v->wheelCount, i = at % v->wheelCount;
+        const int w = at < frontTris ? at / v->wheelCount : 2 + (at - frontTris) / rearCount;
+        const int i = at < frontTris ? at % v->wheelCount : (at - frontTris) % rearCount;
+        const struct RsTexWheel *wm = RsView_WheelOf(v, w);
+        const struct RsTexImage *img = wm->textured ? &wm->tex : NULL;
         const int mirror = v->tireAt[w][0] < 0;
         const int front = w < 2;
+        long long centre[3], num, den;
         struct RsViewVert vert[3];
+        RsView_WheelCentre(v, w, centre);
+        RsView_WheelScaleOf(v, w, &num, &den);
         for (c = 0; c < 3; c++) {
             struct RsTexCorner k;
             int xyz[3];
             long long x0, y0, z0, x;
-            RsTex_WheelCorner(&v->wheel, i, mirror && c ? 3 - c : c, xyz, &k);
+            RsTex_WheelCorner(wm, i, mirror && c ? 3 - c : c, xyz, &k);
             x0 = xyz[0];
             y0 = xyz[1];
             z0 = xyz[2];
             x = mirror ? -x0 : x0;
             long long y = RsView_Q14(y0 * sc - z0 * ss);
             long long z = RsView_Q14(y0 * ss + z0 * sc);
-            x = x * v->wheelScale / 100;
-            y = y * v->wheelScale / 100;
-            z = z * v->wheelScale / 100;
+            x = x * num / den;
+            y = y * num / den;
+            z = z * num / den;
             if (front) {
                 const long long xs = RsView_Q14(x * pc + z * ps);
                 z = RsView_Q14(z * pc - x * ps);
                 x = xs;
             }
-            RsView_Project(&g->s->cam, x + v->tireAt[w][0], y + v->tireAt[w][1] + lift, z + v->tireAt[w][2], g->off, 1,
-                           &vert[c]);
+            RsView_Project(&g->s->cam, x + centre[0], y + centre[1], z + centre[2], g->off, 1, &vert[c]);
             vert[c].u = k.u;
             vert[c].v = k.v;
             vert[c].r = k.r;
@@ -2143,8 +2407,8 @@ static void RsView_GenWheels(const struct RsViewGen *g, int first, int end)
             vert[c].b = k.b;
             vert[c].a = k.a;
         }
-        RsView_TriPrep(&g->tris[g->first + at], &g->rows[2 * (g->first + at)], vert, !RsTex_WheelTwoSided(&v->wheel, i),
-                       RS_VIEW_TRI_TEX, g->maskMode, img, &v->wheel.mat);
+        RsView_TriPrep(&g->tris[g->first + at], &g->rows[2 * (g->first + at)], vert, !RsTex_WheelTwoSided(wm, i),
+                       RS_VIEW_TRI_TEX, g->maskMode, img, &wm->mat);
     }
 }
 
@@ -2277,13 +2541,48 @@ static void RsView_BoxLabel(struct RsView *v, const struct RsViewScene *s, const
     RsView_DrawText(v, &r, text, RS_FONT_SMALL, DT_CENTER | DT_BOTTOM | DT_SINGLELINE);
 }
 
+// THE ANIMATIONS (rs_view.h). The frame set as one number 0..46: the four
+// animations one after the other (the order of the CMDL's animation table).
+static const unsigned char s_rsViewAnimFirst[RS_VIEW_ANIM_COUNT] = { 0, 21, 28, 43 };
+static const unsigned char s_rsViewAnimFrames[RS_VIEW_ANIM_COUNT] = { 21, 7, 15, 4 };
+#define RS_VIEW_NEUTRAL_FRAME 10                        // animation 0, frame 10: straight on
+
+static int RsView_GlobalFrame(const struct RsView *v)
+{
+    return s_rsViewAnimFirst[v->anim] + v->frame;
+}
+
+// The pose of a file that shows frame gf (0..46): a file of every frame has
+// them in that order (RLDPC1, RLDPN3), a still model one pose; an older one
+// only the turn frames 10, 0 and 20 (RS_VIEW_POSE_*): steering frames 0..4
+// show frame 0, 16..20 frame 20, every other frame frame 10.
+static int RsView_FilePose(int poses, int gf)
+{
+    if (poses >= RS_VIEW_FRAMES)
+        return gf;
+    if (poses == 1)
+        return 0;   // a still model (RLDPN3 of one pose)
+    if (gf <= 4)
+        return RS_VIEW_POSE_FRAME0;
+    if (gf >= 16 && gf <= 20)
+        return RS_VIEW_POSE_FRAME20;
+    return RS_VIEW_POSE_NEUTRAL;
+}
+
+// The pose of the dummy (its steering wheel has the three of RS_VIEW_POSE_*).
+static int RsView_DummyPose(const struct RsView *v)
+{
+    return RsView_FilePose(RS_VIEW_POSE_COUNT, RsView_GlobalFrame(v));
+}
+
 // The triangles drawn for the model: a pose of the pose set while one is
-// chosen, else the pose of the preview file.
+// chosen, else the pose of the preview file for the frame set (the classic
+// model has no end pose: the game's fallback stays in its frame).
 static const struct RsViewPoseData *RsView_ShownPose(const struct RsView *v)
 {
     if (v->setIndex >= 0 && v->setIndex < v->setCount)
         return &v->setPoses[v->setIndex];
-    return &v->poses[v->pose];
+    return &v->poses[RsView_FilePose(v->poseCount, RsView_GlobalFrame(v))];
 }
 
 // The native model is drawn in place of the model: there is one without a
@@ -2298,6 +2597,50 @@ static int RsView_NativeUsable(const struct RsView *v)
 static int RsView_DrawsNative(const struct RsView *v)
 {
     return RsView_NativeUsable(v) && v->showNative && !(v->setIndex >= 0 && v->setIndex < v->setCount);
+}
+
+// The end pose drawn: RS_VIEW_END_WIN or _LOSE while one is set with a
+// weight, the native model is drawn and has that pose; else 0.
+static int RsView_EndShown(const struct RsView *v)
+{
+    if (v->endPose < RS_VIEW_END_WIN || v->endPose > RS_VIEW_END_LOSE || v->endWeight <= 0 || !RsView_DrawsNative(v))
+        return 0;
+    return v->native.end[v->endPose - 1] ? v->endPose : 0;
+}
+
+// The positions of the native model drawn (s16 x, y, z per corner, as the
+// file has them) and their box: the file's pose of the frame set, or - after
+// the finish - neutral + weight x (end pose - neutral), per coordinate,
+// rounded half away from zero (rs_view.h, the end poses). The blend is built
+// once per end pose and weight, not per picture, on one thread.
+static const unsigned char *RsView_NativePos(struct RsView *v, const long long **box)
+{
+    const int end = RsView_EndShown(v);
+    int p;
+    if (end) {
+        if (v->blendEnd != end || v->blendWeight != v->endWeight) {
+            const unsigned char *n = v->native.pos[v->native.neutral], *e = v->native.end[end - 1];
+            size_t i;
+            if (!v->blendPos)
+                v->blendPos = (unsigned char *)Rs_Alloc((size_t)v->native.vertices * RS_TEX_NATIVE_POS3_BYTES);
+            for (i = 0; i < (size_t)v->native.vertices * 3; i++) {
+                const int a = RsView_ReadS16(n + 2 * i), b = RsView_ReadS16(e + 2 * i);
+                const int m = a + (int)RsView_DivRound((long long)(b - a) * v->endWeight, 100);
+                v->blendPos[2 * i] = (unsigned char)(m & 0xFF);
+                v->blendPos[2 * i + 1] = (unsigned char)((m >> 8) & 0xFF);
+            }
+            RsView_PosBox(v->blendPos, v->native.vertices, v->blendBox);
+            v->blendEnd = end;
+            v->blendWeight = v->endWeight;
+        }
+        if (box)
+            *box = v->blendBox;
+        return v->blendPos;
+    }
+    p = RsView_FilePose(v->native.poses, RsView_GlobalFrame(v));
+    if (box)
+        *box = v->nativeBox[p];
+    return v->native.pos[p];
 }
 
 // A marker of the look at pixel (x, y): a ring of radius Rs_Px(5) and a
@@ -2456,7 +2799,9 @@ static void RsView_Render(HWND view, struct RsView *v)
     // the dummy stands alone.
     const int topH = v->loaded ? labelH : labelH + Rs_Px(36);
     const int native = RsView_DrawsNative(v);
-    const int pose = (v->pose >= 0 && v->pose < RS_VIEW_POSE_COUNT) ? v->pose : RS_VIEW_POSE_NEUTRAL;
+    const int pose = RsView_DummyPose(v);
+    const long long *nativeBox = NULL;
+    const unsigned char *nativePos = v->loaded && v->native.triangles > 0 ? RsView_NativePos(v, &nativeBox) : NULL;
     const struct RsViewSolid *kart, *driver;
     size_t i, n = (size_t)v->w * (size_t)v->h;
     wchar_t text[RS_VIEW_MESSAGE_CAP];
@@ -2507,7 +2852,7 @@ static void RsView_Render(HWND view, struct RsView *v)
         kart = &v->solids[RS_VIEW_SOLID_BARE + pose];   // the wheel model takes the place of the game's wheels
 
     // The list: floor, shadow, model, the wheels under it, the dummy.
-    count = 4 + (native ? v->native.triangles : (v->loaded ? RsView_ShownPose(v)->count : 0)) + 4 * v->wheelCount +
+    count = 4 + (native ? v->native.triangles : (v->loaded ? RsView_ShownPose(v)->count : 0)) + RsView_WheelTris(v) +
             2 * v->solids[RS_VIEW_SOLID_KART + pose].triangles + driver->triangles;
     RsView_TrisReserve(v, count);
     memset(&g, 0, sizeof(g));
@@ -2559,7 +2904,7 @@ static void RsView_Render(HWND view, struct RsView *v)
         QueryPerformanceCounter(&nativeStart);
         nativeTimed = 1;
         g.kind = RS_VIEW_GEN_NATIVE;
-        g.nativePose = pose;
+        g.nativePos = nativePos;
         RsView_Generate(v, &g, v->native.triangles);
         modelEnd = modelFirst + v->native.triangles;
     } else if (v->loaded) {
@@ -2586,7 +2931,7 @@ static void RsView_Render(HWND view, struct RsView *v)
         g.kind = RS_VIEW_GEN_WHEELS;
         g.maskMode = RS_VIEW_MASK_NONE;
         g.off = s.offModel;
-        wheelCount = 4 * v->wheelCount;
+        wheelCount = RsView_WheelTris(v);
     } else if (v->loaded && v->wheels && v->tireEnd > v->tireFirst && v->tireEnd <= kart->positions) {
         g.kind = RS_VIEW_GEN_SOLID;
         g.maskMode = RS_VIEW_MASK_SKIP;
@@ -2599,7 +2944,7 @@ static void RsView_Render(HWND view, struct RsView *v)
         g.kind = RS_VIEW_GEN_WHEELS;
         g.maskMode = RS_VIEW_MASK_NONE;
         g.off = s.offDummy;
-        wheelCount = 4 * v->wheelCount;
+        wheelCount = RsView_WheelTris(v);
     }
     RsView_Generate(v, &g, wheelCount);
     wheelEnd += wheelCount;
@@ -2657,7 +3002,7 @@ static void RsView_Render(HWND view, struct RsView *v)
         // Above the model: its native box in the pose shown (RsView_Parse),
         // "Native model" or, switched to the classic one, "Classic model"; a
         // blend material: the game draws the classic one, and so does the view.
-        RsView_BoxLabel(v, &s, v->nativeBox[pose], v->nativeBox[pose] + 3, s.offModel, labelH,
+        RsView_BoxLabel(v, &s, nativeBox, nativeBox + 3, s.offModel, labelH,
                         native ? L"Native model"
                                : ((v->native.flags & RS_TEX_NATIVE_BLEND) ? L"Classic model (blend material)" : L"Classic model"));
     }
@@ -2675,8 +3020,8 @@ static void RsView_Render(HWND view, struct RsView *v)
     if (nativeTimed && Rs_Automating() && !v->benching) {
         QueryPerformanceCounter(&renderEnd);
         QueryPerformanceFrequency(&freq);
-        Rs_AutoLog(L"  view: native model %d triangles, pose %d, %d x %d pixels: triangles %lld us, whole picture %lld us",
-                   v->native.triangles, v->pose, v->w, v->h,
+        Rs_AutoLog(L"  view: native model %d triangles, frame %d, %d x %d pixels: triangles %lld us, whole picture %lld us",
+                   v->native.triangles, RsView_GlobalFrame(v), v->w, v->h,
                    (long long)((nativeEnd.QuadPart - nativeStart.QuadPart) * 1000000 / freq.QuadPart),
                    (long long)((renderEnd.QuadPart - renderStart.QuadPart) * 1000000 / freq.QuadPart));
     }
@@ -3208,14 +3553,14 @@ static int RsView_PickRay(struct RsView *v, int px, int py, int out[3])
         o[k] -= dir[k];   // d = 0: the camera
     {
         const int native = RsView_DrawsNative(v);
-        const int pose = (v->pose >= 0 && v->pose < RS_VIEW_POSE_COUNT) ? v->pose : RS_VIEW_POSE_NEUTRAL;
+        const unsigned char *nativePos = native ? RsView_NativePos(v, NULL) : NULL;
         const struct RsViewPoseData *pd = RsView_ShownPose(v);
         const int count = native ? v->native.triangles : pd->count;
         for (tri = 0; tri < count; tri++) {
             double q[3][3], e1[3], e2[3], h[3], sv[3], qv[3], det, f, u, w, t;
             int i;
             for (i = 0; i < 3; i++) {
-                const unsigned char *p = native ? v->native.pos[pose] + (size_t)tri * RS_TEX_NATIVE_POS_BYTES + (size_t)i * 6
+                const unsigned char *p = native ? nativePos + (size_t)RsTex_NativeVertex(&v->native, tri, i) * RS_TEX_NATIVE_POS3_BYTES
                                                 : pd->tris + (size_t)tri * RS_VIEW_TRI_BYTES + (size_t)i * RS_VIEW_CORNER_BYTES;
                 const int sub = native ? 1 : pd->sub;
                 q[i][0] = (double)RsView_ReadS16(p) * sub;
@@ -3296,6 +3641,126 @@ static void RsView_WheelTimer(HWND view, struct RsView *v, int run)
     }
 }
 
+// THE ANIMATIONS: the frame and the end pose shown; a new picture only when
+// something changed.
+static void RsView_AnimShow(HWND view, struct RsView *v, int anim, int frame, int end, int weight)
+{
+    if (anim == v->anim && frame == v->frame && end == v->endPose && weight == v->endWeight)
+        return;
+    v->anim = anim;
+    v->frame = frame;
+    v->endPose = end;
+    v->endWeight = weight;
+    if (v->loaded)
+        RsView_Changed(view, v);
+}
+
+// The view's own timer for the playing (like the wheel animation's).
+static void RsView_AnimTimer(HWND view, struct RsView *v, int run)
+{
+    if (run && !v->animTimer)
+        v->animTimer = SetTimer(view, RS_VIEW_TIMER_ANIM, RS_VIEW_ANIM_TICK_MS, NULL) != 0;
+    else if (!run && v->animTimer) {
+        KillTimer(view, RS_VIEW_TIMER_ANIM);
+        v->animTimer = 0;
+    }
+}
+
+static void RsView_PlayStop(HWND view, struct RsView *v)
+{
+    v->playing = -1;
+    v->playStep = 0;
+    RsView_AnimTimer(view, v, 0);
+}
+
+// One loop of the playing, tick by tick (rs_view.h): the length of a part
+// and what tick t of it shows. Forth and back over n frames: 2 (n - 1) ticks.
+#define RS_VIEW_END_TICKS 2                             // ticks per stage of an end pose
+#define RS_VIEW_END_HOLD 30                             // ticks the end pose is held
+#define RS_VIEW_END_REST 10                             // ticks of the frame before it comes again
+#define RS_VIEW_END_LENGTH (RS_VIEW_END_TICKS * (2 * RS_VIEW_END_STAGES - 1) + RS_VIEW_END_HOLD + RS_VIEW_END_REST)
+
+// Whether a part shows anything of its own in RS_VIEW_PLAY_ALL: an end pose
+// only while the native model drawn has it.
+static int RsView_PlayHas(const struct RsView *v, int what)
+{
+    if (what == RS_VIEW_PLAY_WIN || what == RS_VIEW_PLAY_LOSE)
+        return RsView_DrawsNative(v) && v->native.end[what == RS_VIEW_PLAY_WIN ? RS_TEX_END_WIN : RS_TEX_END_LOSE] != NULL;
+    return 1;
+}
+
+static int RsView_PlayLength(int what)
+{
+    switch (what) {
+    case RS_VIEW_PLAY_STEER:
+        return 2 * (s_rsViewAnimFrames[RS_VIEW_ANIM_STEER] - 1);
+    case RS_VIEW_PLAY_CRASH:
+        return s_rsViewAnimFrames[RS_VIEW_ANIM_CRASH];
+    case RS_VIEW_PLAY_WIN:
+    case RS_VIEW_PLAY_LOSE:
+        return RS_VIEW_END_LENGTH;
+    case RS_VIEW_PLAY_REVERSE:
+        return 2 * (s_rsViewAnimFrames[RS_VIEW_ANIM_REVERSE] - 1);
+    default:
+        return 2 * (s_rsViewAnimFrames[RS_VIEW_ANIM_JUMP] - 1);
+    }
+}
+
+// Tick t (0 .. RsView_PlayLength - 1) of a part: anim, frame, end pose, weight.
+static void RsView_PlayAt(int what, int t, int out[4])
+{
+    out[0] = RS_VIEW_ANIM_STEER;
+    out[1] = RS_VIEW_NEUTRAL_FRAME;
+    out[2] = RS_VIEW_END_NONE;
+    out[3] = 0;
+    if (what == RS_VIEW_PLAY_STEER) {
+        // 10 -> 0 -> 20 -> 10
+        out[1] = t <= 10 ? 10 - t : (t <= 30 ? t - 10 : 50 - t);
+    } else if (what == RS_VIEW_PLAY_CRASH) {
+        out[0] = RS_VIEW_ANIM_CRASH;
+        out[1] = t;
+    } else if (what == RS_VIEW_PLAY_WIN || what == RS_VIEW_PLAY_LOSE) {
+        // up stage 1..8, held, down 7..1, then the frame
+        const int up = RS_VIEW_END_TICKS * RS_VIEW_END_STAGES, held = up + RS_VIEW_END_HOLD;
+        const int down = held + RS_VIEW_END_TICKS * (RS_VIEW_END_STAGES - 1);
+        const int stage = t < up ? t / RS_VIEW_END_TICKS + 1
+                        : t < held ? RS_VIEW_END_STAGES
+                        : t < down ? RS_VIEW_END_STAGES - 1 - (t - held) / RS_VIEW_END_TICKS : 0;
+        out[2] = what == RS_VIEW_PLAY_WIN ? RS_VIEW_END_WIN : RS_VIEW_END_LOSE;
+        out[3] = (int)RsView_DivRound((long long)stage * 100, RS_VIEW_END_STAGES);
+    } else {
+        const int anim = what == RS_VIEW_PLAY_REVERSE ? RS_VIEW_ANIM_REVERSE : RS_VIEW_ANIM_JUMP;
+        const int n = s_rsViewAnimFrames[anim];
+        out[0] = anim;
+        out[1] = t < n ? t : 2 * (n - 1) - t;
+    }
+}
+
+// The state of tick playStep of the playing.
+static void RsView_PlayApply(HWND view, struct RsView *v)
+{
+    int st[4], what = v->playing, t;
+    if (what < 0)
+        return;
+    if (what == RS_VIEW_PLAY_ALL) {
+        int total = 0, k;
+        for (k = 0; k < RS_VIEW_PLAY_ALL; k++)
+            total += RsView_PlayHas(v, k) ? RsView_PlayLength(k) : 0;
+        t = v->playStep % total;
+        for (k = 0; k < RS_VIEW_PLAY_ALL - 1; k++) {
+            const int len = RsView_PlayHas(v, k) ? RsView_PlayLength(k) : 0;
+            if (t < len)
+                break;
+            t -= len;
+        }
+        what = k;
+    } else {
+        t = v->playStep % RsView_PlayLength(what);
+    }
+    RsView_PlayAt(what, t, st);
+    RsView_AnimShow(view, v, st[0], st[1], st[2], st[3]);
+}
+
 static LRESULT CALLBACK RsView_Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     struct RsView *v = RsView_Data(hwnd);
@@ -3326,16 +3791,22 @@ static LRESULT CALLBACK RsView_Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         RsView_DummyExtent(v);
         v->setIndex = -1;
         v->wheelScale = 100;
+        v->rearSize = RS_VIEW_REAR_SIZE_SAME;
+        v->anim = RS_VIEW_ANIM_STEER;
+        v->frame = RS_VIEW_NEUTRAL_FRAME;
+        v->playing = -1;
         Rs_DummyTires(v->tireAt, &v->tireHalf);
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, (LONG_PTR)v);
         return 0;
     case WM_DESTROY:
         if (v) {
             RsView_WheelTimer(hwnd, v, 0);
+            RsView_AnimTimer(hwnd, v, 0);
             RsView_FreeFrame(v);
             RsView_DropModel(v);
             RsView_DropSet(v);
             RsView_DropWheel(v);
+            RsView_DropRear(v);
             RsView_SolidsFree(v);
             RsView_PoolStop(v->pool);
             Rs_Free(v->tris);
@@ -3364,10 +3835,23 @@ static LRESULT CALLBACK RsView_Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
     case WM_ERASEBKGND:
         return 1;
     case WM_SHOWWINDOW:
-        if (v && !wParam)
+        if (v && !wParam) {
             RsView_WheelTimer(hwnd, v, 0);
+            RsView_AnimTimer(hwnd, v, 0);
+        }
         break;
     case WM_TIMER:
+        if (v && wParam == RS_VIEW_TIMER_ANIM) {
+            // As the wheel animation: a fixed step per tick; hidden or
+            // minimized the timer stops until the next paint.
+            if (v->playing < 0 || !IsWindowVisible(hwnd) || IsIconic(GetAncestor(hwnd, GA_ROOT))) {
+                RsView_AnimTimer(hwnd, v, 0);
+                return 0;
+            }
+            v->playStep++;
+            RsView_PlayApply(hwnd, v);
+            return 0;
+        }
         if (v && wParam == RS_VIEW_TIMER_WHEEL) {
             // Fixed steps per tick, not per time: hidden, minimized or
             // without a wheel model the timer stops (and the picture with
@@ -3388,6 +3872,8 @@ static LRESULT CALLBACK RsView_Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         HDC dc;
         if (v && v->wheelAnim && v->wheelCount && !v->wheelTimer)
             RsView_WheelTimer(hwnd, v, 1);   // shown again, or a wheel model came
+        if (v && v->playing >= 0 && !v->animTimer)
+            RsView_AnimTimer(hwnd, v, 1);    // shown again
         dc = BeginPaint(hwnd, &ps);
         RsView_PaintTo(hwnd, v, dc);
         EndPaint(hwnd, &ps);
@@ -3709,19 +4195,16 @@ BOOL RsView_LoadPreviewData(HWND view, const void *data, size_t bytes)
     return RsView_Take(view, v, copy, bytes) ? TRUE : FALSE;
 }
 
+// The turn frames of RS_VIEW_POSE_*.
+static const unsigned char s_rsViewPoseFrame[RS_VIEW_POSE_COUNT] = { RS_VIEW_NEUTRAL_FRAME, 0, 20 };
+
 void RsView_SetPose(HWND view, int pose)
 {
-    struct RsView *v = RsView_Data(view);
-    if (!v)
-        return;
     if (pose < 0)
         pose = 0;
     if (pose >= RS_VIEW_POSE_COUNT)
         pose = RS_VIEW_POSE_COUNT - 1;
-    if (pose == v->pose)
-        return;
-    v->pose = pose;
-    RsView_Changed(view, v);
+    RsView_SetAnimFrame(view, RS_VIEW_ANIM_STEER, s_rsViewPoseFrame[pose]);
 }
 
 void RsView_SetYaw(HWND view, int degrees)
@@ -3800,7 +4283,7 @@ int RsView_TriangleCount(HWND view, int pose)
     struct RsView *v = RsView_Data(view);
     if (!v || !v->loaded || pose < 0 || pose >= RS_VIEW_POSE_COUNT)
         return 0;
-    return v->poses[pose].count;
+    return v->poses[RsView_FilePose(v->poseCount, s_rsViewPoseFrame[pose])].count;
 }
 
 // ---------------------------------------------------------------------------
@@ -3918,7 +4401,7 @@ BOOL RsView_LoadWheelModel(HWND view, const wchar_t *path)
     if (!v)
         return FALSE;
     data = RsView_ReadFile(path, &bytes, why, 256);
-    if (!data || !RsView_ParseWheel(v, data, bytes, why, 256)) {
+    if (!data || !RsView_ParseWheel(v, 0, data, bytes, why, 256)) {
         Rs_Free(data);
         RsView_DropWheel(v);
         Rs_AutoLog(L"  preview: the wheel model could not be shown: %ls", why);
@@ -4338,4 +4821,199 @@ int RsView_TextureInfo(HWND view, int *textures, int *bytes)
         if (v->native.mat[m].texture < 0)
             missing++;
     return missing;
+}
+
+// ---------------------------------------------------------------------------
+// The rear wheel, the axles and the animations (rs_view.h)
+// ---------------------------------------------------------------------------
+
+// As RsView_LoadWheelModel: a damaged or missing file drops the rear wheel
+// model shown before (FALSE) - the rear pair shows the wheel model again.
+BOOL RsView_LoadRearWheelModel(HWND view, const wchar_t *path)
+{
+    struct RsView *v = RsView_Data(view);
+    wchar_t why[256];
+    unsigned char *data;
+    size_t bytes = 0;
+    if (!v)
+        return FALSE;
+    data = RsView_ReadFile(path, &bytes, why, 256);
+    if (!data || !RsView_ParseWheel(v, 1, data, bytes, why, 256)) {
+        Rs_Free(data);
+        RsView_DropRear(v);
+        Rs_AutoLog(L"  preview: the rear wheel model could not be shown: %ls", why);
+        RsView_WheelExtent(v);
+        RsView_Reframe(view, v);
+        return FALSE;
+    }
+    RsView_WheelExtent(v);
+    RsView_Reframe(view, v);
+    return TRUE;
+}
+
+void RsView_DropRearWheelModel(HWND view)
+{
+    struct RsView *v = RsView_Data(view);
+    if (!v || !v->rearData)
+        return;
+    RsView_DropRear(v);
+    RsView_WheelExtent(v);
+    RsView_Reframe(view, v);
+}
+
+// A new offset is a new place of the wheels: the framing follows it, as
+// the scale (turning never zooms).
+void RsView_SetAxle(HWND view, int axle, int dz, int dy, int dtrack)
+{
+    struct RsView *v = RsView_Data(view);
+    static const int lo[3] = { RS_VIEW_AXLE_DZ_MIN, RS_VIEW_AXLE_DY_MIN, RS_VIEW_AXLE_TRACK_MIN };
+    static const int hi[3] = { RS_VIEW_AXLE_DZ_MAX, RS_VIEW_AXLE_DY_MAX, RS_VIEW_AXLE_TRACK_MAX };
+    int o[3], a;
+    if (!v || axle < RS_VIEW_AXLE_FRONT || axle > RS_VIEW_AXLE_REAR)
+        return;
+    o[0] = dz;
+    o[1] = dy;
+    o[2] = dtrack;
+    for (a = 0; a < 3; a++)
+        o[a] = o[a] < lo[a] ? lo[a] : (o[a] > hi[a] ? hi[a] : o[a]);
+    if (memcmp(o, v->axle[axle], sizeof(o)) == 0)
+        return;
+    memcpy(v->axle[axle], o, sizeof(o));
+    if (v->wheelCount) {
+        RsView_WheelExtent(v);
+        RsView_Reframe(view, v);
+    }
+}
+
+void RsView_SetRearWheelSize(HWND view, int size)
+{
+    struct RsView *v = RsView_Data(view);
+    if (!v)
+        return;
+    if (size < RS_VIEW_REAR_SIZE_MIN)
+        size = RS_VIEW_REAR_SIZE_MIN;
+    if (size > RS_VIEW_REAR_SIZE_MAX)
+        size = RS_VIEW_REAR_SIZE_MAX;
+    if (size == v->rearSize)
+        return;
+    v->rearSize = size;
+    if (v->wheelCount && v->rearCount) {
+        RsView_WheelExtent(v);
+        RsView_Reframe(view, v);
+    }
+}
+
+void RsView_GetAxle(HWND view, int axle, int *dz, int *dy, int *dtrack)
+{
+    struct RsView *v = RsView_Data(view);
+    const int ok = v && axle >= 0 && axle <= 1;
+    if (dz)
+        *dz = ok ? v->axle[axle][0] : 0;
+    if (dy)
+        *dy = ok ? v->axle[axle][1] : 0;
+    if (dtrack)
+        *dtrack = ok ? v->axle[axle][2] : 0;
+}
+
+void RsView_SetWheelsAlways(HWND view, int on)
+{
+    struct RsView *v = RsView_Data(view);
+    if (v)
+        v->wheelsAlways = on != 0;
+}
+
+int RsView_GetWheelsAlways(HWND view)
+{
+    struct RsView *v = RsView_Data(view);
+    return v ? v->wheelsAlways : 0;
+}
+
+void RsView_SetAnimFrame(HWND view, int anim, int frame)
+{
+    struct RsView *v = RsView_Data(view);
+    if (!v)
+        return;
+    RsView_PlayStop(view, v);
+    if (anim < 0)
+        anim = 0;
+    if (anim >= RS_VIEW_ANIM_COUNT)
+        anim = RS_VIEW_ANIM_COUNT - 1;
+    if (frame < 0)
+        frame = 0;
+    if (frame >= s_rsViewAnimFrames[anim])
+        frame = s_rsViewAnimFrames[anim] - 1;
+    RsView_AnimShow(view, v, anim, frame, RS_VIEW_END_NONE, 0);   // a frame chosen ends the end pose
+}
+
+void RsView_SetSteer(HWND view, int steer)
+{
+    if (steer < -RS_VIEW_STEER_MAX)
+        steer = -RS_VIEW_STEER_MAX;
+    if (steer > RS_VIEW_STEER_MAX)
+        steer = RS_VIEW_STEER_MAX;
+    RsView_SetAnimFrame(view, RS_VIEW_ANIM_STEER, RS_VIEW_NEUTRAL_FRAME + steer);
+}
+
+void RsView_SetEndPose(HWND view, int end, int weight)
+{
+    struct RsView *v = RsView_Data(view);
+    if (!v)
+        return;
+    RsView_PlayStop(view, v);
+    if (end < RS_VIEW_END_NONE || end > RS_VIEW_END_LOSE)
+        end = RS_VIEW_END_NONE;
+    if (weight < 0)
+        weight = 0;
+    if (weight > 100)
+        weight = 100;
+    RsView_AnimShow(view, v, v->anim, v->frame, end, weight);
+}
+
+void RsView_PlayAnim(HWND view, int what, int on)
+{
+    struct RsView *v = RsView_Data(view);
+    if (!v)
+        return;
+    if (!on || what < 0 || what >= RS_VIEW_PLAY_COUNT) {
+        RsView_PlayStop(view, v);
+        return;
+    }
+    v->playing = what;
+    v->playStep = 0;
+    RsView_PlayApply(view, v);
+    RsView_AnimTimer(view, v, IsWindowVisible(view));
+}
+
+int RsView_AnimTicks(HWND view, int ticks)
+{
+    struct RsView *v = RsView_Data(view);
+    int i;
+    if (!v || v->playing < 0 || ticks <= 0)
+        return 0;
+    for (i = 0; i < ticks; i++) {
+        v->playStep++;
+        RsView_PlayApply(view, v);
+    }
+    return ticks;
+}
+
+int RsView_AnimInfo(HWND view, struct RsViewAnimInfo *info)
+{
+    struct RsView *v = RsView_Data(view);
+    memset(info, 0, sizeof(*info));
+    info->playing = v ? v->playing : -1;
+    if (v) {
+        info->anim = v->anim;
+        info->frame = v->frame;
+        info->end = v->endPose;
+        info->weight = v->endWeight;
+    }
+    if (!v || !v->loaded)
+        return 0;
+    info->classicFrames = v->poseCount;
+    info->nativeFrames = v->native.triangles > 0 ? v->native.poses : 0;
+    info->nativeEnd = (v->native.triangles > 0 && v->native.end[RS_TEX_END_WIN] ? 1 : 0) |
+                      (v->native.triangles > 0 && v->native.end[RS_TEX_END_LOSE] ? 2 : 0);
+    info->drawsNative = RsView_DrawsNative(v);
+    return 1;
 }

@@ -1,7 +1,9 @@
 // rs_tex.h - the native model's textures and colours for the 3D preview
 //
 // rldpack writes the native model of a character into the --preview file
-// ("RLDPN2", THE NATIVE MODEL IN THE PREVIEW in tools/rldpack_native.inc) and
+// ("RLDPN3" - every frame, the end poses, corners indexed - or the older
+// "RLDPN2" of the turn frames 10, 0, 20 with corners per triangle; THE NATIVE
+// MODEL IN THE PREVIEW in tools/rldpack_native.inc) and
 // an author's wheel into the preview file of char-wheel ("RLDPW3", the head of
 // tools/rldpack_wheel.inc). rs_tex.c reads both into the structures below and
 // gives the view (rs_view.c, which keeps the rasterizer) what the game's "nr"
@@ -63,17 +65,26 @@
 #define RS_TEX_TEXTURES_MAX 16                  // RLDCHAR_TEX_COUNT_MAX
 #define RS_TEX_MATERIALS_MAX 64                 // RLDCHAR_NET_MATERIALS_MAX
 #define RS_TEX_TRIANGLES_MAX 30000              // RLDCHAR_NET_TRIANGLES_MAX
+#define RS_TEX_VERTICES_MAX 65536               // the u16 corner index of RLDPN3 (the game's own limit is lower)
 #define RS_TEX_WHEEL_TRIANGLES_MAX 1024         // RLDCHAR_WHEEL_TRIANGLES_MAX
 #define RS_TEX_LEVELS_MAX 12                    // RLDMIP_LEVELS_MAX: 2048 down to 1
 #define RS_TEX_EDGE_MIN 16                      // RLDCHAR_TEX_EDGE_MIN..MAX, powers of two
 #define RS_TEX_EDGE_MAX 2048
 #define RS_TEX_WHEEL_EDGE_MAX 1024              // RLDCHAR_WHEEL_TEXTURE_EDGE_MAX
 #define RS_TEX_BUDGET (64u * 1024u * 1024u)     // RLDCHAR_TEX_GPU_BYTES_MAX: RGBA8 with every level
-#define RS_TEX_POSES 3                          // the turn frames 10, 0 and 20, as RLDPV2
+#define RS_TEX_POSES 3                          // RLDPN2: the turn frames 10, 0 and 20, as RLDPV2
+#define RS_TEX_FRAMES 47                        // RLDPN3: every frame of the four animations
+#define RS_TEX_POSES_MAX RS_TEX_FRAMES
+#define RS_TEX_NEUTRAL_FRAME 10                 // turn frame 10: the pose the end poses start from
+#define RS_TEX_END_WIN 0                        // the end poses (MRPH): RsTexNative.end
+#define RS_TEX_END_LOSE 1
 
 // The layout of a triangle in the files, for the accessors below.
-#define RS_TEX_NATIVE_POS_BYTES 18              // per triangle and pose: 3 x s16 x, y, z
-#define RS_TEX_NATIVE_TRI_BYTES 40              // 3 x {s32 u, s32 v, u8 r, g, b, a}, u16 material, u16 0
+#define RS_TEX_NATIVE_POS_BYTES 18              // RLDPN2 per triangle and pose: 3 x s16 x, y, z
+#define RS_TEX_NATIVE_TRI_BYTES 40              // RLDPN2: 3 x {s32 u, s32 v, u8 r, g, b, a}, u16 material, u16 0
+#define RS_TEX_NATIVE_POS3_BYTES 6              // per corner (RLDPN3: per vertex) and pose: s16 x, y, z
+#define RS_TEX_NATIVE_VERTEX_BYTES 12           // RLDPN3 per vertex: s32 u, s32 v, u8 r, g, b, a
+#define RS_TEX_NATIVE_INDEX_BYTES 8             // RLDPN3 per triangle: u16 a, b, c, material
 #define RS_TEX_WHEEL_TRI_BYTES 44               // 3 x {s16 x, y, z, s32 u, s32 v}, u8 flags, u8 0
 
 #define RS_TEX_NATIVE_BLEND 0x1u                // RsTexNative.flags: a blend material - the game draws the classic model
@@ -111,7 +122,10 @@ struct RsTexCorner {
     int r, g, b, a;                             // C: COL0, or 255 (a wheel: always 255)
 };
 
-// The native model of a preview file (RLDPN2).
+// The native model of a preview file (RLDPN3 or RLDPN2). Positions are
+// per corner: a vertex of RLDPN3, or corner c of triangle t of RLDPN2 as the
+// vertex 3 t + c (RsTex_NativeVertex) - so pos[p] and end[e] hold vertices x
+// RS_TEX_NATIVE_POS3_BYTES either way.
 struct RsTexNative {
     unsigned int flags;                         // RS_TEX_NATIVE_BLEND
     int textureCount;
@@ -119,8 +133,15 @@ struct RsTexNative {
     int materialCount;
     struct RsTexMaterial mat[RS_TEX_MATERIALS_MAX];
     int triangles;
-    const unsigned char *pos[RS_TEX_POSES];     // triangles x RS_TEX_NATIVE_POS_BYTES each, in the file
-    const unsigned char *tris;                  // triangles x RS_TEX_NATIVE_TRI_BYTES, in the file
+    int vertices;                               // RLDPN3: its vertices; RLDPN2: 3 x triangles
+    int indexed;                                // 1 = RLDPN3
+    int poses;                                  // RLDPN3: RS_TEX_FRAMES, or 1 (a still model); RLDPN2: RS_TEX_POSES
+    int neutral;                                // the pose of turn frame 10 (RLDPN3: 10 or 0; RLDPN2: 0)
+    const unsigned char *pos[RS_TEX_POSES_MAX]; // vertices x RS_TEX_NATIVE_POS3_BYTES each, in the file
+    const unsigned char *end[2];                // win, lose (absolute positions as pos); NULL = none
+    const unsigned char *tris;                  // RLDPN2: triangles x RS_TEX_NATIVE_TRI_BYTES, in the file
+    const unsigned char *vtx;                   // RLDPN3: vertices x RS_TEX_NATIVE_VERTEX_BYTES
+    const unsigned char *idx;                   // RLDPN3: triangles x RS_TEX_NATIVE_INDEX_BYTES
     size_t bytes;                               // the textures with all their levels
 };
 
@@ -133,8 +154,8 @@ struct RsTexWheel {
     const unsigned char *tris;                  // triangles x RS_TEX_WHEEL_TRI_BYTES, in the file
 };
 
-// The native model behind the RLDPV2 data: data[at..bytes) must be exactly one
-// RLDPN2 block. 1 = read, the levels built; 0 = refused, why says why in
+// The native model behind the classic data: data[at..bytes) must be exactly
+// one RLDPN3 or RLDPN2 block. 1 = read, the levels built; 0 = refused, why says why in
 // English (lower case, no full stop, as the view's other reasons) and out
 // holds nothing. data must outlive out.
 int RsTex_ParseNative(const unsigned char *data, size_t bytes, size_t at, struct RsTexNative *out, wchar_t *why, int whyCap);
@@ -144,12 +165,15 @@ void RsTex_FreeNative(struct RsTexNative *n);
 int RsTex_ParseWheel(const unsigned char *data, size_t bytes, struct RsTexWheel *out, wchar_t *why, int whyCap);
 void RsTex_FreeWheel(struct RsTexWheel *w);
 
-// Triangle tri of the native model: its material (an index into mat), its
-// corner c (0..2) and that corner's position in pose (0..RS_TEX_POSES - 1),
-// 1/16 game units.
+// Triangle tri of the native model: its material (an index into mat), the
+// vertex of its corner c (0..2; the index into pos), that corner's UV and
+// colour, and its position in pose (0..poses - 1), 1/16 game units.
 int RsTex_NativeMaterialOf(const struct RsTexNative *n, int tri);
+int RsTex_NativeVertex(const struct RsTexNative *n, int tri, int c);
 void RsTex_NativeCorner(const struct RsTexNative *n, int tri, int c, struct RsTexCorner *out);
 void RsTex_NativePosition(const struct RsTexNative *n, int pose, int tri, int c, int xyz[3]);
+// The same of an end pose (RS_TEX_END_*), which must be there (end[e] != NULL).
+void RsTex_NativeEndPosition(const struct RsTexNative *n, int e, int tri, int c, int xyz[3]);
 
 // Corner c of wheel triangle tri: position (1/16 game units, the wheel's own
 // axes) and UV; the colour is 255. TwoSided: flags bit 0 (char-wheel writes 0).

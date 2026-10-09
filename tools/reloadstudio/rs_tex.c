@@ -1,7 +1,8 @@
 // rs_tex.c - the native model's textures and colours for the 3D preview
 //
-// See rs_tex.h. Reads the blocks rldpack writes for the view (RLDPN2 behind
-// the RLDPV2 data of make-char --preview, RLDPW3 of char-wheel --preview),
+// See rs_tex.h. Reads the blocks rldpack writes for the view (RLDPN3, or the
+// older RLDPN2, behind the classic data of make-char --preview, RLDPW3 of
+// char-wheel --preview),
 // checks every length and count before it is used, and builds the mip levels
 // of every texture with the game's code (include/rldmip.inc). Plain C: no
 // Win32, no view, no float - the view draws, this file only answers.
@@ -26,6 +27,7 @@ typedef unsigned int u32;
 #define RS_TEX_WRAP_V_SHIFT 3
 
 static const unsigned char s_rsTexNativeMagic[RS_TEX_MAGIC_BYTES] = { 'R', 'L', 'D', 'P', 'N', '2', 0, 0 };
+static const unsigned char s_rsTexNativeMagic3[RS_TEX_MAGIC_BYTES] = { 'R', 'L', 'D', 'P', 'N', '3', 0, 0 };
 static const unsigned char s_rsTexWheelMagic[RS_TEX_MAGIC_BYTES] = { 'R', 'L', 'D', 'P', 'W', '3', 0, 0 };
 
 static unsigned int RsTex_U32(const unsigned char *p)
@@ -130,14 +132,78 @@ static int RsTex_Material(const unsigned char *p, int textures, struct RsTexMate
     return m->texture >= -1 && m->texture < textures && m->alphaMode <= RS_TEX_ALPHA_BLEND;
 }
 
+// The geometry of RLDPN3 from at (behind the materials): vertices,
+// triangles, the poses, the end poses, then per vertex u, v, COL0 and per
+// triangle its three vertices and its material - to the end of the file.
+// 0 = refused (why set); out keeps its textures for the caller to free.
+static int RsTex_ParseNative3(const unsigned char *data, size_t bytes, size_t at, struct RsTexNative *out, wchar_t *why, int whyCap)
+{
+    unsigned int vertices, tris, poses, neutral, morphs, t;
+    size_t perVertex;
+    int p, e;
+
+    if (bytes - at < 20) {
+        swprintf(why, (size_t)whyCap, L"the native model ends before its triangles");
+        return 0;
+    }
+    vertices = RsTex_U32(data + at);
+    tris = RsTex_U32(data + at + 4);
+    poses = RsTex_U32(data + at + 8);
+    neutral = RsTex_U32(data + at + 12);
+    morphs = RsTex_U32(data + at + 16);
+    at += 20;
+    if (vertices < 3 || vertices > RS_TEX_VERTICES_MAX || tris < 1 || tris > RS_TEX_TRIANGLES_MAX) {
+        swprintf(why, (size_t)whyCap, L"the native model claims %u corners and %u triangles", vertices, tris);
+        return 0;
+    }
+    if (!((poses == RS_TEX_FRAMES && neutral == RS_TEX_NEUTRAL_FRAME) || (poses == 1 && neutral == 0)) || morphs > 3u) {
+        swprintf(why, (size_t)whyCap, L"the native model claims %u poses with %u as neutral and end poses 0x%x", poses, neutral, morphs);
+        return 0;
+    }
+    // Every size below is at most 47 + 2 poses of 65535 corners: no wrap.
+    perVertex = (size_t)(poses + (morphs & 1u) + (morphs >> 1)) * RS_TEX_NATIVE_POS3_BYTES + RS_TEX_NATIVE_VERTEX_BYTES;
+    if (bytes - at != (size_t)vertices * perVertex + (size_t)tris * RS_TEX_NATIVE_INDEX_BYTES) {
+        swprintf(why, (size_t)whyCap, L"the native model of %u corners and %u triangles is %u bytes long", vertices, tris, (unsigned)(bytes - at));
+        return 0;
+    }
+    for (p = 0; p < (int)poses; p++) {
+        out->pos[p] = data + at;
+        at += (size_t)vertices * RS_TEX_NATIVE_POS3_BYTES;
+    }
+    for (e = 0; e < 2; e++)
+        if (morphs & (1u << e)) {
+            out->end[e] = data + at;
+            at += (size_t)vertices * RS_TEX_NATIVE_POS3_BYTES;
+        }
+    out->vtx = data + at;
+    at += (size_t)vertices * RS_TEX_NATIVE_VERTEX_BYTES;
+    out->idx = data + at;
+    for (t = 0; t < tris; t++) {
+        const unsigned char *q = out->idx + (size_t)t * RS_TEX_NATIVE_INDEX_BYTES;
+        const unsigned int a = (unsigned int)q[0] | ((unsigned int)q[1] << 8), b = (unsigned int)q[2] | ((unsigned int)q[3] << 8);
+        const unsigned int c = (unsigned int)q[4] | ((unsigned int)q[5] << 8), m = (unsigned int)q[6] | ((unsigned int)q[7] << 8);
+        if (a >= vertices || b >= vertices || c >= vertices || m >= (unsigned int)out->materialCount) {
+            swprintf(why, (size_t)whyCap, L"triangle %u of the native model names corners %u, %u, %u and material %u", t, a, b, c, m);
+            return 0;
+        }
+    }
+    out->indexed = 1;
+    out->vertices = (int)vertices;
+    out->triangles = (int)tris;
+    out->poses = (int)poses;
+    out->neutral = (int)neutral;
+    return 1;
+}
+
 int RsTex_ParseNative(const unsigned char *data, size_t bytes, size_t at, struct RsTexNative *out, wchar_t *why, int whyCap)
 {
     unsigned int count, materials, tris, poses, t;
     size_t budget = 0;
-    int p;
+    int p, three;
 
     memset(out, 0, sizeof(*out));
-    if (at > bytes || bytes - at < RS_TEX_MAGIC_BYTES + 8 || memcmp(data + at, s_rsTexNativeMagic, RS_TEX_MAGIC_BYTES) != 0) {
+    three = at <= bytes && bytes - at >= RS_TEX_MAGIC_BYTES + 8 && memcmp(data + at, s_rsTexNativeMagic3, RS_TEX_MAGIC_BYTES) == 0;
+    if (!three && (at > bytes || bytes - at < RS_TEX_MAGIC_BYTES + 8 || memcmp(data + at, s_rsTexNativeMagic, RS_TEX_MAGIC_BYTES) != 0)) {
         if (at <= bytes && bytes - at >= RS_TEX_MAGIC_BYTES && memcmp(data + at, "RLDPN", 5) == 0)
             swprintf(why, (size_t)whyCap, L"the native model is in another format (%.6hs) - make the preview again with this version",
                      (const char *)(data + at));
@@ -218,6 +284,11 @@ int RsTex_ParseNative(const unsigned char *data, size_t bytes, size_t at, struct
         at += RS_TEX_MATERIAL_BYTES;
     }
     out->materialCount = (int)materials;
+    if (three) {
+        if (RsTex_ParseNative3(data, bytes, at, out, why, whyCap))
+            return 1;
+        goto refused;
+    }
 
     if (bytes - at < 8) {
         swprintf(why, (size_t)whyCap, L"the native model ends before its triangles");
@@ -251,6 +322,9 @@ int RsTex_ParseNative(const unsigned char *data, size_t bytes, size_t at, struct
         }
     }
     out->triangles = (int)tris;
+    out->vertices = 3 * (int)tris;
+    out->poses = RS_TEX_POSES;
+    out->neutral = 0;   // the turn frames 10, 0, 20
     return 1;
 
 refused:
@@ -322,13 +396,24 @@ int RsTex_ParseWheel(const unsigned char *data, size_t bytes, struct RsTexWheel 
 
 int RsTex_NativeMaterialOf(const struct RsTexNative *n, int tri)
 {
-    const unsigned char *p = n->tris + (size_t)tri * RS_TEX_NATIVE_TRI_BYTES + 36;
+    const unsigned char *p = n->indexed ? n->idx + (size_t)tri * RS_TEX_NATIVE_INDEX_BYTES + 6
+                                        : n->tris + (size_t)tri * RS_TEX_NATIVE_TRI_BYTES + 36;
+    return (int)p[0] | ((int)p[1] << 8);
+}
+
+int RsTex_NativeVertex(const struct RsTexNative *n, int tri, int c)
+{
+    const unsigned char *p;
+    if (!n->indexed)
+        return 3 * tri + c;
+    p = n->idx + (size_t)tri * RS_TEX_NATIVE_INDEX_BYTES + (size_t)c * 2;
     return (int)p[0] | ((int)p[1] << 8);
 }
 
 void RsTex_NativeCorner(const struct RsTexNative *n, int tri, int c, struct RsTexCorner *out)
 {
-    const unsigned char *p = n->tris + (size_t)tri * RS_TEX_NATIVE_TRI_BYTES + (size_t)c * 12;
+    const unsigned char *p = n->indexed ? n->vtx + (size_t)RsTex_NativeVertex(n, tri, c) * RS_TEX_NATIVE_VERTEX_BYTES
+                                        : n->tris + (size_t)tri * RS_TEX_NATIVE_TRI_BYTES + (size_t)c * 12;
     out->u = RsTex_S32(p);
     out->v = RsTex_S32(p + 4);
     out->r = p[8];
@@ -339,7 +424,15 @@ void RsTex_NativeCorner(const struct RsTexNative *n, int tri, int c, struct RsTe
 
 void RsTex_NativePosition(const struct RsTexNative *n, int pose, int tri, int c, int xyz[3])
 {
-    const unsigned char *p = n->pos[pose] + (size_t)tri * RS_TEX_NATIVE_POS_BYTES + (size_t)c * 6;
+    const unsigned char *p = n->pos[pose] + (size_t)RsTex_NativeVertex(n, tri, c) * RS_TEX_NATIVE_POS3_BYTES;
+    xyz[0] = RsTex_S16(p);
+    xyz[1] = RsTex_S16(p + 2);
+    xyz[2] = RsTex_S16(p + 4);
+}
+
+void RsTex_NativeEndPosition(const struct RsTexNative *n, int e, int tri, int c, int xyz[3])
+{
+    const unsigned char *p = n->end[e] + (size_t)RsTex_NativeVertex(n, tri, c) * RS_TEX_NATIVE_POS3_BYTES;
     xyz[0] = RsTex_S16(p);
     xyz[1] = RsTex_S16(p + 2);
     xyz[2] = RsTex_S16(p + 4);
