@@ -538,18 +538,21 @@ static void Wh_ParseLine(wchar_t *line)
         Wh_JobListAdd(g_wh.jobFiles, &g_wh.jobFileCount, Wh_Field(f, n, 3));
     } else if (wcscmp(f[0], L"model") == 0 && wcscmp(Wh_Field(f, n, 1), L"texture") == 0) {
         // @model texture <state> <material> <path> <sha256>: a file of the
-        // stamp; one not found also its folder and that of the model, where
-        // it may be put
+        // stamp; one not found also that name in its folder, in that of the
+        // model and in the Textures folder, where it may be put (only that
+        // name: other files written there, an export for one, change nothing)
         const wchar_t *path = Wh_Field(f, n, 4);
         Wh_JobListAdd(g_wh.jobFiles, &g_wh.jobFileCount, path);
         if (wcscmp(Wh_Field(f, n, 2), L"ok") != 0 && path[0]) {
-            wchar_t dir[WH_VAL];
+            wchar_t dir[WH_VAL], there[WH_VAL];
             int i;
-            Rs_PathDir(dir, WH_VAL, path);
-            Wh_JobListAdd(g_wh.jobFolders, &g_wh.jobFolderCount, dir);
             Rs_PathDir(dir, WH_VAL, g_wh.checked);
-            Wh_JobListAdd(g_wh.jobFolders, &g_wh.jobFolderCount, dir);
-            Wh_JobListAdd(g_wh.jobFolders, &g_wh.jobFolderCount, g_wh.textures);
+            Rs_PathJoin(there, WH_VAL, dir, Rs_PathName(path));
+            Wh_JobListAdd(g_wh.jobFiles, &g_wh.jobFileCount, there);
+            if (g_wh.textures[0]) {
+                Rs_PathJoin(there, WH_VAL, g_wh.textures, Rs_PathName(path));
+                Wh_JobListAdd(g_wh.jobFiles, &g_wh.jobFileCount, there);
+            }
             for (i = 0; i < g_wh.jobMissingCount && _wcsicmp(g_wh.jobMissing[i], Rs_PathName(path)) != 0; i++)
                 ;
             if (i == g_wh.jobMissingCount && i < WH_MISSING)

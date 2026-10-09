@@ -6857,6 +6857,7 @@ static int Char_WriteReport(const wchar_t *path)
     else
         Char_Put(f, L"preview: (none)");
     Char_Put(f, L"pose: %ls", g_charPoseWords[g_char.poseNow]);
+    g_char.yawNow = RsView_GetYaw(g_char.view);   // a new model may have reset the camera
     Char_Put(f, L"turn: %d degrees", g_char.yawNow);
     {
         // The camera and the display toggles of the preview (Char_AutoView).

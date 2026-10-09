@@ -191,7 +191,8 @@ void RsView_DropPoseSet(HWND view);
 // tools/rldpack_wheel.inc). Drawn at the dummy's four wheel points instead of
 // the game's wheels, only while RsView_SetWheels is on, textured, and by depth
 // against the model (the game draws them in the native model's item); the
-// dummy beside the model keeps the game's wheels.
+// dummy beside the model keeps the game's wheels, and so does the classic
+// look of a model that has a native one (the game's fallback).
 BOOL RsView_LoadWheelModel(HWND view, const wchar_t *path);
 void RsView_DropWheelModel(HWND view);
 void RsView_SetWheelScale(HWND view, int percent);  // 50..200, integer scaling; the centres rise by the radius grown

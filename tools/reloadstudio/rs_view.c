@@ -396,6 +396,7 @@ struct RsView {
     int lookPoint[2][3];       // 1/16 units
     int lookGrey;              // the points are the retail ones: grey
     int pick;                  // 1 or 2 while that point is picked by a click; 0 = none
+    DWORD pickClickTime;       // message time of the click that ended a pick: its double click resets nothing
     int pickDone;              // the point the last pick was for
     int pickHit;               // it hit the model
     int pickAt[3];             // where, 1/16 units
@@ -2575,11 +2576,13 @@ static void RsView_Render(HWND view, struct RsView *v)
 
     // The game's wheels under the model (only into pixels the model left
     // free), or the wheel model by depth, as the game draws it (under the
-    // model, or on the dummy alone); timed for RsView_WheelBench.
+    // model, or on the dummy alone); timed for RsView_WheelBench. The classic
+    // look of a model that has a native one is the game's fallback, which
+    // keeps the game's wheels: the wheel model goes with the native look only.
     QueryPerformanceCounter(&wheelStart);
     g.first = modelEnd;
     wheelEnd = modelEnd;
-    if (v->loaded && v->wheels && v->wheelCount) {
+    if (v->loaded && v->wheels && v->wheelCount && (native || !RsView_NativeUsable(v))) {
         g.kind = RS_VIEW_GEN_WHEELS;
         g.maskMode = RS_VIEW_MASK_NONE;
         g.off = s.offModel;
@@ -3397,8 +3400,10 @@ static LRESULT CALLBACK RsView_Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         }
         if (!RsView_Turnable(v))
             return 0;
-        if (msg == WM_LBUTTONDBLCLK && !v->pick) {
-            // A double click resets the view (while picking it is a click).
+        if (msg == WM_LBUTTONDBLCLK && !v->pick &&
+            (DWORD)GetMessageTime() - v->pickClickTime > (DWORD)GetDoubleClickTime()) {
+            // A double click resets the view (while picking, and as the second
+            // click of the one that picked a point, it is a click).
             RsView_UserPreset(hwnd, v, RS_VIEW_PRESET_THREE_QUARTER);
             return 0;
         }
@@ -3520,6 +3525,7 @@ static LRESULT CALLBACK RsView_Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
                     v->pitch = v->dragPitch;
                     RsView_UserCamera(hwnd, v, oldYaw);
                 }
+                v->pickClickTime = (DWORD)GetMessageTime();
                 RsView_PickNotify(hwnd, v, v->downX, v->downY);
             }
         }
