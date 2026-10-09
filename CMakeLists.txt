@@ -232,6 +232,7 @@ if(MSVC)
         tools/reloadstudio/rs_view.c
         tools/reloadstudio/rs_anim.c
         tools/reloadstudio/rs_wheels.c
+        tools/reloadstudio/rs_tex.c
         tools/reloadstudio/rs_rldpack.c
         tools/rldpack_image.c
         platform/native_disc_image.c
@@ -373,6 +374,32 @@ if(BUILD_TESTING)
     if(MSVC)
         add_test(NAME reloadstudio_rldpack_selftest COMMAND $<TARGET_FILE:ReloadStudio> --rldpack selftest)
         set_tests_properties(reloadstudio_rldpack_selftest PROPERTIES PASS_REGULAR_EXPRESSION "Self-test passed")
+
+        # The textures of the Studio's 3D preview (tools/reloadstudio/rs_tex.c):
+        # rldpack's make-char and char-wheel write the preview blocks, rs_tex.c
+        # reads them back; the levels against the game's goldens, the colour
+        # formula against the float32 shader. A console program of its own
+        # (tools/reloadstudio/rs_tex_test.c), only built with the tests.
+        add_executable(rs_tex_selftest
+            tools/reloadstudio/rs_tex_test.c
+            tools/reloadstudio/rs_tex.c
+            tools/rldpack_image.c
+            platform/native_disc_image.c
+            tools/rldpack.rc
+            platform/rldpack.manifest
+        )
+        target_compile_definitions(rs_tex_selftest PRIVATE CTR_NATIVE
+            CTR_NATIVE_VERSION=\"${CTR_NATIVE_VERSION}\")
+        target_include_directories(rs_tex_selftest PRIVATE ${CMAKE_SOURCE_DIR}/include ${CTR_BUILD_ID_DIR})
+        add_dependencies(rs_tex_selftest ctr_build_id)
+        target_compile_options(rs_tex_selftest PRIVATE ${CTR_RLDPACK_FP_OPTIONS})
+        set_target_properties(rs_tex_selftest PROPERTIES
+            C_STANDARD 17
+            C_STANDARD_REQUIRED ON
+            C_EXTENSIONS OFF
+        )
+        add_test(NAME reloadstudio_tex_selftest COMMAND $<TARGET_FILE:rs_tex_selftest>)
+        set_tests_properties(reloadstudio_tex_selftest PROPERTIES PASS_REGULAR_EXPRESSION "rs_tex selftest passed: ")
     endif()
     set_tests_properties(ctr_native_version PROPERTIES PASS_REGULAR_EXPRESSION "^CTR Reload ${CTR_NATIVE_VERSION} ")
 

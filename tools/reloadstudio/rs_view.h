@@ -25,10 +25,11 @@
 // shown instead of the picture.
 //
 // Dragging with the left mouse button turns model and dummy, each about its
-// own origin (both by the same angle); the parent then gets
-// WM_COMMAND with HIWORD(wParam) = RS_VIEW_N_YAW, LOWORD(wParam) = the control
-// ID and lParam = the control. Same input gives the same pixels: the drawing
-// uses only integers (see rs_view.c), so screenshots can be compared.
+// own origin (both by the same angle), and tilts the camera; the parent then
+// gets WM_COMMAND with HIWORD(wParam) = RS_VIEW_N_YAW / RS_VIEW_N_CAMERA,
+// LOWORD(wParam) = the control ID and lParam = the control (THE CAMERA below).
+// Same input gives the same pixels: the drawing uses only integers (see
+// rs_view.c), so screenshots can be compared.
 
 #ifndef RS_VIEW_H
 #define RS_VIEW_H
@@ -69,6 +70,59 @@ enum RsViewPose {
 // The yaw a new view starts with: a three-quarter view from the front.
 #define RS_VIEW_DEFAULT_YAW 35
 
+// THE CAMERA. Yaw turns model and dummy (each about its own origin, as
+// RsView_SetYaw), pitch tilts the camera (degrees it looks down: -10..89,
+// further limited so that the eye stays above the ground), zoom is a factor
+// on the focal length of the framing (percent, 50..800; the camera does not
+// move, so nothing comes too near), pan moves the picture (pixels of the
+// view, limited so that the middle of the model stays in the picture). All
+// integers: the same camera gives the same pixels.
+// Mouse: left drag turns (across) and tilts (up and down), right or middle
+// drag pans, the wheel zooms in fixed steps (x 1.25) about the middle of the
+// picture, a double click resets the view, a right click (no drag) opens the
+// view's menu - or ends a pick. A small bar in the view (drawn by the view)
+// holds the fixed views and the button "View" with the same menu.
+// Every change by the user sends WM_COMMAND RS_VIEW_N_CAMERA (and
+// RS_VIEW_N_YAW as well when the yaw changed); a toggle changed in the
+// menu sends RS_VIEW_N_TOGGLES.
+#define RS_VIEW_N_CAMERA 0x0103
+#define RS_VIEW_N_TOGGLES 0x0104
+#define RS_VIEW_DEFAULT_PITCH 20
+#define RS_VIEW_DEFAULT_ZOOM 100
+enum RsViewPreset {
+    RS_VIEW_PRESET_FRONT = 0,      // yaw 0, pitch 5
+    RS_VIEW_PRESET_SIDE,           // yaw 90, pitch 5
+    RS_VIEW_PRESET_BACK,           // yaw 180, pitch 5
+    RS_VIEW_PRESET_TOP,            // yaw 0, pitch 89
+    RS_VIEW_PRESET_THREE_QUARTER,  // the start view: yaw 35, pitch 20
+    RS_VIEW_PRESET_RACE,           // the game's race camera behind the kart (its own distance and focal length)
+    RS_VIEW_PRESET_COUNT
+};
+void RsView_SetCamera(HWND view, int yaw, int pitch, int zoomPercent, int panX, int panY);  // pan in pixels of the view; clamped
+void RsView_GetCamera(HWND view, int *yaw, int *pitch, int *zoomPercent, int *panX, int *panY);
+void RsView_ResetCamera(HWND view);               // the start view (RS_VIEW_PRESET_THREE_QUARTER)
+void RsView_SetPreset(HWND view, int preset);     // zoom 100, pan 0
+int  RsView_GetPreset(HWND view);                 // RS_VIEW_PRESET_* while unchanged, -1 after a drag/zoom/pan
+// The model the page shows (e.g. the path of the OBJ), before RsView_LoadPreview:
+// a different one than before resets the camera, the same one keeps it.
+void RsView_SetModelKey(HWND view, const wchar_t *key);
+
+// Display toggles of the view; they change nothing that is built.
+void RsView_SetBackground(HWND view, int light);  // 0 dark (default), 1 light
+void RsView_SetCrashRef(HWND view, int on);       // the dummy "Crash size" beside the model; default 1
+void RsView_SetOverlays(HWND view, int shadow, int exhaust);  // display only, default 1 1
+void RsView_SetShowNative(HWND view, int native); // 1 = the native model when loaded (default), 0 = the classic one
+int  RsView_HasNative(HWND view);                 // 1 = the preview carries a native model
+int  RsView_GetToggles(HWND view, int *light, int *crash, int *shadow, int *exhaust, int *native);  // returns native drawn (0/1)
+// Bench: frames pictures, each one step further in an orbit (yaw +3, pitch swinging), timed (microseconds).
+// Returns the pictures drawn; the camera is the same afterwards.
+int  RsView_Bench(HWND view, int frames, int *avgUs, int *maxUs, int *p95Us, int *w, int *h);
+// The textures of the loaded model: their count and bytes (with the levels).
+// Returns the materials drawn without a texture - RLDPN2 does not tell a
+// missing file from a material that never had one, so the page names missing
+// files from rldpack's warnings, not from this count.
+int  RsView_TextureInfo(HWND view, int *textures, int *bytes);
+
 // Registers the window class. TRUE if it is registered (also when it already was).
 BOOL RsView_Register(HINSTANCE instance);
 
@@ -78,9 +132,11 @@ BOOL RsView_Register(HINSTANCE instance);
 // A missing or damaged file leaves an empty view with a message saying why.
 // Pose and yaw stay as they are.
 // Preview feature (open to everyone): the file may go on with the native
-// model ("RLDPN1", make-char --native-model on; THE NATIVE MODEL IN THE
-// PREVIEW in tools/rldpack_native.inc), which the view then draws, textured,
-// in place of the model (rs_view.c, THE NATIVE MODEL). Anything else after
+// model ("RLDPN2", make-char --native-model on; THE NATIVE MODEL IN THE
+// PREVIEW in tools/rldpack_native.inc; read by rs_tex.c with the game's mip
+// levels), which the view then draws, textured, in place of the model
+// (rs_view.c, THE NATIVE MODEL) - not with a blend material, which the game
+// refuses natively. Anything else after
 // the last pose is refused as before ("bytes follow after the last pose").
 void RsView_LoadPreview(HWND view, const wchar_t *path);
 
@@ -129,8 +185,9 @@ int  RsView_PoseSetCount(HWND view);
 void RsView_ShowPoseSet(HWND view, int index);     // -1 = the built model again (RsView_SetPose applies)
 void RsView_DropPoseSet(HWND view);
 
-// A wheel model (rldpack char-wheel --preview, "RLDPW2\0\0": its texture and
-// its triangles with UV, centred on its axle, sized like the game's wheel;
+// A wheel model (rldpack char-wheel --preview, "RLDPW3\0\0", read by rs_tex.c:
+// its texture with the game's mip levels, its material and its triangles
+// with UV, centred on its axle, sized like the game's wheel;
 // tools/rldpack_wheel.inc). Drawn at the dummy's four wheel points instead of
 // the game's wheels, only while RsView_SetWheels is on, textured, and by depth
 // against the model (the game draws them in the native model's item); the
@@ -164,11 +221,14 @@ int RsView_WheelPixels(HWND view, int *w, int *h);
 
 // The look of the driver (the tab In-game look; preview feature): positions
 // in 1/16 game units of the model, as the preview file.
-// shadow 1: quad x0 x1 z0 z1 drawn on the floor under the model, turned with
-// it, the floor's colour at half - the model's pixels stay as they are.
+// shadow 1: quad x0 x1 z0 z1 on the floor under the model, turned with it,
+// subtracted from the floor like the game's shadow: darkest in the middle,
+// soft towards its edges - the model's pixels stay as they are.
 // count 0..2 exhaust points, always on top: a ring with a cross, point 1 in
 // the accent colour, point 2 in the note colour; grey 1: all grey (the
-// retail points). NULL quad or points: none.
+// retail smoke points), with the retail turbo flames as orange diamonds.
+// NULL quad or points: none. RsView_SetOverlays hides either for the view
+// only.
 void RsView_SetLook(HWND view, int shadow, const int quad[4], int count, const int point[2][3], int grey);
 
 // Picking a point of the model's surface: after RsView_PickBegin(view, n)

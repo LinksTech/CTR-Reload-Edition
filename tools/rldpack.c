@@ -97,6 +97,11 @@ typedef signed int s32;
 // in already: the game decodes the textures of CTXT with it (preview).
 #include <rldpng.inc>
 
+// The mip levels of a native texture, the game's code (platform/native_tex.c
+// builds them with it). Only the self-test uses it here: it proves that the
+// levels Reload Studio builds for its preview are the game's.
+#include <rldmip.inc>
+
 // Build ID (CTR_NATIVE_BUILD_ID), generated on every build - see Rld_Usage.
 #include "ctr_build_id.h"
 

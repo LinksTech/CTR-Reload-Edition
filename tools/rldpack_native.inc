@@ -2519,27 +2519,44 @@ static int RldMk_NativeModel(const struct RldObjNative *src, const struct RldMkP
 // THE NATIVE MODEL IN THE PREVIEW (make-char --preview with --native-model on)
 //========================================================================================
 //
-// For the 3D view of Reload Studio (tools/reloadstudio/rs_view.c, preview
-// feature): when make-char made a native model and writes --preview, the
-// native model follows the RLDPV2 data in the same file, already checked by
-// the game's rules (RldMk_CheckNativeBytes) and decoded - the view decodes
-// nothing and checks nothing. Without a native model the file is RLDPV2 as
-// before, byte for byte. Little endian, no padding:
-//   "RLDPN1\0\0"
-//   u32 textures, per texture: u32 width, u32 height, u32 flags (CTXT,
-//       RLDCHAR_TEX_*), width x height x 4 bytes RGBA, rows from the top;
-//       a side above RLDMK_NATIVE_PREVIEW_EDGE is halved (2 x 2 box, rounded)
-//       until it fits - a preview, not the game's texture
+// For the 3D view of Reload Studio (tools/reloadstudio/rs_tex.c reads it,
+// tools/reloadstudio/rs_view.c draws it): when make-char made a native model
+// and writes --preview, the native model follows the RLDPV2 data in the same
+// file, already checked by the game's rules (RldMk_CheckNativeBytes) and
+// decoded - the view decodes no PNG and checks no rule. It carries what the
+// game's "nr" program gets (platform/native_char_gpu.c, NativeCharGpu_Build):
+// the corner color COL0 and the material's color apart, the alpha modes, and
+// the textures in their full size; the levels below level 0 are built by the
+// reader with include/rldmip.inc, the same code the game builds them with.
+// Without a native model the file is RLDPV2 as before, byte for byte. Little
+// endian, no padding:
+//   "RLDPN2\0\0"
+//   u32 flags: bit 0 (RLDMK_NATIVE_PREVIEW_BLEND) a material is a blend
+//       material (alpha mode 2): the game refuses the whole native set for it
+//       and draws the CMDL, so the view shows the CMDL too. make-char writes
+//       only opaque and mask materials, so its own files never set it.
+//       Bits 1-31 are 0.
+//   u32 textures (0..16), per texture: u32 width, u32 height (each a power of
+//       two from 16 to 2048, CTXT-4), u32 flags (CTXT, RLDCHAR_TEX_*: linear,
+//       wrap U and V, nearest, alpha), then width x height x 4 bytes RGBA:
+//       level 0 as CTXT holds it, rows from the top, straight alpha, never
+//       scaled. CTXT-6 keeps every texture with all its levels within 64 MiB.
+//   u32 materials M (1..64), per material 8 bytes, the first 8 of MATL in
+//       CNET: u8 r, g, b, a (the tint), s16 texture (-1 none), u8 alpha mode
+//       (0 opaque, 1 mask, 2 blend), u8 flags (bit 0: always nearest)
 //   u32 triangles T, u32 poses 3: per pose T x 3 corners of s16 x, y, z in
 //       1/16 game units (rounded half away from zero, as RLDPV2) - the turn
 //       frames 10, 0 and 20 of RLDPV2; a still model three times its pose
 //   per triangle: 3 corners of {s32 u, s32 v (Q16, v from the top as in CTXT,
-//       clamped to +-64), u8 r, g, b (COL0 or white, times the material's
-//       color), u8 0}, then s16 texture (-1 none), u8 alpha mode, u8 0
-// The corners run as CNET has them: counter-clockwise seen from outside.
+//       clamped to +-64), u8 r, g, b, a (COL0 as stored; 255 without COL0)},
+//       then u16 material, u16 0
+// Size 24 + sum (12 + width x height x 4) + 8 M + 8 + T x 94. The corners run
+// as CNET has them: counter-clockwise seen from outside.
 
-#define RLDMK_NATIVE_PREVIEW_EDGE 512u
 #define RLDMK_NATIVE_PREVIEW_UV_MAX (64 * 65536)
+#define RLDMK_NATIVE_PREVIEW_BLEND 0x1u
+#define RLDMK_NATIVE_PREVIEW_MATERIAL_BYTES 8u
+#define RLDMK_NATIVE_PREVIEW_TRIANGLE_BYTES (3u * 12u + 4u)
 
 static const u32 s_rldMkNativePreviewFrames[3] = {10u, 0u, 20u};
 
@@ -2561,68 +2578,14 @@ static s32 RldMk_NativePreviewQ16(double value)
 	return (s32)rounded;
 }
 
-// The texture for the preview: halved while a side is above the edge.
-// Returns a malloc'd copy (or NULL) and its size.
-static u8 *RldMk_NativePreviewTexture(const struct RldCharTexture *t, u32 *widthOut, u32 *heightOut)
-{
-	u32 w = t->width;
-	u32 h = t->height;
-	u8 *rgba = (u8 *)malloc((size_t)w * h * 4u + 4u);
-
-	if (rgba == NULL)
-	{
-		return NULL;
-	}
-	memcpy(rgba, t->rgba, (size_t)w * h * 4u);
-	while ((w > RLDMK_NATIVE_PREVIEW_EDGE) || (h > RLDMK_NATIVE_PREVIEW_EDGE))
-	{
-		const u32 nw = (w > RLDMK_NATIVE_PREVIEW_EDGE) ? (w / 2u) : w;
-		const u32 nh = (h > RLDMK_NATIVE_PREVIEW_EDGE) ? (h / 2u) : h;
-		const u32 sx = w / nw;
-		const u32 sy = h / nh;
-		u32 x;
-		u32 y;
-
-		for (y = 0; y < nh; y++)
-		{
-			for (x = 0; x < nw; x++)
-			{
-				u32 c;
-
-				for (c = 0; c < 4u; c++)
-				{
-					u32 sum = 0;
-					u32 dx;
-					u32 dy;
-
-					for (dy = 0; dy < sy; dy++)
-					{
-						for (dx = 0; dx < sx; dx++)
-						{
-							sum += rgba[(((size_t)(y * sy + dy) * w) + (x * sx + dx)) * 4u + c];
-						}
-					}
-					rgba[(((size_t)y * nw) + x) * 4u + c] = (u8)((sum + ((sx * sy) / 2u)) / (sx * sy));
-				}
-			}
-		}
-		w = nw;
-		h = nh;
-	}
-	*widthOut = w;
-	*heightOut = h;
-	return rgba;
-}
-
 // The block above for a native part that passed (READY), in memory
 // (malloc'd, *sizeOut bytes). NULL = not READY or out of memory.
 static u8 *RldMk_NativePreviewBlock(const struct RldCharNative *n, size_t *sizeOut)
 {
-	static const u8 magic[8] = {'R', 'L', 'D', 'P', 'N', '1', 0, 0};
-	u8 *texture[RLDCHAR_TEX_COUNT_MAX];
-	u32 width[RLDCHAR_TEX_COUNT_MAX];
-	u32 height[RLDCHAR_TEX_COUNT_MAX];
-	size_t size = 8u + 4u + 8u + ((size_t)n->triangleCount * (3u * 3u * 6u + 3u * 12u + 4u));
+	static const u8 magic[8] = {'R', 'L', 'D', 'P', 'N', '2', 0, 0};
+	size_t size = 8u + 4u + 4u + 4u + ((size_t)n->materialCount * RLDMK_NATIVE_PREVIEW_MATERIAL_BYTES) + 8u +
+	              ((size_t)n->triangleCount * (3u * 3u * 6u + RLDMK_NATIVE_PREVIEW_TRIANGLE_BYTES));
+	u32 flags = 0;
 	u8 *out = NULL;
 	size_t at = 0;
 	u32 t;
@@ -2632,28 +2595,38 @@ static u8 *RldMk_NativePreviewBlock(const struct RldCharNative *n, size_t *sizeO
 
 	*sizeOut = 0;
 
-	memset(texture, 0, sizeof(texture));
 	for (t = 0; ok && (t < n->textureCount); t++)
 	{
-		texture[t] = RldMk_NativePreviewTexture(&n->texture[t], &width[t], &height[t]);
-		ok = (texture[t] != NULL);
-		size += 12u + ((size_t)width[t] * height[t] * 4u);
+		size += 12u + ((size_t)n->texture[t].width * n->texture[t].height * 4u);
+	}
+	for (i = 0; ok && (i < n->materialCount); i++)
+	{
+		flags |= (n->materials[(size_t)i * RLDCHAR_NET_MATERIAL_BYTES + 6u] == 2u) ? RLDMK_NATIVE_PREVIEW_BLEND : 0u;
 	}
 	out = ok ? (u8 *)malloc(size) : NULL;
 	ok = (out != NULL);
 	if (ok)
 	{
 		memcpy(out, magic, 8u);
-		at = 8u;
-		Rld_WriteLE32(&out[at], n->textureCount);
-		at += 4u;
+		Rld_WriteLE32(&out[8], flags);
+		Rld_WriteLE32(&out[12], n->textureCount);
+		at = 16u;
 		for (t = 0; t < n->textureCount; t++)
 		{
-			Rld_WriteLE32(&out[at], width[t]);
-			Rld_WriteLE32(&out[at + 4u], height[t]);
-			Rld_WriteLE32(&out[at + 8u], n->texture[t].flags);
-			memcpy(&out[at + 12u], texture[t], (size_t)width[t] * height[t] * 4u);
-			at += 12u + ((size_t)width[t] * height[t] * 4u);
+			const struct RldCharTexture *x = &n->texture[t];
+
+			Rld_WriteLE32(&out[at], x->width);
+			Rld_WriteLE32(&out[at + 4u], x->height);
+			Rld_WriteLE32(&out[at + 8u], x->flags);
+			memcpy(&out[at + 12u], x->rgba, (size_t)x->width * x->height * 4u);
+			at += 12u + ((size_t)x->width * x->height * 4u);
+		}
+		Rld_WriteLE32(&out[at], n->materialCount);
+		at += 4u;
+		for (i = 0; i < n->materialCount; i++)
+		{
+			memcpy(&out[at], &n->materials[(size_t)i * RLDCHAR_NET_MATERIAL_BYTES], RLDMK_NATIVE_PREVIEW_MATERIAL_BYTES);
+			at += RLDMK_NATIVE_PREVIEW_MATERIAL_BYTES;
 		}
 		Rld_WriteLE32(&out[at], n->triangleCount);
 		Rld_WriteLE32(&out[at + 4u], 3u);
@@ -2679,38 +2652,32 @@ static u8 *RldMk_NativePreviewBlock(const struct RldCharNative *n, size_t *sizeO
 		}
 		for (i = 0; i < n->triangleCount; i++)
 		{
-			const u8 *m = &n->materials[(size_t)Rld_ReadLE16(&n->triangleMaterials[2u * i]) * RLDCHAR_NET_MATERIAL_BYTES];
 			u32 c;
 
 			for (c = 0; c < 3u; c++)
 			{
 				const u8 *ix = &n->indices[((size_t)(3u * i) + c) * n->indexSize];
 				const u32 vertex = (n->indexSize == 2u) ? Rld_ReadLE16(ix) : Rld_ReadLE32(ix);
-				int k;
 
 				Rld_WriteLE32(&out[at], (u32)RldMk_NativePreviewQ16((n->uv != NULL) ? (double)RldChar_F32(&n->uv[8u * vertex]) : 0.0));
 				Rld_WriteLE32(&out[at + 4u], (u32)RldMk_NativePreviewQ16((n->uv != NULL) ? (double)RldChar_F32(&n->uv[8u * vertex + 4u]) : 0.0));
-				for (k = 0; k < 3; k++)
+				if (n->colors != NULL)
 				{
-					const u32 base = (n->colors != NULL) ? n->colors[4u * vertex + (u32)k] : 255u;
-
-					out[at + 8u + (u32)k] = (u8)(((base * m[k]) + 127u) / 255u);
+					memcpy(&out[at + 8u], &n->colors[4u * vertex], 4u);
 				}
-				out[at + 11u] = 0u;
+				else
+				{
+					memset(&out[at + 8u], 255, 4u);
+				}
 				at += 12u;
 			}
-			Rld_WriteLE16(&out[at], Rld_ReadLE16(&m[4]));
-			out[at + 2u] = m[6];
-			out[at + 3u] = 0u;
+			Rld_WriteLE16(&out[at], Rld_ReadLE16(&n->triangleMaterials[2u * i]));
+			Rld_WriteLE16(&out[at + 2u], 0u);
 			at += 4u;
 		}
 		ok = (at == size);
 	}
 
-	for (t = 0; t < RLDCHAR_TEX_COUNT_MAX; t++)
-	{
-		free(texture[t]);
-	}
 	if (!ok)
 	{
 		free(out);

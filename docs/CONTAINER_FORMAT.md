@@ -949,6 +949,27 @@ Nothing of this is in the container; it is how the tool gets there.
   corner in steps of 0.2 to 0.6 units; 1/16 units keep the preview within
   1/32 of it. The older `RLDPV1` is the same with whole game units;
   Reload Studio reads both.
+
+  With `--native-model on` the native model follows in the same file,
+  as the game's rules passed it (`RLDPN2`, `RldMk_NativePreviewBlock` in
+  `tools/rldpack_native.inc`, read by `tools/reloadstudio/rs_tex.c`). It
+  carries what the game's "nr" program gets, so that the preview can draw
+  the native model as the game does:
+
+  | Field | Type | Content |
+  |---|---|---|
+  | magic | char[8] | `RLDPN2` and two NUL |
+  | flags | u32 | bit 0: a material blends (alpha mode 2) - the game then refuses the whole native part and draws CMDL, and so does the preview; make-char writes only opaque and mask materials. Bits 1-31 are 0 |
+  | textures | u32 + entries | 0..16; per texture u32 width, u32 height (powers of two 16..2048, CTXT-4), u32 flags (CTXT), then width x height x 4 bytes RGBA: level 0 as CTXT holds it, rows from the top, never scaled. The reader builds the levels below with `include/rldmip.inc`, the game's code; CTXT-6 keeps all of them within 64 MiB |
+  | materials | u32 + M x 8 | 1..64; the first 8 bytes of MATL: u8 r, g, b, a (the tint), s16 texture (-1 none), u8 alpha mode (0 opaque, 1 mask, 2 blend), u8 flags (bit 0 always nearest) |
+  | triangles, poses | u32 T, u32 3 | per pose T x 3 corners of s16 x, y, z in 1/16 game units: the turn frames 10, 0 and 20 (a still model three times its pose) |
+  | per triangle | 3 x 12 + 4 | 3 corners of {s32 u, s32 v in Q16 (v from the top as in CTXT, clamped to +-64), u8 r, g, b, a: COL0 as stored, 255 without}, then u16 material, u16 0 |
+
+  Size 24 + sum (12 + width x height x 4) + 8 M + 8 + 94 T. The colour of a
+  pixel is the "nr" program's: texel times corner colour times material
+  colour, the mask leaving out what has alpha below one half; no light. The
+  older `RLDPN1` (corner colours already multiplied, textures halved above
+  512) is no longer read: the preview asks for a new build.
 - The self-test (`rldpack selftest`, also `ReloadStudio.exe --rldpack
   selftest`) builds fixed models made in the code and compares the
   SHA-256 of what comes out with fixed values (`RLDMK_GOLDEN_*`): PLAIN,
@@ -1862,9 +1883,14 @@ Size = 0x1C + 12 N + 8 T, at most 5660 bytes.
 `rldpack char-wheel --model <obj|ply>` reads an author's wheel by the rules
 of `make-char --wheel-model` (the same budget and message codes; never
 repaired or reduced, its texture never scaled), fits it to the size of the
-game's wheel and writes only a preview file for Reload Studio (`RLDPW2`: the
-texture and the textured triangles; the layout is at the head of
-`tools/rldpack_wheel.inc`); it refuses `--out` and never writes a container.
+game's wheel and writes only a preview file for Reload Studio (`RLDPW3`: the
+texture whole, up to 1024 on a side, with the CTXT flags make-char would give
+it; the wheel's one material as MATL has it - colour, texture, alpha mode -
+the vertex colour 255 as in the game; then the textured triangles. The layout
+is at the head of `tools/rldpack_wheel.inc`; Reload Studio reads it with
+`tools/reloadstudio/rs_tex.c` and builds the levels with `include/rldmip.inc`,
+and no longer reads the older `RLDPW2`); it refuses `--out` and never writes
+a container.
 The wheel reaches the container only through `make-char --wheel-model`
 (WHLS version 2 in CNET, "A wheel of one's own").
 

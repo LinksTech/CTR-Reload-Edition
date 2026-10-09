@@ -17,7 +17,9 @@
 // (RLDDUM_TIRE_HALF_SIZE game units, tools/rldpack_dummy.inc; the Studio's
 // slider "Wheel size" scales it from there) and centred on its box. The only
 // output is the --preview file; char-wheel never writes a container and
-// refuses --out: make-char packs the wheel.
+// refuses --out: make-char packs the wheel. The texture is looked for as
+// make-char looks for it: --textures <folder> (the OBJ reader's switch, the
+// same folders make-char is given) first, then the places next to the files.
 //
 // THE BUDGET (as WHLS version 2; over it is an error, never cut short): the
 // faces as fans, triangles without area left out; at most
@@ -41,24 +43,35 @@
 // (wheel-off-axis). A wheel without extent across or along its axle is
 // refused (wheel-flat).
 //
-// THE --preview FILE ("RLDPW2"), little endian:
-//   "RLDPW2\0\0"               8 bytes
-//   u32 width, u32 height,     the texture (0 0 0: none), rows from the top,
-//   u32 flags                  straight alpha; the CTXT wrap bits
-//                              (RLDCHAR_TEX_WRAP_*: repeat, or clamp for an MTL
-//                              -clamp on); a side above RLDMK_NATIVE_PREVIEW_EDGE
-//                              is halved until it fits, as in RLDPN1
-//   width x height x 4 bytes   RGBA
+// THE --preview FILE ("RLDPW3"), little endian - what the game's "nr" program
+// gets for an author's wheel (platform/native_char_gpu.c: vertex color 255,
+// the tint of the wheel's material times its texture):
+//   "RLDPW3\0\0"               8 bytes
+//   u32 width, u32 height,     the texture (0 0 0: none), each side a power of
+//   u32 flags                  two from 16 to RLDWHEEL_TEXTURE_EDGE_MAX; the CTXT
+//                              flags make-char gives it: wrap clamp on both axes
+//                              when every corner's UV lies in 0..1, else repeat;
+//                              alpha mask when a texel has alpha below 255
+//   width x height x 4 bytes   RGBA, level 0, rows from the top, straight alpha,
+//                              never scaled (the reader builds the levels with
+//                              include/rldmip.inc, as the game does)
+//   u8 r, u8 g, u8 b, u8 a     the material, laid out as MATL of CNET (and as in
+//   s16 texture                RLDPN2): the color (the tint) above, a = 255;
+//   u8 alpha mode, u8 flags    texture 0, or -1 without one; alpha mode 1 mask
+//                              with a texture that has alpha below 255, else 0
+//                              opaque; flags 0
 //   u32 triangles              1 or more
 //   per triangle 3 corners of
 //     s16 x, s16 y, s16 z      1/16 game units (RLDWHEEL_PREVIEW_UNIT), the wheel's
 //                              own axes above, centred on the axle
 //     s32 u, s32 v             Q16 of the texture, v from the top (CTXT), clamped
 //                              to +-64 (RLDMK_NATIVE_PREVIEW_UV_MAX); 0 without one
-//     u8 r, u8 g, u8 b         the wheel's one color (above), the same in every corner
-//     u8 pad                   0 (bit 0 = 1 would draw it from both sides)
+//   then u8 flags, u8 0        flags 0 (bit 0 = 1 would draw it from both sides)
 // Nothing follows the last triangle. The corners of a triangle run
-// counter-clockwise seen from outside, as the file has them.
+// counter-clockwise seen from outside, as the file has them. When make-char
+// shares one CTXT entry between the wheel and the body (the same bytes), the
+// game's wrap is repeat as soon as either side needs it; char-wheel sees only
+// the wheel.
 //
 // DETERMINISM as make-char: the same files give the same bytes. The file is
 // built twice and compared before it is written.
@@ -69,8 +82,10 @@
 #define RLDWHEEL_ROUND 0.8            // height and length within this ratio: round about X
 #define RLDWHEEL_PREVIEW_UNIT 16.0    // the file's unit: 1/16 game unit
 #define RLDWHEEL_HEAD_BYTES 20u       // magic, width, height, flags
+#define RLDWHEEL_MATERIAL_BYTES 8u    // rgba, s16 texture, alpha mode, flags (MATL)
 #define RLDWHEEL_READ_MAX (64u * RLDWHEEL_TRIANGLES_MAX)   // triangles taken in before the ones without area are left out
-#define RLDWHEEL_CORNER_BYTES 18u
+#define RLDWHEEL_CORNER_BYTES 14u
+#define RLDWHEEL_TRIANGLE_BYTES (3u * RLDWHEEL_CORNER_BYTES + 2u)
 #define RLDWHEEL_ACROSS (2.0 * RLDDUM_TIRE_HALF_SIZE)   // the game's wheel, game units across
 
 struct RldWheelOptions
@@ -92,7 +107,7 @@ struct RldWheelMesh
 	int obj;
 	u32 texWidth;         // the texture as read, 0 = none
 	u32 texHeight;
-	u32 texFlags;         // RLDCHAR_TEX_WRAP_*
+	int texAlpha;         // a texel has alpha below 255
 	u8 *rgba;             // malloc'd, texWidth x texHeight x 4
 	char texture[RLD_PATH_MAX];
 	char material[RLDOBJ_NAME_MAX + 1u];
@@ -115,7 +130,7 @@ struct RldWheelResult
 	u32 texWidth;          // the texture as read (0 = none) and its file
 	u32 texHeight;
 	char texture[RLD_PATH_MAX];
-	u8 *preview;           // the RLDPW2 file, malloc'ed
+	u8 *preview;           // the RLDPW3 file, malloc'ed
 	size_t previewSize;
 };
 
@@ -276,7 +291,7 @@ static int RldWheel_Texture(const struct RldObjNative *n, const struct RldObjNat
 	size_t size = 0;
 	int fromImg = 0;
 	int state;
-	u32 wrap;
+	size_t i;
 	int ok = 1;
 
 	if ((m == NULL) || (m->texture == RLDMK_NONE) || (m->texture >= n->textureCount))
@@ -330,8 +345,10 @@ static int RldWheel_Texture(const struct RldObjNative *n, const struct RldObjNat
 			memcpy(w->rgba, image.rgba, (size_t)image.width * image.height * 4u);
 			w->texWidth = image.width;
 			w->texHeight = image.height;
-			wrap = m->clampOn ? 1u : 0u;
-			w->texFlags = (wrap << RLDCHAR_TEX_WRAP_U_SHIFT) | (wrap << RLDCHAR_TEX_WRAP_V_SHIFT);
+			for (i = 0; i < (size_t)image.width * image.height; i++)
+			{
+				w->texAlpha |= (image.rgba[4u * i + 3u] != 255u);
+			}
 			snprintf(w->texture, sizeof(w->texture), "%s", t->path);
 		}
 	}
@@ -478,50 +495,27 @@ static int RldWheel_Unit(double value)
 	return (int)unit;
 }
 
-// The RLDPW2 bytes of the wheel, times factor and shifted by `shift`. NULL = out of memory.
+// The RLDPW3 bytes of the wheel, times factor and shifted by `shift`. NULL = out of memory.
 static u8 *RldWheel_Preview(const struct RldWheelMesh *w, double factor, const double shift[3], struct RldWheelResult *res)
 {
-	struct RldCharTexture source;
-	u8 *texture = NULL;
-	u32 tw = 0;
-	u32 th = 0;
-	size_t size;
+	const int textured = (w->rgba != NULL);
+	const u32 tw = textured ? w->texWidth : 0u;
+	const u32 th = textured ? w->texHeight : 0u;
+	const size_t texBytes = (size_t)tw * th * 4u;
+	const size_t first = RLDWHEEL_HEAD_BYTES + texBytes + RLDWHEEL_MATERIAL_BYTES + 4u;
 	size_t at;
 	u8 *out;
 	u32 count = 0;
+	u32 outside = 0;
+	u32 flags = 0;
 	u32 t;
 
-	if (w->rgba != NULL)
-	{
-		source.width = w->texWidth;
-		source.height = w->texHeight;
-		source.flags = w->texFlags;
-		source.rgba = w->rgba;
-		texture = RldMk_NativePreviewTexture(&source, &tw, &th);
-		if (texture == NULL)
-		{
-			return NULL;
-		}
-	}
-	size = RLDWHEEL_HEAD_BYTES + (size_t)tw * th * 4u + 4u + (size_t)w->triangles * 3u * RLDWHEEL_CORNER_BYTES;
-	out = (u8 *)calloc(1, size);
+	out = (u8 *)calloc(1, first + (size_t)w->triangles * RLDWHEEL_TRIANGLE_BYTES);
 	if (out == NULL)
 	{
-		free(texture);
 		return NULL;
 	}
-	memcpy(out, "RLDPW2\0\0", 8u);
-	Rld_WriteLE32(&out[8], tw);
-	Rld_WriteLE32(&out[12], th);
-	Rld_WriteLE32(&out[16], (texture != NULL) ? w->texFlags : 0u);
-	at = RLDWHEEL_HEAD_BYTES;
-	if (texture != NULL)
-	{
-		memcpy(&out[at], texture, (size_t)tw * th * 4u);
-		at += (size_t)tw * th * 4u;
-	}
-	at += 4u;   // the count, below
-
+	at = first;
 	for (t = 0; t < w->triangles; t++)
 	{
 		int v[3][3];
@@ -542,21 +536,41 @@ static u8 *RldWheel_Preview(const struct RldWheelMesh *w, double factor, const d
 
 		for (k = 0; k < 3; k++)
 		{
+			const double *uv = &w->uv[6u * t + 2u * (u32)k];
+
 			for (a = 0; a < 3; a++)
 			{
 				Rld_WriteLE16(&out[at + 2u * (u32)a], (u32)v[k][a] & 0xFFFFu);
 			}
-			Rld_WriteLE32(&out[at + 6u], (u32)RldMk_NativePreviewQ16((texture != NULL) ? w->uv[6u * t + 2u * (u32)k] : 0.0));
-			Rld_WriteLE32(&out[at + 10u], (u32)RldMk_NativePreviewQ16((texture != NULL) ? w->uv[6u * t + 2u * (u32)k + 1u] : 0.0));
-			memcpy(&out[at + 14u], w->rgb, 3u);
-			out[at + 17u] = 0u;
+			Rld_WriteLE32(&out[at + 6u], (u32)RldMk_NativePreviewQ16(textured ? uv[0] : 0.0));
+			Rld_WriteLE32(&out[at + 10u], (u32)RldMk_NativePreviewQ16(textured ? uv[1] : 0.0));
+			outside |= (uv[0] < 0.0) || (uv[0] > 1.0) || (uv[1] < 0.0) || (uv[1] > 1.0);
 			at += RLDWHEEL_CORNER_BYTES;
 		}
+		out[at] = 0u;
+		out[at + 1u] = 0u;
+		at += 2u;
 		count++;
 	}
-	free(texture);
 
-	Rld_WriteLE32(&out[RLDWHEEL_HEAD_BYTES + (size_t)tw * th * 4u], count);
+	// The head, the texture and the material: the CTXT flags and MATL of
+	// make-char (rldpack_native.inc, CTXT and MATL of RldMk_NativeModel).
+	if (textured)
+	{
+		const u32 wrap = outside ? 0u : 1u;
+
+		flags = (wrap << RLDCHAR_TEX_WRAP_U_SHIFT) | (wrap << RLDCHAR_TEX_WRAP_V_SHIFT) | ((w->texAlpha ? 1u : 0u) << RLDCHAR_TEX_ALPHA_SHIFT);
+		memcpy(&out[RLDWHEEL_HEAD_BYTES], w->rgba, texBytes);
+	}
+	memcpy(out, "RLDPW3\0\0", 8u);
+	Rld_WriteLE32(&out[8], tw);
+	Rld_WriteLE32(&out[12], th);
+	Rld_WriteLE32(&out[16], flags);
+	memcpy(&out[RLDWHEEL_HEAD_BYTES + texBytes], w->rgb, 3u);
+	out[RLDWHEEL_HEAD_BYTES + texBytes + 3u] = 255u;
+	Rld_WriteLE16(&out[RLDWHEEL_HEAD_BYTES + texBytes + 4u], textured ? 0u : 0xFFFFu);
+	out[RLDWHEEL_HEAD_BYTES + texBytes + 6u] = (u8)((textured && w->texAlpha) ? 1u : 0u);
+	Rld_WriteLE32(&out[first - 4u], count);
 	res->triangles = count;
 	res->previewSize = at;
 	return out;
@@ -827,6 +841,12 @@ static int RldWheel_Command(int argc, char **argv)
 		{
 			forwardArg = argv[++i];
 		}
+		else if ((strcmp(arg, "--textures") == 0) && hasValue)
+		{
+			// The OBJ reader's switch, as make-char hands it on: the wheel's
+			// texture is looked for by the same rule (RldObj_SearchTexture).
+			RldObj_Argument(arg, argv[++i]);
+		}
 		else if (strcmp(arg, "--out") == 0)
 		{
 			RldMk_Say("error", "usage", arg, "char-wheel writes no container: make-char --wheel-model packs the wheel. It only writes --preview <file>.");
@@ -992,10 +1012,12 @@ static void RldWheel_Usage(FILE *out)
 	        RLDWHEEL_TEXTURE_EDGE_MAX);
 	fprintf(out, "  game's wheel (%.0f game units across) and centres it on its axle. The\n", RLDWHEEL_ACROSS);
 	fprintf(out, "  wheel: axle along X, outer side +X, +Y up, +Z forward. It writes only the\n");
-	fprintf(out, "  preview file for Reload Studio (RLDPW2, tools/rldpack_wheel.inc), never a\n");
+	fprintf(out, "  preview file for Reload Studio (RLDPW3, tools/rldpack_wheel.inc), never a\n");
 	fprintf(out, "  container: --out is refused.\n");
 	fprintf(out, "  --preview <file>            the wheel for the 3D preview of Reload Studio\n");
 	fprintf(out, "  --up y|z, --forward z|-z    the axes of the model, as with make-char\n");
+	fprintf(out, "  --textures <folder>         look for a texture that is not at its path in\n");
+	fprintf(out, "                              this folder first, as make-char does (up to %u)\n", RLDOBJ_TEXTURE_DIRS);
 	fprintf(out, "\n");
 	fprintf(out, "  machine lines (--machine): @value model, up, forward, preview; @file wheel;\n");
 	fprintf(out, "  @msg; @char wheel-mesh <obj|ply> <points> <materials>, wheel-texture\n");
@@ -1103,11 +1125,16 @@ static int RldWheel_TestBuild(const struct RldMkTestMesh *mesh, const struct Rld
 // of a point is its PLY y and z plus one half, none on the first face with
 // RLDWHEEL_TEST_NO_VT. The texture is a PNG of tw x th pixels, red at the top
 // left, green elsewhere; cut to its first half with RLDWHEEL_TEST_TEX_CUT,
-// not there with RLDWHEEL_TEST_TEX_GONE.
+// not there with RLDWHEEL_TEST_TEX_GONE, in "selftest/elsewhere/" instead of next
+// to the OBJ with RLDWHEEL_TEST_TEX_ASIDE, a folder the reader never looks in
+// by itself (found there only with RLDWHEEL_TEST_TEX_FOLDER: --textures
+// selftest/elsewhere, as char-wheel takes it).
 #define RLDWHEEL_TEST_TWO 1
 #define RLDWHEEL_TEST_NO_VT 2
 #define RLDWHEEL_TEST_TEX_CUT 4
 #define RLDWHEEL_TEST_TEX_GONE 8
+#define RLDWHEEL_TEST_TEX_ASIDE 16
+#define RLDWHEEL_TEST_TEX_FOLDER 32
 static int RldWheel_TestBuildObj(const struct RldMkTestMesh *mesh, u32 tw, u32 th, int flags, struct RldWheelResult *res)
 {
 	static const char mtl[] = "newmtl tire\nKd 1 1 1\nmap_Kd wheel.png\nnewmtl rim\nKd 0.5 0.5 0.5\n";
@@ -1126,6 +1153,10 @@ static int RldWheel_TestBuildObj(const struct RldMkTestMesh *mesh, u32 tw, u32 t
 	memset(&wo, 0, sizeof(wo));
 	RldMk_ResetSaid();
 	RldObj_ResetOptions();
+	if (flags & RLDWHEEL_TEST_TEX_FOLDER)
+	{
+		RldObj_Argument("--textures", "selftest/elsewhere");
+	}
 	if (rgb == NULL)
 	{
 		return 0;
@@ -1173,7 +1204,7 @@ static int RldWheel_TestBuildObj(const struct RldMkTestMesh *mesh, u32 tw, u32 t
 	files[0].path = "selftest/wheel.mtl";
 	files[0].data = (const u8 *)mtl;
 	files[0].size = sizeof(mtl) - 1u;
-	files[1].path = "selftest/wheel.png";
+	files[1].path = (flags & RLDWHEEL_TEST_TEX_ASIDE) ? "selftest/elsewhere/wheel.png" : "selftest/wheel.png";
 	files[1].data = png;
 	files[1].size = (flags & RLDWHEEL_TEST_TEX_CUT) ? (pngSize / 2u) : pngSize;
 	s_rldObjFiles = files;
@@ -1184,15 +1215,21 @@ static int RldWheel_TestBuildObj(const struct RldMkTestMesh *mesh, u32 tw, u32 t
 	}
 	s_rldObjFiles = NULL;
 	s_rldObjFileCount = 0;
+	RldObj_ResetOptions();
 	free(png);
 	free(b.data);
 	return ok;
 }
 
-// Where the triangles start in a RLDPW2 file.
+// Where the material and the triangles start in a RLDPW3 file.
+static size_t RldWheel_TestMaterial(const struct RldWheelResult *res)
+{
+	return RLDWHEEL_HEAD_BYTES + (size_t)Rld_ReadLE32(&res->preview[8]) * Rld_ReadLE32(&res->preview[12]) * 4u;
+}
+
 static size_t RldWheel_TestTris(const struct RldWheelResult *res)
 {
-	return RLDWHEEL_HEAD_BYTES + (size_t)Rld_ReadLE32(&res->preview[8]) * Rld_ReadLE32(&res->preview[12]) * 4u + 4u;
+	return RldWheel_TestMaterial(res) + RLDWHEEL_MATERIAL_BYTES + 4u;
 }
 
 // The box of the file's corners (x0 y0 z0 x1 y1 z1, 1/16 game units), and the
@@ -1221,7 +1258,7 @@ static void RldWheel_TestMeasure(const struct RldWheelResult *res, int box[6], u
 		{
 			for (a = 0; a < 3; a++)
 			{
-				const int unit = (int)(s16)Rld_ReadLE16(&res->preview[first + (3u * t + (u32)k) * RLDWHEEL_CORNER_BYTES + 2u * (u32)a]);
+				const int unit = (int)(s16)Rld_ReadLE16(&res->preview[first + t * RLDWHEEL_TRIANGLE_BYTES + (u32)k * RLDWHEEL_CORNER_BYTES + 2u * (u32)a]);
 
 				v[k][a] = (double)unit;
 				box[a] = (unit < box[a]) ? unit : box[a];
@@ -1273,8 +1310,8 @@ static int RldWheel_SelfTest(void)
 	RldWheel_Test(ok && (res.triangles == 64u) && (res.points == 34u) && (res.factor > 0.9999) && (res.factor < 1.0001) && (box[1] == -256) &&
 	                  (box[4] == 256) &&
 	                  (box[2] == -256) && (box[5] == 256) && (box[0] == -80) && (box[3] == 80) && (inward == 0u) &&
-	                  (memcmp(res.preview, "RLDPW2\0\0", 8u) == 0) && (Rld_ReadLE32(&res.preview[8]) == 0u) &&
-	                  (res.previewSize == RLDWHEEL_HEAD_BYTES + 4u + 64u * 3u * RLDWHEEL_CORNER_BYTES),
+	                  (memcmp(res.preview, "RLDPW3\0\0", 8u) == 0) && (Rld_ReadLE32(&res.preview[8]) == 0u) &&
+	                  (res.previewSize == RLDWHEEL_HEAD_BYTES + RLDWHEEL_MATERIAL_BYTES + 4u + 64u * RLDWHEEL_TRIANGLE_BYTES),
 	              "game size", "built %d, %u triangles, %u points, x%.4g, box %d %d %d %d %d %d, %u inward", ok, res.triangles, res.points, res.factor,
 	              box[0], box[1], box[2], box[3], box[4], box[5], inward);
 	RldWheel_FreeResult(&res);
@@ -1373,22 +1410,36 @@ static int RldWheel_SelfTest(void)
 	RldWheel_FreeResult(&res);
 
 	// 6. An OBJ with a 16 x 16 texture: textured, UVs v from the top, the
-	// texture in the file, white corners (Kd 1 1 1), one material.
+	// texture in the file, the material white (Kd 1 1 1) and opaque, one
+	// material; every UV inside 0..1, so clamp on both axes as make-char
+	// writes it.
 	RldWheel_TestWheel(mesh, 16u, 0.25, 0.078125, origin, 0);
 	ok = RldWheel_TestBuildObj(mesh, 16u, 16u, 0, &res);
 	{
 		const size_t first = ok ? RldWheel_TestTris(&res) : 0u;
+		const size_t material = ok ? RldWheel_TestMaterial(&res) : 0u;
 		const int textured = ok && (Rld_ReadLE32(&res.preview[8]) == 16u) && (Rld_ReadLE32(&res.preview[12]) == 16u) &&
+		                     (Rld_ReadLE32(&res.preview[16]) == ((1u << RLDCHAR_TEX_WRAP_U_SHIFT) | (1u << RLDCHAR_TEX_WRAP_V_SHIFT))) &&
 		                     (res.preview[RLDWHEEL_HEAD_BYTES] == 255u) && (res.preview[RLDWHEEL_HEAD_BYTES + 1u] == 0u) &&
 		                     (res.preview[RLDWHEEL_HEAD_BYTES + 5u] == 255u);
+		const int tint = ok && (res.preview[material] == 255u) && (res.preview[material + 1u] == 255u) && (res.preview[material + 2u] == 255u) &&
+		                 (res.preview[material + 3u] == 255u) && (Rld_ReadLE16(&res.preview[material + 4u]) == 0u) && (res.preview[material + 6u] == 0u);
 		// corner 0 of triangle 0: the ring's first point (y 0.25, z 0): u = 0.75, v = 1 - 0.5
-		const int uv = ok && ((s32)Rld_ReadLE32(&res.preview[first + 6u]) == 49152) && ((s32)Rld_ReadLE32(&res.preview[first + 10u]) == 32768) &&
-		               (res.preview[first + 14u] == 255u);
+		const int uv = ok && ((s32)Rld_ReadLE32(&res.preview[first + 6u]) == 49152) && ((s32)Rld_ReadLE32(&res.preview[first + 10u]) == 32768);
 
-		RldWheel_Test(ok && res.obj && textured && uv && (res.triangles == 64u) && (res.materials == 1u) && !RldMk_Said("wheel-materials"),
-		              "OBJ with texture", "built %d, obj %d, textured %d, uv %d, %u triangles, %u materials", ok, res.obj, textured, uv, res.triangles,
-		              res.materials);
+		RldWheel_Test(ok && res.obj && textured && tint && uv && (res.triangles == 64u) && (res.materials == 1u) && !RldMk_Said("wheel-materials") &&
+		                  (res.previewSize == first + 64u * RLDWHEEL_TRIANGLE_BYTES),
+		              "OBJ with texture", "built %d, obj %d, textured %d, tint %d, uv %d, %u triangles, %u materials", ok, res.obj, textured, tint, uv,
+		              res.triangles, res.materials);
 	}
+	RldWheel_FreeResult(&res);
+
+	// 6b. A texture of 1024 x 16, the largest side a wheel may have: in the
+	// file as it is, never halved.
+	ok = RldWheel_TestBuildObj(mesh, 1024u, 16u, 0, &res);
+	RldWheel_Test(ok && (Rld_ReadLE32(&res.preview[8]) == 1024u) && (Rld_ReadLE32(&res.preview[12]) == 16u) &&
+	                  (res.previewSize == RldWheel_TestTris(&res) + 64u * RLDWHEEL_TRIANGLE_BYTES),
+	              "texture 1024 kept whole", "built %d, %u x %u", ok, ok ? Rld_ReadLE32(&res.preview[8]) : 0u, ok ? Rld_ReadLE32(&res.preview[12]) : 0u);
 	RldWheel_FreeResult(&res);
 
 	// 7. A texture 2048 wide: refused (never scaled); 24 x 16: not a power of two.
@@ -1416,6 +1467,34 @@ static int RldWheel_SelfTest(void)
 	              "texture missing: the color", "built %d, wheel-texture said %d, wheel-texture-file said %d", ok, RldMk_Said("wheel-texture"),
 	              RldMk_Said("wheel-texture-file"));
 	RldWheel_FreeResult(&res);
+
+	// 7c. The texture only in another folder: missing without --textures,
+	// found there with it (tex-found-nearby), as make-char finds it; and
+	// char-wheel takes the switch.
+	ok = RldWheel_TestBuildObj(mesh, 16u, 16u, RLDWHEEL_TEST_TEX_ASIDE, &res);
+	RldWheel_Test(ok && RldMk_Said("wheel-texture") && (Rld_ReadLE32(&res.preview[8]) == 0u), "texture in another folder, no --textures: the color",
+	              "built %d, wheel-texture said %d", ok, RldMk_Said("wheel-texture"));
+	RldWheel_FreeResult(&res);
+	ok = RldWheel_TestBuildObj(mesh, 16u, 16u, RLDWHEEL_TEST_TEX_ASIDE | RLDWHEEL_TEST_TEX_FOLDER, &res);
+	RldWheel_Test(ok && !RldMk_Said("wheel-texture") && RldMk_Said("tex-found-nearby") && (Rld_ReadLE32(&res.preview[8]) == 16u) &&
+	                  (res.preview[RLDWHEEL_HEAD_BYTES] == 255u) && (res.preview[RLDWHEEL_HEAD_BYTES + 1u] == 0u),
+	              "texture found by --textures", "built %d, wheel-texture said %d, tex-found-nearby said %d", ok, RldMk_Said("wheel-texture"),
+	              RldMk_Said("tex-found-nearby"));
+	RldWheel_FreeResult(&res);
+	{
+		char *args[5];
+		int code;
+
+		args[0] = (char *)"--textures";
+		args[1] = (char *)"selftest/elsewhere";
+		args[2] = (char *)"--model";
+		args[3] = (char *)"selftest/no-such-wheel.obj";
+		args[4] = NULL;
+		code = RldWheel_Command(4, args);
+		RldWheel_Test((code != 0) && !RldMk_Said("usage") && (s_rldObjOptions.textureDirCount == 1u), "--textures is a switch of char-wheel",
+		              "exit code %d, usage said %d, %u folders", code, RldMk_Said("usage"), s_rldObjOptions.textureDirCount);
+		RldObj_ResetOptions();
+	}
 
 	// 8. Two materials: refused (a wheel has one); a textured face without vt: refused.
 	ok = RldWheel_TestBuildObj(mesh, 16u, 16u, RLDWHEEL_TEST_TWO, &res);

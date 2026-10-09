@@ -4887,6 +4887,21 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
     while (GetMessageW(&msg, NULL, 0, 0) > 0) {
         HWND page = g_current >= 0 ? g_pages[g_current] : NULL;
         int key = msg.message >= WM_KEYFIRST && msg.message <= WM_KEYLAST;
+        // The wheel over a model preview (class RS_VIEW_CLASS of rs_view.h)
+        // zooms it, wherever the focus is; the page scrolls everywhere else.
+        if (msg.message == WM_MOUSEWHEEL) {
+            POINT pt;
+            HWND under;
+            wchar_t cls[32];
+            pt.x = (short)LOWORD(msg.lParam);
+            pt.y = (short)HIWORD(msg.lParam);
+            under = WindowFromPoint(pt);
+            if (under && under != msg.hwnd && GetAncestor(under, GA_ROOT) == g_main &&
+                GetClassNameW(under, cls, 32) && wcscmp(cls, L"RsModelView") == 0) {
+                SendMessageW(under, msg.message, msg.wParam, msg.lParam);
+                continue;
+            }
+        }
         // A slider hands the mouse wheel to the scrolling view, also while it
         // has the focus (like Rs_ComboSub): scrolling the page over it must not
         // move it. The keys still move it.

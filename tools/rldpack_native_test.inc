@@ -619,9 +619,16 @@ static int RldMk_NativeMakeSet(struct RldMkNativeSet *set)
 // --repair auto: the native triangles repaired as the CMDL's (turned back,
 // the hole closed) - the native model of make-native-tests --obj.
 #define RLDMK_GOLDEN_NATIVE_OBJ_REPAIR "be878af022b345bef44f29ca5ad220af36daf6d0bae738f285a334682c0b952c"
-// The preview block of that native model (RLDPN1, THE NATIVE MODEL IN THE
-// PREVIEW), as make-char --preview appends it for Reload Studio.
-#define RLDMK_GOLDEN_NATIVE_OBJ_PREVIEW "1c87b550ff8f8a4dc2b98788031daefb298caba0ed2ebcd6f5a3213e6b71d895"
+// The preview block of the native model of the automatic poses (RLDPN2, THE
+// NATIVE MODEL IN THE PREVIEW), as make-char --preview appends it for Reload
+// Studio.
+#define RLDMK_GOLDEN_NATIVE_OBJ_PREVIEW "ae148fb53c4e351a38d05dff9902f14f3a50dbb7bc60f741a196e473b3b0cd6b"
+// The levels of include/rldmip.inc for the fixed image of the game's
+// --native-tex-selftest (32 x 16, 6 levels, 2732 bytes): the game's own
+// goldens (NATIVE_TEX_GOLDEN_* in platform/native_tex.c), so the packer and
+// Reload Studio build the levels the game uploads.
+#define RLDMK_GOLDEN_MIP_SRGB "a5a29bd35b804143de9d5d2d906be0dce6d804724b5f1a1206d1477590dee862"
+#define RLDMK_GOLDEN_MIP_LINEAR "35f614f4e3eb7d1eab2b6fd0fe77469e628aaf1d3c2e6d45f289b36a89e18680"
 // The mini OBJ with the driver split until the model is over the reduction
 // limit (RldMk_TestSplitOver), --reduce auto: the CMDL reduced, the native
 // model with every face, inside the CMDL's hull (RldMkBuild.nativePosition).
@@ -1215,11 +1222,20 @@ static void RldMk_SelfTestNativeObj(void)
 	{
 		size_t blockSize = 0;
 		u8 *block = RldMk_NativePreviewBlock(&native, &blockSize);
-		const size_t want = 8u + 4u + (12u + 16u * 32u * 4u) + (12u + 32u * 16u * 4u) + 8u + ((size_t)native.triangleCount * (3u * 18u + 40u));
+		const size_t texAt = 16u;
+		const size_t matAt = texAt + (12u + 16u * 32u * 4u) + (12u + 32u * 16u * 4u);
+		const size_t want = matAt + 4u + 4u * RLDMK_NATIVE_PREVIEW_MATERIAL_BYTES + 8u + ((size_t)native.triangleCount * (3u * 18u + 40u));
+		const size_t cornerAt = matAt + 4u + 4u * RLDMK_NATIVE_PREVIEW_MATERIAL_BYTES + 8u + 3u * (size_t)native.triangleCount * 18u;
+		const int laid = (block != NULL) && (blockSize == want) && (memcmp(block, "RLDPN2\0\0", 8u) == 0) && (Rld_ReadLE32(&block[8]) == 0u) &&
+		                 (Rld_ReadLE32(&block[12]) == 2u) && (Rld_ReadLE32(&block[texAt]) == 16u) && (Rld_ReadLE32(&block[texAt + 4u]) == 32u) &&
+		                 (memcmp(&block[texAt + 12u], native.texture[0].rgba, 16u * 32u * 4u) == 0) && (Rld_ReadLE32(&block[matAt]) == 4u) &&
+		                 (memcmp(&block[matAt + 4u], native.materials, 8u) == 0) && (memcmp(&block[matAt + 12u], &native.materials[16], 8u) == 0) &&
+		                 (block[cornerAt + 8u] == 255u) && (block[cornerAt + 11u] == 255u) &&
+		                 (Rld_ReadLE16(&block[cornerAt + 36u]) == Rld_ReadLE16(&native.triangleMaterials[0]));
 
-		RldMk_Test((block != NULL) && (blockSize == want) && (memcmp(block, "RLDPN1\0\0", 8u) == 0) && (Rld_ReadLE32(&block[8]) == 2u),
-		           "native OBJ: the preview block (RLDPN1) holds 2 textures and every triangle in 3 poses", "size %u, want %u", (u32)blockSize, (u32)want);
-		if ((block != NULL) && (Rld_CheckGolden("make-char --native-model on --preview of the mini OBJ: RLDPN1", block, blockSize,
+		RldMk_Test(laid, "native OBJ: the preview block (RLDPN2) holds 2 textures whole, 4 materials, every triangle in 3 poses, white corners without COL0",
+		           "size %u, want %u", (u32)blockSize, (u32)want);
+		if ((block != NULL) && (Rld_CheckGolden("make-char --native-model on --preview of the mini OBJ: RLDPN2", block, blockSize,
 		                                        RLDMK_GOLDEN_NATIVE_OBJ_PREVIEW) != 0))
 		{
 			s_rldMkTestFailed++;
@@ -1724,6 +1740,57 @@ static void RldMk_SelfTestNativeObj(void)
 	RldMk_ResetSaid();
 }
 
+// include/rldmip.inc against the game: the fixed image of NativeTex_TestImage
+// (platform/native_tex.c) - every fourth texel on a diagonal transparent, the
+// rest alpha 40..255 - gives the game's golden chains, and every byte comes
+// back from linear light unchanged.
+static void RldMk_SelfTestMip(void)
+{
+	enum
+	{
+		TEST_W = 32,
+		TEST_H = 16,
+	};
+	static u8 image[TEST_W * TEST_H * 4];
+	static u8 chain[TEST_W * TEST_H * 4 * 2];
+	const int levels = RldMip_LevelCount(TEST_W, TEST_H);
+	const size_t bytes = RldMip_ChainBytes(TEST_W, TEST_H, levels);
+	int roundTrip = 0;
+	int x;
+	int y;
+	int c;
+
+	for (y = 0; y < TEST_H; y++)
+	{
+		for (x = 0; x < TEST_W; x++)
+		{
+			u8 *p = image + ((size_t)y * TEST_W + (size_t)x) * 4u;
+
+			p[0] = (u8)((x * 37 + y * 11) & 255);
+			p[1] = (u8)((x * x * 3 + y * 29) & 255);
+			p[2] = (u8)(((x ^ y) * 23) & 255);
+			p[3] = (u8)((((x + y) % 4) == 0) ? 0 : ((x * y * 13 + 40) & 255));
+		}
+	}
+	for (c = 0; c < 256; c++)
+	{
+		roundTrip += (RldMip_Encode(RldMip_Decode((u8)c, 0), 0) == (u8)c) ? 1 : 0;
+	}
+	RldMk_Test((levels == 6) && (bytes == 2732u) && (roundTrip == 256) && (RldMip_LevelCount(2048, 16) == RLDMIP_LEVELS_MAX),
+	           "mip levels: 32 x 16 has 6 levels in 2732 bytes, 2048 has 12, every byte survives sRGB to linear and back",
+	           "%d levels, %u bytes, %d of 256 bytes back", levels, (u32)bytes, roundTrip);
+	RldMip_BuildLevels(image, TEST_W, TEST_H, levels, 0, chain);
+	if (Rld_CheckGolden("mip levels of the game's test image, sRGB (include/rldmip.inc)", chain, bytes, RLDMK_GOLDEN_MIP_SRGB) != 0)
+	{
+		s_rldMkTestFailed++;
+	}
+	RldMip_BuildLevels(image, TEST_W, TEST_H, levels, 1, chain);
+	if (Rld_CheckGolden("mip levels of the game's test image, linear data (include/rldmip.inc)", chain, bytes, RLDMK_GOLDEN_MIP_LINEAR) != 0)
+	{
+		s_rldMkTestFailed++;
+	}
+}
+
 static void RldMk_SelfTestNative(void)
 {
 	struct RldMkNativeSet set;
@@ -1846,6 +1913,9 @@ static void RldMk_SelfTestNative(void)
 
 	// The native model of an OBJ (make-char --native-model on).
 	RldMk_SelfTestNativeObj();
+
+	// The levels the preview builds of its textures, against the game's.
+	RldMk_SelfTestMip();
 }
 
 // Is there a CMakeCache.txt in folder or in one of the eight folders above
