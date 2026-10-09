@@ -30,6 +30,8 @@
 //    4d --fit crash: the model placed onto the reference dummy - its kart on
 //       Crash's kart (tools/rldpack_dummy.inc); --size and the poses turn
 //       about the dummy's seat
+//    4k shape keys of a glTF model (steer_left, steer_right, reverse, crash,
+//       jump, win, lose): offsets per position (RldMk_StepKeys)
 //    4m --remesh on (on request only): each part group of more than 24
 //       triangles becomes a closed hull (tools/rldpack_remesh.inc), which 4r
 //       then reduces
@@ -43,7 +45,8 @@
 //    5  axes and scale -> game units: +Y up, +Z forward, 64 per Blender unit
 //    6  draw memory per frame: 28 bytes per untextured triangle
 //    7  colors -> a palette of 128 (or 64)
-//    8  the 47 frames 21/7/15/4: still, or the automatic poses
+//    8  the 47 frames 21/7/15/4: still, or the automatic poses; a slot with
+//       a shape key takes neutral + w x offset along the retail curve instead
 //    9  quantization: one byte per axis, the up axis on even values (every
 //       value with --y-full, CHRI bit 4)
 //   10  command list: strips and fans, the vertex cache, cull bits per triangle
@@ -1394,6 +1397,48 @@ static int RldMk_ParsePly(const u8 *data, size_t size, struct RldMkPly *ply)
 
 static const char *const s_rldMkGroupNames[RLDMK_GROUPS] = {"kart", "driver", "wheel"};
 
+// The shape keys a model may bring (glTF morph targets, tools/rldpack_gltf.inc
+// reads them), in the order of RLDGLTF_KEY_*. The first five replace the
+// automatic motion of their slot in the 47 frames (RldMk_StepKeys); win and
+// lose never move a frame, they go to the native model only (RldMk_MorphDelta).
+#define RLDMK_KEY_STEER_LEFT 0
+#define RLDMK_KEY_STEER_RIGHT 1
+#define RLDMK_KEY_REVERSE 2
+#define RLDMK_KEY_CRASH 3
+#define RLDMK_KEY_JUMP 4
+#define RLDMK_KEY_WIN 5
+#define RLDMK_KEY_LOSE 6
+#define RLDMK_KEYS 7
+
+#define RLDMK_MORPH_WIN 0
+#define RLDMK_MORPH_LOSE 1
+
+static const char *const s_rldMkKeyNames[RLDMK_KEYS] = {"steer_left", "steer_right", "reverse", "crash", "jump", "win", "lose"};
+
+// What a slot shows (@pose): no key and the automatic motion, the key, the
+// other steering key mirrored, nothing at all (--poses still; win and lose
+// without a key), or a key that cannot be used (the slot is automatic then).
+enum
+{
+	RLDMK_KEYSTATE_AUTOMATIC = 0,
+	RLDMK_KEYSTATE_FILE,
+	RLDMK_KEYSTATE_MIRRORED,
+	RLDMK_KEYSTATE_NEUTRAL,
+	RLDMK_KEYSTATE_ERROR,
+	RLDMK_KEYSTATES
+};
+
+static const char *const s_rldMkKeyStates[RLDMK_KEYSTATES] = {"automatic", "from-file", "mirrored", "neutral", "error"};
+
+// The keys handed to the chain: per point of the RldMkPly (the index of
+// ply->xyz, before welding) the offset of that point in the key, in the axes
+// and units of ply->xyz. NULL = the key is not there.
+struct RldMkPoseKeys
+{
+	u32 pointCount;                   // == ply->vertexCount
+	const double *delta[RLDMK_KEYS];  // 3 per point
+};
+
 struct RldMkOptions
 {
 	u32 colorTarget;  // 64 or 128
@@ -1423,6 +1468,8 @@ struct RldMkOptions
 	int yFull;        // --y-full: the up axis on every value 0..255, CHRI flag RLDCHAR_FLAG_FULL_HEIGHT
 	int nativeKeep;   // --native-model on: a reduction keeps the positions before it for the native
 	                  // model (RldMkBuild.nativePosition); without a reduction nothing changes
+	const struct RldMkPoseKeys *keys;  // shape keys of the model (RldMk_StepKeys); NULL = none, the
+	                                   // build is byte for byte the one without them
 };
 
 struct RldMkPart
@@ -1602,6 +1649,19 @@ struct RldMkBuild
 	u8 *nativePositionGroup;
 	u32 *nativePlyPosition;    // per PLY vertex: its position here, RLDMK_NONE when dropped
 	double *nativeFrame;       // RLDMK_FRAMES_TOTAL x nativePositionCount x 3, game units
+
+	// Shape keys (RldMk_StepKeys): per key the offset of every position in game
+	// units, moved and scaled with the positions (the reduction, --size); the
+	// kart's are 0. keyNative per native position (nativePosition), only when
+	// the reduction kept those. NULL = the slot is not driven by a key.
+	int keysDone;              // RldMk_StepKeys ran: keyState says what each slot shows
+	int keyState[RLDMK_KEYS];  // RLDMK_KEYSTATE_*
+	const char *keyWhy[RLDMK_KEYS];  // the rule of RLDMK_KEYSTATE_ERROR
+	double *keyDelta[RLDMK_KEYS];
+	double *keyNative[RLDMK_KEYS];
+	u32 keyKartMoved[RLDMK_KEYS];  // kart points the key moved (pose-kart-moved), dropped
+	u32 keyMirrorPairs;        // the mirror rule: positions that found their mirror image
+	u32 keyMirrorOf;           // ... of these (driver and steering wheel)
 };
 
 static void RldMk_FreeBuild(struct RldMkBuild *b)
@@ -1642,6 +1702,15 @@ static void RldMk_FreeBuild(struct RldMkBuild *b)
 	free(b->nativePositionGroup);
 	free(b->nativePlyPosition);
 	free(b->nativeFrame);
+	{
+		int k;
+
+		for (k = 0; k < RLDMK_KEYS; k++)
+		{
+			free(b->keyDelta[k]);
+			free(b->keyNative[k]);
+		}
+	}
 	memset(b, 0, sizeof(*b));
 }
 
@@ -4037,6 +4106,416 @@ static int RldMk_StepDummy(struct RldMkBuild *b, const struct RldMkOptions *opt)
 }
 
 //========================================================================================
+// STEP 4k: SHAPE KEYS - POSES OF THE AUTHOR'S OWN
+//========================================================================================
+//
+// A glTF model may bring shape keys (morph targets) named after the slots
+// (s_rldMkKeyNames, case does not count; tools/rldpack_gltf.inc reads them).
+// The base mesh is the neutral pose. A key steer_left, steer_right, reverse,
+// crash or jump replaces the automatic motion of its slot in the 47 frames:
+// frame = neutral + w x offset, w along the retail curve that drives the
+// automatic pose (RldMk_FrameKey). CMDL and the native model's POSN get the
+// same frames (RldMk_StepPoses), and step 9 takes them all into the CMDL's
+// hull, so CNET-9 holds as it does for the automatic poses. win and lose
+// never move a frame: the native model takes their offsets (RldMk_MorphDelta),
+// and step 9 takes neutral + offset into its hull as well.
+//
+// Here, after the place (step 4d) and before the reduction, every position
+// gets the mean offset of the PLY points welded into it, through the linear
+// part of the axes (RldMk_Axes: --up, --forward and the factor of --fit or
+// --scale; the dummy's shift moves no offset). The reduction keeps the offsets
+// of the positions it keeps - and all of them for the native model under
+// --native-model on -, --size scales them with their positions.
+//
+// THE KART STAYS: offsets of kart positions are dropped (pose-kart-moved,
+// warning); the game's wheels and the shadow stand on it.
+// THE MIRROR: only one of steer_left and steer_right - the other side is its
+// mirror image (x -> -x about x = 0) when at least RLDMK_MIRROR_SHARE of the
+// driver's and steering wheel's positions find a mirror partner within
+// RLDMK_MIRROR_TOLERANCE of the model's width (state mirrored; a position
+// without a partner keeps still). Otherwise the turn stays automatic on both
+// sides, both slots automatic with the reason RLDMK_KEY_NOT_SYMMETRIC
+// (pose-not-symmetric, warning).
+// NO KEY IS USED with --poses still (every slot neutral, pose-still note),
+// without a driver part (pose-no-driver: the automatic poses move nothing
+// either) or after --remesh on (pose-remesh: the hulls have no point of the
+// model). Without keys this step only names the states: no byte changes.
+
+#define RLDMK_MIRROR_SHARE_NUM 49u     // 98 % = 49 / 50
+#define RLDMK_MIRROR_SHARE_DEN 50u
+#define RLDMK_MIRROR_TOLERANCE 0.005   // of the model's width (x)
+#define RLDMK_KEY_STILL 1.0e-6         // game units: a kart offset this small is none
+#define RLDMK_KEY_NOT_SYMMETRIC "model not symmetric, using automatic lean"  // the reason of both steering slots
+
+struct RldMkMirrorCell
+{
+	s64 cell[3];
+	u32 position;
+};
+
+static int RldMk_CompareMirrorCell(const void *a, const void *b)
+{
+	const struct RldMkMirrorCell *x = (const struct RldMkMirrorCell *)a;
+	const struct RldMkMirrorCell *y = (const struct RldMkMirrorCell *)b;
+	int i;
+
+	for (i = 0; i < 3; i++)
+	{
+		if (x->cell[i] != y->cell[i])
+		{
+			return (x->cell[i] < y->cell[i]) ? -1 : 1;
+		}
+	}
+
+	return (x->position < y->position) ? -1 : ((x->position > y->position) ? 1 : 0);
+}
+
+// The first entry of `cells` in cell c, or count when there is none.
+static u32 RldMk_MirrorFirst(const struct RldMkMirrorCell *cells, u32 count, const s64 c[3])
+{
+	u32 lo = 0;
+	u32 hi = count;
+
+	while (lo < hi)
+	{
+		const u32 mid = lo + (hi - lo) / 2u;
+		struct RldMkMirrorCell probe;
+
+		memcpy(probe.cell, c, sizeof(probe.cell));
+		probe.position = 0u;
+		if (RldMk_CompareMirrorCell(&cells[mid], &probe) < 0)
+		{
+			lo = mid + 1u;
+		}
+		else
+		{
+			hi = mid;
+		}
+	}
+
+	return ((lo < count) && (memcmp(cells[lo].cell, c, sizeof(cells[lo].cell)) == 0)) ? lo : count;
+}
+
+// The mirror partner of every position: the nearest position to (-x, y, z)
+// within `tolerance`, RLDMK_NONE for none; ties go to the lower position.
+// 0 = out of memory.
+static int RldMk_MirrorPartners(const double *position, u32 count, double tolerance, u32 *partner)
+{
+	struct RldMkMirrorCell *cells = (struct RldMkMirrorCell *)malloc(((size_t)count + 1u) * sizeof(*cells));
+	u32 p;
+	int a;
+
+	if (cells == NULL)
+	{
+		return 0;
+	}
+	for (p = 0; p < count; p++)
+	{
+		for (a = 0; a < 3; a++)
+		{
+			cells[p].cell[a] = (s64)RldMk_Floor(position[3u * p + (u32)a] / tolerance);
+		}
+		cells[p].position = p;
+	}
+	qsort(cells, count, sizeof(*cells), RldMk_CompareMirrorCell);
+
+	for (p = 0; p < count; p++)
+	{
+		const double m[3] = {-position[3u * p], position[3u * p + 1u], position[3u * p + 2u]};
+		double best = tolerance * tolerance;
+		s64 home[3];
+		int dx;
+		int dy;
+		int dz;
+
+		partner[p] = RLDMK_NONE;
+		for (a = 0; a < 3; a++)
+		{
+			home[a] = (s64)RldMk_Floor(m[a] / tolerance);
+		}
+		for (dx = -1; dx <= 1; dx++)
+		{
+			for (dy = -1; dy <= 1; dy++)
+			{
+				for (dz = -1; dz <= 1; dz++)
+				{
+					const s64 c[3] = {home[0] + dx, home[1] + dy, home[2] + dz};
+					u32 at = RldMk_MirrorFirst(cells, count, c);
+
+					for (; (at < count) && (memcmp(cells[at].cell, c, sizeof(c)) == 0); at++)
+					{
+						const u32 q = cells[at].position;
+						const double *v = &position[3u * q];
+						const double d = (v[0] - m[0]) * (v[0] - m[0]) + (v[1] - m[1]) * (v[1] - m[1]) + (v[2] - m[2]) * (v[2] - m[2]);
+
+						if ((d < best) || ((d == best) && ((partner[p] == RLDMK_NONE) || (q < partner[p]))))
+						{
+							best = d;
+							partner[p] = q;
+						}
+					}
+				}
+			}
+		}
+	}
+
+	free(cells);
+	return 1;
+}
+
+// The offsets of key k per position, game units (see above). 0 = out of memory.
+static int RldMk_KeyOffsets(const struct RldMkPly *ply, const struct RldMkOptions *opt, struct RldMkBuild *b, int k)
+{
+	const double *in = opt->keys->delta[k];
+	const u32 *map = (b->plyPosition != NULL) ? b->plyPosition : b->vertexPosition;
+	double *out = (double *)calloc((size_t)b->positionCount * 3u + 3u, sizeof(double));
+	u32 *count = (u32 *)calloc((size_t)b->positionCount + 1u, sizeof(u32));
+	u32 moved = 0;
+	u32 v;
+	u32 p;
+	int a;
+
+	if ((out == NULL) || (count == NULL))
+	{
+		free(out);
+		free(count);
+		return 0;
+	}
+
+	for (v = 0; (v < ply->vertexCount) && (v < opt->keys->pointCount); v++)
+	{
+		const u32 at = map[v];
+		double d[3];
+
+		if ((at == RLDMK_NONE) || (at >= b->positionCount))
+		{
+			continue;
+		}
+		RldMk_Axes(opt, &in[3u * v], d);
+		for (a = 0; a < 3; a++)
+		{
+			out[3u * at + (u32)a] += d[a];
+		}
+		count[at]++;
+	}
+
+	for (p = 0; p < b->positionCount; p++)
+	{
+		double *d = &out[3u * p];
+
+		if (count[p] > 1u)
+		{
+			for (a = 0; a < 3; a++)
+			{
+				d[a] /= (double)count[p];
+			}
+		}
+		if (b->positionGroup[p] == RLDMK_GROUP_KART)
+		{
+			if ((d[0] > RLDMK_KEY_STILL) || (d[0] < -RLDMK_KEY_STILL) || (d[1] > RLDMK_KEY_STILL) || (d[1] < -RLDMK_KEY_STILL) || (d[2] > RLDMK_KEY_STILL) ||
+			    (d[2] < -RLDMK_KEY_STILL))
+			{
+				moved++;
+			}
+			d[0] = 0.0;
+			d[1] = 0.0;
+			d[2] = 0.0;
+		}
+	}
+
+	b->keyKartMoved[k] = moved;
+	if (moved != 0u)
+	{
+		RldMk_Say("warning", "pose-kart-moved", s_rldMkKeyNames[k],
+		          "The shape key \"%s\" moves the kart (%u points); the kart stays as in the model - the game's wheels and the shadow stand on it. Move only the driver and the steering wheel in the key.",
+		          s_rldMkKeyNames[k], moved);
+	}
+
+	free(count);
+	b->keyDelta[k] = out;
+	return 1;
+}
+
+// One steering key alone: the other side as its mirror image, when the model
+// is symmetric enough. 0 = out of memory.
+static int RldMk_KeyMirror(struct RldMkBuild *b, int from, int to)
+{
+	const double *d = b->keyDelta[from];
+	double lo = 1.0e30;
+	double hi = -1.0e30;
+	double tolerance;
+	u32 *partner;
+	double *out;
+	u32 of = 0;
+	u32 pairs = 0;
+	u32 p;
+
+	for (p = 0; p < b->positionCount; p++)
+	{
+		const double x = b->position[3u * p];
+
+		lo = (x < lo) ? x : lo;
+		hi = (x > hi) ? x : hi;
+	}
+	tolerance = (hi > lo) ? (RLDMK_MIRROR_TOLERANCE * (hi - lo)) : 1.0e-6;
+
+	partner = (u32 *)malloc(((size_t)b->positionCount + 1u) * sizeof(u32));
+	out = (double *)calloc((size_t)b->positionCount * 3u + 3u, sizeof(double));
+	if ((partner == NULL) || (out == NULL) || !RldMk_MirrorPartners(b->position, b->positionCount, tolerance, partner))
+	{
+		free(partner);
+		free(out);
+		return 0;
+	}
+
+	for (p = 0; p < b->positionCount; p++)
+	{
+		const u32 q = partner[p];
+
+		if (b->positionGroup[p] == RLDMK_GROUP_KART)
+		{
+			continue;
+		}
+		of++;
+		if (q != RLDMK_NONE)
+		{
+			pairs++;
+			out[3u * p + 0u] = -d[3u * q + 0u];
+			out[3u * p + 1u] = d[3u * q + 1u];
+			out[3u * p + 2u] = d[3u * q + 2u];
+		}
+	}
+	free(partner);
+
+	b->keyMirrorPairs = pairs;
+	b->keyMirrorOf = of;
+	if (((u64)pairs * RLDMK_MIRROR_SHARE_DEN) >= ((u64)of * RLDMK_MIRROR_SHARE_NUM))
+	{
+		b->keyDelta[to] = out;
+		b->keyState[to] = RLDMK_KEYSTATE_MIRRORED;
+		RldMk_Say("info", "pose-mirrored", s_rldMkKeyNames[to], "%s is the mirror image of %s (%u of %u points of the driver found their partner).",
+		          s_rldMkKeyNames[to], s_rldMkKeyNames[from], pairs, of);
+		return 1;
+	}
+
+	free(out);
+	free(b->keyDelta[from]);
+	b->keyDelta[from] = NULL;
+	b->keyState[from] = RLDMK_KEYSTATE_AUTOMATIC;
+	b->keyState[to] = RLDMK_KEYSTATE_AUTOMATIC;
+	b->keyWhy[from] = RLDMK_KEY_NOT_SYMMETRIC;
+	b->keyWhy[to] = RLDMK_KEY_NOT_SYMMETRIC;
+	{
+		char technical[96];
+
+		snprintf(technical, sizeof(technical), "%s alone, %u of %u points mirrored, %u %% needed", s_rldMkKeyNames[from], pairs, of,
+		         (u32)(100u * RLDMK_MIRROR_SHARE_NUM / RLDMK_MIRROR_SHARE_DEN));
+		RldMk_Say("warning", "pose-not-symmetric", technical, "%s", RLDMK_KEY_NOT_SYMMETRIC);
+	}
+	return 1;
+}
+
+static int RldMk_StepKeys(const struct RldMkPly *ply, struct RldMkBuild *b, const struct RldMkOptions *opt)
+{
+	const struct RldMkPoseKeys *keys = opt->maskModel ? NULL : opt->keys;
+	int given[RLDMK_KEYS];
+	int any = 0;
+	int k;
+
+	b->keysDone = 1;
+	for (k = 0; k < RLDMK_KEYS; k++)
+	{
+		given[k] = (keys != NULL) && (keys->delta[k] != NULL) && (keys->pointCount == ply->vertexCount);
+		any |= given[k];
+		b->keyState[k] = given[k] ? RLDMK_KEYSTATE_FILE : ((k < RLDMK_KEY_WIN) ? RLDMK_KEYSTATE_AUTOMATIC : RLDMK_KEYSTATE_NEUTRAL);
+		b->keyWhy[k] = NULL;
+	}
+
+	if (opt->still)
+	{
+		for (k = 0; k < RLDMK_KEYS; k++)
+		{
+			b->keyState[k] = RLDMK_KEYSTATE_NEUTRAL;
+		}
+		if (any)
+		{
+			RldMk_Say("note", "pose-still", NULL, "--poses still: every frame is the neutral pose, the shape keys are not used.");
+		}
+		return 1;
+	}
+	if (!any)
+	{
+		return 1;
+	}
+
+	if (b->remeshed || !b->posed)
+	{
+		const char *why = b->remeshed ? "pose-remesh" : "pose-no-driver";
+
+		for (k = 0; k < RLDMK_KEYS; k++)
+		{
+			if (given[k])
+			{
+				b->keyState[k] = RLDMK_KEYSTATE_ERROR;
+				b->keyWhy[k] = why;
+			}
+		}
+		if (b->remeshed)
+		{
+			RldMk_Say("warning", "pose-remesh", NULL,
+			          "The shape keys cannot follow the closed hull (--remesh on): the hull has no points of the model. The poses stay automatic; build without --remesh to use them.");
+		}
+		else
+		{
+			RldMk_Say("warning", "pose-no-driver", NULL,
+			          "The model has no driver part apart from the kart, so the shape keys cannot move anything (the kart stays as in the model). Make the driver a separate part.");
+		}
+		return 1;
+	}
+
+	for (k = 0; k < RLDMK_KEYS; k++)
+	{
+		if (given[k] && !RldMk_KeyOffsets(ply, opt, b, k))
+		{
+			return RldMk_OutOfMemory();
+		}
+	}
+
+	if (given[RLDMK_KEY_STEER_LEFT] != given[RLDMK_KEY_STEER_RIGHT])
+	{
+		const int from = given[RLDMK_KEY_STEER_LEFT] ? RLDMK_KEY_STEER_LEFT : RLDMK_KEY_STEER_RIGHT;
+
+		if (!RldMk_KeyMirror(b, from, (from == RLDMK_KEY_STEER_LEFT) ? RLDMK_KEY_STEER_RIGHT : RLDMK_KEY_STEER_LEFT))
+		{
+			return RldMk_OutOfMemory();
+		}
+	}
+
+	return 1;
+}
+
+// The offsets of key k for set 0 (the positions) or 1 (the native ones, after
+// a reduction under --native-model on), NULL = none.
+static double *RldMk_KeySet(const struct RldMkBuild *b, int set, int k)
+{
+	return (set == 0) ? b->keyDelta[k] : b->keyNative[k];
+}
+
+// win and lose for the native model's MRPH (pose-api): the offset of every
+// position of the chain RldMk_NativeModel maps the CNET vertices onto (its
+// chainPosition: nativePosition after a reduction under --native-model on,
+// else position), 3 doubles each, game units as POSN; the kart's are 0.
+// NULL = the model has no such key (or it could not be used).
+static const double *RldMk_MorphDelta(const struct RldMkBuild *b, int target, u32 *positionCount)
+{
+	const int kept = (b->nativeFrame != NULL);
+	const int k = (target == RLDMK_MORPH_LOSE) ? RLDMK_KEY_LOSE : RLDMK_KEY_WIN;
+
+	*positionCount = kept ? b->nativePositionCount : b->positionCount;
+	return kept ? b->keyNative[k] : b->keyDelta[k];
+}
+
+//========================================================================================
 // STEP 4m: --remesh on - CLOSED HULLS
 //========================================================================================
 //
@@ -4615,6 +5094,76 @@ static u32 RldMk_RemeshTarget(const struct RldMkBuild *b, u32 target)
 	return (wanted < target) ? wanted : target;
 }
 
+// The shape keys through the reduction (RldMk_StepKeys): room for the offsets
+// of the kept positions, 0 = out of memory (nothing kept then).
+static int RldMk_KeysKeep(const struct RldMkBuild *b, double *kept[RLDMK_KEYS])
+{
+	int k;
+
+	for (k = 0; k < RLDMK_KEYS; k++)
+	{
+		kept[k] = NULL;
+		if (b->keyDelta[k] != NULL)
+		{
+			kept[k] = (double *)malloc(((size_t)b->positionCount + 1u) * 3u * sizeof(double));
+			if (kept[k] == NULL)
+			{
+				while (k > 0)
+				{
+					k--;
+					free(kept[k]);
+					kept[k] = NULL;
+				}
+				return 0;
+			}
+		}
+	}
+
+	return 1;
+}
+
+static void RldMk_KeysFree(double *kept[RLDMK_KEYS])
+{
+	int k;
+
+	for (k = 0; k < RLDMK_KEYS; k++)
+	{
+		free(kept[k]);
+		kept[k] = NULL;
+	}
+}
+
+// The offsets of the kept positions in their new order; the old ones stay for
+// the native positions when those are kept (RldMkBuild.nativePosition).
+static void RldMk_KeysCommit(struct RldMkBuild *b, double *kept[RLDMK_KEYS], const u32 *renumber, int native)
+{
+	int k;
+	u32 i;
+
+	for (k = 0; k < RLDMK_KEYS; k++)
+	{
+		if (b->keyDelta[k] == NULL)
+		{
+			continue;
+		}
+		for (i = 0; i < b->positionCount; i++)
+		{
+			if (renumber[i] != RLDMK_NONE)
+			{
+				memcpy(&kept[k][3u * renumber[i]], &b->keyDelta[k][3u * i], 3u * sizeof(double));
+			}
+		}
+		free(b->keyNative[k]);
+		b->keyNative[k] = native ? b->keyDelta[k] : NULL;
+		if (!native)
+		{
+			free(b->keyDelta[k]);
+		}
+		b->keyDelta[k] = kept[k];
+		kept[k] = NULL;
+	}
+}
+
 static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, const struct RldMkOptions *opt)
 {
 	const u32 triangles = b->triangleCount;
@@ -4637,11 +5186,13 @@ static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, co
 	u8 *positionGroup;
 	u32 *diagReduced = NULL;
 	u32 *diagFrom = NULL;
+	double *keyKept[RLDMK_KEYS];
 	u32 reduceStage;
 	u32 used = 0;
 	u32 t;
 	u32 i;
 
+	memset(keyKept, 0, sizeof(keyKept));
 	b->reduceFrom = triangles;
 	b->reduceTo = triangles;
 
@@ -4787,7 +5338,7 @@ static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, co
 		diagFrom = (u32 *)malloc(((size_t)b->positionCount + 1u) * sizeof(u32));
 	}
 	if ((vertexPosition == NULL) || (vertexRgb == NULL) || (triangle == NULL) || (renumber == NULL) || (position == NULL) || (positionPart == NULL) ||
-	    (positionGroup == NULL) || (b->diagnose && ((diagReduced == NULL) || (diagFrom == NULL))))
+	    (positionGroup == NULL) || (b->diagnose && ((diagReduced == NULL) || (diagFrom == NULL))) || !RldMk_KeysKeep(b, keyKept))
 	{
 		free(vertexPosition);
 		free(vertexRgb);
@@ -4851,6 +5402,7 @@ static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, co
 		free(positionGroup);
 		free(diagReduced);
 		free(diagFrom);
+		RldMk_KeysFree(keyKept);
 		RldRed_Free(&result);
 		return 0;
 	}
@@ -4871,6 +5423,7 @@ static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, co
 			free(positionGroup);
 			free(diagReduced);
 			free(diagFrom);
+			RldMk_KeysFree(keyKept);
 			RldRed_Free(&result);
 			return RldMk_OutOfMemory();
 		}
@@ -4932,6 +5485,7 @@ static int RldMk_StepReduce(const struct RldMkPly *ply, struct RldMkBuild *b, co
 		free(b->position);
 		free(b->positionGroup);
 	}
+	RldMk_KeysCommit(b, keyKept, renumber, opt->nativeKeep && !opt->maskModel);
 	free(b->triangle);
 	free(b->vertexRgb);
 	free(b->positionPart);
@@ -5054,8 +5608,9 @@ static int RldMk_StepBudget(struct RldMkBuild *b, const struct RldMkOptions *opt
 //========================================================================================
 //
 // The frame counts are the templates' (21/7/15/4, s_rldCharFrames), counted
-// without the half-frame bit. Still: every frame is the neutral pose. The
-// automatic poses move rigid parts only, the kart never:
+// without the half-frame bit. Still: every frame is the neutral pose. A slot
+// with a shape key takes it instead of its automatic pose (RldMk_FrameKey,
+// step 4k). The automatic poses move rigid parts only, the kart never:
 //
 // (These are the poses of --fit none, about the hip; with --fit crash the
 // dummy's poses apply instead, RldDum_PoseFrame.)
@@ -5138,6 +5693,72 @@ static void RldMk_FramePose(u32 frame, struct RldMkPose *pose)
 
 		first += count;
 	}
+}
+
+// THE KEYS (RldMk_StepKeys) in the frames: the key that drives frame `frame`
+// and its weight w (frame = neutral + w x offset), -1 = none (the automatic
+// pose). The weights follow the curves that drive the automatic poses:
+//   turn 0..20     steer_left on 0..9, steer_right on 11..20, by the retail
+//                  curve s_rldDumRetailTurn normed to 1 at the stop (frames
+//                  0 and 20), 10 neutral; only with both sides (one may be
+//                  mirrored)
+//   reverse 0..6   k / 6
+//   bump 0..14     crash, by the nod s_rldMkBumpPitch normed to 1 at its
+//                  peak (-20 degrees, frames 2 and 3): the same course and
+//                  sign, so frame 8 (+8 degrees) swings to -0.4
+//   jump 0..3      k / 3
+#define RLDMK_BUMP_PITCH_PEAK (-20.0)
+
+static int RldMk_FrameKey(const struct RldMkBuild *b, u32 frame, double *weight)
+{
+	u32 first = 0;
+	int anim;
+
+	*weight = 0.0;
+	for (anim = 0; anim < RLDCHAR_ANIM_COUNT; anim++)
+	{
+		const u32 count = (u32)s_rldCharFrames[anim];
+
+		if (frame < (first + count))
+		{
+			const u32 k = frame - first;
+
+			if (anim == 0)
+			{
+				if ((b->keyDelta[RLDMK_KEY_STEER_LEFT] == NULL) || (b->keyDelta[RLDMK_KEY_STEER_RIGHT] == NULL))
+				{
+					return -1;
+				}
+				if (k < (u32)RLDDUM_NEUTRAL_FRAME)
+				{
+					*weight = s_rldDumRetailTurn[k] / RLDDUM_RETAIL_WHEEL_TURN;
+					return RLDMK_KEY_STEER_LEFT;
+				}
+				if (k > (u32)RLDDUM_NEUTRAL_FRAME)
+				{
+					*weight = s_rldDumRetailTurn[2u * RLDDUM_NEUTRAL_FRAME - k] / RLDDUM_RETAIL_WHEEL_TURN;
+					return RLDMK_KEY_STEER_RIGHT;
+				}
+				return RLDMK_KEY_STEER_LEFT;
+			}
+			if (anim == 1)
+			{
+				*weight = (double)k / 6.0;
+				return (b->keyDelta[RLDMK_KEY_REVERSE] != NULL) ? RLDMK_KEY_REVERSE : -1;
+			}
+			if (anim == 2)
+			{
+				*weight = s_rldMkBumpPitch[(k < 15u) ? k : 14u] / RLDMK_BUMP_PITCH_PEAK;
+				return (b->keyDelta[RLDMK_KEY_CRASH] != NULL) ? RLDMK_KEY_CRASH : -1;
+			}
+			*weight = (double)((k < 4u) ? k : 3u) / 3.0;
+			return (b->keyDelta[RLDMK_KEY_JUMP] != NULL) ? RLDMK_KEY_JUMP : -1;
+		}
+
+		first += count;
+	}
+
+	return -1;
 }
 
 // The sines and cosines of a pose: pitch, yaw, roll.
@@ -5224,6 +5845,8 @@ static int RldMk_StepPoses(struct RldMkBuild *b)
 	{
 		struct RldMkPose pose;
 		struct RldDumPose dummyPose;
+		double weight;
+		const int key = RldMk_FrameKey(b, f, &weight);
 
 		RldMk_FramePose(f, &pose);
 		RldDum_PoseFrame(f, &dummyPose);
@@ -5239,6 +5862,14 @@ static int RldMk_StepPoses(struct RldMkBuild *b)
 			u8 *positionGroup;
 			const u32 count = RldMk_PositionSet(b, set, &position, &positionGroup);
 			double *frame = (set == 0) ? b->frame : b->nativeFrame;
+			const double *offset = (key < 0) ? NULL : RldMk_KeySet(b, set, key);
+
+			if ((key >= 0) && (count != 0u) && (offset == NULL))
+			{
+				RldMk_Say("error", "pose-internal", s_rldMkKeyNames[key], "Internal error: the shape key %s lost its native points. Please report it.",
+				          s_rldMkKeyNames[key]);
+				return 0;
+			}
 
 			for (p = 0; p < count; p++)
 			{
@@ -5246,7 +5877,14 @@ static int RldMk_StepPoses(struct RldMkBuild *b)
 				double *out = &frame[((size_t)f * count + p) * 3u];
 				const int group = positionGroup[p];
 
-				if (!b->posed || (group == RLDMK_GROUP_KART) || (!b->dummy && (group == RLDMK_GROUP_WHEEL) && !pose.wheel))
+				if (offset != NULL)
+				{
+					// a shape key: neutral + w x offset (the kart's offsets are 0)
+					out[0] = neutral[0] + weight * offset[3u * p + 0u];
+					out[1] = neutral[1] + weight * offset[3u * p + 1u];
+					out[2] = neutral[2] + weight * offset[3u * p + 2u];
+				}
+				else if (!b->posed || (group == RLDMK_GROUP_KART) || (!b->dummy && (group == RLDMK_GROUP_WHEEL) && !pose.wheel))
 				{
 					memcpy(out, neutral, 3u * sizeof(double));
 				}
@@ -5378,12 +6016,21 @@ static void RldMk_SizeHull(const struct RldMkBuild *b, struct RldMkSizeHull *hul
 		return;
 	}
 
-	// Without poses every frame is the neutral one: one pass is enough.
-	for (f = 0; f < (b->posed ? (u32)RLDMK_FRAMES_TOTAL : 1u); f++)
+	// Without poses every frame is the neutral one: one pass is enough. Two
+	// more passes for the shape keys win and lose (neutral + offset), which
+	// step 9 takes into the hull as well.
+	for (f = 0; f < ((u32)RLDMK_FRAMES_TOTAL + 2u); f++)
 	{
 		struct RldMkPose pose;
 		struct RldDumPose dummyPose;
 		double trig[6];
+		double weight = 1.0;
+		const int key = (f < (u32)RLDMK_FRAMES_TOTAL) ? RldMk_FrameKey(b, f, &weight) : (RLDMK_KEY_WIN + (int)(f - (u32)RLDMK_FRAMES_TOTAL));
+
+		if ((f >= (b->posed ? (u32)RLDMK_FRAMES_TOTAL : 1u)) && ((f < (u32)RLDMK_FRAMES_TOTAL) || (b->keyDelta[key] == NULL)))
+		{
+			continue;
+		}
 
 		RldMk_FramePose(f, &pose);
 		RldMk_PoseTrig(&pose, trig);
@@ -5411,7 +6058,15 @@ static void RldMk_SizeHull(const struct RldMkBuild *b, struct RldMkSizeHull *hul
 					continue;
 				}
 
-				if (!b->posed || (!b->dummy && (group == RLDMK_GROUP_WHEEL) && !pose.wheel))
+				if ((key >= 0) && (RldMk_KeySet(b, set, key) != NULL))
+				{
+					const double *offset = &RldMk_KeySet(b, set, key)[3u * p];
+
+					moved[0] = neutral[0] + weight * offset[0];
+					moved[1] = neutral[1] + weight * offset[1];
+					moved[2] = neutral[2] + weight * offset[2];
+				}
+				else if (!b->posed || (!b->dummy && (group == RLDMK_GROUP_WHEEL) && !pose.wheel))
 				{
 					memcpy(moved, neutral, sizeof(moved));
 				}
@@ -5518,6 +6173,7 @@ static int RldMk_StepSize(struct RldMkBuild *b, const struct RldMkOptions *opt)
 	u32 high = 0;
 	u32 p;
 	int set;
+	int k;
 	double s;
 
 	// The measures as exported, for ply-axes in RldMk_StepMeasure (the same
@@ -5622,6 +6278,17 @@ static int RldMk_StepSize(struct RldMkBuild *b, const struct RldMkOptions *opt)
 			for (a = 0; a < 3; a++)
 			{
 				v[a] = hull.pivot[a] + s * (v[a] - hull.pivot[a]);
+			}
+
+			// the shape keys' offsets grow with their positions
+			for (k = 0; k < RLDMK_KEYS; k++)
+			{
+				double *offset = RldMk_KeySet(b, set, k);
+
+				for (a = 0; (offset != NULL) && (a < 3); a++)
+				{
+					offset[3u * p + (u32)a] *= s;
+				}
 			}
 		}
 	}
@@ -5848,6 +6515,34 @@ static int RldMk_StepQuantize(struct RldMkBuild *b)
 
 			lo[a] = (v < lo[a]) ? v : lo[a];
 			hi[a] = (v > hi[a]) ? v : hi[a];
+		}
+	}
+	// The shape keys win and lose (RldMk_StepKeys): neutral + offset of both
+	// sets, so that the native model's MRPH stays inside the hull too.
+	{
+		int key;
+		int set;
+
+		for (key = RLDMK_KEY_WIN; key <= RLDMK_KEY_LOSE; key++)
+		{
+			for (set = 0; set < 2; set++)
+			{
+				double *position;
+				u8 *positionGroup;
+				const u32 count = RldMk_PositionSet(b, set, &position, &positionGroup);
+				const double *offset = RldMk_KeySet(b, set, key);
+
+				for (i = 0; (offset != NULL) && (i < count); i++)
+				{
+					for (a = 0; a < 3; a++)
+					{
+						const double v = position[3u * i + (size_t)a] + offset[3u * i + (size_t)a];
+
+						lo[a] = (v < lo[a]) ? v : lo[a];
+						hi[a] = (v > hi[a]) ? v : hi[a];
+					}
+				}
+			}
 		}
 	}
 
@@ -7994,7 +8689,7 @@ static int RldMk_BuildOnce(const struct RldMkPly *ply, const struct RldMkOptions
 		          tall / RLDMK_UNITS, RLDMK_RETAIL_HEIGHT_MAX / RLDMK_UNITS, b->fitKart[1] / RLDMK_UNITS, RLDMK_CRASH_LENGTH / RLDMK_UNITS, percent);
 	}
 
-	if (!RldMk_StepRemesh(b, opt, ply) || !RldMk_StepDummy(b, opt) || (b->diagnose && !RldMk_DiagKeep(ply, b)))
+	if (!RldMk_StepRemesh(b, opt, ply) || !RldMk_StepDummy(b, opt) || !RldMk_StepKeys(ply, b, opt) || (b->diagnose && !RldMk_DiagKeep(ply, b)))
 	{
 		return 0;
 	}
@@ -12909,6 +13604,71 @@ static void RldMk_EmitFacts(const struct RldMkBuild *b, u32 templateId)
 	}
 }
 
+// The shape keys the model reader found (s_rldGltfMorphs, after
+// RldMk_LoadModel) for the chain: opt->keys stays NULL without any, and the
+// build is then the one of a model without keys.
+static void RldMk_KeysFromModel(const struct RldMkPly *ply, struct RldMkPoseKeys *keys, struct RldMkOptions *opt)
+{
+	int any = 0;
+	int k;
+
+	memset(keys, 0, sizeof(*keys));
+	opt->keys = NULL;
+	if (!s_rldGltfMorphs.read || (s_rldGltfMorphs.pointCount != ply->vertexCount))
+	{
+		return;
+	}
+
+	keys->pointCount = s_rldGltfMorphs.pointCount;
+	for (k = 0; (k < RLDMK_KEYS) && (k < RLDGLTF_KEY_COUNT); k++)
+	{
+		keys->delta[k] = s_rldGltfMorphs.point[k];
+		any |= (keys->delta[k] != NULL);
+	}
+	opt->keys = any ? keys : NULL;
+}
+
+// @pose <name> <state> <reason> for all seven shape key names, in the order
+// of s_rldMkKeyNames (Reload Studio, the card Animations): from-file,
+// automatic (no key, or a steering key alone on a model that is not symmetric:
+// the automatic motion), mirrored (the other steering key's mirror image),
+// neutral (win and lose without a key; every slot with --poses still) or
+// error (the key is there but cannot be used - the slot is automatic). The
+// reason is a rule id (error) or RLDMK_KEY_NOT_SYMMETRIC (automatic), else "-".
+static void RldMk_EmitPoses(const struct RldMkBuild *b, const struct RldMkOptions *opt)
+{
+	char text[256];
+	size_t at = 0;
+	int k;
+
+	text[0] = '\0';
+	for (k = 0; k < RLDMK_KEYS; k++)
+	{
+		const int given = (opt->keys != NULL) && (opt->keys->delta[k] != NULL);
+		int state = given ? RLDMK_KEYSTATE_ERROR : ((opt->still || (k >= RLDMK_KEY_WIN)) ? RLDMK_KEYSTATE_NEUTRAL : RLDMK_KEYSTATE_AUTOMATIC);
+		const char *why = given ? "model" : NULL;
+
+		// the chain stopped before the keys: a key cannot be used then
+		if (b->keysDone)
+		{
+			state = b->keyState[k];
+			why = b->keyWhy[k];
+		}
+		Rld_Emit("pose", s_rldMkKeyNames[k], s_rldMkKeyStates[state], (why != NULL) ? why : "-", (const char *)NULL);
+		if (at < sizeof(text))
+		{
+			const int n = snprintf(&text[at], sizeof(text) - at, "%s%s %s", (k == 0) ? "" : ", ", s_rldMkKeyNames[k], s_rldMkKeyStates[state]);
+
+			at += (n > 0) ? (size_t)n : 0u;
+		}
+	}
+
+	if ((opt->keys != NULL) && !s_rldMkQuiet)
+	{
+		printf("  shape keys    %s\n", text);
+	}
+}
+
 // The same, for people.
 static void RldMk_PrintFacts(const struct RldMkBuild *b, const struct RldMkOptions *opt, u32 templateId)
 {
@@ -13263,6 +14023,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	int authorGiven;
 	int built;
 	struct RldMkOptions opt;
+	struct RldMkPoseKeys poseKeys;
 	struct RldMkPly ply;
 	struct RldMkModelInfo modelInfo;
 	struct RldMkBuild build;
@@ -14047,9 +14808,14 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	}
 	s_rldObjNativeWant = 0;
 
+	// THE SHAPE KEYS of a glTF model (tools/rldpack_gltf.inc), per point of
+	// the model as read: the chain bakes them into the frames (RldMk_StepKeys).
+	RldMk_KeysFromModel(&ply, &poseKeys, &opt);
+
 	built = RldMk_BuildModel(&ply, &opt, &build);
 	RldMk_EmitFacts(&build, templateId);
 	RldMk_PrintFacts(&build, &opt, templateId);
+	RldMk_EmitPoses(&build, &opt);
 
 	// BUILT TWICE: the same input must give the same bytes. Not with --check:
 	// Reload Studio checks after every change of a field, and nothing is
@@ -22105,6 +22871,424 @@ static void RldMk_SelfTestTurret(struct RldMkTestMesh *mesh)
 	}
 }
 
+// SHAPE KEYS (RldMk_StepKeys): kart, driver and steering wheel as boxes,
+// offsets per PLY point made in memory - no glTF is read.
+//   key replaces slot   a jump key: frames 0..42 as without keys, 43..46
+//                       neutral + k/3 x offset; the kart never moves
+//   turn                both steering keys: frame 0 and 20 the full offset,
+//                       10 neutral, 5 along the retail curve
+//   mirror yes / no     steer_left alone on a symmetric model: steer_right
+//                       mirrored; on a lopsided one automatic (pose-not-symmetric)
+//   unknown key         a glTF read with only unknown names: no keys, the bytes
+//                       of the model without them
+//   no keys             an empty key set builds the same bytes
+//   hull                crash, win and lose and the reduced native positions
+//                       lie inside the hull of every CMDL frame (CNET-9); a key
+//                       too large for a driver is a clear error (model-scale)
+
+// The standard model with the driver box split n x n; *driverFirst..*driverEnd the
+// driver's PLY points, *kartEnd the kart's end. lopsided: the driver box reaches
+// further to -x than to +x.
+static void RldMk_TestKeyModel(struct RldMkTestMesh *mesh, u32 n, int lopsided, u32 *kartEnd, u32 *driverEnd)
+{
+	static const double kartLo[3] = {-0.45, 0.10, -0.90};
+	static const double kartHi[3] = {0.45, 0.35, 0.90};
+	static const double wheelLo[3] = {-0.15, 0.50, 0.30};
+	static const double wheelHi[3] = {0.15, 0.60, 0.36};
+	double driverLo[3] = {-0.25, 0.40, -0.40};
+	double driverHi[3] = {0.25, 1.00, 0.10};
+
+	if (lopsided)
+	{
+		driverHi[0] = 0.05;
+	}
+	mesh->vertexCount = 0;
+	mesh->faceCount = 0;
+	RldMk_TestBox(mesh, kartLo, kartHi, 1u, 0u, 0, -1);
+	*kartEnd = mesh->vertexCount;
+	RldMk_TestBox(mesh, driverLo, driverHi, n, 10u, 0, -1);
+	*driverEnd = mesh->vertexCount;
+	RldMk_TestBox(mesh, wheelLo, wheelHi, 1u, 20u, 0, -1);
+}
+
+// Offsets of one kind for every PLY point: 0 none, 1 the driver up by 0.1, 2 the
+// driver toward +X by 0.1 per unit of height above 0.4, 3 the kart up by 0.1,
+// 4 the driver up by 100 (far too large).
+static void RldMk_TestKeyFill(double *delta, u32 count, u32 kartEnd, u32 driverEnd, const struct RldMkTestMesh *mesh, int kind)
+{
+	u32 v;
+
+	for (v = 0; v < count; v++)
+	{
+		const int driver = (v >= kartEnd) && (v < driverEnd);
+
+		delta[3u * v + 0u] = ((kind == 2) && driver) ? (0.1 * (mesh->xyz[v][1] - 0.4)) : 0.0;
+		delta[3u * v + 1u] = (((kind == 1) && driver) || ((kind == 3) && (v < kartEnd))) ? 0.1 : (((kind == 4) && driver) ? 100.0 : 0.0);
+		delta[3u * v + 2u] = 0.0;
+	}
+}
+
+// Read the mesh as PLY and build it with `keys`. 1 = built.
+static int RldMk_TestKeyBuild(const struct RldMkTestMesh *mesh, const struct RldMkOptions *base, const struct RldMkPoseKeys *keys, struct RldMkPly *ply,
+                              struct RldMkBuild *b)
+{
+	struct RldMkOptions opt = *base;
+	size_t size = 0;
+	u8 *data = RldMk_TestPly(mesh, 0, 1, 0, &size);
+	int ok;
+
+	memset(ply, 0, sizeof(*ply));
+	memset(b, 0, sizeof(*b));
+	RldMk_ResetSaid();
+	opt.keys = keys;
+	ok = (data != NULL) && RldMk_ParsePly(data, size, ply) && RldMk_BuildModel(ply, &opt, b);
+	free(data);
+	return ok;
+}
+
+// Every frame position of both sets, and neutral + offset of win and lose,
+// inside the CMDL's frame hulls, give or take two steps (as RldMk_NativeModel).
+static int RldMk_TestKeyHull(const struct RldMkBuild *b)
+{
+	struct RldCharHull hulls[RLDCHAR_NET_POSES];
+	int set;
+	u32 f;
+	u32 p;
+	int a;
+
+	if ((b->cmdl == NULL) || (b->cmdlSize < 8u) || !RldChar_FrameHulls(&b->cmdl[4], Rld_ReadLE32(&b->cmdl[0]), 0u, hulls))
+	{
+		return 0;
+	}
+	for (set = 0; set < 2; set++)
+	{
+		double *position;
+		u8 *group;
+		const u32 count = RldMk_PositionSet(b, set, &position, &group);
+		const double *frame = (set == 0) ? b->frame : b->nativeFrame;
+
+		for (f = 0; f < (RLDMK_FRAMES_TOTAL + 2u); f++)
+		{
+			const struct RldCharHull *h = &hulls[(f < RLDMK_FRAMES_TOTAL) ? f : 0u];
+			const double *morph = (f < RLDMK_FRAMES_TOTAL) ? NULL : RldMk_KeySet(b, set, RLDMK_KEY_WIN + (int)(f - RLDMK_FRAMES_TOTAL));
+
+			if ((f >= RLDMK_FRAMES_TOTAL) && (morph == NULL))
+			{
+				continue;
+			}
+			for (p = 0; p < count; p++)
+			{
+				for (a = 0; a < 3; a++)
+				{
+					const double step = (h->hi[a] - h->lo[a]) / 255.0;
+					const double v = (morph != NULL) ? (position[3u * p + (u32)a] + morph[3u * p + (u32)a]) : frame[((size_t)f * count + p) * 3u + (u32)a];
+
+					if ((v < (h->lo[a] - 2.0 * step)) || (v > (h->hi[a] + 2.0 * step)))
+					{
+						return 0;
+					}
+				}
+			}
+		}
+	}
+
+	return 1;
+}
+
+static void RldMk_SelfTestKeys(struct RldMkTestMesh *mesh)
+{
+	static double delta[RLDMK_KEYS][RLDMK_TEST_VERTICES * 3];
+	struct RldMkOptions opt;
+	struct RldMkPoseKeys keys;
+	struct RldMkPly ply;
+	struct RldMkPly plyA;
+	struct RldMkBuild a;
+	struct RldMkBuild b;
+	u32 kartEnd;
+	u32 driverEnd;
+	u32 p;
+	u32 f;
+	int ok;
+	int k;
+
+	RldMk_TestOptions(&opt);
+	RldMk_TestKeyModel(mesh, 2u, 0, &kartEnd, &driverEnd);
+	memset(&keys, 0, sizeof(keys));
+	keys.pointCount = mesh->vertexCount;
+
+	// The model without keys, to compare with.
+	ok = RldMk_TestKeyBuild(mesh, &opt, NULL, &plyA, &a);
+	RldMk_Test(ok && a.keysDone && (a.keyState[RLDMK_KEY_STEER_LEFT] == RLDMK_KEYSTATE_AUTOMATIC) && (a.keyState[RLDMK_KEY_WIN] == RLDMK_KEYSTATE_NEUTRAL),
+	           "shape keys: none - every slot automatic, win and lose neutral", "built %d", ok);
+
+	// No keys: an empty set builds the same bytes.
+	ok = RldMk_TestKeyBuild(mesh, &opt, &keys, &ply, &b) && (b.cmdlSize == a.cmdlSize) && (memcmp(b.cmdl, a.cmdl, a.cmdlSize) == 0);
+	RldMk_Test(ok, "shape keys: an empty set of keys builds the bytes of the model without keys", "cmdl %u / %u bytes", (u32)b.cmdlSize, (u32)a.cmdlSize);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+
+	// The turn's sign: frame 0 is full lock to the left, and the automatic lean
+	// moves the driver's top toward +X there (the driver's left) - where a
+	// steer_left key leans as well (RldMk_FrameKey, steer_left on frames 0..9).
+	{
+		u32 top = RLDMK_NONE;
+
+		for (p = 0; ok && (p < a.positionCount); p++)
+		{
+			if ((a.positionGroup[p] == RLDMK_GROUP_DRIVER) && ((top == RLDMK_NONE) || (a.position[3u * p + 1u] > a.position[3u * top + 1u])))
+			{
+				top = p;
+			}
+		}
+		ok = (top != RLDMK_NONE) && (RldMk_At(&a, 0u, top)[0] > a.position[3u * top]) && (RldMk_At(&a, 20u, top)[0] < a.position[3u * top]);
+		RldMk_Test(ok, "shape keys: the automatic turn leans the driver toward +X in frame 0 (full left) - the side of steer_left", "top %u", top);
+	}
+
+	// An empty key (every offset 0) is there: from-file, no motion in its slot.
+	keys.delta[RLDMK_KEY_REVERSE] = delta[RLDMK_KEY_REVERSE];
+	RldMk_TestKeyFill(delta[RLDMK_KEY_REVERSE], mesh->vertexCount, kartEnd, driverEnd, mesh, 0);
+	ok = RldMk_TestKeyBuild(mesh, &opt, &keys, &ply, &b) && (b.keyState[RLDMK_KEY_REVERSE] == RLDMK_KEYSTATE_FILE) &&
+	     (memcmp(&b.frame[(size_t)21u * b.positionCount * 3u], &b.frame[(size_t)27u * b.positionCount * 3u], (size_t)b.positionCount * 3u * sizeof(double)) == 0) &&
+	     (memcmp(&b.frame[(size_t)27u * b.positionCount * 3u], b.position, (size_t)b.positionCount * 3u * sizeof(double)) == 0);
+	RldMk_Test(ok, "shape keys: an empty reverse key is from-file and keeps the slot still", "built %d", ok);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+	keys.delta[RLDMK_KEY_REVERSE] = NULL;
+
+	// Key replaces slot: jump.
+	RldMk_TestKeyFill(delta[RLDMK_KEY_JUMP], mesh->vertexCount, kartEnd, driverEnd, mesh, 1);
+	keys.delta[RLDMK_KEY_JUMP] = delta[RLDMK_KEY_JUMP];
+	ok = RldMk_TestKeyBuild(mesh, &opt, &keys, &ply, &b) && (b.positionCount == a.positionCount) && (b.keyState[RLDMK_KEY_JUMP] == RLDMK_KEYSTATE_FILE) &&
+	     (b.keyState[RLDMK_KEY_CRASH] == RLDMK_KEYSTATE_AUTOMATIC) && (b.keyDelta[RLDMK_KEY_JUMP] != NULL) &&
+	     (memcmp(b.frame, a.frame, (size_t)43u * a.positionCount * 3u * sizeof(double)) == 0) &&
+	     ((b.cmdlSize != a.cmdlSize) || (memcmp(b.cmdl, a.cmdl, a.cmdlSize) != 0));
+	for (p = 0; ok && (p < b.positionCount); p++)
+	{
+		const double *offset = &b.keyDelta[RLDMK_KEY_JUMP][3u * p];
+		const int kart = (b.positionGroup[p] == RLDMK_GROUP_KART);
+		const int driver = (b.positionGroup[p] == RLDMK_GROUP_DRIVER);
+
+		const double rise = offset[1] - (driver ? (0.1 * RLDMK_UNITS) : 0.0);
+
+		ok = (offset[0] == 0.0) && (offset[2] == 0.0) && (rise < 1.0e-9) && (rise > -1.0e-9);
+		for (f = 43u; ok && (f < RLDMK_FRAMES_TOTAL); f++)
+		{
+			const double *at = RldMk_At(&b, f, p);
+			const double w = (double)(f - 43u) / 3.0;
+
+			ok = (at[0] == b.position[3u * p]) && (at[2] == b.position[3u * p + 2u]) && (at[1] == (b.position[3u * p + 1u] + w * offset[1])) &&
+			     (!kart || (memcmp(at, &b.position[3u * p], 3u * sizeof(double)) == 0));
+		}
+	}
+	RldMk_Test(ok, "shape keys: a jump key replaces the jump (neutral + k/3 x offset), the other slots and the kart stay as without keys",
+	           "built with %u positions, state %d", b.positionCount, b.keyState[RLDMK_KEY_JUMP]);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+	keys.delta[RLDMK_KEY_JUMP] = NULL;
+
+	// The turn with both keys: frame 0 and 20 the full offset, 10 neutral, 5 the retail curve.
+	RldMk_TestKeyFill(delta[RLDMK_KEY_STEER_LEFT], mesh->vertexCount, kartEnd, driverEnd, mesh, 2);
+	RldMk_TestKeyFill(delta[RLDMK_KEY_STEER_RIGHT], mesh->vertexCount, kartEnd, driverEnd, mesh, 1);
+	keys.delta[RLDMK_KEY_STEER_LEFT] = delta[RLDMK_KEY_STEER_LEFT];
+	keys.delta[RLDMK_KEY_STEER_RIGHT] = delta[RLDMK_KEY_STEER_RIGHT];
+	ok = RldMk_TestKeyBuild(mesh, &opt, &keys, &ply, &b) && (b.keyState[RLDMK_KEY_STEER_LEFT] == RLDMK_KEYSTATE_FILE) &&
+	     (b.keyState[RLDMK_KEY_STEER_RIGHT] == RLDMK_KEYSTATE_FILE);
+	for (p = 0; ok && (p < b.positionCount); p++)
+	{
+		const double *l = &b.keyDelta[RLDMK_KEY_STEER_LEFT][3u * p];
+		const double *r = &b.keyDelta[RLDMK_KEY_STEER_RIGHT][3u * p];
+		const double *n = &b.position[3u * p];
+		const double w5 = s_rldDumRetailTurn[5] / RLDDUM_RETAIL_WHEEL_TURN;
+
+		for (k = 0; ok && (k < 3); k++)
+		{
+			ok = (RldMk_At(&b, 0u, p)[k] == (n[k] + l[k])) && (RldMk_At(&b, 20u, p)[k] == (n[k] + r[k])) && (RldMk_At(&b, 10u, p)[k] == n[k]) &&
+			     (RldMk_At(&b, 5u, p)[k] == (n[k] + w5 * l[k])) && (RldMk_At(&b, 15u, p)[k] == (n[k] + w5 * r[k]));
+		}
+	}
+	RldMk_Test(ok, "shape keys: steer_left drives frames 0..9, steer_right 11..20 along the retail curve, 10 neutral", "built %d", ok);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+	keys.delta[RLDMK_KEY_STEER_RIGHT] = NULL;
+
+	// Mirror yes: steer_left alone on a symmetric model.
+	ok = RldMk_TestKeyBuild(mesh, &opt, &keys, &ply, &b) && (b.keyState[RLDMK_KEY_STEER_LEFT] == RLDMK_KEYSTATE_FILE) &&
+	     (b.keyState[RLDMK_KEY_STEER_RIGHT] == RLDMK_KEYSTATE_MIRRORED) && (b.keyDelta[RLDMK_KEY_STEER_RIGHT] != NULL) &&
+	     (b.keyMirrorPairs == b.keyMirrorOf) && (b.keyMirrorOf != 0u);
+	for (p = 0; ok && (p < b.positionCount); p++)
+	{
+		const double *l = &b.keyDelta[RLDMK_KEY_STEER_LEFT][3u * p];
+		const double *r = &b.keyDelta[RLDMK_KEY_STEER_RIGHT][3u * p];
+		const double dx = r[0] + l[0];
+
+		ok = (dx < 1.0e-9) && (dx > -1.0e-9) && (r[1] == l[1]) && (r[2] == l[2]) && (RldMk_At(&b, 20u, p)[0] == (b.position[3u * p] + r[0]));
+	}
+	RldMk_Test(ok, "shape keys: steer_left alone on a symmetric model - steer_right is its mirror image (mirrored)", "built %d, pairs %u of %u, state %d",
+	           ok, b.keyMirrorPairs, b.keyMirrorOf, b.keyState[RLDMK_KEY_STEER_RIGHT]);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+
+	// Mirror no: the same key on a lopsided driver - the turn stays automatic.
+	{
+		struct RldMkPly plyL;
+		struct RldMkBuild l;
+
+		RldMk_TestKeyModel(mesh, 2u, 1, &kartEnd, &driverEnd);
+		RldMk_TestKeyFill(delta[RLDMK_KEY_STEER_LEFT], mesh->vertexCount, kartEnd, driverEnd, mesh, 2);
+		keys.pointCount = mesh->vertexCount;
+		ok = RldMk_TestKeyBuild(mesh, &opt, NULL, &plyL, &l) && RldMk_TestKeyBuild(mesh, &opt, &keys, &ply, &b) && RldMk_Said("pose-not-symmetric") &&
+		     (s_rldMkErrors == 0) && (b.keyState[RLDMK_KEY_STEER_LEFT] == RLDMK_KEYSTATE_AUTOMATIC) &&
+		     (b.keyState[RLDMK_KEY_STEER_RIGHT] == RLDMK_KEYSTATE_AUTOMATIC) && (b.keyWhy[RLDMK_KEY_STEER_LEFT] != NULL) &&
+		     (b.keyWhy[RLDMK_KEY_STEER_RIGHT] != NULL) && (strcmp(b.keyWhy[RLDMK_KEY_STEER_LEFT], RLDMK_KEY_NOT_SYMMETRIC) == 0) &&
+		     (strcmp(b.keyWhy[RLDMK_KEY_STEER_RIGHT], RLDMK_KEY_NOT_SYMMETRIC) == 0) &&
+		     (b.cmdlSize == l.cmdlSize) && (memcmp(b.cmdl, l.cmdl, l.cmdlSize) == 0);
+		RldMk_Test(ok, "shape keys: steer_left alone on a lopsided model - both sides automatic (not symmetric), a warning, the bytes of the model without keys",
+		           "pairs %u of %u, said: %s", b.keyMirrorPairs, b.keyMirrorOf, s_rldMkCodes);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+		RldMk_FreeBuild(&l);
+		RldMk_FreePly(&plyL);
+		keys.delta[RLDMK_KEY_STEER_LEFT] = NULL;
+		RldMk_TestKeyModel(mesh, 2u, 0, &kartEnd, &driverEnd);
+		keys.pointCount = mesh->vertexCount;
+	}
+
+	// Unknown key: a glTF whose only target has no slot name hands the chain no keys.
+	{
+		struct RldMkPoseKeys fromModel;
+		struct RldMkOptions withModel = opt;
+		const struct RldGltfMorphs kept = s_rldGltfMorphs;
+
+		memset(&s_rldGltfMorphs, 0, sizeof(s_rldGltfMorphs));
+		s_rldGltfMorphs.read = 1;
+		s_rldGltfMorphs.pointCount = plyA.vertexCount;
+		s_rldGltfMorphs.unknownCount = 1u;
+		snprintf(s_rldGltfMorphs.unknown[0], sizeof(s_rldGltfMorphs.unknown[0]), "%s", "wave");
+		RldMk_KeysFromModel(&plyA, &fromModel, &withModel);
+		ok = (withModel.keys == NULL);
+		s_rldGltfMorphs.point[RLDGLTF_KEY_CRASH] = delta[RLDMK_KEY_CRASH];
+		RldMk_KeysFromModel(&plyA, &fromModel, &withModel);
+		ok = ok && (withModel.keys == &fromModel) && (fromModel.delta[RLDMK_KEY_CRASH] == delta[RLDMK_KEY_CRASH]) && (fromModel.delta[RLDMK_KEY_JUMP] == NULL);
+		s_rldGltfMorphs = kept;
+		RldMk_Test(ok, "shape keys: a model with only an unknown key hands the chain none; a known one reaches its slot", "keys %d", ok);
+	}
+
+	// Kart moved, crash, win and lose: the kart stays, everything inside the hull.
+	RldMk_TestKeyFill(delta[RLDMK_KEY_CRASH], mesh->vertexCount, kartEnd, driverEnd, mesh, 3);
+	RldMk_TestKeyFill(delta[RLDMK_KEY_WIN], mesh->vertexCount, kartEnd, driverEnd, mesh, 2);
+	RldMk_TestKeyFill(delta[RLDMK_KEY_LOSE], mesh->vertexCount, kartEnd, driverEnd, mesh, 1);
+	for (p = 0; p < mesh->vertexCount; p++)
+	{
+		delta[RLDMK_KEY_WIN][3u * p] *= 6.0;     // the driver leans far: the hull must grow
+		delta[RLDMK_KEY_CRASH][3u * p + 2u] = ((p >= kartEnd) && (p < driverEnd)) ? -0.2 : 0.0;
+	}
+	keys.delta[RLDMK_KEY_CRASH] = delta[RLDMK_KEY_CRASH];
+	keys.delta[RLDMK_KEY_WIN] = delta[RLDMK_KEY_WIN];
+	keys.delta[RLDMK_KEY_LOSE] = delta[RLDMK_KEY_LOSE];
+	ok = RldMk_TestKeyBuild(mesh, &opt, &keys, &ply, &b) && RldMk_Said("pose-kart-moved") && RldMk_TestKeyHull(&b) &&
+	     (b.keyState[RLDMK_KEY_WIN] == RLDMK_KEYSTATE_FILE) && (b.scale[0] > a.scale[0]) &&
+	     (memcmp(b.frame, a.frame, (size_t)28u * a.positionCount * 3u * sizeof(double)) == 0);
+	for (p = 0; ok && (p < b.positionCount); p++)
+	{
+		u32 count = 0;
+		const double *won = RldMk_MorphDelta(&b, RLDMK_MORPH_WIN, &count);
+
+		ok = (won != NULL) && (count == b.positionCount) && ((b.positionGroup[p] != RLDMK_GROUP_KART) || (won[3u * p + 1u] == 0.0));
+		for (f = 28u; ok && (f < 43u) && (b.positionGroup[p] == RLDMK_GROUP_KART); f++)
+		{
+			ok = (memcmp(RldMk_At(&b, f, p), &b.position[3u * p], 3u * sizeof(double)) == 0);
+		}
+	}
+	RldMk_Test(ok, "shape keys: crash, win and lose inside the hull of every frame (CNET-9), the kart stays (pose-kart-moved)", "built %d, said: %s", ok,
+	           s_rldMkCodes);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+
+	// A key far too large for a driver: a clear error, no model.
+	RldMk_TestKeyFill(delta[RLDMK_KEY_LOSE], mesh->vertexCount, kartEnd, driverEnd, mesh, 4);
+	ok = !RldMk_TestKeyBuild(mesh, &opt, &keys, &ply, &b) && RldMk_Said("model-scale");
+	RldMk_Test(ok, "shape keys: a key that makes the model too large for the game is refused (model-scale)", "said: %s", s_rldMkCodes);
+	RldMk_FreeBuild(&b);
+	RldMk_FreePly(&ply);
+	for (k = 0; k < RLDMK_KEYS; k++)
+	{
+		keys.delta[k] = NULL;
+	}
+
+	// --poses still: every slot neutral, the keys unused, the bytes of the still model.
+	{
+		struct RldMkOptions still = opt;
+		struct RldMkPly plyS;
+		struct RldMkBuild s;
+
+		still.still = 1;
+		keys.delta[RLDMK_KEY_REVERSE] = delta[RLDMK_KEY_CRASH];
+		ok = RldMk_TestKeyBuild(mesh, &still, NULL, &plyS, &s) && RldMk_TestKeyBuild(mesh, &still, &keys, &ply, &b) && RldMk_Said("pose-still") &&
+		     (b.keyState[RLDMK_KEY_REVERSE] == RLDMK_KEYSTATE_NEUTRAL) && (b.keyState[RLDMK_KEY_STEER_LEFT] == RLDMK_KEYSTATE_NEUTRAL) &&
+		     (b.cmdlSize == s.cmdlSize) && (memcmp(b.cmdl, s.cmdl, s.cmdlSize) == 0);
+		RldMk_Test(ok, "shape keys: --poses still keeps every frame neutral (pose-still)", "said: %s", s_rldMkCodes);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+		RldMk_FreeBuild(&s);
+		RldMk_FreePly(&plyS);
+		keys.delta[RLDMK_KEY_REVERSE] = NULL;
+	}
+
+	// --size 150: the offsets grow with the driver.
+	{
+		struct RldMkOptions sized = opt;
+
+		sized.sizePercent = 150u;
+		RldMk_TestKeyFill(delta[RLDMK_KEY_JUMP], mesh->vertexCount, kartEnd, driverEnd, mesh, 1);
+		keys.delta[RLDMK_KEY_JUMP] = delta[RLDMK_KEY_JUMP];
+		ok = RldMk_TestKeyBuild(mesh, &sized, &keys, &ply, &b);
+		for (p = 0; ok && (p < b.positionCount); p++)
+		{
+			const double rise = RldMk_At(&b, 46u, p)[1] - RldMk_At(&b, 43u, p)[1];
+			const double want = (b.positionGroup[p] == RLDMK_GROUP_DRIVER) ? (1.5 * 0.1 * RLDMK_UNITS) : 0.0;
+
+			ok = ((rise - want) < 1.0e-9) && ((rise - want) > -1.0e-9);
+		}
+		RldMk_Test(ok, "shape keys: --size 150 scales the offsets with the driver", "built %d", ok);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+		keys.delta[RLDMK_KEY_JUMP] = NULL;
+	}
+
+	// A reduced model with --native-model on: the native positions keep their
+	// offsets, their frames follow the key and stay inside the CMDL's hull.
+	{
+		struct RldMkOptions reduce = opt;
+		u32 triangles = 0;
+		const u32 n = RldMk_TestSplitOver(RLDMK_REDUCE_LIMIT, &triangles);
+		u32 count = 0;
+
+		reduce.reduce = 1;
+		reduce.nativeKeep = 1;
+		RldMk_TestKeyModel(mesh, n, 0, &kartEnd, &driverEnd);
+		keys.pointCount = mesh->vertexCount;
+		RldMk_TestKeyFill(delta[RLDMK_KEY_REVERSE], mesh->vertexCount, kartEnd, driverEnd, mesh, 2);
+		RldMk_TestKeyFill(delta[RLDMK_KEY_LOSE], mesh->vertexCount, kartEnd, driverEnd, mesh, 1);
+		keys.delta[RLDMK_KEY_REVERSE] = delta[RLDMK_KEY_REVERSE];
+		keys.delta[RLDMK_KEY_LOSE] = delta[RLDMK_KEY_LOSE];
+		ok = RldMk_TestKeyBuild(mesh, &reduce, &keys, &ply, &b) && b.reduced && (b.nativeFrame != NULL) && (b.keyNative[RLDMK_KEY_REVERSE] != NULL) &&
+		     (RldMk_MorphDelta(&b, RLDMK_MORPH_LOSE, &count) == b.keyNative[RLDMK_KEY_LOSE]) && (count == b.nativePositionCount) && RldMk_TestKeyHull(&b);
+		for (p = 0; ok && (p < b.nativePositionCount); p++)
+		{
+			const double *at = &b.nativeFrame[((size_t)27u * b.nativePositionCount + p) * 3u];
+
+			ok = (at[0] == (b.nativePosition[3u * p] + b.keyNative[RLDMK_KEY_REVERSE][3u * p]));
+		}
+		RldMk_Test(ok, "shape keys: a reduced model keeps the offsets of its native positions (--native-model on), inside the hull", "built %d, %u -> %u triangles",
+		           ok, b.reduceFrom, b.reduceTo);
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+	}
+
+	RldMk_FreeBuild(&a);
+	RldMk_FreePly(&plyA);
+}
+
 // NO STEERING WHEEL ON A VEHICLE OF ITS OWN: --wheels off, a vehicle shorter
 // than a kart, a driver on it and a small part in front of him (arms, say):
 // the small part leans with the driver instead of turning as a steering wheel.
@@ -22423,6 +23607,7 @@ static int RldChar_SelfTest(void)
 	RldMk_SelfTestStrtod();
 	RldMk_SelfTestTurret(mesh);
 	RldMk_SelfTestNoSteering(mesh);
+	RldMk_SelfTestKeys(mesh);
 	RldMk_SelfTestFaceSource(mesh);
 	RldMk_SelfTestStrayAndWheels(mesh);
 	RldMk_SelfTestSplitVehicle(mesh);

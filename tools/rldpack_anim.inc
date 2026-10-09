@@ -13,6 +13,11 @@
 // view. It never builds a character and refuses --out - no pose reaches a
 // container yet, and make-char knows nothing of them.
 //
+// A glTF MODEL (.glb, .gltf) brings its poses as shape keys instead, which
+// make-char does bake into the frames (RldMk_StepKeys): `char-poses --model
+// <x.glb>` without --pose-dir says the state of every slot (RldAnim_KeysCommand
+// below). The pose folder stays for PLY models.
+//
 // THE POSES: one PLY per pose in one folder (not its subfolders), named after
 // the pose, upper or lower case alike:
 //   turn_left.ply    turn, frame 0: full lock to the left
@@ -777,6 +782,132 @@ static int RldAnim_ReadPose(const char *dir, const char *file, struct RldMkPly *
 }
 
 //========================================================================================
+// A glTF MODEL: THE SHAPE KEYS
+//========================================================================================
+//
+// `char-poses --model <x.glb|x.gltf>` without --pose-dir: the poses are shape
+// keys of the model (tools/rldpack_gltf.inc reads them, make-char bakes them,
+// RldMk_StepKeys). The model is built quietly as make-char builds it with the
+// same switches, keys and all, and the state of every slot is said - the
+// rules of the keys (pose-kart-moved, pose-not-symmetric, pose-remesh,
+// pose-no-driver) loud, the model's own findings are those of make-char --check.
+// Nothing is written: --preview is said (pose-preview, note), the 47 frames
+// are the preview of make-char --preview.
+//
+// MACHINE LINES: the @value lines of the switches, then
+//   @pose     <name> <state> <rule>   per shape key name, as make-char says
+//             them (RldMk_EmitPoses)
+//   @char     pose-unknown <name>     per target name that is no slot
+//   @char     poses <found> <shown>   keys of a slot name, and the slots they
+//             drive (from-file and mirrored)
+//   @end      0 = the model built, 1 = it did not (or it was not read), 2 = the
+//             command line
+
+static int RldAnim_KeysCommand(const char *modelArg, const struct RldMkOptions *switches, const char *previewArg)
+{
+	struct RldMkOptions opt = *switches;
+	struct RldMkPoseKeys keys;
+	struct RldMkPly ply;
+	struct RldMkModelInfo info;
+	struct RldMkBuild build;
+	u32 found = 0;
+	u32 shown = 0;
+	u32 i;
+	int built;
+	int quiet;
+	int k;
+
+	memset(&ply, 0, sizeof(ply));
+	memset(&build, 0, sizeof(build));
+	if (!RldMk_LoadModel(modelArg, &ply, &info, RLDMK_ROLE_POSE))
+	{
+		return 1;
+	}
+	if (!s_rldGltfMorphs.read)
+	{
+		RldMk_Say("error", "pose-dir", NULL, "No pose folder was given. A PLY model takes its poses from a folder (--pose-dir); a glTF brings them as shape keys.");
+		RldMk_FreePly(&ply);
+		return 2;
+	}
+
+	RldMk_KeysFromModel(&ply, &keys, &opt);
+	quiet = s_rldMkQuiet;
+	s_rldMkQuiet = 1;
+	built = RldMk_BuildModel(&ply, &opt, &build);
+	s_rldMkQuiet = quiet;
+
+	// The rules of the keys, said again out loud (the build was quiet).
+	for (k = 0; k < RLDMK_KEYS; k++)
+	{
+		found += ((opt.keys != NULL) && (opt.keys->delta[k] != NULL)) ? 1u : 0u;
+		if (!build.keysDone)
+		{
+			continue;
+		}
+		shown += ((build.keyState[k] == RLDMK_KEYSTATE_FILE) || (build.keyState[k] == RLDMK_KEYSTATE_MIRRORED)) ? 1u : 0u;
+		if (build.keyKartMoved[k] != 0u)
+		{
+			RldMk_Say("warning", "pose-kart-moved", s_rldMkKeyNames[k],
+			          "The shape key \"%s\" moves the kart (%u points); the kart stays as in the model - the game's wheels and the shadow stand on it.",
+			          s_rldMkKeyNames[k], build.keyKartMoved[k]);
+		}
+		if (build.keyState[k] == RLDMK_KEYSTATE_MIRRORED)
+		{
+			RldMk_Say("info", "pose-mirrored", s_rldMkKeyNames[k], "%s is the mirror image of the other steering key (%u of %u points of the driver found their partner).",
+			          s_rldMkKeyNames[k], build.keyMirrorPairs, build.keyMirrorOf);
+		}
+		if ((build.keyWhy[k] != NULL) && (strcmp(build.keyWhy[k], RLDMK_KEY_NOT_SYMMETRIC) == 0) && (opt.keys != NULL) && (opt.keys->delta[k] != NULL))
+		{
+			char technical[96];
+
+			snprintf(technical, sizeof(technical), "%s alone, %u of %u points mirrored", s_rldMkKeyNames[k], build.keyMirrorPairs, build.keyMirrorOf);
+			RldMk_Say("warning", "pose-not-symmetric", technical, "%s", RLDMK_KEY_NOT_SYMMETRIC);
+		}
+		else if ((build.keyState[k] == RLDMK_KEYSTATE_ERROR) && (build.keyWhy[k] != NULL))
+		{
+			RldMk_Say("warning", build.keyWhy[k], s_rldMkKeyNames[k], "The shape key %s cannot be used (%s); its slot stays automatic.", s_rldMkKeyNames[k],
+			          build.keyWhy[k]);
+		}
+	}
+	if (!built)
+	{
+		RldMk_Say("error", "pose-model", NULL, "The model does not build, so its shape keys cannot be used. Check the model first (make-char --check).");
+	}
+
+	RldMk_EmitPoses(&build, &opt);
+	for (k = 0; k < RLDMK_KEYS; k++)
+	{
+		const int given = (opt.keys != NULL) && (opt.keys->delta[k] != NULL);
+		const int state = build.keysDone ? build.keyState[k] : (given ? RLDMK_KEYSTATE_ERROR : RLDMK_KEYSTATE_AUTOMATIC);
+		const char *why = build.keysDone ? build.keyWhy[k] : (given ? "model" : NULL);
+
+		printf("  %-12s  %-10s  %s\n", s_rldMkKeyNames[k], s_rldMkKeyStates[state], (why != NULL) ? why : "");
+	}
+	for (i = 0; (i < s_rldGltfMorphs.unknownCount) && (i < RLDGLTF_UNKNOWN_KEPT); i++)
+	{
+		Rld_Emit("char", "pose-unknown", s_rldGltfMorphs.unknown[i], (const char *)NULL);
+	}
+	{
+		char foundText[16];
+		char shownText[16];
+
+		snprintf(foundText, sizeof(foundText), "%u", found);
+		snprintf(shownText, sizeof(shownText), "%u", shown);
+		Rld_Emit("char", "poses", foundText, shownText, (const char *)NULL);
+	}
+
+	if (previewArg != NULL)
+	{
+		RldMk_Say("note", "pose-preview", previewArg,
+		          "No preview file for a glTF's shape keys: the 47 frames with the keys baked in are in the preview of make-char --preview.");
+	}
+
+	RldMk_FreeBuild(&build);
+	RldMk_FreePly(&ply);
+	return built ? 0 : 1;
+}
+
+//========================================================================================
 // THE COMMAND: rldpack char-poses
 //========================================================================================
 
@@ -882,7 +1013,8 @@ static int RldAnim_PosesCommand(int argc, char **argv)
 		}
 	}
 
-	if ((modelArg == NULL) || (dirArg == NULL))
+	// Without a pose folder the model must be a glTF with shape keys (RldAnim_KeysCommand).
+	if ((modelArg == NULL) || ((dirArg == NULL) && !Rld_EndsWithNoCase(modelArg, ".glb") && !Rld_EndsWithNoCase(modelArg, ".gltf")))
 	{
 		RldMk_Say("error", "usage", NULL, "%s", (modelArg == NULL) ? "No model file was given." : "No pose folder was given.");
 		fprintf(stderr, "\n");
@@ -978,7 +1110,10 @@ static int RldAnim_PosesCommand(int argc, char **argv)
 	{
 		char number[24];
 
-		Rld_Emit("value", "pose-dir", dirArg, "switch", (const char *)NULL);
+		if (dirArg != NULL)
+		{
+			Rld_Emit("value", "pose-dir", dirArg, "switch", (const char *)NULL);
+		}
 		snprintf(number, sizeof(number), "%u", opt.sizePercent);
 		Rld_Emit("value", "size", number, (sizeArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "fit", opt.fit ? "crash" : "none", (fitArg != NULL) ? "switch" : "default", (const char *)NULL);
@@ -993,6 +1128,13 @@ static int RldAnim_PosesCommand(int argc, char **argv)
 	if (s_rldMkErrors != 0)
 	{
 		return 2;
+	}
+
+	// A glTF: its shape keys, through make-char's chain (--remesh says pose-remesh there).
+	if (dirArg == NULL)
+	{
+		opt.remesh = remesh;
+		return RldAnim_KeysCommand(modelArg, &opt, previewArg);
 	}
 
 	// The closed hull has vertices of its own, none of them in a pose: the
@@ -1010,6 +1152,12 @@ static int RldAnim_PosesCommand(int argc, char **argv)
 	if (!RldMk_LoadModel(modelArg, &ply, &info, RLDMK_ROLE_POSE))
 	{
 		return 1;
+	}
+	if (s_rldGltfMorphs.read)
+	{
+		RldMk_Say("error", "pose-dir", dirArg, "A glTF model brings its poses as shape keys; leave out --pose-dir.");
+		RldMk_FreePly(&ply);
+		return 2;
 	}
 
 	if (!RldAnim_PrepareModel(&model, &ply, &opt, why, sizeof(why)))
@@ -1124,6 +1272,7 @@ static void RldAnim_Usage(FILE *out)
 {
 	fprintf(out, "CHAR-POSES (A PREVIEW - THE POSES ARE NOT PACKED YET)\n");
 	fprintf(out, "  rldpack char-poses --model <ply> --pose-dir <folder> [switches]\n");
+	fprintf(out, "  rldpack char-poses --model <glb|gltf> [switches]\n");
 	fprintf(out, "  Checks poses of your own against a model and places them where the\n");
 	fprintf(out, "  model stands, for the 3D view of Reload Studio. A pose is the model's\n");
 	fprintf(out, "  own mesh exported once more with moved vertices: the same vertices in\n");
@@ -1131,7 +1280,12 @@ static void RldAnim_Usage(FILE *out)
 	fprintf(out, "  --out; make-char does not use the poses yet.\n");
 	fprintf(out, "\n");
 	fprintf(out, "  --model <ply>               the model, as for make-char (required)\n");
-	fprintf(out, "  --pose-dir <folder>         one PLY per pose (required): turn_left,\n");
+	fprintf(out, "  A glTF model brings its poses as shape keys (steer_left, steer_right,\n");
+	fprintf(out, "  reverse, crash, jump, win, lose); without --pose-dir char-poses says\n");
+	fprintf(out, "  how make-char uses each one: from-file, mirrored, automatic, neutral\n");
+	fprintf(out, "  or error.\n");
+	fprintf(out, "\n");
+	fprintf(out, "  --pose-dir <folder>         one PLY per pose (a PLY model): turn_left,\n");
 	fprintf(out, "                              turn_right, reverse, bump, jump; idle is\n");
 	fprintf(out, "                              checked but not used. Other PLY files are\n");
 	fprintf(out, "                              named and left alone\n");
