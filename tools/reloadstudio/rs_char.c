@@ -6514,6 +6514,8 @@ static int Char_OtherModelFile(const wchar_t *path)
 // with it. A .png that comes with an .obj is not the icon: dropped with an
 // OBJ it is its texture (rldpack reads it through the MTL), and an icon that
 // changes unasked would go unnoticed. With a .ply it is the icon as always.
+// While the card Wheels is shown, a .ply or .obj is the wheel model instead
+// (the first one; the model keeps its file).
 // Returns the number of paths taken.
 static int Char_DropPaths(HWND page, const wchar_t *const *paths, int count)
 {
@@ -6522,6 +6524,13 @@ static int Char_DropPaths(HWND page, const wchar_t *const *paths, int count)
 
     model[0] = 0;
     other[0] = 0;
+    if (g_char.tab == CHAR_TAB_EXTRAS && g_char.extrasCard == CHAR_EXTRAS_WHEELS) {
+        for (i = 0; i < count; i++)
+            if (Char_EndsWith(paths[i], L".ply") || Char_EndsWith(paths[i], L".obj")) {
+                CharWheels_Automate(page, L"wheel-model", paths[i]);
+                return 1;
+            }
+    }
     for (i = 0; i < count; i++) {
         if (Char_EndsWith(paths[i], L".obj"))
             withObj = 1;

@@ -339,8 +339,6 @@ Characters
   own) stays "Coming soon".
 - The shadow in Reload Studio's preview is a soft rectangle; the game's
   shadow can look a little different.
-- A wheel model dropped onto the Character page is taken as the body.
-  Choose a wheel model in the card Wheels.
 
 Previews
 - The invisible kart still hits crates and fruit, so they break in the
