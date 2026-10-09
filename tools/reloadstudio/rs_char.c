@@ -1,4 +1,4 @@
-// rs_char.c - page "Character": build a PLY or OBJ model as .rldchar
+// rs_char.c - page "Character": build a glTF, OBJ or PLY model as .rldchar
 //
 // The page checks nothing itself. It starts rldpack make-char (with --check to
 // check, without it to build), reads its machine lines (protocol in
@@ -120,8 +120,13 @@
 // rldpack reads from the game's data; without them the measured frame stands
 // in as lines.
 //
-// Model: a PLY, or an OBJ with its material file (MTL) and the textures the
-// MTL names (PNG, JPG, TGA). rldpack tells the format by the content and
+// Model: a glTF (.glb with everything inside - the recommended format, first
+// in the file dialog - or .gltf with its files), a PLY, or an OBJ with its
+// material file (MTL) and the textures the MTL names (PNG, JPG, TGA). make-char
+// reads a glTF into the same data as an OBJ, so the page treats it as one
+// (Char_ModelIsObj: the Textures folder, vertex colours, the native model,
+// the wheels); its shape keys are the driver's animations (card Animations,
+// @pose). rldpack tells the format by the content and
 // says what it read in @model lines: the format, the MTL, every texture with
 // its material, the groups (o, g) and where the colours came from. For an OBJ
 // the tab Model shows them below the model field: one line with the summary
@@ -155,7 +160,7 @@
 //
 // Layout: the steps as tabs on the left, the 3D preview always on the right,
 // the build below both, so that every tab is seen whole without scrolling:
-//   1 Model         the PLY or OBJ, its size, the options and what rldpack did
+//   1 Model         the glTF, OBJ or PLY, its size, the options and what rldpack did
 //                   to it
 //   2 Driver        name, driving style, mask
 //   3 In-game look  two cards, switched in the title line: Portrait (icon,
@@ -170,7 +175,8 @@
 //                   its vertex colours meet its textures), Wheels and
 //                   Animations (rs_wheels.c, rs_anim.c), one at a time;
 //                   Wheels a preview feature open to everyone, Animations
-//                   locked without --enable-preview-features. Import
+//                   (the shape keys of a glTF, the @pose lines of the
+//                   check) open as well. Import
 //                   lives here, not on the tab Model: there an OBJ leaves no
 //                   room at 1366 x 768 and at 1920 x 1080 with 150 % (the bar
 //                   is at its least height), and its choices are rarely
@@ -209,8 +215,12 @@
 // at a time, and each would start and end a run of rldpack.
 #define CHAR_CLICK_DELAY   100
 #define CHAR_VAL           1024   // length of a value or path
+// The file dialog of the model: glTF binary first (recommended: it brings its
+// textures and its shape keys, the driver's animations), then OBJ and PLY.
+#define CHAR_MODEL_FILTER  L"glTF binary (*.glb) - recommended\0*.glb\0OBJ models (*.obj)\0*.obj\0PLY models (*.ply)\0*.ply\0" \
+                           L"glTF (*.gltf)\0*.gltf\0All models (*.glb;*.gltf;*.obj;*.ply)\0*.glb;*.gltf;*.obj;*.ply\0All files\0*.*\0\0"
 #define CHAR_VOICE_SET_MAX 64     // files with an event of their own (--voice), at most
-#define CHAR_MAX_ARGS      (56 + 2 * CHAR_VOICE_SET_MAX)
+#define CHAR_MAX_ARGS      (64 + 2 * CHAR_VOICE_SET_MAX)
 #define CHAR_CMD_CAP       32768  // the command in the raw output, at most (the shell's RS_CMD_CAP)
 #define CHAR_NAME_MAX      17     // RLDCHAR_NAME_MAX in include/rldchar.inc
 #define CHAR_SIZE_MIN      50     // range of the --size switch
@@ -525,7 +535,7 @@ static const int g_charPoseView[CHAR_POSES] = { RS_VIEW_POSE_NEUTRAL, RS_VIEW_PO
 static const wchar_t *const g_charPresetWords[RS_VIEW_PRESET_COUNT] = { L"front", L"side", L"back", L"top", L"34", L"race" };
 
 // Before a model is chosen, below its field (the page has no subtitle).
-#define CHAR_START_TEXT L"Pick a PLY or OBJ model of driver, steering wheel and kart. rldpack converts and checks it and builds the .rldchar."
+#define CHAR_START_TEXT L"Pick a glTF (.glb), OBJ or PLY model of driver, steering wheel and kart. rldpack converts and checks it and builds the .rldchar."
 #define CHAR_SIZE_HINT_TEXT L"Visual size only - physics and collision follow the driving style."
 #define CHAR_NAME_RULE_TEXT L"1 to 17 characters: A-Z 0-9 space ! % ' + , - . / : < = > ? _"
 #define CHAR_VOICES_TEXT L"Optional - without voices the driver is silent in the game."
@@ -585,6 +595,7 @@ struct CharJobData {
     wchar_t modelFormat[8];         // @model format: ply | obj, "" = not reported
     wchar_t modelColors[16];        // @model colors: vertex | material | texture | grey | mixed
     struct CharImport *import;      // @model mtl, texture and group lines, in their order
+    struct RsAnimPoses poses;       // @pose lines and the messages about the poses (card Animations, rs_anim.c)
     int importCount, importCap;
     int importLines[3];             // the lines of each kind CHAR_IMPORT_*, kept or not
     long groupsMore;                // groups rldpack did not list (@msg obj-groups "<n> more groups ...")
@@ -1978,8 +1989,9 @@ static void Char_ParseLine(wchar_t *line)
     } else if (wcscmp(kind, L"file") == 0) {
         if (wcscmp(Char_Field(f, n, 1), L"icon-retail") == 0)
             j->iconRetailOk = wcscmp(Char_Field(f, n, 2), L"ok") == 0;
-        // The model: a PLY, or an OBJ (its MTL comes as @model mtl as well).
-        if (wcscmp(Char_Field(f, n, 1), L"ply") == 0 || wcscmp(Char_Field(f, n, 1), L"obj") == 0) {
+        // The model: a PLY, an OBJ (its MTL comes as @model mtl as well) or a glTF.
+        if (wcscmp(Char_Field(f, n, 1), L"ply") == 0 || wcscmp(Char_Field(f, n, 1), L"obj") == 0 ||
+            wcscmp(Char_Field(f, n, 1), L"gltf") == 0 || wcscmp(Char_Field(f, n, 1), L"glb") == 0) {
             const wchar_t *bytes = Char_Field(f, n, 4);
             j->modelSeen = 1;
             Char_Copy(j->modelState, 16, Char_Field(f, n, 2));
@@ -2110,7 +2122,11 @@ static void Char_ParseLine(wchar_t *line)
             Char_Copy(j->fitBasis, 16, Char_Field(f, n, 7));
         }
     } else if (wcscmp(kind, L"model") == 0) {
+        if (wcscmp(Char_Field(f, n, 1), L"shape-key") == 0)
+            CharAnim_ShapeKey(&j->poses, Char_Field(f, n, 2), Char_Field(f, n, 3));
         Char_ImportLine(f, n);
+    } else if (wcscmp(kind, L"pose") == 0) {
+        CharAnim_PoseLine(&j->poses, f, n);
     } else if (wcscmp(kind, L"voice") == 0) {
         Char_VoiceLine(f, n);
     } else if (wcscmp(kind, L"voiceevent") == 0) {
@@ -2145,6 +2161,7 @@ static void Char_ParseLine(wchar_t *line)
                 Char_Headline(line, RS_COL_MUTED);
             }
         }
+        CharAnim_PoseMsg(&j->poses, Char_Field(f, n, 2), text);
         Char_JobMsg(Rs_SeverityFromText(Char_Field(f, n, 1)), Char_Field(f, n, 2), text, detail);
     } else if (wcscmp(kind, L"result") == 0) {
         const wchar_t *bytes = Char_Field(f, n, 3);
@@ -2269,9 +2286,11 @@ static int Char_CardOfCode(const wchar_t *code)
         wcscmp(code, L"up") == 0 || wcscmp(code, L"forward") == 0 || wcscmp(code, L"ply-up-axis") == 0 ||
         wcscmp(code, L"colors") == 0 || (wcsncmp(code, L"native-", 7) == 0 && !Rs_NativeForUsers()))
         return CHAR_EXTRAS_IMPORT;
-    if (wcsncmp(code, L"pose", 4) == 0)
+    // The poses and shape keys (a rig is refused there: use shape keys), the
+    // wheels and their axles.
+    if (wcsncmp(code, L"pose", 4) == 0 || wcsncmp(code, L"morph-", 6) == 0 || wcscmp(code, L"model-rig") == 0)
         return CHAR_EXTRAS_ANIM;
-    if (wcsncmp(code, L"wheel-", 6) == 0)
+    if (wcsncmp(code, L"wheel-", 6) == 0 || wcsncmp(code, L"axle-", 5) == 0 || wcscmp(code, L"rear-wheel") == 0)
         return CHAR_EXTRAS_WHEELS;
     return -1;
 }
@@ -2297,9 +2316,7 @@ static int Char_TabOfCode(const wchar_t *code)
     if (wcsncmp(code, L"name", 4) == 0 || wcscmp(code, L"author") == 0 || wcscmp(code, L"class") == 0 ||
         wcscmp(code, L"template") == 0 || wcsncmp(code, L"mask", 4) == 0)
         return CHAR_TAB_DRIVER;
-    if (wcsncmp(code, L"pose", 4) == 0 || wcsncmp(code, L"wheel-", 6) == 0)
-        return CHAR_TAB_EXTRAS;
-    if (Char_CardOfCode(code) == CHAR_EXTRAS_IMPORT)
+    if (Char_CardOfCode(code) >= 0)
         return CHAR_TAB_EXTRAS;
     return CHAR_TAB_MODEL;
 }
@@ -2965,7 +2982,9 @@ static void Char_ImportFill(void)
 // or the model has no colours (the line is amber then).
 static void Char_ImportSummary(wchar_t *out, int cap, int *problem)
 {
-    int obj = wcscmp(g_char.importFormat, L"obj") == 0;
+    // A glTF is read into the same lines as an OBJ (no MTL: its materials are inside).
+    int gltf = wcscmp(g_char.importFormat, L"gltf") == 0 || wcscmp(g_char.importFormat, L"glb") == 0;
+    int obj = wcscmp(g_char.importFormat, L"obj") == 0 || gltf;
     int mtl = g_char.importTotal[CHAR_IMPORT_MTL], tex = g_char.importTotal[CHAR_IMPORT_TEXTURE];
     int groups = g_char.importTotal[CHAR_IMPORT_GROUP], mtlOk = 0, texOk = 0, listed = 0, i;
     const wchar_t *mtlState = L"";
@@ -2987,12 +3006,12 @@ static void Char_ImportSummary(wchar_t *out, int cap, int *problem)
             listed++;
         }
     }
-    Char_Copy(out, cap, obj ? L"OBJ" : L"PLY");
+    Char_Copy(out, cap, gltf ? L"glTF" : obj ? L"OBJ" : L"PLY");
     if (obj) {
         t[0] = 0;
         if (mtl > 1)
             swprintf(t, 160, L": %d of %d MTL files found", mtlOk, mtl);
-        else if (mtl == 1 && wcscmp(mtlState, L"none") == 0)
+        else if (mtl == 1 && wcscmp(mtlState, L"none") == 0 && !gltf)
             Char_Copy(t, 160, L": no MTL");
         else if (mtl == 1)
             swprintf(t, 160, L": MTL %ls", Char_ImportStateText(mtlState));
@@ -3093,15 +3112,17 @@ static void Char_ImportClear(void)
     }
 }
 
-// The model is an OBJ: by what the last check of this model read, else by its
-// name.
+// The model is an OBJ - or a glTF, which make-char reads into the same data
+// as an OBJ (its materials, textures and UVs; the same choices, the same
+// native model): by what the last check of this model read, else by its name.
 static int Char_ModelIsObj(void)
 {
     wchar_t model[CHAR_VAL];
     Char_FieldPath(g_char.model, model, CHAR_VAL);
     if (g_char.importFormat[0] && model[0] && _wcsicmp(model, g_char.checkModel) == 0)
-        return wcscmp(g_char.importFormat, L"obj") == 0;
-    return Char_EndsWith(model, L".obj");
+        return wcscmp(g_char.importFormat, L"obj") == 0 || wcscmp(g_char.importFormat, L"gltf") == 0 ||
+               wcscmp(g_char.importFormat, L"glb") == 0;
+    return Char_EndsWith(model, L".obj") || Char_EndsWith(model, L".glb") || Char_EndsWith(model, L".gltf");
 }
 
 // The entry chosen in a list of the card Import, 0 (the default) when none.
@@ -4764,6 +4785,8 @@ static void Char_ApplyPreview(int seq)
     for (i = 0; i < CHAR_POSES; i++)
         g_char.previewTris[i] = (unsigned long)RsView_TriangleCount(g_char.view, i);
     RsView_SetPose(g_char.view, g_charPoseView[g_char.poseNow]);
+    // The animation the card Animations shows goes on in the new file.
+    CharAnim_PreviewLoaded();
     // The preview shows the colours of the palette as they are - the game's
     // brightest case. In the race the ground under the kart darkens the
     // driver (game/COLL.c sets alphaScale from the track's colour there,
@@ -5162,6 +5185,8 @@ struct CharArgs {
     wchar_t exhaust[160];   // --exhaust x,y,z[;x,y,z]
     wchar_t wheel[CHAR_VAL];      // --wheel-model (the card Wheels)
     wchar_t wheelSize[16];        // --wheel-size
+    wchar_t rearWheel[CHAR_VAL];  // --rear-wheel-model
+    wchar_t axle[2][48];          // --axle-front, --axle-rear <dz>,<dy>,<dtrack>
     wchar_t *name;          // Rs_Free
     wchar_t *voiceSet[CHAR_VOICE_SET_MAX];   // "<file>=<event>" of --voice, Rs_Free
 };
@@ -5234,8 +5259,11 @@ static void Char_DefaultOut(const wchar_t *model, wchar_t *out, int cap)
         return;
     Char_Copy(name, CHAR_VAL - 8, Rs_PathName(model));
     n = wcslen(name);
-    if (n > 4 && (_wcsicmp(name + n - 4, L".ply") == 0 || _wcsicmp(name + n - 4, L".obj") == 0))
+    if (n > 4 && (_wcsicmp(name + n - 4, L".ply") == 0 || _wcsicmp(name + n - 4, L".obj") == 0 ||
+                  _wcsicmp(name + n - 4, L".glb") == 0))
         name[n - 4] = 0;
+    else if (n > 5 && _wcsicmp(name + n - 5, L".gltf") == 0)
+        name[n - 5] = 0;
     Char_Append(name, CHAR_VAL, L".rldchar");
     Rs_PathJoin(out, cap, dir, name);
 }
@@ -5392,6 +5420,26 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
             Char_ArgsAdd(a, L"--wheel-size");
             Char_ArgsAdd(a, a->wheelSize);
         }
+        // With it, and only when set (none set: the command of before; make-char
+        // then writes WHLS version 3): the rear wheel, the axles, Always draw.
+        if (CharWheels_RearModelPath(a->rearWheel, CHAR_VAL)) {
+            Char_ArgsAdd(a, L"--rear-wheel-model");
+            Char_ArgsAdd(a, a->rearWheel);
+        }
+        {
+            int axle, v[3];
+            for (axle = 0; axle < 2; axle++) {
+                if (!CharWheels_Axle(axle, v))
+                    continue;
+                swprintf(a->axle[axle], 48, L"%d,%d,%d", v[0], v[1], v[2]);
+                Char_ArgsAdd(a, axle == 0 ? L"--axle-front" : L"--axle-rear");
+                Char_ArgsAdd(a, a->axle[axle]);
+            }
+        }
+        if (CharWheels_Always()) {
+            Char_ArgsAdd(a, L"--wheels-always");
+            Char_ArgsAdd(a, L"on");
+        }
     }
     // The mask always, also the template's: the file carries the choice.
     Char_ArgsAdd(a, L"--mask");
@@ -5523,7 +5571,7 @@ static void Char_NoModel(HWND page)
     RsView_Clear(g_char.view, NULL);
     g_char.viewPartCount = 0;
     g_char.viewFirst = -1;
-    Char_ViewNotePart(L"Grey: Crash with his kart - the size a model is fitted to. Choose a PLY or OBJ model.");
+    Char_ViewNotePart(L"Grey: Crash with his kart - the size a model is fitted to. Choose a glTF, OBJ or PLY model.");
     Char_ViewNotePart(CHAR_VIEW_MOUSE_TEXT);
     Char_ViewNoteShow(RS_COL_MUTED);
     Char_ApplyQuality();
@@ -5533,15 +5581,15 @@ static void Char_NoModel(HWND page)
     g_char.stampKnown = 0;
     Char_SetInfo(CHAR_START_TEXT, RS_COL_MUTED);
     Char_ImportClear();
-    Char_Headline(L"Choose a PLY or OBJ model to start", RS_COL_MUTED);
+    Char_Headline(L"Choose a glTF, OBJ or PLY model to start", RS_COL_MUTED);
     Char_ReduceFitShow(page, 0);
     Char_ProgressShow(page, 0);
     Char_VoicesClear();
-    Char_EmptyText(L"Choose a PLY or OBJ model. What rldpack finds shows up here.");
+    Char_EmptyText(L"Choose a glTF, OBJ or PLY model. What rldpack finds shows up here.");
     Char_UpdateButtons();
     g_char.checkModel[0] = 0;
     CharWheels_ModelChecked(page, L"", g_char.sizeNow, 0);
-    CharAnim_ModelChecked(page, L"", g_char.sizeNow, 0);
+    CharAnim_ModelChecked(page, L"", L"", NULL, 0);
 }
 
 // The switches that change nothing rldpack does with the model: name,
@@ -6132,7 +6180,7 @@ static int Char_CheckDone(HWND page, int exitCode, int seq)
     Char_ShowCheckResult(exitCode);
     // The cards of the preview features follow the model just checked.
     CharWheels_ModelChecked(page, g_char.checkModel, g_char.sizeNow, g_char.checked);
-    CharAnim_ModelChecked(page, g_char.checkModel, g_char.sizeNow, g_char.checked);
+    CharAnim_ModelChecked(page, g_char.checkModel, g_char.importFormat, &j->poses, g_char.checked);
     return 1;
 }
 
@@ -6406,6 +6454,8 @@ static void Char_SetPose(int pose)
     if (SendMessageW(g_char.pose, CB_GETCURSEL, 0, 0) != pose)
         SendMessageW(g_char.pose, CB_SETCURSEL, (WPARAM)pose, 0);
     RsView_SetPose(g_char.view, g_charPoseView[pose]);
+    // The steering of the card Animations follows (the same frames 10, 0, 20).
+    CharAnim_SteerFromPage(pose == 1 ? -RS_VIEW_STEER_MAX : pose == 2 ? RS_VIEW_STEER_MAX : 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -6425,9 +6475,7 @@ static void Char_BrowseModel(HWND page)
     wchar_t start[CHAR_VAL];
     wchar_t pick[CHAR_VAL];
     Char_DialogStart(g_char.model, start, CHAR_VAL);
-    if (Rs_BrowseOpenFile(Rs_MainWindow(), L"Choose the character model",
-                          L"3D models (*.ply;*.obj)\0*.ply;*.obj\0PLY models (*.ply)\0*.ply\0"
-                          L"OBJ models (*.obj)\0*.obj\0All files\0*.*\0\0", start, pick, CHAR_VAL))
+    if (Rs_BrowseOpenFile(Rs_MainWindow(), L"Choose the character model", CHAR_MODEL_FILTER, start, pick, CHAR_VAL))
         Char_SetModel(page, pick);
 }
 
@@ -6496,11 +6544,26 @@ static void Char_ShowInFolder(void)
     ShellExecuteW(NULL, L"open", L"explorer.exe", params, NULL, SW_SHOWNORMAL);
 }
 
+// A model Reload Studio reads: glTF (binary .glb or .gltf with its files), OBJ
+// or PLY - by its ending, as the file dialog lists them.
+static int Char_ModelFile(const wchar_t *path)
+{
+    return Char_EndsWith(path, L".glb") || Char_EndsWith(path, L".gltf") || Char_EndsWith(path, L".obj") ||
+           Char_EndsWith(path, L".ply");
+}
+
+// A model whose textures may lie beside it as files: glTF or OBJ (a .png
+// dropped with it is its texture, not the icon).
+static int Char_ModelWithTextures(const wchar_t *path)
+{
+    return Char_EndsWith(path, L".glb") || Char_EndsWith(path, L".gltf") || Char_EndsWith(path, L".obj");
+}
+
 // A file ending of another 3D format: dropped, it goes into the model field
 // all the same, and the check says what it is and which formats are read.
 static int Char_OtherModelFile(const wchar_t *path)
 {
-    static const wchar_t *const endings[] = { L".fbx", L".gltf", L".glb", L".stl", L".blend", L".3ds", L".dae" };
+    static const wchar_t *const endings[] = { L".fbx", L".stl", L".blend", L".3ds", L".dae", L".usd", L".usdz" };
     int i;
     for (i = 0; i < (int)(sizeof(endings) / sizeof(endings[0])); i++)
         if (Char_EndsWith(path, endings[i]))
@@ -6509,32 +6572,32 @@ static int Char_OtherModelFile(const wchar_t *path)
 }
 
 // Files dropped onto the page (or given to the automation verb "drop"): a
-// .ply or .obj is the model, a .png the icon, a folder the voices folder. A
-// file of another 3D format is the model only when no .ply or .obj came
-// with it. A .png that comes with an .obj is not the icon: dropped with an
-// OBJ it is its texture (rldpack reads it through the MTL), and an icon that
-// changes unasked would go unnoticed. With a .ply it is the icon as always.
-// While the card Wheels is shown, a .ply or .obj is the wheel model instead
-// (the first one; the model keeps its file).
+// .glb, .gltf, .obj or .ply is the model, a .png the icon, a folder the voices
+// folder. A file of another 3D format is the model only when none of those
+// came with it. A .png that comes with a glTF or an OBJ is not the icon:
+// dropped with it it is its texture (rldpack reads it through the model),
+// and an icon that changes unasked would go unnoticed. With a .ply it is the
+// icon as always. While the card Wheels is shown, a model file is the wheel
+// model instead (the first one; the model keeps its file).
 // Returns the number of paths taken.
 static int Char_DropPaths(HWND page, const wchar_t *const *paths, int count)
 {
     wchar_t model[CHAR_VAL], other[CHAR_VAL];
-    int i, tab = -1, taken = 0, withModel = 0, withObj = 0;
+    int i, tab = -1, taken = 0, withModel = 0, withTextures = 0;
 
     model[0] = 0;
     other[0] = 0;
     if (g_char.tab == CHAR_TAB_EXTRAS && g_char.extrasCard == CHAR_EXTRAS_WHEELS) {
         for (i = 0; i < count; i++)
-            if (Char_EndsWith(paths[i], L".ply") || Char_EndsWith(paths[i], L".obj")) {
+            if (Char_ModelFile(paths[i])) {
                 CharWheels_Automate(page, L"wheel-model", paths[i]);
                 return 1;
             }
     }
     for (i = 0; i < count; i++) {
-        if (Char_EndsWith(paths[i], L".obj"))
-            withObj = 1;
-        if (withObj || Char_EndsWith(paths[i], L".ply"))
+        if (Char_ModelWithTextures(paths[i]))
+            withTextures = 1;
+        if (Char_ModelFile(paths[i]))
             withModel = 1;
     }
     for (i = 0; i < count; i++) {
@@ -6543,11 +6606,11 @@ static int Char_DropPaths(HWND page, const wchar_t *const *paths, int count)
             Rs_SetText(g_char.voices, path);
             if (tab < 0)
                 tab = CHAR_TAB_VOICES;
-        } else if (Char_EndsWith(path, L".png") && !withObj) {
+        } else if (Char_EndsWith(path, L".png") && !withTextures) {
             Rs_SetText(g_char.icon, path);
             if (tab < 0 || tab == CHAR_TAB_VOICES)
                 tab = CHAR_TAB_LOOK;
-        } else if (Char_EndsWith(path, L".ply") || Char_EndsWith(path, L".obj")) {
+        } else if (Char_ModelFile(path)) {
             Char_Copy(model, CHAR_VAL, path);
             tab = CHAR_TAB_MODEL;
         } else if (Char_OtherModelFile(path) && !withModel) {
@@ -7596,8 +7659,13 @@ static void Char_Create(HWND page)
     g_char.tab = CHAR_TAB_MODEL;
     g_char.extrasCard = CHAR_EXTRAS_IMPORT;
 
-    g_char.modelLabel = Rs_Label(page, CHAR_ID_MODEL_LABEL, L"Model (PLY or OBJ)", RS_FONT_BOLD);
+    // "Model file": a label naming the formats ("Model (GLB/OBJ/PLY)") would
+    // widen the label column of every tab - at 1366 x 768 the card Import
+    // then needs a line more and the page scrolls. The formats are in the
+    // cue, in the line below the field and in the file dialog.
+    g_char.modelLabel = Rs_Label(page, CHAR_ID_MODEL_LABEL, L"Model file", RS_FONT_BOLD);
     g_char.model = Rs_Edit(page, CHAR_ID_MODEL, L"", 0);
+    SendMessageW(g_char.model, EM_SETCUEBANNER, FALSE, (LPARAM)L"A glTF (.glb, recommended), OBJ or PLY of driver, steering wheel and kart");
     g_char.modelBrowse = Rs_Button(page, CHAR_ID_MODEL_BROWSE, L"Browse...");
     g_char.modelInfo = Rs_Label(page, CHAR_ID_MODEL_INFO, L"-", RS_FONT_SMALL);   // wraps (Char_Layout)
     g_char.modelImport = Rs_Label(page, CHAR_ID_MODEL_IMPORT, L"", RS_FONT_SMALL); // wraps (Char_Layout)
@@ -8716,7 +8784,7 @@ static void Char_TabApply(HWND page)
         if (tab < 0)
             continue;
         want = tab == g_char.tab && (card < 0 || card == (tab == CHAR_TAB_LOOK ? g_char.lookCard : g_char.extrasCard)) &&
-               !Char_UserHidden(c);
+               !Char_UserHidden(c) && !CharWheels_Hidden(c);
         if (c == g_char.reduceFit)
             want = want && g_char.reduceFitOn;
         else if (c == g_char.quality)

@@ -244,10 +244,11 @@ optional or still to do. A click on a head, "< Back" and "Next >" in the bar,
 or Ctrl+Tab and Ctrl+Shift+Tab move between the tabs.
 
 Tab 1 Model
-  Model (PLY or OBJ)
-              Your model of driver, steering wheel and kart in one file: a
-              PLY with vertex colours (ASCII or binary) or an OBJ (see OBJ
-              below), +Y up, +Z forward, at
+  Model file  Your model of driver, steering wheel and kart in one file: a
+              glTF (.glb, recommended - see glTF below), an OBJ (see OBJ
+              below) or a PLY with vertex colours (ASCII or binary). The
+              file dialog lists "glTF binary (*.glb) - recommended" first.
+              +Y up, +Z forward, at
               any scale: Reload Studio fits it to Crash size (see Size). The
               kart is the part at the bottom; the game draws the wheels (see
               "Show kart wheels"). Other parts of a vehicle that lie across
@@ -257,20 +258,34 @@ Tab 1 Model
               Small faults of the export are repaired (see "Repair the
               model"); a model with more triangles than a driver may draw
               is refused or reduced (see "Reduce to fit"). You can also
-              drag files onto the page: a .ply or .obj is the model, a .png
-              the icon, a folder the voices. A .png dragged together with an
-              .obj is not taken as the icon: it is mostly a texture, which
-              the material file names anyway.
+              drag files onto the page: a .glb, .gltf, .obj or .ply is the
+              model (on the card Wheels: the wheel model), a .png the icon,
+              a folder the voices. A .png dragged together with a .glb,
+              .gltf or .obj is not taken as the icon: it is mostly a
+              texture, which the model names anyway.
               Export again as often as you like: when you come back to
               Reload Studio (or to this page), it checks again by itself if
               the model, its material file, a texture (also one put next to
               the material file since), the icon or a file of the voices
               folder has been written since the last check.
+  glTF        The recommended format: glTF 2.0, best as one .glb file
+              (Blender: File -> Export -> glTF 2.0, format "glTF Binary").
+              It brings everything at once: all meshes of the scene (as one
+              driver), their UVs, normals, materials (base colour and base
+              colour texture) and textures - inside the .glb, or as files
+              next to a .gltf. Reload Studio reads it like an OBJ: the same
+              rules, limits, choices and messages, the same native model.
+              Its shape keys are the driver's animations (tab Extras, card
+              Animations; how to make them: docs/ANIMATIONS.md). A glTF with
+              a rig (armature, skin) is refused: rigs are not supported yet
+              - use shape keys. OBJ and PLY stay as they are for models
+              without animations.
   OBJ         Reload Studio tells a PLY from an OBJ by what is in the file,
               not by its name: a PLY named .obj is read as a PLY, with a
-              warning. A file of another format (FBX, glTF, STL, Blender...)
-              is refused with its name; export it as PLY or OBJ. An OBJ may
-              bring vertex colours ("v x y z r g b", as Blender writes them),
+              warning. A file of another format (FBX, STL, Blender...)
+              is refused with its name; export it as glTF, OBJ or PLY.
+              An OBJ may bring vertex colours ("v x y z r g b", as Blender
+              writes them),
               materials (mtllib and usemtl, the colour Kd of the material
               file) and textures (map_Kd: PNG, JPG or TGA). The colour of
               each corner of a face:
@@ -298,10 +313,10 @@ Tab 1 Model
               with more than four corners are split into triangles; lines,
               points and curves are left out. A broken OBJ (a number that is
               none, a corner that does not exist, no faces) is refused with
-              the line it found it in. Poses of your own (tab Extras) are
-              read from PLY only for now; a wheel model (card Wheels) may be
-              an OBJ or a PLY.
-              Textures folder (an OBJ that missed a texture, or with a
+              the line it found it in. Animations of your own come from the
+              shape keys of a glTF (tab Extras, card Animations); a wheel
+              model (card Wheels) may be a glTF, an OBJ or a PLY.
+              Textures folder (a glTF or OBJ that missed a texture, or with a
               folder set): a folder where rldpack looks
               first for a texture that is not at the path the material file
               gives - by its name, also in its folders textures, tex, images
@@ -486,23 +501,24 @@ Tab 5 Extras
               Colors: the palette of the model - "128 (default)" keeps up to
               128 colours, "64" as many as the original drivers have
               ("--colors 64").
-              Vertex colors (an OBJ only): how a vertex colour meets the
-              texture of its face. "Auto (default)": an OBJ ripped from a
+              Vertex colors (an OBJ or glTF only): how a vertex colour meets
+              the texture of its face. "Auto (default)": an OBJ ripped from a
               PS1 game (the vertex colours of its textured faces lie around
               0x80) lights its textures as the PS1 did - 0x80 shows the
               texture as it is -, any other model keeps texture times vertex
               colour. "Texture modulation (PS1)" and "Plain color" choose one
               of the two for every model ("--vertex-colors modulate|color" on
               the command line; Auto passes nothing).
-              Native model (an OBJ only, marked "Preview feature"): tick it
-              to write the OBJ's own mesh, UVs and textures into the
+              Native model (an OBJ or glTF only, marked "Preview feature"):
+              tick it to write the model's own mesh, UVs and textures into the
               character beside the classic model. It needs "Show kart
               wheels" off or a wheel model (card Wheels). The game draws it
               with NATIVE DRIVERS set to Preview (OPTIONS -> GRAPHICS);
               otherwise it draws the classic model as before.
   Wheels      Wheels of your own on the native model (marked "Preview
-              feature"). Wheel model: an OBJ (with its MTL file and one
-              texture of at most 1024 x 1024) or a PLY of one wheel - axle
+              feature"). Wheel model: a glTF (.glb, recommended), an OBJ
+              (with its MTL file and one texture of at most 1024 x 1024) or
+              a PLY of one wheel - axle
               along X, outer side toward +X, in the axes of the model (Up
               and Forward on the card Import), like the body; at most 1024
               triangles, never reduced. A texture that is there but cannot
@@ -520,8 +536,44 @@ Tab 5 Extras
               that is not X). Browse and Clear take effect at once; a wheel
               exported again (or its texture put in place) is read again
               when you come back to Reload Studio.
-  Animations  Poses of your own. Its fields are marked "Coming soon" and
-              greyed out; nothing of them is written into a character yet.
+              Rear wheel model (optional): another wheel for the two rear
+              wheels, with the same rules - for example a wider one. Empty:
+              the rear wheels are the wheel model, as in the game. It is
+              used only together with a wheel model.
+              Front axle / Rear axle with Fwd, Up and Track: moves the
+              wheels of that axle, in model units (the game's wheel has a
+              radius of 16). Fwd -32..32 (+ toward the front), Up -16..32,
+              Track -32..64 (the whole track wider; each wheel moves by
+              half). 0 0 0 is the game's place. The preview follows at once.
+              Always draw wheels: the game draws your wheels at every
+              distance; off (the default) it leaves them out far away, as it
+              does for its own drivers. Each of these is passed only when
+              you set it - left alone, the character is built exactly as
+              before.
+  Animations  Your driver's animations, from the shape keys of a glTF
+              model (.glb). In Blender, give the driver mesh shape keys
+              (Object Data -> Shape Keys) named steer_left, steer_right,
+              reverse, crash, jump, win and lose - the base mesh is the
+              neutral pose - and export glTF 2.0 with Shape Keys on. The
+              full guide, with a template: docs/ANIMATIONS.md. The list
+              shows each of the seven poses and where it comes from:
+              "from the file" (your shape key), "mirrored" (only one
+              steering key: the other side is its mirror image when the
+              model is symmetric), "automatic" (no key: the driver leans as
+              before), "neutral" (win and lose without a key) or "error"
+              with the reason. Shape keys with other names are ignored and
+              named below the list; OBJ and PLY have no shape keys and keep
+              the automatic poses. Steering, reverse, crash and jump are
+              built into every frame of the character, so every version of
+              the game shows them. Win and lose show only with the native
+              model (NATIVE DRIVERS set to Preview): after the finish line
+              the driver blends to win (places 1-3) or lose (4-8).
+              The preview below the list: the slider Steering from left to
+              right, the tick boxes Jump, Crash, Reverse, Win and Lose (one
+              at a time; untick for steering again) and Play, which plays
+              the animation shown as a loop. A click on a pose in the list
+              shows it. Nothing of it is built or remembered. Rigs
+              (armatures) are not supported yet - use shape keys.
 
 On the right
   Preview     The model as the game will draw it. Drag to turn it (left
@@ -534,7 +586,8 @@ On the right
               only - what is built is chosen on the tab In-game look) and,
               when the character has both, Native or Classic. None of it is
               built or remembered. The list at the top right of the card
-              picks Neutral, Steering left or Steering right. On the left
+              picks Neutral, Steering left or Steering right (the card
+              Animations shows every frame and plays them). On the left
               your model, with the kart wheels the game draws under it (none
               with "Show kart wheels" off). On the right, in grey and in the
               same scale on the same floor, "Crash size": the original kart
@@ -544,10 +597,11 @@ On the right
               (NATIVE DRIVERS set to Preview) when the character has a
               native model, else Classic, and why - with what to do for the
               native look (tick "Native model", Show kart wheels off or a
-              wheel model, an OBJ instead of a PLY). It names the textures
-              that were not found, and says when your wheels show but are
-              not built. The classic colours are those on a bright road:
-              on dark ground the game shades every driver, by up to 75 %.
+              wheel model, a glTF or OBJ instead of a PLY). It names the
+              textures that were not found, and says when your wheels show
+              but are not built. The classic colours are those on a bright
+              road: on dark ground the game shades every driver, by up to
+              75 %.
 
 The bar at the bottom
   Headline    What the last check or build says, e.g. "Ready to build" (one
@@ -674,6 +728,11 @@ Reload Studio
     Try "Closed hull (remesh)" on a model the repair cannot fix.
 [ ] Character page: a model with its own wheels or vehicle, "Show kart
     wheels" off - the game draws no kart wheels for it.
+[ ] Character page: a .glb from Blender with shape keys (docs/ANIMATIONS.md)
+    - the card Animations lists them, the preview plays them, and the
+    driver steers, jumps and crashes with them in the game.
+[ ] Character page, card Wheels: a wheel model, a rear wheel model, the
+    axles moved - the preview and the game (NATIVE DRIVERS Preview) agree.
 [ ] Character page: Mask Aku Aku and Uka Uka - with OPTIONS -> CHEATS ->
     MASKS on, the driver wears the chosen mask in the race and the HUD shows
     its icon.

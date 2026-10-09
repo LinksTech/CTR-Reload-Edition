@@ -2,7 +2,7 @@
 //
 // Reload Studio is the front end for track and character authors: pack a
 // track folder into a .rldtrack container, put together cups for cups.txt,
-// build a .rldchar character from a PLY or OBJ model, test a track in the game. All
+// build a .rldchar character from a glTF, OBJ or PLY model, test a track in the game. All
 // texts on screen are English.
 //
 // GROUND RULE: converting and checking is done by rldpack make. Reload Studio carries
@@ -22,7 +22,7 @@
 //   rs_view.c     3D model view beside the reference dummy (window class RsModelView, rs_view.h)
 //   rs_tex.c      textures of the preview: RLDPN2 and RLDPW3 read, mip levels as in the game (rs_tex.h)
 //   rs_wheels.c   card "Wheels" of the page "Character" (preview feature, rs_wheels.h)
-//   rs_anim.c     card "Animations" of the page "Character" (preview feature, rs_anim.h)
+//   rs_anim.c     card "Animations" of the page "Character" (shape keys of a glTF, rs_anim.h)
 //   rs_test.c     page "Test in game"
 //
 // Command line (details in rs_shell.c): `--rldpack <arguments>` (first
@@ -31,8 +31,9 @@
 // `--settings <ini>` (settings, logs and temporary files only there - below at
 // Rs_ConfigGet), `--ui-scale <percent>` (scale of the window instead of the
 // monitor's), `--screen <w>x<h>` (lay the window out as on a screen of that
-// size), `--enable-preview-features` (unlock the fields marked "Coming soon",
-// g_rsPreviewFeatures below; never stored), `--help`.
+// size), `--enable-preview-features` (developer mode: the user mode of the
+// page Character, g_rsPreviewFeatures below; never stored - every finished
+// field is open without it), `--help`.
 //
 // Characters: UTF-16 in the front end (W functions), UTF-8 on the pipe to
 // rldpack and in files. The manifest sets the ANSI code page to UTF-8,
@@ -328,7 +329,7 @@
 //             verdict <word> <rule> <detail>, icon <state> <why>
 //
 // Commands the page "Character" calls (always --template 14, Fake Crash):
-//   make-char --machine --check --model <ply | obj> --name <n> --template 14
+//   make-char --machine --check --model <glb | gltf | obj | ply> --name <n> --template 14
 //             --class <balanced|acceleration|speed|turning> --size <percent>
 //             [--repair off] [--open-parts one-sided] [--remesh on]
 //             [--reduce off] [--wheels off] [--mask aku|uka]   (only when they
@@ -355,18 +356,26 @@
 //             [--up z] [--forward -z]   (when the card Import of the tab Extras
 //             says Up Z or Forward -Z; +Y up and +Z forward are the defaults)
 //             [--colors 64]   (when the card says Colors 64; 128 is the default)
-//             [--textures <folder>]   (an OBJ only, when the field Textures
+//             [--textures <folder>]   (an OBJ or glTF only, when the field Textures
 //             folder of the tab Model is not empty)
-//             [--vertex-colors modulate|color]   (an OBJ only, when the card
+//             [--vertex-colors modulate|color]   (an OBJ or glTF only, when the card
 //             Import of the tab Extras does not say Auto)
 //             [--native-model on]   (preview feature, open to everyone: an
-//             OBJ, "Native model" ticked on the card Import and Show kart
+//             OBJ or glTF (read into the same data as an OBJ: @model format
+//             gltf), "Native model" ticked on the card Import and Show kart
 //             wheels off - or on with a wheel model of the card Wheels; never
 //             otherwise, so without the tick the command and the character's
 //             bytes are those of before)
-//             [--wheel-model <obj|ply> [--wheel-size <50..200>]]   (the card
+//             [--wheel-model <glb|obj|ply> [--wheel-size <50..200>]
+//             [--rear-wheel-model <glb|obj|ply>] [--axle-front <dz>,<dy>,<dtrack>]
+//             [--axle-rear <dz>,<dy>,<dtrack>] [--wheels-always on]]   (the card
 //             Wheels, preview feature: with --native-model on and Show kart
-//             wheels on; --wheel-size only when it is not 100)
+//             wheels on; --wheel-size only when it is not 100, the rear wheel
+//             only when one is chosen, an axle only when it is not 0 0 0 (whole
+//             model units: forward -32..32, up -16..32, the whole track
+//             -32..64), --wheels-always only when ticked - none of them set,
+//             the command is the one of before; with any make-char writes WHLS
+//             version 3)
 //             THE USER MODE (Rs_NativeForUsers, today with the switch): no
 //             --repair, --open-parts, --remesh, --reduce or --colors (rldpack's
 //             defaults, the choices hidden), --native-model on for every OBJ
@@ -389,11 +398,12 @@
 // "ReloadStudio.exe --rldpack make-char ...", quoted as it was passed.
 //
 // Automation verbs of the page "Character" (--do, besides those of the shell):
-//   model <ply|obj|none>, drop <path>[|<path>...] (as dropping these files
-//   onto the page together: a folder is the voices, a .ply or .obj the model,
-//   a .png the icon only when no .obj came with it, another 3D file
-//   the model only when neither came with it),
-//   textures <folder|none> (the field Textures folder; passed for an OBJ only),
+//   model <glb|gltf|obj|ply|none>, drop <path>[|<path>...] (as dropping these
+//   files onto the page together: a folder is the voices, a .glb, .gltf, .obj
+//   or .ply the model - on the card Wheels the wheel model -, a .png the icon
+//   only when no .glb, .gltf or .obj came with it, another 3D file the model
+//   only when none of those came with it),
+//   textures <folder|none> (the field Textures folder; passed for an OBJ or glTF only),
 //   name <text>, class <word>, mask aku|uka, mapcolor
 //   template|RRGGBB, size <percent>, icon <png|none>, icon-fit fit|fill|none,
 //   icon-transparent on|off, icon-frame on|off, repair|open-parts|remesh|reduce|
@@ -436,7 +446,24 @@
 //   "view-look: <dark|light> <crash on|off> <shadow on|off> <exhaust on|off>
 //   <native|classic>"),
 //   problem <n> (as a click on message n), report <file>, the verbs of the cards
-//   Wheels and Animations (rs_wheels.c, rs_anim.c), and for the tab Voices:
+//   Wheels and Animations (rs_wheels.c, rs_anim.c; nothing of them is stored):
+//   wheel-model <glb|obj|ply|none>  (also wheel) the wheel model; waits for char-wheel
+//   rear-wheel-model <glb|obj|ply|none>  (also rear-wheel) the rear wheel model; waits
+//   wheel-size <50..200>          percent of the game's wheel
+//   axle front|rear <forward> <up> <track>  whole model units, clamped (0 0 0 = retail);
+//                                 the preview at once, the check follows
+//   wheels-always on|off          "Always draw wheels"
+//   wheel-turn <spin> <steer>, wheel-anim on|off, wheel-bench <pictures>
+//                                 the wheels in the preview (rs_wheels.c)
+//   anim-steer <-10..10>          the steering of the preview (frame 10 + value)
+//   anim-play <steer|jump|crash|reverse|win|lose> on|off   that animation, on = a loop
+//   anim-show <steer|jump|crash|reverse|win|lose|steer_left|steer_right>
+//                                 as a click on its button: its strongest frame
+//   anim-end win|lose|none        the pose after the finish (none: steering again)
+//   ("report" writes them as "wheel status", "rear wheel ...", "axle front|rear
+//   ...", "wheels always ...", "wheel export extras ...", "animation pose <name>
+//   <state> ...", "animation keys ignored ...", "animation preview ..."),
+//   and for the tab Voices:
 //   voices <folder|none>          the folder (the check follows)
 //   voice <file>=<event|none>     as choosing the file in the list and its event
 //                                 (the file must be in the list of the last check)
@@ -459,32 +486,26 @@
 // with and without --enable-preview-features and draws it in place of the
 // model (the View menu of the preview shows the classic one instead).
 //
-// char-poses (the card "Animations" of the page "Character", rs_anim.c; only
-// with --enable-preview-features) - poses of one's own for the preview, never a
-// container (tools/rldpack_anim.inc, details there):
-//   char-poses --machine --model <ply> --pose-dir <folder> --size <percent>
-//              [--wheels off] [--repair off] --preview <file>
-//   @rldpack  1  char-poses
-//   @value    pose-dir <folder> switch, then size, fit, wheels, repair, up and
-//             forward as make-char says them
-//   @file     ply ok | missing <model> <bytes>
-//   @msg      as make-char; own ids pose-*, pose-model, pose-dir, pose-folder
-//   @char     pose <name> <ok | missing | bad | unused | automatic> <file> <rule>
-//             six, in the order turn_left turn_right reverse bump jump idle
-//   @char     pose-unknown <file>                 per .ply that is no pose
-//   @char     poses <found> <shown>
-//   @file     preview ok | failed <name> <bytes>
-//   @end      <exit code>   (no @result: nothing is built)
-// The --preview file (little endian): "RLDPS1\0\0", u32 poses = 6 (in the order
-// above, 0 triangles for a missing or refused one), per pose u32 triangles and
-// the triangle records of RLDPV1 (the faces before repair and reduction, drawn
-// from both sides).
+// The poses of a glTF (the card "Animations" of the page "Character", rs_anim.c):
+// make-char reads the shape keys (morph targets) steer_left, steer_right,
+// reverse, crash, jump, win and lose of the model and says per pose
+//   @pose     <name> from-file | automatic | mirrored | neutral | error [<reason>]
+//   @model    shape-key <name as written> <pose | unknown>   (every key of a glTF)
+//   @msg      warning pose-unknown-key (a key of no pose, ignored), warning
+//             pose-not-symmetric (one steering key, the model not symmetric:
+//             automatic lean), error model-rig (a skin: rigs are not supported
+//             yet); OBJ and PLY say none of them (the automatic poses)
+// The page collects them with the run (also from a result kept) and hands them
+// to the card after the check. rldpack char-poses (a folder of pose PLYs,
+// "RLDPS1" preview) is no longer called by the Studio; it stays in rldpack
+// (tools/rldpack_anim.inc).
 //
 // char-wheel (the card "Wheels" of the page "Character", rs_wheels.c; a preview
 // feature open to everyone) - a wheel of one's own for the preview, never a
 // container (tools/rldpack_wheel.inc; the rules of make-char --wheel-model):
-//   char-wheel --machine --model <obj|ply> [--up z] [--forward -z] [--textures <folder>]
-//              --preview <file>   (--textures: the page's Textures folder, as make-char gets it)
+//   char-wheel --machine --model <glb|obj|ply> [--up z] [--forward -z] [--textures <folder>]
+//              --preview <file>   (--textures: the page's Textures folder, as make-char gets it;
+//              a second run of its own for the rear wheel model)
 //   @rldpack  1  char-wheel
 //   @value    model, up, forward, preview  <value> <origin>
 //   @file     wheel ok | missing <name> <bytes>
@@ -751,14 +772,16 @@ int Rs_CheckBoxWidth(HWND box);
 int Rs_TextWidth(HWND h, const wchar_t *text);
 
 // ---------------------------------------------------------------------------
-// Preview features: fields of a page that are shown but not finished yet.
-// Without --enable-preview-features they are visible, greyed out and marked
-// "Coming soon"; nothing of them is ever written into a container.
+// The developer switch. Every finished field of the Studio is open without
+// it; what is still a preview says so ("Preview feature", Rs_PreviewMark).
+// "Coming soon" is left only for what is not built at all (on the page Track
+// the modes Time Trial and Battle, rs_track.c; in the user mode the box
+// "Include classic fallback model", rs_char.c). Rigs are refused by rldpack
+// (model-rig); the card Animations says so.
 // ---------------------------------------------------------------------------
 
 // 1 with --enable-preview-features on the command line (rs_shell.c). Never
-// stored in the settings. Every command and automation path of a locked field
-// checks it first - EnableWindow alone does not stop a posted WM_COMMAND.
+// stored in the settings. It switches only the user mode (Rs_NativeForUsers).
 extern int g_rsPreviewFeatures;
 
 // The native model for users (renderer step 6): 1 = the page Character is
@@ -771,7 +794,6 @@ extern int g_rsPreviewFeatures;
 // without it, marked "Preview feature" (Rs_PreviewMark) - the tick box Native
 // model of the card Import, the look, the native model in the preview - and
 // an export without the native part keeps its command and its bytes.
-// The card Animations stays on g_rsPreviewFeatures itself.
 int Rs_NativeForUsers(void);
 
 // Tooltip for a control of a page, NULL or "" removes it. The tool sits on the
@@ -780,13 +802,9 @@ int Rs_NativeForUsers(void);
 // every layout() and lists the tips in the automation verb "controls".
 void Rs_SetTip(HWND control, const wchar_t *text);
 
-// The small hint at the right of a card's title line: "Coming soon" (muted),
-// with --enable-preview-features "Preview feature" (note colour). Position it in
-// layout() like any label.
-HWND Rs_ComingSoon(HWND page, int id);
-
-// The same place for a field open to everyone that is still a preview:
-// "Preview feature" (note colour), with and without the switch.
+// The small hint at the right of a card's title line for a field open to
+// everyone that is still a preview: "Preview feature" (note colour), with and
+// without the switch. Position it in layout() like any label.
 HWND Rs_PreviewMark(HWND page, int id);
 
 // ---------------------------------------------------------------------------

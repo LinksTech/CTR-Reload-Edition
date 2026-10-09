@@ -1695,8 +1695,8 @@ HWND Rs_Label(HWND page, int id, const wchar_t *text, int font)
 }
 
 // The cue of an empty, disabled one-line input field: Windows shows a cue
-// (EM_SETCUEBANNER) only while the field is enabled, and a field locked with
-// its cue ("Coming soon") would be a blank box. The shell writes the cue in
+// (EM_SETCUEBANNER) only while the field is enabled, and a greyed-out field
+// with its cue would be a blank box. The shell writes the cue in
 // RS_COL_MUTED over what Windows painted.
 static void Rs_EditCuePaint(HWND h, HDC dc)
 {
@@ -2046,14 +2046,6 @@ HWND Rs_PreviewMark(HWND page, int id)
     HWND h = Rs_Label(page, id, L"Preview feature", RS_FONT_SMALL);
     if (h)
         Rs_SetTextColor(h, RS_COL_NOTE);
-    return h;
-}
-
-HWND Rs_ComingSoon(HWND page, int id)
-{
-    HWND h = Rs_Label(page, id, g_rsPreviewFeatures ? L"Preview feature" : L"Coming soon", RS_FONT_SMALL);
-    if (h)
-        Rs_SetTextColor(h, g_rsPreviewFeatures ? RS_COL_NOTE : RS_COL_MUTED);
     return h;
 }
 
@@ -4673,8 +4665,9 @@ static const wchar_t g_helpText[] =
     L"  --log <file>           automation log\n"
     L"  --rldpack <args>       run as rldpack (only as the first argument)\n"
     L"  --enable-preview-features\n"
-    L"                         unlock fields marked \"Coming soon\" (unfinished;\n"
-    L"                         nothing of them is written into a container)\n"
+    L"                         developer mode: the user mode of the page Character\n"
+    L"                         (its choices fixed at rldpack's defaults); every\n"
+    L"                         finished field is open without it\n"
     L"  --help                 this text\n"
     L"\n"
     L"Automation verbs of the window: page track|cups|char|test, shot <file.bmp>\n"
@@ -4759,7 +4752,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
         } else if (wcscmp(argv[i], L"--screen") == 0) {
             screenArg = i + 1 < argc ? argv[++i] : L"";
         } else if (wcscmp(argv[i], L"--enable-preview-features") == 0) {
-            // Never stored: every start without it has the fields locked again.
+            // Never stored: every start without it is the page players get.
             g_rsPreviewFeatures = 1;
         } else if (wcscmp(argv[i], L"--help") == 0 || wcscmp(argv[i], L"-h") == 0 ||
                    wcscmp(argv[i], L"/?") == 0) {

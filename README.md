@@ -80,15 +80,19 @@ the original ones.
   gets caught before you race, not mid-race
 
 ### 🧑‍🚀 Custom characters
-- Build your own driver from a PLY or OBJ model (OBJ with its MTL and
-  PNG/JPG/TGA/BMP textures), exported at any scale
+- Build your own driver from a glTF (.glb, recommended), OBJ or PLY model
+  (with its textures), exported at any scale
+- Animations of your own: shape keys in Blender for steering, reverse,
+  crash, jump, and a win or lose pose after the finish line
 - The model is fitted to Crash's size, repaired and, above the triangle
   limit, reduced automatically - the shape and the colours stay
 - Your own icon in the driver select and the race HUD, mask (Aku Aku or
   Uka Uka), minimap colour and voice clips
 - The driving style (Balanced, Acceleration, Speed, Turning) decides how
   the kart drives and sounds
-- Kart wheels drawn or hidden, for models that bring their own vehicle
+- Kart wheels drawn or hidden, for models that bring their own vehicle -
+  or wheels of your own, with an extra rear wheel and the axles where you
+  want them
 - Drop a .rldchar file into the characters folder and it gets its own tile
   in the driver select - up to 32 of them
 
@@ -98,8 +102,8 @@ the original ones.
 - Checks while you work and says in plain words what is wrong and how to
   fix it
 - "Build container" also records the track's preview in the background
-- Character preview next to Crash and in the steering poses, the way the
-  game will draw it
+- Character preview next to Crash, the way the game will draw it - it
+  plays the steering, jump, crash, reverse, win and lose animations
 - Notices a new export by itself and checks again; long builds show their
   progress and can be cancelled
 - "Test in game" starts a race on your track straight away
@@ -174,22 +178,34 @@ model); above 90 Reload Studio warns.
 
 ## Custom characters
 
-On its Character page, Reload Studio builds a `.rldchar` driver from one PLY
-or OBJ model of driver, steering wheel and kart, in five steps: model,
-driver, in-game look, voices and extras. The model can be exported at any
-scale - it is fitted to Crash with his kart, repaired (split corners, holes,
-faces turned inward) and, if it has more triangles than a driver may draw,
-reduced until it fits. The preview shows it next to Crash and in the
-steering poses, the way the game will draw it.
+On its Character page, Reload Studio builds a `.rldchar` driver from one
+model of driver, steering wheel and kart - a glTF (.glb, recommended: it
+brings its textures and its animations in one file), an OBJ or a PLY - in
+five steps: model, driver, in-game look, voices and extras. The model can be
+exported at any scale - it is fitted to Crash with his kart, repaired (split
+corners, holes, faces turned inward) and, if it has more triangles than a
+driver may draw, reduced until it fits. The preview shows it next to Crash
+and in its animations, the way the game will draw it.
 
 You choose the driving style (Balanced, Acceleration, Speed, Turning), the
 mask, an icon for the driver select and the race HUD, a minimap colour and a
 folder of voice clips. Switch off "Show kart wheels" for a model that brings
 its own wheels or vehicle.
 
-An OBJ can also keep its own mesh and textures ("Native model" on the
+Animations come from shape keys on the driver in Blender, named
+steer_left, steer_right, reverse, crash, jump, win and lose, exported as
+glTF. The Animations card lists each pose - from your file, mirrored,
+automatic or with an error - and plays them in the preview. Steering,
+reverse, crash and jump work in every build of the game; win and lose show
+on the native model. The how-to and a Blender template are in
+[docs/ANIMATIONS.md](docs/ANIMATIONS.md). Rigs (armatures) are not supported
+yet - use shape keys.
+
+A glTF or OBJ can also keep its own mesh and textures ("Native model" on the
 Extras tab, a preview feature): the game draws it with NATIVE DRIVERS set to
-Preview, on wheels of your own if you give it a wheel model (card Wheels).
+Preview, on wheels of your own if you give it a wheel model (card Wheels) -
+with a different rear wheel if you like, each axle moved forward, up or
+wider, and drawn at every distance if you tick "Always draw wheels".
 
 In the preview, drag to turn the model, drag with the right mouse button to
 move it, use the mouse wheel to zoom and double-click to go back to the start
@@ -223,8 +239,8 @@ Planned, in no particular order and without a date:
 - Boss races and race modifiers in NITRO-PIT
 - Custom characters in more modes: two players, Adventure and the NITRO-PIT
   challenges
-- Animations of your own for custom characters - Reload Studio shows them
-  as a "Coming soon" card
+- Rigs (armatures) for custom characters - animations are shape keys
+  for now
 - Skin support for the drivers
 - ...and more
 
