@@ -197,15 +197,20 @@ steer_left, steer_right, reverse, crash, jump, win and lose, exported as
 glTF. The Animations card lists each pose - from your file, mirrored,
 automatic or with an error - and plays them in the preview. Steering,
 reverse, crash and jump work in every build of the game; win and lose show
-on the native model. The how-to and a Blender template are in
-[docs/ANIMATIONS.md](docs/ANIMATIONS.md). Rigs (armatures) are not supported
-yet - use shape keys.
+on the native model. The how-to is
+[docs/ANIMATIONS.md](docs/ANIMATIONS.md); a Blender template to start from is
+built by a script in [templates](templates/README.md) - both come with the
+release package:
+
+    blender --background --factory-startup --python templates/make_driver_template.py
+
+Rigs (armatures) are not supported yet - use shape keys.
 
 A glTF or OBJ can also keep its own mesh and textures ("Native model" on the
 Extras tab, a preview feature): the game draws it with NATIVE DRIVERS set to
 Preview, on wheels of your own if you give it a wheel model (card Wheels) -
-with a different rear wheel if you like, each axle moved forward, up or
-wider, and drawn at every distance if you tick "Always draw wheels".
+with a different rear wheel if you like and each axle moved forward, up or
+wider. Your wheels are drawn at every distance.
 
 In the preview, drag to turn the model, drag with the right mouse button to
 move it, use the mouse wheel to zoom and double-click to go back to the start

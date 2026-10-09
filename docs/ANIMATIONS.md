@@ -5,10 +5,17 @@ and a win and a lose pose after the finish line. You make them as **shape
 keys** in Blender and export the model as **glTF 2.0 binary (.glb)**. Reload
 Studio reads the .glb on the Character page like an OBJ, plus the shape keys.
 
-A ready-made start is the template [`templates/driver-template.blend`](../templates/driver-template.blend)
-(CC0, free for any use): a simple placeholder driver with kart, at the right
-size and orientation, with all seven shape keys and the export settings
-already stored in the file.
+A ready-made start is the template `templates/driver-template.blend` (CC0,
+free for any use): a simple placeholder driver with kart, at the right size
+and orientation, with all seven shape keys and the export settings already
+stored in the file. It is not shipped as a file: build it once with Blender
+5.2 from the folder of the release package (or of the source code), where
+the folder `templates` is:
+
+    blender --background --factory-startup --python templates/make_driver_template.py
+
+It is written next to the script, as `templates/driver-template.blend`
+(details in [templates/README.md](../templates/README.md)).
 
 ## 1. Prepare the model
 
@@ -26,7 +33,9 @@ already stored in the file.
    front of him are taken as the steering wheel. So keep the driver's arms,
    legs and face connected to his body (the template welds each limb to the
    body at one corner). The game draws the wheels; leave them out, or use the
-   Wheels card.
+   Wheels card - a wheel of your own with its tread modelled as geometry, not
+   only painted in the texture (the game keeps a fast wheel from strobing by
+   the bumps of its shape).
 4. **Materials:** use the **Principled BSDF** with an **Image Texture** on
    Base Color (or just a Base Color). That is what the glTF exporter writes
    and what Reload Studio reads. The model needs UVs for its texture.

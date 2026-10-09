@@ -18,8 +18,13 @@
 # 5. Package by ALLOW LIST, never the build folder as a whole:
 #      ctr_native.exe, ctr_native.pdb, ReloadStudio.exe,
 #      LICENSE, THIRD_PARTY_NOTICES.md, README.txt, RELEASE-NOTES.txt,
+#      docs/ANIMATIONS.md (the guide to animations of one's own, which
+#      Reload Studio and README.txt name) and templates/ (LICENSE, README.md,
+#      make_driver_template.py: the script that builds the Blender template;
+#      the .blend itself is no file of the repository),
 #      <name>-source.zip (GPL: the source code of this commit, git archive by
-#      allow list - everything the build needs, nothing else).
+#      allow list - everything the build needs and the guide with the
+#      template's script, nothing else).
 #    rldpack is not shipped on its own: Reload Studio carries it
 #    (ReloadStudio.exe --rldpack ...).
 # 6. Check: no file type that tools/content_guard.py refuses (disc content,
@@ -29,7 +34,8 @@
 #    the source zip. A hit aborts, and no zip is created.
 #
 # Output: dist/<name>.zip with the folder <name>/ inside, which holds the files
-# of step 5 directly (<name>/ctr_native.exe, <name>/ReloadStudio.exe, ...).
+# of step 5 directly (<name>/ctr_native.exe, <name>/ReloadStudio.exe, ...,
+# <name>/docs/ANIMATIONS.md, <name>/templates/...).
 # The build ID is the part of <name> after the last "-" (for a clean tree).
 set -eu
 cd "$(dirname "$0")/../.."
@@ -97,6 +103,9 @@ rm -rf "$OUT" "dist/$NAME.zip"
 mkdir -p "$OUT"
 cp "$R/ctr_native.exe" "$R/ctr_native.pdb" "$R/ReloadStudio.exe" "$OUT/"
 cp LICENSE THIRD_PARTY_NOTICES.md "$OUT/"
+mkdir -p "$OUT/docs" "$OUT/templates"
+cp docs/ANIMATIONS.md "$OUT/docs/"
+cp templates/LICENSE templates/README.md templates/make_driver_template.py "$OUT/templates/"
 for t in README RELEASE-NOTES; do
 	sed -e "s/@VERSION@/$VERSION/g" -e "s/@BUILD@/$ID/g" -e "s/@NAME@/$NAME/g" \
 		"tools/package/$t.txt" > "$OUT/$t.txt"
@@ -106,7 +115,8 @@ echo "== Source code (GPL) by allow list"
 git archive --format=zip --prefix="$NAME-source/" -o "$OUT/$NAME-source.zip" HEAD -- \
 	CMakeLists.txt CMakePresets.json build-msvc.bat main.c LICENSE THIRD_PARTY_NOTICES.md README.md BUILDING.md \
 	.gitignore .clang-format .clang-tidy .clangd \
-	cmake game include platform tools metadata externals/SDL
+	cmake game include platform tools metadata externals/SDL externals/cgltf \
+	docs/ANIMATIONS.md templates/LICENSE templates/README.md templates/make_driver_template.py
 
 echo "== Check for forbidden content"
 python - "$OUT" <<'PY' || { echo "ABORT: forbidden content, no package"; exit 5; }
@@ -140,16 +150,19 @@ def check(name, read=None):
         bad.append(name)
     elif any(('/' + d) in ('/' + n) for d in BAD_DIR):
         bad.append(name)
-for f in os.listdir(root):
-    if not f.endswith('-source.zip'):
-        check(f)
-        continue
-    # The source zip is the one archive in the package: the files in it are
-    # checked instead.
-    with zipfile.ZipFile(os.path.join(root, f)) as z:
-        for n in z.namelist():
-            if not n.endswith('/'):
-                check(n.split('/', 1)[1] if '/' in n else n, lambda n=n: z.read(n))
+for top, dirs, files in os.walk(root):
+    dirs.sort()
+    for f in sorted(files):
+        rel = os.path.relpath(os.path.join(top, f), root).replace(os.sep, '/')
+        if not (top == root and f.endswith('-source.zip')):
+            check(rel)
+            continue
+        # The source zip is the one archive in the package: the files in it are
+        # checked instead.
+        with zipfile.ZipFile(os.path.join(top, f)) as z:
+            for n in z.namelist():
+                if not n.endswith('/'):
+                    check(n.split('/', 1)[1] if '/' in n else n, lambda n=n: z.read(n))
 if bad:
     for b in bad[:40]:
         print('  forbidden:', b)
@@ -162,8 +175,11 @@ import os, sys, zipfile, hashlib
 root, out = sys.argv[1], sys.argv[2]
 base = os.path.basename(root)
 with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
-    for f in sorted(os.listdir(root)):
-        z.write(os.path.join(root, f), base + '/' + f)
+    for top, dirs, files in os.walk(root):
+        dirs.sort()
+        for f in sorted(files):
+            rel = os.path.relpath(os.path.join(top, f), root).replace(os.sep, '/')
+            z.write(os.path.join(top, f), base + '/' + rel)
 # The release jobs take these four out of the zip by exactly these paths.
 with zipfile.ZipFile(out) as z:
     names = z.namelist()

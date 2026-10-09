@@ -276,7 +276,8 @@ Tab 1 Model
               next to a .gltf. Reload Studio reads it like an OBJ: the same
               rules, limits, choices and messages, the same native model.
               Its shape keys are the driver's animations (tab Extras, card
-              Animations; how to make them: docs/ANIMATIONS.md). A glTF with
+              Animations; how to make them: docs/ANIMATIONS.md in this
+              package). A glTF with
               a rig (armature, skin) is refused: rigs are not supported yet
               - use shape keys. OBJ and PLY stay as they are for models
               without animations.
@@ -545,17 +546,26 @@ Tab 5 Extras
               radius of 16). Fwd -32..32 (+ toward the front), Up -16..32,
               Track -32..64 (the whole track wider; each wheel moves by
               half). 0 0 0 is the game's place. The preview follows at once.
-              Always draw wheels: the game draws your wheels at every
-              distance; off (the default) it leaves them out far away, as it
-              does for its own drivers. Each of these is passed only when
-              you set it - left alone, the character is built exactly as
-              before.
+              Each of these is passed only when you set it - left alone,
+              the character is built exactly as before. The game draws your
+              wheels at every distance (not left out far away like its own
+              tyres). Model the tread as geometry - lugs with grooves
+              between: the game keeps a fast wheel from seeming to turn
+              backwards by the bumps of its shape, so at full speed it turns
+              a little slower than the kart drives; a tread painted only in
+              the texture of a smooth wheel is not seen and may flicker.
   Animations  Your driver's animations, from the shape keys of a glTF
               model (.glb). In Blender, give the driver mesh shape keys
               (Object Data -> Shape Keys) named steer_left, steer_right,
               reverse, crash, jump, win and lose - the base mesh is the
               neutral pose - and export glTF 2.0 with Shape Keys on. The
-              full guide, with a template: docs/ANIMATIONS.md. The list
+              full guide: docs/ANIMATIONS.md in this package. A Blender
+              template to start from is in the folder templates as a
+              script; build the .blend with Blender 5.2 from the folder of
+              this package:
+    blender --background --factory-startup --python templates/make_driver_template.py
+              (it is written next to the script; templates/README.md).
+              The list
               shows each of the seven poses and where it comes from:
               "from the file" (your shape key), "mirrored" (only one
               steering key: the other side is its mirror image when the
@@ -567,7 +577,9 @@ Tab 5 Extras
               built into every frame of the character, so every version of
               the game shows them. Win and lose show only with the native
               model (NATIVE DRIVERS set to Preview): after the finish line
-              the driver blends to win (places 1-3) or lose (4-8).
+              the driver blends to win (places 1-3) or lose (4-8). Without
+              "Native model" they are not built: the list says "used only
+              with the native model" and Win and Lose are greyed out.
               The preview below the list: the slider Steering from left to
               right, the tick boxes Jump, Crash, Reverse, Win and Lose (one
               at a time; untick for steering again) and Play, which plays
@@ -728,7 +740,8 @@ Reload Studio
     Try "Closed hull (remesh)" on a model the repair cannot fix.
 [ ] Character page: a model with its own wheels or vehicle, "Show kart
     wheels" off - the game draws no kart wheels for it.
-[ ] Character page: a .glb from Blender with shape keys (docs/ANIMATIONS.md)
+[ ] Character page: a .glb from Blender with shape keys (docs/ANIMATIONS.md
+    in this package)
     - the card Animations lists them, the preview plays them, and the
     driver steers, jumps and crashes with them in the game.
 [ ] Character page, card Wheels: a wheel model, a rear wheel model, the

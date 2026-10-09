@@ -54,5 +54,9 @@ void CharAnim_PreviewLoaded(void);
 // The page's choice Neutral / Steering left / Steering right below the
 // preview (0, -10, +10): the card's steering follows (Play stops).
 void CharAnim_SteerFromPage(int steer);
+// The native model is built (1) or not (0), after every change of the page:
+// without it win and lose are not built - their tick boxes are greyed out
+// and the list says so.
+void CharAnim_NativeState(int native);
 void CharAnim_Report(FILE *f);                                      // appended to "report"
 #endif

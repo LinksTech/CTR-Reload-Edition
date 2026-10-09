@@ -368,14 +368,14 @@
 //             bytes are those of before)
 //             [--wheel-model <glb|obj|ply> [--wheel-size <50..200>]
 //             [--rear-wheel-model <glb|obj|ply>] [--axle-front <dz>,<dy>,<dtrack>]
-//             [--axle-rear <dz>,<dy>,<dtrack>] [--wheels-always on]]   (the card
+//             [--axle-rear <dz>,<dy>,<dtrack>]]   (the card
 //             Wheels, preview feature: with --native-model on and Show kart
 //             wheels on; --wheel-size only when it is not 100, the rear wheel
 //             only when one is chosen, an axle only when it is not 0 0 0 (whole
 //             model units: forward -32..32, up -16..32, the whole track
-//             -32..64), --wheels-always only when ticked - none of them set,
-//             the command is the one of before; with any make-char writes WHLS
-//             version 3)
+//             -32..64) - none of them set, the command is the one of before;
+//             with any make-char writes WHLS version 3. Never --wheels-always:
+//             the game draws an author's wheels at every distance anyway)
 //             THE USER MODE (Rs_NativeForUsers, today with the switch): no
 //             --repair, --open-parts, --remesh, --reduce or --colors (rldpack's
 //             defaults, the choices hidden), --native-model on for every OBJ
@@ -452,7 +452,8 @@
 //   wheel-size <50..200>          percent of the game's wheel
 //   axle front|rear <forward> <up> <track>  whole model units, clamped (0 0 0 = retail);
 //                                 the preview at once, the check follows
-//   wheels-always on|off          "Always draw wheels"
+//   wheels-always on|off          refused (FAIL): it has no effect in the game, the
+//                                 card has no such choice and passes nothing
 //   wheel-turn <spin> <steer>, wheel-anim on|off, wheel-bench <pictures>
 //                                 the wheels in the preview (rs_wheels.c)
 //   anim-steer <-10..10>          the steering of the preview (frame 10 + value)
@@ -461,7 +462,7 @@
 //                                 as a click on its button: its strongest frame
 //   anim-end win|lose|none        the pose after the finish (none: steering again)
 //   ("report" writes them as "wheel status", "rear wheel ...", "axle front|rear
-//   ...", "wheels always ...", "wheel export extras ...", "animation pose <name>
+//   ...", "wheel export extras ...", "animation pose <name>
 //   <state> ...", "animation keys ignored ...", "animation preview ..."),
 //   and for the tab Voices:
 //   voices <folder|none>          the folder (the check follows)

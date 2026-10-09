@@ -1507,7 +1507,7 @@ kinds apart; the layout is the same byte for byte (`RLDCHAR_WHEEL_VERSION_*`):
 |---|---|---|---|
 | 1 | the test wheel (a grey cylinder of 64 triangles) | the same mesh turned 180 degrees about Y, never mirrored | the self-test's files and `--native-probe` only; `make-char` never writes it for a character |
 | 2 | an author's wheel | the mirror image of the mesh: x negated, the normals mirrored (nx negated), the winding turned - the outer side (+X) is outside on both sides, and a tread runs mirrored | `make-char --wheel-model` |
-| 3 | an author's wheel as 2, with a rear wheel of its own, axle offsets or "always draw" | as 2, for the front and the rear mesh | `make-char --wheel-model` with `--rear-wheel-model`, `--axle-front`, `--axle-rear` or `--wheels-always on` |
+| 3 | an author's wheel as 2, with a rear wheel of its own, axle offsets or the reserved flag "always draw" | as 2, for the front and the rear mesh | `make-char --wheel-model` with `--rear-wheel-model`, `--axle-front`, `--axle-rear` or `--wheels-always on` |
 
 Drawing the wheels, the turn of version 1 and the mirror of version 2, is the
 game's part; the reader only checks. A reader from before version 2 (before
@@ -1524,7 +1524,7 @@ kart wheels.
 | 0x00 | u32 | vertexCount Nw, 3..2048 |
 | 0x04 | u32 | triangleCount Tw, 1..1024 |
 | 0x08 | u16 | material (< M) |
-| 0x0A | u16 | flags: 0 in versions 1 and 2; version 3: bit 0 always draw (`RLDCHAR_WHEEL_ALWAYS_DRAW`, no level of detail), bit 1 a rear mesh follows (`RLDCHAR_WHEEL_REAR_MESH`), bits 2-15 0 |
+| 0x0A | u16 | flags: 0 in versions 1 and 2; version 3: bit 0 always draw (`RLDCHAR_WHEEL_ALWAYS_DRAW`; reserved: written and read, no effect in the game - an author's wheels are drawn at every distance anyway), bit 1 a rear mesh follows (`RLDCHAR_WHEEL_REAR_MESH`), bits 2-15 0 |
 | 0x0C | f32 | radius, 0..64 model units |
 | 0x10 | f32 | halfWidth, 0..radius |
 | 0x14 | f32[3] | front: the center of the front wheel on +X, model units (version 3: with its axle offset) |
@@ -1629,7 +1629,7 @@ player never sees the grey test wheel on a driver of a file:
 | wheels shown, WHLS version 1 (the test wheel; old files of the preview) | the game refuses the native part (`native-wheels`): CMDL with the retail kart wheels |
 | WHLS version 2 breaks CNET-10 or CNET-12, its texture over 1024 or broken (CTXT-n) | the whole native part is refused (all or nothing): CMDL with the retail kart wheels |
 | an older reader (before v0.7.5) and WHLS version 2 | CNET-10 (version): CMDL with the retail kart wheels |
-| wheels shown, WHLS version 3 valid (CNET-10, CNET-12) | the reader hands on the native body with the author's wheels (`wheelVersion` 3, `RldChar_WheelIsOwn`); the game draws them with the rear mesh, the offsets in the wheel points and "always draw" once it reads version 3 - until then it refuses the part with `native-wheels`: CMDL with the retail kart wheels |
+| wheels shown, WHLS version 3 valid (CNET-10, CNET-12) | the reader hands on the native body with the author's wheels (`wheelVersion` 3, `RldChar_WheelIsOwn`); the game draws them with the rear mesh and the offsets in the wheel points (the flag "always draw" changes nothing) once it reads version 3 - until then it refuses the part with `native-wheels`: CMDL with the retail kart wheels |
 | a reader before version 3 (0.7.5) and WHLS version 3 | CNET-10 (version): CMDL with the retail kart wheels |
 | MRPH broken (CNET-13) | the whole native part is refused: CMDL with the retail kart wheels |
 | a reader before MRPH, or MRPH of another version | MRPH skipped: the native model without win and lose |
@@ -1661,7 +1661,14 @@ Deliberate differences from the retail wheels:
 - No LOD: retail leaves the tyres out past the LOD threshold
   (`game/DrawTires.c:829-850`; with three or four players already from the
   first coarser header). An author's wheels are always drawn, like the
-  native body, which is not reduced either.
+  native body, which is not reduced either. A custom driver has one model
+  head, so the retail rule would never apply to it; the flag "always draw"
+  of WHLS version 3 is therefore reserved and has no effect in the game.
+- Strobing: the turn the game draws per frame is held below half the step
+  of the wheel's tread, found from the bumps of its shape (none found: 8).
+  A tread painted only in the texture of a smooth wheel is not seen and may
+  still flicker, and at full speed the wheel turns visibly slower than the
+  kart drives: model the tread as geometry (lugs with grooves between).
 - Dimmed with the body: the retail tyre sprites keep their tyre colour in a
   mirror and under water (`scratch->tireColor`, `game/DrawTires.c:867`).
   An author's wheels follow the tint of the body, so in a mirror and below
@@ -1967,8 +1974,10 @@ are set.
   2, r + dy, 49.75 + dz) and rear (36 + dtrack / 2, r + dy, -24 + dz), r the
   radius of that wheel; the front axle stays in front of the rear one
   (`axle-order`, which the bounds already keep).
-- `--wheels-always on|off`: on sets "always draw" (no level of detail);
-  off, the default, leaves the wheels to the retail rule of the tyres.
+- `--wheels-always on|off`: on sets the flag "always draw". It is reserved
+  and has no effect in the game: an author's wheels are drawn at every
+  distance anyway (a custom driver has one model head, the retail rule of
+  the tyres never applies). Reload Studio does not pass it.
 - WHLS version 3 is written only when a switch changes something (a rear
   model, an offset other than 0, `--wheels-always on`); `--axle-front 0,0,0`
   or `--wheels-always off` alone keep version 2 and the same bytes.

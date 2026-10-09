@@ -20,13 +20,12 @@ int  CharWheels_SizePercent(void);
 // the rear wheel model (1, its path into out; 0 = none, the rear wheels are the
 // wheel model); an axle (0 front, 1 rear) moved: 1 and its forward, up and
 // track in whole model units into value (make-char --axle-front|--axle-rear
-// <dz>,<dy>,<dtrack>), 0 = 0 0 0; "Always draw wheels" (--wheels-always on).
+// <dz>,<dy>,<dtrack>), 0 = 0 0 0.
 int  CharWheels_RearModelPath(wchar_t *out, int cap);
 int  CharWheels_Axle(int axle, int value[3]);
-int  CharWheels_Always(void);
 // 0 = nothing of the export changed since the last call; 1 = a field was
 // typed in (a model, an axle value), 2 = clicked (Browse, Clear, the slider,
-// Always draw, automation, a wheel file written since it was read). Cleared.
+// automation, a wheel file written since it was read). Cleared.
 int  CharWheels_ExportChanged(void);
 // When Reload Studio is active again or the page is shown again (the page's
 // Char_FilesChanged): a file the last char-wheel of either wheel read (the

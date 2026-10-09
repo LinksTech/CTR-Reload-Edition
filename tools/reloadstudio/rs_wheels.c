@@ -32,15 +32,15 @@
 // `--wheel-size <percent>` to make-char while the native model is built and
 // Show kart wheels is on (CharWheels_ModelPath, CharWheels_SizePercent); with
 // them, and only when set, `--rear-wheel-model <file>`, `--axle-front
-// <dz>,<dy>,<dtrack>`, `--axle-rear ...` (not 0 0 0) and `--wheels-always on`
-// (CharWheels_RearModelPath, CharWheels_Axle, CharWheels_Always) - none of
-// them set, the command is the one of before. A change of any makes the page
+// <dz>,<dy>,<dtrack>` and `--axle-rear ...` (not 0 0 0)
+// (CharWheels_RearModelPath, CharWheels_Axle) - none of them set, the command
+// is the one of before. A change of any makes the page
 // check again (CharWheels_ExportChanged). The axes of the card Import (--up,
 // --forward) are the wheels' too: char-wheel gets them, and a change reads the
 // wheels again; so does the Textures folder of the page (--textures, an OBJ or
 // glTF body only, CharWheels_SetTextures), where make-char looks for the
 // wheels' textures as well. make-char then writes WHLS version 2 beside the
-// native model (version 3 with a rear wheel, an axle moved or Always draw);
+// native model (version 3 with a rear wheel or an axle moved);
 // the classic model keeps the game's wheels as its fallback.
 //
 // THE AXLES: per axle (the choice Front axle / Rear axle) three whole numbers
@@ -48,9 +48,10 @@
 // toward the front), Up (-16..32) and Track (-32..64, the whole track wider;
 // each wheel moves by half of it); 0 0 0 = the retail wheel points. The view
 // takes them at once (RsView_SetAxle: 1/16 units, its dtrack per wheel = half
-// the track). "Always draw wheels": the game draws the wheels at every
-// distance instead of leaving them out far away as for the retail drivers
-// (WHLS flag ALWAYS_DRAW); the preview draws them always anyway.
+// the track). There is no choice "Always draw": the game draws an author's
+// wheels at every distance (a custom driver has one model head, the retail
+// rule of the tyres never applies), so make-char's --wheels-always has no
+// effect in the game and the card does not pass it.
 //
 // "Show kart wheels" (tab Model, rs_char.c) stays the master:
 //   a wheel model, kart wheels on    your wheels on the native model; the
@@ -68,7 +69,7 @@
 //   rear-wheel-model <glb|obj|ply|none>  (also "rear-wheel") the rear wheel; waits as well
 //   wheel-size <50..200>        percent of the game's wheel
 //   axle front|rear <forward> <up> <track>  whole model units (0 0 0 = retail)
-//   wheels-always on|off        "Always draw wheels"
+//   wheels-always on|off        refused: it would change nothing in the game
 //   wheel-turn <spin> <steer>   fixed angles in whole degrees; stops the animation
 //   wheel-anim on|off           the animation of the preview (a timer of the view)
 //   wheel-bench <pictures>      the preview drawn that often, one animation step
@@ -101,7 +102,6 @@
 #define WH_ID_AXLE          316     // the choice Front axle / Rear axle
 #define WH_ID_AXLE_CAPTION  317     // 317..319: Fwd, Up, Track
 #define WH_ID_AXLE_VALUE    320     // 320..322: their fields
-#define WH_ID_ALWAYS        323
 #define WH_ID_FIRST         300
 #define WH_ID_LAST          339
 
@@ -171,7 +171,7 @@ struct WhSlot {
 
 static struct {
     HWND page, view;
-    HWND hint, note, sizeLabel, size, sizeValue, animate, always, wheelsNote, status;
+    HWND hint, note, sizeLabel, size, sizeValue, animate, wheelsNote, status;
     HWND axle, axleCaption[WH_AXLE_VALUES], axleValue[WH_AXLE_VALUES];
     struct WhSlot slot[WH_SLOTS];
     int created;
@@ -180,7 +180,6 @@ static struct {
     int sizeNow, spin, steer, anim;
     int axleShown;              // the axle the fields show: 0 front, 1 rear
     int axleNow[2][WH_AXLE_VALUES];
-    int alwaysNow;
     int exportChanged;          // CharWheels_ExportChanged: 1 typed, 2 clicked, 0 nothing
     int obj, kartWheels, nativeOn, passed;   // CharWheels_PageState
     int upZ, backwards;         // the page's axes (card Import): the wheel's as well
@@ -816,8 +815,6 @@ static void Wh_Tips(void)
     const wchar_t *axle = L"Moves the wheels of one axle, in model units (the game's wheel has a radius of 16): Fwd toward the "
                           L"front (-32..32), Up (-16..32), Track the whole track wider or narrower (-32..64). 0 0 0 = the "
                           L"game's wheel points. In the preview at once.";
-    const wchar_t *always = L"The game draws your wheels at every distance. Off (default): far away it leaves them out, as it "
-                            L"does for its own drivers.";
     int i;
 
     Rs_SetTip(g_wh.hint, L"Preview: wheels of your own on the native model; the game draws them with NATIVE DRIVERS set to "
@@ -839,7 +836,6 @@ static void Wh_Tips(void)
         Rs_SetTip(g_wh.axleCaption[i], axle);
         Rs_SetTip(g_wh.axleValue[i], axle);
     }
-    Rs_SetTip(g_wh.always, always);
 }
 
 static void Wh_CreateSlot(HWND page, int slot)
@@ -898,7 +894,6 @@ void CharWheels_Create(HWND page, HWND view)
     }
     Wh_AxleFields();
     g_wh.animate = Rs_Check(page, WH_ID_ANIMATE, L"Animate in the preview (spin and steer)");
-    g_wh.always = Rs_Check(page, WH_ID_ALWAYS, L"Always draw wheels");
     g_wh.wheelsNote = Rs_Label(page, WH_ID_WHEELS_NOTE, WH_TEXT_GAME, RS_FONT_SMALL);
     Rs_SetTextColor(g_wh.note, RS_COL_MUTED);
     Rs_SetTextColor(g_wh.wheelsNote, RS_COL_MUTED);
@@ -926,7 +921,7 @@ static void Wh_LaySlot(int slot, int left, int x, int right, int y, int labelW, 
 int CharWheels_Layout(HWND page, int left, int right, int top, int labelW, int compact)
 {
     RECT card, in;
-    int x, y, h, w, fieldW, width, i, cx, valueW, gap, w2;
+    int x, y, h, w, fieldW, width, i, cx, valueW, gap;
     HWND labels[3];
     wchar_t *text;
 
@@ -999,19 +994,10 @@ int CharWheels_Layout(HWND page, int left, int right, int top, int labelW, int c
     }
     y += Rs_Px(compact ? 32 : 36);
 
-    // The tick boxes: side by side from the label column where they fit.
+    // The tick box from the label column.
     w = Rs_CheckBoxWidth(g_wh.animate);
-    w2 = Rs_CheckBoxWidth(g_wh.always);
-    if (w + Rs_Px(16) + w2 <= width) {
-        MoveWindow(g_wh.animate, in.left, y, w, Rs_Px(24), TRUE);
-        MoveWindow(g_wh.always, in.left + w + Rs_Px(16), y, w2, Rs_Px(24), TRUE);
-        y += Rs_Px(compact ? 26 : 30);
-    } else {
-        MoveWindow(g_wh.animate, in.left, y, w < width ? w : width, Rs_Px(24), TRUE);
-        y += Rs_Px(28);
-        MoveWindow(g_wh.always, in.left, y, w2 < width ? w2 : width, Rs_Px(24), TRUE);
-        y += Rs_Px(30);
-    }
+    MoveWindow(g_wh.animate, in.left, y, w < width ? w : width, Rs_Px(24), TRUE);
+    y += Rs_Px(compact ? 26 : 30);
     h = Wh_TextHeight(g_wh.wheelsNote, width);
     MoveWindow(g_wh.wheelsNote, in.left, y, width, h, TRUE);
     y += h;
@@ -1058,15 +1044,6 @@ static void Wh_SetAnimation(int on)
         RsView_SetWheelTurn(g_wh.view, g_wh.spin, g_wh.steer);
 }
 
-static void Wh_SetAlways(int on)
-{
-    if ((on != 0) != g_wh.alwaysNow)
-        g_wh.exportChanged = 2;
-    g_wh.alwaysNow = on != 0;
-    SendMessageW(g_wh.always, BM_SETCHECK, g_wh.alwaysNow ? BST_CHECKED : BST_UNCHECKED, 0);
-    RsView_SetWheelsAlways(g_wh.view, g_wh.alwaysNow);
-}
-
 int CharWheels_Command(HWND page, int id, int code)
 {
     int slot;
@@ -1098,10 +1075,6 @@ int CharWheels_Command(HWND page, int id, int code)
     case WH_ID_ANIMATE:
         if (code == BN_CLICKED)
             Wh_SetAnimation(Wh_IsChecked(g_wh.animate));
-        break;
-    case WH_ID_ALWAYS:
-        if (code == BN_CLICKED)
-            Wh_SetAlways(Wh_IsChecked(g_wh.always));
         break;
     case WH_ID_AXLE:
         if (code == CBN_SELCHANGE) {
@@ -1333,11 +1306,9 @@ int CharWheels_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         return RS_AUTO_DONE;
     }
     if (wcscmp(verb, L"wheels-always") == 0) {
-        if (!Wh_AutoOnOff(verb, arg, &on))
-            return RS_AUTO_FAIL;
-        Wh_SetAlways(on);
-        Rs_AutoLog(L"  %ls: %ls", verb, on ? L"on" : L"off");
-        return RS_AUTO_DONE;
+        // Gone from the card: it would change nothing in the game.
+        Rs_AutoLog(L"  %ls: refused - it has no effect: the game draws your wheels at every distance (nothing is passed)", verb);
+        return RS_AUTO_FAIL;
     }
     if (wcscmp(verb, L"wheel-size") == 0) {
         if (Wh_AutoNumbers(arg, v, 1) != 1 || v[0] < WH_SIZE_MIN || v[0] > WH_SIZE_MAX) {
@@ -1512,11 +1483,6 @@ int CharWheels_Axle(int axle, int value[3])
     return set;
 }
 
-int CharWheels_Always(void)
-{
-    return g_wh.created && g_wh.alwaysNow;
-}
-
 int CharWheels_ExportChanged(void)
 {
     const int changed = g_wh.exportChanged;
@@ -1590,9 +1556,9 @@ void CharWheels_Report(FILE *f)
     text = Rs_GetText(g_wh.hint);
     Wh_Put(f, L"wheels hint: %ls", text);
     Rs_Free(text);
-    Wh_Put(f, L"wheels fields: model %ls, browse %ls, clear %ls, size %ls, animate %ls, rear model %ls, axle %ls, always %ls",
+    Wh_Put(f, L"wheels fields: model %ls, browse %ls, clear %ls, size %ls, animate %ls, rear model %ls, axle %ls",
            Wh_EnabledWord(fr->model), Wh_EnabledWord(fr->browse), Wh_EnabledWord(fr->clear), Wh_EnabledWord(g_wh.size),
-           Wh_EnabledWord(g_wh.animate), Wh_EnabledWord(re->model), Wh_EnabledWord(g_wh.axleValue[0]), Wh_EnabledWord(g_wh.always));
+           Wh_EnabledWord(g_wh.animate), Wh_EnabledWord(re->model), Wh_EnabledWord(g_wh.axleValue[0]));
     text = Rs_GetText(fr->model);
     Wh_Put(f, L"wheel model: %ls", text && text[0] ? text : L"none");
     Rs_Free(text);
@@ -1623,7 +1589,6 @@ void CharWheels_Report(FILE *f)
                a == 0 ? L"front" : L"rear", g_wh.axleNow[a][0], g_wh.axleNow[a][1], g_wh.axleNow[a][2], vd, vy, vt);
     }
     Wh_Put(f, L"axle shown: %ls", g_wh.axleShown ? L"rear" : L"front");
-    Wh_Put(f, L"wheels always: %ls (preview %ls)", g_wh.alwaysNow ? L"on" : L"off", RsView_GetWheelsAlways(g_wh.view) ? L"on" : L"off");
     Wh_Put(f, L"wheel preview: spin %d, steer %d, animation %ls", g_wh.spin, g_wh.steer, g_wh.anim ? L"on" : L"off");
     Wh_Put(f, L"wheel export: %ls", g_wh.passed ? L"passed as --wheel-model (with the native model)" : L"not passed");
     {
@@ -1636,8 +1601,6 @@ void CharWheels_Report(FILE *f)
             Wh_Append(extra, 200, L" --axle-front");
         if (g_wh.passed && CharWheels_Axle(1, v))
             Wh_Append(extra, 200, L" --axle-rear");
-        if (g_wh.passed && g_wh.alwaysNow)
-            Wh_Append(extra, 200, L" --wheels-always");
         Wh_Put(f, L"wheel export extras: %ls", extra[0] ? extra + 1 : L"none");
     }
     Wh_Put(f, L"wheel in the preview only: %ls", fr->loaded && g_wh.kartWheels && !g_wh.passed ? L"yes (shown, not built)" : L"no");

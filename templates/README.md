@@ -11,10 +11,16 @@ It was made with Blender 5.2; older versions may not open it.
 
 How to use it: [docs/ANIMATIONS.md](../docs/ANIMATIONS.md).
 
-`make_driver_template.py` builds the file from scratch, the same bytes on
-every run of the same Blender version:
+The .blend is not shipped as a file (neither in the repository nor in the
+release package): build it once. `make_driver_template.py` builds it from
+scratch, the same bytes on every run of the same Blender version; run it
+from the folder that holds `templates` (the release package or the source
+code), with `blender` being Blender 5.2 (or its full path, e.g.
+"C:\Program Files\Blender Foundation\Blender 5.2\blender.exe"):
 
     blender --background --factory-startup --python templates/make_driver_template.py
+
+It writes `templates/driver-template.blend` next to the script.
 
 `--glb <file>` also exports the .glb. The template, its texture and the
 script are released under CC0 1.0 Universal ([LICENSE](LICENSE)): use them

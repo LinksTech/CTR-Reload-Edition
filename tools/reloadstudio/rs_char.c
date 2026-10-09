@@ -655,6 +655,7 @@ struct CharJobData {
     wchar_t resultSha[80];
     int endSeen, endCode;
     wchar_t nativeText[256];        // @char native-model as the note says it, "" = none (Char_NativeResult)
+    unsigned long nativeTriangles;  // its triangles (the native model drawn in the preview), 0 = none
     int lookQuadSeen;               // @value shadow-quad x0 x1 z0 z1 (game units) -> 1/16
     int lookQuad[4];
 };
@@ -800,6 +801,7 @@ static struct {
     // check shown: its file carries the native model (RsView_HasNative), the
     // OBJ names textures, the textures it did not find.
     int previewNative, previewTextured, previewMissing;
+    unsigned long previewNativeTris;    // triangles of the native model in the preview (view-bench)
     wchar_t previewMissingNames[256];
     wchar_t previewModel[CHAR_VAL]; // the model of the preview shown
     // The note's sentences, the most important first; the layout shows as
@@ -3436,6 +3438,8 @@ static void Char_NativeUpdate(void)
         return;
     CharWheels_PageState(g_char.objOn, Char_IsChecked(g_char.wheels), Char_NativeOn(), Char_WheelPassed(NULL, 0),
                          Char_ListIndex(g_char.up, CHAR_UP_COUNT) != 0, Char_ListIndex(g_char.forward, CHAR_FORWARD_COUNT) != 0);
+    // win and lose are built only into the native model.
+    CharAnim_NativeState(Char_NativePassed());
     // The Textures folder as Char_MakeArgs passes it (an OBJ only): char-wheel
     // looks there for the wheel's texture as make-char does.
     {
@@ -3496,6 +3500,7 @@ static void Char_NativeResult(wchar_t **f, int n)
 {
     if (n < 9)
         return;
+    g_charJob.nativeTriangles = wcstoul(f[3], NULL, 10);
     swprintf(g_charJob.nativeText, 256, L"Native model: %ls vertices, %ls triangles, %ls poses, %ls materials, %ls textures, %ls - %ls bytes (preview).",
              f[2], f[3], f[4], f[5], f[6], wcscmp(f[7], L"wheels") == 0 ? L"with wheels" : L"no wheels", f[8]);
     if (Char_NativePassed())
@@ -4795,6 +4800,7 @@ static void Char_ApplyPreview(int seq)
     // The note (Char_ViewNoteUpdate): the textures of the model and those
     // not found, by their file names, once each.
     g_char.previewNative = RsView_HasNative(g_char.view);
+    g_char.previewNativeTris = g_char.previewNative ? g_charJob.nativeTriangles : 0ul;
     g_char.previewTextured = 0;
     g_char.previewMissing = 0;
     g_char.previewMissingNames[0] = 0;
@@ -5421,7 +5427,9 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
             Char_ArgsAdd(a, a->wheelSize);
         }
         // With it, and only when set (none set: the command of before; make-char
-        // then writes WHLS version 3): the rear wheel, the axles, Always draw.
+        // then writes WHLS version 3): the rear wheel, the axles. Never
+        // --wheels-always: the game draws an author's wheels at every
+        // distance, the flag changes nothing there.
         if (CharWheels_RearModelPath(a->rearWheel, CHAR_VAL)) {
             Char_ArgsAdd(a, L"--rear-wheel-model");
             Char_ArgsAdd(a, a->rearWheel);
@@ -5435,10 +5443,6 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
                 Char_ArgsAdd(a, axle == 0 ? L"--axle-front" : L"--axle-rear");
                 Char_ArgsAdd(a, a->axle[axle]);
             }
-        }
-        if (CharWheels_Always()) {
-            Char_ArgsAdd(a, L"--wheels-always");
-            Char_ArgsAdd(a, L"on");
         }
     }
     // The mask always, also the template's: the file carries the choice.
@@ -7603,9 +7607,16 @@ static int Char_AutoView(const wchar_t *verb, const wchar_t *arg)
             return RS_AUTO_FAIL;
         }
         UpdateWindow(g_char.view);
-        Rs_AutoLog(L"  view-bench: %d pictures of %d x %d pixels, %lu triangles in the pose shown: picture %d us on average, "
-                   L"p95 %d us, longest %d us",
-                   n, w, h, g_char.previewShown ? g_char.previewTris[g_char.poseNow] : 0ul, avg, p95, longest);
+        {
+            // The triangles of the model drawn: the native one (all its
+            // triangles in every frame) or the classic pose shown.
+            int light, crash, shadow, exhaust, native = 0;
+            const int drawsNative = RsView_GetToggles(g_char.view, &light, &crash, &shadow, &exhaust, &native) && g_char.previewNativeTris;
+            Rs_AutoLog(L"  view-bench: %d pictures of %d x %d pixels, %lu triangles of the %ls model shown: picture %d us on average, "
+                       L"p95 %d us, longest %d us",
+                       n, w, h, drawsNative ? g_char.previewNativeTris : g_char.previewShown ? g_char.previewTris[g_char.poseNow] : 0ul,
+                       drawsNative ? L"native" : L"classic", avg, p95, longest);
+        }
         return RS_AUTO_DONE;
     }
     return RS_AUTO_UNKNOWN;

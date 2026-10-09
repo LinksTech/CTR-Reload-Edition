@@ -26,7 +26,9 @@
 // 0), the tick boxes Jump, Crash, Reverse, Win and Lose (one at a time,
 // unticked: back to steering) and Play (the animation shown, as a loop on the
 // view's own timer in fixed steps) steer what the preview draws. Nothing of
-// it is built or stored. A click on a pose in the list shows it.
+// it is built or stored. A click on a pose in the list shows it. Win and Lose
+// are greyed out while no native model is built (CharAnim_NativeState): the
+// list then says their keys are used only with the native model.
 //
 // The pose folder of earlier versions (one PLY per pose, rldpack char-poses,
 // shown before the reduction and never built) is gone from the card: the
@@ -71,11 +73,12 @@ enum { AN_WHAT_STEER = -1, AN_WHAT_JUMP = 0, AN_WHAT_CRASH, AN_WHAT_REVERSE, AN_
 
 #define AN_TEXT_NOTE        L"Shape keys on the driver of a glTF model (.glb) animate it: steer_left, steer_right, reverse, crash, " \
                             L"jump, win, lose. In Blender: Object Data, Shape Keys - one key per pose with that name, then " \
-                            L"File, Export, glTF 2.0 with Shape Keys on. How-to: docs/ANIMATIONS.md."
+                            L"File, Export, glTF 2.0 with Shape Keys on. How-to: docs/ANIMATIONS.md (folder docs of the package)."
 #define AN_TEXT_NO_MODEL    L"Choose a model first: the poses are read from it."
 #define AN_TEXT_NO_KEYS     L"OBJ and PLY carry no shape keys: the driver moves with the automatic poses. Export a glTF (.glb) for poses of your own."
 #define AN_TEXT_NOT_SAID    L"rldpack said nothing about the poses of this model: the automatic poses are used."
-#define AN_TEXT_RIG         L"Rigs are not supported yet - use shape keys (docs/ANIMATIONS.md)."
+#define AN_TEXT_RIG         L"Rigs are not supported yet - use shape keys (docs/ANIMATIONS.md, folder docs of the package)."
+#define AN_TEXT_NO_NATIVE   L"Win and lose show only with the native model: tick Native model (Extras, Import)."
 
 // The poses as make-char names them (@pose), as the list shows them, and
 // what the preview shows for them.
@@ -116,6 +119,7 @@ static struct {
     int what;                   // AN_WHAT_*: what the preview shows
     int steerNow;               // -AN_STEER_MAX..AN_STEER_MAX
     int playing;                // Play: the animation shown as a loop
+    int native;                 // the native model is built (CharAnim_NativeState): win and lose count
     COLORREF statusColor;
     wchar_t model[AN_VAL];      // the model of the page's last check, "" = none
     wchar_t format[8];          // its format (@model format)
@@ -240,9 +244,15 @@ static int An_NotSymmetric(int p)
 // The state of a pose: make-char's word, else what it is without a key.
 static const wchar_t *An_State(int p)
 {
-    if (g_an.poses.state[p][0])
-        return g_an.poses.state[p];
-    return p == RS_ANIM_WIN || p == RS_ANIM_LOSE ? L"neutral" : L"automatic";
+    // Only what rldpack said: "-" before a check, without a model or when
+    // the model could not be read (a rig).
+    return g_an.poses.state[p][0] ? g_an.poses.state[p] : L"-";
+}
+
+// win or lose from the file, but no native model is built: not in the character.
+static int An_EndUnused(int p)
+{
+    return (p == RS_ANIM_WIN || p == RS_ANIM_LOSE) && !g_an.native && wcscmp(An_State(p), L"from-file") == 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -366,12 +376,16 @@ static void An_ViewApply(void)
         RsView_PlayAnim(g_an.view, g_an.what == AN_WHAT_STEER ? RS_VIEW_PLAY_STEER : play[g_an.what], 1);
 }
 
-// The buttons and the slider as the card's state.
+// The buttons and the slider as the card's state; Win and Lose only with
+// the native model.
 static void An_ShowControls(void)
 {
     int i;
-    for (i = 0; i < AN_SHOWS; i++)
+    for (i = 0; i < AN_SHOWS; i++) {
         SendMessageW(g_an.show[i], BM_SETCHECK, g_an.what == i ? BST_CHECKED : BST_UNCHECKED, 0);
+        if (i == AN_WHAT_WIN || i == AN_WHAT_LOSE)
+            EnableWindow(g_an.show[i], g_an.native ? TRUE : FALSE);
+    }
     SendMessageW(g_an.play, BM_SETCHECK, g_an.playing ? BST_CHECKED : BST_UNCHECKED, 0);
     if ((int)SendMessageW(g_an.steer, TBM_GETPOS, 0, 0) != g_an.steerNow)
         SendMessageW(g_an.steer, TBM_SETPOS, TRUE, g_an.steerNow);
@@ -380,6 +394,8 @@ static void An_ShowControls(void)
 static void An_Show(int what, int steer, int playing)
 {
     g_an.what = what < AN_WHAT_STEER || what >= AN_SHOWS ? AN_WHAT_STEER : what;
+    if ((g_an.what == AN_WHAT_WIN || g_an.what == AN_WHAT_LOSE) && !g_an.native)
+        g_an.what = AN_WHAT_STEER;
     if (steer < -AN_STEER_MAX)
         steer = -AN_STEER_MAX;
     if (steer > AN_STEER_MAX)
@@ -404,7 +420,8 @@ static void An_StateText(int p, wchar_t *out, int cap)
         return;
     }
     if (wcscmp(s, L"from-file") == 0)
-        An_Copy(out, cap, p == RS_ANIM_WIN || p == RS_ANIM_LOSE ? L"from the file (native model)" : L"from the file");
+        An_Copy(out, cap, An_EndUnused(p) ? L"from the file - used only with the native model (tick Native model)"
+                          : p == RS_ANIM_WIN || p == RS_ANIM_LOSE ? L"from the file (native model)" : L"from the file");
     else if (wcscmp(s, L"mirrored") == 0)
         swprintf(out, cap, L"mirrored from %ls", p == RS_ANIM_STEER_LEFT ? L"steer_right" : L"steer_left");
     else if (wcscmp(s, L"automatic") == 0)
@@ -495,6 +512,11 @@ static void An_StatusUpdate(void)
         swprintf(t, 600, L" Ignored (no pose of that name): %ls.", g_an.poses.unknownNames);
         An_Append(text, 1024, t);
     }
+    if (An_EndUnused(RS_ANIM_WIN) || An_EndUnused(RS_ANIM_LOSE)) {
+        An_Append(text, 1024, L" ");
+        An_Append(text, 1024, AN_TEXT_NO_NATIVE);
+        unused++;
+    }
     An_Status(text, errors ? RS_COL_ERROR : (g_an.poses.unknown || unused || g_an.poses.symmetric[0]) ? RS_COL_WARNING : RS_COL_TEXT);
 }
 
@@ -519,7 +541,8 @@ static void An_Tips(void)
     for (i = 0; i < AN_SHOWS; i++)
         Rs_SetTip(g_an.show[i], i == AN_WHAT_WIN || i == AN_WHAT_LOSE
                                     ? L"The pose after the finish (the native model blends to it: win at places 1-3, lose at "
-                                      L"4-8). Untick for steering."
+                                      L"4-8). Untick for steering. Greyed out without the native model: tick Native model "
+                                      L"(Extras, Import)."
                                     : L"Shows this animation in the preview (with Play as a loop). Untick for steering.");
     Rs_SetTip(g_an.play, play);
 }
@@ -553,6 +576,9 @@ void CharAnim_Create(HWND page, HWND view)
     for (i = 0; i < AN_SHOWS; i++)
         g_an.show[i] = Rs_Check(page, AN_ID_SHOW + i, g_anShows[i].text);
     g_an.play = Rs_Check(page, AN_ID_PLAY, L"Play (loop)");
+    // Win and Lose wait for the native model (CharAnim_NativeState).
+    EnableWindow(g_an.show[AN_WHAT_WIN], FALSE);
+    EnableWindow(g_an.show[AN_WHAT_LOSE], FALSE);
     Rs_SetTextColor(g_an.note, RS_COL_MUTED);
     Rs_SetTextColor(g_an.steerLeft, RS_COL_MUTED);
     Rs_SetTextColor(g_an.steerRight, RS_COL_MUTED);
@@ -753,6 +779,10 @@ int CharAnim_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
             Rs_AutoLog(L"  %ls: say win, lose or none", verb);
             return RS_AUTO_FAIL;
         }
+        if ((what == AN_WHAT_WIN || what == AN_WHAT_LOSE) && !g_an.native) {
+            Rs_AutoLog(L"  %ls: %ls", verb, AN_TEXT_NO_NATIVE);
+            return RS_AUTO_FAIL;
+        }
         An_Show(what, g_an.steerNow, 0);
         UpdateWindow(g_an.view);
         Rs_AutoLog(L"  %ls: %ls", verb, what == AN_WHAT_STEER ? L"none (steering)" : An_WhatWord(what));
@@ -775,6 +805,10 @@ int CharAnim_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
                 Rs_AutoLog(L"  %ls: say steer, jump, crash, reverse, win, lose, steer_left or steer_right", verb);
                 return RS_AUTO_FAIL;
             }
+            if ((what == AN_WHAT_WIN || what == AN_WHAT_LOSE) && !g_an.native) {
+                Rs_AutoLog(L"  %ls: %ls", verb, AN_TEXT_NO_NATIVE);
+                return RS_AUTO_FAIL;
+            }
             An_Show(what, g_an.steerNow, 0);
         }
         UpdateWindow(g_an.view);
@@ -784,6 +818,10 @@ int CharAnim_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
     what = An_AutoWhat(word);
     if (what < -1 || (_wcsicmp(rest, L"on") != 0 && _wcsicmp(rest, L"off") != 0)) {
         Rs_AutoLog(L"  %ls: say <steer|jump|crash|reverse|win|lose> on|off", verb);
+        return RS_AUTO_FAIL;
+    }
+    if ((what == AN_WHAT_WIN || what == AN_WHAT_LOSE) && !g_an.native) {
+        Rs_AutoLog(L"  %ls: %ls", verb, AN_TEXT_NO_NATIVE);
         return RS_AUTO_FAIL;
     }
     An_Show(what, g_an.steerNow, _wcsicmp(rest, L"on") == 0);
@@ -816,6 +854,17 @@ void CharAnim_ModelChecked(HWND page, const wchar_t *model, const wchar_t *forma
 void CharAnim_PreviewLoaded(void)
 {
     An_ViewApply();
+}
+
+void CharAnim_NativeState(int native)
+{
+    if (!g_an.created || (native != 0) == g_an.native)
+        return;
+    g_an.native = native != 0;
+    // Win or lose shown and no native model any more: steering again.
+    An_Show(g_an.what, g_an.steerNow, g_an.playing);
+    An_FillList();
+    An_StatusUpdate();
 }
 
 void CharAnim_SteerFromPage(int steer)
@@ -858,6 +907,8 @@ void CharAnim_Report(FILE *f)
     }
     An_Put(f, L"animation keys ignored: %d%ls%ls", g_an.poses.unknown, g_an.poses.unknown ? L" " : L"", g_an.poses.unknownNames);
     An_Put(f, L"animation rig refused: %ls", g_an.poses.rig ? L"yes" : L"no");
+    An_Put(f, L"animation win and lose: %ls", g_an.native ? L"native model built - Win and Lose enabled"
+                                                          : L"no native model - Win and Lose greyed out");
     An_Put(f, L"animation preview: %ls, steering %d (frame %d), play %ls", An_WhatWord(g_an.what), g_an.steerNow,
            AN_STEER_MAX + g_an.steerNow, g_an.playing ? L"on" : L"off");
     An_Put(f, L"animations status: %ls", g_an.statusText);

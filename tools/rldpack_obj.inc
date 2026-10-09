@@ -3041,9 +3041,14 @@ static void RldObj_SayMissing(const struct RldObjModel *m, char (*libraryPath)[R
 		}
 	}
 
-	// The technical line: where the first one was looked for.
-	snprintf(where, sizeof(where), "looked for at %s, %snext to the MTL and OBJ files, in their folders textures, tex, images and maps, also as .png, .jpg, "
-	         ".jpeg, .tga and .bmp", m->textures[first].path, (s_rldObjOptions.textureDirCount != 0u) ? "in the --textures folders, " : "");
+	// The technical line: where the first one was looked for. A glTF is its
+	// own "MTL file" (rldpack_gltf.inc, RldGltf_Finish): next to it.
+	snprintf(where, sizeof(where), "looked for at %s, %snext to the %s, in their folders textures, tex, images and maps, also as .png, .jpg, "
+	         ".jpeg, .tga and .bmp", m->textures[first].path, (s_rldObjOptions.textureDirCount != 0u) ? "in the --textures folders, " : "",
+	         (Rld_EndsWithNoCase(libraryPath[m->textures[first].library], ".gltf") ||
+	          Rld_EndsWithNoCase(libraryPath[m->textures[first].library], ".glb"))
+	             ? "glTF file"
+	             : "MTL and OBJ files");
 
 	if (missing == 1u)
 	{
