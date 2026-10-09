@@ -2224,7 +2224,7 @@ static const char *RldChar_CheckVoices(const u8 *bytes, u64 size, struct RldChar
 // refused or loads exactly as it would without them, in this build and in
 // every build before it. Only those three generic findings refuse the whole
 // file (DAMAGED); everything below - compression, sizes, the limits
-// RLDCHAR_LIMIT_CNET/CTXT, the hashes, every rule CNET-1..12 and CTXT-1..8 -
+// RLDCHAR_LIMIT_CNET/CTXT, the hashes, every rule CNET-1..13 and CTXT-1..8 -
 // costs only the native part: the driver keeps its CMDL. This replaces the
 // earlier plan of a required feature bit for a texture table.
 //
@@ -2262,7 +2262,10 @@ static const char *RldChar_CheckVoices(const u8 *bytes, u64 size, struct RldChar
 //   UV00 optional  stride 8   N x f32[2]; required when a material has a texture
 //   COL0 optional  stride 4   N x RGBA8
 //   WHLS optional  stride 0   the wheels (C.7.4), see RLDCHAR_WHEEL_*; required unless CHRI hides the wheels.
-//                             Its own version: 1 the test wheel, 2 an author's wheel (rule CNET-12)
+//                             Its own version: 1 the test wheel, 2 an author's wheel (rule CNET-12), 3 an
+//                             author's wheel with a rear wheel, axle offsets or "always draw"
+//   MRPH optional  stride 0   the shape keys win and lose as deltas of the neutral pose (rule CNET-13);
+//                             another version than 1 is skipped like an unknown tag
 //
 // CTXT version 1:
 //   0x00 u16 version 1, 0x02 u16 flags 0, 0x04 u16 count 1..16, 0x06 u16 entryBytes 0x40, 0x08 u32[2] reserved 0
@@ -2284,6 +2287,7 @@ static const char *RldChar_CheckVoices(const u8 *bytes, u64 size, struct RldChar
 #define RLDCHAR_NET_TRIANGLES_MAX 30000u
 #define RLDCHAR_NET_MATERIALS_MAX 64u
 #define RLDCHAR_NET_POSES 47u                      // 21 + 7 + 15 + 4, the frames of a character
+#define RLDCHAR_NET_NEUTRAL_POSE 10u               // turn frame 10, no steering: the base pose of MRPH (a still model: its one pose)
 #define RLDCHAR_NET_POSE_FLOAT 1u                  // poseEncoding 1
 #define RLDCHAR_NET_VERTEX_BYTES 24u
 #define RLDCHAR_NET_MATERIAL_BYTES 16u
@@ -2301,7 +2305,25 @@ static const char *RldChar_CheckVoices(const u8 *bytes, u64 size, struct RldChar
 #define RLDCHAR_WHEEL_SLACK 1.0e-4                 // relative and absolute room of the cylinder test
 #define RLDCHAR_WHEEL_VERSION_TEST 1u              // WHLS version 1: the test wheel (self-tests, --native-probe)
 #define RLDCHAR_WHEEL_VERSION_USER 2u              // WHLS version 2: an author's wheel (make-char --wheel-model), rule CNET-12
-#define RLDCHAR_WHEEL_TEXTURE_EDGE_MAX 1024u       // CNET-12: each side of the texture of a version 2 wheel
+#define RLDCHAR_WHEEL_VERSION_USER3 3u             // WHLS version 3: version 2 and its extension (rear wheel, axles, flags)
+#define RLDCHAR_WHEEL_TEXTURE_EDGE_MAX 1024u       // CNET-12: each side of the texture of a version 2 or 3 wheel
+#define RLDCHAR_WHEEL_ALWAYS_DRAW 0x1u             // WHLS 3 flags bit 0: drawn at every level of detail
+#define RLDCHAR_WHEEL_REAR_MESH 0x2u               // WHLS 3 flags bit 1: the rear wheels have a mesh of their own
+#define RLDCHAR_WHEEL_FLAGS_KNOWN 0x3u
+#define RLDCHAR_WHEEL_EXTRA_BYTES 0x30u            // the head of the WHLS 3 extension
+#define RLDCHAR_AXLE_DZ_MIN (-32.0)                // WHLS 3 axle offsets, model units (the retail wheel has radius 16)
+#define RLDCHAR_AXLE_DZ_MAX 32.0
+#define RLDCHAR_AXLE_DY_MIN (-16.0)
+#define RLDCHAR_AXLE_DY_MAX 32.0
+#define RLDCHAR_AXLE_TRACK_MIN (-32.0)             // the change of the whole track: each wheel moves by half of it
+#define RLDCHAR_AXLE_TRACK_MAX 64.0
+
+#define RLDCHAR_MORPH_VERSION 1u
+#define RLDCHAR_MORPH_HEAD_BYTES 0x10u
+#define RLDCHAR_MORPH_WIN 0                        // the targets of MRPH, in their order in the section
+#define RLDCHAR_MORPH_LOSE 1
+#define RLDCHAR_MORPH_TARGETS 2u
+#define RLDCHAR_MORPH_NORMALS 0x1u                 // MRPH flags bit 0: normal deltas follow the position deltas
 
 #define RLDCHAR_TEX_VERSION 1u
 #define RLDCHAR_TEX_HEAD_BYTES 0x10u
@@ -2367,9 +2389,18 @@ struct RldCharNative
 	const u8 *triangleMaterials;// triangleCount x 2 bytes
 	const u8 *materials;        // materialCount x 16 bytes
 	const u8 *wheel;            // the WHLS section, or NULL (none, or hidden by CHRI)
-	u32 wheelVersion;           // its version: RLDCHAR_WHEEL_VERSION_TEST (1) or _USER (2); 0 = no wheel
+	u32 wheelVersion;           // its version: RLDCHAR_WHEEL_VERSION_TEST (1), _USER (2) or _USER3 (3); 0 = no wheel
 	u32 wheelVertexCount;
 	u32 wheelTriangleCount;
+	u32 wheelFlags;             // WHLS 3: RLDCHAR_WHEEL_ALWAYS_DRAW, RLDCHAR_WHEEL_REAR_MESH; 0 for versions 1 and 2
+	const u8 *wheelExtra;       // WHLS 3: its extension (the head at offset E), else NULL
+	u32 wheelRearVertexCount;   // WHLS 3 with RLDCHAR_WHEEL_REAR_MESH, else 0
+	u32 wheelRearTriangleCount;
+	float wheelAxle[2][3];      // WHLS 3: front, rear {dz, dy, dtrack} as given - already part of the wheel points; else 0
+	const u8 *morph;            // the MRPH section (version 1, CNET-13 held), or NULL
+	u32 morphTargets;           // bit (1 << RLDCHAR_MORPH_*) per target present; 0 = no MRPH
+	u32 morphNormals;           // 1 = MRPH has normal deltas
+	u32 morphBasePose;          // the POSN slot the deltas apply to
 
 	struct RldCharTexture texture[RLDCHAR_TEX_COUNT_MAX];
 	u64 textureBytes;           // sum of width x height x 4 over the decoded textures
@@ -2626,28 +2657,204 @@ static int RldChar_NetKnown(const u8 *cnet, u32 table, u32 count, const char tag
 
 // The wheels (WHLS, renderer concept C.7.4): rule CNET-10.
 //   0x00 u32 vertexCount Nw 3..2048, 0x04 u32 triangleCount Tw 1..1024,
-//   0x08 u16 material (< M), 0x0A u16 flags 0, 0x0C f32 radius (0..64),
-//   0x10 f32 halfWidth (0..radius), 0x14 f32[3] front, 0x20 f32[3] rear
-//   (the wheel centers on +X, model units), 0x2C u32 reserved 0,
-//   0x30 Nw x {f32 position[3], f32 normal[3], f32 uv[2]} (center at the
-//   origin, axle along X, outside +X), then Tw x 3 u16 indices.
-//   Size exactly 0x30 + 32 Nw + 6 Tw.
-// The version of the section entry tells the two kinds apart; the layout is
-// the same byte for byte:
+//   0x08 u16 material (< M), 0x0A u16 flags (0; version 3: below),
+//   0x0C f32 radius (0..64), 0x10 f32 halfWidth (0..radius), 0x14 f32[3]
+//   front, 0x20 f32[3] rear (the wheel centers on +X, model units), 0x2C u32
+//   reserved 0, 0x30 Nw x {f32 position[3], f32 normal[3], f32 uv[2]}
+//   (center at the origin, axle along X, outside +X), then Tw x 3 u16
+//   indices. Size exactly 0x30 + 32 Nw + 6 Tw (versions 1 and 2).
+// The version of the section entry tells the kinds apart; the layout of
+// versions 1 and 2 is the same byte for byte:
 //   1  the test wheel (the self-test's files, --native-probe): the -X wheels
 //      are the same mesh turned 180 degrees about Y, never mirrored.
 //   2  an author's wheel (make-char --wheel-model): the -X wheels are its
 //      mirror image (x negated, the normals mirrored, the winding turned), so
 //      that the outer side is outside on both sides. Rule CNET-12 below
 //      holds its texture to RLDCHAR_WHEEL_TEXTURE_EDGE_MAX.
-// A reader before version 2 refuses such a section by CNET-10 (version), and
-// the driver keeps its CMDL. Drawing either version is the game's part.
+//   3  an author's wheel as 2, with what version 2 cannot say: the flags at
+//      0x0A (RLDCHAR_WHEEL_ALWAYS_DRAW, RLDCHAR_WHEEL_REAR_MESH), and behind
+//      the mesh, at E = 0x30 + 32 Nw + 6 Tw rounded up to 4 (the bytes between
+//      0), an extension:
+//        E+0x00 f32[3] axleFront {dz, dy, dtrack}, E+0x0C f32[3] axleRear -
+//               the offsets the author gave, in model units; the wheel
+//               points at 0x14 and 0x20 hold them already (a reader never
+//               adds them again)
+//        E+0x18 u32 rearVertexCount Nr, E+0x1C u32 rearTriangleCount Tr,
+//        E+0x20 u16 rearMaterial, E+0x22 u16 reserved 0, E+0x24 f32
+//               rearRadius, E+0x28 f32 rearHalfWidth, E+0x2C u32 reserved 0 -
+//               with RLDCHAR_WHEEL_REAR_MESH as the front wheel's fields
+//               (3..2048, 1..1024, < M, 0..64, 0..radius), else all 0
+//        E+0x30 Nr x 32 bytes of the rear mesh (as the front one), then
+//               Tr x 3 u16 indices
+//      Size exactly E + 0x30 + 32 Nr + 6 Tr. Without a rear mesh the rear
+//      wheels are drawn from the front mesh, as in version 2; either mesh
+//      is mirrored for the -X wheels. RLDCHAR_AXLE_* bound the offsets.
+// A reader before version 2 refuses a version 2 or 3 section by CNET-10
+// (version), a reader before version 3 a version 3 section, and the driver
+// keeps its CMDL. Drawing any version is the game's part.
+
+// The vertices and triangles of one wheel mesh (front, or the rear one of
+// version 3) against CNET-10. which: "WHLS" or "WHLS rear". 1 = passed.
+static int RldChar_CheckWheelMesh(const u8 *mesh, u32 nw, u32 tw, double radius, double halfWidth, const char *which, struct RldCharNative *out)
+{
+	u32 i;
+
+	for (i = 0; i < nw; i++)
+	{
+		const u8 *v = &mesh[i * RLDCHAR_WHEEL_VERTEX_BYTES];
+		const double x = RldChar_F32(&v[0]);
+		const double y = RldChar_F32(&v[4]);
+		const double z = RldChar_F32(&v[8]);
+		const double nx = RldChar_F32(&v[12]);
+		const double ny = RldChar_F32(&v[16]);
+		const double nz = RldChar_F32(&v[20]);
+		const double n2 = (nx * nx) + (ny * ny) + (nz * nz);
+		const double r = (radius * (1.0 + RLDCHAR_WHEEL_SLACK)) + RLDCHAR_WHEEL_SLACK;
+		const double h = (halfWidth * (1.0 + RLDCHAR_WHEEL_SLACK)) + RLDCHAR_WHEEL_SLACK;
+		u32 c;
+
+		for (c = 0; c < 8u; c++)
+		{
+			if (!RldChar_F32Finite(&v[4u * c]))
+			{
+				return RldChar_NativeFail(out, "CNET-10", "%s vertex %u is not a finite number", which, (unsigned)i);
+			}
+		}
+		if ((x < -h) || (x > h) || (((y * y) + (z * z)) > (r * r)))
+		{
+			return RldChar_NativeFail(out, "CNET-10", "%s vertex %u (%.3f %.3f %.3f) lies outside the wheel's cylinder", which, (unsigned)i, x, y, z);
+		}
+		if ((n2 < RLDCHAR_NET_NORMAL_MIN) || (n2 > RLDCHAR_NET_NORMAL_MAX))
+		{
+			return RldChar_NativeFail(out, "CNET-10", "%s vertex %u: the normal is not of length 1", which, (unsigned)i);
+		}
+	}
+	for (i = 0; i < tw; i++)
+	{
+		const u8 *t = &mesh[(nw * RLDCHAR_WHEEL_VERTEX_BYTES) + (i * 6u)];
+		const u32 a = Rld_ReadLE16(&t[0]);
+		const u32 b = Rld_ReadLE16(&t[2]);
+		const u32 c = Rld_ReadLE16(&t[4]);
+
+		if ((a >= nw) || (b >= nw) || (c >= nw) || (a == b) || (b == c) || (a == c))
+		{
+			return RldChar_NativeFail(out, "CNET-10", "%s triangle %u (%u %u %u): an index >= %u or a vertex twice", which, (unsigned)i, (unsigned)a,
+			                          (unsigned)b, (unsigned)c, (unsigned)nw);
+		}
+	}
+	return 1;
+}
+
+// The extension of WHLS version 3 at w + extra (size: the section's bytes):
+// its fill bytes, axle offsets, flags and the rear mesh. 1 = passed (out filled).
+static int RldChar_CheckWheelExtra(const u8 *w, u32 size, u32 meshEnd, u32 flags, struct RldCharNative *out)
+{
+	static const double lo[3] = {RLDCHAR_AXLE_DZ_MIN, RLDCHAR_AXLE_DY_MIN, RLDCHAR_AXLE_TRACK_MIN};
+	static const double hi[3] = {RLDCHAR_AXLE_DZ_MAX, RLDCHAR_AXLE_DY_MAX, RLDCHAR_AXLE_TRACK_MAX};
+	const u32 extra = (meshEnd + 3u) & ~3u;
+	const u8 *x = &w[extra];
+	u32 nr;
+	u32 tr;
+	u32 i;
+	int k;
+
+	if (((u64)extra + RLDCHAR_WHEEL_EXTRA_BYTES) > size)
+	{
+		return RldChar_NativeFail(out, "CNET-10", "WHLS version 3 has %u bytes, its extension needs %u", (unsigned)size,
+		                          (unsigned)(extra + RLDCHAR_WHEEL_EXTRA_BYTES));
+	}
+	for (i = meshEnd; i < extra; i++)
+	{
+		if (w[i] != 0u)
+		{
+			return RldChar_NativeFail(out, "CNET-10", "WHLS version 3: a fill byte in front of the extension is not 0");
+		}
+	}
+	for (k = 0; k < 6; k++)
+	{
+		double value;
+
+		if (!RldChar_F32Finite(&x[4u * (u32)k]))
+		{
+			return RldChar_NativeFail(out, "CNET-10", "WHLS version 3: an axle offset is not a finite number");
+		}
+		value = RldChar_F32(&x[4u * (u32)k]);
+		if ((value < lo[k % 3]) || (value > hi[k % 3]))
+		{
+			return RldChar_NativeFail(out, "CNET-10", "WHLS version 3: the %s axle's %s is %.3f - it may be %.0f..%.0f model units", (k < 3) ? "front" : "rear",
+			                          ((k % 3) == 0) ? "dz" : (((k % 3) == 1) ? "dy" : "dtrack"), value, lo[k % 3], hi[k % 3]);
+		}
+	}
+	nr = Rld_ReadLE32(&x[0x18]);
+	tr = Rld_ReadLE32(&x[0x1C]);
+	if ((Rld_ReadLE16(&x[0x22]) != 0u) || (Rld_ReadLE32(&x[0x2C]) != 0u))
+	{
+		return RldChar_NativeFail(out, "CNET-10", "WHLS version 3: a reserved field of the extension is not 0");
+	}
+	if ((flags & RLDCHAR_WHEEL_REAR_MESH) == 0u)
+	{
+		if ((nr != 0u) || (tr != 0u) || (Rld_ReadLE16(&x[0x20]) != 0u) || (Rld_ReadLE32(&x[0x24]) != 0u) || (Rld_ReadLE32(&x[0x28]) != 0u) ||
+		    (size != (extra + RLDCHAR_WHEEL_EXTRA_BYTES)))
+		{
+			return RldChar_NativeFail(out, "CNET-10", "WHLS version 3 without a rear mesh: its rear fields are 0 and nothing follows the extension");
+		}
+	}
+	else
+	{
+		double radius;
+		double halfWidth;
+
+		if ((nr < 3u) || (nr > RLDCHAR_WHEEL_VERTICES_MAX) || (tr < 1u) || (tr > RLDCHAR_WHEEL_TRIANGLES_MAX))
+		{
+			return RldChar_NativeFail(out, "CNET-10", "WHLS rear wheel has %u vertices and %u triangles - it may have 3..%u and 1..%u", (unsigned)nr, (unsigned)tr,
+			                          (unsigned)RLDCHAR_WHEEL_VERTICES_MAX, (unsigned)RLDCHAR_WHEEL_TRIANGLES_MAX);
+		}
+		if ((u64)size != ((u64)extra + RLDCHAR_WHEEL_EXTRA_BYTES + ((u64)nr * RLDCHAR_WHEEL_VERTEX_BYTES) + ((u64)tr * 6u)))
+		{
+			return RldChar_NativeFail(out, "CNET-10", "WHLS version 3 has %u bytes, its rear wheel of %u vertices and %u triangles needs %u", (unsigned)size,
+			                          (unsigned)nr, (unsigned)tr, (unsigned)(extra + RLDCHAR_WHEEL_EXTRA_BYTES + (nr * RLDCHAR_WHEEL_VERTEX_BYTES) + (tr * 6u)));
+		}
+		if (Rld_ReadLE16(&x[0x20]) >= out->materialCount)
+		{
+			return RldChar_NativeFail(out, "CNET-10", "WHLS rear wheel names material %u - there are %u", (unsigned)Rld_ReadLE16(&x[0x20]),
+			                          (unsigned)out->materialCount);
+		}
+		if (!RldChar_F32Finite(&x[0x24]) || !RldChar_F32Finite(&x[0x28]))
+		{
+			return RldChar_NativeFail(out, "CNET-10", "WHLS rear wheel: radius or width is not a finite number");
+		}
+		radius = RldChar_F32(&x[0x24]);
+		halfWidth = RldChar_F32(&x[0x28]);
+		if ((radius <= 0.0) || (radius > RLDCHAR_WHEEL_RADIUS_MAX) || (halfWidth <= 0.0) || (halfWidth > radius))
+		{
+			return RldChar_NativeFail(out, "CNET-10", "WHLS rear wheel: radius %.3f and half width %.3f - the radius may be 0..%.0f, the half width 0..radius",
+			                          radius, halfWidth, RLDCHAR_WHEEL_RADIUS_MAX);
+		}
+		if (!RldChar_CheckWheelMesh(&x[RLDCHAR_WHEEL_EXTRA_BYTES], nr, tr, radius, halfWidth, "WHLS rear", out))
+		{
+			return 0;
+		}
+		out->wheelRearVertexCount = nr;
+		out->wheelRearTriangleCount = tr;
+	}
+
+	for (k = 0; k < 6; k++)
+	{
+		out->wheelAxle[k / 3][k % 3] = RldChar_F32(&x[4u * (u32)k]);
+	}
+	out->wheelExtra = x;
+	return 1;
+}
+
 static int RldChar_CheckWheels(const u8 *cnet, const u8 *entry, struct RldCharNative *out)
 {
 	const u32 size = Rld_ReadLE32(&entry[12]);
+	const u32 version = Rld_ReadLE16(&entry[4]);
 	const u8 *w = &cnet[Rld_ReadLE32(&entry[8])];
 	u32 nw;
 	u32 tw;
+	u32 flags;
+	u32 meshEnd;
 	double radius;
 	double halfWidth;
 	double point[2][3];
@@ -2655,9 +2862,9 @@ static int RldChar_CheckWheels(const u8 *cnet, const u8 *entry, struct RldCharNa
 	int k;
 	int axis;
 
-	if ((Rld_ReadLE16(&entry[4]) != RLDCHAR_WHEEL_VERSION_TEST) && (Rld_ReadLE16(&entry[4]) != RLDCHAR_WHEEL_VERSION_USER))
+	if ((version != RLDCHAR_WHEEL_VERSION_TEST) && (version != RLDCHAR_WHEEL_VERSION_USER) && (version != RLDCHAR_WHEEL_VERSION_USER3))
 	{
-		return RldChar_NativeFail(out, "CNET-10", "WHLS has version %u - this reader knows 1 and 2", (unsigned)Rld_ReadLE16(&entry[4]));
+		return RldChar_NativeFail(out, "CNET-10", "WHLS has version %u - this reader knows 1, 2 and 3", (unsigned)version);
 	}
 	if (Rld_ReadLE16(&entry[6]) != 0u)
 	{
@@ -2674,16 +2881,18 @@ static int RldChar_CheckWheels(const u8 *cnet, const u8 *entry, struct RldCharNa
 		return RldChar_NativeFail(out, "CNET-10", "WHLS has %u vertices and %u triangles - it may have 3..%u and 1..%u", (unsigned)nw, (unsigned)tw,
 		                          (unsigned)RLDCHAR_WHEEL_VERTICES_MAX, (unsigned)RLDCHAR_WHEEL_TRIANGLES_MAX);
 	}
-	if ((u64)size != ((u64)RLDCHAR_WHEEL_HEAD_BYTES + ((u64)nw * RLDCHAR_WHEEL_VERTEX_BYTES) + ((u64)tw * 6u)))
+	meshEnd = RLDCHAR_WHEEL_HEAD_BYTES + (nw * RLDCHAR_WHEEL_VERTEX_BYTES) + (tw * 6u);
+	if (((version != RLDCHAR_WHEEL_VERSION_USER3) && (size != meshEnd)) || ((version == RLDCHAR_WHEEL_VERSION_USER3) && (size < meshEnd)))
 	{
 		return RldChar_NativeFail(out, "CNET-10", "WHLS has %u bytes, %u vertices and %u triangles need %u", (unsigned)size, (unsigned)nw, (unsigned)tw,
-		                          (unsigned)(RLDCHAR_WHEEL_HEAD_BYTES + (nw * RLDCHAR_WHEEL_VERTEX_BYTES) + (tw * 6u)));
+		                          (unsigned)meshEnd);
 	}
 	if (Rld_ReadLE16(&w[0x08]) >= out->materialCount)
 	{
 		return RldChar_NativeFail(out, "CNET-10", "WHLS names material %u - there are %u", (unsigned)Rld_ReadLE16(&w[0x08]), (unsigned)out->materialCount);
 	}
-	if ((Rld_ReadLE16(&w[0x0A]) != 0u) || (Rld_ReadLE32(&w[0x2C]) != 0u))
+	flags = Rld_ReadLE16(&w[0x0A]);
+	if ((Rld_ReadLE32(&w[0x2C]) != 0u) || ((version != RLDCHAR_WHEEL_VERSION_USER3) && (flags != 0u)) || ((flags & ~RLDCHAR_WHEEL_FLAGS_KNOWN) != 0u))
 	{
 		return RldChar_NativeFail(out, "CNET-10", "WHLS flags or reserved field not 0");
 	}
@@ -2718,58 +2927,144 @@ static int RldChar_CheckWheels(const u8 *cnet, const u8 *entry, struct RldCharNa
 		                          point[0][0], point[0][2], point[1][0], point[1][2]);
 	}
 
-	for (i = 0; i < nw; i++)
+	if (!RldChar_CheckWheelMesh(&w[RLDCHAR_WHEEL_HEAD_BYTES], nw, tw, radius, halfWidth, "WHLS", out))
 	{
-		const u8 *v = &w[RLDCHAR_WHEEL_HEAD_BYTES + (i * RLDCHAR_WHEEL_VERTEX_BYTES)];
-		const double x = RldChar_F32(&v[0]);
-		const double y = RldChar_F32(&v[4]);
-		const double z = RldChar_F32(&v[8]);
-		const double nx = RldChar_F32(&v[12]);
-		const double ny = RldChar_F32(&v[16]);
-		const double nz = RldChar_F32(&v[20]);
-		const double n2 = (nx * nx) + (ny * ny) + (nz * nz);
-		const double r = (radius * (1.0 + RLDCHAR_WHEEL_SLACK)) + RLDCHAR_WHEEL_SLACK;
-		const double h = (halfWidth * (1.0 + RLDCHAR_WHEEL_SLACK)) + RLDCHAR_WHEEL_SLACK;
-		u32 c;
-
-		for (c = 0; c < 8u; c++)
-		{
-			if (!RldChar_F32Finite(&v[4u * c]))
-			{
-				return RldChar_NativeFail(out, "CNET-10", "WHLS vertex %u is not a finite number", (unsigned)i);
-			}
-		}
-		if ((x < -h) || (x > h) || (((y * y) + (z * z)) > (r * r)))
-		{
-			return RldChar_NativeFail(out, "CNET-10", "WHLS vertex %u (%.3f %.3f %.3f) lies outside the wheel's cylinder", (unsigned)i, x, y, z);
-		}
-		if ((n2 < RLDCHAR_NET_NORMAL_MIN) || (n2 > RLDCHAR_NET_NORMAL_MAX))
-		{
-			return RldChar_NativeFail(out, "CNET-10", "WHLS vertex %u: the normal is not of length 1", (unsigned)i);
-		}
+		return 0;
 	}
-	for (i = 0; i < tw; i++)
+	if ((version == RLDCHAR_WHEEL_VERSION_USER3) && !RldChar_CheckWheelExtra(w, size, meshEnd, flags, out))
 	{
-		const u8 *t = &w[RLDCHAR_WHEEL_HEAD_BYTES + (nw * RLDCHAR_WHEEL_VERTEX_BYTES) + (i * 6u)];
-		const u32 a = Rld_ReadLE16(&t[0]);
-		const u32 b = Rld_ReadLE16(&t[2]);
-		const u32 c = Rld_ReadLE16(&t[4]);
-
-		if ((a >= nw) || (b >= nw) || (c >= nw) || (a == b) || (b == c) || (a == c))
-		{
-			return RldChar_NativeFail(out, "CNET-10", "WHLS triangle %u (%u %u %u): an index >= %u or a vertex twice", (unsigned)i, (unsigned)a, (unsigned)b,
-			                          (unsigned)c, (unsigned)nw);
-		}
+		return 0;
 	}
 
 	out->wheel = w;
-	out->wheelVersion = Rld_ReadLE16(&entry[4]);
+	out->wheelVersion = version;
 	out->wheelVertexCount = nw;
 	out->wheelTriangleCount = tw;
+	out->wheelFlags = (version == RLDCHAR_WHEEL_VERSION_USER3) ? flags : 0u;
 	return 1;
 }
 
-// CNET-1..10 on the chunk as stored; fills the counts and pointers of out.
+// MRPH, the shape keys win and lose (rule CNET-13), version 1:
+//   0x00 u16 targets (bit 0 win, bit 1 lose; 1..3), 0x02 u16 flags (bit 0:
+//   normal deltas follow), 0x04 u32 vertexCount (N of the head), 0x08 u16
+//   basePose (RLDCHAR_NET_NEUTRAL_POSE with 47 poses, 0 for a still model),
+//   0x0A u16 reserved 0, 0x0C u32 reserved 0, then per target present, win
+//   before lose: N x f32[3] position deltas and, with flags bit 0, N x f32[3]
+//   normal deltas. Size exactly 0x10 + targets x N x 12 x (1 + normals).
+// The pose of a target is POSN[basePose] + delta, its normal POSN[basePose]
+// normal + delta (of length 1). Every such position lies inside the head's
+// hull and inside the box of the 47 CMDL frames (hulls), the room the driver
+// takes in its own model: the game shows win and lose at any CMDL frame and
+// culls and sorts by that frame. A reader before this one skips MRPH as an
+// unknown tag (no win, no lose), and so does this reader with a version
+// other than 1. 1 = passed (out->morph set for version 1).
+static int RldChar_CheckMorph(const u8 *cnet, const u8 *entry, const struct RldCharHull hulls[RLDCHAR_NET_POSES], struct RldCharNative *out)
+{
+	const u32 size = Rld_ReadLE32(&entry[12]);
+	const u8 *m = &cnet[Rld_ReadLE32(&entry[8])];
+	const u32 base = (out->poseCount == 0u) ? 0u : RLDCHAR_NET_NEUTRAL_POSE;
+	const u8 *pose = &out->poses[(size_t)base * out->vertexCount * RLDCHAR_NET_VERTEX_BYTES];
+	double box[2][3];
+	u32 targets;
+	u32 normals;
+	u32 count;
+	u32 block;
+	u32 t;
+	u32 i;
+	u32 c;
+
+	if (Rld_ReadLE16(&entry[4]) != RLDCHAR_MORPH_VERSION)
+	{
+		return 1;
+	}
+	if (Rld_ReadLE16(&entry[6]) != 0u)
+	{
+		return RldChar_NativeFail(out, "CNET-13", "MRPH has stride %u, not 0 (its layout is its own)", (unsigned)Rld_ReadLE16(&entry[6]));
+	}
+	if (size < RLDCHAR_MORPH_HEAD_BYTES)
+	{
+		return RldChar_NativeFail(out, "CNET-13", "MRPH has %u bytes, its head alone needs %u", (unsigned)size, (unsigned)RLDCHAR_MORPH_HEAD_BYTES);
+	}
+	targets = Rld_ReadLE16(&m[0x00]);
+	normals = Rld_ReadLE16(&m[0x02]);
+	if ((targets < 1u) || (targets > 3u) || ((normals & ~RLDCHAR_MORPH_NORMALS) != 0u) || (Rld_ReadLE16(&m[0x0A]) != 0u) || (Rld_ReadLE32(&m[0x0C]) != 0u))
+	{
+		return RldChar_NativeFail(out, "CNET-13", "MRPH targets 0x%x, flags 0x%x - targets bit 0 win and bit 1 lose, flags bit 0 only, reserved fields 0",
+		                          (unsigned)targets, (unsigned)normals);
+	}
+	if ((Rld_ReadLE32(&m[0x04]) != out->vertexCount) || (Rld_ReadLE16(&m[0x08]) != base))
+	{
+		return RldChar_NativeFail(out, "CNET-13", "MRPH is made for %u vertices and pose %u - the model has %u vertices and its base pose is %u",
+		                          (unsigned)Rld_ReadLE32(&m[0x04]), (unsigned)Rld_ReadLE16(&m[0x08]), (unsigned)out->vertexCount, (unsigned)base);
+	}
+	count = (targets & 1u) + ((targets >> 1) & 1u);
+	block = out->vertexCount * 12u * ((normals != 0u) ? 2u : 1u);
+	if ((u64)size != ((u64)RLDCHAR_MORPH_HEAD_BYTES + ((u64)count * block)))
+	{
+		return RldChar_NativeFail(out, "CNET-13", "MRPH has %u bytes, %u targets of %u vertices need %llu", (unsigned)size, (unsigned)count,
+		                          (unsigned)out->vertexCount, (unsigned long long)((u64)RLDCHAR_MORPH_HEAD_BYTES + ((u64)count * block)));
+	}
+
+	// The box of the 47 frames.
+	for (c = 0; c < 3u; c++)
+	{
+		box[0][c] = hulls[0].lo[c];
+		box[1][c] = hulls[0].hi[c];
+		for (i = 1; i < RLDCHAR_NET_POSES; i++)
+		{
+			box[0][c] = (hulls[i].lo[c] < box[0][c]) ? hulls[i].lo[c] : box[0][c];
+			box[1][c] = (hulls[i].hi[c] > box[1][c]) ? hulls[i].hi[c] : box[1][c];
+		}
+	}
+	for (t = 0; t < count; t++)
+	{
+		const u8 *delta = &m[RLDCHAR_MORPH_HEAD_BYTES + ((size_t)t * block)];
+		const u8 *normal = &delta[(size_t)out->vertexCount * 12u];
+		const char *name = ((t == 0u) && ((targets & 1u) != 0u)) ? "win" : "lose";
+
+		for (i = 0; i < (block / 4u); i++)
+		{
+			if (!RldChar_F32Finite(&delta[4u * i]))
+			{
+				return RldChar_NativeFail(out, "CNET-13", "MRPH %s: vertex %u is not a finite number", name, (unsigned)((i / 3u) % out->vertexCount));
+			}
+		}
+		for (i = 0; i < out->vertexCount; i++)
+		{
+			const u8 *b = &pose[i * RLDCHAR_NET_VERTEX_BYTES];
+			double n2 = 0.0;
+
+			for (c = 0; c < 3u; c++)
+			{
+				const double p = (double)RldChar_F32(&b[4u * c]) + (double)RldChar_F32(&delta[(i * 12u) + (4u * c)]);
+
+				if ((p < out->hullMin[c]) || (p > out->hullMax[c]) || (p < box[0][c]) || (p > box[1][c]))
+				{
+					return RldChar_NativeFail(out, "CNET-13", "MRPH %s: vertex %u lies outside the hull (axis %u: %.3f, head %.3f..%.3f, frames %.3f..%.3f)", name,
+					                          (unsigned)i, (unsigned)c, p, (double)out->hullMin[c], (double)out->hullMax[c], box[0][c], box[1][c]);
+				}
+				if (normals != 0u)
+				{
+					const double n = (double)RldChar_F32(&b[12u + (4u * c)]) + (double)RldChar_F32(&normal[(i * 12u) + (4u * c)]);
+
+					n2 += n * n;
+				}
+			}
+			if ((normals != 0u) && ((n2 < RLDCHAR_NET_NORMAL_MIN) || (n2 > RLDCHAR_NET_NORMAL_MAX)))
+			{
+				return RldChar_NativeFail(out, "CNET-13", "MRPH %s: vertex %u: the normal is not of length 1 (length^2 %.4f)", name, (unsigned)i, n2);
+			}
+		}
+	}
+
+	out->morph = m;
+	out->morphTargets = targets;
+	out->morphNormals = (normals != 0u) ? 1u : 0u;
+	out->morphBasePose = base;
+	return 1;
+}
+
+// CNET-1..10 and 13 on the chunk as stored; fills the counts and pointers of out.
 // chriFlags: RLDCHAR_FLAG_NO_WHEELS makes WHLS irrelevant (not checked, not
 // used). hulls: the 47 CMDL frames (RldChar_FrameHulls). 1 = passed.
 static int RldChar_CheckNet(const u8 *cnet, size_t size, u32 chriFlags, const struct RldCharHull hulls[RLDCHAR_NET_POSES], struct RldCharNative *out)
@@ -3055,6 +3350,12 @@ static int RldChar_CheckNet(const u8 *cnet, size_t size, u32 chriFlags, const st
 		}
 	}
 
+	// CNET-13: the shape keys win and lose, when there is an MRPH.
+	if (RldChar_NetSection(cnet, table, sectionCount, "MRPH", &entry) && !RldChar_CheckMorph(cnet, entry, hulls, out))
+	{
+		return 0;
+	}
+
 	return 1;
 }
 
@@ -3254,7 +3555,7 @@ static void RldChar_NativeDrop(struct RldCharNative *out)
 	memcpy(out->detail, detail, sizeof(detail));
 }
 
-// Step 1 of the native part: out->cnet (owned, as stored) against CNET-1..10.
+// Step 1 of the native part: out->cnet (owned, as stored) against CNET-1..10 and 13.
 // 1 = passed; else out is REFUSED and holds nothing.
 static int RldChar_NativeNet(struct RldCharNative *out, u32 chriFlags, const struct RldCharHull hulls[RLDCHAR_NET_POSES])
 {
@@ -3266,27 +3567,37 @@ static int RldChar_NativeNet(struct RldCharNative *out, u32 chriFlags, const str
 	return 1;
 }
 
-// CNET-12, an author's wheel (WHLS version 2) only: its one material (the
-// field of WHLS) has no texture - one color - or a texture whose sides are at
-// most RLDCHAR_WHEEL_TEXTURE_EDGE_MAX. The material and the texture may be
-// the body's as well; the bound then holds for that texture. Run once the
+// CNET-12, an author's wheel (WHLS version 2 or 3) only: the material of a
+// mesh (the field of WHLS; version 3 with a rear mesh: its field too) has no
+// texture - one color - or a texture whose sides are at most
+// RLDCHAR_WHEEL_TEXTURE_EDGE_MAX. The material and the texture may be the
+// body's as well; the bound then holds for that texture. Run once the
 // textures are decoded (their sides are known). 1 = passed.
 static int RldChar_CheckUserWheel(struct RldCharNative *out)
 {
-	const u8 *m;
-	int texture;
+	u32 k;
 
-	if ((out->wheel == NULL) || (out->wheelVersion != RLDCHAR_WHEEL_VERSION_USER))
+	if ((out->wheel == NULL) || ((out->wheelVersion != RLDCHAR_WHEEL_VERSION_USER) && (out->wheelVersion != RLDCHAR_WHEEL_VERSION_USER3)))
 	{
 		return 1;
 	}
-	m = &out->materials[(size_t)Rld_ReadLE16(&out->wheel[0x08]) * RLDCHAR_NET_MATERIAL_BYTES];
-	texture = RldChar_SignedHalf(Rld_ReadLE16(&m[4]));
-	if ((texture >= 0) && ((out->texture[texture].width > RLDCHAR_WHEEL_TEXTURE_EDGE_MAX) || (out->texture[texture].height > RLDCHAR_WHEEL_TEXTURE_EDGE_MAX)))
+	for (k = 0; k < 2u; k++)
 	{
-		return RldChar_NativeFail(out, "CNET-12", "the wheel (WHLS version 2) has texture %d of %u x %u - a wheel's texture may have %u on each side",
-		                          texture, (unsigned)out->texture[texture].width, (unsigned)out->texture[texture].height,
-		                          (unsigned)RLDCHAR_WHEEL_TEXTURE_EDGE_MAX);
+		const u8 *m;
+		int texture;
+
+		if ((k == 1u) && (out->wheelRearVertexCount == 0u))
+		{
+			break;
+		}
+		m = &out->materials[(size_t)Rld_ReadLE16((k == 0u) ? &out->wheel[0x08] : &out->wheelExtra[0x20]) * RLDCHAR_NET_MATERIAL_BYTES];
+		texture = RldChar_SignedHalf(Rld_ReadLE16(&m[4]));
+		if ((texture >= 0) && ((out->texture[texture].width > RLDCHAR_WHEEL_TEXTURE_EDGE_MAX) || (out->texture[texture].height > RLDCHAR_WHEEL_TEXTURE_EDGE_MAX)))
+		{
+			return RldChar_NativeFail(out, "CNET-12", "the %swheel (WHLS version %u) has texture %d of %u x %u - a wheel's texture may have %u on each side",
+			                          (k == 0u) ? "" : "rear ", (unsigned)out->wheelVersion, texture, (unsigned)out->texture[texture].width,
+			                          (unsigned)out->texture[texture].height, (unsigned)RLDCHAR_WHEEL_TEXTURE_EDGE_MAX);
+		}
 	}
 	return 1;
 }
@@ -3321,6 +3632,110 @@ static void RldChar_NativeTextures(struct RldCharNative *out, const u8 *ctxt, si
 		return;
 	}
 	out->state = RLDCHAR_NATIVE_READY;
+}
+
+// THE WHEELS AND THE SHAPE KEYS OF A READY PART, for the game and the views.
+// Pure reads of what the checks above let through; nothing is checked again.
+
+// One wheel mesh of WHLS: front, or the rear one (version 3 with
+// RLDCHAR_WHEEL_REAR_MESH; else the rear wheels draw the front mesh, and so
+// does this). vertices: count x 32 bytes {f32 position[3], f32 normal[3],
+// f32 uv[2]}; indices: triangles x 3 u16.
+struct RldCharWheelMesh
+{
+	const u8 *vertices;
+	const u8 *indices;
+	u32 vertexCount;
+	u32 triangleCount;
+	u32 material;               // < materialCount
+	float radius;               // model units
+	float halfWidth;
+	int own;                    // 1 = the rear wheel's own mesh (version 3)
+};
+
+// 1 = an author's wheel (WHLS version 2 or 3), drawn mirrored on the -X side.
+static int RldChar_WheelIsOwn(const struct RldCharNative *n)
+{
+	return (n->wheel != NULL) && ((n->wheelVersion == RLDCHAR_WHEEL_VERSION_USER) || (n->wheelVersion == RLDCHAR_WHEEL_VERSION_USER3));
+}
+
+// The mesh of the front (rear 0) or rear (rear 1) wheels. 0 = no wheel.
+static int RldChar_WheelMesh(const struct RldCharNative *n, int rear, struct RldCharWheelMesh *out)
+{
+	memset(out, 0, sizeof(*out));
+	if (n->wheel == NULL)
+	{
+		return 0;
+	}
+	if (rear && (n->wheelExtra != NULL) && (n->wheelRearVertexCount != 0u))
+	{
+		const u8 *x = n->wheelExtra;
+
+		out->vertices = &x[RLDCHAR_WHEEL_EXTRA_BYTES];
+		out->indices = &x[RLDCHAR_WHEEL_EXTRA_BYTES + (n->wheelRearVertexCount * RLDCHAR_WHEEL_VERTEX_BYTES)];
+		out->vertexCount = n->wheelRearVertexCount;
+		out->triangleCount = n->wheelRearTriangleCount;
+		out->material = Rld_ReadLE16(&x[0x20]);
+		out->radius = RldChar_F32(&x[0x24]);
+		out->halfWidth = RldChar_F32(&x[0x28]);
+		out->own = 1;
+		return 1;
+	}
+	out->vertices = &n->wheel[RLDCHAR_WHEEL_HEAD_BYTES];
+	out->indices = &n->wheel[RLDCHAR_WHEEL_HEAD_BYTES + (n->wheelVertexCount * RLDCHAR_WHEEL_VERTEX_BYTES)];
+	out->vertexCount = n->wheelVertexCount;
+	out->triangleCount = n->wheelTriangleCount;
+	out->material = Rld_ReadLE16(&n->wheel[0x08]);
+	out->radius = RldChar_F32(&n->wheel[0x0C]);
+	out->halfWidth = RldChar_F32(&n->wheel[0x10]);
+	return 1;
+}
+
+// The deltas of an MRPH target (RLDCHAR_MORPH_WIN or _LOSE): vertexCount x
+// f32[3] each, little-endian bytes in cnet; *normals NULL without normal
+// deltas. 0 = the part has no such target (nothing set).
+static int RldChar_MorphTarget(const struct RldCharNative *n, int target, const u8 **positions, const u8 **normals)
+{
+	const u32 block = n->vertexCount * 12u * ((n->morphNormals != 0u) ? 2u : 1u);
+	u32 index;
+
+	if ((n->morph == NULL) || (target < 0) || (target >= (int)RLDCHAR_MORPH_TARGETS) || ((n->morphTargets & (1u << (u32)target)) == 0u))
+	{
+		return 0;
+	}
+	index = ((target == RLDCHAR_MORPH_LOSE) && ((n->morphTargets & 1u) != 0u)) ? 1u : 0u;
+	*positions = &n->morph[RLDCHAR_MORPH_HEAD_BYTES + ((size_t)index * block)];
+	*normals = (n->morphNormals != 0u) ? &(*positions)[(size_t)n->vertexCount * 12u] : NULL;
+	return 1;
+}
+
+// Vertex v of the blend from the base pose (morphBasePose; without MRPH the
+// neutral pose) toward a target at weight t (0 the base pose, 1 the target):
+// position = base + t x delta, normal = base normal + t x normal delta, not
+// normalized (the native mesh is not lit). A target the part does not have
+// gives the base pose. Floats only, no state: the same numbers everywhere.
+static void RldChar_MorphVertex(const struct RldCharNative *n, int target, float t, u32 v, float position[3], float normal[3])
+{
+	const u32 base = (n->poseCount == 0u) ? 0u : RLDCHAR_NET_NEUTRAL_POSE;
+	const u8 *p = &n->poses[(((size_t)base * n->vertexCount) + v) * RLDCHAR_NET_VERTEX_BYTES];
+	const u8 *positions = NULL;
+	const u8 *normals = NULL;
+	const int has = RldChar_MorphTarget(n, target, &positions, &normals);
+	int c;
+
+	for (c = 0; c < 3; c++)
+	{
+		position[c] = RldChar_F32(&p[4 * c]);
+		normal[c] = RldChar_F32(&p[12 + (4 * c)]);
+		if (has)
+		{
+			position[c] += t * RldChar_F32(&positions[((size_t)v * 12u) + (4u * (u32)c)]);
+			if (normals != NULL)
+			{
+				normal[c] += t * RldChar_F32(&normals[((size_t)v * 12u) + (4u * (u32)c)]);
+			}
+		}
+	}
 }
 
 // THE ENTRY. reader is open (Rld_OpenAs with s_rldCharFormat); chriFlags the

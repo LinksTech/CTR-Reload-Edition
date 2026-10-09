@@ -14004,6 +14004,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	const char *wheelSizeArg = NULL;
 	u32 wheelSize = 100u;
 	struct RldMkUserWheel userWheel;
+	struct RldMkWheelExtra wheelExtra;
 	int haveWheel = 0;
 	struct RldMkNativeFacts nativeFacts;
 	u8 *cnet = NULL;
@@ -14042,6 +14043,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	RldObj_ResetOptions();
 	memset(&nativeFacts, 0, sizeof(nativeFacts));
 	memset(&userWheel, 0, sizeof(userWheel));
+	memset(&wheelExtra, 0, sizeof(wheelExtra));
 	memset(&ply, 0, sizeof(ply));
 	memset(&build, 0, sizeof(build));
 	memset(nameField, 0, sizeof(nameField));
@@ -14222,6 +14224,10 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		else if ((strcmp(arg, "--wheel-size") == 0) && hasValue)
 		{
 			wheelSizeArg = argv[++i];
+		}
+		else if (hasValue && RldMk_WheelExtraArg(arg, argv[i + 1], &wheelExtra))
+		{
+			i++;
 		}
 		else if ((strcmp(arg, "--repair") == 0) && hasValue)
 		{
@@ -14431,6 +14437,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		          "--wheel-model needs --native-model on: a wheel of your own is a part of the native model (preview). The classic model always "
 		          "drives with the game's kart wheels.");
 	}
+	RldMk_WheelExtraCheck(&wheelExtra, wheelModelArg != NULL);
 	if (nativeModel && !opt.noWheels && (wheelModelArg == NULL))
 	{
 		RldMk_Say("error", "native-model", "--wheels",
@@ -14854,7 +14861,8 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	// agree (said above otherwise). Nothing of it reaches the CMDL.
 	if ((wheelModelArg != NULL) && nativeModel && !opt.noWheels && built)
 	{
-		haveWheel = RldMk_UserWheelLoad(wheelModelArg, NULL, 0u, &opt, wheelSize, &userWheel);
+		haveWheel = RldMk_UserWheelLoad(wheelModelArg, NULL, 0u, &opt, wheelSize, &userWheel) &&
+		            RldMk_WheelExtraApply(&wheelExtra, &opt, wheelSize, &userWheel);
 	}
 
 	if (maskModelArg != NULL)
@@ -14867,6 +14875,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	if (built && (previewArg != NULL))
 	{
 		RldMk_WritePreview(&build, previewArg);
+		RldMk_ClassicPreviewAppend(&build, previewArg);
 	}
 
 	// THE LOOK of the model that was built: the auto shadow from its frames
@@ -15223,9 +15232,11 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		       "reads it only with NATIVE DRIVERS set to PREVIEW (GRAPHICS) or --native-preview)\n",
 		       (u32)cnetSize, nativeFacts.vertices, nativeFacts.triangles, nativeFacts.poses ? "47 poses" : "one still pose", nativeFacts.materials,
 		       nativeFacts.textures, nativeFacts.colors ? ", vertex colors" : "",
-		       (nativeFacts.wheelVersion == RLDCHAR_WHEEL_VERSION_USER) ? "its own wheels (WHLS version 2)"
-		                                                                : (nativeFacts.wheels ? "the test wheel" : "no wheels"));
-		if (haveWheel && (nativeFacts.wheelVersion == RLDCHAR_WHEEL_VERSION_USER))
+		       (nativeFacts.wheelVersion == RLDCHAR_WHEEL_VERSION_USER3)
+		           ? "its own wheels (WHLS version 3)"
+		           : ((nativeFacts.wheelVersion == RLDCHAR_WHEEL_VERSION_USER) ? "its own wheels (WHLS version 2)"
+		                                                                       : (nativeFacts.wheels ? "the test wheel" : "no wheels")));
+		if (haveWheel && (nativeFacts.wheelVersion >= RLDCHAR_WHEEL_VERSION_USER))
 		{
 			char color[8];
 			char look[48];
@@ -15647,7 +15658,7 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 			else
 			{
 				snprintf(wheelText, sizeof(wheelText), "wheels: WHLS version %u (%s, %u triangles, radius %.2f)", (unsigned)native.wheelVersion,
-				         (native.wheelVersion == RLDCHAR_WHEEL_VERSION_USER) ? "its own" : "the test wheel", (unsigned)native.wheelTriangleCount,
+				         RldChar_WheelIsOwn(&native) ? "its own" : "the test wheel", (unsigned)native.wheelTriangleCount,
 				         (double)RldChar_F32(&native.wheel[0x0C]));
 			}
 			snprintf(nativeText, sizeof(nativeText), "ready: %u vertices, %u triangles, %u poses, %u materials, %u textures (%llu bytes RGBA8), %s",
@@ -16215,6 +16226,15 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "                              classic model keeps the game's kart wheels\n");
 	fprintf(out, "  --wheel-size <50..200>      the radius of that wheel in percent of the\n");
 	fprintf(out, "                              game's wheel (%.0f model units; default 100)\n", RLDDUM_TIRE_HALF_SIZE);
+	fprintf(out, "  --rear-wheel-model <glb|obj|ply>  PREVIEW, with --wheel-model: a mesh of its\n");
+	fprintf(out, "                              own for the rear wheels (the same rules and size)\n");
+	fprintf(out, "  --axle-front <dz>,<dy>,<dtrack>   PREVIEW, with --wheel-model: the front\n");
+	fprintf(out, "                              axle forward (%.0f..%.0f), up (%.0f..%.0f) and the track\n", RLDCHAR_AXLE_DZ_MIN, RLDCHAR_AXLE_DZ_MAX,
+	        RLDCHAR_AXLE_DY_MIN, RLDCHAR_AXLE_DY_MAX);
+	fprintf(out, "                              wider (%.0f..%.0f), model units; 0,0,0 = the game's\n", RLDCHAR_AXLE_TRACK_MIN, RLDCHAR_AXLE_TRACK_MAX);
+	fprintf(out, "  --axle-rear <dz>,<dy>,<dtrack>    the same for the rear axle\n");
+	fprintf(out, "  --wheels-always on|off      PREVIEW: on draws the wheels at every level of\n");
+	fprintf(out, "                              detail; off (default) as the game's tyres\n");
 	fprintf(out, "\n");
 	fprintf(out, "  rldpack make-char --model driver.ply --name \"MY DRIVER\" --template 14\n");
 	fprintf(out, "  rldpack make-char --model driver.obj --name \"MY DRIVER\" --template 14\n");

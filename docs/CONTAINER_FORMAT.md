@@ -950,26 +950,50 @@ Nothing of this is in the container; it is how the tool gets there.
   1/32 of it. The older `RLDPV1` is the same with whole game units;
   Reload Studio reads both.
 
-  With `--native-model on` the native model follows in the same file,
-  as the game's rules passed it (`RLDPN2`, `RldMk_NativePreviewBlock` in
-  `tools/rldpack_native.inc`, read by `tools/reloadstudio/rs_tex.c`). It
-  carries what the game's "nr" program gets, so that the preview can draw
-  the native model as the game does:
+  Every frame of the classic model follows right behind it (`RLDPC1`,
+  `RldMk_ClassicPreviewAppend` in `tools/rldpack_native.inc`), so that the
+  preview plays all animations:
 
   | Field | Type | Content |
   |---|---|---|
-  | magic | char[8] | `RLDPN2` and two NUL |
+  | magic | char[8] | `RLDPC1` and two NUL |
+  | frames, records, triangles | u32 x 3 | 47 (turn 21, reverse 7, bump 15, jump 4, the order of CMDL), the records R of the model, T as in RLDPV2 |
+  | corners | T x 3 x u16 | the record of every corner, in the order and winding of RLDPV2 (colour and flags of a corner: RLDPV2's) |
+  | frames | 47 x R x 3 x s16 | every record in every frame, 1/16 game units as RLDPV2 |
+
+  Size 20 + 6 T + 282 R. Frame 10 is RLDPV2's pose 0 again, frames 0 and
+  20 its poses 1 and 2. The classic model has no win and no lose.
+
+  With `--native-model on` the native model follows in the same file, as
+  the game's rules passed it (`RLDPN3`, `RldMk_NativePreviewBlock3` in
+  `tools/rldpack_native.inc`, read by `tools/reloadstudio/rs_tex.c`). It
+  carries what the game's "nr" program gets, so that the preview can draw
+  the native model as the game does, with all its poses and the shape keys
+  win and lose:
+
+  | Field | Type | Content |
+  |---|---|---|
+  | magic | char[8] | `RLDPN3` and two NUL |
   | flags | u32 | bit 0: a material blends (alpha mode 2) - the game then refuses the whole native part and draws CMDL, and so does the preview; make-char writes only opaque and mask materials. Bits 1-31 are 0 |
   | textures | u32 + entries | 0..16; per texture u32 width, u32 height (powers of two 16..2048, CTXT-4), u32 flags (CTXT), then width x height x 4 bytes RGBA: level 0 as CTXT holds it, rows from the top, never scaled. The reader builds the levels below with `include/rldmip.inc`, the game's code; CTXT-6 keeps all of them within 64 MiB |
   | materials | u32 + M x 8 | 1..64; the first 8 bytes of MATL: u8 r, g, b, a (the tint), s16 texture (-1 none), u8 alpha mode (0 opaque, 1 mask, 2 blend), u8 flags (bit 0 always nearest) |
-  | triangles, poses | u32 T, u32 3 | per pose T x 3 corners of s16 x, y, z in 1/16 game units: the turn frames 10, 0 and 20 (a still model three times its pose) |
-  | per triangle | 3 x 12 + 4 | 3 corners of {s32 u, s32 v in Q16 (v from the top as in CTXT, clamped to +-64), u8 r, g, b, a: COL0 as stored, 255 without}, then u16 material, u16 0 |
+  | counts | u32 x 5 | vertices N, triangles T, poses P (47, or 1 for a still model), neutral (the pose win and lose start from: 10, or 0), morphs (bit 0 win, bit 1 lose) |
+  | poses | P x N x 3 x s16 | every pose of every vertex in 1/16 game units (rounded half away from zero) |
+  | targets | per morph bit, N x 3 x s16 | win, then lose: the target itself (pose neutral + its MRPH delta), the same units; the view blends neutral + w x (target - neutral), w 0..1, as the game |
+  | vertices | N x 12 | s32 u, s32 v in Q16 (v from the top as in CTXT, clamped to +-64), u8 r, g, b, a: COL0 as stored, 255 without |
+  | triangles | T x 8 | u16 a, b, c (counter-clockwise seen from outside), u16 material |
 
-  Size 24 + sum (12 + width x height x 4) + 8 M + 8 + 94 T. The colour of a
-  pixel is the "nr" program's: texel times corner colour times material
-  colour, the mask leaving out what has alpha below one half; no light. The
-  older `RLDPN1` (corner colours already multiplied, textures halved above
-  512) is no longer read: the preview asks for a new build.
+  Size 8 + 4 + 4 + sum (12 + width x height x 4) + 4 + 8 M + 20 + 6 N (P +
+  morphs) + 12 N + 8 T. The wheels are not in it: the view shows them from
+  `char-wheel`'s own file (`RLDPW3`), one run for the front and one for a
+  rear wheel model; the rear one at the size of the build when it is scaled
+  by the ratio of the two `@char fit` lines' "across before". The colour of
+  a pixel is the "nr" program's: texel times corner colour times material
+  colour, the mask leaving out what has alpha below one half; no light.
+  `RLDPN2` (the same head, then only the turn frames 10, 0 and 20 per
+  triangle corner; `RldMk_NativePreviewBlock`) is no longer written by
+  make-char and stays only for the readers that do not know RLDPN3 yet. The
+  older `RLDPN1` is no longer read: the preview asks for a new build.
 - The self-test (`rldpack selftest`, also `ReloadStudio.exe --rldpack
   selftest`) builds fixed models made in the code and compares the
   SHA-256 of what comes out with fixed values (`RLDMK_GOLDEN_*`): PLAIN,
@@ -1326,29 +1350,65 @@ What the game does with it (`platform/native_chars.c`,
   seat in a one-player race never says it; fire and drop are said only for
   a human driver; set 8 has no caller and is not an event.
 
-### Planned: driver animations from pose models
+### Driver animations from shape keys (glTF)
 
-Planned, not part of 1.0 as written today: the game reads nothing new, and
-neither `rldpack make-char` nor Reload Studio writes anything of it.
+A model read from glTF 2.0 (`.glb`, `.gltf`; `tools/rldpack_gltf.inc`) may
+carry shape keys (morph targets) on the driver's meshes. Their names, case
+ignored: `steer_left`, `steer_right`, `reverse`, `crash`, `jump`, `win`,
+`lose`. The base mesh is the neutral pose. A name the packer does not know
+is said (warning `pose-unknown-key`, `@char pose-unknown <name>`) and left
+out; it changes no byte. A glTF with a skin is refused (error `model-rig`:
+"Rigs are not supported yet, please use shape keys") and no file is written.
+OBJ and PLY have no shape keys: their files stay byte for byte as before.
 
-- The author exports the same mesh once at rest (the model) and once per
-  pose: `turn_left.ply`, `turn_right.ply`, `reverse.ply`, `bump.ply`,
-  `jump.ply` in one folder (`idle.ply` is checked but has no slot in the
-  race). Every pose has the same vertices in the same order and the same
-  faces; only the positions differ, colors come from the model.
-- rldpack turns them into the frames of the four retail slots, along curves
-  measured on the retail drivers: turn 21 frames (frame 0 full left, 10 the
-  model, 20 full right), reverse 7, bump 15 (a held pose), jump 4. The kart
-  stays as in the model. A slot without its pose (turn needs both) keeps
-  today's automatic poses.
-- No new chunk and no new field: the frames go into CMDL exactly as today
-  (4 animations, raw frames, the counts that model-anim-frames demands). The
-  pose files are never packed. Without a pose folder the file is byte for
-  byte the same.
+THE 47 FRAMES (make-char step 4k, `RldMk_StepKeys` in
+`tools/rldpack_char.inc`): after the model is placed and before the
+reduction, every key becomes a delta per position of the chain (the mean of
+the deltas of the points welded into it, through the linear part of the
+axes, fit and `--scale`; `--size` scales them with their positions). Step 8
+then writes frame = base + w(k) x delta for a slot with its key, the
+automatic pose of today for a slot without. The weights follow the retail
+curves that drive the automatic poses:
 
-`rldpack char-poses --model <ply> --pose-dir <folder>` already checks a
-pose folder (rules `pose-*`) and writes only a preview file for Reload
-Studio; it refuses `--out` and never writes a container.
+| Key | Slot | Weight |
+|---|---|---|
+| steer_left | turn frames 0..9 (frame 0 full left) | the retail turn curve normed to 1 at full lock (`s_rldDumRetailTurn[k] / 45.2`) |
+| steer_right | turn frames 11..20 (frame 20 full right) | the same, mirrored; frame 10 stays neutral |
+| reverse | reverse frames 0..6 | k / 6 |
+| crash | bump frames 0..14 | the retail pitch curve normed to its peak (`s_rldMkBumpPitch[k] / -20`, its sign kept) |
+| jump | jump frames 0..3 | k / 3 |
+| win, lose | none | they never move a frame: they go to the native model only (MRPH) |
+
+The kart stays rigid: a key that moves kart positions is said (warning
+`pose-kart-moved`) and its kart part left out, so wheels, shadow and exhaust
+keep their places. CMDL (step 9, its hull taking every frame and base +
+delta of win and lose) and POSN of the native model get the same frames:
+the classic model and the native one move alike, and a build before these
+keys reads the file as any other. A key that makes the model too large for
+the hull is the error `model-scale`.
+
+THE MIRROR RULE: with only `steer_left` (or only `steer_right`) the other side
+is its mirror image (x negated) when at least 98 % of the driver's positions
+find a partner at (-x, y, z) within 0.5 % of the model's width (info
+`pose-mirrored`, status `mirrored`). Else the key is dropped, the turn keeps
+the automatic lean and the warning `pose-not-symmetric` says "model is not
+symmetric, using the automatic lean".
+
+NOT USED: with `--poses still` (note `pose-still`), with `--remesh on`
+(`pose-remesh`) or without a driver part (`pose-no-driver`) the slots keep
+their automatic poses.
+
+MACHINE LINES (make-char, also with `--check`; `char-poses --model <glb>`
+prints the same): one line per name, always in this order -
+`@pose <steer_left|steer_right|reverse|crash|jump|win|lose>
+<from-file|automatic|mirrored|neutral|error> <rule|->`; `neutral` is win or
+lose without a key, `error` names its rule (for example
+`pose-not-symmetric`). With keys also the text line `shape keys ...`.
+
+`rldpack char-poses --model <ply> --pose-dir <folder>` still checks a pose
+folder of PLY files (rules `pose-*`) and writes only a preview file for
+Reload Studio; `char-poses --model <glb>` reports the keys of a glTF. It
+refuses `--out` and never writes a container.
 
 ### Preview, planned: CNET and CTXT, the native model
 
@@ -1364,7 +1424,7 @@ memory, makes them into GPU objects at the load and draws them in place of
 the CMDL where its native route allows (`platform/native_char_gpu.c`,
 `platform/native_render_layer.c`), at an internal resolution (RESOLUTION) of
 2X or more - at 1X the CMDL draws - and only with the kart wheels hidden or
-with wheels of its own (WHLS version 2; see "What the game does with
+with wheels of its own (WHLS version 2 or 3; see "What the game does with
 them"). The layout is a draft and may change until the native path is
 released. Source: the section CNET AND CTXT at the end of
 `include/rldchar.inc`.
@@ -1392,7 +1452,7 @@ bound:
 |---|---|---|
 | compression method not 0, size_stored != size_raw, larger than `RLDCHAR_LIMIT_CNET` / `RLDCHAR_LIMIT_CTXT` (32 MiB), unreadable, hash mismatch | `native-chunk` | native part refused, CMDL drawn |
 | the file changed since the start (its CMDL hash), the file cannot be opened | `native-file` | native part refused, CMDL drawn |
-| any rule CNET-1..12, CTXT-1..8 below | the rule | native part refused, CMDL drawn |
+| any rule CNET-1..13, CTXT-1..8 below | the rule | native part refused, CMDL drawn |
 
 Without `--native-preview` CNET and CTXT are not read and not checked at all,
 not even a broken one: the roster read at start never opens them, and its
@@ -1437,6 +1497,7 @@ u32 size. An unknown tag is skipped.
 | UV00 | optional; required when a material has a texture | 8 | N x f32[2] |
 | COL0 | optional | 4 | N x RGBA8 |
 | WHLS | required unless CHRI hides the wheels (flags bit 0) | 0 | the wheels, below |
+| MRPH | optional (version 1; another version is skipped like an unknown tag) | 0 | the shape keys win and lose, below |
 
 WHLS, the wheels (one mesh for all four). Size exactly 0x30 + 32 Nw + 6 Tw.
 The version of its section entry (not a field of the section) tells two
@@ -1446,11 +1507,16 @@ kinds apart; the layout is the same byte for byte (`RLDCHAR_WHEEL_VERSION_*`):
 |---|---|---|---|
 | 1 | the test wheel (a grey cylinder of 64 triangles) | the same mesh turned 180 degrees about Y, never mirrored | the self-test's files and `--native-probe` only; `make-char` never writes it for a character |
 | 2 | an author's wheel | the mirror image of the mesh: x negated, the normals mirrored (nx negated), the winding turned - the outer side (+X) is outside on both sides, and a tread runs mirrored | `make-char --wheel-model` |
+| 3 | an author's wheel as 2, with a rear wheel of its own, axle offsets or "always draw" | as 2, for the front and the rear mesh | `make-char --wheel-model` with `--rear-wheel-model`, `--axle-front`, `--axle-rear` or `--wheels-always on` |
 
 Drawing the wheels, the turn of version 1 and the mirror of version 2, is the
 game's part; the reader only checks. A reader from before version 2 (before
 v0.7.5) refuses a version 2 section by CNET-10 (`WHLS has version 2 - this
-reader knows 1`) and keeps the CMDL: the file stays valid and safe.
+reader knows 1`) and keeps the CMDL: the file stays valid and safe. A reader
+from before version 3 (0.7.5 and the builds before the night of 09./10.10.)
+refuses a version 3 section the same way (`WHLS has version 3 - this reader
+knows 1 and 2`, measured with rldpack af24de8 `verify`): CMDL with the retail
+kart wheels.
 
 
 | Offset | Type | Field |
@@ -1458,14 +1524,62 @@ reader knows 1`) and keeps the CMDL: the file stays valid and safe.
 | 0x00 | u32 | vertexCount Nw, 3..2048 |
 | 0x04 | u32 | triangleCount Tw, 1..1024 |
 | 0x08 | u16 | material (< M) |
-| 0x0A | u16 | flags 0 |
+| 0x0A | u16 | flags: 0 in versions 1 and 2; version 3: bit 0 always draw (`RLDCHAR_WHEEL_ALWAYS_DRAW`, no level of detail), bit 1 a rear mesh follows (`RLDCHAR_WHEEL_REAR_MESH`), bits 2-15 0 |
 | 0x0C | f32 | radius, 0..64 model units |
 | 0x10 | f32 | halfWidth, 0..radius |
-| 0x14 | f32[3] | front: the center of the front wheel on +X, model units |
-| 0x20 | f32[3] | rear: the center of the rear wheel on +X |
+| 0x14 | f32[3] | front: the center of the front wheel on +X, model units (version 3: with its axle offset) |
+| 0x20 | f32[3] | rear: the center of the rear wheel on +X (version 3: with its axle offset) |
 | 0x2C | u32 | reserved 0 |
 | 0x30 | Nw x 32 bytes | f32 position[3], f32 normal[3], f32 uv[2]: center at the origin, axle along X, outside +X |
 | then | Tw x 6 bytes | u16 a, b, c |
+
+Version 3 goes on behind the mesh, at E = 0x30 + 32 Nw + 6 Tw rounded up to 4
+(the bytes between are 0). Size exactly E + 0x30 + 32 Nr + 6 Tr:
+
+| Offset | Type | Field |
+|---|---|---|
+| E+0x00 | f32[3] | axleFront {dz forward, dy up, dtrack the whole track wider}: as the author gave them, model units; the wheel points hold them already, a reader never adds them again |
+| E+0x0C | f32[3] | axleRear, the same |
+| E+0x18 | u32 | rearVertexCount Nr: with the rear flag 3..2048, else 0 |
+| E+0x1C | u32 | rearTriangleCount Tr: with the rear flag 1..1024, else 0 |
+| E+0x20 | u16 | rearMaterial (< M), else 0 |
+| E+0x22 | u16 | reserved 0 |
+| E+0x24 | f32 | rearRadius 0..64, else 0 |
+| E+0x28 | f32 | rearHalfWidth 0..rearRadius, else 0 |
+| E+0x2C | u32 | reserved 0 |
+| E+0x30 | Nr x 32, then Tr x 6 | the rear mesh, as the front one |
+
+The bounds of the offsets (`RLDCHAR_AXLE_*`, model units; the retail wheel
+has radius 16): dz -32..32, dy -16..32, dtrack -32..64. Without the rear flag
+the rear wheels draw the front mesh, as in version 2. The reader hands it
+on: `wheelFlags`, `wheelExtra`, `wheelRearVertexCount`,
+`wheelRearTriangleCount`, `wheelAxle[2][3]`; `RldChar_WheelIsOwn` (version 2
+or 3) and `RldChar_WheelMesh` (front, or rear: its own mesh or the front
+one) are the reads for the game and the views.
+
+MRPH, the shape keys win and lose (version 1, stride 0; rule CNET-13):
+
+| Offset | Type | Field |
+|---|---|---|
+| 0x00 | u16 | targets: bit 0 win, bit 1 lose; 1..3 |
+| 0x02 | u16 | flags: bit 0 normal deltas follow; bits 1-15 0 |
+| 0x04 | u32 | vertexCount: N of the head |
+| 0x08 | u16 | basePose: 10 (turn frame 10, no steering) with 47 poses, 0 for a still model (`RLDCHAR_NET_NEUTRAL_POSE`) |
+| 0x0A | u16 | reserved 0 |
+| 0x0C | u32 | reserved 0 |
+| 0x10 | | per target present, win before lose: N x f32[3] position deltas; with flags bit 0 then N x f32[3] normal deltas |
+
+Size exactly 0x10 + targets x N x 12 x (1 + normals). The pose of a target
+is POSN[basePose] + delta; its normal POSN[basePose] + the normal delta, of
+length 1. `RldChar_MorphTarget` and `RldChar_MorphVertex` (the blend base +
+t x delta) are the reads for the game and the views. A reader before MRPH
+(rldpack and the game at af24de8, 0.7.5) skips it as an unknown tag - CNET-4
+holds it to the place rules of every section (4-aligned, behind the table,
+inside the chunk, no overlap, at most 16 sections) and CNET-5 does not look
+at it - so such a reader shows the native model without win and lose
+(measured with rldpack af24de8 `verify`: ready). Budget at N = 20000 with
+both targets and normals: 16 + 2 x 20000 x 24 = 960 016 bytes; a whole CNET
+at N 20000, 47 poses, T 30000 then about 24.2 MB of the 32 MiB.
 
 | Rule | What must hold |
 |---|---|
@@ -1478,13 +1592,15 @@ reader knows 1`) and keeps the CMDL: the file stays valid and safe.
 | CNET-7 | every index < N, no triangle with a vertex twice, every triangle material < M |
 | CNET-8 | materials: alphaMode <= 2, flags bit 0 only, reserved bytes 0, texture -1 or < textureCount; UV00 present when a material has a texture |
 | CNET-9 | every pose inside the hull of its CMDL frame (a still pose inside all 47): per axis pos..pos + 255 of the frame (pos.y with bit 0 cleared) times scale / 4096 |
-| CNET-10 | CHRI hides the wheels: WHLS is not looked at. Else WHLS is there and holds: version 1 or 2, stride 0, its counts and exact size, material < M, flags and reserved 0, radius and halfWidth in range, the wheel points finite, within 256 model units, on +X and front before rear, every vertex finite and inside the cylinder (with 1e-4 of room), unit normals, every index < Nw and no vertex twice |
+| CNET-10 | CHRI hides the wheels: WHLS is not looked at. Else WHLS is there and holds: version 1, 2 or 3, stride 0, its counts and exact size, material < M, flags (0 in versions 1 and 2, bits 0-1 in 3) and reserved 0, radius and halfWidth in range, the wheel points finite, within 256 model units, on +X and front before rear, every vertex finite and inside the cylinder (with 1e-4 of room), unit normals, every index < Nw and no vertex twice. Version 3 also: the fill bytes 0, the axle offsets finite and within their bounds, the rear fields 0 and nothing behind the extension without the rear flag, with it the rear mesh as the front one (counts, exact size, material, radius, cylinder, normals, indices) |
 | CNET-11 | textureCount equals the entries of CTXT; textureCount 0 needs no CTXT, and a CTXT then is a finding |
-| CNET-12 | WHLS version 2 only (an author's wheel), checked after CTXT-1..8: its one material (the field at 0x08) has no texture - the wheel is one color - or a texture of at most 1024 x 1024 (`RLDCHAR_WHEEL_TEXTURE_EDGE_MAX`). The material and its texture may be the body's as well; the bound then holds for that texture. Version 1 is not held to it |
+| CNET-12 | WHLS version 2 or 3 only (an author's wheel), checked after CTXT-1..8: its material (the field at 0x08; version 3 with a rear mesh also rearMaterial) has no texture - the wheel is one color - or a texture of at most 1024 x 1024 (`RLDCHAR_WHEEL_TEXTURE_EDGE_MAX`). The material and its texture may be the body's as well; the bound then holds for that texture. Version 1 is not held to it |
+| CNET-13 | MRPH version 1 only (another version is skipped): stride 0, targets 1..3, flags bit 0 only, reserved 0, vertexCount N, basePose 10 (0 for a still model), the exact size; every number finite; every target position (base + delta) inside the head's hull and inside the box of the 47 CMDL frame hulls (the room the driver takes in its own model: the game shows win and lose at any CMDL frame and culls and sorts by it); with normals every base normal + delta of length 1 (length^2 0.98..1.02) |
 
 The reader hands the version on: `struct RldCharNative.wheelVersion` is
-`RLDCHAR_WHEEL_VERSION_TEST` (1) or `RLDCHAR_WHEEL_VERSION_USER` (2) when
-`wheel` is set, 0 when there is no wheel (none, or CHRI hides them).
+`RLDCHAR_WHEEL_VERSION_TEST` (1), `RLDCHAR_WHEEL_VERSION_USER` (2) or
+`RLDCHAR_WHEEL_VERSION_USER3` (3) when `wheel` is set, 0 when there is no
+wheel (none, or CHRI hides them).
 
 THE BUDGET OF AN AUTHOR'S WHEEL (version 2): one mesh of at most 1024
 triangles and 2048 vertices (CNET-10, the same as version 1), drawn four
@@ -1513,7 +1629,11 @@ player never sees the grey test wheel on a driver of a file:
 | wheels shown, WHLS version 1 (the test wheel; old files of the preview) | the game refuses the native part (`native-wheels`): CMDL with the retail kart wheels |
 | WHLS version 2 breaks CNET-10 or CNET-12, its texture over 1024 or broken (CTXT-n) | the whole native part is refused (all or nothing): CMDL with the retail kart wheels |
 | an older reader (before v0.7.5) and WHLS version 2 | CNET-10 (version): CMDL with the retail kart wheels |
-| `make-char` | never writes version 1 for a character; `--native-model on` with the kart wheels shown needs `--wheel-model`; a wheel over a bound is an error and no file |
+| wheels shown, WHLS version 3 valid (CNET-10, CNET-12) | the reader hands on the native body with the author's wheels (`wheelVersion` 3, `RldChar_WheelIsOwn`); the game draws them with the rear mesh, the offsets in the wheel points and "always draw" once it reads version 3 - until then it refuses the part with `native-wheels`: CMDL with the retail kart wheels |
+| a reader before version 3 (0.7.5) and WHLS version 3 | CNET-10 (version): CMDL with the retail kart wheels |
+| MRPH broken (CNET-13) | the whole native part is refused: CMDL with the retail kart wheels |
+| a reader before MRPH, or MRPH of another version | MRPH skipped: the native model without win and lose |
+| `make-char` | never writes version 1 for a character; `--native-model on` with the kart wheels shown needs `--wheel-model`; a wheel over a bound is an error and no file; version 3 only when a switch of it changes something, else version 2 byte for byte |
 | the game without the native preview (NATIVE DRIVERS OFF, no `--native-preview`), or at a resolution of 1X | CNET and CTXT are not used: CMDL with the retail kart wheels |
 | a view that has no wheel pose for the driver (the game) | that view: CMDL with the retail kart wheels |
 
@@ -1593,7 +1713,7 @@ last, one texture after the other.
 | When | What |
 |---|---|
 | start (roster) | nothing: CNET and CTXT are not opened, with or without `--native-preview` |
-| a seat is bound (load stage 5: seat 0, and every seat of `--dev-char-seats`), only with the native preview (NATIVE DRIVERS set to PREVIEW on the GRAPHICS page, or `--native-preview`) | the file is opened again from its path: its CMDL hash must still be the loaded one; CNET is read and checked (CNET-1..10) against the 47 frame hulls of the model in memory, then CTXT (CNET-11, CTXT-1..8, then CNET-12), the textures decoded to RGBA8; all of it is held in host memory until the seats are cleared (next load). In load stage 5, right after the seats are armed, a held part is made into GPU objects (`platform/native_char_gpu.c`; a blend material refuses the whole set and the seat draws its CMDL); the render layer then draws it in place of the CMDL where its native route allows |
+| a seat is bound (load stage 5: seat 0, and every seat of `--dev-char-seats`), only with the native preview (NATIVE DRIVERS set to PREVIEW on the GRAPHICS page, or `--native-preview`) | the file is opened again from its path: its CMDL hash must still be the loaded one; CNET is read and checked (CNET-1..10 and 13) against the 47 frame hulls of the model in memory, then CTXT (CNET-11, CTXT-1..8, then CNET-12), the textures decoded to RGBA8; all of it is held in host memory until the seats are cleared (next load). In load stage 5, right after the seats are armed, a held part is made into GPU objects (`platform/native_char_gpu.c`; a blend material refuses the whole set and the seat draws its CMDL); the render layer then draws it in place of the CMDL where its native route allows |
 | the driver select preview, only with the native preview | the file of the custom tile under the cursor is read and checked the same way and held for the preview window (one line with `<who>` `preview`) |
 | a broken native part | one line, the driver keeps its CMDL |
 | a native part that passes CNET-1..12 and CTXT-1..8 while CHRI shows the kart wheels (flags bit 0 clear) and WHLS is an author's wheel (version 2) | held with its own wheels and drawn natively with them (see "THE GAME DRAWS" above); its CMDL with the retail kart wheels stays the fallback |
@@ -1756,8 +1876,8 @@ frames (see below).
 Source: `tools/rldpack_native.inc`, section A WHEEL OF ONE'S OWN. Preview,
 like the native model it belongs to.
 
-- `--wheel-model <file.obj|file.ply>`: one wheel for all four. The format by
-  the content, as `--model`: an OBJ with its MTL file and texture through the
+- `--wheel-model <file.glb|file.gltf|file.obj|file.ply>`: one wheel for all four. The format by
+  the content, as `--model`: a glTF (read into the same faces as an OBJ), an OBJ with its MTL file and texture through the
   same OBJ reader (its faces as written), a PLY as make-char reads one (no
   texture coordinates: one color). `--wheel-size <50..200>`: the radius in
   percent of the game's wheel (16 model units, `RLDDUM_TIRE_HALF_SIZE`;
@@ -1824,6 +1944,52 @@ like the native model it belongs to.
   <file> <bytes>` and `@char native-wheel <triangles> <vertices> <radius>
   <half width> <percent> <WxH|color-RRGGBB>`. The OBJ reader's `@model`
   lines are those of the model only.
+
+#### Rear wheel, axles and "always draw" (WHLS version 3)
+
+Source: `tools/rldpack_native.inc`, section THE REAR WHEEL, THE AXLES AND
+"ALWAYS DRAW". Preview, like the native model. Each switch needs
+`--wheel-model` (error `usage`); Reload Studio passes them only when they
+are set.
+
+- `--rear-wheel-model <file.glb|file.gltf|file.obj|file.ply>`: a mesh of its
+  own for the rear wheels, read, checked and fitted as `--wheel-model` (the
+  same rules, budget and message codes; error `rear-wheel-model` names the
+  file). It keeps its size against the front wheel as the two files have it:
+  rear radius = front radius x the rear model's radius / the front model's,
+  both measured as the fit measures them, at most 64 (`wheel-size`). Its
+  material comes after the front wheel's, its texture is its own entry or
+  shares one of the same bytes.
+- `--axle-front <dz>,<dy>,<dtrack>`, `--axle-rear <dz>,<dy>,<dtrack>`: the
+  axle forward, up and the track wider (the whole track: each wheel moves by
+  half of it), model units rounded to 1/16, dz -32..32, dy -16..32, dtrack
+  -32..64 (error `axle-range`). The wheel points become front (36 + dtrack /
+  2, r + dy, 49.75 + dz) and rear (36 + dtrack / 2, r + dy, -24 + dz), r the
+  radius of that wheel; the front axle stays in front of the rear one
+  (`axle-order`, which the bounds already keep).
+- `--wheels-always on|off`: on sets "always draw" (no level of detail);
+  off, the default, leaves the wheels to the retail rule of the tyres.
+- WHLS version 3 is written only when a switch changes something (a rear
+  model, an offset other than 0, `--wheels-always on`); `--axle-front 0,0,0`
+  or `--wheels-always off` alone keep version 2 and the same bytes.
+- `--machine`, only for version 3: `@value wheels-version 3`, `@value
+  axle-front <dz> <dy> <dtrack>`, `@value axle-rear ...`, `@value
+  wheels-always on|off`, `@value rear-wheel <radius> <half width>`.
+
+#### win and lose (MRPH)
+
+When the model has the shape keys `win` or `lose` (see "Driver animations
+from shape keys"), `make-char --native-model on` writes MRPH: each CNET
+vertex takes the delta of its chain position from turn frame 10 (the same
+weld as POSN), with the normals of the target from its smooth groups less
+those of the base pose. A target is kept inside the box of the 47 frames
+(the hull of step 9 already takes win and lose; a move back of more than two
+quantization steps is the warning `morph-clamped`) and widens the head's
+hull. `--machine`: `@value morph win|lose <vertices>`. Without the keys (OBJ,
+PLY, a glTF without them, `--poses still`) there is no MRPH and CNET stays
+byte for byte as before. The game blends from the pose it draws to win
+(places 1-3) or lose (4-8) after the finish, natively only; the CMDL
+fallback stays neutral.
 
 ### Planned once: CWHL, own wheels (reserved, not assigned)
 

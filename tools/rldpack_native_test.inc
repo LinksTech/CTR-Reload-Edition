@@ -35,7 +35,7 @@
 #define RLDMK_GOLDEN_NATIVE_POSES "91a6634abbde504c9b8f3586abbfa55c78bf10ec50a8c78b1f81607f6533bc1f"
 #define RLDMK_GOLDEN_NATIVE_TEXTURE "91a84b2163c3ec26e128e4d17ebc15b063b496055f830afc28341c20252cea4f"
 
-#define RLDMK_NATIVE_CASES_MAX 48
+#define RLDMK_NATIVE_CASES_MAX 80
 
 struct RldMkNativeCase
 {
@@ -171,6 +171,69 @@ static u32 RldMk_NativeSectionAt(const u8 *cnet, const char tag[4], u32 *entryAt
 		}
 	}
 	return 0;
+}
+
+// cnet with the section tag (version, data) in place of the one it has, or
+// added behind the others: the table one entry longer, every section moved
+// by it, each 4-aligned in its order. NULL = out of memory.
+static u8 *RldMk_NativeWithSection(const u8 *cnet, size_t cnetSize, const char tag[4], u32 version, const u8 *data, u32 dataSize, size_t *sizeOut)
+{
+	const u32 table = Rld_ReadLE16(&cnet[0x04]);
+	const u32 count = Rld_ReadLE16(&cnet[0x06]);
+	const int found = (RldMk_NativeSectionAt(cnet, tag, NULL) != 0u);
+	const u32 newCount = count + (found ? 0u : 1u);
+	size_t size = table + ((size_t)newCount * RLDCHAR_NET_SECTION_BYTES);
+	size_t at;
+	u8 *out;
+	u32 s;
+
+	for (s = 0; s < count; s++)
+	{
+		const u8 *e = &cnet[table + (s * RLDCHAR_NET_SECTION_BYTES)];
+
+		size = ((size + 3u) & ~(size_t)3u) + ((memcmp(e, tag, 4u) == 0) ? dataSize : Rld_ReadLE32(&e[12]));
+	}
+	if (!found)
+	{
+		size = ((size + 3u) & ~(size_t)3u) + dataSize;
+	}
+	out = (u8 *)calloc(1, size + 4u);
+	if (out == NULL)
+	{
+		return NULL;
+	}
+	(void)cnetSize;
+	memcpy(out, cnet, table);
+	Rld_WriteLE16(&out[0x06], newCount);
+	at = table + ((size_t)newCount * RLDCHAR_NET_SECTION_BYTES);
+	for (s = 0; s < newCount; s++)
+	{
+		u8 *e = &out[table + (s * RLDCHAR_NET_SECTION_BYTES)];
+		const int mine = (s == count) || (memcmp(&cnet[table + (s * RLDCHAR_NET_SECTION_BYTES)], tag, 4u) == 0);
+		const u8 *from = mine ? data : &cnet[Rld_ReadLE32(&cnet[table + (s * RLDCHAR_NET_SECTION_BYTES) + 8u])];
+		const u32 bytes = mine ? dataSize : Rld_ReadLE32(&cnet[table + (s * RLDCHAR_NET_SECTION_BYTES) + 12u]);
+
+		at = (at + 3u) & ~(size_t)3u;
+		if (s < count)
+		{
+			memcpy(e, &cnet[table + (s * RLDCHAR_NET_SECTION_BYTES)], RLDCHAR_NET_SECTION_BYTES);
+		}
+		else
+		{
+			memcpy(e, tag, 4u);
+			Rld_WriteLE16(&e[6], 0u);
+		}
+		if (mine)
+		{
+			Rld_WriteLE16(&e[4], version);
+		}
+		Rld_WriteLE32(&e[8], (u32)at);
+		Rld_WriteLE32(&e[12], bytes);
+		memcpy(&out[at], from, bytes);
+		at += bytes;
+	}
+	*sizeOut = size;
+	return out;
 }
 
 // CTXT with two textures: the probe texture, then a gradient of width x
@@ -387,7 +450,7 @@ static int RldMk_NativeMakeSet(struct RldMkNativeSet *set)
 	//        1  material 0, the probe texture (256 x 256)
 	//        2  material 1 with texture 1 of 1024 x 16: on the bound
 	//        3  version 1 with texture 1 of 2048 x 16: CNET-12 is not about it
-	//        4  version 3: CNET-10
+	//        4  version 4: CNET-10
 	//        5  material 1 with texture 1 of 2048 x 16: CNET-12
 	{
 		static const struct
@@ -398,7 +461,7 @@ static int RldMk_NativeMakeSet(struct RldMkNativeSet *set)
 			u32 width;              // 0: the probe's CTXT alone, else a second texture of width x 16
 		} cases[] = {
 		    {"good_wheel-v2-plain", 2u, 1u, 0u},       {"good_wheel-v2-textured", 2u, 0u, 0u},       {"good_wheel-v2-texture-1024", 2u, 1u, 1024u},
-		    {"good_wheel-v1-texture-2048", 1u, 1u, 2048u}, {"bad_CNET-10_wheel-version-3", 3u, 1u, 0u}, {"bad_CNET-12_texture-2048", 2u, 1u, 2048u},
+		    {"good_wheel-v1-texture-2048", 1u, 1u, 2048u}, {"bad_CNET-10_wheel-version-4", 4u, 1u, 0u}, {"bad_CNET-12_texture-2048", 2u, 1u, 2048u},
 		};
 		int k;
 
@@ -432,6 +495,183 @@ static int RldMk_NativeMakeSet(struct RldMkNativeSet *set)
 			RldMk_NativeAdd(set, cases[k].name, 0u, c, stillSize, (two != NULL) ? two : ctxt, (two != NULL) ? twoSize : ctxtSize);
 			free(c);
 			free(two);
+		}
+	}
+
+	// WHLS version 3 (rear wheel, axles, flags): the test wheel of the probe
+	// as version 3, its extension behind it.
+	//   what 0  flags "always draw", axle offsets, no rear mesh
+	//        1  a rear mesh (the front one again, material 1) and both flags
+	//        2  an axle offset beyond its bound (dz 40)
+	//        3  an unknown flag (bit 2)
+	//        4  rear fields without the rear flag
+	//        5  a rear vertex outside its cylinder
+	//        6  no extension at all (the layout of version 2)
+	{
+		static const struct
+		{
+			const char *name;
+			int what;
+		} cases[] = {
+		    {"good_wheel-v3-flags", 0},           {"good_wheel-v3-rear", 1},          {"bad_CNET-10_v3-axle-range", 2},
+		    {"bad_CNET-10_v3-flags", 3},          {"bad_CNET-10_v3-rear-without-flag", 4}, {"bad_CNET-10_v3-rear-vertex", 5},
+		    {"bad_CNET-10_v3-no-extension", 6},
+		};
+		u32 entryAt = 0;
+		const u32 at = RldMk_NativeSectionAt(still, "WHLS", &entryAt);
+		const u32 front = Rld_ReadLE32(&still[entryAt + 12u]);
+		const u32 meshBytes = front - RLDCHAR_WHEEL_HEAD_BYTES;
+		const u32 extra = (front + 3u) & ~3u;
+		int k;
+
+		for (k = 0; k < (int)(sizeof(cases) / sizeof(cases[0])); k++)
+		{
+			const int rear = (cases[k].what == 1) || (cases[k].what == 4) || (cases[k].what == 5);
+			const u32 size = (cases[k].what == 6) ? front : (extra + RLDCHAR_WHEEL_EXTRA_BYTES + (rear ? meshBytes : 0u));
+			u8 *w = (u8 *)calloc(1, size);
+			u8 *c = NULL;
+			size_t cSize = 0;
+
+			if (w == NULL)
+			{
+				set->failed = 1;
+				continue;
+			}
+			memcpy(w, &still[at], front);
+			if (cases[k].what != 6)
+			{
+				u8 *x = &w[extra];
+
+				Rld_WriteLE16(&w[0x0A], RLDCHAR_WHEEL_ALWAYS_DRAW | (((cases[k].what == 1) || (cases[k].what == 5)) ? RLDCHAR_WHEEL_REAR_MESH : 0u));
+				RldMk_PutF32(&x[0x00], (cases[k].what == 2) ? 40.0 : 4.0);
+				RldMk_PutF32(&x[0x04], 2.0);
+				RldMk_PutF32(&x[0x08], 8.0);
+				RldMk_PutF32(&x[0x0C], -4.0);
+				if (cases[k].what == 3)
+				{
+					Rld_WriteLE16(&w[0x0A], 0x4u);
+				}
+				if (rear)
+				{
+					memcpy(&x[0x18], &w[0x00], 8u);
+					Rld_WriteLE16(&x[0x20], 1u);
+					memcpy(&x[0x24], &w[0x0C], 8u);
+					memcpy(&x[RLDCHAR_WHEEL_EXTRA_BYTES], &w[RLDCHAR_WHEEL_HEAD_BYTES], meshBytes);
+					if (cases[k].what == 5)
+					{
+						RldMk_PutF32(&x[RLDCHAR_WHEEL_EXTRA_BYTES + 4u], 100.0);
+					}
+				}
+			}
+			c = RldMk_NativeWithSection(still, stillSize, "WHLS", RLDCHAR_WHEEL_VERSION_USER3, w, size, &cSize);
+			if (c == NULL)
+			{
+				set->failed = 1;
+			}
+			else
+			{
+				RldMk_NativeAdd(set, cases[k].name, 0u, c, cSize, ctxt, ctxtSize);
+			}
+			free(c);
+			free(w);
+		}
+	}
+
+	// MRPH, the shape keys win and lose (rule CNET-13), on the probe with 47
+	// poses: every vertex a quarter of the way to the middle of the head's
+	// hull (inside it and inside every frame), the normals unchanged.
+	//   what 0  win and lose, with normal deltas
+	//        1  lose only, without normal deltas
+	//        2  version 2: skipped as an unknown tag
+	//        3  stride 12      4  no target       5  N + 1 vertices
+	//        6  base pose 0    7  4 bytes short   8  a NaN
+	//        9  a vertex beyond the hull          10  a normal of length 2
+	{
+		static const struct
+		{
+			const char *name;
+			int what;
+		} cases[] = {
+		    {"good_mrph-win-lose", 0},     {"good_mrph-lose-only", 1},  {"good_mrph-version-2-skipped", 2}, {"bad_CNET-13_stride", 3},
+		    {"bad_CNET-13_no-target", 4},  {"bad_CNET-13_vertices", 5}, {"bad_CNET-13_base-pose", 6},       {"bad_CNET-13_size", 7},
+		    {"bad_CNET-13_nan", 8},        {"bad_CNET-13_hull", 9},     {"bad_CNET-13_normal", 10},
+		};
+		const u32 n = Rld_ReadLE32(&poses[0x08]);
+		const u8 *base = &poses[RldMk_NativeSectionAt(poses, "POSN", NULL) + ((size_t)RLDCHAR_NET_NEUTRAL_POSE * n * RLDCHAR_NET_VERTEX_BYTES)];
+		int k;
+
+		for (k = 0; k < (int)(sizeof(cases) / sizeof(cases[0])); k++)
+		{
+			const int what = cases[k].what;
+			const u32 targets = (what == 1) ? 2u : ((what == 4) ? 0u : 3u);
+			const u32 normals = (what == 1) ? 0u : 1u;
+			const u32 count = (targets & 1u) + ((targets >> 1) & 1u);
+			const u32 full = RLDCHAR_MORPH_HEAD_BYTES + (((count == 0u) ? 1u : count) * n * 12u * (normals + 1u));
+			const u32 size = full - ((what == 7) ? 4u : 0u);
+			u8 *m = (u8 *)calloc(1, full);
+			u8 *c = NULL;
+			size_t cSize = 0;
+			u32 t;
+			u32 i;
+
+			if (m == NULL)
+			{
+				set->failed = 1;
+				continue;
+			}
+			Rld_WriteLE16(&m[0x00], targets);
+			Rld_WriteLE16(&m[0x02], normals);
+			Rld_WriteLE32(&m[0x04], n + ((what == 5) ? 1u : 0u));
+			Rld_WriteLE16(&m[0x08], (what == 6) ? 0u : RLDCHAR_NET_NEUTRAL_POSE);
+			for (t = 0; t < ((count == 0u) ? 1u : count); t++)
+			{
+				u8 *d = &m[RLDCHAR_MORPH_HEAD_BYTES + ((size_t)t * n * 12u * (normals + 1u))];
+
+				for (i = 0; i < n; i++)
+				{
+					int axis;
+
+					for (axis = 0; axis < 3; axis++)
+					{
+						const double middle = 0.5 * ((double)RldChar_F32(&poses[0x18 + (4 * axis)]) + (double)RldChar_F32(&poses[0x24 + (4 * axis)]));
+						const double from = RldChar_F32(&base[(i * RLDCHAR_NET_VERTEX_BYTES) + (4u * (u32)axis)]);
+
+						RldMk_PutF32(&d[(i * 12u) + (4u * (u32)axis)], 0.25 * (middle - from));
+					}
+				}
+			}
+			if (what == 8)
+			{
+				Rld_WriteLE32(&m[RLDCHAR_MORPH_HEAD_BYTES + 4u], 0x7FC00000u);
+			}
+			if (what == 9)
+			{
+				RldMk_PutF32(&m[RLDCHAR_MORPH_HEAD_BYTES + 4u], 1000.0);
+			}
+			if (what == 10)
+			{
+				RldMk_PutF32(&m[RLDCHAR_MORPH_HEAD_BYTES + (n * 12u)], 1.0);
+				RldMk_PutF32(&m[RLDCHAR_MORPH_HEAD_BYTES + (n * 12u) + 4u], 1.0);
+				RldMk_PutF32(&m[RLDCHAR_MORPH_HEAD_BYTES + (n * 12u) + 8u], 1.0);
+			}
+			c = RldMk_NativeWithSection(poses, posesSize, "MRPH", (what == 2) ? 2u : RLDCHAR_MORPH_VERSION, m, size, &cSize);
+			if ((c != NULL) && (what == 3))
+			{
+				u32 entryAt = 0;
+
+				RldMk_NativeSectionAt(c, "MRPH", &entryAt);
+				Rld_WriteLE16(&c[entryAt + 6u], 12u);
+			}
+			if (c == NULL)
+			{
+				set->failed = 1;
+			}
+			else
+			{
+				RldMk_NativeAdd(set, cases[k].name, 0u, c, cSize, ctxt, ctxtSize);
+			}
+			free(c);
+			free(m);
 		}
 	}
 
@@ -619,10 +859,10 @@ static int RldMk_NativeMakeSet(struct RldMkNativeSet *set)
 // --repair auto: the native triangles repaired as the CMDL's (turned back,
 // the hole closed) - the native model of make-native-tests --obj.
 #define RLDMK_GOLDEN_NATIVE_OBJ_REPAIR "be878af022b345bef44f29ca5ad220af36daf6d0bae738f285a334682c0b952c"
-// The preview block of the native model of the automatic poses (RLDPN2, THE
+// The preview block of the native model of the automatic poses (RLDPN3, THE
 // NATIVE MODEL IN THE PREVIEW), as make-char --preview appends it for Reload
 // Studio.
-#define RLDMK_GOLDEN_NATIVE_OBJ_PREVIEW "ae148fb53c4e351a38d05dff9902f14f3a50dbb7bc60f741a196e473b3b0cd6b"
+#define RLDMK_GOLDEN_NATIVE_OBJ_PREVIEW "f6a749a80bf359b0dd2cda77fbd90f3f418f2458b3a66d6d5bf2a986731835dd"
 // The levels of include/rldmip.inc for the fixed image of the game's
 // --native-tex-selftest (32 x 16, 6 levels, 2732 bytes): the game's own
 // goldens (NATIVE_TEX_GOLDEN_* in platform/native_tex.c), so the packer and
@@ -668,6 +908,10 @@ struct RldMkNativeObjCase
 	int wheelNoVt;             // its corners without vt
 	int wheelWide;             // half as wide again as it is across
 	u32 wheelSize;             // --wheel-size; 0 = 100
+	int wheelRear;             // WHLS version 3 with the same cylinder as the rear wheel's own mesh
+	int always;                // WHLS version 3: --wheels-always on
+	double axle[2][3];         // WHLS version 3: --axle-front, --axle-rear
+	int morph;                 // MRPH: 1 win (every position 0.25 up) and lose (0.25 to +X), 2 win 500 up (moved back, warned)
 };
 
 struct RldMkNativeObjResult
@@ -744,6 +988,8 @@ static int RldMk_NativeObjMake(const struct RldMkNativeObjCase *k, struct RldMkN
 	struct RldMkBuffer wheelFile;
 	struct RldMkBuffer wheelMtl;
 	struct RldMkUserWheel wheel;
+	double *morphWin = NULL;
+	double *morphLose = NULL;
 	struct RldMkOptions opt;
 	struct RldMkModelInfo info;
 	struct RldMkPly ply;
@@ -1038,11 +1284,53 @@ static int RldMk_NativeObjMake(const struct RldMkNativeObjCase *k, struct RldMkN
 			r->wheelLoaded = RldMk_UserWheelLoad((k->wheel == 2) ? "selftest/wheel.ply" : "selftest/wheel.obj", wheelFile.data, wheelFile.size, &opt,
 			                                     (k->wheelSize != 0u) ? k->wheelSize : 100u, &wheel);
 		}
+		if (r->wheelLoaded && (k->wheelRear || k->always || (k->axle[0][0] != 0.0) || (k->axle[0][1] != 0.0) || (k->axle[0][2] != 0.0) ||
+		                       (k->axle[1][0] != 0.0) || (k->axle[1][1] != 0.0) || (k->axle[1][2] != 0.0)))
+		{
+			struct RldMkWheelExtra x;
+			struct RldMkUserWheel *rear = NULL;
+
+			memset(&x, 0, sizeof(x));
+			x.always = k->always;
+			memcpy(x.axle, k->axle, sizeof(x.axle));
+			if (k->wheelRear)
+			{
+				rear = (struct RldMkUserWheel *)calloc(1, sizeof(*rear));
+				if ((rear != NULL) && !RldMk_UserWheelLoad("selftest/rear.obj", wheelFile.data, wheelFile.size, &opt, (k->wheelSize != 0u) ? k->wheelSize : 100u,
+				                                           rear))
+				{
+					free(rear);
+					rear = NULL;
+				}
+			}
+			r->wheelLoaded = (!k->wheelRear || (rear != NULL)) && RldMk_WheelExtraPlace(&x, &wheel, rear);
+		}
+		if (k->morph != 0)
+		{
+			const u32 count = (b.nativeFrame != NULL) ? b.nativePositionCount : b.positionCount;
+
+			morphWin = (double *)calloc((size_t)count * 3u + 3u, sizeof(double));
+			morphLose = (double *)calloc((size_t)count * 3u + 3u, sizeof(double));
+			if ((morphWin != NULL) && (morphLose != NULL))
+			{
+				for (i = 0; i < count; i++)
+				{
+					morphWin[3u * i + 1u] = (k->morph == 2) ? 500.0 : 0.25;
+					morphLose[3u * i + 0u] = 0.25;
+				}
+				s_rldMkMorphTest[0] = morphWin;
+				s_rldMkMorphTest[1] = (k->morph == 2) ? NULL : morphLose;
+				s_rldMkMorphTestCount = count;
+			}
+		}
 		if ((k->wheel == 0) || r->wheelLoaded)
 		{
 			r->made = RldMk_NativeModel(&s_rldObjNative, &ply, &b, &opt, !k->wheelsOff, r->wheelLoaded ? &wheel : NULL, &r->cnet, &r->cnetSize, &r->ctxt,
 			                            &r->ctxtSize, &r->facts);
 		}
+		s_rldMkMorphTest[0] = NULL;
+		s_rldMkMorphTest[1] = NULL;
+		s_rldMkMorphTestCount = 0;
 	}
 	s_rldObjFiles = NULL;
 	s_rldObjFileCount = 0;
@@ -1059,6 +1347,8 @@ static int RldMk_NativeObjMake(const struct RldMkNativeObjCase *k, struct RldMkN
 	free(wheelFile.data);
 	free(wheelMtl.data);
 	RldMk_UserWheelFree(&wheel);
+	free(morphWin);
+	free(morphLose);
 	free(mesh);
 	return ok;
 }
@@ -1175,6 +1465,8 @@ static void RldMk_NativeObjRefused(const struct RldMkNativeObjCase *k, const cha
 	RldMk_NativeObjFree(&r);
 }
 
+static void RldMk_SelfTestNativeFormat(void);
+
 static void RldMk_SelfTestNativeObj(void)
 {
 	struct RldMkNativeObjCase k;
@@ -1217,25 +1509,36 @@ static void RldMk_SelfTestNativeObj(void)
 		           Rld_ReadLE16(&m[4]), m[6], m[16], Rld_ReadLE16(&m[20]), m[22], Rld_ReadLE16(&m[36]), m[38], native.texture[0].flags,
 		           native.texture[1].flags);
 	}
-	// The preview block (Reload Studio): its size from its counts, golden.
+	// The preview block (Reload Studio, RLDPN3): its size from its counts,
+	// every pose of every vertex, golden.
 	if (native.state == RLDCHAR_NATIVE_READY)
 	{
 		size_t blockSize = 0;
-		u8 *block = RldMk_NativePreviewBlock(&native, &blockSize);
+		u8 *block = RldMk_NativePreviewBlock3(&native, &blockSize);
 		const size_t texAt = 16u;
 		const size_t matAt = texAt + (12u + 16u * 32u * 4u) + (12u + 32u * 16u * 4u);
-		const size_t want = matAt + 4u + 4u * RLDMK_NATIVE_PREVIEW_MATERIAL_BYTES + 8u + ((size_t)native.triangleCount * (3u * 18u + 40u));
-		const size_t cornerAt = matAt + 4u + 4u * RLDMK_NATIVE_PREVIEW_MATERIAL_BYTES + 8u + 3u * (size_t)native.triangleCount * 18u;
-		const int laid = (block != NULL) && (blockSize == want) && (memcmp(block, "RLDPN2\0\0", 8u) == 0) && (Rld_ReadLE32(&block[8]) == 0u) &&
+		const size_t countAt = matAt + 4u + 4u * RLDMK_NATIVE_PREVIEW_MATERIAL_BYTES;
+		const size_t poseAt = countAt + 20u;
+		const size_t vertexAt = poseAt + ((size_t)native.vertexCount * 6u * RLDCHAR_NET_POSES);
+		const size_t triAt = vertexAt + ((size_t)native.vertexCount * RLDMK_NATIVE_PREVIEW_VERTEX_BYTES);
+		const size_t want = triAt + ((size_t)native.triangleCount * RLDMK_NATIVE_PREVIEW_TRIANGLE_BYTES);
+		const u8 *last = &native.poses[(((size_t)46u * native.vertexCount) + 5u) * RLDCHAR_NET_VERTEX_BYTES];
+		const int laid = (block != NULL) && (blockSize == want) && (memcmp(block, "RLDPN3\0\0", 8u) == 0) && (Rld_ReadLE32(&block[8]) == 0u) &&
 		                 (Rld_ReadLE32(&block[12]) == 2u) && (Rld_ReadLE32(&block[texAt]) == 16u) && (Rld_ReadLE32(&block[texAt + 4u]) == 32u) &&
 		                 (memcmp(&block[texAt + 12u], native.texture[0].rgba, 16u * 32u * 4u) == 0) && (Rld_ReadLE32(&block[matAt]) == 4u) &&
 		                 (memcmp(&block[matAt + 4u], native.materials, 8u) == 0) && (memcmp(&block[matAt + 12u], &native.materials[16], 8u) == 0) &&
-		                 (block[cornerAt + 8u] == 255u) && (block[cornerAt + 11u] == 255u) &&
-		                 (Rld_ReadLE16(&block[cornerAt + 36u]) == Rld_ReadLE16(&native.triangleMaterials[0]));
+		                 (Rld_ReadLE32(&block[countAt]) == native.vertexCount) && (Rld_ReadLE32(&block[countAt + 4u]) == native.triangleCount) &&
+		                 (Rld_ReadLE32(&block[countAt + 8u]) == RLDCHAR_NET_POSES) && (Rld_ReadLE32(&block[countAt + 12u]) == RLDCHAR_NET_NEUTRAL_POSE) &&
+		                 (Rld_ReadLE32(&block[countAt + 16u]) == 0u) &&
+		                 ((s16)Rld_ReadLE16(&block[poseAt + ((((size_t)46u * native.vertexCount) + 5u) * 6u) + 2u]) ==
+		                  (s16)RldMk_NativePreviewSixteenth(RldChar_F32(&last[4]))) &&
+		                 (block[vertexAt + 8u] == 255u) && (block[vertexAt + 11u] == 255u) &&
+		                 (Rld_ReadLE16(&block[triAt]) == Rld_ReadLE16(&native.indices[0])) &&
+		                 (Rld_ReadLE16(&block[triAt + 6u]) == Rld_ReadLE16(&native.triangleMaterials[0]));
 
-		RldMk_Test(laid, "native OBJ: the preview block (RLDPN2) holds 2 textures whole, 4 materials, every triangle in 3 poses, white corners without COL0",
+		RldMk_Test(laid, "native OBJ: the preview block (RLDPN3) holds 2 textures whole, 4 materials, all 47 poses of every vertex, white corners without COL0",
 		           "size %u, want %u", (u32)blockSize, (u32)want);
-		if ((block != NULL) && (Rld_CheckGolden("make-char --native-model on --preview of the mini OBJ: RLDPN2", block, blockSize,
+		if ((block != NULL) && (Rld_CheckGolden("make-char --native-model on --preview of the mini OBJ: RLDPN3", block, blockSize,
 		                                        RLDMK_GOLDEN_NATIVE_OBJ_PREVIEW) != 0))
 		{
 			s_rldMkTestFailed++;
@@ -1738,6 +2041,242 @@ static void RldMk_SelfTestNativeObj(void)
 	k.wheelWide = 1;
 	RldMk_NativeObjRefused(&k, "wheel-wide", "native OBJ refused: a wheel wider than across (its axle not X)");
 	RldMk_ResetSaid();
+
+	RldMk_SelfTestNativeFormat();
+}
+
+// WHLS version 3, MRPH and the classic frames of the preview (RLDPC1): the
+// writers of make-char and the switches, held to the game's rules.
+static void RldMk_SelfTestNativeFormat(void)
+{
+	struct RldMkNativeObjCase k;
+	struct RldMkNativeObjResult a;
+	struct RldMkNativeObjResult again;
+	struct RldCharNative native;
+	struct RldMkWheelExtra x;
+
+	// 8. --wheels-always on and the axles: version 3 without a rear mesh, the
+	//    wheel points moved (front x 36 + 8 / 2, y 16 + 2, z 49.75 + 4).
+	memset(&k, 0, sizeof(k));
+	k.want = 1;
+	k.wheel = 1;
+	k.always = 1;
+	k.axle[0][0] = 4.0;
+	k.axle[0][1] = 2.0;
+	k.axle[0][2] = 8.0;
+	k.axle[1][0] = -2.0;
+	if (RldMk_NativeObjMake(&k, &a) && a.made)
+	{
+		RldMk_CheckNativeBytes(a.cmdl, a.cmdlSize, a.chriFlags, a.cnet, a.cnetSize, a.ctxt, a.ctxtSize, &native);
+		RldMk_Test((native.state == RLDCHAR_NATIVE_READY) && (native.wheelVersion == RLDCHAR_WHEEL_VERSION_USER3) && RldChar_WheelIsOwn(&native) &&
+		               (native.wheelFlags == RLDCHAR_WHEEL_ALWAYS_DRAW) && (native.wheelRearVertexCount == 0u) && (native.wheelAxle[0][2] == 8.0f) &&
+		               (native.wheelAxle[1][0] == -2.0f) && (RldChar_F32(&native.wheel[0x14]) == 40.0f) && (RldChar_F32(&native.wheel[0x18]) == 18.0f) &&
+		               (RldChar_F32(&native.wheel[0x1C]) == 53.75f) && (RldChar_F32(&native.wheel[0x28]) == -26.0f) &&
+		               (a.facts.wheelVersion == RLDCHAR_WHEEL_VERSION_USER3),
+		           "native OBJ, --wheels-always on and axles: WHLS version 3, the flag, the offsets kept and in the wheel points, ready",
+		           "state %d (%s) %s, version %u, flags %u, front %.3f %.3f %.3f", native.state, (native.rule != NULL) ? native.rule : "", native.detail,
+		           native.wheelVersion, native.wheelFlags, (native.wheel != NULL) ? RldChar_F32(&native.wheel[0x14]) : 0.0f,
+		           (native.wheel != NULL) ? RldChar_F32(&native.wheel[0x18]) : 0.0f, (native.wheel != NULL) ? RldChar_F32(&native.wheel[0x1C]) : 0.0f);
+		RldChar_FreeNative(&native);
+		if (RldMk_NativeObjMake(&k, &again) && again.made)
+		{
+			RldMk_Test((again.cnetSize == a.cnetSize) && (memcmp(again.cnet, a.cnet, a.cnetSize) == 0), "native OBJ, WHLS version 3, built twice: the same CNET",
+			           "differ");
+		}
+		RldMk_NativeObjFree(&again);
+	}
+	else
+	{
+		RldMk_Test(0, "native OBJ, --wheels-always on and axles", "not made (said: %s)", s_rldMkCodes);
+	}
+	RldMk_NativeObjFree(&a);
+
+	// 8a. A rear wheel of its own (the same cylinder): its mesh behind the
+	//     extension, its material after the front wheel's, the same texture
+	//     entry (the same bytes).
+	memset(&k, 0, sizeof(k));
+	k.want = 1;
+	k.wheel = 1;
+	k.wheelRear = 1;
+	if (RldMk_NativeObjMake(&k, &a) && a.made)
+	{
+		RldMk_CheckNativeBytes(a.cmdl, a.cmdlSize, a.chriFlags, a.cnet, a.cnetSize, a.ctxt, a.ctxtSize, &native);
+		if (native.state == RLDCHAR_NATIVE_READY)
+		{
+			struct RldCharWheelMesh front;
+			struct RldCharWheelMesh rear;
+			const int both = RldChar_WheelMesh(&native, 0, &front) && RldChar_WheelMesh(&native, 1, &rear);
+			const u8 *fm = &native.materials[(size_t)front.material * RLDCHAR_NET_MATERIAL_BYTES];
+			const u8 *rm = &native.materials[(size_t)rear.material * RLDCHAR_NET_MATERIAL_BYTES];
+
+			RldMk_Test(both && rear.own && !front.own && (native.wheelFlags == RLDCHAR_WHEEL_REAR_MESH) && (rear.vertexCount == front.vertexCount) &&
+			               (rear.triangleCount == front.triangleCount) && (rear.material == (front.material + 1u)) &&
+			               (rear.material == (native.materialCount - 1u)) && (Rld_ReadLE16(&rm[4]) == Rld_ReadLE16(&fm[4])) && (rear.radius == 16.0f) &&
+			               (memcmp(rear.vertices, front.vertices, (size_t)front.vertexCount * RLDCHAR_WHEEL_VERTEX_BYTES) == 0),
+			           "native OBJ with a rear wheel of its own: WHLS version 3, its mesh, its material last, the texture entry shared, ready",
+			           "flags %u, rear %u/%u, materials %u %u of %u", native.wheelFlags, rear.vertexCount, rear.triangleCount, front.material, rear.material,
+			           native.materialCount);
+		}
+		else
+		{
+			RldMk_Test(0, "native OBJ with a rear wheel of its own", "refused (%s) %s", (native.rule != NULL) ? native.rule : "", native.detail);
+		}
+		RldChar_FreeNative(&native);
+	}
+	else
+	{
+		RldMk_Test(0, "native OBJ with a rear wheel of its own", "not made (said: %s)", s_rldMkCodes);
+	}
+	RldMk_NativeObjFree(&a);
+
+	// 8b. The switches: values, bounds, "needs --wheel-model"; all at 0 is
+	//     version 2 (byte for byte the file without them).
+	RldMk_ResetSaid();
+	memset(&x, 0, sizeof(x));
+	RldMk_Test(RldMk_WheelExtraArg("--axle-front", "1.5,-2,0", &x) && RldMk_WheelExtraArg("--axle-rear", "0,0,0", &x) &&
+	               RldMk_WheelExtraArg("--wheels-always", "off", &x) && !x.bad && (x.axle[0][0] == 1.5) && (x.axle[0][1] == -2.0) &&
+	               RldMk_WheelExtraCheck(&x, 1) && RldMk_WheelExtraUsed(&x) && !RldMk_WheelExtraArg("--wheel-model", "w.obj", &x),
+	           "switches of WHLS version 3: --axle-front 1.5,-2,0 taken, the others not theirs", "bad %d, said: %s", x.bad, s_rldMkCodes);
+	memset(&x, 0, sizeof(x));
+	RldMk_WheelExtraArg("--axle-front", "0,0,0", &x);
+	RldMk_WheelExtraArg("--wheels-always", "off", &x);
+	RldMk_Test(!RldMk_WheelExtraUsed(&x) && RldMk_WheelExtraCheck(&x, 1), "switches of WHLS version 3: all at 0 and off - version 2 stays", "used");
+	RldMk_Test(!RldMk_WheelExtraCheck(&x, 0) && RldMk_Said("usage"), "switches of WHLS version 3: without --wheel-model refused (usage)", "said: %s",
+	           s_rldMkCodes);
+	RldMk_ResetSaid();
+	memset(&x, 0, sizeof(x));
+	RldMk_WheelExtraArg("--axle-front", "40,0,0", &x);
+	RldMk_Test(x.bad && RldMk_Said("axle-range"), "switches of WHLS version 3: dz 40 refused (axle-range)", "said: %s", s_rldMkCodes);
+	RldMk_ResetSaid();
+	memset(&x, 0, sizeof(x));
+	RldMk_WheelExtraArg("--axle-rear", "1,2", &x);
+	RldMk_WheelExtraArg("--wheels-always", "maybe", &x);
+	RldMk_Test(x.bad && RldMk_Said("axle-range") && RldMk_Said("usage"), "switches of WHLS version 3: two numbers and \"maybe\" refused", "said: %s",
+	           s_rldMkCodes);
+	RldMk_ResetSaid();
+
+	// 9. MRPH: win and lose of every position (the self-test's shape keys),
+	//    each CNET vertex its position's delta from pose 10, with normals;
+	//    the preview block carries the targets; built twice the same.
+	memset(&k, 0, sizeof(k));
+	k.want = 1;
+	k.morph = 1;
+	if (RldMk_NativeObjMake(&k, &a) && a.made)
+	{
+		RldMk_CheckNativeBytes(a.cmdl, a.cmdlSize, a.chriFlags, a.cnet, a.cnetSize, a.ctxt, a.ctxtSize, &native);
+		if (native.state == RLDCHAR_NATIVE_READY)
+		{
+			float base[3];
+			float win[3];
+			float lose[3];
+			float normal[3];
+			size_t blockSize = 0;
+			u8 *block;
+
+			RldChar_MorphVertex(&native, RLDCHAR_MORPH_WIN, 0.0f, 3u, base, normal);
+			RldChar_MorphVertex(&native, RLDCHAR_MORPH_WIN, 1.0f, 3u, win, normal);
+			RldChar_MorphVertex(&native, RLDCHAR_MORPH_LOSE, 1.0f, 3u, lose, normal);
+			RldMk_Test((native.morphTargets == 3u) && (native.morphNormals == 1u) && (native.morphBasePose == RLDCHAR_NET_NEUTRAL_POSE) &&
+			               (a.facts.morphTargets == 3u) && (win[0] == base[0]) && (win[1] > base[1]) && (lose[0] > base[0]) && (lose[1] == base[1]),
+			           "native OBJ with win and lose: MRPH with both targets and normals from pose 10, win up, lose to +X, ready",
+			           "targets %u normals %u base %u, base %.3f %.3f win %.3f %.3f lose %.3f %.3f", native.morphTargets, native.morphNormals,
+			           native.morphBasePose, base[0], base[1], win[0], win[1], lose[0], lose[1]);
+			block = RldMk_NativePreviewBlock3(&native, &blockSize);
+			RldMk_Test((block != NULL) && (memcmp(block, "RLDPN3", 6u) == 0) &&
+			               (blockSize == (16u + (12u + 16u * 32u * 4u) + (12u + 32u * 16u * 4u) + 4u + ((size_t)native.materialCount * 8u) + 20u +
+			                              ((size_t)native.vertexCount * 6u * (RLDCHAR_NET_POSES + 2u)) + ((size_t)native.vertexCount * 12u) +
+			                              ((size_t)native.triangleCount * 8u))),
+			           "native OBJ with win and lose: the preview block (RLDPN3) carries both targets", "size %u", (u32)blockSize);
+			free(block);
+		}
+		else
+		{
+			RldMk_Test(0, "native OBJ with win and lose", "refused (%s) %s", (native.rule != NULL) ? native.rule : "", native.detail);
+		}
+		RldChar_FreeNative(&native);
+		if (RldMk_NativeObjMake(&k, &again) && again.made)
+		{
+			RldMk_Test((again.cnetSize == a.cnetSize) && (memcmp(again.cnet, a.cnet, a.cnetSize) == 0), "native OBJ with win and lose, built twice: the same CNET",
+			           "differ");
+		}
+		RldMk_NativeObjFree(&again);
+	}
+	else
+	{
+		RldMk_Test(0, "native OBJ with win and lose", "not made (said: %s)", s_rldMkCodes);
+	}
+	RldMk_NativeObjFree(&a);
+
+	// 9a. win 500 up: moved back onto the frames' box, warned (morph-clamped), ready.
+	RldMk_ResetSaid();
+	k.morph = 2;
+	if (RldMk_NativeObjMake(&k, &a) && a.made)
+	{
+		RldMk_CheckNativeBytes(a.cmdl, a.cmdlSize, a.chriFlags, a.cnet, a.cnetSize, a.ctxt, a.ctxtSize, &native);
+		RldMk_Test((native.state == RLDCHAR_NATIVE_READY) && (native.morphTargets == 1u) && RldMk_Said("morph-clamped") && (a.facts.morphClamped != 0u),
+		           "native OBJ with win far beyond the frames: moved back, warned (morph-clamped), ready", "state %d (%s) %s, said: %s", native.state,
+		           (native.rule != NULL) ? native.rule : "", native.detail, s_rldMkCodes);
+		RldChar_FreeNative(&native);
+	}
+	else
+	{
+		RldMk_Test(0, "native OBJ with win far beyond the frames", "not made (said: %s)", s_rldMkCodes);
+	}
+	RldMk_NativeObjFree(&a);
+	RldMk_ResetSaid();
+
+	// 10. RLDPC1: every frame of the standard model; frame 10 and frame 0 are
+	//     RLDPV2's poses 0 and 1, corner by corner.
+	{
+		struct RldMkTestMesh *mesh = (struct RldMkTestMesh *)calloc(1, sizeof(struct RldMkTestMesh));
+		struct RldMkOptions opt;
+		struct RldMkPly ply;
+		struct RldMkBuild b;
+		int ok = (mesh != NULL);
+
+		memset(&b, 0, sizeof(b));
+		memset(&ply, 0, sizeof(ply));
+		if (ok)
+		{
+			RldMk_TestOptions(&opt);
+			RldMk_TestStandard(mesh, 2u, 0, 0.0, -1);
+			ok = RldMk_TestBuild(mesh, 0, 1, &opt, &ply, &b);
+		}
+		if (ok)
+		{
+			int box[6];
+			size_t pvSize = 0;
+			size_t pcSize = 0;
+			u8 *pv = RldMk_PreviewV2(&b, &pvSize, box);
+			u8 *pc = RldMk_ClassicPreviewBlock(&b, &pcSize);
+			const u32 frameBytes = b.recordCount * 6u;
+			const size_t framesAt = RLDMK_CLASSIC_PREVIEW_HEAD + ((size_t)b.drawCount * 6u);
+			int same = (pv != NULL) && (pc != NULL) && (pcSize == (framesAt + ((size_t)RLDMK_FRAMES_TOTAL * frameBytes))) &&
+			           (memcmp(pc, "RLDPC1\0\0", 8u) == 0) && (Rld_ReadLE32(&pc[8]) == RLDMK_FRAMES_TOTAL) && (Rld_ReadLE32(&pc[16]) == b.drawCount);
+			u32 i;
+
+			for (i = 0; same && (i < (3u * b.drawCount)); i++)
+			{
+				const u32 record = Rld_ReadLE16(&pc[RLDMK_CLASSIC_PREVIEW_HEAD + (2u * i)]);
+				const u8 *v2pose0 = &pv[12u + 4u + ((size_t)i * RLDMK_PREVIEW_CORNER_BYTES)];
+				const u8 *v2pose1 = &pv[12u + (4u + ((size_t)b.drawCount * 3u * RLDMK_PREVIEW_CORNER_BYTES)) + 4u + ((size_t)i * RLDMK_PREVIEW_CORNER_BYTES)];
+
+				same = (record < b.recordCount) && (memcmp(&pc[framesAt + ((size_t)RLDMK_NEUTRAL_FRAME * frameBytes) + (6u * record)], v2pose0, 6u) == 0) &&
+				       (memcmp(&pc[framesAt + (6u * record)], v2pose1, 6u) == 0);
+			}
+			RldMk_Test(same, "preview RLDPC1: 47 frames of every record, frames 10 and 0 corner by corner RLDPV2's poses 0 and 1", "size %u, records %u, triangles %u",
+			           (u32)pcSize, b.recordCount, b.drawCount);
+			free(pv);
+			free(pc);
+		}
+		else
+		{
+			RldMk_Test(0, "preview RLDPC1", "the standard model was not built");
+		}
+		RldMk_FreeBuild(&b);
+		RldMk_FreePly(&ply);
+		free(mesh);
+	}
 }
 
 // include/rldmip.inc against the game: the fixed image of NativeTex_TestImage
@@ -1886,14 +2425,22 @@ static void RldMk_SelfTestNative(void)
 		snprintf(label, sizeof(label), "native %s", c->name);
 		if (strncmp(c->name, "good_", 5u) == 0)
 		{
-			// the version of the wheel as the reader hands it on: 2 an author's wheel, 1 the test wheel, 0 none
-			const u32 version = (strncmp(c->name, "good_wheel-v2", 13u) == 0) ? RLDCHAR_WHEEL_VERSION_USER
+			// the version of the wheel as the reader hands it on: 3 and 2 an author's wheel, 1 the test wheel, 0 none
+			const u32 version = (strncmp(c->name, "good_wheel-v3", 13u) == 0)   ? RLDCHAR_WHEEL_VERSION_USER3
+			                    : (strncmp(c->name, "good_wheel-v2", 13u) == 0) ? RLDCHAR_WHEEL_VERSION_USER
 			                    : ((c->chriFlags & RLDCHAR_FLAG_NO_WHEELS) != 0u) ? 0u
 			                                                                       : RLDCHAR_WHEEL_VERSION_TEST;
+			// MRPH as the reader hands it on: the targets, 0 for none or a skipped version
+			const u32 morphs = (strcmp(c->name, "good_mrph-win-lose") == 0) ? 3u : ((strcmp(c->name, "good_mrph-lose-only") == 0) ? 2u : 0u);
+			const int rearWant = (strcmp(c->name, "good_wheel-v3-rear") == 0);
 
-			RldMk_Test((native.state == RLDCHAR_NATIVE_READY) && (native.wheelVersion == version) && ((native.wheel != NULL) == (version != 0u)), label,
-			           "state %d (%s) %s, wheel version %u (want %u)", native.state, (native.rule != NULL) ? native.rule : "", native.detail,
-			           native.wheelVersion, version);
+			RldMk_Test((native.state == RLDCHAR_NATIVE_READY) && (native.wheelVersion == version) && ((native.wheel != NULL) == (version != 0u)) &&
+			               (native.morphTargets == morphs) && ((native.morph != NULL) == (morphs != 0u)) &&
+			               ((native.wheelRearVertexCount != 0u) == rearWant) &&
+			               ((version != RLDCHAR_WHEEL_VERSION_USER3) || ((native.wheelFlags & RLDCHAR_WHEEL_ALWAYS_DRAW) != 0u)),
+			           label, "state %d (%s) %s, wheel version %u (want %u), morphs %u (want %u), rear %u", native.state,
+			           (native.rule != NULL) ? native.rule : "", native.detail, native.wheelVersion, version, native.morphTargets, morphs,
+			           native.wheelRearVertexCount);
 		}
 		else if (strncmp(c->name, "none_", 5u) == 0)
 		{

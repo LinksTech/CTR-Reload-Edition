@@ -10,8 +10,10 @@
 // WHAT IT DOES. The wheel model of make-char --wheel-model (WHLS version 2,
 // docs/CONTAINER_FORMAT.md) for the 3D preview of Reload Studio, by the same
 // rules as make-char (RldMk_UserWheelBuild of the wheel package; the message
-// codes are its codes): a PLY or an OBJ with its MTL file and one texture of
-// ONE wheel is read as it is - no repair, no reduction - and checked against
+// codes are its codes): a PLY, an OBJ with its MTL file and one texture, or a
+// glTF 2.0 file (.glb or .gltf, read by the glTF reader of make-char into the
+// same faces as an OBJ: RLDMK_ROLE_CHAR_WHEEL, s_rldObjWheel) of ONE wheel is
+// read as it is - no repair, no reduction - and checked against
 // the budget of an author's wheel. It is scaled so that its vertex farthest
 // from the axle lies at the radius of the wheel the game draws
 // (RLDDUM_TIRE_HALF_SIZE game units, tools/rldpack_dummy.inc; the Studio's
@@ -121,7 +123,8 @@ struct RldWheelResult
 	u32 points;
 	u32 materials;
 	u32 dropped;           // triangles without area, left out
-	int obj;
+	int obj;               // an OBJ or a glTF file (faces with materials)
+	int gltf;              // a glTF file
 	int fitted;            // the factor below was found
 	double factor;         // 4 significant digits, as --fit crash
 	double acrossBefore;   // across (game units) at scale 1
@@ -364,11 +367,13 @@ static int RldWheel_Texture(const struct RldObjNative *n, const struct RldObjNat
 }
 
 // An OBJ: its faces as written (the capture of the native model), as fans,
-// with the UVs and the color of the wheel's one material. 0 = refused (said).
-static int RldWheel_FromObj(const char *path, const u8 *data, size_t size, const struct RldMkOptions *opt, struct RldWheelMesh *w,
+// with the UVs and the color of the wheel's one material; a glTF file the
+// same through the reader of make-char --wheel-model (its capture
+// s_rldObjWheel). 0 = refused (said).
+static int RldWheel_FromObj(const char *path, const u8 *data, size_t size, const struct RldMkOptions *opt, int gltf, struct RldWheelMesh *w,
                             struct RldWheelResult *res)
 {
-	const struct RldObjNative *n = &s_rldObjNative;
+	struct RldObjNative *n = gltf ? &s_rldObjWheel : &s_rldObjNative;
 	const struct RldObjNativeMaterial *m = NULL;
 	struct RldMkPly ply;
 	struct RldMkModelInfo info;
@@ -381,20 +386,30 @@ static int RldWheel_FromObj(const char *path, const u8 *data, size_t size, const
 
 	memset(&ply, 0, sizeof(ply));
 	memset(&info, 0, sizeof(info));
-	info.role = RLDMK_ROLE_MAIN;   // the capture is made for the main model only
-	RldObj_FreeNative(&s_rldObjNative);
-	s_rldObjNativeWant = 1;
-	ok = RldObj_Parse(path, data, size, &ply, &info);
-	s_rldObjNativeWant = 0;
+	RldObj_FreeNative(n);
+	if (gltf)
+	{
+		s_rldMkEmitModelOff = 1;
+		ok = RldMk_ImportModel(path, data, size, &ply, &info, RLDMK_ROLE_CHAR_WHEEL);
+		s_rldMkEmitModelOff = 0;
+	}
+	else
+	{
+		info.role = RLDMK_ROLE_MAIN;   // the capture is made for the main model only
+		s_rldObjNativeWant = 1;
+		ok = RldObj_Parse(path, data, size, &ply, &info);
+		s_rldObjNativeWant = 0;
+	}
 	RldMk_FreePly(&ply);
 	if (!ok || !n->captured)
 	{
-		RldObj_FreeNative(&s_rldObjNative);
+		RldObj_FreeNative(n);
 		return 0;
 	}
 	ok = 0;
 	w->obj = 1;
 	res->obj = 1;
+	res->gltf = gltf;
 	res->vertices = n->vCount;
 	res->faces = n->faceCount;
 
@@ -482,8 +497,26 @@ static int RldWheel_FromObj(const char *path, const u8 *data, size_t size, const
 
 done:
 	free(names);
-	RldObj_FreeNative(&s_rldObjNative);
+	RldObj_FreeNative(n);
 	return ok;
+}
+
+// A glTF file by its first bytes: the magic of a .glb, or the JSON of a
+// .gltf (its first character other than white space an opening brace - no
+// OBJ or PLY starts so).
+static int RldWheel_IsGltf(const u8 *data, size_t size)
+{
+	size_t i = 0;
+
+	if ((size >= 4u) && (memcmp(data, "glTF", 4u) == 0))
+	{
+		return 1;
+	}
+	while ((i < size) && ((data[i] == ' ') || (data[i] == '\t') || (data[i] == '\r') || (data[i] == '\n')))
+	{
+		i++;
+	}
+	return (i < size) && (data[i] == '{');
 }
 
 // A position in the file's unit, kept in 16 bits.
@@ -588,7 +621,9 @@ static int RldWheel_BuildOnce(const char *path, const u8 *data, size_t size, con
 	double shift[3];
 	double across;
 	const int errors = s_rldMkErrors;
-	const int obj = !((size >= 3u) && (memcmp(data, "ply", 3u) == 0)) && RldObj_Detect(data, size);
+	const int ply = (size >= 3u) && (memcmp(data, "ply", 3u) == 0);
+	const int gltf = !ply && RldWheel_IsGltf(data, size);
+	const int obj = !ply && (gltf || RldObj_Detect(data, size));
 	u32 i;
 	int ok = 0;
 	int a;
@@ -600,7 +635,7 @@ static int RldWheel_BuildOnce(const char *path, const u8 *data, size_t size, con
 	opt.backwards = wo->backwards;
 	opt.scale = 1.0;
 
-	if (obj ? !RldWheel_FromObj(path, data, size, &opt, &w, res) : !RldWheel_FromPly(data, size, &opt, &w, res))
+	if (obj ? !RldWheel_FromObj(path, data, size, &opt, gltf, &w, res) : !RldWheel_FromPly(data, size, &opt, &w, res))
 	{
 		goto done;
 	}
@@ -866,7 +901,7 @@ static int RldWheel_Command(int argc, char **argv)
 
 	if (modelArg == NULL)
 	{
-		RldMk_Say("error", "usage", NULL, "No wheel model was given (--model <obj|ply>).");
+		RldMk_Say("error", "usage", NULL, "No wheel model was given (--model <glb|obj|ply>).");
 		if (!s_rldMkQuiet)
 		{
 			fprintf(stderr, "\n");
@@ -925,7 +960,7 @@ static int RldWheel_Command(int argc, char **argv)
 	{
 		snprintf(number[0], sizeof(number[0]), "%u", res.points);
 		snprintf(number[1], sizeof(number[1]), "%u", res.materials);
-		Rld_Emit("char", "wheel-mesh", res.obj ? "obj" : "ply", number[0], number[1], (const char *)NULL);
+		Rld_Emit("char", "wheel-mesh", res.gltf ? "gltf" : (res.obj ? "obj" : "ply"), number[0], number[1], (const char *)NULL);
 		if (res.texWidth != 0u)
 		{
 			snprintf(number[0], sizeof(number[0]), "%u", res.texWidth);
@@ -1004,11 +1039,12 @@ static int RldWheel_Command(int argc, char **argv)
 static void RldWheel_Usage(FILE *out)
 {
 	fprintf(out, "CHAR-WHEEL - THE PREVIEW OF AN AUTHOR'S WHEEL MODEL\n");
-	fprintf(out, "  rldpack char-wheel --model <wheel.obj|wheel.ply> [--preview <file>] [switches]\n");
-	fprintf(out, "  Reads one wheel as make-char --wheel-model takes it - an OBJ with its MTL\n");
-	fprintf(out, "  file and one texture, or a PLY with vertex colors - as it is (never\n");
-	fprintf(out, "  repaired or reduced), checks the budget of a wheel (at most %u triangles,\n", RLDWHEEL_TRIANGLES_MAX);
-	fprintf(out, "  %u points, a texture of at most %u x %u), scales it to the size of the\n", RLDWHEEL_POINTS_MAX, RLDWHEEL_TEXTURE_EDGE_MAX,
+	fprintf(out, "  rldpack char-wheel --model <wheel.glb|wheel.obj|wheel.ply> [--preview <file>]\n");
+	fprintf(out, "  Reads one wheel as make-char --wheel-model takes it - a glTF (.glb, .gltf),\n");
+	fprintf(out, "  an OBJ with its MTL file and one texture, or a PLY with vertex colors - as\n");
+	fprintf(out, "  it is (never repaired or reduced), checks the budget of a wheel (at most\n");
+	fprintf(out, "  %u triangles,", RLDWHEEL_TRIANGLES_MAX);
+	fprintf(out, " %u points, a texture of at most %u x %u), scales it to the size of the\n", RLDWHEEL_POINTS_MAX, RLDWHEEL_TEXTURE_EDGE_MAX,
 	        RLDWHEEL_TEXTURE_EDGE_MAX);
 	fprintf(out, "  game's wheel (%.0f game units across) and centres it on its axle. The\n", RLDWHEEL_ACROSS);
 	fprintf(out, "  wheel: axle along X, outer side +X, +Y up, +Z forward. It writes only the\n");
@@ -1020,7 +1056,7 @@ static void RldWheel_Usage(FILE *out)
 	fprintf(out, "                              this folder first, as make-char does (up to %u)\n", RLDOBJ_TEXTURE_DIRS);
 	fprintf(out, "\n");
 	fprintf(out, "  machine lines (--machine): @value model, up, forward, preview; @file wheel;\n");
-	fprintf(out, "  @msg; @char wheel-mesh <obj|ply> <points> <materials>, wheel-texture\n");
+	fprintf(out, "  @msg; @char wheel-mesh <gltf|obj|ply> <points> <materials>, wheel-texture\n");
 	fprintf(out, "  <width> <height> <file> | none, fit <factor> <across before> <after>,\n");
 	fprintf(out, "  wheel <triangles> <across> <wide> 0; @value wheel-size <across> built;\n");
 	fprintf(out, "  @file preview; @end. No @result: nothing is built.\n");
