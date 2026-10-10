@@ -288,8 +288,8 @@
 // Behind the original for the same reason: the copy for ARCADE -> CUSTOM CUP
 // reads its MM_CUP_SELECT_* constants and MM_NativeMenu.c's name shortening.
 #include "230/MM_NativeCupSelect.c"
-// The MODS box of both screens: calls the two retail procs and draws with the
-// MODE box of the NITRO RACE track screen (MM_NativeTrackSelect.c).
+// The MODS box of both screens: calls the retail procs (and the NITRO CUP
+// copy), and the NITRO RACE track screen calls it (MM_NativeTrackSelect.c).
 #include "230/MM_NativeModsBox.c"
 // NITRO-PIT -> CRYSTAL: bits, end box and way back for containers.
 #include "230/MM_NativeCrystal.c"

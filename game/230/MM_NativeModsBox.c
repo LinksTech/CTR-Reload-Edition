@@ -2,21 +2,26 @@
 
 #ifdef CTR_NATIVE
 
-// THE MODS BOX OF THE ARCADE TRACK SELECT AND CUP SELECT (one player, disc
-// tracks - NativeMods_MenuOffered, platform/native_mods.c).
+// THE MODS BOX OF THE ARCADE TRACK SELECT AND CUP SELECT (one player, on the
+// disc and in NITRO-PIT - NativeMods_MenuOffered, platform/native_mods.c).
 //
-// NO COPY OF A RETAIL PROC: both screens keep their retail proc, which is
-// called unchanged from a proc of this file. MM_NativeModsBox_Hook (from
-// NativeMenuLock_Tick, before the NITRO-PIT hooks) swaps the proc pointer
-// every frame between exactly these pairs, as the NITRO-PIT copies do:
-// MM_TrackSelect_MenuProc <-> MM_NativeModsBox_TrackProc and
-// MM_CupSelect_MenuProc <-> MM_NativeModsBox_CupProc. Not offered (NITRO-PIT,
-// two or more players, time trial, battle, adventure): the retail proc stands,
-// and nothing here is drawn.
+// NO COPY OF A RETAIL PROC. The retail screens keep their retail proc, which
+// is called unchanged from a proc of this file: MM_NativeModsBox_Hook swaps
+// the proc pointer every frame between exactly these pairs -
+// MM_TrackSelect_MenuProc <-> MM_NativeModsBox_TrackProc and, for both cup
+// screens, MM_CupSelect_MenuProc / MM_NativeCupSelect_MenuProc <->
+// MM_NativeModsBox_CupProc (which calls the one it took the place of). The
+// NITRO-PIT hooks swap only from an original, so MM_NativeModsBox_Unhook puts
+// the originals back before them and MM_NativeModsBox_Hook comes after them
+// (NativeMenuLock_Tick). Not offered: the original stands, nothing here is
+// drawn. The track screen of NITRO-PIT is a copy of its own
+// (MM_NativeTrackSelect.c), and its pointer is what the widescreen rows ask
+// for (NativeUiDecl_CustomTrackSelect) - so it is never swapped: the copy
+// calls the box itself ([K9] there).
 //
-// THE TRACK SELECT. The MODS box stands directly below the lap box, in the
-// place and the style of the MODE box of NITRO RACE (MM_NativeTrackSelect.c,
-// block THE MODE BOX): same frame, font, width (MM_TRACK_SELECT_LAP_MENU_WIDTH)
+// THE TRACK SELECT. The MODS box stands directly below the lap box
+// (MM_NativeTrackSelect.c, block THE TIME TRIAL AND THE MODS BOX): the lap
+// box's frame, font, width (MM_TRACK_SELECT_LAP_MENU_WIDTH)
 // and transition, title MODS, one row with the status line
 // (NativeMods_StatusText). It is there while the lap box is open. DOWN on the
 // last lap row moves the cursor into it (the row RECTMENU leaves silent,
@@ -28,16 +33,20 @@
 // the step is taken only with the keys RECTMENU itself would read
 // (MM_NativeTrackSelect_ModeStep).
 //
+// NITRO RACE: the same box in the same place, below the lap box, with the
+// same keys - the copy of the track select calls it ([K9] there).
+//
 // THE CUP SELECT has no free place for a box at 4:3: the four cups and their
 // shadows reach down to row 204 of 216. The MODS entry there is one line of
 // FONT_SMALL, "MODS: " and the status, centred below the cups in the free
-// strip; DOWN on a cup of the lower row moves the cursor onto it (RECTMENU
-// leaves that key silent there, D230.rowsCupSelect), it then gets the pulsing
-// bar of the cups, UP or TRIANGLE/SQUARE gives the cursor back to that cup,
-// CROSS (or CIRCLE) opens the MODS page.
+// strip; DOWN on a cup of the lower row moves the cursor onto it (a row whose
+// DOWN stays on itself: RECTMENU leaves that key silent there,
+// D230.rowsCupSelect and the rows of NITRO CUP alike), it then gets the
+// pulsing bar of the cups, UP or TRIANGLE/SQUARE gives the cursor back to
+// that cup, CROSS (or CIRCLE) opens the MODS page.
 //
 // THE MODS PAGE (game/native_mods_page.c) stands alone while it is open, like
-// the GRAPHICS page: the retail proc is not called, the page reads the keys.
+// the GRAPHICS page: the screen's proc is not called, the page reads the keys.
 // Closed with TRIANGLE/SQUARE, the cursor is in the MODS entry again and the
 // status line says what was chosen.
 
@@ -67,6 +76,10 @@ global_variable int s_nativeModsFocus = 0;
 // The cup the cursor came from.
 global_variable s16 s_nativeModsCupRow = 2;
 
+// The cup proc the box stands in for: MM_CupSelect_MenuProc or, in NITRO CUP,
+// MM_NativeCupSelect_MenuProc.
+global_variable void (*s_nativeModsCupInner)(struct RectMenu *) = MM_CupSelect_MenuProc;
+
 global_variable char s_nativeModsCupLine[24];
 
 // The keys the step looks at, as RECTMENU reads them: player one, no L1/R1
@@ -81,10 +94,11 @@ internal u32 MM_NativeModsBox_Tapped(void)
 	return sdata->buttonTapPerPlayer[0] & (BTN_UP | BTN_DOWN | BTN_LEFT | BTN_RIGHT | BTN_CROSS_one | BTN_CIRCLE | BTN_TRIANGLE | BTN_SQUARE_one);
 }
 
-// The cursor in the MODS entry: UP and back go out (1), CROSS opens the page,
-// every other key is swallowed. The input is cleared in every case, so the
-// retail proc and RECTMENU see nothing of it.
-internal int MM_NativeModsBox_EntryKeys(void)
+// The cursor in the MODS entry: the way out (UP below the screen's place,
+// DOWN above it) and back go out (1), CROSS opens the page, every other key
+// is swallowed. The input is cleared in every case, so the screen's proc and
+// RECTMENU see nothing of it.
+internal int MM_NativeModsBox_EntryKeys(u32 wayOut)
 {
 	const u32 tapped = MM_NativeModsBox_Tapped();
 	int out = 0;
@@ -94,7 +108,7 @@ internal int MM_NativeModsBox_EntryKeys(void)
 		OtherFX_Play(1, 1);
 		NativeModsPage_Open();
 	}
-	else if ((tapped & BTN_UP) != 0)
+	else if ((tapped & wayOut) != 0)
 	{
 		OtherFX_Play(0, 1);
 		out = 1;
@@ -109,12 +123,26 @@ internal int MM_NativeModsBox_EntryKeys(void)
 	return out;
 }
 
+// The page while it is open, in place of the screen's proc. 1 when it ran.
+int MM_NativeModsBox_PageFrame(void)
+{
+	if (!NativeModsPage_IsOpen())
+	{
+		return 0;
+	}
+
+	NativeModsPage_Frame();
+	RECTMENU_ClearInput();
+	return 1;
+}
+
 // ---------------------------------------------------------------------------
 // THE TRACK SELECT
 // ---------------------------------------------------------------------------
 
-// Below the lap box, as MM_NativeTrackSelect_DrawModeBox places the MODE box.
-internal void MM_NativeModsBox_DrawTrackBox(void)
+// Below the lap box (MM_NativeTrackSelect.c, block THE TIME TRIAL AND THE MODS
+// BOX: frame y 173..201, shadow to 207).
+internal void MM_NativeModsBox_DrawTrackBox(int focused)
 {
 	const struct RectMenuStyle *style = &g_rectMenuStyleRetail;
 	const struct RectMenu *laps = &D230.menuLapSel;
@@ -128,17 +156,15 @@ internal void MM_NativeModsBox_DrawTrackBox(void)
 	s_nativeModsMenu.posY_curr = (u16)(lapFrameBottom + style->shadowHWide + MM_NATIVE_MODE_AIR + style->frameOffsetY);
 	s_nativeModsMenu.rowSelected = 0;
 
-	MM_NativeTrackSelect_DrawBox(&s_nativeModsMenu, s_nativeModsFocus);
+	MM_NativeTrackSelect_DrawBox(&s_nativeModsMenu, focused);
 }
 
 void MM_NativeModsBox_TrackProc(struct RectMenu *menu)
 {
 	Color pulse;
 
-	if (NativeModsPage_IsOpen())
+	if (MM_NativeModsBox_PageFrame())
 	{
-		NativeModsPage_Frame();
-		RECTMENU_ClearInput();
 		return;
 	}
 
@@ -151,7 +177,7 @@ void MM_NativeModsBox_TrackProc(struct RectMenu *menu)
 	{
 		if (s_nativeModsFocus)
 		{
-			if (MM_NativeModsBox_EntryKeys())
+			if (MM_NativeModsBox_EntryKeys(BTN_UP))
 			{
 				// Back onto the last lap row, the row the cursor came from.
 				s_nativeModsFocus = 0;
@@ -186,8 +212,28 @@ void MM_NativeModsBox_TrackProc(struct RectMenu *menu)
 
 	if (D230.trackSelect.lapBoxOpen != 0)
 	{
-		MM_NativeModsBox_DrawTrackBox();
+		MM_NativeModsBox_DrawTrackBox(s_nativeModsFocus);
 	}
+}
+
+// ---------------------------------------------------------------------------
+// NITRO RACE (called by the copy of the track select, MM_NativeTrackSelect.c)
+// ---------------------------------------------------------------------------
+
+int MM_NativeModsBox_NitroOffered(void)
+{
+	return NativeMods_MenuOffered();
+}
+
+// The cursor in the box: 1 when it goes back to the last lap row.
+int MM_NativeModsBox_NitroKeys(void)
+{
+	return MM_NativeModsBox_EntryKeys(BTN_UP);
+}
+
+void MM_NativeModsBox_DrawNitroBox(int focused)
+{
+	MM_NativeModsBox_DrawTrackBox(focused);
 }
 
 // ---------------------------------------------------------------------------
@@ -214,21 +260,28 @@ internal void MM_NativeModsBox_DrawCupLine(void)
 	}
 }
 
+// A cup of the lower row: its DOWN stays on itself.
+internal int MM_NativeModsBox_LowerCup(const struct RectMenu *menu)
+{
+	const s16 row = menu->rowSelected;
+
+	return (row >= 0) && (menu->rows[row].rowOnPressDown == (char)row);
+}
+
 void MM_NativeModsBox_CupProc(struct RectMenu *menu)
 {
+	void (*inner)(struct RectMenu *) = s_nativeModsCupInner;
 	Color pulse;
 
-	// A cup was confirmed (RECTMENU_ProcessInput): the retail way out.
+	// A cup was confirmed (RECTMENU_ProcessInput): the way out of the screen.
 	if (menu->funcState == RECTMENU_FUNC_STATE_INPUT)
 	{
-		MM_CupSelect_MenuProc(menu);
+		inner(menu);
 		return;
 	}
 
-	if (NativeModsPage_IsOpen())
+	if (MM_NativeModsBox_PageFrame())
 	{
-		NativeModsPage_Frame();
-		RECTMENU_ClearInput();
 		return;
 	}
 
@@ -238,13 +291,13 @@ void MM_NativeModsBox_CupProc(struct RectMenu *menu)
 	}
 	else if (s_nativeModsFocus)
 	{
-		if (MM_NativeModsBox_EntryKeys())
+		if (MM_NativeModsBox_EntryKeys(BTN_UP))
 		{
 			s_nativeModsFocus = 0;
 			menu->rowSelected = s_nativeModsCupRow;
 		}
 	}
-	else if ((MM_NativeModsBox_Tapped() == BTN_DOWN) && ((menu->rowSelected == 2) || (menu->rowSelected == 3)))
+	else if ((MM_NativeModsBox_Tapped() == BTN_DOWN) && MM_NativeModsBox_LowerCup(menu))
 	{
 		s_nativeModsFocus = 1;
 		s_nativeModsCupRow = menu->rowSelected;
@@ -259,13 +312,13 @@ void MM_NativeModsBox_CupProc(struct RectMenu *menu)
 
 	if (!s_nativeModsFocus)
 	{
-		MM_CupSelect_MenuProc(menu);
+		inner(menu);
 	}
 	else
 	{
 		pulse = sdata->menuRowHighlight_Normal;
 		ColorCode_SetPacked(&sdata->menuRowHighlight_Normal, MM_NATIVE_MODE_STILL_MARK);
-		MM_CupSelect_MenuProc(menu);
+		inner(menu);
 		sdata->menuRowHighlight_Normal = pulse;
 	}
 
@@ -276,30 +329,39 @@ void MM_NativeModsBox_CupProc(struct RectMenu *menu)
 }
 
 // ---------------------------------------------------------------------------
-// THE HOOK, every frame before the NITRO-PIT hooks: they swap only from the
-// retail proc, so ours goes back to retail first wherever the box is not
-// offered.
+// THE HOOK, every frame around the NITRO-PIT hooks (NativeMenuLock_Tick):
+// Unhook before them puts the originals back, Hook after them takes the place
+// of an original where the box is offered.
 // ---------------------------------------------------------------------------
-void MM_NativeModsBox_Hook(void)
+void MM_NativeModsBox_Unhook(void)
 {
-	const int offered = NativeMods_MenuOffered();
-
-	if (offered && (D230.menuTrackSelect.funcPtr == MM_TrackSelect_MenuProc))
-	{
-		D230.menuTrackSelect.funcPtr = MM_NativeModsBox_TrackProc;
-	}
-	else if (!offered && (D230.menuTrackSelect.funcPtr == MM_NativeModsBox_TrackProc))
+	if (D230.menuTrackSelect.funcPtr == MM_NativeModsBox_TrackProc)
 	{
 		D230.menuTrackSelect.funcPtr = MM_TrackSelect_MenuProc;
 	}
 
-	if (offered && (D230.menuCupSelect.funcPtr == MM_CupSelect_MenuProc))
+	if (D230.menuCupSelect.funcPtr == MM_NativeModsBox_CupProc)
 	{
-		D230.menuCupSelect.funcPtr = MM_NativeModsBox_CupProc;
+		D230.menuCupSelect.funcPtr = s_nativeModsCupInner;
 	}
-	else if (!offered && (D230.menuCupSelect.funcPtr == MM_NativeModsBox_CupProc))
+}
+
+void MM_NativeModsBox_Hook(void)
+{
+	if (!NativeMods_MenuOffered())
 	{
-		D230.menuCupSelect.funcPtr = MM_CupSelect_MenuProc;
+		return;
+	}
+
+	if (D230.menuTrackSelect.funcPtr == MM_TrackSelect_MenuProc)
+	{
+		D230.menuTrackSelect.funcPtr = MM_NativeModsBox_TrackProc;
+	}
+
+	if ((D230.menuCupSelect.funcPtr == MM_CupSelect_MenuProc) || (D230.menuCupSelect.funcPtr == MM_NativeCupSelect_MenuProc))
+	{
+		s_nativeModsCupInner = D230.menuCupSelect.funcPtr;
+		D230.menuCupSelect.funcPtr = MM_NativeModsBox_CupProc;
 	}
 }
 

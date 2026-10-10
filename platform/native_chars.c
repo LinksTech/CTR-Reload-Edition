@@ -1361,6 +1361,9 @@ void NativeChar_LoadRoster(void)
 	{
 		Platform_LogWarn("[CTR Char] dev seats: no file in the roster - every seat stays retail\n");
 	}
+
+	// The settings of the first MODS page need the roster to be carried over.
+	NativeMods_AfterRoster();
 }
 
 // The CVOI of a file a seat is bound to, read again from its path at the
@@ -1849,6 +1852,31 @@ internal u32 NativeChar_AnimFrames(const struct Model *model, int a)
 	}
 
 	return anim->numFrames & NATIVE_CHAR_FRAME_MASK;
+}
+
+// A file of the roster can sit on its template's donor: the donor is there and
+// every animation has as many frames in the file as in the donor - the check
+// of the mods seats at load stage 5 (NativeChar_ArmModsSeats), and the draw at
+// stage 4 asks it first (platform/native_mods.c), with the template's model it
+// read itself.
+internal int NativeChar_FitsDonor(int entry, const struct Model *donor)
+{
+	int a;
+
+	if ((entry < 0) || (entry >= s_charRosterFiles) || (donor == NULL) || (s_charFiles[entry].model == NULL))
+	{
+		return 0;
+	}
+
+	for (a = 0; a < RLDCHAR_ANIM_COUNT; a++)
+	{
+		if (NativeChar_AnimFrames(s_charFiles[entry].model, a) != NativeChar_AnimFrames(donor, a))
+		{
+			return 0;
+		}
+	}
+
+	return 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -3264,8 +3292,6 @@ internal int NativeChar_ArmModsSeats(struct GameTracker *gGT)
 		const int entry = NativeMods_SeatEntry(seat);
 		const int templateId = (int)data.characterIDs[seat];
 		const struct Model *donor;
-		int same;
-		int a;
 
 		if ((entry < 0) || (entry >= s_charRosterFiles))
 		{
@@ -3273,13 +3299,7 @@ internal int NativeChar_ArmModsSeats(struct GameTracker *gGT)
 		}
 
 		donor = ((templateId >= 0) && (templateId <= RLDCHAR_TEMPLATE_MAX)) ? NativeChar_DonorModel(templateId) : NULL;
-		same = (donor != NULL) && (templateId == NativeChar_EntryTemplate(entry));
-		for (a = 0; same && (a < RLDCHAR_ANIM_COUNT); a++)
-		{
-			same = (NativeChar_AnimFrames(s_charFiles[entry].model, a) == NativeChar_AnimFrames(donor, a));
-		}
-
-		if (!same)
+		if ((templateId != NativeChar_EntryTemplate(entry)) || !NativeChar_FitsDonor(entry, donor))
 		{
 			const int instead = NativeMods_RetailFallback(seat);
 

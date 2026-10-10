@@ -56,18 +56,17 @@
 //   [K8] CTR: the same copy with the list of the containers that declare
 //        CTR. Three laps fixed, no lap box; at the start
 //        MM_NativeCtr_Arm sets TOKEN_RACE (MM_NativeCtr.c).
-//   [K9] NITRO RACE: a MODE box directly below the lap box - RACE (the
-//        default, the race as before) and TIME TRIAL. Same frame, font,
-//        width and transition as the lap box. Laps and mode are chosen
-//        independently: DOWN on the last lap row moves the cursor into the
-//        MODE box, onto the confirmed mode; CROSS there confirms the row and
-//        goes back to the last lap row, UP on its first row and
-//        TRIANGLE/SQUARE go back without a change. Only CROSS (or CIRCLE)
-//        in the lap box starts, and TRIANGLE/SQUARE there closes both, as
-//        before. As long
-//        as the cursor never enters the MODE box, the lap box runs exactly
-//        as before. At the start TIME TRIAL calls MM_NativeTimeTrial_Arm
-//        (MM_NativeTimeTrial.c). Block THE MODE BOX.
+//   [K9] TIME TRIAL: a row of its own in the NITRO-PIT box; the same copy
+//        with the list of NITRO RACE and the lap box, and at the start
+//        MM_NativeTimeTrial_Arm (MM_NativeTimeTrial.c). NITRO RACE: the MODS
+//        box directly below the lap box (MM_NativeModsBox.c), where the
+//        MODE box with RACE and TIME TRIAL stood until 0.7.5. DOWN on the
+//        last lap row moves the cursor into it, UP or TRIANGLE/SQUARE back
+//        onto that row, CROSS opens the MODS page, which then stands alone
+//        in place of this proc. Only CROSS (or CIRCLE) in the lap box starts,
+//        and TRIANGLE/SQUARE there closes the lap box, as before. As long as
+//        the cursor never enters the MODS box, the lap box runs exactly as
+//        before. Block THE TIME TRIAL AND THE MODS BOX.
 
 // How many characters of a name fit in a row of the wheel: the row is
 // MM_TRACK_SELECT_ROW_W (256) wide, the name starts 8 inside, a character in
@@ -83,7 +82,8 @@
 
 // Which NITRO-PIT row is chosen (MM_NATIVE_CHOSEN_*, 0 = none). Set and
 // cleared only in the race type box (NativeMenuLock_ProcRaceType): NITRO RACE,
-// CRYSTAL and CTR set it; NITRO CUP, SINGLE, CUP and the way back clear it.
+// TIME TRIAL, CRYSTAL and CTR set it; NITRO CUP, SINGLE, CUP and the way back
+// clear it.
 //
 // The release at the title screen (MM_NativeTracks_Disarm) leaves it standing,
 // on purpose: after a NITRO-PIT race CHANGE LEVEL leads back here
@@ -99,7 +99,10 @@ void MM_NativeTrackSelect_SetChosen(int chosen)
 	if (chosen != s_nativeTrackSelectChosen)
 	{
 		Platform_Log("[CTR Menu] NITRO-PIT: %s %s\n",
-		             (chosen == MM_NATIVE_CHOSEN_CRYSTAL) ? "CRYSTAL" : ((chosen == MM_NATIVE_CHOSEN_CTR) ? "CTR" : "NITRO RACE"),
+		             (chosen == MM_NATIVE_CHOSEN_CRYSTAL)    ? "CRYSTAL"
+		             : (chosen == MM_NATIVE_CHOSEN_CTR)      ? "CTR"
+		             : (chosen == MM_NATIVE_CHOSEN_TIME_TRIAL) ? "TIME TRIAL"
+		                                                     : "NITRO RACE",
 		             chosen ? "chosen - track select shows tracks/" : "off - track select shows the disc");
 	}
 
@@ -401,16 +404,17 @@ internal void MM_NativeTrackSelect_MapUpload(struct MM_NativeMap *map, int row)
 }
 
 // ===========================================================================
-//  [K9] THE MODE BOX.
+//  [K9] THE TIME TRIAL AND THE MODS BOX.
 // ===========================================================================
 //
-//  Only in NITRO RACE. CRYSTAL and CTR start without the lap box ([K7],
-//  [K8]); there the mode is always RACE.
+//  TIME TRIAL is the row of the NITRO-PIT box that sets
+//  MM_NATIVE_CHOSEN_TIME_TRIAL: the list of NITRO RACE, the lap box, and
+//  MM_NativeTrackSelect_Mode answers TIME TRIAL - the start arms it
+//  (MM_NativeTimeTrial_Arm). CRYSTAL and CTR start without the lap box ([K7],
+//  [K8]); there and in NITRO RACE the mode is RACE.
 //
-//  THE ROWS. One table in the order of MM_NATIVE_MODE_* (ovr_230.h): the
-//  row index IS the mode. The box shows the first MM_NATIVE_MODE_OFFERED
-//  rows; a row after them is planned and not offered. Modifiers are planned
-//  too - whether they become rows of this box is not determined.
+//  THE MODS BOX (MM_NativeModsBox.c, NativeMods_MenuOffered) only in NITRO
+//  RACE - a time trial has no CPU seats.
 //
 //  THE PLACE. The lap box of the disc (D230.menuLapSel, D230.c:594-603):
 //  small font, centred on x 0x18C, rows from y 0x7c, drawn with the width
@@ -418,124 +422,45 @@ internal void MM_NativeTrackSelect_MapUpload(struct MM_NativeMap *map, int row)
 //  gives its frame the height of its content plus frameExtraH, minus one
 //  for the small font (RECTMENU.c:817-830): title 8 + 6, three rows of 8,
 //  so 38 + 8 - 1 = 45, frame y 120..164, shadow to 170 (RECTMENU.c:433-451).
-//  The MODE box takes the same x, the same width and the same transition,
+//  The MODS box takes the same x, the same width and the same transition,
 //  and its frame begins below that shadow with MM_NATIVE_MODE_AIR rows of
-//  air: title and two rows, 30 + 8 - 1 = 37, frame y 173..209, shadow to
-//  215 - the last row of the 216 high picture. The preview window above
-//  ends at 120 with its shadow, the wheel on the left at x 288; title and
-//  map are not drawn while the lap box is open.
+//  air: title and one row, 22 + 8 - 1 = 29, frame y 173..201, shadow to 207
+//  - as on the disc. The preview window above ends at 120 with its shadow,
+//  the wheel on the left at x 288; title and map are not drawn while the lap
+//  box is open.
 //
 //  THE BOX WITHOUT THE CURSOR keeps its marked row: RECTMENU draws it as
 //  always, only with the highlight colour held still and dimmer for this
 //  one call (MM_NATIVE_MODE_STILL_MARK). The pulsing bar
 //  (MainFrame_RenderFrame.c:450) stays the sign of the cursor.
 //
-//  THE MODE IS A CONFIRMED VALUE, like a row of a submenu: it changes only
-//  with CROSS (or CIRCLE) in the MODE box. Moving the cursor there changes nothing, so
-//  laps and mode are chosen independently of each other.
-//
 //  INPUT. The lap box keeps RECTMENU_ProcessInput unchanged; it alone
-//  starts. Only the step between the boxes is taken before it, with what
+//  starts. Only the step into the MODS box is taken before it, with what
 //  RECTMENU itself would read (RECTMENU.c:913-952): player one, no L1/R1
 //  held, UP before DOWN, no confirm or back key in the same frame, and the
-//  box with the cursor already the active box - a box entered anew clears
-//  the input in its first frame (RECTMENU.c:900-911). Down on
-//  the last lap row stays where it is in RECTMENU (D230.rowsLapSel,
-//  D230.c:592), silent, so that key is free. The step plays the cursor
-//  sound of RECTMENU (RECTMENU.c:960). In the MODE box
-//  RECTMENU_ProcessInput runs on its own box, with its sounds: cursor 0,
-//  CROSS/CIRCLE 1 (confirm and back to LAPS), TRIANGLE/SQUARE 2 (back to LAPS
-//  without a change). Back to LAPS is always the last lap row - the row
-//  the cursor came from.
+//  lap box already the active box - a box entered anew clears the input in
+//  its first frame (RECTMENU.c:900-911). Down on the last lap row stays where
+//  it is in RECTMENU (D230.rowsLapSel, D230.c:592), silent, so that key is
+//  free. The step plays the cursor sound of RECTMENU (RECTMENU.c:960). In the
+//  MODS box the keys go to MM_NativeModsBox_NitroKeys: UP or
+//  TRIANGLE/SQUARE back to the last lap row - the row the cursor came from -,
+//  CROSS opens the MODS page.
 #define MM_NATIVE_MODE_AIR 2
 
 #define MM_NATIVE_MODE_STILL_MARK MakeColorPacked(0x40, 0x20, 0)
-
-struct MM_NativeModeRow
-{
-	s16 text;
-	const char *name;
-};
-
-global_variable const struct MM_NativeModeRow s_nativeModeTable[] = {
-    {MM_NATIVE_LNG_MODE_RACE, "RACE"},
-    {LNG_TIME_TRIAL, "TIME TRIAL"},
-
-    // Planned, not offered.
-    {MM_NATIVE_LNG_MODE_BOSS_RACE, "BOSS RACE"},
-};
-
-CTR_STATIC_ASSERT(MM_NATIVE_MODE_OFFERED <= (int)(sizeof(s_nativeModeTable) / sizeof(s_nativeModeTable[0])));
-
-// Two rows fill the picture to its last row (block THE MODE BOX: shadow to
-// 215 of 216); a third row needs a new place first.
-CTR_STATIC_ASSERT(MM_NATIVE_MODE_OFFERED <= 2);
-
-global_variable struct MenuRow s_nativeModeRows[MM_NATIVE_MODE_OFFERED + 1];
-
-global_variable struct RectMenu s_nativeModeMenu = {
-    .stringIndexTitle = MM_NATIVE_LNG_MODE,
-    .state = USE_SMALL_FONT | CENTER_ON_X,
-    .rows = &s_nativeModeRows[0],
-};
-
-// The confirmed mode for the session, like the lap row
-// (sdata->uselessLapRowCopy). Program start: RACE. The cursor in the MODE
-// box is s_nativeModeMenu.rowSelected.
-global_variable int s_nativeTrackSelectMode = MM_NATIVE_MODE_RACE;
 
 // Which box holds the cursor. LAPS at every opening of the lap box.
 enum
 {
 	MM_NATIVE_FOCUS_LAPS = 0,
-	MM_NATIVE_FOCUS_MODE = 1,
+	MM_NATIVE_FOCUS_MODS = 1,
 };
 
-global_variable int s_nativeModeFocus = MM_NATIVE_FOCUS_LAPS;
+global_variable int s_nativeLapFocus = MM_NATIVE_FOCUS_LAPS;
 
 int MM_NativeTrackSelect_Mode(void)
 {
-	return (s_nativeTrackSelectChosen == MM_NATIVE_CHOSEN_RACE) ? s_nativeTrackSelectMode : MM_NATIVE_MODE_RACE;
-}
-
-internal int MM_NativeTrackSelect_ModeOffered(void)
-{
-	return s_nativeTrackSelectChosen == MM_NATIVE_CHOSEN_RACE;
-}
-
-internal void MM_NativeTrackSelect_SetMode(int mode)
-{
-	if ((mode < 0) || (mode >= MM_NATIVE_MODE_OFFERED))
-	{
-		return;
-	}
-
-	if (mode != s_nativeTrackSelectMode)
-	{
-		Platform_Log("[CTR Menu] NITRO-PIT mode: %s\n", s_nativeModeTable[mode].name);
-	}
-
-	s_nativeTrackSelectMode = mode;
-}
-
-// The offered rows of the table, linked up and down like D230.rowsLapSel:
-// the first row stays on UP, the last on DOWN.
-internal void MM_NativeTrackSelect_ModeRows(void)
-{
-	int i;
-
-	for (i = 0; i < MM_NATIVE_MODE_OFFERED; i++)
-	{
-		struct MenuRow *row = &s_nativeModeRows[i];
-
-		row->stringIndex = s_nativeModeTable[i].text;
-		row->rowOnPressUp = (char)((i > 0) ? (i - 1) : i);
-		row->rowOnPressDown = (char)((i < (MM_NATIVE_MODE_OFFERED - 1)) ? (i + 1) : i);
-		row->rowOnPressLeft = (char)i;
-		row->rowOnPressRight = (char)i;
-	}
-
-	s_nativeModeRows[MM_NATIVE_MODE_OFFERED].stringIndex = RECTMENU_STRING_NONE;
+	return (s_nativeTrackSelectChosen == MM_NATIVE_CHOSEN_TIME_TRIAL) ? MM_NATIVE_MODE_TIME_TRIAL : MM_NATIVE_MODE_RACE;
 }
 
 internal s16 MM_NativeTrackSelect_LastRow(const struct RectMenu *box)
@@ -550,24 +475,23 @@ internal s16 MM_NativeTrackSelect_LastRow(const struct RectMenu *box)
 	return last;
 }
 
-// Back from the MODE box to the last lap row. The lap box becomes the
+// Back from the MODS box to the last lap row. The lap box becomes the
 // active box again (RECTMENU.c:902-910), so its next frame does not clear
 // the input as a box entered anew would.
 internal void MM_NativeTrackSelect_BackToLaps(void)
 {
-	s_nativeModeFocus = MM_NATIVE_FOCUS_LAPS;
+	s_nativeLapFocus = MM_NATIVE_FOCUS_LAPS;
 	D230.menuLapSel.rowSelected = MM_NativeTrackSelect_LastRow(&D230.menuLapSel);
 	sdata->activeSubMenu = &D230.menuLapSel;
 }
 
-// The step between the two boxes, before RECTMENU_ProcessInput sees the key.
-internal void MM_NativeTrackSelect_ModeStep(void)
+// The step into the MODS box, before RECTMENU_ProcessInput sees the key.
+internal void MM_NativeTrackSelect_ModsStep(void)
 {
 	const u32 button = sdata->buttonTapPerPlayer[0];
-	const struct RectMenu *active = (s_nativeModeFocus == MM_NATIVE_FOCUS_LAPS) ? &D230.menuLapSel : &s_nativeModeMenu;
 
 	// A box entered anew clears the input in its first frame (RECTMENU.c:902-910).
-	if (sdata->activeSubMenu != active)
+	if ((s_nativeLapFocus != MM_NATIVE_FOCUS_LAPS) || (sdata->activeSubMenu != &D230.menuLapSel))
 	{
 		return;
 	}
@@ -578,46 +502,18 @@ internal void MM_NativeTrackSelect_ModeStep(void)
 		return;
 	}
 
-	if ((s_nativeModeFocus == MM_NATIVE_FOCUS_LAPS) && ((button & BTN_UP) == 0) && ((button & BTN_DOWN) != 0) &&
-	    (D230.menuLapSel.rowSelected == MM_NativeTrackSelect_LastRow(&D230.menuLapSel)))
-	{
-		s_nativeModeFocus = MM_NATIVE_FOCUS_MODE;
-		s_nativeModeMenu.rowSelected = (s16)s_nativeTrackSelectMode;
-	}
-	else if ((s_nativeModeFocus == MM_NATIVE_FOCUS_MODE) && ((button & BTN_UP) != 0) && (s_nativeModeMenu.rowSelected == 0))
-	{
-		MM_NativeTrackSelect_BackToLaps();
-	}
-	else
+	if (((button & BTN_UP) != 0) || ((button & BTN_DOWN) == 0) || (D230.menuLapSel.rowSelected != MM_NativeTrackSelect_LastRow(&D230.menuLapSel)))
 	{
 		return;
 	}
 
+	s_nativeLapFocus = MM_NATIVE_FOCUS_MODS;
 	OtherFX_Play(0, 1);
 	RECTMENU_ClearInput();
 }
 
-// The MODE box holds the cursor: RECTMENU on its own box. CROSS (1)
-// confirms the row as the mode, TRIANGLE/SQUARE (-1) leaves it; both go
-// back to LAPS. Never a start and never a close: those belong to the lap
-// box alone.
-internal void MM_NativeTrackSelect_ModeInput(void)
-{
-	const int result = RECTMENU_ProcessInput(&s_nativeModeMenu);
-
-	if (result == 1)
-	{
-		MM_NativeTrackSelect_SetMode((int)s_nativeModeMenu.rowSelected);
-	}
-
-	if (result != 0)
-	{
-		MM_NativeTrackSelect_BackToLaps();
-	}
-}
-
-// One of the two boxes. The one with the cursor exactly as RECTMENU draws
-// it; the other with the still mark.
+// The lap box or the MODS box. The one with the cursor exactly as RECTMENU
+// draws it; the other with the still mark.
 internal void MM_NativeTrackSelect_DrawBox(struct RectMenu *box, int focused)
 {
 	const int posX = D230.trackTransitions.named.trackSelect_lapMenuTransition.currX;
@@ -634,34 +530,6 @@ internal void MM_NativeTrackSelect_DrawBox(struct RectMenu *box, int focused)
 	ColorCode_SetPacked(&sdata->menuRowHighlight_Normal, MM_NATIVE_MODE_STILL_MARK);
 	RECTMENU_DrawSelf(box, posX, posY, MM_TRACK_SELECT_LAP_MENU_WIDTH);
 	sdata->menuRowHighlight_Normal = pulse;
-}
-
-// The MODE box below the lap box (block THE MODE BOX). The frame of the lap
-// box as RECTMENU_DrawSelf builds it (RECTMENU.c:817-830). The proc runs at
-// RECTMENU.c:1096-1100, outside the style bracket (:1119-1159), so the style
-// is retail and the scale 1 here - which is why the numbers below are taken
-// from g_rectMenuStyleRetail without RM_S.
-internal void MM_NativeTrackSelect_DrawModeBox(void)
-{
-	const struct RectMenuStyle *style = &g_rectMenuStyleRetail;
-	const struct RectMenu *laps = &D230.menuLapSel;
-	s16 lapHeight = 0;
-	int lapFrameBottom;
-
-	RECTMENU_GetHeight(&D230.menuLapSel, &lapHeight, 0);
-
-	lapFrameBottom = (int)laps->posY_curr - style->frameOffsetY + lapHeight + style->frameExtraH - (int)((laps->state & 0xff) >> 7);
-
-	s_nativeModeMenu.posX_curr = laps->posX_curr;
-	s_nativeModeMenu.posY_curr = (u16)(lapFrameBottom + style->shadowHWide + MM_NATIVE_MODE_AIR + style->frameOffsetY);
-
-	// Without the cursor the box shows the confirmed mode.
-	if (s_nativeModeFocus != MM_NATIVE_FOCUS_MODE)
-	{
-		s_nativeModeMenu.rowSelected = (s16)s_nativeTrackSelectMode;
-	}
-
-	MM_NativeTrackSelect_DrawBox(&s_nativeModeMenu, s_nativeModeFocus == MM_NATIVE_FOCUS_MODE);
 }
 
 // [K1] The first frame after MM_TrackSelect_Init.
@@ -685,7 +553,7 @@ internal void MM_NativeTrackSelect_Enter(struct RectMenu *menu)
 	s_nativeMapUploaded = -1;
 
 	// [K9]
-	s_nativeModeFocus = MM_NATIVE_FOCUS_LAPS;
+	s_nativeLapFocus = MM_NATIVE_FOCUS_LAPS;
 
 	Platform_Log("[CTR Menu] CUSTOM track select: %d container(s), cursor on %d\n", count, (int)s_nativeTrackSelectBackup);
 }
@@ -765,6 +633,12 @@ void MM_NativeTrackSelect_MenuProc(struct RectMenu *menu)
 {
 	struct GameTracker *gGT = sdata->gGT;
 	s16 elapsedFrames = D230.trackSelect.transition.frame;
+
+	// [K9] The MODS page stands alone while it is open.
+	if (MM_NativeModsBox_PageFrame())
+	{
+		return;
+	}
 
 	// [K1] Init has set exactly this state (MM_TrackSelect.c:354, :360),
 	// and only the first frame after it sees it: after that ENTERING_MENU counts
@@ -851,7 +725,7 @@ void MM_NativeTrackSelect_MenuProc(struct RectMenu *menu)
 					MM_NativeCtr_Arm();
 				}
 
-				// [K9] TIME TRIAL from the MODE box (MM_NativeTimeTrial.c).
+				// [K9] TIME TRIAL from the NITRO-PIT box (MM_NativeTimeTrial.c).
 				if (MM_NativeTrackSelect_Mode() == MM_NATIVE_MODE_TIME_TRIAL)
 				{
 					Platform_Log("[CTR Menu] CUSTOM start: mode TIME TRIAL - MM_NativeTimeTrial_Arm\n");
@@ -885,7 +759,7 @@ void MM_NativeTrackSelect_MenuProc(struct RectMenu *menu)
 		int importantButton = sdata->buttonTapPerPlayer[0] & MM_TRACK_SELECT_INPUT;
 
 		// [K9] Every opening of the lap box begins in LAPS.
-		s_nativeModeFocus = MM_NATIVE_FOCUS_LAPS;
+		s_nativeLapFocus = MM_NATIVE_FOCUS_LAPS;
 
 		if (
 		    // if not changing levels
@@ -998,45 +872,41 @@ void MM_NativeTrackSelect_MenuProc(struct RectMenu *menu)
 		// copy LapRow from 8d920 to temp variable b55ae
 		D230.menuLapSel.rowSelected = sdata->uselessLapRowCopy;
 
-		// [K9] The MODE box only in NITRO RACE; elsewhere the cursor never
-		// leaves LAPS.
-		const int modeOffered = MM_NativeTrackSelect_ModeOffered();
+		// [K9] The MODS box only where it is offered (NITRO RACE); elsewhere
+		// the cursor never leaves LAPS.
+		const int modsOffered = MM_NativeModsBox_NitroOffered();
 
-		if (modeOffered)
+		if (!modsOffered)
 		{
-			MM_NativeTrackSelect_ModeRows();
-		}
-		else
-		{
-			s_nativeModeFocus = MM_NATIVE_FOCUS_LAPS;
+			s_nativeLapFocus = MM_NATIVE_FOCUS_LAPS;
 		}
 
 		// If you're in track selection menu
 		if (D230.trackSelect.transition.state == IN_MENU)
 		{
 			// [K9]
-			if (modeOffered)
+			if (modsOffered)
 			{
-				MM_NativeTrackSelect_ModeStep();
+				MM_NativeTrackSelect_ModsStep();
 			}
 
-			if (s_nativeModeFocus == MM_NATIVE_FOCUS_LAPS)
+			if (s_nativeLapFocus == MM_NATIVE_FOCUS_LAPS)
 			{
 				lapSelTransitionState = RECTMENU_ProcessInput(&D230.menuLapSel);
 			}
-			else
+			else if (MM_NativeModsBox_NitroKeys())
 			{
-				// Neither starts nor closes (block THE MODE BOX).
-				MM_NativeTrackSelect_ModeInput();
+				// Neither starts nor closes: back onto the last lap row.
+				MM_NativeTrackSelect_BackToLaps();
 			}
 		}
 
 		// [K9] With the cursor in LAPS the same call as before.
-		MM_NativeTrackSelect_DrawBox(&D230.menuLapSel, s_nativeModeFocus == MM_NATIVE_FOCUS_LAPS);
+		MM_NativeTrackSelect_DrawBox(&D230.menuLapSel, s_nativeLapFocus == MM_NATIVE_FOCUS_LAPS);
 
-		if (modeOffered)
+		if (modsOffered)
 		{
-			MM_NativeTrackSelect_DrawModeBox();
+			MM_NativeModsBox_DrawNitroBox(s_nativeLapFocus == MM_NATIVE_FOCUS_MODS);
 		}
 
 		// put LapRow back into 8d920

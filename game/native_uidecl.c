@@ -30,11 +30,17 @@ internal int NativeUiDecl_BattleSetup(void)
 	return NativeUiDecl_ActiveMenuIs(&D230.menuBattleWeapons);
 }
 
+// game/native_mods_page.c, later in the unity build
+int NativeModsPage_IsOpen(void);
+
 // Any track screen: retail (time trial, arcade, VS, battle) or the
-// copy for CUSTOM - both draw through D230.menuTrackSelect.
+// copy for CUSTOM - both draw through D230.menuTrackSelect. Not while the
+// MODS page stands over it alone: the rows of the track screen would take
+// the page's parts left of their rectangles' edge (x 307) to the left edge -
+// the page is one panel ("menu-mods" below).
 internal int NativeUiDecl_TrackSelect(void)
 {
-	return NativeUiDecl_ActiveMenuIs(&D230.menuTrackSelect);
+	return NativeUiDecl_ActiveMenuIs(&D230.menuTrackSelect) && !NativeModsPage_IsOpen();
 }
 
 // Is there a reason under a box of the chain in this frame? (native_menuscreen.c)
@@ -44,7 +50,7 @@ int NativeMenuReason_OnScreen(void);
 // the copy of the proc (MM_NativeTrackSelect.c) on the pointer.
 internal int NativeUiDecl_CustomTrackSelect(void)
 {
-	return NativeUiDecl_ActiveMenuIs(&D230.menuTrackSelect) && (D230.menuTrackSelect.funcPtr == MM_NativeTrackSelect_MenuProc);
+	return NativeUiDecl_TrackSelect() && (D230.menuTrackSelect.funcPtr == MM_NativeTrackSelect_MenuProc);
 }
 
 // Is the arcade/adventure results screen in the picture? Two facts that the
@@ -497,6 +503,13 @@ global_variable const struct NativeUiMenuPolicy g_nativeUiMenuPolicies[] = {
     {"menu-battle-setup", NativeUiDecl_BattleSetup, (int)CTR_UI_ANCHOR_CENTRE},
     // Beta 0: the GRAPHICS page, 56..456 like the options screen of the pause
     {"menu-graphics", NativeGraphics_Active, (int)CTR_UI_ANCHOR_CENTRE},
+    // The MODS page, the same panel 56..456, over the track select or the cup
+    // select. Without this row the edge rule takes its parts one by one; over
+    // the track select the rows of that screen are off while it is open
+    // (NativeUiDecl_TrackSelect), else they took everything left of x 307 to
+    // the left edge: labels outside the frame, a torn title, one edge of the
+    // frame alone on the left.
+    {"menu-mods", NativeModsPage_IsOpen, (int)CTR_UI_ANCHOR_CENTRE},
     {"menu-cup-select", NativeUiDecl_CupSelect, (int)CTR_UI_ANCHOR_CENTRE},
     {NULL, NULL, 0},
 };

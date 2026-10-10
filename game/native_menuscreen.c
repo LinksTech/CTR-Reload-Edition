@@ -395,11 +395,11 @@ int NativeMenuHighScore_RestBox(const int *box, int *outRest, int *outOffset)
 // open the difficulty directly - exactly what the 1P row does
 // (MM_MenuFlow.c:306-314). The chain there is three levels deep.
 //
-// LOCKED, grey with lock sound: NITRO RACE, as long as no container offers a race;
-// NITRO CUP, as long as cups.txt carries no readable cup (why is said by
-// the log); CRYSTAL, as long as no container offers Crystal
-// (MM_NativeCrystal.c); CTR likewise with CTR (MM_NativeCtr.c); TIME
-// TRIAL (Beta 2) always. If the cursor stands
+// LOCKED, grey with lock sound: NITRO RACE and TIME TRIAL, as long as no
+// container offers a race; NITRO CUP, as long as cups.txt carries no readable
+// cup (why is said by the log); CRYSTAL, as long as no container offers
+// Crystal (MM_NativeCrystal.c); CTR likewise with CTR (MM_NativeCtr.c). If the
+// cursor stands
 // on a grey row, a line below the box says the reason
 // (NativeMenuReason_NoteDrawn). NITRO-PIT itself is never grey in the arcade path.
 //
@@ -470,9 +470,9 @@ internal const char *NativeMenuRaceType_Reason(int row)
 		return (NativeCup_Count() <= 0) ? "NO CUSTOM CUPS" : NULL;
 	case NATIVE_PIT_ROW_CRYSTAL:
 		return (NativeTrack_CountOffered(NATIVE_TRACK_MODE_CRYSTAL) <= 0) ? "NO CRYSTAL TRACKS" : NULL;
-	// TIME TRIAL comes in Beta 2.
+	// TIME TRIAL: a NITRO RACE alone (MM_NativeTimeTrial.c), on the same tracks.
 	case NATIVE_PIT_ROW_TIME_TRIAL:
-		return "COMING SOON";
+		return (NativeTrack_CountRaceOffered() <= 0) ? "NO CUSTOM TRACKS" : NULL;
 	// CTR is released for Beta 0 - white as soon as a
 	// container offers CTR (MM_NativeCtr.c).
 	case NATIVE_PIT_ROW_CTR:
@@ -1222,14 +1222,16 @@ internal void NativeMenuLock_ProcRaceType(struct RectMenu *menu)
 				return;
 			}
 
-			// CRYSTAL: one player, without opponents, so without
-			// DIFFICULTY - the retail proc gets, as with NITRO RACE, the row
-			// of SINGLE (cup off), then the box goes out to the driver select,
-			// as MM_MenuProc_Difficulty does it (MM_MenuFlow.c). After that the
-			// track choice with the CRYSTAL list. Back from the driver select
-			// this box stands as NITRO-PIT again (RECTMENU.c: the
-			// deepest box of the chain loses ONLY_DRAW_TITLE).
-			if (row == NATIVE_PIT_ROW_CRYSTAL)
+			// CRYSTAL and TIME TRIAL: one player, without opponents, so
+			// without DIFFICULTY - the retail proc gets, as with NITRO RACE,
+			// the row of SINGLE (cup off), then the box goes out to the driver
+			// select, as MM_MenuProc_Difficulty does it (MM_MenuFlow.c). After
+			// that the track choice with the CRYSTAL list, or for TIME TRIAL
+			// the list of NITRO RACE with the lap box (MM_NativeTrackSelect.c,
+			// [K9]). Back from the driver select this box stands as NITRO-PIT
+			// again (RECTMENU.c: the deepest box of the chain loses
+			// ONLY_DRAW_TITLE).
+			if ((row == NATIVE_PIT_ROW_CRYSTAL) || (row == NATIVE_PIT_ROW_TIME_TRIAL))
 			{
 				menu->rowSelected = 0;
 				MM_MenuProc_SingleCup(menu);
@@ -1242,7 +1244,7 @@ internal void NativeMenuLock_ProcRaceType(struct RectMenu *menu)
 				D230.titleMenuState = TITLE_MENU_STATE_EXITING;
 				D230.desiredMenuIndex = MM_EXIT_ROUTE_CHARACTER_SELECT;
 
-				MM_NativeTrackSelect_SetChosen(MM_NATIVE_CHOSEN_CRYSTAL);
+				MM_NativeTrackSelect_SetChosen((row == NATIVE_PIT_ROW_CRYSTAL) ? MM_NATIVE_CHOSEN_CRYSTAL : MM_NATIVE_CHOSEN_TIME_TRIAL);
 				MM_NativeCupSelect_SetChosen(0);
 				return;
 			}
@@ -1397,15 +1399,17 @@ void NativeMenuLock_Tick(void)
 		D230.menuRaceType.funcPtr = NativeMenuLock_ProcRaceType;
 	}
 
-	// The MODS box (one-player arcade on the disc tracks): its procs or the
-	// originals. Before the two hooks below, which swap only from an original.
-	MM_NativeModsBox_Hook();
+	// The MODS box (one-player arcade): the originals back before the two
+	// hooks below, which swap only from an original, and its procs after them.
+	MM_NativeModsBox_Unhook();
 
 	// The track screen: the copy for CUSTOM or the original.
 	MM_NativeTrackSelect_Hook();
 
 	// The cup screen: the copy for CUSTOM CUP or the original.
 	MM_NativeCupSelect_Hook();
+
+	MM_NativeModsBox_Hook();
 
 	NativeMenuLock_Apply();
 }

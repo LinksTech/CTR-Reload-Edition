@@ -226,36 +226,37 @@ void MM_NativeCup_LogPoints(void);
 void MM_NativeCup_LogFinal(void);
 void MM_NativeCup_Stop(const char *why);
 
-// NITRO-PIT -> NITRO RACE, CRYSTAL, CTR (game/230/MM_NativeTrackSelect.c).
+// NITRO-PIT -> NITRO RACE, TIME TRIAL, CRYSTAL, CTR (game/230/MM_NativeTrackSelect.c).
 //
 // The choice in the race type box sets the marker, and the hook swaps every frame
 // the proc of the track screen: the copy while a NITRO-PIT row applies, otherwise the
 // original. Called from NativeMenuLock_Tick (game/native_menuscreen.c).
-// chosen: 0 off, MM_NATIVE_CHOSEN_RACE (NITRO RACE), MM_NATIVE_CHOSEN_CRYSTAL
-// or MM_NATIVE_CHOSEN_CTR - the same copy with a different list.
+// chosen: 0 off, MM_NATIVE_CHOSEN_RACE (NITRO RACE), MM_NATIVE_CHOSEN_CRYSTAL,
+// MM_NATIVE_CHOSEN_CTR or MM_NATIVE_CHOSEN_TIME_TRIAL - the same copy with a
+// different list (TIME TRIAL: the list of NITRO RACE).
 enum
 {
 	MM_NATIVE_CHOSEN_RACE = 1,
 	MM_NATIVE_CHOSEN_CRYSTAL = 2,
 	MM_NATIVE_CHOSEN_CTR = 3,
+	MM_NATIVE_CHOSEN_TIME_TRIAL = 4,
 };
 void MM_NativeTrackSelect_SetChosen(int chosen);
 void MM_NativeTrackSelect_Hook(void);
 void MM_NativeTrackSelect_MenuProc(struct RectMenu *menu);
 
-// The MODE box below the lap box of the NITRO RACE track screen
-// (game/230/MM_NativeTrackSelect.c). RACE is the default and changes nothing.
-// Rows after TIME TRIAL (boss race, modifiers) are planned and not offered yet.
+// The mode of the NITRO-PIT track screen (game/230/MM_NativeTrackSelect.c):
+// TIME TRIAL when the TIME TRIAL row of the NITRO-PIT box chose it, RACE
+// everywhere else.
 enum
 {
 	MM_NATIVE_MODE_RACE = 0,
 	MM_NATIVE_MODE_TIME_TRIAL = 1,
-	MM_NATIVE_MODE_OFFERED = 2,
 };
 int MM_NativeTrackSelect_Mode(void);
 
-// NITRO-PIT -> MODE: TIME TRIAL (game/230/MM_NativeTimeTrial.c). The track
-// screen calls it at the start when the MODE box stands on TIME TRIAL.
+// NITRO-PIT -> TIME TRIAL (game/230/MM_NativeTimeTrial.c). The track screen
+// calls it at the start when its mode is TIME TRIAL.
 void MM_NativeTimeTrial_Arm(void);
 
 // The rest of that mode: a NITRO RACE alone, without items, best times in a
@@ -273,13 +274,21 @@ struct RectMenu *MM_NativeTimeTrial_EndMenu(void); // 222.c, instead of menu222
 // mode rule of the driver select reads it (NativeChar_ModeAllowed).
 int MM_NativeTrackSelect_Chosen(void);
 
-// NITRO CUP chosen (game/230/MM_NativeCupSelect.c): 1, else 0.
-int MM_NativeCupSelect_Chosen(void);
-
 // The MODS box of the arcade track select and cup select
-// (game/230/MM_NativeModsBox.c): the proc swap, every frame from
-// NativeMenuLock_Tick, before the NITRO-PIT hooks.
+// (game/230/MM_NativeModsBox.c). The proc swap, every frame from
+// NativeMenuLock_Tick: Unhook before the NITRO-PIT hooks (they swap only from
+// an original), Hook after them.
+void MM_NativeModsBox_Unhook(void);
 void MM_NativeModsBox_Hook(void);
+
+// The MODS box of NITRO RACE, from the copy of the track select
+// (MM_NativeTrackSelect.c, [K9]): offered at all; the MODS page while it is
+// open (1: the page ran, the proc returns); the cursor in the box (1: back to
+// the lap box); the box drawn below the lap box, with or without the cursor.
+int MM_NativeModsBox_NitroOffered(void);
+int MM_NativeModsBox_PageFrame(void);
+int MM_NativeModsBox_NitroKeys(void);
+void MM_NativeModsBox_DrawNitroBox(int focused);
 
 // Which mode the list of the track screen provides (NATIVE_TRACK_MODE_RACE,
 // _CRYSTAL or _CTR, native_assets.h): who is in it, what can be chosen,

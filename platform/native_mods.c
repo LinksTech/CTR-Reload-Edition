@@ -1,6 +1,7 @@
 // ===========================================================================
 // THE MODS OF THE ARCADE RACE (include/platform/native_mods.h): the CPU seats
-// of a one-player arcade race on the disc tracks, single race and cup.
+// of a one-player arcade race, single race and cup, on the disc tracks and in
+// NITRO-PIT.
 //
 // THE PLAN, load stage 4 (NativeMods_PlanSeats, from LOAD_DriverMPK right
 // after LOAD_Robots1P): the seats 1..7 are drawn and written into
@@ -18,10 +19,21 @@
 // its seat to a retail driver of the pack nobody sits on - never a seat
 // without a model.
 //
+// A FILE THAT CANNOT SIT ON ITS TEMPLATE: the seat's model at load stage 5 is
+// the pack's when the pack holds the template, else the one read here - and
+// the two need not have the same frame counts (the pack's Coco and Polar have
+// others than every file rldpack writes; the bigfile's have not). So before
+// the plan stands, a drawn file whose template the pack does not hold is
+// checked against the model read here for it (NativeChar_FitsDonor, the check
+// of load stage 5); one that does not fit leaves the pool, and the seats are
+// drawn again without it. A template in the pack is checked at stage 5 alone;
+// a seat that does not fit there gets, with ONLY SELECTED, a ticked retail
+// driver whose model the load holds, else a free one of the pack.
+//
 // THE BINDING, load stage 5 (NativeChar_ArmSeats -> NativeChar_ArmModsSeats):
 // the seats with a file are bound like seat 0 of a pick - the file's class,
-// mask, map color and voices; a seat whose file does not fit its donor gets a
-// free retail driver of the pack instead (NativeMods_RetailFallback).
+// mask, map color and voices; a seat whose file does not fit its donor after
+// all gets a free retail driver of the pack instead (NativeMods_RetailFallback).
 //
 // THE MEMORY: the read models live in host memory until the next plan or a
 // menu load onto the main menu (NativeMods_ForgetPlan); the draw memory of
@@ -31,29 +43,44 @@
 //
 // THE RANDOM NUMBERS are the module's own (xorshift32, seeded once from the
 // performance counter at the first draw): the game's RNG never moves for a
-// draw, and a race at the defaults never comes here.
+// draw, and a race at DEFAULT never comes here.
 // ===========================================================================
 
 #include <platform/native_mods.h>
 
 #define NATIVE_MODS_SEATS        8
-#define NATIVE_MODS_RETAIL_COUNT 15
-#define NATIVE_MODS_OFF_MAX      64
+#define NATIVE_MODS_MODEL_MAX    NATIVE_MODS_RETAIL_COUNT
+#define NATIVE_MODS_ON_MAX       128
+#define NATIVE_MODS_OLD_OFF_MAX  64
 #define NATIVE_MODS_FILE_MAX     260
 #define NATIVE_MODS_SECTOR_BYTES 0x800
+#define NATIVE_MODS_POOL_MAX     (NATIVE_MODS_RETAIL_COUNT + NATIVE_CHAR_ROSTER_MAX)
 
-int MM_NativeCupSelect_Chosen(void);
 int NativeCD_ReadSectorsAt(s32 encodedPos, s32 sectors, void *dst);
 
-// The two values, as the MODS page and ctr-settings.cfg set them.
+// The value, as the MODS page and ctr-settings.cfg set it.
 global_variable int s_modsCpu = NATIVE_MODS_CPU_DEFAULT;
-global_variable int s_modsCustom = NATIVE_MODS_CUSTOM_OFF;
 
-// SELECT DRIVERS: the files that are NOT ticked, by file name (letter case
-// ignored, as the folder scan takes names). A name of a file that is no longer
-// in the folder stays - it is ticked off again when the file comes back.
-global_variable char s_modsOff[NATIVE_MODS_OFF_MAX][NATIVE_MODS_FILE_MAX];
-global_variable int s_modsOffCount;
+// SELECT DRIVERS: the ticked retail drivers (bit = id) and the ticked files by
+// file name (letter case ignored, as the folder scan takes names). A name of a
+// file that is no longer in the folder stays - it is ticked again when the
+// file comes back.
+global_variable u32 s_modsRetailOn;
+global_variable char s_modsOn[NATIVE_MODS_ON_MAX][NATIVE_MODS_FILE_MAX];
+global_variable int s_modsOnCount;
+
+// The lines of the first MODS page (CPU CHARACTERS, CPU CUSTOM DRIVERS and the
+// files unticked there), kept until the roster is known
+// (NativeMods_AfterRoster). A line of this page wins over all of them.
+global_variable struct
+{
+	int seen;
+	int cpu;
+	int custom;
+} s_modsOld;
+global_variable char s_modsOldOff[NATIVE_MODS_OLD_OFF_MAX][NATIVE_MODS_FILE_MAX];
+global_variable int s_modsOldOffCount;
+global_variable int s_modsNewSeen;
 
 // The plan of the load in progress: the roster entry of every seat (-1 =
 // retail); valid while a race of the plan loads or runs. A cup keeps it for
@@ -69,18 +96,22 @@ global_variable struct
 	int entry[NATIVE_MODS_SEATS];
 } s_modsPlan;
 
-// The retail models read for the plan, in host memory.
+// The retail models read for the plan, in host memory: the retail seats the
+// pack does not hold and the templates of the drawn files the pack does not
+// hold.
 global_variable struct
 {
 	int id;
 	u8 *bytes;
 	struct Model *model;
-} s_modsModel[NATIVE_MODS_SEATS];
+} s_modsModel[NATIVE_MODS_MODEL_MAX];
 global_variable int s_modsModelCount;
 
-// --dev-mods (main.c): the values of this run, never read from or written
-// to the file; with file names, exactly these are ticked.
+// --dev-mods (main.c): the value of this run, never read from or written to
+// the file; with drivers, exactly these are ticked.
 global_variable int s_modsDevGiven;
+global_variable int s_modsDevTicks;
+global_variable u32 s_modsDevRetail;
 global_variable char s_modsDevFile[NATIVE_CHAR_ROSTER_MAX][NATIVE_MODS_FILE_MAX];
 global_variable int s_modsDevFileCount;
 
@@ -89,51 +120,54 @@ global_variable int s_modsDraws;
 global_variable char s_modsStatus[16];
 
 // ---------------------------------------------------------------------------
-// THE VALUES
+// THE VALUE AND THE TICKS
 // ---------------------------------------------------------------------------
 
-int NativeMods_CpuCharacters(void)
+internal const char *NativeMods_ValueName(int value)
+{
+	return (value == NATIVE_MODS_CPU_ALL) ? "all random" : ((value == NATIVE_MODS_CPU_SELECTED) ? "only selected" : "default");
+}
+
+internal int NativeMods_Clamp(int value)
+{
+	return ((value == NATIVE_MODS_CPU_ALL) || (value == NATIVE_MODS_CPU_SELECTED)) ? value : NATIVE_MODS_CPU_DEFAULT;
+}
+
+int NativeMods_CpuDrivers(void)
 {
 	return s_modsCpu;
 }
 
-void NativeMods_SetCpuCharacters(int value)
+void NativeMods_SetCpuDrivers(int value)
 {
-	s_modsCpu = (value == NATIVE_MODS_CPU_RANDOM) ? NATIVE_MODS_CPU_RANDOM : NATIVE_MODS_CPU_DEFAULT;
+	s_modsCpu = NativeMods_Clamp(value);
 	Platform_SettingsSave();
-	Platform_Log("[CTR Mods] cpu characters: %s\n", (s_modsCpu == NATIVE_MODS_CPU_RANDOM) ? "random" : "default");
-}
-
-int NativeMods_CustomDrivers(void)
-{
-	return s_modsCustom;
-}
-
-void NativeMods_SetCustomDrivers(int value)
-{
-	s_modsCustom = ((value >= NATIVE_MODS_CUSTOM_OFF) && (value <= NATIVE_MODS_CUSTOM_SELECTED)) ? value : NATIVE_MODS_CUSTOM_OFF;
-	Platform_SettingsSave();
-	Platform_Log("[CTR Mods] cpu custom drivers: %s\n",
-	             (s_modsCustom == NATIVE_MODS_CUSTOM_RANDOM) ? "random" : ((s_modsCustom == NATIVE_MODS_CUSTOM_SELECTED) ? "selected" : "off"));
+	Platform_Log("[CTR Mods] cpu drivers: %s\n", NativeMods_ValueName(s_modsCpu));
 }
 
 int NativeMods_DriverCount(void)
 {
-	return NativeChar_RosterFileCount();
+	return NATIVE_MODS_RETAIL_COUNT + NativeChar_RosterFileCount();
 }
 
 const char *NativeMods_DriverName(int index)
 {
+	if ((index >= 0) && (index < NATIVE_MODS_RETAIL_COUNT))
+	{
+		return sdata->lngStrings[data.MetaDataCharacters[index].name_LNG_long];
+	}
+
+	index -= NATIVE_MODS_RETAIL_COUNT;
 	return ((index >= 0) && (index < NativeChar_RosterFileCount())) ? NativeChar_EntryName(index) : "";
 }
 
-internal int NativeMods_OffIndex(const char *file)
+internal int NativeMods_OnIndex(const char *file)
 {
 	int i;
 
-	for (i = 0; i < s_modsOffCount; i++)
+	for (i = 0; i < s_modsOnCount; i++)
 	{
-		if (SDL_strcasecmp(s_modsOff[i], file) == 0)
+		if (SDL_strcasecmp(s_modsOn[i], file) == 0)
 		{
 			return i;
 		}
@@ -142,93 +176,150 @@ internal int NativeMods_OffIndex(const char *file)
 	return -1;
 }
 
-int NativeMods_DriverSelected(int index)
+internal int NativeMods_DevFileIndex(const char *file)
 {
 	int i;
 
-	if ((index < 0) || (index >= NativeChar_RosterFileCount()))
+	for (i = 0; i < s_modsDevFileCount; i++)
 	{
-		return 0;
-	}
-
-	if (s_modsDevFileCount > 0)
-	{
-		for (i = 0; i < s_modsDevFileCount; i++)
+		if (SDL_strcasecmp(s_modsDevFile[i], file) == 0)
 		{
-			if (SDL_strcasecmp(s_modsDevFile[i], NativeChar_EntryFile(index)) == 0)
-			{
-				return 1;
-			}
+			return i;
 		}
-
-		return 0;
 	}
 
-	return NativeMods_OffIndex(NativeChar_EntryFile(index)) < 0;
+	return -1;
+}
+
+// A file of the roster (entry) is ticked.
+internal int NativeMods_FileTicked(int entry)
+{
+	const char *file = NativeChar_EntryFile(entry);
+
+	return s_modsDevTicks ? (NativeMods_DevFileIndex(file) >= 0) : (NativeMods_OnIndex(file) >= 0);
+}
+
+internal int NativeMods_RetailTicked(int id)
+{
+	return (((s_modsDevTicks ? s_modsDevRetail : s_modsRetailOn) >> id) & 1u) != 0;
+}
+
+int NativeMods_DriverSelected(int index)
+{
+	if ((index >= 0) && (index < NATIVE_MODS_RETAIL_COUNT))
+	{
+		return NativeMods_RetailTicked(index);
+	}
+
+	index -= NATIVE_MODS_RETAIL_COUNT;
+	return ((index >= 0) && (index < NativeChar_RosterFileCount())) ? NativeMods_FileTicked(index) : 0;
 }
 
 // Only the list; the caller saves.
-internal void NativeMods_StoreOff(const char *file, int off)
+internal void NativeMods_StoreOn(const char *file, int on)
 {
-	const int at = NativeMods_OffIndex(file);
+	const int at = NativeMods_OnIndex(file);
 
-	if (off && (at < 0) && (s_modsOffCount < NATIVE_MODS_OFF_MAX) && (file[0] != '\0') && (strlen(file) < NATIVE_MODS_FILE_MAX))
+	if (on && (at < 0) && (s_modsOnCount < NATIVE_MODS_ON_MAX) && (file[0] != '\0') && (strlen(file) < NATIVE_MODS_FILE_MAX))
 	{
-		snprintf(s_modsOff[s_modsOffCount], NATIVE_MODS_FILE_MAX, "%s", file);
-		s_modsOffCount++;
+		snprintf(s_modsOn[s_modsOnCount], NATIVE_MODS_FILE_MAX, "%s", file);
+		s_modsOnCount++;
 	}
-	else if (!off && (at >= 0))
+	else if (!on && (at >= 0))
 	{
-		s_modsOffCount--;
-		if (at != s_modsOffCount)
+		s_modsOnCount--;
+		if (at != s_modsOnCount)
 		{
-			memcpy(s_modsOff[at], s_modsOff[s_modsOffCount], NATIVE_MODS_FILE_MAX);
+			memcpy(s_modsOn[at], s_modsOn[s_modsOnCount], NATIVE_MODS_FILE_MAX);
+		}
+	}
+}
+
+// The ticks of --dev-mods: this run only.
+internal void NativeMods_StoreDev(const char *file, int on)
+{
+	const int at = NativeMods_DevFileIndex(file);
+
+	if (on && (at < 0) && (s_modsDevFileCount < NATIVE_CHAR_ROSTER_MAX) && (strlen(file) < NATIVE_MODS_FILE_MAX))
+	{
+		snprintf(s_modsDevFile[s_modsDevFileCount], NATIVE_MODS_FILE_MAX, "%s", file);
+		s_modsDevFileCount++;
+	}
+	else if (!on && (at >= 0))
+	{
+		s_modsDevFileCount--;
+		if (at != s_modsDevFileCount)
+		{
+			memcpy(s_modsDevFile[at], s_modsDevFile[s_modsDevFileCount], NATIVE_MODS_FILE_MAX);
 		}
 	}
 }
 
 void NativeMods_SetDriverSelected(int index, int on)
 {
-	const char *file;
+	if ((index >= 0) && (index < NATIVE_MODS_RETAIL_COUNT))
+	{
+		u32 *mask = s_modsDevTicks ? &s_modsDevRetail : &s_modsRetailOn;
 
+		*mask = on ? (*mask | (1u << index)) : (*mask & ~(1u << index));
+		Platform_SettingsSave();
+		Platform_Log("[CTR Mods] select drivers: retail driver %d (%s) %s\n", index, data.MetaDataCharacters[index].name_Debug, on ? "on" : "off");
+		return;
+	}
+
+	index -= NATIVE_MODS_RETAIL_COUNT;
 	if ((index < 0) || (index >= NativeChar_RosterFileCount()))
 	{
 		return;
 	}
 
-	file = NativeChar_EntryFile(index);
-	NativeMods_StoreOff(file, !on);
+	if (s_modsDevTicks)
+	{
+		NativeMods_StoreDev(NativeChar_EntryFile(index), on);
+	}
+	else
+	{
+		NativeMods_StoreOn(NativeChar_EntryFile(index), on);
+	}
+
 	Platform_SettingsSave();
-	Platform_Log("[CTR Mods] select drivers: %s %s\n", file, on ? "on" : "off");
+	Platform_Log("[CTR Mods] select drivers: %s %s\n", NativeChar_EntryFile(index), on ? "on" : "off");
 }
 
 int NativeMods_SelectedCount(void)
 {
-	int count = 0;
+	const int count = NativeMods_DriverCount();
+	int selected = 0;
 	int i;
 
-	for (i = 0; i < NativeChar_RosterFileCount(); i++)
+	for (i = 0; i < count; i++)
 	{
-		count += NativeMods_DriverSelected(i);
+		selected += NativeMods_DriverSelected(i);
 	}
 
-	return count;
+	return selected;
 }
 
 const char *NativeMods_StatusText(void)
 {
-	if (s_modsCustom == NATIVE_MODS_CUSTOM_RANDOM)
+	if (s_modsCpu == NATIVE_MODS_CPU_ALL)
 	{
-		return "CUSTOM: ALL";
+		return "ALL RANDOM";
 	}
 
-	if (s_modsCustom == NATIVE_MODS_CUSTOM_SELECTED)
+	if (s_modsCpu == NATIVE_MODS_CPU_SELECTED)
 	{
-		snprintf(s_modsStatus, sizeof(s_modsStatus), "CUSTOM: %d", NativeMods_SelectedCount());
-		return s_modsStatus;
+		const int selected = NativeMods_SelectedCount();
+
+		// Nothing ticked is DEFAULT, and the box says so.
+		if (selected > 0)
+		{
+			snprintf(s_modsStatus, sizeof(s_modsStatus), "%d SELECTED", selected);
+			return s_modsStatus;
+		}
 	}
 
-	return (s_modsCpu == NATIVE_MODS_CPU_RANDOM) ? "CPU: RANDOM" : "OFF";
+	return "OFF";
 }
 
 // ---------------------------------------------------------------------------
@@ -239,18 +330,45 @@ void NativeMods_SaveLines(FILE *file)
 {
 	int i;
 
-	fprintf(file, "mods cpuchars %d\n", s_modsCpu);
-	fprintf(file, "mods custom %d\n", s_modsCustom);
-	for (i = 0; i < s_modsOffCount; i++)
+	fprintf(file, "mods cpu %d\n", s_modsCpu);
+	for (i = 0; i < NATIVE_MODS_RETAIL_COUNT; i++)
 	{
-		fprintf(file, "mods off %s\n", s_modsOff[i]);
+		if (((s_modsRetailOn >> i) & 1u) != 0)
+		{
+			fprintf(file, "mods retail %d\n", i);
+		}
 	}
+
+	for (i = 0; i < s_modsOnCount; i++)
+	{
+		fprintf(file, "mods file %s\n", s_modsOn[i]);
+	}
+}
+
+// The rest of a line after "<key> " as a name: a file name may hold spaces.
+// 0 for a name that is empty or too long.
+internal int NativeMods_LineName(const char *rest, size_t keyLength, char name[NATIVE_MODS_FILE_MAX])
+{
+	size_t length;
+
+	if (strlen(&rest[keyLength]) >= NATIVE_MODS_FILE_MAX)
+	{
+		return 0;
+	}
+
+	snprintf(name, NATIVE_MODS_FILE_MAX, "%s", &rest[keyLength]);
+	length = strlen(name);
+	while ((length > 0) && ((name[length - 1] == '\n') || (name[length - 1] == '\r')))
+	{
+		name[--length] = '\0';
+	}
+
+	return length > 0;
 }
 
 int NativeMods_LoadLine(const char *rest)
 {
 	char name[NATIVE_MODS_FILE_MAX];
-	size_t length;
 	int value;
 
 	// --dev-mods holds this run: the lines are known, but they do not count.
@@ -259,36 +377,115 @@ int NativeMods_LoadLine(const char *rest)
 		return 1;
 	}
 
+	if (sscanf(rest, "cpu %d", &value) == 1)
+	{
+		s_modsCpu = NativeMods_Clamp(value);
+		s_modsNewSeen = 1;
+		return 1;
+	}
+
+	if ((sscanf(rest, "retail %d", &value) == 1) && (value >= 0) && (value < NATIVE_MODS_RETAIL_COUNT))
+	{
+		s_modsRetailOn |= 1u << value;
+		s_modsNewSeen = 1;
+		return 1;
+	}
+
+	if ((strncmp(rest, "file ", 5) == 0) && NativeMods_LineName(rest, 5, name))
+	{
+		NativeMods_StoreOn(name, 1);
+		s_modsNewSeen = 1;
+		return 1;
+	}
+
+	// The first MODS page.
 	if (sscanf(rest, "cpuchars %d", &value) == 1)
 	{
-		s_modsCpu = (value == NATIVE_MODS_CPU_RANDOM) ? NATIVE_MODS_CPU_RANDOM : NATIVE_MODS_CPU_DEFAULT;
+		s_modsOld.seen = 1;
+		s_modsOld.cpu = (value == 1);
 		return 1;
 	}
 
 	if (sscanf(rest, "custom %d", &value) == 1)
 	{
-		s_modsCustom = ((value >= NATIVE_MODS_CUSTOM_OFF) && (value <= NATIVE_MODS_CUSTOM_SELECTED)) ? value : NATIVE_MODS_CUSTOM_OFF;
+		s_modsOld.seen = 1;
+		s_modsOld.custom = ((value >= 0) && (value <= 2)) ? value : 0;
 		return 1;
 	}
 
-	// The name is the rest of the line: a file name may hold spaces.
-	if ((strncmp(rest, "off ", 4) == 0) && (strlen(&rest[4]) < sizeof(name)))
+	if ((strncmp(rest, "off ", 4) == 0) && NativeMods_LineName(rest, 4, name))
 	{
-		snprintf(name, sizeof(name), "%s", &rest[4]);
-		length = strlen(name);
-		while ((length > 0) && ((name[length - 1] == '\n') || (name[length - 1] == '\r')))
+		if (s_modsOldOffCount < NATIVE_MODS_OLD_OFF_MAX)
 		{
-			name[--length] = '\0';
+			snprintf(s_modsOldOff[s_modsOldOffCount], NATIVE_MODS_FILE_MAX, "%s", name);
+			s_modsOldOffCount++;
 		}
-
-		if (length > 0)
-		{
-			NativeMods_StoreOff(name, 1);
-			return 1;
-		}
+		s_modsOld.seen = 1;
+		return 1;
 	}
 
 	return 0;
+}
+
+// THE FIRST MODS PAGE, CARRIED OVER. It had CPU CHARACTERS (DEFAULT: the
+// troupe, RANDOM: every retail driver) and CPU CUSTOM DRIVERS (OFF, RANDOM:
+// every file, SELECTED: the files not unticked); the pool was both together.
+//   both at their default          -> DEFAULT
+//   CUSTOM DRIVERS RANDOM          -> ALL RANDOM
+//   CPU CHARACTERS RANDOM alone    -> ONLY SELECTED, every retail driver
+//   CUSTOM DRIVERS SELECTED        -> ONLY SELECTED, every retail driver and
+//                                     every file of the roster not unticked
+// The troupe of DEFAULT cannot be ticked; every retail driver stands for it.
+// Saved at once in the lines of this page (never under --settings-defaults).
+void NativeMods_AfterRoster(void)
+{
+	int ticked = 0;
+	int i;
+
+	if (!s_modsOld.seen || s_modsNewSeen || s_modsDevGiven)
+	{
+		s_modsOld.seen = 0;
+		return;
+	}
+
+	s_modsOld.seen = 0;
+	if (s_modsOld.custom == 1)
+	{
+		s_modsCpu = NATIVE_MODS_CPU_ALL;
+	}
+	else if (s_modsOld.cpu || (s_modsOld.custom == 2))
+	{
+		s_modsCpu = NATIVE_MODS_CPU_SELECTED;
+		s_modsRetailOn = (1u << NATIVE_MODS_RETAIL_COUNT) - 1u;
+		ticked = NATIVE_MODS_RETAIL_COUNT;
+
+		for (i = 0; (s_modsOld.custom == 2) && (i < NativeChar_RosterFileCount()); i++)
+		{
+			const char *file = NativeChar_EntryFile(i);
+			int off = 0;
+			int k;
+
+			for (k = 0; k < s_modsOldOffCount; k++)
+			{
+				off |= (SDL_strcasecmp(s_modsOldOff[k], file) == 0);
+			}
+
+			if (!off)
+			{
+				NativeMods_StoreOn(file, 1);
+				ticked++;
+			}
+		}
+	}
+	else
+	{
+		s_modsCpu = NATIVE_MODS_CPU_DEFAULT;
+	}
+
+	Platform_Log("[CTR Mods] settings of the first MODS page carried over: cpu characters %s, custom drivers %s -> cpu drivers %s, %d driver(s) ticked\n",
+	             s_modsOld.cpu ? "random" : "default", (s_modsOld.custom == 1) ? "random" : ((s_modsOld.custom == 2) ? "selected" : "off"),
+	             NativeMods_ValueName(s_modsCpu), ticked);
+	Platform_SettingsSave();
 }
 
 int NativeMods_SetDev(const char *list)
@@ -305,6 +502,7 @@ int NativeMods_SetDev(const char *list)
 
 	snprintf(copy, sizeof(copy), "%s", list);
 	s_modsDevFileCount = 0;
+	s_modsDevRetail = 0;
 	for (word = copy; word != NULL; word = next, field++)
 	{
 		next = strchr(word, ',');
@@ -315,30 +513,32 @@ int NativeMods_SetDev(const char *list)
 
 		if (field == 0)
 		{
-			if ((strcmp(word, "default") != 0) && (strcmp(word, "random") != 0))
+			if (strcmp(word, "default") == 0)
 			{
-				return 0;
-			}
-			s_modsCpu = (strcmp(word, "random") == 0) ? NATIVE_MODS_CPU_RANDOM : NATIVE_MODS_CPU_DEFAULT;
-		}
-		else if (field == 1)
-		{
-			if (strcmp(word, "off") == 0)
-			{
-				s_modsCustom = NATIVE_MODS_CUSTOM_OFF;
+				s_modsCpu = NATIVE_MODS_CPU_DEFAULT;
 			}
 			else if (strcmp(word, "random") == 0)
 			{
-				s_modsCustom = NATIVE_MODS_CUSTOM_RANDOM;
+				s_modsCpu = NATIVE_MODS_CPU_ALL;
 			}
 			else if (strcmp(word, "selected") == 0)
 			{
-				s_modsCustom = NATIVE_MODS_CUSTOM_SELECTED;
+				s_modsCpu = NATIVE_MODS_CPU_SELECTED;
 			}
 			else
 			{
 				return 0;
 			}
+		}
+		else if ((word[0] >= '0') && (word[0] <= '9') && (strspn(word, "0123456789") == strlen(word)))
+		{
+			const int id = atoi(word);
+
+			if (id >= NATIVE_MODS_RETAIL_COUNT)
+			{
+				return 0;
+			}
+			s_modsDevRetail |= 1u << id;
 		}
 		else if ((word[0] == '\0') || (s_modsDevFileCount >= NATIVE_CHAR_ROSTER_MAX) || (strlen(word) >= NATIVE_MODS_FILE_MAX))
 		{
@@ -351,14 +551,10 @@ int NativeMods_SetDev(const char *list)
 		}
 	}
 
-	if (field < 2)
-	{
-		return 0;
-	}
-
 	s_modsDevGiven = 1;
-	Platform_Log("[CTR Mods] --dev-mods: cpu %s, custom %s, %d file(s) ticked by name (this run only)\n", (s_modsCpu == NATIVE_MODS_CPU_RANDOM) ? "random" : "default",
-	             (s_modsCustom == NATIVE_MODS_CUSTOM_RANDOM) ? "random" : ((s_modsCustom == NATIVE_MODS_CUSTOM_SELECTED) ? "selected" : "off"), s_modsDevFileCount);
+	s_modsDevTicks = (field > 1);
+	Platform_Log("[CTR Mods] --dev-mods: cpu drivers %s, %s (this run only)\n", NativeMods_ValueName(s_modsCpu),
+	             s_modsDevTicks ? "the drivers named ticked" : "the ticks of the file");
 	return 1;
 }
 
@@ -375,6 +571,7 @@ void NativeMods_SetSeed(u32 seed)
 int NativeMods_MenuOffered(void)
 {
 	const struct GameTracker *gGT = sdata->gGT;
+	const int chosen = MM_NativeTrackSelect_Chosen();
 	u32 mode1;
 
 	if (gGT == NULL)
@@ -384,27 +581,45 @@ int NativeMods_MenuOffered(void)
 
 	mode1 = (u32)gGT->gameMode1;
 	return ((mode1 & ARCADE_MODE) != 0) && ((mode1 & (TIME_TRIAL | ADVENTURE_MODE | BATTLE_MODE)) == 0) && (gGT->numPlyrNextGame == 1) &&
-	       (gGT->boolDemoMode == 0) && (MM_NativeTrackSelect_Chosen() == 0) && (MM_NativeCupSelect_Chosen() == 0);
+	       (gGT->boolDemoMode == 0) && (chosen != MM_NATIVE_CHOSEN_CRYSTAL) && (chosen != MM_NATIVE_CHOSEN_CTR) &&
+	       (chosen != MM_NATIVE_CHOSEN_TIME_TRIAL);
 }
 
 // The race being loaded is one the box was offered for: the funnel's mode
 // rule (arcade, one player, no time trial, adventure, relic, battle or
-// cutscene), no demo, no NITRO-PIT marker and none of the challenge bits.
+// cutscene), no demo, none of the challenge bits (CRYSTAL and CTR of
+// NITRO-PIT set them) and not the TIME TRIAL of NITRO-PIT (a NITRO RACE
+// alone, MM_NativeTimeTrial.c: no mode bit of its own).
 internal int NativeMods_RaceAllowed(const struct GameTracker *gGT)
 {
 	return (gGT != NULL) && ((gGT->gameMode1 & MAIN_MENU) == 0) && (gGT->boolDemoMode == 0) && (NativeChar_ModeRefusal(gGT) == NULL) &&
-	       ((gGT->gameMode1 & CRYSTAL_CHALLENGE) == 0) && ((gGT->gameMode2 & TOKEN_RACE) == 0) && (MM_NativeTrackSelect_Chosen() == 0) &&
-	       (MM_NativeCupSelect_Chosen() == 0);
+	       ((gGT->gameMode1 & CRYSTAL_CHALLENGE) == 0) && ((gGT->gameMode2 & TOKEN_RACE) == 0) &&
+	       (MM_NativeTrackSelect_Mode() != MM_NATIVE_MODE_TIME_TRIAL);
 }
 
 internal int NativeMods_Defaults(void)
 {
-	return (s_modsCpu == NATIVE_MODS_CPU_DEFAULT) && (s_modsCustom == NATIVE_MODS_CUSTOM_OFF);
+	return s_modsCpu == NATIVE_MODS_CPU_DEFAULT;
 }
 
 int NativeMods_CustomRace(void)
 {
-	return (s_modsCustom != NATIVE_MODS_CUSTOM_OFF) && (NativeChar_RosterFileCount() > 0) && NativeMods_RaceAllowed(sdata->gGT);
+	int can = 0;
+	int i;
+
+	if (s_modsCpu == NATIVE_MODS_CPU_ALL)
+	{
+		can = (NativeChar_RosterFileCount() > 0);
+	}
+	else if (s_modsCpu == NATIVE_MODS_CPU_SELECTED)
+	{
+		for (i = 0; !can && (i < NativeChar_RosterFileCount()); i++)
+		{
+			can = NativeMods_FileTicked(i);
+		}
+	}
+
+	return can && NativeMods_RaceAllowed(sdata->gGT);
 }
 
 // ---------------------------------------------------------------------------
@@ -486,7 +701,7 @@ internal struct Model *NativeMods_ReadModel(struct BigHeader *bigfile, int id)
 	u32 bodyBytes = 0;
 	u32 mapBytes = 0;
 
-	if ((size < 12u) || (s_modsModelCount >= NATIVE_MODS_SEATS))
+	if ((size < 12u) || (s_modsModelCount >= NATIVE_MODS_MODEL_MAX))
 	{
 		Platform_LogWarn("[CTR Mods] model of driver %d not read: %s\n", id, (size < 12u) ? "the bigfile entry is too small" : "no free place");
 		return NULL;
@@ -543,6 +758,15 @@ internal struct Model *NativeMods_ReadModel(struct BigHeader *bigfile, int id)
 	return (struct Model *)&bytes[4];
 }
 
+// The model of retail driver id as this plan sees it: read for it already, or
+// read now. NULL when it cannot be read.
+internal const struct Model *NativeMods_Model(struct BigHeader *bigfile, int id)
+{
+	const struct Model *model = NativeMods_ModelByName(data.MetaDataCharacters[id].name_Debug);
+
+	return (model != NULL) ? model : NativeMods_ReadModel(bigfile, id);
+}
+
 // ---------------------------------------------------------------------------
 // THE DRAW
 // ---------------------------------------------------------------------------
@@ -591,9 +815,9 @@ internal int NativeMods_InPack(const int pack[NATIVE_MODS_SEATS], int id)
 	return 0;
 }
 
-// A retail id of the pack that no seat shows (a custom seat shows its file,
-// not its template), and not seat 0's; -1 for none. With eight ids in the pack
-// and at most seven other seats there is always one.
+// A retail id of the pack that no retail seat shows (a custom seat shows its
+// file, not its template), and not seat 0's; -1 for none. With eight ids in
+// the pack and at most seven other seats there is always one.
 internal int NativeMods_FreePackId(const int pack[NATIVE_MODS_SEATS], int seat)
 {
 	int i;
@@ -638,97 +862,73 @@ internal void NativeMods_LogPlan(const char *how)
 		used += (size_t)written;
 	}
 
-	Platform_Log("[CTR Mods] seats (%s, level %d, cpu %s, custom %s):%s\n", how, (int)sdata->gGT->levelID,
-	             (s_modsCpu == NATIVE_MODS_CPU_RANDOM) ? "random" : "default",
-	             (s_modsCustom == NATIVE_MODS_CUSTOM_RANDOM) ? "random" : ((s_modsCustom == NATIVE_MODS_CUSTOM_SELECTED) ? "selected" : "off"), line);
+	Platform_Log("[CTR Mods] seats (%s, level %d, cpu drivers %s):%s\n", how, (int)sdata->gGT->levelID, NativeMods_ValueName(s_modsCpu), line);
 }
 
-// The draw: the pool (retail part, custom part), shuffled with the module's
-// own numbers (Fisher-Yates), the first seven to the seats 1..7 in order. Too
-// few: filled with retail drivers nobody has, in id order.
-internal void NativeMods_Draw(const int pack[NATIVE_MODS_SEATS], int pick)
+// The pool of the value: retail ids (entry -1) and roster files (the id is
+// the file's template), never the player's own (retail id player, file pick)
+// and never a file marked unfit. The count.
+internal int NativeMods_Pool(int player, int pick, const u8 *unfit, int poolId[NATIVE_MODS_POOL_MAX], int poolEntry[NATIVE_MODS_POOL_MAX])
 {
-	int poolId[NATIVE_MODS_RETAIL_COUNT + NATIVE_CHAR_ROSTER_MAX];
-	int poolEntry[NATIVE_MODS_RETAIL_COUNT + NATIVE_CHAR_ROSTER_MAX];
-	const int player = (int)data.characterIDs[0];
+	const int all = (s_modsCpu == NATIVE_MODS_CPU_ALL);
 	int count = 0;
-	int seat;
 	int i;
 
-	if (s_modsCpu == NATIVE_MODS_CPU_RANDOM)
+	for (i = 0; i < NATIVE_MODS_RETAIL_COUNT; i++)
 	{
-		for (i = 0; i < NATIVE_MODS_RETAIL_COUNT; i++)
+		if ((i != player) && (all || NativeMods_RetailTicked(i)))
 		{
-			if (i != player)
-			{
-				poolId[count] = i;
-				poolEntry[count] = -1;
-				count++;
-			}
-		}
-	}
-	else
-	{
-		for (seat = 1; seat < NATIVE_MODS_SEATS; seat++)
-		{
-			poolId[count] = pack[seat];
+			poolId[count] = i;
 			poolEntry[count] = -1;
 			count++;
 		}
 	}
 
-	for (i = 0; (s_modsCustom != NATIVE_MODS_CUSTOM_OFF) && (i < NativeChar_RosterFileCount()); i++)
+	for (i = 0; (i < NativeChar_RosterFileCount()) && (count < NATIVE_MODS_POOL_MAX); i++)
 	{
-		if ((i == pick) || ((s_modsCustom == NATIVE_MODS_CUSTOM_SELECTED) && !NativeMods_DriverSelected(i)))
+		if ((i != pick) && !unfit[i] && (all || NativeMods_FileTicked(i)))
 		{
-			continue;
+			poolId[count] = NativeChar_EntryTemplate(i);
+			poolEntry[count] = i;
+			count++;
 		}
-
-		poolId[count] = NativeChar_EntryTemplate(i);
-		poolEntry[count] = i;
-		count++;
 	}
 
-	for (i = count - 1; i > 0; i--)
-	{
-		const int j = NativeMods_Below(i + 1);
-		const int id = poolId[i];
-		const int entry = poolEntry[i];
+	return count;
+}
 
-		poolId[i] = poolId[j];
-		poolEntry[i] = poolEntry[j];
-		poolId[j] = id;
-		poolEntry[j] = entry;
-	}
+// The draw: the pool shuffled with the module's own numbers (Fisher-Yates),
+// taken in that order onto the seats 1..7; a pool smaller than seven is
+// shuffled again for the seats left. Nobody twice while the pool lasts.
+internal void NativeMods_Draw(const int poolIdIn[NATIVE_MODS_POOL_MAX], const int poolEntryIn[NATIVE_MODS_POOL_MAX], int count)
+{
+	int poolId[NATIVE_MODS_POOL_MAX];
+	int poolEntry[NATIVE_MODS_POOL_MAX];
+	int seat = 1;
+	int i;
 
-	for (seat = 1; seat < NATIVE_MODS_SEATS; seat++)
+	while (seat < NATIVE_MODS_SEATS)
 	{
-		if ((seat - 1) < count)
+		memcpy(poolId, poolIdIn, sizeof(poolId));
+		memcpy(poolEntry, poolEntryIn, sizeof(poolEntry));
+
+		for (i = count - 1; i > 0; i--)
 		{
-			data.characterIDs[seat] = (s16)poolId[seat - 1];
-			s_modsPlan.entry[seat] = poolEntry[seat - 1];
-			continue;
+			const int j = NativeMods_Below(i + 1);
+			const int id = poolId[i];
+			const int entry = poolEntry[i];
+
+			poolId[i] = poolId[j];
+			poolEntry[i] = poolEntry[j];
+			poolId[j] = id;
+			poolEntry[j] = entry;
 		}
 
-		// Filled up: the first retail id no seat shows.
-		for (i = 0; i < NATIVE_MODS_RETAIL_COUNT; i++)
+		for (i = 0; (i < count) && (seat < NATIVE_MODS_SEATS); i++, seat++)
 		{
-			int used = (i == player);
-			int s;
-
-			for (s = 1; !used && (s < seat); s++)
-			{
-				used = (s_modsPlan.entry[s] < 0) && ((int)data.characterIDs[s] == i);
-			}
-
-			if (!used)
-			{
-				break;
-			}
+			data.characterIDs[seat] = (s16)poolId[i];
+			s_modsPlan.entry[seat] = poolEntry[i];
 		}
-
-		data.characterIDs[seat] = (s16)((i < NATIVE_MODS_RETAIL_COUNT) ? i : pack[seat]);
-		s_modsPlan.entry[seat] = -1;
 	}
 }
 
@@ -736,11 +936,16 @@ void NativeMods_PlanSeats(struct BigHeader *bigfile)
 {
 	struct GameTracker *gGT = sdata->gGT;
 	int pack[NATIVE_MODS_SEATS];
+	int poolId[NATIVE_MODS_POOL_MAX];
+	int poolEntry[NATIVE_MODS_POOL_MAX];
+	u8 unfit[NATIVE_CHAR_ROSTER_MAX];
 	int pick = NativeChar_Pick();
 	const int cup = ((gGT->gameMode2 & CUP_ANY_KIND) != 0);
+	int count;
 	int seat;
+	int redraw;
 
-	// The defaults: nothing at all - not even the plan of an earlier race is
+	// DEFAULT: nothing at all - not even the plan of an earlier race is
 	// touched here (a menu load lets it go).
 	if (NativeMods_Defaults() && !s_modsPlan.valid && (s_modsModelCount == 0))
 	{
@@ -780,8 +985,52 @@ void NativeMods_PlanSeats(struct BigHeader *bigfile)
 
 	NativeMods_ReleaseModels();
 	memset(&s_modsPlan, 0, sizeof(s_modsPlan));
+	memset(unfit, 0, sizeof(unfit));
 	s_modsDraws++;
-	NativeMods_Draw(pack, pick);
+
+	// Drawn until every drawn file whose template the pack does not hold sits
+	// on it; a round that finds one that does not takes it out of the pool, so
+	// this ends.
+	do
+	{
+		count = NativeMods_Pool(pack[0], pick, unfit, poolId, poolEntry);
+		if (count == 0)
+		{
+			for (seat = 1; seat < NATIVE_MODS_SEATS; seat++)
+			{
+				data.characterIDs[seat] = (s16)pack[seat];
+			}
+
+			Platform_Log("[CTR Mods] cpu drivers %s: no driver may drive (nothing ticked, only the player's own, or no file fits) - the retail "
+			             "seats, as DEFAULT\n",
+			             NativeMods_ValueName(s_modsCpu));
+			NativeMods_ForgetPlan();
+			return;
+		}
+
+		NativeMods_Draw(poolId, poolEntry, count);
+
+		redraw = 0;
+		for (seat = 1; seat < NATIVE_MODS_SEATS; seat++)
+		{
+			const int entry = s_modsPlan.entry[seat];
+			const int templateId = (int)data.characterIDs[seat];
+
+			if ((entry < 0) || unfit[entry] || NativeMods_InPack(pack, templateId))
+			{
+				continue;
+			}
+
+			if ((templateId < 0) || (templateId >= NATIVE_MODS_RETAIL_COUNT) || !NativeChar_FitsDonor(entry, NativeMods_Model(bigfile, templateId)))
+			{
+				Platform_LogWarn("[CTR Mods] %s cannot sit on its template %d (no model of it, or other frame counts) - left out, the seats are "
+				                 "drawn again\n",
+				                 NativeChar_EntryFile(entry), templateId);
+				unfit[entry] = 1;
+				redraw = 1;
+			}
+		}
+	} while (redraw);
 
 	// Every retail model the plan needs and the pack does not hold.
 	for (seat = 1; seat < NATIVE_MODS_SEATS; seat++)
@@ -828,9 +1077,31 @@ int NativeMods_SeatEntry(int seat)
 	return s_modsPlan.entry[seat];
 }
 
-// Load stage 5: a seat whose file could not be bound gets a retail driver of
-// the pack nobody shows (the pack is the one this load holds: seat 0's and
-// LOAD_Robots1P's ids). Returns the id written.
+// ONLY SELECTED, load stage 5: a ticked retail driver, not the player's,
+// whose model this load holds (the pack's or one read for the plan), drawn
+// among them; -1 for none.
+internal int NativeMods_TickedAtHand(void)
+{
+	int ids[NATIVE_MODS_RETAIL_COUNT];
+	int count = 0;
+	int i;
+
+	for (i = 0; (s_modsCpu == NATIVE_MODS_CPU_SELECTED) && (i < NATIVE_MODS_RETAIL_COUNT); i++)
+	{
+		if ((i != s_modsPlan.player) && NativeMods_RetailTicked(i) &&
+		    (NativeMods_InPack(s_modsPlan.pack, i) || (NativeMods_ModelByName(data.MetaDataCharacters[i].name_Debug) != NULL)))
+		{
+			ids[count++] = i;
+		}
+	}
+
+	return (count > 0) ? ids[NativeMods_Below(count)] : -1;
+}
+
+// Load stage 5: a seat whose file could not be bound gets, with ONLY
+// SELECTED, a ticked retail driver at hand (NativeMods_TickedAtHand), else a
+// retail driver of the pack nobody shows (the pack is the one this load
+// holds: seat 0's and LOAD_Robots1P's ids). Returns the id written.
 int NativeMods_RetailFallback(int seat)
 {
 	int id;
@@ -841,7 +1112,11 @@ int NativeMods_RetailFallback(int seat)
 	}
 
 	s_modsPlan.entry[seat] = -1;
-	id = NativeMods_FreePackId(s_modsPlan.pack, seat);
+	id = NativeMods_TickedAtHand();
+	if (id < 0)
+	{
+		id = NativeMods_FreePackId(s_modsPlan.pack, seat);
+	}
 	if (id >= 0)
 	{
 		data.characterIDs[seat] = (s16)id;

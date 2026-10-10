@@ -7,10 +7,12 @@
 #include "platform/native_assets.h"
 #include "platform/native_chars.h"
 
-// NITRO-PIT -> NITRO RACE -> MODE: TIME TRIAL. ALONE ON A CONTAINER TRACK.
+// NITRO-PIT -> TIME TRIAL. ALONE ON A CONTAINER TRACK.
 //
-// The MODE box below the lap box of the track screen (MM_NativeTrackSelect.c)
-// calls MM_NativeTimeTrial_Arm at the start when it stands on TIME TRIAL. The
+// The TIME TRIAL row of the NITRO-PIT box opens the track screen with the
+// list of NITRO RACE (MM_NATIVE_CHOSEN_TIME_TRIAL), which calls
+// MM_NativeTimeTrial_Arm at the start (MM_NativeTrackSelect.c, [K9]). Until
+// 0.7.5 it was the row TIME TRIAL of a MODE box below the lap box. The
 // race is an ordinary arcade race (NITRO RACE) plus this marker - the
 // TIME_TRIAL bit of retail stays OFF, on purpose:
 //   - in a race gGT->levelID is the donor slot (DINGO CANYON), never the
@@ -46,8 +48,9 @@
 // (RACING) and RETRY keeps it - the restart sets the race up again. Back in
 // the menu level (CHANGE LEVEL, CHANGE CHARACTER, QUIT, pause menu) the
 // menu tick clears it, so the next NITRO RACE has opponents and items again;
-// the MODE box calls Arm again for the next start. IsCustom also asks the
-// MODE box itself, so a stale marker cannot make a RACE start alone.
+// the track screen calls Arm again for the next start. IsCustom also asks the
+// track screen's mode itself, so a stale marker cannot make a RACE start
+// alone.
 
 #define MM_NATIVE_TT_FILE      "nitro-pit-times.tsv"
 #define MM_NATIVE_TT_TEMP      "~nitro-pit-times.tsv.tmp"
@@ -137,7 +140,7 @@ int MM_NativeTimeTrial_IsCustom(void)
 	const struct GameTracker *gGT = sdata->gGT;
 
 	// The race type as NITRO RACE starts it: arcade, one player, no other
-	// mode bit, a container on the donor slot - and the MODE box still on
+	// mode bit, a container on the donor slot - and the track screen still in
 	// TIME TRIAL.
 	return (s_ttState != MM_NATIVE_TT_OFF) && (gGT->numPlyrCurrGame == 1) && ((gGT->gameMode1 & ARCADE_MODE) != 0) &&
 	       ((gGT->gameMode1 & (TIME_TRIAL | ADVENTURE_MODE | BATTLE_MODE | CRYSTAL_CHALLENGE | RELIC_RACE)) == 0) &&
@@ -690,8 +693,8 @@ internal void MM_NativeTimeTrial_DriverName(char *out, int outSize)
 }
 
 // From MM_NativeTrackSelect_MenuProc, when the container of the row is loaded
-// and QueueLoadTrack is about to request the level, and the MODE box stands on
-// TIME TRIAL. Sets no mode bit: the race is NITRO RACE (see above).
+// and QueueLoadTrack is about to request the level, and its mode is TIME
+// TRIAL. Sets no mode bit: the race is NITRO RACE (see above).
 void MM_NativeTimeTrial_Arm(void)
 {
 	s_ttState = MM_NATIVE_TT_ARMED;
@@ -704,7 +707,7 @@ void MM_NativeTimeTrial_Arm(void)
 // From NativeMenuLock_Tick, only in the menu level (see MM_NativeCrystal_MenuTick,
 // the same reason). After a time trial race every way back into the menu
 // clears the marker; an ARMED marker (start on its way) is cleared only when
-// the MODE box no longer says TIME TRIAL.
+// the track screen is no longer in TIME TRIAL.
 void MM_NativeTimeTrial_MenuTick(void)
 {
 	const struct GameTracker *gGT = sdata->gGT;

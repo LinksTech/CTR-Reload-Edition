@@ -2543,7 +2543,7 @@ int main(int argc, char *argv[])
 			if (!NativeMods_SetDev(value))
 			{
 				fflush(stdout);
-				fprintf(stderr, "switch --dev-mods expects default|random,off|random|selected[,file,...], got %s\n", value);
+				fprintf(stderr, "switch --dev-mods expects default|random|selected[,driver,...], got %s\n", value);
 				fflush(stderr);
 				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
 			}
