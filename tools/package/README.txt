@@ -162,7 +162,10 @@ Adventure, Battle or with two players (the NITRO-PIT time trial takes them).
   never the voice of Fake Crash. The game logs who sits where at the start
   of a race ("[CTR Char] seats: ...") and the clips of each file (a line
   starting with "[CTR Char] voices").
-- The cup podium still shows Fake Crash.
+- The cup podium still shows the template (Fake Crash, for a character
+  from Reload Studio) in place of the custom driver; the log line
+  "[CTR Char] seat 0 empty: podium of an arcade cup, the pick stays" says
+  so.
 
 
 4. RELOAD STUDIO
@@ -276,8 +279,8 @@ Tab 1 Model
               next to a .gltf. Reload Studio reads it like an OBJ: the same
               rules, limits, choices and messages, the same native model.
               Its shape keys are the driver's animations (tab Extras, card
-              Animations; how to make them: docs/ANIMATIONS.md in this
-              package). A glTF with
+              Animations; how to make them: ANIMATIONS.txt on the release
+              page, docs/ANIMATIONS.md in the source code). A glTF with
               a rig (armature, skin) is refused: rigs are not supported yet
               - use shape keys. OBJ and PLY stay as they are for models
               without animations.
@@ -549,20 +552,32 @@ Tab 5 Extras
               Each of these is passed only when you set it - left alone,
               the character is built exactly as before. The game draws your
               wheels at every distance (not left out far away like its own
-              tyres). Model the tread as geometry - lugs with grooves
-              between: the game keeps a fast wheel from seeming to turn
-              backwards by the bumps of its shape, so at full speed it turns
-              a little slower than the kart drives; a tread painted only in
-              the texture of a smooth wheel is not seen and may flicker.
+              tyres). Model the tread as geometry - 4 to 32 lugs, all alike,
+              with a groove between each two: when the character is built,
+              the lugs of each wheel model are counted from its shape, and a
+              count that is certain goes into the file, so a fast wheel
+              never seems to stand still or turn backwards. A count is
+              stored only when every patterned part repeats that often -
+              lugs, groove floors, also spokes or bolts on the rim (8 spokes
+              on 4 lugs: no count). A wheel without a count (smooth, lugs
+              not all alike, spokes out of step with the lugs, a pattern
+              only painted in the texture, which can still flicker) gets a
+              limit that is safe for up to 32 lugs: at full speed it may
+              turn a little slower than the kart drives, never backwards;
+              the messages of the build say why there is no count. A
+              character built before this version has no count; build it
+              again once.
   Animations  Your driver's animations, from the shape keys of a glTF
               model (.glb). In Blender, give the driver mesh shape keys
               (Object Data -> Shape Keys) named steer_left, steer_right,
               reverse, crash, jump, win and lose - the base mesh is the
               neutral pose - and export glTF 2.0 with Shape Keys on. The
-              full guide: docs/ANIMATIONS.md in this package. A Blender
-              template to start from is in the folder templates as a
-              script; build the .blend with Blender 5.2 from the folder of
-              this package:
+              full guide is ANIMATIONS.txt on the release page (in the
+              source code: docs/ANIMATIONS.md). A Blender template to start
+              from, driver-template.blend (Blender 5.2), is a download on
+              the release page as well. The source code carries the script
+              that makes it; run it with Blender 5.2 from the folder of the
+              source code:
     blender --background --factory-startup --python templates/make_driver_template.py
               (it is written next to the script; templates/README.md).
               The list
@@ -740,8 +755,8 @@ Reload Studio
     Try "Closed hull (remesh)" on a model the repair cannot fix.
 [ ] Character page: a model with its own wheels or vehicle, "Show kart
     wheels" off - the game draws no kart wheels for it.
-[ ] Character page: a .glb from Blender with shape keys (docs/ANIMATIONS.md
-    in this package)
+[ ] Character page: a .glb from Blender with shape keys (ANIMATIONS.txt on
+    the release page)
     - the card Animations lists them, the preview plays them, and the
     driver steers, jumps and crashes with them in the game.
 [ ] Character page, card Wheels: a wheel model, a rear wheel model, the
@@ -804,11 +819,17 @@ Modes and menus
 Characters
 - Custom drivers without their own voice lines are silent. With voices a
   driver says nothing at an event it has no clip for.
-- At top speed the tread of custom wheels can look still or turning
-  backwards (a stroboscope effect of the frame rate).
+- Wheels of their own: when the lugs cannot be counted for certain from the
+  shape of the wheel (a smooth wheel, lugs that are not all alike, spokes or
+  bolts out of step with the lugs, or a tread painted only in the texture),
+  the wheel seems to turn slower than the kart drives at top speed. A
+  painted pattern with more repeats than the stored count, or than 32, may
+  still flicker at speed. Wheels built before this version carry no count;
+  build the character again.
 - The character's own icon shows only for the first 20 loaded files; high
   score lists and profiles show the portrait of Fake Crash.
-- The cup podium shows Fake Crash.
+- The cup podium shows the template (Fake Crash, for a character from
+  Reload Studio) in place of the custom driver.
 - Only in the one-player ARCADE driver select; not in NITRO-PIT CRYSTAL or
   CTR, the original Time Trial, Adventure, Battle or with two players.
 - The size is visual only - physics and collision follow the driving style.
@@ -890,6 +911,11 @@ if you mind.
   LICENSE             the GNU General Public License version 3
   THIRD_PARTY_NOTICES.md
                       licenses of the components the programs contain
+  docs\ANIMATIONS.md  the guide to animations of your own (ANIMATIONS.txt
+                      on the release page)
+  templates\          the script that makes the Blender driver template,
+                      its license and README.md (the .blend itself is
+                      driver-template.blend on the release page)
   <package name>-source.zip
                       the source code of exactly this build
 

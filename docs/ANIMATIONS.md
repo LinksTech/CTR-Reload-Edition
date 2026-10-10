@@ -5,17 +5,26 @@ and a win and a lose pose after the finish line. You make them as **shape
 keys** in Blender and export the model as **glTF 2.0 binary (.glb)**. Reload
 Studio reads the .glb on the Character page like an OBJ, plus the shape keys.
 
-A ready-made start is the template `templates/driver-template.blend` (CC0,
-free for any use): a simple placeholder driver with kart, at the right size
-and orientation, with all seven shape keys and the export settings already
-stored in the file. It is not shipped as a file: build it once with Blender
-5.2 from the folder of the release package (or of the source code), where
-the folder `templates` is:
+A ready-made start is the template `driver-template.blend` (CC0, free for
+any use): a simple placeholder driver with kart, at the right size and
+orientation, with all seven shape keys and the export settings already
+stored in the file. Download it from the release page, where it comes with
+its licence (`LICENSE-template.txt`), this guide as `ANIMATIONS.txt` and
+`SHA256SUMS.txt`. It was made with Blender 5.2; older versions may not open
+it.
+
+The .blend is not in the repository. The source code (also the source
+archive on the release page) carries the script that makes it,
+`templates/make_driver_template.py`; to build it yourself, run it once with
+Blender 5.2 from the folder of the source code, where the folder
+`templates` is:
 
     blender --background --factory-startup --python templates/make_driver_template.py
 
-It is written next to the script, as `templates/driver-template.blend`
-(details in [templates/README.md](../templates/README.md)).
+It is written next to the script, as `templates/driver-template.blend`.
+Every run of the same Blender version makes the same bytes; Blender 5.2.2,
+which made the download, makes the download itself (details in
+[templates/README.md](../templates/README.md)).
 
 ## 1. Prepare the model
 
@@ -28,14 +37,25 @@ It is written next to the script, as `templates/driver-template.blend`
    tallest original driver (142.5 game units = 2.23 m). Model at about that
    size and the factor stays close to 1. The template's kart is exactly
    1.756 m long; the empty "CrashSize" in it shows Crash with his kart.
-3. **Parts:** the kart is one connected piece at the bottom, about as long as
-   a kart. The driver is the largest other piece; small separate pieces in
-   front of him are taken as the steering wheel. So keep the driver's arms,
-   legs and face connected to his body (the template welds each limb to the
-   body at one corner). The game draws the wheels; leave them out, or use the
-   Wheels card - a wheel of your own with its tread modelled as geometry, not
-   only painted in the texture (the game keeps a fast wheel from strobing by
-   the bumps of its shape).
+3. **Parts:** the kart is one connected piece at the bottom, about as long
+   as a kart. The driver is the largest other piece; small separate pieces
+   in front of him are taken as the steering wheel. So keep the driver's
+   arms, legs and face connected to his body (the template welds each limb
+   to the body at one corner). The game draws the wheels; leave them out, or
+   use the Wheels card - a wheel of your own with its tread modelled as
+   geometry, not only painted in the texture: 4 to 32 lugs, all alike, with
+   a groove between each two. When the character is built, the lugs are
+   counted from the shape of each wheel model (front and rear); only a count
+   that is certain, with every spoke or bolt on the rim repeating as often
+   as the lugs, is stored in the file, and the game uses it to keep a fast
+   wheel from seeming to stand still or turn backwards. A wheel without a
+   count (a smooth one, lugs that are not all alike, spokes or bolts that do
+   not repeat as often as the lugs, a pattern only painted in the texture)
+   gets a limit that is safe for any tread of up to 32 lugs: at top speed it
+   may seem to turn slower than the kart drives, but never backwards or
+   standing still; the messages of the build say why there is no count. A
+   character with wheels of its own built before this version has no count:
+   build it again once.
 4. **Materials:** use the **Principled BSDF** with an **Image Texture** on
    Base Color (or just a Base Color). That is what the glTF exporter writes
    and what Reload Studio reads. The model needs UVs for its texture.
@@ -99,11 +119,12 @@ Animations lists each pose as from file, automatic, mirrored or error.
 
 ## 5. Where you see win and lose
 
-After the finish line, only on the **native model**: build the character with
-"Native model" ticked (tab Extras, card Import; it needs "Show kart wheels"
-off or a wheel model on the Wheels card) and set OPTIONS -> GRAPHICS ->
-NATIVE DRIVERS to Preview, at a RESOLUTION of 2x or more. The classic model
-stays in the neutral pose after the finish line.
+After the finish line of a race with a real placing (not in a time trial),
+only on the **native model**: build the character with "Native model"
+ticked (tab Extras, card Import; it needs "Show kart wheels" off or a wheel
+model on the Wheels card) and set OPTIONS -> GRAPHICS -> NATIVE DRIVERS to
+Preview, at a RESOLUTION of 2x or more. The classic model stays in the
+neutral pose after the finish line.
 
 ## 6. Limits
 

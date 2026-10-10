@@ -31,18 +31,42 @@ NEW IN 0.7.5 BETA
 - For scripts: rldpack make-char --shadow retail|auto|off and
   --exhaust retail|off|x,y,z[;x,y,z] (points in game units of the
   finished model). rldpack info names the look.
+- Models in glTF 2.0: make-char --model and char-wheel read a .glb
+  (recommended) or a .gltf (with its .bin and textures next to it, or
+  embedded). All meshes of the scene become one driver, as with an OBJ.
+  Base colour, base colour texture, emission, vertex colours (COLOR_0)
+  and the alpha mode are read like the materials of an OBJ, and the same
+  rules, budgets and messages apply. A Blender export with the default
+  settings (nose toward -Y, +Z up) stands right with the default axes.
+  Textures embedded in a .glb are copied to the TEMP folder for the run
+  (rldpack-gltf-<hash>-<n>.png or .jpg) and removed when it ends; no
+  folder to write to is the error model-gltf-temp. A broken file
+  (model-gltf-broken), a file without a mesh (model-gltf-empty) and
+  lines or points instead of triangles (model-gltf-mode) are refused.
+  OBJ and PLY stay as they are.
+- Reload Studio: the file dialogs for the model and the wheels list
+  "glTF binary (*.glb) - recommended" first, then OBJ and PLY. A .glb or
+  .gltf dropped onto the page is the model (on the card Wheels: the
+  wheel model). The field is now called "Model file". A glTF counts as
+  an OBJ for the page: Textures folder, Vertex colors, Native model and
+  wheels.
 - Reload Studio: the Character page switches to a compact layout when
   the window is small and fits 1366 x 768 at 150 % without scrolling.
 - Reload Studio: a new 3D preview on the Character page. Drag to turn
   the model and to look from higher or lower, drag with the right or
-  middle mouse button to move it, turn the mouse wheel to zoom (50 to
-  800 %), double-click for the start view. A bar in the preview and its
-  View menu (also on a right click) hold the fixed views Front, Side,
-  Back, Top, 3/4 and Race (the chase camera of the race), Reset view, a
-  dark or light background, the Crash size reference, Shadow and
-  Exhaust. These switches only change what you see; what is built is
-  still chosen on the tab In-game look. None of them is remembered;
-  every start begins with the 3/4 view.
+  middle mouse button to move it, turn the mouse wheel to zoom to the
+  point under the pointer (50 to 800 %), double-click for the start
+  view. A bar in the preview and its View menu (also on a right click)
+  hold the fixed views Front, Side, Back, Top, 3/4 and Race (the chase
+  camera of the race), Reset view, a dark or light background, the Crash
+  size reference, Shadow and Exhaust. These switches only change what
+  you see; what is built is still chosen on the tab In-game look. None
+  of them is remembered; every start begins with the 3/4 view.
+- Reload Studio: a file named portable.ini next to ReloadStudio.exe (it
+  may be empty) keeps its settings, logs and temporary files in that
+  folder, as --settings <file.ini> does; a --settings switch still wins.
+  With either, rldpack, which Reload Studio runs, keeps its temporary
+  files there as well (it used to write them to %TEMP%).
 - Fix: in an arcade cup the custom driver is kept at the podium instead
   of being dropped with a warning. After the cup the game returns to the
   title, and the driver select starts on the template's tile, as after
@@ -58,6 +82,76 @@ NEW IN 0.7.5 BETA
   path over 511 characters now ends the start instead of falling back to
   the standard log. A shot or dump file that cannot be written says so in
   the log.
+
+ANIMATIONS FROM SHAPE KEYS
+- A glTF can bring the driver's animations as shape keys (morph targets)
+  of the driver mesh: steer_left, steer_right, reverse, crash, jump, win
+  and lose, each optional, upper or lower case alike (docs/ANIMATIONS.md
+  in the source code). The base mesh is the neutral pose; each key is
+  the full pose.
+- steer_left and steer_right: the lean at full lock (frame 0 full left,
+  frame 10 neutral, frame 20 full right), weighted along the steering
+  curve of the original drivers. reverse: 7 frames, from 0 to full.
+  crash: 15 frames along the pitch curve of the original bump, full at
+  the strongest point. jump: 4 frames, from 0 to full. These go into the
+  47 frames of the classic model (CMDL) and of the high-detail model
+  (POSN): the game is unchanged for them, and every version shows them.
+- Mirror rule: with only one steering key the other side is its mirror
+  image (x -> -x) when at least 98 % of the points find a partner within
+  0.5 % of the model's width (info pose-mirrored). Otherwise both sides
+  keep the automatic lean, with the warning pose-not-symmetric "model not
+  symmetric, using automatic lean".
+- A missing key keeps the automatic pose (win and lose: neutral); a key
+  that is exported but empty keeps that pose still. Unknown names are
+  ignored (warning pose-unknown-key). The kart stays still: where a key
+  moves the kart it is set to 0 (warning pose-kart-moved). A key that
+  makes the model too big is the error model-scale. With --poses still,
+  with --remesh on or without a driver part the keys are not used.
+- win and lose: a new optional section MRPH in the CNET chunk holds them
+  for the high-detail model, so only with --native-model on (960016
+  bytes at 20000 vertices with both targets). After the finish line of
+  a race with a real placing (not in a time trial) the game blends the
+  native driver from the neutral pose to win (places 1-3) or lose
+  (places 4-8) in 8 steps over about half a second. The steps are
+  computed while loading (7.3 MiB at 20000 vertices for both); only the
+  drawing changes, the race runs the same. The classic model stays
+  neutral.
+- A glTF with a rig (skin) is refused: model-rig "Rigs are not supported
+  yet, please use shape keys".
+- For scripts: make-char prints a line @pose <name> <state> <reason> for
+  each of the seven (state from-file, automatic, mirrored, neutral or
+  error). rldpack char-poses --model <x.glb> prints the same lines
+  without writing a file; its PLY folder form stays.
+- Without shape keys, and for every OBJ or PLY, the file is byte for
+  byte the one built before.
+- Reload Studio, card Animations (tab Extras): open without a start
+  switch, no longer "Coming soon". It lists the seven poses with where
+  each comes from (from the file, mirrored, automatic, neutral, or an
+  error with its reason) and names ignored shape keys and a refused rig.
+  Its preview: a slider Steering from left to right, Jump, Crash,
+  Reverse, Win and Lose (one at a time) and Play (loop); a click on a
+  pose in the list shows it. Nothing of it is built or remembered.
+- Reload Studio preview: all 47 frames of both models, and win and lose
+  blended on the Native look; the Classic look stays neutral after the
+  finish line, as in the game.
+- Reload Studio, card Animations: without "Native model" win and lose
+  are not built; the list says "used only with the native model" and
+  Win and Lose are greyed out.
+- A driver template for Blender (CC0 1.0, free for any use): a simple
+  placeholder driver with kart at the right size (1 Blender unit = 1 m
+  = 64 game units) and orientation, with the seven shape keys (jump,
+  crash and reverse empty and muted, so the game moves those itself)
+  and the glTF export settings stored in the file (collection Driver >
+  Exporters). It is a download of its own on the release page:
+  driver-template.blend (made with Blender 5.2; older versions may not
+  open it), with LICENSE-template.txt, the guide as ANIMATIONS.txt and
+  SHA256SUMS.txt. The .blend is not in the source code or the package;
+  they carry the script that makes it (folder templates:
+  make_driver_template.py, LICENSE, README.md), and the same Blender
+  version makes the same bytes from it:
+  blender --background --factory-startup --python
+  templates/make_driver_template.py
+  docs/ANIMATIONS.md, the guide, is in the package as well.
 
 PREVIEW: HIGH-DETAIL CUSTOM CHARACTERS (off by default)
 - A new native render path draws a custom character from a second,
@@ -106,11 +200,48 @@ PREVIEW: HIGH-DETAIL CUSTOM CHARACTERS (off by default)
   version) the character drives its classic model with the game's own
   wheels. Older versions refuse a version 2 wheel and draw the classic
   model.
+- Wheels of their own, complete (WHLS version 3, written only when one
+  of these switches is used or a tread count is stored, see below;
+  otherwise version 2 as before):
+  --rear-wheel-model <glb|obj|ply>: a wheel of its own for the two rear
+  wheels, with the same limits and its own material and texture; it
+  keeps its size next to the front wheel as in the two files.
+  --axle-front and --axle-rear <fwd>,<up>,<track>: moves the wheels of
+  that axle, in model units (fwd -32..32, up -16..32, track -32..64 for
+  the whole track; each wheel moves by half).
+  --wheels-always on|off is reserved: on sets a flag of version 3 that
+  has no effect in the game (wheels of their own are drawn at every
+  distance anyway); Reload Studio does not pass it.
+  --wheel-model and char-wheel take a .glb as well.
+- Wheels of their own no longer look still or as if they turn backwards
+  at top speed. When the character is built, make-char counts the lugs
+  of the tread from the shape of each wheel model (front and rear): 4 to
+  32 lugs, all alike, with a groove between each two. Only a count that
+  is certain goes into the file, and the game then turns the drawn wheel
+  by at most 0.45 of the spacing of its lugs per frame. A wheel without
+  a count (a smooth one, or one whose tread cannot be counted for
+  certain) gets a limit that is safe for any tread of up to 32 lugs: at
+  top speed it may seem to turn slower than the kart drives, but never
+  backwards or standing still. Only the drawing changes. The count is
+  stored only when every patterned part of the wheel repeats exactly that
+  often: lugs, groove floors, and also spokes or bolts on the rim (smooth
+  round parts do not matter). 8 spokes on 4 lugs, or 12 spokes on 10
+  lugs, mean no count and the safe limit. Model spokes and lugs as
+  geometry, in step with each other: a pattern only painted in the
+  texture (stripes, painted spokes) is not counted and can still flicker.
+- For scripts: make-char prints @value wheel-treads front|rear <n>
+  found|not-determined, and without a count info wheel-treads with the
+  reason; rldpack info names the count. A character with wheels of its
+  own built before this version has no count: build it again once.
+- Older versions skip MRPH (no win and lose; the high-detail model is
+  drawn as before) and refuse WHLS version 3 (rule CNET-10): a file with
+  a rear wheel model, moved axles or a stored tread count gets its
+  classic model with the game's own wheels there.
 - Reload Studio: "Native model" (tab Extras, card Import) and the card
   "In the race" are open without a start switch, marked "Preview
-  feature". The new card Wheels takes a wheel model (OBJ or PLY) and its
-  size and spins and steers the wheels in the preview. Without the tick
-  Reload Studio builds the same file as before.
+  feature". The new card Wheels takes a wheel model (glTF, OBJ or PLY)
+  and its size and spins and steers the wheels in the preview. Without
+  the tick Reload Studio builds the same file as before.
 - Reload Studio preview of the high-detail model: drawn as the game
   draws it with NATIVE DRIVERS set to PREVIEW, with the real textures in
   full size (up to the game's limit) and the same mipmaps as the game.
@@ -127,6 +258,14 @@ PREVIEW: HIGH-DETAIL CUSTOM CHARACTERS (off by default)
   Clear at once, and finds the wheel texture in the Textures folder as
   well. When the preview shows wheels the character will not have, the
   card and the line below the preview say so.
+- Reload Studio, card Wheels: "Rear wheel model (GLB/OBJ/PLY)" and
+  Front axle or Rear axle with Fwd, Up and Track. The preview shows
+  the rear wheel at its size and the moved axles at once. Each of these
+  goes to make-char only when it is set.
+- While the card Wheels is shown, a .glb, .gltf, OBJ or PLY dropped
+  onto the Character page becomes the wheel model; the body keeps its
+  file.
+  Elsewhere a dropped model is the body, as before.
 
 
 NEW IN 0.0.5 BETA
@@ -305,7 +444,8 @@ Characters
   driver says nothing at an event it has no clip for.
 - The character's own icon shows only for the first 20 loaded files; high
   score lists and profiles show the portrait of Fake Crash.
-- The cup podium shows Fake Crash.
+- The cup podium shows the template (Fake Crash, for a character from
+  Reload Studio) in place of the custom driver.
 - Only in the one-player ARCADE driver select; not in NITRO-PIT CRYSTAL or
   CTR, the original Time Trial, Adventure, Battle or with two players.
 - The size is visual only - physics and collision follow the driving style.
@@ -319,24 +459,42 @@ Characters
   model gets the classic model only.
 - High-detail model: a semi-transparent (blend) material makes the game
   draw the classic model for that driver.
-- High-detail model: only from an OBJ. A PLY names no texture file, so it
-  gets the classic model only (Reload Studio says so).
+- High-detail model: only from an OBJ or a glTF. A PLY names no texture
+  file, so it gets the classic model only (Reload Studio says so).
 - The format of the high-detail model is a preview and may change.
 - Exhaust points belong to the model as it was fitted. After a change of
   size or fit, set them again.
 - The fitted shadow is computed from the model's footprint with start
   values; it may cover a little more or less than the model.
-- Wheels of their own: at top speed the tread can look still or as if it
-  turns backwards (a stroboscope effect).
 - Wheels of their own are always drawn, also where the game leaves its
-  own wheels out (lower level of detail), and in the mirror and under
-  water they are darkened like the body.
+  own wheels out (lower level of detail); --wheels-always has no effect.
+  In the mirror and under water they are darkened like the body.
 - A wheel size other than 100 % shows only on the high-detail model; the
   classic model drives with the game's wheels at their normal size.
 - The wheel points do not follow the size of the driver (--size).
-- Reload Studio's preview shows the poses Neutral, Steering left and
-  Steering right, but no animations. The card Animations (poses of your
-  own) stays "Coming soon".
+- Wheels of their own: when the lugs cannot be counted for certain from
+  the shape of the wheel (a smooth wheel, lugs that are not all alike,
+  spokes or bolts that do not repeat as often as the lugs, or a tread
+  painted only in the texture), the game uses the limit that is safe for
+  up to 32 lugs, and at top speed the wheel seems to turn slower than the
+  kart drives. A painted pattern with more repeats than the stored count,
+  or than 32, may still flicker at speed.
+- Wheels of their own built before this version carry no tread count
+  and get that safe limit; build the character again once.
+- Win and lose show only on the high-detail model (--native-model on,
+  in Reload Studio "Native model") and only after a race with a real
+  placing; the classic model stays neutral after the finish line.
+- At the finish line the high-detail driver first jumps a little from
+  its steering pose, then blends into win or lose (the blend starts from
+  the neutral pose).
+- Rigs (a glTF with a skin) are not supported yet; animations come only
+  from shape keys.
+- glTF: a texture rotation (KHR_texture_transform) is not used (warning
+  gltf-texture-rotation); the weights of the shape keys in the file are
+  ignored (the base mesh is the neutral pose).
+- rldpack: for a file with moved axles the text line "wheel ... at" of
+  make-char still names the game's wheel points, and rldpack verify does
+  not name the section MRPH; the @ lines are right.
 - The shadow in Reload Studio's preview is a soft rectangle; the game's
   shadow can look a little different.
 

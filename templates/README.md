@@ -11,11 +11,14 @@ It was made with Blender 5.2; older versions may not open it.
 
 How to use it: [docs/ANIMATIONS.md](../docs/ANIMATIONS.md).
 
-The .blend is not shipped as a file (neither in the repository nor in the
-release package): build it once. `make_driver_template.py` builds it from
-scratch, the same bytes on every run of the same Blender version; run it
-from the folder that holds `templates` (the release package or the source
-code), with `blender` being Blender 5.2 (or its full path, e.g.
+The .blend is a download of its own on the release page
+(`driver-template.blend`, with `LICENSE-template.txt`, the guide as
+`ANIMATIONS.txt` and `SHA256SUMS.txt`); it is not in the repository or a
+package. To build it yourself: `make_driver_template.py` builds it from
+scratch, the same bytes on every run of the same Blender version (Blender
+5.2.2 makes the download itself); run it from the folder that holds
+`templates` (the source code, or a package that has this folder), with
+`blender` being Blender 5.2 (or its full path, e.g.
 "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe"):
 
     blender --background --factory-startup --python templates/make_driver_template.py
