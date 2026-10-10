@@ -33,6 +33,12 @@ extern int g_cfg_nativeLayerReport;
 // scene table (prev/curr per logic tick of gGT->timer).
 void NativeRenderLayer_Pull(struct GameTracker *gGT);
 
+// Load stage 5 (game/LOAD/LOAD_TenStages.c), right after the native sets of
+// the seats went up: the depth image of the main target and the pipelines of
+// the race, built at the loading screen instead of in the first race frame.
+// Returns at once without --native-preview or without a native set.
+void NativeRenderLayer_WarmRace(void);
+
 // INSTANCE_Birth and INSTANCE_Death: one more generation for the pool slot of
 // the instance, so a reused slot never inherits the previous state of the
 // instance that lived there before. Host table only.

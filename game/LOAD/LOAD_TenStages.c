@@ -21,6 +21,12 @@ void NativeCharGpu_LoadSeats(int levelID);
 // seats. Returns at once without the switch.
 void NativeCharGpu_LoadTwin(int levelID);
 
+// From platform/native_render_layer.c as well: the depth image of the main
+// target and the pipelines of the race, built at this loading screen (stage 5,
+// after the sets) instead of in the first race frame. Returns at once without
+// --native-preview or without a native set.
+void NativeRenderLayer_WarmRace(void);
+
 #ifdef CTR_NATIVE
 // See game/LOAD/LOAD_File.c: declaration instead of a platform header, because this
 // file is part of the game's unity build.
@@ -557,6 +563,11 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 		// every pose, the indices and the textures of a bound seat (step 4c).
 		NativeCharGpu_LoadSeats(gGT->levelID);
 		NativeCharGpu_LoadTwin(gGT->levelID);
+
+		// With a native set: the depth image of the main target and the
+		// pipelines of the race now, at the loading screen, instead of in the
+		// first race frame. Nothing without one.
+		NativeRenderLayer_WarmRace();
 
 		// The driver's native texture goes up here, with the drivers of the
 		// race being loaded: the flag covers the screen, no race frame is

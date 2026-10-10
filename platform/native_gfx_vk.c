@@ -928,9 +928,22 @@ global_variable struct
 
 	// The pass object actually open. A pipeline must be compatible with the pass
 	// it draws in, and compatibility does not reach across attachment formats -
-	// an RGBA8 target and a BGRA swapchain are not interchangeable - so this,
-	// not s_vk.renderPass, is what belongs in the pipeline key.
+	// an RGBA8 target and a BGRA swapchain are not interchangeable - so the
+	// pipeline key names a pass of this one's class, never s_vk.renderPass.
 	VkRenderPass activePass;
+
+	// THE PASS THE PIPELINES ARE KEYED ON: one per class of attachments
+	// (format, samples, depth), the pass that loads the target and starts
+	// from its final layout (NativeVk_PipelinePass). The passes of a class
+	// differ only in load operation and initial layout, which makes them
+	// compatible in Vulkan's sense, and a pipeline may draw in any pass
+	// compatible with the one it was built against. Keyed on activePass, the
+	// same pipeline came into being once per load operation - up to three
+	// times, and in the first race frame. Only with --native-preview; without
+	// it, and when the class has no slot left, this is activePass, and the
+	// key is the one of every run before. Set beside activePass in
+	// NativeVk_BeginPassIfNeeded.
+	VkRenderPass pipelinePass;
 
 	// One descriptor pool per frame in flight, reset when that frame comes round
 	// again. Allocating from a freshly reset pool is a bump allocation; calling
@@ -4669,6 +4682,46 @@ internal VkRenderPass NativeVk_GetRenderPass(VkFormat format, VkAttachmentLoadOp
 	return s_vk.renderPasses[slot].pass;
 }
 
+// The key a pass of the cache was made from, NULL for a handle that is not
+// one of them (the swapchain path's own s_vk.renderPass, a stale handle).
+internal const struct NativeVkRenderPassKey *NativeVk_RenderPassKeyOf(VkRenderPass pass)
+{
+	for (uint32_t i = 0; i < NATIVE_VK_MAX_RENDER_PASSES; i++)
+	{
+		if (s_vk.renderPasses[i].used && (s_vk.renderPasses[i].pass == pass))
+		{
+			return &s_vk.renderPasses[i].key;
+		}
+	}
+
+	return NULL;
+}
+
+// THE PASS A PIPELINE IS KEYED ON. Of all the passes of one class of
+// attachments - format, samples, depth - the one that loads the target and
+// starts from its final layout: the pass every resumption of a target takes.
+// The others of the class (clear, don't care, the undefined first layout of a
+// swapchain image) differ from it only in the load operation and the initial
+// layout of the colour attachment, and those are exactly what the
+// specification lets compatible passes differ in (8.2 "Render Pass
+// Compatibility": attachment references compatible when format and sample
+// count match, the passes otherwise identical except for initial and final
+// layouts, load and store operations and the layouts of attachment
+// references; NativeVk_GetRenderPass gives every pass of a class the same
+// subpass and the same dependencies). A draw needs a pass compatible with the
+// one its pipeline was built against, not the same one
+// (VUID-vkCmdDraw-renderPass-02684, VUID-vkCmdDrawIndexed-renderPass-02684),
+// so one pipeline serves the class instead of one per load operation. Made
+// here when it does not exist yet; VK_NULL_HANDLE only when the cache has no
+// slot left, and the caller then keys on the pass itself, as every pass did
+// before. Only called with --native-preview (NativeVk_BeginPassIfNeeded,
+// NativeGfxVK_WarmPipelines): a run without it keys on the open pass, makes
+// its passes in the order it always did and never comes here.
+internal VkRenderPass NativeVk_PipelinePass(VkFormat format, VkImageLayout finalLayout, uint32_t samples, VkFormat depthFormat)
+{
+	return NativeVk_GetRenderPass(format, VK_ATTACHMENT_LOAD_OP_LOAD, finalLayout, finalLayout, samples, depthFormat);
+}
+
 internal VkFramebuffer NativeVk_GetFramebuffer(VkRenderPass pass, VkImageView view, VkImageView resolveView, VkImageView depthView, uint32_t width,
                                                uint32_t height)
 {
@@ -4871,19 +4924,33 @@ internal int NativeVk_BeginPassIfNeeded(void)
 	s_vk.framePasses++;
 	NativeVk_ForgetRecordedState();
 
+	// The pass the pipelines of this class are keyed on - with --native-preview
+	// the loading one, made here when the class is new; out of slots, the pass
+	// itself. Without the switch the pass itself, always: the key, the passes
+	// made and the order they are made in are then the ones of every run
+	// before, and nothing is looked up or created here.
+	s_vk.pipelinePass = pass;
+
+	if (g_cfg_nativePreview)
+	{
+		const VkRenderPass classPass = NativeVk_PipelinePass(s_vk.passFormat, s_vk.passFinalLayout, s_vk.passSamples, s_vk.passDepthFormat);
+
+		if (classPass != VK_NULL_HANDLE)
+		{
+			s_vk.pipelinePass = classPass;
+		}
+	}
+
 	if (isSwapchain)
 	{
 		s_vk.swapchainTouched = 1;
 	}
 
-	// s_vk.renderPass is deliberately NOT reassigned here. It is what pipelines
-	// were keyed and built against, and moving it would silently make the cache
-	// hand out pipelines keyed on one pass while drawing happened in another.
-	//
-	// Drawing in a different pass object is legal: Vulkan requires the two to be
-	// compatible, not identical, and compatibility is about attachment formats
-	// and sample counts - which match - not about load operations. So a pass
-	// that loads and a pass that clears take the same pipeline.
+	// s_vk.renderPass is deliberately NOT reassigned here: it is the swapchain
+	// path's own pass, not one of this cache. The pipelines are keyed on
+	// s_vk.pipelinePass, one pass per class of attachments, and draw in
+	// whichever pass of the class is open - NativeVk_PipelinePass says why
+	// that is legal.
 
 	return 1;
 }
@@ -6317,6 +6384,11 @@ internal void NativeVk_DestroyMultisampledPasses(uint32_t *passes, uint32_t *pip
 			s_vk.activePass = VK_NULL_HANDLE;
 		}
 
+		if (s_vk.pipelinePass == slot->pass)
+		{
+			s_vk.pipelinePass = VK_NULL_HANDLE;
+		}
+
 		vkDestroyRenderPass_fn(s_vk.device, slot->pass, NULL);
 		memset(slot, 0, sizeof(*slot));
 		(*passes)++;
@@ -6512,6 +6584,214 @@ internal int NativeGfxVK_TargetDepth(NativeGfxTarget id)
 	const struct NativeVkTarget *target = NativeVk_Target(id);
 
 	return ((target != NULL) && (target->depthView != VK_NULL_HANDLE)) ? 1 : 0;
+}
+
+// The program a cached key was built for: the one with its vertex module and
+// pipeline layout. NULL for a program destroyed since.
+internal const struct NativeVkProgram *NativeVk_ProgramOfKey(const struct NativeVkPipelineKey *key)
+{
+	for (uint32_t i = 0; i < NATIVE_VK_MAX_PROGRAMS; i++)
+	{
+		const struct NativeVkProgram *program = &s_vk.programs[i];
+
+		if (program->used && ((uint64_t)program->vertexModule == key->vertexModule) && ((uint64_t)program->pipelineLayout == key->layout))
+		{
+			return program;
+		}
+	}
+
+	return NULL;
+}
+
+// The program of that name (desc->debugName, the same name that found its
+// SPIR-V), NULL while there is none.
+internal const struct NativeVkProgram *NativeVk_ProgramNamed(const char *name)
+{
+	for (uint32_t i = 0; i < NATIVE_VK_MAX_PROGRAMS; i++)
+	{
+		const struct NativeVkProgram *program = &s_vk.programs[i];
+
+		if (program->used && (strcmp(program->name, name) == 0))
+		{
+			return program;
+		}
+	}
+
+	return NULL;
+}
+
+// PIPELINES AHEAD OF THE RACE. The first race frame with a native driver
+// built its pipelines at their first draw - seven with four samples, 142 ms
+// of a 157 ms frame on a cold driver cache - because the depth attachment the
+// native draws need (NativeGfxVK_SetTargetDepth) makes the main target's
+// passes a class of their own, and no pipeline existed for it yet. Called at
+// the loading screen (NativeRenderLayer_WarmRace, load stage 5) once the
+// target has its depth image. Builds, for the target that has one,
+//   1. every pipeline the target drew with before it had depth, on its pass
+//      with depth - the same programs, blends and vertex layouts - and, for
+//      the PSX programs (the ones with edge variants), every blend mode of
+//      the scene with and without sample shading, because a loading screen
+//      shows only a few of them;
+//   2. the draws of the native layer itself: program "nr" with the layout of
+//      nativeVertexBuffer, blend none, depth test and write with
+//      GREATER_OR_EQUAL, alpha not written, culled back and front (the mirror
+//      image) - the DEPTH convention of native_gfx.h, as
+//      NativeRenderer_DrawNativeMesh sets it.
+// Records no command and opens no pass: NativeVk_GetPipeline only builds and
+// remembers, and a pipeline already in the cache costs a lookup. Without
+// --native-preview, or without a target with depth, nothing happens at all.
+// Returns the number built; one line says so.
+int NativeGfxVK_WarmPipelines(NativeGfxBuffer nativeVertexBuffer)
+{
+	// The blend modes the scene draws with (BlendMode, native_renderer_types.h):
+	// the four PSX modes and the texel-weighted forms of three of them.
+	// BM_AVERAGE itself always arrives as its texel form, BM_ALPHA never
+	// reaches the main target.
+	static const uint8_t sceneBlends[] = {BM_NONE, BM_ADD, BM_SUBTRACT, BM_ADD_QUATER_SOURCE, BM_AVERAGE_TEXEL, BM_ADD_TEXEL, BM_ADD_QUATER_SOURCE_TEXEL};
+
+	// Collected before anything is built: NativeVk_GetPipeline fills the table
+	// that is being read.
+	static struct NativeVkPipelineKey seeds[NATIVE_VK_MAX_PIPELINES];
+	uint32_t seedCount = 0;
+
+	if ((s_vk.device == VK_NULL_HANDLE) || !g_cfg_nativePreview)
+	{
+		return 0;
+	}
+
+	// The target with depth: the main target while NativeGfxVK_SetTargetDepth
+	// gave it one; the window never has one.
+	const struct NativeVkTarget *target = NULL;
+
+	for (uint32_t i = 0; i < NATIVE_VK_MAX_TARGETS; i++)
+	{
+		if (s_vk.targets[i].used && s_vk.targets[i].depthWanted && (s_vk.targets[i].depthView != VK_NULL_HANDLE))
+		{
+			target = &s_vk.targets[i];
+			break;
+		}
+	}
+
+	const struct NativeVkTexture *texture = (target != NULL) ? NativeVk_Texture(target->texture) : NULL;
+
+	if (texture == NULL)
+	{
+		return 0;
+	}
+
+	const uint64_t started = SDL_GetPerformanceCounter();
+	const uint32_t before = s_vk.pipelineCount;
+	const uint32_t samples = (target->msaaImage != VK_NULL_HANDLE) ? target->samples : 1u;
+
+	// The pass the race's pipelines are keyed on. An offscreen target ends
+	// every pass in SHADER_READ_ONLY (NativeVk_RepointBoundTarget).
+	const VkRenderPass depthPass = NativeVk_PipelinePass(texture->format, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, samples, target->depthFormat);
+
+	if (depthPass == VK_NULL_HANDLE)
+	{
+		return 0;
+	}
+
+	// 1. What the target drew with so far: every key on a pass of its class
+	// without depth.
+	for (uint32_t i = 0; i < NATIVE_VK_MAX_PIPELINES; i++)
+	{
+		const struct NativeVkPipelineSlot *entry = &s_vk.pipelines[i];
+		const struct NativeVkRenderPassKey *passKey = entry->used ? NativeVk_RenderPassKeyOf((VkRenderPass)entry->key.renderPass) : NULL;
+
+		if ((passKey != NULL) && (passKey->format == (uint32_t)texture->format) && (passKey->samples == samples) && (passKey->depthFormat == 0) &&
+		    (passKey->finalLayout == (uint32_t)VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) && (seedCount < NATIVE_VK_MAX_PIPELINES))
+		{
+			seeds[seedCount++] = entry->key;
+		}
+	}
+
+	for (uint32_t s = 0; s < seedCount; s++)
+	{
+		const struct NativeVkProgram *program = NativeVk_ProgramOfKey(&seeds[s]);
+		struct NativeVkPipelineKey key = seeds[s];
+
+		key.renderPass = (uint64_t)depthPass;
+		NativeVk_GetPipeline(&key);
+
+		// A PSX program: every blend of the scene, with and without sample
+		// shading, the fragment stage as NativeVk_RecordDrawSetup picks it.
+		if ((program == NULL) || (program->fragmentModuleCentroid == VK_NULL_HANDLE))
+		{
+			continue;
+		}
+
+		for (uint32_t b = 0; b < (uint32_t)sizeof(sceneBlends); b++)
+		{
+			for (uint32_t shading = 0; shading < 2u; shading++)
+			{
+				key.blend = sceneBlends[b];
+				key.pad[0] = 0;
+				key.fragmentModule = (uint64_t)program->fragmentModule;
+
+				if (samples > 1)
+				{
+					if (shading)
+					{
+						if (!g_gfx_sampleShading || (program->fragmentModuleSample == VK_NULL_HANDLE))
+						{
+							continue;
+						}
+
+						key.fragmentModule = (uint64_t)program->fragmentModuleSample;
+						key.pad[0] = 1;
+					}
+					else
+					{
+						key.fragmentModule = (uint64_t)program->fragmentModuleCentroid;
+					}
+				}
+				else if (shading)
+				{
+					continue;
+				}
+
+				NativeVk_GetPipeline(&key);
+			}
+		}
+	}
+
+	// 2. The native layer's own draws.
+	const struct NativeVkProgram *native = NativeVk_ProgramNamed("nr");
+	const struct NativeVkBuffer *buffer = NativeVk_Buffer(nativeVertexBuffer);
+
+	if ((native != NULL) && (buffer != NULL))
+	{
+		struct NativeVkPipelineKey key;
+		memset(&key, 0, sizeof(key));
+
+		key.vertexModule = (uint64_t)native->vertexModule;
+		key.fragmentModule = (uint64_t)native->fragmentModule;
+		key.renderPass = (uint64_t)depthPass;
+		key.layout = (uint64_t)native->pipelineLayout;
+		key.vertexLayout = buffer->vertexLayout;
+		key.blend = (uint8_t)BM_NONE;
+		key.pad[1] = (uint8_t)((samples > 1) ? samples : 0u);
+		key.depthTest = 1;
+		key.depthWrite = 1;
+		key.depthCompare = (uint8_t)NATIVE_GFX_COMPARE_GREATER_OR_EQUAL;
+		key.colorWriteOff = (uint8_t)NATIVE_GFX_COLOR_A;
+
+		// Back, and front for the mirror image. No flip bit: the target is not
+		// the window (NativeVk_KeyDrawState).
+		key.cull = (uint8_t)NATIVE_GFX_CULL_BACK;
+		NativeVk_GetPipeline(&key);
+		key.cull = (uint8_t)NATIVE_GFX_CULL_FRONT;
+		NativeVk_GetPipeline(&key);
+	}
+
+	const uint32_t built = s_vk.pipelineCount - before;
+	const double ms = (double)(SDL_GetPerformanceCounter() - started) * 1000.0 / (double)SDL_GetPerformanceFrequency();
+
+	Platform_Log("[CTR Vk] warm: %u pipeline(s) built in %.1f ms for the race (%u in cache; %u sample(s), %u seed(s), native layer %s)\n", built, ms,
+	             s_vk.pipelineCount, samples, seedCount, ((native != NULL) && (buffer != NULL)) ? "yes" : "no");
+
+	return (int)built;
 }
 
 internal NativeGfxTarget NativeGfxVK_CreateTarget(const NativeGfxTargetDesc *desc)
@@ -7261,7 +7541,10 @@ internal int NativeVk_RecordDrawSetup(struct NativeVkProgram *program, struct Na
 
 	key.vertexModule = (uint64_t)program->vertexModule;
 	key.fragmentModule = (uint64_t)program->fragmentModule;
-	key.renderPass = (uint64_t)s_vk.activePass;
+	// With --native-preview the pass of the class (s_vk.pipelinePass), not the
+	// pass that is open; without it, and when the class ran out of slots,
+	// pipelinePass IS activePass and the key is the one of every run before.
+	key.renderPass = (uint64_t)((s_vk.pipelinePass != VK_NULL_HANDLE) ? s_vk.pipelinePass : s_vk.activePass);
 	key.layout = (uint64_t)program->pipelineLayout;
 	key.vertexLayout = buffer->vertexLayout;
 	key.blend = (uint8_t)s_vk.state.blend;

@@ -588,6 +588,21 @@ void NativeGfx_EndTimer(void);
 int NativeGfx_TimerReady(NativeGfxTimer timer);
 u32 NativeGfx_TimerElapsedNanoseconds(NativeGfxTimer timer);
 
+// --- Backend-specific ------------------------------------------------------
+//
+// Vulkan only and named so on purpose, like the measuring switches below: what
+// it does is a property of this backend's pipeline cache, not of the
+// interface. PIPELINES AHEAD OF THE RACE. For the target that has a depth
+// image right now (SetTargetDepth), builds the pipelines its draws would
+// otherwise build at their first use, in the first race frame: every pipeline
+// the target drew with before it had depth, the PSX programs over every blend
+// mode of the scene, and the native layer's own draws (program "nr") with the
+// vertex layout of nativeVertexBuffer and the DEPTH convention above. Records
+// nothing and opens no pass; a pipeline already known costs a lookup. Without
+// --native-preview, or without such a target, nothing happens at all. Returns
+// the number built; one log line says so.
+int NativeGfxVK_WarmPipelines(NativeGfxBuffer nativeVertexBuffer);
+
 #endif
 
 #if defined(CTR_INTERNAL)

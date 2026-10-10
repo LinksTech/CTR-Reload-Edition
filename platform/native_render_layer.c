@@ -6013,6 +6013,41 @@ internal void NativeRenderLayer_CheckRestorePull(void)
 	}
 }
 
+// LOAD STAGE 5 (game/LOAD/LOAD_TenStages.c), right after the native sets of
+// the seats went up: what the first race frame did at its first native draw,
+// done at the loading screen instead. The depth image of the main target
+// (NativeRenderer_WantNativeDepth, until now first asked for in the pull of
+// that frame, below) and the pipelines of the race (NativeGfxVK_WarmPipelines,
+// built lazily at their first draw until now: 142 ms of the first race frame
+// on a cold driver cache). Only with --native-preview and only when a seat has
+// a native set; without one nothing happens, and the retail path never gets
+// here with anything to do. The pull's own wish (s_nrCharDepthWanted) stays 0
+// until a seat binds, so a loading frame does not take the image away again;
+// the first race frame then asks for what it already has.
+void NativeRenderLayer_WarmRace(void)
+{
+	const struct NativeCharGpu *set = NULL;
+	int seat;
+
+	if (!g_cfg_nativePreview)
+	{
+		return;
+	}
+
+	for (seat = 0; (seat < NATIVE_RENDER_LAYER_DRIVERS) && (set == NULL); seat++)
+	{
+		set = NativeCharGpu_ForSeat(seat);
+	}
+
+	if (set == NULL)
+	{
+		return;
+	}
+
+	NativeRenderer_WantNativeDepth(1);
+	NativeGfxVK_WarmPipelines(set->bodyVB);
+}
+
 void NativeRenderLayer_Pull(struct GameTracker *gGT)
 {
 	const struct JitPool *pool;
