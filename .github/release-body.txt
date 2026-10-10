@@ -54,6 +54,7 @@ Mods menu (Feature Preview)
 Known issues
 - Custom drivers without their own voice lines are silent.
 - The cup podium shows a custom driver as its template, so win and lose are not seen there.
+- Custom drivers racing as CPU opponents show a placeholder icon in the standings.
 - Custom drivers on the templates Coco and Polar (only possible with rldpack --template 3 or 6; Reload Studio always builds on Fake Crash) are not supported yet: the game drives the original driver instead, and as CPU drivers they are left out.
 - Win and lose show only on the high-detail model (built with "Native model", NATIVE DRIVERS set to PREVIEW, resolution 2x or more). At the finish line the driver first jumps a little from its steering pose, then blends into win or lose.
 - Rigs are not supported yet: animations come only from shape keys.

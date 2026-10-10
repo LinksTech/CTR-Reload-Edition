@@ -486,6 +486,8 @@ Characters
   score lists and profiles show the portrait of Fake Crash.
 - The cup podium shows the template (Fake Crash, for a character from
   Reload Studio) in place of the custom driver.
+- Custom drivers racing as CPU opponents show a placeholder icon in the
+  standings.
 - Custom drivers on the templates Coco and Polar (only possible with
   rldpack --template 3 or 6; Reload Studio always builds on Fake Crash)
   are not supported yet: the game drives the original driver instead,

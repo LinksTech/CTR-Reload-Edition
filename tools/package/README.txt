@@ -852,6 +852,8 @@ Characters
   score lists and profiles show the portrait of Fake Crash.
 - The cup podium shows the template (Fake Crash, for a character from
   Reload Studio) in place of the custom driver.
+- Custom drivers racing as CPU opponents show a placeholder icon in the
+  standings.
 - Only in the one-player ARCADE driver select; not in NITRO-PIT CRYSTAL or
   CTR, the original Time Trial, Adventure, Battle or with two players.
 - The size is visual only - physics and collision follow the driving style.
