@@ -99,9 +99,9 @@ The game loads every .rldtrack file in its "tracks" folder at start. Custom
 tracks are under ARCADE -> NITRO-PIT:
 
   RACE         single race on a custom track (with bots if it has nav paths);
-               below the laps the MODE box: RACE or TIME TRIAL
+               below the laps the MODS box (section "Mods" below)
   CUP          custom cups from tracks\cups.txt (made on the Cups page)
-  TIME TRIAL   grey, "COMING SOON" - the time trial is under RACE, MODE
+  TIME TRIAL   alone on a custom track, against the clock
   CRYSTAL      crystal challenge: collect every crystal in 3:00
   CTR          CTR challenge: finish 1st and collect C, T and R
 
@@ -112,9 +112,8 @@ offers several modes is listed under each of them.
 In the track list the window on the left plays the track's preview. Without a
 preview it shows NO PREVIEW; that is not an error.
 
-Time trial: in the track list press X, then DOWN past the last lap row into
-the MODE box, choose TIME TRIAL with X, pick the laps and start with X. You
-drive alone, without crates or fruit; the HUD lists the lap times and your
+Time trial: choose TIME TRIAL in NITRO-PIT, then your driver; in the track
+list press X, pick the laps and start with X. You drive alone, without crates or fruit; the HUD lists the lap times and your
 best time for this track and lap count. The best times are kept in
 nitro-pit-times.tsv next to the game, one line per track and lap count with
 driver and date - never on the memory card. A line of a track that is no
@@ -169,20 +168,25 @@ Adventure, Battle or with two players (the NITRO-PIT time trial takes them).
   "[CTR Char] seat 0 empty: podium of an arcade cup, the pick stays" says
   so.
 
-Mods - the CPU opponents: in the one-player ARCADE track select press X on a
-track, then DOWN past the last lap row into the MODS box (in the cup select:
-DOWN from a lower cup onto the MODS line) and X. The MODS page works like
-the GRAPHICS page:
-  CPU CHARACTERS      DEFAULT (the usual opponents) or RANDOM (drawn from all
-                      fifteen original drivers)
-  CPU CUSTOM DRIVERS  OFF, RANDOM (every custom driver of the "characters"
-                      folder may be drawn) or SELECTED (only the ones ticked
-                      on SELECT DRIVERS, all ticked at first)
-Each CPU seat draws from one pool of original and custom drivers; nobody
-twice, never your own driver. Every single race draws anew, a cup keeps its
-opponents for all four races. The choice is saved in ctr-settings.cfg. The
-log line "[CTR Mods] seats ..." names who sits where. Not in NITRO-PIT, Time
-Trial, Adventure, Battle or with two players.
+Mods - the CPU opponents: in the one-player ARCADE track select (also NITRO
+RACE) press X on a track, then DOWN below the last LAPS row into the MODS box
+(in the cup select, also NITRO CUP: DOWN from a lower cup onto the MODS line)
+and X. The MODS page works
+like the GRAPHICS page:
+  CPU DRIVERS      DEFAULT (the usual opponents), ALL RANDOM (every installed
+                   driver, original and custom, with the same chance) or
+                   ONLY SELECTED (only the ticked drivers)
+  SELECT DRIVERS   all drivers, the original ones first, then the custom
+                   ones of the "characters" folder, each ON or OFF; none is
+                   ticked at first
+Nobody appears twice, except with ONLY SELECTED when fewer drivers are ticked
+than there are CPU seats (7): one ticked driver gives seven of the same
+opponent. Nothing ticked is DEFAULT (the box shows OFF). Your own driver is
+never a CPU. Every single race draws anew, a cup keeps its opponents for all
+four races. The choice is saved in ctr-settings.cfg; settings of the earlier
+MODS page are taken over. The log line "[CTR Mods] seats ..." names who sits
+where. Not in CRYSTAL, CTR or TIME TRIAL of NITRO-PIT, Time Trial,
+Adventure, Battle or with two players.
 
 
 4. RELOAD STUDIO
@@ -723,7 +727,7 @@ folders the file dialogs open in are).
   Race              restart points (the checkpoints that count the laps)
   Crystal Challenge at least one crystal on the track
   CTR Challenge     each of the letters C, T and R exactly once
-  Time Trial        the same as Race (in the game: RACE, MODE TIME TRIAL)
+  Time Trial        the same as Race (in the game: NITRO-PIT, TIME TRIAL)
   Battle            not available yet (greyed out)
 
 Also good to know:

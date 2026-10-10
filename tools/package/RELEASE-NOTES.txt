@@ -276,28 +276,35 @@ PREVIEW: HIGH-DETAIL CUSTOM CHARACTERS (off by default)
   Elsewhere a dropped model is the body, as before.
 
 
+NITRO-PIT TIME TRIAL
+- NITRO-PIT: TIME TRIAL is a row of its own in the NITRO-PIT box (it
+  leads straight to the driver select, then to the track list and the
+  laps). The MODE box below the laps of NITRO RACE is gone; the MODS box
+  stands there now.
+
 MODS MENU
-- ARCADE (single race and cup, one player, the disc tracks): a MODS box
-  below the LAPS box of the track select, and a MODS line below the cups
-  in the cup select. DOWN from the last LAPS row (or from a lower cup)
-  reaches it, CROSS opens the MODS page. The page looks and works like
-  the GRAPHICS page.
-- CPU CHARACTERS: DEFAULT or RANDOM. With RANDOM the CPU opponents are
-  drawn from all fifteen retail drivers instead of the fixed group.
-- CPU CUSTOM DRIVERS: OFF, RANDOM or SELECTED. RANDOM puts every
-  installed custom driver into the pool, SELECTED only the ones ticked on
-  SELECT DRIVERS (all ON by default).
-- Every CPU seat draws with the same chance from one pool of retail and
-  custom drivers. Nobody appears twice, and the player's own driver never
-  drives as a CPU. Every single race draws anew; the four races of a cup
-  keep the same opponents.
-- With NATIVE DRIVERS set to PREVIEW custom CPU drivers are drawn with
-  their high-detail model, otherwise with their classic model. A custom
-  driver that cannot be loaded is skipped.
-- The settings are saved like the GRAPHICS settings (ctr-settings.cfg).
-  With the defaults (DEFAULT and OFF) races stay exactly as before.
-- Not offered in Adventure, Time Trial, Battle, NITRO-PIT and with two or
-  more players.
+- ARCADE with one player (single race and cup, on the disc tracks and in
+  NITRO RACE and NITRO CUP) has a MODS box: in the track select DOWN
+  below the last LAPS row, in the cup select DOWN from a lower cup onto
+  the MODS line. CROSS opens the MODS page, which works like the
+  GRAPHICS page.
+- CPU DRIVERS: DEFAULT (the usual opponents, races exactly as before),
+  ALL RANDOM (every installed driver, original and custom, with the same
+  chance; nobody twice) or ONLY SELECTED (only the drivers ticked on
+  SELECT DRIVERS).
+- SELECT DRIVERS lists the fifteen original drivers, then the custom
+  drivers, each ON or OFF; none is ticked at first. With fewer ticked
+  drivers than the seven CPU seats they appear more than once: one
+  ticked driver gives seven of the same opponent. Nothing ticked is
+  DEFAULT, and the box then shows OFF.
+- The player's own driver never drives as a CPU. Every single race draws
+  anew; the four races of a cup keep the same opponents. A custom driver
+  that cannot be loaded or cannot sit on its template is skipped.
+- With NATIVE DRIVERS set to PREVIEW custom CPU drivers use their
+  high-detail model, otherwise their classic model. The choice is saved
+  like the GRAPHICS settings (ctr-settings.cfg).
+- Not offered in CRYSTAL, CTR and TIME TRIAL of NITRO-PIT, Adventure,
+  Time Trial, Battle and with two or more players.
 
 
 NEW IN 0.0.5 BETA
@@ -454,7 +461,7 @@ NEW IN BETA 0
 KNOWN ISSUES
 ------------
 Modes and menus
-- Custom tracks play Race (also as Time Trial), Crystal Challenge and CTR
+- Custom tracks play Race, Time Trial, Crystal Challenge and CTR
   Challenge. Battle is planned.
 - Time trial: the HUD keeps TIME at the top left, the rank column and the
   wumpa counter. A new record and a new best lap in one run show only NEW
@@ -478,6 +485,10 @@ Characters
   score lists and profiles show the portrait of Fake Crash.
 - The cup podium shows the template (Fake Crash, for a character from
   Reload Studio) in place of the custom driver.
+- Custom drivers on the templates Coco and Polar (only possible with
+  rldpack --template 3 or 6; Reload Studio always builds on Fake Crash)
+  are not supported yet: the game drives the original driver instead,
+  and as CPU drivers they are left out.
 - Only in the one-player ARCADE driver select; not in NITRO-PIT CRYSTAL or
   CTR, the original Time Trial, Adventure, Battle or with two players.
 - The size is visual only - physics and collision follow the driving style.
