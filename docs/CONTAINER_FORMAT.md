@@ -1546,16 +1546,50 @@ Version 3 goes on behind the mesh, at E = 0x30 + 32 Nw + 6 Tw rounded up to 4
 | E+0x22 | u16 | reserved 0 |
 | E+0x24 | f32 | rearRadius 0..64, else 0 |
 | E+0x28 | f32 | rearHalfWidth 0..rearRadius, else 0 |
-| E+0x2C | u32 | reserved 0 |
+| E+0x2C | u8 | treadsFront: the tread count of the front mesh, 4..32, or 0 = not determined |
+| E+0x2D | u8 | treadsRear: the same for the rear mesh with the rear flag, else 0 |
+| E+0x2E | u16 | reserved 0 |
 | E+0x30 | Nr x 32, then Tr x 6 | the rear mesh, as the front one |
 
 The bounds of the offsets (`RLDCHAR_AXLE_*`, model units; the retail wheel
 has radius 16): dz -32..32, dy -16..32, dtrack -32..64. Without the rear flag
 the rear wheels draw the front mesh, as in version 2. The reader hands it
 on: `wheelFlags`, `wheelExtra`, `wheelRearVertexCount`,
-`wheelRearTriangleCount`, `wheelAxle[2][3]`; `RldChar_WheelIsOwn` (version 2
-or 3) and `RldChar_WheelMesh` (front, or rear: its own mesh or the front
-one) are the reads for the game and the views.
+`wheelRearTriangleCount`, `wheelAxle[2][3]`, `wheelTreads[2]`;
+`RldChar_WheelIsOwn` (version 2 or 3) and `RldChar_WheelMesh` (front, or
+rear: its own mesh or the front one, with its tread count) are the reads for
+the game and the views.
+
+The tread counts (E+0x2C, E+0x2D) are written by make-char, which works them
+out from the geometry of each mesh (`include/rldtread.inc`) and stores a
+count only when it is certain: the points within 3 % of the largest radius
+(the running surface) have open gaps between them - grooves, no edge joins
+the two sides at full radius - their number n is 4..32, they recur evenly
+round the wheel, and the surface is n-fold symmetric (every point turned by
+360/n degrees lands within 0.2 % of the radius of another). Then every
+patterned ring of the whole wheel - the points at one distance from the
+axle and one x, unless an edge joins every two neighbouring directions of
+it (a turned, smooth profile) - must be n-fold symmetric too and not
+symmetric under a finer turn (half of it, or 360/(k n) degrees): lug tops,
+groove floors, spokes and bolts repeat exactly n times, so no geometric part
+of the wheel repeats more often than the stored count and none runs
+backwards under its clamp. Anything else - a smooth tyre, fewer than 4 or
+more than 32 grooves, uneven or unlike lugs, lugs whose corners repeat
+twice as often (tops of half the pitch), spokes out of step with the lugs
+(12 spokes on 10 lugs) or more often (8 on 4) - stores 0, and the game's
+safe clamp applies. Not looked at: the texture, and the facets of a smooth
+turned part (a coarse rim). A count found makes
+make-char write version 3 even without the other switches (with all axle
+offsets 0 and no flag); a wheel without one stays version 2 as before.
+make-char says each count (`@value wheel-treads front|rear <n>
+found|not-determined`, and an info `wheel-treads` with the reason when none
+was found); `rldpack verify` shows it (`treads 10 from the file` or `tread
+count not determined`). The game clamps the drawn roll by the stored count
+and, without one, by the clamp that is safe for every count up to 32 (see
+"Strobing" below); it never guesses a count itself. Files written before
+the field existed (its bytes were a u32 reserved 0) read as "not
+determined"; a reader before the field refuses a file with a count by
+CNET-10 (reserved field) and the driver keeps its CMDL.
 
 MRPH, the shape keys win and lose (version 1, stride 0; rule CNET-13):
 
@@ -1592,7 +1626,7 @@ at N 20000, 47 poses, T 30000 then about 24.2 MB of the 32 MiB.
 | CNET-7 | every index < N, no triangle with a vertex twice, every triangle material < M |
 | CNET-8 | materials: alphaMode <= 2, flags bit 0 only, reserved bytes 0, texture -1 or < textureCount; UV00 present when a material has a texture |
 | CNET-9 | every pose inside the hull of its CMDL frame (a still pose inside all 47): per axis pos..pos + 255 of the frame (pos.y with bit 0 cleared) times scale / 4096 |
-| CNET-10 | CHRI hides the wheels: WHLS is not looked at. Else WHLS is there and holds: version 1, 2 or 3, stride 0, its counts and exact size, material < M, flags (0 in versions 1 and 2, bits 0-1 in 3) and reserved 0, radius and halfWidth in range, the wheel points finite, within 256 model units, on +X and front before rear, every vertex finite and inside the cylinder (with 1e-4 of room), unit normals, every index < Nw and no vertex twice. Version 3 also: the fill bytes 0, the axle offsets finite and within their bounds, the rear fields 0 and nothing behind the extension without the rear flag, with it the rear mesh as the front one (counts, exact size, material, radius, cylinder, normals, indices) |
+| CNET-10 | CHRI hides the wheels: WHLS is not looked at. Else WHLS is there and holds: version 1, 2 or 3, stride 0, its counts and exact size, material < M, flags (0 in versions 1 and 2, bits 0-1 in 3) and reserved 0, radius and halfWidth in range, the wheel points finite, within 256 model units, on +X and front before rear, every vertex finite and inside the cylinder (with 1e-4 of room), unit normals, every index < Nw and no vertex twice. Version 3 also: the fill bytes 0, the axle offsets finite and within their bounds, each tread count 0 or 4..32 (the rear one 0 without the rear flag) and the reserved fields 0, the rear fields 0 and nothing behind the extension without the rear flag, with it the rear mesh as the front one (counts, exact size, material, radius, cylinder, normals, indices) |
 | CNET-11 | textureCount equals the entries of CTXT; textureCount 0 needs no CTXT, and a CTXT then is a finding |
 | CNET-12 | WHLS version 2 or 3 only (an author's wheel), checked after CTXT-1..8: its material (the field at 0x08; version 3 with a rear mesh also rearMaterial) has no texture - the wheel is one color - or a texture of at most 1024 x 1024 (`RLDCHAR_WHEEL_TEXTURE_EDGE_MAX`). The material and its texture may be the body's as well; the bound then holds for that texture. Version 1 is not held to it |
 | CNET-13 | MRPH version 1 only (another version is skipped): stride 0, targets 1..3, flags bit 0 only, reserved 0, vertexCount N, basePose 10 (0 for a still model), the exact size; every number finite; every target position (base + delta) inside the head's hull and inside the box of the 47 CMDL frame hulls (the room the driver takes in its own model: the game shows win and lose at any CMDL frame and culls and sorts by it); with normals every base normal + delta of length 1 (length^2 0.98..1.02) |
@@ -1665,10 +1699,19 @@ Deliberate differences from the retail wheels:
   head, so the retail rule would never apply to it; the flag "always draw"
   of WHLS version 3 is therefore reserved and has no effect in the game.
 - Strobing: the turn the game draws per frame is held below half the step
-  of the wheel's tread, found from the bumps of its shape (none found: 8).
-  A tread painted only in the texture of a smooth wheel is not seen and may
-  still flicker, and at full speed the wheel turns visibly slower than the
-  kart drives: model the tread as geometry (lugs with grooves between).
+  of the wheel's tread: 0.45 of 360 / n degrees with the count n the file
+  stores (WHLS version 3, E+0x2C/0x2D), else 0.45 of 360 / 32 degrees,
+  which is below half the step of every tread of up to 32 lugs - so no
+  tread a file can describe seems to stand or to turn backwards. One
+  logic tick is one picture (the frame loop runs the logic once and draws
+  once, nothing is interpolated between ticks), so this holds between any
+  two pictures. At full speed the wheel turns visibly slower than the kart
+  drives, more so without a stored count. A tread painted only in the
+  texture of a smooth wheel is not counted: model the tread as geometry
+  (4 to 32 lugs, all alike, with grooves between). A pattern painted on
+  (spokes, stripes) with more repeats than the stored count can still seem
+  to turn backwards; geometric spokes or bolts that do not repeat exactly
+  as often as the lugs keep the count from being stored (the safe clamp).
 - Dimmed with the body: the retail tyre sprites keep their tyre colour in a
   mirror and under water (`scratch->tireColor`, `game/DrawTires.c:867`).
   An author's wheels follow the tint of the body, so in a mirror and below

@@ -511,27 +511,24 @@ int NativeCharGpu_Build(const struct RldCharNative *n, struct NativeCharGpuCpu *
 				}
 			}
 
-			// The tread count of an author's wheel, from the mesh as it is (the
-			// first half): the stroboscope clamp of its drawn roll (render plan A3).
+			// The tread count of an author's wheel: the stroboscope clamp of its
+			// drawn roll (render plan A3). The one the file stores for this mesh
+			// (WHLS 3, make-char found it in the geometry), else the safe clamp
+			// for every count up to 32 - never a guess of the game's own.
 			if (own)
 			{
-				struct NativeWheelTreads treads;
+				const int stored = (mesh[m].treads != 0u);
+				const int treads = stored ? (int)mesh[m].treads : NATIVE_WHEELS_TREADS_SAFE;
 
-				NativeWheels_EstimateTreads(&verts[0].position[0], sizeof(struct NativeProbeVertex), nw, idx, tw * 3u, vertexAt, &treads);
 				if (m == 0u)
 				{
-					out->wheelTreads = treads.treads;
-					out->wheelTreadsEstimated = (u8)treads.estimated;
-					out->wheelTreadOuter = treads.outer;
-					out->wheelTreadAngles = treads.angles;
-					out->wheelTreadOpen = treads.open;
-					out->wheelTreadImplausible = treads.implausible;
-					out->wheelTreadStrength = (float)treads.strength;
+					out->wheelTreads = treads;
+					out->wheelTreadsStored = (u8)stored;
 				}
 				else
 				{
-					out->wheelRearTreads = treads.treads;
-					out->wheelRearTreadsEstimated = (u8)treads.estimated;
+					out->wheelRearTreads = treads;
+					out->wheelRearTreadsStored = (u8)stored;
 				}
 			}
 
@@ -747,12 +744,7 @@ internal int NativeCharGpu_Upload(struct NativeCharGpu *set, const struct RldCha
 	memcpy(set->wheelFront, cpu.wheelFront, sizeof(set->wheelFront));
 	memcpy(set->wheelRear, cpu.wheelRear, sizeof(set->wheelRear));
 	set->wheelTreads = cpu.wheelTreads;
-	set->wheelTreadsEstimated = cpu.wheelTreadsEstimated;
-	set->wheelTreadOuter = cpu.wheelTreadOuter;
-	set->wheelTreadAngles = cpu.wheelTreadAngles;
-	set->wheelTreadOpen = cpu.wheelTreadOpen;
-	set->wheelTreadImplausible = cpu.wheelTreadImplausible;
-	set->wheelTreadStrength = cpu.wheelTreadStrength;
+	set->wheelTreadsStored = cpu.wheelTreadsStored;
 	set->wheelAlways = cpu.wheelAlways;
 	set->wheelRearOwn = cpu.wheelRearOwn;
 	set->wheelRearFirst = cpu.wheelRearFirst;
@@ -762,7 +754,7 @@ internal int NativeCharGpu_Upload(struct NativeCharGpu *set, const struct RldCha
 	set->wheelRearRadius = cpu.wheelRearRadius;
 	set->wheelRearHalfWidth = cpu.wheelRearHalfWidth;
 	set->wheelRearTreads = cpu.wheelRearTreads;
-	set->wheelRearTreadsEstimated = cpu.wheelRearTreadsEstimated;
+	set->wheelRearTreadsStored = cpu.wheelRearTreadsStored;
 
 	stagingBefore = NativeGfx_StagingBytes();
 
@@ -931,11 +923,17 @@ internal void NativeCharGpu_LogTreads(const char *who, const struct NativeCharGp
 	{
 		return;
 	}
-	Platform_Log("[CTR NativeChar] %s: own wheel treads %d (%s, %u outer points at %u angles, open gaps %d, strength %.2f, not believed %d), "
-	             "roll clamp %.4f rad per tick (half pitch %.4f)\n",
-	             who, set->wheelTreads, set->wheelTreadsEstimated ? "estimated" : "default", (unsigned)set->wheelTreadOuter, (unsigned)set->wheelTreadAngles,
-	             set->wheelTreadOpen, (double)set->wheelTreadStrength, set->wheelTreadImplausible, NativeWheels_StrobeClamp(set->wheelTreads),
-	             3.141592653589793 / (double)set->wheelTreads);
+	if (set->wheelTreadsStored)
+	{
+		Platform_Log("[CTR NativeChar] %s: own wheel treads %d (from the file), roll clamp %.4f rad per tick (half pitch %.4f)\n", who, set->wheelTreads,
+		             NativeWheels_StrobeClamp(set->wheelTreads), 3.141592653589793 / (double)set->wheelTreads);
+	}
+	else
+	{
+		Platform_Log("[CTR NativeChar] %s: own wheel treads not stored: safe clamp for up to %d, roll clamp %.4f rad per tick (half pitch %.4f of %d "
+		             "treads)\n",
+		             who, set->wheelTreads, NativeWheels_StrobeClamp(set->wheelTreads), 3.141592653589793 / (double)set->wheelTreads, set->wheelTreads);
+	}
 
 	// WHLS version 3: the rear wheel, the middles with the axle offsets and the
 	// level of detail, a line of its own (a version 2 wheel keeps the lines of
@@ -948,7 +946,7 @@ internal void NativeCharGpu_LogTreads(const char *who, const struct NativeCharGp
 		{
 			snprintf(rear, sizeof(rear), "own %u triangles, material %u, radius %.3f, treads %d (%s)", (unsigned)(set->wheelRearIndexCount / 3u),
 			         (unsigned)set->wheelRearMaterial, (double)set->wheelRearRadius, set->wheelRearTreads,
-			         set->wheelRearTreadsEstimated ? "estimated" : "default");
+			         set->wheelRearTreadsStored ? "from the file" : "not stored, safe clamp");
 		}
 		else
 		{
@@ -1928,7 +1926,9 @@ internal int NativeCharGpu_TestFormatFiles(const char *dir, int *files, int *che
 			int ok = cpu.hasWheels && cpu.wheelOwn && cpu.wheelRearOwn && (cpu.wheelRearFirst == (cpu.wheelIndexCount * 2u)) &&
 			         (cpu.wheelRearMirrorFirst == (cpu.wheelRearFirst + cpu.wheelRearIndexCount)) &&
 			         (cpu.wheelIndexTotal == (cpu.wheelRearMirrorFirst + cpu.wheelRearIndexCount)) && (cpu.wheelRearMaterial < cpu.materialCount) &&
-			         (cpu.wheelRearTreads >= NATIVE_WHEELS_TREADS_MIN) && (cpu.wheelAlways == (((n.wheelFlags & RLDCHAR_WHEEL_ALWAYS_DRAW) != 0u) ? 1u : 0u));
+			         (cpu.wheelRearTreads == ((n.wheelTreads[1] != 0u) ? (int)n.wheelTreads[1] : NATIVE_WHEELS_TREADS_SAFE)) &&
+			         (cpu.wheelRearTreadsStored == ((n.wheelTreads[1] != 0u) ? 1u : 0u)) &&
+			         (cpu.wheelAlways == (((n.wheelFlags & RLDCHAR_WHEEL_ALWAYS_DRAW) != 0u) ? 1u : 0u));
 			const u32 frontPoints = n.wheelVertexCount * 2u;
 			u32 i;
 

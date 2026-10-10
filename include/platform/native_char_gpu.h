@@ -111,16 +111,12 @@ struct NativeCharGpu
 	float wheelHalfWidth;
 	float wheelFront[3];
 	float wheelRear[3];
-	// The stroboscope of an author's wheel (render plan A3): its tread count,
-	// worked out at load (NativeWheels_EstimateTreads); 0 for the test wheel
-	// and none, which are drawn without a clamp.
+	// The stroboscope of an author's wheel (render plan A3): the tread count
+	// the clamp takes - the one the file stores (WHLS 3), else
+	// NATIVE_WHEELS_TREADS_SAFE; 0 for the test wheel and none, which are
+	// drawn without a clamp.
 	int wheelTreads;
-	u8 wheelTreadsEstimated; // 1 = from the mesh, 0 = the default
-	u32 wheelTreadOuter;     // its outermost points
-	u32 wheelTreadAngles;    // their angles after merging
-	int wheelTreadOpen;      // open gaps between them (NativeWheelTreads.open)
-	int wheelTreadImplausible; // a count found and not believed, 0 = none
-	float wheelTreadStrength; // the periodicity of the count taken
+	u8 wheelTreadsStored;    // 1 = from the file, 0 = not stored (the safe clamp)
 	// WHLS version 3 (render plan A1, A2, A4). The rear wheel's own mesh sits
 	// behind the front one in the same buffers, laid out the same way (the
 	// mesh, then its mirror image); its middles come with the front ones
@@ -136,7 +132,7 @@ struct NativeCharGpu
 	float wheelRearRadius;
 	float wheelRearHalfWidth;
 	int wheelRearTreads;
-	u8 wheelRearTreadsEstimated;
+	u8 wheelRearTreadsStored;
 
 	u32 textureCount;
 	TextureID texture[NATIVE_CHAR_GPU_TEXTURES];
@@ -192,12 +188,7 @@ struct NativeCharGpuCpu
 	float wheelFront[3];
 	float wheelRear[3];
 	int wheelTreads;
-	u8 wheelTreadsEstimated;
-	u32 wheelTreadOuter;
-	u32 wheelTreadAngles;
-	int wheelTreadOpen;
-	int wheelTreadImplausible;
-	float wheelTreadStrength;
+	u8 wheelTreadsStored;
 	u8 wheelAlways;
 	u8 wheelRearOwn;
 	u32 wheelRearFirst;
@@ -207,7 +198,7 @@ struct NativeCharGpuCpu
 	float wheelRearRadius;
 	float wheelRearHalfWidth;
 	int wheelRearTreads;
-	u8 wheelRearTreadsEstimated;
+	u8 wheelRearTreadsStored;
 	float hullMin[3];
 	float hullMax[3];
 };

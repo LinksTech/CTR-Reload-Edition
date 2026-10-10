@@ -14863,6 +14863,10 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	{
 		haveWheel = RldMk_UserWheelLoad(wheelModelArg, NULL, 0u, &opt, wheelSize, &userWheel) &&
 		            RldMk_WheelExtraApply(&wheelExtra, &opt, wheelSize, &userWheel);
+		if (haveWheel)
+		{
+			RldMk_WheelTreadsSay(&userWheel, wheelModelArg, wheelExtra.rearPath);
+		}
 	}
 
 	if (maskModelArg != NULL)
@@ -15241,6 +15245,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 			char color[8];
 			char look[48];
 			char wheelText[6][24];
+			int k;
 
 			snprintf(color, sizeof(color), "%02X%02X%02X", userWheel.rgba[0], userWheel.rgba[1], userWheel.rgba[2]);
 			if (userWheel.textured)
@@ -15258,6 +15263,25 @@ static int RldChar_MakeCommand(int argc, char **argv)
 			if (userWheel.dropped != 0u)
 			{
 				printf("  wheel         %u triangles without area left out\n", userWheel.dropped);
+			}
+			for (k = 0; k < 2; k++)
+			{
+				const struct RldMkUserWheel *m = (k == 0) ? &userWheel : userWheel.rear;
+
+				if (m == NULL)
+				{
+					continue;
+				}
+				if (m->treads.treads != 0u)
+				{
+					printf("  wheel treads  %s %u, from the geometry (%s), stored in WHLS - the game clamps the drawn roll to 0.45 of a tread\n",
+					       (k == 0) ? "front" : "rear", m->treads.treads, RldTread_Why(m->treads.why));
+				}
+				else
+				{
+					printf("  wheel treads  %s: tread count not determined (%s) - the game clamps the drawn roll for any tread of up to %u\n",
+					       (k == 0) ? "front" : "rear", RldTread_Why(m->treads.why), (unsigned)RLDCHAR_WHEEL_TREADS_MAX);
+				}
 			}
 			snprintf(wheelText[0], sizeof(wheelText[0]), "%u", userWheel.triangles);
 			snprintf(wheelText[1], sizeof(wheelText[1]), "%u", userWheel.vertices);
@@ -15649,7 +15673,7 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 
 		if (native.state == RLDCHAR_NATIVE_READY)
 		{
-			char wheelText[96];
+			char wheelText[192];
 
 			if (native.wheel == NULL)
 			{
@@ -15657,9 +15681,44 @@ static int RldMk_Inspect(const char *path, int full, int machine)
 			}
 			else
 			{
-				snprintf(wheelText, sizeof(wheelText), "wheels: WHLS version %u (%s, %u triangles, radius %.2f)", (unsigned)native.wheelVersion,
+				char treadText[96];
+
+				// The tread counts of an author's wheel (WHLS 3, E+0x2C and E+0x2D).
+				treadText[0] = '\0';
+				if (RldChar_WheelIsOwn(&native))
+				{
+					const int rear = (native.wheelRearVertexCount != 0u);
+					char part[2][40];
+					int k;
+
+					for (k = 0; k < 2; k++)
+					{
+						if (native.wheelTreads[k] != 0u)
+						{
+							snprintf(part[k], sizeof(part[k]), "%u from the file", (unsigned)native.wheelTreads[k]);
+						}
+						else
+						{
+							snprintf(part[k], sizeof(part[k]), "not determined");
+						}
+					}
+					if ((native.wheelTreads[0] == 0u) && (!rear || (native.wheelTreads[1] == 0u)))
+					{
+						snprintf(treadText, sizeof(treadText), ", tread count not determined: the game clamps for up to %u",
+						         (unsigned)RLDCHAR_WHEEL_TREADS_MAX);
+					}
+					else if (!rear)
+					{
+						snprintf(treadText, sizeof(treadText), ", treads %s", part[0]);
+					}
+					else
+					{
+						snprintf(treadText, sizeof(treadText), ", treads front %s, rear %s", part[0], part[1]);
+					}
+				}
+				snprintf(wheelText, sizeof(wheelText), "wheels: WHLS version %u (%s, %u triangles, radius %.2f%s)", (unsigned)native.wheelVersion,
 				         RldChar_WheelIsOwn(&native) ? "its own" : "the test wheel", (unsigned)native.wheelTriangleCount,
-				         (double)RldChar_F32(&native.wheel[0x0C]));
+				         (double)RldChar_F32(&native.wheel[0x0C]), treadText);
 			}
 			snprintf(nativeText, sizeof(nativeText), "ready: %u vertices, %u triangles, %u poses, %u materials, %u textures (%llu bytes RGBA8), %s",
 			         native.vertexCount, native.triangleCount, native.poseCount, native.materialCount, native.textureCount,
@@ -16217,7 +16276,9 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "                              --native-probe. Default off: nothing changes\n");
 	fprintf(out, "  --wheel-model <glb|obj|ply> PREVIEW, with --native-model on and the wheels\n");
 	fprintf(out, "                              shown: one wheel of your own for all four (WHLS\n");
-	fprintf(out, "                              version 2) - axle along X, outer side +X, centre\n");
+	fprintf(out, "                              version 2; version 3 with a rear wheel, axle\n");
+	fprintf(out, "                              offsets or a tread count) - axle along X, outer\n");
+	fprintf(out, "                              side +X, centre\n");
 	fprintf(out, "                              in the origin, the axes of --up/--forward; an OBJ\n");
 	fprintf(out, "                              with one material (a texture up to %u x %u, or\n", RLDCHAR_WHEEL_TEXTURE_EDGE_MAX,
 	        RLDCHAR_WHEEL_TEXTURE_EDGE_MAX);
@@ -16235,8 +16296,9 @@ static void RldChar_Usage(FILE *out)
 	        RLDCHAR_AXLE_DY_MIN, RLDCHAR_AXLE_DY_MAX);
 	fprintf(out, "                              wider (%.0f..%.0f), model units; 0,0,0 = the game's\n", RLDCHAR_AXLE_TRACK_MIN, RLDCHAR_AXLE_TRACK_MAX);
 	fprintf(out, "  --axle-rear <dz>,<dy>,<dtrack>    the same for the rear axle\n");
-	fprintf(out, "  --wheels-always on|off      PREVIEW: on draws the wheels at every level of\n");
-	fprintf(out, "                              detail; off (default) as the game's tyres\n");
+	fprintf(out, "  --wheels-always on|off      reserved, without effect: on sets a flag of\n");
+	fprintf(out, "                              WHLS version 3 that the game does not use\n");
+	fprintf(out, "                              (wheels of your own are drawn at every distance)\n");
 	fprintf(out, "\n");
 	fprintf(out, "  rldpack make-char --model driver.ply --name \"MY DRIVER\" --template 14\n");
 	fprintf(out, "  rldpack make-char --model driver.obj --name \"MY DRIVER\" --template 14\n");

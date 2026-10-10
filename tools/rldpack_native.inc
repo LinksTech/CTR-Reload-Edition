@@ -1099,7 +1099,11 @@ struct RldMkUserWheel
 	u32 extraFlags;            // WHLS version 3: RLDCHAR_WHEEL_ALWAYS_DRAW, RLDCHAR_WHEEL_REAR_MESH
 	double axle[2][3];         // WHLS version 3: --axle-front, --axle-rear {dz, dy, dtrack}, already in the wheel points
 	int version3;              // WHLS version 3 is written (RldMk_WheelExtraApply)
+	struct RldTreadResult treads; // the tread count of this mesh (include/rldtread.inc); stored in WHLS version 3 when found
 };
+
+// The scratch of the tread count (include/rldtread.inc), once.
+static struct RldTreadWork s_rldMkTreadWork;
 
 static void RldMk_UserWheelFree(struct RldMkUserWheel *w)
 {
@@ -1598,6 +1602,14 @@ static int RldMk_UserWheelLoad(const char *path, const u8 *data, size_t size, co
 			ok = 0;
 		}
 	}
+	// The tread count of the mesh as it is stored (the stroboscope clamp of
+	// the game, include/rldtread.inc).
+	if (ok)
+	{
+		RldTread_Count(&w->whls[RLDCHAR_WHEEL_HEAD_BYTES], w->vertices,
+		               &w->whls[RLDCHAR_WHEEL_HEAD_BYTES + ((size_t)w->vertices * RLDCHAR_WHEEL_VERTEX_BYTES)], w->triangles, &s_rldMkTreadWork,
+		               &w->treads);
+	}
 	RldMk_FreePly(&ply);
 	RldObj_FreeNative(&s_rldObjWheel);
 	return ok;
@@ -1623,17 +1635,28 @@ static int RldMk_UserWheelLoad(const char *path, const u8 *data, size_t size, co
 //       the whole track: each wheel moves by half of it), model units,
 //       rounded to 1/16, within RLDCHAR_AXLE_* (axle-range); the front axle
 //       stays in front of the rear one (axle-order)
-//   --wheels-always on|off  on: the wheels are drawn at every level of detail
-//       (RLDCHAR_WHEEL_ALWAYS_DRAW); off, the default: as the retail tyres
+//   --wheels-always on|off  on: writes the flag RLDCHAR_WHEEL_ALWAYS_DRAW, which
+//       is reserved and has no effect in the game (an author's wheels are
+//       drawn at every distance anyway); off, the default: the flag clear
+// THE TREAD COUNT of each wheel mesh is worked out from its geometry when it
+// is read (RldMk_UserWheelLoad, include/rldtread.inc: the grooves of the
+// running surface and every patterned ring of the wheel repeating exactly
+// that often, strict rules, 4..32 or none) and kept in the extension
+// (E+0x2C front, E+0x2D rear); the game clamps the drawn roll by it, and
+// without one by the clamp that is safe for any count up to 32. Machine
+// lines for every wheel of one's own (RldMk_WheelTreadsSay): @value
+// wheel-treads front|rear <n> found|not-determined (n 0 = not determined);
+// a count not determined is also said (info wheel-treads, with the reason).
 // Only when one of them changes something - a rear model, an offset other
-// than 0, "always" on - is WHLS written as version 3 (include/rldchar.inc);
-// otherwise it stays version 2 and the file is byte for byte the one without
-// the switches. The wheel points of version 3 hold the offsets: front (36 +
-// dtrack / 2, r + dy, 49.75 + dz), rear (36 + dtrack / 2, r + dy, -24 + dz),
-// r the radius of that wheel (its bottom stays at y = dy); the extension
-// keeps the offsets as given. Machine lines, only for version 3: @value
-// wheels-version 3, @value axle-front|axle-rear <dz> <dy> <dtrack>, @value
-// wheels-always on|off.
+// than 0, "always" on - or a tread count was found is WHLS written as
+// version 3 (include/rldchar.inc); otherwise it stays version 2 and the
+// file is byte for byte the one without the switches. The wheel points of
+// version 3 hold the offsets: front (36 + dtrack / 2, r + dy, 49.75 + dz),
+// rear (36 + dtrack / 2, r + dy, -24 + dz), r the radius of that wheel (its
+// bottom stays at y = dy); with all offsets 0 (a tread count alone) they are
+// the points of version 2, byte for byte. The extension keeps the offsets as
+// given. Machine lines, only for version 3: @value wheels-version 3, @value
+// axle-front|axle-rear <dz> <dy> <dtrack>, @value wheels-always on|off.
 
 #define RLDMK_AXLE_STEP 16.0       // axle offsets are kept in 1/16 model unit
 
@@ -1847,7 +1870,8 @@ static int RldMk_WheelExtraApply(const struct RldMkWheelExtra *x, const struct R
 
 	if (!RldMk_WheelExtraUsed(x))
 	{
-		return 1;
+		// Without the switches version 3 only carries a tread count found.
+		return (w->treads.treads == 0u) ? 1 : RldMk_WheelExtraPlace(x, w, NULL);
 	}
 	if (x->rearPath != NULL)
 	{
@@ -1891,6 +1915,36 @@ static int RldMk_WheelExtraApply(const struct RldMkWheelExtra *x, const struct R
 		}
 	}
 	return RldMk_WheelExtraPlace(x, w, rear);
+}
+
+// The tread counts of the wheels of one's own, said once after
+// RldMk_WheelExtraApply (THE TREAD COUNT above): per mesh @value wheel-treads
+// front|rear <n> found|not-determined, and for a count not determined an
+// info line with the reason. path, rearPath: the model files.
+static void RldMk_WheelTreadsSay(const struct RldMkUserWheel *w, const char *path, const char *rearPath)
+{
+	int k;
+
+	for (k = 0; k < 2; k++)
+	{
+		const struct RldMkUserWheel *m = (k == 0) ? w : w->rear;
+		char number[16];
+
+		if (m == NULL)
+		{
+			continue;
+		}
+		snprintf(number, sizeof(number), "%u", m->treads.treads);
+		Rld_Emit("value", "wheel-treads", (k == 0) ? "front" : "rear", number, (m->treads.treads != 0u) ? "found" : "not-determined", (const char *)NULL);
+		if (m->treads.treads == 0u)
+		{
+			RldMk_Say("info", "wheel-treads", (k == 0) ? path : rearPath,
+			          "Tread count not determined for the %swheel (%s), so none is stored: the game turns it by at most 0.45 of 1/32 of a turn per "
+			          "frame, which no tread of up to 32 lugs can make look backwards; at top speed the wheel may look slower than the kart. For an "
+			          "exact count model 4 to 32 lugs, all alike, with a groove between each two.",
+			          (k == 0) ? "" : "rear ", RldTread_Why(m->treads.why));
+		}
+	}
 }
 
 // The self-test's shape keys (tools/rldpack_native_test.inc) in place of
@@ -2779,6 +2833,8 @@ static int RldMk_NativeModel(const struct RldObjNative *src, const struct RldMkP
 					{
 						RldMk_PutF32(&x[4 * k], userWheel->axle[k / 3][k % 3]);
 					}
+					x[0x2C] = (u8)userWheel->treads.treads;   // the tread counts, 0 = not determined
+					x[0x2D] = (rearWheel != NULL) ? (u8)rearWheel->treads.treads : 0u;
 					if (rearWheel != NULL)
 					{
 						memcpy(&x[0x18], &rearWheel->whls[0x00], 8u);   // its vertex and triangle counts

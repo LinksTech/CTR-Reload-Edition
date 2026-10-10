@@ -2311,6 +2311,8 @@ static const char *RldChar_CheckVoices(const u8 *bytes, u64 size, struct RldChar
 #define RLDCHAR_WHEEL_REAR_MESH 0x2u               // WHLS 3 flags bit 1: the rear wheels have a mesh of their own
 #define RLDCHAR_WHEEL_FLAGS_KNOWN 0x3u
 #define RLDCHAR_WHEEL_EXTRA_BYTES 0x30u            // the head of the WHLS 3 extension
+#define RLDCHAR_WHEEL_TREADS_MIN 4u                // WHLS 3 tread count of a wheel (E+0x2C, E+0x2D): 0 = not determined, else 4..32
+#define RLDCHAR_WHEEL_TREADS_MAX 32u
 #define RLDCHAR_AXLE_DZ_MIN (-32.0)                // WHLS 3 axle offsets, model units (the retail wheel has radius 16)
 #define RLDCHAR_AXLE_DZ_MAX 32.0
 #define RLDCHAR_AXLE_DY_MIN (-16.0)
@@ -2397,6 +2399,7 @@ struct RldCharNative
 	u32 wheelRearVertexCount;   // WHLS 3 with RLDCHAR_WHEEL_REAR_MESH, else 0
 	u32 wheelRearTriangleCount;
 	float wheelAxle[2][3];      // WHLS 3: front, rear {dz, dy, dtrack} as given - already part of the wheel points; else 0
+	u32 wheelTreads[2];         // WHLS 3: the tread count of the front and the rear mesh (4..32), 0 = not determined; 0 for versions 1 and 2
 	const u8 *morph;            // the MRPH section (version 1, CNET-13 held), or NULL
 	u32 morphTargets;           // bit (1 << RLDCHAR_MORPH_*) per target present; 0 = no MRPH
 	u32 morphNormals;           // 1 = MRPH has normal deltas
@@ -2681,9 +2684,18 @@ static int RldChar_NetKnown(const u8 *cnet, u32 table, u32 count, const char tag
 //               adds them again)
 //        E+0x18 u32 rearVertexCount Nr, E+0x1C u32 rearTriangleCount Tr,
 //        E+0x20 u16 rearMaterial, E+0x22 u16 reserved 0, E+0x24 f32
-//               rearRadius, E+0x28 f32 rearHalfWidth, E+0x2C u32 reserved 0 -
-//               with RLDCHAR_WHEEL_REAR_MESH as the front wheel's fields
+//               rearRadius, E+0x28 f32 rearHalfWidth - with
+//               RLDCHAR_WHEEL_REAR_MESH as the front wheel's fields
 //               (3..2048, 1..1024, < M, 0..64, 0..radius), else all 0
+//        E+0x2C u8 treadsFront, E+0x2D u8 treadsRear, E+0x2E u16 reserved
+//               0 - the tread count of each mesh as make-char found it in
+//               the geometry (include/rldtread.inc): 0 = not determined,
+//               else RLDCHAR_WHEEL_TREADS_MIN..MAX; treadsRear only with
+//               RLDCHAR_WHEEL_REAR_MESH (else 0: the rear wheels draw the
+//               front mesh and take its count). The game clamps the drawn
+//               roll by this count, and without one by the safe clamp for
+//               every count up to RLDCHAR_WHEEL_TREADS_MAX. Files written
+//               before the field had it 0 (then a u32 reserved 0).
 //        E+0x30 Nr x 32 bytes of the rear mesh (as the front one), then
 //               Tr x 3 u16 indices
 //      Size exactly E + 0x30 + 32 Nr + 6 Tr. Without a rear mesh the rear
@@ -2787,9 +2799,23 @@ static int RldChar_CheckWheelExtra(const u8 *w, u32 size, u32 meshEnd, u32 flags
 	}
 	nr = Rld_ReadLE32(&x[0x18]);
 	tr = Rld_ReadLE32(&x[0x1C]);
-	if ((Rld_ReadLE16(&x[0x22]) != 0u) || (Rld_ReadLE32(&x[0x2C]) != 0u))
+	if ((Rld_ReadLE16(&x[0x22]) != 0u) || (Rld_ReadLE16(&x[0x2E]) != 0u))
 	{
 		return RldChar_NativeFail(out, "CNET-10", "WHLS version 3: a reserved field of the extension is not 0");
+	}
+	for (k = 0; k < 2; k++)
+	{
+		const u32 treads = x[0x2C + k];
+
+		if ((treads != 0u) && ((treads < RLDCHAR_WHEEL_TREADS_MIN) || (treads > RLDCHAR_WHEEL_TREADS_MAX)))
+		{
+			return RldChar_NativeFail(out, "CNET-10", "WHLS version 3: the %s wheel's tread count is %u - it may be 0 (not determined) or %u..%u",
+			                          (k == 0) ? "front" : "rear", (unsigned)treads, (unsigned)RLDCHAR_WHEEL_TREADS_MIN, (unsigned)RLDCHAR_WHEEL_TREADS_MAX);
+		}
+	}
+	if (((flags & RLDCHAR_WHEEL_REAR_MESH) == 0u) && (x[0x2D] != 0u))
+	{
+		return RldChar_NativeFail(out, "CNET-10", "WHLS version 3: a rear tread count without a rear mesh");
 	}
 	if ((flags & RLDCHAR_WHEEL_REAR_MESH) == 0u)
 	{
@@ -2842,6 +2868,8 @@ static int RldChar_CheckWheelExtra(const u8 *w, u32 size, u32 meshEnd, u32 flags
 	{
 		out->wheelAxle[k / 3][k % 3] = RldChar_F32(&x[4u * (u32)k]);
 	}
+	out->wheelTreads[0] = x[0x2C];
+	out->wheelTreads[1] = x[0x2D];
 	out->wheelExtra = x;
 	return 1;
 }
@@ -3651,6 +3679,7 @@ struct RldCharWheelMesh
 	float radius;               // model units
 	float halfWidth;
 	int own;                    // 1 = the rear wheel's own mesh (version 3)
+	u32 treads;                 // its tread count (WHLS 3, RLDCHAR_WHEEL_TREADS_MIN..MAX), 0 = not determined
 };
 
 // 1 = an author's wheel (WHLS version 2 or 3), drawn mirrored on the -X side.
@@ -3679,6 +3708,7 @@ static int RldChar_WheelMesh(const struct RldCharNative *n, int rear, struct Rld
 		out->radius = RldChar_F32(&x[0x24]);
 		out->halfWidth = RldChar_F32(&x[0x28]);
 		out->own = 1;
+		out->treads = n->wheelTreads[1];
 		return 1;
 	}
 	out->vertices = &n->wheel[RLDCHAR_WHEEL_HEAD_BYTES];
@@ -3688,6 +3718,7 @@ static int RldChar_WheelMesh(const struct RldCharNative *n, int rear, struct Rld
 	out->material = Rld_ReadLE16(&n->wheel[0x08]);
 	out->radius = RldChar_F32(&n->wheel[0x0C]);
 	out->halfWidth = RldChar_F32(&n->wheel[0x10]);
+	out->treads = n->wheelTreads[0];
 	return 1;
 }
 

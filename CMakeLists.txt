@@ -613,7 +613,7 @@ if(BUILD_TESTING)
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     )
     set_tests_properties(char_native_selftest PROPERTIES
-        PASS_REGULAR_EXPRESSION "char native selftest passed: 60 files, [0-9]+ checks, 0 failures"
+        PASS_REGULAR_EXPRESSION "char native selftest passed: 66 files, [0-9]+ checks, 0 failures"
         TIMEOUT 300
         FIXTURES_SETUP native_char_files
     )

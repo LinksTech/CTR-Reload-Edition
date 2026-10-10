@@ -507,6 +507,10 @@ static int RldMk_NativeMakeSet(struct RldMkNativeSet *set)
 	//        4  rear fields without the rear flag
 	//        5  a rear vertex outside its cylinder
 	//        6  no extension at all (the layout of version 2)
+	//        7  the rear mesh and tread counts 10 front, 12 rear
+	//        8  a tread count of 33       9  a rear tread count without the rear mesh
+	//       10  the reserved u16 behind the tread counts not 0
+	//       11  a front tread count of 3   12  the rear mesh and a rear tread count of 255
 	{
 		static const struct
 		{
@@ -515,7 +519,9 @@ static int RldMk_NativeMakeSet(struct RldMkNativeSet *set)
 		} cases[] = {
 		    {"good_wheel-v3-flags", 0},           {"good_wheel-v3-rear", 1},          {"bad_CNET-10_v3-axle-range", 2},
 		    {"bad_CNET-10_v3-flags", 3},          {"bad_CNET-10_v3-rear-without-flag", 4}, {"bad_CNET-10_v3-rear-vertex", 5},
-		    {"bad_CNET-10_v3-no-extension", 6},
+		    {"bad_CNET-10_v3-no-extension", 6},   {"good_wheel-v3-treads", 7},        {"bad_CNET-10_v3-treads-range", 8},
+		    {"bad_CNET-10_v3-treads-rear-without-mesh", 9}, {"bad_CNET-10_v3-treads-reserved", 10},
+		    {"bad_CNET-10_v3-treads-low", 11},    {"bad_CNET-10_v3-treads-rear-range", 12},
 		};
 		u32 entryAt = 0;
 		const u32 at = RldMk_NativeSectionAt(still, "WHLS", &entryAt);
@@ -526,7 +532,7 @@ static int RldMk_NativeMakeSet(struct RldMkNativeSet *set)
 
 		for (k = 0; k < (int)(sizeof(cases) / sizeof(cases[0])); k++)
 		{
-			const int rear = (cases[k].what == 1) || (cases[k].what == 4) || (cases[k].what == 5);
+			const int rear = (cases[k].what == 1) || (cases[k].what == 4) || (cases[k].what == 5) || (cases[k].what == 7) || (cases[k].what == 12);
 			const u32 size = (cases[k].what == 6) ? front : (extra + RLDCHAR_WHEEL_EXTRA_BYTES + (rear ? meshBytes : 0u));
 			u8 *w = (u8 *)calloc(1, size);
 			u8 *c = NULL;
@@ -542,7 +548,10 @@ static int RldMk_NativeMakeSet(struct RldMkNativeSet *set)
 			{
 				u8 *x = &w[extra];
 
-				Rld_WriteLE16(&w[0x0A], RLDCHAR_WHEEL_ALWAYS_DRAW | (((cases[k].what == 1) || (cases[k].what == 5)) ? RLDCHAR_WHEEL_REAR_MESH : 0u));
+				Rld_WriteLE16(&w[0x0A], RLDCHAR_WHEEL_ALWAYS_DRAW |
+				                            (((cases[k].what == 1) || (cases[k].what == 5) || (cases[k].what == 7) || (cases[k].what == 12))
+				                                 ? RLDCHAR_WHEEL_REAR_MESH
+				                                 : 0u));
 				RldMk_PutF32(&x[0x00], (cases[k].what == 2) ? 40.0 : 4.0);
 				RldMk_PutF32(&x[0x04], 2.0);
 				RldMk_PutF32(&x[0x08], 8.0);
@@ -551,6 +560,9 @@ static int RldMk_NativeMakeSet(struct RldMkNativeSet *set)
 				{
 					Rld_WriteLE16(&w[0x0A], 0x4u);
 				}
+				x[0x2C] = (cases[k].what == 7) ? 10u : ((cases[k].what == 8) ? 33u : ((cases[k].what == 11) ? 3u : 0u));
+				x[0x2D] = (cases[k].what == 7) ? 12u : ((cases[k].what == 9) ? 10u : ((cases[k].what == 12) ? 255u : 0u));
+				x[0x2E] = (cases[k].what == 10) ? 1u : 0u;
 				if (rear)
 				{
 					memcpy(&x[0x18], &w[0x00], 8u);
@@ -900,6 +912,7 @@ struct RldMkNativeObjCase
 	int blenderKe;             // the driver's material as Blender 5.2 writes it, with Ke 0.2 (no Kd): white x texture still
 	int wheel;                 // a wheel of one's own (--wheel-model, the wheels shown): 1 the cylinder as OBJ, 2 as PLY
 	u32 wheelSides;            // its sides; 0 = 12 (4 triangles each)
+	u32 wheelLugs;             // a tread of this many lugs (4 sides each: 2 at full radius, 2 at 0.9 of it); 0 = smooth
 	u32 wheelTexWidth;         // its texture; 0 = 32 x 32
 	u32 wheelTexHeight;
 	int wheelTexCut;           // its texture cut to its first half (unreadable)
@@ -1087,7 +1100,7 @@ static int RldMk_NativeObjMake(const struct RldMkNativeObjCase *k, struct RldMkN
 	// d = +X at k + 1 as (a, b, c), (a, c, d); the caps as fans.
 	if (ok && (k->wheel != 0))
 	{
-		const u32 n = (k->wheelSides != 0u) ? k->wheelSides : 12u;
+		const u32 n = (k->wheelLugs != 0u) ? (4u * k->wheelLugs) : ((k->wheelSides != 0u) ? k->wheelSides : 12u);
 		const double half = k->wheelWide ? 0.45 : 0.1;
 		size_t size = 0;
 
@@ -1116,6 +1129,8 @@ static int RldMk_NativeObjMake(const struct RldMkNativeObjCase *k, struct RldMkN
 		}
 		for (i = 0; i < n; i++)
 		{
+			// with lugs: sides 0 and 1 of every 4 at full radius, 2 and 3 a groove
+			const double radius = ((k->wheelLugs != 0u) && ((i % 4u) >= 2u)) ? 0.27 : 0.3;
 			double sine;
 			double cosine;
 
@@ -1124,11 +1139,11 @@ static int RldMk_NativeObjMake(const struct RldMkNativeObjCase *k, struct RldMkN
 			{
 				if (k->wheel == 2)
 				{
-					RldMk_BufferText(&wheelFile, "%.6f %.6f %.6f 200 30 30\n", j ? -half : half, 0.3 * cosine, 0.3 * sine);
+					RldMk_BufferText(&wheelFile, "%.6f %.6f %.6f 200 30 30\n", j ? -half : half, radius * cosine, radius * sine);
 				}
 				else
 				{
-					RldMk_BufferText(&wheelFile, "v %.6f %.6f %.6f\n", j ? -half : half, 0.3 * cosine, 0.3 * sine);
+					RldMk_BufferText(&wheelFile, "v %.6f %.6f %.6f\n", j ? -half : half, radius * cosine, radius * sine);
 				}
 			}
 		}
@@ -1304,6 +1319,14 @@ static int RldMk_NativeObjMake(const struct RldMkNativeObjCase *k, struct RldMkN
 				}
 			}
 			r->wheelLoaded = (!k->wheelRear || (rear != NULL)) && RldMk_WheelExtraPlace(&x, &wheel, rear);
+		}
+		else if (r->wheelLoaded)
+		{
+			// Without the switches as make-char: version 3 only for a tread count found.
+			struct RldMkWheelExtra x;
+
+			memset(&x, 0, sizeof(x));
+			r->wheelLoaded = RldMk_WheelExtraApply(&x, &opt, (k->wheelSize != 0u) ? k->wheelSize : 100u, &wheel);
 		}
 		if (k->morph != 0)
 		{
@@ -2045,6 +2068,336 @@ static void RldMk_SelfTestNativeObj(void)
 	RldMk_SelfTestNativeFormat();
 }
 
+// THE TREAD COUNT (include/rldtread.inc) on made-up wheel meshes in the
+// layout of WHLS, radius 16 about X. A profile round the wheel - (angle in
+// degrees, radius) points, a lug top at 16, a groove floor at 14 - extruded
+// from x +6 to x -6 (two triangles per step), or a grid of rows across:
+//   rows 10      two staggered rows of 10 lugs, as a tyre is often built:
+//                40 steps, 4 rows across, each row 2 steps high and 2 a
+//                groove, the inner two rows half a pitch on: 10 (10 open
+//                gaps among 40 outer angles)
+//   lugs 5       5 lugs of 24 degrees: 5
+//   off 5        the same 5 lugs 0.4 and 0.3 off the origin (a box not
+//                centred on the axle): 5, about the mean of the points
+//   lugs 8       8 lugs of 16 degrees: 8
+//   bevel 12     12 lugs with bevelled tops (4 angles each): 12
+//   half 12      12 lugs of half the pitch: none - their corners repeat 24
+//                times (rule 5: finer), so 12 is not stored
+//   spikes 32    32 spikes: 32
+//   smooth 32    an even ring of 32: none (smooth)
+//   valve 32     the ring and a loose triangle with one point on the rim:
+//                none (2 open gaps)
+//   lugs 3       3 lugs: none (fewer than 4)
+//   spikes 40    40 spikes: none (more than 32)
+//   uneven 8     8 lugs, one of them 3 degrees off: none (not symmetric)
+//   slit 6       6 lugs each cut in two by a slit: none (12 gaps, the band
+//                not 12-fold) - never 6 from a guess
+//   webs 16      16 spikes, every second two joined by a web (an edge at
+//                full radius): 8 grooves, but the 16 spikes would run back
+//                under a clamp for 8: none (rule 5: finer)
+//   none         no point: none
+//   spokes 4+8   4 lugs and 8 spokes below them: none (finer)
+//   spokes 10+12 10 lugs and 12 spokes: none (out of step)
+//   rim 10       10 lugs and a smooth rim of 16 facets: 10 (a smooth ring,
+//                an edge between every two of its neighbours, is the same
+//                however it is turned)
+#define RLDMK_TREAD_TEST_STEPS 192
+
+struct RldMkTreadMesh
+{
+	u8 vertices[RLDMK_TREAD_TEST_STEPS * 4u * RLDCHAR_WHEEL_VERTEX_BYTES];
+	u8 indices[RLDMK_TREAD_TEST_STEPS * 4u * 6u * 2u];
+	double profile[RLDMK_TREAD_TEST_STEPS][2];
+	double offset[2];           // y, z added to every point
+	u32 profileCount;
+	u32 points;
+	u32 triangles;
+};
+
+static void RldMk_TreadPoint(struct RldMkTreadMesh *m, double x, double degrees, double radius)
+{
+	u8 *v = &m->vertices[(size_t)m->points * RLDCHAR_WHEEL_VERTEX_BYTES];
+	double sine;
+	double cosine;
+
+	RldMk_SinCos(degrees, &sine, &cosine);
+	memset(v, 0, RLDCHAR_WHEEL_VERTEX_BYTES);
+	RldMk_PutF32(&v[0], x);
+	RldMk_PutF32(&v[4], (radius * cosine) + m->offset[0]);
+	RldMk_PutF32(&v[8], (radius * sine) + m->offset[1]);
+	RldMk_PutF32(&v[16], 1.0);
+	m->points++;
+}
+
+static void RldMk_TreadTriangle(struct RldMkTreadMesh *m, u32 a, u32 b, u32 c)
+{
+	Rld_WriteLE16(&m->indices[(size_t)m->triangles * 6u], a);
+	Rld_WriteLE16(&m->indices[((size_t)m->triangles * 6u) + 2u], b);
+	Rld_WriteLE16(&m->indices[((size_t)m->triangles * 6u) + 4u], c);
+	m->triangles++;
+}
+
+// The profile extruded: point k at x +6 is 2k, at x -6 2k + 1.
+static void RldMk_TreadExtrude(struct RldMkTreadMesh *m)
+{
+	u32 k;
+
+	m->points = 0;
+	m->triangles = 0;
+	for (k = 0; k < m->profileCount; k++)
+	{
+		RldMk_TreadPoint(m, 6.0, m->profile[k][0], m->profile[k][1]);
+		RldMk_TreadPoint(m, -6.0, m->profile[k][0], m->profile[k][1]);
+	}
+	for (k = 0; k < m->profileCount; k++)
+	{
+		const u32 a = 2u * k;
+		const u32 b = 2u * ((k + 1u) % m->profileCount);
+
+		RldMk_TreadTriangle(m, a, b, a + 1u);
+		RldMk_TreadTriangle(m, b, b + 1u, a + 1u);
+	}
+}
+
+static void RldMk_TreadProfile(struct RldMkTreadMesh *m, double degrees, double radius)
+{
+	if (m->profileCount < RLDMK_TREAD_TEST_STEPS)
+	{
+		m->profile[m->profileCount][0] = degrees;
+		m->profile[m->profileCount][1] = radius;
+		m->profileCount++;
+	}
+}
+
+// lugs lugs, each of the given top angles about its middle at 16 (shift0:
+// degrees added to the middle of lug 0 alone), a groove floor at 14 between;
+// slit: a groove in the middle of every lug as well.
+static void RldMk_TreadLugs(struct RldMkTreadMesh *m, int lugs, const double *top, int topCount, double shift0, int slit)
+{
+	int l;
+	int t;
+
+	m->profileCount = 0;
+	for (l = 0; l < lugs; l++)
+	{
+		const double middle = ((360.0 * (double)l) / (double)lugs) + ((l == 0) ? shift0 : 0.0);
+
+		for (t = 0; t < topCount; t++)
+		{
+			if (slit && (t == (topCount / 2)))
+			{
+				RldMk_TreadProfile(m, middle + top[t - 1], 14.0);
+				RldMk_TreadProfile(m, middle + top[t], 14.0);
+			}
+			RldMk_TreadProfile(m, middle + top[t], 16.0);
+		}
+		RldMk_TreadProfile(m, middle + top[topCount - 1], 14.0);
+		RldMk_TreadProfile(m, middle + (360.0 / (double)lugs) + top[0], 14.0);
+	}
+	RldMk_TreadExtrude(m);
+}
+
+// count spokes at x 0 from radius 4 to 13, each 4 degrees wide (two
+// triangles), loose from the rest.
+static void RldMk_TreadSpokes(struct RldMkTreadMesh *m, u32 count)
+{
+	u32 k;
+
+	for (k = 0; k < count; k++)
+	{
+		const double middle = (360.0 * (double)k) / (double)count;
+		const u32 at = m->points;
+
+		RldMk_TreadPoint(m, 0.0, middle - 2.0, 4.0);
+		RldMk_TreadPoint(m, 0.0, middle + 2.0, 4.0);
+		RldMk_TreadPoint(m, 0.0, middle + 2.0, 13.0);
+		RldMk_TreadPoint(m, 0.0, middle - 2.0, 13.0);
+		RldMk_TreadTriangle(m, at, at + 1u, at + 2u);
+		RldMk_TreadTriangle(m, at, at + 2u, at + 3u);
+	}
+}
+
+static void RldMk_TreadRing(struct RldMkTreadMesh *m, int steps)
+{
+	int k;
+
+	m->profileCount = 0;
+	for (k = 0; k < steps; k++)
+	{
+		RldMk_TreadProfile(m, (360.0 * (double)k) / (double)steps, 16.0);
+	}
+	RldMk_TreadExtrude(m);
+}
+
+// The rows of the other wheel model: 40 steps of 9 degrees, rows across at
+// x 6, 2, -2, -6; a row is at 16 on the steps j with (j + shift) % 4 < 2,
+// else at 14.8 (shift 0 for the outer two, 2 for the inner two); quads
+// between neighbouring steps and rows, two triangles each.
+static void RldMk_TreadRows(struct RldMkTreadMesh *m)
+{
+	static const double rowX[4] = {6.0, 2.0, -2.0, -6.0};
+	u32 j;
+	u32 r;
+
+	m->points = 0;
+	m->triangles = 0;
+	for (j = 0; j < 40u; j++)
+	{
+		for (r = 0; r < 4u; r++)
+		{
+			const u32 shift = (r < 2u) ? 0u : 2u;
+
+			RldMk_TreadPoint(m, rowX[r], 9.0 * (double)j, (((j + shift) % 4u) < 2u) ? 16.0 : 14.8);
+		}
+	}
+	for (j = 0; j < 40u; j++)
+	{
+		const u32 next = (j + 1u) % 40u;
+
+		for (r = 0; r < 3u; r++)
+		{
+			const u32 a = (4u * j) + r;
+			const u32 b = (4u * next) + r;
+
+			RldMk_TreadTriangle(m, a, b, b + 1u);
+			RldMk_TreadTriangle(m, a, b + 1u, a + 1u);
+		}
+	}
+}
+
+static void RldMk_SelfTestTreads(void)
+{
+	enum
+	{
+		CASES = 18
+	};
+	static struct RldMkTreadMesh m;
+	static struct RldTreadWork work;
+	static const char *const names[CASES] = {"rows 10",    "lugs 5",  "lugs 8",    "bevel 12",  "half 12",  "spikes 32", "smooth 32",
+	                                         "valve 32",   "lugs 3",  "spikes 40", "uneven 8",  "slit 6",   "webs 16",   "none",
+	                                         "off 5",      "spokes 4+8", "spokes 10+12", "rim 10"};
+	static const u32 expect[CASES] = {10u, 5u, 8u, 12u, 0u, 32u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 0u, 5u, 0u, 0u, 10u};
+	static const int why[CASES] = {RLDTREAD_FOUND, RLDTREAD_FOUND, RLDTREAD_FOUND, RLDTREAD_FOUND, RLDTREAD_FINER, RLDTREAD_FOUND, RLDTREAD_SMOOTH,
+	                               RLDTREAD_FEW,   RLDTREAD_FEW,   RLDTREAD_MANY,  RLDTREAD_ASYMMETRIC, RLDTREAD_ASYMMETRIC, RLDTREAD_FINER,
+	                               RLDTREAD_NO_MESH, RLDTREAD_FOUND, RLDTREAD_FINER, RLDTREAD_OUT_OF_STEP, RLDTREAD_FOUND};
+	static const double top5[2] = {-12.0, 12.0};
+	static const double top8[2] = {-8.0, 8.0};
+	static const double top12[4] = {-6.0, -3.0, 3.0, 6.0};
+	static const double half12[2] = {-7.5, 7.5};
+	static const double spike[1] = {0.0};
+	static const double top3[2] = {-20.0, 20.0};
+	static const double slit6[4] = {-14.0, -4.0, 4.0, 14.0};
+	int c;
+
+	for (c = 0; c < CASES; c++)
+	{
+		struct RldTreadResult r;
+		char label[96];
+
+		memset(&m, 0, sizeof(m));
+		switch (c)
+		{
+		case 0:
+			RldMk_TreadRows(&m);
+			break;
+		case 1:
+			RldMk_TreadLugs(&m, 5, top5, 2, 0.0, 0);
+			break;
+		case 2:
+			RldMk_TreadLugs(&m, 8, top8, 2, 0.0, 0);
+			break;
+		case 3:
+			RldMk_TreadLugs(&m, 12, top12, 4, 0.0, 0);
+			break;
+		case 4:
+			RldMk_TreadLugs(&m, 12, half12, 2, 0.0, 0);
+			break;
+		case 5:
+			RldMk_TreadLugs(&m, 32, spike, 1, 0.0, 0);
+			break;
+		case 6:
+		case 7:
+			RldMk_TreadRing(&m, 32);
+			if (c == 7)
+			{
+				// a loose triangle: one point on the rim between two facets, two below
+				const u32 at = m.points;
+
+				RldMk_TreadPoint(&m, 6.0, 5.625, 16.0);
+				RldMk_TreadPoint(&m, 6.0, 4.0, 15.0);
+				RldMk_TreadPoint(&m, 6.0, 7.0, 15.0);
+				RldMk_TreadTriangle(&m, at, at + 1u, at + 2u);
+			}
+			break;
+		case 8:
+			RldMk_TreadLugs(&m, 3, top3, 2, 0.0, 0);
+			break;
+		case 9:
+			RldMk_TreadLugs(&m, 40, spike, 1, 0.0, 0);
+			break;
+		case 10:
+			RldMk_TreadLugs(&m, 8, top8, 2, 3.0, 0);
+			break;
+		case 11:
+			RldMk_TreadLugs(&m, 6, slit6, 4, 0.0, 1);
+			break;
+		case 12:
+			// 16 spikes: every second pair of neighbouring tips joined by a
+			// triangle with a point below the rim
+			RldMk_TreadLugs(&m, 16, spike, 1, 0.0, 0);
+			{
+				u32 t;
+
+				for (t = 0; t < 16u; t += 2u)
+				{
+					const u32 at = m.points;
+
+					RldMk_TreadPoint(&m, 0.0, 22.5 * ((double)t + 0.5), 12.0);
+					RldMk_TreadTriangle(&m, 2u * (3u * t), 2u * (3u * (t + 1u)), at);
+				}
+			}
+			break;
+		case 14:
+			m.offset[0] = 0.4;
+			m.offset[1] = -0.3;
+			RldMk_TreadLugs(&m, 5, top5, 2, 0.0, 0);
+			break;
+		case 15:
+			RldMk_TreadLugs(&m, 4, top8, 2, 0.0, 0);
+			RldMk_TreadSpokes(&m, 8);
+			break;
+		case 16:
+			RldMk_TreadLugs(&m, 10, top8, 2, 0.0, 0);
+			RldMk_TreadSpokes(&m, 12);
+			break;
+		case 17:
+			RldMk_TreadLugs(&m, 10, top8, 2, 0.0, 0);
+			{
+				// a flat rim of 16 facets at x 0, radius 10, a fan to its middle
+				const u32 middle = m.points;
+				u32 t;
+
+				RldMk_TreadPoint(&m, 0.0, 0.0, 0.0);
+				for (t = 0; t < 16u; t++)
+				{
+					RldMk_TreadPoint(&m, 0.0, 22.5 * (double)t, 10.0);
+				}
+				for (t = 0; t < 16u; t++)
+				{
+					RldMk_TreadTriangle(&m, middle, middle + 1u + t, middle + 1u + ((t + 1u) % 16u));
+				}
+			}
+			break;
+		default:
+			break;
+		}
+		RldTread_Count(m.vertices, m.points, m.indices, m.triangles, &work, &r);
+		snprintf(label, sizeof(label), "tread count of a made-up wheel, %s: %u (%s)", names[c], expect[c], RldTread_Why(why[c]));
+		RldMk_Test((r.treads == expect[c]) && (r.why == why[c]), label, "got %u (%s), %u outer points at %u angles, %u open gaps", r.treads,
+		           RldTread_Why(r.why), r.outer, r.angles, r.open);
+	}
+}
+
 // WHLS version 3, MRPH and the classic frames of the preview (RLDPC1): the
 // writers of make-char and the switches, held to the game's rules.
 static void RldMk_SelfTestNativeFormat(void)
@@ -2128,6 +2481,41 @@ static void RldMk_SelfTestNativeFormat(void)
 		RldMk_Test(0, "native OBJ with a rear wheel of its own", "not made (said: %s)", s_rldMkCodes);
 	}
 	RldMk_NativeObjFree(&a);
+
+	// 8c. A wheel with a tread of 5 lugs and no switch: version 3 for the
+	//     tread count alone - flags 0, offsets 0, the wheel points as in
+	//     version 2, the count 5 front and 0 rear; built twice the same. The
+	//     smooth cylinder of the other cases stays version 2 (above).
+	memset(&k, 0, sizeof(k));
+	k.want = 1;
+	k.wheel = 1;
+	k.wheelLugs = 5u;
+	if (RldMk_NativeObjMake(&k, &a) && a.made)
+	{
+		RldMk_CheckNativeBytes(a.cmdl, a.cmdlSize, a.chriFlags, a.cnet, a.cnetSize, a.ctxt, a.ctxtSize, &native);
+		RldMk_Test((native.state == RLDCHAR_NATIVE_READY) && (native.wheelVersion == RLDCHAR_WHEEL_VERSION_USER3) && (native.wheelFlags == 0u) &&
+		               (native.wheelRearVertexCount == 0u) && (native.wheelTreads[0] == 5u) && (native.wheelTreads[1] == 0u) &&
+		               (native.wheelAxle[0][0] == 0.0f) && (native.wheelAxle[1][2] == 0.0f) && (RldChar_F32(&native.wheel[0x14]) == 36.0f) &&
+		               (RldChar_F32(&native.wheel[0x18]) == 16.0f) && (RldChar_F32(&native.wheel[0x1C]) == 49.75f) &&
+		               (RldChar_F32(&native.wheel[0x28]) == -24.0f) && (a.facts.wheelVersion == RLDCHAR_WHEEL_VERSION_USER3),
+		           "native OBJ with a wheel of 5 lugs: WHLS version 3 for the tread count 5 alone, no flag, no offset, ready",
+		           "state %d (%s) %s, version %u, flags %u, treads %u %u", native.state, (native.rule != NULL) ? native.rule : "", native.detail,
+		           native.wheelVersion, native.wheelFlags, native.wheelTreads[0], native.wheelTreads[1]);
+		RldChar_FreeNative(&native);
+		if (RldMk_NativeObjMake(&k, &again) && again.made)
+		{
+			RldMk_Test((again.cnetSize == a.cnetSize) && (memcmp(again.cnet, a.cnet, a.cnetSize) == 0),
+			           "native OBJ with a wheel of 5 lugs, built twice: the same CNET", "differ");
+		}
+		RldMk_NativeObjFree(&again);
+	}
+	else
+	{
+		RldMk_Test(0, "native OBJ with a wheel of 5 lugs", "not made (said: %s)", s_rldMkCodes);
+	}
+	RldMk_NativeObjFree(&a);
+
+	RldMk_SelfTestTreads();
 
 	// 8b. The switches: values, bounds, "needs --wheel-model"; all at 0 is
 	//     version 2 (byte for byte the file without them).
@@ -2432,15 +2820,18 @@ static void RldMk_SelfTestNative(void)
 			                                                                       : RLDCHAR_WHEEL_VERSION_TEST;
 			// MRPH as the reader hands it on: the targets, 0 for none or a skipped version
 			const u32 morphs = (strcmp(c->name, "good_mrph-win-lose") == 0) ? 3u : ((strcmp(c->name, "good_mrph-lose-only") == 0) ? 2u : 0u);
-			const int rearWant = (strcmp(c->name, "good_wheel-v3-rear") == 0);
+			const int rearWant = (strcmp(c->name, "good_wheel-v3-rear") == 0) || (strcmp(c->name, "good_wheel-v3-treads") == 0);
+			// the tread counts as the reader hands them on (WHLS 3 E+0x2C, E+0x2D)
+			const int treadsWant = (strcmp(c->name, "good_wheel-v3-treads") == 0);
 
 			RldMk_Test((native.state == RLDCHAR_NATIVE_READY) && (native.wheelVersion == version) && ((native.wheel != NULL) == (version != 0u)) &&
 			               (native.morphTargets == morphs) && ((native.morph != NULL) == (morphs != 0u)) &&
 			               ((native.wheelRearVertexCount != 0u) == rearWant) &&
-			               ((version != RLDCHAR_WHEEL_VERSION_USER3) || ((native.wheelFlags & RLDCHAR_WHEEL_ALWAYS_DRAW) != 0u)),
-			           label, "state %d (%s) %s, wheel version %u (want %u), morphs %u (want %u), rear %u", native.state,
+			               ((version != RLDCHAR_WHEEL_VERSION_USER3) || ((native.wheelFlags & RLDCHAR_WHEEL_ALWAYS_DRAW) != 0u)) &&
+			               (native.wheelTreads[0] == (treadsWant ? 10u : 0u)) && (native.wheelTreads[1] == (treadsWant ? 12u : 0u)),
+			           label, "state %d (%s) %s, wheel version %u (want %u), morphs %u (want %u), rear %u, treads %u %u", native.state,
 			           (native.rule != NULL) ? native.rule : "", native.detail, native.wheelVersion, version, native.morphTargets, morphs,
-			           native.wheelRearVertexCount);
+			           native.wheelRearVertexCount, native.wheelTreads[0], native.wheelTreads[1]);
 		}
 		else if (strncmp(c->name, "none_", 5u) == 0)
 		{

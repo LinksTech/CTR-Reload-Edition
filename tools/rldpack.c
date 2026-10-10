@@ -93,6 +93,10 @@ typedef signed int s32;
 #include <rldtrack.inc>
 #include <rldchar.inc>
 
+// The tread count of an author's wheel from its geometry (make-char writes it
+// into WHLS version 3; the game reads it for its stroboscope clamp).
+#include <rldtread.inc>
+
 // The PNG reader for make-char --icon and CTXT. include/rldchar.inc pulls it
 // in already: the game decodes the textures of CTXT with it (preview).
 #include <rldpng.inc>

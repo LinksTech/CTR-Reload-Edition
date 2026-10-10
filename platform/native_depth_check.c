@@ -1749,8 +1749,12 @@ static int NativeDepthCheck_Finish(int *checks, double *errorMax)
 //            18, no rear mesh, not always drawn.
 //   v3 rear  the rear mesh behind: points 16..35 (its mirror image x negated),
 //            its range at 36 and its mirror at 60, 24 indices each, all of
-//            them at 16 or more; material 1, radius 24, treads 10; ALWAYS_DRAW
-//            read. Without the rear mesh flag: the front mesh as in v2.
+//            them at 16 or more; material 1, radius 24; ALWAYS_DRAW read.
+//            Without the rear mesh flag: the front mesh as in v2.
+//   treads   the counts of the file (n->wheelTreads, WHLS 3 E+0x2C/0x2D)
+//            are the clamp's: v2 none - the front the safe 32, not stored;
+//            v3 rear 10 stored and the front none (the safe 32); v3 without
+//            the rear mesh front 12 stored.
 //   roll     front radius 16, rear 24: the rear roll step is 16 / 24 of the
 //            front's; with the rear the front's, the same.
 //   level    the retail tyre threshold: 1 player lodIndex 2 shown, 3 hidden;
@@ -1873,6 +1877,8 @@ static int NativeDepthCheck_WheelsV3(int *checks)
 		n.wheelExtra = (pass == 1) ? extra : NULL;
 		n.wheelRearVertexCount = (pass == 1) ? (u32)NR : 0u;
 		n.wheelRearTriangleCount = (pass == 1) ? (u32)TR : 0u;
+		n.wheelTreads[0] = (pass == 2) ? 12u : 0u;
+		n.wheelTreads[1] = (pass == 1) ? 10u : 0u;
 		if (!NativeCharGpu_Build(&n, &cpu))
 		{
 			NativeCharGpu_FreeCpu(&cpu);
@@ -1885,6 +1891,8 @@ static int NativeDepthCheck_WheelsV3(int *checks)
 		                ? 0
 		                : 1;
 		(*checks)++;
+		failures += ((cpu.wheelTreads == ((pass == 2) ? 12 : NATIVE_WHEELS_TREADS_SAFE)) && (cpu.wheelTreadsStored == ((pass == 2) ? 1u : 0u))) ? 0 : 1;
+		(*checks)++;
 		if (pass != 1)
 		{
 			failures += ((cpu.wheelRearOwn == 0u) && (cpu.wheelVertexCount == (u32)(2 * NW)) && (cpu.wheelIndexTotal == (u32)(6 * TW))) ? 0 : 1;
@@ -1896,7 +1904,7 @@ static int NativeDepthCheck_WheelsV3(int *checks)
 			         (cpu.wheelIndexTotal == (u32)((6 * TW) + (6 * TR))) && (cpu.wheelRearFirst == (u32)(6 * TW)) &&
 			         (cpu.wheelRearMirrorFirst == (u32)((6 * TW) + (3 * TR))) && (cpu.wheelRearIndexCount == (u32)(3 * TR)) &&
 			         (cpu.wheelRearMaterial == 1u) && (cpu.wheelRearRadius == 24.0f) && (cpu.wheelRearHalfWidth == 8.0f) && (cpu.wheelRearTreads == 10) &&
-			         cpu.wheelRearTreadsEstimated;
+			         cpu.wheelRearTreadsStored;
 
 			(*checks)++;
 			for (i = 0; ok && (i < (u32)(6 * TR)); i++)
@@ -2192,7 +2200,8 @@ int NativeDepthCheck_Run(void)
 	       (finishFailures == 0) ? "passed" : "differ");
 
 	// The own wheels of WHLS version 3 (render plan A1, A2, A4), on an eighth line.
-	printf("native depth selftest own wheels v3: rear mesh, axle roll, level of detail with NO LOD off and on, %d checks, %d failures, wheels v3 %s\n",
+	printf("native depth selftest own wheels v3: rear mesh, tread counts of the file, axle roll, level of detail with NO LOD off and on, %d checks, "
+	       "%d failures, wheels v3 %s\n",
 	       v3Checks, v3Failures, (v3Failures == 0) ? "passed" : "differ");
 
 	return passed ? 0 : 1;
