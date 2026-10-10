@@ -479,8 +479,8 @@ Characters
   up to 32 lugs, and at top speed the wheel seems to turn slower than the
   kart drives. A painted pattern with more repeats than the stored count,
   or than 32, may still flicker at speed.
-- Wheels of their own built before this version carry no tread count
-  and get that safe limit; build the character again once.
+- Drivers exported with earlier builds should be re-exported in Reload
+  Studio to get correct wheel tread animation.
 - Win and lose show only on the high-detail model (--native-model on,
   in Reload Studio "Native model") and only after a race with a real
   placing; the classic model stays neutral after the finish line.

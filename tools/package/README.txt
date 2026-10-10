@@ -824,8 +824,9 @@ Characters
   bolts out of step with the lugs, or a tread painted only in the texture),
   the wheel seems to turn slower than the kart drives at top speed. A
   painted pattern with more repeats than the stored count, or than 32, may
-  still flicker at speed. Wheels built before this version carry no count;
-  build the character again.
+  still flicker at speed.
+- Drivers exported with earlier builds should be re-exported in Reload
+  Studio to get correct wheel tread animation.
 - The character's own icon shows only for the first 20 loaded files; high
   score lists and profiles show the portrait of Fake Crash.
 - The cup podium shows the template (Fake Crash, for a character from
