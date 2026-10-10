@@ -161,9 +161,12 @@ PREVIEW: HIGH-DETAIL CUSTOM CHARACTERS (off by default)
   all 47 animation frames, with mipmaps.
 - It draws the driver in the race (one-player ARCADE, your seat), in
   water and mud, with its mirror image on ice, and in the driver select.
-  Eight different drivers of 30000 triangles each in one race at 4x
-  resolution: 12.3 ms CPU and 1.3 ms GPU per frame at the 99th
-  percentile, at most 587 MiB of memory.
+  Measured on the test machine at 4x resolution with 4x MSAA: eight
+  copies of one driver with poses and wheels of its own, 11.1 ms per
+  frame (CPU and GPU together) at the 99th percentile on a custom
+  track, the same as their classic models; eight different drivers
+  at the limits above, 2.6 ms per frame on Polar Pass, with 934 MiB
+  of video memory and 862 MiB of memory.
 - With the kart wheels hidden or with wheels of its own: a file that
   shows the kart wheels and has no wheel model keeps its classic model
   (the log says why). rldpack make-char --native-model on needs
