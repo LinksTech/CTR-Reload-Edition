@@ -168,11 +168,10 @@ Adventure, Battle or with two players (the NITRO-PIT time trial takes them).
   "[CTR Char] seat 0 empty: podium of an arcade cup, the pick stays" says
   so.
 
-Mods - the CPU opponents: in the one-player ARCADE track select (also NITRO
-RACE) press X on a track, then DOWN below the last LAPS row into the MODS box
-(in the cup select, also NITRO CUP: DOWN from a lower cup onto the MODS line)
-and X. The MODS page works
-like the GRAPHICS page:
+Mods (Feature Preview) - the CPU opponents: in the one-player ARCADE track
+select (also NITRO RACE) press X on a track, then DOWN below the last LAPS row
+into the MODS box (in the cup select, also NITRO CUP: DOWN from a lower cup
+onto the MODS line) and X. The MODS page works like the GRAPHICS page:
   CPU DRIVERS      DEFAULT (the usual opponents), ALL RANDOM (every installed
                    driver, original and custom, with the same chance) or
                    ONLY SELECTED (only the ticked drivers)
@@ -186,7 +185,7 @@ never a CPU. Every single race draws anew, a cup keeps its opponents for all
 four races. The choice is saved in ctr-settings.cfg; settings of the earlier
 MODS page are taken over. The log line "[CTR Mods] seats ..." names who sits
 where. Not in CRYSTAL, CTR or TIME TRIAL of NITRO-PIT, Time Trial,
-Adventure, Battle or with two players.
+Adventure, Battle or with two players. More mods are coming.
 
 
 4. RELOAD STUDIO

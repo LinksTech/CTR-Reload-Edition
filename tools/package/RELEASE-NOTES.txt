@@ -282,7 +282,7 @@ NITRO-PIT TIME TRIAL
   laps). The MODE box below the laps of NITRO RACE is gone; the MODS box
   stands there now.
 
-MODS MENU
+MODS MENU (FEATURE PREVIEW)
 - ARCADE with one player (single race and cup, on the disc tracks and in
   NITRO RACE and NITRO CUP) has a MODS box: in the track select DOWN
   below the last LAPS row, in the cup select DOWN from a lower cup onto
@@ -305,6 +305,7 @@ MODS MENU
   like the GRAPHICS settings (ctr-settings.cfg).
 - Not offered in CRYSTAL, CTR and TIME TRIAL of NITRO-PIT, Adventure,
   Time Trial, Battle and with two or more players.
+- More mods are coming.
 
 
 NEW IN 0.0.5 BETA

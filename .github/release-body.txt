@@ -42,13 +42,14 @@ Preview: high-detail custom characters
 - Reload Studio builds the high-detail model without a start switch: tick "Native model" (tab Extras, card Import, marked "Preview feature"); it needs "Show kart wheels" off or a wheel model. The card Wheels takes the wheel model and its size and shows the wheels in place, steering and spinning, in the preview, also without a body model. It reads the wheel again when you export it again, says why it warns (for example a texture not found) and finds the wheel texture in the Textures folder as well. While the card Wheels is shown, a model dropped onto the page becomes the wheel model; the body keeps its file. Without the tick, Reload Studio builds the same file as before.
 - The card Wheels also takes a "Rear wheel model (GLB/OBJ/PLY)" and the axles (Front axle or Rear axle, with Fwd, Up and Track). The preview shows the rear wheel and the moved axles at once. Each of these goes into the file only when you set it; left alone, the character is built exactly as before.
 
-Mods menu
+Mods menu (Feature Preview)
 - ARCADE with one player (single race and cup, on the disc tracks and in NITRO RACE and NITRO CUP) has a MODS box: in the track select DOWN below the last LAPS row, in the cup select DOWN from a lower cup onto the MODS line. CROSS opens the MODS page, which works like the GRAPHICS page.
 - CPU DRIVERS: DEFAULT (the usual opponents, races exactly as before), ALL RANDOM (every installed driver, original and custom, with the same chance; nobody twice) or ONLY SELECTED (only the drivers ticked on SELECT DRIVERS).
 - SELECT DRIVERS lists the fifteen original drivers, then the custom drivers, each ON or OFF; none is ticked at first. With fewer ticked drivers than the seven CPU seats they appear more than once: one ticked driver gives seven of the same opponent. Nothing ticked is DEFAULT, and the box then shows OFF.
 - Your own driver never drives as a CPU. Every single race draws anew; the four races of a cup keep the same opponents. A custom driver that cannot be loaded or cannot sit on its template is skipped.
 - With NATIVE DRIVERS set to PREVIEW custom CPU drivers use their high-detail model, otherwise their classic model. The choice is saved like the GRAPHICS settings.
 - Not offered in CRYSTAL, CTR and TIME TRIAL of NITRO-PIT, Adventure, Time Trial, Battle and with two or more players.
+- More mods are coming.
 
 Known issues
 - Custom drivers without their own voice lines are silent.

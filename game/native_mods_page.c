@@ -3,7 +3,8 @@
 // ===========================================================================
 // MODS PAGE (the big view of the MODS box of the track select and cup select).
 //
-// Main page "MODS", two rows in English:
+// Main page "MODS", below the separator line the small line "FEATURE PREVIEW"
+// (white like the values, FONT_SMALL), then two rows in English:
 //   CPU DRIVERS      DEFAULT / ALL RANDOM / ONLY SELECTED
 //   SELECT DRIVERS   <n> SELECTED   (grey unless CPU DRIVERS is ONLY SELECTED;
 //                                    no arrow: FONT_SMALL draws ">" as a dash)
@@ -51,6 +52,8 @@ void Platform_Log(const char *format, ...);
 #define NATIVE_MODS_PAGE_VISIBLE     6
 #define NATIVE_MODS_PAGE_NAME_MAX    40
 #define NATIVE_MODS_PAGE_ROW_Y       58
+#define NATIVE_MODS_PAGE_PREVIEW_Y   49
+#define NATIVE_MODS_PAGE_MAIN_ROW_Y  66
 #define NATIVE_MODS_PAGE_ROW_PITCH   18
 #define NATIVE_MODS_PAGE_LABEL_X     76
 #define NATIVE_MODS_PAGE_VALUE_X     436
@@ -110,17 +113,18 @@ internal void NativeModsPage_DrawMain(void)
 	u32 *ot = gGT->backBuffer->otMem.uiOT;
 	char text[24];
 	const int value = NativeModsPage_Value();
-	const int firstHintY = NATIVE_MODS_PAGE_ROW_Y + (NATIVE_MODS_PAGE_ROWS * NATIVE_MODS_PAGE_ROW_PITCH) + 8;
+	const int firstHintY = NATIVE_MODS_PAGE_MAIN_ROW_Y + (NATIVE_MODS_PAGE_ROWS * NATIVE_MODS_PAGE_ROW_PITCH) + 8;
 	int hintY = firstHintY;
 	int row;
 
 	DecalFont_DrawLine("MODS", 256, 26, FONT_BIG, (JUSTIFY_CENTER | ORANGE));
+	DecalFont_DrawLine("FEATURE PREVIEW", 256, NATIVE_MODS_PAGE_PREVIEW_Y, FONT_SMALL, (JUSTIFY_CENTER | WHITE));
 
 	snprintf(text, sizeof(text), "%d SELECTED", NativeMods_SelectedCount());
 
 	for (row = 0; row < NATIVE_MODS_PAGE_ROWS; row++)
 	{
-		const int y = NATIVE_MODS_PAGE_ROW_Y + (row * NATIVE_MODS_PAGE_ROW_PITCH);
+		const int y = NATIVE_MODS_PAGE_MAIN_ROW_Y + (row * NATIVE_MODS_PAGE_ROW_PITCH);
 		const int grey = (row == NATIVE_MODS_PAGE_ROW_DRIVERS) && (value != NATIVE_MODS_PAGE_SELECTED);
 
 		DecalFont_DrawLine((char *)s_nativeModsPageLabels[row], NATIVE_MODS_PAGE_LABEL_X, y, FONT_SMALL, grey ? GRAY : ORANGE);
@@ -141,7 +145,7 @@ internal void NativeModsPage_DrawMain(void)
 		hintY += NATIVE_MODS_PAGE_HINT_PITCH;
 	}
 
-	NativeModsPage_DrawFrame(ot, NATIVE_MODS_PAGE_ROW_Y + (s_nativeModsPageRow * NATIVE_MODS_PAGE_ROW_PITCH), firstHintY, hintY);
+	NativeModsPage_DrawFrame(ot, NATIVE_MODS_PAGE_MAIN_ROW_Y + (s_nativeModsPageRow * NATIVE_MODS_PAGE_ROW_PITCH), firstHintY, hintY);
 }
 
 // The name of a list row, cut until it ends NATIVE_MODS_PAGE_GAP left of the
