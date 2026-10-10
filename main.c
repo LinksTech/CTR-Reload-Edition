@@ -251,6 +251,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--native-wheel-report", "", "only with --native-preview --native-probe: per tick the float wheel middles, roll phase and speed of the probe seat beside the middles of its retail wheels, which stay on for that seat (measuring the wheel poses)"},
     {"--native-seam-report", "", "only with --native-preview: one line per frame and native item of view 0 (probe or custom character) with its view z, shift, depth and box - the seam at view z 0x1000 (measuring only)"},
     {"--native-depth-tint", "", "only with --native-preview: every native draw is coloured by its depth (red and blue full, green = 1024 / w) instead of its colours - the seam at view z 0x1000 made visible (measuring only)"},
+    {"--native-retire-selftest", "", "the Vulkan retire lists of textures and framebuffers without a device: a level change with the lists cut to 8 entries, every handle destroyed exactly once, none left behind, then end (ctest native_retire_selftest)"},
     {"--native-char-gpu-selftest", "<dir>", "the good .rldchar files of dir (written by rldpack make-native-tests) through the native read and the GPU set build of a custom character without a device, then end (ctest native_char_gpu_selftest)"},
     {"--native-split-report", "", "measuring only: per water line view of seat 0 drawn as a custom character (SPLIT, and SPECIAL with the split line), the raw values the queue split it with - the first four, then every 30th VBlank"},
     {"--native-twin-selftest", "<dir>", "the retail twin (step 4d, platform/native_twin.c) without a device: a retail model and a VRAM made in memory, then old_plain.rldchar of dir (written by rldpack make-native-tests), through the converter, then end (ctest native_twin_selftest)"},
@@ -2227,6 +2228,14 @@ int main(int argc, char *argv[])
 		if ((strcmp(argv[argIndex], "--native-char-gpu-selftest") == 0) && ((argIndex + 1) < argc))
 		{
 			return NativeCharGpu_SelfTest(argv[argIndex + 1]);
+		}
+
+		// The Vulkan retire lists without a device (platform/native_gfx_vk.c,
+		// ctest native_retire_selftest): made-up handles and counters in place
+		// of the Vulkan calls. Up here for the same reason.
+		if (strcmp(argv[argIndex], "--native-retire-selftest") == 0)
+		{
+			return NativeVk_RetireSelfTest();
 		}
 
 		// The retail twin without a device (step 4d, platform/native_twin.c,

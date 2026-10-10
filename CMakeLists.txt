@@ -596,6 +596,15 @@ if(BUILD_TESTING)
     # does, the timeout ends the test instead of the build.
     set_tests_properties(selftest_bad_containers selftest_bad_disc PROPERTIES TIMEOUT 300)
 
+    # THE VULKAN RETIRE LISTS (platform/native_gfx_vk.c), without a device: one
+    # level change of 100 textures and 25 framebuffers with the lists cut to 8
+    # entries - full lists are drained at once, nothing is left behind, every
+    # handle is destroyed exactly once.
+    add_test(NAME native_retire_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --native-retire-selftest)
+    set_tests_properties(native_retire_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "native retire selftest passed: 100 textures, 25 framebuffers, cap 8, [1-9][0-9]* drain\\(s\\), 0 leak\\(s\\), 15 checks, 0 failures"
+    )
+
     # THE NATIVE MODEL OF A CUSTOM CHARACTER (CNET, CTXT; preview). rldpack
     # writes its test characters into the build folder (never into the
     # source tree), the game reads each through the roster read and the

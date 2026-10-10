@@ -2426,8 +2426,10 @@ global_variable VkDeviceSize s_vkAllocatedReported = 0;
 global_variable uint32_t s_vkTexturesCreated = 0;
 global_variable uint32_t s_vkTexturesDestroyed = 0;
 
-// How often a full retire list was emptied at once (NativeVk_DrainPendingNow).
+// How often a full retire list was emptied at once (NativeVk_DrainPendingNow),
+// and how many handles were lost because even that could not run.
 global_variable uint32_t s_vkPendingDrains = 0;
+global_variable uint32_t s_vkPendingLeaks = 0;
 
 // The places of each retire list that are used: all of them, unless
 // --dev-vk-pending-cap asks for fewer (main.c) - a measuring run that wants
@@ -3928,6 +3930,7 @@ internal void NativeGfxVK_DestroyTexture(TextureID id)
 	}
 	else
 	{
+		s_vkPendingLeaks++;
 		Platform_LogError("[CTR Vk] pending image list full - leaking one rather than risking a recording buffer\n");
 	}
 
@@ -5142,6 +5145,7 @@ internal void NativeVk_InvalidateFramebuffers(VkImageView view)
 			// Only when the drain itself could not run (no device, the
 			// frame's buffer not its own). Losing the handle leaks; destroying
 			// it now could corrupt a recording command buffer.
+			s_vkPendingLeaks++;
 			Platform_LogError("[CTR Vk] pending framebuffer list full - leaking one rather than risking a recording buffer\n");
 		}
 
@@ -5330,6 +5334,192 @@ internal void NativeVk_FlushPendingImmediately(void)
 {
 	s_vk.frameCounter += (uint32_t)NATIVE_VK_FRAMES_IN_FLIGHT + 2u;
 	NativeVk_FlushPendingFramebuffers();
+}
+
+// --native-retire-selftest (main.c, ctest native_retire_selftest): THE RETIRE
+// LISTS WITHOUT A DEVICE. The real paths - NativeGfxVK_DestroyTexture,
+// NativeVk_InvalidateFramebuffers, NativeVk_DrainPendingNow and the frame
+// start's NativeVk_FlushPendingFramebuffers - run on a table of made-up
+// handles, with the lists cut to RETIRE_TEST_CAP entries and the five Vulkan
+// calls they make (destroy image, view, framebuffer, free memory, wait for
+// the device) replaced by counters. No frame is open, so the drain's
+// submission has nothing to submit. Checked: every retired handle is either
+// destroyed or still on a list, never lost (no leak); the lists never hold
+// more than their cap; a full list was drained at once; and after the frames
+// in flight have passed, every handle is destroyed exactly once. Everything
+// the test touches - the backend state, the function pointers, the counters -
+// is put back before it returns.
+#define NATIVE_VK_RETIRE_TEST_CAP          8u
+#define NATIVE_VK_RETIRE_TEST_TEXTURES     100u
+#define NATIVE_VK_RETIRE_TEST_FRAMEBUFFERS 25u
+
+global_variable uint32_t s_vkRetireTestImages;
+global_variable uint32_t s_vkRetireTestViews;
+global_variable uint32_t s_vkRetireTestMemory;
+global_variable uint32_t s_vkRetireTestFramebuffers;
+global_variable uint32_t s_vkRetireTestWaits;
+
+internal VKAPI_ATTR void VKAPI_CALL NativeVk_RetireTestDestroyImage(VkDevice device, VkImage image, const VkAllocationCallbacks *allocator)
+{
+	(void)device;
+	(void)allocator;
+	s_vkRetireTestImages += (image != VK_NULL_HANDLE) ? 1u : 0u;
+}
+
+internal VKAPI_ATTR void VKAPI_CALL NativeVk_RetireTestDestroyView(VkDevice device, VkImageView view, const VkAllocationCallbacks *allocator)
+{
+	(void)device;
+	(void)allocator;
+	s_vkRetireTestViews += (view != VK_NULL_HANDLE) ? 1u : 0u;
+}
+
+internal VKAPI_ATTR void VKAPI_CALL NativeVk_RetireTestFreeMemory(VkDevice device, VkDeviceMemory memory, const VkAllocationCallbacks *allocator)
+{
+	(void)device;
+	(void)allocator;
+	s_vkRetireTestMemory += (memory != VK_NULL_HANDLE) ? 1u : 0u;
+}
+
+internal VKAPI_ATTR void VKAPI_CALL NativeVk_RetireTestDestroyFramebuffer(VkDevice device, VkFramebuffer framebuffer, const VkAllocationCallbacks *allocator)
+{
+	(void)device;
+	(void)allocator;
+	s_vkRetireTestFramebuffers += (framebuffer != VK_NULL_HANDLE) ? 1u : 0u;
+}
+
+internal VKAPI_ATTR VkResult VKAPI_CALL NativeVk_RetireTestWaitIdle(VkDevice device)
+{
+	(void)device;
+	s_vkRetireTestWaits++;
+	return VK_SUCCESS;
+}
+
+internal void NativeVk_RetireTestCheck(int ok, const char *what, int *checks, int *failures)
+{
+	(*checks)++;
+	if (!ok)
+	{
+		(*failures)++;
+		printf("native retire selftest FAILED: %s\n", what);
+	}
+}
+
+int NativeVk_RetireSelfTest(void)
+{
+	const size_t stateBytes = sizeof(s_vk);
+	void *savedState = malloc(stateBytes);
+	const PFN_vkDestroyImage savedDestroyImage = vkDestroyImage_fn;
+	const PFN_vkDestroyImageView savedDestroyView = vkDestroyImageView_fn;
+	const PFN_vkFreeMemory savedFreeMemory = vkFreeMemory_fn;
+	const PFN_vkDestroyFramebuffer savedDestroyFramebuffer = vkDestroyFramebuffer_fn;
+	const PFN_vkDeviceWaitIdle savedWaitIdle = vkDeviceWaitIdle_fn;
+	const uint32_t savedCap = s_vkPendingCap;
+	const uint32_t savedDrains = s_vkPendingDrains;
+	const uint32_t savedLeaks = s_vkPendingLeaks;
+	const uint32_t savedDestroyed = s_vkTexturesDestroyed;
+	uint32_t highestImages = 0;
+	uint32_t highestFramebuffers = 0;
+	uint32_t drains;
+	int checks = 0;
+	int failures = 0;
+	uint32_t i;
+
+	if (savedState == NULL)
+	{
+		printf("native retire selftest FAILED: no memory for the saved state\n");
+		return 1;
+	}
+
+	memcpy(savedState, &s_vk, stateBytes);
+	memset(&s_vk, 0, stateBytes);
+	s_vk.device = (VkDevice)(uintptr_t)0x1;
+	s_vk.frameCounter = 100u;
+
+	vkDestroyImage_fn = NativeVk_RetireTestDestroyImage;
+	vkDestroyImageView_fn = NativeVk_RetireTestDestroyView;
+	vkFreeMemory_fn = NativeVk_RetireTestFreeMemory;
+	vkDestroyFramebuffer_fn = NativeVk_RetireTestDestroyFramebuffer;
+	vkDeviceWaitIdle_fn = NativeVk_RetireTestWaitIdle;
+	s_vkPendingCap = NATIVE_VK_RETIRE_TEST_CAP;
+	s_vkPendingDrains = 0;
+	s_vkPendingLeaks = 0;
+	s_vkRetireTestImages = 0;
+	s_vkRetireTestViews = 0;
+	s_vkRetireTestMemory = 0;
+	s_vkRetireTestFramebuffers = 0;
+	s_vkRetireTestWaits = 0;
+
+	// The table: textures 1..100 with handles of their own, and a framebuffer
+	// cached on the view of every fourth one.
+	for (i = 0; i < NATIVE_VK_RETIRE_TEST_TEXTURES; i++)
+	{
+		s_vk.textures[i].used = 1;
+		s_vk.textures[i].image = (VkImage)(0x10000u + i);
+		s_vk.textures[i].memory = (VkDeviceMemory)(0x20000u + i);
+		s_vk.textures[i].view = (VkImageView)(0x30000u + i);
+	}
+
+	for (i = 0; i < NATIVE_VK_RETIRE_TEST_FRAMEBUFFERS; i++)
+	{
+		s_vk.framebuffers[i].used = 1;
+		s_vk.framebuffers[i].key.view = (uint64_t)(0x30000u + (4u * i));
+		s_vk.framebuffers[i].framebuffer = (VkFramebuffer)(0x40000u + i);
+	}
+
+	// One level change: every texture goes in the same frame.
+	for (i = 0; i < NATIVE_VK_RETIRE_TEST_TEXTURES; i++)
+	{
+		NativeGfxVK_DestroyTexture((TextureID)(i + 1u));
+		highestImages = (s_vk.pendingImageCount > highestImages) ? s_vk.pendingImageCount : highestImages;
+		highestFramebuffers = (s_vk.pendingFramebufferCount > highestFramebuffers) ? s_vk.pendingFramebufferCount : highestFramebuffers;
+	}
+
+	drains = s_vkPendingDrains;
+	NativeVk_RetireTestCheck(s_vkPendingLeaks == 0, "a handle was left behind", &checks, &failures);
+	NativeVk_RetireTestCheck(drains > 0, "a full list was not drained", &checks, &failures);
+	NativeVk_RetireTestCheck(s_vkRetireTestWaits == drains, "a drain did not wait for the device", &checks, &failures);
+	NativeVk_RetireTestCheck(highestImages <= NATIVE_VK_RETIRE_TEST_CAP, "the image list went past its cap", &checks, &failures);
+	NativeVk_RetireTestCheck(highestFramebuffers <= NATIVE_VK_RETIRE_TEST_CAP, "the framebuffer list went past its cap", &checks, &failures);
+	NativeVk_RetireTestCheck((s_vkRetireTestImages + s_vk.pendingImageCount) == NATIVE_VK_RETIRE_TEST_TEXTURES, "images destroyed + pending != retired",
+	                         &checks, &failures);
+	NativeVk_RetireTestCheck((s_vkRetireTestViews + s_vk.pendingImageCount) == NATIVE_VK_RETIRE_TEST_TEXTURES, "views destroyed + pending != retired",
+	                         &checks, &failures);
+	NativeVk_RetireTestCheck((s_vkRetireTestMemory + s_vk.pendingImageCount) == NATIVE_VK_RETIRE_TEST_TEXTURES, "memory freed + pending != retired",
+	                         &checks, &failures);
+	NativeVk_RetireTestCheck((s_vkRetireTestFramebuffers + s_vk.pendingFramebufferCount) == NATIVE_VK_RETIRE_TEST_FRAMEBUFFERS,
+	                         "framebuffers destroyed + pending != retired", &checks, &failures);
+
+	// The frames in flight pass: the frame start destroys the rest.
+	s_vk.frameCounter += (uint32_t)NATIVE_VK_FRAMES_IN_FLIGHT + 2u;
+	NativeVk_FlushPendingFramebuffers();
+
+	NativeVk_RetireTestCheck((s_vk.pendingImageCount == 0) && (s_vk.pendingFramebufferCount == 0), "the lists are not empty after the frames in flight",
+	                         &checks, &failures);
+	NativeVk_RetireTestCheck(s_vkRetireTestImages == NATIVE_VK_RETIRE_TEST_TEXTURES, "not every image destroyed exactly once", &checks, &failures);
+	NativeVk_RetireTestCheck(s_vkRetireTestViews == NATIVE_VK_RETIRE_TEST_TEXTURES, "not every view destroyed exactly once", &checks, &failures);
+	NativeVk_RetireTestCheck(s_vkRetireTestMemory == NATIVE_VK_RETIRE_TEST_TEXTURES, "not every memory freed exactly once", &checks, &failures);
+	NativeVk_RetireTestCheck(s_vkRetireTestFramebuffers == NATIVE_VK_RETIRE_TEST_FRAMEBUFFERS, "not every framebuffer destroyed exactly once", &checks,
+	                         &failures);
+	NativeVk_RetireTestCheck(s_vkPendingLeaks == 0, "a handle was left behind at the frame start", &checks, &failures);
+
+	printf("native retire selftest %s: %u textures, %u framebuffers, cap %u, %u drain(s), %u leak(s), %d checks, %d failures\n",
+	       (failures == 0) ? "passed" : "FAILED", (unsigned)NATIVE_VK_RETIRE_TEST_TEXTURES, (unsigned)NATIVE_VK_RETIRE_TEST_FRAMEBUFFERS,
+	       (unsigned)NATIVE_VK_RETIRE_TEST_CAP, (unsigned)drains, (unsigned)s_vkPendingLeaks, checks, failures);
+
+	memcpy(&s_vk, savedState, stateBytes);
+	free(savedState);
+	vkDestroyImage_fn = savedDestroyImage;
+	vkDestroyImageView_fn = savedDestroyView;
+	vkFreeMemory_fn = savedFreeMemory;
+	vkDestroyFramebuffer_fn = savedDestroyFramebuffer;
+	vkDeviceWaitIdle_fn = savedWaitIdle;
+	s_vkPendingCap = savedCap;
+	s_vkPendingDrains = savedDrains;
+	s_vkPendingLeaks = savedLeaks;
+	s_vkTexturesDestroyed = savedDestroyed;
+	NativeVk_ResetSetCache();
+
+	return (failures == 0) ? 0 : 1;
 }
 
 // --- State ------------------------------------------------------------------
@@ -5865,6 +6055,7 @@ internal void NativeVk_RetireTargetMsaa(struct NativeVkTarget *target)
 	}
 	else
 	{
+		s_vkPendingLeaks++;
 		Platform_LogError("[CTR MSAA] pending image list full - leaking a multisampled image rather than risking a recording buffer\n");
 	}
 
@@ -6413,6 +6604,7 @@ internal void NativeVk_RetireTargetDepth(struct NativeVkTarget *target)
 	}
 	else
 	{
+		s_vkPendingLeaks++;
 		Platform_Log("[CTR Vk] pending image list full - leaking a depth image rather than risking a recording buffer\n");
 	}
 
