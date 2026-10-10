@@ -15274,7 +15274,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 				}
 				if (m->treads.treads != 0u)
 				{
-					printf("  wheel treads  %s %u, from the geometry (%s), stored in WHLS - the game clamps the drawn roll to 0.45 of a tread\n",
+					printf("  wheel treads  %s %u, from the geometry (%s), stored in WHLS - the game clamps the drawn roll to 0.30 of a tread\n",
 					       (k == 0) ? "front" : "rear", m->treads.treads, RldTread_Why(m->treads.why));
 				}
 				else

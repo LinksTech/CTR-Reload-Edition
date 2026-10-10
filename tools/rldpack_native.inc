@@ -1939,7 +1939,7 @@ static void RldMk_WheelTreadsSay(const struct RldMkUserWheel *w, const char *pat
 		if (m->treads.treads == 0u)
 		{
 			RldMk_Say("info", "wheel-treads", (k == 0) ? path : rearPath,
-			          "Tread count not determined for the %swheel (%s), so none is stored: the game turns it by at most 0.45 of 1/32 of a turn per "
+			          "Tread count not determined for the %swheel (%s), so none is stored: the game turns it by at most 0.30 of 1/32 of a turn per "
 			          "frame, which no tread of up to 32 lugs can make look backwards; at top speed the wheel may look slower than the kart. For an "
 			          "exact count model 4 to 32 lugs, all alike, with a groove between each two.",
 			          (k == 0) ? "" : "rear ", RldTread_Why(m->treads.why));

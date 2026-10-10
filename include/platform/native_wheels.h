@@ -137,12 +137,15 @@ double NativeWheels_RollRadius(const struct NativeWheelPose *pose);
 // report keep the true step (rollStep). Drawing only: the pose table is all
 // this changes. treads is the count the file stores for the mesh (WHLS 3,
 // worked out by make-char from the geometry, include/rldtread.inc); without
-// one NATIVE_WHEELS_TREADS_SAFE: 0.45 of 1/32 of a turn is below half the
+// one NATIVE_WHEELS_TREADS_SAFE: 0.30 of 1/32 of a turn is below half the
 // pitch of every tread of up to 32 (RLDCHAR_WHEEL_TREADS_MAX), so no tread
 // a file can describe ever seems to stand or to turn backwards - only a
 // wheel with fewer treads looks slower at top speed. The game never guesses
-// a count of its own.
-#define NATIVE_WHEELS_STROBE_FRACTION 0.45
+// a count of its own. 0.30 and not just under 1/2: a step near half a pitch
+// is nearly as close to the step backwards (the fraction minus 1) as to its
+// own, and the tread seems to flicker in place; at 0.30 it clearly rolls
+// forward, at top speed 0.30 / 0.45 = 2/3 as fast as at 0.45.
+#define NATIVE_WHEELS_STROBE_FRACTION 0.30
 #define NATIVE_WHEELS_TREADS_SAFE 32
 
 // The clamp of the drawn roll step for a tread count, radians per tick; 0 for
@@ -151,12 +154,12 @@ double NativeWheels_StrobeClamp(int treads);
 
 // The stroboscope counters of every seat with a clamp (an own wheel): ticks
 // with a roll step, ticks clamped, and the largest true and drawn steps in
-// tread pitches (the drawn one stays below 0.5).
+// tread pitches (the drawn one stays at NATIVE_WHEELS_STROBE_FRACTION or below).
 void NativeWheels_StrobeCounts(unsigned long long *ticks, unsigned long long *clamped, double *stepMax, double *drawnMax);
 
 // --native-depth-selftest, a line of its own: the safe clamp against every
-// tread count 4..32 (below half a pitch, a forward step stays forward), a
-// stored count taking the place of the safe one, and the clamp on made-up
+// tread count 4..32 (at most NATIVE_WHEELS_STROBE_FRACTION of a pitch, a
+// forward step stays forward), a stored count taking the place of the safe one, and the clamp on made-up
 // ticks. 1 = passed; line gets the report.
 int NativeWheels_StrobeSelfTest(char *line, size_t size);
 

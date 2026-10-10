@@ -563,7 +563,7 @@ Tab 5 Extras
               not all alike, spokes out of step with the lugs, a pattern
               only painted in the texture, which can still flicker) gets a
               limit that is safe for up to 32 lugs: at full speed it may
-              turn a little slower than the kart drives, never backwards;
+              turn slower than the kart drives, never backwards;
               the messages of the build say why there is no count. A
               character built before this version has no count; build it
               again once.

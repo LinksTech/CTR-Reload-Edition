@@ -218,7 +218,7 @@ PREVIEW: HIGH-DETAIL CUSTOM CHARACTERS (off by default)
   of the tread from the shape of each wheel model (front and rear): 4 to
   32 lugs, all alike, with a groove between each two. Only a count that
   is certain goes into the file, and the game then turns the drawn wheel
-  by at most 0.45 of the spacing of its lugs per frame. A wheel without
+  by at most 0.30 of the spacing of its lugs per frame. A wheel without
   a count (a smooth one, or one whose tread cannot be counted for
   certain) gets a limit that is safe for any tread of up to 32 lugs: at
   top speed it may seem to turn slower than the kart drives, but never

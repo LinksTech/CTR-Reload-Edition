@@ -469,12 +469,14 @@ void NativeWheels_StrobeCounts(unsigned long long *ticks, unsigned long long *cl
 //            to 12000 forward and backward (12000 is past any kart's: the
 //            true step is then 3.7 rad) the drawn step moves a tread of each
 //            of those counts by a part of its pitch strictly between 0 and
-//            1/2 in the direction of travel - never standing, never back
-//   stored   a count of the file (10) clamps to 0.45 of its own pitch in
+//            1/2, and at most NATIVE_WHEELS_STROBE_FRACTION, in the direction
+//            of travel - never standing, never back
+//   stored   a count of the file (10) clamps to 0.30 of its own pitch in
 //            place of the safe clamp
 //   ticks    speed 3000 forward and backward (true step 0.916 rad) drawn
-//            clamped with the sign kept, speed 200 as it is, treads 0 the
-//            true step
+//            clamped with the sign kept, speed 150 (true step 0.046 rad,
+//            below the safe clamp 0.059 rad) as it is, treads 0 the true
+//            step
 // Leaves the pose table empty and the counters as they were.
 internal int NativeWheels_TestStep(struct Driver *driver, struct Instance *inst, s16 speed, int treads, double *step, double *drawn)
 {
@@ -506,7 +508,7 @@ int NativeWheels_StrobeSelfTest(char *line, size_t size)
 {
 	static struct Driver driver;
 	static struct Instance inst;
-	static const s16 speeds[4] = {3000, -3000, 200, 3000};
+	static const s16 speeds[4] = {3000, -3000, 150, 3000};
 	static const int treads[4] = {NATIVE_WHEELS_TREADS_SAFE, NATIVE_WHEELS_TREADS_SAFE, NATIVE_WHEELS_TREADS_SAFE, 0};
 	const unsigned long long ticksBefore = s_nwStrobeTicks;
 	const unsigned long long clampedBefore = s_nwStrobeClamped;
@@ -552,7 +554,7 @@ int NativeWheels_StrobeSelfTest(char *line, size_t size)
 			// The move of the tread in its pitches, signed in the direction of travel.
 			const double part = ((c > 0) ? d : -d) / (NATIVE_WHEELS_TWO_PI / (double)n);
 
-			safeHeld = safeHeld && (part > 0.0) && (part < 0.5);
+			safeHeld = safeHeld && (part > 0.0) && (part < 0.5) && (part <= NATIVE_WHEELS_STROBE_FRACTION + 1e-12);
 			partMax = (part > partMax) ? part : partMax;
 			partMin = (part < partMin) ? part : partMin;
 		}

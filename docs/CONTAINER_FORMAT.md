@@ -1699,8 +1699,8 @@ Deliberate differences from the retail wheels:
   head, so the retail rule would never apply to it; the flag "always draw"
   of WHLS version 3 is therefore reserved and has no effect in the game.
 - Strobing: the turn the game draws per frame is held below half the step
-  of the wheel's tread: 0.45 of 360 / n degrees with the count n the file
-  stores (WHLS version 3, E+0x2C/0x2D), else 0.45 of 360 / 32 degrees,
+  of the wheel's tread: 0.30 of 360 / n degrees with the count n the file
+  stores (WHLS version 3, E+0x2C/0x2D), else 0.30 of 360 / 32 degrees,
   which is below half the step of every tread of up to 32 lugs - so no
   tread a file can describe seems to stand or to turn backwards. One
   logic tick is one picture (the frame loop runs the logic once and draws

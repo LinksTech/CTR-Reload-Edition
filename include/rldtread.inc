@@ -15,7 +15,7 @@
 //
 // WHAT THE COUNT IS FOR. At top speed a wheel turns by more than half a tread
 // pitch per tick and its tread seems to stand or to turn backwards. The game
-// clamps the drawn roll to 0.45 of a pitch 2 pi / treads. A count smaller
+// clamps the drawn roll to 0.30 of a pitch 2 pi / treads. A count smaller
 // than the number of times anything of the wheel visibly repeats would let
 // that part run backwards; a larger one only turns the wheel more slowly. So
 // a count is given only when the geometry leaves no doubt; else none (0), and
