@@ -268,6 +268,31 @@ internal void NativeCD_SetLastCom(int com)
 	s_cdLastCom = com;
 }
 
+// The mods of the arcade race (platform/native_mods.c): sectors of a file of
+// the disc read into host memory beside the load queue. The place the queue
+// reads from - file, sector and the host file's position - is the same before
+// and after. encodedPos is a position as CdPosToInt gives it (a bigfile's
+// cdpos plus the entry's offset). 1 when every sector came.
+int NativeCD_ReadSectorsAt(s32 encodedPos, s32 sectors, void *dst)
+{
+	const s32 keepFile = s_nativeCdCurrentFile;
+	const s32 keepSector = s_nativeCdCurrentSector;
+	CdlLOC pos;
+	s32 ok;
+
+	NativeCD_IntToPos(encodedPos, &pos);
+	ok = NativeCD_SetLoc(&pos) && NativeCD_ReadSectors(sectors, dst);
+
+	s_nativeCdCurrentFile = keepFile;
+	s_nativeCdCurrentSector = keepSector;
+	if ((keepFile >= 0) && (keepFile < s_nativeCdFileCount) && (s_nativeCdFiles[keepFile].source == NATIVE_CD_FILE_HOST))
+	{
+		(void)fseek(s_nativeCdFiles[keepFile].hostFile, keepSector * NATIVE_CD_SECTOR_SIZE, SEEK_SET);
+	}
+
+	return ok;
+}
+
 int NativeCD_Init(void)
 {
 	for (s32 i = 0; i < s_nativeCdFileCount; i++)

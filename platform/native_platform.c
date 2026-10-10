@@ -12,6 +12,7 @@
 #include "platform/native_renderer.h"
 #include "platform/native_replay_scheduler.h"
 #include "platform/native_savestate.h"
+#include "platform/native_mods.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
@@ -508,12 +509,17 @@ void Platform_SettingsSave(void)
 		}
 	}
 
+	// The MODS page (platform/native_mods.c), last: an older build skips
+	// these lines with a warning and keeps every line above.
+	NativeMods_SaveLines(file);
+
 	fclose(file);
 }
 
 void Platform_SettingsLoad(void)
 {
-	char line[128];
+	// Long enough for "mods off <file name>" (platform/native_mods.c).
+	char line[512];
 	char sectionName[24];
 	char keyName[24];
 	FILE *file;
@@ -543,6 +549,21 @@ void Platform_SettingsLoad(void)
 
 		if ((line[0] == '#') || (line[0] == '\n') || (line[0] == '\r'))
 		{
+			continue;
+		}
+
+		// The MODS page: its own reader, a file name is not a number.
+		if (strncmp(line, "mods ", 5) == 0)
+		{
+			if (NativeMods_LoadLine(&line[5]))
+			{
+				applied++;
+			}
+			else
+			{
+				Platform_LogWarn("[CTR Native] settings: a 'mods' line names nothing, skipped\n");
+				skipped++;
+			}
 			continue;
 		}
 

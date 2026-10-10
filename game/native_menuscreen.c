@@ -1397,6 +1397,10 @@ void NativeMenuLock_Tick(void)
 		D230.menuRaceType.funcPtr = NativeMenuLock_ProcRaceType;
 	}
 
+	// The MODS box (one-player arcade on the disc tracks): its procs or the
+	// originals. Before the two hooks below, which swap only from an original.
+	MM_NativeModsBox_Hook();
+
 	// The track screen: the copy for CUSTOM or the original.
 	MM_NativeTrackSelect_Hook();
 

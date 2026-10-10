@@ -79,6 +79,7 @@
 #include "platform/native_preview.c"
 #include "platform/native_testfiles.c"
 #include "platform/native_chars.c"
+#include "platform/native_mods.c"
 #include "platform/native_char_gpu.c"
 #include "platform/native_twin.c"
 #include "platform/native_wheels.c"
@@ -336,6 +337,8 @@ static const NativeSwitch s_devSwitches[] = {
     {"--dev-grid-fill", "<n>", "n placeholder tiles, 1 to 32, after the custom character tiles in the one-player arcade driver select (rows and scrolling with many entries); a placeholder cannot be chosen"},
     {"--dev-char-seats", "<all|cycle>", "every seat of a one-player arcade race drives a custom model, the bots put on the file's template (give --driver <that template> for seat 0), with the template's class: all =the first file of the roster, cycle = the next file at every race load (several models measured in one run); draw memory and mempack grow by eight models"},
     {"--dev-char-seat-files", "<f0,f1,...>", "as --dev-char-seats all, but seat 0, 1, ... drives the roster file f0, f1, ... (1 to 8 file names of the folder, commas between), every further seat the first file of the roster, each bot on its own file's template; not with --dev-char-seats or --char"},
+    {"--dev-mods", "<cpu,custom[,file...]>", "the MODS page for this run, never saved: cpu = default|random, custom = off|random|selected, the files after it the ticked ones of SELECTED (file names of the folder; without any, every file)"},
+    {"--dev-mods-seed", "<n>", "the draw of the MODS page starts from this number (1 to 4294967295) instead of the clock: the same seats again in the same run order"},
     {"--ui-safe-area-off", "", "UI safe area off"},
     {"--ui-declarations-off", "", "UI declarations off"},
     {"--ui-floor-off", "", "UI floor off"},
@@ -2529,6 +2532,36 @@ int main(int argc, char *argv[])
 				fflush(stderr);
 				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
 			}
+		}
+		else if ((strcmp(argv[argIndex], "--dev-mods") == 0) && ((argIndex + 1) < argc))
+		{
+			// A measuring switch, like --dev-char-seats: a word it does not
+			// know ends the start.
+			const char *value = argv[++argIndex];
+
+			if (!NativeMods_SetDev(value))
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --dev-mods expects default|random,off|random|selected[,file,...], got %s\n", value);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+		}
+		else if ((strcmp(argv[argIndex], "--dev-mods-seed") == 0) && ((argIndex + 1) < argc))
+		{
+			const char *value = argv[++argIndex];
+			char *end = NULL;
+			const unsigned long seed = strtoul(value, &end, 10);
+
+			if ((value[0] < '0') || (value[0] > '9') || (end == NULL) || (*end != '\0') || (seed == 0ul) || (seed > 0xfffffffful))
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --dev-mods-seed expects a number from 1 to 4294967295, got %s\n", value);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			NativeMods_SetSeed((u32)seed);
 		}
 		else if ((strcmp(argv[argIndex], "--native-probe-seat") == 0) && ((argIndex + 1) < argc))
 		{

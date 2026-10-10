@@ -108,7 +108,14 @@ enum
 
 	// Planned, not offered yet.
 	MM_NATIVE_LNG_MODE_BOSS_RACE = MM_NATIVE_LNG_BASE + 0x8d,
+
+	// The MODS box of the arcade track select (MM_NativeModsBox.c): its title
+	// and its status line (platform/native_mods.c, at most 11 characters).
+	MM_NATIVE_LNG_MODS = MM_NATIVE_LNG_BASE + 0x8e,
+	MM_NATIVE_LNG_MODS_STATUS = MM_NATIVE_LNG_BASE + 0x8f,
 };
+
+const char *NativeMods_StatusText(void); // platform/native_mods.c
 
 char *MM_NativeMenu_String(s16 index)
 {
@@ -151,6 +158,10 @@ char *MM_NativeMenu_String(s16 index)
 		return "RACE";
 	case MM_NATIVE_LNG_MODE_BOSS_RACE:
 		return "BOSS RACE";
+	case MM_NATIVE_LNG_MODS:
+		return "MODS";
+	case MM_NATIVE_LNG_MODS_STATUS:
+		return (char *)NativeMods_StatusText();
 	default:
 		break;
 	}

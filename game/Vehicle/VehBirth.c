@@ -512,6 +512,8 @@ internal b32 VehBirth_ModelNameEquals(const struct Model *model, const char *nam
 	return true;
 }
 
+struct Model *NativeMods_ModelByName(const char *name); // platform/native_mods.c
+
 struct Model *VehBirth_GetModelByName(char *searchName)
 {
 	// array to character models loaded,
@@ -545,7 +547,10 @@ struct Model *VehBirth_GetModelByName(char *searchName)
 			}
 		}
 	}
-	return NULL;
+
+	// A retail driver the pack does not hold, read for the MODS page
+	// (platform/native_mods.c); NULL without one, as before.
+	return NativeMods_ModelByName(searchName);
 }
 
 void VehBirth_SetConsts(struct Driver *driver)

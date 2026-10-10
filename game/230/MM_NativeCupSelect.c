@@ -77,6 +77,14 @@ void MM_NativeCupSelect_SetChosen(int chosen)
 	s_nativeCupChosen = chosen;
 }
 
+// The marker for code outside this file: 1 while NITRO CUP is chosen. The
+// MODS box is not offered then (NativeMods_MenuOffered, platform/
+// native_mods.c).
+int MM_NativeCupSelect_Chosen(void)
+{
+	return s_nativeCupChosen;
+}
+
 // The hook condition: NITRO CUP chosen, arcade, cup, no other mode.
 internal int MM_NativeCupSelect_Applies(void)
 {

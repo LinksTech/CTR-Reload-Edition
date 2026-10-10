@@ -133,6 +133,7 @@
 #include <platform/native_path.h>
 #include <platform/native_render_layer.h>
 #include <platform/native_char_gpu.h>
+#include <platform/native_mods.h>
 
 #include <SDL3/SDL.h>
 
@@ -1792,12 +1793,12 @@ internal const struct Model *NativeChar_DonorModel(int templateId)
 	const char *name = data.MetaDataCharacters[templateId].name_Debug;
 	int i;
 
-	if ((models == NULL) || (name == NULL))
+	if (name == NULL)
 	{
 		return NULL;
 	}
 
-	for (i = 0; (i < NATIVE_CHAR_DONOR_SCAN_MAX) && (models[i] != NULL); i++)
+	for (i = 0; (models != NULL) && (i < NATIVE_CHAR_DONOR_SCAN_MAX) && (models[i] != NULL); i++)
 	{
 		int same = 1;
 		int word;
@@ -1817,7 +1818,9 @@ internal const struct Model *NativeChar_DonorModel(int templateId)
 		}
 	}
 
-	return NULL;
+	// A retail model the mods of this load read from the bigfile
+	// (platform/native_mods.c); NULL without one.
+	return NativeMods_ModelByName(name);
 }
 
 // Frames of animation a in header 0, counted as the game counts them
@@ -2010,6 +2013,28 @@ internal u32 NativeChar_DevSeatFilesBytes(u32 *seat0, u32 *other)
 	return *seat0 + *other;
 }
 
+// The mods of the arcade race (platform/native_mods.c): one buffer, one pass -
+// seat 0 as a ghost of the largest file (with its own mask), every CPU seat at
+// the draw bytes of the largest file. The plan is drawn only in load stage 4,
+// after this reserve; the largest file covers any plan. 0 without a file.
+internal u32 NativeChar_ModsBytes(u32 *seat0, u32 *other)
+{
+	int e;
+
+	*seat0 = 0;
+	*other = 0;
+	for (e = 0; e < s_charRosterFiles; e++)
+	{
+		const struct NativeCharFile *f = &s_charFiles[e];
+		const u32 ghost = NativeChar_FileGhostBytes(f) + ((f->maskState == NATIVE_CHAR_MASK_OWN) ? f->maskDrawBytes : 0u);
+
+		*seat0 = (ghost > *seat0) ? ghost : *seat0;
+		*other = (f->drawBytes > *other) ? f->drawBytes : *other;
+	}
+
+	return *seat0 + ((u32)(NATIVE_CHAR_SEATS - 1) * *other);
+}
+
 u32 NativeChar_DrawReserve(int tableBytes)
 {
 	const struct GameTracker *gGT = sdata->gGT;
@@ -2063,6 +2088,16 @@ u32 NativeChar_DrawReserve(int tableBytes)
 		// a dev seat wears the retail mask.
 		kind = NATIVE_CHAR_LOAD_DEV;
 		entry = NativeChar_DevSeatsEntry();
+	}
+	else if (NativeMods_CustomRace())
+	{
+		// Custom drivers on the CPU seats (platform/native_mods.c).
+		bytes = NativeChar_ModsBytes(&seat0, &other) * NATIVE_CHAR_DRAW_PASSES;
+		Platform_Log("[CTR Char] draw memory: %d bytes + %u for custom models (race, mods: seat 0 at most %u bytes as a ghost + %d x %u bytes, "
+		             "x %u passes) = %d\n",
+		             tableBytes, (unsigned)bytes, (unsigned)seat0, NATIVE_CHAR_SEATS - 1, (unsigned)other, (unsigned)NATIVE_CHAR_DRAW_PASSES,
+		             tableBytes + (int)bytes);
+		return bytes;
 	}
 	else
 	{
@@ -2130,6 +2165,17 @@ u32 NativeChar_MempackExtraNeeded(void)
 		largest = (bytes > largest) ? bytes : largest;
 	}
 
+	// The mods of the arcade race can put custom drivers on the CPU seats
+	// whenever the roster holds a file - the MODS page switches them on in
+	// the running game, after this split is fixed.
+	{
+		u32 seat0;
+		u32 other;
+		const u32 bytes = NativeChar_ModsBytes(&seat0, &other);
+
+		largest = (bytes > largest) ? bytes : largest;
+	}
+
 	return 2u * NATIVE_CHAR_DRAW_PASSES * largest;
 }
 
@@ -2137,6 +2183,11 @@ u32 NativeChar_MempackExtraNeeded(void)
 // THE ROSTER, as the driver select reads it. Every function answers for any
 // index: outside the roster -1, "", 0 or NULL.
 // ---------------------------------------------------------------------------
+
+int NativeChar_RosterFileCount(void)
+{
+	return s_charRosterFiles;
+}
 
 int NativeChar_RosterCount(void)
 {
@@ -3083,9 +3134,9 @@ internal void NativeChar_ArmDevSeatFiles(struct GameTracker *gGT)
 	NativeChar_LogSeats();
 }
 
-void NativeChar_ArmSeats(void)
+// Steps 3 to 8 of NativeChar_ArmSeats: seat 0 on the pick. 1 when it is bound.
+internal int NativeChar_ArmPick(struct GameTracker *gGT)
 {
-	struct GameTracker *gGT = sdata->gGT;
 	const int pick = s_charPick;
 	struct Model *model;
 	int templateId;
@@ -3093,57 +3144,17 @@ void NativeChar_ArmSeats(void)
 	const struct Model *donor;
 	int a;
 
-	// Nothing from an earlier load survives into this one; a load of
-	// --dev-char-seats names what it dropped first.
-	NativeChar_FlushDevLoad();
-	NativeChar_ClearSeats();
-
-	// 1. A menu load, silently. characterIDs[0] keeps the template on the way
-	//    back into the menu, and the menu births drivers too
-	//    (VehBirth_NonGhost). A load of the main menu onto the title (quit,
-	//    race end, cup end, demo end) drops the pick - not the garage, which
-	//    is a menu load as well.
-	if ((gGT->gameMode1 & MAIN_MENU) != 0)
-	{
-		if ((gGT->levelID == MAIN_MENU_LEVEL) && (sdata->mainMenuState == MAIN_MENU_TITLE))
-		{
-			s_charPick = -1;
-		}
-
-		return;
-	}
-
-	// 2. No file in the roster: retail, silently. Placeholders alone never
-	//    bind, so the roster has nothing to give either.
-	if (s_charRosterFiles == 0)
-	{
-		return;
-	}
-
-	// 2b. --dev-char-seats (developer switch, measuring): every seat, the pick
-	//     does not count.
-	if (s_charDevSeats == NATIVE_CHAR_DEV_SEATS_FILES)
-	{
-		NativeChar_ArmDevSeatFiles(gGT);
-		return;
-	}
-	if (s_charDevSeats != NATIVE_CHAR_DEV_SEATS_OFF)
-	{
-		NativeChar_ArmDevSeats(gGT);
-		return;
-	}
-
 	// 3. No custom pick: retail, silently.
 	if ((pick < 0) || (pick >= s_charRosterCount))
 	{
-		return;
+		return 0;
 	}
 
 	// 4. Demo: every seat is a bot of the attract mode or --autoload-demo.
 	if (gGT->boolDemoMode != 0)
 	{
 		Platform_Log("[CTR Char] not bound: demo\n");
-		return;
+		return 0;
 	}
 
 	// 4b. The podium at the end of an arcade cup: nothing to bind - the podium
@@ -3154,7 +3165,7 @@ void NativeChar_ArmSeats(void)
 	if (NativeChar_ArcadeCupPodium(gGT))
 	{
 		Platform_Log("[CTR Char] seat 0 empty: podium of an arcade cup, the pick stays\n");
-		return;
+		return 0;
 	}
 
 	// 5. The mode. The driver select and the main menu keep the pick at -1
@@ -3166,7 +3177,7 @@ void NativeChar_ArmSeats(void)
 		Platform_LogWarn("[CTR Char] not bound: mode %s (gameMode1 0x%08x, %d player(s)) - custom pick in a forbidden mode, must not happen - pick dropped\n",
 		                 modeWhy, (unsigned)gGT->gameMode1, (int)gGT->numPlyrCurrGame);
 		s_charPick = -1;
-		return;
+		return 0;
 	}
 
 	// 6. The pick names a file, and the seat runs on its template. Both, because
@@ -3179,14 +3190,14 @@ void NativeChar_ArmSeats(void)
 	if (model == NULL)
 	{
 		Platform_Log("[CTR Char] seat 0 empty: entry %d is a placeholder\n", pick);
-		return;
+		return 0;
 	}
 
 	templateId = NativeChar_EntryTemplate(pick);
 	if ((int)data.characterIDs[0] != templateId)
 	{
 		Platform_Log("[CTR Char] seat 0 empty: template %d is not %d\n", (int)data.characterIDs[0], templateId);
-		return;
+		return 0;
 	}
 
 	// 7. The frame counts of the donor: the game logic counts frames from the
@@ -3200,7 +3211,7 @@ void NativeChar_ArmSeats(void)
 		if (ours != theirs)
 		{
 			Platform_Log("[CTR Char] not bound: frames %d %u/%u\n", a, (unsigned)ours, (unsigned)theirs);
-			return;
+			return 0;
 		}
 	}
 
@@ -3232,7 +3243,159 @@ void NativeChar_ArmSeats(void)
 		}
 	}
 
-	NativeChar_LogSeats();
+	return 1;
+}
+
+// The mods of the arcade race (platform/native_mods.c): every CPU seat the
+// plan of this load gave a file is bound as seat 0 of a pick is - on the
+// file's template, which the plan wrote into characterIDs in load stage 4,
+// with the file's class, mask, map color and voices; the own mask model stays
+// seat 0's. A seat whose donor is missing or whose frame counts differ gets a
+// retail driver of the pack nobody shows instead (NativeMods_RetailFallback),
+// loudly. The number of seats bound.
+internal int NativeChar_ArmModsSeats(struct GameTracker *gGT)
+{
+	int bound = 0;
+	int seat;
+
+	(void)gGT;
+	for (seat = 1; seat < NATIVE_CHAR_SEATS; seat++)
+	{
+		const int entry = NativeMods_SeatEntry(seat);
+		const int templateId = (int)data.characterIDs[seat];
+		const struct Model *donor;
+		int same;
+		int a;
+
+		if ((entry < 0) || (entry >= s_charRosterFiles))
+		{
+			continue;
+		}
+
+		donor = ((templateId >= 0) && (templateId <= RLDCHAR_TEMPLATE_MAX)) ? NativeChar_DonorModel(templateId) : NULL;
+		same = (donor != NULL) && (templateId == NativeChar_EntryTemplate(entry));
+		for (a = 0; same && (a < RLDCHAR_ANIM_COUNT); a++)
+		{
+			same = (NativeChar_AnimFrames(s_charFiles[entry].model, a) == NativeChar_AnimFrames(donor, a));
+		}
+
+		if (!same)
+		{
+			const int instead = NativeMods_RetailFallback(seat);
+
+			Platform_LogWarn("[CTR Mods] seat %d: %s not bound (template %d, %s) - retail driver %d instead\n", seat, s_charFiles[entry].file,
+			                 templateId, (donor == NULL) ? "no donor" : "other frame counts", instead);
+			continue;
+		}
+
+		s_seat[seat].model = s_charFiles[entry].model;
+		s_seat[seat].entry = entry;
+		s_seat[seat].motorId = templateId;
+
+		{
+			u32 color = 0;
+
+			if (RldChar_MapColor(&s_charFiles[entry].info, &color))
+			{
+				s_seat[seat].hasMapColor = 1;
+				s_seat[seat].mapColor[0] = color;
+				s_seat[seat].mapColor[1] = color;
+				s_seat[seat].mapColor[2] = color;
+				s_seat[seat].mapColor[3] = color;
+			}
+		}
+
+		bound++;
+		Platform_Log("[CTR Mods] seat %d = %s on template %d\n", seat, s_charFiles[entry].file, templateId);
+	}
+
+	// What a bound file holds, once per file (seat 0's pick holds its own).
+	for (seat = 1; seat < NATIVE_CHAR_SEATS; seat++)
+	{
+		int earlier = 0;
+		int s;
+
+		if (s_seat[seat].model == NULL)
+		{
+			continue;
+		}
+
+		for (s = 0; s < seat; s++)
+		{
+			earlier |= (s_seat[s].model != NULL) && (s_seat[s].entry == s_seat[seat].entry);
+		}
+
+		if (!earlier)
+		{
+			NativeChar_HoldVoices(s_seat[seat].entry);
+			NativeChar_HoldNative(s_seat[seat].entry, "mods seat");
+		}
+	}
+
+	if (bound > 0)
+	{
+		NativeChar_PortraitsDirty();
+	}
+
+	return bound;
+}
+
+void NativeChar_ArmSeats(void)
+{
+	struct GameTracker *gGT = sdata->gGT;
+	int pickBound;
+	int modsBound;
+
+	// Nothing from an earlier load survives into this one; a load of
+	// --dev-char-seats names what it dropped first.
+	NativeChar_FlushDevLoad();
+	NativeChar_ClearSeats();
+
+	// 1. A menu load, silently. characterIDs[0] keeps the template on the way
+	//    back into the menu, and the menu births drivers too
+	//    (VehBirth_NonGhost). A load of the main menu onto the title (quit,
+	//    race end, cup end, demo end) drops the pick - not the garage, which
+	//    is a menu load as well. Every menu load lets the plan of the mods go
+	//    (a cup ends there).
+	if ((gGT->gameMode1 & MAIN_MENU) != 0)
+	{
+		if ((gGT->levelID == MAIN_MENU_LEVEL) && (sdata->mainMenuState == MAIN_MENU_TITLE))
+		{
+			s_charPick = -1;
+		}
+
+		NativeMods_ForgetPlan();
+		return;
+	}
+
+	// 2. No file in the roster: retail, silently. Placeholders alone never
+	//    bind, so the roster has nothing to give either.
+	if (s_charRosterFiles == 0)
+	{
+		return;
+	}
+
+	// 2b. --dev-char-seats (developer switch, measuring): every seat, the pick
+	//     does not count.
+	if (s_charDevSeats == NATIVE_CHAR_DEV_SEATS_FILES)
+	{
+		NativeChar_ArmDevSeatFiles(gGT);
+		return;
+	}
+	if (s_charDevSeats != NATIVE_CHAR_DEV_SEATS_OFF)
+	{
+		NativeChar_ArmDevSeats(gGT);
+		return;
+	}
+
+	// 3 to 8: seat 0 on the pick; then the CPU seats of the mods. One seats
+	// line for both, only when something is bound.
+	pickBound = NativeChar_ArmPick(gGT);
+	modsBound = NativeChar_ArmModsSeats(gGT);
+	if (pickBound || (modsBound > 0))
+	{
+		NativeChar_LogSeats();
+	}
 }
 
 struct Model *NativeChar_SeatModel(int index)
@@ -3614,6 +3777,12 @@ int NativeChar_Active(void)
 	// and on the same template the pick would then bind to a restored retail
 	// state.
 	if (s_charPick >= 0)
+	{
+		return 1;
+	}
+
+	// Retail models the mods read into host memory (platform/native_mods.c).
+	if (NativeMods_HoldsModels())
 	{
 		return 1;
 	}

@@ -273,6 +273,14 @@ struct RectMenu *MM_NativeTimeTrial_EndMenu(void); // 222.c, instead of menu222
 // mode rule of the driver select reads it (NativeChar_ModeAllowed).
 int MM_NativeTrackSelect_Chosen(void);
 
+// NITRO CUP chosen (game/230/MM_NativeCupSelect.c): 1, else 0.
+int MM_NativeCupSelect_Chosen(void);
+
+// The MODS box of the arcade track select and cup select
+// (game/230/MM_NativeModsBox.c): the proc swap, every frame from
+// NativeMenuLock_Tick, before the NITRO-PIT hooks.
+void MM_NativeModsBox_Hook(void);
+
 // Which mode the list of the track screen provides (NATIVE_TRACK_MODE_RACE,
 // _CRYSTAL or _CTR, native_assets.h): who is in it, what can be chosen,
 // what is loaded. Set by MM_NativeTrackSelect_SetChosen.

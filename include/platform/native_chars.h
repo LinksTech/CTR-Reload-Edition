@@ -96,6 +96,7 @@ void NativeChar_LoadRoster(void);
 // --dev-grid-fill. At most NATIVE_CHAR_ROSTER_MAX in all (the rest is cut,
 // one log line).
 int NativeChar_RosterCount(void);
+int NativeChar_RosterFileCount(void);     // the files of the roster (entries 0..n - 1), without the placeholders
 int NativeChar_EntryTemplate(int entry);        // 0..14; -1 outside the roster
 const char *NativeChar_EntryName(int entry);    // CHRI name; placeholders "PLACEHOLDER <n>" (n = 1..); "" outside
 int NativeChar_EntryIsPlaceholder(int entry);   // 1 for a placeholder, 0 for a file, 0 outside

@@ -164,6 +164,8 @@ void LOAD_Robots1P(int characterID)
 	}
 }
 
+void NativeMods_PlanSeats(struct BigHeader *bigfile); // platform/native_mods.c
+
 static void (*const LOAD_DriverMPK_SetPointer)(struct LoadQueueSlot *) = LOAD_QUEUE_CALLBACK_SET_POINTER;
 
 int LOAD_DriverMPK(struct BigHeader *bigfile, int levelLOD, void (*callback)(struct LoadQueueSlot *))
@@ -239,6 +241,10 @@ int LOAD_DriverMPK(struct BigHeader *bigfile, int levelLOD, void (*callback)(str
 		if ((gameMode1 & (TIME_TRIAL | MAIN_MENU)) != MAIN_MENU)
 		{
 			LOAD_Robots1P(data.characterIDs[0]);
+
+			// The MODS page (platform/native_mods.c): the CPU seats drawn anew,
+			// before the pack is queued. Nothing at its defaults.
+			NativeMods_PlanSeats(bigfile);
 		}
 
 		// arcade mpk
