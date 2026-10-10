@@ -84,11 +84,13 @@ character that was built with a native model (Reload Studio, tab Extras,
 card Import, "Native model") with that model and its textures, and with its
 own wheels when it has them (card Wheels). It does so at a RESOLUTION of 2x
 or more (Native counts when the window is at least twice the game's size);
-at 1x, and for every other driver, the game draws as before. The choice
-applies at the next start; until then the page shows "NATIVE DRIVERS: AFTER
-RESTART". To turn it off, set it to Off on the page and restart. If the game
-does not start after choosing Preview, delete the line
-"video nativedrivers 1" from ctr-settings.cfg (next to ctr_native.exe).
+at 1x, and for every other driver, the game draws as before. The pipelines
+a race needs for these drivers are built while the race loads, so the first
+frame of the race does not stall. The choice applies at the next start;
+until then the page shows "NATIVE DRIVERS: AFTER RESTART". To turn it off,
+set it to Off on the page and restart. If the game does not start after
+choosing Preview, delete the line "video nativedrivers 1" from
+ctr-settings.cfg (next to ctr_native.exe).
 
 
 3. CUSTOM TRACKS AND CHARACTERS IN THE GAME
@@ -827,6 +829,7 @@ Characters
   still flicker at speed.
 - Drivers exported with earlier builds should be re-exported in Reload
   Studio to get correct wheel tread animation.
+- Native drivers in split-screen are not performance-optimized yet.
 - The character's own icon shows only for the first 20 loaded files; high
   score lists and profiles show the portrait of Fake Crash.
 - The cup podium shows the template (Fake Crash, for a character from

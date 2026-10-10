@@ -233,6 +233,11 @@ PREVIEW: HIGH-DETAIL CUSTOM CHARACTERS (off by default)
   found|not-determined, and without a count info wheel-treads with the
   reason; rldpack info names the count. A character with wheels of its
   own built before this version has no count: build it again once.
+- The native render path was measured with eight custom drivers on
+  screen, with poses and wheels of their own. With NATIVE DRIVERS set to
+  PREVIEW, the pipelines a race needs are now built while the race
+  loads, so the first frame of the race no longer stalls (it used to
+  build them at first use).
 - Older versions skip MRPH (no win and lose; the high-detail model is
   drawn as before) and refuse WHLS version 3 (rule CNET-10): a file with
   a rear wheel model, moved axles or a stored tread count gets its
@@ -481,6 +486,7 @@ Characters
   or than 32, may still flicker at speed.
 - Drivers exported with earlier builds should be re-exported in Reload
   Studio to get correct wheel tread animation.
+- Native drivers in split-screen are not performance-optimized yet.
 - Win and lose show only on the high-detail model (--native-model on,
   in Reload Studio "Native model") and only after a race with a real
   placing; the classic model stays neutral after the finish line.
