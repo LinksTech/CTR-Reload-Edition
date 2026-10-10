@@ -169,6 +169,21 @@ Adventure, Battle or with two players (the NITRO-PIT time trial takes them).
   "[CTR Char] seat 0 empty: podium of an arcade cup, the pick stays" says
   so.
 
+Mods - the CPU opponents: in the one-player ARCADE track select press X on a
+track, then DOWN past the last lap row into the MODS box (in the cup select:
+DOWN from a lower cup onto the MODS line) and X. The MODS page works like
+the GRAPHICS page:
+  CPU CHARACTERS      DEFAULT (the usual opponents) or RANDOM (drawn from all
+                      fifteen original drivers)
+  CPU CUSTOM DRIVERS  OFF, RANDOM (every custom driver of the "characters"
+                      folder may be drawn) or SELECTED (only the ones ticked
+                      on SELECT DRIVERS, all ticked at first)
+Each CPU seat draws from one pool of original and custom drivers; nobody
+twice, never your own driver. Every single race draws anew, a cup keeps its
+opponents for all four races. The choice is saved in ctr-settings.cfg. The
+log line "[CTR Mods] seats ..." names who sits where. Not in NITRO-PIT, Time
+Trial, Adventure, Battle or with two players.
+
 
 4. RELOAD STUDIO
 ----------------

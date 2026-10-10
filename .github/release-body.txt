@@ -11,6 +11,7 @@ New in 0.7.5
 - Reload Studio: the Character page fits smaller screens without scrolling (for example 1366 x 768 at 150 %).
 - Reload Studio, Character page: a new 3D preview. Drag to turn the model and to look from higher or lower, drag with the right or middle mouse button to move it, turn the mouse wheel to zoom to the point under the pointer, double-click to reset. Fixed views Front, Side, Back, Top, 3/4 and Race (the in-game chase camera) are on a bar in the preview and in its View menu (also on a right-click), with the shadow and the exhaust (shown or hidden), the Crash size reference (on or off) and a dark or light background. These switches only change what you see, never the character file.
 - Reload Studio: a file named portable.ini next to ReloadStudio.exe (it may be empty) keeps its settings, logs and temporary files in that folder instead of %APPDATA% and %TEMP%, as the switch --settings does; the packer that Reload Studio runs keeps its temporary files there as well.
+- New MODS menu in ARCADE: random retail drivers and custom drivers on the CPU seats (see Mods menu below).
 - Fix: in an arcade cup the custom driver is no longer dropped at the podium.
 - Fix: an OBJ material with a texture and an emission colour (Ke) but no diffuse colour is no longer drawn darker. Characters built from such a model get other colours when you build them again.
 
@@ -40,9 +41,18 @@ Preview: high-detail custom characters
 - Reload Studio builds the high-detail model without a start switch: tick "Native model" (tab Extras, card Import, marked "Preview feature"); it needs "Show kart wheels" off or a wheel model. The card Wheels takes the wheel model and its size and shows the wheels in place, steering and spinning, in the preview, also without a body model. It reads the wheel again when you export it again, says why it warns (for example a texture not found) and finds the wheel texture in the Textures folder as well. While the card Wheels is shown, a model dropped onto the page becomes the wheel model; the body keeps its file. Without the tick, Reload Studio builds the same file as before.
 - The card Wheels also takes a "Rear wheel model (GLB/OBJ/PLY)" and the axles (Front axle or Rear axle, with Fwd, Up and Track). The preview shows the rear wheel and the moved axles at once. Each of these goes into the file only when you set it; left alone, the character is built exactly as before.
 
+Mods menu
+- ARCADE (single race and cup, one player, the disc tracks) has a MODS box below the LAPS box of the track select, and a MODS line below the cups in the cup select. DOWN from the last LAPS row (or from a lower cup) reaches it, CROSS opens the MODS page, which looks and works like the GRAPHICS page.
+- CPU CHARACTERS: DEFAULT or RANDOM. With RANDOM the CPU opponents are drawn from all fifteen retail drivers instead of the fixed group.
+- CPU CUSTOM DRIVERS: OFF, RANDOM or SELECTED. RANDOM puts every installed custom driver into the pool; SELECTED only the ones ticked on SELECT DRIVERS (a list of the installed custom drivers, all ON by default).
+- Every CPU seat draws with the same chance from one pool of retail and custom drivers. Nobody appears twice, and your own driver never drives as a CPU. Every single race draws anew; the four races of a cup keep the same opponents.
+- With NATIVE DRIVERS set to PREVIEW, custom CPU drivers are drawn with their high-detail model, otherwise with their classic model. A custom driver that cannot be loaded is skipped.
+- The settings are saved like the GRAPHICS settings. With the defaults (DEFAULT and OFF) races stay exactly as before.
+- Not offered in Adventure, Time Trial, Battle, NITRO-PIT and with two or more players.
+
 Known issues
 - Custom drivers without their own voice lines are silent.
-- The cup podium shows the template, Fake Crash, in place of the custom driver, so win and lose are not seen there.
+- The cup podium shows a custom driver as its template, so win and lose are not seen there.
 - Win and lose show only on the high-detail model (built with "Native model", NATIVE DRIVERS set to PREVIEW, resolution 2x or more). At the finish line the driver first jumps a little from its steering pose, then blends into win or lose.
 - Rigs are not supported yet: animations come only from shape keys.
 - Wheels of their own: when the lugs cannot be counted for certain from the shape of the wheel (a smooth wheel, lugs that are not all alike, spokes or bolts that do not repeat as often as the lugs, or a tread painted only in the texture), the wheel seems to turn slower than the kart drives at top speed. A painted pattern with more repeats than the stored count, or than 32, may still flicker at speed.
