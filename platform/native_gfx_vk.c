@@ -27,6 +27,7 @@
 #include <SDL3/SDL_vulkan.h>
 
 #include "platform/native_log.h"
+#include "platform/native_perf.h"
 
 // The device interface this backend implements. The pipeline cache also needs
 // its state vocabulary - blend modes, vertex attribute types - to key on.
@@ -43,6 +44,25 @@
 
 #include <stdio.h>
 #include <string.h>
+
+// THE COUNTS OF THE PERF RECORDER (--perf). Every draw recorded and every
+// copy from the host into device memory - a texture, a buffer, a uniform
+// block in the ring - goes to the recorder as it happens; the recorder keeps
+// the char_ counters only while the draw scope of the native driver path is
+// open (its gate), so this backend never has to know whose draw it records.
+// Without --perf each call is one compare and return in the recorder.
+internal void NativeVk_PerfCountDraw(int vertices)
+{
+	NativePerf_AddCount(NATIVE_PERF_COUNT_DRAW_CALLS, 1u);
+	NativePerf_AddCount(NATIVE_PERF_COUNT_CHAR_DRAW_CALLS, 1u);
+	NativePerf_AddCount(NATIVE_PERF_COUNT_CHAR_VERTICES, (u64)vertices);
+}
+
+internal void NativeVk_PerfCountUpload(u64 bytes)
+{
+	NativePerf_AddCount(NATIVE_PERF_COUNT_UPLOAD_BYTES, bytes);
+	NativePerf_AddCount(NATIVE_PERF_COUNT_CHAR_UPLOAD_BYTES, bytes);
+}
 
 #define NATIVE_VK_MAX_SWAPCHAIN_IMAGES 8
 
@@ -3299,6 +3319,7 @@ internal int NativeVk_RecordUploadInFrame(struct NativeVkTexture *texture, int x
 	s_vk.uploadsSinceSubmit++;
 	s_vk.frameUploadsInFrame++;
 	s_vk.frameUploadBytesInFrame += (uint32_t)bytes;
+	NativeVk_PerfCountUpload((u64)bytes);
 
 	return 1;
 }
@@ -3444,6 +3465,7 @@ internal void NativeGfxVK_UpdateTexture(TextureID id, int x, int y, int width, i
 		};
 
 		vkCmdCopyBufferToImage_fn(commands, s_vk.stagingBuffer, texture->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+		NativeVk_PerfCountUpload((u64)bytes);
 
 		NativeVk_TransitionImage(commands, texture->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
@@ -3722,6 +3744,7 @@ internal TextureID NativeGfxVK_CreateTextureLevels(const NativeGfxTextureLevelsD
 		}
 
 		vkCmdCopyBufferToImage_fn(commands, s_vk.stagingBuffer, texture->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, levels, regions);
+		NativeVk_PerfCountUpload((u64)total);
 	}
 
 	NativeVk_TransitionImageLevels(commands, texture->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, levels);
@@ -4169,6 +4192,7 @@ internal void NativeGfxVK_UpdateVertexBuffer(NativeGfxBuffer id, int offset, int
 		}
 
 		memcpy((unsigned char *)buffer->mapped + offset, source, (size_t)bytes);
+		NativeVk_PerfCountUpload((u64)bytes);
 		return;
 	}
 
@@ -4193,6 +4217,7 @@ internal void NativeGfxVK_UpdateVertexBuffer(NativeGfxBuffer id, int offset, int
 			};
 
 			vkCmdCopyBuffer_fn(commands, s_vk.stagingBuffer, buffer->buffer, 1, &region);
+			NativeVk_PerfCountUpload((u64)bytes);
 			NativeVk_FinishOneShot(commands);
 		}
 	}
@@ -4313,6 +4338,7 @@ internal NativeGfxBuffer NativeGfxVK_CreateIndexBuffer(const NativeGfxIndexBuffe
 	}
 
 	memcpy(s_vk.stagingMapped, desc->initial, (size_t)desc->bytes);
+	NativeVk_PerfCountUpload((u64)desc->bytes);
 
 	{
 		VkCommandBuffer commands = VK_NULL_HANDLE;
@@ -6945,6 +6971,7 @@ internal int NativeVk_PlaceUniforms(struct NativeVkProgram *program)
 	}
 
 	memcpy((unsigned char *)ring->mapped + offset, program->uniformShadow, program->uniformBytes);
+	NativeVk_PerfCountUpload((u64)program->uniformBytes);
 
 	ring->used = offset + program->uniformBytes;
 
@@ -7223,6 +7250,12 @@ internal int NativeVk_RecordDrawSetup(struct NativeVkProgram *program, struct Na
 		return 0;
 	}
 
+	// --perf, the bind bucket of the native driver path (gated by its draw
+	// scope in the recorder): the pipeline key and its lookup here, the
+	// descriptor set and every bind command further down, the uniform
+	// placement between them in the upload bucket.
+	NativePerf_BeginScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_BIND);
+
 	struct NativeVkPipelineKey key;
 	memset(&key, 0, sizeof(key));
 
@@ -7262,6 +7295,8 @@ internal int NativeVk_RecordDrawSetup(struct NativeVkProgram *program, struct Na
 
 	const VkPipeline pipeline = NativeVk_GetPipeline(&key);
 
+	NativePerf_EndScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_BIND);
+
 	if (pipeline == VK_NULL_HANDLE)
 	{
 		s_vk.skipNoPipeline++;
@@ -7275,7 +7310,11 @@ internal int NativeVk_RecordDrawSetup(struct NativeVkProgram *program, struct Na
 	// Places this draw's uniform block in the ring and creates the ring if this
 	// is the frame's first draw. Separate from the set now: the block's offset
 	// travels with the bind, not inside the descriptor.
+	NativePerf_BeginScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_UPLOAD);
 	int descriptorsReady = NativeVk_PlaceUniforms(program);
+	NativePerf_EndScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_UPLOAD);
+
+	NativePerf_BeginScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_BIND);
 
 	if (descriptorsReady)
 	{
@@ -7286,6 +7325,7 @@ internal int NativeVk_RecordDrawSetup(struct NativeVkProgram *program, struct Na
 
 	if (!descriptorsReady)
 	{
+		NativePerf_EndScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_BIND);
 		s_vk.skipNoDescriptors++;
 		return 0;
 	}
@@ -7442,6 +7482,8 @@ internal int NativeVk_RecordDrawSetup(struct NativeVkProgram *program, struct Na
 		}
 	}
 
+	NativePerf_EndScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_BIND);
+
 	*outKey = key;
 
 	return 1;
@@ -7476,7 +7518,11 @@ internal void NativeGfxVK_Draw(int firstVertex, int vertexCount)
 
 	struct NativeVkPipelineKey key;
 
-	if (!NativeVk_RecordDrawSetup(program, buffer, &key))
+	NativePerf_BeginScope(NATIVE_PERF_BUCKET_VK_DRAW_SETUP);
+	const int setUp = NativeVk_RecordDrawSetup(program, buffer, &key);
+	NativePerf_EndScope(NATIVE_PERF_BUCKET_VK_DRAW_SETUP);
+
+	if (!setUp)
 	{
 		return;
 	}
@@ -7485,6 +7531,7 @@ internal void NativeGfxVK_Draw(int firstVertex, int vertexCount)
 
 	s_vk.frameDraws++;
 	s_vk.drawsSinceSubmit++;
+	NativeVk_PerfCountDraw(vertexCount);
 
 	// Anti-aliasing, for the final report: counted only here, where the draw
 	// is really recorded - not while building the key, after which it can still
@@ -7547,7 +7594,11 @@ internal void NativeGfxVK_DrawIndexed(int firstIndex, int indexCount, int vertex
 
 	struct NativeVkPipelineKey key;
 
-	if (!NativeVk_RecordDrawSetup(program, buffer, &key))
+	NativePerf_BeginScope(NATIVE_PERF_BUCKET_VK_DRAW_SETUP);
+	const int setUp = NativeVk_RecordDrawSetup(program, buffer, &key);
+	NativePerf_EndScope(NATIVE_PERF_BUCKET_VK_DRAW_SETUP);
+
+	if (!setUp)
 	{
 		return;
 	}
@@ -7567,6 +7618,7 @@ internal void NativeGfxVK_DrawIndexed(int firstIndex, int indexCount, int vertex
 
 	s_vk.frameDraws++;
 	s_vk.drawsSinceSubmit++;
+	NativeVk_PerfCountDraw(indexCount);
 
 	if (key.pad[1] > 1)
 	{

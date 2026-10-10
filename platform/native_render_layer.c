@@ -104,6 +104,7 @@
 #include "platform/native_gfx.h"
 #include "platform/native_gpu.h"
 #include "platform/native_gpu_links.h"
+#include "platform/native_perf.h"
 #include "platform/native_probe.h"
 #include "platform/native_render_layer.h"
 #include "platform/native_renderer.h"
@@ -5266,6 +5267,9 @@ internal int NativeRenderLayer_RouteCharView(int k, const struct Instance *inst,
 		return NativeRenderLayer_CharFallback(seat, NR_PROBE_FALLBACK_ARENA_FULL);
 	}
 
+	// --perf: the pull of this view's state (the item, the pose, the side
+	// below), the wheels in their own bucket in between.
+	NativePerf_BeginScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_PULL);
 	index = s_nrItemCount[db];
 	it = &s_nrItems[db][index];
 	notes = NativeRenderLayer_FillItem(it, gGT, inst, idpp, pb, view);
@@ -5403,9 +5407,13 @@ internal int NativeRenderLayer_RouteCharView(int k, const struct Instance *inst,
 		}
 	}
 
+	NativePerf_EndScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_PULL);
+	NativePerf_BeginScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_WHEELS);
 	NativeRenderLayer_FillCharWheels(it, inst, pb);
 	NativeRenderLayer_CharWheelLod(it, idpp, gGT);
+	NativePerf_EndScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_WHEELS);
 	NativeRenderLayer_OwnWheelLine(it, inst);
+	NativePerf_BeginScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_PULL);
 	if (split)
 	{
 		NativeRenderLayer_SetUpSplit(it, &s_nrItems[db][index + 1], inst, idpp, branchR);
@@ -5414,6 +5422,7 @@ internal int NativeRenderLayer_RouteCharView(int k, const struct Instance *inst,
 	{
 		NativeRenderLayer_SetUpMirror(it, &s_nrItems[db][index + 1], inst, idpp, pb, mirror == 1, (mirror == 1) && branchR);
 	}
+	NativePerf_EndScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_PULL);
 	s_nrItemCount[db] += n;
 
 	// The retail twin: one marker per occupied bin of each item (see
@@ -6014,6 +6023,10 @@ void NativeRenderLayer_Pull(struct GameTracker *gGT)
 	int slot;
 	int seat;
 
+	// --perf: the pull bucket spans this function, the wheel poses below
+	// excepted (their own bucket); nothing without the recorder.
+	NativePerf_BeginScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_PULL);
+
 	// The seats of this frame first, in every frame and before every gate:
 	// the binding below, the route and the handler count of this frame read
 	// them, and a loading frame has to leave the table empty.
@@ -6057,6 +6070,7 @@ void NativeRenderLayer_Pull(struct GameTracker *gGT)
 	// the instances live in yet.
 	if ((gGT == NULL) || ((gGT->renderFlags & RENDER_FLAG_RENDER_BUCKET) == 0))
 	{
+		NativePerf_EndScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_PULL);
 		return;
 	}
 
@@ -6094,6 +6108,8 @@ void NativeRenderLayer_Pull(struct GameTracker *gGT)
 	// writes only that file's table. A seat whose instance carries a bound
 	// model with an author's wheel (WHLS version 2) rolls over that wheel's
 	// radius; every other seat as before.
+	NativePerf_EndScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_PULL);
+	NativePerf_BeginScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_WHEELS);
 	if (NativeRenderLayer_ProbeActive() || (s_nrCharCount > 0))
 	{
 		for (seat = 0; seat < NATIVE_RENDER_LAYER_DRIVERS; seat++)
@@ -6126,6 +6142,8 @@ void NativeRenderLayer_Pull(struct GameTracker *gGT)
 		s_nrWheelSample = g_cfg_nativeWheelReport && tick;
 		s_nrWheelSampleTimer = (u32)gGT->timer;
 	}
+	NativePerf_EndScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_WHEELS);
+	NativePerf_BeginScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_PULL);
 
 	// WIN AND LOSE: the finish of every seat whose set has stages, once per
 	// tick (NativeRenderLayer_PullFinish).
@@ -6253,6 +6271,7 @@ void NativeRenderLayer_Pull(struct GameTracker *gGT)
 	{
 		s_nrCount.objectsPeak = objects;
 	}
+	NativePerf_EndScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_PULL);
 }
 
 int NativeRenderLayer_Route(const struct Instance *inst, const struct InstDrawPerPlayer *idpp, const struct PushBuffer *pb)
@@ -7586,15 +7605,18 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 	if (!primary && it->mirror)
 	{
 		s_nrCharMirror.drawn++;
+		NativePerf_AddCount(NATIVE_PERF_COUNT_CHAR_MIRROR_ITEMS, 1u);
 	}
 	else if (!primary)
 	{
 		s_nrCharWater.drawn++;
+		NativePerf_AddCount(NATIVE_PERF_COUNT_CHAR_MIRROR_ITEMS, 1u);
 	}
 	else
 	{
 		s_nrCharCnt.draws++;
 		s_nrCharSeatCnt[seat].draws++;
+		NativePerf_AddCount(NATIVE_PERF_COUNT_CHAR_ITEMS, 1u);
 		if (it->twin)
 		{
 			s_nrTwinCnt.draws++;
@@ -7761,6 +7783,7 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 	{
 		s_nrCharViewDrawFrame[view] = s_nrFrame;
 		s_nrCharViewDraws[view] = 0;
+		NativePerf_AddCount(NATIVE_PERF_COUNT_CHAR_VIEWS, 1u);
 	}
 	s_nrCharViewDraws[view]++;
 	if (s_nrCharViewDraws[view] > s_nrCharCnt.mostPerView)
@@ -7873,6 +7896,29 @@ internal void NativeRenderLayer_DrawCharItem(const struct NrDrawItem *it, const 
 	}
 }
 
+// --perf: NativeRenderLayer_DrawCharItem inside the draw bucket of the native
+// driver path (the matrices, the ranges, every mesh draw of body and wheels
+// down to the device's draw command), and the second item of a view (the
+// mirror, the side below the water line) inside the views bucket as well.
+// Nothing without the recorder.
+internal void NativeRenderLayer_DrawCharItemTimed(const struct NrDrawItem *it, const RECT16 *clip, const DISPENV *dispenv, int onScreen, float ofsX,
+                                                  float ofsY, const struct NrTwinSlice *slice)
+{
+	const int second = (it->primary == 0);
+
+	NativePerf_BeginScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_DRAW);
+	if (second)
+	{
+		NativePerf_BeginScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_VIEWS);
+	}
+	NativeRenderLayer_DrawCharItem(it, clip, dispenv, onScreen, ofsX, ofsY, slice);
+	if (second)
+	{
+		NativePerf_EndScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_VIEWS);
+	}
+	NativePerf_EndScope(NATIVE_PERF_BUCKET_NATIVE_CHAR_DRAW);
+}
+
 // The stamp of this instance view: 1 when it was routed natively in this frame
 // (*wheels: whether that item drew native wheels), else 0. 0 at once while no
 // custom character is bound natively.
@@ -7955,7 +8001,7 @@ void NativeRenderLayer_DrawNativeItem(u32 item, const RECT16 *clip, const DISPEN
 			s_nrTwinBins.stale++;
 			return;
 		}
-		NativeRenderLayer_DrawCharItem(&s_nrItems[db][slice->item], clip, dispenv, onScreen, ofsX, ofsY, slice);
+		NativeRenderLayer_DrawCharItemTimed(&s_nrItems[db][slice->item], clip, dispenv, onScreen, ofsX, ofsY, slice);
 		return;
 	}
 
@@ -7970,7 +8016,7 @@ void NativeRenderLayer_DrawNativeItem(u32 item, const RECT16 *clip, const DISPEN
 
 	if (it->kind == NR_ITEM_CHAR)
 	{
-		NativeRenderLayer_DrawCharItem(it, clip, dispenv, onScreen, ofsX, ofsY, NULL);
+		NativeRenderLayer_DrawCharItemTimed(it, clip, dispenv, onScreen, ofsX, ofsY, NULL);
 		return;
 	}
 

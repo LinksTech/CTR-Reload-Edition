@@ -10,7 +10,9 @@
 #include <SDL3/SDL.h>
 
 #include <errno.h>
+#include <math.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #if defined(_WIN32)
@@ -32,10 +34,37 @@
 #define NATIVE_PERF_FRAME_WARN_40_MS 40.0
 #define NATIVE_PERF_FRAME_WARN_50_MS 50.0
 
+// The per-frame samples kept for the percentiles of the summary: total_ms,
+// work_ms, every bucket, and the GPU frames in a series of their own. Grown
+// by doubling from here, only with --perf (nothing is allocated without it).
+#define NATIVE_PERF_SAMPLES_FIRST    4096
+#define NATIVE_PERF_SERIES_TOTAL     0
+#define NATIVE_PERF_SERIES_WORK      1
+#define NATIVE_PERF_SERIES_GPU       2
+#define NATIVE_PERF_SERIES_BUCKET0   3
+#define NATIVE_PERF_SERIES_COUNT     (NATIVE_PERF_SERIES_BUCKET0 + NATIVE_PERF_BUCKET_COUNT)
+
 struct NativePerfBucketInfo
 {
 	const char *name;
 	s32 dominantCandidate;
+
+	// The bucket that has to be open for a scope of this one to count, or -1.
+	// A gated scope that begins while its gate is closed is left out whole.
+	s32 gate;
+};
+
+struct NativePerfCounterInfo
+{
+	const char *name;
+	s32 gate; // as for a bucket: the counter only adds while the gate is open
+};
+
+struct NativePerfSeries
+{
+	f64 *values;
+	u32 count;
+	u32 capacity;
 };
 
 struct NativePerfWorstFrame
@@ -54,35 +83,54 @@ struct NativePerfWorstFrame
 };
 
 global_variable const struct NativePerfBucketInfo s_bucketInfo[NATIVE_PERF_BUCKET_COUNT] = {
-    {"game_logic_ms", 1},
-    {"render_frame_ms", 0},
-    {"mainframe_setup_ms", 1},
-    {"mainframe_effects_ms", 1},
-    {"mainframe_hud_ms", 1},
-    {"mainframe_queue_instances_ms", 1},
-    {"mainframe_execute_instances_ms", 1},
-    {"mainframe_level_geometry_ms", 1},
-    {"mainframe_post_level_ms", 1},
-    {"mainframe_refreshcard_ms", 1},
-    {"mainframe_clear_screen_ms", 1},
-    {"mainframe_ui_ms", 1},
-    {"mainframe_render_vsync_ms", 0},
-    {"platform_end_frame_ms", 0},
-    {"platform_end_scene_ms", 0},
-    {"render_submit_ms", 1},
-    {"platform_begin_scene_ms", 1},
-    {"draw_otag_ms", 0},
-    {"draw_otag_parse_ms", 1},
-    {"draw_all_splits_ms", 1},
-    {"renderer_begin_scene_ms", 1},
-    {"renderer_update_vram_ms", 1},
-    {"renderer_vertex_upload_ms", 1},
-    {"renderer_draw_triangles_ms", 1},
-    {"framebuffer_store_ms", 0},
-    {"framebuffer_readback_ms", 1},
-    {"swap_window_ms", 1},
-    {"vsync_wait_ms", 0},
-    {"audio_vblank_ms", 1},
+    {"game_logic_ms", 1, -1},
+    {"render_frame_ms", 0, -1},
+    {"mainframe_setup_ms", 1, -1},
+    {"mainframe_effects_ms", 1, -1},
+    {"mainframe_hud_ms", 1, -1},
+    {"mainframe_queue_instances_ms", 1, -1},
+    {"mainframe_execute_instances_ms", 1, -1},
+    {"mainframe_level_geometry_ms", 1, -1},
+    {"mainframe_post_level_ms", 1, -1},
+    {"mainframe_refreshcard_ms", 1, -1},
+    {"mainframe_clear_screen_ms", 1, -1},
+    {"mainframe_ui_ms", 1, -1},
+    {"mainframe_render_vsync_ms", 0, -1},
+    {"platform_end_frame_ms", 0, -1},
+    {"platform_end_scene_ms", 0, -1},
+    {"render_submit_ms", 1, -1},
+    {"platform_begin_scene_ms", 1, -1},
+    {"draw_otag_ms", 0, -1},
+    {"draw_otag_parse_ms", 1, -1},
+    {"draw_all_splits_ms", 1, -1},
+    {"renderer_begin_scene_ms", 1, -1},
+    {"renderer_update_vram_ms", 1, -1},
+    {"renderer_vertex_upload_ms", 1, -1},
+    {"renderer_draw_triangles_ms", 1, -1},
+    {"framebuffer_store_ms", 0, -1},
+    {"framebuffer_readback_ms", 1, -1},
+    {"swap_window_ms", 1, -1},
+    {"vsync_wait_ms", 0, -1},
+    {"audio_vblank_ms", 1, -1},
+    // The native driver path: parts of the buckets above, never dominant.
+    {"native_char_pull_ms", 0, -1},
+    {"native_char_wheels_ms", 0, -1},
+    {"native_char_upload_ms", 0, NATIVE_PERF_BUCKET_NATIVE_CHAR_DRAW},
+    {"native_char_bind_ms", 0, NATIVE_PERF_BUCKET_NATIVE_CHAR_DRAW},
+    {"native_char_draw_ms", 0, -1},
+    {"native_char_views_ms", 0, NATIVE_PERF_BUCKET_NATIVE_CHAR_DRAW},
+    {"vk_draw_setup_ms", 0, -1},
+};
+
+global_variable const struct NativePerfCounterInfo s_counterInfo[NATIVE_PERF_COUNT_COUNT] = {
+    {"draw_calls", -1},
+    {"char_draw_calls", NATIVE_PERF_BUCKET_NATIVE_CHAR_DRAW},
+    {"char_views", -1},
+    {"upload_bytes", -1},
+    {"char_upload_bytes", NATIVE_PERF_BUCKET_NATIVE_CHAR_DRAW},
+    {"char_vertices", NATIVE_PERF_BUCKET_NATIVE_CHAR_DRAW},
+    {"char_items", -1},
+    {"char_mirror_items", -1},
 };
 
 global_variable FILE *s_csvFile;
@@ -117,6 +165,10 @@ global_variable char s_gpuCsvPath[NATIVE_PERF_PATH_MAX];
 global_variable char s_summaryPath[NATIVE_PERF_PATH_MAX];
 global_variable struct NativePerfWorstFrame s_worstFrames[NATIVE_PERF_TOP_FRAME_COUNT];
 global_variable s32 s_worstFrameCount;
+global_variable u64 s_frameCounts[NATIVE_PERF_COUNT_COUNT];
+global_variable u64 s_counterTotals[NATIVE_PERF_COUNT_COUNT];
+global_variable struct NativePerfSeries s_series[NATIVE_PERF_SERIES_COUNT];
+global_variable u32 s_samplesDropped;
 
 internal f64 NativePerf_CounterToMs(u64 counterDelta)
 {
@@ -146,6 +198,75 @@ internal const char *NativePerf_BucketName(enum NativePerfBucket bucket)
 	}
 
 	return s_bucketInfo[bucket].name;
+}
+
+internal const char *NativePerf_SeriesName(s32 series)
+{
+	switch (series)
+	{
+	case NATIVE_PERF_SERIES_TOTAL:
+		return "total_ms";
+	case NATIVE_PERF_SERIES_WORK:
+		return "work_ms";
+	case NATIVE_PERF_SERIES_GPU:
+		return "gpu_ms";
+	default:
+		return NativePerf_BucketName((enum NativePerfBucket)(series - NATIVE_PERF_SERIES_BUCKET0));
+	}
+}
+
+// One more sample of a series. A failed growth drops the sample and is
+// counted; the CSV row of the frame is written regardless.
+internal void NativePerf_PushSample(s32 series, f64 value)
+{
+	struct NativePerfSeries *s = &s_series[series];
+
+	if (s->count == s->capacity)
+	{
+		const u32 capacity = (s->capacity == 0) ? NATIVE_PERF_SAMPLES_FIRST : (s->capacity * 2u);
+		f64 *grown = (f64 *)realloc(s->values, (size_t)capacity * sizeof(f64));
+
+		if (grown == NULL)
+		{
+			s_samplesDropped++;
+			return;
+		}
+		s->values = grown;
+		s->capacity = capacity;
+	}
+
+	s->values[s->count++] = value;
+}
+
+internal int NativePerf_CompareSamples(const void *a, const void *b)
+{
+	const f64 x = *(const f64 *)a;
+	const f64 y = *(const f64 *)b;
+
+	return (x > y) - (x < y);
+}
+
+// Nearest rank on the sorted series: the value at ceil(q * n) - 1.
+internal f64 NativePerf_Percentile(const struct NativePerfSeries *s, f64 q)
+{
+	u32 rank;
+
+	if (s->count == 0)
+	{
+		return 0.0;
+	}
+
+	rank = (u32)ceil(q * (f64)s->count);
+	if (rank == 0)
+	{
+		rank = 1;
+	}
+	if (rank > s->count)
+	{
+		rank = s->count;
+	}
+
+	return s->values[rank - 1];
 }
 
 internal s32 NativePerf_PathExists(const char *path)
@@ -266,6 +387,11 @@ internal void NativePerf_WriteCsvHeader(FILE *file)
 		fprintf(file, ",%s", NativePerf_BucketName((enum NativePerfBucket)bucket));
 	}
 
+	for (s32 counter = 0; counter < NATIVE_PERF_COUNT_COUNT; counter++)
+	{
+		fprintf(file, ",%s", s_counterInfo[counter].name);
+	}
+
 	fprintf(file, "\n");
 }
 
@@ -345,6 +471,32 @@ internal void NativePerf_WriteSummary(FILE *file)
 	for (s32 bucket = 0; bucket < NATIVE_PERF_BUCKET_COUNT; bucket++)
 	{
 		fprintf(file, "  %s: %.3f\n", NativePerf_BucketName((enum NativePerfBucket)bucket), s_bucketTotals[bucket]);
+	}
+
+	// Nearest rank over the frames of the run (gpu_ms over the GPU frames
+	// that finished); the series are sorted in place here, nothing reads
+	// them afterwards.
+	fprintf(file, "\npercentiles_ms (nearest rank; name: n p50 p90 p99 max):\n");
+	for (s32 series = 0; series < NATIVE_PERF_SERIES_COUNT; series++)
+	{
+		struct NativePerfSeries *s = &s_series[series];
+
+		if (s->count > 0)
+		{
+			qsort(s->values, (size_t)s->count, sizeof(f64), NativePerf_CompareSamples);
+		}
+		fprintf(file, "  %s: %u %.3f %.3f %.3f %.3f\n", NativePerf_SeriesName(series), s->count, NativePerf_Percentile(s, 0.50),
+		        NativePerf_Percentile(s, 0.90), NativePerf_Percentile(s, 0.99), (s->count > 0) ? s->values[s->count - 1] : 0.0);
+	}
+	if (s_samplesDropped > 0)
+	{
+		fprintf(file, "  samples_dropped=%u\n", s_samplesDropped);
+	}
+
+	fprintf(file, "\ncounter_totals:\n");
+	for (s32 counter = 0; counter < NATIVE_PERF_COUNT_COUNT; counter++)
+	{
+		fprintf(file, "  %s: %llu\n", s_counterInfo[counter].name, (unsigned long long)s_counterTotals[counter]);
 	}
 
 	fprintf(file, "\ntop_worst_work_frames:\n");
@@ -486,6 +638,14 @@ void NativePerf_Shutdown(void)
 		Platform_Log("[CTR Perf] failed to write summary: %s\n", s_summaryPath);
 	}
 
+	for (s32 series = 0; series < NATIVE_PERF_SERIES_COUNT; series++)
+	{
+		free(s_series[series].values);
+		s_series[series].values = NULL;
+		s_series[series].count = 0;
+		s_series[series].capacity = 0;
+	}
+
 	Platform_Log("[CTR Perf] frames=%u avg=%.3fms avgWork=%.3fms max=%.3fms maxWork=%.3fms over33.33=%u workOver33.33=%u over40=%u over50=%u\n", s_frameIndex,
 	             (s_frameIndex == 0) ? 0.0 : s_totalFrameMs / (f64)s_frameIndex, (s_frameIndex == 0) ? 0.0 : s_totalWorkMs / (f64)s_frameIndex, s_maxFrameMs,
 	             s_maxWorkMs, s_framesOverBudget, s_workFramesOverBudget, s_framesOver40, s_framesOver50);
@@ -504,6 +664,7 @@ void NativePerf_RecordGpuFrame(u32 frameIndex, f64 gpuMs)
 	fprintf(s_gpuCsvFile, "%u,%.3f\n", frameIndex, gpuMs);
 	s_gpuFrameCount++;
 	s_totalGpuFrameMs += gpuMs;
+	NativePerf_PushSample(NATIVE_PERF_SERIES_GPU, gpuMs);
 	if (gpuMs > s_maxGpuFrameMs)
 	{
 		s_maxGpuFrameMs = gpuMs;
@@ -525,6 +686,7 @@ void NativePerf_BeginFrame(const struct NativePerfFrameInfo *info)
 	memset(s_frameBucketMs, 0, sizeof(s_frameBucketMs));
 	memset(s_scopeDepth, 0, sizeof(s_scopeDepth));
 	memset(s_scopeStartCounter, 0, sizeof(s_scopeStartCounter));
+	memset(s_frameCounts, 0, sizeof(s_frameCounts));
 
 	s_frameBeginInfo = *info;
 	NativeAudio_GetOutputStats(&s_beginUnderrunFrames, &s_beginOverflowFrames, &s_beginQueuedFrames);
@@ -570,8 +732,16 @@ void NativePerf_EndFrame(const struct NativePerfFrameInfo *info)
 	{
 		fprintf(s_csvFile, ",%.3f", s_frameBucketMs[bucket]);
 		s_bucketTotals[bucket] += s_frameBucketMs[bucket];
+		NativePerf_PushSample(NATIVE_PERF_SERIES_BUCKET0 + bucket, s_frameBucketMs[bucket]);
+	}
+	for (s32 counter = 0; counter < NATIVE_PERF_COUNT_COUNT; counter++)
+	{
+		fprintf(s_csvFile, ",%llu", (unsigned long long)s_frameCounts[counter]);
+		s_counterTotals[counter] += s_frameCounts[counter];
 	}
 	fprintf(s_csvFile, "\n");
+	NativePerf_PushSample(NATIVE_PERF_SERIES_TOTAL, totalMs);
+	NativePerf_PushSample(NATIVE_PERF_SERIES_WORK, workMs);
 
 	s_rowsSinceFlush++;
 	if (s_rowsSinceFlush >= NATIVE_PERF_FLUSH_INTERVAL)
@@ -631,6 +801,13 @@ void NativePerf_BeginScope(enum NativePerfBucket bucket)
 		return;
 	}
 
+	// A gated bucket counts only inside its gate (s_bucketInfo); begun
+	// outside it, the scope is not opened and its end returns at depth 0.
+	if ((s_bucketInfo[bucket].gate >= 0) && (s_scopeDepth[s_bucketInfo[bucket].gate] <= 0))
+	{
+		return;
+	}
+
 	if (s_scopeDepth[bucket]++ == 0)
 	{
 		s_scopeStartCounter[bucket] = SDL_GetPerformanceCounter();
@@ -654,5 +831,20 @@ void NativePerf_EndScope(enum NativePerfBucket bucket)
 	{
 		s_frameBucketMs[bucket] += NativePerf_CounterToMs(SDL_GetPerformanceCounter() - s_scopeStartCounter[bucket]);
 	}
+}
+
+void NativePerf_AddCount(enum NativePerfCounter counter, u64 amount)
+{
+	if (!s_enabled || !s_frameOpen || (counter < 0) || (counter >= NATIVE_PERF_COUNT_COUNT))
+	{
+		return;
+	}
+
+	if ((s_counterInfo[counter].gate >= 0) && (s_scopeDepth[s_counterInfo[counter].gate] <= 0))
+	{
+		return;
+	}
+
+	s_frameCounts[counter] += amount;
 }
 #endif
