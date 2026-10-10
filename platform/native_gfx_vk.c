@@ -514,7 +514,13 @@ struct NativeVkFramebufferSlot
 //
 // So they go on a list and are freed at the start of a frame instead, where
 // nothing is recording yet.
-#define NATIVE_VK_MAX_PENDING_FRAMEBUFFERS 64
+//
+// 1024, not 64: a race change with custom drivers on the CPU seats retires
+// all their textures in one frame - five drivers with 16 each are 80 - and 64
+// places left 16 of them in VRAM for good at every change (the MODS load run:
+// +65 MiB per race). A list that is full anyway is emptied at once
+// (NativeVk_DrainPendingNow), never by leaving anything behind.
+#define NATIVE_VK_MAX_PENDING_FRAMEBUFFERS 1024
 
 // --- Render targets ---------------------------------------------------------
 
@@ -1163,6 +1169,13 @@ internal void NativeVk_InvalidateFramebuffers(VkImageView view);
 // Lives with the frame, but an upload has to reach the queue behind the draws
 // that were issued before it, and uploads come first in this file.
 internal int NativeVk_SubmitFrameSoFarAndWait(void);
+
+// Lives with the retire lists, but destroying a texture may find its list full,
+// and textures come first in this file.
+internal void NativeVk_DrainPendingNow(const char *what);
+
+// Lives with the descriptor sets; the drain lets the sets of the frame go.
+internal void NativeVk_ResetSetCache(void);
 internal void NativeVk_EndPassIfOpen(void);
 
 // Drawing sits above both of these in the file but needs them: the program table
@@ -2412,6 +2425,20 @@ global_variable uint32_t s_vkAllocationCount = 0;
 global_variable VkDeviceSize s_vkAllocatedReported = 0;
 global_variable uint32_t s_vkTexturesCreated = 0;
 global_variable uint32_t s_vkTexturesDestroyed = 0;
+
+// How often a full retire list was emptied at once (NativeVk_DrainPendingNow).
+global_variable uint32_t s_vkPendingDrains = 0;
+
+// The places of each retire list that are used: all of them, unless
+// --dev-vk-pending-cap asks for fewer (main.c) - a measuring run that wants
+// the drain to happen.
+global_variable uint32_t s_vkPendingCap = NATIVE_VK_MAX_PENDING_FRAMEBUFFERS;
+
+void NativeVk_SetPendingCap(int cap)
+{
+	s_vkPendingCap = ((cap >= 1) && (cap <= NATIVE_VK_MAX_PENDING_FRAMEBUFFERS)) ? (uint32_t)cap : NATIVE_VK_MAX_PENDING_FRAMEBUFFERS;
+	Platform_Log("[CTR Vk] --dev-vk-pending-cap: the retire lists hold %u entries\n", s_vkPendingCap);
+}
 
 // THE DEVICE MEMORY AT EXIT, to the kilobyte.
 //
@@ -3885,7 +3912,12 @@ internal void NativeGfxVK_DestroyTexture(TextureID id)
 	// descriptor set naming this view - the renderer destroys textures during a
 	// level load, which is mid-frame from here. vkDeviceWaitIdle does not help:
 	// a recording buffer is not something the GPU is finishing.
-	if (s_vk.pendingImageCount < NATIVE_VK_MAX_PENDING_FRAMEBUFFERS)
+	if (s_vk.pendingImageCount >= s_vkPendingCap)
+	{
+		NativeVk_DrainPendingNow("image");
+	}
+
+	if (s_vk.pendingImageCount < s_vkPendingCap)
 	{
 		const uint32_t slot = s_vk.pendingImageCount++;
 
@@ -5086,7 +5118,19 @@ internal void NativeVk_InvalidateFramebuffers(VkImageView view)
 			continue;
 		}
 
-		if (s_vk.pendingFramebufferCount < NATIVE_VK_MAX_PENDING_FRAMEBUFFERS)
+		// A full list is emptied first; that may destroy this very entry, when
+		// it stands on a view that was already on the list.
+		if (s_vk.pendingFramebufferCount >= s_vkPendingCap)
+		{
+			NativeVk_DrainPendingNow("framebuffer");
+
+			if (!s_vk.framebuffers[i].used)
+			{
+				continue;
+			}
+		}
+
+		if (s_vk.pendingFramebufferCount < s_vkPendingCap)
 		{
 			const uint32_t slot = s_vk.pendingFramebufferCount++;
 
@@ -5095,8 +5139,9 @@ internal void NativeVk_InvalidateFramebuffers(VkImageView view)
 		}
 		else
 		{
-			// Nowhere to park it. Losing the handle leaks; destroying it now
-			// could corrupt a recording command buffer. A leak is recoverable.
+			// Only when the drain itself could not run (no device, the
+			// frame's buffer not its own). Losing the handle leaks; destroying
+			// it now could corrupt a recording command buffer.
 			Platform_LogError("[CTR Vk] pending framebuffer list full - leaking one rather than risking a recording buffer\n");
 		}
 
@@ -5116,7 +5161,8 @@ internal void NativeVk_InvalidateFramebuffers(VkImageView view)
 // goes the way InvalidateFramebuffers sends it: onto the pending list, destroyed
 // at a later frame start. It was only used in the frame it was built in, which
 // is long finished by now. No command of any frame changes; when the case does
-// not occur, this finds nothing and does nothing.
+// not occur, this finds nothing and does nothing. With the list full it is
+// destroyed here: for the same reason nothing can still be using it.
 internal void NativeVk_DropFramebuffersOnRetiredView(VkImageView view)
 {
 	for (uint32_t i = 0; i < NATIVE_VK_MAX_FRAMEBUFFERS; i++)
@@ -5133,7 +5179,7 @@ internal void NativeVk_DropFramebuffersOnRetiredView(VkImageView view)
 			continue;
 		}
 
-		if (s_vk.pendingFramebufferCount < NATIVE_VK_MAX_PENDING_FRAMEBUFFERS)
+		if (s_vk.pendingFramebufferCount < s_vkPendingCap)
 		{
 			const uint32_t pending = s_vk.pendingFramebufferCount++;
 
@@ -5142,7 +5188,8 @@ internal void NativeVk_DropFramebuffersOnRetiredView(VkImageView view)
 		}
 		else
 		{
-			Platform_Log("[CTR Vk] pending framebuffer list full - leaking one rather than risking a recording buffer\n");
+			vkDestroyFramebuffer_fn(s_vk.device, slot->framebuffer, NULL);
+			Platform_Log("[CTR Vk] pending framebuffer list full - a framebuffer on a retired view destroyed at once (its frame is long finished)\n");
 		}
 
 		memset(&s_vk.framebuffers[i], 0, sizeof(s_vk.framebuffers[i]));
@@ -5212,6 +5259,69 @@ internal void NativeVk_FlushPendingFramebuffers(void)
 	}
 
 	s_vk.pendingImageCount = kept;
+}
+
+// A RETIRE LIST THAT IS FULL ANYWAY is emptied here, at once and whole -
+// never by leaving a texture behind, which stays in VRAM for good. What is on
+// the lists is still waited for by two things: the command buffer recording
+// right now, and the frames in flight with their descriptor sets. Both are
+// taken away first: the frame so far goes to the GPU and is waited for
+// (NativeVk_SubmitFrameSoFarAndWait, which reopens the same buffer), then the
+// whole device (vkDeviceWaitIdle) - SetTargetSamples destroys at once after
+// the same two waits. After that nothing in use names anything on the lists.
+// A framebuffer still cached on one of the views goes with it, and so do the
+// descriptor sets cached in this frame: one of them may name a view destroyed
+// here, whose handle value a new view could get. The stall falls at a level
+// load, the only place the lists fill up; a frame that does not fill a list
+// never comes here.
+internal void NativeVk_DrainPendingNow(const char *what)
+{
+	uint32_t images = s_vk.pendingImageCount;
+	uint32_t framebuffers = s_vk.pendingFramebufferCount;
+	uint32_t cached = 0;
+
+	if ((s_vk.device == VK_NULL_HANDLE) || !NativeVk_SubmitFrameSoFarAndWait())
+	{
+		Platform_LogError("[CTR Vk] pending lists full (%s) and the frame could not be submitted - nothing drained\n", what);
+		return;
+	}
+
+	vkDeviceWaitIdle_fn(s_vk.device);
+
+	for (uint32_t i = 0; i < s_vk.pendingImageCount; i++)
+	{
+		const VkImageView view = s_vk.pendingImages[i].view;
+
+		for (uint32_t f = 0; (view != VK_NULL_HANDLE) && (f < NATIVE_VK_MAX_FRAMEBUFFERS); f++)
+		{
+			const struct NativeVkFramebufferSlot *slot = &s_vk.framebuffers[f];
+
+			if (slot->used && ((slot->key.view == (uint64_t)view) || (slot->key.resolveView == (uint64_t)view) || (slot->key.depthView == (uint64_t)view)))
+			{
+				vkDestroyFramebuffer_fn(s_vk.device, slot->framebuffer, NULL);
+				memset(&s_vk.framebuffers[f], 0, sizeof(s_vk.framebuffers[f]));
+				cached++;
+			}
+		}
+
+		if (view != VK_NULL_HANDLE) { vkDestroyImageView_fn(s_vk.device, view, NULL); }
+		if (s_vk.pendingImages[i].image != VK_NULL_HANDLE) { vkDestroyImage_fn(s_vk.device, s_vk.pendingImages[i].image, NULL); }
+		if (s_vk.pendingImages[i].memory != VK_NULL_HANDLE) { vkFreeMemory_fn(s_vk.device, s_vk.pendingImages[i].memory, NULL); }
+	}
+
+	for (uint32_t i = 0; i < s_vk.pendingFramebufferCount; i++)
+	{
+		vkDestroyFramebuffer_fn(s_vk.device, s_vk.pendingFramebuffers[i].framebuffer, NULL);
+	}
+
+	s_vk.pendingImageCount = 0;
+	s_vk.pendingFramebufferCount = 0;
+	NativeVk_ResetSetCache();
+	s_vkPendingDrains++;
+
+	Platform_Log("[CTR Vk] pending lists full (%s) at frame %u - drained at once after waiting for the GPU: %u image(s), %u framebuffer(s), %u cached "
+	             "framebuffer(s) on their views (drain %u)\n",
+	             what, s_vk.frameCounter, images, framebuffers, cached, s_vkPendingDrains);
 }
 
 // Shutdown only: the device is idle by then, so everything still waiting can go
@@ -5739,7 +5849,12 @@ internal void NativeVk_RetireTargetMsaa(struct NativeVkTarget *target)
 		NativeVk_InvalidateFramebuffers(target->msaaView);
 	}
 
-	if (s_vk.pendingImageCount < NATIVE_VK_MAX_PENDING_FRAMEBUFFERS)
+	if (s_vk.pendingImageCount >= s_vkPendingCap)
+	{
+		NativeVk_DrainPendingNow("multisampled image");
+	}
+
+	if (s_vk.pendingImageCount < s_vkPendingCap)
 	{
 		const uint32_t slot = s_vk.pendingImageCount++;
 
@@ -6282,7 +6397,12 @@ internal void NativeVk_RetireTargetDepth(struct NativeVkTarget *target)
 		NativeVk_InvalidateFramebuffers(target->depthView);
 	}
 
-	if (s_vk.pendingImageCount < NATIVE_VK_MAX_PENDING_FRAMEBUFFERS)
+	if (s_vk.pendingImageCount >= s_vkPendingCap)
+	{
+		NativeVk_DrainPendingNow("depth image");
+	}
+
+	if (s_vk.pendingImageCount < s_vkPendingCap)
 	{
 		const uint32_t slot = s_vk.pendingImageCount++;
 

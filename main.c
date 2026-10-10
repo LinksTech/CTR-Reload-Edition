@@ -337,8 +337,9 @@ static const NativeSwitch s_devSwitches[] = {
     {"--dev-grid-fill", "<n>", "n placeholder tiles, 1 to 32, after the custom character tiles in the one-player arcade driver select (rows and scrolling with many entries); a placeholder cannot be chosen"},
     {"--dev-char-seats", "<all|cycle>", "every seat of a one-player arcade race drives a custom model, the bots put on the file's template (give --driver <that template> for seat 0), with the template's class: all =the first file of the roster, cycle = the next file at every race load (several models measured in one run); draw memory and mempack grow by eight models"},
     {"--dev-char-seat-files", "<f0,f1,...>", "as --dev-char-seats all, but seat 0, 1, ... drives the roster file f0, f1, ... (1 to 8 file names of the folder, commas between), every further seat the first file of the roster, each bot on its own file's template; not with --dev-char-seats or --char"},
-    {"--dev-mods", "<cpu,custom[,file...]>", "the MODS page for this run, never saved: cpu = default|random, custom = off|random|selected, the files after it the ticked ones of SELECTED (file names of the folder; without any, every file)"},
+    {"--dev-mods", "<value[,driver...]>", "the MODS page for this run, never saved: value = default|random|selected (CPU DRIVERS: DEFAULT, ALL RANDOM, ONLY SELECTED), the drivers after it the ticked ones - a number 0..14 a retail driver, anything else a file name of the folder; without any, the ticks of the file"},
     {"--dev-mods-seed", "<n>", "the draw of the MODS page starts from this number (1 to 4294967295) instead of the clock: the same seats again in the same run order"},
+    {"--dev-vk-pending-cap", "<n>", "the Vulkan retire lists of textures and framebuffers hold only n entries (1 to 1024) instead of 1024: a measuring run in which a full list is drained at once"},
     {"--ui-safe-area-off", "", "UI safe area off"},
     {"--ui-declarations-off", "", "UI declarations off"},
     {"--ui-floor-off", "", "UI floor off"},
@@ -2562,6 +2563,22 @@ int main(int argc, char *argv[])
 			}
 
 			NativeMods_SetSeed((u32)seed);
+		}
+		else if ((strcmp(argv[argIndex], "--dev-vk-pending-cap") == 0) && ((argIndex + 1) < argc))
+		{
+			const char *value = argv[++argIndex];
+			char *end = NULL;
+			const long cap = strtol(value, &end, 10);
+
+			if ((end == NULL) || (*end != '\0') || (cap < 1) || (cap > 1024))
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --dev-vk-pending-cap expects a number from 1 to 1024, got %s\n", value);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+
+			NativeVk_SetPendingCap((int)cap);
 		}
 		else if ((strcmp(argv[argIndex], "--native-probe-seat") == 0) && ((argIndex + 1) < argc))
 		{
