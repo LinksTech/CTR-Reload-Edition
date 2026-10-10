@@ -907,6 +907,8 @@ Reload Studio remembers its settings in %APPDATA%\CTR Reload\reloadstudio.ini.
 For automation and tests, "ReloadStudio.exe --settings <file.ini>" keeps
 its settings in that file instead, and its logs and temporary files in the
 folder of that file; nothing is then written to %APPDATA% or %TEMP%.
+A file named portable.ini next to ReloadStudio.exe (it may be empty) does the
+same without the switch: settings, logs and temporary files stay in its folder.
 "--ui-scale <percent>" (75 to 300) lays the window out at that display scale
 instead of the monitor's, and "--screen <w>x<h>" as if the screen were that
 size - for screenshots of other setups. "--do" plays back steps (among them

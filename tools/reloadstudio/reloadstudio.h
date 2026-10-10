@@ -29,9 +29,10 @@
 // argument: the rldpack face), `--do "<verb> <argument>"` (automation, any
 // number of times), `--log <file>` (automation log), `--theme dark|light|system`,
 // `--settings <ini>` (settings, logs and temporary files only there - below at
-// Rs_ConfigGet), `--ui-scale <percent>` (scale of the window instead of the
-// monitor's), `--screen <w>x<h>` (lay the window out as on a screen of that
-// size), `--enable-preview-features` (developer mode: the user mode of the
+// Rs_ConfigGet; portable.ini next to the exe does the same), `--ui-scale
+// <percent>` (scale of the window instead of the monitor's), `--screen <w>x<h>`
+// (lay the window out as on a screen of that size),
+// `--enable-preview-features` (developer mode: the user mode of the
 // page Character, g_rsPreviewFeatures below; never stored - every finished
 // field is open without it), `--help`.
 //
@@ -915,7 +916,10 @@ int  Rs_Automating(void);
 // read and written only in that file, also in automation (theme and start page
 // stay fixed there: light, page Track), nothing is copied from alphamaker.ini,
 // and logs and temporary files go to the folder of that file (Rs_TempDir).
+// Its child processes (rldpack, the game) get TEMP and TMP set to that folder.
 // Reload Studio then touches neither %APPDATA% nor %TEMP%. `--rldpack` ignores it.
+// portable.ini next to the exe (it may be empty) acts as `--settings <exe
+// folder>\portable.ini`; an explicit --settings wins over it.
 // Missing levels of the folder are created. A missing value, a folder (existing,
 // or ending in a slash) or a folder that cannot be created is an error: no
 // settings, logs next to this exe, a message box (in automation: the log).

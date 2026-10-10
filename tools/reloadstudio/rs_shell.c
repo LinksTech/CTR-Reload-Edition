@@ -51,9 +51,16 @@
 // instead of %TEMP%\Reload Studio (Rs_TempDir). Nothing is read from or
 // written to %APPDATA% or %TEMP%. A missing value or a folder instead of a file
 // is an error (Rs_ConfigInit): no settings, a message, no fallback to %APPDATA%.
+// The child processes (rldpack, the game) get TEMP and TMP set to that folder
+// as well (Rs_TempForChildren): rldpack keeps its temporary files there too.
 // Meant for automation and tests; without the
 // switch everything stays as described in reloadstudio.h. The rldpack face
 // (`--rldpack`, first argument) never reads settings and ignores the switch.
+//
+// A file (or anything) named portable.ini next to this exe acts as
+// `--settings <exe folder>\portable.ini`: a copy in a test folder keeps its
+// settings, logs and temporary files in that folder. It may be empty. An
+// explicit --settings wins over it; without it nothing changes.
 //
 // COLOUR SCHEME
 //
@@ -158,6 +165,8 @@ static wchar_t g_exeDir[MAX_PATH];
 static wchar_t g_iniPath[MAX_PATH];
 static int g_settingsFile;              // --settings <ini>: settings, logs and temp files only there
 static wchar_t g_dataDir[MAX_PATH];     // with --settings: the folder of that file
+static int g_settingsPortable;          // the settings file is portable.ini next to this exe
+static wchar_t g_portableIni[MAX_PATH]; // its path
 #define RS_SETTINGS_ERR (MAX_PATH * 2 + 256)
 static wchar_t g_settingsError[RS_SETTINGS_ERR];   // --settings unusable: why, else ""
 static int g_hoverNav = -1;
@@ -616,8 +625,9 @@ static void Rs_SettingsFail(const wchar_t *why, const wchar_t *value)
     g_iniPath[0] = 0;
     wcscpy(g_dataDir, g_exeDir);
     swprintf(g_settingsError, RS_SETTINGS_ERR,
-             L"--settings: %ls ('%ls'). Reload Studio runs without saved settings; logs and "
-             L"temporary files go to %ls.", why, value ? value : L"", g_exeDir);
+             L"%ls: %ls ('%ls'). Reload Studio runs without saved settings; logs and "
+             L"temporary files go to %ls.", g_settingsPortable ? L"portable.ini" : L"--settings",
+             why, value ? value : L"", g_exeDir);
     Rs_AutoLog(L"settings: %ls", g_settingsError);
 }
 
@@ -696,6 +706,22 @@ void Rs_TempDir(wchar_t *out, int cap)
         Rs_PathJoin(out, cap, tmp, L"Reload Studio");
     }
     CreateDirectoryW(out, NULL);
+}
+
+// With --settings (or portable.ini): TEMP and TMP of this process become the
+// folder of Rs_TempDir. Every child (Rs_Launch passes no environment of its
+// own) inherits them, so rldpack's temporary files (the copies of glTF images,
+// the cache of the reduction) land there and not in %TEMP%. Without the switch
+// the environment stays as it is.
+static void Rs_TempForChildren(void)
+{
+    wchar_t dir[MAX_PATH];
+
+    if (!g_settingsFile)
+        return;
+    Rs_TempDir(dir, MAX_PATH);
+    SetEnvironmentVariableW(L"TEMP", dir);
+    SetEnvironmentVariableW(L"TMP", dir);
 }
 
 // The one rule for the game program, for every page: the chosen one (setting
@@ -4652,7 +4678,8 @@ static const wchar_t g_helpText[] =
     L"Usage: ReloadStudio.exe [options]\n"
     L"\n"
     L"  --settings <ini>       settings only in this file; logs and temporary files\n"
-    L"                         go to its folder\n"
+    L"                         go to its folder (portable.ini next to the exe does\n"
+    L"                         the same without the switch)\n"
     L"  --theme dark|light|system\n"
     L"                         colour scheme at start\n"
     L"  --ui-scale <percent>   scale of the window, 75 to 300 (e.g. 150), instead of\n"
@@ -4761,6 +4788,16 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
             return 0;
         }
     }
+    // portable.ini next to this exe: as --settings with that file. An explicit
+    // --settings wins; without the file nothing changes.
+    if (!g_settingsFile) {
+        Rs_PathJoin(g_portableIni, MAX_PATH, g_exeDir, L"portable.ini");
+        if (GetFileAttributesW(g_portableIni) != INVALID_FILE_ATTRIBUTES) {
+            g_settingsFile = 1;
+            g_settingsPortable = 1;
+            settingsArg = g_portableIni;
+        }
+    }
     // Before anything is logged (Rs_ConfigInit, the pages' create): the
     // automation log starts empty.
     if (g_automating && g_autoLogPath[0])
@@ -4784,6 +4821,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
     icc.dwICC = ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES | ICC_UPDOWN_CLASS | ICC_BAR_CLASSES;
     InitCommonControlsEx(&icc);
     Rs_ConfigInit(settingsArg);
+    Rs_TempForChildren();
 
     {
         HDC dc = GetDC(NULL);
@@ -4870,7 +4908,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
     if (g_automating) {
         Rs_AutoLog(L"Reload Studio automation, %d step(s)", g_autoCount);
         if (g_settingsFile)
-            Rs_AutoLog(L"settings: %ls", g_iniPath[0] ? g_iniPath : L"(none - see above)");
+            Rs_AutoLog(L"settings: %ls%ls", g_iniPath[0] ? g_iniPath : L"(none - see above)",
+                       g_settingsPortable ? L" (portable.ini next to the exe)" : L"");
         if (g_rsPreviewFeatures)
             Rs_AutoLog(L"preview features: on");
         g_autoSettleUntil = GetTickCount() + 300;
