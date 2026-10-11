@@ -25,6 +25,24 @@ UNRELEASED
   safely, the packer says why.
 - Tracks packed with an earlier version need to be packed again to get
   this.
+- MODS page (Feature Preview, one-player ARCADE and NITRO-PIT races): the
+  page is grouped into DRIVERS, RULES and WORLD and scrolls. Everything is
+  off at first; with every value at normal the game is exactly as before.
+  - DIFFICULTY: EASY / NORMAL / HARD / EXTREME for the CPU drivers. EXTREME
+    drives as fast as HARD and attacks about three times as often.
+  - BOSS CHALLENGE: one against one with Ripper Roo, Papu Papu, Komodo Joe,
+    Pinstripe or Nitros Oxide (or a random one) on any race track, with his
+    strength, weapons and path.
+  - ITEMS: DEFAULT, CHAOS (every race item with the same chance) or CUSTOM
+    (your own weights in ITEM WEIGHTS). With CHAOS, CUSTOM or EXTREME the
+    CPU drivers use every race item too.
+  - GRAVITY 20% to 200%, GRIP 0% (ice) to 100%, NIGHT 0% to 90% (50% to
+    60% is a good start).
+  - RETRO FUELED: rules of the Retro-Fueled mod by TheRedhotbr (CTR-ModSDK)
+    - every turbo pad a super turbo pad, 1 s of reserves on super pads, a
+    boost keeps the super fire, SQUARE with DOWN keeps the reserves. Each
+    rule can be switched on its own.
+  - Settings of the earlier MODS page are taken over.
 
 
 NEW IN 0.7.5 BETA
