@@ -1267,11 +1267,15 @@ internal void DebugMenu_MenuKeysTick(void)
 //  D-pad towards the restart point two ahead of the kart's own
 //  (ptr_restart_points, the heading as VehStuckProc's respawn takes it:
 //  ratan2(dx, dz)). Which way LEFT turns the heading is learnt from the kart
-//  itself while it steers. Each time the kart gets reserves, a short while
-//  later it holds SQUARE for 8 frames - every other time with DOWN, which
-//  KEEP RESERVES lets keep them, the others alone, which clears them. The pad
-//  bus is set as the key sequence sets it (not together with --menu-keys).
-//  Every change of the reserves under SQUARE is logged.
+//  itself while it steers. From the n-th race of the run on (--dev-kart-steer
+//  n, default 1), each time the kart gets reserves it holds SQUARE for 8
+//  frames once it is off the pad and on the ground with more than 300 left -
+//  every other time with DOWN, which KEEP RESERVES lets keep them, the others
+//  alone, which clears them. (On a pad the game keeps the reserves anyway,
+//  and SQUARE before a jump costs the speed for it - the first try braked
+//  right after the pads of Hot Air Skyway and fell into its gap.) The pad bus
+//  is set as the key sequence sets it (not together with --menu-keys). Every
+//  change of the reserves under SQUARE is logged.
 // ---------------------------------------------------------------------------
 
 int g_cfg_kartSteer = 0;
@@ -1286,7 +1290,8 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 	local_persist int lastAngle = 0;
 	local_persist u16 lastWord = 0xffff;
 	local_persist int hadReserves = 0;
-	local_persist int squareIn = -1;
+	local_persist int pending = 0;
+	local_persist int race = 0;
 	local_persist int squareLeft = 0;
 	local_persist int squareCount = 0;
 	local_persist int squareDown = 0;
@@ -1313,11 +1318,18 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 		{
 			armed = 0;
 			hadReserves = 0;
-			squareIn = -1;
+			pending = 0;
 			squareLeft = 0;
 			Platform_InputClearInstalledPadSnapshots();
 		}
 		return;
+	}
+
+	if (!armed)
+	{
+		race++;
+		Platform_Log("[CTR Debug] --dev-kart-steer: race %d of the run, level %d, SQUARE tests %s\n", race, (int)gGT->levelID,
+		             (race >= g_cfg_kartSteer) ? "on" : "off");
 	}
 
 	if (!haveBase)
@@ -1381,23 +1393,26 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 		}
 	}
 
-	// SQUARE a while after the kart got reserves, every other time with DOWN.
-	if ((d->reserves > 0) && !hadReserves && (squareLeft == 0))
+	// SQUARE once for each new batch of reserves, off the pad and on the
+	// ground, every other time with DOWN.
+	if ((d->reserves > 0) && !hadReserves)
 	{
-		squareIn = 6;
+		pending = 1;
+	}
+	if (d->reserves <= 0)
+	{
+		pending = 0;
 	}
 	hadReserves = (d->reserves > 0);
 
-	if (squareIn > 0)
+	if (pending && (squareLeft == 0) && (race >= g_cfg_kartSteer) && (d->reserves > 300) &&
+	    ((d->stepFlagSet & COLL_STEP_TRIGGER_TURBO_PAD_MASK) == 0) && ((d->actionsFlagSet & ACTION_TOUCH_GROUND) != 0))
 	{
-		squareIn--;
-		if ((squareIn == 0) && (d->reserves > 0))
-		{
-			squareLeft = 8;
-			squareDown = (squareCount & 1) == 0;
-			squareFrom = d->reserves;
-			squareCount++;
-		}
+		pending = 0;
+		squareLeft = 8;
+		squareDown = (squareCount & 1) == 0;
+		squareFrom = d->reserves;
+		squareCount++;
 	}
 
 	if (squareLeft > 0)
