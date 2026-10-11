@@ -897,6 +897,35 @@ static int Rld_WarnAboutLevTables(const u8 *lev, size_t size)
     return missing;
 }
 
+// Water vertices (Level.numWaterVertices at 0x34) without the level's water
+// visibility list (visOVertSrc at 0x28). Every disc track with water has it.
+// CTR Reload 0.7.5 read it unchecked while loading and crashed before the
+// first frame; the game now animates no water at load then, and per frame
+// takes the list from the PVS of the quad under the camera, where exporters
+// do write one. The container is built either way.
+static void Rld_WarnAboutWaterList(const u8 *lev, size_t size)
+{
+    u32 water;
+
+    if (size < (4u + 0x200u))
+    {
+        return;
+    }
+
+    water = Rld_ReadLE32(&lev[4 + 0x34]);
+    if ((water == 0u) || (Rld_ReadLE32(&lev[4 + 0x28]) != 0u))
+    {
+        return;
+    }
+
+    printf("\nWARNING: this LEV has %u water vertices but no visOVertSrc, the level's\n", water);
+    printf("  list of which water vertices move. Every track on the disc with water has\n");
+    printf("  one. CTR Reload 0.7.5 crashes while loading such a track; later builds\n");
+    printf("  load it and move the water by the lists in the quads' PVS. Export the\n");
+    printf("  track with visOVertSrc set (as in the PVS) and this warning goes away.\n");
+    Rld_Say("warning", "water-list", "visOVertSrc", "The track has %u water vertices but no water visibility list (visOVertSrc). CTR Reload 0.7.5 crashes while loading it; this build loads it.", water);
+}
+
 // THE VISIBILITY LISTS - what the author learns nowhere else.
 //
 // Every quad block carries at 0x44 a pointer to struct PVS: visLeafSrc at
@@ -2998,6 +3027,7 @@ static int Rld_Pack(const struct RldPackJob *job)
 #undef RLD_MODE_NOTE
 
 	Rld_WarnAboutLevTables(lev, levSize);
+	Rld_WarnAboutWaterList(lev, levSize);
 	Rld_WarnAboutSky(lev, levSize);
 	Rld_WarnAboutVisibility(lev, levSize);
 	free(parmChunk);

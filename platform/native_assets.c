@@ -1010,9 +1010,11 @@ internal void NativeTrack_CopyText(char *dst, size_t dstSize, const char *src)
 //
 //   levTexLookup   DecalGlobal_Store and DecalGlobal_FindInLEV, BOTH with
 //                  a null test in the first line
-//   visOVertSrc    a memcpy in MainFrame whose length comes from
-//                  numWaterVertices - and that is 0 here
-//   visSCVertSrc   the same with numSCVert
+//   visOVertSrc    a memcpy in MainFrame with a null test, and the water
+//                  animation at load (AnimateWater1P from MainInit), which
+//                  read it unchecked until an exported track brought water
+//                  vertices without it; AnimateWater_Common tests it now
+//   visSCVertSrc   the same memcpy with numSCVert
 //
 // The other six - unk3, unk4, unk_Lev_CC, unk_Lev_D0, lowTexArray and
 // namedTexArray - are read NOWHERE. A block on them would have stopped a

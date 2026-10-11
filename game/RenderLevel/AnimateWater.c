@@ -153,6 +153,19 @@ static void AnimateWater_Common(int timer, int numWaterVertices, struct WaterVer
 	{
 		return;
 	}
+
+	// Water vertices without a visibility list: every disc track sets
+	// Level.visOVertSrc, an exported one can leave it null and carry the list
+	// only in its PVS (MainFrame takes it from there per frame). The call at
+	// load passes the level's own and read through null - a crash before the
+	// first frame. A null list marks no vertex visible, so nothing is animated.
+	for (int i = 0; i < numLists; i++)
+	{
+		if (visLists[i] == NULL)
+		{
+			return;
+		}
+	}
 #endif
 
 	u16 colorOffset = AnimateWater_ReadTextureHalf(waterEnvMap, 0);
