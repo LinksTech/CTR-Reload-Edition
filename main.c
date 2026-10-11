@@ -238,6 +238,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--menu-keys", "<sequence>", "scripted pad steps, e.g. down,cross or l1+r1+down (up to 256; keys up down left right cross circle square triangle start select l1 r1 l2 r2 none)"},
     {"--menu-keys-quit", "<vblanks>", "end this many VBlanks after the last step (default 120, 0 = do not end)"},
     {"--menu-keys-every", "<vblanks>", "length of one step of the sequence (default 24)"},
+    {"--menu-keys-hold", "<vblanks>", "how long a step holds its keys before they are let go (default 3; as long as --menu-keys-every holds them through, for driving)"},
     {"--menu-keys-from", "<vblank>", "first step of the sequence at this VBlank (default 300)"},
     {"--menu-pads", "<n>", "the key sequence reports this many connected pads, 1 to 4 (default 1)"},
     {"--vk-validation", "", "Vulkan validation layer on"},
@@ -3966,6 +3967,21 @@ int main(int argc, char *argv[])
 
 				g_cfg_menuKeysQuit = atoi(argv[++argIndex]);
 				printf("[CTR Native] menu keys quit: %d\n", g_cfg_menuKeysQuit);
+			}
+			else if ((strcmp(argv[argIndex], "--menu-keys-hold") == 0) && ((argIndex + 1) < argc))
+			{
+				// How many VBlanks of a step its keys are held. Default 3, a tap.
+				// A step as long as --menu-keys-every holds them through, and the
+				// same keys in the next step stay held: a kart driven by the
+				// sequence keeps its gas.
+				extern int g_cfg_menuKeysHold;
+
+				g_cfg_menuKeysHold = atoi(argv[++argIndex]);
+				if (g_cfg_menuKeysHold < 1)
+				{
+					g_cfg_menuKeysHold = 1;
+				}
+				printf("[CTR Native] menu keys hold: %d vblank(s) of each step\n", g_cfg_menuKeysHold);
 			}
 			else if ((strcmp(argv[argIndex], "--menu-keys-every") == 0) && ((argIndex + 1) < argc))
 			{
