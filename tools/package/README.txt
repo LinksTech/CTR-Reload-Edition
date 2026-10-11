@@ -169,15 +169,15 @@ Adventure, Battle or with two players (the NITRO-PIT time trial takes them).
   so.
 
 Mods (Feature Preview) - the CPU opponents, the difficulty, a boss challenge
-and play mods for items, gravity, grip and night: in the one-player ARCADE
-track select (also NITRO RACE) press X on a track, then DOWN below the last
-LAPS row into the MODS box (in the cup select, also NITRO CUP: DOWN from a
-lower cup onto the MODS line) and X. The MODS page works like the GRAPHICS
-page and is grouped under three small headings; it scrolls with a bar.
-UP/DOWN choose the row, LEFT/RIGHT change the value (percentages in steps of
-10), X opens SELECT DRIVERS or ITEM WEIGHTS, moves a choice to the next value
-and puts a percentage back to its normal value. TRIANGLE goes back. A grey
-row cannot be changed.
+and play mods for items, gravity, grip, night and Retro Fueled rules: in the
+one-player ARCADE track select (also NITRO RACE) press X on a track, then DOWN
+below the last LAPS row into the MODS box (in the cup select, also NITRO CUP:
+DOWN from a lower cup onto the MODS line) and X. The MODS page works like the
+GRAPHICS page and is grouped under three small headings; it scrolls with a
+bar. UP/DOWN choose the row, LEFT/RIGHT change the value (percentages in steps
+of 10), X opens SELECT DRIVERS, ITEM WEIGHTS or RETRO PARTS, moves a choice to
+the next value and puts a percentage back to its normal value. TRIANGLE goes
+back. A grey row cannot be changed.
   DRIVERS
   CPU DRIVERS      DEFAULT (the usual opponents), ALL RANDOM (every installed
                    driver, original and custom, with the same chance) or
@@ -188,8 +188,18 @@ row cannot be changed.
   DIFFICULTY       EASY / NORMAL / HARD / EXTREME. Moves the CPU drivers'
                    strength (their speed and how they catch up) from what you
                    chose in the game's own difficulty menu: EASY one step of
-                   the original cup difficulty easier, HARD two steps harder,
-                   EXTREME three steps harder. NORMAL is the original
+                   the original cup difficulty easier, HARD two steps harder.
+                   EXTREME is three steps harder in the speed setting, which
+                   drives as fast as HARD (the CPU drivers cannot get
+                   faster), but it attacks much more: half the waiting time
+                   between two attacks, twice the chance, and the CPU drivers
+                   two places ahead of and behind you attack too, from behind
+                   at any place (the original: only while you are in the
+                   first three), and even more often while you lead. With
+                   ITEMS DEFAULT the attacks are aimed at you: a CPU driver
+                   ahead drops items or throws bombs backwards, one behind
+                   fires missiles. EXTREME also uses every race item (see
+                   below). NORMAL is the original
   BOSS CHALLENGE   OFF / RANDOM / ROO / PAPU / JOE / PINSTRIPE / OXIDE. One
                    against one with the boss on any race track, like the boss
                    races of the Adventure: his model, his strength, his
@@ -212,6 +222,31 @@ row cannot be changed.
                    say so). Only one item on: every box gives exactly that
                    item. The game's own rules stay: only one warpball at a
                    time (another box gives triple missiles then)
+  RETRO FUELED     OFF / ON, normal OFF. The rules of the "Retro-Fueled" mod
+                   by TheRedhotbr (from the CTR-ModSDK project), which bring
+                   rules of Crash Team Racing Nitro-Fueled to the original
+                   game
+  RETRO PARTS      Only with RETRO FUELED ON, grey otherwise. X opens the
+                   page RETRO FUELED with four parts, each ON or OFF, all ON
+                   at first. The line under the list says what the part under
+                   the cursor does. All parts OFF is the same as OFF (the
+                   page says so).
+                   SUPER PADS: every turbo pad gives the fire of a super
+                   turbo pad.
+                   LONG SUPER PADS: a super turbo pad gives 1 second of
+                   reserves instead of 1/8 second.
+                   USF STACKING: a boost on top of a super fire (from a
+                   power slide or a jump) keeps the super fire's speed
+                   instead of dropping to the smaller one.
+                   KEEP RESERVES: holding SQUARE together with DOWN, or in
+                   the air, keeps the reserves (normally SQUARE clears
+                   them); without X they do not drive the kart then, so you
+                   can turn around and keep them. SQUARE alone still clears
+                   the reserves.
+                   The pad rules count for the CPU drivers too. KEEP
+                   RESERVES only concerns braking, which CPU drivers never
+                   do. Not included from the original mod: its blue fire and
+                   its title and start banner graphics
   WORLD
   GRAVITY          20% to 200%, normal 100% (off). Below 100% karts and CPU
                    drivers fall slower (moon), jumps go higher and longer.
@@ -231,18 +266,23 @@ row cannot be changed.
                    blue tint; HUD, menus and texts stay bright. Works for
                    the classic drawing and for native drivers (NATIVE
                    DRIVERS PREVIEW)
-CPU drivers never take item boxes; with ITEMS CHAOS or CUSTOM they attack as
-often as before with their own four weapons (TNT, potion, bomb, missile):
-CHAOS each with the same chance, CUSTOM by the weights (bomb counts the triple
-bomb too, missile the triple missile). If all four weigh 0, they do not
-attack. All settings can be combined, except that a boss replaces the CPU
-drivers. A slider counts as on as soon as it is not at its normal value. With
-every value at normal the game is exactly as before.
+CPU drivers never take item boxes. With ITEMS CHAOS or CUSTOM, or DIFFICULTY
+EXTREME, a CPU attack gets its item the way an item box would give it at the
+CPU driver's place (CHAOS and CUSTOM by the same chances or weights as your
+boxes, otherwise the original items for that place) and uses it at once: TNT
+and potion are dropped, bombs and missiles are fired (one shot of a triple),
+turbo, shield and mask are used on itself, clock and warpball work as when you
+use them. Otherwise (ITEMS DEFAULT and no EXTREME) the CPU drivers attack as
+in the original game with their four weapons.
+All settings can be combined, except that a boss replaces the CPU drivers. A
+slider counts as on as soon as it is not at its normal value. With every value
+at normal the game is exactly as before.
 The MODS box says what is on: OFF, ALL RANDOM, <n> SELECTED, and with any play
-mod on: "<n> MODS", "RANDOM +<n>" or "<k> SEL +<n>"; with a boss: "BOSS: ROO",
-"BOSS: PAPU", "BOSS: JOE", "BOSS: OXIDE", "PINSTRIPE" or "RANDOM BOSS", and
-"BOSS +<n>" when other mods are on too. The log line "[CTR Mods] play mods in
-this race: ..." names the active mods at the start of a race.
+mod on: "<n> MODS", "RANDOM +<n>" or "<k> SEL +<n>" (RETRO FUELED counts as
+one mod: "1 MOD"); with a boss: "BOSS: ROO", "BOSS: PAPU", "BOSS: JOE",
+"BOSS: OXIDE", "PINSTRIPE" or "RANDOM BOSS", and "BOSS +<n>" when other mods
+are on too. The log line "[CTR Mods] play mods in this race: ..." names the
+active mods at the start of a race.
 Nobody appears twice, except with ONLY SELECTED when fewer drivers are ticked
 than there are CPU seats (7): one ticked driver gives seven of the same
 opponent. Nothing ticked is DEFAULT (the box shows OFF). Your own driver is
