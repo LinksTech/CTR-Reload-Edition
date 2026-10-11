@@ -56,8 +56,73 @@ int NativeMods_SelectedCount(void);
 
 // The status line of the MODS box, at most 11 characters of FONT_SMALL (the
 // box is as wide as LAPS, 164): "OFF" (DEFAULT, or ONLY SELECTED with nothing
-// ticked - that is DEFAULT), "ALL RANDOM", "<n> SELECTED".
+// ticked - that is DEFAULT), "ALL RANDOM", "<n> SELECTED". With play mods on
+// (below): "<n> MOD(S)" beside DEFAULT, else the CPU value short and the count -
+// "RANDOM +<n>", "<k> SEL +<n>" (11 characters at most).
 const char *NativeMods_StatusText(void);
+
+// THE PLAY MODS, each OFF or ON, freely combined, for the same races as CPU
+// DRIVERS (the rule of NativeMods_MenuOffered at the menu, of the race below):
+//   MOON GRAVITY  the karts fall at 41/100 of their gravity - the game's own
+//                 low gravity (QUADBLOCK_FLAG_LOW_GRAVITY, BOT_FLAG_MOON_GRAVITY);
+//                 the hang-time turbo is judged by the air time times 41/100,
+//                 so a jump earns what it earns at full gravity
+//   ICY TRACKS    road terrain (full speed and full grip: asphalt, wood, stone,
+//                 hardpack, metal and the three asphalts of the water tracks)
+//                 is ice, as Polar Pass's; water, mud, grass, dirt, snow, the
+//                 slow and the sideslip terrain keep theirs, and the turbo pads
+//                 and ramps are not terrain at all
+//   ITEM CHAOS    an item box gives every item of the four race item sets with
+//                 the same chance, whatever the rank; a CPU driver, which never
+//                 takes a box, attacks with its four weapons (TNT, potion, bomb,
+//                 missile) with the same chance, whatever the side
+// All OFF changes nothing: no other path, no other random number.
+#define NATIVE_MODS_PLAY_MOON  0x1
+#define NATIVE_MODS_PLAY_ICY   0x2
+#define NATIVE_MODS_PLAY_CHAOS 0x4
+
+// The page's value of one mod (bit above), and the setter (saves at once).
+int NativeMods_PlayOn(int bit);
+void NativeMods_SetPlayOn(int bit, int on);
+
+// 1 while the race in progress is one the mods are for and the mod is ON.
+int NativeMods_PlayActive(int bit);
+
+// ICY TRACKS: the terrain the game takes for a ground of this terrain type -
+// TERRAIN_ICE for road terrain while the mod is active, else the type itself;
+// bot 1 for a CPU driver's nav frame, 0 for a kart's ground (the count at exit).
+u8 NativeMods_IcyTerrain(u8 terrainType, int bot);
+
+// MOON GRAVITY: the air time the hang-time turbo is judged by, at landing
+// (the meter in ms; unchanged unless the mod is active). The meter stops at
+// 2400 ms; MoonAir, while airborne, keeps a driver's air time past it, and
+// the hang time is that times 41/100. given and full are the fire steps the
+// turbo got and would have got from the meter (-1 = none), for the report at
+// exit.
+void NativeMods_MoonAir(int driverID, int airTime);
+int NativeMods_MoonHangTime(int driverID, int jumpMeter);
+void NativeMods_NoteLanding(int given, int full);
+
+// MOON GRAVITY and ICY TRACKS, for the report at exit: a CPU driver put back on
+// its path after a kill plane (BOTS_Killplane), counted while a play mod is
+// active.
+void NativeMods_NoteBotRescue(void);
+
+// ITEM CHAOS, for the report at exit: an item a box gave (bot 0) or a CPU
+// driver's attack (bot 1).
+void NativeMods_NoteItem(int bot, int item);
+
+// game/DebugMenu.c, beside the [CTR Race] line: one line with the play mods of
+// this race, only when one is active.
+void NativeMods_LogRace(void);
+
+// main.c, --dev-mods-play <none|moon,icy,chaos>: the play mods of this run,
+// never saved (the lines of the file do not count). 0 for another form.
+int NativeMods_SetDevPlay(const char *list);
+
+// main.c, --mods-selftest (ctest mods_selftest): the play mods without a race -
+// settings lines, status line, --dev-mods-play, ice terrain, hang time. 0 = passed.
+int NativeMods_SelfTest(void);
 
 // The menu side of the race rule: the MODS box is offered in the track select
 // and the cup select of a one-player arcade race - on the disc and in
@@ -74,8 +139,8 @@ int NativeMods_SetDev(const char *list);
 void NativeMods_SetSeed(u32 seed);
 
 // ctr-settings.cfg (platform/native_platform.c): SaveLines writes "mods cpu
-// <n>", one "mods retail <id>" per ticked retail driver and one "mods file
-// <file>" per ticked file; LoadLine takes the rest of a line after "mods " and
+// <n>", "mods moon", "mods icy" and "mods chaos" <0|1>, one "mods retail <id>"
+// per ticked retail driver and one "mods file <file>" per ticked file; LoadLine takes the rest of a line after "mods " and
 // answers 1 when it named a mods value, else 0 (the caller counts it as
 // skipped). The lines of the first MODS page ("cpuchars", "custom", "off") are
 // read too and carried over once the roster is known (NativeMods_AfterRoster).

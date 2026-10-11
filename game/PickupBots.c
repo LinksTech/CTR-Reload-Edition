@@ -1,4 +1,5 @@
 #include <common.h>
+#include <platform/native_mods.h>
 
 void PickupBots_Init(void)
 {
@@ -93,6 +94,34 @@ static void PickupBots_PlayVoice(u32 voiceID, struct Driver *attacker, struct Dr
 	Voiceline_RequestPlay(voiceID, data.characterIDs[attacker->driverID], data.characterIDs[victim->driverID]);
 }
 
+// ITEM CHAOS (MODS page): a CPU attack with one of the four CPU weapons, each
+// with the same chance, whichever side of the player the bot is on. The weapon
+// goes off as the branch of UpdateArcade that fires it: TNT and potion are
+// dropped, bomb and missile shot, with the same voice line.
+static void PickupBots_ChaosAttack(struct Driver *bot, struct Driver *player)
+{
+	static const int weapons[4] = {PICKUPBOTS_ITEM_TNT, PICKUPBOTS_ITEM_POTION, PICKUPBOTS_ITEM_BOMB, PICKUPBOTS_ITEM_MISSILE};
+	const int weaponID = weapons[(u32)MixRNG_Scramble() % 4u];
+	const int dropped = (weaponID == PICKUPBOTS_ITEM_TNT) || (weaponID == PICKUPBOTS_ITEM_POTION);
+
+	bot->heldItemID = weaponID;
+
+	if ((player->actionsFlagSet & ACTION_BOT) == 0)
+	{
+		PickupBots_PlayVoice(dropped ? PICKUPBOTS_VOICELINE_MINE_DROP : ((weaponID == PICKUPBOTS_ITEM_BOMB) ? PICKUPBOTS_VOICELINE_BOMB : PICKUPBOTS_VOICELINE_MISSILE),
+		                     bot, player);
+	}
+
+	VehPickupItem_ShootNow(bot, dropped ? weaponID : PICKUPBOTS_SHOOT_ID_BOMB_MISSILE, 0);
+	if (dropped)
+	{
+		bot->numWumpas = 0;
+	}
+
+	PickupBots_SetCooldown(bot);
+	NativeMods_NoteItem(1, weaponID);
+}
+
 static void PickupBots_UpdateArcade(void)
 {
 	struct GameTracker *gGT = sdata->gGT;
@@ -109,7 +138,15 @@ static void PickupBots_UpdateArcade(void)
 			{
 				int rng = MixRNG_Scramble() % PICKUPBOTS_LEADING_ATTACK_ROLL_MOD;
 
-				if (rng == 0)
+				// ITEM CHAOS: as often as the three branches below, any weapon.
+				if (NativeMods_PlayActive(NATIVE_MODS_PLAY_CHAOS))
+				{
+					if (rng < 3)
+					{
+						PickupBots_ChaosAttack(bot, player);
+					}
+				}
+				else if (rng == 0)
 				{
 					int weaponID;
 
@@ -186,7 +223,16 @@ static void PickupBots_UpdateArcade(void)
 				int rng = MixRNG_Scramble() % PICKUPBOTS_TRAILING_ATTACK_ROLL_MOD;
 				int weaponID = PICKUPBOTS_ITEM_NONE;
 
-				if ((rng < PICKUPBOTS_TRAILING_ATTACK_MISSILE_THRESHOLD) && (bot->lapIndex != (u8)(gGT->numLaps - 1)))
+				// ITEM CHAOS: as often as missile and bomb together, any weapon,
+				// on the last lap too.
+				if (NativeMods_PlayActive(NATIVE_MODS_PLAY_CHAOS))
+				{
+					if (rng < PICKUPBOTS_TRAILING_ATTACK_BOMB_THRESHOLD)
+					{
+						PickupBots_ChaosAttack(bot, player);
+					}
+				}
+				else if ((rng < PICKUPBOTS_TRAILING_ATTACK_MISSILE_THRESHOLD) && (bot->lapIndex != (u8)(gGT->numLaps - 1)))
 				{
 					weaponID = PICKUPBOTS_ITEM_MISSILE;
 				}

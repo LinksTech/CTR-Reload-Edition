@@ -1,4 +1,5 @@
 #include <common.h>
+#include <platform/native_mods.h>
 
 enum
 {
@@ -914,6 +915,127 @@ enum ItemSet
 extern u8 *itemSetWeaponTables[ITEMSET_Count];
 extern u8 itemSetWeaponCounts[ITEMSET_Count];
 
+// ITEM CHAOS (MODS page): every item the four race item sets hold, each once,
+// in id order, and one of them with the same chance. Spring is left out: no
+// race table should hold it, and SetHeldItem turns it into a turbo anyway.
+void Platform_Log(const char *format, ...);
+
+u8 VehPhysGeneral_ChaosItem(void)
+{
+	static u8 items[HELD_ITEM_NONE];
+	static int count = 0;
+	u32 rng;
+
+	if (count == 0)
+	{
+		int id;
+
+		for (id = 0; id < HELD_ITEM_NONE; id++)
+		{
+			int set;
+			int seen = 0;
+
+			for (set = ITEMSET_Race1; !seen && (set <= ITEMSET_Race4); set++)
+			{
+				int k;
+
+				for (k = 0; !seen && (k < itemSetWeaponCounts[set]); k++)
+				{
+					seen = (itemSetWeaponTables[set][k] == id);
+				}
+			}
+
+			if (seen && (id != HELD_ITEM_SPRING))
+			{
+				items[count++] = (u8)id;
+			}
+		}
+
+		Platform_Log("[CTR Mods] item chaos: %d items, each with the same chance\n", count);
+	}
+
+	rng = (u32)MixRNG_Scramble() >> ITEMSET_RNG_RANDOM_SHIFT;
+	return items[rng % (u32)count];
+}
+
+// --mods-selftest (platform/native_mods.c): one whole period of the game's
+// random numbers (MixRNG_Scramble is 16 bit, 65536 steps) through the chaos
+// draw - only items of the race sets, no spring, every item of the sets, each
+// within 1 percent of the same count. The random number is put back. Returns
+// the failures.
+int VehPhysGeneral_ChaosSelfTest(int *checks)
+{
+	const int saved = sdata->randomNumber;
+	int counts[HELD_ITEM_NONE] = {0};
+	int failures = 0;
+	int drawn = 0;
+	int lo = 0x7fffffff, hi = 0;
+	int i;
+
+	for (i = 0; i < 0x10000; i++)
+	{
+		const int id = VehPhysGeneral_ChaosItem();
+
+		if ((id < 0) || (id >= HELD_ITEM_NONE))
+		{
+			failures++;
+			continue;
+		}
+		counts[id]++;
+	}
+	sdata->randomNumber = saved;
+
+	for (i = 0; i < HELD_ITEM_NONE; i++)
+	{
+		int set;
+		int inSets = 0;
+
+		for (set = ITEMSET_Race1; set <= ITEMSET_Race4; set++)
+		{
+			int k;
+
+			for (k = 0; k < itemSetWeaponCounts[set]; k++)
+			{
+				inSets |= (itemSetWeaponTables[set][k] == i);
+			}
+		}
+
+		(*checks)++;
+		if ((i == HELD_ITEM_SPRING) ? (counts[i] != 0) : ((counts[i] != 0) != inSets))
+		{
+			printf("mods selftest: item %d drawn %d times by ITEM CHAOS, in the race sets %d\n", i, counts[i], inSets);
+			failures++;
+		}
+
+		if (counts[i] != 0)
+		{
+			drawn++;
+			lo = (counts[i] < lo) ? counts[i] : lo;
+			hi = (counts[i] > hi) ? counts[i] : hi;
+		}
+	}
+
+	(*checks)++;
+	if ((drawn == 0) || ((hi - lo) * 100 > (0x10000 / drawn)))
+	{
+		printf("mods selftest: ITEM CHAOS draws %d items between %d and %d times each\n", drawn, lo, hi);
+		failures++;
+	}
+
+	{
+		char ids[64] = "";
+
+		for (i = 0; i < HELD_ITEM_NONE; i++)
+		{
+			if (counts[i] != 0)
+			{
+				snprintf(&ids[strlen(ids)], sizeof(ids) - strlen(ids), " %d", i);
+			}
+		}
+		printf("mods selftest: ITEM CHAOS, %d items (held item ids%s), %d to %d of 65536 draws each\n", drawn, ids, lo, hi);
+	}
+	return failures;
+}
 
 // Itemset infographic (outdated):
 // https://discord.com/channels/330945093416779787/550106151887568906/734368526294450267
@@ -1095,6 +1217,14 @@ void VehPhysGeneral_SetHeldItem(struct Driver *driver)
 	}
 	SetItem:
 		driver->heldItemID = item;
+	}
+
+	// ITEM CHAOS (MODS page): the box gives any race item, whatever the rank. The
+	// rules below (one warpball at a time, spring as turbo) stay.
+	if ((itemSet >= ITEMSET_Race1) && (itemSet <= ITEMSET_Race4) && NativeMods_PlayActive(NATIVE_MODS_PLAY_CHAOS))
+	{
+		driver->heldItemID = VehPhysGeneral_ChaosItem();
+		NativeMods_NoteItem(0, driver->heldItemID);
 	}
 
 	// In Boss race

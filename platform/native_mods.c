@@ -119,6 +119,12 @@ global_variable u32 s_modsRandom;
 global_variable int s_modsDraws;
 global_variable char s_modsStatus[16];
 
+// The play mods (NATIVE_MODS_PLAY_*): the page's and the file's value, and
+// --dev-mods-play's for this run, which wins and is never saved.
+global_variable int s_modsPlayFile;
+global_variable int s_modsPlayDev;
+global_variable int s_modsPlayDevGiven;
+
 // ---------------------------------------------------------------------------
 // THE VALUE AND THE TICKS
 // ---------------------------------------------------------------------------
@@ -300,23 +306,42 @@ int NativeMods_SelectedCount(void)
 	return selected;
 }
 
+internal int NativeMods_PlayCount(void);
+
 const char *NativeMods_StatusText(void)
 {
+	const int play = NativeMods_PlayCount();
+	const int selected = (s_modsCpu == NATIVE_MODS_CPU_SELECTED) ? NativeMods_SelectedCount() : 0;
+
+	// With play mods on, the CPU value short and the count: the box holds 11
+	// characters, and "ALL RANDOM + 2" would be 14.
+	if (play > 0)
+	{
+		if (s_modsCpu == NATIVE_MODS_CPU_ALL)
+		{
+			snprintf(s_modsStatus, sizeof(s_modsStatus), "RANDOM +%d", play);
+		}
+		else if (selected > 0)
+		{
+			snprintf(s_modsStatus, sizeof(s_modsStatus), "%d SEL +%d", selected, play);
+		}
+		else
+		{
+			snprintf(s_modsStatus, sizeof(s_modsStatus), (play == 1) ? "%d MOD" : "%d MODS", play);
+		}
+		return s_modsStatus;
+	}
+
 	if (s_modsCpu == NATIVE_MODS_CPU_ALL)
 	{
 		return "ALL RANDOM";
 	}
 
-	if (s_modsCpu == NATIVE_MODS_CPU_SELECTED)
+	// Nothing ticked is DEFAULT, and the box says so.
+	if (selected > 0)
 	{
-		const int selected = NativeMods_SelectedCount();
-
-		// Nothing ticked is DEFAULT, and the box says so.
-		if (selected > 0)
-		{
-			snprintf(s_modsStatus, sizeof(s_modsStatus), "%d SELECTED", selected);
-			return s_modsStatus;
-		}
+		snprintf(s_modsStatus, sizeof(s_modsStatus), "%d SELECTED", selected);
+		return s_modsStatus;
 	}
 
 	return "OFF";
@@ -331,6 +356,9 @@ void NativeMods_SaveLines(FILE *file)
 	int i;
 
 	fprintf(file, "mods cpu %d\n", s_modsCpu);
+	fprintf(file, "mods moon %d\n", ((s_modsPlayFile & NATIVE_MODS_PLAY_MOON) != 0) ? 1 : 0);
+	fprintf(file, "mods icy %d\n", ((s_modsPlayFile & NATIVE_MODS_PLAY_ICY) != 0) ? 1 : 0);
+	fprintf(file, "mods chaos %d\n", ((s_modsPlayFile & NATIVE_MODS_PLAY_CHAOS) != 0) ? 1 : 0);
 	for (i = 0; i < NATIVE_MODS_RETAIL_COUNT; i++)
 	{
 		if (((s_modsRetailOn >> i) & 1u) != 0)
@@ -370,6 +398,26 @@ int NativeMods_LoadLine(const char *rest)
 {
 	char name[NATIVE_MODS_FILE_MAX];
 	int value;
+
+	// THE PLAY MODS, before --dev-mods: that switch holds the CPU lines only.
+	// Any number but 1 is OFF, and a file without these lines keeps them OFF.
+	{
+		static const struct
+		{
+			const char *format;
+			int bit;
+		} play[3] = {{"moon %d", NATIVE_MODS_PLAY_MOON}, {"icy %d", NATIVE_MODS_PLAY_ICY}, {"chaos %d", NATIVE_MODS_PLAY_CHAOS}};
+		int k;
+
+		for (k = 0; k < 3; k++)
+		{
+			if (sscanf(rest, play[k].format, &value) == 1)
+			{
+				s_modsPlayFile = (value == 1) ? (s_modsPlayFile | play[k].bit) : (s_modsPlayFile & ~play[k].bit);
+				return 1;
+			}
+		}
+	}
 
 	// --dev-mods holds this run: the lines are known, but they do not count.
 	if (s_modsDevGiven)
@@ -620,6 +668,494 @@ int NativeMods_CustomRace(void)
 	}
 
 	return can && NativeMods_RaceAllowed(sdata->gGT);
+}
+
+// ---------------------------------------------------------------------------
+// THE PLAY MODS: MOON GRAVITY, ICY TRACKS, ITEM CHAOS (native_mods.h)
+// ---------------------------------------------------------------------------
+
+#define NATIVE_MODS_PLAY_ALL (NATIVE_MODS_PLAY_MOON | NATIVE_MODS_PLAY_ICY | NATIVE_MODS_PLAY_CHAOS)
+
+// The hang-time turbo's air time at MOON GRAVITY: times 41/100, the factor of
+// the gravity (VehPhysForce_OnGravity). A jump's air time is its upward speed
+// over the gravity, twice; at 41/100 of the gravity it lasts 100/41 as long,
+// and this gives it back the time it takes at full gravity.
+#define NATIVE_MODS_MOON_NUM 41
+#define NATIVE_MODS_MOON_DEN 100
+
+// The report at exit: hang-time turbos by fire step (0..2, small medium
+// large), as given and as the full air time would have given them; items by
+// HELD_ITEM id, from boxes and from CPU attacks.
+#define NATIVE_MODS_ITEM_IDS 0x20
+global_variable int s_modsReportArmed;
+global_variable int s_modsLandingGiven[3];
+global_variable int s_modsLandingFull[3];
+global_variable int s_modsLandings;
+global_variable int s_modsItems[2][NATIVE_MODS_ITEM_IDS];
+
+internal int NativeMods_PlayValue(void)
+{
+	return s_modsPlayDevGiven ? s_modsPlayDev : s_modsPlayFile;
+}
+
+internal int NativeMods_PlayCount(void)
+{
+	const int value = NativeMods_PlayValue();
+
+	return (((value & NATIVE_MODS_PLAY_MOON) != 0) ? 1 : 0) + (((value & NATIVE_MODS_PLAY_ICY) != 0) ? 1 : 0) +
+	       (((value & NATIVE_MODS_PLAY_CHAOS) != 0) ? 1 : 0);
+}
+
+internal const char *NativeMods_PlayName(int bit)
+{
+	return (bit == NATIVE_MODS_PLAY_MOON) ? "moon gravity" : ((bit == NATIVE_MODS_PLAY_ICY) ? "icy tracks" : "item chaos");
+}
+
+int NativeMods_PlayOn(int bit)
+{
+	return (NativeMods_PlayValue() & bit) != 0;
+}
+
+void NativeMods_SetPlayOn(int bit, int on)
+{
+	bit &= NATIVE_MODS_PLAY_ALL;
+
+	// --dev-mods-play holds this run; the page changes it, the file keeps its own.
+	if (s_modsPlayDevGiven)
+	{
+		s_modsPlayDev = on ? (s_modsPlayDev | bit) : (s_modsPlayDev & ~bit);
+	}
+	else
+	{
+		s_modsPlayFile = on ? (s_modsPlayFile | bit) : (s_modsPlayFile & ~bit);
+		Platform_SettingsSave();
+	}
+
+	Platform_Log("[CTR Mods] %s: %s\n", NativeMods_PlayName(bit), on ? "on" : "off");
+}
+
+// --mods-selftest: the race rule is taken as met (there is no race to ask).
+global_variable int s_modsSelfTestRace;
+
+int NativeMods_PlayActive(int bit)
+{
+	return ((NativeMods_PlayValue() & bit) != 0) && (s_modsSelfTestRace || NativeMods_RaceAllowed(sdata->gGT));
+}
+
+global_variable u32 s_modsIcy[2];
+global_variable int s_modsBotRescues;
+
+internal void NativeMods_ArmReport(void);
+
+u8 NativeMods_IcyTerrain(u8 terrainType, int bot)
+{
+	// Road terrain: full speed and full grip in the game's table (speedMultiplier,
+	// slowUntilSpeed, counterSteerRatio and groundFrictionScale all 0x100), and
+	// no effect of its own. Water and fast water keep their surface and splash
+	// (COLL.c, the water and mud branch), mud its slowing and its spray, and
+	// sideslip its flag; grass, dirt, track, snow and the two slow terrains brake
+	// beside the road and keep doing it.
+	switch (terrainType)
+	{
+	case TERRAIN_ASPHALT:
+	case TERRAIN_WOOD:
+	case TERRAIN_STONE:
+	case TERRAIN_HARDPACK:
+	case TERRAIN_METAL:
+	case TERRAIN_RIVERASPHALT:
+	case TERRAIN_STEAMASPHALT:
+	case TERRAIN_OCEANASPHALT:
+		if (!NativeMods_PlayActive(NATIVE_MODS_PLAY_ICY))
+		{
+			return terrainType;
+		}
+		if (!s_modsSelfTestRace)
+		{
+			NativeMods_ArmReport();
+			s_modsIcy[bot ? 1 : 0]++;
+		}
+		return (u8)TERRAIN_ICE;
+	default:
+		return terrainType;
+	}
+}
+
+internal void NativeMods_PlayReport(void)
+{
+	static const char *const step[3] = {"small", "medium", "large"};
+	int k;
+
+	if ((s_modsIcy[0] != 0) || (s_modsIcy[1] != 0))
+	{
+		Platform_Log("[CTR Mods] at exit: icy tracks, road terrain driven as ice in %u ground frame(s) of a kart and %u nav frame(s) of a CPU driver\n",
+		             (unsigned)s_modsIcy[0], (unsigned)s_modsIcy[1]);
+	}
+
+	if (s_modsReportArmed)
+	{
+		Platform_Log("[CTR Mods] at exit: %d CPU driver(s) put back on the path after a kill plane while a play mod was on\n", s_modsBotRescues);
+	}
+
+	if (s_modsLandings != 0)
+	{
+		Platform_Log("[CTR Mods] at exit: moon gravity, %d landing(s) with a hang-time turbo by the full air time\n", s_modsLandings);
+		for (k = 0; k < 3; k++)
+		{
+			Platform_Log("[CTR Mods]   %-6s by the full air time %d, given %d\n", step[k], s_modsLandingFull[k], s_modsLandingGiven[k]);
+		}
+	}
+
+	for (k = 0; k < 2; k++)
+	{
+		int total = 0;
+		int id;
+
+		for (id = 0; id < NATIVE_MODS_ITEM_IDS; id++)
+		{
+			total += s_modsItems[k][id];
+		}
+
+		if (total != 0)
+		{
+			char line[512] = "";
+
+			for (id = 0; id < NATIVE_MODS_ITEM_IDS; id++)
+			{
+				if (s_modsItems[k][id] != 0)
+				{
+					snprintf(&line[strlen(line)], sizeof(line) - strlen(line), " %d=%d", id, s_modsItems[k][id]);
+				}
+			}
+			Platform_Log("[CTR Mods] at exit: item chaos, %d %s (held item id=count):%s\n", total, (k == 0) ? "item(s) from boxes" : "CPU attack(s)",
+			             line);
+		}
+	}
+}
+
+internal void NativeMods_ArmReport(void)
+{
+	if (!s_modsReportArmed)
+	{
+		s_modsReportArmed = 1;
+		Platform_AtExitReport(NativeMods_PlayReport);
+	}
+}
+
+// A driver's air time of the jump in progress, past the meter's 2400 ms.
+#define NATIVE_MODS_DRIVERS 8
+global_variable int s_modsAir[NATIVE_MODS_DRIVERS];
+
+void NativeMods_MoonAir(int driverID, int airTime)
+{
+	if ((driverID >= 0) && (driverID < NATIVE_MODS_DRIVERS) && NativeMods_PlayActive(NATIVE_MODS_PLAY_MOON))
+	{
+		s_modsAir[driverID] = airTime;
+	}
+}
+
+int NativeMods_MoonHangTime(int driverID, int jumpMeter)
+{
+	int air = jumpMeter;
+
+	if (!NativeMods_PlayActive(NATIVE_MODS_PLAY_MOON))
+	{
+		return jumpMeter;
+	}
+
+	if ((driverID >= 0) && (driverID < NATIVE_MODS_DRIVERS))
+	{
+		air = (s_modsAir[driverID] > jumpMeter) ? s_modsAir[driverID] : jumpMeter;
+		s_modsAir[driverID] = 0;
+	}
+
+	return (air * NATIVE_MODS_MOON_NUM) / NATIVE_MODS_MOON_DEN;
+}
+
+void NativeMods_NoteLanding(int given, int full)
+{
+	if (full < 0)
+	{
+		return;
+	}
+
+	NativeMods_ArmReport();
+	s_modsLandings++;
+	s_modsLandingFull[(full > 2) ? 2 : full]++;
+	if (given >= 0)
+	{
+		s_modsLandingGiven[(given > 2) ? 2 : given]++;
+	}
+}
+
+void NativeMods_NoteBotRescue(void)
+{
+	if (NativeMods_PlayActive(NATIVE_MODS_PLAY_ALL))
+	{
+		NativeMods_ArmReport();
+		s_modsBotRescues++;
+	}
+}
+
+void NativeMods_NoteItem(int bot, int item)
+{
+	if ((item < 0) || (item >= NATIVE_MODS_ITEM_IDS))
+	{
+		return;
+	}
+
+	NativeMods_ArmReport();
+	s_modsItems[bot ? 1 : 0][item]++;
+}
+
+void NativeMods_LogRace(void)
+{
+	static const int bits[3] = {NATIVE_MODS_PLAY_MOON, NATIVE_MODS_PLAY_ICY, NATIVE_MODS_PLAY_CHAOS};
+	char text[64] = "";
+	int k;
+
+	for (k = 0; k < 3; k++)
+	{
+		if (NativeMods_PlayActive(bits[k]))
+		{
+			snprintf(&text[strlen(text)], sizeof(text) - strlen(text), "%s%s", (text[0] != '\0') ? ", " : "", NativeMods_PlayName(bits[k]));
+		}
+	}
+
+	if (text[0] != '\0')
+	{
+		Platform_Log("[CTR Mods] play mods in this race: %s\n", text);
+	}
+}
+
+int NativeMods_SetDevPlay(const char *list)
+{
+	char copy[64];
+	char *word;
+	char *next;
+	int value = 0;
+
+	if ((list == NULL) || (strlen(list) >= sizeof(copy)))
+	{
+		return 0;
+	}
+
+	snprintf(copy, sizeof(copy), "%s", list);
+	if (strcmp(copy, "none") != 0)
+	{
+		for (word = copy; word != NULL; word = next)
+		{
+			next = strchr(word, ',');
+			if (next != NULL)
+			{
+				*next++ = '\0';
+			}
+
+			if (strcmp(word, "moon") == 0)
+			{
+				value |= NATIVE_MODS_PLAY_MOON;
+			}
+			else if (strcmp(word, "icy") == 0)
+			{
+				value |= NATIVE_MODS_PLAY_ICY;
+			}
+			else if (strcmp(word, "chaos") == 0)
+			{
+				value |= NATIVE_MODS_PLAY_CHAOS;
+			}
+			else
+			{
+				return 0;
+			}
+		}
+	}
+
+	s_modsPlayDev = value;
+	s_modsPlayDevGiven = 1;
+	Platform_Log("[CTR Mods] --dev-mods-play: moon gravity %s, icy tracks %s, item chaos %s (this run only)\n",
+	             ((value & NATIVE_MODS_PLAY_MOON) != 0) ? "on" : "off", ((value & NATIVE_MODS_PLAY_ICY) != 0) ? "on" : "off",
+	             ((value & NATIVE_MODS_PLAY_CHAOS) != 0) ? "on" : "off");
+	return 1;
+}
+
+// --mods-selftest (ctest mods_selftest): what the play mods compute without a
+// race - the settings lines, the box's status line, --dev-mods-play, the ice
+// terrain and the hang time of MOON GRAVITY. Touches no file; the module's
+// values are put back at the end. 0 = passed.
+int VehPhysGeneral_ChaosSelfTest(int *checks); // game/Vehicle/VehPhysGeneral.c
+
+int NativeMods_SelfTest(void)
+{
+	static const struct
+	{
+		int cpu;
+		u32 retail;
+		int play;
+		const char *status;
+	} statusCases[] = {
+	    {NATIVE_MODS_CPU_DEFAULT, 0u, 0, "OFF"},
+	    {NATIVE_MODS_CPU_ALL, 0u, 0, "ALL RANDOM"},
+	    {NATIVE_MODS_CPU_SELECTED, 0u, 0, "OFF"},
+	    {NATIVE_MODS_CPU_SELECTED, 0x7u, 0, "3 SELECTED"},
+	    {NATIVE_MODS_CPU_DEFAULT, 0u, NATIVE_MODS_PLAY_ICY, "1 MOD"},
+	    {NATIVE_MODS_CPU_DEFAULT, 0u, NATIVE_MODS_PLAY_ALL, "3 MODS"},
+	    {NATIVE_MODS_CPU_SELECTED, 0u, NATIVE_MODS_PLAY_MOON | NATIVE_MODS_PLAY_CHAOS, "2 MODS"},
+	    {NATIVE_MODS_CPU_ALL, 0u, NATIVE_MODS_PLAY_MOON | NATIVE_MODS_PLAY_CHAOS, "RANDOM +2"},
+	    {NATIVE_MODS_CPU_SELECTED, 0x7u, NATIVE_MODS_PLAY_CHAOS, "3 SEL +1"},
+	    {NATIVE_MODS_CPU_SELECTED, 0x7fffu, NATIVE_MODS_PLAY_ALL, "15 SEL +3"},
+	};
+	static const struct
+	{
+		const char *line;
+		int known;
+		int play;
+	} lineCases[] = {
+	    {"moon 1", 1, NATIVE_MODS_PLAY_MOON},
+	    {"icy 1", 1, NATIVE_MODS_PLAY_MOON | NATIVE_MODS_PLAY_ICY},
+	    {"chaos 1", 1, NATIVE_MODS_PLAY_ALL},
+	    {"icy 0", 1, NATIVE_MODS_PLAY_MOON | NATIVE_MODS_PLAY_CHAOS},
+	    {"moon 2", 1, NATIVE_MODS_PLAY_CHAOS},
+	    {"moon x", 0, NATIVE_MODS_PLAY_CHAOS},
+	    {"chaos 0", 1, 0},
+	};
+	static const struct
+	{
+		const char *list;
+		int ok;
+		int play;
+	} devCases[] = {
+	    {"none", 1, 0}, {"moon", 1, NATIVE_MODS_PLAY_MOON}, {"icy,chaos", 1, NATIVE_MODS_PLAY_ICY | NATIVE_MODS_PLAY_CHAOS},
+	    {"moon,icy,chaos", 1, NATIVE_MODS_PLAY_ALL}, {"", 0, 0}, {"moon,", 0, 0}, {"gravity", 0, 0},
+	};
+	static const struct
+	{
+		int meter;
+		int hang;
+	} moonCases[] = {{0, 0}, {1560, 639}, {1561, 640}, {2342, 960}, {0x960, 984}};
+	const int savedCpu = s_modsCpu;
+	const u32 savedRetail = s_modsRetailOn;
+	const int savedFile = s_modsPlayFile;
+	const int savedDev = s_modsPlayDev;
+	const int savedDevGiven = s_modsPlayDevGiven;
+	const int savedCpuDev = s_modsDevGiven;
+	int checks = 0;
+	int failures = 0;
+	size_t k;
+	int t;
+
+	s_modsDevGiven = 0;
+	s_modsPlayDevGiven = 0;
+
+	for (k = 0; k < sizeof(statusCases) / sizeof(statusCases[0]); k++)
+	{
+		const char *status;
+
+		s_modsCpu = statusCases[k].cpu;
+		s_modsRetailOn = statusCases[k].retail;
+		s_modsPlayFile = statusCases[k].play;
+		status = NativeMods_StatusText();
+		checks++;
+		if ((strcmp(status, statusCases[k].status) != 0) || (strlen(status) > 11u))
+		{
+			printf("mods selftest: status case %d is \"%s\", wanted \"%s\"\n", (int)k, status, statusCases[k].status);
+			failures++;
+		}
+	}
+
+	s_modsPlayFile = 0;
+	for (k = 0; k < sizeof(lineCases) / sizeof(lineCases[0]); k++)
+	{
+		const int known = NativeMods_LoadLine(lineCases[k].line);
+
+		checks++;
+		if ((known != lineCases[k].known) || (s_modsPlayFile != lineCases[k].play))
+		{
+			printf("mods selftest: line \"%s\" gives known %d play %d, wanted %d and %d\n", lineCases[k].line, known, s_modsPlayFile,
+			       lineCases[k].known, lineCases[k].play);
+			failures++;
+		}
+	}
+
+	for (k = 0; k < sizeof(devCases) / sizeof(devCases[0]); k++)
+	{
+		int ok;
+
+		s_modsPlayDev = 0;
+		s_modsPlayDevGiven = 0;
+		ok = NativeMods_SetDevPlay(devCases[k].list);
+		checks++;
+		if ((ok != devCases[k].ok) || (ok && (s_modsPlayDev != devCases[k].play)))
+		{
+			printf("mods selftest: --dev-mods-play \"%s\" gives %d / %d, wanted %d / %d\n", devCases[k].list, ok, s_modsPlayDev, devCases[k].ok,
+			       devCases[k].play);
+			failures++;
+		}
+	}
+	s_modsPlayDevGiven = 0;
+
+	// ICE: off, every terrain stays; on, the road terrain is ice and nothing else changes.
+	s_modsSelfTestRace = 1;
+	for (t = 0; t <= TERRAIN_SLOWDIRT; t++)
+	{
+		const int road = (t == TERRAIN_ASPHALT) || (t == TERRAIN_WOOD) || (t == TERRAIN_STONE) || (t == TERRAIN_HARDPACK) || (t == TERRAIN_METAL) ||
+		                 (t == TERRAIN_RIVERASPHALT) || (t == TERRAIN_STEAMASPHALT) || (t == TERRAIN_OCEANASPHALT);
+
+		s_modsPlayFile = 0;
+		checks++;
+		failures += (NativeMods_IcyTerrain((u8)t, 0) != (u8)t);
+		s_modsPlayFile = NATIVE_MODS_PLAY_ALL & ~NATIVE_MODS_PLAY_ICY;
+		checks++;
+		failures += (NativeMods_IcyTerrain((u8)t, 0) != (u8)t);
+		s_modsPlayFile = NATIVE_MODS_PLAY_ICY;
+		checks++;
+		if (NativeMods_IcyTerrain((u8)t, 1) != (road ? (u8)TERRAIN_ICE : (u8)t))
+		{
+			printf("mods selftest: terrain %d becomes %d with ICY TRACKS\n", t, (int)NativeMods_IcyTerrain((u8)t, 1));
+			failures++;
+		}
+	}
+
+	// MOON GRAVITY: off, the air time stays; on, times 41/100.
+	for (k = 0; k < sizeof(moonCases) / sizeof(moonCases[0]); k++)
+	{
+		s_modsPlayFile = NATIVE_MODS_PLAY_ICY;
+		checks++;
+		failures += (NativeMods_MoonHangTime(-1, moonCases[k].meter) != moonCases[k].meter);
+		s_modsPlayFile = NATIVE_MODS_PLAY_MOON;
+		checks++;
+		if (NativeMods_MoonHangTime(-1, moonCases[k].meter) != moonCases[k].hang)
+		{
+			printf("mods selftest: air time %d judged as %d with MOON GRAVITY, wanted %d\n", moonCases[k].meter,
+			       NativeMods_MoonHangTime(-1, moonCases[k].meter), moonCases[k].hang);
+			failures++;
+		}
+	}
+
+	// Past the meter: 3513 ms in the air, the meter stopped at 2400 - judged as
+	// 1440, the large step a jump of 1440 ms gets at full gravity; and only once.
+	s_modsPlayFile = NATIVE_MODS_PLAY_MOON;
+	NativeMods_MoonAir(3, 3513);
+	checks += 2;
+	failures += (NativeMods_MoonHangTime(3, 0x960) != 1440);
+	failures += (NativeMods_MoonHangTime(3, 0x960) != 984);
+	s_modsPlayFile = 0;
+	NativeMods_MoonAir(3, 3513);
+	s_modsPlayFile = NATIVE_MODS_PLAY_MOON;
+	checks++;
+	failures += (NativeMods_MoonHangTime(3, 0x960) != 984);
+	s_modsSelfTestRace = 0;
+
+	// ITEM CHAOS: the draw over one whole period of the game's random numbers.
+	failures += VehPhysGeneral_ChaosSelfTest(&checks);
+
+	s_modsCpu = savedCpu;
+	s_modsRetailOn = savedRetail;
+	s_modsPlayFile = savedFile;
+	s_modsPlayDev = savedDev;
+	s_modsPlayDevGiven = savedDevGiven;
+	s_modsDevGiven = savedCpuDev;
+
+	printf("mods selftest %s: %d checks, %d failures\n", (failures == 0) ? "passed" : "FAILED", checks, failures);
+	return (failures == 0) ? 0 : 1;
 }
 
 // ---------------------------------------------------------------------------

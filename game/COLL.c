@@ -1,5 +1,6 @@
 #include <common.h>
 #include <ctr_scratchpad.h>
+#include <platform/native_mods.h>
 
 // ===========================================================================
 // THE CROSS-CHECK FOR THE ZERO RULE, only counted.
@@ -1604,7 +1605,8 @@ void COLL_FIXED_PlayerSearch(struct Thread *t, struct Driver *d)
 	}
 	else
 	{
-		u8 terrainType = d->currBlockTouching->terrain_type;
+		// ICY TRACKS (MODS page): road terrain is ice; the rest keeps its terrain.
+		u8 terrainType = NativeMods_IcyTerrain(d->currBlockTouching->terrain_type, 0);
 
 		if ((terrainType != TERRAIN_ICE) && (d->currentTerrain == TERRAIN_ICE))
 		{

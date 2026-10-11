@@ -1,4 +1,5 @@
 #include <common.h>
+#include <platform/native_mods.h>
 
 // From game/native_trackmod.c, which comes after this file in game_unity.h.
 // The answer is the bits the MaskGrab recovery should leave in place;
@@ -777,6 +778,9 @@ void BOTS_MaskGrab(struct Thread *botThread)
 void BOTS_Killplane(struct Thread *botThread)
 {
 	struct Driver *bot = botThread->object;
+
+	// MOON GRAVITY / ICY TRACKS: counted for the report at exit (only while on).
+	NativeMods_NoteBotRescue();
 	b32 usingTinyArenaOverride = false;
 
 	// check for Tiny Arena
@@ -1641,8 +1645,9 @@ UpdateTireColorTimer:
 		botDriver->botData.botFlags |= BOT_FLAG_MOON_GRAVITY;
 	}
 
+	// MOON GRAVITY (MODS page): the moon gravity of a nav stretch, everywhere.
 	int gravity;
-	if ((botDriver->botData.botFlags & BOT_FLAG_MOON_GRAVITY) == 0)
+	if (((botDriver->botData.botFlags & BOT_FLAG_MOON_GRAVITY) == 0) && !NativeMods_PlayActive(NATIVE_MODS_PLAY_MOON))
 	{
 		gravity = botDriver->const_Gravity;
 	}
@@ -1768,7 +1773,8 @@ UpdateTireColorTimer:
 	botDriver->actionsFlagSet &= ~(ACTION_ENGINE_ECHO | ACTION_BACK_SKID | ACTION_FRONT_SKID);
 	botDriver->actionsFlagSet |= navActionFlags;
 
-	struct Terrain *terrain = VehAfterColl_GetTerrain(((u8)navFrameCurr->flags) >> 3);
+	// ICY TRACKS (MODS page): the bot's road terrain is ice, as the player's.
+	struct Terrain *terrain = VehAfterColl_GetTerrain(NativeMods_IcyTerrain(((u8)navFrameCurr->flags) >> 3, 1));
 
 	botDriver->terrainMeta1 = terrain;
 

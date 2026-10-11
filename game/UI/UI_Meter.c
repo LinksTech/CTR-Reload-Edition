@@ -1,4 +1,5 @@
 #include <common.h>
+#include <platform/native_mods.h>
 
 enum
 {
@@ -56,6 +57,21 @@ enum
 };
 
 
+// The step of the hang-time turbo for an air time: 0 small, 1 medium, 2 large,
+// -1 none (for the MOON GRAVITY report).
+static int UI_JumpMeter_Step(int hangTime)
+{
+	if (hangTime >= UI_JUMP_METER_HANG_TIME_LARGE)
+	{
+		return 2;
+	}
+	if (hangTime >= UI_JUMP_METER_HANG_TIME_MEDIUM)
+	{
+		return 1;
+	}
+	return (hangTime >= UI_JUMP_METER_HANG_TIME_SMALL) ? 0 : -1;
+}
+
 void UI_JumpMeter_Update(struct Driver *driver)
 {
 	if ((driver->actionsFlagSet & ACTION_AIRBORNE) == 0)
@@ -87,14 +103,23 @@ void UI_JumpMeter_Update(struct Driver *driver)
 				driver->highestJump = driver->jumpMeter;
 			}
 
-			if (driver->jumpMeter >= UI_JUMP_METER_HANG_TIME_SMALL)
+			// MOON GRAVITY (MODS page): the turbo by the air time the jump takes at
+			// full gravity; the meter and the statistics keep the real one.
+			const int hangTime = NativeMods_MoonHangTime(driver->driverID, driver->jumpMeter);
+
+			if (hangTime != driver->jumpMeter)
+			{
+				NativeMods_NoteLanding(UI_JumpMeter_Step(hangTime), UI_JumpMeter_Step(driver->jumpMeter));
+			}
+
+			if (hangTime >= UI_JUMP_METER_HANG_TIME_SMALL)
 			{
 				int fireLevel = UI_JUMP_METER_HANG_TIME_FIRE_SMALL;
-				if (driver->jumpMeter >= UI_JUMP_METER_HANG_TIME_MEDIUM)
+				if (hangTime >= UI_JUMP_METER_HANG_TIME_MEDIUM)
 				{
 					fireLevel = UI_JUMP_METER_HANG_TIME_FIRE_MEDIUM;
 				}
-				if (driver->jumpMeter >= UI_JUMP_METER_HANG_TIME_LARGE)
+				if (hangTime >= UI_JUMP_METER_HANG_TIME_LARGE)
 				{
 					fireLevel = UI_JUMP_METER_HANG_TIME_FIRE_LARGE;
 				}
@@ -111,6 +136,7 @@ void UI_JumpMeter_Update(struct Driver *driver)
 		}
 
 		driver->jumpMeter = driver->jump_LandingBoost;
+		NativeMods_MoonAir(driver->driverID, driver->jump_LandingBoost);
 
 		if (UI_JUMP_METER_MAX < driver->jump_LandingBoost)
 		{

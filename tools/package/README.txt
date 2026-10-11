@@ -168,16 +168,32 @@ Adventure, Battle or with two players (the NITRO-PIT time trial takes them).
   "[CTR Char] seat 0 empty: podium of an arcade cup, the pick stays" says
   so.
 
-Mods (Feature Preview) - the CPU opponents: in the one-player ARCADE track
-select (also NITRO RACE) press X on a track, then DOWN below the last LAPS row
-into the MODS box (in the cup select, also NITRO CUP: DOWN from a lower cup
-onto the MODS line) and X. The MODS page works like the GRAPHICS page:
+Mods (Feature Preview) - the CPU opponents and three play mods: in the
+one-player ARCADE track select (also NITRO RACE) press X on a track, then DOWN
+below the last LAPS row into the MODS box (in the cup select, also NITRO CUP:
+DOWN from a lower cup onto the MODS line) and X. The MODS page works like the
+GRAPHICS page:
   CPU DRIVERS      DEFAULT (the usual opponents), ALL RANDOM (every installed
                    driver, original and custom, with the same chance) or
                    ONLY SELECTED (only the ticked drivers)
   SELECT DRIVERS   all drivers, the original ones first, then the custom
                    ones of the "characters" folder, each ON or OFF; none is
                    ticked at first
+  MOON GRAVITY     OFF / ON: every kart falls at 41% of its gravity (the
+                   game's own low gravity), so jumps go higher and longer.
+                   The turbo for a long jump is what the same jump earns at
+                   normal gravity
+  ICY TRACKS       OFF / ON: the road (asphalt, wood, stone, metal and the
+                   like) is ice, as on Polar Pass. Water, mud, grass, dirt,
+                   snow, turbo pads and ramps keep working as before
+  ITEM CHAOS       OFF / ON: every item box gives any race item with the same
+                   chance, whatever your place. The CPU drivers, who never
+                   take boxes, attack with their own four weapons (TNT,
+                   potion, bomb, missile) at random, whatever their place
+The three can be combined with each other and with CPU DRIVERS. The MODS box
+says what is on: OFF, ALL RANDOM, <n> SELECTED, and with any of the three
+on: "<n> MODS", "RANDOM +<n>" or "<k> SEL +<n>". The log line "[CTR Mods]
+play mods in this race: ..." names them at the start of a race.
 Nobody appears twice, except with ONLY SELECTED when fewer drivers are ticked
 than there are CPU seats (7): one ticked driver gives seven of the same
 opponent. Nothing ticked is DEFAULT (the box shows OFF). Your own driver is

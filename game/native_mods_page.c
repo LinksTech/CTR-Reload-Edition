@@ -1,15 +1,20 @@
 #include <common.h>
+#include <platform/native_mods.h>
 
 // ===========================================================================
 // MODS PAGE (the big view of the MODS box of the track select and cup select).
 //
 // Main page "MODS", below the separator line the small line "FEATURE PREVIEW"
-// (white like the values, FONT_SMALL), then two rows in English:
+// (white like the values, FONT_SMALL), then five rows in English:
 //   CPU DRIVERS      DEFAULT / ALL RANDOM / ONLY SELECTED
 //   SELECT DRIVERS   <n> SELECTED   (grey unless CPU DRIVERS is ONLY SELECTED;
 //                                    no arrow: FONT_SMALL draws ">" as a dash)
-// Up/down chooses the row (around the ends), left/right the value, cross opens
-// SELECT DRIVERS (only when it is not grey), triangle goes back.
+//   MOON GRAVITY     OFF / ON       (the play mods, platform/native_mods.h)
+//   ICY TRACKS       OFF / ON
+//   ITEM CHAOS       OFF / ON
+// Up/down chooses the row (around the ends), left/right the value (OFF left,
+// ON right), cross opens SELECT DRIVERS (only when it is not grey) and toggles
+// a play mod, triangle goes back.
 //
 // Sub page "SELECT DRIVERS": at most six rows at a time, every driver - the
 // fifteen retail ones first, then the custom ones - with ON / OFF; the list
@@ -47,8 +52,9 @@ void Platform_Log(const char *format, ...);
 #define NATIVE_MODS_PAGE_ALL      1
 #define NATIVE_MODS_PAGE_SELECTED 2
 
-#define NATIVE_MODS_PAGE_ROWS        2
+#define NATIVE_MODS_PAGE_ROWS        5
 #define NATIVE_MODS_PAGE_ROW_DRIVERS 1
+#define NATIVE_MODS_PAGE_ROW_PLAY    2 // the first play mod; the rest follow
 #define NATIVE_MODS_PAGE_VISIBLE     6
 #define NATIVE_MODS_PAGE_NAME_MAX    40
 #define NATIVE_MODS_PAGE_ROW_Y       58
@@ -67,7 +73,10 @@ global_variable int s_nativeModsPageRow = 0;
 global_variable int s_nativeModsPageCursor = 0;
 global_variable int s_nativeModsPageScroll = 0;
 
-global_variable const char *const s_nativeModsPageLabels[NATIVE_MODS_PAGE_ROWS] = {"CPU DRIVERS", "SELECT DRIVERS"};
+global_variable const char *const s_nativeModsPageLabels[NATIVE_MODS_PAGE_ROWS] = {"CPU DRIVERS", "SELECT DRIVERS", "MOON GRAVITY", "ICY TRACKS",
+                                                                                      "ITEM CHAOS"};
+global_variable const int s_nativeModsPagePlay[NATIVE_MODS_PAGE_ROWS - NATIVE_MODS_PAGE_ROW_PLAY] = {NATIVE_MODS_PLAY_MOON, NATIVE_MODS_PLAY_ICY,
+                                                                                                    NATIVE_MODS_PLAY_CHAOS};
 global_variable const char *const s_nativeModsPageValues[3] = {"DEFAULT", "ALL RANDOM", "ONLY SELECTED"};
 
 // Separator line and background, the same calls and numbers as
@@ -127,9 +136,15 @@ internal void NativeModsPage_DrawMain(void)
 		const int y = NATIVE_MODS_PAGE_MAIN_ROW_Y + (row * NATIVE_MODS_PAGE_ROW_PITCH);
 		const int grey = (row == NATIVE_MODS_PAGE_ROW_DRIVERS) && (value != NATIVE_MODS_PAGE_SELECTED);
 
+		const char *shown = (row == 0) ? s_nativeModsPageValues[value] : text;
+
+		if (row >= NATIVE_MODS_PAGE_ROW_PLAY)
+		{
+			shown = NativeMods_PlayOn(s_nativeModsPagePlay[row - NATIVE_MODS_PAGE_ROW_PLAY]) ? "ON" : "OFF";
+		}
+
 		DecalFont_DrawLine((char *)s_nativeModsPageLabels[row], NATIVE_MODS_PAGE_LABEL_X, y, FONT_SMALL, grey ? GRAY : ORANGE);
-		DecalFont_DrawLine((row == 0) ? (char *)s_nativeModsPageValues[value] : text, NATIVE_MODS_PAGE_VALUE_X, y, FONT_SMALL,
-		                   (JUSTIFY_RIGHT | (grey ? GRAY : WHITE)));
+		DecalFont_DrawLine((char *)shown, NATIVE_MODS_PAGE_VALUE_X, y, FONT_SMALL, (JUSTIFY_RIGHT | (grey ? GRAY : WHITE)));
 	}
 
 	// ONLY SELECTED with nothing ticked is DEFAULT (platform/native_mods.c).
@@ -211,11 +226,25 @@ internal void NativeModsPage_DrawSub(void)
 	                         hintY);
 }
 
-// Left (-1) or right (+1) on CPU DRIVERS; the value does not run past its
-// ends. 0 if nothing changes.
+// Left (-1) or right (+1) on CPU DRIVERS or a play mod; the value does not run
+// past its ends (a play mod: OFF left, ON right). 0 if nothing changes.
 internal int NativeModsPage_Change(int row, int dir)
 {
 	const int value = NativeModsPage_Value() + dir;
+
+	if (row >= NATIVE_MODS_PAGE_ROW_PLAY)
+	{
+		const int bit = s_nativeModsPagePlay[row - NATIVE_MODS_PAGE_ROW_PLAY];
+		const int on = (dir > 0);
+
+		if (NativeMods_PlayOn(bit) == on)
+		{
+			return 0;
+		}
+
+		NativeMods_SetPlayOn(bit, on);
+		return 1;
+	}
 
 	if ((row != 0) || (value < NATIVE_MODS_PAGE_DEFAULT) || (value > NATIVE_MODS_PAGE_SELECTED))
 	{
@@ -276,7 +305,14 @@ internal int NativeModsPage_KeysMain(int tapped)
 	}
 	else if ((tapped & (BTN_CROSS_one | BTN_CIRCLE)) != 0)
 	{
-		if (s_nativeModsPageRow == NATIVE_MODS_PAGE_ROW_DRIVERS)
+		if (s_nativeModsPageRow >= NATIVE_MODS_PAGE_ROW_PLAY)
+		{
+			const int bit = s_nativeModsPagePlay[s_nativeModsPageRow - NATIVE_MODS_PAGE_ROW_PLAY];
+
+			NativeMods_SetPlayOn(bit, !NativeMods_PlayOn(bit));
+			OtherFX_Play(0, 1);
+		}
+		else if (s_nativeModsPageRow == NATIVE_MODS_PAGE_ROW_DRIVERS)
 		{
 			if (NativeModsPage_Value() == NATIVE_MODS_PAGE_SELECTED)
 			{

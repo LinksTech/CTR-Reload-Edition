@@ -1,4 +1,5 @@
 #include <common.h>
+#include <platform/native_mods.h>
 
 // The session cheats from gameMode2 as text (native_menuscreen.c, CHEATS box);
 // the [CTR Race] line names them, a measurement run must show "cheats none".
@@ -1949,6 +1950,9 @@ void DebugMenu_Frame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 			             (int)gGT->levelID, container ? " container '" : "", container ? NativeTrack_LoadedName() : "", container ? "'" : "",
 			             (int)data.characterIDs[0], (int)gGT->arcadeDifficulty, (int)gGT->numLaps, (int)gGT->numPlyrCurrGame,
 			             (int)gGT->numBotsNextGame, (unsigned)gGT->gameMode1, NativeMenuCheats_Describe(), Platform_GetVBlankCount());
+
+			// The play mods of the MODS page, one line, only when one is active.
+			NativeMods_LogRace();
 		}
 
 		// --autopilot: the clock of the player seat. A bot never goes through

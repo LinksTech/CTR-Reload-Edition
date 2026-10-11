@@ -1,4 +1,5 @@
 #include <common.h>
+#include <platform/native_mods.h>
 
 
 void VehPhysForce_ConvertSpeedToVecOut(struct Driver *driver, Vec3 *vel)
@@ -139,7 +140,9 @@ void VehPhysForce_OnGravity(struct Driver *driver, Vec3 *velocity)
 	// can reach this frame after TeleportSelf clears underDriver and before
 	// fixed collision repopulates it; PS1 low-RAM behavior is no low-gravity
 	// flag, while host C would crash on a null dereference.
-	if ((underDriver != NULL) && ((underDriver->quadFlags & VEH_PHYS_FORCE_QUAD_LOW_GRAVITY) != 0))
+	// MOON GRAVITY (MODS page) is the low gravity of such a quad block everywhere,
+	// once: on a low-gravity block it is what the block gives anyway.
+	if (((underDriver != NULL) && ((underDriver->quadFlags & VEH_PHYS_FORCE_QUAD_LOW_GRAVITY) != 0)) || NativeMods_PlayActive(NATIVE_MODS_PLAY_MOON))
 	{
 		int scaledGravity = CTR_MipsAddLo(CTR_MipsSll(gravityY, 2), gravityY);
 		gravityY = CTR_MipsAddLo(CTR_MipsSll(scaledGravity, 3), gravityY) / VEH_PHYS_FORCE_LOW_GRAVITY_DIVISOR;
