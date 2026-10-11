@@ -191,11 +191,11 @@ back. A grey row cannot be changed.
                    the original cup difficulty easier, HARD two steps harder.
                    EXTREME is three steps harder in the speed setting, which
                    drives as fast as HARD (the CPU drivers cannot get
-                   faster), but it attacks much more: half the waiting time
-                   between two attacks, twice the chance, and the CPU drivers
-                   two places ahead of and behind you attack too, from behind
-                   at any place (the original: only while you are in the
-                   first three), and even more often while you lead. With
+                   faster), but it attacks about three times as often: half
+                   the waiting time between two attacks, the CPU drivers two
+                   places ahead of and behind you attack too, from behind at
+                   any place (the original: only while you are in the first
+                   three), and twice as often from behind while you lead. With
                    ITEMS DEFAULT the attacks are aimed at you: a CPU driver
                    ahead drops items or throws bombs backwards, one behind
                    fires missiles. EXTREME also uses every race item (see
