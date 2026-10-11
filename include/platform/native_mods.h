@@ -100,10 +100,10 @@ const char *NativeMods_StatusText(void);
 //               +0xF0 - one step of the cup difficulty menu down, two and
 //               three up. EXTREME is as fast as HARD would be at its top, and
 //               harder by how the CPU drivers attack (game/PickupBots.c): half
-//               the time between two attacks, twice the chance, the bots two
-//               places ahead and behind the player too, from behind at any
-//               place (the game: only while the player is in the first three)
-//               and twice that again while the player leads; with ITEMS at
+//               the time between two attacks, the bots two places ahead and
+//               behind the player too, from behind at any place (the game:
+//               only while the player is in the first three) and twice the
+//               chance from behind while the player leads; with ITEMS at
 //               DEFAULT aimed - a bot ahead drops or throws backwards, a bot
 //               behind shoots. And with every race item (CPU ITEMS).
 //   CPU ITEMS   (no row: ITEMS at CHAOS or CUSTOM, or DIFFICULTY EXTREME) a CPU

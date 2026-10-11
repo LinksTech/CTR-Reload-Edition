@@ -1257,6 +1257,177 @@ internal void DebugMenu_MenuKeysTick(void)
 	}
 }
 
+// ---------------------------------------------------------------------------
+//  --dev-kart-steer: the human kart of seat 0 driven by a simple steerer,
+//  with the kart's own physics (not a bot like --autopilot) - for measuring
+//  what only a kart does, such as its turbo pads and what SQUARE does to the
+//  reserves (RETRO FUELED of the MODS page).
+//
+//  HOW. In every race frame the steerer holds CROSS and steers with the
+//  D-pad towards the restart point two ahead of the kart's own
+//  (ptr_restart_points, the heading as VehStuckProc's respawn takes it:
+//  ratan2(dx, dz)). Which way LEFT turns the heading is learnt from the kart
+//  itself while it steers. Each time the kart gets reserves, a short while
+//  later it holds SQUARE for 8 frames - every other time with DOWN, which
+//  KEEP RESERVES lets keep them, the others alone, which clears them. The pad
+//  bus is set as the key sequence sets it (not together with --menu-keys).
+//  Every change of the reserves under SQUARE is logged.
+// ---------------------------------------------------------------------------
+
+int g_cfg_kartSteer = 0;
+
+internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
+{
+	local_persist struct PlatformInputPadSnapshot base[4];
+	local_persist int haveBase = 0;
+	local_persist int armed = 0;
+	local_persist int leftSign = 1;
+	local_persist int votes = 0;
+	local_persist int lastAngle = 0;
+	local_persist u16 lastWord = 0xffff;
+	local_persist int hadReserves = 0;
+	local_persist int squareIn = -1;
+	local_persist int squareLeft = 0;
+	local_persist int squareCount = 0;
+	local_persist int squareDown = 0;
+	local_persist int squareFrom = 0;
+
+	struct PlatformInputPadSnapshot pads[4];
+	struct Driver *d;
+	struct Level *level;
+	u16 word = 0xffff;
+	int slot;
+
+	if (!g_cfg_kartSteer)
+	{
+		return;
+	}
+
+	d = (gGT != NULL) ? gGT->drivers[0] : NULL;
+	level = (gGT != NULL) ? gGT->level1 : NULL;
+
+	if ((d == NULL) || (level == NULL) || ((gGT->gameMode1 & (MAIN_MENU | LOADING | END_OF_RACE)) != 0) || (sdata->Loading.stage != LOAD_IDLE) ||
+	    ((d->actionsFlagSet & ACTION_BOT) != 0) || (level->ptr_restart_points == NULL) || (level->cnt_restart_points < 3))
+	{
+		if (armed)
+		{
+			armed = 0;
+			hadReserves = 0;
+			squareIn = -1;
+			squareLeft = 0;
+			Platform_InputClearInstalledPadSnapshots();
+		}
+		return;
+	}
+
+	if (!haveBase)
+	{
+		if (Platform_InputCapturePadSnapshots(base, 4) <= 0)
+		{
+			return;
+		}
+		haveBase = 1;
+	}
+
+	{
+		const struct CheckpointNode *cn = level->ptr_restart_points;
+		const int count = level->cnt_restart_points;
+		int target = d->checkpoint.currentIndex;
+		int k;
+
+		for (k = 0; k < 2; k++)
+		{
+			const int next = cn[(target < count) ? target : 0].nextIndex_forward;
+
+			target = (next < count) ? next : 0;
+		}
+
+		{
+			const int dx = cn[target].pos.x - (d->posCurr.x >> 8);
+			const int dz = cn[target].pos.z - (d->posCurr.z >> 8);
+			const int want = ratan2(dx, dz) & 0xfff;
+			const int angle = d->angle & 0xfff;
+			int diff = ((want - angle + 0x800) & 0xfff) - 0x800;
+			int turned = ((angle - lastAngle + 0x800) & 0xfff) - 0x800;
+
+			// Learn which way LEFT turns: the heading's change while a
+			// steering key was held in the frame before.
+			if (((lastWord & RAW_BTN_LEFT) == 0) && (turned != 0))
+			{
+				votes += (turned > 0) ? 1 : -1;
+			}
+			else if (((lastWord & RAW_BTN_RIGHT) == 0) && (turned != 0))
+			{
+				votes += (turned > 0) ? -1 : 1;
+			}
+			if ((votes > 8) || (votes < -8))
+			{
+				const int sign = (votes > 0) ? 1 : -1;
+
+				if (sign != leftSign)
+				{
+					Platform_Log("[CTR Debug] --dev-kart-steer: LEFT turns the heading %s\n", (sign > 0) ? "up" : "down");
+				}
+				leftSign = sign;
+				votes = 0;
+			}
+			lastAngle = angle;
+
+			word &= (u16)~RAW_BTN_CROSS;
+			if ((diff > 0x40) || (diff < -0x40))
+			{
+				word &= (u16)~((((diff > 0) ? 1 : -1) == leftSign) ? RAW_BTN_LEFT : RAW_BTN_RIGHT);
+			}
+		}
+	}
+
+	// SQUARE a while after the kart got reserves, every other time with DOWN.
+	if ((d->reserves > 0) && !hadReserves && (squareLeft == 0))
+	{
+		squareIn = 6;
+	}
+	hadReserves = (d->reserves > 0);
+
+	if (squareIn > 0)
+	{
+		squareIn--;
+		if ((squareIn == 0) && (d->reserves > 0))
+		{
+			squareLeft = 8;
+			squareDown = (squareCount & 1) == 0;
+			squareFrom = d->reserves;
+			squareCount++;
+		}
+	}
+
+	if (squareLeft > 0)
+	{
+		word |= (u16)(RAW_BTN_CROSS | RAW_BTN_LEFT | RAW_BTN_RIGHT);
+		word &= (u16)~(RAW_BTN_SQUARE | (squareDown ? RAW_BTN_DOWN : 0));
+		squareLeft--;
+		if (squareLeft == 0)
+		{
+			Platform_Log("[CTR Debug] --dev-kart-steer: square%s %d held 8 frames: reserves %d before, %d after\n", squareDown ? " + down" : " alone",
+			             squareCount, squareFrom, (int)d->reserves);
+		}
+	}
+
+	memcpy(pads, base, sizeof(pads));
+	for (slot = 0; slot < 4; slot++)
+	{
+		pads[slot].buttons[0] = (u8)(word & 0xff);
+		pads[slot].buttons[1] = (u8)((word >> 8) & 0xff);
+		if (slot == 0)
+		{
+			pads[slot].connected = 1;
+			pads[slot].status = 0;
+			pads[slot].id = 0x41;
+		}
+	}
+	Platform_InputInstallPadSnapshots(pads, 4);
+	armed = 1;
+	lastWord = word;
+}
 
 // ---------------------------------------------------------------------------
 //  --level-tour: many tracks in one run.
@@ -1835,6 +2006,7 @@ void DebugMenu_Frame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 	// The key sequence first: it must have set the pad bus before anything
 	// in this frame reads it.
 	DebugMenu_MenuKeysTick();
+	DebugMenu_KartSteerTick(gGT);
 
 	// Big enough for the longest line that CAN come about, not for the
 	// longest one wants to see. By the container format a track name may be

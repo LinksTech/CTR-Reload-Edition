@@ -321,19 +321,16 @@ static void PickupBots_ModsAttack(struct Driver *bot, struct Driver *player, int
 }
 
 // The attack roll of a bot next to the player: ahead (the game: 3 of 200, one
-// to each of its branches) or behind (4 of 800); EXTREME twice that, from
-// behind twice again while the player leads.
+// to each of its branches) or behind (4 of 800); EXTREME from behind twice
+// that while the player leads. (Twice the roll everywhere on top came to 5.7
+// times HARD's attacks a lap - too many; the measurement of round 3.)
 static int PickupBots_ModsRoll(int ahead, struct Driver *player)
 {
 	int roll = ahead ? 3 : PICKUPBOTS_TRAILING_ATTACK_BOMB_THRESHOLD;
 
-	if (NativeMods_CpuExtreme())
+	if (NativeMods_CpuExtreme() && !ahead && (player->driverRank == 0))
 	{
 		roll *= 2;
-		if (!ahead && (player->driverRank == 0))
-		{
-			roll *= 2;
-		}
 	}
 
 	return roll;

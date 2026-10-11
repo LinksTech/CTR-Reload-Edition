@@ -238,6 +238,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--menu-keys", "<sequence>", "scripted pad steps, e.g. down,cross or l1+r1+down (up to 256; keys up down left right cross circle square triangle start select l1 r1 l2 r2 none)"},
     {"--menu-keys-quit", "<vblanks>", "end this many VBlanks after the last step (default 120, 0 = do not end)"},
     {"--menu-keys-every", "<vblanks>", "length of one step of the sequence (default 24)"},
+    {"--dev-kart-steer", "", "the kart of seat 0 drives itself with its own physics (not a bot): CROSS held, steered along the restart points, SQUARE (every other time with DOWN) a while after it gets reserves; for measuring"},
     {"--menu-keys-hold", "<vblanks>", "how long a step holds its keys before they are let go (default 3; as long as --menu-keys-every holds them through, for driving)"},
     {"--menu-keys-from", "<vblank>", "first step of the sequence at this VBlank (default 300)"},
     {"--menu-pads", "<n>", "the key sequence reports this many connected pads, 1 to 4 (default 1)"},
@@ -3967,6 +3968,13 @@ int main(int argc, char *argv[])
 
 				g_cfg_menuKeysQuit = atoi(argv[++argIndex]);
 				printf("[CTR Native] menu keys quit: %d\n", g_cfg_menuKeysQuit);
+			}
+			else if (strcmp(argv[argIndex], "--dev-kart-steer") == 0)
+			{
+				extern int g_cfg_kartSteer;
+
+				g_cfg_kartSteer = 1;
+				printf("[CTR Native] --dev-kart-steer: the kart of seat 0 steers itself along the restart points\n");
 			}
 			else if ((strcmp(argv[argIndex], "--menu-keys-hold") == 0) && ((argIndex + 1) < argc))
 			{
