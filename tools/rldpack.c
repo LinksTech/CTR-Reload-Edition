@@ -2234,6 +2234,10 @@ static const char *Rld_ParseParmValues(const char *reverb, const char *bots, con
 	return NULL;
 }
 
+// THE START GRID AND THE NAV PATHS of make, for a LEV that lacks them. Here,
+// after the readers it uses (Rld_LevModesRead, Rld_PtrMapRead, RLD_LEV_*).
+#include "rldpack_nav.inc"
+
 //========================================================================================
 // THE SHARED PACKING PATH OF build AND make
 //========================================================================================
@@ -2276,6 +2280,11 @@ struct RldPackJob
 	int make;
 	int keepModelIds;
 
+	// make only: the start grid and the nav paths where the LEV lacks them
+	// (tools/rldpack_nav.inc); off with --keep-start-spots / --keep-nav.
+	int keepStartSpots;
+	int keepNav;
+
 	// make --check only: check and build everything, but write nothing.
 	// failedBefore: make has already found something (the music) and only lets
 	// Rld_Pack keep running so that the modes are reported.
@@ -2292,6 +2301,7 @@ static int Rld_Pack(const struct RldPackJob *job)
 	int abrChecked = 0;
 	struct RldAbrReport abrReport;
 	struct RldModelIds modelIds;
+	struct RldAutoLev autoLev;
 	struct RldSpawn spawn;
 	struct RldLevModes levModes;
 	struct RldParm parm;
@@ -2504,6 +2514,15 @@ static int Rld_Pack(const struct RldPackJob *job)
 	// -, aligned only in make. ABR and ID touch different
 	// bytes; META does not change because of it, Rld_MemNeed reads no instances.
 	Rld_ModelIds(lev, levSize, job->make && !job->keepModelIds, &modelIds);
+
+	// THE START GRID AND THE NAV PATHS, make only, after ABR and ID and before
+	// the modes are read: the checks and warnings below then see the track as it
+	// goes into the container. A LEV that has both is not touched.
+	memset(&autoLev, 0, sizeof(autoLev));
+	if (job->make)
+	{
+		Rld_AutoLevApply(&lev, &levSize, in.modes, job->keepStartSpots, job->keepNav, &autoLev);
+	}
 
 	// THE DATA PER MODE (4.1): a declared mode without its data aborts
 	// before a file is created.
@@ -2789,6 +2808,39 @@ static int Rld_Pack(const struct RldPackJob *job)
 			printf("  spawn table   count %d - %s, %s\n", spawn.count, ghosts ? "N. Tropy / N. Oxide ghosts at slots 4 and 5" : "no ghosts (time trial not offered)",
 			       (spawn.count >= 4) ? "fly-in camera path at slot 3" : "no fly-in (count below 4)");
 		}
+
+		if (autoLev.gridMade)
+		{
+			printf("  start grid    made: 2 rows of 4 behind restart point 0, %d apart (the LEV had %d distinct start spot(s))\n", autoLev.gridColumn,
+			       autoLev.gridSpotsBefore);
+		}
+		else if (autoLev.gridWhy != NULL)
+		{
+			printf("  start grid    not made - %s\n", autoLev.gridWhy);
+		}
+		else if (job->keepStartSpots)
+		{
+			printf("  start grid    left alone (--keep-start-spots)\n");
+		}
+
+		if (autoLev.navMade)
+		{
+			printf("  nav paths     made: 3 paths of %u frames along the restart ring (%u of %u restart points, %u units around)\n", autoLev.navFrames,
+			       autoLev.navRing, autoLev.navRestart, autoLev.navLap);
+			if ((autoLev.navNoGround != 0u) || (autoLev.navSideFallback != 0u))
+			{
+				printf("                %u frame(s) without ground under them, %u side frame(s) put onto the middle line\n", autoLev.navNoGround,
+				       autoLev.navSideFallback);
+			}
+		}
+		else if (autoLev.navWhy != NULL)
+		{
+			printf("  nav paths     not made - %s\n", autoLev.navWhy);
+		}
+		else if (job->keepNav)
+		{
+			printf("  nav paths     left alone (--keep-nav)\n");
+		}
 	}
 	{
 		// What the track demands in memory - visible when BUILDING and not
@@ -2842,6 +2894,41 @@ static int Rld_Pack(const struct RldPackJob *job)
 	if (job->make && !job->keepModelIds && (modelIds.problem == NULL) && (modelIds.differ != 0u))
 	{
 		Rld_Say("info", "model-ids", NULL, "The model numbers of %u object(s) were corrected, so the game shows the right models.", modelIds.differ);
+	}
+
+	// The grid and the paths: said like ABR - the cause is in the export, and
+	// the author should hear about it.
+	if (autoLev.gridMade)
+	{
+		Rld_Say("info", "start-grid", NULL,
+		        "The track had %d different start spot(s) for 8 karts. The packer put the 8 karts in two rows of four behind the finish line.",
+		        autoLev.gridSpotsBefore);
+		printf("\nNOTE: the LEV gave the 8 karts only %d different start spot(s).\n", autoLev.gridSpotsBefore);
+		printf("  Karts on one spot start inside each other, and a spot off the road\n");
+		printf("  starts the race where the finish line cannot be reached. rldpack has\n");
+		printf("  put them in two rows of four behind restart point 0, facing restart\n");
+		printf("  point 1. Export the track with its 8 start spots and this note goes away.\n");
+	}
+	else if (autoLev.gridWhy != NULL)
+	{
+		Rld_Say("warning", "start-grid", autoLev.gridWhy,
+		        "The track has fewer than 8 different start spots, and the packer could not place them itself (%s). Export the track with all 8 start spots.",
+		        autoLev.gridWhy);
+	}
+
+	if (autoLev.navMade)
+	{
+		Rld_Say("info", "nav-made", NULL,
+		        "The track had no nav paths, so the bots could not drive. The packer made three from the track's checkpoints; the bots follow them, without shortcuts or tricks.");
+		printf("\nNOTE: the LEV carried no nav paths - without them the game starts the race\n");
+		printf("  without bots. rldpack has made three from the restart ring (a middle line\n");
+		printf("  and one to each side, on the ground, a frame every 240 units). The bots\n");
+		printf("  drive them cleanly but know no shortcut, drift or jump. Export the track\n");
+		printf("  with its own nav paths for better bots, and this note goes away.\n");
+	}
+	else if (autoLev.navWhy != NULL)
+	{
+		printf("\nWARNING: no nav paths could be made from the restart points - %s.\n", autoLev.navWhy);
 	}
 
 	if (abrReport.layoutsFixed != 0u)
@@ -4162,6 +4249,8 @@ static int Cmd_Make(int argc, char *argv[], const char *argv0)
 	const char *source[RLD_TXT_KEYS];
 	int noMusic = 0;
 	int keepModelIds = 0;
+	int keepStartSpots = 0;
+	int keepNav = 0;
 	int abrKeep = 0;
 	int check = 0;
 	int musicFailed = 0;
@@ -4192,6 +4281,8 @@ static int Cmd_Make(int argc, char *argv[], const char *argv0)
 		else if ((strcmp(arg, "--hwl") == 0) && next) { hwlArg = argv[++i]; }
 		else if (strcmp(arg, "--no-music") == 0) { noMusic = 1; }
 		else if (strcmp(arg, "--keep-model-ids") == 0) { keepModelIds = 1; }
+		else if (strcmp(arg, "--keep-start-spots") == 0) { keepStartSpots = 1; }
+		else if (strcmp(arg, "--keep-nav") == 0) { keepNav = 1; }
 		else if (strcmp(arg, "--abr-keep") == 0) { abrKeep = 1; }
 		else if (strcmp(arg, "--check") == 0) { check = 1; }
 		else if (strcmp(arg, "--sndb") == 0)
@@ -4694,6 +4785,8 @@ musicDone:
 	job.abrKeep = abrKeep;
 	job.make = 1;
 	job.keepModelIds = keepModelIds;
+	job.keepStartSpots = keepStartSpots;
+	job.keepNav = keepNav;
 	job.check = check;
 	job.failedBefore = musicFailed;
 
@@ -6204,6 +6297,9 @@ static int Cmd_Selftest(void)
 	// MAKE: model ID, spawn table, SCA -> SNDB, track.txt.
 	failed |= Rld_SelftestMake();
 
+	// MAKE: the start grid and the nav paths of a LEV without them (tools/rldpack_nav.inc).
+	failed |= Rld_SelftestAutoLev();
+
 	// MAKE-CHAR: glTF, OBJ and PLY, the chain, the model rules, CHRI (tools/rldpack_char.inc).
 	// It counts its failed cases; here only "any" matters.
 	failed |= (RldChar_SelfTest() != 0);
@@ -6277,6 +6373,9 @@ static void Rld_Usage(void)
 	printf("  optionally track.txt. Everything else is left alone.\n");
 	printf("  The container lands NEXT TO the folder as <folder>.rldtrack. make fixes\n");
 	printf("  the model ids of the instances; everything else it checks as build does.\n");
+	printf("  For race, a LEV with fewer than 8 different start spots gets a grid\n");
+	printf("  behind restart point 0, and a LEV without nav paths gets three along its\n");
+	printf("  restart ring, so that the bots drive; a LEV that has them keeps them.\n");
 	printf("  It writes no level id: the game gives every track its id itself.\n");
 	printf("\n");
 	printf("  --name, --author, --modes, --track-version, --reverb, --bots, --ambient\n");
@@ -6292,6 +6391,8 @@ static void Rld_Usage(void)
 	printf("  --out <file>                somewhere else than next to the folder\n");
 	printf("  --keep-model-ids            leave InstDef.modelID as the exporter wrote it\n");
 	printf("                              (and the ids of the letter models c, t, r)\n");
+	printf("  --keep-start-spots          leave the 8 start spots as exported\n");
+	printf("  --keep-nav                  make no nav paths for a LEV without them\n");
 	printf("  --abr-keep                  as with build\n");
 	printf("  --check                     run every check and build in memory, write nothing\n");
 	printf("  --reverb/--bots/--ambient default\n");

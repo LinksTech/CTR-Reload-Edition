@@ -223,6 +223,21 @@ The game checks it at load, before the load path sees it:
 checkpoint index of every quadblock (0xFF or an existing restart point),
 end-of-race cameras and the map table (spawn slot 0).
 
+What `rldpack make` adds to a race LEV that lacks it (`tools/rldpack_nav.inc`);
+a LEV that has it keeps it byte for byte:
+
+- Start grid: fewer than 8 distinct start spots (`Level.DriverSpawn`) become two
+  rows of four behind restart point 0, facing restart point 1, each on the
+  ground. `--keep-start-spots` leaves them.
+- Nav paths: no path with more than one point becomes three paths along the
+  restart ring (from point 0 along `nextIndex_forward` back to 0), a frame every
+  240 units on the ground, `goBackCount` = the restart point the frame lies
+  behind, `pathChangeOpcode` 0x0C00, no flags. They go behind the body, and their
+  table slots into the pointer map. `--keep-nav` leaves the LEV without.
+- Not made, with the reason in the report, when the restart points do not form
+  a ring, there is no ground behind the line, or the line through the restart
+  points leaves the ground in more than 1 of 20 frames or in more than 8 in a row.
+
 ### VRMD (`Rld_CheckVrm`)
 
 The VRM file as the game loads it:
