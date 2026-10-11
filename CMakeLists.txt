@@ -439,9 +439,10 @@ if(BUILD_TESTING)
     set_tests_properties(char_grid_selftest PROPERTIES
         PASS_REGULAR_EXPRESSION "char grid selftest passed: [0-9]+ checks, 0 failures"
     )
-    # The play mods of the MODS page (MOON GRAVITY, ICY TRACKS, ITEM CHAOS)
-    # without a race: the settings lines, the status line of the MODS box,
-    # --dev-mods-play, the ice terrain and the hang time. It only computes.
+    # The play mods of the MODS page without a race: the settings lines, the
+    # status line of the MODS box, --dev-mods-play, gravity and hang time,
+    # grip, night colour, difficulty, boss sections, the item box and the CPU
+    # items, the rules of RETRO FUELED. It only computes.
     add_test(NAME mods_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --mods-selftest)
     set_tests_properties(mods_selftest PROPERTIES
         PASS_REGULAR_EXPRESSION "mods selftest passed: [0-9]+ checks, 0 failures"
