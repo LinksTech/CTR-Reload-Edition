@@ -981,7 +981,8 @@ int NativeMods_SetDevPlay(const char *list)
 // race - the settings lines, the box's status line, --dev-mods-play, the ice
 // terrain and the hang time of MOON GRAVITY. Touches no file; the module's
 // values are put back at the end. 0 = passed.
-int VehPhysGeneral_ChaosSelfTest(int *checks); // game/Vehicle/VehPhysGeneral.c
+int VehPhysGeneral_ChaosSelfTest(int *checks);               // game/Vehicle/VehPhysGeneral.c
+int VehPhysGeneral_ChaosBoxSelfTest(int chaosOn, int *checks); // game/Vehicle/VehPhysGeneral.c
 
 int NativeMods_SelfTest(void)
 {
@@ -1144,8 +1145,15 @@ int NativeMods_SelfTest(void)
 	failures += (NativeMods_MoonHangTime(3, 0x960) != 984);
 	s_modsSelfTestRace = 0;
 
-	// ITEM CHAOS: the draw over one whole period of the game's random numbers.
+	// ITEM CHAOS: the draw over one whole period of the game's random numbers,
+	// then the item box itself, off and on.
 	failures += VehPhysGeneral_ChaosSelfTest(&checks);
+	s_modsSelfTestRace = 1;
+	s_modsPlayFile = 0;
+	failures += VehPhysGeneral_ChaosBoxSelfTest(0, &checks);
+	s_modsPlayFile = NATIVE_MODS_PLAY_CHAOS;
+	failures += VehPhysGeneral_ChaosBoxSelfTest(1, &checks);
+	s_modsSelfTestRace = 0;
 
 	s_modsCpu = savedCpu;
 	s_modsRetailOn = savedRetail;

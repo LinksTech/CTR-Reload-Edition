@@ -1037,6 +1037,95 @@ int VehPhysGeneral_ChaosSelfTest(int *checks)
 	return failures;
 }
 
+// --mods-selftest: the item box itself (SetHeldItem) in a race made up here -
+// arcade, one player, seven bots, the player in first place on lap 2 - over
+// 65536 boxes, with ITEM CHAOS off (chaosOn 0: every item from the first-place
+// set) and on (1: every one of the 11 race items, each within 5 percent of the
+// same count, the first-place set or not). The warpball flag is cleared before
+// each box, so the rule "one warpball at a time" does not turn the rest into
+// missiles. sdata->gGT and the random number are put back. Returns the failures.
+int VehPhysGeneral_ChaosBoxSelfTest(int chaosOn, int *checks)
+{
+	static struct GameTracker race;
+	static struct Driver player;
+	struct GameTracker *const savedGT = sdata->gGT;
+	const int savedRandom = sdata->randomNumber;
+	int counts[HELD_ITEM_ROULETTE + 1] = {0};
+	int failures = 0;
+	int kinds = 0;
+	int lo = 0x7fffffff, hi = 0;
+	int i;
+
+	memset(&race, 0, sizeof(race));
+	memset(&player, 0, sizeof(player));
+	race.gameMode1 = ARCADE_MODE;
+	race.numPlyrCurrGame = 1;
+	race.numBotsNextGame = 7;
+	race.levelID = 0;
+	player.driverRank = 0;
+	player.lapIndex = 1;
+	sdata->gGT = &race;
+
+	for (i = 0; i < 0x10000; i++)
+	{
+		race.gameMode1 &= ~WARPBALL_HELD;
+		race.numPlayersWith3Missiles = 0;
+		VehPhysGeneral_SetHeldItem(&player);
+		counts[(player.heldItemID <= HELD_ITEM_ROULETTE) ? player.heldItemID : HELD_ITEM_ROULETTE]++;
+	}
+
+	sdata->gGT = savedGT;
+	sdata->randomNumber = savedRandom;
+
+	for (i = 0; i <= HELD_ITEM_ROULETTE; i++)
+	{
+		int inFirst = 0;
+		int inSets = 0;
+		int set;
+		int k;
+
+		for (set = ITEMSET_Race1; set <= ITEMSET_Race4; set++)
+		{
+			for (k = 0; k < itemSetWeaponCounts[set]; k++)
+			{
+				if (itemSetWeaponTables[set][k] == i)
+				{
+					inSets = 1;
+					inFirst |= (set == ITEMSET_Race1);
+				}
+			}
+		}
+
+		(*checks)++;
+		if (chaosOn ? ((counts[i] != 0) != (inSets && (i != HELD_ITEM_SPRING))) : ((counts[i] != 0) && !inFirst))
+		{
+			printf("mods selftest: item box, ITEM CHAOS %s, item %d came %d times (first-place set %d, race sets %d)\n", chaosOn ? "on" : "off", i, counts[i],
+			       inFirst, inSets);
+			failures++;
+		}
+
+		if (counts[i] != 0)
+		{
+			kinds++;
+			lo = (counts[i] < lo) ? counts[i] : lo;
+			hi = (counts[i] > hi) ? counts[i] : hi;
+		}
+	}
+
+	if (chaosOn)
+	{
+		(*checks)++;
+		if ((kinds == 0) || ((hi - lo) * 20 > (0x10000 / kinds)))
+		{
+			printf("mods selftest: item box, ITEM CHAOS on, %d items between %d and %d times each\n", kinds, lo, hi);
+			failures++;
+		}
+	}
+
+	printf("mods selftest: item box in first place, ITEM CHAOS %s: %d kinds of item, %d to %d of 65536 boxes each\n", chaosOn ? "on" : "off", kinds, lo, hi);
+	return failures;
+}
+
 // Itemset infographic (outdated):
 // https://discord.com/channels/330945093416779787/550106151887568906/734368526294450267
 void VehPhysGeneral_SetHeldItem(struct Driver *driver)
