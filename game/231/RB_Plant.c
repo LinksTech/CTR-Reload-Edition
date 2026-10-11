@@ -1,4 +1,5 @@
 #include <common.h>
+#include <platform/native_mods.h>
 
 // budget: 2584
 
@@ -318,8 +319,8 @@ void RB_Plant_ThTick_Hungry(struct Thread *t)
 
 	// === did not collide with PLAYER ===
 
-	// bosses are immune
-	if ((gGT->gameMode1 & ADVENTURE_BOSS) != 0)
+	// bosses are immune - the boss of the MODS page's BOSS too
+	if (((gGT->gameMode1 & ADVENTURE_BOSS) != 0) || (NativeMods_BossIndex() >= 0))
 	{
 		return;
 	}

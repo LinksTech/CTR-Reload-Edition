@@ -210,11 +210,20 @@ void BOTS_Adv_AdjustDifficulty(void)
 	s32 currDifficulty;
 	s16 cupDifficulty = 0;
 
+	// BOSS (MODS page): the arcade race against a boss takes his row, as his
+	// adventure race does.
+	const int modsBoss = NativeMods_BossIndex();
+
 	// NOTE(aalhendi): Retail stores params1 in slot 1 and params2 in slot 0.
 	if ((gameMode1 & ADVENTURE_BOSS) != 0)
 	{
 		sdata->difficultyParams[1] = data.BossDifficulty[gGT->bossID].params1;
 		sdata->difficultyParams[0] = data.BossDifficulty[gGT->bossID].params2;
+	}
+	else if (modsBoss >= 0)
+	{
+		sdata->difficultyParams[1] = data.BossDifficulty[modsBoss].params1;
+		sdata->difficultyParams[0] = data.BossDifficulty[modsBoss].params2;
 	}
 	else
 	{
@@ -266,6 +275,14 @@ void BOTS_Adv_AdjustDifficulty(void)
 		}
 
 		cupDifficulty = (s16)((u16)gGT->arcadeDifficulty + BOTS_DIFFICULTY_CUP_OFFSET);
+
+		// BOSS (MODS page): his place in his blend as in his adventure race on
+		// the first try (no race lost, no cheat), in a cup too.
+		if (modsBoss >= 0)
+		{
+			currDifficulty = (modsBoss * BOTS_ADV_NORMAL_SCALE) - (BOTS_Adv_NumTimesLostEvent(0) - BOTS_ADV_HIGH_TIER_LOSS_BASE);
+			cupDifficulty = (s16)currDifficulty;
+		}
 	}
 	else if ((gameMode1 & ADVENTURE_CUP) != 0)
 	{
@@ -337,6 +354,11 @@ void BOTS_Adv_AdjustDifficulty(void)
 	{
 		currDifficulty = 0;
 	}
+
+	// DIFFICULTY (MODS page): the place in the blend moved by its step; the
+	// game's own value at NORMAL.
+	currDifficulty = NativeMods_BotDifficulty((s16)currDifficulty, modsBoss >= 0);
+	cupDifficulty = NativeMods_BotDifficulty(cupDifficulty, modsBoss >= 0);
 
 	BOTS_Adv_LerpDifficulty(sdata->arcade_difficultyParams, (s16)currDifficulty);
 
@@ -419,7 +441,7 @@ void BOTS_Adv_AdjustDifficulty(void)
 		sdata->driver_pathIndexIDs[i] = pathOrder[(u8)sdata->kartSpawnOrderArray[i]];
 	}
 
-	if ((gameMode1 & ADVENTURE_BOSS) != 0)
+	if (((gameMode1 & ADVENTURE_BOSS) != 0) || (modsBoss >= 0))
 	{
 		sdata->driver_pathIndexIDs[0] = 0;
 		sdata->driver_pathIndexIDs[1] = 1;
@@ -779,7 +801,7 @@ void BOTS_Killplane(struct Thread *botThread)
 {
 	struct Driver *bot = botThread->object;
 
-	// MOON GRAVITY / ICY TRACKS: counted for the report at exit (only while on).
+	// GRAVITY, GRIP and the rest: counted for the report at exit (only while on).
 	NativeMods_NoteBotRescue();
 	b32 usingTinyArenaOverride = false;
 
@@ -1645,15 +1667,17 @@ UpdateTireColorTimer:
 		botDriver->botData.botFlags |= BOT_FLAG_MOON_GRAVITY;
 	}
 
-	// MOON GRAVITY (MODS page): the moon gravity of a nav stretch, everywhere.
+	// GRAVITY (MODS page): the mod's share, on a moon stretch the lower of the
+	// two; 100 and the stretch's own 41 are computed as retail.
+	const int gravityPercent = NativeMods_GravityPercent(((botDriver->botData.botFlags & BOT_FLAG_MOON_GRAVITY) != 0) ? 41 : 100);
 	int gravity;
-	if (((botDriver->botData.botFlags & BOT_FLAG_MOON_GRAVITY) == 0) && !NativeMods_PlayActive(NATIVE_MODS_PLAY_MOON))
+	if (gravityPercent == 100)
 	{
 		gravity = botDriver->const_Gravity;
 	}
 	else
 	{
-		gravity = CTR_MipsDiv(CTR_MipsMulLo(botDriver->const_Gravity, 41), 100);
+		gravity = CTR_MipsDiv(CTR_MipsMulLo(botDriver->const_Gravity, gravityPercent), 100);
 	}
 
 	botDriver->botData.aiPhysics.speedY =
@@ -1773,8 +1797,10 @@ UpdateTireColorTimer:
 	botDriver->actionsFlagSet &= ~(ACTION_ENGINE_ECHO | ACTION_BACK_SKID | ACTION_FRONT_SKID);
 	botDriver->actionsFlagSet |= navActionFlags;
 
-	// ICY TRACKS (MODS page): the bot's road terrain is ice, as the player's.
-	struct Terrain *terrain = VehAfterColl_GetTerrain(NativeMods_IcyTerrain(((u8)navFrameCurr->flags) >> 3, 1));
+	// GRIP (MODS page): the bot's road terrain is ice at 0 %, a blend of road
+	// and ice below 100 %, as the player's.
+	const u8 navTerrain = ((u8)navFrameCurr->flags) >> 3;
+	struct Terrain *terrain = NativeMods_GripTerrain(navTerrain, VehAfterColl_GetTerrain(NativeMods_IcyTerrain(navTerrain, 1)), 1);
 
 	botDriver->terrainMeta1 = terrain;
 

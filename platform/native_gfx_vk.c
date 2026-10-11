@@ -8907,6 +8907,15 @@ internal void NativeVk_BlendAttachment(BlendMode blend, VkPipelineColorBlendAtta
 		out->colorBlendOp = VK_BLEND_OP_ADD;
 		break;
 
+	case BM_MULTIPLY:
+		// dst * src for the colour; the frame's alpha (its mask bit) kept.
+		out->srcColorBlendFactor = VK_BLEND_FACTOR_ZERO;
+		out->dstColorBlendFactor = VK_BLEND_FACTOR_SRC_COLOR;
+		out->colorBlendOp = VK_BLEND_OP_ADD;
+		out->srcAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+		out->dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+		break;
+
 	case BM_ALPHA:
 		// Here alpha carries the weight, so it is blended rather than passed
 		// through - the one mode that overrides the defaults set above.

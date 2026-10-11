@@ -58,7 +58,7 @@ enum
 
 
 // The step of the hang-time turbo for an air time: 0 small, 1 medium, 2 large,
-// -1 none (for the MOON GRAVITY report).
+// -1 none (for the GRAVITY report).
 static int UI_JumpMeter_Step(int hangTime)
 {
 	if (hangTime >= UI_JUMP_METER_HANG_TIME_LARGE)
@@ -103,9 +103,9 @@ void UI_JumpMeter_Update(struct Driver *driver)
 				driver->highestJump = driver->jumpMeter;
 			}
 
-			// MOON GRAVITY (MODS page): the turbo by the air time the jump takes at
-			// full gravity; the meter and the statistics keep the real one.
-			const int hangTime = NativeMods_MoonHangTime(driver->driverID, driver->jumpMeter);
+			// GRAVITY (MODS page): the turbo by the air time the jump takes at the
+			// game's own gravity; the meter and the statistics keep the real one.
+			const int hangTime = NativeMods_HangTime(driver->driverID, driver->jumpMeter);
 
 			if (hangTime != driver->jumpMeter)
 			{
@@ -136,7 +136,7 @@ void UI_JumpMeter_Update(struct Driver *driver)
 		}
 
 		driver->jumpMeter = driver->jump_LandingBoost;
-		NativeMods_MoonAir(driver->driverID, driver->jump_LandingBoost);
+		NativeMods_AirTime(driver->driverID, driver->jump_LandingBoost);
 
 		if (UI_JUMP_METER_MAX < driver->jump_LandingBoost)
 		{

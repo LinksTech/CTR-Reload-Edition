@@ -1605,7 +1605,7 @@ void COLL_FIXED_PlayerSearch(struct Thread *t, struct Driver *d)
 	}
 	else
 	{
-		// ICY TRACKS (MODS page): road terrain is ice; the rest keeps its terrain.
+		// GRIP (MODS page) at 0 %: road terrain is ice; the rest keeps its terrain.
 		u8 terrainType = NativeMods_IcyTerrain(d->currBlockTouching->terrain_type, 0);
 
 		if ((terrainType != TERRAIN_ICE) && (d->currentTerrain == TERRAIN_ICE))
@@ -1616,7 +1616,9 @@ void COLL_FIXED_PlayerSearch(struct Thread *t, struct Driver *d)
 		d->currentTerrain = terrainType;
 	}
 
-	d->terrainMeta1 = VehAfterColl_GetTerrain(d->currentTerrain);
+	// GRIP (MODS page) between 0 and 100 %: road terrain drives as a blend of
+	// road and ice; its type (sounds, particles, the ice timer) stays.
+	d->terrainMeta1 = NativeMods_GripTerrain(d->currentTerrain, VehAfterColl_GetTerrain(d->currentTerrain), 0);
 	d->terrainMeta2 = d->terrainMeta1;
 	d->jump_CoyoteTimerMS = COLL_FIXED_PLAYER_SEARCH_COYOTE_TIME_MS;
 

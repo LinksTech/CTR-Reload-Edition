@@ -2033,8 +2033,27 @@ void NativeChar_NoteVBlank(int vblank); // platform/native_chars.c, later in the
 // The shot, at the VBlank it was asked for. Its own small function so that it
 // sits beside the dump rather than inside the frame. With --char the steer
 // frame of seat 0 at the same moment goes beside it (platform/native_chars.c).
+// A snapshot asked for by the game side (the shot= of --dev-mods-play,
+// platform/native_mods.c), taken at the end of the frame like --shot.
+global_variable char s_shotRequestPath[PLATFORM_ARG_PATH_MAX + 32];
+
+void Platform_ShotRequest(const char *path)
+{
+	if ((path != NULL) && (path[0] != '\0'))
+	{
+		snprintf(s_shotRequestPath, sizeof(s_shotRequestPath), "%s", path);
+	}
+}
+
 internal void Platform_ShotIfDue(void)
 {
+	if (s_shotRequestPath[0] != '\0')
+	{
+		Platform_TakeScreenshot(s_shotRequestPath);
+		Platform_Log("[CTR Shot] vblank %d: %s (asked for by the game)\n", Platform_GetVBlankCount(), s_shotRequestPath);
+		s_shotRequestPath[0] = '\0';
+	}
+
 	if ((g_cfg_shotAt <= 0) || (Platform_GetVBlankCount() < g_cfg_shotAt))
 	{
 		return;

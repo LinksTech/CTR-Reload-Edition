@@ -1,4 +1,5 @@
 #include <common.h>
+#include <platform/native_mods.h>
 #include <ctr_subpixel.h>
 
 #if defined(CTR_NATIVE)
@@ -118,6 +119,14 @@ void MainFrame_ResetDB(struct GameTracker *gGT)
 	puVar3 = (u32 *)((int)otSwapchainDB + 4);
 	gGT->pushBuffer_UI.ptrOT = puVar3;
 	db->otMem.uiOT = puVar3;
+
+#if defined(CTR_NATIVE)
+	// THE MODS PAGE (platform/native_mods.c), first thing of the frame's
+	// tables: NIGHT links its multiply into slot 0 of the view now, so that
+	// everything the frame links there later is drawn before it - the whole
+	// world under it, the HUD after it.
+	NativeMods_RaceFrame(gGT);
+#endif
 
 #if defined(CTR_NATIVE)
 	if (sdata->ptrPushBufferUI != 0)

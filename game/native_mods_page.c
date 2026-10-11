@@ -5,21 +5,41 @@
 // MODS PAGE (the big view of the MODS box of the track select and cup select).
 //
 // Main page "MODS", below the separator line the small line "FEATURE PREVIEW"
-// (white like the values, FONT_SMALL), then five rows in English:
-//   CPU DRIVERS      DEFAULT / ALL RANDOM / ONLY SELECTED
-//   SELECT DRIVERS   <n> SELECTED   (grey unless CPU DRIVERS is ONLY SELECTED;
-//                                    no arrow: FONT_SMALL draws ">" as a dash)
-//   MOON GRAVITY     OFF / ON       (the play mods, platform/native_mods.h)
-//   ICY TRACKS       OFF / ON
-//   ITEM CHAOS       OFF / ON
-// Up/down chooses the row (around the ends), left/right the value (OFF left,
-// ON right), cross opens SELECT DRIVERS (only when it is not grey) and toggles
-// a play mod, triangle goes back.
+// (white like the values, FONT_SMALL), then the rows in three groups, each
+// under a small white heading, in English:
+//   DRIVERS  CPU DRIVERS     DEFAULT / ALL RANDOM / ONLY SELECTED
+//                            (grey while BOSS CHALLENGE is on: it sits out)
+//            SELECT DRIVERS  <n> SELECTED   (grey unless CPU DRIVERS is ONLY
+//                            SELECTED and no boss; no arrow: FONT_SMALL draws
+//                            ">" as a dash)
+//            DIFFICULTY      EASY / NORMAL / HARD / EXTREME
+//            BOSS CHALLENGE  OFF / RANDOM / ROO / PAPU / JOE / PINSTRIPE / OXIDE
+//   RULES    ITEMS           DEFAULT / CHAOS / CUSTOM
+//            ITEM WEIGHTS    <k> OF <n> ON  (grey unless ITEMS is CUSTOM)
+//   WORLD    GRAVITY         20 % .. 200 %, steps of 10
+//            GRIP            0 % .. 100 %
+//            NIGHT           0 % .. 90 %
+// (the play mods, platform/native_mods.h). Twelve lines do not fit the page:
+// it shows NATIVE_MODS_PAGE_MAIN_VISIBLE of them and scrolls so that the
+// cursor stays in view, with the heading of its group when it is the group's
+// first row; a bar right of the rows shows where the view is.
+//
+// Keys: up/down choose the row (around the ends, headings are skipped),
+// left/right the value (no wrap; a percentage to the next multiple of 10),
+// cross opens SELECT DRIVERS / ITEM WEIGHTS (only when not grey), takes a
+// choice to the next one (around the end) and a percentage back to its
+// normal value; a grey row takes no key; triangle goes back.
 //
 // Sub page "SELECT DRIVERS": at most six rows at a time, every driver - the
 // fifteen retail ones first, then the custom ones - with ON / OFF; the list
 // scrolls so the cursor stays visible. Left sets OFF, right sets ON, cross
 // toggles, triangle goes back to the main page.
+//
+// Sub page "ITEM WEIGHTS": the same list of the race items (the items of the
+// four race sets, NativeMods_RaceItems) with OFF / LOW / NORMAL / HIGH (the
+// weights 0 / 1 / 2 / 4); left and right step, cross goes round. Below the
+// list what the weights come to: every item OFF is DEFAULT, one item alone is
+// the only item of every box.
 //
 // The look is the one of the GRAPHICS page (native_graphics.c): title, separator
 // line, rows with the value on the right, highlight bar, background; same
@@ -31,10 +51,12 @@
 // cleared after a handled key (like NativeGraphics_Proc).
 //
 // Widths in FONT_SMALL (13 a character, 7 for ':' and '.'): the longest label
-// ("SELECT DRIVERS", 182, 76 to 258) stays 35 left of its value ("47
-// SELECTED" at most - 15 retail and 32 roster files -, 143, from 293); "CPU
-// DRIVERS" (143, to 219) 48 left of "ONLY SELECTED" (169, from 267). A driver name is cut to what ends
-// NATIVE_MODS_PAGE_GAP left of OFF, measured (DecalFont_GetLineWidth).
+// ("BOSS CHALLENGE" and "SELECT DRIVERS", 182, 76 to 258) stays 35 left of
+// its longest value ("47 SELECTED" at most - 15 retail and 32 roster files -,
+// 143, from 293; "PINSTRIPE" 117); "CPU DRIVERS" (143, to 219) 48 left of
+// "ONLY SELECTED" (169, from 267). A list name is cut to what ends
+// NATIVE_MODS_PAGE_GAP left of the widest value, measured
+// (DecalFont_GetLineWidth).
 // ===========================================================================
 
 int NativeMods_CpuDrivers(void);
@@ -52,37 +74,144 @@ void Platform_Log(const char *format, ...);
 #define NATIVE_MODS_PAGE_ALL      1
 #define NATIVE_MODS_PAGE_SELECTED 2
 
-#define NATIVE_MODS_PAGE_ROWS        5
-#define NATIVE_MODS_PAGE_ROW_DRIVERS 1
-#define NATIVE_MODS_PAGE_ROW_PLAY    2 // the first play mod; the rest follow
-#define NATIVE_MODS_PAGE_VISIBLE     6
-#define NATIVE_MODS_PAGE_NAME_MAX    40
-#define NATIVE_MODS_PAGE_ROW_Y       58
-#define NATIVE_MODS_PAGE_PREVIEW_Y   49
-#define NATIVE_MODS_PAGE_MAIN_ROW_Y  66
-#define NATIVE_MODS_PAGE_ROW_PITCH   18
-#define NATIVE_MODS_PAGE_LABEL_X     76
-#define NATIVE_MODS_PAGE_VALUE_X     436
-#define NATIVE_MODS_PAGE_GAP         16
-#define NATIVE_MODS_PAGE_HINT_PITCH  10
-#define NATIVE_MODS_PAGE_BACK_Y      20
+// The rows of the main page, in cursor order.
+enum
+{
+	NATIVE_MODS_PAGE_ROW_CPU = 0,
+	NATIVE_MODS_PAGE_ROW_DRIVERS,
+	NATIVE_MODS_PAGE_ROW_DIFFICULTY,
+	NATIVE_MODS_PAGE_ROW_BOSS,
+	NATIVE_MODS_PAGE_ROW_ITEMS,
+	NATIVE_MODS_PAGE_ROW_WEIGHTS,
+	NATIVE_MODS_PAGE_ROW_GRAVITY,
+	NATIVE_MODS_PAGE_ROW_GRIP,
+	NATIVE_MODS_PAGE_ROW_NIGHT,
+	NATIVE_MODS_PAGE_ROWS
+};
+
+// The sub pages.
+#define NATIVE_MODS_PAGE_SUB_NONE    0
+#define NATIVE_MODS_PAGE_SUB_DRIVERS 1
+#define NATIVE_MODS_PAGE_SUB_WEIGHTS 2
+
+#define NATIVE_MODS_PAGE_LINES        12
+#define NATIVE_MODS_PAGE_MAIN_VISIBLE 7
+#define NATIVE_MODS_PAGE_MAIN_ROW_Y   62
+#define NATIVE_MODS_PAGE_MAIN_PITCH   15
+#define NATIVE_MODS_PAGE_HEAD_X       66
+#define NATIVE_MODS_PAGE_BAR_X        446
+#define NATIVE_MODS_PAGE_VISIBLE      6
+#define NATIVE_MODS_PAGE_NAME_MAX     40
+#define NATIVE_MODS_PAGE_ROW_Y        58
+#define NATIVE_MODS_PAGE_PREVIEW_Y    49
+#define NATIVE_MODS_PAGE_ROW_PITCH    18
+#define NATIVE_MODS_PAGE_LABEL_X      76
+#define NATIVE_MODS_PAGE_VALUE_X      436
+#define NATIVE_MODS_PAGE_GAP          16
+#define NATIVE_MODS_PAGE_HINT_PITCH   10
+#define NATIVE_MODS_PAGE_BACK_Y       20
 
 global_variable int s_nativeModsPageOpen = 0;
-global_variable int s_nativeModsPageSub = 0;
+global_variable int s_nativeModsPageSub = NATIVE_MODS_PAGE_SUB_NONE;
 global_variable int s_nativeModsPageRow = 0;
+global_variable int s_nativeModsPageMainScroll = 0;
 global_variable int s_nativeModsPageCursor = 0;
 global_variable int s_nativeModsPageScroll = 0;
 
-global_variable const char *const s_nativeModsPageLabels[NATIVE_MODS_PAGE_ROWS] = {"CPU DRIVERS", "SELECT DRIVERS", "MOON GRAVITY", "ICY TRACKS",
-                                                                                      "ITEM CHAOS"};
-global_variable const int s_nativeModsPagePlay[NATIVE_MODS_PAGE_ROWS - NATIVE_MODS_PAGE_ROW_PLAY] = {NATIVE_MODS_PLAY_MOON, NATIVE_MODS_PLAY_ICY,
-                                                                                                    NATIVE_MODS_PLAY_CHAOS};
-global_variable const char *const s_nativeModsPageValues[3] = {"DEFAULT", "ALL RANDOM", "ONLY SELECTED"};
+// The lines of the main page: a heading (row -1) or a row.
+global_variable const struct
+{
+	const char *text;
+	int row;
+} s_nativeModsPageLines[NATIVE_MODS_PAGE_LINES] = {
+    {"DRIVERS", -1},
+    {"CPU DRIVERS", NATIVE_MODS_PAGE_ROW_CPU},
+    {"SELECT DRIVERS", NATIVE_MODS_PAGE_ROW_DRIVERS},
+    {"DIFFICULTY", NATIVE_MODS_PAGE_ROW_DIFFICULTY},
+    {"BOSS CHALLENGE", NATIVE_MODS_PAGE_ROW_BOSS},
+    {"RULES", -1},
+    {"ITEMS", NATIVE_MODS_PAGE_ROW_ITEMS},
+    {"ITEM WEIGHTS", NATIVE_MODS_PAGE_ROW_WEIGHTS},
+    {"WORLD", -1},
+    {"GRAVITY", NATIVE_MODS_PAGE_ROW_GRAVITY},
+    {"GRIP", NATIVE_MODS_PAGE_ROW_GRIP},
+    {"NIGHT", NATIVE_MODS_PAGE_ROW_NIGHT},
+};
 
-// Separator line and background, the same calls and numbers as
-// NativeGraphics_Draw. firstHintY: where the first hint stands; hintY: below
-// the last hint drawn.
-internal void NativeModsPage_DrawFrame(u32 *ot, int cursorY, int firstHintY, int hintY)
+global_variable const char *const s_nativeModsPageValues[3] = {"DEFAULT", "ALL RANDOM", "ONLY SELECTED"};
+global_variable const char *const s_nativeModsPageLevels[4] = {"OFF", "LOW", "NORMAL", "HIGH"};
+
+// The play mod of a row (native_mods.h), -1 for the CPU rows and ITEM WEIGHTS.
+internal int NativeModsPage_Mod(int row)
+{
+	switch (row)
+	{
+	case NATIVE_MODS_PAGE_ROW_DIFFICULTY:
+		return NATIVE_MODS_DIFFICULTY;
+	case NATIVE_MODS_PAGE_ROW_BOSS:
+		return NATIVE_MODS_BOSS;
+	case NATIVE_MODS_PAGE_ROW_ITEMS:
+		return NATIVE_MODS_ITEMS;
+	case NATIVE_MODS_PAGE_ROW_GRAVITY:
+		return NATIVE_MODS_GRAVITY;
+	case NATIVE_MODS_PAGE_ROW_GRIP:
+		return NATIVE_MODS_GRIP;
+	case NATIVE_MODS_PAGE_ROW_NIGHT:
+		return NATIVE_MODS_NIGHT;
+	default:
+		return -1;
+	}
+}
+
+internal int NativeModsPage_Value(void)
+{
+	const int value = NativeMods_CpuDrivers();
+
+	return ((value >= NATIVE_MODS_PAGE_DEFAULT) && (value <= NATIVE_MODS_PAGE_SELECTED)) ? value : NATIVE_MODS_PAGE_DEFAULT;
+}
+
+internal int NativeModsPage_Boss(void)
+{
+	return NativeMods_Value(NATIVE_MODS_BOSS) != NATIVE_MODS_BOSS_OFF;
+}
+
+// A grey row shows its value and takes no key.
+internal int NativeModsPage_Grey(int row)
+{
+	switch (row)
+	{
+	case NATIVE_MODS_PAGE_ROW_CPU:
+		return NativeModsPage_Boss();
+	case NATIVE_MODS_PAGE_ROW_DRIVERS:
+		return NativeModsPage_Boss() || (NativeModsPage_Value() != NATIVE_MODS_PAGE_SELECTED);
+	case NATIVE_MODS_PAGE_ROW_WEIGHTS:
+		return NativeMods_Value(NATIVE_MODS_ITEMS) != NATIVE_MODS_ITEMS_CUSTOM;
+	default:
+		return 0;
+	}
+}
+
+// ITEM WEIGHTS: the race items, and how many of them are not OFF.
+internal int NativeModsPage_Items(u8 items[NATIVE_MODS_ITEM_IDS], int *on)
+{
+	const int count = NativeMods_RaceItems(items);
+	int k;
+
+	*on = 0;
+	for (k = 0; k < count; k++)
+	{
+		*on += (NativeMods_ItemLevel(items[k]) != NATIVE_MODS_WEIGHT_OFF);
+	}
+
+	return count;
+}
+
+// Separator line, the scroll bar of a list that does not fit, and background,
+// the same calls and numbers as NativeGraphics_Draw. firstHintY: where the
+// first hint stands; hintY: below the last hint drawn. The bar: its top and
+// height, and the share in view (first line, lines shown, all lines); none
+// when all of them are shown.
+internal void NativeModsPage_DrawFrame(u32 *ot, int cursorY, int firstHintY, int hintY, int barY, int barH, int first, int shown, int all)
 {
 	Color color;
 
@@ -93,10 +222,20 @@ internal void NativeModsPage_DrawFrame(u32 *ot, int cursorY, int firstHintY, int
 		CTR_Box_DrawClearBox(&cursor, &sdata->menuRowHighlight_Normal, TRANS_50_DECAL, ot);
 	}
 
+	ColorCode_SetPacked(&color, sdata->battleSetup_Color_UI_1);
+
+	if ((barH > 0) && (all > shown))
+	{
+		RECT thumb = {.x = NATIVE_MODS_PAGE_BAR_X, .y = (s16)(barY + ((barH * first) / all)), .w = 3, .h = (s16)((barH * shown) / all)};
+		RECT track = {.x = NATIVE_MODS_PAGE_BAR_X, .y = (s16)barY, .w = 3, .h = (s16)barH};
+
+		RECTMENU_DrawOuterRect_Edge(&thumb, color, 0x20, ot);
+		CTR_Box_DrawClearBox(&track, &sdata->menuRowHighlight_Normal, TRANS_50_DECAL, ot);
+	}
+
 	{
 		RECT separator = {.x = 66, .y = 43, .w = 380, .h = 2};
 
-		ColorCode_SetPacked(&color, sdata->battleSetup_Color_UI_1);
 		RECTMENU_DrawOuterRect_Edge(&separator, color, 0x20, ot);
 	}
 
@@ -109,48 +248,132 @@ internal void NativeModsPage_DrawFrame(u32 *ot, int cursorY, int firstHintY, int
 	}
 }
 
-internal int NativeModsPage_Value(void)
+// The value a row shows.
+internal const char *NativeModsPage_Shown(int row, char text[24])
 {
-	const int value = NativeMods_CpuDrivers();
+	const int mod = NativeModsPage_Mod(row);
 
-	return ((value >= NATIVE_MODS_PAGE_DEFAULT) && (value <= NATIVE_MODS_PAGE_SELECTED)) ? value : NATIVE_MODS_PAGE_DEFAULT;
+	if (mod >= 0)
+	{
+		return NativeMods_ValueText(mod);
+	}
+
+	if (row == NATIVE_MODS_PAGE_ROW_CPU)
+	{
+		return s_nativeModsPageValues[NativeModsPage_Value()];
+	}
+
+	if (row == NATIVE_MODS_PAGE_ROW_DRIVERS)
+	{
+		snprintf(text, 24, "%d SELECTED", NativeMods_SelectedCount());
+		return text;
+	}
+
+	{
+		u8 items[NATIVE_MODS_ITEM_IDS];
+		int on;
+		const int count = NativeModsPage_Items(items, &on);
+
+		snprintf(text, 24, "%d OF %d ON", on, count);
+		return text;
+	}
+}
+
+internal int NativeModsPage_LineOfRow(int row)
+{
+	int line;
+
+	for (line = 0; line < NATIVE_MODS_PAGE_LINES; line++)
+	{
+		if (s_nativeModsPageLines[line].row == row)
+		{
+			return line;
+		}
+	}
+
+	return 0;
+}
+
+// The view of the main page: the cursor's line inside it, and the heading
+// above it too when the cursor is on the first row of a group.
+internal void NativeModsPage_FixMainScroll(void)
+{
+	const int line = NativeModsPage_LineOfRow(s_nativeModsPageRow);
+	const int top = ((line > 0) && (s_nativeModsPageLines[line - 1].row < 0)) ? (line - 1) : line;
+
+	if (top < s_nativeModsPageMainScroll)
+	{
+		s_nativeModsPageMainScroll = top;
+	}
+	if (line >= (s_nativeModsPageMainScroll + NATIVE_MODS_PAGE_MAIN_VISIBLE))
+	{
+		s_nativeModsPageMainScroll = line - (NATIVE_MODS_PAGE_MAIN_VISIBLE - 1);
+	}
+	if (s_nativeModsPageMainScroll > (NATIVE_MODS_PAGE_LINES - NATIVE_MODS_PAGE_MAIN_VISIBLE))
+	{
+		s_nativeModsPageMainScroll = NATIVE_MODS_PAGE_LINES - NATIVE_MODS_PAGE_MAIN_VISIBLE;
+	}
+	if (s_nativeModsPageMainScroll < 0)
+	{
+		s_nativeModsPageMainScroll = 0;
+	}
 }
 
 internal void NativeModsPage_DrawMain(void)
 {
 	struct GameTracker *gGT = sdata->gGT;
 	u32 *ot = gGT->backBuffer->otMem.uiOT;
-	char text[24];
-	const int value = NativeModsPage_Value();
-	const int firstHintY = NATIVE_MODS_PAGE_MAIN_ROW_Y + (NATIVE_MODS_PAGE_ROWS * NATIVE_MODS_PAGE_ROW_PITCH) + 8;
+	const int firstHintY = NATIVE_MODS_PAGE_MAIN_ROW_Y + (NATIVE_MODS_PAGE_MAIN_VISIBLE * NATIVE_MODS_PAGE_MAIN_PITCH) + 6;
 	int hintY = firstHintY;
-	int row;
+	int cursorY = -1;
+	int i;
 
 	DecalFont_DrawLine("MODS", 256, 26, FONT_BIG, (JUSTIFY_CENTER | ORANGE));
 	DecalFont_DrawLine("FEATURE PREVIEW", 256, NATIVE_MODS_PAGE_PREVIEW_Y, FONT_SMALL, (JUSTIFY_CENTER | WHITE));
 
-	snprintf(text, sizeof(text), "%d SELECTED", NativeMods_SelectedCount());
+	NativeModsPage_FixMainScroll();
 
-	for (row = 0; row < NATIVE_MODS_PAGE_ROWS; row++)
+	for (i = 0; i < NATIVE_MODS_PAGE_MAIN_VISIBLE; i++)
 	{
-		const int y = NATIVE_MODS_PAGE_MAIN_ROW_Y + (row * NATIVE_MODS_PAGE_ROW_PITCH);
-		const int grey = (row == NATIVE_MODS_PAGE_ROW_DRIVERS) && (value != NATIVE_MODS_PAGE_SELECTED);
+		const int line = s_nativeModsPageMainScroll + i;
+		const int row = s_nativeModsPageLines[line].row;
+		const int y = NATIVE_MODS_PAGE_MAIN_ROW_Y + (i * NATIVE_MODS_PAGE_MAIN_PITCH);
+		char text[24];
+		int grey;
 
-		const char *shown = (row == 0) ? s_nativeModsPageValues[value] : text;
-
-		if (row >= NATIVE_MODS_PAGE_ROW_PLAY)
+		if (row < 0)
 		{
-			shown = NativeMods_PlayOn(s_nativeModsPagePlay[row - NATIVE_MODS_PAGE_ROW_PLAY]) ? "ON" : "OFF";
+			DecalFont_DrawLine((char *)s_nativeModsPageLines[line].text, NATIVE_MODS_PAGE_HEAD_X, y, FONT_SMALL, WHITE);
+			continue;
 		}
 
-		DecalFont_DrawLine((char *)s_nativeModsPageLabels[row], NATIVE_MODS_PAGE_LABEL_X, y, FONT_SMALL, grey ? GRAY : ORANGE);
-		DecalFont_DrawLine((char *)shown, NATIVE_MODS_PAGE_VALUE_X, y, FONT_SMALL, (JUSTIFY_RIGHT | (grey ? GRAY : WHITE)));
+		grey = NativeModsPage_Grey(row);
+		DecalFont_DrawLine((char *)s_nativeModsPageLines[line].text, NATIVE_MODS_PAGE_LABEL_X, y, FONT_SMALL, grey ? GRAY : ORANGE);
+		DecalFont_DrawLine((char *)NativeModsPage_Shown(row, text), NATIVE_MODS_PAGE_VALUE_X, y, FONT_SMALL, (JUSTIFY_RIGHT | (grey ? GRAY : WHITE)));
+
+		if (row == s_nativeModsPageRow)
+		{
+			cursorY = y;
+		}
 	}
 
-	// ONLY SELECTED with nothing ticked is DEFAULT (platform/native_mods.c).
-	if ((value == NATIVE_MODS_PAGE_SELECTED) && (NativeMods_SelectedCount() == 0))
+	// BOSS CHALLENGE leaves the CPU seats to the boss (platform/native_mods.c).
+	if (NativeModsPage_Boss())
+	{
+		DecalFont_DrawLine("ONLY YOU AND THE BOSS", 256, hintY, FONT_SMALL, (JUSTIFY_CENTER | WHITE));
+		hintY += NATIVE_MODS_PAGE_HINT_PITCH;
+	}
+	// ONLY SELECTED with nothing ticked is DEFAULT.
+	else if ((NativeModsPage_Value() == NATIVE_MODS_PAGE_SELECTED) && (NativeMods_SelectedCount() == 0))
 	{
 		DecalFont_DrawLine("NONE SELECTED: AS DEFAULT", 256, hintY, FONT_SMALL, (JUSTIFY_CENTER | WHITE));
+		hintY += NATIVE_MODS_PAGE_HINT_PITCH;
+	}
+
+	// CUSTOM with every item OFF is DEFAULT.
+	if (NativeMods_ItemsAllOff())
+	{
+		DecalFont_DrawLine("ALL ITEMS OFF: AS DEFAULT", 256, hintY, FONT_SMALL, (JUSTIFY_CENTER | WHITE));
 		hintY += NATIVE_MODS_PAGE_HINT_PITCH;
 	}
 
@@ -160,14 +383,16 @@ internal void NativeModsPage_DrawMain(void)
 		hintY += NATIVE_MODS_PAGE_HINT_PITCH;
 	}
 
-	NativeModsPage_DrawFrame(ot, NATIVE_MODS_PAGE_MAIN_ROW_Y + (s_nativeModsPageRow * NATIVE_MODS_PAGE_ROW_PITCH), firstHintY, hintY);
+	NativeModsPage_DrawFrame(ot, cursorY, firstHintY, hintY, NATIVE_MODS_PAGE_MAIN_ROW_Y - 3, NATIVE_MODS_PAGE_MAIN_VISIBLE * NATIVE_MODS_PAGE_MAIN_PITCH,
+	                         s_nativeModsPageMainScroll, NATIVE_MODS_PAGE_MAIN_VISIBLE, NATIVE_MODS_PAGE_LINES);
 }
 
 // The name of a list row, cut until it ends NATIVE_MODS_PAGE_GAP left of the
-// widest value (OFF): never into the value.
-internal void NativeModsPage_FitName(const char *source, char name[NATIVE_MODS_PAGE_NAME_MAX + 1])
+// widest value (OFF on SELECT DRIVERS, NORMAL on ITEM WEIGHTS): never into the
+// value.
+internal void NativeModsPage_FitName(const char *source, const char *widest, char name[NATIVE_MODS_PAGE_NAME_MAX + 1])
 {
-	const int room = NATIVE_MODS_PAGE_VALUE_X - DecalFont_GetLineWidth("OFF", FONT_SMALL) - NATIVE_MODS_PAGE_GAP - NATIVE_MODS_PAGE_LABEL_X;
+	const int room = NATIVE_MODS_PAGE_VALUE_X - DecalFont_GetLineWidth((char *)widest, FONT_SMALL) - NATIVE_MODS_PAGE_GAP - NATIVE_MODS_PAGE_LABEL_X;
 	size_t length;
 
 	strncpy(name, (source != NULL) ? source : "", NATIVE_MODS_PAGE_NAME_MAX);
@@ -180,17 +405,34 @@ internal void NativeModsPage_FitName(const char *source, char name[NATIVE_MODS_P
 	}
 }
 
+// The count of the open list.
+internal int NativeModsPage_SubCount(void)
+{
+	if (s_nativeModsPageSub == NATIVE_MODS_PAGE_SUB_WEIGHTS)
+	{
+		u8 items[NATIVE_MODS_ITEM_IDS];
+		int on;
+
+		return NativeModsPage_Items(items, &on);
+	}
+
+	return NativeMods_DriverCount();
+}
+
 internal void NativeModsPage_DrawSub(void)
 {
 	struct GameTracker *gGT = sdata->gGT;
 	u32 *ot = gGT->backBuffer->otMem.uiOT;
-	const int count = NativeMods_DriverCount();
+	const int weights = (s_nativeModsPageSub == NATIVE_MODS_PAGE_SUB_WEIGHTS);
+	u8 items[NATIVE_MODS_ITEM_IDS];
+	int on = 0;
+	const int count = weights ? NativeModsPage_Items(items, &on) : NativeMods_DriverCount();
 	const int firstHintY = NATIVE_MODS_PAGE_ROW_Y + (NATIVE_MODS_PAGE_VISIBLE * NATIVE_MODS_PAGE_ROW_PITCH) + 8;
 	int hintY = firstHintY;
 	int last = s_nativeModsPageScroll + NATIVE_MODS_PAGE_VISIBLE;
 	int i;
 
-	DecalFont_DrawLine("SELECT DRIVERS", 256, 26, FONT_BIG, (JUSTIFY_CENTER | ORANGE));
+	DecalFont_DrawLine(weights ? "ITEM WEIGHTS" : "SELECT DRIVERS", 256, 26, FONT_BIG, (JUSTIFY_CENTER | ORANGE));
 
 	if (last > count)
 	{
@@ -202,9 +444,18 @@ internal void NativeModsPage_DrawSub(void)
 		const int y = NATIVE_MODS_PAGE_ROW_Y + ((i - s_nativeModsPageScroll) * NATIVE_MODS_PAGE_ROW_PITCH);
 		char name[NATIVE_MODS_PAGE_NAME_MAX + 1];
 
-		NativeModsPage_FitName(NativeMods_DriverName(i), name);
-		DecalFont_DrawLine(name, NATIVE_MODS_PAGE_LABEL_X, y, FONT_SMALL, ORANGE);
-		DecalFont_DrawLine(NativeMods_DriverSelected(i) ? "ON" : "OFF", NATIVE_MODS_PAGE_VALUE_X, y, FONT_SMALL, (JUSTIFY_RIGHT | WHITE));
+		if (weights)
+		{
+			NativeModsPage_FitName(NativeMods_ItemName(items[i]), "NORMAL", name);
+			DecalFont_DrawLine(name, NATIVE_MODS_PAGE_LABEL_X, y, FONT_SMALL, ORANGE);
+			DecalFont_DrawLine((char *)s_nativeModsPageLevels[NativeMods_ItemLevel(items[i])], NATIVE_MODS_PAGE_VALUE_X, y, FONT_SMALL, (JUSTIFY_RIGHT | WHITE));
+		}
+		else
+		{
+			NativeModsPage_FitName(NativeMods_DriverName(i), "OFF", name);
+			DecalFont_DrawLine(name, NATIVE_MODS_PAGE_LABEL_X, y, FONT_SMALL, ORANGE);
+			DecalFont_DrawLine(NativeMods_DriverSelected(i) ? "ON" : "OFF", NATIVE_MODS_PAGE_VALUE_X, y, FONT_SMALL, (JUSTIFY_RIGHT | WHITE));
+		}
 	}
 
 	if (count > NATIVE_MODS_PAGE_VISIBLE)
@@ -216,6 +467,29 @@ internal void NativeModsPage_DrawSub(void)
 		hintY += NATIVE_MODS_PAGE_HINT_PITCH;
 	}
 
+	// What the weights come to (platform/native_mods.c).
+	if (weights && (on == 0))
+	{
+		DecalFont_DrawLine("ALL OFF: AS DEFAULT", 256, hintY, FONT_SMALL, (JUSTIFY_CENTER | WHITE));
+		hintY += NATIVE_MODS_PAGE_HINT_PITCH;
+	}
+	else if (weights && (on == 1))
+	{
+		char text[40];
+		int alone = 0;
+
+		for (i = 0; i < count; i++)
+		{
+			if (NativeMods_ItemLevel(items[i]) != NATIVE_MODS_WEIGHT_OFF)
+			{
+				alone = i;
+			}
+		}
+		snprintf(text, sizeof(text), "EVERY BOX: %s", NativeMods_ItemName(items[alone]));
+		DecalFont_DrawLine(text, 256, hintY, FONT_SMALL, (JUSTIFY_CENTER | WHITE));
+		hintY += NATIVE_MODS_PAGE_HINT_PITCH;
+	}
+
 	if (Platform_SettingsLocked())
 	{
 		DecalFont_DrawLine("NOT SAVED IN THIS RUN", 256, hintY, FONT_SMALL, (JUSTIFY_CENTER | WHITE));
@@ -223,30 +497,27 @@ internal void NativeModsPage_DrawSub(void)
 	}
 
 	NativeModsPage_DrawFrame(ot, NATIVE_MODS_PAGE_ROW_Y + ((s_nativeModsPageCursor - s_nativeModsPageScroll) * NATIVE_MODS_PAGE_ROW_PITCH), firstHintY,
-	                         hintY);
+	                         hintY, 0, 0, 0, 0, 0);
 }
 
-// Left (-1) or right (+1) on CPU DRIVERS or a play mod; the value does not run
-// past its ends (a play mod: OFF left, ON right). 0 if nothing changes.
+// Left (-1) or right (+1) on a row; the value does not run past its ends. 0
+// if nothing changes.
 internal int NativeModsPage_Change(int row, int dir)
 {
+	const int mod = NativeModsPage_Mod(row);
 	const int value = NativeModsPage_Value() + dir;
 
-	if (row >= NATIVE_MODS_PAGE_ROW_PLAY)
+	if (NativeModsPage_Grey(row))
 	{
-		const int bit = s_nativeModsPagePlay[row - NATIVE_MODS_PAGE_ROW_PLAY];
-		const int on = (dir > 0);
-
-		if (NativeMods_PlayOn(bit) == on)
-		{
-			return 0;
-		}
-
-		NativeMods_SetPlayOn(bit, on);
-		return 1;
+		return 0;
 	}
 
-	if ((row != 0) || (value < NATIVE_MODS_PAGE_DEFAULT) || (value > NATIVE_MODS_PAGE_SELECTED))
+	if (mod >= 0)
+	{
+		return NativeMods_Step(mod, dir);
+	}
+
+	if ((row != NATIVE_MODS_PAGE_ROW_CPU) || (value < NATIVE_MODS_PAGE_DEFAULT) || (value > NATIVE_MODS_PAGE_SELECTED))
 	{
 		return 0;
 	}
@@ -286,6 +557,62 @@ internal void NativeModsPage_FixScroll(int count)
 	}
 }
 
+internal void NativeModsPage_OpenSub(int sub)
+{
+	s_nativeModsPageSub = sub;
+	s_nativeModsPageCursor = 0;
+	s_nativeModsPageScroll = 0;
+	OtherFX_Play(1, 1);
+	Platform_Log("[CTR Menu] MODS: %s\n", (sub == NATIVE_MODS_PAGE_SUB_WEIGHTS) ? "ITEM WEIGHTS" : "SELECT DRIVERS");
+}
+
+// Cross on a row: a sub page opens (2), a choice goes to its next value
+// (around the end), a percentage back to its normal value (1); 0 if nothing
+// happens.
+internal int NativeModsPage_Cross(int row)
+{
+	const int mod = NativeModsPage_Mod(row);
+
+	if (NativeModsPage_Grey(row))
+	{
+		return 0;
+	}
+
+	if (row == NATIVE_MODS_PAGE_ROW_DRIVERS)
+	{
+		NativeModsPage_OpenSub(NATIVE_MODS_PAGE_SUB_DRIVERS);
+		return 2;
+	}
+
+	if (row == NATIVE_MODS_PAGE_ROW_WEIGHTS)
+	{
+		NativeModsPage_OpenSub(NATIVE_MODS_PAGE_SUB_WEIGHTS);
+		return 2;
+	}
+
+	if (row == NATIVE_MODS_PAGE_ROW_CPU)
+	{
+		NativeMods_SetCpuDrivers((NativeModsPage_Value() + 1) % (NATIVE_MODS_PAGE_SELECTED + 1));
+		return 1;
+	}
+
+	if ((mod == NATIVE_MODS_GRAVITY) || (mod == NATIVE_MODS_GRIP) || (mod == NATIVE_MODS_NIGHT))
+	{
+		if (NativeMods_Value(mod) == NativeMods_NormalValue(mod))
+		{
+			return 0;
+		}
+		NativeMods_SetValue(mod, NativeMods_NormalValue(mod));
+		return 1;
+	}
+
+	if (!NativeMods_Step(mod, 1))
+	{
+		NativeMods_SetValue(mod, 0);
+	}
+	return 1;
+}
+
 // Returns 1 if the page was closed by the key.
 internal int NativeModsPage_KeysMain(int tapped)
 {
@@ -305,27 +632,11 @@ internal int NativeModsPage_KeysMain(int tapped)
 	}
 	else if ((tapped & (BTN_CROSS_one | BTN_CIRCLE)) != 0)
 	{
-		if (s_nativeModsPageRow >= NATIVE_MODS_PAGE_ROW_PLAY)
-		{
-			const int bit = s_nativeModsPagePlay[s_nativeModsPageRow - NATIVE_MODS_PAGE_ROW_PLAY];
+		const int done = NativeModsPage_Cross(s_nativeModsPageRow);
 
-			NativeMods_SetPlayOn(bit, !NativeMods_PlayOn(bit));
-			OtherFX_Play(0, 1);
-		}
-		else if (s_nativeModsPageRow == NATIVE_MODS_PAGE_ROW_DRIVERS)
+		if (done != 2)
 		{
-			if (NativeModsPage_Value() == NATIVE_MODS_PAGE_SELECTED)
-			{
-				s_nativeModsPageSub = 1;
-				s_nativeModsPageCursor = 0;
-				s_nativeModsPageScroll = 0;
-				OtherFX_Play(1, 1);
-				Platform_Log("[CTR Menu] MODS: SELECT DRIVERS\n");
-			}
-			else
-			{
-				OtherFX_Play(5, 1);
-			}
+			OtherFX_Play(done ? 0 : 5, 1);
 		}
 	}
 	else
@@ -336,17 +647,57 @@ internal int NativeModsPage_KeysMain(int tapped)
 		return 1;
 	}
 
+	NativeModsPage_FixMainScroll();
 	return 0;
+}
+
+// ITEM WEIGHTS: left and right step without wrap, cross goes round.
+internal void NativeModsPage_KeysWeight(int tapped)
+{
+	u8 items[NATIVE_MODS_ITEM_IDS];
+	int on;
+	int item;
+	int level;
+	int next;
+
+	NativeModsPage_Items(items, &on);
+	item = items[s_nativeModsPageCursor];
+	level = NativeMods_ItemLevel(item);
+
+	if ((tapped & BTN_LEFT) != 0)
+	{
+		next = (level > NATIVE_MODS_WEIGHT_OFF) ? (level - 1) : level;
+	}
+	else if ((tapped & BTN_RIGHT) != 0)
+	{
+		next = (level < NATIVE_MODS_WEIGHT_HIGH) ? (level + 1) : level;
+	}
+	else
+	{
+		next = (level + 1) % (NATIVE_MODS_WEIGHT_HIGH + 1);
+	}
+
+	if (next != level)
+	{
+		NativeMods_SetItemLevel(item, next);
+		OtherFX_Play(0, 1);
+	}
+	else
+	{
+		OtherFX_Play(5, 1);
+	}
 }
 
 internal void NativeModsPage_KeysSub(int tapped)
 {
-	const int count = NativeMods_DriverCount();
+	const int weights = (s_nativeModsPageSub == NATIVE_MODS_PAGE_SUB_WEIGHTS);
+	const int count = NativeModsPage_SubCount();
 
 	if ((tapped & (BTN_TRIANGLE | BTN_SQUARE_one)) != 0)
 	{
-		s_nativeModsPageSub = 0;
-		s_nativeModsPageRow = NATIVE_MODS_PAGE_ROW_DRIVERS;
+		s_nativeModsPageRow = weights ? NATIVE_MODS_PAGE_ROW_WEIGHTS : NATIVE_MODS_PAGE_ROW_DRIVERS;
+		s_nativeModsPageSub = NATIVE_MODS_PAGE_SUB_NONE;
+		NativeModsPage_FixMainScroll();
 		OtherFX_Play(2, 1);
 		return;
 	}
@@ -365,6 +716,10 @@ internal void NativeModsPage_KeysSub(int tapped)
 	{
 		s_nativeModsPageCursor = (s_nativeModsPageCursor + 1) % count;
 		OtherFX_Play(0, 1);
+	}
+	else if (weights)
+	{
+		NativeModsPage_KeysWeight(tapped);
 	}
 	else
 	{
@@ -401,8 +756,9 @@ internal void NativeModsPage_KeysSub(int tapped)
 void NativeModsPage_Open(void)
 {
 	s_nativeModsPageOpen = 1;
-	s_nativeModsPageSub = 0;
+	s_nativeModsPageSub = NATIVE_MODS_PAGE_SUB_NONE;
 	s_nativeModsPageRow = 0;
+	s_nativeModsPageMainScroll = 0;
 	s_nativeModsPageCursor = 0;
 	s_nativeModsPageScroll = 0;
 	Platform_Log("[CTR Menu] MODS: the page opens\n");
@@ -426,7 +782,7 @@ void NativeModsPage_Frame(void)
 
 	if (tapped != 0)
 	{
-		if (s_nativeModsPageSub)
+		if (s_nativeModsPageSub != NATIVE_MODS_PAGE_SUB_NONE)
 		{
 			NativeModsPage_KeysSub(tapped);
 		}
@@ -439,9 +795,9 @@ void NativeModsPage_Frame(void)
 		RECTMENU_ClearInput();
 	}
 
-	if (s_nativeModsPageSub)
+	if (s_nativeModsPageSub != NATIVE_MODS_PAGE_SUB_NONE)
 	{
-		NativeModsPage_FixScroll(NativeMods_DriverCount());
+		NativeModsPage_FixScroll(NativeModsPage_SubCount());
 		NativeModsPage_DrawSub();
 	}
 	else

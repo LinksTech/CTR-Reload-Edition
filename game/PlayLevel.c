@@ -1,4 +1,5 @@
 #include <common.h>
+#include <platform/native_mods.h>
 
 enum PlayLevelConstants
 {
@@ -194,6 +195,11 @@ void PlayLevel_UpdateLapStats(void)
 
 					gGT->lapTime[currDriver->lapIndex] = gGT->elapsedEventTime - currDriver->lapTime;
 				}
+
+#if defined(CTR_NATIVE)
+				// The MODS page's measuring (--dev-mods-play): every driver's lap.
+				NativeMods_NoteLap(currDriver, currDriver->lapIndex, gGT->elapsedEventTime - currDriver->lapTime);
+#endif
 
 				// time on the clock
 				currDriver->lapTime = gGT->elapsedEventTime;

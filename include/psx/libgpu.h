@@ -621,6 +621,20 @@ typedef struct
 #define PSYX_NATIVE_CODE       0xB3
 #define PSYX_NATIVE_FLAG_EMPTY 0x1u // nothing to draw: tests the channel only
 
+// A blend request (sub-form 4): the next semi-transparent primitive the
+// parser meets is drawn with this host blend instead of its tpage's PSX mode,
+// and the request is gone after it (any primitive ends it). code[0]: the
+// request in bits 0..23, 0xB4 in bits 24..31; code[1]: 0. Set by
+// SetPsyXBlend (native_libgpu.c), payload first as with the others.
+typedef struct
+{
+	DECLARE_P_ADDR
+	u32 code[2];
+} DR_PSYX_BLEND;
+
+#define PSYX_BLEND_CODE            0xB4
+#define NATIVE_PSYX_BLEND_MULTIPLY 1u // B * F (BM_MULTIPLY): NIGHT of the MODS page
+
 /*
  * Environment
  */
@@ -825,6 +839,7 @@ extern void GetDrawEnv2(DR_ENV *p);
 
 extern void SetPsyXTexture(DR_PSYX_TEX *p, u32 grTextureId, int width, int height);
 extern void SetPsyXDebugMarker(DR_PSYX_DBGMARKER *p, const char *str);
+extern void SetPsyXBlend(DR_PSYX_BLEND *p, u32 request);
 
 #ifdef _DEBUG
 #define PSYX_DBG_MARKER_TEXT(primptr, ot, text)  \

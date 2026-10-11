@@ -340,7 +340,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--dev-char-seat-files", "<f0,f1,...>", "as --dev-char-seats all, but seat 0, 1, ... drives the roster file f0, f1, ... (1 to 8 file names of the folder, commas between), every further seat the first file of the roster, each bot on its own file's template; not with --dev-char-seats or --char"},
     {"--dev-mods", "<value[,driver...]>", "the MODS page for this run, never saved: value = default|random|selected (CPU DRIVERS: DEFAULT, ALL RANDOM, ONLY SELECTED), the drivers after it the ticked ones - a number 0..14 a retail driver, anything else a file name of the folder; without any, the ticks of the file"},
     {"--dev-mods-seed", "<n>", "the draw of the MODS page starts from this number (1 to 4294967295) instead of the clock: the same seats again in the same run order"},
-    {"--dev-mods-play", "<none|moon,icy,chaos>", "the play mods of the MODS page for this run, never saved: MOON GRAVITY, ICY TRACKS and ITEM CHAOS, any of them comma separated, none for all OFF"},
+    {"--dev-mods-play", "<set>[/<set>...]", "the play mods of the MODS page for this run, never saved; each race load takes the next set, the last one stays. A set is none or a comma list of gravity=<20..200>, grip=<0..100>, night=<0..90>, items=default|chaos|custom, w<item id>=<0..3> (ITEM WEIGHTS: off, low, normal, high), difficulty=easy|normal|hard|extreme, boss=off|random|roo|papu|joe|pinstripe|oxide, and for measuring base=<n> (the bots' difficulty before DIFFICULTY) and shot=<race frame> (a snapshot <--shot-name>-raceNN.bmp); moon, icy and chaos are gravity=41, grip=0 and items=chaos"},
     {"--dev-vk-pending-cap", "<n>", "the Vulkan retire lists of textures and framebuffers hold only n entries (1 to 1024) instead of 1024: a measuring run in which a full list is drained at once"},
     {"--ui-safe-area-off", "", "UI safe area off"},
     {"--ui-declarations-off", "", "UI declarations off"},
@@ -350,7 +350,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--selftest-disc", "<dir>", "unpack the test images in <dir> (good-*/bad-*.bin), then end"},
     {"--gte-selftest", "", "both GTE paths against each other, then end"},
     {"--char-grid-selftest", "", "layout, navigation and scrolling of the driver select grid for 0 to 32 custom entries, then end; no window, no data needed"},
-    {"--mods-selftest", "", "the play mods of the MODS page without a race: settings lines, the status line of the box, --dev-mods-play, the ice terrain and the hang time of MOON GRAVITY, then end (ctest mods_selftest)"},
+    {"--mods-selftest", "", "the play mods of the MODS page without a race: settings lines, the status line of the box, --dev-mods-play, the page's steps, gravity and hang time, the grip blend, the night colour, difficulty, the boss sections, the item box and the CPU weapons, then end (ctest mods_selftest)"},
     {"--char-native-selftest", "<dir>", "every .rldchar of dir (written by rldpack make-native-tests) through the roster read and the native read (CNET, CTXT) without and with --native-preview, each against the expectation its name gives, then end; no window, no data needed"},
     {"--selftest-containers", "<dir>", "every check the game runs on a container, on every *.rldtrack in dir (good-* must load, bad-* must be refused), then end; no window, no data needed"},
     {"--make-test-containers", "<dir>", "write the synthetic good-*/bad-* containers of the container self-test into dir, then end"},
@@ -2591,7 +2591,9 @@ int main(int argc, char *argv[])
 			if (!NativeMods_SetDevPlay(value))
 			{
 				fflush(stdout);
-				fprintf(stderr, "switch --dev-mods-play expects none or moon,icy,chaos (any of them), got %s\n", value);
+				fprintf(stderr, "switch --dev-mods-play expects sets like none or gravity=60,grip=30,night=50,items=custom,w9=3,difficulty=hard,boss=roo, "
+				                "separated by /, got %s\n",
+				        value);
 				fflush(stderr);
 				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
 			}

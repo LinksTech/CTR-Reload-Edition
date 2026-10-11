@@ -140,13 +140,23 @@ void VehPhysForce_OnGravity(struct Driver *driver, Vec3 *velocity)
 	// can reach this frame after TeleportSelf clears underDriver and before
 	// fixed collision repopulates it; PS1 low-RAM behavior is no low-gravity
 	// flag, while host C would crash on a null dereference.
-	// MOON GRAVITY (MODS page) is the low gravity of such a quad block everywhere,
-	// once: on a low-gravity block it is what the block gives anyway.
-	if (((underDriver != NULL) && ((underDriver->quadFlags & VEH_PHYS_FORCE_QUAD_LOW_GRAVITY) != 0)) || NativeMods_PlayActive(NATIVE_MODS_PLAY_MOON))
+	const int lowGravity = (underDriver != NULL) && ((underDriver->quadFlags & VEH_PHYS_FORCE_QUAD_LOW_GRAVITY) != 0);
+
+	// GRAVITY (MODS page): the mod's share of the gravity, on a low-gravity
+	// block the lower of the two; 41 is the block's own, computed as retail.
+	const int gravityPercent = NativeMods_GravityPercent(lowGravity ? 41 : 100);
+
+	if (gravityPercent == 41)
 	{
 		int scaledGravity = CTR_MipsAddLo(CTR_MipsSll(gravityY, 2), gravityY);
 		gravityY = CTR_MipsAddLo(CTR_MipsSll(scaledGravity, 3), gravityY) / VEH_PHYS_FORCE_LOW_GRAVITY_DIVISOR;
 	}
+	else if (gravityPercent != 100)
+	{
+		gravityY = CTR_MipsDiv(CTR_MipsMulLo(gravityY, gravityPercent), VEH_PHYS_FORCE_LOW_GRAVITY_DIVISOR);
+	}
+
+	NativeMods_NoteGravity(driver->driverID, gravityPercent, lowGravity ? 41 : 100, elapsedTimeMS, (driver->actionsFlagSet & ACTION_AIRBORNE) != 0);
 
 	gravityY = CTR_MipsSra(CTR_MipsMulLo(gravityY, elapsedTimeMS), 5);
 	Vec3 localGravity = VehPhysForce_OnGravity_RotateVectorLocal(&driver->matrixMovingDir, 0, (s16)gravityY, 0);

@@ -56,72 +56,204 @@ int NativeMods_SelectedCount(void);
 
 // The status line of the MODS box, at most 11 characters of FONT_SMALL (the
 // box is as wide as LAPS, 164): "OFF" (DEFAULT, or ONLY SELECTED with nothing
-// ticked - that is DEFAULT), "ALL RANDOM", "<n> SELECTED". With play mods on
-// (below): "<n> MOD(S)" beside DEFAULT, else the CPU value short and the count -
-// "RANDOM +<n>", "<k> SEL +<n>" (11 characters at most).
+// ticked - that is DEFAULT), "ALL RANDOM", "<n> SELECTED". With play mods away
+// from their normal value (below): "<n> MOD(S)" beside DEFAULT, else the CPU
+// value short and the count - "RANDOM +<n>", "<k> SEL +<n>". With BOSS
+// CHALLENGE, which leaves CPU DRIVERS aside: the boss alone ("BOSS: ROO", the
+// bare name or "RANDOM BOSS" where that does not fit), or "BOSS +<n>".
 const char *NativeMods_StatusText(void);
 
-// THE PLAY MODS, each OFF or ON, freely combined, for the same races as CPU
-// DRIVERS (the rule of NativeMods_MenuOffered at the menu, of the race below):
-//   MOON GRAVITY  the karts fall at 41/100 of their gravity - the game's own
-//                 low gravity (QUADBLOCK_FLAG_LOW_GRAVITY, BOT_FLAG_MOON_GRAVITY);
-//                 the hang-time turbo is judged by the air time times 41/100,
-//                 so a jump earns what it earns at full gravity
-//   ICY TRACKS    road terrain (full speed and full grip: asphalt, wood, stone,
-//                 hardpack, metal and the three asphalts of the water tracks)
-//                 is ice, as Polar Pass's; water, mud, grass, dirt, snow, the
-//                 slow and the sideslip terrain keep theirs, and the turbo pads
-//                 and ramps are not terrain at all
-//   ITEM CHAOS    an item box gives every item of the four race item sets with
-//                 the same chance, whatever the rank; a CPU driver, which never
-//                 takes a box, attacks with its four weapons (TNT, potion, bomb,
-//                 missile) with the same chance, whatever the side
-// All OFF changes nothing: no other path, no other random number.
-#define NATIVE_MODS_PLAY_MOON  0x1
-#define NATIVE_MODS_PLAY_ICY   0x2
-#define NATIVE_MODS_PLAY_CHAOS 0x4
+// THE PLAY MODS, freely combined, for the same races as CPU DRIVERS (the rule
+// of NativeMods_MenuOffered at the menu, of the race below). Each has a normal
+// value, and at its normal value it is off: no other path, no other random
+// number.
+//   GRAVITY     20..200 %, normal 100. The karts and the CPU drivers fall at
+//               this share of their gravity; a low-gravity stretch of the
+//               track (QUADBLOCK_FLAG_LOW_GRAVITY, BOT_FLAG_MOON_GRAVITY, 41 %)
+//               keeps the lower of the two. The hang-time turbo is judged by
+//               the air time times the gravity share the jump flew at against
+//               the share the game gives there, so a jump earns what it earns
+//               at the game's own gravity, on every step.
+//   GRIP        0..100 %, normal 100. Road terrain (full speed and full grip:
+//               asphalt, wood, stone, hardpack, metal and the three asphalts
+//               of the water tracks) is blended towards ice: at 0 % it is ice,
+//               as Polar Pass's (round 1's ICY TRACKS); in between its numbers
+//               (speed, grip, counter-steer, friction, the bots' scales) lie
+//               between the two, and its flags are the ice's below 50 %. Water,
+//               mud, grass, dirt, snow, the slow and the sideslip terrain keep
+//               theirs; turbo pads and ramps are not terrain at all.
+//   NIGHT       0..90 %, normal 0. The 3D world (track, drivers, objects, sky)
+//               is darkened by this share with a slight blue: one multiply over
+//               the view after the world and before the HUD, so HUD, menus and
+//               texts stay as they are, for the retail drawing and the native
+//               drivers alike.
+//   ITEMS       DEFAULT (the game's sets by rank), CHAOS (every race item with
+//               the same chance, whatever the rank), CUSTOM (the weights of
+//               ITEM WEIGHTS, whatever the rank; all OFF is DEFAULT). A CPU
+//               driver, which never takes a box, attacks as often as before
+//               with its four weapons - TNT, potion, bomb, missile; CHAOS each
+//               with the same chance, CUSTOM by the weights (bomb with the
+//               triple bomb, missile with the triple missile).
+//   DIFFICULTY  EASY, NORMAL, HARD, EXTREME, normal NORMAL. The bots' place in
+//               the game's own difficulty blend (BOTS_Adv_AdjustDifficulty,
+//               ArcadeDifficulty / BossDifficulty) moves by -0x50, 0, +0x50,
+//               +0xA0 - one and two steps of the cup difficulty menu.
+//   BOSS        OFF, RANDOM, ROO, PAPU, JOE, PINSTRIPE, OXIDE. One against one
+//               with the boss: his model, his strength (BossDifficulty), his
+//               weapon pattern (data.BossWeapon*, its sections spread over this
+//               track's checkpoints) and his path changes; CPU DRIVERS sits
+//               out. Without a nav path the race has no boss and says so.
+enum
+{
+	NATIVE_MODS_GRAVITY = 0,
+	NATIVE_MODS_GRIP,
+	NATIVE_MODS_NIGHT,
+	NATIVE_MODS_ITEMS,
+	NATIVE_MODS_DIFFICULTY,
+	NATIVE_MODS_BOSS,
+	NATIVE_MODS_VALUES
+};
 
-// The page's value of one mod (bit above), and the setter (saves at once).
-int NativeMods_PlayOn(int bit);
-void NativeMods_SetPlayOn(int bit, int on);
+#define NATIVE_MODS_ITEMS_DEFAULT 0
+#define NATIVE_MODS_ITEMS_CHAOS   1
+#define NATIVE_MODS_ITEMS_CUSTOM  2
 
-// 1 while the race in progress is one the mods are for and the mod is ON.
-int NativeMods_PlayActive(int bit);
+#define NATIVE_MODS_DIFF_EASY    0
+#define NATIVE_MODS_DIFF_NORMAL  1
+#define NATIVE_MODS_DIFF_HARD    2
+#define NATIVE_MODS_DIFF_EXTREME 3
 
-// ICY TRACKS: the terrain the game takes for a ground of this terrain type -
-// TERRAIN_ICE for road terrain while the mod is active, else the type itself;
-// bot 1 for a CPU driver's nav frame, 0 for a kart's ground (the count at exit).
-u8 NativeMods_IcyTerrain(u8 terrainType, int bot);
+#define NATIVE_MODS_BOSS_OFF       0
+#define NATIVE_MODS_BOSS_RANDOM    1
+#define NATIVE_MODS_BOSS_ROO       2
+#define NATIVE_MODS_BOSS_PAPU      3
+#define NATIVE_MODS_BOSS_JOE       4
+#define NATIVE_MODS_BOSS_PINSTRIPE 5
+#define NATIVE_MODS_BOSS_OXIDE     6
 
-// MOON GRAVITY: the air time the hang-time turbo is judged by, at landing
-// (the meter in ms; unchanged unless the mod is active). The meter stops at
-// 2400 ms; MoonAir, while airborne, keeps a driver's air time past it, and
-// the hang time is that times 41/100. given and full are the fire steps the
-// turbo got and would have got from the meter (-1 = none), for the report at
-// exit.
-void NativeMods_MoonAir(int driverID, int airTime);
-int NativeMods_MoonHangTime(int driverID, int jumpMeter);
+// ITEM WEIGHTS: a level per held item id, weights 0 / 1 / 2 / 4.
+#define NATIVE_MODS_WEIGHT_OFF    0
+#define NATIVE_MODS_WEIGHT_LOW    1
+#define NATIVE_MODS_WEIGHT_NORMAL 2
+#define NATIVE_MODS_WEIGHT_HIGH   3
+#define NATIVE_MODS_ITEM_IDS      16
+
+// The page's value of one mod, its text ("60 %", "CUSTOM", "HARD", "ROO"),
+// its normal value, and the setters (clamped, saved at once). Step: left (-1)
+// or right (+1) - a percentage to the next multiple of 10 in that direction
+// (41 goes to 40 or 50), a choice to the next one, no wrap; 0 when nothing
+// changed. ItemLevel / SetItemLevel: ITEM WEIGHTS.
+int NativeMods_Value(int which);
+const char *NativeMods_ValueText(int which);
+int NativeMods_NormalValue(int which);
+void NativeMods_SetValue(int which, int value);
+int NativeMods_Step(int which, int dir);
+int NativeMods_ItemLevel(int item);
+void NativeMods_SetItemLevel(int item, int level);
+
+// The race items in id order (the items of the four race sets, without the
+// spring), as ITEM WEIGHTS lists them; their names. The count.
+int NativeMods_RaceItems(u8 items[NATIVE_MODS_ITEM_IDS]);
+const char *NativeMods_ItemName(int item);
+
+// 1 when ITEMS is CUSTOM and every race item is OFF (that is DEFAULT).
+int NativeMods_ItemsAllOff(void);
+
+// 1 while the race in progress is one the mods are for and the mod is away
+// from its normal value (ITEMS: CHAOS, or CUSTOM with an item on; BOSS: the
+// boss this race was loaded with sits on seat 1).
+int NativeMods_Active(int which);
+
+// GRAVITY, game/Vehicle/VehPhysForce.c and game/BOTS.c: the gravity share in
+// percent for a stretch whose own share is zonePercent (100, or 41 on a
+// low-gravity stretch) - zonePercent itself unless the mod is active.
+int NativeMods_GravityPercent(int zonePercent);
+
+// GRAVITY, the hang-time turbo (game/UI/UI_Meter.c): NoteGravity, every
+// gravity frame of a kart (the share it fell at and the game's own, the
+// frame's ms, airborne or not) weighs the flight; AirTime, while airborne,
+// keeps the air time past the meter's 2400 ms; HangTime, at landing, is the
+// air time the turbo is judged by (the meter in ms, unchanged unless the mod
+// is active). given and full are the fire steps the turbo got and would have
+// got from the meter (-1 = none), for the report at exit.
+void NativeMods_NoteGravity(int driverID, int percent, int ownPercent, int ms, int airborne);
+void NativeMods_AirTime(int driverID, int airTime);
+int NativeMods_HangTime(int driverID, int jumpMeter);
 void NativeMods_NoteLanding(int given, int full);
 
-// MOON GRAVITY and ICY TRACKS, for the report at exit: a CPU driver put back on
-// its path after a kill plane (BOTS_Killplane), counted while a play mod is
-// active.
+// GRIP at 0 %: the terrain the game takes for a ground of this type -
+// TERRAIN_ICE for road terrain, else the type itself; bot 1 for a CPU
+// driver's nav frame, 0 for a kart's ground (the count at exit).
+u8 NativeMods_IcyTerrain(u8 terrainType, int bot);
+
+// GRIP between 0 and 100 %: the terrain entry to use for terrain type
+// terrainType whose entry is meta - a blend of road and ice for road terrain,
+// meta itself otherwise.
+struct Terrain;
+struct Terrain *NativeMods_GripTerrain(u8 terrainType, struct Terrain *meta, int bot);
+
+// NIGHT: the multiply colour for a darkening of percent (0..90): 1 and the
+// colour in rgb (0..255 a channel, 255 = unchanged), 0 at 0 %.
+int NativeMods_NightColor(int percent, u8 rgb[3]);
+
+// game/MAIN/MainFrame_RenderFrame.c, once a frame after the world is queued
+// and before the HUD's draw environment: the NIGHT multiply, the line of a
+// boss race without a boss, and the shots of --dev-mods-play.
+struct GameTracker;
+void NativeMods_RaceFrame(struct GameTracker *gGT);
+
+// ITEMS: 1 while it is active; the weight of a held item id for a box (CHAOS
+// 1, CUSTOM 0/1/2/4) and of a CPU weapon (TNT, potion, bomb, missile).
+int NativeMods_ItemsActive(void);
+int NativeMods_ItemWeight(int item);
+int NativeMods_CpuWeaponWeight(int weapon);
+
+// DIFFICULTY, game/BOTS.c: the bots' difficulty for the game's own value
+// (after its clamp at 0) - unchanged unless the mod is active. boss 1 for the
+// value of a boss challenge (the measuring base of --dev-mods-play is not
+// taken there).
+s16 NativeMods_BotDifficulty(s16 difficulty, int boss);
+
+// BOSS: the boss index of this race (0 Roo, 1 Papu, 2 Joe, 3 Pinstripe,
+// 4 Oxide - gGT->bossID's numbering, the row of BossDifficulty) while the
+// mod is active, else -1; the boss's weapon pattern for this track
+// (PickupBots.c; rebuild 1 at the race's start, 0 for the first section).
+struct MetaDataBOSS;
+int NativeMods_BossIndex(void);
+struct MetaDataBOSS *NativeMods_BossWeapons(int rebuild);
+
+// GRAVITY and GRIP, for the report at exit: a CPU driver put back on its path
+// after a kill plane (BOTS_Killplane), counted while a play mod is active.
 void NativeMods_NoteBotRescue(void);
 
-// ITEM CHAOS, for the report at exit: an item a box gave (bot 0) or a CPU
-// driver's attack (bot 1).
+// ITEMS and BOSS, for the report at exit: an item a box gave (bot 0), a CPU
+// driver's attack (bot 1) or a boss weapon (bot 2).
 void NativeMods_NoteItem(int bot, int item);
+
+// game/PlayLevel.c: a driver crossed the line after lap lapIndex (0-based)
+// in ticks (960 a second); logged under --dev-mods-play (the measuring of
+// DIFFICULTY).
+struct Driver;
+void NativeMods_NoteLap(const struct Driver *driver, int lapIndex, int ticks);
 
 // game/DebugMenu.c, beside the [CTR Race] line: one line with the play mods of
 // this race, only when one is active.
 void NativeMods_LogRace(void);
 
-// main.c, --dev-mods-play <none|moon,icy,chaos>: the play mods of this run,
-// never saved (the lines of the file do not count). 0 for another form.
+// main.c, --dev-mods-play <set>[/<set>...]: the play mods of this run, never
+// saved (the lines of the file do not count). A set is "none" or a comma list
+// of gravity=<n>, grip=<n>, night=<n>, items=default|chaos|custom,
+// w<item id>=<0..3> (ITEM WEIGHTS), difficulty=easy|normal|hard|extreme,
+// boss=off|random|roo|papu|joe|pinstripe|oxide and the measuring keys
+// base=<n> (the bots' difficulty before DIFFICULTY, as the cup menu's
+// 80 / 160 / 240) and shot=<race frame> (a snapshot of that frame); round 1's
+// words moon, icy and chaos are gravity=41, grip=0 and items=chaos. Each race
+// load takes the next set, the last one stays. 0 for another form.
 int NativeMods_SetDevPlay(const char *list);
 
 // main.c, --mods-selftest (ctest mods_selftest): the play mods without a race -
-// settings lines, status line, --dev-mods-play, ice terrain, hang time. 0 = passed.
+// settings lines, status line, --dev-mods-play, steps, gravity, hang time,
+// grip blend, night colour, difficulty, boss sections, item draws. 0 = passed.
 int NativeMods_SelfTest(void);
 
 // The menu side of the race rule: the MODS box is offered in the track select
@@ -139,12 +271,16 @@ int NativeMods_SetDev(const char *list);
 void NativeMods_SetSeed(u32 seed);
 
 // ctr-settings.cfg (platform/native_platform.c): SaveLines writes "mods cpu
-// <n>", "mods moon", "mods icy" and "mods chaos" <0|1>, one "mods retail <id>"
-// per ticked retail driver and one "mods file <file>" per ticked file; LoadLine takes the rest of a line after "mods " and
-// answers 1 when it named a mods value, else 0 (the caller counts it as
-// skipped). The lines of the first MODS page ("cpuchars", "custom", "off") are
-// read too and carried over once the roster is known (NativeMods_AfterRoster).
-// A file without these lines keeps the defaults.
+// <n>", the play mods ("mods gravity", "grip", "night" <percent>, "mods items",
+// "difficulty", "boss" <n>, "mods weight <item id> <level>" for an item not
+// at NORMAL), one "mods retail <id>" per ticked retail driver and one "mods
+// file <file>" per ticked file; LoadLine takes the rest of a line after "mods "
+// and answers 1 when it named a mods value, else 0 (the caller counts it as
+// skipped). A value out of its range is its normal value. Round 1's lines are
+// carried over: "moon 1" is GRAVITY 41 %, "icy 1" GRIP 0 %, "chaos 1" ITEMS
+// CHAOS, 0 the normal value. The lines of the first MODS page ("cpuchars",
+// "custom", "off") are read too and carried over once the roster is known
+// (NativeMods_AfterRoster). A file without these lines keeps the defaults.
 #include <stdio.h>
 void NativeMods_SaveLines(FILE *file);
 int NativeMods_LoadLine(const char *rest);
@@ -159,7 +295,9 @@ void NativeMods_AfterRoster(void);
 // of this load does not hold (it holds the player's and LOAD_Robots1P's) is
 // read from the bigfile into host memory (BI_RACERMODELHI, as the pack's
 // models are _hi), and so is the template of a custom seat, to check the file
-// against it. Nothing at DEFAULT, nothing for any other load.
+// against it. With BOSS the boss alone takes seat 1 (his model read the same
+// way), and the race gets one bot. Nothing at DEFAULT, nothing for any other
+// load. Each call takes the next set of --dev-mods-play.
 void NativeMods_PlanSeats(struct BigHeader *bigfile);
 
 // game/Vehicle/VehBirth.c (after the driver pack) and the donor search of the
@@ -186,8 +324,10 @@ int NativeMods_CustomRace(void);
 // cup is let go, the next cup draws anew.
 void NativeMods_ForgetPlan(void);
 
-// 1 while retail models read for the mods are held (quick states refuse,
-// as for a bound custom seat).
+// 1 while retail models read for the mods are held, while a GRIP blend entry
+// (host memory) may sit in a driver, or while a BOSS race runs on the boss
+// table of this module (sdata->bossWeaponMeta points at it): quick states
+// refuse, as for a bound custom seat.
 int NativeMods_HoldsModels(void);
 
 #endif

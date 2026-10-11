@@ -364,3 +364,13 @@ void SetPsyXTexture(DR_PSYX_TEX *p, u32 grTextureId, int width, int height)
 	setlen(p, 2);
 	setcode(p, 0xB1);
 }
+
+// The blend request (DR_PSYX_BLEND, include/psx/libgpu.h): the code shares
+// code[0] with the request, so the whole word is written at once.
+void SetPsyXBlend(DR_PSYX_BLEND *p, u32 request)
+{
+	p->code[0] = ((u32)PSYX_BLEND_CODE << 24) | (request & 0x00ffffffu);
+	p->code[1] = 0u;
+
+	setlen(p, 2);
+}

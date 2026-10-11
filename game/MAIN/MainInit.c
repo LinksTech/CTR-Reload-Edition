@@ -1,4 +1,5 @@
 #include <common.h>
+#include <platform/native_mods.h>
 
 #ifdef CTR_NATIVE
 int NativeFlyIn_PreviewAlone(void); // game/native_flyin.c
@@ -543,6 +544,13 @@ void MainInit_Drivers(struct GameTracker *gGT)
 		if (MM_NativeTimeTrial_RaceAlone())
 		{
 			numDrivers = numPlyrCurrGame;
+		}
+
+		// BOSS of the MODS page (platform/native_mods.c): the player and the
+		// boss on seat 1, one against one, as in the boss race above.
+		if (NativeMods_BossIndex() >= 0)
+		{
+			numDrivers = numPlyrCurrGame + 1;
 		}
 #endif
 

@@ -6,6 +6,13 @@ void PickupBots_Init(void)
 	int hub;
 	int lev = sdata->gGT->levelID;
 
+	// BOSS (MODS page): the boss's own weapon pattern, spread over this track.
+	if (NativeMods_BossIndex() >= 0)
+	{
+		sdata->bossWeaponMeta = NativeMods_BossWeapons(1);
+		return;
+	}
+
 	// get hubID of level
 	hub = data.metaDataLEV[lev].hubID;
 
@@ -94,15 +101,102 @@ static void PickupBots_PlayVoice(u32 voiceID, struct Driver *attacker, struct Dr
 	Voiceline_RequestPlay(voiceID, data.characterIDs[attacker->driverID], data.characterIDs[victim->driverID]);
 }
 
-// ITEM CHAOS (MODS page): a CPU attack with one of the four CPU weapons, each
-// with the same chance, whichever side of the player the bot is on. The weapon
-// goes off as the branch of UpdateArcade that fires it: TNT and potion are
-// dropped, bomb and missile shot, with the same voice line.
-static void PickupBots_ChaosAttack(struct Driver *bot, struct Driver *player)
+// ITEMS (MODS page): one of the four CPU weapons by the weights of ITEMS
+// (NativeMods_CpuWeaponWeight: CHAOS 1 each, so one number of the game modulo
+// 4, as round 1; CUSTOM by ITEM WEIGHTS), whichever side of the player the bot
+// is on; -1 when every one of the four weighs 0.
+static const int s_pickupBotsWeapons[4] = {PICKUPBOTS_ITEM_TNT, PICKUPBOTS_ITEM_POTION, PICKUPBOTS_ITEM_BOMB, PICKUPBOTS_ITEM_MISSILE};
+
+static int PickupBots_ModsWeapon(void)
 {
-	static const int weapons[4] = {PICKUPBOTS_ITEM_TNT, PICKUPBOTS_ITEM_POTION, PICKUPBOTS_ITEM_BOMB, PICKUPBOTS_ITEM_MISSILE};
-	const int weaponID = weapons[(u32)MixRNG_Scramble() % 4u];
+	int total = 0;
+	u32 rng;
+	int k;
+
+	for (k = 0; k < 4; k++)
+	{
+		total += NativeMods_CpuWeaponWeight(s_pickupBotsWeapons[k]);
+	}
+
+	rng = (u32)MixRNG_Scramble();
+	if (total <= 0)
+	{
+		return PICKUPBOTS_ITEM_INVALID;
+	}
+
+	rng %= (u32)total;
+	for (k = 0; k < 4; k++)
+	{
+		const u32 weight = (u32)NativeMods_CpuWeaponWeight(s_pickupBotsWeapons[k]);
+
+		if (rng < weight)
+		{
+			return s_pickupBotsWeapons[k];
+		}
+		rng -= weight;
+	}
+
+	return s_pickupBotsWeapons[3];
+}
+
+// --mods-selftest (platform/native_mods.c): 65536 CPU weapons at the ITEMS
+// value the caller set, each within 5 percent of its weight's share, none of
+// weight 0. The random number is put back. Returns the failures.
+int PickupBots_WeaponSelfTest(int *checks)
+{
+	const int saved = sdata->randomNumber;
+	int counts[4] = {0};
+	int total = 0;
+	int failures = 0;
+	int i;
+	int k;
+
+	for (k = 0; k < 4; k++)
+	{
+		total += NativeMods_CpuWeaponWeight(s_pickupBotsWeapons[k]);
+	}
+
+	for (i = 0; i < 0x10000; i++)
+	{
+		const int weapon = PickupBots_ModsWeapon();
+
+		for (k = 0; k < 4; k++)
+		{
+			counts[k] += (weapon == s_pickupBotsWeapons[k]);
+		}
+	}
+	sdata->randomNumber = saved;
+
+	for (k = 0; k < 4; k++)
+	{
+		const int share = (total > 0) ? ((0x10000 * NativeMods_CpuWeaponWeight(s_pickupBotsWeapons[k])) / total) : 0;
+		const int off = counts[k] - share;
+
+		(*checks)++;
+		if ((share == 0) ? (counts[k] != 0) : ((((off < 0) ? -off : off) * 20) > share))
+		{
+			printf("mods selftest: CPU weapon %d came %d times, its share %d\n", s_pickupBotsWeapons[k], counts[k], share);
+			failures++;
+		}
+	}
+
+	printf("mods selftest: CPU weapons by ITEM WEIGHTS (TNT, potion, bomb, missile): %d %d %d %d of 65536\n", counts[0], counts[1], counts[2], counts[3]);
+	return failures;
+}
+
+// ITEMS (MODS page): a CPU attack with one of the four CPU weapons
+// (PickupBots_ModsWeapon). The weapon goes off as the branch of UpdateArcade
+// that fires it: TNT and potion are dropped, bomb and missile shot, with the
+// same voice line. Nothing when all four weigh 0.
+static void PickupBots_ModsAttack(struct Driver *bot, struct Driver *player)
+{
+	const int weaponID = PickupBots_ModsWeapon();
 	const int dropped = (weaponID == PICKUPBOTS_ITEM_TNT) || (weaponID == PICKUPBOTS_ITEM_POTION);
+
+	if (weaponID < 0)
+	{
+		return;
+	}
 
 	bot->heldItemID = weaponID;
 
@@ -138,12 +232,12 @@ static void PickupBots_UpdateArcade(void)
 			{
 				int rng = MixRNG_Scramble() % PICKUPBOTS_LEADING_ATTACK_ROLL_MOD;
 
-				// ITEM CHAOS: as often as the three branches below, any weapon.
-				if (NativeMods_PlayActive(NATIVE_MODS_PLAY_CHAOS))
+				// ITEMS: as often as the three branches below, any weapon.
+				if (NativeMods_ItemsActive())
 				{
 					if (rng < 3)
 					{
-						PickupBots_ChaosAttack(bot, player);
+						PickupBots_ModsAttack(bot, player);
 					}
 				}
 				else if (rng == 0)
@@ -223,13 +317,13 @@ static void PickupBots_UpdateArcade(void)
 				int rng = MixRNG_Scramble() % PICKUPBOTS_TRAILING_ATTACK_ROLL_MOD;
 				int weaponID = PICKUPBOTS_ITEM_NONE;
 
-				// ITEM CHAOS: as often as missile and bomb together, any weapon,
-				// on the last lap too.
-				if (NativeMods_PlayActive(NATIVE_MODS_PLAY_CHAOS))
+				// ITEMS: as often as missile and bomb together, any weapon, on the
+				// last lap too.
+				if (NativeMods_ItemsActive())
 				{
 					if (rng < PICKUPBOTS_TRAILING_ATTACK_BOMB_THRESHOLD)
 					{
-						PickupBots_ChaosAttack(bot, player);
+						PickupBots_ModsAttack(bot, player);
 					}
 				}
 				else if ((rng < PICKUPBOTS_TRAILING_ATTACK_MISSILE_THRESHOLD) && (bot->lapIndex != (u8)(gGT->numLaps - 1)))
@@ -264,14 +358,22 @@ static void PickupBots_SetBossCooldown(struct MetaDataBOSS *bossMeta)
 {
 	struct GameTracker *gGT = sdata->gGT;
 
+	// BOSS (MODS page): as on the first try, no race lost.
+	const int lost = (NativeMods_BossIndex() >= 0) ? 0 : (s8)sdata->advProgress.timesLostBossRace[gGT->bossID];
+
 	sdata->bossWeaponCooldown = (RngDeadCoed(&sdata->advRng) & PICKUPBOTS_BOSS_COOLDOWN_RANDOM_MASK) + bossMeta->weaponCooldown +
-	                            PICKUPBOTS_BOSS_COOLDOWN_BASE_FRAMES +
-	                            ((s8)sdata->advProgress.timesLostBossRace[gGT->bossID] * PICKUPBOTS_BOSS_LOSS_COOLDOWN_STEP);
+	                            PICKUPBOTS_BOSS_COOLDOWN_BASE_FRAMES + (lost * PICKUPBOTS_BOSS_LOSS_COOLDOWN_STEP);
 }
 
 static struct MetaDataBOSS *PickupBots_GetInitialBossMeta(void)
 {
 	struct GameTracker *gGT = sdata->gGT;
+
+	// BOSS (MODS page): the first section of his pattern on this track.
+	if (NativeMods_BossIndex() >= 0)
+	{
+		return NativeMods_BossWeapons(0);
+	}
 
 	if (gGT->levelID == OXIDE_STATION)
 	{
@@ -507,6 +609,12 @@ static void PickupBots_UpdateBoss(void)
 
 	int weaponID = PickupBots_UpdateBossJuice(bossMeta, PickupBots_GetBossWeaponID(bossMeta));
 	int throwFlag = bossMeta->throwFlag;
+
+	// BOSS (MODS page): counted for the report at exit.
+	if ((weaponID >= 0) && (NativeMods_BossIndex() >= 0))
+	{
+		NativeMods_NoteItem(2, weaponID);
+	}
 	int weaponFlags = (throwFlag == BOSS_WEAPON_THROW) ? PICKUPBOTS_SHOOT_FLAG_RANDOM : 0;
 
 	if (weaponID >= 0)
@@ -529,7 +637,8 @@ static void PickupBots_UpdateBoss(void)
 		{
 			VehPickupItem_ShootNow(boss, PICKUPBOTS_SHOOT_ID_BOMB_MISSILE, (s16)weaponFlags);
 		}
-		else if ((boss->heldItemID == PICKUPBOTS_ITEM_POTION) && (weaponFlags == PICKUPBOTS_SHOOT_FLAG_RANDOM) && (gGT->levelID == OXIDE_STATION))
+		else if ((boss->heldItemID == PICKUPBOTS_ITEM_POTION) && (weaponFlags == PICKUPBOTS_SHOOT_FLAG_RANDOM) &&
+		         ((NativeMods_BossIndex() >= 0) ? (data.characterIDs[1] == NITROS_OXIDE) : (gGT->levelID == OXIDE_STATION)))
 		{
 			VehPickupItem_ShootNow(boss, weaponID, PICKUPBOTS_SHOOT_FLAG_RANDOM);
 			VehPickupItem_ShootNow(boss, weaponID, PICKUPBOTS_SHOOT_FLAG_RANDOM);
@@ -554,9 +663,18 @@ void PickupBots_Update(void)
 {
 	struct GameTracker *gGT = sdata->gGT;
 
+	// BOSS (MODS page): the boss race's start and its weapons; a boss race
+	// whose boss found no nav path has nobody to throw anything.
+	const int modsBoss = (NativeMods_BossIndex() >= 0);
+
+	if (modsBoss && ((gGT->numBotsNextGame == 0) || (gGT->drivers[1] == NULL)))
+	{
+		return;
+	}
+
 	if ((gGT->numBotsNextGame == 0) || (gGT->elapsedEventTime < PICKUPBOTS_UPDATE_START_DELAY))
 	{
-		if (gGT->gameMode1 >= 0)
+		if ((gGT->gameMode1 >= 0) && !modsBoss)
 		{
 			return;
 		}
@@ -567,7 +685,7 @@ void PickupBots_Update(void)
 		}
 	}
 
-	if ((gGT->gameMode1 & (ADVENTURE_BOSS | END_OF_RACE)) != ADVENTURE_BOSS)
+	if (((gGT->gameMode1 & (ADVENTURE_BOSS | END_OF_RACE)) != ADVENTURE_BOSS) && !(modsBoss && ((gGT->gameMode1 & END_OF_RACE) == 0)))
 	{
 		if (gGT->numPlyrCurrGame == 0)
 		{

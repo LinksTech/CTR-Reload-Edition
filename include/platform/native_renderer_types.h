@@ -94,7 +94,14 @@ typedef enum
 	// between B - F and F. It stays with two passes.
 	BM_AVERAGE_TEXEL,
 	BM_ADD_TEXEL,
-	BM_ADD_QUATER_SOURCE_TEXEL
+	BM_ADD_QUATER_SOURCE_TEXEL,
+
+	// MULTIPLY: B * F, not a PSX mode either. Only a DR_PSYX_BLEND request
+	// (include/psx/libgpu.h) chooses it, for the one semi-transparent primitive
+	// after it - NIGHT of the MODS page darkens the 3D view with it by a share
+	// no PSX mode can give (they weight by 1/2, 1 and 1/4 only). The frame's
+	// alpha (the mask bit) stays as it was.
+	BM_MULTIPLY
 } BlendMode;
 
 typedef enum

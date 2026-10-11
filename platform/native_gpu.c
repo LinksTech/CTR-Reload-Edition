@@ -239,6 +239,10 @@ typedef struct
 	int overrideTextureWidth;
 	int overrideTextureHeight;
 
+	// A blend request of the ordering table (DR_PSYX_BLEND): the host blend
+	// of the next primitive, BM_NONE for none. One primitive takes it.
+	BlendMode overrideBlend;
+
 	int drawPrimMode;
 	bool psxDrawMaskSet;
 	bool framebufferFeedbackRunActive;
@@ -1891,6 +1895,17 @@ internal void AddSplit(bool semiTrans, bool textured, bool framebufferFeedback)
 
 	BlendMode blendMode = semiTrans ? GET_TPAGE_BLEND(tpage) : BM_NONE;
 	TexFormat texFormat = GetTPageFormat(tpage);
+
+	// A blend request (DR_PSYX_BLEND) is for this primitive alone: taken by a
+	// semi-transparent one, and gone after any.
+	if (s_gpu.overrideBlend != BM_NONE)
+	{
+		if (semiTrans)
+		{
+			blendMode = s_gpu.overrideBlend;
+		}
+		s_gpu.overrideBlend = BM_NONE;
+	}
 	TextureID textureId = textured ? NativeRenderer_GetVRAMTexture() : NativeRenderer_GetWhiteTexture();
 	bool psxTexturedSemiTrans = semiTrans && textured && s_gpu.overrideTexture == 0;
 	// NOTE(aalhendi): PS1 framebuffer bit 15 follows sampled texture STP for
@@ -4979,6 +4994,14 @@ internal int ProcessPsyXPrims(P_TAG *polyTag)
 
 		s_gpuNativeParsed++;
 		NativeGpu_AddNativeSplit(item, flags);
+		return 2;
+	}
+	case 0x04:
+	{
+		// A blend request for the next primitive (DR_PSYX_BLEND).
+		const DR_PSYX_BLEND *request = (const DR_PSYX_BLEND *)polyTag;
+
+		s_gpu.overrideBlend = ((request->code[0] & 0xFFFFFF) == NATIVE_PSYX_BLEND_MULTIPLY) ? BM_MULTIPLY : BM_NONE;
 		return 2;
 	}
 	}

@@ -915,54 +915,89 @@ enum ItemSet
 extern u8 *itemSetWeaponTables[ITEMSET_Count];
 extern u8 itemSetWeaponCounts[ITEMSET_Count];
 
-// ITEM CHAOS (MODS page): every item the four race item sets hold, each once,
-// in id order, and one of them with the same chance. Spring is left out: no
+// ITEMS (MODS page): every item the four race item sets hold, each once, in
+// id order - the list of ITEM WEIGHTS and of the draw. Spring is left out: no
 // race table should hold it, and SetHeldItem turns it into a turbo anyway.
 void Platform_Log(const char *format, ...);
 
-u8 VehPhysGeneral_ChaosItem(void)
+int VehPhysGeneral_RaceItems(u8 items[NATIVE_MODS_ITEM_IDS])
 {
-	static u8 items[HELD_ITEM_NONE];
+	int count = 0;
+	int id;
+
+	for (id = 0; (id < HELD_ITEM_NONE) && (id < NATIVE_MODS_ITEM_IDS); id++)
+	{
+		int set;
+		int seen = 0;
+
+		for (set = ITEMSET_Race1; !seen && (set <= ITEMSET_Race4); set++)
+		{
+			int k;
+
+			for (k = 0; !seen && (k < itemSetWeaponCounts[set]); k++)
+			{
+				seen = (itemSetWeaponTables[set][k] == id);
+			}
+		}
+
+		if (seen && (id != HELD_ITEM_SPRING))
+		{
+			items[count++] = (u8)id;
+		}
+	}
+
+	return count;
+}
+
+// The draw of CHAOS and CUSTOM: one random number of the game, as the race
+// sets take it, over the race items by their weights (NativeMods_ItemWeight:
+// CHAOS 1 each - the same chance -, CUSTOM 0/1/2/4). With no weight at all
+// (not active then) the first race item.
+u8 VehPhysGeneral_ModsItem(void)
+{
+	static u8 items[NATIVE_MODS_ITEM_IDS];
 	static int count = 0;
+	int total = 0;
+	int k;
 	u32 rng;
 
 	if (count == 0)
 	{
-		int id;
+		count = VehPhysGeneral_RaceItems(items);
+		Platform_Log("[CTR Mods] items: %d race items for CHAOS and CUSTOM\n", count);
+	}
 
-		for (id = 0; id < HELD_ITEM_NONE; id++)
-		{
-			int set;
-			int seen = 0;
-
-			for (set = ITEMSET_Race1; !seen && (set <= ITEMSET_Race4); set++)
-			{
-				int k;
-
-				for (k = 0; !seen && (k < itemSetWeaponCounts[set]); k++)
-				{
-					seen = (itemSetWeaponTables[set][k] == id);
-				}
-			}
-
-			if (seen && (id != HELD_ITEM_SPRING))
-			{
-				items[count++] = (u8)id;
-			}
-		}
-
-		Platform_Log("[CTR Mods] item chaos: %d items, each with the same chance\n", count);
+	for (k = 0; k < count; k++)
+	{
+		total += NativeMods_ItemWeight(items[k]);
 	}
 
 	rng = (u32)MixRNG_Scramble() >> ITEMSET_RNG_RANDOM_SHIFT;
-	return items[rng % (u32)count];
+	if (total <= 0)
+	{
+		return items[0];
+	}
+
+	rng %= (u32)total;
+	for (k = 0; k < count; k++)
+	{
+		const u32 weight = (u32)NativeMods_ItemWeight(items[k]);
+
+		if (rng < weight)
+		{
+			return items[k];
+		}
+		rng -= weight;
+	}
+
+	return items[count - 1];
 }
 
-// --mods-selftest (platform/native_mods.c): one whole period of the game's
-// random numbers (MixRNG_Scramble is 16 bit, 65536 steps) through the chaos
-// draw - only items of the race sets, no spring, every item of the sets, each
-// within 1 percent of the same count. The random number is put back. Returns
-// the failures.
+// --mods-selftest (platform/native_mods.c), ITEMS at CHAOS: one whole period of
+// the game's random numbers (MixRNG_Scramble is 16 bit, 65536 steps) through
+// the draw - only items of the race sets, no spring, every item of the sets,
+// each within 1 percent of the same count. The random number is put back.
+// Returns the failures.
 int VehPhysGeneral_ChaosSelfTest(int *checks)
 {
 	const int saved = sdata->randomNumber;
@@ -974,7 +1009,7 @@ int VehPhysGeneral_ChaosSelfTest(int *checks)
 
 	for (i = 0; i < 0x10000; i++)
 	{
-		const int id = VehPhysGeneral_ChaosItem();
+		const int id = VehPhysGeneral_ModsItem();
 
 		if ((id < 0) || (id >= HELD_ITEM_NONE))
 		{
@@ -1003,7 +1038,7 @@ int VehPhysGeneral_ChaosSelfTest(int *checks)
 		(*checks)++;
 		if ((i == HELD_ITEM_SPRING) ? (counts[i] != 0) : ((counts[i] != 0) != inSets))
 		{
-			printf("mods selftest: item %d drawn %d times by ITEM CHAOS, in the race sets %d\n", i, counts[i], inSets);
+			printf("mods selftest: item %d drawn %d times by ITEMS CHAOS, in the race sets %d\n", i, counts[i], inSets);
 			failures++;
 		}
 
@@ -1018,7 +1053,7 @@ int VehPhysGeneral_ChaosSelfTest(int *checks)
 	(*checks)++;
 	if ((drawn == 0) || ((hi - lo) * 100 > (0x10000 / drawn)))
 	{
-		printf("mods selftest: ITEM CHAOS draws %d items between %d and %d times each\n", drawn, lo, hi);
+		printf("mods selftest: ITEMS CHAOS draws %d items between %d and %d times each\n", drawn, lo, hi);
 		failures++;
 	}
 
@@ -1032,29 +1067,40 @@ int VehPhysGeneral_ChaosSelfTest(int *checks)
 				snprintf(&ids[strlen(ids)], sizeof(ids) - strlen(ids), " %d", i);
 			}
 		}
-		printf("mods selftest: ITEM CHAOS, %d items (held item ids%s), %d to %d of 65536 draws each\n", drawn, ids, lo, hi);
+		printf("mods selftest: ITEMS CHAOS, %d items (held item ids%s), %d to %d of 65536 draws each\n", drawn, ids, lo, hi);
 	}
 	return failures;
 }
 
 // --mods-selftest: the item box itself (SetHeldItem) in a race made up here -
 // arcade, one player, seven bots, the player in first place on lap 2 - over
-// 65536 boxes, with ITEM CHAOS off (chaosOn 0: every item from the first-place
-// set) and on (1: every one of the 11 race items, each within 5 percent of the
-// same count, the first-place set or not). The warpball flag is cleared before
-// each box, so the rule "one warpball at a time" does not turn the rest into
-// missiles. sdata->gGT and the random number are put back. Returns the failures.
-int VehPhysGeneral_ChaosBoxSelfTest(int chaosOn, int *checks)
+// 65536 boxes, at the ITEMS value the caller set: mode 0 (DEFAULT, or CUSTOM
+// with every item OFF) every item from the first-place set; 1 (CHAOS) every
+// one of the race items, each within 5 percent of the same count, the
+// first-place set or not; 2 and 3 (CUSTOM, mixed weights or one item alone)
+// every race item by its weight - within 5 percent of its share, never one of
+// weight 0. The warpball flag is cleared before each box, so the rule "one
+// warpball at a time" does not turn the rest into missiles. sdata->gGT and the
+// random number are put back. Returns the failures.
+int VehPhysGeneral_ItemsBoxSelfTest(int mode, const char *what, int *checks)
 {
 	static struct GameTracker race;
 	static struct Driver player;
 	struct GameTracker *const savedGT = sdata->gGT;
 	const int savedRandom = sdata->randomNumber;
 	int counts[HELD_ITEM_ROULETTE + 1] = {0};
+	u8 items[NATIVE_MODS_ITEM_IDS];
+	const int itemCount = VehPhysGeneral_RaceItems(items);
+	int total = 0;
 	int failures = 0;
 	int kinds = 0;
 	int lo = 0x7fffffff, hi = 0;
 	int i;
+
+	for (i = 0; i < itemCount; i++)
+	{
+		total += NativeMods_ItemWeight(items[i]);
+	}
 
 	memset(&race, 0, sizeof(race));
 	memset(&player, 0, sizeof(player));
@@ -1083,6 +1129,7 @@ int VehPhysGeneral_ChaosBoxSelfTest(int chaosOn, int *checks)
 		int inSets = 0;
 		int set;
 		int k;
+		int bad;
 
 		for (set = ITEMSET_Race1; set <= ITEMSET_Race4; set++)
 		{
@@ -1096,11 +1143,27 @@ int VehPhysGeneral_ChaosBoxSelfTest(int chaosOn, int *checks)
 			}
 		}
 
-		(*checks)++;
-		if (chaosOn ? ((counts[i] != 0) != (inSets && (i != HELD_ITEM_SPRING))) : ((counts[i] != 0) && !inFirst))
+		if (mode == 0)
 		{
-			printf("mods selftest: item box, ITEM CHAOS %s, item %d came %d times (first-place set %d, race sets %d)\n", chaosOn ? "on" : "off", i, counts[i],
-			       inFirst, inSets);
+			bad = (counts[i] != 0) && !inFirst;
+		}
+		else if (mode == 1)
+		{
+			bad = (counts[i] != 0) != (inSets && (i != HELD_ITEM_SPRING));
+		}
+		else
+		{
+			const int weight = (i < NATIVE_MODS_ITEM_IDS) ? NativeMods_ItemWeight(i) : 0;
+			const int share = (inSets && (i != HELD_ITEM_SPRING) && (total > 0)) ? ((0x10000 * weight) / total) : 0;
+			const int off = counts[i] - share;
+
+			bad = (share == 0) ? (counts[i] != 0) : (((off < 0) ? -off : off) * 20 > share);
+		}
+
+		(*checks)++;
+		if (bad)
+		{
+			printf("mods selftest: item box, ITEMS %s, item %d came %d times (first-place set %d, race sets %d)\n", what, i, counts[i], inFirst, inSets);
 			failures++;
 		}
 
@@ -1112,17 +1175,28 @@ int VehPhysGeneral_ChaosBoxSelfTest(int chaosOn, int *checks)
 		}
 	}
 
-	if (chaosOn)
+	if (mode == 1)
 	{
 		(*checks)++;
 		if ((kinds == 0) || ((hi - lo) * 20 > (0x10000 / kinds)))
 		{
-			printf("mods selftest: item box, ITEM CHAOS on, %d items between %d and %d times each\n", kinds, lo, hi);
+			printf("mods selftest: item box, ITEMS CHAOS, %d items between %d and %d times each\n", kinds, lo, hi);
 			failures++;
 		}
 	}
 
-	printf("mods selftest: item box in first place, ITEM CHAOS %s: %d kinds of item, %d to %d of 65536 boxes each\n", chaosOn ? "on" : "off", kinds, lo, hi);
+	{
+		char line[160] = "";
+
+		for (i = 0; i <= HELD_ITEM_ROULETTE; i++)
+		{
+			if (counts[i] != 0)
+			{
+				snprintf(&line[strlen(line)], sizeof(line) - strlen(line), " %d=%d", i, counts[i]);
+			}
+		}
+		printf("mods selftest: item box in first place, ITEMS %s: %d kind(s) of item of 65536 boxes:%s\n", what, kinds, line);
+	}
 	return failures;
 }
 
@@ -1308,18 +1382,24 @@ void VehPhysGeneral_SetHeldItem(struct Driver *driver)
 		driver->heldItemID = item;
 	}
 
-	// ITEM CHAOS (MODS page): the box gives any race item, whatever the rank. The
-	// rules below (one warpball at a time, spring as turbo) stay.
-	if ((itemSet >= ITEMSET_Race1) && (itemSet <= ITEMSET_Race4) && NativeMods_PlayActive(NATIVE_MODS_PLAY_CHAOS))
+	// ITEMS (MODS page): CHAOS and CUSTOM give any race item by their weights,
+	// whatever the rank - from the race sets, and in a BOSS race of the MODS
+	// page from the boss set too. The rules below (one warpball at a time,
+	// spring as turbo) stay.
+	const int modsBoss = NativeMods_BossIndex();
+	const int modsItems = NativeMods_ItemsActive() && (((itemSet >= ITEMSET_Race1) && (itemSet <= ITEMSET_Race4)) || ((itemSet == ITEMSET_BossRace) && (modsBoss >= 0)));
+
+	if (modsItems)
 	{
-		driver->heldItemID = VehPhysGeneral_ChaosItem();
+		driver->heldItemID = VehPhysGeneral_ModsItem();
 		NativeMods_NoteItem(0, driver->heldItemID);
 	}
 
-	// In Boss race
-	if (gGT->gameMode1 & ADVENTURE_BOSS)
+	// In Boss race - and in BOSS of the MODS page as on the first try (no race
+	// lost), unless ITEMS chose the item.
+	if ((gGT->gameMode1 & ADVENTURE_BOSS) || ((modsBoss >= 0) && !modsItems))
 	{
-		s8 bossFails = sdata->advProgress.timesLostBossRace[gGT->bossID];
+		s8 bossFails = (gGT->gameMode1 & ADVENTURE_BOSS) ? sdata->advProgress.timesLostBossRace[gGT->bossID] : 0;
 
 		if (bossFails < ITEMSET_BOSS_LOSSES_REPLACE_MASK_CLOCK_WARPBALL)
 		{
@@ -1346,7 +1426,7 @@ void VehPhysGeneral_SetHeldItem(struct Driver *driver)
 		}
 
 		// Replace 3 Missiles with 1 Missile if racing Komodo Joe
-		if (gGT->levelID == DRAGON_MINES && driver->heldItemID == HELD_ITEM_MISSILE_3X)
+		if (((gGT->gameMode1 & ADVENTURE_BOSS) ? (gGT->levelID == DRAGON_MINES) : (modsBoss == 2)) && driver->heldItemID == HELD_ITEM_MISSILE_3X)
 		{
 			driver->heldItemID = HELD_ITEM_MISSILE_1X;
 		}
