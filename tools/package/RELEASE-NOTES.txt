@@ -16,6 +16,17 @@ DECISIONS
   built into Reload Studio and is not a separate program in the package.
 
 
+UNRELEASED
+----------
+- Custom tracks without a start grid get one automatically: Reload Studio
+  puts the 8 karts in two rows behind the finish line.
+- Custom tracks without CPU paths get them generated from their
+  checkpoints, so the CPU drivers race on them. Where this can't be done
+  safely, the packer says why.
+- Tracks packed with an earlier version need to be packed again to get
+  this.
+
+
 NEW IN 0.7.5 BETA
 -----------------
 - Version numbers: 0.7.5 follows 0.0.5. From now on versions count 0.x.y
