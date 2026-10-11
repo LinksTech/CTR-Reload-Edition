@@ -25,6 +25,8 @@ UNRELEASED
   safely, the packer says why.
 - Tracks packed with an earlier version need to be packed again to get
   this.
+- Fixed a crash when loading custom tracks with water whose level header
+  has no water vertex list (e.g. Sunken Sprint).
 - MODS page (Feature Preview, one-player ARCADE and NITRO-PIT races): the
   page is grouped into DRIVERS, RULES and WORLD and scrolls. Everything is
   off at first; with every value at normal the game is exactly as before.
