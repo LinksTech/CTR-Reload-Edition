@@ -709,10 +709,12 @@ internal const char *const s_modsLevelText[4] = {"OFF", "LOW", "NORMAL", "HIGH"}
 internal const int s_modsLevelWeight[4] = {0, 1, 2, 4};
 
 // DIFFICULTY: the move in the game's blend (0xF0 is the distance from its
-// first table to its second), and the range a move may reach - from one step
-// of the cup menu below its EASY (0x50 - 0x50 = 0, the quick start's 0 - 0x50)
-// to two steps above its HARD.
-internal const int s_modsDiffMove[4] = {-0x50, 0, 0x50, 0xA0};
+// first table to its second; a step of the cup menu is 0x50): EASY one step
+// down, HARD two up (from MEDIUM 0xA0 that is 0x140, the game's own SUPER
+// HARD cheat), EXTREME three up. One step up was measured too close to NORMAL
+// (the measurement of round 2). The range a move may reach: from one step below the
+// cup menu's EASY (0x50 - 0x50 = 0, the quick start's 0 - 0x50) to 0x190.
+internal const int s_modsDiffMove[4] = {-0x50, 0, 0xA0, 0xF0};
 #define NATIVE_MODS_DIFF_LOW  (-0x50)
 #define NATIVE_MODS_DIFF_HIGH 0x190
 
@@ -1140,7 +1142,7 @@ internal void NativeMods_ArmReport(void)
 // GRAVITY
 // ---------------------------------------------------------------------------
 
-int NativeMods_GravityPercent(int zonePercent)
+int NativeMods_GravityPercent(int zonePercent, int airborne)
 {
 	int gravity;
 
@@ -1149,8 +1151,16 @@ int NativeMods_GravityPercent(int zonePercent)
 		return zonePercent;
 	}
 
-	// A low-gravity stretch keeps the lower of its own share and the mod's.
+	// Above 100 % only on the ground: in the air the game's own gravity, so
+	// every gap is cleared as on the disc (at 200 % in the air no driver got
+	// over the gap of Hot Air Skyway, the kill plane put them back for ever).
 	gravity = NativeMods_Value(NATIVE_MODS_GRAVITY);
+	if (airborne && (gravity > 100))
+	{
+		gravity = 100;
+	}
+
+	// A low-gravity stretch keeps the lower of its own share and the mod's.
 	return ((zonePercent < 100) && (zonePercent < gravity)) ? zonePercent : gravity;
 }
 
@@ -1205,7 +1215,7 @@ void NativeMods_AirTime(int driverID, int airTime)
 // game's 41 %; without a recorded flight the share is the mod's value.
 int NativeMods_HangTime(int driverID, int jumpMeter)
 {
-	long long fell = NativeMods_Value(NATIVE_MODS_GRAVITY);
+	long long fell = (NativeMods_Value(NATIVE_MODS_GRAVITY) < 100) ? NativeMods_Value(NATIVE_MODS_GRAVITY) : 100;
 	long long own = 100;
 	int air = jumpMeter;
 
@@ -2037,7 +2047,7 @@ int NativeMods_SelfTest(void)
 		int meter;
 		int hang;
 	} hangCases[] = {
-	    {41, 0, 0}, {41, 1560, 639}, {41, 1561, 640}, {41, 2342, 960}, {41, 0x960, 984}, {20, 3200, 640}, {200, 320, 640}, {200, 720, 1440}, {100, 1000, 1000},
+	    {41, 0, 0}, {41, 1560, 639}, {41, 1561, 640}, {41, 2342, 960}, {41, 0x960, 984}, {20, 3200, 640}, {200, 320, 320}, {200, 720, 720}, {100, 1000, 1000},
 	};
 	const int savedCpu = s_modsCpu;
 	const u32 savedRetail = s_modsRetailOn;
@@ -2132,13 +2142,19 @@ int NativeMods_SelfTest(void)
 	for (t = 20; t <= 200; t += 10)
 	{
 		s_modsPlayDev[0].value[NATIVE_MODS_GRAVITY] = t;
-		NATIVE_MODS_EXPECT((NativeMods_GravityPercent(100) == t) && (NativeMods_GravityPercent(NATIVE_MODS_LOW_GRAVITY) == ((t < 41) ? t : 41)),
-		                   "gravity %d gives %d and %d on low gravity", t, NativeMods_GravityPercent(100), NativeMods_GravityPercent(NATIVE_MODS_LOW_GRAVITY));
+		NATIVE_MODS_EXPECT((NativeMods_GravityPercent(100, 0) == t) && (NativeMods_GravityPercent(NATIVE_MODS_LOW_GRAVITY, 0) == ((t < 41) ? t : 41)) &&
+		                       (NativeMods_GravityPercent(100, 1) == ((t < 100) ? t : 100)) &&
+		                       (NativeMods_GravityPercent(NATIVE_MODS_LOW_GRAVITY, 1) == ((t < 41) ? t : 41)),
+		                   "gravity %d gives %d and %d on low gravity, %d in the air", t, NativeMods_GravityPercent(100, 0),
+		                   NativeMods_GravityPercent(NATIVE_MODS_LOW_GRAVITY, 0), NativeMods_GravityPercent(100, 1));
 	}
 	s_modsPlayDev[0].value[NATIVE_MODS_GRAVITY] = 100;
-	NATIVE_MODS_EXPECT((NativeMods_GravityPercent(100) == 100) && (NativeMods_GravityPercent(41) == 41), "gravity 100 changes nothing");
+	NATIVE_MODS_EXPECT((NativeMods_GravityPercent(100, 0) == 100) && (NativeMods_GravityPercent(41, 0) == 41) && (NativeMods_GravityPercent(100, 1) == 100) &&
+	                       (NativeMods_GravityPercent(41, 1) == 41),
+	                   "gravity 100 changes nothing");
 
-	// THE HANG TIME, without a recorded flight: the air time times the share.
+	// THE HANG TIME, without a recorded flight: the air time times the share
+	// (above 100 % the flight is at the game's own gravity, the share 1).
 	for (k = 0; k < sizeof(hangCases) / sizeof(hangCases[0]); k++)
 	{
 		s_modsPlayDev[0].value[NATIVE_MODS_GRAVITY] = hangCases[k].gravity;
@@ -2155,14 +2171,14 @@ int NativeMods_SelfTest(void)
 	NATIVE_MODS_EXPECT(NativeMods_HangTime(3, 0x960) == 1440, "a flight past the meter is judged as %d", NativeMods_HangTime(3, 0x960));
 	NATIVE_MODS_EXPECT(NativeMods_HangTime(3, 0x960) == 984, "the second landing keeps the meter");
 
-	// A flight partly over a low-gravity stretch at 200 %: 30 ms at 200 of the
-	// game's 100, 73 ms at 41 of the game's 41 - weighed by the time at each.
-	s_modsPlayDev[0].value[NATIVE_MODS_GRAVITY] = 200;
-	NativeMods_NoteGravity(5, 200, 100, 0, 0);
-	NativeMods_NoteGravity(5, 200, 100, 30, 1);
-	NativeMods_NoteGravity(5, 41, 41, 73, 1);
-	NATIVE_MODS_EXPECT(NativeMods_HangTime(5, 1000) == (int)((1000LL * (200 * 30 + 41 * 73)) / (100 * 30 + 41 * 73)),
-	                   "a flight over a low-gravity stretch at 200 %% is judged as %d", NativeMods_HangTime(5, 1000));
+	// A flight partly over a low-gravity stretch at 20 %: 30 ms at 20 of the
+	// game's 100, 73 ms at 20 of the game's 41 - weighed by the time at each.
+	s_modsPlayDev[0].value[NATIVE_MODS_GRAVITY] = 20;
+	NativeMods_NoteGravity(5, 20, 100, 0, 0);
+	NativeMods_NoteGravity(5, 20, 100, 30, 1);
+	NativeMods_NoteGravity(5, 20, 41, 73, 1);
+	NATIVE_MODS_EXPECT(NativeMods_HangTime(5, 1000) == (int)((1000LL * (20 * 30 + 20 * 73)) / (100 * 30 + 41 * 73)),
+	                   "a flight over a low-gravity stretch at 20 %% is judged as %d", NativeMods_HangTime(5, 1000));
 	s_modsPlayDev[0].value[NATIVE_MODS_GRAVITY] = 100;
 	NativeMods_NoteGravity(5, 100, 100, 30, 1);
 	NATIVE_MODS_EXPECT(NativeMods_HangTime(5, 1234) == 1234, "gravity 100 judges the meter itself");
@@ -2255,7 +2271,9 @@ int NativeMods_SelfTest(void)
 	}
 	s_modsPlayDev[0].value[NATIVE_MODS_DIFFICULTY] = NATIVE_MODS_DIFF_EXTREME;
 	s_modsPlayDev[0].base = 160;
-	NATIVE_MODS_EXPECT((NativeMods_BotDifficulty(0, 0) == 0x140) && (NativeMods_BotDifficulty(24, 1) == 24 + 0xA0), "the measuring base");
+	NATIVE_MODS_EXPECT((NativeMods_BotDifficulty(0, 0) == 0x190) && (NativeMods_BotDifficulty(24, 1) == 24 + 0xF0), "the measuring base");
+	s_modsPlayDev[0].value[NATIVE_MODS_DIFFICULTY] = NATIVE_MODS_DIFF_HARD;
+	NATIVE_MODS_EXPECT(NativeMods_BotDifficulty(0, 0) == 0x140, "HARD from MEDIUM is the SUPER HARD cheat's 0x140");
 	s_modsPlayDev[0].base = -1;
 
 	// BOSS: the sections of every boss spread over a track of 72 checkpoints

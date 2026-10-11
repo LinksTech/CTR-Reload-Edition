@@ -224,13 +224,16 @@ internal void NativeModsPage_DrawFrame(u32 *ot, int cursorY, int firstHintY, int
 
 	ColorCode_SetPacked(&color, sdata->battleSetup_Color_UI_1);
 
+	// The thumb solid in the colour of the separator line, on a dark track.
 	if ((barH > 0) && (all > shown))
 	{
 		RECT thumb = {.x = NATIVE_MODS_PAGE_BAR_X, .y = (s16)(barY + ((barH * first) / all)), .w = 3, .h = (s16)((barH * shown) / all)};
 		RECT track = {.x = NATIVE_MODS_PAGE_BAR_X, .y = (s16)barY, .w = 3, .h = (s16)barH};
+		Color trackColor;
 
-		RECTMENU_DrawOuterRect_Edge(&thumb, color, 0x20, ot);
-		CTR_Box_DrawClearBox(&track, &sdata->menuRowHighlight_Normal, TRANS_50_DECAL, ot);
+		ColorCode_SetPacked(&trackColor, MakeColorPacked(0x30, 0x30, 0x30));
+		CTR_Box_DrawSolidBox(&thumb, color, ot);
+		CTR_Box_DrawSolidBox(&track, trackColor, ot);
 	}
 
 	{

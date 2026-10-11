@@ -68,12 +68,14 @@ const char *NativeMods_StatusText(void);
 // value, and at its normal value it is off: no other path, no other random
 // number.
 //   GRAVITY     20..200 %, normal 100. The karts and the CPU drivers fall at
-//               this share of their gravity; a low-gravity stretch of the
-//               track (QUADBLOCK_FLAG_LOW_GRAVITY, BOT_FLAG_MOON_GRAVITY, 41 %)
-//               keeps the lower of the two. The hang-time turbo is judged by
-//               the air time times the gravity share the jump flew at against
-//               the share the game gives there, so a jump earns what it earns
-//               at the game's own gravity, on every step.
+//               this share of their gravity - above 100 % on the ground only,
+//               in the air at the game's own, so every gap is still cleared;
+//               a low-gravity stretch of the track (QUADBLOCK_FLAG_LOW_GRAVITY,
+//               BOT_FLAG_MOON_GRAVITY, 41 %) keeps the lower of the two. The
+//               hang-time turbo is judged by the air time times the gravity
+//               share the jump flew at against the share the game gives
+//               there, so a jump earns what it earns at the game's own
+//               gravity, on every step.
 //   GRIP        0..100 %, normal 100. Road terrain (full speed and full grip:
 //               asphalt, wood, stone, hardpack, metal and the three asphalts
 //               of the water tracks) is blended towards ice: at 0 % it is ice,
@@ -96,8 +98,9 @@ const char *NativeMods_StatusText(void);
 //               triple bomb, missile with the triple missile).
 //   DIFFICULTY  EASY, NORMAL, HARD, EXTREME, normal NORMAL. The bots' place in
 //               the game's own difficulty blend (BOTS_Adv_AdjustDifficulty,
-//               ArcadeDifficulty / BossDifficulty) moves by -0x50, 0, +0x50,
-//               +0xA0 - one and two steps of the cup difficulty menu.
+//               ArcadeDifficulty / BossDifficulty) moves by -0x50, 0, +0xA0,
+//               +0xF0 - one step of the cup difficulty menu down, two and
+//               three up.
 //   BOSS        OFF, RANDOM, ROO, PAPU, JOE, PINSTRIPE, OXIDE. One against one
 //               with the boss: his model, his strength (BossDifficulty), his
 //               weapon pattern (data.BossWeapon*, its sections spread over this
@@ -166,8 +169,9 @@ int NativeMods_Active(int which);
 
 // GRAVITY, game/Vehicle/VehPhysForce.c and game/BOTS.c: the gravity share in
 // percent for a stretch whose own share is zonePercent (100, or 41 on a
-// low-gravity stretch) - zonePercent itself unless the mod is active.
-int NativeMods_GravityPercent(int zonePercent);
+// low-gravity stretch), airborne 1 off the ground - zonePercent itself unless
+// the mod is active.
+int NativeMods_GravityPercent(int zonePercent, int airborne);
 
 // GRAVITY, the hang-time turbo (game/UI/UI_Meter.c): NoteGravity, every
 // gravity frame of a kart (the share it fell at and the game's own, the

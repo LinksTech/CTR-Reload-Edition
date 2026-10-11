@@ -142,9 +142,10 @@ void VehPhysForce_OnGravity(struct Driver *driver, Vec3 *velocity)
 	// flag, while host C would crash on a null dereference.
 	const int lowGravity = (underDriver != NULL) && ((underDriver->quadFlags & VEH_PHYS_FORCE_QUAD_LOW_GRAVITY) != 0);
 
-	// GRAVITY (MODS page): the mod's share of the gravity, on a low-gravity
-	// block the lower of the two; 41 is the block's own, computed as retail.
-	const int gravityPercent = NativeMods_GravityPercent(lowGravity ? 41 : 100);
+	// GRAVITY (MODS page): the mod's share of the gravity (above 100 % on the
+	// ground only), on a low-gravity block the lower of the two; 41 is the
+	// block's own, computed as retail.
+	const int gravityPercent = NativeMods_GravityPercent(lowGravity ? 41 : 100, (driver->actionsFlagSet & ACTION_TOUCH_GROUND) == 0);
 
 	if (gravityPercent == 41)
 	{

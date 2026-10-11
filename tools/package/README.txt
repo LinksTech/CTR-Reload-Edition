@@ -168,40 +168,91 @@ Adventure, Battle or with two players (the NITRO-PIT time trial takes them).
   "[CTR Char] seat 0 empty: podium of an arcade cup, the pick stays" says
   so.
 
-Mods (Feature Preview) - the CPU opponents and three play mods: in the
-one-player ARCADE track select (also NITRO RACE) press X on a track, then DOWN
-below the last LAPS row into the MODS box (in the cup select, also NITRO CUP:
-DOWN from a lower cup onto the MODS line) and X. The MODS page works like the
-GRAPHICS page:
+Mods (Feature Preview) - the CPU opponents, the difficulty, a boss challenge
+and play mods for items, gravity, grip and night: in the one-player ARCADE
+track select (also NITRO RACE) press X on a track, then DOWN below the last
+LAPS row into the MODS box (in the cup select, also NITRO CUP: DOWN from a
+lower cup onto the MODS line) and X. The MODS page works like the GRAPHICS
+page and is grouped under three small headings; it scrolls with a bar.
+UP/DOWN choose the row, LEFT/RIGHT change the value (percentages in steps of
+10), X opens SELECT DRIVERS or ITEM WEIGHTS, moves a choice to the next value
+and puts a percentage back to its normal value. TRIANGLE goes back. A grey
+row cannot be changed.
+  DRIVERS
   CPU DRIVERS      DEFAULT (the usual opponents), ALL RANDOM (every installed
                    driver, original and custom, with the same chance) or
                    ONLY SELECTED (only the ticked drivers)
   SELECT DRIVERS   all drivers, the original ones first, then the custom
                    ones of the "characters" folder, each ON or OFF; none is
                    ticked at first
-  MOON GRAVITY     OFF / ON: every kart falls at 41% of its gravity (the
-                   game's own low gravity), so jumps go higher and longer.
-                   The turbo for a long jump is what the same jump earns at
-                   normal gravity
-  ICY TRACKS       OFF / ON: the road (asphalt, wood, stone, metal and the
-                   like) is ice, as on Polar Pass. Water, mud, grass, dirt,
-                   snow, turbo pads and ramps keep working as before
-  ITEM CHAOS       OFF / ON: every item box gives any race item with the same
-                   chance, whatever your place. The CPU drivers, who never
-                   take boxes, attack with their own four weapons (TNT,
-                   potion, bomb, missile) at random, whatever their place
-The three can be combined with each other and with CPU DRIVERS. The MODS box
-says what is on: OFF, ALL RANDOM, <n> SELECTED, and with any of the three
-on: "<n> MODS", "RANDOM +<n>" or "<k> SEL +<n>". The log line "[CTR Mods]
-play mods in this race: ..." names them at the start of a race.
+  DIFFICULTY       EASY / NORMAL / HARD / EXTREME. Moves the CPU drivers'
+                   strength (their speed and how they catch up) from what you
+                   chose in the game's own difficulty menu: EASY one step of
+                   the original cup difficulty easier, HARD two steps harder,
+                   EXTREME three steps harder. NORMAL is the original
+  BOSS CHALLENGE   OFF / RANDOM / ROO / PAPU / JOE / PINSTRIPE / OXIDE. One
+                   against one with the boss on any race track, like the boss
+                   races of the Adventure: his model, his strength, his
+                   weapons (his own throwing pattern, spread over the track)
+                   and his path. CPU DRIVERS is not used then and is shown
+                   grey. RANDOM picks a boss (not your own driver if
+                   possible); a cup keeps its boss for all races. The item
+                   boxes give you the boss-race items, as in the Adventure. A
+                   custom track without CPU paths races without the boss and
+                   says so on screen
+  RULES
+  ITEMS            DEFAULT (the original items by place), CHAOS (every race
+                   item with the same chance, whatever your place) or CUSTOM
+                   (your own weights from ITEM WEIGHTS, whatever your place)
+  ITEM WEIGHTS     Only with ITEMS CUSTOM, grey otherwise. All 11 race items
+                   (TURBO, BOMB, MISSILE, TNT, POTION, SHIELD, MASK, CLOCK,
+                   WARPBALL, TRIPLE BOMB, TRIPLE MISSILE) each OFF / LOW /
+                   NORMAL / HIGH (weights 0 / 1 / 2 / 4), all NORMAL at first.
+                   All OFF is the same as DEFAULT (the page and the MODS box
+                   say so). Only one item on: every box gives exactly that
+                   item. The game's own rules stay: only one warpball at a
+                   time (another box gives triple missiles then)
+  WORLD
+  GRAVITY          20% to 200%, normal 100% (off). Below 100% karts and CPU
+                   drivers fall slower (moon), jumps go higher and longer.
+                   Above 100% they are pressed harder onto the road, but in
+                   the air the normal gravity stays, so every gap can still
+                   be cleared. The turbo after a jump is what the same jump
+                   earns at normal gravity, on every step. A low-gravity part
+                   of a track keeps its own low gravity (the lower counts)
+  GRIP             0% to 100%, normal 100% (off). 0% is ice as on Polar Pass,
+                   in between the grip of the road blends from normal to ice.
+                   Only the road (asphalt, wood, stone, hardpack, metal and
+                   the asphalt of the water tracks); water, mud, grass, dirt,
+                   snow, turbo pads and ramps work as before. The CPU drivers
+                   drive on the same road
+  NIGHT            0% to 90%, normal 0% (off). The 3D world (track, drivers,
+                   objects, sky) gets darker by that share with a slight
+                   blue tint; HUD, menus and texts stay bright. Works for
+                   the classic drawing and for native drivers (NATIVE
+                   DRIVERS PREVIEW)
+CPU drivers never take item boxes; with ITEMS CHAOS or CUSTOM they attack as
+often as before with their own four weapons (TNT, potion, bomb, missile):
+CHAOS each with the same chance, CUSTOM by the weights (bomb counts the triple
+bomb too, missile the triple missile). If all four weigh 0, they do not
+attack. All settings can be combined, except that a boss replaces the CPU
+drivers. A slider counts as on as soon as it is not at its normal value. With
+every value at normal the game is exactly as before.
+The MODS box says what is on: OFF, ALL RANDOM, <n> SELECTED, and with any play
+mod on: "<n> MODS", "RANDOM +<n>" or "<k> SEL +<n>"; with a boss: "BOSS: ROO",
+"BOSS: PAPU", "BOSS: JOE", "BOSS: OXIDE", "PINSTRIPE" or "RANDOM BOSS", and
+"BOSS +<n>" when other mods are on too. The log line "[CTR Mods] play mods in
+this race: ..." names the active mods at the start of a race.
 Nobody appears twice, except with ONLY SELECTED when fewer drivers are ticked
 than there are CPU seats (7): one ticked driver gives seven of the same
 opponent. Nothing ticked is DEFAULT (the box shows OFF). Your own driver is
 never a CPU. Every single race draws anew, a cup keeps its opponents for all
 four races. The choice is saved in ctr-settings.cfg; settings of the earlier
-MODS page are taken over. The log line "[CTR Mods] seats ..." names who sits
-where. Not in CRYSTAL, CTR or TIME TRIAL of NITRO-PIT, Time Trial,
-Adventure, Battle or with two players. More mods are coming.
+MODS page are taken over (MOON GRAVITY ON becomes GRAVITY 41%, ICY TRACKS ON
+becomes GRIP 0%, ITEM CHAOS ON becomes ITEMS CHAOS; everything else starts at
+its normal value). The log line "[CTR Mods] seats ..." names who sits where.
+Not in CRYSTAL, CTR or TIME TRIAL of NITRO-PIT, Time Trial, Adventure, Battle
+or with two players. More mods are coming.
 
 
 4. RELOAD STUDIO

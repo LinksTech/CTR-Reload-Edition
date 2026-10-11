@@ -1667,9 +1667,11 @@ UpdateTireColorTimer:
 		botDriver->botData.botFlags |= BOT_FLAG_MOON_GRAVITY;
 	}
 
-	// GRAVITY (MODS page): the mod's share, on a moon stretch the lower of the
-	// two; 100 and the stretch's own 41 are computed as retail.
-	const int gravityPercent = NativeMods_GravityPercent(((botDriver->botData.botFlags & BOT_FLAG_MOON_GRAVITY) != 0) ? 41 : 100);
+	// GRAVITY (MODS page): the mod's share (above 100 % on the ground only), on
+	// a moon stretch the lower of the two; 100 and the stretch's own 41 are
+	// computed as retail.
+	const int gravityPercent = NativeMods_GravityPercent(((botDriver->botData.botFlags & BOT_FLAG_MOON_GRAVITY) != 0) ? 41 : 100,
+	                                                     (botDriver->actionsFlagSet & ACTION_TOUCH_GROUND) == 0);
 	int gravity;
 	if (gravityPercent == 100)
 	{
