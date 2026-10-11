@@ -1,4 +1,5 @@
 #include <common.h>
+#include <platform/native_mods.h>
 
 #if defined(CTR_NATIVE)
 void INSTANCE_NativeBirthSkipped(const char *what);
@@ -323,11 +324,14 @@ void VehFire_Increment(struct Driver *driver, int reserves, u32 type, int fireLe
 
 	    // you have USF, and boosted on a non-STP,
 	    // resize fire to lose size
+	    // (not with USF STACKING of RETRO FUELED, MODS page: the rules of
+	    // CTR-ModSDK's Retro-Fueled, platform/native_mods.c)
 	    (
 	        // Current speed cap is greater than 0x1000
 	        // AND
 	        // You are not on a super turbo pad
-	        (int)driver->const_SacredFireSpeed < (int)driver->fireSpeedCap && ((driver->stepFlagSet & COLL_STEP_TRIGGER_SUPER_TURBO_PAD) == 0)))
+	        (int)driver->const_SacredFireSpeed < (int)driver->fireSpeedCap && ((driver->stepFlagSet & COLL_STEP_TRIGGER_SUPER_TURBO_PAD) == 0) &&
+	        !NativeMods_RetroKeepUsf((driver->actionsFlagSet & ACTION_BOT) != 0)))
 
 	{
 		driver->fireSpeedCap = (s16)newFireSpeedCap;

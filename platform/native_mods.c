@@ -700,6 +700,7 @@ internal const struct
 } s_modsRange[NATIVE_MODS_VALUES] = {
     {"gravity", 20, 200, 100, 1}, {"grip", 0, 100, 100, 1},      {"night", 0, 90, 0, 1},
     {"items", 0, 2, 0, 0},        {"difficulty", 0, 3, 1, 0},    {"boss", 0, 6, 0, 0},
+    {"retro", 0, 1, 0, 0},
 };
 
 internal const char *const s_modsItemsText[3] = {"DEFAULT", "CHAOS", "CUSTOM"};
@@ -707,6 +708,15 @@ internal const char *const s_modsDiffText[4] = {"EASY", "NORMAL", "HARD", "EXTRE
 internal const char *const s_modsBossText[7] = {"OFF", "RANDOM", "ROO", "PAPU", "JOE", "PINSTRIPE", "OXIDE"};
 internal const char *const s_modsLevelText[4] = {"OFF", "LOW", "NORMAL", "HIGH"};
 internal const int s_modsLevelWeight[4] = {0, 1, 2, 4};
+internal const char *const s_modsRetroText[2] = {"OFF", "ON"};
+internal const char *const s_modsRetroKey[NATIVE_MODS_RETRO_PARTS] = {"rpads", "rlong", "rstack", "rkeep"};
+internal const char *const s_modsRetroName[NATIVE_MODS_RETRO_PARTS] = {"SUPER PADS", "LONG SUPER PADS", "USF STACKING", "KEEP RESERVES"};
+internal const char *const s_modsRetroHint[NATIVE_MODS_RETRO_PARTS] = {"EVERY PAD GIVES SUPER FIRE", "SUPER PADS GIVE 1 S RESERVES",
+                                                                       "BOOSTS KEEP THE SUPER FIRE", "SQUARE + DOWN KEEPS RESERVES"};
+
+// RETRO FUELED, LONG SUPER PADS: the reserves of a kart's turbo pad
+// (VehPhysForce_CollideDrivers), 1 s.
+#define NATIVE_MODS_RETRO_PAD_RESERVES 960
 
 // DIFFICULTY: the move in the game's blend (0xF0 is the distance from its
 // first table to its second; a step of the cup menu is 0x50): EASY one step
@@ -725,6 +735,7 @@ struct NativeModsPlay
 {
 	int value[NATIVE_MODS_VALUES];
 	u8 level[NATIVE_MODS_ITEM_IDS];
+	u8 retro[NATIVE_MODS_RETRO_PARTS];
 
 	// --dev-mods-play only: the bots' difficulty before DIFFICULTY (-1 none)
 	// and the race frame of a snapshot (0 none).
@@ -744,6 +755,10 @@ internal void NativeMods_PlayDefaults(struct NativeModsPlay *play)
 	for (k = 0; k < NATIVE_MODS_ITEM_IDS; k++)
 	{
 		play->level[k] = NATIVE_MODS_WEIGHT_NORMAL;
+	}
+	for (k = 0; k < NATIVE_MODS_RETRO_PARTS; k++)
+	{
+		play->retro[k] = 1;
 	}
 	play->base = -1;
 }
@@ -810,6 +825,8 @@ const char *NativeMods_ValueText(int which)
 		return s_modsDiffText[value];
 	case NATIVE_MODS_BOSS:
 		return s_modsBossText[value];
+	case NATIVE_MODS_RETRO:
+		return s_modsRetroText[value];
 	default:
 		snprintf(text, sizeof(text), "%d %%", value);
 		return text;
@@ -886,8 +903,35 @@ void NativeMods_SetItemLevel(int item, int level)
 	Platform_Log("[CTR Mods] item weight %s: %s\n", NativeMods_ItemName(item), s_modsLevelText[level]);
 }
 
+int NativeMods_RetroPart(int part)
+{
+	return ((part >= 0) && (part < NATIVE_MODS_RETRO_PARTS)) ? NativeMods_Play()->retro[part] : 0;
+}
+
+void NativeMods_SetRetroPart(int part, int on)
+{
+	if ((part < 0) || (part >= NATIVE_MODS_RETRO_PARTS))
+	{
+		return;
+	}
+
+	NativeMods_Play()->retro[part] = (u8)(on != 0);
+	NativeMods_PlaySaved();
+	Platform_Log("[CTR Mods] retro part %s: %s\n", s_modsRetroName[part], s_modsRetroText[on != 0]);
+}
+
+const char *NativeMods_RetroPartName(int part)
+{
+	return ((part >= 0) && (part < NATIVE_MODS_RETRO_PARTS)) ? s_modsRetroName[part] : "?";
+}
+
+const char *NativeMods_RetroPartHint(int part)
+{
+	return ((part >= 0) && (part < NATIVE_MODS_RETRO_PARTS)) ? s_modsRetroHint[part] : "";
+}
+
 // ctr-settings.cfg: the file's values (never --dev-mods-play's), an item
-// weight only where it is not NORMAL.
+// weight only where it is not NORMAL, a retro part only where it is OFF.
 internal void NativeMods_PlaySaveLines(FILE *file)
 {
 	const struct NativeModsPlay *play = NativeMods_FilePlay();
@@ -903,6 +947,14 @@ internal void NativeMods_PlaySaveLines(FILE *file)
 		if (play->level[k] != NATIVE_MODS_WEIGHT_NORMAL)
 		{
 			fprintf(file, "mods weight %d %d\n", k, (int)play->level[k]);
+		}
+	}
+
+	for (k = 0; k < NATIVE_MODS_RETRO_PARTS; k++)
+	{
+		if (!play->retro[k])
+		{
+			fprintf(file, "mods retropart %d 0\n", k);
 		}
 	}
 }
@@ -933,6 +985,15 @@ internal int NativeMods_PlayLoadLine(const char *rest)
 		if ((item >= 0) && (item < NATIVE_MODS_ITEM_IDS))
 		{
 			play->level[item] = (u8)(((value >= NATIVE_MODS_WEIGHT_OFF) && (value <= NATIVE_MODS_WEIGHT_HIGH)) ? value : NATIVE_MODS_WEIGHT_NORMAL);
+		}
+		return 1;
+	}
+
+	if (sscanf(rest, "retropart %d %d", &item, &value) == 2)
+	{
+		if ((item >= 0) && (item < NATIVE_MODS_RETRO_PARTS))
+		{
+			play->retro[item] = (u8)(value != 0);
 		}
 		return 1;
 	}
@@ -1006,6 +1067,19 @@ internal int NativeMods_PlayOn(int which)
 		return (play->value[which] == NATIVE_MODS_ITEMS_CHAOS) || ((play->value[which] == NATIVE_MODS_ITEMS_CUSTOM) && !NativeMods_ItemsAllOff());
 	}
 
+	// RETRO FUELED with every part OFF is OFF.
+	if (which == NATIVE_MODS_RETRO)
+	{
+		int k;
+		int parts = 0;
+
+		for (k = 0; k < NATIVE_MODS_RETRO_PARTS; k++)
+		{
+			parts += play->retro[k];
+		}
+		return (play->value[which] != 0) && (parts > 0);
+	}
+
 	return play->value[which] != s_modsRange[which].normal;
 }
 
@@ -1059,6 +1133,12 @@ global_variable u32 s_modsBlend[2];
 global_variable int s_modsBotRescues;
 global_variable int s_modsNightFrames;
 global_variable int s_modsLaps;
+global_variable u32 s_modsRetro[2][NATIVE_MODS_RETRO_PARTS];
+global_variable u32 s_modsRetroCleared;
+
+// --dev-mods-play: the CPU attacks of the race in progress, by held item id
+// (NativeMods_NoteItem, logged with each lap of seat 0).
+global_variable int s_modsRaceAttacks[NATIVE_MODS_REPORT_IDS];
 
 internal void NativeMods_PlayReport(void)
 {
@@ -1121,6 +1201,20 @@ internal void NativeMods_PlayReport(void)
 			}
 			Platform_Log("[CTR Mods] at exit: %d %s (held item id=count):%s\n", total, from[k], line);
 		}
+	}
+
+	for (k = 0; k < NATIVE_MODS_RETRO_PARTS; k++)
+	{
+		if ((s_modsRetro[0][k] != 0) || (s_modsRetro[1][k] != 0))
+		{
+			Platform_Log("[CTR Mods] at exit: retro %s in %u frame(s) of a kart and %u of a CPU driver\n", s_modsRetroName[k], (unsigned)s_modsRetro[0][k],
+			             (unsigned)s_modsRetro[1][k]);
+		}
+	}
+	if (s_modsRetroCleared != 0)
+	{
+		Platform_Log("[CTR Mods] at exit: retro, square cleared the reserves of a kart in %u frame(s) (neither down held nor in the air)\n",
+		             (unsigned)s_modsRetroCleared);
 	}
 
 	if (s_modsLaps != 0)
@@ -1485,24 +1579,18 @@ int NativeMods_ItemWeight(int item)
 	}
 }
 
-int NativeMods_CpuWeaponWeight(int weapon)
+int NativeMods_CpuExtreme(void)
 {
-	if (NativeMods_Value(NATIVE_MODS_ITEMS) == NATIVE_MODS_ITEMS_CHAOS)
-	{
-		return 1;
-	}
-
-	switch (weapon)
-	{
-	case HELD_ITEM_BOMB_1X:
-		return NativeMods_ItemWeight(HELD_ITEM_BOMB_1X) + NativeMods_ItemWeight(HELD_ITEM_BOMB_3X);
-	case HELD_ITEM_MISSILE_1X:
-		return NativeMods_ItemWeight(HELD_ITEM_MISSILE_1X) + NativeMods_ItemWeight(HELD_ITEM_MISSILE_3X);
-	default:
-		return NativeMods_ItemWeight(weapon);
-	}
+	return NativeMods_Active(NATIVE_MODS_DIFFICULTY) && (NativeMods_Value(NATIVE_MODS_DIFFICULTY) == NATIVE_MODS_DIFF_EXTREME);
 }
 
+int NativeMods_CpuAllItems(void)
+{
+	return NativeMods_ItemsActive() || NativeMods_CpuExtreme();
+}
+
+// Counted for every race (the disc's attacks too), only reported when a play
+// mod armed the report or --dev-mods-play runs.
 void NativeMods_NoteItem(int bot, int item)
 {
 	if ((item < 0) || (item >= NATIVE_MODS_REPORT_IDS) || (bot < 0) || (bot > 2))
@@ -1510,8 +1598,113 @@ void NativeMods_NoteItem(int bot, int item)
 		return;
 	}
 
-	NativeMods_ArmReport();
+	if ((bot != 1) || (s_modsPlayDevCount > 0) || NativeMods_CpuAllItems())
+	{
+		NativeMods_ArmReport();
+	}
 	s_modsItems[bot][item]++;
+	if (bot == 1)
+	{
+		s_modsRaceAttacks[item]++;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RETRO FUELED
+// ---------------------------------------------------------------------------
+
+// The rules of "Retro-Fueled" by TheRedhotbr (CTR-ModSDK, GPL-3.0, its
+// mods/Modules/Retro-Fueled and the same rules as C in
+// mods/Standalones/UnnamedDefinitiveCTRMod/src/Packaged_Mods/Retro-Fueled,
+// read at commit e3f19686fb07; THIRD_PARTY_NOTICES.md). The mod patches the
+// PS1 code; here its conditions sit in our C where the game takes them -
+// VehPhysForce_CollideDrivers and BOTS_UpdateGlobals' nav turbos (the pads),
+// VehFire_Increment (the stacking), VehPhysProc_Driving_PhysLinear (square).
+// Not taken: its blue fire (one palette at a fixed VRAM place, switched by
+// driver 1 alone) and its title and banner graphics (track files).
+internal int NativeMods_RetroOn(int part)
+{
+	return NativeMods_Active(NATIVE_MODS_RETRO) && NativeMods_Play()->retro[part];
+}
+
+internal void NativeMods_NoteRetro(int bot, int part)
+{
+	NativeMods_ArmReport();
+	s_modsRetro[bot != 0][part]++;
+}
+
+int NativeMods_RetroSuperPad(int bot)
+{
+	if (!NativeMods_RetroOn(NATIVE_MODS_RETRO_PADS))
+	{
+		return 0;
+	}
+
+	NativeMods_NoteRetro(bot, NATIVE_MODS_RETRO_PADS);
+	return 1;
+}
+
+// OopsAllSuperTurboPads.c gives every pad 960 (StandardizeTurboPadReserves).
+int NativeMods_RetroPadReserves(int reserves, int bot)
+{
+	if (!NativeMods_RetroOn(NATIVE_MODS_RETRO_LONG))
+	{
+		return reserves;
+	}
+
+	NativeMods_NoteRetro(bot, NATIVE_MODS_RETRO_LONG);
+	return NATIVE_MODS_RETRO_PAD_RESERVES;
+}
+
+// Turbo_Increment_AllowUSFStacking.c: the game's third reason to take the
+// new speed cap - a super fire, and not on a super turbo pad - is left out.
+int NativeMods_RetroKeepUsf(int bot)
+{
+	if (!NativeMods_RetroOn(NATIVE_MODS_RETRO_STACK))
+	{
+		return 0;
+	}
+
+	NativeMods_NoteRetro(bot, NATIVE_MODS_RETRO_STACK);
+	return 1;
+}
+
+// KeepU-TurnReserves.c (HookReserveCancelation): square with down held, or
+// with the air time running (jump_LandingBoost), keeps the reserves; and the
+// "holding X with reserves" the game then assumes is not assumed unless X is
+// held. The mod reads pad 1 and driver 1 for every kart; here each kart's own.
+int NativeMods_RetroKeepRule(u32 buttons, int airTime, int *noGas)
+{
+	const int keep = ((buttons & BTN_DOWN) != 0) || (airTime != 0);
+
+	*noGas = keep && ((buttons & BTN_CROSS) == 0);
+	return keep;
+}
+
+int NativeMods_RetroKeepReserves(u32 buttons, int airTime, int reserves, int *noGas)
+{
+	int keep;
+
+	*noGas = 0;
+	if (!NativeMods_RetroOn(NATIVE_MODS_RETRO_KEEP))
+	{
+		return 0;
+	}
+
+	keep = NativeMods_RetroKeepRule(buttons, airTime, noGas);
+	if (reserves > 0)
+	{
+		if (keep)
+		{
+			NativeMods_NoteRetro(0, NATIVE_MODS_RETRO_KEEP);
+		}
+		else
+		{
+			NativeMods_ArmReport();
+			s_modsRetroCleared++;
+		}
+	}
+	return keep;
 }
 
 // ---------------------------------------------------------------------------
@@ -1638,6 +1831,7 @@ internal void NativeMods_NextRace(void)
 	s_modsRaceLoads++;
 	s_modsRaceFrames = 0;
 	s_modsBossMissingSaid = 0;
+	memset(s_modsRaceAttacks, 0, sizeof(s_modsRaceAttacks));
 
 	if (s_modsPlayDevCount > 0)
 	{
@@ -1717,6 +1911,27 @@ void NativeMods_NoteLap(const struct Driver *driver, int lapIndex, int ticks)
 	             (int)sdata->gGT->levelID, s_modsDiffText[NativeMods_Value(NATIVE_MODS_DIFFICULTY)], (int)driver->driverID,
 	             data.MetaDataCharacters[(int)data.characterIDs[driver->driverID]].name_Debug, (driver->driverID == 0) ? "seat 0" : "cpu", lapIndex + 1,
 	             ms / 1000, ms % 1000);
+
+	// The CPU attacks of this race so far, at each lap of seat 0 (the
+	// measuring of EXTREME): the count, and by held item id.
+	if (driver->driverID == 0)
+	{
+		char line[256] = "";
+		int total = 0;
+		int id;
+
+		for (id = 0; id < NATIVE_MODS_REPORT_IDS; id++)
+		{
+			total += s_modsRaceAttacks[id];
+			if (s_modsRaceAttacks[id] != 0)
+			{
+				snprintf(&line[strlen(line)], sizeof(line) - strlen(line), " %d=%d", id, s_modsRaceAttacks[id]);
+			}
+		}
+		Platform_Log("[CTR Mods] attacks: race load %d, level %d, difficulty %s, items %s, seat 0 lap %d done: %d CPU attack(s) so far (held item id=count):%s\n",
+		             s_modsRaceLoads, (int)sdata->gGT->levelID, s_modsDiffText[NativeMods_Value(NATIVE_MODS_DIFFICULTY)],
+		             s_modsItemsText[NativeMods_Value(NATIVE_MODS_ITEMS)], lapIndex + 1, total, line);
+	}
 }
 
 void NativeMods_NoteBotRescue(void)
@@ -1860,6 +2075,23 @@ internal int NativeMods_DevSet(char *text, struct NativeModsPlay *play)
 			continue;
 		}
 
+		for (k = 0; k < NATIVE_MODS_RETRO_PARTS; k++)
+		{
+			if (strcmp(word, s_modsRetroKey[k]) == 0)
+			{
+				break;
+			}
+		}
+		if (k < NATIVE_MODS_RETRO_PARTS)
+		{
+			if (!NativeMods_Number(equals, &value) || (value < 0) || (value > 1))
+			{
+				return 0;
+			}
+			play->retro[k] = (u8)value;
+			continue;
+		}
+
 		for (k = 0; k < NATIVE_MODS_VALUES; k++)
 		{
 			if (strcmp(word, s_modsRange[k].key) == 0)
@@ -1882,8 +2114,21 @@ internal int NativeMods_DevSet(char *text, struct NativeModsPlay *play)
 		}
 		else
 		{
-			value = (k == NATIVE_MODS_ITEMS) ? NativeMods_Word(equals, s_modsItemsText, 3)
-			                                 : ((k == NATIVE_MODS_DIFFICULTY) ? NativeMods_Word(equals, s_modsDiffText, 4) : NativeMods_Word(equals, s_modsBossText, 7));
+			switch (k)
+			{
+			case NATIVE_MODS_ITEMS:
+				value = NativeMods_Word(equals, s_modsItemsText, 3);
+				break;
+			case NATIVE_MODS_DIFFICULTY:
+				value = NativeMods_Word(equals, s_modsDiffText, 4);
+				break;
+			case NATIVE_MODS_RETRO:
+				value = NativeMods_Word(equals, s_modsRetroText, 2);
+				break;
+			default:
+				value = NativeMods_Word(equals, s_modsBossText, 7);
+				break;
+			}
 			if (value < 0)
 			{
 				return 0;
@@ -1934,10 +2179,12 @@ int NativeMods_SetDevPlay(const char *list)
 	{
 		const struct NativeModsPlay *play = &s_modsPlayDev[k];
 
-		Platform_Log("[CTR Mods] --dev-mods-play set %d: gravity %d %%, grip %d %%, night %d %%, items %s, difficulty %s, boss %s%s (this run only)\n", k + 1,
-		             play->value[NATIVE_MODS_GRAVITY], play->value[NATIVE_MODS_GRIP], play->value[NATIVE_MODS_NIGHT],
+		Platform_Log("[CTR Mods] --dev-mods-play set %d: gravity %d %%, grip %d %%, night %d %%, items %s, difficulty %s, boss %s, retro %s (parts %d%d%d%d)%s "
+		             "(this run only)\n",
+		             k + 1, play->value[NATIVE_MODS_GRAVITY], play->value[NATIVE_MODS_GRIP], play->value[NATIVE_MODS_NIGHT],
 		             s_modsItemsText[play->value[NATIVE_MODS_ITEMS]], s_modsDiffText[play->value[NATIVE_MODS_DIFFICULTY]],
-		             s_modsBossText[play->value[NATIVE_MODS_BOSS]], (play->base >= 0) ? ", measuring base set" : "");
+		             s_modsBossText[play->value[NATIVE_MODS_BOSS]], s_modsRetroText[play->value[NATIVE_MODS_RETRO]], play->retro[0], play->retro[1],
+		             play->retro[2], play->retro[3], (play->base >= 0) ? ", measuring base set" : "");
 	}
 	return 1;
 }
@@ -1948,7 +2195,7 @@ int NativeMods_SetDevPlay(const char *list)
 
 int VehPhysGeneral_ChaosSelfTest(int *checks);                      // game/Vehicle/VehPhysGeneral.c
 int VehPhysGeneral_ItemsBoxSelfTest(int mode, const char *what, int *checks); // game/Vehicle/VehPhysGeneral.c
-int PickupBots_WeaponSelfTest(int *checks);                         // game/PickupBots.c
+int PickupBots_ItemSelfTest(const char *what, int *checks);         // game/PickupBots.c
 
 #define NATIVE_MODS_EXPECT(cond, ...)                                                                                                                       \
 	do                                                                                                                                                     \
@@ -1989,6 +2236,11 @@ int NativeMods_SelfTest(void)
 	    {NATIVE_MODS_CPU_DEFAULT, 0u, "boss=pinstripe", "PINSTRIPE"},
 	    {NATIVE_MODS_CPU_SELECTED, 0x7u, "boss=random", "RANDOM BOSS"},
 	    {NATIVE_MODS_CPU_DEFAULT, 0u, "boss=papu,night=50,grip=0", "BOSS +2"},
+	    {NATIVE_MODS_CPU_DEFAULT, 0u, "retro=on", "1 MOD"},
+	    {NATIVE_MODS_CPU_DEFAULT, 0u, "retro=on,rpads=0,rlong=0,rstack=0,rkeep=0", "OFF"},
+	    {NATIVE_MODS_CPU_DEFAULT, 0u, "retro=off,rpads=1", "OFF"},
+	    {NATIVE_MODS_CPU_ALL, 0u, "retro=on,rkeep=0,gravity=50,items=chaos", "RANDOM +3"},
+	    {NATIVE_MODS_CPU_DEFAULT, 0u, "boss=joe,retro=on", "BOSS +1"},
 	};
 	static const struct
 	{
@@ -2019,7 +2271,10 @@ int NativeMods_SelfTest(void)
 	    {"icy,chaos", 1, 1, 100, 0, 1, 0},
 	    {"gravity=20,grip=30,items=custom,boss=joe", 1, 1, 20, 30, 2, 4},
 	    {"none/gravity=200/boss=random", 1, 3, 100, 100, 0, 0},
+	    {"retro=on,rpads=0,gravity=50", 1, 1, 50, 100, 0, 0},
 	    {"", 0, 0, 0, 0, 0, 0},
+	    {"retro=yes", 0, 0, 0, 0, 0, 0},
+	    {"rpads=2", 0, 0, 0, 0, 0, 0},
 	    {"moon,", 0, 0, 0, 0, 0, 0},
 	    {"gravity", 0, 0, 0, 0, 0, 0},
 	    {"gravity=19", 0, 0, 0, 0, 0, 0},
@@ -2040,6 +2295,7 @@ int NativeMods_SelfTest(void)
 	    {NATIVE_MODS_GRAVITY, 20, -1, 20},  {NATIVE_MODS_GRAVITY, 200, 1, 200}, {NATIVE_MODS_GRIP, 0, -1, 0},     {NATIVE_MODS_GRIP, 0, 1, 10},
 	    {NATIVE_MODS_GRIP, 100, 1, 100},    {NATIVE_MODS_NIGHT, 90, 1, 90},     {NATIVE_MODS_NIGHT, 0, 1, 10},    {NATIVE_MODS_BOSS, 6, 1, 6},
 	    {NATIVE_MODS_BOSS, 0, 1, 1},        {NATIVE_MODS_DIFFICULTY, 0, -1, 0}, {NATIVE_MODS_ITEMS, 2, 1, 2},
+	    {NATIVE_MODS_RETRO, 0, 1, 1},       {NATIVE_MODS_RETRO, 1, 1, 1},       {NATIVE_MODS_RETRO, 1, -1, 0},
 	};
 	static const struct
 	{
@@ -2094,6 +2350,11 @@ int NativeMods_SelfTest(void)
 	NATIVE_MODS_EXPECT(NativeMods_LoadLine("weight 7 9") && (s_modsPlayFile.level[7] == NATIVE_MODS_WEIGHT_NORMAL), "line \"weight 7 9\"");
 	NATIVE_MODS_EXPECT(NativeMods_LoadLine("difficulty 3") && (s_modsPlayFile.value[NATIVE_MODS_DIFFICULTY] == 3), "line \"difficulty 3\"");
 	NATIVE_MODS_EXPECT(NativeMods_LoadLine("boss 7") && (s_modsPlayFile.value[NATIVE_MODS_BOSS] == 0), "line \"boss 7\"");
+	NATIVE_MODS_EXPECT(NativeMods_LoadLine("retro 1") && (s_modsPlayFile.value[NATIVE_MODS_RETRO] == 1), "line \"retro 1\"");
+	NATIVE_MODS_EXPECT(NativeMods_LoadLine("retro 2") && (s_modsPlayFile.value[NATIVE_MODS_RETRO] == 0), "line \"retro 2\"");
+	NATIVE_MODS_EXPECT(NativeMods_LoadLine("retropart 2 0") && (s_modsPlayFile.retro[2] == 0) && (s_modsPlayFile.retro[1] == 1), "line \"retropart 2 0\"");
+	NATIVE_MODS_EXPECT(NativeMods_LoadLine("retropart 2 1") && (s_modsPlayFile.retro[2] == 1), "line \"retropart 2 1\"");
+	NATIVE_MODS_EXPECT(NativeMods_LoadLine("retropart 9 0") && (s_modsPlayFile.retro[3] == 1), "line \"retropart 9 0\"");
 	NativeMods_PlayDefaults(NativeMods_FilePlay());
 
 	// --dev-mods-play.
@@ -2121,6 +2382,18 @@ int NativeMods_SelfTest(void)
 		NATIVE_MODS_EXPECT(NativeMods_Value(NATIVE_MODS_GRAVITY) == wanted[t], "race load %d has gravity %d", t + 1, NativeMods_Value(NATIVE_MODS_GRAVITY));
 	}
 	NATIVE_MODS_EXPECT(NativeMods_Value(NATIVE_MODS_NIGHT) == 30, "the last set stays");
+
+	// A dev set's retro parts; all ON at first.
+	NativeMods_SetDevPlay("retro=on,rlong=0,rkeep=0");
+	NATIVE_MODS_EXPECT((NativeMods_Value(NATIVE_MODS_RETRO) == 1) && (NativeMods_RetroPart(NATIVE_MODS_RETRO_PADS) == 1) &&
+	                       (NativeMods_RetroPart(NATIVE_MODS_RETRO_LONG) == 0) && (NativeMods_RetroPart(NATIVE_MODS_RETRO_STACK) == 1) &&
+	                       (NativeMods_RetroPart(NATIVE_MODS_RETRO_KEEP) == 0),
+	                   "the retro parts of a dev set");
+	NativeMods_SetDevPlay("none");
+	for (t = 0; t < NATIVE_MODS_RETRO_PARTS; t++)
+	{
+		NATIVE_MODS_EXPECT(NativeMods_RetroPart(t) == 1, "retro part %d is ON at first", t);
+	}
 
 	// THE STEPS of the page.
 	NativeMods_SetDevPlay("none");
@@ -2312,8 +2585,78 @@ int NativeMods_SelfTest(void)
 		                   "boss %s keeps his sections at home", s_modsBosses[t].name);
 	}
 
+	// RETRO FUELED: off changes nothing - the pads' own values, no stacking,
+	// square clears; on, each part alone does its own and nothing of the
+	// others.
+	{
+		static const struct
+		{
+			u32 buttons;
+			int air;
+			int keep;
+			int noGas;
+		} keepCases[] = {
+		    {BTN_SQUARE, 0, 0, 0},
+		    {BTN_SQUARE | BTN_DOWN, 0, 1, 1},
+		    {BTN_SQUARE | BTN_DOWN | BTN_CROSS, 0, 1, 0},
+		    {BTN_SQUARE, 33, 1, 1},
+		    {BTN_SQUARE | BTN_CROSS, 33, 1, 0},
+		    {BTN_SQUARE | BTN_CROSS, 0, 0, 0},
+		    {BTN_SQUARE | BTN_LEFT | BTN_UP, 0, 0, 0},
+		};
+		int noGas;
+
+		NativeMods_SetDevPlay("none");
+		NATIVE_MODS_EXPECT(!NativeMods_RetroSuperPad(0) && !NativeMods_RetroSuperPad(1) && (NativeMods_RetroPadReserves(0x78, 0) == 0x78) &&
+		                       (NativeMods_RetroPadReserves(0x78, 1) == 0x78) && !NativeMods_RetroKeepUsf(0) &&
+		                       !NativeMods_RetroKeepReserves(BTN_SQUARE | BTN_DOWN, 33, 500, &noGas) && (noGas == 0),
+		                   "RETRO FUELED off changes nothing");
+		NativeMods_SetDevPlay("retro=on,rpads=0,rlong=0,rstack=0,rkeep=0");
+		NATIVE_MODS_EXPECT(!NativeMods_Active(NATIVE_MODS_RETRO) && !NativeMods_RetroSuperPad(0) && (NativeMods_RetroPadReserves(0x78, 0) == 0x78) &&
+		                       !NativeMods_RetroKeepUsf(1) && !NativeMods_RetroKeepReserves(BTN_SQUARE | BTN_DOWN, 0, 500, &noGas),
+		                   "RETRO FUELED with every part OFF changes nothing");
+		NativeMods_SetDevPlay("retro=on,rlong=0,rstack=0,rkeep=0");
+		NATIVE_MODS_EXPECT(NativeMods_RetroSuperPad(0) && NativeMods_RetroSuperPad(1) && (NativeMods_RetroPadReserves(0x78, 1) == 0x78) &&
+		                       !NativeMods_RetroKeepUsf(0) && !NativeMods_RetroKeepReserves(BTN_SQUARE | BTN_DOWN, 0, 500, &noGas),
+		                   "SUPER PADS alone");
+		NativeMods_SetDevPlay("retro=on,rpads=0,rstack=0,rkeep=0");
+		NATIVE_MODS_EXPECT(!NativeMods_RetroSuperPad(0) && (NativeMods_RetroPadReserves(0x78, 0) == 960) && (NativeMods_RetroPadReserves(0x78, 1) == 960) &&
+		                       !NativeMods_RetroKeepUsf(1),
+		                   "LONG SUPER PADS alone: 1 s, the karts' 0x3c0 of a turbo pad");
+		NativeMods_SetDevPlay("retro=on,rpads=0,rlong=0,rkeep=0");
+		NATIVE_MODS_EXPECT(!NativeMods_RetroSuperPad(1) && NativeMods_RetroKeepUsf(0) && NativeMods_RetroKeepUsf(1) &&
+		                       !NativeMods_RetroKeepReserves(BTN_SQUARE | BTN_DOWN, 0, 500, &noGas),
+		                   "USF STACKING alone");
+		NativeMods_SetDevPlay("retro=on,rpads=0,rlong=0,rstack=0");
+		for (k = 0; k < sizeof(keepCases) / sizeof(keepCases[0]); k++)
+		{
+			const int keep = NativeMods_RetroKeepReserves(keepCases[k].buttons, keepCases[k].air, 500, &noGas);
+			int ruleGas;
+			const int rule = NativeMods_RetroKeepRule(keepCases[k].buttons, keepCases[k].air, &ruleGas);
+
+			NATIVE_MODS_EXPECT((keep == keepCases[k].keep) && (noGas == keepCases[k].noGas) && (rule == keep) && (ruleGas == noGas),
+			                   "KEEP RESERVES, buttons 0x%x, air %d: keep %d no gas %d", (unsigned)keepCases[k].buttons, keepCases[k].air, keep, noGas);
+		}
+		NATIVE_MODS_EXPECT(!NativeMods_RetroSuperPad(0) && (NativeMods_RetroPadReserves(0x78, 0) == 0x78) && !NativeMods_RetroKeepUsf(0),
+		                   "KEEP RESERVES alone");
+		NativeMods_SetDevPlay("retro=off");
+	}
+
+	// CPU ITEMS: only with ITEMS active or EXTREME; the attacks of EXTREME only
+	// with EXTREME.
+	NativeMods_SetDevPlay("none");
+	NATIVE_MODS_EXPECT(!NativeMods_CpuAllItems() && !NativeMods_CpuExtreme(), "the disc's CPU weapons at DEFAULT");
+	NativeMods_SetDevPlay("difficulty=hard");
+	NATIVE_MODS_EXPECT(!NativeMods_CpuAllItems() && !NativeMods_CpuExtreme(), "the disc's CPU weapons at HARD");
+	NativeMods_SetDevPlay("items=custom,w0=0,w1=0,w2=0,w3=0,w4=0,w6=0,w7=0,w8=0,w9=0,w10=0,w11=0,w12=0,w13=0");
+	NATIVE_MODS_EXPECT(!NativeMods_CpuAllItems(), "the disc's CPU weapons with every item OFF");
+	NativeMods_SetDevPlay("items=chaos");
+	NATIVE_MODS_EXPECT(NativeMods_CpuAllItems() && !NativeMods_CpuExtreme(), "CPU ITEMS with CHAOS");
+	NativeMods_SetDevPlay("difficulty=extreme");
+	NATIVE_MODS_EXPECT(NativeMods_CpuAllItems() && NativeMods_CpuExtreme(), "CPU ITEMS and the attacks with EXTREME");
+
 	// ITEMS: the chaos draw over a whole period, then the item box itself -
-	// DEFAULT, CHAOS, a mixed CUSTOM and one item alone - and the CPU weapons.
+	// DEFAULT, CHAOS, a mixed CUSTOM and one item alone - and the CPU items.
 	s_modsPlayDev[0].value[NATIVE_MODS_ITEMS] = NATIVE_MODS_ITEMS_CHAOS;
 	failures += VehPhysGeneral_ChaosSelfTest(&checks);
 	s_modsPlayDev[0].value[NATIVE_MODS_ITEMS] = NATIVE_MODS_ITEMS_DEFAULT;
@@ -2327,8 +2670,16 @@ int NativeMods_SelfTest(void)
 	NativeMods_SetDevPlay("items=custom,w0=0,w1=0,w2=0,w3=0,w4=0,w6=0,w7=0,w8=0,w9=0,w10=0,w11=0");
 	NATIVE_MODS_EXPECT(!NativeMods_ItemsActive() && NativeMods_ItemsAllOff(), "every item OFF is DEFAULT");
 	failures += VehPhysGeneral_ItemsBoxSelfTest(0, "CUSTOM all off", &checks);
-	NativeMods_SetDevPlay("items=custom,w0=3,w1=0,w2=0,w3=2,w4=1,w6=3,w7=3,w8=3,w9=3,w10=3,w11=1");
-	failures += PickupBots_WeaponSelfTest(&checks);
+	NativeMods_SetDevPlay("items=chaos");
+	failures += PickupBots_ItemSelfTest("CHAOS", &checks);
+	NativeMods_SetDevPlay("items=custom,w0=3,w1=0,w2=0,w3=2,w4=1,w6=3,w7=3,w8=3,w9=3,w10=3,w11=1,w12=2,w13=0");
+	failures += PickupBots_ItemSelfTest("CUSTOM mixed", &checks);
+	NativeMods_SetDevPlay("items=custom,w0=0,w1=0,w2=0,w3=0,w4=0,w6=0,w7=1,w8=0,w9=0,w10=0,w11=0,w12=0,w13=0");
+	failures += PickupBots_ItemSelfTest("CUSTOM mask alone", &checks);
+	NativeMods_SetDevPlay("difficulty=extreme");
+	failures += PickupBots_ItemSelfTest("EXTREME, ITEMS DEFAULT (aimed)", &checks);
+	NativeMods_SetDevPlay("difficulty=extreme,items=chaos");
+	failures += PickupBots_ItemSelfTest("EXTREME and CHAOS", &checks);
 	s_modsSelfTestRace = 0;
 
 	s_modsCpu = savedCpu;

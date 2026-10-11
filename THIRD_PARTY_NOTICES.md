@@ -681,6 +681,28 @@ indices).
 
 Sunset Vista compatibility data used with permission of Tramadoll.
 
+## Retro-Fueled (CTR-ModSDK)
+
+Source: <https://github.com/CTR-tools/CTR-ModSDK>, `mods/Modules/Retro-Fueled`
+and the same rules as C in
+`mods/Standalones/UnnamedDefinitiveCTRMod/src/Packaged_Mods/Retro-Fueled`,
+read at commit `e3f19686fb07`.
+
+Retro-Fueled is a mod by TheRedhotbr that brings rules of Crash Team Racing
+Nitro-Fueled to the original game. The RETRO FUELED option of the MODS page
+follows four of its rules: every turbo pad gives the fire of a super turbo pad,
+a super turbo pad gives one second of reserves, a boost on top of a super fire
+keeps the super fire's speed, and the reserves stay when square is held together
+with down or in the air. The mod patches the PlayStation code. CTR Reload Edition
+takes the conditions of these rules into its own C code at the places of the
+game they change (`platform/native_mods.c`, `game/Vehicle/VehPhysForce.c`,
+`game/Vehicle/VehFire.c`, `game/Vehicle/VehPhysProc.c`, `game/BOTS.c`); no patch
+file, address or graphic of the mod is used. Its blue fire (by Avery) and its
+title and start banner graphics (by Avery and LinkZer) are not included.
+
+License: GNU General Public License, version 3 (the license of CTR-ModSDK and
+of CTR Reload Edition).
+
 ## Origin of game data, texts and decompiled tables
 
 The data tables taken from the retail game, the game texts and the decompiled

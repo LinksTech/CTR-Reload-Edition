@@ -1392,7 +1392,10 @@ void VehPhysGeneral_SetHeldItem(struct Driver *driver)
 	if (modsItems)
 	{
 		driver->heldItemID = VehPhysGeneral_ModsItem();
-		NativeMods_NoteItem(0, driver->heldItemID);
+		if ((driver->actionsFlagSet & ACTION_BOT) == 0)
+		{
+			NativeMods_NoteItem(0, driver->heldItemID);
+		}
 	}
 
 	// In Boss race - and in BOSS of the MODS page as on the first try (no race

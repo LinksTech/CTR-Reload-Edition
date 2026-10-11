@@ -91,9 +91,18 @@ static int PickupBots_IsCloseToPlayer(struct Driver *player, struct Driver *bot)
 	return (u32)((x * x + z * z) - PICKUPBOTS_CLOSE_DIST_SQ_BIAS) < PICKUPBOTS_CLOSE_DIST_SQ_RANGE;
 }
 
+// Every CPU attack is counted for the report at exit (NativeMods_NoteItem;
+// nothing of the race changes): the held item the bot used.
 static void PickupBots_SetCooldown(struct Driver *bot)
 {
+	NativeMods_NoteItem(1, bot->heldItemID);
 	bot->botData.weaponCooldown = (MixRNG_Scramble() & PICKUPBOTS_COOLDOWN_RANDOM_MASK) + PICKUPBOTS_COOLDOWN_BASE_FRAMES;
+
+	// DIFFICULTY EXTREME (MODS page): half the time to the next attack.
+	if (NativeMods_CpuExtreme())
+	{
+		bot->botData.weaponCooldown = (bot->botData.weaponCooldown >> 1);
+	}
 }
 
 static void PickupBots_PlayVoice(u32 voiceID, struct Driver *attacker, struct Driver *victim)
@@ -101,124 +110,240 @@ static void PickupBots_PlayVoice(u32 voiceID, struct Driver *attacker, struct Dr
 	Voiceline_RequestPlay(voiceID, data.characterIDs[attacker->driverID], data.characterIDs[victim->driverID]);
 }
 
-// ITEMS (MODS page): one of the four CPU weapons by the weights of ITEMS
-// (NativeMods_CpuWeaponWeight: CHAOS 1 each, so one number of the game modulo
-// 4, as round 1; CUSTOM by ITEM WEIGHTS), whichever side of the player the bot
-// is on; -1 when every one of the four weighs 0.
-static const int s_pickupBotsWeapons[4] = {PICKUPBOTS_ITEM_TNT, PICKUPBOTS_ITEM_POTION, PICKUPBOTS_ITEM_BOMB, PICKUPBOTS_ITEM_MISSILE};
-
-static int PickupBots_ModsWeapon(void)
+// CPU ITEMS (MODS page, ITEMS CHAOS or CUSTOM, or DIFFICULTY EXTREME;
+// platform/native_mods.h): the item of a CPU attack, drawn by the item box
+// itself for the bot's place (VehPhysGeneral_SetHeldItem - CHAOS and CUSTOM by
+// their weights, DEFAULT the set of the bot's rank, one warpball at a time),
+// the stack of a triple not kept. With ITEMS at DEFAULT under EXTREME aimed at
+// the player: a bot ahead of him takes no missile (it would fly ahead, a bomb
+// thrown backwards instead), a bot behind no TNT or potion (dropped behind
+// it, a missile instead).
+static int PickupBots_ModsItem(struct Driver *bot, int ahead)
 {
-	int total = 0;
-	u32 rng;
-	int k;
+	int item;
 
-	for (k = 0; k < 4; k++)
+	VehPhysGeneral_SetHeldItem(bot);
+	item = bot->heldItemID;
+	bot->numHeldItems = 0;
+
+	if (NativeMods_CpuExtreme() && !NativeMods_ItemsActive())
 	{
-		total += NativeMods_CpuWeaponWeight(s_pickupBotsWeapons[k]);
-	}
-
-	rng = (u32)MixRNG_Scramble();
-	if (total <= 0)
-	{
-		return PICKUPBOTS_ITEM_INVALID;
-	}
-
-	rng %= (u32)total;
-	for (k = 0; k < 4; k++)
-	{
-		const u32 weight = (u32)NativeMods_CpuWeaponWeight(s_pickupBotsWeapons[k]);
-
-		if (rng < weight)
+		if (ahead && ((item == HELD_ITEM_MISSILE_1X) || (item == HELD_ITEM_MISSILE_3X)))
 		{
-			return s_pickupBotsWeapons[k];
+			item = HELD_ITEM_BOMB_1X;
 		}
-		rng -= weight;
+		else if (!ahead && ((item == PICKUPBOTS_ITEM_TNT) || (item == PICKUPBOTS_ITEM_POTION)))
+		{
+			item = HELD_ITEM_MISSILE_1X;
+		}
 	}
 
-	return s_pickupBotsWeapons[3];
+	return item;
 }
 
-// --mods-selftest (platform/native_mods.c): 65536 CPU weapons at the ITEMS
-// value the caller set, each within 5 percent of its weight's share, none of
-// weight 0. The random number is put back. Returns the failures.
-int PickupBots_WeaponSelfTest(int *checks)
+// --mods-selftest (platform/native_mods.c): 65536 CPU attacks of a bot in
+// fourth place on lap 2, at the play mods the caller set, half of them ahead
+// of the player - each item within 5 percent of the share the box gives it
+// (CHAOS, CUSTOM; the warpball flag cleared before each), or only items of the
+// bot's set (DEFAULT under EXTREME), never one the side rule takes away. The
+// random number is put back. Returns the failures.
+int PickupBots_ItemSelfTest(const char *what, int *checks)
 {
-	const int saved = sdata->randomNumber;
-	int counts[4] = {0};
+	static struct GameTracker race;
+	static struct Driver bot;
+	struct GameTracker *const savedGT = sdata->gGT;
+	const int savedRandom = sdata->randomNumber;
+	const int aimed = NativeMods_CpuExtreme() && !NativeMods_ItemsActive();
+	int counts[2][HELD_ITEM_ROULETTE + 1] = {{0}};
+	u8 items[NATIVE_MODS_ITEM_IDS];
+	const int itemCount = NativeMods_RaceItems(items);
 	int total = 0;
 	int failures = 0;
 	int i;
-	int k;
 
-	for (k = 0; k < 4; k++)
+	for (i = 0; i < itemCount; i++)
 	{
-		total += NativeMods_CpuWeaponWeight(s_pickupBotsWeapons[k]);
+		total += NativeMods_ItemWeight(items[i]);
 	}
+
+	memset(&race, 0, sizeof(race));
+	memset(&bot, 0, sizeof(bot));
+	race.gameMode1 = ARCADE_MODE;
+	race.numPlyrCurrGame = 1;
+	race.numBotsNextGame = 7;
+	bot.driverRank = 3;
+	bot.lapIndex = 1;
+	bot.actionsFlagSet = ACTION_BOT;
+	sdata->gGT = &race;
 
 	for (i = 0; i < 0x10000; i++)
 	{
-		const int weapon = PickupBots_ModsWeapon();
+		int item;
 
-		for (k = 0; k < 4; k++)
-		{
-			counts[k] += (weapon == s_pickupBotsWeapons[k]);
-		}
+		race.gameMode1 &= ~WARPBALL_HELD;
+		item = PickupBots_ModsItem(&bot, i & 1);
+		counts[i & 1][(item <= HELD_ITEM_ROULETTE) ? item : HELD_ITEM_ROULETTE]++;
 	}
-	sdata->randomNumber = saved;
 
-	for (k = 0; k < 4; k++)
+	sdata->gGT = savedGT;
+	sdata->randomNumber = savedRandom;
+
+	for (i = 0; i <= HELD_ITEM_ROULETTE; i++)
 	{
-		const int share = (total > 0) ? ((0x10000 * NativeMods_CpuWeaponWeight(s_pickupBotsWeapons[k])) / total) : 0;
-		const int off = counts[k] - share;
+		const int all = counts[0][i] + counts[1][i];
+		int inSet = 0;
+		int bad;
+		int k;
+
+		// Fourth place of eight is the second race set (SetHeldItem, 1P arcade).
+		for (k = 0; k < 0x34; k++)
+		{
+			inSet |= (data.RNG_itemSetRace2[k] == i);
+		}
+
+		if (aimed)
+		{
+			const int missile = (i == HELD_ITEM_MISSILE_1X) || (i == HELD_ITEM_MISSILE_3X);
+			const int dropped = (i == PICKUPBOTS_ITEM_TNT) || (i == PICKUPBOTS_ITEM_POTION);
+
+			bad = (missile && (counts[1][i] != 0)) || (dropped && (counts[0][i] != 0)) ||
+			      ((all != 0) && !inSet && (i != HELD_ITEM_BOMB_1X) && (i != HELD_ITEM_MISSILE_1X) && (i != HELD_ITEM_MISSILE_3X) && (i != HELD_ITEM_TURBO));
+		}
+		else
+		{
+			int raceItem = 0;
+			int weight;
+			int share;
+
+			for (k = 0; k < itemCount; k++)
+			{
+				raceItem |= (items[k] == i);
+			}
+			weight = raceItem ? NativeMods_ItemWeight(i) : 0;
+			share = (total > 0) ? ((0x10000 * weight) / total) : 0;
+			const int off = all - share;
+
+			bad = (share == 0) ? (all != 0) : (((off < 0) ? -off : off) * 20 > share);
+		}
 
 		(*checks)++;
-		if ((share == 0) ? (counts[k] != 0) : ((((off < 0) ? -off : off) * 20) > share))
+		if (bad)
 		{
-			printf("mods selftest: CPU weapon %d came %d times, its share %d\n", s_pickupBotsWeapons[k], counts[k], share);
+			printf("mods selftest: CPU items, %s, item %d came %d times ahead and %d behind (in the bot's set %d)\n", what, i, counts[1][i], counts[0][i], inSet);
 			failures++;
 		}
 	}
 
-	printf("mods selftest: CPU weapons by ITEM WEIGHTS (TNT, potion, bomb, missile): %d %d %d %d of 65536\n", counts[0], counts[1], counts[2], counts[3]);
+	{
+		char line[200] = "";
+
+		for (i = 0; i <= HELD_ITEM_ROULETTE; i++)
+		{
+			if ((counts[0][i] + counts[1][i]) != 0)
+			{
+				snprintf(&line[strlen(line)], sizeof(line) - strlen(line), " %d=%d/%d", i, counts[1][i], counts[0][i]);
+			}
+		}
+		printf("mods selftest: CPU items, %s, of 65536 attacks (held item id=ahead/behind):%s\n", what, line);
+	}
 	return failures;
 }
 
-// ITEMS (MODS page): a CPU attack with one of the four CPU weapons
-// (PickupBots_ModsWeapon). The weapon goes off as the branch of UpdateArcade
-// that fires it: TNT and potion are dropped, bomb and missile shot, with the
-// same voice line. Nothing when all four weigh 0.
-static void PickupBots_ModsAttack(struct Driver *bot, struct Driver *player)
+// CPU ITEMS: the attack with the item drawn (PickupBots_ModsItem), used at
+// once - TNT and potion dropped and bomb and missile shot as the branches of
+// UpdateArcade do (one of a triple; a bomb of a bot ahead backwards when the
+// attack is aimed), the others as the player's item (VehPickupItem_ShootNow):
+// turbo and mask on the bot, the shield without juice (a juiced one only ends
+// when its owner fires it, which a bot never does), clock and warpball on the
+// others. The race sets hold no invisibility and no super engine (battle
+// items; their timers run in the kart's code only), so none is drawn here.
+// The voice lines as the four weapons' on the disc.
+static void PickupBots_ModsAttack(struct Driver *bot, struct Driver *player, int ahead)
 {
-	const int weaponID = PickupBots_ModsWeapon();
-	const int dropped = (weaponID == PICKUPBOTS_ITEM_TNT) || (weaponID == PICKUPBOTS_ITEM_POTION);
+	const int item = PickupBots_ModsItem(bot, ahead);
+	const int human = (player->actionsFlagSet & ACTION_BOT) == 0;
 
-	if (weaponID < 0)
+	bot->heldItemID = item;
+
+	switch (item)
 	{
+	case PICKUPBOTS_ITEM_TNT:
+	case PICKUPBOTS_ITEM_POTION:
+		if (human)
+		{
+			PickupBots_PlayVoice(PICKUPBOTS_VOICELINE_MINE_DROP, bot, player);
+		}
+		VehPickupItem_ShootNow(bot, item, 0);
+		bot->numWumpas = 0;
+		break;
+
+	case HELD_ITEM_BOMB_1X:
+	case HELD_ITEM_BOMB_3X:
+		if (human)
+		{
+			PickupBots_PlayVoice(PICKUPBOTS_VOICELINE_BOMB, bot, player);
+		}
+		VehPickupItem_ShootNow(bot, PICKUPBOTS_SHOOT_ID_BOMB_MISSILE, (ahead && NativeMods_CpuExtreme()) ? PICKUPBOTS_SHOOT_FLAG_BACKWARD : 0);
+		break;
+
+	case HELD_ITEM_MISSILE_1X:
+	case HELD_ITEM_MISSILE_3X:
+		if (human)
+		{
+			PickupBots_PlayVoice(PICKUPBOTS_VOICELINE_MISSILE, bot, player);
+		}
+		VehPickupItem_ShootNow(bot, PICKUPBOTS_SHOOT_ID_BOMB_MISSILE, 0);
+		break;
+
+	case HELD_ITEM_SHIELD:
+	{
+		const s8 wumpas = bot->numWumpas;
+
+		bot->numWumpas = 0;
+		VehPickupItem_ShootNow(bot, item, 0);
+		bot->numWumpas = wumpas;
+		break;
+	}
+
+	case HELD_ITEM_TURBO:
+	case HELD_ITEM_MASK:
+	case HELD_ITEM_CLOCK:
+	case HELD_ITEM_WARPBALL:
+		VehPickupItem_ShootNow(bot, item, 0);
+		break;
+
+	default:
+		bot->heldItemID = PICKUPBOTS_ITEM_NONE;
 		return;
 	}
 
-	bot->heldItemID = weaponID;
-
-	if ((player->actionsFlagSet & ACTION_BOT) == 0)
-	{
-		PickupBots_PlayVoice(dropped ? PICKUPBOTS_VOICELINE_MINE_DROP : ((weaponID == PICKUPBOTS_ITEM_BOMB) ? PICKUPBOTS_VOICELINE_BOMB : PICKUPBOTS_VOICELINE_MISSILE),
-		                     bot, player);
-	}
-
-	VehPickupItem_ShootNow(bot, dropped ? weaponID : PICKUPBOTS_SHOOT_ID_BOMB_MISSILE, 0);
-	if (dropped)
-	{
-		bot->numWumpas = 0;
-	}
-
 	PickupBots_SetCooldown(bot);
-	NativeMods_NoteItem(1, weaponID);
+}
+
+// The attack roll of a bot next to the player: ahead (the game: 3 of 200, one
+// to each of its branches) or behind (4 of 800); EXTREME twice that, from
+// behind twice again while the player leads.
+static int PickupBots_ModsRoll(int ahead, struct Driver *player)
+{
+	int roll = ahead ? 3 : PICKUPBOTS_TRAILING_ATTACK_BOMB_THRESHOLD;
+
+	if (NativeMods_CpuExtreme())
+	{
+		roll *= 2;
+		if (!ahead && (player->driverRank == 0))
+		{
+			roll *= 2;
+		}
+	}
+
+	return roll;
 }
 
 static void PickupBots_UpdateArcade(void)
 {
 	struct GameTracker *gGT = sdata->gGT;
+	const int modsItems = NativeMods_CpuAllItems();
+	const int extreme = NativeMods_CpuExtreme();
 
 	for (int i = 0; i < gGT->numPlyrCurrGame; i++)
 	{
@@ -232,12 +357,12 @@ static void PickupBots_UpdateArcade(void)
 			{
 				int rng = MixRNG_Scramble() % PICKUPBOTS_LEADING_ATTACK_ROLL_MOD;
 
-				// ITEMS: as often as the three branches below, any weapon.
-				if (NativeMods_ItemsActive())
+				// CPU ITEMS: as often as the three branches below (EXTREME more), any item.
+				if (modsItems)
 				{
-					if (rng < 3)
+					if (rng < PickupBots_ModsRoll(1, player))
 					{
-						PickupBots_ModsAttack(bot, player);
+						PickupBots_ModsAttack(bot, player, 1);
 					}
 				}
 				else if (rng == 0)
@@ -306,7 +431,21 @@ static void PickupBots_UpdateArcade(void)
 			}
 		}
 
-		if (player->driverRank < 3)
+		// EXTREME: the bot two places ahead too.
+		if (extreme && (player->driverRank >= 2))
+		{
+			struct Driver *bot = gGT->driversInRaceOrder[player->driverRank - 2];
+
+			if (PickupBots_IsBotWeaponReady(bot) && PickupBots_IsCloseToPlayer(player, bot) &&
+			    ((MixRNG_Scramble() % PICKUPBOTS_LEADING_ATTACK_ROLL_MOD) < PickupBots_ModsRoll(1, player)))
+			{
+				PickupBots_ModsAttack(bot, player, 1);
+				bot->heldItemID = PICKUPBOTS_ITEM_NONE;
+			}
+		}
+
+		// EXTREME: from behind at any place, the bots one and two places behind.
+		if ((player->driverRank < 3) || (extreme && (player->driverRank < 7)))
 		{
 			struct Driver *bot = gGT->driversInRaceOrder[player->driverRank + 1];
 
@@ -317,13 +456,13 @@ static void PickupBots_UpdateArcade(void)
 				int rng = MixRNG_Scramble() % PICKUPBOTS_TRAILING_ATTACK_ROLL_MOD;
 				int weaponID = PICKUPBOTS_ITEM_NONE;
 
-				// ITEMS: as often as missile and bomb together, any weapon, on the
-				// last lap too.
-				if (NativeMods_ItemsActive())
+				// CPU ITEMS: as often as missile and bomb together (EXTREME
+				// more), any item, on the last lap too.
+				if (modsItems)
 				{
-					if (rng < PICKUPBOTS_TRAILING_ATTACK_BOMB_THRESHOLD)
+					if (rng < PickupBots_ModsRoll(0, player))
 					{
-						PickupBots_ModsAttack(bot, player);
+						PickupBots_ModsAttack(bot, player, 0);
 					}
 				}
 				else if ((rng < PICKUPBOTS_TRAILING_ATTACK_MISSILE_THRESHOLD) && (bot->lapIndex != (u8)(gGT->numLaps - 1)))
@@ -348,6 +487,18 @@ static void PickupBots_UpdateArcade(void)
 					PickupBots_SetCooldown(bot);
 				}
 
+				bot->heldItemID = PICKUPBOTS_ITEM_NONE;
+			}
+		}
+
+		if (extreme && (player->driverRank < 6))
+		{
+			struct Driver *bot = gGT->driversInRaceOrder[player->driverRank + 2];
+
+			if (PickupBots_IsBotWeaponReady(bot) && PickupBots_IsCloseToPlayer(player, bot) &&
+			    ((MixRNG_Scramble() % PICKUPBOTS_TRAILING_ATTACK_ROLL_MOD) < PickupBots_ModsRoll(0, player)))
+			{
+				PickupBots_ModsAttack(bot, player, 0);
 				bot->heldItemID = PICKUPBOTS_ITEM_NONE;
 			}
 		}

@@ -16,17 +16,20 @@
 //            BOSS CHALLENGE  OFF / RANDOM / ROO / PAPU / JOE / PINSTRIPE / OXIDE
 //   RULES    ITEMS           DEFAULT / CHAOS / CUSTOM
 //            ITEM WEIGHTS    <k> OF <n> ON  (grey unless ITEMS is CUSTOM)
+//            RETRO FUELED    OFF / ON
+//            RETRO PARTS     <k> OF 4 ON  (grey unless RETRO FUELED is ON)
 //   WORLD    GRAVITY         20 % .. 200 %, steps of 10
 //            GRIP            0 % .. 100 %
 //            NIGHT           0 % .. 90 %
-// (the play mods, platform/native_mods.h). Twelve lines do not fit the page:
+// (the play mods, platform/native_mods.h). Fourteen lines do not fit the page:
 // it shows NATIVE_MODS_PAGE_MAIN_VISIBLE of them and scrolls so that the
 // cursor stays in view, with the heading of its group when it is the group's
 // first row; a bar right of the rows shows where the view is.
 //
 // Keys: up/down choose the row (around the ends, headings are skipped),
 // left/right the value (no wrap; a percentage to the next multiple of 10),
-// cross opens SELECT DRIVERS / ITEM WEIGHTS (only when not grey), takes a
+// cross opens SELECT DRIVERS / ITEM WEIGHTS / RETRO PARTS (only when not
+// grey), takes a
 // choice to the next one (around the end) and a percentage back to its
 // normal value; a grey row takes no key; triangle goes back.
 //
@@ -40,6 +43,11 @@
 // weights 0 / 1 / 2 / 4); left and right step, cross goes round. Below the
 // list what the weights come to: every item OFF is DEFAULT, one item alone is
 // the only item of every box.
+//
+// Sub page "RETRO FUELED": its four parts (SUPER PADS, LONG SUPER PADS, USF
+// STACKING, KEEP RESERVES) with ON / OFF, keys as on SELECT DRIVERS; below
+// them one line of what the part under the cursor does, and "ALL PARTS OFF:
+// AS OFF" when none is on.
 //
 // The look is the one of the GRAPHICS page (native_graphics.c): title, separator
 // line, rows with the value on the right, highlight bar, background; same
@@ -83,6 +91,8 @@ enum
 	NATIVE_MODS_PAGE_ROW_BOSS,
 	NATIVE_MODS_PAGE_ROW_ITEMS,
 	NATIVE_MODS_PAGE_ROW_WEIGHTS,
+	NATIVE_MODS_PAGE_ROW_RETRO,
+	NATIVE_MODS_PAGE_ROW_PARTS,
 	NATIVE_MODS_PAGE_ROW_GRAVITY,
 	NATIVE_MODS_PAGE_ROW_GRIP,
 	NATIVE_MODS_PAGE_ROW_NIGHT,
@@ -93,8 +103,9 @@ enum
 #define NATIVE_MODS_PAGE_SUB_NONE    0
 #define NATIVE_MODS_PAGE_SUB_DRIVERS 1
 #define NATIVE_MODS_PAGE_SUB_WEIGHTS 2
+#define NATIVE_MODS_PAGE_SUB_RETRO   3
 
-#define NATIVE_MODS_PAGE_LINES        12
+#define NATIVE_MODS_PAGE_LINES        14
 #define NATIVE_MODS_PAGE_MAIN_VISIBLE 7
 #define NATIVE_MODS_PAGE_MAIN_ROW_Y   62
 #define NATIVE_MODS_PAGE_MAIN_PITCH   15
@@ -132,6 +143,8 @@ global_variable const struct
     {"RULES", -1},
     {"ITEMS", NATIVE_MODS_PAGE_ROW_ITEMS},
     {"ITEM WEIGHTS", NATIVE_MODS_PAGE_ROW_WEIGHTS},
+    {"RETRO FUELED", NATIVE_MODS_PAGE_ROW_RETRO},
+    {"RETRO PARTS", NATIVE_MODS_PAGE_ROW_PARTS},
     {"WORLD", -1},
     {"GRAVITY", NATIVE_MODS_PAGE_ROW_GRAVITY},
     {"GRIP", NATIVE_MODS_PAGE_ROW_GRIP},
@@ -141,7 +154,8 @@ global_variable const struct
 global_variable const char *const s_nativeModsPageValues[3] = {"DEFAULT", "ALL RANDOM", "ONLY SELECTED"};
 global_variable const char *const s_nativeModsPageLevels[4] = {"OFF", "LOW", "NORMAL", "HIGH"};
 
-// The play mod of a row (native_mods.h), -1 for the CPU rows and ITEM WEIGHTS.
+// The play mod of a row (native_mods.h), -1 for the CPU rows and the rows of
+// a sub page.
 internal int NativeModsPage_Mod(int row)
 {
 	switch (row)
@@ -152,6 +166,8 @@ internal int NativeModsPage_Mod(int row)
 		return NATIVE_MODS_BOSS;
 	case NATIVE_MODS_PAGE_ROW_ITEMS:
 		return NATIVE_MODS_ITEMS;
+	case NATIVE_MODS_PAGE_ROW_RETRO:
+		return NATIVE_MODS_RETRO;
 	case NATIVE_MODS_PAGE_ROW_GRAVITY:
 		return NATIVE_MODS_GRAVITY;
 	case NATIVE_MODS_PAGE_ROW_GRIP:
@@ -186,9 +202,25 @@ internal int NativeModsPage_Grey(int row)
 		return NativeModsPage_Boss() || (NativeModsPage_Value() != NATIVE_MODS_PAGE_SELECTED);
 	case NATIVE_MODS_PAGE_ROW_WEIGHTS:
 		return NativeMods_Value(NATIVE_MODS_ITEMS) != NATIVE_MODS_ITEMS_CUSTOM;
+	case NATIVE_MODS_PAGE_ROW_PARTS:
+		return NativeMods_Value(NATIVE_MODS_RETRO) == 0;
 	default:
 		return 0;
 	}
+}
+
+// RETRO PARTS: how many are on.
+internal int NativeModsPage_PartsOn(void)
+{
+	int on = 0;
+	int k;
+
+	for (k = 0; k < NATIVE_MODS_RETRO_PARTS; k++)
+	{
+		on += NativeMods_RetroPart(k);
+	}
+
+	return on;
 }
 
 // ITEM WEIGHTS: the race items, and how many of them are not OFF.
@@ -269,6 +301,12 @@ internal const char *NativeModsPage_Shown(int row, char text[24])
 	if (row == NATIVE_MODS_PAGE_ROW_DRIVERS)
 	{
 		snprintf(text, 24, "%d SELECTED", NativeMods_SelectedCount());
+		return text;
+	}
+
+	if (row == NATIVE_MODS_PAGE_ROW_PARTS)
+	{
+		snprintf(text, 24, "%d OF %d ON", NativeModsPage_PartsOn(), NATIVE_MODS_RETRO_PARTS);
 		return text;
 	}
 
@@ -380,6 +418,13 @@ internal void NativeModsPage_DrawMain(void)
 		hintY += NATIVE_MODS_PAGE_HINT_PITCH;
 	}
 
+	// RETRO FUELED with every part OFF is OFF.
+	if ((NativeMods_Value(NATIVE_MODS_RETRO) != 0) && (NativeModsPage_PartsOn() == 0))
+	{
+		DecalFont_DrawLine("ALL PARTS OFF: AS OFF", 256, hintY, FONT_SMALL, (JUSTIFY_CENTER | WHITE));
+		hintY += NATIVE_MODS_PAGE_HINT_PITCH;
+	}
+
 	if (Platform_SettingsLocked())
 	{
 		DecalFont_DrawLine("NOT SAVED IN THIS RUN", 256, hintY, FONT_SMALL, (JUSTIFY_CENTER | WHITE));
@@ -391,8 +436,8 @@ internal void NativeModsPage_DrawMain(void)
 }
 
 // The name of a list row, cut until it ends NATIVE_MODS_PAGE_GAP left of the
-// widest value (OFF on SELECT DRIVERS, NORMAL on ITEM WEIGHTS): never into the
-// value.
+// widest value (OFF on SELECT DRIVERS and RETRO FUELED, NORMAL on ITEM
+// WEIGHTS): never into the value.
 internal void NativeModsPage_FitName(const char *source, const char *widest, char name[NATIVE_MODS_PAGE_NAME_MAX + 1])
 {
 	const int room = NATIVE_MODS_PAGE_VALUE_X - DecalFont_GetLineWidth((char *)widest, FONT_SMALL) - NATIVE_MODS_PAGE_GAP - NATIVE_MODS_PAGE_LABEL_X;
@@ -419,6 +464,11 @@ internal int NativeModsPage_SubCount(void)
 		return NativeModsPage_Items(items, &on);
 	}
 
+	if (s_nativeModsPageSub == NATIVE_MODS_PAGE_SUB_RETRO)
+	{
+		return NATIVE_MODS_RETRO_PARTS;
+	}
+
 	return NativeMods_DriverCount();
 }
 
@@ -427,15 +477,21 @@ internal void NativeModsPage_DrawSub(void)
 	struct GameTracker *gGT = sdata->gGT;
 	u32 *ot = gGT->backBuffer->otMem.uiOT;
 	const int weights = (s_nativeModsPageSub == NATIVE_MODS_PAGE_SUB_WEIGHTS);
+	const int retro = (s_nativeModsPageSub == NATIVE_MODS_PAGE_SUB_RETRO);
 	u8 items[NATIVE_MODS_ITEM_IDS];
 	int on = 0;
-	const int count = weights ? NativeModsPage_Items(items, &on) : NativeMods_DriverCount();
+	const int count = NativeModsPage_SubCount();
 	const int firstHintY = NATIVE_MODS_PAGE_ROW_Y + (NATIVE_MODS_PAGE_VISIBLE * NATIVE_MODS_PAGE_ROW_PITCH) + 8;
 	int hintY = firstHintY;
 	int last = s_nativeModsPageScroll + NATIVE_MODS_PAGE_VISIBLE;
 	int i;
 
-	DecalFont_DrawLine(weights ? "ITEM WEIGHTS" : "SELECT DRIVERS", 256, 26, FONT_BIG, (JUSTIFY_CENTER | ORANGE));
+	if (weights)
+	{
+		NativeModsPage_Items(items, &on);
+	}
+
+	DecalFont_DrawLine(weights ? "ITEM WEIGHTS" : (retro ? "RETRO FUELED" : "SELECT DRIVERS"), 256, 26, FONT_BIG, (JUSTIFY_CENTER | ORANGE));
 
 	if (last > count)
 	{
@@ -453,6 +509,12 @@ internal void NativeModsPage_DrawSub(void)
 			DecalFont_DrawLine(name, NATIVE_MODS_PAGE_LABEL_X, y, FONT_SMALL, ORANGE);
 			DecalFont_DrawLine((char *)s_nativeModsPageLevels[NativeMods_ItemLevel(items[i])], NATIVE_MODS_PAGE_VALUE_X, y, FONT_SMALL, (JUSTIFY_RIGHT | WHITE));
 		}
+		else if (retro)
+		{
+			NativeModsPage_FitName(NativeMods_RetroPartName(i), "OFF", name);
+			DecalFont_DrawLine(name, NATIVE_MODS_PAGE_LABEL_X, y, FONT_SMALL, ORANGE);
+			DecalFont_DrawLine(NativeMods_RetroPart(i) ? "ON" : "OFF", NATIVE_MODS_PAGE_VALUE_X, y, FONT_SMALL, (JUSTIFY_RIGHT | WHITE));
+		}
 		else
 		{
 			NativeModsPage_FitName(NativeMods_DriverName(i), "OFF", name);
@@ -468,6 +530,18 @@ internal void NativeModsPage_DrawSub(void)
 		snprintf(text, sizeof(text), "%d-%d OF %d", s_nativeModsPageScroll + 1, last, count);
 		DecalFont_DrawLine(text, 256, hintY, FONT_SMALL, (JUSTIFY_CENTER | WHITE));
 		hintY += NATIVE_MODS_PAGE_HINT_PITCH;
+	}
+
+	// What the part under the cursor does; every part OFF is OFF.
+	if (retro)
+	{
+		DecalFont_DrawLine((char *)NativeMods_RetroPartHint(s_nativeModsPageCursor), 256, hintY, FONT_SMALL, (JUSTIFY_CENTER | WHITE));
+		hintY += NATIVE_MODS_PAGE_HINT_PITCH;
+		if (NativeModsPage_PartsOn() == 0)
+		{
+			DecalFont_DrawLine("ALL PARTS OFF: AS OFF", 256, hintY, FONT_SMALL, (JUSTIFY_CENTER | WHITE));
+			hintY += NATIVE_MODS_PAGE_HINT_PITCH;
+		}
 	}
 
 	// What the weights come to (platform/native_mods.c).
@@ -566,7 +640,8 @@ internal void NativeModsPage_OpenSub(int sub)
 	s_nativeModsPageCursor = 0;
 	s_nativeModsPageScroll = 0;
 	OtherFX_Play(1, 1);
-	Platform_Log("[CTR Menu] MODS: %s\n", (sub == NATIVE_MODS_PAGE_SUB_WEIGHTS) ? "ITEM WEIGHTS" : "SELECT DRIVERS");
+	Platform_Log("[CTR Menu] MODS: %s\n",
+	             (sub == NATIVE_MODS_PAGE_SUB_WEIGHTS) ? "ITEM WEIGHTS" : ((sub == NATIVE_MODS_PAGE_SUB_RETRO) ? "RETRO FUELED" : "SELECT DRIVERS"));
 }
 
 // Cross on a row: a sub page opens (2), a choice goes to its next value
@@ -590,6 +665,12 @@ internal int NativeModsPage_Cross(int row)
 	if (row == NATIVE_MODS_PAGE_ROW_WEIGHTS)
 	{
 		NativeModsPage_OpenSub(NATIVE_MODS_PAGE_SUB_WEIGHTS);
+		return 2;
+	}
+
+	if (row == NATIVE_MODS_PAGE_ROW_PARTS)
+	{
+		NativeModsPage_OpenSub(NATIVE_MODS_PAGE_SUB_RETRO);
 		return 2;
 	}
 
@@ -694,11 +775,12 @@ internal void NativeModsPage_KeysWeight(int tapped)
 internal void NativeModsPage_KeysSub(int tapped)
 {
 	const int weights = (s_nativeModsPageSub == NATIVE_MODS_PAGE_SUB_WEIGHTS);
+	const int retro = (s_nativeModsPageSub == NATIVE_MODS_PAGE_SUB_RETRO);
 	const int count = NativeModsPage_SubCount();
 
 	if ((tapped & (BTN_TRIANGLE | BTN_SQUARE_one)) != 0)
 	{
-		s_nativeModsPageRow = weights ? NATIVE_MODS_PAGE_ROW_WEIGHTS : NATIVE_MODS_PAGE_ROW_DRIVERS;
+		s_nativeModsPageRow = weights ? NATIVE_MODS_PAGE_ROW_WEIGHTS : (retro ? NATIVE_MODS_PAGE_ROW_PARTS : NATIVE_MODS_PAGE_ROW_DRIVERS);
 		s_nativeModsPageSub = NATIVE_MODS_PAGE_SUB_NONE;
 		NativeModsPage_FixMainScroll();
 		OtherFX_Play(2, 1);
@@ -726,7 +808,7 @@ internal void NativeModsPage_KeysSub(int tapped)
 	}
 	else
 	{
-		const int on = NativeMods_DriverSelected(s_nativeModsPageCursor) ? 1 : 0;
+		const int on = (retro ? NativeMods_RetroPart(s_nativeModsPageCursor) : NativeMods_DriverSelected(s_nativeModsPageCursor)) ? 1 : 0;
 		int next;
 
 		if ((tapped & BTN_LEFT) != 0)
@@ -742,7 +824,12 @@ internal void NativeModsPage_KeysSub(int tapped)
 			next = !on;
 		}
 
-		if (next != on)
+		if ((next != on) && retro)
+		{
+			NativeMods_SetRetroPart(s_nativeModsPageCursor, next);
+			OtherFX_Play(0, 1);
+		}
+		else if (next != on)
 		{
 			NativeMods_SetDriverSelected(s_nativeModsPageCursor, next);
 			OtherFX_Play(0, 1);

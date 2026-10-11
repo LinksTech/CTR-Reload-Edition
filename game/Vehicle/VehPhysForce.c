@@ -591,19 +591,23 @@ void VehPhysForce_CollideDrivers(struct Thread *thread, struct Driver *driver)
 		driver->collisionFlags |= DRIVER_COLL_FLAG_MASK_GRAB_REQUEST;
 	}
 
+	// RETRO FUELED (MODS page; the rules of CTR-ModSDK's Retro-Fueled,
+	// platform/native_mods.c): SUPER PADS takes a turbo pad as the cheat does,
+	// LONG SUPER PADS gives a super pad's fire 1 s of reserves.
 	if ((stepFlagSet & COLL_STEP_TRIGGER_SUPER_TURBO_PAD) != 0)
 	{
-		VehFire_Increment(driver, VEH_PHYS_FORCE_SUPER_TURBO_PAD_RESERVES, TURBO_PAD | FREEZE_RESERVES_ON_TURBO_PAD, VEH_PHYS_FORCE_SUPER_TURBO_PAD_FIRE_LEVEL);
+		VehFire_Increment(driver, NativeMods_RetroPadReserves(VEH_PHYS_FORCE_SUPER_TURBO_PAD_RESERVES, 0), TURBO_PAD | FREEZE_RESERVES_ON_TURBO_PAD,
+		                  VEH_PHYS_FORCE_SUPER_TURBO_PAD_FIRE_LEVEL);
 	}
 	else if ((stepFlagSet & COLL_STEP_TRIGGER_TURBO_PAD) != 0)
 	{
-		if ((sdata->gGT->gameMode2 & CHEAT_TURBOPAD) == 0)
+		if (((sdata->gGT->gameMode2 & CHEAT_TURBOPAD) == 0) && !NativeMods_RetroSuperPad(0))
 		{
 			VehFire_Increment(driver, VEH_PHYS_FORCE_TURBO_PAD_RESERVES, TURBO_PAD | FREEZE_RESERVES_ON_TURBO_PAD, VEH_PHYS_FORCE_TURBO_PAD_FIRE_LEVEL);
 		}
 		else
 		{
-			VehFire_Increment(driver, VEH_PHYS_FORCE_SUPER_TURBO_PAD_RESERVES, TURBO_PAD | FREEZE_RESERVES_ON_TURBO_PAD,
+			VehFire_Increment(driver, NativeMods_RetroPadReserves(VEH_PHYS_FORCE_SUPER_TURBO_PAD_RESERVES, 0), TURBO_PAD | FREEZE_RESERVES_ON_TURBO_PAD,
 			                  VEH_PHYS_FORCE_SUPER_TURBO_PAD_FIRE_LEVEL);
 		}
 	}

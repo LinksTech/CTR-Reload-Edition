@@ -1,4 +1,5 @@
 #include <common.h>
+#include <platform/native_mods.h>
 
 // budget: 4624
 // curr: 4380
@@ -689,9 +690,15 @@ CheckJumpButtons:
 			actionsFlagSetCopy |= ACTION_JUMP_BUTTON_HELD;
 		}
 	}
+	// KEEP RESERVES of RETRO FUELED (MODS page; the rules of CTR-ModSDK's
+	// Retro-Fueled, platform/native_mods.c): square with down held or in the
+	// air keeps the reserves, and without cross they do not drive the kart.
+	int retroNoGas = 0;
+	const int retroKeep = (square != 0) && NativeMods_RetroKeepReserves(buttonsHeld, driver->jump_LandingBoost, driver->reserves, &retroNoGas);
+
 	if (
 	    // If you are holding Square
-	    (square != 0) &&
+	    (square != 0) && !retroKeep &&
 
 	    // if you're not on any turbo pad
 	    ((driver->stepFlagSet & COLL_STEP_TRIGGER_TURBO_PAD_MASK) == 0))
@@ -743,7 +750,7 @@ CheckJumpButtons:
 
 		// Assume you're holding Cross, because
 		// you have Reserves and you aren't slowing down
-		cross = VEH_PHYS_PROC_ASSUMED_CROSS_BUTTON;
+		cross = retroNoGas ? 0 : VEH_PHYS_PROC_ASSUMED_CROSS_BUTTON;
 	}
 
 

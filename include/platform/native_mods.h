@@ -92,15 +92,44 @@ const char *NativeMods_StatusText(void);
 //   ITEMS       DEFAULT (the game's sets by rank), CHAOS (every race item with
 //               the same chance, whatever the rank), CUSTOM (the weights of
 //               ITEM WEIGHTS, whatever the rank; all OFF is DEFAULT). A CPU
-//               driver, which never takes a box, attacks as often as before
-//               with its four weapons - TNT, potion, bomb, missile; CHAOS each
-//               with the same chance, CUSTOM by the weights (bomb with the
-//               triple bomb, missile with the triple missile).
+//               driver, which never takes a box, attacks as often as before,
+//               but with every race item (see CPU ITEMS below).
 //   DIFFICULTY  EASY, NORMAL, HARD, EXTREME, normal NORMAL. The bots' place in
 //               the game's own difficulty blend (BOTS_Adv_AdjustDifficulty,
 //               ArcadeDifficulty / BossDifficulty) moves by -0x50, 0, +0xA0,
 //               +0xF0 - one step of the cup difficulty menu down, two and
-//               three up.
+//               three up. EXTREME is as fast as HARD would be at its top, and
+//               harder by how the CPU drivers attack (game/PickupBots.c): half
+//               the time between two attacks, twice the chance, the bots two
+//               places ahead and behind the player too, from behind at any
+//               place (the game: only while the player is in the first three)
+//               and twice that again while the player leads; with ITEMS at
+//               DEFAULT aimed - a bot ahead drops or throws backwards, a bot
+//               behind shoots. And with every race item (CPU ITEMS).
+//   CPU ITEMS   (no row: ITEMS at CHAOS or CUSTOM, or DIFFICULTY EXTREME) a CPU
+//               attack draws its item as an item box would for the bot's place
+//               (VehPhysGeneral_SetHeldItem - CHAOS and CUSTOM by their weights,
+//               DEFAULT the set of the bot's rank) and uses it at once: TNT and
+//               potion dropped, bomb and missile shot (one of a triple), turbo,
+//               shield and mask on itself, clock and warpball as the player's
+//               (the race sets hold no invisibility and no super engine).
+//               Without both, the game's four weapons as on the disc.
+//   RETRO       OFF, ON, normal OFF: the rules of "Retro-Fueled" (CTR-ModSDK,
+//               THIRD_PARTY_NOTICES.md), each of RETRO PARTS on its own, all ON
+//               at first; with every part OFF it is off.
+//               SUPER PADS       every turbo pad gives the fire of a super
+//                                turbo pad (the game's CHEAT_TURBOPAD)
+//               LONG SUPER PADS  a super turbo pad gives 1 s of reserves (960,
+//                                the game's 120) - the karts' value of a turbo
+//                                pad, for karts and CPU drivers
+//               USF STACKING     a boost on top of a super fire keeps its speed
+//                                cap (the game takes the boost's lower one off
+//                                a super turbo pad)
+//               KEEP RESERVES    square held with down, or in the air, keeps the
+//                                reserves (the game clears them), and without
+//                                cross they do not drive the kart then (a U-turn)
+//               The pads count for the CPU drivers too (their nav turbos);
+//               KEEP RESERVES is a kart's only, a CPU driver never brakes.
 //   BOSS        OFF, RANDOM, ROO, PAPU, JOE, PINSTRIPE, OXIDE. One against one
 //               with the boss: his model, his strength (BossDifficulty), his
 //               weapon pattern (data.BossWeapon*, its sections spread over this
@@ -114,8 +143,16 @@ enum
 	NATIVE_MODS_ITEMS,
 	NATIVE_MODS_DIFFICULTY,
 	NATIVE_MODS_BOSS,
+	NATIVE_MODS_RETRO,
 	NATIVE_MODS_VALUES
 };
+
+// RETRO PARTS.
+#define NATIVE_MODS_RETRO_PADS  0
+#define NATIVE_MODS_RETRO_LONG  1
+#define NATIVE_MODS_RETRO_STACK 2
+#define NATIVE_MODS_RETRO_KEEP  3
+#define NATIVE_MODS_RETRO_PARTS 4
 
 #define NATIVE_MODS_ITEMS_DEFAULT 0
 #define NATIVE_MODS_ITEMS_CHAOS   1
@@ -153,6 +190,13 @@ void NativeMods_SetValue(int which, int value);
 int NativeMods_Step(int which, int dir);
 int NativeMods_ItemLevel(int item);
 void NativeMods_SetItemLevel(int item, int level);
+
+// RETRO PARTS: on (1) or off of a part on the page, its row name and its hint
+// line; the setter saves at once.
+int NativeMods_RetroPart(int part);
+void NativeMods_SetRetroPart(int part, int on);
+const char *NativeMods_RetroPartName(int part);
+const char *NativeMods_RetroPartHint(int part);
 
 // The race items in id order (the items of the four race sets, without the
 // spring), as ITEM WEIGHTS lists them; their names. The count.
@@ -207,10 +251,28 @@ struct GameTracker;
 void NativeMods_RaceFrame(struct GameTracker *gGT);
 
 // ITEMS: 1 while it is active; the weight of a held item id for a box (CHAOS
-// 1, CUSTOM 0/1/2/4) and of a CPU weapon (TNT, potion, bomb, missile).
+// 1, CUSTOM 0/1/2/4).
 int NativeMods_ItemsActive(void);
 int NativeMods_ItemWeight(int item);
-int NativeMods_CpuWeaponWeight(int weapon);
+
+// game/PickupBots.c: CPU ITEMS (ITEMS active or DIFFICULTY EXTREME) and the
+// attacks of EXTREME, each 1 while it holds for the race in progress.
+int NativeMods_CpuAllItems(void);
+int NativeMods_CpuExtreme(void);
+
+// RETRO FUELED, while the race in progress has the part on (bot 1 for a CPU
+// driver, counted for the report at exit): SuperPad 1 when a turbo pad gives
+// the fire of a super turbo pad; PadReserves the reserves of a super turbo pad
+// (the game's value given, 960 with LONG SUPER PADS); KeepUsf 1 when a boost
+// keeps the super fire's speed cap the game would take off (asked only then);
+// KeepReserves, for a kart holding square (buttons held, its air time
+// jump_LandingBoost, reserves left), 1 when the reserves stay - then *noGas 1
+// when they do not drive it (cross not held). KeepRule: that rule alone.
+int NativeMods_RetroSuperPad(int bot);
+int NativeMods_RetroPadReserves(int reserves, int bot);
+int NativeMods_RetroKeepUsf(int bot);
+int NativeMods_RetroKeepReserves(u32 buttons, int airTime, int reserves, int *noGas);
+int NativeMods_RetroKeepRule(u32 buttons, int airTime, int *noGas);
 
 // DIFFICULTY, game/BOTS.c: the bots' difficulty for the game's own value
 // (after its clamp at 0) - unchanged unless the mod is active. boss 1 for the
@@ -231,7 +293,8 @@ struct MetaDataBOSS *NativeMods_BossWeapons(int rebuild);
 void NativeMods_NoteBotRescue(void);
 
 // ITEMS and BOSS, for the report at exit: an item a box gave (bot 0), a CPU
-// driver's attack (bot 1) or a boss weapon (bot 2).
+// driver's attack (bot 1, every one, also on the disc's way, counted per race
+// under --dev-mods-play) or a boss weapon (bot 2).
 void NativeMods_NoteItem(int bot, int item);
 
 // game/PlayLevel.c: a driver crossed the line after lap lapIndex (0-based)
@@ -248,7 +311,8 @@ void NativeMods_LogRace(void);
 // saved (the lines of the file do not count). A set is "none" or a comma list
 // of gravity=<n>, grip=<n>, night=<n>, items=default|chaos|custom,
 // w<item id>=<0..3> (ITEM WEIGHTS), difficulty=easy|normal|hard|extreme,
-// boss=off|random|roo|papu|joe|pinstripe|oxide and the measuring keys
+// boss=off|random|roo|papu|joe|pinstripe|oxide, retro=off|on, rpads=, rlong=,
+// rstack=, rkeep=<0|1> (RETRO PARTS) and the measuring keys
 // base=<n> (the bots' difficulty before DIFFICULTY, as the cup menu's
 // 80 / 160 / 240) and shot=<race frame> (a snapshot of that frame); round 1's
 // words moon, icy and chaos are gravity=41, grip=0 and items=chaos. Each race
@@ -257,7 +321,8 @@ int NativeMods_SetDevPlay(const char *list);
 
 // main.c, --mods-selftest (ctest mods_selftest): the play mods without a race -
 // settings lines, status line, --dev-mods-play, steps, gravity, hang time,
-// grip blend, night colour, difficulty, boss sections, item draws. 0 = passed.
+// grip blend, night colour, difficulty, boss sections, item draws, the CPU
+// items, the rules of RETRO FUELED. 0 = passed.
 int NativeMods_SelfTest(void);
 
 // The menu side of the race rule: the MODS box is offered in the track select
@@ -276,8 +341,8 @@ void NativeMods_SetSeed(u32 seed);
 
 // ctr-settings.cfg (platform/native_platform.c): SaveLines writes "mods cpu
 // <n>", the play mods ("mods gravity", "grip", "night" <percent>, "mods items",
-// "difficulty", "boss" <n>, "mods weight <item id> <level>" for an item not
-// at NORMAL), one "mods retail <id>" per ticked retail driver and one "mods
+// "difficulty", "boss", "retro" <n>, "mods weight <item id> <level>" for an
+// item not at NORMAL, "mods retropart <part> 0" for a part OFF), one "mods retail <id>" per ticked retail driver and one "mods
 // file <file>" per ticked file; LoadLine takes the rest of a line after "mods "
 // and answers 1 when it named a mods value, else 0 (the caller counts it as
 // skipped). A value out of its range is its normal value. Round 1's lines are

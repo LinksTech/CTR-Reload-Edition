@@ -1894,16 +1894,26 @@ UpdateTireColorTimer:
 		}
 	}
 
+	// RETRO FUELED (MODS page; the rules of CTR-ModSDK's Retro-Fueled,
+	// platform/native_mods.c), for the CPU drivers' own pad values: SUPER PADS
+	// takes a turbo pad as a super one, LONG SUPER PADS gives a super one 1 s.
 	if ((navFrameFlags & BOTS_NAV_FLAG_SUPER_TURBO) != 0)
 	{
-		VehFire_Increment(botDriver, 0x78, 1, 0x900);
+		VehFire_Increment(botDriver, NativeMods_RetroPadReserves(0x78, 1), 1, 0x900);
 
 		botDriver->botData.botFlags |= BOT_FLAG_NAV_BOOST_ACTIVE;
 	}
 
 	if ((navFrameFlags & BOTS_NAV_FLAG_TURBO) != 0)
 	{
-		VehFire_Increment(botDriver, 0x2d0, 1, 0x180);
+		if (NativeMods_RetroSuperPad(1))
+		{
+			VehFire_Increment(botDriver, NativeMods_RetroPadReserves(0x78, 1), 1, 0x900);
+		}
+		else
+		{
+			VehFire_Increment(botDriver, 0x2d0, 1, 0x180);
+		}
 
 		botDriver->botData.botFlags |= BOT_FLAG_NAV_BOOST_ACTIVE;
 	}
