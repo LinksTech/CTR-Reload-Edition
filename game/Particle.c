@@ -1127,6 +1127,50 @@ int NativeRenderLayer_HideExhaustQuad(const struct Particle *particle);
 // a look. Only the drawing; the particle stays as it is.
 int NativeChar_ExhaustDraw(const struct Particle *particle, s32 *posX, s32 *posY, s32 *posZ);
 
+#if defined(CTR_NATIVE)
+// From platform/engine_fx_exhaust.c (--engine): the exhaust smoke of a custom
+// driver the engine draws. Gets the finished retail quad of the particle, the
+// ordering table and cell the retail link would use. 0 = not such a particle
+// (the retail link as always), 1 = the engine drew it (do not link), -1 = it
+// could not (retail link; the engine counted it).
+int EngineFx_ExhaustParticle(const struct Particle *p, int view, const POLY_FT4 *poly, s32 depth, u32 *ot, int cell);
+
+// The ordering table and cell Particle_RenderList_LinkAndAdvance picks for a
+// normal quad (same arithmetic, draw time only; writes nothing).
+static int Particle_NativeOtSlot(const struct Particle *particle, const struct InstDrawPerPlayer *idpp, s32 depth, u32 *defaultOT, u32 **otBaseOut)
+{
+	s32 otIndex;
+
+	if (idpp != NULL)
+	{
+		otIndex = depth >> 5;
+		if (otIndex < (u16)idpp->depthOffset[0])
+		{
+			otIndex = (u16)idpp->depthOffset[0];
+		}
+		if ((u16)idpp->depthOffset[1] < otIndex)
+		{
+			otIndex = (u16)idpp->depthOffset[1];
+		}
+		*otBaseOut = (u32 *)(u32)idpp->otRangeNormal;
+	}
+	else
+	{
+		otIndex = (depth >> 8) + (s8)particle->otIndexOffset;
+		if (otIndex < 0)
+		{
+			otIndex = 0;
+		}
+		if (otIndex >= 0x400)
+		{
+			otIndex = 0x3ff;
+		}
+		*otBaseOut = defaultOT;
+	}
+	return (int)otIndex;
+}
+#endif
+
 void Particle_RenderList(struct PushBuffer *pb, void *particleList)
 {
 	struct GameTracker *gGT = sdata->gGT;
@@ -1323,8 +1367,22 @@ void Particle_RenderList(struct PushBuffer *pb, void *particleList)
 			}
 			else
 			{
-				Particle_RenderList_LinkAndAdvance(&primCursor, &payloadCursor, particle, idpp, flagsSetColor, scratch->depth, scratch->ot);
-				NativeRenderLayer_NoteParticleQuad(particle, pb, (const POLY_FT4 *)prim);
+#if defined(CTR_NATIVE)
+				u32 *engineOt;
+				const int engineCell = Particle_NativeOtSlot(particle, idpp, scratch->depth, scratch->ot, &engineOt);
+
+				// The exhaust of a driver the engine owns: the engine draws the
+				// quad just written, the retail primitive is not linked.
+				if (EngineFx_ExhaustParticle(particle, (int)cameraID, (const POLY_FT4 *)prim, scratch->depth, engineOt, engineCell) == 1)
+				{
+					Particle_RenderList_AdvanceUnlinked(&primCursor, &payloadCursor);
+				}
+				else
+#endif
+				{
+					Particle_RenderList_LinkAndAdvance(&primCursor, &payloadCursor, particle, idpp, flagsSetColor, scratch->depth, scratch->ot);
+					NativeRenderLayer_NoteParticleQuad(particle, pb, (const POLY_FT4 *)prim);
+				}
 			}
 			prim = primCursor;
 
