@@ -9,6 +9,16 @@ int NativeChar_ModelShadow(const struct Model *model, s16 quad[4]);
 void NativeChar_NoteShadow(int mode);
 void NativeChar_ShadowAxes(const s16 quad[4], int scaleX, int scaleZ, int height, s16 out[4][3]);
 
+#ifdef CTR_NATIVE
+// From platform/engine_fx_common.c and platform/engine_fx_shadow.c (the native
+// engine, --engine): a custom driver whose shadow the engine draws, and that
+// draw. DRAW TIME ONLY - an owned driver runs every check and the projection
+// as before, only its PS1 primitives are not written.
+int Engine_FxOwnsDriver(const struct Driver *d);
+void EngineFx_Shadow(const struct Driver *d, int view, const SVec3 points[9], const struct TextureLayout *tex0, const struct TextureLayout *tex1,
+                     u32 color, int depth, int depthBias, u32 *ot);
+#endif
+
 enum
 {
 	VEH_GROUND_SHADOW_MAX_DRIVERS = 8,
@@ -414,6 +424,9 @@ void VehGroundShadow_Main(void)
 	// The look per driver (NativeChar_ModelShadow), and for auto its vectors
 	// once the entry is READY - on the stack, never in the scratchpad.
 	int lookMode[VEH_GROUND_SHADOW_MAX_DRIVERS];
+#ifdef CTR_NATIVE
+	int engineOwned[VEH_GROUND_SHADOW_MAX_DRIVERS];
+#endif
 	s16 lookQuad[VEH_GROUND_SHADOW_MAX_DRIVERS][4];
 	SVec3 lookCentre[VEH_GROUND_SHADOW_MAX_DRIVERS];
 	SVec3 lookLocal[VEH_GROUND_SHADOW_MAX_DRIVERS][3];
@@ -447,6 +460,9 @@ void VehGroundShadow_Main(void)
 		struct Driver *driver = gGT->drivers[driverIndex];
 
 		lookMode[driverIndex] = VEH_GROUND_SHADOW_LOOK_RETAIL;
+#ifdef CTR_NATIVE
+		engineOwned[driverIndex] = Engine_FxOwnsDriver(driver);
+#endif
 
 		if (driver != NULL)
 		{
@@ -618,11 +634,22 @@ void VehGroundShadow_Main(void)
 			}
 			VehGroundShadow_ProjectPoints(points, sxy, depth);
 
-			for (int quadIndex = 0; quadIndex < VEH_GROUND_SHADOW_NUM_QUADS; quadIndex++)
+#ifdef CTR_NATIVE
+			if (engineOwned[driverIndex])
 			{
-				const struct TextureLayout *texture = (quadIndex & 1) != 0 ? shadowTex1 : shadowTex0;
+				// The engine draws the same four quads (same points, icons,
+				// colour, cell); no PS1 primitive is written for this driver.
+				EngineFx_Shadow(entry->driver, playerIndex, points, shadowTex0, shadowTex1, color, depth[0], entry->depthBias, otBase);
+			}
+			else
+#endif
+			{
+				for (int quadIndex = 0; quadIndex < VEH_GROUND_SHADOW_NUM_QUADS; quadIndex++)
+				{
+					const struct TextureLayout *texture = (quadIndex & 1) != 0 ? shadowTex1 : shadowTex0;
 
-				VehGroundShadow_EmitQuad(&prim, otBase, texture, color, sxy, depth[0], entry->depthBias, quadIndex);
+					VehGroundShadow_EmitQuad(&prim, otBase, texture, color, sxy, depth[0], entry->depthBias, quadIndex);
+				}
 			}
 		}
 	}
