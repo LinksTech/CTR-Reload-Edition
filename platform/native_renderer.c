@@ -2409,8 +2409,16 @@ int NativeRenderer_NativeProbeReady(void)
 void NativeRenderer_WantNativeDepth(int want)
 {
 	extern int g_cfg_nativePreview;
+	extern int g_cfg_engine;
 
 	want = (want != 0) ? 1 : 0;
+	if (g_cfg_engine)
+	{
+		// The engine draws with depth in every frame; while it is on, the main
+		// target keeps its depth image (the native layer's per-frame Pull would
+		// otherwise drop it again and make it anew every frame).
+		want = 1;
+	}
 	if (!g_cfg_nativePreview || (want == s_nativeDepthWanted))
 	{
 		return;
