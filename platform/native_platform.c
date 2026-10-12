@@ -101,6 +101,9 @@ internal void Platform_HandleWindowResize(void)
 	NativeRenderer_ResetDevice();
 }
 
+// The cursor is the mouse layer's (platform/native_mouse.c): shown with our own
+// shape only while the mouse is in use, hidden otherwise, in windowed and in
+// fullscreen alike. This stays as the one call the window events make.
 internal void Platform_UpdateCursorVisibility(void)
 {
 	if (g_window == NULL)
@@ -108,14 +111,7 @@ internal void Platform_UpdateCursorVisibility(void)
 		return;
 	}
 
-	if ((SDL_GetWindowFlags(g_window) & SDL_WINDOW_FULLSCREEN) != 0)
-	{
-		SDL_HideCursor();
-	}
-	else
-	{
-		SDL_ShowCursor();
-	}
+	NativeMouse_Update();
 }
 
 internal void Platform_HandleFullscreenToggle(void)
@@ -2544,13 +2540,42 @@ void Platform_PollHostEvents(void)
 			}
 			Platform_DetectDisplayAspect("display changed");
 			break;
+		case SDL_EVENT_MOUSE_MOTION:
+			// Motion was never counted in measuring mode and still is not; outside
+			// it the mouse layer decides whether the pointer really moved.
+			if (!g_cfg_deterministic)
+			{
+				NativeMouse_OnMotion(event.motion.x, event.motion.y);
+			}
+			break;
 		case SDL_EVENT_MOUSE_BUTTON_DOWN:
+		case SDL_EVENT_MOUSE_BUTTON_UP:
 		case SDL_EVENT_MOUSE_WHEEL:
 			// The game reads no mouse. Counted in measuring mode only, so that a
-			// disturbance is seen to have arrived.
+			// disturbance is seen to have arrived. Outside it the events go to the
+			// menu mouse layer (native_mouse.c).
 			if (g_cfg_deterministic)
 			{
-				Platform_NoteSealed(&s_sealedMouse);
+				if (event.type != SDL_EVENT_MOUSE_BUTTON_UP)
+				{
+					Platform_NoteSealed(&s_sealedMouse);
+				}
+			}
+			else if (event.type == SDL_EVENT_MOUSE_WHEEL)
+			{
+				NativeMouse_OnWheel((event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) ? -event.wheel.y : event.wheel.y);
+			}
+			else
+			{
+				NativeMouse_OnButton((int)event.button.button, event.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
+			}
+			break;
+		case SDL_EVENT_GAMEPAD_AXIS_MOTION:
+			// A stick pushed clearly, or a trigger pulled, means the pad is in use.
+			// Not counted in measuring mode (as before).
+			if (!g_cfg_deterministic && ((event.gaxis.value > 16000) || (event.gaxis.value < -16000)))
+			{
+				NativeMouse_OnKeyOrPad();
 			}
 			break;
 		case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
@@ -2560,6 +2585,10 @@ void Platform_PollHostEvents(void)
 			if (g_cfg_deterministic)
 			{
 				Platform_NoteSealed(&s_sealedPadButtons);
+			}
+			else
+			{
+				NativeMouse_OnKeyOrPad();
 			}
 			break;
 		case SDL_EVENT_WINDOW_ENTER_FULLSCREEN:
@@ -2636,6 +2665,12 @@ void Platform_PollHostEvents(void)
 				break;
 			}
 
+			// A key press hides the pointer and turns the menu mouse off.
+			if ((down != 0) && (event.key.repeat == 0))
+			{
+				NativeMouse_OnKeyOrPad();
+			}
+
 			Platform_UpdateHostAltKeyState(key, down);
 
 			// Ctrl+Q ends the game. The modifier is read from the event rather
@@ -2710,6 +2745,9 @@ void Platform_PollHostEvents(void)
 		}
 		}
 	}
+
+	// Once per frame, after the events: the pointer is shown or hidden.
+	NativeMouse_Update();
 }
 
 int Platform_PollInput(void)

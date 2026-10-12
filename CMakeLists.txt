@@ -447,6 +447,12 @@ if(BUILD_TESTING)
     set_tests_properties(mods_selftest PROPERTIES
         PASS_REGULAR_EXPRESSION "mods selftest passed: [0-9]+ checks, 0 failures"
     )
+    # The menu mouse without a window: window to menu mapping (letterbox,
+    # pillarbox, widescreen shifts), round trip, active rules. It only computes.
+    add_test(NAME mouse_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --mouse-selftest)
+    set_tests_properties(mouse_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "mouse selftest passed: [0-9]+ checks, 0 failures"
+    )
     # --dev-char-seat-files (main.c, the first loop of main): given twice,
     # together with --dev-char-seats or --char, or with a list not of the form,
     # it ends the start with exit code 64 and its reason, before any window or

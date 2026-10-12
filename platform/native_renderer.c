@@ -1198,6 +1198,16 @@ void NativeRenderer_SyncWindowSize(void)
 	SDL_GetWindowSizeInPixels(g_window, &g_windowWidth, &g_windowHeight);
 }
 
+// Where the finished picture sits in the window, in window pixels (bars already
+// taken off). Read-only; the mouse layer (native_mouse.c) maps the pointer through it.
+void NativeRenderer_GetPresentViewport(int *x, int *y, int *w, int *h)
+{
+	if (x != NULL) { *x = s_presentViewport.x; }
+	if (y != NULL) { *y = s_presentViewport.y; }
+	if (w != NULL) { *w = s_presentViewport.w; }
+	if (h != NULL) { *h = s_presentViewport.h; }
+}
+
 void NativeRenderer_ApplyWorldAspectToPresentation(void)
 {
 	int aspectW = 4;

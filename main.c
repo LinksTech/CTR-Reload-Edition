@@ -346,6 +346,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--dev-mods-seed", "<n>", "the draw of the MODS page starts from this number (1 to 4294967295) instead of the clock: the same seats again in the same run order"},
     {"--dev-mods-play", "<set>[/<set>...]", "the play mods of the MODS page for this run, never saved; each race load takes the next set, the last one stays. A set is none or a comma list of gravity=<20..200>, grip=<0..100>, night=<0..90>, items=default|chaos|custom, w<item id>=<0..3> (ITEM WEIGHTS: off, low, normal, high), difficulty=easy|normal|hard|extreme, boss=off|random|roo|papu|joe|pinstripe|oxide, and for measuring base=<n> (the bots' difficulty before DIFFICULTY) and shot=<race frame> (a snapshot <--shot-name>-raceNN.bmp); moon, icy and chaos are gravity=41, grip=0 and items=chaos"},
     {"--dev-vk-pending-cap", "<n>", "the Vulkan retire lists of textures and framebuffers hold only n entries (1 to 1024) instead of 1024: a measuring run in which a full list is drained at once"},
+    {"--dev-mouse-at", "<x>,<y>", "from the first menu frame the mouse counts as moved to this window pixel position and active, also with --deterministic (a hover screenshot); not saved"},
     {"--ui-safe-area-off", "", "UI safe area off"},
     {"--ui-declarations-off", "", "UI declarations off"},
     {"--ui-floor-off", "", "UI floor off"},
@@ -355,6 +356,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--gte-selftest", "", "both GTE paths against each other, then end"},
     {"--char-grid-selftest", "", "layout, navigation and scrolling of the driver select grid for 0 to 32 custom entries, then end; no window, no data needed"},
     {"--mods-selftest", "", "the play mods of the MODS page without a race: settings lines, the status line of the box, --dev-mods-play, the page's steps, gravity and hang time, the grip blend, the night colour, difficulty, the boss sections, the item box and the CPU weapons, then end (ctest mods_selftest)"},
+    {"--mouse-selftest", "", "the menu mouse without a window: the window to menu mapping with letterbox and pillarbox, the widescreen shift of left, centre and right elements at 4:3, 16:9 and 43:18, the round trip, and the active/inactive rules, then end (ctest mouse_selftest)"},
     {"--char-native-selftest", "<dir>", "every .rldchar of dir (written by rldpack make-native-tests) through the roster read and the native read (CNET, CTXT) without and with --native-preview, each against the expectation its name gives, then end; no window, no data needed"},
     {"--selftest-containers", "<dir>", "every check the game runs on a container, on every *.rldtrack in dir (good-* must load, bad-* must be refused), then end; no window, no data needed"},
     {"--make-test-containers", "<dir>", "write the synthetic good-*/bad-* containers of the container self-test into dir, then end"},
@@ -2228,6 +2230,14 @@ int main(int argc, char *argv[])
 			return NativeMods_SelfTest();
 		}
 
+		// The menu mouse (platform/native_mouse.c): the window to menu mapping and
+		// the active rules, on made-up window sizes. Up here for the same reason:
+		// it computes only (ctest mouse_selftest).
+		if (strcmp(argv[argIndex], "--mouse-selftest") == 0)
+		{
+			return NativeMouse_SelfTest();
+		}
+
 		// The native part of custom characters (CNET, CTXT), up here for the
 		// same reason: it only reads the files rldpack wrote into a build
 		// folder (ctest char_native_selftest, platform/native_chars.c).
@@ -2598,6 +2608,20 @@ int main(int argc, char *argv[])
 				fprintf(stderr, "switch --dev-mods-play expects sets like none or gravity=60,grip=30,night=50,items=custom,w9=3,difficulty=hard,boss=roo, "
 				                "separated by /, got %s\n",
 				        value);
+				fflush(stderr);
+				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
+			}
+		}
+		else if ((strcmp(argv[argIndex], "--dev-mouse-at") == 0) && ((argIndex + 1) < argc))
+		{
+			// A hover screenshot: a bad value ends the start, like the other
+			// dev switches - a run without the pointer would show something else.
+			const char *value = argv[++argIndex];
+
+			if (!NativeMouse_SetDevAt(value))
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --dev-mouse-at expects <x>,<y> window pixels from 0 to 16384, got %s\n", value);
 				fflush(stderr);
 				return NativeConsole_Return((u32)NATIVE_EXIT_DEV_REQUIRED);
 			}
