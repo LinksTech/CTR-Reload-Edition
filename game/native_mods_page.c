@@ -1,4 +1,5 @@
 #include <common.h>
+#include <platform/native_mouse.h>
 #include <platform/native_mods.h>
 
 // ===========================================================================
@@ -859,6 +860,124 @@ int NativeModsPage_IsOpen(void)
 	return s_nativeModsPageOpen;
 }
 
+// Does the wheel change the value of this main page row (else it scrolls)?
+internal int NativeModsPage_RowHasValue(int row)
+{
+	return (row != NATIVE_MODS_PAGE_ROW_DRIVERS) && (row != NATIVE_MODS_PAGE_ROW_WEIGHTS) && (row != NATIVE_MODS_PAGE_ROW_PARTS);
+}
+
+// THE MOUSE: hover chooses a row (headings are not rows), a left click is Cross
+// on it, the right click is Triangle (back), the wheel changes the value of a
+// value row (the row under the pointer, else the cursor row) and scrolls
+// otherwise. Hovering never scrolls. Returns the button bits to add to the
+// taps; 0 and no change at all while the mouse is not in use.
+internal int NativeModsPage_Mouse(void)
+{
+	RECT frame = {.x = 56, .y = NATIVE_MODS_PAGE_BACK_Y, .w = 400, .h = 180};
+	const int sub = s_nativeModsPageSub;
+	const int weights = (sub == NATIVE_MODS_PAGE_SUB_WEIGHTS);
+	int added = 0;
+	int hovered = -1; // a main page row, or an index of the open list
+	int valueRow;
+	int wheel;
+	int x;
+	int y;
+
+	if (!NativeMouse_Active())
+	{
+		return 0;
+	}
+
+	if (NativeMouse_MenuPoint(&frame, &x, &y) && (x >= 56) && (x < 456))
+	{
+		if (sub == NATIVE_MODS_PAGE_SUB_NONE)
+		{
+			const int band = y - (NATIVE_MODS_PAGE_MAIN_ROW_Y - 3);
+
+			if ((band >= 0) && (band < NATIVE_MODS_PAGE_MAIN_VISIBLE * NATIVE_MODS_PAGE_MAIN_PITCH))
+			{
+				const int line = s_nativeModsPageMainScroll + (band / NATIVE_MODS_PAGE_MAIN_PITCH);
+
+				if ((line < NATIVE_MODS_PAGE_LINES) && (s_nativeModsPageLines[line].row >= 0))
+				{
+					hovered = s_nativeModsPageLines[line].row;
+				}
+			}
+		}
+		else
+		{
+			const int band = y - (NATIVE_MODS_PAGE_ROW_Y - 3);
+			const int index = s_nativeModsPageScroll + (band / NATIVE_MODS_PAGE_ROW_PITCH);
+
+			if ((band >= 0) && (band < NATIVE_MODS_PAGE_VISIBLE * NATIVE_MODS_PAGE_ROW_PITCH) && (index < NativeModsPage_SubCount()))
+			{
+				hovered = index;
+			}
+		}
+	}
+
+	if (NativeMouse_TakeMoved() && (hovered >= 0))
+	{
+		int *cursor = (sub == NATIVE_MODS_PAGE_SUB_NONE) ? &s_nativeModsPageRow : &s_nativeModsPageCursor;
+
+		if (*cursor != hovered)
+		{
+			*cursor = hovered;
+			OtherFX_Play(0, 1);
+		}
+	}
+
+	if (NativeMouse_TakeClick(1) && (hovered >= 0))
+	{
+		if (sub == NATIVE_MODS_PAGE_SUB_NONE)
+		{
+			s_nativeModsPageRow = hovered;
+		}
+		else
+		{
+			s_nativeModsPageCursor = hovered;
+		}
+		added |= BTN_CROSS_one;
+	}
+
+	if (NativeMouse_TakeClick(2))
+	{
+		added |= BTN_TRIANGLE;
+	}
+
+	wheel = NativeMouse_TakeWheel();
+	if (wheel != 0)
+	{
+		if (sub == NATIVE_MODS_PAGE_SUB_NONE)
+		{
+			valueRow = (hovered >= 0) ? hovered : s_nativeModsPageRow;
+			if (NativeModsPage_RowHasValue(valueRow))
+			{
+				s_nativeModsPageRow = valueRow;
+				added |= (wheel > 0) ? BTN_RIGHT : BTN_LEFT;
+			}
+			else
+			{
+				added |= (wheel > 0) ? BTN_UP : BTN_DOWN;
+			}
+		}
+		else if (weights)
+		{
+			if (hovered >= 0)
+			{
+				s_nativeModsPageCursor = hovered;
+			}
+			added |= (wheel > 0) ? BTN_RIGHT : BTN_LEFT;
+		}
+		else
+		{
+			added |= (wheel > 0) ? BTN_UP : BTN_DOWN;
+		}
+	}
+
+	return added;
+}
+
 void NativeModsPage_Frame(void)
 {
 	int tapped;
@@ -868,7 +987,7 @@ void NativeModsPage_Frame(void)
 		return;
 	}
 
-	tapped = sdata->buttonTapPerPlayer[0] & (BTN_UP | BTN_DOWN | BTN_LEFT | BTN_RIGHT | BTN_CROSS_one | BTN_CIRCLE | BTN_TRIANGLE | BTN_SQUARE_one);
+	tapped = (sdata->buttonTapPerPlayer[0] | NativeModsPage_Mouse()) & (BTN_UP | BTN_DOWN | BTN_LEFT | BTN_RIGHT | BTN_CROSS_one | BTN_CIRCLE | BTN_TRIANGLE | BTN_SQUARE_one);
 
 	if (tapped != 0)
 	{

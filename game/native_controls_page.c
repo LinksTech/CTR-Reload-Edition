@@ -1,5 +1,6 @@
 #include <common.h>
 #include <platform/native_controls.h>
+#include <platform/native_mouse.h>
 
 // ===========================================================================
 // CONTROLS PAGE IN THE OPTIONS BOX (keyboard rebinding), and the race context.
@@ -422,6 +423,78 @@ internal void NativeControlsPage_Capture(void)
 	}
 }
 
+// THE MOUSE: hover chooses an action row (headings are not rows), a left click
+// is Cross on it, the right click goes back, the wheel scrolls (Up / Down). The
+// view only follows the cursor, so hovering never scrolls. Returns the button bits
+// to add to the taps; 0 and no change at all while the mouse is not in use.
+internal int NativeControlsPage_Mouse(void)
+{
+	RECT frame = {.x = 56, .y = NATIVE_CONTROLS_PAGE_BACK_Y, .w = 400, .h = 180};
+	int added = 0;
+	int hovered = -1;
+	int wheel;
+	int x;
+	int y;
+
+	if (!NativeMouse_Active())
+	{
+		return 0;
+	}
+
+	if (NativeMouse_MenuPoint(&frame, &x, &y) && (x >= 56) && (x < 456))
+	{
+		const int band = y - (NATIVE_CONTROLS_PAGE_ROW_Y - 3);
+
+		if ((band >= 0) && (band < NATIVE_CONTROLS_PAGE_VISIBLE * NATIVE_CONTROLS_PAGE_PITCH))
+		{
+			const int line = s_nativeControlsPageScroll + (band / NATIVE_CONTROLS_PAGE_PITCH);
+
+			if ((line < NATIVE_CONTROLS_PAGE_LINES) && (s_nativeControlsPageLines[line].action != NATIVE_CONTROLS_LINE_HEADING))
+			{
+				hovered = line;
+			}
+		}
+	}
+
+	if (NativeMouse_TakeMoved() && (hovered >= 0) && (hovered != s_nativeControlsPageLine))
+	{
+		s_nativeControlsPageLine = hovered;
+		OtherFX_Play(0, 1);
+	}
+
+	if (NativeMouse_TakeClick(1) && (hovered >= 0))
+	{
+		s_nativeControlsPageLine = hovered;
+		added |= BTN_CROSS_one;
+	}
+
+	if (NativeMouse_TakeClick(2))
+	{
+		added |= BTN_TRIANGLE;
+	}
+
+	wheel = NativeMouse_TakeWheel();
+	if (wheel != 0)
+	{
+		added |= (wheel > 0) ? BTN_UP : BTN_DOWN;
+	}
+
+	return added;
+}
+
+// While a key is captured the mouse does nothing; what it did meanwhile is
+// dropped so that it does not fire when the capture ends.
+internal void NativeControlsPage_MouseDrop(void)
+{
+	if (NativeMouse_Active())
+	{
+		NativeMouse_TakeMoved();
+		NativeMouse_TakeClick(1);
+		NativeMouse_TakeClick(2);
+		NativeMouse_TakeWheel();
+	}
+}
+
 // DISABLE_INPUT_ALLOW_FUNCPTRS: the proc runs every frame, reads the keys
 // itself and clears them (like NativeGraphics_Proc).
 internal void NativeControlsPage_Proc(struct RectMenu *menu)
@@ -437,11 +510,12 @@ internal void NativeControlsPage_Proc(struct RectMenu *menu)
 	{
 		// every pad tap is dropped while a key is wanted
 		RECTMENU_ClearInput();
+		NativeControlsPage_MouseDrop();
 		NativeControlsPage_Capture();
 	}
 	else
 	{
-		const int tapped = sdata->buttonTapPerPlayer[0] & (BTN_UP | BTN_DOWN | BTN_CROSS_one | BTN_TRIANGLE | BTN_SQUARE_one);
+		const int tapped = (sdata->buttonTapPerPlayer[0] | NativeControlsPage_Mouse()) & (BTN_UP | BTN_DOWN | BTN_CROSS_one | BTN_TRIANGLE | BTN_SQUARE_one);
 
 		if (tapped != 0)
 		{

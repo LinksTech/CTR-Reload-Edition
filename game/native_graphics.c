@@ -1,4 +1,5 @@
 #include <common.h>
+#include <platform/native_mouse.h>
 
 // ===========================================================================
 // GRAPHICS PAGE IN THE OPTIONS BOX (Beta 0).
@@ -336,11 +337,68 @@ internal int NativeGraphics_NextRow(int row, int dir)
 	return (row + NATIVE_GRAPHICS_ROWS + dir) % NATIVE_GRAPHICS_ROWS;
 }
 
+// THE MOUSE: hover chooses the row, the wheel changes the value (of the row under
+// the pointer, else of the cursor row), the right click goes back. Returns the
+// button bits to add to the taps; 0 and no change at all while the mouse is
+// not in use.
+internal int NativeGraphics_Mouse(void)
+{
+	RECT frame = {.x = 56, .y = NATIVE_GRAPHICS_BACK_Y, .w = 400, .h = NATIVE_GRAPHICS_BACK_BOTTOM - NATIVE_GRAPHICS_BACK_Y};
+	int added = 0;
+	int hovered = -1;
+	int wheel;
+	int x;
+	int y;
+
+	if (!NativeMouse_Active())
+	{
+		return 0;
+	}
+
+	if (NativeMouse_MenuPoint(&frame, &x, &y) && (x >= 56) && (x < 456))
+	{
+		const int row = (y - (NATIVE_GRAPHICS_ROW_Y - 3));
+
+		if ((row >= 0) && (row < NATIVE_GRAPHICS_ROWS * NATIVE_GRAPHICS_ROW_PITCH))
+		{
+			hovered = row / NATIVE_GRAPHICS_ROW_PITCH;
+		}
+	}
+
+	if (NativeMouse_TakeMoved() && (hovered >= 0) && (hovered != s_nativeGraphicsRow))
+	{
+		s_nativeGraphicsRow = hovered;
+		OtherFX_Play(0, 1);
+	}
+
+	if (NativeMouse_TakeClick(1) && (hovered >= 0))
+	{
+		s_nativeGraphicsRow = hovered;
+	}
+
+	if (NativeMouse_TakeClick(2))
+	{
+		added |= BTN_TRIANGLE;
+	}
+
+	wheel = NativeMouse_TakeWheel();
+	if (wheel != 0)
+	{
+		if (hovered >= 0)
+		{
+			s_nativeGraphicsRow = hovered;
+		}
+		added |= (wheel > 0) ? BTN_RIGHT : BTN_LEFT;
+	}
+
+	return added;
+}
+
 // DISABLE_INPUT_ALLOW_FUNCPTRS: the proc runs every frame, reads the keys
 // itself and clears them (like MM_NativeTrackSelect.c:554-645).
 internal void NativeGraphics_Proc(struct RectMenu *menu)
 {
-	const int tapped = sdata->buttonTapPerPlayer[0] & (BTN_UP | BTN_DOWN | BTN_LEFT | BTN_RIGHT | BTN_TRIANGLE | BTN_SQUARE_one);
+	const int tapped = (sdata->buttonTapPerPlayer[0] | NativeGraphics_Mouse()) & (BTN_UP | BTN_DOWN | BTN_LEFT | BTN_RIGHT | BTN_TRIANGLE | BTN_SQUARE_one);
 
 	(void)menu;
 

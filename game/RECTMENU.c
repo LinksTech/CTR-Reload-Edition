@@ -622,6 +622,31 @@ void RECTMENU_GetWidth(struct RectMenu *m, s16 *width, b32 boolCheckSubmenu)
 }
 
 
+#ifdef CTR_NATIVE
+#include <platform/native_mouse.h>
+
+// WHERE THE ROWS OF A BOX WERE DRAWN, for the mouse (platform/native_mouse.h).
+//
+// RECTMENU_DrawSelf notes the frame and the band of every row of a box that shows
+// its rows; RECTMENU_ProcessInput of the next frame compares the pointer with
+// that. Plain bookkeeping, nothing here is read by the game itself.
+#define RM_MOUSE_SLOTS 4
+#define RM_MOUSE_ROWS 32
+
+struct RectMenuMouseRecord
+{
+	const struct RectMenu *menu;
+	unsigned frame;
+	RECT frameRect;
+	int numRows;
+	RECT rows[RM_MOUSE_ROWS];
+};
+
+static struct RectMenuMouseRecord s_rmMouse[RM_MOUSE_SLOTS];
+static unsigned s_rmMouseFrame;
+#endif
+
+
 void RECTMENU_DrawSelf(struct RectMenu *menu, int posX, s16 posY, s16 menuWidth)
 {
 	u16 textFlags;
@@ -828,6 +853,51 @@ LAB_80045e94:
 	borders.w = menuWidth + RM_S(s_style->frameExtraW);
 	borders.y = local_38 + offsetY + posY_prev - RM_S(s_style->frameOffsetY);
 	borders.x = local_40 + posX + posX_prev - RM_S(s_style->frameOffsetX);
+
+#ifdef CTR_NATIVE
+	// Note the frame and the row bands of this box (same formulas as the
+	// highlight bar above, with the row index in place of rowSelected).
+	if ((menu->state & (ONLY_DRAW_TITLE | SHOW_ONLY_HIGHLIT_ROW)) == 0)
+	{
+		struct RectMenuMouseRecord *slot = &s_rmMouse[0];
+		int k;
+		int rowY;
+		int rowH;
+
+		for (k = 0; k < RM_MOUSE_SLOTS; k++)
+		{
+			if (s_rmMouse[k].menu == menu)
+			{
+				slot = &s_rmMouse[k];
+				break;
+			}
+			if (s_rmMouse[k].frame < slot->frame)
+			{
+				slot = &s_rmMouse[k];
+			}
+		}
+
+		rowY = offsetY + posY_prev + local_38 + local_50 - 1;
+		if (-1 < menu->stringIndexTitle)
+		{
+			rowY += local_48 + RM_S(s_style->titleAdvance);
+		}
+		rowH = sVar7 + (((menu->state & USE_SMALL_FONT) == 0) ? -RM_S(s_style->highlightShrinkBig) : 1);
+
+		slot->menu = menu;
+		slot->frame = s_rmMouseFrame;
+		slot->frameRect = borders;
+		slot->numRows = 0;
+		for (k = 0; k < RM_MOUSE_ROWS && menu->rows[k].stringIndex != -1; k++)
+		{
+			slot->rows[k].x = local_40 + posX + posX_prev;
+			slot->rows[k].y = (s16)(rowY + k * sVar7);
+			slot->rows[k].w = menuWidth;
+			slot->rows[k].h = (s16)rowH;
+			slot->numRows = k + 1;
+		}
+	}
+#endif
 	RECTMENU_DrawFullRect(menu, &borders);
 
 #ifdef CTR_NATIVE
@@ -919,6 +989,83 @@ int RECTMENU_ProcessInput(struct RectMenu *m)
 		// get button from P1
 		button = sdata->buttonTapPerPlayer[0];
 	}
+
+#ifdef CTR_NATIVE
+	// THE MOUSE on the bottom box: hover selects a row, the left click is a Cross
+	// tap, the right click a Triangle tap, the wheel is Up / Down. The taps go through the
+	// normal path below, so locked rows and MENU_CANT_GO_BACK decide as ever.
+	// Nothing happens unless the mouse is in use.
+	if (NativeMouse_Active() && ((m->state & ONLY_DRAW_TITLE) == 0) &&
+	    ((m->state & RECTMENU_DRAW_CALLBACK_FLAGS) != RECTMENU_DRAW_CALLBACK_FLAGS))
+	{
+		const struct RectMenuMouseRecord *rec = NULL;
+		int k;
+		int x;
+		int y;
+		int hovered = -1;
+		int added = 0;
+		int wheel;
+
+		for (k = 0; k < RM_MOUSE_SLOTS; k++)
+		{
+			if ((s_rmMouse[k].menu == m) && (s_rmMouse[k].frame + 1 >= s_rmMouseFrame))
+			{
+				rec = &s_rmMouse[k];
+			}
+		}
+
+		if ((rec != NULL) && NativeMouse_MenuPoint(&rec->frameRect, &x, &y))
+		{
+			for (k = 0; k < rec->numRows; k++)
+			{
+				const RECT *r = &rec->rows[k];
+
+				if ((x >= r->x) && (x < r->x + r->w) && (y >= r->y) && (y < r->y + r->h))
+				{
+					hovered = k;
+					break;
+				}
+			}
+		}
+
+		if (NativeMouse_TakeMoved() && (hovered >= 0) && (hovered != m->rowSelected))
+		{
+			m->rowSelected = hovered;
+			if ((m->state & MUTE_SOUND_OF_MOVING_CURSOR) == 0)
+			{
+				OtherFX_Play(0, 1);
+			}
+		}
+
+		if (NativeMouse_TakeClick(1) && (hovered >= 0))
+		{
+			m->rowSelected = hovered;
+			added |= BTN_CROSS_one;
+		}
+
+		if (NativeMouse_TakeClick(2))
+		{
+			added |= BTN_TRIANGLE;
+		}
+
+		wheel = NativeMouse_TakeWheel();
+		if (wheel > 0)
+		{
+			added |= BTN_UP;
+		}
+		else if (wheel < 0)
+		{
+			added |= BTN_DOWN;
+		}
+
+		if (added != 0)
+		{
+			sdata->buttonTapPerPlayer[0] |= added;
+			sdata->AnyPlayerTap |= added;
+			button |= added;
+		}
+	}
+#endif
 
 	if (
 
@@ -1058,6 +1205,7 @@ void RECTMENU_ProcessState()
 	// THE MENU HOOKS, first in every menu frame and before the proc of the
 	// active box - up here, before anything about the boxes is read.
 	NativeMenuLock_Tick();
+	s_rmMouseFrame++;
 #endif
 
 	// check for curr box
