@@ -659,7 +659,9 @@ internal void NativeMenuMain_ProcQuit(struct RectMenu *menu)
 internal int NativeMenuLock_ChoiceIsLocked(const struct RectMenu *menu);
 
 // THE OPTIONS BOX: CHEATS /
-// CONTROLS / GRAPHICS, plus SCRAPBOOK when unlocked. It hangs below the
+// GRAPHICS / CONTROLS, plus SCRAPBOOK when unlocked. CONTROLS comes last so
+// that the rows above it keep their places (the menu runs that go to GRAPHICS
+// press down once). It hangs below the
 // main menu like NEW/LOAD below ADVENTURE (D230.c:121-135) and returns in
 // the same way (MM_MenuFlow.c:486-490). Two or three rows below
 // the collapsed main box: far below 216.
@@ -670,19 +672,19 @@ internal int NativeMenuLock_ChoiceIsLocked(const struct RectMenu *menu);
 // next to GRAPHICS.
 global_variable struct MenuRow s_nativeOptionsRows[] = {
     {MM_NATIVE_LNG_CHEATS, 0, 1, 0, 0},
-    {MM_NATIVE_LNG_CONTROLS, 0, 2, 1, 1},
-    {MM_NATIVE_LNG_GRAPHICS, 1, 2, 2, 2},
+    {MM_NATIVE_LNG_GRAPHICS, 0, 2, 1, 1},
+    {MM_NATIVE_LNG_CONTROLS, 1, 2, 2, 2},
     {RECTMENU_STRING_NONE},
 };
 
 // SCRAPBOOK: only once it is unlocked, and then between
-// CHEATS and CONTROLS - hidden, not grey, as in the retail main menu
+// CHEATS and GRAPHICS - hidden, not grey, as in the retail main menu
 // (MM_MenuFlow.c:49-52). It is a reward.
 global_variable struct MenuRow s_nativeOptionsRowsScrapbook[] = {
     {MM_NATIVE_LNG_CHEATS, 0, 1, 0, 0},
     {LNG_SCRAPBOOK, 0, 2, 1, 1},
-    {MM_NATIVE_LNG_CONTROLS, 1, 3, 2, 2},
-    {MM_NATIVE_LNG_GRAPHICS, 2, 3, 3, 3},
+    {MM_NATIVE_LNG_GRAPHICS, 1, 3, 2, 2},
+    {MM_NATIVE_LNG_CONTROLS, 2, 3, 3, 3},
     {RECTMENU_STRING_NONE},
 };
 
