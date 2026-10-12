@@ -23,6 +23,13 @@ enum
 static const u32 VEH_GROUND_SKIDS_TPAGE_BLEND_MASK = 0xff9fffff;
 static const u32 VEH_GROUND_SKIDS_COLOR_SENTINEL = 0xffffffffu;
 
+#ifdef CTR_NATIVE
+// Engine-drawn skid marks of custom drivers (platform/engine_fx_skids.c, compiled
+// after this file). Draw time only: the skid history is written as before.
+int EngineFx_SkidsOwns(const struct Driver *d);
+void EngineFx_Skids(const struct Driver *d, const struct PushBuffer *pb);
+#endif
+
 
 static u32 VehGroundSkids_ReadTexWord(const struct TextureLayout *layout, u32 offset)
 {
@@ -234,6 +241,15 @@ void VehGroundSkids_Main(struct Thread *thread, struct PushBuffer *pb)
 	while (thread != NULL)
 	{
 		struct Driver *d = thread->object;
+#ifdef CTR_NATIVE
+		if (EngineFx_SkidsOwns(d))
+		{
+			// the engine draws this driver's marks; no PS1 primitive is written
+			EngineFx_Skids(d, pb);
+			thread = thread->siblingThread;
+			continue;
+		}
+#endif
 		u32 flags = d->skidmarkEnableFlags;
 
 		if (flags > DRIVER_SKIDMARK_CURRENT_FRAME_MASK)
