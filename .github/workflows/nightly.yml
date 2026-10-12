@@ -1,12 +1,15 @@
 # CTR Reload Edition - nightly build of main.
 #
 # The only automatic build of main. Every day at 21:00 UTC, and by hand (Actions -> Nightly -> Run workflow):
-# builds main and replaces the one pre-release "nightly-builds" with exactly
-# the four files of every release (see build.yml): the programs
+# builds main and updates the one pre-release "nightly-builds" so that it holds
+# exactly the four files of every release (see build.yml): the programs
 # ctr_native.exe and ReloadStudio.exe, and LICENSE and THIRD_PARTY_NOTICES.md,
-# because the licenses must travel with the programs. If main has not changed
-# since the last nightly, the run ends after the check and nothing is built
-# or replaced.
+# because the licenses must travel with the programs. The tag is moved to the
+# new commit and the release is edited in place, never deleted and recreated:
+# deleting and recreating a tag of the same name raced with GitHub's delayed
+# tag deletion and turned the release into an untagged draft. If main has not
+# changed since the last nightly, the run ends after the check and nothing is
+# built or updated.
 #
 # The last built commit is the tag nightly-builds itself: it always points at
 # the main commit the nightly was built from.
@@ -170,7 +173,11 @@ jobs:
           } > body.md
           cat body.md
 
-      - name: Replace the nightly release
+      # The release and its tag are MOVED, never deleted. Deleting the tag and
+      # creating a release with the same tag name seconds later loses a race:
+      # GitHub processes the tag deletion late, and a release whose tag "was
+      # deleted" becomes an untagged draft (2026-10-03 and 2026-10-11).
+      - name: Update the nightly release in place
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -179,19 +186,54 @@ jobs:
         run: |
           set -e
           repo=$GITHUB_REPOSITORY
-          if gh release view nightly-builds -R "$repo" > /dev/null 2>&1; then
-            gh release delete nightly-builds -R "$repo" --cleanup-tag --yes
-          fi
-          # A tag left without its release would keep the old commit.
+          title="Nightly build — $(date -u +%Y-%m-%d) ($ID)"
+          files="out/ctr_native.exe out/ReloadStudio.exe out/LICENSE out/THIRD_PARTY_NOTICES.md"
+          # 1. The tag: moved to the new commit if it exists, made if not.
           if gh api "repos/$repo/git/ref/tags/nightly-builds" > /dev/null 2>&1; then
-            gh api -X DELETE "repos/$repo/git/refs/tags/nightly-builds"
+            gh api -X PATCH "repos/$repo/git/refs/tags/nightly-builds" -f sha="$SHA" -F force=true > /dev/null
+          else
+            gh api -X POST "repos/$repo/git/refs" -f ref=refs/tags/nightly-builds -f sha="$SHA" > /dev/null
           fi
-          gh release create nightly-builds out/ctr_native.exe out/ReloadStudio.exe \
-            out/LICENSE out/THIRD_PARTY_NOTICES.md -R "$repo" \
-            --target "$SHA" \
-            --title "Nightly build — $(date -u +%Y-%m-%d) ($ID)" \
-            --notes-file body.md \
-            --prerelease \
-            --latest=false
+          # 2. The release: edited in place if it exists, made on the existing tag if not.
+          if gh release view nightly-builds -R "$repo" > /dev/null 2>&1; then
+            gh release upload nightly-builds $files -R "$repo" --clobber
+            gh release edit nightly-builds -R "$repo" --title "$title" --notes-file body.md \
+              --draft=false --prerelease --latest=false
+          else
+            gh release create nightly-builds $files -R "$repo" --verify-tag \
+              --title "$title" --notes-file body.md --prerelease --latest=false
+          fi
+          # 3. Exactly the four files: any other asset is removed.
+          for name in $(gh release view nightly-builds -R "$repo" --json assets -q '.assets[].name'); do
+            case "$name" in
+              ctr_native.exe|ReloadStudio.exe|LICENSE|THIRD_PARTY_NOTICES.md) ;;
+              *) gh release delete-asset nightly-builds "$name" -R "$repo" -y ;;
+            esac
+          done
+
+      # Checked for two minutes, because the race above showed only after
+      # seconds. A release that turned into a draft anyway is put back once;
+      # if it is still wrong after that, the run fails and says so.
+      - name: Check the nightly release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.check.outputs.sha }}
+        run: |
+          set -e
+          repo=$GITHUB_REPOSITORY
+          healed=0
+          for i in 1 2 3 4 5 6; do
+            sleep 20
+            state=$(gh release view nightly-builds -R "$repo" --json isDraft,isPrerelease,tagName \
+              -q '"\(.isDraft) \(.isPrerelease) \(.tagName)"')
+            tag=$(gh api "repos/$repo/git/ref/tags/nightly-builds" -q .object.sha)
+            echo "check $i: draft/prerelease/tag = $state, tag -> $tag"
+            if [ "$state" != "false true nightly-builds" ] || [ "$tag" != "$SHA" ]; then
+              [ "$healed" = 0 ] || { echo "nightly release still wrong after one repair"; exit 1; }
+              gh release edit nightly-builds -R "$repo" --draft=false --prerelease --latest=false --verify-tag
+              healed=1
+            fi
+          done
           gh release view nightly-builds -R "$repo" --json name,isPrerelease,assets \
             -q '"\(.name) prerelease=\(.isPrerelease) " + ([.assets[].name] | join(" "))'
