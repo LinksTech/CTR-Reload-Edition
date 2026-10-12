@@ -212,6 +212,8 @@ typedef struct
 } EngineExternalMeshDesc;
 int Engine_MeshCreateExternal(const EngineExternalMeshDesc *desc); // index or -1
 int Engine_MeshIsExternal(int mesh);
+// Selftest of the external meshes; *checks is SET to its check count (not added).
+int Engine_SelfTestMeshExternal(int *checks);
 // Bytes held by all live meshes (CPU copies), for the budget log.
 u32 Engine_MeshBytes(void);
 // GPU handles, set by the renderer once uploaded (u32 so this header needs no

@@ -12,6 +12,12 @@ int Engine_SelfTest(void)
 	failures += Engine_SelfTestCamera(&checks);
 	failures += Engine_SelfTestMaterial(&checks);
 	failures += Engine_SelfTestMeshScene(&checks);
+	{
+		int external = 0;
+
+		failures += Engine_SelfTestMeshExternal(&external);
+		checks += external;
+	}
 	failures += Engine_SelfTestFx(&checks);
 	failures += Engine_SelfTestVram(&checks);
 	failures += Engine_SelfTestModel(&checks);
