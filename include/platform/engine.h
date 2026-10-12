@@ -227,8 +227,16 @@ typedef struct
 #define ENGINE_VIEWS 4
 #define ENGINE_DRAWS_PER_VIEW 512
 #define ENGINE_DYN_VERTICES_PER_FRAME 65536
+#define ENGINE_SCENE_BANKS 2
 
-void Engine_SceneBeginFrame(void); // empties every list, resets the dynamic ring
+// The scene has one bank per double buffer of the game (gGT->swapchainIndex):
+// a frame collects into its bank while the other bank's draws may still be
+// drawn from the other buffer's ordering table. Every call below works on the
+// SELECTED bank (bank 0 at start); Engine_SceneSortedBank reads any bank.
+void Engine_SceneSelectBank(int bank); // 0 or 1; anything else is ignored
+int Engine_SceneBank(void);
+
+void Engine_SceneBeginFrame(void); // empties every list of the selected bank, resets that bank's dynamic ring
 // Copies the draw (and its dynamic vertices into the frame's ring). Returns the
 // draw's index in its view, or -1 when the list or the ring is full (counted).
 int Engine_SceneSubmit(int view, const EngineDraw *draw);
@@ -236,6 +244,9 @@ int Engine_SceneSubmit(int view, const EngineDraw *draw);
 // then transparent sorted back to front (larger sortDepth first), stable.
 // Returns the count; *out points into the scene's own storage.
 int Engine_SceneSorted(int view, const EngineDraw **out);
+// The same for a given bank (the draw side resolves a marker with the bank it
+// was written in). Returns 0 and *out = NULL for an invalid bank or view.
+int Engine_SceneSortedBank(int bank, int view, const EngineDraw **out);
 u32 Engine_SceneOverflows(void); // draws refused since the start (list or ring full)
 
 // --------------------------------------------------------------------------
