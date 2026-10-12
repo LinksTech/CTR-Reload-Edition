@@ -98,6 +98,7 @@ typedef struct
 	u32 refusedBadMaterial;
 	u32 refusedBadRange;
 	u32 uploadFailed;
+	u32 submittedPerView[ENGINE_VIEWS];
 } EngineRenderCounts;
 
 global_variable int s_engRenderTried = 0;
@@ -177,6 +178,8 @@ int Engine_RenderInit(void)
 
 	Platform_Log("[CTR Engine] render ready: program %s, dynamic buffer %u bytes (%d regions x %d vertices)\n",
 	             (Engine_Program() != 0xffffffffu) ? "ne ready" : "ne missing", bytes, ENGINE_DYN_REGIONS, ENGINE_DYN_EXPANDED);
+	// The engine registers its own exit report whenever it is on.
+	Platform_AtExitReport(Engine_RenderReport);
 	return 1;
 }
 
@@ -441,6 +444,7 @@ int Engine_RenderSubmitLinked(int view, const EngineDraw *draw, u32 *ot, int cel
 	ot[cell] = CtrGpu_PrimToOTLink24(marker);
 	s_engMarkerCount[bank]++;
 	s_engCount.submitted++;
+	s_engCount.submittedPerView[view & (ENGINE_VIEWS - 1)]++;
 	return 1;
 }
 
@@ -570,6 +574,18 @@ internal const EngineMaterial *Engine_RenderMaterialFor(const EngineRenderDraw *
 	return Engine_Material((draw->materialOverride >= 0) ? draw->materialOverride : rangeMaterial);
 }
 
+// Once-only diagnostics: the first refusal of each kind and the first marker drawn.
+internal void Engine_RenderFirstRefusal(int kind, const char *reason)
+{
+	global_variable int s_seen[16];
+
+	if ((kind >= 0) && (kind < 16) && !s_seen[kind])
+	{
+		s_seen[kind] = 1;
+		Platform_Log("[CTR Engine] first refusal: %s\n", reason);
+	}
+}
+
 int Engine_DrawMarker(u32 item, const void *clipArg, const void *dispenvArg, int onScreen, int ofsX, int ofsY)
 {
 	const RECT16 *clip = (const RECT16 *)clipArg;
@@ -587,28 +603,32 @@ int Engine_DrawMarker(u32 item, const void *clipArg, const void *dispenvArg, int
 	u32 vb = 0xffffffffu;
 	u32 ib = 0xffffffffu;
 
-	(void)ofsX;
-	(void)ofsY;
 	s_engCount.markersSeen++;
 
-	if (((item & ENGINE_MARKER_FLAG) == 0u) || ((item & 0xC80000u) != 0u) || (index >= s_engDrawCount[bank][view]))
+	// Item layout (ENGINE_MARKER_ITEM): index bits 0-15, view bits 16-17, bank bit 20,
+	// flag bit 22. Reserved, never set: bits 18, 19, 21, 23 (mask 0xAC0000).
+	if (((item & ENGINE_MARKER_FLAG) == 0u) || ((item & 0xAC0000u) != 0u) || (index >= s_engDrawCount[bank][view]))
 	{
 		s_engCount.refusedBadItem++;
+		Engine_RenderFirstRefusal(0, "bad item (flag, bits or index >= draw count)");
 		return 0;
 	}
 	if (Engine_Program() == 0xffffffffu)
 	{
 		s_engCount.refusedNoProgram++;
+		Engine_RenderFirstRefusal(1, "no program");
 		return 0;
 	}
 	if ((clip == NULL) || (clip->w <= 0) || (clip->h <= 0))
 	{
 		s_engCount.refusedClip++;
+		Engine_RenderFirstRefusal(2, "bad clip rect");
 		return 0;
 	}
 	if (!onScreen || !NativeGfx_TargetDepth(s_mainRenderTarget))
 	{
 		s_engCount.refusedOffscreenOrNoDepth++;
+		Engine_RenderFirstRefusal(3, "offscreen or target has no depth");
 		return 0;
 	}
 
@@ -618,6 +638,7 @@ int Engine_DrawMarker(u32 item, const void *clipArg, const void *dispenvArg, int
 		if (!Engine_RenderBufferValid(s_engDynBuffer))
 		{
 			s_engCount.refusedBadMesh++;
+			Engine_RenderFirstRefusal(4, "bad mesh/frame/buffer");
 			return 0;
 		}
 	}
@@ -631,6 +652,7 @@ int Engine_DrawMarker(u32 item, const void *clipArg, const void *dispenvArg, int
 		if ((mesh == NULL) || (vb == 0xffffffffu) || (ib == 0xffffffffu) || (draw->frame >= mesh->frames) || (mesh->rangeCount == 0u))
 		{
 			s_engCount.refusedBadMesh++;
+			Engine_RenderFirstRefusal(4, "bad mesh/frame/buffer");
 			return 0;
 		}
 	}
@@ -653,8 +675,14 @@ int Engine_DrawMarker(u32 item, const void *clipArg, const void *dispenvArg, int
 			const double s2 = (double)s[column * 4 + 2];
 			const double s3 = (double)s[column * 4 + 3];
 
-			clipFromModel.m[column * 4 + 0] = (float)((double)p[0] * s0 + (double)p[12] * s3);
-			clipFromModel.m[column * 4 + 1] = (float)((double)p[5] * s1 + (double)p[13] * s3);
+			// The split's draw offset, as NativeRenderLayer_ScreenFromView adds it:
+			// screen.x = H*x + (rectW/2 + ofsX)*z, so the offset multiplies the w
+			// row. The matrix already holds rectW/2 and rectH/2.
+			const double t0 = s0 + (double)ofsX * s3;
+			const double t1 = s1 + (double)ofsY * s3;
+
+			clipFromModel.m[column * 4 + 0] = (float)((double)p[0] * t0 + (double)p[12] * s3);
+			clipFromModel.m[column * 4 + 1] = (float)((double)p[5] * t1 + (double)p[13] * s3);
 			clipFromModel.m[column * 4 + 2] = (float)s2;
 			clipFromModel.m[column * 4 + 3] = (float)s3;
 		}
@@ -686,6 +714,7 @@ int Engine_DrawMarker(u32 item, const void *clipArg, const void *dispenvArg, int
 		if (material == NULL)
 		{
 			s_engCount.refusedBadMaterial++;
+			Engine_RenderFirstRefusal(5, "bad material (dynamic)");
 		}
 		else
 		{
@@ -709,11 +738,13 @@ int Engine_DrawMarker(u32 item, const void *clipArg, const void *dispenvArg, int
 			if (material == NULL)
 			{
 				s_engCount.refusedBadMaterial++;
+				Engine_RenderFirstRefusal(6, "bad material");
 				continue;
 			}
 			if ((range->indexCount == 0u) || (range->firstIndex > mesh->indexCount) || (range->indexCount > (mesh->indexCount - range->firstIndex)))
 			{
 				s_engCount.refusedBadRange++;
+				Engine_RenderFirstRefusal(7, "bad range");
 				continue;
 			}
 			drawn += Engine_RenderDrawRange(material, draw, clipFromModel.m, cull, 1, range->firstIndex, range->indexCount,
@@ -751,6 +782,10 @@ int Engine_DrawMarker(u32 item, const void *clipArg, const void *dispenvArg, int
 	s_engCount.rangesDrawn += (u32)drawn;
 	if (drawn > 0)
 	{
+		if (s_engCount.drawn == 0u)
+		{
+			Platform_Log("[CTR Engine] first marker drawn: bank %d view %d index %d, ofs %d,%d\n", bank, view, index, ofsX, ofsY);
+		}
 		s_engCount.drawn++;
 	}
 	return (drawn > 0) ? 1 : 0;
@@ -770,4 +805,6 @@ void Engine_RenderReport(void)
 	             s_engCount.submitRefusedScene, s_engCount.submitRefusedCell, s_engCount.submitRefusedArena, s_engCount.submitRefusedDyn,
 	             s_engCount.refusedBadItem, s_engCount.refusedNoProgram, s_engCount.refusedClip, s_engCount.refusedOffscreenOrNoDepth,
 	             s_engCount.refusedBadMesh, s_engCount.refusedBadMaterial, s_engCount.refusedBadRange, s_engCount.uploadFailed);
+	Platform_Log("[CTR Engine] submits per view: %u %u %u %u\n", s_engCount.submittedPerView[0], s_engCount.submittedPerView[1],
+	             s_engCount.submittedPerView[2], s_engCount.submittedPerView[3]);
 }
