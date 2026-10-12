@@ -152,7 +152,8 @@ enum MainMenuNativeConstants
 	MM_NATIVE_LNG_CRYSTAL = MM_NATIVE_LNG_BASE + 0x86,
 	MM_NATIVE_LNG_CTR = MM_NATIVE_LNG_BASE + 0x87,
 
-	// The OPTIONS box under the main menu. 0x88 is unused.
+	// The OPTIONS box under the main menu.
+	MM_NATIVE_LNG_CONTROLS = MM_NATIVE_LNG_BASE + 0x88,
 	MM_NATIVE_LNG_CHEATS = MM_NATIVE_LNG_BASE + 0x89,
 	MM_NATIVE_LNG_GRAPHICS = MM_NATIVE_LNG_BASE + 0x8a,
 

@@ -150,6 +150,8 @@ char *MM_NativeMenu_String(s16 index)
 		return "EXIT GAME";
 	case MM_NATIVE_LNG_CHEATS:
 		return "CHEATS";
+	case MM_NATIVE_LNG_CONTROLS:
+		return "CONTROLS";
 	case MM_NATIVE_LNG_GRAPHICS:
 		return "GRAPHICS";
 	case MM_NATIVE_LNG_MODE:

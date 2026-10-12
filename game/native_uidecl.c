@@ -498,6 +498,8 @@ struct NativeUiMenuPolicy
 
 // game/native_graphics.c, later in the unity build
 int NativeGraphics_Active(void);
+// game/native_controls_page.c, later in the unity build
+int NativeControlsPage_Active(void);
 
 global_variable const struct NativeUiMenuPolicy g_nativeUiMenuPolicies[] = {
     {"menu-battle-setup", NativeUiDecl_BattleSetup, (int)CTR_UI_ANCHOR_CENTRE},
@@ -509,6 +511,8 @@ global_variable const struct NativeUiMenuPolicy g_nativeUiMenuPolicies[] = {
     // (NativeUiDecl_TrackSelect), else they took everything left of x 307 to
     // the left edge: labels outside the frame, a torn title, one edge of the
     // frame alone on the left.
+    // The CONTROLS page, the same panel 56..456 as GRAPHICS
+    {"menu-controls", NativeControlsPage_Active, (int)CTR_UI_ANCHOR_CENTRE},
     {"menu-mods", NativeModsPage_IsOpen, (int)CTR_UI_ANCHOR_CENTRE},
     {"menu-cup-select", NativeUiDecl_CupSelect, (int)CTR_UI_ANCHOR_CENTRE},
     {NULL, NULL, 0},
