@@ -6,6 +6,16 @@
 void NativeChar_ArmSeats(void);
 void NativeChar_ClearSeats(void);
 
+#ifdef CTR_NATIVE
+// From platform/engine*.c, further down in the translation unit. Only with
+// --engine (dev); otherwise one comparison.
+extern int g_cfg_engine;
+extern int g_cfg_engineTestScene;
+void Engine_RenderLevelUnload(void);
+void Engine_TestSceneLoad(void);
+int Engine_RenderUploadMeshes(void);
+#endif
+
 // From platform/native_renderer.c, further down as well: the texture of the
 // native probe form mips, uploaded at this loading screen (stage 5), never in a
 // race frame. Returns at once without --native-preview --native-probe mips.
@@ -320,6 +330,12 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 
 			// The driver pack a seat was checked against is gone with it.
 			NativeChar_ClearSeats();
+#ifdef CTR_NATIVE
+			if (g_cfg_engine)
+			{
+				Engine_RenderLevelUnload();
+			}
+#endif
 		}
 
 		gGT->level1 = 0;
@@ -568,6 +584,17 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 		// pipelines of the race now, at the loading screen, instead of in the
 		// first race frame. Nothing without one.
 		NativeRenderLayer_WarmRace();
+#ifdef CTR_NATIVE
+		// The engine's meshes and materials go up at this loading screen.
+		if (g_cfg_engine)
+		{
+			if (g_cfg_engineTestScene)
+			{
+				Engine_TestSceneLoad();
+			}
+			Engine_RenderUploadMeshes();
+		}
+#endif
 
 		// The driver's native texture goes up here, with the drivers of the
 		// race being loaded: the flag covers the screen, no race frame is

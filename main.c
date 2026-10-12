@@ -370,6 +370,9 @@ static const NativeSwitch s_devSwitches[] = {
     {"--gte-selftest", "", "both GTE paths against each other, then end"},
     {"--char-grid-selftest", "", "layout, navigation and scrolling of the driver select grid for 0 to 32 custom entries, then end; no window, no data needed"},
     {"--mods-selftest", "", "the play mods of the MODS page without a race: settings lines, the status line of the box, --dev-mods-play, the page's steps, gravity and hang time, the grip blend, the night colour, difficulty, the boss sections, the item box and the CPU weapons, then end (ctest mods_selftest)"},
+    {"--engine", "", "the native engine (phase 1, a prototype): draws through the ordering table as engine markers behind the PS1 path; switches the native groundwork on as --native-preview does (depth-capable passes, texture manager); without it nothing of the engine runs"},
+    {"--engine-track", "", "with --engine: the track drawn by the engine (prototype)"},
+    {"--engine-testscene", "", "with --engine: a textured box 600 units in front of the camera of view 0, drawn every race frame through the whole engine path"},
     {"--engine-selftest", "", "the native engine's modules without a window: maths, the camera against the PS1 projection, materials and blend equations, meshes and the scene lists, effect geometry, the VRAM decoder, then end (ctest engine_selftest)"},
     {"--mouse-selftest", "", "the menu mouse without a window: the window to menu mapping with letterbox and pillarbox, the widescreen shift of left, centre and right elements at 4:3, 16:9 and 43:18, the round trip, and the active/inactive rules, then end (ctest mouse_selftest)"},
     {"--controls-selftest", "<dir>", "the keyboard bindings file ctr-controls.cfg in <dir>: parsing, fallbacks, saving, swaps, race and menu context and key capture, then end (ctest controls_selftest)"},
@@ -654,6 +657,33 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 		}
 	}
 
+	// --engine-track and --engine-testscene only mean something on top of
+	// --engine: refused here, before any window, never ignored silently.
+	{
+		int engineGiven = 0;
+		const char *needsEngine = NULL;
+
+		for (int argIndex = 1; argIndex < argc; argIndex++)
+		{
+			if (strcmp(argv[argIndex], "--engine") == 0)
+			{
+				engineGiven = 1;
+			}
+			else if ((needsEngine == NULL) && ((strcmp(argv[argIndex], "--engine-track") == 0) || (strcmp(argv[argIndex], "--engine-testscene") == 0)))
+			{
+				needsEngine = argv[argIndex];
+			}
+		}
+
+		if ((needsEngine != NULL) && !engineGiven)
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch %s requires --engine\n", needsEngine);
+			fflush(stderr);
+			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+	}
+
 	if (g_cfg_dev)
 	{
 		printf("[CTR Native] --dev: developer switches unlocked\n");
@@ -729,6 +759,27 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 			extern int g_cfg_nativePreview;
 
 			g_cfg_nativePreview = 1;
+		}
+		else if (strcmp(argv[argIndex], "--engine") == 0)
+		{
+			// UP HERE for the reason of --native-preview: the engine stands on
+			// the native layer's device groundwork (depth-capable passes, the
+			// texture manager), which comes into being in Platform_Init. The
+			// layer itself binds nothing without custom characters; step 3
+			// moves custom characters to the engine. The pairing checks are in
+			// NativeArgs_GateDevSwitches, the log line in the big loop.
+			extern int g_cfg_nativePreview;
+
+			g_cfg_engine = 1;
+			g_cfg_nativePreview = 1;
+		}
+		else if (strcmp(argv[argIndex], "--engine-track") == 0)
+		{
+			g_cfg_engineTrack = 1;
+		}
+		else if (strcmp(argv[argIndex], "--engine-testscene") == 0)
+		{
+			g_cfg_engineTestScene = 1;
 		}
 		else if ((strcmp(argv[argIndex], "--native-probe") == 0) && ((argIndex + 1) < argc))
 		{
@@ -3450,6 +3501,11 @@ int main(int argc, char *argv[])
 
 				// The marker channel reports at exit only in a run that has it.
 				Platform_AtExitReport(NativeRenderLayer_MarkerReport);
+			}
+			else if (strcmp(argv[argIndex], "--engine") == 0)
+			{
+				// Set by the early reader (NativeArgs_ReadDisplayFlags).
+				Platform_Log("[CTR Engine] --engine: on (dev); native groundwork on\n");
 			}
 			else if (strcmp(argv[argIndex], "--native-wheel-report") == 0)
 			{

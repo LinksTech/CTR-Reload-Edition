@@ -23,6 +23,13 @@ volatile int gCtrDebugSkipLevelGeometry = 0;
 // nothing back. It checks RENDER_FLAG_RENDER_BUCKET itself, like the queue.
 void NativeRenderLayer_Pull(struct GameTracker *gGT);
 
+#if defined(CTR_NATIVE)
+// From platform/engine_frame.c and platform/engine.c, further down in the
+// translation unit. Only with --engine (dev); otherwise one comparison.
+extern int g_cfg_engine;
+void Engine_FrameCollect(struct GameTracker *gGT);
+#endif
+
 void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 {
 	struct Level *lev = gGT->level1;
@@ -124,6 +131,12 @@ void MainFrame_RenderFrame(struct GameTracker *gGT, struct GamepadSystem *gGamep
 	// the title DPP, the pickup bots) are accepted on purpose.
 	// Outside the perf scope, so the queue bucket still measures only the queue.
 	NativeRenderLayer_Pull(gGT);
+#if defined(CTR_NATIVE)
+	if (g_cfg_engine)
+	{
+		Engine_FrameCollect(gGT);
+	}
+#endif
 
 	MAINFRAME_PERF_BEGIN(NATIVE_PERF_BUCKET_MAINFRAME_QUEUE_INSTANCES);
 	RenderBucket_QueueAllInstances(gGT);

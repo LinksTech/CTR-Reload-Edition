@@ -13,6 +13,11 @@
 // registers nothing.
 void NativeRenderLayer_RegisterMarkerArenas(struct GameTracker *gGT);
 
+// From platform/engine_render.c and platform/engine.c, further down in the
+// translation unit. Only with --engine (dev); otherwise one comparison.
+extern int g_cfg_engine;
+void Engine_RenderFrameBegin(int bank);
+
 static void MainFrame_RegisterGpuLinkRanges(struct GameTracker *gGT)
 {
 	static const char *const primLabels[2] = {"db0 prim", "db1 prim"};
@@ -38,6 +43,13 @@ static void MainFrame_RegisterGpuLinkRanges(struct GameTracker *gGT)
 	}
 
 	NativeRenderLayer_RegisterMarkerArenas(gGT);
+
+	// The engine selects the bank of the buffer now filled (the double buffer
+	// just swapped) and empties it.
+	if (g_cfg_engine)
+	{
+		Engine_RenderFrameBegin((gGT->swapchainIndex != 0) ? 1 : 0);
+	}
 }
 #endif
 

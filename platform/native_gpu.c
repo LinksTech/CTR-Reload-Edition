@@ -15,6 +15,7 @@
 #include "platform/native_log.h"
 #include "platform/native_perf.h"
 #include "platform/native_render_layer.h"
+#include "platform/engine.h"
 #include "platform/native_renderer.h"
 
 #include <assert.h>
@@ -352,6 +353,14 @@ global_variable unsigned long long s_gpuNativeSplits = 0;
 global_variable unsigned long long s_gpuNativeRefused = 0;
 global_variable unsigned long long s_gpuNativeDrawCalls = 0;
 global_variable unsigned long long s_gpuSplitsAfterNative = 0;
+
+// The engine's markers (ENGINE_MARKER_FLAG, only with --engine) travel the same
+// channel but are counted apart, so the render layer's marker report (written
+// against parsed) stays true: they are in none of the counters above.
+global_variable unsigned long long s_gpuEngineParsed = 0;
+global_variable unsigned long long s_gpuEngineSplits = 0;
+global_variable unsigned long long s_gpuEngineRefused = 0;
+global_variable unsigned long long s_gpuEngineDrawCalls = 0;
 
 global_variable unsigned long long s_auditBatches = 0;
 global_variable unsigned long long s_auditSplits = 0;
@@ -2173,6 +2182,17 @@ internal void NativeGpu_SplitDrawOffset(const GPUDrawSplit *split, float *ofsX, 
 // read.
 internal void NativeGpu_DrawNativeSplit(const GPUDrawSplit *split)
 {
+	if (g_cfg_engine && ((split->nativeItem & ENGINE_MARKER_FLAG) != 0))
+	{
+		float engineOfsX = 0.0f;
+		float engineOfsY = 0.0f;
+
+		s_gpuEngineDrawCalls++;
+		NativeGpu_SplitDrawOffset(split, &engineOfsX, &engineOfsY);
+		Engine_DrawMarker(split->nativeItem, &split->drawenv.clip, &split->dispenv, split->drawenv.dfe, (int)engineOfsX, (int)engineOfsY);
+		return;
+	}
+
 	s_gpuNativeDrawCalls++;
 
 	if ((split->nativeFlags & PSYX_NATIVE_FLAG_EMPTY) != 0)
@@ -2194,6 +2214,15 @@ void NativeGpu_MarkerCounts(struct NativeGpuMarkerCounts *out)
 	out->refused = s_gpuNativeRefused;
 	out->drawCalls = s_gpuNativeDrawCalls;
 	out->afterNative = s_gpuSplitsAfterNative;
+}
+
+// The engine's share of the marker channel, for "[CTR Engine] at exit".
+void NativeGpu_EngineMarkerCounts(unsigned long long *parsed, unsigned long long *splits, unsigned long long *refused, unsigned long long *drawCalls)
+{
+	*parsed = s_gpuEngineParsed;
+	*splits = s_gpuEngineSplits;
+	*refused = s_gpuEngineRefused;
+	*drawCalls = s_gpuEngineDrawCalls;
 }
 
 void DrawSplit(const GPUDrawSplit *split)
@@ -4991,6 +5020,22 @@ internal int ProcessPsyXPrims(P_TAG *polyTag)
 		const DR_PSYX_NATIVE *marker = (const DR_PSYX_NATIVE *)polyTag;
 		const u32 item = marker->code[0] & 0xFFFFFF;
 		const u32 flags = marker->code[1];
+
+		if (g_cfg_engine && ((item & ENGINE_MARKER_FLAG) != 0))
+		{
+			// An engine marker: the split is made as for any native item, its
+			// counts move from the layer's counters to the engine's.
+			const unsigned long long splitsBefore = s_gpuNativeSplits;
+			const unsigned long long refusedBefore = s_gpuNativeRefused;
+
+			NativeGpu_AddNativeSplit(item, flags);
+			s_gpuEngineParsed++;
+			s_gpuEngineSplits += s_gpuNativeSplits - splitsBefore;
+			s_gpuEngineRefused += s_gpuNativeRefused - refusedBefore;
+			s_gpuNativeSplits = splitsBefore;
+			s_gpuNativeRefused = refusedBefore;
+			return 2;
+		}
 
 		s_gpuNativeParsed++;
 		NativeGpu_AddNativeSplit(item, flags);
