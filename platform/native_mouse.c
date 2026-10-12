@@ -81,6 +81,7 @@ global_variable int s_mouseDetHidden = 0;
 global_variable SDL_Cursor *s_mouseCursor = NULL;
 global_variable int s_mouseCursorFailed = 0;
 global_variable int s_mouseFocusOverride = -1; // selftest only: -1 ask the window, else 0/1
+global_variable int s_mouseRaceOverride = -1;  // selftest only: -1 ask the game, else 0/1 (before the game starts its state looks like a race)
 
 // --dev-mouse-at
 global_variable int s_mouseDevSet = 0;
@@ -106,6 +107,17 @@ internal int NativeMouse_WindowHasFocus(void)
 	return (SDL_GetWindowFlags(g_window) & SDL_WINDOW_INPUT_FOCUS) != 0;
 }
 
+// Is a race running? The game's answer, unless the selftest overrides it.
+internal int NativeMouse_InRace(void)
+{
+	if (s_mouseRaceOverride >= 0)
+	{
+		return s_mouseRaceOverride;
+	}
+
+	return NativeControlsPage_RaceContext();
+}
+
 // May the mouse be used at all right now? (Whether it has moved is a separate
 // question.) Never in measuring mode, never without focus, never in a race.
 internal int NativeMouse_Allowed(void)
@@ -115,7 +127,7 @@ internal int NativeMouse_Allowed(void)
 		return 0;
 	}
 
-	return NativeMouse_WindowHasFocus() && !NativeControlsPage_RaceContext();
+	return NativeMouse_WindowHasFocus() && !NativeMouse_InRace();
 }
 
 internal void NativeMouse_DropPending(void)
@@ -241,7 +253,7 @@ int NativeMouse_Active(void)
 	// hover screenshot of a deterministic run.
 	if (s_mouseDevPlaced && g_cfg_deterministic)
 	{
-		return !NativeControlsPage_RaceContext();
+		return !NativeMouse_InRace();
 	}
 
 	return s_mouseActive && NativeMouse_Allowed();
@@ -849,6 +861,7 @@ int NativeMouse_SelfTest(void)
 		int my = 0;
 
 		s_mouseFocusOverride = 1;
+		s_mouseRaceOverride = 0;
 
 		NATIVE_MOUSE_EXPECT(!NativeMouse_Active(), "inactive at the start");
 		NATIVE_MOUSE_EXPECT(!NativeMouse_MenuPoint(&frame, &mx, &my), "inactive: MenuPoint answers 0");
@@ -900,7 +913,15 @@ int NativeMouse_SelfTest(void)
 		NATIVE_MOUSE_EXPECT(!NativeMouse_Active(), "measuring mode: never active");
 		g_cfg_deterministic = 0;
 
+		// Racing: the mouse stays off.
+		s_mouseRaceOverride = 1;
+		NativeMouse_OnMotion(500.0f, 500.0f);
+		NATIVE_MOUSE_EXPECT(!NativeMouse_Active(), "race context: movement does not activate");
+		s_mouseActive = 1;
+		NATIVE_MOUSE_EXPECT(!NativeMouse_Active(), "race context: Active() is 0");
+
 		NativeMouse_OnKeyOrPad();
+		s_mouseRaceOverride = -1;
 		s_mouseFocusOverride = -1;
 		s_mouseHavePos = 0;
 	}
