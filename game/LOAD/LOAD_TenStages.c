@@ -13,6 +13,7 @@ extern int g_cfg_engine;
 extern int g_cfg_engineTestScene;
 void Engine_RenderLevelUnload(void);
 void Engine_DriverLoad(void);
+void EngineFx_TurboLoad(void);
 void Engine_DriverUnload(void);
 void Engine_TestSceneLoad(void);
 int Engine_RenderUploadMeshes(void);
@@ -983,6 +984,15 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 		{
 			goto LAB_800346b0;
 		}
+#ifdef CTR_NATIVE
+		// The turbo flame models are in gGT->modelPtr[] now: import them and upload
+		// their meshes (only meshes without buffers yet go up) at this loading screen.
+		if (g_cfg_engine)
+		{
+			EngineFx_TurboLoad();
+			Engine_RenderUploadMeshes();
+		}
+#endif
 		break;
 	}
 	case 9:

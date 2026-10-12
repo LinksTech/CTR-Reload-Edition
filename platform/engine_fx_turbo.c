@@ -42,54 +42,82 @@ typedef struct
 internal EngTurboModel s_engTurboModels[ENG_TURBO_MODELS];
 internal struct NrDrawItem s_engTurboItem;
 
-// The cached import of a model, re-made when its mesh is gone (level change).
+// The cached import of a model: only a lookup. The meshes are made at the load
+// point (EngineFx_TurboLoad); an upload inside a race frame is not allowed, so
+// a model without a live mesh WITH GPU buffers is not drawn (retail draws it).
 internal EngTurboModel *EngineFx_TurboModel(const struct Model *model)
 {
-	EngTurboModel *slot = NULL;
 	int i;
 
 	for (i = 0; i < ENG_TURBO_MODELS; i++)
 	{
 		EngTurboModel *e = &s_engTurboModels[i];
+		u32 vb = 0xffffffffu;
+		u32 ib = 0xffffffffu;
 
-		if (e->model == model)
+		if ((e->model != model) || e->failed || (e->imp.mesh < 0) || (Engine_MeshDesc(e->imp.mesh) == NULL))
 		{
-			if (e->failed)
-			{
-				return NULL;
-			}
-			if ((e->imp.mesh >= 0) && (Engine_MeshDesc(e->imp.mesh) != NULL))
-			{
-				return e;
-			}
-			e->model = NULL; // stale: the mesh was freed with the level
+			continue;
 		}
-		if ((e->model == NULL) && (slot == NULL))
+		Engine_MeshGetGpu(e->imp.mesh, &vb, &ib);
+		if ((vb == 0xffffffffu) || (ib == 0xffffffffu))
 		{
-			slot = e;
+			return NULL;
 		}
+		return e;
 	}
-	if (slot == NULL)
-	{
-		slot = &s_engTurboModels[0]; // more models than slots (never: 8 flame models)
-	}
-	memset(slot, 0, sizeof(*slot));
-	slot->model = model;
-	if (!Engine_ModelImport(model, "turbo flame", &slot->imp) || (slot->imp.mesh < 0))
-	{
-		slot->failed = 1;
-		return NULL;
-	}
-	for (i = 0; i < slot->imp.materialCount; i++)
-	{
-		const EngineMaterial *m = Engine_Material(slot->imp.firstMaterial + i);
+	return NULL;
+}
 
-		if ((m != NULL) && (m->blend != ENGINE_BLEND_OPAQUE) && (m->blend != ENGINE_BLEND_MASK))
+// At the load point, after Engine_DriverLoad and before Engine_RenderUploadMeshes:
+// imports the eight flame models the game births and animates for the drivers
+// (gGT->modelPtr[STATIC_TURBO_EFFECT + 0..7], VehFire.c / VehTurbo.c) so that
+// the renderer uploads them with the other meshes. Reset by every call (the
+// meshes of the last level are gone).
+void EngineFx_TurboLoad(void)
+{
+	const struct GameTracker *gGT = sdata->gGT;
+	int n;
+	int i;
+	int imported = 0;
+
+	memset(s_engTurboModels, 0, sizeof(s_engTurboModels));
+	if (!g_cfg_engine || (gGT == NULL))
+	{
+		return;
+	}
+	for (n = 0; n < ENG_TURBO_MODELS; n++)
+	{
+		const struct Model *model;
+		EngTurboModel *slot = &s_engTurboModels[n];
+
+		if (n >= 8)
 		{
-			slot->transparent = 1;
+			break;
+		}
+		model = gGT->modelPtr[STATIC_TURBO_EFFECT + n];
+		if (model == NULL)
+		{
+			continue;
+		}
+		slot->model = model;
+		if (!Engine_ModelImport(model, "turbo flame", &slot->imp) || (slot->imp.mesh < 0))
+		{
+			slot->failed = 1;
+			continue;
+		}
+		imported++;
+		for (i = 0; i < slot->imp.materialCount; i++)
+		{
+			const EngineMaterial *m = Engine_Material(slot->imp.firstMaterial + i);
+
+			if ((m != NULL) && (m->blend != ENGINE_BLEND_OPAQUE) && (m->blend != ENGINE_BLEND_MASK))
+			{
+				slot->transparent = 1;
+			}
 		}
 	}
-	return slot;
+	Platform_Log("[CTR Engine] turbo flames: %d model(s) imported\n", imported);
 }
 
 // 1 = the engine drew this flame instance in this view (the retail handler is
