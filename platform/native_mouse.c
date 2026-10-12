@@ -444,6 +444,12 @@ void NativeMouse_Update(void)
 		Platform_Log("[CTR Mouse] --dev-mouse-at %d,%d: pointer placed, hover active (dev)\n", s_mouseDevX, s_mouseDevY);
 	}
 
+	// Dev-only (--dev-mouse-at): the placed pointer counts as moving on every frame.
+	if (s_mouseDevPlaced)
+	{
+		s_mouseMoved = 1;
+	}
+
 	// Measuring mode: hidden once, then never touched - nothing that could
 	// reach a rendered frame.
 	if (g_cfg_deterministic)

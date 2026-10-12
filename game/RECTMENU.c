@@ -1000,9 +1000,10 @@ int RECTMENU_ProcessInput(struct RectMenu *m)
 	{
 		const struct RectMenuMouseRecord *rec = NULL;
 		int k;
-		int x;
-		int y;
+		int x = 0;
+		int y = 0;
 		int hovered = -1;
+		int mapped;
 		int added = 0;
 		int wheel;
 
@@ -1014,7 +1015,8 @@ int RECTMENU_ProcessInput(struct RectMenu *m)
 			}
 		}
 
-		if ((rec != NULL) && NativeMouse_MenuPoint(&rec->frameRect, &x, &y))
+		mapped = (rec != NULL) && NativeMouse_MenuPoint(&rec->frameRect, &x, &y);
+		if (mapped)
 		{
 			for (k = 0; k < rec->numRows; k++)
 			{
@@ -1028,7 +1030,9 @@ int RECTMENU_ProcessInput(struct RectMenu *m)
 			}
 		}
 
-		if (NativeMouse_TakeMoved() && (hovered >= 0) && (hovered != m->rowSelected))
+		// The movement is only consumed once the pointer maps onto this box, so a move that
+		// arrives before the box is drawn still applies in the first frame it exists.
+		if (mapped && NativeMouse_TakeMoved() && (hovered >= 0) && (hovered != m->rowSelected))
 		{
 			m->rowSelected = hovered;
 			if ((m->state & MUTE_SOUND_OF_MOVING_CURSOR) == 0)
