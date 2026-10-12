@@ -916,6 +916,142 @@ global_variable const char *ctr_native_twin_shader =
     "}\n"
     "#endif\n";
 
+// The engine program, "ne" (platform/engine_programs.c creates it; the native
+// engine, include/platform/engine.h section PROGRAMS). Its source lives here so
+// that tools/shader_spirv_probe.c emits ne.vert / ne.frag with the others and the
+// ctest shader_spirv_dialect compiles it. The block "NeBlock" is struct
+// EngineUniforms field for field (160 bytes std140).
+//
+//
+// texSource (params.x), the three ways to colour a fragment:
+//   0  the vertex colour times the tint, nothing else.
+//   1  the native texture of slot 0 times it. params.y > 0.5 marks an sRGB
+//      texture (NATIVE_GFX_TEXFMT_RGBA8_SRGB): its sample arrives in linear
+//      light and goes straight back to gamma with the sRGB encoding, so the
+//      modulation happens in gamma as in "nr" (the main target and the
+//      swapchain are UNORM). The statement is the one of "nr", character for
+//      character.
+//   2  the PSX VRAM, below.
+//
+// VRAM (texSource 2). vramPage.xy is the page origin in VRAM words, vramPage.z
+// the depth (0 = 4 bit, 1 = 8 bit, 2 = 15 bit), vramClut.xy the CLUT origin in
+// words. v_uv is in TEXELS of the page, 0..255, as a PS1 primitive carries
+// them, and wraps inside the 256 x 256 page. The texel is found like this:
+//   4 bit   word (page.x + u / 4, page.y + v), nibble u mod 4 is the index
+//   8 bit   word (page.x + u / 2, page.y + v), byte u mod 2 is the index
+//   15 bit  word (page.x + u, page.y + v) is the colour
+// and for 4 and 8 bit the colour word is (clut.x + index, clut.y). This is the
+// arithmetic of GPU_PAGE_COLUMN_4BIT / _8BIT and of the 15-bit route in
+// native_shaders.inc (GPU_SAMPLE_TEXTURE_FUNC) without the page store: that
+// store holds one index per pixel and is a copy of what these words say. Word
+// x and y wrap on the VRAM (1024 x 512), as the PSX program's VRAM sampler
+// (REPEAT) does for the last page.
+//
+// FIVE-FIVE-FIVE. A word is the two bytes of the RG8 texel: .r the low byte,
+// .g the high byte. Bits 0-4 red, 5-9 green, 10-14 blue, bit 15 the STP bit.
+// The PSX program turns the word into a colour through the RG8 lookup table
+// (NativeRenderer_InitRG8LUT): channel = (value & 31) << 3, so 31 becomes 248,
+// not 255. This shader does the same shift directly instead of a table fetch,
+// which gives the same 8-bit values and keeps the retail look, including the
+// 248 that the bright factor then doubles.
+//
+// THE MASK. The word 0x0000 (after the CLUT for indexed pages) is transparent
+// and discarded, as texelVisible() in GPU_STP_PASS_FUNC does (rg.x + rg.y > 0).
+// The STP bit then selects by stpPass (params.w): 1 keeps only texels WITHOUT
+// STP, 2 only texels WITH STP, 0 keeps all - the PSX program's
+// discardForSemiTransPass for its passes 1 and 2.
+//
+// ALPHA. The PSX program multiplies the colour by the vertex colour and then
+// OVERWRITES alpha with its mask bit (1 when the draw sets the mask or an STP
+// texel is written with output STP, else 0); it never carries a texel alpha.
+// An engine draw has no mask bit to write, so a VRAM texel is opaque: alpha is
+// the vertex alpha times the tint alpha (1.0 for every ordinary draw), and
+// alphaCutoff (params.z) applies to that alpha like on every other path.
+//
+// MODULATION. colour = texel * vertex colour * params2.x. 2.0 is the PSX bright
+// factor of retail data (128 is the neutral colour on the console), 1.0 native
+// data - the nrLook.y of "nrt". The result is not clamped here; the UNORM
+// target clamps.
+global_variable const char *ctr_native_engine_shader =
+    "#ifdef VERTEX\n"
+    "layout(location = 0) in vec3 a_position;\n"
+    "layout(location = 1) in vec2 a_texcoord;\n"
+    "layout(location = 2) in vec4 a_color;\n"
+    "VARYING_LOC0 out vec2 v_uv;\n"
+    "VARYING_LOC1 out vec4 v_color;\n"
+    "UBO_QUALIFIER uniform NeBlock {\n"
+    "	mat4 clipFromModel;\n"
+    "	vec4 tint;\n"
+    "	vec4 params;\n"
+    "	vec4 params2;\n"
+    "	vec4 vramPage;\n"
+    "	vec4 vramClut;\n"
+    "	vec4 pad;\n"
+    "};\n"
+    "void main() {\n"
+    "	v_uv = a_texcoord;\n"
+    "	v_color = a_color * tint;\n"
+    "	gl_Position = clipFromModel * vec4(a_position, 1.0);\n"
+    "}\n"
+    "#endif\n"
+    "#ifdef FRAGMENT\n"
+    "VARYING_LOC0 in vec2 v_uv;\n"
+    "VARYING_LOC1 in vec4 v_color;\n"
+    "SAMPLER_SLOT0 uniform sampler2D s_texture;\n"
+    "SAMPLER_SLOT1 uniform sampler2D s_vram;\n"
+    "UBO_QUALIFIER uniform NeBlock {\n"
+    "	mat4 clipFromModel;\n"
+    "	vec4 tint;\n"
+    "	vec4 params;\n"
+    "	vec4 params2;\n"
+    "	vec4 vramPage;\n"
+    "	vec4 vramClut;\n"
+    "	vec4 pad;\n"
+    "};\n"
+    // One VRAM word: the two bytes of the RG8 texel, low byte first. Wrapped on the VRAM.
+    "int vramWord(ivec2 p) {\n"
+    "	ivec2 w = ivec2(p.x & 1023, p.y & 511);\n"
+    "	ivec2 b = ivec2(texelFetch(s_vram, w, 0).rg * 255.0 + 0.5);\n"
+    "	return b.x | (b.y << 8);\n"
+    "}\n"
+    "void main() {\n"
+    "	vec4 colour = v_color;\n"
+    "	if (params.x > 1.5) {\n"
+    // Texel of the page, wrapped inside the 256 x 256 page.
+    "		ivec2 t = ivec2(floor(v_uv)) & 255;\n"
+    "		ivec2 page = ivec2(vramPage.xy + 0.5);\n"
+    "		int depth = int(vramPage.z + 0.5);\n"
+    "		int word;\n"
+    "		if (depth == 0) {\n"
+    "			int index = (vramWord(page + ivec2(t.x >> 2, t.y)) >> ((t.x & 3) * 4)) & 15;\n"
+    "			word = vramWord(ivec2(vramClut.xy + 0.5) + ivec2(index, 0));\n"
+    "		} else if (depth == 1) {\n"
+    "			int index = (vramWord(page + ivec2(t.x >> 1, t.y)) >> ((t.x & 1) * 8)) & 255;\n"
+    "			word = vramWord(ivec2(vramClut.xy + 0.5) + ivec2(index, 0));\n"
+    "		} else {\n"
+    "			word = vramWord(page + t);\n"
+    "		}\n"
+    // 0x0000 is transparent.
+    "		if (word == 0) { discard; }\n"
+    "		bool stp = (word & 0x8000) != 0;\n"
+    "		int pass = int(params.w + 0.5);\n"
+    "		if ((pass == 1) && stp) { discard; }\n"
+    "		if ((pass == 2) && !stp) { discard; }\n"
+    // 5:5:5 as the RG8 lookup table does it: (v & 31) << 3.
+    "		vec3 texel = vec3(float((word & 31) << 3), float(((word >> 5) & 31) << 3), float(((word >> 10) & 31) << 3)) / 255.0;\n"
+    "		colour = vec4(texel * v_color.rgb * params2.x, v_color.a);\n"
+    "	} else if (params.x > 0.5) {\n"
+    "		if (params.y > 0.5) {\n"
+    "			vec4 texel = texture(s_texture, v_uv);\n"
+    "			vec3 encoded = mix(1.055 * pow(texel.rgb, vec3(1.0 / 2.4)) - 0.055, texel.rgb * 12.92, lessThan(texel.rgb, vec3(0.0031308)));\n"
+    "			colour *= vec4(encoded, texel.a);\n"
+    "		} else { colour *= texture(s_texture, v_uv); }\n"
+    "	}\n"
+    "	if ((params.z > 0.0) && (colour.a < params.z)) { discard; }\n"
+    "	fragColor = colour;\n"
+    "}\n"
+    "#endif\n";
+
 // The blit shaders by name, in one place.
 //
 // Two readers: native_renderer.c, to find the prebuilt SPIR-V module that goes
@@ -968,6 +1104,10 @@ internal int CtrBlitShader_Get(int index, const char **outName, const char **out
 	case 5:
 		name = "nrt";
 		body = ctr_native_twin_shader;
+		break;
+	case 6:
+		name = "ne";
+		body = ctr_native_engine_shader;
 		break;
 	default:
 		return 0;
