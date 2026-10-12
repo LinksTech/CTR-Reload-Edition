@@ -76,6 +76,9 @@ typedef struct
 	int materialOverride;
 	int dynMaterial;
 	u16 flags;
+	// The water line (EngineDraw.split / splitKeep); splitKeep 0 = no split.
+	float split[4];
+	s8 splitKeep;
 } EngineRenderDraw;
 
 // The counters of Engine_RenderReport.
@@ -231,8 +234,9 @@ int Engine_RenderUploadMeshes(void)
 		NativeGfxBuffer vbuf;
 		NativeGfxBuffer ibuf;
 
-		if (desc == NULL)
+		if ((desc == NULL) || Engine_MeshIsExternal(mesh))
 		{
+			// An external mesh already has its buffers, which are not ours.
 			continue;
 		}
 		Engine_MeshGetGpu(mesh, &vb, &ib);
@@ -416,6 +420,9 @@ int Engine_RenderSubmitLinked(int view, const EngineDraw *draw, u32 *ot, int cel
 	rec->materialOverride = draw->materialOverride;
 	rec->dynMaterial = draw->dynMaterial;
 	rec->flags = draw->flags;
+	// EngineDraw is zeroed by its callers: split all 0 and splitKeep 0 mean no split.
+	memcpy(rec->split, draw->split, sizeof(rec->split));
+	rec->splitKeep = draw->splitKeep;
 	rec->dynFirst = 0;
 	rec->dynCount = 0;
 	if (dynamic)
@@ -516,6 +523,9 @@ internal int Engine_RenderDrawRange(const EngineMaterial *material, const Engine
 	u.params[2] = (material->blend == ENGINE_BLEND_MASK) ? material->alphaCutoff : 0.0f;
 	u.params[3] = 0.0f;
 	u.params2[0] = vram ? 2.0f : 1.0f;
+	// splitKeep 0 (every draw that does not set it) keeps everything.
+	u.params2[1] = (draw->splitKeep > 0) ? 1.0f : ((draw->splitKeep < 0) ? -1.0f : 0.0f);
+	memcpy(u.split, draw->split, sizeof(u.split));
 	if (vram)
 	{
 		const EngineTpage tpage = Engine_DecodeTpage(material->tpage);
