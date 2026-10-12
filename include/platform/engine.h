@@ -195,6 +195,23 @@ void Engine_MeshDestroy(int mesh);
 void Engine_MeshesReset(void);
 // The CPU copy (for the renderer and the tests); NULL for an invalid index.
 const EngineMeshDesc *Engine_MeshDesc(int mesh);
+// AN EXTERNAL MESH: GPU buffers that belong to someone else (the custom driver
+// sets of platform/native_char_gpu.c), registered WITHOUT a CPU copy. The mesh
+// has no vertices/indices in its description (NULL, indexCount = the sum of the
+// ranges), is never uploaded by the renderer and its buffers are never
+// destroyed by the engine (Engine_MeshDestroy only forgets them).
+typedef struct
+{
+	u32 vertexBuffer; // NativeGfxBuffer
+	u32 indexBuffer;  // NativeGfxBuffer, u16 indices
+	u32 verticesPerFrame;
+	u32 frames;
+	const EngineRange *ranges;
+	u32 rangeCount;
+	const char *name;
+} EngineExternalMeshDesc;
+int Engine_MeshCreateExternal(const EngineExternalMeshDesc *desc); // index or -1
+int Engine_MeshIsExternal(int mesh);
 // Bytes held by all live meshes (CPU copies), for the budget log.
 u32 Engine_MeshBytes(void);
 // GPU handles, set by the renderer once uploaded (u32 so this header needs no
@@ -219,7 +236,17 @@ typedef struct
 	const u16 *dynIndices;
 	u32 dynIndexCount;
 	int dynMaterial;
+	// The water line of a custom driver (step 3): a plane in MODEL units,
+	// d = split[3] - dot(split.xyz, position); splitKeep 1 keeps d >= 0 (below
+	// the plane), -1 keeps d < 0 (above), 0 keeps everything (every other draw).
+	float split[4];
+	s8 splitKeep;
 } EngineDraw;
+
+// clipFromModel ends in PSX screen pixels RELATIVE TO THE VIEW (the offset
+// rect.w/2, rect.h/2 included); the split's draw offset of the ordering table
+// (NativeGpu_SplitDrawOffset) is added by the renderer at draw time, as the
+// native layer adds it (NativeRenderLayer_ScreenFromView).
 
 #define ENGINE_DRAW_TRANSPARENT 0x0001u // draw after the opaque ones, back to front
 #define ENGINE_DRAW_NO_DEPTH 0x0002u    // no depth test (overlays)
@@ -317,10 +344,10 @@ typedef struct
 	float clipFromModel[16];
 	float tint[4];
 	float params[4];
-	float params2[4];
+	float params2[4]; // x modulate, y splitKeep (-1, 0, 1), z..w 0
 	float vramPage[4];
 	float vramClut[4];
-	float pad[4];
+	float split[4];   // the water-line plane in model units (EngineDraw.split)
 } EngineUniforms; // 160 bytes
 
 // Creates "ne" once (only with g_cfg_engine). 1 = ready.
@@ -388,6 +415,55 @@ void Engine_TestSceneLoad(void);
 void Engine_TestSceneCollect(struct GameTracker *gGT);
 
 // --------------------------------------------------------------------------
+// CUSTOM DRIVERS (platform/engine_driver.c; step 3)
+//
+// Under --engine the custom drivers are drawn by the engine instead of the
+// native layer: the layer still decides per (instance, view) what to draw and
+// computes it (pose, wheel poses, water line, mirror - its route), but instead
+// of its own marker it hands the finished item to the engine, which turns it
+// into engine draws (body + wheels) linked into the same ordering-table cell.
+// The layer then draws nothing of its own for custom drivers.
+
+// At the load stage, right after the custom driver sets were uploaded
+// (NativeCharGpu_LoadSeats): one external mesh per set body (and per wheel
+// mesh), engine materials from the set's materials. At unload: forgotten.
+void Engine_DriverLoad(void);
+void Engine_DriverUnload(void);
+// The engine mesh of a set's body, -1 when none (set = index of the
+// native_char_gpu set, 0..NATIVE_CHAR_GPU_SETS-1).
+int Engine_DriverBodyMesh(int set);
+struct NrDrawItem;
+// From the layer's char route: submits the item's draws into OT range `ot`,
+// cell `cell` (what the layer would have linked its marker into). Returns the
+// number of engine draws submitted; 0 = nothing (the layer then falls back as
+// it always did).
+int Engine_DriverSubmitItem(const struct NrDrawItem *it, u32 *ot, int cell);
+
+// --------------------------------------------------------------------------
+// RETAIL MODELS (platform/engine_model.c; step 3)
+//
+// A model in the PS1 format (the CMDL of a .rldchar, or any retail struct
+// Model in memory) to an engine mesh with VRAM materials: every frame of every
+// animation of every header as one mesh frame, the triangles of the PS1 command
+// list, texture coordinates in page texels, one material per (tpage, clut,
+// semi-transparency) with ENGINE_MATERIAL_SEMI_STP for the PS1 rule.
+struct Model;
+typedef struct
+{
+	int mesh;          // engine mesh, -1 on failure
+	int firstMaterial; // the materials made for it (consecutive indices)
+	int materialCount;
+	int headerCount;   // model headers (LODs) imported: only header 0 (the most detailed)
+	int animCount;
+	int frameTotal;
+} EngineModelImport;
+// Returns 1 on success. Reads only; the model stays as it is.
+int Engine_ModelImport(const struct Model *model, const char *name, EngineModelImport *out);
+// The mesh frame of (animation, frame) of an imported model, -1 if out of range.
+int Engine_ModelFrame(const EngineModelImport *imp, int anim, int frame);
+int Engine_SelfTestModel(int *checks);
+
+// --------------------------------------------------------------------------
 // SELFTEST (platform/engine_selftest.c; main.c --engine-selftest, ctest
 // engine_selftest). Each module's test returns its failure count and adds its
 // checks to *checks; it prints one line per failing check.
@@ -397,6 +473,7 @@ int Engine_SelfTestMaterial(int *checks);
 int Engine_SelfTestMeshScene(int *checks);
 int Engine_SelfTestFx(int *checks);
 int Engine_SelfTestVram(int *checks);
+// (Engine_SelfTestModel above.)
 // All of them; prints "engine selftest passed: N checks, 0 failures" or
 // "engine selftest FAILED: N checks, F failures"; returns 0 / 1.
 int Engine_SelfTest(void);

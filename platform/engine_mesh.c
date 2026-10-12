@@ -194,3 +194,16 @@ void Engine_MeshGetGpu(int mesh, u32 *vertexBuffer, u32 *indexBuffer)
 		*indexBuffer = i;
 	}
 }
+
+// Step 3 contract (external meshes) - skeleton.
+int Engine_MeshCreateExternal(const EngineExternalMeshDesc *desc)
+{
+	(void)desc;
+	return -1;
+}
+
+int Engine_MeshIsExternal(int mesh)
+{
+	(void)mesh;
+	return 0;
+}

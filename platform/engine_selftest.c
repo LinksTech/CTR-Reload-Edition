@@ -14,6 +14,7 @@ int Engine_SelfTest(void)
 	failures += Engine_SelfTestMeshScene(&checks);
 	failures += Engine_SelfTestFx(&checks);
 	failures += Engine_SelfTestVram(&checks);
+	failures += Engine_SelfTestModel(&checks);
 
 	if (failures == 0)
 	{

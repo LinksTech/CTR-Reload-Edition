@@ -101,6 +101,8 @@
 #include "platform/engine_render.c"
 #include "platform/engine_frame.c"
 #include "platform/engine_testscene.c"
+#include "platform/engine_model.c"
+#include "platform/engine_driver.c"
 #include "platform/engine_selftest.c"
 
 #ifndef CC
