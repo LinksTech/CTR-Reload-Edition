@@ -55,6 +55,7 @@
 #include "platform/native_subpixel.c"
 #include "platform/native_gte_flags.c"
 
+#include "platform/native_controls.c"
 #include "platform/native_input.c"
 #include "platform/native_inline_c.c"
 #include "platform/native_libapi.c"
@@ -67,6 +68,7 @@
 #include "platform/native_memcard.c"
 #include "platform/native_memcard_adapter.c"
 #include "platform/native_perf.c"
+#include "platform/native_mouse.c"
 #include "platform/native_platform.c"
 #include "platform/native_replay_scheduler.c"
 #include "platform/native_gfx_vk.c"

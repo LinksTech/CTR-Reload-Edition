@@ -307,6 +307,8 @@
 #include "native_graphics.c"
 // The MODS page, opened from the MODS box (230/MM_NativeModsBox.c).
 #include "native_mods_page.c"
+// The CONTROLS page (keyboard layout), opened from the OPTIONS box like GRAPHICS.
+#include "native_controls_page.c"
 #include "native_menuscreen.c"
 
 #include "231/R231.c"
