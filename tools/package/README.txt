@@ -70,6 +70,7 @@ older game or Reload Studio from another folder behaves differently - most
 
 Keys: F11 or Alt+Enter switches between window and full screen. F12 saves a
 screenshot. Everything else is in the game menus.
+The game keys can be changed in OPTIONS -> CONTROLS (file ctr-controls.cfg).
 
 Graphics: OPTIONS -> GRAPHICS. Up/down picks a row, left/right changes it.
   DISPLAY MODE   Fullscreen / Windowed          (right away)

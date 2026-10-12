@@ -45,6 +45,19 @@ UNRELEASED
     boost keeps the super fire, SQUARE with DOWN keeps the reserves. Each
     rule can be switched on its own.
   - Settings of the earlier MODS page are taken over.
+- Keyboard keys can be changed: OPTIONS -> CONTROLS, or the file
+  ctr-controls.cfg next to ctr_native.exe. If a key is already used by
+  another action of the same kind, the two swap. RESET TO DEFAULT, or
+  deleting the file, brings the stock layout back, which is the layout of
+  earlier versions. A line in the file the game cannot use is skipped and
+  logged. The controller layout is unchanged.
+- Mouse in menus: hover picks a row, left click confirms, right click goes
+  back, the wheel scrolls lists and changes values. Works in the list menus
+  (main menu, OPTIONS, CHEATS, pause and race end menus) and on the
+  GRAPHICS, MODS and CONTROLS pages. Not yet in the driver, track and cup
+  select. In a race the mouse does nothing.
+- Reload Studio now says when packing whether the CPU (nav) paths were
+  taken from the file or made automatically.
 
 
 NEW IN 0.7.5 BETA

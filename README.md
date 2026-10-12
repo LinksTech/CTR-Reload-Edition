@@ -28,6 +28,7 @@
 <p align="center">
   <a href="#features">Features</a> &middot;
   <a href="#getting-started">Getting started</a> &middot;
+  <a href="#controls">Controls</a> &middot;
   <a href="#custom-tracks">Custom tracks</a> &middot;
   <a href="#custom-characters">Custom characters</a> &middot;
   <a href="#whats-next">What's next</a> &middot;
@@ -152,6 +153,33 @@ The game reads both folders when it starts: after a new track or character,
 restart the game.
 
 Windows 10 (1903 or newer) or Windows 11 and a graphics driver with Vulkan 1.0.
+
+## Controls
+
+Stock keyboard layout (the controller layout is fixed):
+
+| Action | Key |
+| --- | --- |
+| Gas / confirm | C |
+| Brake / back | X / Z |
+| Steer, menu cursor | Left, Right, Up, Down |
+| Jump and drift | Right Shift, Left Shift |
+| Item | V |
+| Rear view / camera | Right Ctrl / Left Ctrl |
+| Start / select | Return / Space |
+
+All keys can be changed in OPTIONS → CONTROLS: pick an action, press confirm,
+then press the new key (Escape cancels). If another action of the same kind
+had that key, the two swap. RESET TO DEFAULT brings the stock layout back.
+Escape, F1-F12, Alt and the Windows keys cannot be bound.
+
+The keys are saved in `ctr-controls.cfg` next to the game, one line per
+action, for example `gas C`. A line the game cannot use is skipped with a line
+in the log. Delete the file to get the stock layout back.
+
+In menus the mouse works too: hover picks a row, left click confirms, right
+click goes back, the wheel scrolls lists and changes values. It is not in the
+driver, track and cup select yet, and not during a race.
 
 ## Custom tracks
 
