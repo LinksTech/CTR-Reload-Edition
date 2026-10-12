@@ -86,10 +86,13 @@ struct RldAutoLev
 	int gridMade;
 	const char *gridWhy;     // set: not made, and why (NULL with gridMade 0: not needed or --keep-start-spots)
 	int gridSpotsBefore;     // distinct start spots before
+	int gridKept;            // 1: the LEV had 8 distinct start spots and keeps them as exported
 	int gridColumn;          // spacing of the columns used
 
 	// nav paths
 	int navMade;
+	int navKept;             // 1: the LEV had nav paths (race mode) and keeps them as exported
+	int navPathsBefore;      // nav paths in the LEV before
 	const char *navWhy;
 	u32 navFrames;           // frames per path
 	u32 navRing;             // restart points on the ring
@@ -1005,6 +1008,9 @@ static void Rld_AutoLevApply(u8 **levInOut, size_t *sizeInOut, u32 modes, int ke
 
 	Rld_LevModesRead(*levInOut, *sizeInOut, &before);
 	out->gridSpotsBefore = before.startSpots;
+	out->navPathsBefore = before.navPaths;
+	out->gridKept = !keepStart && (before.startSpots >= RLD_DRIVER_SPAWNS);
+	out->navKept = !keepNav && ((modes & RLD_MODE_RACE) != 0u) && (before.navPaths != 0);
 	wantGrid = !keepStart && (before.startSpots < RLD_DRIVER_SPAWNS);
 	wantNav = !keepNav && ((modes & RLD_MODE_RACE) != 0u) && (before.navPaths == 0);
 	if (!wantGrid && !wantNav)
@@ -1154,7 +1160,7 @@ static int Rld_SelftestAutoLev(void)
 	// Made: grid and paths, and the game's own check takes the result.
 	Rld_AutoLevApply(&lev, &size, RLD_MODE_RACE, 0, 0, &report);
 	Rld_LevModesRead(lev, size, &modes);
-	if (!report.gridMade || !report.navMade || (report.gridSpotsBefore != 1) || (report.navRing != 8u) || (modes.navPaths != 3) ||
+	if (!report.gridMade || !report.navMade || report.gridKept || report.navKept || (report.navPathsBefore != 0) || (report.gridSpotsBefore != 1) || (report.navRing != 8u) || (modes.navPaths != 3) ||
 	    (modes.startSpots != 8) || (report.navFrames < 70u) || (report.navFrames > 90u) || (Rld_CheckLev(lev, size) != NULL))
 	{
 		bad |= 2;
@@ -1220,7 +1226,7 @@ static int Rld_SelftestAutoLev(void)
 		}
 	}
 
-	// A second pass changes nothing: the LEV has both now.
+	// A second pass changes nothing: the LEV has both now, and says it keeps them.
 	copy = (u8 *)malloc(size);
 	if (copy != NULL)
 	{
@@ -1228,7 +1234,7 @@ static int Rld_SelftestAutoLev(void)
 		size2 = size;
 		Rld_AutoLevApply(&copy, &size2, RLD_MODE_RACE, 0, 0, &report);
 		if ((size2 != size) || (memcmp(copy, lev, size) != 0) || report.gridMade || report.navMade || (report.gridWhy != NULL) ||
-		    (report.navWhy != NULL))
+		    (report.navWhy != NULL) || !report.gridKept || !report.navKept || (report.navPathsBefore != 3))
 		{
 			bad |= 32;
 		}
@@ -1258,7 +1264,7 @@ static int Rld_SelftestAutoLev(void)
 			else
 			{
 				Rld_AutoLevApply(&a, &size, RLD_MODE_RACE, cases[c].keep, cases[c].keep, &report);
-				if ((size != size2) || (memcmp(a, orig, size) != 0) || report.gridMade || report.navMade ||
+				if ((size != size2) || (memcmp(a, orig, size) != 0) || report.gridMade || report.navMade || report.gridKept || report.navKept ||
 				    ((report.navWhy == NULL) != (cases[c].keep != 0)) || ((report.gridWhy == NULL) != (cases[c].keep != 0)))
 				{
 					bad |= 64 << c;

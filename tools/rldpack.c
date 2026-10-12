@@ -2851,6 +2851,10 @@ static int Rld_Pack(const struct RldPackJob *job)
 		{
 			printf("  start grid    left alone (--keep-start-spots)\n");
 		}
+		else if (autoLev.gridKept)
+		{
+			printf("  start grid    from the LEV: %d distinct start spots, kept as exported\n", autoLev.gridSpotsBefore);
+		}
 
 		if (autoLev.navMade)
 		{
@@ -2869,6 +2873,10 @@ static int Rld_Pack(const struct RldPackJob *job)
 		else if (job->keepNav)
 		{
 			printf("  nav paths     left alone (--keep-nav)\n");
+		}
+		else if (autoLev.navKept)
+		{
+			printf("  nav paths     from the LEV: %d path(s), kept as exported\n", autoLev.navPathsBefore);
 		}
 	}
 	{
@@ -2948,12 +2956,16 @@ static int Rld_Pack(const struct RldPackJob *job)
 	if (autoLev.navMade)
 	{
 		Rld_Say("info", "nav-made", NULL,
-		        "The track had no nav paths, so the bots could not drive. The packer made three from the track's checkpoints; the bots follow them, without shortcuts or tricks.");
+		        "Nav paths made automatically: the track had no nav paths, so the bots could not drive. The packer made three from the track's checkpoints; the bots follow them, without shortcuts or tricks.");
 		printf("\nNOTE: the LEV carried no nav paths - without them the game starts the race\n");
 		printf("  without bots. rldpack has made three from the restart ring (a middle line\n");
 		printf("  and one to each side, on the ground, a frame every 240 units). The bots\n");
 		printf("  drive them cleanly but know no shortcut, drift or jump. Export the track\n");
 		printf("  with its own nav paths for better bots, and this note goes away.\n");
+	}
+	else if (autoLev.navKept)
+	{
+		Rld_Say("info", "nav-kept", NULL, "Nav paths taken from the file: the bots follow the track's own %d path(s).", autoLev.navPathsBefore);
 	}
 	else if (autoLev.navWhy != NULL)
 	{
