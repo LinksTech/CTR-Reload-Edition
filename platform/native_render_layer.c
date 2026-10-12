@@ -714,6 +714,11 @@ struct NrDrawItem
 #define NR_ITEM_PROBE 0
 #define NR_ITEM_CHAR  1
 
+// From platform/engine*.c, further down in the translation unit (--engine, dev
+// only; with it off nothing below is reached).
+extern int g_cfg_engine;
+int Engine_DriverSubmitItem(const struct NrDrawItem *it, u32 *ot, int cell);
+
 // The part of a view an item draws (step 4e): the whole view, or the side
 // above the water line (otRangeNormal) or below it (otRangeSecondary).
 #define NR_PART_WHOLE 0
@@ -3478,6 +3483,13 @@ internal void NativeRenderLayer_ReadCharFactor(void)
 // natively, 0 = factor 1, leave it to the CMDL (counted).
 internal int NativeRenderLayer_CharFactorAllows(int preview)
 {
+	// Under --engine the engine draws the custom drivers (platform/engine_driver.c),
+	// at factor 1 as well: every factor allows. Unchanged without it.
+	if (g_cfg_engine)
+	{
+		return 1;
+	}
+
 	const int on = (s_nrCharFactor >= 2);
 	const int key = s_nrCharFactor + (s_nrCharFactorNative ? 100 : 0);
 
@@ -5428,7 +5440,23 @@ internal int NativeRenderLayer_RouteCharView(int k, const struct Instance *inst,
 	// The retail twin: one marker per occupied bin of each item (see
 	// NR_SLICE_MARKER), in the same order of the items as below. When they do
 	// not fit, nothing is linked there and the twin takes the markers below.
-	if (!(it->twin && NativeRenderLayer_TwinBinMarkers(idpp, index, n)))
+	// Under --engine a set the engine has meshes for is handed to the engine
+	// instead of a layer marker (platform/engine_driver.c): its draws are linked
+	// into the cell the layer would have used, the first into the middle bin of
+	// otRangeNormal, the second item (water side / mirror) into the middle bin
+	// of otRangeSecondary (NativeRenderLayer_MarkerBin). No layer marker of such
+	// an item exists, so DrawCharItem is never reached for it. When the engine
+	// declines the first item (a set it does not have, the preview), the layer's
+	// own path below runs unchanged.
+	if (g_cfg_engine && !it->twin && (Engine_DriverSubmitItem(it, (u32 *)idpp->otRangeNormal, NativeRenderLayer_MarkerBin(idpp, 0)) > 0))
+	{
+		if ((n == 2) && ((idpp->otRangeSecondary == 0) ||
+		                 (Engine_DriverSubmitItem(&s_nrItems[db][index + 1], (u32 *)idpp->otRangeSecondary, NativeRenderLayer_MarkerBin(idpp, 0)) == 0)))
+		{
+			s_nrCharWater.linkLost++;
+		}
+	}
+	else if (!(it->twin && NativeRenderLayer_TwinBinMarkers(idpp, index, n)))
 	{
 		if (!NativeRenderLayer_LinkMarker(idpp, idpp->otRangeNormal, (u32)index, 0))
 		{

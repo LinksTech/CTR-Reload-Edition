@@ -12,6 +12,8 @@ void NativeChar_ClearSeats(void);
 extern int g_cfg_engine;
 extern int g_cfg_engineTestScene;
 void Engine_RenderLevelUnload(void);
+void Engine_DriverLoad(void);
+void Engine_DriverUnload(void);
 void Engine_TestSceneLoad(void);
 int Engine_RenderUploadMeshes(void);
 #endif
@@ -333,6 +335,7 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 #ifdef CTR_NATIVE
 			if (g_cfg_engine)
 			{
+				Engine_DriverUnload();
 				Engine_RenderLevelUnload();
 			}
 #endif
@@ -592,6 +595,8 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 			{
 				Engine_TestSceneLoad();
 			}
+			// After NativeCharGpu_LoadSeats: the driver sets' meshes and materials.
+			Engine_DriverLoad();
 			Engine_RenderUploadMeshes();
 		}
 #endif
