@@ -21,25 +21,50 @@ internal int s_testLogged = 0;
 
 CTR_STATIC_ASSERT(sizeof(struct NativeProbeVertex) == sizeof(EngineVertex));
 
-// Inverse of a rigid view matrix (rotation R and translation t): R^T and -R^T t.
-internal void Engine_TestSceneInvertRigid(const EngineMat4 *v, EngineMat4 *out)
+// General affine inverse of a view matrix (3x3 A and translation t): inv(A) and
+// -inv(A) t. A transpose is NOT enough: the game's matrix_ViewProj has its Y row
+// scaled for the aspect (about 0x360/0x600), so it is not orthonormal; with the
+// transpose the translation's y came back scaled by s^2 instead of cancelled and
+// the box landed thousands of units off screen. Returns 0 (identity in out) when
+// the matrix is singular.
+internal int Engine_TestSceneInvertRigid(const EngineMat4 *v, EngineMat4 *out)
 {
+	// a(r, c) = v->m[c * 4 + r] (column-major)
+	const double a00 = v->m[0], a10 = v->m[1], a20 = v->m[2];
+	const double a01 = v->m[4], a11 = v->m[5], a21 = v->m[6];
+	const double a02 = v->m[8], a12 = v->m[9], a22 = v->m[10];
+	const double c00 = a11 * a22 - a12 * a21;
+	const double c01 = a12 * a20 - a10 * a22;
+	const double c02 = a10 * a21 - a11 * a20;
+	const double det = a00 * c00 + a01 * c01 + a02 * c02;
+	double inv[3][3];
 	int i;
-	int j;
 
 	Engine_Mat4Identity(out);
+	if ((det < 1e-12) && (det > -1e-12))
+	{
+		return 0;
+	}
+	inv[0][0] = c00 / det;
+	inv[0][1] = (a02 * a21 - a01 * a22) / det;
+	inv[0][2] = (a01 * a12 - a02 * a11) / det;
+	inv[1][0] = c01 / det;
+	inv[1][1] = (a00 * a22 - a02 * a20) / det;
+	inv[1][2] = (a02 * a10 - a00 * a12) / det;
+	inv[2][0] = c02 / det;
+	inv[2][1] = (a01 * a20 - a00 * a21) / det;
+	inv[2][2] = (a00 * a11 - a01 * a10) / det;
 	for (i = 0; i < 3; i++)
 	{
-		float t = 0.0f;
+		int k;
 
-		for (j = 0; j < 3; j++)
+		for (k = 0; k < 3; k++)
 		{
-			// out(i, j) = v(j, i)
-			out->m[j * 4 + i] = v->m[i * 4 + j];
-			t -= v->m[i * 4 + j] * v->m[12 + j];
+			out->m[k * 4 + i] = (float)inv[i][k];
 		}
-		out->m[12 + i] = t;
+		out->m[12 + i] = (float)-(inv[i][0] * v->m[12] + inv[i][1] * v->m[13] + inv[i][2] * v->m[14]);
 	}
+	return 1;
 }
 
 void Engine_TestSceneLoad(void)
@@ -147,7 +172,10 @@ void Engine_TestSceneCollect(struct GameTracker *gGT)
 
 	// clipFromModel = screenFromWorld * worldFromView * viewModel
 	Engine_CameraScreenFromWorld(cam, &screenFromWorld);
-	Engine_TestSceneInvertRigid(&cam->viewFromWorld, &worldFromView);
+	if (!Engine_TestSceneInvertRigid(&cam->viewFromWorld, &worldFromView))
+	{
+		return;
+	}
 	Engine_Mat4Mul(&worldFromView, &viewModel, &model);
 	Engine_Mat4Mul(&screenFromWorld, &model, &clip);
 
