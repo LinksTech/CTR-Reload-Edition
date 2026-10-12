@@ -453,6 +453,12 @@ if(BUILD_TESTING)
     set_tests_properties(mouse_selftest PROPERTIES
         PASS_REGULAR_EXPRESSION "mouse selftest passed: [0-9]+ checks, 0 failures"
     )
+    # The keyboard bindings file ctr-controls.cfg: parsing and fallbacks, saving,
+    # swaps, race and menu context, key capture. Works in a folder of the build.
+    add_test(NAME controls_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --controls-selftest ${CMAKE_BINARY_DIR}/selftest/controls)
+    set_tests_properties(controls_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "controls selftest passed: [0-9]+ checks, 0 failures"
+    )
     # --dev-char-seat-files (main.c, the first loop of main): given twice,
     # together with --dev-char-seats or --char, or with a list not of the form,
     # it ends the start with exit code 64 and its reason, before any window or

@@ -357,6 +357,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--char-grid-selftest", "", "layout, navigation and scrolling of the driver select grid for 0 to 32 custom entries, then end; no window, no data needed"},
     {"--mods-selftest", "", "the play mods of the MODS page without a race: settings lines, the status line of the box, --dev-mods-play, the page's steps, gravity and hang time, the grip blend, the night colour, difficulty, the boss sections, the item box and the CPU weapons, then end (ctest mods_selftest)"},
     {"--mouse-selftest", "", "the menu mouse without a window: the window to menu mapping with letterbox and pillarbox, the widescreen shift of left, centre and right elements at 4:3, 16:9 and 43:18, the round trip, and the active/inactive rules, then end (ctest mouse_selftest)"},
+    {"--controls-selftest", "<dir>", "the keyboard bindings file ctr-controls.cfg in <dir>: parsing, fallbacks, saving, swaps, race and menu context and key capture, then end (ctest controls_selftest)"},
     {"--char-native-selftest", "<dir>", "every .rldchar of dir (written by rldpack make-native-tests) through the roster read and the native read (CNET, CTXT) without and with --native-preview, each against the expectation its name gives, then end; no window, no data needed"},
     {"--selftest-containers", "<dir>", "every check the game runs on a container, on every *.rldtrack in dir (good-* must load, bad-* must be refused), then end; no window, no data needed"},
     {"--make-test-containers", "<dir>", "write the synthetic good-*/bad-* containers of the container self-test into dir, then end"},
@@ -2236,6 +2237,15 @@ int main(int argc, char *argv[])
 		if (strcmp(argv[argIndex], "--mouse-selftest") == 0)
 		{
 			return NativeMouse_SelfTest();
+		}
+
+		// The keyboard bindings (platform/native_controls.c): the file
+		// ctr-controls.cfg inside <dir>, swaps, contexts and key capture on fake
+		// keyboard states. Up here for the same reason: no window, no data
+		// (ctest controls_selftest).
+		if ((strcmp(argv[argIndex], "--controls-selftest") == 0) && ((argIndex + 1) < argc))
+		{
+			return NativeControls_SelfTest(argv[argIndex + 1]);
 		}
 
 		// The native part of custom characters (CNET, CTXT), up here for the

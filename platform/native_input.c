@@ -28,20 +28,6 @@
 // MIT-licensed pad implementation while moving host ownership into ctr-native.
 // See THIRD_PARTY_NOTICES.md.
 
-struct NativeInputKeyboardMapping
-{
-	s32 id;
-
-	s32 kc_square, kc_circle, kc_triangle, kc_cross;
-
-	s32 kc_l1, kc_l2, kc_l3;
-	s32 kc_r1, kc_r2, kc_r3;
-
-	s32 kc_start, kc_select;
-
-	s32 kc_dpad_left, kc_dpad_right, kc_dpad_up, kc_dpad_down;
-};
-
 struct NativeInputControllerMapping
 {
 	s32 id;
@@ -89,7 +75,6 @@ struct NativeInputStateSnapshot
 };
 
 global_variable struct NativeInputControllerMapping s_controllerMapping;
-global_variable struct NativeInputKeyboardMapping s_keyboardMapping;
 global_variable s32 s_controllerToSlotMapping[NATIVE_INPUT_MAX_CONTROLLERS] = {-1, -1, -1, -1};
 
 global_variable struct NativeInputController s_controllers[NATIVE_INPUT_MAX_CONTROLLERS];
@@ -254,27 +239,6 @@ internal void NativeInput_WriteInstalledSnapshots(void)
 
 internal void NativeInput_DefaultMappings(void)
 {
-	s_keyboardMapping.kc_square = SDL_SCANCODE_X;
-	s_keyboardMapping.kc_circle = SDL_SCANCODE_V;
-	s_keyboardMapping.kc_triangle = SDL_SCANCODE_Z;
-	s_keyboardMapping.kc_cross = SDL_SCANCODE_C;
-
-	s_keyboardMapping.kc_l1 = SDL_SCANCODE_LSHIFT;
-	s_keyboardMapping.kc_l2 = SDL_SCANCODE_LCTRL;
-	s_keyboardMapping.kc_l3 = SDL_SCANCODE_LEFTBRACKET;
-
-	s_keyboardMapping.kc_r1 = SDL_SCANCODE_RSHIFT;
-	s_keyboardMapping.kc_r2 = SDL_SCANCODE_RCTRL;
-	s_keyboardMapping.kc_r3 = SDL_SCANCODE_RIGHTBRACKET;
-
-	s_keyboardMapping.kc_dpad_up = SDL_SCANCODE_UP;
-	s_keyboardMapping.kc_dpad_down = SDL_SCANCODE_DOWN;
-	s_keyboardMapping.kc_dpad_left = SDL_SCANCODE_LEFT;
-	s_keyboardMapping.kc_dpad_right = SDL_SCANCODE_RIGHT;
-
-	s_keyboardMapping.kc_select = SDL_SCANCODE_SPACE;
-	s_keyboardMapping.kc_start = SDL_SCANCODE_RETURN;
-
 	s_controllerMapping.gc_square = SDL_GAMEPAD_BUTTON_WEST;
 	s_controllerMapping.gc_circle = SDL_GAMEPAD_BUTTON_EAST;
 	s_controllerMapping.gc_triangle = SDL_GAMEPAD_BUTTON_NORTH;
@@ -480,80 +444,13 @@ internal void NativeInput_ApplyController(s32 slot)
 
 internal u16 NativeInput_ReadKeyboard(void)
 {
-	const struct NativeInputKeyboardMapping *mapping = &s_keyboardMapping;
-	u16 buttons = 0xffff;
-
 	if (s_keyboardState == NULL)
 	{
-		return buttons;
+		return 0xffff;
 	}
 
-	if (s_keyboardState[mapping->kc_square])
-	{
-		buttons &= ~0x8000;
-	}
-	if (s_keyboardState[mapping->kc_circle])
-	{
-		buttons &= ~0x2000;
-	}
-	if (s_keyboardState[mapping->kc_triangle])
-	{
-		buttons &= ~0x1000;
-	}
-	if (s_keyboardState[mapping->kc_cross])
-	{
-		buttons &= ~0x4000;
-	}
-	if (s_keyboardState[mapping->kc_l1])
-	{
-		buttons &= ~0x400;
-	}
-	if (s_keyboardState[mapping->kc_l2])
-	{
-		buttons &= ~0x100;
-	}
-	if (s_keyboardState[mapping->kc_l3])
-	{
-		buttons &= ~0x2;
-	}
-	if (s_keyboardState[mapping->kc_r1])
-	{
-		buttons &= ~0x800;
-	}
-	if (s_keyboardState[mapping->kc_r2])
-	{
-		buttons &= ~0x200;
-	}
-	if (s_keyboardState[mapping->kc_r3])
-	{
-		buttons &= ~0x4;
-	}
-	if (s_keyboardState[mapping->kc_dpad_up])
-	{
-		buttons &= ~0x10;
-	}
-	if (s_keyboardState[mapping->kc_dpad_down])
-	{
-		buttons &= ~0x40;
-	}
-	if (s_keyboardState[mapping->kc_dpad_left])
-	{
-		buttons &= ~0x80;
-	}
-	if (s_keyboardState[mapping->kc_dpad_right])
-	{
-		buttons &= ~0x20;
-	}
-	if (s_keyboardState[mapping->kc_select])
-	{
-		buttons &= ~0x1;
-	}
-	if (s_keyboardState[mapping->kc_start])
-	{
-		buttons &= ~0x8;
-	}
-
-	return buttons;
+	// The keys come from ctr-controls.cfg (platform/native_controls.c).
+	return NativeControls_ReadKeyboard(s_keyboardState, NativeControlsPage_RaceContext());
 }
 
 internal s32 NativeInput_KeyboardSuppressed(void)
@@ -826,6 +723,10 @@ int Platform_InputInit(void)
 		NativeInput_ResetSnapshot(slot);
 		s_installedSnapshots[slot] = s_controllers[slot].snapshot;
 	}
+
+	// After Platform_SettingsLoad (native_platform.c, Platform_Init), so the
+	// --settings-defaults seal is already known to Platform_SettingsLocked.
+	NativeControls_Load();
 
 	NativeInput_DefaultMappings();
 	s_keyboardControllerSlot = NATIVE_INPUT_DEFAULT_KEYBOARD_SLOT;

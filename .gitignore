@@ -80,6 +80,7 @@ logs/
 *.log
 *.dmp
 ctr-settings.cfg
+ctr-controls.cfg
 ctr-data.cfg
 ctr-view.cfg
 alphamaker.ini
