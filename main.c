@@ -88,6 +88,16 @@
 #include "platform/native_render_layer.c"
 #include "platform/native_probe.c"
 #include "platform/native_depth_check.c"
+// The native engine (include/platform/engine.h), after everything it reads.
+#include "platform/engine.c"
+#include "platform/engine_math.c"
+#include "platform/engine_camera.c"
+#include "platform/engine_material.c"
+#include "platform/engine_mesh.c"
+#include "platform/engine_scene.c"
+#include "platform/engine_fx.c"
+#include "platform/engine_vram.c"
+#include "platform/engine_selftest.c"
 
 #ifndef CC
 #if defined(__GNUC__)
@@ -356,6 +366,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--gte-selftest", "", "both GTE paths against each other, then end"},
     {"--char-grid-selftest", "", "layout, navigation and scrolling of the driver select grid for 0 to 32 custom entries, then end; no window, no data needed"},
     {"--mods-selftest", "", "the play mods of the MODS page without a race: settings lines, the status line of the box, --dev-mods-play, the page's steps, gravity and hang time, the grip blend, the night colour, difficulty, the boss sections, the item box and the CPU weapons, then end (ctest mods_selftest)"},
+    {"--engine-selftest", "", "the native engine's modules without a window: maths, the camera against the PS1 projection, materials and blend equations, meshes and the scene lists, effect geometry, the VRAM decoder, then end (ctest engine_selftest)"},
     {"--mouse-selftest", "", "the menu mouse without a window: the window to menu mapping with letterbox and pillarbox, the widescreen shift of left, centre and right elements at 4:3, 16:9 and 43:18, the round trip, and the active/inactive rules, then end (ctest mouse_selftest)"},
     {"--controls-selftest", "<dir>", "the keyboard bindings file ctr-controls.cfg in <dir>: parsing, fallbacks, saving, swaps, race and menu context and key capture, then end (ctest controls_selftest)"},
     {"--char-native-selftest", "<dir>", "every .rldchar of dir (written by rldpack make-native-tests) through the roster read and the native read (CNET, CTXT) without and with --native-preview, each against the expectation its name gives, then end; no window, no data needed"},
@@ -2234,6 +2245,14 @@ int main(int argc, char *argv[])
 		// The menu mouse (platform/native_mouse.c): the window to menu mapping and
 		// the active rules, on made-up window sizes. Up here for the same reason:
 		// it computes only (ctest mouse_selftest).
+		// The native engine (platform/engine_*.c): every module on made-up
+		// data. Up here for the same reason: it computes only (ctest
+		// engine_selftest).
+		if (strcmp(argv[argIndex], "--engine-selftest") == 0)
+		{
+			return Engine_SelfTest();
+		}
+
 		if (strcmp(argv[argIndex], "--mouse-selftest") == 0)
 		{
 			return NativeMouse_SelfTest();

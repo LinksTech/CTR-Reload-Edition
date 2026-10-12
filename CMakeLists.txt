@@ -449,6 +449,12 @@ if(BUILD_TESTING)
     )
     # The menu mouse without a window: window to menu mapping (letterbox,
     # pillarbox, widescreen shifts), round trip, active rules. It only computes.
+    # The native engine without a window (platform/engine_*.c): maths, camera,
+    # materials, scene, effect geometry, VRAM decoder. It only computes.
+    add_test(NAME engine_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --engine-selftest)
+    set_tests_properties(engine_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "engine selftest passed: [0-9]+ checks, 0 failures"
+    )
     add_test(NAME mouse_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --mouse-selftest)
     set_tests_properties(mouse_selftest PROPERTIES
         PASS_REGULAR_EXPRESSION "mouse selftest passed: [0-9]+ checks, 0 failures"
