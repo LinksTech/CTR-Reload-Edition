@@ -97,6 +97,10 @@
 #include "platform/engine_scene.c"
 #include "platform/engine_fx.c"
 #include "platform/engine_vram.c"
+#include "platform/engine_programs.c"
+#include "platform/engine_render.c"
+#include "platform/engine_frame.c"
+#include "platform/engine_testscene.c"
 #include "platform/engine_selftest.c"
 
 #ifndef CC

@@ -278,13 +278,114 @@ int Engine_FxRibbon(const EngineVec3 *left, const EngineVec3 *right, const u8 (*
 
 // Decodes a w x h window (u0,v0 in texels of the page) of a texture page into
 // RGBA8, rows from the top, with the PS1 rules the retail twin decoder uses
-// (native_twin.c NativeTwin_DecodeVram): texel 0x0000 transparent, the STP bit
-// carried in alpha. depth: 0 = 4 bit, 1 = 8 bit, 2 = 15 bit. Returns 0 on bad
+// (native_twin.c NativeTwin_DecodeVram): texel 0x0000 is transparent (alpha 0),
+// every other texel opaque (alpha 255) with its 5:5:5 colour shifted left by 3;
+// the STP bit is not in the output (the "ne" program handles it, stpPass).
+// depth: 0 = 4 bit, 1 = 8 bit, 2 = 15 bit. Returns 0 on bad
 // arguments (window outside the page or VRAM).
 int Engine_VramDecode(const u16 *vram, int pageX, int pageY, int depth, int clutX, int clutY, int u0, int v0, int w, int h,
                       u8 *rgbaOut);
 // One texel as RGBA8 (same rules).
 void Engine_VramTexel(const u16 *vram, int pageX, int pageY, int depth, int clutX, int clutY, int u, int v, u8 rgbaOut[4]);
+
+// --------------------------------------------------------------------------
+// PROGRAMS (platform/engine_programs.c)
+//
+// The engine's own program "ne" (GLSL in engine_programs.c, compiled like the
+// other programs through NativeRenderer_Shader_CompileWithUniforms). It reads
+// struct EngineVertex. Per draw range one EngineUniforms block (std140, 160
+// bytes, field for field the GLSL block "NeBlock"):
+//   clipFromModel  finished clip matrix (PSX ortho * screen-from-model)
+//   tint           RGBA multiplier (material tint * draw tint)
+//   params         x texSource (0 none, 1 native, 2 VRAM), y sRGB (1: re-encode
+//                  a native sRGB texel to gamma), z alphaCutoff (discard below,
+//                  0 = none), w stpPass (0 all texels, 1 only texels WITHOUT
+//                  the STP bit, 2 only texels WITH it - the PS1 rule that only
+//                  STP texels of a semi-transparent face blend)
+//   params2        x modulate (1.0 native data; 2.0 retail data: texel x colour
+//                  x 2, the PSX bright factor), y..w 0
+//   vramPage       x page x (VRAM words), y page y, z depth 0/1/2, w 0
+//   vramClut       x clut x, y clut y, z..w 0
+// VRAM sampling: the PSX VRAM texture (NativeRenderer_GetVRAMTexture, RG8
+// 1024x512) through the same CLUT lookup as the PSX program; texel 0x0000 is
+// transparent (discarded); the texel's 5:5:5 colour expanded as the PSX
+// program does. Texture coordinates of VRAM materials are in texels of the
+// page (0..255), as a PS1 primitive carries them.
+
+typedef struct
+{
+	float clipFromModel[16];
+	float tint[4];
+	float params[4];
+	float params2[4];
+	float vramPage[4];
+	float vramClut[4];
+	float pad[4];
+} EngineUniforms; // 160 bytes
+
+// Creates "ne" once (only with g_cfg_engine). 1 = ready.
+int Engine_ProgramsInit(void);
+// The program handle (ShaderID as u32), 0xffffffff when not made.
+u32 Engine_Program(void);
+
+// --------------------------------------------------------------------------
+// RENDER (platform/engine_render.c)
+//
+// Phase 1 output: a draw of the scene is linked into the PS1 ordering table as
+// a DR_PSYX_NATIVE marker whose item carries ENGINE_MARKER_FLAG; the PS1 OT
+// parser (native_gpu.c) hands such an item to Engine_DrawMarker at its place in
+// the OT. Depth: one clear per view and frame, at the first engine draw of that
+// view; every engine draw tests and writes depth unless its material or flags
+// say otherwise. PS1 primitives never test depth.
+
+#define ENGINE_MARKER_FLAG 0x400000u
+// item = ENGINE_MARKER_FLAG | (bank << 20) | (view << 16) | drawIndex (0..0xFFFF)
+#define ENGINE_MARKER_ITEM(bank, view, index) (ENGINE_MARKER_FLAG | ((u32)(bank) << 20) | ((u32)(view) << 16) | ((u32)(index) & 0xFFFFu))
+
+// Programs ("ne"), the dynamic vertex buffer. Only with g_cfg_engine; called
+// by Engine_RenderUploadMeshes the first time (a load phase, never inside a
+// frame); a second call does nothing. 1 = ready.
+int Engine_RenderInit(void);
+// At a level load stage (the load phase, where one-shot uploads may wait):
+// Engine_RenderInit if not yet done, then uploads every mesh that has no GPU
+// buffers yet. Returns the meshes uploaded.
+int Engine_RenderUploadMeshes(void);
+// At level unload: GPU buffers of all meshes freed (one load late, as the
+// native layer does), meshes and materials reset.
+void Engine_RenderLevelUnload(void);
+// Once per game frame, right after the double buffers swapped (where
+// NativeRenderLayer_RegisterMarkerArenas runs): selects the bank of the buffer
+// now filled, empties it, resets that bank's marker arena and the per-view
+// depth-clear flags.
+void Engine_RenderFrameBegin(int bank);
+// Submits a draw into the current bank and links its marker into OT cell
+// `cell` (0..0x3ff) of the ordering table `ot` (the u32 array of the view's
+// push buffer OT). Returns 1 when submitted AND linked.
+int Engine_RenderSubmitLinked(int view, const EngineDraw *draw, u32 *ot, int cell);
+// From the OT parser: draws the marker's draw. clip/dispenv/onScreen/ofs as the
+// native layer's NativeRenderLayer_DrawNativeItem gets them. Returns 1 if drawn.
+// clip is the split's RECT16 and dispenv its DISPENV (void here so this header
+// needs no PSX types).
+int Engine_DrawMarker(u32 item, const void *clip, const void *dispenv, int onScreen, int ofsX, int ofsY);
+// Counters for the end-of-run log line "[CTR Engine] at exit: ...".
+void Engine_RenderReport(void);
+
+// --------------------------------------------------------------------------
+// FRAME HOOKS (platform/engine_frame.c, called from game/platform code)
+struct GameTracker;
+// From MainFrame_RenderFrame, where NativeRenderLayer_Pull is called: cameras
+// of the views (Engine_CameraFromPushBuffer) and the frame's collectors.
+void Engine_FrameCollect(struct GameTracker *gGT);
+// The camera of a view this frame (valid only between collect and draw).
+const EngineCamera *Engine_FrameCamera(int view);
+
+// --------------------------------------------------------------------------
+// TEST SCENE (platform/engine_testscene.c; --engine-testscene with --engine)
+// A textured cube (the probe body) in front of the camera of view 0, drawn
+// every race frame through the whole engine path.
+extern int g_cfg_engineTestScene;
+void Engine_TestSceneLoad(void);
+void Engine_TestSceneCollect(struct GameTracker *gGT);
 
 // --------------------------------------------------------------------------
 // SELFTEST (platform/engine_selftest.c; main.c --engine-selftest, ctest
