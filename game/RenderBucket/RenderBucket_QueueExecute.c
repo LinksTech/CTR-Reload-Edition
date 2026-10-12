@@ -36,6 +36,13 @@ int NativeChar_ModelFullHeight(const struct Model *model);
 int NativeRenderLayer_Route(const struct Instance *inst, const struct InstDrawPerPlayer *idpp, const struct PushBuffer *pb);
 void NativeRenderLayer_NoteSwitchEntry(const struct Instance *inst, const struct InstDrawPerPlayer *idpp, const struct PushBuffer *pb, u32 handler);
 
+#ifdef CTR_NATIVE
+// From platform/engine_fx_turbo.c: 1 = the engine drew this turbo flame of a custom
+// driver (draw time only) and the retail handler is skipped; 0 = retail draws.
+int EngineFx_TurboRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb);
+extern int g_cfg_engine;
+#endif
+
 struct RenderBucketEntry
 {
 	struct Instance *inst;
@@ -5422,6 +5429,10 @@ static void RenderBucket_DispatchDrawFunc(struct RenderBucketDrawContext *ctx)
 	// The render layer decides here: after every visibility exit of
 	// PrepareDrawContext and after the setup callback, so it only sees
 	// instances that retail would really draw now. Non-zero = drawn natively.
+	if (g_cfg_engine && (EngineFx_TurboRoute(ctx->inst, ctx->idpp, ctx->pb) != 0))
+	{
+		return;
+	}
 	if (NativeRenderLayer_Route(ctx->inst, ctx->idpp, ctx->pb) != 0)
 	{
 		return;
