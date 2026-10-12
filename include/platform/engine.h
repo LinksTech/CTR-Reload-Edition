@@ -442,6 +442,41 @@ struct NrDrawItem;
 int Engine_DriverSubmitItem(const struct NrDrawItem *it, u32 *ot, int cell);
 
 // --------------------------------------------------------------------------
+// EFFECTS OF CUSTOM DRIVERS (step 4; platform/engine_fx_common.c and one
+// platform/engine_fx_<effect>.c per effect)
+//
+// The game's producers of a driver's effects (ground shadow, exhaust smoke,
+// turbo flames, skid marks) ask Engine_FxOwnsDriver first. When it answers 1
+// the engine draws that effect of that driver and the producer writes NO PS1
+// primitive for it. DRAW TIME ONLY: the game's simulation, its random numbers
+// and every state it keeps run exactly as before; only the primitives of the
+// owned driver are not written. Without --engine every answer is 0 and every
+// producer is exactly as before.
+
+typedef enum
+{
+	ENGINE_FX_SHADOW = 0,
+	ENGINE_FX_EXHAUST,
+	ENGINE_FX_TURBO,
+	ENGINE_FX_SKIDS,
+	ENGINE_FX_KINDS
+} EngineFxKind;
+
+// The native_char_gpu set of a seat (0..7), -1 when the seat has none.
+int Engine_DriverSetOfSeat(int seat);
+struct Driver;
+// 1 when --engine is on and this driver is a custom driver whose body the
+// engine draws in this level (Engine_DriverBodyMesh of its set >= 0). Cheap:
+// called per producer per driver per frame.
+int Engine_FxOwnsDriver(const struct Driver *d);
+// Counters for the exit report: an effect the engine drew for an owned driver,
+// and an effect primitive the retail path still wrote for an owned driver
+// (must stay 0 - the measure of "no bridge to the old path").
+void Engine_FxNoteDrawn(EngineFxKind kind);
+void Engine_FxNoteRetail(EngineFxKind kind);
+void Engine_FxReport(void); // "[CTR Engine] effects: ..." at exit
+
+// --------------------------------------------------------------------------
 // RETAIL MODELS (platform/engine_model.c; step 3)
 //
 // A model in the PS1 format (the CMDL of a .rldchar, or any retail struct

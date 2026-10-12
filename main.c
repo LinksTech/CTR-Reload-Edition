@@ -103,6 +103,11 @@
 #include "platform/engine_testscene.c"
 #include "platform/engine_model.c"
 #include "platform/engine_driver.c"
+#include "platform/engine_fx_common.c"
+#include "platform/engine_fx_shadow.c"
+#include "platform/engine_fx_exhaust.c"
+#include "platform/engine_fx_turbo.c"
+#include "platform/engine_fx_skids.c"
 #include "platform/engine_selftest.c"
 
 #ifndef CC
