@@ -53,6 +53,7 @@ internal int EngineFx_ShadowMaterial(u16 tpage, u16 clut)
 	want.tpage = tpage;
 	want.clut = clut;
 	want.tint[0] = want.tint[1] = want.tint[2] = want.tint[3] = 1.0f;
+	want.depthBias = ENGINE_GROUND_DEPTH_BIAS; // on the ground: in front of an engine track
 
 	for (i = 0; i < s_engShadowMatCount; i++)
 	{

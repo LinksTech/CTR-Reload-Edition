@@ -155,6 +155,7 @@ static int EngineSkid_Material(const struct TextureLayout *icon, int abr)
 	m.tpage = (u16)((icon->tpage & ~0x60u) | ((u32)abr << 5));
 	m.clut = icon->clut;
 	m.tint[0] = m.tint[1] = m.tint[2] = m.tint[3] = 1.0f;
+	m.depthBias = ENGINE_GROUND_DEPTH_BIAS; // on the ground: in front of an engine track
 
 	if (slot->used)
 	{

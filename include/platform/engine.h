@@ -495,6 +495,11 @@ int Engine_FxOwnsDriver(const struct Driver *d);
 void Engine_FxNoteDrawn(EngineFxKind kind);
 void Engine_FxNoteRetail(EngineFxKind kind);
 void Engine_FxReport(void); // "[CTR Engine] effects: ..." at exit
+// Ground effects (shadow, skid marks) lie on the track surface. Once the track
+// is an engine draw that writes depth (--engine-track), a coplanar effect fails
+// the depth test and disappears; their materials therefore pull them nearer by
+// this fraction of their depth (EngineMaterial.depthBias): 2 units at 512.
+#define ENGINE_GROUND_DEPTH_BIAS (1.0f / 256.0f)
 
 // --------------------------------------------------------------------------
 // RETAIL MODELS (platform/engine_model.c; step 3)
