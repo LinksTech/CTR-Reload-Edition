@@ -13,8 +13,12 @@
 // into the OT cell (depth of point 0 >> 8) + depthBias, clamped to 0..0x3ff.
 // The tpage of the icons carries semi-transparency mode 2 (B - F).
 //
-// The engine draws the same: the four quads as dynamic geometry in that same
-// space, with a camera whose translation is zeroed, in the same cell.
+// The engine draws the same four quads as dynamic geometry in the same cell,
+// but in WORLD units with the full view camera: point / 4 + camera position.
+// The track the engine draws goes through that camera too, so both share its
+// translation (game/PushBuffer.c rounds it to whole units); camera-relative
+// points with a zeroed translation sat up to one unit behind that frame and,
+// one unit above the drawn faces, still failed the depth test there.
 
 #define ENG_SHADOW_QUADS 4
 #define ENG_SHADOW_OT_MAX 0x3ff
@@ -98,7 +102,7 @@ void EngineFx_Shadow(const struct Driver *d, int view, const SVec3 points[9], co
                      u32 color, int depth, int depthBias, u32 *ot)
 {
 	const EngineCamera *cam;
-	EngineCamera local;
+	const struct PushBuffer *pb;
 	EngineMat4 screenFromWorld;
 	int cell;
 	int q;
@@ -116,12 +120,10 @@ void EngineFx_Shadow(const struct Driver *d, int view, const SVec3 points[9], co
 		return;
 	}
 
-	// The retail projection has translation zero: rotation only.
-	local = *cam;
-	local.viewFromWorld.m[12] = 0.0f;
-	local.viewFromWorld.m[13] = 0.0f;
-	local.viewFromWorld.m[14] = 0.0f;
-	Engine_CameraScreenFromWorld(&local, &screenFromWorld);
+	// The camera position the retail points are relative to
+	// (VehGroundShadow_Main: pb->matrix_Camera.t of the same view).
+	pb = &sdata->gGT->pushBuffer[view];
+	Engine_CameraScreenFromWorld(cam, &screenFromWorld);
 
 	cell = (depth >> 8) + depthBias;
 	if (cell < 0)
@@ -161,9 +163,9 @@ void EngineFx_Shadow(const struct Driver *d, int view, const SVec3 points[9], co
 			// screen position does not care (a perspective divide), the depth does:
 			// at x4 the shadow would sit four times too far and, once the track is
 			// an engine draw that writes depth, behind it. Back to world units.
-			v[i].position[0] = (float)p->x * 0.25f;
-			v[i].position[1] = (float)p->y * 0.25f;
-			v[i].position[2] = (float)p->z * 0.25f;
+			v[i].position[0] = (float)p->x * 0.25f + (float)pb->matrix_Camera.t[0];
+			v[i].position[1] = (float)p->y * 0.25f + (float)pb->matrix_Camera.t[1];
+			v[i].position[2] = (float)p->z * 0.25f + (float)pb->matrix_Camera.t[2];
 			v[i].texcoord[0] = us[i];
 			v[i].texcoord[1] = vs[i];
 			memcpy(v[i].color, colour, 4);

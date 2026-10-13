@@ -500,6 +500,15 @@ void Engine_FxReport(void); // "[CTR Engine] effects: ..." at exit
 // the depth test and disappears; their materials therefore pull them nearer by
 // this fraction of their depth (EngineMaterial.depthBias): 2 units at 512.
 #define ENGINE_GROUND_DEPTH_BIAS (1.0f / 256.0f)
+// The game keeps a driver on its COLLISION height (game/COLL.c, quadBlockHeight
+// from the hit point), which lies below the drawn track faces: on Dingo Canyon
+// 2302 under faces at 2304. The skid points are written at that height
+// (game/Vehicle/VehEmitter.c, VehEmitter_Skidmarks, local y 0 through the
+// instance matrix); the retail shadow lifts itself by 3 (VehGroundShadow.c,
+// VEH_GROUND_SHADOW_GROUND_Y_OFFSET). The PS1 order table never asks, a depth
+// test does: the engine draws the skid marks this many world units higher, the
+// height the retail shadow already has. Drawing only; the game state is untouched.
+#define ENGINE_GROUND_LIFT 3.0f
 
 // --------------------------------------------------------------------------
 // RETAIL MODELS (platform/engine_model.c; step 3)

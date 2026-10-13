@@ -192,7 +192,7 @@ static void EngineSkid_AddQuad(EngineSkidRun *run, const struct TextureLayout *i
 	for (k = 0; k < 4; k++)
 	{
 		v[k].position[0] = pos[k].x;
-		v[k].position[1] = pos[k].y;
+		v[k].position[1] = pos[k].y + ENGINE_GROUND_LIFT; // collision height -> drawn surface
 		v[k].position[2] = pos[k].z;
 		v[k].texcoord[0] = (float)uv[k][0];
 		v[k].texcoord[1] = (float)uv[k][1];
