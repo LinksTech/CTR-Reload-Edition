@@ -523,6 +523,15 @@ int EngineFx_Tires(const struct Driver *d, const struct Instance *inst, const st
 		{
 			cell = (int)idpp->depthOffset[1];
 		}
+		// The depth window does not always hold the cell inside the table (seen
+		// in reflection views on Polar Pass: 3 refused submits, one set drawn by
+		// retail): then the instance's own bin, the one the body and the other
+		// engine draws of this instance use (NativeRenderLayer_MarkerBin). The
+		// cell is only the phase-1 transition channel; the engine sorts by depth.
+		if ((cell < 0) || (cell > 0x3ff))
+		{
+			cell = NativeRenderLayer_MarkerBin(idpp, 0);
+		}
 		out->material = EngineFx_TiresMaterial(icon->texLayout.tpage, icon->texLayout.clut, semi);
 		if (out->material < 0)
 		{
