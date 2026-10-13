@@ -3036,11 +3036,20 @@ void NativeChar_PickForJump(void)
 // (game/230/MM_MenuFlow.c), the race type box has set the NITRO-PIT marker
 // (game/native_menuscreen.c). Not the CRYSTAL_CHALLENGE or TOKEN_RACE bits -
 // the track select sets those only after the driver select.
-int NativeChar_ModeAllowed(void)
+//
+// Under --engine also the RETAIL Time Trial driver select. The main menu row
+// clears ARCADE_MODE and every other mode bit (MM_MenuFlow.c:140), then sets
+// one player and TIME_TRIAL (MM_MenuFlow.c:177-179) and leaves through the same
+// driver select (MM_EXIT_ROUTE_CHARACTER_SELECT, :175), so the bits at the
+// select are TIME_TRIAL alone: ARCADE_MODE, ADVENTURE_MODE and BATTLE_MODE
+// clear. The NITRO-PIT marker is not asked there: its CRYSTAL and CTR values
+// only take effect with ARCADE_MODE set (MM_NativeTrackSelect_Applies,
+// MM_NativeTrackSelect.c:139), and the title leaves a value standing, so a
+// stale one must not hide the tiles. The race side is NativeChar_PickModeRefusal.
+// Without --engine every answer is as it was (a Time Trial is refused).
+internal int NativeChar_ModeAllowedFor(const struct GameTracker *gGT, int chosen)
 {
-	const struct GameTracker *gGT = sdata->gGT;
 	u32 mode1;
-	int chosen;
 
 	if (gGT == NULL)
 	{
@@ -3048,10 +3057,19 @@ int NativeChar_ModeAllowed(void)
 	}
 
 	mode1 = (u32)gGT->gameMode1;
-	chosen = MM_NativeTrackSelect_Chosen();
+
+	if (g_cfg_engine && ((mode1 & TIME_TRIAL) != 0))
+	{
+		return ((mode1 & (ARCADE_MODE | ADVENTURE_MODE | BATTLE_MODE)) == 0) && (gGT->numPlyrNextGame == 1) && (gGT->boolDemoMode == 0);
+	}
 
 	return ((mode1 & ARCADE_MODE) != 0) && ((mode1 & (TIME_TRIAL | ADVENTURE_MODE | BATTLE_MODE)) == 0) && (gGT->numPlyrNextGame == 1) &&
 	       (gGT->boolDemoMode == 0) && (chosen != MM_NATIVE_CHOSEN_CRYSTAL) && (chosen != MM_NATIVE_CHOSEN_CTR);
+}
+
+int NativeChar_ModeAllowed(void)
+{
+	return NativeChar_ModeAllowedFor(sdata->gGT, MM_NativeTrackSelect_Chosen());
 }
 
 // After a binding: who sits where in this race - the character id of every
@@ -4489,6 +4507,62 @@ internal void NativeChar_ModeRuleSelfTest(int *checks, int *failures)
 			snprintf(what, sizeof(what), "mode rule %s, engine %d: pick rule is %s", cases[c].name, engine, (want != NULL) ? want : "none");
 			NativeChar_MaskExpect(checks, failures, (pick == NULL) ? (want == NULL) : ((want != NULL) && (strcmp(pick, want) == 0)), what);
 		}
+	}
+
+	// The menu side, NativeChar_ModeAllowedFor: the driver select of an arcade
+	// race (both), of the retail Time Trial (engine only), and the refusals.
+	{
+		static const struct
+		{
+			const char *name;
+			u32 mode1;
+			int players;
+			int demo;
+			int chosen;
+			int allowedOff;
+			int allowedOn;
+		} menu[] = {
+		    {"arcade 1P", ARCADE_MODE, 1, 0, 0, 1, 1},
+		    {"arcade 1P, CRYSTAL marker", ARCADE_MODE, 1, 0, MM_NATIVE_CHOSEN_CRYSTAL, 0, 0},
+		    {"arcade 1P, CTR marker", ARCADE_MODE, 1, 0, MM_NATIVE_CHOSEN_CTR, 0, 0},
+		    {"arcade 2P", ARCADE_MODE, 2, 0, 0, 0, 0},
+		    {"retail time trial 1P", TIME_TRIAL, 1, 0, 0, 0, 1},
+		    {"retail time trial 1P, stale CRYSTAL marker", TIME_TRIAL, 1, 0, MM_NATIVE_CHOSEN_CRYSTAL, 0, 1},
+		    {"retail time trial 2P", TIME_TRIAL, 2, 0, 0, 0, 0},
+		    {"retail time trial, demo", TIME_TRIAL, 1, 1, 0, 0, 0},
+		    {"time trial with the arcade bit", ARCADE_MODE | TIME_TRIAL, 1, 0, 0, 0, 0},
+		    {"time trial, adventure", TIME_TRIAL | ADVENTURE_MODE, 1, 0, 0, 0, 0},
+		    {"time trial, battle", TIME_TRIAL | BATTLE_MODE, 1, 0, 0, 0, 0},
+		    {"adventure", ADVENTURE_MODE, 1, 0, 0, 0, 0},
+		    {"battle", BATTLE_MODE, 1, 0, 0, 0, 0},
+		    {"arcade battle", ARCADE_MODE | BATTLE_MODE, 1, 0, 0, 0, 0},
+		    {"arcade, demo", ARCADE_MODE, 1, 1, 0, 0, 0},
+		    {"nothing set", 0, 1, 0, 0, 0, 0},
+		};
+
+		for (c = 0; c < (sizeof(menu) / sizeof(menu[0])); c++)
+		{
+			int engine;
+
+			gt.gameMode1 = (int)menu[c].mode1;
+			gt.gameMode2 = 0;
+			gt.numPlyrNextGame = (u8)menu[c].players;
+			gt.boolDemoMode = menu[c].demo;
+
+			for (engine = 0; engine <= 1; engine++)
+			{
+				const int want = engine ? menu[c].allowedOn : menu[c].allowedOff;
+				char what[160];
+
+				g_cfg_engine = engine;
+				snprintf(what, sizeof(what), "menu mode rule %s, engine %d: driver select %s", menu[c].name, engine, want ? "offers custom drivers" : "refuses");
+				NativeChar_MaskExpect(checks, failures, (NativeChar_ModeAllowedFor(&gt, menu[c].chosen) != 0) == (want != 0), what);
+			}
+		}
+
+		gt.boolDemoMode = 0;
+		gt.numPlyrNextGame = 0;
+		NativeChar_MaskExpect(checks, failures, NativeChar_ModeAllowedFor(NULL, 0) == 0, "menu mode rule: no game tracker refuses");
 	}
 
 	g_cfg_engine = engineBefore;
