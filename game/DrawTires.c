@@ -5,6 +5,14 @@
 int NativeChar_ModelHidesWheels(const struct Model *model);
 int NativeChar_ViewHidesWheels(const struct Instance *inst, const struct PushBuffer *pb);
 
+#if defined(CTR_NATIVE)
+// From platform/engine_fx_tires.c (--engine): the wheel sprites of an owned driver as
+// engine draws. 0 = not owned / engine off (retail draws), 1 = the engine drew them
+// (retail writes no tire primitive), -1 = owned but not drawn (retail draws).
+int EngineFx_Tires(const struct Driver *d, const struct Instance *inst, const struct InstDrawPerPlayer *idpp, const struct PushBuffer *pb, int reflection,
+                   u32 colourWord);
+#endif
+
 static const u32 sDrawTiresSolidJumpTable[8] = {
     0x8006ed7c, 0x8006ed98, 0x8006edb4, 0x8006edcc, 0x8006ede4, 0x8006ee00, 0x8006ee1c, 0x8006ee3c,
 };
@@ -871,6 +879,17 @@ static int DrawTiresSolid_StagePlayer(struct DrawTiresScratch *scratch, struct D
 		return 0;
 	}
 
+#if defined(CTR_NATIVE)
+	// ENGINE (--engine): the wheel sprites of an owned driver without a wheel mesh are
+	// drawn by the engine (platform/engine_fx_tires.c), here, after every suppression
+	// check above. Drawn: no tire primitive is written for this driver and view.
+	// Without --engine the answer is 0 and nothing changes.
+	if (EngineFx_Tires(driver, inst, idpp, pb, 0, (u32)scratch->tireColor) == 1)
+	{
+		return 1;
+	}
+#endif
+
 	scratch->otRangeNormal = idpp->otRangeNormal;
 	scratch->otRangeSecondary = idpp->otRangeSecondary;
 	scratch->otRangeStart = scratch->depthOffsetStartBytes + idpp->otRangeNormal;
@@ -1479,6 +1498,15 @@ static int DrawTiresReflection_StagePlayer(struct DrawTiresScratch *scratch, str
 
 	scratch->wheelSprites = driver->wheelSprites;
 	scratch->tireColor = ((flags & PUSHBUFFER_EXISTS) != 0) ? 0x2e808080 : driver->tireColor;
+
+#if defined(CTR_NATIVE)
+	// ENGINE (--engine): the mirrored wheel sprites of an owned driver, drawn by the
+	// engine (platform/engine_fx_tires.c). Drawn: no reflection tire primitive.
+	if (EngineFx_Tires(driver, inst, idpp, pb, 1, (u32)scratch->tireColor) == 1)
+	{
+		return 1;
+	}
+#endif
 
 	DrawTiresReflection_BuildWheelLocalPairs(scratch, driver, inst, idpp);
 	DrawTiresReflection_SetupGteState(scratch, inst, idpp, pb);
