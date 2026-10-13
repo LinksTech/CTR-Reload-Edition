@@ -15,9 +15,15 @@
 //   - the model: the retail flame model, imported once per level and Model
 //     pointer by Engine_ModelImport; its animation frame is inst->animFrame of
 //     animation inst->animIndex;
-//   - the matrix: NativeRenderLayer_FillItem (idpp->mvp, the shift +2 near /
-//     -2 DRAW_HUGE, screen H and rect) and NativeRenderLayer_CharItemMatrix
-//     with unitScale = 16384 / header-0 scale, exactly as a char item;
+//   - the matrix and the view handler: Engine_InstanceSubmit
+//     (platform/engine_instance.c), in WORLD space from the flame instance's
+//     own state (inst->matrix, inst->scale, the world water height
+//     inst->vertSplit that VehTurbo.c copies from the driver) and the engine
+//     camera of the view; no idpp->mvp, no near/huge shift, no GTE. Every
+//     handler is drawn (round of 2026-10-13): NORMAL as one draw, SPLIT_LINE
+//     as the part above the water only (a flame under water is not drawn:
+//     drawBelow 0), REFLECTIVE / SPECIAL as the flame plus its mirror image
+//     (mirrorTint = tint);
 //   - the colour: the retail DPCT fades the vertex colours toward the far
 //     colour by a = idpp->alphaScale / 4096 (RenderBucket_LoadPrimColors); the
 //     far colour is (colorRGBA >> 20, >> 12, >> 4) & 0xff for the colour
@@ -25,9 +31,11 @@
 //     tint is therefore (1 - a) + far * a per channel, alpha 1; the blend is
 //     the one of each imported material (semi-transparent faces of the model);
 //   - the cell: the middle bin of the instance's otRangeNormal, the same cell
-//     the layer links a char item into (NativeRenderLayer_MarkerBin).
-// The water line (SPLIT_LINE / REFLECTIVE handlers) is not drawn here: such a
-// view returns 0 and the retail handler draws the flame (counted as retail).
+//     the layer links a char item into (NativeRenderLayer_MarkerBin); the mirror
+//     goes into otRangeSecondary (Engine_InstanceSubmit).
+// A view the engine declines (no camera, a flame without uploaded mesh, a
+// handler Engine_InstanceSubmit does not understand) returns 0: the retail
+// handler draws the flame, counted as retail.
 
 #define ENG_TURBO_MODELS 16
 
@@ -40,7 +48,6 @@ typedef struct
 } EngTurboModel;
 
 internal EngTurboModel s_engTurboModels[ENG_TURBO_MODELS];
-internal struct NrDrawItem s_engTurboItem;
 
 // The cached import of a model: only a lookup. The meshes are made at the load
 // point (EngineFx_TurboLoad); an upload inside a race frame is not allowed, so
@@ -129,10 +136,8 @@ int EngineFx_TurboRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, s
 	const struct Turbo *turbo;
 	const struct ModelHeader *mh0;
 	EngTurboModel *em;
-	EngineDraw draw;
-	double S[4][4];
-	int view = -1;
-	int v;
+	EngineInstanceDraw draw;
+	int view;
 	int anim;
 	int frame;
 	float a;
@@ -161,18 +166,10 @@ int EngineFx_TurboRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, s
 
 	// From here on the flame belongs to an owned driver: whatever is declined
 	// is drawn by the retail path and counted as such.
-	for (v = 0; v < NATIVE_RENDER_LAYER_VIEWS; v++)
-	{
-		if (pb == &gGT->pushBuffer[v])
-		{
-			view = v;
-			break;
-		}
-	}
+	view = Engine_InstanceViewOf(pb);
 	mh0 = (inst->model->numHeaders >= 1) ? inst->model->headers : NULL;
-	if ((view < 0) || ((inst->flags & SCREENSPACE_INSTANCE) != 0) || ((u32)idpp->unkEC != (u32)RB_RETAIL_DRAWFUNC_NORMAL) ||
-	    (idpp->otRangeNormal == 0) || (idpp->ptrCurrFrame == NULL) || (mh0 == NULL) || (mh0->scale.x == 0) || (mh0->scale.y == 0) ||
-	    ((u16)mh0->scale.z == 0))
+	if ((view < 0) || ((inst->flags & SCREENSPACE_INSTANCE) != 0) || (idpp->otRangeNormal == 0) || (idpp->ptrCurrFrame == NULL) ||
+	    (mh0 == NULL) || (mh0->scale.x == 0) || (mh0->scale.y == 0) || ((u16)mh0->scale.z == 0))
 	{
 		Engine_FxNoteRetail(ENGINE_FX_TURBO);
 		return 0;
@@ -183,14 +180,6 @@ int EngineFx_TurboRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, s
 		Engine_FxNoteRetail(ENGINE_FX_TURBO);
 		return 0;
 	}
-
-	// The matrix as a char item has it (idpp->mvp, shift, H, rect), then the
-	// unit scale of header 0, the units of the imported positions.
-	(void)NativeRenderLayer_FillItem(&s_engTurboItem, gGT, inst, idpp, pb, view);
-	s_engTurboItem.unitScale[0] = 16384.0 / (double)mh0->scale.x;
-	s_engTurboItem.unitScale[1] = 16384.0 / (double)mh0->scale.y;
-	s_engTurboItem.unitScale[2] = 16384.0 / (double)(u16)mh0->scale.z;
-	NativeRenderLayer_CharItemMatrix(&s_engTurboItem, 0.0, 0.0, S);
 
 	anim = (int)inst->animIndex;
 	frame = (int)inst->animFrame;
@@ -226,7 +215,6 @@ int EngineFx_TurboRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, s
 	}
 
 	memset(&draw, 0, sizeof(draw));
-	draw.materialOverride = -1;
 	draw.mesh = em->imp.mesh;
 	{
 		const int meshFrame = Engine_ModelFrame(&em->imp, anim, frame);
@@ -238,15 +226,18 @@ int EngineFx_TurboRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, s
 		}
 		draw.frame = (u32)meshFrame;
 	}
-	Engine_DriverMatrix(S, &draw.clipFromModel);
-	draw.sortDepth = (float)S[3][3];
 	draw.tint[0] = (1.0f - a) + (farColor[0] * a);
 	draw.tint[1] = (1.0f - a) + (farColor[1] * a);
 	draw.tint[2] = (1.0f - a) + (farColor[2] * a);
 	draw.tint[3] = 1.0f;
+	// The mirror image has the flame's tint; nothing of the flame is drawn
+	// below the water line.
+	memcpy(draw.belowTint, draw.tint, sizeof(draw.tint));
+	memcpy(draw.mirrorTint, draw.tint, sizeof(draw.tint));
+	draw.drawBelow = 0;
 	draw.flags = em->transparent ? ENGINE_DRAW_TRANSPARENT : 0;
 
-	if (!Engine_RenderSubmitLinked(view, &draw, (u32 *)idpp->otRangeNormal, NativeRenderLayer_MarkerBin(idpp, 0)))
+	if (Engine_InstanceSubmit(inst, idpp, pb, &draw) <= 0)
 	{
 		Engine_FxNoteRetail(ENGINE_FX_TURBO);
 		return 0;
