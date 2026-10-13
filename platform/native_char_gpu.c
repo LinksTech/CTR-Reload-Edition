@@ -1120,6 +1120,96 @@ void NativeCharGpu_LoadSeats(int levelID)
 	}
 }
 
+// THE MENU SCENE'S SET (--engine --engine-menuscene, round of 2026-10-13): one
+// custom driver the engine draws in the main menu, with no seat. Called by
+// Engine_MenuSceneLoad at load stage 5, after NativeCharGpu_LoadSeats (which
+// emptied the grave and cleared the tables of the last level) and before
+// Engine_DriverLoad (which turns every READY set of s_ncgSets[] into an engine
+// mesh). The first roster file with a ready native part is uploaded into the
+// next free slot of s_ncgSets[], exactly as a seat is (NativeCharGpu_Upload
+// with seat -1, as the preview does).
+//
+// Its life is the seats' life: the slot is counted in s_ncgSetCount, so
+// NativeCharGpu_ReleaseAll (NativeChar_ClearSeats, at the next level change,
+// before the pack is popped, LOAD_TenStages.c) lets its buffers and textures go
+// through the grave like every other set; no seat points at it (s_ncgSeatSet
+// stays as LoadSeats made it), the preview set and the driver select are not
+// touched. The key is dropped after the upload: the native part stays in the
+// roster entry (it belongs to NativeChar_ReleaseNative / a preview of the same
+// file may free it earlier), and the key of a set is only ever compared with
+// pointers of seats (NativeCharGpu_ForSeat, the share check of LoadSeats) -
+// NULL never matches one. Returns the set index or -1; one log line either way.
+int NativeCharGpu_LoadMenuScene(void)
+{
+	extern int g_cfg_engine;
+	extern int g_cfg_engineMenuScene;
+	const struct GameTracker *gGT = sdata->gGT;
+	struct NativeCharGpu *set;
+	const char *file;
+	int entry;
+	int index;
+
+	if (!g_cfg_engine || !g_cfg_engineMenuScene)
+	{
+		return -1;
+	}
+	// Only the main menu level (include/namespace_Level.h, MAIN_MENU_LEVEL).
+	if ((gGT == NULL) || (gGT->levelID != MAIN_MENU_LEVEL))
+	{
+		Platform_Log("[CTR Engine] menu scene: no set (not the main menu level)\n");
+		return -1;
+	}
+	if (!g_cfg_nativePreview)
+	{
+		Platform_Log("[CTR Engine] menu scene: no set (needs --native-preview)\n");
+		return -1;
+	}
+	if (s_ncgSetCount >= NATIVE_CHAR_GPU_SETS)
+	{
+		Platform_Log("[CTR Engine] menu scene: no set (table full)\n");
+		return -1;
+	}
+
+	// The first roster file with a native part. A file whose part is held
+	// already (a preview) is used as it is; else it is read as a seat reads it
+	// (one "native model" line per file looked at).
+	for (entry = 0; entry < s_charRosterFiles; entry++)
+	{
+		NativeChar_HoldNative(entry, "menu scene");
+		if ((s_charFiles[entry].native != NULL) && (s_charFiles[entry].native->state == RLDCHAR_NATIVE_READY))
+		{
+			break;
+		}
+	}
+	if (entry >= s_charRosterFiles)
+	{
+		Platform_Log("[CTR Engine] menu scene: no set (no roster file has a native model)\n");
+		return -1;
+	}
+	file = NativeChar_EntryFile(entry);
+
+	set = &s_ncgSets[s_ncgSetCount];
+	NativeCharGpu_Release(set, 0);
+	index = s_ncgSetCount;
+	s_ncgSetCount++;
+
+	if (!NativeCharGpu_Upload(set, s_charFiles[entry].native, -1, file, "menu", 0u))
+	{
+		set->key = NULL;
+		s_ncgCount.refused++;
+		Platform_Log("[CTR Engine] menu scene: no set (%s not uploaded: %s)\n", file, set->why);
+		return -1;
+	}
+	set->key = NULL;
+	s_ncgCount.made++;
+	s_ncgCount.vertexBytes += set->vertexBytes;
+	s_ncgCount.indexBytes += set->indexBytes;
+	s_ncgCount.textures += set->textureCount;
+	s_ncgCount.textureBytes += set->textureBytes;
+	Platform_Log("[CTR Engine] menu scene: set %d from '%s'\n", index, file);
+	return index;
+}
+
 void NativeCharGpu_ReleasePreview(void)
 {
 	if (s_ncgPreviewEntry < 0)
