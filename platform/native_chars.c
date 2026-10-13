@@ -159,6 +159,8 @@
 
 // --dev, main.c. Defined further down in the same build.
 extern int g_cfg_dev;
+extern int g_cfg_engine;
+extern int g_cfg_devRaceMode; // --dev-race-mode, main.c: 0 arcade, 1 retail Time Trial, 2 Adventure race
 
 // The native preview (--native-preview or NATIVE DRIVERS set to PREVIEW, see
 // platform/native_gfx_vk.c, which defines it). Only read here: without it
@@ -1767,6 +1769,73 @@ internal const char *NativeChar_ModeRefusal(const struct GameTracker *gGT)
 	return NULL;
 }
 
+// The mode rule of the PICK (seat 0 on a chosen file) under the engine: the
+// same as NativeChar_ModeRefusal, plus two races it refuses without --engine.
+//
+//   Time Trial (retail, the TIME_TRIAL bit; no ARCADE_MODE bit - the menu
+//   clears it, game/230/MM_MenuFlow.c:140). Seat 0 is the human driver; the
+//   two ghost drivers are separate threads (GhostReplay_Init1) that never go
+//   through VehBirth_NonGhost and never ask NativeChar_SeatModel, and only seat
+//   0 is ever armed through this rule, so a ghost is never bound. Callers that
+//   arm other seats (dev seats, the mods, the probe, the twin) keep the strict
+//   NativeChar_ModeRefusal: seat 1 and 2 of a Time Trial are ghosts.
+//   Adventure, a plain race only: ADVENTURE_MODE without the arena (hub), cup,
+//   boss, relic, crystal and CTR token bits. The race a warp pad starts is
+//   exactly that (game/232/AH_WarpPad.c:641-694; the token row of the menu sets
+//   TOKEN_RACE, the relic row RELIC_RACE, AH_WarpPad_MenuProc 140-157), and it
+//   loads the same 1-player arcade pack as an arcade race (game/LOAD/
+//   LOAD_Assets.c:241-251), so the donor is found as there.
+//
+// Without --engine this IS NativeChar_ModeRefusal, every answer as before.
+internal const char *NativeChar_PickModeRefusal(const struct GameTracker *gGT)
+{
+	const u32 mode1 = (u32)gGT->gameMode1;
+	const int tt = g_cfg_engine && ((mode1 & TIME_TRIAL) != 0);
+	const int adv = g_cfg_engine && ((mode1 & ADVENTURE_MODE) != 0);
+
+	if (!tt && !adv)
+	{
+		return NativeChar_ModeRefusal(gGT);
+	}
+
+	if (gGT->numPlyrCurrGame != 1)
+	{
+		return "not one player";
+	}
+
+	if (tt && adv)
+	{
+		return "time trial";
+	}
+
+	if ((mode1 & (ADVENTURE_ARENA | ADVENTURE_CUP | ADVENTURE_BOSS)) != 0)
+	{
+		return "adventure";
+	}
+
+	if (adv && (((mode1 & CRYSTAL_CHALLENGE) != 0) || ((gGT->gameMode2 & TOKEN_RACE) != 0)))
+	{
+		return "adventure";
+	}
+
+	if ((mode1 & RELIC_RACE) != 0)
+	{
+		return "relic race";
+	}
+
+	if ((mode1 & BATTLE_MODE) != 0)
+	{
+		return "battle";
+	}
+
+	if (((mode1 & GAME_CUTSCENE) != 0) || ((gGT->gameMode2 & CREDITS) != 0))
+	{
+		return "cutscene";
+	}
+
+	return NULL;
+}
+
 // The load of the podium at the end of an arcade cup: UI_CupStandings sets the
 // empty reward STATIC_BIG1 and loads Gem Stone Valley (game/UI/
 // UI_CupStandings.c), the hub detection of the load adds ADVENTURE_ARENA to the
@@ -1782,6 +1851,40 @@ internal int NativeChar_ArcadeCupPodium(const struct GameTracker *gGT)
 	       (gGT->podiumRewardID == STATIC_BIG1);
 }
 
+// A retail Time Trial: the HI model of the player is the donor. The pack of a Time
+// Trial (BI_TIMETRIALPACK + characterIDs[1], game/LOAD/LOAD_Assets.c:254-266)
+// holds the GHOST driver, and the player's own model is data.driverModelExtras[0]
+// (BI_RACERMODELHI, same lines) - the one VehBirth_GetModelByName finds first
+// for the player (game/Vehicle/VehBirth.c:521-530). The slot is a union: until
+// load stage 6 it holds the file start (cleared in stage 4, set by the queue
+// callback, so fresh in stage 5 where the funnel asks), and stage 6 turns it into
+// the model (file start + LOAD_MODEL_FILE_HEADER_BYTES, game/LOAD/
+// LOAD_TenStages.c:662-665). Loading.stage is the stage being run while the
+// stage function runs, and the next one after it.
+internal const struct Model *NativeChar_TimeTrialDonor(void)
+{
+	const struct GameTracker *gGT = sdata->gGT;
+	void *slot;
+
+	if (!g_cfg_engine || (gGT == NULL) || ((gGT->gameMode1 & GAME_MODE_TIME_TRIAL_GAMEPLAY_MASK) != TIME_TRIAL))
+	{
+		return NULL;
+	}
+
+	slot = data.driverModelExtras[0].fileBase;
+	if (slot == NULL)
+	{
+		return NULL;
+	}
+
+	if ((sdata->Loading.stage >= LOAD_TEN_STAGES_0) && (sdata->Loading.stage <= 6))
+	{
+		return (const struct Model *)((const u8 *)slot + LOAD_MODEL_FILE_HEADER_BYTES);
+	}
+
+	return (const struct Model *)slot;
+}
+
 // The model retail gives seat 0 on this template: the one in the driver pack
 // whose 16-byte name is the template's debug name - the search of
 // VehBirth_GetModelByName (game/Vehicle/VehBirth.c) over sdata->PLYROBJECTLIST,
@@ -1790,15 +1893,41 @@ internal int NativeChar_ArcadeCupPodium(const struct GameTracker *gGT)
 // LOAD_DriverMPK queues none (game/LOAD/LOAD_Assets.c:239-245), and in stage 5
 // a slot is not yet a model of this load - stage 4 empties it, stage 6 turns a
 // file start into a model - so it can still hold a model from an earlier load.
+// The one exception is slot 0 of a retail Time Trial under --engine
+// (NativeChar_TimeTrialDonor), read as the file start of THIS load.
 internal const struct Model *NativeChar_DonorModel(int templateId)
 {
 	struct Model **models = (struct Model **)sdata->PLYROBJECTLIST;
 	const char *name = data.MetaDataCharacters[templateId].name_Debug;
 	int i;
+	const struct Model *timeTrial = NativeChar_TimeTrialDonor();
 
 	if (name == NULL)
 	{
 		return NULL;
+	}
+
+	// A Time Trial: the player's HI model, ahead of the pack (which holds the ghost's
+	// driver - the same character gives the pack's LOW model, not the one retail
+	// draws for the player).
+	if (timeTrial != NULL)
+	{
+		int same = 1;
+		int word;
+
+		for (word = 0; word < MODEL_NAME_WORD_COUNT; word++)
+		{
+			if (ModelName_ReadWord(timeTrial->name, word) != ModelName_ReadWord(name, word))
+			{
+				same = 0;
+				break;
+			}
+		}
+
+		if (same)
+		{
+			return timeTrial;
+		}
 	}
 
 	for (i = 0; (models != NULL) && (i < NATIVE_CHAR_DONOR_SCAN_MAX) && (models[i] != NULL); i++)
@@ -2090,8 +2219,14 @@ u32 NativeChar_DrawReserve(int tableBytes)
 		kind = NATIVE_CHAR_LOAD_MENU;
 		entry = NativeChar_LargestEntry(kind);
 	}
-	else if (NativeChar_ModeRefusal(gGT) != NULL)
+	else if (NativeChar_PickModeRefusal(gGT) != NULL)
 	{
+		return 0;
+	}
+	else if ((s_charDevSeats != NATIVE_CHAR_DEV_SEATS_OFF) && (NativeChar_ModeRefusal(gGT) != NULL))
+	{
+		// The dev seats arm every seat, ghosts of a Time Trial included:
+		// they keep the strict rule (NativeChar_ArmDevSeats), so no reserve.
 		return 0;
 	}
 	else if (s_charDevSeats == NATIVE_CHAR_DEV_SEATS_FILES)
@@ -3199,7 +3334,18 @@ internal int NativeChar_ArmPick(struct GameTracker *gGT)
 	// 5. The mode. The driver select and the main menu keep the pick at -1
 	//    outside the modes it may be made in, so a pick here is a gap in that
 	//    rule: loud, and the pick is dropped.
-	modeWhy = NativeChar_ModeRefusal(gGT);
+	//    Under --engine this is NativeChar_PickModeRefusal: a retail Time Trial
+	//    and a plain adventure race pass. The adventure race of
+	//    --dev-race-mode adventure is the one place a pick meets ADVENTURE_MODE
+	//    (NativeChar_ModeAllowed keeps the driver select out of it), and the way
+	//    on from that race is the hub: not a gap in the rule, so not loud, and
+	//    the pick stays for the next plain race.
+	modeWhy = NativeChar_PickModeRefusal(gGT);
+	if ((modeWhy != NULL) && g_cfg_engine && (g_cfg_devRaceMode == 2) && ((gGT->gameMode1 & ADVENTURE_MODE) != 0))
+	{
+		Platform_Log("[CTR Char] seat 0 empty: not a plain adventure race (%s, gameMode1 0x%08x), the pick stays\n", modeWhy, (unsigned)gGT->gameMode1);
+		return 0;
+	}
 	if (modeWhy != NULL)
 	{
 		Platform_LogWarn("[CTR Char] not bound: mode %s (gameMode1 0x%08x, %d player(s)) - custom pick in a forbidden mode, must not happen - pick dropped\n",
@@ -4048,6 +4194,8 @@ internal void NativeChar_TestMaskCase(int *checks, int *failures, const char *na
 	}
 }
 
+internal void NativeChar_ModeRuleSelfTest(int *checks, int *failures); // defined below, called from the mask test
+
 // The own mask (CMSK): good ones, too large ones and broken ones. A broken
 // one is only "not usable" - the file around it is not part of the check, so
 // it cannot be refused by it.
@@ -4273,7 +4421,79 @@ void NativeChar_MaskSelfTest(int *checks, int *failures)
 
 	NativeChar_OwnMaskSelfTest(checks, failures);
 	NativeChar_MapColorSelfTest(checks, failures);
+	NativeChar_ModeRuleSelfTest(checks, failures);
 }
+
+// The mode rules of the pick without a race: NativeChar_ModeRefusal as it was
+// (also with --engine, for the callers that arm other seats), and
+// NativeChar_PickModeRefusal, which lets a retail Time Trial and a plain
+// adventure race through under --engine and nowhere else.
+internal void NativeChar_ModeRuleSelfTest(int *checks, int *failures)
+{
+	static struct GameTracker gt;
+	static const struct
+	{
+		const char *name;
+		u32 mode1;
+		u32 mode2;
+		int players;
+		const char *strict;     // NativeChar_ModeRefusal, engine on or off
+		const char *pickOff;    // NativeChar_PickModeRefusal without --engine
+		const char *pickOn;     // NativeChar_PickModeRefusal with --engine
+	} cases[] = {
+	    {"arcade", ARCADE_MODE, 0, 1, NULL, NULL, NULL},
+	    {"arcade, two players", ARCADE_MODE, 0, 2, "not one player", "not one player", "not one player"},
+	    {"nothing set", 0, 0, 1, "not arcade", "not arcade", "not arcade"},
+	    {"retail time trial", TIME_TRIAL, 0, 1, "not arcade", "not arcade", NULL},
+	    {"time trial, two players", TIME_TRIAL, 0, 2, "not arcade", "not arcade", "not one player"},
+	    {"time trial with the arcade bit", ARCADE_MODE | TIME_TRIAL, 0, 1, "time trial", "time trial", NULL},
+	    {"time trial, cutscene", TIME_TRIAL | GAME_CUTSCENE, 0, 1, "not arcade", "not arcade", "cutscene"},
+	    {"time trial, relic", TIME_TRIAL | RELIC_RACE, 0, 1, "not arcade", "not arcade", "relic race"},
+	    {"plain adventure race", ADVENTURE_MODE, 0, 1, "not arcade", "not arcade", NULL},
+	    {"adventure hub", ADVENTURE_MODE | ADVENTURE_ARENA, 0, 1, "not arcade", "not arcade", "adventure"},
+	    {"adventure cup", ADVENTURE_MODE | ADVENTURE_CUP, 0, 1, "not arcade", "not arcade", "adventure"},
+	    {"adventure boss", ADVENTURE_MODE | ADVENTURE_BOSS, 0, 1, "not arcade", "not arcade", "adventure"},
+	    {"adventure relic", ADVENTURE_MODE | RELIC_RACE, 0, 1, "not arcade", "not arcade", "relic race"},
+	    {"adventure crystal challenge", ADVENTURE_MODE | CRYSTAL_CHALLENGE, 0, 1, "not arcade", "not arcade", "adventure"},
+	    {"adventure CTR token race", ADVENTURE_MODE, TOKEN_RACE, 1, "not arcade", "not arcade", "adventure"},
+	    {"adventure battle", ADVENTURE_MODE | BATTLE_MODE, 0, 1, "not arcade", "not arcade", "battle"},
+	    {"adventure with the arcade bit", ARCADE_MODE | ADVENTURE_MODE, 0, 1, "adventure", "adventure", NULL},
+	    {"arcade cup", ARCADE_MODE, CUP_ANY_KIND, 1, NULL, NULL, NULL},
+	    {"arcade with the CTR token race", ARCADE_MODE, TOKEN_RACE, 1, NULL, NULL, NULL},
+	    {"battle", ARCADE_MODE | BATTLE_MODE, 0, 1, "battle", "battle", "battle"},
+	};
+	const int engineBefore = g_cfg_engine;
+	size_t c;
+
+	for (c = 0; c < (sizeof(cases) / sizeof(cases[0])); c++)
+	{
+		int engine;
+
+		gt.gameMode1 = (int)cases[c].mode1;
+		gt.gameMode2 = (int)cases[c].mode2;
+		gt.numPlyrCurrGame = (u8)cases[c].players;
+
+		for (engine = 0; engine <= 1; engine++)
+		{
+			const char *strict;
+			const char *pick;
+			const char *want = engine ? cases[c].pickOn : cases[c].pickOff;
+			char what[160];
+
+			g_cfg_engine = engine;
+			strict = NativeChar_ModeRefusal(&gt);
+			pick = NativeChar_PickModeRefusal(&gt);
+
+			snprintf(what, sizeof(what), "mode rule %s, engine %d: strict rule is %s", cases[c].name, engine, (cases[c].strict != NULL) ? cases[c].strict : "none");
+			NativeChar_MaskExpect(checks, failures, (strict == NULL) ? (cases[c].strict == NULL) : ((cases[c].strict != NULL) && (strcmp(strict, cases[c].strict) == 0)), what);
+			snprintf(what, sizeof(what), "mode rule %s, engine %d: pick rule is %s", cases[c].name, engine, (want != NULL) ? want : "none");
+			NativeChar_MaskExpect(checks, failures, (pick == NULL) ? (want == NULL) : ((want != NULL) && (strcmp(pick, want) == 0)), what);
+		}
+	}
+
+	g_cfg_engine = engineBefore;
+}
+
 
 // ---------------------------------------------------------------------------
 // THE LOOK SELF-TEST, part of --char-grid-selftest (MM_NativeCharGrid_SelfTest).

@@ -4,6 +4,8 @@
 #ifdef CTR_NATIVE
 int NativeFlyIn_PreviewAlone(void); // game/native_flyin.c
 u32 NativeChar_DrawReserve(int tableBytes); // platform/native_chars.c
+struct Model *NativeChar_SeatModel(int index); // platform/native_chars.c
+extern int g_cfg_engine;
 
 static void MainInit_InitVisMemBspListNodes(struct VisMem *visMem, struct mesh_info *mesh)
 {
@@ -595,7 +597,16 @@ void MainInit_Drivers(struct GameTracker *gGT)
 		// humanGhost = *humanPlyrDriverModel,
 
 		// then replace with intended P1 model
-		*humanPlyrDriverModel = data.driverModelExtras[0].model;
+		// A bound custom seat 0 (--engine only; the funnel binds in a Time Trial
+		// only then, NativeChar_PickModeRefusal) was born with its own model
+		// (VehBirth_NonGhost) and keeps it: the HI model of the character would
+		// take it away again and the layer's check "the instance has another
+		// model" (native_render_layer.c) would unbind the seat. The ghosts are
+		// other threads and are not touched here.
+		if (!(g_cfg_engine && (NativeChar_SeatModel(0) != NULL) && (*humanPlyrDriverModel == NativeChar_SeatModel(0))))
+		{
+			*humanPlyrDriverModel = data.driverModelExtras[0].model;
+		}
 #endif
 	}
 }

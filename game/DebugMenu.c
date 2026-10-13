@@ -21,6 +21,9 @@ void NativeChar_PickForJump(void);
 // snapshot that replay and quick state install as well.
 #include <platform/native_input.h>
 
+// --dev-race-mode: the memory card root is moved away from memcards/ (see DebugMenu_JumpToLevel).
+#include <platform/native_memcard.h>
+
 // The in-game debug menu.
 //
 // SELECT+START opens it wherever the game logic runs. While it is open the game
@@ -364,6 +367,16 @@ global_variable const struct DebugLevel s_levels[] = {
 // first row is the same number.
 #define DBG_JUMP_LAPS 3
 
+// --dev-race-mode tt: the ghost tape the track select allocates before the ghost
+// menu (game/230/MM_TrackSelect.c:47-48, MM_TRACK_SELECT_GHOST_TAPE_ALLOC_SIZE and
+// _CLEAR_SIZE): the whole buffer, and the header that is cleared for "no ghost".
+#define DBG_GHOST_TAPE_ALLOC_SIZE 0x3e00
+#define DBG_GHOST_TAPE_CLEAR_SIZE 0x28
+
+// --dev-race-mode (main.c): 0 the arcade race of every jump so far, 1 a retail
+// Time Trial, 2 a plain Adventure race.
+extern int g_cfg_devRaceMode;
+
 // How long a held direction waits before it steps again. Ten VBlanks is a
 // comfortable hand speed; without it a held button walks the whole list,
 // because the input wipe further down destroys the game's own edge detection.
@@ -667,6 +680,25 @@ internal void DebugMenu_JumpToLevel(struct GameTracker *gGT, int levelID, int dr
 		MM_NativeCrystal_ModeBits(&addBits, &remBits);
 	}
 
+	// --dev-race-mode (developer switch, measuring the engine; 0 = off = every
+	// line above and below exactly as before). The chosen mode's own bit goes
+	// into the set mask AND out of the clear mask (same reason as the probe:
+	// MainMain.c:247 clears after it sets), and ARCADE_MODE into the clear mask:
+	// retail's Time Trial and Adventure never carry it (MM_MenuFlow.c:140 clears
+	// it before the choice sets TIME_TRIAL at 179 or ADVENTURE_MODE at 159).
+	if (g_cfg_devRaceMode == 1)
+	{
+		addBits = TIME_TRIAL;
+		remBits = (remBits & ~(u32)TIME_TRIAL) | ARCADE_MODE;
+	}
+	else if (g_cfg_devRaceMode == 2)
+	{
+		// ADVENTURE_ARENA stays in the clear mask: this is the race a warp pad
+		// starts (AH_WarpPad.c:693 removes the arena bit), not the hub.
+		addBits = ADVENTURE_MODE;
+		remBits = (remBits & ~(u32)ADVENTURE_MODE) | ARCADE_MODE;
+	}
+
 	sdata->Loading.OnBegin.AddBitsConfig0 |= addBits;
 	sdata->Loading.OnBegin.RemBitsConfig0 |= remBits;
 
@@ -674,6 +706,51 @@ internal void DebugMenu_JumpToLevel(struct GameTracker *gGT, int levelID, int dr
 	gGT->numPlyrNextGame = 1;
 	gGT->currLEV = (s16)levelID;
 	gGT->numLaps = ((gGT->gameMode2 & CHEAT_ONELAP) != 0) ? 1 : DBG_JUMP_LAPS;
+
+	if (g_cfg_devRaceMode != 0)
+	{
+		// What the menu sets for the two modes besides the mode bit:
+		// - three laps, the 1-lap cheat intentionally off (MM_MenuFlow.c:146-150
+		//   MM_DEFAULT_LAP_COUNT; the arcade choice alone honours CHEAT_ONELAP);
+		// - the item cheats off (MM_MenuFlow.c:160 for the adventure, :180 for the
+		//   Time Trial);
+		// - no CTR token race left over (the warp pad's token row sets it, and a
+		//   plain race has none: AH_WarpPad.c:148-153).
+		gGT->numLaps = DBG_JUMP_LAPS;
+		gGT->gameMode2 &= ~(CHEAT_WUMPA | CHEAT_MASK | CHEAT_TURBO | CHEAT_ENGINE | CHEAT_BOMBS | TOKEN_RACE);
+		sdata->Loading.OnBegin.RemBitsConfig8 |= TOKEN_RACE;
+
+		// NO WRITE TO DISK. Nothing in a race writes a memory card file by itself
+		// - every write is a menu choice (RefreshCard.c:295/301 through
+		// SelectProfile, GAMEPROG_SaveCupProgress at SelectProfile.c:645) - and a
+		// run that ends before the finish never reaches one. This is the net under
+		// that: the card root moved to a folder of its own, so a choice made by
+		// accident (an autopilot pressing through the end menu) lands there and
+		// never in memcards/, and the saves of memcards/ are not even found.
+		// The Time Trial and the Adventure race touch only the RAM copy of the
+		// progress (MainGameEnd.c: highScoreTracks, advProgress losses).
+		(void)NativeMemcard_SetRoot("memcards-dev-race-mode");
+	}
+
+	if (g_cfg_devRaceMode == 1)
+	{
+		// What the track select does when the Time Trial track is chosen
+		// (MM_TrackSelect.c:461-469): the buffer for the ghost tape at the end of
+		// the memory, cleared header, "no ghost in the race". The ghost menu then
+		// finishes with "no ghost" (SelectProfile.c:951 clears the same 0x28 bytes)
+		// and copies the tape's character into seat 1 (SelectProfile.c:1314-1317),
+		// which for a cleared header is character 0. A tape of an earlier race is
+		// let go first, as the race-end menu does (GhostTape_Destroy).
+		GhostTape_Destroy();
+		sdata->ptrGhostTapePlaying = MEMPACK_AllocHighMem(DBG_GHOST_TAPE_ALLOC_SIZE);
+		memset(sdata->ptrGhostTapePlaying, 0, DBG_GHOST_TAPE_CLEAR_SIZE);
+		sdata->boolReplayHumanGhost = 0;
+		data.characterIDs[1] = sdata->ptrGhostTapePlaying->characterID;
+
+		// QueueLoadTrack_MenuProc (QueueLoadTrack.c:9-14): the two staff ghosts.
+		data.characterIDs[2] = N_TROPY;
+		data.characterIDs[3] = NITROS_OXIDE;
+	}
 
 	// What QueueLoadTrack_MenuProc clears for a race that is not a battle.
 	gGT->originalEventTime = TITLE_INITIAL_EVENT_TIME;
@@ -691,6 +768,12 @@ internal void DebugMenu_JumpToLevel(struct GameTracker *gGT, int levelID, int dr
 	// a crystal race was set up here.
 	Platform_Log("[CTR Debug] level %d as driver %d, 1 player, %d lap(s)%s\n", levelID, driverID, (int)gGT->numLaps,
 	             s_crystalProbe ? " - PROBE: CRYSTAL_CHALLENGE set instead of cleared, nothing else prepared for it" : "");
+	if (g_cfg_devRaceMode != 0)
+	{
+		Platform_Log("[CTR Debug] --dev-race-mode: %s, gameMode1 add 0x%08x clear 0x%08x, memory card root memcards-dev-race-mode\n",
+		             (g_cfg_devRaceMode == 1) ? "retail Time Trial (TIME_TRIAL, no ghost, N Tropy and Oxide in seats 2 and 3)" : "Adventure race (ADVENTURE_MODE)",
+		             (unsigned)addBits, (unsigned)remBits);
+	}
 	MainRaceTrack_RequestLoad((s16)levelID);
 }
 

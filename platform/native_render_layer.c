@@ -3551,7 +3551,9 @@ internal void NativeRenderLayer_BindChars(const struct GameTracker *gGT)
 	}
 	else
 	{
-		why = NativeChar_ModeRefusal(gGT);
+		// The pick rule: under --engine a retail Time Trial and a plain adventure race
+		// pass (NativeChar_PickModeRefusal), else it is NativeChar_ModeRefusal.
+		why = NativeChar_PickModeRefusal(gGT);
 	}
 
 	for (seat = 0; seat < NATIVE_RENDER_LAYER_DRIVERS; seat++)
