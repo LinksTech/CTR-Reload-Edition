@@ -995,6 +995,9 @@ global_variable const char *ctr_native_engine_shader =
     // The water line, in model units before the matrix: the "nr" rule (nrSplit).
     "	v_split = split.w - dot(split.xyz, a_position);\n"
     "	gl_Position = clipFromModel * vec4(a_position, 1.0);\n"
+    // The material's depth offset (params2.z, 0 = none): clip z times (1 + offset). With the reverse Z of the
+    // engine a positive value pulls the vertex nearer, a negative one farther; it layers coplanar track decals.
+    "	gl_Position.z *= (1.0 + params2.z);\n"
     "}\n"
     "#endif\n"
     "#ifdef FRAGMENT\n"

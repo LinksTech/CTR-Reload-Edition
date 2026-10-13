@@ -525,6 +525,8 @@ internal int Engine_RenderDrawRange(const EngineMaterial *material, const Engine
 	u.params2[0] = vram ? 2.0f : 1.0f;
 	// splitKeep 0 (every draw that does not set it) keeps everything.
 	u.params2[1] = (draw->splitKeep > 0) ? 1.0f : ((draw->splitKeep < 0) ? -1.0f : 0.0f);
+	// The material's depth offset (track decals): the vertex stage multiplies clip z by 1 + this. 0 for every material made without one.
+	u.params2[2] = material->depthBias;
 	memcpy(u.split, draw->split, sizeof(u.split));
 	if (vram)
 	{
