@@ -157,9 +157,13 @@ void EngineFx_Shadow(const struct Driver *d, int view, const SVec3 points[9], co
 		{
 			const SVec3 *p = &points[s_engShadowQuadPoint[q][i]];
 
-			v[i].position[0] = (float)p->x;
-			v[i].position[1] = (float)p->y;
-			v[i].position[2] = (float)p->z;
+			// The retail points are camera-relative in FOUR times world units. The
+			// screen position does not care (a perspective divide), the depth does:
+			// at x4 the shadow would sit four times too far and, once the track is
+			// an engine draw that writes depth, behind it. Back to world units.
+			v[i].position[0] = (float)p->x * 0.25f;
+			v[i].position[1] = (float)p->y * 0.25f;
+			v[i].position[2] = (float)p->z * 0.25f;
 			v[i].texcoord[0] = us[i];
 			v[i].texcoord[1] = vs[i];
 			memcpy(v[i].color, colour, 4);
@@ -170,7 +174,7 @@ void EngineFx_Shadow(const struct Driver *d, int view, const SVec3 points[9], co
 		draw.materialOverride = -1;
 		draw.clipFromModel = screenFromWorld;
 		draw.tint[0] = draw.tint[1] = draw.tint[2] = draw.tint[3] = 1.0f;
-		draw.sortDepth = (float)depth;
+		draw.sortDepth = (float)depth * 0.25f; // SZ is x4 as well
 		draw.otCell = (u32)cell;
 		draw.flags = ENGINE_DRAW_TRANSPARENT;
 		draw.dynVertices = v;
