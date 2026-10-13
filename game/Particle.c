@@ -1128,12 +1128,18 @@ int NativeRenderLayer_HideExhaustQuad(const struct Particle *particle);
 int NativeChar_ExhaustDraw(const struct Particle *particle, s32 *posX, s32 *posY, s32 *posZ);
 
 #if defined(CTR_NATIVE)
+extern int g_cfg_engine;
+
 // From platform/engine_fx_exhaust.c (--engine): the exhaust smoke of a custom
-// driver the engine draws. Gets the finished retail quad of the particle, the
-// ordering table and cell the retail link would use. 0 = not such a particle
-// (the retail link as always), 1 = the engine drew it (do not link), -1 = it
-// could not (retail link; the engine counted it).
-int EngineFx_ExhaustParticle(const struct Particle *p, int view, const POLY_FT4 *poly, s32 depth, u32 *ot, int cell);
+// driver the engine draws, computed from the particle's state (position with
+// the look offset applied, icon, scale, roll, colour axes) - no GTE, no retail
+// primitive. cameraOffset is the view's camera position times 4 (the scratch
+// pad value), defaultOT the view's ordering table. 0 = not such a particle (the
+// retail path as always), 1 = the engine took it (retail writes and links
+// nothing for it, also when the particle is culled or hidden), -1 = an owned
+// particle the engine could not take (the retail path; the engine counted it).
+int EngineFx_ExhaustSprite(struct Particle *p, int view, const struct Icon *icon, s32 posX, s32 posY, s32 posZ, const s32 *cameraOffset, u32 *defaultOT,
+                           int lookHide);
 
 // The ordering table and cell Particle_RenderList_LinkAndAdvance picks for a
 // normal quad (same arithmetic, draw time only; writes nothing).
@@ -1302,6 +1308,17 @@ void Particle_RenderList(struct PushBuffer *pb, void *particleList)
 				// The look of a custom character (CHRI): its own exhaust point.
 				lookHide = NativeChar_ExhaustDraw(particle, &posX, &posY, &posZ);
 
+#if defined(CTR_NATIVE)
+				// --engine: the exhaust of a driver the engine owns is computed by
+				// the engine from the particle state (here the position is known
+				// with the look's offset, nothing has touched the GTE yet). 1 = it
+				// took the particle, retail writes and links nothing for it.
+				if (g_cfg_engine && (EngineFx_ExhaustSprite(particle, (int)cameraID, icon, posX, posY, posZ, scratch->cameraOffset, scratch->ot, lookHide) == 1))
+				{
+					goto next_particle;
+				}
+#endif
+
 				if ((idppFlags & PUSHBUFFER_EXISTS) != 0)
 				{
 					idpp = NULL;
@@ -1367,22 +1384,8 @@ void Particle_RenderList(struct PushBuffer *pb, void *particleList)
 			}
 			else
 			{
-#if defined(CTR_NATIVE)
-				u32 *engineOt;
-				const int engineCell = Particle_NativeOtSlot(particle, idpp, scratch->depth, scratch->ot, &engineOt);
-
-				// The exhaust of a driver the engine owns: the engine draws the
-				// quad just written, the retail primitive is not linked.
-				if (EngineFx_ExhaustParticle(particle, (int)cameraID, (const POLY_FT4 *)prim, scratch->depth, engineOt, engineCell) == 1)
-				{
-					Particle_RenderList_AdvanceUnlinked(&primCursor, &payloadCursor);
-				}
-				else
-#endif
-				{
-					Particle_RenderList_LinkAndAdvance(&primCursor, &payloadCursor, particle, idpp, flagsSetColor, scratch->depth, scratch->ot);
-					NativeRenderLayer_NoteParticleQuad(particle, pb, (const POLY_FT4 *)prim);
-				}
+				Particle_RenderList_LinkAndAdvance(&primCursor, &payloadCursor, particle, idpp, flagsSetColor, scratch->depth, scratch->ot);
+				NativeRenderLayer_NoteParticleQuad(particle, pb, (const POLY_FT4 *)prim);
 			}
 			prim = primCursor;
 
