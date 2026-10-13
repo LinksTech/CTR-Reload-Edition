@@ -40,7 +40,11 @@ void NativeRenderLayer_NoteSwitchEntry(const struct Instance *inst, const struct
 // From platform/engine_fx_turbo.c: 1 = the engine drew this turbo flame of a custom
 // driver (draw time only) and the retail handler is skipped; 0 = retail draws.
 int EngineFx_TurboRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb);
+int Engine_DriverCmdlRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb);
+int Engine_TrackInstanceRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb);
+void Engine_DriverNoteRetailBody(const struct Instance *inst);
 extern int g_cfg_engine;
+extern int g_cfg_engineTrack;
 #endif
 
 struct RenderBucketEntry
@@ -5433,9 +5437,22 @@ static void RenderBucket_DispatchDrawFunc(struct RenderBucketDrawContext *ctx)
 	{
 		return;
 	}
+	if (g_cfg_engine && (Engine_DriverCmdlRoute(ctx->inst, ctx->idpp, ctx->pb) != 0))
+	{
+		return;
+	}
+	if (g_cfg_engine && g_cfg_engineTrack && (Engine_TrackInstanceRoute(ctx->inst, ctx->idpp, ctx->pb) != 0))
+	{
+		return;
+	}
 	if (NativeRenderLayer_Route(ctx->inst, ctx->idpp, ctx->pb) != 0)
 	{
 		return;
+	}
+	if (g_cfg_engine)
+	{
+		// Retail draws this instance now: counted when it is an owned driver's body.
+		Engine_DriverNoteRetailBody(ctx->inst);
 	}
 	NativeRenderLayer_NoteSwitchEntry(ctx->inst, ctx->idpp, ctx->pb, (u32)ctx->idpp->unkEC);
 

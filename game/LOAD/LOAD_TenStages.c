@@ -17,6 +17,11 @@ void EngineFx_TurboLoad(void);
 void Engine_DriverUnload(void);
 void Engine_TestSceneLoad(void);
 int Engine_RenderUploadMeshes(void);
+extern int g_cfg_engineTrack;
+extern int g_cfg_engineMenuScene;
+void Engine_DriverCmdlLoad(void);
+void Engine_MenuSceneLoad(void);
+void Engine_TrackLoad(void);
 #endif
 
 // From platform/native_renderer.c, further down as well: the texture of the
@@ -596,8 +601,16 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 			{
 				Engine_TestSceneLoad();
 			}
+			// The menu scene's driver set (main menu level only) joins the
+			// seats' sets before the engine registers them.
+			if (g_cfg_engineMenuScene)
+			{
+				Engine_MenuSceneLoad();
+			}
 			// After NativeCharGpu_LoadSeats: the driver sets' meshes and materials.
 			Engine_DriverLoad();
+			// The bound custom seats without a native set: their CMDL models.
+			Engine_DriverCmdlLoad();
 			Engine_RenderUploadMeshes();
 		}
 #endif
@@ -990,6 +1003,11 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 		if (g_cfg_engine)
 		{
 			EngineFx_TurboLoad();
+			// The track prototype: the level is in memory (gGT->level1, stage 7).
+			if (g_cfg_engineTrack)
+			{
+				Engine_TrackLoad();
+			}
 			Engine_RenderUploadMeshes();
 		}
 #endif

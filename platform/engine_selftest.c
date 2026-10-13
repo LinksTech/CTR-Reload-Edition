@@ -21,6 +21,9 @@ int Engine_SelfTest(void)
 	failures += Engine_SelfTestFx(&checks);
 	failures += Engine_SelfTestVram(&checks);
 	failures += Engine_SelfTestModel(&checks);
+	failures += Engine_SelfTestInstance(&checks);
+	failures += Engine_SelfTestExhaust(&checks);
+	failures += Engine_SelfTestTrack(&checks);
 
 	if (failures == 0)
 	{

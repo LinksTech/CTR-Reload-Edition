@@ -34,6 +34,14 @@ void Engine_FrameCollect(struct GameTracker *gGT)
 	{
 		Engine_TestSceneCollect(gGT);
 	}
+	if (g_cfg_engineMenuScene)
+	{
+		Engine_MenuSceneCollect(gGT);
+	}
+	if (g_cfg_engineTrack)
+	{
+		Engine_TrackCollect(gGT);
+	}
 }
 
 const EngineCamera *Engine_FrameCamera(int view)

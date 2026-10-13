@@ -225,3 +225,10 @@ int EngineFx_ExhaustParticle(const struct Particle *p, int view, const POLY_FT4 
 	Engine_FxNoteDrawn(ENGINE_FX_EXHAUST);
 	return 1;
 }
+
+// Scaffold: no checks yet.
+int Engine_SelfTestExhaust(int *checks)
+{
+	(void)checks;
+	return 0;
+}

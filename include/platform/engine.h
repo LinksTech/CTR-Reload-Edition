@@ -21,6 +21,15 @@
 // Switches (main.c). 0 = off, the default.
 extern int g_cfg_engine;      // --engine
 extern int g_cfg_engineTrack; // --engine-track (needs --engine)
+extern int g_cfg_engineMenuScene; // --engine-menuscene (needs --engine)
+
+// THE PRINCIPLE (2026-10-13): CTR Reload is a PC version, not a 1:1 port. The
+// engine shows the game state the way we want it; it does NOT rebuild the PS1
+// drawing pipeline (ordering tables as a goal, GTE rounding, PS1 sprite maths,
+// PS1 water and mirror tricks). Game logic (physics, AI, the 30 Hz tick, the
+// random numbers, every state the game writes while drawing) is never touched.
+// In phase 1 the ordering-table marker is only the TRANSITION channel while PS1
+// and engine objects share a frame; it is no model for new maths.
 
 // --------------------------------------------------------------------------
 // MATH (platform/engine_math.c)
@@ -117,6 +126,12 @@ typedef struct
 	u16 clut;
 	float tint[4];     // RGBA multiplier, 1.0 = unchanged
 	float alphaCutoff; // ENGINE_BLEND_MASK
+	// Depth offset for coplanar layers (track decals, round of 2026-10-13): the clip z
+	// of every vertex is multiplied by (1 + depthBias), so with reverse Z a
+	// positive value pulls the face NEARER by that fraction of its depth. 0 =
+	// none (every material made before this round). The renderer hands it to
+	// "ne" as params2.z.
+	float depthBias;
 } EngineMaterial;
 
 // Decoded tpage word: x base (multiple of 64), y base (0 or 256), colour depth
@@ -346,7 +361,7 @@ typedef struct
 	float clipFromModel[16];
 	float tint[4];
 	float params[4];
-	float params2[4]; // x modulate, y splitKeep (-1, 0, 1), z..w 0
+	float params2[4]; // x modulate, y splitKeep (-1, 0, 1), z depthBias of the material, w 0
 	float vramPage[4];
 	float vramClut[4];
 	float split[4];   // the water-line plane in model units (EngineDraw.split)
@@ -459,15 +474,20 @@ typedef enum
 	ENGINE_FX_EXHAUST,
 	ENGINE_FX_TURBO,
 	ENGINE_FX_SKIDS,
+	ENGINE_FX_BODY,  // the driver's body (a retail draw of an owned driver's body = the layer and the CMDL route declined)
+	ENGINE_FX_TIRES, // the wheels as sprites (drivers without a wheel mesh: CMDL files, CNET without WHLS)
 	ENGINE_FX_KINDS
 } EngineFxKind;
 
 // The native_char_gpu set of a seat (0..7), -1 when the seat has none.
 int Engine_DriverSetOfSeat(int seat);
 struct Driver;
-// 1 when --engine is on and this driver is a custom driver whose body the
-// engine draws in this level (Engine_DriverBodyMesh of its set >= 0). Cheap:
-// called per producer per driver per frame.
+// 1 when --engine is on and this driver is one of the race's drivers
+// (gGT->drivers[driverID] == d: a Time Trial ghost is a Driver of its own whose
+// driverID names a seat, and is never owned) and a custom driver whose body the
+// engine draws in this level: its seat's set has an engine body mesh
+// (Engine_DriverBodyMesh >= 0), or its CMDL model was imported
+// (Engine_DriverCmdlOwns). Cheap: called per producer per driver per frame.
 int Engine_FxOwnsDriver(const struct Driver *d);
 // Counters for the exit report: an effect the engine drew for an owned driver,
 // and an effect primitive the retail path still wrote for an owned driver
@@ -501,6 +521,88 @@ int Engine_ModelFrame(const EngineModelImport *imp, int anim, int frame);
 int Engine_SelfTestModel(int *checks);
 
 // --------------------------------------------------------------------------
+// INSTANCES IN WORLD SPACE (platform/engine_instance.c; round of 2026-10-13)
+//
+// One instance of the game (struct Instance) whose model was imported with
+// Engine_ModelImport, drawn by the engine in one view in WORLD space: the
+// model-to-world matrix from the instance (its rotation/translation and the
+// unit scale of model header 0), the view's engine camera (Engine_FrameCamera),
+// no idpp->mvp, no GTE. The view's retail draw handler (idpp->unkEC) only says
+// WHAT the view wants, the engine decides HOW (the principle above):
+//   NORMAL, NORMAL_ALT   one draw.
+//   SPLIT (water line)   the part above the instance's world water plane, and
+//                        the part below it with belowTint (or none when
+//                        drawBelow is 0) - one draw each, clipped by the
+//                        plane (EngineDraw.split in model units).
+//   REFLECTION, SPECIAL  the draw, plus its mirror image about the world
+//                        plane (reflection matrix in world space) with
+//                        mirrorTint.
+// Cells (phase-1 transition channel): the middle bin of idpp->otRangeNormal,
+// the second draw into idpp->otRangeSecondary when that is non-zero.
+struct Instance;
+struct InstDrawPerPlayer;
+
+typedef struct
+{
+	int mesh;           // engine mesh (Engine_ModelImport)
+	u32 frame;          // mesh frame (Engine_ModelFrame)
+	float tint[4];      // the draw's tint (above water / not mirrored)
+	float belowTint[4]; // SPLIT: the part below the plane
+	float mirrorTint[4];// REFLECTION / SPECIAL: the mirror image
+	int drawBelow;      // SPLIT: 0 = the part below the plane is not drawn
+	u16 flags;          // ENGINE_DRAW_*
+} EngineInstanceDraw;
+
+// The instance's model-to-world matrix (model units of the imported mesh to
+// world units). 0 when the instance has no model or a zero scale.
+int Engine_InstanceWorldMatrix(const struct Instance *inst, EngineMat4 *worldFromModel);
+// Submits the instance's draws for this view (see above). Returns the number
+// of draws submitted; 0 = nothing submitted (the caller lets retail draw).
+int Engine_InstanceSubmit(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb, const EngineInstanceDraw *d);
+// The view of a push buffer (0..3), -1 when it is none of gGT->pushBuffer[].
+int Engine_InstanceViewOf(const struct PushBuffer *pb);
+
+// --------------------------------------------------------------------------
+// CUSTOM DRIVERS WITH ONLY A CMDL (platform/engine_driver_cmdl.c; round of 2026-10-13)
+//
+// A bound custom seat without a native set (the file has no CNET): its CMDL
+// model (NativeChar_SeatModel) is imported at the load stage, its body drawn by
+// the engine through Engine_InstanceSubmit. Its wheels are retail sprites in
+// the game; the engine draws them through the tire effect (ENGINE_FX_TIRES).
+void Engine_DriverCmdlLoad(void);          // load stage 5, after Engine_DriverLoad
+int Engine_DriverCmdlOwns(const struct Driver *d); // 1 = the engine draws this driver's CMDL body
+// From RenderBucket_DispatchDrawFunc, before the layer: 1 = the engine drew
+// this driver body instance in this view (the retail handler is skipped).
+int Engine_DriverCmdlRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb);
+// From RenderBucket_DispatchDrawFunc, right before the retail handler runs:
+// counts ENGINE_FX_BODY as retail when inst is the body of an owned driver.
+void Engine_DriverNoteRetailBody(const struct Instance *inst);
+
+// --------------------------------------------------------------------------
+// MENU SCENE (platform/engine_menuscene.c; --engine-menuscene, round of 2026-10-13)
+//
+// Phase-1 finish line Z5: one custom driver drawn OUTSIDE a race, in the main
+// menu level, through the same API (an engine mesh of a driver set, EngineDraw
+// with its own matrix), turning.
+void Engine_MenuSceneLoad(void);                 // load stage 5, before Engine_DriverLoad (main menu level only)
+void Engine_MenuSceneCollect(struct GameTracker *gGT); // from Engine_FrameCollect
+
+// --------------------------------------------------------------------------
+// TRACK PROTOTYPE (platform/engine_track.c; --engine-track, round of 2026-10-13)
+//
+// The level's quadblocks as engine meshes with VRAM materials (built at load
+// stage 8), drawn every race frame with the view's camera; the PS1 path skips
+// the level buckets the engine draws (Engine_TrackOwnsBucket). Level instances
+// through the model importer (Engine_TrackInstanceRoute). Not in this round:
+// visibility, detail levels, water, sky.
+void Engine_TrackLoad(void);                      // load stage 8, before Engine_RenderUploadMeshes
+void Engine_TrackCollect(struct GameTracker *gGT); // from Engine_FrameCollect
+// 1 = the PS1 level draw skips this bucket of DrawLevelOvr1P this frame.
+int Engine_TrackOwnsBucket(int bucketIndex);
+// From RenderBucket_DispatchDrawFunc: 1 = the engine drew this level instance.
+int Engine_TrackInstanceRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb);
+
+// --------------------------------------------------------------------------
 // SELFTEST (platform/engine_selftest.c; main.c --engine-selftest, ctest
 // engine_selftest). Each module's test returns its failure count and adds its
 // checks to *checks; it prints one line per failing check.
@@ -511,6 +613,9 @@ int Engine_SelfTestMeshScene(int *checks);
 int Engine_SelfTestFx(int *checks);
 int Engine_SelfTestVram(int *checks);
 // (Engine_SelfTestModel above.)
+int Engine_SelfTestInstance(int *checks); // engine_instance.c: world matrix, water plane, mirror
+int Engine_SelfTestExhaust(int *checks);  // engine_fx_exhaust.c: the sprite from particle state
+int Engine_SelfTestTrack(int *checks);    // engine_track.c: quadblock to triangles
 // All of them; prints "engine selftest passed: N checks, 0 failures" or
 // "engine selftest FAILED: N checks, F failures"; returns 0 / 1.
 int Engine_SelfTest(void);

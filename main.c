@@ -103,11 +103,16 @@
 #include "platform/engine_testscene.c"
 #include "platform/engine_model.c"
 #include "platform/engine_driver.c"
+#include "platform/engine_instance.c"
+#include "platform/engine_driver_cmdl.c"
 #include "platform/engine_fx_common.c"
 #include "platform/engine_fx_shadow.c"
 #include "platform/engine_fx_exhaust.c"
 #include "platform/engine_fx_turbo.c"
 #include "platform/engine_fx_skids.c"
+#include "platform/engine_fx_tires.c"
+#include "platform/engine_menuscene.c"
+#include "platform/engine_track.c"
 #include "platform/engine_selftest.c"
 
 #ifndef CC
@@ -231,6 +236,9 @@ static int NativeArg_IsVersion(const char *arg)
 #define NATIVE_EXIT_DEV_REQUIRED 64 // EX_USAGE from sysexits.h: wrong command line
 
 int g_cfg_dev = 0;
+// --dev-race-mode: 0 = the direct start (--level) is an arcade race, 1 = a
+// retail Time Trial, 2 = an Adventure race (game/DebugMenu.c).
+int g_cfg_devRaceMode = 0;
 
 typedef struct
 {
@@ -380,6 +388,8 @@ static const NativeSwitch s_devSwitches[] = {
     {"--engine", "", "the native engine (phase 1, a prototype): draws through the ordering table as engine markers behind the PS1 path; switches the native groundwork on as --native-preview does (depth-capable passes, texture manager); without it nothing of the engine runs"},
     {"--engine-track", "", "with --engine: the track drawn by the engine (prototype)"},
     {"--engine-testscene", "", "with --engine: a textured box 600 units in front of the camera of view 0, drawn every race frame through the whole engine path"},
+    {"--engine-menuscene", "", "with --engine: the first custom driver of the roster drawn by the engine in the main menu, turning (phase-1 finish line Z5)"},
+    {"--dev-race-mode", "<tt|adventure>", "with --level: the direct start as a retail Time Trial (tt) or as an Adventure race (adventure) instead of an arcade race"},
     {"--engine-selftest", "", "the native engine's modules without a window: maths, the camera against the PS1 projection, materials and blend equations, meshes and the scene lists, effect geometry, the VRAM decoder, then end (ctest engine_selftest)"},
     {"--mouse-selftest", "", "the menu mouse without a window: the window to menu mapping with letterbox and pillarbox, the widescreen shift of left, centre and right elements at 4:3, 16:9 and 43:18, the round trip, and the active/inactive rules, then end (ctest mouse_selftest)"},
     {"--controls-selftest", "<dir>", "the keyboard bindings file ctr-controls.cfg in <dir>: parsing, fallbacks, saving, swaps, race and menu context and key capture, then end (ctest controls_selftest)"},
@@ -676,7 +686,8 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			{
 				engineGiven = 1;
 			}
-			else if ((needsEngine == NULL) && ((strcmp(argv[argIndex], "--engine-track") == 0) || (strcmp(argv[argIndex], "--engine-testscene") == 0)))
+			else if ((needsEngine == NULL) && ((strcmp(argv[argIndex], "--engine-track") == 0) || (strcmp(argv[argIndex], "--engine-testscene") == 0) ||
+			                                   (strcmp(argv[argIndex], "--engine-menuscene") == 0)))
 			{
 				needsEngine = argv[argIndex];
 			}
@@ -686,6 +697,20 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 		{
 			fflush(stdout);
 			fprintf(stderr, "switch %s requires --engine\n", needsEngine);
+			fflush(stderr);
+			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+	}
+
+	// --dev-race-mode knows two values; anything else is refused here, before
+	// any window.
+	for (int argIndex = 1; (argIndex + 1) < argc; argIndex++)
+	{
+		if ((strcmp(argv[argIndex], "--dev-race-mode") == 0) && (strcmp(argv[argIndex + 1], "tt") != 0) &&
+		    (strcmp(argv[argIndex + 1], "adventure") != 0))
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch --dev-race-mode expects tt or adventure, not '%s'\n", argv[argIndex + 1]);
 			fflush(stderr);
 			return NATIVE_EXIT_DEV_REQUIRED;
 		}
@@ -787,6 +812,10 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 		else if (strcmp(argv[argIndex], "--engine-testscene") == 0)
 		{
 			g_cfg_engineTestScene = 1;
+		}
+		else if (strcmp(argv[argIndex], "--engine-menuscene") == 0)
+		{
+			g_cfg_engineMenuScene = 1;
 		}
 		else if ((strcmp(argv[argIndex], "--native-probe") == 0) && ((argIndex + 1) < argc))
 		{
@@ -4207,6 +4236,13 @@ int main(int argc, char *argv[])
 				// chosen track (platform/native_assets.c, s_nativeTrackFolder).
 				NativeTrack_SetFolder(argv[++argIndex]);
 				printf("[CTR Native] containers come from '%s' instead of tracks/\n", argv[argIndex]);
+			}
+			else if ((strcmp(argv[argIndex], "--dev-race-mode") == 0) && ((argIndex + 1) < argc))
+			{
+				// The direct start of --level as another 1P mode (game/DebugMenu.c,
+				// DebugMenu_JumpToLevel). The value was checked before any window.
+				g_cfg_devRaceMode = (strcmp(argv[++argIndex], "tt") == 0) ? 1 : 2;
+				printf("[CTR Native] direct start as %s\n", (g_cfg_devRaceMode == 1) ? "a retail Time Trial" : "an Adventure race");
 			}
 			else if ((strcmp(argv[argIndex], "--level") == 0) && ((argIndex + 1) < argc))
 			{
