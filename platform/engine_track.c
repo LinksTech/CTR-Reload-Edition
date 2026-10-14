@@ -53,12 +53,14 @@
 // animates in place (SCVert, configFlags & 4) are LIVE FACES, drawn every frame
 // from the level vertices as the game left them (see LIVE FACES below).
 //
-// KNOWN LIMITS: one detail level (the finest), no visibility culling (everything
-// not water, in a leaf), hidden faces of track mods (platform frames) are drawn,
-// PS1 objects have no depth test and draw on top of the engine track.
+// VISIBILITY (round of 2026-10-15): every frame the engine draws the faces of
+// the blocks the game's own visibility lists show (see VISIBILITY below), as
+// dynamic geometry; static meshes are no longer made.
+//
+// KNOWN LIMITS: one detail level (the finest), hidden faces of track mods
+// (platform frames) are drawn, PS1 objects have no depth test and draw on top
+// of the engine track.
 
-#define EGT_MESH_VERTICES_MAX 65536u // u16 indices
-#define EGT_MESHES_MAX 48
 #define EGT_KEYS_MAX 4096
 #define EGT_MODELS_MAX 128
 #define EGT_CELL_OPAQUE 0x3fe // above every cell a track face uses (<= 1020) and below the clear/glow/sky cell 0x3ff
@@ -66,10 +68,17 @@
 #define EGT_BUCKET_WATER_RENDERED 8
 #define EGT_BUCKET_WATER_LIST 9
 #define EGT_BUCKET_COUNT 11
-// Live faces (scenery vertex animation) per frame, as expanded vertices (3 per
-// triangle): a third of the renderer's dynamic store (ENGINE_DYN_EXPANDED,
-// engine_render.c), the rest stays for the effects. Above it a face stays static.
-#define EGT_LIVE_EXPANDED_MAX 32768u
+// The track's share of the frame's dynamic geometry: expanded vertices (3 per
+// triangle) of the renderer's 98304 per bank (ENGINE_DYN_EXPANDED, engine_render.c)
+// and vertices of the scene's 65536 (ENGINE_DYN_VERTICES_PER_FRAME); the rest
+// stays for sky, water and effects. A frame whose shown faces do not fit is left
+// to the PS1 walk (counted).
+#define EGT_DYN_EXPANDED_MAX 57344u
+#define EGT_DYN_VERTICES_MAX 40960u
+// A leaf flag no render-list rule names (RenderLists.c:128-160 read 0x02, 0x08,
+// 0x10, 0x20, 0x80): its leaves hold the large 'blanket' blocks over finer ones
+// (Cortex Castle, N. Gin Labs). Only counted (the tour line), drawn like any leaf.
+#define EGT_LEAF_FLAG_SPECIAL 0x0040u
 
 // --------------------------------------------------------------------------
 // Pure data side (no game state): the part the selftest checks.
@@ -121,19 +130,6 @@ typedef struct
 	EngTrackKey key[EGT_KEYS_MAX];
 	int count;
 } EngTrackKeySet;
-
-typedef struct
-{
-	EngineVertex *vertices;
-	u32 vertexCount;
-	u16 *indices;
-	u32 indexCount;
-	EngineRange *ranges;
-	u32 rangeCount;
-	u32 vertexCap;
-	u32 indexCap;
-	u32 rangeCap;
-} EngTrackMeshBuild;
 
 internal const int s_egtGrid[4][4] = {{0, 4, 5, 6}, {4, 1, 6, 7}, {5, 6, 2, 8}, {6, 7, 8, 3}};
 
@@ -423,205 +419,61 @@ internal int EngTrack_BuildBlock(const EngTrackBlockIn *in, const u32 *table, in
 	return faces;
 }
 
-internal int EngTrack_BuildEnsure(EngTrackMeshBuild *b, u32 vertices, u32 indices, u32 ranges)
-{
-	if (b->vertexCount + vertices > b->vertexCap)
-	{
-		u32 cap = (b->vertexCap == 0u) ? 1024u : b->vertexCap;
-		EngineVertex *p;
-
-		while (cap < b->vertexCount + vertices)
-		{
-			cap *= 2u;
-		}
-		if (cap > EGT_MESH_VERTICES_MAX)
-		{
-			cap = EGT_MESH_VERTICES_MAX;
-		}
-		p = (EngineVertex *)realloc(b->vertices, (size_t)cap * sizeof(EngineVertex));
-		if (p == NULL)
-		{
-			return 0;
-		}
-		b->vertices = p;
-		b->vertexCap = cap;
-	}
-	if (b->indexCount + indices > b->indexCap)
-	{
-		u32 cap = (b->indexCap == 0u) ? 3072u : b->indexCap;
-		u16 *p;
-
-		while (cap < b->indexCount + indices)
-		{
-			cap *= 2u;
-		}
-		p = (u16 *)realloc(b->indices, (size_t)cap * sizeof(u16));
-		if (p == NULL)
-		{
-			return 0;
-		}
-		b->indices = p;
-		b->indexCap = cap;
-	}
-	if (b->rangeCount + ranges > b->rangeCap)
-	{
-		const u32 cap = (b->rangeCap == 0u) ? 16u : (b->rangeCap * 2u);
-		EngineRange *p = (EngineRange *)realloc(b->ranges, (size_t)cap * sizeof(EngineRange));
-
-		if (p == NULL)
-		{
-			return 0;
-		}
-		b->ranges = p;
-		b->rangeCap = cap;
-	}
-	return 1;
-}
-
-internal void EngTrack_BuildFree(EngTrackMeshBuild *b)
-{
-	free(b->vertices);
-	free(b->indices);
-	free(b->ranges);
-	memset(b, 0, sizeof(*b));
-}
-
-// The faces whose key is semi (semi = 1) or opaque (semi = 0) into meshes of at
-// most maxVertices vertices, grouped by key (one range per key per mesh, the key's
-// material from matOfKey; a key with a negative material is skipped). Writes up
-// to maxBuilds builds into builds[] (zeroed by the caller) and returns their
-// count. *dropped counts faces left out because maxBuilds was reached or memory ran out.
-internal int EngTrack_Assemble(const EngTrackFace *faces, int faceCount, const EngTrackKeySet *keys, const int *matOfKey, int semi, u32 maxVertices,
-                               EngTrackMeshBuild *builds, int maxBuilds, int *dropped)
-{
-	int *order = NULL;
-	int *start = NULL;
-	int *fill = NULL;
-	int buildCount = 0;
-	int k;
-	int i;
-
-	if (maxVertices > EGT_MESH_VERTICES_MAX)
-	{
-		maxVertices = EGT_MESH_VERTICES_MAX;
-	}
-	order = (int *)malloc(((size_t)faceCount + 1u) * sizeof(int));
-	start = (int *)calloc((size_t)keys->count + 2u, sizeof(int));
-	fill = (int *)calloc((size_t)keys->count + 2u, sizeof(int));
-	if ((order == NULL) || (start == NULL) || (fill == NULL))
-	{
-		free(order);
-		free(start);
-		free(fill);
-		if (dropped != NULL)
-		{
-			*dropped += faceCount;
-		}
-		return 0;
-	}
-	// Counting sort of the faces by key (stable).
-	for (i = 0; i < faceCount; i++)
-	{
-		start[faces[i].key + 1]++;
-	}
-	for (k = 0; k < keys->count; k++)
-	{
-		start[k + 1] += start[k];
-	}
-	memcpy(fill, start, ((size_t)keys->count + 1u) * sizeof(int));
-	for (i = 0; i < faceCount; i++)
-	{
-		order[fill[faces[i].key]++] = i;
-	}
-	free(fill);
-
-	for (k = 0; k < keys->count; k++)
-	{
-		int n;
-
-		if ((matOfKey[k] < 0) || (EngTrack_IsSemi(keys->key[k].tpage) != semi))
-		{
-			continue;
-		}
-		for (n = start[k]; n < start[k + 1]; n++)
-		{
-			const EngTrackFace *f = &faces[order[n]];
-			EngTrackMeshBuild *b = (buildCount > 0) ? &builds[buildCount - 1] : NULL;
-			u32 base;
-			int t;
-			int c;
-
-			if ((b == NULL) || (b->vertexCount + f->vertCount > maxVertices))
-			{
-				if (buildCount >= maxBuilds)
-				{
-					if (dropped != NULL)
-					{
-						(*dropped)++;
-					}
-					continue;
-				}
-				b = &builds[buildCount++];
-			}
-			if (!EngTrack_BuildEnsure(b, f->vertCount, (u32)f->triCount * 3u, 1u))
-			{
-				if (dropped != NULL)
-				{
-					(*dropped)++;
-				}
-				continue;
-			}
-			// A new range at the start of the mesh and whenever the material changes.
-			if ((b->rangeCount == 0u) || (b->ranges[b->rangeCount - 1u].material != (u16)matOfKey[k]))
-			{
-				EngineRange *r = &b->ranges[b->rangeCount++];
-
-				r->firstIndex = b->indexCount;
-				r->indexCount = 0;
-				r->material = (u16)matOfKey[k];
-			}
-			base = b->vertexCount;
-			for (c = 0; c < f->vertCount; c++)
-			{
-				b->vertices[b->vertexCount++] = f->v[c];
-			}
-			for (t = 0; t < f->triCount; t++)
-			{
-				b->indices[b->indexCount++] = (u16)(base + f->tri[t][0]);
-				b->indices[b->indexCount++] = (u16)(base + f->tri[t][1]);
-				b->indices[b->indexCount++] = (u16)(base + f->tri[t][2]);
-			}
-			b->ranges[b->rangeCount - 1u].indexCount += (u32)f->triCount * 3u;
-		}
-	}
-	free(order);
-	free(start);
-	return buildCount;
-}
-
+// DRAW FACES (round of 2026-10-15). Every track face is kept at load with what
+// a frame needs to draw it: its built vertices (texture coordinates of the
+// mosaic and AnimTex rows, key, material), the level vertex of each slot vertex,
+// and where the PS1 walk finds its visibility (below). Every frame the faces the
+// game's visibility shows are written as dynamic geometry, one draw per material.
+//
 // LIVE FACES. Where the game moves level vertices itself every frame - the
 // scenery vertex animation of a level with configFlags & 4 (AnimateQuad,
 // game/RenderLevel/AnimateWater.c, writes position and colour of the SCVert
 // vertices in place; MainFrame_RenderFrame.c 1P path) - a face touching such a
-// vertex is not baked into the static meshes: it is kept with the level vertex of
-// each of its slot vertices and drawn every frame as dynamic geometry from what
-// the level vertex holds now. Read only: the game writes, the engine reads.
+// vertex reads position and colour from its level vertices every frame. Read
+// only: the game writes, the engine reads.
+//
+// VISIBILITY. The PS1 draws a block only when
+//   1. the walk of the BSP reaches its leaf: RenderLists_Walk1P2P
+//      (game/RenderLevel/RenderLists.c:261-331) follows a child only when its bit
+//      in the frame's leaf list is set - RenderLists_IsVisible (:28-37), word
+//      (node >> 5) & 0x1ff, bit 31 - (node & 31) of gGT->visMem1->visLeafList[0]
+//      (game/MAIN/MainFrame_RenderFrame.c:1004) - and its box overlaps the view's
+//      box (RenderLists_BoxOverlapsPushBuffer, :40-44, pushBuffer[0].bbox); the
+//      frustum test it adds for leaves (:301) is left to the GPU; and
+//   2. its bit in the frame's face list is set: the walk seeds the bit pointer
+//      with the leaf's FIRST block (word blockID >> 5, index blockID & 31,
+//      game/226/226_00_DrawLevelOvr1P.c:9497-9505) and consumes one bit per
+//      block of the leaf in array order - bit 31 - index, the index stepping
+//      down and moving to the next word at index 31 below 0 (226_00:9507-9525,
+//      used at :9558, :9663, :9921) - in visMem1->visFaceList[0]
+//      (MainFrame_RenderFrame.c:1007).
+// Both lists are refilled for the frame by MainFrame_VisMemFullFrame
+// (MainFrame_RenderFrame.c:52, game/MAIN/MainFrame.c:771-817) before
+// Engine_FrameCollect runs. The engine reads them (read only) and draws exactly
+// the faces of the blocks they show; frustum culling is left to the GPU. Where
+// a level hides geometry from a place through its PVS (the walls of Roo's
+// Tubes, Hot Air Skyway, Mystery Caves), the engine hides it too.
 typedef struct
 {
 	EngTrackFace face; // texture coordinates, triangles, key as built
 	u16 vertex[4];     // the level vertex (mesh->ptrVertexArray index) of each slot vertex
 	int material;
-	int semi;
-} EngTrackLiveFace;
+	u16 faceWord; // the face-list bit of its block
+	u16 leafNode; // its leaf (BSP node index)
+	u8 faceBit;
+	u8 semi;
+	u8 live;    // 1 = position and colour read from the level vertices every frame
+	u8 special; // its leaf has flag 0x40 (counted per frame for the tour line)
+} EngTrackDrawFace;
 
-// Live faces of one material, drawn as one dynamic draw.
+// The faces of one material (index range of the sorted faces), drawn as one dynamic draw.
 typedef struct
 {
 	int material;
 	int semi;
 	int first;
 	int count;
-} EngTrackLiveGroup;
+} EngTrackDrawGroup;
 
 // 1 when a slot vertex of the face is a marked level vertex (live[] has
 // numVertex entries; an index outside it counts as not marked).
@@ -641,11 +493,142 @@ internal int EngTrack_FaceTouches(const EngTrackFace *f, const u16 *blockIndex, 
 	return 0;
 }
 
-// The vertices and indices of count live faces with the level vertices as they
-// are now: position and colour from verts, texture coordinates as built.
-// Returns the vertex count; *indexCount gets the index count. outV needs 4 and
-// outI 6 entries per face.
-internal u32 EngTrack_LiveFill(const EngTrackLiveFace *faces, int count, const struct LevVertex *verts, EngineVertex *outV, u16 *outI, u32 *indexCount)
+// The face-list bits of the count blocks of a leaf whose first block has
+// firstBlockID, as the PS1 walk consumes them (see VISIBILITY).
+internal void EngTrack_LeafFaceBits(u16 firstBlockID, int count, u16 *wordOut, u8 *bitOut)
+{
+	int word = (int)(firstBlockID >> 5);
+	int index = (int)(firstBlockID & 0x1fu);
+	int i;
+
+	for (i = 0; i < count; i++)
+	{
+		if (index < 0)
+		{
+			index = 31;
+			word++;
+		}
+		wordOut[i] = (u16)word;
+		bitOut[i] = (u8)(31 - index);
+		index--;
+	}
+}
+
+// The leaf-list bit of BSP node `node`, as RenderLists_IsVisible tests it.
+internal void EngTrack_LeafBit(int node, u16 *wordOut, u8 *bitOut)
+{
+	*wordOut = (u16)((node >> 5) & 0x1ff);
+	*bitOut = (u8)(31 - (node & 31));
+}
+
+// Bit `bit` of word `word` of a list of wordCount words. A word past the list
+// counts as set (the face is drawn; the loader counts such blocks).
+internal int EngTrack_ListBit(const u32 *list, int wordCount, u16 word, u8 bit)
+{
+	if ((int)word >= wordCount)
+	{
+		return 1;
+	}
+	return ((list[word] >> bit) & 1u) ? 1 : 0;
+}
+
+// One child of the walk: followed when its leaf-list bit is set and its box
+// overlaps the view's box. 0 = the stack is full.
+internal int EngTrack_WalkPush(const struct BSP *root, int nodeCount, const u32 *leafList, int leafWords, const struct BoundingBox *viewBox, BspChildId child,
+                               u16 *walkStack, int *sp, int stackMax)
+{
+	const int node = (int)((u16)child & BSP_CHILD_ID_INDEX_MASK);
+	const struct BoundingBox *box;
+	u16 word = 0;
+	u8 bit = 0;
+
+	if ((child < 0) || (node >= nodeCount))
+	{
+		return 1;
+	}
+	EngTrack_LeafBit(node, &word, &bit);
+	if ((leafList != NULL) && !EngTrack_ListBit(leafList, leafWords, word, bit))
+	{
+		return 1;
+	}
+	box = &root[node].box;
+	if ((viewBox != NULL) && !((box->min.x <= viewBox->max.x) && (viewBox->min.x <= box->max.x) && (box->min.y <= viewBox->max.y) &&
+	                           (viewBox->min.y <= box->max.y) && (box->min.z <= viewBox->max.z) && (viewBox->min.z <= box->max.z)))
+	{
+		return 1;
+	}
+	if (*sp >= stackMax)
+	{
+		return 0;
+	}
+	walkStack[(*sp)++] = (u16)child;
+	return 1;
+}
+
+// The leaves the PS1 walk reaches this frame (VISIBILITY 1): shown[] (nodeCount
+// entries) is cleared and set for them. Returns the leaves reached, -1 when the
+// walkStack (stackMax entries) ran full (the caller leaves the frame to the PS1 walk).
+internal int EngTrack_WalkLeaves(const struct BSP *root, int nodeCount, const u32 *leafList, int leafWords, const struct BoundingBox *viewBox, u8 *shown,
+                                 u16 *walkStack, int stackMax)
+{
+	int sp = 0;
+	int reached = 0;
+	int ok;
+
+	memset(shown, 0, (size_t)nodeCount);
+	if ((root == NULL) || (nodeCount <= 0))
+	{
+		return 0;
+	}
+	if ((root->flag & BSP_NODE_FLAG_LEAF) != 0)
+	{
+		shown[0] = 1;
+		return 1;
+	}
+	ok = EngTrack_WalkPush(root, nodeCount, leafList, leafWords, viewBox, root->data.branch.childID[0], walkStack, &sp, stackMax) &&
+	     EngTrack_WalkPush(root, nodeCount, leafList, leafWords, viewBox, root->data.branch.childID[1], walkStack, &sp, stackMax);
+	while (ok && (sp > 0))
+	{
+		const u16 child = walkStack[--sp];
+		const int node = (int)(child & BSP_CHILD_ID_INDEX_MASK);
+
+		if ((child & BSP_CHILD_ID_LEAF_FLAG) != 0)
+		{
+			if (!shown[node])
+			{
+				shown[node] = 1;
+				reached++;
+			}
+			continue;
+		}
+		ok = EngTrack_WalkPush(root, nodeCount, leafList, leafWords, viewBox, root[node].data.branch.childID[0], walkStack, &sp, stackMax) &&
+		     EngTrack_WalkPush(root, nodeCount, leafList, leafWords, viewBox, root[node].data.branch.childID[1], walkStack, &sp, stackMax);
+	}
+	return ok ? reached : -1;
+}
+
+// 1 = the frame shows the face: the walk reached its leaf (leafShown, NULL = every
+// leaf) and the face list has its block's bit (NULL = every block).
+internal int EngTrack_FaceShown(const EngTrackDrawFace *f, const u32 *faceList, int faceWords, const u8 *leafShown)
+{
+	if ((leafShown != NULL) && !leafShown[f->leafNode])
+	{
+		return 0;
+	}
+	if ((faceList != NULL) && !EngTrack_ListBit(faceList, faceWords, f->faceWord, f->faceBit))
+	{
+		return 0;
+	}
+	return 1;
+}
+
+// The vertices and indices of the faces of faces[0..count) with shown[i] set
+// (shown NULL: all): a live face with its level vertices as they are now
+// (position and colour from verts), every other face as built. Returns the
+// vertex count; *indexCount gets the index count. outV needs 4 and outI 6
+// entries per face written.
+internal u32 EngTrack_FillFaces(const EngTrackDrawFace *faces, const u8 *shown, int count, const struct LevVertex *verts, EngineVertex *outV, u16 *outI,
+                                u32 *indexCount)
 {
 	u32 vertexCount = 0;
 	u32 indices = 0;
@@ -657,18 +640,26 @@ internal u32 EngTrack_LiveFill(const EngTrackLiveFace *faces, int count, const s
 		int c;
 		int t;
 
+		if ((shown != NULL) && !shown[i])
+		{
+			continue;
+		}
 		for (c = 0; c < f->vertCount; c++)
 		{
-			const struct LevVertex *lv = &verts[faces[i].vertex[c]];
 			EngineVertex *ev = &outV[vertexCount + (u32)c];
 
 			*ev = f->v[c];
-			ev->position[0] = (float)lv->pos.x;
-			ev->position[1] = (float)lv->pos.y;
-			ev->position[2] = (float)lv->pos.z;
-			ev->color[0] = lv->color_hi[0];
-			ev->color[1] = lv->color_hi[1];
-			ev->color[2] = lv->color_hi[2];
+			if (faces[i].live)
+			{
+				const struct LevVertex *lv = &verts[faces[i].vertex[c]];
+
+				ev->position[0] = (float)lv->pos.x;
+				ev->position[1] = (float)lv->pos.y;
+				ev->position[2] = (float)lv->pos.z;
+				ev->color[0] = lv->color_hi[0];
+				ev->color[1] = lv->color_hi[1];
+				ev->color[2] = lv->color_hi[2];
+			}
 		}
 		for (t = 0; t < f->triCount; t++)
 		{
@@ -682,15 +673,26 @@ internal u32 EngTrack_LiveFill(const EngTrackLiveFace *faces, int count, const s
 	return vertexCount;
 }
 
+// The mesh frame of an animation word of a retail model: the importer makes one
+// mesh frame per LOGICAL frame of an animation - a half-frame animation
+// (numFrames with the top bit) included, its odd frames as the in-between poses
+// retail interpolates (platform/native_twin.c:296-334, RB:2236-2239) - so the
+// word is the frame, clamped to the last logical one. Halving it the way the
+// retail queue finds its STORED frame (NativeRenderLayer_AnimFrameNumber) shows
+// half the time on these animations (the start banner waved too slowly).
+internal int EngTrack_LogicalFrame(u16 numFrames, u16 animFrame)
+{
+	const int logical = (int)(numFrames & 0x7fffu);
+
+	if (logical <= 0)
+	{
+		return 0;
+	}
+	return ((int)animFrame < logical) ? (int)animFrame : (logical - 1);
+}
+
 // --------------------------------------------------------------------------
 // Game side
-
-typedef struct
-{
-	int mesh;
-	int semi;
-	u32 vertices; // verticesPerFrame at load, to recognise the mesh at draw time
-} EngTrackMesh;
 
 typedef struct
 {
@@ -706,9 +708,9 @@ typedef struct
 } EngTrackModel;
 
 global_variable EngTrackKeySet s_egtKeys;
-global_variable EngTrackMesh s_egtMeshes[EGT_MESHES_MAX];
-global_variable int s_egtMeshCount;
 global_variable const struct Level *s_egtLevel;
+global_variable const struct mesh_info *s_egtMesh; // with s_egtLevel and s_egtLevelID: the level the faces were built for
+global_variable int s_egtLevelID = -1;
 global_variable EngTrackModel s_egtModels[EGT_MODELS_MAX];
 global_variable int s_egtModelCount;
 global_variable int s_egtSubmitted; // this frame the engine track was submitted
@@ -718,16 +720,33 @@ global_variable u64 s_egtBucketsSkipped;
 global_variable u64 s_egtWaterVisits;
 global_variable u64 s_egtInstDrawn;
 global_variable u64 s_egtInstDeclined;
-// Live faces of the loaded level (made at load, drawn every frame), grouped by material.
-global_variable EngTrackLiveFace *s_egtLive;
-global_variable int s_egtLiveCount;
-global_variable int s_egtLiveCap;
-global_variable EngTrackLiveGroup *s_egtLiveGroups;
-global_variable int s_egtLiveGroupCount;
-global_variable const struct LevVertex *s_egtLiveVertices; // the level's vertex array the live faces read
-global_variable EngineVertex *s_egtLiveScratchV;           // one group's vertices, rebuilt per draw
-global_variable u16 *s_egtLiveScratchI;
-global_variable u64 s_egtLiveDrawn;
+// The faces of the loaded level (made at load, drawn every frame as far as the
+// game's visibility shows them), sorted by (semi, material) into groups.
+global_variable EngTrackDrawFace *s_egtFaces;
+global_variable int s_egtFaceCount;
+global_variable int s_egtFaceCap;
+global_variable EngTrackDrawGroup *s_egtGroups;
+global_variable int s_egtGroupCount;
+global_variable u8 *s_egtShown;                         // per face, this frame
+global_variable const struct LevVertex *s_egtVertices; // the level's vertex array the live faces read
+global_variable EngineVertex *s_egtScratchV;           // one group's vertices, rebuilt per draw
+global_variable u16 *s_egtScratchI;
+global_variable int s_egtFaceWords; // words of the face list ((numQuadBlock + 31) >> 5)
+global_variable int s_egtLeafWords; // words of the leaf list ((numBspNodes + 31) >> 5)
+global_variable int s_egtNodeCount;   // BSP nodes of the level
+global_variable u8 *s_egtLeafShown;   // per node, this frame: the walk reached the leaf
+global_variable u16 *s_egtWalkStack;  // the walk's stack (numBspNodes + 2 entries)
+// Frames of the loaded level the engine could not draw: no visibility list, the
+// dynamic store would not hold the shown faces (the PS1 walk draws those frames),
+// or a submit refused after the first one went in (counted, the frame stays partial).
+global_variable u64 s_egtNoVisFrames;
+global_variable u64 s_egtOverBudgetFrames;
+global_variable u64 s_egtRefusedFrames;
+// Per frame peaks since the last tour entry began (reset by EngTrack_TourReport phase 0).
+global_variable u32 s_egtPeakFaces;
+global_variable u32 s_egtPeakVertices;
+global_variable u32 s_egtPeakExpanded;
+global_variable u32 s_egtPeakSpecial;
 
 // Why a level instance was left to retail (the tour's per-track line).
 enum
@@ -747,11 +766,11 @@ global_variable struct
 {
 	int levelID;
 	int faces;
-	int meshes;
+	int liveFaces;
+	int specialFaces;
+	int groups;
 	int materials;
 	int dropped;
-	int liveFaces;
-	int frozenFaces;
 	int modelsImported;
 	int modelsFailed;
 } s_egtLoad = {-1, 0, 0, 0, 0, 0, 0, 0, 0};
@@ -765,6 +784,9 @@ global_variable struct
 	u64 instDrawn;
 	u64 instDeclined;
 	u64 instDeclinedBy[EGT_DECLINE_COUNT];
+	u64 noVisFrames;
+	u64 overBudgetFrames;
+	u64 refusedFrames;
 	EngineRenderCounters render;
 	u32 fxDrawn[ENGINE_FX_KINDS];
 	u32 fxRetail[ENGINE_FX_KINDS];
@@ -788,6 +810,8 @@ internal void EngTrack_Report(void)
 	             (unsigned long long)s_egtFramesDrawn, (unsigned long long)s_egtBucketsSkipped, (unsigned long long)s_egtWaterVisits);
 	Platform_Log("[CTR Engine] track: level instances drawn by the engine %llu, declined (retail draws them) %llu\n",
 	             (unsigned long long)s_egtInstDrawn, (unsigned long long)s_egtInstDeclined);
+	Platform_Log("[CTR Engine] track: frames left to the PS1 walk: no visibility list %llu, over the dynamic budget %llu; frames with a submit refused %llu\n",
+	             (unsigned long long)s_egtNoVisFrames, (unsigned long long)s_egtOverBudgetFrames, (unsigned long long)s_egtRefusedFrames);
 	for (i = 0; i < s_egtModelCount; i++)
 	{
 		const EngTrackModel *m = &s_egtModels[i];
@@ -818,6 +842,13 @@ internal void EngTrack_TourReport(int entry, int levelID, int phase)
 		s_egtTourBase.instDrawn = s_egtInstDrawn;
 		s_egtTourBase.instDeclined = s_egtInstDeclined;
 		memcpy(s_egtTourBase.instDeclinedBy, s_egtInstDeclinedBy, sizeof(s_egtTourBase.instDeclinedBy));
+		s_egtTourBase.noVisFrames = s_egtNoVisFrames;
+		s_egtTourBase.overBudgetFrames = s_egtOverBudgetFrames;
+		s_egtTourBase.refusedFrames = s_egtRefusedFrames;
+		s_egtPeakFaces = 0;
+		s_egtPeakVertices = 0;
+		s_egtPeakExpanded = 0;
+		s_egtPeakSpecial = 0;
 		s_egtTourBase.render = rc;
 		memcpy(s_egtTourBase.fxDrawn, fxDrawn, sizeof(fxDrawn));
 		memcpy(s_egtTourBase.fxRetail, fxRetail, sizeof(fxRetail));
@@ -831,12 +862,19 @@ internal void EngTrack_TourReport(int entry, int levelID, int phase)
 		const u32 refusedDyn = rc.refusedDyn - b->refusedDyn;
 		const u32 refusedNotReady = rc.refusedNotReady - b->refusedNotReady;
 
-		Platform_Log("[CTR Engine] tour %d level %d track: loaded for level %d, meshes %d, materials %d, faces %d, dropped %d, live faces %d (frozen %d); "
+		Platform_Log("[CTR Engine] tour %d level %d track: loaded for level %d, faces %d (live %d, in leaves 0x40 %d), groups %d, materials %d, dropped %d; "
 		             "models %d imported, %d failed; frames drawn %llu of %llu, PS1 level buckets skipped %llu\n",
-		             entry, levelID, s_egtLoad.levelID, s_egtLoad.meshes, s_egtLoad.materials, s_egtLoad.faces, s_egtLoad.dropped, s_egtLoad.liveFaces,
-		             s_egtLoad.frozenFaces, s_egtLoad.modelsImported, s_egtLoad.modelsFailed,
+		             entry, levelID, s_egtLoad.levelID, s_egtLoad.faces, s_egtLoad.liveFaces, s_egtLoad.specialFaces, s_egtLoad.groups, s_egtLoad.materials,
+		             s_egtLoad.dropped, s_egtLoad.modelsImported, s_egtLoad.modelsFailed,
 		             (unsigned long long)(s_egtFramesDrawn - s_egtTourBase.framesDrawn), (unsigned long long)(s_egtCollectFrames - s_egtTourBase.collectFrames),
 		             (unsigned long long)(s_egtBucketsSkipped - s_egtTourBase.bucketsSkipped));
+		Platform_Log("[CTR Engine] tour %d level %d visibility: frames left to the PS1 walk %llu (no list %llu, over budget %llu), submit refused %llu; "
+		             "peak per frame: faces %u, vertices %u, expanded %u (budget %u), in leaves 0x40 %u\n",
+		             entry, levelID,
+		             (unsigned long long)((s_egtNoVisFrames - s_egtTourBase.noVisFrames) + (s_egtOverBudgetFrames - s_egtTourBase.overBudgetFrames)),
+		             (unsigned long long)(s_egtNoVisFrames - s_egtTourBase.noVisFrames), (unsigned long long)(s_egtOverBudgetFrames - s_egtTourBase.overBudgetFrames),
+		             (unsigned long long)(s_egtRefusedFrames - s_egtTourBase.refusedFrames), s_egtPeakFaces, s_egtPeakVertices, s_egtPeakExpanded,
+		             (unsigned)EGT_DYN_EXPANDED_MAX, s_egtPeakSpecial);
 		Platform_Log("[CTR Engine] tour %d level %d instances: drawn %llu, declined %llu (model not imported %llu, flags %llu, frame %llu, submit %llu)\n",
 		             entry, levelID, (unsigned long long)(s_egtInstDrawn - s_egtTourBase.instDrawn),
 		             (unsigned long long)(s_egtInstDeclined - s_egtTourBase.instDeclined),
@@ -864,39 +902,11 @@ internal void EngTrack_TourReport(int entry, int levelID, int phase)
 	}
 }
 
-// Whether the track meshes made at load are still the live meshes (the mesh
-// tables are reset at level unload and slots are reused).
-internal int EngTrack_MeshesLive(void)
-{
-	int i;
-
-	if (s_egtMeshCount <= 0)
-	{
-		return 0;
-	}
-	for (i = 0; i < s_egtMeshCount; i++)
-	{
-		const EngineMeshDesc *d = Engine_MeshDesc(s_egtMeshes[i].mesh);
-		u32 vb = 0xffffffffu;
-		u32 ib = 0xffffffffu;
-
-		if ((d == NULL) || (d->name == NULL) || (strncmp(d->name, "track ", 6) != 0) || (d->verticesPerFrame != s_egtMeshes[i].vertices))
-		{
-			return 0;
-		}
-		Engine_MeshGetGpu(s_egtMeshes[i].mesh, &vb, &ib);
-		if ((vb == 0xffffffffu) || (ib == 0xffffffffu))
-		{
-			return 0;
-		}
-	}
-	return 1;
-}
-
 // The engine draws the track only in frames the game draws the level: the PS1
 // path walks the level under RENDER_FLAG_DRAW_LEVEL (game/MAIN/MainFrame_RenderFrame.c:173,
 // the same rule the sky follows, engine_sky.c EngSky_Eligible); the water follows
-// the track (Engine_TrackDrawnThisFrame).
+// the track (Engine_TrackDrawnThisFrame). The level memory is reused from load to
+// load, so the address alone does not name the level the faces were built for.
 internal int EngTrack_Active(const struct GameTracker *gGT)
 {
 	if (!g_cfg_engine || !g_cfg_engineTrack || (gGT == NULL) || (gGT->numPlyrCurrGame != 1))
@@ -908,7 +918,8 @@ internal int EngTrack_Active(const struct GameTracker *gGT)
 	{
 		return 0;
 	}
-	return EngTrack_MeshesLive();
+	return (((int)gGT->levelID == s_egtLevelID) && (gGT->level1->ptr_mesh_info == s_egtMesh) && (s_egtGroupCount > 0) &&
+	        (s_egtLeafShown != NULL)) ? 1 : 0;
 }
 
 internal EngTrackModel *EngTrack_ModelEntry(const struct Model *model, int create)
@@ -961,9 +972,11 @@ internal u8 EngTrack_MosaicFormOfLeaf(u16 flag)
 }
 
 // Marks the quadblocks of water leaves and of any leaf (the PS1 walk draws only
-// blocks that sit in a leaf), and the mosaic form of every block in a leaf.
+// blocks that sit in a leaf), the mosaic form of every block in a leaf, and its
+// visibility (VISIBILITY above): the face-list word and bit of the block, its
+// leaf (node index), special = its leaf has EGT_LEAF_FLAG_SPECIAL.
 // Returns the number of leaves seen.
-internal int EngTrack_MarkLeaves(const struct mesh_info *mesh, u8 *water, u8 *inLeaf, u8 *form)
+internal int EngTrack_MarkLeaves(const struct mesh_info *mesh, u8 *water, u8 *inLeaf, u8 *form, u16 *faceWord, u8 *faceBit, u16 *leafNode, u8 *special)
 {
 	int leaves = 0;
 	int n;
@@ -992,10 +1005,13 @@ internal int EngTrack_MarkLeaves(const struct mesh_info *mesh, u8 *water, u8 *in
 			continue;
 		}
 		leaves++;
+		EngTrack_LeafFaceBits((u16)node->data.leaf.ptrQuadBlockArray[0].blockID, node->data.leaf.numQuads, &faceWord[first], &faceBit[first]);
 		for (i = 0; i < node->data.leaf.numQuads; i++)
 		{
 			inLeaf[first + i] = 1;
 			form[first + i] = EngTrack_MosaicFormOfLeaf(node->flag);
+			leafNode[first + i] = (u16)n;
+			special[first + i] = (u8)(((node->flag & EGT_LEAF_FLAG_SPECIAL) != 0u) ? 1 : 0);
 			if ((node->flag & BSP_LEAF_FLAG_WATER) != 0)
 			{
 				water[first + i] = 1;
@@ -1067,55 +1083,68 @@ internal void EngTrack_ImportModels(const struct Level *level)
 	s_egtLoad.modelsFailed = failed;
 }
 
-internal void EngTrack_LiveFree(void)
+internal void EngTrack_DrawFree(void)
 {
-	free(s_egtLive);
-	free(s_egtLiveGroups);
-	free(s_egtLiveScratchV);
-	free(s_egtLiveScratchI);
-	s_egtLive = NULL;
-	s_egtLiveGroups = NULL;
-	s_egtLiveScratchV = NULL;
-	s_egtLiveScratchI = NULL;
-	s_egtLiveCount = 0;
-	s_egtLiveCap = 0;
-	s_egtLiveGroupCount = 0;
-	s_egtLiveVertices = NULL;
+	free(s_egtFaces);
+	free(s_egtGroups);
+	free(s_egtShown);
+	free(s_egtScratchV);
+	free(s_egtScratchI);
+	free(s_egtLeafShown);
+	free(s_egtWalkStack);
+	s_egtLeafShown = NULL;
+	s_egtWalkStack = NULL;
+	s_egtNodeCount = 0;
+	s_egtFaces = NULL;
+	s_egtGroups = NULL;
+	s_egtShown = NULL;
+	s_egtScratchV = NULL;
+	s_egtScratchI = NULL;
+	s_egtFaceCount = 0;
+	s_egtFaceCap = 0;
+	s_egtGroupCount = 0;
+	s_egtVertices = NULL;
 }
 
-// A built face (key set) as a live face with the level vertices of its block. 0 = out of memory.
-internal int EngTrack_LiveAppend(const EngTrackFace *f, const u16 *blockIndex)
+// A built face (key set) as a draw face with the level vertices of its block, the
+// face-list bit of its block and its leaf. 0 = out of memory.
+internal int EngTrack_DrawAppend(const EngTrackFace *f, const u16 *blockIndex, int live, u16 faceWord, u8 faceBit, u16 leafNode, int special)
 {
-	EngTrackLiveFace *lf;
+	EngTrackDrawFace *df;
 	int v;
 
-	if (s_egtLiveCount >= s_egtLiveCap)
+	if (s_egtFaceCount >= s_egtFaceCap)
 	{
-		const int cap = (s_egtLiveCap == 0) ? 1024 : (s_egtLiveCap * 2);
-		EngTrackLiveFace *p = (EngTrackLiveFace *)realloc(s_egtLive, (size_t)cap * sizeof(EngTrackLiveFace));
+		const int cap = (s_egtFaceCap == 0) ? 4096 : (s_egtFaceCap * 2);
+		EngTrackDrawFace *p = (EngTrackDrawFace *)realloc(s_egtFaces, (size_t)cap * sizeof(EngTrackDrawFace));
 
 		if (p == NULL)
 		{
 			return 0;
 		}
-		s_egtLive = p;
-		s_egtLiveCap = cap;
+		s_egtFaces = p;
+		s_egtFaceCap = cap;
 	}
-	lf = &s_egtLive[s_egtLiveCount++];
-	memset(lf, 0, sizeof(*lf));
-	lf->face = *f;
+	df = &s_egtFaces[s_egtFaceCount++];
+	memset(df, 0, sizeof(*df));
+	df->face = *f;
 	for (v = 0; v < 4; v++)
 	{
-		lf->vertex[v] = blockIndex[f->grid[v]];
+		df->vertex[v] = blockIndex[f->grid[v]];
 	}
-	lf->material = -1;
+	df->material = -1;
+	df->faceWord = faceWord;
+	df->faceBit = faceBit;
+	df->leafNode = leafNode;
+	df->live = (u8)(live ? 1 : 0);
+	df->special = (u8)(special ? 1 : 0);
 	return 1;
 }
 
-internal int EngTrack_LiveCompare(const void *a, const void *b)
+internal int EngTrack_DrawCompare(const void *a, const void *b)
 {
-	const EngTrackLiveFace *x = (const EngTrackLiveFace *)a;
-	const EngTrackLiveFace *y = (const EngTrackLiveFace *)b;
+	const EngTrackDrawFace *x = (const EngTrackDrawFace *)a;
+	const EngTrackDrawFace *y = (const EngTrackDrawFace *)b;
 
 	if (x->semi != y->semi)
 	{
@@ -1128,48 +1157,50 @@ internal int EngTrack_LiveCompare(const void *a, const void *b)
 	return 0;
 }
 
-// The live faces get their materials (a face whose key has none is dropped and
-// counted), sorted by (semi, material) and grouped; the scratch for the largest
-// group is made. 0 = out of memory (no live face is drawn then).
-internal int EngTrack_LiveGroup(const int *matOfKey, int *dropped)
+// The faces get their materials (a face whose key has none is dropped and
+// counted), are sorted by (semi, material) and grouped; the per-face shown flags
+// and the scratch for the largest group are made. 0 = out of memory (nothing is
+// drawn then).
+internal int EngTrack_DrawGroup(const int *matOfKey, int *dropped)
 {
 	int kept = 0;
 	int largest = 0;
 	int i;
 
-	for (i = 0; i < s_egtLiveCount; i++)
+	for (i = 0; i < s_egtFaceCount; i++)
 	{
-		EngTrackLiveFace *lf = &s_egtLive[i];
+		EngTrackDrawFace *df = &s_egtFaces[i];
 
-		lf->material = matOfKey[lf->face.key];
-		lf->semi = EngTrack_IsSemi(s_egtKeys.key[lf->face.key].tpage);
-		if (lf->material < 0)
+		df->material = matOfKey[df->face.key];
+		df->semi = (u8)EngTrack_IsSemi(s_egtKeys.key[df->face.key].tpage);
+		if (df->material < 0)
 		{
 			(*dropped)++;
 			continue;
 		}
-		s_egtLive[kept++] = *lf;
+		s_egtFaces[kept++] = *df;
 	}
-	s_egtLiveCount = kept;
-	if (s_egtLiveCount == 0)
+	s_egtFaceCount = kept;
+	if (s_egtFaceCount == 0)
 	{
 		return 1;
 	}
-	qsort(s_egtLive, (size_t)s_egtLiveCount, sizeof(EngTrackLiveFace), EngTrack_LiveCompare);
-	s_egtLiveGroups = (EngTrackLiveGroup *)calloc((size_t)s_egtLiveCount, sizeof(EngTrackLiveGroup));
-	if (s_egtLiveGroups == NULL)
+	qsort(s_egtFaces, (size_t)s_egtFaceCount, sizeof(EngTrackDrawFace), EngTrack_DrawCompare);
+	s_egtGroups = (EngTrackDrawGroup *)calloc((size_t)s_egtFaceCount, sizeof(EngTrackDrawGroup));
+	s_egtShown = (u8 *)calloc((size_t)s_egtFaceCount, 1u);
+	if ((s_egtGroups == NULL) || (s_egtShown == NULL))
 	{
 		return 0;
 	}
-	for (i = 0; i < s_egtLiveCount; i++)
+	for (i = 0; i < s_egtFaceCount; i++)
 	{
-		EngTrackLiveGroup *g = (s_egtLiveGroupCount > 0) ? &s_egtLiveGroups[s_egtLiveGroupCount - 1] : NULL;
+		EngTrackDrawGroup *g = (s_egtGroupCount > 0) ? &s_egtGroups[s_egtGroupCount - 1] : NULL;
 
-		if ((g == NULL) || (g->material != s_egtLive[i].material) || (g->semi != s_egtLive[i].semi))
+		if ((g == NULL) || (g->material != s_egtFaces[i].material) || (g->semi != (int)s_egtFaces[i].semi))
 		{
-			g = &s_egtLiveGroups[s_egtLiveGroupCount++];
-			g->material = s_egtLive[i].material;
-			g->semi = s_egtLive[i].semi;
+			g = &s_egtGroups[s_egtGroupCount++];
+			g->material = s_egtFaces[i].material;
+			g->semi = (int)s_egtFaces[i].semi;
 			g->first = i;
 			g->count = 0;
 		}
@@ -1179,13 +1210,13 @@ internal int EngTrack_LiveGroup(const int *matOfKey, int *dropped)
 			largest = g->count;
 		}
 	}
-	s_egtLiveScratchV = (EngineVertex *)malloc((size_t)largest * 4u * sizeof(EngineVertex));
-	s_egtLiveScratchI = (u16 *)malloc((size_t)largest * 6u * sizeof(u16));
-	return ((s_egtLiveScratchV != NULL) && (s_egtLiveScratchI != NULL)) ? 1 : 0;
+	s_egtScratchV = (EngineVertex *)malloc((size_t)largest * 4u * sizeof(EngineVertex));
+	s_egtScratchI = (u16 *)malloc((size_t)largest * 6u * sizeof(u16));
+	return ((s_egtScratchV != NULL) && (s_egtScratchI != NULL)) ? 1 : 0;
 }
 
 // At load stage 8, after level1 is set and the models are in gGT->modelPtr, before
-// Engine_RenderUploadMeshes. Builds the track meshes and imports the instance models.
+// Engine_RenderUploadMeshes. Builds the draw faces and imports the instance models.
 void Engine_TrackLoad(void)
 {
 	struct GameTracker *gGT = sdata->gGT;
@@ -1194,11 +1225,11 @@ void Engine_TrackLoad(void)
 	u8 *water = NULL;
 	u8 *inLeaf = NULL;
 	u8 *form = NULL;
-	EngTrackFace *faces = NULL;
-	int faceCount = 0;
-	int faceCap = 0;
+	u16 *faceWord = NULL;
+	u8 *faceBit = NULL;
+	u16 *leafNode = NULL;
+	u8 *special = NULL;
 	int *matOfKey = NULL;
-	EngTrackMeshBuild *builds = NULL;
 	int hist[256];
 	int blocks = 0;
 	int waterBlocks = 0;
@@ -1212,18 +1243,18 @@ void Engine_TrackLoad(void)
 	int animFaces = 0;
 	int droppedFaces = 0;
 	int materials = 0;
+	int liveFaces = 0;
+	int specialFaces = 0;
+	int bitsPastList = 0;
 	int leaves;
-	int meshCount = 0;
-	int semiPass;
 	int i;
 	u8 *live = NULL; // level vertices the game animates (SCVert), NULL when none
-	u32 liveExpanded = 0;
-	int frozenFaces = 0;
 
-	EngTrack_LiveFree();
-	s_egtMeshCount = 0;
+	EngTrack_DrawFree();
 	s_egtModelCount = 0;
 	s_egtLevel = NULL;
+	s_egtMesh = NULL;
+	s_egtLevelID = -1;
 	s_egtSubmitted = 0;
 	s_egtKeys.count = 0;
 	if (!g_cfg_engine || !g_cfg_engineTrack || (gGT == NULL) || (gGT->level1 == NULL))
@@ -1247,13 +1278,26 @@ void Engine_TrackLoad(void)
 	water = (u8 *)calloc((size_t)mesh->numQuadBlock, 1u);
 	inLeaf = (u8 *)calloc((size_t)mesh->numQuadBlock, 1u);
 	form = (u8 *)calloc((size_t)mesh->numQuadBlock, 1u);
-	builds = (EngTrackMeshBuild *)calloc(EGT_MESHES_MAX, sizeof(EngTrackMeshBuild));
-	if ((water == NULL) || (inLeaf == NULL) || (form == NULL) || (builds == NULL))
+	faceWord = (u16 *)calloc((size_t)mesh->numQuadBlock, sizeof(u16));
+	faceBit = (u8 *)calloc((size_t)mesh->numQuadBlock, 1u);
+	leafNode = (u16 *)calloc((size_t)mesh->numQuadBlock, sizeof(u16));
+	special = (u8 *)calloc((size_t)mesh->numQuadBlock, 1u);
+	if ((water == NULL) || (inLeaf == NULL) || (form == NULL) || (faceWord == NULL) || (faceBit == NULL) || (leafNode == NULL) || (special == NULL))
 	{
 		Platform_Log("[CTR Engine] track: out of memory\n");
 		goto done;
 	}
-	leaves = EngTrack_MarkLeaves(mesh, water, inLeaf, form);
+	leaves = EngTrack_MarkLeaves(mesh, water, inLeaf, form, faceWord, faceBit, leafNode, special);
+	s_egtNodeCount = mesh->numBspNodes;
+	s_egtLeafShown = (u8 *)calloc((size_t)((mesh->numBspNodes > 0) ? mesh->numBspNodes : 1), 1u);
+	s_egtWalkStack = (u16 *)calloc((size_t)((mesh->numBspNodes > 0) ? mesh->numBspNodes : 1) + 2u, sizeof(u16));
+	if ((s_egtLeafShown == NULL) || (s_egtWalkStack == NULL))
+	{
+		Platform_Log("[CTR Engine] track: out of memory\n");
+		goto done;
+	}
+	s_egtFaceWords = (mesh->numQuadBlock + 31) >> 5;
+	s_egtLeafWords = (mesh->numBspNodes + 31) >> 5;
 	// The scenery vertices the game animates in place (configFlags & 4: SCVert, not water).
 	if (((level->configFlags & 4u) != 0u) && (level->numSCVert > 0) && (level->ptrSCVert != NULL))
 	{
@@ -1323,6 +1367,10 @@ void Engine_TrackLoad(void)
 			badBlocks++;
 			continue;
 		}
+		if ((int)faceWord[i] >= s_egtFaceWords)
+		{
+			bitsPastList++;
+		}
 		in.drawOrderLow = qb->draw_order_low;
 		in.drawOrderHigh = qb->draw_order_high;
 		for (k = 0; k < 4; k++)
@@ -1357,6 +1405,7 @@ void Engine_TrackLoad(void)
 		{
 			EngTrackFace *f = &built[k];
 			u16 keyTpage = 0;
+			int isLive;
 
 			// A mosaic face the table takes: keyed by the table's tpage word, clut 0. So is an
 			// animated face (no mosaic): a whole-face row read from its AnimTex cell (pointer - 1) every frame.
@@ -1373,34 +1422,14 @@ void Engine_TrackLoad(void)
 				droppedFaces++;
 				continue;
 			}
-			// A face on an animated vertex: live, while the budget lasts; else static (frozen).
-			if ((live != NULL) && EngTrack_FaceTouches(f, qb->index, live, mesh->numVertex))
+			isLive = (live != NULL) && EngTrack_FaceTouches(f, qb->index, live, mesh->numVertex);
+			if (!EngTrack_DrawAppend(f, qb->index, isLive, faceWord[i], faceBit[i], leafNode[i], special[i]))
 			{
-				const u32 expanded = (u32)f->triCount * 3u;
-
-				if ((liveExpanded + expanded <= EGT_LIVE_EXPANDED_MAX) && EngTrack_LiveAppend(f, qb->index))
-				{
-					liveExpanded += expanded;
-					triangles += f->triCount;
-					hist[(u8)f->bias]++;
-					continue;
-				}
-				frozenFaces++;
+				droppedFaces++;
+				continue;
 			}
-			if (faceCount >= faceCap)
-			{
-				const int cap = (faceCap == 0) ? 4096 : (faceCap * 2);
-				EngTrackFace *p = (EngTrackFace *)realloc(faces, (size_t)cap * sizeof(EngTrackFace));
-
-				if (p == NULL)
-				{
-					droppedFaces++;
-					continue;
-				}
-				faces = p;
-				faceCap = cap;
-			}
-			faces[faceCount++] = *f;
+			liveFaces += isLive;
+			specialFaces += special[i];
 			triangles += f->triCount;
 			hist[(u8)f->bias]++;
 		}
@@ -1414,6 +1443,7 @@ void Engine_TrackLoad(void)
 	if (matOfKey == NULL)
 	{
 		Platform_Log("[CTR Engine] track: out of memory\n");
+		EngTrack_DrawFree();
 		goto done;
 	}
 	for (i = 0; i < s_egtKeys.count; i++)
@@ -1446,77 +1476,36 @@ void Engine_TrackLoad(void)
 			materials++;
 		}
 	}
-	for (i = 0; i < faceCount; i++)
+	if (!EngTrack_DrawGroup(matOfKey, &droppedFaces))
 	{
-		if (matOfKey[faces[i].key] < 0)
-		{
-			droppedFaces++;
-		}
+		Platform_Log("[CTR Engine] track: out of memory\n");
+		droppedFaces += s_egtFaceCount;
+		EngTrack_DrawFree();
 	}
-	if ((s_egtLiveCount > 0) && !EngTrack_LiveGroup(matOfKey, &droppedFaces))
-	{
-		droppedFaces += s_egtLiveCount;
-		EngTrack_LiveFree();
-	}
-	s_egtLiveVertices = mesh->ptrVertexArray;
-
-	// Meshes: opaque first, then semi-transparent (the draw order of the two cells).
-	for (semiPass = 0; semiPass < 2; semiPass++)
-	{
-		const int first = meshCount;
-		const int made = EngTrack_Assemble(faces, faceCount, &s_egtKeys, matOfKey, semiPass, EGT_MESH_VERTICES_MAX, builds + first, EGT_MESHES_MAX - first,
-		                                   &droppedFaces);
-		int b;
-
-		for (b = 0; b < made; b++)
-		{
-			EngTrackMeshBuild *mb = &builds[first + b];
-			EngineMeshDesc desc;
-			char name[32];
-			int id;
-
-			memset(&desc, 0, sizeof(desc));
-			snprintf(name, sizeof(name), "track %s %d", semiPass ? "semi" : "opaque", b);
-			desc.vertices = mb->vertices;
-			desc.verticesPerFrame = mb->vertexCount;
-			desc.frames = 1;
-			desc.indices = mb->indices;
-			desc.indexCount = mb->indexCount;
-			desc.ranges = mb->ranges;
-			desc.rangeCount = mb->rangeCount;
-			desc.name = name;
-			id = Engine_MeshCreate(&desc);
-			if (id < 0)
-			{
-				droppedFaces++; // a whole mesh is lost: counted once, the log line shows the mesh count
-				continue;
-			}
-			s_egtMeshes[s_egtMeshCount].mesh = id;
-			s_egtMeshes[s_egtMeshCount].semi = semiPass;
-			s_egtMeshes[s_egtMeshCount].vertices = mb->vertexCount;
-			s_egtMeshCount++;
-		}
-		meshCount += made;
-	}
+	s_egtVertices = mesh->ptrVertexArray;
 	s_egtLevel = level;
+	s_egtMesh = mesh;
+	s_egtLevelID = (int)gGT->levelID;
 	s_egtLoad.levelID = (int)gGT->levelID;
-	s_egtLoad.faces = faceCount + s_egtLiveCount;
-	s_egtLoad.meshes = s_egtMeshCount;
+	s_egtLoad.faces = s_egtFaceCount;
+	s_egtLoad.liveFaces = liveFaces;
+	s_egtLoad.specialFaces = specialFaces;
+	s_egtLoad.groups = s_egtGroupCount;
 	s_egtLoad.materials = materials;
 	s_egtLoad.dropped = droppedFaces;
-	s_egtLoad.liveFaces = s_egtLiveCount;
-	s_egtLoad.frozenFaces = frozenFaces;
 
-	Platform_Log("[CTR Engine] track: %d blocks, %d water blocks excluded, %d invisible skipped, %d faces, %d triangles, %d mesh(es), %d materials, "
+	Platform_Log("[CTR Engine] track: %d blocks, %d water blocks excluded, %d invisible skipped, %d faces, %d triangles, %d draw group(s), %d materials, "
 	             "mosaic faces %d, animtex faces %d\n",
-	             blocks, waterBlocks, invisible, faceCount + s_egtLiveCount, triangles, s_egtMeshCount, materials, mosaicFaces, animFaces);
-	if ((live != NULL) || (s_egtLiveCount > 0))
+	             blocks, waterBlocks, invisible, s_egtFaceCount, triangles, s_egtGroupCount, materials, mosaicFaces, animFaces);
+	Platform_Log("[CTR Engine] track: visibility from the frame's leaf and face lists: %d leaves, %d face(s) in leaves with flag 0x40, %d block(s) with a face "
+	             "bit past the list (always drawn)\n",
+	             leaves, specialFaces, bitsPastList);
+	if (live != NULL)
 	{
-		Platform_Log("[CTR Engine] track: %d live face(s) in %d draw(s) (scenery vertex animation, %d animated vertices), %d left static over the budget\n",
-		             s_egtLiveCount, s_egtLiveGroupCount, level->numSCVert, frozenFaces);
+		Platform_Log("[CTR Engine] track: %d live face(s) (scenery vertex animation, %d animated vertices)\n", liveFaces, level->numSCVert);
 	}
 	Platform_Log("[CTR Engine] track: also %d block(s) in no leaf skipped, %d with a bad vertex index, %d face(s) without a usable layout, "
-	             "%d out of the scratch table, %d dropped (keys, materials, meshes, memory)\n",
+	             "%d out of the scratch table, %d dropped (keys, materials, memory)\n",
 	             unreferenced, badBlocks, noLayout, badFields, droppedFaces);
 	{
 		char text[1024];
@@ -1536,26 +1525,34 @@ void Engine_TrackLoad(void)
 	EngTrack_ImportModels(level);
 
 done:
-	for (i = 0; (builds != NULL) && (i < EGT_MESHES_MAX); i++)
-	{
-		EngTrack_BuildFree(&builds[i]);
-	}
-	free(builds);
-	free(faces);
 	free(matOfKey);
 	free(water);
 	free(inLeaf);
 	free(form);
+	free(faceWord);
+	free(faceBit);
+	free(leafNode);
+	free(special);
 	free(live);
 }
 
-// Once per frame from Engine_FrameCollect: one draw per track mesh in view 0.
+// Once per frame from Engine_FrameCollect: the faces the frame's visibility shows,
+// one dynamic draw per material in view 0. When the frame has no visibility list
+// or its faces would not fit, nothing is submitted and the PS1 walk draws the
+// level this frame (s_egtSubmitted stays 0) - never a frame without track.
 void Engine_TrackCollect(struct GameTracker *gGT)
 {
 	const EngineCamera *cam;
+	const u32 *faceList;
+	const u32 *leafList;
 	EngineMat4 screenFromWorld;
+	u32 faces = 0;
+	u32 vertices = 0;
+	u32 expanded = 0;
+	u32 specials = 0;
+	int refused = 0;
+	int submittedAny = 0;
 	int i;
-	int submitted = 0;
 
 	s_egtSubmitted = 0;
 	if (g_cfg_engine && g_cfg_engineTrack && (gGT != NULL) && ((gGT->gameMode1 & MAIN_MENU) == 0) && ((gGT->renderFlags & RENDER_FLAG_DRAW_LEVEL) != 0) &&
@@ -1572,61 +1569,92 @@ void Engine_TrackCollect(struct GameTracker *gGT)
 	{
 		return;
 	}
-	Engine_CameraScreenFromWorld(cam, &screenFromWorld);
-	for (i = 0; i < s_egtMeshCount; i++)
+	faceList = (gGT->visMem1 != NULL) ? (const u32 *)gGT->visMem1->visFaceList[0] : NULL;
+	leafList = (gGT->visMem1 != NULL) ? (const u32 *)gGT->visMem1->visLeafList[0] : NULL;
+	if ((faceList == NULL) || (leafList == NULL))
 	{
-		EngineDraw draw;
-		const int cell = s_egtMeshes[i].semi ? EGT_CELL_SEMI : EGT_CELL_OPAQUE;
+		s_egtNoVisFrames++;
+		return;
+	}
+	if (EngTrack_WalkLeaves(s_egtMesh->bspRoot, s_egtNodeCount, leafList, s_egtLeafWords, &gGT->pushBuffer[0].bbox, s_egtLeafShown, s_egtWalkStack,
+	                        s_egtNodeCount + 2) < 0)
+	{
+		s_egtNoVisFrames++;
+		return;
+	}
 
+	// What the lists show, and whether it fits (else the PS1 walk draws this frame).
+	for (i = 0; i < s_egtFaceCount; i++)
+	{
+		const EngTrackDrawFace *df = &s_egtFaces[i];
+
+		s_egtShown[i] = (u8)EngTrack_FaceShown(df, faceList, s_egtFaceWords, s_egtLeafShown);
+		if (s_egtShown[i])
+		{
+			faces++;
+			vertices += df->face.vertCount;
+			expanded += (u32)df->face.triCount * 3u;
+			specials += df->special;
+		}
+	}
+	if ((vertices > EGT_DYN_VERTICES_MAX) || (expanded > EGT_DYN_EXPANDED_MAX))
+	{
+		s_egtOverBudgetFrames++;
+		return;
+	}
+	s_egtPeakFaces = (faces > s_egtPeakFaces) ? faces : s_egtPeakFaces;
+	s_egtPeakVertices = (vertices > s_egtPeakVertices) ? vertices : s_egtPeakVertices;
+	s_egtPeakExpanded = (expanded > s_egtPeakExpanded) ? expanded : s_egtPeakExpanded;
+	s_egtPeakSpecial = (specials > s_egtPeakSpecial) ? specials : s_egtPeakSpecial;
+
+	Engine_CameraScreenFromWorld(cam, &screenFromWorld);
+	for (i = 0; i < s_egtGroupCount; i++)
+	{
+		const EngTrackDrawGroup *g = &s_egtGroups[i];
+		const int cell = g->semi ? EGT_CELL_SEMI : EGT_CELL_OPAQUE;
+		EngineDraw draw;
+		u32 indexCount = 0;
+		const u32 vertexCount = EngTrack_FillFaces(&s_egtFaces[g->first], &s_egtShown[g->first], g->count, s_egtVertices, s_egtScratchV, s_egtScratchI,
+		                                           &indexCount);
+
+		if (vertexCount == 0u)
+		{
+			continue;
+		}
 		memset(&draw, 0, sizeof(draw));
-		draw.mesh = s_egtMeshes[i].mesh;
-		draw.frame = 0;
+		draw.mesh = -1;
 		draw.clipFromModel = screenFromWorld; // the track is in world units: the raw s16 positions
 		draw.tint[0] = draw.tint[1] = draw.tint[2] = draw.tint[3] = 1.0f;
 		draw.materialOverride = -1;
 		draw.sortDepth = 1.0e9f; // farther than anything: first of the transparent list
 		draw.otCell = (u32)cell;
-		draw.flags = s_egtMeshes[i].semi ? ENGINE_DRAW_TRANSPARENT : 0;
-		draw.dynMaterial = -1;
-		if (Engine_RenderSubmitLinked(0, &draw, gGT->pushBuffer[0].ptrOT, cell))
-		{
-			submitted++;
-		}
-	}
-	// The live faces, one dynamic draw per material, from the level vertices as the game left them.
-	for (i = 0; i < s_egtLiveGroupCount; i++)
-	{
-		const EngTrackLiveGroup *g = &s_egtLiveGroups[i];
-		const int cell = g->semi ? EGT_CELL_SEMI : EGT_CELL_OPAQUE;
-		EngineDraw draw;
-		u32 indexCount = 0;
-		const u32 vertexCount = EngTrack_LiveFill(&s_egtLive[g->first], g->count, s_egtLiveVertices, s_egtLiveScratchV, s_egtLiveScratchI, &indexCount);
-
-		memset(&draw, 0, sizeof(draw));
-		draw.mesh = -1;
-		draw.clipFromModel = screenFromWorld;
-		draw.tint[0] = draw.tint[1] = draw.tint[2] = draw.tint[3] = 1.0f;
-		draw.materialOverride = -1;
-		draw.sortDepth = 1.0e9f;
-		draw.otCell = (u32)cell;
 		draw.flags = g->semi ? ENGINE_DRAW_TRANSPARENT : 0;
-		draw.dynVertices = s_egtLiveScratchV;
+		draw.dynVertices = s_egtScratchV;
 		draw.dynVertexCount = vertexCount;
-		draw.dynIndices = s_egtLiveScratchI;
+		draw.dynIndices = s_egtScratchI;
 		draw.dynIndexCount = indexCount;
 		draw.dynMaterial = g->material;
-		if ((vertexCount > 0u) && Engine_RenderSubmitLinked(0, &draw, gGT->pushBuffer[0].ptrOT, cell))
+		if (Engine_RenderSubmitLinked(0, &draw, gGT->pushBuffer[0].ptrOT, cell))
 		{
-			submitted++;
-			s_egtLiveDrawn++;
+			submittedAny = 1;
+		}
+		else
+		{
+			refused = 1;
 		}
 	}
-	// The PS1 level is skipped only when every mesh and every live draw of the track was submitted this frame.
-	if (submitted == (s_egtMeshCount + s_egtLiveGroupCount))
+	if (refused)
 	{
-		s_egtSubmitted = 1;
-		s_egtFramesDrawn++;
+		s_egtRefusedFrames++;
+		// Nothing went in: the PS1 walk draws the level this frame. Once a group went
+		// in, it must not draw it a second time: the frame stays partial (counted).
+		if (!submittedAny)
+		{
+			return;
+		}
 	}
+	s_egtSubmitted = 1;
+	s_egtFramesDrawn++;
 }
 
 int Engine_TrackDrawnThisFrame(void)
@@ -1683,6 +1711,28 @@ int Engine_TrackInstanceRoute(struct Instance *inst, struct InstDrawPerPlayer *i
 	if ((em->drawn == 0u) && (em->declined == 0u))
 	{
 		Platform_Log("[CTR Engine] track: instance model '%s' id %d first seen (%s)\n", em->name, (int)em->id, em->imported ? "imported" : "not imported");
+		// Where retail (idpp->mvp, the matrix its queue built) and the engine (the view's camera on
+		// inst->matrix) put the model's origin in view space, and the scales: the evidence for a
+		// transform difference between the two paths.
+		{
+			const int view = Engine_InstanceViewOf(pb);
+			const EngineCamera *cam = (view >= 0) ? Engine_FrameCamera(view) : NULL;
+			const struct ModelHeader *h0 = ((inst->model->numHeaders >= 1) && (inst->model->headers != NULL)) ? inst->model->headers : NULL;
+			EngineVec3 at;
+
+			at.x = (float)inst->matrix.t[0];
+			at.y = (float)inst->matrix.t[1];
+			at.z = (float)inst->matrix.t[2];
+			if (cam != NULL)
+			{
+				at = Engine_Mat4MulPoint(&cam->viewFromWorld, at);
+			}
+			Platform_Log("[CTR Engine] track:   '%s' view position retail %d %d %d, engine %.0f %.0f %.0f; inst scale %d %d %d, header 0 scale %d %d %d of %d header(s), "
+			             "flags 0x%08x\n",
+			             em->name, (int)idpp->mvp.t[0], (int)idpp->mvp.t[1], (int)idpp->mvp.t[2], at.x, at.y, at.z, (int)inst->scale.x, (int)inst->scale.y,
+			             (int)inst->scale.z, (h0 != NULL) ? (int)h0->scale.x : 0, (h0 != NULL) ? (int)h0->scale.y : 0, (h0 != NULL) ? (int)h0->scale.z : 0,
+			             (int)inst->model->numHeaders, (unsigned)inst->flags);
+		}
 	}
 	if (!em->imported || (inst->model->numHeaders < 1) || (inst->model->headers == NULL))
 	{
@@ -1700,7 +1750,7 @@ int Engine_TrackInstanceRoute(struct Instance *inst, struct InstDrawPerPlayer *i
 	}
 	mh0 = inst->model->headers;
 
-	// The animation frame as the turbo flames take it (platform/engine_fx_turbo.c).
+	// The animation frame: the logical frame of the word (EngTrack_LogicalFrame).
 	anim = (int)inst->animIndex;
 	frame = (int)inst->animFrame;
 	{
@@ -1708,7 +1758,7 @@ int Engine_TrackInstanceRoute(struct Instance *inst, struct InstDrawPerPlayer *i
 
 		if (ma != NULL)
 		{
-			frame = NativeRenderLayer_AnimFrameNumber(ma, (u16)inst->animFrame);
+			frame = EngTrack_LogicalFrame(ma->numFrames, (u16)inst->animFrame);
 		}
 		else
 		{
@@ -1954,91 +2004,26 @@ int Engine_SelfTestTrack(int *checks)
 		EGT_CHECK(EngTrack_IsSemi(0x0100) && !EngTrack_IsSemi(0x0160), "semi rule: abr 0 is semi, abr 3 is opaque");
 	}
 
-	// (9) mesh split at 65536 vertices: 16384 four-vertex faces fill one mesh, the next face starts a second.
-	{
-		static EngTrackKeySet set;
-		EngTrackMeshBuild builds[4];
-		EngTrackFace *faces;
-		const int matOfKey[1] = {7};
-		int dropped = 0;
-		int made;
-		int fi;
-
-		memset(builds, 0, sizeof(builds));
-		set.count = 0;
-		EngTrack_KeysFind(&set, 0x0160, 0, 0, 0);
-		faces = (EngTrackFace *)calloc(16385u, sizeof(EngTrackFace));
-		EGT_CHECK(faces != NULL, "split test: out of memory");
-		if (faces != NULL)
-		{
-			int bad = 0;
-
-			for (fi = 0; fi < 16385; fi++)
-			{
-				faces[fi].vertCount = 4;
-				faces[fi].triCount = 2;
-				faces[fi].tri[0][0] = 0;
-				faces[fi].tri[0][1] = 1;
-				faces[fi].tri[0][2] = 2;
-				faces[fi].tri[1][0] = 1;
-				faces[fi].tri[1][1] = 3;
-				faces[fi].tri[1][2] = 2;
-				faces[fi].key = 0;
-			}
-			made = EngTrack_Assemble(faces, 16384, &set, matOfKey, 0, EGT_MESH_VERTICES_MAX, builds, 4, &dropped);
-			EGT_CHECK((made == 1) && (builds[0].vertexCount == 65536u) && (builds[0].indexCount == 16384u * 6u) && (dropped == 0),
-			          "split test: 16384 faces gave %d mesh(es), %u vertices", made, builds[0].vertexCount);
-			for (fi = 0; fi < 4; fi++)
-			{
-				EngTrack_BuildFree(&builds[fi]);
-			}
-			made = EngTrack_Assemble(faces, 16385, &set, matOfKey, 0, EGT_MESH_VERTICES_MAX, builds, 4, &dropped);
-			EGT_CHECK((made == 2) && (builds[0].vertexCount == 65536u) && (builds[1].vertexCount == 4u) && (builds[1].indexCount == 6u),
-			          "split test: 16385 faces gave %d mesh(es), %u + %u vertices", made, builds[0].vertexCount, builds[1].vertexCount);
-			for (fi = 0; (fi < 2) && (fi < made); fi++)
-			{
-				u32 q;
-
-				for (q = 0; q < builds[fi].indexCount; q++)
-				{
-					bad += (builds[fi].indices[q] >= builds[fi].vertexCount);
-				}
-				bad += (builds[fi].rangeCount != 1u) || (builds[fi].ranges[0].material != 7u) || (builds[fi].ranges[0].indexCount != builds[fi].indexCount);
-			}
-			EGT_CHECK(bad == 0, "split test: %d bad index or range entries", bad);
-			for (fi = 0; fi < 4; fi++)
-			{
-				EngTrack_BuildFree(&builds[fi]);
-			}
-			// The semi pass of an opaque-only set is empty.
-			made = EngTrack_Assemble(faces, 16385, &set, matOfKey, 1, EGT_MESH_VERTICES_MAX, builds, 4, &dropped);
-			EGT_CHECK(made == 0, "split test: opaque faces appeared in the semi pass");
-			free(faces);
-		}
-		for (fi = 0; fi < 4; fi++)
-		{
-			EngTrack_BuildFree(&builds[fi]);
-		}
-	}
-
-	// (10) live faces: the grid of the slot vertices, the touch test, the fill from the level vertices.
+	// (9) draw faces: the grid of the slot vertices, the touch test, the fill with and without live vertices.
 	{
 		const u16 blockIndex[9] = {10, 11, 12, 13, 14, 15, 16, 17, 18};
 		struct LevVertex verts[20];
 		u8 live[20];
-		EngTrackLiveFace lf[2];
+		EngTrackDrawFace df[2];
 		EngineVertex outV[8];
 		u16 outI[12];
 		u32 indexCount = 0;
 		u32 vertexCount;
+		const u8 shownSecond[2] = {0, 1};
 
 		EngTrack_TestBlock(&in, &lay);
 		n = EngTrack_BuildBlock(&in, &identity, 1, out, NULL);
 		EGT_CHECK((n == 4) && (out[1].grid[0] == 4) && (out[1].grid[1] == 1) && (out[1].grid[2] == 6) && (out[1].grid[3] == 7),
-		          "live: face 1 grid %d %d %d %d (expected 4 1 6 7)", out[1].grid[0], out[1].grid[1], out[1].grid[2], out[1].grid[3]);
+		          "draw faces: face 1 grid %d %d %d %d (expected 4 1 6 7)", out[1].grid[0], out[1].grid[1], out[1].grid[2], out[1].grid[3]);
 		memset(live, 0, sizeof(live));
 		live[16] = 1; // grid corner 6 of this block: the middle vertex, shared by all four faces
-		EGT_CHECK(EngTrack_FaceTouches(&out[0], blockIndex, live, 20) && EngTrack_FaceTouches(&out[3], blockIndex, live, 20), "live: a face on the middle vertex not touched");
+		EGT_CHECK(EngTrack_FaceTouches(&out[0], blockIndex, live, 20) && EngTrack_FaceTouches(&out[3], blockIndex, live, 20),
+		          "live: a face on the middle vertex not touched");
 		live[16] = 0;
 		live[11] = 1; // grid corner 1: only face 1
 		EGT_CHECK(!EngTrack_FaceTouches(&out[0], blockIndex, live, 20) && EngTrack_FaceTouches(&out[1], blockIndex, live, 20), "live: the corner test is wrong");
@@ -2054,23 +2039,122 @@ int Engine_SelfTestTrack(int *checks)
 			verts[k].color_hi[1] = (u8)(120 + k);
 			verts[k].color_hi[2] = (u8)(140 + k);
 		}
-		memset(lf, 0, sizeof(lf));
+		memset(df, 0, sizeof(df));
 		for (k = 0; k < 2; k++)
 		{
-			lf[k].face = out[k];
+			df[k].face = out[k];
+			df[k].live = 1;
 			for (v = 0; v < 4; v++)
 			{
-				lf[k].vertex[v] = blockIndex[out[k].grid[v]];
+				df[k].vertex[v] = blockIndex[out[k].grid[v]];
 			}
 		}
-		vertexCount = EngTrack_LiveFill(lf, 2, verts, outV, outI, &indexCount);
-		EGT_CHECK((vertexCount == 8u) && (indexCount == 12u), "live fill: %u vertices, %u indices (expected 8, 12)", vertexCount, indexCount);
+		vertexCount = EngTrack_FillFaces(df, NULL, 2, verts, outV, outI, &indexCount);
+		EGT_CHECK((vertexCount == 8u) && (indexCount == 12u), "fill: %u vertices, %u indices (expected 8, 12)", vertexCount, indexCount);
 		EGT_CHECK((outV[4].position[0] == 1014.0f) && (outV[4].position[1] == 2014.0f) && (outV[4].position[2] == 3014.0f) && (outV[4].color[0] == 114) &&
 		              (outV[4].color[2] == 154) && (outV[5].position[0] == 1011.0f),
-		          "live fill: positions/colours not read from the level vertices");
+		          "fill: live positions/colours not read from the level vertices");
 		EGT_CHECK((outV[4].texcoord[0] == out[1].v[0].texcoord[0]) && (outV[4].texcoord[1] == out[1].v[0].texcoord[1]) && (outV[4].color[3] == 255),
-		          "live fill: texture coordinates or alpha changed");
-		EGT_CHECK((outI[6] == (u16)(4 + out[1].tri[0][0])) && (outI[11] == (u16)(4 + out[1].tri[1][2])), "live fill: indices not offset to the second face");
+		          "fill: texture coordinates or alpha changed");
+		EGT_CHECK((outI[6] == (u16)(4 + out[1].tri[0][0])) && (outI[11] == (u16)(4 + out[1].tri[1][2])), "fill: indices not offset to the second face");
+		df[1].live = 0;
+		vertexCount = EngTrack_FillFaces(df, shownSecond, 2, verts, outV, outI, &indexCount);
+		EGT_CHECK((vertexCount == 4u) && (indexCount == 6u) && (outV[0].position[0] == out[1].v[0].position[0]) && (outV[0].color[0] == out[1].v[0].color[0]) &&
+		              (outI[0] == out[1].tri[0][0]),
+		          "fill: a hidden face written, or a static face not as built (%u vertices)", vertexCount);
+	}
+
+	// (11) the pose of an animation word: logical frames, half-frame animations not halved, clamped.
+	EGT_CHECK((EngTrack_LogicalFrame(5, 3) == 3) && (EngTrack_LogicalFrame(5, 9) == 4) && (EngTrack_LogicalFrame(0x8005, 3) == 3) &&
+	              (EngTrack_LogicalFrame(0x8005, 4) == 4) && (EngTrack_LogicalFrame(0x8005, 200) == 4) && (EngTrack_LogicalFrame(0, 7) == 0) &&
+	              (EngTrack_LogicalFrame(0x8000, 3) == 0),
+	          "pose: the logical frame of an animation word is wrong");
+
+	// (10) visibility: the face-list bits of a leaf as the PS1 walk consumes them, the leaf bit, the tests.
+	{
+		u16 words[4];
+		u8 bits[4];
+		u16 lw = 0;
+		u8 lb = 0;
+		u32 faceList[3];
+		u32 leafList[2];
+		const u8 reachedLeaves[3] = {0, 1, 0};
+		EngTrackDrawFace f;
+
+		EngTrack_LeafFaceBits(5, 3, words, bits);
+		EGT_CHECK((words[0] == 0) && (bits[0] == 26) && (words[1] == 0) && (bits[1] == 27) && (words[2] == 0) && (bits[2] == 28),
+		          "visibility: blocks 5.. got word/bit %d/%d %d/%d %d/%d (expected 0/26 0/27 0/28)", words[0], bits[0], words[1], bits[1], words[2], bits[2]);
+		EngTrack_LeafFaceBits(32, 2, words, bits);
+		EGT_CHECK((words[0] == 1) && (bits[0] == 31) && (words[1] == 2) && (bits[1] == 0), "visibility: first block 32 got %d/%d then %d/%d (expected 1/31 2/0)",
+		          words[0], bits[0], words[1], bits[1]);
+		EngTrack_LeafFaceBits(31, 2, words, bits);
+		EGT_CHECK((words[0] == 0) && (bits[0] == 0) && (words[1] == 0) && (bits[1] == 1), "visibility: first block 31 got %d/%d then %d/%d (expected 0/0 0/1)",
+		          words[0], bits[0], words[1], bits[1]);
+		EngTrack_LeafBit(37, &lw, &lb);
+		EGT_CHECK((lw == 1) && (lb == 26), "visibility: leaf 37 got word %d bit %d (expected 1, 26)", lw, lb);
+		EngTrack_LeafBit(0x3fff, &lw, &lb);
+		EGT_CHECK((lw == 0x1ff) && (lb == 0), "visibility: leaf 0x3fff got word %d bit %d (expected 0x1ff, 0)", lw, lb);
+
+		faceList[0] = 0x04000000u; // bit 26
+		faceList[1] = 0u;
+		faceList[2] = 0u;
+		leafList[0] = 0u;
+		leafList[1] = 0x04000000u; // leaf 37
+		EGT_CHECK(EngTrack_ListBit(faceList, 3, 0, 26) && !EngTrack_ListBit(faceList, 3, 0, 27) && EngTrack_ListBit(faceList, 3, 5, 0),
+		          "visibility: list bit test (set, clear, past the list)");
+		memset(&f, 0, sizeof(f));
+		f.faceWord = 0;
+		f.faceBit = 26;
+		f.leafNode = 1;
+		EGT_CHECK(EngTrack_FaceShown(&f, faceList, 3, reachedLeaves), "visibility: a face in a reached leaf with its bit set is hidden");
+		f.faceBit = 27;
+		EGT_CHECK(!EngTrack_FaceShown(&f, faceList, 3, reachedLeaves), "visibility: a face with its bit clear is shown");
+		f.faceBit = 26;
+		f.leafNode = 2;
+		EGT_CHECK(!EngTrack_FaceShown(&f, faceList, 3, reachedLeaves), "visibility: a face in a leaf not reached is shown");
+		EGT_CHECK(EngTrack_FaceShown(&f, NULL, 3, NULL), "visibility: without lists a face is hidden");
+
+		// The walk: root 0 -> leaf 1, branch 2 -> leaves 3, 4. Leaf list: 1, 2, 3 set; 4 clear.
+		{
+			struct BSP tree[5];
+			struct BoundingBox view;
+			u8 shownNodes[5];
+			u16 walkStack[8];
+			u32 leaves[1];
+			int reached;
+
+			memset(tree, 0, sizeof(tree));
+			for (k = 0; k < 5; k++)
+			{
+				tree[k].box.min.x = tree[k].box.min.y = tree[k].box.min.z = -10;
+				tree[k].box.max.x = tree[k].box.max.y = tree[k].box.max.z = 10;
+			}
+			tree[0].data.branch.childID[0] = (BspChildId)(BSP_CHILD_ID_LEAF_FLAG | 1);
+			tree[0].data.branch.childID[1] = 2;
+			tree[1].flag = BSP_NODE_FLAG_LEAF;
+			tree[2].data.branch.childID[0] = (BspChildId)(BSP_CHILD_ID_LEAF_FLAG | 3);
+			tree[2].data.branch.childID[1] = (BspChildId)(BSP_CHILD_ID_LEAF_FLAG | 4);
+			tree[3].flag = BSP_NODE_FLAG_LEAF;
+			tree[4].flag = BSP_NODE_FLAG_LEAF;
+			leaves[0] = (1u << 30) | (1u << 29) | (1u << 28); // nodes 1, 2, 3
+			view.min.x = view.min.y = view.min.z = -100;
+			view.max.x = view.max.y = view.max.z = 100;
+			reached = EngTrack_WalkLeaves(tree, 5, leaves, 1, &view, shownNodes, walkStack, 8);
+			EGT_CHECK((reached == 2) && shownNodes[1] && shownNodes[3] && !shownNodes[4] && !shownNodes[2], "walk: reached %d, leaves 1 %d 3 %d 4 %d", reached,
+			          shownNodes[1], shownNodes[3], shownNodes[4]);
+			leaves[0] = (1u << 30) | (1u << 28); // branch 2 cleared: its leaves are not reached
+			reached = EngTrack_WalkLeaves(tree, 5, leaves, 1, &view, shownNodes, walkStack, 8);
+			EGT_CHECK((reached == 1) && shownNodes[1] && !shownNodes[3], "walk: a leaf under a hidden branch was reached");
+			leaves[0] = (1u << 30) | (1u << 29) | (1u << 28);
+			tree[1].box.min.x = 200;
+			tree[1].box.max.x = 300; // outside the view's box
+			reached = EngTrack_WalkLeaves(tree, 5, leaves, 1, &view, shownNodes, walkStack, 8);
+			EGT_CHECK((reached == 1) && !shownNodes[1] && shownNodes[3], "walk: a leaf outside the view's box was reached");
+			tree[1].box.min.x = -10;
+			tree[1].box.max.x = 10;
+			reached = EngTrack_WalkLeaves(tree, 5, leaves, 1, &view, shownNodes, walkStack, 1);
+			EGT_CHECK(reached == -1, "walk: a full stack not reported");
+		}
 	}
 
 	return failures;
