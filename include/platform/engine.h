@@ -376,8 +376,10 @@ void Engine_VramTexel(const u16 *vram, int pageX, int pageY, int depth, int clut
 //   split          the water-line plane in model units (EngineDraw.split)
 //   params3        x program (EngineMaterial.program), y frame time in seconds
 //                  (gGT->timer / 30 of the bank's frame, Engine_FrameTime), z, w
-//                  EngineMaterial.programParam[0..1]
-//   params4        EngineDraw.user[0..3], per-draw program data
+//                  EngineMaterial.programParam[0..1]; "ne": z = the lift of a
+//                  track decal in world units (0 = none, engine_track.c DECALS)
+//   params4        EngineDraw.user[0..3], per-draw program data; "ne" with a
+//                  decal lift: the decal plane's normal (xyz) and normal . camera
 // VRAM sampling: the PSX VRAM texture (NativeRenderer_GetVRAMTexture, RG8
 // 1024x512) through the same CLUT lookup as the PSX program; texel 0x0000 is
 // transparent (discarded); the texel's 5:5:5 colour expanded as the PSX
