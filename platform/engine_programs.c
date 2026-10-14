@@ -12,10 +12,16 @@
 // the engine can wear the retail textures of the game without a copy of them.
 //
 // THE BLOCK. "NeBlock" is struct EngineUniforms (include/platform/engine.h)
-// field for field, 160 bytes std140: a mat4 at 0, then six vec4 at 64, 80, 96,
-// 112, 128, 144. Both stages declare it the same way. Only vec4 after the
-// matrix means std140 and the C struct agree without padding rules to get
-// wrong; the static assert below holds the size.
+// field for field, 192 bytes std140: a mat4 at 0, then eight vec4 at 64, 80,
+// 96, 112, 128, 144, 160, 176. Both stages of every engine program declare it
+// with the same text (ENGINE_UNIFORM_BLOCK_GLSL in native_shaders.inc). Only
+// vec4 after the matrix means std140 and the C struct agree without padding
+// rules to get wrong; the static assert below holds the size.
+//
+// THE PROGRAMS. "ne" (ENGINE_PROGRAM_NE) and the water program "nw"
+// (ENGINE_PROGRAM_NW, platform/engine_water_shader.inc) share the vertex
+// layout, the samplers and the block; a material names its program
+// (EngineMaterial.program) and the renderer binds it per range.
 //
 // THE SAMPLERS. Two slots, both constant for the lifetime of the program:
 //   slot 0  "s_texture"  the native texture of texSource 1 (RGBA8, sRGB or not,
@@ -42,14 +48,15 @@
 // so tools/shader_spirv_probe.c emits ne.vert / ne.frag, the build compiles them
 // into native_shaders_spv.h and the ctest shader_spirv_dialect checks them.
 
-// The block must be exactly what the GLSL below declares: mat4 (64) + 6 x vec4 (96) in ctr_native_engine_shader.
-_Static_assert(sizeof(EngineUniforms) == 160, "EngineUniforms must be 160 bytes (std140 NeBlock)");
+// The block must be exactly what the GLSL declares: mat4 (64) + 8 x vec4 (128), ENGINE_UNIFORM_BLOCK_GLSL.
+_Static_assert(sizeof(EngineUniforms) == 192, "EngineUniforms must be 192 bytes (std140 NeBlock)");
 
 // The GLSL is ctr_native_engine_shader in native_shaders.inc (with its explanation),
 // so the SPIR-V probe and the dialect test see it.
 
 global_variable int s_engineProgramsTried = 0;
 global_variable ShaderID s_engineProgram = NATIVE_GFX_INVALID;
+global_variable ShaderID s_engineWaterProgram = NATIVE_GFX_INVALID;
 
 int Engine_ProgramsInit(void)
 {
@@ -69,7 +76,7 @@ int Engine_ProgramsInit(void)
 
 	// The descriptor of NativeRenderer_Shader_CompileWithUniforms, with the
 	// samplers of "ne" (see the header comment for why not the helper).
-	const NativeGfxProgramDesc desc = {
+	NativeGfxProgramDesc desc = {
 	    .attribs = {
 	        {.slot = a_position, .name = "a_position"},
 	        {.slot = a_texcoord, .name = "a_texcoord"},
@@ -91,10 +98,31 @@ int Engine_ProgramsInit(void)
 
 	Platform_Log("[CTR Engine] program 'ne' %s\n", (s_engineProgram != NATIVE_GFX_INVALID) ? "ready" : "missing");
 
+	// "nw": the same descriptor under its own name (its SPIR-V modules are nw.vert / nw.frag).
+	desc.debugName = "nw";
+	s_engineWaterProgram = NativeGfx_CreateProgram(&desc);
+
+	Platform_Log("[CTR Engine] program 'nw' %s\n", (s_engineWaterProgram != NATIVE_GFX_INVALID) ? "ready" : "missing");
+
 	return (s_engineProgram != NATIVE_GFX_INVALID) ? 1 : 0;
 }
 
 u32 Engine_Program(void)
 {
 	return (s_engineProgram != NATIVE_GFX_INVALID) ? (u32)s_engineProgram : 0xffffffffu;
+}
+
+u32 Engine_ProgramOf(int program)
+{
+	ShaderID id = NATIVE_GFX_INVALID;
+
+	if (program == ENGINE_PROGRAM_NE)
+	{
+		id = s_engineProgram;
+	}
+	else if (program == ENGINE_PROGRAM_NW)
+	{
+		id = s_engineWaterProgram;
+	}
+	return (id != NATIVE_GFX_INVALID) ? (u32)id : 0xffffffffu;
 }

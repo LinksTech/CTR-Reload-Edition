@@ -287,6 +287,7 @@ add_custom_command(
     DEPENDS
         shader_spirv_probe
         ${CMAKE_CURRENT_SOURCE_DIR}/platform/native_shaders.inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/platform/engine_water_shader.inc
         ${CMAKE_CURRENT_SOURCE_DIR}/tools/build_shaders.cmake
     COMMENT "Compiling shaders to SPIR-V"
     VERBATIM

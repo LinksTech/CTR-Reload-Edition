@@ -920,7 +920,7 @@ global_variable const char *ctr_native_twin_shader =
 // engine, include/platform/engine.h section PROGRAMS). Its source lives here so
 // that tools/shader_spirv_probe.c emits ne.vert / ne.frag with the others and the
 // ctest shader_spirv_dialect compiles it. The block "NeBlock" is struct
-// EngineUniforms field for field (160 bytes std140).
+// EngineUniforms field for field (192 bytes std140, ENGINE_UNIFORM_BLOCK_GLSL).
 //
 //
 // texSource (params.x), the three ways to colour a fragment:
@@ -972,6 +972,23 @@ global_variable const char *ctr_native_twin_shader =
 // factor of retail data (128 is the neutral colour on the console), 1.0 native
 // data - the nrLook.y of "nrt". The result is not clamped here; the UNORM
 // target clamps.
+// The uniform block of every engine program ("ne" here, "nw" in
+// engine_water_shader.inc), both stages: struct EngineUniforms field for field
+// (include/platform/engine.h, 192 bytes std140: a mat4, then eight vec4). One
+// text, so the programs cannot drift apart.
+#define ENGINE_UNIFORM_BLOCK_GLSL \
+	"UBO_QUALIFIER uniform NeBlock {\n" \
+	"	mat4 clipFromModel;\n" \
+	"	vec4 tint;\n" \
+	"	vec4 params;\n" \
+	"	vec4 params2;\n" \
+	"	vec4 vramPage;\n" \
+	"	vec4 vramClut;\n" \
+	"	vec4 split;\n" \
+	"	vec4 params3;\n" \
+	"	vec4 params4;\n" \
+	"};\n"
+
 global_variable const char *ctr_native_engine_shader =
     "#ifdef VERTEX\n"
     "layout(location = 0) in vec3 a_position;\n"
@@ -980,15 +997,7 @@ global_variable const char *ctr_native_engine_shader =
     "VARYING_LOC0 out vec2 v_uv;\n"
     "VARYING_LOC1 out vec4 v_color;\n"
     "VARYING_LOC2 out float v_split;\n"
-    "UBO_QUALIFIER uniform NeBlock {\n"
-    "	mat4 clipFromModel;\n"
-    "	vec4 tint;\n"
-    "	vec4 params;\n"
-    "	vec4 params2;\n"
-    "	vec4 vramPage;\n"
-    "	vec4 vramClut;\n"
-    "	vec4 split;\n"
-    "};\n"
+    ENGINE_UNIFORM_BLOCK_GLSL
     "void main() {\n"
     "	v_uv = a_texcoord;\n"
     "	v_color = a_color * tint;\n"
@@ -1006,15 +1015,7 @@ global_variable const char *ctr_native_engine_shader =
     "VARYING_LOC2 in float v_split;\n"
     "SAMPLER_SLOT0 uniform sampler2D s_texture;\n"
     "SAMPLER_SLOT1 uniform sampler2D s_vram;\n"
-    "UBO_QUALIFIER uniform NeBlock {\n"
-    "	mat4 clipFromModel;\n"
-    "	vec4 tint;\n"
-    "	vec4 params;\n"
-    "	vec4 params2;\n"
-    "	vec4 vramPage;\n"
-    "	vec4 vramClut;\n"
-    "	vec4 split;\n"
-    "};\n"
+    ENGINE_UNIFORM_BLOCK_GLSL
     // One VRAM word: the two bytes of the RG8 texel, low byte first. Wrapped on the VRAM.
     "int vramWord(ivec2 p) {\n"
     "	ivec2 w = ivec2(p.x & 1023, p.y & 511);\n"
@@ -1061,6 +1062,9 @@ global_variable const char *ctr_native_engine_shader =
     "	fragColor = colour;\n"
     "}\n"
     "#endif\n";
+
+// The water program "nw" (platform/engine_water.c draws with it): its own file.
+#include "engine_water_shader.inc"
 
 // The blit shaders by name, in one place.
 //
@@ -1118,6 +1122,10 @@ internal int CtrBlitShader_Get(int index, const char **outName, const char **out
 	case 6:
 		name = "ne";
 		body = ctr_native_engine_shader;
+		break;
+	case 7:
+		name = "nw";
+		body = ctr_native_water_shader;
 		break;
 	default:
 		return 0;

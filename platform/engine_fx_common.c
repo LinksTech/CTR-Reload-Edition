@@ -78,3 +78,15 @@ void Engine_FxReport(void)
 	             s_engFxDrawn[0], s_engFxDrawn[1], s_engFxDrawn[2], s_engFxDrawn[3], s_engFxDrawn[4], s_engFxDrawn[5], s_engFxRetail[0],
 	             s_engFxRetail[1], s_engFxRetail[2], s_engFxRetail[3], s_engFxRetail[4], s_engFxRetail[5]);
 }
+
+void Engine_FxCountersGet(u32 drawn[ENGINE_FX_KINDS], u32 retail[ENGINE_FX_KINDS])
+{
+	if (drawn != NULL)
+	{
+		memcpy(drawn, s_engFxDrawn, sizeof(s_engFxDrawn));
+	}
+	if (retail != NULL)
+	{
+		memcpy(retail, s_engFxRetail, sizeof(s_engFxRetail));
+	}
+}

@@ -42,7 +42,11 @@
 // TEXTURES. An IconGroup4 holds four layouts (far, middle, near, mosaic). The
 // finest REAL level is 3, or 2 when the first word of level 3 is a mosaic table
 // reference (negative, or a pointer into the level: DrawLevelOvr1P_TextureLodLevel
-// ~913). A pointer with bit 0 set is an AnimTex indirection (*(ptr - 1)) which
+// ~913). A mosaic face is offered to platform/engine_track_mosaic.c
+// (Engine_TrackMosaicFace, round of 2026-10-15): when it takes the face, the
+// shader picks the tile and the face is keyed with the table's tpage word
+// (bit 15 set, clut 0) and drawn as ENGINE_TEX_VRAM_TABLE; otherwise level 2
+// stays. A pointer with bit 0 set is an AnimTex indirection (*(ptr - 1)) which
 // is resolved ONCE at load: animated textures freeze (documented limit).
 //
 // KNOWN LIMITS (prototype): one detail level (the finest), no visibility
@@ -88,6 +92,11 @@ typedef struct
 	u8 doubleSided;
 	s8 bias;
 	int key; // set by the loader (EngTrack_KeysFind)
+	// For Engine_TrackMosaicFace: the slot (0..3) whose UV vertex v took before
+	// the mirror swap, bit 23 of the scratch word, and the mid face index k.
+	u8 slotOf[4];
+	u8 mirrored;
+	u8 mid;
 } EngTrackFace;
 
 typedef struct
@@ -272,6 +281,7 @@ internal int EngTrack_BuildBlock(const EngTrackBlockIn *in, const u32 *table, in
 		int corner[4] = {0, 0, 0, 0};
 		int grid[4] = {0, 0, 0, 0};
 		int uvSlot[4] = {0, 1, 2, 3};
+		int slotOf[4] = {0, 1, 2, 3};
 		int uvOk[4] = {1, 1, 1, 1};
 		int valid[2] = {0, 0};
 		int bad = 0;
@@ -341,6 +351,7 @@ internal int EngTrack_BuildBlock(const EngTrackBlockIn *in, const u32 *table, in
 					if (corner[j] == corner[3])
 					{
 						src = uvSlot[j];
+						slotOf[3] = j;
 						uvOk[3] = 1;
 						break;
 					}
@@ -388,6 +399,12 @@ internal int EngTrack_BuildBlock(const EngTrackBlockIn *in, const u32 *table, in
 		f->clut = lay->clut;
 		f->bias = (s8)((in->drawOrderHigh >> (8 * k)) & 0xffu);
 		f->key = -1;
+		for (v = 0; v < 4; v++)
+		{
+			f->slotOf[v] = (u8)slotOf[v];
+		}
+		f->mirrored = (u8)mirrored;
+		f->mid = (u8)k;
 		faces++;
 	}
 	return faces;
@@ -702,9 +719,31 @@ internal EngTrackModel *EngTrack_ModelEntry(const struct Model *model, int creat
 	}
 }
 
+// The mosaic form a leaf's flags give its blocks, in the order the render list
+// picks the slot (game/RenderLevel/RenderLists.c, RenderLists_Select1P2PSlot and
+// RenderLists_Select1P2PSlotByFlags): DYNAMIC_SUBDIV, 4X4 and no flag use the
+// 4x4 table, then 4X1, then 4X2.
+internal u8 EngTrack_MosaicFormOfLeaf(u16 flag)
+{
+	if ((flag & (BSP_RENDER_LEAF_FLAG_DYNAMIC_SUBDIV | BSP_RENDER_LEAF_FLAG_4X4)) != 0)
+	{
+		return ENGINE_MOSAIC_FORM_4X4;
+	}
+	if ((flag & BSP_RENDER_LEAF_FLAG_4X1) != 0)
+	{
+		return ENGINE_MOSAIC_FORM_4X1;
+	}
+	if ((flag & BSP_RENDER_LEAF_FLAG_4X2) != 0)
+	{
+		return ENGINE_MOSAIC_FORM_4X2;
+	}
+	return ENGINE_MOSAIC_FORM_4X4;
+}
+
 // Marks the quadblocks of water leaves and of any leaf (the PS1 walk draws only
-// blocks that sit in a leaf). Returns the number of leaves seen.
-internal int EngTrack_MarkLeaves(const struct mesh_info *mesh, u8 *water, u8 *inLeaf)
+// blocks that sit in a leaf), and the mosaic form of every block in a leaf.
+// Returns the number of leaves seen.
+internal int EngTrack_MarkLeaves(const struct mesh_info *mesh, u8 *water, u8 *inLeaf, u8 *form)
 {
 	int leaves = 0;
 	int n;
@@ -736,6 +775,7 @@ internal int EngTrack_MarkLeaves(const struct mesh_info *mesh, u8 *water, u8 *in
 		for (i = 0; i < node->data.leaf.numQuads; i++)
 		{
 			inLeaf[first + i] = 1;
+			form[first + i] = EngTrack_MosaicFormOfLeaf(node->flag);
 			if ((node->flag & BSP_LEAF_FLAG_WATER) != 0)
 			{
 				water[first + i] = 1;
@@ -810,6 +850,7 @@ void Engine_TrackLoad(void)
 	const struct mesh_info *mesh;
 	u8 *water = NULL;
 	u8 *inLeaf = NULL;
+	u8 *form = NULL;
 	EngTrackFace *faces = NULL;
 	int faceCount = 0;
 	int faceCap = 0;
@@ -857,13 +898,15 @@ void Engine_TrackLoad(void)
 	memset(hist, 0, sizeof(hist));
 	water = (u8 *)calloc((size_t)mesh->numQuadBlock, 1u);
 	inLeaf = (u8 *)calloc((size_t)mesh->numQuadBlock, 1u);
+	form = (u8 *)calloc((size_t)mesh->numQuadBlock, 1u);
 	builds = (EngTrackMeshBuild *)calloc(EGT_MESHES_MAX, sizeof(EngTrackMeshBuild));
-	if ((water == NULL) || (inLeaf == NULL) || (builds == NULL))
+	if ((water == NULL) || (inLeaf == NULL) || (form == NULL) || (builds == NULL))
 	{
 		Platform_Log("[CTR Engine] track: out of memory\n");
 		goto done;
 	}
-	leaves = EngTrack_MarkLeaves(mesh, water, inLeaf);
+	leaves = EngTrack_MarkLeaves(mesh, water, inLeaf, form);
+	Engine_TrackMosaicBegin((int)gGT->levelID);
 	blocks = mesh->numQuadBlock;
 
 	for (i = 0; i < mesh->numQuadBlock; i++)
@@ -871,6 +914,7 @@ void Engine_TrackLoad(void)
 		const struct QuadBlock *qb = &mesh->ptrQuadBlockArray[i];
 		EngTrackBlockIn in;
 		EngTrackFace built[4];
+		const struct TextureLayout *groups[4] = {NULL, NULL, NULL, NULL};
 		int anim[4] = {0, 0, 0, 0};
 		int mos[4] = {0, 0, 0, 0};
 		int n;
@@ -921,6 +965,7 @@ void Engine_TrackLoad(void)
 			const struct TextureLayout *group = EngTrack_ResolveGroup((u32)(size_t)qb->ptr_texture_mid[k], EngTrack_SpanOk, &anim[k]);
 
 			in.layout[k] = NULL;
+			groups[k] = group;
 			if (group != NULL)
 			{
 				const struct TextureLayout *lay = EngTrack_FinestLayout(group, EngTrack_IsLevelPtr, &mos[k]);
@@ -946,7 +991,14 @@ void Engine_TrackLoad(void)
 		for (k = 0; k < n; k++)
 		{
 			EngTrackFace *f = &built[k];
+			u16 keyTpage = 0;
 
+			// A mosaic face the table takes: keyed by the table's tpage word, clut 0.
+			if (mos[f->mid] && Engine_TrackMosaicFace(groups[f->mid], f->mirrored, form[i], f->slotOf, f->v, f->vertCount, &keyTpage))
+			{
+				f->tpage = keyTpage;
+				f->clut = 0;
+			}
 			f->key = EngTrack_KeysFind(&s_egtKeys, f->tpage, f->clut, f->doubleSided, f->bias);
 			if (f->key < 0)
 			{
@@ -972,6 +1024,9 @@ void Engine_TrackLoad(void)
 		}
 	}
 
+	// The mosaic data texture, after the last face.
+	Engine_TrackMosaicEnd();
+
 	// Materials: one per key, registered once (Engine_MaterialRegister does not dedupe).
 	matOfKey = (int *)malloc(((size_t)s_egtKeys.count + 1u) * sizeof(int));
 	if (matOfKey == NULL)
@@ -986,7 +1041,8 @@ void Engine_TrackLoad(void)
 		const int semi = EngTrack_IsSemi(key->tpage);
 
 		memset(&m, 0, sizeof(m));
-		m.texSource = ENGINE_TEX_VRAM;
+		// Bit 15 never sits in a real tpage (EngTrack_LayoutUsable): the key of a mosaic table.
+		m.texSource = ((key->tpage & 0x8000u) != 0u) ? ENGINE_TEX_VRAM_TABLE : ENGINE_TEX_VRAM;
 		m.tpage = key->tpage;
 		m.clut = key->clut;
 		m.tint[0] = m.tint[1] = m.tint[2] = m.tint[3] = 1.0f;
@@ -1089,6 +1145,7 @@ done:
 	free(matOfKey);
 	free(water);
 	free(inLeaf);
+	free(form);
 }
 
 // Once per frame from Engine_FrameCollect: one draw per track mesh in view 0.
@@ -1138,10 +1195,15 @@ void Engine_TrackCollect(struct GameTracker *gGT)
 	}
 }
 
+int Engine_TrackDrawnThisFrame(void)
+{
+	return s_egtSubmitted;
+}
+
 // 1 = the PS1 walk of DrawLevelOvr1P treats this bucket as empty this frame.
 // Buckets 0-7 and 10 are track faces (4x4, dynamic, 4x2, 4x1, full dynamic; rendered
-// and list variants); 8 and 9 are water and stay PS1. The counts are bucket
-// visits of the walk, not drawn buckets.
+// and list variants); 8 and 9 are water, answered by Engine_WaterOwnsBucket. The
+// counts are bucket visits of the walk, not drawn buckets.
 int Engine_TrackOwnsBucket(int bucketIndex)
 {
 	if (!g_cfg_engine || !g_cfg_engineTrack || !s_egtSubmitted || (bucketIndex < 0) || (bucketIndex >= EGT_BUCKET_COUNT))

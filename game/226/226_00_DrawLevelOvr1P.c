@@ -11237,8 +11237,10 @@ static int Ovr226_800a0e78_DispatchBucketHandler(u32 handlerAddress, void *bucke
 #ifdef CTR_NATIVE
 // From platform/engine_track.c (--engine --engine-track): 1 = the engine draws this level bucket
 // of the 1-player walk this frame (the track faces, buckets 0-7 and 10), so the PS1 walk treats it
-// as empty. Water (8, 9), sky, glow and the render lists stay PS1.
+// as empty. Water (8, 9): platform/engine_water.c answers the same way. Sky, glow and the render
+// lists stay here.
 int Engine_TrackOwnsBucket(int bucketIndex);
+int Engine_WaterOwnsBucket(int bucketIndex);
 extern int g_cfg_engine;
 #endif
 
@@ -11256,8 +11258,8 @@ static int Ovr226_800a0e10_DispatchBucketTable(struct DrawLevelOvr1PRenderList *
 		const struct DrawLevelOvr1PBucket *bucket = &sDrawLevelOvr1PBuckets[bucketIndex];
 		void *bucketValue = DrawLevelOvr1P_GetRenderListBucketValue(renderList, bucket);
 #if defined(CTR_NATIVE)
-		// The engine's track draws this bucket: take the retail empty-bucket path below.
-		if (g_cfg_engine && Engine_TrackOwnsBucket((int)bucketIndex))
+		// The engine's track or water draws this bucket: take the retail empty-bucket path below.
+		if (g_cfg_engine && (Engine_TrackOwnsBucket((int)bucketIndex) || Engine_WaterOwnsBucket((int)bucketIndex)))
 		{
 			bucketValue = NULL;
 		}

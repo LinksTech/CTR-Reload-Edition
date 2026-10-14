@@ -113,6 +113,10 @@
 #include "platform/engine_fx_tires.c"
 #include "platform/engine_menuscene.c"
 #include "platform/engine_track.c"
+#include "platform/engine_track_mosaic.c"
+#include "platform/engine_sky.c"
+#include "platform/engine_water.c"
+#include "platform/engine_tour.c"
 #include "platform/engine_selftest.c"
 
 #ifndef CC
@@ -389,6 +393,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--engine-track", "", "with --engine: the track drawn by the engine (prototype)"},
     {"--engine-testscene", "", "with --engine: a textured box 600 units in front of the camera of view 0, drawn every race frame through the whole engine path"},
     {"--engine-menuscene", "", "with --engine: the first custom driver of the roster drawn by the engine in the main menu, turning (phase-1 finish line Z5)"},
+    {"--engine-hide", "<sky,water>", "with --engine --engine-track: the engine owns the listed items (the PS1 path does not draw them) but draws nothing of them - the 'minus' run of the measurements; comma-separated, words sky and water"},
     {"--dev-race-mode", "<tt|adventure>", "with --level: the direct start as a retail Time Trial (tt) or as an Adventure race (adventure) instead of an arcade race"},
     {"--engine-selftest", "", "the native engine's modules without a window: maths, the camera against the PS1 projection, materials and blend equations, meshes and the scene lists, effect geometry, the VRAM decoder, then end (ctest engine_selftest)"},
     {"--mouse-selftest", "", "the menu mouse without a window: the window to menu mapping with letterbox and pillarbox, the widescreen shift of left, centre and right elements at 4:3, 16:9 and 43:18, the round trip, and the active/inactive rules, then end (ctest mouse_selftest)"},
@@ -581,6 +586,35 @@ static int NativeArgs_ValueFits(const char *arg, const char *value)
 
 // 0 = go on. Otherwise the exit code with which main ends at once; the message
 // is then already on stderr. Called before everything else, see above.
+// The value of --engine-hide: a comma list of the words sky and water, as
+// ENGINE_HIDE_* bits; -1 for an empty list or any other word.
+static int NativeArgs_EngineHideBits(const char *list)
+{
+	int bits = 0;
+	const char *at = list;
+
+	while ((at != NULL) && (*at != 0))
+	{
+		const char *end = strchr(at, ',');
+		const size_t length = (end != NULL) ? (size_t)(end - at) : strlen(at);
+
+		if ((length == 3) && (strncmp(at, "sky", 3) == 0))
+		{
+			bits |= ENGINE_HIDE_SKY;
+		}
+		else if ((length == 5) && (strncmp(at, "water", 5) == 0))
+		{
+			bits |= ENGINE_HIDE_WATER;
+		}
+		else
+		{
+			return -1;
+		}
+		at = (end != NULL) ? (end + 1) : NULL;
+	}
+	return (bits != 0) ? bits : -1;
+}
+
 static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 {
 	const NativeSwitch *known;
@@ -687,7 +721,7 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 				engineGiven = 1;
 			}
 			else if ((needsEngine == NULL) && ((strcmp(argv[argIndex], "--engine-track") == 0) || (strcmp(argv[argIndex], "--engine-testscene") == 0) ||
-			                                   (strcmp(argv[argIndex], "--engine-menuscene") == 0)))
+			                                   (strcmp(argv[argIndex], "--engine-menuscene") == 0) || (strcmp(argv[argIndex], "--engine-hide") == 0)))
 			{
 				needsEngine = argv[argIndex];
 			}
@@ -697,6 +731,19 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 		{
 			fflush(stdout);
 			fprintf(stderr, "switch %s requires --engine\n", needsEngine);
+			fflush(stderr);
+			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+	}
+
+	// --engine-hide knows the words sky and water; anything else is refused
+	// here, before any window.
+	for (int argIndex = 1; (argIndex + 1) < argc; argIndex++)
+	{
+		if ((strcmp(argv[argIndex], "--engine-hide") == 0) && (NativeArgs_EngineHideBits(argv[argIndex + 1]) < 0))
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch --engine-hide expects sky and/or water, comma-separated, not '%s'\n", argv[argIndex + 1]);
 			fflush(stderr);
 			return NATIVE_EXIT_DEV_REQUIRED;
 		}
@@ -816,6 +863,13 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 		else if (strcmp(argv[argIndex], "--engine-menuscene") == 0)
 		{
 			g_cfg_engineMenuScene = 1;
+		}
+		else if ((strcmp(argv[argIndex], "--engine-hide") == 0) && ((argIndex + 1) < argc))
+		{
+			// The value was checked before any window (bits ENGINE_HIDE_*).
+			const int bits = NativeArgs_EngineHideBits(argv[++argIndex]);
+
+			g_cfg_engineHide = (bits > 0) ? bits : 0;
 		}
 		else if ((strcmp(argv[argIndex], "--native-probe") == 0) && ((argIndex + 1) < argc))
 		{

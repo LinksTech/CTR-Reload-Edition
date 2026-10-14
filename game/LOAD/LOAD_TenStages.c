@@ -22,6 +22,8 @@ extern int g_cfg_engineMenuScene;
 void Engine_DriverCmdlLoad(void);
 void Engine_MenuSceneLoad(void);
 void Engine_TrackLoad(void);
+void Engine_SkyLoad(void);
+void Engine_WaterLoad(void);
 #endif
 
 // From platform/native_renderer.c, further down as well: the texture of the
@@ -1007,6 +1009,8 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 			if (g_cfg_engineTrack)
 			{
 				Engine_TrackLoad();
+				Engine_SkyLoad();
+				Engine_WaterLoad();
 			}
 			Engine_RenderUploadMeshes();
 		}

@@ -79,6 +79,8 @@ typedef struct
 	// The water line (EngineDraw.split / splitKeep); splitKeep 0 = no split.
 	float split[4];
 	s8 splitKeep;
+	float user[4]; // EngineDraw.user, the program's per-draw data (params4)
+	float time;    // Engine_FrameTime of the bank at submit (params3.y)
 } EngineRenderDraw;
 
 // The counters of Engine_RenderReport.
@@ -423,6 +425,8 @@ int Engine_RenderSubmitLinked(int view, const EngineDraw *draw, u32 *ot, int cel
 	// EngineDraw is zeroed by its callers: split all 0 and splitKeep 0 mean no split.
 	memcpy(rec->split, draw->split, sizeof(rec->split));
 	rec->splitKeep = draw->splitKeep;
+	memcpy(rec->user, draw->user, sizeof(rec->user));
+	rec->time = Engine_FrameTime(bank);
 	rec->dynFirst = 0;
 	rec->dynCount = 0;
 	if (dynamic)
@@ -454,6 +458,9 @@ int Engine_RenderSubmitLinked(int view, const EngineDraw *draw, u32 *ot, int cel
 	s_engCount.submittedPerView[view & (ENGINE_VIEWS - 1)]++;
 	return 1;
 }
+
+// Once-only diagnostics (defined below): the first refusal of each kind.
+internal void Engine_RenderFirstRefusal(int kind, const char *reason);
 
 // The orientation of a draw as the native layer takes it (NativeRenderLayer
 // item->cull from the determinant of the model-to-view rotation): the sign of
@@ -494,9 +501,12 @@ internal BlendMode Engine_RenderBlendMode(u8 blend)
 // `indexed`, else vertices of the bound dynamic buffer from `vertexOffset`.
 // Returns 1 if something was drawn. *outTexture is set when slot 0 changed,
 // *outVram when the VRAM unit changed (both restored by the caller).
+// *boundProgram is the program bound now (the caller binds "ne" first; a range
+// of another program binds its own, and the next range rebinds as needed).
 internal int Engine_RenderDrawRange(const EngineMaterial *material, const EngineRenderDraw *draw, const float *clipFromModel, NativeGfxCull cull, int indexed,
-                                    u32 first, u32 count, int vertexOffset, int *outTexture, int *outVram)
+                                    u32 first, u32 count, int vertexOffset, int *outTexture, int *outVram, u32 *boundProgram)
 {
+	const u32 program = Engine_ProgramOf((int)material->program);
 	EngineUniforms u;
 	NativeGfxDrawState state;
 	const int vram = (material->texSource == ENGINE_TEX_VRAM);
@@ -510,6 +520,17 @@ internal int Engine_RenderDrawRange(const EngineMaterial *material, const Engine
 	if (count == 0u)
 	{
 		return 0;
+	}
+	if (program == 0xffffffffu)
+	{
+		s_engCount.refusedNoProgram++;
+		Engine_RenderFirstRefusal(8, "no program for the material");
+		return 0;
+	}
+	if (program != *boundProgram)
+	{
+		NativeGfx_BindProgram((ShaderID)program);
+		*boundProgram = program;
 	}
 
 	memset(&u, 0, sizeof(u));
@@ -528,6 +549,11 @@ internal int Engine_RenderDrawRange(const EngineMaterial *material, const Engine
 	// The material's depth offset (track decals): the vertex stage multiplies clip z by 1 + this. 0 for every material made without one.
 	u.params2[2] = material->depthBias;
 	memcpy(u.split, draw->split, sizeof(u.split));
+	u.params3[0] = (float)material->program;
+	u.params3[1] = draw->time;
+	u.params3[2] = material->programParam[0];
+	u.params3[3] = material->programParam[1];
+	memcpy(u.params4, draw->user, sizeof(u.params4));
 	if (vram)
 	{
 		const EngineTpage tpage = Engine_DecodeTpage(material->tpage);
@@ -568,7 +594,7 @@ internal int Engine_RenderDrawRange(const EngineMaterial *material, const Engine
 		{
 			NativeGfx_SetBlendMode(blend);
 		}
-		NativeGfx_UpdateUniforms((ShaderID)Engine_Program(), &u);
+		NativeGfx_UpdateUniforms((ShaderID)program, &u);
 		if (indexed)
 		{
 			NativeGfx_DrawIndexed((int)first, (int)count, vertexOffset);
@@ -612,6 +638,7 @@ int Engine_DrawMarker(u32 item, const void *clipArg, const void *dispenvArg, int
 	int textureBound = 0;
 	int vramBound = 0;
 	int drawn = 0;
+	u32 boundProgram;
 	u32 vb = 0xffffffffu;
 	u32 ib = 0xffffffffu;
 
@@ -717,6 +744,7 @@ int Engine_DrawMarker(u32 item, const void *clipArg, const void *dispenvArg, int
 
 	NativeGfx_SetBlendMode(BM_NONE);
 	NativeGfx_BindProgram((ShaderID)Engine_Program());
+	boundProgram = Engine_Program();
 
 	if (draw->dynCount > 0u)
 	{
@@ -734,7 +762,8 @@ int Engine_DrawMarker(u32 item, const void *clipArg, const void *dispenvArg, int
 			                             &s_engDynCpu[bank][draw->dynFirst]);
 			NativeGfx_BindVertexBuffer(s_engDynBuffer);
 			// The slice just written starts at firstVertex of the buffer.
-			drawn += Engine_RenderDrawRange(material, draw, clipFromModel.m, cull, 0, 0, draw->dynCount, (int)firstVertex, &textureBound, &vramBound);
+			drawn += Engine_RenderDrawRange(material, draw, clipFromModel.m, cull, 0, 0, draw->dynCount, (int)firstVertex, &textureBound, &vramBound,
+			                                &boundProgram);
 		}
 	}
 	else
@@ -760,7 +789,7 @@ int Engine_DrawMarker(u32 item, const void *clipArg, const void *dispenvArg, int
 				continue;
 			}
 			drawn += Engine_RenderDrawRange(material, draw, clipFromModel.m, cull, 1, range->firstIndex, range->indexCount,
-			                                (int)(draw->frame * mesh->verticesPerFrame), &textureBound, &vramBound);
+			                                (int)(draw->frame * mesh->verticesPerFrame), &textureBound, &vramBound, &boundProgram);
 		}
 	}
 
@@ -801,6 +830,26 @@ int Engine_DrawMarker(u32 item, const void *clipArg, const void *dispenvArg, int
 		s_engCount.drawn++;
 	}
 	return (drawn > 0) ? 1 : 0;
+}
+
+void Engine_RenderCountersGet(EngineRenderCounters *out)
+{
+	if (out == NULL)
+	{
+		return;
+	}
+	out->drawn = s_engCount.drawn;
+	out->markers = s_engCount.markersSeen;
+	out->ranges = s_engCount.rangesDrawn;
+	out->submitted = s_engCount.submitted;
+	out->refusedNotReady = s_engCount.submitRefusedNotReady;
+	out->refusedScene = s_engCount.submitRefusedScene;
+	out->refusedCell = s_engCount.submitRefusedCell;
+	out->refusedArena = s_engCount.submitRefusedArena;
+	out->refusedDyn = s_engCount.submitRefusedDyn;
+	out->refusedAtDraw = s_engCount.refusedBadItem + s_engCount.refusedNoProgram + s_engCount.refusedClip + s_engCount.refusedOffscreenOrNoDepth +
+	                     s_engCount.refusedBadMesh + s_engCount.refusedBadMaterial + s_engCount.refusedBadRange;
+	out->uploadFailed = s_engCount.uploadFailed;
 }
 
 void Engine_RenderReport(void)

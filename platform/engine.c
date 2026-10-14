@@ -7,3 +7,4 @@ int g_cfg_engine = 0;
 int g_cfg_engineTrack = 0;
 int g_cfg_engineTestScene = 0;
 int g_cfg_engineMenuScene = 0;
+int g_cfg_engineHide = 0; // ENGINE_HIDE_* bits of --engine-hide

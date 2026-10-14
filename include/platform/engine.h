@@ -22,6 +22,13 @@
 extern int g_cfg_engine;      // --engine
 extern int g_cfg_engineTrack; // --engine-track (needs --engine)
 extern int g_cfg_engineMenuScene; // --engine-menuscene (needs --engine)
+// --engine-hide <sky,water> (needs --engine; round of 2026-10-15): the engine
+// still owns the item (the PS1 path does not draw it) but draws nothing of it.
+// The "minus" run of the measurements: the pixels the item covers show what is
+// behind it. The collectors of the sky and the water read the bits.
+extern int g_cfg_engineHide;
+#define ENGINE_HIDE_SKY 0x1
+#define ENGINE_HIDE_WATER 0x2
 
 // THE PRINCIPLE (2026-10-13): CTR Reload is a PC version, not a 1:1 port. The
 // engine shows the game state the way we want it; it does NOT rebuild the PS1
@@ -108,6 +115,7 @@ typedef enum
 	ENGINE_TEX_NONE = 0,
 	ENGINE_TEX_NATIVE, // a texture of the native texture manager (RGBA8)
 	ENGINE_TEX_VRAM,   // a texture page of the PS1 VRAM with its CLUT
+	ENGINE_TEX_VRAM_TABLE, // VRAM through the track mosaic table (texture slot 3, platform/engine_track_mosaic.c)
 } EngineTexSource;
 
 #define ENGINE_MATERIAL_DOUBLE_SIDED 0x0001u
@@ -132,7 +140,16 @@ typedef struct
 	// none (every material made before this round). The renderer hands it to
 	// "ne" as params2.z.
 	float depthBias;
+	// The program that draws the material (ENGINE_PROGRAM_*, round of 2026-10-15);
+	// 0 = "ne", so every material made with memset stays "ne". programParam goes
+	// to the program as params3.z/w (its meaning is the program's).
+	u8 program;
+	float programParam[2];
 } EngineMaterial;
+
+#define ENGINE_PROGRAM_NE 0 // "ne", the engine program (platform/native_shaders.inc ctr_native_engine_shader)
+#define ENGINE_PROGRAM_NW 1 // "nw", the water program (platform/engine_water_shader.inc)
+#define ENGINE_PROGRAM_COUNT 2
 
 // Decoded tpage word: x base (multiple of 64), y base (0 or 256), colour depth
 // 0 = 4 bit, 1 = 8 bit, 2 = 15 bit, semi-transparency mode 0..3.
@@ -258,6 +275,9 @@ typedef struct
 	// the plane), -1 keeps d < 0 (above), 0 keeps everything (every other draw).
 	float split[4];
 	s8 splitKeep;
+	// Per-draw data of the material's program (EngineUniforms.params4; "nw": the
+	// eye position in model units, w 0). 0 for every submitter that zeroes the draw.
+	float user[4];
 } EngineDraw;
 
 // clipFromModel ends in PSX screen pixels RELATIVE TO THE VIEW (the offset
@@ -337,8 +357,9 @@ void Engine_VramTexel(const u16 *vram, int pageX, int pageY, int depth, int clut
 //
 // The engine's own program "ne" (GLSL in engine_programs.c, compiled like the
 // other programs through NativeRenderer_Shader_CompileWithUniforms). It reads
-// struct EngineVertex. Per draw range one EngineUniforms block (std140, 160
-// bytes, field for field the GLSL block "NeBlock"):
+// struct EngineVertex. Per draw range one EngineUniforms block (std140, 192
+// bytes, field for field the GLSL block "NeBlock", one text for every engine
+// program: ENGINE_UNIFORM_BLOCK_GLSL in platform/native_shaders.inc):
 //   clipFromModel  finished clip matrix (PSX ortho * screen-from-model)
 //   tint           RGBA multiplier (material tint * draw tint)
 //   params         x texSource (0 none, 1 native, 2 VRAM), y sRGB (1: re-encode
@@ -347,9 +368,16 @@ void Engine_VramTexel(const u16 *vram, int pageX, int pageY, int depth, int clut
 //                  the STP bit, 2 only texels WITH it - the PS1 rule that only
 //                  STP texels of a semi-transparent face blend)
 //   params2        x modulate (1.0 native data; 2.0 retail data: texel x colour
-//                  x 2, the PSX bright factor), y..w 0
+//                  x 2, the PSX bright factor), y splitKeep, z depthBias of the
+//                  material, w table flags (track mosaic, P1: 1 = LOD fallback
+//                  to level 2)
 //   vramPage       x page x (VRAM words), y page y, z depth 0/1/2, w 0
 //   vramClut       x clut x, y clut y, z..w 0
+//   split          the water-line plane in model units (EngineDraw.split)
+//   params3        x program (EngineMaterial.program), y frame time in seconds
+//                  (gGT->timer / 30 of the bank's frame, Engine_FrameTime), z, w
+//                  EngineMaterial.programParam[0..1]
+//   params4        EngineDraw.user[0..3], per-draw program data
 // VRAM sampling: the PSX VRAM texture (NativeRenderer_GetVRAMTexture, RG8
 // 1024x512) through the same CLUT lookup as the PSX program; texel 0x0000 is
 // transparent (discarded); the texel's 5:5:5 colour expanded as the PSX
@@ -365,12 +393,16 @@ typedef struct
 	float vramPage[4];
 	float vramClut[4];
 	float split[4];   // the water-line plane in model units (EngineDraw.split)
-} EngineUniforms; // 160 bytes
+	float params3[4]; // x program, y frame time s, z/w material programParam
+	float params4[4]; // EngineDraw.user
+} EngineUniforms; // 192 bytes
 
-// Creates "ne" once (only with g_cfg_engine). 1 = ready.
+// Creates the engine programs ("ne", "nw") once (only with g_cfg_engine). 1 = "ne" ready.
 int Engine_ProgramsInit(void);
-// The program handle (ShaderID as u32), 0xffffffff when not made.
+// The handle of "ne" (ShaderID as u32), 0xffffffff when not made.
 u32 Engine_Program(void);
+// The handle of an ENGINE_PROGRAM_* program, 0xffffffff when not made or unknown.
+u32 Engine_ProgramOf(int program);
 
 // --------------------------------------------------------------------------
 // RENDER (platform/engine_render.c)
@@ -413,6 +445,15 @@ int Engine_RenderSubmitLinked(int view, const EngineDraw *draw, u32 *ot, int cel
 int Engine_DrawMarker(u32 item, const void *clip, const void *dispenv, int onScreen, int ofsX, int ofsY);
 // Counters for the end-of-run log line "[CTR Engine] at exit: ...".
 void Engine_RenderReport(void);
+// The same counters, read only (the track tour prints them per track as deltas).
+typedef struct
+{
+	u32 drawn, markers, ranges, submitted;
+	u32 refusedNotReady, refusedScene, refusedCell, refusedArena, refusedDyn;
+	u32 refusedAtDraw; // item + program + clip + offscreen + mesh + material + range
+	u32 uploadFailed;
+} EngineRenderCounters;
+void Engine_RenderCountersGet(EngineRenderCounters *out);
 
 // --------------------------------------------------------------------------
 // FRAME HOOKS (platform/engine_frame.c, called from game/platform code)
@@ -422,6 +463,10 @@ struct GameTracker;
 void Engine_FrameCollect(struct GameTracker *gGT);
 // The camera of a view this frame (valid only between collect and draw).
 const EngineCamera *Engine_FrameCamera(int view);
+// The game time of the frame last collected into a scene bank, in seconds
+// (gGT->timer / 30: deterministic, stands still in a pause). 0 for a bank never
+// collected. The renderer hands it to every program as params3.y.
+float Engine_FrameTime(int bank);
 
 // --------------------------------------------------------------------------
 // TEST SCENE (platform/engine_testscene.c; --engine-testscene with --engine)
@@ -495,6 +540,8 @@ int Engine_FxOwnsDriver(const struct Driver *d);
 void Engine_FxNoteDrawn(EngineFxKind kind);
 void Engine_FxNoteRetail(EngineFxKind kind);
 void Engine_FxReport(void); // "[CTR Engine] effects: ..." at exit
+// The counters of Engine_FxNoteDrawn / Engine_FxNoteRetail, read only.
+void Engine_FxCountersGet(u32 drawn[ENGINE_FX_KINDS], u32 retail[ENGINE_FX_KINDS]);
 // Ground effects (shadow, skid marks) lie on the track surface. Once the track
 // is an engine draw that writes depth (--engine-track), a coplanar effect fails
 // the depth test and disappears; their materials therefore pull them nearer by
@@ -615,6 +662,82 @@ void Engine_TrackCollect(struct GameTracker *gGT); // from Engine_FrameCollect
 int Engine_TrackOwnsBucket(int bucketIndex);
 // From RenderBucket_DispatchDrawFunc: 1 = the engine drew this level instance.
 int Engine_TrackInstanceRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb);
+// 1 = every track mesh was submitted this frame (the water draws only then).
+int Engine_TrackDrawnThisFrame(void);
+
+// --------------------------------------------------------------------------
+// TRACK MOSAIC (platform/engine_track_mosaic.c; round of 2026-10-15)
+//
+// A mosaic mid face (level 3 of its IconGroup4 is a mosaic table reference)
+// keeps its two triangles; the "ne" program picks the tile per fragment from a
+// data texture (one row per table, mirror and form; texture slot 3) and samples
+// the VRAM with the tile's own tpage and clut. No PS1 subdivision. Every
+// function is a no-op returning 0 without g_cfg_engine && g_cfg_engineTrack.
+#define ENGINE_MOSAIC_FORM_4X4 0 // leaf flag 4X4, DYNAMIC_SUBDIV or none (table 16 + 16)
+#define ENGINE_MOSAIC_FORM_4X2 1 // leaf flag 4X2 (8 + 8)
+#define ENGINE_MOSAIC_FORM_4X1 2 // leaf flag 4X1 (4 + 4)
+struct TextureLayout;
+void Engine_TrackMosaicBegin(int levelId); // Engine_TrackLoad start: empties the row set
+// One built mid face. group = its resolved IconGroup4 (level 3 holds the mosaic word),
+// mirrored = bit 23 of the face's scratch-table word, form = ENGINE_MOSAIC_FORM_* of its leaf,
+// slotOf[v] = slot (0..3) whose UV vertex v took before the mirror swap (triangle mode: the
+// earlier slot on the same corner). 1 = the face is a mosaic face: v[0..vertCount-1].texcoord
+// rewritten and *keyTpage = 0x8000 | (abr of the row's tiles << 5): the caller keys the face with
+// tpage *keyTpage and clut 0. 0 = unchanged (level 2 stays; reason counted).
+int Engine_TrackMosaicFace(const struct TextureLayout *group, int mirrored, int form, const u8 *slotOf, EngineVertex *v, int vertCount, u16 *keyTpage);
+int Engine_TrackMosaicEnd(void);     // builds the data texture, logs the counters; 1 = ready
+void Engine_TrackMosaicUnload(void); // level unload (deferred destroy)
+u32 Engine_TrackMosaicTexture(void); // TextureID for slot 3, 0xffffffff when none
+int Engine_SelfTestTrackMosaic(int *checks);
+
+// --------------------------------------------------------------------------
+// SKY (platform/engine_sky.c; --engine-track, round of 2026-10-15)
+//
+// The level's sky dome (struct Skybox, all 8 segments) as one static engine
+// mesh with vertex colours, drawn every race frame in view 0 with the camera's
+// rotation only (sky at infinity), no depth test, no depth write, linked into
+// OT cell 0x3ff; the level's stars as engine billboards in the same cell; the
+// back colour and glow as an engine backdrop. The PS1 DrawSky_Full and
+// RenderStars skip their primitives when the engine drew them.
+void Engine_SkyLoad(void);                       // load stage 8, next to Engine_TrackLoad, before Engine_RenderUploadMeshes
+void Engine_SkyCollect(struct GameTracker *gGT); // from Engine_FrameCollect
+int Engine_SkyOwnsView(const struct PushBuffer *pb);  // DrawSky_Full: 1 = the engine drew this view's dome this frame
+int Engine_SkyOwnsStars(const struct PushBuffer *pb); // RenderStars: 1 = the engine draws this view's stars this frame
+int Engine_SelfTestSky(int *checks);
+
+// --------------------------------------------------------------------------
+// WATER (platform/engine_water.c; --engine-track, round of 2026-10-15)
+//
+// The water blocks of the level as one engine mesh drawn by the program "nw";
+// the PS1 water buckets 8, 9 are skipped while it is drawn. AnimateWater (game
+// state, COLL reads color_hi) runs unchanged.
+void Engine_WaterLoad(void);                       // load stage 8, after Engine_TrackLoad, before Engine_RenderUploadMeshes
+void Engine_WaterCollect(struct GameTracker *gGT); // from Engine_FrameCollect, after Engine_TrackCollect
+int Engine_WaterOwnsBucket(int bucketIndex);       // 1 = DrawLevelOvr1P skips this bucket (8 or 9) this frame
+typedef struct
+{
+	int blocks;         // water blocks of the level
+	int onScreen;       // blocks with a visible part in the view
+	float share;        // estimated screen share 0..1 (clipped quads, overlaps counted twice, capped)
+	float box[4];       // x0, y0, x1, y1 as fractions of the view rect
+	float nearestDepth; // view depth of the nearest visible water corner
+} EngineWaterProbe;
+// Pure read of gGT->level1 and gGT->pushBuffer[view] (dev tour only). 1 = valid.
+int Engine_WaterProbe(const struct GameTracker *gGT, int view, EngineWaterProbe *out);
+void Engine_WaterProbeLog(const struct GameTracker *gGT, int view, int vblank, const char *tag); // the probe log line
+int Engine_SelfTestWater(int *checks);
+
+// --------------------------------------------------------------------------
+// TRACK TOUR (--level-tour, game/DebugMenu.c; platform/engine_tour.c, round of 2026-10-15)
+//
+// The tour calls Engine_TourNotify at the first race frame of an entry (phase 0) and after
+// its last (phase 1). A package that logs per-track lines registers one function at its
+// first load under --engine; without --engine nothing is registered and nothing is logged.
+#define ENGINE_TOUR_REPORTS_MAX 16
+typedef void (*EngineTourReportFn)(int entry, int levelID, int phase);
+int Engine_TourRegister(EngineTourReportFn fn); // 1 = registered (duplicates ignored), 0 = table full
+void Engine_TourNotify(int entry, int levelID, int phase);
+int Engine_SelfTestTour(int *checks); // engine_tour.c: registry, burst schedule, progress fold, fingerprint
 
 // --------------------------------------------------------------------------
 // SELFTEST (platform/engine_selftest.c; main.c --engine-selftest, ctest
@@ -630,6 +753,7 @@ int Engine_SelfTestVram(int *checks);
 int Engine_SelfTestInstance(int *checks); // engine_instance.c: world matrix, water plane, mirror
 int Engine_SelfTestExhaust(int *checks);  // engine_fx_exhaust.c: the sprite from particle state
 int Engine_SelfTestTrack(int *checks);    // engine_track.c: quadblock to triangles
+// (Engine_SelfTestTrackMosaic, Engine_SelfTestSky, Engine_SelfTestWater and Engine_SelfTestTour are above.)
 // All of them; prints "engine selftest passed: N checks, 0 failures" or
 // "engine selftest FAILED: N checks, F failures"; returns 0 / 1.
 int Engine_SelfTest(void);
