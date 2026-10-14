@@ -279,8 +279,9 @@ int EngineTour_ShotName(char *out, size_t size, const char *shotName, int entry,
 // falls while the kart drives forward and jumps up by about one track length at
 // the line. A frame step is folded into (-L/2, L/2]: crossing the line forward
 // counts as the small forward step it is. Progress is the sum of the steps; a
-// stall is a run of samples without a new maximum of that sum. One tour at a
-// time, so the state is the file's own.
+// stall is a run of samples without a new maximum of that sum, counted from the
+// first forward step on (the wait on the grid until the start is not a stall).
+// One tour at a time, so the state is the file's own.
 
 global_variable struct
 {
@@ -332,6 +333,10 @@ void EngineTour_DriveSample(u32 distanceToFinish)
 		s_engTourDrive.best = s_engTourDrive.sum;
 		s_engTourDrive.stall = 0;
 		return;
+	}
+	if (s_engTourDrive.best <= 0)
+	{
+		return; // not moved yet: still on the grid
 	}
 	s_engTourDrive.stall++;
 	if (s_engTourDrive.stall > s_engTourDrive.longestStall)
@@ -495,6 +500,11 @@ int Engine_SelfTestTour(int *checks)
 	// (5) progress: forward, over the line, backwards, stall
 	EngineTour_DriveBegin(1000u);
 	EngineTour_DriveSample(600u);
+	EngineTour_DriveSample(600u); // standing on the grid: no stall yet
+	EngineTour_DriveSample(610u); // rolled back on the grid: no stall either
+	EngineTour_DriveSample(600u);
+	EGTOUR_CHECK((EngineTour_DriveLongestStall() == 0) && (EngineTour_DriveMilliLaps() == 0), "progress: the grid wait counted as a stall (%d)",
+	             EngineTour_DriveLongestStall());
 	EngineTour_DriveSample(500u);
 	EngineTour_DriveSample(100u);
 	EGTOUR_CHECK((EngineTour_DriveMilliLaps() == 500) && (EngineTour_DriveLongestStall() == 0), "progress forward: %d milli-laps", EngineTour_DriveMilliLaps());
@@ -507,7 +517,7 @@ int Engine_SelfTestTour(int *checks)
 	             EngineTour_DriveMilliLaps(), EngineTour_DriveLongestStall());
 	EngineTour_DriveSample(900u); // new best: the stall ends
 	EngineTour_DriveSample(899u);
-	EGTOUR_CHECK((EngineTour_DriveLongestStall() == 3) && (EngineTour_DriveSamples() == 9), "stall reset or samples wrong (%d, %d)", EngineTour_DriveLongestStall(),
+	EGTOUR_CHECK((EngineTour_DriveLongestStall() == 3) && (EngineTour_DriveSamples() == 12), "stall reset or samples wrong (%d, %d)", EngineTour_DriveLongestStall(),
 	             EngineTour_DriveSamples());
 	EngineTour_DriveSample(10u); // a step of more than half a lap: 111 backwards over the line (899 -> 1000 -> 0 -> 10)
 	EGTOUR_CHECK(EngineTour_DriveMilliLaps() == 590, "progress backwards over the line: %d milli-laps (expected 590)", EngineTour_DriveMilliLaps());

@@ -739,7 +739,7 @@ enum
 	EGT_DECLINE_COUNT
 };
 global_variable u64 s_egtInstDeclinedBy[EGT_DECLINE_COUNT];
-// Race frames of the loaded level that Engine_TrackCollect saw (drawn or not).
+// Race frames of the loaded level in which the game draws the level (the engine drew it or not).
 global_variable u64 s_egtCollectFrames;
 
 // What the last Engine_TrackLoad built, for the tour's per-track line.
@@ -893,13 +893,18 @@ internal int EngTrack_MeshesLive(void)
 	return 1;
 }
 
+// The engine draws the track only in frames the game draws the level: the PS1
+// path walks the level under RENDER_FLAG_DRAW_LEVEL (game/MAIN/MainFrame_RenderFrame.c:173,
+// the same rule the sky follows, engine_sky.c EngSky_Eligible); the water follows
+// the track (Engine_TrackDrawnThisFrame).
 internal int EngTrack_Active(const struct GameTracker *gGT)
 {
 	if (!g_cfg_engine || !g_cfg_engineTrack || (gGT == NULL) || (gGT->numPlyrCurrGame != 1))
 	{
 		return 0;
 	}
-	if (((gGT->gameMode1 & MAIN_MENU) != 0) || (gGT->level1 == NULL) || (gGT->level1 != s_egtLevel))
+	if (((gGT->gameMode1 & MAIN_MENU) != 0) || ((gGT->renderFlags & RENDER_FLAG_DRAW_LEVEL) == 0) || (gGT->level1 == NULL) ||
+	    (gGT->level1 != s_egtLevel))
 	{
 		return 0;
 	}
@@ -1553,7 +1558,8 @@ void Engine_TrackCollect(struct GameTracker *gGT)
 	int submitted = 0;
 
 	s_egtSubmitted = 0;
-	if (g_cfg_engine && g_cfg_engineTrack && (gGT != NULL) && ((gGT->gameMode1 & MAIN_MENU) == 0) && (gGT->level1 != NULL) && (gGT->level1 == s_egtLevel))
+	if (g_cfg_engine && g_cfg_engineTrack && (gGT != NULL) && ((gGT->gameMode1 & MAIN_MENU) == 0) && ((gGT->renderFlags & RENDER_FLAG_DRAW_LEVEL) != 0) &&
+	    (gGT->level1 != NULL) && (gGT->level1 == s_egtLevel))
 	{
 		s_egtCollectFrames++;
 	}
