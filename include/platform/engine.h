@@ -290,7 +290,7 @@ typedef struct
 
 #define ENGINE_VIEWS 4
 #define ENGINE_DRAWS_PER_VIEW 512
-#define ENGINE_DYN_VERTICES_PER_FRAME 65536
+#define ENGINE_DYN_VERTICES_PER_FRAME 131072
 #define ENGINE_SCENE_BANKS 2
 
 // The scene has one bank per double buffer of the game (gGT->swapchainIndex):
