@@ -109,7 +109,7 @@ int Engine_MaterialRegister(const EngineMaterial *m)
 	{
 		return -1;
 	}
-	if ((m->blend >= ENGINE_BLEND_COUNT) || (m->texSource > ENGINE_TEX_VRAM))
+	if ((m->blend >= ENGINE_BLEND_COUNT) || (m->texSource > ENGINE_TEX_VRAM_TABLE))
 	{
 		return -1;
 	}
@@ -319,10 +319,12 @@ int Engine_SelfTestMaterial(int *checks)
 		m.blend = ENGINE_BLEND_COUNT;
 		MAT_CHECK(Engine_MaterialRegister(&m) == -1, "blend out of range");
 		m.blend = ENGINE_BLEND_OPAQUE;
-		m.texSource = ENGINE_TEX_VRAM + 1;
+		m.texSource = ENGINE_TEX_VRAM_TABLE + 1;
 		MAT_CHECK(Engine_MaterialRegister(&m) == -1, "texSource out of range");
+		m.texSource = ENGINE_TEX_VRAM_TABLE;
+		MAT_CHECK(Engine_MaterialRegister(&m) == 1, "the mosaic table source (the last one) is a texSource");
 		m.texSource = ENGINE_TEX_NATIVE;
-		for (n = 1; n < ENGINE_MATERIALS_MAX; n++)
+		for (n = 2; n < ENGINE_MATERIALS_MAX; n++)
 		{
 			if (Engine_MaterialRegister(&m) != n)
 			{
