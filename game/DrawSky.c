@@ -50,6 +50,13 @@ CTR_STATIC_ASSERT(sizeof(struct DrawSkyScratch) == 0x8);
 CTR_STATIC_ASSERT(offsetof(struct DrawSkyScratch, baseFaceOffset) == 0x0);
 CTR_STATIC_ASSERT(offsetof(struct DrawSkyScratch, baseCountOffset) == 0x4);
 
+#ifdef CTR_NATIVE
+// From platform/engine_sky.c (--engine --engine-track): 1 = the engine drew the sky of this view
+// this frame, so DrawSky_Full writes no face.
+int Engine_SkyOwnsView(const struct PushBuffer *pb);
+extern int g_cfg_engine;
+#endif
+
 static u32 DrawSky_ReadWord(const void *base, int offset)
 {
 	return *(const u32 *)(const void *)((const char *)base + offset);
@@ -280,6 +287,17 @@ void DrawSky_Full(void *skybox, struct PushBuffer *pb, struct PrimMem *primMem)
 
 		scratch->baseFaceOffset = baseFaceOffset;
 		scratch->baseCountOffset = baseCountOffset;
+
+#if defined(CTR_NATIVE)
+		// --engine --engine-track: the engine drew this view's sky (platform/engine_sky.c).
+		// The GTE matrix and the two scratch words above are set as always; only the
+		// faces are not written. Without --engine one compare.
+		if (g_cfg_engine && Engine_SkyOwnsView(pb))
+		{
+			primMem->cursor = prim;
+			return;
+		}
+#endif
 
 		ctx.verts = sky->ptrVertex;
 		ctx.ot = &pb->ptrOT[0x3ff];

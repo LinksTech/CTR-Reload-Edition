@@ -5,6 +5,13 @@ CTR_STATIC_ASSERT(offsetof(TILE_1, tag) == 0x00);
 CTR_STATIC_ASSERT(offsetof(TILE_1, r0) == 0x04);
 CTR_STATIC_ASSERT(offsetof(TILE_1, x0) == 0x08);
 
+#ifdef CTR_NATIVE
+// From platform/engine_sky.c (--engine --engine-track): 1 = the engine draws the stars of this
+// view this frame, so the loop below writes no tile. The GTE setup and the draw-mode packet stay.
+int Engine_SkyOwnsStars(const struct PushBuffer *pb);
+extern int g_cfg_engine;
+#endif
+
 static s32 RenderStars_MulLowShift(s32 value, s32 scale)
 {
 	return (s32)(u32)((s64)value * (s64)scale) >> 12;
@@ -96,6 +103,14 @@ void RenderStars(struct PushBuffer *pb, struct PrimMem *primMem, struct Stars *s
 		ot = &pb->ptrOT[(u16)stars->distance];
 		state0 = 0x30125400;
 		state1 = 0x493583fe;
+
+#ifdef CTR_NATIVE
+		// Without --engine one compare.
+		if (g_cfg_engine && Engine_SkyOwnsStars(pb))
+		{
+			starIndex = -1;
+		}
+#endif
 
 		while (starIndex >= 0)
 		{
