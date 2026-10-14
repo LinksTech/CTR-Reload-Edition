@@ -6093,6 +6093,9 @@ static void RldMk_SizeHull(const struct RldMkBuild *b, struct RldMkSizeHull *hul
 	}
 }
 
+// The even origin of the up axis (defined below, next to RldMk_QuantValue).
+static int RldMk_OriginY(double low, int yFull);
+
 // Does `percent` fit? 1 = yes; 0 = no, *why says which check (English, for the message).
 static int RldMk_SizeFits(const struct RldMkSizeHull *hull, u32 percent, char *why, size_t whySize)
 {
