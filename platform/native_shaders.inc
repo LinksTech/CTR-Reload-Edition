@@ -1074,9 +1074,13 @@ global_variable const char *ctr_native_engine_shader =
     // (it starts again at every border, where its derivative would send the
     // border pixels to the coarsest level). The face size comes in the vertex
     // alpha as 16 * log2 of the side length (engine_track_mosaic.c,
-    // EngMosaic_FaceSizeCode; the same on all vertices of a face).
+    // EngMosaic_FaceSizeCode; the same on all vertices of a face). The SHORTER
+    // of the two screen directions counts, as an anisotropic filter would take
+    // it: a face seen at a grazing angle near the camera is long in one
+    // direction only, and the longer one would send it to a coarse level
+    // where the PS1 (by depth) still draws its finest.
     "vec2 faceFootprint() {\n"
-    "	float world = max(length(dFdx(v_world)), length(dFdy(v_world)));\n"
+    "	float world = min(length(dFdx(v_world)), length(dFdy(v_world)));\n"
     "	float size = exp2(floor(v_color.a / max(tint.a, 1e-6) * 255.0 + 0.5) / 16.0);\n"
     "	return vec2(world / size);\n"
     "}\n"
