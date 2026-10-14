@@ -45,7 +45,9 @@
 //   texels 49..57 the group's levels 2, 1 and 0 (3 texels each): the fallback
 //                 when a tile texel is smaller than a pixel, then a level-2
 //                 texel, and so on - picked by the screen derivative, like mip
-//                 levels, not by the PS1's distance thresholds
+//                 levels, not by the PS1's distance thresholds; a pixel spanning
+//                 several texels of its level along its longer screen direction
+//                 averages up to 5 point taps along it ("ne", texSource 3)
 // A 4x2 or 4x1 table is spread over the 16 cells at load (cell (c, r) = entry
 // 4 * (r >> 1) + c, or entry c), so the program knows one grid only.
 //
