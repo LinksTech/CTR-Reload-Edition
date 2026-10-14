@@ -448,11 +448,14 @@ internal int EngTrack_BuildBlock(const EngTrackBlockIn *in, const u32 *table, in
 //      used at :9558, :9663, :9921) - in visMem1->visFaceList[0]
 //      (MainFrame_RenderFrame.c:1007).
 // Both lists are refilled for the frame by MainFrame_VisMemFullFrame
-// (MainFrame_RenderFrame.c:52, game/MAIN/MainFrame.c:771-817) before
-// Engine_FrameCollect runs. The engine reads them (read only) and draws exactly
-// the faces of the blocks they show; frustum culling is left to the GPU. Where
-// a level hides geometry from a place through its PVS (the walls of Roo's
-// Tubes, Hot Air Skyway, Mystery Caves), the engine hides it too.
+// (MainFrame_RenderFrame.c:52, game/MAIN/MainFrame.c:771-817). For 1 the engine
+// reads the leaves the PS1 walk itself linked into view 0's render lists
+// (gGT->LevRenderLists[0]) at the first bucket of DrawLevelOvr1P, after the walk
+// of the same frame (EngTrack_SubmitShown); its own mirror of the walk
+// (EngTrack_WalkLeaves) only checks itself against them (counted). For 2 it
+// consumes the face bits as above. Everything is read only; frustum culling
+// is the GPU's. Where a level hides geometry from a place through its PVS
+// (the walls of Roo's Tubes, Hot Air Skyway, Mystery Caves), the engine hides it too.
 typedef struct
 {
 	EngTrackFace face; // texture coordinates, triangles, key as built
@@ -607,6 +610,39 @@ internal int EngTrack_WalkLeaves(const struct BSP *root, int nodeCount, const u3
 	return ok ? reached : -1;
 }
 
+// The leaves the PS1 walk linked into a frame's render lists (headCount list heads
+// of struct VisMemBspListNode, each node naming a BSP leaf): shown[] (nodeCount
+// entries) is cleared and set for them. Returns the leaves, -1 for a node that is
+// no leaf of root or a list longer than nodeCount (a broken list: not followed).
+internal int EngTrack_LeavesOfLists(const struct BSP *root, int nodeCount, struct VisMemBspListNode *const *heads, int headCount, u8 *shown)
+{
+	int count = 0;
+	int h;
+
+	memset(shown, 0, (size_t)nodeCount);
+	for (h = 0; h < headCount; h++)
+	{
+		const struct VisMemBspListNode *node;
+		int steps = 0;
+
+		for (node = heads[h]; node != NULL; node = node->next)
+		{
+			const ptrdiff_t at = node->bsp - root;
+
+			if ((node->bsp == NULL) || (at < 0) || (at >= nodeCount) || ((root[at].flag & BSP_NODE_FLAG_LEAF) == 0) || (++steps > nodeCount))
+			{
+				return -1;
+			}
+			if (!shown[at])
+			{
+				shown[at] = 1;
+				count++;
+			}
+		}
+	}
+	return count;
+}
+
 // 1 = the frame shows the face: the walk reached its leaf (leafShown, NULL = every
 // leaf) and the face list has its block's bit (NULL = every block).
 internal int EngTrack_FaceShown(const EngTrackDrawFace *f, const u32 *faceList, int faceWords, const u8 *leafShown)
@@ -734,7 +770,18 @@ global_variable u16 *s_egtScratchI;
 global_variable int s_egtFaceWords; // words of the face list ((numQuadBlock + 31) >> 5)
 global_variable int s_egtLeafWords; // words of the leaf list ((numBspNodes + 31) >> 5)
 global_variable int s_egtNodeCount;   // BSP nodes of the level
-global_variable u8 *s_egtLeafShown;   // per node, this frame: the walk reached the leaf
+global_variable u8 *s_egtLeafShown;   // per node, this frame: the PS1 walk linked the leaf
+global_variable u8 *s_egtLeafWalk;    // per node, this frame: the engine's own walk reached the leaf (the check)
+global_variable int s_egtWalkValid;
+global_variable int s_egtPending; // collected, faces not yet submitted (EngTrack_SubmitShown)
+global_variable const u32 *s_egtFaceListNow;
+global_variable EngineMat4 s_egtScreenFromWorld;
+global_variable u64 s_egtNotWalkedFrames; // collected, but DrawLevelOvr1P did not come
+global_variable u64 s_egtBadListFrames;   // a render list that is not a list of leaves
+global_variable u64 s_egtWalkMissed;      // leaves the PS1 lists had and the engine walk not
+global_variable u64 s_egtWalkExtra;       // leaves the engine walk had and the PS1 lists not (its frustum test)
+global_variable u64 s_egtWalkDiffFrames;
+global_variable int s_egtWalkMissedLogged; // per tour entry
 global_variable u16 *s_egtWalkStack;  // the walk's stack (numBspNodes + 2 entries)
 // Frames of the loaded level the engine could not draw: no visibility list, the
 // dynamic store would not hold the shown faces (the PS1 walk draws those frames),
@@ -787,6 +834,11 @@ global_variable struct
 	u64 noVisFrames;
 	u64 overBudgetFrames;
 	u64 refusedFrames;
+	u64 notWalkedFrames;
+	u64 badListFrames;
+	u64 walkMissed;
+	u64 walkExtra;
+	u64 walkDiffFrames;
 	EngineRenderCounters render;
 	u32 fxDrawn[ENGINE_FX_KINDS];
 	u32 fxRetail[ENGINE_FX_KINDS];
@@ -812,6 +864,10 @@ internal void EngTrack_Report(void)
 	             (unsigned long long)s_egtInstDrawn, (unsigned long long)s_egtInstDeclined);
 	Platform_Log("[CTR Engine] track: frames left to the PS1 walk: no visibility list %llu, over the dynamic budget %llu; frames with a submit refused %llu\n",
 	             (unsigned long long)s_egtNoVisFrames, (unsigned long long)s_egtOverBudgetFrames, (unsigned long long)s_egtRefusedFrames);
+	Platform_Log("[CTR Engine] track: walk check: frames without the level walk %llu, broken lists %llu; engine walk against the PS1 lists: leaves missed %llu, "
+	             "extra %llu, in %llu frame(s)\n",
+	             (unsigned long long)s_egtNotWalkedFrames, (unsigned long long)s_egtBadListFrames, (unsigned long long)s_egtWalkMissed,
+	             (unsigned long long)s_egtWalkExtra, (unsigned long long)s_egtWalkDiffFrames);
 	for (i = 0; i < s_egtModelCount; i++)
 	{
 		const EngTrackModel *m = &s_egtModels[i];
@@ -845,6 +901,12 @@ internal void EngTrack_TourReport(int entry, int levelID, int phase)
 		s_egtTourBase.noVisFrames = s_egtNoVisFrames;
 		s_egtTourBase.overBudgetFrames = s_egtOverBudgetFrames;
 		s_egtTourBase.refusedFrames = s_egtRefusedFrames;
+		s_egtTourBase.notWalkedFrames = s_egtNotWalkedFrames;
+		s_egtTourBase.badListFrames = s_egtBadListFrames;
+		s_egtTourBase.walkMissed = s_egtWalkMissed;
+		s_egtTourBase.walkExtra = s_egtWalkExtra;
+		s_egtTourBase.walkDiffFrames = s_egtWalkDiffFrames;
+		s_egtWalkMissedLogged = 0;
 		s_egtPeakFaces = 0;
 		s_egtPeakVertices = 0;
 		s_egtPeakExpanded = 0;
@@ -875,6 +937,11 @@ internal void EngTrack_TourReport(int entry, int levelID, int phase)
 		             (unsigned long long)(s_egtNoVisFrames - s_egtTourBase.noVisFrames), (unsigned long long)(s_egtOverBudgetFrames - s_egtTourBase.overBudgetFrames),
 		             (unsigned long long)(s_egtRefusedFrames - s_egtTourBase.refusedFrames), s_egtPeakFaces, s_egtPeakVertices, s_egtPeakExpanded,
 		             (unsigned)EGT_DYN_EXPANDED_MAX, s_egtPeakSpecial);
+		Platform_Log("[CTR Engine] tour %d level %d walk check: frames without the level walk %llu, broken lists %llu; engine walk against the PS1 lists: "
+		             "leaves missed %llu, extra %llu, in %llu frame(s)\n",
+		             entry, levelID, (unsigned long long)(s_egtNotWalkedFrames - s_egtTourBase.notWalkedFrames),
+		             (unsigned long long)(s_egtBadListFrames - s_egtTourBase.badListFrames), (unsigned long long)(s_egtWalkMissed - s_egtTourBase.walkMissed),
+		             (unsigned long long)(s_egtWalkExtra - s_egtTourBase.walkExtra), (unsigned long long)(s_egtWalkDiffFrames - s_egtTourBase.walkDiffFrames));
 		Platform_Log("[CTR Engine] tour %d level %d instances: drawn %llu, declined %llu (model not imported %llu, flags %llu, frame %llu, submit %llu)\n",
 		             entry, levelID, (unsigned long long)(s_egtInstDrawn - s_egtTourBase.instDrawn),
 		             (unsigned long long)(s_egtInstDeclined - s_egtTourBase.instDeclined),
@@ -1091,8 +1158,11 @@ internal void EngTrack_DrawFree(void)
 	free(s_egtScratchV);
 	free(s_egtScratchI);
 	free(s_egtLeafShown);
+	free(s_egtLeafWalk);
 	free(s_egtWalkStack);
 	s_egtLeafShown = NULL;
+	s_egtLeafWalk = NULL;
+	s_egtPending = 0;
 	s_egtWalkStack = NULL;
 	s_egtNodeCount = 0;
 	s_egtFaces = NULL;
@@ -1290,8 +1360,9 @@ void Engine_TrackLoad(void)
 	leaves = EngTrack_MarkLeaves(mesh, water, inLeaf, form, faceWord, faceBit, leafNode, special);
 	s_egtNodeCount = mesh->numBspNodes;
 	s_egtLeafShown = (u8 *)calloc((size_t)((mesh->numBspNodes > 0) ? mesh->numBspNodes : 1), 1u);
+	s_egtLeafWalk = (u8 *)calloc((size_t)((mesh->numBspNodes > 0) ? mesh->numBspNodes : 1), 1u);
 	s_egtWalkStack = (u16 *)calloc((size_t)((mesh->numBspNodes > 0) ? mesh->numBspNodes : 1) + 2u, sizeof(u16));
-	if ((s_egtLeafShown == NULL) || (s_egtWalkStack == NULL))
+	if ((s_egtLeafShown == NULL) || (s_egtLeafWalk == NULL) || (s_egtWalkStack == NULL))
 	{
 		Platform_Log("[CTR Engine] track: out of memory\n");
 		goto done;
@@ -1536,25 +1607,28 @@ done:
 	free(live);
 }
 
-// Once per frame from Engine_FrameCollect: the faces the frame's visibility shows,
-// one dynamic draw per material in view 0. When the frame has no visibility list
-// or its faces would not fit, nothing is submitted and the PS1 walk draws the
-// level this frame (s_egtSubmitted stays 0) - never a frame without track.
+// Once per frame from Engine_FrameCollect (MainFrame_RenderFrame.c:134): decides
+// whether the engine draws the track this frame and keeps what the drawing needs.
+// The faces themselves are chosen and submitted later in the same frame, at the
+// first bucket of DrawLevelOvr1P (EngTrack_SubmitShown from Engine_TrackOwnsBucket):
+// only then has the PS1 walk of this frame (RenderLists_Init1P2P,
+// MainFrame_RenderFrame.c:1004) linked its leaves, and the engine draws exactly
+// those. Its own walk (EngTrack_WalkLeaves) is still run here, as a check that is
+// counted against the PS1's lists. Without lists nothing is kept and the PS1 walk
+// draws the level (s_egtSubmitted 0) - never a frame without track.
 void Engine_TrackCollect(struct GameTracker *gGT)
 {
 	const EngineCamera *cam;
 	const u32 *faceList;
 	const u32 *leafList;
-	EngineMat4 screenFromWorld;
-	u32 faces = 0;
-	u32 vertices = 0;
-	u32 expanded = 0;
-	u32 specials = 0;
-	int refused = 0;
-	int submittedAny = 0;
-	int i;
 
 	s_egtSubmitted = 0;
+	if (s_egtPending)
+	{
+		// The last frame's DrawLevelOvr1P never came (no level walk): nothing was drawn.
+		s_egtPending = 0;
+		s_egtNotWalkedFrames++;
+	}
 	if (g_cfg_engine && g_cfg_engineTrack && (gGT != NULL) && ((gGT->gameMode1 & MAIN_MENU) == 0) && ((gGT->renderFlags & RENDER_FLAG_DRAW_LEVEL) != 0) &&
 	    (gGT->level1 != NULL) && (gGT->level1 == s_egtLevel))
 	{
@@ -1576,19 +1650,80 @@ void Engine_TrackCollect(struct GameTracker *gGT)
 		s_egtNoVisFrames++;
 		return;
 	}
-	if (EngTrack_WalkLeaves(s_egtMesh->bspRoot, s_egtNodeCount, leafList, s_egtLeafWords, &gGT->pushBuffer[0].bbox, s_egtLeafShown, s_egtWalkStack,
-	                        s_egtNodeCount + 2) < 0)
+	s_egtWalkValid = (EngTrack_WalkLeaves(s_egtMesh->bspRoot, s_egtNodeCount, leafList, s_egtLeafWords, &gGT->pushBuffer[0].bbox, s_egtLeafWalk,
+	                                      s_egtWalkStack, s_egtNodeCount + 2) >= 0)
+	                     ? 1
+	                     : 0;
+	Engine_CameraScreenFromWorld(cam, &s_egtScreenFromWorld);
+	s_egtFaceListNow = faceList;
+	s_egtPending = 1;
+	// The engine means to draw the track this frame (the water and the instances ask now);
+	// EngTrack_SubmitShown hands it back to the PS1 walk when the faces do not fit.
+	s_egtSubmitted = 1;
+}
+
+// The first bucket of this frame's DrawLevelOvr1P: the leaves the PS1 walk linked
+// in view 0's render lists (gGT->LevRenderLists[0], the lists RenderLists_Init1P2P
+// filled at MainFrame_RenderFrame.c:1004 and DrawLevelOvr1P reads at :1007), the
+// face bit of every block in them, the faces into the dynamic ring. 1 = the engine
+// draws the track this frame; 0 = the PS1 buckets draw it (counted).
+internal int EngTrack_SubmitShown(struct GameTracker *gGT)
+{
+	struct VisMemBspListNode *heads[DRAW_LEVEL_OVR1P_RENDER_LIST_SLOT_COUNT + 1];
+	u32 faces = 0;
+	u32 vertices = 0;
+	u32 expanded = 0;
+	u32 specials = 0;
+	int refused = 0;
+	int submittedAny = 0;
+	int differs = 0;
+	int i;
+
+	for (i = 0; i < DRAW_LEVEL_OVR1P_RENDER_LIST_SLOT_COUNT; i++)
 	{
-		s_egtNoVisFrames++;
-		return;
+		heads[i] = gGT->LevRenderLists[0].list[i].bspListStart;
+	}
+	heads[DRAW_LEVEL_OVR1P_RENDER_LIST_SLOT_COUNT] = gGT->LevRenderLists[0].bspListStart_FullDynamic;
+	if (EngTrack_LeavesOfLists(s_egtMesh->bspRoot, s_egtNodeCount, heads, DRAW_LEVEL_OVR1P_RENDER_LIST_SLOT_COUNT + 1, s_egtLeafShown) < 0)
+	{
+		s_egtBadListFrames++;
+		return 0;
 	}
 
-	// What the lists show, and whether it fits (else the PS1 walk draws this frame).
+	// The check: the engine's own walk against the PS1's lists (leaves the frustum
+	// test of the PS1 walk dropped show up as engine-only; they cost nothing).
+	if (s_egtWalkValid)
+	{
+		for (i = 0; i < s_egtNodeCount; i++)
+		{
+			if (s_egtLeafShown[i] == s_egtLeafWalk[i])
+			{
+				continue;
+			}
+			differs = 1;
+			if (s_egtLeafShown[i])
+			{
+				s_egtWalkMissed++;
+				if (s_egtWalkMissedLogged < 6)
+				{
+					s_egtWalkMissedLogged++;
+					Platform_Log("[CTR Engine] track: the engine walk missed leaf %d (flag 0x%04x) the PS1 walk linked\n", i, (unsigned)s_egtMesh->bspRoot[i].flag);
+				}
+			}
+			else
+			{
+				s_egtWalkExtra++;
+			}
+		}
+		s_egtWalkDiffFrames += (u64)differs;
+	}
+
+	// What the lists show, and whether it fits (else the PS1 buckets draw this frame).
 	for (i = 0; i < s_egtFaceCount; i++)
 	{
 		const EngTrackDrawFace *df = &s_egtFaces[i];
 
-		s_egtShown[i] = (u8)EngTrack_FaceShown(df, faceList, s_egtFaceWords, s_egtLeafShown);
+		s_egtShown[i] = (u8)EngTrack_FaceShown(df, s_egtFaceListNow, s_egtFaceWords, s_egtLeafShown);
 		if (s_egtShown[i])
 		{
 			faces++;
@@ -1600,14 +1735,13 @@ void Engine_TrackCollect(struct GameTracker *gGT)
 	if ((vertices > EGT_DYN_VERTICES_MAX) || (expanded > EGT_DYN_EXPANDED_MAX))
 	{
 		s_egtOverBudgetFrames++;
-		return;
+		return 0;
 	}
 	s_egtPeakFaces = (faces > s_egtPeakFaces) ? faces : s_egtPeakFaces;
 	s_egtPeakVertices = (vertices > s_egtPeakVertices) ? vertices : s_egtPeakVertices;
 	s_egtPeakExpanded = (expanded > s_egtPeakExpanded) ? expanded : s_egtPeakExpanded;
 	s_egtPeakSpecial = (specials > s_egtPeakSpecial) ? specials : s_egtPeakSpecial;
 
-	Engine_CameraScreenFromWorld(cam, &screenFromWorld);
 	for (i = 0; i < s_egtGroupCount; i++)
 	{
 		const EngTrackDrawGroup *g = &s_egtGroups[i];
@@ -1623,7 +1757,7 @@ void Engine_TrackCollect(struct GameTracker *gGT)
 		}
 		memset(&draw, 0, sizeof(draw));
 		draw.mesh = -1;
-		draw.clipFromModel = screenFromWorld; // the track is in world units: the raw s16 positions
+		draw.clipFromModel = s_egtScreenFromWorld; // the track is in world units: the raw s16 positions
 		draw.tint[0] = draw.tint[1] = draw.tint[2] = draw.tint[3] = 1.0f;
 		draw.materialOverride = -1;
 		draw.sortDepth = 1.0e9f; // farther than anything: first of the transparent list
@@ -1646,15 +1780,15 @@ void Engine_TrackCollect(struct GameTracker *gGT)
 	if (refused)
 	{
 		s_egtRefusedFrames++;
-		// Nothing went in: the PS1 walk draws the level this frame. Once a group went
-		// in, it must not draw it a second time: the frame stays partial (counted).
+		// Nothing went in: the PS1 buckets draw the level this frame. Once a group went
+		// in, they must not draw it a second time: the frame stays partial (counted).
 		if (!submittedAny)
 		{
-			return;
+			return 0;
 		}
 	}
-	s_egtSubmitted = 1;
 	s_egtFramesDrawn++;
+	return 1;
 }
 
 int Engine_TrackDrawnThisFrame(void)
@@ -1665,12 +1799,23 @@ int Engine_TrackDrawnThisFrame(void)
 // 1 = the PS1 walk of DrawLevelOvr1P treats this bucket as empty this frame.
 // Buckets 0-7 and 10 are track faces (4x4, dynamic, 4x2, 4x1, full dynamic; rendered
 // and list variants); 8 and 9 are water, answered by Engine_WaterOwnsBucket. The
-// counts are bucket visits of the walk, not drawn buckets.
+// counts are bucket visits of the walk, not drawn buckets. The first call of a
+// frame (bucket 10, game/226/226_00_DrawLevelOvr1P.c:11255-11262) submits the
+// track's faces (EngTrack_SubmitShown).
 int Engine_TrackOwnsBucket(int bucketIndex)
 {
 	if (!g_cfg_engine || !g_cfg_engineTrack || !s_egtSubmitted || (bucketIndex < 0) || (bucketIndex >= EGT_BUCKET_COUNT))
 	{
 		return 0;
+	}
+	if (s_egtPending)
+	{
+		s_egtPending = 0;
+		if (!EngTrack_SubmitShown(sdata->gGT))
+		{
+			s_egtSubmitted = 0;
+			return 0;
+		}
 	}
 	if ((bucketIndex == EGT_BUCKET_WATER_RENDERED) || (bucketIndex == EGT_BUCKET_WATER_LIST))
 	{
@@ -2154,6 +2299,28 @@ int Engine_SelfTestTrack(int *checks)
 			tree[1].box.max.x = 10;
 			reached = EngTrack_WalkLeaves(tree, 5, leaves, 1, &view, shownNodes, walkStack, 1);
 			EGT_CHECK(reached == -1, "walk: a full stack not reported");
+
+			// The PS1 walk's render lists: two heads, leaves 3 and 1, the same leaf twice.
+			{
+				struct VisMemBspListNode nodes[3];
+				struct VisMemBspListNode *heads[2];
+
+				nodes[0].bsp = &tree[3];
+				nodes[0].next = &nodes[1];
+				nodes[1].bsp = &tree[1];
+				nodes[1].next = NULL;
+				nodes[2].bsp = &tree[3];
+				nodes[2].next = NULL;
+				heads[0] = &nodes[0];
+				heads[1] = &nodes[2];
+				reached = EngTrack_LeavesOfLists(tree, 5, heads, 2, shownNodes);
+				EGT_CHECK((reached == 2) && shownNodes[1] && shownNodes[3] && !shownNodes[4], "lists: %d leaves (expected 1 and 3)", reached);
+				nodes[2].bsp = &tree[2]; // a branch in a list of leaves
+				EGT_CHECK(EngTrack_LeavesOfLists(tree, 5, heads, 2, shownNodes) == -1, "lists: a branch node not refused");
+				nodes[2].bsp = &tree[3];
+				nodes[1].next = &nodes[0]; // a cycle
+				EGT_CHECK(EngTrack_LeavesOfLists(tree, 5, heads, 2, shownNodes) == -1, "lists: a cycle not refused");
+			}
 		}
 	}
 
