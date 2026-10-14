@@ -52,12 +52,12 @@
 #define EGW_RIPPLE_FULL 2000.0
 #define EGW_RIPPLE_ZERO 8000.0
 #define EGW_FLOW 400.0
-#define EGW_K_WATER 0.60
+#define EGW_K_WATER 0.85
 #define EGW_REFLECT_MAX 0.45
 #define EGW_F0 0.02
 #define EGW_IOR 1.33
 #define EGW_SEA_TOP 34.0
-#define EGW_SEA_BOTTOM 62.0
+#define EGW_SEA_BOTTOM 48.0
 // The three waves: direction x, direction z (unit), wavelength and speed in
 // world units, slope amplitude.
 #define EGW_W0_DX 0.8

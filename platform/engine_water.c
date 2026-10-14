@@ -1175,9 +1175,11 @@ int Engine_SelfTestWater(int *checks)
 		EGW_CHECK((fabsf(later.u - flat.u) < 1.0e-4f) && (fabsf(later.v - flat.v) < 1.0e-4f), "ripples past EGW_RIPPLE_ZERO still move: %.5f %.5f",
 		          later.u - flat.u, later.v - flat.v);
 		// The sea colour: straight down reads the bottom row, a grazing look the row of the critical angle
-		// (the refracted ray 48.75 degrees from straight down: 34 + 28 * 41.25 / 90 = 46.8), in the azimuth of the view.
+		// (the refracted ray 48.75 degrees from straight down, so 41.25 of 90 degrees down from the horizon), in the
+		// azimuth of the view.
 		EGW_CHECK(fabsf(down.seaV - (float)EGW_SEA_BOTTOM) < 0.01f, "straight down: sea v %.3f, expected EGW_SEA_BOTTOM", down.seaV);
-		EGW_CHECK(fabsf(flat.seaV - 46.83f) < 0.2f, "grazing: sea v %.3f, expected about 46.83", flat.seaV);
+		EGW_CHECK(fabsf(flat.seaV - (float)(EGW_SEA_TOP + (EGW_SEA_BOTTOM - EGW_SEA_TOP) * 41.25 / 90.0)) < 0.2f, "grazing: sea v %.3f, expected the critical-angle row",
+		          flat.seaV);
 		EGW_CHECK(EngWater_TestUDist(flat.seaU, flat.u) < 0.01f, "grazing: sea u %.3f not the azimuth of the reflection %.3f", flat.seaU, flat.u);
 		// The mix: the reflection weighs EGW_REFLECT_MAX * fresnel - next to nothing straight down, most at a grazing look.
 		EGW_CHECK(fabsf(down.reflectWeight - (float)(EGW_REFLECT_MAX * EGW_F0)) < 1.0e-3f, "straight down: reflection weight %.4f", down.reflectWeight);
