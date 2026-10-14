@@ -56,6 +56,8 @@ void Engine_FrameCollect(struct GameTracker *gGT)
 		// the water draws only when the track was drawn this frame.
 		Engine_SkyCollect(gGT);
 		Engine_TrackCollect(gGT);
+		// The animated textures of the track: rows of the mosaic table, before anything is drawn.
+		Engine_TrackMosaicFrame();
 		Engine_WaterCollect(gGT);
 	}
 }

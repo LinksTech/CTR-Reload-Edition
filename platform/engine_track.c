@@ -1353,8 +1353,11 @@ void Engine_TrackLoad(void)
 			EngTrackFace *f = &built[k];
 			u16 keyTpage = 0;
 
-			// A mosaic face the table takes: keyed by the table's tpage word, clut 0.
-			if (mos[f->mid] && Engine_TrackMosaicFace(groups[f->mid], f->mirrored, form[i], f->slotOf, f->v, f->vertCount, &keyTpage))
+			// A mosaic face the table takes: keyed by the table's tpage word, clut 0. So is an
+			// animated face (no mosaic): a whole-face row read from its AnimTex cell (pointer - 1) every frame.
+			if ((mos[f->mid] && Engine_TrackMosaicFace(groups[f->mid], f->mirrored, form[i], f->slotOf, f->v, f->vertCount, &keyTpage)) ||
+			    (!mos[f->mid] && anim[f->mid] &&
+			     Engine_TrackMosaicAnimFace((u32)(size_t)qb->ptr_texture_mid[f->mid] - 1u, f->mirrored, f->slotOf, f->v, f->vertCount, &keyTpage)))
 			{
 				f->tpage = keyTpage;
 				f->clut = 0;

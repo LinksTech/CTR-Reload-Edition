@@ -686,6 +686,13 @@ void Engine_TrackMosaicBegin(int levelId); // Engine_TrackLoad start: empties th
 // rewritten and *keyTpage = 0x8000 | (abr of the row's tiles << 5): the caller keys the face with
 // tpage *keyTpage and clut 0. 0 = unchanged (level 2 stays; reason counted).
 int Engine_TrackMosaicFace(const struct TextureLayout *group, int mirrored, int form, const u8 *slotOf, EngineVertex *v, int vertCount, u16 *keyTpage);
+// One built mid face of an animated texture (its texture pointer has bit 0 set; cell = that
+// pointer - 1, the word holding the IconGroup4 shown now). 1 = the face became a whole-face
+// face of the table (texcoords rewritten, keyed with *keyTpage and clut 0 like a mosaic face);
+// 0 = unchanged (frozen at load, reason counted).
+int Engine_TrackMosaicAnimFace(u32 cell, int mirrored, const u8 *slotOf, EngineVertex *v, int vertCount, u16 *keyTpage);
+// From Engine_FrameCollect after Engine_TrackCollect: rewrites the table rows whose AnimTex cell names another group now.
+void Engine_TrackMosaicFrame(void);
 int Engine_TrackMosaicEnd(void);     // builds the data texture, logs the counters; 1 = ready
 void Engine_TrackMosaicUnload(void); // level unload (deferred destroy)
 u32 Engine_TrackMosaicTexture(void); // TextureID for slot 3, 0xffffffff when none

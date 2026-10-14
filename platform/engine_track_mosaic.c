@@ -60,8 +60,20 @@
 // has one blend mode, so a face is keyed with the abr of its row's tiles when
 // they all agree; a row whose tiles disagree keeps level 2 (counted).
 //
+// ANIMATED TEXTURES. A mid face whose texture pointer has bit 0 set names an
+// AnimTex cell (*(ptr - 1) holds the IconGroup4 shown now; the game moves it,
+// engine_track.c EngTrack_ResolveGroup). Such a face gets a whole-face row
+// (one cell per side) keyed by its cell: the finest layout of the group shown
+// now, plus its levels 2, 1, 0. Once per frame, after the track is collected,
+// Engine_TrackMosaicFrame reads every cell and rewrites the rows whose group
+// changed (one row of the data texture each; the backend records the copy into
+// the frame between passes, NativeVk_RecordUploadInFrame). The blend of the
+// face stays the one of the group at load; a later group with another abr is
+// drawn with it anyway and counted.
+//
 // DRAW TIME ONLY. Nothing here writes game state: the tables are read at load
-// stage 8, from the same level memory the PS1 draw reads.
+// stage 8 and the AnimTex cells once per frame, from the same level memory the
+// PS1 draw reads.
 
 #define EGM_ROWS_MAX 4096
 #define EGM_ROW_TEXELS 64
@@ -78,8 +90,10 @@ _Static_assert(EGM_LEVEL_TEXEL + 9 <= EGM_ROW_TEXELS, "the levels must fit into 
 
 typedef struct
 {
-	u32 group; // address of the IconGroup4 the row was made for (the key)
+	u32 group; // address of the IconGroup4 the row was made for (the key of a table row)
 	u32 table; // address of its mosaic table (0 for a whole-face row)
+	u32 animCell; // AnimTex cell of a whole-face row (its key), 0 for a table row
+	u32 shown; // the IconGroup4 a whole-face row holds now
 	u8 mirrored;
 	u8 form;   // ENGINE_MOSAIC_FORM_*
 	u8 side;   // cells per side: 4, or 1 for a whole-face row
@@ -137,6 +151,48 @@ internal int EngMosaic_Abr(const struct TextureLayout *lay)
 	return (lay->tpage >> 5) & 3;
 }
 
+// A layout as a face of the given mirror sees it in its own space. Only the
+// table is stored mirrored; any other layout is not: a mirrored face takes its
+// UVs in the order {uv1, uv0, uv3, uv2} (engine_track.c, EngTrack_BuildBlock),
+// which in the face's own space is the layout with its corners swapped so.
+internal void EngMosaic_MirrorCopy(struct TextureLayout *dst, const struct TextureLayout *src, int mirrored)
+{
+	*dst = *src;
+	if (mirrored)
+	{
+		dst->u0 = src->u1;
+		dst->v0 = src->v1;
+		dst->u1 = src->u0;
+		dst->v1 = src->v0;
+		dst->u2 = src->u3;
+		dst->v2 = src->v3;
+		dst->u3 = src->u2;
+		dst->v3 = src->v2;
+	}
+}
+
+// Room for one more row (the set grows). 0 when it is full or out of memory.
+internal int EngMosaic_RowRoom(EngMosaicRowSet *set)
+{
+	if (set->count >= EGM_ROWS_MAX)
+	{
+		return 0;
+	}
+	if (set->count >= set->cap)
+	{
+		const int cap = (set->cap == 0) ? 64 : (set->cap * 2);
+		EngMosaicRow *p = (EngMosaicRow *)realloc(set->rows, (size_t)cap * sizeof(EngMosaicRow));
+
+		if (p == NULL)
+		{
+			return 0;
+		}
+		set->rows = p;
+		set->cap = cap;
+	}
+	return 1;
+}
+
 // Fills a row from a table (both halves readable: 2 * own entries). Returns 0
 // for an unknown form.
 internal int EngMosaic_RowFill(EngMosaicRow *row, u32 groupAddress, u32 tableAddress, const struct TextureLayout *table, int mirrored, int form,
@@ -163,26 +219,9 @@ internal int EngMosaic_RowFill(EngMosaicRow *row, u32 groupAddress, u32 tableAdd
 			row->cell[4 * r + c] = table[EngMosaic_CellEntry(form, mirrored, c, r)];
 		}
 	}
-	// Levels 0..2 are not stored mirrored: a mirrored face takes its UVs in the
-	// order {uv1, uv0, uv3, uv2} (engine_track.c, EngTrack_BuildBlock), which in
-	// the face's own space is the layout with its corners swapped the same way.
 	for (i = 0; i < 3; i++)
 	{
-		const struct TextureLayout *src = &levels[i];
-		struct TextureLayout *dst = &row->level[i];
-
-		*dst = *src;
-		if (mirrored)
-		{
-			dst->u0 = src->u1;
-			dst->v0 = src->v1;
-			dst->u1 = src->u0;
-			dst->v1 = src->v0;
-			dst->u2 = src->u3;
-			dst->v2 = src->v3;
-			dst->u3 = src->u2;
-			dst->v3 = src->v2;
-		}
+		EngMosaic_MirrorCopy(&row->level[i], &levels[i], mirrored);
 	}
 	row->abr = (s8)EngMosaic_Abr(&row->cell[0]);
 	for (i = 1; i < EGM_CELLS; i++)
@@ -218,28 +257,80 @@ internal int EngMosaic_RowFind(EngMosaicRowSet *set, u32 groupAddress, u32 table
 	{
 		const EngMosaicRow *row = &set->rows[i];
 
-		if ((row->group == groupAddress) && (row->mirrored == (u8)(mirrored ? 1 : 0)) && (row->form == (u8)form))
+		if ((row->animCell == 0u) && (row->group == groupAddress) && (row->mirrored == (u8)(mirrored ? 1 : 0)) && (row->form == (u8)form))
 		{
 			return i;
 		}
 	}
-	if (set->count >= EGM_ROWS_MAX)
+	if (!EngMosaic_RowRoom(set))
 	{
 		return -1;
 	}
-	if (set->count >= set->cap)
-	{
-		const int cap = (set->cap == 0) ? 64 : (set->cap * 2);
-		EngMosaicRow *p = (EngMosaicRow *)realloc(set->rows, (size_t)cap * sizeof(EngMosaicRow));
-
-		if (p == NULL)
-		{
-			return -1;
-		}
-		set->rows = p;
-		set->cap = cap;
-	}
 	EngMosaic_RowFill(&set->rows[set->count], groupAddress, tableAddress, table, mirrored, form, levels);
+	if (made != NULL)
+	{
+		*made = 1;
+	}
+	return set->count++;
+}
+
+// A whole-face row for the IconGroup4 group: its finest layout (finest, one of
+// group's) in every cell, one cell per side, and its levels 2, 1, 0; all with
+// the corners of a mirrored face swapped. The key fields stay as they are.
+internal void EngMosaic_WholeFaceFill(EngMosaicRow *row, u32 groupAddress, const struct TextureLayout *group, const struct TextureLayout *finest)
+{
+	struct TextureLayout lay;
+	int i;
+
+	EngMosaic_MirrorCopy(&lay, finest, row->mirrored);
+	for (i = 0; i < EGM_CELLS; i++)
+	{
+		row->cell[i] = lay;
+	}
+	for (i = 0; i < 3; i++)
+	{
+		EngMosaic_MirrorCopy(&row->level[i], &group[i], row->mirrored);
+	}
+	row->shown = groupAddress;
+}
+
+// The whole-face row of (AnimTex cell, mirrored): an existing one, or a new one
+// filled from group (shown now) with the abr of finest. Returns the index, -1
+// when the set is full or out of memory. *made = 1 when the row is new.
+internal int EngMosaic_AnimRowFind(EngMosaicRowSet *set, u32 cell, int mirrored, u32 groupAddress, const struct TextureLayout *group,
+                                   const struct TextureLayout *finest, int *made)
+{
+	EngMosaicRow *row;
+	int i;
+
+	if (made != NULL)
+	{
+		*made = 0;
+	}
+	// Cell 0 is the mark of a table row: never a key here.
+	if (cell == 0u)
+	{
+		return -1;
+	}
+	for (i = 0; i < set->count; i++)
+	{
+		if ((set->rows[i].animCell == cell) && (set->rows[i].mirrored == (u8)(mirrored ? 1 : 0)))
+		{
+			return i;
+		}
+	}
+	if (!EngMosaic_RowRoom(set))
+	{
+		return -1;
+	}
+	row = &set->rows[set->count];
+	memset(row, 0, sizeof(*row));
+	row->animCell = cell;
+	row->mirrored = (u8)(mirrored ? 1 : 0);
+	row->form = ENGINE_MOSAIC_FORM_4X4;
+	row->side = 1;
+	row->abr = (s8)EngMosaic_Abr(finest);
+	EngMosaic_WholeFaceFill(row, groupAddress, group, finest);
 	if (made != NULL)
 	{
 		*made = 1;
@@ -402,12 +493,59 @@ typedef struct
 	int badTable;
 	int unknownForm;
 	int abrMixed;
+	int animFaces; // AnimTex faces handed in
+	int animMade;  // turned into whole-face faces
+	int animBad;   // their cell or group not readable at load
 } EngMosaicCounts;
 
 global_variable EngMosaicRowSet s_egmRows;
 global_variable EngMosaicCounts s_egmCount;
 global_variable u32 s_egmTexture = NATIVE_GFX_INVALID;
 global_variable int s_egmLevel = -1;
+// Over the whole run (the exit line): rows rewritten by Engine_TrackMosaicFrame,
+// frames it looked, rewrites whose group has another abr than the row's key,
+// cells or groups it could not read.
+global_variable u64 s_egmAnimRewrites;
+global_variable u64 s_egmAnimFrames;
+global_variable u64 s_egmAnimAbrChanges;
+global_variable u64 s_egmAnimBadCells;
+global_variable int s_egmReportRegistered;
+
+internal void EngMosaic_Report(void)
+{
+	Platform_Log("[CTR Engine] track mosaic: animated rows rewritten %llu over %llu frames, abr changes %llu, bad cells %llu\n",
+	             (unsigned long long)s_egmAnimRewrites, (unsigned long long)s_egmAnimFrames, (unsigned long long)s_egmAnimAbrChanges,
+	             (unsigned long long)s_egmAnimBadCells);
+}
+
+// The IconGroup4 an AnimTex cell names now (*cell), or NULL when the cell or the
+// group does not lie in level memory. *address is the group's address.
+internal const struct TextureLayout *EngMosaic_AnimGroup(u32 cell, u32 *address)
+{
+	u32 now = 0;
+
+	*address = 0;
+	if ((cell == 0u) || !DrawLevelOvr1P_IsNativeLevelSpan(cell, (u32)sizeof(now)))
+	{
+		return NULL;
+	}
+	memcpy(&now, (const void *)(size_t)cell, sizeof(now));
+	if ((now == 0u) || !DrawLevelOvr1P_IsNativeLevelSpan(now, 4u * (u32)sizeof(struct TextureLayout)))
+	{
+		return NULL;
+	}
+	*address = now;
+	return (const struct TextureLayout *)(size_t)now;
+}
+
+// The layout the track builder would take for the group (engine_track.c: level
+// 3, or 2 for a mosaic word or a blank level 3), NULL when it is not usable.
+internal const struct TextureLayout *EngMosaic_AnimFinest(const struct TextureLayout *group)
+{
+	const struct TextureLayout *lay = EngTrack_FinestLayout(group, EngTrack_IsLevelPtr, NULL);
+
+	return EngTrack_LayoutUsable(lay) ? lay : NULL;
+}
 
 internal int EngMosaic_CompareInt(const void *a, const void *b)
 {
@@ -440,6 +578,11 @@ void Engine_TrackMosaicBegin(int levelId)
 	if (!g_cfg_engine || !g_cfg_engineTrack)
 	{
 		return;
+	}
+	if (!s_egmReportRegistered)
+	{
+		s_egmReportRegistered = 1;
+		Platform_AtExitReport(EngMosaic_Report);
 	}
 	EngMosaic_Release();
 	s_egmLevel = levelId;
@@ -499,6 +642,98 @@ int Engine_TrackMosaicFace(const struct TextureLayout *group, int mirrored, int 
 	return 1;
 }
 
+int Engine_TrackMosaicAnimFace(u32 cell, int mirrored, const u8 *slotOf, EngineVertex *v, int vertCount, u16 *keyTpage)
+{
+	const struct TextureLayout *group;
+	const struct TextureLayout *finest = NULL;
+	u32 now = 0;
+	int row;
+	int i;
+
+	if (!g_cfg_engine || !g_cfg_engineTrack || (slotOf == NULL) || (v == NULL) || (keyTpage == NULL) || (vertCount < 1) || (vertCount > 4))
+	{
+		return 0;
+	}
+	s_egmCount.animFaces++;
+	group = EngMosaic_AnimGroup(cell, &now);
+	if (group != NULL)
+	{
+		finest = EngMosaic_AnimFinest(group);
+	}
+	if (finest == NULL)
+	{
+		s_egmCount.animBad++;
+		return 0;
+	}
+	row = EngMosaic_AnimRowFind(&s_egmRows, cell, mirrored, now, group, finest, NULL);
+	if (row < 0)
+	{
+		s_egmCount.rowsFull++;
+		return 0;
+	}
+	for (i = 0; i < vertCount; i++)
+	{
+		float s;
+		float t;
+
+		EngMosaic_SlotPosition(slotOf[i] & 3, &s, &t);
+		EngMosaic_Encode(row, s, t, v[i].texcoord);
+	}
+	*keyTpage = (u16)(0x8000u | ((u32)s_egmRows.rows[row].abr << 5));
+	s_egmCount.animMade++;
+	return 1;
+}
+
+// Once per frame, after Engine_TrackCollect: the whole-face rows whose AnimTex
+// cell names another group now are rewritten. The upload lands in the frame
+// before the engine's draws are recorded (NativeGfx_UpdateTexture records the
+// copy between passes, NativeVk_RecordUploadInFrame).
+void Engine_TrackMosaicFrame(void)
+{
+	u8 px[EGM_ROW_TEXELS * 4];
+	int i;
+
+	if (!g_cfg_engine || !g_cfg_engineTrack || (s_egmTexture == NATIVE_GFX_INVALID) || (s_egmCount.animMade == 0) || !Engine_TrackDrawnThisFrame())
+	{
+		return;
+	}
+	s_egmAnimFrames++;
+	for (i = 0; i < s_egmRows.count; i++)
+	{
+		EngMosaicRow *row = &s_egmRows.rows[i];
+		const struct TextureLayout *group;
+		const struct TextureLayout *finest = NULL;
+		u32 now = 0;
+
+		if (row->animCell == 0u)
+		{
+			continue;
+		}
+		group = EngMosaic_AnimGroup(row->animCell, &now);
+		if ((group != NULL) && (now == row->shown))
+		{
+			continue;
+		}
+		if (group != NULL)
+		{
+			finest = EngMosaic_AnimFinest(group);
+		}
+		if (finest == NULL)
+		{
+			s_egmAnimBadCells++;
+			continue;
+		}
+		if (EngMosaic_Abr(finest) != row->abr)
+		{
+			s_egmAnimAbrChanges++;
+		}
+		EngMosaic_WholeFaceFill(row, now, group, finest);
+		EngMosaic_PackRow(px, row);
+		NativeGfx_UpdateTexture((TextureID)s_egmTexture, 0, i, EGM_ROW_TEXELS, 1, NATIVE_GFX_TEXFMT_RGBA8, px, 0);
+		s_egmAnimRewrites++;
+	}
+}
+
 // The log lines of section MOSAIC (engine.h), from the rows made.
 internal void EngMosaic_Log(int width, int height, const char *state)
 {
@@ -514,12 +749,14 @@ internal void EngMosaic_Log(int width, int height, const char *state)
 	int abrDiffers = 0;
 	int classDiffers = 0;
 	int depth[3] = {0, 0, 0};
+	int tableRows = 0;
+	int animRows = 0;
 	int n = 0;
 	int i;
 
 	for (i = 0; i < set->count; i++)
 	{
-		tileCount += EngMosaic_OwnEntries(set->rows[i].form);
+		tileCount += (set->rows[i].animCell == 0u) ? EngMosaic_OwnEntries(set->rows[i].form) : 0;
 	}
 	if (set->count > 0)
 	{
@@ -535,11 +772,17 @@ internal void EngMosaic_Log(int width, int height, const char *state)
 		int j;
 		int e;
 
+		// The whole-face rows of animated faces are not table rows.
+		if (row->animCell != 0u)
+		{
+			animRows++;
+			continue;
+		}
 		mirroredRows += row->mirrored;
 		// A table is counted at its first row.
 		for (j = 0; j < i; j++)
 		{
-			if (set->rows[j].table == row->table)
+			if ((set->rows[j].animCell == 0u) && (set->rows[j].table == row->table))
 			{
 				break;
 			}
@@ -547,8 +790,9 @@ internal void EngMosaic_Log(int width, int height, const char *state)
 		tables += (j == i) ? 1 : 0;
 		if (level2Texels != NULL)
 		{
-			level2Texels[i] = EngMosaic_LayoutTexels(&row->level[2]);
+			level2Texels[tableRows] = EngMosaic_LayoutTexels(&row->level[2]);
 		}
+		tableRows++;
 		for (e = 0; e < own; e++)
 		{
 			const struct TextureLayout *t = &row->cell[EngMosaic_OwnCell(row->form, e)];
@@ -576,13 +820,13 @@ internal void EngMosaic_Log(int width, int height, const char *state)
 			distinct += (memcmp(&tiles[i], &tiles[i - 1], sizeof(struct TextureLayout)) != 0) ? 1 : 0;
 		}
 		qsort(tileTexels, (size_t)n, sizeof(int), EngMosaic_CompareInt);
-		qsort(level2Texels, (size_t)set->count, sizeof(int), EngMosaic_CompareInt);
+		qsort(level2Texels, (size_t)tableRows, sizeof(int), EngMosaic_CompareInt);
 	}
 
 	Platform_Log("[CTR Engine] track mosaic: level %d: mosaic faces %d, made %d (4x4 %d, 4x2 %d, 4x1 %d), tables %d, rows %d (mirrored %d), "
 	             "distinct tiles %d\n",
 	             s_egmLevel, s_egmCount.faces, s_egmCount.made, s_egmCount.byForm[ENGINE_MOSAIC_FORM_4X4], s_egmCount.byForm[ENGINE_MOSAIC_FORM_4X2],
-	             s_egmCount.byForm[ENGINE_MOSAIC_FORM_4X1], tables, set->count, mirroredRows, distinct);
+	             s_egmCount.byForm[ENGINE_MOSAIC_FORM_4X1], tables, tableRows, mirroredRows, distinct);
 	Platform_Log("[CTR Engine] track mosaic: level %d: fallback to level 2: rows full %d, bad table %d, unknown form %d, abr mixed %d\n", s_egmLevel,
 	             s_egmCount.rowsFull, s_egmCount.badTable, s_egmCount.unknownForm, s_egmCount.abrMixed);
 	Platform_Log("[CTR Engine] track mosaic: level %d: tiles vs level 2: tpage/clut differ %d, abr differs %d (semi/opaque class differs %d); "
@@ -591,12 +835,14 @@ internal void EngMosaic_Log(int width, int height, const char *state)
 	if ((n > 0) && (level2Texels != NULL))
 	{
 		Platform_Log("[CTR Engine] track mosaic: level %d: tile texels min %d median %d max %d, level 2 texels min %d median %d max %d\n", s_egmLevel,
-		             tileTexels[0], tileTexels[n / 2], tileTexels[n - 1], level2Texels[0], level2Texels[set->count / 2], level2Texels[set->count - 1]);
+		             tileTexels[0], tileTexels[n / 2], tileTexels[n - 1], level2Texels[0], level2Texels[tableRows / 2], level2Texels[tableRows - 1]);
 	}
 	else
 	{
 		Platform_Log("[CTR Engine] track mosaic: level %d: tile texels none\n", s_egmLevel);
 	}
+	Platform_Log("[CTR Engine] track mosaic: level %d: animated faces %d, made %d, whole-face rows %d, bad cells %d\n", s_egmLevel, s_egmCount.animFaces,
+	             s_egmCount.animMade, animRows, s_egmCount.animBad);
 	Platform_Log("[CTR Engine] track mosaic: level %d: data texture %dx%d %s\n", s_egmLevel, width, height, state);
 	free(tiles);
 	free(tileTexels);
@@ -882,6 +1128,37 @@ int Engine_SelfTestTrackMosaic(int *checks)
 	// (10) texel count of a layout.
 	EGM_CHECK((EngMosaic_LayoutTexels(&table[0]) == 32 * 32) && (EngMosaic_LayoutTexels(&levels[2]) == 7 * 7), "layout texels %d %d",
 	          EngMosaic_LayoutTexels(&table[0]), EngMosaic_LayoutTexels(&levels[2]));
+
+	// (11) whole-face rows of animated faces: keyed by (cell, mirrored), one cell per side, every
+	// cell the finest layout (corners swapped when mirrored), apart from the table rows; a rewrite
+	// for another group changes the cells and what the row shows.
+	{
+		u8 px[EGM_ROW_TEXELS * 4];
+		int same = 0;
+
+		made = 0;
+		a = EngMosaic_AnimRowFind(&set, 0x5000u, 0, 0x6000u, table, &table[3], &made);
+		EGM_CHECK((a == 4) && (made == 1) && (set.rows[4].side == 1) && (set.rows[4].shown == 0x6000u) && (set.rows[4].abr == 3) &&
+		              (set.rows[4].level[2].u0 == 2),
+		          "anim row: index %d made %d", a, made);
+		for (i = 0; i < EGM_CELLS; i++)
+		{
+			same += (memcmp(&set.rows[4].cell[i], &table[3], sizeof(table[3])) == 0);
+		}
+		EGM_CHECK(same == EGM_CELLS, "anim row: %d of 16 cells hold the finest layout", same);
+		b = EngMosaic_AnimRowFind(&set, 0x5000u, 0, 0x6000u, table, &table[3], &made);
+		EGM_CHECK((b == 4) && (made == 0), "anim row: the same cell gave %d made %d", b, made);
+		b = EngMosaic_AnimRowFind(&set, 0x5000u, 1, 0x6000u, table, &table[3], &made);
+		EGM_CHECK((b == 5) && (made == 1) && (set.rows[5].cell[0].u0 == table[3].u1) && (set.rows[5].cell[0].u1 == table[3].u0),
+		          "anim row: mirrored row %d not swapped", b);
+		EGM_CHECK((EngMosaic_RowFind(&set, 0x1000u, 0x2000u, table, 0, ENGINE_MOSAIC_FORM_4X4, levels, NULL) == 0) &&
+		              (EngMosaic_AnimRowFind(&set, 0u, 0, 0x6000u, table, &table[3], NULL) == -1),
+		          "anim rows mixed up with table rows, or cell 0 taken");
+		EngMosaic_WholeFaceFill(&set.rows[4], 0x7000u, &table[4], &table[7]);
+		EGM_CHECK((set.rows[4].shown == 0x7000u) && (set.rows[4].cell[5].u0 == 7) && (set.rows[4].level[0].u0 == 4), "anim row rewrite");
+		EngMosaic_PackRow(px, &set.rows[4]);
+		EGM_CHECK((px[0] == 1) && (px[4 * (EGM_CELL_TEXEL + 3 * 15)] == 7), "anim row packing");
+	}
 
 	EngMosaic_RowSetFree(&set);
 	return failures;
