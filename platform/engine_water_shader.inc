@@ -36,8 +36,17 @@
 // THE COLOUR. Schlick's fresnel F (EGW_F0) mixes the two: the reflection weighs
 // EGW_REFLECT_MAX * F, the sea colour the rest; the sum times EGW_K_WATER, the
 // vertex colour and the tint, faded out between EGW_FADE_START and EGW_FADE_END
-// of view depth. The material blends it additively (the PS1 water is additive
-// too), so the floor below shows through.
+// of horizontal distance from the eye (x and z, so the fade does not move when
+// the camera turns). The material blends it additively (the PS1 water is
+// additive too), so the floor below shows through.
+//
+// THE FAR FADE. The numbers are the distances at which the PS1 water fades to
+// black (game/226/226_00_DrawLevelOvr1P.c, Ovr226_800a2234: full colour below
+// 3072, nothing from 4096 on, in its octagon distance on x and z). Water past
+// them is not part of the retail picture: with a later fade (12000..16000 up to
+// 2026-10-15) the far sea of Crash Cove showed as a bright band on the horizon,
+// over the arrow sign behind the beach. Only the distances are taken, not the
+// GTE fade.
 //
 // THE NUMBERS. Every constant is a macro below and goes into the GLSL text from
 // here, and platform/engine_water.c computes the same lookup on the CPU from
@@ -47,8 +56,8 @@
 #define EGW_STR(x) #x
 
 #define EGW_ENV_TEXELS 64
-#define EGW_FADE_START 12000.0
-#define EGW_FADE_END 16000.0
+#define EGW_FADE_START 3072.0
+#define EGW_FADE_END 4096.0
 #define EGW_RIPPLE_FULL 2000.0
 #define EGW_RIPPLE_ZERO 8000.0
 #define EGW_FLOW 400.0
@@ -171,7 +180,7 @@ global_variable const char *ctr_native_water_shader =
     "	float seaV = " EGW_XSTR(EGW_SEA_TOP) " + (" EGW_XSTR(EGW_SEA_BOTTOM) " - " EGW_XSTR(EGW_SEA_TOP) ") * depression / (0.5 * PI);\n"
     "	float cosine = clamp(dot(-view, n), 0.0, 1.0);\n"
     "	float fresnel = " EGW_XSTR(EGW_F0) " + (1.0 - " EGW_XSTR(EGW_F0) ") * pow(1.0 - cosine, 5.0);\n"
-    "	float fade = clamp((" EGW_XSTR(EGW_FADE_END) " - v_depth) / (" EGW_XSTR(EGW_FADE_END) " - " EGW_XSTR(EGW_FADE_START) "), 0.0, 1.0);\n"
+    "	float fade = clamp((" EGW_XSTR(EGW_FADE_END) " - length(v_world.xz - params4.xz)) / (" EGW_XSTR(EGW_FADE_END) " - " EGW_XSTR(EGW_FADE_START) "), 0.0, 1.0);\n"
     "	float reflectWeight = " EGW_XSTR(EGW_REFLECT_MAX) " * fresnel;\n"
     "	vec3 water = mix(envBilinear(vec2(seaU, seaV)), envBilinear(vec2(u, v)), reflectWeight);\n"
     "	vec3 colour = water * " EGW_XSTR(EGW_K_WATER) " * v_color.rgb * fade;\n"

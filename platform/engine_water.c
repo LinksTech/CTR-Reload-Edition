@@ -316,8 +316,9 @@ done:
 // macros: the env texel of the reflection (u wraps at 64, v 0 = zenith .. 32 =
 // horizon), the env texel of the sea colour along the refracted ray (v from
 // EGW_SEA_TOP to EGW_SEA_BOTTOM), the weight of the reflection in the mix
-// (EGW_REFLECT_MAX * fresnel) and the far fade. eye and world in world units,
-// (nx, nz) the mesh normal, depth the view depth, time in seconds.
+// (EGW_REFLECT_MAX * fresnel) and the far fade (by the distance from eye to
+// world on x and z). eye and world in world units, (nx, nz) the mesh normal,
+// depth the view depth (for the ripples), time in seconds.
 typedef struct
 {
 	float u;
@@ -415,7 +416,12 @@ internal EngWaterLook EngWater_Lookup(const float eye[3], const float world[3], 
 	cosine = EngWater_Clamp(-d, 0.0, 1.0);
 	fresnel = EGW_F0 + (1.0 - EGW_F0) * pow(1.0 - cosine, 5.0);
 	out.reflectWeight = (float)(EGW_REFLECT_MAX * fresnel);
-	out.fade = (float)EngWater_Clamp((EGW_FADE_END - (double)depth) / (EGW_FADE_END - EGW_FADE_START), 0.0, 1.0);
+	{
+		const double fx = (double)world[0] - (double)eye[0];
+		const double fz = (double)world[2] - (double)eye[2];
+
+		out.fade = (float)EngWater_Clamp((EGW_FADE_END - sqrt(fx * fx + fz * fz)) / (EGW_FADE_END - EGW_FADE_START), 0.0, 1.0);
+	}
 	return out;
 }
 
@@ -1155,7 +1161,7 @@ int Engine_SelfTestWater(int *checks)
 	}
 	EngWater_BuildFree(&b);
 
-	// (6) the lookup. Ripples off (depth past EGW_RIPPLE_ZERO, fade still 1).
+	// (6) the lookup. Ripples off (depth past EGW_RIPPLE_ZERO).
 	{
 		const float point[3] = {0.0f, 0.0f, 0.0f};
 		const float above[3] = {0.0f, 1000.0f, 0.0f};
@@ -1185,10 +1191,19 @@ int Engine_SelfTestWater(int *checks)
 		EGW_CHECK(fabsf(down.reflectWeight - (float)(EGW_REFLECT_MAX * EGW_F0)) < 1.0e-3f, "straight down: reflection weight %.4f", down.reflectWeight);
 		EGW_CHECK((flat.reflectWeight > down.reflectWeight + 0.3f) && (flat.reflectWeight <= (float)EGW_REFLECT_MAX),
 		          "fresnel: grazing weight %.3f against straight down %.3f (at most EGW_REFLECT_MAX)", flat.reflectWeight, down.reflectWeight);
-		EGW_CHECK((EngWater_Lookup(above, point, 0.0f, 0.0f, 1000.0f, 0.0f).fade == 1.0f) &&
-		              (EngWater_Lookup(above, point, 0.0f, 0.0f, (float)EGW_FADE_END, 0.0f).fade == 0.0f) &&
-		              (fabsf(EngWater_Lookup(above, point, 0.0f, 0.0f, (float)(0.5 * (EGW_FADE_START + EGW_FADE_END)), 0.0f).fade - 0.5f) < 1.0e-4f),
-		          "fade: not 1 near, 0.5 half way, 0 at EGW_FADE_END");
+		// The far fade goes by the distance on x and z: the height of the eye and the view depth do not count.
+		{
+			const float halfWay = (float)(0.5 * (EGW_FADE_START + EGW_FADE_END));
+			const float nearHigh[3] = {0.0f, 3000.0f, -1000.0f};
+			const float endLow[3] = {(float)EGW_FADE_END, 10.0f, 0.0f};
+			const float halfDiagonal[3] = {halfWay * 0.6f, 200.0f, halfWay * 0.8f};
+
+			EGW_CHECK((EngWater_Lookup(above, point, 0.0f, 0.0f, (float)EGW_FADE_END + 1000.0f, 0.0f).fade == 1.0f) &&
+			              (EngWater_Lookup(nearHigh, point, 0.0f, 0.0f, 1000.0f, 0.0f).fade == 1.0f) &&
+			              (EngWater_Lookup(endLow, point, 0.0f, 0.0f, 1000.0f, 0.0f).fade == 0.0f) &&
+			              (fabsf(EngWater_Lookup(halfDiagonal, point, 0.0f, 0.0f, 1000.0f, 0.0f).fade - 0.5f) < 1.0e-3f),
+			          "fade: not 1 near (also straight above and high up), 0.5 half way, 0 at EGW_FADE_END on x and z");
+		}
 	}
 
 	// (7) animated, slowly: per game frame the reflection lookup moves 0.01 .. 0.5 texel on average and never
