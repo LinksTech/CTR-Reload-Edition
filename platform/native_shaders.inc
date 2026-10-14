@@ -939,9 +939,7 @@ global_variable const char *ctr_native_twin_shader =
 //      read as in 2. With params2.w 1 a cell texel smaller than a pixel gives
 //      way to the group's level 2, then 1, then 0 (the screen derivative of
 //      the world position over the face size the vertex alpha carries, like
-//      mip levels; not the PS1's distance thresholds). A pixel that spans
-//      several texels of its level along its longer screen direction averages
-//      up to 5 nearest texels along it (anisotropic filtering with point taps).
+//      mip levels; not the PS1's distance thresholds).
 //
 // VRAM (texSource 2). vramPage.xy is the page origin in VRAM words, vramPage.z
 // the depth (0 = 4 bit, 1 = 8 bit, 2 = 15 bit), vramClut.xy the CLUT origin in
@@ -1058,20 +1056,16 @@ global_variable const char *ctr_native_engine_shader =
     "	}\n"
     "	return vramWord(page + t);\n"
     "}\n"
-    // A colour word's texel, 5:5:5 as the RG8 lookup table does it: (v & 31) << 3.
-    "vec3 texelOf(int word) {\n"
-    "	return vec3(float((word & 31) << 3), float(((word >> 5) & 31) << 3), float(((word >> 10) & 31) << 3)) / 255.0;\n"
-    "}\n"
-    // Whether this pass draws a colour word: 0x0000 is transparent, then the STP passes.
-    "bool wordDrawn(int word) {\n"
+    // A colour word as the fragment: 0x0000 is transparent, the STP passes, 5:5:5
+    // as the RG8 lookup table does it: (v & 31) << 3.
+    "vec4 wordColour(int word) {\n"
+    "	if (word == 0) { discard; }\n"
     "	bool stp = (word & 0x8000) != 0;\n"
     "	int pass = int(params.w + 0.5);\n"
-    "	return (word != 0) && !((pass == 1) && stp) && !((pass == 2) && !stp);\n"
-    "}\n"
-    // A colour word as the fragment (a word the pass does not draw is discarded).
-    "vec4 wordColour(int word) {\n"
-    "	if (!wordDrawn(word)) { discard; }\n"
-    "	return vec4(texelOf(word) * v_color.rgb * params2.x, v_color.a);\n"
+    "	if ((pass == 1) && stp) { discard; }\n"
+    "	if ((pass == 2) && !stp) { discard; }\n"
+    "	vec3 texel = vec3(float((word & 31) << 3), float(((word >> 5) & 31) << 3), float(((word >> 10) & 31) << 3)) / 255.0;\n"
+    "	return vec4(texel * v_color.rgb * params2.x, v_color.a);\n"
     "}\n"
     // One texel of the mosaic table, its four bytes.
     "ivec4 tableTexel(int row, int x) {\n"
@@ -1082,27 +1076,6 @@ global_variable const char *ctr_native_engine_shader =
     "	vec2 lo = vec2(min(min(a.x, b.x), min(c.x, c.z)), min(min(a.y, b.y), min(c.y, c.w)));\n"
     "	vec2 hi = vec2(max(max(a.x, b.x), max(c.x, c.z)), max(max(a.y, b.y), max(c.y, c.w)));\n"
     "	return hi - lo + 1.0;\n"
-    "}\n"
-    // The colour word at (s, t) of a face for one level: -1 the cells of the row (texels 1..48), 0..2 the
-    // group's levels 2, 1, 0 (texels 49, 52, 55). The UV inside the layout is bilinear over its corners u0v0
-    // (0, 0), u1v1 (1, 0), u2v2 (0, 1), u3v3 (1, 1).
-    "int tableWord(int row, int side, int level, vec2 st) {\n"
-    "	int at = 49 + 3 * level;\n"
-    "	vec2 f = clamp(st, 0.0, 1.0);\n"
-    "	if (level < 0) {\n"
-    "		vec2 g = st * float(side);\n"
-    "		ivec2 cr = clamp(ivec2(floor(g)), ivec2(0), ivec2(side - 1));\n"
-    "		f = g - vec2(cr);\n"
-    "		at = 1 + 3 * (4 * cr.y + cr.x);\n"
-    "	}\n"
-    "	ivec4 a = tableTexel(row, at);\n"
-    "	ivec4 b = tableTexel(row, at + 1);\n"
-    "	ivec4 c = tableTexel(row, at + 2);\n"
-    "	vec2 uv = mix(mix(vec2(a.xy), vec2(b.xy), f.x), mix(vec2(c.xy), vec2(c.zw), f.x), f.y);\n"
-    "	int tpage = b.z | (b.w << 8);\n"
-    "	int clut = a.z | (a.w << 8);\n"
-    "	return pageWord(ivec2(floor(uv)), ivec2((tpage & 15) * 64, ((tpage >> 4) & 1) * 256), (tpage >> 7) & 3,\n"
-    "	                ivec2((clut & 63) * 16, clut >> 6));\n"
     "}\n"
     // How much of the face one pixel covers: the world size of the pixel over the
     // face's size. The world position is continuous across faces, (s, t) is not
@@ -1133,55 +1106,36 @@ global_variable const char *ctr_native_engine_shader =
     "		vec2 ab = floor(v_uv * 0.25);\n"
     "		int row = int(ab.x) + 64 * int(ab.y);\n"
     "		vec2 st = v_uv - 4.0 * ab - 2.0;\n"
-    // Before any discard: the derivatives need the whole 2 x 2 quad. The row part of v_uv is the same on the
-    // whole face and the quad's pixels are evaluated on one triangle, so the derivatives of v_uv (not of the
-    // decoded st, whose floor can wrap on a neighbour) are those of (s, t): the pixel's footprint on the face.
+    // Before any discard: the derivatives need the whole 2 x 2 quad.
     "		vec2 face = faceFootprint();\n"
-    "		vec2 stX = dFdx(v_uv);\n"
-    "		vec2 stY = dFdy(v_uv);\n"
     "		int side = max(tableTexel(row, 0).r, 1);\n"
-    "		int level = -1;\n"
-    "		int taps = 1;\n"
-    "		vec2 axis = stX;\n"
+    "		vec2 g = st * float(side);\n"
+    "		ivec2 cr = clamp(ivec2(floor(g)), ivec2(0), ivec2(side - 1));\n"
+    "		vec2 f = g - vec2(cr);\n"
+    "		int at = 1 + 3 * (4 * cr.y + cr.x);\n"
+    "		ivec4 a = tableTexel(row, at);\n"
+    "		ivec4 b = tableTexel(row, at + 1);\n"
+    "		ivec4 c = tableTexel(row, at + 2);\n"
     // params2.w 1: a cell texel smaller than a pixel gives way to level 2, then 1, then 0 (texels 49, 52, 55).
     "		if (params2.w > 0.5) {\n"
-    "			vec2 g = st * float(side);\n"
-    "			ivec2 cr = clamp(ivec2(floor(g)), ivec2(0), ivec2(side - 1));\n"
-    "			int at = 1 + 3 * (4 * cr.y + cr.x);\n"
-    "			vec2 size = layoutSize(tableTexel(row, at), tableTexel(row, at + 1), tableTexel(row, at + 2)) * float(side);\n"
+    "			vec2 size = layoutSize(a, b, c) * float(side);\n"
     "			float perPixel = max(face.x * size.x, face.y * size.y);\n"
     "			for (int k = 0; (k < 3) && (perPixel > 1.0); k++) {\n"
-    "				level = k;\n"
-    "				size = layoutSize(tableTexel(row, 49 + 3 * k), tableTexel(row, 50 + 3 * k), tableTexel(row, 51 + 3 * k));\n"
+    "				at = 49 + 3 * k;\n"
+    "				a = tableTexel(row, at);\n"
+    "				b = tableTexel(row, at + 1);\n"
+    "				c = tableTexel(row, at + 2);\n"
+    "				f = clamp(st, 0.0, 1.0);\n"
+    "				size = layoutSize(a, b, c);\n"
     "				perPixel = max(face.x * size.x, face.y * size.y);\n"
     "			}\n"
-    // The texels of the chosen level the pixel spans along its longer screen direction. That many taps (an odd
-    // count, so the centre is one of them) cover it with one tap per texel at most: 5 at the 4 to 1 cap.
-    "			vec2 tx = stX * size;\n"
-    "			vec2 ty = stY * size;\n"
-    "			axis = (dot(tx, tx) >= dot(ty, ty)) ? stX : stY;\n"
-    "			float span = sqrt(max(dot(tx, tx), dot(ty, ty)));\n"
-    "			taps = clamp(2 * int(ceil((span - 1.0) * 0.5)) + 1, 1, 5);\n"
     "		}\n"
-    // The centre tap is the texel of a single sample and decides the discard, so cut-outs keep their edge.
-    "		int word = tableWord(row, side, level, st);\n"
-    "		colour = wordColour(word);\n"
-    // A pixel that spans several texels along its longer direction averages that many nearest texels along
-    // it, spread evenly over the pixel: anisotropic filtering with point taps, in the shader. Every tap is a
-    // texel of the level the pixel chose, so a face near the camera looks as before (one tap), and a face seen
-    // almost edge-on no longer skips texels from frame to frame (the shimmer of Hot Air Skyway, round
-    // 2026-10-15). Taps the centre's pass does not draw (transparent, the other STP pass) are left out.
-    "		if (taps > 1) {\n"
-    "			vec3 sum = texelOf(word);\n"
-    "			float n = 1.0;\n"
-    "			for (int i = 0; i < taps; i++) {\n"
-    "				if (i == (taps - 1) / 2) { continue; }\n"
-    "				float o = (float(i) + 0.5) / float(taps) - 0.5;\n"
-    "				int w = tableWord(row, side, level, clamp(st + axis * o, 0.0, 1.0));\n"
-    "				if (wordDrawn(w)) { sum += texelOf(w); n += 1.0; }\n"
-    "			}\n"
-    "			colour = vec4(sum / n * v_color.rgb * params2.x, v_color.a);\n"
-    "		}\n"
+    // The UV inside the cell: bilinear over its corners u0v0 (0, 0), u1v1 (1, 0), u2v2 (0, 1), u3v3 (1, 1).
+    "		vec2 uv = mix(mix(vec2(a.xy), vec2(b.xy), f.x), mix(vec2(c.xy), vec2(c.zw), f.x), f.y);\n"
+    "		int tpage = b.z | (b.w << 8);\n"
+    "		int clut = a.z | (a.w << 8);\n"
+    "		colour = wordColour(pageWord(ivec2(floor(uv)), ivec2((tpage & 15) * 64, ((tpage >> 4) & 1) * 256), (tpage >> 7) & 3,\n"
+    "		                             ivec2((clut & 63) * 16, clut >> 6)));\n"
     // The vertex alpha held the face size: a table face is as opaque as any VRAM texel (the tint's alpha only).
     "		colour.a = tint.a;\n"
     "	} else if (params.x > 1.5) {\n"
