@@ -956,10 +956,10 @@ int Engine_WaterProbe(const struct GameTracker *gGT, int view, EngineWaterProbe 
 	return 1;
 }
 
-// The probe as a log line, for the tour (every 30 race frames; `vblank` is
-// whatever frame number the caller counts in - the tour passes its race frame,
-// the number --level-tour-shots uses). Quiet on a level without water blocks.
-void Engine_WaterProbeLog(const struct GameTracker *gGT, int view, int vblank, const char *tag)
+// The probe as a log line, for the tour (every 30 race frames; frame is the
+// tour's race frame, the number --level-tour-shots uses). Quiet on a level
+// without water blocks.
+void Engine_WaterProbeLog(const struct GameTracker *gGT, int view, int frame, const char *tag)
 {
 	EngineWaterProbe p;
 
@@ -968,7 +968,7 @@ void Engine_WaterProbeLog(const struct GameTracker *gGT, int view, int vblank, c
 		return;
 	}
 	Platform_Log("[CTR Engine] water probe %s: level %d frame %d view %d: %d of %d block(s) on screen, share %.3f, box %.3f,%.3f-%.3f,%.3f, nearest %.0f\n",
-	             (tag != NULL) ? tag : "-", gGT->levelID, vblank, view, p.onScreen, p.blocks, p.share, p.box[0], p.box[1], p.box[2], p.box[3], p.nearestDepth);
+	             (tag != NULL) ? tag : "-", gGT->levelID, frame, view, p.onScreen, p.blocks, p.share, p.box[0], p.box[1], p.box[2], p.box[3], p.nearestDepth);
 }
 
 // --------------------------------------------------------------------------
