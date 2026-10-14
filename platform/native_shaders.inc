@@ -1078,9 +1078,13 @@ global_variable const char *ctr_native_engine_shader =
     // of the two screen directions counts, as an anisotropic filter would take
     // it: a face seen at a grazing angle near the camera is long in one
     // direction only, and the longer one would send it to a coarse level
-    // where the PS1 (by depth) still draws its finest.
+    // where the PS1 (by depth) still draws its finest. Capped at 4 to 1 like an
+    // anisotropic filter: at the flattest angles the longer direction counts
+    // again (divided by 4), or the finest tiles sparkle along the road.
     "vec2 faceFootprint() {\n"
-    "	float world = min(length(dFdx(v_world)), length(dFdy(v_world)));\n"
+    "	float minor = min(length(dFdx(v_world)), length(dFdy(v_world)));\n"
+    "	float major = max(length(dFdx(v_world)), length(dFdy(v_world)));\n"
+    "	float world = max(minor, major * 0.25);\n"
     "	float size = exp2(floor(v_color.a / max(tint.a, 1e-6) * 255.0 + 0.5) / 16.0);\n"
     "	return vec2(world / size);\n"
     "}\n"
