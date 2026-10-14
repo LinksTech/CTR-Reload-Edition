@@ -11,8 +11,9 @@
 // BSP_LEAF_FLAG_WATER; RenderLists puts such a leaf in the water slot only,
 // game/RenderLevel/RenderLists.c Select1P2PSlot) become one static engine mesh,
 // drawn every race frame by the program "nw" (platform/engine_water_shader.inc):
-// a rippled reflection of the level's env map (on the disc a 64 x 64 sky
-// panorama), weighted by fresnel and added to what lies below. While it is
+// the water's own colour from the sea half of the level's env map (on the disc
+// a 64 x 64 sky and sea panorama) along the refracted ray, mixed by fresnel
+// with a rippled reflection of its sky half, and added to what lies below. While it is
 // drawn, the PS1 walk of the level skips its two water buckets (8 "water
 // rendered", 9 "water list" of DrawLevelOvr1P) through Engine_WaterOwnsBucket.
 //
@@ -312,15 +313,18 @@ done:
 }
 
 // The CPU twin of the lookup of "nw" (engine_water_shader.inc), from the same
-// macros: the env texel coordinate (u wraps at 64, v 0 = zenith .. 32 =
-// horizon), the brightness factor (K_BASE + K_FRESNEL * fresnel) and the far
-// fade. eye and world in world units, (nx, nz) the mesh normal, depth the view
-// depth, time in seconds.
+// macros: the env texel of the reflection (u wraps at 64, v 0 = zenith .. 32 =
+// horizon), the env texel of the sea colour along the refracted ray (v from
+// EGW_SEA_TOP to EGW_SEA_BOTTOM), the weight of the reflection in the mix
+// (EGW_REFLECT_MAX * fresnel) and the far fade. eye and world in world units,
+// (nx, nz) the mesh normal, depth the view depth, time in seconds.
 typedef struct
 {
 	float u;
 	float v;
-	float intensity;
+	float seaU;
+	float seaV;
+	float reflectWeight;
 	float fade;
 } EngWaterLook;
 
@@ -387,9 +391,30 @@ internal EngWaterLook EngWater_Lookup(const float eye[3], const float world[3], 
 	azimuth = azimuth / (2.0 * 3.14159265);
 	out.u = (float)((azimuth - floor(azimuth)) * env);
 	out.v = (float)((env * 0.5) * (1.0 - elevation / (0.5 * 3.14159265)));
+	// GLSL refract(view, n, 1 / EGW_IOR): no ray (0) on total internal reflection.
+	{
+		const double eta = 1.0 / EGW_IOR;
+		const double k = 1.0 - eta * eta * (1.0 - d * d);
+		double t[3] = {0.0, 0.0, 0.0};
+		double depression;
+		double seaAzimuth;
+
+		if (k >= 0.0)
+		{
+			for (i = 0; i < 3; i++)
+			{
+				t[i] = eta * view[i] - (eta * d + sqrt(k)) * n[i];
+			}
+		}
+		depression = asin(EngWater_Clamp(-t[1], 0.0, 1.0));
+		seaAzimuth = ((fabs(t[0]) + fabs(t[2])) > 1.0e-6) ? atan2(t[2], t[0]) : 0.0;
+		seaAzimuth = seaAzimuth / (2.0 * 3.14159265);
+		out.seaU = (float)((seaAzimuth - floor(seaAzimuth)) * env);
+		out.seaV = (float)(EGW_SEA_TOP + (EGW_SEA_BOTTOM - EGW_SEA_TOP) * depression / (0.5 * 3.14159265));
+	}
 	cosine = EngWater_Clamp(-d, 0.0, 1.0);
 	fresnel = EGW_F0 + (1.0 - EGW_F0) * pow(1.0 - cosine, 5.0);
-	out.intensity = (float)(EGW_K_BASE + EGW_K_FRESNEL * fresnel);
+	out.reflectWeight = (float)(EGW_REFLECT_MAX * fresnel);
 	out.fade = (float)EngWater_Clamp((EGW_FADE_END - (double)depth) / (EGW_FADE_END - EGW_FADE_START), 0.0, 1.0);
 	return out;
 }
@@ -1149,19 +1174,29 @@ int Engine_SelfTestWater(int *checks)
 		EGW_CHECK((EngWater_TestUDist(a.u, c.u) < 0.1f) && (fabsf(a.u - c.u) > 60.0f), "azimuth wrap: u %.3f and %.3f", a.u, c.u);
 		EGW_CHECK((fabsf(later.u - flat.u) < 1.0e-4f) && (fabsf(later.v - flat.v) < 1.0e-4f), "ripples past EGW_RIPPLE_ZERO still move: %.5f %.5f",
 		          later.u - flat.u, later.v - flat.v);
-		EGW_CHECK(fabsf(down.intensity - (float)(EGW_K_BASE + EGW_K_FRESNEL * EGW_F0)) < 1.0e-3f, "straight down: intensity %.4f", down.intensity);
-		EGW_CHECK(flat.intensity > down.intensity + 0.3f, "fresnel: grazing %.3f not brighter than straight down %.3f", flat.intensity, down.intensity);
+		// The sea colour: straight down reads the bottom row, a grazing look the row of the critical angle
+		// (the refracted ray 48.75 degrees from straight down: 34 + 28 * 41.25 / 90 = 46.8), in the azimuth of the view.
+		EGW_CHECK(fabsf(down.seaV - (float)EGW_SEA_BOTTOM) < 0.01f, "straight down: sea v %.3f, expected EGW_SEA_BOTTOM", down.seaV);
+		EGW_CHECK(fabsf(flat.seaV - 46.83f) < 0.2f, "grazing: sea v %.3f, expected about 46.83", flat.seaV);
+		EGW_CHECK(EngWater_TestUDist(flat.seaU, flat.u) < 0.01f, "grazing: sea u %.3f not the azimuth of the reflection %.3f", flat.seaU, flat.u);
+		// The mix: the reflection weighs EGW_REFLECT_MAX * fresnel - next to nothing straight down, most at a grazing look.
+		EGW_CHECK(fabsf(down.reflectWeight - (float)(EGW_REFLECT_MAX * EGW_F0)) < 1.0e-3f, "straight down: reflection weight %.4f", down.reflectWeight);
+		EGW_CHECK((flat.reflectWeight > down.reflectWeight + 0.3f) && (flat.reflectWeight <= (float)EGW_REFLECT_MAX),
+		          "fresnel: grazing weight %.3f against straight down %.3f (at most EGW_REFLECT_MAX)", flat.reflectWeight, down.reflectWeight);
 		EGW_CHECK((EngWater_Lookup(above, point, 0.0f, 0.0f, 1000.0f, 0.0f).fade == 1.0f) &&
 		              (EngWater_Lookup(above, point, 0.0f, 0.0f, (float)EGW_FADE_END, 0.0f).fade == 0.0f) &&
 		              (fabsf(EngWater_Lookup(above, point, 0.0f, 0.0f, (float)(0.5 * (EGW_FADE_START + EGW_FADE_END)), 0.0f).fade - 0.5f) < 1.0e-4f),
 		          "fade: not 1 near, 0.5 half way, 0 at EGW_FADE_END");
 	}
 
-	// (7) animated, slowly: per game frame the lookup moves 0.01 .. 0.5 texel on average and never 0.5 or more.
+	// (7) animated, slowly: per game frame the reflection lookup moves 0.01 .. 0.5 texel on average and never
+	// 0.5 or more; the sea lookup moves too (at least 0.005 on average) and never 0.5 or more.
 	{
 		const float eye[3] = {0.0f, 300.0f, -1500.0f};
 		double sum = 0.0;
+		double seaSum = 0.0;
 		float most = 0.0f;
+		float seaMost = 0.0f;
 		int samples = 0;
 		int ix;
 		int iz;
@@ -1180,14 +1215,20 @@ int Engine_SelfTestWater(int *checks)
 					const float du = EngWater_TestUDist(l0.u, l1.u);
 					const float dv = l1.v - l0.v;
 					const float d = sqrtf(du * du + dv * dv);
+					const float sdu = EngWater_TestUDist(l0.seaU, l1.seaU);
+					const float sdv = l1.seaV - l0.seaV;
+					const float sd = sqrtf(sdu * sdu + sdv * sdv);
 
 					sum += d;
 					most = (d > most) ? d : most;
+					seaSum += sd;
+					seaMost = (sd > seaMost) ? sd : seaMost;
 					samples++;
 				}
 			}
 		}
 		EGW_CHECK((sum / samples >= 0.01) && (sum / samples <= 0.5) && (most < 0.5f), "motion per frame: mean %.4f, max %.4f texel", sum / samples, most);
+		EGW_CHECK((seaSum / samples >= 0.005) && (seaMost < 0.5f), "sea motion per frame: mean %.4f, max %.4f texel", seaSum / samples, seaMost);
 	}
 
 	// (8) the eye from a view matrix: it maps to the view origin.

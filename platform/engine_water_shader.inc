@@ -26,10 +26,18 @@
 // texels of the page (vramPage / vramClut as in "ne"); u wraps inside the 64
 // texels, v is clamped. Bilinear over four texels, each through the CLUT.
 //
-// THE COLOUR. Schlick's fresnel (EGW_F0) weights the reflection: env * (K_BASE +
-// K_FRESNEL * F) * vertex colour * tint, faded out between EGW_FADE_START and
-// EGW_FADE_END of view depth. The material blends it additively (the PS1 water
-// is additive too), so the floor below shows through.
+// THE WATER'S OWN COLOUR. The view ray is also refracted into the water (index
+// EGW_IOR) and looked up in the SEA half of the same env map: the azimuth gives
+// u, the depression of the refracted ray gives v from EGW_SEA_TOP (just below
+// the horizon line) to EGW_SEA_BOTTOM (straight down). On the disc that half is
+// the turquoise sea the retail water shows; a steep look reads the deeper,
+// darker rows.
+//
+// THE COLOUR. Schlick's fresnel F (EGW_F0) mixes the two: the reflection weighs
+// EGW_REFLECT_MAX * F, the sea colour the rest; the sum times EGW_K_WATER, the
+// vertex colour and the tint, faded out between EGW_FADE_START and EGW_FADE_END
+// of view depth. The material blends it additively (the PS1 water is additive
+// too), so the floor below shows through.
 //
 // THE NUMBERS. Every constant is a macro below and goes into the GLSL text from
 // here, and platform/engine_water.c computes the same lookup on the CPU from
@@ -44,9 +52,12 @@
 #define EGW_RIPPLE_FULL 2000.0
 #define EGW_RIPPLE_ZERO 8000.0
 #define EGW_FLOW 400.0
-#define EGW_K_BASE 0.30
-#define EGW_K_FRESNEL 0.60
+#define EGW_K_WATER 0.60
+#define EGW_REFLECT_MAX 0.45
 #define EGW_F0 0.02
+#define EGW_IOR 1.33
+#define EGW_SEA_TOP 34.0
+#define EGW_SEA_BOTTOM 62.0
 // The three waves: direction x, direction z (unit), wavelength and speed in
 // world units, slope amplitude.
 #define EGW_W0_DX 0.8
@@ -152,10 +163,18 @@ global_variable const char *ctr_native_water_shader =
     "	float azimuth = ((abs(r.x) + abs(r.z)) > 1.0e-6) ? atan(r.z, r.x) : 0.0;\n"
     "	float u = fract(azimuth / (2.0 * PI)) * ENV;\n"
     "	float v = (ENV * 0.5) * (1.0 - elevation / (0.5 * PI));\n"
+    // The refracted ray (none when the eye is below the surface: GLSL refract gives 0 then).
+    "	vec3 t = refract(view, n, 1.0 / " EGW_XSTR(EGW_IOR) ");\n"
+    "	float depression = asin(clamp(-t.y, 0.0, 1.0));\n"
+    "	float seaAzimuth = ((abs(t.x) + abs(t.z)) > 1.0e-6) ? atan(t.z, t.x) : 0.0;\n"
+    "	float seaU = fract(seaAzimuth / (2.0 * PI)) * ENV;\n"
+    "	float seaV = " EGW_XSTR(EGW_SEA_TOP) " + (" EGW_XSTR(EGW_SEA_BOTTOM) " - " EGW_XSTR(EGW_SEA_TOP) ") * depression / (0.5 * PI);\n"
     "	float cosine = clamp(dot(-view, n), 0.0, 1.0);\n"
     "	float fresnel = " EGW_XSTR(EGW_F0) " + (1.0 - " EGW_XSTR(EGW_F0) ") * pow(1.0 - cosine, 5.0);\n"
     "	float fade = clamp((" EGW_XSTR(EGW_FADE_END) " - v_depth) / (" EGW_XSTR(EGW_FADE_END) " - " EGW_XSTR(EGW_FADE_START) "), 0.0, 1.0);\n"
-    "	vec3 colour = envBilinear(vec2(u, v)) * (" EGW_XSTR(EGW_K_BASE) " + " EGW_XSTR(EGW_K_FRESNEL) " * fresnel) * v_color.rgb * fade;\n"
+    "	float reflectWeight = " EGW_XSTR(EGW_REFLECT_MAX) " * fresnel;\n"
+    "	vec3 water = mix(envBilinear(vec2(seaU, seaV)), envBilinear(vec2(u, v)), reflectWeight);\n"
+    "	vec3 colour = water * " EGW_XSTR(EGW_K_WATER) " * v_color.rgb * fade;\n"
     "	fragColor = vec4(colour, 1.0);\n"
     "}\n"
     "#endif\n";
