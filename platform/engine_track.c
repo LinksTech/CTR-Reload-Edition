@@ -49,11 +49,13 @@
 // stays. A pointer with bit 0 set is an AnimTex indirection (*(ptr - 1)) which
 // is resolved ONCE at load: animated textures freeze (documented limit).
 //
-// KNOWN LIMITS (prototype): one detail level (the finest), no visibility
-// culling (everything not water, in a leaf), no vertex animation (scenery
-// vertices keep their load-time position and colour), water stays PS1, hidden
-// faces of track mods (platform frames) are drawn, PS1 objects have no depth
-// test and draw on top of the engine track.
+// SCENERY VERTEX ANIMATION (round of 2026-10-15): faces on vertices the game
+// animates in place (SCVert, configFlags & 4) are LIVE FACES, drawn every frame
+// from the level vertices as the game left them (see LIVE FACES below).
+//
+// KNOWN LIMITS: one detail level (the finest), no visibility culling (everything
+// not water, in a leaf), hidden faces of track mods (platform frames) are drawn,
+// PS1 objects have no depth test and draw on top of the engine track.
 
 #define EGT_MESH_VERTICES_MAX 65536u // u16 indices
 #define EGT_MESHES_MAX 48
@@ -64,6 +66,10 @@
 #define EGT_BUCKET_WATER_RENDERED 8
 #define EGT_BUCKET_WATER_LIST 9
 #define EGT_BUCKET_COUNT 11
+// Live faces (scenery vertex animation) per frame, as expanded vertices (3 per
+// triangle): a third of the renderer's dynamic store (ENGINE_DYN_EXPANDED,
+// engine_render.c), the rest stays for the effects. Above it a face stays static.
+#define EGT_LIVE_EXPANDED_MAX 32768u
 
 // --------------------------------------------------------------------------
 // Pure data side (no game state): the part the selftest checks.
@@ -97,6 +103,9 @@ typedef struct
 	u8 slotOf[4];
 	u8 mirrored;
 	u8 mid;
+	// The grid corner (0..8) of each slot vertex: its level vertex is the block's index[grid[v]]
+	// (the live faces read the vertex again every frame).
+	u8 grid[4];
 } EngTrackFace;
 
 typedef struct
@@ -403,6 +412,10 @@ internal int EngTrack_BuildBlock(const EngTrackBlockIn *in, const u32 *table, in
 		{
 			f->slotOf[v] = (u8)slotOf[v];
 		}
+		for (v = 0; v < 4; v++)
+		{
+			f->grid[v] = (u8)grid[v];
+		}
 		f->mirrored = (u8)mirrored;
 		f->mid = (u8)k;
 		faces++;
@@ -586,6 +599,89 @@ internal int EngTrack_Assemble(const EngTrackFace *faces, int faceCount, const E
 	return buildCount;
 }
 
+// LIVE FACES. Where the game moves level vertices itself every frame - the
+// scenery vertex animation of a level with configFlags & 4 (AnimateQuad,
+// game/RenderLevel/AnimateWater.c, writes position and colour of the SCVert
+// vertices in place; MainFrame_RenderFrame.c 1P path) - a face touching such a
+// vertex is not baked into the static meshes: it is kept with the level vertex of
+// each of its slot vertices and drawn every frame as dynamic geometry from what
+// the level vertex holds now. Read only: the game writes, the engine reads.
+typedef struct
+{
+	EngTrackFace face; // texture coordinates, triangles, key as built
+	u16 vertex[4];     // the level vertex (mesh->ptrVertexArray index) of each slot vertex
+	int material;
+	int semi;
+} EngTrackLiveFace;
+
+// Live faces of one material, drawn as one dynamic draw.
+typedef struct
+{
+	int material;
+	int semi;
+	int first;
+	int count;
+} EngTrackLiveGroup;
+
+// 1 when a slot vertex of the face is a marked level vertex (live[] has
+// numVertex entries; an index outside it counts as not marked).
+internal int EngTrack_FaceTouches(const EngTrackFace *f, const u16 *blockIndex, const u8 *live, int numVertex)
+{
+	int v;
+
+	for (v = 0; v < f->vertCount; v++)
+	{
+		const int index = (int)blockIndex[f->grid[v]];
+
+		if ((index < numVertex) && live[index])
+		{
+			return 1;
+		}
+	}
+	return 0;
+}
+
+// The vertices and indices of count live faces with the level vertices as they
+// are now: position and colour from verts, texture coordinates as built.
+// Returns the vertex count; *indexCount gets the index count. outV needs 4 and
+// outI 6 entries per face.
+internal u32 EngTrack_LiveFill(const EngTrackLiveFace *faces, int count, const struct LevVertex *verts, EngineVertex *outV, u16 *outI, u32 *indexCount)
+{
+	u32 vertexCount = 0;
+	u32 indices = 0;
+	int i;
+
+	for (i = 0; i < count; i++)
+	{
+		const EngTrackFace *f = &faces[i].face;
+		int c;
+		int t;
+
+		for (c = 0; c < f->vertCount; c++)
+		{
+			const struct LevVertex *lv = &verts[faces[i].vertex[c]];
+			EngineVertex *ev = &outV[vertexCount + (u32)c];
+
+			*ev = f->v[c];
+			ev->position[0] = (float)lv->pos.x;
+			ev->position[1] = (float)lv->pos.y;
+			ev->position[2] = (float)lv->pos.z;
+			ev->color[0] = lv->color_hi[0];
+			ev->color[1] = lv->color_hi[1];
+			ev->color[2] = lv->color_hi[2];
+		}
+		for (t = 0; t < f->triCount; t++)
+		{
+			outI[indices++] = (u16)(vertexCount + f->tri[t][0]);
+			outI[indices++] = (u16)(vertexCount + f->tri[t][1]);
+			outI[indices++] = (u16)(vertexCount + f->tri[t][2]);
+		}
+		vertexCount += f->vertCount;
+	}
+	*indexCount = indices;
+	return vertexCount;
+}
+
 // --------------------------------------------------------------------------
 // Game side
 
@@ -606,6 +702,7 @@ typedef struct
 	int transparent;
 	u32 drawn;
 	u32 declined;
+	char why[96]; // Engine_ModelImportWhy of a failed import
 } EngTrackModel;
 
 global_variable EngTrackKeySet s_egtKeys;
@@ -621,6 +718,57 @@ global_variable u64 s_egtBucketsSkipped;
 global_variable u64 s_egtWaterVisits;
 global_variable u64 s_egtInstDrawn;
 global_variable u64 s_egtInstDeclined;
+// Live faces of the loaded level (made at load, drawn every frame), grouped by material.
+global_variable EngTrackLiveFace *s_egtLive;
+global_variable int s_egtLiveCount;
+global_variable int s_egtLiveCap;
+global_variable EngTrackLiveGroup *s_egtLiveGroups;
+global_variable int s_egtLiveGroupCount;
+global_variable const struct LevVertex *s_egtLiveVertices; // the level's vertex array the live faces read
+global_variable EngineVertex *s_egtLiveScratchV;           // one group's vertices, rebuilt per draw
+global_variable u16 *s_egtLiveScratchI;
+global_variable u64 s_egtLiveDrawn;
+
+// Why a level instance was left to retail (the tour's per-track line).
+enum
+{
+	EGT_DECLINE_MODEL = 0, // no model entry, model not imported, no header
+	EGT_DECLINE_FLAGS,     // screen-space, billboard or hidden instance
+	EGT_DECLINE_FRAME,     // animation frame outside the imported frames
+	EGT_DECLINE_SUBMIT,    // Engine_InstanceSubmit refused
+	EGT_DECLINE_COUNT
+};
+global_variable u64 s_egtInstDeclinedBy[EGT_DECLINE_COUNT];
+// Race frames of the loaded level that Engine_TrackCollect saw (drawn or not).
+global_variable u64 s_egtCollectFrames;
+
+// What the last Engine_TrackLoad built, for the tour's per-track line.
+global_variable struct
+{
+	int levelID;
+	int faces;
+	int meshes;
+	int materials;
+	int dropped;
+	int liveFaces;
+	int frozenFaces;
+	int modelsImported;
+	int modelsFailed;
+} s_egtLoad = {-1, 0, 0, 0, 0, 0, 0, 0, 0};
+
+// The counters at the first race frame of a tour entry (EngTrack_TourReport phase 0).
+global_variable struct
+{
+	u64 framesDrawn;
+	u64 collectFrames;
+	u64 bucketsSkipped;
+	u64 instDrawn;
+	u64 instDeclined;
+	u64 instDeclinedBy[EGT_DECLINE_COUNT];
+	EngineRenderCounters render;
+	u32 fxDrawn[ENGINE_FX_KINDS];
+	u32 fxRetail[ENGINE_FX_KINDS];
+} s_egtTourBase;
 
 internal int EngTrack_SpanOk(u32 p, u32 size)
 {
@@ -646,6 +794,73 @@ internal void EngTrack_Report(void)
 
 		Platform_Log("[CTR Engine] track:   model '%s' id %d (%s): drawn %u, declined %u\n", m->name, (int)m->id, m->imported ? "imported" : "not imported",
 		             m->drawn, m->declined);
+	}
+}
+
+// The per-track lines of a --level-tour entry (Engine_TourRegister, include/platform/engine.h
+// TRACK TOUR): phase 0 (first race frame) keeps the counters, phase 1 (after the
+// last) prints what the entry added. The model table is the level's own (reset
+// at every load), so its counts are printed as they stand.
+internal void EngTrack_TourReport(int entry, int levelID, int phase)
+{
+	EngineRenderCounters rc;
+	u32 fxDrawn[ENGINE_FX_KINDS];
+	u32 fxRetail[ENGINE_FX_KINDS];
+	int i;
+
+	Engine_RenderCountersGet(&rc);
+	Engine_FxCountersGet(fxDrawn, fxRetail);
+	if (phase == 0)
+	{
+		s_egtTourBase.framesDrawn = s_egtFramesDrawn;
+		s_egtTourBase.collectFrames = s_egtCollectFrames;
+		s_egtTourBase.bucketsSkipped = s_egtBucketsSkipped;
+		s_egtTourBase.instDrawn = s_egtInstDrawn;
+		s_egtTourBase.instDeclined = s_egtInstDeclined;
+		memcpy(s_egtTourBase.instDeclinedBy, s_egtInstDeclinedBy, sizeof(s_egtTourBase.instDeclinedBy));
+		s_egtTourBase.render = rc;
+		memcpy(s_egtTourBase.fxDrawn, fxDrawn, sizeof(fxDrawn));
+		memcpy(s_egtTourBase.fxRetail, fxRetail, sizeof(fxRetail));
+		return;
+	}
+	{
+		const EngineRenderCounters *b = &s_egtTourBase.render;
+		const u32 refusedScene = rc.refusedScene - b->refusedScene;
+		const u32 refusedCell = rc.refusedCell - b->refusedCell;
+		const u32 refusedArena = rc.refusedArena - b->refusedArena;
+		const u32 refusedDyn = rc.refusedDyn - b->refusedDyn;
+		const u32 refusedNotReady = rc.refusedNotReady - b->refusedNotReady;
+
+		Platform_Log("[CTR Engine] tour %d level %d track: loaded for level %d, meshes %d, materials %d, faces %d, dropped %d, live faces %d (frozen %d); "
+		             "models %d imported, %d failed; frames drawn %llu of %llu, PS1 level buckets skipped %llu\n",
+		             entry, levelID, s_egtLoad.levelID, s_egtLoad.meshes, s_egtLoad.materials, s_egtLoad.faces, s_egtLoad.dropped, s_egtLoad.liveFaces,
+		             s_egtLoad.frozenFaces, s_egtLoad.modelsImported, s_egtLoad.modelsFailed,
+		             (unsigned long long)(s_egtFramesDrawn - s_egtTourBase.framesDrawn), (unsigned long long)(s_egtCollectFrames - s_egtTourBase.collectFrames),
+		             (unsigned long long)(s_egtBucketsSkipped - s_egtTourBase.bucketsSkipped));
+		Platform_Log("[CTR Engine] tour %d level %d instances: drawn %llu, declined %llu (model not imported %llu, flags %llu, frame %llu, submit %llu)\n",
+		             entry, levelID, (unsigned long long)(s_egtInstDrawn - s_egtTourBase.instDrawn),
+		             (unsigned long long)(s_egtInstDeclined - s_egtTourBase.instDeclined),
+		             (unsigned long long)(s_egtInstDeclinedBy[EGT_DECLINE_MODEL] - s_egtTourBase.instDeclinedBy[EGT_DECLINE_MODEL]),
+		             (unsigned long long)(s_egtInstDeclinedBy[EGT_DECLINE_FLAGS] - s_egtTourBase.instDeclinedBy[EGT_DECLINE_FLAGS]),
+		             (unsigned long long)(s_egtInstDeclinedBy[EGT_DECLINE_FRAME] - s_egtTourBase.instDeclinedBy[EGT_DECLINE_FRAME]),
+		             (unsigned long long)(s_egtInstDeclinedBy[EGT_DECLINE_SUBMIT] - s_egtTourBase.instDeclinedBy[EGT_DECLINE_SUBMIT]));
+		Platform_Log("[CTR Engine] tour %d level %d render: draws %u, ranges %u, refused at submit %u (scene %u, cell/args %u, arena %u, dynamic %u, "
+		             "not ready %u), refused at draw %u, upload failed %u\n",
+		             entry, levelID, rc.drawn - b->drawn, rc.ranges - b->ranges, refusedScene + refusedCell + refusedArena + refusedDyn + refusedNotReady,
+		             refusedScene, refusedCell, refusedArena, refusedDyn, refusedNotReady, rc.refusedAtDraw - b->refusedAtDraw,
+		             rc.uploadFailed - b->uploadFailed);
+		Platform_Log("[CTR Engine] tour %d level %d effects retail of owned drivers: shadow %u, exhaust %u, turbo %u, skids %u, body %u, tires %u\n", entry,
+		             levelID, fxRetail[ENGINE_FX_SHADOW] - s_egtTourBase.fxRetail[ENGINE_FX_SHADOW],
+		             fxRetail[ENGINE_FX_EXHAUST] - s_egtTourBase.fxRetail[ENGINE_FX_EXHAUST], fxRetail[ENGINE_FX_TURBO] - s_egtTourBase.fxRetail[ENGINE_FX_TURBO],
+		             fxRetail[ENGINE_FX_SKIDS] - s_egtTourBase.fxRetail[ENGINE_FX_SKIDS], fxRetail[ENGINE_FX_BODY] - s_egtTourBase.fxRetail[ENGINE_FX_BODY],
+		             fxRetail[ENGINE_FX_TIRES] - s_egtTourBase.fxRetail[ENGINE_FX_TIRES]);
+	}
+	for (i = 0; i < s_egtModelCount; i++)
+	{
+		const EngTrackModel *m = &s_egtModels[i];
+
+		Platform_Log("[CTR Engine] tour %d level %d model '%s' id %d: drawn %u, declined %u%s%s\n", entry, levelID, m->name, (int)m->id, m->drawn, m->declined,
+		             m->imported ? "" : ", not imported: ", m->imported ? "" : ((m->why[0] != '\0') ? m->why : "no entry"));
 	}
 }
 
@@ -798,6 +1013,8 @@ internal void EngTrack_ImportModels(const struct Level *level)
 	if ((level->ptrInstDefs == NULL) || (level->numInstances == 0u))
 	{
 		Platform_Log("[CTR Engine] track: instance models: 0 imported, 0 failed (no instances)\n");
+		s_egtLoad.modelsImported = 0;
+		s_egtLoad.modelsFailed = 0;
 		return;
 	}
 	for (i = 0; i < level->numInstances; i++)
@@ -823,6 +1040,8 @@ internal void EngTrack_ImportModels(const struct Level *level)
 		if (!Engine_ModelImport(model, m->name, &m->imp) || (m->imp.mesh < 0))
 		{
 			m->imported = 0;
+			snprintf(m->why, sizeof(m->why), "%s", (Engine_ModelImportWhy()[0] != '\0') ? Engine_ModelImportWhy() : "no mesh");
+			Platform_Log("[CTR Engine] track: instance model '%s' id %d not imported: %s\n", m->name, (int)m->id, m->why);
 			failed++;
 			continue;
 		}
@@ -839,6 +1058,125 @@ internal void EngTrack_ImportModels(const struct Level *level)
 		}
 	}
 	Platform_Log("[CTR Engine] track: instance models: %d imported, %d failed (of %d distinct)\n", imported, failed, s_egtModelCount);
+	s_egtLoad.modelsImported = imported;
+	s_egtLoad.modelsFailed = failed;
+}
+
+internal void EngTrack_LiveFree(void)
+{
+	free(s_egtLive);
+	free(s_egtLiveGroups);
+	free(s_egtLiveScratchV);
+	free(s_egtLiveScratchI);
+	s_egtLive = NULL;
+	s_egtLiveGroups = NULL;
+	s_egtLiveScratchV = NULL;
+	s_egtLiveScratchI = NULL;
+	s_egtLiveCount = 0;
+	s_egtLiveCap = 0;
+	s_egtLiveGroupCount = 0;
+	s_egtLiveVertices = NULL;
+}
+
+// A built face (key set) as a live face with the level vertices of its block. 0 = out of memory.
+internal int EngTrack_LiveAppend(const EngTrackFace *f, const u16 *blockIndex)
+{
+	EngTrackLiveFace *lf;
+	int v;
+
+	if (s_egtLiveCount >= s_egtLiveCap)
+	{
+		const int cap = (s_egtLiveCap == 0) ? 1024 : (s_egtLiveCap * 2);
+		EngTrackLiveFace *p = (EngTrackLiveFace *)realloc(s_egtLive, (size_t)cap * sizeof(EngTrackLiveFace));
+
+		if (p == NULL)
+		{
+			return 0;
+		}
+		s_egtLive = p;
+		s_egtLiveCap = cap;
+	}
+	lf = &s_egtLive[s_egtLiveCount++];
+	memset(lf, 0, sizeof(*lf));
+	lf->face = *f;
+	for (v = 0; v < 4; v++)
+	{
+		lf->vertex[v] = blockIndex[f->grid[v]];
+	}
+	lf->material = -1;
+	return 1;
+}
+
+internal int EngTrack_LiveCompare(const void *a, const void *b)
+{
+	const EngTrackLiveFace *x = (const EngTrackLiveFace *)a;
+	const EngTrackLiveFace *y = (const EngTrackLiveFace *)b;
+
+	if (x->semi != y->semi)
+	{
+		return (x->semi < y->semi) ? -1 : 1;
+	}
+	if (x->material != y->material)
+	{
+		return (x->material < y->material) ? -1 : 1;
+	}
+	return 0;
+}
+
+// The live faces get their materials (a face whose key has none is dropped and
+// counted), sorted by (semi, material) and grouped; the scratch for the largest
+// group is made. 0 = out of memory (no live face is drawn then).
+internal int EngTrack_LiveGroup(const int *matOfKey, int *dropped)
+{
+	int kept = 0;
+	int largest = 0;
+	int i;
+
+	for (i = 0; i < s_egtLiveCount; i++)
+	{
+		EngTrackLiveFace *lf = &s_egtLive[i];
+
+		lf->material = matOfKey[lf->face.key];
+		lf->semi = EngTrack_IsSemi(s_egtKeys.key[lf->face.key].tpage);
+		if (lf->material < 0)
+		{
+			(*dropped)++;
+			continue;
+		}
+		s_egtLive[kept++] = *lf;
+	}
+	s_egtLiveCount = kept;
+	if (s_egtLiveCount == 0)
+	{
+		return 1;
+	}
+	qsort(s_egtLive, (size_t)s_egtLiveCount, sizeof(EngTrackLiveFace), EngTrack_LiveCompare);
+	s_egtLiveGroups = (EngTrackLiveGroup *)calloc((size_t)s_egtLiveCount, sizeof(EngTrackLiveGroup));
+	if (s_egtLiveGroups == NULL)
+	{
+		return 0;
+	}
+	for (i = 0; i < s_egtLiveCount; i++)
+	{
+		EngTrackLiveGroup *g = (s_egtLiveGroupCount > 0) ? &s_egtLiveGroups[s_egtLiveGroupCount - 1] : NULL;
+
+		if ((g == NULL) || (g->material != s_egtLive[i].material) || (g->semi != s_egtLive[i].semi))
+		{
+			g = &s_egtLiveGroups[s_egtLiveGroupCount++];
+			g->material = s_egtLive[i].material;
+			g->semi = s_egtLive[i].semi;
+			g->first = i;
+			g->count = 0;
+		}
+		g->count++;
+		if (g->count > largest)
+		{
+			largest = g->count;
+		}
+	}
+	s_egtLiveScratchV = (EngineVertex *)malloc((size_t)largest * 4u * sizeof(EngineVertex));
+	s_egtLiveScratchI = (u16 *)malloc((size_t)largest * 6u * sizeof(u16));
+	return ((s_egtLiveScratchV != NULL) && (s_egtLiveScratchI != NULL)) ? 1 : 0;
 }
 
 // At load stage 8, after level1 is set and the models are in gGT->modelPtr, before
@@ -873,7 +1211,11 @@ void Engine_TrackLoad(void)
 	int meshCount = 0;
 	int semiPass;
 	int i;
+	u8 *live = NULL; // level vertices the game animates (SCVert), NULL when none
+	u32 liveExpanded = 0;
+	int frozenFaces = 0;
 
+	EngTrack_LiveFree();
 	s_egtMeshCount = 0;
 	s_egtModelCount = 0;
 	s_egtLevel = NULL;
@@ -887,6 +1229,7 @@ void Engine_TrackLoad(void)
 	{
 		s_egtReportRegistered = 1;
 		Platform_AtExitReport(EngTrack_Report);
+		Engine_TourRegister(EngTrack_TourReport);
 	}
 	level = gGT->level1;
 	mesh = level->ptr_mesh_info;
@@ -906,6 +1249,23 @@ void Engine_TrackLoad(void)
 		goto done;
 	}
 	leaves = EngTrack_MarkLeaves(mesh, water, inLeaf, form);
+	// The scenery vertices the game animates in place (configFlags & 4: SCVert, not water).
+	if (((level->configFlags & 4u) != 0u) && (level->numSCVert > 0) && (level->ptrSCVert != NULL))
+	{
+		live = (u8 *)calloc((size_t)mesh->numVertex, 1u);
+		if (live != NULL)
+		{
+			for (i = 0; i < level->numSCVert; i++)
+			{
+				const ptrdiff_t at = level->ptrSCVert[i].v - mesh->ptrVertexArray;
+
+				if ((at >= 0) && (at < mesh->numVertex))
+				{
+					live[at] = 1;
+				}
+			}
+		}
+	}
 	Engine_TrackMosaicBegin((int)gGT->levelID);
 	blocks = mesh->numQuadBlock;
 
@@ -1005,6 +1365,20 @@ void Engine_TrackLoad(void)
 				droppedFaces++;
 				continue;
 			}
+			// A face on an animated vertex: live, while the budget lasts; else static (frozen).
+			if ((live != NULL) && EngTrack_FaceTouches(f, qb->index, live, mesh->numVertex))
+			{
+				const u32 expanded = (u32)f->triCount * 3u;
+
+				if ((liveExpanded + expanded <= EGT_LIVE_EXPANDED_MAX) && EngTrack_LiveAppend(f, qb->index))
+				{
+					liveExpanded += expanded;
+					triangles += f->triCount;
+					hist[(u8)f->bias]++;
+					continue;
+				}
+				frozenFaces++;
+			}
 			if (faceCount >= faceCap)
 			{
 				const int cap = (faceCap == 0) ? 4096 : (faceCap * 2);
@@ -1071,6 +1445,12 @@ void Engine_TrackLoad(void)
 			droppedFaces++;
 		}
 	}
+	if ((s_egtLiveCount > 0) && !EngTrack_LiveGroup(matOfKey, &droppedFaces))
+	{
+		droppedFaces += s_egtLiveCount;
+		EngTrack_LiveFree();
+	}
+	s_egtLiveVertices = mesh->ptrVertexArray;
 
 	// Meshes: opaque first, then semi-transparent (the draw order of the two cells).
 	for (semiPass = 0; semiPass < 2; semiPass++)
@@ -1111,10 +1491,22 @@ void Engine_TrackLoad(void)
 		meshCount += made;
 	}
 	s_egtLevel = level;
+	s_egtLoad.levelID = (int)gGT->levelID;
+	s_egtLoad.faces = faceCount + s_egtLiveCount;
+	s_egtLoad.meshes = s_egtMeshCount;
+	s_egtLoad.materials = materials;
+	s_egtLoad.dropped = droppedFaces;
+	s_egtLoad.liveFaces = s_egtLiveCount;
+	s_egtLoad.frozenFaces = frozenFaces;
 
 	Platform_Log("[CTR Engine] track: %d blocks, %d water blocks excluded, %d invisible skipped, %d faces, %d triangles, %d mesh(es), %d materials, "
 	             "mosaic faces %d, animtex faces %d\n",
-	             blocks, waterBlocks, invisible, faceCount, triangles, s_egtMeshCount, materials, mosaicFaces, animFaces);
+	             blocks, waterBlocks, invisible, faceCount + s_egtLiveCount, triangles, s_egtMeshCount, materials, mosaicFaces, animFaces);
+	if ((live != NULL) || (s_egtLiveCount > 0))
+	{
+		Platform_Log("[CTR Engine] track: %d live face(s) in %d draw(s) (scenery vertex animation, %d animated vertices), %d left static over the budget\n",
+		             s_egtLiveCount, s_egtLiveGroupCount, level->numSCVert, frozenFaces);
+	}
 	Platform_Log("[CTR Engine] track: also %d block(s) in no leaf skipped, %d with a bad vertex index, %d face(s) without a usable layout, "
 	             "%d out of the scratch table, %d dropped (keys, materials, meshes, memory)\n",
 	             unreferenced, badBlocks, noLayout, badFields, droppedFaces);
@@ -1146,6 +1538,7 @@ done:
 	free(water);
 	free(inLeaf);
 	free(form);
+	free(live);
 }
 
 // Once per frame from Engine_FrameCollect: one draw per track mesh in view 0.
@@ -1157,6 +1550,10 @@ void Engine_TrackCollect(struct GameTracker *gGT)
 	int submitted = 0;
 
 	s_egtSubmitted = 0;
+	if (g_cfg_engine && g_cfg_engineTrack && (gGT != NULL) && ((gGT->gameMode1 & MAIN_MENU) == 0) && (gGT->level1 != NULL) && (gGT->level1 == s_egtLevel))
+	{
+		s_egtCollectFrames++;
+	}
 	if (!EngTrack_Active(gGT))
 	{
 		return;
@@ -1187,8 +1584,36 @@ void Engine_TrackCollect(struct GameTracker *gGT)
 			submitted++;
 		}
 	}
-	// The PS1 level is skipped only when every mesh of the track was submitted this frame.
-	if (submitted == s_egtMeshCount)
+	// The live faces, one dynamic draw per material, from the level vertices as the game left them.
+	for (i = 0; i < s_egtLiveGroupCount; i++)
+	{
+		const EngTrackLiveGroup *g = &s_egtLiveGroups[i];
+		const int cell = g->semi ? EGT_CELL_SEMI : EGT_CELL_OPAQUE;
+		EngineDraw draw;
+		u32 indexCount = 0;
+		const u32 vertexCount = EngTrack_LiveFill(&s_egtLive[g->first], g->count, s_egtLiveVertices, s_egtLiveScratchV, s_egtLiveScratchI, &indexCount);
+
+		memset(&draw, 0, sizeof(draw));
+		draw.mesh = -1;
+		draw.clipFromModel = screenFromWorld;
+		draw.tint[0] = draw.tint[1] = draw.tint[2] = draw.tint[3] = 1.0f;
+		draw.materialOverride = -1;
+		draw.sortDepth = 1.0e9f;
+		draw.otCell = (u32)cell;
+		draw.flags = g->semi ? ENGINE_DRAW_TRANSPARENT : 0;
+		draw.dynVertices = s_egtLiveScratchV;
+		draw.dynVertexCount = vertexCount;
+		draw.dynIndices = s_egtLiveScratchI;
+		draw.dynIndexCount = indexCount;
+		draw.dynMaterial = g->material;
+		if ((vertexCount > 0u) && Engine_RenderSubmitLinked(0, &draw, gGT->pushBuffer[0].ptrOT, cell))
+		{
+			submitted++;
+			s_egtLiveDrawn++;
+		}
+	}
+	// The PS1 level is skipped only when every mesh and every live draw of the track was submitted this frame.
+	if (submitted == (s_egtMeshCount + s_egtLiveGroupCount))
 	{
 		s_egtSubmitted = 1;
 		s_egtFramesDrawn++;
@@ -1243,17 +1668,25 @@ int Engine_TrackInstanceRoute(struct Instance *inst, struct InstDrawPerPlayer *i
 	if (em == NULL)
 	{
 		s_egtInstDeclined++;
+		s_egtInstDeclinedBy[EGT_DECLINE_MODEL]++;
 		return 0;
 	}
 	if ((em->drawn == 0u) && (em->declined == 0u))
 	{
 		Platform_Log("[CTR Engine] track: instance model '%s' id %d first seen (%s)\n", em->name, (int)em->id, em->imported ? "imported" : "not imported");
 	}
-	if (!em->imported || ((inst->flags & (SCREENSPACE_INSTANCE | DRAW_BILLBOARD | HIDE_MODEL)) != 0u) || (inst->model->numHeaders < 1) ||
-	    (inst->model->headers == NULL))
+	if (!em->imported || (inst->model->numHeaders < 1) || (inst->model->headers == NULL))
 	{
 		em->declined++;
 		s_egtInstDeclined++;
+		s_egtInstDeclinedBy[EGT_DECLINE_MODEL]++;
+		return 0;
+	}
+	if ((inst->flags & (SCREENSPACE_INSTANCE | DRAW_BILLBOARD | HIDE_MODEL)) != 0u)
+	{
+		em->declined++;
+		s_egtInstDeclined++;
+		s_egtInstDeclinedBy[EGT_DECLINE_FLAGS]++;
 		return 0;
 	}
 	mh0 = inst->model->headers;
@@ -1279,6 +1712,7 @@ int Engine_TrackInstanceRoute(struct Instance *inst, struct InstDrawPerPlayer *i
 	{
 		em->declined++;
 		s_egtInstDeclined++;
+		s_egtInstDeclinedBy[EGT_DECLINE_FRAME]++;
 		return 0;
 	}
 
@@ -1298,6 +1732,7 @@ int Engine_TrackInstanceRoute(struct Instance *inst, struct InstDrawPerPlayer *i
 	}
 	em->declined++;
 	s_egtInstDeclined++;
+	s_egtInstDeclinedBy[EGT_DECLINE_SUBMIT]++;
 	return 0;
 }
 
@@ -1575,6 +2010,58 @@ int Engine_SelfTestTrack(int *checks)
 		{
 			EngTrack_BuildFree(&builds[fi]);
 		}
+	}
+
+	// (10) live faces: the grid of the slot vertices, the touch test, the fill from the level vertices.
+	{
+		const u16 blockIndex[9] = {10, 11, 12, 13, 14, 15, 16, 17, 18};
+		struct LevVertex verts[20];
+		u8 live[20];
+		EngTrackLiveFace lf[2];
+		EngineVertex outV[8];
+		u16 outI[12];
+		u32 indexCount = 0;
+		u32 vertexCount;
+
+		EngTrack_TestBlock(&in, &lay);
+		n = EngTrack_BuildBlock(&in, &identity, 1, out, NULL);
+		EGT_CHECK((n == 4) && (out[1].grid[0] == 4) && (out[1].grid[1] == 1) && (out[1].grid[2] == 6) && (out[1].grid[3] == 7),
+		          "live: face 1 grid %d %d %d %d (expected 4 1 6 7)", out[1].grid[0], out[1].grid[1], out[1].grid[2], out[1].grid[3]);
+		memset(live, 0, sizeof(live));
+		live[16] = 1; // grid corner 6 of this block: the middle vertex, shared by all four faces
+		EGT_CHECK(EngTrack_FaceTouches(&out[0], blockIndex, live, 20) && EngTrack_FaceTouches(&out[3], blockIndex, live, 20), "live: a face on the middle vertex not touched");
+		live[16] = 0;
+		live[11] = 1; // grid corner 1: only face 1
+		EGT_CHECK(!EngTrack_FaceTouches(&out[0], blockIndex, live, 20) && EngTrack_FaceTouches(&out[1], blockIndex, live, 20), "live: the corner test is wrong");
+		EGT_CHECK(!EngTrack_FaceTouches(&out[1], blockIndex, live, 11), "live: a vertex past the level is touched");
+
+		memset(verts, 0, sizeof(verts));
+		for (k = 0; k < 20; k++)
+		{
+			verts[k].pos.x = (s16)(1000 + k);
+			verts[k].pos.y = (s16)(2000 + k);
+			verts[k].pos.z = (s16)(3000 + k);
+			verts[k].color_hi[0] = (u8)(100 + k);
+			verts[k].color_hi[1] = (u8)(120 + k);
+			verts[k].color_hi[2] = (u8)(140 + k);
+		}
+		memset(lf, 0, sizeof(lf));
+		for (k = 0; k < 2; k++)
+		{
+			lf[k].face = out[k];
+			for (v = 0; v < 4; v++)
+			{
+				lf[k].vertex[v] = blockIndex[out[k].grid[v]];
+			}
+		}
+		vertexCount = EngTrack_LiveFill(lf, 2, verts, outV, outI, &indexCount);
+		EGT_CHECK((vertexCount == 8u) && (indexCount == 12u), "live fill: %u vertices, %u indices (expected 8, 12)", vertexCount, indexCount);
+		EGT_CHECK((outV[4].position[0] == 1014.0f) && (outV[4].position[1] == 2014.0f) && (outV[4].position[2] == 3014.0f) && (outV[4].color[0] == 114) &&
+		              (outV[4].color[2] == 154) && (outV[5].position[0] == 1011.0f),
+		          "live fill: positions/colours not read from the level vertices");
+		EGT_CHECK((outV[4].texcoord[0] == out[1].v[0].texcoord[0]) && (outV[4].texcoord[1] == out[1].v[0].texcoord[1]) && (outV[4].color[3] == 255),
+		          "live fill: texture coordinates or alpha changed");
+		EGT_CHECK((outI[6] == (u16)(4 + out[1].tri[0][0])) && (outI[11] == (u16)(4 + out[1].tri[1][2])), "live fill: indices not offset to the second face");
 	}
 
 	return failures;

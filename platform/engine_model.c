@@ -1,4 +1,5 @@
 #include <platform/engine.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -46,6 +47,15 @@ typedef struct
 } ModelFrameTable;
 
 global_variable ModelFrameTable s_modelTables[ENGINE_MESHES_MAX];
+
+// Why the last Engine_ModelImport failed ("" after a success), for the callers'
+// log lines (the track's per-model report).
+global_variable char s_modelWhy[256];
+
+const char *Engine_ModelImportWhy(void)
+{
+	return s_modelWhy;
+}
 
 // What distinguishes one engine material of a model.
 typedef struct
@@ -116,19 +126,23 @@ int Engine_ModelImport(const struct Model *model, const char *name, EngineModelI
 	int firstMaterial = -1;
 	int ok = 0;
 
+	s_modelWhy[0] = '\0';
 	if (out == NULL)
 	{
+		snprintf(s_modelWhy, sizeof(s_modelWhy), "no output");
 		return 0;
 	}
 	memset(out, 0, sizeof(*out));
 	out->mesh = -1;
 	if ((model == NULL) || (model->numHeaders < 1) || (model->headers == NULL))
 	{
+		snprintf(s_modelWhy, sizeof(s_modelWhy), "no model header");
 		return 0;
 	}
 	// A failed NativeTwin_FromModel leaves src freed and zeroed.
 	if (!NativeTwin_FromModel(model, 0, &src, why, sizeof(why)))
 	{
+		snprintf(s_modelWhy, sizeof(s_modelWhy), "decoder: %s", why);
 		return 0;
 	}
 
@@ -141,6 +155,7 @@ int Engine_ModelImport(const struct Model *model, const char *name, EngineModelI
 	order = (u32 *)calloc(src.native.triangleCount, sizeof(u32));
 	if ((frames == 0u) || (triKey == NULL) || (order == NULL))
 	{
+		snprintf(s_modelWhy, sizeof(s_modelWhy), "%s", (frames == 0u) ? "no frame" : "out of memory");
 		goto done;
 	}
 
@@ -161,6 +176,7 @@ int Engine_ModelImport(const struct Model *model, const char *name, EngineModelI
 		key.doubleSided = (src.triangleSide[t] == 1u) ? 1 : 0;
 		if (src.material[m].textured && (key.tile < 0))
 		{
+			snprintf(s_modelWhy, sizeof(s_modelWhy), "textured triangle %u without a tile", (unsigned)t);
 			goto done;
 		}
 		for (k = 0; k < keyCount; k++)
@@ -174,6 +190,7 @@ int Engine_ModelImport(const struct Model *model, const char *name, EngineModelI
 		{
 			if (keyCount >= MODEL_KEYS_MAX)
 			{
+				snprintf(s_modelWhy, sizeof(s_modelWhy), "more than %d materials", MODEL_KEYS_MAX);
 				goto done;
 			}
 			keys[keyCount++] = key;
@@ -184,6 +201,7 @@ int Engine_ModelImport(const struct Model *model, const char *name, EngineModelI
 	perFrame = keptTris * 3u;
 	if ((keptTris == 0u) || (perFrame > 65535u) || ((u64)perFrame * frames > (1u << 20)))
 	{
+		snprintf(s_modelWhy, sizeof(s_modelWhy), "%u triangle(s) x %u frame(s) outside the mesh limits", (unsigned)keptTris, (unsigned)frames);
 		goto done;
 	}
 
@@ -209,6 +227,7 @@ int Engine_ModelImport(const struct Model *model, const char *name, EngineModelI
 	materials = (EngineMaterial *)calloc((size_t)keyCount, sizeof(EngineMaterial));
 	if ((vertices == NULL) || (indices == NULL) || (ranges == NULL) || (materials == NULL))
 	{
+		snprintf(s_modelWhy, sizeof(s_modelWhy), "out of memory");
 		goto done;
 	}
 
@@ -289,6 +308,7 @@ int Engine_ModelImport(const struct Model *model, const char *name, EngineModelI
 		index = Engine_MaterialRegister(m);
 		if ((index < 0) || ((k > 0) && (index != (firstMaterial + k))))
 		{
+			snprintf(s_modelWhy, sizeof(s_modelWhy), "%s", (index < 0) ? "material table full" : "materials not consecutive");
 			goto done;
 		}
 		if (k == 0)
@@ -316,6 +336,7 @@ int Engine_ModelImport(const struct Model *model, const char *name, EngineModelI
 		mesh = Engine_MeshCreate(&desc);
 		if (mesh < 0)
 		{
+			snprintf(s_modelWhy, sizeof(s_modelWhy), "mesh table full or mesh refused");
 			goto done;
 		}
 

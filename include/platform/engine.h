@@ -579,6 +579,7 @@ typedef struct
 int Engine_ModelImport(const struct Model *model, const char *name, EngineModelImport *out);
 // The mesh frame of (animation, frame) of an imported model, -1 if out of range.
 int Engine_ModelFrame(const EngineModelImport *imp, int anim, int frame);
+const char *Engine_ModelImportWhy(void); // why the last Engine_ModelImport failed ("" after a success)
 int Engine_SelfTestModel(int *checks);
 
 // --------------------------------------------------------------------------
