@@ -580,6 +580,17 @@ int Engine_ModelImport(const struct Model *model, const char *name, EngineModelI
 // The mesh frame of (animation, frame) of an imported model, -1 if out of range.
 int Engine_ModelFrame(const EngineModelImport *imp, int anim, int frame);
 const char *Engine_ModelImportWhy(void); // why the last Engine_ModelImport failed ("" after a success)
+// THE LIVE FRAME of a still model (no animations, uncompressed frame) the game
+// rewrites in place while racing - the start banner: RB_Banner_LInB
+// (game/231/RB_Banner.c) rewrites the colour index of every command and the
+// colour table at birth, after the load stage that imports the model, and
+// RB_Banner_Animate_Play rewrites the height byte of every vertex and turns the
+// colour table every tick. The mesh frame rebuilt from the model's CURRENT
+// frame bytes, command list and colour table into out (the vertex order and
+// texture coordinates of the mesh). Returns the vertex count (the mesh's
+// vertices per frame), 0 when the model has no live frame, its list no longer
+// has the imported records, or out is too small. Reads only.
+u32 Engine_ModelLiveFrame(const EngineModelImport *imp, const struct Model *model, EngineVertex *out, u32 outMax);
 int Engine_SelfTestModel(int *checks);
 
 // --------------------------------------------------------------------------
@@ -613,6 +624,10 @@ typedef struct
 	float mirrorTint[4];// REFLECTION / SPECIAL: the mirror image
 	int drawBelow;      // SPLIT: 0 = the part below the plane is not drawn
 	u16 flags;          // ENGINE_DRAW_*
+	// NULL = the mesh frame. Else the frame's vertices this frame (verticesPerFrame
+	// of the mesh, Engine_ModelLiveFrame): every range of the mesh is drawn from
+	// them as dynamic geometry, one draw per range.
+	const EngineVertex *liveVertices;
 } EngineInstanceDraw;
 
 // The instance's model-to-world matrix (model units of the imported mesh to

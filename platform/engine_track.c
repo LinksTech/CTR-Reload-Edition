@@ -714,8 +714,9 @@ internal u32 EngTrack_FillFaces(const EngTrackDrawFace *faces, const u8 *shown, 
 // (numFrames with the top bit) included, its odd frames as the in-between poses
 // retail interpolates (platform/native_twin.c:296-334, RB:2236-2239) - so the
 // word is the frame, clamped to the last logical one. Halving it the way the
-// retail queue finds its STORED frame (NativeRenderLayer_AnimFrameNumber) shows
-// half the time on these animations (the start banner waved too slowly).
+// retail queue finds its STORED frame (NativeRenderLayer_AnimFrameNumber) would
+// show half the time on these animations. (The start banner has no animation:
+// the game moves it in place, see LIVE FRAME at Engine_TrackInstanceRoute.)
 internal int EngTrack_LogicalFrame(u16 numFrames, u16 animFrame)
 {
 	const int logical = (int)(numFrames & 0x7fffu);
@@ -738,6 +739,8 @@ typedef struct
 	EngineModelImport imp;
 	int imported;
 	int transparent;
+	int live;          // drawn from its live frame (Engine_ModelLiveFrame)
+	int liveRefusedLogged;
 	u32 drawn;
 	u32 declined;
 	char why[96]; // Engine_ModelImportWhy of a failed import
@@ -756,6 +759,10 @@ global_variable u64 s_egtBucketsSkipped;
 global_variable u64 s_egtWaterVisits;
 global_variable u64 s_egtInstDrawn;
 global_variable u64 s_egtInstDeclined;
+// The live frame of a level instance (Engine_TrackInstanceRoute, LIVE FRAME),
+// rebuilt per draw; the submit copies it.
+#define EGT_LIVE_VERTICES_MAX 4096u
+global_variable EngineVertex s_egtLiveVertices[EGT_LIVE_VERTICES_MAX];
 // The faces of the loaded level (made at load, drawn every frame as far as the
 // game's visibility shows them), sorted by (semi, material) into groups.
 global_variable EngTrackDrawFace *s_egtFaces;
@@ -1134,6 +1141,7 @@ internal void EngTrack_ImportModels(const struct Level *level)
 			continue;
 		}
 		m->imported = 1;
+		m->live = (model->id == STATIC_STARTBANNERWAVE) ? 1 : 0;
 		imported++;
 		for (k = 0; k < m->imp.materialCount; k++)
 		{
@@ -1855,7 +1863,8 @@ int Engine_TrackInstanceRoute(struct Instance *inst, struct InstDrawPerPlayer *i
 	}
 	if ((em->drawn == 0u) && (em->declined == 0u))
 	{
-		Platform_Log("[CTR Engine] track: instance model '%s' id %d first seen (%s)\n", em->name, (int)em->id, em->imported ? "imported" : "not imported");
+		Platform_Log("[CTR Engine] track: instance model '%s' id %d first seen (%s)\n", em->name, (int)em->id,
+		             em->imported ? (em->live ? "imported, live frame" : "imported") : "not imported");
 		// Where retail (idpp->mvp, the matrix its queue built) and the engine (the view's camera on
 		// inst->matrix) put the model's origin in view space, and the scales: the evidence for a
 		// transform difference between the two paths.
@@ -1928,6 +1937,25 @@ int Engine_TrackInstanceRoute(struct Instance *inst, struct InstDrawPerPlayer *i
 	d.mirrorTint[0] = d.mirrorTint[1] = d.mirrorTint[2] = d.mirrorTint[3] = 1.0f;
 	d.drawBelow = 1;
 	d.flags = em->transparent ? ENGINE_DRAW_TRANSPARENT : 0;
+	// LIVE FRAME. The start banner (STATIC_STARTBANNERWAVE) is the model the
+	// game rewrites in place: at birth its colour indices and colour table
+	// (RB_Banner_LInB, game/231/RB_Banner.c:210-266, after this load stage
+	// imported the disc state), every tick its vertex heights and the turn of
+	// its colour table (RB_Banner_ThTick -> RB_Banner_Animate_Play, :161-206).
+	// It is drawn from the frame rebuilt from that state, read when retail would
+	// draw it; if that fails, from the imported frame (logged once).
+	if (em->live)
+	{
+		if (Engine_ModelLiveFrame(&em->imp, inst->model, s_egtLiveVertices, EGT_LIVE_VERTICES_MAX) > 0u)
+		{
+			d.liveVertices = s_egtLiveVertices;
+		}
+		else if (!em->liveRefusedLogged)
+		{
+			em->liveRefusedLogged = 1;
+			Platform_Log("[CTR Engine] track: instance model '%s' id %d: live frame refused, the imported frame is drawn\n", em->name, (int)em->id);
+		}
+	}
 	if (Engine_InstanceSubmit(inst, idpp, pb, &d) > 0)
 	{
 		em->drawn++;

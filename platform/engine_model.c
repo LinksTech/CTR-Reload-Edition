@@ -32,9 +32,20 @@
 // Not followed: animated textures (a face keeps the layout of the build), and
 // the full-height bit (NativeTwin fullHeight is 0: the odd height bit is
 // dropped as for retail models).
+//
+// THE LIVE FRAME (round of 2026-10-15). A still model (no animations, an
+// uncompressed frame) keeps, per mesh vertex, the vertex record it was decoded
+// from (NativeTwinSource.cornerVertex). Engine_ModelLiveFrame rebuilds the
+// mesh frame from the model's CURRENT data with it: position from the record's
+// bytes in mh->ptrFrameData, colour from mh->ptrColors at the index the
+// record's command names now. That is the state retail draws with for a model
+// the game rewrites in place (see engine.h, Engine_ModelLiveFrame).
 
 #define MODEL_ANIMS_MAX NATIVE_TWIN_ANIMS_MAX
 #define MODEL_KEYS_MAX 256
+// The x/y mask of a full frame without the full-height bit (native_twin.c
+// NATIVE_TWIN_MASK_XY, RB:2468-2480): the importer decodes with fullHeight 0.
+#define MODEL_LIVE_MASK_XY 0xfff8ffffu
 
 // The frame table of an imported model, found by its mesh index.
 typedef struct
@@ -44,9 +55,16 @@ typedef struct
 	int frameTotal;
 	int base[MODEL_ANIMS_MAX];
 	int frames[MODEL_ANIMS_MAX];
+	// A still model: the vertex record of every mesh vertex and the records per
+	// frame; NULL and 0 for an animated one.
+	u16 *record;
+	u32 recordCount;
+	u32 streamRecords;
 } ModelFrameTable;
 
 global_variable ModelFrameTable s_modelTables[ENGINE_MESHES_MAX];
+// Engine_ModelLiveFrame: the colour index of every record of the current list.
+global_variable u8 s_modelLiveColour[NATIVE_TWIN_STREAM_MAX];
 
 // Why the last Engine_ModelImport failed ("" after a success), for the callers'
 // log lines (the track's per-model report).
@@ -116,6 +134,7 @@ int Engine_ModelImport(const struct Model *model, const char *name, EngineModelI
 	u16 *indices = NULL;
 	EngineRange *ranges = NULL;
 	EngineMaterial *materials = NULL;
+	u16 *record = NULL;
 	u32 frames = 0;
 	u32 perFrame = 0;
 	u32 keptTris = 0;
@@ -230,6 +249,20 @@ int Engine_ModelImport(const struct Model *model, const char *name, EngineModelI
 		snprintf(s_modelWhy, sizeof(s_modelWhy), "out of memory");
 		goto done;
 	}
+	// A still model with an uncompressed frame: the record of every mesh
+	// vertex, for Engine_ModelLiveFrame (an allocation failure only leaves the
+	// model without it).
+	if ((src.animCount == 0u) && (model->headers[0].unk3 == 0u) && (src.streamVertices <= (u32)NATIVE_TWIN_STREAM_MAX))
+	{
+		record = (u16 *)calloc(perFrame, sizeof(u16));
+		if (record != NULL)
+		{
+			for (t = 0; t < perFrame; t++)
+			{
+				record[t] = (u16)src.cornerVertex[(order[t / 3u] * 3u) + (t % 3u)];
+			}
+		}
+	}
 
 	for (f = 0; f < frames; f++)
 	{
@@ -341,6 +374,8 @@ int Engine_ModelImport(const struct Model *model, const char *name, EngineModelI
 		}
 
 		table = &s_modelTables[mesh];
+		// The slot of a mesh of an earlier level: its records go with it.
+		free(table->record);
 		memset(table, 0, sizeof(*table));
 		table->used = 1;
 		table->animCount = (int)src.animCount;
@@ -350,6 +385,13 @@ int Engine_ModelImport(const struct Model *model, const char *name, EngineModelI
 			table->base[a] = base;
 			table->frames[a] = (int)src.animFrames[a];
 			base += (int)src.animFrames[a];
+		}
+		if (record != NULL)
+		{
+			table->record = record;
+			table->recordCount = perFrame;
+			table->streamRecords = src.streamVertices;
+			record = NULL;
 		}
 		out->mesh = mesh;
 		out->firstMaterial = firstMaterial;
@@ -367,6 +409,7 @@ done:
 	free(indices);
 	free(ranges);
 	free(materials);
+	free(record);
 	NativeTwin_Free(&src);
 	if (!ok)
 	{
@@ -400,6 +443,94 @@ int Engine_ModelFrame(const EngineModelImport *imp, int anim, int frame)
 		return -1;
 	}
 	return table->base[anim] + frame;
+}
+
+internal int Model_S16(u32 value)
+{
+	value &= 0xffffu;
+	return (value >= 0x8000u) ? ((int)value - 0x10000) : (int)value;
+}
+
+u32 Engine_ModelLiveFrame(const EngineModelImport *imp, const struct Model *model, EngineVertex *out, u32 outMax)
+{
+	const ModelFrameTable *table;
+	const EngineMeshDesc *desc;
+	const struct ModelHeader *mh;
+	const struct ModelFrame *mf;
+	const u32 *list;
+	const u8 *bytes;
+	double unit[3];
+	u32 origin;
+	u32 records = 0;
+	u32 index;
+	u32 v;
+
+	if ((imp == NULL) || (imp->mesh < 0) || (imp->mesh >= ENGINE_MESHES_MAX) || (out == NULL) || (model == NULL) || (model->numHeaders < 1) ||
+	    (model->headers == NULL))
+	{
+		return 0;
+	}
+	table = &s_modelTables[imp->mesh];
+	desc = Engine_MeshDesc(imp->mesh);
+	mh = &model->headers[0];
+	if (!table->used || (table->record == NULL) || (desc == NULL) || (desc->vertices == NULL) || (desc->frames != 1u) ||
+	    (desc->verticesPerFrame != table->recordCount) || (table->recordCount > outMax) || (mh->ptrAnimations != NULL) || (mh->ptrFrameData == NULL) ||
+	    (mh->unk3 != 0u) || (mh->ptrColors == NULL) || (mh->ptrCommandList == 0u))
+	{
+		return 0;
+	}
+
+	// The colour index of every record as the list names it NOW: the command
+	// that decodes the record (bit 26 clear), byte offset (command >> 7) & 0x1fc
+	// (RB:2568-2579). A cached command (bit 26) takes the colour of its record.
+	// Colour-only commands (upper half 0) are not followed. A list whose record
+	// count is not the one of the import is refused.
+	list = (const u32 *)(uintptr_t)mh->ptrCommandList;
+	for (index = 1; (index <= (u32)NATIVE_TWIN_COMMANDS_MAX) && (list[index] != 0xffffffffu); index++)
+	{
+		const u32 command = list[index];
+
+		if (((command >> 16) == 0u) || ((command & 0x04000000u) != 0u))
+		{
+			continue;
+		}
+		if (records >= table->streamRecords)
+		{
+			return 0;
+		}
+		s_modelLiveColour[records++] = (u8)((command >> 9) & 0x7fu);
+	}
+	if (records != table->streamRecords)
+	{
+		return 0;
+	}
+
+	// The GTE input of a record of a full frame, as the importer's decoder
+	// takes it (native_twin.c NativeTwin_PackFull), in model units.
+	mf = mh->ptrFrameData;
+	bytes = (const u8 *)mf + mf->vertexOffset;
+	origin = (u32)(u16)(mf->pos.x & 0x7fff) | ((u32)(u16)mf->pos.y << 16);
+	unit[0] = (double)mh->scale.x / 16384.0;
+	unit[1] = (double)mh->scale.y / 16384.0;
+	unit[2] = (double)(u16)mh->scale.z / 16384.0;
+	for (v = 0; v < table->recordCount; v++)
+	{
+		const u32 r = table->record[v];
+		const u8 *b = &bytes[(size_t)r * 3u];
+		const u32 word = ((((u32)b[0] | ((u32)b[2] << 16)) + origin) << 2) & MODEL_LIVE_MASK_XY;
+		const u32 colour = mh->ptrColors[s_modelLiveColour[r]];
+		EngineVertex *o = &out[v];
+
+		*o = desc->vertices[v];
+		o->position[0] = (float)((double)Model_S16(word) * unit[0]);
+		o->position[1] = (float)((double)Model_S16(word >> 16) * unit[1]);
+		o->position[2] = (float)((double)Model_S16((u32)((int)mf->pos.z + (int)b[1]) << 2) * unit[2]);
+		o->color[0] = (u8)colour;
+		o->color[1] = (u8)(colour >> 8);
+		o->color[2] = (u8)(colour >> 16);
+		o->color[3] = 255;
+	}
+	return table->recordCount;
 }
 
 // --------------------------------------------------------------------------
@@ -681,6 +812,67 @@ int Engine_SelfTestModel(int *checks)
 		memset(&none, 0, sizeof(none));
 		none.mesh = -1;
 		MODEL_CHECK(Engine_ModelFrame(&none, 0, 0) == -1, "Engine_ModelFrame of a failed import");
+
+		// THE LIVE FRAME. An animated model has none; the same model made still
+		// (pose 0 as its frame) has one that equals the import while nothing
+		// changed, and follows a rewrite of one height byte, the colour indices
+		// of the list and the colour table the way the start banner's thread
+		// rewrites them (game/231/RB_Banner.c).
+		{
+			EngineVertex live[MODEL_TEST_RECORDS];
+			EngineModelImport still;
+			int r;
+
+			MODEL_CHECK(Engine_ModelLiveFrame(&imp, &m->model, live, MODEL_TEST_RECORDS) == 0u, "live frame of an animated model refused");
+			m->header.numAnimations = 0;
+			m->header.ptrAnimations = NULL;
+			m->header.ptrFrameData = (struct ModelFrame *)(m->animBytes[0] + sizeof(struct ModelAnim));
+			memset(&still, 0, sizeof(still));
+			if (!Engine_ModelImport(&m->model, "model-test still", &still) || (Engine_MeshDesc(still.mesh) == NULL))
+			{
+				MODEL_CHECK(0, "still import failed");
+			}
+			else
+			{
+				const EngineMeshDesc *sd = Engine_MeshDesc(still.mesh);
+				u8 *bytes = (u8 *)m->header.ptrFrameData + m->header.ptrFrameData->vertexOffset;
+
+				MODEL_CHECK((still.animCount == 0) && (sd->frames == 1u) && (sd->verticesPerFrame == 12u), "still import shape");
+				MODEL_CHECK(Engine_ModelLiveFrame(&still, &m->model, live, MODEL_TEST_RECORDS) == 12u, "live frame of the still model");
+				MODEL_CHECK(memcmp(live, sd->vertices, sizeof(live)) == 0, "live frame of unchanged data equals the import");
+				MODEL_CHECK(Engine_ModelLiveFrame(&still, &m->model, live, MODEL_TEST_RECORDS - 1) == 0u, "live frame larger than the room refused");
+
+				bytes[(4 * 3) + 1] = 50; // record 4: height byte
+				for (r = 0; r < MODEL_TEST_RECORDS; r++)
+				{
+					m->commands[1 + r] = (m->commands[1 + r] & 0xffff01ffu) | ((u32)(MODEL_TEST_RECORDS - 1 - r) << 9);
+				}
+				m->colours[0] = 0x00303132u;
+				MODEL_CHECK(Engine_ModelLiveFrame(&still, &m->model, live, MODEL_TEST_RECORDS) == 12u, "live frame after the rewrite");
+				for (tri = 0; tri < MODEL_TEST_TRIS; tri++)
+				{
+					for (c = 0; c < 3; c++)
+					{
+						const EngineVertex *v = &live[(tri * 3) + c];
+						const EngineVertex *s = &sd->vertices[(tri * 3) + c];
+						const int rec = recordOf[tri][c];
+						const int ci = MODEL_TEST_RECORDS - 1 - rec;
+						const u32 col = (ci == 0) ? 0x00303132u : ModelTest_Colour(ci);
+						const float ez = (rec == 4) ? 100.0f : s->position[2];
+
+						MODEL_CHECK((v->position[0] == s->position[0]) && (v->position[1] == s->position[1]) && (v->position[2] == ez) &&
+						                (v->texcoord[0] == s->texcoord[0]) && (v->texcoord[1] == s->texcoord[1]),
+						            "live tri %d corner %d position %g %g %g, wanted z %g", tri, c, v->position[0], v->position[1], v->position[2], ez);
+						MODEL_CHECK((v->color[0] == (u8)col) && (v->color[1] == (u8)(col >> 8)) && (v->color[2] == (u8)(col >> 16)) && (v->color[3] == 255),
+						            "live tri %d corner %d colour %u %u %u", tri, c, v->color[0], v->color[1], v->color[2]);
+					}
+				}
+				m->commands[1 + MODEL_TEST_RECORDS - 1] = 0xffffffffu; // one record fewer than imported
+				MODEL_CHECK(Engine_ModelLiveFrame(&still, &m->model, live, MODEL_TEST_RECORDS) == 0u, "live frame of a list with other records refused");
+				Engine_MeshDestroy(still.mesh);
+				MODEL_CHECK(Engine_ModelLiveFrame(&still, &m->model, live, MODEL_TEST_RECORDS) == 0u, "live frame after destroy");
+			}
+		}
 
 		Engine_MeshDestroy(imp.mesh);
 		MODEL_CHECK(Engine_ModelFrame(&imp, 0, 0) == -1, "Engine_ModelFrame after destroy");

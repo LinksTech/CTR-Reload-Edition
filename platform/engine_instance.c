@@ -97,8 +97,16 @@
 // unit scale + CharItemMatrix, as engine_fx_turbo.c used to) and the eight
 // corners of the mesh's bounding box compared on the screen. It changes
 // nothing that is drawn; it only checks the derivation above.
+//
+// LIVE VERTICES (round of 2026-10-15). With d->liveVertices every draw above
+// is made of the mesh's ranges as dynamic geometry from those vertices (the
+// frame the caller rebuilt this frame, Engine_ModelLiveFrame), one draw per
+// range with the range's material, all linked into the same cell. A model
+// mesh lists every vertex once in order (indices 0..n-1, engine_model.c), so
+// a range is the run of vertices it names.
 
 #define ENG_INST_CROSS_MAX 120
+#define ENG_INST_LIVE_MAX 4096 // vertices of a live frame
 
 typedef enum
 {
@@ -117,6 +125,10 @@ global_variable struct NrDrawItem s_engInstItem;
 global_variable int s_engInstCrossCount = 0;
 global_variable int s_engInstCrossLogged = 0;
 global_variable float s_engInstCrossMax = 0.0f;
+
+// 0..ENG_INST_LIVE_MAX-1: the indices of a range of a live frame.
+global_variable u16 s_engInstLiveIndex[ENG_INST_LIVE_MAX];
+global_variable int s_engInstLiveIndexReady = 0;
 
 // --------------------------------------------------------------------------
 // The maths on plain numbers (also the self test's subject).
@@ -387,6 +399,57 @@ internal void EngInst_CrossCheck(const struct Instance *inst, const struct InstD
 // --------------------------------------------------------------------------
 // The submit.
 
+// One draw of the instance into cell bin of ot: the mesh frame, or with live
+// vertices every range of the mesh as dynamic geometry (LIVE VERTICES above).
+// 1 = submitted (with live vertices: at least one range).
+internal int EngInst_SubmitLinked(int view, const EngineDraw *draw, const EngineInstanceDraw *d, u32 *ot, int bin)
+{
+	const EngineMeshDesc *desc;
+	int submitted = 0;
+	u32 r;
+	u32 i;
+
+	if (d->liveVertices == NULL)
+	{
+		return Engine_RenderSubmitLinked(view, draw, ot, bin);
+	}
+	desc = Engine_MeshDesc(d->mesh);
+	if ((desc == NULL) || (desc->ranges == NULL) || (desc->indexCount != desc->verticesPerFrame) || (desc->verticesPerFrame > ENG_INST_LIVE_MAX))
+	{
+		return 0;
+	}
+	if (!s_engInstLiveIndexReady)
+	{
+		for (i = 0; i < ENG_INST_LIVE_MAX; i++)
+		{
+			s_engInstLiveIndex[i] = (u16)i;
+		}
+		s_engInstLiveIndexReady = 1;
+	}
+	for (r = 0; r < desc->rangeCount; r++)
+	{
+		const EngineRange *range = &desc->ranges[r];
+		EngineDraw live = *draw;
+
+		if ((range->indexCount == 0u) || (range->firstIndex + range->indexCount > desc->verticesPerFrame))
+		{
+			continue;
+		}
+		live.mesh = -1;
+		live.frame = 0;
+		live.dynVertices = d->liveVertices + range->firstIndex;
+		live.dynVertexCount = range->indexCount;
+		live.dynIndices = s_engInstLiveIndex;
+		live.dynIndexCount = range->indexCount;
+		live.dynMaterial = (int)range->material;
+		if (Engine_RenderSubmitLinked(view, &live, ot, bin))
+		{
+			submitted = 1;
+		}
+	}
+	return submitted;
+}
+
 int Engine_InstanceSubmit(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb, const EngineInstanceDraw *d)
 {
 	const EngineCamera *cam;
@@ -478,7 +541,7 @@ int Engine_InstanceSubmit(struct Instance *inst, struct InstDrawPerPlayer *idpp,
 	{
 		draw.splitKeep = -1; // the part above the plane
 	}
-	if (!Engine_RenderSubmitLinked(view, &draw, (u32 *)idpp->otRangeNormal, bin))
+	if (!EngInst_SubmitLinked(view, &draw, d, (u32 *)idpp->otRangeNormal, bin))
 	{
 		return EngInst_Decline();
 	}
@@ -495,7 +558,7 @@ int Engine_InstanceSubmit(struct Instance *inst, struct InstDrawPerPlayer *idpp,
 		{
 			draw.splitKeep = 1; // the part below the plane
 			memcpy(draw.tint, d->belowTint, sizeof(draw.tint));
-			if (Engine_RenderSubmitLinked(view, &draw, ot2, bin))
+			if (EngInst_SubmitLinked(view, &draw, d, ot2, bin))
 			{
 				drawn++;
 			}
@@ -511,7 +574,7 @@ int Engine_InstanceSubmit(struct Instance *inst, struct InstDrawPerPlayer *idpp,
 		Engine_Mat4Mul(&screenFromWorld, &mirrorWorld, &draw.clipFromModel);
 		draw.splitKeep = -1; // only the reflection of the part above the plane
 		memcpy(draw.tint, d->mirrorTint, sizeof(draw.tint));
-		if (Engine_RenderSubmitLinked(view, &draw, ot2, bin))
+		if (EngInst_SubmitLinked(view, &draw, d, ot2, bin))
 		{
 			drawn++;
 		}
