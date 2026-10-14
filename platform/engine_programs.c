@@ -23,12 +23,16 @@
 // layout, the samplers and the block; a material names its program
 // (EngineMaterial.program) and the renderer binds it per range.
 //
-// THE SAMPLERS. Two slots, both constant for the lifetime of the program:
+// THE SAMPLERS. Three slots, all constant for the lifetime of the program:
 //   slot 0  "s_texture"  the native texture of texSource 1 (RGBA8, sRGB or not,
 //                        exactly as "nr" reads it)
 //   slot 1  "s_vram"     the PSX VRAM texture (RG8, 1024 x 512, the texture
 //                        NativeRenderer_GetVRAMTexture returns), read with
 //                        texelFetch - nearest only, never filtered
+//   slot 3  "s_table"    the track mosaic table of texSource 3 (RGBA8, nearest,
+//                        platform/engine_track_mosaic.c), read with texelFetch
+// Slot 2 is the PSX page atlas: the layout has a binding for it (the bindings
+// run from 0 to the highest slot) but "ne" never declares or moves it.
 // The PSX program has the VRAM in slot 0 and its colour lookup table in slot 1;
 // "ne" has no lookup table (see FIVE-FIVE-FIVE below), so a draw binds the two
 // textures it needs and nothing else.
@@ -86,8 +90,9 @@ int Engine_ProgramsInit(void)
 	    .samplers = {
 	        {.slot = 0, .name = "s_texture"},
 	        {.slot = 1, .name = "s_vram"},
+	        {.slot = 3, .name = "s_table"},
 	    },
-	    .samplerCount = 2,
+	    .samplerCount = 3,
 	    .uniformBlockName = "NeBlock",
 	    .uniformBlockBytes = (int)sizeof(EngineUniforms),
 	    .uniformBlockBinding = NATIVE_UNIFORM_BLOCK_BINDING,

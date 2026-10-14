@@ -63,6 +63,10 @@
 // draw (NativeRenderer_InitialiseRender binds it once and nothing rebinds it).
 #define ENGINE_VRAM_UNIT 1
 #define ENGINE_LUT_UNIT 1
+// The track mosaic table (platform/engine_track_mosaic.c), bound per range of an
+// ENGINE_TEX_VRAM_TABLE material. Slot 2 is the PSX page atlas and never moves;
+// nothing of the PSX path reads slot 3, so it is not restored.
+#define ENGINE_TABLE_UNIT 3
 
 // The slim copy of a draw. Dynamic geometry is in s_engDynCpu[bank], from dynFirst.
 typedef struct
@@ -103,6 +107,7 @@ typedef struct
 	u32 refusedBadMaterial;
 	u32 refusedBadRange;
 	u32 uploadFailed;
+	u32 tableRanges; // ranges drawn through the track mosaic table (texture slot 3)
 	u32 submittedPerView[ENGINE_VIEWS];
 } EngineRenderCounts;
 
@@ -302,6 +307,8 @@ void Engine_RenderLevelUnload(void)
 	}
 
 	Engine_RenderEmptyGrave();
+	// The mosaic data texture goes with the level (retired by the backend, not destroyed under a frame).
+	Engine_TrackMosaicUnload();
 	for (int i = 0; i < s_engLiveCount; i++)
 	{
 		s_engGraveVB[i] = s_engLiveVB[i];
@@ -509,7 +516,9 @@ internal int Engine_RenderDrawRange(const EngineMaterial *material, const Engine
 	const u32 program = Engine_ProgramOf((int)material->program);
 	EngineUniforms u;
 	NativeGfxDrawState state;
-	const int vram = (material->texSource == ENGINE_TEX_VRAM);
+	const int table = (material->texSource == ENGINE_TEX_VRAM_TABLE);
+	const int vram = (material->texSource == ENGINE_TEX_VRAM) || table;
+	const u32 tableTexture = table ? Engine_TrackMosaicTexture() : NATIVE_GFX_INVALID;
 	const int native = (material->texSource == ENGINE_TEX_NATIVE) && (material->nativeTexture != NATIVE_GFX_INVALID);
 	const BlendMode blend = Engine_RenderBlendMode(material->blend);
 	const int transparent = (draw->flags & ENGINE_DRAW_TRANSPARENT) != 0u;
@@ -527,6 +536,13 @@ internal int Engine_RenderDrawRange(const EngineMaterial *material, const Engine
 		Engine_RenderFirstRefusal(8, "no program for the material");
 		return 0;
 	}
+	if (table && (tableTexture == NATIVE_GFX_INVALID))
+	{
+		// A table face without its data texture would read the fallback texture.
+		s_engCount.refusedBadMaterial++;
+		Engine_RenderFirstRefusal(9, "mosaic table range without its data texture");
+		return 0;
+	}
 	if (program != *boundProgram)
 	{
 		NativeGfx_BindProgram((ShaderID)program);
@@ -539,7 +555,7 @@ internal int Engine_RenderDrawRange(const EngineMaterial *material, const Engine
 	{
 		u.tint[i] = material->tint[i] * draw->tint[i];
 	}
-	u.params[0] = vram ? 2.0f : (native ? 1.0f : 0.0f);
+	u.params[0] = table ? 3.0f : (vram ? 2.0f : (native ? 1.0f : 0.0f));
 	u.params[1] = (native && ((material->flags & ENGINE_MATERIAL_SRGB) != 0u)) ? 1.0f : 0.0f;
 	u.params[2] = (material->blend == ENGINE_BLEND_MASK) ? material->alphaCutoff : 0.0f;
 	u.params[3] = 0.0f;
@@ -548,6 +564,8 @@ internal int Engine_RenderDrawRange(const EngineMaterial *material, const Engine
 	u.params2[1] = (draw->splitKeep > 0) ? 1.0f : ((draw->splitKeep < 0) ? -1.0f : 0.0f);
 	// The material's depth offset (track decals): the vertex stage multiplies clip z by 1 + this. 0 for every material made without one.
 	u.params2[2] = material->depthBias;
+	// Table flags: 1 = a cell texel smaller than a pixel falls back to the group's levels 2, 1, 0.
+	u.params2[3] = table ? 1.0f : 0.0f;
 	memcpy(u.split, draw->split, sizeof(u.split));
 	u.params3[0] = (float)material->program;
 	u.params3[1] = draw->time;
@@ -569,6 +587,11 @@ internal int Engine_RenderDrawRange(const EngineMaterial *material, const Engine
 
 		NativeGfx_BindTexture(ENGINE_VRAM_UNIT, NativeRenderer_GetVRAMTexture(), NATIVE_GFX_FILTER_NEAREST);
 		*outVram = 1;
+		if (table)
+		{
+			NativeGfx_BindTexture(ENGINE_TABLE_UNIT, (TextureID)tableTexture, NATIVE_GFX_FILTER_NEAREST);
+			s_engCount.tableRanges++;
+		}
 	}
 	else if (native)
 	{
@@ -868,4 +891,5 @@ void Engine_RenderReport(void)
 	             s_engCount.refusedBadMesh, s_engCount.refusedBadMaterial, s_engCount.refusedBadRange, s_engCount.uploadFailed);
 	Platform_Log("[CTR Engine] submits per view: %u %u %u %u\n", s_engCount.submittedPerView[0], s_engCount.submittedPerView[1],
 	             s_engCount.submittedPerView[2], s_engCount.submittedPerView[3]);
+	Platform_Log("[CTR Engine] track mosaic: table ranges drawn %u\n", s_engCount.tableRanges);
 }

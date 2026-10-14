@@ -932,6 +932,13 @@ global_variable const char *ctr_native_twin_shader =
 //      swapchain are UNORM). The statement is the one of "nr", character for
 //      character.
 //   2  the PSX VRAM, below.
+//   3  the PSX VRAM through the track mosaic table (slot 3, platform/
+//      engine_track_mosaic.c, which explains the row and the vertex): v_uv
+//      carries the face's row and its own position (s, t); the cell under
+//      (s, t) gives the UVs, the tpage and the clut, and the texel is then
+//      read as in 2. With params2.w 1 a cell texel smaller than a pixel gives
+//      way to the group's level 2, then 1, then 0 (the screen derivative of
+//      (s, t), like mip levels; not the PS1's distance thresholds).
 //
 // VRAM (texSource 2). vramPage.xy is the page origin in VRAM words, vramPage.z
 // the depth (0 = 4 bit, 1 = 8 bit, 2 = 15 bit), vramClut.xy the CLUT origin in
@@ -1015,6 +1022,7 @@ global_variable const char *ctr_native_engine_shader =
     "VARYING_LOC2 in float v_split;\n"
     "SAMPLER_SLOT0 uniform sampler2D s_texture;\n"
     "SAMPLER_SLOT1 uniform sampler2D s_vram;\n"
+    "SAMPLER_SLOT3 uniform sampler2D s_table;\n"
     ENGINE_UNIFORM_BLOCK_GLSL
     // One VRAM word: the two bytes of the RG8 texel, low byte first. Wrapped on the VRAM.
     "int vramWord(ivec2 p) {\n"
@@ -1022,35 +1030,96 @@ global_variable const char *ctr_native_engine_shader =
     "	ivec2 b = ivec2(texelFetch(s_vram, w, 0).rg * 255.0 + 0.5);\n"
     "	return b.x | (b.y << 8);\n"
     "}\n"
+    // The colour word of texel t of a page (t wraps inside the 256 x 256 page).
+    "int pageWord(ivec2 t, ivec2 page, int depth, ivec2 clut) {\n"
+    "	t = t & 255;\n"
+    "	if (depth == 0) {\n"
+    "		int index = (vramWord(page + ivec2(t.x >> 2, t.y)) >> ((t.x & 3) * 4)) & 15;\n"
+    "		return vramWord(clut + ivec2(index, 0));\n"
+    "	}\n"
+    "	if (depth == 1) {\n"
+    "		int index = (vramWord(page + ivec2(t.x >> 1, t.y)) >> ((t.x & 1) * 8)) & 255;\n"
+    "		return vramWord(clut + ivec2(index, 0));\n"
+    "	}\n"
+    "	return vramWord(page + t);\n"
+    "}\n"
+    // A colour word as the fragment: 0x0000 is transparent, the STP passes, 5:5:5
+    // as the RG8 lookup table does it: (v & 31) << 3.
+    "vec4 wordColour(int word) {\n"
+    "	if (word == 0) { discard; }\n"
+    "	bool stp = (word & 0x8000) != 0;\n"
+    "	int pass = int(params.w + 0.5);\n"
+    "	if ((pass == 1) && stp) { discard; }\n"
+    "	if ((pass == 2) && !stp) { discard; }\n"
+    "	vec3 texel = vec3(float((word & 31) << 3), float(((word >> 5) & 31) << 3), float(((word >> 10) & 31) << 3)) / 255.0;\n"
+    "	return vec4(texel * v_color.rgb * params2.x, v_color.a);\n"
+    "}\n"
+    // One texel of the mosaic table, its four bytes.
+    "ivec4 tableTexel(int row, int x) {\n"
+    "	return ivec4(texelFetch(s_table, ivec2(x, row), 0) * 255.0 + 0.5);\n"
+    "}\n"
+    // The UV box of a layout (its three texels) in texels, per axis.
+    "vec2 layoutSize(ivec4 a, ivec4 b, ivec4 c) {\n"
+    "	vec2 lo = vec2(min(min(a.x, b.x), min(c.x, c.z)), min(min(a.y, b.y), min(c.y, c.w)));\n"
+    "	vec2 hi = vec2(max(max(a.x, b.x), max(c.x, c.z)), max(max(a.y, b.y), max(c.y, c.w)));\n"
+    "	return hi - lo + 1.0;\n"
+    "}\n"
+    // How much of the face one pixel covers, along s and t. A neighbour pixel on
+    // another face jumps (a face starts at 0 again, another row adds 4): an axis
+    // with a jump is left out; with a jump on both the face is a few pixels wide
+    // and counts as far.
+    "vec2 faceFootprint(vec2 st) {\n"
+    "	vec2 dx = abs(dFdx(st));\n"
+    "	vec2 dy = abs(dFdy(st));\n"
+    "	bool xJump = max(dx.x, dx.y) > 0.25;\n"
+    "	bool yJump = max(dy.x, dy.y) > 0.25;\n"
+    "	if (xJump && yJump) { return vec2(1.0); }\n"
+    "	if (xJump) { return dy; }\n"
+    "	if (yJump) { return dx; }\n"
+    "	return max(dx, dy);\n"
+    "}\n"
     "void main() {\n"
     // params2.y: 1 keeps v_split >= 0 (below the plane), -1 keeps v_split < 0, 0 keeps all.
     "	if ((params2.y > 0.5) && (v_split < 0.0)) { discard; }\n"
     "	if ((params2.y < -0.5) && (v_split >= 0.0)) { discard; }\n"
     "	vec4 colour = v_color;\n"
-    "	if (params.x > 1.5) {\n"
-    // Texel of the page, wrapped inside the 256 x 256 page.
-    "		ivec2 t = ivec2(floor(v_uv)) & 255;\n"
-    "		ivec2 page = ivec2(vramPage.xy + 0.5);\n"
-    "		int depth = int(vramPage.z + 0.5);\n"
-    "		int word;\n"
-    "		if (depth == 0) {\n"
-    "			int index = (vramWord(page + ivec2(t.x >> 2, t.y)) >> ((t.x & 3) * 4)) & 15;\n"
-    "			word = vramWord(ivec2(vramClut.xy + 0.5) + ivec2(index, 0));\n"
-    "		} else if (depth == 1) {\n"
-    "			int index = (vramWord(page + ivec2(t.x >> 1, t.y)) >> ((t.x & 1) * 8)) & 255;\n"
-    "			word = vramWord(ivec2(vramClut.xy + 0.5) + ivec2(index, 0));\n"
-    "		} else {\n"
-    "			word = vramWord(page + t);\n"
+    "	if (params.x > 2.5) {\n"
+    // The face's row and its own position (s, t): texcoord = (s + 2 + 4a, t + 2 + 4b), row = a + 64 b.
+    "		vec2 ab = floor(v_uv * 0.25);\n"
+    "		int row = int(ab.x) + 64 * int(ab.y);\n"
+    "		vec2 st = v_uv - 4.0 * ab - 2.0;\n"
+    // Before any discard: the derivatives need the whole 2 x 2 quad.
+    "		vec2 face = faceFootprint(st);\n"
+    "		int side = max(tableTexel(row, 0).r, 1);\n"
+    "		vec2 g = st * float(side);\n"
+    "		ivec2 cr = clamp(ivec2(floor(g)), ivec2(0), ivec2(side - 1));\n"
+    "		vec2 f = g - vec2(cr);\n"
+    "		int at = 1 + 3 * (4 * cr.y + cr.x);\n"
+    "		ivec4 a = tableTexel(row, at);\n"
+    "		ivec4 b = tableTexel(row, at + 1);\n"
+    "		ivec4 c = tableTexel(row, at + 2);\n"
+    // params2.w 1: a cell texel smaller than a pixel gives way to level 2, then 1, then 0 (texels 49, 52, 55).
+    "		if (params2.w > 0.5) {\n"
+    "			vec2 size = layoutSize(a, b, c) * float(side);\n"
+    "			float perPixel = max(face.x * size.x, face.y * size.y);\n"
+    "			for (int k = 0; (k < 3) && (perPixel > 1.0); k++) {\n"
+    "				at = 49 + 3 * k;\n"
+    "				a = tableTexel(row, at);\n"
+    "				b = tableTexel(row, at + 1);\n"
+    "				c = tableTexel(row, at + 2);\n"
+    "				f = clamp(st, 0.0, 1.0);\n"
+    "				size = layoutSize(a, b, c);\n"
+    "				perPixel = max(face.x * size.x, face.y * size.y);\n"
+    "			}\n"
     "		}\n"
-    // 0x0000 is transparent.
-    "		if (word == 0) { discard; }\n"
-    "		bool stp = (word & 0x8000) != 0;\n"
-    "		int pass = int(params.w + 0.5);\n"
-    "		if ((pass == 1) && stp) { discard; }\n"
-    "		if ((pass == 2) && !stp) { discard; }\n"
-    // 5:5:5 as the RG8 lookup table does it: (v & 31) << 3.
-    "		vec3 texel = vec3(float((word & 31) << 3), float(((word >> 5) & 31) << 3), float(((word >> 10) & 31) << 3)) / 255.0;\n"
-    "		colour = vec4(texel * v_color.rgb * params2.x, v_color.a);\n"
+    // The UV inside the cell: bilinear over its corners u0v0 (0, 0), u1v1 (1, 0), u2v2 (0, 1), u3v3 (1, 1).
+    "		vec2 uv = mix(mix(vec2(a.xy), vec2(b.xy), f.x), mix(vec2(c.xy), vec2(c.zw), f.x), f.y);\n"
+    "		int tpage = b.z | (b.w << 8);\n"
+    "		int clut = a.z | (a.w << 8);\n"
+    "		colour = wordColour(pageWord(ivec2(floor(uv)), ivec2((tpage & 15) * 64, ((tpage >> 4) & 1) * 256), (tpage >> 7) & 3,\n"
+    "		                             ivec2((clut & 63) * 16, clut >> 6)));\n"
+    "	} else if (params.x > 1.5) {\n"
+    "		colour = wordColour(pageWord(ivec2(floor(v_uv)), ivec2(vramPage.xy + 0.5), int(vramPage.z + 0.5), ivec2(vramClut.xy + 0.5)));\n"
     "	} else if (params.x > 0.5) {\n"
     "		if (params.y > 0.5) {\n"
     "			vec4 texel = texture(s_texture, v_uv);\n"
