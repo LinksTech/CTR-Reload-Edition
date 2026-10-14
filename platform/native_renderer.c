@@ -591,6 +591,9 @@ int g_cfg_instancePool = 0;
 // the last. Empty: no tour. Read by game/DebugMenu.c, beside --level.
 char g_cfg_levelTour[1024] = "";
 int g_cfg_levelTourFrames = 600;
+// --level-tour-shots <frames>: the snapshot bursts of every tour entry, as text
+// (game/DebugMenu.c reads it with the list). Empty: no snapshots.
+char g_cfg_levelTourShots[256] = "";
 
 // --- The VRAM copy window ---------------------------------------------------
 //

@@ -319,6 +319,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--driver", "<n>", "driver for the jump with --level or --autoload-track (default 0, Crash)"},
     {"--level-tour", "<list>", "drive the listed tracks one after another, each started from the main menu like --level / --autoload-track and left after --level-tour-frames race frames like QUIT, then end; list: races (level ids 0..17), containers (every container of the track folder), level ids, container file names, comma-separated"},
     {"--level-tour-frames", "<n>", "race frames per track of --level-tour (default 600)"},
+    {"--level-tour-shots", "<frames>", "with --level-tour: at each listed race frame of every entry a burst of 12 snapshots of consecutive race frames (<--shot-name>-tNN-L<level>-<burst>-<race frame>.bmp); a plain number is for every track, L<level>@<frame> for that level only; comma-separated, up to 32"},
     {"--setup", "", "first-start screen even when data is there"},
     {"--record", "", "record a replay report under debug/reports/ from boot (the log goes there too)"},
     {"--replay", "<file>", "play a replay"},
@@ -520,6 +521,7 @@ static const NativeValueLimit s_valueLimits[] = {
     {"--char", NATIVE_CHAR_PATH_MAX, 0},
     {"--autoload-track", sizeof(g_cfg_autoloadTrack), 0},
     {"--level-tour", sizeof(g_cfg_levelTour), 0},
+    {"--level-tour-shots", sizeof(g_cfg_levelTourShots), 0},
 };
 
 // The entries of a comma list as the readers count them: empty ones (",,")
@@ -4334,6 +4336,15 @@ int main(int argc, char *argv[])
 					g_cfg_levelTourFrames = 1;
 				}
 				printf("[CTR Native] level tour: %d race frame(s) each\n", g_cfg_levelTourFrames);
+			}
+			else if ((strcmp(argv[argIndex], "--level-tour-shots") == 0) && ((argIndex + 1) < argc))
+			{
+				// Kept as text; game/DebugMenu.c reads it with the tour list
+				// (EngineTour_ParseShots) and refuses a list that does not read.
+				extern char g_cfg_levelTourShots[256];
+
+				snprintf(g_cfg_levelTourShots, sizeof(g_cfg_levelTourShots), "%s", argv[++argIndex]);
+				printf("[CTR Native] level tour: snapshot bursts at '%s'\n", g_cfg_levelTourShots);
 			}
 			else if ((strcmp(argv[argIndex], "--autoload-track") == 0) && ((argIndex + 1) < argc))
 			{

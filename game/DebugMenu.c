@@ -1550,8 +1550,33 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 //  does not. One VRAM dump per entry, at its last race frame
 //  (Platform_DumpRequest, <--dump-prefix>-tour-NN-<track>.tga). After the last
 //  entry the run ends through Platform_QuitGame, the door --menu-keys-quit uses.
+//
+//  WHAT EACH ENTRY MEASURES (round of 2026-10-15, the engine's all-tracks tour).
+//  Everything below only READS game state, the same with and without --engine:
+//  - --level-tour-shots: bursts of 12 snapshots of consecutive race frames at
+//    the listed race frames of every entry (L<level>@<frame>: that level only),
+//    named <--shot-name>-tNN-L<level>-<burst>-<race frame>.bmp, one "burst" line
+//    each. Race frames, not VBlanks: an entry's VBlanks move with everything
+//    before it, its race frames are its game state.
+//  - one "drive" line: the player's progress along the track from race frame
+//    DBG_TOUR_DRIVE_FROM on (lap fractions, the longest stall) and a fingerprint
+//    of every driver at the last race frame. The tour of a run without --engine
+//    and the same tour with it must print the same fingerprints: the measure
+//    that the engine left the game alone on every track.
+//  - under --engine the per-track reports of the engine (Engine_TourNotify) at
+//    the first race frame and after the last.
 #define DBG_TOUR_MAX           64
 #define DBG_TOUR_RETAIL_RACES  18 // level ids 0..17, include/namespace_Level.h
+#define DBG_TOUR_SHOTS_MAX     32 // entries of --level-tour-shots (ENGINE_TOUR_SHOTS_MAX)
+#define DBG_TOUR_BURST_FRAMES  12 // snapshots per burst (ENGINE_TOUR_BURST_FRAMES)
+// The progress count starts after the start sequence (fly-in and countdown).
+#define DBG_TOUR_DRIVE_FROM    150
+// The track length of the lap count: the start node's distance, scaled as
+// game/Vehicle/VehLap.c:167 scales it (VEH_LAP_TRACK_DISTANCE_SCALE_SHIFT).
+#define DBG_TOUR_TRACK_LENGTH_SHIFT 3
+// Under --engine: the water probe line every this many race frames (it chooses
+// the race frames of the water bursts).
+#define DBG_TOUR_WATER_PROBE_EVERY 30
 // How long the tour may go without progress - the main menu up, a track
 // started, a race frame counted - before it gives up: two minutes of VBlanks.
 // A tour that hangs ends with a line that says where, rather than running until
@@ -1593,6 +1618,40 @@ global_variable int s_tourFrames = 0;
 global_variable int s_tourLevel = -1;   // the level id the current entry was started on
 global_variable int s_tourPhase = DBG_TOUR_PHASE_READ;
 global_variable int s_tourWatched = 0; // the deadline has been set once
+
+// --level-tour-shots, read with the list: entries for every level (-1) or one.
+global_variable int s_tourShotLevels[DBG_TOUR_SHOTS_MAX];
+global_variable int s_tourShotFrames[DBG_TOUR_SHOTS_MAX];
+global_variable int s_tourShotCount = 0;
+// The current entry: its burst starts, the burst being shot (its first race frame
+// and VBlank, its last so far), and what the drive line reports.
+global_variable int s_tourBursts[DBG_TOUR_SHOTS_MAX];
+global_variable int s_tourBurstCount = 0;
+global_variable int s_tourBurstOpen = -1;
+global_variable int s_tourBurstFirstFrame = 0;
+global_variable int s_tourBurstFirstVBlank = 0;
+global_variable int s_tourBurstLastFrame = 0;
+global_variable int s_tourBurstLastVBlank = 0;
+global_variable u32 s_tourState = 0;
+global_variable int s_tourLaps = 0;
+global_variable int s_tourMaskGrabs = 0;
+
+// platform/engine_tour.c: the tour's arithmetic (include/platform/engine.h, TRACK TOUR).
+int EngineTour_ParseShots(const char *text, int *levels, int *frames, int max, int *badAt);
+int EngineTour_BurstsForLevel(const int *levels, const int *frames, int count, int level, int *starts, int max, int *overlapped);
+int EngineTour_BurstOf(const int *starts, int n, int raceFrame);
+int EngineTour_ShotName(char *out, size_t size, const char *shotName, int entry, int level, int burst, int raceFrame);
+void EngineTour_DriveBegin(u32 trackLength);
+void EngineTour_DriveSample(u32 distanceToFinish);
+int EngineTour_DriveMilliLaps(void);
+int EngineTour_DriveLongestStall(void);
+u32 EngineTour_Fnv(u32 hash, const void *bytesIn, u32 bytes);
+u32 EngineTour_FnvStart(void);
+void Engine_TourNotify(int entry, int levelID, int phase);
+// platform/engine_water.c: where the water lies in view 0, one log line (pure read); frame = the race frame.
+void Engine_WaterProbeLog(const struct GameTracker *gGT, int view, int frame, const char *tag);
+// platform/native_platform.c: a snapshot at the end of this frame (as native_mods.c asks for one).
+void Platform_ShotRequest(const char *path);
 
 internal void DebugMenu_TourAdd(int level, int trackIndex, int mode)
 {
@@ -1762,6 +1821,26 @@ internal void DebugMenu_TourRead(void)
 
 	Platform_Log("[CTR Tour] %d track(s), %d skipped, %d frame(s) each, list '%s'\n", s_tourCount, s_tourSkipped, g_cfg_levelTourFrames,
 	             g_cfg_levelTour);
+
+	// --level-tour-shots: a list that does not read is refused whole - a tour
+	// with half its bursts would look like a complete measurement.
+	{
+		extern char g_cfg_levelTourShots[256];
+		int badAt = 0;
+		const int count = EngineTour_ParseShots(g_cfg_levelTourShots, s_tourShotLevels, s_tourShotFrames, DBG_TOUR_SHOTS_MAX, &badAt);
+
+		s_tourShotCount = 0;
+		if (count < 0)
+		{
+			Platform_Log("[CTR Tour] shots: '%s' refused at entry %d (race frames from 1, L<level>@<frame>, up to %d) - no snapshots\n",
+			             g_cfg_levelTourShots, badAt, DBG_TOUR_SHOTS_MAX);
+		}
+		else if (count > 0)
+		{
+			s_tourShotCount = count;
+			Platform_Log("[CTR Tour] shots: %d burst start(s) of %d race frames, list '%s'\n", count, DBG_TOUR_BURST_FRAMES, g_cfg_levelTourShots);
+		}
+	}
 }
 
 internal const char *DebugMenu_TourDiscName(int level)
@@ -1953,6 +2032,136 @@ internal int DebugMenu_TourMenuStep(struct GameTracker *gGT, int now, int menuUp
 	return 1;
 }
 
+// The burst being shot is over (its last frame, or the entry ended inside it):
+// its line, with the VBlanks its snapshots were asked for in.
+internal void DebugMenu_TourBurstClose(void)
+{
+	if (s_tourBurstOpen < 0)
+	{
+		return;
+	}
+	Platform_Log("[CTR Tour] %d/%d: level %d burst %d: race frames %d..%d at vblanks %d..%d\n", s_tourPos + 1, s_tourCount, s_tourLevel,
+	             s_tourBurstOpen + 1, s_tourBurstFirstFrame, s_tourBurstLastFrame, s_tourBurstFirstVBlank, s_tourBurstLastVBlank);
+	s_tourBurstOpen = -1;
+}
+
+// What one race frame of an entry measures (see the head of this section). Read
+// only: the drivers, the level's start node and the frame counter.
+internal void DebugMenu_TourMeasure(struct GameTracker *gGT, int now)
+{
+	extern char g_cfg_shotName[PLATFORM_ARG_PATH_MAX];
+	extern int g_cfg_engine;
+	const struct Driver *player = gGT->drivers[0];
+	int burst;
+
+	if (s_tourFrames == 1)
+	{
+		const struct Level *level = gGT->level1;
+		u32 trackLength = 0;
+		int overlapped = 0;
+
+		s_tourBurstCount = EngineTour_BurstsForLevel(s_tourShotLevels, s_tourShotFrames, s_tourShotCount, s_tourLevel, s_tourBursts, DBG_TOUR_SHOTS_MAX,
+		                                             &overlapped);
+		s_tourBurstOpen = -1;
+		if (overlapped > 0)
+		{
+			Platform_Log("[CTR Tour] %d/%d: level %d: %d burst start(s) inside an earlier burst left out\n", s_tourPos + 1, s_tourCount, s_tourLevel,
+			             overlapped);
+		}
+		if ((level != NULL) && (level->ptr_restart_points != NULL) && (level->cnt_restart_points > 0))
+		{
+			trackLength = (u32)level->ptr_restart_points[0].distToFinish << DBG_TOUR_TRACK_LENGTH_SHIFT;
+		}
+		EngineTour_DriveBegin(trackLength);
+		s_tourState = 0;
+		s_tourLaps = 0;
+		s_tourMaskGrabs = 0;
+		Engine_TourNotify(s_tourPos + 1, s_tourLevel, 0);
+	}
+
+	// Snapshots: one per race frame inside a burst, taken at the end of this frame.
+	burst = EngineTour_BurstOf(s_tourBursts, s_tourBurstCount, s_tourFrames);
+	if (burst != s_tourBurstOpen)
+	{
+		DebugMenu_TourBurstClose();
+	}
+	if (burst >= 0)
+	{
+		char path[PLATFORM_ARG_PATH_MAX + 64];
+
+		if (burst != s_tourBurstOpen)
+		{
+			s_tourBurstOpen = burst;
+			s_tourBurstFirstFrame = s_tourFrames;
+			s_tourBurstFirstVBlank = now;
+		}
+		s_tourBurstLastFrame = s_tourFrames;
+		s_tourBurstLastVBlank = now;
+		if (EngineTour_ShotName(path, sizeof(path), g_cfg_shotName, s_tourPos + 1, s_tourLevel, burst + 1, s_tourFrames))
+		{
+			Platform_ShotRequest(path);
+		}
+	}
+
+	// Under --engine: where the water is on screen (a log line, nothing drawn or kept).
+	if (g_cfg_engine && ((s_tourFrames % DBG_TOUR_WATER_PROBE_EVERY) == 0))
+	{
+		char tag[64];
+
+		snprintf(tag, sizeof(tag), "tour %d level %d race frame %d", s_tourPos + 1, s_tourLevel, s_tourFrames);
+		Engine_WaterProbeLog(gGT, 0, s_tourFrames, tag);
+	}
+
+	// The player's progress, from the end of the start sequence on.
+	if ((player != NULL) && (s_tourFrames >= DBG_TOUR_DRIVE_FROM))
+	{
+		EngineTour_DriveSample(player->distanceToFinish_curr);
+		s_tourLaps = (int)player->lapIndex;
+		s_tourMaskGrabs = (int)player->numTimesMaskGrab;
+	}
+
+	// The fingerprint of this frame; the last race frame's is the entry's. Field by
+	// field, never a whole struct (no padding bytes in it).
+	{
+		u32 hash = EngineTour_FnvStart();
+		int seat;
+
+		for (seat = 0; seat < 8; seat++)
+		{
+			const struct Driver *d = gGT->drivers[seat];
+			s32 values[7];
+
+			if (d == NULL)
+			{
+				continue;
+			}
+			values[0] = seat;
+			values[1] = d->posCurr.x;
+			values[2] = d->posCurr.y;
+			values[3] = d->posCurr.z;
+			values[4] = (s32)d->distanceToFinish_curr;
+			values[5] = (s32)d->lapIndex;
+			values[6] = (s32)d->numTimesMaskGrab;
+			hash = EngineTour_Fnv(hash, values, (u32)sizeof(values));
+		}
+		s_tourState = hash;
+	}
+}
+
+// The entry's measurement lines and the engine's reports after its last frame.
+internal void DebugMenu_TourMeasureEnd(void)
+{
+	const int milli = EngineTour_DriveMilliLaps();
+	const int magnitude = (milli < 0) ? -milli : milli;
+
+	DebugMenu_TourBurstClose();
+	Platform_Log("[CTR Tour] %d/%d: level %d drive: progress %s%d.%03d lap(s) from race frame %d, laps %d, longest stall %d frame(s), mask grabs %d, "
+	             "state %08x\n",
+	             s_tourPos + 1, s_tourCount, s_tourLevel, (milli < 0) ? "-" : "", magnitude / 1000, magnitude % 1000, DBG_TOUR_DRIVE_FROM, s_tourLaps,
+	             EngineTour_DriveLongestStall(), s_tourMaskGrabs, (unsigned)s_tourState);
+	Engine_TourNotify(s_tourPos + 1, s_tourLevel, 1);
+}
+
 // The entry is over - its frames are driven, or the game left the race by
 // itself. Dump, then back to the menu or, after the last entry, to the end.
 // leftByItself: the game is already on its way to the menu (or in a demo), and
@@ -1960,6 +2169,7 @@ internal int DebugMenu_TourMenuStep(struct GameTracker *gGT, int now, int menuUp
 internal void DebugMenu_TourFinish(struct GameTracker *gGT, int now, int leftByItself)
 {
 	DebugMenu_TourDump(&s_tour[s_tourPos]);
+	DebugMenu_TourMeasureEnd();
 
 	if (leftByItself)
 	{
@@ -2024,6 +2234,7 @@ internal void DebugMenu_TourDriveStep(struct GameTracker *gGT, int now, int inRa
 
 	s_tourFrames++;
 	DebugMenu_TourProgress(now);
+	DebugMenu_TourMeasure(gGT, now);
 
 	if (s_tourFrames >= g_cfg_levelTourFrames)
 	{

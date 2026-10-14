@@ -724,7 +724,7 @@ typedef struct
 } EngineWaterProbe;
 // Pure read of gGT->level1 and gGT->pushBuffer[view] (dev tour only). 1 = valid.
 int Engine_WaterProbe(const struct GameTracker *gGT, int view, EngineWaterProbe *out);
-void Engine_WaterProbeLog(const struct GameTracker *gGT, int view, int vblank, const char *tag); // the probe log line
+void Engine_WaterProbeLog(const struct GameTracker *gGT, int view, int frame, const char *tag); // the probe log line; frame = the tour's race frame
 int Engine_SelfTestWater(int *checks);
 
 // --------------------------------------------------------------------------
