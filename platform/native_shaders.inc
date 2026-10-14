@@ -1020,6 +1020,14 @@ global_variable const char *ctr_native_engine_shader =
     // The material's depth offset (params2.z, 0 = none): clip z times (1 + offset). With the reverse Z of the
     // engine a positive value pulls the vertex nearer, a negative one farther; it layers coplanar track decals.
     "	gl_Position.z *= (1.0 + params2.z);\n"
+    // A track decal's lift (params3.z world units, 0 = none; platform/engine_track.c DECALS): its depth is that of
+    // its plane moved the lift toward the camera. params4 = (plane normal, normal . camera), so h is the camera's
+    // distance to the plane; scaling the view vector by s = (h - lift) / h lands on the moved plane with the same
+    // screen point, and with clip z = zNear the depth is z / s. s stays >= 0.5 when the camera is near the plane.
+    "	if (params3.z > 0.0) {\n"
+    "		float h = abs(params4.w - dot(params4.xyz, a_position));\n"
+    "		if (h > 0.0) { gl_Position.z /= max((h - params3.z) / h, 0.5); }\n"
+    "	}\n"
     "}\n"
     "#endif\n"
     "#ifdef FRAGMENT\n"

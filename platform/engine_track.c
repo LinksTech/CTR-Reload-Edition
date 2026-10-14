@@ -1,4 +1,5 @@
 #include <platform/engine.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -64,7 +65,7 @@
 #define EGT_KEYS_MAX 4096
 #define EGT_MODELS_MAX 128
 #define EGT_CELL_OPAQUE 0x3fe // above every cell a track face uses (<= 1020) and below the clear/glow/sky cell 0x3ff
-#define EGT_CELL_SEMI 0x3fd   // after the opaque meshes: a lower cell is drawn later
+#define EGT_CELL_SEMI 0x3fd   // after the opaque meshes: a lower cell is drawn later; also the decals (see DECALS)
 #define EGT_BUCKET_WATER_RENDERED 8
 #define EGT_BUCKET_WATER_LIST 9
 #define EGT_BUCKET_COUNT 11
@@ -123,6 +124,11 @@ typedef struct
 	u16 clut;
 	u8 doubleSided;
 	s8 bias;
+	// A decal key (see DECALS): lift > 0 in world units, and the plane normal its
+	// faces share (normalQ: x and z in 1/1024, the key; normal: of its first face).
+	u8 lift;
+	s16 normalQ[2];
+	float normal[3];
 } EngTrackKey;
 
 typedef struct
@@ -228,15 +234,31 @@ internal const struct TextureLayout *EngTrack_FinestLayout(const struct TextureL
 	return &group[3];
 }
 
-internal int EngTrack_KeysFind(EngTrackKeySet *set, u16 tpage, u16 clut, int doubleSided, int bias)
+// A key with a lift (1..255) also needs the normal: faces of one decal key share the
+// plane normal within 1/1024 per component, so the vertex stage can measure the
+// camera's distance to their plane with the key's normal. lift 0 ignores normal.
+internal int EngTrack_KeysFindLifted(EngTrackKeySet *set, u16 tpage, u16 clut, int doubleSided, int bias, int lift, const float *normal)
 {
+	s16 q0 = 0;
+	s16 q1 = 0;
+	EngTrackKey *nk;
 	int i;
 
+	if ((lift <= 0) || (lift > 255) || (normal == NULL))
+	{
+		lift = 0;
+	}
+	else
+	{
+		q0 = (s16)floorf(normal[0] * 1024.0f + 0.5f);
+		q1 = (s16)floorf(normal[2] * 1024.0f + 0.5f);
+	}
 	for (i = 0; i < set->count; i++)
 	{
 		const EngTrackKey *k = &set->key[i];
 
-		if ((k->tpage == tpage) && (k->clut == clut) && (k->doubleSided == (u8)(doubleSided ? 1 : 0)) && (k->bias == (s8)bias))
+		if ((k->tpage == tpage) && (k->clut == clut) && (k->doubleSided == (u8)(doubleSided ? 1 : 0)) && (k->bias == (s8)bias) && (k->lift == (u8)lift) &&
+		    (k->normalQ[0] == q0) && (k->normalQ[1] == q1))
 		{
 			return i;
 		}
@@ -245,11 +267,23 @@ internal int EngTrack_KeysFind(EngTrackKeySet *set, u16 tpage, u16 clut, int dou
 	{
 		return -1;
 	}
-	set->key[set->count].tpage = tpage;
-	set->key[set->count].clut = clut;
-	set->key[set->count].doubleSided = (u8)(doubleSided ? 1 : 0);
-	set->key[set->count].bias = (s8)bias;
+	nk = &set->key[set->count];
+	nk->tpage = tpage;
+	nk->clut = clut;
+	nk->doubleSided = (u8)(doubleSided ? 1 : 0);
+	nk->bias = (s8)bias;
+	nk->lift = (u8)lift;
+	nk->normalQ[0] = q0;
+	nk->normalQ[1] = q1;
+	nk->normal[0] = (lift > 0) ? normal[0] : 0.0f;
+	nk->normal[1] = (lift > 0) ? normal[1] : 1.0f;
+	nk->normal[2] = (lift > 0) ? normal[2] : 0.0f;
 	return set->count++;
+}
+
+internal int EngTrack_KeysFind(EngTrackKeySet *set, u16 tpage, u16 clut, int doubleSided, int bias)
+{
+	return EngTrack_KeysFindLifted(set, tpage, clut, doubleSided, bias, 0, NULL);
 }
 
 // Zero-area test on the three world points (the PS1 draws nothing for NCLIP = 0).
@@ -476,6 +510,8 @@ typedef struct
 	int semi;
 	int first;
 	int count;
+	int lift;         // its key's lift (0 = no decal)
+	float normal[3];  // its key's plane normal (decals)
 } EngTrackDrawGroup;
 
 // 1 when a slot vertex of the face is a marked level vertex (live[] has
@@ -494,6 +530,327 @@ internal int EngTrack_FaceTouches(const EngTrackFace *f, const u16 *blockIndex, 
 		}
 	}
 	return 0;
+}
+
+// DECALS (round of 2026-10-15 night). The PS1 layers faces with the s8 bias of
+// draw_order_high: it is added to the OT index (226_00_DrawLevelOvr1P.c ~2352), so
+// of two faces at about the same depth the one with the LOWER bias is painted
+// later. Level data relies on it for faces that do not lie on their base: the
+// boost pads of Turbo Track lie flat at y 96 on a road (bias 16) that climbs 1 in
+// 12 under them, so half a pad is up to 22.7 units UNDER the road. A depth test
+// needs its own rule; the engine does not copy the OT order:
+//   - A DECAL is a floor face (normal within 60 degrees of up) every point of
+//     which lies over or under a floor face with a HIGHER bias, nearly parallel
+//     (normals within 25 degrees), at most EGT_DECAL_GAP units away along y.
+//     Found once at load (EngTrack_FindDecals); live faces take no part.
+//   - Its LIFT is the most it lies under such a base, plus EGT_DECAL_MARGIN,
+//     rounded up to whole units (so at least the margin).
+//   - It is drawn after the other opaque track faces (cell EGT_CELL_DECAL, the
+//     higher bias first), tests depth but does not write it, and its depth is
+//     that of its plane moved the lift toward the camera along its normal (the
+//     vertex stage of "ne": params3.z = lift, params4 = normal and normal . camera;
+//     the screen position does not change). Karts and objects come later and
+//     test against the base, so a lifted pad never covers a kart on the road.
+// Every other face keeps the fractional depth offset of its bias.
+#define EGT_DECAL_GAP 32.0f      // the largest distance along y between a decal and its base
+#define EGT_DECAL_MARGIN 2.0f    // a decal ends at least this far in front of its base
+#define EGT_DECAL_FLOOR 0.5f     // normal y of a floor face (60 degrees)
+#define EGT_DECAL_PARALLEL 0.9f  // cosine between the normals of a decal and its base
+#define EGT_DECAL_SHRINK 0.96f   // samples pulled toward the triangle centre (shared edges)
+
+// The unit plane normal of a built face (area-weighted over its triangles), turned
+// to point up (y >= 0). 0 = no area.
+internal int EngTrack_FaceNormal(const EngTrackFace *f, float n[3])
+{
+	double s[3] = {0.0, 0.0, 0.0};
+	double len;
+	int t;
+
+	for (t = 0; t < f->triCount; t++)
+	{
+		const float *a = f->v[f->tri[t][0]].position;
+		const float *b = f->v[f->tri[t][1]].position;
+		const float *c = f->v[f->tri[t][2]].position;
+		const double ux = (double)b[0] - a[0], uy = (double)b[1] - a[1], uz = (double)b[2] - a[2];
+		const double vx = (double)c[0] - a[0], vy = (double)c[1] - a[1], vz = (double)c[2] - a[2];
+
+		// Every triangle of a face has the same winding, so the sum keeps the plane.
+		s[0] += uy * vz - uz * vy;
+		s[1] += uz * vx - ux * vz;
+		s[2] += ux * vy - uy * vx;
+	}
+	len = sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2]);
+	if (len < 1e-6)
+	{
+		return 0;
+	}
+	if (s[1] < 0.0)
+	{
+		len = -len;
+	}
+	n[0] = (float)(s[0] / len);
+	n[1] = (float)(s[1] / len);
+	n[2] = (float)(s[2] / len);
+	return 1;
+}
+
+// The height (y) of face f over the point (x, z), from the triangle that holds it
+// in x/z. 0 = no triangle holds it.
+internal int EngTrack_FaceHeightAt(const EngTrackFace *f, float x, float z, float *y)
+{
+	int t;
+
+	for (t = 0; t < f->triCount; t++)
+	{
+		const float *a = f->v[f->tri[t][0]].position;
+		const float *b = f->v[f->tri[t][1]].position;
+		const float *c = f->v[f->tri[t][2]].position;
+		const float det = (b[2] - c[2]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[2] - c[2]);
+		float l1;
+		float l2;
+		float l3;
+
+		if (fabsf(det) < 1e-3f)
+		{
+			continue;
+		}
+		l1 = ((b[2] - c[2]) * (x - c[0]) + (c[0] - b[0]) * (z - c[2])) / det;
+		l2 = ((c[2] - a[2]) * (x - c[0]) + (a[0] - c[0]) * (z - c[2])) / det;
+		l3 = 1.0f - l1 - l2;
+		if ((l1 >= -1e-4f) && (l2 >= -1e-4f) && (l3 >= -1e-4f))
+		{
+			*y = l1 * a[1] + l2 * b[1] + l3 * c[1];
+			return 1;
+		}
+	}
+	return 0;
+}
+
+// The lift of face a over its candidate bases, or 0 when a is no decal. Samples
+// per triangle: the corners, three points on every edge and the centre, pulled
+// EGT_DECAL_SHRINK toward the centre; every sample needs a base within the gap.
+internal int EngTrack_DecalLift(const EngTrackFace *a, const EngTrackFace *const *bases, int baseCount)
+{
+	float need = -EGT_DECAL_GAP;
+	int t;
+
+	for (t = 0; t < a->triCount; t++)
+	{
+		const float *p[3];
+		float c[3];
+		int s;
+		int k;
+
+		for (k = 0; k < 3; k++)
+		{
+			p[k] = a->v[a->tri[t][k]].position;
+		}
+		for (k = 0; k < 3; k++)
+		{
+			c[k] = (p[0][k] + p[1][k] + p[2][k]) / 3.0f;
+		}
+		for (s = 0; s < 13; s++)
+		{
+			float q[3];
+			float best = 0.0f;
+			int found = 0;
+			int b;
+
+			for (k = 0; k < 3; k++)
+			{
+				if (s < 3)
+				{
+					q[k] = p[s][k];
+				}
+				else if (s < 12)
+				{
+					const int e = (s - 3) / 3;
+					const float w = (float)((s - 3) % 3 + 1) / 4.0f;
+
+					q[k] = p[e][k] + w * (p[(e + 1) % 3][k] - p[e][k]);
+				}
+				else
+				{
+					q[k] = c[k];
+				}
+				q[k] = c[k] + EGT_DECAL_SHRINK * (q[k] - c[k]);
+			}
+			for (b = 0; b < baseCount; b++)
+			{
+				float y;
+
+				if (EngTrack_FaceHeightAt(bases[b], q[0], q[2], &y) && (fabsf(y - q[1]) <= EGT_DECAL_GAP) && (!found || ((y - q[1]) > best)))
+				{
+					best = y - q[1];
+					found = 1;
+				}
+			}
+			if (!found)
+			{
+				return 0;
+			}
+			need = (best > need) ? best : need;
+		}
+	}
+	if (a->triCount == 0)
+	{
+		return 0;
+	}
+	// Rounded up to whole units; a coplanar base (need 0 within float noise) gives the margin.
+	return (int)ceilf(((need > 0.0f) ? need : 0.0f) + EGT_DECAL_MARGIN - 1e-3f);
+}
+
+typedef struct
+{
+	float n[3];
+	float x0, x1, z0, z1;
+	int floor;
+} EngTrackDecalInfo;
+
+typedef struct
+{
+	int bias;
+	int index;
+} EngTrackDecalOrder;
+
+internal int EngTrack_DecalOrderCompare(const void *a, const void *b)
+{
+	const EngTrackDecalOrder *x = (const EngTrackDecalOrder *)a;
+	const EngTrackDecalOrder *y = (const EngTrackDecalOrder *)b;
+
+	if (x->bias != y->bias)
+	{
+		return (x->bias > y->bias) ? -1 : 1;
+	}
+	return (x->index < y->index) ? -1 : ((x->index > y->index) ? 1 : 0);
+}
+
+// The decals among faces[0..count) (see DECALS): liftOut[i] = lift or 0, and
+// normalOut[3 i..3 i + 2] = the face's up normal (every face). Returns the number
+// of decals, -1 when out of memory (then no face is a decal).
+internal int EngTrack_FindDecals(const EngTrackDrawFace *faces, int count, u8 *liftOut, float *normalOut)
+{
+	EngTrackDecalInfo *info;
+	EngTrackDecalOrder *order;
+	const EngTrackFace **bases;
+	int floors = 0;
+	int decals = 0;
+	int i;
+
+	memset(liftOut, 0, (size_t)count);
+	if (count <= 0)
+	{
+		return 0;
+	}
+	info = (EngTrackDecalInfo *)malloc((size_t)count * sizeof(EngTrackDecalInfo));
+	order = (EngTrackDecalOrder *)malloc((size_t)count * sizeof(EngTrackDecalOrder));
+	bases = (const EngTrackFace **)malloc((size_t)count * sizeof(const EngTrackFace *));
+	if ((info == NULL) || (order == NULL) || (bases == NULL))
+	{
+		free(info);
+		free(order);
+		free(bases);
+		return -1;
+	}
+	for (i = 0; i < count; i++)
+	{
+		const EngTrackFace *f = &faces[i].face;
+		EngTrackDecalInfo *d = &info[i];
+		int v;
+
+		d->floor = (!faces[i].live && EngTrack_FaceNormal(f, d->n) && (d->n[1] >= EGT_DECAL_FLOOR)) ? 1 : 0;
+		if (!d->floor)
+		{
+			d->n[0] = 0.0f;
+			d->n[1] = 1.0f;
+			d->n[2] = 0.0f;
+		}
+		normalOut[3 * i + 0] = d->n[0];
+		normalOut[3 * i + 1] = d->n[1];
+		normalOut[3 * i + 2] = d->n[2];
+		d->x0 = d->x1 = f->v[0].position[0];
+		d->z0 = d->z1 = f->v[0].position[2];
+		for (v = 1; v < f->vertCount; v++)
+		{
+			const float *p = f->v[v].position;
+
+			d->x0 = (p[0] < d->x0) ? p[0] : d->x0;
+			d->x1 = (p[0] > d->x1) ? p[0] : d->x1;
+			d->z0 = (p[2] < d->z0) ? p[2] : d->z0;
+			d->z1 = (p[2] > d->z1) ? p[2] : d->z1;
+		}
+		if (d->floor)
+		{
+			order[floors].bias = (int)f->bias;
+			order[floors].index = i;
+			floors++;
+		}
+	}
+	qsort(order, (size_t)floors, sizeof(EngTrackDecalOrder), EngTrack_DecalOrderCompare);
+	for (i = 0; i < count; i++)
+	{
+		const EngTrackDecalInfo *a = &info[i];
+		int baseCount = 0;
+		int j;
+		int lift;
+
+		if (!a->floor)
+		{
+			continue;
+		}
+		// The floors sorted by bias, the highest first: the bases are a prefix.
+		for (j = 0; (j < floors) && (order[j].bias > (int)faces[i].face.bias); j++)
+		{
+			const EngTrackDecalInfo *b = &info[order[j].index];
+
+			if ((b->x1 < a->x0) || (a->x1 < b->x0) || (b->z1 < a->z0) || (a->z1 < b->z0))
+			{
+				continue;
+			}
+			if ((a->n[0] * b->n[0] + a->n[1] * b->n[1] + a->n[2] * b->n[2]) < EGT_DECAL_PARALLEL)
+			{
+				continue;
+			}
+			bases[baseCount++] = &faces[order[j].index].face;
+		}
+		if (baseCount == 0)
+		{
+			continue;
+		}
+		lift = EngTrack_DecalLift(&faces[i].face, bases, baseCount);
+		if (lift > 0)
+		{
+			liftOut[i] = (u8)((lift > 255) ? 255 : lift);
+			decals++;
+		}
+	}
+	free(info);
+	free(order);
+	free(bases);
+	return decals;
+}
+
+// The world position of the camera of a view matrix (view = M * world + t, column
+// major as EngineMat4 keeps it): -M^-1 * t. 0 when M is singular.
+internal int EngTrack_CameraWorld(const EngineMat4 *viewFromWorld, float out[3])
+{
+	const float *m = viewFromWorld->m;
+	// a[r][c] = m[c * 4 + r]
+	const double a00 = m[0], a01 = m[4], a02 = m[8];
+	const double a10 = m[1], a11 = m[5], a12 = m[9];
+	const double a20 = m[2], a21 = m[6], a22 = m[10];
+	const double t0 = -(double)m[12], t1 = -(double)m[13], t2 = -(double)m[14];
+	const double det = a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20) + a02 * (a10 * a21 - a11 * a20);
+
+	if ((det > -1e-12) && (det < 1e-12))
+	{
+		return 0;
+	}
+	// Cramer's rule for M * c = -t.
+	out[0] = (float)((t0 * (a11 * a22 - a12 * a21) - a01 * (t1 * a22 - a12 * t2) + a02 * (t1 * a21 - a11 * t2)) / det);
+	out[1] = (float)((a00 * (t1 * a22 - a12 * t2) - t0 * (a10 * a22 - a12 * a20) + a02 * (a10 * t2 - t1 * a20)) / det);
+	out[2] = (float)((a00 * (a11 * t2 - t1 * a21) - a01 * (a10 * t2 - t1 * a20) + t0 * (a10 * a21 - a11 * a20)) / det);
+	return 1;
 }
 
 // The face-list bits of the count blocks of a leaf whose first block has
@@ -783,6 +1140,8 @@ global_variable int s_egtWalkValid;
 global_variable int s_egtPending; // collected, faces not yet submitted (EngTrack_SubmitShown)
 global_variable const u32 *s_egtFaceListNow;
 global_variable EngineMat4 s_egtScreenFromWorld;
+global_variable float s_egtCameraWorld[3]; // the camera of view 0 in world units (decal lift)
+global_variable int s_egtCameraWorldOk;
 global_variable u64 s_egtNotWalkedFrames; // collected, but DrawLevelOvr1P did not come
 global_variable u64 s_egtBadListFrames;   // a render list that is not a list of leaves
 global_variable u64 s_egtWalkMissed;      // leaves the PS1 lists had and the engine walk not
@@ -1223,7 +1582,20 @@ internal int EngTrack_DrawCompare(const void *a, const void *b)
 {
 	const EngTrackDrawFace *x = (const EngTrackDrawFace *)a;
 	const EngTrackDrawFace *y = (const EngTrackDrawFace *)b;
+	const EngTrackKey *kx = &s_egtKeys.key[x->face.key];
+	const EngTrackKey *ky = &s_egtKeys.key[y->face.key];
 
+	// Decals last, among them the lower bias first: a later marker in the same OT
+	// cell is painted EARLIER (it becomes the cell's head), so the decal with the
+	// lowest bias paints last (see DECALS).
+	if ((kx->lift != 0) != (ky->lift != 0))
+	{
+		return (kx->lift != 0) ? 1 : -1;
+	}
+	if ((kx->lift != 0) && (kx->bias != ky->bias))
+	{
+		return (kx->bias < ky->bias) ? -1 : 1;
+	}
 	if (x->semi != y->semi)
 	{
 		return (x->semi < y->semi) ? -1 : 1;
@@ -1281,6 +1653,15 @@ internal int EngTrack_DrawGroup(const int *matOfKey, int *dropped)
 			g->semi = (int)s_egtFaces[i].semi;
 			g->first = i;
 			g->count = 0;
+			// One key per material: the group's decal data is its first face's key.
+			{
+				const EngTrackKey *key = &s_egtKeys.key[s_egtFaces[i].face.key];
+
+				g->lift = (int)key->lift;
+				g->normal[0] = key->normal[0];
+				g->normal[1] = key->normal[1];
+				g->normal[2] = key->normal[2];
+			}
 		}
 		g->count++;
 		if (g->count > largest)
@@ -1324,6 +1705,11 @@ void Engine_TrackLoad(void)
 	int liveFaces = 0;
 	int specialFaces = 0;
 	int bitsPastList = 0;
+	int decals = 0;
+	int decalsLifted = 0;
+	int decalsUnkeyed = 0;
+	int decalLiftMax = 0;
+	int unusedKeys = 0;
 	int leaves;
 	int i;
 	u8 *live = NULL; // level vertices the game animates (SCVert), NULL when none
@@ -1514,6 +1900,37 @@ void Engine_TrackLoad(void)
 		}
 	}
 
+	// Decals (see DECALS): their own keys, with lift and plane normal.
+	if (s_egtFaceCount > 0)
+	{
+		u8 *lift = (u8 *)malloc((size_t)s_egtFaceCount);
+		float *normal = (float *)malloc((size_t)s_egtFaceCount * 3u * sizeof(float));
+
+		decals = ((lift != NULL) && (normal != NULL)) ? EngTrack_FindDecals(s_egtFaces, s_egtFaceCount, lift, normal) : -1;
+		for (i = 0; i < s_egtFaceCount; i++)
+		{
+			EngTrackFace *f = &s_egtFaces[i].face;
+			const EngTrackKey old = s_egtKeys.key[f->key];
+			int key;
+
+			if ((decals <= 0) || (lift[i] == 0))
+			{
+				continue;
+			}
+			key = EngTrack_KeysFindLifted(&s_egtKeys, old.tpage, old.clut, old.doubleSided, old.bias, lift[i], &normal[3 * i]);
+			if (key < 0)
+			{
+				decalsUnkeyed++;
+				continue;
+			}
+			f->key = key;
+			decalLiftMax = ((int)lift[i] > decalLiftMax) ? (int)lift[i] : decalLiftMax;
+			decalsLifted += ((int)lift[i] > (int)EGT_DECAL_MARGIN) ? 1 : 0;
+		}
+		free(lift);
+		free(normal);
+	}
+
 	// The mosaic data texture, after the last face.
 	Engine_TrackMosaicEnd();
 
@@ -1525,12 +1942,27 @@ void Engine_TrackLoad(void)
 		EngTrack_DrawFree();
 		goto done;
 	}
+	// A key whose faces all became decals has no face left: no material for it.
+	for (i = 0; i < s_egtKeys.count; i++)
+	{
+		matOfKey[i] = -2;
+	}
+	for (i = 0; i < s_egtFaceCount; i++)
+	{
+		matOfKey[s_egtFaces[i].face.key] = -1;
+	}
 	for (i = 0; i < s_egtKeys.count; i++)
 	{
 		const EngTrackKey *key = &s_egtKeys.key[i];
 		EngineMaterial m;
 		const int semi = EngTrack_IsSemi(key->tpage);
 
+		if (matOfKey[i] == -2)
+		{
+			matOfKey[i] = -1;
+			unusedKeys++;
+			continue;
+		}
 		memset(&m, 0, sizeof(m));
 		// Bit 15 never sits in a real tpage (EngTrack_LayoutUsable): the key of a mosaic table.
 		m.texSource = ((key->tpage & 0x8000u) != 0u) ? ENGINE_TEX_VRAM_TABLE : ENGINE_TEX_VRAM;
@@ -1549,6 +1981,12 @@ void Engine_TrackLoad(void)
 		}
 		// The PS1 layers coplanar faces with the s8 bias added to the OT index (higher = farther).
 		m.depthBias = -(float)key->bias / 16384.0f;
+		if (key->lift != 0)
+		{
+			// A decal tests depth but does not write it; "ne" lifts it (params3.z, see DECALS).
+			m.flags |= (u16)ENGINE_MATERIAL_NO_DEPTH_WRITE;
+			m.programParam[0] = (float)key->lift;
+		}
 		matOfKey[i] = Engine_MaterialRegister(&m);
 		if (matOfKey[i] >= 0)
 		{
@@ -1601,6 +2039,8 @@ void Engine_TrackLoad(void)
 		}
 		Platform_Log("%s\n", text);
 	}
+	Platform_Log("[CTR Engine] track: decals %d (%d lifted past the margin, largest lift %d), %d without a key, %d unused key(s)%s\n",
+	             (decals > 0) ? decals : 0, decalsLifted, decalLiftMax, decalsUnkeyed, unusedKeys, (decals < 0) ? ", out of memory: none lifted" : "");
 	EngTrack_ImportModels(level);
 
 done:
@@ -1663,6 +2103,8 @@ void Engine_TrackCollect(struct GameTracker *gGT)
 	                     ? 1
 	                     : 0;
 	Engine_CameraScreenFromWorld(cam, &s_egtScreenFromWorld);
+	// Without a camera point the decals are drawn without their lift this frame (params4 = 0).
+	s_egtCameraWorldOk = EngTrack_CameraWorld(&cam->viewFromWorld, s_egtCameraWorld);
 	s_egtFaceListNow = faceList;
 	s_egtPending = 1;
 	// The engine means to draw the track this frame (the water and the instances ask now);
@@ -1753,7 +2195,7 @@ internal int EngTrack_SubmitShown(struct GameTracker *gGT)
 	for (i = 0; i < s_egtGroupCount; i++)
 	{
 		const EngTrackDrawGroup *g = &s_egtGroups[i];
-		const int cell = g->semi ? EGT_CELL_SEMI : EGT_CELL_OPAQUE;
+		const int cell = (g->semi || (g->lift != 0)) ? EGT_CELL_SEMI : EGT_CELL_OPAQUE;
 		EngineDraw draw;
 		u32 indexCount = 0;
 		const u32 vertexCount = EngTrack_FillFaces(&s_egtFaces[g->first], &s_egtShown[g->first], g->count, s_egtVertices, s_egtScratchV, s_egtScratchI,
@@ -1776,6 +2218,15 @@ internal int EngTrack_SubmitShown(struct GameTracker *gGT)
 		draw.dynIndices = s_egtScratchI;
 		draw.dynIndexCount = indexCount;
 		draw.dynMaterial = g->material;
+		if ((g->lift != 0) && s_egtCameraWorldOk)
+		{
+			// The decal's plane for the vertex stage of "ne": h = params4.w - normal . position is the
+			// camera's distance to the plane through the vertex (see DECALS).
+			draw.user[0] = g->normal[0];
+			draw.user[1] = g->normal[1];
+			draw.user[2] = g->normal[2];
+			draw.user[3] = g->normal[0] * s_egtCameraWorld[0] + g->normal[1] * s_egtCameraWorld[1] + g->normal[2] * s_egtCameraWorld[2];
+		}
 		if (Engine_RenderSubmitLinked(0, &draw, gGT->pushBuffer[0].ptrOT, cell))
 		{
 			submittedAny = 1;
@@ -2008,6 +2459,32 @@ internal void EngTrack_TestBlock(EngTrackBlockIn *in, const struct TextureLayout
 internal int EngTrack_TestIsPtr(u32 word)
 {
 	return (word == 0x1234u) ? 1 : 0;
+}
+
+// A test face for the decal pass: the quad x0..x1 by z 0..200 at height y0 + slope * x
+// (slots v0 (x0,0), v1 (x1,0), v2 (x0,200), v3 (x1,200), triangles (0,1,2) and (1,3,2)).
+internal void EngTrack_TestDecalFace(EngTrackDrawFace *df, float x0, float x1, float y0, float slope, int bias)
+{
+	int v;
+
+	memset(df, 0, sizeof(*df));
+	for (v = 0; v < 4; v++)
+	{
+		const float x = (v & 1) ? x1 : x0;
+
+		df->face.v[v].position[0] = x;
+		df->face.v[v].position[1] = y0 + slope * x;
+		df->face.v[v].position[2] = (v & 2) ? 200.0f : 0.0f;
+	}
+	df->face.vertCount = 4;
+	df->face.triCount = 2;
+	df->face.tri[0][0] = 0;
+	df->face.tri[0][1] = 1;
+	df->face.tri[0][2] = 2;
+	df->face.tri[1][0] = 1;
+	df->face.tri[1][1] = 3;
+	df->face.tri[1][2] = 2;
+	df->face.bias = (s8)bias;
 }
 
 int Engine_SelfTestTrack(int *checks)
@@ -2350,6 +2827,73 @@ int Engine_SelfTestTrack(int *checks)
 				EGT_CHECK(EngTrack_LeavesOfLists(tree, 5, heads, 2, shownNodes) == -1, "lists: a cycle not refused");
 			}
 		}
+	}
+
+	// (12) decals: the Turbo Track pad on its climbing road, and what is no decal.
+	{
+		EngTrackDrawFace df[8];
+		u8 lift[8];
+		float normal[24];
+		int decals;
+
+		EngTrack_TestDecalFace(&df[0], 0.0f, 800.0f, 64.0f, 1.0f / 12.0f, 16); // the road, y = 64 + x / 12
+		EngTrack_TestDecalFace(&df[1], 384.0f, 656.0f, 96.0f, 0.0f, 0);        // pad half under the road (to 22.7)
+		EngTrack_TestDecalFace(&df[2], 100.0f, 200.0f, 96.0f, 0.0f, 0);        // pad over the road
+		EngTrack_TestDecalFace(&df[3], 700.0f, 900.0f, 130.0f, 0.0f, 0);       // half off the road
+		EngTrack_TestDecalFace(&df[4], 100.0f, 200.0f, 96.0f, 0.0f, 16);       // the road's own bias
+		EngTrack_TestDecalFace(&df[5], 100.0f, 200.0f, 200.0f, 0.0f, 0);       // far over the road
+		EngTrack_TestDecalFace(&df[6], 100.0f, 200.0f, 96.0f, 0.0f, 0);        // a live face
+		df[6].live = 1;
+		EngTrack_TestDecalFace(&df[7], 100.0f, 100.0f, 80.0f, 0.0f, 0);        // a wall: x fixed, z and y vary
+		df[7].face.v[1].position[0] = 100.0f;
+		df[7].face.v[1].position[1] = 120.0f;
+		df[7].face.v[1].position[2] = 0.0f;
+		df[7].face.v[3].position[1] = 120.0f;
+		decals = EngTrack_FindDecals(df, 8, lift, normal);
+		EGT_CHECK((lift[1] >= 24) && (lift[1] <= 26), "decals: pad under the road lifted %d (expected 24..26)", lift[1]);
+		EGT_CHECK(lift[2] == 2, "decals: pad over the road lifted %d (expected the margin 2)", lift[2]);
+		EGT_CHECK((lift[0] == 0) && (lift[3] == 0) && (lift[4] == 0) && (lift[5] == 0) && (lift[6] == 0) && (lift[7] == 0),
+		          "decals: no-decal faces lifted (road %d, half off %d, same bias %d, far %d, live %d, wall %d)", lift[0], lift[3], lift[4], lift[5],
+		          lift[6], lift[7]);
+		EGT_CHECK(decals == 2, "decals: %d found (expected 2)", decals);
+		EGT_CHECK((fabsf(normal[0] + 0.0830f) < 1e-3f) && (fabsf(normal[1] - 0.9965f) < 1e-3f) && (fabsf(normal[2]) < 1e-5f) && (fabsf(normal[3]) < 1e-5f) &&
+		              (fabsf(normal[4] - 1.0f) < 1e-5f),
+		          "decals: normals (road %.4f %.4f %.4f, expected -0.0830 0.9965 0; pad y %.4f, expected 1)", normal[0], normal[1], normal[2], normal[4]);
+	}
+
+	// (13) decal keys and the camera point.
+	{
+		static EngTrackKeySet set;
+		const float up[3] = {0.0f, 1.0f, 0.0f};
+		const float tilt[3] = {-0.0830f, 0.9965f, 0.0f};
+		const float c[3] = {100.0f, 50.0f, -30.0f};
+		EngineMat4 view;
+		float got[3];
+		int a;
+
+		set.count = 0;
+		a = EngTrack_KeysFind(&set, 0x011f, 0x7a40, 0, 0);
+		EGT_CHECK((EngTrack_KeysFindLifted(&set, 0x011f, 0x7a40, 0, 0, 0, tilt) == a) && (set.count == 1), "decal keys: lift 0 is the plain key");
+		EGT_CHECK((EngTrack_KeysFindLifted(&set, 0x011f, 0x7a40, 0, 0, 25, up) == 1) && (EngTrack_KeysFindLifted(&set, 0x011f, 0x7a40, 0, 0, 25, up) == 1) &&
+		              (EngTrack_KeysFindLifted(&set, 0x011f, 0x7a40, 0, 0, 2, up) == 2) && (EngTrack_KeysFindLifted(&set, 0x011f, 0x7a40, 0, 0, 25, tilt) == 3) &&
+		              (set.count == 4),
+		          "decal keys: lift and normal did not key (count %d)", set.count);
+		EGT_CHECK((set.key[3].lift == 25) && (set.key[3].normal[0] == tilt[0]) && (set.key[0].lift == 0) && (set.key[0].normal[1] == 1.0f),
+		          "decal keys: stored lift/normal wrong");
+
+		// view = M * world + t, M a quarter turn about y with a scale of 2 on x: the camera point is c.
+		memset(&view, 0, sizeof(view));
+		view.m[0 * 4 + 2] = -1.0f; // a[2][0]
+		view.m[1 * 4 + 1] = 1.0f;  // a[1][1]
+		view.m[2 * 4 + 0] = 2.0f;  // a[0][2]
+		view.m[15] = 1.0f;
+		view.m[12] = -(2.0f * c[2]);
+		view.m[13] = -(c[1]);
+		view.m[14] = -(-c[0]);
+		EGT_CHECK(EngTrack_CameraWorld(&view, got) && (fabsf(got[0] - c[0]) < 1e-3f) && (fabsf(got[1] - c[1]) < 1e-3f) && (fabsf(got[2] - c[2]) < 1e-3f),
+		          "camera point: got %.3f %.3f %.3f (expected 100 50 -30)", got[0], got[1], got[2]);
+		memset(&view, 0, sizeof(view));
+		EGT_CHECK(!EngTrack_CameraWorld(&view, got), "camera point: a singular matrix gave a point");
 	}
 
 	return failures;
