@@ -69,13 +69,20 @@
 #define EGT_BUCKET_WATER_RENDERED 8
 #define EGT_BUCKET_WATER_LIST 9
 #define EGT_BUCKET_COUNT 11
-// The track's share of the frame's dynamic geometry: expanded vertices (3 per
-// triangle) of the renderer's 98304 per bank (ENGINE_DYN_EXPANDED, engine_render.c)
-// and vertices of the scene's 65536 (ENGINE_DYN_VERTICES_PER_FRAME); the rest
-// stays for sky, water and effects. A frame whose shown faces do not fit is left
-// to the PS1 walk (counted).
-#define EGT_DYN_EXPANDED_MAX 57344u
-#define EGT_DYN_VERTICES_MAX 40960u
+// The track's share of the frame's dynamic geometry. The limits are the per-bank
+// rings: the scene's ENGINE_DYN_VERTICES_PER_FRAME vertices and 3/2 of that in
+// indices (engine_scene.c, SceneBank), and the renderer's expanded store of the
+// same 3/2 (ENGINE_DYN_EXPANDED, engine_render.c: one vertex per index). The track
+// takes all of it but a fixed reserve for sky, water and effects (24576 vertices,
+// 40960 expanded; with 65536 that is the track's 40960 / 57344 of before). A frame
+// whose shown faces do not fit is left to the PS1 walk (counted).
+#define EGT_DYN_RESERVE_VERTICES 24576u
+#define EGT_DYN_RESERVE_EXPANDED 40960u
+#define EGT_DYN_VERTICES_MAX ((u32)ENGINE_DYN_VERTICES_PER_FRAME - EGT_DYN_RESERVE_VERTICES)
+#define EGT_DYN_EXPANDED_MAX ((u32)ENGINE_DYN_VERTICES_PER_FRAME * 3u / 2u - EGT_DYN_RESERVE_EXPANDED)
+// One dynamic draw indexes its own vertices with u16: a group with more shown
+// vertices than this goes in several draws (EngTrack_FillFacesFrom).
+#define EGT_DRAW_VERTICES_MAX 65532u
 // A leaf flag no render-list rule names (RenderLists.c:128-160 read 0x02, 0x08,
 // 0x10, 0x20, 0x80): its leaves hold the large 'blanket' blocks over finer ones
 // (Cortex Castle, N. Gin Labs). Only counted (the tour line), drawn like any leaf.
@@ -1015,19 +1022,20 @@ internal int EngTrack_FaceShown(const EngTrackDrawFace *f, const u32 *faceList, 
 	return 1;
 }
 
-// The vertices and indices of the faces of faces[0..count) with shown[i] set
-// (shown NULL: all): a live face with its level vertices as they are now
-// (position and colour from verts), every other face as built. Returns the
-// vertex count; *indexCount gets the index count. outV needs 4 and outI 6
-// entries per face written.
-internal u32 EngTrack_FillFaces(const EngTrackDrawFace *faces, const u8 *shown, int count, const struct LevVertex *verts, EngineVertex *outV, u16 *outI,
-                                u32 *indexCount)
+// The vertices and indices of the faces of faces[first..count) with shown[i] set
+// (shown NULL: all), up to maxVertices vertices: a live face with its level
+// vertices as they are now (position and colour from verts), every other face as
+// built. Returns the vertex count; *indexCount gets the index count and *next the
+// first face not written (count when all were). outV needs 4 and outI 6 entries
+// per face written; the indices count from 0 for every call (one draw each).
+internal u32 EngTrack_FillFacesFrom(const EngTrackDrawFace *faces, const u8 *shown, int first, int count, const struct LevVertex *verts, EngineVertex *outV,
+                                    u16 *outI, u32 maxVertices, u32 *indexCount, int *next)
 {
 	u32 vertexCount = 0;
 	u32 indices = 0;
 	int i;
 
-	for (i = 0; i < count; i++)
+	for (i = first; i < count; i++)
 	{
 		const EngTrackFace *f = &faces[i].face;
 		int c;
@@ -1036,6 +1044,10 @@ internal u32 EngTrack_FillFaces(const EngTrackDrawFace *faces, const u8 *shown, 
 		if ((shown != NULL) && !shown[i])
 		{
 			continue;
+		}
+		if ((vertexCount + f->vertCount) > maxVertices)
+		{
+			break;
 		}
 		for (c = 0; c < f->vertCount; c++)
 		{
@@ -1063,7 +1075,16 @@ internal u32 EngTrack_FillFaces(const EngTrackDrawFace *faces, const u8 *shown, 
 		vertexCount += f->vertCount;
 	}
 	*indexCount = indices;
+	*next = i;
 	return vertexCount;
+}
+
+internal u32 EngTrack_FillFaces(const EngTrackDrawFace *faces, const u8 *shown, int count, const struct LevVertex *verts, EngineVertex *outV, u16 *outI,
+                                u32 *indexCount)
+{
+	int next;
+
+	return EngTrack_FillFacesFrom(faces, shown, 0, count, verts, outV, outI, EGT_DRAW_VERTICES_MAX, indexCount, &next);
 }
 
 // The mesh frame of an animation word of a retail model: the importer makes one
@@ -2196,44 +2217,51 @@ internal int EngTrack_SubmitShown(struct GameTracker *gGT)
 	{
 		const EngTrackDrawGroup *g = &s_egtGroups[i];
 		const int cell = (g->semi || (g->lift != 0)) ? EGT_CELL_SEMI : EGT_CELL_OPAQUE;
-		EngineDraw draw;
-		u32 indexCount = 0;
-		const u32 vertexCount = EngTrack_FillFaces(&s_egtFaces[g->first], &s_egtShown[g->first], g->count, s_egtVertices, s_egtScratchV, s_egtScratchI,
-		                                           &indexCount);
+		int next = 0;
 
-		if (vertexCount == 0u)
+		// Usually one draw per group; more only when its shown faces pass the u16 index range of a draw.
+		while (next < g->count)
 		{
-			continue;
-		}
-		memset(&draw, 0, sizeof(draw));
-		draw.mesh = -1;
-		draw.clipFromModel = s_egtScreenFromWorld; // the track is in world units: the raw s16 positions
-		draw.tint[0] = draw.tint[1] = draw.tint[2] = draw.tint[3] = 1.0f;
-		draw.materialOverride = -1;
-		draw.sortDepth = 1.0e9f; // farther than anything: first of the transparent list
-		draw.otCell = (u32)cell;
-		draw.flags = g->semi ? ENGINE_DRAW_TRANSPARENT : 0;
-		draw.dynVertices = s_egtScratchV;
-		draw.dynVertexCount = vertexCount;
-		draw.dynIndices = s_egtScratchI;
-		draw.dynIndexCount = indexCount;
-		draw.dynMaterial = g->material;
-		if ((g->lift != 0) && s_egtCameraWorldOk)
-		{
-			// The decal's plane for the vertex stage of "ne": h = params4.w - normal . position is the
-			// camera's distance to the plane through the vertex (see DECALS).
-			draw.user[0] = g->normal[0];
-			draw.user[1] = g->normal[1];
-			draw.user[2] = g->normal[2];
-			draw.user[3] = g->normal[0] * s_egtCameraWorld[0] + g->normal[1] * s_egtCameraWorld[1] + g->normal[2] * s_egtCameraWorld[2];
-		}
-		if (Engine_RenderSubmitLinked(0, &draw, gGT->pushBuffer[0].ptrOT, cell))
-		{
-			submittedAny = 1;
-		}
-		else
-		{
-			refused = 1;
+			EngineDraw draw;
+			u32 indexCount = 0;
+			const int from = next;
+			const u32 vertexCount = EngTrack_FillFacesFrom(&s_egtFaces[g->first], &s_egtShown[g->first], from, g->count, s_egtVertices, s_egtScratchV,
+			                                               s_egtScratchI, EGT_DRAW_VERTICES_MAX, &indexCount, &next);
+
+			if ((vertexCount == 0u) || (next <= from))
+			{
+				break;
+			}
+			memset(&draw, 0, sizeof(draw));
+			draw.mesh = -1;
+			draw.clipFromModel = s_egtScreenFromWorld; // the track is in world units: the raw s16 positions
+			draw.tint[0] = draw.tint[1] = draw.tint[2] = draw.tint[3] = 1.0f;
+			draw.materialOverride = -1;
+			draw.sortDepth = 1.0e9f; // farther than anything: first of the transparent list
+			draw.otCell = (u32)cell;
+			draw.flags = g->semi ? ENGINE_DRAW_TRANSPARENT : 0;
+			draw.dynVertices = s_egtScratchV;
+			draw.dynVertexCount = vertexCount;
+			draw.dynIndices = s_egtScratchI;
+			draw.dynIndexCount = indexCount;
+			draw.dynMaterial = g->material;
+			if ((g->lift != 0) && s_egtCameraWorldOk)
+			{
+				// The decal's plane for the vertex stage of "ne": h = params4.w - normal . position is the
+				// camera's distance to the plane through the vertex (see DECALS).
+				draw.user[0] = g->normal[0];
+				draw.user[1] = g->normal[1];
+				draw.user[2] = g->normal[2];
+				draw.user[3] = g->normal[0] * s_egtCameraWorld[0] + g->normal[1] * s_egtCameraWorld[1] + g->normal[2] * s_egtCameraWorld[2];
+			}
+			if (Engine_RenderSubmitLinked(0, &draw, gGT->pushBuffer[0].ptrOT, cell))
+			{
+				submittedAny = 1;
+			}
+			else
+			{
+				refused = 1;
+			}
 		}
 	}
 	if (refused)
@@ -2712,6 +2740,20 @@ int Engine_SelfTestTrack(int *checks)
 		EGT_CHECK((vertexCount == 4u) && (indexCount == 6u) && (outV[0].position[0] == out[1].v[0].position[0]) && (outV[0].color[0] == out[1].v[0].color[0]) &&
 		              (outI[0] == out[1].tri[0][0]),
 		          "fill: a hidden face written, or a static face not as built (%u vertices)", vertexCount);
+		// Chunks: room for one face of 4 stops before the second; the next call starts there and counts from 0.
+		{
+			int next = -1;
+
+			vertexCount = EngTrack_FillFacesFrom(df, NULL, 0, 2, verts, outV, outI, 7u, &indexCount, &next);
+			EGT_CHECK((vertexCount == 4u) && (indexCount == 6u) && (next == 1), "chunk: first %u vertices, %u indices, next %d (expected 4, 6, 1)", vertexCount,
+			          indexCount, next);
+			vertexCount = EngTrack_FillFacesFrom(df, NULL, next, 2, verts, outV, outI, 7u, &indexCount, &next);
+			EGT_CHECK((vertexCount == 4u) && (indexCount == 6u) && (next == 2) && (outI[0] == (u16)out[1].tri[0][0]) &&
+			              (outV[0].position[0] == out[1].v[0].position[0]),
+			          "chunk: second %u vertices, next %d, indices not from 0", vertexCount, next);
+			vertexCount = EngTrack_FillFacesFrom(df, NULL, 0, 2, verts, outV, outI, 3u, &indexCount, &next);
+			EGT_CHECK((vertexCount == 0u) && (next == 0), "chunk: a face larger than the room was written or skipped (next %d)", next);
+		}
 	}
 
 	// (11) the pose of an animation word: logical frames, half-frame animations not halved, clamped.
