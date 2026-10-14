@@ -53,7 +53,8 @@
 // t + 2 + 4b) with (s, t) the slot position of the vertex and row = a + 64 b
 // (a, b 0..63). The values stay below 256, the range of the VRAM UVs before,
 // so the interpolation is as precise as it was. EngMosaic_Decode is the C copy
-// of the program's decode; the selftest holds the two together.
+// of the program's decode; the selftest holds the two together. The vertex
+// alpha carries the face size (EngMosaic_FaceSizeCode) for the level choice.
 //
 // BLEND. The PS1 takes the semi-transparent packet code and the blend mode from
 // the tile (~2504 reads the tpage the mosaic path has just loaded). A material
@@ -407,6 +408,68 @@ internal void EngMosaic_Encode(int row, float s, float t, float *out)
 	out[1] = t + 2.0f + 4.0f * (float)(row >> 6);
 }
 
+// The size of a face as its vertices' alpha byte: 16 * log2 of the geometric
+// mean of its two side lengths (slot 0 to 1 and slot 0 to 2, world units),
+// 1..255 (a face of 1 unit up to about 2^16). "ne" turns it back into a length
+// and divides the world size of a pixel by it: how much of the face one pixel
+// covers, from the world position, which is continuous across the faces (the
+// face's own (s, t) jumps at every border, and its screen derivative there
+// would send the border pixels to the coarsest level). 0 when a slot is missing.
+internal u8 EngMosaic_FaceSizeCode(const EngineVertex *v, const u8 *slotOf, int vertCount)
+{
+	const EngineVertex *at[3] = {NULL, NULL, NULL};
+	double side[2];
+	double mean;
+	double code;
+	int i;
+	int k;
+
+	for (i = 0; i < vertCount; i++)
+	{
+		const int slot = slotOf[i] & 3;
+
+		if ((slot < 3) && (at[slot] == NULL))
+		{
+			at[slot] = &v[i];
+		}
+	}
+	if ((at[0] == NULL) || (at[1] == NULL) || (at[2] == NULL))
+	{
+		return 0;
+	}
+	for (k = 0; k < 2; k++)
+	{
+		const EngineVertex *to = at[k + 1];
+		const double dx = (double)to->position[0] - (double)at[0]->position[0];
+		const double dy = (double)to->position[1] - (double)at[0]->position[1];
+		const double dz = (double)to->position[2] - (double)at[0]->position[2];
+
+		side[k] = sqrt(dx * dx + dy * dy + dz * dz);
+	}
+	mean = sqrt(side[0] * side[1]);
+	code = (mean > 1.0) ? floor(16.0 * log2(mean) + 0.5) : 1.0;
+	return (u8)((code < 1.0) ? 1.0 : ((code > 255.0) ? 255.0 : code));
+}
+
+// A table face's vertices: texcoord = row and slot position (EngMosaic_Encode),
+// alpha = the face size (EngMosaic_FaceSizeCode; "ne" draws table faces opaque
+// in alpha, as every VRAM texel is, so the byte is free).
+internal void EngMosaic_FaceWrite(int row, const u8 *slotOf, EngineVertex *v, int vertCount)
+{
+	const u8 size = EngMosaic_FaceSizeCode(v, slotOf, vertCount);
+	int i;
+
+	for (i = 0; i < vertCount; i++)
+	{
+		float s;
+		float t;
+
+		EngMosaic_SlotPosition(slotOf[i] & 3, &s, &t);
+		EngMosaic_Encode(row, s, t, v[i].texcoord);
+		v[i].color[3] = size;
+	}
+}
+
 // The C copy of the decode in "ne" (native_shaders.inc, table mode).
 internal void EngMosaic_Decode(float x, float y, int *row, float *s, float *t)
 {
@@ -594,7 +657,6 @@ int Engine_TrackMosaicFace(const struct TextureLayout *group, int mirrored, int 
 	u32 word = 0;
 	int own;
 	int row;
-	int i;
 
 	if (!g_cfg_engine || !g_cfg_engineTrack || (group == NULL) || (slotOf == NULL) || (v == NULL) || (keyTpage == NULL) || (vertCount < 1) ||
 	    (vertCount > 4))
@@ -628,14 +690,7 @@ int Engine_TrackMosaicFace(const struct TextureLayout *group, int mirrored, int 
 		s_egmCount.abrMixed++;
 		return 0;
 	}
-	for (i = 0; i < vertCount; i++)
-	{
-		float s;
-		float t;
-
-		EngMosaic_SlotPosition(slotOf[i] & 3, &s, &t);
-		EngMosaic_Encode(row, s, t, v[i].texcoord);
-	}
+	EngMosaic_FaceWrite(row, slotOf, v, vertCount);
 	*keyTpage = (u16)(0x8000u | ((u32)s_egmRows.rows[row].abr << 5));
 	s_egmCount.made++;
 	s_egmCount.byForm[form]++;
@@ -648,7 +703,6 @@ int Engine_TrackMosaicAnimFace(u32 cell, int mirrored, const u8 *slotOf, EngineV
 	const struct TextureLayout *finest = NULL;
 	u32 now = 0;
 	int row;
-	int i;
 
 	if (!g_cfg_engine || !g_cfg_engineTrack || (slotOf == NULL) || (v == NULL) || (keyTpage == NULL) || (vertCount < 1) || (vertCount > 4))
 	{
@@ -671,14 +725,7 @@ int Engine_TrackMosaicAnimFace(u32 cell, int mirrored, const u8 *slotOf, EngineV
 		s_egmCount.rowsFull++;
 		return 0;
 	}
-	for (i = 0; i < vertCount; i++)
-	{
-		float s;
-		float t;
-
-		EngMosaic_SlotPosition(slotOf[i] & 3, &s, &t);
-		EngMosaic_Encode(row, s, t, v[i].texcoord);
-	}
+	EngMosaic_FaceWrite(row, slotOf, v, vertCount);
 	*keyTpage = (u16)(0x8000u | ((u32)s_egmRows.rows[row].abr << 5));
 	s_egmCount.animMade++;
 	return 1;
@@ -1158,6 +1205,37 @@ int Engine_SelfTestTrackMosaic(int *checks)
 		EGM_CHECK((set.rows[4].shown == 0x7000u) && (set.rows[4].cell[5].u0 == 7) && (set.rows[4].level[0].u0 == 4), "anim row rewrite");
 		EngMosaic_PackRow(px, &set.rows[4]);
 		EGM_CHECK((px[0] == 1) && (px[4 * (EGM_CELL_TEXEL + 3 * 15)] == 7), "anim row packing");
+	}
+
+	// (12) the face size in the vertex alpha: 16 * log2 of the mean side length, the same on every
+	// vertex, back within 3 % as "ne" reads it; a face without slots 0..2 gets 0.
+	{
+		static const float corner[4][3] = {{0, 5, 0}, {384, 5, 0}, {0, 5, 384}, {384, 5, 384}};
+		const u8 slots[4] = {0, 1, 2, 3};
+		const u8 noSlots[4] = {3, 3, 3, 3};
+		EngineVertex quad[4];
+		int bad = 0;
+		int r = -1;
+		float s = 0.0f;
+		float t = 0.0f;
+
+		memset(quad, 0, sizeof(quad));
+		for (i = 0; i < 4; i++)
+		{
+			memcpy(quad[i].position, corner[i], sizeof(corner[i]));
+		}
+		EngMosaic_FaceWrite(70, slots, quad, 4);
+		for (i = 0; i < 4; i++)
+		{
+			EngMosaic_Decode(quad[i].texcoord[0], quad[i].texcoord[1], &r, &s, &t);
+			bad += (quad[i].color[3] != 137) || (r != 70) || (s != (float)(i & 1)) || (t != (float)(i >> 1));
+		}
+		EGM_CHECK(bad == 0, "face write: %d vertices wrong (alpha %d)", bad, quad[0].color[3]);
+		EGM_CHECK(fabs(pow(2.0, (double)quad[0].color[3] / 16.0) / 384.0 - 1.0) < 0.03, "face size code does not read back");
+		quad[1].position[0] = 100.0f;
+		quad[2].position[2] = 400.0f;
+		EGM_CHECK((EngMosaic_FaceSizeCode(quad, slots, 4) == 122) && (EngMosaic_FaceSizeCode(quad, noSlots, 4) == 0), "face size code %d",
+		          EngMosaic_FaceSizeCode(quad, slots, 4));
 	}
 
 	EngMosaic_RowSetFree(&set);

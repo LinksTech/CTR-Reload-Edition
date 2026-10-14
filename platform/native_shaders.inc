@@ -938,7 +938,8 @@ global_variable const char *ctr_native_twin_shader =
 //      (s, t) gives the UVs, the tpage and the clut, and the texel is then
 //      read as in 2. With params2.w 1 a cell texel smaller than a pixel gives
 //      way to the group's level 2, then 1, then 0 (the screen derivative of
-//      (s, t), like mip levels; not the PS1's distance thresholds).
+//      the world position over the face size the vertex alpha carries, like
+//      mip levels; not the PS1's distance thresholds).
 //
 // VRAM (texSource 2). vramPage.xy is the page origin in VRAM words, vramPage.z
 // the depth (0 = 4 bit, 1 = 8 bit, 2 = 15 bit), vramClut.xy the CLUT origin in
@@ -1004,10 +1005,13 @@ global_variable const char *ctr_native_engine_shader =
     "VARYING_LOC0 out vec2 v_uv;\n"
     "VARYING_LOC1 out vec4 v_color;\n"
     "VARYING_LOC2 out float v_split;\n"
+    "VARYING_LOC3 out vec3 v_world;\n"
     ENGINE_UNIFORM_BLOCK_GLSL
     "void main() {\n"
     "	v_uv = a_texcoord;\n"
     "	v_color = a_color * tint;\n"
+    // Model units (the track's are world units): the table mode's pixel size (faceFootprint).
+    "	v_world = a_position;\n"
     // The water line, in model units before the matrix: the "nr" rule (nrSplit).
     "	v_split = split.w - dot(split.xyz, a_position);\n"
     "	gl_Position = clipFromModel * vec4(a_position, 1.0);\n"
@@ -1020,6 +1024,7 @@ global_variable const char *ctr_native_engine_shader =
     "VARYING_LOC0 in vec2 v_uv;\n"
     "VARYING_LOC1 in vec4 v_color;\n"
     "VARYING_LOC2 in float v_split;\n"
+    "VARYING_LOC3 in vec3 v_world;\n"
     "SAMPLER_SLOT0 uniform sampler2D s_texture;\n"
     "SAMPLER_SLOT1 uniform sampler2D s_vram;\n"
     "SAMPLER_SLOT3 uniform sampler2D s_table;\n"
@@ -1064,19 +1069,16 @@ global_variable const char *ctr_native_engine_shader =
     "	vec2 hi = vec2(max(max(a.x, b.x), max(c.x, c.z)), max(max(a.y, b.y), max(c.y, c.w)));\n"
     "	return hi - lo + 1.0;\n"
     "}\n"
-    // How much of the face one pixel covers, along s and t. A neighbour pixel on
-    // another face jumps (a face starts at 0 again, another row adds 4): an axis
-    // with a jump is left out; with a jump on both the face is a few pixels wide
-    // and counts as far.
-    "vec2 faceFootprint(vec2 st) {\n"
-    "	vec2 dx = abs(dFdx(st));\n"
-    "	vec2 dy = abs(dFdy(st));\n"
-    "	bool xJump = max(dx.x, dx.y) > 0.25;\n"
-    "	bool yJump = max(dy.x, dy.y) > 0.25;\n"
-    "	if (xJump && yJump) { return vec2(1.0); }\n"
-    "	if (xJump) { return dy; }\n"
-    "	if (yJump) { return dx; }\n"
-    "	return max(dx, dy);\n"
+    // How much of the face one pixel covers: the world size of the pixel over the
+    // face's size. The world position is continuous across faces, (s, t) is not
+    // (it starts again at every border, where its derivative would send the
+    // border pixels to the coarsest level). The face size comes in the vertex
+    // alpha as 16 * log2 of the side length (engine_track_mosaic.c,
+    // EngMosaic_FaceSizeCode; the same on all vertices of a face).
+    "vec2 faceFootprint() {\n"
+    "	float world = max(length(dFdx(v_world)), length(dFdy(v_world)));\n"
+    "	float size = exp2(floor(v_color.a / max(tint.a, 1e-6) * 255.0 + 0.5) / 16.0);\n"
+    "	return vec2(world / size);\n"
     "}\n"
     "void main() {\n"
     // params2.y: 1 keeps v_split >= 0 (below the plane), -1 keeps v_split < 0, 0 keeps all.
@@ -1089,7 +1091,7 @@ global_variable const char *ctr_native_engine_shader =
     "		int row = int(ab.x) + 64 * int(ab.y);\n"
     "		vec2 st = v_uv - 4.0 * ab - 2.0;\n"
     // Before any discard: the derivatives need the whole 2 x 2 quad.
-    "		vec2 face = faceFootprint(st);\n"
+    "		vec2 face = faceFootprint();\n"
     "		int side = max(tableTexel(row, 0).r, 1);\n"
     "		vec2 g = st * float(side);\n"
     "		ivec2 cr = clamp(ivec2(floor(g)), ivec2(0), ivec2(side - 1));\n"
@@ -1118,6 +1120,8 @@ global_variable const char *ctr_native_engine_shader =
     "		int clut = a.z | (a.w << 8);\n"
     "		colour = wordColour(pageWord(ivec2(floor(uv)), ivec2((tpage & 15) * 64, ((tpage >> 4) & 1) * 256), (tpage >> 7) & 3,\n"
     "		                             ivec2((clut & 63) * 16, clut >> 6)));\n"
+    // The vertex alpha held the face size: a table face is as opaque as any VRAM texel (the tint's alpha only).
+    "		colour.a = tint.a;\n"
     "	} else if (params.x > 1.5) {\n"
     "		colour = wordColour(pageWord(ivec2(floor(v_uv)), ivec2(vramPage.xy + 0.5), int(vramPage.z + 0.5), ivec2(vramClut.xy + 0.5)));\n"
     "	} else if (params.x > 0.5) {\n"
