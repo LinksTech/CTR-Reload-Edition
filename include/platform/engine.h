@@ -66,6 +66,7 @@ extern int g_cfg_engineOff;
 #define ENGINE_SETTING_LINE 4      // 1 with --engine on the command line: the command line decides
 int Engine_SettingDecision(int setting, int dev, int engineOnLine, int noEngine);
 void Engine_SettingApply(int setting);
+int Engine_SelfTestSwitches(int *checks); // engine.c: --engine-fail reader, the setting's rule, the fallback
 
 // THE PRINCIPLE (2026-10-13): CTR Reload is a PC version, not a 1:1 port. The
 // engine shows the game state the way we want it; it does NOT rebuild the PS1
