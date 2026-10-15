@@ -678,6 +678,8 @@ int Engine_ModelImport(const struct Model *model, const char *name, EngineModelI
 // The mesh frame of (animation, frame) of an imported model, -1 if out of range.
 int Engine_ModelFrame(const EngineModelImport *imp, int anim, int frame);
 const char *Engine_ModelImportWhy(void); // why the last Engine_ModelImport failed ("" after a success)
+// Log lines: the model's twin counts and per texture page + CLUT its triangles and page texel box. Reads only.
+void Engine_ModelLogTiles(const struct Model *model, const char *name);
 // THE LIVE FRAME of a still model (no animations, uncompressed frame) the game
 // rewrites in place while racing - the start banner: RB_Banner_LInB
 // (game/231/RB_Banner.c) rewrites the colour index of every command and the

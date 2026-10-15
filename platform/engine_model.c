@@ -419,6 +419,64 @@ done:
 	return ok;
 }
 
+// THE TILE LINES of a model (the track's per-model report): the twin's counts
+// and, per texture page + CLUT, its triangles and the box of their page texels -
+// the VRAM a draw of the import reads. Reads only.
+void Engine_ModelLogTiles(const struct Model *model, const char *name)
+{
+	struct NativeTwinSource src;
+	char why[192];
+	u32 box[NATIVE_TWIN_TILES_MAX][4];
+	u32 t;
+	u32 k;
+
+	if (!NativeTwin_FromModel(model, 0, &src, why, sizeof(why)))
+	{
+		Platform_Log("[CTR Engine] model '%s' tiles: decoder: %s\n", name, why);
+		return;
+	}
+	Platform_Log("[CTR Engine] model '%s' tiles: %u, events textured %u untextured %u semi %u, animtex layouts %u (outside %u) triangles %u\n", name,
+	             (unsigned)src.tileCount, (unsigned)src.count.textured, (unsigned)src.count.untextured, (unsigned)src.count.semi,
+	             (unsigned)src.count.animatedLayouts, (unsigned)src.count.animatedOutside, (unsigned)src.count.animatedTriangles);
+	for (k = 0; k < src.tileCount; k++)
+	{
+		box[k][0] = box[k][1] = 255u;
+		box[k][2] = box[k][3] = 0u;
+	}
+	for (t = 0; t < src.native.triangleCount; t++)
+	{
+		const int m = (s16)Rld_ReadLE16(&src.native.triangleMaterials[(size_t)t * 2u]);
+		const int tile = src.material[m].textured ? Model_TileOf(&src, t, m) : -1;
+		u32 c;
+
+		if (tile < 0)
+		{
+			continue;
+		}
+		for (c = 0; c < 3u; c++)
+		{
+			const u8 *uv = &src.native.uv[(((size_t)t * 3u) + c) * 8u];
+			const u32 tex = src.tile[tile].texture;
+			const u32 u = Model_TexelOf(Model_ReadF32(uv), src.native.texture[tex].width) - ((u32)src.tile[tile].cellX * (u32)NATIVE_TWIN_TILE_EDGE);
+			const u32 v = Model_TexelOf(Model_ReadF32(uv + 4), src.native.texture[tex].height) - ((u32)src.tile[tile].cellY * (u32)NATIVE_TWIN_TILE_EDGE);
+
+			box[tile][0] = (u < box[tile][0]) ? u : box[tile][0];
+			box[tile][1] = (v < box[tile][1]) ? v : box[tile][1];
+			box[tile][2] = (u > box[tile][2]) ? u : box[tile][2];
+			box[tile][3] = (v > box[tile][3]) ? v : box[tile][3];
+		}
+	}
+	for (k = 0; k < src.tileCount; k++)
+	{
+		const struct NativeTwinTile *tl = &src.tile[k];
+
+		Platform_Log("[CTR Engine] model '%s' tile %u: tpage 0x%04x clut 0x%04x depth %u, page %u,%u clut at %u,%u, triangles %u, texels u %u-%u v %u-%u\n", name,
+		             (unsigned)k, (unsigned)tl->tpage, (unsigned)tl->clut, (unsigned)tl->depth, (unsigned)tl->pageX, (unsigned)tl->pageY, (unsigned)tl->clutX,
+		             (unsigned)tl->clutY, (unsigned)tl->triangles, (unsigned)box[k][0], (unsigned)box[k][2], (unsigned)box[k][1], (unsigned)box[k][3]);
+	}
+	NativeTwin_Free(&src);
+}
+
 int Engine_ModelFrame(const EngineModelImport *imp, int anim, int frame)
 {
 	const ModelFrameTable *table;

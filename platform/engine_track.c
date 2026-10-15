@@ -1528,6 +1528,7 @@ internal int EngTrack_ImportOne(const struct Model *model, int levelListOnly)
 	}
 	m->imported = 1;
 	m->live = (model->id == STATIC_STARTBANNERWAVE) ? 1 : 0;
+	Engine_ModelLogTiles(model, m->name);
 	for (k = 0; k < m->imp.materialCount; k++)
 	{
 		const EngineMaterial *mat = Engine_Material(m->imp.firstMaterial + k);
