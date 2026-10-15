@@ -153,6 +153,10 @@ typedef struct
 global_variable EilEntry s_eil[ENGINE_MESHES_MAX];
 global_variable EngineVertex s_eilLive[EIL_VERTICES_MAX];
 global_variable int s_eilLogged = 0;
+// The variant whose copies s_eilLive holds now (its sides, for the oracle's
+// side=back, Engine_InstLightBackFace); NULL after the variant is freed.
+global_variable const u8 *s_eilLiveBack = NULL;
+global_variable u32 s_eilLiveCount = 0;
 
 internal void Eil_Log(const char *line)
 {
@@ -291,6 +295,11 @@ internal int Eil_RegisterVariant(const EngineMaterial *base, int variant)
 
 internal void Eil_FreeVariant(EilVariant *v)
 {
+	if ((v->back != NULL) && (v->back == s_eilLiveBack))
+	{
+		s_eilLiveBack = NULL;
+		s_eilLiveCount = 0;
+	}
 	free(v->source);
 	free(v->back);
 	memset(v, 0, sizeof(*v));
@@ -588,11 +597,25 @@ int Engine_InstLightApply(const struct Instance *inst, const struct InstDrawPerP
 	}
 	Eil_LightOf(inst, idpp, &light);
 	Eil_Fill(v, src, &light, s_eilLive);
+	s_eilLiveBack = v->back;
+	s_eilLiveCount = v->vertexCount;
 	d->mesh = v->mesh;
 	d->frame = 0;
 	d->liveVertices = s_eilLive;
 	d->flags = (u16)(v->transparent ? (d->flags | ENGINE_DRAW_TRANSPARENT) : (d->flags & ~ENGINE_DRAW_TRANSPARENT));
 	return 1;
+}
+
+int Engine_InstLightBackFace(const EngineVertex *corner0)
+{
+	size_t at;
+
+	if ((corner0 == NULL) || (s_eilLiveBack == NULL) || (corner0 < s_eilLive) || (corner0 >= s_eilLive + s_eilLiveCount))
+	{
+		return 0;
+	}
+	at = (size_t)(corner0 - s_eilLive);
+	return ((at % 3u) == 0u) ? (s_eilLiveBack[at / 3u] != 0u) : 0;
 }
 
 // --------------------------------------------------------------------------
@@ -1266,8 +1289,19 @@ int Engine_SelfTestInstLight(int *checks)
 					EIL_CHECK((front[0] > backColour[0]) && (front[1] > backColour[1]), "the back side is darker (%u %u against %u %u)", front[0], front[1],
 					          backColour[0], backColour[1]);
 				}
+				// The oracle's side=back: the copies in s_eilLive as Engine_InstLightApply leaves them.
+				Eil_Fill(&v, vertices, &l, s_eilLive);
+				s_eilLiveBack = v.back;
+				s_eilLiveCount = v.vertexCount;
+				for (t = 0; t < 5; t++)
+				{
+					EIL_CHECK(Engine_InstLightBackFace(&s_eilLive[t * 3]) == (int)wantBack[t], "%s side=back of copy %d", (writer == EIL_WRITER_LIT) ? "lit" : "key", t);
+				}
+				EIL_CHECK(!Engine_InstLightBackFace(&s_eilLive[10]) && !Engine_InstLightBackFace(&live[9]) && !Engine_InstLightBackFace(&s_eilLive[15]),
+				          "side=back only for a corner 0 of the live copies");
 				Engine_MeshDestroy(v.mesh);
 				Eil_FreeVariant(&v);
+				EIL_CHECK(!Engine_InstLightBackFace(&s_eilLive[9]), "no side=back after the variant is freed");
 			}
 		}
 		{

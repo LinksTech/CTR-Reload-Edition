@@ -904,6 +904,9 @@ int Engine_InstLightSplit(const struct Instance *inst, const struct InstDrawPerP
 // transparent flag. 1 = d is ready (also: nothing to do for another writer);
 // 0 = refused (logged once per mesh): retail draws.
 int Engine_InstLightApply(const struct Instance *inst, const struct InstDrawPerPlayer *idpp, int mesh, u32 frame, EngineInstanceDraw *d);
+// For the engine oracle (side=back on E lines): 1 = corner0 is corner 0 of a
+// back-side copy in the live vertices of the last Engine_InstLightApply.
+int Engine_InstLightBackFace(const EngineVertex *corner0);
 int Engine_SelfTestInstLight(int *checks);
 
 // --------------------------------------------------------------------------

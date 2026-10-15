@@ -1026,6 +1026,11 @@ internal int EngOracle_DrawFaces(const EngineDraw *draw, const char *dynTag, Eng
 			{
 				EngOracle_FinishEngineFace(&f, m, draw->tint, &draw->dynVertices[draw->dynIndices[t * 3u]], &draw->dynVertices[draw->dynIndices[t * 3u + 1u]],
 				                           &draw->dynVertices[draw->dynIndices[t * 3u + 2u]]);
+				// A back-side copy of a two-sided lit/key triangle (platform/engine_inst_light.c).
+				if (Engine_InstLightBackFace(&draw->dynVertices[draw->dynIndices[t * 3u]]))
+				{
+					EngOracle_Append(f.extra, sizeof(f.extra), "side=back");
+				}
 			}
 			emit(&f, material, user);
 			faces++;
