@@ -100,16 +100,18 @@ void CTR_Clip_NoteFrameUse(int usedBytes, int capacityBytes);
 // for every face (the static block of a load, the AnimTex faces of a frame).
 #include <psx/gtereg.h> // gteRegs: the oracle pass puts the GTE back as it was
 int Engine_TrackOracleWanted(void);
-void Engine_TrackOracleNotePrim(const void *prim, const s32 *positionSum, int corners);
-void Engine_TrackOracleBlock(const struct QuadBlock *block, int water, int sieve, const void *primFrom, const void *primTo, const void *clipFrom,
-                             const void *clipTo);
+void Engine_TrackOracleNotePrim(const void *prim, const s16 *cornerPositions, int corners);
+void Engine_TrackOracleBlock(const struct QuadBlock *block, int water, int marks, const s16 *walkGrid, const void *primFrom, const void *primTo,
+                             const void *clipFrom, const void *clipTo);
 void Engine_TrackOracleClip(const void *record, const s32 *positionSum, int corners, const void *primFrom, const void *primTo);
 void Engine_TrackOracleDone(int completed, const void *primFrom, const void *primTo);
-void Engine_TrackOracleLayout(const struct QuadBlock *block, int face, int level, int finest, const struct TextureLayout *layout, int anim, int sieve);
+void Engine_TrackOracleLayout(const struct QuadBlock *block, int face, int level, int finest, const struct TextureLayout *layout, int mirrored, int anim,
+                              int sieve);
 void Engine_TrackOracleTable(const struct QuadBlock *block, int face, const struct TextureLayout *table, int anim, int mirrored);
 #endif
 static int s_oraclePass;
 static int s_oracleSieve; // the sieve dropped a layout while the oracle pass drew the current block
+static int s_oracleMorph; // the distance fade moved a midpoint (colour, place) while the oracle pass drew the current block
 
 static u32 DrawLevelOvr1P_ReadPackedWord(const void *src)
 {
@@ -2497,23 +2499,24 @@ static void DrawLevelOvr1P_AddRawPrimToOt(struct PrimMem *primMem, void *packet,
 #endif
 }
 
-// ORACLE PASS: where a packet lies - the sum of its corners' level positions
-// (the walk's own projected records, subdivision midpoints included) - so that
-// the log can name the mid face and the mosaic cell the packet covers. Reads only.
+// ORACLE PASS: where a packet lies - its corners' positions in the packet's
+// vertex order (the walk's own projected records, subdivision midpoints
+// included) - so that the log can name the mid face, the mosaic cell and the
+// face slot of every corner. Reads only.
 static void DrawLevelOvr1P_OracleNotePrim(const void *prim, const struct DrawLevelOvr1PScratchVertex *projected, const int *indices, int count)
 {
 #if defined(CTR_NATIVE)
 	if (s_oraclePass)
 	{
-		s32 sum[3] = {0, 0, 0};
+		s16 corner[12];
 
-		for (int i = 0; i < count; i++)
+		for (int i = 0; (i < count) && (i < 4); i++)
 		{
-			sum[0] += projected[indices[i]].pos[0];
-			sum[1] += projected[indices[i]].pos[1];
-			sum[2] += projected[indices[i]].pos[2];
+			corner[3 * i] = projected[indices[i]].pos[0];
+			corner[3 * i + 1] = projected[indices[i]].pos[1];
+			corner[3 * i + 2] = projected[indices[i]].pos[2];
 		}
-		Engine_TrackOracleNotePrim(prim, sum, count);
+		Engine_TrackOracleNotePrim(prim, corner, (count < 4) ? count : 4);
 	}
 #else
 	(void)prim;
@@ -2724,6 +2727,8 @@ static void Ovr226_800a1408_AdjustFullDynamicMidVertex(struct DrawLevelOvr1PScra
 	{
 		return;
 	}
+	// ORACLE PASS: this block's midpoint colour and place come from the fade below (morph=1 on its lines).
+	s_oracleMorph |= s_oraclePass;
 
 	for (s32 axisIndex = 0; axisIndex < 3; axisIndex++)
 	{
@@ -4381,8 +4386,22 @@ static void DrawLevelOvr1P_OracleBlock(const struct QuadBlock *block, int water,
 #if defined(CTR_NATIVE)
 	if (s_oraclePass)
 	{
-		Engine_TrackOracleBlock(block, water, s_oracleSieve, primFrom, primMem->cursor, clipFrom, DrawLevelOvr1P_GetClipRecordCursor());
+		// The block's nine grid points as the walk holds them (frame 0 of the
+		// projection records, grid index order; midpoints of far blocks moved by
+		// the fade): the place of a packet is measured in this space.
+		const struct DrawLevelOvr1PScratchVertex *grid = DrawLevelOvr1P_GetScratchVertices();
+		s16 walkGrid[27];
+
+		for (int i = 0; i < 9; i++)
+		{
+			walkGrid[3 * i] = grid[i].pos[0];
+			walkGrid[3 * i + 1] = grid[i].pos[1];
+			walkGrid[3 * i + 2] = grid[i].pos[2];
+		}
+		Engine_TrackOracleBlock(block, water, s_oracleSieve | (s_oracleMorph << 1), walkGrid, primFrom, primMem->cursor, clipFrom,
+		                        DrawLevelOvr1P_GetClipRecordCursor());
 		s_oracleSieve = 0;
+		s_oracleMorph = 0;
 	}
 #else
 	(void)block;
@@ -11603,6 +11622,7 @@ void DrawLevelOvr1P_OracleLayouts(const struct mesh_info *mesh, int animOnly)
 		{
 			const u32 ptr = (u32)block->ptr_texture_mid[face];
 			const int anim = ((ptr & 1u) != 0u) ? 1 : 0;
+			const int mirrored = DrawLevelOvr1P_OracleFaceMirrored(block, face);
 			const struct TextureLayout *group;
 			u32 word;
 			int mosaic;
@@ -11614,23 +11634,23 @@ void DrawLevelOvr1P_OracleLayouts(const struct mesh_info *mesh, int animOnly)
 			group = DrawLevelOvr1P_ResolveTexturePointerChecked(ptr);
 			if (group == NULL)
 			{
-				Engine_TrackOracleLayout(block, face, 0, 3, NULL, anim, 1);
+				Engine_TrackOracleLayout(block, face, 0, 3, NULL, mirrored, anim, 1);
 				continue;
 			}
 			word = DrawLevelOvr1P_ReadPackedWord((const u8 *)group + 0x24);
 			mosaic = DrawLevelOvr1P_TreatAsRetailNegativeTextureWord(word);
 			for (int level = 0; level < (mosaic ? 3 : 4); level++)
 			{
-				Engine_TrackOracleLayout(block, face, level, mosaic ? 2 : 3, &group[level], anim, 0);
+				Engine_TrackOracleLayout(block, face, level, mosaic ? 2 : 3, &group[level], mirrored, anim, 0);
 			}
 			if (mosaic && DrawLevelOvr1P_IsNativeLevelTexturePointer(word))
 			{
-				Engine_TrackOracleTable(block, face, (const struct TextureLayout *)word, anim, DrawLevelOvr1P_OracleFaceMirrored(block, face));
+				Engine_TrackOracleTable(block, face, (const struct TextureLayout *)word, anim, mirrored);
 			}
 		}
 		if (!animOnly && (block->ptr_texture_low != NULL))
 		{
-			Engine_TrackOracleLayout(block, -1, -1, -1, (const struct TextureLayout *)block->ptr_texture_low, 0, 0);
+			Engine_TrackOracleLayout(block, -1, -1, -1, (const struct TextureLayout *)block->ptr_texture_low, 0, 0, 0);
 		}
 	}
 }

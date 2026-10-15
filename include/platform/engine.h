@@ -861,22 +861,26 @@ int Engine_SelfTestTrackMosaic(int *checks);
 int Engine_TrackOracleWanted(void);
 struct QuadBlock;
 struct mesh_info;
-// During the oracle pass, from the 226 packet writers: the sum of a packet's
-// corner positions (level units) and their count.
-void Engine_TrackOracleNotePrim(const void *prim, const s32 *positionSum, int corners);
+// During the oracle pass, from the 226 packet writers: a packet's corner
+// positions (level units, 3 per corner, the packet's vertex order) and their count.
+void Engine_TrackOracleNotePrim(const void *prim, const s16 *cornerPositions, int corners);
 // During the oracle pass: the packets one quadblock's handler wrote [primFrom,
 // primTo) and the clip records it left [clipFrom, clipTo); water = a water
-// bucket; sieve = the sieve dropped a layout while the block was drawn.
-void Engine_TrackOracleBlock(const struct QuadBlock *block, int water, int sieve, const void *primFrom, const void *primTo, const void *clipFrom,
-                             const void *clipTo);
+// bucket; marks: bit 0 the sieve dropped a layout while the block was drawn,
+// bit 1 the distance fade moved its midpoints (colour and place, the geomorph);
+// walkGrid: its nine grid points as the walk holds them (27 values).
+void Engine_TrackOracleBlock(const struct QuadBlock *block, int water, int marks, const s16 *walkGrid, const void *primFrom, const void *primTo,
+                             const void *clipFrom, const void *clipTo);
 // The packets the clip consumer wrote for one record (R lines of the block that wrote it, clip=1).
 void Engine_TrackOracleClip(const void *record, const s32 *positionSum, int corners, const void *primFrom, const void *primTo);
 // End of the pass: one log line with the counts (completed 0 = the walk stopped).
 void Engine_TrackOracleDone(int completed, const void *primFrom, const void *primTo);
-// From DrawLevelOvr1P_OracleLayouts: one layout 226 resolved for a face (level
+// From DrawLevelOvr1P_OracleLayouts: one layout 226 resolved for a face (mirrored =
+// the walk draws the face mirrored: the line gets the face's corner order; level
 // 0..3; face -1 / level -1 = the block's low layout; layout NULL with sieve 1 =
 // the sieve dropped the face's group) and the table a face's level 3 names.
-void Engine_TrackOracleLayout(const struct QuadBlock *block, int face, int level, int finest, const struct TextureLayout *layout, int anim, int sieve);
+void Engine_TrackOracleLayout(const struct QuadBlock *block, int face, int level, int finest, const struct TextureLayout *layout, int mirrored, int anim,
+                              int sieve);
 void Engine_TrackOracleTable(const struct QuadBlock *block, int face, const struct TextureLayout *table, int anim, int mirrored);
 // game/226: the layouts the walk resolves for every face of the level (animOnly
 // = only the faces of AnimTex cells), handed to the two functions above.
