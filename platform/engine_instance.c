@@ -396,6 +396,90 @@ internal void EngInst_CrossCheck(const struct Instance *inst, const struct InstD
 	}
 }
 
+// The screen box (x0, y0, x1, y1) of the 8 corners through a clip matrix, as
+// fractions of the view rectangle. 0 when a corner is behind the camera.
+internal int EngInst_BoxOnScreen(const float *m, const float lo[3], const float hi[3], float w, float h, float box[4])
+{
+	int k;
+
+	for (k = 0; k < 8; k++)
+	{
+		float sx;
+		float sy;
+
+		if (!EngInst_ToScreen(m, (k & 1) ? hi[0] : lo[0], (k & 2) ? hi[1] : lo[1], (k & 4) ? hi[2] : lo[2], &sx, &sy))
+		{
+			return 0;
+		}
+		sx /= w;
+		sy /= h;
+		box[0] = ((k == 0) || (sx < box[0])) ? sx : box[0];
+		box[1] = ((k == 0) || (sy < box[1])) ? sy : box[1];
+		box[2] = ((k == 0) || (sx > box[2])) ? sx : box[2];
+		box[3] = ((k == 0) || (sy > box[3])) ? sy : box[3];
+	}
+	return 1;
+}
+
+int Engine_InstanceScreenBoxes(const struct Instance *inst, const struct InstDrawPerPlayer *idpp, const struct PushBuffer *pb, int mesh, u32 frame,
+                               float engineBox[4], float retailBox[4])
+{
+	const struct GameTracker *gGT = sdata->gGT;
+	const struct ModelHeader *mh0 = EngInst_Header0(inst);
+	const EngineMeshDesc *md = Engine_MeshDesc(mesh);
+	const EngineCamera *cam;
+	const EngineVertex *vtx;
+	EngineMat4 worldFromModel;
+	EngineMat4 screenFromWorld;
+	EngineMat4 clip;
+	EngineMat4 layerClip;
+	double S[4][4];
+	float lo[3];
+	float hi[3];
+	int view;
+	u32 i;
+	int c;
+
+	if ((gGT == NULL) || (idpp == NULL) || (pb == NULL) || (mh0 == NULL) || (md == NULL) || (md->vertices == NULL) || (frame >= md->frames) ||
+	    (md->verticesPerFrame == 0) || (idpp->ptrCurrFrame == NULL) || (engineBox == NULL) || (retailBox == NULL))
+	{
+		return 0;
+	}
+	view = Engine_InstanceViewOf(pb);
+	cam = (view >= 0) ? Engine_FrameCamera(view) : NULL;
+	if ((cam == NULL) || (cam->rectW <= 0) || (cam->rectH <= 0) || !Engine_InstanceWorldMatrix(inst, &worldFromModel))
+	{
+		return 0;
+	}
+	vtx = md->vertices + ((size_t)frame * md->verticesPerFrame);
+	for (c = 0; c < 3; c++)
+	{
+		lo[c] = vtx[0].position[c];
+		hi[c] = vtx[0].position[c];
+	}
+	for (i = 1; i < md->verticesPerFrame; i++)
+	{
+		for (c = 0; c < 3; c++)
+		{
+			lo[c] = (vtx[i].position[c] < lo[c]) ? vtx[i].position[c] : lo[c];
+			hi[c] = (vtx[i].position[c] > hi[c]) ? vtx[i].position[c] : hi[c];
+		}
+	}
+	Engine_CameraScreenFromWorld(cam, &screenFromWorld);
+	Engine_Mat4Mul(&screenFromWorld, &worldFromModel, &clip);
+
+	// The layer's matrix, as EngInst_CrossCheck builds it (s_engInstItem is scratch).
+	(void)NativeRenderLayer_FillItem(&s_engInstItem, gGT, inst, idpp, pb, view);
+	s_engInstItem.unitScale[0] = 16384.0 / (double)mh0->scale.x;
+	s_engInstItem.unitScale[1] = 16384.0 / (double)mh0->scale.y;
+	s_engInstItem.unitScale[2] = 16384.0 / (double)(u16)mh0->scale.z;
+	NativeRenderLayer_CharItemMatrix(&s_engInstItem, 0.0, 0.0, S);
+	NativeRenderLayer_MatrixToDraw(S, layerClip.m);
+
+	return EngInst_BoxOnScreen(clip.m, lo, hi, (float)cam->rectW, (float)cam->rectH, engineBox) &&
+	       EngInst_BoxOnScreen(layerClip.m, lo, hi, (float)cam->rectW, (float)cam->rectH, retailBox);
+}
+
 // --------------------------------------------------------------------------
 // The submit.
 
@@ -707,6 +791,25 @@ int Engine_SelfTestInstance(int *checks)
 	// is mirrored to 2 * 150 - 200 = 100.
 	m = Engine_Mat4MulPoint(&mirror, (EngineVec3){0.0f, 0.0f, 0.0f});
 	EngInst_Check(EngInst_Near(m.y, 100.0f, 0.001f), "mirror of a point above the plane (y 200) lies at 2L - 200 = 100", &n, &failures);
+
+	// The screen box of the POSITION CHECK: sx = x / z, sy = y / z (w = z); the
+	// box (0..4, 0..2, 2..4) spans x 0..2 and y 0..1, in a view of 2 x 4: 0..1 x 0..0.25.
+	{
+		EngineMat4 proj;
+		const float lo[3] = {0.0f, 0.0f, 2.0f};
+		const float hi[3] = {4.0f, 2.0f, 4.0f};
+		const float behind[3] = {0.0f, 0.0f, 0.5f};
+		float box[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+
+		memset(&proj, 0, sizeof(proj));
+		proj.m[0] = 1.0f;
+		proj.m[5] = 1.0f;
+		proj.m[11] = 1.0f;
+		EngInst_Check(EngInst_BoxOnScreen(proj.m, lo, hi, 2.0f, 4.0f, box) && EngInst_Near(box[0], 0.0f, 1e-6f) && EngInst_Near(box[1], 0.0f, 1e-6f) &&
+		                  EngInst_Near(box[2], 1.0f, 1e-6f) && EngInst_Near(box[3], 0.25f, 1e-6f),
+		              "position check: screen box of a known box", &n, &failures);
+		EngInst_Check(!EngInst_BoxOnScreen(proj.m, behind, hi, 2.0f, 4.0f, box), "position check: a corner behind the camera makes no box", &n, &failures);
+	}
 
 	*checks += n;
 	return failures;

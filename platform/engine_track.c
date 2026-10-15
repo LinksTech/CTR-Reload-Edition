@@ -1121,6 +1121,11 @@ typedef struct
 	int liveRefusedLogged;
 	u32 drawn;
 	u32 declined;
+	// POSITION CHECK: drawn instances whose screen box was made through both
+	// matrices, and the largest centre difference (fractions of the view).
+	u32 posChecked;
+	float posMaxDx;
+	float posMaxDy;
 	char why[96]; // Engine_ModelImportWhy of a failed import
 } EngTrackModel;
 
@@ -1139,6 +1144,9 @@ global_variable u64 s_egtInstDrawn;
 global_variable u64 s_egtInstDeclined;
 global_variable u64 s_egtRuntimeDrawn;    // of s_egtInstDrawn: runtime instances (RUNTIME INSTANCES)
 global_variable u64 s_egtRuntimeDeclined; // of s_egtInstDeclined: runtime instances
+// POSITION CHECK lines of runtime instances written since the load.
+#define EGT_POSITION_LINES_MAX 6000u
+global_variable u32 s_egtPositionLines;
 // The live frame of a level instance (Engine_TrackInstanceRoute, LIVE FRAME),
 // rebuilt per draw; the submit copies it.
 #define EGT_LIVE_VERTICES_MAX 4096u
@@ -1367,6 +1375,11 @@ internal void EngTrack_TourReport(int entry, int levelID, int phase)
 
 		Platform_Log("[CTR Engine] tour %d level %d model '%s' id %d: drawn %u, declined %u%s%s\n", entry, levelID, m->name, (int)m->id, m->drawn, m->declined,
 		             m->imported ? "" : ", not imported: ", m->imported ? "" : ((m->why[0] != '\0') ? m->why : "no entry"));
+		if (m->posChecked > 0u)
+		{
+			Platform_Log("[CTR Engine] tour %d level %d model '%s' position: %u draw(s) checked, centre engine vs retail at most dx %.4f dy %.4f of the view\n",
+			             entry, levelID, m->name, m->posChecked, (double)m->posMaxDx, (double)m->posMaxDy);
+		}
 	}
 }
 
@@ -1544,6 +1557,7 @@ internal void EngTrack_ImportModels(const struct Level *level)
 	int listFailed = 0;
 
 	s_egtModelCount = 0;
+	s_egtPositionLines = 0;
 	if ((level->ptrInstDefs == NULL) || (level->numInstances == 0u))
 	{
 		Platform_Log("[CTR Engine] track: instance models: 0 imported, 0 failed (no instances)\n");
@@ -2417,6 +2431,39 @@ internal int EngTrack_InstanceRule(const struct Instance *inst, int modelInTable
 	return ((inst->thread == NULL) && modelInTable) ? EGT_RULE_RUNTIME : EGT_RULE_RETAIL;
 }
 
+// POSITION CHECK (round of 2026-10-15, S1). After every engine draw of a level
+// instance: the centre of its screen box through the engine's matrix against
+// the one through the retail queue's matrix (Engine_InstanceScreenBoxes); the
+// largest difference per model goes into the tour's model line. A runtime
+// instance also writes one line per draw (at most EGT_POSITION_LINES_MAX per
+// load) with the game's frame counter (sdata->frameCounter, the frameCounter
+// column of the --perf-dir frame_times.csv), so a burst shot can be matched to
+// the boxes. Reads only; draws nothing.
+internal void EngTrack_PositionCheck(EngTrackModel *em, const struct Instance *inst, const struct InstDrawPerPlayer *idpp, const struct PushBuffer *pb, int mesh,
+                                     u32 frame, int runtime)
+{
+	float e[4];
+	float r[4];
+	float dx;
+	float dy;
+
+	if (!Engine_InstanceScreenBoxes(inst, idpp, pb, mesh, frame, e, r))
+	{
+		return;
+	}
+	dx = fabsf(((e[0] + e[2]) - (r[0] + r[2])) * 0.5f);
+	dy = fabsf(((e[1] + e[3]) - (r[1] + r[3])) * 0.5f);
+	em->posChecked++;
+	em->posMaxDx = (dx > em->posMaxDx) ? dx : em->posMaxDx;
+	em->posMaxDy = (dy > em->posMaxDy) ? dy : em->posMaxDy;
+	if (runtime && (s_egtPositionLines < EGT_POSITION_LINES_MAX))
+	{
+		s_egtPositionLines++;
+		Platform_Log("[CTR Engine] track: position fc %d '%s' '%s' engine %.4f %.4f %.4f %.4f retail %.4f %.4f %.4f %.4f\n", (int)sdata->frameCounter, em->name,
+		             inst->name, e[0], e[1], e[2], e[3], r[0], r[1], r[2], r[3]);
+	}
+}
+
 // One instance of a model of the table (em, NULL = no entry) drawn by
 // Engine_InstanceSubmit: 1 drawn, 0 declined (counted). runtime: the instance
 // came through the RUNTIME INSTANCES rule (only the first-seen line says so).
@@ -2534,6 +2581,7 @@ internal int EngTrack_RouteInstance(struct Instance *inst, struct InstDrawPerPla
 	{
 		em->drawn++;
 		s_egtInstDrawn++;
+		EngTrack_PositionCheck(em, inst, idpp, pb, d.mesh, d.frame, runtime);
 		return 1;
 	}
 	em->declined++;

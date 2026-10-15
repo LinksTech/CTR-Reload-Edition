@@ -736,6 +736,12 @@ int Engine_InstanceWorldMatrix(const struct Instance *inst, EngineMat4 *worldFro
 int Engine_InstanceSubmit(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb, const EngineInstanceDraw *d);
 // The view of a push buffer (0..3), -1 when it is none of gGT->pushBuffer[].
 int Engine_InstanceViewOf(const struct PushBuffer *pb);
+// Where the instance is on the screen: the box (x0, y0, x1, y1, fractions of
+// the view rectangle) of the mesh frame's bounding box through the engine's
+// matrix and through the layer's matrix of the retail queue (idpp). 1 = both
+// boxes made (every corner in front of the camera). A measurement; draws nothing.
+int Engine_InstanceScreenBoxes(const struct Instance *inst, const struct InstDrawPerPlayer *idpp, const struct PushBuffer *pb, int mesh, u32 frame,
+                               float engineBox[4], float retailBox[4]);
 
 // --------------------------------------------------------------------------
 // CUSTOM DRIVERS WITH ONLY A CMDL (platform/engine_driver_cmdl.c; round of 2026-10-13)
