@@ -46,6 +46,9 @@ void NativeCharGpu_LoadTwin(int levelID);
 // after the sets) instead of in the first race frame. Returns at once without
 // --native-preview or without a native set.
 void NativeRenderLayer_WarmRace(void);
+// From platform/engine_material.c: the Vulkan pipelines of every draw state the
+// loaded engine materials can reach, built at this loading screen (stage 8).
+void Engine_MaterialsWarmPipelines(void);
 
 #ifdef CTR_NATIVE
 // See game/LOAD/LOAD_File.c: declaration instead of a platform header, because this
@@ -1011,6 +1014,7 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 				Engine_TrackLoad();
 				Engine_SkyLoad();
 				Engine_WaterLoad();
+				Engine_MaterialsWarmPipelines();
 			}
 			Engine_RenderUploadMeshes();
 		}

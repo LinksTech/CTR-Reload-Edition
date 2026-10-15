@@ -1,6 +1,8 @@
 #include <platform/engine.h>
 #include <platform/native_mods.h>
 
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -164,6 +166,132 @@ u8 Engine_NightChannel(int nightPercent, u8 value)
 		return value;
 	}
 	return Engine_BlendChannel(ENGINE_BLEND_MULTIPLY, value, rgb[2]);
+}
+
+// --------------------------------------------------------------------------
+// pipelines ahead of the race (round of 2026-10-15)
+//
+// The draw states a material can reach in Engine_RenderDrawRange
+// (platform/engine_render.c): its program; its blend as Engine_RenderBlendMode
+// maps it, and BM_NONE for the opaque first pass of a semi-transparent VRAM face
+// (twoPass); depth test on with write on (opaque) or off (transparent draws,
+// ENGINE_MATERIAL_NO_DEPTH_WRITE), and depth test off (ENGINE_DRAW_NO_DEPTH,
+// the sky); cull none for a double-sided material, else back or front (by the
+// determinant of the draw's matrix: a mirror image draws front); compare
+// GREATER_OR_EQUAL, alpha not written. Engine_MaterialsWarmPipelines hands every
+// distinct one of the loaded materials to the Vulkan backend, which builds
+// their pipelines at the load point instead of inside a race frame.
+
+#define ENG_WARM_STATES_MAX 512
+
+int NativeGfxVK_WarmEngine(const uint32_t *programs, const uint8_t *blends, const NativeGfxDrawState *states, int count,
+                           const NativeGfxVertexBufferDesc *layoutDesc);
+
+global_variable u32 s_warmPrograms[ENG_WARM_STATES_MAX];
+global_variable u8 s_warmBlends[ENG_WARM_STATES_MAX];
+global_variable NativeGfxDrawState s_warmStates[ENG_WARM_STATES_MAX];
+
+// Engine_RenderBlendMode (engine_render.c), the same mapping.
+internal u8 EngMat_WarmBlend(u8 blend)
+{
+	switch (blend)
+	{
+	case ENGINE_BLEND_PSX_AVERAGE:
+		return (u8)BM_AVERAGE;
+	case ENGINE_BLEND_PSX_ADD:
+		return (u8)BM_ADD;
+	case ENGINE_BLEND_PSX_SUBTRACT:
+		return (u8)BM_SUBTRACT;
+	case ENGINE_BLEND_PSX_ADD_QUARTER:
+		return (u8)BM_ADD_QUATER_SOURCE;
+	case ENGINE_BLEND_MULTIPLY:
+		return (u8)BM_MULTIPLY;
+	default:
+		return (u8)BM_NONE;
+	}
+}
+
+// Adds the states of material m, drawn by program handle `program`, that are
+// not in the lists yet; returns the new count (at most max).
+internal int EngMat_WarmStatesOf(const EngineMaterial *m, u32 program, u32 *programs, u8 *blends, NativeGfxDrawState *states, int count, int max)
+{
+	// depth test, depth write
+	static const int depth[3][2] = {{1, 1}, {1, 0}, {0, 0}};
+	static const NativeGfxCull culls[2] = {NATIVE_GFX_CULL_BACK, NATIVE_GFX_CULL_FRONT};
+	const int vram = (m->texSource == ENGINE_TEX_VRAM) || (m->texSource == ENGINE_TEX_VRAM_TABLE);
+	const u8 blend = EngMat_WarmBlend(m->blend);
+	const int twoPass = vram && (blend != (u8)BM_NONE) && (blend != (u8)BM_MULTIPLY) && ((m->flags & ENGINE_MATERIAL_SEMI_STP) != 0u);
+	const int doubleSided = (m->flags & ENGINE_MATERIAL_DOUBLE_SIDED) != 0u;
+
+	for (int b = 0; b < (twoPass ? 2 : 1); b++)
+	{
+		const u8 passBlend = (b == 0) ? blend : (u8)BM_NONE;
+
+		for (int d = 0; d < 3; d++)
+		{
+			for (int c = 0; c < (doubleSided ? 1 : 2); c++)
+			{
+				NativeGfxDrawState s;
+				int i;
+
+				if ((depth[d][1] != 0) && ((m->flags & ENGINE_MATERIAL_NO_DEPTH_WRITE) != 0u))
+				{
+					continue;
+				}
+				memset(&s, 0, sizeof(s));
+				s.depthTest = depth[d][0];
+				s.depthWrite = depth[d][1];
+				s.depthCompare = NATIVE_GFX_COMPARE_GREATER_OR_EQUAL;
+				s.cull = doubleSided ? NATIVE_GFX_CULL_NONE : culls[c];
+				s.colorWriteOff = NATIVE_GFX_COLOR_A;
+				for (i = 0; i < count; i++)
+				{
+					if ((programs[i] == program) && (blends[i] == passBlend) && (states[i].depthTest == s.depthTest) && (states[i].depthWrite == s.depthWrite) &&
+					    (states[i].cull == s.cull))
+					{
+						break;
+					}
+				}
+				if ((i < count) || (count >= max))
+				{
+					continue;
+				}
+				programs[count] = program;
+				blends[count] = passBlend;
+				states[count] = s;
+				count++;
+			}
+		}
+	}
+	return count;
+}
+
+void Engine_MaterialsWarmPipelines(void)
+{
+	NativeGfxVertexBufferDesc desc;
+	int count = 0;
+
+	if (!g_cfg_engine)
+	{
+		return;
+	}
+	for (int k = 0; k < s_materialCount; k++)
+	{
+		const u32 program = Engine_ProgramOf((int)s_materials[k].program);
+
+		if (program != 0xffffffffu)
+		{
+			count = EngMat_WarmStatesOf(&s_materials[k], program, s_warmPrograms, s_warmBlends, s_warmStates, count, ENG_WARM_STATES_MAX);
+		}
+	}
+	// The vertex layout of the engine buffers (Engine_RenderFillVertexDesc, engine_render.c).
+	memset(&desc, 0, sizeof(desc));
+	desc.stride = (int)sizeof(EngineVertex);
+	desc.attribCount = 3;
+	desc.attribs[0] = (NativeGfxVertexAttrib){.slot = a_position, .components = 3, .type = NATIVE_GFX_ATTR_FLOAT32, .offset = offsetof(EngineVertex, position)};
+	desc.attribs[1] = (NativeGfxVertexAttrib){.slot = a_texcoord, .components = 2, .type = NATIVE_GFX_ATTR_FLOAT32, .offset = offsetof(EngineVertex, texcoord)};
+	desc.attribs[2] = (NativeGfxVertexAttrib){.slot = a_color, .components = 4, .type = NATIVE_GFX_ATTR_UNORM8, .offset = offsetof(EngineVertex, color)};
+	NativeGfxVK_WarmEngine(s_warmPrograms, s_warmBlends, s_warmStates, count, &desc);
 }
 
 // --------------------------------------------------------------------------
@@ -382,6 +510,37 @@ int Engine_SelfTestMaterial(int *checks)
 		Engine_SetLight(NULL);
 		MAT_CHECK(Engine_GetLight()->nightPercent == 40, "light NULL ignored");
 		Engine_SetLight(&saved);
+	}
+
+	// pipelines ahead of the race: the states of a semi-transparent double-sided
+	// VRAM material (both passes, three depth states, no cull) and of an opaque
+	// one-sided one without depth write (two depth states, back and front).
+	{
+		static u32 programs[16];
+		static u8 blends[16];
+		static NativeGfxDrawState states[16];
+		EngineMaterial warmA;
+		EngineMaterial warmB;
+		int n;
+
+		memset(&warmA, 0, sizeof(warmA));
+		warmA.blend = ENGINE_BLEND_PSX_AVERAGE;
+		warmA.texSource = ENGINE_TEX_VRAM;
+		warmA.flags = ENGINE_MATERIAL_SEMI_STP | ENGINE_MATERIAL_DOUBLE_SIDED;
+		memset(&warmB, 0, sizeof(warmB));
+		warmB.blend = ENGINE_BLEND_OPAQUE;
+		warmB.flags = ENGINE_MATERIAL_NO_DEPTH_WRITE;
+		n = EngMat_WarmStatesOf(&warmA, 7u, programs, blends, states, 0, 16);
+		MAT_CHECK((n == 6) && (blends[0] == (u8)BM_AVERAGE) && (blends[3] == (u8)BM_NONE) && (states[0].depthTest == 1) && (states[0].depthWrite == 1) &&
+		              (states[2].depthTest == 0) && (states[0].cull == NATIVE_GFX_CULL_NONE) && (states[0].colorWriteOff == NATIVE_GFX_COLOR_A),
+		          "warm states of a semi double-sided VRAM material: %d", n);
+		n = EngMat_WarmStatesOf(&warmB, 7u, programs, blends, states, n, 16);
+		MAT_CHECK((n == 10) && (states[6].depthWrite == 0) && (states[6].cull == NATIVE_GFX_CULL_BACK) && (states[7].cull == NATIVE_GFX_CULL_FRONT),
+		          "warm states of an opaque one-sided material without depth write: %d", n);
+		MAT_CHECK(EngMat_WarmStatesOf(&warmA, 7u, programs, blends, states, n, 16) == 10, "warm states not repeated");
+		MAT_CHECK(EngMat_WarmStatesOf(&warmA, 8u, programs, blends, states, n, 12) == 12, "warm states of another program, held to the room");
+		MAT_CHECK(EngMat_WarmBlend(ENGINE_BLEND_MASK) == (u8)BM_NONE && EngMat_WarmBlend(ENGINE_BLEND_PSX_SUBTRACT) == (u8)BM_SUBTRACT,
+		          "warm blend mapping");
 	}
 
 	return failures;

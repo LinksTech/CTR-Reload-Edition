@@ -7106,6 +7106,160 @@ int NativeGfxVK_WarmPipelines(NativeGfxBuffer nativeVertexBuffer)
 	return (int)built;
 }
 
+// ENGINE PIPELINES AHEAD OF THE RACE (round of 2026-10-15). The first draw of an
+// engine material whose blend mode the engine program had not drawn with built
+// its pipeline inside the race frame: 26-28 ms of CPU in the draw setup on
+// Dragon Mines (Z7 runs of the round of 2026-10-15, the 'lantern' with blend
+// BM_AVERAGE at frame 425, a BM_SUBTRACT draw at frame 70). Called once per level
+// at the load point (engine_material.c, Engine_MaterialsWarmPipelines) with
+// every state the loaded engine materials can draw with: program, blend, depth
+// test/write, cull. The key is the one NativeVk_RecordDrawSetup makes for such
+// a draw on the target with depth: that target's pass class (as step 2 of
+// NativeGfxVK_WarmPipelines for "nr"), the vertex layout of the engine buffers,
+// the draw state as NativeVk_KeyDrawState normalises it (an offscreen target,
+// no flip bit), the sample count of the pass; the engine programs have no edge
+// variants. Builds and remembers only (NativeVk_GetPipeline), records nothing.
+// Without a target with depth (no --native-preview) nothing is built.
+//
+// IN-FRAME BUILDS. The fragment modules of the warmed programs are kept; a
+// pipeline of one of them built anywhere but here is counted and logged
+// ("[CTR Vk] engine pipeline built in a frame"). Nothing is kept or logged in
+// a run that never warmed (no --engine).
+#define NATIVE_VK_ENGINE_MODULES 4
+#define NATIVE_VK_ENGINE_ROOM 32 // cache slots that stay free for everything else
+
+global_variable uint64_t s_vkEngineModules[NATIVE_VK_ENGINE_MODULES];
+global_variable uint32_t s_vkEngineModuleCount = 0;
+global_variable int s_vkEngineWarming = 0;
+global_variable uint32_t s_vkEngineBuiltInFrame = 0;
+
+// From NativeVk_GetPipeline, after a build.
+internal void NativeVk_NoteEngineBuild(const struct NativeVkPipelineKey *key)
+{
+	if (s_vkEngineWarming)
+	{
+		return;
+	}
+	for (uint32_t i = 0; i < s_vkEngineModuleCount; i++)
+	{
+		if (key->fragmentModule == s_vkEngineModules[i])
+		{
+			s_vkEngineBuiltInFrame++;
+			Platform_Log("[CTR Vk] engine pipeline built in a frame (%u so far): blend %u depth %u write %u cull 0x%x\n", s_vkEngineBuiltInFrame,
+			             key->blend, key->depthTest, key->depthWrite, key->cull);
+			return;
+		}
+	}
+}
+
+// count states: programs[i] (ShaderID), blends[i] (BlendMode), states[i]; layout
+// describes the engine vertex buffers. Returns the number of pipelines built,
+// -1 when nothing could be warmed.
+int NativeGfxVK_WarmEngine(const uint32_t *programs, const uint8_t *blends, const NativeGfxDrawState *states, int count,
+                           const NativeGfxVertexBufferDesc *layoutDesc)
+{
+	const struct NativeVkTarget *target = NULL;
+
+	if ((s_vk.device == VK_NULL_HANDLE) || !g_cfg_nativePreview || (programs == NULL) || (blends == NULL) || (states == NULL) || (layoutDesc == NULL))
+	{
+		return -1;
+	}
+	for (uint32_t i = 0; i < NATIVE_VK_MAX_TARGETS; i++)
+	{
+		if (s_vk.targets[i].used && s_vk.targets[i].depthWanted && (s_vk.targets[i].depthView != VK_NULL_HANDLE))
+		{
+			target = &s_vk.targets[i];
+			break;
+		}
+	}
+
+	const struct NativeVkTexture *texture = (target != NULL) ? NativeVk_Texture(target->texture) : NULL;
+
+	if (texture == NULL)
+	{
+		Platform_Log("[CTR Vk] engine warm: no target with depth, nothing built\n");
+		return -1;
+	}
+
+	const uint64_t started = SDL_GetPerformanceCounter();
+	const uint32_t before = s_vk.pipelineCount;
+	const uint32_t samples = (target->msaaImage != VK_NULL_HANDLE) ? target->samples : 1u;
+	const VkRenderPass depthPass = NativeVk_PipelinePass(texture->format, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, samples, target->depthFormat);
+	struct NativeVkVertexLayout layout;
+	uint32_t skipped = 0;
+
+	if (depthPass == VK_NULL_HANDLE)
+	{
+		return -1;
+	}
+
+	// The layout as NativeGfxVK_CreateVertexBuffer interns it.
+	memset(&layout, 0, sizeof(layout));
+	layout.stride = (uint32_t)layoutDesc->stride;
+	layout.attribCount = ((uint32_t)layoutDesc->attribCount > NATIVE_GFX_MAX_ATTRIBS) ? NATIVE_GFX_MAX_ATTRIBS : (uint32_t)layoutDesc->attribCount;
+	for (uint32_t i = 0; i < layout.attribCount; i++)
+	{
+		layout.attribs[i].location = (uint32_t)layoutDesc->attribs[i].slot;
+		layout.attribs[i].binding = 0;
+		layout.attribs[i].format = NativeVk_AttribFormat(layoutDesc->attribs[i].type, layoutDesc->attribs[i].components);
+		layout.attribs[i].offset = (uint32_t)layoutDesc->attribs[i].offset;
+	}
+
+	const uint32_t vertexLayout = NativeVk_InternVertexLayout(&layout);
+
+	s_vkEngineWarming = 1;
+	for (int s = 0; s < count; s++)
+	{
+		const struct NativeVkProgram *program = NativeVk_Program((ShaderID)programs[s]);
+		struct NativeVkPipelineKey key;
+
+		if ((program == NULL) || (s_vk.pipelineCount + NATIVE_VK_ENGINE_ROOM >= NATIVE_VK_MAX_PIPELINES))
+		{
+			skipped++;
+			continue;
+		}
+		if (s_vkEngineModuleCount < NATIVE_VK_ENGINE_MODULES)
+		{
+			uint32_t m = 0;
+
+			while ((m < s_vkEngineModuleCount) && (s_vkEngineModules[m] != (uint64_t)program->fragmentModule))
+			{
+				m++;
+			}
+			if (m == s_vkEngineModuleCount)
+			{
+				s_vkEngineModules[s_vkEngineModuleCount++] = (uint64_t)program->fragmentModule;
+			}
+		}
+
+		memset(&key, 0, sizeof(key));
+		key.vertexModule = (uint64_t)program->vertexModule;
+		key.fragmentModule = (uint64_t)program->fragmentModule;
+		key.renderPass = (uint64_t)depthPass;
+		key.layout = (uint64_t)program->pipelineLayout;
+		key.vertexLayout = vertexLayout;
+		key.blend = blends[s];
+		key.pad[1] = (uint8_t)((samples > 1) ? samples : 0u);
+		if (states[s].depthTest != 0)
+		{
+			key.depthTest = 1;
+			key.depthWrite = (uint8_t)(states[s].depthWrite ? 1 : 0);
+			key.depthCompare = (uint8_t)states[s].depthCompare;
+		}
+		key.cull = (uint8_t)((uint32_t)states[s].cull & 3u);
+		key.colorWriteOff = (uint8_t)(states[s].colorWriteOff & 0x0Fu);
+		NativeVk_GetPipeline(&key);
+	}
+	s_vkEngineWarming = 0;
+
+	const uint32_t built = s_vk.pipelineCount - before;
+	const double ms = (double)(SDL_GetPerformanceCounter() - started) * 1000.0 / (double)SDL_GetPerformanceFrequency();
+
+	Platform_Log("[CTR Vk] engine warm: %u pipeline(s) built in %.1f ms for %d state(s), %u skipped (%u in cache; %u sample(s)); built in a frame so far %u\n",
+	             built, ms, count, skipped, s_vk.pipelineCount, samples, s_vkEngineBuiltInFrame);
+	return (int)built;
+}
+
 internal NativeGfxTarget NativeGfxVK_CreateTarget(const NativeGfxTargetDesc *desc)
 {
 	uint32_t index = 0;
@@ -9184,6 +9338,7 @@ internal VkPipeline NativeVk_GetPipeline(const struct NativeVkPipelineKey *key)
 			entry->key = *key;
 			entry->pipeline = built;
 			s_vk.pipelineCount++;
+			NativeVk_NoteEngineBuild(key);
 
 			// A draw state of its own gets a line of its own; every other key
 			// says what it always said.
