@@ -2683,6 +2683,7 @@ done:
 // finest geometry and colour at every distance, decided 2026-10-16).
 #define EGT_ORACLE_MARK_SIEVE 1
 #define EGT_ORACLE_MARK_MORPH 2
+#define EGT_ORACLE_MARK_ZEROAREA 4 // the packet covers no area (its corners coincide): drawn by retail, seen by nobody
 #define EGT_ORACLE_EXTRA_MAX 256
 #define EGT_ORACLE_BLEND_OPAQUE (-1)
 #define EGT_ORACLE_SPANS_MAX 4096
@@ -2767,6 +2768,7 @@ typedef struct
 	s8 k;
 	s8 level;
 	u8 anim;
+	s8 entry; // a table entry's index in its table (both halves), -1 for a level
 } EngTrackOracleCand;
 
 // Per logged frame: the retail side of the oracle pass.
@@ -2785,6 +2787,7 @@ global_variable struct
 	u32 noGeometry;  // packets without a position note (geometry lost or past the array)
 	u32 outsideFace; // packets whose position lies in no face of their block
 	u32 gridFallback; // block visits whose walk grid failed EngTrack_OracleGridValid (level positions used)
+	u32 zeroArea;     // packets without area (zeroarea=1)
 	u32 staticLines;
 	u32 eFaces;      // engine faces written (E side)
 	u32 eLines;
@@ -2807,6 +2810,7 @@ global_variable struct
 	{
 		const void *prim;
 		int corners;
+		int sourceEntry;
 		float corner[4][3];
 	} geo[EGT_ORACLE_GEO_MAX];
 } s_ego;
@@ -2989,31 +2993,37 @@ internal int EngTrack_OracleOnLayout(u16 tpage, u16 clut, const int *uv, int uvC
 // The candidate the primitive is: the first that holds its points as corners,
 // else the first whose box holds them (the list is in the order tiles, levels
 // 3..0 per face, low). -1 = none. Only a label: the line keeps the packet's values.
-internal int EngTrack_OracleClassify(u16 tpage, u16 clut, const int *uv, int uvCount, const EngTrackOracleCand *c, int n, int *exact)
+// builtMask (bit k = the engine built mid face k; -1 = all): a layout several
+// faces share names a built face first, so that a packet of a degenerate face's
+// twin is not put on the degenerate one.
+internal int EngTrack_OracleClassify(u16 tpage, u16 clut, const int *uv, int uvCount, const EngTrackOracleCand *c, int n, int *exact, int builtMask)
 {
-	int contained = -1;
-	int i;
+	int pass;
 
 	*exact = 0;
-	for (i = 0; i < n; i++)
+	for (pass = 0; pass < 4; pass++)
 	{
-		int ex = 0;
+		const int wantExact = (pass < 2) ? 1 : 0;
+		const int wantBuilt = ((pass & 1) == 0) ? 1 : 0;
+		int i;
 
-		if (!EngTrack_OracleOnLayout(tpage, clut, uv, uvCount, &c[i].lay, &ex))
+		for (i = 0; i < n; i++)
 		{
-			continue;
-		}
-		if (ex)
-		{
-			*exact = 1;
+			int ex = 0;
+
+			if (wantBuilt && (c[i].k >= 0) && ((builtMask & (1 << c[i].k)) == 0))
+			{
+				continue;
+			}
+			if (!EngTrack_OracleOnLayout(tpage, clut, uv, uvCount, &c[i].lay, &ex) || (ex != wantExact))
+			{
+				continue;
+			}
+			*exact = ex;
 			return i;
 		}
-		if (contained < 0)
-		{
-			contained = i;
-		}
 	}
-	return contained;
+	return -1;
 }
 
 // Entries of a table for the leaf form: own half + mirrored half.
@@ -3070,6 +3080,7 @@ internal int EngTrack_OracleCandidates(const struct QuadBlock *qb, int form, Eng
 		{
 			memcpy(&out[n].lay, (const struct TextureLayout *)(size_t)word + e, sizeof(struct TextureLayout));
 			out[n].k = (s8)k;
+			out[n].entry = (s8)e;
 			out[n].level = EGT_ORACLE_LEVEL_TILE;
 			out[n].anim = (u8)anim[k];
 			n++;
@@ -3085,6 +3096,7 @@ internal int EngTrack_OracleCandidates(const struct QuadBlock *qb, int form, Eng
 			}
 			out[n].lay = group[k][level];
 			out[n].k = (s8)k;
+			out[n].entry = -1;
 			out[n].level = (s8)level;
 			out[n].anim = (u8)anim[k];
 			n++;
@@ -3094,6 +3106,7 @@ internal int EngTrack_OracleCandidates(const struct QuadBlock *qb, int form, Eng
 	{
 		memcpy(&out[n].lay, qb->ptr_texture_low, sizeof(struct TextureLayout));
 		out[n].k = -1;
+		out[n].entry = -1;
 		out[n].level = EGT_ORACLE_LEVEL_LOW;
 		out[n].anim = 0;
 		n++;
@@ -3201,9 +3214,98 @@ internal void EngTrack_OracleCellOfForm(float s, float t, int form, int *row, in
 		*row = 0;
 	}
 }
+// (s, t) of p on a face with one triangle (EngTrack_BuildBlock kept one of the
+// two: the other is degenerate, so its fourth slot corner lies on another and
+// the bilinear inverse has no answer): barycentric in the triangle's plane,
+// carried to the slot positions of its three vertices (vertex v sits at slot v,
+// (v & 1, v >> 1)). Returns the plane distance over the face size like
+// EngTrack_OracleFaceParam, -1 for a degenerate triangle or p more than margin
+// (in barycentric units) outside it.
+internal float EngTrack_OracleTriParam(const EngTrackFace *face, const float p[3], float margin, float *s, float *t)
+{
+	const u8 *tri = face->tri[0];
+	float e1[3];
+	float e2[3];
+	float q[3];
+	float n[3];
+	float d00 = 0.0f;
+	float d01 = 0.0f;
+	float d11 = 0.0f;
+	float d20 = 0.0f;
+	float d21 = 0.0f;
+	float den;
+	float size;
+	float off = 0.0f;
+	float w[3];
+	int i;
+	int a;
+
+	for (a = 0; a < 3; a++)
+	{
+		e1[a] = face->v[tri[1]].position[a] - face->v[tri[0]].position[a];
+		e2[a] = face->v[tri[2]].position[a] - face->v[tri[0]].position[a];
+		q[a] = p[a] - face->v[tri[0]].position[a];
+		d00 += e1[a] * e1[a];
+		d01 += e1[a] * e2[a];
+		d11 += e2[a] * e2[a];
+		d20 += q[a] * e1[a];
+		d21 += q[a] * e2[a];
+	}
+	n[0] = e1[1] * e2[2] - e1[2] * e2[1];
+	n[1] = e1[2] * e2[0] - e1[0] * e2[2];
+	n[2] = e1[0] * e2[1] - e1[1] * e2[0];
+	size = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+	den = d00 * d11 - d01 * d01;
+	if ((size < 1e-6f) || (fabsf(den) < 1e-9f))
+	{
+		return -1.0f;
+	}
+	w[1] = (d11 * d20 - d01 * d21) / den;
+	w[2] = (d00 * d21 - d01 * d20) / den;
+	w[0] = 1.0f - w[1] - w[2];
+	if ((w[0] < -margin) || (w[1] < -margin) || (w[2] < -margin))
+	{
+		return -1.0f;
+	}
+	*s = 0.0f;
+	*t = 0.0f;
+	for (i = 0; i < 3; i++)
+	{
+		*s += w[i] * (float)(tri[i] & 1);
+		*t += w[i] * (float)((tri[i] >> 1) & 1);
+	}
+	for (a = 0; a < 3; a++)
+	{
+		off += q[a] * n[a];
+	}
+	return fabsf(off / size) / sqrtf(size);
+}
+
+// (s, t) of p on a built face: the bilinear inverse over its four slot corners,
+// or EngTrack_OracleTriParam when it kept one triangle. -1 = no answer.
+internal float EngTrack_OracleFacePoint(const EngTrackFace *face, const float p[3], float margin, float *s, float *t)
+{
+	float corner[4][3];
+	int v;
+	int a;
+
+	if (face->triCount < 2)
+	{
+		return EngTrack_OracleTriParam(face, p, margin, s, t);
+	}
+	for (v = 0; v < 4; v++)
+	{
+		for (a = 0; a < 3; a++)
+		{
+			corner[v][a] = face->v[v].position[a];
+		}
+	}
+	return EngTrack_OracleFaceParam((const float(*)[3])corner, p, s, t);
+}
+
 // The mid face of the block that holds p and p's (s, t) in it: faces[k] (NULL =
-// no engine face k). The face whose (s, t) lies inside [-0.02, 1.02] and nearest
-// its plane; -1 when none does.
+// no engine face k). The face whose (s, t) lies inside [-0.02, 1.02] (inside its
+// triangle for a one-triangle face) and nearest its plane; -1 when none does.
 internal int EngTrack_OracleFaceAt(const EngTrackFace *const *faces, const float p[3], float *sOut, float *tOut)
 {
 	float bestOff = 1e30f;
@@ -3212,25 +3314,15 @@ internal int EngTrack_OracleFaceAt(const EngTrackFace *const *faces, const float
 
 	for (k = 0; k < 4; k++)
 	{
-		float corner[4][3];
 		float s;
 		float t;
 		float off;
-		int v;
-		int a;
 
 		if (faces[k] == NULL)
 		{
 			continue;
 		}
-		for (v = 0; v < 4; v++)
-		{
-			for (a = 0; a < 3; a++)
-			{
-				corner[v][a] = faces[k]->v[v].position[a];
-			}
-		}
-		off = EngTrack_OracleFaceParam(corner, p, &s, &t);
+		off = EngTrack_OracleFacePoint(faces[k], p, 0.02f, &s, &t);
 		if ((off < 0.0f) || (s < -0.02f) || (s > 1.02f) || (t < -0.02f) || (t > 1.02f) || (off >= bestOff))
 		{
 			continue;
@@ -3335,14 +3427,14 @@ internal void EngTrack_OracleApplySlots(EngTrackOracleFace *f, u8 (*rgb)[3], con
 // EGT_ORACLE_MARK_*): sieve=1, morph=1 (its midpoints faded by distance); prim=normal (the track
 // walk's one writer), tp=/cl=, col=.
 internal void EngTrack_OracleRetailLine(EngTrackOracleFace *f, int block, int water, int clip, int sieve, int form, u16 tpage, u16 clut, const u8 (*rgbIn)[3],
-                                        const EngTrackOracleCand *c, int n, int faceAt, float s, float t, const float (*cornerST)[2])
+                                        const EngTrackOracleCand *c, int n, int faceAt, float s, float t, const float (*cornerST)[2], int builtMask)
 {
 	static const char *const levelName[6] = {"0", "1", "2", "3", "tile", "low"};
 	u8 rgb[4][3];
 	int slotOf[4] = {0, 1, 2, 3};
 	int ordered = 0;
 	int exact = 0;
-	const int at = EngTrack_OracleClassify(tpage, clut, f->uv, f->uvCount, c, n, &exact);
+	const int at = EngTrack_OracleClassify(tpage, clut, f->uv, f->uvCount, c, n, &exact, builtMask);
 	const int k = (faceAt >= 0) ? faceAt : ((at >= 0) ? (int)c[at].k : -1);
 
 	f->src = water ? 'W' : 'T';
@@ -3404,6 +3496,10 @@ internal void EngTrack_OracleRetailLine(EngTrackOracleFace *f, int block, int wa
 	if ((sieve & EGT_ORACLE_MARK_MORPH) != 0)
 	{
 		EngTrack_OracleExtra(f, "morph=1");
+	}
+	if ((sieve & EGT_ORACLE_MARK_ZEROAREA) != 0)
+	{
+		EngTrack_OracleExtra(f, "zeroarea=1");
 	}
 	EngTrack_OracleExtra(f, "prim=normal");
 	EngTrack_OracleRawWords(f, tpage, clut);
@@ -3471,7 +3567,7 @@ internal int EngTrack_OracleGridValid(const struct QuadBlock *qb, const struct L
 
 // The position note of the packet at prim (the notes come in packet order):
 // its centre and its corners (*corners of them, the packet's vertex order).
-internal int EngTrack_OracleGeometry(const void *prim, float centre[3], float (*corner)[3], int *corners)
+internal int EngTrack_OracleGeometry(const void *prim, float centre[3], float (*corner)[3], int *corners, int *sourceEntry)
 {
 	int i;
 
@@ -3484,6 +3580,7 @@ internal int EngTrack_OracleGeometry(const void *prim, float centre[3], float (*
 
 			s_ego.geoAt = i + 1;
 			*corners = s_ego.geo[i].corners;
+			*sourceEntry = s_ego.geo[i].sourceEntry;
 			for (a = 0; a < 3; a++)
 			{
 				centre[a] = 0.0f;
@@ -3503,6 +3600,100 @@ internal int EngTrack_OracleGeometry(const void *prim, float centre[3], float (*
 }
 
 // The R lines of the packets in [from, to) of one block.
+// A GT4 whose corners v and u (u < v) lie on one place (within half a unit):
+// corner v is dropped from the line's uv and colours and from the corner list,
+// leaving a GT3. Only one such pair is taken; returns 1 when one was dropped.
+internal int EngTrack_OracleDropTwin(EngTrackOracleFace *f, u8 (*rgb)[3], float (*corner)[3], int *corners)
+{
+	int v;
+	int u;
+
+	for (v = 1; v < *corners; v++)
+	{
+		for (u = 0; u < v; u++)
+		{
+			const float dx = corner[v][0] - corner[u][0];
+			const float dy = corner[v][1] - corner[u][1];
+			const float dz = corner[v][2] - corner[u][2];
+			int i;
+
+			if ((dx * dx + dy * dy + dz * dz) >= 0.25f)
+			{
+				continue;
+			}
+			for (i = v; i + 1 < *corners; i++)
+			{
+				corner[i][0] = corner[i + 1][0];
+				corner[i][1] = corner[i + 1][1];
+				corner[i][2] = corner[i + 1][2];
+				f->uv[2 * i] = f->uv[2 * i + 2];
+				f->uv[2 * i + 1] = f->uv[2 * i + 3];
+				memcpy(rgb[i], rgb[i + 1], 3);
+			}
+			(*corners)--;
+			f->uvCount--;
+			return 1;
+		}
+	}
+	return 0;
+}
+
+// 1 = the packet covers no area: every triangle of its corners (0, 1, 2) and,
+// for four, (1, 3, 2) has a cross product of (almost) zero.
+internal int EngTrack_OracleZeroArea(const float (*corner)[3], int corners)
+{
+	static const int tris[2][3] = {{0, 1, 2}, {1, 3, 2}};
+	int t;
+
+	for (t = 0; t < ((corners == 4) ? 2 : 1); t++)
+	{
+		float e1[3];
+		float e2[3];
+		float n[3];
+		int a;
+
+		for (a = 0; a < 3; a++)
+		{
+			e1[a] = corner[tris[t][1]][a] - corner[tris[t][0]][a];
+			e2[a] = corner[tris[t][2]][a] - corner[tris[t][0]][a];
+		}
+		n[0] = e1[1] * e2[2] - e1[2] * e2[1];
+		n[1] = e1[2] * e2[0] - e1[0] * e2[2];
+		n[2] = e1[0] * e2[1] - e1[1] * e2[0];
+		if ((n[0] * n[0] + n[1] * n[1] + n[2] * n[2]) > 1e-6f)
+		{
+			return 0;
+		}
+	}
+	return 1;
+}
+
+// src=<e> on a tile packet: the table entry the walk's mosaic reload read for it
+// (226 DrawLevelOvr1P_PrepareDeepestMosaicUv and its two twins, sourceOffset /
+// 12), written only when that entry of the block's tables is the layout the
+// packet carries (its corners exactly): the walk's own choice next to the
+// cell its place names.
+internal void EngTrack_OracleSourceMark(EngTrackOracleFace *f, u16 tpage, u16 clut, const EngTrackOracleCand *c, int n, int sourceEntry)
+{
+	int i;
+
+	if ((sourceEntry < 0) || (f->cellRow < 0))
+	{
+		return;
+	}
+	for (i = 0; i < n; i++)
+	{
+		int exact = 0;
+
+		if ((c[i].level == EGT_ORACLE_LEVEL_TILE) && (c[i].entry == sourceEntry) && EngTrack_OracleOnLayout(tpage, clut, f->uv, f->uvCount, &c[i].lay, &exact) &&
+		    exact)
+		{
+			EngTrack_OracleExtra(f, "src=%d", sourceEntry);
+			return;
+		}
+	}
+}
+
 internal void EngTrack_OracleRetailRange(int block, int water, int clip, int sieve, const s16 *walkGrid, const void *from, const void *to, const float *place)
 {
 	static EngTrackOracleCand cand[EGT_ORACLE_CANDS_MAX];
@@ -3511,7 +3702,9 @@ internal void EngTrack_OracleRetailRange(int block, int water, int clip, int sie
 	const u32 *w = (const u32 *)from;
 	const u32 *end = (const u32 *)to;
 	const int form = (s_egtBlockForm != NULL) ? (int)s_egtBlockForm[block] : ENGINE_MOSAIC_FORM_4X4;
+	int builtMask;
 	int n;
+	int k;
 
 	if ((from == NULL) || (to == NULL) || (end <= w))
 	{
@@ -3519,6 +3712,11 @@ internal void EngTrack_OracleRetailRange(int block, int water, int clip, int sie
 	}
 	n = EngTrack_OracleCandidates(&s_egtMesh->ptrQuadBlockArray[block], form, cand);
 	EngTrack_OracleBlockFaces(block, walkGrid, copies, faces);
+	builtMask = 0;
+	for (k = 0; k < 4; k++)
+	{
+		builtMask |= (faces[k] != NULL) ? (1 << k) : 0;
+	}
 	while (w < end)
 	{
 		EngTrackOracleFace f;
@@ -3534,6 +3732,8 @@ internal void EngTrack_OracleRetailRange(int block, int water, int clip, int sie
 		float t = 0.0f;
 		int faceAt = -1;
 		int isFace = 0;
+		int lineMarks = sieve;
+		int sourceEntry = -1;
 		const void *prim = w;
 		const u32 used = EngTrack_OracleDecodePrim(w, (u32)(end - w), &f, &tpage, &clut, rgb, &isFace);
 
@@ -3553,39 +3753,46 @@ internal void EngTrack_OracleRetailRange(int block, int water, int clip, int sie
 			centre[1] = place[1];
 			centre[2] = place[2];
 		}
-		if ((place == NULL) && !EngTrack_OracleGeometry(prim, centre, corner, &corners))
+		if ((place == NULL) && !EngTrack_OracleGeometry(prim, centre, corner, &corners, &sourceEntry))
 		{
 			s_ego.noGeometry++;
 		}
 		else
 		{
-			faceAt = EngTrack_OracleFaceAt(faces, centre, &s, &t);
-			s_ego.outsideFace += (faceAt < 0) ? 1u : 0u;
+			// A GT4 with two corners on one place is a triangle (its second half has no
+			// area): the repeated corner goes, the rest is a GT3. A packet with no area
+			// at all is marked and placed nowhere.
+			if ((corners == 4) && (f.uvCount == 4))
+			{
+				EngTrack_OracleDropTwin(&f, rgb, corner, &corners);
+			}
+			if ((corners >= 3) && (corners == f.uvCount) && EngTrack_OracleZeroArea(corner, corners))
+			{
+				lineMarks |= EGT_ORACLE_MARK_ZEROAREA;
+				s_ego.zeroArea++;
+			}
+			else
+			{
+				faceAt = EngTrack_OracleFaceAt(faces, centre, &s, &t);
+				s_ego.outsideFace += (faceAt < 0) ? 1u : 0u;
+			}
 		}
 		// The corners' own (s, t) in that face: their slots (not for clip pieces, whose
 		// corners are cut points; corners stays 0 for them).
 		if ((faceAt >= 0) && (corners == f.uvCount))
 		{
-			float fc[4][3];
 			int v;
-			int a;
 
-			for (v = 0; v < 4; v++)
-			{
-				for (a = 0; a < 3; a++)
-				{
-					fc[v][a] = faces[faceAt]->v[v].position[a];
-				}
-			}
 			haveST = 1;
 			for (v = 0; v < corners; v++)
 			{
-				haveST &= (EngTrack_OracleFaceParam((const float(*)[3])fc, corner[v], &cornerST[v][0], &cornerST[v][1]) >= 0.0f) ? 1 : 0;
+				haveST &= (EngTrack_OracleFacePoint(faces[faceAt], corner[v], 0.1f, &cornerST[v][0], &cornerST[v][1]) >= 0.0f) ? 1 : 0;
 			}
 		}
 		f.sub = (int)s_ego.seq++;
-		EngTrack_OracleRetailLine(&f, block, water, clip, sieve, form, tpage, clut, (const u8(*)[3])rgb, cand, n, faceAt, s, t,
-		                          haveST ? (const float(*)[2])cornerST : NULL);
+		EngTrack_OracleRetailLine(&f, block, water, clip, lineMarks, form, tpage, clut, (const u8(*)[3])rgb, cand, n, faceAt, s, t,
+		                          haveST ? (const float(*)[2])cornerST : NULL, builtMask);
+		EngTrack_OracleSourceMark(&f, tpage, clut, cand, n, sourceEntry);
 		EngTrack_OracleEmit('R', &f);
 		if (clip)
 		{
@@ -3690,6 +3897,21 @@ internal void EngTrack_OracleStaticLine(EngTrackOracleFace *f, int block, int wa
 		if (mirrored && (entry < 0))
 		{
 			EngTrack_OracleMirrorCorners(f);
+		}
+		{
+			const u8 *bytes = (const u8 *)lay;
+			size_t i;
+			int blank = 1;
+
+			for (i = 0; i < sizeof(*lay); i++)
+			{
+				blank &= (bytes[i] == 0) ? 1 : 0;
+			}
+			if (blank)
+			{
+				// An all-zero layout (an empty table entry): nothing the walk can show (information).
+				EngTrack_OracleExtra(f, "blank=1");
+			}
 		}
 	}
 	if (mirrored)
@@ -3865,7 +4087,7 @@ void Engine_TrackOracleTable(const struct QuadBlock *block, int face, const stru
 
 // From the 226 packet writers during the oracle pass: a packet's corner
 // positions (level units, the packet's vertex order) and their count.
-void Engine_TrackOracleNotePrim(const void *prim, const s16 *cornerPositions, int corners)
+void Engine_TrackOracleNotePrim(const void *prim, const s16 *cornerPositions, int corners, int sourceEntry)
 {
 	int v;
 	int a;
@@ -3881,6 +4103,7 @@ void Engine_TrackOracleNotePrim(const void *prim, const s16 *cornerPositions, in
 	}
 	s_ego.geo[s_ego.geoCount].prim = prim;
 	s_ego.geo[s_ego.geoCount].corners = corners;
+	s_ego.geo[s_ego.geoCount].sourceEntry = sourceEntry;
 	for (v = 0; v < corners; v++)
 	{
 		for (a = 0; a < 3; a++)
@@ -5555,18 +5778,18 @@ int Engine_SelfTestTrack(int *checks)
 		uv[3] = 0;
 		uv[4] = 0;
 		uv[5] = 15;
-		EGT_CHECK((EngTrack_OracleClassify(tpage, clut, uv, 3, cand, 3, &exact) == 0) && exact, "oracle classify: tile corners not the tile");
+		EGT_CHECK((EngTrack_OracleClassify(tpage, clut, uv, 3, cand, 3, &exact, -1) == 0) && exact, "oracle classify: tile corners not the tile");
 		uv[2] = 8;
 		uv[5] = 8;
-		EGT_CHECK((EngTrack_OracleClassify(tpage, clut, uv, 3, cand, 3, &exact) == 0) && !exact, "oracle classify: a piece of the tile not part of it");
+		EGT_CHECK((EngTrack_OracleClassify(tpage, clut, uv, 3, cand, 3, &exact, -1) == 0) && !exact, "oracle classify: a piece of the tile not part of it");
 		uv[2] = 63;
 		uv[5] = 63;
-		EGT_CHECK((EngTrack_OracleClassify(tpage, clut, uv, 3, cand, 3, &exact) == 1) && exact, "oracle classify: level 3 corners not level 3");
-		EGT_CHECK((EngTrack_OracleClassify(tpage, 0x7803, uv, 3, cand, 3, &exact) == 2) && exact, "oracle classify: the low layout not found");
-		EGT_CHECK(EngTrack_OracleClassify(tpage, 0x7804, uv, 3, cand, 3, &exact) == -1, "oracle classify: a foreign clut matched");
-		EGT_CHECK(EngTrack_OracleClassify((u16)(tpage ^ 0x0020u), clut, uv, 3, cand, 3, &exact) == -1, "oracle classify: another abr matched");
+		EGT_CHECK((EngTrack_OracleClassify(tpage, clut, uv, 3, cand, 3, &exact, -1) == 1) && exact, "oracle classify: level 3 corners not level 3");
+		EGT_CHECK((EngTrack_OracleClassify(tpage, 0x7803, uv, 3, cand, 3, &exact, -1) == 2) && exact, "oracle classify: the low layout not found");
+		EGT_CHECK(EngTrack_OracleClassify(tpage, 0x7804, uv, 3, cand, 3, &exact, -1) == -1, "oracle classify: a foreign clut matched");
+		EGT_CHECK(EngTrack_OracleClassify((u16)(tpage ^ 0x0020u), clut, uv, 3, cand, 3, &exact, -1) == -1, "oracle classify: another abr matched");
 		uv[2] = 64;
-		EGT_CHECK(EngTrack_OracleClassify(tpage, clut, uv, 3, cand, 3, &exact) == -1, "oracle classify: a point past the box matched");
+		EGT_CHECK(EngTrack_OracleClassify(tpage, clut, uv, 3, cand, 3, &exact, -1) == -1, "oracle classify: a point past the box matched");
 
 		// Where a packet lies: (s, t) in a square and a trapezoid face, the plane distance, the cell.
 		{
@@ -5612,6 +5835,8 @@ int Engine_SelfTestTrack(int *checks)
 
 			memset(&a, 0, sizeof(a));
 			memset(&b, 0, sizeof(b));
+			a.triCount = 2;
+			b.triCount = 2;
 			for (corner = 0; corner < 4; corner++)
 			{
 				a.v[corner].position[0] = (corner & 1) ? 100.0f : 0.0f;
@@ -5622,6 +5847,80 @@ int Engine_SelfTestTrack(int *checks)
 			EGT_CHECK((EngTrack_OracleFaceAt(faces, inB, &s, &t) == 1) && (fabsf(s - 0.5f) < 1e-4f) && (fabsf(t - 0.5f) < 1e-4f),
 			          "oracle face at: not face 1 (s %.3f t %.3f)", s, t);
 			EGT_CHECK(EngTrack_OracleFaceAt(faces, away, &s, &t) == -1, "oracle face at: a point off the block found a face");
+		}
+
+		// A face with one triangle (slots 0, 1, 2; slot 3 lies on slot 2): placed by the
+		// triangle; twins of a GT4 dropped; packets without area found; a layout shared
+		// by a degenerate and a built face names the built one.
+		{
+			static EngTrackFace tri;
+			const EngTrackFace *faces[4] = {NULL, NULL, &tri, NULL};
+			const float inTri[3] = {25.0f, 0.0f, 50.0f};
+			const float outTri[3] = {90.0f, 0.0f, 90.0f};
+			float cornerPos[4][3] = {{0, 0, 0}, {10, 0, 0}, {0, 0, 10}, {10, 0, 0}};
+			const float flat[3][3] = {{0, 0, 0}, {5, 0, 0}, {10, 0, 0}};
+			u8 twinRgb[4][3] = {{1, 1, 1}, {2, 2, 2}, {3, 3, 3}, {4, 4, 4}};
+			EngTrackOracleCand shared[2];
+			int corners = 4;
+			float s = 0.0f;
+			float t = 0.0f;
+			int tv;
+
+			memset(&tri, 0, sizeof(tri));
+			for (tv = 0; tv < 4; tv++)
+			{
+				tri.v[tv].position[0] = (tv & 1) ? 100.0f : 0.0f;
+				tri.v[tv].position[2] = (tv >= 2) ? 100.0f : 0.0f;
+			}
+			tri.v[3].position[0] = 0.0f; // slot 3 on slot 2
+			tri.triCount = 1;
+			tri.tri[0][0] = 0;
+			tri.tri[0][1] = 1;
+			tri.tri[0][2] = 2;
+			EGT_CHECK((EngTrack_OracleFaceAt(faces, inTri, &s, &t) == 2) && (fabsf(s - 0.25f) < 1e-4f) && (fabsf(t - 0.5f) < 1e-4f),
+			          "oracle one-triangle face: not found (s %.3f t %.3f)", s, t);
+			EGT_CHECK(EngTrack_OracleFaceAt(faces, outTri, &s, &t) == -1, "oracle one-triangle face: a point past its triangle found it");
+
+			memset(&f, 0, sizeof(f));
+			f.uvCount = 4;
+			for (tv = 0; tv < 8; tv++)
+			{
+				f.uv[tv] = 10 * tv;
+			}
+			EGT_CHECK(EngTrack_OracleDropTwin(&f, twinRgb, cornerPos, &corners) && (corners == 3) && (f.uvCount == 3) && (f.uv[4] == 40) && (f.uv[5] == 50) &&
+			              (twinRgb[2][0] == 3) && (cornerPos[2][2] == 10.0f),
+			          "oracle twin corner: not dropped (corners %d, uv %d,%d)", corners, f.uv[4], f.uv[5]);
+			EGT_CHECK(!EngTrack_OracleDropTwin(&f, twinRgb, cornerPos, &corners) && (corners == 3), "oracle twin corner: dropped without a twin");
+			EGT_CHECK(EngTrack_OracleZeroArea(flat, 3) && !EngTrack_OracleZeroArea((const float(*)[3])cornerPos, 3), "oracle zero area: wrong");
+
+			memset(shared, 0, sizeof(shared));
+			shared[0].lay.tpage = 0x006d;
+			shared[0].lay.u1 = 15;
+			shared[0].lay.v2 = 15;
+			shared[0].lay.u3 = 15;
+			shared[0].lay.v3 = 15;
+			shared[0].k = 3;
+			shared[0].level = 3;
+			shared[1] = shared[0];
+			shared[1].k = 2;
+			uv[0] = 0;
+			uv[1] = 0;
+			uv[2] = 15;
+			uv[3] = 0;
+			uv[4] = 0;
+			uv[5] = 15;
+			EGT_CHECK((EngTrack_OracleClassify(0x006d, 0, uv, 3, shared, 2, &exact, 1 << 2) == 1) && (EngTrack_OracleClassify(0x006d, 0, uv, 3, shared, 2, &exact, -1) == 0),
+			          "oracle classify: a shared layout not put on the built face");
+			shared[0].level = EGT_ORACLE_LEVEL_TILE;
+			shared[0].entry = 7;
+			memset(&f, 0, sizeof(f));
+			f.uvCount = 3;
+			memcpy(f.uv, uv, 6 * sizeof(int));
+			f.cellRow = 1;
+			EngTrack_OracleSourceMark(&f, 0x006d, 0, shared, 2, 6);
+			EGT_CHECK(f.extra[0] == '\0', "oracle src: written for another entry: '%s'", f.extra);
+			EngTrack_OracleSourceMark(&f, 0x006d, 0, shared, 2, 7);
+			EGT_CHECK(strcmp(f.extra, "src=7") == 0, "oracle src: '%s'", f.extra);
 		}
 
 		// The R line: face and cell from the place, stage from the layout, markers; pairs separated by a space.
@@ -5635,22 +5934,22 @@ int Engine_SelfTestTrack(int *checks)
 		rgb[0][0] = 10;
 		rgb[0][1] = 20;
 		rgb[0][2] = 30;
-		EngTrack_OracleRetailLine(&f, 77, 0, 1, 1, ENGINE_MOSAIC_FORM_4X4, tpage, clut, (const u8(*)[3])rgb, cand, 3, 3, 0.3f, 0.8f, NULL);
+		EngTrack_OracleRetailLine(&f, 77, 0, 1, 1, ENGINE_MOSAIC_FORM_4X4, tpage, clut, (const u8(*)[3])rgb, cand, 3, 3, 0.3f, 0.8f, NULL, -1);
 		EGT_CHECK((f.src == 'T') && (strcmp(f.srcId, "77.3") == 0) && (f.cellRow == 3) && (f.cellCol == 1) &&
 		              (strncmp(f.extra, "k=3 anim=1 clip=1 sieve=1 prim=normal tp=0x00b5 cl=0x7802 col=10,20,30;", 71) == 0),
 		          "oracle R line (tile): src %c id %s cell %d,%d extra '%s'", f.src, f.srcId, f.cellRow, f.cellCol, f.extra);
-		EngTrack_OracleRetailLine(&f, 77, 0, 0, 0, ENGINE_MOSAIC_FORM_4X4, tpage, clut, (const u8(*)[3])rgb, cand, 3, -1, 0.0f, 0.0f, NULL);
+		EngTrack_OracleRetailLine(&f, 77, 0, 0, 0, ENGINE_MOSAIC_FORM_4X4, tpage, clut, (const u8(*)[3])rgb, cand, 3, -1, 0.0f, 0.0f, NULL, -1);
 		EGT_CHECK((f.cellRow == -1) && (strcmp(f.srcId, "77.2") == 0) && (strncmp(f.extra, "k=2 nogeo=1 anim=1 prim=normal", 30) == 0), "oracle R line (tile, no place): '%s'", f.extra);
 		f.uv[2] = 63;
 		f.uv[5] = 63;
-		EngTrack_OracleRetailLine(&f, 77, 0, 0, 0, ENGINE_MOSAIC_FORM_4X4, tpage, clut, (const u8(*)[3])rgb, cand, 3, 1, 0.5f, 0.5f, NULL);
+		EngTrack_OracleRetailLine(&f, 77, 0, 0, 0, ENGINE_MOSAIC_FORM_4X4, tpage, clut, (const u8(*)[3])rgb, cand, 3, 1, 0.5f, 0.5f, NULL, -1);
 		EGT_CHECK((f.cellRow == -1) && (strncmp(f.extra, "k=1 stage=3 prim=normal", 23) == 0), "oracle R line (level 3): '%s'", f.extra);
 		f.uv[2] = 31;
-		EngTrack_OracleRetailLine(&f, 77, 0, 0, 0, ENGINE_MOSAIC_FORM_4X4, tpage, clut, (const u8(*)[3])rgb, cand, 3, 1, 0.5f, 0.5f, NULL);
+		EngTrack_OracleRetailLine(&f, 77, 0, 0, 0, ENGINE_MOSAIC_FORM_4X4, tpage, clut, (const u8(*)[3])rgb, cand, 3, 1, 0.5f, 0.5f, NULL, -1);
 		EGT_CHECK(strncmp(f.extra, "k=1 stage=3 part=1 prim=normal", 30) == 0, "oracle R line (a piece of level 3): '%s'", f.extra);
-		EngTrack_OracleRetailLine(&f, 77, 0, 0, EGT_ORACLE_MARK_MORPH, ENGINE_MOSAIC_FORM_4X4, tpage, clut, (const u8(*)[3])rgb, cand, 3, 1, 0.5f, 0.5f, NULL);
+		EngTrack_OracleRetailLine(&f, 77, 0, 0, EGT_ORACLE_MARK_MORPH, ENGINE_MOSAIC_FORM_4X4, tpage, clut, (const u8(*)[3])rgb, cand, 3, 1, 0.5f, 0.5f, NULL, -1);
 		EGT_CHECK(strncmp(f.extra, "k=1 stage=3 part=1 morph=1 prim=normal", 38) == 0, "oracle R line (faded midpoints): '%s'", f.extra);
-		EngTrack_OracleRetailLine(&f, 78, 1, 0, 0, ENGINE_MOSAIC_FORM_4X4, tpage, 0x7804, (const u8(*)[3])rgb, cand, 3, -1, 0.0f, 0.0f, NULL);
+		EngTrack_OracleRetailLine(&f, 78, 1, 0, 0, ENGINE_MOSAIC_FORM_4X4, tpage, 0x7804, (const u8(*)[3])rgb, cand, 3, -1, 0.0f, 0.0f, NULL, -1);
 		EGT_CHECK((f.src == 'W') && (strcmp(f.srcId, "78") == 0) && (strncmp(f.extra, "stage=none prim=normal", 22) == 0), "oracle R line (water, no layout): extra '%s'", f.extra);
 
 		// Corners in slot order (FM A9): a GT4 tile packet whose vertices come as slots
@@ -5671,7 +5970,7 @@ int Engine_SelfTestTrack(int *checks)
 			f.uv[5] = 15;
 			f.uv[6] = 15;
 			f.uv[7] = 0;
-			EngTrack_OracleRetailLine(&f, 77, 0, 0, 0, ENGINE_MOSAIC_FORM_4X4, tpage, clut, (const u8(*)[3])tileRgb, cand, 3, 3, 0.375f, 0.875f, tileST);
+			EngTrack_OracleRetailLine(&f, 77, 0, 0, 0, ENGINE_MOSAIC_FORM_4X4, tpage, clut, (const u8(*)[3])tileRgb, cand, 3, 3, 0.375f, 0.875f, tileST, -1);
 			EGT_CHECK((f.cellRow == 3) && (f.cellCol == 1) && (f.uv[0] == 0) && (f.uv[1] == 0) && (f.uv[2] == 15) && (f.uv[3] == 0) && (f.uv[4] == 0) &&
 			              (f.uv[5] == 15) && (f.uv[6] == 15) && (f.uv[7] == 15) && (strstr(f.extra, "slots=0,1,2,3 col=0,0,0;1,1,1;2,2,2;3,3,3") != NULL),
 			          "oracle R line in slot order: uv %d,%d %d,%d %d,%d %d,%d '%s'", f.uv[0], f.uv[1], f.uv[2], f.uv[3], f.uv[4], f.uv[5], f.uv[6], f.uv[7],
@@ -5683,7 +5982,7 @@ int Engine_SelfTestTrack(int *checks)
 			f.uv[3] = 0;
 			f.uv[4] = 63;
 			f.uv[5] = 63;
-			EngTrack_OracleRetailLine(&f, 77, 0, 0, 0, ENGINE_MOSAIC_FORM_4X4, tpage, clut, (const u8(*)[3])tileRgb, cand, 3, 1, 0.5f, 0.5f, faceST);
+			EngTrack_OracleRetailLine(&f, 77, 0, 0, 0, ENGINE_MOSAIC_FORM_4X4, tpage, clut, (const u8(*)[3])tileRgb, cand, 3, 1, 0.5f, 0.5f, faceST, -1);
 			EGT_CHECK((f.uv[0] == 63) && (f.uv[1] == 0) && (f.uv[2] == 0) && (f.uv[3] == 63) && (strstr(f.extra, "stage=3 prim=normal") != NULL) &&
 			              (strstr(f.extra, "slots=1,2,3 col=0,0,0;3,3,3;2,2,2") != NULL),
 			          "oracle GT3 in slot order: '%s'", f.extra);
@@ -5691,7 +5990,7 @@ int Engine_SelfTestTrack(int *checks)
 			f.uv[1] = 63;
 			f.uv[2] = 63;
 			f.uv[3] = 0;
-			EngTrack_OracleRetailLine(&f, 77, 0, 0, 0, ENGINE_MOSAIC_FORM_4X4, tpage, clut, (const u8(*)[3])tileRgb, cand, 3, 1, 0.5f, 0.5f, offST);
+			EngTrack_OracleRetailLine(&f, 77, 0, 0, 0, ENGINE_MOSAIC_FORM_4X4, tpage, clut, (const u8(*)[3])tileRgb, cand, 3, 1, 0.5f, 0.5f, offST, -1);
 			EGT_CHECK((f.uv[0] == 0) && (f.uv[1] == 63) && (strstr(f.extra, "slots=") == NULL), "oracle corner off the slots: '%s'", f.extra);
 		}
 
@@ -5726,7 +6025,11 @@ int Engine_SelfTestTrack(int *checks)
 			          "oracle static mirrored level: uv %d,%d,%d,%d,%d,%d,%d,%d '%s'", f.uv[0], f.uv[1], f.uv[2], f.uv[3], f.uv[4], f.uv[5], f.uv[6], f.uv[7],
 			          f.extra);
 			EngTrack_OracleStaticLine(&f, 0, 0, 0, 0, 3, -1, -1, -1, &mirLay, 0, 0, 0, "load");
+			EGT_CHECK(strstr(f.extra, "blank=1") == NULL, "oracle static line: a layout marked blank");
 			EGT_CHECK((f.uv[0] == 80) && (f.uv[2] == 95) && (strstr(f.extra, "mir") == NULL), "oracle static level not mirrored: '%s'", f.extra);
+			memset(&mirLay, 0, sizeof(mirLay));
+			EngTrack_OracleStaticLine(&f, 0, 0, 0, 0, 3, -1, -1, -1, &mirLay, 0, 0, 0, "load");
+			EGT_CHECK(strstr(f.extra, "blank=1") != NULL, "oracle static line: an all-zero layout not marked blank: '%s'", f.extra);
 		}
 
 		// The tag of a load block: the tour entry while it drives, else the load number.
@@ -5957,7 +6260,7 @@ int Engine_SelfTestTrack(int *checks)
 
 		memset(spare, 0, sizeof(spare));
 		memset(&s_ego, 0, sizeof(s_ego));
-		Engine_TrackOracleNotePrim(&spare[0], cornerPositions, 3);
+		Engine_TrackOracleNotePrim(&spare[0], cornerPositions, 3, 5);
 		Engine_TrackOracleBlock(NULL, 0, 0, NULL, &spare[0], &spare[1], NULL, NULL);
 		Engine_TrackOracleClip(&spare[0], sum, 3, &spare[0], &spare[1]);
 		Engine_TrackOracleDone(1, &spare[0], &spare[1]);

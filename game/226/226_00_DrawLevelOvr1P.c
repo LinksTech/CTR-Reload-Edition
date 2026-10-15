@@ -100,7 +100,7 @@ void CTR_Clip_NoteFrameUse(int usedBytes, int capacityBytes);
 // for every face (the static block of a load, the AnimTex faces of a frame).
 #include <psx/gtereg.h> // gteRegs: the oracle pass puts the GTE back as it was
 int Engine_TrackOracleWanted(void);
-void Engine_TrackOracleNotePrim(const void *prim, const s16 *cornerPositions, int corners);
+void Engine_TrackOracleNotePrim(const void *prim, const s16 *cornerPositions, int corners, int sourceEntry);
 void Engine_TrackOracleBlock(const struct QuadBlock *block, int water, int marks, const s16 *walkGrid, const void *primFrom, const void *primTo,
                              const void *clipFrom, const void *clipTo);
 void Engine_TrackOracleClip(const void *record, const s32 *positionSum, int corners, const void *primFrom, const void *primTo);
@@ -112,6 +112,7 @@ void Engine_TrackOracleTable(const struct QuadBlock *block, int face, const stru
 static int s_oraclePass;
 static int s_oracleSieve; // the sieve dropped a layout while the oracle pass drew the current block
 static int s_oracleMorph; // the distance fade moved a midpoint (colour, place) while the oracle pass drew the current block
+static int s_oracleSourceEntry = -1; // the table entry the last mosaic reload read (oracle pass only; -1 none)
 
 static u32 DrawLevelOvr1P_ReadPackedWord(const void *src)
 {
@@ -1257,6 +1258,11 @@ static void DrawLevelOvr1P_PrepareDeepestMosaicUv(const struct DrawLevelOvr1PScr
 		sourceOffset += reloadSpan;
 	}
 	sourceOffset += *CTR_SCRATCHPAD_PTR(u32, DRAW_LEVEL_OVR1P_MOSAIC_SOURCE_BIAS_OFFSET);
+	// ORACLE PASS: the table entry this reload reads (src= on the packets that follow).
+	if (s_oraclePass)
+	{
+		s_oracleSourceEntry = ((sourceOffset % (u32)sizeof(struct TextureLayout)) == 0u) ? (int)(sourceOffset / (u32)sizeof(struct TextureLayout)) : -1;
+	}
 
 	const u8 *source = (const u8 *)(u32)(mosaicBase + sourceOffset);
 	u32 uv0 = DrawLevelOvr1P_ReadPackedWord(source + 0);
@@ -2516,7 +2522,7 @@ static void DrawLevelOvr1P_OracleNotePrim(const void *prim, const struct DrawLev
 			corner[3 * i + 1] = projected[indices[i]].pos[1];
 			corner[3 * i + 2] = projected[indices[i]].pos[2];
 		}
-		Engine_TrackOracleNotePrim(prim, corner, (count < 4) ? count : 4);
+		Engine_TrackOracleNotePrim(prim, corner, (count < 4) ? count : 4, s_oracleSourceEntry);
 	}
 #else
 	(void)prim;
@@ -4402,6 +4408,7 @@ static void DrawLevelOvr1P_OracleBlock(const struct QuadBlock *block, int water,
 		                        DrawLevelOvr1P_GetClipRecordCursor());
 		s_oracleSieve = 0;
 		s_oracleMorph = 0;
+		s_oracleSourceEntry = -1;
 	}
 #else
 	(void)block;
@@ -5901,6 +5908,11 @@ static void Ovr226_800a3f74_PrepareGround4x1DeepestUv(const struct DrawLevelOvr1
 		sourceOffset += 0x30;
 	}
 	sourceOffset += *CTR_SCRATCHPAD_PTR(u32, DRAW_LEVEL_OVR1P_MOSAIC_SOURCE_BIAS_OFFSET);
+	// ORACLE PASS: the table entry this reload reads (src= on the packets that follow).
+	if (s_oraclePass)
+	{
+		s_oracleSourceEntry = ((sourceOffset % (u32)sizeof(struct TextureLayout)) == 0u) ? (int)(sourceOffset / (u32)sizeof(struct TextureLayout)) : -1;
+	}
 
 	const u8 *source = (const u8 *)(u32)(mosaicBase + sourceOffset);
 	u32 uv0 = DrawLevelOvr1P_ReadPackedWord(source + 0);
@@ -6241,6 +6253,11 @@ static void Ovr226_800a4b54_PrepareGround4x1RenderedDeepestUv(const struct DrawL
 		sourceOffset += 0x30;
 	}
 	sourceOffset += *CTR_SCRATCHPAD_PTR(u32, DRAW_LEVEL_OVR1P_MOSAIC_SOURCE_BIAS_OFFSET);
+	// ORACLE PASS: the table entry this reload reads (src= on the packets that follow).
+	if (s_oraclePass)
+	{
+		s_oracleSourceEntry = ((sourceOffset % (u32)sizeof(struct TextureLayout)) == 0u) ? (int)(sourceOffset / (u32)sizeof(struct TextureLayout)) : -1;
+	}
 
 	const u8 *source = (const u8 *)(u32)(mosaicBase + sourceOffset);
 	u32 uv0 = DrawLevelOvr1P_ReadPackedWord(source + 0);

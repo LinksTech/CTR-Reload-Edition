@@ -1051,8 +1051,9 @@ int Engine_TrackOracleWanted(void);
 struct QuadBlock;
 struct mesh_info;
 // During the oracle pass, from the 226 packet writers: a packet's corner
-// positions (level units, 3 per corner, the packet's vertex order) and their count.
-void Engine_TrackOracleNotePrim(const void *prim, const s16 *cornerPositions, int corners);
+// positions (level units, 3 per corner, the packet's vertex order) and their count;
+// sourceEntry = the table entry the walk's last mosaic reload read in this block (-1 none).
+void Engine_TrackOracleNotePrim(const void *prim, const s16 *cornerPositions, int corners, int sourceEntry);
 // During the oracle pass: the packets one quadblock's handler wrote [primFrom,
 // primTo) and the clip records it left [clipFrom, clipTo); water = a water
 // bucket; marks: bit 0 the sieve dropped a layout while the block was drawn,
