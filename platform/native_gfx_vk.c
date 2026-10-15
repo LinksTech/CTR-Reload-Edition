@@ -43,6 +43,7 @@
 #endif
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // THE COUNTS OF THE PERF RECORDER (--perf). Every draw recorded and every
@@ -358,8 +359,12 @@ struct NativeVkTexture
 
 #define NATIVE_VK_MAX_BUFFERS 512
 
-// Read ranges kept per buffer for the overwrite measurement (pendingRanges).
+// Read ranges kept per buffer for the overwrite measurement (pendingRanges):
+// this many in the buffer itself, more in pendingHeap.
 #define NATIVE_VK_PENDING_RANGES 8
+
+// One read range [0] to [1] (bytes, end exclusive).
+typedef VkDeviceSize NativeVkRange[2];
 
 struct NativeVkBuffer
 {
@@ -406,14 +411,26 @@ struct NativeVkBuffer
 	// bytes. Now every draw notes the bytes it reads - a plain draw its vertex
 	// range, an indexed draw the vertices its indices reach (smallest to
 	// largest index of the index buffer, plus the vertex offset) - into a list
-	// of up to NATIVE_VK_PENDING_RANGES ranges; a range that overlaps or
-	// touches one already listed is merged into it, and once the list is full a
-	// new range is merged into the last one. Every byte a pending draw reads is
-	// therefore always inside a listed range (the list can only say too much,
-	// never too little), so a write into bytes a recorded draw still needs is
-	// counted exactly as before; only bytes no pending draw reads no longer
-	// count. Measurement only: nothing of this reaches a command buffer.
-	VkDeviceSize pendingRanges[NATIVE_VK_PENDING_RANGES][2];
+	// sorted by start; a range that overlaps or touches one already listed is
+	// merged into it, so the list is exactly the bytes the pending draws read.
+	//
+	// THE LIST GROWS, IT DOES NOT MERGE INTO ITS LAST ENTRY (day round of
+	// 2026-10-15). It used to hold NATIVE_VK_PENDING_RANGES ranges and merge
+	// every further one into the last: that entry became the hull of all later
+	// draws, and a write into a gap of the hull counted as an overwrite. The
+	// engine writes each dynamic draw's own slice of its region right before
+	// the draw, in the order of the ordering table, which is not the order the
+	// slices were handed out (platform/engine_render.c, Engine_DrawMarker); once
+	// more than 8 disjoint slices are pending, the next slice, read by no
+	// recorded draw, can fall into the hull (E7 tour: 3096 lines '1 or 2 vertex
+	// write(s) overwrote ...', none without the engine). Past the inline
+	// ranges the list moves to pendingHeap (doubled when full). Only if that
+	// memory cannot be had does a new range merge into a neighbour, which can
+	// only say too much, never too little. Measurement only: nothing of this
+	// reaches a command buffer.
+	NativeVkRange pendingRanges[NATIVE_VK_PENDING_RANGES];
+	NativeVkRange *pendingHeap; // NULL, or the list in use (pendingHeapCap entries)
+	uint32_t pendingHeapCap;
 	uint32_t pendingRangeCount;
 };
 
@@ -931,6 +948,7 @@ global_variable struct
 	// while draws recorded against its previous contents were still waiting.
 	uint32_t frameBufferClobbers;
 	uint32_t frameDrawsClobbered;
+	VkDeviceSize frameClobberedBytes; // the size of the last buffer counted, to name it in the line
 
 	// The pass object actually open. A pipeline must be compatible with the pass
 	// it draws in, and compatibility does not reach across attachment formats -
@@ -4128,9 +4146,41 @@ internal NativeGfxBuffer NativeGfxVK_CreateVertexBuffer(const NativeGfxVertexBuf
 // THE READ RANGES of a buffer's pending draws (see pendingRanges). A draw that
 // opens a new round - nothing pending, the list from before is stale since the
 // last submit or the last counted overwrite - starts the list afresh.
+internal NativeVkRange *NativeVk_PendingList(struct NativeVkBuffer *buffer)
+{
+	return (buffer->pendingHeap != NULL) ? buffer->pendingHeap : buffer->pendingRanges;
+}
+
+// The first listed range whose end is at or past lo (touch = 1) or past lo
+// (touch = 0). The list is sorted and its ranges neither overlap nor touch,
+// so the ends are sorted as well.
+internal uint32_t NativeVk_PendingFirstEnd(const NativeVkRange *list, uint32_t count, VkDeviceSize lo, int touch)
+{
+	uint32_t low = 0;
+	uint32_t high = count;
+
+	while (low < high)
+	{
+		const uint32_t mid = low + ((high - low) / 2u);
+
+		if (touch ? (list[mid][1] < lo) : (list[mid][1] <= lo))
+		{
+			low = mid + 1u;
+		}
+		else
+		{
+			high = mid;
+		}
+	}
+	return low;
+}
+
 internal void NativeVk_NotePendingRange(struct NativeVkBuffer *buffer, VkDeviceSize lo, VkDeviceSize hi)
 {
-	uint32_t i;
+	NativeVkRange *list;
+	uint32_t count;
+	uint32_t at;
+	uint32_t end;
 
 	if (buffer->pendingDraws == 0)
 	{
@@ -4139,53 +4189,159 @@ internal void NativeVk_NotePendingRange(struct NativeVkBuffer *buffer, VkDeviceS
 
 	buffer->pendingDraws++;
 
-	for (i = 0; i < buffer->pendingRangeCount; i++)
+	// A draw that reads no byte adds no range.
+	if (hi <= lo)
 	{
-		VkDeviceSize *range = buffer->pendingRanges[i];
-
-		if ((lo <= range[1]) && (hi >= range[0]))
-		{
-			range[0] = (lo < range[0]) ? lo : range[0];
-			range[1] = (hi > range[1]) ? hi : range[1];
-			return;
-		}
-	}
-
-	if (buffer->pendingRangeCount < NATIVE_VK_PENDING_RANGES)
-	{
-		buffer->pendingRanges[buffer->pendingRangeCount][0] = lo;
-		buffer->pendingRanges[buffer->pendingRangeCount][1] = hi;
-		buffer->pendingRangeCount++;
 		return;
 	}
 
-	{
-		VkDeviceSize *last = buffer->pendingRanges[NATIVE_VK_PENDING_RANGES - 1];
+	list = NativeVk_PendingList(buffer);
+	count = buffer->pendingRangeCount;
 
-		last[0] = (lo < last[0]) ? lo : last[0];
-		last[1] = (hi > last[1]) ? hi : last[1];
+	// Every listed range that overlaps or touches [lo, hi) becomes one.
+	at = NativeVk_PendingFirstEnd(list, count, lo, 1);
+	end = at;
+	while ((end < count) && (list[end][0] <= hi))
+	{
+		lo = (list[end][0] < lo) ? list[end][0] : lo;
+		hi = (list[end][1] > hi) ? list[end][1] : hi;
+		end++;
 	}
+
+	if (end > at)
+	{
+		list[at][0] = lo;
+		list[at][1] = hi;
+		memmove(&list[at + 1u], &list[end], (size_t)(count - end) * sizeof(NativeVkRange));
+		buffer->pendingRangeCount = count - (end - at - 1u);
+		return;
+	}
+
+	// A range of its own at its place: room first.
+	{
+		const uint32_t cap = (buffer->pendingHeap != NULL) ? buffer->pendingHeapCap : NATIVE_VK_PENDING_RANGES;
+
+		if (count >= cap)
+		{
+			const uint32_t grown = cap * 2u;
+			NativeVkRange *bigger = (NativeVkRange *)realloc(buffer->pendingHeap, (size_t)grown * sizeof(NativeVkRange));
+
+			if (bigger == NULL)
+			{
+				// No memory: merge into a neighbour - too much, never too little.
+				const uint32_t into = (at < count) ? at : (count - 1u);
+
+				list[into][0] = (lo < list[into][0]) ? lo : list[into][0];
+				list[into][1] = (hi > list[into][1]) ? hi : list[into][1];
+				return;
+			}
+			if (buffer->pendingHeap == NULL)
+			{
+				memcpy(bigger, buffer->pendingRanges, (size_t)count * sizeof(NativeVkRange));
+			}
+			buffer->pendingHeap = bigger;
+			buffer->pendingHeapCap = grown;
+			list = bigger;
+		}
+	}
+
+	memmove(&list[at + 1u], &list[at], (size_t)(count - at) * sizeof(NativeVkRange));
+	list[at][0] = lo;
+	list[at][1] = hi;
+	buffer->pendingRangeCount = count + 1u;
 }
 
 // Whether the bytes [lo, hi) a write replaces are read by a pending draw.
-internal int NativeVk_PendingRangeHit(const struct NativeVkBuffer *buffer, VkDeviceSize lo, VkDeviceSize hi)
+internal int NativeVk_PendingRangeHit(struct NativeVkBuffer *buffer, VkDeviceSize lo, VkDeviceSize hi)
 {
-	uint32_t i;
+	const NativeVkRange *list;
+	uint32_t at;
 
-	if (buffer->pendingDraws == 0)
+	if ((buffer->pendingDraws == 0) || (hi <= lo))
 	{
 		return 0;
 	}
 
-	for (i = 0; i < buffer->pendingRangeCount; i++)
+	list = NativeVk_PendingList(buffer);
+	at = NativeVk_PendingFirstEnd(list, buffer->pendingRangeCount, lo, 0);
+
+	return ((at < buffer->pendingRangeCount) && (list[at][0] < hi)) ? 1 : 0;
+}
+
+// The read ranges without a device (called by the engine selftest, ctest
+// engine_selftest): slices drawn out of order as the engine draws them, merging,
+// growth past the inline list, empty draws. Returns the failures.
+int NativeVk_PendingRangeSelfTest(int *checks)
+{
+	struct NativeVkBuffer buffer;
+	int failures = 0;
+	// 40 slices of 96 bytes with a gap of 32 behind each, drawn out of order:
+	// the even ones, then the odd ones. The old list (8 ranges, every further
+	// one merged into the last) took the first odd slice for an overwrite.
+	const VkDeviceSize slice = 96u;
+	const VkDeviceSize pitch = 128u;
+
+#define NVK_RANGE_CHECK(cond, what)                                    \
+	do                                                                 \
+	{                                                                  \
+		(*checks)++;                                                   \
+		if (!(cond))                                                   \
+		{                                                              \
+			printf("engine selftest: vk pending ranges: %s\n", (what)); \
+			failures++;                                                \
+		}                                                              \
+	} while (0)
+
+	memset(&buffer, 0, sizeof(buffer));
+	for (uint32_t k = 0; k < 40u; k++)
 	{
-		if ((lo < buffer->pendingRanges[i][1]) && (hi > buffer->pendingRanges[i][0]))
+		const VkDeviceSize at = (VkDeviceSize)((k < 20u) ? (2u * k) : ((2u * (k - 20u)) + 1u)) * pitch;
+
+		// Before its draw, a slice is read by no pending draw (the engine writes it here).
+		NVK_RANGE_CHECK(!NativeVk_PendingRangeHit(&buffer, at, at + slice), "an unread slice counted as overwritten");
+		NativeVk_NotePendingRange(&buffer, at, at + slice);
+	}
+	NVK_RANGE_CHECK(buffer.pendingDraws == 40u, "40 draws not counted");
+	NVK_RANGE_CHECK(buffer.pendingRangeCount == 40u, "40 disjoint slices not kept apart");
+	NVK_RANGE_CHECK((buffer.pendingHeap != NULL) && (buffer.pendingHeapCap >= 40u), "the list did not grow past the inline ranges");
+	NVK_RANGE_CHECK(NativeVk_PendingRangeHit(&buffer, 5u * pitch + 10u, 5u * pitch + 20u), "a write into a drawn slice not counted");
+	NVK_RANGE_CHECK(!NativeVk_PendingRangeHit(&buffer, 5u * pitch + slice, 6u * pitch), "a write into a gap counted");
+	NVK_RANGE_CHECK(NativeVk_PendingRangeHit(&buffer, 5u * pitch + slice - 1u, 6u * pitch), "a write over the last byte of a slice not counted");
+	NVK_RANGE_CHECK(!NativeVk_PendingRangeHit(&buffer, 40u * pitch, 41u * pitch), "a write behind every slice counted");
+	{
+		int sorted = 1;
+
+		for (uint32_t i = 1; i < buffer.pendingRangeCount; i++)
 		{
-			return 1;
+			sorted &= (buffer.pendingHeap[i - 1u][1] < buffer.pendingHeap[i][0]) ? 1 : 0;
 		}
+		NVK_RANGE_CHECK(sorted, "the list is not sorted and apart");
 	}
 
-	return 0;
+	// Filling the gaps merges everything into one range.
+	for (uint32_t k = 0; k < 40u; k++)
+	{
+		NativeVk_NotePendingRange(&buffer, (VkDeviceSize)k * pitch + slice, (VkDeviceSize)(k + 1u) * pitch);
+	}
+	NVK_RANGE_CHECK((buffer.pendingRangeCount == 1u) && (buffer.pendingHeap[0][0] == 0u) && (buffer.pendingHeap[0][1] == 40u * pitch),
+	                "touching ranges not merged into one");
+
+	// A new round (nothing pending) starts the list afresh; the grown list stays.
+	buffer.pendingDraws = 0;
+	NVK_RANGE_CHECK(!NativeVk_PendingRangeHit(&buffer, 0u, 8u), "a write with nothing pending counted");
+	NativeVk_NotePendingRange(&buffer, 100u, 200u);
+	NativeVk_NotePendingRange(&buffer, 300u, 400u);
+	NativeVk_NotePendingRange(&buffer, 500u, 600u);
+	NativeVk_NotePendingRange(&buffer, 150u, 550u);
+	NVK_RANGE_CHECK((buffer.pendingRangeCount == 1u) && (buffer.pendingHeap[0][0] == 100u) && (buffer.pendingHeap[0][1] == 600u),
+	                "a range over three not merged");
+	NativeVk_NotePendingRange(&buffer, 700u, 700u);
+	NVK_RANGE_CHECK((buffer.pendingRangeCount == 1u) && (buffer.pendingDraws == 5u), "a draw reading no byte added a range");
+	NVK_RANGE_CHECK(!NativeVk_PendingRangeHit(&buffer, 600u, 700u) && NativeVk_PendingRangeHit(&buffer, 599u, 600u), "the end is not exclusive");
+
+	free(buffer.pendingHeap);
+#undef NVK_RANGE_CHECK
+	return failures;
 }
 
 internal void NativeGfxVK_UpdateVertexBuffer(NativeGfxBuffer id, int offset, int bytes, const void *source)
@@ -4236,6 +4392,7 @@ internal void NativeGfxVK_UpdateVertexBuffer(NativeGfxBuffer id, int offset, int
 		{
 			s_vk.frameBufferClobbers++;
 			s_vk.frameDrawsClobbered += buffer->pendingDraws;
+			s_vk.frameClobberedBytes = buffer->bytes;
 			buffer->pendingDraws = 0;
 		}
 
@@ -4292,6 +4449,7 @@ internal void NativeGfxVK_DestroyVertexBuffer(NativeGfxBuffer id)
 	if (buffer->mapped != NULL) { vkUnmapMemory_fn(s_vk.device, buffer->memory); }
 	if (buffer->buffer != VK_NULL_HANDLE) { vkDestroyBuffer_fn(s_vk.device, buffer->buffer, NULL); }
 	if (buffer->memory != VK_NULL_HANDLE) { vkFreeMemory_fn(s_vk.device, buffer->memory, NULL); }
+	free(buffer->pendingHeap);
 
 	memset(buffer, 0, sizeof(*buffer));
 
@@ -10096,12 +10254,14 @@ internal int NativeGfxVK_BeginFrame(void)
 
 	if (s_vk.frameBufferClobbers > 0)
 	{
-		Platform_Log("[CTR Vk] frame %u: %u vertex write(s) overwrote bytes that %u recorded draw(s) on that buffer still need\n", s_vk.frameCounter - 1u,
-		             s_vk.frameBufferClobbers, s_vk.frameDrawsClobbered);
+		// Which buffer: its size names it (the engine's dynamic buffer, the vertex ring, the pose buffer).
+		Platform_Log("[CTR Vk] frame %u: %u vertex write(s) overwrote bytes that %u recorded draw(s) on that buffer still need (last in a buffer of %llu bytes)\n",
+		             s_vk.frameCounter - 1u, s_vk.frameBufferClobbers, s_vk.frameDrawsClobbered, (unsigned long long)s_vk.frameClobberedBytes);
 	}
 
 	s_vk.frameBufferClobbers = 0;
 	s_vk.frameDrawsClobbered = 0;
+	s_vk.frameClobberedBytes = 0;
 
 	for (uint32_t i = 0; i < NATIVE_VK_MAX_BUFFERS; i++)
 	{
