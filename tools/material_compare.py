@@ -35,7 +35,10 @@ header; colour see COL_TOL_*):
     winding). A quad is two triangles of either diagonal. Pieces of
     func=split|reflection|special (cut at the water or mirror line): material
     exact, UV corners inside the corner box of an engine triangle, their
-    colour outside the triangle's colour range is split-col / mirror-col.
+    colour outside the colour range of every such triangle (the engine draws
+    a triangle once per side tint) is split-col / mirror-col. World
+    particles (X particle-...): a quad like a model face (two engine
+    triangles), a line (prim=line) untextured by blend and its colour set.
     A miss is classified by the features in which the nearest engine
     triangle differs. Retail lines with a header (lod) the engine does not
     draw are counted as class lod, not compared. prim other than normal
@@ -65,7 +68,10 @@ header; colour see COL_TOL_*):
   Direction 2 (models, per track and model name): an engine material that
     retail never draws for that model is engine-only-material when retail
     drew one of its triangles (UV set) with another material; on triangles
-    retail never drew it is coverage. When retail
+    retail never drew it is coverage, and so is a material of back-side
+    copies only (engine lines side=back: a two-sided triangle drawn as two
+    one-sided ones) while retail never showed that model from the back
+    (retail lines side=back). When retail
     drew the model only with another header, the material is listed as
     "header 0 never compared" (information). Engine triangles no frame uses
     are counted as unused per model.
@@ -591,7 +597,7 @@ def match_line(r, es, lod, key, ctol, pool, strict=False):
                     continue
                 d = d or ['uv']
                 feats.update(d)
-                cost += len(d)
+                cost += len(d) + (2 if 'uv' in d else 0)   # a wrong diagonal weighs more
             if eng is None or (cand.fault and not fault):
                 eng, fault = cand.e, cand.fault
         if best is None or cost < best[0]:
@@ -608,8 +614,13 @@ def col_gap(r, e):
     return max(min(max(abs(x - y) for x, y in zip(a, b)) for b in r.col) for a in e.col)
 
 
+# Retail writers that copy their colour unchanged (no GTE step): the plain
+# model writer and the world particles (quad and line).
+PLAIN_PRIMS = (None, 'normal', 'particle', 'line')
+
+
 def col_tol(r, gte):
-    return COL_TOL_NORMAL if r.prim in (None, 'normal') else gte
+    return COL_TOL_NORMAL if r.prim in PLAIN_PRIMS else gte
 
 
 # --------------------------------------------------------------------- VRAM
@@ -832,7 +843,7 @@ def _new_stats():
             'per': {}, 'unused': {}, 'coverage': {}, 'prim_equal': 0, 'menu_tracks': set(),
             'part': {}, 'clip': {}, 'nogeo': {}, 'info_lines': {}, 'stage_none': {}, 'lod_never': set(),
             'col_unpaired': 0, 'winding': 0, 'piece': {}, 'eom_coverage': [], 'fault_orient': set(),
-            't_set_rule': {}}
+            't_set_rule': {}, 'back_coverage': []}
 
 
 def _per(stats, tr, src):
@@ -1001,10 +1012,12 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                 if src != 'T':
                     ob = objs.setdefault((src, object_key(src, sid)),
                                          {'R': set(), 'E': {}, 'srcId': sid, 'rlod': set(), 'seen': set(),
-                                          'used': set(), 'ruv': set()})
+                                          'used': set(), 'ruv': set(), 'rback': False})
                     for e in es.lines:
                         ent = ob['E'].setdefault(e.mat(), {'e': e, 'frames': set(), 'fault': None,
-                                                           'lod': set()})
+                                                           'lod': set(), 'front': False})
+                        if e.extra.get('side') != 'back':
+                            ent['front'] = True
                         ent['frames'].add(id(fr))
                         ent['lod'].add(e.lod or '0')
                         if e.fault:
@@ -1071,6 +1084,8 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                     rlod = r.lod or '0'
                     if ob is not None:
                         ob['R'].add(r.mat())
+                        if r.extra.get('side') == 'back':
+                            ob['rback'] = True
                         for opt in line_options(r):
                             for c in opt:
                                 ob['ruv'].add(tuple(sorted((x[0] for x in c), key=_uvs)))
@@ -1082,8 +1097,28 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                     stats['compared'] += count
                     ctol = col_tol(r, gte_tol)
                     pre = []
-                    if r.prim not in (None, 'normal'):
+                    if r.prim not in PLAIN_PRIMS:
                         pre.append('prim')
+                    if r.prim == 'line':
+                        # a world particle line: untextured, compared by blend and its colour set
+                        # {c0, c1} against the corner colours of the engine's untextured line quad
+                        cand = [e for e in es.lines if e.page is None]
+                        same = [e for e in cand if e.blend == r.blend]
+                        rc = set(r.col or ())
+                        ec = set(c for e in same for c in (e.col or ()))
+
+                        def near(a, b):
+                            return max(abs(x - y) for x, y in zip(a, b)) <= ctol
+                        if same and (not rc or not ec or (all(any(near(c, x) for x in ec) for c in rc) and
+                                                          all(any(near(x, c) for c in rc) for x in ec))):
+                            for e in same:
+                                used_by.setdefault(id(e), (e, r))
+                            continue
+                        eng = (same or cand or es.lines)[0]
+                        feats = ['col'] if same else (['blend'] if cand else _mat_diffs(r, eng) or ['uv'])
+                        rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=feats, r=r, e=eng,
+                            r_count=count, fault=eng.fault)
+                        continue
                     if src == 'T' and r.stage == 'none':
                         _bump(stats['stage_none'], tr, count)
                         rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=['stage-none'], r=r,
@@ -1157,10 +1192,14 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                         inside = [t for t in pool if t.mat == r.mat() and t.uvkey and None not in t.uvkey and
                                   r.uv is not None and _in_box(r.uv, t.uvkey)]
                         if inside:
-                            t = inside[0]
+                            # the engine draws a triangle once per side tint (above/below the
+                            # water, mirror): the piece is drawn when ANY of them fits its colour
+                            fit = next((t for t in inside if r.col is None or
+                                        not [c for c in t.cols if c is not None] or
+                                        _cols_in_range(r.col, [c for c in t.cols if c is not None], ctol)), None)
+                            t = fit or inside[0]
                             used_by.setdefault(id(t.e), (t.e, r))
-                            cols = [c for c in t.cols if c is not None]
-                            if r.col is None or not cols or _cols_in_range(r.col, cols, ctol):
+                            if fit is not None:
                                 continue
                             rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid,
                                 features=pre + [PIECE_FUNCS[r.extra['func']]], r=r, e=t.e, r_count=count,
@@ -1171,7 +1210,7 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                     if not miss:
                         if miss is None:
                             stats['winding'] += nrev * count
-                            if r.prim not in (None, 'normal'):
+                            if r.prim not in PLAIN_PRIMS:
                                 stats['prim_equal'] += count
                         continue
                     feats, eng, fault, wind = miss
@@ -1227,6 +1266,11 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                 if not (ent.get('uvs', set()) & ob['ruv']):
                     # retail drew none of these triangles: coverage, not a material question
                     stats['eom_coverage'].append((tr, obj, mat))
+                    continue
+                if not ent['front'] and not ob['rback']:
+                    # only back-side copies (side=back: a two-sided triangle drawn as two
+                    # one-sided ones) and retail never showed a back side of the model here
+                    stats['back_coverage'].append((tr, obj, mat))
                     continue
                 if not (ent['lod'] & ob['rlod']):
                     # retail drew the model only with another header on this track
@@ -1644,6 +1688,8 @@ def render_md(res, inputs, exc_origin):
               % sum(s['piece'].values()))
     md.append('- Engine materials on triangles retail never drew (coverage, not engine-only-material): %d'
               % len(s['eom_coverage']))
+    md.append('- Engine back-side materials (side=back) of models retail never showed from the back (coverage): %d'
+              % len(s['back_coverage']))
     if s['t_set_rule']:
         md.append('- Track lines without slot marker, compared as a corner set (orientation inside the face not '
                   'provable): %d (%s)' % (sum(s['t_set_rule'].values()),
@@ -1892,6 +1938,35 @@ def selftest():
                   L('E', 'I', 'b#0', uv='0,0,0,31,31,0', extra='col=10,10,10;20,20,20;30,30,30')])
     check('winding: colours moved to other UV corners: col', feats(res) == ['col'])
 
+    # world particles (X particle-gNN#slot): quad against the engine's two triangles (u0,u1,u3)/(u0,u3,u2),
+    # line untextured by its colour set
+    PQ = '16,16,31,16,16,31,31,31'
+    pe = [L('E', 'X', 'particle-g03#7', uv='16,16,31,16,31,31', extra='prim=particle,col=200,100,50'),
+          L('E', 'X', 'particle-g03#7', uv='16,16,31,31,16,31', extra='prim=particle,col=200,100,50')]
+    res, _ = run([F(), L('R', 'X', 'particle-g03#7', uv=PQ, blend='1', extra='prim=particle,col=200,100,50')] +
+                 [x.replace('\to\t', '\t1\t') for x in pe])
+    check('particle quad against two engine triangles: 0, no draw-path class', len(res.open) == 0)
+    res, _ = run([F(), L('R', 'X', 'particle-g03#7', uv=PQ, extra='prim=particle,col=200,100,50')] +
+                 [x.replace('0,480', '0,481') for x in pe])
+    check('particle quad with another CLUT: clut', feats(res) == ['clut'])
+    res, _ = run([F(), L('R', 'X', 'particle-g03#7', uv=PQ, extra='prim=particle,col=201,100,50')] + pe)
+    check('particle colour is copied by retail: tolerance 0, col', feats(res) == ['col'])
+    pl = [L('E', 'X', 'particle-g05#2', page='-', clut='-', uv='-', blend='1', extra='prim=line,col=9,9,9;9,9,9;40,40,40'),
+          L('E', 'X', 'particle-g05#2', page='-', clut='-', uv='-', blend='1', extra='prim=line,col=40,40,40;9,9,9;9,9,9')]
+    res, _ = run([F(), L('R', 'X', 'particle-g05#2', page='-', clut='-', uv='-', blend='1',
+                         extra='prim=line,col=9,9,9;40,40,40;40,40,40')] + pl)
+    check('particle line: same colour set: 0', len(res.open) == 0)
+    res, _ = run([F(), L('R', 'X', 'particle-g05#2', page='-', clut='-', uv='-', blend='1',
+                         extra='prim=line,col=9,9,9;41,40,40;41,40,40')] + pl)
+    check('particle line: another colour: col', feats(res) == ['col'])
+    res, _ = run([F(), L('R', 'X', 'particle-g05#2', page='-', clut='-', uv='-', blend='2',
+                         extra='prim=line,col=9,9,9;40,40,40;40,40,40')] + pl)
+    check('particle line: another blend: blend', feats(res) == ['blend'])
+    res, _ = run([F(), L('R', 'X', 'particle-g05#2', page='-', clut='-', uv='-', blend='1',
+                         extra='prim=line,col=9,9,9;40,40,40;40,40,40')] +
+                 [pl[0], pl[1].replace('col=40,40,40;9,9,9;9,9,9', 'col=40,40,40;9,9,9;70,70,70')])
+    check('particle line: an engine colour retail does not have: col', feats(res) == ['col'])
+
     # model pieces cut at the water or mirror line (func=split|reflection|special)
     res, _ = run([F(), L('R', 'I', 'turtle#3', uv='4,4,20,4,4,20', extra='func=split col=85,0,0'),
                   L('E', 'I', 'turtle#3', uv=TRI_A, extra='col=85,0,0')])
@@ -1903,6 +1978,11 @@ def selftest():
     res, _ = run([F(), L('R', 'I', 'crate#5', uv='4,4,20,4,4,20', extra='func=reflection col=48,48,48'),
                   L('E', 'I', 'crate#5', uv=TRI_A, extra='col=64,64,64')])
     check('piece: mirror side colour is mirror-col', feats(res) == ['mirror-col'])
+    res, _ = run([F(), L('R', 'I', 'turtle#3', uv='4,4,20,4,4,20', extra='func=split col=64,0,0'),
+                  L('E', 'I', 'turtle#3', uv=TRI_A, extra='col=85,0,0'),
+                  L('E', 'I', 'turtle#3', uv=TRI_A, extra='col=64,0,0')])
+    check('piece: the engine draws the triangle once per side tint; any fitting one draws the piece: 0',
+          len(res.open) == 0)
     res, _ = run([F(), L('R', 'I', 'turtle#3', uv='4,4,40,4,4,20', extra='func=split'),
                   L('E', 'I', 'turtle#3', uv=TRI_A)])
     check('piece: a corner outside every engine triangle stays uv', feats(res) == ['uv'])
@@ -2051,6 +2131,17 @@ def selftest():
     res, _ = run(base_r + eng_ok + [L('E', 'I', 'tikka#0', clut='0,500', uv=TRI_A)])
     check('(f) engine-only-material: retail drew the same triangle with another material',
           feats(res, 'd2') == ['engine-only-material'] and not feats(res))
+    res, _ = run([F(), L('R', 'I', 'crystal#0', uv=TRI_A, extra='prim=key'),
+                  L('E', 'I', 'crystal#0', uv=TRI_A),
+                  L('E', 'I', 'crystal#0', uv=TRI_A, blend='2', extra='side=back')])
+    check('(f) back-side copy (side=back) of a model retail never showed from the back: coverage',
+          len(res.open) == 0 and len(res.stats['back_coverage']) == 1)
+    res, _ = run([F(), L('R', 'I', 'crystal#0', uv=TRI_A, extra='prim=key'),
+                  L('R', 'I', 'crystal#0', uv='0,0,0,31,31,0', blend='1', extra='prim=key,side=back'),
+                  L('E', 'I', 'crystal#0', uv=TRI_A), L('E', 'I', 'crystal#0', uv='0,0,0,31,31,0', blend='1'),
+                  L('E', 'I', 'crystal#0', uv=TRI_A, blend='2', extra='side=back')])
+    check('(f) back-side copy when retail showed a back side: engine-only-material',
+          feats(res, 'd2') == ['engine-only-material'] and not res.stats['back_coverage'])
     res, _ = run(base_r + eng_ok + [L('E', 'I', 'tikka#0', clut='0,500', uv='64,0,95,0,64,31')])
     check('(f) an engine material on triangles retail never drew is coverage, no deviation',
           len(res.open) == 0 and res.stats['eom_coverage'] == [('L3', 'I:tikka', ((512, 0), 0, (0, 500), 'o'))])
