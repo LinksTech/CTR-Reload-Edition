@@ -769,6 +769,15 @@ void Engine_DriverNoteRetailBody(const struct Instance *inst);
 // with its own matrix), turning.
 void Engine_MenuSceneLoad(void);                 // load stage 5, before Engine_DriverLoad (main menu level only)
 void Engine_MenuSceneCollect(struct GameTracker *gGT); // from Engine_FrameCollect
+// --engine-menuscene-zoom <f>[,<x>[,<yaw>]] (dev, round of 2026-10-16, Z3): the
+// measuring camera of the scene - zoom f, the middle's place x (parts of half
+// the view width), a still view at yaw degrees. Engine_MenuSceneZoomParse: 1 =
+// valid (outputs set), 0 = refused.
+extern float g_cfg_engineMenuSceneZoom;
+extern float g_cfg_engineMenuSceneX;
+extern int g_cfg_engineMenuSceneYawFixed;
+extern float g_cfg_engineMenuSceneYaw;
+int Engine_MenuSceneZoomParse(const char *text, float *zoom, float *x, int *yawFixed, float *yawRad);
 
 // --------------------------------------------------------------------------
 // HI-RES DRIVER, PROTOTYPE (platform/engine_hires.c; round of 2026-10-15, stage H)
@@ -793,6 +802,13 @@ int Engine_HiresWheels(const struct Driver *d, const struct Instance *inst, cons
 int Engine_HiresMenuReady(void); // the menu scene draws the hi-res driver
 void Engine_HiresMenuParts(int *bodyMesh, int *wheelMesh, float hullMin[3], float hullMax[3]);
 void Engine_HiresNoteMenuFrame(void);
+// --engine-hires-texcycle (dev, round of 2026-10-16, Z3): in the menu scene the
+// skin alternates every ENGINE_HIRES_CYCLE_VBLANKS VBlanks: full, 64 x 64, flat
+// key colour (the mask of the sharpness measurement). Engine_HiresMenuMaterial:
+// the material the scene draws the hi-res body and wheels with, -1 = their own.
+#define ENGINE_HIRES_CYCLE_VBLANKS 32
+extern int g_cfg_engineHiresTexCycle;
+int Engine_HiresMenuMaterial(void);
 // Pure: the wheel middle in world units relative to the instance origin, kart
 // axes (DrawTires.c integers: ((scale * (+-0x90, 0x40, 0xc7 | -0x60)) >> 12) / 4);
 // the wheel frame (columns axle, rim up, rim front; steer and roll in radians);

@@ -1,5 +1,7 @@
 #include <platform/engine.h>
 
+#include <stdlib.h>
+
 // ENGINE MENU SCENE - a custom driver drawn by the engine in the main menu
 // (--engine-menuscene, round of 2026-10-13). See include/platform/engine.h, MENU
 // SCENE. Phase-1 finish line Z5: a driver outside a race, through the same API
@@ -75,6 +77,23 @@
 // because a tour shows the main menu only a few frames between its entries.
 #define ENGINE_MENUSCENE_ORACLE_FRAME 10u
 
+// THE CAMERA OF A MEASUREMENT (--engine-menuscene-zoom <f>[,<x>[,<yaw>]], dev,
+// round of 2026-10-16, Z3). Camera only: f multiplies K (a narrower field of
+// view at the same distance - the kart f times larger on screen, its longest
+// side f/3 of the view's height, perspective and OT cell unchanged); x replaces
+// ENGINE_MENUSCENE_X_FRACTION (the middle's place in parts of half the view
+// width, negative left of centre); yaw, in degrees, fixes the angle of view
+// round the kart (the automatic turn and Q/E are off: a still view, the same in
+// every frame, so that shots at different VBlanks of one run show the same
+// pose - the texture variants of --engine-hires-texcycle are measured that way).
+// Without the switch: 1, ENGINE_MENUSCENE_X_FRACTION, turning - as before.
+#define ENGINE_MENUSCENE_ZOOM_MIN 0.25f
+#define ENGINE_MENUSCENE_ZOOM_MAX 8.0f
+float g_cfg_engineMenuSceneZoom = 1.0f;
+float g_cfg_engineMenuSceneX = ENGINE_MENUSCENE_X_FRACTION;
+int g_cfg_engineMenuSceneYawFixed = 0;
+float g_cfg_engineMenuSceneYaw = 0.0f; // radians
+
 int NativeCharGpu_LoadMenuScene(void);
 extern int g_cfg_deterministic; // --deterministic, native_platform.c
 void Engine_OracleArm(const char *tag);
@@ -88,6 +107,56 @@ internal unsigned s_menuWheelDraws = 0;
 internal int s_menuLogged = 0;
 internal int s_menuReportOn = 0;
 internal int s_menuOracleArmed = 0;
+
+// The value of --engine-menuscene-zoom: "<f>[,<x>[,<yaw>]]", f in 0.25..8, x in
+// -1..1, yaw in degrees -360..360. 1 = valid (the outputs are set), 0 = refused
+// (the outputs are not touched). Pure: main.c refuses a bad value before any
+// window, the selftest feeds it made-up text.
+int Engine_MenuSceneZoomParse(const char *text, float *zoom, float *x, int *yawFixed, float *yawRad)
+{
+	double v[3] = {1.0, (double)ENGINE_MENUSCENE_X_FRACTION, 0.0};
+	const char *p = text;
+	int n = 0;
+
+	if ((text == NULL) || (text[0] == '\0'))
+	{
+		return 0;
+	}
+	for (;;)
+	{
+		char *end = NULL;
+
+		if (n >= 3)
+		{
+			return 0;
+		}
+		v[n] = strtod(p, &end);
+		if ((end == p) || !(v[n] == v[n]))
+		{
+			return 0;
+		}
+		n++;
+		if (*end == '\0')
+		{
+			break;
+		}
+		if (*end != ',')
+		{
+			return 0;
+		}
+		p = end + 1;
+	}
+	if ((v[0] < (double)ENGINE_MENUSCENE_ZOOM_MIN) || (v[0] > (double)ENGINE_MENUSCENE_ZOOM_MAX) || (v[1] < -1.0) || (v[1] > 1.0) || (v[2] < -360.0) ||
+	    (v[2] > 360.0))
+	{
+		return 0;
+	}
+	*zoom = (float)v[0];
+	*x = (float)v[1];
+	*yawFixed = (n >= 3) ? 1 : 0;
+	*yawRad = (float)(v[2] * 3.14159265358979323846 / 180.0);
+	return 1;
+}
 
 internal void Engine_MenuSceneReport(void)
 {
@@ -114,6 +183,12 @@ void Engine_MenuSceneLoad(void)
 	s_menuYaw = ENGINE_MENUSCENE_YAW_START;
 	s_menuPauseTicks = 0;
 	s_menuLogged = 0;
+	if ((g_cfg_engineMenuSceneZoom != 1.0f) || (g_cfg_engineMenuSceneX != ENGINE_MENUSCENE_X_FRACTION) || g_cfg_engineMenuSceneYawFixed)
+	{
+		Platform_Log("[CTR Engine] menu scene: measuring camera - zoom %.3f, middle at %.3f of half the view width, %s %.2f deg\n",
+		             (double)g_cfg_engineMenuSceneZoom, (double)g_cfg_engineMenuSceneX, g_cfg_engineMenuSceneYawFixed ? "still at yaw" : "turning from yaw",
+		             (double)(g_cfg_engineMenuSceneYawFixed ? g_cfg_engineMenuSceneYaw : ENGINE_MENUSCENE_YAW_START) * 180.0 / 3.14159265358979323846);
+	}
 }
 
 // 1 when the key is down and no action of the player's layout is bound to it.
@@ -235,6 +310,10 @@ void Engine_MenuSceneCollect(struct GameTracker *gGT)
 	{
 		s_menuYaw += (float)ticks * ENGINE_MENUSCENE_AUTO_PER_TICK;
 	}
+	if (g_cfg_engineMenuSceneYawFixed)
+	{
+		s_menuYaw = g_cfg_engineMenuSceneYaw; // the still view of --engine-menuscene-zoom
+	}
 
 	// Scale from the hull: the longest side is a third of the view's height.
 	side = 0.0f;
@@ -252,8 +331,8 @@ void Engine_MenuSceneCollect(struct GameTracker *gGT)
 	{
 		return;
 	}
-	k = ((float)cam->rectH * ENGINE_MENUSCENE_HEIGHT_FRACTION * ENGINE_MENUSCENE_DISTANCE) / (cam->H * side);
-	xOffset = ENGINE_MENUSCENE_X_FRACTION * (float)(cam->rectW >> 1) * ENGINE_MENUSCENE_DISTANCE / cam->H;
+	k = g_cfg_engineMenuSceneZoom * ((float)cam->rectH * ENGINE_MENUSCENE_HEIGHT_FRACTION * ENGINE_MENUSCENE_DISTANCE) / (cam->H * side);
+	xOffset = g_cfg_engineMenuSceneX * (float)(cam->rectW >> 1) * ENGINE_MENUSCENE_DISTANCE / cam->H;
 
 	// viewModel columns: model x, y, z, translation (see the header comment).
 	c = cosf(s_menuYaw) * k;
@@ -293,7 +372,8 @@ void Engine_MenuSceneCollect(struct GameTracker *gGT)
 	draw.frame = 0u;
 	draw.clipFromModel = bodyClip;
 	draw.tint[0] = draw.tint[1] = draw.tint[2] = draw.tint[3] = 1.0f;
-	draw.materialOverride = -1;
+	// -1, or the texture variant of --engine-hires-texcycle (engine_hires.c), for the body and its wheels.
+	draw.materialOverride = hires ? Engine_HiresMenuMaterial() : -1;
 	draw.sortDepth = ENGINE_MENUSCENE_DISTANCE;
 	draw.otCell = (u32)cell;
 	draw.dynMaterial = -1;

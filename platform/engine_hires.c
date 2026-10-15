@@ -80,6 +80,7 @@
 
 char g_cfg_engineHiresDir[ENGINE_HIRES_DIR_MAX] = "";
 int g_cfg_engineHiresTex64 = 0;
+int g_cfg_engineHiresTexCycle = 0;
 
 #define ENG_HIRES_SEAT 0
 #define ENG_HIRES_SMALL 64
@@ -124,6 +125,11 @@ typedef struct
 	// the log
 	u32 logTimer;
 	int logValid;
+	// --engine-hires-texcycle: the textures full (= texture), 64 x 64 and key,
+	// their materials per load, the variant logged last (0 none, else variant + 1)
+	u32 cycleTex[3];
+	int cycleMaterial[3];
+	int cycleLogged;
 	// counters (exit report)
 	u32 bodyDrawn, bodyDeclined, wheelDraws, wheelSets, mirrorWheelDraws, spriteFallbacks, menuFrames, logLines;
 	int reportOn;
@@ -345,6 +351,58 @@ internal void EngHires_Report(void)
 	             s_engHires.spriteFallbacks, s_engHires.menuFrames, s_engHires.logLines);
 }
 
+// One texture of the skin's settings (sRGB, the whole mip chain, trilinear,
+// anisotropic, clamped); 0xffffffff when the manager refused it.
+internal u32 EngHires_SkinTexture(const u8 *rgba, int w, int h, const char *name)
+{
+	EngineTextureDesc desc;
+
+	memset(&desc, 0, sizeof(desc));
+	desc.width = w;
+	desc.height = h;
+	desc.rgba = rgba;
+	desc.linearData = 0; // sRGB colour
+	desc.oneLevel = 0;   // the whole chain, also for the small variants
+	desc.filter = ENGINE_TEXTURE_FILTERED;
+	desc.maxAnisotropy = 0; // the device limit
+	desc.wrapU = NATIVE_GFX_WRAP_CLAMP;
+	desc.wrapV = NATIVE_GFX_WRAP_CLAMP;
+	desc.name = name;
+	return Engine_TextureCreate(&desc);
+}
+
+// --engine-hires-texcycle: the 64 x 64 reduction of the file and a flat key
+// texture beside the run's texture (variant 0). The key colour is pure magenta,
+// a colour the skin does not have; the scene modulates it with the grey vertex
+// shade only, so a key pixel is (s, 0, s) - tools/hires_mask_sharp.py finds the
+// driver's textured pixels by it. A refusal leaves the cycle off.
+internal void EngHires_MakeCycleTextures(const u8 *rgba)
+{
+	static u8 key[16 * 16 * 4];
+	u8 *small = (u8 *)malloc((size_t)ENG_HIRES_SMALL * ENG_HIRES_SMALL * 4u);
+	int i;
+
+	s_engHires.cycleTex[0] = s_engHires.texture;
+	s_engHires.cycleTex[1] = 0xffffffffu;
+	s_engHires.cycleTex[2] = 0xffffffffu;
+	for (i = 0; i < 16 * 16; i++)
+	{
+		key[i * 4 + 0] = 255;
+		key[i * 4 + 1] = 0;
+		key[i * 4 + 2] = 255;
+		key[i * 4 + 3] = 255;
+	}
+	if ((small != NULL) && EngHires_Reduce(rgba, s_engHires.fileW, s_engHires.fileH, ENG_HIRES_SMALL, ENG_HIRES_SMALL, small))
+	{
+		s_engHires.cycleTex[1] = EngHires_SkinTexture(small, ENG_HIRES_SMALL, ENG_HIRES_SMALL, "hires driver skin 64 (cycle)");
+		s_engHires.cycleTex[2] = EngHires_SkinTexture(key, 16, 16, "hires driver key (cycle)");
+	}
+	free(small);
+	Platform_Log("[CTR Engine] hires texcycle: %s - in the menu scene every %d VBlanks: full, 64x64, key (255,0,255); variant = (vblank / %d) %% 3\n",
+	             ((s_engHires.cycleTex[1] != 0xffffffffu) && (s_engHires.cycleTex[2] != 0xffffffffu)) ? "textures made" : "a texture was refused, cycle off",
+	             ENGINE_HIRES_CYCLE_VBLANKS, ENGINE_HIRES_CYCLE_VBLANKS);
+}
+
 // Once per run: the files and the texture. A refusal is logged and turns the
 // hi-res driver off for the run.
 internal void EngHires_ReadOnce(void)
@@ -409,6 +467,10 @@ internal void EngHires_ReadOnce(void)
 	s_engHires.texW = desc.width;
 	s_engHires.texH = desc.height;
 	s_engHires.ok = 1;
+	if (g_cfg_engineHiresTexCycle)
+	{
+		EngHires_MakeCycleTextures(rgba);
+	}
 
 out:
 	if (s_engHires.ok)
@@ -440,10 +502,12 @@ void Engine_HiresLoad(void)
 	EngineMaterial mat;
 	EngineMeshDesc desc;
 	const int set = Engine_DriverSetOfSeat(ENG_HIRES_SEAT);
+	int variant;
 
 	s_engHires.bodyMesh = -1;
 	s_engHires.wheelMesh = -1;
 	s_engHires.material = -1;
+	s_engHires.cycleMaterial[0] = s_engHires.cycleMaterial[1] = s_engHires.cycleMaterial[2] = -1;
 	s_engHires.seatOff = 0;
 	s_engHires.poseValid = 0;
 	s_engHires.logValid = 0;
@@ -476,6 +540,20 @@ void Engine_HiresLoad(void)
 	{
 		Platform_Log("[CTR Engine] hires: material table full, not drawn in this level\n");
 		return;
+	}
+	// The texcycle variants: the same material with the other textures.
+	s_engHires.cycleMaterial[0] = s_engHires.material;
+	for (variant = 1; variant < 3; variant++)
+	{
+		s_engHires.cycleMaterial[variant] = -1;
+		if (g_cfg_engineHiresTexCycle && (s_engHires.cycleTex[variant] != 0xffffffffu) && (s_engHires.cycleTex[variant] != 0u))
+		{
+			EngineMaterial cm = mat;
+
+			Engine_TextureMaterial(&cm, s_engHires.cycleTex[variant]);
+			cm.flags |= (u16)ENGINE_MATERIAL_DOUBLE_SIDED;
+			s_engHires.cycleMaterial[variant] = Engine_MaterialRegister(&cm);
+		}
 	}
 
 	s_engHires.bodyRange.firstIndex = 0;
@@ -544,6 +622,27 @@ void Engine_HiresMenuParts(int *bodyMesh, int *wheelMesh, float hullMin[3], floa
 void Engine_HiresNoteMenuFrame(void)
 {
 	s_engHires.menuFrames++;
+}
+
+// The texcycle variant of this frame: (vblank / ENGINE_HIRES_CYCLE_VBLANKS) % 3
+// -> 0 full, 1 64 x 64, 2 key; a change is logged with its VBlank. -1 without
+// the switch or when a variant's material is missing.
+int Engine_HiresMenuMaterial(void)
+{
+	static const char *const names[3] = {"full", "64x64", "key"};
+	const int vblank = Platform_GetVBlankCount();
+	const int variant = ((vblank < 0) ? 0 : (vblank / ENGINE_HIRES_CYCLE_VBLANKS)) % 3;
+
+	if (!g_cfg_engineHiresTexCycle || !s_engHires.ok || (s_engHires.cycleMaterial[1] < 0) || (s_engHires.cycleMaterial[2] < 0))
+	{
+		return -1;
+	}
+	if (s_engHires.cycleLogged != (variant + 1))
+	{
+		s_engHires.cycleLogged = variant + 1;
+		Platform_Log("[CTR Engine] hires texcycle: vblank %d: %s\n", vblank, names[variant]);
+	}
+	return s_engHires.cycleMaterial[variant];
 }
 
 // ---------------------------------------------------------------------------
@@ -1172,6 +1271,28 @@ int Engine_SelfTestHires(int *checks)
 		HIRES_CHECK((m[0] == -28.75f) && (m[2] == -19.25f), "rear -x middle");
 		Engine_HiresWheelMiddle(0, 0xccc, 0x1000, 0xccc, m);
 		HIRES_CHECK(m[1] == 16.0f, "middle follows scale.y");
+	}
+	// The value of --engine-menuscene-zoom (engine_menuscene.c): zoom alone,
+	// with the place, with a still yaw; out of range and malformed refused and
+	// the outputs untouched.
+	{
+		float zoom = -1.0f;
+		float x = -9.0f;
+		float yaw = -9.0f;
+		int fixed = -1;
+
+		HIRES_CHECK(Engine_MenuSceneZoomParse("2", &zoom, &x, &fixed, &yaw) && (zoom == 2.0f) && (fabsf(x - 0.30f) < 1e-6f) && (fixed == 0),
+		            "zoom alone keeps the place and the turn");
+		HIRES_CHECK(Engine_MenuSceneZoomParse("2.5,-0.78,90", &zoom, &x, &fixed, &yaw) && (zoom == 2.5f) && (fabsf(x + 0.78f) < 1e-6f) && (fixed == 1) &&
+		                (fabsf(yaw - 1.5707963f) < 1e-5f),
+		            "zoom, place and still yaw");
+		zoom = 7.0f;
+		HIRES_CHECK(!Engine_MenuSceneZoomParse("9", &zoom, &x, &fixed, &yaw) && (zoom == 7.0f), "zoom out of range refused, outputs untouched");
+		HIRES_CHECK(!Engine_MenuSceneZoomParse("2,1.5", &zoom, &x, &fixed, &yaw), "place out of range refused");
+		HIRES_CHECK(!Engine_MenuSceneZoomParse("2,0,10,4", &zoom, &x, &fixed, &yaw), "a fourth value refused");
+		HIRES_CHECK(!Engine_MenuSceneZoomParse("2x", &zoom, &x, &fixed, &yaw) && !Engine_MenuSceneZoomParse("", &zoom, &x, &fixed, &yaw) &&
+		                !Engine_MenuSceneZoomParse("2,,1", &zoom, &x, &fixed, &yaw),
+		            "malformed values refused");
 	}
 #undef HIRES_CHECK
 	*checks += n;

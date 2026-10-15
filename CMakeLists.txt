@@ -829,4 +829,15 @@ message("rldpack native wheels test passed: refused without --wheels off (exit $
         PASS_REGULAR_EXPRESSION "material_compare selftest passed: [0-9]+ checks, 0 failures"
         ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
     )
+
+    # Hi-res driver sharpness on texture pixels only (key-coloured mask,
+    # eroded): synthetic images for every rule of the measure.
+    add_test(
+        NAME hires_mask_sharp_selftest
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/hires_mask_sharp.py selftest
+    )
+    set_tests_properties(hires_mask_sharp_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "selftest: [0-9]+ checks, 0 failures"
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
+    )
 endif()

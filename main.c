@@ -403,6 +403,8 @@ static const NativeSwitch s_devSwitches[] = {
     {"--engine-menuscene", "", "with --engine: the first custom driver of the roster drawn by the engine in the main menu, turning (phase-1 finish line Z5)"},
     {"--engine-hires-dir", "<dir>", "with --engine: the hi-res driver prototype (stage H) from <dir> (body.hrm, wheel.hrm, skin.hrt of tools/hires_testdriver.py) drawn instead of seat 0's body and wheel sprites in a race and as the driver of --engine-menuscene: full-resolution RGBA texture with mip levels, 3D wheels from game state, one log line per tick"},
     {"--engine-hires-tex64", "", "with --engine-hires-dir: the texture reduced to 64x64 (the comparison run of stage H)"},
+    {"--engine-hires-texcycle", "", "with --engine-hires-dir, measuring only: in the menu scene the hi-res skin alternates every 32 VBlanks - full, 64x64, flat magenta key (variant = (vblank / 32) % 3, logged) - the three images of tools/hires_mask_sharp.py from one run"},
+    {"--engine-menuscene-zoom", "<f>[,<x>[,<yaw>]]", "with --engine-menuscene, measuring only: the scene's camera zoomed by f (0.25..8, the kart f times larger), its middle at x of half the view width (-1..1, default 0.3, negative left), and with yaw (degrees) a still view at that angle instead of the turn"},
     {"--engine-hide", "<sky,water>", "with --engine --engine-track: the engine owns the listed items (the PS1 path does not draw them) but draws nothing of them - the 'minus' run of the measurements; comma-separated, words sky and water"},
     {"--engine-fail", "<start|track>", "with --engine, measuring only: forces the engine's fallback to the PS1 path - start: the programs 'ne' and 'nw' are not made, track (needs --engine-track): the first track load of the engine fails; the log names the reason and the run goes on without the engine"},
     {"--engine-oracle", "<file>", "with --engine --engine-track, measuring only: the log of the material comparison into <file> (relative to the game folder) - per drawn surface the texture page, CLUT, UV, blend and mosaic cell of the PS1 path and of the engine, in the frames --level-tour-oracle arms; without it nothing is written"},
@@ -776,6 +778,7 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			else if ((needsEngine == NULL) && ((strcmp(argv[argIndex], "--engine-track") == 0) || (strcmp(argv[argIndex], "--engine-testscene") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-menuscene") == 0) || (strcmp(argv[argIndex], "--engine-hide") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-hires-dir") == 0) || (strcmp(argv[argIndex], "--engine-hires-tex64") == 0) ||
+			                                   (strcmp(argv[argIndex], "--engine-hires-texcycle") == 0) || (strcmp(argv[argIndex], "--engine-menuscene-zoom") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-fail") == 0) || (strcmp(argv[argIndex], "--engine-oracle") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-oracle-fault") == 0)))
 			{
@@ -812,6 +815,24 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 		{
 			fflush(stdout);
 			fprintf(stderr, "switch --engine-hide expects sky and/or water, comma-separated, not '%s'\n", argv[argIndex + 1]);
+			fflush(stderr);
+			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+	}
+
+	// --engine-menuscene-zoom: f, x and yaw in range (Engine_MenuSceneZoomParse);
+	// refused here, before any window.
+	for (int argIndex = 1; (argIndex + 1) < argc; argIndex++)
+	{
+		float zoom = 1.0f;
+		float x = 0.0f;
+		float yaw = 0.0f;
+		int yawFixed = 0;
+
+		if ((strcmp(argv[argIndex], "--engine-menuscene-zoom") == 0) && !Engine_MenuSceneZoomParse(argv[argIndex + 1], &zoom, &x, &yawFixed, &yaw))
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch --engine-menuscene-zoom expects <f>[,<x>[,<yaw>]] with f 0.25..8, x -1..1, yaw -360..360 degrees, not '%s'\n", argv[argIndex + 1]);
 			fflush(stderr);
 			return NATIVE_EXIT_DEV_REQUIRED;
 		}
@@ -1153,6 +1174,16 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 		else if (strcmp(argv[argIndex], "--engine-hires-tex64") == 0)
 		{
 			g_cfg_engineHiresTex64 = 1;
+		}
+		else if (strcmp(argv[argIndex], "--engine-hires-texcycle") == 0)
+		{
+			g_cfg_engineHiresTexCycle = 1;
+		}
+		else if ((strcmp(argv[argIndex], "--engine-menuscene-zoom") == 0) && ((argIndex + 1) < argc))
+		{
+			// The value was checked before any window (Engine_MenuSceneZoomParse).
+			(void)Engine_MenuSceneZoomParse(argv[++argIndex], &g_cfg_engineMenuSceneZoom, &g_cfg_engineMenuSceneX, &g_cfg_engineMenuSceneYawFixed,
+			                                &g_cfg_engineMenuSceneYaw);
 		}
 		else if ((strcmp(argv[argIndex], "--engine-hide") == 0) && ((argIndex + 1) < argc))
 		{
