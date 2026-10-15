@@ -30,6 +30,7 @@ int Engine_SelfTest(void)
 	failures += Engine_SelfTestTour(&checks);
 	failures += Engine_SelfTestHires(&checks);
 	failures += Engine_SelfTestSwitches(&checks);
+	failures += NativeVk_PendingRangeSelfTest(&checks);
 
 	if (failures == 0)
 	{
