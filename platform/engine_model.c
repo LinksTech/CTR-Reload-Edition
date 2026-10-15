@@ -393,6 +393,24 @@ int Engine_ModelImport(const struct Model *model, const char *name, EngineModelI
 			table->streamRecords = src.streamVertices;
 			record = NULL;
 		}
+		// The engine oracle (--engine-oracle only): which mesh triangles come from a
+		// cycled (animtex) table slot, for anim=1 of its E lines.
+		if ((g_cfg_engineOracle[0] != '\0') && (src.count.animatedTriangles > 0u))
+		{
+			u8 *triAnimated = (u8 *)calloc(keptTris, 1);
+
+			if (triAnimated != NULL)
+			{
+				for (t = 0; t < keptTris; t++)
+				{
+					const int m = (s16)Rld_ReadLE16(&src.native.triangleMaterials[(size_t)order[t] * 2u]);
+
+					triAnimated[t] = src.material[m].animated;
+				}
+				Engine_OracleNoteMeshAnimated(mesh, triAnimated, keptTris);
+				free(triAnimated);
+			}
+		}
 		out->mesh = mesh;
 		out->firstMaterial = firstMaterial;
 		out->materialCount = keyCount;

@@ -47,6 +47,10 @@ extern int g_cfg_engine;
 extern int g_cfg_engineTrack;
 #endif
 
+// From platform/engine_oracle.c (the engine oracle, --engine-oracle): the
+// declarations and ENGINE_ORACLE_* sizes. Every call sits behind g_cfg_engine.
+#include <platform/engine.h>
+
 struct RenderBucketEntry
 {
 	struct Instance *inst;
@@ -793,11 +797,21 @@ static u32 RenderBucket_OTAddress(void *ptr)
 static void RenderBucket_GteLoadLightMatrixWords(const MATRIX *m);
 static void RenderBucket_StoreViewMatrixForSplit(struct InstDrawPerPlayer *idpp);
 
+// 1 only while the engine oracle runs a retail handler a second time to read
+// its primitives (RenderBucket_OracleCaptureRetail, --engine-oracle, armed
+// frames only): the packets are written but linked into no OT, so they are
+// never drawn. 0 in every other run and frame.
+static int s_rbOracleCapture;
+
 static void RenderBucket_LinkPrimRaw(u32 *otEntry, void *prim, u32 lenWord)
 {
 	// NOTE(aalhendi): Source-backs DrawInstPrim_Normal's retail OT tag write at
 	// 0x8006ae50-0x8006ae64.
 	RenderBucket_WritePackedWord(prim, CtrGpu_PackOTTag(*otEntry, lenWord));
+	if (s_rbOracleCapture != 0)
+	{
+		return;
+	}
 	*otEntry = RenderBucket_OTAddress(prim);
 }
 
@@ -5418,6 +5432,197 @@ static int RenderBucket_RunInstanceSetupCallback(struct RenderBucketDrawContext 
 	}
 }
 
+static void RenderBucket_RunRetailDrawFunc(struct RenderBucketDrawContext *ctx);
+
+// THE ENGINE ORACLE (platform/engine_oracle.c; --engine-oracle, dev, armed
+// frames only). For every instance retail would draw in an armed frame the
+// routes are asked in the same order as in RenderBucket_DispatchDrawFunc; the
+// draws a route submits are logged as E lines of the instance
+// (Engine_OracleSourceBegin/End). Then:
+//   - a route drew it (turbo flame 'X', CMDL driver 'D', track instance 'I'):
+//     the retail handler runs once more in capture mode and its primitives
+//     are logged as R lines, then everything it touched is put back
+//     (RenderBucket_OracleCaptureRetail);
+//   - the native layer drew it (a custom driver's own set): no retail oracle
+//     (its CMDL is not what is drawn), E lines only, as 'D' with native=1;
+//   - nobody: retail draws it exactly as without the oracle, and the packets
+//     it wrote are logged as R lines with route=retail.
+// A driver's body is src 'D' with its seat as srcId, any other instance 'I'.
+static void RenderBucket_OracleRunHandler(struct RenderBucketDrawContext *ctx)
+{
+	switch ((u32)ctx->idpp->unkEC)
+	{
+	case RB_RETAIL_DRAWFUNC_NORMAL:
+		RenderBucket_DrawFunc_Normal(ctx);
+		return;
+	case RB_RETAIL_DRAWFUNC_NORMAL_ALT:
+		RenderBucket_DrawFunc_NormalAlt(ctx);
+		return;
+	case RB_RETAIL_DRAWFUNC_SPLIT:
+		RenderBucket_DrawFunc_Split(ctx);
+		return;
+	case RB_RETAIL_DRAWFUNC_SPECIAL:
+		RenderBucket_DrawFunc_Special(ctx);
+		return;
+	case RB_RETAIL_DRAWFUNC_REFLECTION:
+		RenderBucket_DrawFunc_Reflection(ctx);
+		return;
+	default:
+		return;
+	}
+}
+
+// The retail handler of an instance the engine drew, run once more to read what
+// it makes. What it writes and how that is undone:
+//   primMem      packets from the cursor on; logged, then the cursor is put
+//                back (the next writer overwrites them);
+//   OT           nothing: RenderBucket_LinkPrimRaw links no packet while
+//                s_rbOracleCapture is 1, so none is ever drawn;
+//   idpp         the split/reflection handlers swap the two OT ranges and
+//                swap them back; both are restored anyway;
+//   GTE, scratch the state after the setup callback (slot 0, taken before the
+//                routes) is loaded for the handler, the state after the routes
+//                (slot 1) is loaded back afterwards;
+//   ctx          the handler works on a copy;
+//   counters     NativeTrackMod_NoteDrawExit / NativeChar_NoteDroppedInstance
+//                inside the handlers may count (log counters only).
+// Game state read later (DRAW_SUCCESSFUL, the OT ranges, the animation frame)
+// is set by RenderBucket_QueueDraw before this point and not touched here.
+static void RenderBucket_OracleCaptureRetail(struct RenderBucketDrawContext *ctx, char src, const char *id, const char *extra)
+{
+	struct RenderBucketDrawContext capture = *ctx;
+	void *begin = ctx->primMem->cursor;
+	const int rangeNormal = ctx->idpp->otRangeNormal;
+	const int rangeSecondary = ctx->idpp->otRangeSecondary;
+
+	Engine_OracleStateSave(1);
+	Engine_OracleStateRestore(0);
+	s_rbOracleCapture = 1;
+	RenderBucket_OracleRunHandler(&capture);
+	s_rbOracleCapture = 0;
+	Engine_OracleRetailRangeModel(src, id, begin, ctx->primMem->cursor, extra, ctx->mh);
+	ctx->primMem->cursor = begin;
+	ctx->idpp->otRangeNormal = rangeNormal;
+	ctx->idpp->otRangeSecondary = rangeSecondary;
+	Engine_OracleStateRestore(1);
+}
+
+// The retail writer and draw function of the instance as words for the R lines
+// (prim= from Instance+0x60, RenderBucket_WriteInstanceCallbackLabels; func=
+// from idpp->unkEC).
+static void RenderBucket_OracleRetailNames(const struct RenderBucketDrawContext *ctx, char *out, int size)
+{
+	const u32 prim = (u32)(u32)ctx->inst->funcPtr[1];
+	const u32 func = (u32)ctx->idpp->unkEC;
+	const char *primName = 0;
+	const char *funcName = "other";
+	char primBuf[16];
+
+	switch (prim)
+	{
+	case RB_RETAIL_INST_PRIM_NORMAL:
+		primName = "normal";
+		break;
+	case RB_RETAIL_INST_PRIM_DEPTH_FADE:
+		primName = "fade";
+		break;
+	case RB_RETAIL_INST_PRIM_KEY_TOKEN:
+		primName = "key";
+		break;
+	case RB_RETAIL_INST_PRIM_LIT_TEXTURE:
+		primName = "lit";
+		break;
+	case RB_RETAIL_INST_PRIM_CLAMP_DEPTH:
+		primName = "clamp";
+		break;
+	case RB_RETAIL_INST_PRIM_SELECT_RANGE:
+		primName = "range";
+		break;
+	case RB_RETAIL_INST_PRIM_GHOST:
+		primName = "ghost";
+		break;
+	default:
+		snprintf(primBuf, sizeof(primBuf), "x%08x", (unsigned)prim);
+		primName = primBuf;
+		break;
+	}
+	switch ((int)func)
+	{
+	case RB_RETAIL_DRAWFUNC_NORMAL:
+		funcName = "normal";
+		break;
+	case RB_RETAIL_DRAWFUNC_NORMAL_ALT:
+		funcName = "alt";
+		break;
+	case RB_RETAIL_DRAWFUNC_SPLIT:
+		funcName = "split";
+		break;
+	case RB_RETAIL_DRAWFUNC_SPECIAL:
+		funcName = "special";
+		break;
+	case RB_RETAIL_DRAWFUNC_REFLECTION:
+		funcName = "reflection";
+		break;
+	default:
+		break;
+	}
+	snprintf(out, (size_t)size, "prim=%s func=%s", primName, funcName);
+}
+
+static void RenderBucket_OracleDispatch(struct RenderBucketDrawContext *ctx)
+{
+	char id[ENGINE_ORACLE_ID_MAX];
+	char tags[ENGINE_ORACLE_EXTRA_MAX];
+	char names[48];
+	char retailExtra[ENGINE_ORACLE_EXTRA_MAX];
+	char engineExtra[ENGINE_ORACLE_EXTRA_MAX];
+	char src = 0;
+	char kind = 'I';
+	void *begin;
+
+	Engine_OracleInstanceTags(ctx->inst, ctx->idpp, ctx->pb, &kind, id, (int)sizeof(id), tags, (int)sizeof(tags), engineExtra, (int)sizeof(engineExtra));
+	RenderBucket_OracleRetailNames(ctx, names, (int)sizeof(names));
+	Engine_OracleStateSave(0);
+	Engine_OracleSourceBegin(id);
+	if (EngineFx_TurboRoute(ctx->inst, ctx->idpp, ctx->pb) != 0)
+	{
+		src = 'X';
+	}
+	else if (Engine_DriverCmdlRoute(ctx->inst, ctx->idpp, ctx->pb) != 0)
+	{
+		src = 'D';
+	}
+	else if (g_cfg_engineTrack && (Engine_TrackInstanceRoute(ctx->inst, ctx->idpp, ctx->pb) != 0))
+	{
+		src = kind;
+	}
+	else if (NativeRenderLayer_Route(ctx->inst, ctx->idpp, ctx->pb) != 0)
+	{
+		src = 'L';
+	}
+	if (src == 'L')
+	{
+		snprintf(retailExtra, sizeof(retailExtra), "native=1 %s", engineExtra);
+		Engine_OracleSourceEnd('D', retailExtra);
+		return;
+	}
+	Engine_OracleSourceEnd((src != 0) ? src : kind, engineExtra);
+	if (src != 0)
+	{
+		snprintf(retailExtra, sizeof(retailExtra), "%s %s", names, tags);
+		RenderBucket_OracleCaptureRetail(ctx, src, id, retailExtra);
+		return;
+	}
+
+	// Nobody else draws it: retail, exactly as in RenderBucket_DispatchDrawFunc.
+	Engine_DriverNoteRetailBody(ctx->inst);
+	NativeRenderLayer_NoteSwitchEntry(ctx->inst, ctx->idpp, ctx->pb, (u32)ctx->idpp->unkEC);
+	begin = ctx->primMem->cursor;
+	RenderBucket_RunRetailDrawFunc(ctx);
+	snprintf(retailExtra, sizeof(retailExtra), "route=retail %s %s", names, tags);
+	Engine_OracleRetailRangeModel(kind, id, begin, ctx->primMem->cursor, retailExtra, ctx->mh);
+}
+
 static void RenderBucket_DispatchDrawFunc(struct RenderBucketDrawContext *ctx)
 {
 	// NOTE(aalhendi): Retail RenderBucket_Execute copies the per-model color
@@ -5427,6 +5632,14 @@ static void RenderBucket_DispatchDrawFunc(struct RenderBucketDrawContext *ctx)
 	if (RenderBucket_RunInstanceSetupCallback(ctx) == 0)
 	{
 		NativeTrackMod_NoteDrawExit(ctx->inst, 5, (u32)(u32)ctx->inst->funcPtr[0]);
+		return;
+	}
+
+	// The engine oracle's armed frame (--engine-oracle, dev): the routes and the
+	// retail handler through RenderBucket_OracleDispatch. One comparison otherwise.
+	if (g_cfg_engine && Engine_OracleActive())
+	{
+		RenderBucket_OracleDispatch(ctx);
 		return;
 	}
 
@@ -5455,7 +5668,12 @@ static void RenderBucket_DispatchDrawFunc(struct RenderBucketDrawContext *ctx)
 		Engine_DriverNoteRetailBody(ctx->inst);
 	}
 	NativeRenderLayer_NoteSwitchEntry(ctx->inst, ctx->idpp, ctx->pb, (u32)ctx->idpp->unkEC);
+	RenderBucket_RunRetailDrawFunc(ctx);
+}
 
+// The retail draw handler of the instance (idpp->unkEC), with its exit notes.
+static void RenderBucket_RunRetailDrawFunc(struct RenderBucketDrawContext *ctx)
+{
 	switch ((u32)ctx->idpp->unkEC)
 	{
 	case RB_RETAIL_DRAWFUNC_NORMAL:

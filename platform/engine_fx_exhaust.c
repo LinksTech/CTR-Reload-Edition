@@ -427,6 +427,8 @@ int EngineFx_ExhaustSprite(struct Particle *p, int view, const struct Icon *icon
 		Engine_FxNoteRetail(ENGINE_FX_EXHAUST);
 		return -1;
 	}
+	// The engine oracle (armed frames only): E lines of the effect, no retail side (the producer writes none for an owned driver).
+	Engine_OracleEngineDraw('X', "exhaust", view, &draw, NULL);
 	Engine_FxNoteDrawn(ENGINE_FX_EXHAUST);
 	return 1;
 }
@@ -622,6 +624,8 @@ int EngineFx_WorldSprite(struct Particle *p, int view, const struct Icon *icon, 
 		s_engFxFlameRetail++;
 		return -1;
 	}
+	// The engine oracle (armed frames only): E lines of the world sprite, no retail side.
+	Engine_OracleEngineDraw('X', "worldsprite", view, &draw, NULL);
 	s_engFxFlameDrawn++;
 	return 1;
 }

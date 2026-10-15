@@ -24,8 +24,18 @@
 int g_dbg_emulatorPaused = 0;
 void (*drawsync_callback)(void) = NULL;
 
+// From platform/engine_oracle.c, further down in the translation unit: the
+// engine oracle counts the game's VRAM writes per track (--engine-oracle, dev,
+// round of 2026-10-16). Without the switch one comparison per call.
+extern char g_cfg_engineOracle[];
+void Engine_OracleNoteVramWrite(int kind, int words);
+
 int ClearImage(RECT16 *rect, uint8_t r, uint8_t g, uint8_t b)
 {
+	if (g_cfg_engineOracle[0] != '\0')
+	{
+		Engine_OracleNoteVramWrite(2, rect->w * rect->h);
+	}
 	NativeRenderer_ClearVRAM(rect->x, rect->y, rect->w, rect->h, r, g, b);
 	NativeRenderer_Clear(rect->x, rect->y, rect->w, rect->h, r, g, b);
 	return 0;
@@ -60,6 +70,10 @@ int DrawSync(int mode)
 
 int LoadImage(RECT16 *rect, void *p)
 {
+	if (g_cfg_engineOracle[0] != '\0')
+	{
+		Engine_OracleNoteVramWrite(0, rect->w * rect->h);
+	}
 	NativeRenderer_CopyVRAM((unsigned short *)p, 0, 0, rect->w, rect->h, rect->x, rect->y);
 	return 0;
 }
@@ -73,6 +87,10 @@ int LoadImage2(RECT16 *rect, void *p)
 
 int MoveImage(RECT16 *rect, int x, int y)
 {
+	if (g_cfg_engineOracle[0] != '\0')
+	{
+		Engine_OracleNoteVramWrite(1, rect->w * rect->h);
+	}
 	NativeRenderer_CopyVRAM(NULL, rect->x, rect->y, rect->w, rect->h, x, y);
 	return 0;
 }

@@ -28,6 +28,7 @@ int Engine_SelfTest(void)
 	failures += Engine_SelfTestSky(&checks);
 	failures += Engine_SelfTestWater(&checks);
 	failures += Engine_SelfTestTour(&checks);
+	failures += Engine_SelfTestOracle(&checks);
 	failures += Engine_SelfTestHires(&checks);
 	failures += Engine_SelfTestSwitches(&checks);
 	failures += NativeVk_PendingRangeSelfTest(&checks);

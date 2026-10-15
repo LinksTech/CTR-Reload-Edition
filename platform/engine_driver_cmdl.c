@@ -316,6 +316,8 @@ int Engine_DriverCmdlRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp
 	// The hi-res driver's body (engine_hires.c, --engine-hires-dir) first.
 	if (Engine_HiresRoute(inst, idpp, pb))
 	{
+		// The engine oracle (armed frames only): these E lines are the hi-res driver's (hires=1).
+		Engine_OracleNoteHires();
 		return 1;
 	}
 	seat = EngCmdl_SeatOfBody(gGT, inst);

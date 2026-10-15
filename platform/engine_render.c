@@ -278,6 +278,8 @@ int Engine_RenderUploadMeshes(void)
 	{
 		return 0;
 	}
+	// The engine oracle's per-track report (--engine-oracle only), registered once at the first load.
+	Engine_OracleLoadStage();
 	if (!Engine_RenderInit())
 	{
 		return 0;
@@ -386,6 +388,7 @@ void Engine_RenderLevelUnload(void)
 	// The handles in the mesh table die with the table.
 	Engine_MeshesReset();
 	Engine_MaterialsReset();
+	Engine_OracleLevelUnload();
 
 	// Nothing of the old level's draws may be drawn from either bank.
 	for (int bank = 0; bank < ENGINE_SCENE_BANKS; bank++)
@@ -409,6 +412,9 @@ void Engine_RenderFrameBegin(int bank)
 	{
 		return;
 	}
+
+	// An armed oracle frame ends at the swap: its RenderFrame is done.
+	Engine_OracleFrameEnd();
 
 	NativeGpuLinks_RegisterRangeChecked("engine native markers db0", s_engMarkers[0], sizeof(s_engMarkers[0]));
 	NativeGpuLinks_RegisterRangeChecked("engine native markers db1", s_engMarkers[1], sizeof(s_engMarkers[1]));
@@ -529,6 +535,8 @@ int Engine_RenderSubmitLinked(int view, const EngineDraw *draw, u32 *ot, int cel
 	s_engMarkerCount[bank]++;
 	s_engCount.submitted++;
 	s_engCount.submittedPerView[view & (ENGINE_VIEWS - 1)]++;
+	// The oracle's E lines of the source open now (only in an armed frame).
+	Engine_OracleNoteSubmit(view, draw);
 	return 1;
 }
 
@@ -696,9 +704,21 @@ internal int Engine_RenderDrawRange(const EngineMaterial *material, const Engine
 	return 1;
 }
 
+// The material a range is drawn with. W3 of the oracle (--engine-oracle-fault,
+// measuring only): the one faulted material is drawn from its copy with the
+// wrong clut (Engine_OracleFaultMaterial); otherwise the table's entry.
+internal const EngineMaterial *Engine_RenderMaterialAt(int index)
+{
+	if ((g_engineOracleFaultMaterial >= 0) && (index == g_engineOracleFaultMaterial))
+	{
+		return Engine_OracleFaultMaterial();
+	}
+	return Engine_Material(index);
+}
+
 internal const EngineMaterial *Engine_RenderMaterialFor(const EngineRenderDraw *draw, int rangeMaterial)
 {
-	return Engine_Material((draw->materialOverride >= 0) ? draw->materialOverride : rangeMaterial);
+	return Engine_RenderMaterialAt((draw->materialOverride >= 0) ? draw->materialOverride : rangeMaterial);
 }
 
 // Once-only diagnostics: the first refusal of each kind and the first marker drawn.
@@ -837,7 +857,7 @@ int Engine_DrawMarker(u32 item, const void *clipArg, const void *dispenvArg, int
 
 	if (draw->dynCount > 0u)
 	{
-		const EngineMaterial *material = Engine_Material(draw->dynMaterial);
+		const EngineMaterial *material = Engine_RenderMaterialAt(draw->dynMaterial);
 		const u32 firstVertex = s_engRegion[bank] * (u32)ENGINE_DYN_EXPANDED + draw->dynFirst;
 
 		if (material == NULL)

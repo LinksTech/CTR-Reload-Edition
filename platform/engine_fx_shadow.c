@@ -187,6 +187,8 @@ void EngineFx_Shadow(const struct Driver *d, int view, const SVec3 points[9], co
 		if (Engine_RenderSubmitLinked(view, &draw, ot, cell))
 		{
 			submitted++;
+			// The engine oracle (armed frames only): E lines of the effect, no retail side (the producer writes none for an owned driver).
+			Engine_OracleEngineDraw('X', "shadow", view, &draw, NULL);
 		}
 	}
 	if (submitted > 0)

@@ -901,6 +901,120 @@ void Engine_TourNotify(int entry, int levelID, int phase);
 int Engine_SelfTestTour(int *checks); // engine_tour.c: registry, burst schedule, progress fold, fingerprint
 
 // --------------------------------------------------------------------------
+// ENGINE ORACLE (P1) (platform/engine_oracle.c; round of 2026-10-16)
+//
+// The material comparison W1: in chosen frames both paths write, per drawn
+// face, the texture page, CLUT, texel window and blend they use, one text line
+// each (tab separated):
+//   F <tag> <levelId> <container 0|1> <raceFrame> <views>
+//   R|E <src> <srcId> <sub> <tpX>,<tpY>,<depth> <clutX>,<clutY> <u0>,<v0>,...
+//       <blend o|0..3> <cell row,col|-> <extra key=value key=value ...|->
+// (F has a 7th column, extra: vram=<the frame's VRAM dump>.)
+// R = the primitives the PS1 path makes for the source in that frame, E = what
+// the engine reads for it. Dev only (--engine-oracle <file>, set in main.c);
+// without --engine or without the file every function returns at once.
+#define ENGINE_ORACLE_PATH_MAX 512
+extern char g_cfg_engineOracle[ENGINE_ORACLE_PATH_MAX]; // --engine-oracle <file>; "" = off
+// --engine-oracle-fault <clut|cell>:<n> (W3, repeatable; main.c): n >= 0 plants the
+// fault, -1 = off. clut: P1, the n-th VRAM material of the instance sources;
+// cell: P2, the mosaic side.
+extern int g_cfg_engineOracleFaultClut;
+extern int g_cfg_engineOracleFaultCell;
+// Arms the oracle for the frame made now: call it in the frame's logic, before
+// MainFrame_RenderFrame of that frame. Writes the F line at once and stays
+// active until the next Engine_RenderFrameBegin. raceFrame -1: gGT->framesInThisLEV.
+void Engine_OracleArm(const char *tag);
+void Engine_OracleArmFrame(const char *tag, int raceFrame);
+int Engine_OracleActive(void);    // 1 while an armed frame is made
+void Engine_OracleFrameEnd(void); // from Engine_RenderFrameBegin
+void Engine_OracleLevelUnload(void); // from Engine_RenderLevelUnload: the W3 fault goes with the material table
+
+#define ENGINE_ORACLE_ID_MAX 48
+#define ENGINE_ORACLE_EXTRA_MAX 256
+#define ENGINE_ORACLE_BLEND_OPAQUE (-1)
+typedef struct
+{
+	char src;                         // 'T','I','D','X','S','W','M'
+	char srcId[ENGINE_ORACLE_ID_MAX]; // T: quadblock index; I: "<model>#<n>"; D: seat; X: effect kind
+	int sub;                          // running number inside the source (R: primitive face, E: triangle)
+	int textured;                     // 0: page, clut and uv written as '-'
+	int tpX, tpY, depth;              // page origin in VRAM words, depth 0/1/2 (4/8/15 bit)
+	int clutX, clutY;                 // VRAM words; '-,-' when depth == 2 or clutX < 0
+	int uvCount;                      // 3 or 4 (anything else: uv '-')
+	int uv[8];                        // u0,v0,u1,v1,u2,v2[,u3,v3] page texels
+	int blend;                        // ENGINE_ORACLE_BLEND_OPAQUE or abr 0..3
+	int cellRow, cellCol;             // mosaic tile, -1 = '-'
+	char extra[ENGINE_ORACLE_EXTRA_MAX]; // "key=value key=value" (one space between pairs); "" = '-'
+	int colorCount;                   // 0, or 3/4 corner colours written as col=r,g,b;r,g,b;...
+	u8 color[4][3];
+	int raw;                          // 1: the raw words are written as tp=0x.... cl=0x....
+	u16 rawTpage, rawClut;
+} EngineOracleFace;
+// One R or E line (kind 'R' / 'E'); only while Engine_OracleActive().
+void Engine_OracleWrite(char kind, const EngineOracleFace *f);
+// The line Engine_OracleWrite writes, with its line end, into out (pure, for
+// the selftest). Returns its length, 0 for a bad kind or face.
+int Engine_OracleFormatLine(char kind, const EngineOracleFace *f, char *out, int size);
+// The command words of ONE packet (after its tag, count = tag >> 24) to faces:
+// polygons 0x20..0x3f, sprites 0x60..0x7f, 0xE1 draw mode (kept in *drawMode,
+// 0xffffffff = unknown; a textured polygon sets its page bits as the GPU does),
+// NOPs, lines/fills/copies skipped; stops at an unknown code. src, srcId and
+// sub are not set. Returns the faces written (at most outMax).
+int Engine_OracleDecodePacket(const u32 *words, int count, u32 *drawMode, EngineOracleFace *out, int outMax);
+// The packets in [begin, end) (written in order, each with its tag word): one
+// R line per face, sub from 0, extra in front of each face's own. Returns the faces.
+int Engine_OracleRetailRange(char src, const char *srcId, const void *begin, const void *end, const char *extra);
+// The same, and anim=1 on every face equal to the current layout of an animated
+// (animtex) table slot of mh, the header retail draws (NULL: no such check).
+struct ModelHeader;
+int Engine_OracleRetailRangeModel(char src, const char *srcId, const void *begin, const void *end, const char *extra, const struct ModelHeader *mh);
+// From the model import (platform/engine_model.c), only with --engine-oracle: one
+// byte per mesh triangle (in index order), 1 = from a cycled (animtex) slot.
+// Copied; forgotten at level unload. A mesh with none needs no call.
+void Engine_OracleNoteMeshAnimated(int mesh, const u8 *triangleAnimated, u32 triangles);
+// The page, clut and blend of an engine material (VRAM_TABLE: the material words
+// as they are and table=1; NATIVE: untextured with tex=native).
+void Engine_OracleFaceFromMaterial(const EngineMaterial *m, EngineOracleFace *f);
+// E lines of one engine draw: one per triangle (mesh frame or dynamic vertices,
+// materialOverride honoured, uv rounded to texels); an external mesh one per
+// range with uv '-'. Returns the lines.
+int Engine_OracleEngineDraw(char src, const char *srcId, int view, const EngineDraw *draw, const char *extra);
+// Source context: between Begin and End every successful Engine_RenderSubmitLinked
+// buffers its faces (Engine_OracleNoteSubmit); End writes them with the letter
+// the route decided. No open source: a submit writes nothing.
+void Engine_OracleSourceBegin(const char *srcId);
+void Engine_OracleSourceEnd(char src, const char *extra);
+void Engine_OracleNoteSubmit(int view, const EngineDraw *draw); // from Engine_RenderSubmitLinked
+// The id ("<model>#<InstDef index>" for level instances, "#r<pool slot>" for
+// runtime ones) and the extra of the R lines (lod=<header>, view=<v> for v > 0)
+// and of the E lines (view) of an instance in a view.
+struct Instance;
+struct InstDrawPerPlayer;
+struct PushBuffer;
+// *src: 'D' for a driver's body (srcId = its seat), else 'I'.
+void Engine_OracleInstanceTags(const struct Instance *inst, const struct InstDrawPerPlayer *idpp, const struct PushBuffer *pb, char *src, char *id, int idSize,
+                               char *retailExtra, int retailSize, char *engineExtra, int engineSize);
+// From Engine_DriverCmdlRoute when the hi-res driver drew the body: the open source gets hires=1.
+void Engine_OracleNoteHires(void);
+// The H line's switches: the command line without the program name (main.c, optional).
+void Engine_OracleSetCommandLine(int argc, char **argv);
+// Sums since the start; all 0 without --engine-oracle (selftest, D-W1.10).
+void Engine_OracleCountersGet(u32 *frames, u32 *linesR, u32 *linesE, u32 *dumps);
+// VRAM writes of the game (platform/native_libgpu.c, only with --engine-oracle):
+// kind 0 LoadImage (words = w * h), 1 MoveImage, 2 ClearImage. Counted per tour
+// entry between its first and last race frame, one log line per entry.
+void Engine_OracleNoteVramWrite(int kind, int words);
+void Engine_OracleLoadStage(void); // from Engine_RenderUploadMeshes: registers the tour report once
+// GTE registers and scratchpad into slot 0/1 and back (the retail capture of
+// game/RenderBucket/RenderBucket_QueueExecute.c leaves both as they were).
+void Engine_OracleStateSave(int slot);
+void Engine_OracleStateRestore(int slot);
+// W3: the material index drawn with the wrong clut (-1 = none) and the faulted copy the renderer binds.
+extern int g_engineOracleFaultMaterial;
+const EngineMaterial *Engine_OracleFaultMaterial(void);
+int Engine_SelfTestOracle(int *checks); // the packet decoder on synthetic primitives
+
+// --------------------------------------------------------------------------
 // SELFTEST (platform/engine_selftest.c; main.c --engine-selftest, ctest
 // engine_selftest). Each module's test returns its failure count and adds its
 // checks to *checks; it prints one line per failing check.

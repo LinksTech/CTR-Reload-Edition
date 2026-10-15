@@ -396,6 +396,8 @@ void EngineFx_Skids(const struct Driver *d, const struct PushBuffer *pb)
 			if (Engine_RenderSubmitLinked(view, &draw, pb->ptrOT, run->cell[mid]))
 			{
 				drewAny = 1;
+				// The engine oracle (armed frames only): E lines of the effect, no retail side (the producer writes none for an owned driver).
+				Engine_OracleEngineDraw('X', "skids", view, &draw, NULL);
 			}
 		}
 	}

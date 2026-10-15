@@ -598,6 +598,8 @@ int EngineFx_Tires(const struct Driver *d, const struct Instance *inst, const st
 		{
 			submitted++;
 			Engine_FxNoteDrawn(ENGINE_FX_TIRES);
+			// The engine oracle (armed frames only): E lines of the effect, no retail side (the producer writes none for an owned driver).
+			Engine_OracleEngineDraw('X', "tires", view, &draw, NULL);
 		}
 		else if (submitted == 0)
 		{
