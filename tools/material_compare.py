@@ -44,10 +44,13 @@ header; colour see COL_TOL_*):
     draw at all: missing-source (route=retail: listed, no deviation).
   Track (T), per frame and face (srcId): a retail line with stage or cell
     must equal the engine entry of the same face with the same stage or
-    cell: material exact, its UV corners a subset of the engine corners
-    (a corner set: a GT3 carries 3 of 4, a mirrored piece another order),
-    colours paired by UV point. Not provable this way: the orientation
-    inside a face (no positions in UV lines). Found under another stage or cell of the face: feature stage or
+    cell: material exact, corner k of the retail line on slot k of the
+    engine line (extra slots=<s>,... or ord=slot; a GT3 fills 3 of the 4
+    slots; an engine line with four corners is in slot order), colours per
+    slot. Retail lines without a slot marker fall back to a corner set (its
+    corners a subset of the engine corners, colours paired by UV point; the
+    orientation inside the face is then not provable) and are counted.
+    Found under another stage or cell of the face: feature stage or
     cell. In the load block every engine stage and cell needs a retail
     line (else engine-only); in race frames engine entries without a
     retail line are coverage gaps (counted). Each set (extra set=: none =
@@ -217,7 +220,7 @@ def parse_box(s):
 class Line(object):
     __slots__ = ('side', 'src', 'srcId', 'sub', 'page', 'depth', 'clut', 'uv', 'blend', 'cell',
                  'extra', 'lineno', 'fault', 'col', 'box', 'lod', 'stage', 'anim', 'prim', 'route',
-                 'key', 'ncorner', 'set', 'flags', 'colbad')
+                 'key', 'ncorner', 'set', 'flags', 'colbad', 'slots')
 
     def mat(self):
         return (self.page, self.depth, self.clut, self.blend)
@@ -274,6 +277,19 @@ def parse_entry(fields, lineno):
     ln.route = ln.extra.get('route')
     ln.set = ln.extra.get('set', '-')
     ln.flags = frozenset(k for k in FLAG_KEYS if ln.extra.get(k, '0') not in ('0', ''))
+    # track corners per slot of the face (0 (0,0), 1 (1,0), 2 (0,1), 3 (1,1)):
+    # slots=<s>,<s>,... names the slot of every listed corner (a GT3 three of
+    # them), ord=slot says the corners are listed in slot order; an engine
+    # track line with four corners and no marker is in slot order
+    ln.slots = None
+    if ln.uv is not None and ln.src == 'T':
+        if 'slots' in ln.extra:
+            sl = _ints(ln.extra['slots'], (len(ln.uv),), 'slots')
+            if len(set(sl)) != len(sl) or not all(0 <= x <= 3 for x in sl):
+                raise LogError('bad slots %r' % ln.extra['slots'])
+            ln.slots = tuple(sl)
+        elif ln.extra.get('ord') == 'slot' or (ln.side == 'E' and len(ln.uv) == 4):
+            ln.slots = tuple(range(len(ln.uv)))
     ln.ncorner = len(ln.uv) if ln.uv is not None else (len(ln.col) if ln.col and len(ln.col) > 1 else 3)
     ln.colbad = ln.col is not None and len(ln.col) not in (1, ln.ncorner)
     if ln.colbad:
@@ -815,7 +831,8 @@ def _new_stats():
             'vram_frames': 0, 'vram_missing': [], 'route_retail': {}, 'lod_lines': {},
             'per': {}, 'unused': {}, 'coverage': {}, 'prim_equal': 0, 'menu_tracks': set(),
             'part': {}, 'clip': {}, 'nogeo': {}, 'info_lines': {}, 'stage_none': {}, 'lod_never': set(),
-            'col_unpaired': 0, 'winding': 0, 'piece': {}, 'eom_coverage': [], 'fault_orient': set()}
+            'col_unpaired': 0, 'winding': 0, 'piece': {}, 'eom_coverage': [], 'fault_orient': set(),
+            't_set_rule': {}}
 
 
 def _per(stats, tr, src):
@@ -848,19 +865,39 @@ def _cols_in_range(cols, ref, ctol):
     return all(lo[i] <= c[i] <= hi[i] for c in cols for i in range(3))
 
 
-def _t_diffs(r, e, ctol):
-    """Track line against an engine line of a face: material exact, the retail
-    UV corners a subset of the engine corners, colours paired by UV point."""
-    d = _mat_diffs(r, e)
+def _slot_map(ln):
+    return dict(zip(ln.slots, _corners(ln)))
+
+
+def _t_corners_ok(r, e):
+    """Ordered per slot when both lines name their slots (corner k of the
+    retail line on slot k of the engine line; a GT3 fills 3 of 4), else the
+    retail corners a subset of the engine corners (fallback, orientation not
+    provable)."""
     if r.uv is None or e.uv is None:
-        sub = r.uv is None and e.uv is None
-    else:
-        sub = set(r.uv) <= set(e.uv)
-    if not sub:
+        return r.uv is None and e.uv is None
+    if r.slots is not None and e.slots is not None:
+        em = _slot_map(e)
+        return all(s in em and em[s][0] == c[0] for s, c in _slot_map(r).items())
+    return set(r.uv) <= set(e.uv)
+
+
+def _t_diffs(r, e, ctol):
+    """Track line against an engine line of a face: material exact, the UV
+    corners per slot (fallback: as a subset), colours paired by slot (fallback:
+    by UV point)."""
+    d = _mat_diffs(r, e)
+    if not _t_corners_ok(r, e):
         d.append('uv')
-    elif r.uv is not None and r.col is not None and e.col is not None and \
-            not _pair_cols_ok(_corners(r), _corners(e), ctol):
-        d.append('col')
+    elif r.uv is not None and r.col is not None and e.col is not None:
+        if r.slots is not None and e.slots is not None:
+            em = _slot_map(e)
+            ok = all(em[s][1] is None or c[1] is None or max(abs(p - q) for p, q in zip(c[1], em[s][1])) <= ctol
+                     for s, c in _slot_map(r).items())
+        else:
+            ok = _pair_cols_ok(_corners(r), _corners(e), ctol)
+        if not ok:
+            d.append('col')
     return [f for f in FEATURES if f in d]
 
 
@@ -951,7 +988,7 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                         for r in rl:
                             rby.setdefault(r.key, []).append(r)
                         seen = any(e.fault == kind and e.key in rby and
-                                   all(_mat_diffs(r, e) or set(r.uv or ()) != set(e.uv or ()) for r in rby[e.key])
+                                   all(_mat_diffs(r, e) or not _t_corners_ok(r, e) for r in rby[e.key])
                                    for e in el)
                         if rl and not seen:
                             stats['fault_orient'].add((kind, (tr, obj)))
@@ -1083,8 +1120,10 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                             fault=best.fault)
                         continue
                     if src == 'T':
-                        # track UV as a corner set: the retail corners are a subset of the
-                        # corners of the engine line of the same key (a GT3 carries 3 of 4)
+                        # track UV per slot (fallback without slot marker: as a corner set,
+                        # the retail corners a subset of the engine corners; counted)
+                        if r.uv is not None and r.slots is None:
+                            _bump(stats['t_set_rule'], tr, count)
                         same = [e for e in es.lines if e.key == r.key]
                         hit = next((e for e in same if not _t_diffs(r, e, ctol)), None)
                         if hit is not None:
@@ -1605,8 +1644,10 @@ def render_md(res, inputs, exc_origin):
               % sum(s['piece'].values()))
     md.append('- Engine materials on triangles retail never drew (coverage, not engine-only-material): %d'
               % len(s['eom_coverage']))
-    md.append('- Not provable from UV lines: the orientation inside a track face (UV compared as a corner set, '
-              'no positions); covered by the offline check of the mirror tables and by screenshots')
+    if s['t_set_rule']:
+        md.append('- Track lines without slot marker, compared as a corner set (orientation inside the face not '
+                  'provable): %d (%s)' % (sum(s['t_set_rule'].values()),
+                                         ' '.join('%s %d' % kv for kv in sorted(s['t_set_rule'].items()))))
     if s['coverage']:
         md.append('')
         md += _table(('track', 'faces (load block)', 'seen in race frames', 'cells (load block)', 'seen',
@@ -1921,9 +1962,33 @@ def selftest():
                   F('t1'), T('R', '5', C00, 'cell=0,0'), T('E', '5', C00, 'cell=0,0')])
     check('track coverage: mirrored faces and those with race cells', res.stats['coverage'].get('L3') == (2, 1, 2, 1, 2, 1))
 
-    # track UV as a corner set (retail corners a subset of the engine corners of the key)
+    # track corners per slot (A9): corner k of the retail line on slot k of the engine line
+    res, _ = run([F(), T('R', '5', C00, 'cell=0,0', extra='ord=slot'), T('E', '5', C00, 'cell=0,0')])
+    check('slots: same corners in slot order: 0, no set rule', len(res.open) == 0 and res.stats['t_set_rule'] == {})
+    res, _ = run([F(), T('R', '5', '7,0,0,0,7,7,0,7', 'cell=0,0', extra='ord=slot'), T('E', '5', C00, 'cell=0,0')])
+    check('slots: a cell turned (same corner set, other slots): uv', feats(res) == ['uv'])
+    res, _ = run([F(), T('R', '5', '0,0,7,0,0,7', 'cell=0,0', extra='slots=0,1,2'), T('E', '5', C00, 'cell=0,0')])
+    check('slots: a GT3 on 3 of the 4 slots: 0', len(res.open) == 0)
+    res, _ = run([F(), T('R', '5', '7,0,7,7,0,7', 'cell=0,0', extra='slots=1,3,2'), T('E', '5', C00, 'cell=0,0')])
+    check('slots: a GT3 on the other diagonal: 0', len(res.open) == 0)
+    res, _ = run([F(), T('R', '5', '7,0,7,7,0,7', 'cell=0,0', extra='slots=0,3,2'), T('E', '5', C00, 'cell=0,0')])
+    check('slots: a GT3 with a corner on the wrong slot: uv', feats(res) == ['uv'])
+    res, _ = run([F(), T('R', '5', C00, 'cell=0,0', extra='ord=slot,col=1,1,1;2,2,2;3,3,3;4,4,4'),
+                  T('E', '5', C00, 'cell=0,0', extra='col=1,1,1;2,2,2;3,3,4;4,4,4')])
+    check('slots: colours compared per slot', feats(res) == ['col'])
+    TURN = '7,0,0,0,7,7,0,7'
+    res, _ = run([F('L3-load'), T('R', '5', C00, 'cell=0,0', extra='ord=slot'), T('R', '5', TURN, 'cell=0,1', extra='ord=slot'),
+                  T('E', '5', TURN, 'cell=0,0', extra='fault=cell'),
+                  T('E', '5', C00, 'cell=0,1', extra='fault=cell')], expect=['fault:cell'])
+    check('slots: swapping a tile with its turned copy is a cell deviation and the control fires',
+          res.control.startswith('yes') and res.stats['fault_orient'] == set() and feats(res) == ['cell', 'cell'])
+    check('parse: bad slots are an error',
+          len(parse_log('\n'.join([F(), T('R', '5', C00, 'cell=0,0', extra='slots=0,1,1,2')]) + '\n', 's').errors) == 1)
+
+    # fallback without slot marker: track UV as a corner set (counted)
     res, _ = run([F(), T('R', '5', '7,0,0,0,7,7,0,7', 'cell=0,0'), T('E', '5', C00, 'cell=0,0')])
-    check('track corner set: a mirrored corner order of a cell: 0', len(res.open) == 0)
+    check('track corner set: a mirrored corner order of a cell: 0, counted as set rule',
+          len(res.open) == 0 and res.stats['t_set_rule'] == {'L3': 1})
     res, _ = run([F(), T('R', '5', '0,0,7,0,0,7', 'cell=0,0'), T('E', '5', C00, 'cell=0,0')])
     check('track corner set: a GT3 with 3 of the 4 corners: 0', len(res.open) == 0)
     res, _ = run([F(), T('R', '5', '0,0,7,0,0,8', 'cell=0,0'), T('E', '5', C00, 'cell=0,0')])
