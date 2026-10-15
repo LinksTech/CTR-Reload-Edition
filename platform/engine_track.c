@@ -2417,8 +2417,9 @@ enum
 };
 
 // Which rule of Engine_TrackInstanceRoute takes an instance; modelInTable: its
-// model has an entry in the model table; containerLevel: the level came from a
-// track container (level id NATIVE_TRACK_LEVELID_FIRST and up). Runtime
+// model has an entry in the model table; containerLevel: the level is a loaded
+// track container's (NativeTrack_ActiveForLevel - a container plays in its
+// donor's level slot, so its gGT->levelID is a retail one). Runtime
 // instances are taken on container levels only: retail births some without a
 // thread too (the 'wake' model, id 67, on Dingo Canyon and Tiny Arena; E7 tour
 // of 2026-10-15), and those stay with their retail handler.
@@ -2624,7 +2625,7 @@ int Engine_TrackInstanceRoute(struct Instance *inst, struct InstDrawPerPlayer *i
 		return 0;
 	}
 	em = EngTrack_ModelEntry(inst->model, 0);
-	switch (EngTrack_InstanceRule(inst, em != NULL, s_egtLevelID >= NATIVE_TRACK_LEVELID_FIRST))
+	switch (EngTrack_InstanceRule(inst, em != NULL, NativeTrack_ActiveForLevel(s_egtLevelID)))
 	{
 	case EGT_RULE_LEVEL:
 		return EngTrack_RouteInstance(inst, idpp, pb, (em != NULL) ? em : EngTrack_ModelEntry(inst->model, 1), 0);
