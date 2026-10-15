@@ -131,3 +131,16 @@ u32 Engine_ProgramOf(int program)
 	}
 	return (id != NATIVE_GFX_INVALID) ? (u32)id : 0xffffffffu;
 }
+
+// The reason Engine_RenderInit hands to Engine_Fallback when a program is missing.
+const char *Engine_ProgramsFailReason(void)
+{
+	const int ne = (s_engineProgram == NATIVE_GFX_INVALID);
+	const int nw = (s_engineWaterProgram == NATIVE_GFX_INVALID);
+
+	if (ne && nw)
+	{
+		return "the programs 'ne' and 'nw' could not be created";
+	}
+	return ne ? "the program 'ne' could not be created" : (nw ? "the program 'nw' could not be created" : "no program missing");
+}

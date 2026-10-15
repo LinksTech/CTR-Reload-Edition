@@ -1786,6 +1786,7 @@ void Engine_TrackLoad(void)
 	int leaves;
 	int i;
 	u8 *live = NULL; // level vertices the game animates (SCVert), NULL when none
+	const char *failed = NULL; // the reason for Engine_Fallback; NULL = the level is drawable
 
 	EngTrack_DrawFree();
 	s_egtModelCount = 0;
@@ -1822,6 +1823,7 @@ void Engine_TrackLoad(void)
 	if ((water == NULL) || (inLeaf == NULL) || (form == NULL) || (faceWord == NULL) || (faceBit == NULL) || (leafNode == NULL) || (special == NULL))
 	{
 		Platform_Log("[CTR Engine] track: out of memory\n");
+		failed = "out of memory";
 		goto done;
 	}
 	leaves = EngTrack_MarkLeaves(mesh, water, inLeaf, form, faceWord, faceBit, leafNode, special);
@@ -1832,6 +1834,7 @@ void Engine_TrackLoad(void)
 	if ((s_egtLeafShown == NULL) || (s_egtLeafWalk == NULL) || (s_egtWalkStack == NULL))
 	{
 		Platform_Log("[CTR Engine] track: out of memory\n");
+		failed = "out of memory";
 		goto done;
 	}
 	s_egtFaceWords = (mesh->numQuadBlock + 31) >> 5;
@@ -2004,8 +2007,23 @@ void Engine_TrackLoad(void)
 		free(normal);
 	}
 
-	// The mosaic data texture, after the last face.
-	Engine_TrackMosaicEnd();
+	// The mosaic data texture, after the last face. Without it every face keyed
+	// to a table (tpage bit 15) is refused at its draw (engine_render.c, "mosaic
+	// table range without its data texture"): the track would have holes.
+	if (!Engine_TrackMosaicEnd())
+	{
+		for (i = 0; i < s_egtKeys.count; i++)
+		{
+			if ((s_egtKeys.key[i].tpage & 0x8000u) != 0u)
+			{
+				failed = "the track mosaic data texture was not made";
+			}
+		}
+		if (failed != NULL)
+		{
+			goto done;
+		}
+	}
 
 	// Materials: one per key, registered once (Engine_MaterialRegister does not dedupe).
 	matOfKey = (int *)malloc(((size_t)s_egtKeys.count + 1u) * sizeof(int));
@@ -2013,6 +2031,7 @@ void Engine_TrackLoad(void)
 	{
 		Platform_Log("[CTR Engine] track: out of memory\n");
 		EngTrack_DrawFree();
+		failed = "out of memory";
 		goto done;
 	}
 	// A key whose faces all became decals has no face left: no material for it.
@@ -2071,6 +2090,7 @@ void Engine_TrackLoad(void)
 		Platform_Log("[CTR Engine] track: out of memory\n");
 		droppedFaces += s_egtFaceCount;
 		EngTrack_DrawFree();
+		failed = "out of memory (draw groups)";
 	}
 	s_egtVertices = mesh->ptrVertexArray;
 	s_egtLevel = level;
@@ -2126,6 +2146,11 @@ done:
 	free(leafNode);
 	free(special);
 	free(live);
+	// A level the engine cannot draw goes to the PS1 path, with the reason (FALLBACK, engine.h).
+	if (failed != NULL)
+	{
+		Engine_Fallback("track load", failed);
+	}
 }
 
 // Once per frame from Engine_FrameCollect (MainFrame_RenderFrame.c:134): decides

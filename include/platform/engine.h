@@ -30,6 +30,20 @@ extern int g_cfg_engineHide;
 #define ENGINE_HIDE_SKY 0x1
 #define ENGINE_HIDE_WATER 0x2
 
+// --------------------------------------------------------------------------
+// FALLBACK (platform/engine.c; day round of 2026-10-15)
+//
+// When the engine cannot start (its programs "ne"/"nw" or its dynamic vertex
+// buffer are not made, Engine_RenderInit) or cannot draw a level it loads
+// (Engine_TrackLoad without memory or without the mosaic data texture, a mesh
+// that does not upload), the run goes on over the PS1 path: one log line with
+// the stage and the reason, then every engine switch above goes to 0 for the
+// rest of the run. Every hook asks g_cfg_engine first, so the game draws as in
+// a run without --engine. Called only at load points (never inside a frame).
+// Game state is not touched: the engine only ever read it.
+void Engine_Fallback(const char *stage, const char *reason);
+int Engine_FellBack(void); // 1 = Engine_Fallback switched the engine off in this run
+
 // THE PRINCIPLE (2026-10-13): CTR Reload is a PC version, not a 1:1 port. The
 // engine shows the game state the way we want it; it does NOT rebuild the PS1
 // drawing pipeline (ordering tables as a goal, GTE rounding, PS1 sprite maths,
@@ -445,6 +459,8 @@ typedef struct
 
 // Creates the engine programs ("ne", "nw") once (only with g_cfg_engine). 1 = "ne" ready.
 int Engine_ProgramsInit(void);
+// Why a program is missing, for the log line of Engine_Fallback (Engine_RenderInit).
+const char *Engine_ProgramsFailReason(void);
 // The handle of "ne" (ShaderID as u32), 0xffffffff when not made.
 u32 Engine_Program(void);
 // The handle of an ENGINE_PROGRAM_* program, 0xffffffff when not made or unknown.

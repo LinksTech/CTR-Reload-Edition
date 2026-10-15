@@ -1,6 +1,7 @@
 #include <platform/engine.h>
 
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 
 // ENGINE RENDER - see include/platform/engine.h (section RENDER).
@@ -172,8 +173,21 @@ int Engine_RenderInit(void)
 		return s_engRenderReady;
 	}
 	s_engRenderTried = 1;
+	// The exit report also in a run that falls back below (it says what the
+	// engine drew before; Engine_RenderReport).
+	Platform_AtExitReport(Engine_RenderReport);
 
+	// Both programs or none: a material names "ne" or "nw", and a range without
+	// its program would be refused at every draw (refusedNoProgram) - a hole
+	// in the picture, not a picture. Then the PS1 path draws (Engine_Fallback).
 	Engine_ProgramsInit();
+	if ((Engine_ProgramOf(ENGINE_PROGRAM_NE) == 0xffffffffu) || (Engine_ProgramOf(ENGINE_PROGRAM_NW) == 0xffffffffu))
+	{
+		Platform_Log("[CTR Engine] render NOT ready: program 'ne' %s, program 'nw' %s\n", (Engine_ProgramOf(ENGINE_PROGRAM_NE) == 0xffffffffu) ? "missing" : "ready",
+		             (Engine_ProgramOf(ENGINE_PROGRAM_NW) == 0xffffffffu) ? "missing" : "ready");
+		Engine_Fallback("start", Engine_ProgramsFailReason());
+		return 0;
+	}
 
 	Engine_RenderFillVertexDesc(&desc, (int)bytes, 1, NULL);
 	s_engDynBuffer = NativeGfx_CreateVertexBuffer(&desc);
@@ -181,6 +195,7 @@ int Engine_RenderInit(void)
 	{
 		s_engDynBuffer = NATIVE_GFX_INVALID;
 		Platform_Log("[CTR Engine] render NOT ready: dynamic vertex buffer (%u bytes) could not be created\n", bytes);
+		Engine_Fallback("start", "the dynamic vertex buffer of the engine could not be created");
 		return 0;
 	}
 	s_engDynBytes = bytes;
@@ -188,8 +203,6 @@ int Engine_RenderInit(void)
 
 	Platform_Log("[CTR Engine] render ready: program %s, dynamic buffer %u bytes (%d regions x %d vertices)\n",
 	             (Engine_Program() != 0xffffffffu) ? "ne ready" : "ne missing", bytes, ENGINE_DYN_REGIONS, ENGINE_DYN_EXPANDED);
-	// The engine registers its own exit report whenever it is on.
-	Platform_AtExitReport(Engine_RenderReport);
 	return 1;
 }
 
@@ -216,6 +229,7 @@ int Engine_RenderUploadMeshes(void)
 {
 	int uploaded = 0;
 	u64 bytes = 0;
+	const u32 failedBefore = s_engCount.uploadFailed;
 
 	if (!g_cfg_engine)
 	{
@@ -291,6 +305,15 @@ int Engine_RenderUploadMeshes(void)
 	}
 
 	Platform_Log("[CTR Engine] meshes uploaded: %d (%llu bytes)\n", uploaded, (unsigned long long)bytes);
+	// A mesh without buffers is refused at every draw (refusedBadMesh): the
+	// driver or the track faces it carries would be missing from the picture.
+	if (s_engCount.uploadFailed != failedBefore)
+	{
+		char reason[96];
+
+		snprintf(reason, sizeof(reason), "%u mesh(es) could not be uploaded", s_engCount.uploadFailed - failedBefore);
+		Engine_Fallback("level load", reason);
+	}
 	return uploaded;
 }
 
@@ -877,7 +900,8 @@ void Engine_RenderCountersGet(EngineRenderCounters *out)
 
 void Engine_RenderReport(void)
 {
-	if (!g_cfg_engine)
+	// After a fallback as well: the counters say what the engine drew before it.
+	if (!g_cfg_engine && !Engine_FellBack())
 	{
 		return;
 	}
