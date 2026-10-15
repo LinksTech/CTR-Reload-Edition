@@ -414,6 +414,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--engine-fail", "<start|track>", "with --engine, measuring only: forces the engine's fallback to the PS1 path - start: the programs 'ne' and 'nw' are not made, track (needs --engine-track): the first track load of the engine fails; the log names the reason and the run goes on without the engine"},
     {"--engine-oracle", "<file>", "with --engine --engine-track, measuring only: the log of the material comparison into <file> (relative to the game folder) - per drawn surface the texture page, CLUT, UV, blend and mosaic cell of the PS1 path and of the engine, in the frames --level-tour-oracle arms; without it nothing is written"},
     {"--engine-oracle-fault", "<clut|cell>:<n>", "with --engine-oracle, measuring only (the controls of the comparison): clut:<n> - the CLUT of the n-th engine material of the instances is falsified on purpose, cell:<n> - two cells of a mosaic row of the track are swapped; each named in the log; given once per kind (twice for both)"},
+    {"--engine-particles", "", "with --engine --engine-track, a prototype (off by default): the world particles (wheel spray, sparks, smoke, flames, bubbles, mud) drawn by the engine with a depth test against the engine track; without it the PS1 path draws them as before; per track the log line 'world particles: engine N, left to retail M'"},
     {"--no-engine", "", "the native engine stays off for this run, whatever ctr-settings.cfg says (video engine 1); the way back to the PS1 path once the engine is the default; not with --engine"},
     {"--dev-race-mode", "<tt|adventure>", "with --level: the direct start as a retail Time Trial (tt) or as an Adventure race (adventure) instead of an arcade race"},
     {"--dev-tt-ghost", "", "with --dev-race-mode tt: the track's staff ghost (N. Tropy) races along - its gate is opened in this session's progress in RAM (the card root is the one of --dev-race-mode); retail disc tracks only"},
@@ -788,7 +789,7 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			                                   (strcmp(argv[argIndex], "--engine-hires-texcycle") == 0) || (strcmp(argv[argIndex], "--engine-menuscene-zoom") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-hires-anim") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-fail") == 0) || (strcmp(argv[argIndex], "--engine-oracle") == 0) ||
-			                                   (strcmp(argv[argIndex], "--engine-oracle-fault") == 0)))
+			                                   (strcmp(argv[argIndex], "--engine-oracle-fault") == 0) || (strcmp(argv[argIndex], "--engine-particles") == 0)))
 			{
 				needsEngine = argv[argIndex];
 			}
@@ -885,6 +886,34 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 		{
 			fflush(stdout);
 			fprintf(stderr, "switch --engine-fail track requires --engine-track\n");
+			fflush(stderr);
+			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+	}
+
+	// --engine-particles draws the world particles against the engine's track,
+	// so it needs --engine-track (--engine is checked above). Refused here,
+	// before any window.
+	{
+		int trackGiven = 0;
+		int particlesGiven = 0;
+
+		for (int argIndex = 1; argIndex < argc; argIndex++)
+		{
+			if (strcmp(argv[argIndex], "--engine-track") == 0)
+			{
+				trackGiven = 1;
+			}
+			else if (strcmp(argv[argIndex], "--engine-particles") == 0)
+			{
+				particlesGiven = 1;
+			}
+		}
+
+		if (particlesGiven && !trackGiven)
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch --engine-particles requires --engine-track\n");
 			fflush(stderr);
 			return NATIVE_EXIT_DEV_REQUIRED;
 		}
@@ -1194,6 +1223,11 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 		else if (strcmp(argv[argIndex], "--engine-track") == 0)
 		{
 			g_cfg_engineTrack = 1;
+		}
+		else if (strcmp(argv[argIndex], "--engine-particles") == 0)
+		{
+			// The pairing was checked before any window (NativeArgs_GateDevSwitches).
+			g_cfg_engineParticles = 1;
 		}
 		else if (strcmp(argv[argIndex], "--engine-testscene") == 0)
 		{
@@ -4022,6 +4056,11 @@ int main(int argc, char *argv[])
 				// Set by the early reader; the file is opened by platform/engine_oracle.c.
 				Platform_Log("[CTR Engine] --engine-oracle %s (measuring): the log of the material comparison; frames only where --level-tour-oracle arms them\n",
 				             g_cfg_engineOracle);
+			}
+			else if (strcmp(argv[argIndex], "--engine-particles") == 0)
+			{
+				// Set by the early reader; the counts are logged per track and at exit.
+				Platform_Log("[CTR Engine] --engine-particles: on (dev, prototype); the world particles are drawn by the engine with a depth test\n");
 			}
 			else if (strcmp(argv[argIndex], "--engine-oracle-fault") == 0)
 			{

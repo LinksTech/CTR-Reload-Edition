@@ -636,8 +636,11 @@ int EngineFx_WorldSprite(struct Particle *p, int view, const struct Icon *icon, 
 // WORLD PARTICLES (night round of 2026-10-16): every particle of the ordinary
 // list (wheel spray, terrain dust, water and snow spray, sparks, smoke, flames,
 // exhaust of retail drivers, ...) drawn by the engine under --engine
-// --engine-track, with a depth test against the engine track. The PS1 primitive
-// has none and shows through walls.
+// --engine-track --engine-particles, with a depth test against the engine track.
+// The PS1 primitive has none and shows through walls. OFF by default (dev switch
+// --engine-particles, main.c): whether the spray stays visible under the depth
+// test is not settled yet; without the switch the PS1 path draws every particle
+// as before and Particle_RenderList only compares the switch.
 //
 // WHERE AND WHAT. Particle_RenderList (game/Particle.c) offers a particle at the
 // one point where retail is about to link its primitive into the ordering table:
@@ -652,8 +655,8 @@ int EngineFx_WorldSprite(struct Particle *p, int view, const struct Icon *icon, 
 // retail links nothing (the written primitive is neither linked nor kept), or 0
 // and retail links it as always.
 //
-// THE RULE. Taken is every particle that reaches that point while the engine
-// draws the track in this frame (Engine_TrackDrawnThisFrame: decided by the
+// THE RULE. With --engine-particles, taken is every particle that reaches that
+// point while the engine draws the track in this frame (Engine_TrackDrawnThisFrame: decided by the
 // frame's collect, before the particles; 1 player, not the menu). One path for
 // every kind: the kind only names the counter (the icon group's slot in
 // gGT->iconGroup, 0x00..0x10, or "other"); the geometry follows the axes:
@@ -682,6 +685,10 @@ int EngineFx_WorldSprite(struct Particle *p, int view, const struct Icon *icon, 
 // the engine cannot project it, retail would draw a screen-filling quad - taken
 // and not drawn, as the exhaust does. Outside a frame with the engine track the
 // hook answers 0 and counts nothing as left (that is the PS1 track's frame).
+
+// --engine-particles (main.c; dev, needs --engine --engine-track): 1 = the engine
+// draws the world particles. Read by Particle_RenderList and the rule.
+int g_cfg_engineParticles = 0;
 
 #define ENGINE_FX_PARTICLE_SLOTS 0x11 // gGT->iconGroup[0x11]
 #define ENGINE_FX_PARTICLE_OTHER ENGINE_FX_PARTICLE_SLOTS
@@ -818,9 +825,9 @@ internal int EngineFx_ParticleKindOf(const struct IconGroup *group, struct IconG
 
 // The rule on plain values (also the self test's subject): the engine is on and
 // draws the track in this frame. Every particle that reaches the hook is then taken.
-internal int EngineFx_ParticleRule(int engine, int trackDrawn)
+internal int EngineFx_ParticleRule(int engine, int particles, int trackDrawn)
 {
-	return engine && trackDrawn;
+	return engine && particles && trackDrawn;
 }
 
 // Material for a particle, cached per level (the table resets at level unload;
@@ -1100,7 +1107,7 @@ internal int EngineFx_ParticleEnter(const struct Particle *p, int view, const En
 	const struct GameTracker *gGT = sdata->gGT;
 	int kind;
 
-	if ((p == NULL) || (gGT == NULL) || !EngineFx_ParticleRule(g_cfg_engine, Engine_TrackDrawnThisFrame()))
+	if ((p == NULL) || (gGT == NULL) || !EngineFx_ParticleRule(g_cfg_engine, g_cfg_engineParticles, Engine_TrackDrawnThisFrame()))
 	{
 		return -1;
 	}
@@ -1505,9 +1512,10 @@ internal int EngineFx_ParticleSelfTest(int *checks)
 	char msg[160];
 
 	// The rule.
-	EngineFx_ExhaustCheck(EngineFx_ParticleRule(1, 1), "particle rule: taken with the engine track drawn", checks, &failures);
-	EngineFx_ExhaustCheck(!EngineFx_ParticleRule(0, 1), "particle rule: not without --engine", checks, &failures);
-	EngineFx_ExhaustCheck(!EngineFx_ParticleRule(1, 0), "particle rule: not in a frame the PS1 walk draws the track", checks, &failures);
+	EngineFx_ExhaustCheck(EngineFx_ParticleRule(1, 1, 1), "particle rule: taken with the switch and the engine track drawn", checks, &failures);
+	EngineFx_ExhaustCheck(!EngineFx_ParticleRule(0, 1, 1), "particle rule: not without --engine (also after the engine's fallback)", checks, &failures);
+	EngineFx_ExhaustCheck(!EngineFx_ParticleRule(1, 0, 1), "particle rule: not without --engine-particles", checks, &failures);
+	EngineFx_ExhaustCheck(!EngineFx_ParticleRule(1, 1, 0), "particle rule: not in a frame the PS1 walk draws the track", checks, &failures);
 
 	// The kind: the slot of the icon group; the first slot wins; no group or an unknown one is "other".
 	{

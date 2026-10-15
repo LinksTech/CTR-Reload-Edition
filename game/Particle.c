@@ -1129,6 +1129,9 @@ int NativeChar_ExhaustDraw(const struct Particle *particle, s32 *posX, s32 *posY
 
 #if defined(CTR_NATIVE)
 extern int g_cfg_engine;
+// --engine-particles (platform/engine_fx_exhaust.c; dev, needs --engine --engine-track):
+// the world particles below are offered to the engine; 0 = the PS1 path as before.
+extern int g_cfg_engineParticles;
 
 // From platform/engine_fx_exhaust.c (--engine): the exhaust smoke of a custom
 // driver the engine draws, computed from the particle's state (position with
@@ -1146,7 +1149,7 @@ int EngineFx_ExhaustSprite(struct Particle *p, int view, const struct Icon *icon
 // every other particle.
 int EngineFx_WorldSprite(struct Particle *p, int view, const struct Icon *icon, s32 posX, s32 posY, s32 posZ, const s32 *cameraOffset, u32 *defaultOT);
 
-// From platform/engine_fx_exhaust.c (--engine --engine-track, WORLD PARTICLES): every
+// From platform/engine_fx_exhaust.c (--engine-particles, WORLD PARTICLES): every
 // particle retail is about to link into an ordering table - after its gates, its
 // Particle_SetColors call and its primitive, so every game-state write of this
 // function happens exactly as before - is offered to the engine, which draws it
@@ -1230,7 +1233,7 @@ void Particle_RenderList(struct PushBuffer *pb, void *particleList)
 	scratch->cameraOffset[2] = CTR_MipsSll(pb->matrix_Camera.t[2], 2);
 
 #if defined(CTR_NATIVE)
-	if (g_cfg_engine)
+	if (g_cfg_engineParticles)
 	{
 		EngineFx_ParticlesBegin((int)cameraID);
 	}
@@ -1404,10 +1407,10 @@ void Particle_RenderList(struct PushBuffer *pb, void *particleList)
 			{
 				Particle_RenderList_WriteSpecialPrimitive((struct ParticleSpecialPacket *)prim, particle, flagsAxis, flagsSetColor, color, scratch);
 #if defined(CTR_NATIVE)
-				// --engine --engine-track: the engine draws the line (WORLD PARTICLES);
+				// --engine-particles: the engine draws the line (WORLD PARTICLES);
 				// the packet stays written, it is neither linked nor kept.
-				if (g_cfg_engine && (EngineFx_ParticleLine(particle, (int)cameraID, flagsAxis, flagsSetColor, color, posX, posY, posZ, scratch->cameraOffset,
-				                                           scratch->depth, idpp, scratch->ot) == 1))
+				if (g_cfg_engineParticles && (EngineFx_ParticleLine(particle, (int)cameraID, flagsAxis, flagsSetColor, color, posX, posY, posZ,
+				                                                    scratch->cameraOffset, scratch->depth, idpp, scratch->ot) == 1))
 				{
 					goto next_particle;
 				}
@@ -1429,11 +1432,11 @@ void Particle_RenderList(struct PushBuffer *pb, void *particleList)
 				Particle_RenderList_AdvanceUnlinked(&primCursor, &payloadCursor);
 			}
 #if defined(CTR_NATIVE)
-			// --engine --engine-track: the engine draws the quad (WORLD PARTICLES); the
+			// --engine-particles: the engine draws the quad (WORLD PARTICLES); the
 			// primitive stays written (the probe still reads it), it is neither
 			// linked nor kept.
-			else if (g_cfg_engine && (EngineFx_ParticleQuad(particle, (int)cameraID, icon, flagsSetColor, color, &matrix, posX, posY, posZ, scratch->cameraOffset,
-			                                                scratch->depth, idpp, scratch->ot, (const POLY_FT4 *)prim) == 1))
+			else if (g_cfg_engineParticles && (EngineFx_ParticleQuad(particle, (int)cameraID, icon, flagsSetColor, color, &matrix, posX, posY, posZ,
+			                                                         scratch->cameraOffset, scratch->depth, idpp, scratch->ot, (const POLY_FT4 *)prim) == 1))
 			{
 				NativeRenderLayer_NoteParticleQuad(particle, pb, (const POLY_FT4 *)prim);
 			}
