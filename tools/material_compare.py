@@ -29,8 +29,13 @@ Rules (tolerance 0 on page, depth, CLUT, UV texels, blend, cell, stage,
 header; colour see COL_TOL_*):
   Models (I D X M S W), per frame and source: every retail triangle must be
     an engine triangle with the same page, depth, CLUT, blend, UV corners and
-    corner colours. Triangles are compared rotated so the smallest (u,v)
-    comes first, winding kept; a quad is two triangles of either diagonal.
+    corner colours. A triangle is a set of (UV, colour) corners; one found
+    only with the other winding is counted apart (the import lists one-sided
+    triangles in the engine's cull order; --strict-winding compares the
+    winding). A quad is two triangles of either diagonal. Pieces of
+    func=split|reflection|special (cut at the water or mirror line): material
+    exact, UV corners inside the corner box of an engine triangle, their
+    colour outside the triangle's colour range is split-col / mirror-col.
     A miss is classified by the features in which the nearest engine
     triangle differs. Retail lines with a header (lod) the engine does not
     draw are counted as class lod, not compared. prim other than normal
@@ -39,7 +44,10 @@ header; colour see COL_TOL_*):
     draw at all: missing-source (route=retail: listed, no deviation).
   Track (T), per frame and face (srcId): a retail line with stage or cell
     must equal the engine entry of the same face with the same stage or
-    cell. Found under another stage or cell of the face: feature stage or
+    cell: material exact, its UV corners a subset of the engine corners
+    (a corner set: a GT3 carries 3 of 4, a mirrored piece another order),
+    colours paired by UV point. Not provable this way: the orientation
+    inside a face (no positions in UV lines). Found under another stage or cell of the face: feature stage or
     cell. In the load block every engine stage and cell needs a retail
     line (else engine-only); in race frames engine entries without a
     retail line are coverage gaps (counted). Each set (extra set=: none =
@@ -52,7 +60,9 @@ header; colour see COL_TOL_*):
     information, with one compared; nogeo=1 - counted only; clip=1 -
     counted and compared.
   Direction 2 (models, per track and model name): an engine material that
-    retail never draws for that model is engine-only-material. When retail
+    retail never draws for that model is engine-only-material when retail
+    drew one of its triangles (UV set) with another material; on triangles
+    retail never drew it is coverage. When retail
     drew the model only with another header, the material is listed as
     "header 0 never compared" (information). Engine triangles no frame uses
     are counted as unused per model.
@@ -94,7 +104,11 @@ import sys
 
 SOURCES = 'TIDXSWM'
 FEATURES = ('prim', 'anim', 'lod', 'page', 'depth', 'clut', 'uv', 'blend', 'col', 'stage', 'cell',
-            'stage-none', 'missing-source', 'engine-only-material', 'engine-only', 'sample-outside')
+            'stage-none', 'split-col', 'mirror-col', 'missing-source', 'engine-only-material', 'engine-only',
+            'sample-outside')
+# Retail draw functions that cut model triangles at the water or mirror line
+# and write pieces with interpolated UV and the colour of their side.
+PIECE_FUNCS = {'split': 'split-col', 'reflection': 'mirror-col', 'special': 'mirror-col'}
 # Markers of the track lines (P2): retail part (a piece), clip (from a clip
 # record), nogeo (a mosaic piece without a place), lodonly (a level retail does
 # not draw by default), noleaf (a block the walk never reaches), sieve; engine
@@ -282,10 +296,46 @@ class Frame(object):
         self.vram = self.extra.get('vram')   # VRAM dump of this frame (path relative to the log)
         self.base_dir = ''
         self.load = tag.endswith('-load')
+        self.section = None
         self.sources = {}   # (src, srcId) -> {'R': [...], 'E': [...]}
 
-    def track(self):
+    def slot(self):
         return 'L%s%s' % (self.level, 'c' if self.container not in ('0', '') else '')
+
+    def track(self):
+        return self.section or self.slot()
+
+
+_SECTION_TAG = re.compile(r'^(t\d+-L\d+)(?:-|$)')
+
+
+def assign_sections(frames):
+    """The track of a frame is its section of the log: a load block (tag
+    ...-load) starts a new section, the race frames after it belong to it.
+    Containers play in the slot of their donor level, so the level id alone
+    does not name a track. Name = tNN-L<id> of the first race frame tag of
+    the section (the tour entry), else the level slot (L<id>, c for a
+    container). A race frame with another tNN-L<id> prefix than its section,
+    or without one after a named section, starts a new section too."""
+    cur, name, members = None, None, []
+
+    def close():
+        for f in members:
+            f.section = name or members[0].slot()
+    for fr in frames:
+        m = _SECTION_TAG.match(fr.tag)
+        pre = m.group(1) if m else None
+        races = [f for f in members if not f.load]
+        if fr.load or cur is None or (name is not None and pre != name) or \
+                (name is None and races and (pre is not None or fr.slot() != races[-1].slot())):
+            if members:
+                close()
+            cur, name, members = fr, None, []
+        if not fr.load and name is None and pre is not None:
+            name = pre
+        members.append(fr)
+    if members:
+        close()
 
 
 class Log(object):
@@ -374,7 +424,25 @@ def line_options(ln):
 
 
 class Tri(object):
-    __slots__ = ('e', 'mat', 'uvkey', 'cols', 'lod', 'key', 'fault')
+    __slots__ = ('e', 'mat', 'uvkey', 'cols', 'lod', 'key', 'fault', 'corners', 'skey')
+
+
+def _uvs(p):
+    return p if p is not None else (-1, -1)
+
+
+def _pair_cols_ok(rc, tcorners, ctol):
+    """Colours paired by UV point (a corner keeps its UV and colour whatever
+    the order of the corners)."""
+    for uv, c in rc:
+        if c is None:
+            continue
+        cands = [tc for tu, tc in tcorners if tu == uv]
+        if not cands or any(x is None for x in cands):
+            continue
+        if not any(max(abs(p - q) for p, q in zip(c, x)) <= ctol for x in cands):
+            return False
+    return True
 
 
 def _cols_ok(a, b, ctol):
@@ -393,7 +461,7 @@ class EngineSet(object):
             if k not in uniq or (e.fault and not uniq[k].fault):
                 uniq[k] = e
         self.lines = list(uniq.values())
-        self.tris, self.by_uv, self.unknown = [], {}, {}
+        self.tris, self.by_uv, self.by_set, self.unknown = [], {}, {}, {}
         self.lods = set((e.lod or '0') for e in self.lines)
         for e in self.lines:
             if e.page is not None and e.uv is None:
@@ -405,8 +473,11 @@ class EngineSet(object):
                 t.e, t.mat, t.lod, t.key, t.fault = e, e.mat(), e.lod or '0', e.key, e.fault
                 t.uvkey = tuple(x[0] for x in rc)
                 t.cols = tuple(x[1] for x in rc)
+                t.corners = rc
+                t.skey = tuple(sorted(t.uvkey, key=_uvs))
                 self.tris.append(t)
                 self.by_uv.setdefault((t.mat, t.uvkey, t.lod, t.key), []).append(t)
+                self.by_set.setdefault((t.mat, t.skey, t.lod, t.key), []).append(t)
 
     def match(self, corners, mat, lod, key, ctol):
         rc = _rot(corners)
@@ -418,21 +489,33 @@ class EngineSet(object):
         u = self.unknown.get((mat, lod, key))
         return u[0] if u else None
 
+    def match_set(self, corners, mat, lod, key, ctol):
+        """The triangle as a set of (UV, colour) corners: the winding is not
+        compared (the import lists one-sided triangles in the engine's cull
+        order, every corner keeps its position, UV and colour)."""
+        skey = tuple(sorted((x[0] for x in corners), key=_uvs))
+        for t in self.by_set.get((mat, skey, lod, key), ()):
+            if _pair_cols_ok(corners, t.corners, ctol):
+                return t
+        return None
+
     def keys(self):
         return set(e.key for e in self.lines)
 
 
-def _tri_diffs(mat, rc, t, ctol):
+def _tri_diffs(mat, rc, t, ctol, strict=False):
     d = []
     for name, i in (('page', 0), ('depth', 1), ('clut', 2)):
         if mat[i] != t.mat[i]:
             d.append(name)
     uvkey = tuple(x[0] for x in rc)
-    if uvkey != t.uvkey:
+    same = (uvkey == t.uvkey) if strict else (tuple(sorted(uvkey, key=_uvs)) == t.skey)
+    if not same:
         d.append('uv')
     if mat[3] != t.mat[3]:
         d.append('blend')
-    if uvkey == t.uvkey and not _cols_ok(tuple(x[1] for x in rc), t.cols, ctol):
+    if same and not (_cols_ok(tuple(x[1] for x in rc), t.cols, ctol) if strict
+                     else _pair_cols_ok(rc, t.corners, ctol)):
         d.append('col')
     return d
 
@@ -444,45 +527,50 @@ def _uv_dist(rc, t):
     return sum(abs(p[0] - q[0]) + abs(p[1] - q[1]) for p, q in zip(a, t.uvkey))
 
 
-def nearest_tri(corners, mat, pool, ctol):
+def nearest_tri(corners, mat, pool, ctol, strict=False):
     rc = _rot(corners)
     best = None
     for t in pool:
-        d = _tri_diffs(mat, rc, t, ctol)
+        d = _tri_diffs(mat, rc, t, ctol, strict)
         k = (len(d), _uv_dist(rc, t), 0 if t.fault else 1, t.e.lineno)
         if best is None or k < best[0]:
             best = (k, d, t)
     return (best[1], best[2]) if best else (None, None)
 
 
-def match_line(r, es, lod, key, ctol, pool):
+def match_line(r, es, lod, key, ctol, pool, strict=False):
     """Matches a retail line against the engine set. Returns (used engine
-    lines, None) when drawn, else (used, (features, engine line, fault, winding))."""
+    lines, None, n) when drawn - n = triangles found only with the other
+    winding - else (used, (features, engine line, fault, winding), 0).
+    strict: the winding is compared (a reversed one is uv)."""
     used, best = [], None
     mat = r.mat()
     for opt in line_options(r):
-        fails, got = [], []
+        fails, got, nrev = [], [], 0
         for corners in opt:
             t = es.match(corners, mat, lod, key, ctol)
+            if t is None and not strict:
+                t = es.match_set(corners, mat, lod, key, ctol)
+                nrev += 1 if t is not None else 0
             if t is not None:
                 got.append(t.e if isinstance(t, Tri) else t)
             else:
                 fails.append(corners)
         used += got
         if not fails:
-            return used, None
+            return used, None, nrev
         feats, eng, fault, wind = set(), None, None, False
         cost = 0
         for corners in fails:
             rev = [corners[0], corners[2], corners[1]]
-            t = es.match(rev, mat, lod, key, ctol)
+            t = es.match(rev, mat, lod, key, ctol) if strict else None
             if isinstance(t, Tri):
                 feats.add('uv')
                 wind = True
                 cost += 1
                 cand = t
             else:
-                d, cand = nearest_tri(corners, mat, pool, ctol)
+                d, cand = nearest_tri(corners, mat, pool, ctol, strict)
                 if cand is None:
                     continue
                 d = d or ['uv']
@@ -492,7 +580,7 @@ def match_line(r, es, lod, key, ctol, pool):
                 eng, fault = cand.e, cand.fault
         if best is None or cost < best[0]:
             best = (cost, [f for f in FEATURES if f in feats], eng, fault, wind)
-    return used, best[1:]
+    return used, best[1:], 0
 
 
 # ------------------------------------------------------------------ colours
@@ -682,8 +770,8 @@ def pattern(features, r, e, wind=False):
                 parts.append('uv %s>%s' % ('-' if r.uv is None else 'set', '-' if e.uv is None else 'set'))
         elif f == 'blend':
             parts.append('blend %s>%s' % (r.blend, e.blend))
-        elif f == 'col':
-            parts.append('col gap %s' % _gap_bucket(col_gap(r, e)))
+        elif f in ('col', 'split-col', 'mirror-col'):
+            parts.append('%s gap %s' % (f, _gap_bucket(col_gap(r, e))))
     return (' '.join(parts) or '-') + _flags(r, e)
 
 
@@ -727,7 +815,7 @@ def _new_stats():
             'vram_frames': 0, 'vram_missing': [], 'route_retail': {}, 'lod_lines': {},
             'per': {}, 'unused': {}, 'coverage': {}, 'prim_equal': 0, 'menu_tracks': set(),
             'part': {}, 'clip': {}, 'nogeo': {}, 'info_lines': {}, 'stage_none': {}, 'lod_never': set(),
-            'col_unpaired': 0}
+            'col_unpaired': 0, 'winding': 0, 'piece': {}, 'eom_coverage': [], 'fault_orient': set()}
 
 
 def _per(stats, tr, src):
@@ -747,6 +835,33 @@ def _inside(r, e):
         return False
     u0, v0, u1, v1 = bbox(e.uv)
     return all(u0 <= u <= u1 and v0 <= v <= v1 for u, v in r.uv)
+
+
+def _in_box(points, corners):
+    u0, v0, u1, v1 = bbox(corners)
+    return all(u0 <= u <= u1 and v0 <= v <= v1 for u, v in points)
+
+
+def _cols_in_range(cols, ref, ctol):
+    lo = [min(c[i] for c in ref) - ctol for i in range(3)]
+    hi = [max(c[i] for c in ref) + ctol for i in range(3)]
+    return all(lo[i] <= c[i] <= hi[i] for c in cols for i in range(3))
+
+
+def _t_diffs(r, e, ctol):
+    """Track line against an engine line of a face: material exact, the retail
+    UV corners a subset of the engine corners, colours paired by UV point."""
+    d = _mat_diffs(r, e)
+    if r.uv is None or e.uv is None:
+        sub = r.uv is None and e.uv is None
+    else:
+        sub = set(r.uv) <= set(e.uv)
+    if not sub:
+        d.append('uv')
+    elif r.uv is not None and r.col is not None and e.col is not None and \
+            not _pair_cols_ok(_corners(r), _corners(e), ctol):
+        d.append('col')
+    return [f for f in FEATURES if f in d]
 
 
 def _mat_diffs(r, e):
@@ -773,10 +888,11 @@ def unit_of(rec):
     return (rec.track, rec.object, rec.e.mat() if rec.e is not None else None)
 
 
-def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None):
+def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
     """Returns (records, stats). vram_for(frame) gives the frame's Vram or None."""
     records, stats = [], _new_stats()
     stats['frames'] = len(frames)
+    assign_sections(frames)
     per_track = {}            # track -> (src, model) -> object data (models)
     tcov = {}                 # track -> coverage sets (track faces)
     visible = set()           # (track, object, material) of model fault lines on faces retail draws
@@ -827,7 +943,19 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None):
                         cov['seen_faces'].update(sid for r in rl)
                         cov['seen_cells'].update((sid, r.cell) for r in rl if r.cell != '-')
                     for kind in sorted(set(e.fault for e in el if e.fault)):
-                        stats['fault_units'].append((kind, (tr, obj), bool(rl)))
+                        # a planted fault is checkable on a face when a faulted line differs
+                        # from the retail line of its key as a corner set or a material; two
+                        # swapped cells that differ only in orientation cannot be seen in UV
+                        # corner sets (the named residuum) and are counted apart
+                        rby = {}
+                        for r in rl:
+                            rby.setdefault(r.key, []).append(r)
+                        seen = any(e.fault == kind and e.key in rby and
+                                   all(_mat_diffs(r, e) or set(r.uv or ()) != set(e.uv or ()) for r in rby[e.key])
+                                   for e in el)
+                        if rl and not seen:
+                            stats['fault_orient'].add((kind, (tr, obj)))
+                        stats['fault_units'].append((kind, (tr, obj), bool(rl) and seen))
                 if any(r.route == 'retail' for r in rl):
                     stats['route_retail'].setdefault(tr, set()).add(obj)
                     continue
@@ -836,7 +964,7 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None):
                 if src != 'T':
                     ob = objs.setdefault((src, object_key(src, sid)),
                                          {'R': set(), 'E': {}, 'srcId': sid, 'rlod': set(), 'seen': set(),
-                                          'used': set()})
+                                          'used': set(), 'ruv': set()})
                     for e in es.lines:
                         ent = ob['E'].setdefault(e.mat(), {'e': e, 'frames': set(), 'fault': None,
                                                            'lod': set()})
@@ -845,6 +973,8 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None):
                         if e.fault:
                             ent['fault'], ent['e'] = e.fault, e
                         ob['seen'].add(e.tuple_key())
+                    for t in es.tris:
+                        ob['E'][t.mat].setdefault('uvs', set()).add(t.skey)
                 # retail lines, one per distinct tuple
                 ret = {}
                 for r in rl:
@@ -904,6 +1034,9 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None):
                     rlod = r.lod or '0'
                     if ob is not None:
                         ob['R'].add(r.mat())
+                        for opt in line_options(r):
+                            for c in opt:
+                                ob['ruv'].add(tuple(sorted((x[0] for x in c), key=_uvs)))
                         ob['rlod'].add(rlod)
                     if src != 'T' and rlod not in es.lods:
                         lod_count[rlod] = lod_count.get(rlod, 0) + count
@@ -950,33 +1083,57 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None):
                             fault=best.fault)
                         continue
                     if src == 'T':
-                        same = [t for t in es.tris if t.key == r.key]
-                        used, miss = match_line(r, es, rlod, r.key, ctol, same or es.tris)
-                        if miss is not None and r.key[0] != '-':
-                            for k2 in sorted(keys - set([r.key]), key=str):
-                                u2, m2 = match_line(r, es, rlod, k2, ctol, [])
-                                if m2 is None:
-                                    e2 = u2[0]
-                                    rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=[r.key[0]],
-                                        r=r, e=e2, r_count=count, fault=e2.fault,
-                                        pattern='%s %s>%s' % (r.key[0], r.key[1], k2[1]) + _flags(r, e2))
-                                    used, miss = u2, False
-                                    break
-                            if miss is not False and not same:
-                                d, cand = nearest_tri(_corners(r)[:3], r.mat(), es.tris, ctol)
-                                rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=[r.key[0]],
-                                    r=r, e=cand.e if cand else None, r_count=count,
-                                    fault=cand.fault if cand else None,
-                                    pattern='%s %s absent' % r.key + _flags(r, None))
-                                miss = False
-                    else:
-                        pool = [t for t in es.tris if t.lod == rlod]
-                        used, miss = match_line(r, es, rlod, None, ctol, pool)
+                        # track UV as a corner set: the retail corners are a subset of the
+                        # corners of the engine line of the same key (a GT3 carries 3 of 4)
+                        same = [e for e in es.lines if e.key == r.key]
+                        hit = next((e for e in same if not _t_diffs(r, e, ctol)), None)
+                        if hit is not None:
+                            used_by.setdefault(id(hit), (hit, r))
+                            continue
+                        other = next((e for e in es.lines if e.key != r.key and not _t_diffs(r, e, ctol)), None)
+                        if other is not None:
+                            used_by.setdefault(id(other), (other, r))
+                            rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=[r.key[0]], r=r,
+                                e=other, r_count=count, fault=other.fault,
+                                pattern='%s %s>%s' % (r.key[0], r.key[1], other.key[1]) + _flags(r, other))
+                            continue
+                        if not same:
+                            rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=[r.key[0]], r=r,
+                                r_count=count, pattern='%s %s absent' % r.key + _flags(r, None))
+                            continue
+                        best = min(same, key=lambda e: (len(_t_diffs(r, e, ctol)), e.lineno))
+                        d = _t_diffs(r, best, ctol)
+                        if r.anim or best.anim:
+                            pre.append('anim')
+                        rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=pre + d, r=r, e=best,
+                            r_count=count, fault=best.fault)
+                        continue
+                    pool = [t for t in es.tris if t.lod == rlod]
+                    used, miss, nrev = match_line(r, es, rlod, None, ctol, pool, strict_winding)
+                    if miss is not None and r.extra.get('func') in PIECE_FUNCS:
+                        # a piece cut at the water or mirror line: page, depth, CLUT and blend
+                        # exact, every UV corner inside the corner box of one engine triangle;
+                        # its colour (the side's tint) is its own feature
+                        _bump(stats['piece'], tr, count)
+                        inside = [t for t in pool if t.mat == r.mat() and t.uvkey and None not in t.uvkey and
+                                  r.uv is not None and _in_box(r.uv, t.uvkey)]
+                        if inside:
+                            t = inside[0]
+                            used_by.setdefault(id(t.e), (t.e, r))
+                            cols = [c for c in t.cols if c is not None]
+                            if r.col is None or not cols or _cols_in_range(r.col, cols, ctol):
+                                continue
+                            rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid,
+                                features=pre + [PIECE_FUNCS[r.extra['func']]], r=r, e=t.e, r_count=count,
+                                fault=t.fault)
+                            continue
                     for e in used:
                         used_by.setdefault(id(e), (e, r))
                     if not miss:
-                        if miss is None and r.prim not in (None, 'normal'):
-                            stats['prim_equal'] += count
+                        if miss is None:
+                            stats['winding'] += nrev * count
+                            if r.prim not in (None, 'normal'):
+                                stats['prim_equal'] += count
                         continue
                     feats, eng, fault, wind = miss
                     if not feats:
@@ -1027,6 +1184,10 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None):
                 continue
             for mat, ent in sorted(ob['E'].items(), key=lambda kv: kv[1]['e'].lineno):
                 if mat in ob['R'] or (tr, obj, mat) in reported:
+                    continue
+                if not (ent.get('uvs', set()) & ob['ruv']):
+                    # retail drew none of these triangles: coverage, not a material question
+                    stats['eom_coverage'].append((tr, obj, mat))
                     continue
                 if not (ent['lod'] & ob['rlod']):
                     # retail drew the model only with another header on this track
@@ -1221,8 +1382,9 @@ def plausibility(log, stats):
     return out, one
 
 
-def analyse(log, rows, gte_tol=COL_TOL_GTE, expect=None, vram_for=None, check_plausible=True):
-    records, stats = compare(log.frames, gte_tol, vram_for)
+def analyse(log, rows, gte_tol=COL_TOL_GTE, expect=None, vram_for=None, check_plausible=True,
+            strict_winding=False):
+    records, stats = compare(log.frames, gte_tol, vram_for, strict_winding)
     apply_exceptions(records, rows)
     faults, positives, _ = parse_expect(expect)
     res = Result()
@@ -1251,7 +1413,8 @@ def analyse(log, rows, gte_tol=COL_TOL_GTE, expect=None, vram_for=None, check_pl
     for kind in kinds:
         target = FAULT_TARGET.get(kind)
         want = sorted(set(u for k, u, vis in units if k == kind and vis), key=repr)
-        blind = len(set(u for k, u, vis in units if k == kind and not vis) - set(want))
+        orient = set(u for k, u in stats['fault_orient'] if k == kind) - set(want)
+        blind = len(set(u for k, u, vis in units if k == kind and not vis) - set(want) - orient)
         mine = [r for r in res.control_open if r.fault == kind]
         reported = set(unit_of(r) for r in mine)
         missing = [u for u in want if u not in reported]
@@ -1263,7 +1426,8 @@ def analyse(log, rows, gte_tol=COL_TOL_GTE, expect=None, vram_for=None, check_pl
         elif mine and want and not missing:
             parts.append('%s yes (%d deviation(s), feature %s on %s; %d faulted unit(s) retail draws%s%s)' % (
                 kind, len(mine), target or 'any', ' '.join(sorted(set(r.track for r in mine))), len(want),
-                ', %d not drawn by retail' % blind if blind else '',
+                (', %d not drawn by retail' % blind if blind else '') +
+                (', %d differ only in orientation (not provable from UV corner sets)' % len(orient) if orient else ''),
                 ', %d other deviation(s) on fault lines (counted as deviations)' % strays if strays else ''))
         else:
             swallowed = sorted(set(r.excepted for r in res.control_covered if r.fault == kind))
@@ -1435,6 +1599,14 @@ def render_md(res, inputs, exc_origin):
     md.append('- Track: engine entries in race frames without a retail line (coverage gaps): %d' % s['gap'])
     md.append('- Retail lines of a draw path other than normal that matched: %d' % s['prim_equal'])
     md.append('- Textured engine lines without UV (external meshes; UV not checked): %d' % s['engine_no_uv'])
+    md.append('- Model triangles found only with the other winding (corners as a set, winding not compared%s): %d'
+              % (' - strict: a uv deviation' if getattr(res, 'strict_winding', False) else '', s['winding']))
+    md.append('- Model pieces cut at the water or mirror line (func split/reflection/special) by the piece rule: %d'
+              % sum(s['piece'].values()))
+    md.append('- Engine materials on triangles retail never drew (coverage, not engine-only-material): %d'
+              % len(s['eom_coverage']))
+    md.append('- Not provable from UV lines: the orientation inside a track face (UV compared as a corner set, '
+              'no positions); covered by the offline check of the mirror tables and by screenshots')
     if s['coverage']:
         md.append('')
         md += _table(('track', 'faces (load block)', 'seen in race frames', 'cells (load block)', 'seen',
@@ -1524,6 +1696,8 @@ def main(argv):
     ap.add_argument('--col-tol-gte', type=int, default=COL_TOL_GTE,
                     help='colour tolerance for GTE retail writers (default %d)' % COL_TOL_GTE)
     ap.add_argument('--lenient', action='store_true', help='skip malformed log lines (counted)')
+    ap.add_argument('--strict-winding', action='store_true',
+                    help='compare the winding of model triangles (a reversed one is a uv deviation)')
     a = ap.parse_args(argv)
     _, _, xerr = parse_expect(a.expect)
     rows, errs = load_exceptions(a.exceptions)
@@ -1555,7 +1729,8 @@ def main(argv):
     if not log.frames:
         print('material_compare: no F line in the log')
         return 2
-    res = analyse(log, rows, a.col_tol_gte, a.expect, file_vram_loader())
+    res = analyse(log, rows, a.col_tol_gte, a.expect, file_vram_loader(), strict_winding=a.strict_winding)
+    res.strict_winding = a.strict_winding
     res.gte_tol = a.col_tol_gte
     md = render_md(res, [os.path.basename(p) for p in a.logs], os.path.basename(a.exceptions))
     if bad:
@@ -1609,14 +1784,14 @@ def selftest():
     rows, errs = parse_exceptions(exc_text, 'synthetic')
     check('synthetic exception list parses', not errs and len(rows) == 4)
 
-    def run(lines, expect=None, rws=None, vram=None, plaus=False, gte=COL_TOL_GTE):
+    def run(lines, expect=None, rws=None, vram=None, plaus=False, gte=COL_TOL_GTE, strict=False):
         log = parse_log('\n'.join(['H\tabc1234\t--engine --engine-oracle x'] + lines) + '\n', 'synthetic')
         if log.errors:
             print('parse errors: %s' % log.errors)
         rr = rws if rws is not None else rows
         for x in rr:
             x.hits = 0
-        res = analyse(log, rr, gte, expect, (lambda fr: vram) if vram is not None else None, plaus)
+        res = analyse(log, rr, gte, expect, (lambda fr: vram) if vram is not None else None, plaus, strict)
         return res, log.errors
 
     def feats(res, kind='d1'):
@@ -1664,9 +1839,34 @@ def selftest():
                   L('E', 'I', 'f#0', uv=TRI_A, extra='col=128,128,128')])
     check('(b) colour within the GTE tolerance 2: 0', len(res.open) == 0)
     one([L('E', 'I', 'tikka#0', uv=TRI_A)], 'uv', 'half of the quad')
-    one([L('E', 'I', 'tikka#0', uv=TRI_A_REV), L('E', 'I', 'tikka#0', uv=TRI_B)], 'uv', 'winding reversed')
-    res, _ = run([F(), L('R', 'I', 'tikka#0', uv=TRI_A), L('E', 'I', 'tikka#0', uv=TRI_A_REV)])
-    check('(b) winding reversed: pattern', [r.pattern for r in res.open] == ['uv winding reversed'])
+    res, _ = run(base_r + [L('E', 'I', 'tikka#0', uv=TRI_A_REV), L('E', 'I', 'tikka#0', uv=TRI_B)])
+    check('winding: a triangle is a set of (UV, colour) corners, the reversed winding is counted apart',
+          len(res.open) == 0 and res.stats['winding'] == 1)
+    res, _ = run([F(), L('R', 'I', 'tikka#0', uv=TRI_A), L('E', 'I', 'tikka#0', uv=TRI_A_REV)], strict=True)
+    check('winding: --strict-winding makes it a uv deviation', [r.pattern for r in res.open] == ['uv winding reversed'])
+    res, _ = run([F(), L('R', 'I', 'b#0', uv=TRI_A, extra='col=10,10,10;20,20,20;30,30,30'),
+                  L('E', 'I', 'b#0', uv='0,0,0,31,31,0', extra='col=10,10,10;30,30,30;20,20,20')])
+    check('winding: reversed corners keep their colour (pairing by UV): 0', len(res.open) == 0)
+    res, _ = run([F(), L('R', 'I', 'b#0', uv=TRI_A, extra='col=10,10,10;20,20,20;30,30,30'),
+                  L('E', 'I', 'b#0', uv='0,0,0,31,31,0', extra='col=10,10,10;20,20,20;30,30,30')])
+    check('winding: colours moved to other UV corners: col', feats(res) == ['col'])
+
+    # model pieces cut at the water or mirror line (func=split|reflection|special)
+    res, _ = run([F(), L('R', 'I', 'turtle#3', uv='4,4,20,4,4,20', extra='func=split col=85,0,0'),
+                  L('E', 'I', 'turtle#3', uv=TRI_A, extra='col=85,0,0')])
+    check('piece: UV corners inside an engine triangle, same material and colour: 0',
+          len(res.open) == 0 and res.stats['piece'] == {'L3': 1})
+    res, _ = run([F(), L('R', 'I', 'turtle#3', uv='4,4,20,4,4,20', extra='func=split col=64,0,0'),
+                  L('E', 'I', 'turtle#3', uv=TRI_A, extra='col=85,0,0')])
+    check('piece: the side colour (x0.75) is its own feature split-col', feats(res) == ['split-col'])
+    res, _ = run([F(), L('R', 'I', 'crate#5', uv='4,4,20,4,4,20', extra='func=reflection col=48,48,48'),
+                  L('E', 'I', 'crate#5', uv=TRI_A, extra='col=64,64,64')])
+    check('piece: mirror side colour is mirror-col', feats(res) == ['mirror-col'])
+    res, _ = run([F(), L('R', 'I', 'turtle#3', uv='4,4,40,4,4,20', extra='func=split'),
+                  L('E', 'I', 'turtle#3', uv=TRI_A)])
+    check('piece: a corner outside every engine triangle stays uv', feats(res) == ['uv'])
+    res, _ = run([F(), L('R', 'I', 'turtle#3', uv='4,4,20,4,4,20'), L('E', 'I', 'turtle#3', uv=TRI_A)])
+    check('piece rule only for split/reflection/special: a normal line inside a triangle is uv', feats(res) == ['uv'])
     # half the quad with a wrong CLUT says clut
     res, _ = run(base_r + [L('E', 'I', 'tikka#0', uv=TRI_A), L('E', 'I', 'tikka#0', clut='16,480', uv=TRI_B)])
     check('(b) half a quad with another CLUT: clut', feats(res) == ['clut'])
@@ -1721,6 +1921,20 @@ def selftest():
                   F('t1'), T('R', '5', C00, 'cell=0,0'), T('E', '5', C00, 'cell=0,0')])
     check('track coverage: mirrored faces and those with race cells', res.stats['coverage'].get('L3') == (2, 1, 2, 1, 2, 1))
 
+    # track UV as a corner set (retail corners a subset of the engine corners of the key)
+    res, _ = run([F(), T('R', '5', '7,0,0,0,7,7,0,7', 'cell=0,0'), T('E', '5', C00, 'cell=0,0')])
+    check('track corner set: a mirrored corner order of a cell: 0', len(res.open) == 0)
+    res, _ = run([F(), T('R', '5', '0,0,7,0,0,7', 'cell=0,0'), T('E', '5', C00, 'cell=0,0')])
+    check('track corner set: a GT3 with 3 of the 4 corners: 0', len(res.open) == 0)
+    res, _ = run([F(), T('R', '5', '0,0,7,0,0,8', 'cell=0,0'), T('E', '5', C00, 'cell=0,0')])
+    check('track corner set: a corner not among the engine corners: uv', feats(res) == ['uv'])
+    res, _ = run([F(), T('R', '5', C00, 'cell=0,0', extra='col=1,1,1;2,2,2;3,3,3;4,4,4'),
+                  T('E', '5', '7,0,0,0,7,7,0,7', 'cell=0,0', extra='col=2,2,2;1,1,1;4,4,4;3,3,3')])
+    check('track corner set: colours paired by UV point: 0', len(res.open) == 0)
+    res, _ = run([F(), T('R', '5', C00, 'cell=0,0', extra='col=1,1,1;2,2,2;3,3,3;4,4,4'),
+                  T('E', '5', C00, 'cell=0,0', extra='col=2,2,2;1,1,1;4,4,4;3,3,3')])
+    check('track corner set: a colour on another UV point: col', feats(res) == ['col'])
+
     # track markers (P2)
     S2 = '0,0,15,0,0,15,15,15'
     res, _ = run([F(), T('R', '5', '2,3,15,3,2,15,15,15', 'stage=2', extra='part=1'), T('E', '5', S2, 'stage=2')])
@@ -1769,8 +1983,12 @@ def selftest():
           len(res.open) == 0 and res.stats['route_retail'] == {'L3': set(['I:crate'])})
 
     # (f) direction 2
+    res, _ = run(base_r + eng_ok + [L('E', 'I', 'tikka#0', clut='0,500', uv=TRI_A)])
+    check('(f) engine-only-material: retail drew the same triangle with another material',
+          feats(res, 'd2') == ['engine-only-material'] and not feats(res))
     res, _ = run(base_r + eng_ok + [L('E', 'I', 'tikka#0', clut='0,500', uv='64,0,95,0,64,31')])
-    check('(f) engine-only-material', feats(res, 'd2') == ['engine-only-material'] and not feats(res))
+    check('(f) an engine material on triangles retail never drew is coverage, no deviation',
+          len(res.open) == 0 and res.stats['eom_coverage'] == [('L3', 'I:tikka', ((512, 0), 0, (0, 500), 'o'))])
     res, _ = run(base_r + eng_ok + [L('E', 'I', 'crate#1', uv=TRI_A)])
     check('(f) model only the engine draws: information',
           len(res.open) == 0 and [r.object for r in res.info] == ['I:crate'])
@@ -1835,6 +2053,15 @@ def selftest():
         T('E', '5', C10, 'cell=0,1', extra='fault=cell'), T('E', '5', C01, 'cell=1,0', extra='fault=cell')],
         expect=['fault:cell'])
     check('(h) control cell fired', res.control.startswith('yes') and res.exit == 0 and len(res.control_open) == 2)
+    res, _ = run([F('L3-load'), T('R', '5', C00, 'cell=0,0'), T('R', '5', C01, 'cell=0,1'),
+                  T('E', '5', '7,0,0,0,7,7,0,7', 'cell=0,0', extra='fault=cell'),
+                  T('E', '5', C01, 'cell=0,1', extra='fault=cell'),
+                  T('R', '6', C00, 'cell=0,0'), T('R', '6', C01, 'cell=0,1'),
+                  T('E', '6', C01, 'cell=0,0', extra='fault=cell'), T('E', '6', C00, 'cell=0,1', extra='fault=cell')],
+                 expect=['fault:cell'])
+    check('(h) cell fault that only turns a cell (same corner set) is counted apart, not required',
+          res.control.startswith('yes') and '1 differ only in orientation' in res.control and
+          res.stats['fault_orient'] == set([('cell', ('L3', 'T:5'))]))
     res, _ = run([F('L3-load'), T('R', '5', C00, 'cell=0,0'), T('R', '5', C01, 'cell=0,1'), T('R', '5', C10, 'cell=1,0'),
                   T('E', '5', C00, 'cell=0,0', clut='0,481', extra='fault=cell'),
                   T('E', '5', C10, 'cell=0,1', extra='fault=cell'), T('E', '5', C01, 'cell=1,0', extra='fault=cell')],
@@ -1859,7 +2086,7 @@ def selftest():
     check('(j) known positive fired', res.positives == [('L4', 'I:flamejet', 'col', 1)] and res.exit == 1)
     res, _ = run([F(), L('R', 'I', 'fruit#0', uv='0,0,7,0,0,7', extra='lod=1'),
                   L('R', 'I', 'fruit#0', uv='8,0,15,0,8,7', extra='lod=1'),
-                  L('E', 'I', 'fruit#0', page='576,0,0', uv='0,0,31,0,0,31', extra='lod=0')])
+                  L('E', 'I', 'fruit#0', page='576,0,0', uv='0,0,7,0,0,7', extra='lod=0')])
     check('(j) lod=1: one LOD-header record, not compared',
           [(r.feature_label(), r.r_count, r.pattern) for r in res.open if r.kind == 'd1'] == [('lod', 2, 'lod 1>0')])
     check('(j) lod=1: header 0 never compared is information with the model, no deviation',
@@ -1940,6 +2167,27 @@ def selftest():
     log = parse_log('\n'.join([F(), L('R', 'I', 'x#0', uv=TRI_A), L('E', 'I', 'x#0', uv=TRI_A)]) + '\n', 's')
     check('plausibility: missing H line', 'no H line' in ' '.join(plausibility(log, compare(log.frames)[1])[0]))
 
+    # tracks are sections of the log: containers in the same level slot stay apart
+    log2 = parse_log('\n'.join([
+        F('L0-load', level=0), T('R', '5', C00, 'cell=0,0'), T('E', '5', C00, 'cell=0,0'),
+        F('t01-L0-f300', level=0, extra='vram=v.tga'), L('R', 'I', 'door#0', uv=TRI_A), L('E', 'I', 'door#0', uv=TRI_A),
+        F('L0-load', level=0, cont=1), T('R', '5', C01, 'cell=0,0'), T('E', '5', C01, 'cell=0,0'),
+        F('t19-L65-start', level=0, cont=1), L('R', 'I', 'door#0', uv=TRI_A, clut='0,481'),
+        L('E', 'I', 'door#0', uv=TRI_A, clut='0,481'),
+        F('t19-L65-f300', level=0, cont=1), L('R', 'I', 'door#0', uv=TRI_A, clut='0,481'),
+        L('E', 'I', 'door#0', uv=TRI_A, clut='0,481'),
+        F('L0-load', level=0, cont=1), T('R', '5', C10, 'cell=0,0'), T('E', '5', C10, 'cell=0,0'),
+        F('t20-L66-f300', level=0, cont=1), L('E', 'I', 'door#0', uv=TRI_A, clut='0,482'),
+        F('menu', level=40)]) + '\n', 's')
+    res2 = analyse(log2, rows, check_plausible=False)
+    check('sections: each load block starts a track named by its first race frame (tNN-L<id>)',
+          [f.track() for f in log2.frames] == ['t01-L0', 't01-L0', 't19-L65', 't19-L65', 't19-L65', 't20-L66', 't20-L66', 'L40']
+          and res2.stats['tracks'] == ['L40', 't01-L0', 't19-L65', 't20-L66'])
+    check('sections: containers of one slot do not mix (no engine-only-material across them)',
+          len(res2.open) == 0 and sorted(r.track for r in res2.info) == ['t20-L66'])
+    check('sections: a known positive names the section', parse_expect(['t04-L3:I:startbanner:sample-outside'])[1] ==
+          [('t04-L3', 'I:startbanner', 'sample-outside')])
+
     # classes across tracks
     res, _ = run([F('a', level=3), L('R', 'I', 'tikka#0', uv=TRI_A), L('E', 'I', 'tikka#0', clut='16,480', uv=TRI_A),
                   F('b', level=4), L('R', 'I', 'tikka#2', uv=TRI_A), L('E', 'I', 'tikka#2', clut='16,480', uv=TRI_A),
@@ -1978,8 +2226,18 @@ def selftest():
         repo_rows, repo_errs = parse_exceptions(fh.read(), DEFAULT_EXCEPTIONS)
     ids = set(x.id for x in repo_rows)
     check('repo exception list parses with exactly the agreed rows',
-          not repo_errs and ids == set(['sky-look', 'water-look', 'hires-driver', 'depth-offset', 'lod-header']) and
+          not repo_errs and ids == set(['sky-look', 'water-look', 'hires-driver', 'depth-offset', 'lod-header',
+                                        'track-geomorph']) and
           [x.id for x in repo_rows if x.doc] == ['depth-offset'])
+    res, _ = run([F(), L('R', 'T', '5.0', uv=QUAD, extra='stage=2,morph=1,col=10,10,10'),
+                  L('E', 'T', '5.0', uv=QUAD, extra='stage=2,col=20,20,20'),
+                  L('R', 'T', '6.0', uv=QUAD, extra='stage=2,col=10,10,10'),
+                  L('E', 'T', '6.0', uv=QUAD, extra='stage=2,col=20,20,20'),
+                  L('R', 'T', '7.0', uv=QUAD, extra='stage=2,morph=1,col=10,10,10'),
+                  L('E', 'T', '7.0', uv=QUAD, clut='0,481', extra='stage=2,col=20,20,20')], rws=repo_rows)
+    check('repo exception list: track-geomorph covers only track colour with r.morph=1',
+          [(r.srcId, r.excepted) for r in res.records if r.excepted] == [('5.0', 'track-geomorph')] and
+          sorted((r.srcId, r.feature_label()) for r in res.open) == [('6.0', 'col'), ('7.0', 'clut+col')])
     res, _ = run([F(), L('R', 'D', '0', uv=TRI_A), L('E', 'D', '0', page='-', clut='-', uv='-', extra='hires=1'),
                   L('R', 'W', 'water', uv=TRI_A), L('E', 'W', 'water', clut='0,481', uv=TRI_A),
                   L('R', 'S', 'sky', page='-', clut='-', uv='-', extra='col=1,2,3'),
