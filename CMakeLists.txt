@@ -477,6 +477,10 @@ if(BUILD_TESTING)
     set_tests_properties(no_engine_not_with_engine PROPERTIES PASS_REGULAR_EXPRESSION "switch --no-engine does not go with --engine")
     add_test(NAME no_engine_needs_dev COMMAND $<TARGET_FILE:ctr_native> --no-engine --dev-race-mode stop)
     set_tests_properties(no_engine_needs_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --no-engine requires --dev")
+    add_test(NAME dev_tt_ghost_needs_tt COMMAND $<TARGET_FILE:ctr_native> --dev --dev-tt-ghost --dev-race-mode stop)
+    set_tests_properties(dev_tt_ghost_needs_tt PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-tt-ghost requires --dev-race-mode tt")
+    add_test(NAME dev_tt_ghost_needs_dev COMMAND $<TARGET_FILE:ctr_native> --dev-tt-ghost --dev-race-mode stop)
+    set_tests_properties(dev_tt_ghost_needs_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-tt-ghost requires --dev")
     add_test(NAME mouse_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --mouse-selftest)
     set_tests_properties(mouse_selftest PROPERTIES
         PASS_REGULAR_EXPRESSION "mouse selftest passed: [0-9]+ checks, 0 failures"
