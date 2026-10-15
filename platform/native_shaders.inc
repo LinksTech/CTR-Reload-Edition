@@ -1029,7 +1029,13 @@ global_variable const char *ctr_native_engine_shader =
     "}\n"
     "#endif\n"
     "#ifdef FRAGMENT\n"
-    "VARYING_LOC0 in vec2 v_uv;\n"
+    // ANTI-ALIASING, as the PSX program does it (gpu_shader_common, PSX_EDGE_INTERP): with MSAA the fragment of an
+    // edge pixel is evaluated at the pixel centre, also when that lies outside the triangle, and the UV there
+    // reaches beyond the face - a foreign texel, or the transparent word 0x0000, which discards the samples the
+    // face covers in that pixel and lets what is behind show through a crack along the edge. Centroid keeps the
+    // UV inside the covered part; with one sample it is the centre as before. The fragment stage's decoration is
+    // the one that counts (tools/shader_spirv_probe.c). v_world stays at the centre: its derivatives pick the level.
+    "VARYING_LOC0 centroid in vec2 v_uv;\n"
     "VARYING_LOC1 in vec4 v_color;\n"
     "VARYING_LOC2 in float v_split;\n"
     "VARYING_LOC3 in vec3 v_world;\n"
@@ -1111,7 +1117,8 @@ global_variable const char *ctr_native_engine_shader =
     "		int side = max(tableTexel(row, 0).r, 1);\n"
     "		vec2 g = st * float(side);\n"
     "		ivec2 cr = clamp(ivec2(floor(g)), ivec2(0), ivec2(side - 1));\n"
-    "		vec2 f = g - vec2(cr);\n"
+    // Inside the cell, also for a centroid a rounding step off the face's border: never a texel beyond the tile.
+    "		vec2 f = clamp(g - vec2(cr), 0.0, 1.0);\n"
     "		int at = 1 + 3 * (4 * cr.y + cr.x);\n"
     "		ivec4 a = tableTexel(row, at);\n"
     "		ivec4 b = tableTexel(row, at + 1);\n"
