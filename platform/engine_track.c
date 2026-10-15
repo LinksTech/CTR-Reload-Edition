@@ -1118,6 +1118,7 @@ typedef struct
 	int imported;
 	int transparent;
 	int live;          // drawn from its live frame (Engine_ModelLiveFrame)
+	int levelListOnly; // in the level's model list, used by no InstDef (RUNTIME INSTANCES)
 	int liveRefusedLogged;
 	u32 drawn;
 	u32 declined;
@@ -1137,6 +1138,8 @@ global_variable u64 s_egtBucketsSkipped;
 global_variable u64 s_egtWaterVisits;
 global_variable u64 s_egtInstDrawn;
 global_variable u64 s_egtInstDeclined;
+global_variable u64 s_egtRuntimeDrawn;    // of s_egtInstDrawn: runtime instances (RUNTIME INSTANCES)
+global_variable u64 s_egtRuntimeDeclined; // of s_egtInstDeclined: runtime instances
 // The live frame of a level instance (Engine_TrackInstanceRoute, LIVE FRAME),
 // rebuilt per draw; the submit copies it.
 #define EGT_LIVE_VERTICES_MAX 4096u
@@ -1207,7 +1210,9 @@ global_variable struct
 	int dropped;
 	int modelsImported;
 	int modelsFailed;
-} s_egtLoad = {-1, 0, 0, 0, 0, 0, 0, 0, 0};
+	int listModelsImported; // models of the level list no InstDef uses (RUNTIME INSTANCES)
+	int listModelsFailed;
+} s_egtLoad = {-1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 
 // The counters at the first race frame of a tour entry (EngTrack_TourReport phase 0).
 global_variable struct
@@ -1218,6 +1223,8 @@ global_variable struct
 	u64 instDrawn;
 	u64 instDeclined;
 	u64 instDeclinedBy[EGT_DECLINE_COUNT];
+	u64 runtimeDrawn;
+	u64 runtimeDeclined;
 	u64 noVisFrames;
 	u64 overBudgetFrames;
 	u64 refusedFrames;
@@ -1249,6 +1256,8 @@ internal void EngTrack_Report(void)
 	             (unsigned long long)s_egtFramesDrawn, (unsigned long long)s_egtBucketsSkipped, (unsigned long long)s_egtWaterVisits);
 	Platform_Log("[CTR Engine] track: level instances drawn by the engine %llu, declined (retail draws them) %llu\n",
 	             (unsigned long long)s_egtInstDrawn, (unsigned long long)s_egtInstDeclined);
+	Platform_Log("[CTR Engine] track: of these runtime instances (no InstDef, no thread): drawn %llu, declined %llu\n", (unsigned long long)s_egtRuntimeDrawn,
+	             (unsigned long long)s_egtRuntimeDeclined);
 	Platform_Log("[CTR Engine] track: frames left to the PS1 walk: no visibility list %llu, over the dynamic budget %llu; frames with a submit refused %llu\n",
 	             (unsigned long long)s_egtNoVisFrames, (unsigned long long)s_egtOverBudgetFrames, (unsigned long long)s_egtRefusedFrames);
 	Platform_Log("[CTR Engine] track: walk check: frames without the level walk %llu, broken lists %llu; engine walk against the PS1 lists: leaves missed %llu, "
@@ -1285,6 +1294,8 @@ internal void EngTrack_TourReport(int entry, int levelID, int phase)
 		s_egtTourBase.instDrawn = s_egtInstDrawn;
 		s_egtTourBase.instDeclined = s_egtInstDeclined;
 		memcpy(s_egtTourBase.instDeclinedBy, s_egtInstDeclinedBy, sizeof(s_egtTourBase.instDeclinedBy));
+		s_egtTourBase.runtimeDrawn = s_egtRuntimeDrawn;
+		s_egtTourBase.runtimeDeclined = s_egtRuntimeDeclined;
 		s_egtTourBase.noVisFrames = s_egtNoVisFrames;
 		s_egtTourBase.overBudgetFrames = s_egtOverBudgetFrames;
 		s_egtTourBase.refusedFrames = s_egtRefusedFrames;
@@ -1336,6 +1347,10 @@ internal void EngTrack_TourReport(int entry, int levelID, int phase)
 		             (unsigned long long)(s_egtInstDeclinedBy[EGT_DECLINE_FLAGS] - s_egtTourBase.instDeclinedBy[EGT_DECLINE_FLAGS]),
 		             (unsigned long long)(s_egtInstDeclinedBy[EGT_DECLINE_FRAME] - s_egtTourBase.instDeclinedBy[EGT_DECLINE_FRAME]),
 		             (unsigned long long)(s_egtInstDeclinedBy[EGT_DECLINE_SUBMIT] - s_egtTourBase.instDeclinedBy[EGT_DECLINE_SUBMIT]));
+		Platform_Log("[CTR Engine] tour %d level %d runtime instances: drawn %llu, declined %llu; level list models without an InstDef %d imported, "
+		             "%d failed\n",
+		             entry, levelID, (unsigned long long)(s_egtRuntimeDrawn - s_egtTourBase.runtimeDrawn),
+		             (unsigned long long)(s_egtRuntimeDeclined - s_egtTourBase.runtimeDeclined), s_egtLoad.listModelsImported, s_egtLoad.listModelsFailed);
 		Platform_Log("[CTR Engine] tour %d level %d render: draws %u, ranges %u, refused at submit %u (scene %u, cell/args %u, arena %u, dynamic %u, "
 		             "not ready %u), refused at draw %u, upload failed %u\n",
 		             entry, levelID, rc.drawn - b->drawn, rc.ranges - b->ranges, refusedScene + refusedCell + refusedArena + refusedDyn + refusedNotReady,
@@ -1475,67 +1490,104 @@ internal int EngTrack_MarkLeaves(const struct mesh_info *mesh, u8 *water, u8 *in
 	return leaves;
 }
 
+// One model into the table and through the importer: 1 imported, 0 failed,
+// -1 already in the table.
+internal int EngTrack_ImportOne(const struct Model *model, int levelListOnly)
+{
+	EngTrackModel *m;
+	int k;
+
+	if (EngTrack_ModelEntry(model, 0) != NULL)
+	{
+		return -1;
+	}
+	m = EngTrack_ModelEntry(model, 1);
+	if (m == NULL)
+	{
+		return 0;
+	}
+	m->levelListOnly = levelListOnly;
+	if (!Engine_ModelImport(model, m->name, &m->imp) || (m->imp.mesh < 0))
+	{
+		m->imported = 0;
+		snprintf(m->why, sizeof(m->why), "%s", (Engine_ModelImportWhy()[0] != '\0') ? Engine_ModelImportWhy() : "no mesh");
+		Platform_Log("[CTR Engine] track: %s model '%s' id %d not imported: %s\n", levelListOnly ? "level list" : "instance", m->name, (int)m->id, m->why);
+		return 0;
+	}
+	m->imported = 1;
+	m->live = (model->id == STATIC_STARTBANNERWAVE) ? 1 : 0;
+	for (k = 0; k < m->imp.materialCount; k++)
+	{
+		const EngineMaterial *mat = Engine_Material(m->imp.firstMaterial + k);
+
+		if ((mat != NULL) && (mat->blend != ENGINE_BLEND_OPAQUE) && (mat->blend != ENGINE_BLEND_MASK))
+		{
+			m->transparent = 1;
+		}
+	}
+	return 1;
+}
+
 // The retail models of the level's instances, imported like the turbo flames
 // (platform/engine_fx_turbo.c EngineFx_TurboLoad): the meshes exist before
-// Engine_RenderUploadMeshes runs.
+// Engine_RenderUploadMeshes runs (and before Engine_MaterialsWarmPipelines,
+// LOAD_TenStages.c). Then the models of the level's model list
+// (level->ptrModelsPtrArray, the list LOAD_TenStages.c stores into
+// gGT->modelPtr) that no InstDef uses: only runtime-born instances can show
+// them (RUNTIME INSTANCES, Engine_TrackInstanceRoute). They are counted apart,
+// so the line of the InstDef models stays what it was.
 internal void EngTrack_ImportModels(const struct Level *level)
 {
 	u32 i;
 	int imported = 0;
 	int failed = 0;
+	int listImported = 0;
+	int listFailed = 0;
 
 	s_egtModelCount = 0;
 	if ((level->ptrInstDefs == NULL) || (level->numInstances == 0u))
 	{
 		Platform_Log("[CTR Engine] track: instance models: 0 imported, 0 failed (no instances)\n");
-		s_egtLoad.modelsImported = 0;
-		s_egtLoad.modelsFailed = 0;
-		return;
 	}
-	for (i = 0; i < level->numInstances; i++)
+	else
 	{
-		const struct Model *model = level->ptrInstDefs[i].model;
-		EngTrackModel *m;
-		int k;
+		for (i = 0; i < level->numInstances; i++)
+		{
+			const struct Model *model = level->ptrInstDefs[i].model;
+			int r;
 
-		if (model == NULL)
-		{
-			continue;
-		}
-		if (EngTrack_ModelEntry(model, 0) != NULL)
-		{
-			continue;
-		}
-		m = EngTrack_ModelEntry(model, 1);
-		if (m == NULL)
-		{
-			failed++;
-			continue;
-		}
-		if (!Engine_ModelImport(model, m->name, &m->imp) || (m->imp.mesh < 0))
-		{
-			m->imported = 0;
-			snprintf(m->why, sizeof(m->why), "%s", (Engine_ModelImportWhy()[0] != '\0') ? Engine_ModelImportWhy() : "no mesh");
-			Platform_Log("[CTR Engine] track: instance model '%s' id %d not imported: %s\n", m->name, (int)m->id, m->why);
-			failed++;
-			continue;
-		}
-		m->imported = 1;
-		m->live = (model->id == STATIC_STARTBANNERWAVE) ? 1 : 0;
-		imported++;
-		for (k = 0; k < m->imp.materialCount; k++)
-		{
-			const EngineMaterial *mat = Engine_Material(m->imp.firstMaterial + k);
-
-			if ((mat != NULL) && (mat->blend != ENGINE_BLEND_OPAQUE) && (mat->blend != ENGINE_BLEND_MASK))
+			if (model == NULL)
 			{
-				m->transparent = 1;
+				continue;
 			}
+			r = EngTrack_ImportOne(model, 0);
+			imported += (r == 1) ? 1 : 0;
+			failed += (r == 0) ? 1 : 0;
 		}
+		Platform_Log("[CTR Engine] track: instance models: %d imported, %d failed (of %d distinct)\n", imported, failed, s_egtModelCount);
 	}
-	Platform_Log("[CTR Engine] track: instance models: %d imported, %d failed (of %d distinct)\n", imported, failed, s_egtModelCount);
 	s_egtLoad.modelsImported = imported;
 	s_egtLoad.modelsFailed = failed;
+
+	if (level->ptrModelsPtrArray != NULL)
+	{
+		for (i = 0; i < level->numModels; i++)
+		{
+			const struct Model *model = level->ptrModelsPtrArray[i];
+			int r;
+
+			if (model == NULL)
+			{
+				continue;
+			}
+			r = EngTrack_ImportOne(model, 1);
+			listImported += (r == 1) ? 1 : 0;
+			listFailed += (r == 0) ? 1 : 0;
+		}
+	}
+	Platform_Log("[CTR Engine] track: level list models without an InstDef (runtime instances): %d imported, %d failed (list of %u)\n", listImported, listFailed, (level->ptrModelsPtrArray != NULL) ? (unsigned)level->numModels : 0u);
+	s_egtLoad.listModelsImported = listImported;
+	s_egtLoad.listModelsFailed = listFailed;
 }
 
 internal void EngTrack_DrawFree(void)
@@ -2313,27 +2365,39 @@ int Engine_TrackOwnsBucket(int bucketIndex)
 	return 1;
 }
 
-// A level instance (inst->instDef != NULL: INSTANCE.c:395 links it to its InstDef
-// in the LEV, only level instances have one) whose model was imported at load,
-// drawn by Engine_InstanceSubmit. Declined (0): not a level instance, the track
-// not engine-drawn this frame, screen-space or billboard or hidden instances,
-// a model without import, a frame out of range, or the submit refusing.
-int Engine_TrackInstanceRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb)
+enum
 {
-	struct GameTracker *gGT = sdata->gGT;
-	EngTrackModel *em;
+	EGT_RULE_RETAIL = 0, // left to the retail handler, not counted
+	EGT_RULE_LEVEL,      // a level instance (it has an InstDef)
+	EGT_RULE_RUNTIME     // a runtime instance (see Engine_TrackInstanceRoute)
+};
+
+// Which rule of Engine_TrackInstanceRoute takes an instance; modelInTable: its
+// model has an entry in the model table.
+internal int EngTrack_InstanceRule(const struct Instance *inst, int modelInTable)
+{
+	if ((inst == NULL) || (inst->model == NULL))
+	{
+		return EGT_RULE_RETAIL;
+	}
+	if (inst->instDef != NULL)
+	{
+		return EGT_RULE_LEVEL;
+	}
+	return ((inst->thread == NULL) && modelInTable) ? EGT_RULE_RUNTIME : EGT_RULE_RETAIL;
+}
+
+// One instance of a model of the table (em, NULL = no entry) drawn by
+// Engine_InstanceSubmit: 1 drawn, 0 declined (counted). runtime: the instance
+// came through the RUNTIME INSTANCES rule (only the first-seen line says so).
+internal int EngTrack_RouteInstance(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb, EngTrackModel *em, int runtime)
+{
 	EngineInstanceDraw d;
 	const struct ModelHeader *mh0;
 	int anim;
 	int frame;
 	int meshFrame;
 
-	if (!g_cfg_engine || !g_cfg_engineTrack || !s_egtSubmitted || (inst == NULL) || (idpp == NULL) || (pb == NULL) || (gGT == NULL) ||
-	    (inst->instDef == NULL) || (inst->model == NULL))
-	{
-		return 0;
-	}
-	em = EngTrack_ModelEntry(inst->model, 1);
 	if (em == NULL)
 	{
 		s_egtInstDeclined++;
@@ -2342,8 +2406,9 @@ int Engine_TrackInstanceRoute(struct Instance *inst, struct InstDrawPerPlayer *i
 	}
 	if ((em->drawn == 0u) && (em->declined == 0u))
 	{
-		Platform_Log("[CTR Engine] track: instance model '%s' id %d first seen (%s)\n", em->name, (int)em->id,
-		             em->imported ? (em->live ? "imported, live frame" : "imported") : "not imported");
+		Platform_Log("[CTR Engine] track: instance model '%s' id %d first seen (%s)%s\n", em->name, (int)em->id,
+		             em->imported ? (em->live ? "imported, live frame" : "imported") : "not imported",
+		             runtime ? (em->levelListOnly ? ", runtime instance of a level list model" : ", runtime instance") : "");
 		// Where retail (idpp->mvp, the matrix its queue built) and the engine (the view's camera on
 		// inst->matrix) put the model's origin in view space, and the scales: the evidence for a
 		// transform difference between the two paths.
@@ -2445,6 +2510,53 @@ int Engine_TrackInstanceRoute(struct Instance *inst, struct InstDrawPerPlayer *i
 	s_egtInstDeclined++;
 	s_egtInstDeclinedBy[EGT_DECLINE_SUBMIT]++;
 	return 0;
+}
+
+// 1 = the engine draws this instance of the level (Engine_InstanceSubmit), 0 =
+// the retail handler draws it. Called for every instance retail would draw now
+// (RenderBucket_DispatchDrawFunc), only while the engine draws the track.
+//
+// LEVEL INSTANCES: inst->instDef != NULL (INSTANCE.c:395 links it to its InstDef
+// in the LEV, only level instances have one); the model was imported at load
+// or gets an entry here (counted as declined when it has no import).
+//
+// RUNTIME INSTANCES (round of 2026-10-15): instDef NULL (INSTANCE_Birth sets 0,
+// game/INSTANCE.c:68) AND no thread AND a model of the table (an InstDef model
+// or one of the level's model list, EngTrack_ImportModels). That is an instance
+// native code births from a level model and places itself, writing
+// inst->matrix every tick (a track mod's runtime instances): the engine reads
+// that state at draw time like for any instance. Retail births its runtime
+// instances with a thread (explosions, shadows, warp pad prizes, ...); they and
+// every instance of a model outside the table stay with retail, uncounted, as
+// before.
+//
+// Declined (0, counted): the model has no import, a screen-space or billboard
+// or hidden instance, a frame out of range, or the submit refusing.
+int Engine_TrackInstanceRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb)
+{
+	EngTrackModel *em;
+
+	if (!g_cfg_engine || !g_cfg_engineTrack || !s_egtSubmitted || (inst == NULL) || (idpp == NULL) || (pb == NULL) || (sdata->gGT == NULL) ||
+	    (inst->model == NULL))
+	{
+		return 0;
+	}
+	em = EngTrack_ModelEntry(inst->model, 0);
+	switch (EngTrack_InstanceRule(inst, em != NULL))
+	{
+	case EGT_RULE_LEVEL:
+		return EngTrack_RouteInstance(inst, idpp, pb, (em != NULL) ? em : EngTrack_ModelEntry(inst->model, 1), 0);
+	case EGT_RULE_RUNTIME:
+		if (EngTrack_RouteInstance(inst, idpp, pb, em, 1))
+		{
+			s_egtRuntimeDrawn++;
+			return 1;
+		}
+		s_egtRuntimeDeclined++;
+		return 0;
+	default:
+		return 0;
+	}
 }
 
 // --------------------------------------------------------------------------
@@ -2936,6 +3048,27 @@ int Engine_SelfTestTrack(int *checks)
 		          "camera point: got %.3f %.3f %.3f (expected 100 50 -30)", got[0], got[1], got[2]);
 		memset(&view, 0, sizeof(view));
 		EGT_CHECK(!EngTrack_CameraWorld(&view, got), "camera point: a singular matrix gave a point");
+	}
+
+	// The instance rules of Engine_TrackInstanceRoute (RUNTIME INSTANCES).
+	{
+		static struct Instance inst;
+		static struct Model model;
+		static struct InstDef def;
+		static struct Thread thread;
+
+		memset(&inst, 0, sizeof(inst));
+		EGT_CHECK(EngTrack_InstanceRule(NULL, 1) == EGT_RULE_RETAIL, "rules: no instance not retail");
+		EGT_CHECK(EngTrack_InstanceRule(&inst, 1) == EGT_RULE_RETAIL, "rules: an instance without a model not retail");
+		inst.model = &model;
+		EGT_CHECK(EngTrack_InstanceRule(&inst, 1) == EGT_RULE_RUNTIME, "rules: no InstDef, no thread, model in the table not runtime");
+		EGT_CHECK(EngTrack_InstanceRule(&inst, 0) == EGT_RULE_RETAIL, "rules: a model outside the table not retail");
+		inst.thread = &thread;
+		EGT_CHECK(EngTrack_InstanceRule(&inst, 1) == EGT_RULE_RETAIL, "rules: a runtime instance with a thread not retail");
+		inst.instDef = &def;
+		EGT_CHECK(EngTrack_InstanceRule(&inst, 1) == EGT_RULE_LEVEL, "rules: an InstDef instance with a thread not a level instance");
+		inst.thread = NULL;
+		EGT_CHECK(EngTrack_InstanceRule(&inst, 0) == EGT_RULE_LEVEL, "rules: an InstDef instance outside the table not a level instance");
 	}
 
 	return failures;
