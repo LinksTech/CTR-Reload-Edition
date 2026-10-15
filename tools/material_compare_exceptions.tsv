@@ -1,0 +1,27 @@
+# Exception list of tools/material_compare.py: intended differences between the
+# engine and the retail path. Every row is counted in the report; nothing is
+# dropped silently. New rows need the approval of the maintainers, and of the
+# owner of the look when they hide a visible difference. Not allowed here:
+# mosaic cells, animated textures, draw paths the engine does not rebuild,
+# LOD headers (they are deviation classes until a decision is taken).
+#
+# Columns (tab separated):
+#   id         unique name (a-z, 0-9, -)
+#   src        * or source letters joined by | (T I D X S W M)
+#   feature    * or features joined by | (prim anim lod page depth clut uv blend
+#              col stage cell missing-source engine-only-material engine-only
+#              sample-outside); a deviation is covered only when the row names
+#              ALL its features. '-' = documentation row: names something the
+#              tool does not compare and covers nothing.
+#   condition  - or terms joined by ';', all must hold:
+#              r.KEY / e.KEY / f.KEY with = != ~ (glob) !~, or r.KEY alone (present),
+#              !r.KEY (absent). r = retail line, e = engine line (or nearest
+#              engine candidate), f = frame (tag level container view track
+#              raceFrame). KEY = page depth clut uv blend cell srcId sub or an
+#              extra key.
+#   reason     why the difference is intended (at least 20 characters)
+id	src	feature	condition	reason
+sky-look	S	*	-	Sky look: the engine draws the sky with its own shader (look accepted by screenshot); the PS1 sky gradient and its primitives are not rebuilt.
+water-look	W	*	-	Water look: the engine draws water with its own shader (look accepted by screenshot); the PS1 water tricks are not rebuilt.
+hires-driver	D	*	e.hires=1	Hi-res drivers: the engine reads the driver's own hi-res texture instead of a VRAM page (engine lines marked hires=1), so page, CLUT and UV have no VRAM values to compare. Hi-res is off in the proof run, where this row covers 0.
+depth-offset	T|I	-	-	Depth offset of coplanar layers: the engine orders coplanar faces with a depth offset per material instead of the ordering table. It changes depth order only; no compared field depends on it.

@@ -792,4 +792,15 @@ message("rldpack native wheels test passed: refused without --wheels off (exit $
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/lang_check.py
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     )
+
+    # Material comparison engine against retail (oracle log): synthetic logs for
+    # every rule, the exception list in tools/ and the fault control.
+    add_test(
+        NAME material_compare_selftest
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/material_compare.py --selftest
+    )
+    set_tests_properties(material_compare_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "material_compare selftest passed: [0-9]+ checks, 0 failures"
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
+    )
 endif()
