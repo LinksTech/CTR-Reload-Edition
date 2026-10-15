@@ -456,6 +456,27 @@ if(BUILD_TESTING)
     set_tests_properties(engine_selftest PROPERTIES
         PASS_REGULAR_EXPRESSION "engine selftest passed: [0-9]+ checks, 0 failures"
     )
+    # The engine's switches (main.c, NativeArgs_GateDevSwitches): a line that
+    # cannot mean anything ends the start with exit code 64 and its reason,
+    # before any window or data; the lines are what ctest checks. Each line
+    # carries --dev-race-mode stop behind: should the check under test let it
+    # through, the next check ends it there - never a window.
+    add_test(NAME engine_track_needs_engine COMMAND $<TARGET_FILE:ctr_native> --dev --engine-track --dev-race-mode stop)
+    set_tests_properties(engine_track_needs_engine PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-track requires --engine")
+    add_test(NAME engine_fail_needs_engine COMMAND $<TARGET_FILE:ctr_native> --dev --engine-fail start --dev-race-mode stop)
+    set_tests_properties(engine_fail_needs_engine PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-fail requires --engine")
+    add_test(NAME engine_fail_value COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-fail later --dev-race-mode stop)
+    set_tests_properties(engine_fail_value PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-fail expects start or track, not 'later'")
+    add_test(NAME engine_fail_track_needs_track COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-fail track --dev-race-mode stop)
+    set_tests_properties(engine_fail_track_needs_track PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-fail track requires --engine-track")
+    add_test(NAME engine_fail_once COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-track --engine-fail start --engine-fail track --dev-race-mode stop)
+    set_tests_properties(engine_fail_once PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-fail is given 2 times - once only")
+    add_test(NAME engine_fail_needs_dev COMMAND $<TARGET_FILE:ctr_native> --engine-fail start --dev-race-mode stop)
+    set_tests_properties(engine_fail_needs_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-fail requires --dev")
+    add_test(NAME no_engine_not_with_engine COMMAND $<TARGET_FILE:ctr_native> --dev --engine --no-engine --dev-race-mode stop)
+    set_tests_properties(no_engine_not_with_engine PROPERTIES PASS_REGULAR_EXPRESSION "switch --no-engine does not go with --engine")
+    add_test(NAME no_engine_needs_dev COMMAND $<TARGET_FILE:ctr_native> --no-engine --dev-race-mode stop)
+    set_tests_properties(no_engine_needs_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --no-engine requires --dev")
     add_test(NAME mouse_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --mouse-selftest)
     set_tests_properties(mouse_selftest PROPERTIES
         PASS_REGULAR_EXPRESSION "mouse selftest passed: [0-9]+ checks, 0 failures"
