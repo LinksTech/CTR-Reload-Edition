@@ -28,6 +28,7 @@ int Engine_SelfTest(void)
 	failures += Engine_SelfTestSky(&checks);
 	failures += Engine_SelfTestWater(&checks);
 	failures += Engine_SelfTestTour(&checks);
+	failures += Engine_SelfTestHires(&checks);
 
 	if (failures == 0)
 	{

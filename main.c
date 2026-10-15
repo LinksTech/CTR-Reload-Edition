@@ -111,6 +111,7 @@
 #include "platform/engine_fx_turbo.c"
 #include "platform/engine_fx_skids.c"
 #include "platform/engine_fx_tires.c"
+#include "platform/engine_hires.c"
 #include "platform/engine_menuscene.c"
 #include "platform/engine_track.c"
 #include "platform/engine_track_mosaic.c"
@@ -394,6 +395,8 @@ static const NativeSwitch s_devSwitches[] = {
     {"--engine-track", "", "with --engine: the track drawn by the engine (prototype)"},
     {"--engine-testscene", "", "with --engine: a textured box 600 units in front of the camera of view 0, drawn every race frame through the whole engine path"},
     {"--engine-menuscene", "", "with --engine: the first custom driver of the roster drawn by the engine in the main menu, turning (phase-1 finish line Z5)"},
+    {"--engine-hires-dir", "<dir>", "with --engine: the hi-res driver prototype (stage H) from <dir> (body.hrm, wheel.hrm, skin.hrt of tools/hires_testdriver.py) drawn instead of seat 0's body and wheel sprites in a race and as the driver of --engine-menuscene: full-resolution RGBA texture with mip levels, 3D wheels from game state, one log line per tick"},
+    {"--engine-hires-tex64", "", "with --engine-hires-dir: the texture reduced to 64x64 (the comparison run of stage H)"},
     {"--engine-hide", "<sky,water>", "with --engine --engine-track: the engine owns the listed items (the PS1 path does not draw them) but draws nothing of them - the 'minus' run of the measurements; comma-separated, words sky and water"},
     {"--dev-race-mode", "<tt|adventure>", "with --level: the direct start as a retail Time Trial (tt) or as an Adventure race (adventure) instead of an arcade race"},
     {"--engine-selftest", "", "the native engine's modules without a window: maths, the camera against the PS1 projection, materials and blend equations, meshes and the scene lists, effect geometry, the VRAM decoder, then end (ctest engine_selftest)"},
@@ -522,6 +525,7 @@ static const NativeValueLimit s_valueLimits[] = {
     {"--autoload-track", sizeof(g_cfg_autoloadTrack), 0},
     {"--level-tour", sizeof(g_cfg_levelTour), 0},
     {"--level-tour-shots", sizeof(g_cfg_levelTourShots), 0},
+    {"--engine-hires-dir", sizeof(g_cfg_engineHiresDir), 0},
 };
 
 // The entries of a comma list as the readers count them: empty ones (",,")
@@ -723,7 +727,8 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 				engineGiven = 1;
 			}
 			else if ((needsEngine == NULL) && ((strcmp(argv[argIndex], "--engine-track") == 0) || (strcmp(argv[argIndex], "--engine-testscene") == 0) ||
-			                                   (strcmp(argv[argIndex], "--engine-menuscene") == 0) || (strcmp(argv[argIndex], "--engine-hide") == 0)))
+			                                   (strcmp(argv[argIndex], "--engine-menuscene") == 0) || (strcmp(argv[argIndex], "--engine-hide") == 0) ||
+			                                   (strcmp(argv[argIndex], "--engine-hires-dir") == 0) || (strcmp(argv[argIndex], "--engine-hires-tex64") == 0)))
 			{
 				needsEngine = argv[argIndex];
 			}
@@ -865,6 +870,16 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 		else if (strcmp(argv[argIndex], "--engine-menuscene") == 0)
 		{
 			g_cfg_engineMenuScene = 1;
+		}
+		else if ((strcmp(argv[argIndex], "--engine-hires-dir") == 0) && ((argIndex + 1) < argc))
+		{
+			// The length was checked before any window (s_valueLimits); the
+			// files are read at the first level load (platform/engine_hires.c).
+			snprintf(g_cfg_engineHiresDir, sizeof(g_cfg_engineHiresDir), "%s", argv[++argIndex]);
+		}
+		else if (strcmp(argv[argIndex], "--engine-hires-tex64") == 0)
+		{
+			g_cfg_engineHiresTex64 = 1;
 		}
 		else if ((strcmp(argv[argIndex], "--engine-hide") == 0) && ((argIndex + 1) < argc))
 		{

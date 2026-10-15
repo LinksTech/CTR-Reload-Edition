@@ -711,6 +711,38 @@ void Engine_MenuSceneLoad(void);                 // load stage 5, before Engine_
 void Engine_MenuSceneCollect(struct GameTracker *gGT); // from Engine_FrameCollect
 
 // --------------------------------------------------------------------------
+// HI-RES DRIVER, PROTOTYPE (platform/engine_hires.c; round of 2026-10-15, stage H)
+//
+// --engine-hires-dir <dir> (needs --engine): one synthetic test driver from a
+// local folder in a dev format of its own (body.hrm, wheel.hrm, skin.hrt of
+// tools/hires_testdriver.py; the .rldchar format is not touched) replaces the
+// body and the wheels of seat 0 in a race and the driver of the menu scene: an
+// RGBA texture at full resolution with its mip chain (Engine_TextureCreate), 3D
+// wheels that spin, steer and spring from game state. --engine-hires-tex64: the
+// texture reduced to 64 x 64 (the comparison run). Without the switch every
+// function below returns at once.
+#define ENGINE_HIRES_DIR_MAX 512
+extern char g_cfg_engineHiresDir[ENGINE_HIRES_DIR_MAX];
+extern int g_cfg_engineHiresTex64;
+void Engine_HiresLoad(void); // from Engine_DriverCmdlLoad (load stage 5, before the upload)
+int Engine_HiresOwns(const struct Driver *d); // 1 = d is the race's driver of the hi-res seat (Engine_DriverCmdlOwns answers 1)
+// From Engine_DriverCmdlRoute, first: 1 = the engine drew the seat's body instance in this view.
+int Engine_HiresRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb);
+// From EngineFx_Tires, first: 0 = not the hi-res seat, 1 = wheel meshes drawn (no sprite), -1 = sprites stand in (counted).
+int Engine_HiresWheels(const struct Driver *d, const struct Instance *inst, const struct InstDrawPerPlayer *idpp, const struct PushBuffer *pb, int reflection);
+int Engine_HiresMenuReady(void); // the menu scene draws the hi-res driver
+void Engine_HiresMenuParts(int *bodyMesh, int *wheelMesh, float hullMin[3], float hullMax[3]);
+void Engine_HiresNoteMenuFrame(void);
+// Pure: the wheel middle in world units relative to the instance origin, kart
+// axes (DrawTires.c integers: ((scale * (+-0x90, 0x40, 0xc7 | -0x60)) >> 12) / 4);
+// the wheel frame (columns axle, rim up, rim front; steer and roll in radians);
+// the roll step of one tick (speedApprox * elapsedTimeMS / 8192 over the radius).
+void Engine_HiresWheelMiddle(int wheel, s16 scaleX, s16 scaleY, s16 scaleZ, float out[3]);
+void Engine_HiresWheelFrame(int wheel, double steer, double roll, int hazardTimer, double out[3][3]);
+double Engine_HiresRollStep(int speedApprox, int elapsedTimeMS, int wheelSize);
+int Engine_SelfTestHires(int *checks);
+
+// --------------------------------------------------------------------------
 // TRACK PROTOTYPE (platform/engine_track.c; --engine-track, round of 2026-10-13)
 //
 // The level's quadblocks as engine meshes with VRAM materials (built at load

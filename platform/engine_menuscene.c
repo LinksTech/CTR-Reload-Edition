@@ -41,6 +41,11 @@
 // middle (NativeCharGpu_WheelMiddle). A set with the test wheel (WHLS version 1)
 // or none gets its body only.
 //
+// THE HI-RES DRIVER (--engine-hires-dir, round of 2026-10-15, stage H): when
+// platform/engine_hires.c loaded one, the scene shows it instead of the set -
+// its body (hull from its own mesh, the same model axes) and its wheel mesh at
+// the four rest middles; no roster file is needed then.
+//
 // TIME AND INPUT. gGT->timer runs in the menu (MainFrame_GameLogic advances it
 // unless PAUSE_ALL is set, MainFrame.c:193 and 243); the yaw advances by the
 // ticks that passed since the last frame. Outside --deterministic the keys Q
@@ -132,27 +137,56 @@ void Engine_MenuSceneCollect(struct GameTracker *gGT)
 	float c;
 	float s;
 	float xOffset;
+	float hullMin[3];
+	float hullMax[3];
 	int ticks = 0;
 	int cell;
 	int axis;
 	int mesh;
+	int hires;
+	int hiresWheel = -1;
 
-	// Only the main menu level, a set made for it, a camera, an engine mesh.
-	if ((gGT->levelID != MAIN_MENU_LEVEL) || ((gGT->gameMode1 & MAIN_MENU) == 0) || (s_menuSet < 0) || (s_menuSet >= NATIVE_CHAR_GPU_SETS))
+	// Only the main menu level, a camera, an engine mesh: the hi-res driver of
+	// --engine-hires-dir (platform/engine_hires.c) when it is loaded, else the
+	// set made for the scene.
+	if ((gGT->levelID != MAIN_MENU_LEVEL) || ((gGT->gameMode1 & MAIN_MENU) == 0))
 	{
 		return;
 	}
-	mesh = Engine_DriverBodyMesh(s_menuSet);
 	cam = Engine_FrameCamera(0);
-	if ((mesh < 0) || (cam == NULL))
+	if (cam == NULL)
 	{
 		return;
 	}
-	ds = &s_engDrvSets[s_menuSet];
-	gpu = ds->gpu;
-	if ((gpu == NULL) || (gpu->poseTotal == 0u))
+	hires = Engine_HiresMenuReady();
+	if (hires)
 	{
-		return;
+		Engine_HiresMenuParts(&mesh, &hiresWheel, hullMin, hullMax);
+		ds = NULL;
+		gpu = NULL;
+	}
+	else
+	{
+		if ((s_menuSet < 0) || (s_menuSet >= NATIVE_CHAR_GPU_SETS))
+		{
+			return;
+		}
+		mesh = Engine_DriverBodyMesh(s_menuSet);
+		if (mesh < 0)
+		{
+			return;
+		}
+		ds = &s_engDrvSets[s_menuSet];
+		gpu = ds->gpu;
+		if ((gpu == NULL) || (gpu->poseTotal == 0u))
+		{
+			return;
+		}
+		for (axis = 0; axis < 3; axis++)
+		{
+			hullMin[axis] = gpu->hullMin[axis];
+			hullMax[axis] = gpu->hullMax[axis];
+		}
 	}
 
 	// The yaw: the ticks since the last frame (the first frame and a jump
@@ -195,9 +229,9 @@ void Engine_MenuSceneCollect(struct GameTracker *gGT)
 	side = 0.0f;
 	for (axis = 0; axis < 3; axis++)
 	{
-		const float extent = gpu->hullMax[axis] - gpu->hullMin[axis];
+		const float extent = hullMax[axis] - hullMin[axis];
 
-		centre[axis] = 0.5f * (gpu->hullMax[axis] + gpu->hullMin[axis]);
+		centre[axis] = 0.5f * (hullMax[axis] + hullMin[axis]);
 		if (extent > side)
 		{
 			side = extent;
@@ -261,7 +295,35 @@ void Engine_MenuSceneCollect(struct GameTracker *gGT)
 	if (!s_menuLogged)
 	{
 		s_menuLogged = 1;
-		Platform_Log("[CTR Engine] menu scene: first draw (set %d, mesh %d)\n", s_menuSet, mesh);
+		Platform_Log("[CTR Engine] menu scene: first draw (%s %d, mesh %d)\n", hires ? "hires driver, set" : "set", hires ? -1 : s_menuSet, mesh);
+	}
+
+	// The hi-res driver: its one wheel mesh at the four rest middles (model
+	// units of the body, Engine_HiresWheelMiddle at scale 1.0), not mirrored.
+	if (hires)
+	{
+		int wheel;
+
+		Engine_HiresNoteMenuFrame();
+		for (wheel = 0; wheel < NATIVE_WHEELS_COUNT; wheel++)
+		{
+			EngineMat4 place;
+			float m[3];
+
+			Engine_HiresWheelMiddle(wheel, 0x1000, 0x1000, 0x1000, m);
+			Engine_Mat4Identity(&place);
+			place.m[12] = m[0];
+			place.m[13] = m[1];
+			place.m[14] = m[2];
+			Engine_Mat4Mul(&bodyClip, &place, &draw.clipFromModel);
+			draw.mesh = hiresWheel;
+			draw.frame = 0u;
+			if (Engine_RenderSubmitLinked(0, &draw, gGT->pushBuffer[0].ptrOT, cell))
+			{
+				s_menuWheelDraws++;
+			}
+		}
+		return;
 	}
 
 	// The wheels at rest: the body's matrix times the translation to the

@@ -128,6 +128,9 @@ void Engine_DriverCmdlLoad(void)
 	{
 		return;
 	}
+	// The hi-res driver of --engine-hires-dir (engine_hires.c): its files once,
+	// its meshes and material at every load, uploaded with the others.
+	Engine_HiresLoad();
 
 	for (seat = 0; seat < ENG_CMDL_SEATS; seat++)
 	{
@@ -214,6 +217,11 @@ int Engine_DriverCmdlOwns(const struct Driver *d)
 	{
 		return 0;
 	}
+	// The hi-res driver's seat (engine_hires.c) is the engine's, whatever its model.
+	if (Engine_HiresOwns(d))
+	{
+		return 1;
+	}
 	seat = (int)d->driverID;
 	if ((seat < 0) || (seat >= ENG_CMDL_SEATS) || (gGT->drivers[seat] != d))
 	{
@@ -229,78 +237,27 @@ int Engine_DriverCmdlOwns(const struct Driver *d)
 
 // The mesh must be on the GPU: an upload inside a race frame is not allowed
 // (as in engine_fx_turbo.c), so a model without buffers is left to retail.
-internal int EngCmdl_MeshReady(const EngCmdlModel *e)
+internal int EngCmdl_MeshReady(int mesh)
 {
 	u32 vb = 0xffffffffu;
 	u32 ib = 0xffffffffu;
 
-	if ((e->imp.mesh < 0) || (Engine_MeshDesc(e->imp.mesh) == NULL))
+	if ((mesh < 0) || (Engine_MeshDesc(mesh) == NULL))
 	{
 		return 0;
 	}
-	Engine_MeshGetGpu(e->imp.mesh, &vb, &ib);
+	Engine_MeshGetGpu(mesh, &vb, &ib);
 	return ((vb != 0xffffffffu) && (ib != 0xffffffffu)) ? 1 : 0;
 }
 
-int Engine_DriverCmdlRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb)
+// The tints of a driver body draw (header comment, THE COLOUR, UNDER WATER and
+// MIRROR): tint, belowTint, mirrorTint of draw; also used by engine_hires.c.
+internal void EngCmdl_Tints(const struct Instance *inst, const struct InstDrawPerPlayer *idpp, EngineInstanceDraw *draw)
 {
-	struct GameTracker *gGT = sdata->gGT;
-	const struct Driver *d;
-	const EngCmdlModel *em;
-	const struct ModelHeader *mh0;
-	EngineInstanceDraw draw;
 	float a;
 	float far3[3];
 	float below[3];
-	int seat;
-	int anim = -1;
-	int frame = -1;
-	int meshFrame;
-
-	if (!g_cfg_engine || !s_engCmdlInit || (inst == NULL) || (idpp == NULL) || (pb == NULL) || (gGT == NULL) || (inst->model == NULL))
-	{
-		return 0;
-	}
-	seat = EngCmdl_SeatOfBody(gGT, inst);
-	if (seat < 0)
-	{
-		return 0;
-	}
-	d = gGT->drivers[seat];
-	if ((inst->thread == NULL) || (inst->thread->object != (void *)d) || !Engine_FxOwnsDriver(d) || !Engine_DriverCmdlOwns(d))
-	{
-		return 0;
-	}
-	em = &s_engCmdlModels[s_engCmdlSeat[seat]];
-	mh0 = (inst->model->numHeaders >= 1) ? inst->model->headers : NULL;
-	if ((mh0 == NULL) || ((inst->flags & (SCREENSPACE_INSTANCE | HIDE_MODEL)) != 0) || ((idpp->instFlags & REVERSE_CULL_DIRECTION) != 0) ||
-	    (idpp->mh == NULL) || (idpp->ptrCurrFrame == NULL) || (Engine_InstanceViewOf(pb) < 0) || !EngCmdl_MeshReady(em))
-	{
-		return 0;
-	}
-
-	// The pose: the frame retail draws with (see the header comment).
-	NativeRenderLayer_FrameOf(idpp->mh, idpp->ptrCurrFrame, &anim, &frame);
-	if (frame < 0)
-	{
-		const struct ModelAnim *ma = NativeRenderLayer_AnimOf(mh0, (u32)inst->animIndex);
-
-		if (ma == NULL)
-		{
-			return 0;
-		}
-		anim = (int)inst->animIndex;
-		frame = NativeRenderLayer_AnimFrameNumber(ma, (u16)inst->animFrame);
-	}
-	else if (anim < 0)
-	{
-		anim = 0; // a header without animations: its one frame
-	}
-	meshFrame = Engine_ModelFrame(&em->imp, anim, frame);
-	if (meshFrame < 0)
-	{
-		return 0;
-	}
+	int c;
 
 	// The tint: DPCT toward the far colour by alphaScale / 4096.
 	a = ((int)idpp->alphaScale <= 0) ? 0.0f : (((int)idpp->alphaScale >= 0x1000) ? 1.0f : ((float)idpp->alphaScale / 4096.0f));
@@ -329,22 +286,83 @@ int Engine_DriverCmdlRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp
 		below[2] = (float)(white & ((mask >> 16) & 0xffu)) / 255.0f;
 	}
 
+	for (c = 0; c < 3; c++)
+	{
+		draw->tint[c] = (1.0f - a) + (far3[c] * a);
+		draw->belowTint[c] = draw->tint[c] * below[c];
+		draw->mirrorTint[c] = draw->tint[c];
+	}
+	draw->tint[3] = 1.0f;
+	draw->belowTint[3] = 1.0f;
+	draw->mirrorTint[3] = 1.0f;
+}
+
+int Engine_DriverCmdlRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb)
+{
+	struct GameTracker *gGT = sdata->gGT;
+	const struct Driver *d;
+	const EngCmdlModel *em;
+	const struct ModelHeader *mh0;
+	EngineInstanceDraw draw;
+	int seat;
+	int anim = -1;
+	int frame = -1;
+	int meshFrame;
+
+	if (!g_cfg_engine || !s_engCmdlInit || (inst == NULL) || (idpp == NULL) || (pb == NULL) || (gGT == NULL) || (inst->model == NULL))
+	{
+		return 0;
+	}
+	// The hi-res driver's body (engine_hires.c, --engine-hires-dir) first.
+	if (Engine_HiresRoute(inst, idpp, pb))
+	{
+		return 1;
+	}
+	seat = EngCmdl_SeatOfBody(gGT, inst);
+	if (seat < 0)
+	{
+		return 0;
+	}
+	d = gGT->drivers[seat];
+	if ((inst->thread == NULL) || (inst->thread->object != (void *)d) || !Engine_FxOwnsDriver(d) || !Engine_DriverCmdlOwns(d))
+	{
+		return 0;
+	}
+	em = &s_engCmdlModels[s_engCmdlSeat[seat]];
+	mh0 = (inst->model->numHeaders >= 1) ? inst->model->headers : NULL;
+	if ((mh0 == NULL) || ((inst->flags & (SCREENSPACE_INSTANCE | HIDE_MODEL)) != 0) || ((idpp->instFlags & REVERSE_CULL_DIRECTION) != 0) ||
+	    (idpp->mh == NULL) || (idpp->ptrCurrFrame == NULL) || (Engine_InstanceViewOf(pb) < 0) || !EngCmdl_MeshReady(em->imp.mesh))
+	{
+		return 0;
+	}
+
+	// The pose: the frame retail draws with (see the header comment).
+	NativeRenderLayer_FrameOf(idpp->mh, idpp->ptrCurrFrame, &anim, &frame);
+	if (frame < 0)
+	{
+		const struct ModelAnim *ma = NativeRenderLayer_AnimOf(mh0, (u32)inst->animIndex);
+
+		if (ma == NULL)
+		{
+			return 0;
+		}
+		anim = (int)inst->animIndex;
+		frame = NativeRenderLayer_AnimFrameNumber(ma, (u16)inst->animFrame);
+	}
+	else if (anim < 0)
+	{
+		anim = 0; // a header without animations: its one frame
+	}
+	meshFrame = Engine_ModelFrame(&em->imp, anim, frame);
+	if (meshFrame < 0)
+	{
+		return 0;
+	}
+
 	memset(&draw, 0, sizeof(draw));
 	draw.mesh = em->imp.mesh;
 	draw.frame = (u32)meshFrame;
-	{
-		int c;
-
-		for (c = 0; c < 3; c++)
-		{
-			draw.tint[c] = (1.0f - a) + (far3[c] * a);
-			draw.belowTint[c] = draw.tint[c] * below[c];
-			draw.mirrorTint[c] = draw.tint[c];
-		}
-	}
-	draw.tint[3] = 1.0f;
-	draw.belowTint[3] = 1.0f;
-	draw.mirrorTint[3] = 1.0f;
+	EngCmdl_Tints(inst, idpp, &draw);
 	draw.drawBelow = 1;
 	draw.flags = em->transparent ? ENGINE_DRAW_TRANSPARENT : 0;
 

@@ -3,7 +3,9 @@
 
 // ENGINE FX TIRES - the wheels of owned drivers without a wheel mesh, drawn by
 // the engine as sprites (round of 2026-10-13). See include/platform/engine.h,
-// EFFECTS OF CUSTOM DRIVERS (ENGINE_FX_TIRES).
+// EFFECTS OF CUSTOM DRIVERS (ENGINE_FX_TIRES). The seat of the hi-res driver
+// (--engine-hires-dir) is handed to Engine_HiresWheels first: 3D wheel meshes
+// at the same place in the game's frame, no sprite (platform/engine_hires.c).
 //
 // WHAT THE GAME DOES (game/DrawTires.c). A retail kart, a CMDL-only custom
 // driver and a CNET driver without WHLS have no wheel geometry; RenderAllTires
@@ -312,6 +314,15 @@ int EngineFx_Tires(const struct Driver *d, const struct Instance *inst, const st
 	if (!g_cfg_engine || !Engine_FxOwnsDriver(d))
 	{
 		return 0;
+	}
+	// The hi-res driver's seat (engine_hires.c): wheel meshes, never sprites.
+	{
+		const int hires = Engine_HiresWheels(d, inst, idpp, pb, reflection);
+
+		if (hires != 0)
+		{
+			return hires;
+		}
 	}
 
 	// From here on the driver is owned: whatever cannot be drawn is drawn by the
