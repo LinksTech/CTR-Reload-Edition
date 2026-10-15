@@ -113,7 +113,7 @@ import sys
 
 SOURCES = 'TIDXSWM'
 FEATURES = ('prim', 'anim', 'lod', 'page', 'depth', 'clut', 'uv', 'blend', 'col', 'stage', 'cell',
-            'stage-none', 'split-col', 'mirror-col', 'missing-source', 'engine-only-material', 'engine-only',
+            'stage-none', 'split-col', 'mirror-col', 'col-model', 'missing-source', 'engine-only-material', 'engine-only',
             'sample-outside')
 # Retail draw functions that cut model triangles at the water or mirror line
 # and write pieces with interpolated UV and the colour of their side.
@@ -122,7 +122,15 @@ PIECE_FUNCS = {'split': 'split-col', 'reflection': 'mirror-col', 'special': 'mir
 # record), nogeo (a mosaic piece without a place), lodonly (a level retail does
 # not draw by default), noleaf (a block the walk never reaches), sieve; engine
 # frozen (an AnimTex face that does not follow its cell), tablefail.
-FLAG_KEYS = ('part', 'clip', 'nogeo', 'lodonly', 'noleaf', 'sieve', 'frozen', 'tablefail')
+FLAG_KEYS = ('part', 'clip', 'nogeo', 'lodonly', 'noleaf', 'sieve', 'frozen', 'tablefail', 'degenerate',
+             'nolayout', 'dropped', 'blank', 'zeroarea')
+# Retail track lines without an engine line of their key that are information:
+# in every set a level retail does not draw by default (lodonly), a block in
+# no leaf (noleaf), a table of null entries (blank), a packet without area
+# (zeroarea); in the load block also a degenerate face, a face without layout
+# and a dropped layout.
+INFO_FLAGS_ANY = ('lodonly', 'noleaf', 'blank', 'zeroarea')
+INFO_FLAGS_LOAD = ('degenerate', 'nolayout', 'dropped')
 BLENDS = ('o', '0', '1', '2', '3')
 FAULT_TARGET = {'clut': 'clut', 'cell': 'cell'}
 # Colour tolerance per channel (8-bit corner colours). The retail writer
@@ -134,6 +142,10 @@ FAULT_TARGET = {'clut': 'clut', 'cell': 'cell'}
 # steps can be off by one each, so 2. T1 (normals drawn as colours) is far
 # above (>= 32).
 COL_TOL_NORMAL = 0
+# Track tile colours (slots on both sides) off by at most this are reported as
+# their own feature col-model (rounding of the oracle's tile colour model),
+# not hidden: the tolerance stays COL_TOL_NORMAL.
+COL_MODEL_GAP = 2
 COL_TOL_GTE = 2
 BOX_AREA_MAX = 256 * 256
 DEFAULT_EXCEPTIONS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -843,7 +855,7 @@ def _new_stats():
             'per': {}, 'unused': {}, 'coverage': {}, 'prim_equal': 0, 'menu_tracks': set(),
             'part': {}, 'clip': {}, 'nogeo': {}, 'info_lines': {}, 'stage_none': {}, 'lod_never': set(),
             'col_unpaired': 0, 'winding': 0, 'piece': {}, 'eom_coverage': [], 'fault_orient': set(),
-            't_set_rule': {}, 'back_coverage': []}
+            't_set_rule': {}, 'back_coverage': [], 'src_cell': {}}
 
 
 def _per(stats, tr, src):
@@ -888,9 +900,18 @@ def _t_corners_ok(r, e):
     if r.uv is None or e.uv is None:
         return r.uv is None and e.uv is None
     if r.slots is not None and e.slots is not None:
-        em = _slot_map(e)
-        return all(s in em and em[s][0] == c[0] for s, c in _slot_map(r).items())
+        return all(a[0] == b[0] for a, b in _common_slots(r, e))
     return set(r.uv) <= set(e.uv)
+
+
+def _common_slots(r, e):
+    """(retail corner, engine corner) per slot of the line with fewer slots
+    (a GT3 against a quad, a quad layout against a triangle face of the
+    engine, slots=0,1,2); a slot the other line lacks pairs with None."""
+    rm, em = _slot_map(r), _slot_map(e)
+    few = rm if len(rm) <= len(em) else em
+    return [(rm.get(k, (None, None)), em.get(k, (None, None))) if k in rm and k in em
+            else ((None, None), (-1, None)) for k in few]
 
 
 def _t_diffs(r, e, ctol):
@@ -902,9 +923,8 @@ def _t_diffs(r, e, ctol):
         d.append('uv')
     elif r.uv is not None and r.col is not None and e.col is not None:
         if r.slots is not None and e.slots is not None:
-            em = _slot_map(e)
-            ok = all(em[s][1] is None or c[1] is None or max(abs(p - q) for p, q in zip(c[1], em[s][1])) <= ctol
-                     for s, c in _slot_map(r).items())
+            ok = all(a[1] is None or b[1] is None or max(abs(p - q) for p, q in zip(a[1], b[1])) <= ctol
+                     for a, b in _common_slots(r, e))
         else:
             ok = _pair_cols_ok(_corners(r), _corners(e), ctol)
         if not ok:
@@ -944,6 +964,7 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
     per_track = {}            # track -> (src, model) -> object data (models)
     tcov = {}                 # track -> coverage sets (track faces)
     visible = set()           # (track, object, material) of model fault lines on faces retail draws
+    entry_cell = {}           # (track, face, table entry) -> cell, from the retail load block
 
     def rec(**kw):
         records.append(Record(**kw))
@@ -968,6 +989,21 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
             for setname, rl, el in _groups(src, sides['R'], sides['E']):
                 load = fr.load or setname == 'load'
                 race = not fr.load and setname == '-'
+                if src == 'T':
+                    if load:
+                        # the cell of every table entry of the face (retail load block)
+                        for r in rl:
+                            if 'entry' in r.extra and r.cell != '-':
+                                entry_cell[(tr, sid, r.extra['entry'])] = r.cell
+                    else:
+                        # a tile without slots that names the table entry it was read from
+                        # (src=<e>): its cell comes from that entry, not from where it lies
+                        for r in rl:
+                            if r.key is not None and r.key[0] == 'cell' and r.slots is None and 'src' in r.extra:
+                                c = entry_cell.get((tr, sid, r.extra['src']))
+                                if c is not None:
+                                    r.cell, r.key = c, ('cell', c)
+                                    _bump(stats['src_cell'], tr)
                 p = _per(stats, tr, src)
                 p['R'] += len(rl)
                 p['E'] += len(el)
@@ -1057,8 +1093,9 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                             continue
                         if 'clip' in r.flags:
                             _bump(stats['clip'], tr, count)
-                        if ('lodonly' in r.flags or 'noleaf' in r.flags) and r.key not in keys:
-                            _bump(stats['info_lines'], (tr, 'lodonly' if 'lodonly' in r.flags else 'noleaf'), count)
+                        why = [k for k in INFO_FLAGS_ANY + (INFO_FLAGS_LOAD if load else ()) if k in r.flags]
+                        if why and r.key not in keys:
+                            _bump(stats['info_lines'], (tr, why[0]), count)
                             continue
                     work.append((r, count))
                 if not work:
@@ -1177,6 +1214,12 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                             continue
                         best = min(same, key=lambda e: (len(_t_diffs(r, e, ctol)), e.lineno))
                         d = _t_diffs(r, best, ctol)
+                        if d == ['col'] and r.slots is not None and best.slots is not None and \
+                                max(max(abs(p - q) for p, q in zip(a[1], b[1])) for a, b in _common_slots(r, best)
+                                    if a[1] is not None and b[1] is not None) <= COL_MODEL_GAP:
+                            # tile colours that differ by a rounding step of the oracle's
+                            # colour model: counted apart (no tolerance change)
+                            d = ['col-model']
                         if r.anim or best.anim:
                             pre.append('anim')
                         rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=pre + d, r=r, e=best,
@@ -1690,6 +1733,9 @@ def render_md(res, inputs, exc_origin):
               % len(s['eom_coverage']))
     md.append('- Engine back-side materials (side=back) of models retail never showed from the back (coverage): %d'
               % len(s['back_coverage']))
+    if s['src_cell']:
+        md.append('- Track tiles without slots placed by their table entry (src= against entry= of the load '
+                  'block): %d' % sum(s['src_cell'].values()))
     if s['t_set_rule']:
         md.append('- Track lines without slot marker, compared as a corner set (orientation inside the face not '
                   'provable): %d (%s)' % (sum(s['t_set_rule'].values()),
@@ -1710,10 +1756,11 @@ def render_md(res, inputs, exc_origin):
     for tr in sorted(set(t for t, _ in s['info_lines']) | set(s['part']) | set(s['clip']) | set(s['nogeo']) |
                      set(s['stage_none'])):
         md.append('- %s track lines: part %d (compared by the piece rule), clip %d, nogeo %d (counted only), '
-                  'stage none %d; without engine partner: lodonly %d, noleaf %d (information)' % (
+                  'stage none %d; without engine partner (information): %s' % (
                       tr, s['part'].get(tr, 0), s['clip'].get(tr, 0), s['nogeo'].get(tr, 0),
-                      s['stage_none'].get(tr, 0), s['info_lines'].get((tr, 'lodonly'), 0),
-                      s['info_lines'].get((tr, 'noleaf'), 0)))
+                      s['stage_none'].get(tr, 0),
+                      ', '.join('%s %d' % (k, s['info_lines'].get((tr, k), 0))
+                                for k in INFO_FLAGS_ANY + INFO_FLAGS_LOAD)))
     for tr, obj in sorted(s['lod_never']):
         md.append('- %s: header 0 of %s never compared (retail drew it only with another header)' % (tr, obj))
     for tr in sorted(s['route_retail']):
@@ -2054,7 +2101,7 @@ def selftest():
     res, _ = run([F(), T('R', '5', '7,0,7,7,0,7', 'cell=0,0', extra='slots=0,3,2'), T('E', '5', C00, 'cell=0,0')])
     check('slots: a GT3 with a corner on the wrong slot: uv', feats(res) == ['uv'])
     res, _ = run([F(), T('R', '5', C00, 'cell=0,0', extra='ord=slot,col=1,1,1;2,2,2;3,3,3;4,4,4'),
-                  T('E', '5', C00, 'cell=0,0', extra='col=1,1,1;2,2,2;3,3,4;4,4,4')])
+                  T('E', '5', C00, 'cell=0,0', extra='col=1,1,1;2,2,2;3,3,9;4,4,4')])
     check('slots: colours compared per slot', feats(res) == ['col'])
     TURN = '7,0,0,0,7,7,0,7'
     res, _ = run([F('L3-load'), T('R', '5', C00, 'cell=0,0', extra='ord=slot'), T('R', '5', TURN, 'cell=0,1', extra='ord=slot'),
@@ -2064,6 +2111,44 @@ def selftest():
           res.control.startswith('yes') and res.stats['fault_orient'] == set() and feats(res) == ['cell', 'cell'])
     check('parse: bad slots are an error',
           len(parse_log('\n'.join([F(), T('R', '5', C00, 'cell=0,0', extra='slots=0,1,1,2')]) + '\n', 's').errors) == 1)
+
+    # zeroarea and the cell of a tile from its table entry (src= against entry= of the load block)
+    res, _ = run([F(), T('R', '9', '0,0,15,0,0,15,15,15', 'stage=2', extra='zeroarea=1')])
+    check('zeroarea=1: a dynamic missing-source is information', len(res.open) == 0 and
+          res.stats['info_lines'] == {('L3', 'zeroarea'): 1})
+    blk = [F('L3-load'), T('R', '5', C00, 'cell=0,0', extra='entry=4'), T('R', '5', C11, 'cell=1,1', extra='entry=9'),
+           T('E', '5', C00, 'cell=0,0'), T('E', '5', C11, 'cell=1,1')]
+    res, _ = run(blk + [F('t1'), T('R', '5', C11, 'cell=0,1', extra='src=9'), T('E', '5', C11, 'cell=1,1')])
+    check('src=<e>: a tile without slots takes the cell of its table entry: 0',
+          len(res.open) == 0 and res.stats['src_cell'] == {'L3': 1})
+    res, _ = run(blk + [F('t1'), T('R', '5', C11, 'cell=0,1'), T('E', '5', C11, 'cell=1,1')])
+    check('src=<e>: without it the cell comes from where the tile lies (cell deviation)', feats(res) == ['cell'])
+    res, _ = run(blk + [F('t1'), T('R', '5', C11, 'cell=0,1', extra='src=9,slots=0,1,2,3'), T('E', '5', C11, 'cell=1,1')])
+    check('src=<e> is not used when the tile has slots', feats(res) == ['cell'] and res.stats['src_cell'] == {})
+
+    # markers of lines without an engine partner, triangle faces, tile colour model
+    S2 = '0,0,15,0,0,15,15,15'
+    res, _ = run([F('L3-load'), T('R', '9', S2, 'stage=2', extra='degenerate=1'),
+                  T('R', '8', S2, 'stage=2', extra='blank=1'), T('R', '7', S2, 'stage=2', extra='nolayout=1'),
+                  T('R', '6', S2, 'stage=2', extra='dropped=1'), T('R', '5', C00, 'cell=0,0'), T('E', '5', C00, 'cell=0,0')])
+    check('load block: degenerate, blank, nolayout, dropped without partner are information',
+          len(res.open) == 0 and sorted(k for _, k in res.stats['info_lines']) == ['blank', 'degenerate', 'dropped', 'nolayout'])
+    res, _ = run([F(), T('R', '9', S2, 'stage=2', extra='degenerate=1,set=anim')])
+    check('degenerate outside the load block stays missing-source', feats(res) == ['missing-source'])
+    res, _ = run([F(), T('R', '9', S2, 'stage=2', extra='blank=1')])
+    check('blank=1 is information in any set', len(res.open) == 0)
+    res, _ = run([F('L3-load'), T('R', '5', '0,0,7,0,0,7,9,9', 'stage=2', extra='ord=slot'),
+                  T('E', '5', '0,0,7,0,0,7', 'stage=2', extra='slots=0,1,2')])
+    check('triangle face (slots=0,1,2) against a 4-corner layout: only its slots compared: 0', len(res.open) == 0)
+    res, _ = run([F('L3-load'), T('R', '5', '0,0,7,0,0,8,9,9', 'stage=2', extra='ord=slot'),
+                  T('E', '5', '0,0,7,0,0,7', 'stage=2', extra='slots=0,1,2')])
+    check('triangle face: a differing corner on one of its slots: uv', feats(res) == ['uv'])
+    res, _ = run([F(), T('R', '5', C00, 'cell=0,0', extra='ord=slot,col=225,1,1'),
+                  T('E', '5', C00, 'cell=0,0', extra='col=226,1,1')])
+    check('tile colour off by 1 with slots on both sides: col-model, still a deviation', feats(res) == ['col-model'])
+    res, _ = run([F(), T('R', '5', C00, 'cell=0,0', extra='ord=slot,col=223,1,1'),
+                  T('E', '5', C00, 'cell=0,0', extra='col=226,1,1')])
+    check('tile colour off by 3: col', feats(res) == ['col'])
 
     # fallback without slot marker: track UV as a corner set (counted)
     res, _ = run([F(), T('R', '5', '7,0,0,0,7,7,0,7', 'cell=0,0'), T('E', '5', C00, 'cell=0,0')])
