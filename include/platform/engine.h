@@ -228,14 +228,117 @@ u8 Engine_NightChannel(int nightPercent, u8 value);
 // --------------------------------------------------------------------------
 // MESHES AND SCENE (platform/engine_mesh.c, platform/engine_scene.c)
 
-// The vertex of every engine mesh; the same layout as struct NativeProbeVertex
-// (24 bytes), so the existing "nr" programs can read it.
+// The vertex of every engine mesh (28 bytes): location 0 position, 1 texcoord,
+// 2 colour (the layout of struct NativeProbeVertex), then 3 the UV box.
+//
+// THE UV BOX (round of 2026-10-16). The texels the "ne" VRAM path (texSource 2)
+// may read for the triangle, umin..umax x vmin..vmax in texels of the page,
+// STORED AS uvBox = {umin, vmin, 255 - umax, 255 - vmax}: a vertex whose box
+// was never written (zeroed) means the whole page, no clamp - the behaviour
+// from before the box. Read and write it only through Engine_VertexSetBox /
+// Engine_VertexBoxGet. The program clamps floor(v_uv) into it, so the rounding of the
+// interpolation never reaches a texel outside the box of the corners - one
+// before the smallest corner, or one past 255 that wraps to texel 0 of the same
+// page. Such a texel is foreign or the transparent word 0x0000, and a magnified
+// small box showed it as noise along its border. The PS1 rasteriser never
+// leaves that box; the clamp keeps today's mapping and adds only that rule.
+// It reaches the fragment stage as a flat attribute, taken from the provoking
+// (first) vertex of each triangle, so every vertex of a triangle - and of a
+// face or sprite whose triangles share vertices - carries the same box.
+// The writer of the texcoords fills it, from the same corners:
+//   - a VRAM triangle, face or sprite: Engine_VertexBoxOfCorners (or the box of
+//     the corners its triangles use);
+//   - every other vertex: Engine_VertexBoxFull (0, 0, 255, 255, stored as four
+//     zeros), no limit inside the page. Only texSource 2 of "ne" reads the box;
+//     the mosaic table (3) clamps to its cell itself, native textures (1) and
+//     "nw" never read it.
+// A writer that zeroes its vertices and leaves the box out gets the whole page
+// (no clamp, as before), never texel (0, 0) alone; stack bytes that are not
+// zeroed still give a wrong box, so every writer of a VRAM vertex sets it.
 typedef struct
 {
 	float position[3];
 	float texcoord[2];
 	u8 color[4];
+	u8 uvBox[4];
 } EngineVertex;
+
+CTR_STATIC_ASSERT(sizeof(EngineVertex) == 28);
+
+// One texel of a corner for the box: a texcoord of a VRAM layout is a whole
+// texel; rounded to the nearest and held inside the page.
+static inline u8 Engine_UvBoxTexel(float t)
+{
+	if (!(t > 0.0f))
+	{
+		return 0;
+	}
+	if (t >= 255.0f)
+	{
+		return 255;
+	}
+	return (u8)(int)(t + 0.5f);
+}
+
+// Writes the box umin..umax x vmin..vmax into v[0..count), stored with the
+// maxima as 255 - max (zero = the whole page).
+static inline void Engine_VertexSetBox(EngineVertex *v, int count, u8 umin, u8 vmin, u8 umax, u8 vmax)
+{
+	for (int i = 0; i < count; i++)
+	{
+		v[i].uvBox[0] = umin;
+		v[i].uvBox[1] = vmin;
+		v[i].uvBox[2] = (u8)(255u - umax);
+		v[i].uvBox[3] = (u8)(255u - vmax);
+	}
+}
+
+// The box of a vertex as texels: out = umin, vmin, umax, vmax.
+static inline void Engine_VertexBoxGet(const EngineVertex *v, int out[4])
+{
+	out[0] = v->uvBox[0];
+	out[1] = v->uvBox[1];
+	out[2] = 255 - (int)v->uvBox[2];
+	out[3] = 255 - (int)v->uvBox[3];
+}
+
+// The box of a vertex that reads no VRAM page: the whole page.
+static inline void Engine_VertexBoxFull(EngineVertex *v, int count)
+{
+	Engine_VertexSetBox(v, count, 0, 0, 255, 255);
+}
+
+// The box of the corners v[0..count) (their texcoords), written into all of them:
+// a triangle (3), a sprite quad (4).
+static inline void Engine_VertexBoxOfCorners(EngineVertex *v, int count)
+{
+	u8 umin = 255;
+	u8 vmin = 255;
+	u8 umax = 0;
+	u8 vmax = 0;
+
+	for (int i = 0; i < count; i++)
+	{
+		const u8 u = Engine_UvBoxTexel(v[i].texcoord[0]);
+		const u8 t = Engine_UvBoxTexel(v[i].texcoord[1]);
+
+		umin = (u < umin) ? u : umin;
+		umax = (u > umax) ? u : umax;
+		vmin = (t < vmin) ? t : vmin;
+		vmax = (t > vmax) ? t : vmax;
+	}
+	if (count > 0)
+	{
+		Engine_VertexSetBox(v, count, umin, vmin, umax, vmax);
+	}
+}
+
+// --engine-sample-selftest (ctest engine_sample_selftest, platform/
+// engine_testscene.c): on the GPU, whether "ne" keeps a fragment inside the UV
+// box (instance and mosaic way, 4 and 1 samples), with built-in controls. Opens
+// a hidden window and the Vulkan device, no game data. 0 = passed (or skipped
+// without a device, said on stdout).
+int Engine_SampleSelfTest(void);
 
 typedef struct
 {

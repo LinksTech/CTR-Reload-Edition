@@ -417,6 +417,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--dev-tt-ghost", "", "with --dev-race-mode tt: the track's staff ghost (N. Tropy) races along - its gate is opened in this session's progress in RAM (the card root is the one of --dev-race-mode); retail disc tracks only"},
     {"--dev-cup", "<0..3>", "a retail arcade cup (0 Wumpa, 1 Crystal, 2 Nitro, 3 Crash) started from the main menu like --level, set up as the cup menu does it: EASY, 1 lap per race (what the ARCADE row sets with the ONE LAP cheat), the driver of --driver; the game's own way through the result screens and the cup standings (CROSS by --menu-keys) to the podium; one log line per race and screen, with --shot-name snapshots <name>-cup-r<n>-race|results|points.bmp and <name>-cup-podium-f<frame>.bmp; back at the main menu the run ends; the card root is the one of --dev-race-mode; not with --level, --level-tour, --autoload-track or --dev-race-mode"},
     {"--engine-selftest", "", "the native engine's modules without a window: maths, the camera against the PS1 projection, materials and blend equations, meshes and the scene lists, effect geometry, the VRAM decoder, then end (ctest engine_selftest)"},
+    {"--engine-sample-selftest", "", "on the graphics card (a hidden window): whether the engine program keeps every VRAM texel inside the UV box of its triangle, with built-in controls, then end (ctest engine_sample_selftest)"},
     {"--mouse-selftest", "", "the menu mouse without a window: the window to menu mapping with letterbox and pillarbox, the widescreen shift of left, centre and right elements at 4:3, 16:9 and 43:18, the round trip, and the active/inactive rules, then end (ctest mouse_selftest)"},
     {"--controls-selftest", "<dir>", "the keyboard bindings file ctr-controls.cfg in <dir>: parsing, fallbacks, saving, swaps, race and menu context and key capture, then end (ctest controls_selftest)"},
     {"--char-native-selftest", "<dir>", "every .rldchar of dir (written by rldpack make-native-tests) through the roster read and the native read (CNET, CTXT) without and with --native-preview, each against the expectation its name gives, then end; no window, no data needed"},
@@ -2789,6 +2790,14 @@ int main(int argc, char *argv[])
 		if (strcmp(argv[argIndex], "--engine-selftest") == 0)
 		{
 			return Engine_SelfTest();
+		}
+
+		// The UV box of the engine program on the GPU (platform/engine_testscene.c,
+		// ctest engine_sample_selftest): a hidden window and the Vulkan device, made-up
+		// VRAM, no game data; up here so nothing else of the game starts.
+		if (strcmp(argv[argIndex], "--engine-sample-selftest") == 0)
+		{
+			return Engine_SampleSelfTest();
 		}
 
 		if (strcmp(argv[argIndex], "--mouse-selftest") == 0)

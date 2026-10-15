@@ -397,6 +397,7 @@ int EngineFx_ExhaustSprite(struct Particle *p, int view, const struct Icon *icon
 	v[2].texcoord[1] = (float)icon->texLayout.v3;
 	v[3].texcoord[0] = (float)icon->texLayout.u2;
 	v[3].texcoord[1] = (float)icon->texLayout.v2;
+	Engine_VertexBoxOfCorners(v, 4); // the icon's texels: their box (engine.h, THE UV BOX)
 
 	material = EngineFx_ExhaustMaterial(tpage, icon->texLayout.clut, semi);
 	if (material < 0)
@@ -597,6 +598,7 @@ int EngineFx_WorldSprite(struct Particle *p, int view, const struct Icon *icon, 
 	v[2].texcoord[1] = (float)icon->texLayout.v3;
 	v[3].texcoord[0] = (float)icon->texLayout.u2;
 	v[3].texcoord[1] = (float)icon->texLayout.v2;
+	Engine_VertexBoxOfCorners(v, 4); // the icon's texels: their box (engine.h, THE UV BOX)
 
 	material = EngineFx_ExhaustMaterial(tpage, icon->texLayout.clut, semi);
 	if (material < 0)

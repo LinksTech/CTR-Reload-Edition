@@ -199,6 +199,7 @@ static void EngineSkid_AddQuad(EngineSkidRun *run, const struct TextureLayout *i
 		v[k].color[0] = v[k].color[1] = v[k].color[2] = (u8)col[k]; // PS1 colour byte, 0x80 = unchanged
 		v[k].color[3] = 255;
 	}
+	Engine_VertexBoxOfCorners(v, 4); // the icon's texels: their box (engine.h, THE UV BOX)
 	// GT4 vertex order 0,1,2,3 is a Z: triangles (0,1,2) and (1,3,2)
 	i[0] = b;
 	i[1] = (u16)(b + 1);

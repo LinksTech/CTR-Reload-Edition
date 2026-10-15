@@ -456,6 +456,18 @@ if(BUILD_TESTING)
     set_tests_properties(engine_selftest PROPERTIES
         PASS_REGULAR_EXPRESSION "engine selftest passed: [0-9]+ checks, 0 failures"
     )
+    # The engine program on the graphics card (platform/engine_testscene.c,
+    # Engine_SampleSelfTest): a hidden window and the Vulkan device, made-up VRAM
+    # with poisoned rings around small UV boxes, drawn magnified with 4 and 1
+    # samples through the instance and the mosaic way; no texel outside the box,
+    # and the built-in controls (whole page as box, wider mosaic cells) must see
+    # ring pixels. No game data. Skipped on a machine without a Vulkan device.
+    add_test(NAME engine_sample_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --engine-sample-selftest)
+    set_tests_properties(engine_sample_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "engine sample selftest passed: 4 samples, boxes 0 ring pixels on both ways and both sample counts, control fired: [1-9][0-9]* ring pixels \\(whole page as box\\), mosaic control [1-9][0-9]*"
+        FAIL_REGULAR_EXPRESSION "engine sample selftest FAILED"
+        SKIP_REGULAR_EXPRESSION "engine sample selftest SKIPPED"
+    )
     # The engine's switches (main.c, NativeArgs_GateDevSwitches): a line that
     # cannot mean anything ends the start with exit code 64 and its reason,
     # before any window or data; the lines are what ctest checks. Each line

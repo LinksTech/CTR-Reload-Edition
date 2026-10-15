@@ -6,8 +6,9 @@
 // program "nr" (native_shaders.inc, ctr_native_layer_shader) and of the retail
 // twin "nrt": the same VERTEX / FRAGMENT sections in one source, the same
 // macros (VARYING_LOC0, UBO_QUALIFIER, SAMPLER_SLOTn, fragColor), the same
-// vertex layout (location 0 position, 1 texcoord, 2 colour - struct
-// EngineVertex has the layout of struct NativeProbeVertex). What "ne" adds is
+// vertex layout for locations 0 position, 1 texcoord, 2 colour (struct
+// NativeProbeVertex), and 3 the UV box of struct EngineVertex, which "ne"
+// clamps its VRAM texel to (see THE UV BOX in engine.h). What "ne" adds is
 // one fragment path that reads the PSX VRAM texture directly, so that a mesh of
 // the engine can wear the retail textures of the game without a copy of them.
 //
@@ -93,8 +94,9 @@ int Engine_ProgramsInit(void)
 	        {.slot = a_position, .name = "a_position"},
 	        {.slot = a_texcoord, .name = "a_texcoord"},
 	        {.slot = a_color, .name = "a_color"},
+	        {.slot = a_extra, .name = "a_uvBox"},
 	    },
-	    .attribCount = 3,
+	    .attribCount = 4,
 	    .samplers = {
 	        {.slot = 0, .name = "s_texture"},
 	        {.slot = 1, .name = "s_vram"},

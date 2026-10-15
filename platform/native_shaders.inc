@@ -955,6 +955,16 @@ global_variable const char *ctr_native_twin_shader =
 // x and y wrap on the VRAM (1024 x 512), as the PSX program's VRAM sampler
 // (REPEAT) does for the last page.
 //
+// THE UV BOX. Before that arithmetic floor(v_uv) is clamped to the triangle's
+// box, the flat v_uvBox (EngineVertex.uvBox, include/platform/engine.h): the
+// PS1 never reads a texel outside the box of a primitive's corners, while the
+// rounding of the interpolation here reaches one texel before the smallest
+// corner and one past the largest (255 wrapping to 0 of the page) - a foreign
+// texel or the transparent word along the border of a magnified small box.
+// The box arrives as (umin, vmin, 255 - umax, 255 - vmax), so a vertex without
+// one (all zero) clamps to the whole page, which changes nothing.
+// The mosaic table (texSource 3) clamps to its cell instead and ignores the box.
+//
 // FIVE-FIVE-FIVE. A word is the two bytes of the RG8 texel: .r the low byte,
 // .g the high byte. Bits 0-4 red, 5-9 green, 10-14 blue, bit 15 the STP bit.
 // The PSX program turns the word into a colour through the RG8 lookup table
@@ -1002,13 +1012,17 @@ global_variable const char *ctr_native_engine_shader =
     "layout(location = 0) in vec3 a_position;\n"
     "layout(location = 1) in vec2 a_texcoord;\n"
     "layout(location = 2) in vec4 a_color;\n"
+    // The UV box of the triangle (EngineVertex.uvBox: u8 x 4 as floats, umin, vmin, 255 - umax, 255 - vmax in page texels).
+    "layout(location = 3) in vec4 a_uvBox;\n"
     "VARYING_LOC0 out vec2 v_uv;\n"
     "VARYING_LOC1 out vec4 v_color;\n"
     "VARYING_LOC2 out float v_split;\n"
     "VARYING_LOC3 out vec3 v_world;\n"
+    "VARYING_LOC4 flat out vec4 v_uvBox;\n"
     ENGINE_UNIFORM_BLOCK_GLSL
     "void main() {\n"
     "	v_uv = a_texcoord;\n"
+    "	v_uvBox = a_uvBox;\n"
     "	v_color = a_color * tint;\n"
     // Model units (the track's are world units): the table mode's pixel size (faceFootprint).
     "	v_world = a_position;\n"
@@ -1039,6 +1053,7 @@ global_variable const char *ctr_native_engine_shader =
     "VARYING_LOC1 in vec4 v_color;\n"
     "VARYING_LOC2 in float v_split;\n"
     "VARYING_LOC3 in vec3 v_world;\n"
+    "VARYING_LOC4 flat in vec4 v_uvBox;\n"
     "SAMPLER_SLOT0 uniform sampler2D s_texture;\n"
     "SAMPLER_SLOT1 uniform sampler2D s_vram;\n"
     "SAMPLER_SLOT3 uniform sampler2D s_table;\n"
@@ -1146,7 +1161,11 @@ global_variable const char *ctr_native_engine_shader =
     // The vertex alpha held the face size: a table face is as opaque as any VRAM texel (the tint's alpha only).
     "		colour.a = tint.a;\n"
     "	} else if (params.x > 1.5) {\n"
-    "		colour = wordColour(pageWord(ivec2(floor(v_uv)), ivec2(vramPage.xy + 0.5), int(vramPage.z + 0.5), ivec2(vramClut.xy + 0.5)));\n"
+    // Never a texel outside the triangle's UV box (EngineVertex.uvBox): the rounding of the interpolation reaches
+    // one texel before the smallest corner, and one past the largest (255 + e wraps to texel 0 of the page).
+    // The maxima arrive as 255 - max: a zeroed box is the whole page (no clamp).
+    "		ivec2 texel = clamp(ivec2(floor(v_uv)), ivec2(v_uvBox.xy + 0.5), ivec2(255.5 - v_uvBox.zw));\n"
+    "		colour = wordColour(pageWord(texel, ivec2(vramPage.xy + 0.5), int(vramPage.z + 0.5), ivec2(vramClut.xy + 0.5)));\n"
     "	} else if (params.x > 0.5) {\n"
     "		if (params.y > 0.5) {\n"
     "			vec4 texel = texture(s_texture, v_uv);\n"

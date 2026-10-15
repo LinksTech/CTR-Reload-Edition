@@ -140,8 +140,9 @@ global_variable int s_engGraveCount = 0;
 
 global_variable EngineRenderCounts s_engCount;
 
-// The vertex layout every engine buffer has: the one the "nr" programs read
-// (location 0 position, 1 texture coordinate, 2 colour), struct EngineVertex.
+// The vertex layout every engine buffer has, struct EngineVertex: location 0
+// position, 1 texture coordinate, 2 colour (the three the "nr" programs read),
+// 3 the UV box (u8 x 4, read as whole numbers: USCALED, not normalised).
 internal void Engine_RenderFillVertexDesc(NativeGfxVertexBufferDesc *desc, int bytes, int dynamic, const void *initial)
 {
 	memset(desc, 0, sizeof(*desc));
@@ -149,10 +150,11 @@ internal void Engine_RenderFillVertexDesc(NativeGfxVertexBufferDesc *desc, int b
 	desc->dynamic = dynamic;
 	desc->initial = initial;
 	desc->stride = (int)sizeof(EngineVertex);
-	desc->attribCount = 3;
+	desc->attribCount = 4;
 	desc->attribs[0] = (NativeGfxVertexAttrib){.slot = a_position, .components = 3, .type = NATIVE_GFX_ATTR_FLOAT32, .offset = offsetof(EngineVertex, position)};
 	desc->attribs[1] = (NativeGfxVertexAttrib){.slot = a_texcoord, .components = 2, .type = NATIVE_GFX_ATTR_FLOAT32, .offset = offsetof(EngineVertex, texcoord)};
 	desc->attribs[2] = (NativeGfxVertexAttrib){.slot = a_color, .components = 4, .type = NATIVE_GFX_ATTR_UNORM8, .offset = offsetof(EngineVertex, color)};
+	desc->attribs[3] = (NativeGfxVertexAttrib){.slot = a_extra, .components = 4, .type = NATIVE_GFX_ATTR_UINT8, .offset = offsetof(EngineVertex, uvBox)};
 }
 
 // The native layer treats handle 0 as "none" as well (NativeCharGpu_DropVB).

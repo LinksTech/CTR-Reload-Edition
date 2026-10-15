@@ -101,6 +101,10 @@ internal void EngineFx_SetVertex(EngineVertex *v, EngineVec3 p, float u, float t
 	v->color[1] = colour[1];
 	v->color[2] = colour[2];
 	v->color[3] = colour[3];
+	// Texcoords 0..1 of the quad or ribbon, no VRAM page: the whole page as UV box
+	// (engine.h, THE UV BOX). A caller that puts page texels in instead sets the
+	// box of its corners after them (Engine_VertexBoxOfCorners).
+	Engine_VertexBoxFull(v, 1);
 }
 
 // Writes the 4 quad vertices (corner order v0..v3) and the 6 indices.

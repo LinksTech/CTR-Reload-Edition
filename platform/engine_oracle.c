@@ -51,12 +51,13 @@ int g_engineOracleFaultMaterial = -1;
 #define EO_DECODE_MAX 8
 
 // box= of the E lines: the texel indices the "ne" VRAM path can reach for a
-// triangle. 0 = today: floor(v_uv) is not clamped to the triangle's texel box,
-// so a rounding of the interpolation reaches one texel before the smallest
-// corner (umin - 1) and the largest corner itself; box = umin-1, vmin-1, umax,
-// vmax. Set to 1 TOGETHER with a shader change that clamps floor(v_uv) to the
-// corners' box: box = umin, vmin, umax, vmax.
-#define ENGINE_ORACLE_SAMPLE_CLAMPED 0
+// triangle. 1 since the round of 2026-10-16: "ne" clamps floor(v_uv) to the
+// triangle's UV box (EngineVertex.uvBox, a flat attribute taken from the
+// triangle's first vertex), so box = that vertex's box (Engine_VertexBoxGet). 0 was the rule before
+// the clamp: a rounding of the interpolation reaches one texel before the
+// smallest corner (umin - 1) and the largest corner itself; box = umin-1,
+// vmin-1, umax, vmax of the corners.
+#define ENGINE_ORACLE_SAMPLE_CLAMPED 1
 
 typedef struct
 {
@@ -955,7 +956,19 @@ internal void EngOracle_FinishEngineFace(EngineOracleFace *f, const EngineMateri
 			vmin = (f->uv[k * 2 + 1] < vmin) ? f->uv[k * 2 + 1] : vmin;
 			vmax = (f->uv[k * 2 + 1] > vmax) ? f->uv[k * 2 + 1] : vmax;
 		}
-		if (!ENGINE_ORACLE_SAMPLE_CLAMPED)
+		if (ENGINE_ORACLE_SAMPLE_CLAMPED)
+		{
+			// What the program clamps to: the provoking (first) vertex's box (a zeroed
+			// box is the whole page).
+			int clamp[4];
+
+			Engine_VertexBoxGet(v[0], clamp);
+			umin = clamp[0];
+			vmin = clamp[1];
+			umax = clamp[2];
+			vmax = clamp[3];
+		}
+		else
 		{
 			umin--;
 			vmin--;

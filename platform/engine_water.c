@@ -220,6 +220,9 @@ internal int EngWater_Build(const struct LevVertex *lv, int numVertex, const str
 			v->position[1] = (float)lv[i].pos.y;
 			v->position[2] = (float)lv[i].pos.z;
 			v->color[0] = v->color[1] = v->color[2] = v->color[3] = 255;
+			// "nw" reads the env map with its own rule and never the UV box: the whole
+			// page (engine.h, THE UV BOX); texcoord carries the normal (set below).
+			Engine_VertexBoxFull(v, 1);
 		}
 	}
 

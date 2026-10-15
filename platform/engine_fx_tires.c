@@ -566,6 +566,7 @@ int EngineFx_Tires(const struct Driver *d, const struct Instance *inst, const st
 				out->v[i].texcoord[1] = vs[i];
 				memcpy(out->v[i].color, colour, 4);
 			}
+			Engine_VertexBoxOfCorners(out->v, 4); // the icon's texels: their box (engine.h, THE UV BOX)
 		}
 		out->ot = ot;
 		out->cell = cell;

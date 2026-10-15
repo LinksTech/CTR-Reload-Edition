@@ -170,6 +170,7 @@ void EngineFx_Shadow(const struct Driver *d, int view, const SVec3 points[9], co
 			v[i].texcoord[1] = vs[i];
 			memcpy(v[i].color, colour, 4);
 		}
+		Engine_VertexBoxOfCorners(v, 4); // the layout's texels: their box (engine.h, THE UV BOX)
 
 		memset(&draw, 0, sizeof(draw));
 		draw.mesh = -1;

@@ -148,6 +148,7 @@ internal int EngSky_BuildDome(const struct Skybox *sky, EngineVertex *vertices, 
 		vertices[i].color[1] = v->Color.g;
 		vertices[i].color[2] = v->Color.b;
 		vertices[i].color[3] = 255;
+		Engine_VertexBoxFull(&vertices[i], 1); // untextured (engine.h, THE UV BOX)
 	}
 
 	for (seg = 0; seg < NUM_SKYBOX_SEGMENTS; seg++)
@@ -446,6 +447,7 @@ internal int EngSky_BackdropMesh(const EngSkyBackdrop *bd, const u8 *key, Engine
 				out->color[1] = c[1];
 				out->color[2] = c[2];
 				out->color[3] = 255;
+				Engine_VertexBoxFull(out, 1); // untextured (engine.h, THE UV BOX)
 			}
 		}
 		for (s = 0; s < ESK_BACKDROP_SEGMENTS; s++)

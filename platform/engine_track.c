@@ -441,6 +441,30 @@ internal int EngTrack_BuildBlock(const EngTrackBlockIn *in, const u32 *table, in
 			continue;
 		}
 		f->vertCount = (valid[1] || !valid[0]) ? 4 : 3;
+		// The UV box of the face (engine.h, THE UV BOX): the box of the corners its
+		// triangles use, on all four slot vertices. A face drawn through the mosaic
+		// table (texSource 3) carries it unread.
+		{
+			u8 box[4] = {255, 255, 0, 0};
+
+			for (t = 0; t < f->triCount; t++)
+			{
+				int c;
+
+				for (c = 0; c < 3; c++)
+				{
+					const EngineVertex *ev = &f->v[f->tri[t][c]];
+					const u8 u = Engine_UvBoxTexel(ev->texcoord[0]);
+					const u8 tv = Engine_UvBoxTexel(ev->texcoord[1]);
+
+					box[0] = (u < box[0]) ? u : box[0];
+					box[1] = (tv < box[1]) ? tv : box[1];
+					box[2] = (u > box[2]) ? u : box[2];
+					box[3] = (tv > box[3]) ? tv : box[3];
+				}
+			}
+			Engine_VertexSetBox(f->v, 4, box[0], box[1], box[2], box[3]);
+		}
 		f->tpage = lay->tpage;
 		f->clut = lay->clut;
 		f->bias = (s8)((in->drawOrderHigh >> (8 * k)) & 0xffu);
@@ -4620,6 +4644,14 @@ int Engine_SelfTestTrack(int *checks)
 			       (out[k].v[v].color[0] != in.color[g][0]) || (out[k].v[v].color[3] != 255);
 		}
 		EGT_CHECK(bad == 0, "identity: face %d vertices/UVs differ in %d slot(s)", k, bad);
+		for (v = 0, bad = 0; v < 4; v++)
+		{
+			int box[4];
+
+			Engine_VertexBoxGet(&out[k].v[v], box);
+			bad += (box[0] != 1) || (box[1] != 2) || (box[2] != 36) || (box[3] != 38);
+		}
+		EGT_CHECK(bad == 0, "identity: face %d UV box is not 1,2,36,38 on %d slot(s)", k, bad);
 		EGT_CHECK((out[k].triCount == 2) && (out[k].vertCount == 4) && (out[k].tri[0][0] == 2) && (out[k].tri[0][1] == 1) && (out[k].tri[0][2] == 0) &&
 		              (out[k].tri[1][0] == 2) && (out[k].tri[1][1] == 3) && (out[k].tri[1][2] == 1),
 		          "identity: face %d triangles are not the reversed (0,1,2) and (1,3,2)", k);
@@ -4655,6 +4687,24 @@ int Engine_SelfTestTrack(int *checks)
 		          "triangle mode: slots are not on corners 1, 2, 0");
 		EGT_CHECK((out[0].v[3].texcoord[0] == out[0].v[2].texcoord[0]) && (out[0].v[3].texcoord[1] == out[0].v[2].texcoord[1]),
 		          "triangle mode: slot 3 did not keep the UV of slot 2");
+		{
+			// The UV box of the one triangle: its three corners (slots 0, 1, 2), not slot 3's.
+			const u8 u0 = Engine_UvBoxTexel(out[0].v[0].texcoord[0]);
+			const u8 u1 = Engine_UvBoxTexel(out[0].v[1].texcoord[0]);
+			const u8 u2 = Engine_UvBoxTexel(out[0].v[2].texcoord[0]);
+			const u8 t0 = Engine_UvBoxTexel(out[0].v[0].texcoord[1]);
+			const u8 t1 = Engine_UvBoxTexel(out[0].v[1].texcoord[1]);
+			const u8 t2 = Engine_UvBoxTexel(out[0].v[2].texcoord[1]);
+			const u8 umin = (u0 < u1) ? ((u0 < u2) ? u0 : u2) : ((u1 < u2) ? u1 : u2);
+			const u8 umax = (u0 > u1) ? ((u0 > u2) ? u0 : u2) : ((u1 > u2) ? u1 : u2);
+			const u8 tmin = (t0 < t1) ? ((t0 < t2) ? t0 : t2) : ((t1 < t2) ? t1 : t2);
+			const u8 tmax = (t0 > t1) ? ((t0 > t2) ? t0 : t2) : ((t1 > t2) ? t1 : t2);
+			int box[4];
+
+			Engine_VertexBoxGet(&out[0].v[0], box);
+			EGT_CHECK((box[0] == umin) && (box[1] == tmin) && (box[2] == umax) && (box[3] == tmax) && (memcmp(out[0].v[3].uvBox, out[0].v[0].uvBox, 4) == 0),
+			          "triangle mode: UV box %d %d %d %d, expected %u %u %u %u on all slots", box[0], box[1], box[2], box[3], umin, tmin, umax, tmax);
+		}
 	}
 
 	// (4) the winding: the flip bit and double sided both draw as listed.

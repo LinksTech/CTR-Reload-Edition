@@ -287,10 +287,11 @@ void Engine_MaterialsWarmPipelines(void)
 	// The vertex layout of the engine buffers (Engine_RenderFillVertexDesc, engine_render.c).
 	memset(&desc, 0, sizeof(desc));
 	desc.stride = (int)sizeof(EngineVertex);
-	desc.attribCount = 3;
+	desc.attribCount = 4;
 	desc.attribs[0] = (NativeGfxVertexAttrib){.slot = a_position, .components = 3, .type = NATIVE_GFX_ATTR_FLOAT32, .offset = offsetof(EngineVertex, position)};
 	desc.attribs[1] = (NativeGfxVertexAttrib){.slot = a_texcoord, .components = 2, .type = NATIVE_GFX_ATTR_FLOAT32, .offset = offsetof(EngineVertex, texcoord)};
 	desc.attribs[2] = (NativeGfxVertexAttrib){.slot = a_color, .components = 4, .type = NATIVE_GFX_ATTR_UNORM8, .offset = offsetof(EngineVertex, color)};
+	desc.attribs[3] = (NativeGfxVertexAttrib){.slot = a_extra, .components = 4, .type = NATIVE_GFX_ATTR_UINT8, .offset = offsetof(EngineVertex, uvBox)};
 	NativeGfxVK_WarmEngine(s_warmPrograms, s_warmBlends, s_warmStates, count, &desc);
 }
 

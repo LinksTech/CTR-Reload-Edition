@@ -16,8 +16,11 @@
 // dev format of its own (written by tools/hires_testdriver.py, one synthetic
 // test driver):
 //   body.hrm, wheel.hrm  "HRM1", u32 vertexCount, u32 indexCount, then the
-//                        vertices as struct EngineVertex (24 bytes: position,
-//                        texcoord 0..1, colour), then u16 indices (triangles)
+//                        vertices as 24-byte records (position 3 x f32,
+//                        texcoord 2 x f32 0..1, colour 4 x u8 - the layout of
+//                        struct EngineVertex before its UV box; the reader
+//                        gives every vertex the whole page as box, a native
+//                        texture reads none), then u16 indices (triangles)
 //   skin.hrt             "HRT1", u32 width, u32 height, RGBA8 rows from the top,
 //                        sRGB colour (both edges a power of two in 16..2048)
 // Model space of both meshes: x the kart's left, y up, z front, origin on the
@@ -84,6 +87,8 @@ int g_cfg_engineHiresTexCycle = 0;
 
 #define ENG_HIRES_SEAT 0
 #define ENG_HIRES_SMALL 64
+// One vertex record of an HRM1 file: position, texcoord, colour (no UV box).
+#define ENG_HIRES_FILE_VERTEX_BYTES 24u
 #define ENG_HIRES_TWO_PI 6.283185307179586
 #define ENG_HIRES_ANGLE (ENG_HIRES_TWO_PI / 4096.0) // one game angle unit in radians
 #define ENG_HIRES_WHEEL_RADIUS 16.0                 // model units of the wheel mesh
@@ -174,7 +179,7 @@ internal int EngHires_ParseMesh(const u8 *bytes, size_t size, EngHiresMeshData *
 		*why = "vertex or index count out of range";
 		return 0;
 	}
-	if (size != (12u + ((size_t)vc * sizeof(EngineVertex)) + ((size_t)ic * 2u)))
+	if (size != (12u + ((size_t)vc * ENG_HIRES_FILE_VERTEX_BYTES) + ((size_t)ic * 2u)))
 	{
 		*why = "size does not match the counts";
 		return 0;
@@ -187,8 +192,19 @@ internal int EngHires_ParseMesh(const u8 *bytes, size_t size, EngHiresMeshData *
 		*why = "no host memory";
 		return 0;
 	}
-	memcpy(out->vertices, bytes + 12, (size_t)vc * sizeof(EngineVertex));
-	memcpy(out->indices, bytes + 12 + ((size_t)vc * sizeof(EngineVertex)), (size_t)ic * 2u);
+	// The file keeps the 24-byte records of the dev format; each becomes an
+	// engine vertex with the whole page as UV box (engine.h, THE UV BOX).
+	for (i = 0; i < vc; i++)
+	{
+		const u8 *r = bytes + 12 + ((size_t)i * ENG_HIRES_FILE_VERTEX_BYTES);
+		EngineVertex *v = &out->vertices[i];
+
+		memcpy(v->position, r, sizeof(v->position));
+		memcpy(v->texcoord, r + 12, sizeof(v->texcoord));
+		memcpy(v->color, r + 20, sizeof(v->color));
+		Engine_VertexBoxFull(v, 1);
+	}
+	memcpy(out->indices, bytes + 12 + ((size_t)vc * ENG_HIRES_FILE_VERTEX_BYTES), (size_t)ic * 2u);
 	out->vertexCount = vc;
 	out->indexCount = ic;
 	for (i = 0; i < ic; i++)
@@ -1115,24 +1131,35 @@ int Engine_SelfTestHires(int *checks)
 		const char *why = "";
 		const u32 vc = 3;
 		const u32 ic = 3;
-		EngineVertex v[3];
 		const u16 idx[3] = {0, 1, 2};
+		const float x1 = 2.0f;
+		const float y2 = -3.0f;
+		const float t2 = 0.5f;
 		int ok;
 
-		memset(v, 0, sizeof(v));
-		v[1].position[0] = 2.0f;
-		v[2].position[1] = -3.0f;
+		// Three 24-byte records (position, texcoord, colour), all zero but x of
+		// vertex 1, y of vertex 2, the second texcoord of vertex 2 and its colour.
+		memset(buf, 0, sizeof(buf));
 		memcpy(buf, "HRM1", 4);
 		memcpy(buf + 4, &vc, 4);
 		memcpy(buf + 8, &ic, 4);
-		memcpy(buf + 12, v, sizeof(v));
-		memcpy(buf + 12 + sizeof(v), idx, sizeof(idx));
+		memcpy(buf + 12 + 24 + 0, &x1, 4);
+		memcpy(buf + 12 + 48 + 4, &y2, 4);
+		memcpy(buf + 12 + 48 + 16, &t2, 4);
+		buf[12 + 48 + 20] = 10;
+		buf[12 + 48 + 23] = 40;
+		memcpy(buf + 12 + 3 * 24, idx, sizeof(idx));
 		ok = EngHires_ParseMesh(buf, sizeof(buf), &m, &why);
 		HIRES_CHECK(ok && (m.vertexCount == 3u) && (m.indexCount == 3u), "mesh parses");
 		HIRES_CHECK(ok && (m.hullMax[0] == 2.0f) && (m.hullMin[1] == -3.0f), "mesh hull");
+		HIRES_CHECK(ok && (m.vertices[2].texcoord[1] == 0.5f) && (m.vertices[2].color[0] == 10) && (m.vertices[2].color[3] == 40) &&
+		                (m.vertices[1].position[0] == 2.0f) && (m.indices[2] == 2),
+		            "mesh records read field by field");
+		HIRES_CHECK(ok && (m.vertices[0].uvBox[0] == 0) && (m.vertices[0].uvBox[1] == 0) && (m.vertices[2].uvBox[2] == 0) && (m.vertices[2].uvBox[3] == 0),
+		            "mesh vertices get the whole page as UV box (stored as zeros)");
 		EngHires_FreeMesh(&m);
 		HIRES_CHECK(!EngHires_ParseMesh(buf, sizeof(buf) - 1u, &m, &why), "short mesh refused");
-		buf[12 + sizeof(v) + 4] = 7; // index 2 -> 7
+		buf[12 + 3 * 24 + 4] = 7; // index 2 -> 7
 		HIRES_CHECK(!EngHires_ParseMesh(buf, sizeof(buf), &m, &why), "index out of range refused");
 		buf[0] = 'X';
 		HIRES_CHECK(!EngHires_ParseMesh(buf, sizeof(buf), &m, &why), "bad magic refused");

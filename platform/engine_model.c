@@ -293,6 +293,16 @@ int Engine_ModelImport(const struct Model *model, const char *name, EngineModelI
 				memcpy(v->color, &src.native.colors[(size_t)sv * 4u], 4);
 				indices[dv] = (u16)dv;
 			}
+			// The UV box of the triangle (engine.h, THE UV BOX): the box of its three
+			// corners when textured, the whole page when not.
+			if (tile >= 0)
+			{
+				Engine_VertexBoxOfCorners(&vertices[((size_t)f * perFrame) + ((size_t)t * 3u)], 3);
+			}
+			else
+			{
+				Engine_VertexBoxFull(&vertices[((size_t)f * perFrame) + ((size_t)t * 3u)], 3);
+			}
 		}
 	}
 
@@ -597,6 +607,7 @@ u32 Engine_ModelLiveFrame(const EngineModelImport *imp, const struct Model *mode
 		const u32 colour = mh->ptrColors[s_modelLiveColour[r]];
 		EngineVertex *o = &out[v];
 
+		// Texcoords and the UV box stay those of the import.
 		*o = desc->vertices[v];
 		o->position[0] = (float)((double)Model_S16(word) * unit[0]);
 		o->position[1] = (float)((double)Model_S16(word >> 16) * unit[1]);
@@ -867,6 +878,54 @@ int Engine_SelfTestModel(int *checks)
 					            "tri %d corner %d colour %u %u %u %u", tri, c, v->color[0], v->color[1], v->color[2], v->color[3]);
 				}
 			}
+			// THE UV BOX: the box of the three corners of a textured triangle on every
+			// vertex of it and in every frame; the whole page for the untextured one.
+			for (fi = 0; fi < 5; fi++)
+			{
+				for (tri = 0; tri < MODEL_TEST_TRIS; tri++)
+				{
+					int box[4] = {0, 0, 255, 255};
+
+					if (tri < 3)
+					{
+						box[0] = box[2] = texelOf[tri][0][0];
+						box[1] = box[3] = texelOf[tri][0][1];
+						for (c = 1; c < 3; c++)
+						{
+							box[0] = (texelOf[tri][c][0] < box[0]) ? texelOf[tri][c][0] : box[0];
+							box[1] = (texelOf[tri][c][1] < box[1]) ? texelOf[tri][c][1] : box[1];
+							box[2] = (texelOf[tri][c][0] > box[2]) ? texelOf[tri][c][0] : box[2];
+							box[3] = (texelOf[tri][c][1] > box[3]) ? texelOf[tri][c][1] : box[3];
+						}
+					}
+					for (c = 0; c < 3; c++)
+					{
+						const EngineVertex *v = &d->vertices[((u32)fi * 12u) + ((u32)tri * 3u) + (u32)c];
+						int got[4];
+
+						Engine_VertexBoxGet(v, got);
+						MODEL_CHECK((got[0] == box[0]) && (got[1] == box[1]) && (got[2] == box[2]) && (got[3] == box[3]),
+						            "frame %d tri %d corner %d uv box %d %d %d %d, wanted %d %d %d %d", fi, tri, c, got[0], got[1], got[2], got[3], box[0],
+						            box[1], box[2], box[3]);
+					}
+				}
+			}
+			// The stored form: maxima as 255 - max, so a zeroed vertex (a writer that
+			// set no box) is the whole page, and the whole page is stored as zeros.
+			{
+				EngineVertex z;
+				int got[4];
+
+				memset(&z, 0, sizeof(z));
+				Engine_VertexBoxGet(&z, got);
+				MODEL_CHECK((got[0] == 0) && (got[1] == 0) && (got[2] == 255) && (got[3] == 255), "a zeroed vertex's box is %d %d %d %d, not the whole page",
+				            got[0], got[1], got[2], got[3]);
+				Engine_VertexSetBox(&z, 1, 10, 20, 40, 60);
+				MODEL_CHECK((z.uvBox[0] == 10) && (z.uvBox[1] == 20) && (z.uvBox[2] == 215) && (z.uvBox[3] == 195), "box 10 20 40 60 stored as %u %u %u %u",
+				            z.uvBox[0], z.uvBox[1], z.uvBox[2], z.uvBox[3]);
+				Engine_VertexBoxFull(&z, 1);
+				MODEL_CHECK((z.uvBox[0] == 0) && (z.uvBox[1] == 0) && (z.uvBox[2] == 0) && (z.uvBox[3] == 0), "the whole page not stored as zeros");
+			}
 			{
 				int identity = 1;
 				u32 i;
@@ -941,6 +1000,8 @@ int Engine_SelfTestModel(int *checks)
 						            "live tri %d corner %d position %g %g %g, wanted z %g", tri, c, v->position[0], v->position[1], v->position[2], ez);
 						MODEL_CHECK((v->color[0] == (u8)col) && (v->color[1] == (u8)(col >> 8)) && (v->color[2] == (u8)(col >> 16)) && (v->color[3] == 255),
 						            "live tri %d corner %d colour %u %u %u", tri, c, v->color[0], v->color[1], v->color[2]);
+						MODEL_CHECK(memcmp(v->uvBox, s->uvBox, sizeof(v->uvBox)) == 0, "live tri %d corner %d uv box %u %u %u %u, the import's %u %u %u %u", tri,
+						            c, v->uvBox[0], v->uvBox[1], v->uvBox[2], v->uvBox[3], s->uvBox[0], s->uvBox[1], s->uvBox[2], s->uvBox[3]);
 					}
 				}
 				m->commands[1 + MODEL_TEST_RECORDS - 1] = 0xffffffffu; // one record fewer than imported
