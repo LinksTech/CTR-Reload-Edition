@@ -352,6 +352,50 @@ int Engine_VramDecode(const u16 *vram, int pageX, int pageY, int depth, int clut
 // One texel as RGBA8 (same rules).
 void Engine_VramTexel(const u16 *vram, int pageX, int pageY, int depth, int clutX, int clutY, int u, int v, u8 rgbaOut[4]);
 
+// ENGINE TEXTURES (platform/engine_vram.c, round of 2026-10-15): a full-resolution
+// RGBA8 texture with its whole mip chain for an ENGINE_TEX_NATIVE material, made
+// through the native texture manager (platform/native_tex.c: the edge rule, the
+// levels as a 2x2 box in linear light with alpha weights from include/rldmip.inc,
+// the waited upload) and then given a sampling of its own that does NOT follow
+// --native-filter: FILTERED is trilinear with anisotropy, PIXELATED nearest with
+// nearest levels. The renderer binds it with the texture's own sampler
+// (engine_render.c, NATIVE_GFX_FILTER_KEEP) and "ne" reads it with texture(),
+// so the device picks the level from the pixel's footprint.
+// Edges: powers of two, 16..2048 each (NATIVE_TEX_EDGE_MIN/MAX), at most the
+// device's maxImageDimension2D. Make it while a loading or menu screen is up,
+// never in a race frame (the manager counts every upload in one). Needs
+// --engine (which switches the texture manager on); without it nothing is made
+// and nothing is logged. Anisotropy exists only when the device was made with
+// it (--engine or --native-preview at start); the device clamps it to its limit
+// and to 16.
+#define ENGINE_TEXTURE_FILTERED 0  // linear, linear, levels linear, anisotropy (the default)
+#define ENGINE_TEXTURE_PIXELATED 1 // nearest, nearest, levels nearest, no anisotropy
+
+typedef struct
+{
+	int width; // of level 0
+	int height;
+	// Level 0, RGBA8 with straight alpha, rows from the top, tightly packed.
+	// sRGB colour unless linearData. Read during the call only.
+	const u8 *rgba;
+	int linearData;    // 1: not colour (UNORM, levels averaged in the stored bytes)
+	int oneLevel;      // 1: level 0 only, no levels (a comparison texture)
+	int filter;        // ENGINE_TEXTURE_FILTERED or ENGINE_TEXTURE_PIXELATED
+	int maxAnisotropy; // FILTERED only: 0 = up to the device limit, 1 = off, n = at most n
+	int wrapU;         // NativeGfxWrap: 0 repeat, 1 clamp, 2 mirror
+	int wrapV;
+	const char *name;  // for the log; may be NULL
+} EngineTextureDesc;
+
+// The TextureID (for EngineMaterial.nativeTexture), 0xffffffff when refused
+// (logged with the reason, except without --engine).
+u32 Engine_TextureCreate(const EngineTextureDesc *desc);
+void Engine_TextureDestroy(u32 texture);
+// Points a material at the texture: texSource ENGINE_TEX_NATIVE, nativeTexture,
+// and ENGINE_MATERIAL_SRGB set or cleared after the texture's format. Nothing
+// else of the material changes (blend, tint, the other flags).
+void Engine_TextureMaterial(EngineMaterial *m, u32 texture);
+
 // --------------------------------------------------------------------------
 // PROGRAMS (platform/engine_programs.c)
 //

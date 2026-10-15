@@ -1,4 +1,5 @@
 #include <platform/engine.h>
+#include <platform/native_tex.h>
 
 // ENGINE VRAM - see include/platform/engine.h.
 //
@@ -127,6 +128,128 @@ int Engine_VramDecode(const u16 *vram, int pageX, int pageY, int depth, int clut
 }
 
 // --------------------------------------------------------------------------
+// ENGINE TEXTURES - see include/platform/engine.h. The levels, the edge rule
+// and the upload are the native texture manager's (platform/native_tex.c);
+// this part only chooses the sampling, which there follows --native-filter
+// (default nearest, and anisotropy only with linear) and here follows the
+// texture's own wish.
+
+// The sampling of an engine texture. Pure (the device's anisotropy comes in as
+// arguments), so the selftest checks it without a device.
+internal NativeGfxSampling EngTex_Sampling(const EngineTextureDesc *desc, int levels, int anisotropyEnabled, float deviceLimit)
+{
+	NativeGfxSampling sampling;
+	const int pixelated = (desc->filter == ENGINE_TEXTURE_PIXELATED);
+
+	memset(&sampling, 0, sizeof(sampling));
+	sampling.magFilter = pixelated ? NATIVE_GFX_FILTER_NEAREST : NATIVE_GFX_FILTER_LINEAR;
+	sampling.minFilter = sampling.magFilter;
+	sampling.mipMode = (levels <= 1) ? NATIVE_GFX_MIP_NONE : (pixelated ? NATIVE_GFX_MIP_NEAREST : NATIVE_GFX_MIP_LINEAR);
+	sampling.wrapU = (NativeGfxWrap)desc->wrapU;
+	sampling.wrapV = (NativeGfxWrap)desc->wrapV;
+
+	// The wish, then the device limit and 16 (the device clamps again; a value of
+	// 0 or 1 is off).
+	if (!pixelated && anisotropyEnabled && (desc->maxAnisotropy != 1))
+	{
+		int granted = (int)deviceLimit;
+
+		if (granted > 16)
+		{
+			granted = 16;
+		}
+		if ((desc->maxAnisotropy > 1) && (desc->maxAnisotropy < granted))
+		{
+			granted = desc->maxAnisotropy;
+		}
+		sampling.anisotropy = (granted > 1) ? granted : 0;
+	}
+
+	return sampling;
+}
+
+u32 Engine_TextureCreate(const EngineTextureDesc *desc)
+{
+	NativeTexDesc texDesc;
+	NativeTexResult result = NATIVE_TEX_OK;
+	NativeGfxTextureLimits limits;
+	NativeGfxSampling sampling;
+	TextureID texture;
+	int levels;
+
+	// Without the engine nothing of it runs: no texture, no log line.
+	if (!g_cfg_engine)
+	{
+		return NATIVE_GFX_INVALID;
+	}
+	if ((desc == NULL) || (desc->rgba == NULL) || (desc->wrapU < NATIVE_GFX_WRAP_REPEAT) || (desc->wrapU > NATIVE_GFX_WRAP_MIRROR) ||
+	    (desc->wrapV < NATIVE_GFX_WRAP_REPEAT) || (desc->wrapV > NATIVE_GFX_WRAP_MIRROR) ||
+	    ((desc->filter != ENGINE_TEXTURE_FILTERED) && (desc->filter != ENGINE_TEXTURE_PIXELATED)))
+	{
+		Platform_Log("[CTR Engine] texture '%s' refused: no pixels or a bad wrap or filter\n",
+		             ((desc != NULL) && (desc->name != NULL)) ? desc->name : "(unnamed)");
+		return NATIVE_GFX_INVALID;
+	}
+
+	memset(&texDesc, 0, sizeof(texDesc));
+	texDesc.width = desc->width;
+	texDesc.height = desc->height;
+	texDesc.rgba = desc->rgba;
+	texDesc.flags = (desc->linearData ? NATIVE_TEX_FLAG_LINEAR_DATA : 0u) | (desc->oneLevel ? NATIVE_TEX_FLAG_ONE_LEVEL : 0u);
+	texDesc.wrapU = (NativeGfxWrap)desc->wrapU;
+	texDesc.wrapV = (NativeGfxWrap)desc->wrapV;
+	texDesc.name = desc->name;
+	texture = NativeTex_Create(&texDesc, &result);
+	if (texture == NATIVE_GFX_INVALID)
+	{
+		// The manager has logged the edge or device reason already (silent only when locked).
+		Platform_Log("[CTR Engine] texture '%s' %dx%d refused: %s\n", (desc->name != NULL) ? desc->name : "(unnamed)", desc->width, desc->height,
+		             NativeTex_ResultName(result));
+		return NATIVE_GFX_INVALID;
+	}
+
+	levels = desc->oneLevel ? 1 : NativeTex_LevelCount(desc->width, desc->height);
+	memset(&limits, 0, sizeof(limits));
+	NativeGfx_TextureLimits(&limits);
+	sampling = EngTex_Sampling(desc, levels, limits.anisotropyEnabled, limits.maxSamplerAnisotropy);
+	NativeGfx_SetTextureSampling(texture, &sampling);
+
+	Platform_Log("[CTR Engine] texture '%s' %dx%d: %d level(s), %s%s, anisotropy %d (device %s, limit %.1f)\n",
+	             (desc->name != NULL) ? desc->name : "(unnamed)", desc->width, desc->height, levels,
+	             (desc->filter == ENGINE_TEXTURE_PIXELATED) ? "pixelated" : ((levels > 1) ? "trilinear" : "linear"),
+	             desc->linearData ? " (linear data)" : "", sampling.anisotropy, limits.anisotropyEnabled ? "on" : "off",
+	             (double)limits.maxSamplerAnisotropy);
+
+	return (u32)texture;
+}
+
+void Engine_TextureDestroy(u32 texture)
+{
+	if (texture != NATIVE_GFX_INVALID)
+	{
+		NativeTex_Destroy((TextureID)texture);
+	}
+}
+
+void Engine_TextureMaterial(EngineMaterial *m, u32 texture)
+{
+	if (m == NULL)
+	{
+		return;
+	}
+	m->texSource = ENGINE_TEX_NATIVE;
+	m->nativeTexture = texture;
+	if (NativeTex_IsSrgb((TextureID)texture))
+	{
+		m->flags |= ENGINE_MATERIAL_SRGB;
+	}
+	else
+	{
+		m->flags &= (u16)~ENGINE_MATERIAL_SRGB;
+	}
+}
+
+// --------------------------------------------------------------------------
 // SELFTEST
 
 global_variable u16 g_engineVramSynthetic[ENGINE_VRAM_WIDTH * ENGINE_VRAM_HEIGHT];
@@ -220,6 +343,168 @@ internal u8 *EngineVramTest_Twin(const u16 *vram, int depth, int px, int py, int
 	free(src->native.texture[0].rgba);
 	free(src);
 	return copy;
+}
+
+// The engine textures without a device: the sampling of every wish, and the
+// levels the manager computes for them (a box of 2x2, 2x1 once an edge is 1,
+// in linear light for colour, alpha as weight).
+internal int EngTexTest_Run(int *checks)
+{
+	struct SamplingCase
+	{
+		int filter;
+		int maxAnisotropy;
+		int levels;
+		int enabled;
+		float limit;
+		NativeGfxFilter mag;
+		NativeGfxMipMode mip;
+		int anisotropy;
+	};
+	static const struct SamplingCase cases[] = {
+		{ENGINE_TEXTURE_FILTERED, 0, 12, 1, 16.0f, NATIVE_GFX_FILTER_LINEAR, NATIVE_GFX_MIP_LINEAR, 16},   // the default: device limit
+		{ENGINE_TEXTURE_FILTERED, 0, 12, 1, 8.0f, NATIVE_GFX_FILTER_LINEAR, NATIVE_GFX_MIP_LINEAR, 8},     // a smaller device limit
+		{ENGINE_TEXTURE_FILTERED, 0, 12, 1, 32.0f, NATIVE_GFX_FILTER_LINEAR, NATIVE_GFX_MIP_LINEAR, 16},   // never above 16
+		{ENGINE_TEXTURE_FILTERED, 4, 12, 1, 16.0f, NATIVE_GFX_FILTER_LINEAR, NATIVE_GFX_MIP_LINEAR, 4},    // the wish below the limit
+		{ENGINE_TEXTURE_FILTERED, 32, 12, 1, 16.0f, NATIVE_GFX_FILTER_LINEAR, NATIVE_GFX_MIP_LINEAR, 16},  // the wish above it
+		{ENGINE_TEXTURE_FILTERED, 1, 12, 1, 16.0f, NATIVE_GFX_FILTER_LINEAR, NATIVE_GFX_MIP_LINEAR, 0},    // 1 = off
+		{ENGINE_TEXTURE_FILTERED, 0, 12, 0, 0.0f, NATIVE_GFX_FILTER_LINEAR, NATIVE_GFX_MIP_LINEAR, 0},     // a device without it
+		{ENGINE_TEXTURE_FILTERED, 0, 1, 1, 16.0f, NATIVE_GFX_FILTER_LINEAR, NATIVE_GFX_MIP_NONE, 16},      // one level
+		{ENGINE_TEXTURE_PIXELATED, 0, 12, 1, 16.0f, NATIVE_GFX_FILTER_NEAREST, NATIVE_GFX_MIP_NEAREST, 0}, // pixelated
+		{ENGINE_TEXTURE_PIXELATED, 0, 1, 1, 16.0f, NATIVE_GFX_FILTER_NEAREST, NATIVE_GFX_MIP_NONE, 0},
+	};
+	int failures = 0;
+	size_t c;
+
+	for (c = 0; c < sizeof(cases) / sizeof(cases[0]); c++)
+	{
+		EngineTextureDesc desc;
+		NativeGfxSampling s;
+
+		memset(&desc, 0, sizeof(desc));
+		desc.filter = cases[c].filter;
+		desc.maxAnisotropy = cases[c].maxAnisotropy;
+		desc.wrapU = NATIVE_GFX_WRAP_MIRROR;
+		desc.wrapV = NATIVE_GFX_WRAP_CLAMP;
+		s = EngTex_Sampling(&desc, cases[c].levels, cases[c].enabled, cases[c].limit);
+		(*checks)++;
+		if ((s.magFilter != cases[c].mag) || (s.minFilter != cases[c].mag) || (s.mipMode != cases[c].mip) || (s.anisotropy != cases[c].anisotropy) ||
+		    (s.wrapU != NATIVE_GFX_WRAP_MIRROR) || (s.wrapV != NATIVE_GFX_WRAP_CLAMP))
+		{
+			printf("engine selftest: texture sampling case %d: mag %d min %d mip %d anisotropy %d wrap %d/%d, expected %d %d %d %d 2/1\n", (int)c,
+			       (int)s.magFilter, (int)s.minFilter, (int)s.mipMode, s.anisotropy, (int)s.wrapU, (int)s.wrapV, (int)cases[c].mag, (int)cases[c].mag,
+			       (int)cases[c].mip, cases[c].anisotropy);
+			failures++;
+		}
+	}
+
+	// The chain of a 32 x 8 linear-data texture: 6 levels (32x8, 16x4, 8x2, 4x1,
+	// 2x1, 1x1), every texel the rounded box of the texels under it.
+	{
+		enum
+		{
+			W = 32,
+			H = 8
+		};
+		u8 level0[W * H * 4];
+		u8 *chain;
+		const int count = NativeTex_LevelCount(W, H);
+		const u8 *src = level0;
+		int sw = W;
+		int sh = H;
+		int bad = 0;
+		int level;
+		int i;
+
+		for (i = 0; i < W * H; i++)
+		{
+			level0[i * 4 + 0] = (u8)((i * 37) & 255);
+			level0[i * 4 + 1] = (u8)((i * 91 + 13) & 255);
+			level0[i * 4 + 2] = (u8)((i * i) & 255);
+			level0[i * 4 + 3] = 255;
+		}
+		(*checks)++;
+		chain = (u8 *)malloc(NativeTex_ChainBytes(W, H, 6));
+		if ((count != 6) || (chain == NULL))
+		{
+			printf("engine selftest: texture chain of 32x8: %d levels (expected 6) or no memory\n", count);
+			free(chain);
+			return failures + 1;
+		}
+		NativeTex_BuildLevels(level0, W, H, count, 1, chain);
+		bad += (memcmp(chain, level0, sizeof(level0)) != 0);
+		src = chain;
+		for (level = 1; level < count; level++)
+		{
+			const int dw = (sw > 1) ? (sw / 2) : 1;
+			const int dh = (sh > 1) ? (sh / 2) : 1;
+			const int cols = (sw > 1) ? 2 : 1;
+			const int rows = (sh > 1) ? 2 : 1;
+			const u8 *dst = src + (size_t)sw * (size_t)sh * 4u;
+			int x;
+			int y;
+			int ch;
+
+			for (y = 0; y < dh; y++)
+			{
+				for (x = 0; x < dw; x++)
+				{
+					for (ch = 0; ch < 4; ch++)
+					{
+						int sum = 0;
+						int dy;
+						int dx;
+
+						for (dy = 0; dy < rows; dy++)
+						{
+							for (dx = 0; dx < cols; dx++)
+							{
+								sum += src[((y * rows + dy) * sw + (x * cols + dx)) * 4 + ch];
+							}
+						}
+						bad += (dst[(y * dw + x) * 4 + ch] != (u8)((sum + (rows * cols) / 2) / (rows * cols)));
+					}
+				}
+			}
+			src = dst;
+			sw = dw;
+			sh = dh;
+		}
+		if (bad != 0)
+		{
+			printf("engine selftest: texture chain of 32x8 differs from the box in %d values\n", bad);
+			failures++;
+		}
+		free(chain);
+	}
+
+	// Colour is averaged in linear light: two black and two white sRGB texels give
+	// the sRGB of half the light (about 188), not the byte mean 128. And alpha is a
+	// weight: one opaque red among three transparent greens gives red, alpha 64.
+	{
+		static const u8 blackWhite[16] = {0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 255};
+		static const u8 oneOpaque[16] = {255, 0, 0, 255, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0};
+		u8 chain[(4 + 1) * 4];
+
+		(*checks)++;
+		NativeTex_BuildLevels(blackWhite, 2, 2, 2, 0, chain);
+		if ((chain[16] < 186) || (chain[16] > 189) || (chain[16] != chain[17]) || (chain[16] != chain[18]) || (chain[19] != 255))
+		{
+			printf("engine selftest: texture level of black and white is %u,%u,%u,%u, expected about 188 in linear light\n", chain[16], chain[17],
+			       chain[18], chain[19]);
+			failures++;
+		}
+		(*checks)++;
+		NativeTex_BuildLevels(oneOpaque, 2, 2, 2, 0, chain);
+		if ((chain[16] != 255) || (chain[17] != 0) || (chain[18] != 0) || (chain[19] != 64))
+		{
+			printf("engine selftest: texture level of one opaque texel is %u,%u,%u,%u, expected 255,0,0,64\n", chain[16], chain[17], chain[18],
+			       chain[19]);
+			failures++;
+		}
+	}
+
+	return failures;
 }
 
 int Engine_SelfTestVram(int *checks)
@@ -413,5 +698,5 @@ int Engine_SelfTestVram(int *checks)
 	}
 
 	free(window);
-	return failures;
+	return failures + EngTexTest_Run(checks);
 }
