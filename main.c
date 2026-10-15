@@ -244,6 +244,9 @@ int g_cfg_dev = 0;
 // --dev-race-mode: 0 = the direct start (--level) is an arcade race, 1 = a
 // retail Time Trial, 2 = an Adventure race (game/DebugMenu.c).
 int g_cfg_devRaceMode = 0;
+// --dev-tt-ghost: with --dev-race-mode tt, the track's staff ghost races along
+// (game/DebugMenu.c, DebugMenu_JumpToLevel). 0 = off, every start as before.
+int g_cfg_devTtGhost = 0;
 
 typedef struct
 {
@@ -401,6 +404,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--engine-fail", "<start|track>", "with --engine, measuring only: forces the engine's fallback to the PS1 path - start: the programs 'ne' and 'nw' are not made, track (needs --engine-track): the first track load of the engine fails; the log names the reason and the run goes on without the engine"},
     {"--no-engine", "", "the native engine stays off for this run, whatever ctr-settings.cfg says (video engine 1); the way back to the PS1 path once the engine is the default; not with --engine"},
     {"--dev-race-mode", "<tt|adventure>", "with --level: the direct start as a retail Time Trial (tt) or as an Adventure race (adventure) instead of an arcade race"},
+    {"--dev-tt-ghost", "", "with --dev-race-mode tt: the track's staff ghost (N. Tropy) races along - its gate is opened in this session's progress in RAM (the card root is the one of --dev-race-mode); retail disc tracks only"},
     {"--engine-selftest", "", "the native engine's modules without a window: maths, the camera against the PS1 projection, materials and blend equations, meshes and the scene lists, effect geometry, the VRAM decoder, then end (ctest engine_selftest)"},
     {"--mouse-selftest", "", "the menu mouse without a window: the window to menu mapping with letterbox and pillarbox, the widescreen shift of left, centre and right elements at 4:3, 16:9 and 43:18, the round trip, and the active/inactive rules, then end (ctest mouse_selftest)"},
     {"--controls-selftest", "<dir>", "the keyboard bindings file ctr-controls.cfg in <dir>: parsing, fallbacks, saving, swaps, race and menu context and key capture, then end (ctest controls_selftest)"},
@@ -810,6 +814,33 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 		{
 			fflush(stdout);
 			fprintf(stderr, "switch --engine-fail track requires --engine-track\n");
+			fflush(stderr);
+			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+	}
+
+	// --dev-tt-ghost only means something on a Time Trial direct start.
+	// Before the value check of --dev-race-mode, so that a wrong value
+	// behind it is the net of the ctest line.
+	{
+		int ttGiven = 0;
+		int ghostGiven = 0;
+
+		for (int argIndex = 1; argIndex < argc; argIndex++)
+		{
+			if ((strcmp(argv[argIndex], "--dev-race-mode") == 0) && ((argIndex + 1) < argc) && (strcmp(argv[argIndex + 1], "tt") == 0))
+			{
+				ttGiven = 1;
+			}
+			else if (strcmp(argv[argIndex], "--dev-tt-ghost") == 0)
+			{
+				ghostGiven = 1;
+			}
+		}
+		if (ghostGiven && !ttGiven)
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch --dev-tt-ghost requires --dev-race-mode tt\n");
 			fflush(stderr);
 			return NATIVE_EXIT_DEV_REQUIRED;
 		}
@@ -4397,6 +4428,12 @@ int main(int argc, char *argv[])
 				// DebugMenu_JumpToLevel). The value was checked before any window.
 				g_cfg_devRaceMode = (strcmp(argv[++argIndex], "tt") == 0) ? 1 : 2;
 				printf("[CTR Native] direct start as %s\n", (g_cfg_devRaceMode == 1) ? "a retail Time Trial" : "an Adventure race");
+			}
+			else if (strcmp(argv[argIndex], "--dev-tt-ghost") == 0)
+			{
+				// The pairing with --dev-race-mode tt was checked before any window.
+				g_cfg_devTtGhost = 1;
+				printf("[CTR Native] Time Trial with the track's staff ghost\n");
 			}
 			else if ((strcmp(argv[argIndex], "--level") == 0) && ((argIndex + 1) < argc))
 			{

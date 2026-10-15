@@ -376,6 +376,8 @@ global_variable const struct DebugLevel s_levels[] = {
 // --dev-race-mode (main.c): 0 the arcade race of every jump so far, 1 a retail
 // Time Trial, 2 a plain Adventure race.
 extern int g_cfg_devRaceMode;
+// --dev-tt-ghost (main.c): with --dev-race-mode tt, the staff ghost races along.
+extern int g_cfg_devTtGhost;
 
 // How long a held direction waits before it steps again. Ten VBlanks is a
 // comfortable hand speed; without it a held button walks the whole list,
@@ -750,6 +752,27 @@ internal void DebugMenu_JumpToLevel(struct GameTracker *gGT, int levelID, int dr
 		// QueueLoadTrack_MenuProc (QueueLoadTrack.c:9-14): the two staff ghosts.
 		data.characterIDs[2] = N_TROPY;
 		data.characterIDs[3] = NITROS_OXIDE;
+
+		// --dev-tt-ghost: the staff ghost plays when the track's progress has
+		// TT_NTROPY_OPEN (GhostReplay_Init2, GhostReplay.c:456); its tape comes
+		// from the level itself (GhostReplay.c:357-361, N. Tropy until
+		// TT_NTROPY_BEATEN). The bit is what beating the track's time sets
+		// (MainGameEnd.c:67), here only in the RAM copy of the progress; the card
+		// root is memcards-dev-race-mode (above). Disc tracks only: a container
+		// in the donor slot is not known to carry a staff tape.
+		if (g_cfg_devTtGhost)
+		{
+			if ((levelID >= 0) && (levelID < MEMCARD_HIGH_SCORE_TRACK_COUNT) && !NativeTrack_ActiveForLevel(levelID))
+			{
+				sdata->gameProgress.highScoreTracks[levelID].timeTrialFlags |= TT_NTROPY_OPEN;
+				Platform_Log("[CTR Debug] --dev-tt-ghost: staff ghost of level %d on (%s)\n", levelID,
+				             ((sdata->gameProgress.highScoreTracks[levelID].timeTrialFlags & TT_NTROPY_BEATEN) != 0) ? "Oxide" : "N. Tropy");
+			}
+			else
+			{
+				Platform_Log("[CTR Debug] --dev-tt-ghost: level %d is no disc race track - no staff ghost\n", levelID);
+			}
+		}
 	}
 
 	// What QueueLoadTrack_MenuProc clears for a race that is not a battle.
@@ -2580,6 +2603,19 @@ void DebugMenu_Frame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 				Platform_Log("[CTR Debug] --exit-after-frames: %d race frame(s) drawn on level %d at vblank %d - leaving\n", raceFrames,
 				             gGT->levelID, Platform_GetVBlankCount());
 				Platform_QuitGame("--exit-after-frames");
+			}
+		}
+
+		// --dev-tt-ghost: one line when a ghost really drives (GhostReplay_Init2
+		// sets the flag only for a tape it starts), so the log proves the race had it.
+		if (g_cfg_devTtGhost && ((gGT->gameMode1 & MAIN_MENU) == 0) && (sdata->boolGhostsDrawing != 0))
+		{
+			local_persist int ghostSeen = 0;
+
+			if (!ghostSeen)
+			{
+				ghostSeen = 1;
+				Platform_Log("[CTR Debug] --dev-tt-ghost: a ghost drives on level %d (from vblank %d)\n", gGT->levelID, Platform_GetVBlankCount());
 			}
 		}
 
