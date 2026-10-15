@@ -78,6 +78,14 @@ int Engine_ProgramsInit(void)
 	}
 	s_engineProgramsTried = 1;
 
+	// --engine-fail start: neither program is made, as when the device refuses
+	// them; Engine_RenderInit then falls back (FALLBACK, engine.h).
+	if (g_cfg_engineFail == ENGINE_FAIL_START)
+	{
+		Platform_Log("[CTR Engine] programs 'ne' and 'nw' not made: --engine-fail start\n");
+		return 0;
+	}
+
 	// The descriptor of NativeRenderer_Shader_CompileWithUniforms, with the
 	// samplers of "ne" (see the header comment for why not the helper).
 	NativeGfxProgramDesc desc = {
@@ -140,7 +148,8 @@ const char *Engine_ProgramsFailReason(void)
 
 	if (ne && nw)
 	{
-		return "the programs 'ne' and 'nw' could not be created";
+		return (g_cfg_engineFail == ENGINE_FAIL_START) ? "the programs 'ne' and 'nw' were not made (forced by --engine-fail start)"
+		                                               : "the programs 'ne' and 'nw' could not be created";
 	}
 	return ne ? "the program 'ne' could not be created" : (nw ? "the program 'nw' could not be created" : "no program missing");
 }

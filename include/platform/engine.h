@@ -43,6 +43,14 @@ extern int g_cfg_engineHide;
 // Game state is not touched: the engine only ever read it.
 void Engine_Fallback(const char *stage, const char *reason);
 int Engine_FellBack(void); // 1 = Engine_Fallback switched the engine off in this run
+// --engine-fail <start|track> (needs --engine; track needs --engine-track):
+// measuring only, the fallback forced at the place of the real failure -
+// start: the programs are not made (Engine_ProgramsInit), so Engine_RenderInit
+// falls back; track: Engine_TrackLoad fails at the first level it would draw.
+extern int g_cfg_engineFail;
+#define ENGINE_FAIL_START 1
+#define ENGINE_FAIL_TRACK 2
+int Engine_FailModeFromName(const char *name); // "start" / "track" -> ENGINE_FAIL_*, -1 for any other word
 
 // THE PRINCIPLE (2026-10-13): CTR Reload is a PC version, not a 1:1 port. The
 // engine shows the game state the way we want it; it does NOT rebuild the PS1

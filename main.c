@@ -398,6 +398,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--engine-hires-dir", "<dir>", "with --engine: the hi-res driver prototype (stage H) from <dir> (body.hrm, wheel.hrm, skin.hrt of tools/hires_testdriver.py) drawn instead of seat 0's body and wheel sprites in a race and as the driver of --engine-menuscene: full-resolution RGBA texture with mip levels, 3D wheels from game state, one log line per tick"},
     {"--engine-hires-tex64", "", "with --engine-hires-dir: the texture reduced to 64x64 (the comparison run of stage H)"},
     {"--engine-hide", "<sky,water>", "with --engine --engine-track: the engine owns the listed items (the PS1 path does not draw them) but draws nothing of them - the 'minus' run of the measurements; comma-separated, words sky and water"},
+    {"--engine-fail", "<start|track>", "with --engine, measuring only: forces the engine's fallback to the PS1 path - start: the programs 'ne' and 'nw' are not made, track (needs --engine-track): the first track load of the engine fails; the log names the reason and the run goes on without the engine"},
     {"--dev-race-mode", "<tt|adventure>", "with --level: the direct start as a retail Time Trial (tt) or as an Adventure race (adventure) instead of an arcade race"},
     {"--engine-selftest", "", "the native engine's modules without a window: maths, the camera against the PS1 projection, materials and blend equations, meshes and the scene lists, effect geometry, the VRAM decoder, then end (ctest engine_selftest)"},
     {"--mouse-selftest", "", "the menu mouse without a window: the window to menu mapping with letterbox and pillarbox, the widescreen shift of left, centre and right elements at 4:3, 16:9 and 43:18, the round trip, and the active/inactive rules, then end (ctest mouse_selftest)"},
@@ -728,7 +729,8 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			}
 			else if ((needsEngine == NULL) && ((strcmp(argv[argIndex], "--engine-track") == 0) || (strcmp(argv[argIndex], "--engine-testscene") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-menuscene") == 0) || (strcmp(argv[argIndex], "--engine-hide") == 0) ||
-			                                   (strcmp(argv[argIndex], "--engine-hires-dir") == 0) || (strcmp(argv[argIndex], "--engine-hires-tex64") == 0)))
+			                                   (strcmp(argv[argIndex], "--engine-hires-dir") == 0) || (strcmp(argv[argIndex], "--engine-hires-tex64") == 0) ||
+			                                   (strcmp(argv[argIndex], "--engine-fail") == 0)))
 			{
 				needsEngine = argv[argIndex];
 			}
@@ -751,6 +753,50 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 		{
 			fflush(stdout);
 			fprintf(stderr, "switch --engine-hide expects sky and/or water, comma-separated, not '%s'\n", argv[argIndex + 1]);
+			fflush(stderr);
+			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+	}
+
+	// --engine-fail knows start and track, once; track forces a failure of the
+	// engine's track load, which only runs with --engine-track. Refused here,
+	// before any window.
+	{
+		int failGiven = 0;
+		int trackGiven = 0;
+		int failMode = 0;
+
+		for (int argIndex = 1; argIndex < argc; argIndex++)
+		{
+			if (strcmp(argv[argIndex], "--engine-track") == 0)
+			{
+				trackGiven = 1;
+			}
+			else if ((strcmp(argv[argIndex], "--engine-fail") == 0) && ((argIndex + 1) < argc))
+			{
+				failGiven++;
+				failMode = Engine_FailModeFromName(argv[++argIndex]);
+				if (failMode < 0)
+				{
+					fflush(stdout);
+					fprintf(stderr, "switch --engine-fail expects start or track, not '%s'\n", argv[argIndex]);
+					fflush(stderr);
+					return NATIVE_EXIT_DEV_REQUIRED;
+				}
+			}
+		}
+
+		if (failGiven > 1)
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch --engine-fail is given %d times - once only\n", failGiven);
+			fflush(stderr);
+			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+		if ((failMode == ENGINE_FAIL_TRACK) && !trackGiven)
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch --engine-fail track requires --engine-track\n");
 			fflush(stderr);
 			return NATIVE_EXIT_DEV_REQUIRED;
 		}
@@ -887,6 +933,13 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 			const int bits = NativeArgs_EngineHideBits(argv[++argIndex]);
 
 			g_cfg_engineHide = (bits > 0) ? bits : 0;
+		}
+		else if ((strcmp(argv[argIndex], "--engine-fail") == 0) && ((argIndex + 1) < argc))
+		{
+			// The value was checked before any window (ENGINE_FAIL_*); the log line is in the big loop.
+			const int mode = Engine_FailModeFromName(argv[++argIndex]);
+
+			g_cfg_engineFail = (mode > 0) ? mode : 0;
 		}
 		else if ((strcmp(argv[argIndex], "--native-probe") == 0) && ((argIndex + 1) < argc))
 		{
@@ -3613,6 +3666,12 @@ int main(int argc, char *argv[])
 			{
 				// Set by the early reader (NativeArgs_ReadDisplayFlags).
 				Platform_Log("[CTR Engine] --engine: on (dev); native groundwork on\n");
+			}
+			else if (strcmp(argv[argIndex], "--engine-fail") == 0)
+			{
+				// Set by the early reader; the failure itself is logged where it happens.
+				Platform_Log("[CTR Engine] --engine-fail %s (measuring): the engine's %s fails on purpose, the run falls back to the PS1 path\n",
+				             (g_cfg_engineFail == ENGINE_FAIL_TRACK) ? "track" : "start", (g_cfg_engineFail == ENGINE_FAIL_TRACK) ? "first track load" : "start");
 			}
 			else if (strcmp(argv[argIndex], "--native-wheel-report") == 0)
 			{

@@ -1,5 +1,7 @@
 #include <platform/engine.h>
 
+#include <string.h>
+
 // THE NATIVE ENGINE - the switches. Everything else lives in the engine_*.c
 // files; see include/platform/engine.h.
 
@@ -8,6 +10,7 @@ int g_cfg_engineTrack = 0;
 int g_cfg_engineTestScene = 0;
 int g_cfg_engineMenuScene = 0;
 int g_cfg_engineHide = 0; // ENGINE_HIDE_* bits of --engine-hide
+int g_cfg_engineFail = 0; // ENGINE_FAIL_* of --engine-fail
 
 // THE FALLBACK (see include/platform/engine.h, section FALLBACK). Every hook of
 // the game asks g_cfg_engine first, so with the switches at 0 each one returns
@@ -42,4 +45,22 @@ void Engine_Fallback(const char *stage, const char *reason)
 int Engine_FellBack(void)
 {
 	return (s_engineFallbackStage != NULL) ? 1 : 0;
+}
+
+// The value of --engine-fail as ENGINE_FAIL_*, -1 for any other word.
+int Engine_FailModeFromName(const char *name)
+{
+	if (name == NULL)
+	{
+		return -1;
+	}
+	if (strcmp(name, "start") == 0)
+	{
+		return ENGINE_FAIL_START;
+	}
+	if (strcmp(name, "track") == 0)
+	{
+		return ENGINE_FAIL_TRACK;
+	}
+	return -1;
 }

@@ -1812,6 +1812,12 @@ void Engine_TrackLoad(void)
 		Platform_Log("[CTR Engine] track: no mesh_info in this level\n");
 		return;
 	}
+	// --engine-fail track: the first level the engine would draw fails here, through the same exit as a real failure.
+	if (g_cfg_engineFail == ENGINE_FAIL_TRACK)
+	{
+		failed = "forced by --engine-fail track";
+		goto done;
+	}
 	memset(hist, 0, sizeof(hist));
 	water = (u8 *)calloc((size_t)mesh->numQuadBlock, 1u);
 	inLeaf = (u8 *)calloc((size_t)mesh->numQuadBlock, 1u);
