@@ -1725,6 +1725,18 @@ internal void DebugMenu_TourAddWord(const char *word)
 		return;
 	}
 
+	// The battle arenas (level ids NITRO_COURT..LAB_BASEMENT), each started like
+	// --level: a one-player arcade race on the arena map, not a battle (the
+	// battle menu stays as it is); for load checks of the arenas.
+	if (strcmp(word, "arenas") == 0)
+	{
+		for (i = NITRO_COURT; i <= LAB_BASEMENT; i++)
+		{
+			DebugMenu_TourAdd(i, -1, DBG_TOUR_DISC);
+		}
+		return;
+	}
+
 	for (i = 0; (word[i] >= '0') && (word[i] <= '9') && (digits < 6); i++)
 	{
 		value = (value * 10) + (word[i] - '0');
@@ -1733,7 +1745,7 @@ internal void DebugMenu_TourAddWord(const char *word)
 
 	if ((digits > 0) && (word[i] == '\0'))
 	{
-		if (value < DBG_TOUR_RETAIL_RACES)
+		if ((value < DBG_TOUR_RETAIL_RACES) || ((value >= NITRO_COURT) && (value <= LAB_BASEMENT)))
 		{
 			DebugMenu_TourAdd(value, -1, DBG_TOUR_DISC);
 		}
@@ -1754,8 +1766,9 @@ internal void DebugMenu_TourAddWord(const char *word)
 		else
 		{
 			s_tourSkipped++;
-			Platform_Log("[CTR Tour] skip '%s': neither a race track (0..%d) nor a container id (%d..%d)\n", word, DBG_TOUR_RETAIL_RACES - 1,
-			             NATIVE_TRACK_LEVELID_FIRST, NATIVE_TRACK_LEVELID_FIRST + NATIVE_TRACK_LEVELID_COUNT - 1);
+			Platform_Log("[CTR Tour] skip '%s': neither a race track (0..%d), an arena (%d..%d) nor a container id (%d..%d)\n", word,
+			             DBG_TOUR_RETAIL_RACES - 1, NITRO_COURT, LAB_BASEMENT, NATIVE_TRACK_LEVELID_FIRST,
+			             NATIVE_TRACK_LEVELID_FIRST + NATIVE_TRACK_LEVELID_COUNT - 1);
 		}
 		return;
 	}

@@ -317,7 +317,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--sample-shading", "<off|textured>", "sample shading of the anti-aliasing for comparison (default textured)"},
     {"--level", "<n>", "jump straight into level id n as soon as the main menu is up"},
     {"--driver", "<n>", "driver for the jump with --level or --autoload-track (default 0, Crash)"},
-    {"--level-tour", "<list>", "drive the listed tracks one after another, each started from the main menu like --level / --autoload-track and left after --level-tour-frames race frames like QUIT, then end; list: races (level ids 0..17), containers (every container of the track folder), level ids, container file names, comma-separated"},
+    {"--level-tour", "<list>", "drive the listed tracks one after another, each started from the main menu like --level / --autoload-track and left after --level-tour-frames race frames like QUIT, then end; list: races (level ids 0..17), arenas (level ids 18..24, a one-player race on each battle arena), containers (every container of the track folder), level ids, container file names, comma-separated"},
     {"--level-tour-frames", "<n>", "race frames per track of --level-tour (default 600)"},
     {"--level-tour-shots", "<frames>", "with --level-tour: at each listed race frame of every entry a burst of 12 snapshots of consecutive race frames (<--shot-name>-tNN-L<level>-<burst>-<race frame>.bmp); a plain number is for every track, L<level>@<frame> for that level only; comma-separated, up to 32"},
     {"--setup", "", "first-start screen even when data is there"},
