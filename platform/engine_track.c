@@ -1,5 +1,6 @@
 #include <platform/engine.h>
 #include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -507,6 +508,16 @@ typedef struct
 	u8 semi;
 	u8 live;    // 1 = position and colour read from the level vertices every frame
 	u8 special; // its leaf has flag 0x40 (counted per frame for the tour line)
+	// For the oracle (RETAIL ORACLE): its quadblock (mesh->ptrQuadBlockArray index);
+	// the group level a VRAM face took (3, or 2); anim = its texture pointer names an
+	// AnimTex cell; animRow = it reads the whole-face row that follows the cell every
+	// frame (anim without animRow: the layout of the load, frozen); tableRefused = a
+	// mosaic face the table refused (drawn with level 2).
+	int block;
+	u8 stage;
+	u8 anim;
+	u8 animRow;
+	u8 tableRefused;
 } EngTrackDrawFace;
 
 // The faces of one material (index range of the sorted faces), drawn as one dynamic draw.
@@ -1165,6 +1176,11 @@ global_variable u16 *s_egtScratchI;
 global_variable int s_egtFaceWords; // words of the face list ((numQuadBlock + 31) >> 5)
 global_variable int s_egtLeafWords; // words of the leaf list ((numBspNodes + 31) >> 5)
 global_variable int s_egtNodeCount;   // BSP nodes of the level
+global_variable u8 *s_egtBlockForm; // per quadblock: ENGINE_MOSAIC_FORM_* of its leaf (the oracle's mosaic tables)
+#define EGT_BLOCK_WATER 1u   // s_egtBlockMark: the block lies in a water leaf
+#define EGT_BLOCK_IN_LEAF 2u // s_egtBlockMark: the block lies in a leaf
+global_variable u8 *s_egtBlockMark;    // per quadblock: EGT_BLOCK_WATER / EGT_BLOCK_IN_LEAF (the oracle)
+global_variable int *s_egtFaceOfBlock; // per quadblock and mid face (4 * block + k): its draw face, -1 none (the oracle)
 global_variable u8 *s_egtLeafShown;   // per node, this frame: the PS1 walk linked the leaf
 global_variable u8 *s_egtLeafWalk;    // per node, this frame: the engine's own walk reached the leaf (the check)
 global_variable int s_egtWalkValid;
@@ -1628,6 +1644,12 @@ internal void EngTrack_DrawFree(void)
 	s_egtFaceCap = 0;
 	s_egtGroupCount = 0;
 	s_egtVertices = NULL;
+	free(s_egtBlockForm);
+	free(s_egtBlockMark);
+	free(s_egtFaceOfBlock);
+	s_egtBlockMark = NULL;
+	s_egtFaceOfBlock = NULL;
+	s_egtBlockForm = NULL;
 }
 
 // A built face (key set) as a draw face with the level vertices of its block, the
@@ -1760,6 +1782,9 @@ internal int EngTrack_DrawGroup(const int *matOfKey, int *dropped)
 	s_egtScratchI = (u16 *)malloc((size_t)largest * 6u * sizeof(u16));
 	return ((s_egtScratchV != NULL) && (s_egtScratchI != NULL)) ? 1 : 0;
 }
+
+internal void EngTrack_OracleFault(void);   // RETAIL ORACLE
+internal void EngTrack_OracleLoad(int levelID); // RETAIL ORACLE
 
 // At load stage 8, after level1 is set and the models are in gGT->modelPtr, before
 // Engine_RenderUploadMeshes. Builds the draw faces and imports the instance models.
@@ -1967,12 +1992,14 @@ void Engine_TrackLoad(void)
 			EngTrackFace *f = &built[k];
 			u16 keyTpage = 0;
 			int isLive;
+			const int tableFace = mos[f->mid] && Engine_TrackMosaicFace(groups[f->mid], f->mirrored, form[i], f->slotOf, f->v, f->vertCount, &keyTpage);
+			const int animRowFace =
+			    !mos[f->mid] && anim[f->mid] &&
+			    Engine_TrackMosaicAnimFace((u32)(size_t)qb->ptr_texture_mid[f->mid] - 1u, f->mirrored, f->slotOf, f->v, f->vertCount, &keyTpage);
 
 			// A mosaic face the table takes: keyed by the table's tpage word, clut 0. So is an
 			// animated face (no mosaic): a whole-face row read from its AnimTex cell (pointer - 1) every frame.
-			if ((mos[f->mid] && Engine_TrackMosaicFace(groups[f->mid], f->mirrored, form[i], f->slotOf, f->v, f->vertCount, &keyTpage)) ||
-			    (!mos[f->mid] && anim[f->mid] &&
-			     Engine_TrackMosaicAnimFace((u32)(size_t)qb->ptr_texture_mid[f->mid] - 1u, f->mirrored, f->slotOf, f->v, f->vertCount, &keyTpage)))
+			if (tableFace || animRowFace)
 			{
 				f->tpage = keyTpage;
 				f->clut = 0;
@@ -1988,6 +2015,15 @@ void Engine_TrackLoad(void)
 			{
 				droppedFaces++;
 				continue;
+			}
+			{
+				EngTrackDrawFace *df = &s_egtFaces[s_egtFaceCount - 1];
+
+				df->block = i;
+				df->stage = (u8)((groups[f->mid] != NULL) && (in.layout[f->mid] == &groups[f->mid][3]) ? 3 : 2);
+				df->anim = (u8)anim[f->mid];
+				df->animRow = (u8)animRowFace;
+				df->tableRefused = (u8)(mos[f->mid] && !tableFace);
 			}
 			liveFaces += isLive;
 			specialFaces += special[i];
@@ -2026,6 +2062,9 @@ void Engine_TrackLoad(void)
 		free(lift);
 		free(normal);
 	}
+
+	// --engine-oracle-fault cell (RETAIL ORACLE): a row of the table is changed before it is uploaded.
+	EngTrack_OracleFault();
 
 	// The mosaic data texture, after the last face. Without it every face keyed
 	// to a table (tpage bit 15) is refused at its draw (engine_render.c, "mosaic
@@ -2115,6 +2154,26 @@ void Engine_TrackLoad(void)
 	s_egtVertices = mesh->ptrVertexArray;
 	s_egtLevel = level;
 	s_egtMesh = mesh;
+	s_egtBlockForm = form; // kept for the oracle (freed with the draw faces)
+	form = NULL;
+	// The oracle's view of the blocks: water / in a leaf, and the draw face of each mid face.
+	s_egtBlockMark = (u8 *)calloc((size_t)mesh->numQuadBlock, 1u);
+	s_egtFaceOfBlock = (int *)malloc((size_t)mesh->numQuadBlock * 4u * sizeof(int));
+	if ((s_egtBlockMark != NULL) && (s_egtFaceOfBlock != NULL))
+	{
+		for (i = 0; i < mesh->numQuadBlock; i++)
+		{
+			s_egtBlockMark[i] = (u8)((water[i] ? EGT_BLOCK_WATER : 0u) | (inLeaf[i] ? EGT_BLOCK_IN_LEAF : 0u));
+		}
+		for (i = 0; i < 4 * mesh->numQuadBlock; i++)
+		{
+			s_egtFaceOfBlock[i] = -1;
+		}
+		for (i = 0; i < s_egtFaceCount; i++)
+		{
+			s_egtFaceOfBlock[4 * s_egtFaces[i].block + s_egtFaces[i].face.mid] = i;
+		}
+	}
 	s_egtLevelID = (int)gGT->levelID;
 	s_egtLoad.levelID = (int)gGT->levelID;
 	s_egtLoad.faces = s_egtFaceCount;
@@ -2154,6 +2213,8 @@ void Engine_TrackLoad(void)
 	}
 	Platform_Log("[CTR Engine] track: decals %d (%d lifted past the margin, largest lift %d), %d without a key, %d unused key(s)%s\n",
 	             (decals > 0) ? decals : 0, decalsLifted, decalLiftMax, decalsUnkeyed, unusedKeys, (decals < 0) ? ", out of memory: none lifted" : "");
+	// --engine-oracle: the static block of the level (RETAIL ORACLE).
+	EngTrack_OracleLoad((int)gGT->levelID);
 	EngTrack_ImportModels(level);
 
 done:
@@ -2171,6 +2232,1375 @@ done:
 	{
 		Engine_Fallback("track load", failed);
 	}
+}
+
+// --------------------------------------------------------------------------
+// RETAIL ORACLE (--engine-oracle, round of 2026-10-16: the material comparison
+// W1 of the round notes, done points D-W1.1/D-W1.3). Per quadblock face both paths say which
+// texture they use; the line format is P1's (engine_oracle.c, Engine_OracleWrite),
+// reached through the ORACLE SHIM below.
+//
+// R LINES (the PS1 path, game/226/226_00_DrawLevelOvr1P.c):
+//   - Dynamic, per logged frame: DrawLevelOvr1P runs its whole walk once more
+//     before the frame's own walk (DrawLevelOvr1P_OraclePass). Its packets are
+//     never linked into the ordering table; afterwards primMem, scratchpad, GTE
+//     and the render lists are put back. Each block's packets come here
+//     (Engine_TrackOracleBlock; the near-plane clip records' packets after the
+//     buckets, Engine_TrackOracleClip, matched to the block that wrote the
+//     record) with the level position of their corners (Engine_TrackOracleNotePrim,
+//     the walk's own projected records). The packet is the truth - whatever
+//     helper chose the layout, it carries tpage, clut, uv, abr and colours.
+//     Its place names the mid face (k) and, for a mosaic piece, the cell
+//     (row, col) = the quarter of the face it covers, found from its position
+//     in the face (EngTrack_OracleFaceParam), not from the table index. Its uv
+//     matched against the block's layouts names the whole-face stage (0..3,
+//     low) when it is one.
+//   - Static, once per load (F tag L<id>-load, extra set=load) and per logged
+//     frame for the faces of AnimTex cells (set=anim): the layouts 226 resolves
+//     for every face (DrawLevelOvr1P_OracleLayouts, AnimTex and sieve included),
+//     the table entries with entry=<e> (own half first, then the mirrored half).
+// E LINES (the engine):
+//   - per face the layouts its shader reads: a VRAM face its key's tpage/clut
+//     and texcoords (stage = the level taken); a table face every cell of its
+//     row the form holds (16/8/4, as built, mirror included; cell column) and
+//     the row's levels 2, 1, 0 (stage); a whole-face (AnimTex) row its layout
+//     (stage = its level) and levels. box= the texels the shader can reach.
+//     Dynamic: the faces drawn this frame; set=load: all faces; set=anim: all
+//     faces of AnimTex cells.
+// Raw words on both sides: tp=0x.... cl=0x.... (bits a field drops stay visible).
+
+#define EGT_ORACLE_ID_MAX 48
+#define EGT_ORACLE_EXTRA_MAX 256
+#define EGT_ORACLE_BLEND_OPAQUE (-1)
+#define EGT_ORACLE_SPANS_MAX 4096
+#define EGT_ORACLE_GEO_MAX 32768
+// Candidate layouts of one block: the low layout and per mid face its four
+// levels and both orientations of a 4x4 table (32 entries).
+#define EGT_ORACLE_CANDS_MAX (1 + 4 * (4 + 32))
+enum
+{
+	EGT_ORACLE_LEVEL_TILE = 4, // a mosaic table entry
+	EGT_ORACLE_LEVEL_LOW = 5   // the block's ptr_texture_low
+};
+
+// One R or E line: the fields of P1's EngineOracleFace (engine.h, ENGINE ORACLE (P1)).
+typedef struct
+{
+	char src;
+	char srcId[EGT_ORACLE_ID_MAX];
+	int sub;
+	int textured;
+	int tpX, tpY, depth;
+	int clutX, clutY;
+	int uvCount;
+	int uv[8];
+	int blend;
+	int cellRow, cellCol;
+	char extra[EGT_ORACLE_EXTRA_MAX];
+} EngTrackOracleFace;
+
+// ORACLE SHIM - the only calls into the oracle core (platform/engine_oracle.c).
+// The fault of the cell kind: --engine-oracle-fault cell:<n> (g_cfg_engineOracleFaultCell, -1 = off).
+// The extra text of a track line carries its corner colours and raw words itself
+// (col=, tp=, cl=), so the core's own colour and raw fields stay off.
+internal int EngTrack_OracleOn(void)
+{
+	return Engine_OracleActive();
+}
+
+internal int EngTrack_OracleSwitch(void)
+{
+	return g_cfg_engine && (g_cfg_engineOracle[0] != '\0');
+}
+
+internal void EngTrack_OracleArmLoad(const char *tag)
+{
+	Engine_OracleArmFrame(tag, -1);
+}
+
+internal int EngTrack_OracleFaultCell(void)
+{
+	return g_cfg_engineOracleFaultCell;
+}
+
+internal void EngTrack_OracleEmit(char kind, const EngTrackOracleFace *f)
+{
+	EngineOracleFace o;
+
+	memset(&o, 0, sizeof(o));
+	o.src = f->src;
+	snprintf(o.srcId, sizeof(o.srcId), "%s", f->srcId);
+	o.sub = f->sub;
+	o.textured = f->textured;
+	o.tpX = f->tpX;
+	o.tpY = f->tpY;
+	o.depth = f->depth;
+	o.clutX = f->clutX;
+	o.clutY = f->clutY;
+	o.uvCount = f->uvCount;
+	memcpy(o.uv, f->uv, sizeof(o.uv));
+	o.blend = f->blend;
+	o.cellRow = f->cellRow;
+	o.cellCol = f->cellCol;
+	snprintf(o.extra, sizeof(o.extra), "%s", f->extra);
+	Engine_OracleWrite(kind, &o);
+}
+
+// A candidate layout of a block: a copy (read from level memory), its mid face
+// (-1 for low), its level (0..3, EGT_ORACLE_LEVEL_*), 1 = from an AnimTex cell.
+typedef struct
+{
+	struct TextureLayout lay;
+	s8 k;
+	s8 level;
+	u8 anim;
+} EngTrackOracleCand;
+
+// Per logged frame: the retail side of the oracle pass.
+global_variable struct
+{
+	int active; // the oracle pass of this frame runs (Engine_TrackOracleWanted .. Done)
+	const char *set; // "load" / "anim" while a static set is written, else NULL
+	u32 seq;    // running number of the R lines of the frame (their sub)
+	u32 blocks;
+	u32 prims;
+	u32 clipPrims;
+	u32 notTextured; // packets that are no GT3/GT4 (none expected)
+	u32 noBlock;     // a block pointer outside the level's quadblocks
+	u32 noOwner;     // clip records no block span holds
+	u32 spansLost;   // block spans past EGT_ORACLE_SPANS_MAX
+	u32 noGeometry;  // packets without a position note (geometry lost or past the array)
+	u32 outsideFace; // packets whose position lies in no face of their block
+	u32 staticLines;
+	u32 eFaces;      // engine faces written (E side)
+	u32 eLines;
+	u32 eNoRow;      // table faces whose row was not found
+	int spanCount;
+	int spanAt;
+	int geoCount;
+	int geoAt;
+	struct
+	{
+		const u8 *from;
+		const u8 *to;
+		int block;
+		int water;
+		int sieve;
+	} span[EGT_ORACLE_SPANS_MAX];
+	struct
+	{
+		const void *prim;
+		float centre[3];
+	} geo[EGT_ORACLE_GEO_MAX];
+} s_ego;
+
+// The texture page and CLUT words of the PS1 GPU as the fields of a line.
+internal void EngTrack_OracleTexture(EngTrackOracleFace *f, u16 tpage, u16 clut)
+{
+	f->textured = 1;
+	f->tpX = (int)(tpage & 0xfu) * 64;
+	f->tpY = (int)((tpage >> 4) & 1u) * 256;
+	f->depth = (int)((tpage >> 7) & 3u);
+	if (f->depth > 2)
+	{
+		f->depth = 2;
+	}
+	f->clutX = (int)(clut & 0x3fu) * 16;
+	f->clutY = (int)((clut >> 6) & 0x1ffu);
+}
+
+// srcId of a track line: "<quadblock>.<mid face>" (the face is the unit both sides
+// compare), "<quadblock>" for the block's low layout (k < 0).
+internal void EngTrack_OracleSourceId(EngTrackOracleFace *f, int block, int k)
+{
+	if (k >= 0)
+	{
+		snprintf(f->srcId, sizeof(f->srcId), "%d.%d", block, k);
+	}
+	else
+	{
+		snprintf(f->srcId, sizeof(f->srcId), "%d", block);
+	}
+}
+
+// Appends "key=value" to a line's extra (pairs separated by one space, P1's
+// format; values hold no space); a pair that would not fit is left out.
+internal void EngTrack_OracleExtra(EngTrackOracleFace *f, const char *fmt, ...)
+{
+	char part[96];
+	size_t used = strlen(f->extra);
+	va_list args;
+	int n;
+
+	va_start(args, fmt);
+	n = vsnprintf(part, sizeof(part), fmt, args);
+	va_end(args);
+	if ((n <= 0) || ((size_t)n >= sizeof(part)) || (used + (size_t)n + 2u > sizeof(f->extra)))
+	{
+		return;
+	}
+	if (used > 0)
+	{
+		f->extra[used++] = ' ';
+	}
+	memcpy(f->extra + used, part, (size_t)n + 1u);
+}
+
+// tp= and cl=: the raw words.
+internal void EngTrack_OracleRawWords(EngTrackOracleFace *f, u16 tpage, u16 clut)
+{
+	EngTrack_OracleExtra(f, "tp=0x%04x", (unsigned)tpage);
+	EngTrack_OracleExtra(f, "cl=0x%04x", (unsigned)clut);
+}
+
+// col=: the corner colours (three or four "r,g,b" separated by ';').
+internal void EngTrack_OracleColours(EngTrackOracleFace *f, const u8 (*rgb)[3], int count)
+{
+	char text[64];
+	size_t used = 0;
+	int i;
+
+	text[0] = '\0';
+	for (i = 0; (i < count) && (used + 13u < sizeof(text)); i++)
+	{
+		used += (size_t)snprintf(text + used, sizeof(text) - used, "%s%d,%d,%d", (i > 0) ? ";" : "", rgb[i][0], rgb[i][1], rgb[i][2]);
+	}
+	EngTrack_OracleExtra(f, "col=%s", text);
+}
+
+// One packet of the level walk at words (words[0] the tag, word count << 24).
+// The walk writes POLY_GT3 (9 words) and POLY_GT4 (12) only, codes 0x34..0x37 and
+// 0x3c..0x3f (DrawLevelOvr1P_SelectRawPrimitiveCode). Fills tpage, clut, the uv
+// points, the blend (abr when the code is semi-transparent) and the corner
+// colours of a textured one (*isFace = 1). Returns the packet's words with the
+// tag; 0 = no packet (count 0 or past wordsLeft): stop.
+internal u32 EngTrack_OracleDecodePrim(const u32 *words, u32 wordsLeft, EngTrackOracleFace *f, u16 *tpageOut, u16 *clutOut, u8 (*rgb)[3], int *isFace)
+{
+	static const int uvWord[4] = {3, 6, 9, 12};
+	static const int rgbWord[4] = {1, 4, 7, 10};
+	const u32 count = (wordsLeft > 0u) ? (words[0] >> 24) : 0u;
+	u32 code;
+	u16 tpage;
+	u16 clut;
+	int corners;
+	int i;
+
+	*isFace = 0;
+	if ((count == 0u) || (count + 1u > wordsLeft))
+	{
+		return 0;
+	}
+	code = (words[1] >> 24) & 0xffu;
+	if ((count == 9u) && ((code & 0xfcu) == 0x34u))
+	{
+		corners = 3;
+	}
+	else if ((count == 12u) && ((code & 0xfcu) == 0x3cu))
+	{
+		corners = 4;
+	}
+	else
+	{
+		return count + 1u;
+	}
+	clut = (u16)(words[3] >> 16);
+	tpage = (u16)(words[6] >> 16);
+	EngTrack_OracleTexture(f, tpage, clut);
+	f->uvCount = corners;
+	for (i = 0; i < corners; i++)
+	{
+		f->uv[2 * i] = (int)(words[uvWord[i]] & 0xffu);
+		f->uv[2 * i + 1] = (int)((words[uvWord[i]] >> 8) & 0xffu);
+		rgb[i][0] = (u8)(words[rgbWord[i]] & 0xffu);
+		rgb[i][1] = (u8)((words[rgbWord[i]] >> 8) & 0xffu);
+		rgb[i][2] = (u8)((words[rgbWord[i]] >> 16) & 0xffu);
+	}
+	f->blend = ((code & 2u) != 0u) ? (int)((tpage >> 5) & 3u) : EGT_ORACLE_BLEND_OPAQUE;
+	*tpageOut = tpage;
+	*clutOut = clut;
+	*isFace = 1;
+	return count + 1u;
+}
+
+// 1 when the primitive lies on the layout: the same tpage (page, abr, depth: the
+// low 9 bits; the PS1 sieve keeps the rest 0) and clut, every uv point inside
+// the box of the layout's four corners. *exact = every point is a corner.
+internal int EngTrack_OracleOnLayout(u16 tpage, u16 clut, const int *uv, int uvCount, const struct TextureLayout *lay, int *exact)
+{
+	const int lu[4] = {lay->u0, lay->u1, lay->u2, lay->u3};
+	const int lv[4] = {lay->v0, lay->v1, lay->v2, lay->v3};
+	int umin = 255;
+	int umax = 0;
+	int vmin = 255;
+	int vmax = 0;
+	int i;
+	int c;
+
+	*exact = 0;
+	if (((tpage & 0x1ffu) != (lay->tpage & 0x1ffu)) || (clut != lay->clut))
+	{
+		return 0;
+	}
+	for (c = 0; c < 4; c++)
+	{
+		umin = (lu[c] < umin) ? lu[c] : umin;
+		umax = (lu[c] > umax) ? lu[c] : umax;
+		vmin = (lv[c] < vmin) ? lv[c] : vmin;
+		vmax = (lv[c] > vmax) ? lv[c] : vmax;
+	}
+	*exact = 1;
+	for (i = 0; i < uvCount; i++)
+	{
+		const int u = uv[2 * i];
+		const int v = uv[2 * i + 1];
+		int corner = 0;
+
+		if ((u < umin) || (u > umax) || (v < vmin) || (v > vmax))
+		{
+			*exact = 0;
+			return 0;
+		}
+		for (c = 0; c < 4; c++)
+		{
+			corner |= ((lu[c] == u) && (lv[c] == v)) ? 1 : 0;
+		}
+		*exact &= corner;
+	}
+	return 1;
+}
+
+// The candidate the primitive is: the first that holds its points as corners,
+// else the first whose box holds them (the list is in the order tiles, levels
+// 3..0 per face, low). -1 = none. Only a label: the line keeps the packet's values.
+internal int EngTrack_OracleClassify(u16 tpage, u16 clut, const int *uv, int uvCount, const EngTrackOracleCand *c, int n, int *exact)
+{
+	int contained = -1;
+	int i;
+
+	*exact = 0;
+	for (i = 0; i < n; i++)
+	{
+		int ex = 0;
+
+		if (!EngTrack_OracleOnLayout(tpage, clut, uv, uvCount, &c[i].lay, &ex))
+		{
+			continue;
+		}
+		if (ex)
+		{
+			*exact = 1;
+			return i;
+		}
+		if (contained < 0)
+		{
+			contained = i;
+		}
+	}
+	return contained;
+}
+
+// Entries of a table for the leaf form: own half + mirrored half.
+internal int EngTrack_OracleTableEntries(int form)
+{
+	switch (form)
+	{
+	case ENGINE_MOSAIC_FORM_4X2:
+		return 16;
+	case ENGINE_MOSAIC_FORM_4X1:
+		return 8;
+	default:
+		return 32;
+	}
+}
+
+// The layouts a block's packets can carry this frame, for the stage label: the
+// mosaic table entries of each mid face (both orientations), the mid groups'
+// levels 3..0 (level 3 not when it is the mosaic word), the low layout. form =
+// ENGINE_MOSAIC_FORM_* of its leaf. Reads level memory only. Returns the count.
+internal int EngTrack_OracleCandidates(const struct QuadBlock *qb, int form, EngTrackOracleCand *out)
+{
+	const struct TextureLayout *group[4] = {NULL, NULL, NULL, NULL};
+	int anim[4] = {0, 0, 0, 0};
+	int mos[4] = {0, 0, 0, 0};
+	int n = 0;
+	int k;
+	int level;
+
+	for (k = 0; k < 4; k++)
+	{
+		group[k] = EngTrack_ResolveGroup((u32)(size_t)qb->ptr_texture_mid[k], EngTrack_SpanOk, &anim[k]);
+		if (group[k] != NULL)
+		{
+			(void)EngTrack_FinestLayout(group[k], EngTrack_IsLevelPtr, &mos[k]);
+		}
+	}
+	for (k = 0; k < 4; k++)
+	{
+		const int entries = EngTrack_OracleTableEntries(form);
+		u32 word = 0;
+		int e;
+
+		if ((group[k] == NULL) || !mos[k])
+		{
+			continue;
+		}
+		memcpy(&word, &group[k][3], sizeof(word));
+		if ((word == 0u) || !EngTrack_SpanOk(word, (u32)entries * (u32)sizeof(struct TextureLayout)))
+		{
+			continue;
+		}
+		for (e = 0; e < entries; e++)
+		{
+			memcpy(&out[n].lay, (const struct TextureLayout *)(size_t)word + e, sizeof(struct TextureLayout));
+			out[n].k = (s8)k;
+			out[n].level = EGT_ORACLE_LEVEL_TILE;
+			out[n].anim = (u8)anim[k];
+			n++;
+		}
+	}
+	for (level = 3; level >= 0; level--)
+	{
+		for (k = 0; k < 4; k++)
+		{
+			if ((group[k] == NULL) || ((level == 3) && mos[k]) || !EngTrack_LayoutUsable(&group[k][level]))
+			{
+				continue;
+			}
+			out[n].lay = group[k][level];
+			out[n].k = (s8)k;
+			out[n].level = (s8)level;
+			out[n].anim = (u8)anim[k];
+			n++;
+		}
+	}
+	if ((qb->ptr_texture_low != NULL) && EngTrack_SpanOk((u32)(size_t)qb->ptr_texture_low, (u32)sizeof(struct TextureLayout)))
+	{
+		memcpy(&out[n].lay, qb->ptr_texture_low, sizeof(struct TextureLayout));
+		out[n].k = -1;
+		out[n].level = EGT_ORACLE_LEVEL_LOW;
+		out[n].anim = 0;
+		n++;
+	}
+	return n;
+}
+
+// The face's own (s, t) of point p: corner[0..3] are the face's slot corners,
+// slot 0 at (0, 0), 1 at (1, 0), 2 at (0, 1), 3 at (1, 1) (the space of the
+// mosaic cells, engine_track_mosaic.c). Bilinear inverse by Newton steps in the
+// plane of the face's two largest normal axes. Returns the distance of p from
+// the face's plane over the face size (0 on the face), or a negative value when
+// the face is degenerate.
+internal float EngTrack_OracleFaceParam(const float corner[4][3], const float p[3], float *s, float *t)
+{
+	float e1[3];
+	float e2[3];
+	float n[3];
+	float c[4][2];
+	float q[2];
+	float size;
+	float off;
+	int ax = 0;
+	int ay = 1;
+	int drop;
+	int i;
+	int step;
+
+	for (i = 0; i < 3; i++)
+	{
+		e1[i] = corner[1][i] - corner[0][i];
+		e2[i] = corner[2][i] - corner[0][i];
+	}
+	n[0] = e1[1] * e2[2] - e1[2] * e2[1];
+	n[1] = e1[2] * e2[0] - e1[0] * e2[2];
+	n[2] = e1[0] * e2[1] - e1[1] * e2[0];
+	size = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+	if (size < 1e-6f)
+	{
+		return -1.0f;
+	}
+	drop = (fabsf(n[0]) >= fabsf(n[1])) ? ((fabsf(n[0]) >= fabsf(n[2])) ? 0 : 2) : ((fabsf(n[1]) >= fabsf(n[2])) ? 1 : 2);
+	ax = (drop == 0) ? 1 : 0;
+	ay = (drop == 2) ? 1 : 2;
+	for (i = 0; i < 4; i++)
+	{
+		c[i][0] = corner[i][ax];
+		c[i][1] = corner[i][ay];
+	}
+	q[0] = p[ax];
+	q[1] = p[ay];
+	*s = 0.5f;
+	*t = 0.5f;
+	for (step = 0; step < 12; step++)
+	{
+		float f[2];
+		float ds[2];
+		float dt[2];
+		float det;
+		int a;
+
+		for (a = 0; a < 2; a++)
+		{
+			const float x = (1.0f - *s) * (1.0f - *t) * c[0][a] + *s * (1.0f - *t) * c[1][a] + (1.0f - *s) * *t * c[2][a] + *s * *t * c[3][a];
+
+			f[a] = x - q[a];
+			ds[a] = (1.0f - *t) * (c[1][a] - c[0][a]) + *t * (c[3][a] - c[2][a]);
+			dt[a] = (1.0f - *s) * (c[2][a] - c[0][a]) + *s * (c[3][a] - c[1][a]);
+		}
+		det = ds[0] * dt[1] - ds[1] * dt[0];
+		if (fabsf(det) < 1e-9f)
+		{
+			break;
+		}
+		*s -= (f[0] * dt[1] - f[1] * dt[0]) / det;
+		*t -= (ds[0] * f[1] - ds[1] * f[0]) / det;
+	}
+	off = ((p[0] - corner[0][0]) * n[0] + (p[1] - corner[0][1]) * n[1] + (p[2] - corner[0][2]) * n[2]) / size;
+	return fabsf(off) / sqrtf(size);
+}
+
+// The cell of (s, t) in a grid of side cells per side (clamped to the grid).
+internal void EngTrack_OracleCellOf(float s, float t, int side, int *row, int *col)
+{
+	int c = (int)floorf(s * (float)side);
+	int r = (int)floorf(t * (float)side);
+
+	*col = (c < 0) ? 0 : ((c > side - 1) ? side - 1 : c);
+	*row = (r < 0) ? 0 : ((r > side - 1) ? side - 1 : r);
+}
+
+
+// The cell of (s, t) as a table of the leaf form shows it, named by its first
+// cell like the engine rows and the static lines: 4x4 any cell; 4x2 the tile
+// spans two rows (rows 0 or 2); 4x1 the whole column (row 0).
+internal void EngTrack_OracleCellOfForm(float s, float t, int form, int *row, int *col)
+{
+	EngTrack_OracleCellOf(s, t, 4, row, col);
+	if (form == ENGINE_MOSAIC_FORM_4X2)
+	{
+		*row &= ~1;
+	}
+	else if (form == ENGINE_MOSAIC_FORM_4X1)
+	{
+		*row = 0;
+	}
+}
+// The mid face of the block that holds p and p's (s, t) in it: faces[k] (NULL =
+// no engine face k). The face whose (s, t) lies inside [-0.02, 1.02] and nearest
+// its plane; -1 when none does.
+internal int EngTrack_OracleFaceAt(const EngTrackFace *const *faces, const float p[3], float *sOut, float *tOut)
+{
+	float bestOff = 1e30f;
+	int best = -1;
+	int k;
+
+	for (k = 0; k < 4; k++)
+	{
+		float corner[4][3];
+		float s;
+		float t;
+		float off;
+		int v;
+		int a;
+
+		if (faces[k] == NULL)
+		{
+			continue;
+		}
+		for (v = 0; v < 4; v++)
+		{
+			for (a = 0; a < 3; a++)
+			{
+				corner[v][a] = faces[k]->v[v].position[a];
+			}
+		}
+		off = EngTrack_OracleFaceParam(corner, p, &s, &t);
+		if ((off < 0.0f) || (s < -0.02f) || (s > 1.02f) || (t < -0.02f) || (t > 1.02f) || (off >= bestOff))
+		{
+			continue;
+		}
+		bestOff = off;
+		best = k;
+		*sOut = s;
+		*tOut = t;
+	}
+	return best;
+}
+
+// One dynamic R line from a decoded packet. k and the cell come from where the
+// packet lies (faceAt >= 0: its face, (s, t) its centre in it); the stage from
+// the layout its uv is (exact corners: stage=<0..3|low>, a table entry: the
+// cell; else part=1 with the layout that holds it, none = no layout of the
+// block). anim=1 from an AnimTex cell, clip=1 from a clip record, sieve=1 when
+// the sieve dropped a layout of the block in the walk; prim=normal (the track
+// walk's one writer), tp=/cl=, col=.
+internal void EngTrack_OracleRetailLine(EngTrackOracleFace *f, int block, int water, int clip, int sieve, int form, u16 tpage, u16 clut, const u8 (*rgb)[3],
+                                        const EngTrackOracleCand *c, int n, int faceAt, float s, float t)
+{
+	static const char *const levelName[6] = {"0", "1", "2", "3", "tile", "low"};
+	int exact = 0;
+	const int at = EngTrack_OracleClassify(tpage, clut, f->uv, f->uvCount, c, n, &exact);
+	const int k = (faceAt >= 0) ? faceAt : ((at >= 0) ? (int)c[at].k : -1);
+
+	f->src = water ? 'W' : 'T';
+	EngTrack_OracleSourceId(f, block, k);
+	f->cellRow = -1;
+	f->cellCol = -1;
+	f->extra[0] = '\0';
+	if (k >= 0)
+	{
+		EngTrack_OracleExtra(f, "k=%d", k);
+	}
+	if (at < 0)
+	{
+		EngTrack_OracleExtra(f, "stage=none");
+	}
+	else if (c[at].level == EGT_ORACLE_LEVEL_TILE)
+	{
+		if (faceAt >= 0)
+		{
+			EngTrack_OracleCellOfForm(s, t, form, &f->cellRow, &f->cellCol);
+		}
+		else
+		{
+			EngTrack_OracleExtra(f, "nogeo=1");
+		}
+	}
+	else
+	{
+		EngTrack_OracleExtra(f, "stage=%s", levelName[(int)c[at].level]);
+	}
+	if ((at >= 0) && !exact)
+	{
+		EngTrack_OracleExtra(f, "part=1");
+	}
+	if ((at >= 0) && c[at].anim)
+	{
+		EngTrack_OracleExtra(f, "anim=1");
+	}
+	if (clip)
+	{
+		EngTrack_OracleExtra(f, "clip=1");
+	}
+	if (sieve)
+	{
+		EngTrack_OracleExtra(f, "sieve=1");
+	}
+	EngTrack_OracleExtra(f, "prim=normal");
+	EngTrack_OracleRawWords(f, tpage, clut);
+	EngTrack_OracleColours(f, rgb, f->uvCount);
+}
+
+// The engine faces of a block per mid face (NULL = none), from s_egtFaceOfBlock.
+internal void EngTrack_OracleBlockFaces(int block, const EngTrackFace **faces)
+{
+	int k;
+
+	for (k = 0; k < 4; k++)
+	{
+		const int at = (s_egtFaceOfBlock != NULL) ? s_egtFaceOfBlock[4 * block + k] : -1;
+
+		faces[k] = (at >= 0) ? &s_egtFaces[at].face : NULL;
+	}
+}
+
+// The position note of the packet at prim (the notes come in packet order).
+internal int EngTrack_OracleGeometry(const void *prim, float centre[3])
+{
+	int i;
+
+	for (i = s_ego.geoAt; i < s_ego.geoCount; i++)
+	{
+		if (s_ego.geo[i].prim == prim)
+		{
+			s_ego.geoAt = i + 1;
+			centre[0] = s_ego.geo[i].centre[0];
+			centre[1] = s_ego.geo[i].centre[1];
+			centre[2] = s_ego.geo[i].centre[2];
+			return 1;
+		}
+	}
+	return 0;
+}
+
+// The R lines of the packets in [from, to) of one block.
+internal void EngTrack_OracleRetailRange(int block, int water, int clip, int sieve, const void *from, const void *to, const float *place)
+{
+	static EngTrackOracleCand cand[EGT_ORACLE_CANDS_MAX];
+	const EngTrackFace *faces[4];
+	const u32 *w = (const u32 *)from;
+	const u32 *end = (const u32 *)to;
+	const int form = (s_egtBlockForm != NULL) ? (int)s_egtBlockForm[block] : ENGINE_MOSAIC_FORM_4X4;
+	int n;
+
+	if ((from == NULL) || (to == NULL) || (end <= w))
+	{
+		return;
+	}
+	n = EngTrack_OracleCandidates(&s_egtMesh->ptrQuadBlockArray[block], form, cand);
+	EngTrack_OracleBlockFaces(block, faces);
+	while (w < end)
+	{
+		EngTrackOracleFace f;
+		u16 tpage = 0;
+		u16 clut = 0;
+		u8 rgb[4][3];
+		float centre[3];
+		float s = 0.0f;
+		float t = 0.0f;
+		int faceAt = -1;
+		int isFace = 0;
+		const void *prim = w;
+		const u32 used = EngTrack_OracleDecodePrim(w, (u32)(end - w), &f, &tpage, &clut, rgb, &isFace);
+
+		if (used == 0u)
+		{
+			break;
+		}
+		w += used;
+		if (!isFace)
+		{
+			s_ego.notTextured++;
+			continue;
+		}
+		if (place != NULL)
+		{
+			centre[0] = place[0];
+			centre[1] = place[1];
+			centre[2] = place[2];
+		}
+		if ((place == NULL) && !EngTrack_OracleGeometry(prim, centre))
+		{
+			s_ego.noGeometry++;
+		}
+		else
+		{
+			faceAt = EngTrack_OracleFaceAt(faces, centre, &s, &t);
+			s_ego.outsideFace += (faceAt < 0) ? 1u : 0u;
+		}
+		f.sub = (int)s_ego.seq++;
+		EngTrack_OracleRetailLine(&f, block, water, clip, sieve, form, tpage, clut, (const u8(*)[3])rgb, cand, n, faceAt, s, t);
+		EngTrack_OracleEmit('R', &f);
+		if (clip)
+		{
+			s_ego.clipPrims++;
+		}
+		else
+		{
+			s_ego.prims++;
+		}
+	}
+}
+
+// The packets in [from, to) (the whole pass, for the check of the Done line).
+internal u32 EngTrack_OracleCountPackets(const void *from, const void *to)
+{
+	const u32 *w = (const u32 *)from;
+	const u32 *end = (const u32 *)to;
+	u32 packets = 0;
+
+	while ((w != NULL) && (w < end) && ((w[0] >> 24) != 0u) && ((w[0] >> 24) + 1u <= (u32)(end - w)))
+	{
+		w += (w[0] >> 24) + 1u;
+		packets++;
+	}
+	return packets;
+}
+
+// box= of a layout the shader samples clamped (the table path: cell and
+// fraction clamped, "never a texel beyond the tile"): the box of its corners.
+internal void EngTrack_OracleLayoutLine(EngTrackOracleFace *f, const struct TextureLayout *lay, int withBox)
+{
+	const int lu[4] = {lay->u0, lay->u1, lay->u2, lay->u3};
+	const int lv[4] = {lay->v0, lay->v1, lay->v2, lay->v3};
+	int umin = 255;
+	int umax = 0;
+	int vmin = 255;
+	int vmax = 0;
+	int c;
+
+	EngTrack_OracleTexture(f, lay->tpage, lay->clut);
+	f->uvCount = 4;
+	for (c = 0; c < 4; c++)
+	{
+		f->uv[2 * c] = lu[c];
+		f->uv[2 * c + 1] = lv[c];
+		umin = (lu[c] < umin) ? lu[c] : umin;
+		umax = (lu[c] > umax) ? lu[c] : umax;
+		vmin = (lv[c] < vmin) ? lv[c] : vmin;
+		vmax = (lv[c] > vmax) ? lv[c] : vmax;
+	}
+	EngTrack_OracleRawWords(f, lay->tpage, lay->clut);
+	if (withBox)
+	{
+		EngTrack_OracleExtra(f, "box=%d,%d,%d,%d", umin, vmin, umax, vmax);
+	}
+}
+
+// A static R line (set=load / set=anim): one layout 226 resolved for a face -
+// level 0..3 (stage=; lodonly=1 below the level the walk draws without distance
+// LOD, `finest`: native_view.c s_lodNone, 226 DrawLevelOvr1P_TextureLodLevel),
+// the low layout (level -1, k -1: stage=low lodonly=1) - or a table entry
+// (entry >= 0, its cell in the cell column).
+internal void EngTrack_OracleStaticLine(EngTrackOracleFace *f, int block, int water, int k, int level, int finest, int entry, int cellRow, int cellCol,
+                                        const struct TextureLayout *lay, int anim, int sieve, const char *set)
+{
+	memset(f, 0, sizeof(*f));
+	f->src = water ? 'W' : 'T';
+	EngTrack_OracleSourceId(f, block, k);
+	f->sub = k;
+	f->blend = EGT_ORACLE_BLEND_OPAQUE;
+	f->cellRow = -1;
+	f->cellCol = -1;
+	if (k >= 0)
+	{
+		EngTrack_OracleExtra(f, "k=%d", k);
+	}
+	if (lay != NULL)
+	{
+		EngTrack_OracleLayoutLine(f, lay, 0);
+		f->blend = EngTrack_IsSemi(lay->tpage) ? (int)((lay->tpage >> 5) & 3u) : EGT_ORACLE_BLEND_OPAQUE;
+	}
+	if (entry >= 0)
+	{
+		f->cellRow = cellRow;
+		f->cellCol = cellCol;
+		EngTrack_OracleExtra(f, "entry=%d", entry);
+	}
+	else if (level >= 0)
+	{
+		EngTrack_OracleExtra(f, "stage=%d", level);
+		if (level < finest)
+		{
+			EngTrack_OracleExtra(f, "lodonly=1");
+		}
+	}
+	else
+	{
+		EngTrack_OracleExtra(f, "stage=low lodonly=1");
+	}
+	if (anim)
+	{
+		EngTrack_OracleExtra(f, "anim=1");
+	}
+	if (sieve)
+	{
+		EngTrack_OracleExtra(f, "sieve=1");
+	}
+	EngTrack_OracleExtra(f, "set=%s", (set != NULL) ? set : "-");
+}
+
+// The cell a table entry stands in (the first one; a 4x2 entry also covers the
+// row below, a 4x1 entry the whole column), for the face's orientation:
+// e = entry - (mirrored ? own : 0), cell (e / 4, e % 4) for 4x4, (2 (e / 4),
+// e % 4) for 4x2, (0, e) for 4x1 - the rule the engine's rows are built by
+// (engine_track_mosaic.c, EngMosaic_CellEntry); the dynamic lines, whose cell
+// comes from where the packet lies, check it.
+internal void EngTrack_OracleEntryCell(int form, int e, int *row, int *col)
+{
+	switch (form)
+	{
+	case ENGINE_MOSAIC_FORM_4X2:
+		*row = 2 * (e >> 2);
+		*col = e & 3;
+		break;
+	case ENGINE_MOSAIC_FORM_4X1:
+		*row = 0;
+		*col = e;
+		break;
+	default:
+		*row = e >> 2;
+		*col = e & 3;
+		break;
+	}
+}
+
+// 1 = a block index of the loaded level; *water its water mark.
+internal int EngTrack_OracleBlockIndex(const struct QuadBlock *block, int *index, int *water)
+{
+	ptrdiff_t at;
+
+	if ((block == NULL) || (s_egtMesh == NULL))
+	{
+		return 0;
+	}
+	at = block - s_egtMesh->ptrQuadBlockArray;
+	if ((at < 0) || (at >= s_egtMesh->numQuadBlock))
+	{
+		return 0;
+	}
+	*index = (int)at;
+	*water = ((s_egtBlockMark != NULL) && ((s_egtBlockMark[at] & EGT_BLOCK_WATER) != 0u)) ? 1 : 0;
+	return 1;
+}
+
+// noleaf=1: the block lies in no leaf, the walk never reaches it (the engine builds no face for it).
+internal void EngTrack_OracleNoLeaf(EngTrackOracleFace *f, int index)
+{
+	if ((s_egtBlockMark != NULL) && ((s_egtBlockMark[index] & EGT_BLOCK_IN_LEAF) == 0u))
+	{
+		EngTrack_OracleExtra(f, "noleaf=1");
+	}
+}
+
+// From DrawLevelOvr1P_OracleLayouts (226): one resolved layout of a face.
+void Engine_TrackOracleLayout(const struct QuadBlock *block, int face, int level, int finest, const struct TextureLayout *layout, int anim, int sieve)
+{
+	EngTrackOracleFace f;
+	int index = 0;
+	int water = 0;
+
+	if ((s_ego.set == NULL) || !EngTrack_OracleBlockIndex(block, &index, &water))
+	{
+		return;
+	}
+	EngTrack_OracleStaticLine(&f, index, water, face, level, finest, -1, -1, -1, layout, anim, sieve, s_ego.set);
+	EngTrack_OracleNoLeaf(&f, index);
+	EngTrack_OracleEmit('R', &f);
+	s_ego.staticLines++;
+}
+
+// From DrawLevelOvr1P_OracleLayouts (226): the table a face's level 3 names and
+// whether the walk draws the face mirrored. The entries of the half the face
+// shows (the form of the block's leaf), each with its cell.
+void Engine_TrackOracleTable(const struct QuadBlock *block, int face, const struct TextureLayout *table, int anim, int mirrored)
+{
+	int index = 0;
+	int water = 0;
+	int form;
+	int entries;
+	int own;
+	int e;
+
+	if ((s_ego.set == NULL) || (table == NULL) || !EngTrack_OracleBlockIndex(block, &index, &water))
+	{
+		return;
+	}
+	form = (s_egtBlockForm != NULL) ? (int)s_egtBlockForm[index] : ENGINE_MOSAIC_FORM_4X4;
+	entries = EngTrack_OracleTableEntries(form);
+	own = entries / 2;
+	if (!EngTrack_SpanOk((u32)(size_t)table, (u32)entries * (u32)sizeof(struct TextureLayout)))
+	{
+		return;
+	}
+	for (e = 0; e < own; e++)
+	{
+		const int entry = (mirrored ? own : 0) + e;
+		EngTrackOracleFace f;
+		int row = 0;
+		int col = 0;
+
+		EngTrack_OracleEntryCell(form, e, &row, &col);
+		EngTrack_OracleStaticLine(&f, index, water, face, -1, 0, entry, row, col, &table[entry], anim, 0, s_ego.set);
+		EngTrack_OracleExtra(&f, "form=%s mir=%d", (form == ENGINE_MOSAIC_FORM_4X2) ? "4x2" : ((form == ENGINE_MOSAIC_FORM_4X1) ? "4x1" : "4x4"),
+		                     mirrored ? 1 : 0);
+		EngTrack_OracleNoLeaf(&f, index);
+		EngTrack_OracleEmit('R', &f);
+		s_ego.staticLines++;
+	}
+}
+
+// From the 226 packet writers during the oracle pass: the sum of a packet's
+// corner positions (level units) and their count.
+void Engine_TrackOracleNotePrim(const void *prim, const s32 *positionSum, int corners)
+{
+	if (!s_ego.active || (prim == NULL) || (positionSum == NULL) || (corners <= 0))
+	{
+		return;
+	}
+	if (s_ego.geoCount >= EGT_ORACLE_GEO_MAX)
+	{
+		s_ego.noGeometry++;
+		return;
+	}
+	s_ego.geo[s_ego.geoCount].prim = prim;
+	s_ego.geo[s_ego.geoCount].centre[0] = (float)positionSum[0] / (float)corners;
+	s_ego.geo[s_ego.geoCount].centre[1] = (float)positionSum[1] / (float)corners;
+	s_ego.geo[s_ego.geoCount].centre[2] = (float)positionSum[2] / (float)corners;
+	s_ego.geoCount++;
+}
+
+// Called by DrawLevelOvr1P before its walk: 1 = run the oracle pass now (a
+// logged frame whose track the engine draws, faces not yet submitted). Writes
+// the retail AnimTex set of the frame first (DrawLevelOvr1P_OracleLayouts).
+int Engine_TrackOracleWanted(void)
+{
+	if (!g_cfg_engine || !g_cfg_engineTrack || !s_egtSubmitted || !s_egtPending || (s_egtMesh == NULL) || !EngTrack_OracleOn())
+	{
+		return 0;
+	}
+	memset(&s_ego, 0, sizeof(s_ego));
+	s_ego.set = "anim";
+	DrawLevelOvr1P_OracleLayouts(s_egtMesh, 1);
+	s_ego.set = NULL;
+	s_ego.active = 1;
+	return 1;
+}
+
+void Engine_TrackOracleBlock(const struct QuadBlock *block, int water, int sieve, const void *primFrom, const void *primTo, const void *clipFrom,
+                             const void *clipTo)
+{
+	int index = 0;
+	int markedWater = 0;
+
+	if (!s_ego.active)
+	{
+		return;
+	}
+	if (!EngTrack_OracleBlockIndex(block, &index, &markedWater))
+	{
+		s_ego.noBlock++;
+		return;
+	}
+	s_ego.blocks++;
+	if ((clipFrom != NULL) && (clipTo != NULL) && ((const u8 *)clipTo > (const u8 *)clipFrom))
+	{
+		if (s_ego.spanCount < EGT_ORACLE_SPANS_MAX)
+		{
+			s_ego.span[s_ego.spanCount].from = (const u8 *)clipFrom;
+			s_ego.span[s_ego.spanCount].to = (const u8 *)clipTo;
+			s_ego.span[s_ego.spanCount].block = index;
+			s_ego.span[s_ego.spanCount].water = water;
+			s_ego.span[s_ego.spanCount].sieve = sieve;
+			s_ego.spanCount++;
+		}
+		else
+		{
+			s_ego.spansLost++;
+		}
+	}
+	EngTrack_OracleRetailRange(index, water, 0, sieve, primFrom, primTo, NULL);
+}
+
+// The consumer takes the records in the order they were written: the spans are
+// searched from the last one found.
+void Engine_TrackOracleClip(const void *record, const s32 *positionSum, int corners, const void *primFrom, const void *primTo)
+{
+	const u8 *at = (const u8 *)record;
+	float place[3] = {0.0f, 0.0f, 0.0f};
+
+	if (!s_ego.active)
+	{
+		return;
+	}
+	if ((s_ego.spanAt < s_ego.spanCount) && (at < s_ego.span[s_ego.spanAt].from))
+	{
+		s_ego.spanAt = 0;
+	}
+	while ((s_ego.spanAt < s_ego.spanCount) && (at >= s_ego.span[s_ego.spanAt].to))
+	{
+		s_ego.spanAt++;
+	}
+	if ((s_ego.spanAt >= s_ego.spanCount) || (at < s_ego.span[s_ego.spanAt].from))
+	{
+		s_ego.noOwner++;
+		return;
+	}
+	if ((positionSum != NULL) && (corners > 0))
+	{
+		place[0] = (float)positionSum[0] / (float)corners;
+		place[1] = (float)positionSum[1] / (float)corners;
+		place[2] = (float)positionSum[2] / (float)corners;
+	}
+	EngTrack_OracleRetailRange(s_ego.span[s_ego.spanAt].block, s_ego.span[s_ego.spanAt].water, 1, s_ego.span[s_ego.spanAt].sieve, primFrom, primTo,
+	                           ((positionSum != NULL) && (corners > 0)) ? place : NULL);
+}
+
+void Engine_TrackOracleDone(int completed, const void *primFrom, const void *primTo)
+{
+	u32 packets;
+
+	if (!s_ego.active)
+	{
+		return;
+	}
+	s_ego.active = 0;
+	packets = EngTrack_OracleCountPackets(primFrom, primTo);
+	Platform_Log("[CTR Engine] oracle track: retail walk %s, %u block visit(s), %u R line(s) (%u from clip records), %u AnimTex set line(s), %u "
+	             "packet(s) in the pass, %u not a textured GT3/GT4, %u packet(s) outside any block, %u without position, %u in no face of their "
+	             "block, %u block pointer(s) outside the level, %u clip record(s) without block, %u block span(s) lost\n",
+	             completed ? "complete" : "STOPPED (no primitive space)", s_ego.blocks, s_ego.prims + s_ego.clipPrims, s_ego.clipPrims, s_ego.staticLines,
+	             packets, s_ego.notTextured,
+	             (packets > s_ego.prims + s_ego.clipPrims + s_ego.notTextured) ? (packets - s_ego.prims - s_ego.clipPrims - s_ego.notTextured) : 0u,
+	             s_ego.noGeometry, s_ego.outsideFace, s_ego.noBlock, s_ego.noOwner, s_ego.spansLost);
+}
+
+// The layouts a table row offers a face, each cell the form holds once (4x4:
+// all 16; 4x2: rows 0 and 2, each standing for itself and the row below; 4x1:
+// row 0; a whole-face row, side 1: cell 0), then levels 2, 1, 0 (the order of
+// the data texture). which[i] = cell index 0..15, or 16 + level. Returns the
+// count (<= 19).
+internal int EngTrack_OracleRowLayouts(int side, int form, int *which)
+{
+	int n = 0;
+	int i;
+
+	for (i = 0; i < ((side == 1) ? 1 : 16); i++)
+	{
+		const int r = i >> 2;
+
+		if ((side != 1) && (((form == ENGINE_MOSAIC_FORM_4X2) && ((r & 1) != 0)) || ((form == ENGINE_MOSAIC_FORM_4X1) && (r != 0))))
+		{
+			continue;
+		}
+		which[n++] = i;
+	}
+	for (i = 2; i >= 0; i--)
+	{
+		which[n++] = 16 + i;
+	}
+	return n;
+}
+
+// The E lines of one table face: out[] gets up to 19 lines. base = the face's
+// line with src, srcId, sub, blend and the shared extra filled; finest = the
+// level a whole-face row holds (side 1).
+internal int EngTrack_OracleTableLines(const EngTrackOracleFace *base, int side, int form, int finest, int faulted, const struct TextureLayout *cells,
+                                       const struct TextureLayout *levels, EngTrackOracleFace *out)
+{
+	int which[19];
+	const int n = EngTrack_OracleRowLayouts(side, form, which);
+	int i;
+
+	for (i = 0; i < n; i++)
+	{
+		EngTrackOracleFace *f = &out[i];
+
+		*f = *base;
+		f->cellRow = -1;
+		f->cellCol = -1;
+		if (which[i] < 16)
+		{
+			EngTrack_OracleLayoutLine(f, &cells[which[i]], 1);
+			if (side == 1)
+			{
+				EngTrack_OracleExtra(f, "stage=%d", finest);
+			}
+			else
+			{
+				f->cellRow = which[i] / 4;
+				f->cellCol = which[i] % 4;
+				if (faulted)
+				{
+					EngTrack_OracleExtra(f, "fault=cell");
+				}
+			}
+		}
+		else
+		{
+			EngTrack_OracleLayoutLine(f, &levels[which[i] - 16], 1);
+			EngTrack_OracleExtra(f, "stage=%d", which[i] - 16);
+		}
+	}
+	return n;
+}
+
+// The E line of a VRAM face: the key's tpage and clut, the face's texcoords;
+// box= unclamped ("ne" samples floor(v_uv) without a clamp: one texel below
+// the lowest corner and the highest corner itself can be read).
+internal void EngTrack_OracleEngineVram(EngTrackOracleFace *f, u16 tpage, u16 clut, const EngTrackFace *face)
+{
+	int umin = 1 << 30;
+	int umax = -(1 << 30);
+	int vmin = 1 << 30;
+	int vmax = -(1 << 30);
+	int v;
+
+	EngTrack_OracleTexture(f, tpage, clut);
+	f->uvCount = face->vertCount;
+	for (v = 0; v < face->vertCount; v++)
+	{
+		const int u = (int)floorf(face->v[v].texcoord[0] + 0.5f);
+		const int t = (int)floorf(face->v[v].texcoord[1] + 0.5f);
+
+		f->uv[2 * v] = u;
+		f->uv[2 * v + 1] = t;
+		umin = (u < umin) ? u : umin;
+		umax = (u > umax) ? u : umax;
+		vmin = (t < vmin) ? t : vmin;
+		vmax = (t > vmax) ? t : vmax;
+	}
+	EngTrack_OracleRawWords(f, tpage, clut);
+	EngTrack_OracleExtra(f, "box=%d,%d,%d,%d", umin - 1, vmin - 1, umax, vmax);
+}
+
+// The shared part of a face's E lines: src, srcId, sub (its mid face), blend of
+// its material, extra k=, anim=1 (and frozen=1 when it does not follow the cell),
+// decal=, live=1, tablefail=1, col= (the colours the face is drawn with now),
+// set= for the static sets.
+internal void EngTrack_OracleEngineBase(EngTrackOracleFace *f, const EngTrackDrawFace *df, const EngTrackKey *key, const struct LevVertex *verts,
+                                        const char *set)
+{
+	u8 rgb[4][3];
+	int v;
+
+	memset(f, 0, sizeof(*f));
+	f->src = 'T';
+	EngTrack_OracleSourceId(f, df->block, (int)df->face.mid);
+	f->sub = (int)df->face.mid;
+	f->blend = EngTrack_IsSemi(key->tpage) ? (int)((key->tpage >> 5) & 3u) : EGT_ORACLE_BLEND_OPAQUE;
+	f->cellRow = -1;
+	f->cellCol = -1;
+	EngTrack_OracleExtra(f, "k=%d", (int)df->face.mid);
+	if (df->anim)
+	{
+		EngTrack_OracleExtra(f, "anim=1");
+		if (!df->animRow)
+		{
+			EngTrack_OracleExtra(f, "frozen=1");
+		}
+	}
+	if (key->lift != 0)
+	{
+		EngTrack_OracleExtra(f, "decal=%d", (int)key->lift);
+	}
+	if (df->live)
+	{
+		EngTrack_OracleExtra(f, "live=1");
+	}
+	if (df->tableRefused)
+	{
+		EngTrack_OracleExtra(f, "tablefail=1");
+	}
+	if (set != NULL)
+	{
+		EngTrack_OracleExtra(f, "set=%s", set);
+	}
+	for (v = 0; v < df->face.vertCount; v++)
+	{
+		const u8 *c = df->face.v[v].color;
+
+		if (df->live && (verts != NULL))
+		{
+			c = verts[df->vertex[v]].color_hi;
+		}
+		rgb[v][0] = c[0];
+		rgb[v][1] = c[1];
+		rgb[v][2] = c[2];
+	}
+	EngTrack_OracleColours(f, (const u8(*)[3])rgb, df->face.vertCount);
+}
+
+// The E lines of one engine face into lines[] (<= 19). 0 = a table face whose row is missing.
+internal int EngTrack_OracleEngineFaceLines(const EngTrackDrawFace *df, const char *set, EngTrackOracleFace *lines)
+{
+	const EngTrackKey *key = &s_egtKeys.key[df->face.key];
+	EngTrackOracleFace base;
+
+	EngTrack_OracleEngineBase(&base, df, key, s_egtVertices, set);
+	if ((key->tpage & 0x8000u) != 0u)
+	{
+		const struct TextureLayout *cells = NULL;
+		const struct TextureLayout *levels = NULL;
+		int side = 0;
+		int form = 0;
+		int finest = 0;
+		int faulted = 0;
+
+		if (!Engine_TrackMosaicOracleRow(df->face.v[0].texcoord[0], df->face.v[0].texcoord[1], &side, &form, &finest, &faulted, &cells, &levels))
+		{
+			return 0;
+		}
+		return EngTrack_OracleTableLines(&base, side, form, finest, faulted, cells, levels, lines);
+	}
+	lines[0] = base;
+	EngTrack_OracleEngineVram(&lines[0], key->tpage, key->clut, &df->face);
+	EngTrack_OracleExtra(&lines[0], "stage=%d", (int)df->stage);
+	return 1;
+}
+
+// The E lines of the engine's faces: shownOnly = the faces drawn this frame
+// (s_egtShown), else all; animOnly = only faces of AnimTex cells.
+internal void EngTrack_OracleEngineFaces(int shownOnly, int animOnly, const char *set)
+{
+	static EngTrackOracleFace lines[19];
+	u32 faces = 0;
+	u32 written = 0;
+	u32 noRow = 0;
+	int i;
+
+	for (i = 0; i < s_egtFaceCount; i++)
+	{
+		const EngTrackDrawFace *df = &s_egtFaces[i];
+		int n;
+		int j;
+
+		if ((shownOnly && ((s_egtShown == NULL) || !s_egtShown[i])) || (animOnly && !df->anim))
+		{
+			continue;
+		}
+		n = EngTrack_OracleEngineFaceLines(df, set, lines);
+		if (n == 0)
+		{
+			noRow++;
+			continue;
+		}
+		for (j = 0; j < n; j++)
+		{
+			EngTrack_OracleEmit('E', &lines[j]);
+		}
+		faces++;
+		written += (u32)n;
+	}
+	Platform_Log("[CTR Engine] oracle track: engine %s %u face(s), %u E line(s), %u table face(s) without their row\n",
+	             (set != NULL) ? set : "frame", faces, written, noRow);
+}
+
+// --engine-oracle-fault cell:<n> (done point D-W3.1): in the row of the n-th
+// table face of the level (block order), two cells of different layouts swap
+// places (Engine_TrackMosaicOracleFault). Measurement only; logged; E lines of
+// faces reading that row carry fault=cell. Before the data texture is made.
+internal void EngTrack_OracleFault(void)
+{
+	const int n = EngTrack_OracleFaultCell();
+	int seen = 0;
+	int i;
+
+	if (n < 0)
+	{
+		return;
+	}
+	for (i = 0; i < s_egtFaceCount; i++)
+	{
+		const EngTrackDrawFace *df = &s_egtFaces[i];
+
+		if (((df->face.tpage & 0x8000u) == 0u) || df->animRow)
+		{
+			continue;
+		}
+		if (seen++ < n)
+		{
+			continue;
+		}
+		if (Engine_TrackMosaicOracleFault(df->face.v[0].texcoord[0], df->face.v[0].texcoord[1], df->block, (int)df->face.mid))
+		{
+			return;
+		}
+	}
+	Platform_Log("[CTR Engine] oracle fault: cell %d - no such table face (or no two different cells in its row)\n", n);
+}
+
+// End of Engine_TrackLoad: the static block of the level (F tag L<id>-load):
+// R = the layouts 226 resolves for every face, E = every face of the engine.
+internal void EngTrack_OracleLoad(int levelID)
+{
+	char tag[32];
+
+	if (!EngTrack_OracleSwitch() || (s_egtMesh == NULL))
+	{
+		return;
+	}
+	snprintf(tag, sizeof(tag), "L%d-load", levelID);
+	EngTrack_OracleArmLoad(tag);
+	if (!EngTrack_OracleOn())
+	{
+		return;
+	}
+	memset(&s_ego, 0, sizeof(s_ego));
+	s_ego.set = "load";
+	DrawLevelOvr1P_OracleLayouts(s_egtMesh, 0);
+	s_ego.set = NULL;
+	Platform_Log("[CTR Engine] oracle track: load block of level %d, %u retail layout line(s)\n", levelID, s_ego.staticLines);
+	EngTrack_OracleEngineFaces(0, 0, "load");
 }
 
 // Once per frame from Engine_FrameCollect (MainFrame_RenderFrame.c:134): decides
@@ -2255,6 +3685,10 @@ internal int EngTrack_SubmitShown(struct GameTracker *gGT)
 	if (EngTrack_LeavesOfLists(s_egtMesh->bspRoot, s_egtNodeCount, heads, DRAW_LEVEL_OVR1P_RENDER_LIST_SLOT_COUNT + 1, s_egtLeafShown) < 0)
 	{
 		s_egtBadListFrames++;
+		if (EngTrack_OracleOn())
+		{
+			Platform_Log("[CTR Engine] oracle track: this frame the PS1 walk draws the track (bad render list): no E lines\n");
+		}
 		return 0;
 	}
 
@@ -2303,7 +3737,18 @@ internal int EngTrack_SubmitShown(struct GameTracker *gGT)
 	if ((vertices > EGT_DYN_VERTICES_MAX) || (expanded > EGT_DYN_EXPANDED_MAX))
 	{
 		s_egtOverBudgetFrames++;
+		if (EngTrack_OracleOn())
+		{
+			Platform_Log("[CTR Engine] oracle track: this frame the PS1 walk draws the track (over budget): no E lines\n");
+		}
 		return 0;
+	}
+	// --engine-oracle: what the shader reads for each face drawn now (RETAIL ORACLE).
+	if (EngTrack_OracleOn())
+	{
+		EngTrack_OracleEngineFaces(1, 0, NULL); // the faces drawn now
+		// and every face of an AnimTex cell, seen or not (done point D-W1.3)
+		EngTrack_OracleEngineFaces(0, 1, "anim");
 	}
 	s_egtPeakFaces = (faces > s_egtPeakFaces) ? faces : s_egtPeakFaces;
 	s_egtPeakVertices = (vertices > s_egtPeakVertices) ? vertices : s_egtPeakVertices;
@@ -3154,6 +4599,311 @@ int Engine_SelfTestTrack(int *checks)
 		EGT_CHECK(EngTrack_InstanceRule(&inst, 1, 1) == EGT_RULE_LEVEL, "rules: an InstDef instance with a thread not a level instance");
 		inst.thread = NULL;
 		EGT_CHECK(EngTrack_InstanceRule(&inst, 0, 1) == EGT_RULE_LEVEL, "rules: an InstDef instance outside the table not a level instance");
+	}
+
+	// (oracle) RETAIL ORACLE on synthetic packets, layouts and faces.
+	{
+		static const u16 tpage = 0x00b5; // page (5, 1) = (320, 256), abr 1, depth 1 (8 bit)
+		static const u16 clut = 0x7802;  // (32, 480)
+		u32 gt4[13];
+		u32 gt3[10];
+		EngTrackOracleFace f;
+		EngTrackOracleCand cand[3];
+		u8 rgb[4][3];
+		u16 tp = 0;
+		u16 cl = 0;
+		int isFace = 0;
+		int exact = 0;
+		u32 used;
+		int uv[8];
+
+		// Decode: a semi-transparent GT4 (code 0x3e) and an opaque GT3 (0x34).
+		memset(gt4, 0, sizeof(gt4));
+		gt4[0] = 12u << 24;
+		gt4[1] = (0x3eu << 24) | (30u << 16) | (20u << 8) | 10u;
+		gt4[3] = ((u32)clut << 16) | (2u << 8) | 1u;
+		gt4[4] = (60u << 16) | (50u << 8) | 40u;
+		gt4[6] = ((u32)tpage << 16) | (4u << 8) | 3u;
+		gt4[7] = 70u;
+		gt4[9] = (6u << 8) | 5u;
+		gt4[10] = 80u;
+		gt4[12] = (8u << 8) | 7u;
+		memset(&f, 0, sizeof(f));
+		used = EngTrack_OracleDecodePrim(gt4, 13u, &f, &tp, &cl, rgb, &isFace);
+		EGT_CHECK((used == 13u) && isFace && (tp == tpage) && (cl == clut) && (f.tpX == 320) && (f.tpY == 256) && (f.depth == 1) && (f.clutX == 32) &&
+		              (f.clutY == 480) && (f.blend == 1) && (f.uvCount == 4),
+		          "oracle decode GT4: used %u face %d tp %d,%d,%d clut %d,%d blend %d", used, isFace, f.tpX, f.tpY, f.depth, f.clutX, f.clutY, f.blend);
+		EGT_CHECK((f.uv[0] == 1) && (f.uv[1] == 2) && (f.uv[2] == 3) && (f.uv[3] == 4) && (f.uv[4] == 5) && (f.uv[5] == 6) && (f.uv[6] == 7) &&
+		              (f.uv[7] == 8) && (rgb[0][0] == 10) && (rgb[0][2] == 30) && (rgb[1][1] == 50) && (rgb[2][0] == 70) && (rgb[3][0] == 80),
+		          "oracle decode GT4: uv or colours wrong");
+		memcpy(gt3, gt4, sizeof(gt3));
+		gt3[0] = 9u << 24;
+		gt3[1] = (0x34u << 24) | 0x010203u;
+		used = EngTrack_OracleDecodePrim(gt3, 10u, &f, &tp, &cl, rgb, &isFace);
+		EGT_CHECK((used == 10u) && isFace && (f.uvCount == 3) && (f.blend == EGT_ORACLE_BLEND_OPAQUE), "oracle decode GT3: used %u blend %d", used,
+		          f.blend);
+		gt3[1] = 0x24u << 24;
+		used = EngTrack_OracleDecodePrim(gt3, 10u, &f, &tp, &cl, rgb, &isFace);
+		EGT_CHECK((used == 10u) && !isFace, "oracle decode: a packet that is no GT3/GT4 not skipped (used %u)", used);
+		EGT_CHECK((EngTrack_OracleDecodePrim(gt4, 12u, &f, &tp, &cl, rgb, &isFace) == 0u) && (EngTrack_OracleDecodePrim(gt4, 0u, &f, &tp, &cl, rgb, &isFace) == 0u),
+		          "oracle decode: a packet past the range not stopped");
+
+		// Classify: a tile (0..15), level 3 of the same page (0..63), the low layout (another clut).
+		memset(cand, 0, sizeof(cand));
+		cand[0].lay.tpage = tpage;
+		cand[0].lay.clut = clut;
+		cand[0].lay.u1 = 15;
+		cand[0].lay.v2 = 15;
+		cand[0].lay.u3 = 15;
+		cand[0].lay.v3 = 15;
+		cand[0].k = 2;
+		cand[0].level = EGT_ORACLE_LEVEL_TILE;
+		cand[0].anim = 1;
+		cand[1] = cand[0];
+		cand[1].lay.u1 = 63;
+		cand[1].lay.v2 = 63;
+		cand[1].lay.u3 = 63;
+		cand[1].lay.v3 = 63;
+		cand[1].level = 3;
+		cand[1].anim = 0;
+		cand[2] = cand[1];
+		cand[2].lay.clut = 0x7803;
+		cand[2].k = -1;
+		cand[2].level = EGT_ORACLE_LEVEL_LOW;
+		uv[0] = 0;
+		uv[1] = 0;
+		uv[2] = 15;
+		uv[3] = 0;
+		uv[4] = 0;
+		uv[5] = 15;
+		EGT_CHECK((EngTrack_OracleClassify(tpage, clut, uv, 3, cand, 3, &exact) == 0) && exact, "oracle classify: tile corners not the tile");
+		uv[2] = 8;
+		uv[5] = 8;
+		EGT_CHECK((EngTrack_OracleClassify(tpage, clut, uv, 3, cand, 3, &exact) == 0) && !exact, "oracle classify: a piece of the tile not part of it");
+		uv[2] = 63;
+		uv[5] = 63;
+		EGT_CHECK((EngTrack_OracleClassify(tpage, clut, uv, 3, cand, 3, &exact) == 1) && exact, "oracle classify: level 3 corners not level 3");
+		EGT_CHECK((EngTrack_OracleClassify(tpage, 0x7803, uv, 3, cand, 3, &exact) == 2) && exact, "oracle classify: the low layout not found");
+		EGT_CHECK(EngTrack_OracleClassify(tpage, 0x7804, uv, 3, cand, 3, &exact) == -1, "oracle classify: a foreign clut matched");
+		EGT_CHECK(EngTrack_OracleClassify((u16)(tpage ^ 0x0020u), clut, uv, 3, cand, 3, &exact) == -1, "oracle classify: another abr matched");
+		uv[2] = 64;
+		EGT_CHECK(EngTrack_OracleClassify(tpage, clut, uv, 3, cand, 3, &exact) == -1, "oracle classify: a point past the box matched");
+
+		// Where a packet lies: (s, t) in a square and a trapezoid face, the plane distance, the cell.
+		{
+			static const float square[4][3] = {{0, 0, 0}, {100, 0, 0}, {0, 0, 100}, {100, 0, 100}};
+			static const float trapezoid[4][3] = {{0, 0, 0}, {100, 0, 0}, {20, 0, 100}, {80, 0, 100}};
+			static const float flat[4][3] = {{0, 0, 0}, {100, 0, 0}, {200, 0, 0}, {300, 0, 0}};
+			const float p1[3] = {30.0f, 0.0f, 80.0f};
+			const float p2[3] = {30.0f, 0.0f, 50.0f};
+			const float p3[3] = {30.0f, 10.0f, 50.0f};
+			float s = 0.0f;
+			float t = 0.0f;
+			float off;
+			int row = -1;
+			int col = -1;
+
+			off = EngTrack_OracleFaceParam(square, p1, &s, &t);
+			EGT_CHECK((fabsf(s - 0.3f) < 1e-4f) && (fabsf(t - 0.8f) < 1e-4f) && (off < 1e-4f), "oracle face param (square): s %.4f t %.4f off %.4f", s, t, off);
+			off = EngTrack_OracleFaceParam(trapezoid, p2, &s, &t);
+			EGT_CHECK((fabsf(s - 0.25f) < 1e-3f) && (fabsf(t - 0.5f) < 1e-3f) && (off < 1e-4f), "oracle face param (trapezoid): s %.4f t %.4f", s, t);
+			off = EngTrack_OracleFaceParam(square, p3, &s, &t);
+			EGT_CHECK(fabsf(off - 0.1f) < 1e-4f, "oracle face param: plane distance %.4f (expected 0.1)", off);
+			EGT_CHECK(EngTrack_OracleFaceParam(flat, p1, &s, &t) < 0.0f, "oracle face param: a degenerate face not refused");
+			EngTrack_OracleCellOf(0.3f, 0.8f, 4, &row, &col);
+			EGT_CHECK((row == 3) && (col == 1), "oracle cell of (0.3, 0.8): %d,%d", row, col);
+			EngTrack_OracleCellOf(1.0f, -0.01f, 4, &row, &col);
+			EGT_CHECK((row == 0) && (col == 3), "oracle cell at the border: %d,%d", row, col);
+			EngTrack_OracleCellOfForm(0.3f, 0.4f, ENGINE_MOSAIC_FORM_4X2, &row, &col);
+			EGT_CHECK((row == 0) && (col == 1), "oracle cell 4x2 upper half: %d,%d", row, col);
+			EngTrack_OracleCellOfForm(0.3f, 0.6f, ENGINE_MOSAIC_FORM_4X2, &row, &col);
+			EGT_CHECK((row == 2) && (col == 1), "oracle cell 4x2 lower half: %d,%d", row, col);
+			EngTrack_OracleCellOfForm(0.9f, 0.9f, ENGINE_MOSAIC_FORM_4X1, &row, &col);
+			EGT_CHECK((row == 0) && (col == 3), "oracle cell 4x1: %d,%d", row, col);
+		}
+		{
+			static EngTrackFace a;
+			static EngTrackFace b;
+			const EngTrackFace *faces[4] = {&a, &b, NULL, NULL};
+			const float inB[3] = {150.0f, 0.0f, 50.0f};
+			const float away[3] = {500.0f, 0.0f, 0.0f};
+			float s = 0.0f;
+			float t = 0.0f;
+			int corner;
+
+			memset(&a, 0, sizeof(a));
+			memset(&b, 0, sizeof(b));
+			for (corner = 0; corner < 4; corner++)
+			{
+				a.v[corner].position[0] = (corner & 1) ? 100.0f : 0.0f;
+				a.v[corner].position[2] = (corner & 2) ? 100.0f : 0.0f;
+				b.v[corner].position[0] = (corner & 1) ? 200.0f : 100.0f;
+				b.v[corner].position[2] = (corner & 2) ? 100.0f : 0.0f;
+			}
+			EGT_CHECK((EngTrack_OracleFaceAt(faces, inB, &s, &t) == 1) && (fabsf(s - 0.5f) < 1e-4f) && (fabsf(t - 0.5f) < 1e-4f),
+			          "oracle face at: not face 1 (s %.3f t %.3f)", s, t);
+			EGT_CHECK(EngTrack_OracleFaceAt(faces, away, &s, &t) == -1, "oracle face at: a point off the block found a face");
+		}
+
+		// The R line: face and cell from the place, stage from the layout, markers; pairs separated by a space.
+		f.uvCount = 3;
+		f.uv[0] = 0;
+		f.uv[1] = 0;
+		f.uv[2] = 15;
+		f.uv[3] = 0;
+		f.uv[4] = 0;
+		f.uv[5] = 15;
+		rgb[0][0] = 10;
+		rgb[0][1] = 20;
+		rgb[0][2] = 30;
+		EngTrack_OracleRetailLine(&f, 77, 0, 1, 1, ENGINE_MOSAIC_FORM_4X4, tpage, clut, (const u8(*)[3])rgb, cand, 3, 3, 0.3f, 0.8f);
+		EGT_CHECK((f.src == 'T') && (strcmp(f.srcId, "77.3") == 0) && (f.cellRow == 3) && (f.cellCol == 1) &&
+		              (strncmp(f.extra, "k=3 anim=1 clip=1 sieve=1 prim=normal tp=0x00b5 cl=0x7802 col=10,20,30;", 71) == 0),
+		          "oracle R line (tile): src %c id %s cell %d,%d extra '%s'", f.src, f.srcId, f.cellRow, f.cellCol, f.extra);
+		EngTrack_OracleRetailLine(&f, 77, 0, 0, 0, ENGINE_MOSAIC_FORM_4X4, tpage, clut, (const u8(*)[3])rgb, cand, 3, -1, 0.0f, 0.0f);
+		EGT_CHECK((f.cellRow == -1) && (strcmp(f.srcId, "77.2") == 0) && (strncmp(f.extra, "k=2 nogeo=1 anim=1 prim=normal", 30) == 0), "oracle R line (tile, no place): '%s'", f.extra);
+		f.uv[2] = 63;
+		f.uv[5] = 63;
+		EngTrack_OracleRetailLine(&f, 77, 0, 0, 0, ENGINE_MOSAIC_FORM_4X4, tpage, clut, (const u8(*)[3])rgb, cand, 3, 1, 0.5f, 0.5f);
+		EGT_CHECK((f.cellRow == -1) && (strncmp(f.extra, "k=1 stage=3 prim=normal", 23) == 0), "oracle R line (level 3): '%s'", f.extra);
+		f.uv[2] = 31;
+		EngTrack_OracleRetailLine(&f, 77, 0, 0, 0, ENGINE_MOSAIC_FORM_4X4, tpage, clut, (const u8(*)[3])rgb, cand, 3, 1, 0.5f, 0.5f);
+		EGT_CHECK(strncmp(f.extra, "k=1 stage=3 part=1 prim=normal", 30) == 0, "oracle R line (a piece of level 3): '%s'", f.extra);
+		EngTrack_OracleRetailLine(&f, 78, 1, 0, 0, ENGINE_MOSAIC_FORM_4X4, tpage, 0x7804, (const u8(*)[3])rgb, cand, 3, -1, 0.0f, 0.0f);
+		EGT_CHECK((f.src == 'W') && (strcmp(f.srcId, "78") == 0) && (strncmp(f.extra, "stage=none prim=normal", 22) == 0), "oracle R line (water, no layout): extra '%s'", f.extra);
+
+		// Static lines (226-resolved layouts): a table entry, the low layout, a face the sieve dropped.
+		EngTrack_OracleStaticLine(&f, 5, 1, 2, -1, 0, 7, 1, 3, &cand[0].lay, 1, 0, "load");
+		EGT_CHECK((f.src == 'W') && (strcmp(f.srcId, "5.2") == 0) && (f.cellRow == 1) && (f.cellCol == 3) && (f.uvCount == 4) && (f.uv[2] == 15) &&
+		              (strcmp(f.extra, "k=2 tp=0x00b5 cl=0x7802 entry=7 anim=1 set=load") == 0),
+		          "oracle static entry line: '%s'", f.extra);
+		EngTrack_OracleStaticLine(&f, 5, 0, -1, -1, -1, -1, -1, -1, &cand[2].lay, 0, 0, "load");
+		EGT_CHECK((f.src == 'T') && (strcmp(f.srcId, "5") == 0) && (strcmp(f.extra, "tp=0x00b5 cl=0x7803 stage=low lodonly=1 set=load") == 0), "oracle static low line: '%s'", f.extra);
+		EngTrack_OracleStaticLine(&f, 5, 0, 1, 0, 3, -1, -1, -1, NULL, 1, 1, "anim");
+		EGT_CHECK(!f.textured && (strcmp(f.extra, "k=1 stage=0 lodonly=1 anim=1 sieve=1 set=anim") == 0), "oracle static sieve line: '%s'", f.extra);
+
+		{
+			int row = -1;
+			int col = -1;
+			int bad = 0;
+
+			EngTrack_OracleEntryCell(ENGINE_MOSAIC_FORM_4X2, 5, &row, &col);
+			bad += (row != 2) || (col != 1);
+			EngTrack_OracleEntryCell(ENGINE_MOSAIC_FORM_4X1, 3, &row, &col);
+			bad += (row != 0) || (col != 3);
+			EngTrack_OracleEntryCell(ENGINE_MOSAIC_FORM_4X4, 6, &row, &col);
+			bad += (row != 1) || (col != 2);
+			EGT_CHECK(bad == 0, "oracle entry cells: %d wrong", bad);
+		}
+
+		// The extra never overflows: a pair that does not fit is left out.
+		memset(&f, 0, sizeof(f));
+		for (isFace = 0; isFace < 40; isFace++)
+		{
+			EngTrack_OracleExtra(&f, "key%d=0123456789", isFace);
+		}
+		EGT_CHECK(strlen(f.extra) < sizeof(f.extra), "oracle extra: overflow");
+	}
+
+	// (oracle) E lines: a VRAM face (unclamped box), the shared part, a table row's layouts.
+	{
+		static EngTrackDrawFace df;
+		static EngTrackOracleFace lines[19];
+		static struct LevVertex verts[4];
+		struct TextureLayout cells[16];
+		struct TextureLayout lv[3];
+		EngTrackKey key;
+		EngTrackOracleFace base;
+		int which[19];
+		int count;
+		int i;
+
+		memset(&df, 0, sizeof(df));
+		memset(&key, 0, sizeof(key));
+		df.block = 12;
+		df.face.mid = 3;
+		df.face.vertCount = 3;
+		df.face.v[0].texcoord[0] = 10.0f;
+		df.face.v[0].texcoord[1] = 20.0f;
+		df.face.v[1].texcoord[0] = 30.0f;
+		df.face.v[1].texcoord[1] = 20.0f;
+		df.face.v[2].texcoord[0] = 10.0f;
+		df.face.v[2].texcoord[1] = 40.0f;
+		df.face.v[0].color[0] = 1;
+		df.face.v[1].color[0] = 2;
+		df.face.v[2].color[0] = 3;
+		df.anim = 1;
+		df.stage = 3;
+		key.tpage = 0x0015; // abr 0: semi
+		key.clut = 0x7802;
+		EngTrack_OracleEngineBase(&base, &df, &key, NULL, NULL);
+		EGT_CHECK((base.src == 'T') && (strcmp(base.srcId, "12.3") == 0) && (base.sub == 3) && (base.blend == 0) &&
+		              (strcmp(base.extra, "k=3 anim=1 frozen=1 col=1,0,0;2,0,0;3,0,0") == 0),
+		          "oracle E base: '%s' blend %d", base.extra, base.blend);
+		df.live = 1;
+		df.vertex[0] = 2;
+		verts[2].color_hi[0] = 99;
+		key.tpage = 0x0075; // abr 3: opaque
+		key.lift = 5;
+		EngTrack_OracleEngineBase(&base, &df, &key, verts, "load");
+		EGT_CHECK((base.blend == EGT_ORACLE_BLEND_OPAQUE) && (strstr(base.extra, "decal=5 live=1 set=load col=99,0,0;") != NULL),
+		          "oracle E base (live, decal, set): '%s'", base.extra);
+		lines[0] = base;
+		EngTrack_OracleEngineVram(&lines[0], key.tpage, key.clut, &df.face);
+		EGT_CHECK((lines[0].uvCount == 3) && (lines[0].uv[2] == 30) && (lines[0].uv[5] == 40) &&
+		              (strstr(lines[0].extra, " tp=0x0075 cl=0x7802 box=9,19,30,40") != NULL),
+		          "oracle E VRAM: '%s'", lines[0].extra);
+
+		// The cells a row's form holds, then levels 2, 1, 0.
+		count = EngTrack_OracleRowLayouts(4, ENGINE_MOSAIC_FORM_4X2, which);
+		EGT_CHECK((count == 11) && (which[3] == 3) && (which[4] == 8) && (which[7] == 11) && (which[8] == 18) && (which[10] == 16),
+		          "oracle row layouts 4x2: %d (which[4] %d)", count, which[4]);
+		EGT_CHECK((EngTrack_OracleRowLayouts(4, ENGINE_MOSAIC_FORM_4X4, which) == 19) && (EngTrack_OracleRowLayouts(4, ENGINE_MOSAIC_FORM_4X1, which) == 7) &&
+		              (EngTrack_OracleRowLayouts(1, ENGINE_MOSAIC_FORM_4X4, which) == 4),
+		          "oracle row layouts: 4x4 / 4x1 / whole-face counts wrong");
+		memset(cells, 0, sizeof(cells));
+		memset(lv, 0, sizeof(lv));
+		for (i = 0; i < 16; i++)
+		{
+			const int e = 4 * ((i >> 2) >> 1) + (i & 3);
+
+			cells[i].tpage = 0x0075;
+			cells[i].u0 = (u8)(16 * e);
+			cells[i].u1 = (u8)(16 * e + 15);
+			cells[i].u2 = (u8)(16 * e);
+			cells[i].v2 = 15;
+			cells[i].u3 = (u8)(16 * e + 15);
+			cells[i].v3 = 15;
+		}
+		lv[1].u0 = 100;
+		lv[1].u3 = 120;
+		lv[1].v3 = 7;
+		count = EngTrack_OracleTableLines(&base, 4, ENGINE_MOSAIC_FORM_4X2, 3, 1, cells, lv, lines);
+		EGT_CHECK((count == 11) && (lines[1].cellRow == 0) && (lines[1].cellCol == 1) && (strstr(lines[1].extra, " box=16,0,31,15 fault=cell") != NULL),
+		          "oracle table lines: n %d cell %d,%d '%s'", count, lines[1].cellRow, lines[1].cellCol, lines[1].extra);
+		EGT_CHECK((lines[4].cellRow == 2) && (lines[4].cellCol == 0) && (lines[9].cellRow == -1) && (strstr(lines[9].extra, " box=0,0,120,7 stage=1") != NULL),
+		          "oracle table lines: second row half at %d,%d, level line '%s'", lines[4].cellRow, lines[4].cellCol, lines[9].extra);
+		count = EngTrack_OracleTableLines(&base, 1, ENGINE_MOSAIC_FORM_4X4, 2, 0, cells, lv, lines);
+		EGT_CHECK((count == 4) && (lines[0].cellRow == -1) && (strstr(lines[0].extra, " stage=2") != NULL) && (strstr(lines[0].extra, "fault") == NULL),
+		          "oracle whole-face lines: '%s'", lines[0].extra);
+	}
+
+	// (oracle) Without a logged frame every entry point is a no-op (done point D-W1.10).
+	{
+		const s32 sum[3] = {1, 2, 3};
+		struct TextureLayout spare[2];
+
+		memset(spare, 0, sizeof(spare));
+		memset(&s_ego, 0, sizeof(s_ego));
+		Engine_TrackOracleNotePrim(&spare[0], sum, 3);
+		Engine_TrackOracleBlock(NULL, 0, 0, &spare[0], &spare[1], NULL, NULL);
+		Engine_TrackOracleClip(&spare[0], sum, 3, &spare[0], &spare[1]);
+		Engine_TrackOracleDone(1, &spare[0], &spare[1]);
+		Engine_TrackOracleLayout(NULL, 0, 0, 3, &spare[0], 0, 0);
+		Engine_TrackOracleTable(NULL, 0, &spare[0], 0, 1);
+		EGT_CHECK(!Engine_TrackOracleWanted() && !s_ego.active && (s_ego.geoCount == 0) && (s_ego.blocks == 0) && (s_ego.staticLines == 0) &&
+		              (s_ego.noBlock == 0),
+		          "oracle: an entry point acted outside a logged frame");
 	}
 
 	return failures;

@@ -99,6 +99,7 @@ typedef struct
 	u8 form;   // ENGINE_MOSAIC_FORM_*
 	u8 side;   // cells per side: 4, or 1 for a whole-face row
 	s8 abr;    // abr of every own tile, -1 when they disagree
+	u8 faulted; // --engine-oracle-fault cell swapped two of its cells (Engine_TrackMosaicOracleFault)
 	struct TextureLayout cell[EGM_CELLS];
 	struct TextureLayout level[3]; // the group's far, middle and near layouts (LOD fallback)
 } EngMosaicRow;
@@ -949,6 +950,116 @@ u32 Engine_TrackMosaicTexture(void)
 	return s_egmTexture;
 }
 
+// The row of a set a table face's texcoord names (EngMosaic_Decode), or NULL
+// when the decoded row is not in the set.
+internal const EngMosaicRow *EngMosaic_RowOfTexcoord(const EngMosaicRowSet *set, float u, float v)
+{
+	int row = -1;
+	float s;
+	float t;
+
+	EngMosaic_Decode(u, v, &row, &s, &t);
+	if ((set->rows == NULL) || (row < 0) || (row >= set->count))
+	{
+		return NULL;
+	}
+	return &set->rows[row];
+}
+
+int Engine_TrackMosaicOracleRow(float u, float v, int *side, int *form, int *finest, int *faulted, const struct TextureLayout **cells,
+                                 const struct TextureLayout **levels)
+{
+	const EngMosaicRow *row;
+
+	if (!g_cfg_engine || !g_cfg_engineTrack || (side == NULL) || (form == NULL) || (finest == NULL) || (faulted == NULL) || (cells == NULL) ||
+	    (levels == NULL))
+	{
+		return 0;
+	}
+	row = EngMosaic_RowOfTexcoord(&s_egmRows, u, v);
+	if (row == NULL)
+	{
+		return 0;
+	}
+	*side = (int)row->side;
+	*form = (int)row->form;
+	*faulted = (int)row->faulted;
+	*cells = row->cell;
+	*levels = row->level;
+	// A whole-face row holds the finest layout of the group shown now: its level (3, or 2).
+	*finest = 3;
+	if ((row->side == 1) && (row->shown != 0u))
+	{
+		const struct TextureLayout *group = (const struct TextureLayout *)(size_t)row->shown;
+		const struct TextureLayout *fin = EngMosaic_AnimFinest(group);
+
+		*finest = (fin != NULL) ? (int)(fin - group) : -1;
+	}
+	return 1;
+}
+
+// Swaps cells a and b of a row (the fault of Engine_TrackMosaicOracleFault):
+// the first pair in cell order whose layouts differ, both cells the row's own
+// (4x4 any; 4x2 rows 0/2 - a spread pair moves with its cell; 4x1 row 0 - the
+// same). Returns 1 with *a, *b set; 0 when all its own cells are equal.
+internal int EngMosaic_FaultSwap(EngMosaicRow *row, int *a, int *b)
+{
+	const int own = EngMosaic_OwnEntries(row->form);
+	const int ca = EngMosaic_OwnCell(row->form, 0);
+	int i;
+
+	for (i = 1; i < own; i++)
+	{
+		const int cb = EngMosaic_OwnCell(row->form, i);
+		const struct TextureLayout first = row->cell[ca];
+		const struct TextureLayout second = row->cell[cb];
+		int j;
+
+		if (memcmp(&first, &second, sizeof(first)) == 0)
+		{
+			continue;
+		}
+		// Every cell showing the one gets the other and the other way round (a 4x2
+		// or 4x1 entry stands in more than one cell).
+		for (j = 0; j < EGM_CELLS; j++)
+		{
+			if (memcmp(&row->cell[j], &first, sizeof(first)) == 0)
+			{
+				row->cell[j] = second;
+			}
+			else if (memcmp(&row->cell[j], &second, sizeof(second)) == 0)
+			{
+				row->cell[j] = first;
+			}
+		}
+		*a = ca;
+		*b = cb;
+		row->faulted = 1;
+		return 1;
+	}
+	return 0;
+}
+
+int Engine_TrackMosaicOracleFault(float u, float v, int block, int mid)
+{
+	EngMosaicRow *row;
+	int a = 0;
+	int b = 0;
+
+	if (!g_cfg_engine || !g_cfg_engineTrack || (s_egmTexture != NATIVE_GFX_INVALID))
+	{
+		return 0;
+	}
+	row = (EngMosaicRow *)EngMosaic_RowOfTexcoord(&s_egmRows, u, v);
+	if ((row == NULL) || (row->side != 4) || !EngMosaic_FaultSwap(row, &a, &b))
+	{
+		return 0;
+	}
+	Platform_Log("[CTR Engine] oracle fault: cell - quadblock %d face %d, its table row %d: cells %d,%d and %d,%d swapped (every face of that row)\n", block,
+	             mid, (int)(row - s_egmRows.rows), a / 4, a % 4, b / 4, b % 4);
+	return 1;
+}
+
 // --------------------------------------------------------------------------
 // Selftest: rows, packing and the decode on synthetic tables.
 
@@ -1236,6 +1347,26 @@ int Engine_SelfTestTrackMosaic(int *checks)
 		quad[2].position[2] = 400.0f;
 		EGM_CHECK((EngMosaic_FaceSizeCode(quad, slots, 4) == 122) && (EngMosaic_FaceSizeCode(quad, noSlots, 4) == 0), "face size code %d",
 		          EngMosaic_FaceSizeCode(quad, slots, 4));
+	}
+
+	// (oracle) the row a table face's texcoord names (Engine_TrackMosaicOracleRow): every vertex of a
+	// face written for row 2 finds row 2 (the 4x2 spread above); a row past the set none.
+	{
+		float tc[2];
+		int bad = 0;
+		int slot;
+
+		for (slot = 0; slot < 4; slot++)
+		{
+			float s;
+			float t;
+
+			EngMosaic_SlotPosition(slot, &s, &t);
+			EngMosaic_Encode(2, s, t, tc);
+			bad += (EngMosaic_RowOfTexcoord(&set, tc[0], tc[1]) != &set.rows[2]);
+		}
+		EngMosaic_Encode(set.count, 0.0f, 0.0f, tc);
+		EGM_CHECK((bad == 0) && (EngMosaic_RowOfTexcoord(&set, tc[0], tc[1]) == NULL), "oracle row: %d slot(s) wrong, or a row past the set found", bad);
 	}
 
 	EngMosaic_RowSetFree(&set);

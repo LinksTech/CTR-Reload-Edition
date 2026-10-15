@@ -852,6 +852,47 @@ u32 Engine_TrackMosaicTexture(void); // TextureID for slot 3, 0xffffffff when no
 int Engine_SelfTestTrackMosaic(int *checks);
 
 // --------------------------------------------------------------------------
+// ENGINE ORACLE (P2) - the track side of the material oracle (--engine-oracle,
+// round of 2026-10-16; platform/engine_track.c, RETAIL ORACLE). Every function
+// does nothing outside a logged frame (or the load block of a logged run).
+//
+// From DrawLevelOvr1P (game/226): 1 = run the oracle pass now (the whole PS1
+// walk, logged and never drawn, before the frame's own walk).
+int Engine_TrackOracleWanted(void);
+struct QuadBlock;
+struct mesh_info;
+// During the oracle pass, from the 226 packet writers: the sum of a packet's
+// corner positions (level units) and their count.
+void Engine_TrackOracleNotePrim(const void *prim, const s32 *positionSum, int corners);
+// During the oracle pass: the packets one quadblock's handler wrote [primFrom,
+// primTo) and the clip records it left [clipFrom, clipTo); water = a water
+// bucket; sieve = the sieve dropped a layout while the block was drawn.
+void Engine_TrackOracleBlock(const struct QuadBlock *block, int water, int sieve, const void *primFrom, const void *primTo, const void *clipFrom,
+                             const void *clipTo);
+// The packets the clip consumer wrote for one record (R lines of the block that wrote it, clip=1).
+void Engine_TrackOracleClip(const void *record, const s32 *positionSum, int corners, const void *primFrom, const void *primTo);
+// End of the pass: one log line with the counts (completed 0 = the walk stopped).
+void Engine_TrackOracleDone(int completed, const void *primFrom, const void *primTo);
+// From DrawLevelOvr1P_OracleLayouts: one layout 226 resolved for a face (level
+// 0..3; face -1 / level -1 = the block's low layout; layout NULL with sieve 1 =
+// the sieve dropped the face's group) and the table a face's level 3 names.
+void Engine_TrackOracleLayout(const struct QuadBlock *block, int face, int level, int finest, const struct TextureLayout *layout, int anim, int sieve);
+void Engine_TrackOracleTable(const struct QuadBlock *block, int face, const struct TextureLayout *table, int anim, int mirrored);
+// game/226: the layouts the walk resolves for every face of the level (animOnly
+// = only the faces of AnimTex cells), handed to the two functions above.
+void DrawLevelOvr1P_OracleLayouts(const struct mesh_info *mesh, int animOnly);
+// The table row a table face reads (its texcoord u, v): cells per side (4, or 1
+// for a whole-face row), its form (ENGINE_MOSAIC_FORM_*), the level a whole-face
+// row holds (3 or 2), 1 = faulted (--engine-oracle-fault cell), its 16 cells and
+// its levels 0, 1, 2 (pointers into the row set, valid until the next load).
+// 0 = no such row.
+int Engine_TrackMosaicOracleRow(float u, float v, int *side, int *form, int *finest, int *faulted, const struct TextureLayout **cells,
+                                 const struct TextureLayout **levels);
+// --engine-oracle-fault cell: swaps two different cells of the row of the table face at
+// (u, v) (block / mid face for the log line), before the data texture is made. 1 = done.
+int Engine_TrackMosaicOracleFault(float u, float v, int block, int mid);
+
+// --------------------------------------------------------------------------
 // SKY (platform/engine_sky.c; --engine-track, round of 2026-10-15)
 //
 // The level's sky dome (struct Skybox, all 8 segments) as one static engine

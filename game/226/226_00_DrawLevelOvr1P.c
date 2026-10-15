@@ -87,7 +87,29 @@ int CTR_ClipBufferBytes(u32 levelID, int numPlyrCurrGame);
 void CTR_Clip_NoteDropNoSpace(int count);
 void CTR_Clip_NoteFrameDiscard(void);
 void CTR_Clip_NoteFrameUse(int usedBytes, int capacityBytes);
+
+// ORACLE PASS (--engine-oracle, round of 2026-10-16; platform/engine_track.c,
+// RETAIL ORACLE). In a frame the material oracle logs while the engine draws
+// the track, DrawLevelOvr1P walks the level twice: first the whole walk with
+// every bucket - what the PS1 path would draw - whose packets are logged per
+// quadblock and never linked into the ordering table, after which everything
+// else the walk wrote is put back (DrawLevelOvr1P_OraclePass); then the walk of
+// every frame with the engine's buckets empty. s_oraclePass is 1 only during
+// the first walk; outside an armed frame it stays 0 and the notes below do
+// nothing. DrawLevelOvr1P_OracleLayouts logs the layouts this file resolves
+// for every face (the static block of a load, the AnimTex faces of a frame).
+#include <psx/gtereg.h> // gteRegs: the oracle pass puts the GTE back as it was
+int Engine_TrackOracleWanted(void);
+void Engine_TrackOracleNotePrim(const void *prim, const s32 *positionSum, int corners);
+void Engine_TrackOracleBlock(const struct QuadBlock *block, int water, int sieve, const void *primFrom, const void *primTo, const void *clipFrom,
+                             const void *clipTo);
+void Engine_TrackOracleClip(const void *record, const s32 *positionSum, int corners, const void *primFrom, const void *primTo);
+void Engine_TrackOracleDone(int completed, const void *primFrom, const void *primTo);
+void Engine_TrackOracleLayout(const struct QuadBlock *block, int face, int level, int finest, const struct TextureLayout *layout, int anim, int sieve);
+void Engine_TrackOracleTable(const struct QuadBlock *block, int face, const struct TextureLayout *table, int anim, int mirrored);
 #endif
+static int s_oraclePass;
+static int s_oracleSieve; // the sieve dropped a layout while the oracle pass drew the current block
 
 static u32 DrawLevelOvr1P_ReadPackedWord(const void *src)
 {
@@ -441,6 +463,8 @@ static void DrawLevelOvr1P_NoteSieveReject(const struct TextureLayout *texture)
 {
 	int i;
 
+	// ORACLE PASS: the block being drawn keeps the previous layout (sieve=1 on its lines).
+	s_oracleSieve |= s_oraclePass;
 	if (!s_sieveReportRegistered)
 	{
 		s_sieveReportRegistered = 1;
@@ -2451,6 +2475,15 @@ static void DrawLevelOvr1P_AddRawPrimToOt(struct PrimMem *primMem, void *packet,
 {
 	u32 *packetTag = packet;
 
+	if (s_oraclePass)
+	{
+		// ORACLE PASS: the packet is logged, never drawn - its tag keeps the size
+		// (the log walks the packets by it) and links nothing: the ordering table
+		// stays as it was. primMem is put back after the pass.
+		*packetTag = CtrGpu_PackOTTag(0x00ffffffu, wordCount << 24);
+		primMem->primitiveCount++;
+		return;
+	}
 	*packetTag = CtrGpu_PackOTTag(*otEntry, wordCount << 24);
 	*otEntry = CtrGpu_PrimToOTLink24(packet);
 	// NOTE(aalhendi): Retail keeps the overlay primitive count in `sp`, seeded
@@ -2461,6 +2494,32 @@ static void DrawLevelOvr1P_AddRawPrimToOt(struct PrimMem *primMem, void *packet,
 	// count is reset per frame and lives in a buffer that flips; this one is
 	// asked over a window of frames and has to survive both.
 	CTR_Lod_NoteLevelPrimitive();
+#endif
+}
+
+// ORACLE PASS: where a packet lies - the sum of its corners' level positions
+// (the walk's own projected records, subdivision midpoints included) - so that
+// the log can name the mid face and the mosaic cell the packet covers. Reads only.
+static void DrawLevelOvr1P_OracleNotePrim(const void *prim, const struct DrawLevelOvr1PScratchVertex *projected, const int *indices, int count)
+{
+#if defined(CTR_NATIVE)
+	if (s_oraclePass)
+	{
+		s32 sum[3] = {0, 0, 0};
+
+		for (int i = 0; i < count; i++)
+		{
+			sum[0] += projected[indices[i]].pos[0];
+			sum[1] += projected[indices[i]].pos[1];
+			sum[2] += projected[indices[i]].pos[2];
+		}
+		Engine_TrackOracleNotePrim(prim, sum, count);
+	}
+#else
+	(void)prim;
+	(void)projected;
+	(void)indices;
+	(void)count;
 #endif
 }
 
@@ -2527,6 +2586,7 @@ static int DrawLevelOvr1P_EmitPreparedProjectedQuadRawCodeAtOtEntry(struct PushB
 	u32 code = primCodeOverride >= 0 ? (u32)primCodeOverride : DrawLevelOvr1P_SelectRawPrimitiveCode(uv1, 0x3e, 0x3c);
 
 	DrawLevelOvr1P_WriteProjectedGT4(prim, projected, indices, code, uv0, uv1, uv2);
+	DrawLevelOvr1P_OracleNotePrim(prim, projected, indices, 4);
 	DrawLevelOvr1P_AddRawPrimToOt(primMem, prim, 12, otEntry);
 	primMem->cursor = nextPrim;
 	return 1;
@@ -2562,6 +2622,7 @@ static int DrawLevelOvr1P_EmitPreparedProjectedTriRawCodeAtOtEntry(struct PushBu
 	u32 code = primCodeOverride >= 0 ? (u32)primCodeOverride : DrawLevelOvr1P_SelectRawPrimitiveCode(uv1, 0x36, 0x34);
 
 	DrawLevelOvr1P_WriteProjectedGT3(prim, projected, indices, code, uv0, uv1, uv2);
+	DrawLevelOvr1P_OracleNotePrim(prim, projected, indices, 3);
 	DrawLevelOvr1P_AddRawPrimToOt(primMem, prim, 9, otEntry);
 	primMem->cursor = nextPrim;
 	return 1;
@@ -4312,6 +4373,51 @@ static void DrawLevelOvr1P_SetListHandlersSeedRenderedCursor(int enabled)
 	sDrawLevelOvr1P_ListHandlersSeedRenderedCursor = enabled;
 }
 
+// ORACLE PASS: the primitives one quadblock's handler wrote (primFrom up to the
+// cursor now) and the clip records it left for the consumer (clipFrom up to the
+// clip cursor now). water = the block came through a water bucket. Reads only.
+static void DrawLevelOvr1P_OracleBlock(const struct QuadBlock *block, int water, const void *primFrom, const struct PrimMem *primMem, const u8 *clipFrom)
+{
+#if defined(CTR_NATIVE)
+	if (s_oraclePass)
+	{
+		Engine_TrackOracleBlock(block, water, s_oracleSieve, primFrom, primMem->cursor, clipFrom, DrawLevelOvr1P_GetClipRecordCursor());
+		s_oracleSieve = 0;
+	}
+#else
+	(void)block;
+	(void)water;
+	(void)primFrom;
+	(void)primMem;
+	(void)clipFrom;
+#endif
+}
+
+// ORACLE PASS: the primitives the consumer wrote for one clip record. Reads only.
+static void DrawLevelOvr1P_OracleClip(const struct DrawLevelOvr1PClipRecord *record, const void *primFrom, const struct PrimMem *primMem)
+{
+#if defined(CTR_NATIVE)
+	if (s_oraclePass)
+	{
+		// The packets of a record lie on the piece the record was cut from: its corners (level positions).
+		const int corners = ((record->header & 1u) != 0u) ? 4 : 3;
+		s32 sum[3] = {0, 0, 0};
+
+		for (int i = 0; i < corners; i++)
+		{
+			sum[0] += record->vertex[i].pos[0];
+			sum[1] += record->vertex[i].pos[1];
+			sum[2] += record->vertex[i].pos[2];
+		}
+		Engine_TrackOracleClip(record, sum, corners, primFrom, primMem->cursor);
+	}
+#else
+	(void)record;
+	(void)primFrom;
+	(void)primMem;
+#endif
+}
+
 static int DrawLevelOvr1P_ConsumeClipRecordsBody(struct PushBuffer *pb, struct PrimMem *primMem);
 
 static int DrawLevelOvr1P_ConsumeClipRecords(struct PushBuffer *pb, struct PrimMem *primMem)
@@ -4373,6 +4479,7 @@ static int DrawLevelOvr1P_ConsumeClipRecordsBody(struct PushBuffer *pb, struct P
 		}
 
 		s_clipRecordsConsumed++;
+		const void *oraclePrim = primMem->cursor;
 		if (!Ovr226_800aa848_ProjectFirstThreeClipRecordsAndDispatch(pb, primMem, record))
 		{
 			// The consumer has no primitive space left (0xd68 per record)
@@ -4398,6 +4505,7 @@ static int DrawLevelOvr1P_ConsumeClipRecordsBody(struct PushBuffer *pb, struct P
 			CTR_NearClip_NoteConsumerStopped(recordsLeft);
 			return 0;
 		}
+		DrawLevelOvr1P_OracleClip(record, oraclePrim, primMem);
 
 		cursor += recordSize;
 	}
@@ -5847,6 +5955,7 @@ static int Ovr226_800a4034_EmitGround4x1GT3Raw(struct PushBuffer *pb, struct Pri
 	u32 code = DrawLevelOvr1P_SelectRawPrimitiveCode(uv1, 0x36, 0x34);
 
 	DrawLevelOvr1P_WriteProjectedGT3(prim, projected, triIndices, code, uv0, uv1, uv2);
+	DrawLevelOvr1P_OracleNotePrim(prim, projected, triIndices, 3);
 	DrawLevelOvr1P_AddRawPrimToOt(primMem, prim, 9, otEntry);
 	primMem->cursor = nextPrim;
 	return 1;
@@ -5876,6 +5985,7 @@ static int Ovr226_800a40b8_EmitGround4x1GT4Raw(struct PushBuffer *pb, struct Pri
 	u32 code = DrawLevelOvr1P_SelectRawPrimitiveCode(uv1, 0x3e, 0x3c);
 
 	DrawLevelOvr1P_WriteProjectedGT4(prim, projected, indices, code, uv0, uv1, uv2);
+	DrawLevelOvr1P_OracleNotePrim(prim, projected, indices, 4);
 	DrawLevelOvr1P_AddRawPrimToOt(primMem, prim, 12, otEntry);
 	primMem->cursor = nextPrim;
 	return 1;
@@ -9557,10 +9667,14 @@ static int Ovr226_800a0ef4_DrawFullDynamicBspList(struct VisMemBspListNode *slot
 			// after that comes the texture question. The && has exactly this order.
 			if (Ovr226_800a0f34_ConsumeFullDynamicVisibilityBit() && !DrawLevelOvr1P_IsInvisibleQuadBlock(block))
 			{
+				const void *oraclePrim = primMem->cursor;
+				const u8 *oracleClip = DrawLevelOvr1P_GetClipRecordCursor();
+
 				if (!Ovr226_800a0f78_EmitFullDynamicQuadBlock(pb, primMem, block, vertices))
 				{
 					return 0;
 				}
+				DrawLevelOvr1P_OracleBlock(block, 0, oraclePrim, primMem, oracleClip);
 			}
 
 			block++;
@@ -9662,10 +9776,14 @@ static int DrawLevelOvr1P_DrawSplitGroundListABspList(struct VisMemBspListNode *
 			// The zero rule, second place. Order as above.
 			if (Ovr226_800a0f34_ConsumeFullDynamicVisibilityBit() && !DrawLevelOvr1P_IsInvisibleQuadBlock(block))
 			{
+				const void *oraclePrim = primMem->cursor;
+				const u8 *oracleClip = DrawLevelOvr1P_GetClipRecordCursor();
+
 				if (!DrawLevelOvr1P_EmitSplitGroundListAQuadBlock(pb, primMem, mesh, block))
 				{
 					return 0;
 				}
+				DrawLevelOvr1P_OracleBlock(block, 0, oraclePrim, primMem, oracleClip);
 			}
 
 			block++;
@@ -9794,6 +9912,9 @@ static int DrawLevelOvr1P_DrawNonWaterRenderedList(struct QuadBlock **renderedLi
 
 		DrawLevelOvr1P_ProjectRenderedGrid(vertices, block, projected, DRAW_LEVEL_OVR1P_PROJECTED_SOURCE_POS_FLAGS, slotMode);
 
+		const void *oraclePrim = primMem->cursor;
+		const u8 *oracleClip = DrawLevelOvr1P_GetClipRecordCursor();
+
 		for (int faceIndex = 0; faceIndex < 4; faceIndex++)
 		{
 			if (!DrawLevelOvr1P_NonWaterRenderedSelectorNearGate(pb, primMem, projected, block, faceIndex, role))
@@ -9801,6 +9922,7 @@ static int DrawLevelOvr1P_DrawNonWaterRenderedList(struct QuadBlock **renderedLi
 				return 0;
 			}
 		}
+		DrawLevelOvr1P_OracleBlock(block, 0, oraclePrim, primMem, oracleClip);
 
 		renderedList++;
 	}
@@ -9920,10 +10042,14 @@ static int DrawLevelOvr1P_DrawBspListQuadBlocks(struct VisMemBspListNode *slot, 
 			// 4x2, dynamic and wide-dynamic via the same dispatcher.
 			if (Ovr226_800a0f34_ConsumeFullDynamicVisibilityBit() && !DrawLevelOvr1P_IsInvisibleQuadBlock(block))
 			{
+				const void *oraclePrim = primMem->cursor;
+				const u8 *oracleClip = DrawLevelOvr1P_GetClipRecordCursor();
+
 				if (!DrawLevelOvr1P_EmitBspListQuadBlock(pb, primMem, mesh, block, role))
 				{
 					return 0;
 				}
+				DrawLevelOvr1P_OracleBlock(block, 0, oraclePrim, primMem, oracleClip);
 			}
 
 			block++;
@@ -10412,6 +10538,7 @@ static int Ovr226_800a27dc_EmitWaterListGT3Raw(struct PushBuffer *pb, struct Pri
 	u32 uv2 = DrawLevelOvr1P_Scratch()->uv.uv2.packed;
 
 	DrawLevelOvr1P_WriteProjectedGT3(prim, projected, triIndices, 0x36, uv0, uv1, uv2);
+	DrawLevelOvr1P_OracleNotePrim(prim, projected, triIndices, 3);
 	DrawLevelOvr1P_AddRawPrimToOt(primMem, prim, 9, inheritedOtEntry);
 	primMem->cursor = nextPrim;
 	return 1;
@@ -10437,6 +10564,7 @@ static int Ovr226_800a2850_EmitWaterListGT4Raw(struct PushBuffer *pb, struct Pri
 	u32 uv2 = DrawLevelOvr1P_Scratch()->uv.uv2.packed;
 
 	DrawLevelOvr1P_WriteProjectedGT4(prim, projected, indices, 0x3e, uv0, uv1, uv2);
+	DrawLevelOvr1P_OracleNotePrim(prim, projected, indices, 4);
 	DrawLevelOvr1P_AddRawPrimToOt(primMem, prim, 12, inheritedOtEntry);
 	primMem->cursor = nextPrim;
 	return 1;
@@ -10602,10 +10730,14 @@ static int Ovr226_800a1e30_DrawWaterBspList(struct VisMemBspListNode *slot, stru
 			// dispatcher above and needs its own.
 			if (Ovr226_800a1eb0_ConsumeWaterVisibilityBit() && !DrawLevelOvr1P_IsInvisibleQuadBlock(block))
 			{
+				const void *oraclePrim = primMem->cursor;
+				const u8 *oracleClip = DrawLevelOvr1P_GetClipRecordCursor();
+
 				if (!Ovr226_800a1ee0_EmitWaterListQuadBlock(pb, primMem, mesh, block))
 				{
 					return 0;
 				}
+				DrawLevelOvr1P_OracleBlock(block, 1, oraclePrim, primMem, oracleClip);
 			}
 
 			block++;
@@ -11085,10 +11217,14 @@ static int Ovr226_800a2904_DrawWaterRenderedListWithDefaultHandler(struct QuadBl
 			return 1;
 		}
 
+		const void *oraclePrim = primMem->cursor;
+		const u8 *oracleClip = DrawLevelOvr1P_GetClipRecordCursor();
+
 		if (!DrawLevelOvr1P_DrawRenderedWaterQuadBlockWithDefaultHandler(pb, primMem, mesh, block, defaultHandlerAddress))
 		{
 			return 0;
 		}
+		DrawLevelOvr1P_OracleBlock(block, 1, oraclePrim, primMem, oracleClip);
 
 		renderedList++;
 	}
@@ -11259,7 +11395,8 @@ static int Ovr226_800a0e10_DispatchBucketTable(struct DrawLevelOvr1PRenderList *
 		void *bucketValue = DrawLevelOvr1P_GetRenderListBucketValue(renderList, bucket);
 #if defined(CTR_NATIVE)
 		// The engine's track or water draws this bucket: take the retail empty-bucket path below.
-		if (g_cfg_engine && (Engine_TrackOwnsBucket((int)bucketIndex) || Engine_WaterOwnsBucket((int)bucketIndex)))
+		// Not in the oracle pass: it walks every bucket and asks the engine nothing.
+		if (g_cfg_engine && !s_oraclePass && (Engine_TrackOwnsBucket((int)bucketIndex) || Engine_WaterOwnsBucket((int)bucketIndex)))
 		{
 			bucketValue = NULL;
 		}
@@ -11291,8 +11428,10 @@ static int Ovr226_800a0e10_DispatchBucketTable(struct DrawLevelOvr1PRenderList *
 	return 1;
 }
 
-void DrawLevelOvr1P(void *LevRenderList, struct PushBuffer *pb, struct BSP *bspList, struct PrimMem *primMem, const int *visFaceList,
-                    const struct TextureLayout *waterEnvMap)
+// The walk of DrawLevelOvr1P. 1 = it ran to its end (or had nothing to walk);
+// 0 = a bucket handler or the clip consumer stopped it (no primitive space left).
+static int DrawLevelOvr1P_Walk(void *LevRenderList, struct PushBuffer *pb, struct BSP *bspList, struct PrimMem *primMem, const int *visFaceList,
+                               const struct TextureLayout *waterEnvMap)
 {
 	struct DrawLevelOvr1PRenderList *renderList = LevRenderList;
 	struct mesh_info *mesh = (struct mesh_info *)bspList;
@@ -11308,14 +11447,14 @@ void DrawLevelOvr1P(void *LevRenderList, struct PushBuffer *pb, struct BSP *bspL
 
 	if (visFaceList == NULL)
 	{
-		return;
+		return 1;
 	}
 
 	DrawLevelOvr1P_Scratch()->waterEnvMapPtr32 = (u32)(u32)waterEnvMap;
 
 	if (mesh->ptrQuadBlockArray == NULL)
 	{
-		return;
+		return 1;
 	}
 
 	DrawLevelOvr1P_SetClipRecordStart(data.PtrClipBuffer[0]);
@@ -11329,7 +11468,7 @@ void DrawLevelOvr1P(void *LevRenderList, struct PushBuffer *pb, struct BSP *bspL
 
 	if (!Ovr226_800a0e10_DispatchBucketTable(renderList, pb, mesh, primMem, visFaceList))
 	{
-		return;
+		return 0;
 	}
 
 	// NOTE(aalhendi): Retail 0x800a0e98 reloads 0x800ab910 into scratch
@@ -11337,6 +11476,162 @@ void DrawLevelOvr1P(void *LevRenderList, struct PushBuffer *pb, struct BSP *bspL
 	Ovr226_800ab3dc_CopyClipRecordJumpTable();
 	if (!DrawLevelOvr1P_ConsumeClipRecords(pb, primMem))
 	{
+		return 0;
+	}
+	return 1;
+}
+
+#if defined(CTR_NATIVE)
+// ORACLE PASS (see the top of the file). The whole walk with every bucket, its
+// primitives handed to the engine per quadblock (DrawLevelOvr1P_OracleBlock,
+// DrawLevelOvr1P_OracleClip). Nothing of it is drawn: DrawLevelOvr1P_AddRawPrimToOt,
+// the walk's only writer of the ordering table, links nothing in the pass. Then
+// everything the walk wrote is put back as it was before, so that the walk of
+// the frame that follows (engine buckets empty) starts from the same state as
+// in a frame without the oracle:
+//   - primMem (cursor and primitive count; the bytes past the cursor are free
+//     space the next writer overwrites),
+//   - the scratchpad (stable scratch, projected vertices, UV scratch, clip cursor),
+//   - the GTE registers,
+//   - the render list of the view (rendered-list heads) and
+//     sdata_static.quadBlocksRendered (the rendered lists),
+//   - this file's walk statics (set again at every walk entry anyway).
+// Not put back, because nothing reads them as game state: the clip buffer's
+// bytes (written and consumed in the pass, the cursor is in the scratchpad),
+// the counters of the log lines (226 sieve/clip/LOD notes, CTR_Lod_*,
+// CTR_NearClip_*, CTR_Clip_*: they count this walk too), the sub-pixel side
+// table of primMem and the scratchpad (native_subpixel.c, drawing only).
+static void DrawLevelOvr1P_OraclePass(void *LevRenderList, struct PushBuffer *pb, struct BSP *bspList, struct PrimMem *primMem, const int *visFaceList,
+                                      const struct TextureLayout *waterEnvMap)
+{
+	static u8 savedScratch[CTR_SCRATCHPAD_SIZE];
+	static struct QuadBlock *savedRendered[sizeof(sdata_static.quadBlocksRendered) / sizeof(sdata_static.quadBlocksRendered[0])];
+	static GTERegisters savedGte;
+	struct DrawLevelOvr1PRenderList savedList;
+	struct PrimMem savedPrimMem;
+	const int savedInheritedOtIndex = sDrawLevelOvr1P_FullDynamicInheritedOtIndex;
+	struct QuadBlock **const savedOverflowBase = sDrawLevelOvr1P_RenderedOverflowBase;
+	u8 *const savedClipStart = sDrawLevelOvr1P_ClipRecordStart;
+	const u32 savedReserveBias = sDrawLevelOvr1P_PrimReserveBias;
+	const u32 savedReloadSpan = sDrawLevelOvr1P_MosaicReloadSpanOverride;
+	const int savedSeedCursor = sDrawLevelOvr1P_ListHandlersSeedRenderedCursor;
+	const void *primFrom;
+	int completed;
+
+	if ((LevRenderList == NULL) || (pb == NULL) || (pb->ptrOT == NULL) || (primMem == NULL))
+	{
 		return;
 	}
+	memcpy(savedScratch, CTR_SCRATCHPAD_BASE, sizeof(savedScratch));
+	memcpy(savedRendered, sdata_static.quadBlocksRendered, sizeof(savedRendered));
+	savedGte = gteRegs;
+	savedList = *(const struct DrawLevelOvr1PRenderList *)LevRenderList;
+	savedPrimMem = *primMem;
+	primFrom = primMem->cursor;
+
+	s_oraclePass = 1;
+	completed = DrawLevelOvr1P_Walk(LevRenderList, pb, bspList, primMem, visFaceList, waterEnvMap);
+	s_oraclePass = 0;
+	Engine_TrackOracleDone(completed, primFrom, primMem->cursor);
+
+	memcpy(CTR_SCRATCHPAD_BASE, savedScratch, sizeof(savedScratch));
+	memcpy(sdata_static.quadBlocksRendered, savedRendered, sizeof(savedRendered));
+	gteRegs = savedGte;
+	*(struct DrawLevelOvr1PRenderList *)LevRenderList = savedList;
+	*primMem = savedPrimMem;
+	sDrawLevelOvr1P_FullDynamicInheritedOtIndex = savedInheritedOtIndex;
+	sDrawLevelOvr1P_RenderedOverflowBase = savedOverflowBase;
+	sDrawLevelOvr1P_ClipRecordStart = savedClipStart;
+	sDrawLevelOvr1P_PrimReserveBias = savedReserveBias;
+	sDrawLevelOvr1P_MosaicReloadSpanOverride = savedReloadSpan;
+	sDrawLevelOvr1P_ListHandlersSeedRenderedCursor = savedSeedCursor;
 }
+#endif
+
+void DrawLevelOvr1P(void *LevRenderList, struct PushBuffer *pb, struct BSP *bspList, struct PrimMem *primMem, const int *visFaceList,
+                    const struct TextureLayout *waterEnvMap)
+{
+#if defined(CTR_NATIVE)
+	// --engine-oracle: in an armed frame whose track the engine draws, first the walk
+	// the PS1 path would make, logged and taken back (DrawLevelOvr1P_OraclePass).
+	if (g_cfg_engine && Engine_TrackOracleWanted())
+	{
+		DrawLevelOvr1P_OraclePass(LevRenderList, pb, bspList, primMem, visFaceList, waterEnvMap);
+	}
+#endif
+	(void)DrawLevelOvr1P_Walk(LevRenderList, pb, bspList, primMem, visFaceList, waterEnvMap);
+}
+
+#if defined(CTR_NATIVE)
+// ORACLE: 1 = the walk draws mid face `face` of the block mirrored: bit 23 of
+// its scratch-table word (the face's 5-bit field of draw_order_low, the test
+// `(s32)(tableWord << 8) < 0` of the selectors). A field past the table: 0.
+static int DrawLevelOvr1P_OracleFaceMirrored(const struct QuadBlock *block, int face)
+{
+	const u32 field = (block->draw_order_low >> (8 + 5 * face)) & 0x1fu;
+	const u32 word = (field < OVR226_SCRATCH_INIT_WORD_COUNT) ? R226.scratchInitTable[field] : 0u;
+
+	return ((s32)(word << 8) < 0) ? 1 : 0;
+}
+
+// ORACLE: the layouts this file resolves for the faces of the level, as the walk
+// would read them now - the static block of a load and, per logged frame, the
+// faces of AnimTex cells (animOnly). Per mid face its IconGroup4 through the
+// AnimTex cell and the sieve (DrawLevelOvr1P_ResolveTexturePointerChecked, the
+// resolver of the selectors; NULL = the walk would keep the previous layout:
+// logged as sieve), levels 0..3 - level 3 only when its first word is no mosaic
+// table reference (DrawLevelOvr1P_TreatAsRetailNegativeTextureWord, the test of
+// DrawLevelOvr1P_TextureLodLevel), else the table that word names - and, not
+// with animOnly, the block's low layout (level -1, face -1). Invisible blocks
+// (DrawLevelOvr1P_IsInvisibleQuadBlock) are skipped as the walk skips them.
+// Reads only; the sieve's own counter counts these resolutions too.
+void DrawLevelOvr1P_OracleLayouts(const struct mesh_info *mesh, int animOnly)
+{
+	if ((mesh == NULL) || (mesh->ptrQuadBlockArray == NULL))
+	{
+		return;
+	}
+	for (s32 i = 0; i < mesh->numQuadBlock; i++)
+	{
+		const struct QuadBlock *block = &mesh->ptrQuadBlockArray[i];
+
+		if (DrawLevelOvr1P_IsInvisibleQuadBlock(block))
+		{
+			continue;
+		}
+		for (int face = 0; face < 4; face++)
+		{
+			const u32 ptr = (u32)block->ptr_texture_mid[face];
+			const int anim = ((ptr & 1u) != 0u) ? 1 : 0;
+			const struct TextureLayout *group;
+			u32 word;
+			int mosaic;
+
+			if ((ptr == 0u) || (animOnly && !anim))
+			{
+				continue;
+			}
+			group = DrawLevelOvr1P_ResolveTexturePointerChecked(ptr);
+			if (group == NULL)
+			{
+				Engine_TrackOracleLayout(block, face, 0, 3, NULL, anim, 1);
+				continue;
+			}
+			word = DrawLevelOvr1P_ReadPackedWord((const u8 *)group + 0x24);
+			mosaic = DrawLevelOvr1P_TreatAsRetailNegativeTextureWord(word);
+			for (int level = 0; level < (mosaic ? 3 : 4); level++)
+			{
+				Engine_TrackOracleLayout(block, face, level, mosaic ? 2 : 3, &group[level], anim, 0);
+			}
+			if (mosaic && DrawLevelOvr1P_IsNativeLevelTexturePointer(word))
+			{
+				Engine_TrackOracleTable(block, face, (const struct TextureLayout *)word, anim, DrawLevelOvr1P_OracleFaceMirrored(block, face));
+			}
+		}
+		if (!animOnly && (block->ptr_texture_low != NULL))
+		{
+			Engine_TrackOracleLayout(block, -1, -1, -1, (const struct TextureLayout *)block->ptr_texture_low, 0, 0);
+		}
+	}
+}
+#endif
