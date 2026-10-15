@@ -1051,7 +1051,8 @@ internal int EngOracle_DrawFaces(const EngineDraw *draw, const char *dynTag, Eng
 			const int material = (draw->materialOverride >= 0) ? draw->materialOverride : (int)range->material;
 			const EngineMaterial *m = Engine_Material(material);
 
-			if (m == NULL)
+			// What the renderer draws: not a range the draw leaves out (Engine_ModelRangeSkip).
+			if ((m == NULL) || Engine_RangeSkipped(draw->rangeSkip, r))
 			{
 				continue;
 			}

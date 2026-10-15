@@ -88,6 +88,7 @@ typedef struct
 	s8 splitKeep;
 	float user[4]; // EngineDraw.user, the program's per-draw data (params4)
 	float time;    // Engine_FrameTime of the bank at submit (params3.y)
+	u64 rangeSkip; // EngineDraw.rangeSkip: the mesh ranges left out
 } EngineRenderDraw;
 
 // The counters of Engine_RenderReport.
@@ -507,6 +508,7 @@ int Engine_RenderSubmitLinked(int view, const EngineDraw *draw, u32 *ot, int cel
 	memcpy(rec->split, draw->split, sizeof(rec->split));
 	rec->splitKeep = draw->splitKeep;
 	memcpy(rec->user, draw->user, sizeof(rec->user));
+	rec->rangeSkip = draw->rangeSkip;
 	rec->time = Engine_FrameTime(bank);
 	rec->dynFirst = 0;
 	rec->dynCount = 0;
@@ -887,6 +889,11 @@ int Engine_DrawMarker(u32 item, const void *clipArg, const void *dispenvArg, int
 			const EngineRange *range = &mesh->ranges[r];
 			const EngineMaterial *material = Engine_RenderMaterialFor(draw, range->material);
 
+			// A range the draw leaves out (the other layouts of an animated slot, Engine_ModelRangeSkip).
+			if (Engine_RangeSkipped(draw->rangeSkip, r))
+			{
+				continue;
+			}
 			if (material == NULL)
 			{
 				s_engCount.refusedBadMaterial++;

@@ -48,8 +48,13 @@
 // (Engine_TrackMosaicFace, round of 2026-10-15): when it takes the face, the
 // shader picks the tile and the face is keyed with the table's tpage word
 // (bit 15 set, clut 0) and drawn as ENGINE_TEX_VRAM_TABLE; otherwise level 2
-// stays. A pointer with bit 0 set is an AnimTex indirection (*(ptr - 1)) which
-// is resolved ONCE at load: animated textures freeze (documented limit).
+// stays. A pointer with bit 0 set is an AnimTex indirection (ptr - 1 is the
+// AnimTex, its first word the IconGroup4 shown now): LAYOUT SOURCE = THE SLOT,
+// READ AT DRAW TIME (round of 2026-10-16, the rule of the models too) - the face,
+// mosaic or not, reads the animated row of its cell, which follows the cell every
+// frame in cells and blend (engine_track_mosaic.c, ANIMATED TEXTURES; here
+// ANIMATED ROWS). Only a face whose cell names no usable group at load keeps the
+// layout it resolved then (frozen, counted).
 //
 // SCENERY VERTEX ANIMATION (round of 2026-10-15): faces on vertices the game
 // animates in place (SCVert, configFlags & 4) are LIVE FACES, drawn every frame
@@ -542,6 +547,9 @@ typedef struct
 	u8 anim;
 	u8 animRow;
 	u8 tableRefused;
+	// ANIMATED ROWS: 1 + its entry in s_egtAnim when its cell's frames give more
+	// than one blend (its key and material follow the row every frame), else 0.
+	u16 animEntry;
 } EngTrackDrawFace;
 
 // The faces of one material (index range of the sorted faces), drawn as one dynamic draw.
@@ -1228,6 +1236,7 @@ global_variable u64 s_egtBadListFrames;   // a render list that is not a list of
 global_variable u64 s_egtWalkMissed;      // leaves the PS1 lists had and the engine walk not
 global_variable u64 s_egtWalkExtra;       // leaves the engine walk had and the PS1 lists not (its frustum test)
 global_variable u64 s_egtWalkDiffFrames;
+global_variable u64 s_egtAnimSwitches; // ANIMATED ROWS: faces that took the material of another blend
 global_variable int s_egtWalkMissedLogged; // per tour entry
 global_variable u16 *s_egtWalkStack;  // the walk's stack (numBspNodes + 2 entries)
 // Frames of the loaded level the engine could not draw: no visibility list, the
@@ -1321,6 +1330,7 @@ internal void EngTrack_Report(void)
 	             "extra %llu, in %llu frame(s)\n",
 	             (unsigned long long)s_egtNotWalkedFrames, (unsigned long long)s_egtBadListFrames, (unsigned long long)s_egtWalkMissed,
 	             (unsigned long long)s_egtWalkExtra, (unsigned long long)s_egtWalkDiffFrames);
+	Platform_Log("[CTR Engine] track: animated faces that took the material of another blend %llu\n", (unsigned long long)s_egtAnimSwitches);
 	for (i = 0; i < s_egtModelCount; i++)
 	{
 		const EngTrackModel *m = &s_egtModels[i];
@@ -1654,6 +1664,8 @@ internal void EngTrack_ImportModels(const struct Level *level)
 	s_egtLoad.listModelsFailed = listFailed;
 }
 
+internal void EngTrack_AnimFree(void); // ANIMATED ROWS
+
 internal void EngTrack_DrawFree(void)
 {
 	free(s_egtFaces);
@@ -1686,6 +1698,7 @@ internal void EngTrack_DrawFree(void)
 	s_egtBlockMark = NULL;
 	s_egtFaceOfBlock = NULL;
 	s_egtBlockForm = NULL;
+	EngTrack_AnimFree();
 }
 
 // A built face (key set) as a draw face with the level vertices of its block, the
@@ -1819,6 +1832,330 @@ internal int EngTrack_DrawGroup(const int *matOfKey, int *dropped)
 	return ((s_egtScratchV != NULL) && (s_egtScratchI != NULL)) ? 1 : 0;
 }
 
+// --------------------------------------------------------------------------
+// ANIMATED ROWS (round of 2026-10-16; engine_track_mosaic.c, ANIMATED TEXTURES).
+// A face of an AnimTex cell reads the animated row of its cell, which follows the
+// cell every frame: its cells (Engine_TrackMosaicFrame) and its blend. A material
+// carries the blend, so a face whose cell's frames give more than one abr is
+// keyed once per abr at load (EngTrack_AnimKeys: the face's own key - sidedness,
+// bias, decal lift and plane - with the table tpage word of that abr) and, every
+// frame before the faces are chosen, takes the key and material of the abr its
+// row holds now (EngTrack_AnimFollow); the oracle and the draw read the same.
+// Such faces are left out of the draw groups of their load material and drawn
+// in a pass of their own after the groups, one dynamic draw per material
+// (EngTrack_AnimSubmit). A face whose cell gives one abr stays in its group.
+
+typedef struct
+{
+	int row;     // its animated row (Engine_TrackMosaicAnimAbr)
+	u8 abrSet;   // bit a: the cell's frames give abr a
+	int key[4];  // per abr its key, -1 none
+	int material[4];
+} EngTrackAnimFace;
+
+global_variable EngTrackAnimFace *s_egtAnim;
+global_variable int s_egtAnimCount;
+global_variable int s_egtAnimCap;
+global_variable int *s_egtAnimFaces; // the faces (s_egtFaces index, after the sort) with an animEntry
+global_variable int s_egtAnimFaceCount;
+global_variable u8 *s_egtDrawShown; // per face this frame: shown and drawn by its group
+global_variable u8 *s_egtAnimMark;  // per face: in the pass's draw being filled
+global_variable EngineVertex *s_egtAnimScratchV;
+global_variable u16 *s_egtAnimScratchI;
+
+internal void EngTrack_AnimFree(void)
+{
+	free(s_egtAnim);
+	free(s_egtAnimFaces);
+	free(s_egtDrawShown);
+	free(s_egtAnimMark);
+	free(s_egtAnimScratchV);
+	free(s_egtAnimScratchI);
+	s_egtAnim = NULL;
+	s_egtAnimCount = 0;
+	s_egtAnimCap = 0;
+	s_egtAnimFaces = NULL;
+	s_egtAnimFaceCount = 0;
+	s_egtDrawShown = NULL;
+	s_egtAnimMark = NULL;
+	s_egtAnimScratchV = NULL;
+	s_egtAnimScratchI = NULL;
+}
+
+// A face of row whose cell's frames give the blends abrSet: its entry (1 + index), 0 when it
+// needs none (one blend) or there is no room (the face keeps the blend of the load).
+internal u16 EngTrack_AnimAppend(int row, u8 abrSet)
+{
+	EngTrackAnimFace *e;
+	int a;
+
+	if ((abrSet & (abrSet - 1u)) == 0u)
+	{
+		return 0;
+	}
+	if (s_egtAnimCount >= 65535)
+	{
+		return 0;
+	}
+	if (s_egtAnimCount >= s_egtAnimCap)
+	{
+		const int cap = (s_egtAnimCap == 0) ? 64 : (s_egtAnimCap * 2);
+		EngTrackAnimFace *p = (EngTrackAnimFace *)realloc(s_egtAnim, (size_t)cap * sizeof(EngTrackAnimFace));
+
+		if (p == NULL)
+		{
+			return 0;
+		}
+		s_egtAnim = p;
+		s_egtAnimCap = cap;
+	}
+	e = &s_egtAnim[s_egtAnimCount++];
+	e->row = row;
+	e->abrSet = abrSet;
+	for (a = 0; a < 4; a++)
+	{
+		e->key[a] = -1;
+		e->material[a] = -1;
+	}
+	return (u16)s_egtAnimCount;
+}
+
+// After the decals: per face with an entry, a key for every abr its cell gives. Returns the keys refused (table full).
+internal int EngTrack_AnimKeys(void)
+{
+	int refused = 0;
+	int i;
+
+	for (i = 0; i < s_egtFaceCount; i++)
+	{
+		const EngTrackDrawFace *df = &s_egtFaces[i];
+		EngTrackAnimFace *e;
+		EngTrackKey base;
+		int a;
+
+		if (df->animEntry == 0u)
+		{
+			continue;
+		}
+		e = &s_egtAnim[df->animEntry - 1u];
+		base = s_egtKeys.key[df->face.key];
+		for (a = 0; a < 4; a++)
+		{
+			if ((e->abrSet & (1u << a)) == 0u)
+			{
+				continue;
+			}
+			e->key[a] = EngTrack_KeysFindLifted(&s_egtKeys, (u16)(0x8000u | ((u32)a << 5)), 0, base.doubleSided, base.bias, base.lift, base.normal);
+			refused += (e->key[a] < 0) ? 1 : 0;
+		}
+	}
+	return refused;
+}
+
+// Before the materials are made: the keys of every abr count as used (matOfKey -1, not -2).
+internal void EngTrack_AnimKeysUsed(int *matOfKey)
+{
+	int j;
+	int a;
+
+	for (j = 0; j < s_egtAnimCount; j++)
+	{
+		for (a = 0; a < 4; a++)
+		{
+			const int key = s_egtAnim[j].key[a];
+
+			if ((key >= 0) && (key < s_egtKeys.count) && (matOfKey[key] == -2))
+			{
+				matOfKey[key] = -1;
+			}
+		}
+	}
+}
+
+// After the draw groups: every abr's material, the faces with an entry and the pass's
+// arrays. Out of memory: the faces keep their load material in their groups (logged).
+internal void EngTrack_AnimLoad(const int *matOfKey)
+{
+	int n = 0;
+	int i;
+	int j;
+	int a;
+
+	for (j = 0; j < s_egtAnimCount; j++)
+	{
+		for (a = 0; a < 4; a++)
+		{
+			const int key = s_egtAnim[j].key[a];
+
+			s_egtAnim[j].material[a] = ((key >= 0) && (key < s_egtKeys.count)) ? matOfKey[key] : -1;
+		}
+	}
+	for (i = 0; i < s_egtFaceCount; i++)
+	{
+		n += (s_egtFaces[i].animEntry != 0u) ? 1 : 0;
+	}
+	if (n == 0)
+	{
+		return;
+	}
+	s_egtAnimFaces = (int *)malloc((size_t)n * sizeof(int));
+	s_egtDrawShown = (u8 *)calloc((size_t)s_egtFaceCount, 1u);
+	s_egtAnimMark = (u8 *)calloc((size_t)s_egtFaceCount, 1u);
+	s_egtAnimScratchV = (EngineVertex *)malloc((size_t)n * 4u * sizeof(EngineVertex));
+	s_egtAnimScratchI = (u16 *)malloc((size_t)n * 6u * sizeof(u16));
+	if ((s_egtAnimFaces == NULL) || (s_egtDrawShown == NULL) || (s_egtAnimMark == NULL) || (s_egtAnimScratchV == NULL) || (s_egtAnimScratchI == NULL))
+	{
+		Platform_Log("[CTR Engine] track: out of memory for %d animated face(s) with more than one blend: they keep the blend of the load\n", n);
+		free(s_egtAnimFaces);
+		free(s_egtDrawShown);
+		free(s_egtAnimMark);
+		free(s_egtAnimScratchV);
+		free(s_egtAnimScratchI);
+		s_egtAnimFaces = NULL;
+		s_egtDrawShown = NULL;
+		s_egtAnimMark = NULL;
+		s_egtAnimScratchV = NULL;
+		s_egtAnimScratchI = NULL;
+		return;
+	}
+	for (i = 0; i < s_egtFaceCount; i++)
+	{
+		if (s_egtFaces[i].animEntry != 0u)
+		{
+			s_egtAnimFaces[s_egtAnimFaceCount++] = i;
+		}
+	}
+}
+
+// The key of abr a for a face entry: a's key and material, or -1 when there is none
+// (the face keeps what it has).
+internal int EngTrack_AnimKeyOf(const EngTrackAnimFace *e, int abr)
+{
+	if ((e == NULL) || (abr < 0) || (abr > 3) || (e->key[abr] < 0) || (e->material[abr] < 0))
+	{
+		return -1;
+	}
+	return e->key[abr];
+}
+
+// Every frame, before the faces are chosen: each face with an entry takes the key and
+// material of the abr its row holds now (read only; the row follows the cell).
+internal void EngTrack_AnimFollow(void)
+{
+	int j;
+
+	for (j = 0; j < s_egtAnimFaceCount; j++)
+	{
+		EngTrackDrawFace *df = &s_egtFaces[s_egtAnimFaces[j]];
+		const EngTrackAnimFace *e = &s_egtAnim[df->animEntry - 1u];
+		const int abr = Engine_TrackMosaicAnimAbr(e->row);
+		const int key = EngTrack_AnimKeyOf(e, abr);
+
+		if ((key < 0) || (key == df->face.key))
+		{
+			continue;
+		}
+		df->face.key = key;
+		df->face.tpage = s_egtKeys.key[key].tpage;
+		df->material = e->material[abr];
+		df->semi = (u8)EngTrack_IsSemi(s_egtKeys.key[key].tpage);
+		s_egtAnimSwitches++;
+	}
+}
+
+// After the groups: the shown faces with an entry, one dynamic draw per material
+// (as a group: cell, transparency, decal plane of its key). *submittedAny / *refused as the groups.
+internal void EngTrack_AnimSubmit(struct GameTracker *gGT, int *submittedAny, int *refused)
+{
+	int j;
+
+	for (j = 0; j < s_egtAnimFaceCount; j++)
+	{
+		const int lead = s_egtAnimFaces[j];
+		const EngTrackDrawFace *first = &s_egtFaces[lead];
+		const EngTrackKey *key = &s_egtKeys.key[first->face.key];
+		const int cell = (first->semi || (key->lift != 0)) ? EGT_CELL_SEMI : EGT_CELL_OPAQUE;
+		int lo = lead;
+		int hi = lead;
+		int next;
+		int k;
+
+		if (!s_egtShown[lead])
+		{
+			continue;
+		}
+		// A material is drawn at its first shown face.
+		for (k = 0; k < j; k++)
+		{
+			if (s_egtShown[s_egtAnimFaces[k]] && (s_egtFaces[s_egtAnimFaces[k]].material == first->material))
+			{
+				break;
+			}
+		}
+		if (k < j)
+		{
+			continue;
+		}
+		for (k = j; k < s_egtAnimFaceCount; k++)
+		{
+			const int i = s_egtAnimFaces[k];
+
+			if (s_egtShown[i] && (s_egtFaces[i].material == first->material))
+			{
+				s_egtAnimMark[i] = 1;
+				lo = (i < lo) ? i : lo;
+				hi = (i > hi) ? i : hi;
+			}
+		}
+		next = lo;
+		while (next <= hi)
+		{
+			EngineDraw draw;
+			u32 indexCount = 0;
+			const int from = next;
+			const u32 vertexCount = EngTrack_FillFacesFrom(s_egtFaces, s_egtAnimMark, from, hi + 1, s_egtVertices, s_egtAnimScratchV, s_egtAnimScratchI,
+			                                               EGT_DRAW_VERTICES_MAX, &indexCount, &next);
+
+			if ((vertexCount == 0u) || (next <= from))
+			{
+				break;
+			}
+			memset(&draw, 0, sizeof(draw));
+			draw.mesh = -1;
+			draw.clipFromModel = s_egtScreenFromWorld;
+			draw.tint[0] = draw.tint[1] = draw.tint[2] = draw.tint[3] = 1.0f;
+			draw.materialOverride = -1;
+			draw.sortDepth = 1.0e9f;
+			draw.otCell = (u32)cell;
+			draw.flags = first->semi ? ENGINE_DRAW_TRANSPARENT : 0;
+			draw.dynVertices = s_egtAnimScratchV;
+			draw.dynVertexCount = vertexCount;
+			draw.dynIndices = s_egtAnimScratchI;
+			draw.dynIndexCount = indexCount;
+			draw.dynMaterial = first->material;
+			if ((key->lift != 0) && s_egtCameraWorldOk)
+			{
+				draw.user[0] = key->normal[0];
+				draw.user[1] = key->normal[1];
+				draw.user[2] = key->normal[2];
+				draw.user[3] = key->normal[0] * s_egtCameraWorld[0] + key->normal[1] * s_egtCameraWorld[1] + key->normal[2] * s_egtCameraWorld[2];
+			}
+			if (Engine_RenderSubmitLinked(0, &draw, gGT->pushBuffer[0].ptrOT, cell))
+			{
+				*submittedAny = 1;
+			}
+			else
+			{
+				*refused = 1;
+			}
+		}
+		for (k = j; k < s_egtAnimFaceCount; k++)
+		{
+			s_egtAnimMark[s_egtAnimFaces[k]] = 0;
+		}
+	}
+}
+
 internal void EngTrack_OracleFault(void);   // RETAIL ORACLE
 internal void EngTrack_OracleLoad(int levelID); // RETAIL ORACLE
 
@@ -1858,6 +2195,7 @@ void Engine_TrackLoad(void)
 	int decalsUnkeyed = 0;
 	int decalLiftMax = 0;
 	int unusedKeys = 0;
+	int animKeysRefused = 0;
 	int leaves;
 	int i;
 	u8 *live = NULL; // level vertices the game animates (SCVert), NULL when none
@@ -2040,13 +2378,18 @@ void Engine_TrackLoad(void)
 			EngTrackFace *f = &built[k];
 			u16 keyTpage = 0;
 			int isLive;
-			const int tableFace = mos[f->mid] && Engine_TrackMosaicFace(groups[f->mid], f->mirrored, form[i], f->slotOf, f->v, f->vertCount, &keyTpage);
-			const int animRowFace =
-			    !mos[f->mid] && anim[f->mid] &&
-			    Engine_TrackMosaicAnimFace((u32)(size_t)qb->ptr_texture_mid[f->mid] - 1u, f->mirrored, f->slotOf, f->v, f->vertCount, &keyTpage);
+			int animRowIndex = -1;
+			u8 animAbrSet = 0;
+			// An animated face, mosaic or not: the animated row of its AnimTex cell (pointer - 1),
+			// which follows the cell every frame (ANIMATED ROWS). Any other mosaic face (or an
+			// animated one without its row, frozen): its table.
+			const int animRowFace = anim[f->mid] && Engine_TrackMosaicAnimFace((u32)(size_t)qb->ptr_texture_mid[f->mid] - 1u, f->mirrored, form[i], f->slotOf,
+			                                                                   f->v, f->vertCount, &keyTpage, &animRowIndex, &animAbrSet);
+			const int tableFace =
+			    !animRowFace && mos[f->mid] && Engine_TrackMosaicFace(groups[f->mid], f->mirrored, form[i], f->slotOf, f->v, f->vertCount, &keyTpage);
 
 			// A mosaic face the table takes: keyed by the table's tpage word, clut 0. So is an
-			// animated face (no mosaic): a whole-face row read from its AnimTex cell (pointer - 1) every frame.
+			// animated face: keyed by the abr its row holds at the load.
 			if (tableFace || animRowFace)
 			{
 				f->tpage = keyTpage;
@@ -2075,7 +2418,9 @@ void Engine_TrackLoad(void)
 				df->stage = (u8)((groups[f->mid] != NULL) && (in.layout[f->mid] == &groups[f->mid][3]) ? 3 : 2);
 				df->anim = (u8)anim[f->mid];
 				df->animRow = (u8)animRowFace;
-				df->tableRefused = (u8)(mos[f->mid] && !tableFace);
+				df->tableRefused = (u8)(mos[f->mid] && !animRowFace && !tableFace);
+				// ANIMATED ROWS: a face whose cell gives more than one blend follows it.
+				df->animEntry = animRowFace ? EngTrack_AnimAppend(animRowIndex, animAbrSet) : 0u;
 			}
 			liveFaces += isLive;
 			specialFaces += special[i];
@@ -2114,6 +2459,8 @@ void Engine_TrackLoad(void)
 		free(lift);
 		free(normal);
 	}
+	// ANIMATED ROWS: a key per blend of a face whose cell gives more than one (after the decals: their lift goes along).
+	animKeysRefused = EngTrack_AnimKeys();
 
 	// --engine-oracle-fault cell (RETAIL ORACLE): a row of the table is changed before it is uploaded.
 	EngTrack_OracleFault();
@@ -2154,6 +2501,7 @@ void Engine_TrackLoad(void)
 	{
 		matOfKey[s_egtFaces[i].face.key] = -1;
 	}
+	EngTrack_AnimKeysUsed(matOfKey);
 	for (i = 0; i < s_egtKeys.count; i++)
 	{
 		const EngTrackKey *key = &s_egtKeys.key[i];
@@ -2202,6 +2550,10 @@ void Engine_TrackLoad(void)
 		droppedFaces += s_egtFaceCount;
 		EngTrack_DrawFree();
 		failed = "out of memory (draw groups)";
+	}
+	else
+	{
+		EngTrack_AnimLoad(matOfKey); // ANIMATED ROWS: the faces and materials per blend
 	}
 	s_egtVertices = mesh->ptrVertexArray;
 	s_egtLevel = level;
@@ -2265,6 +2617,8 @@ void Engine_TrackLoad(void)
 	}
 	Platform_Log("[CTR Engine] track: decals %d (%d lifted past the margin, largest lift %d), %d without a key, %d unused key(s)%s\n",
 	             (decals > 0) ? decals : 0, decalsLifted, decalLiftMax, decalsUnkeyed, unusedKeys, (decals < 0) ? ", out of memory: none lifted" : "");
+	Platform_Log("[CTR Engine] track: animated faces whose blend follows their cell: %d (drawn by their own pass: %d), %d blend key(s) refused\n",
+	             s_egtAnimCount, s_egtAnimFaceCount, animKeysRefused);
 	// --engine-oracle: the static block of the level (RETAIL ORACLE).
 	EngTrack_OracleLoad((int)gGT->levelID);
 	EngTrack_ImportModels(level);
@@ -4166,6 +4520,10 @@ internal int EngTrack_SubmitShown(struct GameTracker *gGT)
 		s_egtWalkDiffFrames += (u64)differs;
 	}
 
+	// ANIMATED ROWS: the faces whose cell gives more than one blend take the material of the blend
+	// their row holds now (before the oracle and the draws read the faces).
+	EngTrack_AnimFollow();
+
 	// What the lists show, and whether it fits (else the PS1 buckets draw this frame).
 	for (i = 0; i < s_egtFaceCount; i++)
 	{
@@ -4201,10 +4559,20 @@ internal int EngTrack_SubmitShown(struct GameTracker *gGT)
 	s_egtPeakExpanded = (expanded > s_egtPeakExpanded) ? expanded : s_egtPeakExpanded;
 	s_egtPeakSpecial = (specials > s_egtPeakSpecial) ? specials : s_egtPeakSpecial;
 
+	// ANIMATED ROWS: the faces drawn by the pass after the groups are left out of their groups.
+	if (s_egtAnimFaceCount > 0)
+	{
+		memcpy(s_egtDrawShown, s_egtShown, (size_t)s_egtFaceCount);
+		for (i = 0; i < s_egtAnimFaceCount; i++)
+		{
+			s_egtDrawShown[s_egtAnimFaces[i]] = 0;
+		}
+	}
 	for (i = 0; i < s_egtGroupCount; i++)
 	{
 		const EngTrackDrawGroup *g = &s_egtGroups[i];
 		const int cell = (g->semi || (g->lift != 0)) ? EGT_CELL_SEMI : EGT_CELL_OPAQUE;
+		const u8 *shown = (s_egtAnimFaceCount > 0) ? s_egtDrawShown : s_egtShown;
 		int next = 0;
 
 		// Usually one draw per group; more only when its shown faces pass the u16 index range of a draw.
@@ -4213,7 +4581,7 @@ internal int EngTrack_SubmitShown(struct GameTracker *gGT)
 			EngineDraw draw;
 			u32 indexCount = 0;
 			const int from = next;
-			const u32 vertexCount = EngTrack_FillFacesFrom(&s_egtFaces[g->first], &s_egtShown[g->first], from, g->count, s_egtVertices, s_egtScratchV,
+			const u32 vertexCount = EngTrack_FillFacesFrom(&s_egtFaces[g->first], &shown[g->first], from, g->count, s_egtVertices, s_egtScratchV,
 			                                               s_egtScratchI, EGT_DRAW_VERTICES_MAX, &indexCount, &next);
 
 			if ((vertexCount == 0u) || (next <= from))
@@ -4252,6 +4620,7 @@ internal int EngTrack_SubmitShown(struct GameTracker *gGT)
 			}
 		}
 	}
+	EngTrack_AnimSubmit(gGT, &submittedAny, &refused);
 	if (refused)
 	{
 		s_egtRefusedFrames++;
@@ -5071,6 +5440,36 @@ int Engine_SelfTestTrack(int *checks)
 		EGT_CHECK(EngTrack_InstanceRule(&inst, 1, 1) == EGT_RULE_LEVEL, "rules: an InstDef instance with a thread not a level instance");
 		inst.thread = NULL;
 		EGT_CHECK(EngTrack_InstanceRule(&inst, 0, 1) == EGT_RULE_LEVEL, "rules: an InstDef instance outside the table not a level instance");
+	}
+
+	// (14) ANIMATED ROWS: an entry only for a face whose cell gives more than one blend; the key of
+	// the abr a row holds, none for an abr without a key or material (the face keeps its own).
+	{
+		const int countBefore = s_egtAnimCount;
+		u16 entry;
+
+		EGT_CHECK((EngTrack_AnimAppend(3, 0x08u) == 0u) && (EngTrack_AnimAppend(3, 0x00u) == 0u) && (s_egtAnimCount == countBefore),
+		          "animated rows: an entry for a face with one blend");
+		entry = EngTrack_AnimAppend(3, 0x0au);
+		EGT_CHECK((entry == (u16)(countBefore + 1)) && (s_egtAnim[entry - 1u].row == 3) && (s_egtAnim[entry - 1u].abrSet == 0x0au) &&
+		              (s_egtAnim[entry - 1u].key[1] == -1) && (s_egtAnim[entry - 1u].material[3] == -1),
+		          "animated rows: entry %u", (unsigned)entry);
+		if (entry != 0u)
+		{
+			EngTrackAnimFace *e = &s_egtAnim[entry - 1u];
+
+			e->key[1] = 5;
+			e->material[1] = 7;
+			e->key[3] = 6;
+			EGT_CHECK((EngTrack_AnimKeyOf(e, 1) == 5) && (EngTrack_AnimKeyOf(e, 3) == -1) && (EngTrack_AnimKeyOf(e, 2) == -1) &&
+			              (EngTrack_AnimKeyOf(e, -1) == -1) && (EngTrack_AnimKeyOf(e, 4) == -1) && (EngTrack_AnimKeyOf(NULL, 1) == -1),
+			          "animated rows: the key of an abr");
+		}
+		// The selftest runs without a level: the table goes again.
+		if (countBefore == 0)
+		{
+			EngTrack_AnimFree();
+		}
 	}
 
 	// (oracle) RETAIL ORACLE on synthetic packets, layouts and faces.

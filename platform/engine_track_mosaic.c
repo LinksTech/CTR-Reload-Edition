@@ -61,16 +61,24 @@
 // has one blend mode, so a face is keyed with the abr of its row's tiles when
 // they all agree; a row whose tiles disagree keeps level 2 (counted).
 //
-// ANIMATED TEXTURES. A mid face whose texture pointer has bit 0 set names an
-// AnimTex cell (*(ptr - 1) holds the IconGroup4 shown now; the game moves it,
-// engine_track.c EngTrack_ResolveGroup). Such a face gets a whole-face row
-// (one cell per side) keyed by its cell: the finest layout of the group shown
-// now, plus its levels 2, 1, 0. Once per frame, after the track is collected,
-// Engine_TrackMosaicFrame reads every cell and rewrites the rows whose group
-// changed (one row of the data texture each; the backend records the copy into
-// the frame between passes, NativeVk_RecordUploadInFrame). The blend of the
-// face stays the one of the group at load; a later group with another abr is
-// drawn with it anyway and counted.
+// ANIMATED TEXTURES (round of 2026-10-16): LAYOUT SOURCE = THE SLOT, READ AT
+// DRAW TIME - the one rule for track faces and models (engine_model.c). A mid
+// face whose texture pointer has bit 0 set names an AnimTex cell (ptr - 1 is
+// the AnimTex; its first word holds the IconGroup4 shown now, which
+// CTR_CycleTex_LEV moves every frame, game/CTR/CTR_CycleTex.c; the 226 walk
+// reads it at the draw). Such a face, mosaic or not, reads an ANIMATED ROW
+// keyed by (cell, mirror, form) that holds what the group shown now gives under
+// the rule of a face of the load (EngMosaic_AnimFill): a group whose level 3 is
+// a mosaic table reference gives the table's cells (side 4, the leaf's form,
+// the face's mirror), any other group - or a table whose tiles disagree in abr -
+// its finest layout as one cell (side 1); plus its levels 2, 1, 0. Once per
+// frame, after the track is collected, Engine_TrackMosaicFrame reads every cell
+// and rewrites the rows whose group changed (one row of the data texture each;
+// the backend records the copy into the frame between passes,
+// NativeVk_RecordUploadInFrame). The blend follows too: the face is keyed for
+// every abr the cell's frames give (Engine_TrackMosaicAnimFace, *abrSet), and
+// the track draws it each frame with the material of the abr its row holds now
+// (Engine_TrackMosaicAnimAbr; engine_track.c, ANIMATED ROWS).
 //
 // DRAW TIME ONLY. Nothing here writes game state: the tables are read at load
 // stage 8 and the AnimTex cells once per frame, from the same level memory the
@@ -296,11 +304,60 @@ internal void EngMosaic_WholeFaceFill(EngMosaicRow *row, u32 groupAddress, const
 	row->shown = groupAddress;
 }
 
-// The whole-face row of (AnimTex cell, mirrored): an existing one, or a new one
-// filled from group (shown now) with the abr of finest. Returns the index, -1
-// when the set is full or out of memory. *made = 1 when the row is new.
-internal int EngMosaic_AnimRowFind(EngMosaicRowSet *set, u32 cell, int mirrored, u32 groupAddress, const struct TextureLayout *group,
-                                   const struct TextureLayout *finest, int *made)
+// An animated row (its key fields animCell, mirrored, form set) filled for the
+// IconGroup4 group shown now, by the rule of a face of the load: when level 3 of
+// group is a mosaic table reference (EngTrack_FinestLayout with isLevelPtr) whose
+// both orientations spanOk vouches for and whose own tiles share one abr, the
+// table's cells (side 4, as EngMosaic_RowFill); otherwise the finest layout as
+// one cell (side 1, EngMosaic_WholeFaceFill: level 2 for a mosaic word, as a
+// face the table refused). The key fields stay. 0 = no usable layout (row unchanged).
+internal int EngMosaic_AnimFill(EngMosaicRow *row, u32 groupAddress, const struct TextureLayout *group, int (*spanOk)(u32 p, u32 size),
+                                int (*isLevelPtr)(u32 word))
+{
+	const struct TextureLayout *finest;
+	int mosaic = 0;
+
+	finest = EngTrack_FinestLayout(group, isLevelPtr, &mosaic);
+	if (mosaic)
+	{
+		const int own = EngMosaic_OwnEntries(row->form);
+		u32 word = 0;
+
+		memcpy(&word, &group[3], sizeof(word));
+		if ((own > 0) && (word != 0u) && ((spanOk == NULL) || spanOk(word, (u32)(2 * own) * (u32)sizeof(struct TextureLayout))))
+		{
+			EngMosaicRow table;
+
+			EngMosaic_RowFill(&table, groupAddress, word, (const struct TextureLayout *)(size_t)word, row->mirrored, row->form, group);
+			if (table.abr >= 0)
+			{
+				memcpy(row->cell, table.cell, sizeof(row->cell));
+				memcpy(row->level, table.level, sizeof(row->level));
+				row->table = word;
+				row->side = 4;
+				row->abr = table.abr;
+				row->shown = groupAddress;
+				return 1;
+			}
+		}
+	}
+	if (!EngTrack_LayoutUsable(finest))
+	{
+		return 0;
+	}
+	row->table = 0;
+	row->side = 1;
+	row->abr = (s8)EngMosaic_Abr(finest);
+	EngMosaic_WholeFaceFill(row, groupAddress, group, finest);
+	return 1;
+}
+
+// The animated row of (AnimTex cell, mirrored, form): an existing one, or a new
+// one filled for group (shown now, EngMosaic_AnimFill). Returns the index, -1
+// when the set is full or out of memory, -2 for cell 0 or an unknown form, -3
+// when group has no usable layout. *made = 1 when the row is new.
+internal int EngMosaic_AnimRowFind(EngMosaicRowSet *set, u32 cell, int mirrored, int form, u32 groupAddress, const struct TextureLayout *group,
+                                   int (*spanOk)(u32 p, u32 size), int (*isLevelPtr)(u32 word), int *made)
 {
 	EngMosaicRow *row;
 	int i;
@@ -310,13 +367,13 @@ internal int EngMosaic_AnimRowFind(EngMosaicRowSet *set, u32 cell, int mirrored,
 		*made = 0;
 	}
 	// Cell 0 is the mark of a table row: never a key here.
-	if (cell == 0u)
+	if ((cell == 0u) || (EngMosaic_OwnEntries(form) == 0))
 	{
-		return -1;
+		return -2;
 	}
 	for (i = 0; i < set->count; i++)
 	{
-		if ((set->rows[i].animCell == cell) && (set->rows[i].mirrored == (u8)(mirrored ? 1 : 0)))
+		if ((set->rows[i].animCell == cell) && (set->rows[i].mirrored == (u8)(mirrored ? 1 : 0)) && (set->rows[i].form == (u8)form))
 		{
 			return i;
 		}
@@ -329,10 +386,11 @@ internal int EngMosaic_AnimRowFind(EngMosaicRowSet *set, u32 cell, int mirrored,
 	memset(row, 0, sizeof(*row));
 	row->animCell = cell;
 	row->mirrored = (u8)(mirrored ? 1 : 0);
-	row->form = ENGINE_MOSAIC_FORM_4X4;
-	row->side = 1;
-	row->abr = (s8)EngMosaic_Abr(finest);
-	EngMosaic_WholeFaceFill(row, groupAddress, group, finest);
+	row->form = (u8)form;
+	if (!EngMosaic_AnimFill(row, groupAddress, group, spanOk, isLevelPtr))
+	{
+		return -3;
+	}
 	if (made != NULL)
 	{
 		*made = 1;
@@ -558,8 +616,10 @@ typedef struct
 	int unknownForm;
 	int abrMixed;
 	int animFaces; // AnimTex faces handed in
-	int animMade;  // turned into whole-face faces
+	int animMade;  // turned into faces of an animated row
 	int animBad;   // their cell or group not readable at load
+	int animTable; // of animMade: the row holds a mosaic table now (side 4)
+	int animBlends; // of animMade: the cell's frames give the row more than one abr
 } EngMosaicCounts;
 
 global_variable EngMosaicRowSet s_egmRows;
@@ -577,29 +637,42 @@ global_variable int s_egmReportRegistered;
 
 internal void EngMosaic_Report(void)
 {
-	Platform_Log("[CTR Engine] track mosaic: animated rows rewritten %llu over %llu frames, abr changes %llu, bad cells %llu\n",
+	Platform_Log("[CTR Engine] track mosaic: animated rows rewritten %llu over %llu frames, abr changes %llu (followed), bad cells %llu\n",
 	             (unsigned long long)s_egmAnimRewrites, (unsigned long long)s_egmAnimFrames, (unsigned long long)s_egmAnimAbrChanges,
 	             (unsigned long long)s_egmAnimBadCells);
 }
 
-// The IconGroup4 an AnimTex cell names now (*cell), or NULL when the cell or the
-// group does not lie in level memory. *address is the group's address.
-internal const struct TextureLayout *EngMosaic_AnimGroup(u32 cell, u32 *address)
+// The IconGroup4 a word names (a group pointer in level memory), or NULL. spanOk NULL: any.
+internal const struct TextureLayout *EngMosaic_GroupAt(u32 word, int (*spanOk)(u32 p, u32 size))
 {
+	if ((word == 0u) || ((spanOk != NULL) && !spanOk(word, 4u * (u32)sizeof(struct TextureLayout))))
+	{
+		return NULL;
+	}
+	return (const struct TextureLayout *)(size_t)word;
+}
+
+// The IconGroup4 an AnimTex cell names now (its first word), or NULL when the
+// cell or the group does not lie in level memory. *address is the group's address.
+internal const struct TextureLayout *EngMosaic_AnimGroupWith(u32 cell, u32 *address, int (*spanOk)(u32 p, u32 size))
+{
+	const struct TextureLayout *group;
 	u32 now = 0;
 
 	*address = 0;
-	if ((cell == 0u) || !DrawLevelOvr1P_IsNativeLevelSpan(cell, (u32)sizeof(now)))
+	if ((cell == 0u) || ((spanOk != NULL) && !spanOk(cell, (u32)sizeof(now))))
 	{
 		return NULL;
 	}
 	memcpy(&now, (const void *)(size_t)cell, sizeof(now));
-	if ((now == 0u) || !DrawLevelOvr1P_IsNativeLevelSpan(now, 4u * (u32)sizeof(struct TextureLayout)))
-	{
-		return NULL;
-	}
-	*address = now;
-	return (const struct TextureLayout *)(size_t)now;
+	group = EngMosaic_GroupAt(now, spanOk);
+	*address = (group != NULL) ? now : 0u;
+	return group;
+}
+
+internal const struct TextureLayout *EngMosaic_AnimGroup(u32 cell, u32 *address)
+{
+	return EngMosaic_AnimGroupWith(cell, address, EngTrack_SpanOk);
 }
 
 // The layout the track builder would take for the group (engine_track.c: level
@@ -609,6 +682,46 @@ internal const struct TextureLayout *EngMosaic_AnimFinest(const struct TextureLa
 	const struct TextureLayout *lay = EngTrack_FinestLayout(group, EngTrack_IsLevelPtr, NULL);
 
 	return EngTrack_LayoutUsable(lay) ? lay : NULL;
+}
+
+// Bit a for every abr an animated row of (mirrored, form) holds for one of the
+// groups the AnimTex at cell cycles through (its numFrames IconGroup4 pointers
+// after the AnimTex, CTR_CycleTex_LEV), plus bit now. Frames whose group is not
+// readable add nothing (the row keeps its group then, counted per frame).
+internal u8 EngMosaic_AnimAbrSet(u32 cell, int mirrored, int form, int now, int (*spanOk)(u32 p, u32 size), int (*isLevelPtr)(u32 word))
+{
+	const struct AnimTex *at = (const struct AnimTex *)(size_t)cell;
+	u8 set = (u8)((now >= 0) ? (1u << now) : 0u);
+	int frames;
+	int f;
+
+	if ((cell == 0u) || ((spanOk != NULL) && !spanOk(cell, (u32)sizeof(struct AnimTex))))
+	{
+		return set;
+	}
+	frames = (int)at->numFrames;
+	if ((frames <= 0) || (frames > 4096) ||
+	    ((spanOk != NULL) && !spanOk(cell + (u32)sizeof(struct AnimTex), (u32)frames * (u32)sizeof(u32))))
+	{
+		return set;
+	}
+	for (f = 0; f < frames; f++)
+	{
+		u32 word = 0;
+		const struct TextureLayout *group;
+		EngMosaicRow row;
+
+		memcpy(&word, (const u8 *)at + sizeof(struct AnimTex) + ((size_t)f * sizeof(u32)), sizeof(word));
+		group = EngMosaic_GroupAt(word, spanOk);
+		memset(&row, 0, sizeof(row));
+		row.mirrored = (u8)(mirrored ? 1 : 0);
+		row.form = (u8)form;
+		if ((group != NULL) && EngMosaic_AnimFill(&row, word, group, spanOk, isLevelPtr))
+		{
+			set |= (u8)(1u << (row.abr & 3));
+		}
+	}
+	return set;
 }
 
 internal int EngMosaic_CompareInt(const void *a, const void *b)
@@ -698,42 +811,54 @@ int Engine_TrackMosaicFace(const struct TextureLayout *group, int mirrored, int 
 	return 1;
 }
 
-int Engine_TrackMosaicAnimFace(u32 cell, int mirrored, const u8 *slotOf, EngineVertex *v, int vertCount, u16 *keyTpage)
+int Engine_TrackMosaicAnimFace(u32 cell, int mirrored, int form, const u8 *slotOf, EngineVertex *v, int vertCount, u16 *keyTpage, int *row, u8 *abrSet)
 {
 	const struct TextureLayout *group;
-	const struct TextureLayout *finest = NULL;
 	u32 now = 0;
-	int row;
+	int index;
 
-	if (!g_cfg_engine || !g_cfg_engineTrack || (slotOf == NULL) || (v == NULL) || (keyTpage == NULL) || (vertCount < 1) || (vertCount > 4))
+	if (!g_cfg_engine || !g_cfg_engineTrack || (slotOf == NULL) || (v == NULL) || (keyTpage == NULL) || (row == NULL) || (abrSet == NULL) ||
+	    (vertCount < 1) || (vertCount > 4))
 	{
 		return 0;
 	}
 	s_egmCount.animFaces++;
 	group = EngMosaic_AnimGroup(cell, &now);
-	if (group != NULL)
+	index = (group != NULL) ? EngMosaic_AnimRowFind(&s_egmRows, cell, mirrored, form, now, group, EngTrack_SpanOk, EngTrack_IsLevelPtr, NULL) : -3;
+	if ((index == -1) || (index == -2))
 	{
-		finest = EngMosaic_AnimFinest(group);
+		s_egmCount.rowsFull += (index == -1) ? 1 : 0;
+		s_egmCount.unknownForm += (index == -2) ? 1 : 0;
+		return 0;
 	}
-	if (finest == NULL)
+	if (index < 0)
 	{
 		s_egmCount.animBad++;
 		return 0;
 	}
-	row = EngMosaic_AnimRowFind(&s_egmRows, cell, mirrored, now, group, finest, NULL);
-	if (row < 0)
-	{
-		s_egmCount.rowsFull++;
-		return 0;
-	}
-	EngMosaic_FaceWrite(row, slotOf, v, vertCount);
-	*keyTpage = (u16)(0x8000u | ((u32)s_egmRows.rows[row].abr << 5));
+	EngMosaic_FaceWrite(index, slotOf, v, vertCount);
+	*keyTpage = (u16)(0x8000u | ((u32)(s_egmRows.rows[index].abr & 3) << 5));
+	*row = index;
+	*abrSet = EngMosaic_AnimAbrSet(cell, mirrored, form, s_egmRows.rows[index].abr, EngTrack_SpanOk, EngTrack_IsLevelPtr);
 	s_egmCount.animMade++;
+	s_egmCount.animTable += (s_egmRows.rows[index].side == 4) ? 1 : 0;
+	s_egmCount.animBlends += ((*abrSet & (*abrSet - 1u)) != 0u) ? 1 : 0;
 	return 1;
 }
 
-// Once per frame, after Engine_TrackCollect: the whole-face rows whose AnimTex
-// cell names another group now are rewritten. The upload lands in the frame
+int Engine_TrackMosaicAnimAbr(int row)
+{
+	if ((row < 0) || (row >= s_egmRows.count) || (s_egmRows.rows[row].animCell == 0u) || (s_egmRows.rows[row].abr < 0))
+	{
+		return -1;
+	}
+	return (int)s_egmRows.rows[row].abr;
+}
+
+// Once per frame, after Engine_TrackCollect: the animated rows whose AnimTex
+// cell names another group now are rewritten (EngMosaic_AnimFill: cells and
+// abr of that group; the track picks the face's material by the abr when it
+// submits, later in the same frame). The upload lands in the frame
 // before the engine's draws are recorded (NativeGfx_UpdateTexture records the
 // copy between passes, NativeVk_RecordUploadInFrame).
 void Engine_TrackMosaicFrame(void)
@@ -750,7 +875,7 @@ void Engine_TrackMosaicFrame(void)
 	{
 		EngMosaicRow *row = &s_egmRows.rows[i];
 		const struct TextureLayout *group;
-		const struct TextureLayout *finest = NULL;
+		const s8 abrBefore = row->abr;
 		u32 now = 0;
 
 		if (row->animCell == 0u)
@@ -762,20 +887,16 @@ void Engine_TrackMosaicFrame(void)
 		{
 			continue;
 		}
-		if (group != NULL)
-		{
-			finest = EngMosaic_AnimFinest(group);
-		}
-		if (finest == NULL)
+		// The group shown now, under the rule of the load (cells of its table, or its finest layout).
+		if ((group == NULL) || !EngMosaic_AnimFill(row, now, group, EngTrack_SpanOk, EngTrack_IsLevelPtr))
 		{
 			s_egmAnimBadCells++;
 			continue;
 		}
-		if (EngMosaic_Abr(finest) != row->abr)
+		if (row->abr != abrBefore)
 		{
 			s_egmAnimAbrChanges++;
 		}
-		EngMosaic_WholeFaceFill(row, now, group, finest);
 		EngMosaic_PackRow(px, row);
 		NativeGfx_UpdateTexture((TextureID)s_egmTexture, 0, i, EGM_ROW_TEXELS, 1, NATIVE_GFX_TEXFMT_RGBA8, px, 0);
 		s_egmAnimRewrites++;
@@ -820,7 +941,7 @@ internal void EngMosaic_Log(int width, int height, const char *state)
 		int j;
 		int e;
 
-		// The whole-face rows of animated faces are not table rows.
+		// The animated rows (one per AnimTex cell, mirror and form) are not counted as table rows.
 		if (row->animCell != 0u)
 		{
 			animRows++;
@@ -889,8 +1010,9 @@ internal void EngMosaic_Log(int width, int height, const char *state)
 	{
 		Platform_Log("[CTR Engine] track mosaic: level %d: tile texels none\n", s_egmLevel);
 	}
-	Platform_Log("[CTR Engine] track mosaic: level %d: animated faces %d, made %d, whole-face rows %d, bad cells %d\n", s_egmLevel, s_egmCount.animFaces,
-	             s_egmCount.animMade, animRows, s_egmCount.animBad);
+	Platform_Log("[CTR Engine] track mosaic: level %d: animated faces %d, made %d (holding a table now %d, more than one blend %d), animated rows %d, "
+	             "bad cells %d\n",
+	             s_egmLevel, s_egmCount.animFaces, s_egmCount.animMade, s_egmCount.animTable, s_egmCount.animBlends, animRows, s_egmCount.animBad);
 	Platform_Log("[CTR Engine] track mosaic: level %d: data texture %dx%d %s\n", s_egmLevel, width, height, state);
 	free(tiles);
 	free(tileTexels);
@@ -1074,6 +1196,14 @@ int Engine_TrackMosaicOracleFault(float u, float v, int block, int mid)
 			failures++;                                 \
 		}                                               \
 	} while (0)
+
+// The table words the selftest's groups name (its isLevelPtr): a level pointer check without a level.
+global_variable u32 s_egmTestTableWords[2];
+
+internal int EngMosaic_TestIsTable(u32 word)
+{
+	return (word != 0u) && ((word == s_egmTestTableWords[0]) || (word == s_egmTestTableWords[1]));
+}
 
 // Entry i of a synthetic table: u0 = i, every other field derived from i, abr 3.
 internal void EngMosaic_TestTable(struct TextureLayout *table, int entries)
@@ -1287,15 +1417,15 @@ int Engine_SelfTestTrackMosaic(int *checks)
 	EGM_CHECK((EngMosaic_LayoutTexels(&table[0]) == 32 * 32) && (EngMosaic_LayoutTexels(&levels[2]) == 7 * 7), "layout texels %d %d",
 	          EngMosaic_LayoutTexels(&table[0]), EngMosaic_LayoutTexels(&levels[2]));
 
-	// (11) whole-face rows of animated faces: keyed by (cell, mirrored), one cell per side, every
-	// cell the finest layout (corners swapped when mirrored), apart from the table rows; a rewrite
-	// for another group changes the cells and what the row shows.
+	// (11) animated rows of a group without a mosaic word: keyed by (cell, mirrored, form), one cell
+	// per side, every cell the finest layout (corners swapped when mirrored), apart from the table
+	// rows; a rewrite for another group changes the cells and what the row shows.
 	{
 		u8 px[EGM_ROW_TEXELS * 4];
 		int same = 0;
 
 		made = 0;
-		a = EngMosaic_AnimRowFind(&set, 0x5000u, 0, 0x6000u, table, &table[3], &made);
+		a = EngMosaic_AnimRowFind(&set, 0x5000u, 0, ENGINE_MOSAIC_FORM_4X4, 0x6000u, table, NULL, NULL, &made);
 		EGM_CHECK((a == 4) && (made == 1) && (set.rows[4].side == 1) && (set.rows[4].shown == 0x6000u) && (set.rows[4].abr == 3) &&
 		              (set.rows[4].level[2].u0 == 2),
 		          "anim row: index %d made %d", a, made);
@@ -1304,18 +1434,121 @@ int Engine_SelfTestTrackMosaic(int *checks)
 			same += (memcmp(&set.rows[4].cell[i], &table[3], sizeof(table[3])) == 0);
 		}
 		EGM_CHECK(same == EGM_CELLS, "anim row: %d of 16 cells hold the finest layout", same);
-		b = EngMosaic_AnimRowFind(&set, 0x5000u, 0, 0x6000u, table, &table[3], &made);
+		b = EngMosaic_AnimRowFind(&set, 0x5000u, 0, ENGINE_MOSAIC_FORM_4X4, 0x6000u, table, NULL, NULL, &made);
 		EGM_CHECK((b == 4) && (made == 0), "anim row: the same cell gave %d made %d", b, made);
-		b = EngMosaic_AnimRowFind(&set, 0x5000u, 1, 0x6000u, table, &table[3], &made);
+		b = EngMosaic_AnimRowFind(&set, 0x5000u, 1, ENGINE_MOSAIC_FORM_4X4, 0x6000u, table, NULL, NULL, &made);
 		EGM_CHECK((b == 5) && (made == 1) && (set.rows[5].cell[0].u0 == table[3].u1) && (set.rows[5].cell[0].u1 == table[3].u0),
 		          "anim row: mirrored row %d not swapped", b);
 		EGM_CHECK((EngMosaic_RowFind(&set, 0x1000u, 0x2000u, table, 0, ENGINE_MOSAIC_FORM_4X4, levels, NULL) == 0) &&
-		              (EngMosaic_AnimRowFind(&set, 0u, 0, 0x6000u, table, &table[3], NULL) == -1),
-		          "anim rows mixed up with table rows, or cell 0 taken");
+		              (EngMosaic_AnimRowFind(&set, 0u, 0, ENGINE_MOSAIC_FORM_4X4, 0x6000u, table, NULL, NULL, NULL) == -2) &&
+		              (EngMosaic_AnimRowFind(&set, 0x5000u, 0, 7, 0x6000u, table, NULL, NULL, NULL) == -2),
+		          "anim rows mixed up with table rows, or cell 0 or an unknown form taken");
 		EngMosaic_WholeFaceFill(&set.rows[4], 0x7000u, &table[4], &table[7]);
 		EGM_CHECK((set.rows[4].shown == 0x7000u) && (set.rows[4].cell[5].u0 == 7) && (set.rows[4].level[0].u0 == 4), "anim row rewrite");
 		EngMosaic_PackRow(px, &set.rows[4]);
 		EGM_CHECK((px[0] == 1) && (px[4 * (EGM_CELL_TEXEL + 3 * 15)] == 7), "anim row packing");
+	}
+
+	// (11b) ANIMATED ROWS follow the group shown now, by the rule of the load (K-ANIM-T, K-ANIM-T2):
+	// a group with a mosaic table gives the table's cells (form, mirror) and their abr; a group
+	// without one its finest layout and abr; a table whose tiles disagree its level 2. The abr set
+	// of an AnimTex holds every abr its frames give.
+	{
+		struct TextureLayout mixed[32];
+		struct TextureLayout groupM[4];
+		struct TextureLayout groupW[4];
+		struct TextureLayout groupX[4];
+		struct TextureLayout blank[4];
+		u32 animMem[16];
+		struct AnimTex *at = (struct AnimTex *)animMem;
+		u32 *frames = (u32 *)((u8 *)animMem + sizeof(struct AnimTex));
+		const u32 tableWord = (u32)(size_t)table;
+		const u32 mixedWord = (u32)(size_t)mixed;
+		const u32 cell = (u32)(size_t)animMem;
+		EngMosaicRow row;
+		int bad = 0;
+		int r;
+
+		memcpy(mixed, table, sizeof(mixed));
+		mixed[5].tpage = 0x0001;  // abr 0 on tile 5 of the own half
+		mixed[21].tpage = 0x0001; // and of the mirrored half
+		memset(groupM, 0, sizeof(groupM));
+		memset(groupW, 0, sizeof(groupW));
+		memset(groupX, 0, sizeof(groupX));
+		memcpy(groupM, levels, sizeof(levels));
+		memcpy(&groupM[3], &tableWord, sizeof(tableWord));
+		memcpy(groupW, levels, sizeof(levels));
+		groupW[3] = table[9];
+		groupW[3].tpage = 0x0021; // abr 1
+		memcpy(groupX, levels, sizeof(levels));
+		groupX[2].tpage = 0x0041; // abr 2: the level 2 a disagreeing table falls back to
+		memcpy(&groupX[3], &mixedWord, sizeof(mixedWord));
+		memset(blank, 0, sizeof(blank));
+		s_egmTestTableWords[0] = tableWord;
+		s_egmTestTableWords[1] = mixedWord;
+
+		r = EngMosaic_AnimRowFind(&set, 0x9000u, 0, ENGINE_MOSAIC_FORM_4X4, (u32)(size_t)groupM, groupM, NULL, EngMosaic_TestIsTable, &made);
+		EGM_CHECK((r >= 0) && (made == 1) && (set.rows[r].side == 4) && (set.rows[r].abr == 3) && (set.rows[r].table == tableWord) &&
+		              (set.rows[r].animCell == 0x9000u) && (set.rows[r].level[2].u0 == 1),
+		          "animated row of a mosaic group: index %d side %d abr %d", r, (r >= 0) ? set.rows[r].side : -1, (r >= 0) ? set.rows[r].abr : -9);
+		for (i = 0; (r >= 0) && (i < 16); i++)
+		{
+			bad += (set.rows[r].cell[i].u0 != (u8)i);
+		}
+		EGM_CHECK(bad == 0, "animated row of a mosaic group: %d cell(s) not the table's", bad);
+		EGM_CHECK((EngMosaic_AnimRowFind(&set, 0x9000u, 0, ENGINE_MOSAIC_FORM_4X2, (u32)(size_t)groupM, groupM, NULL, EngMosaic_TestIsTable, &made) ==
+		           r + 1) && (made == 1) && (set.rows[r + 1].form == ENGINE_MOSAIC_FORM_4X2) && (set.rows[r + 1].cell[8].u0 == 4),
+		          "animated row: another form is another row with the form's spread");
+		EGM_CHECK(EngMosaic_AnimRowFind(&set, 0x9100u, 0, ENGINE_MOSAIC_FORM_4X4, (u32)(size_t)blank, blank, NULL, EngMosaic_TestIsTable, NULL) == -3,
+		          "animated row of a group without a usable layout made");
+
+		// The rewrite for the next groups (Engine_TrackMosaicFrame's step).
+		memset(&row, 0, sizeof(row));
+		row.animCell = 0x9000u;
+		row.form = ENGINE_MOSAIC_FORM_4X4;
+		row.mirrored = 1;
+		EGM_CHECK(EngMosaic_AnimFill(&row, (u32)(size_t)groupM, groupM, NULL, EngMosaic_TestIsTable) && (row.side == 4) && (row.cell[0].u0 == 16) &&
+		              (row.abr == 3),
+		          "animated row, mirrored mosaic group: side %d cell 0 u0 %d", row.side, row.cell[0].u0);
+		EGM_CHECK(EngMosaic_AnimFill(&row, (u32)(size_t)groupW, groupW, NULL, EngMosaic_TestIsTable) && (row.side == 1) && (row.abr == 1) &&
+		              (row.table == 0u) && (row.shown == (u32)(size_t)groupW) && (row.cell[0].u0 == groupW[3].u1) && (row.cell[15].u1 == groupW[3].u0) &&
+		              (row.animCell == 0x9000u) && (row.mirrored == 1),
+		          "animated row, group without a table: side %d abr %d", row.side, row.abr);
+		EGM_CHECK(EngMosaic_AnimFill(&row, (u32)(size_t)groupX, groupX, NULL, EngMosaic_TestIsTable) && (row.side == 1) && (row.abr == 2) &&
+		              (row.cell[0].tpage == 0x0041),
+		          "animated row, table with disagreeing tiles: side %d abr %d (level 2 wanted)", row.side, row.abr);
+		EGM_CHECK(!EngMosaic_AnimFill(&row, (u32)(size_t)blank, blank, NULL, EngMosaic_TestIsTable) && (row.shown == (u32)(size_t)groupX),
+		          "animated row: a group without a usable layout changed the row");
+		{
+			u8 px[EGM_ROW_TEXELS * 4];
+
+			EngMosaic_AnimFill(&row, (u32)(size_t)groupM, groupM, NULL, EngMosaic_TestIsTable);
+			EngMosaic_PackRow(px, &row);
+			EGM_CHECK((px[0] == 4) && (px[1] == ENGINE_MOSAIC_FORM_4X4) && (px[2] == 3), "animated row packing of a table: %d %d %d", px[0], px[1], px[2]);
+		}
+
+		// The blends an AnimTex's frames give: M (3), W (1), X (2); an unreadable frame adds none.
+		memset(animMem, 0, sizeof(animMem));
+		at->ptrActiveTex = (int *)groupM;
+		at->numFrames = 4;
+		frames[0] = (u32)(size_t)groupM;
+		frames[1] = (u32)(size_t)groupW;
+		frames[2] = (u32)(size_t)groupX;
+		frames[3] = (u32)(size_t)blank;
+		EGM_CHECK(EngMosaic_AnimAbrSet(cell, 0, ENGINE_MOSAIC_FORM_4X4, -1, NULL, EngMosaic_TestIsTable) == 0x0eu, "abr set 0x%x, wanted 0x0e",
+		          EngMosaic_AnimAbrSet(cell, 0, ENGINE_MOSAIC_FORM_4X4, -1, NULL, EngMosaic_TestIsTable));
+		at->numFrames = 1;
+		EGM_CHECK((EngMosaic_AnimAbrSet(cell, 0, ENGINE_MOSAIC_FORM_4X4, 0, NULL, EngMosaic_TestIsTable) == 0x09u) &&
+		              (EngMosaic_AnimAbrSet(0u, 0, ENGINE_MOSAIC_FORM_4X4, 2, NULL, EngMosaic_TestIsTable) == 0x04u),
+		          "abr set with the abr now, or of no cell");
+		{
+			u32 address = 0;
+
+			EGM_CHECK((EngMosaic_AnimGroupWith(cell, &address, NULL) == groupM) && (address == (u32)(size_t)groupM), "the group an AnimTex cell names");
+		}
+		EGM_CHECK((Engine_TrackMosaicAnimAbr(-1) == -1) && (Engine_TrackMosaicAnimAbr(EGM_ROWS_MAX) == -1), "Engine_TrackMosaicAnimAbr out of range");
+		s_egmTestTableWords[0] = 0u;
+		s_egmTestTableWords[1] = 0u;
 	}
 
 	// (12) the face size in the vertex alpha: 16 * log2 of the mean side length, the same on every

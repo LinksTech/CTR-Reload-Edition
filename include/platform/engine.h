@@ -419,7 +419,18 @@ typedef struct
 	// Per-draw data of the material's program (EngineUniforms.params4; "nw": the
 	// eye position in model units, w 0). 0 for every submitter that zeroes the draw.
 	float user[4];
+	// The mesh ranges this draw leaves out: bit r = range r (Engine_RangeSkipped;
+	// ranges from 64 up are always drawn). 0 = every range, for every submitter
+	// that zeroes the draw. Engine_InstanceSubmit sets it from the animated
+	// layout slots of the instance's model (Engine_ModelRangeSkip).
+	u64 rangeSkip;
 } EngineDraw;
+
+// 1 = range r of a mesh draw is left out (EngineDraw.rangeSkip).
+static inline int Engine_RangeSkipped(u64 rangeSkip, u32 range)
+{
+	return (range < 64u) && (((rangeSkip >> range) & 1u) != 0u);
+}
 
 // clipFromModel ends in PSX screen pixels RELATIVE TO THE VIEW (the offset
 // rect.w/2, rect.h/2 included); the split's draw offset of the ordering table
@@ -794,6 +805,16 @@ void Engine_ModelLogTiles(const struct Model *model, const char *name);
 // vertices per frame), 0 when the model has no live frame, its list no longer
 // has the imported records, or out is too small. Reads only.
 u32 Engine_ModelLiveFrame(const EngineModelImport *imp, const struct Model *model, EngineVertex *out, u32 outMax);
+// ANIMATED LAYOUTS (round of 2026-10-16). Every frame CTR_CycleTex_AllModels
+// writes into a slot of header 0's layout table the layout of the frame
+// (game/CTR/CTR_CycleTex.c: *ptrActiveTex = ptrArray[frame]). The import makes
+// the triangles of such a slot once per layout the slot can hold (their own
+// ranges and materials); a draw keeps the ranges of the layout the slot holds
+// NOW. Returns the bits of EngineDraw.rangeSkip for mesh drawn for model this
+// frame: read from model's slots at the call (nothing written), 0 for a mesh
+// without animated slots; for another model than the imported one, or a slot
+// holding a pointer outside its animtex list, the ranges of the load's layout.
+u64 Engine_ModelRangeSkip(int mesh, const struct Model *model);
 int Engine_SelfTestModel(int *checks);
 
 // --------------------------------------------------------------------------
@@ -959,12 +980,17 @@ void Engine_TrackMosaicBegin(int levelId); // Engine_TrackLoad start: empties th
 // tpage *keyTpage and clut 0. 0 = unchanged (level 2 stays; reason counted).
 int Engine_TrackMosaicFace(const struct TextureLayout *group, int mirrored, int form, const u8 *slotOf, EngineVertex *v, int vertCount, u16 *keyTpage);
 // One built mid face of an animated texture (its texture pointer has bit 0 set; cell = that
-// pointer - 1, the word holding the IconGroup4 shown now). 1 = the face became a whole-face
-// face of the table (texcoords rewritten, keyed with *keyTpage and clut 0 like a mosaic face);
-// 0 = unchanged (frozen at load, reason counted).
-int Engine_TrackMosaicAnimFace(u32 cell, int mirrored, const u8 *slotOf, EngineVertex *v, int vertCount, u16 *keyTpage);
-// From Engine_FrameCollect after Engine_TrackCollect: rewrites the table rows whose AnimTex cell names another group now.
+// pointer - 1, the AnimTex whose first word holds the IconGroup4 shown now), mosaic or not;
+// form = ENGINE_MOSAIC_FORM_* of its leaf. 1 = the face became a face of an animated row (keyed
+// by cell, mirror and form) holding what the group shown now gives - the cells of its mosaic
+// table, or its finest layout as one cell - texcoords rewritten, keyed with *keyTpage (the abr of
+// the row now) and clut 0 like a mosaic face; *row = the row, *abrSet = bit a for every abr a
+// group of the cell's frames gives the row. 0 = unchanged (frozen at load, reason counted).
+int Engine_TrackMosaicAnimFace(u32 cell, int mirrored, int form, const u8 *slotOf, EngineVertex *v, int vertCount, u16 *keyTpage, int *row, u8 *abrSet);
+// From Engine_FrameCollect after Engine_TrackCollect: rewrites the animated rows whose AnimTex cell names another group now.
 void Engine_TrackMosaicFrame(void);
+// The abr (0..3) an animated row holds now (its tiles' blend), -1 for any other row.
+int Engine_TrackMosaicAnimAbr(int row);
 int Engine_TrackMosaicEnd(void);     // builds the data texture, logs the counters; 1 = ready
 void Engine_TrackMosaicUnload(void); // level unload (deferred destroy)
 u32 Engine_TrackMosaicTexture(void); // TextureID for slot 3, 0xffffffff when none

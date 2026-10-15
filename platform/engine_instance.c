@@ -515,7 +515,7 @@ internal int EngInst_SubmitLinked(int view, const EngineDraw *draw, const Engine
 		const EngineRange *range = &desc->ranges[r];
 		EngineDraw live = *draw;
 
-		if ((range->indexCount == 0u) || (range->firstIndex + range->indexCount > desc->verticesPerFrame))
+		if ((range->indexCount == 0u) || (range->firstIndex + range->indexCount > desc->verticesPerFrame) || Engine_RangeSkipped(draw->rangeSkip, r))
 		{
 			continue;
 		}
@@ -605,6 +605,8 @@ int Engine_InstanceSubmit(struct Instance *inst, struct InstDrawPerPlayer *idpp,
 	memset(&draw, 0, sizeof(draw));
 	draw.mesh = d->mesh;
 	draw.frame = d->frame;
+	// ANIMATED LAYOUTS: the ranges of the layouts the model's slots hold now (read only).
+	draw.rangeSkip = Engine_ModelRangeSkip(d->mesh, inst->model);
 	draw.materialOverride = -1;
 	draw.dynMaterial = -1;
 	draw.clipFromModel = clip;
