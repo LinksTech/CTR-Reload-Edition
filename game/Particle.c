@@ -1140,6 +1140,11 @@ extern int g_cfg_engine;
 // particle the engine could not take (the retail path; the engine counted it).
 int EngineFx_ExhaustSprite(struct Particle *p, int view, const struct Icon *icon, s32 posX, s32 posY, s32 posZ, const s32 *cameraOffset, u32 *defaultOT,
                            int lookHide);
+// From platform/engine_fx_exhaust.c (--engine): a WORLD particle (not driver-local)
+// of a track mod's flame column, drawn by the engine with a depth test against
+// the engine track. Arguments (no lookHide) and answers as EngineFx_ExhaustSprite; 0 for
+// every other particle.
+int EngineFx_WorldSprite(struct Particle *p, int view, const struct Icon *icon, s32 posX, s32 posY, s32 posZ, const s32 *cameraOffset, u32 *defaultOT);
 
 // The ordering table and cell Particle_RenderList_LinkAndAdvance picks for a
 // normal quad (same arithmetic, draw time only; writes nothing).
@@ -1324,6 +1329,14 @@ void Particle_RenderList(struct PushBuffer *pb, void *particleList)
 					idpp = NULL;
 				}
 			}
+#if defined(CTR_NATIVE)
+			// --engine: a track mod's flame column (a world particle) is drawn by the
+			// engine; 1 = it took the particle, retail writes and links nothing for it.
+			else if (g_cfg_engine && (EngineFx_WorldSprite(particle, (int)cameraID, icon, posX, posY, posZ, scratch->cameraOffset, scratch->ot) == 1))
+			{
+				goto next_particle;
+			}
+#endif
 
 			posX -= scratch->cameraOffset[0];
 			posY -= scratch->cameraOffset[1];

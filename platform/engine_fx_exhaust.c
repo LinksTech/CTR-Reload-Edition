@@ -236,10 +236,15 @@ internal float EngineFx_ExhaustRowLength(const EngineCamera *cam, int row)
 // axis start value (used only with hasRotY). Writes 4 vertices (world units,
 // colour in every vertex, texcoords left to the caller) and 6 indices. 0 when the
 // camera's rows are degenerate.
-internal int EngineFx_ExhaustQuad(const EngineCamera *cam, EngineVec3 centre, int texW, int texH, int large, int scaleX, int hasRotY, int rotY,
-                                  const u8 colour[4], EngineVertex v[4], u16 idx[6])
+// scaleY: 1..0x3fff, or 0 = no SCALE_Y axis. Retail (Particle_RenderList_BuildNormalMatrix,
+// no ROT axis): r11 = scaleX << 1 and r22 = scaleX, then r22 = scaleY with SCALE_Y; so
+// the height follows scaleY and the width scaleX. With a ROT_Y axis SCALE_Y is never
+// passed here (the callers refuse it).
+internal int EngineFx_ExhaustQuadXY(const EngineCamera *cam, EngineVec3 centre, int texW, int texH, int large, int scaleX, int scaleY, int hasRotY, int rotY,
+                                    const u8 colour[4], EngineVertex v[4], u16 idx[6])
 {
 	const float s = (scaleX != 0) ? ((float)scaleX / 4096.0f) : 1.0f;
+	const float sy = (scaleY != 0) ? ((float)scaleY / 4096.0f) : s;
 	const float halfW = (float)(texW << (large ? 4 : 1));
 	const float halfH = (float)(texH << (large ? 4 : 1));
 	const float row0 = EngineFx_ExhaustRowLength(cam, 0);
@@ -254,7 +259,13 @@ internal int EngineFx_ExhaustQuad(const EngineCamera *cam, EngineVec3 centre, in
 	{
 		roll = (s16)(-(rotY & 0xfff));
 	}
-	return Engine_FxBillboard(cam, centre, s * halfW / (2.0f * row0), s * halfH / (4.0f * row1), roll, colour, v, idx, 0) == 4;
+	return Engine_FxBillboard(cam, centre, s * halfW / (2.0f * row0), sy * halfH / (4.0f * row1), roll, colour, v, idx, 0) == 4;
+}
+
+internal int EngineFx_ExhaustQuad(const EngineCamera *cam, EngineVec3 centre, int texW, int texH, int large, int scaleX, int hasRotY, int rotY,
+                                  const u8 colour[4], EngineVertex v[4], u16 idx[6])
+{
+	return EngineFx_ExhaustQuadXY(cam, centre, texW, texH, large, scaleX, 0, hasRotY, rotY, colour, v, idx);
 }
 
 // Returns 0 = not an exhaust particle of an owned driver (the caller does what
@@ -417,6 +428,201 @@ int EngineFx_ExhaustSprite(struct Particle *p, int view, const struct Icon *icon
 		return -1;
 	}
 	Engine_FxNoteDrawn(ENGINE_FX_EXHAUST);
+	return 1;
+}
+
+// --------------------------------------------------------------------------
+// TRACK MOD FLAMES (round of 2026-10-15, S1): the flame columns of a track mod
+// drawn by the engine, as billboards with a depth test against the engine
+// track (the PS1 primitive has none and shows through walls).
+//
+// WHICH PARTICLES. Particle_RenderList (game/Particle.c) asks for every WORLD
+// particle (not driver-local) under --engine. Taken are only those that meet all of:
+//   - a container track plays on this level (NativeTrack_ActiveForLevel: a
+//     container is loaded and the level is its donor slot) and the engine drew
+//     the track this frame (Engine_TrackDrawnThisFrame);
+//   - the icon group is the flame slot gGT->iconGroup[0xA];
+//   - the axes are exactly POS_X, POS_Y, POS_Z, SCALE_X, SCALE_Y (0x67), no
+//     function, not driver-local, no special line.
+// That is the column a track mod sets every tick (game/native_trackmod.c,
+// TrackMod_FlameSpawn: Particle_Init with its own group, which it put into
+// iconGroup[0xA] (TrackMod_FlameBuildIcons), then flagsAxis = 0x67, funcPtr NULL,
+// LARGE_QUAD). The retail users of the slot init other axes: emSet_fjFire
+// (game/231/RB_FlameJet.c, RB_FlameJet_Particles) and emSet_Fireball
+// (game/231/RB_Fireball.c) both have ROT_Y and COLOR_R (0xb7). Every other
+// particle answers 0 after these compares and retail draws it as before.
+//
+// GEOMETRY. As the exhaust (header above), without the driver-local offset and
+// the DRAW_SUCCESSFUL gate (a world particle has no instance): position
+// axis >> 6 = 4x world, near-camera box, depth 4z against renderDepthLimit << 2.
+// The size of a SCALE_X + SCALE_Y particle: r11 = scaleX << 1, r22 = scaleY
+// (Particle_RenderList_BuildNormalMatrix), EngineFx_ExhaustQuadXY. The OT cell
+// is the one retail links into without an idpp (Particle_NativeOtSlot).
+//
+// THE GAME-STATE PROOF. Particle_SetColors (game/Particle.c) writes back only in
+// its colour branch, entered when the first argument (the axis flags) has
+// PARTICLE_SET_COLOR_FLAG_RED (0x80, the COLOR_R axis bit). 0x67 has no such bit,
+// so the call writes nothing; it is still made where retail makes it.
+// Engine_SelfTestExhaust checks the rule and the size of a known column.
+
+#define ENGINE_FX_FLAME_ICON_GROUP 0xA
+// The three position axes (0x7) and both scale axes.
+#define ENGINE_FX_FLAME_AXES (0x0007u | PARTICLE_AXIS_FLAG_SCALE_X | PARTICLE_AXIS_FLAG_SCALE_Y)
+
+global_variable u32 s_engFxFlameDrawn;  // taken and submitted
+global_variable u32 s_engFxFlameRetail; // taken by the rule, but left to retail (its PS1 primitive is drawn)
+global_variable u32 s_engFxFlameTourDrawn;
+global_variable u32 s_engFxFlameTourRetail;
+global_variable int s_engFxFlameRegistered;
+
+internal void EngineFx_FlameTourReport(int entry, int levelID, int phase)
+{
+	if (phase == 0)
+	{
+		s_engFxFlameTourDrawn = s_engFxFlameDrawn;
+		s_engFxFlameTourRetail = s_engFxFlameRetail;
+		return;
+	}
+	Platform_Log("[CTR Engine] tour %d level %d track mod flames: drawn %u, left to retail %u\n", entry, levelID, s_engFxFlameDrawn - s_engFxFlameTourDrawn,
+	             s_engFxFlameRetail - s_engFxFlameTourRetail);
+}
+
+internal void EngineFx_FlameReport(void)
+{
+	Platform_Log("[CTR Engine] track mod flames: drawn %u, left to retail %u\n", s_engFxFlameDrawn, s_engFxFlameRetail);
+}
+
+// The rule above on plain values (also the self test's subject).
+internal int EngineFx_FlameRule(int containerLevel, int trackDrawn, int flameSlot, u32 flagsAxis, u32 flagsSetColor, int hasFunc)
+{
+	return containerLevel && trackDrawn && flameSlot && ((flagsAxis & 0xffffu) == ENGINE_FX_FLAME_AXES) && !hasFunc &&
+	       ((flagsSetColor & (PARTICLE_SET_COLOR_FLAG_DRIVER_LOCAL | PARTICLE_SET_COLOR_FLAG_SPECIAL_LINE)) == 0);
+}
+
+// 0 = not a track mod flame (the caller goes on as always), 1 = the engine took
+// it (drawn, or outside the gates where retail draws nothing either), -1 = a
+// flame the engine could not take (counted; retail draws its primitive).
+int EngineFx_WorldSprite(struct Particle *p, int view, const struct Icon *icon, s32 posX, s32 posY, s32 posZ, const s32 *cameraOffset, u32 *defaultOT)
+{
+	const struct GameTracker *gGT = sdata->gGT;
+	const EngineCamera *cam;
+	EngineVertex v[4];
+	u16 idx[6];
+	u8 rgba[4];
+	EngineVec3 world;
+	EngineDraw draw;
+	u32 *ot = NULL;
+	u32 color;
+	float zv;
+	s32 depth;
+	int scaleX;
+	int scaleY;
+	int material;
+	int semi;
+	int raw;
+	int cell;
+	u16 tpage;
+
+	if (!g_cfg_engine || (p == NULL) || (gGT == NULL))
+	{
+		return 0;
+	}
+	if (!s_engFxFlameRegistered)
+	{
+		s_engFxFlameRegistered = 1;
+		Engine_TourRegister(EngineFx_FlameTourReport);
+		Platform_AtExitReport(EngineFx_FlameReport);
+	}
+	if (!EngineFx_FlameRule(NativeTrack_ActiveForLevel((int)gGT->levelID), 1,
+	                        (p->ptrIconGroup != NULL) && (p->ptrIconGroup == gGT->iconGroup[ENGINE_FX_FLAME_ICON_GROUP]), p->flagsAxis, p->flagsSetColor,
+	                        p->funcPtr != NULL))
+	{
+		return 0;
+	}
+	// A flame in a frame the PS1 walk drew the track: retail draws it, counted.
+	if (!Engine_TrackDrawnThisFrame())
+	{
+		s_engFxFlameRetail++;
+		return 0;
+	}
+
+	cam = Engine_FrameCamera(view);
+	scaleX = p->axis[PARTICLE_AXIS_SCALE_X_OR_LINE_SCALE].startVal;
+	scaleY = p->axis[PARTICLE_AXIS_SCALE_Y_OR_LINE_PREV_Y].startVal;
+	if ((cam == NULL) || !cam->valid || (icon == NULL) || (cameraOffset == NULL) || (defaultOT == NULL) || (scaleX < 1) || (scaleX > 0x3fff) ||
+	    (scaleY < 1) || (scaleY > 0x3fff))
+	{
+		s_engFxFlameRetail++;
+		return -1;
+	}
+
+	// The near-camera box and the depth, as retail (see the exhaust).
+	if (!Particle_RenderList_IsNearCamera(posX - cameraOffset[0]) || !Particle_RenderList_IsNearCamera(posY - cameraOffset[1]) ||
+	    !Particle_RenderList_IsNearCamera(posZ - cameraOffset[2]))
+	{
+		return 1;
+	}
+	world.x = (float)posX * 0.25f;
+	world.y = (float)posY * 0.25f;
+	world.z = (float)posZ * 0.25f;
+	zv = Engine_Mat4MulPoint(&cam->viewFromWorld, world).z;
+	if (zv < cam->zNear)
+	{
+		return 1;
+	}
+	depth = (s32)(zv * 4.0f);
+	if (CTR_MipsSll(p->renderDepthLimit, 2) < depth)
+	{
+		return 1;
+	}
+
+	// The colour, where retail calls it (writes nothing for these axes, see above).
+	color = Particle_SetColors(p->flagsAxis, p->flagsSetColor, p);
+	EngineFx_ExhaustDecodeColor(color, rgba, &semi, &raw);
+
+	if (!EngineFx_ExhaustQuadXY(cam, world, (icon->texLayout.u1 - icon->texLayout.u0) + 1, (icon->texLayout.v3 - icon->texLayout.v0) + 1,
+	                            (p->flagsSetColor & PARTICLE_SET_COLOR_FLAG_LARGE_QUAD) != 0, scaleX, scaleY, 0, 0, rgba, v, idx))
+	{
+		s_engFxFlameRetail++;
+		return -1;
+	}
+	tpage = (u16)((icon->texLayout.tpage & ~PARTICLE_SET_COLOR_FLAG_DRAW_MODE_MASK) | (p->flagsSetColor & PARTICLE_SET_COLOR_FLAG_DRAW_MODE_MASK));
+	v[0].texcoord[0] = (float)icon->texLayout.u0;
+	v[0].texcoord[1] = (float)icon->texLayout.v0;
+	v[1].texcoord[0] = (float)icon->texLayout.u1;
+	v[1].texcoord[1] = (float)icon->texLayout.v1;
+	v[2].texcoord[0] = (float)icon->texLayout.u3;
+	v[2].texcoord[1] = (float)icon->texLayout.v3;
+	v[3].texcoord[0] = (float)icon->texLayout.u2;
+	v[3].texcoord[1] = (float)icon->texLayout.v2;
+
+	material = EngineFx_ExhaustMaterial(tpage, icon->texLayout.clut, semi);
+	if (material < 0)
+	{
+		s_engFxFlameRetail++;
+		return -1;
+	}
+	cell = Particle_NativeOtSlot(p, NULL, depth, defaultOT, &ot);
+
+	memset(&draw, 0, sizeof(draw));
+	draw.mesh = -1;
+	Engine_CameraScreenFromWorld(cam, &draw.clipFromModel);
+	draw.tint[0] = draw.tint[1] = draw.tint[2] = draw.tint[3] = 1.0f;
+	draw.materialOverride = -1;
+	draw.sortDepth = zv;
+	draw.otCell = (u32)cell;
+	draw.flags = ENGINE_DRAW_TRANSPARENT;
+	draw.dynVertices = v;
+	draw.dynVertexCount = 4;
+	draw.dynIndices = idx;
+	draw.dynIndexCount = 6;
+	draw.dynMaterial = material;
+	if (!Engine_RenderSubmitLinked(view, &draw, ot, cell))
+	{
+		s_engFxFlameRetail++;
+		return -1;
+	}
+	s_engFxFlameDrawn++;
 	return 1;
 }
 
@@ -729,6 +935,49 @@ int Engine_SelfTestExhaust(int *checks)
 	EngineFx_ExhaustTestEmitter(data.emSet_Exhaust_Med, "Exhaust_Med", 1, checks, &failures);
 	EngineFx_ExhaustTestEmitter(data.emSet_Exhaust_Low, "Exhaust_Low", 1, checks, &failures);
 	EngineFx_ExhaustTestEmitter(data.emSet_Exhaust_Water, "Exhaust_Water", 0, checks, &failures);
+
+	// TRACK MOD FLAMES: the rule, the size of a column, the no-op colour call.
+	{
+		const u32 col = PARTICLE_SET_COLOR_FLAG_LARGE_QUAD | PARTICLE_SET_COLOR_FLAG_SEMI_TRANSPARENT | 0x20u;
+		EngineCamera cam;
+		EngineVertex v[4];
+		u16 idx[6];
+		struct Particle p;
+		float w;
+		float h;
+		u32 word;
+
+		EngineFx_ExhaustCheck(EngineFx_FlameRule(1, 1, 1, 0x67u, col, 0), "flame rule: the column is taken", checks, &failures);
+		EngineFx_ExhaustCheck(!EngineFx_FlameRule(0, 1, 1, 0x67u, col, 0), "flame rule: not on a retail level", checks, &failures);
+		EngineFx_ExhaustCheck(!EngineFx_FlameRule(1, 0, 1, 0x67u, col, 0), "flame rule: not when the PS1 walk drew the track", checks, &failures);
+		EngineFx_ExhaustCheck(!EngineFx_FlameRule(1, 1, 0, 0x67u, col, 0), "flame rule: not outside the flame slot", checks, &failures);
+		EngineFx_ExhaustCheck(!EngineFx_FlameRule(1, 1, 1, 0xb7u, col, 0), "flame rule: not the retail flame jet / fireball axes", checks, &failures);
+		EngineFx_ExhaustCheck(!EngineFx_FlameRule(1, 1, 1, 0x67u, col, 1), "flame rule: not with a function", checks, &failures);
+		EngineFx_ExhaustCheck(!EngineFx_FlameRule(1, 1, 1, 0x67u, col | PARTICLE_SET_COLOR_FLAG_DRIVER_LOCAL, 0), "flame rule: not driver-local", checks,
+		                      &failures);
+
+		// A 32 x 32 large column, scaleX 0x1200, scaleY 0x2a00, at view z 400: retail
+		// r11 = 0x2400, r22 = 0x2a00, halfW = halfH = 512; screen = 2 H r/4096 half / (4 z).
+		EngineFx_ExhaustTestCamera(&cam, 0.0f, 0.0f, 0.0f, 0.0f);
+		{
+			const float retailW = 2.0f * cam.H * ((float)(0x1200 * 2) / 4096.0f * 512.0f) / (4.0f * 400.0f);
+			const float retailH = 2.0f * cam.H * ((float)0x2a00 / 4096.0f * 512.0f) / (4.0f * 400.0f);
+
+			EngineFx_ExhaustCheck(EngineFx_ExhaustQuadXY(&cam, EngineFx_ExhaustTestWorld(&cam, 0.0f, 0.0f, 400.0f), 32, 32, 1, 0x1200, 0x2a00, 0, 0, colour, v,
+			                                             idx),
+			                      "flame quad builds", checks, &failures);
+			EngineFx_ExhaustExtent(&cam, v, &w, &h);
+			EngineFx_ExhaustCheck((EngineFx_ExhaustAbs(w - retailW) < 0.5f) && (EngineFx_ExhaustAbs(h - retailH) < 0.5f), "flame column: retail screen size",
+			                      checks, &failures);
+		}
+
+		// Particle_SetColors with the column's axes writes nothing (no COLOR_R bit).
+		memset(&p, 0x5a, sizeof(p));
+		word = Particle_SetColors(0x67u, col, &p);
+		EngineFx_ExhaustCheck(p.axis[PARTICLE_AXIS_COLOR_R].startVal == (int)0x5a5a5a5a,
+		                      "flame colour call writes no axis", checks, &failures);
+		EngineFx_ExhaustCheck((word & PARTICLE_GPU_CODE_SHADE_TEXTURE) != 0, "flame colour: raw texture", checks, &failures);
+	}
 
 	return failures;
 }
