@@ -816,6 +816,17 @@ u32 Engine_ModelLiveFrame(const EngineModelImport *imp, const struct Model *mode
 // holding a pointer outside its animtex list, the ranges of the load's layout.
 u64 Engine_ModelRangeSkip(int mesh, const struct Model *model);
 int Engine_SelfTestModel(int *checks);
+// THE TRIANGLE SIDES (round 18, for the instance light below): per mesh
+// triangle of an imported model, whether it is two-sided (its command has no
+// cull bit) and whether the command it is drawn with has bit 29. Written by
+// Engine_ModelImport (Engine_ModelNoteTriangles); NULL when the mesh has none
+// (or is no longer the one noted). *generation changes with every import.
+#define ENGINE_MODEL_TRI_TWO_SIDED 0x01u
+#define ENGINE_MODEL_TRI_FLIP 0x02u
+struct NativeTwinSource;
+void Engine_ModelNoteTriangles(int mesh, const struct Model *model, const struct NativeTwinSource *src, const u32 *order, u32 keptTris);
+const u8 *Engine_ModelTriangleBits(int mesh, u32 *count, u32 *generation);
+int Engine_SelfTestModelTriangles(int *checks);
 
 // --------------------------------------------------------------------------
 // INSTANCES IN WORLD SPACE (platform/engine_instance.c; round of 2026-10-13)
@@ -868,6 +879,32 @@ int Engine_InstanceViewOf(const struct PushBuffer *pb);
 // boxes made (every corner in front of the camera). A measurement; draws nothing.
 int Engine_InstanceScreenBoxes(const struct Instance *inst, const struct InstDrawPerPlayer *idpp, const struct PushBuffer *pb, int mesh, u32 frame,
                                float engineBox[4], float retailBox[4]);
+
+// --------------------------------------------------------------------------
+// THE RETAIL WRITER OF AN INSTANCE (platform/engine_inst_light.c; round 18)
+//
+// The colour and blend retail's primitive writer gives an instance's triangles,
+// shown by the engine's instance draw. Chosen by what retail chose for the
+// instance this frame - the labels RenderBucket_WriteInstanceCallbackLabels
+// wrote from its flags (funcPtr[1] the primitive writer, funcPtr[2] the
+// water/mirror side selector) - never by model or level. Reads the game state
+// only (instance, idpp); the maths in float (see the file).
+//
+// 1 = the engine follows the instance's primitive writer (normal, key, lit);
+// 0 = it does not (depth fade): retail draws the instance.
+int Engine_InstLightWriterFollowed(const struct Instance *inst);
+// The tints of the draws by the side selector and the view's handler (SPLIT:
+// tint above, belowTint and drawBelow; REFLECTION / SPECIAL: mirrorTint).
+// 0 = retail draws pieces the engine's draws can not show: retail draws.
+int Engine_InstLightSplit(const struct Instance *inst, const struct InstDrawPerPlayer *idpp, EngineInstanceDraw *d);
+// An instance drawn with the key or lit writer: its triangles lit as retail
+// lights them (flat, per side) and blended per side, drawn from a variant of
+// mesh (made once per import) as live vertices of frame (d->liveVertices, when
+// set, is the source frame). Sets d->mesh, d->frame, d->liveVertices and the
+// transparent flag. 1 = d is ready (also: nothing to do for another writer);
+// 0 = refused (logged once per mesh): retail draws.
+int Engine_InstLightApply(const struct Instance *inst, const struct InstDrawPerPlayer *idpp, int mesh, u32 frame, EngineInstanceDraw *d);
+int Engine_SelfTestInstLight(int *checks);
 
 // --------------------------------------------------------------------------
 // CUSTOM DRIVERS WITH ONLY A CMDL (platform/engine_driver_cmdl.c; round of 2026-10-13)

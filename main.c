@@ -105,6 +105,7 @@
 #include "platform/engine_model.c"
 #include "platform/engine_driver.c"
 #include "platform/engine_instance.c"
+#include "platform/engine_inst_light.c"
 #include "platform/engine_driver_cmdl.c"
 #include "platform/engine_fx_common.c"
 #include "platform/engine_fx_shadow.c"

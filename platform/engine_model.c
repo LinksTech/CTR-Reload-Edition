@@ -1157,6 +1157,7 @@ int Engine_ModelImport(const struct Model *model, const char *name, EngineModelI
 				free(triAnimated);
 			}
 		}
+		Engine_ModelNoteTriangles(mesh, model, &src, order, keptTris);
 		out->mesh = mesh;
 		out->firstMaterial = firstMaterial;
 		out->materialCount = keyCount;
@@ -1437,6 +1438,153 @@ u32 Engine_ModelLiveFrame(const EngineModelImport *imp, const struct Model *mode
 		o->color[3] = 255;
 	}
 	return table->recordCount;
+}
+
+// --------------------------------------------------------------------------
+// THE TRIANGLE SIDES (round 18, for platform/engine_inst_light.c). Per mesh
+// triangle of an imported model (mesh order): ENGINE_MODEL_TRI_TWO_SIDED when
+// its command has no cull bit (the twin's triangleSide 1, the import keeps it
+// once as listed), ENGINE_MODEL_TRI_FLIP when the command it is drawn with
+// has bit 29. Those two decide which side of a two-sided triangle retail's
+// lit and key writers call the front: signedTest = NCLIP ^ instance bit 15 ^
+// command bit 29 (RenderBucket_QueueExecute.c:3199, :3419).
+
+typedef struct
+{
+	u8 *bits;                     // one per mesh triangle, NULL = none
+	u32 count;                    // mesh triangles
+	u32 generation;               // Engine_ModelNoteTriangles call that wrote it
+	const EngineVertex *vertices; // the mesh's CPU copy it belongs to
+} ModelTriangleTable;
+
+global_variable ModelTriangleTable s_modelTriangles[ENGINE_MESHES_MAX];
+global_variable u32 s_modelTriangleGeneration = 0;
+
+// The draw command of every event of header 0's list, in event order: the
+// walk of the twin (native_twin.c NativeTwin_WalkList; RB:4697-4727 in DrawFunc_Normal) without
+// the vertices. A triangle is projected from the third vertex of a strip on;
+// the first one of a strip is drawn with the strip's first command, every
+// later one with its own. Colour-only commands (upper half 0) are skipped.
+// Returns the event count (outMax + 1 when there are more).
+internal u32 Model_EventCommands(const struct ModelHeader *mh, u32 *out, u32 outMax)
+{
+	const u32 *list;
+	u32 events = 0;
+	u32 stripLength = 0;
+	u32 primCommand = 0;
+	u32 index;
+
+	if ((mh == NULL) || (mh->ptrCommandList == 0u))
+	{
+		return 0;
+	}
+	list = (const u32 *)(uintptr_t)mh->ptrCommandList;
+	for (index = 1; (index <= (u32)NATIVE_TWIN_COMMANDS_MAX) && (list[index] != 0xffffffffu); index++)
+	{
+		const u32 command = list[index];
+		const u32 flags = (command >> 24) & 0xffu;
+
+		if ((command >> 16) == 0u)
+		{
+			continue;
+		}
+		if (((flags & NATIVE_TWIN_CMD_NEW_STRIP) != 0u) || (stripLength == 0u))
+		{
+			primCommand = command;
+		}
+		if ((flags & NATIVE_TWIN_CMD_NEW_STRIP) != 0u)
+		{
+			stripLength = 0;
+		}
+		if (stripLength < 2u)
+		{
+			stripLength++;
+			continue;
+		}
+		if (events >= outMax)
+		{
+			return outMax + 1u;
+		}
+		out[events++] = (stripLength == 2u) ? primCommand : command;
+		stripLength++;
+	}
+	return events;
+}
+
+void Engine_ModelNoteTriangles(int mesh, const struct Model *model, const struct NativeTwinSource *src, const u32 *order, u32 keptTris)
+{
+	ModelTriangleTable *table;
+	const EngineMeshDesc *desc;
+	u32 *commands = NULL;
+	u8 *bits = NULL;
+	u32 t;
+
+	if ((mesh < 0) || (mesh >= ENGINE_MESHES_MAX))
+	{
+		return;
+	}
+	table = &s_modelTriangles[mesh];
+	free(table->bits);
+	memset(table, 0, sizeof(*table));
+	table->generation = ++s_modelTriangleGeneration;
+	desc = Engine_MeshDesc(mesh);
+	if ((desc == NULL) || (model == NULL) || (model->numHeaders < 1) || (model->headers == NULL) || (src == NULL) || (order == NULL) ||
+	    (keptTris == 0u) || (src->count.events == 0u) || (desc->verticesPerFrame != keptTris * 3u))
+	{
+		return;
+	}
+	commands = (u32 *)calloc(src->count.events, sizeof(u32));
+	bits = (u8 *)calloc(keptTris, 1);
+	if ((commands == NULL) || (bits == NULL) || (Model_EventCommands(&model->headers[0], commands, src->count.events) != src->count.events))
+	{
+		free(commands);
+		free(bits);
+		return;
+	}
+	for (t = 0; t < keptTris; t++)
+	{
+		const u32 tri = order[t];
+		const u32 e = src->triangleEvent[tri];
+
+		if ((tri >= src->native.triangleCount) || (e >= src->count.events))
+		{
+			free(commands);
+			free(bits);
+			return;
+		}
+		bits[t] = (u8)(((src->triangleSide[tri] == 1u) ? ENGINE_MODEL_TRI_TWO_SIDED : 0u) |
+		               (((commands[e] & NATIVE_TWIN_CMD_FLIP) != 0u) ? ENGINE_MODEL_TRI_FLIP : 0u));
+	}
+	free(commands);
+	table->bits = bits;
+	table->count = keptTris;
+	table->vertices = desc->vertices;
+}
+
+const u8 *Engine_ModelTriangleBits(int mesh, u32 *count, u32 *generation)
+{
+	const ModelTriangleTable *table;
+	const EngineMeshDesc *desc;
+
+	if ((mesh < 0) || (mesh >= ENGINE_MESHES_MAX))
+	{
+		return NULL;
+	}
+	table = &s_modelTriangles[mesh];
+	desc = Engine_MeshDesc(mesh);
+	if ((table->bits == NULL) || (desc == NULL) || (desc->vertices != table->vertices) || (desc->verticesPerFrame != table->count * 3u))
+	{
+		return NULL;
+	}
+	if (count != NULL)
+	{
+		*count = table->count;
+	}
+	if (generation != NULL)
+	{
+		*generation = table->generation;
+	}
+	return table->bits;
 }
 
 // --------------------------------------------------------------------------
@@ -2045,6 +2193,82 @@ int Engine_SelfTestModel(int *checks)
 	free(m->animBytes[1]);
 	free(m);
 	// Model runs last in Engine_SelfTest: nothing after it reads the table.
+	Engine_MaterialsReset();
+	return failures;
+}
+
+// THE TRIANGLE SIDES on the made-up model (called by Engine_SelfTestInstLight):
+// the event walk on a list with a colour-only command and a longer strip, the
+// bits of the four kept triangles (tri 1 has bit 29, tri 2 is two-sided),
+// the same model again with bit 29 on tri 2, and no bits after the destroy.
+int Engine_SelfTestModelTriangles(int *checks)
+{
+	// strip A B C (one event, drawn with A), a colour-only word, strip D E F G
+	// (two events: D, then G's own command).
+	static const u32 list[] = {4u, 0x80010001u, 0x00020002u, 0x00000123u, 0x20030003u, 0x90040004u, 0x00050005u, 0x00060006u, 0x20070007u, 0xffffffffu};
+	static const u8 wanted[2][MODEL_TEST_TRIS] = {
+	    {0u, ENGINE_MODEL_TRI_FLIP, ENGINE_MODEL_TRI_TWO_SIDED, 0u},
+	    {0u, ENGINE_MODEL_TRI_FLIP, ENGINE_MODEL_TRI_TWO_SIDED | ENGINE_MODEL_TRI_FLIP, 0u},
+	};
+	int failures = 0;
+	ModelTest *m = (ModelTest *)malloc(sizeof(ModelTest));
+	struct ModelHeader header;
+	u32 commands[4];
+	u32 generation[2] = {0u, 0u};
+	int pass;
+
+	memset(&header, 0, sizeof(header));
+	header.ptrCommandList = (u32)(uintptr_t)list;
+	MODEL_CHECK(Model_EventCommands(&header, commands, 4u) == 3u, "event walk: %u events, wanted 3", (unsigned)Model_EventCommands(&header, commands, 4u));
+	MODEL_CHECK((commands[0] == 0x80010001u) && (commands[1] == 0x90040004u) && (commands[2] == 0x20070007u),
+	            "event walk commands 0x%08x 0x%08x 0x%08x", (unsigned)commands[0], (unsigned)commands[1], (unsigned)commands[2]);
+	MODEL_CHECK(Model_EventCommands(&header, commands, 2u) == 3u, "event walk with too small room reports more");
+	MODEL_CHECK(Engine_ModelTriangleBits(-1, NULL, NULL) == NULL, "bits of mesh -1");
+
+	if ((m == NULL) || !ModelTest_Build(m))
+	{
+		MODEL_CHECK(0, "test model not built");
+		if (m != NULL)
+		{
+			free(m->animBytes[0]);
+			free(m->animBytes[1]);
+			free(m);
+		}
+		return failures;
+	}
+	for (pass = 0; pass < 2; pass++)
+	{
+		EngineModelImport imp;
+		const u8 *bits;
+		u32 count = 0;
+		int t;
+
+		if (pass == 1)
+		{
+			m->commands[1 + 6] |= NATIVE_TWIN_CMD_FLIP; // tri 2's first command
+		}
+		memset(&imp, 0, sizeof(imp));
+		if (!Engine_ModelImport(&m->model, "model-test sides", &imp))
+		{
+			MODEL_CHECK(0, "pass %d: import failed", pass);
+			continue;
+		}
+		bits = Engine_ModelTriangleBits(imp.mesh, &count, &generation[pass]);
+		MODEL_CHECK((bits != NULL) && (count == MODEL_TEST_TRIS), "pass %d: bits %p count %u", pass, (const void *)bits, (unsigned)count);
+		if ((bits != NULL) && (count == MODEL_TEST_TRIS))
+		{
+			for (t = 0; t < MODEL_TEST_TRIS; t++)
+			{
+				MODEL_CHECK(bits[t] == wanted[pass][t], "pass %d: tri %d bits 0x%x, wanted 0x%x", pass, t, bits[t], wanted[pass][t]);
+			}
+		}
+		Engine_MeshDestroy(imp.mesh);
+		MODEL_CHECK(Engine_ModelTriangleBits(imp.mesh, NULL, NULL) == NULL, "pass %d: no bits after the destroy", pass);
+	}
+	MODEL_CHECK(generation[1] != generation[0], "a new import gives a new generation");
+	free(m->animBytes[0]);
+	free(m->animBytes[1]);
+	free(m);
 	Engine_MaterialsReset();
 	return failures;
 }

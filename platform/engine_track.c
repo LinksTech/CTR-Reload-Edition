@@ -4843,11 +4843,25 @@ internal int EngTrack_RouteInstance(struct Instance *inst, struct InstDrawPerPla
 			Platform_Log("[CTR Engine] track: instance model '%s' id %d: live frame refused, the imported frame is drawn\n", em->name, (int)em->id);
 		}
 	}
+	// THE RETAIL WRITER (round 18, platform/engine_inst_light.c): colour and
+	// blend as the primitive writer and the water/mirror side selector retail
+	// chose for this instance from its flags (funcPtr[1], funcPtr[2]) - the
+	// side tints of the split and mirror draws, and for the key and lit writers
+	// the lit triangles of the mesh's variant. A writer or a side selection the
+	// engine does not show is left to retail (declined, counted under flags).
+	if (!Engine_InstLightWriterFollowed(inst) || !Engine_InstLightSplit(inst, idpp, &d) || !Engine_InstLightApply(inst, idpp, em->imp.mesh, (u32)meshFrame, &d))
+	{
+		em->declined++;
+		s_egtInstDeclined++;
+		s_egtInstDeclinedBy[EGT_DECLINE_FLAGS]++;
+		return 0;
+	}
 	if (Engine_InstanceSubmit(inst, idpp, pb, &d) > 0)
 	{
 		em->drawn++;
 		s_egtInstDrawn++;
-		EngTrack_PositionCheck(em, inst, idpp, pb, d.mesh, d.frame, runtime);
+		// The position of the imported mesh frame (a lit variant has the same corners).
+		EngTrack_PositionCheck(em, inst, idpp, pb, em->imp.mesh, (u32)meshFrame, runtime);
 		return 1;
 	}
 	em->declined++;
