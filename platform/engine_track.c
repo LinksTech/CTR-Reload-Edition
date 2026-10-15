@@ -4168,14 +4168,11 @@ internal int EngTrack_OracleTableLines(const EngTrackOracleFace *base, int side,
 }
 
 // The E line of a VRAM face: the key's tpage and clut, the face's texcoords;
-// box= unclamped ("ne" samples floor(v_uv) without a clamp: one texel below
-// the lowest corner and the highest corner itself can be read).
+// box= the face's UV box ("ne" clamps floor(v_uv) to EngineVertex.uvBox, the
+// same on all slot vertices of the face, EngTrack_BuildBlock).
 internal void EngTrack_OracleEngineVram(EngTrackOracleFace *f, u16 tpage, u16 clut, const EngTrackFace *face)
 {
-	int umin = 1 << 30;
-	int umax = -(1 << 30);
-	int vmin = 1 << 30;
-	int vmax = -(1 << 30);
+	int box[4];
 	int v;
 
 	EngTrack_OracleTexture(f, tpage, clut);
@@ -4187,13 +4184,10 @@ internal void EngTrack_OracleEngineVram(EngTrackOracleFace *f, u16 tpage, u16 cl
 
 		f->uv[2 * v] = u;
 		f->uv[2 * v + 1] = t;
-		umin = (u < umin) ? u : umin;
-		umax = (u > umax) ? u : umax;
-		vmin = (t < vmin) ? t : vmin;
-		vmax = (t > vmax) ? t : vmax;
 	}
 	EngTrack_OracleRawWords(f, tpage, clut);
-	EngTrack_OracleExtra(f, "box=%d,%d,%d,%d", umin - 1, vmin - 1, umax, vmax);
+	Engine_VertexBoxGet(&face->v[0], box);
+	EngTrack_OracleExtra(f, "box=%d,%d,%d,%d", box[0], box[1], box[2], box[3]);
 	// Vertex v of a built face is slot v (EngTrack_BuildBlock); a 3-vertex face is slots 0, 1, 2.
 	EngTrack_OracleExtra(f, "slots=%s", (face->vertCount == 4) ? "0,1,2,3" : "0,1,2");
 }
@@ -5889,6 +5883,7 @@ int Engine_SelfTestTrack(int *checks)
 		df.face.v[1].texcoord[1] = 20.0f;
 		df.face.v[2].texcoord[0] = 10.0f;
 		df.face.v[2].texcoord[1] = 40.0f;
+		Engine_VertexSetBox(df.face.v, 4, 10, 20, 30, 40); // the face's UV box, as EngTrack_BuildBlock writes it
 		df.face.v[0].color[0] = 1;
 		df.face.v[1].color[0] = 2;
 		df.face.v[2].color[0] = 3;
@@ -5911,7 +5906,7 @@ int Engine_SelfTestTrack(int *checks)
 		lines[0] = base;
 		EngTrack_OracleEngineVram(&lines[0], key.tpage, key.clut, &df.face);
 		EGT_CHECK((lines[0].uvCount == 3) && (lines[0].uv[2] == 30) && (lines[0].uv[5] == 40) &&
-		              (strstr(lines[0].extra, " tp=0x0075 cl=0x7802 box=9,19,30,40 slots=0,1,2") != NULL),
+		              (strstr(lines[0].extra, " tp=0x0075 cl=0x7802 box=10,20,30,40 slots=0,1,2") != NULL),
 		          "oracle E VRAM: '%s'", lines[0].extra);
 
 		// The cells a row's form holds, then levels 2, 1, 0.

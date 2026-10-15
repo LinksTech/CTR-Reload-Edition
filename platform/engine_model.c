@@ -780,6 +780,17 @@ internal void Model_SlotTexels(EngineVertex *vertices, u32 frames, u32 perFrame,
 				v->texcoord[0] = look->textured ? (float)look->texel[c][0] : 0.0f;
 				v->texcoord[1] = look->textured ? (float)look->texel[c][1] : 0.0f;
 			}
+			// The copy's own UV box (engine.h, THE UV BOX), from the texels it now holds:
+			// the fill loop left it at the whole page (key.tile < 0), the clamp must not
+			// use another layout's box.
+			if (look->textured)
+			{
+				Engine_VertexBoxOfCorners(&vertices[((size_t)f * perFrame) + (e * 3u)], 3);
+			}
+			else
+			{
+				Engine_VertexBoxFull(&vertices[((size_t)f * perFrame) + (e * 3u)], 3);
+			}
 		}
 	}
 }
@@ -1886,6 +1897,35 @@ internal int ModelTest_AnimatedLayouts(int *checks)
 					}
 				}
 				MODEL_CHECK(bad == 0, "animated layouts: %d wrong texel/position/colour value(s) in the slot copies", bad);
+				// THE UV BOX of every copy: the box of its own texels (B 50..70 x 60..90, C
+				// 1..30 x 2..40), in every frame, not the load layout's box.
+				bad = 0;
+				for (fi = 0; fi < 5; fi++)
+				{
+					int v;
+
+					for (v = 0; v < 3; v++)
+					{
+						int want[4] = {255, 255, 0, 0};
+						int cc;
+
+						for (cc = 0; cc < 3; cc++)
+						{
+							want[0] = (texel[v][cc][0] < want[0]) ? texel[v][cc][0] : want[0];
+							want[1] = (texel[v][cc][1] < want[1]) ? texel[v][cc][1] : want[1];
+							want[2] = (texel[v][cc][0] > want[2]) ? texel[v][cc][0] : want[2];
+							want[3] = (texel[v][cc][1] > want[3]) ? texel[v][cc][1] : want[3];
+						}
+						for (cc = 0; cc < 3; cc++)
+						{
+							int got[4];
+
+							Engine_VertexBoxGet(&d->vertices[((u32)fi * 18u) + 9u + ((u32)v * 3u) + (u32)cc], got);
+							bad += (got[0] != want[0]) || (got[1] != want[1]) || (got[2] != want[2]) || (got[3] != want[3]);
+						}
+					}
+				}
+				MODEL_CHECK(bad == 0, "animated layouts: %d slot copy vertices without the box of their own texels", bad);
 			}
 
 			// The draw reads the slot: the load's pointer, B, C, the frame copy of the load's layout, a stray pointer, another model.

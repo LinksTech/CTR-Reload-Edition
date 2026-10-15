@@ -2648,11 +2648,18 @@ const u16 *NativeRenderer_VramMirror(void)
 }
 
 // A static vertex buffer of the "nr" layout, for the native meshes of step 4c
-// (platform/native_char_gpu.c). The layout is the probe's.
+// (platform/native_char_gpu.c). The layout is the probe's. With --engine the
+// engine program "ne" draws these buffers too (the custom driver sets,
+// Engine_MeshCreateExternal), and "ne" declares location 3, the UV box of
+// struct EngineVertex, which this layout does not have: a fourth attribute
+// then reads the colour bytes there. "ne" uses the box only on its VRAM path; a
+// native mesh wears a native texture (texSource 1) and never takes it. Without
+// --engine the layout stays the three attributes of "nr".
 NativeGfxBuffer NativeRenderer_CreateNativeMeshVertexBuffer(int bytes, const void *initial)
 {
 	extern int g_cfg_nativePreview;
-	const NativeGfxVertexBufferDesc desc = {
+	extern int g_cfg_engine;
+	NativeGfxVertexBufferDesc desc = {
 	    .bytes = bytes,
 	    .dynamic = 0,
 	    .initial = initial,
@@ -2662,8 +2669,11 @@ NativeGfxBuffer NativeRenderer_CreateNativeMeshVertexBuffer(int bytes, const voi
 	        {.slot = a_position, .components = 3, .type = NATIVE_GFX_ATTR_FLOAT32, .offset = offsetof(struct NativeProbeVertex, position)},
 	        {.slot = a_texcoord, .components = 2, .type = NATIVE_GFX_ATTR_FLOAT32, .offset = offsetof(struct NativeProbeVertex, texcoord)},
 	        {.slot = a_color, .components = 4, .type = NATIVE_GFX_ATTR_UNORM8, .offset = offsetof(struct NativeProbeVertex, color)},
+	        {.slot = a_extra, .components = 4, .type = NATIVE_GFX_ATTR_UINT8, .offset = offsetof(struct NativeProbeVertex, color)},
 	    },
 	};
+
+	desc.attribCount = g_cfg_engine ? 4 : 3;
 
 	if (!g_cfg_nativePreview || (bytes <= 0))
 	{

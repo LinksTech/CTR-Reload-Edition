@@ -1045,6 +1045,7 @@ internal int EngineFx_ParticleLineQuad(const EngineCamera *cam, EngineVec3 p0, E
 		v[c].color[2] = col[2];
 		v[c].color[3] = col[3];
 	}
+	Engine_VertexBoxFull(v, 4); // untextured (engine.h, THE UV BOX)
 	return 1;
 }
 
@@ -1197,6 +1198,7 @@ int EngineFx_ParticleQuad(struct Particle *p, int view, const struct Icon *icon,
 	v[2].texcoord[1] = (float)icon->texLayout.v3;
 	v[3].texcoord[0] = (float)icon->texLayout.u2;
 	v[3].texcoord[1] = (float)icon->texLayout.v2;
+	Engine_VertexBoxOfCorners(v, 4); // the icon's texels: their box (engine.h, THE UV BOX)
 	tpage = (u16)((icon->texLayout.tpage & ~PARTICLE_SET_COLOR_FLAG_DRAW_MODE_MASK) | (flagsSetColor & PARTICLE_SET_COLOR_FLAG_DRAW_MODE_MASK));
 	material = EngineFx_ParticleMaterial(1, tpage, icon->texLayout.clut, semi, 0);
 	if (material < 0)
@@ -1631,6 +1633,8 @@ internal int EngineFx_ParticleSelfTest(int *checks)
 			float want;
 
 			EngineFx_ExhaustCheck(EngineFx_ParticleLineQuad(&cam, p0, p1, 0.5f, c0, c1, v), "particle line builds", checks, &failures);
+			EngineFx_ExhaustCheck((v[0].uvBox[0] == 0) && (v[0].uvBox[2] == 0) && (v[3].uvBox[1] == 0) && (v[3].uvBox[3] == 0),
+			                      "particle line: untextured, the UV box is the whole page", checks, &failures);
 			for (int c = 0; c < 4; c++)
 			{
 				EngineFx_ParticleTestScreen(&cam, v[c].position[0], v[c].position[1], v[c].position[2], &s[c][0], &s[c][1]);
