@@ -42,11 +42,20 @@ header; colour see COL_TOL_*):
     cell. Found under another stage or cell of the face: feature stage or
     cell. In the load block every engine stage and cell needs a retail
     line (else engine-only); in race frames engine entries without a
-    retail line are coverage gaps (counted).
+    retail line are coverage gaps (counted). Each set (extra set=: none =
+    drawn this frame, load, anim = all AnimTex faces) is compared on its
+    own; engine entries of set=anim without a retail line are counted.
+    Markers: part=1 (a piece: clip or subdivision) - page, depth, CLUT and
+    blend exact against its key, every UV corner inside the integer corner
+    box of the key's engine line; stage=none - own class stage-none;
+    lodonly=1 / noleaf=1 without an engine line of the same key -
+    information, with one compared; nogeo=1 - counted only; clip=1 -
+    counted and compared.
   Direction 2 (models, per track and model name): an engine material that
-    retail never draws for that model is engine-only-material (lod when
-    retail draws the model only with another header). Engine triangles no
-    frame uses are counted as unused per model.
+    retail never draws for that model is engine-only-material. When retail
+    drew the model only with another header, the material is listed as
+    "header 0 never compared" (information). Engine triangles no frame uses
+    are counted as unused per model.
   Sampling outside the window: for every engine triangle that draws a
     retail face, the texels of its sample box (box=) outside its UV box are
     read from the frame's VRAM dump: ring0 = word 0x0000 where the nearest
@@ -57,13 +66,16 @@ header; colour see COL_TOL_*):
     deviations are counted per row, never dropped.
   Controls: engine lines with extra fault=<kind> are planted faults. A kind
     has fired when deviations outside the exception list point at its lines
-    with the target feature (clut -> clut, cell -> cell) and every faulted
-    material on a face retail draws is reported.
+    with the target feature (clut -> clut, cell -> cell; other deviations
+    on fault lines stay deviations, listed as strays) and every faulted
+    unit retail draws (a model material, a track face) is reported.
   --expect fault:<kind> requires that control; --expect TRACK:SRC:MODEL:FEATURE
     (e.g. L3:I:startbanner:sample-outside) requires a known positive.
-  Plausibility: an H line; per track both sides present for every source
-    kind it has (T and I always, M instead on the menu scene; route=retail
-    sources need no engine side); a readable VRAM dump for every race frame.
+  Plausibility: an H line; per track both sides of T and I in its race
+    frames (load block and set=anim lines do not count; route=retail
+    sources need no engine side; the menu scene, a frame tag with 'menu',
+    needs none); a readable VRAM dump for every race frame. Source kinds
+    with one side only (effects, native drivers, sky, water) are listed.
 
 Outputs: Markdown summary (stdout, or PREFIX.md), all records in PREFIX.tsv,
 candidate classes in PREFIX-classes.tsv.
@@ -82,7 +94,12 @@ import sys
 
 SOURCES = 'TIDXSWM'
 FEATURES = ('prim', 'anim', 'lod', 'page', 'depth', 'clut', 'uv', 'blend', 'col', 'stage', 'cell',
-            'missing-source', 'engine-only-material', 'engine-only', 'sample-outside')
+            'stage-none', 'missing-source', 'engine-only-material', 'engine-only', 'sample-outside')
+# Markers of the track lines (P2): retail part (a piece), clip (from a clip
+# record), nogeo (a mosaic piece without a place), lodonly (a level retail does
+# not draw by default), noleaf (a block the walk never reaches), sieve; engine
+# frozen (an AnimTex face that does not follow its cell), tablefail.
+FLAG_KEYS = ('part', 'clip', 'nogeo', 'lodonly', 'noleaf', 'sieve', 'frozen', 'tablefail')
 BLENDS = ('o', '0', '1', '2', '3')
 FAULT_TARGET = {'clut': 'clut', 'cell': 'cell'}
 # Colour tolerance per channel (8-bit corner colours). The retail writer
@@ -186,13 +203,14 @@ def parse_box(s):
 class Line(object):
     __slots__ = ('side', 'src', 'srcId', 'sub', 'page', 'depth', 'clut', 'uv', 'blend', 'cell',
                  'extra', 'lineno', 'fault', 'col', 'box', 'lod', 'stage', 'anim', 'prim', 'route',
-                 'key', 'ncorner')
+                 'key', 'ncorner', 'set', 'flags', 'colbad')
 
     def mat(self):
         return (self.page, self.depth, self.clut, self.blend)
 
     def tuple_key(self):
-        return (self.mat(), self.uv, self.col, self.box, self.lod, self.key, self.anim, self.prim)
+        return (self.mat(), self.uv, self.col, self.box, self.lod, self.key, self.anim, self.prim,
+                self.flags)
 
 
 def parse_entry(fields, lineno):
@@ -240,9 +258,14 @@ def parse_entry(fields, lineno):
     ln.stage = ln.extra.get('stage')
     ln.prim = ln.extra.get('prim')
     ln.route = ln.extra.get('route')
+    ln.set = ln.extra.get('set', '-')
+    ln.flags = frozenset(k for k in FLAG_KEYS if ln.extra.get(k, '0') not in ('0', ''))
     ln.ncorner = len(ln.uv) if ln.uv is not None else (len(ln.col) if ln.col and len(ln.col) > 1 else 3)
-    if ln.col is not None and len(ln.col) not in (1, ln.ncorner):
-        raise LogError('col has %d corners, the face %d' % (len(ln.col), ln.ncorner))
+    ln.colbad = ln.col is not None and len(ln.col) not in (1, ln.ncorner)
+    if ln.colbad:
+        # colours that cannot be paired with the corners (e.g. three colours on
+        # a quad): not compared, counted
+        ln.col = None
     if ln.src == 'T':
         ln.key = ('cell', ln.cell) if ln.cell != '-' else (('stage', ln.stage) if ln.stage is not None else ('-', '-'))
     else:
@@ -620,6 +643,16 @@ def _gap_bucket(g):
     return '<=8' if g <= 8 else ('9-32' if g <= 32 else ('33-128' if g <= 128 else '>128'))
 
 
+def _flags(r, e):
+    """Track markers that split a class (retail piece kinds, engine frozen faces)."""
+    out = []
+    if r is not None:
+        out += [k for k in ('part', 'clip', 'sieve', 'lodonly', 'noleaf') if k in r.flags]
+    if e is not None:
+        out += [k for k in ('frozen', 'tablefail') if k in e.flags]
+    return (' ' + ' '.join(out)) if out else ''
+
+
 def pattern(features, r, e, wind=False):
     """Short description of a direction-1 deviation, the same for the same
     kind of fault on any track (the key of the candidate classes)."""
@@ -651,7 +684,7 @@ def pattern(features, r, e, wind=False):
             parts.append('blend %s>%s' % (r.blend, e.blend))
         elif f == 'col':
             parts.append('col gap %s' % _gap_bucket(col_gap(r, e)))
-    return ' '.join(parts) or '-'
+    return (' '.join(parts) or '-') + _flags(r, e)
 
 
 def object_key(src, src_id):
@@ -688,15 +721,56 @@ class Record(object):
 
 
 def _new_stats():
-    return {'frames': 0, 'load_frames': 0, 'R': 0, 'E': 0, 'compared': 0, 'gap': 0,
-            'fault_lines': 0, 'tracks': set(), 'fault_mats': [], 'engine_no_uv': 0,
+    return {'frames': 0, 'load_frames': 0, 'R': 0, 'E': 0, 'compared': 0, 'gap': 0, 'anim_gap': 0,
+            'fault_lines': 0, 'tracks': set(), 'fault_units': [], 'engine_no_uv': 0,
             'r_no_col': 0, 'e_no_col': 0, 'box_checked': 0, 'box_unchecked': 0, 'e_no_box': 0,
             'vram_frames': 0, 'vram_missing': [], 'route_retail': {}, 'lod_lines': {},
-            'per': {}, 'unused': {}, 'coverage': {}, 'prim_equal': 0}
+            'per': {}, 'unused': {}, 'coverage': {}, 'prim_equal': 0, 'menu_tracks': set(),
+            'part': {}, 'clip': {}, 'nogeo': {}, 'info_lines': {}, 'stage_none': {}, 'lod_never': set(),
+            'col_unpaired': 0}
 
 
 def _per(stats, tr, src):
-    return stats['per'].setdefault((tr, src), {'R': 0, 'E': 0, 'compared': 0})
+    return stats['per'].setdefault((tr, src), {'R': 0, 'E': 0, 'Rrace': 0, 'Erace': 0, 'compared': 0})
+
+
+def _bump(d, k, n=1):
+    d[k] = d.get(k, 0) + n
+
+
+def _inside(r, e):
+    """Every UV corner of the retail piece lies in the integer corner box of
+    the engine line (inclusive, tolerance 0)."""
+    if r.uv is None:
+        return e.uv is None
+    if e.uv is None:
+        return False
+    u0, v0, u1, v1 = bbox(e.uv)
+    return all(u0 <= u <= u1 and v0 <= v <= v1 for u, v in r.uv)
+
+
+def _mat_diffs(r, e):
+    return [n for n, i in (('page', 0), ('depth', 1), ('clut', 2), ('blend', 3)) if r.mat()[i] != e.mat()[i]]
+
+
+def _groups(src, rl, el):
+    """Track lines split by their set (- = drawn this frame, load, anim):
+    each set is compared on its own."""
+    if src != 'T':
+        return [('-', rl, el)]
+    out = {}
+    for ln in rl:
+        out.setdefault(ln.set, ([], []))[0].append(ln)
+    for ln in el:
+        out.setdefault(ln.set, ([], []))[1].append(ln)
+    return [(k, v[0], v[1]) for k, v in sorted(out.items())]
+
+
+def unit_of(rec):
+    """What a planted fault is checked by: a model material, or a track face."""
+    if rec.src == 'T':
+        return (rec.track, rec.object)
+    return (rec.track, rec.object, rec.e.mat() if rec.e is not None else None)
 
 
 def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None):
@@ -705,218 +779,266 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None):
     stats['frames'] = len(frames)
     per_track = {}            # track -> (src, model) -> object data (models)
     tcov = {}                 # track -> coverage sets (track faces)
-    visible = set()           # (track, object, material) of fault lines on faces retail draws
+    visible = set()           # (track, object, material) of model fault lines on faces retail draws
+
+    def rec(**kw):
+        records.append(Record(**kw))
+
     for fr in frames:
         tr = fr.track()
         stats['tracks'].add(tr)
+        if 'menu' in fr.tag.lower():
+            stats['menu_tracks'].add(tr)
         if fr.load:
             stats['load_frames'] += 1
         objs = per_track.setdefault(tr, {})
         cov = tcov.setdefault(tr, {'load_faces': set(), 'load_cells': set(), 'seen_faces': set(),
-                                   'seen_cells': set()})
+                                   'seen_cells': set(), 'mir_faces': set()})
         vram = vram_for(fr) if (vram_for is not None and fr.vram) else None
         if vram is not None:
             stats['vram_frames'] += 1
         elif not fr.load:
             stats['vram_missing'].append(fr.tag)
         for (src, sid), sides in sorted(fr.sources.items()):
-            rl, el = sides['R'], sides['E']
-            p = _per(stats, tr, src)
-            p['R'] += len(rl)
-            p['E'] += len(el)
-            stats['R'] += len(rl)
-            stats['E'] += len(el)
-            stats['fault_lines'] += sum(1 for e in el if e.fault)
-            stats['engine_no_uv'] += sum(1 for e in el if e.page is not None and e.uv is None)
-            stats['r_no_col'] += sum(1 for r in rl if r.col is None)
-            stats['e_no_col'] += sum(1 for e in el if e.col is None)
-            stats['e_no_box'] += sum(1 for e in el if e.box is None and e.page is not None)
             obj = '%s:%s' % (src, object_key(src, sid))
-            if src == 'T':
-                if fr.load:
-                    cov['load_faces'].update(sid for e in el)
-                    cov['load_cells'].update((sid, e.cell) for e in el if e.cell != '-')
-                else:
-                    cov['seen_faces'].update(sid for r in rl)
-                    cov['seen_cells'].update((sid, r.cell) for r in rl if r.cell != '-')
-            if any(r.route == 'retail' for r in rl):
-                stats['route_retail'].setdefault(tr, set()).add(obj)
-                continue
-            es = EngineSet(el)
-            ob = None
-            if src != 'T':
-                ob = objs.setdefault((src, object_key(src, sid)),
-                                     {'R': set(), 'E': {}, 'srcId': sid, 'rlod': set(), 'seen': set(),
-                                      'used': set()})
-                for e in es.lines:
-                    ent = ob['E'].setdefault(e.mat(), {'e': e, 'frames': set(), 'fault': None,
-                                                       'lod': set()})
-                    ent['frames'].add(id(fr))
-                    ent['lod'].add(e.lod or '0')
-                    if e.fault:
-                        ent['fault'], ent['e'] = e.fault, e
-                    ob['seen'].add(e.tuple_key())
-            if not rl:
-                continue
-            if not es.lines:
-                records.append(Record(kind='d1', frame=fr, track=tr, src=src, srcId=sid,
-                                      features=['missing-source'], r=rl[0], r_count=len(rl)))
-                continue
-            # retail lines, one per distinct tuple
-            ret = {}
-            for r in rl:
-                k = r.tuple_key()
-                if k in ret:
-                    ret[k][1] += 1
-                else:
-                    ret[k] = [r, 1]
-            # fault lines on faces retail draws (for the control rule)
-            rkeys = set()
-            for r, _ in ret.values():
-                for opt in line_options(r):
-                    for c in opt:
-                        rc = _rot(c)
-                        rkeys.add((r.page, r.depth, r.blend, tuple(x[0] for x in rc), r.key))
-            for t in es.tris:
-                if t.fault and (t.mat[0], t.mat[1], t.mat[3], t.uvkey, t.key) in rkeys:
-                    visible.add((tr, obj, t.mat))
-            used_by = {}
-            lod_count = {}
-            for r, count in ret.values():
-                rlod = r.lod or '0'
-                if ob is not None:
-                    ob['R'].add(r.mat())
-                    ob['rlod'].add(rlod)
-                if src != 'T' and rlod not in es.lods:
-                    lod_count[rlod] = lod_count.get(rlod, 0) + count
-                    continue
-                p['compared'] += count
-                stats['compared'] += count
-                ctol = col_tol(r, gte_tol)
+            for setname, rl, el in _groups(src, sides['R'], sides['E']):
+                load = fr.load or setname == 'load'
+                race = not fr.load and setname == '-'
+                p = _per(stats, tr, src)
+                p['R'] += len(rl)
+                p['E'] += len(el)
+                if race:
+                    p['Rrace'] += len(rl)
+                    p['Erace'] += len(el)
+                stats['R'] += len(rl)
+                stats['E'] += len(el)
+                stats['fault_lines'] += sum(1 for e in el if e.fault)
+                stats['engine_no_uv'] += sum(1 for e in el if e.page is not None and e.uv is None)
+                stats['r_no_col'] += sum(1 for r in rl if r.col is None)
+                stats['e_no_col'] += sum(1 for e in el if e.col is None)
+                stats['col_unpaired'] += sum(1 for x in rl + el if x.colbad)
+                stats['e_no_box'] += sum(1 for e in el if e.box is None and e.page is not None)
                 if src == 'T':
-                    same = [t for t in es.tris if t.key == r.key]
-                    used, miss = match_line(r, es, rlod, r.key, ctol, same or es.tris)
-                    if miss is not None and r.key[0] != '-':
-                        for k2 in sorted(es.keys() - set([r.key]), key=str):
-                            u2, m2 = match_line(r, es, rlod, k2, ctol, [])
-                            if m2 is None:
-                                e2 = u2[0]
-                                records.append(Record(
-                                    kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=[r.key[0]],
-                                    r=r, e=e2, r_count=count, fault=e2.fault,
-                                    pattern='%s %s>%s' % (r.key[0], r.key[1], k2[1])))
-                                used, miss = u2, False
-                                break
-                        if miss is not False and not same:
-                            d, cand = nearest_tri(_corners(r)[:3], r.mat(), es.tris, ctol)
-                            records.append(Record(
-                                kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=[r.key[0]],
-                                r=r, e=cand.e if cand else None, r_count=count,
-                                fault=cand.fault if cand else None,
-                                pattern='%s %s absent' % r.key))
-                            miss = False
-                else:
-                    pool = [t for t in es.tris if t.lod == rlod]
-                    used, miss = match_line(r, es, rlod, None, ctol, pool)
-                for e in used:
-                    used_by.setdefault(id(e), (e, r))
-                if not miss:
-                    if r.prim not in (None, 'normal'):
-                        stats['prim_equal'] += count
+                    if load:
+                        cov['load_faces'].update(sid for e in el)
+                        cov['load_cells'].update((sid, e.cell) for e in el if e.cell != '-')
+                        cov['mir_faces'].update(sid for r in rl if r.extra.get('mir', '0') not in ('0', ''))
+                    elif race:
+                        cov['seen_faces'].update(sid for r in rl)
+                        cov['seen_cells'].update((sid, r.cell) for r in rl if r.cell != '-')
+                    for kind in sorted(set(e.fault for e in el if e.fault)):
+                        stats['fault_units'].append((kind, (tr, obj), bool(rl)))
+                if any(r.route == 'retail' for r in rl):
+                    stats['route_retail'].setdefault(tr, set()).add(obj)
                     continue
-                feats, eng, fault, wind = miss
-                if not feats:
-                    # no engine triangle to measure against (only lines without UV)
-                    other = es.lines[0]
-                    feats = [n for n, i in (('page', 0), ('depth', 1), ('clut', 2), ('blend', 3))
-                             if r.mat()[i] != other.mat()[i]] or ['uv']
-                    eng, fault = other, other.fault
-                pre = []
-                if r.prim not in (None, 'normal'):
-                    pre.append('prim')
-                if eng is not None and (r.anim or eng.anim):
-                    pre.append('anim')
-                records.append(Record(kind='d1', frame=fr, track=tr, src=src, srcId=sid,
-                                      features=pre + feats, r=r, e=eng, r_count=count, fault=fault,
-                                      wind=wind))
-            for lv, n in sorted(lod_count.items()):
-                rr = next(r for r, _ in ret.values() if (r.lod or '0') == lv)
-                stats['lod_lines'][(tr, obj)] = stats['lod_lines'].get((tr, obj), 0) + n
-                records.append(Record(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=['lod'],
-                                      r=rr, r_count=n,
-                                      pattern='lod %s>%s' % (lv, '|'.join(sorted(es.lods)))))
-            if ob is not None:
-                ob['used'].update(e.tuple_key() for e, _ in used_by.values())
-            # track: engine entries without a retail line
-            if src == 'T':
-                rk = set(r.key for r, _ in ret.values())
-                for e in es.lines:
-                    if e.key in rk:
-                        continue
-                    if fr.load:
-                        records.append(Record(kind='d2', frame=fr, track=tr, src=src, srcId=sid,
-                                              features=['engine-only'], e=e, fault=e.fault,
-                                              pattern='%s %s' % e.key))
+                es = EngineSet(el)
+                ob = None
+                if src != 'T':
+                    ob = objs.setdefault((src, object_key(src, sid)),
+                                         {'R': set(), 'E': {}, 'srcId': sid, 'rlod': set(), 'seen': set(),
+                                          'used': set()})
+                    for e in es.lines:
+                        ent = ob['E'].setdefault(e.mat(), {'e': e, 'frames': set(), 'fault': None,
+                                                           'lod': set()})
+                        ent['frames'].add(id(fr))
+                        ent['lod'].add(e.lod or '0')
+                        if e.fault:
+                            ent['fault'], ent['e'] = e.fault, e
+                        ob['seen'].add(e.tuple_key())
+                # retail lines, one per distinct tuple
+                ret = {}
+                for r in rl:
+                    k = r.tuple_key()
+                    if k in ret:
+                        ret[k][1] += 1
                     else:
-                        stats['gap'] += 1
-            # sampling outside the window: engine entries that draw a face retail draws
-            for e, r in used_by.values():
-                if e.box is None or e.uv is None or e.page is None:
+                        ret[k] = [r, 1]
+                # track: engine entries without a retail line
+                if src == 'T':
+                    rk = set(r.key for r in rl)
+                    for e in es.lines:
+                        if e.key in rk:
+                            continue
+                        if load:
+                            rec(kind='d2', frame=fr, track=tr, src=src, srcId=sid, features=['engine-only'],
+                                e=e, fault=e.fault, pattern='%s %s' % e.key + _flags(None, e))
+                        elif setname == 'anim':
+                            stats['anim_gap'] += 1
+                        else:
+                            stats['gap'] += 1
+                # what is compared: track lines without a place are counted only, levels retail
+                # does not draw by default and blocks in no leaf are information without a partner
+                work = []
+                keys = es.keys()
+                for r, count in ret.values():
+                    if src == 'T':
+                        if 'nogeo' in r.flags:
+                            _bump(stats['nogeo'], tr, count)
+                            continue
+                        if 'clip' in r.flags:
+                            _bump(stats['clip'], tr, count)
+                        if ('lodonly' in r.flags or 'noleaf' in r.flags) and r.key not in keys:
+                            _bump(stats['info_lines'], (tr, 'lodonly' if 'lodonly' in r.flags else 'noleaf'), count)
+                            continue
+                    work.append((r, count))
+                if not work:
                     continue
-                if vram is None:
-                    stats['box_unchecked'] += 1
+                if not es.lines:
+                    rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=['missing-source'],
+                        r=work[0][0], r_count=sum(c for _, c in work))
                     continue
-                stats['box_checked'] += 1
-                ring0, ringf, reach, wrapped = box_outside(e, vram)
-                if ring0 or ringf:
-                    records.append(Record(
-                        kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=['sample-outside'],
-                        r=r, e=e, r_count=1, fault=e.fault,
-                        pattern=('ring0' if ring0 else 'ringf') + (' wrap' if wrapped else ''),
-                        detail='box %s uv box %s ring0 %d ringf %d reach %d' % (
-                            ','.join(map(str, e.box)), ','.join(map(str, bbox(e.uv))), ring0, ringf, reach)))
+                # model fault lines on faces retail draws (for the control rule)
+                if src != 'T':
+                    rkeys = set()
+                    for r, _ in work:
+                        for opt in line_options(r):
+                            for c in opt:
+                                rc = _rot(c)
+                                rkeys.add((r.page, r.depth, r.blend, tuple(x[0] for x in rc)))
+                    for t in es.tris:
+                        if t.fault and (t.mat[0], t.mat[1], t.mat[3], t.uvkey) in rkeys:
+                            visible.add((tr, obj, t.mat))
+                used_by = {}
+                lod_count = {}
+                for r, count in work:
+                    rlod = r.lod or '0'
+                    if ob is not None:
+                        ob['R'].add(r.mat())
+                        ob['rlod'].add(rlod)
+                    if src != 'T' and rlod not in es.lods:
+                        lod_count[rlod] = lod_count.get(rlod, 0) + count
+                        continue
+                    p['compared'] += count
+                    stats['compared'] += count
+                    ctol = col_tol(r, gte_tol)
+                    pre = []
+                    if r.prim not in (None, 'normal'):
+                        pre.append('prim')
+                    if src == 'T' and r.stage == 'none':
+                        _bump(stats['stage_none'], tr, count)
+                        rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=['stage-none'], r=r,
+                            r_count=count, pattern='stage none' + _flags(r, None))
+                        continue
+                    if src == 'T' and 'part' in r.flags:
+                        # a piece (near-plane clip, subdivision without mosaic): page, depth, CLUT
+                        # and blend exact against its key, every UV corner inside the key's box
+                        _bump(stats['part'], tr, count)
+                        same = [e for e in es.lines if e.key == r.key]
+                        hit = next((e for e in same if not _mat_diffs(r, e) and _inside(r, e)), None)
+                        if hit is not None:
+                            used_by.setdefault(id(hit), (hit, r))
+                            continue
+                        other = next((e for e in es.lines if e.key != r.key and not _mat_diffs(r, e) and
+                                      _inside(r, e)), None)
+                        if other is not None:
+                            used_by.setdefault(id(other), (other, r))
+                            rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=[r.key[0]], r=r,
+                                e=other, r_count=count, fault=other.fault,
+                                pattern='%s %s>%s' % (r.key[0], r.key[1], other.key[1]) + _flags(r, other))
+                            continue
+                        if not same:
+                            rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=[r.key[0]], r=r,
+                                r_count=count, pattern='%s %s absent' % r.key + _flags(r, None))
+                            continue
+                        best = min(same, key=lambda e: (len(_mat_diffs(r, e)) + (0 if _inside(r, e) else 1),
+                                                        e.lineno))
+                        d = _mat_diffs(r, best) + ([] if _inside(r, best) else ['uv'])
+                        if r.anim or best.anim:
+                            pre.append('anim')
+                        rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid,
+                            features=pre + [f for f in FEATURES if f in d], r=r, e=best, r_count=count,
+                            fault=best.fault)
+                        continue
+                    if src == 'T':
+                        same = [t for t in es.tris if t.key == r.key]
+                        used, miss = match_line(r, es, rlod, r.key, ctol, same or es.tris)
+                        if miss is not None and r.key[0] != '-':
+                            for k2 in sorted(keys - set([r.key]), key=str):
+                                u2, m2 = match_line(r, es, rlod, k2, ctol, [])
+                                if m2 is None:
+                                    e2 = u2[0]
+                                    rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=[r.key[0]],
+                                        r=r, e=e2, r_count=count, fault=e2.fault,
+                                        pattern='%s %s>%s' % (r.key[0], r.key[1], k2[1]) + _flags(r, e2))
+                                    used, miss = u2, False
+                                    break
+                            if miss is not False and not same:
+                                d, cand = nearest_tri(_corners(r)[:3], r.mat(), es.tris, ctol)
+                                rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=[r.key[0]],
+                                    r=r, e=cand.e if cand else None, r_count=count,
+                                    fault=cand.fault if cand else None,
+                                    pattern='%s %s absent' % r.key + _flags(r, None))
+                                miss = False
+                    else:
+                        pool = [t for t in es.tris if t.lod == rlod]
+                        used, miss = match_line(r, es, rlod, None, ctol, pool)
+                    for e in used:
+                        used_by.setdefault(id(e), (e, r))
+                    if not miss:
+                        if miss is None and r.prim not in (None, 'normal'):
+                            stats['prim_equal'] += count
+                        continue
+                    feats, eng, fault, wind = miss
+                    if not feats:
+                        # no engine triangle to measure against (only lines without UV)
+                        other = es.lines[0]
+                        feats = _mat_diffs(r, other) or ['uv']
+                        eng, fault = other, other.fault
+                    if eng is not None and (r.anim or eng.anim):
+                        pre.append('anim')
+                    rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=pre + feats, r=r, e=eng,
+                        r_count=count, fault=fault, wind=wind)
+                for lv, n in sorted(lod_count.items()):
+                    rr = next(r for r, _ in work if (r.lod or '0') == lv)
+                    _bump(stats['lod_lines'], (tr, obj), n)
+                    rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=['lod'], r=rr, r_count=n,
+                        pattern='lod %s>%s' % (lv, '|'.join(sorted(es.lods))))
+                if ob is not None:
+                    ob['used'].update(e.tuple_key() for e, _ in used_by.values())
+                # sampling outside the window: engine entries that draw a face retail draws
+                for e, r in used_by.values():
+                    if e.box is None or e.uv is None or e.page is None:
+                        continue
+                    if vram is None:
+                        stats['box_unchecked'] += 1
+                        continue
+                    stats['box_checked'] += 1
+                    ring0, ringf, reach, wrapped = box_outside(e, vram)
+                    if ring0 or ringf:
+                        rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=['sample-outside'],
+                            r=r, e=e, r_count=1, fault=e.fault,
+                            pattern=('ring0' if ring0 else 'ringf') + (' wrap' if wrapped else ''),
+                            detail='box %s uv box %s ring0 %d ringf %d reach %d' % (
+                                ','.join(map(str, e.box)), ','.join(map(str, bbox(e.uv))), ring0, ringf, reach))
     # direction 2, models
     reported = set((r.track, r.object, r.e.mat()) for r in records if r.kind == 'd1' and r.e is not None)
     for tr in sorted(per_track):
         for (src, ok), ob in sorted(per_track[tr].items()):
             obj = '%s:%s' % (src, ok)
             stats['unused'][(tr, obj)] = (len(ob['seen']), len(ob['seen'] & ob['used']))
+            for mat, ent in ob['E'].items():
+                if ent['fault']:
+                    stats['fault_units'].append((ent['fault'], (tr, obj, mat), (tr, obj, mat) in visible))
             if not ob['R']:
-                stats['fault_mats'] += [(tr, obj, m, v['fault'], False) for m, v in ob['E'].items() if v['fault']]
                 if ob['E']:
                     any_e = next(iter(ob['E'].values()))
-                    records.append(Record(kind='info', track=tr, src=src, srcId=ob['srcId'],
-                                          features=['engine-only-source'], e=any_e['e'],
-                                          frames=len(set().union(*[v['frames'] for v in ob['E'].values()]))))
+                    rec(kind='info', track=tr, src=src, srcId=ob['srcId'], features=['engine-only-source'],
+                        e=any_e['e'], frames=len(set().union(*[v['frames'] for v in ob['E'].values()])))
                 continue
             for mat, ent in sorted(ob['E'].items(), key=lambda kv: kv[1]['e'].lineno):
-                if ent['fault']:
-                    stats['fault_mats'].append((tr, obj, mat, ent['fault'], (tr, obj, mat) in visible))
                 if mat in ob['R'] or (tr, obj, mat) in reported:
                     continue
                 if not (ent['lod'] & ob['rlod']):
-                    records.append(Record(kind='d2', track=tr, src=src, srcId=ent['e'].srcId,
-                                          features=['lod'], e=ent['e'], frames=len(ent['frames']),
-                                          fault=ent['fault'],
-                                          pattern='lod %s>%s (engine-only-material)' % (
-                                              '|'.join(sorted(ob['rlod'])), '|'.join(sorted(ent['lod'])))))
+                    # retail drew the model only with another header on this track
+                    stats['lod_never'].add((tr, obj))
                     continue
-                records.append(Record(kind='d2', track=tr, src=src, srcId=ent['e'].srcId,
-                                      features=['engine-only-material'], e=ent['e'],
-                                      frames=len(ent['frames']), fault=ent['fault']))
-    # faulted track lines (cell faults): checkable when retail draws that face in a frame
-    for fr in frames:
-        for (src, sid), sides in fr.sources.items():
-            if src != 'T':
-                continue
-            for e in sides['E']:
-                if e.fault:
-                    stats['fault_mats'].append((fr.track(), 'T:%s' % sid, (e.mat(), e.key), e.fault,
-                                                bool(sides['R'])))
+                rec(kind='d2', track=tr, src=src, srcId=ent['e'].srcId, features=['engine-only-material'],
+                    e=ent['e'], frames=len(ent['frames']), fault=ent['fault'])
     for tr, cov in tcov.items():
         if cov['load_faces']:
             stats['coverage'][tr] = (len(cov['load_faces']), len(cov['load_faces'] & cov['seen_faces']),
-                                     len(cov['load_cells']), len(cov['load_cells'] & cov['seen_cells']))
+                                     len(cov['load_cells']), len(cov['load_cells'] & cov['seen_cells']),
+                                     len(cov['mir_faces']), len(cov['mir_faces'] & set(f for f, _ in cov['seen_cells'])))
     stats['tracks'] = sorted(stats['tracks'])
     return records, stats
 
@@ -1071,24 +1193,32 @@ def parse_expect(specs):
 
 
 def plausibility(log, stats):
-    """Problems that make a zero worthless (dead hooks, missing dumps)."""
-    out = []
+    """(problems, one-sided): problems make a zero worthless (no H line, a
+    dead T or I hook in the frames drawn on a track, a race frame without a
+    VRAM dump); one-sided source kinds (effects only on the engine side,
+    native drivers, sky and water only on the retail side) are listed."""
+    out, one = [], []
     if not log.headers:
         out.append('no H line (exe commit and switches)')
     for tr in stats['tracks']:
+        menu = tr in stats['menu_tracks']
         kinds = set(src for (t, src) in stats['per'] if t == tr)
-        need = set(['M']) if 'M' in kinds else set(['T', 'I'])
+        need = set() if menu else set(['T', 'I'])
         routed = set(o.split(':')[0] for o in stats['route_retail'].get(tr, ()))
         for src in sorted(kinds | need):
-            p = stats['per'].get((tr, src), {'R': 0, 'E': 0})
-            if p['R'] == 0:
-                out.append('%s %s: no retail line' % (tr, src))
-            if p['E'] == 0 and src not in routed:
-                out.append('%s %s: no engine line' % (tr, src))
+            p = stats['per'].get((tr, src), {'R': 0, 'E': 0, 'Rrace': 0, 'Erace': 0})
+            if src in need:
+                if p['Rrace'] == 0:
+                    out.append('%s %s: no retail line in its race frames' % (tr, src))
+                if p['Erace'] == 0 and src not in routed:
+                    out.append('%s %s: no engine line in its race frames' % (tr, src))
+            elif (p['R'] == 0) != (p['E'] == 0):
+                one.append('%s %s: %s side only (%d line(s))%s' % (
+                    tr, src, 'engine' if p['E'] else 'retail', p['E'] or p['R'], ' - menu scene' if menu else ''))
     if stats['vram_missing']:
         out.append('%d race frame(s) without a readable VRAM dump: %s' % (
             len(stats['vram_missing']), ' '.join(stats['vram_missing'][:10])))
-    return out
+    return out, one
 
 
 def analyse(log, rows, gte_tol=COL_TOL_GTE, expect=None, vram_for=None, check_plausible=True):
@@ -1100,40 +1230,49 @@ def analyse(log, rows, gte_tol=COL_TOL_GTE, expect=None, vram_for=None, check_pl
     devs = [r for r in records if r.kind in ('d1', 'd2')]
     res.open = [r for r in devs if r.excepted is None]
     res.covered = [r for r in devs if r.excepted is not None]
-    res.control_open = [r for r in res.open if r.fault]
+
+    def on_target(r):
+        t = FAULT_TARGET.get(r.fault)
+        return t is None or t in r.features
+    # a control deviation points at a fault line AND has the fault's feature;
+    # other deviations on fault lines stay deviations (listed as strays)
+    res.control_open = [r for r in res.open if r.fault and on_target(r)]
+    res.stray = [r for r in res.open if r.fault and not on_target(r)]
     res.control_covered = [r for r in res.covered if r.fault]
-    res.others = [r for r in res.open if not r.fault]
+    res.others = [r for r in res.open if not (r.fault and on_target(r))]
     res.info = [r for r in records if r.kind == 'info']
     res.control_missing = []
     failed = False
-    # controls, per fault kind
-    kinds = sorted(set(k for _, _, _, k, _ in stats['fault_mats']) | set(faults))
+    # controls, per fault kind: every faulted unit retail draws (a model material,
+    # a track face) must be reported with the fault's feature
+    units = stats['fault_units']
+    kinds = sorted(set(k for k, _, _ in units) | set(faults))
     parts = []
     for kind in kinds:
         target = FAULT_TARGET.get(kind)
-        mats = sorted(set((t, o, m) for t, o, m, k, vis in stats['fault_mats'] if k == kind and vis), key=repr)
-        blind = len(set((t, o, m) for t, o, m, k, vis in stats['fault_mats'] if k == kind and not vis) -
-                    set(mats))
+        want = sorted(set(u for k, u, vis in units if k == kind and vis), key=repr)
+        blind = len(set(u for k, u, vis in units if k == kind and not vis) - set(want))
         mine = [r for r in res.control_open if r.fault == kind]
-        hits = [r for r in mine if target is None or target in r.features]
-
-        def mkey(r):
-            return (r.track, r.object, (r.e.mat(), r.e.key) if r.src == 'T' else r.e.mat())
-        reported = set(mkey(r) for r in mine if r.e is not None)
-        missing = [m for m in mats if m not in reported]
-        res.control_missing += [(kind,) + m for m in missing]
-        if not any(k == kind for _, _, _, k, _ in stats['fault_mats']):
+        reported = set(unit_of(r) for r in mine)
+        missing = [u for u in want if u not in reported]
+        res.control_missing += [(kind, u) for u in missing]
+        strays = sum(1 for r in res.stray if r.fault == kind)
+        if not any(k == kind for k, _, _ in units):
             parts.append('%s no - FAILED: expected, no fault=%s line in the log' % (kind, kind))
             failed = True
-        elif hits and not missing:
-            parts.append('%s yes (%d deviation(s), feature %s on %s; %d faulted material(s) on drawn faces%s)' % (
-                kind, len(mine), target or 'any', ' '.join(sorted(set(r.track for r in hits))), len(mats),
-                ', %d not drawn by retail' % blind if blind else ''))
+        elif mine and want and not missing:
+            parts.append('%s yes (%d deviation(s), feature %s on %s; %d faulted unit(s) retail draws%s%s)' % (
+                kind, len(mine), target or 'any', ' '.join(sorted(set(r.track for r in mine))), len(want),
+                ', %d not drawn by retail' % blind if blind else '',
+                ', %d other deviation(s) on fault lines (counted as deviations)' % strays if strays else ''))
         else:
             swallowed = sorted(set(r.excepted for r in res.control_covered if r.fault == kind))
-            why = ('covered by exception(s) %s' % ', '.join(swallowed)) if swallowed and not hits else (
-                '%d of %d faulted material(s) not reported' % (len(missing), len(mats)) if missing
-                else 'no deviation with feature %s' % target)
+            if not want:
+                why = 'no faulted unit on a face retail draws'
+            elif swallowed and not mine:
+                why = 'covered by exception(s) %s' % ', '.join(swallowed)
+            else:
+                why = '%d of %d faulted unit(s) not reported with feature %s' % (len(missing), len(want), target or 'any')
             parts.append('%s no - FAILED: %s' % (kind, why))
             failed = True
     if not kinds:
@@ -1147,7 +1286,7 @@ def analyse(log, rows, gte_tol=COL_TOL_GTE, expect=None, vram_for=None, check_pl
         res.positives.append((tr, obj, feat, n))
         if not n:
             failed = True
-    res.plausible = plausibility(log, stats) if check_plausible else []
+    res.plausible, res.one_sided = plausibility(log, stats) if check_plausible else ([], [])
     if res.plausible:
         failed = True
     res.exit = 3 if failed else (1 if res.others else 0)
@@ -1227,13 +1366,14 @@ def render_md(res, inputs, exc_origin):
     s = res.stats
     md = ['# Material comparison', '']
     md.append('Control fired: %s' % res.control)
-    for m in res.control_missing[:20]:
-        kind, t, o, mat = m
-        md.append('- not reported (%s): %s %s %s' % (kind, t, o, f_matkey(mat if len(mat) == 4 else mat[0])))
+    for kind, u in res.control_missing[:20]:
+        md.append('- not reported (%s): %s %s%s' % (kind, u[0], u[1], (' ' + f_matkey(u[2])) if len(u) > 2 else ''))
     if res.positives:
         md.append('Known positives: %s' % '; '.join('%s %s %s %s' % (t, o, f, ('yes (%d)' % n) if n else 'no - FAILED')
                                                 for t, o, f, n in res.positives))
     md.append('Plausibility: %s' % ('ok' if not res.plausible else 'FAILED - ' + '; '.join(res.plausible[:12])))
+    if res.one_sided:
+        md.append('One-sided source kinds (by design, listed): %s' % '; '.join(res.one_sided))
     md.append('')
     md.append('Deviations outside the exception list and the controls: %d' % len(res.others))
     md.append('Control deviations: %d; covered by the exception list: %d' % (len(res.control_open), len(res.covered)))
@@ -1245,9 +1385,10 @@ def render_md(res, inputs, exc_origin):
               '%d not checked (no dump), %d textured engine line(s) without box' % (
                   s['vram_frames'], len(s['vram_missing']), s['box_checked'], s['box_unchecked'], s['e_no_box']))
     md.append('Colour: tolerance %d per channel for the normal writer, %d for GTE writers; '
-              '%d retail / %d engine line(s) without col (not compared)' % (
+              '%d retail / %d engine line(s) without col (not compared), of them %d with a col that does not '
+              'pair with the corners' % (
                   COL_TOL_NORMAL, res.gte_tol if hasattr(res, 'gte_tol') else COL_TOL_GTE,
-                  s['r_no_col'], s['e_no_col']))
+                  s['r_no_col'], s['e_no_col'], s['col_unpaired']))
     md.append('Exceptions: %s' % exc_origin)
     md.append('')
     md.append('## Exception list')
@@ -1296,7 +1437,8 @@ def render_md(res, inputs, exc_origin):
     md.append('- Textured engine lines without UV (external meshes; UV not checked): %d' % s['engine_no_uv'])
     if s['coverage']:
         md.append('')
-        md += _table(('track', 'faces (load block)', 'seen in race frames', 'cells (load block)', 'seen'),
+        md += _table(('track', 'faces (load block)', 'seen in race frames', 'cells (load block)', 'seen',
+                      'mirrored faces', 'mirrored with race cells'),
                      [(tr,) + v for tr, v in sorted(s['coverage'].items())], limit=1000)
     md.append('')
     md += _table(('track', 'model', 'engine tuples', 'used', 'unused'),
@@ -1305,6 +1447,16 @@ def render_md(res, inputs, exc_origin):
     md.append('## Information (not deviations)')
     md.append('')
     md.append('- Models the engine draws but retail never draws on the track: %d' % len(res.info))
+    md.append('- Track set=anim: engine entries without a retail line: %d' % s['anim_gap'])
+    for tr in sorted(set(t for t, _ in s['info_lines']) | set(s['part']) | set(s['clip']) | set(s['nogeo']) |
+                     set(s['stage_none'])):
+        md.append('- %s track lines: part %d (compared by the piece rule), clip %d, nogeo %d (counted only), '
+                  'stage none %d; without engine partner: lodonly %d, noleaf %d (information)' % (
+                      tr, s['part'].get(tr, 0), s['clip'].get(tr, 0), s['nogeo'].get(tr, 0),
+                      s['stage_none'].get(tr, 0), s['info_lines'].get((tr, 'lodonly'), 0),
+                      s['info_lines'].get((tr, 'noleaf'), 0)))
+    for tr, obj in sorted(s['lod_never']):
+        md.append('- %s: header 0 of %s never compared (retail drew it only with another header)' % (tr, obj))
     for tr in sorted(s['route_retail']):
         md.append('- %s route=retail: %s' % (tr, ' '.join(sorted(s['route_retail'][tr]))))
     if res.info:
@@ -1339,10 +1491,14 @@ def load_exceptions(path):
 
 
 def file_vram_loader():
+    """vram= is tried relative to the log, as its file name next to the log,
+    and relative to the current folder (the game writes it relative to its
+    base folder)."""
     cache = {}
 
     def load(fr):
-        path = os.path.join(fr.base_dir, fr.vram)
+        tries = [os.path.join(fr.base_dir, fr.vram), os.path.join(fr.base_dir, os.path.basename(fr.vram)), fr.vram]
+        path = next((t for t in tries if os.path.isfile(t)), tries[0])
         if path not in cache:
             if len(cache) > 4:
                 cache.clear()
@@ -1559,7 +1715,51 @@ def selftest():
           feats(res, 'd2') == ['engine-only'] * 3 and res.stats['gap'] == 0)
     res, _ = run([F('t-load'), T('R', '5', C00, 'cell=0,0'), T('E', '5', C00, 'cell=0,0'),
                   F('t1'), T('R', '5', C00, 'cell=0,0'), T('E', '5', C00, 'cell=0,0')])
-    check('track coverage: faces and cells', res.stats['coverage'].get('L3') == (1, 1, 1, 1))
+    check('track coverage: faces and cells', res.stats['coverage'].get('L3') == (1, 1, 1, 1, 0, 0))
+    res, _ = run([F('t-load'), T('R', '5', C00, 'cell=0,0', extra='mir=1'), T('E', '5', C00, 'cell=0,0'),
+                  T('R', '6', C00, 'cell=0,0', extra='mir=1'), T('E', '6', C00, 'cell=0,0'),
+                  F('t1'), T('R', '5', C00, 'cell=0,0'), T('E', '5', C00, 'cell=0,0')])
+    check('track coverage: mirrored faces and those with race cells', res.stats['coverage'].get('L3') == (2, 1, 2, 1, 2, 1))
+
+    # track markers (P2)
+    S2 = '0,0,15,0,0,15,15,15'
+    res, _ = run([F(), T('R', '5', '2,3,15,3,2,15,15,15', 'stage=2', extra='part=1'), T('E', '5', S2, 'stage=2')])
+    check('part=1: corners inside the box of its key, same material: 0',
+          len(res.open) == 0 and res.stats['part'] == {'L3': 1})
+    res, _ = run([F(), T('R', '5', '2,3,16,3,2,15,16,15', 'stage=2', extra='part=1'), T('E', '5', S2, 'stage=2')])
+    check('part=1: a corner outside the box: uv', feats(res) == ['uv'] and res.open[0].pattern.endswith(' part'))
+    res, _ = run([F(), T('R', '5', '2,3,15,3,2,15,15,15', 'stage=2', extra='part=1'),
+                  T('E', '5', S2, 'stage=2', clut='0,481')])
+    check('part=1: other CLUT: clut', feats(res) == ['clut'])
+    res, _ = run([F(), T('R', '5', '9,1,15,1,9,6,15,6', 'cell=0,0', extra='part=1')] + eng_cells[:4])
+    check('part=1: inside the box of another cell: cell', feats(res) == ['cell'] and
+          res.open[0].pattern == 'cell 0,0>0,1 part')
+    res, _ = run([F('t-load'), T('R', '5', S2, 'stage=0', extra='lodonly=1'), T('R', '5', S2, 'stage=2'),
+                  T('E', '5', S2, 'stage=2')])
+    check('lodonly=1 without engine partner: information',
+          len(res.open) == 0 and res.stats['info_lines'] == {('L3', 'lodonly'): 1})
+    res, _ = run([F('t-load'), T('R', '5', C00, 'stage=1', extra='lodonly=1'), T('R', '5', S2, 'stage=2'),
+                  T('E', '5', S2, 'stage=2'), T('E', '5', C00, 'stage=1', clut='0,481')])
+    check('lodonly=1 with engine partner: compared', feats(res) == ['clut'])
+    res, _ = run([F('t-load'), T('R', '9', S2, 'stage=2', extra='noleaf=1')])
+    check('noleaf=1 without engine partner: information, not missing-source',
+          len(res.open) == 0 and res.stats['info_lines'] == {('L3', 'noleaf'): 1})
+    res, _ = run([F(), T('R', '5', S2, 'stage=none'), T('E', '5', S2, 'stage=2')])
+    check('stage=none: own class', feats(res) == ['stage-none'] and res.stats['stage_none'] == {'L3': 1})
+    res, _ = run([F(), L('R', 'T', '5', uv='192,0,192,63,255,63', extra='nogeo=1'), T('E', '5', S2, 'stage=2')])
+    check('nogeo=1: counted only', len(res.open) == 0 and res.stats['nogeo'] == {'L3': 1})
+    res, _ = run([F(), T('R', '5', S2, 'stage=2', extra='clip=1'), T('E', '5', S2, 'stage=2', clut='0,481')])
+    check('clip=1: counted and compared', feats(res) == ['clut'] and res.stats['clip'] == {'L3': 1})
+    res, _ = run([F(), T('R', '5', S2, 'stage=2'), T('E', '5', S2, 'stage=2'),
+                  T('R', '5', S2, 'stage=1', extra='set=anim,anim=1'), T('E', '5', S2, 'stage=1', extra='set=anim,anim=1'),
+                  T('E', '5', C00, 'cell=0,0', extra='set=anim,anim=1')])
+    check('set=anim: compared on its own, engine entries without retail line are counted',
+          len(res.open) == 0 and res.stats['anim_gap'] == 1 and res.stats['gap'] == 0)
+    res, _ = run([F(), T('R', '5', S2, 'stage=2'), T('E', '5', S2, 'stage=2'),
+                  T('R', '5', S2, 'stage=1', clut='0,481', extra='set=anim,anim=1'),
+                  T('E', '5', S2, 'stage=1', extra='set=anim,anim=1,frozen=1')])
+    check('set=anim: a frozen face whose animation moved on: anim+clut frozen',
+          feats(res) == ['anim+clut'] and res.open[0].pattern.endswith('frozen'))
 
     # (e) missing source, route=retail
     res, _ = run(base_r + [L('E', 'I', 'tikka#1', uv=TRI_A)])
@@ -1635,6 +1835,13 @@ def selftest():
         T('E', '5', C10, 'cell=0,1', extra='fault=cell'), T('E', '5', C01, 'cell=1,0', extra='fault=cell')],
         expect=['fault:cell'])
     check('(h) control cell fired', res.control.startswith('yes') and res.exit == 0 and len(res.control_open) == 2)
+    res, _ = run([F('L3-load'), T('R', '5', C00, 'cell=0,0'), T('R', '5', C01, 'cell=0,1'), T('R', '5', C10, 'cell=1,0'),
+                  T('E', '5', C00, 'cell=0,0', clut='0,481', extra='fault=cell'),
+                  T('E', '5', C10, 'cell=0,1', extra='fault=cell'), T('E', '5', C01, 'cell=1,0', extra='fault=cell')],
+                 expect=['fault:cell'])
+    check('(h) cell fault marks the row: unswapped cells are no deviation, other features on fault lines stay deviations',
+          len(res.control_open) == 2 and [r.feature_label() for r in res.stray] == ['clut'] and
+          res.others == res.stray and 'other deviation(s) on fault lines' in res.control and res.exit == 1)
 
     # (i) animated texture: retail changes between frames, engine static
     res, _ = run([F('a', frame=10), L('R', 'I', 'tikka#0', uv=TRI_A, extra='anim=1'),
@@ -1655,8 +1862,8 @@ def selftest():
                   L('E', 'I', 'fruit#0', page='576,0,0', uv='0,0,31,0,0,31', extra='lod=0')])
     check('(j) lod=1: one LOD-header record, not compared',
           [(r.feature_label(), r.r_count, r.pattern) for r in res.open if r.kind == 'd1'] == [('lod', 2, 'lod 1>0')])
-    check('(j) lod=1: engine material of header 0 not drawn at header 0 is lod too',
-          feats(res, 'd2') == ['lod'])
+    check('(j) lod=1: header 0 never compared is information with the model, no deviation',
+          feats(res, 'd2') == [] and res.stats['lod_never'] == set([('L3', 'I:fruit')]))
     res, _ = run([F(level=4), L('R', 'I', 'flamejet#2', uv=TRI_A, extra='col=1,1,1'),
                   L('E', 'I', 'flamejet#2', uv=TRI_A, extra='col=1,1,1')], expect=['L4:I:flamejet:col'])
     check('(j) known positive missing: exit 3', res.exit == 3 and res.positives[0][3] == 0)
@@ -1716,8 +1923,22 @@ def selftest():
     res, _ = run([F(extra='vram=v.tga'), L('R', 'I', 'tikka#0', uv=TRI_A), L('E', 'I', 'tikka#0', uv=TRI_A),
                   T('R', '5', C00, 'cell=0,0'), T('E', '5', C00, 'cell=0,0')], plaus=True, vram=vr)
     check('plausibility: both sides of T and I with a dump: ok', res.plausible == [] and res.exit == 0)
+    res, _ = run([F(extra='vram=v.tga'), L('R', 'I', 'tikka#0', uv=TRI_A), L('E', 'I', 'tikka#0', uv=TRI_A),
+                  T('R', '5', C00, 'cell=0,0'), T('E', '5', C00, 'cell=0,0'),
+                  L('E', 'X', 'exhaust', uv=TRI_A), L('E', 'D', '2', page='-', clut='-', uv='-', extra='native=1'),
+                  L('R', 'W', '379', uv=TRI_A), L('R', 'S', 'sky', uv=TRI_A)], plaus=True, vram=vr)
+    check('plausibility: one-sided X, D native, W, S are listed, not a failure',
+          res.plausible == [] and len(res.one_sided) == 4 and res.exit != 3)
+    res, _ = run([F('L3-load'), T('R', '5', C00, 'cell=0,0'), T('E', '5', C00, 'cell=0,0'),
+                  F(extra='vram=v.tga'), L('R', 'I', 'tikka#0', uv=TRI_A), L('E', 'I', 'tikka#0', uv=TRI_A)],
+                 plaus=True, vram=vr)
+    check('plausibility: T only in the load block is a dead hook',
+          res.exit == 3 and any('L3 T: no retail line in its race frames' in p for p in res.plausible))
+    res, _ = run([F('menu', level=40, extra='vram=v.tga'), L('E', 'I', 'pimbel#0', uv=TRI_A)], plaus=True, vram=vr)
+    check('plausibility: the menu scene needs no T, its one-sided kinds are listed',
+          res.plausible == [] and len(res.one_sided) == 1)
     log = parse_log('\n'.join([F(), L('R', 'I', 'x#0', uv=TRI_A), L('E', 'I', 'x#0', uv=TRI_A)]) + '\n', 's')
-    check('plausibility: missing H line', 'no H line' in ' '.join(plausibility(log, compare(log.frames)[1])))
+    check('plausibility: missing H line', 'no H line' in ' '.join(plausibility(log, compare(log.frames)[1])[0]))
 
     # classes across tracks
     res, _ = run([F('a', level=3), L('R', 'I', 'tikka#0', uv=TRI_A), L('E', 'I', 'tikka#0', clut='16,480', uv=TRI_A),
@@ -1734,13 +1955,19 @@ def selftest():
                      ([F(), L('R', 'I', 'x#0', blend='4')], 'bad blend'),
                      ([F(), L('R', 'I', 'x#0', clut='-')], '4-bit page without CLUT'),
                      ([F(), L('R', 'I', 'x#0', uv='-')], 'textured retail line without UV'),
-                     ([F(), L('R', 'I', 'x#0', uv=TRI_A, extra='col=1,2,3;4,5,6')], 'col corners'),
                      ([F(), L('R', 'I', 'x#0', extra='box=5,5,4,4')], 'box')):
         check('parse: %s is an error' % why, len(parse_log('\n'.join(bad) + '\n', 's').errors) == 1)
     log = parse_log('\n'.join(['H\tabc\t--engine', '# comment', '', F(extra='vram=a-1.tga'),
                                L('R', 'I', 'x#0', extra='anim=1;lod=2 hdr col=1,2,3;4,5,6;7,8,9;1,1,1 tp=0x7e,box=1,2,3,4'),
                                L('E', 'I', 'x#0', uv=TRI_A).rsplit('\t', 1)[0]]) + '\r\n', 's')
     ln = log.frames[0].sources[('I', 'x#0')]['R'][0] if log.frames else None
+    log3 = parse_log('\n'.join([F(), L('R', 'T', '5', uv=QUAD, extra='col=1,2,3;4,5,6;7,8,9')]) + '\n', 's')
+    ln3 = log3.frames[0].sources[('T', '5')]['R'][0]
+    check('parse: three colours on a quad are kept unpaired (not compared)',
+          not log3.errors and ln3.col is None and ln3.colbad and ln3.extra['col'] == '1,2,3;4,5,6;7,8,9')
+    res, _ = run([F(), L('R', 'I', 'q#0', uv=QUAD, extra='col=1,2,3;4,5,6;7,8,9'),
+                  L('E', 'I', 'q#0', uv=TRI_A, extra='col=9,9,9'), L('E', 'I', 'q#0', uv=TRI_B, extra='col=9,9,9')])
+    check('unpaired colours: not compared, counted', len(res.open) == 0 and res.stats['col_unpaired'] == 1)
     check('parse: H, comments, CRLF, extra values with separators, 9-field line',
           not log.errors and log.headers == ['abc --engine'] and log.frames[0].vram == 'a-1.tga' and ln is not None
           and ln.extra == {'anim': '1', 'lod': '2', 'hdr': '1', 'col': '1,2,3;4,5,6;7,8,9;1,1,1', 'tp': '0x7e',
