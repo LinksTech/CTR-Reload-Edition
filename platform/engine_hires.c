@@ -79,11 +79,42 @@
 // MENU SCENE (--engine-menuscene): Engine_MenuSceneCollect draws the hi-res body
 // and its four wheels at rest instead of the roster's set (engine_menuscene.c).
 //
+// ANIMATION (--engine-hires-anim, round of 2026-10-16, Z4, prototype): the
+// body becomes an animated one from the same folder (anim.hra, anim.hrt of
+// tools/hires_blender_driver.py - a Blender rig baked to pose frames, as the
+// stage-H analysis proposed: poses as mesh frames, no skeleton at run time, no
+// shader change). anim.hra "HRA1": u32 vertexCount, indexCount, frameCount, clipCount;
+// clipCount x {char name[16], u32 first, u32 count}; texcoords (2 f32 per
+// vertex, v = 0 the top row); frameCount x vertexCount x {3 f32 position, 4 u8
+// colour}; u16 indices. Its own layout, converted field by field into
+// EngineVertex (EngHires_ParseAnim), so it does not depend on the size of
+// EngineVertex. Clips: steer (odd count, first = full right, last = full left),
+// air, drift_l, drift_r. The frame is picked per draw from game state, read
+// only (EngHires_AnimPick, the counters of EngHires_AnimTick, one per logic tick):
+//   air    ACTION_TOUCH_GROUND clear for ENG_HIRES_AIR_DELAY ticks or more
+//          (bumps stay on the ground); then one frame per tick, held at the last
+//   drift  kartState == KS_DRIFTING (players and bots, BOTS.c:2210); the side
+//          is taken at the first drift tick from the first non-zero sign of
+//          multDrift, simpTurnState, wheelRotation (positive = left,
+//          game/Vehicle/VehPhysProc.c:2091-2099);
+//          one frame per tick into the drift, held at the last
+//   steer  otherwise: wheelRotation (the front wheels' value, +-0x40 a full
+//          lock, clamped; bots reach about 0x55) to the nearest steer frame
+// One log line per tick ("hires anim: ...") with the state read and the frame
+// drawn. With --shot-name (as the oracle's snapshots) the series for the eye:
+// a snapshot <shot-name>-<tag>-<vblank>.bmp when a pose is reached in full -
+// tags steer-l / steer-r (a full lock), air, drift-l, drift-r (the clip's last
+// frame) - at most ENG_HIRES_SHOTS_PER_TAG per tag, ENG_HIRES_SHOT_GAP ticks
+// apart, one per frame. The wheels, the matrix animations (wheelie, jump arc,
+// tumble) and the squash of inst->scale stay as before. The menu scene keeps
+// the still body.
+//
 // DRAW TIME ONLY: nothing of the game is written; host memory of this file only.
 
 char g_cfg_engineHiresDir[ENGINE_HIRES_DIR_MAX] = "";
 int g_cfg_engineHiresTex64 = 0;
 int g_cfg_engineHiresTexCycle = 0;
+int g_cfg_engineHiresAnim = 0;
 
 #define ENG_HIRES_SEAT 0
 #define ENG_HIRES_SMALL 64
@@ -92,6 +123,20 @@ int g_cfg_engineHiresTexCycle = 0;
 #define ENG_HIRES_TWO_PI 6.283185307179586
 #define ENG_HIRES_ANGLE (ENG_HIRES_TWO_PI / 4096.0) // one game angle unit in radians
 #define ENG_HIRES_WHEEL_RADIUS 16.0                 // model units of the wheel mesh
+#define ENG_HIRES_CLIP_STEER 0
+#define ENG_HIRES_CLIP_AIR 1
+#define ENG_HIRES_CLIP_DRIFT_L 2
+#define ENG_HIRES_CLIP_DRIFT_R 3
+#define ENG_HIRES_CLIPS 4
+#define ENG_HIRES_AIR_DELAY 3     // ticks off the ground before the air clip starts
+#define ENG_HIRES_STEER_FULL 64   // wheelRotation of a full lock (VEH_PHYS_PROC_WHEEL_ROTATION_STRENGTH)
+#define ENG_HIRES_TICKS_CAP 10000 // counters stop here
+#define ENG_HIRES_SHOT_TAGS 5
+#define ENG_HIRES_SHOTS_PER_TAG 2
+#define ENG_HIRES_SHOT_GAP 90     // ticks between two snapshots of one tag
+
+extern char g_cfg_shotName[PLATFORM_ARG_PATH_MAX]; // --shot-name, native_platform.c
+void Platform_ShotRequest(const char *path);       // native_platform.c
 
 typedef struct
 {
@@ -102,6 +147,20 @@ typedef struct
 	float hullMin[3];
 	float hullMax[3];
 } EngHiresMeshData;
+
+// The animated body of anim.hra (EngHires_ParseAnim).
+typedef struct
+{
+	EngineVertex *vertices; // frames * vertexCount
+	u16 *indices;
+	u32 vertexCount;
+	u32 indexCount;
+	u32 frames;
+	u32 clipFirst[ENG_HIRES_CLIPS];
+	u32 clipCount[ENG_HIRES_CLIPS]; // 0 = the clip is not in the file
+	float hullMin[3];               // over all frames
+	float hullMax[3];
+} EngHiresAnimData;
 
 typedef struct
 {
@@ -135,6 +194,27 @@ typedef struct
 	u32 cycleTex[3];
 	int cycleMaterial[3];
 	int cycleLogged;
+	// --engine-hires-anim: the data (once per run), its texture, per load its
+	// mesh and material; the tick counters of the seat; the log
+	EngHiresAnimData anim;
+	int animOk;
+	u32 animTexture;
+	int animMesh;
+	int animMaterial;
+	EngineRange animRange;
+	const struct Driver *animDriver;
+	const struct Instance *animInst;
+	u32 animTimer;
+	int animValid;
+	int airTicks;
+	int driftTicks;
+	int driftSide; // +1 left, -1 right
+	u32 animLogTimer;
+	int animLogValid;
+	u32 animDraws[ENG_HIRES_CLIPS];
+	u32 animLines;
+	u32 shotCount[ENG_HIRES_SHOT_TAGS];
+	u32 shotTimer[ENG_HIRES_SHOT_TAGS];
 	// counters (exit report)
 	u32 bodyDrawn, bodyDeclined, wheelDraws, wheelSets, mirrorWheelDraws, spriteFallbacks, menuFrames, logLines;
 	int reportOn;
@@ -277,6 +357,225 @@ internal int EngHires_ParseTexture(const u8 *bytes, size_t size, int *w, int *h,
 	return 1;
 }
 
+internal void EngHires_FreeAnim(EngHiresAnimData *a)
+{
+	free(a->vertices);
+	free(a->indices);
+	memset(a, 0, sizeof(*a));
+}
+
+internal float EngHires_F32(const u8 *p)
+{
+	const u32 bits = EngHires_U32(p);
+	float f;
+
+	memcpy(&f, &bits, sizeof(f));
+	return f;
+}
+
+// One vertex of the engine from the file's fields (by name: independent of the
+// size and the other fields of EngineVertex, which stay zero).
+internal void EngHires_AnimVertex(EngineVertex *v, const u8 *pos, const u8 *uv)
+{
+	memset(v, 0, sizeof(*v));
+	v->position[0] = EngHires_F32(pos + 0);
+	v->position[1] = EngHires_F32(pos + 4);
+	v->position[2] = EngHires_F32(pos + 8);
+	v->color[0] = pos[12];
+	v->color[1] = pos[13];
+	v->color[2] = pos[14];
+	v->color[3] = pos[15];
+	v->texcoord[0] = EngHires_F32(uv + 0);
+	v->texcoord[1] = EngHires_F32(uv + 4);
+}
+
+// 1 = out holds the frames as engine vertices and the indices (free with
+// EngHires_FreeAnim). 0 = refused, *why says why. Pure: the selftest feeds it
+// made-up bytes.
+internal int EngHires_ParseAnim(const u8 *bytes, size_t size, EngHiresAnimData *out, const char **why)
+{
+	static const char *const names[ENG_HIRES_CLIPS] = {"steer", "air", "drift_l", "drift_r"};
+	u32 vc;
+	u32 ic;
+	u32 fc;
+	u32 cc;
+	u32 i;
+	u32 f;
+	size_t need;
+	const u8 *uvs;
+	const u8 *frames;
+	const u8 *idx;
+	int c;
+
+	memset(out, 0, sizeof(*out));
+	if ((bytes == NULL) || (size < 20u) || (memcmp(bytes, "HRA1", 4) != 0))
+	{
+		*why = "not an HRA1 file";
+		return 0;
+	}
+	vc = EngHires_U32(bytes + 4);
+	ic = EngHires_U32(bytes + 8);
+	fc = EngHires_U32(bytes + 12);
+	cc = EngHires_U32(bytes + 16);
+	if ((vc == 0u) || (vc > 65535u) || (ic == 0u) || ((ic % 3u) != 0u) || (ic > 600000u) || (fc == 0u) || (fc > 256u) || (cc == 0u) || (cc > 16u))
+	{
+		*why = "a count out of range";
+		return 0;
+	}
+	need = 20u + ((size_t)cc * 24u) + ((size_t)vc * 8u) + ((size_t)vc * fc * 16u) + ((size_t)ic * 2u);
+	if (size != need)
+	{
+		*why = "size does not match the counts";
+		return 0;
+	}
+	for (i = 0; i < cc; i++)
+	{
+		const u8 *clip = bytes + 20 + (i * 24u);
+		const u32 first = EngHires_U32(clip + 16);
+		const u32 count = EngHires_U32(clip + 20);
+
+		if (memchr(clip, 0, 16) == NULL)
+		{
+			*why = "a clip name without its end";
+			return 0;
+		}
+		if ((count == 0u) || (first >= fc) || (count > (fc - first)))
+		{
+			*why = "a clip outside the frames";
+			return 0;
+		}
+		for (c = 0; c < ENG_HIRES_CLIPS; c++)
+		{
+			if (strcmp((const char *)clip, names[c]) == 0)
+			{
+				out->clipFirst[c] = first;
+				out->clipCount[c] = count;
+			}
+		}
+	}
+	if ((out->clipCount[ENG_HIRES_CLIP_STEER] < 3u) || ((out->clipCount[ENG_HIRES_CLIP_STEER] % 2u) == 0u))
+	{
+		memset(out, 0, sizeof(*out));
+		*why = "no steer clip of an odd count of 3 or more";
+		return 0;
+	}
+	uvs = bytes + 20 + ((size_t)cc * 24u);
+	frames = uvs + ((size_t)vc * 8u);
+	idx = frames + ((size_t)vc * fc * 16u);
+	for (i = 0; i < vc; i++)
+	{
+		const float u = EngHires_F32(uvs + (i * 8u));
+		const float v = EngHires_F32(uvs + (i * 8u) + 4u);
+
+		if (!(u >= 0.0f) || !(u <= 1.0f) || !(v >= 0.0f) || !(v <= 1.0f))
+		{
+			memset(out, 0, sizeof(*out));
+			*why = "a texcoord outside 0..1";
+			return 0;
+		}
+	}
+	for (i = 0; i < ic; i++)
+	{
+		if ((u32)(idx[i * 2u] | (idx[i * 2u + 1u] << 8)) >= vc)
+		{
+			memset(out, 0, sizeof(*out));
+			*why = "index out of range";
+			return 0;
+		}
+	}
+	out->vertices = (EngineVertex *)malloc((size_t)vc * fc * sizeof(EngineVertex));
+	out->indices = (u16 *)malloc((size_t)ic * sizeof(u16));
+	if ((out->vertices == NULL) || (out->indices == NULL))
+	{
+		EngHires_FreeAnim(out);
+		*why = "no host memory";
+		return 0;
+	}
+	for (i = 0; i < ic; i++)
+	{
+		out->indices[i] = (u16)(idx[i * 2u] | (idx[i * 2u + 1u] << 8));
+	}
+	for (f = 0; f < fc; f++)
+	{
+		for (i = 0; i < vc; i++)
+		{
+			EngineVertex *v = &out->vertices[((size_t)f * vc) + i];
+
+			EngHires_AnimVertex(v, frames + ((((size_t)f * vc) + i) * 16u), uvs + (i * 8u));
+			for (c = 0; c < 3; c++)
+			{
+				if (!(v->position[c] == v->position[c]) || (fabsf(v->position[c]) > 100000.0f))
+				{
+					EngHires_FreeAnim(out);
+					*why = "position not finite";
+					return 0;
+				}
+				if (((f == 0u) && (i == 0u)) || (v->position[c] < out->hullMin[c]))
+				{
+					out->hullMin[c] = v->position[c];
+				}
+				if (((f == 0u) && (i == 0u)) || (v->position[c] > out->hullMax[c]))
+				{
+					out->hullMax[c] = v->position[c];
+				}
+			}
+		}
+	}
+	out->vertexCount = vc;
+	out->indexCount = ic;
+	out->frames = fc;
+	*why = "";
+	return 1;
+}
+
+// The side of a drift from its first tick: the first non-zero sign of
+// multDrift, simpTurnState, wheelRotation (positive = left); left when all are 0.
+internal int EngHires_DriftSide(int multDrift, int simpTurnState, int wheelRotation)
+{
+	if (multDrift != 0)
+	{
+		return (multDrift > 0) ? 1 : -1;
+	}
+	if (simpTurnState != 0)
+	{
+		return (simpTurnState > 0) ? 1 : -1;
+	}
+	return (wheelRotation < 0) ? -1 : 1;
+}
+
+// The file frame to draw (pure): air before drift before steer (see the head
+// of the file); *clip names the clip.
+internal u32 EngHires_AnimPick(const EngHiresAnimData *a, int steerRaw, int airTicks, int driftTicks, int driftSide, int *clip)
+{
+	int steer = steerRaw;
+	int n;
+
+	if ((a->clipCount[ENG_HIRES_CLIP_AIR] > 0u) && (airTicks >= ENG_HIRES_AIR_DELAY))
+	{
+		const u32 i = (u32)(airTicks - ENG_HIRES_AIR_DELAY);
+
+		*clip = ENG_HIRES_CLIP_AIR;
+		return a->clipFirst[ENG_HIRES_CLIP_AIR] + ((i < a->clipCount[ENG_HIRES_CLIP_AIR]) ? i : (a->clipCount[ENG_HIRES_CLIP_AIR] - 1u));
+	}
+	if (driftTicks > 0)
+	{
+		const int c = (driftSide >= 0) ? ENG_HIRES_CLIP_DRIFT_L : ENG_HIRES_CLIP_DRIFT_R;
+
+		if (a->clipCount[c] > 0u)
+		{
+			const u32 i = (u32)(driftTicks - 1);
+
+			*clip = c;
+			return a->clipFirst[c] + ((i < a->clipCount[c]) ? i : (a->clipCount[c] - 1u));
+		}
+	}
+	steer = (steer > ENG_HIRES_STEER_FULL) ? ENG_HIRES_STEER_FULL : ((steer < -ENG_HIRES_STEER_FULL) ? -ENG_HIRES_STEER_FULL : steer);
+	n = (int)a->clipCount[ENG_HIRES_CLIP_STEER];
+	*clip = ENG_HIRES_CLIP_STEER;
+	// round((steer + FULL) / (2 FULL) * (n - 1)), half up
+	return a->clipFirst[ENG_HIRES_CLIP_STEER] + (u32)((((steer + ENG_HIRES_STEER_FULL) * (n - 1) * 2) + (2 * ENG_HIRES_STEER_FULL)) / (4 * ENG_HIRES_STEER_FULL));
+}
+
 // A box reduction to ow x oh (edges dividing w and h): the mean of each block,
 // rounded half up, in the stored (sRGB) values - a stand-in for a small
 // texture of the same image, nothing finer.
@@ -365,6 +664,12 @@ internal void EngHires_Report(void)
 	             "menu frames %u; frame lines %u\n",
 	             s_engHires.bodyDrawn, s_engHires.bodyDeclined, s_engHires.wheelDraws, s_engHires.wheelSets, s_engHires.mirrorWheelDraws,
 	             s_engHires.spriteFallbacks, s_engHires.menuFrames, s_engHires.logLines);
+	if (g_cfg_engineHiresAnim)
+	{
+		Platform_Log("[CTR Engine] hires anim at exit: %s; body draws by clip - steer %u, air %u, drift_l %u, drift_r %u; anim lines %u\n",
+		             s_engHires.animOk ? "loaded" : "not loaded", s_engHires.animDraws[ENG_HIRES_CLIP_STEER], s_engHires.animDraws[ENG_HIRES_CLIP_AIR],
+		             s_engHires.animDraws[ENG_HIRES_CLIP_DRIFT_L], s_engHires.animDraws[ENG_HIRES_CLIP_DRIFT_R], s_engHires.animLines);
+	}
 }
 
 // One texture of the skin's settings (sRGB, the whole mip chain, trilinear,
@@ -417,6 +722,55 @@ internal void EngHires_MakeCycleTextures(const u8 *rgba)
 	Platform_Log("[CTR Engine] hires texcycle: %s - in the menu scene every %d VBlanks: full, 64x64, key (255,0,255); variant = (vblank / %d) %% 3\n",
 	             ((s_engHires.cycleTex[1] != 0xffffffffu) && (s_engHires.cycleTex[2] != 0xffffffffu)) ? "textures made" : "a texture was refused, cycle off",
 	             ENGINE_HIRES_CYCLE_VBLANKS, ENGINE_HIRES_CYCLE_VBLANKS);
+}
+
+// --engine-hires-anim, once per run after the base files: anim.hra and its
+// texture anim.hrt. A refusal is logged and leaves the still body.
+internal void EngHires_ReadAnimOnce(void)
+{
+	const char *why = "";
+	size_t animSize = 0;
+	size_t texSize = 0;
+	u8 *animData = EngHires_ReadFile(g_cfg_engineHiresDir, "anim.hra", &animSize);
+	u8 *texData = EngHires_ReadFile(g_cfg_engineHiresDir, "anim.hrt", &texSize);
+	const u8 *rgba = NULL;
+	int w = 0;
+	int h = 0;
+
+	s_engHires.animTexture = 0xffffffffu;
+	if ((animData == NULL) || (texData == NULL))
+	{
+		why = "anim.hra or anim.hrt is missing or unreadable";
+	}
+	else if (EngHires_ParseAnim(animData, animSize, &s_engHires.anim, &why) && EngHires_ParseTexture(texData, texSize, &w, &h, &rgba, &why))
+	{
+		s_engHires.animTexture = EngHires_SkinTexture(rgba, w, h, "hires driver anim skin");
+		if (s_engHires.animTexture != 0xffffffffu)
+		{
+			s_engHires.animOk = 1;
+		}
+		else
+		{
+			why = "Engine_TextureCreate refused anim.hrt";
+		}
+	}
+	if (s_engHires.animOk)
+	{
+		const EngHiresAnimData *a = &s_engHires.anim;
+
+		Platform_Log("[CTR Engine] hires anim: loaded %u vertices %u triangles, %u frames (steer %u, air %u, drift_l %u, drift_r %u), hull %.1f..%.1f, "
+		             "%.1f..%.1f, %.1f..%.1f, texture %dx%d\n",
+		             a->vertexCount, a->indexCount / 3u, a->frames, a->clipCount[ENG_HIRES_CLIP_STEER], a->clipCount[ENG_HIRES_CLIP_AIR],
+		             a->clipCount[ENG_HIRES_CLIP_DRIFT_L], a->clipCount[ENG_HIRES_CLIP_DRIFT_R], (double)a->hullMin[0], (double)a->hullMax[0],
+		             (double)a->hullMin[1], (double)a->hullMax[1], (double)a->hullMin[2], (double)a->hullMax[2], w, h);
+	}
+	else
+	{
+		EngHires_FreeAnim(&s_engHires.anim);
+		Platform_Log("[CTR Engine] hires anim: refused (%s), the still body is drawn\n", why);
+	}
+	free(animData);
+	free(texData);
 }
 
 // Once per run: the files and the texture. A refusal is logged and turns the
@@ -487,6 +841,10 @@ internal void EngHires_ReadOnce(void)
 	{
 		EngHires_MakeCycleTextures(rgba);
 	}
+	if (g_cfg_engineHiresAnim)
+	{
+		EngHires_ReadAnimOnce();
+	}
 
 out:
 	if (s_engHires.ok)
@@ -524,6 +882,10 @@ void Engine_HiresLoad(void)
 	s_engHires.wheelMesh = -1;
 	s_engHires.material = -1;
 	s_engHires.cycleMaterial[0] = s_engHires.cycleMaterial[1] = s_engHires.cycleMaterial[2] = -1;
+	s_engHires.animMesh = -1;
+	s_engHires.animMaterial = -1;
+	s_engHires.animValid = 0;
+	s_engHires.animLogValid = 0;
 	s_engHires.seatOff = 0;
 	s_engHires.poseValid = 0;
 	s_engHires.logValid = 0;
@@ -595,6 +957,32 @@ void Engine_HiresLoad(void)
 	desc.ranges = &s_engHires.wheelRange;
 	desc.name = "hires wheel";
 	s_engHires.wheelMesh = Engine_MeshCreate(&desc);
+
+	// The animated body: its own texture, its pose frames as mesh frames.
+	if (s_engHires.animOk)
+	{
+		EngineMaterial am = mat;
+
+		Engine_TextureMaterial(&am, s_engHires.animTexture);
+		am.flags |= (u16)ENGINE_MATERIAL_DOUBLE_SIDED;
+		s_engHires.animMaterial = Engine_MaterialRegister(&am);
+		if (s_engHires.animMaterial >= 0)
+		{
+			s_engHires.animRange.firstIndex = 0;
+			s_engHires.animRange.indexCount = s_engHires.anim.indexCount;
+			s_engHires.animRange.material = (u16)s_engHires.animMaterial;
+			desc.vertices = s_engHires.anim.vertices;
+			desc.verticesPerFrame = s_engHires.anim.vertexCount;
+			desc.frames = s_engHires.anim.frames;
+			desc.indices = s_engHires.anim.indices;
+			desc.indexCount = s_engHires.anim.indexCount;
+			desc.ranges = &s_engHires.animRange;
+			desc.rangeCount = 1;
+			desc.name = "hires body animated";
+			s_engHires.animMesh = Engine_MeshCreate(&desc);
+		}
+		Platform_Log("[CTR Engine] hires anim: mesh %d (%u frames), material %d\n", s_engHires.animMesh, s_engHires.anim.frames, s_engHires.animMaterial);
+	}
 
 	// A seat with a native set the engine draws keeps its own route.
 	if ((set >= 0) && (Engine_DriverBodyMesh(set) >= 0))
@@ -835,9 +1223,12 @@ internal int EngHires_BodyBox(const EngineCamera *cam, const struct Instance *in
 		EngineVec3 p;
 		EngineVec3 s;
 
-		p.x = (i & 1) ? s_engHires.body.hullMax[0] : s_engHires.body.hullMin[0];
-		p.y = (i & 2) ? s_engHires.body.hullMax[1] : s_engHires.body.hullMin[1];
-		p.z = (i & 4) ? s_engHires.body.hullMax[2] : s_engHires.body.hullMin[2];
+		const float *lo = (s_engHires.animMesh >= 0) ? s_engHires.anim.hullMin : s_engHires.body.hullMin;
+		const float *hi = (s_engHires.animMesh >= 0) ? s_engHires.anim.hullMax : s_engHires.body.hullMax;
+
+		p.x = (i & 1) ? hi[0] : lo[0];
+		p.y = (i & 2) ? hi[1] : lo[1];
+		p.z = (i & 4) ? hi[2] : lo[2];
 		if (!Engine_ProjectPoint(cam, Engine_Mat4MulPoint(&world, p), &s))
 		{
 			return 0;
@@ -944,6 +1335,107 @@ internal void EngHires_LogFrame(const struct GameTracker *gGT, const struct Driv
 	             (double)box[3]);
 }
 
+// The animation counters of the seat, one step per logic tick (gGT->timer
+// moved); a new driver or instance starts at 0. Read only.
+internal void EngHires_AnimTick(const struct GameTracker *gGT, const struct Driver *d, const struct Instance *inst)
+{
+	if (!s_engHires.animValid || (s_engHires.animDriver != d) || (s_engHires.animInst != inst))
+	{
+		s_engHires.animValid = 1;
+		s_engHires.animDriver = d;
+		s_engHires.animInst = inst;
+		s_engHires.animTimer = (u32)gGT->timer;
+		s_engHires.airTicks = 0;
+		s_engHires.driftTicks = 0;
+		s_engHires.driftSide = 1;
+		return;
+	}
+	if ((u32)gGT->timer == s_engHires.animTimer)
+	{
+		return;
+	}
+	s_engHires.animTimer = (u32)gGT->timer;
+	if ((d->actionsFlagSet & ACTION_TOUCH_GROUND) != 0)
+	{
+		s_engHires.airTicks = 0;
+	}
+	else if (s_engHires.airTicks < ENG_HIRES_TICKS_CAP)
+	{
+		s_engHires.airTicks++;
+	}
+	if (d->kartState == KS_DRIFTING)
+	{
+		if (s_engHires.driftTicks == 0)
+		{
+			s_engHires.driftSide = EngHires_DriftSide((int)d->multDrift, (int)d->simpTurnState, (int)d->wheelRotation);
+		}
+		if (s_engHires.driftTicks < ENG_HIRES_TICKS_CAP)
+		{
+			s_engHires.driftTicks++;
+		}
+	}
+	else
+	{
+		s_engHires.driftTicks = 0;
+	}
+}
+
+// One line per logic tick (view 0): the state read and the frame drawn.
+internal void EngHires_AnimLog(const struct GameTracker *gGT, const struct Driver *d, const struct Instance *inst, int clip, u32 frame)
+{
+	static const char *const names[ENG_HIRES_CLIPS] = {"steer", "air", "drift_l", "drift_r"};
+
+	if (s_engHires.animLogValid && (s_engHires.animLogTimer == (u32)gGT->timer))
+	{
+		return;
+	}
+	s_engHires.animLogValid = 1;
+	s_engHires.animLogTimer = (u32)gGT->timer;
+	s_engHires.animLines++;
+	Platform_Log("[CTR Engine] hires anim: vb %d timer %u clip %s frame %u (of clip %u) steerRaw %d touch %d airTicks %d kartState %d driftTicks %d side %d "
+	             "multDrift %d simpTurn %d animIndex %d animFrame %d speed %d\n",
+	             Platform_GetVBlankCount(), (unsigned)gGT->timer, names[clip], frame, frame - s_engHires.anim.clipFirst[clip], (int)d->wheelRotation,
+	             ((d->actionsFlagSet & ACTION_TOUCH_GROUND) != 0) ? 1 : 0, s_engHires.airTicks, (int)d->kartState, s_engHires.driftTicks,
+	             s_engHires.driftSide, (int)d->multDrift, (int)d->simpTurnState, (int)inst->animIndex, (int)inst->animFrame, (int)d->speedApprox);
+
+	// The snapshot series (only with --shot-name).
+	if (g_cfg_shotName[0] != '\0')
+	{
+		static const char *const tags[ENG_HIRES_SHOT_TAGS] = {"steer-l", "steer-r", "air", "drift-l", "drift-r"};
+		const u32 inClip = frame - s_engHires.anim.clipFirst[clip];
+		const u32 last = s_engHires.anim.clipCount[clip] - 1u;
+		int tag = -1;
+
+		if (clip == ENG_HIRES_CLIP_STEER)
+		{
+			tag = (inClip == last) ? 0 : ((inClip == 0u) ? 1 : -1);
+		}
+		else if (inClip == last)
+		{
+			tag = clip + 1; // air 2, drift_l 3, drift_r 4
+		}
+		if ((tag >= 0) && (s_engHires.shotCount[tag] < ENG_HIRES_SHOTS_PER_TAG) &&
+		    ((s_engHires.shotCount[tag] == 0u) || (((u32)gGT->timer - s_engHires.shotTimer[tag]) >= ENG_HIRES_SHOT_GAP)))
+		{
+			char base[PLATFORM_ARG_PATH_MAX];
+			char path[PLATFORM_ARG_PATH_MAX + 48];
+			size_t length;
+
+			snprintf(base, sizeof(base), "%s", g_cfg_shotName);
+			length = strlen(base);
+			if ((length > 4) && ((strcmp(&base[length - 4], ".bmp") == 0) || (strcmp(&base[length - 4], ".BMP") == 0)))
+			{
+				base[length - 4] = '\0';
+			}
+			snprintf(path, sizeof(path), "%s-%s-%d.bmp", base, tags[tag], Platform_GetVBlankCount());
+			Platform_ShotRequest(path);
+			s_engHires.shotCount[tag]++;
+			s_engHires.shotTimer[tag] = (u32)gGT->timer;
+			Platform_Log("[CTR Engine] hires anim: snapshot %s (timer %u)\n", path, (unsigned)gGT->timer);
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Draws.
 
@@ -952,6 +1444,7 @@ int Engine_HiresRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, str
 	struct GameTracker *gGT = sdata->gGT;
 	const struct Driver *d;
 	EngineInstanceDraw draw;
+	int clip = ENG_HIRES_CLIP_STEER;
 
 	if (!g_cfg_engine || !s_engHires.ok || (inst == NULL) || (idpp == NULL) || (pb == NULL) || (gGT == NULL))
 	{
@@ -962,6 +1455,10 @@ int Engine_HiresRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, str
 	{
 		return 0;
 	}
+	if (s_engHires.animMesh >= 0)
+	{
+		EngHires_AnimTick(gGT, d, inst);
+	}
 	if ((inst->thread == NULL) || (inst->thread->object != (void *)d) || ((inst->flags & (SCREENSPACE_INSTANCE | HIDE_MODEL)) != 0) ||
 	    (Engine_InstanceViewOf(pb) < 0) || !EngCmdl_MeshReady(s_engHires.bodyMesh))
 	{
@@ -971,11 +1468,24 @@ int Engine_HiresRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, str
 	memset(&draw, 0, sizeof(draw));
 	draw.mesh = s_engHires.bodyMesh;
 	draw.frame = 0u;
+	if ((s_engHires.animMesh >= 0) && EngCmdl_MeshReady(s_engHires.animMesh))
+	{
+		draw.mesh = s_engHires.animMesh;
+		draw.frame = EngHires_AnimPick(&s_engHires.anim, (int)d->wheelRotation, s_engHires.airTicks, s_engHires.driftTicks, s_engHires.driftSide, &clip);
+		if (Engine_InstanceViewOf(pb) == 0)
+		{
+			EngHires_AnimLog(gGT, d, inst, clip, draw.frame);
+		}
+	}
 	EngCmdl_Tints(inst, idpp, &draw);
 	draw.drawBelow = 1;
 	draw.flags = 0;
 	if (Engine_InstanceSubmit(inst, idpp, pb, &draw) > 0)
 	{
+		if (draw.mesh == s_engHires.animMesh)
+		{
+			s_engHires.animDraws[clip]++;
+		}
 		s_engHires.bodyDrawn++;
 		Engine_FxNoteDrawn(ENGINE_FX_BODY);
 		return 1;
@@ -1320,6 +1830,119 @@ int Engine_SelfTestHires(int *checks)
 		HIRES_CHECK(!Engine_MenuSceneZoomParse("2x", &zoom, &x, &fixed, &yaw) && !Engine_MenuSceneZoomParse("", &zoom, &x, &fixed, &yaw) &&
 		                !Engine_MenuSceneZoomParse("2,,1", &zoom, &x, &fixed, &yaw),
 		            "malformed values refused");
+	}
+	// The animated body file (HRA1): a triangle in 4 frames, clips steer 0/3 and
+	// air 3/1; fields land by name; broken files refused.
+	{
+		static u8 buf[20 + 2 * 24 + 3 * 8 + 4 * 3 * 16 + 3 * 2];
+		const u32 head[4] = {3, 3, 4, 2};
+		const u32 steerClip[2] = {0, 3};
+		const u32 airClip[2] = {3, 1};
+		EngHiresAnimData a;
+		const char *why = "";
+		u8 *q = buf;
+		u32 f;
+		u32 i;
+		int ok;
+		int pickClip = -1;
+
+		memset(buf, 0, sizeof(buf));
+		memcpy(q, "HRA1", 4);
+		memcpy(q + 4, head, sizeof(head));
+		q += 20;
+		memcpy(q, "steer", 5);
+		memcpy(q + 16, steerClip, sizeof(steerClip));
+		memcpy(q + 24, "air", 3);
+		memcpy(q + 40, airClip, sizeof(airClip));
+		q += 48;
+		for (i = 0; i < 3; i++)
+		{
+			const float uv[2] = {0.25f * (float)i, 1.0f - 0.25f * (float)i};
+
+			memcpy(q, uv, sizeof(uv));
+			q += 8;
+		}
+		for (f = 0; f < 4; f++)
+		{
+			for (i = 0; i < 3; i++)
+			{
+				const float pos[3] = {(float)f, (float)i, -(float)(f + i)};
+
+				memcpy(q, pos, sizeof(pos));
+				q[12] = (u8)(10 * f + i);
+				q[13] = 7;
+				q[14] = 8;
+				q[15] = 255;
+				q += 16;
+			}
+		}
+		q[0] = 0;
+		q[2] = 1;
+		q[4] = 2;
+		ok = EngHires_ParseAnim(buf, sizeof(buf), &a, &why);
+		HIRES_CHECK(ok && (a.vertexCount == 3u) && (a.indexCount == 3u) && (a.frames == 4u) && (a.clipCount[ENG_HIRES_CLIP_STEER] == 3u) &&
+		                (a.clipFirst[ENG_HIRES_CLIP_AIR] == 3u) && (a.clipCount[ENG_HIRES_CLIP_AIR] == 1u) && (a.clipCount[ENG_HIRES_CLIP_DRIFT_L] == 0u),
+		            "anim parses with its clips");
+		HIRES_CHECK(ok && (a.vertices[3 * 2 + 1].position[0] == 2.0f) && (a.vertices[3 * 2 + 1].position[1] == 1.0f) &&
+		                (a.vertices[3 * 2 + 1].position[2] == -3.0f) && (a.vertices[3 * 2 + 1].color[0] == 21) && (a.vertices[3 * 2 + 1].color[3] == 255) &&
+		                (a.vertices[3 * 2 + 1].texcoord[0] == 0.25f) && (a.vertices[3 * 2 + 1].texcoord[1] == 0.75f),
+		            "anim vertex fields by name");
+		HIRES_CHECK(ok && (a.hullMin[0] == 0.0f) && (a.hullMax[0] == 3.0f) && (a.hullMin[2] == -5.0f), "anim hull over all frames");
+		HIRES_CHECK(ok && (EngHires_AnimPick(&a, 0, 0, 0, 1, &pickClip) == 1u), "a steer clip of 3: straight is its middle");
+		EngHires_FreeAnim(&a);
+		HIRES_CHECK(!EngHires_ParseAnim(buf, sizeof(buf) - 2u, &a, &why), "short anim refused");
+		buf[20 + 48 + 24 + 192 + 4] = 3; // index 2 -> 3
+		HIRES_CHECK(!EngHires_ParseAnim(buf, sizeof(buf), &a, &why), "anim index out of range refused");
+		buf[20 + 48 + 24 + 192 + 4] = 2;
+		memcpy(buf + 20 + 20, &head[3], 4); // steer count 3 -> 2 (even)
+		HIRES_CHECK(!EngHires_ParseAnim(buf, sizeof(buf), &a, &why), "even steer clip refused");
+		memcpy(buf + 20 + 20, &steerClip[1], 4);
+		memcpy(buf + 20 + 24 + 16, &head[0], 4); // air first 3 -> 3 ok; count 1 -> first 3 count 3: outside
+		memcpy(buf + 20 + 24 + 20, &head[0], 4);
+		HIRES_CHECK(!EngHires_ParseAnim(buf, sizeof(buf), &a, &why), "clip outside the frames refused");
+		memcpy(buf + 20 + 24 + 20, &airClip[1], 4);
+		{
+			const float bad = 1.5f;
+
+			memcpy(buf + 20 + 48, &bad, 4);
+			HIRES_CHECK(!EngHires_ParseAnim(buf, sizeof(buf), &a, &why), "texcoord outside 0..1 refused");
+		}
+		buf[0] = 'X';
+		HIRES_CHECK(!EngHires_ParseAnim(buf, sizeof(buf), &a, &why), "anim bad magic refused");
+	}
+	// The pick: the clip table of tools/hires_blender_driver.py (steer 0/9, air
+	// 9/4, drift_l 13/5, drift_r 18/5); air before drift before steer.
+	{
+		EngHiresAnimData a;
+		int clip = -1;
+
+		memset(&a, 0, sizeof(a));
+		a.clipFirst[ENG_HIRES_CLIP_STEER] = 0;
+		a.clipCount[ENG_HIRES_CLIP_STEER] = 9;
+		a.clipFirst[ENG_HIRES_CLIP_AIR] = 9;
+		a.clipCount[ENG_HIRES_CLIP_AIR] = 4;
+		a.clipFirst[ENG_HIRES_CLIP_DRIFT_L] = 13;
+		a.clipCount[ENG_HIRES_CLIP_DRIFT_L] = 5;
+		a.clipFirst[ENG_HIRES_CLIP_DRIFT_R] = 18;
+		a.clipCount[ENG_HIRES_CLIP_DRIFT_R] = 5;
+		HIRES_CHECK((EngHires_AnimPick(&a, 0, 0, 0, 1, &clip) == 4u) && (clip == ENG_HIRES_CLIP_STEER), "straight is the steer middle");
+		HIRES_CHECK((EngHires_AnimPick(&a, 64, 0, 0, 1, &clip) == 8u) && (EngHires_AnimPick(&a, 85, 0, 0, 1, &clip) == 8u), "full left lock and beyond: last steer frame");
+		HIRES_CHECK((EngHires_AnimPick(&a, -64, 0, 0, 1, &clip) == 0u) && (EngHires_AnimPick(&a, 32, 0, 0, 1, &clip) == 6u) &&
+		                (EngHires_AnimPick(&a, -8, 0, 0, 1, &clip) == 4u) && (EngHires_AnimPick(&a, -9, 0, 0, 1, &clip) == 3u),
+		            "steer to the nearest frame");
+		HIRES_CHECK((EngHires_AnimPick(&a, 0, ENG_HIRES_AIR_DELAY - 1, 0, 1, &clip) == 4u) && (clip == ENG_HIRES_CLIP_STEER), "a bump stays on the ground");
+		HIRES_CHECK((EngHires_AnimPick(&a, 0, ENG_HIRES_AIR_DELAY, 0, 1, &clip) == 9u) && (clip == ENG_HIRES_CLIP_AIR) &&
+		                (EngHires_AnimPick(&a, 0, ENG_HIRES_AIR_DELAY + 40, 0, 1, &clip) == 12u),
+		            "air: a frame per tick, held at the last");
+		HIRES_CHECK((EngHires_AnimPick(&a, 30, 0, 1, 1, &clip) == 13u) && (clip == ENG_HIRES_CLIP_DRIFT_L) && (EngHires_AnimPick(&a, 30, 0, 9, 1, &clip) == 17u),
+		            "drift left ramps in and holds");
+		HIRES_CHECK((EngHires_AnimPick(&a, 30, 0, 2, -1, &clip) == 19u) && (clip == ENG_HIRES_CLIP_DRIFT_R), "drift right");
+		HIRES_CHECK((EngHires_AnimPick(&a, 30, ENG_HIRES_AIR_DELAY + 1, 4, 1, &clip) == 10u) && (clip == ENG_HIRES_CLIP_AIR), "air before drift");
+		a.clipCount[ENG_HIRES_CLIP_DRIFT_R] = 0;
+		HIRES_CHECK((EngHires_AnimPick(&a, -64, 0, 2, -1, &clip) == 0u) && (clip == ENG_HIRES_CLIP_STEER), "a missing clip falls back to steer");
+		HIRES_CHECK((EngHires_DriftSide(0, 0, 0) == 1) && (EngHires_DriftSide(-5, 3, 3) == -1) && (EngHires_DriftSide(0, -2, 9) == -1) &&
+		                (EngHires_DriftSide(0, 0, -1) == -1) && (EngHires_DriftSide(7, -2, -9) == 1),
+		            "drift side: first non-zero of multDrift, simpTurnState, wheelRotation");
 	}
 #undef HIRES_CHECK
 	*checks += n;

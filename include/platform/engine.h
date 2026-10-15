@@ -969,6 +969,10 @@ void Engine_HiresNoteMenuFrame(void);
 // the material the scene draws the hi-res body and wheels with, -1 = their own.
 #define ENGINE_HIRES_CYCLE_VBLANKS 32
 extern int g_cfg_engineHiresTexCycle;
+// --engine-hires-anim (dev, round of 2026-10-16, Z4): the body from anim.hra /
+// anim.hrt of the same folder (tools/hires_blender_driver.py), pose frames
+// picked from game state (steer, air, drift); see platform/engine_hires.c.
+extern int g_cfg_engineHiresAnim;
 int Engine_HiresMenuMaterial(void);
 // Pure: the wheel middle in world units relative to the instance origin, kart
 // axes (DrawTires.c integers: ((scale * (+-0x90, 0x40, 0xc7 | -0x60)) >> 12) / 4);

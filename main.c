@@ -407,6 +407,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--engine-menuscene", "", "with --engine: the first custom driver of the roster drawn by the engine in the main menu, turning (phase-1 finish line Z5)"},
     {"--engine-hires-dir", "<dir>", "with --engine: the hi-res driver prototype (stage H) from <dir> (body.hrm, wheel.hrm, skin.hrt of tools/hires_testdriver.py) drawn instead of seat 0's body and wheel sprites in a race and as the driver of --engine-menuscene: full-resolution RGBA texture with mip levels, 3D wheels from game state, one log line per tick"},
     {"--engine-hires-tex64", "", "with --engine-hires-dir: the texture reduced to 64x64 (the comparison run of stage H)"},
+    {"--engine-hires-anim", "", "with --engine-hires-dir: the animated test body of tools/hires_blender_driver.py (anim.hra, anim.hrt in that folder) instead of body.hrm - pose frames for steering, air and drift picked from game state, one log line per tick (prototype Z4)"},
     {"--engine-hires-texcycle", "", "with --engine-hires-dir, measuring only: in the menu scene the hi-res skin alternates every 32 VBlanks - full, 64x64, flat magenta key (variant = (vblank / 32) % 3, logged) - the three images of tools/hires_mask_sharp.py from one run"},
     {"--engine-menuscene-zoom", "<f>[,<x>[,<yaw>]]", "with --engine-menuscene, measuring only: the scene's camera zoomed by f (0.25..8, the kart f times larger), its middle at x of half the view width (-1..1, default 0.3, negative left), and with yaw (degrees) a still view at that angle instead of the turn"},
     {"--engine-hide", "<sky,water>", "with --engine --engine-track: the engine owns the listed items (the PS1 path does not draw them) but draws nothing of them - the 'minus' run of the measurements; comma-separated, words sky and water"},
@@ -785,6 +786,7 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			                                   (strcmp(argv[argIndex], "--engine-menuscene") == 0) || (strcmp(argv[argIndex], "--engine-hide") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-hires-dir") == 0) || (strcmp(argv[argIndex], "--engine-hires-tex64") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-hires-texcycle") == 0) || (strcmp(argv[argIndex], "--engine-menuscene-zoom") == 0) ||
+			                                   (strcmp(argv[argIndex], "--engine-hires-anim") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-fail") == 0) || (strcmp(argv[argIndex], "--engine-oracle") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-oracle-fault") == 0)))
 			{
@@ -1214,6 +1216,10 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 		else if (strcmp(argv[argIndex], "--engine-hires-texcycle") == 0)
 		{
 			g_cfg_engineHiresTexCycle = 1;
+		}
+		else if (strcmp(argv[argIndex], "--engine-hires-anim") == 0)
+		{
+			g_cfg_engineHiresAnim = 1;
 		}
 		else if ((strcmp(argv[argIndex], "--engine-menuscene-zoom") == 0) && ((argIndex + 1) < argc))
 		{
