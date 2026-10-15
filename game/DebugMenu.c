@@ -378,6 +378,9 @@ global_variable const struct DebugLevel s_levels[] = {
 extern int g_cfg_devRaceMode;
 // --dev-tt-ghost (main.c): with --dev-race-mode tt, the staff ghost races along.
 extern int g_cfg_devTtGhost;
+// --dev-cup (main.c): -1 off, else the retail arcade cup 0..3 the run starts
+// (DebugMenu_DevCupTick).
+extern int g_cfg_devCup;
 
 // How long a held direction waits before it steps again. Ten VBlanks is a
 // comfortable hand speed; without it a held button walks the whole list,
@@ -775,6 +778,37 @@ internal void DebugMenu_JumpToLevel(struct GameTracker *gGT, int levelID, int dr
 		}
 	}
 
+	// --dev-cup (developer switch, measuring the engine; -1 = off = every line
+	// above and below exactly as before): what the cup menu sets on top of the
+	// arcade race this jump already is (ARCADE_MODE as MM_MenuFlow.c:195):
+	// - the cup bit (MM_MenuProc_SingleCup, MM_MenuFlow.c:459) and the cup:
+	//   cupID, the first track, the eight scores at 0 (MM_CupSelect.c:66-77);
+	//   the level of the jump is the cup's first track (DebugMenu_DevCupTick);
+	// - the speed of the EASY row (MM_MenuProc_Difficulty, MM_MenuFlow.c:427),
+	//   the one row a progress without cup wins offers (MM_ToggleRows_Difficulty);
+	// - one lap per race, what the ARCADE row sets with the ONE LAP cheat on
+	//   (MM_MenuFlow.c:189-191), so that a measuring run reaches the podium in
+	//   minutes; numLaps stays from race to race, the cup only loads the next
+	//   track (UI_CupStandings.c:646);
+	// - the card root of --dev-race-mode: a cup won for the first time asks on
+	//   the podium to save (CUP_NEW_WIN, UI_CupStandings.c:773, CS_Camera.c:247),
+	//   and a script pressing CROSS answers it there, never in memcards/.
+	if (g_cfg_devCup >= 0)
+	{
+		int seat;
+
+		gGT->gameMode2 |= CUP_ANY_KIND;
+		gGT->cup.cupID = g_cfg_devCup;
+		gGT->cup.trackIndex = 0;
+		for (seat = 0; seat < (int)(sizeof(gGT->cup.points) / sizeof(gGT->cup.points[0])); seat++)
+		{
+			gGT->cup.points[seat] = 0;
+		}
+		gGT->arcadeDifficulty = D230.cupDifficulty.speed[0];
+		gGT->numLaps = MM_ONE_LAP_CHEAT_COUNT;
+		(void)NativeMemcard_SetRoot("memcards-dev-race-mode");
+	}
+
 	// What QueueLoadTrack_MenuProc clears for a race that is not a battle.
 	gGT->originalEventTime = TITLE_INITIAL_EVENT_TIME;
 
@@ -796,6 +830,11 @@ internal void DebugMenu_JumpToLevel(struct GameTracker *gGT, int levelID, int dr
 		Platform_Log("[CTR Debug] --dev-race-mode: %s, gameMode1 add 0x%08x clear 0x%08x, memory card root memcards-dev-race-mode\n",
 		             (g_cfg_devRaceMode == 1) ? "retail Time Trial (TIME_TRIAL, no ghost, N Tropy and Oxide in seats 2 and 3)" : "Adventure race (ADVENTURE_MODE)",
 		             (unsigned)addBits, (unsigned)remBits);
+	}
+	if (g_cfg_devCup >= 0)
+	{
+		Platform_Log("[CTR Debug] --dev-cup: retail arcade cup %d (CUP_ANY_KIND), race 1 of 4, difficulty %d (EASY), %d lap(s) per race, memory card root memcards-dev-race-mode\n",
+		             g_cfg_devCup, (int)gGT->arcadeDifficulty, (int)gGT->numLaps);
 	}
 	MainRaceTrack_RequestLoad((s16)levelID);
 }
@@ -2717,6 +2756,266 @@ internal int DebugMenu_TourTick(struct GameTracker *gGT)
 	return started;
 }
 
+// --dev-cup: the run's cup, from the main menu to the podium and back.
+//
+// THE START: the moment of --level (main menu up, a menu on screen) and its
+// funnel, DebugMenu_JumpToLevel, which sets the cup up for --dev-cup, with the
+// cup's first track (data.ArcadeCups, the table MM_CupSelect.c:83 reads). From
+// there the game goes its own way: UI_CupStandings loads races 2 to 4
+// (UI_CupStandings.c:646) and then the podium (GEM_STONE_VALLEY, :810), and
+// the CROSS on the podium loads the main menu (CS_Camera.c:328). After the
+// jump nothing here writes game state: it reads, logs, asks for snapshots and
+// ends the run once the main menu is back.
+//
+// THE SCREENS of a race, from the game's own state: race (the player's seat has
+// not finished), finish (finished, the standings not yet up), results (the cup
+// standings are drawn - HUD_FLAG_CUP_STANDINGS without the race HUD,
+// MainFrame_RenderFrame.c:546-550 - first page, the finishing order), points
+// (its page bit UI_CUP_STANDINGS_PAGE_TRACK_POINTS: this race's points and the
+// cup's; after race 4 the final standings), then the podium. A screen never
+// goes back to an earlier one within its race. Per screen one line when it
+// begins and one when it ends: its frames, in how many of them the level was
+// drawn (RENDER_FLAG_DRAW_LEVEL) and in how many the engine drew the track
+// (Engine_TrackDrawnThisFrame - read in the game logic, so for the frame made
+// last): which path drew the track behind each screen.
+#define DBG_CUP_RACES           4   // UI_CUP_STANDINGS_TRACKS_PER_CUP
+#define DBG_CUP_PAGE_POINTS     0x4 // UI_CUP_STANDINGS_PAGE_TRACK_POINTS (UI_CupStandings.c:11)
+#define DBG_CUP_SHOT_PAGE_FRAME 48  // framesSinceRaceEnded: the page is up; a CROSS before 60 only skips to 60 (UI_CupStandings.c:209-215)
+#define DBG_CUP_SHOT_RACE_FRAME 300 // race frames of the race snapshot, past the countdown
+#define DBG_CUP_SHOT_FINISH     30  // frames after the player's finish
+enum
+{
+	DBG_CUP_NONE,
+	DBG_CUP_RACE,
+	DBG_CUP_FINISH,
+	DBG_CUP_RESULTS,
+	DBG_CUP_POINTS,
+	DBG_CUP_PODIUM,
+	DBG_CUP_PHASES
+};
+global_variable const char *const s_devCupPhaseNames[DBG_CUP_PHASES] = {"none", "race", "finish", "results", "points", "podium"};
+// Podium frames of the snapshots: the camera pan, where the CROSS of the script
+// is not yet heard (CS_Camera.c:314), and after it.
+global_variable const int s_devCupPodiumShots[] = {30, 90, 180};
+global_variable int s_devCupStarted = 0;
+global_variable int s_devCupRace = 0;      // races begun (1..4)
+global_variable int s_devCupLevel = -1;    // level of the race being counted
+global_variable int s_devCupPhase = DBG_CUP_NONE;
+global_variable int s_devCupPhaseFrames = 0;
+global_variable int s_devCupPhaseLevelDrawn = 0;
+global_variable int s_devCupPhaseEngine = 0;
+global_variable int s_devCupPhaseVBlank = 0;
+global_variable int s_devCupShotsTaken = 0; // bits: race, finish, results, points of the race being counted
+global_variable int s_devCupPodiumFrames = 0;
+global_variable int s_devCupPodiumEngine = 0;
+// platform/engine_track.c: 1 = the engine submitted the track in the frame made last.
+int Engine_TrackDrawnThisFrame(void);
+
+internal void DebugMenu_DevCupShot(const char *tag)
+{
+	extern char g_cfg_shotName[PLATFORM_ARG_PATH_MAX];
+	char path[PLATFORM_ARG_PATH_MAX + 64];
+
+	if ((g_cfg_shotName[0] != '\0') && EngineTour_OracleShotName(path, sizeof(path), g_cfg_shotName, tag))
+	{
+		Platform_ShotRequest(path);
+		Platform_Log("[CTR Cup] dev: snapshot %s asked for at vblank %d\n", tag, Platform_GetVBlankCount());
+	}
+}
+
+internal void DebugMenu_DevCupPhaseEnd(void)
+{
+	if (s_devCupPhase == DBG_CUP_NONE)
+	{
+		return;
+	}
+	if (s_devCupPhase == DBG_CUP_PODIUM)
+	{
+		Platform_Log("[CTR Cup] dev: podium ends: %d frame(s) from vblank %d, level drawn in %d, the engine drew the track in %d\n",
+		             s_devCupPhaseFrames, s_devCupPhaseVBlank, s_devCupPhaseLevelDrawn, s_devCupPhaseEngine);
+	}
+	else
+	{
+		Platform_Log("[CTR Cup] dev: race %d %s ends: %d frame(s) from vblank %d, level drawn in %d, the engine drew the track in %d\n",
+		             s_devCupRace, s_devCupPhaseNames[s_devCupPhase], s_devCupPhaseFrames, s_devCupPhaseVBlank, s_devCupPhaseLevelDrawn,
+		             s_devCupPhaseEngine);
+	}
+	s_devCupPhase = DBG_CUP_NONE;
+}
+
+// 1 = the cup was started this frame (the caller returns, as after --level).
+internal int DebugMenu_DevCupTick(struct GameTracker *gGT)
+{
+	extern int g_cfg_jumpDriver;
+	struct Driver *seat;
+	int phase;
+
+	if (g_cfg_devCup < 0)
+	{
+		return 0;
+	}
+
+	if (!s_devCupStarted)
+	{
+		if (((gGT->gameMode1 & MAIN_MENU) != 0) && (sdata->ptrActiveMenu != NULL))
+		{
+			const int levelID = data.ArcadeCups[g_cfg_devCup].CupTrack[0].trackID;
+
+			s_devCupStarted = 1;
+			Platform_Log("[CTR Cup] dev: --dev-cup %d jumps to race 1 on level %d (cup levels %d %d %d %d) at vblank %d\n", g_cfg_devCup, levelID,
+			             (int)data.ArcadeCups[g_cfg_devCup].CupTrack[0].trackID, (int)data.ArcadeCups[g_cfg_devCup].CupTrack[1].trackID,
+			             (int)data.ArcadeCups[g_cfg_devCup].CupTrack[2].trackID, (int)data.ArcadeCups[g_cfg_devCup].CupTrack[3].trackID,
+			             Platform_GetVBlankCount());
+			DebugMenu_JumpToLevel(gGT, levelID, g_cfg_jumpDriver);
+			return 1;
+		}
+		return 0;
+	}
+
+	if (sdata->load_inProgress != 0)
+	{
+		return 0;
+	}
+
+	// Back at the main menu after a race: the cup is over, the run too.
+	if ((gGT->gameMode1 & MAIN_MENU) != 0)
+	{
+		if ((s_devCupRace > 0) && (sdata->ptrActiveMenu != NULL))
+		{
+			DebugMenu_DevCupPhaseEnd();
+			Platform_Log("[CTR Cup] dev: back at the main menu at vblank %d - %d race(s), podium %d frame(s) (the engine drew the track in %d)\n",
+			             Platform_GetVBlankCount(), s_devCupRace, s_devCupPodiumFrames, s_devCupPodiumEngine);
+			Platform_QuitGame("--dev-cup");
+		}
+		return 0;
+	}
+
+	seat = gGT->drivers[0];
+	if (gGT->levelID == GEM_STONE_VALLEY)
+	{
+		phase = DBG_CUP_PODIUM;
+	}
+	else
+	{
+		if (gGT->levelID != s_devCupLevel)
+		{
+			// A new race: the cup has loaded its next track.
+			DebugMenu_DevCupPhaseEnd();
+			s_devCupLevel = gGT->levelID;
+			s_devCupRace++;
+			s_devCupShotsTaken = 0;
+			Platform_Log("[CTR Cup] dev: race %d of %d on level %d: cup %d track index %d, laps %d, difficulty %d, cup bit %s, at vblank %d\n",
+			             s_devCupRace, DBG_CUP_RACES, (int)gGT->levelID, gGT->cup.cupID, gGT->cup.trackIndex, (int)gGT->numLaps, gGT->arcadeDifficulty,
+			             ((gGT->gameMode2 & CUP_ANY_KIND) != 0) ? "on" : "OFF", Platform_GetVBlankCount());
+		}
+		if (((gGT->hudFlags & HUD_FLAG_CUP_STANDINGS) != 0) && ((gGT->hudFlags & HUD_FLAG_RACE_HUD) == 0))
+		{
+			phase = ((sdata->menuReadyToPass & DBG_CUP_PAGE_POINTS) != 0) ? DBG_CUP_POINTS : DBG_CUP_RESULTS;
+		}
+		else if ((seat != NULL) && ((seat->actionsFlagSet & ACTION_RACE_FINISHED) != 0))
+		{
+			phase = DBG_CUP_FINISH;
+		}
+		else
+		{
+			phase = DBG_CUP_RACE;
+		}
+		if (phase < s_devCupPhase)
+		{
+			phase = s_devCupPhase;
+		}
+	}
+
+	if (phase != s_devCupPhase)
+	{
+		DebugMenu_DevCupPhaseEnd();
+		s_devCupPhase = phase;
+		s_devCupPhaseFrames = 0;
+		s_devCupPhaseLevelDrawn = 0;
+		s_devCupPhaseEngine = 0;
+		s_devCupPhaseVBlank = Platform_GetVBlankCount();
+		if (phase == DBG_CUP_PODIUM)
+		{
+			// The final order as UI_CupStandings_FinalizeCupRanks left it (rank ->
+			// seat, UI_CupStandings.c:672-688); the drivers of the races are gone.
+			int rank = 0;
+			int i;
+
+			for (i = 0; i < (int)(sizeof(data.cupPositionPerPlayer) / sizeof(data.cupPositionPerPlayer[0])); i++)
+			{
+				if (data.cupPositionPerPlayer[i] == 0)
+				{
+					rank = i + 1;
+					break;
+				}
+			}
+			Platform_Log("[CTR Cup] dev: podium on level %d at vblank %d: player's cup rank %d, reward model %d, save prompt %s\n", (int)gGT->levelID,
+			             s_devCupPhaseVBlank, rank, (int)gGT->podiumRewardID, ((gGT->gameMode2 & CUP_NEW_WIN) != 0) ? "pending (a new cup win)" : "none");
+		}
+		else
+		{
+			Platform_Log("[CTR Cup] dev: race %d %s begins at vblank %d (player's place %d)\n", s_devCupRace, s_devCupPhaseNames[phase], s_devCupPhaseVBlank,
+			             (seat != NULL) ? (int)seat->driverRank + 1 : 0);
+		}
+	}
+
+	s_devCupPhaseFrames++;
+	if ((gGT->renderFlags & RENDER_FLAG_DRAW_LEVEL) != 0)
+	{
+		s_devCupPhaseLevelDrawn++;
+	}
+	if (Engine_TrackDrawnThisFrame())
+	{
+		s_devCupPhaseEngine++;
+	}
+
+	if (phase == DBG_CUP_PODIUM)
+	{
+		int i;
+
+		s_devCupPodiumFrames = s_devCupPhaseFrames;
+		s_devCupPodiumEngine = s_devCupPhaseEngine;
+		for (i = 0; i < (int)(sizeof(s_devCupPodiumShots) / sizeof(s_devCupPodiumShots[0])); i++)
+		{
+			if (s_devCupPhaseFrames == s_devCupPodiumShots[i])
+			{
+				char tag[32];
+
+				snprintf(tag, sizeof(tag), "cup-podium-f%03d", s_devCupPodiumShots[i]);
+				DebugMenu_DevCupShot(tag);
+			}
+		}
+	}
+	else
+	{
+		const int bit = 1 << phase;
+		int due = 0;
+
+		if ((phase == DBG_CUP_RACE) && (s_devCupPhaseFrames == DBG_CUP_SHOT_RACE_FRAME))
+		{
+			due = 1;
+		}
+		else if ((phase == DBG_CUP_FINISH) && (s_devCupPhaseFrames == DBG_CUP_SHOT_FINISH))
+		{
+			due = 1;
+		}
+		else if (((phase == DBG_CUP_RESULTS) || (phase == DBG_CUP_POINTS)) && (sdata->framesSinceRaceEnded >= DBG_CUP_SHOT_PAGE_FRAME))
+		{
+			due = 1;
+		}
+		if (due && ((s_devCupShotsTaken & bit) == 0))
+		{
+			char tag[32];
+
+			s_devCupShotsTaken |= bit;
+			snprintf(tag, sizeof(tag), "cup-r%d-%s", s_devCupRace, s_devCupPhaseNames[phase]);
+			DebugMenu_DevCupShot(tag);
+		}
+	}
+
+	return 0;
+}
+
 // The portrait strip counter (platform/native_renderer.c) starts at the first
 // game frame; the boot clear before it is counted on its own.
 void NativeRenderer_StripArm(void);
@@ -2994,6 +3293,12 @@ void DebugMenu_Frame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 				ghostSeen = 1;
 				Platform_Log("[CTR Debug] --dev-tt-ghost: a ghost drives on level %d (from vblank %d)\n", gGT->levelID, Platform_GetVBlankCount());
 			}
+		}
+
+		// --dev-cup N: the cup from the main menu to the podium, see DebugMenu_DevCupTick.
+		if (DebugMenu_DevCupTick(gGT))
+		{
+			return;
 		}
 
 		// --level-tour LIST: one track after another, see DebugMenu_TourTick.

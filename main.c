@@ -248,6 +248,9 @@ int g_cfg_devRaceMode = 0;
 // --dev-tt-ghost: with --dev-race-mode tt, the track's staff ghost races along
 // (game/DebugMenu.c, DebugMenu_JumpToLevel). 0 = off, every start as before.
 int g_cfg_devTtGhost = 0;
+// --dev-cup: a retail arcade cup (0..3) started from the main menu
+// (game/DebugMenu.c, DebugMenu_DevCupTick). -1 = off, every start as before.
+int g_cfg_devCup = -1;
 
 typedef struct
 {
@@ -412,6 +415,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--no-engine", "", "the native engine stays off for this run, whatever ctr-settings.cfg says (video engine 1); the way back to the PS1 path once the engine is the default; not with --engine"},
     {"--dev-race-mode", "<tt|adventure>", "with --level: the direct start as a retail Time Trial (tt) or as an Adventure race (adventure) instead of an arcade race"},
     {"--dev-tt-ghost", "", "with --dev-race-mode tt: the track's staff ghost (N. Tropy) races along - its gate is opened in this session's progress in RAM (the card root is the one of --dev-race-mode); retail disc tracks only"},
+    {"--dev-cup", "<0..3>", "a retail arcade cup (0 Wumpa, 1 Crystal, 2 Nitro, 3 Crash) started from the main menu like --level, set up as the cup menu does it: EASY, 1 lap per race (what the ARCADE row sets with the ONE LAP cheat), the driver of --driver; the game's own way through the result screens and the cup standings (CROSS by --menu-keys) to the podium; one log line per race and screen, with --shot-name snapshots <name>-cup-r<n>-race|results|points.bmp and <name>-cup-podium-f<frame>.bmp; back at the main menu the run ends; the card root is the one of --dev-race-mode; not with --level, --level-tour, --autoload-track or --dev-race-mode"},
     {"--engine-selftest", "", "the native engine's modules without a window: maths, the camera against the PS1 projection, materials and blend equations, meshes and the scene lists, effect geometry, the VRAM decoder, then end (ctest engine_selftest)"},
     {"--mouse-selftest", "", "the menu mouse without a window: the window to menu mapping with letterbox and pillarbox, the widescreen shift of left, centre and right elements at 4:3, 16:9 and 43:18, the round trip, and the active/inactive rules, then end (ctest mouse_selftest)"},
     {"--controls-selftest", "<dir>", "the keyboard bindings file ctr-controls.cfg in <dir>: parsing, fallbacks, saving, swaps, race and menu context and key capture, then end (ctest controls_selftest)"},
@@ -1047,6 +1051,36 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			fprintf(stderr, "switch --dev-tt-ghost requires --dev-race-mode tt\n");
 			fflush(stderr);
 			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+	}
+
+	// --dev-cup: the cup index 0..3, and the cup is the direct start of the run -
+	// no second one beside it. Before the value check of --dev-race-mode, so that
+	// a wrong value behind it is the net of the ctest lines.
+	for (int argIndex = 1; argIndex < argc; argIndex++)
+	{
+		if (strcmp(argv[argIndex], "--dev-cup") == 0)
+		{
+			const char *value = ((argIndex + 1) < argc) ? argv[argIndex + 1] : "";
+
+			if ((strlen(value) != 1) || (value[0] < '0') || (value[0] > '3'))
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --dev-cup expects a cup index 0..3, not '%s'\n", value);
+				fflush(stderr);
+				return NATIVE_EXIT_DEV_REQUIRED;
+			}
+			for (int otherIndex = 1; otherIndex < argc; otherIndex++)
+			{
+				if ((strcmp(argv[otherIndex], "--level") == 0) || (strcmp(argv[otherIndex], "--level-tour") == 0) ||
+				    (strcmp(argv[otherIndex], "--autoload-track") == 0) || (strcmp(argv[otherIndex], "--dev-race-mode") == 0))
+				{
+					fflush(stdout);
+					fprintf(stderr, "switch --dev-cup is a direct start of its own, not with %s\n", argv[otherIndex]);
+					fflush(stderr);
+					return NATIVE_EXIT_DEV_REQUIRED;
+				}
+			}
 		}
 	}
 
@@ -4685,6 +4719,13 @@ int main(int argc, char *argv[])
 				// The pairing with --dev-race-mode tt was checked before any window.
 				g_cfg_devTtGhost = 1;
 				printf("[CTR Native] Time Trial with the track's staff ghost\n");
+			}
+			else if ((strcmp(argv[argIndex], "--dev-cup") == 0) && ((argIndex + 1) < argc))
+			{
+				// The value (0..3) and that no other direct start is given were
+				// checked before any window; game/DebugMenu.c starts the cup.
+				g_cfg_devCup = atoi(argv[++argIndex]);
+				printf("[CTR Native] direct start: retail arcade cup %d\n", g_cfg_devCup);
 			}
 			else if ((strcmp(argv[argIndex], "--level") == 0) && ((argIndex + 1) < argc))
 			{
