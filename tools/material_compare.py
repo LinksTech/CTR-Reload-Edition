@@ -113,7 +113,7 @@ import sys
 
 SOURCES = 'TIDXSWM'
 FEATURES = ('prim', 'anim', 'lod', 'page', 'depth', 'clut', 'uv', 'blend', 'col', 'stage', 'cell',
-            'stage-none', 'split-col', 'mirror-col', 'col-model', 'missing-source', 'engine-only-material', 'engine-only',
+            'stage-none', 'split-col', 'mirror-col', 'missing-source', 'engine-only-material', 'engine-only',
             'sample-outside')
 # Retail draw functions that cut model triangles at the water or mirror line
 # and write pieces with interpolated UV and the colour of their side.
@@ -142,9 +142,10 @@ FAULT_TARGET = {'clut': 'clut', 'cell': 'cell'}
 # steps can be off by one each, so 2. T1 (normals drawn as colours) is far
 # above (>= 32).
 COL_TOL_NORMAL = 0
-# Track tile colours (slots on both sides) off by at most this are reported as
-# their own feature col-model (rounding of the oracle's tile colour model),
-# not hidden: the tolerance stays COL_TOL_NORMAL.
+# Corner colours of track tile packets (cell lines, slots on both sides) are
+# computed by the oracle's model of the walk's colour averaging; a difference
+# of at most this is information (col-model, counted), above it stays col.
+# Stage lines and the colours of the plain model writer keep COL_TOL_NORMAL.
 COL_MODEL_GAP = 2
 COL_TOL_GTE = 2
 BOX_AREA_MAX = 256 * 256
@@ -855,7 +856,7 @@ def _new_stats():
             'per': {}, 'unused': {}, 'coverage': {}, 'prim_equal': 0, 'menu_tracks': set(),
             'part': {}, 'clip': {}, 'nogeo': {}, 'info_lines': {}, 'stage_none': {}, 'lod_never': set(),
             'col_unpaired': 0, 'winding': 0, 'piece': {}, 'eom_coverage': [], 'fault_orient': set(),
-            't_set_rule': {}, 'back_coverage': [], 'src_cell': {}}
+            't_set_rule': {}, 'back_coverage': [], 'src_cell': {}, 'col_model': {}}
 
 
 def _per(stats, tr, src):
@@ -1214,12 +1215,14 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                             continue
                         best = min(same, key=lambda e: (len(_t_diffs(r, e, ctol)), e.lineno))
                         d = _t_diffs(r, best, ctol)
-                        if d == ['col'] and r.slots is not None and best.slots is not None and \
+                        if d == ['col'] and r.key[0] == 'cell' and r.slots is not None and best.slots is not None and \
                                 max(max(abs(p - q) for p, q in zip(a[1], b[1])) for a, b in _common_slots(r, best)
                                     if a[1] is not None and b[1] is not None) <= COL_MODEL_GAP:
-                            # tile colours that differ by a rounding step of the oracle's
-                            # colour model: counted apart (no tolerance change)
-                            d = ['col-model']
+                            # computed tile corner colours within a rounding step of the
+                            # oracle's colour model: information, counted
+                            _bump(stats['col_model'], tr, count)
+                            used_by.setdefault(id(best), (best, r))
+                            continue
                         if r.anim or best.anim:
                             pre.append('anim')
                         rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=pre + d, r=r, e=best,
@@ -1674,11 +1677,12 @@ def render_md(res, inputs, exc_origin):
     md.append('VRAM: %d frame(s) with a dump, %d race frame(s) without; %d engine box(es) checked, '
               '%d not checked (no dump), %d textured engine line(s) without box' % (
                   s['vram_frames'], len(s['vram_missing']), s['box_checked'], s['box_unchecked'], s['e_no_box']))
-    md.append('Colour: tolerance %d per channel for the normal writer, %d for GTE writers; '
+    md.append('Colour: tolerance %d per channel for the normal writer, %d for GTE writers, %d for computed tile '
+              'corners (col-model, information: %d line(s)); '
               '%d retail / %d engine line(s) without col (not compared), of them %d with a col that does not '
               'pair with the corners' % (
-                  COL_TOL_NORMAL, res.gte_tol if hasattr(res, 'gte_tol') else COL_TOL_GTE,
-                  s['r_no_col'], s['e_no_col'], s['col_unpaired']))
+                  COL_TOL_NORMAL, res.gte_tol if hasattr(res, 'gte_tol') else COL_TOL_GTE, COL_MODEL_GAP,
+                  sum(s['col_model'].values()), s['r_no_col'], s['e_no_col'], s['col_unpaired']))
     md.append('Exceptions: %s' % exc_origin)
     md.append('')
     md.append('## Exception list')
@@ -2145,10 +2149,17 @@ def selftest():
     check('triangle face: a differing corner on one of its slots: uv', feats(res) == ['uv'])
     res, _ = run([F(), T('R', '5', C00, 'cell=0,0', extra='ord=slot,col=225,1,1'),
                   T('E', '5', C00, 'cell=0,0', extra='col=226,1,1')])
-    check('tile colour off by 1 with slots on both sides: col-model, still a deviation', feats(res) == ['col-model'])
+    check('tile corner colour off by 1 with slots on both sides: col-model information, no deviation',
+          len(res.open) == 0 and res.stats['col_model'] == {'L3': 1})
+    res, _ = run([F(), T('R', '5', C00, 'cell=0,0', extra='ord=slot,col=224,1,1'),
+                  T('E', '5', C00, 'cell=0,0', extra='col=226,1,1')])
+    check('tile corner colour off by 2: col-model information', len(res.open) == 0 and res.stats['col_model'] == {'L3': 1})
     res, _ = run([F(), T('R', '5', C00, 'cell=0,0', extra='ord=slot,col=223,1,1'),
                   T('E', '5', C00, 'cell=0,0', extra='col=226,1,1')])
-    check('tile colour off by 3: col', feats(res) == ['col'])
+    check('tile corner colour off by 3: col', feats(res) == ['col'] and res.stats['col_model'] == {})
+    res, _ = run([F(), T('R', '5', S2, 'stage=2', extra='ord=slot,col=225,1,1'),
+                  T('E', '5', S2, 'stage=2', extra='col=226,1,1')])
+    check('stage line colour off by 1: col (tolerance 0 stays)', feats(res) == ['col'])
 
     # fallback without slot marker: track UV as a corner set (counted)
     res, _ = run([F(), T('R', '5', '7,0,0,0,7,7,0,7', 'cell=0,0'), T('E', '5', C00, 'cell=0,0')])
