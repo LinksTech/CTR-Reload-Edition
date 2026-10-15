@@ -399,6 +399,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--engine-hires-tex64", "", "with --engine-hires-dir: the texture reduced to 64x64 (the comparison run of stage H)"},
     {"--engine-hide", "<sky,water>", "with --engine --engine-track: the engine owns the listed items (the PS1 path does not draw them) but draws nothing of them - the 'minus' run of the measurements; comma-separated, words sky and water"},
     {"--engine-fail", "<start|track>", "with --engine, measuring only: forces the engine's fallback to the PS1 path - start: the programs 'ne' and 'nw' are not made, track (needs --engine-track): the first track load of the engine fails; the log names the reason and the run goes on without the engine"},
+    {"--no-engine", "", "the native engine stays off for this run, whatever ctr-settings.cfg says (video engine 1); the way back to the PS1 path once the engine is the default; not with --engine"},
     {"--dev-race-mode", "<tt|adventure>", "with --level: the direct start as a retail Time Trial (tt) or as an Adventure race (adventure) instead of an arcade race"},
     {"--engine-selftest", "", "the native engine's modules without a window: maths, the camera against the PS1 projection, materials and blend equations, meshes and the scene lists, effect geometry, the VRAM decoder, then end (ctest engine_selftest)"},
     {"--mouse-selftest", "", "the menu mouse without a window: the window to menu mapping with letterbox and pillarbox, the widescreen shift of left, centre and right elements at 4:3, 16:9 and 43:18, the round trip, and the active/inactive rules, then end (ctest mouse_selftest)"},
@@ -743,6 +744,18 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			fflush(stderr);
 			return NATIVE_EXIT_DEV_REQUIRED;
 		}
+
+		// --no-engine and --engine on one command line contradict each other.
+		for (int argIndex = 1; argIndex < argc; argIndex++)
+		{
+			if ((strcmp(argv[argIndex], "--no-engine") == 0) && engineGiven)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --no-engine does not go with --engine\n");
+				fflush(stderr);
+				return NATIVE_EXIT_DEV_REQUIRED;
+			}
+		}
 	}
 
 	// --engine-hide knows the words sky and water; anything else is refused
@@ -940,6 +953,12 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 			const int mode = Engine_FailModeFromName(argv[++argIndex]);
 
 			g_cfg_engineFail = (mode > 0) ? mode : 0;
+		}
+		else if (strcmp(argv[argIndex], "--no-engine") == 0)
+		{
+			// UP HERE: "video engine" of ctr-settings.cfg is read before the
+			// window (Platform_SettingsPreloadDisplay) and this beats it.
+			g_cfg_engineOff = 1;
 		}
 		else if ((strcmp(argv[argIndex], "--native-probe") == 0) && ((argIndex + 1) < argc))
 		{
@@ -3666,6 +3685,11 @@ int main(int argc, char *argv[])
 			{
 				// Set by the early reader (NativeArgs_ReadDisplayFlags).
 				Platform_Log("[CTR Engine] --engine: on (dev); native groundwork on\n");
+			}
+			else if (strcmp(argv[argIndex], "--no-engine") == 0)
+			{
+				// Set by the early reader.
+				Platform_Log("[CTR Engine] --no-engine: the engine stays off for this run\n");
 			}
 			else if (strcmp(argv[argIndex], "--engine-fail") == 0)
 			{

@@ -52,6 +52,21 @@ extern int g_cfg_engineFail;
 #define ENGINE_FAIL_TRACK 2
 int Engine_FailModeFromName(const char *name); // "start" / "track" -> ENGINE_FAIL_*, -1 for any other word
 
+// --no-engine (dev in this build; the emergency exit and the switch of the
+// PS1-path gates once the engine is the default): the engine stays off for the
+// run, whatever ctr-settings.cfg says. Not with --engine.
+extern int g_cfg_engineOff;
+// THE SETTING "video engine 0|1" (ctr-settings.cfg, read before the window by
+// Platform_SettingsPreloadDisplay; prepared, no menu entry, written only while
+// 1). Engine_SettingDecision is the pure rule, Engine_SettingApply acts on it.
+#define ENGINE_SETTING_OFF 0       // the value 0: nothing
+#define ENGINE_SETTING_ON 1        // the engine and its track on for the run (--engine --engine-track)
+#define ENGINE_SETTING_NEEDS_DEV 2 // 1 without --dev: stays off in this build
+#define ENGINE_SETTING_NO_ENGINE 3 // 1 with --no-engine: off
+#define ENGINE_SETTING_LINE 4      // 1 with --engine on the command line: the command line decides
+int Engine_SettingDecision(int setting, int dev, int engineOnLine, int noEngine);
+void Engine_SettingApply(int setting);
+
 // THE PRINCIPLE (2026-10-13): CTR Reload is a PC version, not a 1:1 port. The
 // engine shows the game state the way we want it; it does NOT rebuild the PS1
 // drawing pipeline (ordering tables as a goal, GTE rounding, PS1 sprite maths,

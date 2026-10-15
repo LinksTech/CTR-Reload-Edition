@@ -368,6 +368,19 @@ global_variable int s_resScaleFile = 4;
 // alone: without --native-preview it stays 0, the retail path.
 global_variable int s_nativeDriversSetting = 0;
 
+// video engine 0|1 (day round of 2026-10-15; prepared, no menu entry): 1 asks
+// for the native engine with its track, as --engine --engine-track. Read before
+// the window for the reason of nativedrivers; what it does in the run is decided
+// by Engine_SettingApply (platform/engine.c: only with --dev in this build,
+// never with --no-engine or --engine on the command line). Not in the table
+// below: it is written only while 1, so no file gets a new line by it.
+global_variable int s_engineSetting = 0;
+
+internal void Platform_StoreEngineSetting(int value)
+{
+	s_engineSetting = (value != 0);
+}
+
 internal void Platform_StoreFullscreenSetting(int value)
 {
 	s_fullscreenSetting = (value != 0);
@@ -496,6 +509,12 @@ void Platform_SettingsSave(void)
 					s_videoSettings[setting].get());
 	}
 
+	// video engine: only while 1 (see s_engineSetting).
+	if (s_engineSetting)
+	{
+		fprintf(file, "%s engine 1\n", NATIVE_SETTINGS_SECTION_VIDEO);
+	}
+
 	for (mode = 0; mode < CTR_View_ModeCount(); mode++)
 	{
 		for (setting = 0; setting < CTR_View_SettingCount(); setting++)
@@ -572,6 +591,13 @@ void Platform_SettingsLoad(void)
 		// The video section first, because it is the one that is not a shape name.
 		if (strcmp(sectionName, NATIVE_SETTINGS_SECTION_VIDEO) == 0)
 		{
+			// video engine is not in the table (see s_engineSetting); its run value was decided before the window.
+			if (strcmp(keyName, "engine") == 0)
+			{
+				Platform_StoreEngineSetting(value);
+				applied++;
+				continue;
+			}
 			for (setting = 0; setting < NATIVE_VIDEO_SETTING_COUNT; setting++)
 			{
 				if (strcmp(keyName, s_videoSettings[setting].key) == 0)
@@ -680,9 +706,21 @@ internal void Platform_SettingsPreloadDisplay(int *fullscreen)
 		{
 			Platform_StoreNativeDriversSetting(value);
 		}
+		else if (strcmp(keyName, "engine") == 0)
+		{
+			Platform_StoreEngineSetting(value);
+		}
 	}
 
 	fclose(file);
+
+	// Only a file that says 1 reaches the engine; without it nothing is logged.
+	if (s_engineSetting)
+	{
+		void Engine_SettingApply(int setting);
+
+		Engine_SettingApply(s_engineSetting);
+	}
 
 	if (s_nativeDriversSetting && !g_cfg_nativePreview)
 	{
