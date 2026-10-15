@@ -328,8 +328,20 @@ typedef struct
 
 #define ENGINE_VIEWS 4
 #define ENGINE_DRAWS_PER_VIEW 512
-#define ENGINE_DYN_VERTICES_PER_FRAME 131072
+// The dynamic geometry per bank and frame: ENGINE_DYN_VERTICES_PER_FRAME vertices
+// and 3/2 of that in indices (the scene's rings) and in expanded vertices (the
+// renderer's store and each region of the GPU buffer). Heap memory made when the
+// engine starts (Engine_RenderInit), none without --engine; 262144 holds every
+// face of the largest track at once (49556 faces, 93931 triangles).
+#define ENGINE_DYN_VERTICES_PER_FRAME 262144
 #define ENGINE_SCENE_BANKS 2
+
+// The dynamic rings of both banks (heap). Engine_RenderInit makes them; 1 = there,
+// 0 = out of memory (none kept). Without them a dynamic draw is refused (counted
+// as Engine_SceneOverflows).
+int Engine_SceneRingsAlloc(void);
+void Engine_SceneRingsFree(void);
+u32 Engine_SceneRingsBytes(void); // what Engine_SceneRingsAlloc takes
 
 // The scene has one bank per double buffer of the game (gGT->swapchainIndex):
 // a frame collects into its bank while the other bank's draws may still be

@@ -1,11 +1,14 @@
 #include <platform/engine.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // ENGINE SCENE - see include/platform/engine.h.
 //
-// The per-view draw lists of the frames in flight. Everything is static
-// storage, once per bank (one bank per double buffer of the game):
+// The per-view draw lists of the frames in flight. The lists are static
+// storage, the dynamic rings heap storage made by Engine_SceneRingsAlloc when
+// the engine starts (Engine_RenderInit; without --engine they never exist),
+// once per bank (one bank per double buffer of the game):
 //   - draws[view]   : the submitted draws in submission order
 //   - sorted[view]  : the same draws as copies in drawing order, rebuilt lazily
 //                     by Engine_SceneSortedBank when the list changed
@@ -25,8 +28,8 @@ typedef struct
 	u16 order[ENGINE_VIEWS][ENGINE_DRAWS_PER_VIEW];
 	int count[ENGINE_VIEWS];
 	int dirty[ENGINE_VIEWS];
-	EngineVertex dynVertices[ENGINE_DYN_VERTICES_PER_FRAME];
-	u16 dynIndices[SCENE_DYN_INDICES_PER_FRAME];
+	EngineVertex *dynVertices; // ENGINE_DYN_VERTICES_PER_FRAME, NULL until Engine_SceneRingsAlloc
+	u16 *dynIndices;           // SCENE_DYN_INDICES_PER_FRAME
 	u32 dynVertexUsed;
 	u32 dynIndexUsed;
 } SceneBank;
@@ -34,6 +37,55 @@ typedef struct
 global_variable SceneBank g_sceneBanks[ENGINE_SCENE_BANKS];
 global_variable int g_sceneBank;
 global_variable u32 g_sceneOverflows;
+
+int Engine_SceneRingsAlloc(void)
+{
+	int bank;
+
+	for (bank = 0; bank < ENGINE_SCENE_BANKS; bank++)
+	{
+		SceneBank *b = &g_sceneBanks[bank];
+
+		if (b->dynVertices == NULL)
+		{
+			b->dynVertices = (EngineVertex *)malloc((size_t)ENGINE_DYN_VERTICES_PER_FRAME * sizeof(EngineVertex));
+		}
+		if (b->dynIndices == NULL)
+		{
+			b->dynIndices = (u16 *)malloc((size_t)SCENE_DYN_INDICES_PER_FRAME * sizeof(u16));
+		}
+		if ((b->dynVertices == NULL) || (b->dynIndices == NULL))
+		{
+			Engine_SceneRingsFree();
+			return 0;
+		}
+		b->dynVertexUsed = 0;
+		b->dynIndexUsed = 0;
+	}
+	return 1;
+}
+
+void Engine_SceneRingsFree(void)
+{
+	int bank;
+
+	for (bank = 0; bank < ENGINE_SCENE_BANKS; bank++)
+	{
+		SceneBank *b = &g_sceneBanks[bank];
+
+		free(b->dynVertices);
+		free(b->dynIndices);
+		b->dynVertices = NULL;
+		b->dynIndices = NULL;
+		b->dynVertexUsed = 0;
+		b->dynIndexUsed = 0;
+	}
+}
+
+u32 Engine_SceneRingsBytes(void)
+{
+	return (u32)ENGINE_SCENE_BANKS * (((u32)ENGINE_DYN_VERTICES_PER_FRAME * (u32)sizeof(EngineVertex)) + ((u32)SCENE_DYN_INDICES_PER_FRAME * (u32)sizeof(u16)));
+}
 
 void Engine_SceneSelectBank(int bank)
 {
@@ -81,7 +133,8 @@ int Engine_SceneSubmit(int view, const EngineDraw *draw)
 	}
 	if (draw->dynVertexCount > 0)
 	{
-		if (draw->dynVertexCount > ENGINE_DYN_VERTICES_PER_FRAME - b->dynVertexUsed ||
+		// No rings (not allocated, or the allocation failed): refused like a full ring.
+		if (b->dynVertices == NULL || b->dynIndices == NULL || draw->dynVertexCount > ENGINE_DYN_VERTICES_PER_FRAME - b->dynVertexUsed ||
 		    draw->dynIndexCount > SCENE_DYN_INDICES_PER_FRAME - b->dynIndexUsed)
 		{
 			g_sceneOverflows++;
@@ -285,6 +338,33 @@ int Engine_SelfTestMeshScene(int *checks)
 
 	Engine_MeshesReset();
 	ST_CHECK(Engine_MeshBytes() == 0, "bytes not 0 after reset");
+
+	// --- the rings: none before the allocation (a dynamic draw is refused), then there
+	{
+		static const EngineVertex v3[3] = {{{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f}, {0, 0, 0, 0}}};
+		static const u16 i3[3] = {0, 1, 2};
+		EngineDraw d;
+		u32 ov;
+		int bank;
+
+		Engine_SceneRingsFree();
+		memset(&d, 0, sizeof(d));
+		d.mesh = -1;
+		d.dynVertices = v3;
+		d.dynVertexCount = 3;
+		d.dynIndices = i3;
+		d.dynIndexCount = 3;
+		Engine_SceneBeginFrame();
+		ov = Engine_SceneOverflows();
+		ST_CHECK(Engine_SceneSubmit(0, &d) == -1 && Engine_SceneOverflows() == ov + 1, "dynamic draw without rings not refused/counted");
+		ST_CHECK(Engine_SceneRingsAlloc() == 1, "rings not allocated");
+		for (bank = 0; bank < ENGINE_SCENE_BANKS; bank++)
+		{
+			ST_CHECK(g_sceneBanks[bank].dynVertices != NULL && g_sceneBanks[bank].dynIndices != NULL, "a bank without rings");
+		}
+		ST_CHECK(Engine_SceneRingsAlloc() == 1 && Engine_SceneRingsBytes() > 0u, "second allocation refused");
+		Engine_SceneBeginFrame();
+	}
 
 	// --- validation
 	ST_CHECK(Engine_MeshCreate(NULL) == -1, "NULL desc accepted");
@@ -561,9 +641,18 @@ int Engine_SelfTestMeshScene(int *checks)
 	// ring full (bank 0)
 	{
 		Engine_SceneBeginFrame();
-		static EngineVertex big[ENGINE_DYN_VERTICES_PER_FRAME];
+		// Heap, not static: a ring-sized array would be static memory of every run.
+		EngineVertex *big = (EngineVertex *)calloc((size_t)ENGINE_DYN_VERTICES_PER_FRAME, sizeof(EngineVertex));
+		u16 *manyI = (u16 *)calloc((size_t)SCENE_DYN_INDICES_PER_FRAME + 3u, sizeof(u16));
 		static u16 bigI[3] = {0, 1, 2};
 		EngineDraw d = St_Draw(-1, -1, 0, 0, 0, 0);
+		ST_CHECK(big != NULL && manyI != NULL, "out of memory for the ring-full test");
+		if (big == NULL || manyI == NULL)
+		{
+			free(big);
+			free(manyI);
+			return failures;
+		}
 		d.dynVertices = big;
 		d.dynVertexCount = ENGINE_DYN_VERTICES_PER_FRAME - 2;
 		d.dynIndices = bigI;
@@ -577,13 +666,14 @@ int Engine_SelfTestMeshScene(int *checks)
 		ST_CHECK(Engine_SceneSubmit(0, &d) == 1, "draw filling the ring exactly refused");
 		{
 			Engine_SceneBeginFrame();
-			static u16 manyI[SCENE_DYN_INDICES_PER_FRAME + 3];
 			d.dynVertexCount = 3;
 			d.dynIndices = manyI;
 			d.dynIndexCount = SCENE_DYN_INDICES_PER_FRAME + 3;
 			ov = Engine_SceneOverflows();
 			ST_CHECK(Engine_SceneSubmit(0, &d) == -1 && Engine_SceneOverflows() == ov + 1, "index ring overflow not refused/counted");
 		}
+		free(big);
+		free(manyI);
 	}
 
 	// list full, BeginFrame

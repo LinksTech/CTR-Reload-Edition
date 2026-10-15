@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // ENGINE RENDER - see include/platform/engine.h (section RENDER).
@@ -43,7 +44,8 @@
 // nothing depends on the scene's storage lifetime. A triangle list of an
 // indexed quad pair is 1.5 times its vertex count, hence the expanded capacity
 // ENGINE_DYN_VERTICES_PER_FRAME * 3 / 2 per bank (a draw that does not fit is
-// refused and counted).
+// refused and counted). The store and the scene's rings are heap memory made
+// by Engine_RenderInit, so a run without --engine has none of them.
 //
 // THE GPU SIDE OF THE DYNAMIC BUFFER. The GPU may still read frame N while
 // frame N+1 is recorded, and the host memory behind a dynamic buffer is written
@@ -124,7 +126,7 @@ global_variable int s_engMarkerCount[ENGINE_SCENE_BANKS];
 global_variable EngineRenderDraw s_engDraws[ENGINE_SCENE_BANKS][ENGINE_VIEWS][ENGINE_DRAWS_PER_VIEW];
 global_variable int s_engDrawCount[ENGINE_SCENE_BANKS][ENGINE_VIEWS];
 global_variable int s_engDepthCleared[ENGINE_SCENE_BANKS][ENGINE_VIEWS];
-global_variable EngineVertex s_engDynCpu[ENGINE_SCENE_BANKS][ENGINE_DYN_EXPANDED];
+global_variable EngineVertex *s_engDynCpu[ENGINE_SCENE_BANKS]; // ENGINE_DYN_EXPANDED each, made by Engine_RenderInit
 global_variable u32 s_engDynUsed[ENGINE_SCENE_BANKS];
 
 // GPU buffers of the meshes: the live ones, and the ones of the last load that
@@ -159,6 +161,40 @@ internal int Engine_RenderBufferValid(NativeGfxBuffer buffer)
 	return (buffer != NATIVE_GFX_INVALID) && (buffer != 0u);
 }
 
+// The CPU side of the dynamic geometry, heap memory only when the engine
+// starts: the expanded store per bank and the scene's rings. 1 = there (also
+// when it already was), 0 = out of memory (nothing kept).
+internal u32 Engine_RenderDynBytes(void)
+{
+	return ((u32)ENGINE_SCENE_BANKS * (u32)ENGINE_DYN_EXPANDED * (u32)sizeof(EngineVertex)) + Engine_SceneRingsBytes();
+}
+
+internal int Engine_RenderDynAlloc(void)
+{
+	int bank;
+	int ok = Engine_SceneRingsAlloc();
+
+	for (bank = 0; bank < ENGINE_SCENE_BANKS; bank++)
+	{
+		if (s_engDynCpu[bank] == NULL)
+		{
+			s_engDynCpu[bank] = (EngineVertex *)malloc((size_t)ENGINE_DYN_EXPANDED * sizeof(EngineVertex));
+		}
+		ok = ok && (s_engDynCpu[bank] != NULL);
+		s_engDynUsed[bank] = 0;
+	}
+	if (!ok)
+	{
+		for (bank = 0; bank < ENGINE_SCENE_BANKS; bank++)
+		{
+			free(s_engDynCpu[bank]);
+			s_engDynCpu[bank] = NULL;
+		}
+		Engine_SceneRingsFree();
+	}
+	return ok;
+}
+
 int Engine_RenderInit(void)
 {
 	NativeGfxVertexBufferDesc desc;
@@ -186,6 +222,13 @@ int Engine_RenderInit(void)
 		Platform_Log("[CTR Engine] render NOT ready: program 'ne' %s, program 'nw' %s\n", (Engine_ProgramOf(ENGINE_PROGRAM_NE) == 0xffffffffu) ? "missing" : "ready",
 		             (Engine_ProgramOf(ENGINE_PROGRAM_NW) == 0xffffffffu) ? "missing" : "ready");
 		Engine_Fallback("start", Engine_ProgramsFailReason());
+		return 0;
+	}
+
+	if (!Engine_RenderDynAlloc())
+	{
+		Platform_Log("[CTR Engine] render NOT ready: the dynamic rings (%u bytes) could not be allocated\n", Engine_RenderDynBytes());
+		Engine_Fallback("start", "the dynamic rings of the engine could not be allocated");
 		return 0;
 	}
 

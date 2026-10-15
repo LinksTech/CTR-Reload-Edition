@@ -58,9 +58,8 @@
 // the blocks the game's own visibility lists show (see VISIBILITY below), as
 // dynamic geometry; static meshes are no longer made.
 //
-// KNOWN LIMITS: one detail level (the finest), hidden faces of track mods
-// (platform frames) are drawn, PS1 objects have no depth test and draw on top
-// of the engine track.
+// KNOWN LIMITS: one detail level (the finest); what stays on the PS1 path (the
+// particles, for example) has no depth test and draws on top of the engine track.
 
 #define EGT_KEYS_MAX 4096
 #define EGT_MODELS_MAX 128
@@ -74,7 +73,7 @@
 // indices (engine_scene.c, SceneBank), and the renderer's expanded store of the
 // same 3/2 (ENGINE_DYN_EXPANDED, engine_render.c: one vertex per index). The track
 // takes all of it but a fixed reserve for sky, water and effects (24576 vertices,
-// 40960 expanded; with 65536 that is the track's 40960 / 57344 of before). A frame
+// 40960 expanded; with 262144 the track's share is 237568 / 352256). A frame
 // whose shown faces do not fit is left to the PS1 walk (counted).
 #define EGT_DYN_RESERVE_VERTICES 24576u
 #define EGT_DYN_RESERVE_EXPANDED 40960u
