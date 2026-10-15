@@ -739,12 +739,43 @@ internal int EngHires_BodyBox(const EngineCamera *cam, const struct Instance *in
 	return 1;
 }
 
+// The inverse of a 3x3 matrix (rows as stored), 0 when it is singular.
+internal int EngHires_Inverse3(const double m[3][3], double inv[3][3])
+{
+	const double c00 = m[1][1] * m[2][2] - m[1][2] * m[2][1];
+	const double c01 = m[1][2] * m[2][0] - m[1][0] * m[2][2];
+	const double c02 = m[1][0] * m[2][1] - m[1][1] * m[2][0];
+	const double det = m[0][0] * c00 + m[0][1] * c01 + m[0][2] * c02;
+
+	if (fabs(det) < 1e-12)
+	{
+		return 0;
+	}
+	inv[0][0] = c00 / det;
+	inv[1][0] = c01 / det;
+	inv[2][0] = c02 / det;
+	inv[0][1] = (m[0][2] * m[2][1] - m[0][1] * m[2][2]) / det;
+	inv[1][1] = (m[0][0] * m[2][2] - m[0][2] * m[2][0]) / det;
+	inv[2][1] = (m[0][1] * m[2][0] - m[0][0] * m[2][1]) / det;
+	inv[0][2] = (m[0][1] * m[1][2] - m[0][2] * m[1][1]) / det;
+	inv[1][2] = (m[0][2] * m[1][0] - m[0][0] * m[1][2]) / det;
+	inv[2][2] = (m[0][0] * m[1][1] - m[0][1] * m[1][0]) / det;
+	return 1;
+}
+
 // One line per logic tick (solid pass, view 0). Drawn values are read back from
-// the finished matrices: the front-left wheel's axle yaw in kart space, and the
-// height of its middle in kart space (world middle - t, through R^T).
+// the finished matrices into kart space through the INVERSE of the instance
+// rotation: the front-left wheel's axle yaw, and the height of its middle
+// (world middle - t). inst->matrix is not orthonormal: its 4.12 entries are
+// rounded (up to about 0.03 world units at the wheel middle through the
+// transpose), and the game writes a stretched matrix for a few ticks (seen on
+// Dingo Canyon every 30 ticks: the up column 1.04 long), so a read-back through
+// the transpose shows up to 1.47 units and 0.088 rad that were never drawn.
 internal void EngHires_LogFrame(const struct GameTracker *gGT, const struct Driver *d, const struct Instance *inst, const EngineCamera *cam,
                                 const EngineMat4 *frontLeft)
 {
+	double R[3][3];
+	double Rinv[3][3];
 	double axle[3];
 	double rel[3];
 	double kart[3];
@@ -760,19 +791,29 @@ internal void EngHires_LogFrame(const struct GameTracker *gGT, const struct Driv
 	s_engHires.logTimer = (u32)gGT->timer;
 	for (row = 0; row < 3; row++)
 	{
-		axle[row] = 0.0;
+		int k;
+
+		for (k = 0; k < 3; k++)
+		{
+			R[row][k] = (double)inst->matrix.m[row][k] / 4096.0;
+		}
 		rel[row] = (double)frontLeft->m[12 + row] - (double)inst->matrix.t[row];
 	}
-	// R^T * column 0 of the wheel matrix (scale k is a common factor of the direction).
+	if (!EngHires_Inverse3(R, Rinv))
+	{
+		return;
+	}
+	// R^-1 * column 0 of the wheel matrix (scale k is a common factor of the direction).
 	for (row = 0; row < 3; row++)
 	{
 		int k;
 
+		axle[row] = 0.0;
 		kart[row] = 0.0;
 		for (k = 0; k < 3; k++)
 		{
-			axle[row] += ((double)inst->matrix.m[k][row] / 4096.0) * (double)frontLeft->m[k];
-			kart[row] += ((double)inst->matrix.m[k][row] / 4096.0) * rel[k];
+			axle[row] += Rinv[row][k] * (double)frontLeft->m[k];
+			kart[row] += Rinv[row][k] * rel[k];
 		}
 	}
 	drawnSteer = atan2(-axle[2], axle[0]);
@@ -1093,6 +1134,33 @@ int Engine_SelfTestHires(int *checks)
 		HIRES_CHECK(fabs(step * radius - way) < 1e-9, "roll step times radius is the way");
 		HIRES_CHECK(Engine_HiresRollStep(-500, 33, 0xccc) < 0.0, "backward speed rolls backward");
 		HIRES_CHECK(Engine_HiresRollStep(1000, 32, 0) == 0.0, "no wheel no roll");
+	}
+	// The read-back through the inverse: a yaw with a stretched up column (as the
+	// game writes for a few ticks) gives the kart-space point back; the transpose
+	// does not.
+	{
+		const double c = cos(0.4);
+		const double sn = sin(0.4);
+		const double R[3][3] = {{c, 0.0, sn}, {0.0, 1.04, 0.0}, {-sn, 0.0, c}};
+		const double m[3] = {28.75, 12.75, 39.75};
+		double inv[3][3];
+		double w[3];
+		double back[3];
+		double viaT = 0.0;
+		int r;
+
+		for (r = 0; r < 3; r++)
+		{
+			w[r] = R[r][0] * m[0] + R[r][1] * m[1] + R[r][2] * m[2];
+		}
+		HIRES_CHECK(EngHires_Inverse3(R, inv), "inverse exists");
+		for (r = 0; r < 3; r++)
+		{
+			back[r] = inv[r][0] * w[0] + inv[r][1] * w[1] + inv[r][2] * w[2];
+			viaT += (r == 1) ? (R[0][1] * w[0] + R[1][1] * w[1] + R[2][1] * w[2]) : 0.0;
+		}
+		HIRES_CHECK((fabs(back[0] - m[0]) < 1e-9) && (fabs(back[1] - m[1]) < 1e-9) && (fabs(back[2] - m[2]) < 1e-9), "inverse reads the middle back");
+		HIRES_CHECK(fabs(viaT - m[1]) > 0.5, "the transpose would not (stretched matrix)");
 	}
 	// Middles: the integer rule of DrawTires.c at the rest scale 0xccc.
 	{
