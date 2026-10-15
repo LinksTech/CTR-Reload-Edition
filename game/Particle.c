@@ -1146,6 +1146,23 @@ int EngineFx_ExhaustSprite(struct Particle *p, int view, const struct Icon *icon
 // every other particle.
 int EngineFx_WorldSprite(struct Particle *p, int view, const struct Icon *icon, s32 posX, s32 posY, s32 posZ, const s32 *cameraOffset, u32 *defaultOT);
 
+// From platform/engine_fx_exhaust.c (--engine --engine-track, WORLD PARTICLES): every
+// particle retail is about to link into an ordering table - after its gates, its
+// Particle_SetColors call and its primitive, so every game-state write of this
+// function happens exactly as before - is offered to the engine, which draws it
+// from the particle state as a world-space quad (or line) with a depth test
+// against the engine track. 1 = the engine took it (retail links nothing), 0 =
+// retail links its primitive as always (counted as "left to retail" in a frame
+// the engine drew the track). rel is the particle position minus the view's
+// camera (4x world, the values retail projects); depth and idpp are the ones
+// retail links with. ParticlesBegin is called once per view and call.
+void EngineFx_ParticlesBegin(int view);
+int EngineFx_ParticleQuad(struct Particle *p, int view, const struct Icon *icon, u16 flagsSetColor, u32 color, const struct ParticleRenderListMatrix *matrix,
+                          s32 relX, s32 relY, s32 relZ, const s32 *cameraOffset, s32 depth, const struct InstDrawPerPlayer *idpp, u32 *defaultOT,
+                          const POLY_FT4 *retail);
+int EngineFx_ParticleLine(struct Particle *p, int view, u16 flagsAxis, u16 flagsSetColor, u32 color, s32 relX, s32 relY, s32 relZ, const s32 *cameraOffset,
+                          s32 depth, const struct InstDrawPerPlayer *idpp, u32 *defaultOT);
+
 // The ordering table and cell Particle_RenderList_LinkAndAdvance picks for a
 // normal quad (same arithmetic, draw time only; writes nothing).
 static int Particle_NativeOtSlot(const struct Particle *particle, const struct InstDrawPerPlayer *idpp, s32 depth, u32 *defaultOT, u32 **otBaseOut)
@@ -1211,6 +1228,13 @@ void Particle_RenderList(struct PushBuffer *pb, void *particleList)
 	scratch->cameraOffset[0] = CTR_MipsSll(pb->matrix_Camera.t[0], 2);
 	scratch->cameraOffset[1] = CTR_MipsSll(pb->matrix_Camera.t[1], 2);
 	scratch->cameraOffset[2] = CTR_MipsSll(pb->matrix_Camera.t[2], 2);
+
+#if defined(CTR_NATIVE)
+	if (g_cfg_engine)
+	{
+		EngineFx_ParticlesBegin((int)cameraID);
+	}
+#endif
 
 	if (prim + (gGT->numParticles * 10) >= (u32 *)primMem->guardEnd)
 	{
@@ -1379,6 +1403,15 @@ void Particle_RenderList(struct PushBuffer *pb, void *particleList)
 			if ((flagsSetColor & PARTICLE_SET_COLOR_FLAG_SPECIAL_LINE) != 0)
 			{
 				Particle_RenderList_WriteSpecialPrimitive((struct ParticleSpecialPacket *)prim, particle, flagsAxis, flagsSetColor, color, scratch);
+#if defined(CTR_NATIVE)
+				// --engine --engine-track: the engine draws the line (WORLD PARTICLES);
+				// the packet stays written, it is neither linked nor kept.
+				if (g_cfg_engine && (EngineFx_ParticleLine(particle, (int)cameraID, flagsAxis, flagsSetColor, color, posX, posY, posZ, scratch->cameraOffset,
+				                                           scratch->depth, idpp, scratch->ot) == 1))
+				{
+					goto next_particle;
+				}
+#endif
 				Particle_RenderList_LinkAndAdvance(&primCursor, &payloadCursor, particle, idpp, flagsSetColor, scratch->depth, scratch->ot);
 				prim = primCursor;
 				goto next_particle;
@@ -1395,6 +1428,16 @@ void Particle_RenderList(struct PushBuffer *pb, void *particleList)
 				// OT is left out (and with it the exhaust box of the probe).
 				Particle_RenderList_AdvanceUnlinked(&primCursor, &payloadCursor);
 			}
+#if defined(CTR_NATIVE)
+			// --engine --engine-track: the engine draws the quad (WORLD PARTICLES); the
+			// primitive stays written (the probe still reads it), it is neither
+			// linked nor kept.
+			else if (g_cfg_engine && (EngineFx_ParticleQuad(particle, (int)cameraID, icon, flagsSetColor, color, &matrix, posX, posY, posZ, scratch->cameraOffset,
+			                                                scratch->depth, idpp, scratch->ot, (const POLY_FT4 *)prim) == 1))
+			{
+				NativeRenderLayer_NoteParticleQuad(particle, pb, (const POLY_FT4 *)prim);
+			}
+#endif
 			else
 			{
 				Particle_RenderList_LinkAndAdvance(&primCursor, &payloadCursor, particle, idpp, flagsSetColor, scratch->depth, scratch->ot);

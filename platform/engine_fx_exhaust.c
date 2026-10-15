@@ -633,6 +633,697 @@ int EngineFx_WorldSprite(struct Particle *p, int view, const struct Icon *icon, 
 }
 
 // --------------------------------------------------------------------------
+// WORLD PARTICLES (night round of 2026-10-16): every particle of the ordinary
+// list (wheel spray, terrain dust, water and snow spray, sparks, smoke, flames,
+// exhaust of retail drivers, ...) drawn by the engine under --engine
+// --engine-track, with a depth test against the engine track. The PS1 primitive
+// has none and shows through walls.
+//
+// WHERE AND WHAT. Particle_RenderList (game/Particle.c) offers a particle at the
+// one point where retail is about to link its primitive into the ordering table:
+// after the gates (driver filter, DRAW_SUCCESSFUL of a driver-local particle's
+// instance, the near-camera box, depth < 0, renderDepthLimit), after
+// Particle_SetColors and after the primitive is written. So every game-state write
+// of that function happens exactly as before, whatever the engine does:
+// Particle_SetColors' clamp write-back, the line colour's velocity word of
+// Particle_RenderList_WriteSpecialPrimitive, ptrIconArray of the icon-frame branch
+// (no proof per emitter is needed, unlike the exhaust and the track mod flames
+// above, which are taken earlier and stay as they are). The engine answers 1 and
+// retail links nothing (the written primitive is neither linked nor kept), or 0
+// and retail links it as always.
+//
+// THE RULE. Taken is every particle that reaches that point while the engine
+// draws the track in this frame (Engine_TrackDrawnThisFrame: decided by the
+// frame's collect, before the particles; 1 player, not the menu). One path for
+// every kind: the kind only names the counter (the icon group's slot in
+// gGT->iconGroup, 0x00..0x10, or "other"); the geometry follows the axes:
+//   - a normal quad (any of ROT_X, ROT_Y, SCALE_X, SCALE_Y): retail's corner (a, b),
+//     a = +-halfW, b = +-halfH (texels << 1, << 4 with LARGE_QUAD), lies at
+//     M * (a, b, 0) / 4096 from the centre in the 4x view space, with M the matrix
+//     Particle_RenderList_BuildNormalMatrix made from the particle's axes (the
+//     game's own reading of its scale and rotation axes; no GTE). The engine puts
+//     the corner at centre + inverse(view rotation) * that / 4 in world units, so
+//     the quad projects to retail's corners (each corner by its own depth, as
+//     RTPS) and lies in the world, where the depth test sees it.
+//   - a special line (SPECIAL_LINE): from the position to position + the delta
+//     retail feeds the GTE ((prev - pos) >> 6, times scale >> 16 with SCALE_X,
+//     each s16 as the GTE register takes it), 1 PSX pixel wide as the PS1 draws a
+//     line (the quad's width is built on the screen and taken back to the world
+//     at each end's depth), gouraud between retail's two colour words.
+// Colour and blend as retail's primitive: the colour word of Particle_SetColors
+// (no colour axis: the raw texture, 128), semi-transparency with the abr bits of
+// flagsSetColor (draw mode), the icon's tpage and clut. The OT cell is the one
+// retail links into (Particle_NativeOtSlot with retail's depth and idpp), the
+// transition channel for the PS1 objects in the same frame.
+//
+// NOT TAKEN, counted as "left to retail" (and why): no camera for the view, a
+// singular camera, no material (cache or table full), the scene refused the draw.
+// "near cut": the centre (or a line end) lies nearer than the engine's near plane;
+// the engine cannot project it, retail would draw a screen-filling quad - taken
+// and not drawn, as the exhaust does. Outside a frame with the engine track the
+// hook answers 0 and counts nothing as left (that is the PS1 track's frame).
+
+#define ENGINE_FX_PARTICLE_SLOTS 0x11 // gGT->iconGroup[0x11]
+#define ENGINE_FX_PARTICLE_OTHER ENGINE_FX_PARTICLE_SLOTS
+#define ENGINE_FX_PARTICLE_KINDS (ENGINE_FX_PARTICLE_SLOTS + 1)
+#define ENGINE_FX_PARTICLE_MATERIALS 128
+#define ENGINE_FX_PARTICLE_WHY 4 // camera, geometry, material, scene
+
+CTR_STATIC_ASSERT(sizeof(POLY_FT4) == 40);
+
+global_variable EngineFxExhaustMaterial s_engFxPartMat[ENGINE_FX_PARTICLE_MATERIALS];
+global_variable u32 s_engFxPartDrawn[ENGINE_FX_PARTICLE_KINDS];
+global_variable u32 s_engFxPartRetail[ENGINE_FX_PARTICLE_KINDS];
+global_variable u32 s_engFxPartTourDrawn[ENGINE_FX_PARTICLE_KINDS];
+global_variable u32 s_engFxPartTourRetail[ENGINE_FX_PARTICLE_KINDS];
+global_variable u32 s_engFxPartWhy[ENGINE_FX_PARTICLE_WHY];
+global_variable u32 s_engFxPartNear;
+global_variable u32 s_engFxPartTourNear;
+global_variable u32 s_engFxPartLines;
+global_variable u32 s_engFxPartTourLines;
+global_variable int s_engFxPartRegistered;
+
+internal u32 EngineFx_ParticleSum(const u32 *a, const u32 *base)
+{
+	u32 sum = 0;
+
+	for (int k = 0; k < ENGINE_FX_PARTICLE_KINDS; k++)
+	{
+		sum += a[k] - ((base != NULL) ? base[k] : 0u);
+	}
+	return sum;
+}
+
+// What the retail producers put into a slot (their use sites; the group names
+// come from the level pack): wheel spray lines, landing and wall sparks (0x0),
+// exhaust, burn smoke and dust puffs (0x1), bubbles (0x7, 0x8), wake and fall
+// splash (0x9), flames (0xA), mud (0xD), mask hint puffs (0x10).
+internal const char *EngineFx_ParticleKindName(int kind)
+{
+	static const char *const names[ENGINE_FX_PARTICLE_KINDS] = {"-spray", "-smoke", "", "", "", "", "", "-bubble", "-bubblepop", "-wake", "-flame", "", "", "-mud", "",
+	                                                            "", "-puff", ""};
+
+	return ((kind >= 0) && (kind < ENGINE_FX_PARTICLE_KINDS)) ? names[kind] : "";
+}
+
+// " gNN-name e/l" for every kind with a count since base (NULL = since the start).
+internal void EngineFx_ParticleKinds(char *out, size_t size, const u32 *baseDrawn, const u32 *baseRetail)
+{
+	size_t used = 0;
+
+	out[0] = '\0';
+	for (int k = 0; k < ENGINE_FX_PARTICLE_KINDS; k++)
+	{
+		const u32 d = s_engFxPartDrawn[k] - ((baseDrawn != NULL) ? baseDrawn[k] : 0u);
+		const u32 r = s_engFxPartRetail[k] - ((baseRetail != NULL) ? baseRetail[k] : 0u);
+		int n;
+
+		if ((d == 0u) && (r == 0u))
+		{
+			continue;
+		}
+		if (k == ENGINE_FX_PARTICLE_OTHER)
+		{
+			n = snprintf(out + used, size - used, " other %u/%u", d, r);
+		}
+		else
+		{
+			n = snprintf(out + used, size - used, " g%02X%s %u/%u", k, EngineFx_ParticleKindName(k), d, r);
+		}
+		if ((n < 0) || ((size_t)n >= size - used))
+		{
+			break;
+		}
+		used += (size_t)n;
+	}
+}
+
+internal void EngineFx_ParticleTourReport(int entry, int levelID, int phase)
+{
+	char kinds[512];
+
+	if (phase == 0)
+	{
+		memcpy(s_engFxPartTourDrawn, s_engFxPartDrawn, sizeof(s_engFxPartTourDrawn));
+		memcpy(s_engFxPartTourRetail, s_engFxPartRetail, sizeof(s_engFxPartTourRetail));
+		s_engFxPartTourNear = s_engFxPartNear;
+		s_engFxPartTourLines = s_engFxPartLines;
+		return;
+	}
+	EngineFx_ParticleKinds(kinds, sizeof(kinds), s_engFxPartTourDrawn, s_engFxPartTourRetail);
+	Platform_Log("[CTR Engine] tour %d level %d world particles: engine %u, left to retail %u (lines %u, near cut %u; by icon group engine/left:%s)\n", entry,
+	             levelID, EngineFx_ParticleSum(s_engFxPartDrawn, s_engFxPartTourDrawn), EngineFx_ParticleSum(s_engFxPartRetail, s_engFxPartTourRetail),
+	             s_engFxPartLines - s_engFxPartTourLines, s_engFxPartNear - s_engFxPartTourNear, (kinds[0] != '\0') ? kinds : " none");
+}
+
+internal void EngineFx_ParticleReport(void)
+{
+	char kinds[512];
+
+	EngineFx_ParticleKinds(kinds, sizeof(kinds), NULL, NULL);
+	Platform_Log("[CTR Engine] world particles: engine %u, left to retail %u (lines %u, near cut %u; left: camera %u, geometry %u, material %u, scene %u; "
+	             "by icon group engine/left:%s)\n",
+	             EngineFx_ParticleSum(s_engFxPartDrawn, NULL), EngineFx_ParticleSum(s_engFxPartRetail, NULL), s_engFxPartLines, s_engFxPartNear, s_engFxPartWhy[0],
+	             s_engFxPartWhy[1], s_engFxPartWhy[2], s_engFxPartWhy[3], (kinds[0] != '\0') ? kinds : " none");
+}
+
+void EngineFx_ParticlesBegin(int view)
+{
+	(void)view;
+	if (!g_cfg_engine || s_engFxPartRegistered)
+	{
+		return;
+	}
+	s_engFxPartRegistered = 1;
+	Engine_TourRegister(EngineFx_ParticleTourReport);
+	Platform_AtExitReport(EngineFx_ParticleReport);
+}
+
+// The counter of a particle: the slot of its icon group in the level's table, or
+// ENGINE_FX_PARTICLE_OTHER (no group, or one the table does not hold).
+internal int EngineFx_ParticleKindOf(const struct IconGroup *group, struct IconGroup *const *slots, int slotCount)
+{
+	if ((group != NULL) && (slots != NULL))
+	{
+		for (int k = 0; k < slotCount; k++)
+		{
+			if (slots[k] == group)
+			{
+				return k;
+			}
+		}
+	}
+	return ENGINE_FX_PARTICLE_OTHER;
+}
+
+// The rule on plain values (also the self test's subject): the engine is on and
+// draws the track in this frame. Every particle that reaches the hook is then taken.
+internal int EngineFx_ParticleRule(int engine, int trackDrawn)
+{
+	return engine && trackDrawn;
+}
+
+// Material for a particle, cached per level (the table resets at level unload;
+// a cached index is checked against the table, as EngineFx_ExhaustMaterial).
+// textured 0: a gouraud line, no texture; the blend from abr when semi.
+internal int EngineFx_ParticleMaterial(int textured, u16 tpage, u16 clut, int semi, int abr)
+{
+	EngineMaterial want;
+	int freeSlot = -1;
+	int index;
+
+	memset(&want, 0, sizeof(want));
+	want.flags = ENGINE_MATERIAL_DOUBLE_SIDED | ENGINE_MATERIAL_NO_DEPTH_WRITE;
+	want.tint[0] = want.tint[1] = want.tint[2] = want.tint[3] = 1.0f;
+	if (textured)
+	{
+		want.texSource = ENGINE_TEX_VRAM;
+		want.clut = clut;
+		if (semi)
+		{
+			want.blend = (u8)Engine_BlendFromAbr((tpage >> 5) & 3);
+			want.flags |= ENGINE_MATERIAL_SEMI_STP;
+			want.tpage = tpage;
+		}
+		else
+		{
+			want.blend = (u8)ENGINE_BLEND_OPAQUE;
+			want.tpage = (u16)((tpage & ~0x60u) | (3u << 5));
+		}
+	}
+	else
+	{
+		// The PS1 blends an untextured semi-transparent primitive as a whole.
+		want.texSource = ENGINE_TEX_NONE;
+		want.blend = (u8)(semi ? Engine_BlendFromAbr(abr & 3) : ENGINE_BLEND_OPAQUE);
+	}
+
+	for (int slot = 0; slot < ENGINE_FX_PARTICLE_MATERIALS; slot++)
+	{
+		EngineFxExhaustMaterial *c = &s_engFxPartMat[slot];
+		const EngineMaterial *have;
+
+		if (!c->used)
+		{
+			if (freeSlot < 0)
+			{
+				freeSlot = slot;
+			}
+			continue;
+		}
+		if (memcmp(&c->wanted, &want, sizeof(want)) != 0)
+		{
+			continue;
+		}
+		have = Engine_Material(c->index);
+		if ((have != NULL) && (memcmp(have, &want, sizeof(want)) == 0))
+		{
+			return c->index;
+		}
+		freeSlot = slot; // same key, the table was reset: register again here
+		break;
+	}
+	if (freeSlot < 0)
+	{
+		// Full: drop every entry whose index no longer holds its key (a new level).
+		for (int slot = 0; slot < ENGINE_FX_PARTICLE_MATERIALS; slot++)
+		{
+			const EngineMaterial *have = Engine_Material(s_engFxPartMat[slot].index);
+
+			if ((have == NULL) || (memcmp(have, &s_engFxPartMat[slot].wanted, sizeof(want)) != 0))
+			{
+				s_engFxPartMat[slot].used = 0;
+				if (freeSlot < 0)
+				{
+					freeSlot = slot;
+				}
+			}
+		}
+		if (freeSlot < 0)
+		{
+			return -1;
+		}
+	}
+	index = Engine_MaterialRegister(&want);
+	if (index < 0)
+	{
+		s_engFxPartMat[freeSlot].used = 0;
+		return -1;
+	}
+	s_engFxPartMat[freeSlot].wanted = want;
+	s_engFxPartMat[freeSlot].index = index;
+	s_engFxPartMat[freeSlot].used = 1;
+	return index;
+}
+
+// The inverse of the camera's 3 x 3 part (view = R * world + t; R is the game's
+// view rotation with its Y row squeezed): world direction = inv * view direction,
+// inv row-major. 0 when R is singular.
+internal int EngineFx_ViewInverse(const EngineCamera *cam, float inv[9])
+{
+	const float *m = cam->viewFromWorld.m;
+	// R row r, column c = m[c * 4 + r]
+	const float a = m[0], b = m[4], c = m[8];
+	const float d = m[1], e = m[5], f = m[9];
+	const float g = m[2], h = m[6], i = m[10];
+	const float det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+
+	if ((det > -1.0e-6f) && (det < 1.0e-6f))
+	{
+		return 0;
+	}
+	inv[0] = (e * i - f * h) / det;
+	inv[1] = (c * h - b * i) / det;
+	inv[2] = (b * f - c * e) / det;
+	inv[3] = (f * g - d * i) / det;
+	inv[4] = (a * i - c * g) / det;
+	inv[5] = (c * d - a * f) / det;
+	inv[6] = (d * h - e * g) / det;
+	inv[7] = (b * g - a * h) / det;
+	inv[8] = (a * e - b * d) / det;
+	return 1;
+}
+
+internal EngineVec3 EngineFx_ViewDirToWorld(const float inv[9], float x, float y, float z)
+{
+	EngineVec3 w;
+
+	w.x = inv[0] * x + inv[1] * y + inv[2] * z;
+	w.y = inv[3] * x + inv[4] * y + inv[5] * z;
+	w.z = inv[6] * x + inv[7] * y + inv[8] * z;
+	return w;
+}
+
+// The four corners of a normal quad in world units (header above): retail corner
+// (a, b) at M * (a, b, 0) / 4096 in the 4x view space. Engine order top-left,
+// top-right, bottom-right, bottom-left = retail corners 0, 1, 3, 2. Positions only.
+internal int EngineFx_ParticleCorners(const EngineCamera *cam, EngineVec3 centre, const struct ParticleRenderListMatrix *mx, int halfW, int halfH,
+                                      EngineVertex v[4])
+{
+	static const int sa[4] = {-1, 1, 1, -1};
+	static const int sb[4] = {-1, -1, 1, 1};
+	const float r11 = (float)(s16)(mx->r11r12 & 0xffffu);
+	const float r12 = (float)(s16)(mx->r11r12 >> 16);
+	const float r21 = (float)(s16)(mx->r13r21 >> 16);
+	const float r22 = (float)(s16)(mx->r22r23 & 0xffffu);
+	const float r31 = (float)(s16)(mx->r31r32 & 0xffffu);
+	const float r32 = (float)(s16)(mx->r31r32 >> 16);
+	// 4096 (the 4.12 matrix) times 4 (the 4x view space)
+	const float k = 1.0f / 16384.0f;
+	float inv[9];
+
+	if (!EngineFx_ViewInverse(cam, inv))
+	{
+		return 0;
+	}
+	for (int c = 0; c < 4; c++)
+	{
+		const float a = (float)(sa[c] * halfW);
+		const float b = (float)(sb[c] * halfH);
+		const EngineVec3 w = EngineFx_ViewDirToWorld(inv, (r11 * a + r12 * b) * k, (r21 * a + r22 * b) * k, (r31 * a + r32 * b) * k);
+
+		v[c].position[0] = centre.x + w.x;
+		v[c].position[1] = centre.y + w.y;
+		v[c].position[2] = centre.z + w.z;
+	}
+	return 1;
+}
+
+// A line from p0 to p1 (world units) as a quad halfPx PSX pixels to each side
+// and past each end, built on the screen and taken back to the world at each
+// end's depth. Colours c0 at p0, c1 at p1. 0 when an end lies nearer than the
+// near plane or the camera is singular.
+internal int EngineFx_ParticleLineQuad(const EngineCamera *cam, EngineVec3 p0, EngineVec3 p1, float halfPx, const u8 c0[4], const u8 c1[4], EngineVertex v[4])
+{
+	EngineVec3 view[2];
+	EngineVec3 end[2];
+	float inv[9];
+	float dx;
+	float dy;
+	float len;
+
+	view[0] = Engine_Mat4MulPoint(&cam->viewFromWorld, p0);
+	view[1] = Engine_Mat4MulPoint(&cam->viewFromWorld, p1);
+	end[0] = p0;
+	end[1] = p1;
+	if ((view[0].z < cam->zNear) || (view[1].z < cam->zNear) || (cam->H <= 0.0f) || !EngineFx_ViewInverse(cam, inv))
+	{
+		return 0;
+	}
+	dx = cam->H * (view[1].x / view[1].z - view[0].x / view[0].z);
+	dy = cam->H * (view[1].y / view[1].z - view[0].y / view[0].z);
+	len = sqrtf(dx * dx + dy * dy);
+	if (len < 1.0e-4f)
+	{
+		dx = 1.0f;
+		dy = 0.0f;
+	}
+	else
+	{
+		dx /= len;
+		dy /= len;
+	}
+	// v0 = p0 left, v1 = p1 left, v2 = p1 right, v3 = p0 right (side normal (-dy, dx))
+	for (int c = 0; c < 4; c++)
+	{
+		const int e = ((c == 1) || (c == 2)) ? 1 : 0;
+		const float along = e ? halfPx : -halfPx;
+		const float side = (c < 2) ? -halfPx : halfPx;
+		const float sx = dx * along - dy * side;
+		const float sy = dy * along + dx * side;
+		const float perPx = view[e].z / cam->H;
+		const EngineVec3 w = EngineFx_ViewDirToWorld(inv, sx * perPx, sy * perPx, 0.0f);
+		const u8 *col = e ? c1 : c0;
+
+		v[c].position[0] = end[e].x + w.x;
+		v[c].position[1] = end[e].y + w.y;
+		v[c].position[2] = end[e].z + w.z;
+		v[c].texcoord[0] = 0.0f;
+		v[c].texcoord[1] = 0.0f;
+		v[c].color[0] = col[0];
+		v[c].color[1] = col[1];
+		v[c].color[2] = col[2];
+		v[c].color[3] = col[3];
+	}
+	return 1;
+}
+
+// The line's end offset as retail feeds it to the GTE (Particle_RenderList_WriteSpecialPrimitive):
+// (prev - pos) >> 6, with SCALE_X times scale >> 16; the register keeps 16 bits.
+internal void EngineFx_ParticleLineDelta(const struct Particle *p, u16 flagsAxis, s32 out[3])
+{
+	static const int prevAxis[3] = {PARTICLE_AXIS_ROT_X_OR_LINE_PREV_X, PARTICLE_AXIS_SCALE_Y_OR_LINE_PREV_Y, PARTICLE_AXIS_ROT_Y_OR_LINE_PREV_Z};
+
+	for (int a = 0; a < 3; a++)
+	{
+		s32 d = (p->axis[prevAxis[a]].startVal - p->axis[PARTICLE_AXIS_POS_X + a].startVal) >> 6;
+
+		if ((flagsAxis & PARTICLE_AXIS_FLAG_SCALE_X) != 0)
+		{
+			d = Particle_RenderList_MulLo(d, p->axis[PARTICLE_AXIS_SCALE_X_OR_LINE_SCALE].startVal) >> 16;
+		}
+		out[a] = (s32)(s16)(u16)((u32)d & 0xffffu);
+	}
+}
+
+// The particle's id in oracle lines: its icon group slot and its pool slot.
+internal void EngineFx_ParticleId(const struct Particle *p, int kind, char *out, size_t size)
+{
+	const struct GameTracker *gGT = sdata->gGT;
+	long slot = -1;
+
+	if ((gGT != NULL) && (gGT->JitPools.particle.ptrPoolData != NULL) && (gGT->JitPools.particle.itemSize != 0u))
+	{
+		const char *base = (const char *)gGT->JitPools.particle.ptrPoolData;
+		const ptrdiff_t off = (const char *)p - base;
+
+		if ((off >= 0) && (off < (ptrdiff_t)gGT->JitPools.particle.itemSize * (ptrdiff_t)gGT->JitPools.particle.maxItems))
+		{
+			slot = (long)(off / (ptrdiff_t)gGT->JitPools.particle.itemSize);
+		}
+	}
+	if (kind == ENGINE_FX_PARTICLE_OTHER)
+	{
+		snprintf(out, size, "particle-other#%ld", slot);
+	}
+	else
+	{
+		snprintf(out, size, "particle-g%02X#%ld", kind, slot);
+	}
+}
+
+// Common start of both hooks: -1 = outside the rule (nothing counted), else the
+// particle's kind, with its view's camera in *cam (NULL: no valid camera).
+internal int EngineFx_ParticleEnter(const struct Particle *p, int view, const EngineCamera **cam)
+{
+	const struct GameTracker *gGT = sdata->gGT;
+	int kind;
+
+	if ((p == NULL) || (gGT == NULL) || !EngineFx_ParticleRule(g_cfg_engine, Engine_TrackDrawnThisFrame()))
+	{
+		return -1;
+	}
+	kind = EngineFx_ParticleKindOf(p->ptrIconGroup, gGT->iconGroup, ENGINE_FX_PARTICLE_SLOTS);
+	*cam = Engine_FrameCamera(view);
+	if ((*cam != NULL) && !(*cam)->valid)
+	{
+		*cam = NULL;
+	}
+	return kind;
+}
+
+// A taken particle the engine could not draw: retail links it (answer 0), counted.
+internal int EngineFx_ParticleLeft(int kind, int why)
+{
+	s_engFxPartRetail[kind]++;
+	s_engFxPartWhy[why]++;
+	return 0;
+}
+
+internal int EngineFx_ParticleSubmit(const EngineCamera *cam, int view, float zv, int material, const EngineVertex v[4], const struct Particle *p, s32 depth,
+                                     const struct InstDrawPerPlayer *idpp, u32 *defaultOT, EngineDraw *draw)
+{
+	static const u16 idx[6] = {0, 1, 2, 0, 2, 3};
+	u32 *ot = NULL;
+	const int cell = Particle_NativeOtSlot(p, idpp, depth, defaultOT, &ot);
+
+	memset(draw, 0, sizeof(*draw));
+	draw->mesh = -1;
+	Engine_CameraScreenFromWorld(cam, &draw->clipFromModel);
+	draw->tint[0] = draw->tint[1] = draw->tint[2] = draw->tint[3] = 1.0f;
+	draw->materialOverride = -1;
+	draw->sortDepth = zv;
+	draw->otCell = (u32)cell;
+	draw->flags = ENGINE_DRAW_TRANSPARENT;
+	draw->dynVertices = v;
+	draw->dynVertexCount = 4;
+	draw->dynIndices = idx;
+	draw->dynIndexCount = 6;
+	draw->dynMaterial = material;
+	return Engine_RenderSubmitLinked(view, draw, ot, cell);
+}
+
+int EngineFx_ParticleQuad(struct Particle *p, int view, const struct Icon *icon, u16 flagsSetColor, u32 color, const struct ParticleRenderListMatrix *matrix,
+                          s32 relX, s32 relY, s32 relZ, const s32 *cameraOffset, s32 depth, const struct InstDrawPerPlayer *idpp, u32 *defaultOT,
+                          const POLY_FT4 *retail)
+{
+	const EngineCamera *cam = NULL;
+	const int kind = EngineFx_ParticleEnter(p, view, &cam);
+	const int shift = ((flagsSetColor & PARTICLE_SET_COLOR_FLAG_LARGE_QUAD) != 0) ? 4 : 1;
+	EngineVertex v[4];
+	EngineVec3 world;
+	EngineDraw draw;
+	u8 rgba[4];
+	float zv;
+	int semi;
+	int raw;
+	int material;
+	u16 tpage;
+
+	if (kind < 0)
+	{
+		return 0;
+	}
+	if ((cam == NULL) || (icon == NULL) || (matrix == NULL) || (cameraOffset == NULL) || (defaultOT == NULL))
+	{
+		return EngineFx_ParticleLeft(kind, 0);
+	}
+	world.x = (float)(relX + cameraOffset[0]) * 0.25f;
+	world.y = (float)(relY + cameraOffset[1]) * 0.25f;
+	world.z = (float)(relZ + cameraOffset[2]) * 0.25f;
+	zv = Engine_Mat4MulPoint(&cam->viewFromWorld, world).z;
+	if (zv < cam->zNear)
+	{
+		s_engFxPartNear++;
+		return 1;
+	}
+	if (!EngineFx_ParticleCorners(cam, world, matrix, ((icon->texLayout.u1 - icon->texLayout.u0) + 1) << shift,
+	                              ((icon->texLayout.v3 - icon->texLayout.v0) + 1) << shift, v))
+	{
+		return EngineFx_ParticleLeft(kind, 1);
+	}
+	EngineFx_ExhaustDecodeColor(color, rgba, &semi, &raw);
+	for (int c = 0; c < 4; c++)
+	{
+		memcpy(v[c].color, rgba, sizeof(rgba));
+	}
+	// The icon's layout, as retail writes it (the draw-mode bits of flagsSetColor
+	// replace the tpage's abr bits); corners 0, 1, 3, 2.
+	v[0].texcoord[0] = (float)icon->texLayout.u0;
+	v[0].texcoord[1] = (float)icon->texLayout.v0;
+	v[1].texcoord[0] = (float)icon->texLayout.u1;
+	v[1].texcoord[1] = (float)icon->texLayout.v1;
+	v[2].texcoord[0] = (float)icon->texLayout.u3;
+	v[2].texcoord[1] = (float)icon->texLayout.v3;
+	v[3].texcoord[0] = (float)icon->texLayout.u2;
+	v[3].texcoord[1] = (float)icon->texLayout.v2;
+	tpage = (u16)((icon->texLayout.tpage & ~PARTICLE_SET_COLOR_FLAG_DRAW_MODE_MASK) | (flagsSetColor & PARTICLE_SET_COLOR_FLAG_DRAW_MODE_MASK));
+	material = EngineFx_ParticleMaterial(1, tpage, icon->texLayout.clut, semi, 0);
+	if (material < 0)
+	{
+		return EngineFx_ParticleLeft(kind, 2);
+	}
+	if (!EngineFx_ParticleSubmit(cam, view, zv, material, v, p, depth, idpp, defaultOT, &draw))
+	{
+		return EngineFx_ParticleLeft(kind, 3);
+	}
+	// The engine oracle (armed frames only): the retail quad as R lines (the
+	// primitive retail wrote and did not link, with a tag of its length) and the
+	// engine's E lines, under the same source id.
+	if (Engine_OracleActive())
+	{
+		char id[ENGINE_ORACLE_ID_MAX];
+		u32 words[10];
+
+		EngineFx_ParticleId(p, kind, id, sizeof(id));
+		if (retail != NULL)
+		{
+			memcpy(words, retail, sizeof(words));
+			words[0] = 9u << 24;
+			Engine_OracleRetailRange('X', id, words, words + 10, "prim=particle");
+		}
+		Engine_OracleEngineDraw('X', id, view, &draw, "prim=particle");
+	}
+	s_engFxPartDrawn[kind]++;
+	return 1;
+}
+
+int EngineFx_ParticleLine(struct Particle *p, int view, u16 flagsAxis, u16 flagsSetColor, u32 color, s32 relX, s32 relY, s32 relZ, const s32 *cameraOffset,
+                          s32 depth, const struct InstDrawPerPlayer *idpp, u32 *defaultOT)
+{
+	const EngineCamera *cam = NULL;
+	const int kind = EngineFx_ParticleEnter(p, view, &cam);
+	EngineVertex v[4];
+	EngineVec3 p0;
+	EngineVec3 p1;
+	EngineDraw draw;
+	s32 delta[3];
+	u32 word0;
+	u32 word1;
+	u8 c0[4];
+	u8 c1[4];
+	int semi;
+	int material;
+
+	if (kind < 0)
+	{
+		return 0;
+	}
+	if ((cam == NULL) || (cameraOffset == NULL) || (defaultOT == NULL))
+	{
+		return EngineFx_ParticleLeft(kind, 0);
+	}
+	p0.x = (float)(relX + cameraOffset[0]) * 0.25f;
+	p0.y = (float)(relY + cameraOffset[1]) * 0.25f;
+	p0.z = (float)(relZ + cameraOffset[2]) * 0.25f;
+	EngineFx_ParticleLineDelta(p, flagsAxis, delta);
+	p1.x = p0.x + (float)delta[0] * 0.25f;
+	p1.y = p0.y + (float)delta[1] * 0.25f;
+	p1.z = p0.z + (float)delta[2] * 0.25f;
+
+	// Retail's two colour words; the first one's code byte carries the semi bit.
+	word0 = color;
+	word1 = (u32)p->axis[PARTICLE_AXIS_ICON_FRAME_OR_LINE_COLOR].startVal;
+	if ((flagsSetColor & PARTICLE_SET_COLOR_FLAG_SPECIAL_LINE_SWAP_COLORS) != 0)
+	{
+		word0 = word1;
+		word1 = color;
+	}
+	semi = (word0 & PARTICLE_GPU_CODE_SEMI_TRANS) != 0;
+	c0[0] = (u8)(word0 & 0xffu);
+	c0[1] = (u8)((word0 >> 8) & 0xffu);
+	c0[2] = (u8)((word0 >> 16) & 0xffu);
+	c0[3] = 255;
+	c1[0] = (u8)(word1 & 0xffu);
+	c1[1] = (u8)((word1 >> 8) & 0xffu);
+	c1[2] = (u8)((word1 >> 16) & 0xffu);
+	c1[3] = 255;
+
+	if (!EngineFx_ParticleLineQuad(cam, p0, p1, 0.5f, c0, c1, v))
+	{
+		s_engFxPartNear++;
+		return 1;
+	}
+	material = EngineFx_ParticleMaterial(0, 0, 0, semi, (flagsSetColor & PARTICLE_SET_COLOR_FLAG_DRAW_MODE_MASK) >> 5);
+	if (material < 0)
+	{
+		return EngineFx_ParticleLeft(kind, 2);
+	}
+	if (!EngineFx_ParticleSubmit(cam, view, Engine_Mat4MulPoint(&cam->viewFromWorld, p0).z, material, v, p, depth, idpp, defaultOT, &draw))
+	{
+		return EngineFx_ParticleLeft(kind, 3);
+	}
+	// The oracle: retail's line as one untextured R line (the decoder skips lines)
+	// with its two colours (col c0;c1;c1), the engine's quad as E lines.
+	if (Engine_OracleActive())
+	{
+		char id[ENGINE_ORACLE_ID_MAX];
+		EngineOracleFace f;
+
+		EngineFx_ParticleId(p, kind, id, sizeof(id));
+		memset(&f, 0, sizeof(f));
+		f.src = 'X';
+		snprintf(f.srcId, sizeof(f.srcId), "%s", id);
+		f.textured = 0;
+		f.clutX = -1;
+		f.clutY = -1;
+		f.blend = semi ? (int)((flagsSetColor & PARTICLE_SET_COLOR_FLAG_DRAW_MODE_MASK) >> 5) : ENGINE_ORACLE_BLEND_OPAQUE;
+		f.cellRow = -1;
+		f.cellCol = -1;
+		snprintf(f.extra, sizeof(f.extra), "prim=line");
+		f.colorCount = 3;
+		memcpy(f.color[0], c0, 3);
+		memcpy(f.color[1], c1, 3);
+		memcpy(f.color[2], c1, 3);
+		Engine_OracleWrite('R', &f);
+		Engine_OracleEngineDraw('X', id, view, &draw, "prim=line");
+	}
+	s_engFxPartLines++;
+	s_engFxPartDrawn[kind]++;
+	return 1;
+}
+
+// --------------------------------------------------------------------------
 // Selftest: a made-up camera and particles, no game state.
 
 internal void EngineFx_ExhaustCheck(int ok, const char *what, int *checks, int *failures)
@@ -764,6 +1455,235 @@ internal void EngineFx_ExhaustTestEmitter(const struct ParticleEmitter *set, con
 	}
 	snprintf(msg, sizeof(msg), "%s: colour entry %s and inside the clamp for its whole life", name, expectColour ? "present" : "absent");
 	EngineFx_ExhaustCheck((lifespan > 0) && (colourEntries == (expectColour ? 1 : 0)) && ok, msg, checks, failures);
+}
+
+// WORLD PARTICLES: the rule, the kind, the corners of every axis kind against a
+// float RTPS of retail's own matrix, the size against the exhaust formula, the line.
+internal void EngineFx_ParticleTestScreen(const EngineCamera *cam, float x, float y, float z, float *sx, float *sy)
+{
+	EngineVec3 w;
+	EngineVec3 view;
+
+	w.x = x;
+	w.y = y;
+	w.z = z;
+	view = Engine_Mat4MulPoint(&cam->viewFromWorld, w);
+	*sx = cam->offsetX + cam->H * view.x / view.z;
+	*sy = cam->offsetY + cam->H * view.y / view.z;
+}
+
+internal int EngineFx_ParticleSelfTest(int *checks)
+{
+	// axis kinds: flags, rotX, rotY, scaleX, scaleY (only the flagged ones are read)
+	static const struct
+	{
+		u16 flags;
+		s32 rotX, rotY, scaleX, scaleY;
+	} kinds[] = {
+	    {0, 0, 0, 0, 0},
+	    {PARTICLE_AXIS_FLAG_SCALE_X, 0, 0, 0x1800, 0},
+	    {PARTICLE_AXIS_FLAG_SCALE_X | PARTICLE_AXIS_FLAG_SCALE_Y, 0, 0, 0x1200, 0x2a00},
+	    {PARTICLE_AXIS_FLAG_SCALE_Y, 0, 0, 0, 0x0c00},
+	    {PARTICLE_AXIS_FLAG_ROT_Y, 0, 300, 0, 0},
+	    {PARTICLE_AXIS_FLAG_ROT_Y, 0, 3000, 0, 0},
+	    {PARTICLE_AXIS_FLAG_ROT_Y | PARTICLE_AXIS_FLAG_SCALE_X, 0, 1500, 0x0900, 0},
+	    {PARTICLE_AXIS_FLAG_ROT_Y | PARTICLE_AXIS_FLAG_SCALE_Y, 0, 700, 0, 0x2000},
+	    {PARTICLE_AXIS_FLAG_ROT_Y | PARTICLE_AXIS_FLAG_SCALE_X | PARTICLE_AXIS_FLAG_SCALE_Y, 0, 2500, 0x1400, 0x0a00},
+	    {PARTICLE_AXIS_FLAG_ROT_X, 400, 0, 0, 0},
+	    {PARTICLE_AXIS_FLAG_ROT_X | PARTICLE_AXIS_FLAG_SCALE_X, 900, 0, 0x1100, 0},
+	    {PARTICLE_AXIS_FLAG_ROT_X | PARTICLE_AXIS_FLAG_SCALE_Y, 3500, 0, 0, 0x1600},
+	    {PARTICLE_AXIS_FLAG_ROT_X | PARTICLE_AXIS_FLAG_ROT_Y, 600, 200, 0, 0},
+	    {PARTICLE_AXIS_FLAG_ROT_X | PARTICLE_AXIS_FLAG_ROT_Y | PARTICLE_AXIS_FLAG_SCALE_X, 300, 1200, 0x0e00, 0},
+	    {PARTICLE_AXIS_FLAG_ROT_X | PARTICLE_AXIS_FLAG_ROT_Y | PARTICLE_AXIS_FLAG_SCALE_X | PARTICLE_AXIS_FLAG_SCALE_Y, 800, 2900, 0x1300, 0x0b00},
+	};
+	static const int sa[4] = {-1, 1, 1, -1};
+	static const int sb[4] = {-1, -1, 1, 1};
+	static const u8 colour[4] = {10, 20, 30, 255};
+	int failures = 0;
+	char msg[160];
+
+	// The rule.
+	EngineFx_ExhaustCheck(EngineFx_ParticleRule(1, 1), "particle rule: taken with the engine track drawn", checks, &failures);
+	EngineFx_ExhaustCheck(!EngineFx_ParticleRule(0, 1), "particle rule: not without --engine", checks, &failures);
+	EngineFx_ExhaustCheck(!EngineFx_ParticleRule(1, 0), "particle rule: not in a frame the PS1 walk draws the track", checks, &failures);
+
+	// The kind: the slot of the icon group; the first slot wins; no group or an unknown one is "other".
+	{
+		static char groups[ENGINE_FX_PARTICLE_SLOTS + 2];
+		struct IconGroup *slots[ENGINE_FX_PARTICLE_SLOTS];
+
+		for (int k = 0; k < ENGINE_FX_PARTICLE_SLOTS; k++)
+		{
+			slots[k] = (struct IconGroup *)(void *)&groups[k];
+		}
+		slots[0x7] = slots[0x1]; // the same group in two slots
+		EngineFx_ExhaustCheck(EngineFx_ParticleKindOf(slots[0x3], slots, ENGINE_FX_PARTICLE_SLOTS) == 0x3, "particle kind: slot 3", checks, &failures);
+		EngineFx_ExhaustCheck(EngineFx_ParticleKindOf(slots[0xA], slots, ENGINE_FX_PARTICLE_SLOTS) == 0xA, "particle kind: the flame slot 0xA", checks, &failures);
+		EngineFx_ExhaustCheck(EngineFx_ParticleKindOf(slots[0x10], slots, ENGINE_FX_PARTICLE_SLOTS) == 0x10, "particle kind: the last slot", checks, &failures);
+		EngineFx_ExhaustCheck(EngineFx_ParticleKindOf(slots[0x7], slots, ENGINE_FX_PARTICLE_SLOTS) == 0x1, "particle kind: the first of two slots", checks,
+		                      &failures);
+		EngineFx_ExhaustCheck(EngineFx_ParticleKindOf((struct IconGroup *)(void *)&groups[ENGINE_FX_PARTICLE_SLOTS + 1], slots, ENGINE_FX_PARTICLE_SLOTS) ==
+		                          ENGINE_FX_PARTICLE_OTHER,
+		                      "particle kind: a group outside the table is other", checks, &failures);
+		EngineFx_ExhaustCheck(EngineFx_ParticleKindOf(NULL, slots, ENGINE_FX_PARTICLE_SLOTS) == ENGINE_FX_PARTICLE_OTHER, "particle kind: no group is other",
+		                      checks, &failures);
+	}
+
+	for (int cameraSet = 0; cameraSet < 2; cameraSet++)
+	{
+		EngineCamera cam;
+
+		if (cameraSet == 0)
+		{
+			EngineFx_ExhaustTestCamera(&cam, 0.0f, 0.0f, 0.0f, 0.0f);
+		}
+		else
+		{
+			EngineFx_ExhaustTestCamera(&cam, 700.0f, 30.0f, -10.0f, 20.0f);
+		}
+
+		// Normal quads: every corner where retail's RTPS puts it (its matrix, its
+		// corner order, each corner by its own depth), within a quarter pixel.
+		for (int i = 0; i < (int)(sizeof(kinds) / sizeof(kinds[0])); i++)
+		{
+			for (int large = 0; large < 2; large++)
+			{
+				const int texW = 24;
+				const int texH = 16;
+				const int halfW = texW << (large ? 4 : 1);
+				const int halfH = texH << (large ? 4 : 1);
+				const float zw = large ? 3000.0f : 400.0f;
+				const EngineVec3 centre = EngineFx_ExhaustTestWorld(&cam, 40.0f, -25.0f, zw);
+				const EngineVec3 centreView = Engine_Mat4MulPoint(&cam.viewFromWorld, centre);
+				struct Particle p;
+				struct ParticleRenderListMatrix mx;
+				EngineVertex v[4];
+				float worst = 0.0f;
+
+				memset(&p, 0, sizeof(p));
+				p.axis[PARTICLE_AXIS_ROT_X_OR_LINE_PREV_X].startVal = kinds[i].rotX;
+				p.axis[PARTICLE_AXIS_ROT_Y_OR_LINE_PREV_Z].startVal = kinds[i].rotY;
+				p.axis[PARTICLE_AXIS_SCALE_X_OR_LINE_SCALE].startVal = kinds[i].scaleX;
+				p.axis[PARTICLE_AXIS_SCALE_Y_OR_LINE_PREV_Y].startVal = kinds[i].scaleY;
+				mx = Particle_RenderList_BuildNormalMatrix(&p, kinds[i].flags);
+
+				EngineFx_ExhaustCheck(EngineFx_ParticleCorners(&cam, centre, &mx, halfW, halfH, v), "particle corners build", checks, &failures);
+				for (int c = 0; c < 4; c++)
+				{
+					// retail: V = TR + M * (a, b, 0) / 4096 in the 4x view space, TR = 4 * view(centre)
+					const float a = (float)(sa[c] * halfW);
+					const float b = (float)(sb[c] * halfH);
+					const float vx = 4.0f * centreView.x + ((float)(s16)(mx.r11r12 & 0xffffu) * a + (float)(s16)(mx.r11r12 >> 16) * b) / 4096.0f;
+					const float vy = 4.0f * centreView.y + ((float)(s16)(mx.r13r21 >> 16) * a + (float)(s16)(mx.r22r23 & 0xffffu) * b) / 4096.0f;
+					const float vz = 4.0f * centreView.z + ((float)(s16)(mx.r31r32 & 0xffffu) * a + (float)(s16)(mx.r31r32 >> 16) * b) / 4096.0f;
+					const float rx = cam.offsetX + cam.H * vx / vz;
+					const float ry = cam.offsetY + cam.H * vy / vz;
+					float ex;
+					float ey;
+
+					EngineFx_ParticleTestScreen(&cam, v[c].position[0], v[c].position[1], v[c].position[2], &ex, &ey);
+					worst = (EngineFx_ExhaustAbs(ex - rx) > worst) ? EngineFx_ExhaustAbs(ex - rx) : worst;
+					worst = (EngineFx_ExhaustAbs(ey - ry) > worst) ? EngineFx_ExhaustAbs(ey - ry) : worst;
+				}
+				snprintf(msg, sizeof(msg), "particle axes 0x%03x large %d camera %d: corners off retail's RTPS by %.3f px", kinds[i].flags, large, cameraSet,
+				         worst);
+				EngineFx_ExhaustCheck(worst < 0.25f, msg, checks, &failures);
+
+				// Without a rotation the size is the exhaust formula's (an independent derivation).
+				if ((kinds[i].flags & (PARTICLE_AXIS_FLAG_ROT_X | PARTICLE_AXIS_FLAG_ROT_Y)) == 0)
+				{
+					EngineVertex q[4];
+					u16 idx[6];
+					float w0;
+					float h0;
+					float w1;
+					float h1;
+					const int scaleX = ((kinds[i].flags & PARTICLE_AXIS_FLAG_SCALE_X) != 0) ? kinds[i].scaleX : 0;
+					const int scaleY = ((kinds[i].flags & PARTICLE_AXIS_FLAG_SCALE_Y) != 0) ? kinds[i].scaleY : 0;
+
+					// The exhaust formula reads a missing SCALE_X as 1.0 for the width and a
+					// missing SCALE_Y as SCALE_X for the height, as retail's matrix does.
+					EngineFx_ExhaustCheck(EngineFx_ExhaustQuadXY(&cam, centre, texW, texH, large, scaleX, scaleY, 0, 0, colour, q, idx),
+					                      "exhaust quad builds", checks, &failures);
+					EngineFx_ExhaustExtent(&cam, q, &w0, &h0);
+					EngineFx_ExhaustExtent(&cam, v, &w1, &h1);
+					snprintf(msg, sizeof(msg), "particle axes 0x%03x large %d: %.2f x %.2f against the exhaust formula %.2f x %.2f", kinds[i].flags, large, w1,
+					         h1, w0, h0);
+					EngineFx_ExhaustCheck((EngineFx_ExhaustAbs(w1 - w0) < 0.5f) && (EngineFx_ExhaustAbs(h1 - h0) < 0.5f), msg, checks, &failures);
+				}
+			}
+		}
+
+		// Lines: the ends where the points project, 1 pixel wide, half a pixel past each end.
+		{
+			const EngineVec3 p0 = EngineFx_ExhaustTestWorld(&cam, -30.0f, 10.0f, 400.0f);
+			const EngineVec3 p1 = EngineFx_ExhaustTestWorld(&cam, 25.0f, -40.0f, 520.0f);
+			static const u8 c0[4] = {200, 100, 50, 255};
+			static const u8 c1[4] = {5, 6, 7, 255};
+			EngineVertex v[4];
+			float s[4][2];
+			float e0x;
+			float e0y;
+			float e1x;
+			float e1y;
+			float width;
+			float length;
+			float want;
+
+			EngineFx_ExhaustCheck(EngineFx_ParticleLineQuad(&cam, p0, p1, 0.5f, c0, c1, v), "particle line builds", checks, &failures);
+			for (int c = 0; c < 4; c++)
+			{
+				EngineFx_ParticleTestScreen(&cam, v[c].position[0], v[c].position[1], v[c].position[2], &s[c][0], &s[c][1]);
+			}
+			EngineFx_ParticleTestScreen(&cam, p0.x, p0.y, p0.z, &e0x, &e0y);
+			EngineFx_ParticleTestScreen(&cam, p1.x, p1.y, p1.z, &e1x, &e1y);
+			// the middle of the p0 side (v0, v3) and of the p1 side (v1, v2), half a pixel past the ends
+			width = sqrtf((s[0][0] - s[3][0]) * (s[0][0] - s[3][0]) + (s[0][1] - s[3][1]) * (s[0][1] - s[3][1]));
+			length = sqrtf(((s[1][0] + s[2][0]) - (s[0][0] + s[3][0])) * ((s[1][0] + s[2][0]) - (s[0][0] + s[3][0])) * 0.25f +
+			               ((s[1][1] + s[2][1]) - (s[0][1] + s[3][1])) * ((s[1][1] + s[2][1]) - (s[0][1] + s[3][1])) * 0.25f);
+			want = sqrtf((e1x - e0x) * (e1x - e0x) + (e1y - e0y) * (e1y - e0y)) + 1.0f;
+			snprintf(msg, sizeof(msg), "particle line camera %d: width %.3f, length %.3f (want 1, %.3f)", cameraSet, width, length, want);
+			EngineFx_ExhaustCheck((EngineFx_ExhaustAbs(width - 1.0f) < 0.01f) && (EngineFx_ExhaustAbs(length - want) < 0.01f), msg, checks, &failures);
+			EngineFx_ExhaustCheck((v[0].color[0] == 200) && (v[3].color[1] == 100) && (v[1].color[2] == 7) && (v[2].color[0] == 5), "particle line colours per end",
+			                      checks, &failures);
+
+			// a line of no length is a 1 x 1 pixel point, as the PS1 draws it
+			EngineFx_ExhaustCheck(EngineFx_ParticleLineQuad(&cam, p0, p0, 0.5f, c0, c1, v), "particle point builds", checks, &failures);
+			for (int c = 0; c < 4; c++)
+			{
+				EngineFx_ParticleTestScreen(&cam, v[c].position[0], v[c].position[1], v[c].position[2], &s[c][0], &s[c][1]);
+			}
+			EngineFx_ExhaustCheck((EngineFx_ExhaustAbs(EngineFx_ExhaustAbs(s[1][0] - s[0][0]) - 1.0f) < 0.01f) &&
+			                          (EngineFx_ExhaustAbs(EngineFx_ExhaustAbs(s[3][1] - s[0][1]) - 1.0f) < 0.01f),
+			                      "particle point: 1 x 1 pixel", checks, &failures);
+
+			// an end nearer than the near plane is refused (counted as near cut by the caller)
+			EngineFx_ExhaustCheck(!EngineFx_ParticleLineQuad(&cam, p0, EngineFx_ExhaustTestWorld(&cam, 0.0f, 0.0f, cam.zNear * 0.5f), 0.5f, c0, c1, v),
+			                      "particle line: an end before the near plane is refused", checks, &failures);
+		}
+	}
+
+	// The line's delta as the GTE register takes it.
+	{
+		struct Particle p;
+		s32 d[3];
+
+		memset(&p, 0, sizeof(p));
+		p.axis[PARTICLE_AXIS_POS_X].startVal = 64 * 1000;
+		p.axis[PARTICLE_AXIS_ROT_X_OR_LINE_PREV_X].startVal = 64 * 1100;
+		p.axis[PARTICLE_AXIS_POS_Y].startVal = 64 * 50;
+		p.axis[PARTICLE_AXIS_SCALE_Y_OR_LINE_PREV_Y].startVal = 0;
+		p.axis[PARTICLE_AXIS_POS_Z].startVal = 0;
+		p.axis[PARTICLE_AXIS_ROT_Y_OR_LINE_PREV_Z].startVal = 64 * 40000;
+		EngineFx_ParticleLineDelta(&p, 0, d);
+		EngineFx_ExhaustCheck((d[0] == 100) && (d[1] == -50) && (d[2] == (s32)(s16)40000), "particle line delta: (prev - pos) >> 6, 16 bits", checks, &failures);
+		p.axis[PARTICLE_AXIS_SCALE_X_OR_LINE_SCALE].startVal = 0x8000;
+		p.axis[PARTICLE_AXIS_ROT_Y_OR_LINE_PREV_Z].startVal = 64 * 300;
+		EngineFx_ParticleLineDelta(&p, PARTICLE_AXIS_FLAG_SCALE_X, d);
+		EngineFx_ExhaustCheck((d[0] == 50) && (d[1] == -25) && (d[2] == 150), "particle line delta: times scale >> 16", checks, &failures);
+	}
+
+	return failures;
 }
 
 int Engine_SelfTestExhaust(int *checks)
@@ -984,6 +1904,9 @@ int Engine_SelfTestExhaust(int *checks)
 		                      "flame colour call writes no axis", checks, &failures);
 		EngineFx_ExhaustCheck((word & PARTICLE_GPU_CODE_SHADE_TEXTURE) != 0, "flame colour: raw texture", checks, &failures);
 	}
+
+	// WORLD PARTICLES.
+	failures += EngineFx_ParticleSelfTest(checks);
 
 	return failures;
 }
