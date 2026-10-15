@@ -28,13 +28,13 @@ void (*drawsync_callback)(void) = NULL;
 // engine oracle counts the game's VRAM writes per track (--engine-oracle, dev,
 // round of 2026-10-16). Without the switch one comparison per call.
 extern char g_cfg_engineOracle[];
-void Engine_OracleNoteVramWrite(int kind, int words);
+void Engine_OracleNoteVramWrite(int kind, int x, int y, int w, int h, int fromX, int fromY);
 
 int ClearImage(RECT16 *rect, uint8_t r, uint8_t g, uint8_t b)
 {
 	if (g_cfg_engineOracle[0] != '\0')
 	{
-		Engine_OracleNoteVramWrite(2, rect->w * rect->h);
+		Engine_OracleNoteVramWrite(2, rect->x, rect->y, rect->w, rect->h, -1, -1);
 	}
 	NativeRenderer_ClearVRAM(rect->x, rect->y, rect->w, rect->h, r, g, b);
 	NativeRenderer_Clear(rect->x, rect->y, rect->w, rect->h, r, g, b);
@@ -72,7 +72,7 @@ int LoadImage(RECT16 *rect, void *p)
 {
 	if (g_cfg_engineOracle[0] != '\0')
 	{
-		Engine_OracleNoteVramWrite(0, rect->w * rect->h);
+		Engine_OracleNoteVramWrite(0, rect->x, rect->y, rect->w, rect->h, -1, -1);
 	}
 	NativeRenderer_CopyVRAM((unsigned short *)p, 0, 0, rect->w, rect->h, rect->x, rect->y);
 	return 0;
@@ -89,7 +89,7 @@ int MoveImage(RECT16 *rect, int x, int y)
 {
 	if (g_cfg_engineOracle[0] != '\0')
 	{
-		Engine_OracleNoteVramWrite(1, rect->w * rect->h);
+		Engine_OracleNoteVramWrite(1, x, y, rect->w, rect->h, rect->x, rect->y);
 	}
 	NativeRenderer_CopyVRAM(NULL, rect->x, rect->y, rect->w, rect->h, x, y);
 	return 0;

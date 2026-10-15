@@ -1042,9 +1042,18 @@ void Engine_OracleSetCommandLine(int argc, char **argv);
 // Sums since the start; all 0 without --engine-oracle (selftest, D-W1.10).
 void Engine_OracleCountersGet(u32 *frames, u32 *linesR, u32 *linesE, u32 *dumps);
 // VRAM writes of the game (platform/native_libgpu.c, only with --engine-oracle):
-// kind 0 LoadImage (words = w * h), 1 MoveImage, 2 ClearImage. Counted per tour
-// entry between its first and last race frame, one log line per entry.
-void Engine_OracleNoteVramWrite(int kind, int words);
+// kind 0 LoadImage, 1 MoveImage, 2 ClearImage; x, y, w, h the rectangle written
+// (MoveImage: the destination), fromX/fromY the source of a MoveImage (-1 else).
+// Counted per tour entry; in race frames one log line per call (capped, see
+// ENGINE_ORACLE_VRAM_LINES_*), and one summary line per entry.
+void Engine_OracleNoteVramWrite(int kind, int x, int y, int w, int h, int fromX, int fromY);
+#define ENGINE_ORACLE_VRAM_LINES_ENTRY 64 // per tour entry
+#define ENGINE_ORACLE_VRAM_LINES_RUN 2048 // per run
+// The colour the "ne" program modulates a vertex with, as 8-bit channels: the
+// vertex colour times the material tint times the draw tint
+// (platform/native_shaders.inc v_color = a_color * tint; engine_render.c
+// u.tint = material->tint * draw->tint), rounded and held to 0..255. Pure.
+void Engine_OracleModulatedColour(const u8 colour[4], const float materialTint[4], const float drawTint[4], u8 out[3]);
 void Engine_OracleLoadStage(void); // from Engine_RenderUploadMeshes: registers the tour report once
 // GTE registers and scratchpad into slot 0/1 and back (the retail capture of
 // game/RenderBucket/RenderBucket_QueueExecute.c leaves both as they were).

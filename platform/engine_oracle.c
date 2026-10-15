@@ -82,6 +82,11 @@ global_variable int s_eoTourRegistered;
 global_variable int s_eoInRace;
 global_variable u32 s_eoVramCount[2][3]; // [outside, race][LoadImage, MoveImage, ClearImage]
 global_variable u32 s_eoVramWords[2];
+global_variable int s_eoVramEntry = -1;
+global_variable int s_eoVramLevel = -1;
+global_variable u32 s_eoVramLinesEntry;
+global_variable u32 s_eoVramLinesRun;
+global_variable u32 s_eoVramLinesDropped;
 
 global_variable int s_eoSourceDepth;
 global_variable char s_eoSourceId[ENGINE_ORACLE_ID_MAX];
@@ -905,9 +910,25 @@ internal int EngOracle_Round(float x)
 	return (int)floorf(x + 0.5f);
 }
 
-// The corner colours of an engine triangle and, for a VRAM face (not the
-// mosaic table, P2 says that one), the texel box the shader can reach.
-internal void EngOracle_FinishEngineFace(EngineOracleFace *f, const EngineMaterial *m, const EngineVertex *v0, const EngineVertex *v1, const EngineVertex *v2)
+void Engine_OracleModulatedColour(const u8 colour[4], const float materialTint[4], const float drawTint[4], u8 out[3])
+{
+	for (int c = 0; c < 3; c++)
+	{
+		// The vertex stage of "ne": v_color = a_color * tint (platform/native_shaders.inc, engine vertex
+		// stage), tint = material->tint * draw->tint (engine_render.c, Engine_RenderDrawRange).
+		const float value = (float)colour[c] * materialTint[c] * drawTint[c];
+		const int rounded = EngOracle_Round(value);
+
+		out[c] = (u8)((rounded < 0) ? 0 : ((rounded > 255) ? 255 : rounded));
+	}
+}
+
+// The corner colours of an engine triangle as the program modulates with them
+// (Engine_OracleModulatedColour: vertex x material tint x draw tint) and, for a
+// VRAM face (not the mosaic table, P2 says that one), the texel box the shader
+// can reach.
+internal void EngOracle_FinishEngineFace(EngineOracleFace *f, const EngineMaterial *m, const float *drawTint, const EngineVertex *v0, const EngineVertex *v1,
+                                         const EngineVertex *v2)
 {
 	const EngineVertex *v[3];
 
@@ -917,9 +938,7 @@ internal void EngOracle_FinishEngineFace(EngineOracleFace *f, const EngineMateri
 	f->colorCount = 3;
 	for (int k = 0; k < 3; k++)
 	{
-		f->color[k][0] = v[k]->color[0];
-		f->color[k][1] = v[k]->color[1];
-		f->color[k][2] = v[k]->color[2];
+		Engine_OracleModulatedColour(v[k]->color, m->tint, drawTint, f->color[k]);
 	}
 	if ((m->texSource == ENGINE_TEX_VRAM) && (f->uvCount == 3))
 	{
@@ -992,7 +1011,7 @@ internal int EngOracle_DrawFaces(const EngineDraw *draw, const char *dynTag, Eng
 			}
 			if (f.uvCount == 3)
 			{
-				EngOracle_FinishEngineFace(&f, m, &draw->dynVertices[draw->dynIndices[t * 3u]], &draw->dynVertices[draw->dynIndices[t * 3u + 1u]],
+				EngOracle_FinishEngineFace(&f, m, draw->tint, &draw->dynVertices[draw->dynIndices[t * 3u]], &draw->dynVertices[draw->dynIndices[t * 3u + 1u]],
 				                           &draw->dynVertices[draw->dynIndices[t * 3u + 2u]]);
 			}
 			emit(&f, material, user);
@@ -1067,7 +1086,7 @@ internal int EngOracle_DrawFaces(const EngineDraw *draw, const char *dynTag, Eng
 					const u16 *tri = &desc->indices[range->firstIndex + t];
 					const u32 triangle = (range->firstIndex + t) / 3u;
 
-					EngOracle_FinishEngineFace(&f, m, &base[tri[0]], &base[tri[1]], &base[tri[2]]);
+					EngOracle_FinishEngineFace(&f, m, draw->tint, &base[tri[0]], &base[tri[1]], &base[tri[2]]);
 					if ((draw->mesh >= 0) && (draw->mesh < ENGINE_MESHES_MAX) && (s_eoMeshAnim[draw->mesh] != NULL) &&
 					    (triangle < s_eoMeshAnimCount[draw->mesh]) && s_eoMeshAnim[draw->mesh][triangle])
 					{
@@ -1423,18 +1442,45 @@ void Engine_OracleSetCommandLine(int argc, char **argv)
 	}
 }
 
-void Engine_OracleNoteVramWrite(int kind, int words)
+void Engine_OracleNoteVramWrite(int kind, int x, int y, int w, int h, int fromX, int fromY)
 {
+	local_persist const char *const names[3] = {"LoadImage", "MoveImage", "ClearImage"};
 	const int race = s_eoInRace ? 1 : 0;
+	const struct GameTracker *gGT = sdata->gGT;
 
 	if ((g_cfg_engineOracle[0] == '\0') || (kind < 0) || (kind > 2))
 	{
 		return;
 	}
 	s_eoVramCount[race][kind]++;
-	if ((kind == 0) && (words > 0))
+	if ((kind == 0) && (w > 0) && (h > 0))
 	{
-		s_eoVramWords[race] += (u32)words;
+		s_eoVramWords[race] += (u32)w * (u32)h;
+	}
+	if (!race)
+	{
+		return;
+	}
+	// One line per call in race frames (FM D-I.3a): the rectangle, the source of
+	// a move, the game frame. The caller is not named: native_libgpu.c is the
+	// PsyQ facade every game writer goes through, and a stack walk would need
+	// compiler-specific code; the rectangle and the frame identify the writer.
+	if ((s_eoVramLinesEntry >= ENGINE_ORACLE_VRAM_LINES_ENTRY) || (s_eoVramLinesRun >= ENGINE_ORACLE_VRAM_LINES_RUN))
+	{
+		s_eoVramLinesDropped++;
+		return;
+	}
+	s_eoVramLinesEntry++;
+	s_eoVramLinesRun++;
+	if (kind == 1)
+	{
+		Platform_Log("[CTR Engine] oracle: vram write in race frame %d, entry %d level %d: %s %d,%d %dx%d from %d,%d\n",
+		             (gGT != NULL) ? gGT->framesInThisLEV : -1, s_eoVramEntry, s_eoVramLevel, names[kind], x, y, w, h, fromX, fromY);
+	}
+	else
+	{
+		Platform_Log("[CTR Engine] oracle: vram write in race frame %d, entry %d level %d: %s %d,%d %dx%d\n", (gGT != NULL) ? gGT->framesInThisLEV : -1,
+		             s_eoVramEntry, s_eoVramLevel, names[kind], x, y, w, h);
 	}
 }
 
@@ -1452,12 +1498,18 @@ internal void EngOracle_TourReport(int entry, int levelID, int phase)
 		}
 		memset(s_eoVramCount, 0, sizeof(s_eoVramCount));
 		memset(s_eoVramWords, 0, sizeof(s_eoVramWords));
+		s_eoVramEntry = entry;
+		s_eoVramLevel = levelID;
+		s_eoVramLinesEntry = 0;
+		s_eoVramLinesDropped = 0;
 		s_eoInRace = 1;
 		return;
 	}
 	s_eoInRace = 0;
-	Platform_Log("[CTR Engine] oracle: vram writes in race frames, entry %d level %d: LoadImage %u (%u words), MoveImage %u, ClearImage %u\n", entry, levelID,
-	             s_eoVramCount[1][0], s_eoVramWords[1], s_eoVramCount[1][1], s_eoVramCount[1][2]);
+	Platform_Log("[CTR Engine] oracle: vram writes in race frames, entry %d level %d: LoadImage %u (%u words), MoveImage %u, ClearImage %u; "
+	             "%u call line(s) not written (cap %d per entry, %d per run)\n",
+	             entry, levelID, s_eoVramCount[1][0], s_eoVramWords[1], s_eoVramCount[1][1], s_eoVramCount[1][2], s_eoVramLinesDropped,
+	             ENGINE_ORACLE_VRAM_LINES_ENTRY, ENGINE_ORACLE_VRAM_LINES_RUN);
 	memset(s_eoVramCount, 0, sizeof(s_eoVramCount));
 	memset(s_eoVramWords, 0, sizeof(s_eoVramWords));
 }
@@ -1711,12 +1763,13 @@ int Engine_SelfTestOracle(int *checks)
 		Engine_OracleWrite('E', &f);
 		Engine_OracleSourceBegin("selftest");
 		Engine_OracleSourceEnd('I', NULL);
-		Engine_OracleNoteVramWrite(0, 16);
+		Engine_OracleNoteVramWrite(0, 0, 0, 4, 4, -1, -1);
 		Engine_OracleFrameEnd();
 		Engine_OracleCountersGet(&frames, &linesR, &linesE, &dumps);
 		EO_CHECK((frames == 0u) && (linesR == 0u) && (linesE == 0u) && (dumps == 0u), "counters without the switch: frames %u, R %u, E %u, dumps %u",
 		         frames, linesR, linesE, dumps);
 		EO_CHECK((s_eoVramCount[0][0] == 0u) && (s_eoVramCount[1][0] == 0u), "vram writes counted without the switch");
+		EO_CHECK(s_eoVramLinesRun == 0u, "vram write lines without the switch");
 		EO_CHECK(g_engineOracleFaultMaterial == -1, "a fault material without the switch");
 	}
 
@@ -1773,6 +1826,25 @@ int Engine_SelfTestOracle(int *checks)
 		len = Engine_OracleFormatLine('R', &f, line, (int)sizeof(line));
 		EO_CHECK((len > 0) && (strcmp(line, "R\tX\tshadow\t0\t-\t-,-\t-\t2\t1,2\t-\n") == 0), "format untextured: '%s'", line);
 		EO_CHECK(Engine_OracleFormatLine('Q', &f, line, (int)sizeof(line)) == 0, "format bad kind");
+	}
+
+	// o) The modulated colour of E col (vertex x material tint x draw tint, rounded, held to 0..255).
+	{
+		const u8 c[4] = {20, 60, 80, 255};
+		const u8 white[4] = {255, 255, 255, 255};
+		const float one[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+		const float fade[4] = {0.75f, 0.75f, 0.75f, 1.0f};
+		const float boost[4] = {2.0f, 0.5f, 1.0f, 1.0f};
+		u8 out[3];
+
+		Engine_OracleModulatedColour(c, one, one, out);
+		EO_CHECK((out[0] == 20) && (out[1] == 60) && (out[2] == 80), "colour x 1: %d,%d,%d", out[0], out[1], out[2]);
+		Engine_OracleModulatedColour(c, one, fade, out);
+		EO_CHECK((out[0] == 15) && (out[1] == 45) && (out[2] == 60), "colour x draw tint 0.75: %d,%d,%d", out[0], out[1], out[2]);
+		Engine_OracleModulatedColour(c, fade, fade, out);
+		EO_CHECK((out[0] == 11) && (out[1] == 34) && (out[2] == 45), "colour x both tints: %d,%d,%d", out[0], out[1], out[2]);
+		Engine_OracleModulatedColour(white, boost, one, out);
+		EO_CHECK((out[0] == 255) && (out[1] == 128) && (out[2] == 255), "colour held to 255: %d,%d,%d", out[0], out[1], out[2]);
 	}
 
 	// l) A retail range while the oracle is not armed writes nothing.
