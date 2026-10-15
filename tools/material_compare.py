@@ -1751,7 +1751,7 @@ def selftest():
         repo_rows, repo_errs = parse_exceptions(fh.read(), DEFAULT_EXCEPTIONS)
     ids = set(x.id for x in repo_rows)
     check('repo exception list parses with exactly the agreed rows',
-          not repo_errs and ids == set(['sky-look', 'water-look', 'hires-driver', 'depth-offset']) and
+          not repo_errs and ids == set(['sky-look', 'water-look', 'hires-driver', 'depth-offset', 'lod-header']) and
           [x.id for x in repo_rows if x.doc] == ['depth-offset'])
     res, _ = run([F(), L('R', 'D', '0', uv=TRI_A), L('E', 'D', '0', page='-', clut='-', uv='-', extra='hires=1'),
                   L('R', 'W', 'water', uv=TRI_A), L('E', 'W', 'water', clut='0,481', uv=TRI_A),
