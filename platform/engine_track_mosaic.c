@@ -108,6 +108,7 @@ typedef struct
 	u8 side;   // cells per side: 4, or 1 for a whole-face row
 	s8 abr;    // abr of every own tile, -1 when they disagree
 	u8 faulted; // --engine-oracle-fault cell swapped two of its cells (Engine_TrackMosaicOracleFault)
+	u8 abrLevels; // abr -1 because the tiles agree with each other but not with a usable level 0..2
 	struct TextureLayout cell[EGM_CELLS];
 	struct TextureLayout level[3]; // the group's far, middle and near layouts (LOD fallback)
 } EngMosaicRow;
@@ -242,6 +243,17 @@ internal int EngMosaic_RowFill(EngMosaicRow *row, u32 groupAddress, u32 tableAdd
 			break;
 		}
 	}
+	// The row's material blends its levels too (the shader's fallback for small texels): a
+	// level 0..2 with another abr than the tiles makes the row mixed as well. A blank level
+	// (not usable, never a texture) does not count.
+	for (i = 0; (row->abr >= 0) && (i < 3); i++)
+	{
+		if (EngTrack_LayoutUsable(&levels[i]) && (EngMosaic_Abr(&levels[i]) != row->abr))
+		{
+			row->abr = -1;
+			row->abrLevels = 1;
+		}
+	}
 	return 1;
 }
 
@@ -316,6 +328,7 @@ internal int EngMosaic_AnimFill(EngMosaicRow *row, u32 groupAddress, const struc
 {
 	const struct TextureLayout *finest;
 	int mosaic = 0;
+	u8 levelsDisagree = 0;
 
 	finest = EngTrack_FinestLayout(group, isLevelPtr, &mosaic);
 	if (mosaic)
@@ -329,10 +342,12 @@ internal int EngMosaic_AnimFill(EngMosaicRow *row, u32 groupAddress, const struc
 			EngMosaicRow table;
 
 			EngMosaic_RowFill(&table, groupAddress, word, (const struct TextureLayout *)(size_t)word, row->mirrored, row->form, group);
+			levelsDisagree = table.abrLevels;
 			if (table.abr >= 0)
 			{
 				memcpy(row->cell, table.cell, sizeof(row->cell));
 				memcpy(row->level, table.level, sizeof(row->level));
+				row->abrLevels = 0;
 				row->table = word;
 				row->side = 4;
 				row->abr = table.abr;
@@ -345,6 +360,7 @@ internal int EngMosaic_AnimFill(EngMosaicRow *row, u32 groupAddress, const struc
 	{
 		return 0;
 	}
+	row->abrLevels = (u8)(mosaic ? levelsDisagree : 0);
 	row->table = 0;
 	row->side = 1;
 	row->abr = (s8)EngMosaic_Abr(finest);
@@ -918,6 +934,7 @@ internal void EngMosaic_Log(int width, int height, const char *state)
 	int abrDiffers = 0;
 	int classDiffers = 0;
 	int depth[3] = {0, 0, 0};
+	int abrLevelRows = 0;
 	int tableRows = 0;
 	int animRows = 0;
 	int n = 0;
@@ -941,6 +958,7 @@ internal void EngMosaic_Log(int width, int height, const char *state)
 		int j;
 		int e;
 
+		abrLevelRows += row->abrLevels;
 		// The animated rows (one per AnimTex cell, mirror and form) are not counted as table rows.
 		if (row->animCell != 0u)
 		{
@@ -996,8 +1014,9 @@ internal void EngMosaic_Log(int width, int height, const char *state)
 	             "distinct tiles %d\n",
 	             s_egmLevel, s_egmCount.faces, s_egmCount.made, s_egmCount.byForm[ENGINE_MOSAIC_FORM_4X4], s_egmCount.byForm[ENGINE_MOSAIC_FORM_4X2],
 	             s_egmCount.byForm[ENGINE_MOSAIC_FORM_4X1], tables, tableRows, mirroredRows, distinct);
-	Platform_Log("[CTR Engine] track mosaic: level %d: fallback to level 2: rows full %d, bad table %d, unknown form %d, abr mixed %d\n", s_egmLevel,
-	             s_egmCount.rowsFull, s_egmCount.badTable, s_egmCount.unknownForm, s_egmCount.abrMixed);
+	Platform_Log("[CTR Engine] track mosaic: level %d: fallback to level 2: rows full %d, bad table %d, unknown form %d, abr mixed %d (rows whose tiles "
+	             "agree but not with a level 0..2: %d)\n",
+	             s_egmLevel, s_egmCount.rowsFull, s_egmCount.badTable, s_egmCount.unknownForm, s_egmCount.abrMixed, abrLevelRows);
 	Platform_Log("[CTR Engine] track mosaic: level %d: tiles vs level 2: tpage/clut differ %d, abr differs %d (semi/opaque class differs %d); "
 	             "tile depth 4/8/15 bit %d/%d/%d\n",
 	             s_egmLevel, differ, abrDiffers, classDiffers, depth[0], depth[1], depth[2]);
@@ -1251,6 +1270,8 @@ int Engine_SelfTestTrackMosaic(int *checks)
 	levels[2].u3 = 7;
 	levels[2].v3 = 8;
 	levels[2].tpage = 0x0060;
+	levels[0].tpage = 0x0060; // every level abr 3, as the tiles
+	levels[1].tpage = 0x0060;
 
 	// (1) row dedupe: the same (group, mirrored, form) is one row, any field of it a new one.
 	a = EngMosaic_RowFind(&set, 0x1000u, 0x2000u, table, 0, ENGINE_MOSAIC_FORM_4X4, levels, &made);
@@ -1322,6 +1343,23 @@ int Engine_SelfTestTrackMosaic(int *checks)
 		EGM_CHECK(row.abr == -1, "mixed abr not seen: %d", row.abr);
 		EngMosaic_RowFill(&row, 1u, 2u, mixed, 1, ENGINE_MOSAIC_FORM_4X4, levels);
 		EGM_CHECK(row.abr == 3, "the other orientation must not see tile 5: %d", row.abr);
+	}
+
+	// (4b) abr of the tiles against the levels: tiles that agree with each other (abr 3) but not
+	// with a usable level 0..2 (abr 0) make the row mixed (abrLevels); a blank level does not count.
+	{
+		struct TextureLayout lv[3];
+		EngMosaicRow row;
+
+		memcpy(lv, levels, sizeof(lv));
+		lv[1].tpage = 0x0000; // abr 0
+		EngMosaic_RowFill(&row, 1u, 2u, table, 0, ENGINE_MOSAIC_FORM_4X4, lv);
+		EGM_CHECK((row.abr == -1) && (row.abrLevels == 1), "tiles against a level of another abr: abr %d levels %d", row.abr, row.abrLevels);
+		memset(&lv[1], 0, sizeof(lv[1])); // blank: no texture
+		EngMosaic_RowFill(&row, 1u, 2u, table, 0, ENGINE_MOSAIC_FORM_4X4, lv);
+		EGM_CHECK((row.abr == 3) && (row.abrLevels == 0), "a blank level made the row mixed: abr %d", row.abr);
+		EngMosaic_RowFill(&row, 1u, 2u, table, 0, ENGINE_MOSAIC_FORM_4X4, levels);
+		EGM_CHECK((row.abr == 3) && (row.abrLevels == 0), "levels of the tiles' abr made the row mixed");
 	}
 
 	// (5) packing: header, a cell's 12 bytes in memory order, level 2.
@@ -1517,6 +1555,18 @@ int Engine_SelfTestTrackMosaic(int *checks)
 		EGM_CHECK(EngMosaic_AnimFill(&row, (u32)(size_t)groupX, groupX, NULL, EngMosaic_TestIsTable) && (row.side == 1) && (row.abr == 2) &&
 		              (row.cell[0].tpage == 0x0041),
 		          "animated row, table with disagreeing tiles: side %d abr %d (level 2 wanted)", row.side, row.abr);
+		{
+			// (4b) animated: tiles that agree (abr 3) with a level 2 of abr 1 give level 2 with its abr.
+			struct TextureLayout groupL[4];
+
+			memcpy(groupL, groupM, sizeof(groupL));
+			groupL[2].tpage = 0x0021;
+			EGM_CHECK(EngMosaic_AnimFill(&row, (u32)(size_t)groupL, groupL, NULL, EngMosaic_TestIsTable) && (row.side == 1) && (row.abr == 1) &&
+			              (row.abrLevels == 1) && (row.cell[0].tpage == 0x0021),
+			          "animated row, tiles against a level of another abr: side %d abr %d", row.side, row.abr);
+			EGM_CHECK(EngMosaic_AnimFill(&row, (u32)(size_t)groupX, groupX, NULL, EngMosaic_TestIsTable) && (row.abrLevels == 0),
+			          "animated row: the level reason stays on a row of disagreeing tiles");
+		}
 		EGM_CHECK(!EngMosaic_AnimFill(&row, (u32)(size_t)blank, blank, NULL, EngMosaic_TestIsTable) && (row.shown == (u32)(size_t)groupX),
 		          "animated row: a group without a usable layout changed the row");
 		{
