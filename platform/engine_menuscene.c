@@ -66,8 +66,18 @@
 #define ENGINE_MENUSCENE_PAUSE_TICKS 90          // 3 seconds of the 30 Hz tick
 #define ENGINE_MENUSCENE_MAX_TICKS 8             // a larger step of the timer is a load or a jump: ignored
 
+// THE ORACLE FRAME (round of 2026-10-16, W2). With --level-tour-oracle the
+// scene arms one oracle frame of the material comparison per run
+// (Engine_OracleArm, platform/engine_oracle.c): its ENGINE_MENUSCENE_ORACLE_FRAME-th
+// drawn frame counted over the whole run, before its draw and before the retail
+// instances of the frame are queued (Engine_FrameCollect runs ahead of
+// RenderBucket_QueueAllInstances, MainFrame_RenderFrame.c). Counted over the run
+// because a tour shows the main menu only a few frames between its entries.
+#define ENGINE_MENUSCENE_ORACLE_FRAME 10u
+
 int NativeCharGpu_LoadMenuScene(void);
 extern int g_cfg_deterministic; // --deterministic, native_platform.c
+void Engine_OracleArm(const char *tag);
 
 internal int s_menuSet = -1;
 internal int s_menuLastTimer = -1;
@@ -77,6 +87,7 @@ internal unsigned s_menuFramesDrawn = 0;
 internal unsigned s_menuWheelDraws = 0;
 internal int s_menuLogged = 0;
 internal int s_menuReportOn = 0;
+internal int s_menuOracleArmed = 0;
 
 internal void Engine_MenuSceneReport(void)
 {
@@ -286,6 +297,14 @@ void Engine_MenuSceneCollect(struct GameTracker *gGT)
 	draw.sortDepth = ENGINE_MENUSCENE_DISTANCE;
 	draw.otCell = (u32)cell;
 	draw.dynMaterial = -1;
+
+	if (!s_menuOracleArmed && (g_cfg_levelTourOracle[0] != '\0') && (s_menuFramesDrawn == ENGINE_MENUSCENE_ORACLE_FRAME))
+	{
+		s_menuOracleArmed = 1;
+		Engine_OracleArm("menu");
+		Platform_Log("[CTR Engine] menu scene: oracle frame 'menu' armed (scene frame %u) at vblank %d\n", ENGINE_MENUSCENE_ORACLE_FRAME + 1u,
+		             Platform_GetVBlankCount());
+	}
 
 	if (!Engine_RenderSubmitLinked(0, &draw, gGT->pushBuffer[0].ptrOT, cell))
 	{

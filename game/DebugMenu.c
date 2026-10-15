@@ -1588,6 +1588,12 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 //    that the engine left the game alone on every track.
 //  - under --engine the per-track reports of the engine (Engine_TourNotify) at
 //    the first race frame and after the last.
+//  - --level-tour-oracle (round of 2026-10-16): the oracle frames of the
+//    material comparison, armed before the frame is drawn - the listed race
+//    frames and the entry's start, line-pre/line-post, see and weapon frames (DebugMenu_TourOracle),
+//    one "oracle" line each and one per entry after its last frame.
+//  - --level-tour-frames L<level>@<count>: that level drives its own count (a
+//    track whose objects come late, Sunset Vista's door and platforms).
 #define DBG_TOUR_MAX           64
 #define DBG_TOUR_RETAIL_RACES  18 // level ids 0..17, include/namespace_Level.h
 #define DBG_TOUR_SHOTS_MAX     32 // entries of --level-tour-shots (ENGINE_TOUR_SHOTS_MAX)
@@ -1659,6 +1665,53 @@ global_variable u32 s_tourState = 0;
 global_variable int s_tourLaps = 0;
 global_variable int s_tourMaskGrabs = 0;
 
+// --level-tour-oracle, --level-tour-oracle-see (round of 2026-10-16, W2: the
+// material comparison over all tracks) and --level-tour-frames as given, kept
+// as text by main.c and read with the list (ENGINE ORACLE (P4) in
+// include/platform/engine.h, sizes ENGINE_TOUR_*).
+#define DBG_TOUR_TEXT_MAX        512 // ENGINE_TOUR_TEXT_MAX
+#define DBG_TOUR_ORACLE_MAX      64  // ENGINE_TOUR_ORACLE_MAX
+#define DBG_TOUR_SEE_MAX         8   // ENGINE_TOUR_SEE_MAX
+#define DBG_TOUR_SEE_NAMES       3   // ENGINE_TOUR_SEE_NAMES
+#define DBG_TOUR_SEE_NAME_BYTES  16  // ENGINE_TOUR_SEE_NAME_BYTES
+#define DBG_TOUR_SEE_FRAMES      2   // "see" oracle frames per entry
+#define DBG_TOUR_SEE_GAP         5   // race frames at least between them (another animation frame of the models)
+#define DBG_TOUR_LINE_BEFORE     20  // the oracle frame before the line: about this many race frames ahead of it
+#define DBG_TOUR_LINE_AFTER      10  // the oracle frame after the line: this many race frames after it
+char g_cfg_levelTourOracle[DBG_TOUR_TEXT_MAX] = "";
+char g_cfg_levelTourOracleSee[DBG_TOUR_TEXT_MAX] = "";
+char g_cfg_levelTourFramesText[DBG_TOUR_TEXT_MAX] = "";
+global_variable int s_tourOracleLevels[DBG_TOUR_ORACLE_MAX];
+global_variable int s_tourOracleFrames[DBG_TOUR_ORACLE_MAX];
+global_variable int s_tourOracleCount = 0;
+global_variable int s_tourSeeLevels[DBG_TOUR_SEE_MAX];
+global_variable char s_tourSeeNames[DBG_TOUR_SEE_MAX][DBG_TOUR_SEE_NAMES][DBG_TOUR_SEE_NAME_BYTES];
+global_variable int s_tourSeeCounts[DBG_TOUR_SEE_MAX];
+global_variable int s_tourSeeCount = 0;
+global_variable int s_tourFrameLevels[DBG_TOUR_SHOTS_MAX];
+global_variable int s_tourFrameCounts[DBG_TOUR_SHOTS_MAX];
+global_variable int s_tourFrameCount = 0;
+global_variable int s_tourFramesThis = 0; // race frames of the current entry
+// The current entry's own oracle frames: the race frames they were found in
+// (0 = not yet), those found but not yet armed, the frames armed.
+#define DBG_TOUR_ORACLE_START    1
+#define DBG_TOUR_ORACLE_LINEPRE  2
+#define DBG_TOUR_ORACLE_LINEPOST 4
+#define DBG_TOUR_ORACLE_WPN      8
+#define DBG_TOUR_ORACLE_SEE      16
+global_variable int s_tourGoFrame = 0;
+global_variable int s_tourLinePreFrame = 0;
+global_variable int s_tourLineFrame = 0;
+global_variable int s_tourWpnFrame = 0;
+global_variable int s_tourSeeFrames[DBG_TOUR_SEE_FRAMES];
+global_variable int s_tourSeeFound = 0;
+global_variable int s_tourOraclePending = 0;
+global_variable int s_tourOracleArmed = 0;
+global_variable int s_tourOracleSkipped = 0;
+global_variable s32 s_tourPrevDist = 0;
+global_variable int s_tourDistPrimed = 0;
+global_variable char s_tourWpnName[17];
+
 // platform/engine_tour.c: the tour's arithmetic (include/platform/engine.h, TRACK TOUR).
 int EngineTour_ParseShots(const char *text, int *levels, int *frames, int max, int *badAt);
 int EngineTour_BurstsForLevel(const int *levels, const int *frames, int count, int level, int *starts, int max, int *overlapped);
@@ -1671,6 +1724,17 @@ int EngineTour_DriveLongestStall(void);
 u32 EngineTour_Fnv(u32 hash, const void *bytesIn, u32 bytes);
 u32 EngineTour_FnvStart(void);
 void Engine_TourNotify(int entry, int levelID, int phase);
+int EngineTour_OracleAt(const int *levels, const int *frames, int count, int level, int raceFrame);
+int EngineTour_OracleTag(char *out, size_t size, int entry, int level, const char *kind);
+int EngineTour_OracleShotName(char *out, size_t size, const char *shotName, const char *tag);
+int EngineTour_LineSoon(s32 remaining, s32 step, int frames);
+int EngineTour_ParseSee(const char *text, int *levels, char (*names)[DBG_TOUR_SEE_NAMES][DBG_TOUR_SEE_NAME_BYTES], int *counts, int max, int *badAt);
+int EngineTour_DriveForwardFolds(void);
+int EngineTour_ParseFrames(const char *text, int *levels, int *frames, int max, int *badAt);
+int EngineTour_FramesForLevel(const int *levels, const int *frames, int count, int level, int fallback);
+// platform/engine_oracle.c (P1, tmp\engine\r18\p1-api.md): the frame being made
+// now is logged by both ways under tag, its F line naming raceFrame.
+void Engine_OracleArmFrame(const char *tag, int raceFrame);
 // platform/engine_water.c: where the water lies in view 0, one log line (pure read); frame = the race frame.
 void Engine_WaterProbeLog(const struct GameTracker *gGT, int view, int frame, const char *tag);
 // platform/native_platform.c: a snapshot at the end of this frame (as native_mods.c asks for one).
@@ -1877,6 +1941,48 @@ internal void DebugMenu_TourRead(void)
 			Platform_Log("[CTR Tour] shots: %d burst start(s) of %d race frames, list '%s'\n", count, DBG_TOUR_BURST_FRAMES, g_cfg_levelTourShots);
 		}
 	}
+
+	// --level-tour-frames with L<level>@<count> entries, and --level-tour-oracle.
+	// main.c refused either list before any window when it did not read; read
+	// again here, and again refused whole.
+	{
+		int badAt = 0;
+		int count;
+
+		s_tourFrameCount = 0;
+		count = EngineTour_ParseFrames(g_cfg_levelTourFramesText, s_tourFrameLevels, s_tourFrameCounts, DBG_TOUR_SHOTS_MAX, &badAt);
+		if ((count > 1) || ((count == 1) && (s_tourFrameCounts[0] != g_cfg_levelTourFrames)))
+		{
+			s_tourFrameCount = count;
+			Platform_Log("[CTR Tour] frames: '%s' (L<level>@<count> for that level)\n", g_cfg_levelTourFramesText);
+		}
+
+		s_tourOracleCount = 0;
+		count = EngineTour_ParseShots(g_cfg_levelTourOracle, s_tourOracleLevels, s_tourOracleFrames, DBG_TOUR_ORACLE_MAX, &badAt);
+		if (count < 0)
+		{
+			Platform_Log("[CTR Tour] oracle: '%s' refused at entry %d - no oracle frames\n", g_cfg_levelTourOracle, badAt);
+		}
+		else if (count > 0)
+		{
+			s_tourOracleCount = count;
+			Platform_Log("[CTR Tour] oracle: frames '%s' of every entry, and per entry the start, %d before and %d after the line, a weapon in view\n",
+			             g_cfg_levelTourOracle, DBG_TOUR_LINE_BEFORE, DBG_TOUR_LINE_AFTER);
+		}
+
+		s_tourSeeCount = 0;
+		count = EngineTour_ParseSee(g_cfg_levelTourOracleSee, s_tourSeeLevels, s_tourSeeNames, s_tourSeeCounts, DBG_TOUR_SEE_MAX, &badAt);
+		if (count < 0)
+		{
+			Platform_Log("[CTR Tour] oracle see: '%s' refused at entry %d\n", g_cfg_levelTourOracleSee, badAt);
+		}
+		else if ((count > 0) && (s_tourOracleCount > 0))
+		{
+			s_tourSeeCount = count;
+			Platform_Log("[CTR Tour] oracle see: '%s' - %d frame(s) per listed level with all its models in view\n", g_cfg_levelTourOracleSee,
+			             DBG_TOUR_SEE_FRAMES);
+		}
+	}
 }
 
 internal const char *DebugMenu_TourDiscName(int level)
@@ -2065,7 +2171,254 @@ internal int DebugMenu_TourMenuStep(struct GameTracker *gGT, int now, int menuUp
 
 	s_tourPhase = DBG_TOUR_PHASE_DRIVING;
 	s_tourFrames = 0;
+
+	// The entry's race frames: its level's L<level>@<count> of --level-tour-frames, else the count.
+	{
+		extern int g_cfg_levelTourFrames;
+
+		s_tourFramesThis = EngineTour_FramesForLevel(s_tourFrameLevels, s_tourFrameCounts, s_tourFrameCount, s_tourLevel, g_cfg_levelTourFrames);
+		if (s_tourFramesThis != g_cfg_levelTourFrames)
+		{
+			Platform_Log("[CTR Tour] %d/%d: level %d: %d race frame(s) (--level-tour-frames L%d@)\n", s_tourPos + 1, s_tourCount, s_tourLevel, s_tourFramesThis,
+			             s_tourLevel);
+		}
+	}
 	return 1;
+}
+
+// A weapon in view: a thread of the buckets of the fired weapons - MINE
+// (potions, TNT, Nitro; VehPickupItem.c:751, 890) and TRACKING (missiles,
+// warpballs; VehPickupItem.c:606, 1132) - whose instance was drawn in view 0 in
+// the frame before (DRAW_SUCCESSFUL of its idpp[0], what the game writes while
+// drawing and Particle_RenderList reads). The name of the first, NULL when
+// none. Read only. In a crystal challenge on Rocky Road and Nitro Court the
+// level's nitro boxes sit in MINE as well (RB_GenericMine.c:31) and count.
+internal const char *DebugMenu_TourWeaponInView(const struct GameTracker *gGT)
+{
+	const int buckets[2] = {MINE, TRACKING};
+	int b;
+
+	for (b = 0; b < 2; b++)
+	{
+		const struct Thread *t;
+
+		for (t = gGT->threadBuckets[buckets[b]].thread; t != NULL; t = t->siblingThread)
+		{
+			struct Instance *inst = t->inst;
+			const struct InstDrawPerPlayer *idpp;
+
+			if (((t->flags & THREAD_FLAG_DEAD) != 0) || (inst == NULL))
+			{
+				continue;
+			}
+			idpp = INST_GETIDPP(inst);
+			if ((idpp[0].instFlags & DRAW_SUCCESSFUL) != 0)
+			{
+				return inst->name;
+			}
+		}
+	}
+	return NULL;
+}
+
+// The models of one --level-tour-oracle-see entry all in view 0: for each name
+// an instance of that model (level instances and the instance pool, as
+// ElimBG_ToggleInstance walks them) drawn in view 0 in the frame before
+// (DRAW_SUCCESSFUL of its idpp[0]). Read only.
+internal int DebugMenu_TourModelInView(struct GameTracker *gGT, const char *name)
+{
+	const struct Level *lev = gGT->level1;
+	struct Instance *inst;
+	u32 i;
+
+	for (i = 0; (lev != NULL) && (lev->ptrInstDefs != NULL) && (i < lev->numInstances); i++)
+	{
+		inst = lev->ptrInstDefs[i].ptrInstance;
+		if ((inst != NULL) && (inst->model != NULL) && (strncmp(inst->model->name, name, DBG_TOUR_SEE_NAME_BYTES) == 0))
+		{
+			const struct InstDrawPerPlayer *idpp = INST_GETIDPP(inst);
+
+			if ((idpp[0].instFlags & DRAW_SUCCESSFUL) != 0)
+			{
+				return 1;
+			}
+		}
+	}
+	for (inst = (struct Instance *)gGT->JitPools.instance.taken.first; inst != NULL; inst = inst->next)
+	{
+		if ((inst->model != NULL) && (strncmp(inst->model->name, name, DBG_TOUR_SEE_NAME_BYTES) == 0))
+		{
+			const struct InstDrawPerPlayer *idpp = INST_GETIDPP(inst);
+
+			if ((idpp[0].instFlags & DRAW_SUCCESSFUL) != 0)
+			{
+				return 1;
+			}
+		}
+	}
+	return 0;
+}
+
+internal int DebugMenu_TourSeeAll(struct GameTracker *gGT, int see)
+{
+	int k;
+
+	for (k = 0; k < s_tourSeeCounts[see]; k++)
+	{
+		if (!DebugMenu_TourModelInView(gGT, s_tourSeeNames[see][k]))
+		{
+			return 0;
+		}
+	}
+	return 1;
+}
+
+// --level-tour-oracle: the oracle frames of one race frame of an entry, armed in
+// the game logic before the frame is drawn (Engine_OracleArmFrame; nothing else
+// is touched; called after the drive sample of the frame). Besides the listed
+// race frames, the entry's own, each found by reading game state:
+// - start: the first race frame after the countdown (fly-in over, START_OF_RACE
+//   clear, trafficLightsTimer down to 0; MainMain.c:362) - the grid with the
+//   start banner ahead.
+// - line-pre and line-post, around the start/finish line: the line is the race
+//   frame in which the drive progress first folded a step forward
+//   (EngineTour_DriveForwardFolds, EngineTour_DriveSample - the grid lies
+//   behind the line, so it is crossed shortly after the start; the crossing
+//   after lap 1 lies far behind the tour's frames). line-post is
+//   DBG_TOUR_LINE_AFTER race frames after it, exactly. line-pre cannot look
+//   back: it is the first race frame after the start in which the player, at
+//   the speed of its last frame, reaches the line within DBG_TOUR_LINE_BEFORE
+//   frames (EngineTour_LineSoon); the line's log line says how far ahead it
+//   really was.
+// - see1, see2 (--level-tour-oracle-see, that level only): the first race frame
+//   after the start with all the entry's models in view, and the next one at
+//   least DBG_TOUR_SEE_GAP frames later (another animation frame).
+// - wpn: the first race frame after the start with a fired weapon in view
+//   (DebugMenu_TourWeaponInView).
+// One oracle frame per race frame, in this order: listed, start, line-pre,
+// line-post, see, wpn; one that has to wait is armed in the next race frame.
+// None on the entry's last race frame: the tour's VRAM dump of the entry is
+// asked for there, and a frame holds one dump request (p1-api.md). One
+// snapshot of the frame (<--shot-name>-<tag>.bmp) when --shot-name is given and
+// no burst shoots this frame.
+internal void DebugMenu_TourOracle(struct GameTracker *gGT, int burst)
+{
+	extern char g_cfg_shotName[PLATFORM_ARG_PATH_MAX];
+	const struct Driver *player = gGT->drivers[0];
+	char kind[16];
+	char tag[64];
+	int see = -1;
+	int i;
+
+	for (i = 0; i < s_tourSeeCount; i++)
+	{
+		if (s_tourSeeLevels[i] == s_tourLevel)
+		{
+			see = i;
+			break;
+		}
+	}
+
+	if ((s_tourGoFrame == 0) && ((gGT->gameMode1 & START_OF_RACE) == 0) && (gGT->trafficLightsTimer <= 0))
+	{
+		s_tourGoFrame = s_tourFrames;
+		s_tourOraclePending |= DBG_TOUR_ORACLE_START;
+	}
+	if ((s_tourGoFrame != 0) && (player != NULL))
+	{
+		const s32 dist = (s32)player->distanceToFinish_curr;
+
+		if ((s_tourLineFrame == 0) && (EngineTour_DriveForwardFolds() > 0))
+		{
+			s_tourLineFrame = s_tourFrames;
+			Platform_Log("[CTR Tour] %d/%d: level %d line at race frame %d; line-pre at %d (%d frame(s) ahead)\n", s_tourPos + 1, s_tourCount, s_tourLevel,
+			             s_tourLineFrame, s_tourLinePreFrame, (s_tourLinePreFrame > 0) ? (s_tourLineFrame - s_tourLinePreFrame) : 0);
+		}
+		if ((s_tourLineFrame == 0) && (s_tourLinePreFrame == 0) && s_tourDistPrimed && EngineTour_LineSoon(dist, s_tourPrevDist - dist, DBG_TOUR_LINE_BEFORE))
+		{
+			s_tourLinePreFrame = s_tourFrames;
+			s_tourOraclePending |= DBG_TOUR_ORACLE_LINEPRE;
+		}
+		s_tourPrevDist = dist;
+		s_tourDistPrimed = 1;
+	}
+	if ((s_tourLineFrame != 0) && (s_tourFrames == s_tourLineFrame + DBG_TOUR_LINE_AFTER))
+	{
+		s_tourOraclePending |= DBG_TOUR_ORACLE_LINEPOST;
+	}
+	if ((s_tourGoFrame != 0) && (see >= 0) && (s_tourSeeFound < DBG_TOUR_SEE_FRAMES) && ((s_tourOraclePending & DBG_TOUR_ORACLE_SEE) == 0) &&
+	    ((s_tourSeeFound == 0) || (s_tourFrames >= s_tourSeeFrames[s_tourSeeFound - 1] + DBG_TOUR_SEE_GAP)) && DebugMenu_TourSeeAll(gGT, see))
+	{
+		s_tourSeeFrames[s_tourSeeFound++] = s_tourFrames;
+		s_tourOraclePending |= DBG_TOUR_ORACLE_SEE;
+	}
+	if ((s_tourGoFrame != 0) && (s_tourWpnFrame == 0))
+	{
+		const char *name = DebugMenu_TourWeaponInView(gGT);
+
+		if (name != NULL)
+		{
+			s_tourWpnFrame = s_tourFrames;
+			snprintf(s_tourWpnName, sizeof(s_tourWpnName), "%.16s", name);
+			s_tourOraclePending |= DBG_TOUR_ORACLE_WPN;
+		}
+	}
+
+	kind[0] = '\0';
+	if (EngineTour_OracleAt(s_tourOracleLevels, s_tourOracleFrames, s_tourOracleCount, s_tourLevel, s_tourFrames))
+	{
+		snprintf(kind, sizeof(kind), "f%d", s_tourFrames);
+	}
+	else if ((s_tourOraclePending & DBG_TOUR_ORACLE_START) != 0)
+	{
+		s_tourOraclePending &= ~DBG_TOUR_ORACLE_START;
+		snprintf(kind, sizeof(kind), "start");
+	}
+	else if ((s_tourOraclePending & DBG_TOUR_ORACLE_LINEPRE) != 0)
+	{
+		s_tourOraclePending &= ~DBG_TOUR_ORACLE_LINEPRE;
+		snprintf(kind, sizeof(kind), "line-pre");
+	}
+	else if ((s_tourOraclePending & DBG_TOUR_ORACLE_LINEPOST) != 0)
+	{
+		s_tourOraclePending &= ~DBG_TOUR_ORACLE_LINEPOST;
+		snprintf(kind, sizeof(kind), "line-post");
+	}
+	else if ((s_tourOraclePending & DBG_TOUR_ORACLE_SEE) != 0)
+	{
+		s_tourOraclePending &= ~DBG_TOUR_ORACLE_SEE;
+		snprintf(kind, sizeof(kind), "see%d", s_tourSeeFound);
+	}
+	else if ((s_tourOraclePending & DBG_TOUR_ORACLE_WPN) != 0)
+	{
+		s_tourOraclePending &= ~DBG_TOUR_ORACLE_WPN;
+		snprintf(kind, sizeof(kind), "wpn");
+	}
+	if ((kind[0] == '\0') || !EngineTour_OracleTag(tag, sizeof(tag), s_tourPos + 1, s_tourLevel, kind))
+	{
+		return;
+	}
+	if (s_tourFrames >= s_tourFramesThis)
+	{
+		s_tourOracleSkipped++;
+		Platform_Log("[CTR Tour] %d/%d: level %d oracle %s NOT armed: race frame %d is the entry's last (its VRAM dump)\n", s_tourPos + 1, s_tourCount,
+		             s_tourLevel, tag, s_tourFrames);
+		return;
+	}
+
+	Engine_OracleArmFrame(tag, s_tourFrames);
+	s_tourOracleArmed++;
+	Platform_Log("[CTR Tour] %d/%d: level %d oracle %s at race frame %d, vblank %d%s%s\n", s_tourPos + 1, s_tourCount, s_tourLevel, tag, s_tourFrames,
+	             Platform_GetVBlankCount(), (strcmp(kind, "wpn") == 0) ? ", weapon " : "", (strcmp(kind, "wpn") == 0) ? s_tourWpnName : "");
+	if ((g_cfg_shotName[0] != '\0') && (burst < 0))
+	{
+		char path[PLATFORM_ARG_PATH_MAX + 64];
+
+		if (EngineTour_OracleShotName(path, sizeof(path), g_cfg_shotName, tag))
+		{
+			Platform_ShotRequest(path);
+		}
+	}
 }
 
 // The burst being shot is over (its last frame, or the entry ended inside it):
@@ -2112,6 +2465,16 @@ internal void DebugMenu_TourMeasure(struct GameTracker *gGT, int now)
 		s_tourState = 0;
 		s_tourLaps = 0;
 		s_tourMaskGrabs = 0;
+		s_tourGoFrame = 0;
+		s_tourLinePreFrame = 0;
+		s_tourLineFrame = 0;
+		s_tourWpnFrame = 0;
+		s_tourSeeFound = 0;
+		s_tourOraclePending = 0;
+		s_tourOracleArmed = 0;
+		s_tourOracleSkipped = 0;
+		s_tourDistPrimed = 0;
+		s_tourWpnName[0] = '\0';
 		Engine_TourNotify(s_tourPos + 1, s_tourLevel, 0);
 	}
 
@@ -2182,6 +2545,13 @@ internal void DebugMenu_TourMeasure(struct GameTracker *gGT, int now)
 		}
 		s_tourState = hash;
 	}
+
+	// --level-tour-oracle: the oracle frames, after the drive sample (its line
+	// event); game state read only.
+	if (s_tourOracleCount > 0)
+	{
+		DebugMenu_TourOracle(gGT, burst);
+	}
 }
 
 // The entry's measurement lines and the engine's reports after its last frame.
@@ -2195,6 +2565,14 @@ internal void DebugMenu_TourMeasureEnd(void)
 	             "state %08x\n",
 	             s_tourPos + 1, s_tourCount, s_tourLevel, (milli < 0) ? "-" : "", magnitude / 1000, magnitude % 1000, DBG_TOUR_DRIVE_FROM, s_tourLaps,
 	             EngineTour_DriveLongestStall(), s_tourMaskGrabs, (unsigned)s_tourState);
+	if (s_tourOracleCount > 0)
+	{
+		// The entry's own oracle frames as found (0 = not reached), what was armed.
+		Platform_Log("[CTR Tour] %d/%d: level %d oracle: %d frame(s) armed, %d not; start %d, line-pre %d, line %d, see %d/%d, wpn %d%s%s\n", s_tourPos + 1,
+		             s_tourCount, s_tourLevel, s_tourOracleArmed, s_tourOracleSkipped, s_tourGoFrame, s_tourLinePreFrame, s_tourLineFrame,
+		             (s_tourSeeFound > 0) ? s_tourSeeFrames[0] : 0, (s_tourSeeFound > 1) ? s_tourSeeFrames[1] : 0, s_tourWpnFrame,
+		             (s_tourOraclePending != 0) ? " (found too late to be armed)" : "", (s_tourWpnFrame == 0) ? "; no weapon in view" : "");
+	}
 	Engine_TourNotify(s_tourPos + 1, s_tourLevel, 1);
 }
 
@@ -2257,8 +2635,6 @@ internal void DebugMenu_TourFinish(struct GameTracker *gGT, int now, int leftByI
 // the deadline runs from the last race frame.
 internal void DebugMenu_TourDriveStep(struct GameTracker *gGT, int now, int inRace)
 {
-	extern int g_cfg_levelTourFrames;
-
 	if (!inRace)
 	{
 		if ((s_tourFrames > 0) && (((gGT->gameMode1 & MAIN_MENU) != 0) || (gGT->boolDemoMode != 0)))
@@ -2272,7 +2648,8 @@ internal void DebugMenu_TourDriveStep(struct GameTracker *gGT, int now, int inRa
 	DebugMenu_TourProgress(now);
 	DebugMenu_TourMeasure(gGT, now);
 
-	if (s_tourFrames >= g_cfg_levelTourFrames)
+	// The entry's count (DebugMenu_TourMenuStep: --level-tour-frames, or its L<level>@ count).
+	if (s_tourFrames >= s_tourFramesThis)
 	{
 		DebugMenu_TourFinish(gGT, now, 0);
 	}

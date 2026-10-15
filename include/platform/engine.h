@@ -1054,6 +1054,30 @@ void Engine_OracleStateRestore(int slot);
 extern int g_engineOracleFaultMaterial;
 const EngineMaterial *Engine_OracleFaultMaterial(void);
 int Engine_SelfTestOracle(int *checks); // the packet decoder on synthetic primitives
+// ENGINE ORACLE (P4) - the oracle frames of the material comparison in the tour
+// (round of 2026-10-16, W2; game/DebugMenu.c, platform/engine_tour.c,
+// platform/engine_menuscene.c; switches in main.c). The tour calls
+// Engine_OracleArmFrame(tag, race frame) in the game logic of a race frame,
+// before that frame is drawn; the menu scene calls Engine_OracleArm from its
+// collect, before its draw and before the retail instances of the frame are
+// queued. Only with --level-tour-oracle.
+#define ENGINE_TOUR_TEXT_MAX 512       // the texts below (game/DebugMenu.c defines them with 512)
+#define ENGINE_TOUR_ORACLE_MAX 64      // entries of --level-tour-oracle
+#define ENGINE_TOUR_SEE_MAX 8          // entries of --level-tour-oracle-see
+#define ENGINE_TOUR_SEE_NAMES 3        // model names per entry (game/DebugMenu.c: DBG_TOUR_SEE_NAMES)
+#define ENGINE_TOUR_SEE_NAME_BYTES 16  // a model name and its NUL (MODEL_NAME_BYTE_COUNT)
+extern char g_cfg_levelTourOracle[ENGINE_TOUR_TEXT_MAX];     // --level-tour-oracle as text; empty: no oracle frames
+extern char g_cfg_levelTourOracleSee[ENGINE_TOUR_TEXT_MAX];  // --level-tour-oracle-see as text
+extern char g_cfg_levelTourFramesText[ENGINE_TOUR_TEXT_MAX]; // --level-tour-frames as given: one count, L<level>@<count> overrides
+int EngineTour_OracleAt(const int *levels, const int *frames, int count, int level, int raceFrame);
+int EngineTour_OracleTag(char *out, size_t size, int entry, int level, const char *kind); // t<NN>-L<level>-<kind>
+int EngineTour_OracleShotName(char *out, size_t size, const char *shotName, const char *tag);
+int EngineTour_LineSoon(s32 remaining, s32 step, int frames);
+int EngineTour_ParseSee(const char *text, int *levels, char (*names)[ENGINE_TOUR_SEE_NAMES][ENGINE_TOUR_SEE_NAME_BYTES], int *counts, int max, int *badAt);
+int EngineTour_DriveForwardFolds(void);
+int EngineTour_ParseShots(const char *text, int *levels, int *frames, int max, int *badAt);
+int EngineTour_ParseFrames(const char *text, int *levels, int *frames, int max, int *badAt);
+int EngineTour_FramesForLevel(const int *levels, const int *frames, int count, int level, int fallback);
 
 // --------------------------------------------------------------------------
 // SELFTEST (platform/engine_selftest.c; main.c --engine-selftest, ctest

@@ -323,8 +323,10 @@ static const NativeSwitch s_devSwitches[] = {
     {"--level", "<n>", "jump straight into level id n as soon as the main menu is up"},
     {"--driver", "<n>", "driver for the jump with --level or --autoload-track (default 0, Crash)"},
     {"--level-tour", "<list>", "drive the listed tracks one after another, each started from the main menu like --level / --autoload-track and left after --level-tour-frames race frames like QUIT, then end; list: races (level ids 0..17), arenas (level ids 18..24, a one-player race on each battle arena), containers (every container of the track folder), level ids, container file names, comma-separated"},
-    {"--level-tour-frames", "<n>", "race frames per track of --level-tour (default 600)"},
+    {"--level-tour-frames", "<n>", "race frames per track of --level-tour (default 600); n[,L<level>@<n>...]: that level drives its own count, comma-separated, up to 32"},
     {"--level-tour-shots", "<frames>", "with --level-tour: at each listed race frame of every entry a burst of 12 snapshots of consecutive race frames (<--shot-name>-tNN-L<level>-<burst>-<race frame>.bmp); a plain number is for every track, L<level>@<frame> for that level only; comma-separated, up to 32"},
+    {"--level-tour-oracle", "<frames>", "needs --level-tour and --engine-oracle, measuring only: an oracle frame of the material comparison at each listed race frame of every entry (syntax of --level-tour-shots, no burst, up to 64), and per entry at the start (first race frame after the countdown), about 20 race frames before and exactly 10 after the player crossed the start/finish line, and with a fired weapon in view; none on an entry's last race frame; one in the menu scene of --engine-menuscene; tags tNN-L<level>-f<frame>|start|line-pre|line-post|wpn and menu, one snapshot <--shot-name>-<tag>.bmp each when --shot-name is given"},
+    {"--level-tour-oracle-see", "<list>", "with --level-tour-oracle: L<level>:<model>[+<model>...] comma-separated - on that level two more oracle frames (tags tNN-L<level>-see1, -see2, at least 5 race frames apart) in the first race frames after the start with an instance of every listed model in view; up to 8 entries of up to 3 models"},
     {"--setup", "", "first-start screen even when data is there"},
     {"--record", "", "record a replay report under debug/reports/ from boot (the log goes there too)"},
     {"--replay", "<file>", "play a replay"},
@@ -403,6 +405,8 @@ static const NativeSwitch s_devSwitches[] = {
     {"--engine-hires-tex64", "", "with --engine-hires-dir: the texture reduced to 64x64 (the comparison run of stage H)"},
     {"--engine-hide", "<sky,water>", "with --engine --engine-track: the engine owns the listed items (the PS1 path does not draw them) but draws nothing of them - the 'minus' run of the measurements; comma-separated, words sky and water"},
     {"--engine-fail", "<start|track>", "with --engine, measuring only: forces the engine's fallback to the PS1 path - start: the programs 'ne' and 'nw' are not made, track (needs --engine-track): the first track load of the engine fails; the log names the reason and the run goes on without the engine"},
+    {"--engine-oracle", "<file>", "with --engine --engine-track, measuring only: the log of the material comparison into <file> (relative to the game folder) - per drawn surface the texture page, CLUT, UV, blend and mosaic cell of the PS1 path and of the engine, in the frames --level-tour-oracle arms; without it nothing is written"},
+    {"--engine-oracle-fault", "<clut|cell>:<n>", "with --engine-oracle, measuring only (the controls of the comparison): clut:<n> - the CLUT of the n-th engine material of the instances is falsified on purpose, cell:<n> - two cells of a mosaic row of the track are swapped; each named in the log; given once per kind (twice for both)"},
     {"--no-engine", "", "the native engine stays off for this run, whatever ctr-settings.cfg says (video engine 1); the way back to the PS1 path once the engine is the default; not with --engine"},
     {"--dev-race-mode", "<tt|adventure>", "with --level: the direct start as a retail Time Trial (tt) or as an Adventure race (adventure) instead of an arcade race"},
     {"--dev-tt-ghost", "", "with --dev-race-mode tt: the track's staff ghost (N. Tropy) races along - its gate is opened in this session's progress in RAM (the card root is the one of --dev-race-mode); retail disc tracks only"},
@@ -532,7 +536,11 @@ static const NativeValueLimit s_valueLimits[] = {
     {"--autoload-track", sizeof(g_cfg_autoloadTrack), 0},
     {"--level-tour", sizeof(g_cfg_levelTour), 0},
     {"--level-tour-shots", sizeof(g_cfg_levelTourShots), 0},
+    {"--level-tour-frames", sizeof(g_cfg_levelTourFramesText), 0},
+    {"--level-tour-oracle", sizeof(g_cfg_levelTourOracle), 0},
+    {"--level-tour-oracle-see", sizeof(g_cfg_levelTourOracleSee), 0},
     {"--engine-hires-dir", sizeof(g_cfg_engineHiresDir), 0},
+    {"--engine-oracle", sizeof(g_cfg_engineOracle), 0},
 };
 
 // The entries of a comma list as the readers count them: empty ones (",,")
@@ -626,6 +634,38 @@ static int NativeArgs_EngineHideBits(const char *list)
 		at = (end != NULL) ? (end + 1) : NULL;
 	}
 	return (bits != 0) ? bits : -1;
+}
+
+// The value of --engine-oracle-fault: clut:<n> (kind 0) or cell:<n> (kind 1),
+// n 0 to 999999. 1 = read.
+static int NativeArgs_OracleFault(const char *value, int *kind, int *n)
+{
+	const char *digits;
+	size_t count = 0;
+
+	if (strncmp(value, "clut:", 5) == 0)
+	{
+		*kind = 0;
+	}
+	else if (strncmp(value, "cell:", 5) == 0)
+	{
+		*kind = 1;
+	}
+	else
+	{
+		return 0;
+	}
+	digits = value + 5;
+	while ((digits[count] >= '0') && (digits[count] <= '9'))
+	{
+		count++;
+	}
+	if ((count == 0) || (count > 6) || (digits[count] != '\0'))
+	{
+		return 0;
+	}
+	*n = atoi(digits);
+	return 1;
 }
 
 static int NativeArgs_GateDevSwitches(int argc, char *argv[])
@@ -736,7 +776,8 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			else if ((needsEngine == NULL) && ((strcmp(argv[argIndex], "--engine-track") == 0) || (strcmp(argv[argIndex], "--engine-testscene") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-menuscene") == 0) || (strcmp(argv[argIndex], "--engine-hide") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-hires-dir") == 0) || (strcmp(argv[argIndex], "--engine-hires-tex64") == 0) ||
-			                                   (strcmp(argv[argIndex], "--engine-fail") == 0)))
+			                                   (strcmp(argv[argIndex], "--engine-fail") == 0) || (strcmp(argv[argIndex], "--engine-oracle") == 0) ||
+			                                   (strcmp(argv[argIndex], "--engine-oracle-fault") == 0)))
 			{
 				needsEngine = argv[argIndex];
 			}
@@ -815,6 +856,147 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 		{
 			fflush(stdout);
 			fprintf(stderr, "switch --engine-fail track requires --engine-track\n");
+			fflush(stderr);
+			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+	}
+
+	// The material comparison (round of 2026-10-16): --engine-oracle compares the
+	// engine's track and instances, so it needs --engine-track (--engine is
+	// checked above); --engine-oracle-fault falsifies one item of it, clut:<n> or
+	// cell:<n>, each kind once; --level-tour-oracle arms its frames in a tour, so
+	// it needs both --engine-oracle and --level-tour and a list that reads, and
+	// --level-tour-oracle-see adds to it. --level-tour-frames is one count and
+	// L<level>@<count> entries. Refused here, before any window: a comparison run
+	// with half its frames would look complete.
+	{
+		const char *oracle = NULL;
+		const char *faultGiven[2] = {NULL, NULL};
+		const char *oracleList = NULL;
+		const char *seeList = NULL;
+		const char *framesList = NULL;
+		int trackGiven = 0;
+		int tourGiven = 0;
+		int levels[ENGINE_TOUR_ORACLE_MAX];
+		int frames[ENGINE_TOUR_ORACLE_MAX];
+		char seeNames[ENGINE_TOUR_SEE_MAX][ENGINE_TOUR_SEE_NAMES][ENGINE_TOUR_SEE_NAME_BYTES];
+		int seeCounts[ENGINE_TOUR_SEE_MAX];
+		int badAt = 0;
+
+		for (int argIndex = 1; argIndex < argc; argIndex++)
+		{
+			const char *value = ((argIndex + 1) < argc) ? argv[argIndex + 1] : NULL;
+
+			if (strcmp(argv[argIndex], "--engine-track") == 0)
+			{
+				trackGiven = 1;
+			}
+			else if ((strcmp(argv[argIndex], "--level-tour") == 0) && (value != NULL))
+			{
+				tourGiven = 1;
+				argIndex++;
+			}
+			else if ((strcmp(argv[argIndex], "--engine-oracle") == 0) && (value != NULL))
+			{
+				oracle = value;
+				argIndex++;
+			}
+			else if ((strcmp(argv[argIndex], "--engine-oracle-fault") == 0) && (value != NULL))
+			{
+				int kind = 0;
+				int n = 0;
+
+				if (!NativeArgs_OracleFault(value, &kind, &n))
+				{
+					fflush(stdout);
+					fprintf(stderr, "switch --engine-oracle-fault expects clut:<n> or cell:<n> (n 0 to 999999), not '%s'\n", value);
+					fflush(stderr);
+					return NATIVE_EXIT_DEV_REQUIRED;
+				}
+				if (faultGiven[kind] != NULL)
+				{
+					fflush(stdout);
+					fprintf(stderr, "switch --engine-oracle-fault is given twice for %s ('%s', '%s') - once per kind\n", (kind == 0) ? "clut" : "cell",
+					        faultGiven[kind], value);
+					fflush(stderr);
+					return NATIVE_EXIT_DEV_REQUIRED;
+				}
+				faultGiven[kind] = value;
+				argIndex++;
+			}
+			else if ((strcmp(argv[argIndex], "--level-tour-oracle") == 0) && (value != NULL))
+			{
+				oracleList = value;
+				argIndex++;
+			}
+			else if ((strcmp(argv[argIndex], "--level-tour-oracle-see") == 0) && (value != NULL))
+			{
+				seeList = value;
+				argIndex++;
+			}
+			else if ((strcmp(argv[argIndex], "--level-tour-frames") == 0) && (value != NULL))
+			{
+				framesList = value;
+				argIndex++;
+			}
+		}
+
+		if ((oracle != NULL) && !trackGiven)
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch --engine-oracle requires --engine-track\n");
+			fflush(stderr);
+			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+		if (((faultGiven[0] != NULL) || (faultGiven[1] != NULL)) && (oracle == NULL))
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch --engine-oracle-fault requires --engine-oracle\n");
+			fflush(stderr);
+			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+		if ((oracleList != NULL) && (oracle == NULL))
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch --level-tour-oracle requires --engine-oracle\n");
+			fflush(stderr);
+			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+		if ((oracleList != NULL) && !tourGiven)
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch --level-tour-oracle requires --level-tour\n");
+			fflush(stderr);
+			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+		if ((oracleList != NULL) && (EngineTour_ParseShots(oracleList, levels, frames, ENGINE_TOUR_ORACLE_MAX, &badAt) <= 0))
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch --level-tour-oracle expects race frames from 1 or L<level>@<frame>, comma-separated, up to %d - '%s' refused at entry %d\n",
+			        ENGINE_TOUR_ORACLE_MAX, oracleList, (badAt > 0) ? badAt : 1);
+			fflush(stderr);
+			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+		if ((seeList != NULL) && (oracleList == NULL))
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch --level-tour-oracle-see requires --level-tour-oracle\n");
+			fflush(stderr);
+			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+		if ((seeList != NULL) && (EngineTour_ParseSee(seeList, levels, seeNames, seeCounts, ENGINE_TOUR_SEE_MAX, &badAt) <= 0))
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch --level-tour-oracle-see expects L<level>:<model>[+<model>...] (up to %d models of up to %d characters), comma-separated, up to %d - '%s' refused at entry %d\n",
+			        ENGINE_TOUR_SEE_NAMES, ENGINE_TOUR_SEE_NAME_BYTES - 1, ENGINE_TOUR_SEE_MAX, seeList, (badAt > 0) ? badAt : 1);
+			fflush(stderr);
+			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+		if ((framesList != NULL) && (EngineTour_ParseFrames(framesList, levels, frames, ENGINE_TOUR_SHOTS_MAX, &badAt) < 0))
+		{
+			fflush(stdout);
+			fprintf(stderr, "switch --level-tour-frames expects one count and L<level>@<count> entries, comma-separated, up to %d - '%s' refused at entry %d\n",
+			        ENGINE_TOUR_SHOTS_MAX, framesList, badAt);
 			fflush(stderr);
 			return NATIVE_EXIT_DEV_REQUIRED;
 		}
@@ -985,6 +1167,31 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 			const int mode = Engine_FailModeFromName(argv[++argIndex]);
 
 			g_cfg_engineFail = (mode > 0) ? mode : 0;
+		}
+		else if ((strcmp(argv[argIndex], "--engine-oracle") == 0) && ((argIndex + 1) < argc))
+		{
+			// The length and the pairing were checked before any window
+			// (s_valueLimits, NativeArgs_GateDevSwitches); the file is written
+			// by platform/engine_oracle.c, the log line is in the big loop.
+			snprintf(g_cfg_engineOracle, sizeof(g_cfg_engineOracle), "%s", argv[++argIndex]);
+		}
+		else if ((strcmp(argv[argIndex], "--engine-oracle-fault") == 0) && ((argIndex + 1) < argc))
+		{
+			// The value was checked before any window (clut:<n> or cell:<n>, each kind once).
+			int kind = 0;
+			int n = 0;
+
+			if (NativeArgs_OracleFault(argv[++argIndex], &kind, &n))
+			{
+				if (kind == 0)
+				{
+					g_cfg_engineOracleFaultClut = n;
+				}
+				else
+				{
+					g_cfg_engineOracleFaultCell = n;
+				}
+			}
 		}
 		else if (strcmp(argv[argIndex], "--no-engine") == 0)
 		{
@@ -3729,6 +3936,18 @@ int main(int argc, char *argv[])
 				Platform_Log("[CTR Engine] --engine-fail %s (measuring): the engine's %s fails on purpose, the run falls back to the PS1 path\n",
 				             (g_cfg_engineFail == ENGINE_FAIL_TRACK) ? "track" : "start", (g_cfg_engineFail == ENGINE_FAIL_TRACK) ? "first track load" : "start");
 			}
+			else if (strcmp(argv[argIndex], "--engine-oracle") == 0)
+			{
+				// Set by the early reader; the file is opened by platform/engine_oracle.c.
+				Platform_Log("[CTR Engine] --engine-oracle %s (measuring): the log of the material comparison; frames only where --level-tour-oracle arms them\n",
+				             g_cfg_engineOracle);
+			}
+			else if (strcmp(argv[argIndex], "--engine-oracle-fault") == 0)
+			{
+				// Set by the early reader; the material it falsifies is named where it happens.
+				Platform_Log("[CTR Engine] --engine-oracle-fault %s (measuring, the controls of the comparison): clut %d, cell %d (-1 = off) falsified on purpose\n",
+				             ((argIndex + 1) < argc) ? argv[argIndex + 1] : "", g_cfg_engineOracleFaultClut, g_cfg_engineOracleFaultCell);
+			}
 			else if (strcmp(argv[argIndex], "--native-wheel-report") == 0)
 			{
 				// Set in the first loop of main, which also refused it without the
@@ -4464,14 +4683,35 @@ int main(int argc, char *argv[])
 			}
 			else if ((strcmp(argv[argIndex], "--level-tour-frames") == 0) && ((argIndex + 1) < argc))
 			{
+				// The plain count first (checked before any window); the text with
+				// its L<level>@<count> entries is read with the list
+				// (game/DebugMenu.c, EngineTour_ParseFrames).
 				extern int g_cfg_levelTourFrames;
 
-				g_cfg_levelTourFrames = atoi(argv[++argIndex]);
+				snprintf(g_cfg_levelTourFramesText, sizeof(g_cfg_levelTourFramesText), "%s", argv[++argIndex]);
+				g_cfg_levelTourFrames = atoi(g_cfg_levelTourFramesText);
 				if (g_cfg_levelTourFrames < 1)
 				{
 					g_cfg_levelTourFrames = 1;
 				}
 				printf("[CTR Native] level tour: %d race frame(s) each\n", g_cfg_levelTourFrames);
+				if (strchr(g_cfg_levelTourFramesText, ',') != NULL)
+				{
+					printf("[CTR Native] level tour: race frames per level '%s'\n", g_cfg_levelTourFramesText);
+				}
+			}
+			else if ((strcmp(argv[argIndex], "--level-tour-oracle") == 0) && ((argIndex + 1) < argc))
+			{
+				// Kept as text, checked before any window; game/DebugMenu.c reads it
+				// with the tour list and arms the oracle frames (Engine_OracleArm).
+				snprintf(g_cfg_levelTourOracle, sizeof(g_cfg_levelTourOracle), "%s", argv[++argIndex]);
+				printf("[CTR Native] level tour: oracle frames at '%s'\n", g_cfg_levelTourOracle);
+			}
+			else if ((strcmp(argv[argIndex], "--level-tour-oracle-see") == 0) && ((argIndex + 1) < argc))
+			{
+				// Kept as text, checked before any window; read with the tour list.
+				snprintf(g_cfg_levelTourOracleSee, sizeof(g_cfg_levelTourOracleSee), "%s", argv[++argIndex]);
+				printf("[CTR Native] level tour: oracle frames with models in view '%s'\n", g_cfg_levelTourOracleSee);
 			}
 			else if ((strcmp(argv[argIndex], "--level-tour-shots") == 0) && ((argIndex + 1) < argc))
 			{

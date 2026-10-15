@@ -274,6 +274,223 @@ int EngineTour_ShotName(char *out, size_t size, const char *shotName, int entry,
 }
 
 // --------------------------------------------------------------------------
+// The oracle frames of the material comparison (round 18, W2; ENGINE ORACLE
+// (P4) in include/platform/engine.h). --level-tour-oracle has the syntax of
+// --level-tour-shots and is read with EngineTour_ParseShots; every listed race
+// frame is one oracle frame (no burst), next to the tour's own frames: the
+// start (the first race frame after the countdown), before and after the line
+// (the first forward fold of the drive progress), a weapon in view and the
+// models of --level-tour-oracle-see in view (game/DebugMenu.c, DebugMenu_TourOracle).
+
+// 1 when raceFrame is listed for this level (a plain entry or L<level>@).
+int EngineTour_OracleAt(const int *levels, const int *frames, int count, int level, int raceFrame)
+{
+	int i;
+
+	for (i = 0; i < count; i++)
+	{
+		if (((levels[i] == ENGINE_TOUR_ALL_LEVELS) || (levels[i] == level)) && (frames[i] == raceFrame))
+		{
+			return 1;
+		}
+	}
+	return 0;
+}
+
+// The tag of an oracle frame: t<NN>-L<level>-<kind> (kind "f330", "start",
+// "line", "wpn"). 0 when it does not fit.
+int EngineTour_OracleTag(char *out, size_t size, int entry, int level, const char *kind)
+{
+	int written;
+
+	if ((out == NULL) || (size == 0) || (kind == NULL) || (kind[0] == '\0'))
+	{
+		return 0;
+	}
+	written = snprintf(out, size, "t%02d-L%d-%s", entry, level, kind);
+	return ((written > 0) && ((size_t)written < size)) ? 1 : 0;
+}
+
+// The snapshot of an oracle frame: <shotName without .bmp>-<tag>.bmp ("tour"
+// when shotName is empty). 0 when it does not fit.
+int EngineTour_OracleShotName(char *out, size_t size, const char *shotName, const char *tag)
+{
+	char base[1024];
+	size_t len;
+	int written;
+
+	if ((out == NULL) || (size == 0) || (tag == NULL))
+	{
+		return 0;
+	}
+	snprintf(base, sizeof(base), "%s", ((shotName != NULL) && (shotName[0] != '\0')) ? shotName : "tour");
+	len = strlen(base);
+	if ((len > 4) && ((strcmp(base + len - 4, ".bmp") == 0) || (strcmp(base + len - 4, ".BMP") == 0)))
+	{
+		base[len - 4] = '\0';
+	}
+	written = snprintf(out, size, "%s-%s.bmp", base, tag);
+	return ((written > 0) && ((size_t)written < size)) ? 1 : 0;
+}
+
+// The line is near: at the speed of the last race frame (step = the fall of
+// distanceToFinish_curr, > 0 forward) the remaining distance to the line is
+// covered within frames race frames. The tour's estimate for the oracle frame
+// before the line (the line itself is the first forward fold of the drive
+// progress below); a kart that stands or rolls back is never near.
+int EngineTour_LineSoon(s32 remaining, s32 step, int frames)
+{
+	if ((step <= 0) || (remaining < 0) || (frames <= 0))
+	{
+		return 0;
+	}
+	return ((s64)remaining <= (s64)step * (s64)frames) ? 1 : 0;
+}
+
+// --level-tour-oracle-see: "L4:flamejet+tikka,L5:plant" - per level the model
+// names that must all be in view at once for that entry's "see" oracle frames.
+// Up to ENGINE_TOUR_SEE_NAMES names joined by '+', each 1 to
+// ENGINE_TOUR_SEE_NAME_BYTES - 1 characters of letters, digits and '_'. Writes
+// up to max entries and returns their count; -1 refuses the whole list
+// (*badAt = the 1-based entry). An empty text is 0 entries.
+int EngineTour_ParseSee(const char *text, int *levels, char (*names)[ENGINE_TOUR_SEE_NAMES][ENGINE_TOUR_SEE_NAME_BYTES], int *counts, int max, int *badAt)
+{
+	const char *at = text;
+	int count = 0;
+	int entry = 0;
+
+	if (badAt != NULL)
+	{
+		*badAt = 0;
+	}
+	if ((text == NULL) || (levels == NULL) || (names == NULL) || (counts == NULL) || (*text == '\0'))
+	{
+		return 0;
+	}
+	for (;;)
+	{
+		int level = 0;
+		int n = 0;
+
+		entry++;
+		if ((count >= max) || ((*at != 'L') && (*at != 'l')))
+		{
+			break;
+		}
+		at++;
+		if (!EngineTour_Number(&at, ENGINE_TOUR_LEVEL_MAX, &level) || (*at != ':'))
+		{
+			break;
+		}
+		at++;
+		for (;;)
+		{
+			int len = 0;
+
+			while (((*at >= 'a') && (*at <= 'z')) || ((*at >= 'A') && (*at <= 'Z')) || ((*at >= '0') && (*at <= '9')) || (*at == '_'))
+			{
+				if ((len >= ENGINE_TOUR_SEE_NAME_BYTES - 1) || (n >= ENGINE_TOUR_SEE_NAMES))
+				{
+					len = -1;
+					break;
+				}
+				names[count][n][len++] = *at++;
+			}
+			if (len <= 0)
+			{
+				n = -1;
+				break;
+			}
+			names[count][n][len] = '\0';
+			n++;
+			if (*at != '+')
+			{
+				break;
+			}
+			at++;
+		}
+		if ((n <= 0) || ((*at != ',') && (*at != '\0')))
+		{
+			break;
+		}
+		levels[count] = level;
+		counts[count] = n;
+		count++;
+		if (*at == '\0')
+		{
+			return count;
+		}
+		at++; // the comma
+	}
+	if (badAt != NULL)
+	{
+		*badAt = entry;
+	}
+	return -1;
+}
+
+// --level-tour-frames: "900" or "900,L80@2100" - exactly one plain count (every
+// entry) and any number of L<level>@<count> (that level). The syntax of the shot
+// list; -1 refuses it (*badAt = the 1-based entry, the second plain count or 1
+// when there is none).
+int EngineTour_ParseFrames(const char *text, int *levels, int *frames, int max, int *badAt)
+{
+	const int count = EngineTour_ParseShots(text, levels, frames, max, badAt);
+	int plain = 0;
+	int i;
+
+	if (count < 0)
+	{
+		return -1;
+	}
+	for (i = 0; i < count; i++)
+	{
+		if (levels[i] == ENGINE_TOUR_ALL_LEVELS)
+		{
+			plain++;
+			if (plain > 1)
+			{
+				if (badAt != NULL)
+				{
+					*badAt = i + 1;
+				}
+				return -1;
+			}
+		}
+	}
+	if (plain == 0)
+	{
+		if (badAt != NULL)
+		{
+			*badAt = 1;
+		}
+		return -1;
+	}
+	return count;
+}
+
+// The race frames of one level: its L<level>@ count, else the plain one, else
+// fallback (an unread list).
+int EngineTour_FramesForLevel(const int *levels, const int *frames, int count, int level, int fallback)
+{
+	int plain = fallback;
+	int i;
+
+	for (i = 0; i < count; i++)
+	{
+		if (levels[i] == level)
+		{
+			return frames[i];
+		}
+		if (levels[i] == ENGINE_TOUR_ALL_LEVELS)
+		{
+			plain = frames[i];
+		}
+	}
+	return plain;
+}
+
+// --------------------------------------------------------------------------
 // Drive progress of the player's seat. The game keeps distanceToFinish_curr as
 // the progress modulo the track length (game/Vehicle/VehLap.c:166-179), so it
 // falls while the kart drives forward and jumps up by about one track length at
@@ -293,6 +510,7 @@ global_variable struct
 	int stall;
 	int longestStall;
 	int samples;
+	int forwardFolds; // steps folded forward: the line crossed forward
 } s_engTourDrive;
 
 void EngineTour_DriveBegin(u32 trackLength)
@@ -325,6 +543,7 @@ void EngineTour_DriveSample(u32 distanceToFinish)
 		else if (step <= -(length / 2))
 		{
 			step += length;
+			s_engTourDrive.forwardFolds++;
 		}
 	}
 	s_engTourDrive.sum += step;
@@ -363,6 +582,13 @@ int EngineTour_DriveLongestStall(void)
 int EngineTour_DriveSamples(void)
 {
 	return s_engTourDrive.samples;
+}
+
+// How often the drive progress folded a step forward: the player crossed the
+// start/finish line forward (the tour's line event; 0 without a track length).
+int EngineTour_DriveForwardFolds(void)
+{
+	return s_engTourDrive.forwardFolds;
 }
 
 // FNV-1a over bytes, continuing from hash (ENGINE_TOUR_FNV_START to begin).
@@ -497,6 +723,55 @@ int Engine_SelfTestTour(int *checks)
 		EGTOUR_CHECK(!EngineTour_ShotName(name, 8, "dir/e.bmp", 3, 12, 2, 751), "name: a too small buffer is not refused");
 	}
 
+	// (4b) oracle frames: membership, tags, snapshot names, the line, the frames list
+	{
+		char name[64];
+		const int ol[3] = {ENGINE_TOUR_ALL_LEVELS, 3, ENGINE_TOUR_ALL_LEVELS};
+		const int of[3] = {300, 330, 600};
+
+		EGTOUR_CHECK(EngineTour_OracleAt(ol, of, 3, 3, 330) && EngineTour_OracleAt(ol, of, 3, 3, 300) && EngineTour_OracleAt(ol, of, 3, 12, 600),
+		             "oracle: a listed frame not found");
+		EGTOUR_CHECK(!EngineTour_OracleAt(ol, of, 3, 12, 330) && !EngineTour_OracleAt(ol, of, 3, 3, 301) && !EngineTour_OracleAt(ol, of, 0, 3, 300),
+		             "oracle: an unlisted frame found");
+		EGTOUR_CHECK(EngineTour_OracleTag(name, sizeof(name), 4, 3, "f330") && (strcmp(name, "t04-L3-f330") == 0), "oracle tag: '%s'", name);
+		EGTOUR_CHECK(EngineTour_OracleTag(name, sizeof(name), 27, 80, "start") && (strcmp(name, "t27-L80-start") == 0), "oracle tag: '%s'", name);
+		EGTOUR_CHECK(!EngineTour_OracleTag(name, 8, 4, 3, "start") && !EngineTour_OracleTag(name, sizeof(name), 4, 3, ""),
+		             "oracle tag: a short buffer or an empty kind not refused");
+		EGTOUR_CHECK(EngineTour_OracleShotName(name, sizeof(name), "dir/o.bmp", "t04-L3-line") && (strcmp(name, "dir/o-t04-L3-line.bmp") == 0),
+		             "oracle shot: '%s'", name);
+		EGTOUR_CHECK(EngineTour_OracleShotName(name, sizeof(name), "", "menu") && (strcmp(name, "tour-menu.bmp") == 0), "oracle shot without base: '%s'", name);
+		EGTOUR_CHECK(EngineTour_LineSoon(200, 10, 20) && EngineTour_LineSoon(0, 1, 20), "line soon: not near at 20 frames");
+		EGTOUR_CHECK(!EngineTour_LineSoon(201, 10, 20) && !EngineTour_LineSoon(50, 0, 20) && !EngineTour_LineSoon(50, -5, 20) && !EngineTour_LineSoon(-3, 10, 20),
+		             "line soon: near where it is not");
+		{
+			int sl[4];
+			char sn[4][ENGINE_TOUR_SEE_NAMES][ENGINE_TOUR_SEE_NAME_BYTES];
+			int sc[4];
+
+			n = EngineTour_ParseSee("L4:flamejet+tikka,L5:plant", sl, sn, sc, 4, &bad);
+			EGTOUR_CHECK((n == 2) && (sl[0] == 4) && (sc[0] == 2) && (strcmp(sn[0][0], "flamejet") == 0) && (strcmp(sn[0][1], "tikka") == 0) && (sl[1] == 5) &&
+			                 (sc[1] == 1) && (strcmp(sn[1][0], "plant") == 0),
+			             "see: list read wrong (%d)", n);
+			EGTOUR_CHECK(EngineTour_ParseSee("", sl, sn, sc, 4, &bad) == 0, "see: empty text is not 0 entries");
+			EGTOUR_CHECK((EngineTour_ParseSee("L4:a+b+c+d", sl, sn, sc, 4, &bad) == -1) && (bad == 1), "see: a fourth name not refused");
+			EGTOUR_CHECK((EngineTour_ParseSee("L4:tikka,L5:", sl, sn, sc, 4, &bad) == -1) && (bad == 2), "see: an empty name not refused");
+			EGTOUR_CHECK((EngineTour_ParseSee("L4:tikka+", sl, sn, sc, 4, &bad) == -1) && (EngineTour_ParseSee("4:tikka", sl, sn, sc, 4, &bad) == -1) &&
+			                 (EngineTour_ParseSee("L4:a b", sl, sn, sc, 4, &bad) == -1) && (EngineTour_ParseSee("L4:abcdefghijklmnop", sl, sn, sc, 4, &bad) == -1),
+			             "see: a broken entry not refused");
+			EGTOUR_CHECK(EngineTour_ParseSee("L1:a,L2:b", sl, sn, sc, 1, &bad) == -1, "see: more entries than room not refused");
+		}
+		n = EngineTour_ParseFrames("900,L80@2100,L3@1200", levels, frames, ENGINE_TOUR_SHOTS_MAX, &bad);
+		EGTOUR_CHECK((n == 3) && (EngineTour_FramesForLevel(levels, frames, n, 80, 600) == 2100) && (EngineTour_FramesForLevel(levels, frames, n, 3, 600) == 1200) &&
+		                 (EngineTour_FramesForLevel(levels, frames, n, 5, 600) == 900),
+		             "frames: list read wrong (%d)", n);
+		n = EngineTour_ParseFrames("900", levels, frames, ENGINE_TOUR_SHOTS_MAX, &bad);
+		EGTOUR_CHECK((n == 1) && (EngineTour_FramesForLevel(levels, frames, n, 17, 600) == 900), "frames: a plain count not read");
+		EGTOUR_CHECK((EngineTour_ParseFrames("900,1200", levels, frames, ENGINE_TOUR_SHOTS_MAX, &bad) == -1) && (bad == 2), "frames: two plain counts not refused");
+		EGTOUR_CHECK((EngineTour_ParseFrames("L3@900", levels, frames, ENGINE_TOUR_SHOTS_MAX, &bad) == -1) && (bad == 1), "frames: no plain count not refused");
+		EGTOUR_CHECK(EngineTour_ParseFrames("0", levels, frames, ENGINE_TOUR_SHOTS_MAX, &bad) == -1, "frames: 0 not refused");
+		EGTOUR_CHECK(EngineTour_FramesForLevel(levels, frames, 0, 3, 600) == 600, "frames: no list is not the fallback");
+	}
+
 	// (5) progress: forward, over the line, backwards, stall
 	EngineTour_DriveBegin(1000u);
 	EngineTour_DriveSample(600u);
@@ -510,6 +785,7 @@ int Engine_SelfTestTour(int *checks)
 	EGTOUR_CHECK((EngineTour_DriveMilliLaps() == 500) && (EngineTour_DriveLongestStall() == 0), "progress forward: %d milli-laps", EngineTour_DriveMilliLaps());
 	EngineTour_DriveSample(950u); // over the line: 100 -> 950 is 150 forward
 	EGTOUR_CHECK(EngineTour_DriveMilliLaps() == 650, "progress over the line: %d milli-laps (expected 650)", EngineTour_DriveMilliLaps());
+	EGTOUR_CHECK(EngineTour_DriveForwardFolds() == 1, "progress over the line: %d forward fold(s), expected 1", EngineTour_DriveForwardFolds());
 	EngineTour_DriveSample(990u); // 40 backwards
 	EngineTour_DriveSample(990u); // standing
 	EngineTour_DriveSample(960u); // 30 forward, still below the best
@@ -521,6 +797,7 @@ int Engine_SelfTestTour(int *checks)
 	             EngineTour_DriveSamples());
 	EngineTour_DriveSample(10u); // a step of more than half a lap: 111 backwards over the line (899 -> 1000 -> 0 -> 10)
 	EGTOUR_CHECK(EngineTour_DriveMilliLaps() == 590, "progress backwards over the line: %d milli-laps (expected 590)", EngineTour_DriveMilliLaps());
+	EGTOUR_CHECK(EngineTour_DriveForwardFolds() == 1, "backwards over the line counted as a forward fold (%d)", EngineTour_DriveForwardFolds());
 	EngineTour_DriveBegin(0u);
 	EngineTour_DriveSample(10u);
 	EngineTour_DriveSample(5u);
