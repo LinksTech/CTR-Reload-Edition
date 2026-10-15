@@ -2417,8 +2417,12 @@ enum
 };
 
 // Which rule of Engine_TrackInstanceRoute takes an instance; modelInTable: its
-// model has an entry in the model table.
-internal int EngTrack_InstanceRule(const struct Instance *inst, int modelInTable)
+// model has an entry in the model table; containerLevel: the level came from a
+// track container (level id NATIVE_TRACK_LEVELID_FIRST and up). Runtime
+// instances are taken on container levels only: retail births some without a
+// thread too (the 'wake' model, id 67, on Dingo Canyon and Tiny Arena; E7 tour
+// of 2026-10-15), and those stay with their retail handler.
+internal int EngTrack_InstanceRule(const struct Instance *inst, int modelInTable, int containerLevel)
 {
 	if ((inst == NULL) || (inst->model == NULL))
 	{
@@ -2428,7 +2432,7 @@ internal int EngTrack_InstanceRule(const struct Instance *inst, int modelInTable
 	{
 		return EGT_RULE_LEVEL;
 	}
-	return ((inst->thread == NULL) && modelInTable) ? EGT_RULE_RUNTIME : EGT_RULE_RETAIL;
+	return ((inst->thread == NULL) && modelInTable && containerLevel) ? EGT_RULE_RUNTIME : EGT_RULE_RETAIL;
 }
 
 // POSITION CHECK (round of 2026-10-15, S1). After every engine draw of a level
@@ -2620,7 +2624,7 @@ int Engine_TrackInstanceRoute(struct Instance *inst, struct InstDrawPerPlayer *i
 		return 0;
 	}
 	em = EngTrack_ModelEntry(inst->model, 0);
-	switch (EngTrack_InstanceRule(inst, em != NULL))
+	switch (EngTrack_InstanceRule(inst, em != NULL, s_egtLevelID >= NATIVE_TRACK_LEVELID_FIRST))
 	{
 	case EGT_RULE_LEVEL:
 		return EngTrack_RouteInstance(inst, idpp, pb, (em != NULL) ? em : EngTrack_ModelEntry(inst->model, 1), 0);
@@ -3136,17 +3140,18 @@ int Engine_SelfTestTrack(int *checks)
 		static struct Thread thread;
 
 		memset(&inst, 0, sizeof(inst));
-		EGT_CHECK(EngTrack_InstanceRule(NULL, 1) == EGT_RULE_RETAIL, "rules: no instance not retail");
-		EGT_CHECK(EngTrack_InstanceRule(&inst, 1) == EGT_RULE_RETAIL, "rules: an instance without a model not retail");
+		EGT_CHECK(EngTrack_InstanceRule(NULL, 1, 1) == EGT_RULE_RETAIL, "rules: no instance not retail");
+		EGT_CHECK(EngTrack_InstanceRule(&inst, 1, 1) == EGT_RULE_RETAIL, "rules: an instance without a model not retail");
 		inst.model = &model;
-		EGT_CHECK(EngTrack_InstanceRule(&inst, 1) == EGT_RULE_RUNTIME, "rules: no InstDef, no thread, model in the table not runtime");
-		EGT_CHECK(EngTrack_InstanceRule(&inst, 0) == EGT_RULE_RETAIL, "rules: a model outside the table not retail");
+		EGT_CHECK(EngTrack_InstanceRule(&inst, 1, 1) == EGT_RULE_RUNTIME, "rules: no InstDef, no thread, model in the table not runtime");
+		EGT_CHECK(EngTrack_InstanceRule(&inst, 0, 1) == EGT_RULE_RETAIL, "rules: a model outside the table not retail");
+		EGT_CHECK(EngTrack_InstanceRule(&inst, 1, 0) == EGT_RULE_RETAIL, "rules: a runtime instance on a retail level not retail");
 		inst.thread = &thread;
-		EGT_CHECK(EngTrack_InstanceRule(&inst, 1) == EGT_RULE_RETAIL, "rules: a runtime instance with a thread not retail");
+		EGT_CHECK(EngTrack_InstanceRule(&inst, 1, 1) == EGT_RULE_RETAIL, "rules: a runtime instance with a thread not retail");
 		inst.instDef = &def;
-		EGT_CHECK(EngTrack_InstanceRule(&inst, 1) == EGT_RULE_LEVEL, "rules: an InstDef instance with a thread not a level instance");
+		EGT_CHECK(EngTrack_InstanceRule(&inst, 1, 1) == EGT_RULE_LEVEL, "rules: an InstDef instance with a thread not a level instance");
 		inst.thread = NULL;
-		EGT_CHECK(EngTrack_InstanceRule(&inst, 0) == EGT_RULE_LEVEL, "rules: an InstDef instance outside the table not a level instance");
+		EGT_CHECK(EngTrack_InstanceRule(&inst, 0, 1) == EGT_RULE_LEVEL, "rules: an InstDef instance outside the table not a level instance");
 	}
 
 	return failures;
