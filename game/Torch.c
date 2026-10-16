@@ -136,6 +136,15 @@ CTR_STATIC_ASSERT(offsetof(struct TorchScratch, rings) == TORCH_RING0_SCRATCH_OF
 CTR_STATIC_ASSERT(CTR_OFFSET_OF_ARRAY(struct TorchScratch, rings, 1) == TORCH_RING1_SCRATCH_OFFSET);
 CTR_STATIC_ASSERT(CTR_OFFSET_OF_ARRAY(struct TorchScratch, rings, 2) == TORCH_RING2_SCRATCH_OFFSET);
 
+#if defined(CTR_NATIVE)
+extern int g_cfg_engine;
+// From platform/engine_fx_weather.c (--engine): counts a heat particle this
+// function draws in a frame in which the engine draws the track ("left to
+// retail"; the heat shimmer reads the frame buffer back and stays on the PS1
+// path). Counting only: nothing here changes.
+void EngineFx_HeatNote(void);
+#endif
+
 static u32 Torch_ReadWord(const void *base, int offset)
 {
 	return *(const u32 *)(const void *)((const char *)base + offset);
@@ -641,6 +650,12 @@ void Torch_Main(void *particleList_heatWarp, struct PushBuffer *pb, struct PrimM
 							card = Torch_Subset1_BuildCard(centerX, centerY, sxy0, sxy1);
 							Torch_Subset2_StoreCard(&card, centerX, centerY, TORCH_RING_2);
 							prim = Torch_EmitParticle(prim, ot);
+#if defined(CTR_NATIVE)
+							if (g_cfg_engine)
+							{
+								EngineFx_HeatNote();
+							}
+#endif
 						}
 					}
 				}

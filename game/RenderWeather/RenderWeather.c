@@ -24,6 +24,20 @@ CTR_STATIC_ASSERT(offsetof(LINE_G2, x0) == 0x08);
 CTR_STATIC_ASSERT(offsetof(LINE_G2, r1) == 0x0C);
 CTR_STATIC_ASSERT(offsetof(LINE_G2, x1) == 0x10);
 
+#if defined(CTR_NATIVE)
+extern int g_cfg_engine;
+// From platform/engine_fx_weather.c (--engine): the drops of a frame in which the
+// engine draws the track are drawn by the engine as world-space lines with a
+// depth test. Begin opens the batch of this call, every drop retail is about to
+// link is offered (1 = taken: written and kept as always, not linked), End submits
+// the batch before the draw-mode packet is linked (or links the taken drops as
+// retail would have, when the engine cannot draw them). Without --engine nothing
+// is called; every state this function writes is written before the hooks.
+void EngineFx_WeatherBegin(const struct PushBuffer *pb, u32 drawMode, u32 *otCell);
+int EngineFx_WeatherLine(void *packet, u32 xy0, u32 z0, u32 xy1, u32 z1, u32 color0, u32 color1);
+void EngineFx_WeatherEnd(void);
+#endif
+
 static u32 RenderWeather_ReadWord(const void *base, int offset)
 {
 	return *(const u32 *)(const void *)((const char *)base + offset);
@@ -256,6 +270,13 @@ void RenderWeather(struct PushBuffer *pb, struct PrimMem *primMem, struct RainBu
 	state1 = 0x493583fe;
 	RenderWeather_NextRng(&state0, &state1, &rngXY, &rngZ);
 
+#if defined(CTR_NATIVE)
+	if (g_cfg_engine)
+	{
+		EngineFx_WeatherBegin(pb, fillMode, ot);
+	}
+#endif
+
 	while (particleCount != 0)
 	{
 		u32 xy0;
@@ -307,6 +328,15 @@ void RenderWeather(struct PushBuffer *pb, struct PrimMem *primMem, struct RainBu
 					CtrGpu_WritePackedXY(&line->x0, sxy0);
 					CtrGpu_WriteColorCode(&line->r1, scratch->colorBottom);
 					CtrGpu_WritePackedXY(&line->x1, sxy1);
+#if defined(CTR_NATIVE)
+					// --engine: the engine draws the drop from its two vectors (v + the
+					// camera, platform/engine_fx_weather.c); the line stays written, unlinked.
+					if (g_cfg_engine && (EngineFx_WeatherLine(line, xy0, z0, xy1, z1, scratch->colorTop, scratch->colorBottom) == 1))
+					{
+						prim = (u32 *)(line + 1);
+						continue;
+					}
+#endif
 					CtrGpu_LinkPacket24(ot, &line->tag, line, 0x04000000);
 					prim = (u32 *)(line + 1);
 				}
@@ -317,6 +347,13 @@ void RenderWeather(struct PushBuffer *pb, struct PrimMem *primMem, struct RainBu
 
 		RenderWeather_NextRng(&state0, &state1, &rngXY, &rngZ);
 	}
+
+#if defined(CTR_NATIVE)
+	if (g_cfg_engine)
+	{
+		EngineFx_WeatherEnd();
+	}
+#endif
 
 	struct CtrGpuDrawModePacket *drawMode = (struct CtrGpuDrawModePacket *)prim;
 	drawMode->drawMode = fillMode;

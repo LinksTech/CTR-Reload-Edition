@@ -24,6 +24,7 @@ int Engine_SelfTest(void)
 	failures += Engine_SelfTestInstance(&checks);
 	failures += Engine_SelfTestInstLight(&checks);
 	failures += Engine_SelfTestExhaust(&checks);
+	failures += Engine_SelfTestWeather(&checks);
 	failures += Engine_SelfTestTrack(&checks);
 	failures += Engine_SelfTestTrackMosaic(&checks);
 	failures += Engine_SelfTestSky(&checks);

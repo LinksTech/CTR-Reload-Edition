@@ -1325,6 +1325,34 @@ int EngineTour_ParseFrames(const char *text, int *levels, int *frames, int max, 
 int EngineTour_FramesForLevel(const int *levels, const int *frames, int count, int level, int fallback);
 
 // --------------------------------------------------------------------------
+// ENGINE FX WEATHER (platform/engine_fx_weather.c; day round of 2026-10-16)
+// The track's rain and snow (RenderWeather), the red beaker's cloud rain
+// (RedBeaker_RenderRain) and the confetti (DrawConfetti) drawn by the engine as
+// world-space lines and quads with a depth test, in a frame in which the engine
+// draws the track; the heat shimmer (Torch_Main) stays on the PS1 path (parked:
+// it reads the frame buffer back) and is counted. The game files declare the
+// hooks themselves (CTR_NATIVE). The drawer writes its state, its primitive and
+// advances its prim cursor as always; a hook answering 1 means retail does not
+// link that primitive. Begin opens one batch per drawer call (per beaker pass),
+// End submits it before the drawer links its draw-mode packet - or, when the
+// engine cannot draw it, links the batch's packets as retail would have.
+// Without --engine nothing is called.
+void EngineFx_WeatherBegin(const struct PushBuffer *pb, u32 drawMode, u32 *otCell);
+void EngineFx_BeakerRainBegin(const struct PushBuffer *pb, s32 trX, s32 trY, s32 trZ, u32 drawMode, u32 *otCell);
+void EngineFx_ConfettiBegin(const struct PushBuffer *pb);
+// A LINE_G2 (packet) of the open weather or beaker batch: its two GTE vectors
+// (VXY, VZ) and its two colour words. 1 = taken, 0 = retail links it.
+int EngineFx_WeatherLine(void *packet, u32 xy0, u32 z0, u32 xy1, u32 z1, u32 color0, u32 color1);
+// A POLY_F4 (packet) of the open confetti batch with the cell retail links it
+// into, its four GTE vectors and its colour word. 1 = taken, 0 = retail links it.
+int EngineFx_ConfettiQuad(void *packet, u32 *otCell, const u32 xy[4], const s32 z[4], u32 color);
+void EngineFx_WeatherEnd(void);
+// One heat particle the PS1 path draws (counted as left to retail in a frame
+// with the engine track).
+void EngineFx_HeatNote(void);
+int Engine_SelfTestWeather(int *checks); // engine_fx_weather.c: rule, geometry, line and quad corners
+
+// --------------------------------------------------------------------------
 // SELFTEST (platform/engine_selftest.c; main.c --engine-selftest, ctest
 // engine_selftest). Each module's test returns its failure count and adds its
 // checks to *checks; it prints one line per failing check.

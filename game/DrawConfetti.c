@@ -24,6 +24,20 @@ CTR_STATIC_ASSERT(offsetof(struct DrawConfettiScratch, remainingParticles) == 0x
 CTR_STATIC_ASSERT(offsetof(struct DrawConfettiScratch, color) == 0x04);
 CTR_STATIC_ASSERT(offsetof(struct DrawConfettiScratch, colorTable) == 0x28);
 
+#if defined(CTR_NATIVE)
+extern int g_cfg_engine;
+// From platform/engine_fx_weather.c (--engine): the pieces of a frame in which
+// the engine draws the track are drawn by the engine as world-space quads with a
+// depth test. Begin opens the batch of this call, every piece retail is about to
+// link is offered (1 = taken: written and kept as always, not linked), End submits
+// the batch (or links the taken pieces as retail would have, when the engine
+// cannot draw them). Without --engine nothing is called; every state this
+// function writes is written before the hooks.
+void EngineFx_ConfettiBegin(const struct PushBuffer *pb);
+int EngineFx_ConfettiQuad(void *packet, u32 *otCell, const u32 xy[4], const s32 z[4], u32 color);
+void EngineFx_WeatherEnd(void);
+#endif
+
 static u32 DrawConfetti_ReadWord(const void *base, int offset)
 {
 	return *(const u32 *)(const void *)((const char *)base + offset);
@@ -227,6 +241,13 @@ void DrawConfetti(struct PushBuffer *pb, struct PrimMem *primMem, struct GameTra
 	rng = DrawConfetti_NextRng(&state0, &state1);
 	particleCount = currentParticles;
 
+#if defined(CTR_NATIVE)
+	if (g_cfg_engine)
+	{
+		EngineFx_ConfettiBegin(pb);
+	}
+#endif
+
 	while (1)
 	{
 		s32 x;
@@ -345,6 +366,22 @@ void DrawConfetti(struct PushBuffer *pb, struct PrimMem *primMem, struct GameTra
 					depth = MFC2(24);
 					CtrGpu_WriteColorCode(&prim->r0, scratch->color);
 					ot = (u32 *)(void *)((char *)otBase + ((depth >> 18) << 2));
+#if defined(CTR_NATIVE)
+					// --engine: the engine draws the piece from its four vectors (v + the
+					// camera, platform/engine_fx_weather.c); the quad stays written, unlinked.
+					if (g_cfg_engine)
+					{
+						const u32 engineXY[4] = {xy0, xy1, xy2, xy3};
+						const s32 engineZ[4] = {z0, z1, z2, z3};
+
+						if (EngineFx_ConfettiQuad(prim, ot, engineXY, engineZ, scratch->color) == 1)
+						{
+							particleCount = scratch->remainingParticles;
+							prim++;
+							continue;
+						}
+					}
+#endif
 					DrawConfetti_LinkPrimitive(prim, ot);
 					particleCount = scratch->remainingParticles;
 					prim++;
@@ -355,6 +392,13 @@ void DrawConfetti(struct PushBuffer *pb, struct PrimMem *primMem, struct GameTra
 
 		particleCount = scratch->remainingParticles;
 	}
+
+#if defined(CTR_NATIVE)
+	if (g_cfg_engine)
+	{
+		EngineFx_WeatherEnd();
+	}
+#endif
 
 	primMem->cursor = prim;
 }

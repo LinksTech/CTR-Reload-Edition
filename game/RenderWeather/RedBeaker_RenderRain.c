@@ -17,6 +17,22 @@ CTR_STATIC_ASSERT(offsetof(LINE_G2, x0) == 0x08);
 CTR_STATIC_ASSERT(offsetof(LINE_G2, r1) == 0x0C);
 CTR_STATIC_ASSERT(offsetof(LINE_G2, x1) == 0x10);
 
+#if defined(CTR_NATIVE)
+extern int g_cfg_engine;
+// From platform/engine_fx_weather.c (--engine): the drops of a cloud in a frame
+// in which the engine draws the track are drawn by the engine as world-space
+// lines with a depth test. Begin opens the batch of one pass (the cloud's
+// translation, the pass's draw mode, the cell), every drop retail has written
+// and linked is offered (1 = taken: the cell word is put back, so the line stays
+// written and is not linked), End submits the batch before the pass links its
+// draw-mode packet (or links the taken drops as retail did, when the engine
+// cannot draw them). Without --engine nothing is called; every state this
+// function writes is written before the hooks.
+void EngineFx_BeakerRainBegin(const struct PushBuffer *pb, s32 trX, s32 trY, s32 trZ, u32 drawMode, u32 *otCell);
+int EngineFx_WeatherLine(void *packet, u32 xy0, u32 z0, u32 xy1, u32 z1, u32 color0, u32 color1);
+void EngineFx_WeatherEnd(void);
+#endif
+
 static u32 RedBeaker_ReadWord(const void *base, int offset)
 {
 	return *(const u32 *)(const void *)((const char *)base + offset);
@@ -154,7 +170,20 @@ static void RedBeaker_RenderPass(u32 **primCursor, u32 *ot, u32 color, u32 drawM
 
 				if (RedBeaker_IsVisible(gteFlag, sxy0, sxy1, screenBounds))
 				{
+#if defined(CTR_NATIVE)
+					void *engineLine = *primCursor;
+					const u32 engineCellWord = *ot;
+#endif
 					RedBeaker_EmitLine(primCursor, ot, color);
+#if defined(CTR_NATIVE)
+					// --engine: the engine draws the drop from its two vectors (v + the
+					// cloud, platform/engine_fx_weather.c); the cell word is put back,
+					// so the line stays written and is not linked.
+					if (g_cfg_engine && (EngineFx_WeatherLine(engineLine, xy0, z0, xy1, z1, 0x52000000, color) == 1))
+					{
+						*ot = engineCellWord;
+					}
+#endif
 				}
 			}
 		}
@@ -162,6 +191,12 @@ static void RedBeaker_RenderPass(u32 **primCursor, u32 *ot, u32 color, u32 drawM
 		rng = RedBeaker_NextRng(&state0, &state1);
 	}
 
+#if defined(CTR_NATIVE)
+	if (g_cfg_engine)
+	{
+		EngineFx_WeatherEnd();
+	}
+#endif
 	RedBeaker_EmitDrawMode(primCursor, ot, drawMode);
 }
 
@@ -290,8 +325,22 @@ void RedBeaker_RenderRain(struct PushBuffer *pb, struct PrimMem *primMem, struct
 
 			ot = (u32 *)(void *)((char *)otBase + otOffset);
 
+#if defined(CTR_NATIVE)
+			// --engine: the batch of the first pass (its translation is the TR loaded above).
+			if (g_cfg_engine)
+			{
+				EngineFx_BeakerRainBegin(pb, RedBeaker_ReadS16(instBase, 0x8c), RedBeaker_ReadS16(instBase, 0x90), cloudZ, 0xe1000a20, ot);
+			}
+#endif
 			RedBeaker_RenderPass(&prim, ot, scratch->colorTop, 0xe1000a20, rainLocal->frameCount, scrollXY, nextScrollXY, scrollZ, nextScrollZ, velocityXY,
 			                     velocityZ, screenBounds);
+#if defined(CTR_NATIVE)
+			// --engine: the batch of the second pass.
+			if (g_cfg_engine)
+			{
+				EngineFx_BeakerRainBegin(pb, RedBeaker_ReadS16(instBase, 0x8c), RedBeaker_ReadS16(instBase, 0x90), cloudZ, 0xe1000a40, ot);
+			}
+#endif
 			RedBeaker_RenderPass(&prim, ot, scratch->colorBottom, 0xe1000a40, rainLocal->frameCount, scrollXY, nextScrollXY, scrollZ, nextScrollZ, velocityXY,
 			                     velocityZ, screenBounds);
 		}

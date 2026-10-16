@@ -113,6 +113,7 @@
 #include "platform/engine_fx_turbo.c"
 #include "platform/engine_fx_skids.c"
 #include "platform/engine_fx_tires.c"
+#include "platform/engine_fx_weather.c"
 #include "platform/engine_hires.c"
 #include "platform/engine_menuscene.c"
 #include "platform/engine_track.c"
