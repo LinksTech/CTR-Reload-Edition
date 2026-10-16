@@ -32,6 +32,8 @@
 //   - bit 7 suppresses the UV write of slot 3 (the vertex keeps what an earlier
 //     slot wrote for the same corner - a triangle-mode entry has slot 3 on the
 //     corner of slot 2, so its second triangle is degenerate and dropped).
+//   The UV writes go to one record per grid point, shared by the slots and
+//   faces of the block; EngTrack_BuildBlock (THE UVS) follows them write by write.
 // The quad is the two triangles T1 = slots (0,1,2) and T2 = slots (1,3,2), both
 // kept in PS1 when NCLIP > 0 (draw_order_low bit 31 = double sided: both ways).
 // A flip bit set inverts that. The engine's cull keeps the opposite screen
@@ -102,6 +104,7 @@ typedef struct
 {
 	s16 pos[9][3];
 	u8 color[9][3];
+	u16 flags[9]; // LevVertex.flags: what the walk's projection records hold before a face writes its UVs
 	u32 drawOrderLow;
 	u32 drawOrderHigh;
 	const struct TextureLayout *layout[4];
@@ -317,11 +320,31 @@ internal int EngTrack_ZeroArea(const s16 *a, const s16 *b, const s16 *c)
 // The faces of one block, at most four, into out[]. table = R226.scratchInitTable
 // (tableCount words). Returns the number of faces written; *fieldsOut (may be
 // NULL) counts faces whose 5-bit field pointed past the table (they use entry 0).
+//
+// THE UVS, AS THE WALK WRITES THEM (226 DrawLevelOvr1P_WriteProjectedUv). The
+// walk keeps one projection record per grid point of the block (its nine
+// vertices, shared by the four faces) and gives a vertex its UV by writing the
+// record: slot v of a face writes uv[v], a mirrored face (bit 23 of its table
+// word) uv[v ^ 1], slot 3 not at all when bit 7 is set; the faces write in
+// order 0..3. A vertex then shows what its record holds - the last write, which
+// for two slots on one grid point is the later slot's, and for slot 3 with the
+// write suppressed the earlier slot's on that point, else an earlier face's, else
+// the vertex's own flags word the projection copied (CopySourcePosFlags). One
+// rule for every slot; regular faces (four points, no suppression) come out as
+// before.
 internal int EngTrack_BuildBlock(const EngTrackBlockIn *in, const u32 *table, int tableCount, EngTrackFace *out, int *fieldsOut)
 {
 	static const int slotsOfTri[2][3] = {{0, 1, 2}, {1, 3, 2}};
+	u8 recU[9];
+	u8 recV[9];
 	int faces = 0;
 	int k;
+
+	for (k = 0; k < 9; k++)
+	{
+		recU[k] = (u8)(in->flags[k] & 0xffu);
+		recV[k] = (u8)(in->flags[k] >> 8);
+	}
 
 	for (k = 0; k < 4; k++)
 	{
@@ -333,7 +356,7 @@ internal int EngTrack_BuildBlock(const EngTrackBlockIn *in, const u32 *table, in
 		int grid[4] = {0, 0, 0, 0};
 		int uvSlot[4] = {0, 1, 2, 3};
 		int slotOf[4] = {0, 1, 2, 3};
-		int uvOk[4] = {1, 1, 1, 1};
+		int wroteBy[9] = {-1, -1, -1, -1, -1, -1, -1, -1, -1};
 		int valid[2] = {0, 0};
 		int bad = 0;
 		int mirrored;
@@ -383,36 +406,32 @@ internal int EngTrack_BuildBlock(const EngTrackBlockIn *in, const u32 *table, in
 		uvU[3] = (float)lay->u3;
 		uvV[3] = (float)lay->v3;
 
+		// The face's writes into the shared records (see THE UVS above).
+		for (v = 0; v < 4; v++)
+		{
+			if ((v == 3) && (((tw >> 7) & 1u) != 0u))
+			{
+				continue;
+			}
+			recU[grid[v]] = (u8)uvU[uvSlot[v]];
+			recV[grid[v]] = (u8)uvV[uvSlot[v]];
+			wroteBy[grid[v]] = v;
+		}
+
 		f = &out[faces];
 		memset(f, 0, sizeof(*f));
 		for (v = 0; v < 4; v++)
 		{
 			EngineVertex *ev = &f->v[v];
-			int src = uvSlot[v];
 
-			if ((v == 3) && (((tw >> 7) & 1u) != 0u))
-			{
-				// Slot 3's UV write is suppressed: the vertex keeps the UV an
-				// earlier slot wrote for the same grid corner.
-				int j;
-
-				uvOk[3] = 0;
-				for (j = 2; j >= 0; j--)
-				{
-					if (corner[j] == corner[3])
-					{
-						src = uvSlot[j];
-						slotOf[3] = j;
-						uvOk[3] = 1;
-						break;
-					}
-				}
-			}
+			// The slot whose UV the vertex shows (the face's own space of a mosaic
+			// row); a record no slot of this face wrote keeps the vertex's slot.
+			slotOf[v] = (wroteBy[grid[v]] >= 0) ? wroteBy[grid[v]] : v;
 			ev->position[0] = (float)in->pos[grid[v]][0];
 			ev->position[1] = (float)in->pos[grid[v]][1];
 			ev->position[2] = (float)in->pos[grid[v]][2];
-			ev->texcoord[0] = uvU[src];
-			ev->texcoord[1] = uvV[src];
+			ev->texcoord[0] = (float)recU[grid[v]];
+			ev->texcoord[1] = (float)recV[grid[v]];
 			ev->color[0] = in->color[grid[v]][0];
 			ev->color[1] = in->color[grid[v]][1];
 			ev->color[2] = in->color[grid[v]][2];
@@ -426,7 +445,7 @@ internal int EngTrack_BuildBlock(const EngTrackBlockIn *in, const u32 *table, in
 			const int b = slotsOfTri[t][1];
 			const int c = slotsOfTri[t][2];
 
-			valid[t] = ((corner[a] != corner[b]) && (corner[b] != corner[c]) && (corner[a] != corner[c]) && uvOk[a] && uvOk[b] && uvOk[c] &&
+			valid[t] = ((corner[a] != corner[b]) && (corner[b] != corner[c]) && (corner[a] != corner[c]) &&
 			            !EngTrack_ZeroArea(in->pos[grid[a]], in->pos[grid[b]], in->pos[grid[c]]))
 			               ? 1
 			               : 0;
@@ -2322,6 +2341,7 @@ void Engine_TrackLoad(void)
 			in.color[k][0] = lv->color_hi[0];
 			in.color[k][1] = lv->color_hi[1];
 			in.color[k][2] = lv->color_hi[2];
+			in.flags[k] = lv->flags;
 		}
 		if (!ok)
 		{
@@ -3477,7 +3497,11 @@ internal void EngTrack_OracleRetailLine(EngTrackOracleFace *f, int block, int wa
 			ordered = EngTrack_OracleSlotOrder(cornerST, f->uvCount, 0.0f, 0.0f, 1.0f, 1.0f, slotOf);
 		}
 	}
-	if ((at >= 0) && !exact)
+	// part=1: the packet is a piece of the layout - its uv not the layout's corners,
+	// or (a stage line placed on its face) its corners not on the face's corners,
+	// whatever its uv (single-texel layouts put a piece's uv on the corners by chance).
+	if ((at >= 0) && (!exact || ((c[at].level != EGT_ORACLE_LEVEL_TILE) && (faceAt >= 0) && (cornerST != NULL) && !ordered &&
+	                             ((sieve & EGT_ORACLE_MARK_ZEROAREA) == 0))))
 	{
 		EngTrack_OracleExtra(f, "part=1");
 	}
@@ -4080,6 +4104,13 @@ void Engine_TrackOracleTable(const struct QuadBlock *block, int face, const stru
 		EngTrack_OracleStaticLine(&f, index, water, face, -1, 0, entry, row, col, &table[entry], mirrored, anim, 0, s_ego.set);
 		EngTrack_OracleExtra(&f, "form=%s", (form == ENGINE_MOSAIC_FORM_4X2) ? "4x2" : ((form == ENGINE_MOSAIC_FORM_4X1) ? "4x1" : "4x4"));
 		EngTrack_OracleFaceMarks(&f, index, face);
+		if ((face >= 0) && (face <= 3) && (s_egtFaceOfBlock != NULL) && (s_egtFaceOfBlock[4 * index + face] >= 0) &&
+		    s_egtFaces[s_egtFaceOfBlock[4 * index + face]].tableRefused)
+		{
+			// The walk takes the level-3 word for a table, the engine refused it
+			// (Engine_TrackMosaicFace) and draws level 2: information, not a missing cell.
+			EngTrack_OracleExtra(&f, "tablefail=1");
+		}
 		EngTrack_OracleEmit('R', &f);
 		s_ego.staticLines++;
 	}
@@ -5273,6 +5304,76 @@ int Engine_SelfTestTrack(int *checks)
 		EGT_CHECK((n == 4) && (bad == 0), "mirrored UV order wrong (%d slots differ)", bad);
 	}
 
+	// (2b) the UV records (226 DrawLevelOvr1P_WriteProjectedUv, written out here in its own
+	// form): one record per grid point, initialised from the vertex flags, written by the
+	// faces in order; every slot shows its record. Words: mirrored with slots 2 and 3 on one
+	// corner (slot 3 written last), the same with slot 3 suppressed, mirrored with slot 3
+	// suppressed on its own corner (record from an earlier face or the flags), plain with
+	// slot 3 suppressed, the triangle-mode word of (3).
+	{
+		static const u32 words[5] = {0x18900808u, 0x18900888u, 0x18900880u, 0x18100880u, 0x10081898u};
+		const u16 uvw[4] = {(u16)(1 | (2 << 8)), (u16)(31 | (4 << 8)), (u16)(6 | (33 << 8)), (u16)(36 | (38 << 8))};
+		EngTrackBlockIn rin;
+		int w;
+
+		EngTrack_TestBlock(&rin, &lay);
+		for (v = 0; v < 9; v++)
+		{
+			rin.flags[v] = (u16)((100 + v) | ((150 + v) << 8));
+		}
+		for (w = 0; w < 5; w++)
+		{
+			const u32 tw = words[w];
+			u16 rec[9];
+			int bad = 0;
+			int g[4];
+
+			for (v = 0; v < 9; v++)
+			{
+				rec[v] = rin.flags[v];
+			}
+			n = EngTrack_BuildBlock(&rin, &tw, 1, out, NULL);
+			for (k = 0; k < 4; k++)
+			{
+				for (v = 0; v < 4; v++)
+				{
+					g[v] = s_egtGrid[k][(24 - (int)((tw >> ((3 - v) * 8)) & 0x1fu)) / 8];
+				}
+				if ((s32)(tw << 8) < 0)
+				{
+					rec[g[0]] = uvw[1];
+					rec[g[1]] = uvw[0];
+					rec[g[2]] = uvw[3];
+					if ((s32)(tw << 24) >= 0)
+					{
+						rec[g[3]] = uvw[2];
+					}
+				}
+				else
+				{
+					rec[g[0]] = uvw[0];
+					rec[g[1]] = uvw[1];
+					rec[g[2]] = uvw[2];
+					if ((s32)(tw << 24) >= 0)
+					{
+						rec[g[3]] = uvw[3];
+					}
+				}
+				for (v = 0; (v < 4) && (k < n); v++)
+				{
+					bad += (out[k].v[v].texcoord[0] != (float)(rec[g[v]] & 0xffu)) || (out[k].v[v].texcoord[1] != (float)(rec[g[v]] >> 8));
+				}
+			}
+			EGT_CHECK((n == 4) && (bad == 0), "UV records: word %08x, %d faces, %d slot UVs differ from the walk's writes", tw, n, bad);
+		}
+		// The L2 case by name: mirrored, slots 2 and 3 on corner 2 -> both show uv2, T2 dropped.
+		n = EngTrack_BuildBlock(&rin, &words[0], 1, out, NULL);
+		EGT_CHECK((n == 4) && (out[0].v[2].texcoord[0] == 6.0f) && (out[0].v[2].texcoord[1] == 33.0f) && (out[0].v[0].texcoord[0] == 31.0f) &&
+		              (out[0].v[1].texcoord[0] == 1.0f) && (out[0].triCount == 1),
+		          "UV records: mirrored shared corner shows %g,%g at slot 2 (expected uv2 6,33)", (double)out[0].v[2].texcoord[0],
+		          (double)out[0].v[2].texcoord[1]);
+	}
+
 	// (3) triangle mode: bit 7 of the last byte, slot 3 on the corner of slot 2 -> T2 degenerate and
 	// dropped, slot 3 keeps the UV of slot 2. This word puts the slots on corners 1, 2, 0, 0.
 	{
@@ -5991,7 +6092,8 @@ int Engine_SelfTestTrack(int *checks)
 			f.uv[2] = 63;
 			f.uv[3] = 0;
 			EngTrack_OracleRetailLine(&f, 77, 0, 0, 0, ENGINE_MOSAIC_FORM_4X4, tpage, clut, (const u8(*)[3])tileRgb, cand, 3, 1, 0.5f, 0.5f, offST, -1);
-			EGT_CHECK((f.uv[0] == 0) && (f.uv[1] == 63) && (strstr(f.extra, "slots=") == NULL), "oracle corner off the slots: '%s'", f.extra);
+			EGT_CHECK((f.uv[0] == 0) && (f.uv[1] == 63) && (strstr(f.extra, "slots=") == NULL) && (strstr(f.extra, "stage=3 part=1 prim=normal") != NULL),
+			          "oracle corner off the slots (a piece whatever its uv): '%s'", f.extra);
 		}
 
 		// Static lines (226-resolved layouts): a table entry (stored as the face shows
