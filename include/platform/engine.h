@@ -233,20 +233,25 @@ typedef struct
 //   slot 3       "s_normal", the material's normal map (nativeTexture2):
 //                tangent space, glTF convention (+X right, +Y up = towards
 //                smaller v, +Z out), linear values, n = texel * 2 - 1
-//   params3.z    1 = the material has a normal map, 0 = none
+//   params3.z    0 = lit without a normal map, 1 = lit with the normal map,
+//                2 = UNLIT (glTF KHR_materials_unlit: base colour x vertex
+//                colour x tint only - no light, no grade; a sky, a glow)
 //   params3.w    the normal map's scale (glTF normalTexture.scale) on x and y
-//   split        xyz the direction towards the sun (unit, world axes), w ambient
+//   split        xyz the direction towards the sun (unit, world axes), w the
+//                ambient light from above (a normal straight up gets it all)
 //   params4      xyz the camera position in world units (the side a double-sided
 //                face is seen from), w the sun's diffuse strength
 //   vramPage     the STYLE (EngineDraw.user2; "ns" has no VRAM page): x the
 //                saturation (1 = unchanged), y the contrast around mid grey
 //                (1 = unchanged), z 1 = flat shading (the face's own normal from
-//                the screen derivatives, no vertex normal, no normal map), w 0
+//                the screen derivatives, no vertex normal, no normal map), w the
+//                ambient light from below (a normal straight down gets it all;
+//                in between the two mix with 0.5 + 0.5 n.y - a hemisphere light)
 //   params.x     0 = no texture (the colour is vertex colour x tint), 1 = the
 //                native texture of slot 0, as in "ne"
 // The tangent frame comes from the screen derivatives of the world position and
 // the texture coordinates (no tangents in the vertex); the colour is
-// texel x vertex colour x tint x (ambient + diffuse * max(0, n . sun)).
+// texel x vertex colour x tint x (ambient(n) + diffuse * max(0, n . sun)).
 #define ENGINE_PROGRAM_NS 2
 #define ENGINE_PROGRAM_COUNT 3
 
@@ -1070,12 +1075,16 @@ extern int g_cfg_engineStaticLight;
 // --engine-static-lit (round of 2026-10-16): the model drawn with program "ns"
 // (normal maps, a sun and ambient light) instead of "ne"; the vertex normals are
 // packed into the vertex at load (ENGINE_STATIC_BUILD_NORMALS).
-// --engine-static-lit-sun <x,y,z,ambient,diffuse>: the sun's direction (towards
-// it, world axes, normalised at load) and the two strengths; without it
-// ENGINE_STATIC_SUN_DEFAULT.
+// --engine-static-lit-sun <x,y,z,ambient,diffuse[,below]>: the sun's direction
+// (towards it, world axes, normalised at load), the ambient light from above,
+// the sun's strength and the ambient light from below (without it the same as
+// from above); without the switch ENGINE_STATIC_SUN_DEFAULT. The default keeps
+// the mean brightness of the flat model (round of 2026-10-16: the first lit
+// runs with 0.50 / 0.60 came out at 0.64 of the flat mean): a road in the sun
+// about 1.29, a wall away from it about 0.88, a ceiling 0.80.
 extern int g_cfg_engineStaticLit;
-extern float g_cfg_engineStaticSun[5];
-#define ENGINE_STATIC_SUN_DEFAULT {0.35f, 0.85f, 0.40f, 0.50f, 0.60f}
+extern float g_cfg_engineStaticSun[6];
+#define ENGINE_STATIC_SUN_DEFAULT {0.35f, 0.85f, 0.40f, 0.95f, 0.40f, 0.80f}
 // --engine-static-style <hires|lowpoly> (the look stage, round of 2026-10-16): the
 // look of the lit model (it switches --engine-static-lit on).
 //   hires    vertex normals and the normal maps, colour as it is (style 1, 1, 0)
@@ -1123,6 +1132,8 @@ typedef struct
 	int normalImage;
 	int normalWrapU, normalWrapV;
 	float normalScale;
+	// glTF KHR_materials_unlit: drawn without light and grade (program "ns").
+	int unlit;
 } EngineStaticMaterial;
 
 typedef struct

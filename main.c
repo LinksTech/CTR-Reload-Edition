@@ -424,7 +424,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--engine-static-lit", "", "with --engine-static-model: the model drawn lit by the engine program 'ns' - the normal maps of its materials (glTF normalTexture, tangent space from the screen derivatives), a sun and ambient light; the load line counts the normal maps made and missing"},
     {"--engine-static-style", "<hires|lowpoly>", "with --engine-static-model: the lit model (switches --engine-static-lit on) in a style - hires: vertex normals and normal maps, the colours as they are; lowpoly: flat shading by the faces, no normal maps, saturation 1.25 and contrast 1.10"},
     {"--engine-static-grade", "<saturation,contrast>", "with --engine-static-lit or --engine-static-style: the colour grade of the lit model instead of the style's (each 0..3, 1 = unchanged)"},
-    {"--engine-static-lit-sun", "<x,y,z,ambient,diffuse>", "with --engine-static-lit: the direction towards the sun (world axes, y up; normalised) and the strengths of the ambient light and the sun (each 0..2); default 0.35,0.85,0.40,0.50,0.60"},
+    {"--engine-static-lit-sun", "<x,y,z,ambient,diffuse[,below]>", "with --engine-static-lit: the direction towards the sun (world axes, y up; normalised), the ambient light from above, the sun's strength and the ambient light from below (each 0..2; without below the same as above); default 0.35,0.85,0.40,0.95,0.40,0.80"},
     {"--engine-flycam", "", "with --engine: view 0 flown freely instead of the game camera - W/S/A/D move, R/F up/down, Shift faster, right mouse button held to look, P logs the point as a line of --engine-flycam-path; no input under --deterministic"},
     {"--engine-flycam-auto", "<frames>", "with --engine, measuring: view 0 flies a deterministic closed loop over stations in <frames> game frames (60..1000000), each station held 30 frames, repeated - the stations of --engine-flycam-path, else 8 above the box of --engine-static-model (or of the level); with --shot-name one snapshot per station in the first loop, <shot-name>-sNN.bmp"},
     {"--engine-flycam-smooth", "", "with --engine-flycam-auto, for videos: no hold at the stations - one centripetal Catmull-Rom curve through the stations and one through their look points, travelled at a constant speed in <frames> game frames from the first station to the last (no way back), then the camera stays; no snapshot per station (use --shot-series)"},
@@ -672,18 +672,26 @@ static int NativeArgs_EngineHideBits(const char *list)
 	return (bits != 0) ? bits : -1;
 }
 
-// The value of --engine-static-lit-sun: five numbers x,y,z,ambient,diffuse, the
-// direction not zero, both strengths 0..2. 1 = read (into out when not NULL).
-static int NativeArgs_StaticSun(const char *value, float out[5])
+// The value of --engine-static-lit-sun: five or six numbers
+// x,y,z,ambient,diffuse[,below], the direction not zero, the strengths 0..2;
+// without below the ambient light from below is the one from above. 1 = read
+// (into out[6] when not NULL).
+static int NativeArgs_StaticSun(const char *value, float out[6])
 {
-	float v[5];
+	float v[6];
 	char tail = 0;
+	const int n = sscanf(value, "%f,%f,%f,%f,%f,%f%c", &v[0], &v[1], &v[2], &v[3], &v[4], &v[5], &tail);
 
-	if (sscanf(value, "%f,%f,%f,%f,%f%c", &v[0], &v[1], &v[2], &v[3], &v[4], &tail) != 5)
+	if (n == 5)
+	{
+		v[5] = v[3];
+	}
+	else if (n != 6)
 	{
 		return 0;
 	}
-	if (!((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) > 1e-12f) || !(v[3] >= 0.0f) || !(v[3] <= 2.0f) || !(v[4] >= 0.0f) || !(v[4] <= 2.0f))
+	if (!((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) > 1e-12f) || !(v[3] >= 0.0f) || !(v[3] <= 2.0f) || !(v[4] >= 0.0f) || !(v[4] <= 2.0f) ||
+	    !(v[5] >= 0.0f) || !(v[5] <= 2.0f))
 	{
 		return 0;
 	}
@@ -1066,7 +1074,7 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			}
 			else if ((sunValue != NULL) && !NativeArgs_StaticSun(sunValue, NULL))
 			{
-				refusal = "switch --engine-static-lit-sun expects x,y,z,ambient,diffuse - a direction that is not zero, both strengths 0..2";
+				refusal = "switch --engine-static-lit-sun expects x,y,z,ambient,diffuse[,below] - a direction that is not zero, the strengths 0..2";
 			}
 			else if ((autoValue != NULL) && ((end == autoValue) || (*end != 0) || (frames < 60) || (frames > 1000000)))
 			{

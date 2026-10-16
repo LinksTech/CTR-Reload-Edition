@@ -41,7 +41,7 @@
 // NORMAL (float VEC3), COLOR_0 (float or normalized u8/u16, VEC3/VEC4), indices
 // (none, u8, u16, u32); every accessor in the GLB BIN buffer, not sparse, inside
 // the BIN chunk (u64 arithmetic). Materials: base colour texture (TEXCOORD_0
-// only), factor, alpha mode, cutoff, double sided, and the normal map
+// only), factor, alpha mode, cutoff, double sided, KHR_materials_unlit, and the normal map
 // (normalTexture, TEXCOORD_0 only: image, wrap, scale; its image is served like
 // every other, the caller makes it as linear data). With ENGINE_STATIC_BUILD_NORMALS
 // NORMAL is read too and packed into uvBox as the world normal
@@ -909,10 +909,12 @@ internal void EngStaticLoad_FillMaterial(const cgltf_data *d, const cgltf_materi
 	o->normalWrapU = 0;
 	o->normalWrapV = 0;
 	o->normalScale = 1.0f;
+	o->unlit = 0;
 	if (m == NULL)
 	{
 		return;
 	}
+	o->unlit = m->unlit ? 1 : 0;
 	{
 		const cgltf_texture_view *nv = &m->normal_texture;
 
@@ -2619,7 +2621,8 @@ int Engine_SelfTestStaticLoad(int *checks)
 		         "{\"primitives\":[{\"attributes\":{\"POSITION\":4,\"NORMAL\":5,\"COLOR_0\":6},\"material\":1}]}],"
 		         "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0},\"baseColorFactor\":[1,0.5,0.25,0.75]},"
 		         "\"normalTexture\":{\"index\":1,\"scale\":0.5},\"alphaMode\":\"MASK\",\"alphaCutoff\":0.25,\"doubleSided\":true},"
-		         "{\"pbrMetallicRoughness\":{\"baseColorFactor\":[1,1,1,1]}}],"
+		         "{\"pbrMetallicRoughness\":{\"baseColorFactor\":[1,1,1,1]},\"extensions\":{\"KHR_materials_unlit\":{}}}],"
+		         "\"extensionsUsed\":[\"KHR_materials_unlit\"],"
 		         "\"textures\":[{\"sampler\":0,\"source\":0},{\"sampler\":0,\"source\":0}],\"samplers\":[{\"wrapS\":33071,\"wrapT\":33648}],"
 		         "\"images\":[{\"bufferView\":7,\"mimeType\":\"image/png\"}],"
 		         "\"buffers\":[{\"byteLength\":%u}],"
@@ -2695,6 +2698,8 @@ int Engine_SelfTestStaticLoad(int *checks)
 			EngStaticLoadTest_Check(model.materials != NULL && model.materials[2].normalImage == -1 &&
 			                            EngStaticLoadTest_Near(model.materials[2].normalScale, 1.0f),
 			                        "material 2 (the default): no normal map, scale 1", checks, &failures);
+			EngStaticLoadTest_Check(model.materials != NULL && model.materials[0].unlit == 0 && model.materials[1].unlit == 1 && model.materials[2].unlit == 0,
+			                        "KHR_materials_unlit: material 1 unlit, material 0 and the default lit", checks, &failures);
 			for (i = 0; i < 6; i++)
 			{
 				for (j = 0; j < 3; j++)

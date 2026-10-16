@@ -16,16 +16,21 @@
 //               vertex colour x tint), as in "ne"
 //   params.y    1 = re-encode the texture (it is sampled linear) like "ne"
 //   params.z    the alpha cutoff (0 = none), tested before the lighting
-//   params3.z   1 = the material has a normal map (slot 3, s_normal)
+//   params3.z   0 = lit, 1 = lit with the normal map of slot 3 (s_normal),
+//               2 = unlit (KHR_materials_unlit): base colour x vertex colour x
+//               tint only, no light and no grade
 //   params3.w   the normal map's scale on x and y (glTF normalTexture.scale)
 //   split.xyz   the direction towards the sun (unit, world axes)
-//   split.w     the ambient light
+//   split.w     the ambient light from above
 //   params4.xyz the camera position (world units)
 //   params4.w   the sun's diffuse strength
 //   vramPage    the STYLE: x saturation, y contrast (1 = unchanged each), z 1 =
 //               flat shading (the face's own normal, no vertex normal, no normal
-//               map) - "ns" reads no VRAM page, the renderer puts EngineDraw.user2
-//               there
+//               map), w the ambient light from below - "ns" reads no VRAM page,
+//               the renderer puts EngineDraw.user2 there
+//
+// THE LIGHT. A hemisphere ambient - from below (vramPage.w) to above (split.w)
+// by 0.5 + 0.5 n.y - plus the sun: ambient(n) + diffuse * max(0, n . sun).
 //
 // THE VERTEX. a_uvBox is no UV box here: xyz = (normal * 0.5 + 0.5) * 255
 // rounded, w = 255 when the vertex has a normal, 0 when not.
@@ -112,6 +117,8 @@ global_variable const char *ctr_native_static_shader =
     "	vec3 N = ((v_hasNormal > 127.5) && !flatShade) ? normalize(v_normal) : normalize(cross(dp1, dp2));\n"
     // The side the face is seen from.
     "	if (dot(N, eyeDir) < 0.0) { N = -N; }\n"
+    "	bool unlit = (params3.z > 1.5);\n"
+    "	if (unlit) { fragColor = colour; return; }\n"
     "	if ((params3.z > 0.5) && !flatShade) {\n"
     "		nt.xy *= params3.w;\n"
     "		vec3 dp2perp = cross(dp2, N);\n"
@@ -126,7 +133,8 @@ global_variable const char *ctr_native_static_shader =
     "			N = normalize(T * inv * nt.x - B * inv * nt.y + N * nt.z);\n"
     "		}\n"
     "	}\n"
-    "	float lit = split.w + params4.w * max(dot(N, split.xyz), 0.0);\n"
+    "	float ambient = mix(vramPage.w, split.w, 0.5 + 0.5 * N.y);\n"
+    "	float lit = ambient + params4.w * max(dot(N, split.xyz), 0.0);\n"
     "	vec3 c = colour.rgb * lit;\n"
     "	float luma = dot(c, vec3(0.2126, 0.7152, 0.0722));\n"
     "	c = mix(vec3(luma), c, vramPage.x);\n"

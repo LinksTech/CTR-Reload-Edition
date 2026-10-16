@@ -62,7 +62,7 @@
 char g_cfg_engineStaticModel[ENGINE_STATIC_PATH_MAX] = "";
 int g_cfg_engineStaticLight = 0;
 int g_cfg_engineStaticLit = 0;
-float g_cfg_engineStaticSun[5] = ENGINE_STATIC_SUN_DEFAULT;
+float g_cfg_engineStaticSun[6] = ENGINE_STATIC_SUN_DEFAULT;
 int g_cfg_engineStaticStyle = ENGINE_STATIC_STYLE_HIRES;
 float g_cfg_engineStaticGrade[2] = {-1.0f, -1.0f};
 
@@ -399,6 +399,7 @@ internal void EngStatic_ReadOnce(void)
 	u32 texturesMade[2] = {0, 0};
 	u32 texturesMissing[2] = {0, 0};
 	u32 normalsNamed = 0;
+	u32 unlitCount = 0;
 	u32 texturesScaled = 0;
 	u32 levelsTotal = 0;
 	int levelsMax = 0;
@@ -431,7 +432,7 @@ internal void EngStatic_ReadOnce(void)
 			s_engStatic.style[0] = (g_cfg_engineStaticGrade[0] >= 0.0f) ? g_cfg_engineStaticGrade[0] : (lowpoly ? lowpolyGrade[0] : 1.0f);
 			s_engStatic.style[1] = (g_cfg_engineStaticGrade[1] >= 0.0f) ? g_cfg_engineStaticGrade[1] : (lowpoly ? lowpolyGrade[1] : 1.0f);
 			s_engStatic.style[2] = lowpoly ? 1.0f : 0.0f;
-			s_engStatic.style[3] = 0.0f;
+			s_engStatic.style[3] = g_cfg_engineStaticSun[5]; // the ambient light from below
 			s_engStatic.sun[0] = (float)(g_cfg_engineStaticSun[0] / len);
 			s_engStatic.sun[1] = (float)(g_cfg_engineStaticSun[1] / len);
 			s_engStatic.sun[2] = (float)(g_cfg_engineStaticSun[2] / len);
@@ -474,6 +475,7 @@ internal void EngStatic_ReadOnce(void)
 		s_engStatic.materialTexture[i] = EngStatic_TextureSlot(m->image, m->wrapU, m->wrapV, 0);
 		s_engStatic.materialNormal[i] = (s_engStatic.lit && (s_engStatic.style[2] < 0.5f)) ? EngStatic_TextureSlot(m->normalImage, m->normalWrapU, m->normalWrapV, 1) : -1;
 		normalsNamed += (s_engStatic.materialNormal[i] >= 0) ? 1u : 0u;
+		unlitCount += (m->unlit != 0) ? 1u : 0u;
 		counts[((m->alphaMode >= 0) && (m->alphaMode <= 2)) ? m->alphaMode : 0]++;
 		doubleSided += (m->doubleSided != 0) ? 1u : 0u;
 		untextured += (m->image < 0) ? 1u : 0u;
@@ -560,10 +562,10 @@ internal void EngStatic_ReadOnce(void)
 		if (s_engStatic.lit)
 		{
 			Platform_Log("[CTR Engine] static model lit: program 'ns', style %s (%s shading, saturation %.2f, contrast %.2f), sun towards %.3f %.3f %.3f, "
-			             "ambient %.2f, diffuse %.2f\n",
+			             "ambient from above %.2f, from below %.2f, diffuse %.2f; unlit materials %u\n",
 			             (s_engStatic.style[2] > 0.5f) ? "lowpoly" : "hires", (s_engStatic.style[2] > 0.5f) ? "flat" : "smooth", (double)s_engStatic.style[0],
 			             (double)s_engStatic.style[1], (double)s_engStatic.sun[0], (double)s_engStatic.sun[1], (double)s_engStatic.sun[2],
-			             (double)g_cfg_engineStaticSun[3], (double)g_cfg_engineStaticSun[4]);
+			             (double)g_cfg_engineStaticSun[3], (double)g_cfg_engineStaticSun[5], (double)g_cfg_engineStaticSun[4], unlitCount);
 		}
 	}
 	EngineStatic_Close(&model);
@@ -620,7 +622,8 @@ internal int EngStatic_RegisterLevel(void)
 			const int hasNormal = (normal >= 0) && (s_engStatic.textures[normal].texture != 0xffffffffu);
 
 			em.program = ENGINE_PROGRAM_NS;
-			em.programParam[0] = hasNormal ? 1.0f : 0.0f;
+			// 2 = unlit (KHR_materials_unlit), 1 = lit with its normal map, 0 = lit without (engine.h, ENGINE_PROGRAM_NS).
+			em.programParam[0] = (m->unlit != 0) ? 2.0f : (hasNormal ? 1.0f : 0.0f);
 			em.programParam[1] = m->normalScale;
 			em.nativeTexture2 = hasNormal ? s_engStatic.textures[normal].texture : 0xffffffffu;
 		}
