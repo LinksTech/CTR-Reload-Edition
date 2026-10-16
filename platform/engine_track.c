@@ -179,6 +179,60 @@ internal int EngTrack_LayoutUsable(const struct TextureLayout *lay)
 	return 0;
 }
 
+// THE TABLE TEST OF THE ENGINE (round of 2026-10-16). On the PC the first word
+// of a level 3 that names a mosaic table is a host pointer into the level, and
+// the PS1 walk takes any word that lies in the level's memory and names a layout
+// without tpage bits from 9 up as one (DrawLevelOvr1P_IsNativeLevelTexturePointer).
+// A plain level 3 whose u0, v0 and clut happen to form such an address passes
+// that test too - on three containers, depending on where the heap put the level.
+// The engine (only the engine; the PS1 walk keeps its test) takes a word as a
+// table only when the entries it names are mosaic tiles (EngTrack_TileUsable);
+// otherwise level 3 is a layout and the face shows it. One rule for every level.
+#define EGT_TABLE_TEST_ENTRIES 8 // both orientations of the smallest form (4x1)
+
+// A mosaic tile: a texture the PS1 draws (no tpage bit from 9 up, not the reserved
+// depth 3, for 4 and 8 bits a CLUT row inside the 512 VRAM rows), not all zero,
+// on a parallelogram of page texels (u0 + u3 == u1 + u2, the same for v: a tile
+// is a part of the face's texture, straight or turned or mirrored). Checked on run
+// f1: all table entries of the 18 race tracks and 7 arenas (about 1.5 million
+// R lines) pass, every entry of the three containers' address-test tables fails.
+internal int EngTrack_TileUsable(const struct TextureLayout *t)
+{
+	const int depth = (t->tpage >> 7) & 3;
+
+	if (!EngTrack_LayoutUsable(t) || (depth == 3) || ((depth < 2) && (t->clut >= 0x8000u)))
+	{
+		return 0;
+	}
+	return ((t->u0 + t->u3) == (t->u1 + t->u2)) && ((t->v0 + t->v3) == (t->v1 + t->v2));
+}
+
+// 1 = the first entries of table are all mosaic tiles.
+internal int EngTrack_TableUsable(const struct TextureLayout *table, int entries)
+{
+	int i;
+
+	for (i = 0; i < entries; i++)
+	{
+		if (!EngTrack_TileUsable(&table[i]))
+		{
+			return 0;
+		}
+	}
+	return (entries > 0) ? 1 : 0;
+}
+
+// 1 = word names a mosaic table for the engine: addressOk (the level's own test of the
+// address, may be NULL in the selftest) and EGT_TABLE_TEST_ENTRIES mosaic tiles there.
+internal int EngTrack_IsTableWord(u32 word, int (*addressOk)(u32 word))
+{
+	if ((word == 0u) || ((addressOk != NULL) && !addressOk(word)))
+	{
+		return 0;
+	}
+	return EngTrack_TableUsable((const struct TextureLayout *)(size_t)word, EGT_TABLE_TEST_ENTRIES);
+}
+
 // The IconGroup4 a texture pointer names. Bit 0 set = AnimTex indirection: the
 // real pointer is stored at (ptr - 1) and is resolved now. spanOk (may be NULL)
 // vouches that [p, p + size) is readable level memory. *anim is set to 1 when
@@ -1309,9 +1363,17 @@ internal int EngTrack_SpanOk(u32 p, u32 size)
 	return DrawLevelOvr1P_IsNativeLevelSpan(p, size);
 }
 
+// The PS1 walk's address test for a table word, with the span of the entries the engine reads.
+internal int EngTrack_TableAddressOk(u32 word)
+{
+	return DrawLevelOvr1P_IsNativeLevelTexturePointer(word) && EngTrack_SpanOk(word, (u32)EGT_TABLE_TEST_ENTRIES * (u32)sizeof(struct TextureLayout));
+}
+
+// The engine's table test (THE TABLE TEST OF THE ENGINE): the address test of the
+// PS1 walk and mosaic tiles at the address.
 internal int EngTrack_IsLevelPtr(u32 word)
 {
-	return DrawLevelOvr1P_IsNativeLevelTexturePointer(word);
+	return EngTrack_IsTableWord(word, EngTrack_TableAddressOk);
 }
 
 internal void EngTrack_Report(void)
@@ -2185,6 +2247,7 @@ void Engine_TrackLoad(void)
 	int triangles = 0;
 	int mosaicFaces = 0;
 	int animFaces = 0;
+	int tableWordsShown = 0;
 	int droppedFaces = 0;
 	int materials = 0;
 	int liveFaces = 0;
@@ -2343,8 +2406,12 @@ void Engine_TrackLoad(void)
 			if (group != NULL)
 			{
 				const struct TextureLayout *lay = EngTrack_FinestLayout(group, EngTrack_IsLevelPtr, &mos[k]);
+				u32 word3 = 0;
 
 				in.layout[k] = EngTrack_LayoutUsable(lay) ? lay : NULL;
+				// THE TABLE TEST OF THE ENGINE: a level 3 the PS1 walk takes for a table and the engine shows as a layout.
+				memcpy(&word3, &group[3], sizeof(word3));
+				tableWordsShown += (!mos[k] && ((s32)word3 >= 0) && DrawLevelOvr1P_IsNativeLevelTexturePointer(word3)) ? 1 : 0;
 			}
 			if (in.layout[k] == NULL)
 			{
@@ -2590,6 +2657,9 @@ void Engine_TrackLoad(void)
 	Platform_Log("[CTR Engine] track: %d blocks, %d water blocks excluded, %d invisible skipped, %d faces, %d triangles, %d draw group(s), %d materials, "
 	             "mosaic faces %d, animtex faces %d\n",
 	             blocks, waterBlocks, invisible, s_egtFaceCount, triangles, s_egtGroupCount, materials, mosaicFaces, animFaces);
+	Platform_Log("[CTR Engine] track: level-3 words the PS1 address test takes for a mosaic table but that name no mosaic tiles: %d (the engine shows "
+	             "them as layouts)\n",
+	             tableWordsShown);
 	Platform_Log("[CTR Engine] track: visibility from the frame's leaf and face lists: %d leaves, %d face(s) in leaves with flag 0x40, %d block(s) with a face "
 	             "bit past the list (always drawn)\n",
 	             leaves, specialFaces, bitsPastList);
@@ -5247,6 +5317,19 @@ internal int EngTrack_TestIsPtr(u32 word)
 	return (word == 0x1234u) ? 1 : 0;
 }
 
+// (7b) the level's address test in the selftest: two buffers count as level memory.
+global_variable u32 s_egtTestTableWords[2];
+
+internal int EngTrack_TestAddress(u32 word)
+{
+	return (word != 0u) && ((word == s_egtTestTableWords[0]) || (word == s_egtTestTableWords[1]));
+}
+
+internal int EngTrack_TestTableWord(u32 word)
+{
+	return EngTrack_IsTableWord(word, EngTrack_TestAddress);
+}
+
 // A test face for the decal pass: the quad x0..x1 by z 0..200 at height y0 + slope * x
 // (slots v0 (x0,0), v1 (x1,0), v2 (x0,200), v3 (x1,200), triangles (0,1,2) and (1,3,2)).
 internal void EngTrack_TestDecalFace(EngTrackDrawFace *df, float x0, float x1, float y0, float slope, int bias)
@@ -5447,6 +5530,86 @@ int Engine_SelfTestTrack(int *checks)
 		EGT_CHECK((EngTrack_FinestLayout(group, EngTrack_TestIsPtr, &mosaic) == &group[2]) && (mosaic == 1), "level pointer did not pick level 2");
 		memset(&group[3], 0, sizeof(group[3]));
 		EGT_CHECK((EngTrack_FinestLayout(group, NULL, &mosaic) == &group[2]) && (mosaic == 0), "blank level 3 did not fall back to level 2");
+	}
+
+	// (7b) THE TABLE TEST OF THE ENGINE: a word the address test passes is a table only when it names
+	// mosaic tiles. A real table (rectangles, turned and mirrored) is one; a layout word whose bytes
+	// happen to form an address in the level - there lie vertices - is a layout, and level 3 shows.
+	{
+		struct TextureLayout table[8];
+		s16 verts[48];
+		struct TextureLayout group[4];
+		struct TextureLayout t;
+		u32 word;
+		int mosaic = -1;
+		int i;
+
+		for (i = 0; i < 8; i++)
+		{
+			memset(&table[i], 0, sizeof(table[i]));
+			table[i].u0 = (u8)(16 * i);
+			table[i].v0 = 64;
+			table[i].u1 = (u8)(16 * i + 15);
+			table[i].v1 = 64;
+			table[i].u2 = (u8)(16 * i);
+			table[i].v2 = 79;
+			table[i].u3 = (u8)(16 * i + 15);
+			table[i].v3 = 79;
+			table[i].tpage = 0x0088; // page 8, 8 bit
+			table[i].clut = (u16)(0x7a00 + i);
+		}
+		// entry 5 turned by a quarter, entry 6 mirrored: still parallelograms
+		table[5].u0 = 80;
+		table[5].v0 = 64;
+		table[5].u1 = 80;
+		table[5].v1 = 79;
+		table[5].u2 = 95;
+		table[5].v2 = 64;
+		table[5].u3 = 95;
+		table[5].v3 = 79;
+		t = table[6];
+		table[6].u0 = t.u1;
+		table[6].u1 = t.u0;
+		table[6].u2 = t.u3;
+		table[6].u3 = t.u2;
+		for (i = 0; i < 48; i++)
+		{
+			verts[i] = (s16)(37 * i - 700); // level vertices: positions, no layouts
+		}
+		EGT_CHECK(EngTrack_TableUsable(table, 8) && EngTrack_IsTableWord((u32)(size_t)table, NULL), "a real table refused");
+		EGT_CHECK(!EngTrack_IsTableWord((u32)(size_t)verts, NULL) && !EngTrack_IsTableWord(0u, NULL), "vertices taken for a table");
+		t = table[2];
+		t.tpage = 0x0288; // bit 9
+		EGT_CHECK(!EngTrack_TileUsable(&t), "tile with tpage bit 9");
+		t.tpage = 0x0188; // depth 3
+		EGT_CHECK(!EngTrack_TileUsable(&t), "tile of depth 3");
+		t.tpage = 0x0008; // 4 bit
+		t.clut = 0x8000;
+		EGT_CHECK(!EngTrack_TileUsable(&t), "4-bit tile with a CLUT row past 511");
+		t.tpage = 0x0108; // 15 bit: the clut word is not read
+		EGT_CHECK(EngTrack_TileUsable(&t), "15-bit tile refused for its unread clut");
+		t = table[2];
+		t.u3 = (u8)(t.u3 + 1);
+		EGT_CHECK(!EngTrack_TileUsable(&t), "tile on no parallelogram");
+		memset(&t, 0, sizeof(t));
+		EGT_CHECK(!EngTrack_TileUsable(&t), "blank tile");
+
+		// The level 3 of a group: a table word gives level 2 (mosaic); a layout word that names
+		// vertices gives level 3 itself.
+		memset(group, 0, sizeof(group));
+		group[2] = table[0];
+		group[3] = table[1];
+		word = (u32)(size_t)table;
+		memcpy(&group[3], &word, sizeof(word));
+		s_egtTestTableWords[0] = (u32)(size_t)table;
+		s_egtTestTableWords[1] = (u32)(size_t)verts;
+		EGT_CHECK((EngTrack_FinestLayout(group, EngTrack_TestTableWord, &mosaic) == &group[2]) && (mosaic == 1), "table word did not pick level 2");
+		word = (u32)(size_t)verts;
+		memcpy(&group[3], &word, sizeof(word));
+		EGT_CHECK((EngTrack_FinestLayout(group, EngTrack_TestTableWord, &mosaic) == &group[3]) && (mosaic == 0),
+		          "a layout word in the level's memory did not keep level 3");
+		s_egtTestTableWords[0] = 0u;
+		s_egtTestTableWords[1] = 0u;
 	}
 
 	// (8) material dedupe: the same key gives the same index, any field of it a new one.

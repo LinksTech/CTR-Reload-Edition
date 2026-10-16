@@ -337,7 +337,8 @@ internal int EngMosaic_AnimFill(EngMosaicRow *row, u32 groupAddress, const struc
 		u32 word = 0;
 
 		memcpy(&word, &group[3], sizeof(word));
-		if ((own > 0) && (word != 0u) && ((spanOk == NULL) || spanOk(word, (u32)(2 * own) * (u32)sizeof(struct TextureLayout))))
+		if ((own > 0) && (word != 0u) && ((spanOk == NULL) || spanOk(word, (u32)(2 * own) * (u32)sizeof(struct TextureLayout))) &&
+		    EngTrack_TableUsable((const struct TextureLayout *)(size_t)word, 2 * own))
 		{
 			EngMosaicRow table;
 
@@ -801,9 +802,11 @@ int Engine_TrackMosaicFace(const struct TextureLayout *group, int mirrored, int 
 		return 0;
 	}
 	// The first word of level 3 is the table (EngTrack_FinestLayout decided that
-	// it is one); both orientations must lie in level memory.
+	// it is one); both orientations must lie in level memory and be mosaic tiles
+	// (engine_track.c, THE TABLE TEST OF THE ENGINE).
 	memcpy(&word, &group[3], sizeof(word));
-	if ((word == 0u) || !DrawLevelOvr1P_IsNativeLevelSpan(word, (u32)(2 * own) * (u32)sizeof(struct TextureLayout)))
+	if ((word == 0u) || !DrawLevelOvr1P_IsNativeLevelSpan(word, (u32)(2 * own) * (u32)sizeof(struct TextureLayout)) ||
+	    !EngTrack_TableUsable((const struct TextureLayout *)(size_t)word, 2 * own))
 	{
 		s_egmCount.badTable++;
 		return 0;
