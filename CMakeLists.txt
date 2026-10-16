@@ -432,6 +432,11 @@ if(BUILD_TESTING)
     set_tests_properties(gte_paths_identical PROPERTIES
         PASS_REGULAR_EXPRESSION "selftest passed: [0-9]+ operations, 0 differences"
     )
+    # The line formats of --dev-drive-log (game/DebugMenu.c): it only formats.
+    add_test(NAME drive_log_selftest COMMAND $<TARGET_FILE:ctr_native> --dev --dev-drive-log-selftest)
+    set_tests_properties(drive_log_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "drive log selftest passed: [0-9]+ checks, 0 failures"
+    )
     # The driver select grid for 0 to 32 custom entries: positions, navigation
     # and scrolling, with rows 0 and 1 held to the retail table. Like the GTE
     # test it only computes - on the D230 tables in the exe, without a window
@@ -873,5 +878,33 @@ message("rldpack native wheels test passed: refused without --wheels off (exit $
     set_tests_properties(hires_mask_sharp_selftest PROPERTIES
         PASS_REGULAR_EXPRESSION "selftest: [0-9]+ checks, 0 failures"
         ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
+    )
+
+    # Collision model generator (tools/collision_gen): procedural test models,
+    # the generator's checks in the game's arithmetic, and the container it
+    # makes judged by the game's own container checks.
+    add_test(
+        NAME collision_gen_selftest
+        COMMAND ${Python3_EXECUTABLE} -m unittest discover
+            -s ${CMAKE_SOURCE_DIR}/tools/collision_gen
+            -p test_*.py
+    )
+    add_test(
+        NAME collision_gen_container
+        COMMAND ${CMAKE_COMMAND}
+            -DPYTHON=${Python3_EXECUTABLE}
+            -DSRC=${CMAKE_SOURCE_DIR}
+            -DRLDPACK=$<TARGET_FILE:rldpack>
+            -DGAME=$<TARGET_FILE:ctr_native>
+            -DDIR=${CMAKE_BINARY_DIR}/selftest/collision_gen
+            -P ${CMAKE_SOURCE_DIR}/cmake/collision_gen_container.cmake
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+    set_tests_properties(collision_gen_selftest collision_gen_container PROPERTIES
+        ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
+        TIMEOUT 600
+    )
+    set_tests_properties(collision_gen_container PROPERTIES
+        PASS_REGULAR_EXPRESSION "2 container\\(s\\): 1 good-, 1 bad-, 0 unexpected"
     )
 endif()

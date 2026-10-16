@@ -288,6 +288,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--menu-keys", "<sequence>", "scripted pad steps, e.g. down,cross or l1+r1+down (up to 256; keys up down left right cross circle square triangle start select l1 r1 l2 r2 none)"},
     {"--menu-keys-quit", "<vblanks>", "end this many VBlanks after the last step (default 120, 0 = do not end)"},
     {"--menu-keys-every", "<vblanks>", "length of one step of the sequence (default 24)"},
+    {"--dev-drive-log", "[n]", "log lines of the kart of seat 0: every n race frames (default 15) position, restart point, distance, lap, ground contact; every lap change; every mask grab with its reason and every landing; reads only, for measuring"},
     {"--dev-kart-steer", "[n]", "the kart of seat 0 drives itself with its own physics (not a bot): CROSS held, steered along the restart points; from race n of the run on (default 1) SQUARE (every other time with DOWN) after it got reserves, off the pad; for measuring"},
     {"--menu-keys-hold", "<vblanks>", "how long a step holds its keys before they are let go (default 3; as long as --menu-keys-every holds them through, for driving)"},
     {"--menu-keys-from", "<vblank>", "first step of the sequence at this VBlank (default 300)"},
@@ -405,6 +406,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--ui-anchor-legacy", "", "old UI anchors"},
     {"--selftest-disc", "<dir>", "unpack the test images in <dir> (good-*/bad-*.bin), then end"},
     {"--gte-selftest", "", "both GTE paths against each other, then end"},
+    {"--dev-drive-log-selftest", "", "the line formats of --dev-drive-log, then end; no window, no data needed (ctest drive_log_selftest)"},
     {"--char-grid-selftest", "", "layout, navigation and scrolling of the driver select grid for 0 to 32 custom entries, then end; no window, no data needed"},
     {"--mods-selftest", "", "the play mods of the MODS page without a race: settings lines, the status line of the box, --dev-mods-play, the page's steps, gravity and hang time, the grip blend, the night colour, difficulty, the boss sections, the item box and the CPU weapons, then end (ctest mods_selftest)"},
     {"--engine-testscene", "", "with --engine: a textured box 600 units in front of the camera of view 0, drawn every race frame through the whole engine path"},
@@ -2812,6 +2814,15 @@ int main(int argc, char *argv[])
 			return MM_NativeCharGrid_SelfTest();
 		}
 
+		// The line formats of --dev-drive-log (game/DebugMenu.c, ctest
+		// drive_log_selftest). Up here for the same reason: it only formats.
+		if (strcmp(argv[argIndex], "--dev-drive-log-selftest") == 0)
+		{
+			extern int DebugMenu_DriveLogSelfTest(void);
+
+			return DebugMenu_DriveLogSelfTest();
+		}
+
 		// The play mods of the MODS page (platform/native_mods.c) without a race:
 		// settings lines, the status line of the box, --dev-mods-play, the ice
 		// terrain and the hang time of MOON GRAVITY. Up here for the same reason:
@@ -4644,6 +4655,17 @@ int main(int argc, char *argv[])
 
 				g_cfg_menuKeysQuit = atoi(argv[++argIndex]);
 				printf("[CTR Native] menu keys quit: %d\n", g_cfg_menuKeysQuit);
+			}
+			else if (strcmp(argv[argIndex], "--dev-drive-log") == 0)
+			{
+				extern int g_cfg_driveLog;
+
+				g_cfg_driveLog = 15;
+				if (((argIndex + 1) < argc) && (argv[argIndex + 1][0] >= '1') && (argv[argIndex + 1][0] <= '9'))
+				{
+					g_cfg_driveLog = atoi(argv[++argIndex]);
+				}
+				printf("[CTR Native] --dev-drive-log: seat 0 logged every %d race frames, every lap change and mask grab\n", g_cfg_driveLog);
 			}
 			else if (strcmp(argv[argIndex], "--dev-kart-steer") == 0)
 			{

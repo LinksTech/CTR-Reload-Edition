@@ -1590,6 +1590,192 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 }
 
 // ---------------------------------------------------------------------------
+//  --dev-drive-log [n]: what the kart of seat 0 does on the track, as log lines.
+//
+//  WHAT FOR. A track whose collision is generated (tools/collision_gen) is
+//  judged by driving it: does the lap count, does the kart ever fall through,
+//  does every mask grab happen where it should. The game keeps these facts in
+//  the driver, but writes none of them down.
+//
+//  HOW. It only reads (the driver of seat 0, the level header) and writes
+//  nothing but log lines; without the switch the tick returns at once. Lines:
+//    [CTR Drive] tick T pos X Y Z cp C dist D lap L ground G state S
+//        every n race frames (default 15)
+//    [CTR Drive] lap A -> B tick T time MS cp C pos X Y Z ymin Y
+//        when the lap counter changes (ymin: the lowest y of seat 0 since the
+//        last lap line)
+//    [CTR Drive] mask grab tick T reason R cp C pos X Y Z
+//        when the kart enters the mask grab; R is what the game left readable:
+//        kill-plane (the step flags of the collision), depth (below the BSP
+//        root box - 0x40, COLL.c), else progress (a jump of a quarter lap)
+//    [CTR Drive] landed tick T cp C pos X Y Z
+//        when it leaves the mask grab
+//  Positions in world units (posCurr >> 8), cp the restart point of lastValid
+//  (255 = none), dist distanceToFinish_curr.
+// ---------------------------------------------------------------------------
+
+int g_cfg_driveLog = 0;
+
+enum
+{
+	DRIVE_LOG_TICK = 0,
+	DRIVE_LOG_LAP,
+	DRIVE_LOG_GRAB,
+	DRIVE_LOG_LANDED,
+};
+
+// One line of the drive log into out (the format the selftest holds fixed).
+// v: tick, x, y, z, cp, then per kind: TICK dist, lap, ground, state;
+// LAP lap before, lap after, time, ymin; GRAB reason (index into the names).
+internal int DebugMenu_DriveLogFormat(char *out, size_t size, int kind, const int *v)
+{
+	local_persist const char *const reasons[3] = {"kill-plane", "depth", "progress"};
+
+	switch (kind)
+	{
+	case DRIVE_LOG_TICK:
+		return snprintf(out, size, "[CTR Drive] tick %d pos %d %d %d cp %d dist %d lap %d ground %d state %d\n", v[0], v[1], v[2], v[3], v[4],
+		                v[5], v[6], v[7], v[8]);
+	case DRIVE_LOG_LAP:
+		return snprintf(out, size, "[CTR Drive] lap %d -> %d tick %d time %d cp %d pos %d %d %d ymin %d\n", v[5], v[6], v[0], v[7], v[4], v[1],
+		                v[2], v[3], v[8]);
+	case DRIVE_LOG_GRAB:
+		return snprintf(out, size, "[CTR Drive] mask grab tick %d reason %s cp %d pos %d %d %d\n", v[0], reasons[((v[5] >= 0) && (v[5] < 3)) ? v[5] : 2],
+		                v[4], v[1], v[2], v[3]);
+	default:
+		return snprintf(out, size, "[CTR Drive] landed tick %d cp %d pos %d %d %d\n", v[0], v[4], v[1], v[2], v[3]);
+	}
+}
+
+internal void DebugMenu_DriveLogTick(struct GameTracker *gGT)
+{
+	local_persist int armed = 0;
+	local_persist int tick = 0;
+	local_persist int lastLap = 0;
+	local_persist int grabbed = 0;
+	local_persist int ymin = 0;
+
+	struct Driver *d;
+	struct Level *level;
+	char line[160];
+	int v[9];
+
+	if (!g_cfg_driveLog)
+	{
+		return;
+	}
+
+	d = (gGT != NULL) ? gGT->drivers[0] : NULL;
+	level = (gGT != NULL) ? gGT->level1 : NULL;
+	if ((d == NULL) || (level == NULL) || ((gGT->gameMode1 & (MAIN_MENU | LOADING)) != 0) || (sdata->Loading.stage != LOAD_IDLE))
+	{
+		armed = 0;
+		return;
+	}
+
+	v[0] = tick + 1;
+	v[1] = d->posCurr.x >> 8;
+	v[2] = d->posCurr.y >> 8;
+	v[3] = d->posCurr.z >> 8;
+	v[4] = (d->lastValid != NULL) ? d->lastValid->checkpointIndex : 255;
+	if (!armed)
+	{
+		armed = 1;
+		tick = 0;
+		v[0] = 1;
+		lastLap = d->lapIndex;
+		grabbed = (d->kartState == KS_MASK_GRABBED);
+		ymin = v[2];
+	}
+	tick = v[0];
+	if (v[2] < ymin)
+	{
+		ymin = v[2];
+	}
+
+	if (d->lapIndex != lastLap)
+	{
+		v[5] = lastLap;
+		v[6] = d->lapIndex;
+		v[7] = gGT->elapsedEventTime;
+		v[8] = ymin;
+		DebugMenu_DriveLogFormat(line, sizeof(line), DRIVE_LOG_LAP, v);
+		Platform_Log("%s", line);
+		lastLap = d->lapIndex;
+		ymin = v[2];
+	}
+
+	if ((d->kartState == KS_MASK_GRABBED) && !grabbed)
+	{
+		int reason = 2;
+
+		if ((d->stepFlagSet & COLL_STEP_FLAG_KILL_PLANE) != 0)
+		{
+			reason = 0;
+		}
+		else if ((level->ptr_mesh_info != NULL) && (level->ptr_mesh_info->bspRoot != NULL) &&
+		         (v[2] < (level->ptr_mesh_info->bspRoot->box.min.y - 0x40)))
+		{
+			reason = 1;
+		}
+		v[5] = reason;
+		DebugMenu_DriveLogFormat(line, sizeof(line), DRIVE_LOG_GRAB, v);
+		Platform_Log("%s", line);
+	}
+	else if ((d->kartState != KS_MASK_GRABBED) && grabbed)
+	{
+		DebugMenu_DriveLogFormat(line, sizeof(line), DRIVE_LOG_LANDED, v);
+		Platform_Log("%s", line);
+	}
+	grabbed = (d->kartState == KS_MASK_GRABBED);
+
+	if ((tick % g_cfg_driveLog) == 0)
+	{
+		v[5] = (int)d->distanceToFinish_curr;
+		v[6] = d->lapIndex;
+		v[7] = ((d->collisionFlags & DRIVER_COLL_FLAG_GROUNDED) != 0) ? 1 : 0;
+		v[8] = d->kartState;
+		DebugMenu_DriveLogFormat(line, sizeof(line), DRIVE_LOG_TICK, v);
+		Platform_Log("%s", line);
+	}
+}
+
+// --dev-drive-log-selftest: the line formats of --dev-drive-log, without a
+// race (ctest drive_log_selftest). 0 = passed.
+int DebugMenu_DriveLogSelfTest(void)
+{
+	static const struct
+	{
+		int kind;
+		int v[9];
+		const char *want;
+	} cases[] = {
+	    {DRIVE_LOG_TICK, {15, -1200, -32, 4000, 12, 30166, 0, 1, 0}, "[CTR Drive] tick 15 pos -1200 -32 4000 cp 12 dist 30166 lap 0 ground 1 state 0\n"},
+	    {DRIVE_LOG_LAP, {900, 0, 0, -160, 0, 0, 1, 61234, -560}, "[CTR Drive] lap 0 -> 1 tick 900 time 61234 cp 0 pos 0 0 -160 ymin -560\n"},
+	    {DRIVE_LOG_GRAB, {400, -1500, -40, 4300, 60, 0, 0, 0, 0}, "[CTR Drive] mask grab tick 400 reason kill-plane cp 60 pos -1500 -40 4300\n"},
+	    {DRIVE_LOG_GRAB, {401, 10, -900, 10, 3, 1, 0, 0, 0}, "[CTR Drive] mask grab tick 401 reason depth cp 3 pos 10 -900 10\n"},
+	    {DRIVE_LOG_GRAB, {402, 10, 0, 10, 3, 2, 0, 0, 0}, "[CTR Drive] mask grab tick 402 reason progress cp 3 pos 10 0 10\n"},
+	    {DRIVE_LOG_GRAB, {403, 10, 0, 10, 3, 7, 0, 0, 0}, "[CTR Drive] mask grab tick 403 reason progress cp 3 pos 10 0 10\n"},
+	    {DRIVE_LOG_LANDED, {445, 2000, -300, 9000, 60, 0, 0, 0, 0}, "[CTR Drive] landed tick 445 cp 60 pos 2000 -300 9000\n"},
+	};
+	char line[160];
+	int failures = 0;
+	int i;
+
+	for (i = 0; i < (int)(sizeof(cases) / sizeof(cases[0])); i++)
+	{
+		DebugMenu_DriveLogFormat(line, sizeof(line), cases[i].kind, cases[i].v);
+		if (strcmp(line, cases[i].want) != 0)
+		{
+			printf("drive log selftest: case %d wrote: %s", i, line);
+			failures++;
+		}
+	}
+	printf("drive log selftest %s: %d checks, %d failures\n", failures ? "FAILED" : "passed", i, failures);
+	return failures ? 1 : 0;
+}
+
+// ---------------------------------------------------------------------------
 //  --level-tour: many tracks in one run.
 //
 //  WHAT FOR. A measurement that has to hold for every track - nothing writes
@@ -3028,6 +3214,7 @@ void DebugMenu_Frame(struct GameTracker *gGT, struct GamepadSystem *gGamepads)
 	// in this frame reads it.
 	DebugMenu_MenuKeysTick();
 	DebugMenu_KartSteerTick(gGT);
+	DebugMenu_DriveLogTick(gGT);
 
 	// Big enough for the longest line that CAN come about, not for the
 	// longest one wants to see. By the container format a track name may be
