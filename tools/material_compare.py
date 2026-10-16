@@ -118,7 +118,7 @@ FEATURES = ('prim', 'anim', 'lod', 'page', 'depth', 'clut', 'uv', 'blend', 'col'
 # Retail draw functions that cut model triangles at the water or mirror line
 # and write pieces with interpolated UV and the colour of their side.
 PIECE_FUNCS = {'split': 'split-col', 'reflection': 'mirror-col', 'special': 'mirror-col'}
-# Markers of the track lines (P2): retail part (a piece), clip (from a clip
+# Markers of the track lines (track oracle): retail part (a piece), clip (from a clip
 # record), nogeo (a mosaic piece without a place), lodonly (a level retail does
 # not draw by default), noleaf (a block the walk never reaches), sieve; engine
 # frozen (an AnimTex face that does not follow its cell), tablefail.
@@ -147,6 +147,10 @@ COL_TOL_NORMAL = 0
 # of at most this is information (col-model, counted), above it stays col.
 # Stage lines and the colours of the plain model writer keep COL_TOL_NORMAL.
 COL_MODEL_GAP = 2
+# Colours of pieces cut at the water or mirror line are interpolated by the
+# retail cut; outside the triangle's colour range by at most this they are
+# information (counted), above it split-col / mirror-col.
+COL_CUT_GAP = 2
 COL_TOL_GTE = 2
 BOX_AREA_MAX = 256 * 256
 DEFAULT_EXCEPTIONS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -318,7 +322,7 @@ def parse_entry(fields, lineno):
         # a stage line laid on its owner face from another mid face (foreign=<place>):
         # its corners are compared as a set
         ln.slots = None
-    ln.ncorner = len(ln.uv) if ln.uv is not None else (len(ln.col) if ln.col and len(ln.col) > 1 else 3)
+    ln.ncorner = len(ln.uv) if ln.uv is not None else (len(ln.col) if ln.col and len(ln.col) in (3, 4) else 3)
     # colw= (engine cell lines): the colours of the cell under the wide frame rule
     ln.colw = parse_col(ln.extra.get('colw'))
     if ln.colw is not None and len(ln.colw) not in (1, ln.ncorner):
@@ -870,7 +874,7 @@ def _new_stats():
             'part': {}, 'clip': {}, 'nogeo': {}, 'info_lines': {}, 'stage_none': {}, 'lod_never': set(),
             'col_unpaired': 0, 'winding': 0, 'piece': {}, 'eom_coverage': [], 'fault_orient': set(),
             't_set_rule': {}, 'back_coverage': [], 'src_cell': {}, 'col_model': {}, 'raw_col': 0,
-            'tablefail': {}, 'anim_degenerate': {}, 'foreign': {}}
+            'tablefail': {}, 'anim_degenerate': {}, 'foreign': {}, 'stage_hit': {}, 'cut_col': {}}
 
 
 def _per(stats, tr, src):
@@ -882,19 +886,32 @@ def _bump(d, k, n=1):
 
 
 def _inside(r, e):
-    """Every UV corner of the retail piece lies in the integer corner box of
-    the engine line (inclusive, tolerance 0)."""
+    """The UV corners of the retail piece lie in the integer corner box of
+    the engine line (inclusive, tolerance 0); of a four-corner piece one
+    corner may lie outside (the free fourth corner of a layout)."""
     if r.uv is None:
         return e.uv is None
     if e.uv is None:
         return False
     u0, v0, u1, v1 = bbox(e.uv)
-    return all(u0 <= u <= u1 and v0 <= v <= v1 for u, v in r.uv)
+    n = sum(1 for u, v in r.uv if u0 <= u <= u1 and v0 <= v <= v1)
+    return n == len(r.uv) or (len(r.uv) == 4 and n >= 3)
 
 
 def _in_box(points, corners):
     u0, v0, u1, v1 = bbox(corners)
     return all(u0 <= u <= u1 and v0 <= v <= v1 for u, v in points)
+
+
+def _range_gap(cols, ref):
+    """How far (largest channel step) colours lie outside the channel range
+    of ref (0 inside); for naming the nearest engine triangle."""
+    ref = [c for c in ref if c is not None]
+    if not cols or not ref:
+        return 0
+    lo = [min(c[i] for c in ref) for i in range(3)]
+    hi = [max(c[i] for c in ref) for i in range(3)]
+    return max(max(lo[i] - c[i], c[i] - hi[i], 0) for c in cols for i in range(3))
 
 
 def _cols_in_range(cols, ref, ctol):
@@ -1139,6 +1156,10 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                         if tfail and 'entry' in r.extra:
                             _bump(stats['tablefail'], tr, count)
                             continue
+                        if 'zeroarea' in r.flags:
+                            # a packet without area draws nothing: information, never uv
+                            _bump(stats['info_lines'], (tr, 'zeroarea'), count)
+                            continue
                         if 'nogeo' in r.flags:
                             _bump(stats['nogeo'], tr, count)
                             continue
@@ -1261,7 +1282,15 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                         if hit is not None:
                             used_by.setdefault(id(hit), (hit, r))
                             continue
-                        other = next((e for e in es.lines if e.key != r.key and not _t_diffs(r, e, ctol)), None)
+                        others = [e for e in es.lines if e.key != r.key and not _t_diffs(r, e, ctol)]
+                        stage = next((e for e in others if e.key[0] == 'stage'), None)
+                        if stage is not None and r.key[0] == 'cell':
+                            # the tile packet is exactly a whole-face stage layout of the face
+                            # (a table entry may carry the same layout): drawn as that stage
+                            used_by.setdefault(id(stage), (stage, r))
+                            _bump(stats['stage_hit'], tr, count)
+                            continue
+                        other = others[0] if others else None
                         if other is not None:
                             used_by.setdefault(id(other), (other, r))
                             rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=[r.key[0]], r=r,
@@ -1307,9 +1336,13 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                             fit = next((t for t in inside if r.col is None or
                                         not [c for c in t.cols if c is not None] or
                                         _cols_in_range(r.col, [c for c in t.cols if c is not None], ctol)), None)
-                            t = fit or inside[0]
+                            t = fit or min(inside, key=lambda x: _range_gap(r.col, x.cols))
                             used_by.setdefault(id(t.e), (t.e, r))
                             if fit is not None:
+                                continue
+                            if r.col is not None and _range_gap(r.col, t.cols) <= COL_CUT_GAP:
+                                # a computed cut colour within a rounding step: information
+                                _bump(stats['cut_col'], tr, count)
                                 continue
                             rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid,
                                 features=pre + [PIECE_FUNCS[r.extra['func']]], r=r, e=t.e, r_count=count,
@@ -1746,11 +1779,12 @@ def render_md(res, inputs, exc_origin):
               '%d not checked (no dump), %d textured engine line(s) without box' % (
                   s['vram_frames'], len(s['vram_missing']), s['box_checked'], s['box_unchecked'], s['e_no_box']))
     md.append('Colour: tolerance %d per channel for the normal writer, %d for GTE writers, %d for computed tile '
-              'corners (col-model, information: %d line(s)); '
+              'corners (col-model, information: %d line(s)), %d for computed cut colours (information: %d line(s)); '
               '%d retail / %d engine line(s) without col (not compared), of them %d with a col that does not '
               'pair with the corners; raw-texture colour not compared: %d retail line(s) (raw=1)' % (
                   COL_TOL_NORMAL, res.gte_tol if hasattr(res, 'gte_tol') else COL_TOL_GTE, COL_MODEL_GAP,
-                  sum(s['col_model'].values()), s['r_no_col'], s['e_no_col'], s['col_unpaired'], s['raw_col']))
+                  sum(s['col_model'].values()), COL_CUT_GAP, sum(s['cut_col'].values()),
+                  s['r_no_col'], s['e_no_col'], s['col_unpaired'], s['raw_col']))
     md.append('Exceptions: %s' % exc_origin)
     md.append('')
     md.append('## Exception list')
@@ -1811,6 +1845,9 @@ def render_md(res, inputs, exc_origin):
     for tr in sorted(s['anim_degenerate']):
         md.append('- %s set=anim lines of faces the load block marks degenerate and no race frame draws: %d '
                   '(information)' % (tr, s['anim_degenerate'][tr]))
+    if s['stage_hit']:
+        md.append('- Track tile packets that are exactly a stage layout of their face (counted as that stage): %d'
+                  % sum(s['stage_hit'].values()))
     if s['foreign']:
         md.append('- Track stage lines laid on their owner face from another mid face (foreign=), corners as a '
                   'set: %d' % sum(s['foreign'].values()))
@@ -2121,6 +2158,20 @@ def selftest():
     res, _ = run([F(), L('R', 'I', 'turtle#3', page='-', clut='-', uv='-', extra='func=split col=45,45,45'),
                   L('E', 'I', 'turtle#3', page='-', clut='-', uv='-', extra='col=60,60,60;80,80,80;60,60,60')])
     check('untextured piece outside every colour range: split-col', feats(res) == ['split-col'])
+    res, _ = run([F(), L('R', 'I', 'turtle#31', page='-', clut='-', uv='-', extra='func=split col=127,100,30;111,74,15;111,74,15'),
+                  L('E', 'I', 'turtle#31', page='-', clut='-', uv='-', extra='col=0,0,0;45,0,0;27,18,3'),
+                  L('E', 'I', 'turtle#31', page='-', clut='-', uv='-', extra='col=97,58,8;112,74,16;128,100,30')])
+    check('untextured piece: the second engine triangle of the material fits: 0', len(res.open) == 0)
+    res, _ = run([F(), L('R', 'I', 'turtle#31', page='-', clut='-', uv='-', extra='func=split col=127,100,30;96,58,7;96,58,7'),
+                  L('E', 'I', 'turtle#31', page='-', clut='-', uv='-', extra='col=0,0,0;45,0,0;27,18,3'),
+                  L('E', 'I', 'turtle#31', page='-', clut='-', uv='-', extra='col=97,58,8;112,74,16;128,100,30')])
+    check('untextured piece one step outside every range: cut colour information (no split-col)',
+          len(res.open) == 0 and res.stats['cut_col'] == {'L3': 1})
+    res, _ = run([F(), L('R', 'I', 'turtle#31', page='-', clut='-', uv='-', extra='func=split col=127,100,30;94,58,7;94,58,7'),
+                  L('E', 'I', 'turtle#31', page='-', clut='-', uv='-', extra='col=0,0,0;45,0,0;27,18,3'),
+                  L('E', 'I', 'turtle#31', page='-', clut='-', uv='-', extra='col=97,58,8;112,74,16;128,100,30')])
+    check('untextured piece three steps outside every range: split-col naming the nearest triangle',
+          feats(res) == ['split-col'] and res.open[0].e.col[0] == (97, 58, 8) and res.stats['cut_col'] == {})
     res, _ = run([F(), L('R', 'I', 'turtle#3', uv='4,4,20,4,4,20'), L('E', 'I', 'turtle#3', uv=TRI_A)])
     check('piece rule only for split/reflection/special: a normal line inside a triangle is uv', feats(res) == ['uv'])
     # half the quad with a wrong CLUT says clut
@@ -2199,6 +2250,24 @@ def selftest():
           res.control.startswith('yes') and res.stats['fault_orient'] == set() and feats(res) == ['cell', 'cell'])
     check('parse: bad slots are an error',
           len(parse_log('\n'.join([F(), T('R', '5', C00, 'cell=0,0', extra='slots=0,1,1,2')]) + '\n', 's').errors) == 1)
+
+    # zeroarea never uv, pieces against the box of the face, a stage before a tile
+    S2 = '0,0,15,0,0,15,15,15'
+    res, _ = run([F(), T('R', '5', '168,0,168,0,168,0,168,0', 'stage=2', extra='zeroarea=1'), T('E', '5', C00, 'stage=2')])
+    check('zeroarea=1 with an engine partner: information, not uv', len(res.open) == 0 and
+          res.stats['info_lines'] == {('L3', 'zeroarea'): 1})
+    res, _ = run([F(), T('R', '5', '1,1,7,1,1,7,168,0', 'stage=2', extra='part=1'), T('E', '5', C00, 'stage=2')])
+    check('part=1: three corners in the box of the face, a free fourth corner outside: 0', len(res.open) == 0)
+    res, _ = run([F(), T('R', '5', '1,1,9,1,1,7,168,0', 'stage=2', extra='part=1'), T('E', '5', C00, 'stage=2')])
+    check('part=1: two corners outside the box: uv', feats(res) == ['uv'])
+    res, _ = run([F(), T('R', '5', '1,1,7,1,9,9', 'stage=2', extra='part=1'), T('E', '5', C00, 'stage=2')])
+    check('part=1: a three-corner piece needs all corners in the box: uv', feats(res) == ['uv'])
+    res, _ = run([F(), T('R', '5', S2, 'cell=1,1'), T('E', '5', C11, 'cell=1,1'),
+                  T('E', '5', S2, 'cell=0,1'), T('E', '5', S2, 'stage=2')])
+    check('a tile packet that is exactly a stage layout of the face: that stage, not cell', len(res.open) == 0 and
+          res.stats['stage_hit'] == {'L3': 1})
+    res, _ = run([F(), T('R', '5', S2, 'cell=1,1'), T('E', '5', C11, 'cell=1,1'), T('E', '5', S2, 'cell=0,1')])
+    check('without a matching stage the tile on another cell stays cell', feats(res) == ['cell'])
 
     # wide frame tiles (wide=1 against colw=), foreign stage lines (corners as a set)
     res, _ = run([F(), T('R', '5', C00, 'cell=0,0', extra='ord=slot,wide=1,col=10,10,10;20,20,20;30,30,30;40,40,40'),
@@ -2296,7 +2365,7 @@ def selftest():
                   T('E', '5', C00, 'cell=0,0', extra='col=2,2,2;1,1,1;4,4,4;3,3,3')])
     check('track corner set: a colour on another UV point: col', feats(res) == ['col'])
 
-    # track markers (P2)
+    # track markers (track oracle)
     S2 = '0,0,15,0,0,15,15,15'
     res, _ = run([F(), T('R', '5', '2,3,15,3,2,15,15,15', 'stage=2', extra='part=1'), T('E', '5', S2, 'stage=2')])
     check('part=1: corners inside the box of its key, same material: 0',
