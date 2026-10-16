@@ -288,6 +288,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--frame-log", "", "frame log, one line per frame"},
     {"--shot", "<vblanks>", "snapshot of the internal frame at this VBlank, or an ascending list 131,133,140 (up to 128, more ends the start)"},
     {"--shot-name", "<file>", "file name of the snapshot (default SCREENSHOT.BMP); with a list, <name>-<vblank>.bmp per snapshot"},
+    {"--shot-series", "<first>,<count>,<step>", "snapshots of the internal frame for a video: from VBlank first, count of them (1..36000) step VBlanks apart (1..600; 2 = every frame of a 30 Hz game under --deterministic), named <shot-name>-f00000.bmp, -f00001.bmp ... (gapless); about 12.7 MB each at --res-scale 4"},
     {"--menu-keys", "<sequence>", "scripted pad steps, e.g. down,cross or l1+r1+down (up to 256; keys up down left right cross circle square triangle start select l1 r1 l2 r2 none)"},
     {"--menu-keys-quit", "<vblanks>", "end this many VBlanks after the last step (default 120, 0 = do not end)"},
     {"--menu-keys-every", "<vblanks>", "length of one step of the sequence (default 24)"},
@@ -872,6 +873,29 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			fprintf(stderr, "switch --engine-menuscene-zoom expects <f>[,<x>[,<yaw>]] with f 0.25..8, x -1..1, yaw -360..360 degrees, not '%s'\n", argv[argIndex + 1]);
 			fflush(stderr);
 			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+	}
+
+	// --shot-series <first>,<count>,<step> (round of 2026-10-16): three whole
+	// numbers in range, refused here, before any window.
+	for (int argIndex = 1; (argIndex + 1) < argc; argIndex++)
+	{
+		if (strcmp(argv[argIndex], "--shot-series") == 0)
+		{
+			int first = 0;
+			int count = 0;
+			int step = 0;
+			char tail = 0;
+
+			if ((sscanf(argv[argIndex + 1], "%d,%d,%d%c", &first, &count, &step, &tail) != 3) || (first < 1) || (count < 1) || (count > 36000) ||
+			    (step < 1) || (step > 600))
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --shot-series expects <first>,<count>,<step> with first >= 1, count 1..36000, step 1..600, not '%s'\n",
+				        argv[argIndex + 1]);
+				fflush(stderr);
+				return NATIVE_EXIT_DEV_REQUIRED;
+			}
 		}
 	}
 
@@ -4085,6 +4109,17 @@ int main(int argc, char *argv[])
 
 				g_cfg_sizeRuleCanvas = 1;
 				printf("[CTR Native] --size-rule-canvas: PS1 size rule in canvas pixels (old path)\n");
+			}
+			else if ((strcmp(argv[argIndex], "--shot-series") == 0) && ((argIndex + 1) < argc))
+			{
+				// The values were checked before any window (first >= 1, count 1..36000, step 1..600).
+				extern int g_cfg_shotSeriesFirst;
+				extern int g_cfg_shotSeriesCount;
+				extern int g_cfg_shotSeriesStep;
+
+				(void)sscanf(argv[++argIndex], "%d,%d,%d", &g_cfg_shotSeriesFirst, &g_cfg_shotSeriesCount, &g_cfg_shotSeriesStep);
+				printf("[CTR Native] shot series: %d snapshot(s) from vblank %d, every %d vblank(s)\n", g_cfg_shotSeriesCount, g_cfg_shotSeriesFirst,
+				       g_cfg_shotSeriesStep);
 			}
 			else if ((strcmp(argv[argIndex], "--shot-name") == 0) && ((argIndex + 1) < argc))
 			{

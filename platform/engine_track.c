@@ -1514,24 +1514,32 @@ internal void EngTrack_TourReport(int entry, int levelID, int phase)
 	}
 }
 
-// The engine draws the track only in frames the game draws the level: the PS1
-// path walks the level under RENDER_FLAG_DRAW_LEVEL (game/MAIN/MainFrame_RenderFrame.c:173,
-// the same rule the sky follows, engine_sky.c EngSky_Eligible); the water follows
-// the track (Engine_TrackDrawnThisFrame). The level memory is reused from load to
-// load, so the address alone does not name the level the faces were built for.
 // HIDDEN TRACK (--engine-hide track, round of 2026-10-16, static model): the
 // level's own geometry - its faces in every bucket of the level walk, its water,
 // its level instances - is owned and not drawn, in a race level (not the main
 // menu) of one player. The game state is not touched; what the PS1 walk does
 // for the buckets it is told are drawn is what it does for every engine frame.
-internal int EngTrack_Hidden(const struct GameTracker *gGT)
+// The frame counts as one the engine drew the track (Engine_TrackDrawnThisFrame
+// answers 1, Engine_TrackCollect), so what follows that answer goes the engine's
+// way with the depth test against the static model in front of it: the world
+// particles and the weather (engine_fx_exhaust.c EngineFx_ParticleRule,
+// engine_fx_weather.c); the engine water stays owned and empty
+// (engine_water.c, Engine_WaterCollect). Pure rule: EngTrack_HiddenRule.
+internal int EngTrack_HiddenRule(int engine, int track, int hideBits, int players, int menu)
 {
-	return (g_cfg_engine && g_cfg_engineTrack && ((g_cfg_engineHide & ENGINE_HIDE_TRACK) != 0) && (gGT != NULL) && (gGT->numPlyrCurrGame == 1) &&
-	        ((gGT->gameMode1 & MAIN_MENU) == 0))
-	           ? 1
-	           : 0;
+	return (engine && track && ((hideBits & ENGINE_HIDE_TRACK) != 0) && (players == 1) && !menu) ? 1 : 0;
 }
 
+internal int EngTrack_Hidden(const struct GameTracker *gGT)
+{
+	return (gGT != NULL) && EngTrack_HiddenRule(g_cfg_engine, g_cfg_engineTrack, g_cfg_engineHide, gGT->numPlyrCurrGame, (gGT->gameMode1 & MAIN_MENU) != 0);
+}
+
+// The engine draws the track only in frames the game draws the level: the PS1
+// path walks the level under RENDER_FLAG_DRAW_LEVEL (game/MAIN/MainFrame_RenderFrame.c:173,
+// the same rule the sky follows, engine_sky.c EngSky_Eligible); the water follows
+// the track (Engine_TrackDrawnThisFrame). The level memory is reused from load to
+// load, so the address alone does not name the level the faces were built for.
 internal int EngTrack_Active(const struct GameTracker *gGT)
 {
 	if (!g_cfg_engine || !g_cfg_engineTrack || (gGT == NULL) || (gGT->numPlyrCurrGame != 1))
@@ -5169,8 +5177,11 @@ void Engine_TrackCollect(struct GameTracker *gGT)
 	}
 	// HIDDEN TRACK: nothing of the level's faces is built or drawn; the buckets and
 	// the level instances are owned instead (Engine_TrackOwnsBucket, Engine_TrackInstanceRoute).
+	// In a frame the game draws the level, the frame counts as drawn by the engine
+	// (particles and weather with the depth test; see EngTrack_HiddenRule).
 	if (EngTrack_Hidden(gGT))
 	{
+		s_egtSubmitted = ((gGT->renderFlags & RENDER_FLAG_DRAW_LEVEL) != 0) ? 1 : 0;
 		return;
 	}
 	if (!EngTrack_Active(gGT))
@@ -7108,6 +7119,15 @@ int Engine_SelfTestTrack(int *checks)
 		              (s_ego.noBlock == 0),
 		          "oracle: an entry point acted outside a logged frame");
 	}
+
+	// HIDDEN TRACK: only with the engine, its track and the word track, one player, not the menu.
+	EGT_CHECK(EngTrack_HiddenRule(1, 1, ENGINE_HIDE_TRACK, 1, 0) == 1, "hidden: engine, track, the word, 1 player");
+	EGT_CHECK(EngTrack_HiddenRule(1, 1, ENGINE_HIDE_TRACK | ENGINE_HIDE_SKY | ENGINE_HIDE_WATER, 1, 0) == 1, "hidden: with sky and water as well");
+	EGT_CHECK(EngTrack_HiddenRule(1, 1, ENGINE_HIDE_SKY | ENGINE_HIDE_WATER, 1, 0) == 0, "hidden: not without the word track");
+	EGT_CHECK(EngTrack_HiddenRule(0, 1, ENGINE_HIDE_TRACK, 1, 0) == 0, "hidden: not without the engine");
+	EGT_CHECK(EngTrack_HiddenRule(1, 0, ENGINE_HIDE_TRACK, 1, 0) == 0, "hidden: not without the engine's track");
+	EGT_CHECK(EngTrack_HiddenRule(1, 1, ENGINE_HIDE_TRACK, 2, 0) == 0, "hidden: not with 2 players");
+	EGT_CHECK(EngTrack_HiddenRule(1, 1, ENGINE_HIDE_TRACK, 1, 1) == 0, "hidden: not in the main menu");
 
 	return failures;
 }

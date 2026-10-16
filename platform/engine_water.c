@@ -827,8 +827,10 @@ void Engine_WaterCollect(struct GameTracker *gGT)
 		return;
 	}
 	s_egwStat.trackFrames++;
-	// --engine-hide water: the engine owns the water and draws nothing (the minus run).
-	if ((g_cfg_engineHide & ENGINE_HIDE_WATER) != 0)
+	// --engine-hide water: the engine owns the water and draws nothing (the minus run);
+	// --engine-hide track the same (the level's water is part of its geometry,
+	// engine_track.c HIDDEN TRACK).
+	if ((g_cfg_engineHide & (ENGINE_HIDE_WATER | ENGINE_HIDE_TRACK)) != 0)
 	{
 		s_egwOwned = 1;
 		s_egwStat.hidden++;

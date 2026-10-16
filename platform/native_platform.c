@@ -1231,6 +1231,17 @@ char g_cfg_shotName[PLATFORM_ARG_PATH_MAX] = {0};
 int g_cfg_shotList[PLATFORM_SHOT_MAX];
 int g_cfg_shotCount = 0;
 global_variable int s_shotNext = 0;
+// --shot-series <first>,<count>,<step> (round of 2026-10-16, the frames of a
+// video): from VBlank first, count snapshots step VBlanks apart, each
+// <name without .bmp>-f<index, 5 digits>.bmp with the index counting from 0 -
+// a gapless numbered sequence an encoder takes as it is. A VBlank that passed
+// the next one due takes the snapshot late and keeps the step from there (the
+// log line names the VBlank). 0 = off.
+int g_cfg_shotSeriesFirst = 0;
+int g_cfg_shotSeriesCount = 0;
+int g_cfg_shotSeriesStep = 0;
+global_variable int s_shotSeriesTaken = 0;
+global_variable int s_shotSeriesNext = 0;
 #endif
 
 internal void Platform_HandleKey(int key, char down)
@@ -2086,6 +2097,36 @@ internal void Platform_ShotIfDue(void)
 		Platform_TakeScreenshot(s_shotRequestPath);
 		Platform_Log("[CTR Shot] vblank %d: %s (asked for by the game)\n", Platform_GetVBlankCount(), s_shotRequestPath);
 		s_shotRequestPath[0] = '\0';
+	}
+
+	// --shot-series: one snapshot of the series when its VBlank has come.
+	if ((g_cfg_shotSeriesCount > 0) && (s_shotSeriesTaken < g_cfg_shotSeriesCount))
+	{
+		const int vblank = Platform_GetVBlankCount();
+
+		if (s_shotSeriesTaken == 0)
+		{
+			s_shotSeriesNext = (s_shotSeriesNext > g_cfg_shotSeriesFirst) ? s_shotSeriesNext : g_cfg_shotSeriesFirst;
+		}
+		if (vblank >= s_shotSeriesNext)
+		{
+			char path[PLATFORM_ARG_PATH_MAX + 32];
+			char base[PLATFORM_ARG_PATH_MAX];
+			size_t len;
+
+			snprintf(base, sizeof(base), "%s", (g_cfg_shotName[0] != '\0') ? g_cfg_shotName : "SCREENSHOT.BMP");
+			len = strlen(base);
+			if ((len > 4) && ((strcmp(base + len - 4, ".bmp") == 0) || (strcmp(base + len - 4, ".BMP") == 0)))
+			{
+				base[len - 4] = '\0';
+			}
+			snprintf(path, sizeof(path), "%s-f%05d.bmp", base, s_shotSeriesTaken);
+			Platform_TakeScreenshot(path);
+			Platform_Log("[CTR Shot] series %d of %d at vblank %d (due %d): %s\n", s_shotSeriesTaken + 1, g_cfg_shotSeriesCount, vblank, s_shotSeriesNext,
+			             path);
+			s_shotSeriesTaken++;
+			s_shotSeriesNext = vblank + g_cfg_shotSeriesStep;
+		}
 	}
 
 	if ((g_cfg_shotAt <= 0) || (Platform_GetVBlankCount() < g_cfg_shotAt))
