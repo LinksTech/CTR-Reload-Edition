@@ -17,11 +17,13 @@ included). It reports:
             working copy, a local path
   date      a date written as day.month.year (use 2026-09-30)
 
-Person names and the folder of a local checkout are not written here. They
-are read from tools/lang_check_names.local.txt, a local file that git ignores:
-one person name per line, or "path <folder>" for a local folder ('#' starts a
-comment). Without that file (a fresh clone, the automatic builds) these two
-checks are skipped.
+Person names, names of community content and the folder of a local checkout
+are not written here. They are read from tools/lang_check_names.local.txt, a
+local file that git ignores, and from info/lang_check_names.local.txt in the
+repository's common git directory (shared by every worktree of the clone, so
+a new worktree checks the same names): one name per line, or "path <folder>"
+for a local folder ('#' starts a comment). Without either file (a fresh clone,
+the automatic builds) these two checks are skipped.
 
 Existing German names that stay for now (--frame-log columns, the
 tracks/vorschau folder ...) are listed in tools/lang_check_allow.txt. New
@@ -37,7 +39,8 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ALLOW_FILE = os.path.join(ROOT, 'tools', 'lang_check_allow.txt')
-LOCAL_FILE = os.path.join(ROOT, 'tools', 'lang_check_names.local.txt')
+DEFAULT_LOCAL_FILE = os.path.join(ROOT, 'tools', 'lang_check_names.local.txt')
+LOCAL_FILE = DEFAULT_LOCAL_FILE
 
 # Third-party code and license texts are not ours to translate.
 SKIP_PREFIXES = ('externals/', 'include/psn00bsdk/')
@@ -230,17 +233,31 @@ def folder_pattern(folder):
     return r'(?:[A-Za-z]:|/[A-Za-z])[\\/]+' + r'[\\/]+'.join(parts)
 
 
+def local_files():
+    """The local name lists that exist: LOCAL_FILE and, while LOCAL_FILE is the
+    default, the shared list in the common git directory (info/)."""
+    paths = [LOCAL_FILE]
+    if LOCAL_FILE == DEFAULT_LOCAL_FILE:
+        try:
+            out = subprocess.run(['git', 'rev-parse', '--git-common-dir'], cwd=ROOT, capture_output=True,
+                                 text=True, check=True).stdout.strip()
+            paths.append(os.path.join(ROOT, out, 'info', 'lang_check_names.local.txt'))
+        except (OSError, subprocess.CalledProcessError):
+            pass
+    return [p for p in paths if os.path.exists(p)]
+
+
 def load_local():
     """The rules from LOCAL_FILE: (person names, local folders), each a regex
     or None. A person name matches in any case, with a possessive s, and a
     camelCase gap counts as a word boundary; a folder matches only as a path."""
     names, folders = [], []
-    if os.path.exists(LOCAL_FILE):
-        for line in open(LOCAL_FILE, encoding='utf-8-sig'):
+    for path in local_files():
+        for line in open(path, encoding='utf-8-sig'):
             line = line.split('#', 1)[0].strip()
             if line.startswith(('path ', 'path\t')):
                 folders.append(folder_pattern(line[5:]))
-            elif line:
+            elif line and line not in names:
                 names.append(line)
     folders = [f for f in folders if f]
     names_rx = folders_rx = None
