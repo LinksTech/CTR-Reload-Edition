@@ -5228,6 +5228,144 @@ internal int EngTrack_RouteInstance(struct Instance *inst, struct InstDrawPerPla
 	return 0;
 }
 
+// --------------------------------------------------------------------------
+// PODIUM (round of 2026-10-16; include/platform/engine.h, TRACK PODIUM (Z2)).
+//
+// The podium plays on an Adventure Arena level: after a cup UI_CupStandings.c:810
+// loads GEM_STONE_VALLEY with ADVENTURE_ARENA and podiumRewardID set. Its figures
+// are no level instances (the load sets NO_LEV_INSTANCE, LOAD_TenStages.c:916):
+// the CS overlay births them with a thread from the podium files the load
+// queues at stage 7 (data.podiumModel_*, LOAD_TenStages.c:860-917; their ids go
+// into gGT->modelPtr at stage 8), the reward from gGT->modelPtr[podiumRewardID].
+// Engine_TrackPodiumLoad imports those models into the table. While the podium
+// plays (EngTrack_PodiumActive) an instance without an InstDef whose model is in
+// the table goes through EngTrack_RouteInstance like a level instance: it reads
+// inst->matrix, the animation and the flags the CS threads wrote, at draw time.
+// A declined one stays with retail, counted. Nothing of the game is written.
+#define EGT_PODIUM_MODELS_MAX 12
+global_variable const struct Level *s_egtPodiumLevel = NULL; // the level the podium models were imported for; NULL = no podium
+global_variable const struct Model *s_egtPodiumModel[EGT_PODIUM_MODELS_MAX];
+global_variable int s_egtPodiumModelCount = 0;
+global_variable u64 s_egtPodiumDrawn = 0;
+global_variable u64 s_egtPodiumDeclined = 0;
+global_variable u64 s_egtPodiumFramesBase = 0;                   // s_egtFramesDrawn at the podium's load
+global_variable u64 s_egtPodiumDeclinedByBase[EGT_DECLINE_COUNT]; // s_egtInstDeclinedBy at the podium's load
+
+internal int EngTrack_PodiumActive(const struct GameTracker *gGT)
+{
+	return ((s_egtPodiumLevel != NULL) && (gGT != NULL) && (s_egtPodiumLevel == s_egtLevel) && (gGT->level1 == s_egtLevel) &&
+	        ((gGT->gameMode1 & ADVENTURE_ARENA) != 0) && (gGT->podiumRewardID != NOFUNC)) ? 1 : 0;
+}
+
+// One podium model into the table (EngTrack_ImportOne) and into the podium list.
+internal void EngTrack_PodiumAdd(const struct Model *model, int *imported, int *failed, int *known)
+{
+	int i;
+	int r;
+
+	if (model == NULL)
+	{
+		return;
+	}
+	for (i = 0; i < s_egtPodiumModelCount; i++)
+	{
+		if (s_egtPodiumModel[i] == model)
+		{
+			return;
+		}
+	}
+	if (s_egtPodiumModelCount >= EGT_PODIUM_MODELS_MAX)
+	{
+		return;
+	}
+	r = EngTrack_ImportOne(model, 0);
+	*imported += (r == 1) ? 1 : 0;
+	*failed += (r == 0) ? 1 : 0;
+	*known += (r < 0) ? 1 : 0;
+	s_egtPodiumModel[s_egtPodiumModelCount++] = model;
+}
+
+void Engine_TrackPodiumLoad(void)
+{
+	struct GameTracker *gGT = sdata->gGT;
+	struct Model **slots;
+	int imported = 0;
+	int failed = 0;
+	int known = 0;
+	int i;
+
+	s_egtPodiumLevel = NULL;
+	s_egtPodiumModelCount = 0;
+	s_egtPodiumDrawn = 0;
+	s_egtPodiumDeclined = 0;
+	if (!g_cfg_engine || !g_cfg_engineTrack || (gGT == NULL) || ((gGT->gameMode1 & ADVENTURE_ARENA) == 0) || (gGT->podiumRewardID == NOFUNC))
+	{
+		return;
+	}
+	if ((s_egtLevel == NULL) || (gGT->level1 != s_egtLevel))
+	{
+		Platform_Log("[CTR Engine] track: podium on level %d: the engine track did not load - the PS1 path draws the podium\n", (int)gGT->levelID);
+		return;
+	}
+	// The eight slots LOAD_TenStages.c treats as one array (stage 7 clears them,
+	// stage 8 moves the first seven past their file header).
+	slots = &data.podiumModel_firstPlace;
+	for (i = 0; i < LOAD_PODIUM_MODEL_SLOT_COUNT; i++)
+	{
+		EngTrack_PodiumAdd(slots[i], &imported, &failed, &known);
+	}
+	if ((gGT->podiumRewardID > 0) && (gGT->podiumRewardID < (s16)(sizeof(gGT->modelPtr) / sizeof(gGT->modelPtr[0]))))
+	{
+		EngTrack_PodiumAdd(gGT->modelPtr[gGT->podiumRewardID], &imported, &failed, &known);
+	}
+	s_egtPodiumLevel = s_egtLevel;
+	s_egtPodiumFramesBase = s_egtFramesDrawn;
+	memcpy(s_egtPodiumDeclinedByBase, s_egtInstDeclinedBy, sizeof(s_egtPodiumDeclinedByBase));
+	Platform_Log("[CTR Engine] track: podium on level %d: %d model(s) imported, %d failed, %d already in the table (reward model id %d)\n",
+	             (int)gGT->levelID, imported, failed, known, (int)gGT->podiumRewardID);
+}
+
+void Engine_TrackPodiumEnd(void)
+{
+	int i;
+
+	if (s_egtPodiumLevel == NULL)
+	{
+		return;
+	}
+	Platform_Log("[CTR Engine] track: podium summary: track frames drawn %llu, podium figures drawn by the engine %llu, declined (retail draws them) %llu "
+	             "(model %llu, flags %llu, frame %llu, submit %llu)\n",
+	             (unsigned long long)(s_egtFramesDrawn - s_egtPodiumFramesBase), (unsigned long long)s_egtPodiumDrawn, (unsigned long long)s_egtPodiumDeclined,
+	             (unsigned long long)(s_egtInstDeclinedBy[EGT_DECLINE_MODEL] - s_egtPodiumDeclinedByBase[EGT_DECLINE_MODEL]),
+	             (unsigned long long)(s_egtInstDeclinedBy[EGT_DECLINE_FLAGS] - s_egtPodiumDeclinedByBase[EGT_DECLINE_FLAGS]),
+	             (unsigned long long)(s_egtInstDeclinedBy[EGT_DECLINE_FRAME] - s_egtPodiumDeclinedByBase[EGT_DECLINE_FRAME]),
+	             (unsigned long long)(s_egtInstDeclinedBy[EGT_DECLINE_SUBMIT] - s_egtPodiumDeclinedByBase[EGT_DECLINE_SUBMIT]));
+	for (i = 0; i < s_egtPodiumModelCount; i++)
+	{
+		const EngTrackModel *m = EngTrack_ModelEntry(s_egtPodiumModel[i], 0);
+
+		if (m != NULL)
+		{
+			Platform_Log("[CTR Engine] track:   podium model '%s' id %d (%s): drawn %u, declined %u\n", m->name, (int)m->id,
+			             m->imported ? "imported" : m->why, m->drawn, m->declined);
+		}
+	}
+	s_egtPodiumLevel = NULL;
+	s_egtPodiumModelCount = 0;
+}
+
+// A podium figure through the route of the level instances, counted apart.
+internal int EngTrack_PodiumRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb, EngTrackModel *em)
+{
+	if (EngTrack_RouteInstance(inst, idpp, pb, em, 0))
+	{
+		s_egtPodiumDrawn++;
+		return 1;
+	}
+	s_egtPodiumDeclined++;
+	return 0;
+}
+
 // 1 = the engine draws this instance of the level (Engine_InstanceSubmit), 0 =
 // the retail handler draws it. Called for every instance retail would draw now
 // (RenderBucket_DispatchDrawFunc), only while the engine draws the track.
@@ -5258,6 +5396,11 @@ int Engine_TrackInstanceRoute(struct Instance *inst, struct InstDrawPerPlayer *i
 		return 0;
 	}
 	em = EngTrack_ModelEntry(inst->model, 0);
+	// PODIUM: the podium's figures (CS threads, no InstDef) while it plays.
+	if ((em != NULL) && (inst->instDef == NULL) && EngTrack_PodiumActive(sdata->gGT))
+	{
+		return EngTrack_PodiumRoute(inst, idpp, pb, em);
+	}
 	switch (EngTrack_InstanceRule(inst, em != NULL, NativeTrack_ActiveForLevel(s_egtLevelID)))
 	{
 	case EGT_RULE_LEVEL:

@@ -1032,6 +1032,19 @@ int Engine_TrackInstanceRoute(struct Instance *inst, struct InstDrawPerPlayer *i
 int Engine_TrackDrawnThisFrame(void);
 
 // --------------------------------------------------------------------------
+// TRACK PODIUM (Z2) (platform/engine_track.c; round of 2026-10-16)
+//
+// The podium scene after a cup (an Adventure Arena level with podiumRewardID
+// set, game/LOAD/LOAD_TenStages.c stage 8): the track loads as on a race
+// level, and the podium's own models (data.podiumModel_*: the three dancers,
+// Tawna, the Dingo fire, the stands; the reward gGT->modelPtr[podiumRewardID])
+// join the track's model table. Their instances - CS threads, no InstDef - go
+// through the instance route of the level instances while the podium plays.
+// The hub levels themselves stay with the PS1 path.
+void Engine_TrackPodiumLoad(void); // load stage 8, right after Engine_TrackLoad, podium only
+void Engine_TrackPodiumEnd(void);  // load stage 0 of the next level: the summary lines, podium state off
+
+// --------------------------------------------------------------------------
 // TRACK MOSAIC (platform/engine_track_mosaic.c; round of 2026-10-15)
 //
 // A mosaic mid face (level 3 of its IconGroup4 is a mosaic table reference)

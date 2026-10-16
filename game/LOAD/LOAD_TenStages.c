@@ -27,6 +27,8 @@ void Engine_MenuSceneLoad(void);
 void Engine_TrackLoad(void);
 void Engine_SkyLoad(void);
 void Engine_WaterLoad(void);
+void Engine_TrackPodiumLoad(void);
+void Engine_TrackPodiumEnd(void);
 #endif
 
 // From platform/native_renderer.c, further down as well: the texture of the
@@ -52,6 +54,35 @@ void NativeRenderLayer_WarmRace(void);
 // From platform/engine_material.c: the Vulkan pipelines of every draw state the
 // loaded engine materials can reach, built at this loading screen (stage 8).
 void Engine_MaterialsWarmPipelines(void);
+
+#ifdef CTR_NATIVE
+// Stage 8 of a level the engine draws: the turbo flame models are in
+// gGT->modelPtr[] now - import them and upload their meshes (only meshes without
+// buffers yet go up) at this loading screen; the track with its sky, water and
+// pipelines (the level is in memory, gGT->level1, stage 7). podium: the podium
+// scene of the Adventure Arena (stage 8 below) - its models join the track's
+// (include/platform/engine.h, TRACK PODIUM (Z2)).
+internal void LOAD_NativeEngineStage8(int podium)
+{
+	if (!g_cfg_engine)
+	{
+		return;
+	}
+	EngineFx_TurboLoad();
+	if (g_cfg_engineTrack)
+	{
+		Engine_TrackLoad();
+		if (podium)
+		{
+			Engine_TrackPodiumLoad();
+		}
+		Engine_SkyLoad();
+		Engine_WaterLoad();
+		Engine_MaterialsWarmPipelines();
+	}
+	Engine_RenderUploadMeshes();
+}
+#endif
 
 #ifdef CTR_NATIVE
 // See game/LOAD/LOAD_File.c: declaration instead of a platform header, because this
@@ -350,6 +381,8 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 			// The switches a level had off (its own fallback, or the players
 			// rule of the default) come back first, so the unload clears what
 			// the engine left of that level (include/platform/engine.h, FALLBACK).
+			// The podium's summary first, while its counters stand (TRACK PODIUM (Z2)).
+			Engine_TrackPodiumEnd();
 			Engine_LevelEnd();
 			if (g_cfg_engine)
 			{
@@ -980,6 +1013,16 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 			{
 				audioState = AUDIO_ADV_HUB;
 			}
+#ifdef CTR_NATIVE
+			// The podium scene through the engine as a race level (the same
+			// condition as the podium models above). The hub itself stays with the
+			// PS1 path: warp pads, the map and the boss doors read the instances'
+			// queue state, and no measuring start reaches the hub yet.
+			if (((gGT->gameMode1 & ADVENTURE_ARENA) != 0) && (gGT->podiumRewardID != NOFUNC))
+			{
+				LOAD_NativeEngineStage8(1);
+			}
+#endif
 			goto LAB_800346b0;
 		}
 
@@ -1012,21 +1055,7 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 			goto LAB_800346b0;
 		}
 #ifdef CTR_NATIVE
-		// The turbo flame models are in gGT->modelPtr[] now: import them and upload
-		// their meshes (only meshes without buffers yet go up) at this loading screen.
-		if (g_cfg_engine)
-		{
-			EngineFx_TurboLoad();
-			// The track prototype: the level is in memory (gGT->level1, stage 7).
-			if (g_cfg_engineTrack)
-			{
-				Engine_TrackLoad();
-				Engine_SkyLoad();
-				Engine_WaterLoad();
-				Engine_MaterialsWarmPipelines();
-			}
-			Engine_RenderUploadMeshes();
-		}
+		LOAD_NativeEngineStage8(0);
 #endif
 		break;
 	}
