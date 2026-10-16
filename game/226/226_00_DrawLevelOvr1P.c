@@ -112,7 +112,7 @@ void Engine_TrackOracleTable(const struct QuadBlock *block, int face, const stru
 static int s_oraclePass;
 static int s_oracleSieve; // the sieve dropped a layout while the oracle pass drew the current block
 static int s_oracleMorph; // the distance fade moved a midpoint (colour, place) while the oracle pass drew the current block
-static int s_oracleWide; // the wide-dynamic subdivision frame (centre from the edge midpoints) ran while the oracle pass drew the current block
+static int s_oracleWide; // a subdivision frame that takes the centre from the edge midpoints ran while the oracle pass drew the current block
 static int s_oracleSourceEntry = -1; // the table entry the last mosaic reload read (oracle pass only; -1 none)
 
 static u32 DrawLevelOvr1P_ReadPackedWord(const void *src)
@@ -2234,6 +2234,7 @@ static void Ovr226_800a9d70_BuildQuad4x4RenderedSubdivisionFrame(struct DrawLeve
 	Ovr226_800a8150_BuildDynamicRenderedSubdivideMidpoint(&sub[2], &sub[5], &projected[indices[2]], &projected[indices[0]]);
 	Ovr226_800a8150_BuildDynamicRenderedSubdivideMidpoint(&sub[3], &sub[8], &projected[indices[3]], &projected[indices[2]]);
 	Ovr226_800a8150_BuildDynamicRenderedSubdivideMidpoint(&sub[4], &sub[6], &sub[4], &sub[8]);
+	s_oracleWide |= s_oraclePass;
 }
 
 static void Ovr226_800a4594_BuildGround4x1RenderedMidpointPair(struct DrawLevelOvr1PScratchVertex *dstA, struct DrawLevelOvr1PScratchVertex *dstB,
@@ -10281,6 +10282,7 @@ static void DrawLevelOvr1P_BuildGridSubdivisionFrame4x4(struct DrawLevelOvr1PScr
 	DrawLevelOvr1P_BuildMidpointFromFirstEndpoint(&sub[3], &sub[8], &projected[indices[3]], &projected[indices[2]], writeClipBytes);
 	// NOTE(aalhendi): Retail 4x4 helpers build the center from edge midpoints.
 	DrawLevelOvr1P_BuildMidpointFromFirstEndpoint(&sub[4], &sub[6], &sub[4], &sub[8], writeClipBytes);
+	s_oracleWide |= s_oraclePass;
 }
 
 static int Ovr226_800a25d0_WaterListFaceGate(struct PushBuffer *pb, struct PrimMem *primMem, struct QuadBlock *block,
