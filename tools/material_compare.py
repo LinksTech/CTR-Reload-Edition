@@ -123,7 +123,7 @@ PIECE_FUNCS = {'split': 'split-col', 'reflection': 'mirror-col', 'special': 'mir
 # not draw by default), noleaf (a block the walk never reaches), sieve; engine
 # frozen (an AnimTex face that does not follow its cell), tablefail.
 FLAG_KEYS = ('part', 'clip', 'nogeo', 'lodonly', 'noleaf', 'sieve', 'frozen', 'tablefail', 'degenerate',
-             'nolayout', 'dropped', 'blank', 'zeroarea')
+             'nolayout', 'dropped', 'blank', 'zeroarea', 'wide', 'foreign')
 # Retail track lines without an engine line of their key that are information:
 # in every set a level retail does not draw by default (lodonly), a block in
 # no leaf (noleaf), a table of null entries (blank), a packet without area
@@ -239,7 +239,7 @@ def parse_box(s):
 class Line(object):
     __slots__ = ('side', 'src', 'srcId', 'sub', 'page', 'depth', 'clut', 'uv', 'blend', 'cell',
                  'extra', 'lineno', 'fault', 'col', 'box', 'lod', 'stage', 'anim', 'prim', 'route',
-                 'key', 'ncorner', 'set', 'flags', 'colbad', 'slots', 'rawcol')
+                 'key', 'ncorner', 'set', 'flags', 'colbad', 'slots', 'rawcol', 'colw')
 
     def mat(self):
         return (self.page, self.depth, self.clut, self.blend)
@@ -314,7 +314,15 @@ def parse_entry(fields, lineno):
             ln.slots = tuple(sl)
         elif ln.extra.get('ord') == 'slot' or (ln.side == 'E' and len(ln.uv) == 4):
             ln.slots = tuple(range(len(ln.uv)))
+    if ln.side == 'R' and 'foreign' in ln.extra:
+        # a stage line laid on its owner face from another mid face (foreign=<place>):
+        # its corners are compared as a set
+        ln.slots = None
     ln.ncorner = len(ln.uv) if ln.uv is not None else (len(ln.col) if ln.col and len(ln.col) > 1 else 3)
+    # colw= (engine cell lines): the colours of the cell under the wide frame rule
+    ln.colw = parse_col(ln.extra.get('colw'))
+    if ln.colw is not None and len(ln.colw) not in (1, ln.ncorner):
+        ln.colw = None
     ln.colbad = ln.col is not None and len(ln.col) not in (1, ln.ncorner)
     if ln.colbad:
         # colours that cannot be paired with the corners (e.g. three colours on
@@ -862,7 +870,7 @@ def _new_stats():
             'part': {}, 'clip': {}, 'nogeo': {}, 'info_lines': {}, 'stage_none': {}, 'lod_never': set(),
             'col_unpaired': 0, 'winding': 0, 'piece': {}, 'eom_coverage': [], 'fault_orient': set(),
             't_set_rule': {}, 'back_coverage': [], 'src_cell': {}, 'col_model': {}, 'raw_col': 0,
-            'tablefail': {}, 'anim_degenerate': {}}
+            'tablefail': {}, 'anim_degenerate': {}, 'foreign': {}}
 
 
 def _per(stats, tr, src):
@@ -921,11 +929,24 @@ def _common_slots(r, e):
             else ((None, None), (-1, None)) for k in few]
 
 
+def _tcol_view(r, e):
+    """The engine line whose colours a retail line is compared with: for a
+    tile of a wide frame block (wide=1) the engine's colw= when it has one."""
+    if 'wide' not in r.flags or e.colw is None:
+        return e
+    v = Line()
+    for k in Line.__slots__:
+        setattr(v, k, getattr(e, k, None))
+    v.col = e.colw
+    return v
+
+
 def _t_diffs(r, e, ctol):
     """Track line against an engine line of a face: material exact, the UV
     corners per slot (fallback: as a subset), colours paired by slot (fallback:
     by UV point)."""
     d = _mat_diffs(r, e)
+    e = _tcol_view(r, e)
     if not _t_corners_ok(r, e):
         d.append('uv')
     elif r.uv is not None and r.col is not None and e.col is not None:
@@ -1068,7 +1089,7 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                 if src != 'T':
                     ob = objs.setdefault((src, object_key(src, sid)),
                                          {'R': set(), 'E': {}, 'srcId': sid, 'rlod': set(), 'seen': set(),
-                                          'used': set(), 'ruv': set(), 'rback': False})
+                                          'used': set(), 'ruv': set(), 'rback': False, 'rtri': {}, 'etri': {}})
                     for e in es.lines:
                         ent = ob['E'].setdefault(e.mat(), {'e': e, 'frames': set(), 'fault': None,
                                                            'lod': set(), 'front': False})
@@ -1081,6 +1102,7 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                         ob['seen'].add(e.tuple_key())
                     for t in es.tris:
                         ob['E'][t.mat].setdefault('uvs', set()).add(t.skey)
+                        ob['etri'].setdefault(t.skey, set()).add(t.mat)
                 # retail lines, one per distinct tuple
                 ret = {}
                 for r in rl:
@@ -1159,7 +1181,9 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                             ob['rback'] = True
                         for opt in line_options(r):
                             for c in opt:
-                                ob['ruv'].add(tuple(sorted((x[0] for x in c), key=_uvs)))
+                                tk = tuple(sorted((x[0] for x in c), key=_uvs))
+                                ob['ruv'].add(tk)
+                                ob['rtri'].setdefault(tk, set()).add(r.mat())
                         ob['rlod'].add(rlod)
                     if src != 'T' and rlod not in es.lods:
                         lod_count[rlod] = lod_count.get(rlod, 0) + count
@@ -1228,7 +1252,9 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                     if src == 'T':
                         # track UV per slot (fallback without slot marker: as a corner set,
                         # the retail corners a subset of the engine corners; counted)
-                        if r.uv is not None and r.slots is None:
+                        if 'foreign' in r.flags:
+                            _bump(stats['foreign'], tr, count)
+                        elif r.uv is not None and r.slots is None:
                             _bump(stats['t_set_rule'], tr, count)
                         same = [e for e in es.lines if e.key == r.key]
                         hit = next((e for e in same if not _t_diffs(r, e, ctol)), None)
@@ -1249,7 +1275,7 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                         best = min(same, key=lambda e: (len(_t_diffs(r, e, ctol)), e.lineno))
                         d = _t_diffs(r, best, ctol)
                         if d == ['col'] and r.key[0] == 'cell' and r.slots is not None and best.slots is not None and \
-                                max(max(abs(p - q) for p, q in zip(a[1], b[1])) for a, b in _common_slots(r, best)
+                                max(max(abs(p - q) for p, q in zip(a[1], b[1])) for a, b in _common_slots(r, _tcol_view(r, best))
                                     if a[1] is not None and b[1] is not None) <= COL_MODEL_GAP:
                             # computed tile corner colours within a rounding step of the
                             # oracle's colour model: information, counted
@@ -1268,8 +1294,13 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                         # exact, every UV corner inside the corner box of one engine triangle;
                         # its colour (the side's tint) is its own feature
                         _bump(stats['piece'], tr, count)
-                        inside = [t for t in pool if t.mat == r.mat() and t.uvkey and None not in t.uvkey and
-                                  r.uv is not None and _in_box(r.uv, t.uvkey)]
+                        if r.uv is None:
+                            # untextured on both sides: the piece lies in any engine triangle of
+                            # its material; only its colour decides
+                            inside = [t for t in pool if t.mat == r.mat() and all(x is None for x in t.uvkey)]
+                        else:
+                            inside = [t for t in pool if t.mat == r.mat() and t.uvkey and None not in t.uvkey and
+                                      _in_box(r.uv, t.uvkey)]
                         if inside:
                             # the engine draws a triangle once per side tint (above/below the
                             # water, mirror): the piece is drawn when ANY of them fits its colour
@@ -1342,8 +1373,12 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
             for mat, ent in sorted(ob['E'].items(), key=lambda kv: kv[1]['e'].lineno):
                 if mat in ob['R'] or (tr, obj, mat) in reported:
                     continue
-                if not (ent.get('uvs', set()) & ob['ruv']):
-                    # retail drew none of these triangles: coverage, not a material question
+                if not any(t in ob['rtri'] and not (ob['rtri'][t] & ob['etri'].get(t, set()))
+                           for t in ent.get('uvs', ())):
+                    # no triangle of this material that retail drew with another material
+                    # the engine lacks for it: the engine material lies on triangles retail
+                    # never drew, or on a copy of a triangle the engine also draws with
+                    # retail's material (another face with the same UV) - coverage
                     stats['eom_coverage'].append((tr, obj, mat))
                     continue
                 if not ent['front'] and not ob['rback']:
@@ -1776,6 +1811,9 @@ def render_md(res, inputs, exc_origin):
     for tr in sorted(s['anim_degenerate']):
         md.append('- %s set=anim lines of faces the load block marks degenerate and no race frame draws: %d '
                   '(information)' % (tr, s['anim_degenerate'][tr]))
+    if s['foreign']:
+        md.append('- Track stage lines laid on their owner face from another mid face (foreign=), corners as a '
+                  'set: %d' % sum(s['foreign'].values()))
     if s['src_cell']:
         md.append('- Track tiles without slots placed by their table entry (src= against entry= of the load '
                   'block): %d' % sum(s['src_cell'].values()))
@@ -2076,6 +2114,13 @@ def selftest():
     res, _ = run([F(), L('R', 'I', 'turtle#3', uv='4,4,40,4,4,20', extra='func=split'),
                   L('E', 'I', 'turtle#3', uv=TRI_A)])
     check('piece: a corner outside every engine triangle stays uv', feats(res) == ['uv'])
+    res, _ = run([F(), L('R', 'I', 'turtle#3', page='-', clut='-', uv='-', extra='func=split col=60,60,60'),
+                  L('E', 'I', 'turtle#3', page='-', clut='-', uv='-', extra='col=10,10,10'),
+                  L('E', 'I', 'turtle#3', page='-', clut='-', uv='-', extra='col=60,60,60;80,80,80;60,60,60')])
+    check('untextured piece: in any untextured engine triangle of its material, colour decides: 0', len(res.open) == 0)
+    res, _ = run([F(), L('R', 'I', 'turtle#3', page='-', clut='-', uv='-', extra='func=split col=45,45,45'),
+                  L('E', 'I', 'turtle#3', page='-', clut='-', uv='-', extra='col=60,60,60;80,80,80;60,60,60')])
+    check('untextured piece outside every colour range: split-col', feats(res) == ['split-col'])
     res, _ = run([F(), L('R', 'I', 'turtle#3', uv='4,4,20,4,4,20'), L('E', 'I', 'turtle#3', uv=TRI_A)])
     check('piece rule only for split/reflection/special: a normal line inside a triangle is uv', feats(res) == ['uv'])
     # half the quad with a wrong CLUT says clut
@@ -2154,6 +2199,22 @@ def selftest():
           res.control.startswith('yes') and res.stats['fault_orient'] == set() and feats(res) == ['cell', 'cell'])
     check('parse: bad slots are an error',
           len(parse_log('\n'.join([F(), T('R', '5', C00, 'cell=0,0', extra='slots=0,1,1,2')]) + '\n', 's').errors) == 1)
+
+    # wide frame tiles (wide=1 against colw=), foreign stage lines (corners as a set)
+    res, _ = run([F(), T('R', '5', C00, 'cell=0,0', extra='ord=slot,wide=1,col=10,10,10;20,20,20;30,30,30;40,40,40'),
+                  T('E', '5', C00, 'cell=0,0', extra='col=10,10,10;20,20,20;30,30,30;90,90,90,'
+                                                     'colw=10,10,10;20,20,20;30,30,30;40,40,40')])
+    check('wide=1: tile colours against colw= of the engine line: 0', len(res.open) == 0)
+    res, _ = run([F(), T('R', '5', C00, 'cell=0,0', extra='ord=slot,col=10,10,10;20,20,20;30,30,30;40,40,40'),
+                  T('E', '5', C00, 'cell=0,0', extra='col=10,10,10;20,20,20;30,30,30;90,90,90,'
+                                                     'colw=10,10,10;20,20,20;30,30,30;40,40,40')])
+    check('without wide=1 the tile colours are compared with col=: col', feats(res) == ['col'])
+    res, _ = run([F(), T('R', '5', C00, 'cell=0,0', extra='ord=slot,wide=1,col=10,10,10;20,20,20;30,30,30;90,90,90'),
+                  T('E', '5', C00, 'cell=0,0', extra='col=10,10,10;20,20,20;30,30,30;90,90,90')])
+    check('wide=1 without colw= on the engine line falls back to col=: 0', len(res.open) == 0)
+    res, _ = run([F(), T('R', '5', '7,0,0,0,7,7,0,7', 'stage=2', extra='ord=slot,foreign=2'),
+                  T('E', '5', C00, 'stage=2')])
+    check('foreign=<place>: corners compared as a set, counted', len(res.open) == 0 and res.stats['foreign'] == {'L3': 1})
 
     # set=anim missing-source by cross reference, faces with a refused table
     res, _ = run([F('L3-load'), T('R', '9', C00, 'stage=2', extra='degenerate=1'),
@@ -2283,20 +2344,24 @@ def selftest():
           len(res.open) == 0 and res.stats['route_retail'] == {'L3': set(['I:crate'])})
 
     # (f) direction 2
+    res, _ = run([F(), L('R', 'I', 'tikka#0', uv=TRI_A), L('E', 'I', 'tikka#0', clut='0,500', uv=TRI_A),
+                  L('E', 'I', 'tikka#0', clut='0,501', uv=TRI_A)])
+    check('(f) engine-only-material: retail drew the triangle with a material the engine lacks for it',
+          feats(res, 'd2') == ['engine-only-material'] and feats(res) == ['clut'])
     res, _ = run(base_r + eng_ok + [L('E', 'I', 'tikka#0', clut='0,500', uv=TRI_A)])
-    check('(f) engine-only-material: retail drew the same triangle with another material',
-          feats(res, 'd2') == ['engine-only-material'] and not feats(res))
+    check('(f) a second engine copy of a triangle the engine also draws with retail material: coverage',
+          len(res.open) == 0 and len(res.stats['eom_coverage']) == 1)
     res, _ = run([F(), L('R', 'I', 'crystal#0', uv=TRI_A, extra='prim=key'),
                   L('E', 'I', 'crystal#0', uv=TRI_A),
                   L('E', 'I', 'crystal#0', uv=TRI_A, blend='2', extra='side=back')])
     check('(f) back-side copy (side=back) of a model retail never showed from the back: coverage',
-          len(res.open) == 0 and len(res.stats['back_coverage']) == 1)
+          len(res.open) == 0 and len(res.stats['back_coverage']) + len(res.stats['eom_coverage']) == 1)
     res, _ = run([F(), L('R', 'I', 'crystal#0', uv=TRI_A, extra='prim=key'),
                   L('R', 'I', 'crystal#0', uv='0,0,0,31,31,0', blend='1', extra='prim=key,side=back'),
-                  L('E', 'I', 'crystal#0', uv=TRI_A), L('E', 'I', 'crystal#0', uv='0,0,0,31,31,0', blend='1'),
+                  L('E', 'I', 'crystal#0', uv=TRI_A),
                   L('E', 'I', 'crystal#0', uv=TRI_A, blend='2', extra='side=back')])
-    check('(f) back-side copy when retail showed a back side: engine-only-material',
-          feats(res, 'd2') == ['engine-only-material'] and not res.stats['back_coverage'])
+    check('(f) a back side retail showed with another blend stays a deviation',
+          feats(res) == ['prim+blend'])
     res, _ = run(base_r + eng_ok + [L('E', 'I', 'tikka#0', clut='0,500', uv='64,0,95,0,64,31')])
     check('(f) an engine material on triangles retail never drew is coverage, no deviation',
           len(res.open) == 0 and res.stats['eom_coverage'] == [('L3', 'I:tikka', ((512, 0), 0, (0, 500), 'o'))])
