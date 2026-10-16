@@ -289,6 +289,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--menu-keys-quit", "<vblanks>", "end this many VBlanks after the last step (default 120, 0 = do not end)"},
     {"--menu-keys-every", "<vblanks>", "length of one step of the sequence (default 24)"},
     {"--dev-drive-log", "[n]", "log lines of the kart of seat 0: every n race frames (default 15) position, restart point, distance, lap, ground contact; every lap change; every mask grab with its reason and every landing; reads only, for measuring"},
+    {"--dev-kart-steer-lead", "<1|2>", "with --dev-kart-steer: steer toward the restart point 1 or 2 (default) ahead of the kart's own; for measuring"},
     {"--dev-kart-steer", "[n]", "the kart of seat 0 drives itself with its own physics (not a bot): CROSS held, steered along the restart points; from race n of the run on (default 1) SQUARE (every other time with DOWN) after it got reserves, off the pad; for measuring"},
     {"--menu-keys-hold", "<vblanks>", "how long a step holds its keys before they are let go (default 3; as long as --menu-keys-every holds them through, for driving)"},
     {"--menu-keys-from", "<vblank>", "first step of the sequence at this VBlank (default 300)"},
@@ -1071,6 +1072,44 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			fprintf(stderr, "switch --dev-tt-ghost requires --dev-race-mode tt\n");
 			fflush(stderr);
 			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+	}
+
+	// --dev-kart-steer-lead: how many restart points ahead --dev-kart-steer
+	// aims, 1 or 2, and only beside --dev-kart-steer. Before the value check of
+	// --dev-race-mode, so that a wrong value behind it is the net of the ctest
+	// lines.
+	{
+		int steerGiven = 0;
+		const char *lead = NULL;
+
+		for (int argIndex = 1; argIndex < argc; argIndex++)
+		{
+			if (strcmp(argv[argIndex], "--dev-kart-steer") == 0)
+			{
+				steerGiven = 1;
+			}
+			else if (strcmp(argv[argIndex], "--dev-kart-steer-lead") == 0)
+			{
+				lead = ((argIndex + 1) < argc) ? argv[argIndex + 1] : "";
+			}
+		}
+		if (lead != NULL)
+		{
+			if ((strcmp(lead, "1") != 0) && (strcmp(lead, "2") != 0))
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --dev-kart-steer-lead expects 1 or 2, not '%s'\n", lead);
+				fflush(stderr);
+				return NATIVE_EXIT_DEV_REQUIRED;
+			}
+			if (!steerGiven)
+			{
+				fflush(stdout);
+				fprintf(stderr, "switch --dev-kart-steer-lead requires --dev-kart-steer\n");
+				fflush(stderr);
+				return NATIVE_EXIT_DEV_REQUIRED;
+			}
 		}
 	}
 
@@ -4666,6 +4705,13 @@ int main(int argc, char *argv[])
 					g_cfg_driveLog = atoi(argv[++argIndex]);
 				}
 				printf("[CTR Native] --dev-drive-log: seat 0 logged every %d race frames, every lap change and mask grab\n", g_cfg_driveLog);
+			}
+			else if ((strcmp(argv[argIndex], "--dev-kart-steer-lead") == 0) && ((argIndex + 1) < argc))
+			{
+				extern int g_cfg_kartSteerLead;
+
+				g_cfg_kartSteerLead = atoi(argv[++argIndex]);
+				printf("[CTR Native] --dev-kart-steer-lead: the kart steers toward the restart point %d ahead\n", g_cfg_kartSteerLead);
 			}
 			else if (strcmp(argv[argIndex], "--dev-kart-steer") == 0)
 			{

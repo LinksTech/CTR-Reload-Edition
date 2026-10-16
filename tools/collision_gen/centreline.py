@@ -394,6 +394,7 @@ def limit_inner(rows, closed, share=0.8, margin=32.0):
             hit = False
             for key in keys:
                 if rows[i][key] > limit:
+                    rows[i].setdefault(key + '0', rows[i][key])     # the width before the cut
                     rows[i][key] = limit
                     hit = True
             cut += hit

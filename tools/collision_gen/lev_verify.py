@@ -700,6 +700,21 @@ def _check_heights(m, surface, raster, tol, hit_min, region, err, tol_below=0.5)
     return height, len(conflicts)
 
 
+def uncovered_points(lev, surface, raster=64, region=None):
+    """Raster points of the model's road (each road layer, region applied) under
+    which the game's floor search finds no ground at all (window y - 256 ..
+    y + 128): road the kart can see but cannot drive on. A list of (x, z, y)."""
+    model = lev if isinstance(lev, LevModel) else LevModel(lev)
+    out = []
+    for x, z in _raster_points(surface, raster):
+        for y in _road_layers(surface, x, z):
+            if region is not None and not region(x, z, y):
+                continue
+            if model.ground_hit(x, z, y + 128, y - 256) is None:
+                out.append((x, z, y))
+    return out
+
+
 def verify_lev(lev, surface=None, raster=64, tol=8.0, hit_min=0.99, region=None):
     """Check a LEV (see the module doc); returns a dict with 'errors' and figures."""
     err = _Errors()

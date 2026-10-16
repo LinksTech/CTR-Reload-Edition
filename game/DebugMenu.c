@@ -1409,8 +1409,9 @@ internal void DebugMenu_MenuKeysTick(void)
 //  reserves (RETRO FUELED of the MODS page).
 //
 //  HOW. In every race frame the steerer holds CROSS and steers with the
-//  D-pad towards the restart point two ahead of the kart's own
-//  (ptr_restart_points, the heading as VehStuckProc's respawn takes it:
+//  D-pad towards the restart point two ahead of the kart's own (one ahead with
+//  --dev-kart-steer-lead 1, for tight bends where two ahead cuts the inner
+//  side) (ptr_restart_points, the heading as VehStuckProc's respawn takes it:
 //  ratan2(dx, dz)). Which way LEFT turns the heading is learnt from the kart
 //  itself while it steers. From the n-th race of the run on (--dev-kart-steer
 //  n, default 1), each time the kart gets reserves it holds SQUARE for 8
@@ -1424,6 +1425,7 @@ internal void DebugMenu_MenuKeysTick(void)
 // ---------------------------------------------------------------------------
 
 int g_cfg_kartSteer = 0;
+int g_cfg_kartSteerLead = 2;
 
 internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 {
@@ -1492,7 +1494,7 @@ internal void DebugMenu_KartSteerTick(struct GameTracker *gGT)
 		int target = d->checkpoint.currentIndex;
 		int k;
 
-		for (k = 0; k < 2; k++)
+		for (k = 0; k < g_cfg_kartSteerLead; k++)
 		{
 			const int next = cn[(target < count) ? target : 0].nextIndex_forward;
 

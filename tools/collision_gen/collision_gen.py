@@ -95,11 +95,12 @@ def read_route(path):
 LEVELS = ((256.0, 512.0), (128.0, 256.0))
 
 
-def route_band(sections, margin=32.0, rise=60.0):
+def route_band(sections, margin=32.0, rise=60.0, measured=False):
     """A predicate for the height check: is (x, z, y) on the road band the
     sections trace (inside the traced width plus margin, within rise of the
     row height)? Road triangles of the class that lie off the route (a side
-    corridor, a pipe) are then left out of the check."""
+    corridor, a pipe) are then left out of the check. measured: the widths as
+    traced, before the inner sides of tight bends were cut."""
     cell = 512.0
     grid = {}
     for sec in sections:
@@ -119,7 +120,9 @@ def route_band(sections, margin=32.0, rise=60.0):
                     if abs(along) > 160.0 or abs(y - r['y']) > rise:
                         continue
                     lat = px * r['dz'] - pz * r['dx']
-                    if -r['dr'] - margin <= lat <= r['dl'] + margin:
+                    left = r.get('dl0', r['dl']) if measured else r['dl']
+                    right = r.get('dr0', r['dr']) if measured else r['dr']
+                    if -right - margin <= lat <= left + margin:
                         return True
         return False
     return inside
@@ -173,6 +176,13 @@ def generate(glb, classes, start, route, road_class='road', edge_class='edge', l
             break
     report = dict(build=info, levels=tried)
     report['verify'] = verify
+    if region == 'route':
+        holes = lev_verify.uncovered_points(lev, surface, region=route_band(sections, margin=0.0, measured=True))
+        cut_band = route_band(sections, margin=0.0)
+        pocket = [(x, z, y) for x, z, y in holes if not cut_band(x, z, y)]
+        report['uncovered_road'] = dict(points=len(holes), first=[dict(x=x, z=z, y=round(y, 1)) for x, z, y in holes[:20]],
+                                        inner_side=len(pocket),
+                                        inner_side_first=[dict(x=x, z=z, y=round(y, 1)) for x, z, y in pocket[:20]])
     if region == 'route' and len(sections) > 1:
         per = []
         for sec in sections:
