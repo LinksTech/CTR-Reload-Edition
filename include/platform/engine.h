@@ -1121,6 +1121,7 @@ void DrawLevelOvr1P_OracleLayouts(const struct mesh_info *mesh, int animOnly);
 // row holds (3 or 2), 1 = faulted (--engine-oracle-fault cell), its 16 cells and
 // its levels 0, 1, 2 (pointers into the row set, valid until the next load).
 // 0 = no such row.
+int Engine_TrackMosaicOracleUv(float rowU, float rowV, float s, float t, float pickS, float pickT, float *uOut, float *vOut); // the shader's UV at (s, t)
 int Engine_TrackMosaicOracleRow(float u, float v, int *side, int *form, int *finest, int *faulted, const struct TextureLayout **cells,
                                  const struct TextureLayout **levels);
 // --engine-oracle-fault cell: swaps two different cells of the row of the table face at

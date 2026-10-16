@@ -3512,6 +3512,163 @@ internal void EngTrack_OracleApplySlots(EngTrackOracleFace *f, u8 (*rgb)[3], con
 	EngTrack_OracleExtra(f, "slots=%s", text);
 }
 
+// The engine's side of a retail tile packet (FM 11.2, point-exact; the format of
+// the comparison tool, D-W1.3b): the extent of the packet in the 4 x 4 grid from its
+// cell (span=<rows>,<columns>), the texel the shader decodes at each of its
+// corners (etex=, in the corner order of the line; the corner moved a hair into the
+// packet to pick the cell, as a pixel centre does; Engine_TrackMosaicOracleUv)
+// and the largest difference between the retail UV and the shader's inside the
+// packet (engd=, texels, information, at 4 points of each triangle: three near the corners
+// and the centroid; the retail UV interpolated over the packet's triangles
+// (0,1,2) and (1,2,3) in the face's own space). engOut gets the corners' UVs in
+// packet order (rounded), *engCount their number (0 = none).
+internal void EngTrack_OracleTileEngine(EngTrackOracleFace *f, int block, int faceAt, const float (*cornerST)[2], int (*engOut)[2], int *engCount,
+                                        float *worst)
+{
+	static const float w[4][3] = {{0.6f, 0.2f, 0.2f}, {0.2f, 0.6f, 0.2f}, {0.2f, 0.2f, 0.6f}, {1.0f / 3.0f, 1.0f / 3.0f, 1.0f / 3.0f}};
+	static const int tri[2][3] = {{0, 1, 2}, {1, 2, 3}};
+	const EngTrackDrawFace *df;
+	float cs = 0.0f;
+	float ct = 0.0f;
+	float smin = 1.0f;
+	float smax = 0.0f;
+	float tmin = 1.0f;
+	float tmax = 0.0f;
+	int at;
+	int v;
+	int k;
+
+	*engCount = 0;
+	*worst = -1.0f;
+	if ((cornerST == NULL) || (f->uvCount < 3) || (faceAt < 0) || (faceAt > 3) || (s_egtFaceOfBlock == NULL))
+	{
+		return;
+	}
+	at = s_egtFaceOfBlock[4 * block + faceAt];
+	if (at < 0)
+	{
+		return;
+	}
+	df = &s_egtFaces[at];
+	for (v = 0; v < f->uvCount; v++)
+	{
+		cs += cornerST[v][0] / (float)f->uvCount;
+		ct += cornerST[v][1] / (float)f->uvCount;
+		smin = (cornerST[v][0] < smin) ? cornerST[v][0] : smin;
+		smax = (cornerST[v][0] > smax) ? cornerST[v][0] : smax;
+		tmin = (cornerST[v][1] < tmin) ? cornerST[v][1] : tmin;
+		tmax = (cornerST[v][1] > tmax) ? cornerST[v][1] : tmax;
+	}
+	for (v = 0; v < f->uvCount; v++)
+	{
+		float u = 0.0f;
+		float tv = 0.0f;
+		const float ps = cornerST[v][0] + (cs - cornerST[v][0]) * 0.01f;
+		const float pt = cornerST[v][1] + (ct - cornerST[v][1]) * 0.01f;
+
+		if (!Engine_TrackMosaicOracleUv(df->face.v[0].texcoord[0], df->face.v[0].texcoord[1], cornerST[v][0], cornerST[v][1], ps, pt, &u, &tv))
+		{
+			return;
+		}
+		engOut[v][0] = (int)floorf(u + 0.5f);
+		engOut[v][1] = (int)floorf(tv + 0.5f);
+	}
+	*engCount = f->uvCount;
+	*worst = 0.0f;
+	for (k = 0; k < ((f->uvCount == 4) ? 2 : 1); k++)
+	{
+		int p;
+
+		for (p = 0; p < 4; p++)
+		{
+			float ss = 0.0f;
+			float tt = 0.0f;
+			float ru = 0.0f;
+			float rv = 0.0f;
+			float eu = 0.0f;
+			float ev = 0.0f;
+			int j;
+
+			for (j = 0; j < 3; j++)
+			{
+				const int c = tri[k][j];
+
+				ss += w[p][j] * cornerST[c][0];
+				tt += w[p][j] * cornerST[c][1];
+				ru += w[p][j] * (float)f->uv[2 * c];
+				rv += w[p][j] * (float)f->uv[2 * c + 1];
+			}
+			if (Engine_TrackMosaicOracleUv(df->face.v[0].texcoord[0], df->face.v[0].texcoord[1], ss, tt, ss, tt, &eu, &ev))
+			{
+				const float d = (fabsf(eu - ru) > fabsf(ev - rv)) ? fabsf(eu - ru) : fabsf(ev - rv);
+
+				*worst = (d > *worst) ? d : *worst;
+			}
+		}
+	}
+	{
+		const int c0 = (int)floorf(smin * 4.0f + 0.01f);
+		const int c1 = (int)ceilf(smax * 4.0f - 0.01f) - 1;
+		const int r0 = (int)floorf(tmin * 4.0f + 0.01f);
+		const int r1 = (int)ceilf(tmax * 4.0f - 0.01f) - 1;
+
+		const int cl = (c0 < 0) ? 0 : c0;
+		const int ch = (c1 > 3) ? 3 : ((c1 < cl) ? cl : c1);
+		const int rl = (r0 < 0) ? 0 : r0;
+		const int rh = (r1 > 3) ? 3 : ((r1 < rl) ? rl : r1);
+
+		EngTrack_OracleExtra(f, "span=%d,%d", rh - rl + 1, ch - cl + 1);
+	}
+}
+
+// kuv2=1 (FM): the K-UV2 pattern - one GT3 on the slots 1, 2, 3 of a stage
+// layout whose corners all are layout corners, one of them the UV another slot
+// should carry (the layout plain or mirrored: uv[slot] or uv[slot ^ 1]).
+// uv/slots in slot order (after EngTrack_OracleApplySlots).
+internal int EngTrack_OracleKuv2(const EngTrackOracleFace *f, const int *slotSorted, const struct TextureLayout *lay)
+{
+	const int lu[4] = {lay->u0, lay->u1, lay->u2, lay->u3};
+	const int lv[4] = {lay->v0, lay->v1, lay->v2, lay->v3};
+	int o;
+
+	if ((f->uvCount != 3) || (slotSorted[0] != 1) || (slotSorted[1] != 2) || (slotSorted[2] != 3))
+	{
+		return 0;
+	}
+	for (o = 0; o < 2; o++)
+	{
+		int wrong = -1;
+		int count = 0;
+		int i;
+
+		for (i = 0; i < 3; i++)
+		{
+			const int want = o ? (slotSorted[i] ^ 1) : slotSorted[i];
+
+			if ((f->uv[2 * i] != lu[want]) || (f->uv[2 * i + 1] != lv[want]))
+			{
+				wrong = i;
+				count++;
+			}
+		}
+		if (count == 1)
+		{
+			int j;
+
+			for (j = 0; j < 4; j++)
+			{
+				const int other = o ? (j ^ 1) : j;
+
+				if ((j != slotSorted[wrong]) && (f->uv[2 * wrong] == lu[other]) && (f->uv[2 * wrong + 1] == lv[other]))
+				{
+					return 1;
+				}
+			}
+		}
+	}
+	return 0;
+}
+
 // One dynamic R line from a decoded packet. k and the cell come from where the
 // packet lies (faceAt >= 0: its face, (s, t) its centre in it); the stage from
 // the layout its uv is (exact corners: stage=<0..3|low>, a table entry: the
@@ -3525,6 +3682,9 @@ internal void EngTrack_OracleRetailLine(EngTrackOracleFace *f, int block, int wa
 	static const char *const levelName[6] = {"0", "1", "2", "3", "tile", "low"};
 	u8 rgb[4][3];
 	int slotOf[4] = {0, 1, 2, 3};
+	int eng[4][2];
+	int engCount = 0;
+	float engWorst = -1.0f;
 	int ordered = 0;
 	int exact = 0;
 	const int at = EngTrack_OracleClassify(tpage, clut, f->uv, f->uvCount, c, n, &exact, builtMask);
@@ -3560,6 +3720,7 @@ internal void EngTrack_OracleRetailLine(EngTrackOracleFace *f, int block, int wa
 
 				ordered = EngTrack_OracleSlotOrder(cornerST, f->uvCount, (float)f->cellCol * 0.25f, (float)f->cellRow * 0.25f,
 				                                   (float)(f->cellCol + 1) * 0.25f, ((float)f->cellRow + rows) * 0.25f, slotOf);
+				EngTrack_OracleTileEngine(f, block, faceAt, cornerST, eng, &engCount, &engWorst);
 			}
 		}
 		else
@@ -3616,9 +3777,49 @@ internal void EngTrack_OracleRetailLine(EngTrackOracleFace *f, int block, int wa
 	EngTrack_OracleRawWords(f, tpage, clut);
 	if (ordered)
 	{
+		int sorted[4] = {0, 1, 2, 3};
+		int engSorted[4][2];
+		int m = 0;
+		int j;
+		int v;
+
+		for (j = 0; j < 4; j++)
+		{
+			for (v = 0; v < f->uvCount; v++)
+			{
+				if (slotOf[v] == j)
+				{
+					sorted[m] = j;
+					engSorted[m][0] = eng[v][0];
+					engSorted[m][1] = eng[v][1];
+					m++;
+				}
+			}
+		}
+		if (engCount == f->uvCount)
+		{
+			memcpy(eng, engSorted, sizeof(int) * 2u * (size_t)m);
+		}
 		EngTrack_OracleApplySlots(f, rgb, slotOf);
+		if ((at >= 0) && (c[at].level != EGT_ORACLE_LEVEL_TILE) && exact && EngTrack_OracleKuv2(f, sorted, &c[at].lay))
+		{
+			EngTrack_OracleExtra(f, "kuv2=1");
+		}
 	}
 	EngTrack_OracleColours(f, (const u8(*)[3])rgb, f->uvCount);
+	if (engCount > 0)
+	{
+		char text[64];
+		size_t used = 0;
+		int v;
+
+		text[0] = '\0';
+		for (v = 0; (v < engCount) && (used + 10u < sizeof(text)); v++)
+		{
+			used += (size_t)snprintf(text + used, sizeof(text) - used, "%s%d,%d", (v > 0) ? ";" : "", eng[v][0], eng[v][1]);
+		}
+		EngTrack_OracleExtra(f, "etex=%s engd=%.1f", text, (double)engWorst);
+	}
 }
 
 // The engine faces of a block per mid face (NULL = none), from s_egtFaceOfBlock.
@@ -4190,6 +4391,8 @@ void Engine_TrackOracleTable(const struct QuadBlock *block, int face, const stru
 		EngTrack_OracleEntryCell(form, e, &row, &col);
 		EngTrack_OracleStaticLine(&f, index, water, face, -1, 0, entry, row, col, &table[entry], mirrored, anim, 0, s_ego.set);
 		EngTrack_OracleExtra(&f, "form=%s", (form == ENGINE_MOSAIC_FORM_4X2) ? "4x2" : ((form == ENGINE_MOSAIC_FORM_4X1) ? "4x1" : "4x4"));
+		// The cells the entry covers from its cell, rows and columns (the tool joins the E cell lines of these rows).
+		EngTrack_OracleExtra(&f, "span=%d,1", (form == ENGINE_MOSAIC_FORM_4X1) ? 4 : ((form == ENGINE_MOSAIC_FORM_4X2) ? 2 : 1));
 		EngTrack_OracleFaceMarks(&f, index, face);
 		if ((face >= 0) && (face <= 3) && (s_egtFaceOfBlock != NULL) && (s_egtFaceOfBlock[4 * index + face] >= 0) &&
 		    s_egtFaces[s_egtFaceOfBlock[4 * index + face]].tableRefused)
@@ -4350,24 +4553,18 @@ void Engine_TrackOracleDone(int completed, const void *primFrom, const void *pri
 	             s_ego.noGeometry, s_ego.outsideFace, s_ego.gridFallback, s_ego.noBlock, s_ego.noOwner, s_ego.spansLost);
 }
 
-// The layouts a table row offers a face, each cell the form holds once (4x4:
-// all 16; 4x2: rows 0 and 2, each standing for itself and the row below; 4x1:
-// row 0; a whole-face row, side 1: cell 0), then levels 2, 1, 0 (the order of
-// the data texture). which[i] = cell index 0..15, or 16 + level. Returns the
-// count (<= 19).
+// The layouts a table row offers a face: all 16 cells (a 4x2 or 4x1 cell holds
+// its row's part of the tile, engine_track_mosaic.c EngMosaic_RowPart; a
+// whole-face row, side 1: cell 0), then levels 2, 1, 0 (the order of the data
+// texture). which[i] = cell index 0..15, or 16 + level. Returns the count (<= 19).
 internal int EngTrack_OracleRowLayouts(int side, int form, int *which)
 {
 	int n = 0;
 	int i;
 
+	(void)form;
 	for (i = 0; i < ((side == 1) ? 1 : 16); i++)
 	{
-		const int r = i >> 2;
-
-		if ((side != 1) && (((form == ENGINE_MOSAIC_FORM_4X2) && ((r & 1) != 0)) || ((form == ENGINE_MOSAIC_FORM_4X1) && (r != 0))))
-		{
-			continue;
-		}
 		which[n++] = i;
 	}
 	for (i = 2; i >= 0; i--)
@@ -4494,8 +4691,11 @@ internal int EngTrack_OracleTableLines(const EngTrackOracleFace *base, int side,
 			{
 				const int r = which[i] / 4;
 				const int c = which[i] % 4;
-				const int r0 = (form == ENGINE_MOSAIC_FORM_4X1) ? 0 : r;
-				const int r1 = (form == ENGINE_MOSAIC_FORM_4X1) ? 4 : ((form == ENGINE_MOSAIC_FORM_4X2) ? r + 2 : r + 1);
+				// The rows the tile spans: a 4x2 or 4x1 cell line carries the colours of the
+				// whole piece the walk draws there (rows r0 .. r1), and its part (tilerow=).
+				const int span = (form == ENGINE_MOSAIC_FORM_4X1) ? 4 : ((form == ENGINE_MOSAIC_FORM_4X2) ? 2 : 1);
+				const int r0 = (r / span) * span;
+				const int r1 = r0 + span;
 				u8 cellCorner[4][3];
 				u8 wideCorner[4][3];
 
@@ -4509,9 +4709,17 @@ internal int EngTrack_OracleTableLines(const EngTrackOracleFace *base, int side,
 				memcpy(wideCorner[3], gridWide[r1][c + 1], 3);
 				f->cellRow = r;
 				f->cellCol = c;
-				if (faulted)
+				if (span > 1)
+				{
+					EngTrack_OracleExtra(f, "tilerow=%d/%d", r - r0, span);
+				}
+				if ((faulted & 1) != 0)
 				{
 					EngTrack_OracleExtra(f, "fault=cell");
+				}
+				if ((faulted & 2) != 0)
+				{
+					EngTrack_OracleExtra(f, "fault=spread");
 				}
 				EngTrack_OracleColours(f, (const u8(*)[3])cellCorner, 4);
 				if (memcmp(cellCorner, wideCorner, sizeof(cellCorner)) != 0)
@@ -6326,6 +6534,35 @@ int Engine_SelfTestTrack(int *checks)
 		EGT_CHECK(strncmp(f.extra, "k=2 stage=3 part=1 prim=normal", 30) == 0, "oracle R line (a piece of level 3): '%s'", f.extra);
 		EngTrack_OracleRetailLine(&f, 77, 0, 0, EGT_ORACLE_MARK_MORPH, ENGINE_MOSAIC_FORM_4X4, tpage, clut, (const u8(*)[3])rgb, cand, 3, 2, 0.5f, 0.5f, NULL, -1);
 		EGT_CHECK(strncmp(f.extra, "k=2 stage=3 part=1 morph=1 prim=normal", 38) == 0, "oracle R line (faded midpoints): '%s'", f.extra);
+		{
+			// kuv2=1: block 1839 face 2 of t03-L2 (layout uv 128,144 191,144 128,191 191,191, mirrored):
+			// one GT3 on slots 1, 2, 3 with slot 2 showing what slot 0 carries (191,144).
+			struct TextureLayout l2;
+			const int slots123[3] = {1, 2, 3};
+			EngTrackOracleFace g;
+
+			memset(&l2, 0, sizeof(l2));
+			l2.u0 = 128;
+			l2.v0 = 144;
+			l2.u1 = 191;
+			l2.v1 = 144;
+			l2.u2 = 128;
+			l2.v2 = 191;
+			l2.u3 = 191;
+			l2.v3 = 191;
+			memset(&g, 0, sizeof(g));
+			g.uvCount = 3;
+			g.uv[0] = 128;
+			g.uv[1] = 144;
+			g.uv[2] = 191;
+			g.uv[3] = 144;
+			g.uv[4] = 128;
+			g.uv[5] = 191;
+			EGT_CHECK(EngTrack_OracleKuv2(&g, slots123, &l2), "kuv2: the L2 pattern not marked");
+			g.uv[2] = 191;
+			g.uv[3] = 191;
+			EGT_CHECK(!EngTrack_OracleKuv2(&g, slots123, &l2), "kuv2: a GT3 as the mirrored layout gives it marked");
+		}
 		// A packet of face 2's layout lying on face 1 (no layout of face 1 holds it): face 2's, foreign=1.
 		f.uv[2] = 63;
 		EngTrack_OracleRetailLine(&f, 77, 0, 0, 0, ENGINE_MOSAIC_FORM_4X4, tpage, clut, (const u8(*)[3])rgb, cand, 3, 1, 0.5f, 0.5f, NULL, -1);
@@ -6617,11 +6854,11 @@ int Engine_SelfTestTrack(int *checks)
 		              (strstr(lines[0].extra, " tp=0x0075 cl=0x7802 box=10,20,30,40 slots=0,1,2") != NULL),
 		          "oracle E VRAM: '%s'", lines[0].extra);
 
-		// The cells a row's form holds, then levels 2, 1, 0.
+		// Every cell of a table row (a 4x2/4x1 cell holds its row's part of the tile), then levels 2, 1, 0.
 		count = EngTrack_OracleRowLayouts(4, ENGINE_MOSAIC_FORM_4X2, which);
-		EGT_CHECK((count == 11) && (which[3] == 3) && (which[4] == 8) && (which[7] == 11) && (which[8] == 18) && (which[10] == 16),
+		EGT_CHECK((count == 19) && (which[3] == 3) && (which[4] == 4) && (which[15] == 15) && (which[16] == 18) && (which[18] == 16),
 		          "oracle row layouts 4x2: %d (which[4] %d)", count, which[4]);
-		EGT_CHECK((EngTrack_OracleRowLayouts(4, ENGINE_MOSAIC_FORM_4X4, which) == 19) && (EngTrack_OracleRowLayouts(4, ENGINE_MOSAIC_FORM_4X1, which) == 7) &&
+		EGT_CHECK((EngTrack_OracleRowLayouts(4, ENGINE_MOSAIC_FORM_4X4, which) == 19) && (EngTrack_OracleRowLayouts(4, ENGINE_MOSAIC_FORM_4X1, which) == 19) &&
 		              (EngTrack_OracleRowLayouts(1, ENGINE_MOSAIC_FORM_4X4, which) == 4),
 		          "oracle row layouts: 4x4 / 4x1 / whole-face counts wrong");
 		memset(cells, 0, sizeof(cells));
@@ -6645,12 +6882,17 @@ int Engine_SelfTestTrack(int *checks)
 		rgb[1][0] = 200;
 		rgb[3][0] = 100;
 		count = EngTrack_OracleTableLines(&base, 4, ENGINE_MOSAIC_FORM_4X2, 3, 1, cells, lv, (const u8(*)[3])rgb, lines);
-		EGT_CHECK((count == 11) && (lines[1].cellRow == 0) && (lines[1].cellCol == 1) &&
-		              (strstr(lines[1].extra, " box=16,0,31,15 slots=0,1,2,3 fault=cell col=50,0,0;100,0,0;50,0,0;100,0,0") != NULL),
+		EGT_CHECK((count == 19) && (lines[1].cellRow == 0) && (lines[1].cellCol == 1) &&
+		              (strstr(lines[1].extra, " box=16,0,31,15 slots=0,1,2,3 tilerow=0/2 fault=cell col=50,0,0;100,0,0;50,0,0;100,0,0") != NULL),
 		          "oracle table lines: n %d cell %d,%d '%s'", count, lines[1].cellRow, lines[1].cellCol, lines[1].extra);
-		EGT_CHECK((lines[4].cellRow == 2) && (lines[4].cellCol == 0) && (lines[9].cellRow == -1) &&
-		              (strstr(lines[9].extra, " box=0,0,120,7 slots=0,1,2,3 stage=1 col=0,0,0;200,0,0;0,0,0;100,0,0") != NULL),
-		          "oracle table lines: second row half at %d,%d, level line '%s'", lines[4].cellRow, lines[4].cellCol, lines[9].extra);
+		// Row 1 holds the lower part of the tile of row 0 (the colours of the whole piece, rows 0 to 2).
+		EGT_CHECK((lines[4].cellRow == 1) && (lines[4].cellCol == 0) && (strstr(lines[4].extra, " tilerow=1/2 fault=cell col=0,0,0;50,0,0;0,0,0;50,0,0") != NULL) &&
+		              (lines[8].cellRow == 2) && (strstr(lines[8].extra, " tilerow=0/2 ") != NULL) && (lines[17].cellRow == -1) &&
+		              (strstr(lines[17].extra, " box=0,0,120,7 slots=0,1,2,3 stage=1 col=0,0,0;200,0,0;0,0,0;100,0,0") != NULL),
+		          "oracle table lines: row 1 '%s', level line '%s'", lines[4].extra, lines[17].extra);
+		count = EngTrack_OracleTableLines(&base, 4, ENGINE_MOSAIC_FORM_4X1, 3, 2, cells, lv, (const u8(*)[3])rgb, lines);
+		EGT_CHECK((count == 19) && (strstr(lines[13].extra, " tilerow=3/4 fault=spread ") != NULL) && (strstr(lines[13].extra, "fault=cell") == NULL),
+		          "oracle table lines 4x1, fault spread: '%s'", lines[13].extra);
 		count = EngTrack_OracleTableLines(&base, 1, ENGINE_MOSAIC_FORM_4X4, 2, 0, cells, lv, (const u8(*)[3])rgb, lines);
 		EGT_CHECK((count == 4) && (lines[0].cellRow == -1) && (strstr(lines[0].extra, " stage=2 col=0,0,0;200,0,0;0,0,0;100,0,0") != NULL) &&
 		              (strstr(lines[0].extra, "fault") == NULL),

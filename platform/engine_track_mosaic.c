@@ -1204,6 +1204,40 @@ int Engine_TrackMosaicOracleFault(float u, float v, int block, int mid)
 	return 1;
 }
 
+// For the oracle: the UV the program "ne" decodes on the face whose texcoord names
+// the row (rowU, rowV), at the face position (s, t): the cell is picked at
+// (pickS, pickT) - the point itself inside a piece, a corner moved a hair into
+// its piece, as a pixel centre lies - and the UV is the cell's bilinear at
+// (s, t) clamped to that cell (the C twin of the table branch of "ne":
+// EngMosaic_CellPick, EngMosaic_CellUv; the shader's level fallback for small
+// texels is not followed, the oracle compares the finest cells). 0 = no row.
+int Engine_TrackMosaicOracleUv(float rowU, float rowV, float s, float t, float pickS, float pickT, float *uOut, float *vOut)
+{
+	const EngMosaicRow *row;
+	float fs = 0.0f;
+	float ft = 0.0f;
+	float cs;
+	float ct;
+	int cell;
+
+	if (!g_cfg_engine || !g_cfg_engineTrack || (uOut == NULL) || (vOut == NULL))
+	{
+		return 0;
+	}
+	row = EngMosaic_RowOfTexcoord(&s_egmRows, rowU, rowV);
+	if (row == NULL)
+	{
+		return 0;
+	}
+	cell = EngMosaic_CellPick((int)row->side, pickS, pickT, &fs, &ft);
+	cs = s * (float)row->side - (float)(cell & 3);
+	ct = t * (float)row->side - (float)(cell >> 2);
+	cs = (cs < 0.0f) ? 0.0f : ((cs > 1.0f) ? 1.0f : cs);
+	ct = (ct < 0.0f) ? 0.0f : ((ct > 1.0f) ? 1.0f : ct);
+	EngMosaic_CellUv(&row->cell[cell], cs, ct, uOut, vOut);
+	return 1;
+}
+
 // --------------------------------------------------------------------------
 // Selftest: rows, packing and the decode on synthetic tables.
 
@@ -1653,6 +1687,38 @@ int Engine_SelfTestTrackMosaic(int *checks)
 		}
 		EngMosaic_Encode(set.count, 0.0f, 0.0f, tc);
 		EGM_CHECK((bad == 0) && (EngMosaic_RowOfTexcoord(&set, tc[0], tc[1]) == NULL), "oracle row: %d slot(s) wrong, or a row past the set found", bad);
+	}
+
+	// (oracle) The shader's UV at a point (the C twin of "ne"): inside cell (0, 1) of row 2
+	// the cell's bilinear at its own (0.2, 0.4); a corner on the row border, picked a hair
+	// into the cell below, that cell's corner (1, 1) - whatever the cells hold.
+	{
+		const EngMosaicRowSet keepRows = s_egmRows;
+		const int keepEngine = g_cfg_engine;
+		const int keepTrack = g_cfg_engineTrack;
+		float tc[2];
+		float u = 0.0f;
+		float v = 0.0f;
+		float u2 = 0.0f;
+		float v2 = 0.0f;
+		float wu = 0.0f;
+		float wv = 0.0f;
+		int ok1;
+		int ok2;
+
+		s_egmRows = set;
+		g_cfg_engine = 1;
+		g_cfg_engineTrack = 1;
+		EngMosaic_Encode(2, 0.0f, 0.0f, tc);
+		ok1 = Engine_TrackMosaicOracleUv(tc[0], tc[1], 0.3f, 0.1f, 0.3f, 0.1f, &u, &v);
+		ok2 = Engine_TrackMosaicOracleUv(tc[0], tc[1], 0.25f, 0.5f, 0.249f, 0.498f, &u2, &v2);
+		s_egmRows = keepRows;
+		g_cfg_engine = keepEngine;
+		g_cfg_engineTrack = keepTrack;
+		EngMosaic_CellUv(&set.rows[2].cell[1], 0.2f, 0.4f, &wu, &wv);
+		EGM_CHECK(ok1 && ok2 && (fabsf(u - wu) < 1e-4f) && (fabsf(v - wv) < 1e-4f) && (u2 == (float)set.rows[2].cell[4].u3) &&
+		              (v2 == (float)set.rows[2].cell[4].v3),
+		          "oracle UV of the shader: %f,%f (want %f,%f), corner %f,%f", (double)u, (double)v, (double)wu, (double)wv, (double)u2, (double)v2);
 	}
 
 	EngMosaic_RowSetFree(&set);
