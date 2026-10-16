@@ -147,6 +147,8 @@ set_target_properties(ctr_native PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
 )
 target_include_directories(ctr_native PRIVATE ${CMAKE_SOURCE_DIR}/include)
+# externals/cgltf/cgltf.h - the glTF parser of the static model (platform/engine_static_load.c).
+target_include_directories(ctr_native PRIVATE ${CMAKE_SOURCE_DIR}/externals/cgltf)
 
 # The packer for .rldtrack containers. A PROGRAM OF ITS OWN, not part of the game -
 # a track author builds their container with it; the game uses nothing of it.
@@ -527,6 +529,23 @@ if(BUILD_TESTING)
     set_tests_properties(engine_oracle_fault_spread_once PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-oracle-fault is given twice for spread")
     add_test(NAME engine_oracle_fault_once COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-track --engine-oracle o.tsv --engine-oracle-fault clut:1 --engine-oracle-fault clut:2 --dev-race-mode stop)
     set_tests_properties(engine_oracle_fault_once PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-oracle-fault is given twice for clut")
+    # The static model and the fly camera (round of 2026-10-16): their pairing rules, before any window.
+    add_test(NAME engine_static_needs_engine COMMAND $<TARGET_FILE:ctr_native> --dev --engine-static-model m.glb --dev-race-mode stop)
+    set_tests_properties(engine_static_needs_engine PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-static-model requires --engine")
+    add_test(NAME engine_static_needs_track COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-static-model m.glb --dev-race-mode stop)
+    set_tests_properties(engine_static_needs_track PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-static-model requires --engine-track")
+    add_test(NAME engine_static_light_needs_model COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-track --engine-static-light --dev-race-mode stop)
+    set_tests_properties(engine_static_light_needs_model PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-static-light requires --engine-static-model")
+    add_test(NAME engine_flycam_auto_value COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-flycam-auto 10 --dev-race-mode stop)
+    set_tests_properties(engine_flycam_auto_value PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-flycam-auto expects a frame count 60..1000000")
+    add_test(NAME engine_flycam_path_needs_auto COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-flycam-path p.txt --dev-race-mode stop)
+    set_tests_properties(engine_flycam_path_needs_auto PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-flycam-path requires --engine-flycam-auto")
+    add_test(NAME engine_flycam_not_with_auto COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-flycam --engine-flycam-auto 600 --dev-race-mode stop)
+    set_tests_properties(engine_flycam_not_with_auto PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-flycam does not go with --engine-flycam-auto")
+    add_test(NAME engine_flycam_needs_dev COMMAND $<TARGET_FILE:ctr_native> --engine --engine-flycam)
+    set_tests_properties(engine_flycam_needs_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-flycam requires --dev")
+    add_test(NAME engine_hide_value COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-track --engine-hide trak --dev-race-mode stop)
+    set_tests_properties(engine_hide_value PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-hide expects sky, water and/or track, comma-separated, not 'trak'")
     add_test(NAME level_tour_oracle_needs_oracle COMMAND $<TARGET_FILE:ctr_native> --dev --level-tour races --level-tour-oracle 300 --dev-race-mode stop)
     set_tests_properties(level_tour_oracle_needs_oracle PROPERTIES PASS_REGULAR_EXPRESSION "switch --level-tour-oracle requires --engine-oracle")
     add_test(NAME level_tour_oracle_needs_tour COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-track --engine-oracle o.tsv --level-tour-oracle 300 --dev-race-mode stop)

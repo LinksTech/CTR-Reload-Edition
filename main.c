@@ -115,6 +115,9 @@
 #include "platform/engine_fx_tires.c"
 #include "platform/engine_fx_weather.c"
 #include "platform/engine_hires.c"
+#include "platform/engine_static_load.c"
+#include "platform/engine_static.c"
+#include "platform/engine_flycam.c"
 #include "platform/engine_menuscene.c"
 #include "platform/engine_track.c"
 #include "platform/engine_track_mosaic.c"
@@ -414,7 +417,12 @@ static const NativeSwitch s_devSwitches[] = {
     {"--engine-hires-anim", "", "with --engine-hires-dir: the animated test body of tools/hires_blender_driver.py (anim.hra, anim.hrt in that folder) instead of body.hrm - pose frames for steering, air and drift picked from game state, one log line per tick (prototype Z4)"},
     {"--engine-hires-texcycle", "", "with --engine-hires-dir, measuring only: in the menu scene the hi-res skin alternates every 32 VBlanks - full, 64x64, flat magenta key (variant = (vblank / 32) % 3, logged) - the three images of tools/hires_mask_sharp.py from one run"},
     {"--engine-menuscene-zoom", "<f>[,<x>[,<yaw>]]", "with --engine-menuscene, measuring only: the scene's camera zoomed by f (0.25..8, the kart f times larger), its middle at x of half the view width (-1..1, default 0.3, negative left), and with yaw (degrees) a still view at that angle instead of the turn"},
-    {"--engine-hide", "<sky,water>", "with --engine --engine-track: the engine owns the listed items (the PS1 path does not draw them) but draws nothing of them - the 'minus' run of the measurements; comma-separated, words sky and water"},
+    {"--engine-hide", "<sky,water,track>", "with --engine --engine-track: the engine owns the listed items (the PS1 path does not draw them) but draws nothing of them - the 'minus' run of the measurements; comma-separated, words sky, water and track (track: the level's faces, its water and its level instances; drivers and effects stay - with --engine-static-model only the model shows)"},
+    {"--engine-static-model", "<file.glb>", "with --engine --engine-track: an external static model (glTF binary, positions in world units and world axes) drawn in every race level - full-resolution textures with all mip levels, trilinear and anisotropic, alpha test for MASK/BLEND materials, u32 indices, pieces with a view test; one log line at load (triangles, materials, textures, mip levels, time, GPU memory), one at exit"},
+    {"--engine-static-light", "", "with --engine-static-model: a fixed directional light from the model's normals baked into its vertex colours at load"},
+    {"--engine-flycam", "", "with --engine: view 0 flown freely instead of the game camera - W/S/A/D move, R/F up/down, Shift faster, right mouse button held to look, P logs the point as a line of --engine-flycam-path; no input under --deterministic"},
+    {"--engine-flycam-auto", "<frames>", "with --engine, measuring: view 0 flies a deterministic closed loop over stations in <frames> game frames (60..1000000), each station held 30 frames, repeated - the stations of --engine-flycam-path, else 8 above the box of --engine-static-model (or of the level); with --shot-name one snapshot per station in the first loop, <shot-name>-sNN.bmp"},
+    {"--engine-flycam-path", "<file>", "with --engine-flycam-auto: the stations from <file>, one per line 'x y z lx ly lz' (camera and the point it looks at, world units; '#' comments), up to 256"},
     {"--engine-fail", "<start|track>", "with --engine, measuring only: forces the engine's fallback to the PS1 path - start: the programs 'ne' and 'nw' are not made, track (needs --engine-track): the first track load of the engine fails; the log names the reason and the run goes on without the engine"},
     {"--engine-oracle", "<file>", "with --engine --engine-track, measuring only: the log of the material comparison into <file> (relative to the game folder) - per drawn surface the texture page, CLUT, UV, blend and mosaic cell of the PS1 path and of the engine, in the frames --level-tour-oracle arms; without it nothing is written"},
     {"--engine-oracle-fault", "<clut|cell|spread>:<n>", "with --engine-oracle, measuring only (the controls of the comparison): clut:<n> - the CLUT of the n-th engine material of the instances is falsified on purpose, cell:<n> - two cells of a mosaic row of the track are swapped, spread:<n> - the row of the n-th 4x2/4x1 table face of the track holds the whole tile in each row (the spreading before 2026-10-16); each named in the log; given once per kind"},
@@ -556,6 +564,8 @@ static const NativeValueLimit s_valueLimits[] = {
     {"--level-tour-oracle", sizeof(g_cfg_levelTourOracle), 0},
     {"--level-tour-oracle-see", sizeof(g_cfg_levelTourOracleSee), 0},
     {"--engine-hires-dir", sizeof(g_cfg_engineHiresDir), 0},
+    {"--engine-static-model", sizeof(g_cfg_engineStaticModel), 0},
+    {"--engine-flycam-path", sizeof(g_cfg_engineFlycamPath), 0},
     {"--engine-oracle", sizeof(g_cfg_engineOracle), 0},
 };
 
@@ -623,7 +633,7 @@ static int NativeArgs_ValueFits(const char *arg, const char *value)
 
 // 0 = go on. Otherwise the exit code with which main ends at once; the message
 // is then already on stderr. Called before everything else, see above.
-// The value of --engine-hide: a comma list of the words sky and water, as
+// The value of --engine-hide: a comma list of the words sky, water and track, as
 // ENGINE_HIDE_* bits; -1 for an empty list or any other word.
 static int NativeArgs_EngineHideBits(const char *list)
 {
@@ -642,6 +652,10 @@ static int NativeArgs_EngineHideBits(const char *list)
 		else if ((length == 5) && (strncmp(at, "water", 5) == 0))
 		{
 			bits |= ENGINE_HIDE_WATER;
+		}
+		else if ((length == 5) && (strncmp(at, "track", 5) == 0))
+		{
+			bits |= ENGINE_HIDE_TRACK;
 		}
 		else
 		{
@@ -799,7 +813,9 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			                                   (strcmp(argv[argIndex], "--engine-menuscene") == 0) || (strcmp(argv[argIndex], "--engine-hide") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-hires-dir") == 0) || (strcmp(argv[argIndex], "--engine-hires-tex64") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-hires-texcycle") == 0) || (strcmp(argv[argIndex], "--engine-menuscene-zoom") == 0) ||
-			                                   (strcmp(argv[argIndex], "--engine-hires-anim") == 0) ||
+			                                   (strcmp(argv[argIndex], "--engine-hires-anim") == 0) || (strcmp(argv[argIndex], "--engine-static-model") == 0) ||
+			                                   (strcmp(argv[argIndex], "--engine-static-light") == 0) || (strcmp(argv[argIndex], "--engine-flycam") == 0) ||
+			                                   (strcmp(argv[argIndex], "--engine-flycam-auto") == 0) || (strcmp(argv[argIndex], "--engine-flycam-path") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-fail") == 0) || (strcmp(argv[argIndex], "--engine-oracle") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-oracle-fault") == 0)))
 			{
@@ -828,14 +844,14 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 		}
 	}
 
-	// --engine-hide knows the words sky and water; anything else is refused
-	// here, before any window.
+	// --engine-hide knows the words sky, water and track; anything else is
+	// refused here, before any window.
 	for (int argIndex = 1; (argIndex + 1) < argc; argIndex++)
 	{
 		if ((strcmp(argv[argIndex], "--engine-hide") == 0) && (NativeArgs_EngineHideBits(argv[argIndex + 1]) < 0))
 		{
 			fflush(stdout);
-			fprintf(stderr, "switch --engine-hide expects sky and/or water, comma-separated, not '%s'\n", argv[argIndex + 1]);
+			fprintf(stderr, "switch --engine-hide expects sky, water and/or track, comma-separated, not '%s'\n", argv[argIndex + 1]);
 			fflush(stderr);
 			return NATIVE_EXIT_DEV_REQUIRED;
 		}
@@ -856,6 +872,88 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			fprintf(stderr, "switch --engine-menuscene-zoom expects <f>[,<x>[,<yaw>]] with f 0.25..8, x -1..1, yaw -360..360 degrees, not '%s'\n", argv[argIndex + 1]);
 			fflush(stderr);
 			return NATIVE_EXIT_DEV_REQUIRED;
+		}
+	}
+
+	// The static model and the fly camera (round of 2026-10-16): the model is
+	// loaded with the engine's track (load stage 8), so it needs --engine-track
+	// (--engine is checked above); --engine-static-light needs the model;
+	// --engine-flycam-auto takes a frame count, --engine-flycam-path needs it,
+	// and the free and the automatic flight do not go together. Refused here,
+	// before any window.
+	{
+		int trackGiven = 0;
+		int modelGiven = 0;
+		int lightGiven = 0;
+		int flycamGiven = 0;
+		const char *autoValue = NULL;
+		int pathGiven = 0;
+
+		for (int argIndex = 1; argIndex < argc; argIndex++)
+		{
+			const char *value = ((argIndex + 1) < argc) ? argv[argIndex + 1] : NULL;
+
+			if (strcmp(argv[argIndex], "--engine-track") == 0)
+			{
+				trackGiven = 1;
+			}
+			else if ((strcmp(argv[argIndex], "--engine-static-model") == 0) && (value != NULL))
+			{
+				modelGiven = 1;
+				argIndex++;
+			}
+			else if (strcmp(argv[argIndex], "--engine-static-light") == 0)
+			{
+				lightGiven = 1;
+			}
+			else if (strcmp(argv[argIndex], "--engine-flycam") == 0)
+			{
+				flycamGiven = 1;
+			}
+			else if ((strcmp(argv[argIndex], "--engine-flycam-auto") == 0) && (value != NULL))
+			{
+				autoValue = value;
+				argIndex++;
+			}
+			else if ((strcmp(argv[argIndex], "--engine-flycam-path") == 0) && (value != NULL))
+			{
+				pathGiven = 1;
+				argIndex++;
+			}
+		}
+
+		{
+			const char *refusal = NULL;
+			char *end = NULL;
+			const long frames = (autoValue != NULL) ? strtol(autoValue, &end, 10) : 0;
+
+			if (modelGiven && !trackGiven)
+			{
+				refusal = "switch --engine-static-model requires --engine-track";
+			}
+			else if (lightGiven && !modelGiven)
+			{
+				refusal = "switch --engine-static-light requires --engine-static-model";
+			}
+			else if ((autoValue != NULL) && ((end == autoValue) || (*end != 0) || (frames < 60) || (frames > 1000000)))
+			{
+				refusal = "switch --engine-flycam-auto expects a frame count 60..1000000";
+			}
+			else if (pathGiven && (autoValue == NULL))
+			{
+				refusal = "switch --engine-flycam-path requires --engine-flycam-auto";
+			}
+			else if (flycamGiven && (autoValue != NULL))
+			{
+				refusal = "switch --engine-flycam does not go with --engine-flycam-auto";
+			}
+			if (refusal != NULL)
+			{
+				fflush(stdout);
+				fprintf(stderr, "%s\n", refusal);
+				fflush(stderr);
+				return NATIVE_EXIT_DEV_REQUIRED;
+			}
 		}
 	}
 
@@ -1240,6 +1338,30 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 			// The value was checked before any window (Engine_MenuSceneZoomParse).
 			(void)Engine_MenuSceneZoomParse(argv[++argIndex], &g_cfg_engineMenuSceneZoom, &g_cfg_engineMenuSceneX, &g_cfg_engineMenuSceneYawFixed,
 			                                &g_cfg_engineMenuSceneYaw);
+		}
+		else if ((strcmp(argv[argIndex], "--engine-static-model") == 0) && ((argIndex + 1) < argc))
+		{
+			// The length and the pairing were checked before any window; the
+			// file is read at the first race level load (platform/engine_static.c).
+			snprintf(g_cfg_engineStaticModel, sizeof(g_cfg_engineStaticModel), "%s", argv[++argIndex]);
+		}
+		else if (strcmp(argv[argIndex], "--engine-static-light") == 0)
+		{
+			g_cfg_engineStaticLight = 1;
+		}
+		else if (strcmp(argv[argIndex], "--engine-flycam") == 0)
+		{
+			g_cfg_engineFlycam = 1;
+		}
+		else if ((strcmp(argv[argIndex], "--engine-flycam-auto") == 0) && ((argIndex + 1) < argc))
+		{
+			// The value was checked before any window (60..1000000).
+			g_cfg_engineFlycamAuto = atoi(argv[++argIndex]);
+		}
+		else if ((strcmp(argv[argIndex], "--engine-flycam-path") == 0) && ((argIndex + 1) < argc))
+		{
+			// The length was checked before any window; read at the first race level (platform/engine_flycam.c).
+			snprintf(g_cfg_engineFlycamPath, sizeof(g_cfg_engineFlycamPath), "%s", argv[++argIndex]);
 		}
 		else if ((strcmp(argv[argIndex], "--engine-hide") == 0) && ((argIndex + 1) < argc))
 		{

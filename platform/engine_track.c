@@ -1237,6 +1237,10 @@ global_variable int s_egtReportRegistered;
 global_variable u64 s_egtFramesDrawn;
 global_variable u64 s_egtBucketsSkipped;
 global_variable u64 s_egtWaterVisits;
+// --engine-hide track (HIDDEN TRACK below): bucket visits and level instances
+// owned and not drawn.
+global_variable u64 s_egtHiddenBuckets;
+global_variable u64 s_egtHiddenInstances;
 global_variable u64 s_egtInstDrawn;
 global_variable u64 s_egtInstDeclined;
 global_variable u64 s_egtRuntimeDrawn;    // of s_egtInstDrawn: runtime instances (RUNTIME INSTANCES)
@@ -1384,6 +1388,11 @@ internal void EngTrack_Report(void)
 	             (unsigned long long)s_egtFramesDrawn, (unsigned long long)s_egtBucketsSkipped, (unsigned long long)s_egtWaterVisits);
 	Platform_Log("[CTR Engine] track: level instances drawn by the engine %llu, declined (retail draws them) %llu\n",
 	             (unsigned long long)s_egtInstDrawn, (unsigned long long)s_egtInstDeclined);
+	if ((g_cfg_engineHide & ENGINE_HIDE_TRACK) != 0)
+	{
+		Platform_Log("[CTR Engine] track: hidden (--engine-hide track): level bucket visits owned %llu, level instances owned %llu, none drawn\n",
+		             (unsigned long long)s_egtHiddenBuckets, (unsigned long long)s_egtHiddenInstances);
+	}
 	Platform_Log("[CTR Engine] track: of these runtime instances (no InstDef, no thread): drawn %llu, declined %llu\n", (unsigned long long)s_egtRuntimeDrawn,
 	             (unsigned long long)s_egtRuntimeDeclined);
 	Platform_Log("[CTR Engine] track: frames left to the PS1 walk: no visibility list %llu, over the dynamic budget %llu; frames with a submit refused %llu\n",
@@ -1510,6 +1519,19 @@ internal void EngTrack_TourReport(int entry, int levelID, int phase)
 // the same rule the sky follows, engine_sky.c EngSky_Eligible); the water follows
 // the track (Engine_TrackDrawnThisFrame). The level memory is reused from load to
 // load, so the address alone does not name the level the faces were built for.
+// HIDDEN TRACK (--engine-hide track, round of 2026-10-16, static model): the
+// level's own geometry - its faces in every bucket of the level walk, its water,
+// its level instances - is owned and not drawn, in a race level (not the main
+// menu) of one player. The game state is not touched; what the PS1 walk does
+// for the buckets it is told are drawn is what it does for every engine frame.
+internal int EngTrack_Hidden(const struct GameTracker *gGT)
+{
+	return (g_cfg_engine && g_cfg_engineTrack && ((g_cfg_engineHide & ENGINE_HIDE_TRACK) != 0) && (gGT != NULL) && (gGT->numPlyrCurrGame == 1) &&
+	        ((gGT->gameMode1 & MAIN_MENU) == 0))
+	           ? 1
+	           : 0;
+}
+
 internal int EngTrack_Active(const struct GameTracker *gGT)
 {
 	if (!g_cfg_engine || !g_cfg_engineTrack || (gGT == NULL) || (gGT->numPlyrCurrGame != 1))
@@ -5145,6 +5167,12 @@ void Engine_TrackCollect(struct GameTracker *gGT)
 	{
 		s_egtCollectFrames++;
 	}
+	// HIDDEN TRACK: nothing of the level's faces is built or drawn; the buckets and
+	// the level instances are owned instead (Engine_TrackOwnsBucket, Engine_TrackInstanceRoute).
+	if (EngTrack_Hidden(gGT))
+	{
+		return;
+	}
 	if (!EngTrack_Active(gGT))
 	{
 		return;
@@ -5363,6 +5391,12 @@ int Engine_TrackDrawnThisFrame(void)
 // track's faces (EngTrack_SubmitShown).
 int Engine_TrackOwnsBucket(int bucketIndex)
 {
+	// HIDDEN TRACK: every bucket of the level walk, water included, is owned and stays empty.
+	if (EngTrack_Hidden(sdata->gGT) && (bucketIndex >= 0) && (bucketIndex < EGT_BUCKET_COUNT))
+	{
+		s_egtHiddenBuckets++;
+		return 1;
+	}
 	if (!g_cfg_engine || !g_cfg_engineTrack || !s_egtSubmitted || (bucketIndex < 0) || (bucketIndex >= EGT_BUCKET_COUNT))
 	{
 		return 0;
@@ -5746,6 +5780,14 @@ internal int EngTrack_PodiumRoute(struct Instance *inst, struct InstDrawPerPlaye
 int Engine_TrackInstanceRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb)
 {
 	EngTrackModel *em;
+
+	// HIDDEN TRACK: a level instance (one with an InstDef) is owned and not drawn;
+	// drivers, weapons and the other runtime instances go their usual way.
+	if (EngTrack_Hidden(sdata->gGT) && (inst != NULL) && (inst->instDef != NULL))
+	{
+		s_egtHiddenInstances++;
+		return 1;
+	}
 
 	if (!g_cfg_engine || !g_cfg_engineTrack || !s_egtSubmitted || (inst == NULL) || (idpp == NULL) || (pb == NULL) || (sdata->gGT == NULL) ||
 	    (inst->model == NULL))

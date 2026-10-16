@@ -27,6 +27,7 @@ void Engine_MenuSceneLoad(void);
 void Engine_TrackLoad(void);
 void Engine_SkyLoad(void);
 void Engine_WaterLoad(void);
+void Engine_StaticLoad(void);
 void Engine_TrackPodiumLoad(void);
 void Engine_TrackPodiumEnd(void);
 #endif
@@ -78,6 +79,8 @@ internal void LOAD_NativeEngineStage8(int podium)
 		}
 		Engine_SkyLoad();
 		Engine_WaterLoad();
+		// The static model of --engine-static-model (returns at once without it).
+		Engine_StaticLoad();
 		Engine_MaterialsWarmPipelines();
 	}
 	Engine_RenderUploadMeshes();

@@ -1,6 +1,13 @@
 #include <common.h>
 
 #ifdef CTR_NATIVE
+// From platform/engine_flycam.c, further down in the translation unit: the fly
+// camera of view 0, after the game logic of a frame. Returns at once without
+// --engine-flycam / --engine-flycam-auto.
+void Engine_FlycamTick(struct GameTracker *gGT);
+#endif
+
+#ifdef CTR_NATIVE
 // HOW LONG A LOAD REALLY TAKES - the end of the measurement.
 //
 // The load path ends at two places (MainMain.c, both transitions to
@@ -477,6 +484,10 @@ u32 main(void)
 				NativeBudget_ScopeEnd(1);
 				// Continue the preview recording (only with --record-preview).
 				NativeFlyIn_Tick();
+#ifdef CTR_NATIVE
+				// The fly camera of view 0 (only with --engine-flycam or --engine-flycam-auto).
+				Engine_FlycamTick(gGT);
+#endif
 #if defined(CTR_NATIVE) && defined(CTR_INTERNAL)
 				NativePerf_EndScope(NATIVE_PERF_BUCKET_GAME_LOGIC);
 #endif

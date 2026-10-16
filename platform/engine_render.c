@@ -271,6 +271,50 @@ internal void Engine_RenderEmptyGrave(void)
 	s_engGraveCount = 0;
 }
 
+u32 Engine_RenderStaticVertexBuffer(const EngineVertex *vertices, u32 count)
+{
+	NativeGfxVertexBufferDesc desc;
+	NativeGfxBuffer buffer;
+	const u64 bytes = (u64)count * sizeof(EngineVertex);
+
+	if ((vertices == NULL) || (count == 0u) || (bytes > 0x7fffffffu))
+	{
+		return 0xffffffffu;
+	}
+	Engine_RenderFillVertexDesc(&desc, (int)bytes, 0, vertices);
+	buffer = NativeGfx_CreateVertexBuffer(&desc);
+	return Engine_RenderBufferValid(buffer) ? (u32)buffer : 0xffffffffu;
+}
+
+u32 Engine_RenderStaticIndexBuffer(const u32 *indices, u32 count)
+{
+	NativeGfxIndexBufferDesc desc;
+	NativeGfxBuffer buffer;
+	const u64 bytes = (u64)count * sizeof(u32);
+
+	if ((indices == NULL) || (count == 0u) || (bytes > 0x7fffffffu))
+	{
+		return 0xffffffffu;
+	}
+	desc.bytes = (int)bytes;
+	desc.type = NATIVE_GFX_INDEX_U32;
+	desc.initial = indices;
+	buffer = NativeGfx_CreateIndexBuffer(&desc);
+	return Engine_RenderBufferValid(buffer) ? (u32)buffer : 0xffffffffu;
+}
+
+void Engine_RenderStaticBuffersFree(u32 vertexBuffer, u32 indexBuffer)
+{
+	if (Engine_RenderBufferValid((NativeGfxBuffer)vertexBuffer) && (vertexBuffer != 0xffffffffu))
+	{
+		NativeGfx_DestroyVertexBuffer((NativeGfxBuffer)vertexBuffer);
+	}
+	if (Engine_RenderBufferValid((NativeGfxBuffer)indexBuffer) && (indexBuffer != 0xffffffffu))
+	{
+		NativeGfx_DestroyIndexBuffer((NativeGfxBuffer)indexBuffer);
+	}
+}
+
 int Engine_RenderUploadMeshes(void)
 {
 	int uploaded = 0;

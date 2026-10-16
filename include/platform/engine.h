@@ -30,6 +30,11 @@ extern int g_cfg_engineMenuScene; // --engine-menuscene (needs --engine)
 extern int g_cfg_engineHide;
 #define ENGINE_HIDE_SKY 0x1
 #define ENGINE_HIDE_WATER 0x2
+// "track" (round of 2026-10-16, static model): the level's own geometry - its
+// faces, its water and its level instances (the ones with an InstDef) - is
+// owned and not drawn (platform/engine_track.c); drivers, weapons and effects
+// stay. Needs --engine-track as well (the default engine has it).
+#define ENGINE_HIDE_TRACK 0x4
 
 // --------------------------------------------------------------------------
 // FALLBACK (platform/engine.c; day round of 2026-10-15, per level since the
@@ -1013,6 +1018,198 @@ void Engine_HiresWheelMiddle(int wheel, s16 scaleX, s16 scaleY, s16 scaleZ, floa
 void Engine_HiresWheelFrame(int wheel, double steer, double roll, int hazardTimer, double out[3][3]);
 double Engine_HiresRollStep(int speedApprox, int elapsedTimeMS, int wheelSize);
 int Engine_SelfTestHires(int *checks);
+
+// --------------------------------------------------------------------------
+// STATIC MODEL (round of 2026-10-16; platform/engine_static_load.c reads the
+// file, platform/engine_static.c makes the GPU side and draws it)
+//
+// --engine-static-model <file.glb> (needs --engine): an external model in glTF
+// binary form, its positions already in world units and world axes (no
+// transform of its own beyond the glTF node matrices), drawn in every race
+// level as static geometry: full-resolution textures with their mip chains,
+// u32 indices, pieces with a box each for the view test. With --engine-hide
+// track the level's own geometry is not drawn, so only the model shows.
+#define ENGINE_STATIC_PATH_MAX 512
+extern char g_cfg_engineStaticModel[ENGINE_STATIC_PATH_MAX];
+// --engine-static-light: a fixed directional light baked into the vertex
+// colours at load (from the model's normals); without it texture x vertex
+// colour x base colour only.
+extern int g_cfg_engineStaticLight;
+
+// THE FILE SIDE (engine_static_load.c): no device, no game state - what the
+// selftest checks on a made-up model.
+//
+// A source of bytes: the file, or memory for the selftest. read() returns 1
+// when all `bytes` from `offset` were read.
+typedef struct
+{
+	int (*read)(void *user, u64 offset, void *dst, u32 bytes);
+	void *user;
+	u64 size;
+	const char *baseDir; // folder of the .glb for image uris ("" or NULL: none)
+} EngineStaticSource;
+// The file source (fopen/seek); 0 when the file does not open. Close it with
+// EngineStatic_SourceFileClose.
+int EngineStatic_SourceFile(const char *path, EngineStaticSource *out);
+void EngineStatic_SourceFileClose(EngineStaticSource *src);
+
+#define ENGINE_STATIC_ALPHA_OPAQUE 0
+#define ENGINE_STATIC_ALPHA_MASK 1
+#define ENGINE_STATIC_ALPHA_BLEND 2 // drawn as MASK with cutoff 0.5 (counted)
+
+typedef struct
+{
+	int image;          // EngineStaticModel image of the base colour texture, -1 none
+	int wrapU, wrapV;   // NativeGfxWrap of its sampler: 0 repeat, 1 clamp, 2 mirror
+	float baseColor[4]; // baseColorFactor
+	int alphaMode;      // ENGINE_STATIC_ALPHA_*
+	float alphaCutoff;  // MASK: glTF alphaCutoff (default 0.5)
+	int doubleSided;
+} EngineStaticMaterial;
+
+typedef struct
+{
+	void *gltf; // the parsed JSON (cgltf_data), owned
+	EngineStaticSource *src;
+	u64 binOffset; // where the GLB BIN chunk's data starts in the source
+	u64 binSize;
+	int materialCount; // the file's materials + 1: the last one is the default (a primitive without material)
+	EngineStaticMaterial *materials;
+	int imageCount;
+	// Counts of the file (EngineStatic_Open)
+	u32 triangles;         // of every TRIANGLES primitive of every node of the scene
+	u32 primitives;        // drawn ones
+	u32 skippedPrimitives; // not TRIANGLES, no POSITION, a type not read, sparse
+	u32 mirroredNodes;     // node matrices with a negative determinant (winding turned)
+	u32 noUvTriangles;     // triangles of primitives without TEXCOORD_0
+	float boxMin[3];       // from the POSITION accessors' min/max through the node matrices (world units)
+	float boxMax[3];
+} EngineStaticModel;
+
+// Parses the JSON chunk of the GLB of src (the BIN chunk is not read: the
+// attributes are read from the source when the pieces are made). 1 = ok; else
+// 0 and why. Free with EngineStatic_Close.
+int EngineStatic_Open(EngineStaticSource *src, EngineStaticModel *out, char *why, int whySize);
+void EngineStatic_Close(EngineStaticModel *model);
+
+// One piece: its vertices, its u32 indices (into its own vertices), its ranges
+// (EngineRange.material = the model's material index, one range per run of
+// triangles of one material, in file order) and the box of its vertices.
+typedef struct
+{
+	EngineVertex *vertices;
+	u32 vertexCount;
+	u32 *indices;
+	u32 indexCount;
+	EngineRange *ranges;
+	u32 rangeCount;
+	float boxMin[3];
+	float boxMax[3];
+} EngineStaticPiece;
+
+// Triangles per piece at most (ENGINE_STATIC_PIECE_TRIANGLES): a piece holds
+// at most 3 x that many vertices, below the mesh limit of 1 << 20.
+#define ENGINE_STATIC_PIECE_TRIANGLES 262144u
+#define ENGINE_STATIC_PIECES_MAX 64
+// The pieces of the model: the triangles split by their centres, the longest
+// side of the centres' box at its middle, until a piece has at most
+// maxTriangles (deterministic: the same file gives the same bytes). Every
+// triangle is in exactly one piece; the vertex colour is COLOR_0 (white
+// without) times the light when `light`. onPiece is called once per piece in
+// piece order and keeps nothing of it (the arrays are freed after the call);
+// it returns 0 to stop. Returns the piece count, or -1 with why (more than
+// ENGINE_STATIC_PIECES_MAX pieces, a read that failed, out of memory, onPiece
+// stopped).
+int EngineStatic_BuildPieces(const EngineStaticModel *model, u32 maxTriangles, int light, int (*onPiece)(void *user, const EngineStaticPiece *piece),
+                             void *user, char *why, int whySize);
+
+// One image as RGBA8 for Engine_TextureCreate: decoded (PNG only) and, if an
+// edge is not a power of two or below 16, scaled UP to the next power of two
+// of at least 16 (bilinear, never down). 1 = ok (free with
+// EngineStatic_FreeImage); 0 with why (not PNG, unreadable, an edge above
+// 2048).
+typedef struct
+{
+	int width, height;         // as made (powers of two, 16..2048)
+	int fileWidth, fileHeight; // as in the file
+	int resampled;             // 1 = scaled up
+	u8 *rgba;
+} EngineStaticImage;
+int EngineStatic_ReadImage(const EngineStaticModel *model, int image, EngineStaticImage *out, char *why, int whySize);
+void EngineStatic_FreeImage(EngineStaticImage *img);
+// The pure helpers the selftest checks directly.
+int EngineStatic_UpEdge(int edge); // next power of two >= max(edge, 16); 0 above 2048
+int EngineStatic_ResampleUp(const u8 *src, int sw, int sh, u8 *dst, int dw, int dh); // bilinear, clamped edges; 1 = ok
+int Engine_SelfTestStaticLoad(int *checks);
+
+// GPU buffers that belong to the caller (engine_render.c; registered with
+// Engine_MeshCreateExternal): the vertex layout of every engine buffer, u32
+// indices. Made at a load stage only (the upload waits); 0xffffffff when
+// refused. Engine_RenderStaticBuffersFree takes either handle as 0xffffffff.
+u32 Engine_RenderStaticVertexBuffer(const EngineVertex *vertices, u32 count);
+u32 Engine_RenderStaticIndexBuffer(const u32 *indices, u32 count);
+void Engine_RenderStaticBuffersFree(u32 vertexBuffer, u32 indexBuffer);
+
+// THE ENGINE SIDE (engine_static.c).
+void Engine_StaticLoad(void);                     // load stage 8, after Engine_TrackLoad, before Engine_RenderUploadMeshes
+void Engine_StaticCollect(struct GameTracker *gGT); // from Engine_FrameCollect, before the track
+// The CORE box of the model in world units (1st to 99th percentile of the
+// vertices per axis, without a sky sphere or other far scenery); 0 when none is
+// loaded. The fly camera's ring is built over it.
+int Engine_StaticBox(float boxMin[3], float boxMax[3]);
+// Pure: 1 = the box may be seen by the camera (not wholly behind the near
+// plane, not wholly outside one side of the view's pyramid).
+int Engine_StaticBoxVisible(const EngineCamera *cam, const float boxMin[3], const float boxMax[3]);
+int Engine_SelfTestStatic(int *checks);
+
+// --------------------------------------------------------------------------
+// FLY CAMERA (round of 2026-10-16; platform/engine_flycam.c)
+//
+// --engine-flycam (needs --engine): view 0 is taken off the game's camera
+// (CAMERA_FLAG_FROZEN, as the preview path camera of game/native_flyin.c) and
+// flown by keyboard and mouse; never under --deterministic.
+// --engine-flycam-auto <frames>: a deterministic flight instead - a closed
+// loop over stations, one loop in <frames> game frames (each station held
+// ENGINE_FLYCAM_HOLD frames, then a smooth move to the next), repeated. The
+// stations: --engine-flycam-path <file> (lines "x y z  lx ly lz": camera and
+// the point it looks at, world units; '#' comments), else
+// ENGINE_FLYCAM_RING stations on a ring low above the static model's core box
+// (the level's vertex box without a model), looking down at a slant. Both
+// modes wait for the end of the level's intro (START_OF_RACE cleared by the
+// game camera's fly-in) before they take the camera, and count their frames
+// from there. With --shot-name one snapshot per station in the first loop:
+// <shot-name>-sNN.bmp.
+// Only pb->pos, pb->rot of view 0 and the freeze flag of its camera are
+// written; nothing else of the game.
+extern int g_cfg_engineFlycam;
+extern int g_cfg_engineFlycamAuto; // frames of one loop, 0 = off
+#define ENGINE_FLYCAM_PATH_MAX 512
+extern char g_cfg_engineFlycamPath[ENGINE_FLYCAM_PATH_MAX];
+#define ENGINE_FLYCAM_STATIONS_MAX 256
+#define ENGINE_FLYCAM_RING 8
+#define ENGINE_FLYCAM_HOLD 30
+
+typedef struct
+{
+	float pos[3];
+	float look[3];
+} EngineFlycamStation;
+
+// From game/MAIN/MainMain.c after the game logic of a frame (not while loading).
+void Engine_FlycamTick(struct GameTracker *gGT);
+// Pure helpers (selftest):
+// the ring of ENGINE_FLYCAM_RING stations above a box; returns the count.
+int Engine_FlycamRing(const float boxMin[3], const float boxMax[3], EngineFlycamStation *out);
+// A path file's text to stations; returns the count, -1 with *badLine (1-based) on a bad line.
+int Engine_FlycamParsePath(const char *text, EngineFlycamStation *out, int max, int *badLine);
+// The camera at game frame `frame` of a loop of `loopFrames` over `count`
+// stations: position and look point; *station = the station held now or -1
+// while moving, *holdFrame = frames into that hold (0 while moving).
+void Engine_FlycamAt(const EngineFlycamStation *st, int count, int loopFrames, u32 frame, float pos[3], float look[3], int *station, int *holdFrame);
+// The game rotation (pb->rot, 4096 a turn) that looks from pos at look, the
+// convention of game/CAM.c (rot.x = 0x800 - pitch, rot.y = yaw, rot.z = 0).
+void Engine_FlycamRot(const float pos[3], const float look[3], s16 rot[3]);
+int Engine_SelfTestFlycam(int *checks);
 
 // --------------------------------------------------------------------------
 // TRACK PROTOTYPE (platform/engine_track.c; --engine-track, round of 2026-10-13)
