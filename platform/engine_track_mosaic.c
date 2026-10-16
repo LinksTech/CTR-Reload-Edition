@@ -364,7 +364,8 @@ internal void EngMosaic_WholeFaceFill(EngMosaicRow *row, u32 groupAddress, const
 // An animated row (its key fields animCell, mirrored, form set) filled for the
 // IconGroup4 group shown now, by the rule of a face of the load: when level 3 of
 // group is a mosaic table reference (EngTrack_FinestLayout with isLevelPtr) whose
-// both orientations spanOk vouches for and whose own tiles share one abr, the
+// both orientations spanOk vouches for, whose tiles of the row's orientation are
+// mosaic tiles (EngTrack_TableUsable) and whose own tiles share one abr, the
 // table's cells (side 4, as EngMosaic_RowFill); otherwise the finest layout as
 // one cell (side 1, EngMosaic_WholeFaceFill: level 2 for a mosaic word, as a
 // face the table refused). The key fields stay. 0 = no usable layout (row unchanged).
@@ -383,7 +384,7 @@ internal int EngMosaic_AnimFill(EngMosaicRow *row, u32 groupAddress, const struc
 
 		memcpy(&word, &group[3], sizeof(word));
 		if ((own > 0) && (word != 0u) && ((spanOk == NULL) || spanOk(word, (u32)(2 * own) * (u32)sizeof(struct TextureLayout))) &&
-		    EngTrack_TableUsable((const struct TextureLayout *)(size_t)word, 2 * own))
+		    EngTrack_TableUsable((const struct TextureLayout *)(size_t)word + (row->mirrored ? own : 0), own))
 		{
 			EngMosaicRow table;
 
@@ -847,11 +848,12 @@ int Engine_TrackMosaicFace(const struct TextureLayout *group, int mirrored, int 
 		return 0;
 	}
 	// The first word of level 3 is the table (EngTrack_FinestLayout decided that
-	// it is one); both orientations must lie in level memory and be mosaic tiles
-	// (engine_track.c, THE TABLE TEST OF THE ENGINE).
+	// it is one); both orientations must lie in level memory, and the tiles of the
+	// orientation this face reads (EngMosaic_CellEntry) must be mosaic tiles -
+	// the other half is never read for it (engine_track.c, THE TABLE TEST OF THE ENGINE).
 	memcpy(&word, &group[3], sizeof(word));
 	if ((word == 0u) || !DrawLevelOvr1P_IsNativeLevelSpan(word, (u32)(2 * own) * (u32)sizeof(struct TextureLayout)) ||
-	    !EngTrack_TableUsable((const struct TextureLayout *)(size_t)word, 2 * own))
+	    !EngTrack_TableUsable((const struct TextureLayout *)(size_t)word + (mirrored ? own : 0), own))
 	{
 		s_egmCount.badTable++;
 		return 0;
@@ -1719,6 +1721,26 @@ int Engine_SelfTestTrackMosaic(int *checks)
 		}
 		EGM_CHECK(!EngMosaic_AnimFill(&row, (u32)(size_t)blank, blank, NULL, EngMosaic_TestIsTable) && (row.shown == (u32)(size_t)groupX),
 		          "animated row: a group without a usable layout changed the row");
+		{
+			// (4c) only the half a face reads is tested: a blank tile in the mirrored
+			// half keeps the table for an unmirrored row and gives level 2 to a mirrored one.
+			struct TextureLayout half[32];
+			struct TextureLayout groupH[4];
+			const u32 halfWord = (u32)(size_t)half;
+
+			memcpy(half, table, sizeof(half));
+			memset(&half[20], 0, sizeof(half[20]));
+			memcpy(groupH, levels, sizeof(levels));
+			memcpy(&groupH[3], &halfWord, sizeof(halfWord));
+			s_egmTestTableWords[1] = halfWord;
+			row.mirrored = 0;
+			EGM_CHECK(EngMosaic_AnimFill(&row, (u32)(size_t)groupH, groupH, NULL, EngMosaic_TestIsTable) && (row.side == 4) && (row.cell[0].u0 == 0),
+			          "animated row, blank tile in the other half: side %d (the table wanted)", row.side);
+			row.mirrored = 1;
+			EGM_CHECK(EngMosaic_AnimFill(&row, (u32)(size_t)groupH, groupH, NULL, EngMosaic_TestIsTable) && (row.side == 1),
+			          "animated row, blank tile in the half it reads: side %d (level 2 wanted)", row.side);
+			s_egmTestTableWords[1] = mixedWord;
+		}
 		{
 			u8 px[EGM_ROW_TEXELS * 4];
 
