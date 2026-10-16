@@ -239,7 +239,7 @@ def parse_box(s):
 class Line(object):
     __slots__ = ('side', 'src', 'srcId', 'sub', 'page', 'depth', 'clut', 'uv', 'blend', 'cell',
                  'extra', 'lineno', 'fault', 'col', 'box', 'lod', 'stage', 'anim', 'prim', 'route',
-                 'key', 'ncorner', 'set', 'flags', 'colbad', 'slots')
+                 'key', 'ncorner', 'set', 'flags', 'colbad', 'slots', 'rawcol')
 
     def mat(self):
         return (self.page, self.depth, self.clut, self.blend)
@@ -289,6 +289,11 @@ def parse_entry(fields, lineno):
     ln.fault = ln.extra.get('fault') if ln.extra.get('fault', '0') not in ('0', '') else None
     ln.anim = ln.extra.get('anim', '0') not in ('0', '')
     ln.col = parse_col(ln.extra.get('col'))
+    # raw texture (raw=1, the raw bit of the packet): the PS1 GPU does not
+    # modulate the texture, the colour bytes do not count - not compared
+    ln.rawcol = ln.side == 'R' and ln.col is not None and ln.extra.get('raw', '0') not in ('0', '')
+    if ln.rawcol:
+        ln.col = None
     ln.box = parse_box(ln.extra.get('box'))
     ln.lod = ln.extra.get('lod')
     ln.stage = ln.extra.get('stage')
@@ -856,7 +861,8 @@ def _new_stats():
             'per': {}, 'unused': {}, 'coverage': {}, 'prim_equal': 0, 'menu_tracks': set(),
             'part': {}, 'clip': {}, 'nogeo': {}, 'info_lines': {}, 'stage_none': {}, 'lod_never': set(),
             'col_unpaired': 0, 'winding': 0, 'piece': {}, 'eom_coverage': [], 'fault_orient': set(),
-            't_set_rule': {}, 'back_coverage': [], 'src_cell': {}, 'col_model': {}}
+            't_set_rule': {}, 'back_coverage': [], 'src_cell': {}, 'col_model': {}, 'raw_col': 0,
+            'tablefail': {}, 'anim_degenerate': {}}
 
 
 def _per(stats, tr, src):
@@ -962,6 +968,18 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
     records, stats = [], _new_stats()
     stats['frames'] = len(frames)
     assign_sections(frames)
+    # cross references over the whole log: track faces the load block marks
+    # degenerate, and faces with retail lines drawn in race frames
+    degen_faces, drawn_faces = set(), set()
+    for fr in frames:
+        for (src, sid), sides in fr.sources.items():
+            if src != 'T':
+                continue
+            for r in sides['R']:
+                if (fr.load or r.set == 'load') and 'degenerate' in r.flags:
+                    degen_faces.add((fr.track(), sid))
+                elif not fr.load and r.set == '-':
+                    drawn_faces.add((fr.track(), sid))
     per_track = {}            # track -> (src, model) -> object data (models)
     tcov = {}                 # track -> coverage sets (track faces)
     visible = set()           # (track, object, material) of model fault lines on faces retail draws
@@ -1018,6 +1036,7 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                 stats['r_no_col'] += sum(1 for r in rl if r.col is None)
                 stats['e_no_col'] += sum(1 for e in el if e.col is None)
                 stats['col_unpaired'] += sum(1 for x in rl + el if x.colbad)
+                stats['raw_col'] += sum(1 for x in rl if x.rawcol)
                 stats['e_no_box'] += sum(1 for e in el if e.box is None and e.page is not None)
                 if src == 'T':
                     if load:
@@ -1070,13 +1089,19 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                         ret[k][1] += 1
                     else:
                         ret[k] = [r, 1]
+                # a face whose table the engine refused (tablefail=1, retail reads the
+                # level-3 word as a table pointer): its load-block table entries and the
+                # engine lines without a retail partner are information (K-ADR/tablefail)
+                tfail = src == 'T' and load and any('tablefail' in x.flags for x in rl + el)
                 # track: engine entries without a retail line
                 if src == 'T':
                     rk = set(r.key for r in rl)
                     for e in es.lines:
                         if e.key in rk:
                             continue
-                        if load:
+                        if tfail:
+                            _bump(stats['tablefail'], tr)
+                        elif load:
                             rec(kind='d2', frame=fr, track=tr, src=src, srcId=sid, features=['engine-only'],
                                 e=e, fault=e.fault, pattern='%s %s' % e.key + _flags(None, e))
                         elif setname == 'anim':
@@ -1089,6 +1114,9 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                 keys = es.keys()
                 for r, count in ret.values():
                     if src == 'T':
+                        if tfail and 'entry' in r.extra:
+                            _bump(stats['tablefail'], tr, count)
+                            continue
                         if 'nogeo' in r.flags:
                             _bump(stats['nogeo'], tr, count)
                             continue
@@ -1102,6 +1130,11 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                 if not work:
                     continue
                 if not es.lines:
+                    if src == 'T' and setname == 'anim' and (tr, sid) in degen_faces and (tr, sid) not in drawn_faces:
+                        # an AnimTex face the load block marks degenerate and no race frame
+                        # draws: information
+                        _bump(stats['anim_degenerate'], tr, sum(c for _, c in work))
+                        continue
                     rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=['missing-source'],
                         r=work[0][0], r_count=sum(c for _, c in work))
                     continue
@@ -1680,9 +1713,9 @@ def render_md(res, inputs, exc_origin):
     md.append('Colour: tolerance %d per channel for the normal writer, %d for GTE writers, %d for computed tile '
               'corners (col-model, information: %d line(s)); '
               '%d retail / %d engine line(s) without col (not compared), of them %d with a col that does not '
-              'pair with the corners' % (
+              'pair with the corners; raw-texture colour not compared: %d retail line(s) (raw=1)' % (
                   COL_TOL_NORMAL, res.gte_tol if hasattr(res, 'gte_tol') else COL_TOL_GTE, COL_MODEL_GAP,
-                  sum(s['col_model'].values()), s['r_no_col'], s['e_no_col'], s['col_unpaired']))
+                  sum(s['col_model'].values()), s['r_no_col'], s['e_no_col'], s['col_unpaired'], s['raw_col']))
     md.append('Exceptions: %s' % exc_origin)
     md.append('')
     md.append('## Exception list')
@@ -1737,6 +1770,12 @@ def render_md(res, inputs, exc_origin):
               % len(s['eom_coverage']))
     md.append('- Engine back-side materials (side=back) of models retail never showed from the back (coverage): %d'
               % len(s['back_coverage']))
+    for tr in sorted(s['tablefail']):
+        md.append('- %s K-ADR/tablefail: %d load-block line(s) of faces whose table the engine refused (information)'
+                  % (tr, s['tablefail'][tr]))
+    for tr in sorted(s['anim_degenerate']):
+        md.append('- %s set=anim lines of faces the load block marks degenerate and no race frame draws: %d '
+                  '(information)' % (tr, s['anim_degenerate'][tr]))
     if s['src_cell']:
         md.append('- Track tiles without slots placed by their table entry (src= against entry= of the load '
                   'block): %d' % sum(s['src_cell'].values()))
@@ -2116,6 +2155,26 @@ def selftest():
     check('parse: bad slots are an error',
           len(parse_log('\n'.join([F(), T('R', '5', C00, 'cell=0,0', extra='slots=0,1,1,2')]) + '\n', 's').errors) == 1)
 
+    # set=anim missing-source by cross reference, faces with a refused table
+    res, _ = run([F('L3-load'), T('R', '9', C00, 'stage=2', extra='degenerate=1'),
+                  F('t1'), T('R', '9', C00, 'stage=2', extra='set=anim,anim=1')])
+    check('set=anim missing-source: degenerate in the load block and never drawn: information',
+          len(res.open) == 0 and res.stats['anim_degenerate'] == {'L3': 1})
+    res, _ = run([F('L3-load'), T('R', '9', C00, 'stage=2', extra='degenerate=1'),
+                  F('t1'), T('R', '9', C00, 'stage=2', extra='set=anim,anim=1'), T('R', '9', C00, 'stage=2')])
+    check('set=anim missing-source stays when a race frame draws the face', feats(res) == ['missing-source'] * 2)
+    res, _ = run([F('L3-load'), T('R', '9', C00, 'stage=2'), F('t1'), T('R', '9', C00, 'stage=2', extra='set=anim,anim=1')])
+    check('set=anim missing-source stays without degenerate in the load block', feats(res) == ['missing-source'] * 2 and res.stats['anim_degenerate'] == {})
+    res, _ = run([F('L3-load'), T('R', '5', C00, 'cell=0,0', extra='entry=0'), T('R', '5', C01, 'cell=0,1', extra='entry=1'),
+                  T('R', '5', '0,0,15,0,0,15,15,15', 'stage=2'),
+                  T('E', '5', '0,0,15,0,0,15,15,15', 'stage=2', extra='tablefail=1'),
+                  T('E', '5', '0,0,15,0,0,15,15,15', 'stage=3', extra='tablefail=1')])
+    check('tablefail=1: table entries and unpartnered engine lines of the face are information (K-ADR/tablefail)',
+          len(res.open) == 0 and res.stats['tablefail'] == {'L3': 3})
+    res, _ = run([F('L3-load'), T('R', '5', C00, 'cell=0,0', extra='entry=0'), T('R', '5', '0,0,15,0,0,15,15,15', 'stage=2'),
+                  T('E', '5', '0,0,15,0,0,15,15,15', 'stage=2')])
+    check('without tablefail the table entry stays a deviation', feats(res) == ['cell'])
+
     # zeroarea and the cell of a tile from its table entry (src= against entry= of the load block)
     res, _ = run([F(), T('R', '9', '0,0,15,0,0,15,15,15', 'stage=2', extra='zeroarea=1')])
     check('zeroarea=1: a dynamic missing-source is information', len(res.open) == 0 and
@@ -2463,6 +2522,16 @@ def selftest():
     ln = log.frames[0].sources[('I', 'x#0')]['R'][0] if log.frames else None
     log3 = parse_log('\n'.join([F(), L('R', 'T', '5', uv=QUAD, extra='col=1,2,3;4,5,6;7,8,9')]) + '\n', 's')
     ln3 = log3.frames[0].sources[('T', '5')]['R'][0]
+    res, _ = run([F(), L('R', 'X', 'particle-g03#1', uv=TRI_A, extra='prim=particle,raw=1,col=40,90,200'),
+                  L('E', 'X', 'particle-g03#1', uv=TRI_A, extra='prim=particle,col=128,128,128')])
+    check('raw=1: the GPU does not modulate a raw texture, its colour is not compared (counted)',
+          len(res.open) == 0 and res.stats['raw_col'] == 1)
+    res, _ = run([F(), L('R', 'X', 'particle-g03#1', uv=TRI_A, extra='prim=particle,col=40,90,200'),
+                  L('E', 'X', 'particle-g03#1', uv=TRI_A, extra='prim=particle,col=128,128,128')])
+    check('without raw=1 the colour is compared: col', feats(res) == ['col'])
+    res, _ = run([F(), L('R', 'X', 'particle-g03#1', uv=TRI_A, extra='prim=particle,raw=1,col=40,90,200'),
+                  L('E', 'X', 'particle-g03#1', uv=TRI_A, clut='0,481', extra='prim=particle,col=128,128,128')])
+    check('raw=1 still compares the CLUT', feats(res) == ['clut'])
     check('parse: three colours on a quad are kept unpaired (not compared)',
           not log3.errors and ln3.col is None and ln3.colbad and ln3.extra['col'] == '1,2,3;4,5,6;7,8,9')
     res, _ = run([F(), L('R', 'I', 'q#0', uv=QUAD, extra='col=1,2,3;4,5,6;7,8,9'),
