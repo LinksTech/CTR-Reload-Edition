@@ -271,6 +271,11 @@ static const NativeSwitch s_playerSwitches[] = {
     {"--version", "", NULL}, // also -v
     {"--help", "", NULL},
     {"--dev", "", NULL},
+    // The native engine is the default for one player (include/platform/engine.h,
+    // DEFAULT): its way out and its two names are player switches.
+    {"--no-engine", "", NULL},
+    {"--engine", "", NULL},
+    {"--engine-track", "", NULL},
 };
 
 static const NativeSwitch s_devSwitches[] = {
@@ -401,8 +406,6 @@ static const NativeSwitch s_devSwitches[] = {
     {"--gte-selftest", "", "both GTE paths against each other, then end"},
     {"--char-grid-selftest", "", "layout, navigation and scrolling of the driver select grid for 0 to 32 custom entries, then end; no window, no data needed"},
     {"--mods-selftest", "", "the play mods of the MODS page without a race: settings lines, the status line of the box, --dev-mods-play, the page's steps, gravity and hang time, the grip blend, the night colour, difficulty, the boss sections, the item box and the CPU weapons, then end (ctest mods_selftest)"},
-    {"--engine", "", "the native engine (phase 1, a prototype): draws through the ordering table as engine markers behind the PS1 path; switches the native groundwork on as --native-preview does (depth-capable passes, texture manager); without it nothing of the engine runs"},
-    {"--engine-track", "", "with --engine: the track drawn by the engine (prototype)"},
     {"--engine-testscene", "", "with --engine: a textured box 600 units in front of the camera of view 0, drawn every race frame through the whole engine path"},
     {"--engine-menuscene", "", "with --engine: the first custom driver of the roster drawn by the engine in the main menu, turning (phase-1 finish line Z5)"},
     {"--engine-hires-dir", "<dir>", "with --engine: the hi-res driver prototype (stage H) from <dir> (body.hrm, wheel.hrm, skin.hrt of tools/hires_testdriver.py) drawn instead of seat 0's body and wheel sprites in a race and as the driver of --engine-menuscene: full-resolution RGBA texture with mip levels, 3D wheels from game state, one log line per tick"},
@@ -415,7 +418,6 @@ static const NativeSwitch s_devSwitches[] = {
     {"--engine-oracle", "<file>", "with --engine --engine-track, measuring only: the log of the material comparison into <file> (relative to the game folder) - per drawn surface the texture page, CLUT, UV, blend and mosaic cell of the PS1 path and of the engine, in the frames --level-tour-oracle arms; without it nothing is written"},
     {"--engine-oracle-fault", "<clut|cell>:<n>", "with --engine-oracle, measuring only (the controls of the comparison): clut:<n> - the CLUT of the n-th engine material of the instances is falsified on purpose, cell:<n> - two cells of a mosaic row of the track are swapped; each named in the log; given once per kind (twice for both)"},
     {"--engine-particles", "", "with --engine --engine-track, a prototype (off by default): the world particles (wheel spray, sparks, smoke, flames, bubbles, mud) drawn by the engine with a depth test against the engine track; without it the PS1 path draws them as before; per track the log line 'world particles: engine N, left to retail M'"},
-    {"--no-engine", "", "the native engine stays off for this run, whatever ctr-settings.cfg says (video engine 1); the way back to the PS1 path once the engine is the default; not with --engine"},
     {"--dev-race-mode", "<tt|adventure>", "with --level: the direct start as a retail Time Trial (tt) or as an Adventure race (adventure) instead of an arcade race"},
     {"--dev-tt-ghost", "", "with --dev-race-mode tt: the track's staff ghost (N. Tropy) races along - its gate is opened in this session's progress in RAM (the card root is the one of --dev-race-mode); retail disc tracks only"},
     {"--dev-cup", "<0..3>", "a retail arcade cup (0 Wumpa, 1 Crystal, 2 Nitro, 3 Crash) started from the main menu like --level, set up as the cup menu does it: EASY, 1 lap per race (what the ARCADE row sets with the ONE LAP cheat), the driver of --driver; the game's own way through the result screens and the cup standings (CROSS by --menu-keys) to the podium; one log line per race and screen, with --shot-name snapshots <name>-cup-r<n>-race|results|points.bmp and <name>-cup-podium-f<frame>.bmp; back at the main menu the run ends; the card root is the one of --dev-race-mode; not with --level, --level-tour, --autoload-track or --dev-race-mode"},
@@ -490,6 +492,10 @@ static void NativeArgs_PrintHelp(void)
 	printf("  --version, -v             version and build\n");
 	printf("  --help                    this overview\n");
 	printf("  --dev                     unlock the developer switches\n");
+	printf("  --no-engine               this run without the native engine: the PS1 drawing path draws\n");
+	printf("                            everything (the way back should the engine not work on this PC)\n");
+	printf("  --engine [--engine-track] the native engine (and its track) by name; without a switch one-player\n");
+	printf("                            races use both, by name the engine stays on with more players too\n");
 	printf("\n");
 	printf("--windowed, --fullscreen, --res-scale, --aspect and --msaa apply to this run and are not saved.\n");
 	printf("Relative paths (--log, --image) are taken relative to the game folder, not the current directory.\n");
@@ -1447,6 +1453,21 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 
 			g_cfg_windowHidden = 1;
 		}
+	}
+
+	// THE DEFAULT (include/platform/engine.h, DEFAULT): without --engine and
+	// --no-engine the engine and its track are on, as --engine --engine-track,
+	// UP HERE for the reason of --engine. One player only: a level of more
+	// players goes to the PS1 path (Engine_LevelBegin). The log line is in main
+	// after Platform_Init.
+	if (Engine_DefaultOn(g_cfg_engine, g_cfg_engineOff))
+	{
+		extern int g_cfg_nativePreview;
+
+		g_cfg_engine = 1;
+		g_cfg_engineTrack = 1;
+		g_cfg_nativePreview = 1;
+		g_cfg_engineDefault = 1;
 	}
 
 	return fullscreen;
@@ -3693,6 +3714,10 @@ int main(int argc, char *argv[])
 		// The version in the log too - on stdout alone it would be lost, and a
 		// tester sends the log, not the console.
 		Platform_Log("[CTR Native] Version: CTR Reload %s (%s)\n", CTR_NATIVE_VERSION, CTR_NATIVE_BUILD_ID);
+		if (g_cfg_engineDefault)
+		{
+			Platform_Log("[CTR Engine] default: the engine and its track on for one-player levels, native groundwork on (--no-engine: the PS1 path)\n");
+		}
 	}
 
 	// And append the total of the lost splits at the end.
@@ -4038,7 +4063,7 @@ int main(int argc, char *argv[])
 			else if (strcmp(argv[argIndex], "--engine") == 0)
 			{
 				// Set by the early reader (NativeArgs_ReadDisplayFlags).
-				Platform_Log("[CTR Engine] --engine: on (dev); native groundwork on\n");
+				Platform_Log("[CTR Engine] --engine: on (command line); native groundwork on\n");
 			}
 			else if (strcmp(argv[argIndex], "--no-engine") == 0)
 			{

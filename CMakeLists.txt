@@ -487,8 +487,20 @@ if(BUILD_TESTING)
     set_tests_properties(engine_fail_needs_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-fail requires --dev")
     add_test(NAME no_engine_not_with_engine COMMAND $<TARGET_FILE:ctr_native> --dev --engine --no-engine --dev-race-mode stop)
     set_tests_properties(no_engine_not_with_engine PROPERTIES PASS_REGULAR_EXPRESSION "switch --no-engine does not go with --engine")
-    add_test(NAME no_engine_needs_dev COMMAND $<TARGET_FILE:ctr_native> --no-engine --dev-race-mode stop)
-    set_tests_properties(no_engine_needs_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --no-engine requires --dev")
+    # The engine is the default for one player (include/platform/engine.h,
+    # DEFAULT): --no-engine, --engine and --engine-track are player switches.
+    # Without --dev they pass the gate, and the developer switch behind them
+    # ends the start there; their pairing rules hold without --dev as well.
+    add_test(NAME no_engine_without_dev COMMAND $<TARGET_FILE:ctr_native> --no-engine --dev-race-mode stop)
+    set_tests_properties(no_engine_without_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-race-mode requires --dev")
+    add_test(NAME engine_without_dev COMMAND $<TARGET_FILE:ctr_native> --engine --engine-track --dev-race-mode stop)
+    set_tests_properties(engine_without_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-race-mode requires --dev")
+    add_test(NAME engine_track_needs_engine_without_dev COMMAND $<TARGET_FILE:ctr_native> --engine-track)
+    set_tests_properties(engine_track_needs_engine_without_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-track requires --engine")
+    add_test(NAME no_engine_not_with_engine_without_dev COMMAND $<TARGET_FILE:ctr_native> --engine --no-engine)
+    set_tests_properties(no_engine_not_with_engine_without_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --no-engine does not go with --engine")
+    add_test(NAME engine_menuscene_still_dev COMMAND $<TARGET_FILE:ctr_native> --engine --engine-menuscene)
+    set_tests_properties(engine_menuscene_still_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-menuscene requires --dev")
     add_test(NAME dev_tt_ghost_needs_tt COMMAND $<TARGET_FILE:ctr_native> --dev --dev-tt-ghost --dev-race-mode stop)
     set_tests_properties(dev_tt_ghost_needs_tt PROPERTIES PASS_REGULAR_EXPRESSION "switch --dev-tt-ghost requires --dev-race-mode tt")
     add_test(NAME dev_tt_ghost_needs_dev COMMAND $<TARGET_FILE:ctr_native> --dev-tt-ghost --dev-race-mode stop)

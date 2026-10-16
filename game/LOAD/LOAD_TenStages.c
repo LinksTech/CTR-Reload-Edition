@@ -8,9 +8,12 @@ void NativeChar_ClearSeats(void);
 
 #ifdef CTR_NATIVE
 // From platform/engine*.c, further down in the translation unit. Only with
-// --engine (dev); otherwise one comparison.
+// the engine on (the default for one player, or --engine); otherwise one
+// comparison.
 extern int g_cfg_engine;
 extern int g_cfg_engineTestScene;
+void Engine_LevelEnd(void);
+void Engine_LevelBegin(int players);
 void Engine_RenderLevelUnload(void);
 void Engine_DriverLoad(void);
 void EngineFx_TurboLoad(void);
@@ -344,11 +347,17 @@ int LOAD_TenStages(struct GameTracker *gGT, int loadingStage, struct BigHeader *
 			// The driver pack a seat was checked against is gone with it.
 			NativeChar_ClearSeats();
 #ifdef CTR_NATIVE
+			// The switches a level had off (its own fallback, or the players
+			// rule of the default) come back first, so the unload clears what
+			// the engine left of that level (include/platform/engine.h, FALLBACK).
+			Engine_LevelEnd();
 			if (g_cfg_engine)
 			{
 				Engine_DriverUnload();
 				Engine_RenderLevelUnload();
 			}
+			// The level about to load: the default engine draws one player only.
+			Engine_LevelBegin(gGT->numPlyrNextGame);
 #endif
 		}
 

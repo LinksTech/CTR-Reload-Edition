@@ -7,9 +7,10 @@
 //
 // The engine draws what used to be drawn through the PS1 ordering table:
 // in phase 1 the custom drivers completely, and a track as a prototype. It
-// only READS game state. Everything runs behind --engine (with --dev); without
-// it no engine function allocates, logs or draws, and the PS1 path is exactly
-// as before.
+// only READS game state. Everything runs behind g_cfg_engine: on by default
+// for one-player levels (section DEFAULT), or by --engine; with --no-engine no
+// engine function allocates, logs or draws, and the PS1 path is exactly as
+// before.
 //
 // Coordinates: world units of the game (s16 positions, 4096 = 1.0 in rotation
 // matrices). Screen: PSX screen pixels of a view (as SetGeomOffset/SetGeomScreen
@@ -31,18 +32,33 @@ extern int g_cfg_engineHide;
 #define ENGINE_HIDE_WATER 0x2
 
 // --------------------------------------------------------------------------
-// FALLBACK (platform/engine.c; day round of 2026-10-15)
+// FALLBACK (platform/engine.c; day round of 2026-10-15, per level since the
+// night round of 2026-10-16)
 //
 // When the engine cannot start (its programs "ne"/"nw" or its dynamic vertex
-// buffer are not made, Engine_RenderInit) or cannot draw a level it loads
-// (Engine_TrackLoad without memory or without the mosaic data texture, a mesh
-// that does not upload), the run goes on over the PS1 path: one log line with
-// the stage and the reason, then every engine switch above goes to 0 for the
-// rest of the run. Every hook asks g_cfg_engine first, so the game draws as in
-// a run without --engine. Called only at load points (never inside a frame).
-// Game state is not touched: the engine only ever read it.
+// buffer are not made, Engine_RenderInit; stage "start"), the run goes on over
+// the PS1 path: one log line with the stage and the reason, then every engine
+// switch above goes to 0 for the rest of the run. When it cannot draw a level
+// it loads (Engine_TrackLoad without memory or without the mosaic data
+// texture, stage "track load"; a mesh that does not upload, stage "level
+// load"), the switches go to 0 for THAT level only: one log line, the PS1 path
+// draws the level, and Engine_LevelEnd gives the switches back at the next
+// level change, so the next level tries the engine again. The log line is the
+// only notice (no menu, no screen text). Every hook asks g_cfg_engine first,
+// so the game draws as in a run without the engine. Called only at load points
+// (never inside a frame). Game state is not touched: the engine only ever read
+// it.
+#define ENGINE_FALLBACK_RUN 0
+#define ENGINE_FALLBACK_LEVEL 1
 void Engine_Fallback(const char *stage, const char *reason);
-int Engine_FellBack(void); // 1 = Engine_Fallback switched the engine off in this run
+int Engine_FallbackScope(const char *stage); // ENGINE_FALLBACK_LEVEL for "track load" / "level load", else ENGINE_FALLBACK_RUN
+int Engine_FellBack(void); // 1 = Engine_Fallback switched the engine off (for a level or the run) at least once in this run
+// The level change (game/LOAD/LOAD_TenStages.c, stage 0 after the first boot):
+// Engine_LevelEnd before the engine's unload gives back what one level had off;
+// Engine_LevelBegin after it, with the players of the next level, applies the
+// players rule of the DEFAULT below.
+void Engine_LevelEnd(void);
+void Engine_LevelBegin(int players);
 // --engine-fail <start|track> (needs --engine; track needs --engine-track):
 // measuring only, the fallback forced at the place of the real failure -
 // start: the programs are not made (Engine_ProgramsInit), so Engine_RenderInit
@@ -52,21 +68,33 @@ extern int g_cfg_engineFail;
 #define ENGINE_FAIL_TRACK 2
 int Engine_FailModeFromName(const char *name); // "start" / "track" -> ENGINE_FAIL_*, -1 for any other word
 
-// --no-engine (dev in this build; the emergency exit and the switch of the
-// PS1-path gates once the engine is the default): the engine stays off for the
-// run, whatever ctr-settings.cfg says. Not with --engine.
+// DEFAULT (night round of 2026-10-16): with neither --engine nor --no-engine on
+// the command line, main.c (NativeArgs_ReadDisplayFlags, before the window)
+// switches the engine and its track on as --engine --engine-track would, and
+// sets g_cfg_engineDefault. The default is for one player: a level of more
+// players (split screen, battle) goes to the PS1 path (Engine_LevelBegin). An
+// --engine named on the command line is not the default and keeps its old
+// meaning. --engine and --engine-track are player switches (no --dev); the
+// other engine switches stay developer switches and still want --engine.
+extern int g_cfg_engineDefault;
+int Engine_DefaultOn(int engineOnLine, int noEngine); // 1 = the default switches the engine on
+// --no-engine (a player switch; the emergency exit and the switch of the
+// PS1-path gates): the engine stays off for the run, whatever ctr-settings.cfg
+// says. Not with --engine.
 extern int g_cfg_engineOff;
 // THE SETTING "video engine 0|1" (ctr-settings.cfg, read before the window by
 // Platform_SettingsPreloadDisplay; prepared, no menu entry, written only while
 // 1). Engine_SettingDecision is the pure rule, Engine_SettingApply acts on it.
+// It stays a developer's key: 0 is no way out (that is --no-engine alone).
 #define ENGINE_SETTING_OFF 0       // the value 0: nothing
 #define ENGINE_SETTING_ON 1        // the engine and its track on for the run (--engine --engine-track)
 #define ENGINE_SETTING_NEEDS_DEV 2 // 1 without --dev: stays off in this build
 #define ENGINE_SETTING_NO_ENGINE 3 // 1 with --no-engine: off
 #define ENGINE_SETTING_LINE 4      // 1 with --engine on the command line: the command line decides
-int Engine_SettingDecision(int setting, int dev, int engineOnLine, int noEngine);
+#define ENGINE_SETTING_DEFAULT 5   // 1 with the engine on by default: changes nothing
+int Engine_SettingDecision(int setting, int dev, int engineOnLine, int noEngine, int byDefault);
 void Engine_SettingApply(int setting);
-int Engine_SelfTestSwitches(int *checks); // engine.c: --engine-fail reader, the setting's rule, the fallback
+int Engine_SelfTestSwitches(int *checks); // engine.c: --engine-fail reader, the setting's rule, the default, the fallback per run and per level
 
 // THE PRINCIPLE (2026-10-13): CTR Reload is a PC version, not a 1:1 port. The
 // engine shows the game state the way we want it; it does NOT rebuild the PS1
