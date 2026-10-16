@@ -87,6 +87,7 @@ typedef struct
 	float split[4];
 	s8 splitKeep;
 	float user[4]; // EngineDraw.user, the program's per-draw data (params4)
+	float user2[4]; // EngineDraw.user2, more of it ("ns": its STYLE in vramPage)
 	float time;    // Engine_FrameTime of the bank at submit (params3.y)
 	u64 rangeSkip; // EngineDraw.rangeSkip: the mesh ranges left out
 } EngineRenderDraw;
@@ -552,6 +553,7 @@ int Engine_RenderSubmitLinked(int view, const EngineDraw *draw, u32 *ot, int cel
 	memcpy(rec->split, draw->split, sizeof(rec->split));
 	rec->splitKeep = draw->splitKeep;
 	memcpy(rec->user, draw->user, sizeof(rec->user));
+	memcpy(rec->user2, draw->user2, sizeof(rec->user2));
 	rec->rangeSkip = draw->rangeSkip;
 	rec->time = Engine_FrameTime(bank);
 	rec->dynFirst = 0;
@@ -694,6 +696,11 @@ internal int Engine_RenderDrawRange(const EngineMaterial *material, const Engine
 	u.params3[2] = material->programParam[0];
 	u.params3[3] = material->programParam[1];
 	memcpy(u.params4, draw->user, sizeof(u.params4));
+	// "ns" reads no VRAM page: its STYLE travels in that vec4 (engine.h, ENGINE_PROGRAM_NS).
+	if (material->program == ENGINE_PROGRAM_NS)
+	{
+		memcpy(u.vramPage, draw->user2, sizeof(u.vramPage));
+	}
 	if (vram)
 	{
 		const EngineTpage tpage = Engine_DecodeTpage(material->tpage);
@@ -719,6 +726,12 @@ internal int Engine_RenderDrawRange(const EngineMaterial *material, const Engine
 	{
 		NativeGfx_BindTexture(0, (TextureID)material->nativeTexture, NATIVE_GFX_FILTER_KEEP);
 		*outTexture = 1;
+		// "ns": the normal map in slot 3 (ENGINE_TABLE_UNIT). Nothing of the PSX path reads
+		// slot 3, so there is nothing to restore afterwards.
+		if ((material->program == ENGINE_PROGRAM_NS) && (material->nativeTexture2 != 0u) && (material->nativeTexture2 != 0xffffffffu))
+		{
+			NativeGfx_BindTexture(ENGINE_TABLE_UNIT, (TextureID)material->nativeTexture2, NATIVE_GFX_FILTER_KEEP);
+		}
 	}
 
 	state.depthTest = ((draw->flags & ENGINE_DRAW_NO_DEPTH) == 0u) ? 1 : 0;

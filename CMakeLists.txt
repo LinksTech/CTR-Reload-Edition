@@ -290,6 +290,7 @@ add_custom_command(
         shader_spirv_probe
         ${CMAKE_CURRENT_SOURCE_DIR}/platform/native_shaders.inc
         ${CMAKE_CURRENT_SOURCE_DIR}/platform/engine_water_shader.inc
+        ${CMAKE_CURRENT_SOURCE_DIR}/platform/engine_static_shader.inc
         ${CMAKE_CURRENT_SOURCE_DIR}/tools/build_shaders.cmake
     COMMENT "Compiling shaders to SPIR-V"
     VERBATIM
@@ -550,6 +551,16 @@ if(BUILD_TESTING)
     set_tests_properties(shot_series_value PROPERTIES PASS_REGULAR_EXPRESSION "switch --shot-series expects <first>,<count>,<step>")
     add_test(NAME shot_series_needs_dev COMMAND $<TARGET_FILE:ctr_native> --shot-series 100,10,2 --dev-race-mode stop)
     set_tests_properties(shot_series_needs_dev PROPERTIES PASS_REGULAR_EXPRESSION "switch --shot-series requires --dev")
+    add_test(NAME engine_static_lit_needs_model COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-track --engine-static-lit --dev-race-mode stop)
+    set_tests_properties(engine_static_lit_needs_model PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-static-lit requires --engine-static-model")
+    add_test(NAME engine_static_lit_sun_value COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-track --engine-static-model m.glb --engine-static-lit --engine-static-lit-sun 0,0,0,0.5,0.5 --dev-race-mode stop)
+    set_tests_properties(engine_static_lit_sun_value PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-static-lit-sun expects x,y,z,ambient,diffuse")
+    add_test(NAME engine_static_style_value COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-track --engine-static-model m.glb --engine-static-style shiny --dev-race-mode stop)
+    set_tests_properties(engine_static_style_value PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-static-style expects hires or lowpoly")
+    add_test(NAME engine_static_grade_value COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-track --engine-static-model m.glb --engine-static-style lowpoly --engine-static-grade 4,1 --dev-race-mode stop)
+    set_tests_properties(engine_static_grade_value PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-static-grade expects saturation,contrast, each 0..3")
+    add_test(NAME engine_flycam_smooth_needs_auto COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-flycam-smooth --dev-race-mode stop)
+    set_tests_properties(engine_flycam_smooth_needs_auto PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-flycam-smooth requires --engine-flycam-auto")
     add_test(NAME level_tour_oracle_needs_oracle COMMAND $<TARGET_FILE:ctr_native> --dev --level-tour races --level-tour-oracle 300 --dev-race-mode stop)
     set_tests_properties(level_tour_oracle_needs_oracle PROPERTIES PASS_REGULAR_EXPRESSION "switch --level-tour-oracle requires --engine-oracle")
     add_test(NAME level_tour_oracle_needs_tour COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-track --engine-oracle o.tsv --level-tour-oracle 300 --dev-race-mode stop)

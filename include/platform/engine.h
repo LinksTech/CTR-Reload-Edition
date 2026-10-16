@@ -216,11 +216,39 @@ typedef struct
 	// to the program as params3.z/w (its meaning is the program's).
 	u8 program;
 	float programParam[2];
+	// A second native texture (round of 2026-10-16): program "ns" reads it as
+	// its normal map in slot 3 (linear RGBA8, Engine_TextureCreate with
+	// linearData). 0 or 0xffffffff = none; every material made with memset has none.
+	u32 nativeTexture2;
 } EngineMaterial;
 
 #define ENGINE_PROGRAM_NE 0 // "ne", the engine program (platform/native_shaders.inc ctr_native_engine_shader)
 #define ENGINE_PROGRAM_NW 1 // "nw", the water program (platform/engine_water_shader.inc)
-#define ENGINE_PROGRAM_COUNT 2
+// "ns", the lit program of the static model (round of 2026-10-16,
+// platform/engine_static_shader.inc; --engine-static-lit). Its inputs besides
+// the ones of "ne" (texSource 1 only, alpha cutoff, sRGB re-encode, tint):
+//   a_uvBox      the vertex normal in world axes, packed: xyz = (n * 0.5 + 0.5)
+//                * 255 rounded, w = 255; w 0 = no normal (the face's own normal
+//                from the screen derivatives of the position stands in)
+//   slot 3       "s_normal", the material's normal map (nativeTexture2):
+//                tangent space, glTF convention (+X right, +Y up = towards
+//                smaller v, +Z out), linear values, n = texel * 2 - 1
+//   params3.z    1 = the material has a normal map, 0 = none
+//   params3.w    the normal map's scale (glTF normalTexture.scale) on x and y
+//   split        xyz the direction towards the sun (unit, world axes), w ambient
+//   params4      xyz the camera position in world units (the side a double-sided
+//                face is seen from), w the sun's diffuse strength
+//   vramPage     the STYLE (EngineDraw.user2; "ns" has no VRAM page): x the
+//                saturation (1 = unchanged), y the contrast around mid grey
+//                (1 = unchanged), z 1 = flat shading (the face's own normal from
+//                the screen derivatives, no vertex normal, no normal map), w 0
+//   params.x     0 = no texture (the colour is vertex colour x tint), 1 = the
+//                native texture of slot 0, as in "ne"
+// The tangent frame comes from the screen derivatives of the world position and
+// the texture coordinates (no tangents in the vertex); the colour is
+// texel x vertex colour x tint x (ambient + diffuse * max(0, n . sun)).
+#define ENGINE_PROGRAM_NS 2
+#define ENGINE_PROGRAM_COUNT 3
 
 // Decoded tpage word: x base (multiple of 64), y base (0 or 256), colour depth
 // 0 = 4 bit, 1 = 8 bit, 2 = 15 bit, semi-transparency mode 0..3.
@@ -452,6 +480,10 @@ typedef struct
 	// Per-draw data of the material's program (EngineUniforms.params4; "nw": the
 	// eye position in model units, w 0). 0 for every submitter that zeroes the draw.
 	float user[4];
+	// More per-draw data of the material's program (EngineUniforms.vramPage,
+	// only for a program that reads no VRAM page: "ns", its STYLE). 0 for every
+	// submitter that zeroes the draw.
+	float user2[4];
 	// The mesh ranges this draw leaves out: bit r = range r (Engine_RangeSkipped;
 	// ranges from 64 up are always drawn). 0 = every range, for every submitter
 	// that zeroes the draw. Engine_InstanceSubmit sets it from the animated
@@ -1035,6 +1067,27 @@ extern char g_cfg_engineStaticModel[ENGINE_STATIC_PATH_MAX];
 // colours at load (from the model's normals); without it texture x vertex
 // colour x base colour only.
 extern int g_cfg_engineStaticLight;
+// --engine-static-lit (round of 2026-10-16): the model drawn with program "ns"
+// (normal maps, a sun and ambient light) instead of "ne"; the vertex normals are
+// packed into the vertex at load (ENGINE_STATIC_BUILD_NORMALS).
+// --engine-static-lit-sun <x,y,z,ambient,diffuse>: the sun's direction (towards
+// it, world axes, normalised at load) and the two strengths; without it
+// ENGINE_STATIC_SUN_DEFAULT.
+extern int g_cfg_engineStaticLit;
+extern float g_cfg_engineStaticSun[5];
+#define ENGINE_STATIC_SUN_DEFAULT {0.35f, 0.85f, 0.40f, 0.50f, 0.60f}
+// --engine-static-style <hires|lowpoly> (the look stage, round of 2026-10-16): the
+// look of the lit model (it switches --engine-static-lit on).
+//   hires    vertex normals and the normal maps, colour as it is (style 1, 1, 0)
+//   lowpoly  flat shading by the faces, no normal maps, saturation and contrast
+//            raised (ENGINE_STATIC_LOWPOLY_GRADE)
+// --engine-static-grade <saturation,contrast> (each 0..3): the colour grade of
+// the style instead of its own.
+#define ENGINE_STATIC_STYLE_HIRES 0
+#define ENGINE_STATIC_STYLE_LOWPOLY 1
+extern int g_cfg_engineStaticStyle;
+extern float g_cfg_engineStaticGrade[2]; // < 0 = the style's own
+#define ENGINE_STATIC_LOWPOLY_GRADE {1.25f, 1.10f}
 
 // THE FILE SIDE (engine_static_load.c): no device, no game state - what the
 // selftest checks on a made-up model.
@@ -1065,6 +1118,11 @@ typedef struct
 	int alphaMode;      // ENGINE_STATIC_ALPHA_*
 	float alphaCutoff;  // MASK: glTF alphaCutoff (default 0.5)
 	int doubleSided;
+	// The normal map (glTF normalTexture, TEXCOORD_0 only): image, -1 none; its
+	// sampler's wrap; scale (default 1).
+	int normalImage;
+	int normalWrapU, normalWrapV;
+	float normalScale;
 } EngineStaticMaterial;
 
 typedef struct
@@ -1115,12 +1173,18 @@ typedef struct
 // side of the centres' box at its middle, until a piece has at most
 // maxTriangles (deterministic: the same file gives the same bytes). Every
 // triangle is in exactly one piece; the vertex colour is COLOR_0 (white
-// without) times the light when `light`. onPiece is called once per piece in
+// without) times the light with ENGINE_STATIC_BUILD_LIGHT in flags; with
+// ENGINE_STATIC_BUILD_NORMALS the vertex normal in world axes is packed into
+// the UV box (program "ns": xyz = (n * 0.5 + 0.5) * 255 rounded, w = 255; a
+// primitive without NORMAL gives four zeros), else the box is the full page as
+// before. onPiece is called once per piece in
 // piece order and keeps nothing of it (the arrays are freed after the call);
 // it returns 0 to stop. Returns the piece count, or -1 with why (more than
 // ENGINE_STATIC_PIECES_MAX pieces, a read that failed, out of memory, onPiece
 // stopped).
-int EngineStatic_BuildPieces(const EngineStaticModel *model, u32 maxTriangles, int light, int (*onPiece)(void *user, const EngineStaticPiece *piece),
+#define ENGINE_STATIC_BUILD_LIGHT 0x1u
+#define ENGINE_STATIC_BUILD_NORMALS 0x2u
+int EngineStatic_BuildPieces(const EngineStaticModel *model, u32 maxTriangles, u32 flags, int (*onPiece)(void *user, const EngineStaticPiece *piece),
                              void *user, char *why, int whySize);
 
 // One image as RGBA8 for Engine_TextureCreate: decoded (PNG only) and, if an
@@ -1210,6 +1274,18 @@ void Engine_FlycamAt(const EngineFlycamStation *st, int count, int loopFrames, u
 // convention of game/CAM.c (rot.x = 0x800 - pitch, rot.y = yaw, rot.z = 0).
 void Engine_FlycamRot(const float pos[3], const float look[3], s16 rot[3]);
 int Engine_SelfTestFlycam(int *checks);
+// --engine-flycam-smooth (with --engine-flycam-auto; round of 2026-10-16, the
+// demo video): no hold at the stations; one centripetal Catmull-Rom curve
+// through the station positions and one through the look points, travelled at
+// a constant speed along the position curve's arc length in <frames> game
+// frames, from the first station to the last (an open path: no way back);
+// after the last frame the camera stays at the last station. No snapshot per
+// station (--shot-series takes the frames of a video).
+extern int g_cfg_engineFlycamSmooth;
+// The pose at game frame `frame` of a flight of `frames` frames; pure and
+// deterministic (the arc-length table is rebuilt when st/count change). Returns
+// 0 for count < 1 (pos/look zero).
+int Engine_FlycamSmoothAt(const EngineFlycamStation *st, int count, int frames, u32 frame, float pos[3], float look[3]);
 
 // --------------------------------------------------------------------------
 // TRACK PROTOTYPE (platform/engine_track.c; --engine-track, round of 2026-10-13)

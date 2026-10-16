@@ -173,8 +173,13 @@ int NativeTex_InRaceFrame(void)
 // --- The manager ------------------------------------------------------------
 
 // Live textures: what NativeTex_IsSrgb and NativeTex_ApplyFilter need to know.
-// 256 is far beyond one driver per seat with a handful of textures each.
-#define NATIVE_TEX_MAX_LIVE 256
+// 256 was far beyond one driver per seat with a handful of textures each; the
+// static model (platform/engine_static.c, round of 2026-10-16) brings a colour
+// texture and a normal map per material - some 300 for one model. 1024 stays
+// below the device's NATIVE_VK_MAX_TEXTURES (2048) with room for everything
+// else; the table is 20 KB and only walked at load time (create, destroy, the
+// sRGB question of a new material) and on a filter change, never per draw.
+#define NATIVE_TEX_MAX_LIVE 1024
 
 struct NativeTexLive
 {

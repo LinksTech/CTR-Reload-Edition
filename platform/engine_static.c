@@ -41,11 +41,30 @@
 // the file's cutoff, BLEND as MASK with cutoff 0.5 (no sorting; counted),
 // double sided without culling.
 //
+// LIT (--engine-static-lit, round of 2026-10-16): the materials take program
+// "ns" (include/platform/engine.h, ENGINE_PROGRAM_NS) instead of "ne": the
+// vertex normals go into the vertices at load (ENGINE_STATIC_BUILD_NORMALS),
+// each material's normal map (glTF normalTexture) becomes a texture of its own
+// - linear data, not sRGB, full resolution and mip chain like the colour - and
+// every draw carries the sun (split: direction, ambient) and the camera position
+// (user: eye, diffuse). Without the switch nothing of it is made and the model
+// is drawn as before.
+//
+// STYLE (--engine-static-style, the look stage of the round of 2026-10-16): hires is
+// LIT as above; lowpoly shades every face flat by its own normal, loads no
+// normal maps and raises saturation and contrast (ENGINE_STATIC_LOWPOLY_GRADE).
+// --engine-static-grade overrides the grade of either. The style goes to "ns"
+// in every draw's user2 (engine.h, ENGINE_PROGRAM_NS, vramPage).
+//
 // DRAW TIME ONLY: nothing of the game is read but the frame's cameras and the
 // level's state flags; nothing is written.
 
 char g_cfg_engineStaticModel[ENGINE_STATIC_PATH_MAX] = "";
 int g_cfg_engineStaticLight = 0;
+int g_cfg_engineStaticLit = 0;
+float g_cfg_engineStaticSun[5] = ENGINE_STATIC_SUN_DEFAULT;
+int g_cfg_engineStaticStyle = ENGINE_STATIC_STYLE_HIRES;
+float g_cfg_engineStaticGrade[2] = {-1.0f, -1.0f};
 
 #define ENG_STATIC_CELL 0x3fe // the track's opaque cell (engine_track.c EGT_CELL_OPAQUE), after the sky's 0x3ff
 #define ENG_STATIC_TEXTURES_MAX 512
@@ -68,6 +87,7 @@ typedef struct
 	int image;
 	int wrapU;
 	int wrapV;
+	int linear;  // 1 = data (a normal map), not colour
 	u32 texture; // TextureID, 0xffffffff = missing
 } EngStaticTexture;
 
@@ -80,6 +100,10 @@ global_variable struct
 	int materialCount;
 	EngineStaticMaterial *materials;
 	int *materialTexture; // per material: index into textures, -1 none
+	int *materialNormal;  // per material: index into textures of its normal map, -1 none (LIT only)
+	int lit;              // the materials take program "ns" (LIT)
+	float sun[3];         // towards the sun, unit (LIT)
+	float style[4];       // EngineDraw.user2 of every draw: saturation, contrast, flat (STYLE)
 	int textureCount;
 	EngStaticTexture textures[ENG_STATIC_TEXTURES_MAX];
 	int pieceCount;
@@ -195,13 +219,13 @@ internal int EngStatic_OnPiece(void *user, const EngineStaticPiece *piece)
 	return 1;
 }
 
-// The texture of a material's (image, wrap) pair: index into the table, a new
-// entry on first use; -1 without an image or when the table is full.
-internal int EngStatic_TextureSlot(const EngineStaticMaterial *m)
+// The texture of an (image, wrap, colour or data) entry: index into the table,
+// a new entry on first use; -1 without an image or when the table is full.
+internal int EngStatic_TextureSlot(int image, int wrapU, int wrapV, int linear)
 {
 	int i;
 
-	if (m->image < 0)
+	if (image < 0)
 	{
 		return -1;
 	}
@@ -209,7 +233,7 @@ internal int EngStatic_TextureSlot(const EngineStaticMaterial *m)
 	{
 		const EngStaticTexture *t = &s_engStatic.textures[i];
 
-		if ((t->image == m->image) && (t->wrapU == m->wrapU) && (t->wrapV == m->wrapV))
+		if ((t->image == image) && (t->wrapU == wrapU) && (t->wrapV == wrapV) && (t->linear == linear))
 		{
 			return i;
 		}
@@ -219,9 +243,10 @@ internal int EngStatic_TextureSlot(const EngineStaticMaterial *m)
 		return -1;
 	}
 	i = s_engStatic.textureCount++;
-	s_engStatic.textures[i].image = m->image;
-	s_engStatic.textures[i].wrapU = m->wrapU;
-	s_engStatic.textures[i].wrapV = m->wrapV;
+	s_engStatic.textures[i].image = image;
+	s_engStatic.textures[i].wrapU = wrapU;
+	s_engStatic.textures[i].wrapV = wrapV;
+	s_engStatic.textures[i].linear = linear;
 	s_engStatic.textures[i].texture = 0xffffffffu;
 	return i;
 }
@@ -242,9 +267,10 @@ internal void EngStatic_Report(void)
 	             (unsigned long long)s_engStatic.piecesDrawn, (unsigned long long)s_engStatic.piecesCulled, (unsigned long long)s_engStatic.refused);
 }
 
-// The textures of the materials. Counts into the out values; a missing image is
-// logged (the first ENG_STATIC_MISSING_LOGGED) and its materials stay untextured.
-internal void EngStatic_MakeTextures(const EngineStaticModel *model, u32 *made, u32 *missing, u32 *scaled, u32 *levelsTotal, int *levelsMax,
+// The textures of the materials. Counts into the out values, made and missing
+// per kind ([0] colour, [1] normal maps); a missing image is logged (the first
+// ENG_STATIC_MISSING_LOGGED) and its materials stay untextured or flat.
+internal void EngStatic_MakeTextures(const EngineStaticModel *model, u32 made[2], u32 missing[2], u32 *scaled, u32 *levelsTotal, int *levelsMax,
                                      u64 *bytes)
 {
 	u32 missingLogged = 0;
@@ -262,7 +288,7 @@ internal void EngStatic_MakeTextures(const EngineStaticModel *model, u32 *made, 
 		imgWhy[0] = 0;
 		if (!EngineStatic_ReadImage(model, t->image, &img, imgWhy, (int)sizeof(imgWhy)))
 		{
-			(*missing)++;
+			missing[t->linear ? 1 : 0]++;
 			if (missingLogged < ENG_STATIC_MISSING_LOGGED)
 			{
 				missingLogged++;
@@ -271,7 +297,7 @@ internal void EngStatic_MakeTextures(const EngineStaticModel *model, u32 *made, 
 			continue;
 		}
 		memset(&desc, 0, sizeof(desc));
-		snprintf(name, sizeof(name), "static image %d", t->image);
+		snprintf(name, sizeof(name), t->linear ? "static normal %d" : "static image %d", t->image);
 		desc.width = img.width;
 		desc.height = img.height;
 		desc.rgba = img.rgba;
@@ -279,11 +305,12 @@ internal void EngStatic_MakeTextures(const EngineStaticModel *model, u32 *made, 
 		desc.maxAnisotropy = 0;
 		desc.wrapU = t->wrapU;
 		desc.wrapV = t->wrapV;
+		desc.linearData = t->linear;
 		desc.name = name;
 		t->texture = Engine_TextureCreate(&desc);
 		if (t->texture == 0xffffffffu)
 		{
-			(*missing)++;
+			missing[t->linear ? 1 : 0]++;
 			if (missingLogged < ENG_STATIC_MISSING_LOGGED)
 			{
 				missingLogged++;
@@ -297,7 +324,7 @@ internal void EngStatic_MakeTextures(const EngineStaticModel *model, u32 *made, 
 			u64 h = (u64)img.height;
 			int level;
 
-			(*made)++;
+			made[t->linear ? 1 : 0]++;
 			*scaled += (img.resampled != 0) ? 1u : 0u;
 			*levelsTotal += (u32)levels;
 			*levelsMax = (levels > *levelsMax) ? levels : *levelsMax;
@@ -369,8 +396,9 @@ internal void EngStatic_ReadOnce(void)
 	char why[160];
 	const u64 started = SDL_GetPerformanceCounter();
 	const u32 stagingBefore = NativeGfx_StagingBytes();
-	u32 texturesMade = 0;
-	u32 texturesMissing = 0;
+	u32 texturesMade[2] = {0, 0};
+	u32 texturesMissing[2] = {0, 0};
+	u32 normalsNamed = 0;
 	u32 texturesScaled = 0;
 	u32 levelsTotal = 0;
 	int levelsMax = 0;
@@ -382,6 +410,33 @@ internal void EngStatic_ReadOnce(void)
 	int i;
 
 	s_engStatic.tried = 1;
+	if (g_cfg_engineStaticLit)
+	{
+		// The programs are made by Engine_RenderInit after this load stage; asking
+		// now makes them now (Engine_ProgramsInit answers a second call from the first).
+		const double len = sqrt((double)g_cfg_engineStaticSun[0] * g_cfg_engineStaticSun[0] + (double)g_cfg_engineStaticSun[1] * g_cfg_engineStaticSun[1] +
+		                        (double)g_cfg_engineStaticSun[2] * g_cfg_engineStaticSun[2]);
+
+		(void)Engine_ProgramsInit();
+		if ((Engine_ProgramOf(ENGINE_PROGRAM_NS) == 0xffffffffu) || !(len > 0.0))
+		{
+			Platform_Log("[CTR Engine] static model: --engine-static-lit without its program 'ns' or sun - drawn flat with 'ne'\n");
+		}
+		else
+		{
+			const int lowpoly = (g_cfg_engineStaticStyle == ENGINE_STATIC_STYLE_LOWPOLY);
+			const float lowpolyGrade[2] = ENGINE_STATIC_LOWPOLY_GRADE;
+
+			s_engStatic.lit = 1;
+			s_engStatic.style[0] = (g_cfg_engineStaticGrade[0] >= 0.0f) ? g_cfg_engineStaticGrade[0] : (lowpoly ? lowpolyGrade[0] : 1.0f);
+			s_engStatic.style[1] = (g_cfg_engineStaticGrade[1] >= 0.0f) ? g_cfg_engineStaticGrade[1] : (lowpoly ? lowpolyGrade[1] : 1.0f);
+			s_engStatic.style[2] = lowpoly ? 1.0f : 0.0f;
+			s_engStatic.style[3] = 0.0f;
+			s_engStatic.sun[0] = (float)(g_cfg_engineStaticSun[0] / len);
+			s_engStatic.sun[1] = (float)(g_cfg_engineStaticSun[1] / len);
+			s_engStatic.sun[2] = (float)(g_cfg_engineStaticSun[2] / len);
+		}
+	}
 	memset(&src, 0, sizeof(src));
 	memset(&model, 0, sizeof(model));
 	memset(&build, 0, sizeof(build));
@@ -403,8 +458,10 @@ internal void EngStatic_ReadOnce(void)
 	s_engStatic.materialCount = model.materialCount;
 	s_engStatic.materials = (EngineStaticMaterial *)malloc((size_t)model.materialCount * sizeof(EngineStaticMaterial));
 	s_engStatic.materialTexture = (int *)malloc((size_t)model.materialCount * sizeof(int));
+	s_engStatic.materialNormal = (int *)malloc((size_t)model.materialCount * sizeof(int));
 	s_engStatic.levelMaterial = (int *)malloc((size_t)model.materialCount * sizeof(int));
-	if ((model.materialCount < 1) || (s_engStatic.materials == NULL) || (s_engStatic.materialTexture == NULL) || (s_engStatic.levelMaterial == NULL))
+	if ((model.materialCount < 1) || (s_engStatic.materials == NULL) || (s_engStatic.materialTexture == NULL) || (s_engStatic.materialNormal == NULL) ||
+	    (s_engStatic.levelMaterial == NULL))
 	{
 		snprintf(why, sizeof(why), "out of memory (material tables)");
 		goto fail;
@@ -414,12 +471,14 @@ internal void EngStatic_ReadOnce(void)
 	{
 		const EngineStaticMaterial *m = &s_engStatic.materials[i];
 
-		s_engStatic.materialTexture[i] = EngStatic_TextureSlot(m);
+		s_engStatic.materialTexture[i] = EngStatic_TextureSlot(m->image, m->wrapU, m->wrapV, 0);
+		s_engStatic.materialNormal[i] = (s_engStatic.lit && (s_engStatic.style[2] < 0.5f)) ? EngStatic_TextureSlot(m->normalImage, m->normalWrapU, m->normalWrapV, 1) : -1;
+		normalsNamed += (s_engStatic.materialNormal[i] >= 0) ? 1u : 0u;
 		counts[((m->alphaMode >= 0) && (m->alphaMode <= 2)) ? m->alphaMode : 0]++;
 		doubleSided += (m->doubleSided != 0) ? 1u : 0u;
 		untextured += (m->image < 0) ? 1u : 0u;
 	}
-	EngStatic_MakeTextures(&model, &texturesMade, &texturesMissing, &texturesScaled, &levelsTotal, &levelsMax, &textureBytes);
+	EngStatic_MakeTextures(&model, texturesMade, texturesMissing, &texturesScaled, &levelsTotal, &levelsMax, &textureBytes);
 
 	// The pieces: a vertex buffer each, one index buffer for all.
 	if (model.triangles > (0xffffffffu / 3u))
@@ -442,7 +501,7 @@ internal void EngStatic_ReadOnce(void)
 		build.histMin[i] = model.boxMin[i];
 		build.histScale[i] = (extent > 0.0f) ? ((float)ENG_STATIC_HIST_BINS / extent) : 0.0f;
 	}
-	pieces = EngineStatic_BuildPieces(&model, ENGINE_STATIC_PIECE_TRIANGLES, g_cfg_engineStaticLight, EngStatic_OnPiece, &build, why, (int)sizeof(why));
+	pieces = EngineStatic_BuildPieces(&model, ENGINE_STATIC_PIECE_TRIANGLES, (g_cfg_engineStaticLight ? ENGINE_STATIC_BUILD_LIGHT : 0u) | (s_engStatic.lit ? ENGINE_STATIC_BUILD_NORMALS : 0u), EngStatic_OnPiece, &build, why, (int)sizeof(why));
 	if (pieces < 0)
 	{
 		if (build.why[0] != 0)
@@ -486,16 +545,26 @@ internal void EngStatic_ReadOnce(void)
 		const u32 given = NativeGfx_ShrinkStaging(stagingBefore);
 
 		Platform_Log("[CTR Engine] static model '%s': %u triangles in %d pieces, %u vertices; materials %d (opaque %u, mask %u, blend drawn as mask %u, "
-		             "double sided %u, untextured %u); textures made %u of %d (missing %u, scaled up %u), mip levels %u (at most %d per texture); "
+		             "double sided %u, untextured %u); textures made %u (missing %u, scaled up %u), normal maps made %u (missing %u) for %u material(s), "
+		             "mip levels %u (at most %d per texture); "
 		             "GPU vertices %.1f MB, indices %.1f MB, textures %.1f MB; primitives %u (skipped %u), mirrored nodes %u, triangles without UV %u; "
 		             "box x %.0f..%.0f y %.0f..%.0f z %.0f..%.0f (core x %.0f..%.0f y %.0f..%.0f z %.0f..%.0f); staging given back %u KB; load %.0f ms\n",
 		             g_cfg_engineStaticModel, model.triangles, s_engStatic.pieceCount, build.vertices, model.materialCount, counts[0], counts[1], counts[2],
-		             doubleSided, untextured, texturesMade, s_engStatic.textureCount, texturesMissing, texturesScaled, levelsTotal, levelsMax,
+		             doubleSided, untextured, texturesMade[0], texturesMissing[0], texturesScaled, texturesMade[1], texturesMissing[1], normalsNamed,
+		             levelsTotal, levelsMax,
 		             (double)build.vertexBytes / 1048576.0, (double)build.indexCount * 4.0 / 1048576.0, (double)textureBytes / 1048576.0,
 		             model.primitives, model.skippedPrimitives, model.mirroredNodes, model.noUvTriangles, (double)s_engStatic.modelMin[0],
 		             (double)s_engStatic.modelMax[0], (double)s_engStatic.modelMin[1], (double)s_engStatic.modelMax[1], (double)s_engStatic.modelMin[2],
 		             (double)s_engStatic.modelMax[2], (double)s_engStatic.coreMin[0], (double)s_engStatic.coreMax[0], (double)s_engStatic.coreMin[1],
 		             (double)s_engStatic.coreMax[1], (double)s_engStatic.coreMin[2], (double)s_engStatic.coreMax[2], given / 1024u, EngStatic_Ms(started));
+		if (s_engStatic.lit)
+		{
+			Platform_Log("[CTR Engine] static model lit: program 'ns', style %s (%s shading, saturation %.2f, contrast %.2f), sun towards %.3f %.3f %.3f, "
+			             "ambient %.2f, diffuse %.2f\n",
+			             (s_engStatic.style[2] > 0.5f) ? "lowpoly" : "hires", (s_engStatic.style[2] > 0.5f) ? "flat" : "smooth", (double)s_engStatic.style[0],
+			             (double)s_engStatic.style[1], (double)s_engStatic.sun[0], (double)s_engStatic.sun[1], (double)s_engStatic.sun[2],
+			             (double)g_cfg_engineStaticSun[3], (double)g_cfg_engineStaticSun[4]);
+		}
 	}
 	EngineStatic_Close(&model);
 	EngineStatic_SourceFileClose(&src);
@@ -544,6 +613,16 @@ internal int EngStatic_RegisterLevel(void)
 		if ((slot >= 0) && (s_engStatic.textures[slot].texture != 0xffffffffu))
 		{
 			Engine_TextureMaterial(&em, s_engStatic.textures[slot].texture);
+		}
+		if (s_engStatic.lit)
+		{
+			const int normal = s_engStatic.materialNormal[i];
+			const int hasNormal = (normal >= 0) && (s_engStatic.textures[normal].texture != 0xffffffffu);
+
+			em.program = ENGINE_PROGRAM_NS;
+			em.programParam[0] = hasNormal ? 1.0f : 0.0f;
+			em.programParam[1] = m->normalScale;
+			em.nativeTexture2 = hasNormal ? s_engStatic.textures[normal].texture : 0xffffffffu;
 		}
 		s_engStatic.levelMaterial[i] = Engine_MaterialRegister(&em);
 		if (s_engStatic.levelMaterial[i] < 0)
@@ -612,6 +691,29 @@ void Engine_StaticLoad(void)
 	             s_engStatic.pieceCount);
 }
 
+// The camera position in world units from the view matrix (view = M world + t,
+// M a rotation with its y row scaled, game/PushBuffer.c): the point the view
+// maps to 0, e = -M^-1 t (Cramer). 0 when M is singular.
+internal int EngStatic_EyeOf(const EngineMat4 *viewFromWorld, float eye[3])
+{
+	const float *m = viewFromWorld->m;
+	// Row r, column c at m[c * 4 + r].
+	const double a = m[0], b = m[4], c = m[8];
+	const double d = m[1], e = m[5], f = m[9];
+	const double g = m[2], h = m[6], i = m[10];
+	const double t0 = -(double)m[12], t1 = -(double)m[13], t2 = -(double)m[14];
+	const double det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+
+	if (!(fabs(det) > 1e-12))
+	{
+		return 0;
+	}
+	eye[0] = (float)((t0 * (e * i - f * h) - b * (t1 * i - f * t2) + c * (t1 * h - e * t2)) / det);
+	eye[1] = (float)((a * (t1 * i - f * t2) - t0 * (d * i - f * g) + c * (d * t2 - t1 * g)) / det);
+	eye[2] = (float)((a * (e * t2 - t1 * h) - b * (d * t2 - t1 * g) + t0 * (d * h - e * g)) / det);
+	return 1;
+}
+
 int Engine_StaticBoxVisible(const EngineCamera *cam, const float boxMin[3], const float boxMax[3])
 {
 	// The view's pyramid as five planes in view space (x right, y down, z
@@ -664,6 +766,8 @@ void Engine_StaticCollect(struct GameTracker *gGT)
 		const EngineCamera *cam = Engine_FrameCamera(view);
 		EngineMat4 screen;
 		u32 triangles = 0;
+		float eye[3] = {0.0f, 0.0f, 0.0f};
+		int haveEye;
 		int p;
 
 		if (cam == NULL)
@@ -671,6 +775,7 @@ void Engine_StaticCollect(struct GameTracker *gGT)
 			continue;
 		}
 		Engine_CameraScreenFromWorld(cam, &screen);
+		haveEye = s_engStatic.lit ? EngStatic_EyeOf(&cam->viewFromWorld, eye) : 0;
 		for (p = 0; p < s_engStatic.pieceCount; p++)
 		{
 			EngineDraw draw;
@@ -688,6 +793,20 @@ void Engine_StaticCollect(struct GameTracker *gGT)
 			draw.materialOverride = -1;
 			draw.otCell = ENG_STATIC_CELL;
 			draw.dynMaterial = -1;
+			if (s_engStatic.lit)
+			{
+				// Program "ns": split = the sun (towards it) and the ambient light,
+				// user = the camera position and the sun's diffuse strength (engine.h, ENGINE_PROGRAM_NS).
+				draw.split[0] = s_engStatic.sun[0];
+				draw.split[1] = s_engStatic.sun[1];
+				draw.split[2] = s_engStatic.sun[2];
+				draw.split[3] = g_cfg_engineStaticSun[3];
+				draw.user[0] = haveEye ? eye[0] : 0.0f;
+				draw.user[1] = haveEye ? eye[1] : 0.0f;
+				draw.user[2] = haveEye ? eye[2] : 0.0f;
+				draw.user[3] = g_cfg_engineStaticSun[4];
+				memcpy(draw.user2, s_engStatic.style, sizeof(draw.user2));
+			}
 			if (Engine_RenderSubmitLinked(view, &draw, gGT->pushBuffer[view].ptrOT, ENG_STATIC_CELL))
 			{
 				s_engStatic.piecesDrawn++;
@@ -827,6 +946,19 @@ int Engine_SelfTestStatic(int *checks)
 		}
 		EngStatic_Check(used >= 50, "too few points on the screen", &n, &failures);
 		EngStatic_Check(missed == 0, "a box around a point on the screen is left out", &n, &failures);
+		// LIT: the camera position the view maps to its origin.
+		{
+			float eye[3];
+			EngineVec3 at;
+			EngineVec3 v;
+
+			EngStatic_Check(EngStatic_EyeOf(&cam.viewFromWorld, eye) == 1, "eye of a turned camera", &n, &failures);
+			at.x = eye[0];
+			at.y = eye[1];
+			at.z = eye[2];
+			v = Engine_Mat4MulPoint(&cam.viewFromWorld, at);
+			EngStatic_Check((fabsf(v.x) < 0.01f) && (fabsf(v.y) < 0.01f) && (fabsf(v.z) < 0.01f), "the eye maps to the view's origin", &n, &failures);
+		}
 	}
 
 	*checks += n;

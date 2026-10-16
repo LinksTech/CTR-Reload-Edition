@@ -41,7 +41,13 @@
 // NORMAL (float VEC3), COLOR_0 (float or normalized u8/u16, VEC3/VEC4), indices
 // (none, u8, u16, u32); every accessor in the GLB BIN buffer, not sparse, inside
 // the BIN chunk (u64 arithmetic). Materials: base colour texture (TEXCOORD_0
-// only), factor, alpha mode, cutoff, double sided. Images: PNG, from the BIN or
+// only), factor, alpha mode, cutoff, double sided, and the normal map
+// (normalTexture, TEXCOORD_0 only: image, wrap, scale; its image is served like
+// every other, the caller makes it as linear data). With ENGINE_STATIC_BUILD_NORMALS
+// NORMAL is read too and packed into uvBox as the world normal
+// (inverse-transpose of the node's 3x3, normalized, (n * 0.5 + 0.5) * 255
+// rounded, w = 255; no NORMAL or a singular node gives 0, 0, 0, 0).
+// Images: PNG, from the BIN or
 // from a file beside the .glb.
 // WHAT IS REFUSED OR COUNTED: a primitive that is not TRIANGLES, has no
 // POSITION, or has an attribute of a supported kind in a type it does not read
@@ -899,9 +905,28 @@ internal void EngStaticLoad_FillMaterial(const cgltf_data *d, const cgltf_materi
 	o->alphaMode = ENGINE_STATIC_ALPHA_OPAQUE;
 	o->alphaCutoff = 0.5f;
 	o->doubleSided = 0;
+	o->normalImage = -1;
+	o->normalWrapU = 0;
+	o->normalWrapV = 0;
+	o->normalScale = 1.0f;
 	if (m == NULL)
 	{
 		return;
+	}
+	{
+		const cgltf_texture_view *nv = &m->normal_texture;
+
+		if (nv->texture != NULL && nv->texcoord == 0 && nv->texture->image != NULL && nv->texture->image >= d->images &&
+		    (size_t)(nv->texture->image - d->images) < d->images_count)
+		{
+			o->normalImage = (int)(nv->texture->image - d->images);
+			o->normalScale = (nv->scale != 0.0f) ? nv->scale : 1.0f;
+			if (nv->texture->sampler != NULL)
+			{
+				o->normalWrapU = EngStaticLoad_WrapOf(nv->texture->sampler->wrap_s);
+				o->normalWrapV = EngStaticLoad_WrapOf(nv->texture->sampler->wrap_t);
+			}
+		}
 	}
 	if (m->has_pbr_metallic_roughness)
 	{
@@ -1350,6 +1375,7 @@ typedef struct
 	u32 leafCount;
 	const u8 *leafId;
 	int light;
+	int normals;
 	double lightDir[3];
 	// the primitive in work
 	const EngStaticLoadPrimInfo *pi;
@@ -1384,7 +1410,7 @@ internal void EngStaticLoad_MakeVertex(const EngStaticLoadP2 *c, u32 v, EngineVe
 	{
 		o->color[k] = (c->col != NULL) ? c->col[4 * (size_t)v + k] : 255;
 	}
-	if (c->light && c->nrm != NULL && c->hasNmat)
+	if (c->nrm != NULL && c->hasNmat)
 	{
 		const double nx = c->nrm[3 * (size_t)v + 0];
 		const double ny = c->nrm[3 * (size_t)v + 1];
@@ -1396,7 +1422,24 @@ internal void EngStaticLoad_MakeVertex(const EngStaticLoadP2 *c, u32 v, EngineVe
 		n[1] = c->nmat[3] * nx + c->nmat[4] * ny + c->nmat[5] * nz;
 		n[2] = c->nmat[6] * nx + c->nmat[7] * ny + c->nmat[8] * nz;
 		len = sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-		if (len > 1e-12)
+		if (c->normals)
+		{
+			if (len > 1e-12)
+			{
+				for (k = 0; k < 3; k++)
+				{
+					int value = (int)((n[k] / len * 0.5 + 0.5) * 255.0 + 0.5);
+
+					o->uvBox[k] = (u8)((value < 0) ? 0 : ((value > 255) ? 255 : value));
+				}
+				o->uvBox[3] = 255;
+			}
+			else
+			{
+				memset(o->uvBox, 0, sizeof(o->uvBox));
+			}
+		}
+		if (c->light && len > 1e-12)
 		{
 			double d = (n[0] * c->lightDir[0] + n[1] * c->lightDir[1] + n[2] * c->lightDir[2]) / len;
 			double factor;
@@ -1418,7 +1461,10 @@ internal void EngStaticLoad_MakeVertex(const EngStaticLoadP2 *c, u32 v, EngineVe
 			}
 		}
 	}
-	Engine_VertexBoxFull(o, 1);
+	if (!c->normals)
+	{
+		Engine_VertexBoxFull(o, 1);
+	}
 }
 
 internal int EngStaticLoad_P2Tri(void *vctx, u32 tri, u32 i0, u32 i1, u32 i2)
@@ -1525,7 +1571,7 @@ internal int EngStaticLoad_P2Prim(void *vctx, const EngStaticLoadPrimInfo *pi)
 
 	c->pi = pi;
 	c->doubleSided = model->materials[pi->material].doubleSided;
-	c->hasNmat = c->light && pi->p.nrm != NULL && EngStaticLoad_NormalMatrix(pi->m, c->nmat);
+	c->hasNmat = (c->light || c->normals) && pi->p.nrm != NULL && EngStaticLoad_NormalMatrix(pi->m, c->nmat);
 	c->pos = (float *)EngStaticLoad_Alloc((u64)vc * 12u);
 	c->uv = (pi->p.uv != NULL) ? (float *)EngStaticLoad_Alloc((u64)vc * 8u) : NULL;
 	c->nrm = (c->hasNmat) ? (float *)EngStaticLoad_Alloc((u64)vc * 12u) : NULL;
@@ -1564,7 +1610,7 @@ internal void EngStaticLoad_LeafFree(EngStaticLoadLeaf *lf)
 	lf->r = NULL;
 }
 
-int EngineStatic_BuildPieces(const EngineStaticModel *model, u32 maxTriangles, int light, int (*onPiece)(void *user, const EngineStaticPiece *piece),
+int EngineStatic_BuildPieces(const EngineStaticModel *model, u32 maxTriangles, u32 flags, int (*onPiece)(void *user, const EngineStaticPiece *piece),
                              void *user, char *why, int whySize)
 {
 	EngStaticLoadSlice leafSlice[ENGINE_STATIC_PIECES_MAX];
@@ -1762,7 +1808,8 @@ int EngineStatic_BuildPieces(const EngineStaticModel *model, u32 maxTriangles, i
 	p2.leaves = leaves;
 	p2.leafCount = leafCount;
 	p2.leafId = leafId;
-	p2.light = light;
+	p2.light = ((flags & ENGINE_STATIC_BUILD_LIGHT) != 0u) ? 1 : 0;
+	p2.normals = ((flags & ENGINE_STATIC_BUILD_NORMALS) != 0u) ? 1 : 0;
 	{
 		const double len = sqrt(0.35 * 0.35 + 0.85 * 0.85 + 0.40 * 0.40);
 
@@ -2571,9 +2618,9 @@ int Engine_SelfTestStaticLoad(int *checks)
 		         "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"TEXCOORD_0\":1,\"NORMAL\":2},\"indices\":3,\"material\":0}]},"
 		         "{\"primitives\":[{\"attributes\":{\"POSITION\":4,\"NORMAL\":5,\"COLOR_0\":6},\"material\":1}]}],"
 		         "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0},\"baseColorFactor\":[1,0.5,0.25,0.75]},"
-		         "\"alphaMode\":\"MASK\",\"alphaCutoff\":0.25,\"doubleSided\":true},"
+		         "\"normalTexture\":{\"index\":1,\"scale\":0.5},\"alphaMode\":\"MASK\",\"alphaCutoff\":0.25,\"doubleSided\":true},"
 		         "{\"pbrMetallicRoughness\":{\"baseColorFactor\":[1,1,1,1]}}],"
-		         "\"textures\":[{\"sampler\":0,\"source\":0}],\"samplers\":[{\"wrapS\":33071,\"wrapT\":33648}],"
+		         "\"textures\":[{\"sampler\":0,\"source\":0},{\"sampler\":0,\"source\":0}],\"samplers\":[{\"wrapS\":33071,\"wrapT\":33648}],"
 		         "\"images\":[{\"bufferView\":7,\"mimeType\":\"image/png\"}],"
 		         "\"buffers\":[{\"byteLength\":%u}],"
 		         "\"bufferViews\":[{\"buffer\":0,\"byteOffset\":%u,\"byteLength\":%u},{\"buffer\":0,\"byteOffset\":%u,\"byteLength\":%u},"
@@ -2639,6 +2686,15 @@ int Engine_SelfTestStaticLoad(int *checks)
 			                            model.materials[2].alphaMode == ENGINE_STATIC_ALPHA_OPAQUE && model.materials[2].doubleSided == 0 &&
 			                            EngStaticLoadTest_Near(model.materials[2].baseColor[0], 1.0f) && EngStaticLoadTest_Near(model.materials[2].alphaCutoff, 0.5f),
 			                        "material 2: the default", checks, &failures);
+			EngStaticLoadTest_Check(model.materials != NULL && model.materials[0].normalImage == 0 && model.materials[0].normalWrapU == 1 &&
+			                            model.materials[0].normalWrapV == 2 && EngStaticLoadTest_Near(model.materials[0].normalScale, 0.5f),
+			                        "material 0: normal map image 0, clamp / mirror, scale 0.5", checks, &failures);
+			EngStaticLoadTest_Check(model.materials != NULL && model.materials[1].normalImage == -1 &&
+			                            EngStaticLoadTest_Near(model.materials[1].normalScale, 1.0f),
+			                        "material 1: no normal map, scale 1", checks, &failures);
+			EngStaticLoadTest_Check(model.materials != NULL && model.materials[2].normalImage == -1 &&
+			                            EngStaticLoadTest_Near(model.materials[2].normalScale, 1.0f),
+			                        "material 2 (the default): no normal map, scale 1", checks, &failures);
 			for (i = 0; i < 6; i++)
 			{
 				for (j = 0; j < 3; j++)
@@ -2783,6 +2839,89 @@ int Engine_SelfTestStaticLoad(int *checks)
 				}
 				EngStaticLoadTest_PiecesFree(&lit);
 				EngStaticLoadTest_PiecesFree(&flat);
+			}
+
+			// ---- c2) the packed normal (ENGINE_STATIC_BUILD_NORMALS) ------------------
+			{
+				EngStaticLoadTestPieces nrm;
+				EngStaticLoadTestPieces nrm2;
+				EngStaticLoadTestPieces plain;
+				const float tn[2][3] = {{L[0], L[1], L[2]}, {-L[0], -L[1], -L[2]}};
+				int gridOk = 1;
+				int gridCount = 0;
+				int mirrorOk = 1;
+				int mirrorTris = 0;
+				int offOk = 1;
+				u32 vi;
+				u32 tri;
+				int n1;
+				int n2;
+
+				EngStaticLoadTest_PiecesInit(&nrm, 1);
+				EngStaticLoadTest_PiecesInit(&nrm2, 0);
+				EngStaticLoadTest_PiecesInit(&plain, 1);
+				n1 = EngineStatic_BuildPieces(&model, 1u << 20, ENGINE_STATIC_BUILD_NORMALS, EngStaticLoadTest_OnPiece, &nrm, why, (int)sizeof(why));
+				n2 = EngineStatic_BuildPieces(&model, 1u << 20, ENGINE_STATIC_BUILD_NORMALS, EngStaticLoadTest_OnPiece, &nrm2, why, (int)sizeof(why));
+				EngStaticLoadTest_Check(n1 == 1 && n2 == 1 && nrm.keptVertices != NULL && nrm.hash == nrm2.hash, "NORMALS: two runs give the same bytes", checks, &failures);
+				(void)EngineStatic_BuildPieces(&model, 1u << 20, 0, EngStaticLoadTest_OnPiece, &plain, why, (int)sizeof(why));
+				if (nrm.keptVertices != NULL && plain.keptVertices != NULL)
+				{
+					// (0, 1, 0) packs to 0.5 * 255 = 127.5 -> 128 (rounded half up), 255, 128, w 255
+					for (vi = 0; vi < nrm.keptVertexCount; vi++)
+					{
+						const EngineVertex *v = &nrm.keptVertices[vi];
+
+						if (v->position[0] >= 50.0f)
+						{
+							gridCount++;
+							if (v->uvBox[0] != 128 || v->uvBox[1] != 255 || v->uvBox[2] != 128 || v->uvBox[3] != 255)
+							{
+								gridOk = 0;
+							}
+						}
+					}
+					// the mirrored node: the world normal is (-x, y, z) of the authored one
+					for (tri = 0; tri < nrm.keptIndexCount / 3u && mirrorTris < 2; tri++)
+					{
+						if (nrm.keptVertices[nrm.keptIndices[3 * tri]].position[0] < 50.0f)
+						{
+							for (k = 0; k < 3; k++)
+							{
+								const EngineVertex *v = &nrm.keptVertices[nrm.keptIndices[3 * tri + (u32)k]];
+								int a2;
+
+								for (a2 = 0; a2 < 3; a2++)
+								{
+									if (fabsf((float)v->uvBox[a2] / 127.5f - 1.0f - tn[mirrorTris][a2]) > 0.02f)
+									{
+										mirrorOk = 0;
+									}
+								}
+								if (v->uvBox[3] != 255)
+								{
+									mirrorOk = 0;
+								}
+							}
+							mirrorTris++;
+						}
+					}
+					// without NORMALS every box is the full box, stored as zeros
+					for (vi = 0; vi < plain.keptVertexCount; vi++)
+					{
+						const EngineVertex *v = &plain.keptVertices[vi];
+
+						if (v->uvBox[0] != 0 || v->uvBox[1] != 0 || v->uvBox[2] != 0 || v->uvBox[3] != 0)
+						{
+							offOk = 0;
+						}
+					}
+				}
+				EngStaticLoadTest_Check(nrm.keptVertices != NULL && gridCount == GRID_VERTS && gridOk, "NORMALS: grid vertices pack (0, 1, 0) to 128, 255, 128, 255", checks, &failures);
+				EngStaticLoadTest_Check(nrm.keptVertices != NULL && mirrorTris == 2 && mirrorOk, "NORMALS: the mirrored node's normals decode to (-x, y, z) within 0.02", checks, &failures);
+				EngStaticLoadTest_Check(plain.keptVertices != NULL && offOk, "without NORMALS every uvBox is the full box (zeros)", checks, &failures);
+				EngStaticLoadTest_PiecesFree(&nrm);
+				EngStaticLoadTest_PiecesFree(&nrm2);
+				EngStaticLoadTest_PiecesFree(&plain);
 			}
 
 			// ---- e) ReadImage ---------------------------------------------------------

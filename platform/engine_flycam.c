@@ -33,6 +33,15 @@
 // after the level's intro (THE INTRO in Engine_FlycamTick); no clock, no input,
 // no random numbers.
 //
+// SMOOTH (--engine-flycam-smooth, with --engine-flycam-auto <frames>): the demo
+// video flight. No holds: a centripetal Catmull-Rom spline (alpha 0.5) through the
+// station positions and one through the look points (same segment and local
+// parameter, so the view reaches each look point at its station), an open path
+// from the first to the last station, travelled at a constant speed along the
+// position curve (arc-length table) in <frames> frames; afterwards the camera
+// stays at the last station. No station log lines and no snapshots: the video
+// frames come from --shot-series. Engine_FlycamSmoothAt is pure and deterministic.
+//
 // THE STATION / SHOT RULE: each station is held for ENGINE_FLYCAM_HOLD frames
 // (less on a very short loop), then a smoothstep move to the next. Halfway
 // through the hold, in the first loop only, one log line names the pose and,
@@ -51,6 +60,7 @@ void Platform_ShotRequest(const char *path);       // native_platform.c
 
 int g_cfg_engineFlycam = 0;
 int g_cfg_engineFlycamAuto = 0;
+int g_cfg_engineFlycamSmooth = 0;
 char g_cfg_engineFlycamPath[ENGINE_FLYCAM_PATH_MAX] = "";
 
 global_variable EngineFlycamStation s_flyStations[ENGINE_FLYCAM_STATIONS_MAX];
@@ -66,6 +76,199 @@ global_variable float s_flyYaw = 0.0f;
 global_variable float s_flyPitch = 0.0f;
 global_variable int s_flyPrevP = 0;
 global_variable u32 s_flyIntroFrames = 0; // frames of the level's intro waited for (THE INTRO)
+
+// --------------------------------------------------------------------------
+// Smooth flight: centripetal Catmull-Rom (Barry-Goldman) + arc-length table
+
+#define ENGFLY_SMOOTH_SAMPLES 64
+#define ENGFLY_SMOOTH_EPS 1.0e-6
+
+global_variable double s_smTab[ENGINE_FLYCAM_STATIONS_MAX * ENGFLY_SMOOTH_SAMPLES + 1];
+global_variable EngineFlycamStation s_smStations[ENGINE_FLYCAM_STATIONS_MAX];
+global_variable int s_smCount = 0; // 0 = no valid table
+global_variable float s_smoothLength = 0.0f;
+
+// Point j (-1..count) of the position (which 0) or look (which 1) polyline; the
+// phantom points mirror the end stations.
+internal double EngFly_SmCoord(const EngineFlycamStation *st, int which, int i, int k)
+{
+	return (which == 0) ? (double)st[i].pos[k] : (double)st[i].look[k];
+}
+
+internal void EngFly_SmPoint(const EngineFlycamStation *st, int count, int which, int j, double out[3])
+{
+	int k;
+
+	for (k = 0; k < 3; k++)
+	{
+		if (j < 0)
+		{
+			out[k] = 2.0 * EngFly_SmCoord(st, which, 0, k) - EngFly_SmCoord(st, which, 1, k);
+		}
+		else if (j >= count)
+		{
+			out[k] = 2.0 * EngFly_SmCoord(st, which, count - 1, k) - EngFly_SmCoord(st, which, count - 2, k);
+		}
+		else
+		{
+			out[k] = EngFly_SmCoord(st, which, j, k);
+		}
+	}
+}
+
+// The curve of segment seg (between stations seg and seg+1) at local parameter u.
+internal void EngFly_SmEval(const EngineFlycamStation *st, int count, int which, int seg, double u, double out[3])
+{
+	double p[4][3];
+	double t[4];
+	double tt;
+	int i;
+	int k;
+
+	for (i = 0; i < 4; i++)
+	{
+		EngFly_SmPoint(st, count, which, seg - 1 + i, p[i]);
+	}
+	t[0] = 0.0;
+	for (i = 1; i < 4; i++)
+	{
+		const double dx = p[i][0] - p[i - 1][0];
+		const double dy = p[i][1] - p[i - 1][1];
+		const double dz = p[i][2] - p[i - 1][2];
+		double d = sqrt(sqrt(dx * dx + dy * dy + dz * dz)); // |dP|^0.5
+
+		if (d < ENGFLY_SMOOTH_EPS)
+		{
+			d = ENGFLY_SMOOTH_EPS;
+		}
+		t[i] = t[i - 1] + d;
+	}
+	tt = t[1] + u * (t[2] - t[1]);
+	for (k = 0; k < 3; k++)
+	{
+		const double a1 = (t[1] - tt) / (t[1] - t[0]) * p[0][k] + (tt - t[0]) / (t[1] - t[0]) * p[1][k];
+		const double a2 = (t[2] - tt) / (t[2] - t[1]) * p[1][k] + (tt - t[1]) / (t[2] - t[1]) * p[2][k];
+		const double a3 = (t[3] - tt) / (t[3] - t[2]) * p[2][k] + (tt - t[2]) / (t[3] - t[2]) * p[3][k];
+		const double b1 = (t[2] - tt) / (t[2] - t[0]) * a1 + (tt - t[0]) / (t[2] - t[0]) * a2;
+		const double b2 = (t[3] - tt) / (t[3] - t[1]) * a2 + (tt - t[1]) / (t[3] - t[1]) * a3;
+
+		out[k] = (t[2] - tt) / (t[2] - t[1]) * b1 + (tt - t[1]) / (t[2] - t[1]) * b2;
+	}
+}
+
+// Rebuilds the arc-length table of the position curve (count >= 2).
+internal void EngFly_SmBuild(const EngineFlycamStation *st, int count)
+{
+	const int n = (count - 1) * ENGFLY_SMOOTH_SAMPLES + 1;
+	double prev[3];
+	double cur[3];
+	int idx;
+
+	EngFly_SmEval(st, count, 0, 0, 0.0, prev);
+	s_smTab[0] = 0.0;
+	for (idx = 1; idx < n; idx++)
+	{
+		const int seg = (idx - 1) / ENGFLY_SMOOTH_SAMPLES;
+		const int j = idx - seg * ENGFLY_SMOOTH_SAMPLES;
+		double d[3];
+		int k;
+
+		EngFly_SmEval(st, count, 0, seg, (double)j / (double)ENGFLY_SMOOTH_SAMPLES, cur);
+		for (k = 0; k < 3; k++)
+		{
+			d[k] = cur[k] - prev[k];
+			prev[k] = cur[k];
+		}
+		s_smTab[idx] = s_smTab[idx - 1] + sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+	}
+	memcpy(s_smStations, st, (size_t)count * sizeof(*st));
+	s_smCount = count;
+	s_smoothLength = (float)s_smTab[n - 1];
+}
+
+int Engine_FlycamSmoothAt(const EngineFlycamStation *st, int count, int frames, u32 frame, float pos[3], float look[3])
+{
+	const EngineFlycamStation *e = NULL;
+	double s;
+	double frac;
+	double u;
+	double p[3];
+	double l[3];
+	int n;
+	int lo;
+	int hi;
+	int seg;
+	int k;
+
+	if (count < 1)
+	{
+		memset(pos, 0, 3 * sizeof(float));
+		memset(look, 0, 3 * sizeof(float));
+		return 0;
+	}
+	if (count > ENGINE_FLYCAM_STATIONS_MAX)
+	{
+		count = ENGINE_FLYCAM_STATIONS_MAX;
+	}
+	if (count == 1)
+	{
+		e = &st[0];
+	}
+	else
+	{
+		if ((s_smCount != count) || (memcmp(s_smStations, st, (size_t)count * sizeof(*st)) != 0))
+		{
+			EngFly_SmBuild(st, count);
+		}
+		if ((frames <= 1) || (frame >= (u32)(frames - 1)))
+		{
+			e = &st[count - 1];
+		}
+		else if (frame == 0)
+		{
+			e = &st[0];
+		}
+	}
+	if (e != NULL)
+	{
+		memcpy(pos, e->pos, 3 * sizeof(float));
+		memcpy(look, e->look, 3 * sizeof(float));
+		return 1;
+	}
+
+	n = (count - 1) * ENGFLY_SMOOTH_SAMPLES + 1;
+	s = s_smTab[n - 1] * (double)frame / (double)(frames - 1);
+	lo = 0;
+	hi = n - 1;
+	while (hi - lo > 1)
+	{
+		const int mid = (lo + hi) / 2;
+
+		if (s_smTab[mid] <= s)
+		{
+			lo = mid;
+		}
+		else
+		{
+			hi = mid;
+		}
+	}
+	frac = (s_smTab[hi] > s_smTab[lo]) ? (s - s_smTab[lo]) / (s_smTab[hi] - s_smTab[lo]) : 0.0;
+	seg = lo / ENGFLY_SMOOTH_SAMPLES;
+	u = ((double)(lo - seg * ENGFLY_SMOOTH_SAMPLES) + frac) / (double)ENGFLY_SMOOTH_SAMPLES;
+	if (u > 1.0)
+	{
+		u = 1.0;
+	}
+	EngFly_SmEval(st, count, 0, seg, u, p);
+	EngFly_SmEval(st, count, 1, seg, u, l);
+	for (k = 0; k < 3; k++)
+	{
+		pos[k] = (float)p[k];
+		look[k] = (float)l[k];
+	}
+	return 1;
+}
 
 internal float EngFly_Clamp(float v)
 {
@@ -424,7 +627,11 @@ internal int EngFly_Setup(const struct GameTracker *gGT)
 		}
 	}
 
-	if (g_cfg_engineFlycamAuto > 0)
+	if ((g_cfg_engineFlycamAuto > 0) && g_cfg_engineFlycamSmooth)
+	{
+		snprintf(mode, sizeof(mode), "auto smooth %d frames", g_cfg_engineFlycamAuto);
+	}
+	else if (g_cfg_engineFlycamAuto > 0)
 	{
 		snprintf(mode, sizeof(mode), "auto %d frames per loop", g_cfg_engineFlycamAuto);
 	}
@@ -463,6 +670,24 @@ internal void EngFly_WritePose(struct GameTracker *gGT, const float pos[3], cons
 	pb->rot.x = rot[0];
 	pb->rot.y = rot[1];
 	pb->rot.z = rot[2];
+}
+
+internal void EngFly_TickSmooth(struct GameTracker *gGT)
+{
+	float pos[3];
+	float look[3];
+	const u32 last = (u32)((g_cfg_engineFlycamAuto > 1) ? (g_cfg_engineFlycamAuto - 1) : 0);
+
+	Engine_FlycamSmoothAt(s_flyStations, s_flyCount, g_cfg_engineFlycamAuto, s_flyFrame, pos, look);
+	EngFly_WritePose(gGT, pos, look);
+	if (s_flyFrame == last)
+	{
+		Platform_Log("[CTR Engine] flycam smooth: end of the flight at frame %u, length %.0f world units\n", (unsigned)s_flyFrame, (double)s_smoothLength);
+	}
+	if (s_flyFrame < 0xFFFFFFFFu)
+	{
+		s_flyFrame++;
+	}
 }
 
 internal void EngFly_TickAuto(struct GameTracker *gGT)
@@ -617,7 +842,11 @@ void Engine_FlycamTick(struct GameTracker *gGT)
 	}
 
 	gGT->cameraDC[0].flags |= CAMERA_FLAG_FROZEN;
-	if (g_cfg_engineFlycamAuto > 0)
+	if ((g_cfg_engineFlycamAuto > 0) && g_cfg_engineFlycamSmooth)
+	{
+		EngFly_TickSmooth(gGT);
+	}
+	else if (g_cfg_engineFlycamAuto > 0)
 	{
 		EngFly_TickAuto(gGT);
 	}
@@ -861,6 +1090,108 @@ internal void EngFly_SelfTestRing(int *n, int *failures)
 	EngFly_Check(ok, "ring: a huge box is clamped to +-32000", n, failures);
 }
 
+internal void EngFly_SelfTestSmooth(int *n, int *failures)
+{
+	static const float xs[6][6] = {
+	    {0.0f, 200.0f, 0.0f, 100.0f, 0.0f, 500.0f},
+	    {100.0f, 300.0f, 0.0f, 500.0f, 50.0f, 400.0f},
+	    {1000.0f, 150.0f, 100.0f, 1500.0f, 0.0f, 600.0f},
+	    {1300.0f, 700.0f, -200.0f, 1000.0f, 300.0f, -100.0f},
+	    {3300.0f, 400.0f, 300.0f, 3000.0f, 100.0f, 900.0f},
+	    {3350.0f, 900.0f, 320.0f, 3400.0f, 200.0f, 0.0f},
+	};
+	enum { FR = 600 };
+	EngineFlycamStation st[6];
+	EngineFlycamStation st2[6];
+	static float P[FR + 1][3];
+	static float L[FR + 1][3];
+	float a[3];
+	float b[3];
+	double mean = 0.0;
+	double lookMax = 0.0;
+	double dev = 0.0;
+	int i;
+	int k;
+	int ok;
+	u32 f;
+
+	for (i = 0; i < 6; i++)
+	{
+		for (k = 0; k < 3; k++)
+		{
+			st[i].pos[k] = xs[i][k];
+			st[i].look[k] = xs[i][3 + k];
+		}
+	}
+	for (f = 0; f <= FR; f++)
+	{
+		Engine_FlycamSmoothAt(st, 6, FR, (f == FR) ? 1000u : f, P[f], L[f]);
+	}
+	EngFly_Check(memcmp(P[0], st[0].pos, sizeof(a)) == 0 && memcmp(L[0], st[0].look, sizeof(a)) == 0, "smooth: frame 0 is station 0", n, failures);
+	Engine_FlycamSmoothAt(st, 6, FR, FR - 1, a, b);
+	EngFly_Check(memcmp(a, st[5].pos, sizeof(a)) == 0 && memcmp(b, st[5].look, sizeof(a)) == 0, "smooth: frame 599 is the last station", n, failures);
+	EngFly_Check(memcmp(P[FR], st[5].pos, sizeof(a)) == 0 && memcmp(L[FR], st[5].look, sizeof(a)) == 0, "smooth: frame 1000 is the last station", n, failures);
+
+	for (f = 0; f < FR - 1; f++)
+	{
+		mean += sqrt(pow((double)P[f + 1][0] - P[f][0], 2) + pow((double)P[f + 1][1] - P[f][1], 2) + pow((double)P[f + 1][2] - P[f][2], 2));
+		{
+			const double ls = sqrt(pow((double)L[f + 1][0] - L[f][0], 2) + pow((double)L[f + 1][1] - L[f][1], 2) + pow((double)L[f + 1][2] - L[f][2], 2));
+
+			lookMax = (ls > lookMax) ? ls : lookMax;
+		}
+	}
+	mean /= (double)(FR - 1);
+	for (f = 0; f < FR - 1; f++)
+	{
+		const double d = sqrt(pow((double)P[f + 1][0] - P[f][0], 2) + pow((double)P[f + 1][1] - P[f][1], 2) + pow((double)P[f + 1][2] - P[f][2], 2));
+		const double r = fabs(d - mean) / mean * 100.0;
+
+		dev = (r > dev) ? r : dev;
+	}
+	EngFly_Check(dev <= 5.0, "smooth: speed is not constant (+-5 %)", n, failures);
+	if (dev <= 5.0)
+	{
+		printf("engine selftest info: flycam smooth speed deviation %.2f %%\n", dev);
+	}
+
+	ok = 1;
+	for (i = 0; i < 6; i++)
+	{
+		double best = 1.0e30;
+		double bestL = 1.0e30;
+
+		for (f = 0; f < FR; f++)
+		{
+			const double d = sqrt(pow((double)P[f][0] - st[i].pos[0], 2) + pow((double)P[f][1] - st[i].pos[1], 2) + pow((double)P[f][2] - st[i].pos[2], 2));
+			const double dl = sqrt(pow((double)L[f][0] - st[i].look[0], 2) + pow((double)L[f][1] - st[i].look[1], 2) + pow((double)L[f][2] - st[i].look[2], 2));
+
+			best = (d < best) ? d : best;
+			bestL = (dl < bestL) ? dl : bestL;
+		}
+		ok = ok && (best < 2.0 * mean);
+		if (!(bestL < lookMax))
+		{
+			EngFly_Check(0, "smooth: a look point is not passed", n, failures);
+		}
+	}
+	EngFly_Check(ok, "smooth: a station is not passed", n, failures);
+
+	Engine_FlycamSmoothAt(st, 6, FR, 250, a, b);
+	Engine_FlycamSmoothAt(st, 6, FR, 250, P[0], L[0]);
+	EngFly_Check(memcmp(a, P[0], sizeof(a)) == 0 && memcmp(b, L[0], sizeof(a)) == 0, "smooth: same input, same floats", n, failures);
+	memcpy(st2, st, sizeof(st));
+	st2[2].pos[1] += 400.0f;
+	Engine_FlycamSmoothAt(st2, 6, FR, 250, P[0], L[0]);
+	EngFly_Check(memcmp(a, P[0], sizeof(a)) != 0, "smooth: a changed station changes the result", n, failures);
+	Engine_FlycamSmoothAt(st, 6, FR, 250, P[0], L[0]);
+	EngFly_Check(memcmp(a, P[0], sizeof(a)) == 0, "smooth: the table is rebuilt back", n, failures);
+
+	Engine_FlycamSmoothAt(st, 1, FR, 77, a, b);
+	EngFly_Check(memcmp(a, st[0].pos, sizeof(a)) == 0 && memcmp(b, st[0].look, sizeof(a)) == 0, "smooth: one station", n, failures);
+	EngFly_Check(Engine_FlycamSmoothAt(st, 0, FR, 77, a, b) == 0 && a[0] == 0.0f && b[2] == 0.0f, "smooth: no stations", n, failures);
+}
+
 int Engine_SelfTestFlycam(int *checks)
 {
 	const float zero[3] = {0.0f, 0.0f, 0.0f};
@@ -877,6 +1208,7 @@ int Engine_SelfTestFlycam(int *checks)
 	EngFly_SelfTestParse(&n, &failures);
 	EngFly_SelfTestAt(&n, &failures);
 	EngFly_SelfTestRing(&n, &failures);
+	EngFly_SelfTestSmooth(&n, &failures);
 
 	*checks += n;
 	return failures;

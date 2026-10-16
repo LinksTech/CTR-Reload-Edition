@@ -22,7 +22,17 @@
 // THE PROGRAMS. "ne" (ENGINE_PROGRAM_NE) and the water program "nw"
 // (ENGINE_PROGRAM_NW, platform/engine_water_shader.inc) share the vertex
 // layout, the samplers and the block; a material names its program
-// (EngineMaterial.program) and the renderer binds it per range.
+// (EngineMaterial.program) and the renderer binds it per range. The lit
+// program of the static model "ns" (ENGINE_PROGRAM_NS,
+// platform/engine_static_shader.inc) has the same layout and block, and the
+// samplers slot 0 and slot 3 only (below). Unlike "ne" and "nw" it is optional:
+// a missing "ns" does not make the engine fall back (Engine_RenderInit checks
+// "ne" and "nw" only); a range of a material that names it is refused at the
+// draw ("no program for the material"). It is made only with
+// --engine-static-model (g_cfg_engineStaticModel), the one user of it; without
+// the switch the engine starts exactly as before. Its SPIR-V (ns.vert,
+// ns.frag) is only data in the executable then: modules are looked up by name
+// when a program is made (NativeVk_FindModule), never loaded at start.
 //
 // THE SAMPLERS. Three slots, all constant for the lifetime of the program:
 //   slot 0  "s_texture"  the native texture of texSource 1 (RGBA8, sRGB or not,
@@ -32,6 +42,9 @@
 //                        texelFetch - nearest only, never filtered
 //   slot 3  "s_table"    the track mosaic table of texSource 3 (RGBA8, nearest,
 //                        platform/engine_track_mosaic.c), read with texelFetch
+// "ns" reads slot 0 "s_texture" (as "ne") and slot 3 as "s_normal": the
+// material's normal map (EngineMaterial.nativeTexture2, linear RGBA8).
+// The unit is the one "ne" gives the mosaic table; the two never meet in one draw.
 // Slot 2 is the PSX page atlas: the layout has a binding for it (the bindings
 // run from 0 to the highest slot) but "ne" never declares or moves it.
 // The PSX program has the VRAM in slot 0 and its colour lookup table in slot 1;
@@ -62,6 +75,7 @@ _Static_assert(sizeof(EngineUniforms) == 192, "EngineUniforms must be 192 bytes 
 global_variable int s_engineProgramsTried = 0;
 global_variable ShaderID s_engineProgram = NATIVE_GFX_INVALID;
 global_variable ShaderID s_engineWaterProgram = NATIVE_GFX_INVALID;
+global_variable ShaderID s_engineStaticProgram = NATIVE_GFX_INVALID;
 
 int Engine_ProgramsInit(void)
 {
@@ -119,6 +133,21 @@ int Engine_ProgramsInit(void)
 
 	Platform_Log("[CTR Engine] program 'nw' %s\n", (s_engineWaterProgram != NATIVE_GFX_INVALID) ? "ready" : "missing");
 
+	// "ns": the same descriptor, the samplers of the static model (slot 0 the base colour, slot 3 the normal map);
+	// its modules are ns.vert / ns.frag. Optional (see THE PROGRAMS), and made
+	// only with --engine-static-model: without it no program, no pipeline and no
+	// log line more than before.
+	if (g_cfg_engineStaticModel[0] != '\0')
+	{
+		desc.debugName = "ns";
+		desc.samplers[0] = (NativeGfxNamedSlot){.slot = 0, .name = "s_texture"};
+		desc.samplers[1] = (NativeGfxNamedSlot){.slot = 3, .name = "s_normal"};
+		desc.samplerCount = 2;
+		s_engineStaticProgram = NativeGfx_CreateProgram(&desc);
+
+		Platform_Log("[CTR Engine] program 'ns' %s\n", (s_engineStaticProgram != NATIVE_GFX_INVALID) ? "ready" : "missing");
+	}
+
 	return (s_engineProgram != NATIVE_GFX_INVALID) ? 1 : 0;
 }
 
@@ -138,6 +167,10 @@ u32 Engine_ProgramOf(int program)
 	else if (program == ENGINE_PROGRAM_NW)
 	{
 		id = s_engineWaterProgram;
+	}
+	else if (program == ENGINE_PROGRAM_NS)
+	{
+		id = s_engineStaticProgram;
 	}
 	return (id != NATIVE_GFX_INVALID) ? (u32)id : 0xffffffffu;
 }

@@ -421,8 +421,13 @@ static const NativeSwitch s_devSwitches[] = {
     {"--engine-hide", "<sky,water,track>", "with --engine --engine-track: the engine owns the listed items (the PS1 path does not draw them) but draws nothing of them - the 'minus' run of the measurements; comma-separated, words sky, water and track (track: the level's faces, its water and its level instances; drivers and effects stay - with --engine-static-model only the model shows)"},
     {"--engine-static-model", "<file.glb>", "with --engine --engine-track: an external static model (glTF binary, positions in world units and world axes) drawn in every race level - full-resolution textures with all mip levels, trilinear and anisotropic, alpha test for MASK/BLEND materials, u32 indices, pieces with a view test; one log line at load (triangles, materials, textures, mip levels, time, GPU memory), one at exit"},
     {"--engine-static-light", "", "with --engine-static-model: a fixed directional light from the model's normals baked into its vertex colours at load"},
+    {"--engine-static-lit", "", "with --engine-static-model: the model drawn lit by the engine program 'ns' - the normal maps of its materials (glTF normalTexture, tangent space from the screen derivatives), a sun and ambient light; the load line counts the normal maps made and missing"},
+    {"--engine-static-style", "<hires|lowpoly>", "with --engine-static-model: the lit model (switches --engine-static-lit on) in a style - hires: vertex normals and normal maps, the colours as they are; lowpoly: flat shading by the faces, no normal maps, saturation 1.25 and contrast 1.10"},
+    {"--engine-static-grade", "<saturation,contrast>", "with --engine-static-lit or --engine-static-style: the colour grade of the lit model instead of the style's (each 0..3, 1 = unchanged)"},
+    {"--engine-static-lit-sun", "<x,y,z,ambient,diffuse>", "with --engine-static-lit: the direction towards the sun (world axes, y up; normalised) and the strengths of the ambient light and the sun (each 0..2); default 0.35,0.85,0.40,0.50,0.60"},
     {"--engine-flycam", "", "with --engine: view 0 flown freely instead of the game camera - W/S/A/D move, R/F up/down, Shift faster, right mouse button held to look, P logs the point as a line of --engine-flycam-path; no input under --deterministic"},
     {"--engine-flycam-auto", "<frames>", "with --engine, measuring: view 0 flies a deterministic closed loop over stations in <frames> game frames (60..1000000), each station held 30 frames, repeated - the stations of --engine-flycam-path, else 8 above the box of --engine-static-model (or of the level); with --shot-name one snapshot per station in the first loop, <shot-name>-sNN.bmp"},
+    {"--engine-flycam-smooth", "", "with --engine-flycam-auto, for videos: no hold at the stations - one centripetal Catmull-Rom curve through the stations and one through their look points, travelled at a constant speed in <frames> game frames from the first station to the last (no way back), then the camera stays; no snapshot per station (use --shot-series)"},
     {"--engine-flycam-path", "<file>", "with --engine-flycam-auto: the stations from <file>, one per line 'x y z lx ly lz' (camera and the point it looks at, world units; '#' comments), up to 256"},
     {"--engine-fail", "<start|track>", "with --engine, measuring only: forces the engine's fallback to the PS1 path - start: the programs 'ne' and 'nw' are not made, track (needs --engine-track): the first track load of the engine fails; the log names the reason and the run goes on without the engine"},
     {"--engine-oracle", "<file>", "with --engine --engine-track, measuring only: the log of the material comparison into <file> (relative to the game folder) - per drawn surface the texture page, CLUT, UV, blend and mosaic cell of the PS1 path and of the engine, in the frames --level-tour-oracle arms; without it nothing is written"},
@@ -667,6 +672,47 @@ static int NativeArgs_EngineHideBits(const char *list)
 	return (bits != 0) ? bits : -1;
 }
 
+// The value of --engine-static-lit-sun: five numbers x,y,z,ambient,diffuse, the
+// direction not zero, both strengths 0..2. 1 = read (into out when not NULL).
+static int NativeArgs_StaticSun(const char *value, float out[5])
+{
+	float v[5];
+	char tail = 0;
+
+	if (sscanf(value, "%f,%f,%f,%f,%f%c", &v[0], &v[1], &v[2], &v[3], &v[4], &tail) != 5)
+	{
+		return 0;
+	}
+	if (!((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]) > 1e-12f) || !(v[3] >= 0.0f) || !(v[3] <= 2.0f) || !(v[4] >= 0.0f) || !(v[4] <= 2.0f))
+	{
+		return 0;
+	}
+	if (out != NULL)
+	{
+		memcpy(out, v, sizeof(v));
+	}
+	return 1;
+}
+
+// The value of --engine-static-grade: saturation,contrast, each 0..3. 1 = read
+// (into out when not NULL).
+static int NativeArgs_StaticGrade(const char *value, float out[2])
+{
+	float v[2];
+	char tail = 0;
+
+	if ((sscanf(value, "%f,%f%c", &v[0], &v[1], &tail) != 2) || !(v[0] >= 0.0f) || !(v[0] <= 3.0f) || !(v[1] >= 0.0f) || !(v[1] <= 3.0f))
+	{
+		return 0;
+	}
+	if (out != NULL)
+	{
+		out[0] = v[0];
+		out[1] = v[1];
+	}
+	return 1;
+}
+
 // The value of --engine-oracle-fault: clut:<n> (kind 0), cell:<n> (kind 1) or
 // spread:<n> (kind 2), n 0 to 999999. 1 = read.
 static int NativeArgs_OracleFault(const char *value, int *kind, int *n)
@@ -816,6 +862,9 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			                                   (strcmp(argv[argIndex], "--engine-hires-texcycle") == 0) || (strcmp(argv[argIndex], "--engine-menuscene-zoom") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-hires-anim") == 0) || (strcmp(argv[argIndex], "--engine-static-model") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-static-light") == 0) || (strcmp(argv[argIndex], "--engine-flycam") == 0) ||
+			                                   (strcmp(argv[argIndex], "--engine-static-lit") == 0) || (strcmp(argv[argIndex], "--engine-static-lit-sun") == 0) ||
+			                                   (strcmp(argv[argIndex], "--engine-static-style") == 0) || (strcmp(argv[argIndex], "--engine-static-grade") == 0) ||
+			                                   (strcmp(argv[argIndex], "--engine-flycam-smooth") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-flycam-auto") == 0) || (strcmp(argv[argIndex], "--engine-flycam-path") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-fail") == 0) || (strcmp(argv[argIndex], "--engine-oracle") == 0) ||
 			                                   (strcmp(argv[argIndex], "--engine-oracle-fault") == 0)))
@@ -909,6 +958,11 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 		int trackGiven = 0;
 		int modelGiven = 0;
 		int lightGiven = 0;
+		int litGiven = 0;
+		const char *sunValue = NULL;
+		const char *styleValue = NULL;
+		const char *gradeValue = NULL;
+		int smoothGiven = 0;
 		int flycamGiven = 0;
 		const char *autoValue = NULL;
 		int pathGiven = 0;
@@ -929,6 +983,29 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			else if (strcmp(argv[argIndex], "--engine-static-light") == 0)
 			{
 				lightGiven = 1;
+			}
+			else if (strcmp(argv[argIndex], "--engine-static-lit") == 0)
+			{
+				litGiven = 1;
+			}
+			else if ((strcmp(argv[argIndex], "--engine-static-lit-sun") == 0) && (value != NULL))
+			{
+				sunValue = value;
+				argIndex++;
+			}
+			else if ((strcmp(argv[argIndex], "--engine-static-style") == 0) && (value != NULL))
+			{
+				styleValue = value;
+				argIndex++;
+			}
+			else if ((strcmp(argv[argIndex], "--engine-static-grade") == 0) && (value != NULL))
+			{
+				gradeValue = value;
+				argIndex++;
+			}
+			else if (strcmp(argv[argIndex], "--engine-flycam-smooth") == 0)
+			{
+				smoothGiven = 1;
 			}
 			else if (strcmp(argv[argIndex], "--engine-flycam") == 0)
 			{
@@ -958,6 +1035,38 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			else if (lightGiven && !modelGiven)
 			{
 				refusal = "switch --engine-static-light requires --engine-static-model";
+			}
+			else if (litGiven && !modelGiven)
+			{
+				refusal = "switch --engine-static-lit requires --engine-static-model";
+			}
+			else if ((styleValue != NULL) && !modelGiven)
+			{
+				refusal = "switch --engine-static-style requires --engine-static-model";
+			}
+			else if ((styleValue != NULL) && (strcmp(styleValue, "hires") != 0) && (strcmp(styleValue, "lowpoly") != 0))
+			{
+				refusal = "switch --engine-static-style expects hires or lowpoly";
+			}
+			else if ((sunValue != NULL) && !litGiven && (styleValue == NULL))
+			{
+				refusal = "switch --engine-static-lit-sun requires --engine-static-lit or --engine-static-style";
+			}
+			else if ((gradeValue != NULL) && !litGiven && (styleValue == NULL))
+			{
+				refusal = "switch --engine-static-grade requires --engine-static-lit or --engine-static-style";
+			}
+			else if ((gradeValue != NULL) && !NativeArgs_StaticGrade(gradeValue, NULL))
+			{
+				refusal = "switch --engine-static-grade expects saturation,contrast, each 0..3";
+			}
+			else if (smoothGiven && (autoValue == NULL))
+			{
+				refusal = "switch --engine-flycam-smooth requires --engine-flycam-auto";
+			}
+			else if ((sunValue != NULL) && !NativeArgs_StaticSun(sunValue, NULL))
+			{
+				refusal = "switch --engine-static-lit-sun expects x,y,z,ambient,diffuse - a direction that is not zero, both strengths 0..2";
 			}
 			else if ((autoValue != NULL) && ((end == autoValue) || (*end != 0) || (frames < 60) || (frames > 1000000)))
 			{
@@ -1372,6 +1481,30 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 		else if (strcmp(argv[argIndex], "--engine-static-light") == 0)
 		{
 			g_cfg_engineStaticLight = 1;
+		}
+		else if (strcmp(argv[argIndex], "--engine-static-lit") == 0)
+		{
+			g_cfg_engineStaticLit = 1;
+		}
+		else if ((strcmp(argv[argIndex], "--engine-static-style") == 0) && ((argIndex + 1) < argc))
+		{
+			// The value was checked before any window (hires or lowpoly); a style is lit.
+			g_cfg_engineStaticStyle = (strcmp(argv[++argIndex], "lowpoly") == 0) ? ENGINE_STATIC_STYLE_LOWPOLY : ENGINE_STATIC_STYLE_HIRES;
+			g_cfg_engineStaticLit = 1;
+		}
+		else if ((strcmp(argv[argIndex], "--engine-static-grade") == 0) && ((argIndex + 1) < argc))
+		{
+			// The value was checked before any window (NativeArgs_StaticGrade).
+			(void)NativeArgs_StaticGrade(argv[++argIndex], g_cfg_engineStaticGrade);
+		}
+		else if (strcmp(argv[argIndex], "--engine-flycam-smooth") == 0)
+		{
+			g_cfg_engineFlycamSmooth = 1;
+		}
+		else if ((strcmp(argv[argIndex], "--engine-static-lit-sun") == 0) && ((argIndex + 1) < argc))
+		{
+			// The value was checked before any window (NativeArgs_StaticSun).
+			(void)NativeArgs_StaticSun(argv[++argIndex], g_cfg_engineStaticSun);
 		}
 		else if (strcmp(argv[argIndex], "--engine-flycam") == 0)
 		{

@@ -1181,6 +1181,9 @@ global_variable const char *ctr_native_engine_shader =
 // The water program "nw" (platform/engine_water.c draws with it): its own file.
 #include "engine_water_shader.inc"
 
+// The lit program of the static model "ns" (platform/engine_static.c draws with it): its own file.
+#include "engine_static_shader.inc"
+
 // The blit shaders by name, in one place.
 //
 // Two readers: native_renderer.c, to find the prebuilt SPIR-V module that goes
@@ -1241,6 +1244,10 @@ internal int CtrBlitShader_Get(int index, const char **outName, const char **out
 	case 7:
 		name = "nw";
 		body = ctr_native_water_shader;
+		break;
+	case 8:
+		name = "ns";
+		body = ctr_native_static_shader;
 		break;
 	default:
 		return 0;
