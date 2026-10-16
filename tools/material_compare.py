@@ -132,7 +132,7 @@ FLAG_KEYS = ('part', 'clip', 'nogeo', 'lodonly', 'noleaf', 'sieve', 'frozen', 't
 INFO_FLAGS_ANY = ('lodonly', 'noleaf', 'blank', 'zeroarea')
 INFO_FLAGS_LOAD = ('degenerate', 'nolayout', 'dropped')
 BLENDS = ('o', '0', '1', '2', '3')
-FAULT_TARGET = {'clut': 'clut', 'cell': 'cell'}
+FAULT_TARGET = {'clut': 'clut', 'cell': 'cell', 'spread': 'uv'}
 # Colour tolerance per channel (8-bit corner colours). The retail writer
 # 'normal' copies the colours of the model or track unchanged into the
 # primitive, so the engine (same table, same live frame) must match exactly.
@@ -874,7 +874,8 @@ def _new_stats():
             'part': {}, 'clip': {}, 'nogeo': {}, 'info_lines': {}, 'stage_none': {}, 'lod_never': set(),
             'col_unpaired': 0, 'winding': 0, 'piece': {}, 'eom_coverage': [], 'fault_orient': set(),
             't_set_rule': {}, 'back_coverage': [], 'src_cell': {}, 'col_model': {}, 'raw_col': 0,
-            'tablefail': {}, 'anim_degenerate': {}, 'foreign': {}, 'stage_hit': {}, 'cut_col': {}}
+            'tablefail': {}, 'anim_degenerate': {}, 'foreign': {}, 'stage_hit': {}, 'cut_col': {},
+            'span': {}, 'native': {}, 'etex': {}}
 
 
 def _per(stats, tr, src):
@@ -918,6 +919,35 @@ def _cols_in_range(cols, ref, ctol):
     lo = [min(c[i] for c in ref) - ctol for i in range(3)]
     hi = [max(c[i] for c in ref) + ctol for i in range(3)]
     return all(lo[i] <= c[i] <= hi[i] for c in cols for i in range(3))
+
+
+def _span(r):
+    """Extent of a retail tile packet in the cell grid (extra span=<rows>,<cols>)."""
+    if 'span' not in r.extra:
+        return None
+    v = _ints(r.extra['span'], (2,), 'span')
+    return (v[0], v[1]) if v[0] >= 1 and v[1] >= 1 else None
+
+
+def _span_check(r, cells, r0, c0, nr, nc):
+    """A retail packet over nr x nc cells against the parts the engine cells
+    read: the parts must join (shared edges equal) and their outer corners
+    must be the packet's corners per slot. Returns (corners ok, joined ok)."""
+    maps = dict((k, dict((sl, c[0]) for sl, c in _slot_map(e).items())) for k, e in cells.items())
+    joined = True
+    for i in range(nr):
+        for j in range(nc):
+            m = maps[(r0 + i, c0 + j)]
+            if i + 1 < nr:
+                d = maps[(r0 + i + 1, c0 + j)]
+                joined &= m.get(2) == d.get(0) and m.get(3) == d.get(1)
+            if j + 1 < nc:
+                d = maps[(r0 + i, c0 + j + 1)]
+                joined &= m.get(1) == d.get(0) and m.get(3) == d.get(2)
+    outer = {0: maps[(r0, c0)].get(0), 1: maps[(r0, c0 + nc - 1)].get(1),
+             2: maps[(r0 + nr - 1, c0)].get(2), 3: maps[(r0 + nr - 1, c0 + nc - 1)].get(3)}
+    corners = all(outer.get(sl) == c[0] for sl, c in _slot_map(r).items())
+    return corners, joined
 
 
 def _slot_map(ln):
@@ -1101,6 +1131,12 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                 if any(r.route == 'retail' for r in rl):
                     stats['route_retail'].setdefault(tr, set()).add(obj)
                     continue
+                if el and all(e.extra.get('tex') == 'native' for e in el) and \
+                        not any(e.extra.get('hires', '0') not in ('0', '') for e in el):
+                    # the engine draws this source with native textures (menu scene,
+                    # native drivers): no VRAM fields to compare - counted, not compared
+                    _bump(stats['native'], (tr, src), len(el))
+                    continue
                 es = EngineSet(el)
                 ob = None
                 if src != 'T':
@@ -1171,6 +1207,21 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                             continue
                     work.append((r, count))
                 if not work:
+                    if src == 'M' and not rl and vram is not None:
+                        # menu scene: an engine object without a retail partner; a VRAM
+                        # material can still be checked for sampling outside its window
+                        for e in es.lines:
+                            if e.box is None or e.uv is None or e.page is None:
+                                continue
+                            stats['box_checked'] += 1
+                            ring0, ringf, reach, wrapped = box_outside(e, vram)
+                            if ring0 or ringf:
+                                rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=['sample-outside'],
+                                    e=e, r_count=0, fault=e.fault,
+                                    pattern=('ring0' if ring0 else 'ringf') + (' wrap' if wrapped else ''),
+                                    detail='box %s uv box %s ring0 %d ringf %d reach %d' % (
+                                        ','.join(map(str, e.box)), ','.join(map(str, bbox(e.uv))), ring0, ringf,
+                                        reach))
                     continue
                 if not es.lines:
                     if src == 'T' and setname == 'anim' and (tr, sid) in degen_faces and (tr, sid) not in drawn_faces:
@@ -1270,6 +1321,45 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                             features=pre + [f for f in FEATURES if f in d], r=r, e=best, r_count=count,
                             fault=best.fault)
                         continue
+                    if src == 'T' and 'etex' in r.extra and r.uv is not None:
+                        # corner-exact (D-W1.3b): the texel the engine shader decodes at every
+                        # corner of the retail packet (etex=u,v;u,v;..., in corner order)
+                        pts = [tuple(_ints(x, (2,), 'etex')) for x in r.extra['etex'].split(';')]
+                        _bump(stats['etex'], tr, count)
+                        if len(pts) != len(r.uv) or any(tuple(a) != tuple(b) for a, b in zip(pts, r.uv)):
+                            e0 = next((e for e in es.lines if e.key == r.key), es.lines[0])
+                            rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=pre + ['uv'], r=r,
+                                e=e0, r_count=count, fault=next((e.fault for e in es.lines
+                                                                 if e.key == r.key and e.fault), None),
+                                pattern='uv part of the tile (corner texel)' + _flags(r, e0),
+                                detail='retail %s engine %s' % (f_uv(r), r.extra['etex']))
+                            continue
+                    sp = _span(r) if src == 'T' else None
+                    if sp is not None and sp != (1, 1) and r.key[0] == 'cell' and r.slots is not None:
+                        # a tile packet over several cells (span=): the parts the engine cells
+                        # read must join to the packet (D-W1.3b, extent of the cells)
+                        r0, c0 = [int(x) for x in r.cell.split(',')]
+                        need = [(r0 + i, c0 + j) for i in range(sp[0]) for j in range(sp[1])]
+                        bycell = dict((tuple(int(x) for x in e.cell.split(',')), e) for e in es.lines
+                                      if e.key[0] == 'cell' and e.slots is not None and e.uv is not None)
+                        if all(k in bycell for k in need):
+                            _bump(stats['span'], tr, count)
+                            cells = dict((k, bycell[k]) for k in need)
+                            corners, joined = _span_check(r, cells, r0, c0, sp[0], sp[1])
+                            d = sorted(set(x for e in cells.values() for x in _mat_diffs(r, e)),
+                                       key=FEATURES.index)
+                            for e in cells.values():
+                                used_by.setdefault(id(e), (e, r))
+                            if not d and corners and joined:
+                                continue
+                            first = cells[need[0]]
+                            fault = next((e.fault for e in cells.values() if e.fault), None)
+                            feats = [f for f in FEATURES if f in d or (f == 'uv' and not (corners and joined))]
+                            rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=pre + feats, r=r,
+                                e=first, r_count=count, fault=fault,
+                                pattern=('uv part of the tile%s' % ('' if joined else ' (cells do not join)')
+                                         if 'uv' in feats else pattern(feats, r, first)) + _flags(r, first))
+                            continue
                     if src == 'T':
                         # track UV per slot (fallback without slot marker: as a corner set,
                         # the retail corners a subset of the engine corners; counted)
@@ -1595,6 +1685,9 @@ def plausibility(log, stats):
         menu = tr in stats['menu_tracks']
         kinds = set(src for (t, src) in stats['per'] if t == tr)
         need = set() if menu else set(['T', 'I'])
+        if menu and stats['per'].get((tr, 'M'), {'E': 0})['E'] + \
+                sum(n for (t, k), n in stats['native'].items() if t == tr and k == 'M') == 0:
+            out.append('%s M: no engine line of the menu scene' % tr)
         routed = set(o.split(':')[0] for o in stats['route_retail'].get(tr, ()))
         for src in sorted(kinds | need):
             p = stats['per'].get((tr, src), {'R': 0, 'E': 0, 'Rrace': 0, 'Erace': 0})
@@ -1845,6 +1938,15 @@ def render_md(res, inputs, exc_origin):
     for tr in sorted(s['anim_degenerate']):
         md.append('- %s set=anim lines of faces the load block marks degenerate and no race frame draws: %d '
                   '(information)' % (tr, s['anim_degenerate'][tr]))
+    for (tr, src_), n in sorted(s['native'].items()):
+        md.append('- %s %s: engine lines with native textures (tex=native, no VRAM fields; not compared): %d'
+                  % (tr, src_, n))
+    if s['etex']:
+        md.append('- Track packets checked corner-exact against the texel the engine decodes there (etex=): %d'
+                  % sum(s['etex'].values()))
+    if s['span']:
+        md.append('- Track tile packets over several cells checked against the joined cell parts (span=): %d'
+                  % sum(s['span'].values()))
     if s['stage_hit']:
         md.append('- Track tile packets that are exactly a stage layout of their face (counted as that stage): %d'
                   % sum(s['stage_hit'].values()))
@@ -2251,6 +2353,46 @@ def selftest():
     check('parse: bad slots are an error',
           len(parse_log('\n'.join([F(), T('R', '5', C00, 'cell=0,0', extra='slots=0,1,1,2')]) + '\n', 's').errors) == 1)
 
+    # tile packets over several cells (span=): the engine cell parts must join to the packet
+    LAY = '0,0,31,0,0,31,31,31'
+    TOPH, BOTH = '0,0,31,0,0,15,31,15', '0,15,31,15,0,31,31,31'
+    res, _ = run([F(), T('R', '5', LAY, 'cell=0,0', extra='ord=slot,span=2,1'),
+                  T('E', '5', TOPH, 'cell=0,0'), T('E', '5', BOTH, 'cell=1,0')])
+    check('span: a packet over two rows = the two engine cell parts joined: 0',
+          len(res.open) == 0 and res.stats['span'] == {'L3': 1})
+    res, _ = run([F(), T('R', '5', LAY, 'cell=0,0', extra='ord=slot,span=2,1'),
+                  T('E', '5', LAY, 'cell=0,0'), T('E', '5', LAY, 'cell=1,0')])
+    check('span: the full layout in each row (old spreading) is uv part of the tile',
+          feats(res) == ['uv'] and res.open[0].pattern.startswith('uv part of the tile (cells do not join)'))
+    res, _ = run([F(), T('R', '5', TOPH, 'cell=0,0', extra='ord=slot'), T('E', '5', LAY, 'cell=0,0')])
+    check('span: a one-row packet against a full-layout cell is uv', feats(res) == ['uv'])
+    res, _ = run([F(), T('R', '5', LAY, 'cell=0,0', extra='ord=slot,span=2,1'),
+                  T('E', '5', TOPH, 'cell=0,0', extra='fault=spread'), T('E', '5', LAY, 'cell=1,0', extra='fault=spread')],
+                 expect=['fault:spread'])
+    check('fault=spread: the planted old spreading fires as a control', res.control.startswith('yes') and
+          'feature uv' in res.control and
+          len(res.control_open) == 1 and res.exit == 0)
+    res, _ = run([F(), T('R', '5', LAY, 'cell=0,0', extra='ord=slot,span=2,1'), T('E', '5', TOPH, 'cell=0,0')])
+    check('span: a spanned cell missing in the engine falls back to the single-cell rule', feats(res) == ['uv'] and
+          res.stats['span'] == {})
+
+    # corner-exact (etex=): the texel the engine decodes at each retail corner
+    res, _ = run([F(), T('R', '5', TOPH, 'cell=0,0', extra='ord=slot,etex=0,0;31,0;0,15;31,15'),
+                  T('E', '5', TOPH, 'cell=0,0')])
+    check('etex: engine texels at the retail corners equal: 0', len(res.open) == 0 and res.stats['etex'] == {'L3': 1})
+    res, _ = run([F(), T('R', '5', TOPH, 'cell=0,0', extra='ord=slot,etex=0,0;31,0;0,31;31,31'),
+                  T('E', '5', TOPH, 'cell=0,0')])
+    check('etex: another texel at a corner is uv part of the tile (corner texel)',
+          feats(res) == ['uv'] and res.open[0].pattern.startswith('uv part of the tile (corner texel)'))
+
+    # native engine textures (menu scene): not compared, counted
+    res, _ = run([F('menu', level=40), L('R', 'M', 'pimbel#0', uv=TRI_A),
+                  L('E', 'M', 'pimbel#0', page='-', clut='-', uv='-', extra='tex=native')])
+    check('tex=native engine lines: not compared, counted', len(res.open) == 0 and
+          res.stats['native'] == {('L40', 'M'): 1})
+    res, _ = run([F('menu', level=40), L('R', 'M', 'logo#0', uv=TRI_A), L('E', 'M', 'logo#0', uv=TRI_A, clut='0,481')])
+    check('VRAM materials of the menu scene are compared as usual', feats(res) == ['clut'])
+
     # zeroarea never uv, pieces against the box of the face, a stage before a tile
     S2 = '0,0,15,0,0,15,15,15'
     res, _ = run([F(), T('R', '5', '168,0,168,0,168,0,168,0', 'stage=2', extra='zeroarea=1'), T('E', '5', C00, 'stage=2')])
@@ -2567,6 +2709,10 @@ def selftest():
     check('(k) known positive T2 fired', res.positives[0][3] == 2)
     res, _ = run(banner('252,228,255,231'), vram=vr)
     check('(k) box = triangle box: 0', len(res.open) == 0 and res.stats['box_checked'] == 2)
+    res, _ = run([F('menu', level=40, extra='vram=v.tga'),
+                  L('E', 'M', 'wheel0', page='896,256,0', clut='800,286', uv='252,228,255,228,252,231',
+                    extra='box=251,227,256,232')], vram=vr)
+    check('menu scene VRAM material without retail partner: sample-outside checked', feats(res) == ['sample-outside'])
     for u in range(252, 256):
         set_index(u, 227, 2)
     res, _ = run(banner('252,227,255,231'), vram=vr)
@@ -2606,9 +2752,13 @@ def selftest():
                  plaus=True, vram=vr)
     check('plausibility: T only in the load block is a dead hook',
           res.exit == 3 and any('L3 T: no retail line in its race frames' in p for p in res.plausible))
-    res, _ = run([F('menu', level=40, extra='vram=v.tga'), L('E', 'I', 'driver#0', uv=TRI_A)], plaus=True, vram=vr)
+    res, _ = run([F('menu', level=40, extra='vram=v.tga'), L('E', 'I', 'driver#0', uv=TRI_A),
+                  L('E', 'M', 'body', page='-', clut='-', uv='-', extra='tex=native,external=1')], plaus=True, vram=vr)
     check('plausibility: the menu scene needs no T, its one-sided kinds are listed',
-          res.plausible == [] and len(res.one_sided) == 1)
+          res.plausible == [] and len(res.one_sided) == 2)
+    res, _ = run([F('menu', level=40, extra='vram=v.tga'), L('E', 'I', 'driver#0', uv=TRI_A)], plaus=True, vram=vr)
+    check('plausibility: the menu scene needs at least one engine line M', res.exit == 3 and
+          any('M: no engine line of the menu scene' in p for p in res.plausible))
     log = parse_log('\n'.join([F(), L('R', 'I', 'x#0', uv=TRI_A), L('E', 'I', 'x#0', uv=TRI_A)]) + '\n', 's')
     check('plausibility: missing H line', 'no H line' in ' '.join(plausibility(log, compare(log.frames)[1])[0]))
 
@@ -2682,7 +2832,7 @@ def selftest():
     ids = set(x.id for x in repo_rows)
     check('repo exception list parses with exactly the agreed rows',
           not repo_errs and ids == set(['sky-look', 'water-look', 'hires-driver', 'depth-offset', 'lod-header',
-                                        'track-geomorph']) and
+                                        'track-geomorph', 'k-uv2']) and
           [x.id for x in repo_rows if x.doc] == ['depth-offset'])
     res, _ = run([F(), L('R', 'T', '5.0', uv=QUAD, extra='stage=2,morph=1,col=10,10,10'),
                   L('E', 'T', '5.0', uv=QUAD, extra='stage=2,col=20,20,20'),
@@ -2690,6 +2840,19 @@ def selftest():
                   L('E', 'T', '6.0', uv=QUAD, extra='stage=2,col=20,20,20'),
                   L('R', 'T', '7.0', uv=QUAD, extra='stage=2,morph=1,col=10,10,10'),
                   L('E', 'T', '7.0', uv=QUAD, clut='0,481', extra='stage=2,col=20,20,20')], rws=repo_rows)
+    check('repo exception list: hires-driver for drivers and the menu scene',
+          [sorted(x.srcs) for x in repo_rows if x.id == 'hires-driver'] == [['D', 'M']])
+    res2, _ = run([F(), L('R', 'M', 'body', uv=TRI_A), L('E', 'M', 'body', page='-', clut='-', uv='-', extra='hires=1')],
+                  rws=repo_rows)
+    check('repo exception list: a hi-res menu driver line is covered by hires-driver',
+          len(res2.open) == 0 and res2.covered and all(r.excepted == 'hires-driver' for r in res2.covered))
+    res2, _ = run([F(), T('R', '5', '0,0,7,0,0,7', 'cell=0,0', extra='slots=1,3,2,kuv2=1'), T('E', '5', C00, 'cell=0,0'),
+                   T('R', '6', '0,0,7,0,0,7', 'cell=0,0', extra='slots=1,3,2'), T('E', '6', C00, 'cell=0,0'),
+                   T('R', '7', '0,0,7,0,0,7', 'cell=0,0', extra='slots=1,3,2,kuv2=1'),
+                   T('E', '7', C00, 'cell=0,0', clut='0,481')], rws=repo_rows)
+    check('repo exception list: k-uv2 covers only uv/col of lines with r.kuv2=1',
+          [(r.srcId, r.excepted) for r in res2.records if r.excepted] == [('5', 'k-uv2')] and
+          sorted((r.srcId, r.feature_label()) for r in res2.open) == [('6', 'uv'), ('7', 'clut+uv')])
     check('repo exception list: track-geomorph covers only track colour with r.morph=1',
           [(r.srcId, r.excepted) for r in res.records if r.excepted] == [('5.0', 'track-geomorph')] and
           sorted((r.srcId, r.feature_label()) for r in res.open) == [('6.0', 'col'), ('7.0', 'clut+col')])
