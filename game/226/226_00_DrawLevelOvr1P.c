@@ -112,6 +112,7 @@ void Engine_TrackOracleTable(const struct QuadBlock *block, int face, const stru
 static int s_oraclePass;
 static int s_oracleSieve; // the sieve dropped a layout while the oracle pass drew the current block
 static int s_oracleMorph; // the distance fade moved a midpoint (colour, place) while the oracle pass drew the current block
+static int s_oracleWide; // the wide-dynamic subdivision frame (centre from the edge midpoints) ran while the oracle pass drew the current block
 static int s_oracleSourceEntry = -1; // the table entry the last mosaic reload read (oracle pass only; -1 none)
 
 static u32 DrawLevelOvr1P_ReadPackedWord(const void *src)
@@ -2175,6 +2176,7 @@ static void Ovr226_800a90c0_BuildWideDynamicSubdivisionFrame(struct DrawLevelOvr
 	Ovr226_800a74a0_BuildDynamicListSubdivideMidpoint(&sub[2], &sub[5], &projected[indices[2]], &projected[indices[0]]);
 	Ovr226_800a74a0_BuildDynamicListSubdivideMidpoint(&sub[3], &sub[8], &projected[indices[3]], &projected[indices[2]]);
 	Ovr226_800a74a0_BuildDynamicListSubdivideMidpoint(&sub[4], &sub[6], &sub[4], &sub[8]);
+	s_oracleWide |= s_oraclePass;
 }
 
 static void Ovr226_800a8150_BuildDynamicRenderedSubdivideMidpoint(struct DrawLevelOvr1PScratchVertex *dstA, struct DrawLevelOvr1PScratchVertex *dstMid,
@@ -4404,10 +4406,11 @@ static void DrawLevelOvr1P_OracleBlock(const struct QuadBlock *block, int water,
 			walkGrid[3 * i + 1] = grid[i].pos[1];
 			walkGrid[3 * i + 2] = grid[i].pos[2];
 		}
-		Engine_TrackOracleBlock(block, water, s_oracleSieve | (s_oracleMorph << 1), walkGrid, primFrom, primMem->cursor, clipFrom,
+		Engine_TrackOracleBlock(block, water, s_oracleSieve | (s_oracleMorph << 1) | (s_oracleWide << 3), walkGrid, primFrom, primMem->cursor, clipFrom,
 		                        DrawLevelOvr1P_GetClipRecordCursor());
 		s_oracleSieve = 0;
 		s_oracleMorph = 0;
+		s_oracleWide = 0;
 		s_oracleSourceEntry = -1;
 	}
 #else
