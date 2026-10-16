@@ -186,7 +186,11 @@ def _ints(s, counts, what):
 
 
 _KEY_TOKEN = re.compile(r'^([A-Za-z_][A-Za-z0-9_]*)(?:=(.*))?$')
-_VALUE_TOKEN = re.compile(r'^(-?[0-9][0-9A-Fa-fx]*|[0-9A-Fa-f]{6})$')
+_VALUE_TOKEN = re.compile(r'^(-?[0-9][0-9A-Fa-fx:]*|[0-9A-Fa-f]{6})$')
+# Inner grid points of a tile packet (etexg=): the shader texel may differ from
+# the interpolated retail UV by this much (retail interpolates to half texels,
+# the engine parts are whole texels); a part mapped wrongly is a quarter tile off.
+ETEXG_TOL = 1
 
 
 def parse_extra(s):
@@ -875,7 +879,7 @@ def _new_stats():
             'col_unpaired': 0, 'winding': 0, 'piece': {}, 'eom_coverage': [], 'fault_orient': set(),
             't_set_rule': {}, 'back_coverage': [], 'src_cell': {}, 'col_model': {}, 'raw_col': 0,
             'tablefail': {}, 'anim_degenerate': {}, 'foreign': {}, 'stage_hit': {}, 'cut_col': {},
-            'span': {}, 'native': {}, 'etex': {}}
+            'span': {}, 'native': {}, 'etex': {}, 'etexg': {}}
 
 
 def _per(stats, tr, src):
@@ -1333,6 +1337,27 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                                                                  if e.key == r.key and e.fault), None),
                                 pattern='uv part of the tile (corner texel)' + _flags(r, e0),
                                 detail='retail %s engine %s' % (f_uv(r), r.extra['etex']))
+                            continue
+                    if src == 'T' and 'etexg' in r.extra and r.uv is not None:
+                        # inner grid points of the packet (etexg=<i>,<j>:<eu>,<ev>:<ru>,<rv>;...):
+                        # the shader texel against the interpolated retail UV
+                        bad = []
+                        for g in r.extra['etexg'].split(';'):
+                            parts = g.split(':')
+                            if len(parts) != 3:
+                                raise LogError('bad etexg point %r' % g)
+                            eu, ev = _ints(parts[1], (2,), 'etexg')
+                            ru, rv = _ints(parts[2], (2,), 'etexg')
+                            if abs(eu - ru) > ETEXG_TOL or abs(ev - rv) > ETEXG_TOL:
+                                bad.append(g)
+                        _bump(stats['etexg'], tr, count)
+                        if bad:
+                            e0 = next((e for e in es.lines if e.key == r.key), es.lines[0])
+                            rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=pre + ['uv'], r=r,
+                                e=e0, r_count=count, fault=next((e.fault for e in es.lines
+                                                                 if e.key == r.key and e.fault), None),
+                                pattern='uv part of the tile (inner grid point)' + _flags(r, e0),
+                                detail='grid points off: %s' % ' '.join(bad))
                             continue
                     sp = _span(r) if src == 'T' else None
                     if sp is not None and sp != (1, 1) and r.key[0] == 'cell' and r.slots is not None:
@@ -1944,6 +1969,9 @@ def render_md(res, inputs, exc_origin):
     if s['etex']:
         md.append('- Track packets checked corner-exact against the texel the engine decodes there (etex=): %d'
                   % sum(s['etex'].values()))
+    if s['etexg']:
+        md.append('- Track packets checked at inner grid points (etexg=, +-%d texel): %d'
+                  % (ETEXG_TOL, sum(s['etexg'].values())))
     if s['span']:
         md.append('- Track tile packets over several cells checked against the joined cell parts (span=): %d'
                   % sum(s['span'].values()))
@@ -2384,6 +2412,14 @@ def selftest():
                   T('E', '5', TOPH, 'cell=0,0')])
     check('etex: another texel at a corner is uv part of the tile (corner texel)',
           feats(res) == ['uv'] and res.open[0].pattern.startswith('uv part of the tile (corner texel)'))
+
+    res, _ = run([F(), T('R', '5', LAY, 'cell=0,0', extra='ord=slot,etexg=0,2:0,16:0,15;4,2:31,15:31,16'),
+                  T('E', '5', LAY, 'cell=0,0')])
+    check('etexg: inner grid points within one texel: 0', len(res.open) == 0 and res.stats['etexg'] == {'L3': 1})
+    res, _ = run([F(), T('R', '5', LAY, 'cell=0,0', extra='ord=slot,etexg=0,2:0,31:0,15;4,2:31,31:31,15'),
+                  T('E', '5', LAY, 'cell=0,0')])
+    check('etexg: a grid point 16 texels off (old spreading) is uv part of the tile (inner grid point)',
+          feats(res) == ['uv'] and res.open[0].pattern.startswith('uv part of the tile (inner grid point)'))
 
     # native engine textures (menu scene): not compared, counted
     res, _ = run([F('menu', level=40), L('R', 'M', 'pimbel#0', uv=TRI_A),
