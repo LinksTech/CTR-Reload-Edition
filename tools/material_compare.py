@@ -2606,7 +2606,7 @@ def selftest():
                  plaus=True, vram=vr)
     check('plausibility: T only in the load block is a dead hook',
           res.exit == 3 and any('L3 T: no retail line in its race frames' in p for p in res.plausible))
-    res, _ = run([F('menu', level=40, extra='vram=v.tga'), L('E', 'I', 'pimbel#0', uv=TRI_A)], plaus=True, vram=vr)
+    res, _ = run([F('menu', level=40, extra='vram=v.tga'), L('E', 'I', 'driver#0', uv=TRI_A)], plaus=True, vram=vr)
     check('plausibility: the menu scene needs no T, its one-sided kinds are listed',
           res.plausible == [] and len(res.one_sided) == 1)
     log = parse_log('\n'.join([F(), L('R', 'I', 'x#0', uv=TRI_A), L('E', 'I', 'x#0', uv=TRI_A)]) + '\n', 's')
