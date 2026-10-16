@@ -3522,6 +3522,108 @@ internal void EngTrack_OracleApplySlots(EngTrackOracleFace *f, u8 (*rgb)[3], con
 // and the centroid; the retail UV interpolated over the packet's triangles
 // (0,1,2) and (1,2,3) in the face's own space). engOut gets the corners' UVs in
 // packet order (rounded), *engCount their number (0 = none).
+// etexg= (FM 11.6): the points of the 4 x 4 grid a packet spans that are not its
+// corners - on a 4x2 or 4x1 piece the row borders on its two sides, where a
+// wrong part of the tile shows even when the parts join -, each
+// <column>,<row>:<engine u>,<engine v>:<retail u>,<retail v> (grid indices 0..4;
+// the engine texel as etex=, the cell picked a hair towards the packet's
+// centre; the retail UV interpolated over the packet's triangle (0,1,2) or
+// (1,2,3) holding the point, rounded). As many as fit into one marker
+// (left side first, top to bottom, then the right side).
+internal void EngTrack_OracleTileGrid(EngTrackOracleFace *f, const EngTrackDrawFace *df, const float (*cornerST)[2], float cs, float ct, float smin,
+                                      float smax, float tmin, float tmax)
+{
+	static const int tri[2][3] = {{0, 1, 2}, {1, 2, 3}};
+	char text[90];
+	size_t used = 0;
+	int side;
+
+	text[0] = '\0';
+	for (side = 0; side < 2; side++)
+	{
+		const int i = side ? (int)floorf(smax * 4.0f + 0.5f) : (int)floorf(smin * 4.0f + 0.5f);
+		int j;
+
+		for (j = 0; j <= 4; j++)
+		{
+			const float gs = (float)i * 0.25f;
+			const float gt = (float)j * 0.25f;
+			float eu = 0.0f;
+			float ev = 0.0f;
+			int corner = 0;
+			int hit = -1;
+			float b[3] = {0.0f, 0.0f, 0.0f};
+			int v;
+			int k;
+			char one[24];
+			int len;
+
+			if ((gt < tmin + 1e-3f) || (gt > tmax - 1e-3f) || (gs < smin - 1e-3f) || (gs > smax + 1e-3f))
+			{
+				continue;
+			}
+			for (v = 0; v < f->uvCount; v++)
+			{
+				corner |= (fabsf(cornerST[v][0] - gs) < 1e-3f) && (fabsf(cornerST[v][1] - gt) < 1e-3f);
+			}
+			if (corner)
+			{
+				continue;
+			}
+			for (k = 0; (k < ((f->uvCount == 4) ? 2 : 1)) && (hit < 0); k++)
+			{
+				const float *p0 = cornerST[tri[k][0]];
+				const float *p1 = cornerST[tri[k][1]];
+				const float *p2 = cornerST[tri[k][2]];
+				const float det = (p1[0] - p0[0]) * (p2[1] - p0[1]) - (p2[0] - p0[0]) * (p1[1] - p0[1]);
+
+				if (fabsf(det) < 1e-9f)
+				{
+					continue;
+				}
+				b[1] = ((gs - p0[0]) * (p2[1] - p0[1]) - (p2[0] - p0[0]) * (gt - p0[1])) / det;
+				b[2] = ((p1[0] - p0[0]) * (gt - p0[1]) - (gs - p0[0]) * (p1[1] - p0[1])) / det;
+				b[0] = 1.0f - b[1] - b[2];
+				if ((b[0] >= -1e-3f) && (b[1] >= -1e-3f) && (b[2] >= -1e-3f))
+				{
+					hit = k;
+				}
+			}
+			if ((hit < 0) || !Engine_TrackMosaicOracleUv(df->face.v[0].texcoord[0], df->face.v[0].texcoord[1], gs, gt, gs + (cs - gs) * 0.01f,
+			                                             gt + (ct - gt) * 0.01f, &eu, &ev))
+			{
+				continue;
+			}
+			{
+				float ru = 0.0f;
+				float rv = 0.0f;
+
+				for (v = 0; v < 3; v++)
+				{
+					ru += b[v] * (float)f->uv[2 * tri[hit][v]];
+					rv += b[v] * (float)f->uv[2 * tri[hit][v] + 1];
+				}
+				len = snprintf(one, sizeof(one), "%s%d,%d:%d,%d:%d,%d", (used > 0) ? ";" : "", i, j, (int)floorf(eu + 0.5f), (int)floorf(ev + 0.5f),
+				               (int)floorf(ru + 0.5f), (int)floorf(rv + 0.5f));
+			}
+			if ((len <= 0) || ((size_t)len >= sizeof(one)) || (used + (size_t)len + 1u >= sizeof(text)))
+			{
+				continue;
+			}
+			memcpy(text + used, one, (size_t)len + 1u);
+			used += (size_t)len;
+		}
+		if (floorf(smax * 4.0f + 0.5f) == floorf(smin * 4.0f + 0.5f))
+		{
+			break;
+		}
+	}
+	if (used > 0)
+	{
+		EngTrack_OracleExtra(f, "etexg=%s", text);
+	}
+}
+
 internal void EngTrack_OracleTileEngine(EngTrackOracleFace *f, int block, int faceAt, const float (*cornerST)[2], int (*engOut)[2], int *engCount,
                                         float *worst)
 {
@@ -3619,6 +3721,7 @@ internal void EngTrack_OracleTileEngine(EngTrackOracleFace *f, int block, int fa
 
 		EngTrack_OracleExtra(f, "span=%d,%d", rh - rl + 1, ch - cl + 1);
 	}
+	EngTrack_OracleTileGrid(f, df, cornerST, cs, ct, smin, smax, tmin, tmax);
 }
 
 // kuv2=1 (FM): the K-UV2 pattern - one GT3 on the slots 1, 2, 3 of a stage
@@ -4891,12 +4994,15 @@ internal void EngTrack_OracleEngineFaces(int shownOnly, int animOnly, const char
 // table face of the level (block order), two cells of different layouts swap
 // places (Engine_TrackMosaicOracleFault). Measurement only; logged; E lines of
 // faces reading that row carry fault=cell. Before the data texture is made.
+internal void EngTrack_OracleFaultSpread(void);
+
 internal void EngTrack_OracleFault(void)
 {
 	const int n = EngTrack_OracleFaultCell();
 	int seen = 0;
 	int i;
 
+	EngTrack_OracleFaultSpread();
 	if (n < 0)
 	{
 		return;
@@ -4919,6 +5025,49 @@ internal void EngTrack_OracleFault(void)
 		}
 	}
 	Platform_Log("[CTR Engine] oracle fault: cell %d - no such table face (or no two different cells in its row)\n", n);
+}
+
+// --engine-oracle-fault spread:<n> (FM 11.1, 11.4): at every level load the row
+// of the n-th 4x2/4x1 table face of that level (block order) - one face per
+// track, named in the log with its level - holds the whole tile in each row again, the
+// spreading before 2026-10-16 (Engine_TrackMosaicOracleSpread). Measurement
+// only; logged; E lines of faces reading that row carry fault=spread.
+internal void EngTrack_OracleFaultSpread(void)
+{
+	const int n = g_cfg_engineOracleFaultSpread;
+	int seen = 0;
+	int i;
+
+	if (n < 0)
+	{
+		return;
+	}
+	for (i = 0; i < s_egtFaceCount; i++)
+	{
+		const EngTrackDrawFace *df = &s_egtFaces[i];
+		const struct TextureLayout *cells = NULL;
+		const struct TextureLayout *levels = NULL;
+		int side = 0;
+		int form = 0;
+		int finest = 0;
+		int faulted = 0;
+
+		if (((df->face.tpage & 0x8000u) == 0u) || df->animRow ||
+		    !Engine_TrackMosaicOracleRow(df->face.v[0].texcoord[0], df->face.v[0].texcoord[1], &side, &form, &finest, &faulted, &cells, &levels) ||
+		    (side != 4) || (form == ENGINE_MOSAIC_FORM_4X4))
+		{
+			continue;
+		}
+		if (seen++ < n)
+		{
+			continue;
+		}
+		if (Engine_TrackMosaicOracleSpread(df->face.v[0].texcoord[0], df->face.v[0].texcoord[1], df->block, (int)df->face.mid))
+		{
+			return;
+		}
+	}
+	Platform_Log("[CTR Engine] oracle fault: spread %d - no such 4x2/4x1 table face in this level\n", n);
 }
 
 // The tag of a static block, one per load: t<NN>-L<level>-load while the tour

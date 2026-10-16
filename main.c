@@ -417,7 +417,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--engine-hide", "<sky,water>", "with --engine --engine-track: the engine owns the listed items (the PS1 path does not draw them) but draws nothing of them - the 'minus' run of the measurements; comma-separated, words sky and water"},
     {"--engine-fail", "<start|track>", "with --engine, measuring only: forces the engine's fallback to the PS1 path - start: the programs 'ne' and 'nw' are not made, track (needs --engine-track): the first track load of the engine fails; the log names the reason and the run goes on without the engine"},
     {"--engine-oracle", "<file>", "with --engine --engine-track, measuring only: the log of the material comparison into <file> (relative to the game folder) - per drawn surface the texture page, CLUT, UV, blend and mosaic cell of the PS1 path and of the engine, in the frames --level-tour-oracle arms; without it nothing is written"},
-    {"--engine-oracle-fault", "<clut|cell>:<n>", "with --engine-oracle, measuring only (the controls of the comparison): clut:<n> - the CLUT of the n-th engine material of the instances is falsified on purpose, cell:<n> - two cells of a mosaic row of the track are swapped; each named in the log; given once per kind (twice for both)"},
+    {"--engine-oracle-fault", "<clut|cell|spread>:<n>", "with --engine-oracle, measuring only (the controls of the comparison): clut:<n> - the CLUT of the n-th engine material of the instances is falsified on purpose, cell:<n> - two cells of a mosaic row of the track are swapped, spread:<n> - the row of the n-th 4x2/4x1 table face of the track holds the whole tile in each row (the spreading before 2026-10-16); each named in the log; given once per kind"},
     {"--dev-race-mode", "<tt|adventure>", "with --level: the direct start as a retail Time Trial (tt) or as an Adventure race (adventure) instead of an arcade race"},
     {"--dev-tt-ghost", "", "with --dev-race-mode tt: the track's staff ghost (N. Tropy) races along - its gate is opened in this session's progress in RAM (the card root is the one of --dev-race-mode); retail disc tracks only"},
     {"--dev-cup", "<0..3>", "a retail arcade cup (0 Wumpa, 1 Crystal, 2 Nitro, 3 Crash) started from the main menu like --level, set up as the cup menu does it: EASY, 1 lap per race (what the ARCADE row sets with the ONE LAP cheat), the driver of --driver; the game's own way through the result screens and the cup standings (CROSS by --menu-keys) to the podium; one log line per race and screen, with --shot-name snapshots <name>-cup-r<n>-race|results|points.bmp and <name>-cup-podium-f<frame>.bmp; back at the main menu the run ends; the card root is the one of --dev-race-mode; not with --level, --level-tour, --autoload-track or --dev-race-mode"},
@@ -652,8 +652,8 @@ static int NativeArgs_EngineHideBits(const char *list)
 	return (bits != 0) ? bits : -1;
 }
 
-// The value of --engine-oracle-fault: clut:<n> (kind 0) or cell:<n> (kind 1),
-// n 0 to 999999. 1 = read.
+// The value of --engine-oracle-fault: clut:<n> (kind 0), cell:<n> (kind 1) or
+// spread:<n> (kind 2), n 0 to 999999. 1 = read.
 static int NativeArgs_OracleFault(const char *value, int *kind, int *n)
 {
 	const char *digits;
@@ -662,16 +662,22 @@ static int NativeArgs_OracleFault(const char *value, int *kind, int *n)
 	if (strncmp(value, "clut:", 5) == 0)
 	{
 		*kind = 0;
+		digits = value + 5;
 	}
 	else if (strncmp(value, "cell:", 5) == 0)
 	{
 		*kind = 1;
+		digits = value + 5;
+	}
+	else if (strncmp(value, "spread:", 7) == 0)
+	{
+		*kind = 2;
+		digits = value + 7;
 	}
 	else
 	{
 		return 0;
 	}
-	digits = value + 5;
 	while ((digits[count] >= '0') && (digits[count] <= '9'))
 	{
 		count++;
@@ -907,7 +913,7 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 	// with half its frames would look complete.
 	{
 		const char *oracle = NULL;
-		const char *faultGiven[2] = {NULL, NULL};
+		const char *faultGiven[3] = {NULL, NULL, NULL};
 		const char *oracleList = NULL;
 		const char *seeList = NULL;
 		const char *framesList = NULL;
@@ -945,14 +951,15 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 				if (!NativeArgs_OracleFault(value, &kind, &n))
 				{
 					fflush(stdout);
-					fprintf(stderr, "switch --engine-oracle-fault expects clut:<n> or cell:<n> (n 0 to 999999), not '%s'\n", value);
+					fprintf(stderr, "switch --engine-oracle-fault expects clut:<n>, cell:<n> or spread:<n> (n 0 to 999999), not '%s'\n", value);
 					fflush(stderr);
 					return NATIVE_EXIT_DEV_REQUIRED;
 				}
 				if (faultGiven[kind] != NULL)
 				{
 					fflush(stdout);
-					fprintf(stderr, "switch --engine-oracle-fault is given twice for %s ('%s', '%s') - once per kind\n", (kind == 0) ? "clut" : "cell",
+					fprintf(stderr, "switch --engine-oracle-fault is given twice for %s ('%s', '%s') - once per kind\n",
+					        (kind == 0) ? "clut" : ((kind == 1) ? "cell" : "spread"),
 					        faultGiven[kind], value);
 					fflush(stderr);
 					return NATIVE_EXIT_DEV_REQUIRED;
@@ -984,7 +991,7 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			fflush(stderr);
 			return NATIVE_EXIT_DEV_REQUIRED;
 		}
-		if (((faultGiven[0] != NULL) || (faultGiven[1] != NULL)) && (oracle == NULL))
+		if (((faultGiven[0] != NULL) || (faultGiven[1] != NULL) || (faultGiven[2] != NULL)) && (oracle == NULL))
 		{
 			fflush(stdout);
 			fprintf(stderr, "switch --engine-oracle-fault requires --engine-oracle\n");
@@ -1257,7 +1264,7 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 		}
 		else if ((strcmp(argv[argIndex], "--engine-oracle-fault") == 0) && ((argIndex + 1) < argc))
 		{
-			// The value was checked before any window (clut:<n> or cell:<n>, each kind once).
+			// The value was checked before any window (clut:<n>, cell:<n> or spread:<n>, each kind once).
 			int kind = 0;
 			int n = 0;
 
@@ -1267,9 +1274,13 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 				{
 					g_cfg_engineOracleFaultClut = n;
 				}
-				else
+				else if (kind == 1)
 				{
 					g_cfg_engineOracleFaultCell = n;
+				}
+				else
+				{
+					g_cfg_engineOracleFaultSpread = n;
 				}
 			}
 		}
@@ -4052,8 +4063,10 @@ int main(int argc, char *argv[])
 			else if (strcmp(argv[argIndex], "--engine-oracle-fault") == 0)
 			{
 				// Set by the early reader; the material it falsifies is named where it happens.
-				Platform_Log("[CTR Engine] --engine-oracle-fault %s (measuring, the controls of the comparison): clut %d, cell %d (-1 = off) falsified on purpose\n",
-				             ((argIndex + 1) < argc) ? argv[argIndex + 1] : "", g_cfg_engineOracleFaultClut, g_cfg_engineOracleFaultCell);
+				Platform_Log("[CTR Engine] --engine-oracle-fault %s (measuring, the controls of the comparison): clut %d, cell %d, spread %d (-1 = off) "
+				             "falsified on purpose\n",
+				             ((argIndex + 1) < argc) ? argv[argIndex + 1] : "", g_cfg_engineOracleFaultClut, g_cfg_engineOracleFaultCell,
+				             g_cfg_engineOracleFaultSpread);
 			}
 			else if (strcmp(argv[argIndex], "--native-wheel-report") == 0)
 			{

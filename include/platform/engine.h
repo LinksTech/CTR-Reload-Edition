@@ -1122,6 +1122,7 @@ void DrawLevelOvr1P_OracleLayouts(const struct mesh_info *mesh, int animOnly);
 // its levels 0, 1, 2 (pointers into the row set, valid until the next load).
 // 0 = no such row.
 int Engine_TrackMosaicOracleUv(float rowU, float rowV, float s, float t, float pickS, float pickT, float *uOut, float *vOut); // the shader's UV at (s, t)
+int Engine_TrackMosaicOracleSpread(float u, float v, int block, int mid); // --engine-oracle-fault spread
 int Engine_TrackMosaicOracleRow(float u, float v, int *side, int *form, int *finest, int *faulted, const struct TextureLayout **cells,
                                  const struct TextureLayout **levels);
 // --engine-oracle-fault cell: swaps two different cells of the row of the table face at
@@ -1197,6 +1198,7 @@ extern char g_cfg_engineOracle[ENGINE_ORACLE_PATH_MAX]; // --engine-oracle <file
 // cell: P2, the mosaic side.
 extern int g_cfg_engineOracleFaultClut;
 extern int g_cfg_engineOracleFaultCell;
+extern int g_cfg_engineOracleFaultSpread; // --engine-oracle-fault spread:<n> (engine_track_mosaic.c), -1 = off
 // Arms the oracle for the frame made now: call it in the frame's logic, before
 // MainFrame_RenderFrame of that frame. Writes the F line at once and stays
 // active until the next Engine_RenderFrameBegin. raceFrame -1: gGT->framesInThisLEV.

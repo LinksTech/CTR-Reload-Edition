@@ -47,7 +47,14 @@
 //                 texel, and so on - picked by the screen derivative, like mip
 //                 levels, not by the PS1's distance thresholds
 // A 4x2 or 4x1 table is spread over the 16 cells at load (cell (c, r) = entry
-// 4 * (r >> 1) + c, or entry c), so the program knows one grid only.
+// 4 * (r >> 1) + c, or entry c), so the program knows one grid only. The walk
+// draws a 4x2 tile once over its two rows and a 4x1 tile once over all four, so
+// each cell holds ITS PART of the tile (EngMosaic_RowPart): a 4x2 row its upper
+// or lower half, a 4x1 row its quarter, the four corners divided bilinearly down
+// the tile (uv0 -> uv2, uv1 -> uv3), rounded to whole texels. Before 2026-10-16
+// every cell held the whole tile, which squeezed it into each row: the
+// striped chevron signs of 2026-10-16 (--engine-oracle-fault spread
+// brings that back on one face as a control of the comparison).
 //
 // THE VERTEX. A mosaic face keeps the vertex layout: texcoord = (s + 2 + 4a,
 // t + 2 + 4b) with (s, t) the slot position of the vertex and row = a + 64 b
@@ -107,7 +114,7 @@ typedef struct
 	u8 form;   // ENGINE_MOSAIC_FORM_*
 	u8 side;   // cells per side: 4, or 1 for a whole-face row
 	s8 abr;    // abr of every own tile, -1 when they disagree
-	u8 faulted; // --engine-oracle-fault cell swapped two of its cells (Engine_TrackMosaicOracleFault)
+	u8 faulted; // --engine-oracle-fault: bit 0 cell swapped two of its cells (Engine_TrackMosaicOracleFault), bit 1 spread (whole tiles per row)
 	u8 abrLevels; // abr -1 because the tiles agree with each other but not with a usable level 0..2
 	struct TextureLayout cell[EGM_CELLS];
 	struct TextureLayout level[3]; // the group's far, middle and near layouts (LOD fallback)
@@ -134,6 +141,34 @@ internal int EngMosaic_OwnEntries(int form)
 	default:
 		return 0;
 	}
+}
+
+// The rows of the 4 x 4 grid one tile of the form spans: 4x2 2, 4x1 4, 4x4 1.
+internal int EngMosaic_TileRows(int form)
+{
+	return (form == ENGINE_MOSAIC_FORM_4X2) ? 2 : ((form == ENGINE_MOSAIC_FORM_4X1) ? 4 : 1);
+}
+
+// Part k of n of a tile down its height (k = 0 the top): the corners uv0/uv1
+// move to k / n and uv2/uv3 to (k + 1) / n of the way from uv0 to uv2 and from
+// uv1 to uv3, rounded to the nearest texel; tpage and clut stay. n = 1: the tile.
+internal void EngMosaic_RowPart(struct TextureLayout *dst, const struct TextureLayout *src, int k, int n)
+{
+	*dst = *src;
+	if (n <= 1)
+	{
+		return;
+	}
+#define EGM_PART(a, b, at) ((u8)(((int)(a) * (n - (at)) + (int)(b) * (at) + n / 2) / n))
+	dst->u0 = EGM_PART(src->u0, src->u2, k);
+	dst->v0 = EGM_PART(src->v0, src->v2, k);
+	dst->u1 = EGM_PART(src->u1, src->u3, k);
+	dst->v1 = EGM_PART(src->v1, src->v3, k);
+	dst->u2 = EGM_PART(src->u0, src->u2, k + 1);
+	dst->v2 = EGM_PART(src->v0, src->v2, k + 1);
+	dst->u3 = EGM_PART(src->u1, src->u3, k + 1);
+	dst->v3 = EGM_PART(src->v1, src->v3, k + 1);
+#undef EGM_PART
 }
 
 // The table entry of cell (c, r) of the 4x4 grid, -1 for an unknown form.
@@ -204,13 +239,29 @@ internal int EngMosaic_RowRoom(EngMosaicRowSet *set)
 	return 1;
 }
 
+// The 16 cells of a row from the table: each its entry's part for its row
+// (EngMosaic_RowPart), or with whole = 1 the whole tile in every row (the old
+// spreading: --engine-oracle-fault spread only).
+internal void EngMosaic_RowSpread(EngMosaicRow *row, const struct TextureLayout *table, int mirrored, int form, int whole)
+{
+	const int span = whole ? 1 : EngMosaic_TileRows(form);
+	int c;
+	int r;
+
+	for (r = 0; r < 4; r++)
+	{
+		for (c = 0; c < 4; c++)
+		{
+			EngMosaic_RowPart(&row->cell[4 * r + c], &table[EngMosaic_CellEntry(form, mirrored, c, r)], r % span, span);
+		}
+	}
+}
+
 // Fills a row from a table (both halves readable: 2 * own entries). Returns 0
 // for an unknown form.
 internal int EngMosaic_RowFill(EngMosaicRow *row, u32 groupAddress, u32 tableAddress, const struct TextureLayout *table, int mirrored, int form,
                                const struct TextureLayout *levels)
 {
-	int c;
-	int r;
 	int i;
 
 	if (EngMosaic_OwnEntries(form) == 0)
@@ -223,13 +274,7 @@ internal int EngMosaic_RowFill(EngMosaicRow *row, u32 groupAddress, u32 tableAdd
 	row->mirrored = (u8)(mirrored ? 1 : 0);
 	row->form = (u8)form;
 	row->side = 4;
-	for (r = 0; r < 4; r++)
-	{
-		for (c = 0; c < 4; c++)
-		{
-			row->cell[4 * r + c] = table[EngMosaic_CellEntry(form, mirrored, c, r)];
-		}
-	}
+	EngMosaic_RowSpread(row, table, mirrored, form, 0);
 	for (i = 0; i < 3; i++)
 	{
 		EngMosaic_MirrorCopy(&row->level[i], &levels[i], mirrored);
@@ -1144,41 +1189,48 @@ int Engine_TrackMosaicOracleRow(float u, float v, int *side, int *form, int *fin
 
 // Swaps cells a and b of a row (the fault of Engine_TrackMosaicOracleFault):
 // the first pair in cell order whose layouts differ, both cells the row's own
-// (4x4 any; 4x2 rows 0/2 - a spread pair moves with its cell; 4x1 row 0 - the
-// same). Returns 1 with *a, *b set; 0 when all its own cells are equal.
+// (4x4 any; 4x2 rows 0/2 - the part in the row below moves with its cell; 4x1
+// row 0 - the same for its four rows). Returns 1 with *a, *b set; 0 when all its
+// own cells are equal.
 internal int EngMosaic_FaultSwap(EngMosaicRow *row, int *a, int *b)
 {
 	const int own = EngMosaic_OwnEntries(row->form);
+	const int span = EngMosaic_TileRows(row->form);
 	const int ca = EngMosaic_OwnCell(row->form, 0);
 	int i;
 
 	for (i = 1; i < own; i++)
 	{
 		const int cb = EngMosaic_OwnCell(row->form, i);
-		const struct TextureLayout first = row->cell[ca];
-		const struct TextureLayout second = row->cell[cb];
-		int j;
+		int k;
 
-		if (memcmp(&first, &second, sizeof(first)) == 0)
+		if (memcmp(&row->cell[ca], &row->cell[cb], sizeof(row->cell[ca])) == 0)
 		{
 			continue;
 		}
-		// Every cell showing the one gets the other and the other way round (a 4x2
-		// or 4x1 entry stands in more than one cell).
-		for (j = 0; j < EGM_CELLS; j++)
+		// Every cell showing the one part gets the other and the other way round (a
+		// 4x4 table may hold a tile twice); part k of a taller tile in row k below.
+		for (k = 0; (k < span) && (ca + 4 * k < EGM_CELLS) && (cb + 4 * k < EGM_CELLS); k++)
 		{
-			if (memcmp(&row->cell[j], &first, sizeof(first)) == 0)
+			const struct TextureLayout first = row->cell[ca + 4 * k];
+			const struct TextureLayout second = row->cell[cb + 4 * k];
+			int j;
+
+			for (j = 0; j < EGM_CELLS; j++)
 			{
-				row->cell[j] = second;
-			}
-			else if (memcmp(&row->cell[j], &second, sizeof(second)) == 0)
-			{
-				row->cell[j] = first;
+				if (memcmp(&row->cell[j], &first, sizeof(first)) == 0)
+				{
+					row->cell[j] = second;
+				}
+				else if (memcmp(&row->cell[j], &second, sizeof(second)) == 0)
+				{
+					row->cell[j] = first;
+				}
 			}
 		}
 		*a = ca;
 		*b = cb;
-		row->faulted = 1;
+		row->faulted |= 1u;
 		return 1;
 	}
 	return 0;
@@ -1235,6 +1287,34 @@ int Engine_TrackMosaicOracleUv(float rowU, float rowV, float s, float t, float p
 	cs = (cs < 0.0f) ? 0.0f : ((cs > 1.0f) ? 1.0f : cs);
 	ct = (ct < 0.0f) ? 0.0f : ((ct > 1.0f) ? 1.0f : ct);
 	EngMosaic_CellUv(&row->cell[cell], cs, ct, uOut, vOut);
+	return 1;
+}
+
+int g_cfg_engineOracleFaultSpread = -1; // --engine-oracle-fault spread:<n> (main.c), -1 = off
+
+// --engine-oracle-fault spread:<n> (FM 11.1): the row the face at (u, v) reads
+// gets the old spreading back - the whole tile in each of its rows
+// (EngMosaic_RowSpread with whole = 1) - for a 4x2 or 4x1 table row; before the
+// data texture is made. Every face of that row shows it; their E lines carry
+// fault=spread. 1 = done (logged).
+int Engine_TrackMosaicOracleSpread(float u, float v, int block, int mid)
+{
+	EngMosaicRow *row;
+
+	if (!g_cfg_engine || !g_cfg_engineTrack || (s_egmTexture != NATIVE_GFX_INVALID))
+	{
+		return 0;
+	}
+	row = (EngMosaicRow *)EngMosaic_RowOfTexcoord(&s_egmRows, u, v);
+	if ((row == NULL) || (row->side != 4) || (row->table == 0u) || (row->form == ENGINE_MOSAIC_FORM_4X4))
+	{
+		return 0;
+	}
+	EngMosaic_RowSpread(row, (const struct TextureLayout *)(size_t)row->table, row->mirrored, row->form, 1);
+	row->faulted |= 2u;
+	Platform_Log("[CTR Engine] oracle fault: spread - level %d, quadblock %d face %d, its %s table row %d: the whole tile in every row (every face of "
+	             "that row)\n",
+	             s_egmLevel, block, mid, (row->form == ENGINE_MOSAIC_FORM_4X2) ? "4x2" : "4x1", (int)(row - s_egmRows.rows));
 	return 1;
 }
 
@@ -1358,6 +1438,39 @@ int Engine_SelfTestTrackMosaic(int *checks)
 			bad += (row.cell[i].u0 != (u8)(4 + (i & 3)));
 		}
 		EGM_CHECK(bad == 0, "4x2 / 4x1 cells: %d wrong", bad);
+		{
+			// Each row its part of the tile (the walk draws a 4x2 tile once over two rows, a
+			// 4x1 tile once over four): v of entry e runs 100 + e .. 131 + e; the parts join
+			// without a gap and together are the tile; with whole = 1 (fault spread) each
+			// row holds the whole tile again.
+			int badPart = 0;
+			int badJoin = 0;
+
+			for (i = 0; i < 16; i++)
+			{
+				const int e2 = want42[i];
+				const int k2 = (i >> 2) & 1;
+				const int e1 = 4 + (i & 3);
+				const int k1 = i >> 2;
+
+				badPart += (set.rows[2].cell[i].v0 != (u8)(((100 + e2) * (2 - k2) + (131 + e2) * k2 + 1) / 2)) ||
+				           (set.rows[2].cell[i].v2 != (u8)(((100 + e2) * (1 - k2) + (131 + e2) * (k2 + 1) + 1) / 2)) ||
+				           (set.rows[2].cell[i].v1 != set.rows[2].cell[i].v0) || (set.rows[2].cell[i].v3 != set.rows[2].cell[i].v2);
+				badPart += (row.cell[i].v0 != (u8)(((100 + e1) * (4 - k1) + (131 + e1) * k1 + 2) / 4)) ||
+				           (row.cell[i].v2 != (u8)(((100 + e1) * (3 - k1) + (131 + e1) * (k1 + 1) + 2) / 4));
+			}
+			for (i = 0; i < 4; i++)
+			{
+				badJoin += (set.rows[2].cell[i].v2 != set.rows[2].cell[4 + i].v0) || (set.rows[2].cell[8 + i].v2 != set.rows[2].cell[12 + i].v0) ||
+				           (set.rows[2].cell[i].v0 != table[i].v0) || (set.rows[2].cell[4 + i].v2 != table[i].v2);
+				badJoin += (row.cell[i].v0 != table[4 + i].v0) || (row.cell[12 + i].v2 != table[4 + i].v2) || (row.cell[i].v2 != row.cell[4 + i].v0) ||
+				           (row.cell[4 + i].v2 != row.cell[8 + i].v0) || (row.cell[8 + i].v2 != row.cell[12 + i].v0);
+			}
+			EGM_CHECK((badPart == 0) && (badJoin == 0), "tile parts per row: %d cells hold the wrong part, %d joins open", badPart, badJoin);
+			EngMosaic_RowSpread(&row, table, 0, ENGINE_MOSAIC_FORM_4X2, 1);
+			EGM_CHECK((row.cell[4].v0 == table[0].v0) && (row.cell[4].v2 == table[0].v2) && (row.cell[0].v2 == table[0].v2),
+			          "whole spreading (fault spread): row 1 cell 0 v %d..%d", row.cell[4].v0, row.cell[4].v2);
+		}
 		EGM_CHECK((EngMosaic_OwnCell(ENGINE_MOSAIC_FORM_4X2, 5) == 9) && (EngMosaic_OwnCell(ENGINE_MOSAIC_FORM_4X1, 3) == 3) &&
 		              (EngMosaic_OwnCell(ENGINE_MOSAIC_FORM_4X4, 15) == 15),
 		          "own cell of an entry");
@@ -1719,6 +1832,52 @@ int Engine_SelfTestTrackMosaic(int *checks)
 		EGM_CHECK(ok1 && ok2 && (fabsf(u - wu) < 1e-4f) && (fabsf(v - wv) < 1e-4f) && (u2 == (float)set.rows[2].cell[4].u3) &&
 		              (v2 == (float)set.rows[2].cell[4].v3),
 		          "oracle UV of the shader: %f,%f (want %f,%f), corner %f,%f", (double)u, (double)v, (double)wu, (double)wv, (double)u2, (double)v2);
+	}
+
+	// (oracle) The shader's UV at a point of a 4x2 face (row 2: entry e has v 100 + e .. 131 + e):
+	// inside cell (0, 1) at t 0.1 the upper half of tile 1 (v 101 .. 117, 0.4 of the way);
+	// a corner on the row border picked into the lower part reads that part's corner;
+	// with the old spreading (fault spread) the same point reads the whole tile (0.4 of
+	// 101 .. 132), 6 texels off the retail UV there (0.2 of the tile: 107.2).
+	{
+		const EngMosaicRowSet keepRows = s_egmRows;
+		const int keepEngine = g_cfg_engine;
+		const int keepTrack = g_cfg_engineTrack;
+		float tc[2];
+		float u = 0.0f;
+		float v = 0.0f;
+		float u2 = 0.0f;
+		float v2 = 0.0f;
+		float v3 = 0.0f;
+		float gu = 0.0f;
+		float gv = 0.0f;
+		float gv2 = 0.0f;
+		int ok1;
+		int ok2;
+		int ok3;
+		int ok4;
+		int ok5;
+
+		s_egmRows = set;
+		g_cfg_engine = 1;
+		g_cfg_engineTrack = 1;
+		EngMosaic_Encode(2, 0.0f, 0.0f, tc);
+		ok1 = Engine_TrackMosaicOracleUv(tc[0], tc[1], 0.3f, 0.1f, 0.3f, 0.1f, &u, &v);
+		ok2 = Engine_TrackMosaicOracleUv(tc[0], tc[1], 0.25f, 0.5f, 0.249f, 0.498f, &u2, &v2);
+		// The grid point on the row border of the piece's right side (etexg=): the middle of the tile (115.5 -> 116).
+		ok4 = Engine_TrackMosaicOracleUv(tc[0], tc[1], 0.25f, 0.25f, 0.24875f, 0.25f, &gu, &gv);
+		EngMosaic_RowSpread(&set.rows[2], table, 0, ENGINE_MOSAIC_FORM_4X2, 1);
+		s_egmRows = set;
+		ok3 = Engine_TrackMosaicOracleUv(tc[0], tc[1], 0.3f, 0.1f, 0.3f, 0.1f, &u, &v3);
+		ok5 = Engine_TrackMosaicOracleUv(tc[0], tc[1], 0.25f, 0.25f, 0.24875f, 0.25f, &u, &gv2);
+		s_egmRows = keepRows;
+		g_cfg_engine = keepEngine;
+		g_cfg_engineTrack = keepTrack;
+		EGM_CHECK(ok1 && ok2 && ok3 && (fabsf(v - 107.4f) < 1e-3f) && (u2 == 31.0f) && (v2 == 131.0f) && (fabsf(v3 - 113.4f) < 1e-3f),
+		          "oracle UV of the shader: %f (want 107.4), corner %f,%f (want 31,131), spread %f (want 113.4)", (double)v, (double)u2, (double)v2,
+		          (double)v3);
+		EGM_CHECK(ok4 && ok5 && (gu == 31.0f) && (gv == 116.0f) && (gv2 == 100.0f), "oracle UV at the inner grid point: %f,%f (want 31,116), spread %f (want 100)",
+		          (double)gu, (double)gv, (double)gv2);
 	}
 
 	EngMosaic_RowSetFree(&set);
