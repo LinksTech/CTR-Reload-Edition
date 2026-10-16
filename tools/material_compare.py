@@ -879,7 +879,8 @@ def _new_stats():
             'col_unpaired': 0, 'winding': 0, 'piece': {}, 'eom_coverage': [], 'fault_orient': set(),
             't_set_rule': {}, 'back_coverage': [], 'src_cell': {}, 'col_model': {}, 'raw_col': 0,
             'tablefail': {}, 'anim_degenerate': {}, 'foreign': {}, 'stage_hit': {}, 'cut_col': {},
-            'span': {}, 'native': {}, 'etex': {}, 'etexg': {}}
+            'span': {}, 'native': {}, 'etex': {}, 'etexg': {}, 'span_cell': {}, 'span_shift': {}, 'tile_box': {},
+            'k_corner': {}}
 
 
 def _per(stats, tr, src):
@@ -956,6 +957,60 @@ def _span_check(r, cells, r0, c0, nr, nc):
 
 def _slot_map(ln):
     return dict(zip(ln.slots, _corners(ln)))
+
+
+def _cell_rc(ln):
+    try:
+        r, c = [int(x) for x in ln.cell.split(',')]
+    except (AttributeError, ValueError):
+        return None
+    return r, c
+
+
+def _span_cells(rl):
+    """The cells the retail tile lines of a face cover with their span= beyond
+    their own cell (a load-block entry of a 4x2 or 4x1 table, a packet over
+    several cells)."""
+    out = set()
+    for r in rl:
+        sp = _span(r)
+        rc = _cell_rc(r) if r.key is not None and r.key[0] == 'cell' else None
+        if sp is None or sp == (1, 1) or rc is None:
+            continue
+        out.update((rc[0] + i, rc[1] + j) for i in range(sp[0]) for j in range(sp[1]))
+    return out
+
+
+def _tile_box(e, lines):
+    """The UV corners of the whole tile an engine cell line shows a part of
+    (tilerow=k/n: the cells k rows up and n - k - 1 down in its column hold the
+    other parts); None for a line that is no tile part."""
+    tr = e.extra.get('tilerow') if e.extra else None
+    rc = _cell_rc(e)
+    if not tr or rc is None or e.uv is None:
+        return None
+    try:
+        k, n = [int(x) for x in tr.split('/')]
+    except ValueError:
+        return None
+    rows = set(rc[0] - k + i for i in range(n))
+    pts = []
+    for x in lines:
+        xc = _cell_rc(x) if x.key is not None and x.key[0] == 'cell' else None
+        if xc is not None and xc[1] == rc[1] and xc[0] in rows and x.uv is not None and not _mat_diffs(e, x):
+            pts.extend(x.uv)
+    return pts or None
+
+
+def _inside_tile(r, e, lines):
+    """A retail piece against the whole tile of an engine tile part (_tile_box),
+    by the rule of _inside."""
+    box = _tile_box(e, lines)
+    if box is None or r.uv is None:
+        return False
+    u0, v0, u1, v1 = bbox(box)
+    n = sum(1 for u, v in r.uv if u0 <= u <= u1 and v0 <= v <= v1)
+    return n == len(r.uv) or (len(r.uv) == 4 and n >= 3)
 
 
 def _t_corners_ok(r, e):
@@ -1175,11 +1230,16 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                 # track: engine entries without a retail line
                 if src == 'T':
                     rk = set(r.key for r in rl)
+                    spanned = _span_cells(rl) if load else set()
                     for e in es.lines:
                         if e.key in rk:
                             continue
                         if tfail:
                             _bump(stats['tablefail'], tr)
+                        elif load and e.key[0] == 'cell' and _cell_rc(e) in spanned:
+                            # a cell a retail entry spans (4x2/4x1): its part is checked with
+                            # that entry (span=, the parts must join); counted
+                            _bump(stats['span_cell'], tr)
                         elif load:
                             rec(kind='d2', frame=fr, track=tr, src=src, srcId=sid, features=['engine-only'],
                                 e=e, fault=e.fault, pattern='%s %s' % e.key + _flags(None, e))
@@ -1304,6 +1364,13 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                         if hit is not None:
                             used_by.setdefault(id(hit), (hit, r))
                             continue
+                        hit = next((e for e in same if not _mat_diffs(r, e) and _inside_tile(r, e, es.lines)), None)
+                        if hit is not None:
+                            # a piece of a tile spread over rows (4x2/4x1): inside the whole
+                            # tile the engine cells show in parts; counted
+                            _bump(stats['tile_box'], tr, count)
+                            used_by.setdefault(id(hit), (hit, r))
+                            continue
                         other = next((e for e in es.lines if e.key != r.key and not _mat_diffs(r, e) and
                                       _inside(r, e)), None)
                         if other is not None:
@@ -1332,9 +1399,17 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                         _bump(stats['etex'], tr, count)
                         if len(pts) != len(r.uv) or any(tuple(a) != tuple(b) for a, b in zip(pts, r.uv)):
                             e0 = next((e for e in es.lines if e.key == r.key), es.lines[0])
+                            efault = next((e.fault for e in es.lines if e.key == r.key and e.fault), None)
+                            if efault is None:
+                                # K-ECKE (parked 2026-10-16, FM 11.9): (a) the inside agrees
+                                # (engd <= 2, a corner on a cell border reads the neighbour), (b) not
+                                try:
+                                    engd = float(r.extra.get('engd', '-1'))
+                                except ValueError:
+                                    engd = -1.0
+                                _bump(stats['k_corner'], (tr, 'a' if 0.0 <= engd <= 2.0 else 'b'), count)
                             rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=pre + ['uv'], r=r,
-                                e=e0, r_count=count, fault=next((e.fault for e in es.lines
-                                                                 if e.key == r.key and e.fault), None),
+                                e=e0, r_count=count, fault=efault,
                                 pattern='uv part of the tile (corner texel)' + _flags(r, e0),
                                 detail='retail %s engine %s' % (f_uv(r), r.extra['etex']))
                             continue
@@ -1379,6 +1454,12 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                                 continue
                             first = cells[need[0]]
                             fault = next((e.fault for e in cells.values() if e.fault), None)
+                            if not d and fault is None and 'etex' in r.extra and 'etexg' in r.extra:
+                                # the shader shows the packet's texels at its corners and inner grid
+                                # points (both checked above): the span the oracle took from the
+                                # packet's place is off by a cell (span shift); counted
+                                _bump(stats['span_shift'], tr, count)
+                                continue
                             feats = [f for f in FEATURES if f in d or (f == 'uv' and not (corners and joined))]
                             rec(kind='d1', frame=fr, track=tr, src=src, srcId=sid, features=pre + feats, r=r,
                                 e=first, r_count=count, fault=fault,
@@ -1397,6 +1478,14 @@ def compare(frames, gte_tol=COL_TOL_GTE, vram_for=None, strict_winding=False):
                         if hit is not None:
                             used_by.setdefault(id(hit), (hit, r))
                             continue
+                        if 'clip' in r.flags and r.key[0] == 'cell':
+                            # a clip piece of a tile spread over rows (4x2/4x1): its corners are
+                            # cut points inside the whole tile the engine cells show in parts
+                            hit = next((e for e in same if not _mat_diffs(r, e) and _inside_tile(r, e, es.lines)), None)
+                            if hit is not None:
+                                _bump(stats['tile_box'], tr, count)
+                                used_by.setdefault(id(hit), (hit, r))
+                                continue
                         others = [e for e in es.lines if e.key != r.key and not _t_diffs(r, e, ctol)]
                         stage = next((e for e in others if e.key[0] == 'stage'), None)
                         if stage is not None and r.key[0] == 'cell':
@@ -1975,6 +2064,22 @@ def render_md(res, inputs, exc_origin):
     if s['span']:
         md.append('- Track tile packets over several cells checked against the joined cell parts (span=): %d'
                   % sum(s['span'].values()))
+    if s['span_cell']:
+        md.append('- Track load-block engine cells a retail entry spans (checked with that entry, span=): %d'
+                  % sum(s['span_cell'].values()))
+    if s['span_shift']:
+        md.append('- Track tile packets whose corners and inner grid points agree but whose span the oracle took '
+                  'a cell off (span shift, information): %d' % sum(s['span_shift'].values()))
+    if s['tile_box']:
+        md.append('- Track pieces of a tile spread over rows, inside the whole tile the engine cells show in parts: %d'
+                  % sum(s['tile_box'].values()))
+    if s['k_corner']:
+        a = sum(n for (_, f), n in s['k_corner'].items() if f == 'a')
+        b = sum(n for (_, f), n in s['k_corner'].items() if f == 'b')
+        md.append('- K-ECKE (parked class, 2026-10-16; counted among the deviations above): corner texel off on %d '
+                  'line(s) - (a) inside agrees (engd <= 2): %d, (b) engd > 2 or none: %d; per track: %s'
+                  % (a + b, a, b, ' '.join('%s %d/%d' % (t, s['k_corner'].get((t, 'a'), 0), s['k_corner'].get((t, 'b'), 0))
+                                           for t in sorted(set(t for t, _ in s['k_corner'])))))
     if s['stage_hit']:
         md.append('- Track tile packets that are exactly a stage layout of their face (counted as that stage): %d'
                   % sum(s['stage_hit'].values()))
@@ -2420,10 +2525,36 @@ def selftest():
                   T('E', '5', LAY, 'cell=0,0')])
     check('etexg: a grid point 16 texels off (old spreading) is uv part of the tile (inner grid point)',
           feats(res) == ['uv'] and res.open[0].pattern.startswith('uv part of the tile (inner grid point)'))
+    res, _ = run([F(), T('R', '5', LAY, 'cell=0,0', extra='ord=slot,etex=0,0;31,0;0,31;30,31,engd=0.5'),
+                  T('E', '5', LAY, 'cell=0,0')])
+    check('K-ECKE: a corner texel off without a fault is a deviation, counted by family (a: engd <= 2)',
+          feats(res) == ['uv'] and res.stats['k_corner'] == {('L3', 'a'): 1})
+
+    # span shift, load-block cells a retail entry spans, clip pieces of a tile spread over rows
+    res, _ = run([F(), T('R', '5', LAY, 'cell=0,0', extra='ord=slot,span=2,1,etex=0,0;31,0;0,31;31,31,'
+                                                        'etexg=0,1:0,8:0,8'),
+                  T('E', '5', LAY, 'cell=0,0'), T('E', '5', BOTH, 'cell=1,0')])
+    check('span shift: corners and inner grid points agree, the span is a cell off: 0, counted',
+          len(res.open) == 0 and res.stats['span_shift'] == {'L3': 1})
+    res, _ = run([F(), T('R', '5', LAY, 'cell=0,0', extra='ord=slot,span=2,1,etex=0,0;31,0;0,31;31,31'),
+                  T('E', '5', LAY, 'cell=0,0'), T('E', '5', LAY, 'cell=1,0')])
+    check('span shift needs etexg: without it the old spreading stays cells do not join',
+          feats(res) == ['uv'] and res.open[0].pattern.startswith('uv part of the tile (cells do not join)'))
+    res, _ = run([F('t-load'), T('R', '5', LAY, 'cell=0,0', extra='ord=slot,span=2,1'),
+                  T('E', '5', TOPH, 'cell=0,0'), T('E', '5', BOTH, 'cell=1,0'), T('E', '5', TOPH, 'cell=2,0')])
+    check('load block: a cell the entry spans is checked with it, a cell outside stays engine-only',
+          feats(res) == [] and feats(res, 'd2') == ['engine-only'] and res.stats['span_cell'] == {'L3': 1})
+    res, _ = run([F(), T('R', '5', '0,0,31,0,0,31', 'cell=0,0', extra='clip=1'),
+                  T('E', '5', TOPH, 'cell=0,0', extra='tilerow=0/2'), T('E', '5', BOTH, 'cell=1,0', extra='tilerow=1/2')])
+    check('clip piece of a tile spread over rows: inside the whole tile: 0, counted',
+          len(res.open) == 0 and res.stats['tile_box'] == {'L3': 1})
+    res, _ = run([F(), T('R', '5', '0,0,31,0,0,40', 'cell=0,0', extra='clip=1'),
+                  T('E', '5', TOPH, 'cell=0,0', extra='tilerow=0/2'), T('E', '5', BOTH, 'cell=1,0', extra='tilerow=1/2')])
+    check('clip piece outside the whole tile: uv', feats(res) == ['uv'] and res.stats['tile_box'] == {})
 
     # native engine textures (menu scene): not compared, counted
-    res, _ = run([F('menu', level=40), L('R', 'M', 'pimbel#0', uv=TRI_A),
-                  L('E', 'M', 'pimbel#0', page='-', clut='-', uv='-', extra='tex=native')])
+    res, _ = run([F('menu', level=40), L('R', 'M', 'driver#0', uv=TRI_A),
+                  L('E', 'M', 'driver#0', page='-', clut='-', uv='-', extra='tex=native')])
     check('tex=native engine lines: not compared, counted', len(res.open) == 0 and
           res.stats['native'] == {('L40', 'M'): 1})
     res, _ = run([F('menu', level=40), L('R', 'M', 'logo#0', uv=TRI_A), L('E', 'M', 'logo#0', uv=TRI_A, clut='0,481')])
