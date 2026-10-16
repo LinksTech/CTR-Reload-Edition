@@ -99,6 +99,30 @@ extern int g_cfg_deterministic; // --deterministic, native_platform.c
 void Engine_OracleArm(const char *tag);
 
 internal int s_menuSet = -1;
+
+// The engine oracle's E lines of the scene (src M; only in the armed frame
+// 'menu', otherwise one call that returns at once): srcId body / wheel<n>,
+// extra set=<n> or hires=1. The driver's textures are native ones (tex=native,
+// no VRAM fields to compare; tools/material_compare.py counts such lines).
+internal void Engine_MenuSceneOracle(const EngineDraw *draw, const char *part, int hires)
+{
+	char extra[32];
+
+	if (!Engine_OracleActive())
+	{
+		return;
+	}
+	if (hires)
+	{
+		snprintf(extra, sizeof(extra), "hires=1");
+	}
+	else
+	{
+		snprintf(extra, sizeof(extra), "set=%d", s_menuSet);
+	}
+	Engine_OracleEngineDraw('M', part, 0, draw, extra);
+}
+
 internal int s_menuLastTimer = -1;
 internal float s_menuYaw = ENGINE_MENUSCENE_YAW_START;
 internal int s_menuPauseTicks = 0;
@@ -391,6 +415,7 @@ void Engine_MenuSceneCollect(struct GameTracker *gGT)
 		return;
 	}
 	s_menuFramesDrawn++;
+	Engine_MenuSceneOracle(&draw, "body", hires);
 	if (!s_menuLogged)
 	{
 		s_menuLogged = 1;
@@ -419,7 +444,11 @@ void Engine_MenuSceneCollect(struct GameTracker *gGT)
 			draw.frame = 0u;
 			if (Engine_RenderSubmitLinked(0, &draw, gGT->pushBuffer[0].ptrOT, cell))
 			{
+				char part[16];
+
 				s_menuWheelDraws++;
+				snprintf(part, sizeof(part), "wheel%d", wheel);
+				Engine_MenuSceneOracle(&draw, part, hires);
 			}
 		}
 		return;
@@ -452,7 +481,11 @@ void Engine_MenuSceneCollect(struct GameTracker *gGT)
 			draw.frame = 0u;
 			if (Engine_RenderSubmitLinked(0, &draw, gGT->pushBuffer[0].ptrOT, cell))
 			{
+				char part[16];
+
 				s_menuWheelDraws++;
+				snprintf(part, sizeof(part), "wheel%d", wheel);
+				Engine_MenuSceneOracle(&draw, part, 0);
 			}
 		}
 	}

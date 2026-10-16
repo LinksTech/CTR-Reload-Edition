@@ -77,6 +77,7 @@ global_variable u32 s_eoTotalE;
 global_variable u32 s_eoDumps;
 global_variable char s_eoArgs[1024];
 global_variable int s_eoSourceHires;
+global_variable u32 s_eoInstancesSeen; // RenderBucket instances of the armed frame (Engine_OracleInstanceTags)
 
 // VRAM writes (platform/native_libgpu.c) per tour entry, in race frames.
 global_variable int s_eoTourRegistered;
@@ -246,6 +247,7 @@ void Engine_OracleArmFrame(const char *tag, int raceFrame)
 	s_eoActive = 1;
 	s_eoLinesR = 0;
 	s_eoLinesE = 0;
+	s_eoInstancesSeen = 0;
 	s_eoSourceDepth = 0;
 	s_eoBufCount = 0;
 	s_eoBufFull = 0;
@@ -282,7 +284,8 @@ void Engine_OracleFrameEnd(void)
 	{
 		fflush(s_eoFile);
 	}
-	Platform_Log("[CTR Engine] oracle: frame '%s' written: %u R line(s), %u E line(s)%s\n", s_eoTag, s_eoLinesR, s_eoLinesE,
+	Platform_Log("[CTR Engine] oracle: frame '%s' written: %u R line(s), %u E line(s), %u retail instance(s) seen%s\n", s_eoTag, s_eoLinesR, s_eoLinesE,
+	             s_eoInstancesSeen,
 	             s_eoBufFull ? " (source buffer full, E lines missing)" : "");
 }
 
@@ -1347,6 +1350,10 @@ void Engine_OracleInstanceTags(const struct Instance *inst, const struct InstDra
 	{
 		return;
 	}
+	if (s_eoActive)
+	{
+		s_eoInstancesSeen++;
+	}
 	if (inst->model != NULL)
 	{
 		memcpy(nameBuf, inst->model->name, 16);
@@ -1576,6 +1583,24 @@ void Engine_OracleStateRestore(int slot)
 			failures++;                                  \
 		}                                                \
 	} while (0)
+
+// The selftest's emitter: counts the faces of a draw and keeps the first.
+typedef struct
+{
+	int count;
+	EngineOracleFace face;
+} EngOracleCollect;
+
+internal void EngOracle_EmitCollect(const EngineOracleFace *f, int material, void *user)
+{
+	EngOracleCollect *c = (EngOracleCollect *)user;
+
+	(void)material;
+	if (c->count++ == 0)
+	{
+		c->face = *f;
+	}
+}
 
 int Engine_SelfTestOracle(int *checks)
 {
@@ -1864,6 +1889,75 @@ int Engine_SelfTestOracle(int *checks)
 		EO_CHECK((out[0] == 11) && (out[1] == 34) && (out[2] == 45), "colour x both tints: %d,%d,%d", out[0], out[1], out[2]);
 		Engine_OracleModulatedColour(white, boost, one, out);
 		EO_CHECK((out[0] == 255) && (out[1] == 128) && (out[2] == 255), "colour held to 255: %d,%d,%d", out[0], out[1], out[2]);
+	}
+
+	// p) A menu-scene draw (src M): a mesh with a native texture gives one face per
+	//    triangle, untextured in the VRAM sense (tp/clut/uv '-') with tex=native and
+	//    col; a VRAM material on the same mesh gives page, clut, uv and box.
+	{
+		local_persist const EngineVertex verts[3] = {
+		    {{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f}, {200, 100, 50, 255}},
+		    {{1.0f, 0.0f, 0.0f}, {16.0f, 0.0f}, {200, 100, 50, 255}},
+		    {{0.0f, 1.0f, 0.0f}, {0.0f, 8.0f}, {200, 100, 50, 255}},
+		};
+		local_persist const u16 idx[3] = {0, 1, 2};
+		EngineMaterial native;
+		EngineMaterial vram;
+		EngineRange range;
+		EngineMeshDesc desc;
+		EngineDraw draw;
+		EngOracleCollect got;
+		int nativeIndex;
+		int vramIndex;
+		int mesh;
+
+		memset(&native, 0, sizeof(native));
+		native.texSource = ENGINE_TEX_NATIVE;
+		native.tint[0] = native.tint[1] = native.tint[2] = native.tint[3] = 1.0f;
+		vram = native;
+		vram.texSource = ENGINE_TEX_VRAM;
+		vram.tpage = 0x7e;
+		vram.clut = (u16)clut;
+		Engine_MaterialsReset(); // the selftest's own table (no level is loaded)
+		nativeIndex = Engine_MaterialRegister(&native);
+		vramIndex = Engine_MaterialRegister(&vram);
+		memset(&range, 0, sizeof(range));
+		range.indexCount = 3;
+		range.material = (u16)nativeIndex;
+		memset(&desc, 0, sizeof(desc));
+		desc.vertices = verts;
+		desc.verticesPerFrame = 3;
+		desc.frames = 1;
+		desc.indices = idx;
+		desc.indexCount = 3;
+		desc.ranges = &range;
+		desc.rangeCount = 1;
+		desc.name = "oracle selftest";
+		mesh = Engine_MeshCreate(&desc);
+		EO_CHECK((nativeIndex >= 0) && (vramIndex >= 0) && (mesh >= 0), "menu: material %d/%d, mesh %d", nativeIndex, vramIndex, mesh);
+		if ((nativeIndex >= 0) && (vramIndex >= 0) && (mesh >= 0))
+		{
+			memset(&draw, 0, sizeof(draw));
+			draw.mesh = mesh;
+			draw.materialOverride = -1;
+			draw.dynMaterial = -1;
+			draw.tint[0] = draw.tint[1] = draw.tint[2] = draw.tint[3] = 1.0f;
+			memset(&got, 0, sizeof(got));
+			EngOracle_DrawFaces(&draw, "dyn=1", EngOracle_EmitCollect, &got);
+			EO_CHECK(got.count == 1, "menu native: %d faces", got.count);
+			EO_CHECK((got.face.textured == 0) && (strstr(got.face.extra, "tex=native") != NULL) && (got.face.colorCount == 3) && (got.face.color[0][0] == 200),
+			         "menu native: textured %d extra '%s' col %d", got.face.textured, got.face.extra, got.face.colorCount);
+
+			draw.materialOverride = vramIndex;
+			memset(&got, 0, sizeof(got));
+			EngOracle_DrawFaces(&draw, "dyn=1", EngOracle_EmitCollect, &got);
+			EO_CHECK((got.count == 1) && (got.face.textured == 1) && (got.face.tpX == 896) && (got.face.uv[2] == 16) && (got.face.uv[5] == 8) &&
+			             // The box follows the sample rule (ENGINE_ORACLE_SAMPLE_CLAMPED: the vertex's box, zeroed = whole page).
+			             (strstr(got.face.extra, ENGINE_ORACLE_SAMPLE_CLAMPED ? "box=0,0,255,255" : "box=-1,-1,16,8") != NULL),
+			         "menu vram: %d faces, textured %d, tpX %d, extra '%s'", got.count, got.face.textured, got.face.tpX, got.face.extra);
+			Engine_MeshDestroy(mesh);
+		}
+		Engine_MaterialsReset();
 	}
 
 	// l) A retail range while the oracle is not armed writes nothing.
