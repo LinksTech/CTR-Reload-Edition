@@ -1041,7 +1041,7 @@ u32 Engine_TrackMosaicTexture(void); // TextureID for slot 3, 0xffffffff when no
 int Engine_SelfTestTrackMosaic(int *checks);
 
 // --------------------------------------------------------------------------
-// ENGINE ORACLE (P2) - the track side of the material oracle (--engine-oracle,
+// ENGINE ORACLE (track) - the track side of the material oracle (--engine-oracle,
 // round of 2026-10-16; platform/engine_track.c, RETAIL ORACLE). Every function
 // does nothing outside a logged frame (or the load block of a logged run).
 //
@@ -1136,7 +1136,7 @@ void Engine_TourNotify(int entry, int levelID, int phase);
 int Engine_SelfTestTour(int *checks); // engine_tour.c: registry, burst schedule, progress fold, fingerprint
 
 // --------------------------------------------------------------------------
-// ENGINE ORACLE (P1) (platform/engine_oracle.c; round of 2026-10-16)
+// ENGINE ORACLE (core) (platform/engine_oracle.c; round of 2026-10-16)
 //
 // The material comparison W1: in chosen frames both paths write, per drawn
 // face, the texture page, CLUT, texel window and blend they use, one text line
@@ -1257,7 +1257,7 @@ void Engine_OracleStateRestore(int slot);
 extern int g_engineOracleFaultMaterial;
 const EngineMaterial *Engine_OracleFaultMaterial(void);
 int Engine_SelfTestOracle(int *checks); // the packet decoder on synthetic primitives
-// ENGINE ORACLE (P4) - the oracle frames of the material comparison in the tour
+// ENGINE ORACLE (tour) - the oracle frames of the material comparison in the tour
 // (round of 2026-10-16, W2; game/DebugMenu.c, platform/engine_tour.c,
 // platform/engine_menuscene.c; switches in main.c). The tour calls
 // Engine_OracleArmFrame(tag, race frame) in the game logic of a race frame,

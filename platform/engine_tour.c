@@ -275,7 +275,7 @@ int EngineTour_ShotName(char *out, size_t size, const char *shotName, int entry,
 
 // --------------------------------------------------------------------------
 // The oracle frames of the material comparison (round 18, W2; ENGINE ORACLE
-// (P4) in include/platform/engine.h). --level-tour-oracle has the syntax of
+// (tour) in include/platform/engine.h). --level-tour-oracle has the syntax of
 // --level-tour-shots and is read with EngineTour_ParseShots; every listed race
 // frame is one oracle frame (no burst), next to the tour's own frames: the
 // start (the first race frame after the countdown), before and after the line

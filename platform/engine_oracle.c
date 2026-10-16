@@ -8,7 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-// ENGINE ORACLE - see include/platform/engine.h (section ENGINE ORACLE (P1)).
+// ENGINE ORACLE - see include/platform/engine.h (section ENGINE ORACLE (core)).
 //
 // The material comparison of the round of 2026-10-16: in a few chosen frames
 // both paths write, per drawn face, which texture page, CLUT, texel window and

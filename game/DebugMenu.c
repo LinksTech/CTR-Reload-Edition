@@ -1706,7 +1706,7 @@ global_variable int s_tourMaskGrabs = 0;
 
 // --level-tour-oracle, --level-tour-oracle-see (round of 2026-10-16, W2: the
 // material comparison over all tracks) and --level-tour-frames as given, kept
-// as text by main.c and read with the list (ENGINE ORACLE (P4) in
+// as text by main.c and read with the list (ENGINE ORACLE (tour) in
 // include/platform/engine.h, sizes ENGINE_TOUR_*).
 #define DBG_TOUR_TEXT_MAX        512 // ENGINE_TOUR_TEXT_MAX
 #define DBG_TOUR_ORACLE_MAX      64  // ENGINE_TOUR_ORACLE_MAX
@@ -1771,7 +1771,7 @@ int EngineTour_ParseSee(const char *text, int *levels, char (*names)[DBG_TOUR_SE
 int EngineTour_DriveForwardFolds(void);
 int EngineTour_ParseFrames(const char *text, int *levels, int *frames, int max, int *badAt);
 int EngineTour_FramesForLevel(const int *levels, const int *frames, int count, int level, int fallback);
-// platform/engine_oracle.c (P1, tmp\engine\r18\p1-api.md): the frame being made
+// platform/engine_oracle.c: the frame being made
 // now is logged by both ways under tag, its F line naming raceFrame.
 void Engine_OracleArmFrame(const char *tag, int raceFrame);
 // platform/engine_water.c: where the water lies in view 0, one log line (pure read); frame = the race frame.
@@ -2337,7 +2337,7 @@ internal int DebugMenu_TourSeeAll(struct GameTracker *gGT, int see)
 // One oracle frame per race frame, in this order: listed, start, line-pre,
 // line-post, see, wpn; one that has to wait is armed in the next race frame.
 // None on the entry's last race frame: the tour's VRAM dump of the entry is
-// asked for there, and a frame holds one dump request (p1-api.md). One
+// asked for there, and a frame holds one dump request (platform/engine_oracle.c). One
 // snapshot of the frame (<--shot-name>-<tag>.bmp) when --shot-name is given and
 // no burst shoots this frame.
 internal void DebugMenu_TourOracle(struct GameTracker *gGT, int burst)

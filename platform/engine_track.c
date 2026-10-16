@@ -2698,7 +2698,7 @@ enum
 	EGT_ORACLE_LEVEL_LOW = 5   // the block's ptr_texture_low
 };
 
-// One R or E line: the fields of P1's EngineOracleFace (engine.h, ENGINE ORACLE (P1)).
+// One R or E line: the fields of EngineOracleFace (engine.h, ENGINE ORACLE (core)).
 typedef struct
 {
 	char src;
