@@ -635,12 +635,10 @@ int EngineFx_WorldSprite(struct Particle *p, int view, const struct Icon *icon, 
 // --------------------------------------------------------------------------
 // WORLD PARTICLES (night round of 2026-10-16): every particle of the ordinary
 // list (wheel spray, terrain dust, water and snow spray, sparks, smoke, flames,
-// exhaust of retail drivers, ...) drawn by the engine under --engine
-// --engine-track --engine-particles, with a depth test against the engine track.
-// The PS1 primitive has none and shows through walls. OFF by default (dev switch
-// --engine-particles, main.c): whether the spray stays visible under the depth
-// test is not settled yet; without the switch the PS1 path draws every particle
-// as before and Particle_RenderList only compares the switch.
+// exhaust of retail drivers, ...) drawn by the engine whenever it draws the
+// track (the default for one player since the round of 2026-10-16), with a depth
+// test against the engine track. The PS1 primitive has none and shows through
+// walls.
 //
 // WHERE AND WHAT. Particle_RenderList (game/Particle.c) offers a particle at the
 // one point where retail is about to link its primitive into the ordering table:
@@ -655,8 +653,8 @@ int EngineFx_WorldSprite(struct Particle *p, int view, const struct Icon *icon, 
 // retail links nothing (the written primitive is neither linked nor kept), or 0
 // and retail links it as always.
 //
-// THE RULE. With --engine-particles, taken is every particle that reaches that
-// point while the engine draws the track in this frame (Engine_TrackDrawnThisFrame: decided by the
+// THE RULE. Taken is every particle that reaches that point while the engine
+// is on and draws the track in this frame (Engine_TrackDrawnThisFrame: decided by the
 // frame's collect, before the particles; 1 player, not the menu). One path for
 // every kind: the kind only names the counter (the icon group's slot in
 // gGT->iconGroup, 0x00..0x10, or "other"); the geometry follows the axes:
@@ -673,6 +671,12 @@ int EngineFx_WorldSprite(struct Particle *p, int view, const struct Icon *icon, 
 //     each s16 as the GTE register takes it), 1 PSX pixel wide as the PS1 draws a
 //     line (the quad's width is built on the screen and taken back to the world
 //     at each end's depth), gouraud between retail's two colour words.
+//     A line of a driver-local particle whose height comes from the driver
+//     (wheel spray, landing and wall sparks; not IGNORE_Y) starts at the driver's
+//     COLLISION height, below the drawn track faces: it is lifted exactly as the
+//     skid marks are (engine_fx_skids.c), ENGINE_GROUND_LIFT world units up and
+//     ENGINE_GROUND_DEPTH_BIAS in its material, so the depth test does not cut
+//     its start off (EngineFx_ParticleLineGround). Drawing only.
 // Colour and blend as retail's primitive: the colour word of Particle_SetColors
 // (no colour axis: the raw texture, 128), semi-transparency with the abr bits of
 // flagsSetColor (draw mode), the icon's tpage and clut. The OT cell is the one
@@ -685,10 +689,6 @@ int EngineFx_WorldSprite(struct Particle *p, int view, const struct Icon *icon, 
 // the engine cannot project it, retail would draw a screen-filling quad - taken
 // and not drawn, as the exhaust does. Outside a frame with the engine track the
 // hook answers 0 and counts nothing as left (that is the PS1 track's frame).
-
-// --engine-particles (main.c; dev, needs --engine --engine-track): 1 = the engine
-// draws the world particles. Read by Particle_RenderList and the rule.
-int g_cfg_engineParticles = 0;
 
 #define ENGINE_FX_PARTICLE_SLOTS 0x11 // gGT->iconGroup[0x11]
 #define ENGINE_FX_PARTICLE_OTHER ENGINE_FX_PARTICLE_SLOTS
@@ -825,15 +825,28 @@ internal int EngineFx_ParticleKindOf(const struct IconGroup *group, struct IconG
 
 // The rule on plain values (also the self test's subject): the engine is on and
 // draws the track in this frame. Every particle that reaches the hook is then taken.
-internal int EngineFx_ParticleRule(int engine, int particles, int trackDrawn)
+internal int EngineFx_ParticleRule(int engine, int trackDrawn)
 {
-	return engine && particles && trackDrawn;
+	return engine && trackDrawn;
+}
+
+// A line that starts at the driver's collision height (header above): driver-local
+// with the driver's height (not IGNORE_Y). Then *lift and *depthBias are the skid
+// marks' (ENGINE_GROUND_LIFT, ENGINE_GROUND_DEPTH_BIAS), else 0. Returns 1 for such a line.
+internal int EngineFx_ParticleLineGround(u16 flagsSetColor, float *lift, float *depthBias)
+{
+	const int ground = ((flagsSetColor & PARTICLE_SET_COLOR_FLAG_DRIVER_LOCAL) != 0) && ((flagsSetColor & PARTICLE_SET_COLOR_FLAG_DRIVER_LOCAL_IGNORE_Y) == 0);
+
+	*lift = ground ? ENGINE_GROUND_LIFT : 0.0f;
+	*depthBias = ground ? ENGINE_GROUND_DEPTH_BIAS : 0.0f;
+	return ground;
 }
 
 // Material for a particle, cached per level (the table resets at level unload;
 // a cached index is checked against the table, as EngineFx_ExhaustMaterial).
 // textured 0: a gouraud line, no texture; the blend from abr when semi.
-internal int EngineFx_ParticleMaterial(int textured, u16 tpage, u16 clut, int semi, int abr)
+// depthBias: EngineMaterial.depthBias (a ground line's, else 0).
+internal int EngineFx_ParticleMaterial(int textured, u16 tpage, u16 clut, int semi, int abr, float depthBias)
 {
 	EngineMaterial want;
 	int freeSlot = -1;
@@ -841,6 +854,7 @@ internal int EngineFx_ParticleMaterial(int textured, u16 tpage, u16 clut, int se
 
 	memset(&want, 0, sizeof(want));
 	want.flags = ENGINE_MATERIAL_DOUBLE_SIDED | ENGINE_MATERIAL_NO_DEPTH_WRITE;
+	want.depthBias = depthBias;
 	want.tint[0] = want.tint[1] = want.tint[2] = want.tint[3] = 1.0f;
 	if (textured)
 	{
@@ -1107,7 +1121,7 @@ internal int EngineFx_ParticleEnter(const struct Particle *p, int view, const En
 	const struct GameTracker *gGT = sdata->gGT;
 	int kind;
 
-	if ((p == NULL) || (gGT == NULL) || !EngineFx_ParticleRule(g_cfg_engine, g_cfg_engineParticles, Engine_TrackDrawnThisFrame()))
+	if ((p == NULL) || (gGT == NULL) || !EngineFx_ParticleRule(g_cfg_engine, Engine_TrackDrawnThisFrame()))
 	{
 		return -1;
 	}
@@ -1207,7 +1221,7 @@ int EngineFx_ParticleQuad(struct Particle *p, int view, const struct Icon *icon,
 	v[3].texcoord[1] = (float)icon->texLayout.v2;
 	Engine_VertexBoxOfCorners(v, 4); // the icon's texels: their box (engine.h, THE UV BOX)
 	tpage = (u16)((icon->texLayout.tpage & ~PARTICLE_SET_COLOR_FLAG_DRAW_MODE_MASK) | (flagsSetColor & PARTICLE_SET_COLOR_FLAG_DRAW_MODE_MASK));
-	material = EngineFx_ParticleMaterial(1, tpage, icon->texLayout.clut, semi, 0);
+	material = EngineFx_ParticleMaterial(1, tpage, icon->texLayout.clut, semi, 0, 0.0f);
 	if (material < 0)
 	{
 		return EngineFx_ParticleLeft(kind, 2);
@@ -1251,6 +1265,8 @@ int EngineFx_ParticleLine(struct Particle *p, int view, u16 flagsAxis, u16 flags
 	u32 word1;
 	u8 c0[4];
 	u8 c1[4];
+	float lift;
+	float depthBias;
 	int semi;
 	int material;
 
@@ -1269,6 +1285,10 @@ int EngineFx_ParticleLine(struct Particle *p, int view, u16 flagsAxis, u16 flags
 	p1.x = p0.x + (float)delta[0] * 0.25f;
 	p1.y = p0.y + (float)delta[1] * 0.25f;
 	p1.z = p0.z + (float)delta[2] * 0.25f;
+	// A line from the driver's collision height: lifted as the skid marks are.
+	(void)EngineFx_ParticleLineGround(flagsSetColor, &lift, &depthBias);
+	p0.y += lift;
+	p1.y += lift;
 
 	// Retail's two colour words; the first one's code byte carries the semi bit.
 	word0 = color;
@@ -1293,7 +1313,7 @@ int EngineFx_ParticleLine(struct Particle *p, int view, u16 flagsAxis, u16 flags
 		s_engFxPartNear++;
 		return 1;
 	}
-	material = EngineFx_ParticleMaterial(0, 0, 0, semi, (flagsSetColor & PARTICLE_SET_COLOR_FLAG_DRAW_MODE_MASK) >> 5);
+	material = EngineFx_ParticleMaterial(0, 0, 0, semi, (flagsSetColor & PARTICLE_SET_COLOR_FLAG_DRAW_MODE_MASK) >> 5, depthBias);
 	if (material < 0)
 	{
 		return EngineFx_ParticleLeft(kind, 2);
@@ -1512,10 +1532,33 @@ internal int EngineFx_ParticleSelfTest(int *checks)
 	char msg[160];
 
 	// The rule.
-	EngineFx_ExhaustCheck(EngineFx_ParticleRule(1, 1, 1), "particle rule: taken with the switch and the engine track drawn", checks, &failures);
-	EngineFx_ExhaustCheck(!EngineFx_ParticleRule(0, 1, 1), "particle rule: not without --engine (also after the engine's fallback)", checks, &failures);
-	EngineFx_ExhaustCheck(!EngineFx_ParticleRule(1, 0, 1), "particle rule: not without --engine-particles", checks, &failures);
-	EngineFx_ExhaustCheck(!EngineFx_ParticleRule(1, 1, 0), "particle rule: not in a frame the PS1 walk draws the track", checks, &failures);
+	EngineFx_ExhaustCheck(EngineFx_ParticleRule(1, 1), "particle rule: taken with the engine on and the engine track drawn", checks, &failures);
+	EngineFx_ExhaustCheck(!EngineFx_ParticleRule(0, 1), "particle rule: not without the engine (--no-engine, the fallback)", checks, &failures);
+	EngineFx_ExhaustCheck(!EngineFx_ParticleRule(1, 0), "particle rule: not in a frame the PS1 walk draws the track", checks, &failures);
+
+	// The lift of a ground line: the skid marks' lift and depth bias for a
+	// driver-local line with the driver's height, nothing for the others.
+	{
+		// 0x58a2, the wheel spray and sparks of VehEmitter.c
+		const u16 spray = PARTICLE_SET_COLOR_FLAG_SPECIAL_LINE | PARTICLE_SET_COLOR_FLAG_SPECIAL_LINE_KEEP_PREVIOUS | PARTICLE_SET_COLOR_FLAG_DRIVER_LOCAL |
+		                  PARTICLE_SET_COLOR_FLAG_SEMI_TRANSPARENT | 0x22u;
+		float lift = -1.0f;
+		float bias = -1.0f;
+
+		EngineFx_ExhaustCheck(EngineFx_ParticleLineGround(spray, &lift, &bias) && (lift == ENGINE_GROUND_LIFT) && (bias == ENGINE_GROUND_DEPTH_BIAS),
+		                      "particle line: wheel spray lifted as the skid marks", checks, &failures);
+		EngineFx_ExhaustCheck(EngineFx_ParticleLineGround(PARTICLE_SET_COLOR_FLAG_SPECIAL_LINE | PARTICLE_SET_COLOR_FLAG_DRIVER_LOCAL, &lift, &bias) &&
+		                          (lift == ENGINE_GROUND_LIFT),
+		                      "particle line: grass spray (0x1800) lifted", checks, &failures);
+		EngineFx_ExhaustCheck(!EngineFx_ParticleLineGround(PARTICLE_SET_COLOR_FLAG_SPECIAL_LINE | PARTICLE_SET_COLOR_FLAG_SEMI_TRANSPARENT, &lift, &bias) &&
+		                          (lift == 0.0f) && (bias == 0.0f),
+		                      "particle line: a world line is not lifted", checks, &failures);
+		EngineFx_ExhaustCheck(!EngineFx_ParticleLineGround(PARTICLE_SET_COLOR_FLAG_SPECIAL_LINE | PARTICLE_SET_COLOR_FLAG_DRIVER_LOCAL |
+		                                                       PARTICLE_SET_COLOR_FLAG_DRIVER_LOCAL_IGNORE_Y,
+		                                                   &lift, &bias) &&
+		                          (lift == 0.0f),
+		                      "particle line: a driver-local line with its own height (IGNORE_Y) is not lifted", checks, &failures);
+	}
 
 	// The kind: the slot of the icon group; the first slot wins; no group or an unknown one is "other".
 	{
