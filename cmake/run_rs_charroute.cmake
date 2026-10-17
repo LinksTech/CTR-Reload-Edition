@@ -9,8 +9,9 @@
 # Reload Studio's --rldpack (rs_charroute.h, decision E6 of the round's plan):
 #   make-char --model <glb> <the page's switches> <RsCharHires_FallbackArgs>
 #             [--wheels off when the model has its own four wheels] --out <classic>
-#   [hires-upscale <glb> -o <upscaled>]                        ("Upscale small textures")
-#   hires-add <classic> <glb or upscaled> -o <out> [--vertex-colors <mode>]
+#   [hires-png <glb> -o <converted>]                           ("Convert JPEG textures to PNG")
+#   [hires-upscale <glb or converted> -o <upscaled>]           ("Upscale small textures")
+#   hires-add <classic> <glb, converted or upscaled> -o <out> [--vertex-colors <mode>]
 #                       (the mode only for a model with COLOR_0: the switch
 #                       "Vertex color blending", include/rldhires_color.inc)
 # This script runs that chain twice - once with rldpack, once with the Studio
@@ -19,9 +20,10 @@
 #      code, no community content): route-bare.glb (an armature, no clips, no
 #      wheel nodes, a 16 x 16 texture), route-tex64.glb (route-bare with a
 #      64 x 64 texture), route-wheels.glb (an armature, 12 clips, its own 4
-#      wheels) and route-vcol.glb (route-bare with PS1-like COLOR_0, grey
-#      128), and the fallback's switches per route as RsCharHires_FallbackArgs
-#      gives them (fallback-<route>.txt, a CMake list).
+#      wheels), route-vcol.glb (route-bare with PS1-like COLOR_0, grey 128)
+#      and route-jpeg.glb (route-bare with its 16 x 16 texture a JPEG), and
+#      the fallback's switches per route as RsCharHires_FallbackArgs gives them
+#      (fallback-<route>.txt, a CMake list).
 #   2. Hi-Res: route-bare.glb without and with hires-upscale; Low-Poly:
 #      route-bare.glb with hires-upscale, route-tex64.glb without and with
 #      it; Hi-Res with wheels: route-wheels.glb with --wheels off.
@@ -30,9 +32,14 @@
 #   4. The vertex colours: route-vcol.glb on Hi-Res with --vertex-colors psx,
 #      off and gltf; rldpack hires-check of each result names its mode, and
 #      gltf is the bytes of the pack without the switch.
+#   5. The JPEG textures: route-jpeg.glb on Hi-Res and Low-Poly with
+#      hires-png (and hires-upscale of the converted model: its texture is 16
+#      px); without hires-png hires-add refuses it; rs_hires_selftest
+#      --png-check reads the converted model as the page does; make-char gives
+#      the same classic fallback from the converted model as from the JPEG one.
 # Prints "charroute passed: <route> sha256 <hash>" per route,
-# "charroute passed: vertex colours psx off gltf" and "charroute passed: 3
-# routes" at the end.
+# "charroute passed: vertex colours psx off gltf", "charroute passed: jpeg
+# converted to png" and "charroute passed: 3 routes" at the end.
 #
 # With -DPAGE=ON (ctest reloadstudio_charroute_page) every route is built a
 # third time by the page Character itself, in automation as an author clicks
@@ -55,9 +62,17 @@
 # author's off against it, "will be upscaled (your choice)" for the author's
 # on without it and nothing for the 64 px kart as it starts; "upscale change"
 # (a click on its "Change") opens Advanced at the box, in view and focused.
-# Prints "charroute page passed: upscale suggested and chosen",
-# "charroute page passed: vertex colours psx off gltf" and "charroute page
-# passed: 3 routes".
+# The JPEG kart (rs_charroute.h, THE JPEG TEXTURES): without the click the
+# page refuses it - the report says the button "Convert to PNG" is offered
+# and the step Model has the HRG-16 line with that fix; "png convert" (the
+# click) checks it as converted and builds rldpack's chain with hires-png
+# (and hires-upscale, suggested for its 16 px texture) byte for byte on
+# Hi-Res and Low-Poly, the line "Your JPEG textures will be converted to
+# PNG." with "Change" on the step Model, "png change" opens Advanced at the
+# box; "png off" after it refuses the kart again. No temp file of the page is
+# left. Prints "charroute page passed: upscale suggested and chosen",
+# "charroute page passed: vertex colours psx off gltf", "charroute page
+# passed: jpeg converted to png" and "charroute page passed: 3 routes".
 
 foreach(required PACKER STUDIO TEST DIR)
     if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
@@ -112,7 +127,8 @@ set(page --name "ROUTE TEST" --template 14 --class balanced --size 100 --mask uk
 
 # One route: name, model, fallback switches, extra switches (a list, may be
 # empty), upscale (ON/OFF); the switches of hires-add after -o <out> in the
-# variable packExtra of the caller (a list, may be empty).
+# variable packExtra of the caller (a list, may be empty); hires-png first
+# when the caller's variable routePng is ON.
 function(route name model fallback extra upscale)
     set(src "${DIR}/${model}")
     # The classic fallback.
@@ -124,12 +140,20 @@ function(route name model fallback extra upscale)
         message(FATAL_ERROR "charroute FAILED: the Studio's make-char (${name}) said an error\n${out}")
     endif()
     same("the classic fallback (${name})" "${DIR}/p-${name}.classic.part" "${DIR}/s-${name}.classic.part")
-    # "Upscale small textures".
+    # "Convert JPEG textures to PNG".
     set(packP "${src}")
     set(packS "${src}")
+    if(routePng)
+        run("rldpack hires-png (${name})" "${PACKER}" hires-png "${src}" -o "${DIR}/p-${name}-png.glb")
+        run("Reload Studio --rldpack hires-png (${name})" "${STUDIO}" --rldpack hires-png "${src}" -o "${DIR}/s-${name}-png.glb" --machine)
+        same("the converted model (${name})" "${DIR}/p-${name}-png.glb" "${DIR}/s-${name}-png.glb")
+        set(packP "${DIR}/p-${name}-png.glb")
+        set(packS "${DIR}/s-${name}-png.glb")
+    endif()
+    # "Upscale small textures".
     if(upscale)
-        run("rldpack hires-upscale (${name})" "${PACKER}" hires-upscale "${src}" -o "${DIR}/p-${name}-upscaled.glb")
-        run("Reload Studio --rldpack hires-upscale (${name})" "${STUDIO}" --rldpack hires-upscale "${src}" -o "${DIR}/s-${name}-upscaled.glb" --machine)
+        run("rldpack hires-upscale (${name})" "${PACKER}" hires-upscale "${packP}" -o "${DIR}/p-${name}-upscaled.glb")
+        run("Reload Studio --rldpack hires-upscale (${name})" "${STUDIO}" --rldpack hires-upscale "${packS}" -o "${DIR}/s-${name}-upscaled.glb" --machine)
         same("the upscaled model (${name})" "${DIR}/p-${name}-upscaled.glb" "${DIR}/s-${name}-upscaled.glb")
         set(packP "${DIR}/p-${name}-upscaled.glb")
         set(packS "${DIR}/s-${name}-upscaled.glb")
@@ -200,7 +224,48 @@ if(hashPsx STREQUAL hashOff OR hashPsx STREQUAL hashGltf OR hashOff STREQUAL has
     message(FATAL_ERROR "charroute FAILED: two vertex colour modes gave the same bytes")
 endif()
 message("charroute passed: vertex colours psx off gltf")
+
+# The JPEG textures: the chain with hires-png (the converted texture is 16 px,
+# so with hires-upscale as the page suggests it), on Hi-Res and Low-Poly.
+set(routePng ON)
+route(jpeg-hires route-jpeg.glb "${fallbackHires}" "" ON)
+route(jpeg-lowpoly route-jpeg.glb "${fallbackLowpoly}" "" ON)
+set(routePng OFF)
+# Without the conversion the game's rules refuse the model: hires-add writes nothing.
+execute_process(COMMAND "${PACKER}" hires-add "${DIR}/p-jpeg-hires.classic.part" "${DIR}/route-jpeg.glb" -o "${DIR}/p-jpeg-refused.rldchar"
+                RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE out)
+if(result EQUAL 0 OR EXISTS "${DIR}/p-jpeg-refused.rldchar" OR NOT out MATCHES "HRG-16")
+    message(FATAL_ERROR "charroute FAILED: hires-add took the JPEG kart without hires-png (exit ${result})\n${out}")
+endif()
+# The converted model as the page checks it.
+run("rs_hires_selftest --png-check" "${TEST}" --png-check "${DIR}/route-jpeg.glb" "${DIR}/p-jpeg-hires-png.glb")
+if(NOT out MATCHES "rs_hires png-check passed")
+    message(FATAL_ERROR "charroute FAILED: the page's check of the converted kart\n${out}")
+endif()
+# make-char reads the JPEG itself: the classic fallback of the converted model
+# is the same, so the chain may take the model as it is.
+run("rldpack make-char (jpeg-hires, converted model)" "${PACKER}" make-char --model "${DIR}/p-jpeg-hires-png.glb" ${page} ${fallbackHires}
+    --out "${DIR}/p-jpeg-hires-converted.classic.part")
+same("the classic fallback of the converted model" "${DIR}/p-jpeg-hires.classic.part" "${DIR}/p-jpeg-hires-converted.classic.part")
+message("charroute passed: jpeg converted to png")
 message("charroute passed: 3 routes")
+
+# The page only checks (no build): route word, model, verbs after the model
+# (a list of --do arguments, may be empty); report into page-<name>-report.txt.
+function(page_check name word model verbs)
+    set(log "${DIR}/page-${name}.log")
+    execute_process(COMMAND "${STUDIO}" --settings "${DIR}/rs.ini" --log "${log}"
+                            --do "page char" --do "route ${word}" --do "model ${DIR}/${model}" ${verbs}
+                            --do "report ${DIR}/page-${name}-report.txt" --do "quit"
+                    RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE out TIMEOUT 240)
+    if(NOT result EQUAL 0 OR NOT EXISTS "${DIR}/page-${name}-report.txt")
+        set(text "")
+        if(EXISTS "${log}")
+            file(READ "${log}" text)
+        endif()
+        message(FATAL_ERROR "charroute FAILED: the page (${name}) ended with ${result}\n${out}\n${text}")
+    endif()
+endfunction()
 
 # The page's log must say what it should.
 function(page_says name pattern what)
@@ -273,6 +338,58 @@ if(PAGE)
     page_route(vcol-gltf hires route-vcol.glb p-vcol-gltf.rldchar)
     set(pageDo "")
     message("charroute page passed: vertex colours psx off gltf")
+
+    # The JPEG kart without the click: refused, the button offered, the
+    # HRG-16 line with its fix on the step Model.
+    page_check(jpeg-refused hires route-jpeg.glb "")
+    file(READ "${DIR}/page-jpeg-refused-report.txt" text)
+    if(NOT text MATCHES "png convert: off \\(the start: never suggested\\), check of the model as it is, jpeg textures 1, button \"Convert to PNG\" offered")
+        message(FATAL_ERROR "charroute FAILED: the page (jpeg-refused) does not offer \"Convert to PNG\"\n${text}")
+    endif()
+    if(NOT text MATCHES "page message: model\t4\tTexture 0 \\('paint'\\) is JPEG\\.\tHow to fix: Press \"Convert to PNG\"")
+        message(FATAL_ERROR "charroute FAILED: the page (jpeg-refused) lacks the JPEG error with its fix\n${text}")
+    endif()
+    if(NOT text MATCHES "shown button: 230 Convert to PNG" OR NOT text MATCHES "png step line: \"\"[\r\n]")
+        message(FATAL_ERROR "charroute FAILED: the page (jpeg-refused) does not show the button, or has a PNG line\n${text}")
+    endif()
+    page_says(jpeg-refused "check: cannot build yet" "the page took the JPEG kart without the click")
+    # The click: the chain with hires-png (and the upscale it now suggests),
+    # rldpack's bytes, on Hi-Res and Low-Poly; the line and "Change".
+    set(pageDo --do "png convert" --do "report ${DIR}/page-jpeg-hires-report.txt" --do "png change")
+    page_route(jpeg-hires hires route-jpeg.glb p-jpeg-hires.rldchar)
+    page_says(jpeg-hires "png convert: 1 JPEG texture\\(s\\) converted for the check \\(rldpack hires-png -> route-jpeg-png\\.glb\\)"
+              "the page did not check the converted kart")
+    page_says(jpeg-hires "upscale small textures: on \\(the suggestion; suggested on, largest base colour texture 16 px\\)"
+              "the page did not suggest the upscale for the converted 16 px texture")
+    page_says(jpeg-hires "png change: advanced open, card Options, \"Convert JPEG textures to PNG\" shown, in view, focus on the box"
+              "\"Change\" did not open Advanced at the box")
+    file(READ "${DIR}/page-jpeg-hires-report.txt" text)
+    if(NOT text MATCHES "png convert: on \\(chosen by the author\\), check of the model as converted, jpeg textures 1, button \"Convert to PNG\" not offered")
+        message(FATAL_ERROR "charroute FAILED: the report of the page (jpeg-hires) does not say the conversion\n${text}")
+    endif()
+    if(NOT text MATCHES "png step line: \"Your JPEG textures will be converted to PNG\\.\" \\(shown, with \"Change\"\\)")
+        message(FATAL_ERROR "charroute FAILED: the step Model (jpeg-hires) does not say that the JPEG textures will be converted\n${text}")
+    endif()
+    if(text MATCHES "is JPEG")
+        message(FATAL_ERROR "charroute FAILED: the page (jpeg-hires) still has the JPEG error after the click\n${text}")
+    endif()
+    set(pageDo --do "png convert")
+    page_route(jpeg-lowpoly lowpoly route-jpeg.glb p-jpeg-lowpoly.rldchar)
+    set(pageDo "")
+    # Unticked in Advanced: the model as it is again, refused.
+    page_check(jpeg-off hires route-jpeg.glb "--do;png convert;--do;png off")
+    file(READ "${DIR}/page-jpeg-off-report.txt" text)
+    if(NOT text MATCHES "png convert: off \\(the start: never suggested\\), check of the model as it is, jpeg textures 1, button \"Convert to PNG\" offered" OR
+       NOT text MATCHES "png step line: \"\"[\r\n]" OR NOT text MATCHES "is JPEG")
+        message(FATAL_ERROR "charroute FAILED: \"png off\" did not bring the JPEG error back (jpeg-off)\n${text}")
+    endif()
+    # No temp file of the page's check or chain is left.
+    foreach(left route-jpeg-png.glb route-jpeg-png-upscaled.glb)
+        if(EXISTS "${DIR}/${left}")
+            message(FATAL_ERROR "charroute FAILED: the page left its temp file ${left}")
+        endif()
+    endforeach()
+    message("charroute page passed: jpeg converted to png")
     message("charroute page passed: 3 routes")
 endif()
 

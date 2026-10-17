@@ -17,6 +17,7 @@
 #include "../rldpack.c"
 #undef main
 
+#include "rs_hires_model.h"
 #include "rs_view.h"
 
 // Rounded to 1/16 game units, half away from zero. The doubles come from
@@ -148,4 +149,64 @@ int Rs_DummyCopiesCheck(wchar_t *why, int whyCap)
     if (why && whyCap > 0)
         why[0] = 0;
     return 1;
+}
+
+// See rs_hires_model.h: rldpack hires-png in this process - the same
+// RldPngc_Make (tools/rldpack_hires_png.inc), so the file written here holds
+// the bytes the command writes. The page Character checks the converted model
+// through it; its build runs the command itself (Char_ChainStart).
+int Rs_HiresPngFile(const wchar_t *in, const wchar_t *out, int *jpeg, int *converted, wchar_t *why, int whyCap)
+{
+    static struct RldPngcResult res;
+    FILE *f;
+    u8 *glb = NULL, *png;
+    long size = -1;
+    size_t outSize = 0;
+    int ok;
+
+    if (jpeg)
+        *jpeg = 0;
+    if (converted)
+        *converted = 0;
+    if (why && whyCap > 0)
+        why[0] = 0;
+    f = _wfopen(in, L"rb");
+    if (f && fseek(f, 0, SEEK_END) == 0)
+        size = ftell(f);
+    ok = f && size > 0 && (unsigned long)size <= RLD_READ_MAX && fseek(f, 0, SEEK_SET) == 0;
+    if (ok) {
+        glb = (u8 *)malloc((size_t)size);
+        ok = glb && fread(glb, 1, (size_t)size, f) == (size_t)size;
+    }
+    if (f)
+        fclose(f);
+    if (!ok) {
+        free(glb);
+        if (why && whyCap > 0)
+            swprintf(why, (size_t)whyCap, L"the model cannot be read");
+        return 0;
+    }
+    png = RldPngc_Make(glb, (size_t)size, &outSize, &res);
+    free(glb);
+    if (jpeg)
+        *jpeg = res.jpeg;
+    if (!png) {
+        if (why && whyCap > 0)
+            swprintf(why, (size_t)whyCap, L"%hs", res.why);
+        return 0;
+    }
+    if (converted)
+        *converted = res.converted;
+    RldPngc_FreeResult(&res);
+    f = _wfopen(out, L"wb");
+    ok = f && fwrite(png, 1, outSize, f) == outSize;
+    if (f && fclose(f) != 0)
+        ok = 0;
+    free(png);
+    if (!ok) {
+        _wremove(out);
+        if (why && whyCap > 0)
+            swprintf(why, (size_t)whyCap, L"the converted model cannot be written to the Studio's temp folder");
+    }
+    return ok;
 }

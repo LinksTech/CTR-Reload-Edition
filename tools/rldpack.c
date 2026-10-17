@@ -6431,7 +6431,7 @@ static void Rld_Usage(void)
 	printf("  char-wheel ...              the preview of a wheel model (glTF, OBJ or PLY) for\n");
 	printf("                              Reload Studio, see below (the wheel of a character:\n");
 	printf("                              make-char --wheel-model, preview)\n");
-	printf("  hires-check, hires-add, hires-strip, hires-upscale ...\n");
+	printf("  hires-check, hires-add, hires-strip, hires-upscale, hires-png ...\n");
 	printf("                              the hi-res driver of a character (a .glb in the\n");
 	printf("                              chunk CHRG, version 1), see below\n");
 	printf("  info     <file>           show the format, META and PARM, leaves LEVD/VRMD untouched\n");
@@ -6444,7 +6444,8 @@ static void Rld_Usage(void)
 	printf("                              voices with the game's own rules\n");
 	printf("  selftest                    check SHA-256 and the build against fixed cases\n");
 	printf("  selftest-hires              check the rules of the hi-res driver (chunk CHRG,\n");
-	printf("                              include/rldhires.inc) against built-in models\n");
+	printf("                              include/rldhires.inc) and hires-png against\n");
+	printf("                              built-in models\n");
 	printf("  make-native-tests [--obj] <folder>\n");
 	printf("                              write the test characters of the native model\n");
 	printf("                              (CNET, CTXT; preview) into a folder of a CMake\n");
@@ -6667,10 +6668,11 @@ static int Cmd_InfoMachine(int argc, char *argv[])
 #include "rldpack_wheel.inc"
 
 // The hi-res driver (include/rldhires.inc): hires-check, hires-add, hires-strip,
-// hires-upscale, and their self-test, selftest-hires.
+// hires-upscale, hires-png, and their self-test, selftest-hires.
 #include "rldpack_hires.inc"
 #include "rldpack_hires_upscale.inc"
 #include "rldpack_hires_test.inc"
+#include "rldpack_hires_png.inc"
 
 // Searched for --machine and removed before a command sees the arguments:
 // otherwise make would report an unknown argument before the machine is on.
@@ -6785,7 +6787,9 @@ static int Rld_MainCommand(int argc, char *argv[])
 	}
 	if (strcmp(argv[1], "selftest-hires") == 0)
 	{
-		return RldHires_SelfTest();
+		const int rules = RldHires_SelfTest();
+
+		return (RldPngc_SelfTest() != 0) || (rules != 0);
 	}
 	if (strcmp(argv[1], "hires-check") == 0)
 	{
@@ -6802,6 +6806,10 @@ static int Rld_MainCommand(int argc, char *argv[])
 	if (strcmp(argv[1], "hires-upscale") == 0)
 	{
 		return RldHires_UpscaleCommand(argc - 2, &argv[2]);
+	}
+	if (strcmp(argv[1], "hires-png") == 0)
+	{
+		return RldHires_PngCommand(argc - 2, &argv[2]);
 	}
 	if (strcmp(argv[1], "hires-test-files") == 0)
 	{

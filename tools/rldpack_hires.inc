@@ -1,5 +1,6 @@
 // rldpack_hires.inc - the hi-res driver on the command line: hires-check,
-// hires-add, hires-strip (hires-upscale: rldpack_hires_upscale.inc).
+// hires-add, hires-strip (hires-upscale: rldpack_hires_upscale.inc, hires-png:
+// rldpack_hires_png.inc).
 //
 // Included by tools/rldpack.c after every helper it uses (Rld_ReadFile, Rld_Say,
 // Rld_WriteEnvelope, s_rldCharFormat). The rules and their messages are
@@ -599,5 +600,11 @@ static void RldHires_Usage(FILE *out)
 	fprintf(out, "  Writes a new model whose small base colour textures (larger edge below 128)\n");
 	fprintf(out, "  are enlarged 2x or 4x with Scale2x, a pixel-art upscaler (no new colours,\n");
 	fprintf(out, "  sharp edges). Everything else stays as it is; the source is only read.\n");
-	fprintf(out, "  Pack the new model with hires-add.\n\n");
+	fprintf(out, "  Pack the new model with hires-add.\n");
+	fprintf(out, "  rldpack hires-png <in.glb> -o <out.glb>\n");
+	fprintf(out, "  Writes a new model whose JPEG textures are PNG: each JPEG embedded in the\n");
+	fprintf(out, "  model is decoded and written as an RGBA PNG of exactly its pixels (the game\n");
+	fprintf(out, "  reads PNG only, rule HRG-16). Everything else stays as it is; the source is\n");
+	fprintf(out, "  only read; a model without JPEG is written as it is. Run it before\n");
+	fprintf(out, "  hires-upscale and hires-add.\n\n");
 }

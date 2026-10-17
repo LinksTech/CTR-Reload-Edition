@@ -1180,6 +1180,13 @@ static void RsHires_Fill(const RldHiresReport *rep, const RldHiresModel *m, stru
         if (img->fileHeight > out->baseEdgeFile)
             out->baseEdgeFile = img->fileHeight;
     }
+    // The JPEG textures (HRG-16 refuses them): the bytes the check found for
+    // every image a material uses (RldHires_CheckImage keeps them in png).
+    for (i = 0; m->images && i < m->imageCount; i++) {
+        const RldHiresImage *img = &m->images[i];
+        if (img->used && img->png && img->pngSize >= 3u && img->png[0] == 0xFFu && img->png[1] == 0xD8u && img->png[2] == 0xFFu)
+            out->jpegTextures++;
+    }
     memcpy(out->boundsMin, m->boundsMin, sizeof(out->boundsMin));
     memcpy(out->boundsMax, m->boundsMax, sizeof(out->boundsMax));
     out->glbBytes = m->glbSize;
@@ -1440,7 +1447,8 @@ int RsHires_UpscaleArgs(const wchar_t *model, const wchar_t *derived, const wcha
     return RS_HIRES_UPSCALE_ARGS;
 }
 
-int RsHires_UpscaledPath(const wchar_t *model, const wchar_t *out, wchar_t *path, int cap)
+// <folder of out>\<model name without .glb><tail>; 0 when it does not fit cap.
+static int RsHires_DerivedPath(const wchar_t *model, const wchar_t *out, const wchar_t *tail, wchar_t *path, int cap)
 {
     const wchar_t *name = model;
     const wchar_t *p;
@@ -1454,13 +1462,33 @@ int RsHires_UpscaledPath(const wchar_t *model, const wchar_t *out, wchar_t *path
     nameLen = wcslen(name);
     if (nameLen >= 4u && _wcsicmp(name + nameLen - 4u, L".glb") == 0)
         nameLen -= 4u;
-    if (nameLen == 0u || cap <= 0 || dirLen + nameLen + 14u > (size_t)cap) {
+    if (nameLen == 0u || cap <= 0 || dirLen + nameLen + wcslen(tail) + 1u > (size_t)cap) {
         if (cap > 0)
             path[0] = 0;
         return 0;
     }
     memcpy(path, out, dirLen * sizeof(wchar_t));
     memcpy(path + dirLen, name, nameLen * sizeof(wchar_t));
-    wcscpy(path + dirLen + nameLen, L"-upscaled.glb");
+    wcscpy(path + dirLen + nameLen, tail);
     return 1;
+}
+
+int RsHires_UpscaledPath(const wchar_t *model, const wchar_t *out, wchar_t *path, int cap)
+{
+    return RsHires_DerivedPath(model, out, L"-upscaled.glb", path, cap);
+}
+
+int RsHires_PngArgs(const wchar_t *model, const wchar_t *derived, const wchar_t **args)
+{
+    args[0] = L"hires-png";
+    args[1] = model;
+    args[2] = L"-o";
+    args[3] = derived;
+    args[4] = L"--machine";
+    return RS_HIRES_PNG_ARGS;
+}
+
+int RsHires_PngPath(const wchar_t *model, const wchar_t *out, wchar_t *path, int cap)
+{
+    return RsHires_DerivedPath(model, out, L"-png.glb", path, cap);
 }

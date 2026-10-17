@@ -29,6 +29,14 @@
 // with a 16, 40 and 63 px texture, not for 64 px, no texture or a texture of
 // unknown size (a JPEG), on Low-Poly and Hi-Res alike, never on Vanilla; and
 // the line below the box.
+//
+// THE JPEG TEXTURES (rs_charroute.h): a kart with a real JPEG texture (made
+// here) is refused by HRG-16 with the fix that names "Convert to PNG", the
+// button is offered only for it on Low-Poly and Hi-Res with the box off, the
+// line on the step Model, and the arguments of the step hires-png. With
+// --png-check <jpeg.glb> <converted.glb> it checks the model rldpack
+// hires-png made of it (cmake/run_rs_charroute.cmake): usable, no JPEG, its
+// texture 16 px and the upscale suggested.
 
 #include "reloadstudio.h"
 #include "rs_hires_model.h"
@@ -293,6 +301,33 @@ struct KtSpec {
     int png;        // the edge of a real RGBA PNG on every face (<= 100), 0 = a plain colour
     int pngHeader;  // the edge of a PNG with its header only (for the checks), 0 = none
     int vcol;       // COLOR_0 on the body: every corner this sRGB byte (grey), 0 = no COLOR_0
+    int jpeg;       // 1 = the texture is s_ktJpeg (16 x 16), mimeType image/jpeg (png and pngHeader 0)
+};
+
+// A JPEG of 16 x 16 pixels in four squares of 8 x 8: (200, 40, 40) and
+// (40, 200, 40) at the top, (40, 40, 200) and (230, 230, 230) below; quality
+// 90, no chroma subsampling - the same bytes as s_rldMkTestJpeg of rldpack's
+// OBJ self-test (tools/rldpack_obj_test.inc).
+static const unsigned char s_ktJpeg[303] = {
+    0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01,
+    0x00, 0x01, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43, 0x00, 0x03, 0x02, 0x02, 0x03, 0x02, 0x02, 0x03,
+    0x03, 0x03, 0x03, 0x04, 0x03, 0x03, 0x04, 0x05, 0x08, 0x05, 0x05, 0x04, 0x04, 0x05, 0x0A, 0x07,
+    0x07, 0x06, 0x08, 0x0C, 0x0A, 0x0C, 0x0C, 0x0B, 0x0A, 0x0B, 0x0B, 0x0D, 0x0E, 0x12, 0x10, 0x0D,
+    0x0E, 0x11, 0x0E, 0x0B, 0x0B, 0x10, 0x16, 0x10, 0x11, 0x13, 0x14, 0x15, 0x15, 0x15, 0x0C, 0x0F,
+    0x17, 0x18, 0x16, 0x14, 0x18, 0x12, 0x14, 0x15, 0x14, 0xFF, 0xDB, 0x00, 0x43, 0x01, 0x03, 0x04,
+    0x04, 0x05, 0x04, 0x05, 0x09, 0x05, 0x05, 0x09, 0x14, 0x0D, 0x0B, 0x0D, 0x14, 0x14, 0x14, 0x14,
+    0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14,
+    0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14,
+    0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0x14, 0xFF, 0xC0,
+    0x00, 0x11, 0x08, 0x00, 0x10, 0x00, 0x10, 0x03, 0x01, 0x11, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11,
+    0x01, 0xFF, 0xC4, 0x00, 0x16, 0x00, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07, 0x08, 0x09, 0xFF, 0xC4, 0x00, 0x14, 0x10, 0x01, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF,
+    0xC4, 0x00, 0x17, 0x01, 0x00, 0x03, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x07, 0x08, 0x09, 0x06, 0xFF, 0xC4, 0x00, 0x14, 0x11, 0x01, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xDA,
+    0x00, 0x0C, 0x03, 0x01, 0x00, 0x02, 0x11, 0x03, 0x11, 0x00, 0x3F, 0x00, 0x14, 0x0D, 0xCE, 0xA9,
+    0xEC, 0x3A, 0x47, 0x74, 0x68, 0xAC, 0x46, 0x41, 0xB9, 0x64, 0xA9, 0xA3, 0x7F, 0xFF, 0xD9,
 };
 
 // A box of grid x grid quads per face into positions, normals, UVs and indices.
@@ -453,7 +488,12 @@ static unsigned char *Kt_Glb(const struct KtSpec *sp, size_t *size)
             Kt_F(&tmp, 0.0f), Kt_F(&tmp, 0.0f), Kt_F(&tmp, 0.0f), Kt_F(&tmp, 1.0f);
         aOut = Kt_View(&bin, &views, &acc, &viewCount, &accCount, &tmp, 5126, 2, "VEC4", NULL);
     }
-    if (sp->png || sp->pngHeader) {
+    if (sp->jpeg) {
+        Kt_Pad(&bin, 0);
+        Kt_Text(&views, ",{\"buffer\":0,\"byteOffset\":%u,\"byteLength\":%u}", (unsigned)bin.n, (unsigned)sizeof(s_ktJpeg));
+        Kt_Put(&bin, s_ktJpeg, sizeof(s_ktJpeg));
+        image = viewCount++;
+    } else if (sp->png || sp->pngHeader) {
         tmp.n = 0;
         Kt_Png(&tmp, sp->png ? (unsigned)sp->png : (unsigned)sp->pngHeader, sp->png == 0);
         Kt_Pad(&bin, 0);
@@ -485,7 +525,8 @@ static unsigned char *Kt_Glb(const struct KtSpec *sp, size_t *size)
     Kt_Text(&json, "],\"materials\":[{\"name\":\"paint\",\"pbrMetallicRoughness\":{%s}}]",
             image >= 0 ? "\"baseColorTexture\":{\"index\":0}" : "\"baseColorFactor\":[0.8,0.3,0.1,1]");
     if (image >= 0)
-        Kt_Text(&json, ",\"textures\":[{\"source\":0}],\"images\":[{\"name\":\"paint\",\"bufferView\":%d,\"mimeType\":\"image/png\"}]", image);
+        Kt_Text(&json, ",\"textures\":[{\"source\":0}],\"images\":[{\"name\":\"paint\",\"bufferView\":%d,\"mimeType\":\"%s\"}]", image,
+                sp->jpeg ? "image/jpeg" : "image/png");
     if (sp->skin)
         Kt_Text(&json, ",\"skins\":[{\"joints\":[1],\"inverseBindMatrices\":%d}]", aIbm);
     for (i = 0; i < sp->clips && i < 12; i++)
@@ -891,7 +932,7 @@ static void Kt_SelfTestRoutes(const wchar_t *folder)
         }
         c.rows[c.rowCount].severity = c.rows[c.rowCount + 1].severity = RS_SEV_ERROR;
         wcscpy(c.rows[c.rowCount].rule, L"HRG-16");
-        wcscpy(c.rows[c.rowCount++].text, L"texture 3 ('decal') is JPEG - export textures as PNG");
+        wcscpy(c.rows[c.rowCount++].text, L"texture 3 ('decal') is not a PNG - export textures as PNG");
         wcscpy(c.rows[c.rowCount].rule, L"HRG-27");
         wcscpy(c.rows[c.rowCount++].text, L"over budget: a texture edge of 4096, the limit is 2048");
         n = RsCharHires_Messages(&c, RS_ROUTE_HIRES, m, 96);
@@ -917,6 +958,15 @@ static void Kt_SelfTestRoutes(const wchar_t *folder)
         c.vcolMode = RS_HIRES_VCOL_OFF;
         n = RsCharHires_Messages(&c, RS_ROUTE_HIRES, m, 96);
         Check(n == 34 && !Kt_HasRule(m, n, L"HRG-36"), "HRG-36 with the vertex colours off: no line");
+        // A JPEG row of HRG-16 beside the others: a line of its own whose fix
+        // is the button (RS_FIX_JPEG), the other HRG-16 rows still one line.
+        wcscpy(c.rows[c.rowCount].rule, L"HRG-16");
+        c.rows[c.rowCount].severity = RS_SEV_ERROR;
+        wcscpy(c.rows[c.rowCount++].text, L"texture 4 ('sticker') is JPEG - export textures as PNG");
+        n = RsCharHires_Messages(&c, RS_ROUTE_HIRES, m, 96);
+        Check(n == 35 && Kt_Has(m, n, RS_SEV_ERROR, RS_WIZ_PLACE_MODEL, L"HRG-16", L"Finding of rule 16 (and 1 more).", NULL) &&
+                  Kt_Has(m, n, RS_SEV_ERROR, RS_WIZ_PLACE_MODEL, L"HRG-16", L"Texture 4 ('sticker') is JPEG.", RS_FIX_JPEG),
+              "a JPEG row of HRG-16: a line of its own with the fix \"Convert to PNG\", the other HRG-16 rows folded as before");
         Check(Kt_Has(m, n, RS_SEV_ERROR, RS_WIZ_PLACE_WHEELS, L"HRG-31", NULL, NULL) && Kt_Has(m, n, RS_SEV_ERROR, RS_WIZ_PLACE_ANIMATIONS, L"HRG-21", NULL, NULL) &&
                   Kt_Has(m, n, RS_SEV_ERROR, RS_WIZ_PLACE_SIZE, L"HRG-17", NULL, NULL) && Kt_Has(m, n, RS_SEV_ERROR, RS_WIZ_PLACE_SIZE, L"HRG-35", NULL, NULL),
               "the places: wheel details at the wheels, clip names at the animations, textures and limits at the size");
@@ -1017,6 +1067,95 @@ static void Kt_SelfTestUpscale(void)
     }
 }
 
+// THE JPEG TEXTURES (rs_charroute.h): the kart with the test JPEG is refused
+// by HRG-16 in one line whose fix names the button; the button only for it,
+// on Low-Poly and Hi-Res, with the box off; the line on the step Model; the
+// step hires-png.
+static void Kt_SelfTestPng(void)
+{
+    static struct RsHiresCheck c;
+    struct RsWizMsg m[48];
+    struct KtSpec jpeg = { 2, 1, 0, 0, 0, 0, 0, 1 };
+    struct KtSpec png = { 2, 1, 0, 0, 16, 0 };
+    const wchar_t *args[RS_HIRES_PNG_ARGS];
+    wchar_t line[RS_WIZ_TEXT_MAX], path[64];
+    int n, i, jpegLines = 0, ok;
+
+    ok = Kt_Check(&jpeg, &c) == 1 && c.read == 1 && c.usable == 0 && c.jpegTextures == 1 && c.baseTextures == 1 && c.baseUnsized == 1;
+    Check(ok, "JPEG kart: read, refused, one JPEG texture (its size unknown to the upscale)");
+    n = RsCharHires_Messages(&c, RS_ROUTE_HIRES, m, 48);
+    for (i = 0; i < n; i++)
+        if (RsCharHires_IsJpegMsg(&m[i])) {
+            jpegLines++;
+            ok = m[i].severity == RS_SEV_ERROR && m[i].place == RS_WIZ_PLACE_MODEL && wcscmp(m[i].text, L"Texture 0 ('paint') is JPEG.") == 0 &&
+                 wcscmp(m[i].fix, RS_FIX_JPEG) == 0 && wcsstr(m[i].fix, L"\"Convert to PNG\"") != NULL && wcsstr(m[i].fix, L"rldpack hires-png") != NULL;
+        }
+    Check(jpegLines == 1 && ok && Kt_WellFormed(m, n), "JPEG kart: one error at the model, 'Texture 0 ('paint') is JPEG.', its fix names \"Convert to PNG\" and rldpack hires-png");
+    Check(RsCharHires_PngFixShown(&c, RS_ROUTE_LOWPOLY, 0) == 1 && RsCharHires_PngFixShown(&c, RS_ROUTE_HIRES, 0) == 1,
+          "JPEG kart: \"Convert to PNG\" offered on Low-Poly and Hi-Res with the box off");
+    Check(RsCharHires_PngFixShown(&c, RS_ROUTE_HIRES, 1) == 0 && RsCharHires_PngFixShown(&c, RS_ROUTE_VANILLA, 0) == 0 &&
+              RsCharHires_PngFixShown(NULL, RS_ROUTE_HIRES, 0) == 0,
+          "\"Convert to PNG\" not offered with the box on, on Vanilla or without a check");
+    RsHires_CheckFree(&c);
+    ok = Kt_Check(&png, &c) == 1 && c.jpegTextures == 0 && RsCharHires_PngFixShown(&c, RS_ROUTE_HIRES, 0) == 0;
+    n = RsCharHires_Messages(&c, RS_ROUTE_HIRES, m, 48);
+    for (i = 0; i < n; i++)
+        ok = ok && !RsCharHires_IsJpegMsg(&m[i]);
+    Check(ok, "PNG kart: no JPEG, no JPEG line, no button");
+    RsHires_CheckFree(&c);
+
+    // The line on the step Model: only with the box on, never on Vanilla.
+    RsCharHires_PngStepLine(RS_ROUTE_HIRES, 1, 1, 0, line, RS_WIZ_TEXT_MAX);
+    ok = wcscmp(line, L"Your JPEG textures will be converted to PNG.") == 0;
+    RsCharHires_PngStepLine(RS_ROUTE_LOWPOLY, 1, 2, 0, line, RS_WIZ_TEXT_MAX);
+    Check(ok && wcscmp(line, L"Your JPEG textures will be converted to PNG.") == 0, "step line: the JPEG textures will be converted");
+    RsCharHires_PngStepLine(RS_ROUTE_HIRES, 1, 1, 1, line, RS_WIZ_TEXT_MAX);
+    Check(wcscmp(line, L"Your JPEG textures could not be converted to PNG - see the message below.") == 0, "step line: the conversion failed");
+    RsCharHires_PngStepLine(RS_ROUTE_HIRES, 1, 0, 0, line, RS_WIZ_TEXT_MAX);
+    Check(wcscmp(line, L"Convert JPEG textures to PNG is on - your model has no JPEG textures.") == 0, "step line: on, but no JPEG in the model");
+    for (ok = 1, i = 0; i < 4; i++) {
+        wcscpy(line, L"x");
+        RsCharHires_PngStepLine(i < 2 ? RS_ROUTE_HIRES : RS_ROUTE_VANILLA, i >= 2, 1, 0, line, RS_WIZ_TEXT_MAX);
+        ok = ok && line[0] == 0;
+    }
+    Check(ok, "step line: none with the box off, never on Vanilla");
+
+    // The step of the chain.
+    Check(RsHires_PngArgs(L"model.glb", L"model-png.glb", args) == 5 && wcscmp(args[0], L"hires-png") == 0 && wcscmp(args[1], L"model.glb") == 0 &&
+              wcscmp(args[2], L"-o") == 0 && wcscmp(args[3], L"model-png.glb") == 0 && wcscmp(args[4], L"--machine") == 0,
+          "the PNG step is rldpack hires-png <model> -o <derived> --machine");
+    Check(RsHires_PngPath(L"C:\\a\\Kart.glb", L"D:\\t\\x.rldchar", path, 64) == 1 && wcscmp(path, L"D:\\t\\Kart-png.glb") == 0 &&
+              RsHires_UpscaledPath(path, L"D:\\t\\x.rldchar", line, 64) == 1 && wcscmp(line, L"D:\\t\\Kart-png-upscaled.glb") == 0 &&
+              RsHires_PngPath(L"m.glb", L"x.rldchar", path, 8) == 0 && path[0] == 0,
+          "the converted model: <folder>\\<model name>-png.glb, upscaled <name>-png-upscaled.glb, refused when it does not fit");
+}
+
+// --png-check <jpeg.glb> <converted.glb>: the JPEG kart and what rldpack
+// hires-png made of it, as the page checks them.
+static int Kt_PngCheck(const wchar_t *jpegPath, const wchar_t *convertedPath)
+{
+    static struct RsHiresCheck c;
+    struct RsWizMsg m[48];
+    unsigned largest = 0;
+    int n, i, jpegLines = 0;
+
+    Check(RsHires_CheckFile(jpegPath, &c) == 1 && c.usable == 0 && c.jpegTextures == 1 && RsCharHires_PngFixShown(&c, RS_ROUTE_HIRES, 0) == 1,
+          "png-check: the JPEG kart is refused, \"Convert to PNG\" offered");
+    RsHires_CheckFree(&c);
+    Check(RsHires_CheckFile(convertedPath, &c) == 1 && c.usable == 1 && c.errors == 0 && c.jpegTextures == 0 && c.baseTextures == 1 &&
+              c.baseUnsized == 0 && c.baseEdgeFile == 16u && c.previewTextured == 1,
+          "png-check: the converted kart is usable, no JPEG, its texture a 16 px PNG, the textured picture");
+    Check(RsCharHires_SuggestUpscale(&c, RS_ROUTE_HIRES, &largest) == 1 && largest == 16u && RsCharHires_PngFixShown(&c, RS_ROUTE_HIRES, 1) == 0,
+          "png-check: the converted kart gets the upscale suggestion (16 px), no button");
+    n = RsCharHires_Messages(&c, RS_ROUTE_HIRES, m, 48);
+    for (i = 0; i < n; i++)
+        jpegLines += RsCharHires_IsJpegMsg(&m[i]);
+    Check(jpegLines == 0, "png-check: no JPEG line for the converted kart");
+    RsHires_CheckFree(&c);
+    printf("rs_hires png-check %s: %d checks, %d failures\n", s_failures ? "FAILED" : "passed", s_checks, s_failures);
+    return s_failures != 0;
+}
+
 // --write <folder>: the karts of the byte test of the routes
 // (cmake/run_rs_charroute.cmake) and the fallback's switches, a CMake list per
 // CHRG route (fallback-lowpoly.txt, fallback-hires.txt).
@@ -1030,6 +1169,7 @@ static int Kt_Write(const wchar_t *folder)
         { L"route-tex64.glb", { 2, 1, 0, 0, 64, 0 } },    // as route-bare with a 64 x 64 texture: no upscale suggested
         { L"route-wheels.glb", { 2, 1, 12, 4, 16, 0 } },  // skinned, 12 clips, its own 4 wheels (the page adds --wheels off)
         { L"route-vcol.glb", { 2, 1, 0, 0, 16, 0, 128 } }, // as route-bare, with PS1-like COLOR_0 (grey 128): the page suggests PSX
+        { L"route-jpeg.glb", { 2, 1, 0, 0, 0, 0, 0, 1 } },  // as route-bare, its 16 x 16 texture a JPEG: refused until "Convert to PNG"
     };
     int i, route, ok = 1;
     for (i = 0; i < (int)(sizeof(karts) / sizeof(karts[0])); i++) {
@@ -1092,10 +1232,13 @@ int wmain(int argc, wchar_t **argv)
         return Kt_Write(argv[2]);
     if (argc == 4 && wcscmp(argv[1], L"--messages") == 0)
         return Kt_Messages(argv[2], argv[3]);
+    if (argc == 4 && wcscmp(argv[1], L"--png-check") == 0)
+        return Kt_PngCheck(argv[2], argv[3]);
     if (argc != 2) {
         printf("usage: rs_hires_selftest <folder with hires-good.glb, hires-warn.glb, hires-bad.glb, packer.rldchar>\n");
         printf("       rs_hires_selftest --write <folder>   (the karts of cmake/run_rs_charroute.cmake)\n");
         printf("       rs_hires_selftest --messages lowpoly|hires <model>   (the lines of a route, by hand)\n");
+        printf("       rs_hires_selftest --png-check <jpeg.glb> <converted.glb>   (cmake/run_rs_charroute.cmake)\n");
         return 2;
     }
 
@@ -1293,6 +1436,7 @@ int wmain(int argc, wchar_t **argv)
     Kt_SelfTestRoutes(argv[1]);
     Kt_SelfTestColours();
     Kt_SelfTestUpscale();
+    Kt_SelfTestPng();
 
     printf("rs_hires selftest %s: %d checks, %d failures\n", s_failures ? "FAILED" : "passed", s_checks, s_failures);
     return s_failures != 0;

@@ -40,6 +40,12 @@
 // "UPSCALE SMALL TEXTURES" IS A SUGGESTION, NOT A PRESET: off on every route,
 // the Studio suggests it only for small textures (RsCharHires_SuggestUpscale,
 // see rs_charroute.h, THE UPSCALE).
+//
+// JPEG TEXTURES (rs_charroute.h, THE JPEG TEXTURES): the rows of HRG-16 that
+// say "is JPEG" are one line of their own (apart from the other HRG-16 rows,
+// a WebP or a damaged PNG), with the fix RS_FIX_JPEG that names the button
+// "Convert to PNG" and rldpack hires-png. Never a suggestion: the button is
+// the author's step.
 
 #include "reloadstudio.h"
 #include "rs_charroute.h"
@@ -149,6 +155,12 @@ static const struct RsHrgSay s_say[] = {
 #define RS_FIX_WHEELS L"To use its own wheels, name four objects wheel_fl, wheel_fr, wheel_rl and wheel_rr in Blender."
 #define RS_FIX_TARGET L"Use Hi-Res instead, or reduce the model in Blender"
 
+// A row of HRG-16 about a JPEG (the check's text "texture N ('x') is JPEG - ...").
+static int RsCharHires_RowIsJpeg(const struct RsHiresRow *r)
+{
+    return wcscmp(r->rule, L"HRG-16") == 0 && wcsstr(r->text, L" is JPEG") != NULL;
+}
+
 static const struct RsHrgSay *RsCharHires_Say(const wchar_t *rule)
 {
     int i;
@@ -238,8 +250,9 @@ int RsCharHires_Messages(const struct RsHiresCheck *c, int route, struct RsWizMs
             continue;
         say = RsCharHires_Say(r->rule);
         if (wcscmp(r->rule, L"HRG-27") != 0) {
+            // One line per rule; the JPEG rows of HRG-16 apart from its others.
             for (j = i + 1; j < c->rowCount; j++)
-                if (!done[j] && wcscmp(c->rows[j].rule, r->rule) == 0) {
+                if (!done[j] && wcscmp(c->rows[j].rule, r->rule) == 0 && RsCharHires_RowIsJpeg(&c->rows[j]) == RsCharHires_RowIsJpeg(r)) {
                     done[j] = 1;
                     more++;
                 }
@@ -257,7 +270,7 @@ int RsCharHires_Messages(const struct RsHiresCheck *c, int route, struct RsWizMs
             }
         }
         RsCharHires_Put(&list[count++], wcscmp(r->rule, L"HRG-36") == 0 ? RS_SEV_WARNING : r->severity, say ? say->place : RS_WIZ_PLACE_MODEL,
-                        r->rule, line, say ? say->fix : RS_FIX_UNKNOWN);
+                        r->rule, line, RsCharHires_RowIsJpeg(r) ? RS_FIX_JPEG : say ? say->fix : RS_FIX_UNKNOWN);
     }
 
     // The clips: one line. The check reached them when it said HRG-19, or
@@ -413,6 +426,34 @@ void RsCharHires_UpscaleStepLine(int route, int on, int suggested, unsigned larg
         swprintf(out, (size_t)cap, L"Your textures will stay as they are (your choice; suggested: upscale, largest %u px).", largest);
     else if (on)
         swprintf(out, (size_t)cap, L"Your textures will be upscaled (your choice).");
+}
+
+// ---------------------------------------------------------------------------
+// The JPEG textures (rs_charroute.h, THE JPEG TEXTURES)
+
+int RsCharHires_IsJpegMsg(const struct RsWizMsg *m)
+{
+    return m && wcscmp(m->rule, L"HRG-16") == 0 && wcsstr(m->text, L" is JPEG") != NULL;
+}
+
+int RsCharHires_PngFixShown(const struct RsHiresCheck *c, int route, int on)
+{
+    return !on && c && c->read && c->jpegTextures > 0 && (route == RS_ROUTE_LOWPOLY || route == RS_ROUTE_HIRES);
+}
+
+void RsCharHires_PngStepLine(int route, int on, int jpeg, int failed, wchar_t *out, int cap)
+{
+    if (!out || cap <= 0)
+        return;
+    out[0] = 0;
+    if (!on || (route != RS_ROUTE_LOWPOLY && route != RS_ROUTE_HIRES))
+        return;
+    if (failed)
+        swprintf(out, (size_t)cap, L"Your JPEG textures could not be converted to PNG - see the message below.");
+    else if (jpeg > 0)
+        swprintf(out, (size_t)cap, L"Your JPEG textures will be converted to PNG.");
+    else
+        swprintf(out, (size_t)cap, L"Convert JPEG textures to PNG is on - your model has no JPEG textures.");
 }
 
 // ---------------------------------------------------------------------------

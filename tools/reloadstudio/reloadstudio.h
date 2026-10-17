@@ -412,13 +412,19 @@
 //   --forward, --colors, --textures, --vertex-colors, --native-model,
 //   --wheel-model: the size stays 100) -, after them the switches of
 //   RsCharHires_FallbackArgs (--reduce auto --rig bind-pose) and, when the
-//   .glb has its own four wheel nodes, --wheels off. Their build, three
+//   .glb has its own four wheel nodes, --wheels off. With "Convert JPEG
+//   textures to PNG" on (only ever the author's click) the .glb is checked as
+//   rldpack hires-png converts it (Rs_HiresPngFile, in the Studio itself, into
+//   the temp folder and deleted after the check). Their build, up to four
 //   commands one after the other:
 //   make-char --machine --model <glb> ... --out <temp folder>\<out name>.classic.part
-//             (the switches of the check, without --check and the previews)
-//   hires-upscale <glb> -o <temp folder>\<glb name>-upscaled.glb --machine
+//             (the switches of the check, without --check and the previews;
+//             make-char reads a JPEG texture itself, so always the .glb itself)
+//   hires-png <glb> -o <temp folder>\<glb name>-png.glb --machine
+//             (only with "Convert JPEG textures to PNG": RsHires_PngArgs)
+//   hires-upscale <glb or converted> -o <temp folder>\<its name>-upscaled.glb --machine
 //             (only with "Upscale small textures": RsHires_UpscaleArgs)
-//   hires-add <classic> <glb or upscaled> -o <out> [--vertex-colors psx|gltf|off] --machine
+//   hires-add <classic> <glb, converted or upscaled> -o <out> [--vertex-colors psx|gltf|off] --machine
 //             (RsHires_PackArgs; --vertex-colors only for a .glb with COLOR_0:
 //             the mode of the switch "Vertex color blending" - none for a
 //             model without, rldpack then writes mode glTF, the bytes of before)
@@ -488,11 +494,43 @@
 //                                 "Upscale small textures" shown, in view, focus
 //                                 on the box" (FAIL when the line is not shown,
 //                                 or when any of these is not so)
+//   png convert                   as a click on the button "Convert to PNG" on
+//                                 the step Model, the fix of the error of a
+//                                 model with JPEG textures (HRG-16; shown only
+//                                 then, RsCharHires_PngFixShown - FAIL when it
+//                                 is not): "Convert JPEG textures to PNG" on as
+//                                 the author's choice, kept for the model, and
+//                                 the model checked again as converted (the
+//                                 shell waits for that check); logged "png
+//                                 convert: a click on "Convert to PNG"", then
+//                                 "png convert: <n> JPEG texture(s) converted
+//                                 for the check (rldpack hires-png -> <file>)"
+//                                 or "png convert: failed - <why>"
+//   png on|off                    as a click on the box "Convert JPEG textures
+//                                 to PNG" (Advanced, card Options of a Low-Poly
+//                                 or Hi-Res route; FAIL on Vanilla): the
+//                                 author's choice, kept for the model (off
+//                                 forgets it), the model checked again - off:
+//                                 as it is, the JPEG error back. The Studio
+//                                 never ticks it by itself
+//   png change                    as "upscale change" for the line of the PNG
+//                                 conversion on the step Model ("Your JPEG
+//                                 textures will be converted to PNG.",
+//                                 RsCharHires_PngStepLine): Advanced at its
+//                                 card Options, the box "Convert JPEG textures
+//                                 to PNG" in view and focused; logged "png
+//                                 change: advanced open, card Options, "Convert
+//                                 JPEG textures to PNG" shown, in view, focus on
+//                                 the box"
 //   "report" writes first "route:", "step:", "advanced:", "upscale small
 //   textures:" (on|off, chosen by the author | suggested | the route's start,
 //   the suggestion with its reason, the preset and the line below the box),
 //   "upscale step line:" (the line on the step Model in quotes, "" for none,
-//   then "(shown, with "Change")" or "(not shown on this view)"),
+//   then "(shown, with "Change")" or "(not shown on this view)"), "png
+//   convert:" (on|off, chosen by the author | the start: never suggested,
+//   "check of the model as converted | the model as it is | no model", "jpeg
+//   textures <n>" [", failed: <why>"], "button "Convert to PNG" offered | not
+//   offered"), "png step line:" (as "upscale step line:"),
 //   "preset:", "details:", "preview:", "preview stage:" (neutral |
 //   the view's own), "vertex colors:" (a CHRG route: the mode, chosen by the
 //   author or suggested, the suggestion with its reason and the median of

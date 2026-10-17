@@ -146,6 +146,46 @@ void RsCharHires_UpscaleLine(int on, int suggested, unsigned largest, wchar_t *o
 // upscale).
 void RsCharHires_UpscaleStepLine(int route, int on, int suggested, unsigned largest, wchar_t *out, int cap);
 
+// THE JPEG TEXTURES of a CHRG route. The game reads PNG textures only (rule
+// HRG-16; CHRG of version 1 holds PNG only, and hires-add stores the .glb
+// byte for byte), so a model with a JPEG texture is refused - the error stays
+// at its place and says what is wrong. Its "How to fix" offers the button
+// "Convert to PNG" on the step Model: the author's deliberate step, never
+// suggested by the Studio. The click ticks "Convert JPEG textures to PNG"
+// (Advanced, card Options, below "Upscale small textures"), kept with the
+// model as the upscale choice is; the page then checks the model as
+// converted (rldpack hires-png into its temp folder, Rs_HiresPngFile) - the
+// JPEG error goes, the upscale suggestion sees the textures' sizes - and the
+// step Model says so in one line with "Change". Unticked in Advanced, the
+// model is checked as it is again and the error comes back. The build runs
+//   make-char <model> (the classic fallback reads JPEG itself)
+//   -> hires-png <model> -o <model>-png.glb
+//   -> [hires-upscale <model>-png.glb -o <model>-png-upscaled.glb]
+//   -> hires-add <classic> <the last of them> -o <out>
+// exactly as rldpack is called by hand. Vanilla never has any of it.
+
+// The fix of a JPEG row of HRG-16 (the button's name in it).
+#define RS_FIX_JPEG L"Press \"Convert to PNG\" - the Studio converts them with rldpack hires-png before packing; your file stays as it is. " \
+                    L"Or save the textures as PNG (glTF export: Images > PNG) and export again."
+
+// 1 = a message of RsCharHires_Messages is about JPEG textures (HRG-16, "is JPEG").
+int RsCharHires_IsJpegMsg(const struct RsWizMsg *m);
+
+// 1 = the button "Convert to PNG" is shown: a CHRG route, the model as it is
+// was checked (the box off) and it has JPEG textures.
+int RsCharHires_PngFixShown(const struct RsHiresCheck *c, int route, int on);
+
+// The one line on the step Model (followed by "Change", which opens Advanced
+// at the box), only while the box is on:
+//   JPEG textures converted:   "Your JPEG textures will be converted to PNG."
+//   the conversion failed:     "Your JPEG textures could not be converted to
+//                               PNG - see the message below."
+//   no JPEG in the model:      "Convert JPEG textures to PNG is on - your
+//                               model has no JPEG textures."
+// L"" when the box is off and on every route but RS_ROUTE_LOWPOLY and
+// RS_ROUTE_HIRES. jpeg: the JPEG textures the conversion found.
+void RsCharHires_PngStepLine(int route, int on, int jpeg, int failed, wchar_t *out, int cap);
+
 // The extra make-char switches of the classic fallback of a CHRG route
 // (written after the page's own switches); returns the count, at most
 // RS_CHARHIRES_FALLBACK_ARGS.

@@ -111,6 +111,10 @@ struct RsHiresCheck {
     int baseTextures;                // images a material uses as base colour
     int baseUnsized;                 // of them, those whose size could not be read (not an embedded PNG)
     unsigned baseEdgeFile;           // the largest width or height of them in the file, 0 = none
+    // The textures a material uses (base colour or normal map) whose bytes are
+    // a JPEG - the ones rule HRG-16 refuses and "Convert JPEG textures to PNG"
+    // converts (rldpack hires-png, rs_charroute.h THE JPEG TEXTURES).
+    int jpegTextures;
     float boundsMin[3], boundsMax[3];// bind pose, metres
     unsigned glbBytes;               // the size of the GLB
 
@@ -248,5 +252,23 @@ int RsHires_PackArgs(const wchar_t *character, const wchar_t *model, const wchar
 #define RS_HIRES_UPSCALE_ARGS 5
 int RsHires_UpscaleArgs(const wchar_t *model, const wchar_t *derived, const wchar_t **args);
 int RsHires_UpscaledPath(const wchar_t *model, const wchar_t *out, wchar_t *path, int cap);
+
+// THE OPTION "Convert JPEG textures to PNG": before packing (and before the
+// upscale), rldpack hires-png <model> -o <derived> --machine writes a new
+// model whose JPEG textures are PNG (the source is only read;
+// tools/rldpack_hires_png.inc); the next step takes that one.
+// RsHires_PngPath: <folder of out>\<model name without .glb>-png.glb; 0 when
+// it does not fit cap (path is then empty).
+#define RS_HIRES_PNG_ARGS 5
+int RsHires_PngArgs(const wchar_t *model, const wchar_t *derived, const wchar_t **args);
+int RsHires_PngPath(const wchar_t *model, const wchar_t *out, wchar_t *path, int cap);
+
+// The same conversion in this process, for the check of the page Character
+// (only Reload Studio has it: rs_rldpack.c, where rldpack's own code is): reads
+// in, writes the bytes rldpack hires-png writes to out. 1 = written; jpeg
+// (may be NULL) = the JPEG textures found, converted (may be NULL) = those
+// converted (0 for a model without JPEG: then out is a copy). 0 = nothing
+// written, why says why in rldpack's words.
+int Rs_HiresPngFile(const wchar_t *in, const wchar_t *out, int *jpeg, int *converted, wchar_t *why, int whyCap);
 
 #endif

@@ -200,6 +200,19 @@
 // choices per model, as the vertex colour mode); "upscale auto" in
 // automation forgets it.
 //
+// THE JPEG TEXTURES of a CHRG route (rs_charroute.h): the game reads PNG
+// only, so a model with a JPEG texture is refused (HRG-16) - the error stays
+// at its place and its "How to fix" names the button "Convert to PNG" on the
+// step Model (the fix of the model's error, like Reduce to fit). Never
+// suggested: only the author's click (or "png convert") ticks "Convert JPEG
+// textures to PNG" (Advanced, card Options, below the upscale), kept with
+// the model. The page then checks the model as converted: rldpack hires-png
+// in this process (Rs_HiresPngFile) into Rs_TempDir, that file checked and
+// deleted again (Char_HiresEnsure) - the JPEG error goes and the upscale
+// suggestion sees the sizes of the PNGs. The step Model shows one line, "Your
+// JPEG textures will be converted to PNG.", with "Change" (Advanced at the
+// box). Unticked there, the model is checked as it is again.
+//
 // THE MESSAGES AT THEIR PLACE: every message keeps its step (and card); the
 // step shows its own below its fields, each with its detail ("How to fix" for
 // a CHRG route), and nothing where it has none. Vanilla: make-char's @msg
@@ -267,10 +280,13 @@
 // THE BUILD OF A CHRG ROUTE (Char_ChainStart): every step through
 // Rs_RunRldpack, so the bytes are rldpack's - make-char with the page's
 // switches, RsCharHires_FallbackArgs and --wheels off when the .glb has its
-// own four wheels -> <out name>.classic.part in Rs_TempDir; with "Upscale
-// small textures" hires-upscale -> <model>-upscaled.glb in Rs_TempDir (never
-// beside the output, never in the game's characters folder); hires-add
-// <classic> <model or upscaled> -o <out>. The temp files go at the end.
+// own four wheels -> <out name>.classic.part in Rs_TempDir (make-char reads
+// a JPEG texture itself, so it takes the model as it is); with "Convert JPEG
+// textures to PNG" hires-png -> <model>-png.glb in Rs_TempDir; with "Upscale
+// small textures" hires-upscale of that (or of the model) ->
+// <name>-upscaled.glb in Rs_TempDir (never beside the output, never in the
+// game's characters folder); hires-add <classic> <the last of them> -o <out>.
+// The temp files go at the end.
 
 #include "reloadstudio.h"
 #include "rs_anim.h"
@@ -461,11 +477,17 @@
 #define CHAR_ID_UPSCALE_NOTE   223   // the line below "Upscale small textures": the suggestion, or the author's choice
 #define CHAR_ID_UPSCALE_STEP   224   // the line of the upscale on the step Model itself (outside Advanced)
 #define CHAR_ID_UPSCALE_CHANGE 225   // "Change" at its end: opens Advanced at the box
-#define CHAR_VCOL_CHOICES      8     // models whose vertex colour mode or upscale the author chose, remembered
+#define CHAR_ID_PNG            226   // "Convert JPEG textures to PNG" (Advanced of a CHRG route, card Options)
+#define CHAR_ID_PNG_HELP       227
+#define CHAR_ID_PNG_STEP       228   // its line on the step Model (only while the box is on)
+#define CHAR_ID_PNG_CHANGE     229   // "Change" at its end: opens Advanced at the box
+#define CHAR_ID_PNG_FIX        230   // "Convert to PNG" on the step Model: the fix of the JPEG error
+#define CHAR_VCOL_CHOICES      8     // models whose vertex colour mode, upscale or PNG conversion the author chose, remembered
 // The author's choices remembered per model (Char_Remembered).
 #define CHAR_CHOICE_VCOL       0     // the vertex colour mode (RS_HIRES_VCOL_*)
 #define CHAR_CHOICE_UPSCALE    1     // "Upscale small textures" (0 or 1)
-#define CHAR_CHOICE_KINDS      2
+#define CHAR_CHOICE_PNG        2     // "Convert JPEG textures to PNG" (1; off is forgotten)
+#define CHAR_CHOICE_KINDS      3
 // The controls of the cards Wheels and Animations (WH_ID_FIRST..WH_ID_LAST in
 // rs_wheels.c, AN_ID_FIRST..AN_ID_LAST in rs_anim.c): Advanced of the step Model shows them.
 // The card Import (380..399) is the page's own.
@@ -512,7 +534,7 @@
 // of a CHRG route is a CHAR_JOB_BUILD (g_char.chainStep says which).
 enum { CHAR_JOB_NONE = 0, CHAR_JOB_CHECK, CHAR_JOB_BUILD, CHAR_JOB_META };
 // The steps of the build of a CHRG route (THE BUILD OF A CHRG ROUTE).
-enum { CHAR_CHAIN_NONE = 0, CHAR_CHAIN_CLASSIC, CHAR_CHAIN_UPSCALE, CHAR_CHAIN_PACK };
+enum { CHAR_CHAIN_NONE = 0, CHAR_CHAIN_CLASSIC, CHAR_CHAIN_PNG, CHAR_CHAIN_UPSCALE, CHAR_CHAIN_PACK };
 // What a machine line is to Char_MetaDone (Char_LineKind).
 enum { CHAR_LINE_MODEL = 0, CHAR_LINE_META, CHAR_LINE_END };
 
@@ -870,6 +892,15 @@ static struct {
     HWND upscaleStep, upscaleChange;
     int upSuggested, upChosen;
     unsigned upLargest;
+    // THE JPEG TEXTURES of a CHRG route: the box of Advanced and its help,
+    // the line on the step Model with "Change" (empty and hidden while the
+    // box is off), the button "Convert to PNG" (shown: pngFixOn); of the
+    // check shown: 1 = it is of the model as converted (hiresPng), the JPEG
+    // textures the conversion found, why it failed ("" = it did not).
+    HWND png, pngHelp, pngStep, pngChange, pngFix;
+    int pngFixOn;
+    int pngJpeg;
+    wchar_t pngWhy[200];
     // THE VERTEX COLOURS of a CHRG route: the switch and its line, the three
     // modes in Advanced; the mode (RS_HIRES_VCOL_*) the picture is drawn in
     // and the build passes, -1 = the model has no COLOR_0 (none of it shown,
@@ -900,6 +931,7 @@ static struct {
     // preview switch Hi-Res | Classic fallback, the idle clip playing.
     struct RsHiresCheck hires;
     int hiresChecked;               // hires holds the check of hiresPath
+    int hiresPng;                   // ... as converted to PNG ("Convert JPEG textures to PNG" was on)
     wchar_t hiresPath[CHAR_VAL];
     unsigned long long hiresStamp;
     HWND previewSwitch[2];
@@ -909,10 +941,12 @@ static struct {
     int hiresShown;                 // the view shows the hi-res picture
     float animSeconds, animWheel;
     DWORD animTick;
-    // THE BUILD OF A CHRG ROUTE: make-char -> classic (temp) -> [hires-upscale
-    // -> derived (temp)] -> hires-add -> out.
+    // THE BUILD OF A CHRG ROUTE: make-char -> classic (temp) -> [hires-png ->
+    // chainPngPath (temp)] -> [hires-upscale -> derived (temp)] -> hires-add -> out.
     wchar_t chainClassic[CHAR_VAL], chainDerived[CHAR_VAL], chainOut[CHAR_VAL], chainModel[CHAR_VAL];
+    wchar_t chainPngPath[CHAR_VAL];
     int chainStep;                  // CHAR_CHAIN_* of the running build, CHAR_CHAIN_NONE = a Vanilla build
+    int chainPng;                   // the running chain converts JPEG textures to PNG first
     int chainUpscale;               // the running chain upscales
     int chainWritten;               // @written of the last upscale or pack step
     wchar_t chainPath[CHAR_VAL], chainSha[80];
@@ -1125,7 +1159,7 @@ static int Char_RouteHides(HWND c)
     int id = GetDlgCtrlID(c);
     if (!Char_Chrg())
         return c == g_char.upscale || c == g_char.upscaleHelp || c == g_char.upscaleNote || c == g_char.upscaleStep ||
-               c == g_char.upscaleChange || id == CHAR_ID_PREVIEW_SWITCH ||
+               c == g_char.upscaleChange || (id >= CHAR_ID_PNG && id <= CHAR_ID_PNG_FIX) || id == CHAR_ID_PREVIEW_SWITCH ||
                id == CHAR_ID_PREVIEW_SWITCH + 1 ||
                (id >= CHAR_ID_VBLEND && id <= CHAR_ID_VMODE_HELP);
     return (id >= CHAR_ID_SIZE_LABEL && id <= CHAR_ID_OPTIONS_LABEL) || (id >= CHAR_ID_REPAIR && id <= CHAR_ID_QUALITY) ||
@@ -1356,9 +1390,11 @@ static int Char_TextHeight(HWND label, int width, int maxLines)
         // the tooltip (Rs_LabelOneLine) - no word is lost, it is a hover away.
         // The notes of the guided flow wrap all the same (their steps have
         // the room): "Upscale small textures", its line and its line on the
-        // step Model, where the build goes, what Test in game did.
+        // step Model, the same of "Convert JPEG textures to PNG", where the
+        // build goes, what Test in game did.
         if (g_char.compact && lineH > 0 && label != g_char.headline && label != g_char.upscaleHelp && label != g_char.upscaleNote &&
-            label != g_char.upscaleStep && label != g_char.outNote && label != g_char.testNote) {
+            label != g_char.upscaleStep && label != g_char.pngHelp && label != g_char.pngStep && label != g_char.outNote &&
+            label != g_char.testNote) {
             Rs_LabelOneLine(label, h > lineH);
             if (h > lineH)
                 h = lineH;
@@ -2549,11 +2585,13 @@ static int Char_TabOfId(int id, int *card)
         return CHAR_TAB_MODEL;
     }
     if ((id >= CHAR_ID_REPAIR && id <= CHAR_ID_QUALITY) || id == CHAR_ID_REDUCE || id == CHAR_ID_UPSCALE ||
-        id == CHAR_ID_UPSCALE_HELP || id == CHAR_ID_UPSCALE_NOTE || (id >= CHAR_ID_VMODE_LABEL && id <= CHAR_ID_VMODE_HELP)) {
+        id == CHAR_ID_UPSCALE_HELP || id == CHAR_ID_UPSCALE_NOTE || (id >= CHAR_ID_VMODE_LABEL && id <= CHAR_ID_VMODE_HELP) ||
+        id == CHAR_ID_PNG || id == CHAR_ID_PNG_HELP) {
         *card = CHAR_EXTRAS_OPTIONS;
         return CHAR_TAB_MODEL;
     }
-    if (id == CHAR_ID_VBLEND || id == CHAR_ID_VBLEND_NOTE || id == CHAR_ID_UPSCALE_STEP || id == CHAR_ID_UPSCALE_CHANGE) {
+    if (id == CHAR_ID_VBLEND || id == CHAR_ID_VBLEND_NOTE || id == CHAR_ID_UPSCALE_STEP || id == CHAR_ID_UPSCALE_CHANGE ||
+        (id >= CHAR_ID_PNG_STEP && id <= CHAR_ID_PNG_FIX)) {
         *card = CHAR_CARD_BASIC;
         return CHAR_TAB_MODEL;
     }
@@ -5554,8 +5592,18 @@ static int Char_ChrgMessages(int exitCode, int makeOk)
                     L"How to fix: export the model again as glTF Binary (.glb) and choose that file.");
         errors++;
     } else {
+        // "Convert JPEG textures to PNG" on, and the conversion failed: its
+        // reason in place of the JPEG line (whose fix is the button).
+        if (g_char.hiresPng && g_char.pngWhy[0]) {
+            swprintf(text, 2 * RS_WIZ_TEXT_MAX + 32, L"Your JPEG textures could not be converted to PNG: %ls.", g_char.pngWhy);
+            Char_MsgAdd(CHAR_TAB_MODEL, RS_SEV_ERROR, text,
+                        L"How to fix: save the textures as PNG (glTF export: Images > PNG) and export again (HRG-16).");
+            errors++;
+        }
         n = RsCharHires_Messages(&g_char.hires, g_char.route, w, CHAR_WIZ_MSGS);
         for (i = 0; i < n; i++) {
+            if (g_char.hiresPng && g_char.pngWhy[0] && RsCharHires_IsJpegMsg(&w[i]))
+                continue;
             if (w[i].fix[0])
                 swprintf(detail, RS_WIZ_TEXT_MAX + 48, L"How to fix: %ls%ls%ls%ls", w[i].fix, w[i].rule[0] ? L" (" : L"", w[i].rule,
                          w[i].rule[0] ? L")" : L"");
@@ -5816,16 +5864,52 @@ static int Char_Cancel(HWND page)
 // of the classic fallback made from the same file (the page's own switches,
 // then RsCharHires_FallbackArgs: Char_MakeArgs). The .glb is read again only
 // when it is another file or was written since (its stamp).
+//
+// THE JPEG TEXTURES: with "Convert JPEG textures to PNG" on, the file checked
+// is the model as rldpack hires-png converts it (Rs_HiresPngFile, the same
+// code in this process) - written to Rs_TempDir as <model>-png.glb, read by
+// the check and deleted again; the build converts once more (Char_ChainStart),
+// so no temp file outlives the check. hiresPath stays the author's model (the
+// choices per model and the view's key go by it).
 static void Char_HiresEnsure(const wchar_t *model)
 {
     unsigned long long stamp = Char_StampFile(CHAR_STAMP_START, model);
-    if (g_char.hiresChecked && _wcsicmp(model, g_char.hiresPath) == 0 && stamp == g_char.hiresStamp)
+    const int png = Char_IsChecked(g_char.png);
+    wchar_t dir[CHAR_VAL], beside[CHAR_VAL], converted[CHAR_VAL];
+    if (g_char.hiresChecked && _wcsicmp(model, g_char.hiresPath) == 0 && stamp == g_char.hiresStamp && png == g_char.hiresPng)
         return;
     Char_HiresStop();
     RsHires_CheckFree(&g_char.hires);
     memset(&g_char.hires, 0, sizeof(g_char.hires));
-    RsHires_CheckFile(model, &g_char.hires);
+    g_char.pngJpeg = 0;
+    g_char.pngWhy[0] = 0;
+    converted[0] = 0;
+    if (png) {
+        int jpeg = 0, done = 0;
+        Rs_TempDir(dir, CHAR_VAL);
+        Rs_PathJoin(beside, CHAR_VAL, dir, L"check.rldchar");
+        if (!RsHires_PngPath(model, beside, converted, CHAR_VAL) || _wcsicmp(converted, model) == 0) {
+            converted[0] = 0;
+            Char_Copy(g_char.pngWhy, 200, L"the path of the converted model is too long");
+        } else if (!Rs_HiresPngFile(model, converted, &jpeg, &done, g_char.pngWhy, 200)) {
+            converted[0] = 0;
+            if (!g_char.pngWhy[0])
+                Char_Copy(g_char.pngWhy, 200, L"the conversion failed");
+        }
+        g_char.pngJpeg = jpeg;
+        if (Rs_Automating()) {
+            if (converted[0])
+                Rs_AutoLog(L"  png convert: %d JPEG texture(s) converted for the check (rldpack hires-png -> %ls)", done,
+                           Rs_PathName(converted));
+            else
+                Rs_AutoLog(L"  png convert: failed - %ls", g_char.pngWhy);
+        }
+    }
+    RsHires_CheckFile(converted[0] ? converted : model, &g_char.hires);
+    if (converted[0])
+        DeleteFileW(converted);
     g_char.hiresChecked = 1;
+    g_char.hiresPng = png;
     g_char.hiresStamp = stamp;
     Char_Copy(g_char.hiresPath, CHAR_VAL, model);
     g_char.animSeconds = 0.0f;
@@ -5847,6 +5931,9 @@ static void Char_HiresForget(void)
     RsHires_CheckFree(&g_char.hires);
     memset(&g_char.hires, 0, sizeof(g_char.hires));
     g_char.hiresChecked = 0;
+    g_char.hiresPng = 0;
+    g_char.pngJpeg = 0;
+    g_char.pngWhy[0] = 0;
     g_char.hiresPath[0] = 0;
     g_char.hiresShown = 0;
     Rs_Free(g_char.classicPv);
@@ -6019,9 +6106,9 @@ static void Char_UpscaleSet(int on)
     Char_UpscaleControls();
 }
 
-// "Change" at the end of the line on the step Model: Advanced opens at its
+// "Change" at the end of a line on the step Model: Advanced opens at its
 // card Options, the box gets the keyboard focus and is scrolled into view.
-static void Char_UpscaleChange(HWND page)
+static void Char_OptionsChange(HWND page, HWND box)
 {
     int c;
     if (!Char_Chrg() || !Char_ExtrasShown(CHAR_EXTRAS_OPTIONS))
@@ -6033,8 +6120,56 @@ static void Char_UpscaleChange(HWND page)
     Rs_SetText(g_char.advanced, L"Hide advanced");
     Char_MsgRefill();
     Char_Relayout(page);
-    SetFocus(g_char.upscale);
-    Rs_ScrollIntoView(g_char.upscale);
+    SetFocus(box);
+    Rs_ScrollIntoView(box);
+}
+
+static void Char_UpscaleChange(HWND page)
+{
+    Char_OptionsChange(page, g_char.upscale);
+}
+
+// THE JPEG TEXTURES: the line on the step Model (while the box is on) and the
+// button "Convert to PNG" (the check of the model as it is found a JPEG), as
+// the box and the check shown are; laid out again when either changed.
+static void Char_PngControls(void)
+{
+    wchar_t step[RS_WIZ_TEXT_MAX], was[RS_WIZ_TEXT_MAX];
+    const int checked = Char_Chrg() && g_char.hiresChecked;
+    const int fix = checked && RsCharHires_PngFixShown(&g_char.hires, g_char.route, g_char.hiresPng);
+    RsCharHires_PngStepLine(checked ? g_char.route : RS_ROUTE_NONE, checked && g_char.hiresPng, g_char.pngJpeg, g_char.pngWhy[0] != 0, step,
+                            RS_WIZ_TEXT_MAX);
+    GetWindowTextW(g_char.pngStep, was, RS_WIZ_TEXT_MAX);
+    Rs_SetText(g_char.pngStep, step);
+    if ((wcscmp(was, step) != 0 || fix != g_char.pngFixOn) && g_char.view) {
+        g_char.pngFixOn = fix;
+        Char_Relayout(GetParent(g_char.view));
+    }
+    g_char.pngFixOn = fix;
+}
+
+// Before the check of a CHRG route: the box as the author chose it for this
+// model - never suggested, so off without a choice.
+static void Char_PngUpdate(const wchar_t *model)
+{
+    Char_SetChecked(g_char.png, Char_Remembered(model, CHAR_CHOICE_PNG) == 1);
+}
+
+// The author (the box, "Convert to PNG") or the automation sets "Convert JPEG
+// textures to PNG": kept for this model, and the model checked again - as
+// converted, or as it is. Returns Char_Check's result.
+static int Char_PngSet(HWND page, int on)
+{
+    wchar_t model[CHAR_VAL];
+    Char_SetChecked(g_char.png, on);
+    Char_FieldPath(g_char.model, model, CHAR_VAL);
+    if (model[0])
+        Char_Remember(model, CHAR_CHOICE_PNG, on ? 1 : -1);
+    g_char.builtFresh = 0;
+    Char_UpdateButtons();
+    if (Rs_Automating())
+        Rs_AutoLog(L"  convert jpeg textures to png: %ls (the author's choice)", on ? L"on" : L"off");
+    return Char_Check(page);
 }
 
 // The idle clip stops (another step, the classic fallback, a new check).
@@ -7026,10 +7161,13 @@ static int Char_CheckRun(HWND page, int force)
             Char_ChrgNotGlb(page);
             return 0;
         }
-        if (model[0])
+        if (model[0]) {
+            Char_PngUpdate(model);  // the author's choice for this model, else off
             Char_HiresEnsure(model);
+        }
         Char_VcolUpdate();      // the suggestion and the mode (also for another route)
         Char_UpscaleUpdate();   // the same for "Upscale small textures"
+        Char_PngControls();     // the line and the button of "Convert JPEG textures to PNG"
     }
     seq = g_char.seq + 1;       // taken only when rldpack runs
     if (!Char_MakeArgs(&a, 1, NULL, seq)) {
@@ -7084,12 +7222,14 @@ static int Char_CheckNow(HWND page)
 
 // THE BUILD OF A CHRG ROUTE, every step through Rs_RunRldpack (the bytes are
 // rldpack's): make-char with the switches of the check -> the classic
-// fallback <out name>.classic.part in Rs_TempDir; with "Upscale small
-// textures" hires-upscale <model> -o <derived> (RsHires_UpscaleArgs; the
-// derived .glb also in Rs_TempDir, never in the game's characters folder);
-// then hires-add <classic> <model or derived> -o <out> (RsHires_PackArgs).
-// The temp files go at the end, whatever happened. The raw output ("Show
-// details") has every command and every line of the three.
+// fallback <out name>.classic.part in Rs_TempDir; with "Convert JPEG textures
+// to PNG" hires-png <model> -o <model>-png.glb (RsHires_PngArgs); with
+// "Upscale small textures" hires-upscale <model or converted> -o <derived>
+// (RsHires_UpscaleArgs; the derived .glb files also in Rs_TempDir, never in
+// the game's characters folder); then hires-add <classic> <the last of them>
+// -o <out> (RsHires_PackArgs). The temp files go at the end, whatever
+// happened. The raw output ("Show details") has every command and every line
+// of them.
 static void Char_ChainCleanup(void)
 {
     wchar_t part[CHAR_VAL + 8];
@@ -7100,6 +7240,8 @@ static void Char_ChainCleanup(void)
     }
     if (g_char.chainUpscale && g_char.chainDerived[0])
         DeleteFileW(g_char.chainDerived);
+    if (g_char.chainPng && g_char.chainPngPath[0])
+        DeleteFileW(g_char.chainPngPath);
     if (g_char.chainOut[0]) {
         swprintf(part, CHAR_VAL + 8, L"%ls.part", g_char.chainOut);
         if (Rs_FileExists(part))
@@ -7108,6 +7250,7 @@ static void Char_ChainCleanup(void)
     g_char.chainStep = CHAR_CHAIN_NONE;
     g_char.chainClassic[0] = 0;
     g_char.chainDerived[0] = 0;
+    g_char.chainPngPath[0] = 0;
 }
 
 // Starts one step after make-char: its command into the raw output, its
@@ -7148,7 +7291,7 @@ static int Char_ChainRun(HWND page, int step, const wchar_t *const *args, int ar
     return 1;
 }
 
-// A line of hires-upscale or hires-add: its findings and what it wrote.
+// A line of hires-png, hires-upscale or hires-add: its findings and what it wrote.
 static void Char_ChainLine(const wchar_t *line)
 {
     wchar_t *copy = Rs_Dup(line), *f[8];
@@ -7182,12 +7325,21 @@ static int Char_ChainStart(HWND page, const wchar_t *path)
     Char_Copy(g_char.chainOut, CHAR_VAL, path);
     Char_FieldPath(g_char.model, g_char.chainModel, CHAR_VAL);
     g_char.chainUpscale = Char_IsChecked(g_char.upscale);
+    g_char.chainPng = Char_IsChecked(g_char.png);
     g_char.chainVcol = g_char.vcolMode;       // -1: the model has no COLOR_0, no switch
     g_char.chainDerived[0] = 0;
-    // The upscaled model beside a temp "output" of the same name: in Rs_TempDir.
+    g_char.chainPngPath[0] = 0;
+    // The converted and the upscaled model beside a temp "output" of the same
+    // name: in Rs_TempDir. The upscale takes the converted model.
     Rs_PathJoin(beside, CHAR_VAL, dir, Rs_PathName(path));
-    if (g_char.chainUpscale && (!RsHires_UpscaledPath(g_char.chainModel, beside, g_char.chainDerived, CHAR_VAL) ||
-                                _wcsicmp(g_char.chainDerived, g_char.chainModel) == 0)) {
+    if (g_char.chainPng && (!RsHires_PngPath(g_char.chainModel, beside, g_char.chainPngPath, CHAR_VAL) ||
+                            _wcsicmp(g_char.chainPngPath, g_char.chainModel) == 0)) {
+        g_char.chainPngPath[0] = 0;
+        g_char.chainPng = 0;
+    }
+    if (g_char.chainUpscale &&
+        (!RsHires_UpscaledPath(g_char.chainPng ? g_char.chainPngPath : g_char.chainModel, beside, g_char.chainDerived, CHAR_VAL) ||
+         _wcsicmp(g_char.chainDerived, g_char.chainModel) == 0)) {
         g_char.chainDerived[0] = 0;
         g_char.chainUpscale = 0;
     }
@@ -7246,6 +7398,7 @@ static void Char_BuildDone(HWND page, int exitCode);
 static void Char_ChainDone(HWND page, int exitCode)
 {
     const wchar_t *args[RS_HIRES_PACK_ARGS > RS_HIRES_UPSCALE_ARGS ? RS_HIRES_PACK_ARGS : RS_HIRES_UPSCALE_ARGS];
+    const wchar_t *model = g_char.chainPng ? g_char.chainPngPath : g_char.chainModel;   // the model after hires-png
     int n, step = g_char.chainStep;
 
     if (step == CHAR_CHAIN_CLASSIC) {
@@ -7255,8 +7408,24 @@ static void Char_ChainDone(HWND page, int exitCode)
             Char_ChainCleanup();
             return;
         }
+        if (g_char.chainPng) {
+            n = RsHires_PngArgs(g_char.chainModel, g_char.chainPngPath, args);
+            if (Char_ChainRun(page, CHAR_CHAIN_PNG, args, n, L"Converting JPEG textures to PNG..."))
+                return;
+            Char_ChainFailed(page, L"Converting to PNG", -1);
+            return;
+        }
+        step = CHAR_CHAIN_PNG;              // straight on to the upscale step
+        exitCode = 0;
+        g_char.chainWritten = 1;
+    }
+    if (step == CHAR_CHAIN_PNG) {
+        if (exitCode != 0 || !g_char.chainWritten) {
+            Char_ChainFailed(page, L"Converting to PNG", exitCode);
+            return;
+        }
         if (g_char.chainUpscale) {
-            n = RsHires_UpscaleArgs(g_char.chainModel, g_char.chainDerived, args);
+            n = RsHires_UpscaleArgs(model, g_char.chainDerived, args);
             if (Char_ChainRun(page, CHAR_CHAIN_UPSCALE, args, n, L"Upscaling small textures..."))
                 return;
             Char_ChainFailed(page, L"Upscaling", -1);
@@ -7271,8 +7440,7 @@ static void Char_ChainDone(HWND page, int exitCode)
             Char_ChainFailed(page, L"Upscaling", exitCode);
             return;
         }
-        n = RsHires_PackArgs(g_char.chainClassic, g_char.chainUpscale ? g_char.chainDerived : g_char.chainModel, g_char.chainOut,
-                             g_char.chainVcol, args);
+        n = RsHires_PackArgs(g_char.chainClassic, g_char.chainUpscale ? g_char.chainDerived : model, g_char.chainOut, g_char.chainVcol, args);
         if (Char_ChainRun(page, CHAR_CHAIN_PACK, args, n, L"Packing the hi-res model..."))
             return;
         Char_ChainFailed(page, L"Packing", -1);
@@ -8155,6 +8323,8 @@ static int Char_SetRoute(HWND page, int route)
     g_char.upChosen = 0;
     Rs_SetText(g_char.upscaleNote, L"");
     Rs_SetText(g_char.upscaleStep, L"");
+    Rs_SetText(g_char.pngStep, L"");    // until the check of the model on this route
+    g_char.pngFixOn = 0;
     Char_ExtrasFix();
     Char_RouteTexts();
     g_char.tab = CHAR_TAB_MODEL;
@@ -8276,6 +8446,19 @@ static void Char_ReportFlow(FILE *f)
         Char_Put(f, L"upscale step line: \"%ls\"%ls", line,
                  !line[0] ? L"" : Char_IsShown(g_char.upscaleStep) && Char_IsShown(g_char.upscaleChange) ? L" (shown, with \"Change\")"
                                                                                                            : L" (not shown on this view)");
+        // THE JPEG TEXTURES: the box (only ever the author's), what the check
+        // shown is of, the button "Convert to PNG" and the line on the step
+        // Model.
+        Char_Put(f, L"png convert: %ls (%ls), check of %ls, jpeg textures %d%ls%ls, button \"Convert to PNG\" %ls%ls",
+                 Char_IsChecked(g_char.png) ? L"on" : L"off", Char_IsChecked(g_char.png) ? L"chosen by the author" : L"the start: never suggested",
+                 !checked ? L"no model" : g_char.hiresPng ? L"the model as converted" : L"the model as it is",
+                 g_char.hiresPng ? g_char.pngJpeg : g_char.hires.jpegTextures, g_char.pngWhy[0] ? L", failed: " : L"", g_char.pngWhy,
+                 g_char.pngFixOn ? L"offered" : L"not offered", g_char.pngFixOn && !Char_IsShown(g_char.pngFix) ? L" (not shown on this view)" : L"",
+                 Char_Chrg() ? L"" : L" [no CHRG route: hidden, not used]");
+        GetWindowTextW(g_char.pngStep, line, RS_WIZ_TEXT_MAX);
+        Char_Put(f, L"png step line: \"%ls\"%ls", line,
+                 !line[0] ? L"" : Char_IsShown(g_char.pngStep) && Char_IsShown(g_char.pngChange) ? L" (shown, with \"Change\")"
+                                                                                                   : L" (not shown on this view)");
     }
     if (p)
         Char_Put(f, L"preset: chrg %d, triangle target %llu, texture edge target %u", p->chrg, p->triangleTarget, p->textureEdgeTarget);
@@ -9701,6 +9884,21 @@ static void Char_Create(HWND page)
     Rs_SetTextColor(g_char.upscaleStep, RS_COL_MUTED);
     g_char.upscaleChange = Rs_Button(page, CHAR_ID_UPSCALE_CHANGE, L"Change");
     Rs_SetTip(g_char.upscaleChange, L"Opens Advanced at \"Upscale small textures\".");
+    // THE JPEG TEXTURES: the box (never ticked by the Studio itself), its
+    // help, its line on the step Model with "Change", and the button of the
+    // JPEG error's fix.
+    g_char.png = Rs_Check(page, CHAR_ID_PNG, L"Convert JPEG textures to PNG");
+    g_char.pngHelp = Rs_Label(page, CHAR_ID_PNG_HELP,
+                              L"The game reads PNG textures only. Before packing, a copy of the model is written with its JPEG textures "
+                              L"as PNG, pixel for pixel as decoded. The model file itself is not changed.",
+                              RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.pngHelp, RS_COL_MUTED);
+    g_char.pngStep = Rs_Label(page, CHAR_ID_PNG_STEP, L"", RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.pngStep, RS_COL_MUTED);
+    g_char.pngChange = Rs_Button(page, CHAR_ID_PNG_CHANGE, L"Change");
+    Rs_SetTip(g_char.pngChange, L"Opens Advanced at \"Convert JPEG textures to PNG\".");
+    g_char.pngFix = Rs_Button(page, CHAR_ID_PNG_FIX, L"Convert to PNG");
+    Rs_SetTip(g_char.pngFix, L"Converts the model's JPEG textures to PNG before packing (rldpack hires-png). Your file stays as it is.");
     // THE VERTEX COLOURS: the switch is a three-state box (the third state
     // glTF, chosen in Advanced); the page sets its state itself.
     g_char.vblend = Rs_Check(page, CHAR_ID_VBLEND, L"Vertex color blending");
@@ -9921,6 +10119,27 @@ static int Char_LayStrip(int left, int right, int top)
 // fit over the limit, and the button that opens Advanced. A CHRG route has
 // only the model and the line of its check (Char_RouteHides). Returns the
 // bottom of what it placed.
+// A line on the step Model with "Change" right after its text (at the right
+// of the field when the text wraps); returns the y below it.
+static int Char_LayStepLine(HWND label, HWND change, int x, int y, int fieldW)
+{
+    int bh = Rs_Px(g_char.compact ? 24 : 28), cw = Char_TextWidth(change, L"Change") + Rs_Px(28);
+    int lw = fieldW - cw - Rs_Px(8), tw, off, rowH, noteH;
+    wchar_t *text = Rs_GetText(label);
+    tw = Char_TextWidth(label, text) + Rs_Px(4);
+    Rs_Free(text);
+    if (tw < lw)
+        lw = tw;
+    if (lw < Rs_Px(40))
+        lw = Rs_Px(40);
+    noteH = Char_NoteHeight(label, lw);
+    off = (bh - Rs_Px(18)) / 2;
+    MoveWindow(label, x, y + off, lw, noteH, TRUE);
+    MoveWindow(change, x + lw + Rs_Px(8), y, cw, bh, TRUE);
+    rowH = off + noteH > bh ? off + noteH : bh;
+    return y + rowH + Rs_Px(g_char.compact ? 2 : 6);
+}
+
 static int Char_LayModelAt(const struct CharLay *k, const RECT *in, int filesH)
 {
     HWND options[2];
@@ -9947,25 +10166,19 @@ static int Char_LayModelAt(const struct CharLay *k, const RECT *in, int filesH)
         MoveWindow(g_char.vblendNote, x, y, fieldW, noteH, TRUE);
         y += noteH + Rs_Px(g_char.compact ? 2 : 6);
     }
-    // A CHRG route: the line of the upscale with "Change" right after its
+    // A CHRG route: the line of the PNG conversion and the line of the
+    // upscale (in the order of the build), each with "Change" right after its
     // text (at the right of the field when the text wraps), only while it
-    // says something (Char_UpscaleControls).
-    if (chrg && GetWindowTextLengthW(g_char.upscaleStep) > 0) {
-        int bh = Rs_Px(g_char.compact ? 24 : 28), cw = Char_TextWidth(g_char.upscaleChange, L"Change") + Rs_Px(28);
-        int lw = fieldW - cw - Rs_Px(8), tw, off, rowH;
-        wchar_t *text = Rs_GetText(g_char.upscaleStep);
-        tw = Char_TextWidth(g_char.upscaleStep, text) + Rs_Px(4);
-        Rs_Free(text);
-        if (tw < lw)
-            lw = tw;
-        if (lw < Rs_Px(40))
-            lw = Rs_Px(40);
-        noteH = Char_NoteHeight(g_char.upscaleStep, lw);
-        off = (bh - Rs_Px(18)) / 2;
-        MoveWindow(g_char.upscaleStep, x, y + off, lw, noteH, TRUE);
-        MoveWindow(g_char.upscaleChange, x + lw + Rs_Px(8), y, cw, bh, TRUE);
-        rowH = off + noteH > bh ? off + noteH : bh;
-        y += rowH + Rs_Px(g_char.compact ? 2 : 6);
+    // says something (Char_PngControls, Char_UpscaleControls).
+    if (chrg && GetWindowTextLengthW(g_char.pngStep) > 0)
+        y = Char_LayStepLine(g_char.pngStep, g_char.pngChange, x, y, fieldW);
+    if (chrg && GetWindowTextLengthW(g_char.upscaleStep) > 0)
+        y = Char_LayStepLine(g_char.upscaleStep, g_char.upscaleChange, x, y, fieldW);
+    // A model with JPEG textures: "Convert to PNG", the fix of its error.
+    if (chrg && g_char.pngFixOn) {
+        int bw = Char_TextWidth(g_char.pngFix, L"Convert to PNG") + Rs_Px(32);
+        MoveWindow(g_char.pngFix, x, y + Rs_Px(2), bw < fieldW ? bw : fieldW, Rs_Px(30), TRUE);
+        y += Rs_Px(g_char.compact ? 34 : 38);
     }
     if (!chrg) {
         // An OBJ (or a model not named .ply): the line of what was read right
@@ -10103,6 +10316,14 @@ static int Char_LayOptions(const RECT *in)
             y += Rs_Px(28);
         noteH = Char_TextHeight(g_char.upscaleHelp, w, CHAR_NOTE_LINES);
         MoveWindow(g_char.upscaleHelp, x, y, w, noteH, TRUE);
+        y += noteH;
+        // "Convert JPEG textures to PNG" and its help.
+        bw = Char_CheckWidth(g_char.png);
+        y += Rs_Px(14);
+        MoveWindow(g_char.png, x, y, bw < w ? bw : w, Rs_Px(24), TRUE);
+        y += Rs_Px(28);
+        noteH = Char_TextHeight(g_char.pngHelp, w, CHAR_NOTE_LINES);
+        MoveWindow(g_char.pngHelp, x, y, w, noteH, TRUE);
         y += noteH;
         // A model with COLOR_0: the three vertex colour modes.
         if (g_char.vcolMode >= 0) {
@@ -10695,6 +10916,12 @@ static int Char_Wanted(HWND c)
             return GetWindowTextLengthW(c) > 0;
         if (c == g_char.upscaleChange)
             return GetWindowTextLengthW(g_char.upscaleStep) > 0;
+        if (c == g_char.pngStep)
+            return GetWindowTextLengthW(c) > 0;
+        if (c == g_char.pngChange)
+            return GetWindowTextLengthW(g_char.pngStep) > 0;
+        if (c == g_char.pngFix)
+            return g_char.pngFixOn;
         if (c == g_char.texturesLabel || c == g_char.textures || c == g_char.texturesBrowse || c == g_char.texturesClear)
             return g_char.texturesOn;
         return 1;
@@ -11063,6 +11290,21 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
         if (code == BN_CLICKED)
             Char_UpscaleChange(page);
         break;
+    case CHAR_ID_PNG:
+        // The author's choice, kept for this model; the model is checked
+        // again, as converted or as it is.
+        if (code == BN_CLICKED)
+            Char_PngSet(page, Char_IsChecked(g_char.png));
+        break;
+    case CHAR_ID_PNG_FIX:
+        // The deliberate step: the box on, the model checked as converted.
+        if (code == BN_CLICKED && g_char.pngFixOn)
+            Char_PngSet(page, 1);
+        break;
+    case CHAR_ID_PNG_CHANGE:
+        if (code == BN_CLICKED)
+            Char_OptionsChange(page, g_char.png);
+        break;
     case CHAR_ID_VBLEND:
         // On (PSX) <-> off; from glTF (Advanced) a click turns it on.
         if (code == BN_CLICKED && g_char.vcolMode >= 0)
@@ -11421,8 +11663,8 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
         if (line && g_char.jobId && (int)wParam == g_char.jobId) {
             Char_RawAppend(line);
             // The lines of a CHAR_JOB_META run are read when it ends (Char_MetaDone);
-            // those of hires-upscale and hires-add by the chain (Char_ChainLine).
-            if (g_char.jobKind == CHAR_JOB_BUILD && g_char.chainStep >= CHAR_CHAIN_UPSCALE)
+            // those of hires-png, hires-upscale and hires-add by the chain (Char_ChainLine).
+            if (g_char.jobKind == CHAR_JOB_BUILD && g_char.chainStep >= CHAR_CHAIN_PNG)
                 Char_ChainLine(line);
             else if (g_char.jobKind != CHAR_JOB_META)
                 Char_Feed(line);
@@ -11571,6 +11813,31 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
     return 0;
 }
 
+// "upscale change", "png change": a click on "Change" at the end of a line on
+// the step Model - FAIL when it is not shown, or when Advanced did not open
+// at its card Options with the box shown, in view and focused.
+static int Char_AutoChange(HWND page, const wchar_t *word, int id, HWND change, HWND box, const wchar_t *boxName)
+{
+    HWND host = GetParent(page);
+    RECT at, view;
+    int inView;
+    if (!Char_IsShown(change)) {
+        Rs_AutoLog(L"  %ls change: no line with \"Change\" on the step Model shown", word);
+        return RS_AUTO_FAIL;
+    }
+    SendMessageW(page, WM_COMMAND, MAKEWPARAM(id, BN_CLICKED), (LPARAM)change);
+    UpdateWindow(page);
+    GetWindowRect(box, &at);
+    GetClientRect(host, &view);
+    MapWindowPoints(host, NULL, (POINT *)&view, 2);
+    inView = at.left >= view.left && at.right <= view.right && at.top >= view.top && at.bottom <= view.bottom;
+    Rs_AutoLog(L"  %ls change: advanced %ls%ls, \"%ls\" %ls, %ls, focus %ls", word, g_char.advOpen ? L"open, card " : L"closed",
+               g_char.advOpen ? g_charExtrasTexts[g_char.extrasCard] : L"", boxName, Char_IsShown(box) ? L"shown" : L"hidden",
+               inView ? L"in view" : L"out of view", GetFocus() == box ? L"on the box" : L"elsewhere");
+    return g_char.advOpen && g_char.extrasCard == CHAR_EXTRAS_OPTIONS && Char_IsShown(box) && inView && GetFocus() == box ? RS_AUTO_DONE
+                                                                                                                        : RS_AUTO_FAIL;
+}
+
 static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
 {
     int r;
@@ -11701,29 +11968,8 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
             Rs_AutoLog(L"  upscale: only Low-Poly and Hi-Res have \"Upscale small textures\"");
             return RS_AUTO_FAIL;
         }
-        if (_wcsicmp(arg, L"change") == 0) {
-            HWND host = GetParent(page);
-            RECT box, view;
-            int inView;
-            if (!Char_IsShown(g_char.upscaleChange)) {
-                Rs_AutoLog(L"  upscale change: no line with \"Change\" on the step Model shown");
-                return RS_AUTO_FAIL;
-            }
-            SendMessageW(page, WM_COMMAND, MAKEWPARAM(CHAR_ID_UPSCALE_CHANGE, BN_CLICKED), (LPARAM)g_char.upscaleChange);
-            UpdateWindow(page);
-            GetWindowRect(g_char.upscale, &box);
-            GetClientRect(host, &view);
-            MapWindowPoints(host, NULL, (POINT *)&view, 2);
-            inView = box.left >= view.left && box.right <= view.right && box.top >= view.top && box.bottom <= view.bottom;
-            Rs_AutoLog(L"  upscale change: advanced %ls%ls, \"Upscale small textures\" %ls, %ls, focus %ls",
-                       g_char.advOpen ? L"open, card " : L"closed", g_char.advOpen ? g_charExtrasTexts[g_char.extrasCard] : L"",
-                       Char_IsShown(g_char.upscale) ? L"shown" : L"hidden", inView ? L"in view" : L"out of view",
-                       GetFocus() == g_char.upscale ? L"on the box" : L"elsewhere");
-            return g_char.advOpen && g_char.extrasCard == CHAR_EXTRAS_OPTIONS && Char_IsShown(g_char.upscale) && inView &&
-                           GetFocus() == g_char.upscale
-                       ? RS_AUTO_DONE
-                       : RS_AUTO_FAIL;
-        }
+        if (_wcsicmp(arg, L"change") == 0)
+            return Char_AutoChange(page, L"upscale", CHAR_ID_UPSCALE_CHANGE, g_char.upscaleChange, g_char.upscale, L"Upscale small textures");
         if (_wcsicmp(arg, L"auto") == 0) {
             Char_Remember(g_char.hiresPath, CHAR_CHOICE_UPSCALE, -1);
             Char_UpscaleUpdate();
@@ -11739,6 +11985,37 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         Rs_AutoLog(L"  upscale: %ls (%ls; suggested %ls, largest base colour texture %u px)", Char_IsChecked(g_char.upscale) ? L"on" : L"off",
                    g_char.upChosen ? L"the author's choice" : L"the suggestion", g_char.upSuggested ? L"on" : L"off", g_char.upLargest);
         return RS_AUTO_DONE;
+    }
+    // "png convert|on|off|change": "Convert JPEG textures to PNG" of a CHRG
+    // route - convert as a click on the button "Convert to PNG" of the JPEG
+    // error (FAIL when it is not offered), on and off as a click on the box of
+    // Advanced (the author's choice, kept for the model; the model is checked
+    // again), change as a click on "Change" at the end of its line on the step
+    // Model. Never suggested: nothing else ticks it.
+    if (wcscmp(verb, L"png") == 0) {
+        int on = _wcsicmp(arg, L"on") == 0;
+        if (!Char_Chrg()) {
+            Rs_AutoLog(L"  png: only Low-Poly and Hi-Res have \"Convert JPEG textures to PNG\"");
+            return RS_AUTO_FAIL;
+        }
+        if (_wcsicmp(arg, L"change") == 0)
+            return Char_AutoChange(page, L"png", CHAR_ID_PNG_CHANGE, g_char.pngChange, g_char.png, L"Convert JPEG textures to PNG");
+        if (_wcsicmp(arg, L"convert") == 0) {
+            if (!g_char.pngFixOn || !Char_IsShown(g_char.pngFix)) {
+                Rs_AutoLog(L"  png convert: no button \"Convert to PNG\" shown (no JPEG texture found, or already converted)");
+                return RS_AUTO_FAIL;
+            }
+            Rs_AutoLog(L"  png convert: a click on \"Convert to PNG\"");
+            r = Char_PngSet(page, 1);
+        } else if (on || _wcsicmp(arg, L"off") == 0) {
+            Char_SetChecked(g_char.png, on);
+            r = Char_PngSet(page, on);
+        } else {
+            Rs_AutoLog(L"  png: say convert, on, off or change");
+            return RS_AUTO_FAIL;
+        }
+        UpdateWindow(page);
+        return r > 0 ? RS_AUTO_WAIT : RS_AUTO_DONE;
     }
     if (wcscmp(verb, L"tab") == 0)
         return Char_AutoTab(page, arg);

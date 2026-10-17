@@ -229,6 +229,269 @@ static void RldUp_FreeResult(struct RldUpResult *r)
 	}
 }
 
+// The chunks of a glTF binary of version 2: its JSON, its BIN (NULL, length 0
+// when there is none) and where the chunks after them begin. 0 with why when
+// it is not one.
+static int RldUp_Chunks(const u8 *glb, size_t size, const u8 **json, u32 *jsonLen, const u8 **bin, u32 *binLen, size_t *restAt, char *why,
+                        size_t whyCap)
+{
+	*json = NULL;
+	*jsonLen = 0;
+	*bin = NULL;
+	*binLen = 0;
+	*restAt = 0;
+	if ((size < 20u) || (Rld_ReadLE32(&glb[0]) != 0x46546C67u) || (Rld_ReadLE32(&glb[4]) != 2u) || (Rld_ReadLE32(&glb[8]) != size) ||
+	    (Rld_ReadLE32(&glb[16]) != 0x4E4F534Au))
+	{
+		snprintf(why, whyCap, "not a glTF binary of version 2 (header, length or first chunk JSON)");
+		return 0;
+	}
+	*jsonLen = Rld_ReadLE32(&glb[12]);
+	if ((size_t)*jsonLen > (size - 20u))
+	{
+		snprintf(why, whyCap, "the JSON chunk runs past the end of the file");
+		return 0;
+	}
+	*json = &glb[20];
+	*restAt = 20u + *jsonLen;
+	if (((*restAt + 8u) <= size) && (Rld_ReadLE32(&glb[*restAt + 4u]) == 0x004E4942u))
+	{
+		*binLen = Rld_ReadLE32(&glb[*restAt]);
+		if ((size_t)*binLen > (size - *restAt - 8u))
+		{
+			snprintf(why, whyCap, "the BIN chunk runs past the end of the file");
+			return 0;
+		}
+		*bin = &glb[*restAt + 8u];
+		*restAt += 8u + *binLen;
+	}
+	return 1;
+}
+
+// The derived GLB of glb with the new PNGs of list[0..listCount) (see the
+// head of this file): the JSON keeps every byte but the "bufferView" value of
+// each image of the list, buffers[0].byteLength and - when mime is not NULL -
+// the "mimeType" value of each image of the list, which becomes mime (an
+// image without one keeps having none); one bufferView per image is appended
+// to bufferViews, its PNG to the BIN (each at a 4-byte boundary; list[i].view
+// and list[i].offset are set here). viewsCount: the bufferViews of glb as
+// cgltf read them. NULL with why when it cannot be made.
+static u8 *RldUp_Rewrite(const u8 *glb, size_t size, struct RldUpImage *list, int listCount, int viewsCount, const char *mime, size_t *outSize,
+                         char *why, size_t whyCap)
+{
+	const u8 *json;
+	const u8 *bin;
+	u32 jsonLen;
+	u32 binLen;
+	size_t restAt;
+	jsmn_parser parser;
+	jsmntok_t *tok = NULL;
+	int count;
+	int images;
+	int views;
+	int buffers;
+	struct RldUpEdit *edits = NULL;
+	int editCount = 0;
+	u8 *out = NULL;
+	size_t newJsonLen;
+	size_t newJsonPad;
+	size_t newBinLen;
+	size_t newBinPad;
+	size_t at;
+	int i;
+	int k;
+
+	*outSize = 0;
+	if (!RldUp_Chunks(glb, size, &json, &jsonLen, &bin, &binLen, &restAt, why, whyCap))
+	{
+		return NULL;
+	}
+	if ((mime != NULL) && (strlen(mime) >= sizeof(edits[0].text)))
+	{
+		snprintf(why, whyCap, "the mimeType is too long");
+		return NULL;
+	}
+
+	// The JSON's tokens: images[i].bufferView (and mimeType), the end of
+	// bufferViews, buffers[0].byteLength.
+	jsmn_init(&parser);
+	count = jsmn_parse(&parser, (const char *)json, jsonLen, NULL, 0);
+	tok = (count > 0) ? (jsmntok_t *)malloc((size_t)count * sizeof(*tok)) : NULL;
+	edits = (struct RldUpEdit *)calloc(2u * (size_t)listCount + 2u, sizeof(*edits));
+	if ((tok == NULL) || (edits == NULL))
+	{
+		snprintf(why, whyCap, (count > 0) ? "out of memory" : "the JSON does not tokenize");
+		goto fail;
+	}
+	jsmn_init(&parser);
+	if ((jsmn_parse(&parser, (const char *)json, jsonLen, tok, (size_t)count) != count) || (tok[0].type != JSMN_OBJECT))
+	{
+		snprintf(why, whyCap, "the JSON does not tokenize");
+		goto fail;
+	}
+	images = RldUp_Member(tok, count, 0, json, "images");
+	views = RldUp_Member(tok, count, 0, json, "bufferViews");
+	buffers = RldUp_Member(tok, count, 0, json, "buffers");
+	if ((images < 0) || (views < 0) || (buffers < 0) || (tok[views].type != JSMN_ARRAY) || (tok[views].size != viewsCount) || (tok[views].size == 0))
+	{
+		snprintf(why, whyCap, "images, bufferViews or buffers not found in the JSON as cgltf read them");
+		goto fail;
+	}
+	{
+		const int b0 = RldUp_Element(tok, count, buffers, 0);
+		const int length = RldUp_Member(tok, count, b0, json, "byteLength");
+		size_t binAt = binLen;
+
+		if ((length < 0) || (tok[length].type != JSMN_PRIMITIVE))
+		{
+			snprintf(why, whyCap, "buffers[0].byteLength not found");
+			goto fail;
+		}
+		for (i = 0; i < listCount; i++)
+		{
+			struct RldUpImage *u = &list[i];
+			const int im = RldUp_Element(tok, count, images, u->image);
+			const int bv = RldUp_Member(tok, count, im, json, "bufferView");
+			struct RldUpEdit *e = &edits[editCount++];
+
+			if ((bv < 0) || (tok[bv].type != JSMN_PRIMITIVE))
+			{
+				snprintf(why, whyCap, "images[%d].bufferView not found", u->image);
+				goto fail;
+			}
+			binAt = (binAt + 3u) & ~(size_t)3u;
+			u->offset = (u32)binAt;
+			u->view = (u32)(viewsCount + i);
+			binAt += u->pngSize;
+			e->at = (size_t)tok[bv].start;
+			e->cut = (size_t)(tok[bv].end - tok[bv].start);
+			snprintf(e->text, sizeof(e->text), "%u", u->view);
+			if (mime != NULL)
+			{
+				const int mt = RldUp_Member(tok, count, im, json, "mimeType");
+
+				if ((mt >= 0) && (tok[mt].type != JSMN_STRING))
+				{
+					snprintf(why, whyCap, "images[%d].mimeType is not a string", u->image);
+					goto fail;
+				}
+				if (mt >= 0)
+				{
+					e = &edits[editCount++];
+					e->at = (size_t)tok[mt].start;
+					e->cut = (size_t)(tok[mt].end - tok[mt].start);
+					snprintf(e->text, sizeof(e->text), "%s", mime);
+				}
+			}
+		}
+		newBinLen = binAt;
+		edits[editCount].at = (size_t)tok[length].start;
+		edits[editCount].cut = (size_t)(tok[length].end - tok[length].start);
+		snprintf(edits[editCount].text, sizeof(edits[editCount].text), "%u", (unsigned)newBinLen);
+		editCount++;
+	}
+	// The new bufferViews go in front of the closing bracket of bufferViews.
+	edits[editCount].at = (size_t)tok[views].end - 1u;
+	edits[editCount].cut = 0;
+	edits[editCount].text[0] = 0;
+	editCount++;
+	if (json[tok[views].end - 1] != ']')
+	{
+		snprintf(why, whyCap, "bufferViews does not end in ]");
+		goto fail;
+	}
+	qsort(edits, (size_t)editCount, sizeof(*edits), RldUp_EditOrder);
+
+	// Sizes: the JSON grows by the edits and the appended views.
+	newJsonLen = jsonLen;
+	for (k = 0; k < editCount; k++)
+	{
+		newJsonLen = newJsonLen - edits[k].cut + strlen(edits[k].text);
+	}
+	for (i = 0; i < listCount; i++)
+	{
+		char view[96];
+
+		newJsonLen += (size_t)snprintf(view, sizeof(view), ",{\"buffer\":0,\"byteOffset\":%u,\"byteLength\":%u}", list[i].offset,
+		                               (unsigned)list[i].pngSize);
+	}
+	newJsonPad = (newJsonLen + 3u) & ~(size_t)3u;
+	newBinPad = (newBinLen + 3u) & ~(size_t)3u;
+	*outSize = 12u + 8u + newJsonPad + 8u + newBinPad + (size - restAt);
+	if (*outSize > 0xFFFFFFFFu)
+	{
+		snprintf(why, whyCap, "the result would be larger than 4 GiB");
+		goto fail;
+	}
+	out = (u8 *)calloc(1, *outSize);
+	if (out == NULL)
+	{
+		snprintf(why, whyCap, "out of memory");
+		goto fail;
+	}
+	RldHires_PutLE32(&out[0], 0x46546C67u);
+	RldHires_PutLE32(&out[4], 2u);
+	RldHires_PutLE32(&out[8], (u32)*outSize);
+	RldHires_PutLE32(&out[12], (u32)newJsonPad);
+	RldHires_PutLE32(&out[16], 0x4E4F534Au);
+	{
+		u8 *j = &out[20];
+		size_t from = 0;
+
+		at = 0;
+		for (k = 0; k < editCount; k++)
+		{
+			memcpy(&j[at], &json[from], edits[k].at - from);
+			at += edits[k].at - from;
+			if ((edits[k].cut == 0u) && (edits[k].text[0] == 0))
+			{
+				for (i = 0; i < listCount; i++)
+				{
+					char view[96];
+					const int n = snprintf(view, sizeof(view), ",{\"buffer\":0,\"byteOffset\":%u,\"byteLength\":%u}", list[i].offset,
+					                       (unsigned)list[i].pngSize);
+
+					memcpy(&j[at], view, (size_t)n);
+					at += (size_t)n;
+				}
+			}
+			else
+			{
+				memcpy(&j[at], edits[k].text, strlen(edits[k].text));
+				at += strlen(edits[k].text);
+			}
+			from = edits[k].at + edits[k].cut;
+		}
+		memcpy(&j[at], &json[from], jsonLen - from);
+		at += jsonLen - from;
+		// The source's padding (spaces or NULs) was copied with it; pad to 4 with spaces.
+		memset(&j[at], ' ', newJsonPad - at);
+	}
+	at = 20u + newJsonPad;
+	RldHires_PutLE32(&out[at], (u32)newBinPad);
+	RldHires_PutLE32(&out[at + 4u], 0x004E4942u);
+	if (binLen > 0u)
+	{
+		memcpy(&out[at + 8u], bin, binLen);
+	}
+	for (i = 0; i < listCount; i++)
+	{
+		memcpy(&out[at + 8u + list[i].offset], list[i].png, list[i].pngSize);
+	}
+	at += 8u + newBinPad;
+	memcpy(&out[at], &glb[restAt], size - restAt);
+	free(tok);
+	free(edits);
+	return out;
+
+fail:
+	free(tok);
+	free(edits);
+	free(out);
+	*outSize = 0;
+	return NULL;
+}
+
 // The derived GLB of glb (see the head of this file). NULL with res->why when
 // it cannot be made; a model with nothing to enlarge comes back as a copy.
 // res->list holds the enlarged images (free with RldUp_FreeResult).
@@ -241,50 +504,15 @@ static u8 *RldUp_Glb(const u8 *glb, size_t size, size_t *outSize, struct RldUpRe
 	u32 jsonLen;
 	u32 binLen = 0;
 	size_t restAt;
-	jsmn_parser parser;
-	jsmntok_t *tok = NULL;
-	int count;
-	int images;
-	int views;
-	int buffers;
 	int viewsCount;
-	struct RldUpEdit *edits = NULL;
-	int editCount = 0;
 	u8 *out = NULL;
-	size_t newJsonLen;
-	size_t newJsonPad;
-	size_t newBinLen;
-	size_t newBinPad;
-	size_t at;
 	int i;
-	int k;
 
 	memset(res, 0, sizeof(*res));
 	*outSize = 0;
-	if ((size < 20u) || (Rld_ReadLE32(&glb[0]) != 0x46546C67u) || (Rld_ReadLE32(&glb[4]) != 2u) || (Rld_ReadLE32(&glb[8]) != size) ||
-	    (Rld_ReadLE32(&glb[16]) != 0x4E4F534Au))
+	if (!RldUp_Chunks(glb, size, &json, &jsonLen, &bin, &binLen, &restAt, res->why, sizeof(res->why)))
 	{
-		snprintf(res->why, sizeof(res->why), "not a glTF binary of version 2 (header, length or first chunk JSON)");
 		return NULL;
-	}
-	jsonLen = Rld_ReadLE32(&glb[12]);
-	if ((size_t)jsonLen > (size - 20u))
-	{
-		snprintf(res->why, sizeof(res->why), "the JSON chunk runs past the end of the file");
-		return NULL;
-	}
-	json = &glb[20];
-	restAt = 20u + jsonLen;
-	if (((restAt + 8u) <= size) && (Rld_ReadLE32(&glb[restAt + 4u]) == 0x004E4942u))
-	{
-		binLen = Rld_ReadLE32(&glb[restAt]);
-		if ((size_t)binLen > (size - restAt - 8u))
-		{
-			snprintf(res->why, sizeof(res->why), "the BIN chunk runs past the end of the file");
-			return NULL;
-		}
-		bin = &glb[restAt + 8u];
-		restAt += 8u + binLen;
 	}
 
 	memset(&options, 0, sizeof(options));
@@ -387,165 +615,13 @@ static u8 *RldUp_Glb(const u8 *glb, size_t size, size_t *outSize, struct RldUpRe
 		return out;
 	}
 
-	// The JSON's tokens: images[i].bufferView, the end of bufferViews, buffers[0].byteLength.
-	jsmn_init(&parser);
-	count = jsmn_parse(&parser, (const char *)json, jsonLen, NULL, 0);
-	tok = (count > 0) ? (jsmntok_t *)malloc((size_t)count * sizeof(*tok)) : NULL;
-	edits = (struct RldUpEdit *)calloc((size_t)res->upscaled + 2u, sizeof(*edits));
-	if ((tok == NULL) || (edits == NULL))
-	{
-		snprintf(res->why, sizeof(res->why), (count > 0) ? "out of memory" : "the JSON does not tokenize");
-		goto fail;
-	}
-	jsmn_init(&parser);
-	if ((jsmn_parse(&parser, (const char *)json, jsonLen, tok, (size_t)count) != count) || (tok[0].type != JSMN_OBJECT))
-	{
-		snprintf(res->why, sizeof(res->why), "the JSON does not tokenize");
-		goto fail;
-	}
-	images = RldUp_Member(tok, count, 0, json, "images");
-	views = RldUp_Member(tok, count, 0, json, "bufferViews");
-	buffers = RldUp_Member(tok, count, 0, json, "buffers");
-	if ((images < 0) || (views < 0) || (buffers < 0) || (tok[views].type != JSMN_ARRAY) || (tok[views].size != viewsCount) || (tok[views].size == 0))
-	{
-		snprintf(res->why, sizeof(res->why), "images, bufferViews or buffers not found in the JSON as cgltf read them");
-		goto fail;
-	}
-	{
-		const int b0 = RldUp_Element(tok, count, buffers, 0);
-		const int length = RldUp_Member(tok, count, b0, json, "byteLength");
-		size_t binAt = binLen;
-
-		if ((length < 0) || (tok[length].type != JSMN_PRIMITIVE))
-		{
-			snprintf(res->why, sizeof(res->why), "buffers[0].byteLength not found");
-			goto fail;
-		}
-		for (i = 0; i < res->upscaled; i++)
-		{
-			struct RldUpImage *u = &res->list[i];
-			const int im = RldUp_Element(tok, count, images, u->image);
-			const int bv = RldUp_Member(tok, count, im, json, "bufferView");
-			struct RldUpEdit *e = &edits[editCount++];
-
-			if ((bv < 0) || (tok[bv].type != JSMN_PRIMITIVE))
-			{
-				snprintf(res->why, sizeof(res->why), "images[%d].bufferView not found", u->image);
-				goto fail;
-			}
-			binAt = (binAt + 3u) & ~(size_t)3u;
-			u->offset = (u32)binAt;
-			u->view = (u32)(viewsCount + i);
-			binAt += u->pngSize;
-			e->at = (size_t)tok[bv].start;
-			e->cut = (size_t)(tok[bv].end - tok[bv].start);
-			snprintf(e->text, sizeof(e->text), "%u", u->view);
-		}
-		newBinLen = binAt;
-		edits[editCount].at = (size_t)tok[length].start;
-		edits[editCount].cut = (size_t)(tok[length].end - tok[length].start);
-		snprintf(edits[editCount].text, sizeof(edits[editCount].text), "%u", (unsigned)newBinLen);
-		editCount++;
-	}
-	// The new bufferViews go in front of the closing bracket of bufferViews.
-	edits[editCount].at = (size_t)tok[views].end - 1u;
-	edits[editCount].cut = 0;
-	edits[editCount].text[0] = 0;
-	editCount++;
-	if (json[tok[views].end - 1] != ']')
-	{
-		snprintf(res->why, sizeof(res->why), "bufferViews does not end in ]");
-		goto fail;
-	}
-	qsort(edits, (size_t)editCount, sizeof(*edits), RldUp_EditOrder);
-
-	// Sizes: the JSON grows by the edits and the appended views.
-	newJsonLen = jsonLen;
-	for (k = 0; k < editCount; k++)
-	{
-		newJsonLen = newJsonLen - edits[k].cut + strlen(edits[k].text);
-	}
-	for (i = 0; i < res->upscaled; i++)
-	{
-		char view[96];
-
-		newJsonLen += (size_t)snprintf(view, sizeof(view), ",{\"buffer\":0,\"byteOffset\":%u,\"byteLength\":%u}", res->list[i].offset,
-		                               (unsigned)res->list[i].pngSize);
-	}
-	newJsonPad = (newJsonLen + 3u) & ~(size_t)3u;
-	newBinPad = (newBinLen + 3u) & ~(size_t)3u;
-	*outSize = 12u + 8u + newJsonPad + 8u + newBinPad + (size - restAt);
-	if (*outSize > 0xFFFFFFFFu)
-	{
-		snprintf(res->why, sizeof(res->why), "the result would be larger than 4 GiB");
-		goto fail;
-	}
-	out = (u8 *)calloc(1, *outSize);
+	out = RldUp_Rewrite(glb, size, res->list, res->upscaled, viewsCount, NULL, outSize, res->why, sizeof(res->why));
 	if (out == NULL)
 	{
-		snprintf(res->why, sizeof(res->why), "out of memory");
-		goto fail;
+		RldUp_FreeResult(res);
+		res->upscaled = 0;
 	}
-	RldHires_PutLE32(&out[0], 0x46546C67u);
-	RldHires_PutLE32(&out[4], 2u);
-	RldHires_PutLE32(&out[8], (u32)*outSize);
-	RldHires_PutLE32(&out[12], (u32)newJsonPad);
-	RldHires_PutLE32(&out[16], 0x4E4F534Au);
-	{
-		u8 *j = &out[20];
-		size_t from = 0;
-
-		at = 0;
-		for (k = 0; k < editCount; k++)
-		{
-			memcpy(&j[at], &json[from], edits[k].at - from);
-			at += edits[k].at - from;
-			if ((edits[k].cut == 0u) && (edits[k].text[0] == 0))
-			{
-				for (i = 0; i < res->upscaled; i++)
-				{
-					char view[96];
-					const int n = snprintf(view, sizeof(view), ",{\"buffer\":0,\"byteOffset\":%u,\"byteLength\":%u}", res->list[i].offset,
-					                       (unsigned)res->list[i].pngSize);
-
-					memcpy(&j[at], view, (size_t)n);
-					at += (size_t)n;
-				}
-			}
-			else
-			{
-				memcpy(&j[at], edits[k].text, strlen(edits[k].text));
-				at += strlen(edits[k].text);
-			}
-			from = edits[k].at + edits[k].cut;
-		}
-		memcpy(&j[at], &json[from], jsonLen - from);
-		at += jsonLen - from;
-		// The source's padding (spaces or NULs) was copied with it; pad to 4 with spaces.
-		memset(&j[at], ' ', newJsonPad - at);
-	}
-	at = 20u + newJsonPad;
-	RldHires_PutLE32(&out[at], (u32)newBinPad);
-	RldHires_PutLE32(&out[at + 4u], 0x004E4942u);
-	memcpy(&out[at + 8u], bin, binLen);
-	for (i = 0; i < res->upscaled; i++)
-	{
-		memcpy(&out[at + 8u + res->list[i].offset], res->list[i].png, res->list[i].pngSize);
-	}
-	at += 8u + newBinPad;
-	memcpy(&out[at], &glb[restAt], size - restAt);
-	free(tok);
-	free(edits);
 	return out;
-
-fail:
-	free(tok);
-	free(edits);
-	free(out);
-	RldUp_FreeResult(res);
-	res->upscaled = 0;
-	*outSize = 0;
-	return NULL;
 }
 
 static int RldHires_UpscaleCommand(int argc, char **argv)
