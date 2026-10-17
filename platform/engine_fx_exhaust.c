@@ -2,6 +2,9 @@
 #include <math.h>
 #include <stdio.h>
 
+// platform/native_render_layer.c: the measuring switch --native-hide-exhaust.
+int NativeRenderLayer_HideExhaustQuad(const struct Particle *particle);
+
 // ENGINE FX EXHAUST - the exhaust smoke of custom drivers drawn by the engine (step 4).
 // See include/platform/engine.h, EFFECTS OF CUSTOM DRIVERS.
 //
@@ -370,7 +373,11 @@ int EngineFx_ExhaustSprite(struct Particle *p, int view, const struct Icon *icon
 	// The colour: the one game-state write of this path (a proven no-op, see the
 	// header), called at the point where retail calls it.
 	color = Particle_SetColors(flagsAxis, flagsSetColor, p);
-	if (lookHide)
+	// The measuring switch --native-hide-exhaust hides it here as retail does
+	// (game/Particle.c, Particle_RenderList: the same test with "|", so the
+	// hidden quads are counted alike); without the switch the call is 0 and
+	// counts nothing.
+	if (NativeRenderLayer_HideExhaustQuad(p) | lookHide)
 	{
 		return 1; // retail projects the quad, then leaves it out of the OT
 	}
