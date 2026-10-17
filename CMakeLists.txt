@@ -239,6 +239,8 @@ if(MSVC)
         tools/reloadstudio/rs_tex.c
         tools/reloadstudio/rs_hires_model.c
         tools/reloadstudio/rs_hires.c
+        tools/reloadstudio/rs_charhires.c
+        tools/reloadstudio/rs_cards.c
         tools/reloadstudio/rs_rldpack.c
         tools/rldpack_image.c
         platform/native_disc_image.c
