@@ -110,6 +110,8 @@ def percentile(sorted_vals, p):
 def variant_info(filename):
     stem = os.path.basename(filename.replace("\\", "/"))
     stem = re.sub(r"\.(rldchar|glb)$", "", stem, flags=re.IGNORECASE)
+    # the copy of hires_chars_dir.py --shots-first is a second load of the same variant
+    stem = re.sub(r"-0shots-", "-", stem, flags=re.IGNORECASE)
     m = VARIANT_RE.search(stem)
     if m:
         return stem, int(m.group(1)) * 1000, int(m.group(2))
@@ -586,6 +588,7 @@ def selftest():
     c.check(percentile([], 99) is None and percentile([7], 99) == 7, "nearest rank on empty / single")
     c.check(variant_info("C:\\x\\testdriver-t40k-x1024.rldchar") == ("testdriver-t40k-x1024", 40000, 1024), "variant name .rldchar")
     c.check(variant_info("testdriver-t320k-x2048.glb") == ("testdriver-t320k-x2048", 320000, 2048), "variant name .glb")
+    c.check(variant_info("testdriver-0shots-t40k-x1024.rldchar") == ("testdriver-t40k-x1024", 40000, 1024), "shots copy = same variant")
     c.check(variant_info("Crash JP.rldchar") == ("Crash JP", None, None), "unknown name kept")
 
     root = tempfile.mkdtemp(prefix="hbe-")

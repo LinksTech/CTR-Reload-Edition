@@ -33,6 +33,18 @@ FIELD_TABLE = {
     "clip":    ("clip",    "str",   1),
     "blend":   ("blend",   "float", 1),
     "prev":    ("prev",    "str",   1),
+    "timer":   ("timer",   "int",   1),
+    "want":    ("want",    "str",   1),
+    "t":       ("t",       "float", 1),
+    "steerclip": ("steerclip", "str", 1),
+    "steerRaw":  ("steerRaw",  "int", 1),
+    "air":     ("air",     "int",   1),
+    "kart":    ("kart",    "int",   1),
+    "drift":   ("drift",   "int",   1),
+    "rank":    ("rank",    "int",   1),
+    "roll":    ("roll",    "float", 1),
+    "pos":     ("pos",     "float", 3),   # x y z
+    "wheels":  ("wheels",  "str",   1),   # own | standard
     "steer":   ("steer",   "float", 1),
     "yaw":     ("yaw",     "float", 1),
     "yawgame": ("yawgame", "float", 1),
@@ -42,6 +54,7 @@ FIELD_TABLE = {
     "box":     ("box",     "float", 4),   # x0 y0 x1 y1 (screen fractions)
 }
 REQUIRED_FIELDS = ("vb", "seat", "state", "clip")
+NONE_WORDS = {"prev": "none", "steerclip": "none"}   # this word means "no value" -> None
 
 # --------------------------------------------------------------------------
 # Thresholds and tables
@@ -56,6 +69,7 @@ EXPECTED_CLIP = {                # state -> clip; default identity
 RAMP_MIN_FRAMES_60 = 4           # criterion 2: ramp covers >= 4 frames at 60 Hz
 BLEND_DECREASE_EPS = 1e-6
 WHEEL_SLIP_MAX = 0.05            # criterion 3: mean |omega*radius - v| / v
+STEER_DEADZONE = 0.05            # |steer| above it in state base must draw a steer clip
 STEER_DIFF_MAX = 0.01            # rad, max |yaw - yawgame|
 
 # --------------------------------------------------------------------------
@@ -73,6 +87,55 @@ def _conv(kind, tok):
     except ValueError:
         return None
     return tok
+
+
+def _derive(rec):
+    """Add eval_state / eval_clip / eval_expected / eval_ok to a record.
+
+    The engine's states (base, jump, ..., forced, finished) are not clip names.
+    A record without "want" is the provisional format: state and clip as logged.
+    """
+    state, clip = rec["state"], rec["clip"]
+    exp = None
+    ok = True
+    if rec.get("want") is None:
+        es, ec = state, clip
+    elif state == "base":
+        sc = rec.get("steerclip")
+        if sc in ("steer_left", "steer_right"):
+            es, ec = sc, sc
+            steer = rec.get("steer")
+            if steer is not None and ((sc == "steer_left" and steer < 0)
+                                      or (sc == "steer_right" and steer > 0)):
+                ok = False      # sign mismatch: + = left
+        else:
+            steer = rec.get("steer")
+            if steer is not None and abs(steer) > STEER_DEADZONE:
+                # steering, but no steer clip drawn: a wrong line of that steer state
+                es, ec = ("steer_left" if steer > 0 else "steer_right"), "none"
+            else:
+                es, ec = "idle", clip
+    elif state == "finished":
+        rank = rec.get("rank")
+        if rank is None:
+            es = "finished"
+        else:
+            es = "podium_%d" % (rank + 1) if 0 <= rank <= 2 else "lose"
+        ec = clip
+    elif state == "forced":
+        es, ec, exp = "forced:" + rec["want"], clip, rec["want"]
+    else:
+        es, ec = state, clip
+    rec["eval_state"], rec["eval_clip"] = es, ec
+    rec["eval_expected"], rec["eval_ok"] = exp, ok
+    return rec
+
+
+def eval_view(rec):
+    """(eval_state, eval_clip) of a record: what the criteria compare."""
+    if "eval_state" not in rec:
+        _derive(rec)
+    return rec["eval_state"], rec["eval_clip"]
 
 
 def parse_hires_lines(lines):
@@ -111,6 +174,10 @@ def parse_hires_lines(lines):
             continue
         rec["raw"] = raw.rstrip("\r\n")
         rec["extra"] = extra
+        for f, w in NONE_WORDS.items():
+            if rec[f] == w:
+                rec[f] = None
+        _derive(rec)
         out.append(rec)
     return out
 
@@ -179,17 +246,18 @@ def evaluate(records, rate_hz=30, expected=None, require_states=None,
     # criterion 1
     per_state = {}
     for r in records:
-        s = per_state.setdefault(r["state"], {"lines": 0, "excluded": 0,
-                                              "counted": 0, "matching": 0})
+        es, ec = eval_view(r)
+        want = exp[es] if es in exp else (r["eval_expected"] or es)
+        s = per_state.setdefault(es, {"lines": 0, "excluded": 0,
+                                      "counted": 0, "matching": 0, "expected_clip": want})
         s["lines"] += 1
         if r["blend"] is not None and r["blend"] < 1.0:
             s["excluded"] += 1
             continue
         s["counted"] += 1
-        if r["clip"] == exp.get(r["state"], r["state"]):
+        if ec == want and r["eval_ok"]:
             s["matching"] += 1
     for st, s in per_state.items():
-        s["expected_clip"] = exp.get(st, st)
         s["share"] = (s["matching"] / s["counted"]) if s["counted"] else None
         s["ok"] = s["share"] is None or s["share"] >= CLIP_SHARE_MIN
     missing = {}
@@ -350,18 +418,52 @@ def main(argv):
 # --------------------------------------------------------------------------
 # Selftest
 # --------------------------------------------------------------------------
-def _line(vb, seat, state, clip, blend=1.0, prev="idle", steer=0.5, yaw=0.2,
+def _line(vb, seat, state, clip, blend=1.0, prev="idle", steer=None, yaw=0.2,
           yawgame=0.2, v=3.125, radius=0.25, omega=None, prefix="[CTR Engine] ",
-          tail=""):
+          tail="", fmt="real", rank=None, want=None):
+    """One log line. `state` is the eval-level state (idle, steer_left, jump,
+    podium_2, lose, forced:menu, ...); fmt "real" maps it to the engine's words,
+    fmt "prov" writes the provisional format (state and clip as given)."""
     if omega is None:
         omega = v / radius
-    parts = ["%shires char:" % prefix, "vb %d" % vb, "seat %d" % seat, "state %s" % state,
-             "clip %s" % clip]
+    if fmt == "prov":
+        parts = ["%shires char:" % prefix, "vb %d" % vb, "seat %d" % seat, "state %s" % state,
+                 "clip %s" % clip]
+        if blend is not None:
+            parts.append("blend %.3f" % blend)
+        parts += ["prev %s" % prev, "steer %.3f" % (0.5 if steer is None else steer),
+                  "yaw %.4f" % yaw, "yawgame %.4f" % yawgame, "omega %.3f" % omega,
+                  "radius %.4f" % radius, "v %.3f" % v, "box 0.41 0.52 0.58 0.71"]
+        return " ".join(parts) + tail
+    steerclip = "none"
+    drift = 0
+    if state == "idle":
+        eng, want_ = "base", clip
+        steer = 0.0 if steer is None else steer
+    elif state in ("steer_left", "steer_right"):
+        eng, want_, steerclip = "base", clip, clip
+        steer = (0.5 if state == "steer_left" else -0.5) if steer is None else steer
+    elif state.startswith("podium_") or state == "lose":
+        eng, want_ = "finished", clip
+        rank = (int(state[-1]) - 1 if state != "lose" else 5) if rank is None else rank
+    elif state.startswith("forced:"):
+        eng, want_ = "forced", state[7:]
+    else:
+        eng, want_ = state, clip
+        drift = {"drift_left": 1, "drift_right": -1}.get(state, 0)
+    if want is not None:
+        want_ = want
+    steer = 0.0 if steer is None else steer
+    parts = ["%shires char:" % prefix, "vb %d" % vb, "seat %d" % seat, "timer %d" % (vb * 2),
+             "state %s" % eng, "want %s" % want_, "clip %s" % clip, "t %.3f" % 0.5]
     if blend is not None:
         parts.append("blend %.3f" % blend)
-    parts += ["prev %s" % prev, "steer %.3f" % steer, "yaw %.4f" % yaw,
-              "yawgame %.4f" % yawgame, "omega %.3f" % omega, "radius %.4f" % radius,
-              "v %.3f" % v, "box 0.41 0.52 0.58 0.71"]
+    parts += ["prev %s" % (prev or "none"), "steer %.3f" % steer, "steerclip %s" % steerclip,
+              "steerRaw %d" % int(steer * 100), "air 0", "kart 0", "drift %d" % drift,
+              "rank %d" % (0 if rank is None else rank), "yaw %.4f" % yaw,
+              "yawgame %.4f" % yawgame, "roll 0.1000", "omega %.3f" % omega,
+              "radius %.4f" % radius, "v %.3f" % v, "pos 1.0 2.0 3.0", "wheels own",
+              "box 0.41 0.52 0.58 0.71"]
     return " ".join(parts) + tail
 
 
@@ -424,7 +526,18 @@ def selftest():
     check("parse count", len(recs) == 1)
     r = recs[0] if recs else {}
     check("parse ints", r.get("vb") == 1234 and r.get("seat") == 0)
-    check("parse strs", r.get("state") == "steer_left" and r.get("prev") == "idle")
+    check("parse strs", r.get("state") == "base" and r.get("prev") == "idle"
+          and r.get("want") == "steer_left" and r.get("wheels") == "own")
+    check("parse eval view", eval_view(r) == ("steer_left", "steer_left") and r.get("eval_ok"))
+    check("parse real extras", r.get("timer") == 2468 and r.get("steerclip") == "steer_left"
+          and r.get("pos") == (1.0, 2.0, 3.0) and r.get("steerRaw") == 62 and r.get("rank") == 0
+          and r.get("t") == 0.5 and r.get("drift") == 0 and r.get("roll") == 0.1)
+    idl = parse_hires_lines([_line(1, 0, "idle", "idle", prev=None)])[0]
+    check("parse none words", idl["prev"] is None and idl["steerclip"] is None
+          and eval_view(idl) == ("idle", "idle"))
+    prv = parse_hires_lines([_line(1, 0, "steer_left", "steer_left", fmt="prov")])[0]
+    check("parse provisional", prv["state"] == "steer_left" and prv["want"] is None
+          and eval_view(prv) == ("steer_left", "steer_left"))
     check("parse floats", r.get("blend") == 0.75 and r.get("omega") == 12.5 and r.get("v") == 3.125)
     check("parse box", r.get("box") == (0.41, 0.52, 0.58, 0.71))
     check("parse unknown key", r.get("extra") == {"newkey": "somevalue"})
@@ -456,18 +569,18 @@ def selftest():
     check("30Hz 1-line ramp fails", not crit(res)["blend_ramps"])
 
     # --- clip share ---------------------------------------------------------
-    log = make_log(seats=(0,), segments=[("idle", 20), ("steer_left", 100), ("steer_right", 20)],
+    log = make_log(seats=(0,), segments=[("idle", 20), ("jump", 100), ("hit", 20)],
                    mutate=lambda i, kw: (kw.update(clip="idle", blend=None)
-                                         if kw["state"] == "steer_left" and i in (30, 60) else None))
-    res = run(log, allow_missing=("jump", "drift_left", "drift_right", "hit"))
-    st = res["states"]["steer_left"]
+                                         if kw["state"] == "jump" and i in (30, 60) else None))
+    res = run(log, allow_missing=("steer_left", "steer_right", "drift_left", "drift_right"))
+    st = res["states"]["jump"]
     check("2% wrong clip share", abs(st["share"] - 0.98) < 1e-9 and not st["ok"], str(st))
     check("2% wrong clip FAIL", not crit(res)["clip_per_state"] and res["verdict"] == "FAIL")
-    log = make_log(seats=(0,), segments=[("idle", 20), ("steer_left", 100), ("steer_right", 20)],
+    log = make_log(seats=(0,), segments=[("idle", 20), ("jump", 100), ("hit", 20)],
                    mutate=lambda i, kw: (kw.update(clip="idle", blend=None)
-                                         if kw["state"] == "steer_left" and i == 30 else None))
-    res = run(log, allow_missing=("jump", "drift_left", "drift_right", "hit"))
-    check("1% wrong clip PASS", crit(res)["clip_per_state"] and res["verdict"] == "PASS", str(res["states"]["steer_left"]))
+                                         if kw["state"] == "jump" and i == 30 else None))
+    res = run(log, allow_missing=("steer_left", "steer_right", "drift_left", "drift_right"))
+    check("1% wrong clip PASS", crit(res)["clip_per_state"] and res["verdict"] == "PASS", str(res["states"]["jump"]))
 
     # --- ramps --------------------------------------------------------------
     # 0 -> 1 in one line
@@ -531,6 +644,66 @@ def selftest():
           and not res["states"]["drift_left"]["ok"])
     res = run(make_log(clip_of=fb), rate_hz=30, expected=fb)
     check("fallback with override PASS", res["verdict"] == "PASS", str(res["criteria"]))
+
+    # --- derived states (real format) --------------------------------------
+    allow_all = REQUIRED_STATES
+    # steer sign mismatch: steer_left clip drawn while steer < 0
+    log = make_log(seats=(0,), segments=[("idle", 10), ("steer_left", 50), ("steer_right", 20)],
+                   mutate=lambda i, kw: kw.update(steer=-0.4)
+                   if kw["state"] == "steer_left" and kw["blend"] == 1.0 else None)
+    res = run(log, allow_missing=allow_all)
+    check("steer sign mismatch FAIL", not crit(res)["clip_per_state"]
+          and res["states"]["steer_left"]["matching"] == 0 and res["verdict"] == "FAIL",
+          str(res["states"]["steer_left"]))
+    check("steer sign other state intact", res["states"]["steer_right"]["share"] == 1.0)
+    log = make_log(seats=(0,), segments=[("idle", 10), ("steer_right", 20)],
+                   mutate=lambda i, kw: kw.update(steer=0.3) if kw["state"] == "steer_right" else None)
+    res = run(log, allow_missing=allow_all)
+    check("steer sign mismatch right FAIL", not res["states"]["steer_right"]["ok"])
+    # steer clip names a state even when the logged state is "base"
+    res = run(make_log(), rate_hz=30)
+    check("base+steerclip -> steer_left/right", "steer_left" in res["states"]
+          and "steer_right" in res["states"] and "base" not in res["states"])
+    # base with steerclip none -> idle
+    one = parse_hires_lines([_line(1, 0, "idle", "idle")])[0]
+    check("base steerclip none -> idle", one["state"] == "base" and one["steerclip"] is None
+          and eval_view(one) == ("idle", "idle"))
+    # base, steering beyond the dead zone, but no steer clip drawn: a wrong steer line
+    two = parse_hires_lines([_line(1, 0, "idle", "idle", steer=0.4), _line(2, 0, "idle", "idle", steer=0.02)])
+    check("base steer 0.4 without steer clip -> steer_left, wrong", eval_view(two[0]) == ("steer_left", "none"))
+    check("base steer 0.02 (dead zone) -> idle", eval_view(two[1]) == ("idle", "idle"))
+    # finished: rank 1 -> podium_2, rank 5 -> lose
+    fin = [("idle", 5), ("podium_2", 30)]
+    res = run(make_log(seats=(0,), segments=fin), allow_missing=allow_all)
+    check("finished rank 1 -> podium_2 PASS", "podium_2" in res["states"]
+          and res["states"]["podium_2"]["share"] == 1.0 and res["verdict"] == "PASS", str(res["states"]))
+    res = run(make_log(seats=(0,), segments=[("idle", 5), ("lose", 30)]), allow_missing=allow_all)
+    check("finished rank 5 -> lose PASS", res["states"]["lose"]["share"] == 1.0 and res["verdict"] == "PASS")
+    res = run(make_log(seats=(0,), segments=[("idle", 5), ("lose", 30)], clip_of={"lose": "podium_1"}),
+              allow_missing=allow_all)
+    check("rank 5 drawing podium_1 FAIL", not crit(res)["clip_per_state"] and res["verdict"] == "FAIL",
+          str(res["states"].get("lose")))
+    res = run(make_log(seats=(0,), segments=[("idle", 5), ("podium_3", 30)], clip_of={"podium_3": "podium_1"}),
+              allow_missing=allow_all)
+    check("podium_3 drawing podium_1 FAIL", not res["states"]["podium_3"]["ok"])
+    res = run(make_log(seats=(0,), segments=[("idle", 5), ("podium_3", 30)], clip_of={"podium_3": "podium_1"}),
+              allow_missing=allow_all, expected={"podium_3": "podium_1"})
+    check("podium fallback via expected PASS", res["verdict"] == "PASS")
+    # forced: expected clip is the wanted one
+    res = run(make_log(seats=(0,), segments=[("idle", 5), ("forced:menu", 30)], clip_of={"forced:menu": "menu"}),
+              allow_missing=allow_all)
+    check("forced want menu drawing menu PASS", res["states"]["forced:menu"]["share"] == 1.0
+          and res["verdict"] == "PASS", str(res["states"]))
+    res = run(make_log(seats=(0,), segments=[("idle", 5), ("forced:menu", 30)], clip_of={"forced:menu": "idle"}),
+              allow_missing=allow_all)
+    check("forced want menu drawing idle FAIL", not crit(res)["clip_per_state"])
+    # provisional format still works (including a mixed log)
+    prov = [_line(1, 0, "idle", "idle", fmt="prov")] * 5 + [_line(1, 0, "jump", "jump", fmt="prov")] * 5
+    prov = [x for x in prov]   # (no cross-fade here: only the clip share is judged)
+    res = run(prov, allow_missing=allow_all)
+    check("provisional lines PASS", crit(res)["clip_per_state"] and set(res["states"]) == {"idle", "jump"})
+    res = run(prov + make_seat(3, segments=[("idle", 5), ("jump", 5)]), allow_missing=allow_all)
+    check("mixed formats PASS", crit(res)["clip_per_state"] and res["states"]["jump"]["lines"] == 15)
 
     # --- CLI paths ----------------------------------------------------------
     def cli(lines, argv):

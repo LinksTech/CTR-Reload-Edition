@@ -112,10 +112,13 @@ def crop_box(img, box, factor):
 # race
 # --------------------------------------------------------------------------
 def longest_run_middle(recs, state):
-    """Middle record of the longest run of consecutive lines with state == clip == state."""
+    """Middle record of the longest run of consecutive lines whose derived state and clip
+    (hires_tick_eval.py: eval_state / eval_clip, e.g. steer_left from state base with
+    steerclip steer_left) both equal state, without a cross-fade."""
     best, cur = [], []
     for r in recs:
-        ok = r["state"] == state and r["clip"] == state and r["blend"] in (None, 1.0)
+        st, cl = r.get("eval_state", r["state"]), r.get("eval_clip", r["clip"])
+        ok = st == state and cl == state and r.get("eval_ok", True) and r["blend"] in (None, 1.0)
         if ok:
             cur.append(r)
             if len(cur) > len(best):
@@ -163,7 +166,7 @@ def do_race(shots, name, series, log, out, seat=0, crop=2.0):
             continue
         c = crop_box(img, rec.get("box"), crop)
         c.save(os.path.join(out, "race-%s.png" % state))
-        tiles.append((c, "%s | clip %s | vb %d" % (state, rec["clip"], rec["vb"])))
+        tiles.append((c, "%s | clip %s | vb %d" % (state, rec.get("eval_clip", rec["clip"]), rec["vb"])))
     if not tiles:
         return 0
     make_sheet(tiles).save(os.path.join(out, "race-sheet.png"))

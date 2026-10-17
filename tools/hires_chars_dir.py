@@ -101,9 +101,19 @@ def fresh_work():
     os.makedirs(WORK_DIR)
 
 
+def roster_key(name):
+    """The game's roster order (platform/native_chars.c, NativeChar_CompareNameEntries):
+    the names compared with ASCII letters upper-cased, ties by the bytes."""
+    b = name.encode("utf-8")
+    return (bytes(c - 32 if 97 <= c <= 122 else c for c in b), b)
+
+
+SHOTS_MARK = "0shots-"  # sorts before "t..." (digit before letter): the roster's first file
+
+
 def write_chars(out, rows, extra_cols):
     """rows: list of dict(name, glb_sha, plus extra cols). Writes chars.txt, prints roster."""
-    rows = sorted(rows, key=lambda r: r["name"].encode("utf-8"))
+    rows = sorted(rows, key=lambda r: roster_key(r["name"]))
     lines = ["# name\tbytes\tsha256\tglb_sha256\troster_no" +
              "".join("\t" + c for c in extra_cols)]
     for i, r in enumerate(rows, 1):
@@ -142,10 +152,26 @@ def mode_budget(args):
             check_file(args, out_file)
             rows.append({"name": name, "glb_sha": sha256(glb)})
             print("ok  %s" % name)
+        if args.shots_first:
+            # a copy of one variant that sorts first in the roster: the first race
+            # load of --dev-char-seats cycle drives it (the tour entry that carries
+            # the snapshots); hires_budget_eval.py counts it as a second load of
+            # that variant
+            src = os.path.join(args.out, "testdriver-%s.rldchar" % args.shots_first)
+            if not os.path.isfile(src):
+                raise Failure("--shots-first %s is not one of the variants made" % args.shots_first)
+            name = "testdriver-%s%s.rldchar" % (SHOTS_MARK, args.shots_first)
+            shutil.copyfile(src, os.path.join(args.out, name))
+            glb = os.path.join(args.src, "testdriver-%s.glb" % args.shots_first)
+            rows.append({"name": name, "glb_sha": sha256(glb)})
+            print("ok  %s (copy of testdriver-%s.rldchar)" % (name, args.shots_first))
     except (Failure, OSError) as e:
         print("error: %s" % e, file=sys.stderr)
         return 1
-    write_chars(args.out, rows, [])
+    rows = write_chars(args.out, rows, [])
+    if args.shots_first and not rows[0]["name"].startswith("testdriver-" + SHOTS_MARK):
+        print("error: the shots copy does not sort first", file=sys.stderr)
+        return 1
     return 0
 
 
@@ -265,6 +291,18 @@ def selftest():
           rows[0][3] == sha256(os.path.join(src, "testdriver-t10k-x2048.glb")),
           "chars.txt bytes and hashes")
     check("roster order" in text, "roster printed")
+    # --shots-first: the copy sorts first, the game's case-insensitive order
+    out_s = os.path.join(fake_dir, "out shots")
+    code, text = tool("budget", "--rldpack", fake, "--src", src, "--out", out_s, "--shots-first", "t40k-x1024")
+    rows_s = [l.split("	") for l in open(os.path.join(out_s, "chars.txt")).read().splitlines() if not l.startswith("#")]
+    check(code == 0 and len(rows_s) == 9 and rows_s[0][0] == "testdriver-0shots-t40k-x1024.rldchar"
+          and rows_s[0][2] == sha256(os.path.join(out_s, "testdriver-t40k-x1024.rldchar")),
+          "--shots-first: a copy of the variant, first in the roster: " + text)
+    code, text = tool("budget", "--rldpack", fake, "--src", src, "--out", os.path.join(fake_dir, "out shots bad"),
+                      "--variants", "t10k-x2048", "--shots-first", "t40k-x1024")
+    check(code == 1, "--shots-first of a variant not made: exit 1")
+    check(sorted(["b.rldchar", "A.rldchar", "a.rldchar"], key=roster_key) == ["A.rldchar", "a.rldchar", "b.rldchar"],
+          "roster order is case-insensitive, ties by bytes")
 
     # custom variants + command template
     out2 = os.path.join(fake_dir, "out custom")
@@ -337,6 +375,8 @@ def main():
         if m == "budget":
             sp.add_argument("--variants", default="standard")
             sp.add_argument("--base", default=None)
+            sp.add_argument("--shots-first", default=None, metavar="VARIANT",
+                            help="also a copy of that variant named to sort first in the roster")
         else:
             sp.add_argument("--glb", default="testdriver-t40k-x1024.glb")
             sp.add_argument("--templates", default="0,1,2,3,4,5,6,7")
