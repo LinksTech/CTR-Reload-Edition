@@ -70,6 +70,9 @@
 // Scale and middle come from the character's hull (Engine_HiresCharHull, model
 // units, rest pose and every clip), so the size does not change with the clip.
 // A declined submit draws nothing in that frame (counted, reported at exit).
+// While the driver select is open (sdata->ptrActiveMenu ==
+// &D230.menuCharacterSelect) the scene leaves its hi-res character out (counted):
+// the select's preview window shows the driver there.
 // One log line at the first draw: file, roster entry, clip asked and drawn.
 
 #define ENGINE_HIRES_MENU_SLOT (ENGINE_HIRES_SLOTS - 1) // the scene's forced pose slot (the podium takes the first three)
@@ -149,6 +152,7 @@ internal float s_menuClock = 0.0f;      // game seconds of the scene (the hi-res
 internal unsigned s_menuHiresDrawn = 0; // frames drawn with a hi-res character
 internal unsigned s_menuHiresDeclined = 0;
 internal int s_menuHiresLogged = 0;
+internal unsigned s_menuHiresSelectSkipped = 0; // frames left out while the driver select was open
 
 // The value of --engine-menuscene-zoom: "<f>[,<x>[,<yaw>]]", f in 0.25..8, x in
 // -1..1, yaw in degrees -360..360. 1 = valid (the outputs are set), 0 = refused
@@ -209,7 +213,8 @@ internal void Engine_MenuSceneReport(void)
 	Platform_Log("[CTR Engine] menu scene: %u frame(s) drawn, %u wheel draw(s)\n", s_menuFramesDrawn, s_menuWheelDraws);
 	if (g_cfg_engineHiresChars)
 	{
-		Platform_Log("[CTR Engine] menu scene: hi-res character drawn in %u frame(s), declined %u\n", s_menuHiresDrawn, s_menuHiresDeclined);
+		Platform_Log("[CTR Engine] menu scene: hi-res character drawn in %u frame(s), declined %u, left out while the driver select was open %u\n",
+		             s_menuHiresDrawn, s_menuHiresDeclined, s_menuHiresSelectSkipped);
 	}
 }
 
@@ -357,6 +362,14 @@ void Engine_MenuSceneCollect(struct GameTracker *gGT)
 	if (!hires)
 	{
 		hiresChar = Engine_MenuSceneHiresChar(&hiresEntry, hullMin, hullMax);
+		// While the driver select is open (the menu it runs in, as
+		// MM_NativeCharGrid.c asks it) its preview window shows the driver:
+		// the scene's hi-res character stays away, so one driver is on screen.
+		if ((hiresChar >= 0) && (sdata->ptrActiveMenu == &D230.menuCharacterSelect))
+		{
+			s_menuHiresSelectSkipped++;
+			return;
+		}
 	}
 	if (hires)
 	{
