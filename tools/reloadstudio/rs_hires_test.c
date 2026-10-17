@@ -170,6 +170,11 @@ int wmain(int argc, wchar_t **argv)
               "idle at 0.5 s: 5 degrees");
         RsHires_AnimFrame(&c, -1, 0.5f, 0.0f, NULL, NULL);  // the rest pose
         Check(RsHires_AnimCorner(&c, 1, p, n) && Near(p[0], 0.1) && Near(p[1], 0.5), "the rest pose keeps the vertex");
+        // The third vertex (0, 1, 0) has one weight of 0.5: renormalised to 1 as the engine does
+        // (EngHc_ReadPrimitive), it stays at (0, 1, 0); unrenormalised it would stand at (0, 0.5, 0).
+        RsHires_AnimFrame(&c, 3, 1.0f, 0.0f, NULL, NULL);
+        Check(RsHires_AnimCorner(&c, 2, p, n) && Near(p[0], 0.0) && Near(p[1], 1.0) && Near(p[2], 0.0),
+              "weights renormalised as the engine does: a lone weight of 0.5 moves the vertex fully");
         Check(RsHires_AnimLength(&c, 0) == 1.0f && RsHires_AnimLength(&c, -1) == 0.0f, "clip lengths");
         {
             float share = 0.0f;
@@ -198,6 +203,14 @@ int wmain(int argc, wchar_t **argv)
     Check(c.wheels == 0 && c.clips == 11 && c.clipState[6] == RS_HIRES_CLIP_FALLBACK && c.clipVia[6] == 0 && c.clipFullLock[6] == 0,
           "hires-warn.glb: no wheels, 'hit' falls back to 'idle'");
     Check(c.previewTriangles == 1, "hires-warn.glb: the picture has the body only (the found wheels are not drawn)");
+    RsHires_CheckFree(&c);
+
+    // The clip hull (include/rldhires_hull.inc) in the Studio's check: clips that
+    // take the model to 4.05 m are refused as rldpack refuses them.
+    Path(path, argv[1], L"hires-hull.glb");
+    Check(RsHires_CheckFile(path, &c) == 1 && c.usable == 0 && c.errors == 1 && c.rowCount == 1 && wcscmp(c.rows[0].rule, L"HRG-18") == 0 &&
+              wcsstr(c.rows[0].text, L"idle") != NULL,
+          "hires-hull.glb: the Studio refuses the clip hull of 4.05 m (HRG-18, clip 'idle')");
     RsHires_CheckFree(&c);
 
     Path(path, argv[1], L"hires-bad.glb");

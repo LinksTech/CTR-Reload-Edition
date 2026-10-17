@@ -28,6 +28,7 @@ typedef signed long long s64;
 #include <rldchar.inc>
 #include <rldhires.inc>
 #include <rldhires_anim.inc>
+#include <rldhires_hull.inc>
 #if defined(_MSC_VER)
 #pragma warning(pop)
 #endif
@@ -248,6 +249,13 @@ static void RsHires_CollectPrimitive(const RldHiresModel *m, struct RsHiresTex *
                 cgltf_uint j[4] = {0, 0, 0, 0};
                 cgltf_accessor_read_uint(joints, vi, j, 4);
                 cgltf_accessor_read_float(weights, vi, q->weight, 4);
+                // The weights renormalised to a sum of 1, all on the first joint when they
+                // sum to 0 - the engine's rule (EngHc_ReadPrimitive), so both skin alike.
+                {
+                    const float sum = q->weight[0] + q->weight[1] + q->weight[2] + q->weight[3];
+                    for (k = 0; k < 4; k++)
+                        q->weight[k] = (sum > 0.0f) ? (q->weight[k] / sum) : ((k == 0) ? 1.0f : 0.0f);
+                }
                 for (k = 0; k < 4; k++)
                     q->joint[k] = (u8)(j[k] < 255u ? j[k] : 0u);   // RldHires_Open refused a joint past the skin (HRG-14)
             }
@@ -703,6 +711,11 @@ int RsHires_CheckGlb(const unsigned char *glb, size_t size, struct RsHiresCheck 
     ok = RldHires_Open(glb, (u32)size, &m, &rep);
     if (m.data)
         ok = RldHires_CheckBudget(&m, &rep) && ok;
+    if (m.usable) {
+        // The poses of every clip (include/rldhires_hull.inc): what rldpack hires-check adds.
+        float lo[3], hi[3];
+        ok = RldHires_CheckClipHull(&m, &rep, lo, hi, NULL) && ok;
+    }
     RsHires_Fill(&rep, &m, out);
     RsHires_Picture(&m, out);
     out->read = 1;

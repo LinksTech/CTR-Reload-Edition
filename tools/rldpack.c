@@ -115,6 +115,9 @@ typedef signed int s32;
 // the same file the game and Reload Studio include (include/rldhires.inc).
 // Its self-test is tools/rldpack_hires_test.inc (selftest-hires).
 #include <rldhires.inc>
+// The pose maths of the engine and the animated hull (the 4 m rule over every clip).
+#include <rldhires_anim.inc>
+#include <rldhires_hull.inc>
 
 // Build ID (CTR_NATIVE_BUILD_ID), generated on every build - see Rld_Usage.
 #include "ctr_build_id.h"
