@@ -111,6 +111,11 @@ typedef signed int s32;
 #define CGLTF_IMPLEMENTATION
 #include <cgltf.h>
 
+// The hi-res driver (chunk CHRG): the format, its rules and their messages,
+// the same file the game and Reload Studio include (include/rldhires.inc).
+// Its self-test is tools/rldpack_hires_test.inc (selftest-hires).
+#include <rldhires.inc>
+
 // Build ID (CTR_NATIVE_BUILD_ID), generated on every build - see Rld_Usage.
 #include "ctr_build_id.h"
 
@@ -6397,6 +6402,8 @@ static void Rld_Usage(void)
 	printf("                              the model, the portrait, the own mask and the\n");
 	printf("                              voices with the game's own rules\n");
 	printf("  selftest                    check SHA-256 and the build against fixed cases\n");
+	printf("  selftest-hires              check the rules of the hi-res driver (chunk CHRG,\n");
+	printf("                              include/rldhires.inc) against built-in models\n");
 	printf("  make-native-tests [--obj] <folder>\n");
 	printf("                              write the test characters of the native model\n");
 	printf("                              (CNET, CTXT; preview) into a folder of a CMake\n");
@@ -6617,6 +6624,9 @@ static int Cmd_InfoMachine(int argc, char *argv[])
 #include "rldpack_anim.inc"
 #include "rldpack_wheel.inc"
 
+// The self-test of the hi-res driver (include/rldhires.inc), selftest-hires.
+#include "rldpack_hires_test.inc"
+
 // Searched for --machine and removed before a command sees the arguments:
 // otherwise make would report an unknown argument before the machine is on.
 static int Rld_MainCommand(int argc, char *argv[]);
@@ -6723,6 +6733,10 @@ static int Rld_MainCommand(int argc, char *argv[])
 	if (strcmp(argv[1], "selftest") == 0)
 	{
 		return Cmd_Selftest();
+	}
+	if (strcmp(argv[1], "selftest-hires") == 0)
+	{
+		return RldHires_SelfTest();
 	}
 	if (strcmp(argv[1], "make-native-tests") == 0)
 	{

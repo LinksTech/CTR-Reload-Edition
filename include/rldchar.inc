@@ -110,6 +110,16 @@ static const u16 s_rldCharFrames[RLDCHAR_ANIM_COUNT] = {21, 7, 15, 4};
 // are not in it on purpose: the envelope treats them as unknown chunks, and
 // only the reader of the native part (RldChar_ReadNative, behind
 // --native-preview) checks them, with RldChar_NativeLimit.
+//
+// CHRG (the hi-res driver, include/rldhires.inc) is not in it either, on
+// purpose and for the same reason: a known type gets the envelope's checks in
+// Rld_OpenAs (compression, size_stored == size_raw, the limit), and a failed
+// one refuses the WHOLE file - the driver would vanish from the roster. A
+// broken CHRG must only drop the hi-res part, and every older build skips
+// CHRG as unknown anyway. So the envelope skips it here too, and
+// RldHires_ReadChunk runs those checks (rule HRG-5: stored, the same sizes,
+// 64 MiB, SHA-256) for the hi-res reader alone. A container without CHRG reads
+// exactly as before.
 static u64 RldChar_ChunkLimit(const u8 *type)
 {
 	if (memcmp(type, "CHRI", 4) == 0)
@@ -148,7 +158,9 @@ static u64 RldChar_ChunkLimit(const u8 *type)
 // bound seat. CPRM (values) has a size limit above, but rldpack does not
 // write it and nothing interprets it yet.
 // PREVIEW: CNET (the native model) and CTXT (its textures), see the section
-// CNET AND CTXT at the end of this file. RESERVED NAMES: CTEX (once planned
+// CNET AND CTXT at the end of this file. HI-RES: CHRG (a GLB model, behind
+// the engine's --engine-hires-chars), written by rldpack hires-add, read and
+// checked by include/rldhires.inc. RESERVED NAMES: CTEX (once planned
 // for texture data; the textures of the native model are CTXT) and CWHL
 // (own wheels; the native wheels are a part of CNET) - both stay unassigned
 // and are skipped like any unknown chunk.
