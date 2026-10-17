@@ -1130,6 +1130,12 @@ int Engine_SelfTestHires(int *checks);
 // No change to any other draw, no share of ENGINE_DYN_VERTICES_PER_FRAME.
 extern int g_cfg_engineHiresChars;
 extern int g_cfg_engineHiresCharsLog;
+// THE TEXTURE FILTER of the hi-res drivers: trilinear with anisotropy
+// (ENGINE_TEXTURE_FILTERED), independent of --native-filter and of the glTF
+// sampler's filters (only its wraps are read). --engine-hires-chars-filter
+// <nearest|linear> (--dev, measuring only: the comparison image) sets
+// ENGINE_TEXTURE_PIXELATED or ENGINE_TEXTURE_FILTERED (the default).
+extern int g_cfg_engineHiresCharsFilter;
 
 // The fixed clip list of the format (section 4), index = clip id.
 #define ENGINE_HIRES_CLIP_IDLE 0

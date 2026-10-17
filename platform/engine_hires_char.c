@@ -43,6 +43,7 @@
 
 int g_cfg_engineHiresChars = 0;
 int g_cfg_engineHiresCharsLog = 0;
+int g_cfg_engineHiresCharsFilter = ENGINE_TEXTURE_FILTERED;
 
 // ---------------------------------------------------------------------------
 // THE DATA
@@ -121,6 +122,8 @@ typedef struct
 	int wrapU;
 	int wrapV;
 	u32 texture; // Engine_TextureCreate, 0xffffffff none
+	int fileWidth;  // the PNG's edges (before the round-up)
+	int fileHeight;
 	int width;
 	int height;
 } EngHcTex;
@@ -159,6 +162,7 @@ typedef struct
 	EngHcTex tex[ENG_HC_TEXTURES_MAX];
 	int texCount;
 	int texOverflow; // a material needed a texture upload past ENG_HC_TEXTURES_MAX (HRG-35)
+	int nearestAsked; // texture views whose glTF sampler asks NEAREST magnification (not followed)
 	u64 texBytes;
 	float hullMin[3];
 	float hullMax[3];
@@ -538,6 +542,11 @@ internal int EngHc_TextureOf(EngHcChar *c, const cgltf_data *gltf, const cgltf_t
 	{
 		wrapU = EngHc_WrapOf((int)tex->sampler->wrap_s);
 		wrapV = EngHc_WrapOf((int)tex->sampler->wrap_t);
+		// 9728 NEAREST (Blender "Closest"): noted for the ready line, drawn filtered anyway.
+		if ((int)tex->sampler->mag_filter == 9728)
+		{
+			c->nearestAsked++;
+		}
 	}
 	for (k = 0; k < c->texCount; k++)
 	{
@@ -1141,6 +1150,8 @@ internal int EngHc_Upload(const RldHiresModel *m, EngHcChar *c, const char **rul
 			*rule = "HRG-16";
 			return 0;
 		}
+		t->fileWidth = (int)png.width;
+		t->fileHeight = (int)png.height;
 		w = EngineStatic_UpEdge((int)png.width);
 		h = EngineStatic_UpEdge((int)png.height);
 		if ((w == 0) || (h == 0))
@@ -1181,7 +1192,14 @@ internal int EngHc_Upload(const RldHiresModel *m, EngHcChar *c, const char **rul
 		desc.rgba = rgba;
 		desc.linearData = t->linear;
 		desc.oneLevel = 0;
-		desc.filter = ENGINE_TEXTURE_FILTERED;
+		// THE FILTER: trilinear with anisotropy (ENGINE_TEXTURE_FILTERED: linear
+		// magnification and minification, linear between the mip levels; the
+		// texture's own keyed sampler, engine_vram.c EngTex_Sampling, bound with
+		// NATIVE_GFX_FILTER_KEEP at the draw) - whatever --native-filter says and
+		// whatever the file's sampler asks (its magFilter / minFilter are not read,
+		// only its wraps). Point sampling only with --engine-hires-chars-filter
+		// nearest (measuring: the comparison image).
+		desc.filter = g_cfg_engineHiresCharsFilter;
 		desc.maxAnisotropy = 0;
 		desc.wrapU = t->wrapU;
 		desc.wrapV = t->wrapV;
@@ -1203,7 +1221,15 @@ internal int EngHc_Upload(const RldHiresModel *m, EngHcChar *c, const char **rul
 		c->texBytes += (u64)w * (u64)h * 4u;
 		if (used < sizeof(c->texText))
 		{
-			used += (size_t)snprintf(c->texText + used, sizeof(c->texText) - used, " %dx%d%s", w, h, t->linear ? "n" : "");
+			// "n" a normal map; "(from WxH)" an image whose edges were rounded up (bilinear, at least 16).
+			if ((w != (int)t->fileWidth) || (h != (int)t->fileHeight))
+			{
+				used += (size_t)snprintf(c->texText + used, sizeof(c->texText) - used, " %dx%d%s(from %dx%d)", w, h, t->linear ? "n" : "", t->fileWidth, t->fileHeight);
+			}
+			else
+			{
+				used += (size_t)snprintf(c->texText + used, sizeof(c->texText) - used, " %dx%d%s", w, h, t->linear ? "n" : "");
+			}
 		}
 	}
 	(void)m;
@@ -2433,6 +2459,9 @@ internal int EngHc_LoadChar(int entry, int ch, const char **rule, char *detail, 
 		return 0;
 	}
 	c->used = 1;
+	Platform_Log("[CTR Engine] hires char textures: %s: filter %s, %d texture(s):%s%s\n", c->file,
+	             (g_cfg_engineHiresCharsFilter == ENGINE_TEXTURE_PIXELATED) ? "nearest (--engine-hires-chars-filter)" : "trilinear with anisotropy", c->texCount,
+	             c->texText, (c->nearestAsked > 0) ? "; the file's sampler asks NEAREST (drawn with the filter above)" : "");
 	return 1;
 }
 
@@ -3300,6 +3329,31 @@ int Engine_SelfTestHiresChar(int *checks)
 	HC_CHECK(Engine_ProgramStaticWanted("", 1) && Engine_ProgramStaticWanted("m.glb", 0) && !Engine_ProgramStaticWanted("", 0) &&
 	             !Engine_ProgramStaticWanted(NULL, 0),
 	         "program ns wanted with the static model or the hi-res drivers, else not");
+	// THE FILTER: by default the hi-res textures are made FILTERED, and that sampling is
+	// linear magnification and minification, linear between the levels, anisotropic
+	// (engine_vram.c EngTex_Sampling, set on the texture's keyed sampler; the draw binds
+	// with NATIVE_GFX_FILTER_KEEP). PIXELATED (--engine-hires-chars-filter nearest) is
+	// point sampling. Small images: edges rounded up to a power of two of at least 16.
+	{
+		EngineTextureDesc desc;
+		NativeGfxSampling lin;
+		NativeGfxSampling pix;
+
+		memset(&desc, 0, sizeof(desc));
+		desc.filter = g_cfg_engineHiresCharsFilter;
+		desc.wrapU = NATIVE_GFX_WRAP_REPEAT;
+		desc.wrapV = NATIVE_GFX_WRAP_REPEAT;
+		lin = EngTex_Sampling(&desc, 11, 1, 16.0f);
+		desc.filter = ENGINE_TEXTURE_PIXELATED;
+		pix = EngTex_Sampling(&desc, 11, 1, 16.0f);
+		HC_CHECK((g_cfg_engineHiresCharsFilter == ENGINE_TEXTURE_FILTERED) && (lin.magFilter == NATIVE_GFX_FILTER_LINEAR) &&
+		             (lin.minFilter == NATIVE_GFX_FILTER_LINEAR) && (lin.mipMode == NATIVE_GFX_MIP_LINEAR) && (lin.anisotropy == 16),
+		         "hi-res textures by default trilinear with anisotropy");
+		HC_CHECK((pix.magFilter == NATIVE_GFX_FILTER_NEAREST) && (pix.mipMode == NATIVE_GFX_MIP_NEAREST) && (pix.anisotropy == 0), "the comparison filter is point sampling");
+		HC_CHECK((EngineStatic_UpEdge(24) == 32) && (EngineStatic_UpEdge(4) == 16) && (EngineStatic_UpEdge(32) == 32) && (NativeTex_LevelCount(16, 16) == 5) &&
+		             (NativeTex_LevelCount(32, 32) == 6) && (NativeTex_LevelCount(1024, 1024) == 11),
+		         "small images: 24 -> 32, 4 -> 16; levels 5 (16), 6 (32), 11 (1024)");
+	}
 	failures += EngHc_SelfTestLoader(checks);
 #undef HC_CHECK
 	*checks += n;
