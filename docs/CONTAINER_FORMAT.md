@@ -398,6 +398,7 @@ uncompressed, SHA-256 like every chunk, at most 64 MiB with the header.
 | 0x04 | u32 | flags | bits 0-1: the vertex colour mode (below); bits 2-31 are 0. A set bit 2-31, or mode 3, drops the hi-res part (HRG-3) |
 | 0x08 | u32 | glbOffset | = headerBytes (HRG-4) |
 | 0x0C | u32 | glbSize | glbOffset + glbSize = the chunk's size (HRG-4) |
+| 0x10 | u32 | parts | only when headerBytes >= 20; proposed for 4.3, not yet accepted (see "The parts"). An older reader reads past it |
 
 The GLB follows byte for byte as the author exported it; the packer checks it
 and never changes it.
@@ -472,7 +473,35 @@ engine's hard limits: 62 materials, 1048576 vertices, 255 skinning entries
 (joints + body nodes with a mesh but no skin + 4 wheels), 64 texture uploads
 (HRG-32..35).
 
-**The rules** are HRG-1 .. HRG-36, each with a fixed level, listed with their
+**The parts** (field 0x10, an ignorable extension of version 1, proposed for
+4.3 and not yet accepted; written by `rldpack hires-add --kart-part` or
+`--game-kart`, else the header stays 16 bytes and the bytes are those of
+before):
+
+| Bit | Name | Meaning |
+|---|---|---|
+| 0 | kart part | the subtree of the first node named `kart` (in the drawn scene) is the kart. Where the kart is not wanted - the podium scene, the menu scene, the driver select - the engine leaves it out together with the four wheels; in a race it stays, and a finished driver keeps the seated race clips (idle, steer) instead of podium_1..3 / lose, which a file with a kart part makes standing |
+| 1 | game kart | the file has no kart; the game puts in the original kart from the player's own game data (the in-game insertion is a later package; until then the bit is read and reported only). With bit 0 set too, bit 0 wins (HRG-40) |
+| 8-15 | kart donor | with bit 1: the retail driver 0..14 whose kart (its colours) is taken; 0xFF = the template of CHRI |
+
+Every other bit is written 0 and ignored when read (HRG-40, a note): the whole
+field is ignorable. The name alone never makes a kart part: a file of before
+with a node `kart` by chance keeps its look (HRG-39, a note). Without a node
+`kart` (HRG-37) or with a skinned vertex weighted to joints inside and outside
+it (HRG-38) the kart is drawn everywhere, as without the bit; `hires-add
+--kart-part` refuses such a model. An older game reads past the field and draws
+the whole model everywhere, the kart on the podium included; the file stays
+fully usable. The engine leaves the kart out by giving its palette entries (the
+joints and mesh nodes in the subtree, and the four wheels) a zero scale at the
+model's origin; one draw stays one draw.
+
+**The kit mark.** What `rldpack kit-extract` makes from the player's game data
+carries glTF extras `{"ctr_kit": "kart" | "steer_wheel" | "wheel"}` on its
+nodes and meshes and material names that start with `ctrkit_`. A model with
+either is HRG-41 (a warning): it contains the original kart from the player's
+game data and must not be shared - export the figure without the kart.
+
+**The rules** are HRG-1 .. HRG-41, each with a fixed level, listed with their
 texts in `s_rldHiresRules` (`include/rldhires.inc`): an error refuses the
 hi-res part (the classic model is drawn), a warning means the driver runs but
 something falls back to a standard (a clip, the wheels, flat normals), a note
@@ -481,7 +510,8 @@ hires-check` and Reload Studio.
 
 **Extending CHRG.** A later field that an older reader may ignore comes as
 more header bytes (headerBytes > 16, version 1): an older reader skips them
-and draws the model. Something an older reader must not ignore comes as a new
+and draws the model. The first such field is `parts` at 0x10 (above); a field
+exists when headerBytes is larger than its offset, the next one starts at 0x14. Something an older reader must not ignore comes as a new
 flag bit (HRG-3) or as version 2 (HRG-1): an older reader drops the hi-res
 part and draws the classic model. Both ways are covered by the self-tests
 (`rldpack selftest-hires`, ctest `rldhires_selftest` and `rldhires_files`).

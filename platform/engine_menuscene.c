@@ -296,6 +296,7 @@ internal int Engine_MenuSceneHiresDraw(struct GameTracker *gGT, int ch, int entr
 	sub.time = s_menuClock;
 	sub.prevClip = -1;
 	sub.fade = 1.0f;
+	sub.hideKart = 1; // the menu scene: a figure with a kart part stands without it
 	sub.inst = NULL;
 	sub.worldFromModel = *worldModel;
 	sub.view = 0;

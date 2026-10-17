@@ -198,6 +198,13 @@ typedef struct
 	float hullMin[3];
 	float hullMax[3];
 	u32 hostBytes;
+	// THE KART PART (CHRG parts bit 0, include/rldhires.inc THE PARTS): kartEntry[e]
+	// = 1 for a palette entry of the kart (a joint or rigid node in the subtree of
+	// the node "kart", and the four wheels); NULL when the file has none.
+	u8 *kartEntry;
+	int kartPart;
+	u32 kartEntries;   // of them, the four wheels included
+	u32 kartLogged;    // bit per slot: "kart hidden" said once
 	int levelMaterial[ENG_HC_MATERIALS_MAX];
 	u32 materialLevel;
 	char clipText[320];
@@ -258,6 +265,7 @@ typedef struct
 	double steer;               // radians, front wheels
 	double roll[4];
 	int hazard;
+	int hideKart;               // 1 = the kart part and the wheels are left out (a forced submit's hideKart)
 } EngHcPlace;
 
 internal struct
@@ -392,10 +400,14 @@ internal void EngHc_FreeCpu(EngHcChar *c)
 	free(c->base);
 	free(c->indices);
 	free(c->rigidNode);
+	free(c->kartEntry);
 	c->src = NULL;
 	c->base = NULL;
 	c->indices = NULL;
 	c->rigidNode = NULL;
+	c->kartEntry = NULL;
+	c->kartPart = 0;
+	c->kartEntries = 0;
 }
 
 internal void EngHc_Fail(const char **rule, char *detail, int detailSize, const char *r, const char *text)
@@ -902,6 +914,40 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 	c->wheelFirst = c->joints + c->rigidCount;
 	c->paletteCount = c->wheelFirst + 4u;
 	c->ownWheels = (m->wheelNode[0] >= 0) && (m->wheelNode[1] >= 0) && (m->wheelNode[2] >= 0) && (m->wheelNode[3] >= 0);
+	// THE KART PART: which palette entries are the kart (the joints and rigid
+	// nodes in the subtree of "kart", and always the four wheels).
+	c->kartPart = 0;
+	c->kartEntries = 0;
+	c->kartLogged = 0;
+	if (m->kartPart && (m->inKart != NULL) && (c->paletteCount <= ENG_HC_PALETTE_MAX))
+	{
+		u32 e;
+
+		c->kartEntry = (u8 *)calloc(c->paletteCount, 1);
+		if (c->kartEntry == NULL)
+		{
+			EngHc_Fail(rule, detail, detailSize, "HRG-7", "out of memory");
+			EngHc_FreeCpu(c);
+			return 0;
+		}
+		for (e = 0; e < c->joints; e++)
+		{
+			c->kartEntry[e] = m->inKart[c->skel.jointNode[e]];
+		}
+		for (e = 0; e < c->rigidCount; e++)
+		{
+			c->kartEntry[c->joints + e] = m->inKart[c->rigidNode[e]];
+		}
+		for (e = c->wheelFirst; e < c->paletteCount; e++)
+		{
+			c->kartEntry[e] = 1;
+		}
+		for (e = 0; e < c->paletteCount; e++)
+		{
+			c->kartEntries += c->kartEntry[e];
+		}
+		c->kartPart = 1;
+	}
 	for (k = 0; k < 4; k++)
 	{
 		if (c->ownWheels)
@@ -1457,6 +1503,35 @@ internal void EngHc_StatePose(const EngHcChar *c, const EngHcSeatState *st, cons
 
 // The palette of a pose at a place (s_hc.worlds and s_hc.palette); the wheel
 // read-back of wheel 0 into *yaw and *roll.
+// THE KART LEFT OUT (a forced submit with hideKart, a file with the kart part):
+// every kart entry of the palette becomes a zero scale at the model's origin,
+// so each triangle on it collapses to a point and the GPU draws nothing of it.
+// A vertex is weighted to kart joints only or to figure joints only (HRG-38
+// refuses the kart part otherwise), so no figure vertex moves. One draw stays one
+// draw: no range, buffer or program changes.
+internal void EngHc_HideKart(const EngHcChar *c, const EngHcPlace *pl)
+{
+	u32 e;
+
+	if (!pl->hideKart || !c->kartPart || (c->kartEntry == NULL))
+	{
+		return;
+	}
+	for (e = 0; e < c->paletteCount; e++)
+	{
+		float *out = &s_hc.palette[e * 12u];
+
+		if (!c->kartEntry[e])
+		{
+			continue;
+		}
+		memset(out, 0, 12u * sizeof(float));
+		out[3] = pl->world.m[12];
+		out[7] = pl->world.m[13];
+		out[11] = pl->world.m[14];
+	}
+}
+
 internal void EngHc_Palette(const EngHcChar *c, const RldAnimTrs *pose, const EngHcPlace *pl, float *yaw, float *roll)
 {
 	EngineMat4 m64 = pl->world;
@@ -1605,6 +1680,7 @@ internal void EngHc_Palette(const EngHcChar *c, const RldAnimTrs *pose, const En
 			}
 		}
 	}
+	EngHc_HideKart(c, pl);
 }
 
 // Skins a character's pose at a place into the slot's array of this bank and
@@ -1881,6 +1957,7 @@ internal void EngHc_SeatTick(const struct GameTracker *gGT, int seat)
 	in.force = run->force;
 	in.finished = ((d->actionsFlagSet & ACTION_RACE_FINISHED) != 0) ? 1 : 0;
 	in.rank = (int)d->driverRank;
+	in.kartPart = c->kartPart;
 	EngHc_Advance(&run->st, in.elapsedMs);
 	state = EngHc_Decide(&run->st, &in, &forceClip);
 	if (EngHc_Changes(&run->st, state, forceClip))
@@ -2177,6 +2254,14 @@ internal int EngHc_Submit(int ch, const EngineHiresSubmit *s)
 	{
 		pl.roll[w] = (double)s->wheelRoll;
 	}
+	pl.hideKart = (s->hideKart && c->kartPart) ? 1 : 0;
+	if (pl.hideKart && ((s_hc.chars[ch].kartLogged & (1u << (u32)s->slot)) == 0u))
+	{
+		s_hc.chars[ch].kartLogged |= 1u << (u32)s->slot;
+		Platform_Log("[CTR Engine] hires char: %s kart hidden at %s (slot %d, clip %s, %u kart entries with the 4 wheels)\n", c->file,
+		             (s->slot == ENG_HC_SLOT_SELECT) ? "select" : (s->slot == (ENGINE_HIRES_SLOTS - 1)) ? "menu" : "podium", s->slot,
+		             Engine_HiresClipName(s->clip), (unsigned)c->kartEntries);
+	}
 	EngHc_EvalClip(c, s->clip, s->time, 0.0f, s_hc.poseA, &resolved, NULL);
 	if ((s->prevClip >= 0) && (s->fade < 1.0f))
 	{
@@ -2257,6 +2342,7 @@ internal int EngHc_SelectRoute(struct Instance *inst, struct InstDrawPerPlayer *
 	s.time = (float)gGT->timer / 30.0f;
 	s.prevClip = -1;
 	s.fade = 1.0f;
+	s.hideKart = 1; // the driver select: a figure with a kart part stands without it
 	s.inst = inst;
 	s.idpp = idpp;
 	s.pb = pb;
@@ -2484,7 +2570,7 @@ internal int EngHc_CheckChunk(const u8 *bytes, size_t size, RldHiresModel *model
 		return 0;
 	}
 	// In the chunk's vertex colour mode (ParseChunk refused mode 3).
-	if (!RldHires_OpenAs(chunk.glb, chunk.glbSize, RldHiresColor_Mode(chunk.flags), model, rep) || !RldHires_CheckBudget(model, rep))
+	if (!RldHires_OpenParts(chunk.glb, chunk.glbSize, RldHiresColor_Mode(chunk.flags), chunk.parts, model, rep) || !RldHires_CheckBudget(model, rep))
 	{
 		EngHc_FirstError(rep, rule, detail, detailSize);
 		return 0;
@@ -2548,6 +2634,12 @@ internal int EngHc_LoadChar(int entry, int ch, const char **rule, char *detail, 
 	{
 		Platform_Log("[CTR Engine] hires char vertex colours: %s: %s\n", c->file,
 		             (c->vcolMode == RLDHIRES_VCOL_PSX) ? "PSX blend (grey 128 is neutral, texture x colour / 128)" : "off (COLOR_0 ignored)");
+	}
+	// The kart part, only when the file has one (a file of before logs as before).
+	if (c->kartPart)
+	{
+		Platform_Log("[CTR Engine] hires char kart part: %s: %u of %u palette entries (the 4 wheels included) - left out on the podium, in the menu scene and the driver select; a finished driver keeps the race clips\n",
+		             c->file, (unsigned)c->kartEntries, (unsigned)c->paletteCount);
 	}
 	Platform_Log("[CTR Engine] hires char textures: %s: filter %s, %d texture(s):%s%s\n", c->file,
 	             (g_cfg_engineHiresCharsFilter == ENGINE_TEXTURE_PIXELATED) ? "nearest (--engine-hires-chars-filter)" : "trilinear with anisotropy", c->texCount,
@@ -3005,6 +3097,48 @@ internal int EngHc_SelfTestLoader(int *checks)
 				HL_CHECK(fabsf(yaw) < 0.01f, "A: read-back yaw through the squashed matrix is still 0");
 			}
 			Engine_Mat4Identity(&pl.world);
+			// THE KART LEFT OUT: A has no kart part, so hideKart changes nothing;
+			// with entries 1..5 marked kart (joint 1 and the wheels), they become a
+			// zero scale at the model's origin and joint 0 stays as it was.
+			{
+				float before[6 * 12];
+				u8 marks[6] = {0, 1, 1, 1, 1, 1};
+				int same;
+				int zero = 1;
+				u32 e;
+
+				pl.world.m[12] = 5.0f;
+				pl.world.m[13] = 6.0f;
+				pl.world.m[14] = 7.0f;
+				EngHc_Palette(&c, s_hc.poseA, &pl, &yaw, &roll);
+				memcpy(before, s_hc.palette, sizeof(before));
+				pl.hideKart = 1;
+				EngHc_Palette(&c, s_hc.poseA, &pl, &yaw, &roll);
+				HL_CHECK(memcmp(before, s_hc.palette, sizeof(before)) == 0, "kart: without a kart part hideKart leaves the palette as it is");
+				c.kartPart = 1;
+				c.kartEntry = marks;
+				EngHc_Palette(&c, s_hc.poseA, &pl, &yaw, &roll);
+				same = (memcmp(before, s_hc.palette, 12u * sizeof(float)) == 0);
+				for (e = 1; e < 6u; e++)
+				{
+					const float *x = &s_hc.palette[e * 12u];
+					int k;
+
+					for (k = 0; k < 12; k++)
+					{
+						const float want = (k == 3) ? 5.0f : (k == 7) ? 6.0f : (k == 11) ? 7.0f : 0.0f;
+
+						zero &= (x[k] == want);
+					}
+				}
+				HL_CHECK(same && zero, "kart: kart entries a zero scale at the origin (5, 6, 7), the figure's joint 0 unchanged");
+				pl.hideKart = 0;
+				EngHc_Palette(&c, s_hc.poseA, &pl, &yaw, &roll);
+				HL_CHECK(memcmp(before, s_hc.palette, sizeof(before)) == 0, "kart: hideKart 0 with a kart part - the palette of before");
+				c.kartEntry = NULL;
+				c.kartPart = 0;
+				Engine_Mat4Identity(&pl.world);
+			}
 			// The clip pose: idle at t = 1 rotates the bone 10 degrees about z.
 			{
 				EngHcSeatState st;
@@ -3053,6 +3187,22 @@ internal int EngHc_SelfTestLoader(int *checks)
 		}
 		memset(&s_hc.chars[0], 0, sizeof(s_hc.chars[0]));
 		EngHc_FreeCpu(&c);
+	}
+	RldHires_Close(&model);
+	free(chunk);
+
+	// The kart part (CHRG parts bit 0): A's root node is "kart", so with the bit
+	// every palette entry is the kart (2 joints and 4 wheels).
+	chunk = (glb != NULL) ? RldHires_BuildChunkParts(glb, (u32)glbSize, 0u, RLDHIRES_PART_KART, &chunkSize) : NULL;
+	ok = (chunk != NULL) && EngHc_CheckChunk(chunk, chunkSize, &model, &rep, &rule, detail, (int)sizeof(detail));
+	memset(&c, 0, sizeof(c));
+	c.indexBuffer = 0xffffffffu;
+	ok = ok && EngHc_BuildCpu(&model, &c, &rule, detail, (int)sizeof(detail));
+	HL_CHECK(ok && c.kartPart && (c.kartEntry != NULL) && (c.kartEntries == 6u) && (c.paletteCount == 6u), "kart: A with the bit - 6 of 6 entries are the kart");
+	if (ok)
+	{
+		EngHc_FreeCpu(&c);
+		HL_CHECK((c.kartEntry == NULL) && !c.kartPart, "kart: freed with the character");
 	}
 	RldHires_Close(&model);
 	free(chunk);
@@ -3525,6 +3675,16 @@ int Engine_SelfTestHiresChar(int *checks)
 		in.rank = 5;
 		st = EngHc_Decide(&s, &in, &forceClip);
 		HC_CHECK((st == ENG_HC_STATE_FINISHED) && (forceClip == ENGINE_HIRES_CLIP_LOSE), "finished on place 6: lose");
+		// A file with the kart part keeps its seated race clips when finished
+		// (its podium and lose clips stand without the kart): hit here.
+		in.kartPart = 1;
+		st = EngHc_Decide(&s, &in, &forceClip);
+		HC_CHECK((st == ENG_HC_STATE_HIT) && (forceClip == -1), "kart part: finished keeps the race states (hit), no podium or lose clip");
+		in.kartState = 0;
+		st = EngHc_Decide(&s, &in, &forceClip);
+		HC_CHECK(st == ENG_HC_STATE_BASE, "kart part: finished and nothing else - base (idle, steer)");
+		in.kartPart = 0;
+		in.kartState = KS_SPINNING;
 		HC_CHECK((EngHc_FinishedClip(0) == ENGINE_HIRES_CLIP_PODIUM_1) && (EngHc_FinishedClip(2) == ENGINE_HIRES_CLIP_PODIUM_3) &&
 		             (EngHc_FinishedClip(3) == ENGINE_HIRES_CLIP_LOSE) && (EngHc_FinishedClip(-1) == ENGINE_HIRES_CLIP_LOSE),
 		         "finished clips by rank");

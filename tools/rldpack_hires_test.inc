@@ -63,6 +63,12 @@ struct HrTestSpec
 	int clampTexture;       // a second material uses the same image through a clamping sampler
 	float colour0;          // > 0: the body's three vertices get COLOR_0 (linear grey of this value)
 	int vcolMode;           // the vertex colour mode the model is opened for (RldHires_OpenAs); 0 = glTF
+	u32 parts;              // the CHRG parts field it is opened with (RldHires_OpenParts); 0 = none
+	int kartJoint;          // joint_1 is named "kart" (with animCase the body's vertex 1 hangs on it and joint_0: HRG-38)
+	int kartRigid;          // part_0 (needs extraRigid) is named "kart"
+	int kartTwice;          // part_1 (needs extraRigid 2) is named "kart" too
+	int kitMaterial;        // material 0 is named "ctrkit_paint" (the kit mark, HRG-41)
+	int kitExtras;          // the body node carries extras {"ctr_kit":"kart"} (the kit mark, HRG-41)
 };
 
 static int s_hrChecks;
@@ -516,7 +522,8 @@ static u8 *HrTest_Glb(const struct HrTestSpec *sp, u32 *sizeOut)
 		HrTest_Append(json, sizeof(json), ",{\"source\":0,\"sampler\":0}"); // texture 1 + 2P
 	}
 	HrTest_Append(json, sizeof(json), "]");
-	HrTest_Append(json, sizeof(json), ",\"materials\":[{\"name\":\"paint\",\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}%s%s%s%s}",
+	HrTest_Append(json, sizeof(json), sp->kitMaterial ? ",\"materials\":[{\"name\":\"ctrkit_paint\"," : ",\"materials\":[{\"name\":\"paint\",");
+	HrTest_Append(json, sizeof(json), "\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}%s%s%s%s}",
 	              sp->blend ? ",\"alphaMode\":\"BLEND\"" : "", sp->emissive ? ",\"emissiveFactor\":[1,0,0]" : "",
 	              ((sp->required != NULL) && (strcmp(sp->required, "KHR_materials_unlit") == 0)) ? ",\"extensions\":{\"KHR_materials_unlit\":{}}" : "",
 	              sp->sameImageNormal ? ",\"normalTexture\":{\"index\":0}" : "");
@@ -601,11 +608,19 @@ static u8 *HrTest_Glb(const struct HrTestSpec *sp, u32 *sizeOut)
 	}
 	else
 	{
-		HrTest_Append(json, sizeof(json), "{\"name\":\"body\",\"mesh\":0%s}", (skins > 0) ? ",\"skin\":0" : "");
+		HrTest_Append(json, sizeof(json), "{\"name\":\"body\",\"mesh\":0%s%s}", (skins > 0) ? ",\"skin\":0" : "",
+		              sp->kitExtras ? ",\"extras\":{\"ctr_kit\":\"kart\"}" : "");
 	}
 	for (i = 0; i < joints; i++)
 	{
-		HrTest_Append(json, sizeof(json), ",{\"name\":\"joint_%d\"%s", i, (sp->animCase && (i == 1)) ? ",\"translation\":[0,0.5,0]" : "");
+		if (sp->kartJoint && (i == 1))
+		{
+			HrTest_Append(json, sizeof(json), ",{\"name\":\"kart\"%s", sp->animCase ? ",\"translation\":[0,0.5,0]" : "");
+		}
+		else
+		{
+			HrTest_Append(json, sizeof(json), ",{\"name\":\"joint_%d\"%s", i, (sp->animCase && (i == 1)) ? ",\"translation\":[0,0.5,0]" : "");
+		}
 		if ((i == 0) && (joints > 1))
 		{
 			HrTest_Append(json, sizeof(json), ",\"children\":[");
@@ -645,7 +660,14 @@ static u8 *HrTest_Glb(const struct HrTestSpec *sp, u32 *sizeOut)
 	}
 	for (i = 0; i < sp->extraRigid; i++)
 	{
-		HrTest_Append(json, sizeof(json), ",{\"name\":\"part_%d\",\"mesh\":1}", i);
+		if ((sp->kartRigid && (i == 0)) || (sp->kartTwice && (i == 1)))
+		{
+			HrTest_Append(json, sizeof(json), ",{\"name\":\"kart\",\"mesh\":1}");
+		}
+		else
+		{
+			HrTest_Append(json, sizeof(json), ",{\"name\":\"part_%d\",\"mesh\":1}", i);
+		}
 	}
 	HrTest_Append(json, sizeof(json), "]");
 
@@ -750,7 +772,7 @@ static int HrTest_Open(const struct HrTestSpec *sp, RldHiresReport *rep, RldHire
 		HrTest_Check(0, "out of memory building a test GLB");
 		return 0;
 	}
-	ok = RldHires_OpenAs(glb, size, sp->vcolMode, &m, rep);
+	ok = RldHires_OpenParts(glb, size, sp->vcolMode, sp->parts, &m, rep);
 	if (keep != NULL)
 	{
 		*keep = m;
@@ -1158,7 +1180,9 @@ static void HrTest_Pack(void)
 
 // The CHRG a newer writer could write around a GLB: longerHeader 0 = version 2
 // (the 16-byte header of version 1 with version 2), 1 = version 1 with a
-// 20-byte header whose 4 unknown bytes are 0xA5. malloc'ed, NULL on no memory.
+// 24-byte header: the parts field at 0x10 empty (0, include/rldhires.inc THE
+// PARTS) and 4 bytes a newer field could hold at 0x14, 0xA5. malloc'ed, NULL
+// on no memory.
 static u8 *HrTest_NewerWriterChunk(const u8 *glb, u32 glbSize, int longerHeader, size_t *sizeOut)
 {
 	size_t size = 0;
@@ -1176,15 +1200,15 @@ static u8 *HrTest_NewerWriterChunk(const u8 *glb, u32 glbSize, int longerHeader,
 		*sizeOut = size;
 		return chunk;
 	}
-	longer = (u8 *)calloc(1, size + 4u);
+	longer = (u8 *)calloc(1, size + 8u);
 	if (longer != NULL)
 	{
 		memcpy(longer, chunk, 16);
-		memset(longer + 16, 0xA5, 4);
-		memcpy(longer + 20, chunk + 16, glbSize);
-		RldHires_PutLE16(&longer[0x02], 20u);
-		RldHires_PutLE32(&longer[0x08], 20u);
-		*sizeOut = size + 4u;
+		memset(longer + 20, 0xA5, 4);
+		memcpy(longer + 24, chunk + 16, glbSize);
+		RldHires_PutLE16(&longer[0x02], 24u);
+		RldHires_PutLE32(&longer[0x08], 24u);
+		*sizeOut = size + 8u;
 	}
 	free(chunk);
 	return longer;
@@ -1198,16 +1222,18 @@ static u8 *HrTest_NewerWriterChunk(const u8 *glb, u32 glbSize, int longerHeader,
 // (clips that take the model to 4.05 m: HRG-18 of the clip hull), hires-tex.glb
 // (a decodable texture, red with a green middle, and COLOR_0 at sRGB 128: the
 // textured preview and HRG-36), hires-walk.glb (the good model with one more
-// animation 'Walk': HRG-21, a note). The folder must exist.
+// animation 'Walk': HRG-21, a note), hires-kart.glb (the good model with two
+// more rigid nodes, the first named "kart": the kart part of CHRG parts bit 0,
+// HRG-39 without it). The folder must exist.
 //
 // With a character file as the second argument it also writes that character
 // with the CHRG of a newer writer (HrTest_NewerChunk on files): hires-v2.rldchar
-// (CHRG version 2: only the hi-res part is refused, HRG-1) and hires-h20.rldchar
-// (version 1 with a 20-byte header: read past).
+// (CHRG version 2: only the hi-res part is refused, HRG-1) and hires-h24.rldchar
+// (version 1 with a 24-byte header, parts 0 and 4 unknown bytes: read past).
 static int RldHires_TestFilesCommand(int argc, char **argv)
 {
-	static const char *const names[7] = {"hires-good.glb", "hires-warn.glb", "hires-bad.glb", "hires-anim.glb", "hires-hull.glb", "hires-tex.glb",
-	                                     "hires-walk.glb"};
+	static const char *const names[8] = {"hires-good.glb", "hires-warn.glb", "hires-bad.glb", "hires-anim.glb", "hires-hull.glb", "hires-tex.glb",
+	                                     "hires-walk.glb", "hires-kart.glb"};
 	int k;
 
 	if ((argc != 1) && (argc != 2))
@@ -1215,7 +1241,7 @@ static int RldHires_TestFilesCommand(int argc, char **argv)
 		fprintf(stderr, "usage: rldpack hires-test-files <folder> [<character.rldchar>]\n");
 		return 2;
 	}
-	for (k = 0; k < 7; k++)
+	for (k = 0; k < 8; k++)
 	{
 		struct HrTestSpec sp;
 		char path[RLD_PATH_MAX];
@@ -1251,6 +1277,11 @@ static int RldHires_TestFilesCommand(int argc, char **argv)
 		{
 			sp.unknownAnim = 1; // 'Walk' next to the 12 clips (HRG-21, a note)
 		}
+		else if (k == 7)
+		{
+			sp.extraRigid = 2; // part_0 named "kart" and part_1: the kart part (CHRG parts bit 0)
+			sp.kartRigid = 1;
+		}
 		glb = HrTest_Glb(&sp, &size);
 		snprintf(path, sizeof(path), "%s/%s", argv[0], names[k]);
 		file = (glb != NULL) ? fopen(path, "wb") : NULL;
@@ -1270,7 +1301,7 @@ static int RldHires_TestFilesCommand(int argc, char **argv)
 	if (argc == 2)
 	{
 		static struct RldHiresPackIn in;
-		static const char *const out[2] = {"hires-v2.rldchar", "hires-h20.rldchar"};
+		static const char *const out[2] = {"hires-v2.rldchar", "hires-h24.rldchar"};
 		struct HrTestSpec sp;
 		const char *why;
 		u32 size = 0;
@@ -1576,7 +1607,7 @@ static void HrTest_NewerChunk(void)
 		static RldHiresReport rep;
 		size_t chrgSize = 0;
 		u8 *chrg = (glb != NULL) ? HrTest_NewerWriterChunk(glb, glbSize, v, &chrgSize) : NULL;
-		const char *what = (v == 0) ? "CHRG version 2" : "CHRG version 1 with a 20-byte header";
+		const char *what = (v == 0) ? "CHRG version 2" : "CHRG version 1 with a 24-byte header";
 		char line[160];
 		u8 *a;
 		u8 *b;
@@ -1641,9 +1672,9 @@ static void HrTest_NewerChunk(void)
 			{
 				RldHiresModel m;
 
-				snprintf(line, sizeof(line), "%s: read, the 4 unknown header bytes skipped, the GLB at 20", what);
-				HrTest_Check(parsed == 1 && rule == NULL && c.version == 1u && c.headerBytes == 20u && c.glbOffset == 20u && c.glb == bytes + 20 &&
-				                 bytes[16] == 0xA5u && bytes[19] == 0xA5u && c.glbSize == glbSize && memcmp(c.glb, glb, glbSize) == 0,
+				snprintf(line, sizeof(line), "%s: read, parts 0, the 4 unknown header bytes skipped, the GLB at 24", what);
+				HrTest_Check(parsed == 1 && rule == NULL && c.version == 1u && c.headerBytes == 24u && c.glbOffset == 24u && c.glb == bytes + 24 &&
+				                 c.parts == 0u && bytes[20] == 0xA5u && bytes[23] == 0xA5u && c.glbSize == glbSize && memcmp(c.glb, glb, glbSize) == 0,
 				             line);
 				RldHires_ReportClear(&rep);
 				snprintf(line, sizeof(line), "%s: the model opens without any message", what);
@@ -1671,6 +1702,164 @@ static void HrTest_NewerChunk(void)
 		free(chrg);
 	}
 	free(glb);
+}
+
+// THE PARTS (field 0x10 of the CHRG header, HRG-37..41): the kart part found
+// and refused, the game's kart and its donor, the kit mark, and the bytes
+// RldHires_BuildChunkParts writes (an older reader reads past the field).
+static void HrTest_Parts(void)
+{
+	static RldHiresReport rep;
+	struct HrTestSpec sp;
+	RldHiresModel m;
+	u8 *glb = NULL;
+	u32 glbSize = 0;
+	int i;
+
+	// A clean kart part: the rigid node part_0 is "kart".
+	memset(&sp, 0, sizeof(sp));
+	sp.extraRigid = 2;
+	sp.kartRigid = 1;
+	sp.parts = RLDHIRES_PART_KART;
+	HrTest_Check(HrTest_Open(&sp, &rep, &m, &glb) == 1 && rep.count == 0 && m.kartPart == 1 && m.kartNodes == 1u && m.inKart != NULL &&
+	                 m.inKart[m.kartNode] == 1 && m.inKart[0] == 0,
+	             "parts: a rigid node 'kart' with bit 0 - kart part on, one node, no message");
+	RldHires_Close(&m);
+	free(glb);
+	glb = NULL;
+
+	// The same node without bit 0: drawn as before, a note (HRG-39), no kart part.
+	sp.parts = 0u;
+	HrTest_Check(HrTest_Open(&sp, &rep, &m, &glb) == 1 && rep.count == 1 && rep.notes == 1 && RldHires_ReportHas(&rep, "HRG-39") && m.kartPart == 0 &&
+	                 m.inKart == NULL,
+	             "parts: a node 'kart' without the bit - HRG-39 note only, no kart part (a file of before keeps its look)");
+	RldHires_Close(&m);
+	free(glb);
+	glb = NULL;
+
+	// A joint 'kart' with nothing weighted across: the kart part covers the joint.
+	memset(&sp, 0, sizeof(sp));
+	sp.kartJoint = 1;
+	sp.parts = RLDHIRES_PART_KART;
+	HrTest_Check(HrTest_Open(&sp, &rep, &m, &glb) == 1 && rep.count == 0 && m.kartPart == 1 && m.kartNodes == 1u, "parts: the joint 'kart' - kart part on");
+	RldHires_Close(&m);
+	free(glb);
+	glb = NULL;
+
+	// HRG-37, HRG-38, HRG-40, HRG-41: each fires, the base model fires none.
+	memset(&sp, 0, sizeof(sp));
+	sp.parts = RLDHIRES_PART_KART;
+	HrTest_Rule("HRG-37", &sp, "bit 0 without a node 'kart'");
+	HrTest_Check(HrTest_Open(&sp, &rep, &m, &glb) == 1 && m.kartPart == 0, "HRG-37: no kart part");
+	RldHires_Close(&m);
+	free(glb);
+	glb = NULL;
+
+	memset(&sp, 0, sizeof(sp));
+	sp.kartJoint = 1;
+	sp.animCase = 1; // the body's vertex 1 hangs half on joint_0, half on "kart"
+	sp.parts = RLDHIRES_PART_KART;
+	HrTest_Rule("HRG-38", &sp, "a vertex weighted to 'kart' and joint_0");
+	HrTest_Check(HrTest_Open(&sp, &rep, &m, &glb) == 1 && m.kartPart == 0 && m.inKart == NULL, "HRG-38: no kart part");
+	RldHires_Close(&m);
+	free(glb);
+	glb = NULL;
+
+	memset(&sp, 0, sizeof(sp));
+	sp.parts = 0x80000000u;
+	HrTest_Rule("HRG-40", &sp, "an unknown bit of the parts field");
+	sp.parts = RLDHIRES_PART_KART | RLDHIRES_PART_GAME_KART;
+	sp.extraRigid = 2;
+	sp.kartRigid = 1;
+	HrTest_Check(HrTest_Open(&sp, &rep, &m, &glb) == 1 && RldHires_ReportHas(&rep, "HRG-40") && m.kartPart == 1 && m.gameKart == 0,
+	             "HRG-40: both kart bits - the file's own kart wins");
+	RldHires_Close(&m);
+	free(glb);
+	glb = NULL;
+	sp.parts = RLDHIRES_PART_KART;
+	sp.kartTwice = 1;
+	HrTest_Check(HrTest_Open(&sp, &rep, &m, &glb) == 1 && RldHires_ReportHas(&rep, "HRG-40") && m.kartPart == 1 && m.kartNodes == 1u,
+	             "HRG-40: a second node 'kart' - the first one is the kart");
+	RldHires_Close(&m);
+	free(glb);
+	glb = NULL;
+
+	memset(&sp, 0, sizeof(sp));
+	sp.kitMaterial = 1;
+	HrTest_Rule("HRG-41", &sp, "a material 'ctrkit_paint'");
+	memset(&sp, 0, sizeof(sp));
+	sp.kitExtras = 1;
+	HrTest_Rule("HRG-41", &sp, "extras {\"ctr_kit\":...} on a node");
+	HrTest_Check(HrTest_Open(&sp, &rep, &m, &glb) == 1 && m.kitMarked == 1 && rep.warnings == 1 && rep.count == 1, "HRG-41: one warning, usable, kitMarked");
+	RldHires_Close(&m);
+	free(glb);
+	glb = NULL;
+	HrTest_Check(RldHires_RuleLevel("HRG-37") == RLDHIRES_WARNING && RldHires_RuleLevel("HRG-38") == RLDHIRES_WARNING &&
+	                 RldHires_RuleLevel("HRG-39") == RLDHIRES_NOTE && RldHires_RuleLevel("HRG-40") == RLDHIRES_NOTE &&
+	                 RldHires_RuleLevel("HRG-41") == RLDHIRES_WARNING,
+	             "parts: HRG-37/38/41 warnings, HRG-39/40 notes - never an error (the field is ignorable)");
+
+	// The game's kart: bit 1 and the donor.
+	memset(&sp, 0, sizeof(sp));
+	sp.parts = RLDHIRES_PART_GAME_KART | (3u << RLDHIRES_PART_DONOR_SHIFT);
+	HrTest_Check(HrTest_Open(&sp, &rep, &m, &glb) == 1 && rep.count == 0 && m.gameKart == 1 && m.kartDonor == 3 && m.kartPart == 0,
+	             "parts: bit 1 with donor 3 - the game's kart of driver 3, no message");
+	RldHires_Close(&m);
+	free(glb);
+	glb = NULL;
+	sp.parts = RLDHIRES_PART_GAME_KART | (RLDHIRES_PART_DONOR_TEMPLATE << RLDHIRES_PART_DONOR_SHIFT);
+	HrTest_Check(HrTest_Open(&sp, &rep, &m, &glb) == 1 && rep.count == 0 && m.gameKart == 1 && m.kartDonor == (int)RLDHIRES_PART_DONOR_TEMPLATE,
+	             "parts: bit 1 with donor 0xFF - the template's kart");
+	RldHires_Close(&m);
+	free(glb);
+	glb = NULL;
+	sp.parts = RLDHIRES_PART_GAME_KART | (20u << RLDHIRES_PART_DONOR_SHIFT);
+	HrTest_Check(HrTest_Open(&sp, &rep, &m, &glb) == 1 && RldHires_ReportHas(&rep, "HRG-40") && m.kartDonor == (int)RLDHIRES_PART_DONOR_TEMPLATE,
+	             "parts: donor 20 - HRG-40, the template's kart");
+	RldHires_Close(&m);
+	free(glb);
+	glb = NULL;
+
+	// The bytes: parts 0 = the 16-byte chunk of before; parts != 0 = 20 bytes,
+	// the field at 0x10, the GLB unchanged; ParseChunk reads it back; a 16-byte
+	// header reads as parts 0; unknown parts bits are not written.
+	memset(&sp, 0, sizeof(sp));
+	glb = HrTest_Glb(&sp, &glbSize);
+	if (glb != NULL)
+	{
+		size_t sizeA = 0;
+		size_t sizeB = 0;
+		size_t sizeC = 0;
+		u8 *a = RldHires_BuildChunkFlags(glb, glbSize, 1u, &sizeA);
+		u8 *b = RldHires_BuildChunkParts(glb, glbSize, 1u, 0u, &sizeB);
+		u8 *c = RldHires_BuildChunkParts(glb, glbSize, 1u, RLDHIRES_PART_KART, &sizeC);
+		u8 *d = RldHires_BuildChunkParts(glb, glbSize, 1u, 0x80000000u, &sizeA);
+		RldHiresChunk pc;
+
+		HrTest_Check((a != NULL) && (b != NULL) && (sizeB == (size_t)glbSize + 16u) && (memcmp(a, b, sizeB) == 0), "parts: parts 0 writes the 16-byte chunk of before");
+		HrTest_Check((c != NULL) && (sizeC == (size_t)glbSize + 20u) && (RldHires_LE16(&c[2]) == 20u) && (RldHires_LE32(&c[8]) == 20u) &&
+		                 (RldHires_LE32(&c[0x10]) == RLDHIRES_PART_KART) && (memcmp(&c[20], glb, glbSize) == 0) && (memcmp(c, b, 2) == 0) &&
+		                 (memcmp(&c[4], &b[4], 4) == 0),
+		             "parts: parts 1 writes a 20-byte header, the field at 0x10, the GLB unchanged");
+		HrTest_Check(d == NULL, "parts: an unknown parts bit is not written");
+		HrTest_Check((c != NULL) && RldHires_ParseChunk(c, sizeC, &pc, NULL, NULL, 0) && (pc.parts == RLDHIRES_PART_KART) && (pc.headerBytes == 20u) &&
+		                 (pc.glbSize == glbSize) && (pc.flags == 1u),
+		             "parts: ParseChunk reads the field back");
+		HrTest_Check((b != NULL) && RldHires_ParseChunk(b, sizeB, &pc, NULL, NULL, 0) && (pc.parts == 0u), "parts: a 16-byte header reads as parts 0");
+		free(a);
+		free(b);
+		free(c);
+		free(d);
+		free(glb);
+		glb = NULL;
+	}
+	for (i = 37; i <= 41; i++)
+	{
+		char id[8];
+
+		snprintf(id, sizeof(id), "HRG-%d", i);
+		HrTest_Check(RldHires_RuleLevel(id) >= 0, "parts: HRG-37..41 are in the rule table");
+	}
 }
 
 static int RldHires_SelfTest(void)
@@ -2525,6 +2714,7 @@ static int RldHires_SelfTest(void)
 
 	// A CHRG OF A NEWER WRITER (CHRG version 1 frozen, container 4.2).
 	HrTest_NewerChunk();
+	HrTest_Parts();
 
 	if (s_hrFailures == 0)
 	{

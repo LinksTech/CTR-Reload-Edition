@@ -16,7 +16,10 @@
 //   FORCED  a clip given by Engine_HiresSeatForceClip (podium, results) - first
 //   FINISHED ACTION_RACE_FINISHED (game/PlayLevel.c:240; the kart drives on
 //           under AI): podium_<driverRank + 1> for ranks 0..2, lose from rank 3,
-//           looped (the rank is frozen at the finish, PlayLevel.c:249)
+//           looped (the rank is frozen at the finish, PlayLevel.c:249). Not for
+//           a file with the kart part (CHRG parts bit 0): its podium and lose
+//           clips stand without the kart, so a finished driver of it stays in
+//           the states below (seated, the kart drives on).
 //   HIT     kartState KS_SPINNING, KS_BLASTED or KS_CRASHING: clip "hit", once
 //           from the tick the state is entered, held while it lasts
 //   JUMP    ACTION_TOUCH_GROUND clear for ENG_HC_AIR_DELAY ticks or more (a bump
@@ -74,6 +77,7 @@ typedef struct
 	int force;         // the seat's forced clip, -1 none
 	int finished;      // ACTION_RACE_FINISHED set
 	int rank;          // driver->driverRank (0-based)
+	int kartPart;      // the file has the kart part (CHRG parts bit 0): finished keeps the seated race clips
 } EngHcInput;
 
 typedef struct
@@ -283,7 +287,9 @@ internal int EngHc_Decide(EngHcSeatState *s, const EngHcInput *in, int *forceCli
 		*forceClip = in->force;
 		return ENG_HC_STATE_FORCED;
 	}
-	if (in->finished)
+	// A file with the kart part stands in podium_1..3 / lose (made for the podium
+	// scene without the kart): in the race it keeps its seated clips below.
+	if (in->finished && !in->kartPart)
 	{
 		*forceClip = EngHc_FinishedClip(in->rank);
 		return ENG_HC_STATE_FINISHED;

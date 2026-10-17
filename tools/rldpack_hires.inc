@@ -7,18 +7,24 @@
 // include/rldhires.inc - the same code the game and Reload Studio run; nothing
 // here checks a model a second way.
 //
-//   hires-check <file.glb | file.rldchar> [--vertex-colors gltf|psx|off]
+//   hires-check <file.glb | file.rldchar> [--vertex-colors gltf|psx|off] [--kart-part | --game-kart <0..14|template>]
 //       prints every finding of the model (and, for a .rldchar, of its CHRG
-//       chunk), the vertex colour mode, then one summary line. A .rldchar is
-//       checked in the mode its CHRG names (the switch is refused there), a
-//       .glb in the switch's mode (glTF without it). Exit 0 = no error, 1 =
-//       errors (or a .rldchar without CHRG: there is no hi-res part to check),
-//       2 = usage.
-//   hires-add <in.rldchar> <model.glb> -o <out.rldchar> [--vertex-colors gltf|psx|off]
+//       chunk), the vertex colour mode, the parts, then one summary line. A
+//       .rldchar is checked in the mode and with the parts its CHRG names (the
+//       switches are refused there), a .glb as the switches say (glTF, no
+//       parts without them). Exit 0 = no error, 1 = errors (or a .rldchar
+//       without CHRG: there is no hi-res part to check), 2 = usage.
+//   hires-add <in.rldchar> <model.glb> -o <out.rldchar> [--vertex-colors gltf|psx|off] [--kart-part | --game-kart <0..14|template>]
 //       adds CHRG, or replaces the one there is, with the vertex colour mode
 //       in its flags (include/rldhires_color.inc; without the switch glTF,
 //       flags 0: the bytes hires-add wrote before the mode). Refuses a model
 //       with an error (the budget included) and writes nothing then.
+//       --kart-part writes the 20-byte header with parts bit 0 (THE PARTS,
+//       include/rldhires.inc): the subtree of the node "kart" is left out where
+//       the kart is not wanted. Refused when the model has no usable kart part
+//       (HRG-37, HRG-38). --game-kart writes bit 1 and the kart donor: the file
+//       has no kart, the game puts in the player's own. Without either the
+//       header is the 16 bytes of before.
 //   hires-strip <in.rldchar> -o <out.rldchar>
 //       removes CHRG.
 //
@@ -294,19 +300,98 @@ static int RldHiresPack_VertexColours(int argc, char **argv, char **rest, int *m
 	return n;
 }
 
-// Runs every rule on a GLB in a vertex colour mode: RldHires_OpenAs and, when
-// it opened, the budget. Fills rep and m (close m with RldHires_Close). 1 = usable.
-static int RldHiresPack_CheckGlbAs(const u8 *glb, size_t size, int vcolMode, RldHiresModel *m, RldHiresReport *rep)
+// Takes --kart-part and --game-kart <0..14|template> out of argv (anywhere,
+// once, not both): the other arguments go to rest in their order, their count
+// is returned. *parts is the field 0x10 they ask for (0 without them), *given 1
+// when one was there. -1 = a usage error.
+static int RldHiresPack_Parts(int argc, char **argv, char **rest, u32 *parts, int *given)
+{
+	int n = 0;
+	int i;
+
+	*parts = 0u;
+	*given = 0;
+	for (i = 0; i < argc; i++)
+	{
+		if (strcmp(argv[i], "--kart-part") == 0)
+		{
+			if (*given)
+			{
+				return -1;
+			}
+			*parts = RLDHIRES_PART_KART;
+			*given = 1;
+			continue;
+		}
+		if (strcmp(argv[i], "--game-kart") == 0)
+		{
+			u32 donor = RLDHIRES_PART_DONOR_TEMPLATE;
+
+			if (*given || ((i + 1) >= argc))
+			{
+				return -1;
+			}
+			i++;
+			if (strcmp(argv[i], "template") != 0)
+			{
+				char *end = NULL;
+				const unsigned long v = strtoul(argv[i], &end, 10);
+
+				if ((end == argv[i]) || (*end != '\0') || (v > RLDHIRES_PART_DONOR_MAX))
+				{
+					return -1;
+				}
+				donor = (u32)v;
+			}
+			*parts = RLDHIRES_PART_GAME_KART | (donor << RLDHIRES_PART_DONOR_SHIFT);
+			*given = 1;
+			continue;
+		}
+		rest[n++] = argv[i];
+	}
+	return n;
+}
+
+// What a parts field means, for the line hires-check and hires-add print.
+static void RldHiresPack_PartsLine(u32 parts, const RldHiresModel *m)
+{
+	if (parts == 0u)
+	{
+		printf("  parts: none (16-byte header)\n");
+	}
+	else if ((parts & RLDHIRES_PART_KART) != 0u)
+	{
+		printf("  parts: 0x%08x, kart part %s (%u nodes)\n", (unsigned)parts, m->kartPart ? "on" : "off", (unsigned)m->kartNodes);
+	}
+	else if (((parts & RLDHIRES_PART_GAME_KART) != 0u) && (m->kartDonor == (int)RLDHIRES_PART_DONOR_TEMPLATE))
+	{
+		printf("  parts: 0x%08x, the game's kart (of the template)\n", (unsigned)parts);
+	}
+	else if ((parts & RLDHIRES_PART_GAME_KART) != 0u)
+	{
+		printf("  parts: 0x%08x, the game's kart (of driver %d)\n", (unsigned)parts, m->kartDonor);
+	}
+	else
+	{
+		printf("  parts: 0x%08x\n", (unsigned)parts);
+	}
+}
+
+// Runs every rule on a GLB in a vertex colour mode with a parts field:
+// RldHires_OpenParts and, when it opened, the budget. Fills rep and m (close m
+// with RldHires_Close). 1 = usable.
+static int RldHiresPack_CheckGlbParts(const u8 *glb, size_t size, int vcolMode, u32 parts, RldHiresModel *m, RldHiresReport *rep)
 {
 	int ok;
+	const u32 header = (parts != 0u) ? RLDHIRES_CHUNK_HEADER_BYTES_PARTS : RLDHIRES_CHUNK_HEADER_BYTES;
 
-	if (size > (size_t)(RLDHIRES_CHUNK_LIMIT - RLDHIRES_CHUNK_HEADER_BYTES))
+	if (size > (size_t)(RLDHIRES_CHUNK_LIMIT - header))
 	{
 		memset(m, 0, sizeof(*m));
-		RldHires_Say(rep, "HRG-5", "the model is %u bytes - with its 16-byte header CHRG may be 64 MiB at most", (unsigned)size);
+		RldHires_Say(rep, "HRG-5", "the model is %u bytes - with its %u-byte header CHRG may be 64 MiB at most", (unsigned)size, (unsigned)header);
 		return 0;
 	}
-	ok = RldHires_OpenAs(glb, (u32)size, vcolMode, m, rep);
+	ok = RldHires_OpenParts(glb, (u32)size, vcolMode, parts, m, rep);
 	if (m->data != NULL)
 	{
 		ok = RldHires_CheckBudget(m, rep) && ok;
@@ -321,6 +406,12 @@ static int RldHiresPack_CheckGlbAs(const u8 *glb, size_t size, int vcolMode, Rld
 		ok = RldHires_CheckClipHull(m, rep, lo, hi, NULL) && ok;
 	}
 	return ok;
+}
+
+// RldHiresPack_CheckGlbParts without the parts field.
+static int RldHiresPack_CheckGlbAs(const u8 *glb, size_t size, int vcolMode, RldHiresModel *m, RldHiresReport *rep)
+{
+	return RldHiresPack_CheckGlbParts(glb, size, vcolMode, 0u, m, rep);
 }
 
 // RldHiresPack_CheckGlbAs in glTF mode.
@@ -339,15 +430,19 @@ static int RldHires_CheckCommand(int argc, char **argv)
 	const u8 *glb;
 	size_t glbSize;
 	char *rest[8];
+	char *rest2[8];
 	int mode = RLDHIRES_VCOL_GLTF;
 	int given = 0;
+	u32 parts = 0u;
+	int partsGiven = 0;
+	const int restCount = (argc > 8) ? -1 : RldHiresPack_VertexColours(argc, argv, rest, &mode, &given);
 
-	if ((argc > 8) || (RldHiresPack_VertexColours(argc, argv, rest, &mode, &given) != 1))
+	if ((restCount < 0) || (RldHiresPack_Parts(restCount, rest, rest2, &parts, &partsGiven) != 1))
 	{
-		fprintf(stderr, "usage: rldpack hires-check <file.glb | file.rldchar> [--vertex-colors gltf|psx|off]\n");
+		fprintf(stderr, "usage: rldpack hires-check <file.glb | file.rldchar> [--vertex-colors gltf|psx|off] [--kart-part | --game-kart <0..14|template>]\n");
 		return 2;
 	}
-	argv = rest;
+	argv = rest2;
 	RldHires_ReportClear(&rep);
 	memset(&m, 0, sizeof(m));
 	printf("hires check of %s\n", argv[0]);
@@ -371,13 +466,13 @@ static int RldHires_CheckCommand(int argc, char **argv)
 
 		free(bytes);
 		bytes = NULL;
-		if (given)
+		if (given || partsGiven)
 		{
 			if (why == NULL)
 			{
 				Rld_Close(&reader);
 			}
-			fprintf(stderr, "rldpack: --vertex-colors is for a .glb - a .rldchar is checked in the mode its CHRG names\n");
+			fprintf(stderr, "rldpack: --vertex-colors, --kart-part and --game-kart are for a .glb - a .rldchar is checked as its CHRG says\n");
 			return 2;
 		}
 		if (why != NULL)
@@ -415,10 +510,12 @@ static int RldHires_CheckCommand(int argc, char **argv)
 		glb = c.glb;
 		glbSize = c.glbSize;
 		mode = RldHiresColor_Mode(c.flags); // ParseChunk refused mode 3
+		parts = c.parts;
 	}
 
 	printf("  vertex colours: %s\n", RldHiresPack_ModeText(mode));
-	RldHiresPack_CheckGlbAs(glb, glbSize, mode, &m, &rep);
+	RldHiresPack_CheckGlbParts(glb, glbSize, mode, parts, &m, &rep);
+	RldHiresPack_PartsLine(parts, &m);
 	RldHiresPack_Print(&rep);
 	RldHiresPack_Summary("hires check", &rep, &m);
 	RldHires_Close(&m);
@@ -496,15 +593,23 @@ static int RldHires_AddCommand(int argc, char **argv)
 	size_t chunkSize = 0;
 	const char *why;
 	int ok;
+	int kartRefused;
 	int result;
-	char *rest[8];
+	char *rest[10];
+	char *rest2[10];
 	int mode = RLDHIRES_VCOL_GLTF;
 	int given = 0;
-	int restCount = (argc > 8) ? -1 : RldHiresPack_VertexColours(argc, argv, rest, &mode, &given);
+	u32 parts = 0u;
+	int partsGiven = 0;
+	int restCount = (argc > 10) ? -1 : RldHiresPack_VertexColours(argc, argv, rest, &mode, &given);
 
-	if ((restCount < 0) || !RldHiresPack_Args(restCount, rest, 2, paths, &outPath))
+	if (restCount >= 0)
 	{
-		fprintf(stderr, "usage: rldpack hires-add <in.rldchar> <model.glb> -o <out.rldchar> [--vertex-colors gltf|psx|off]\n");
+		restCount = RldHiresPack_Parts(restCount, rest, rest2, &parts, &partsGiven);
+	}
+	if ((restCount < 0) || !RldHiresPack_Args(restCount, rest2, 2, paths, &outPath))
+	{
+		fprintf(stderr, "usage: rldpack hires-add <in.rldchar> <model.glb> -o <out.rldchar> [--vertex-colors gltf|psx|off] [--kart-part | --game-kart <0..14|template>]\n");
 		return 2;
 	}
 	if (!Rld_ReadFile(paths[1], &glb, &glbSize))
@@ -515,13 +620,22 @@ static int RldHires_AddCommand(int argc, char **argv)
 	RldHires_ReportClear(&rep);
 	printf("hires-add: %s + %s\n", paths[0], paths[1]);
 	printf("  vertex colours: %s\n", RldHiresPack_ModeText(mode));
-	ok = RldHiresPack_CheckGlbAs(glb, glbSize, mode, &m, &rep);
+	ok = RldHiresPack_CheckGlbParts(glb, glbSize, mode, parts, &m, &rep);
+	RldHiresPack_PartsLine(parts, &m);
 	RldHiresPack_Print(&rep);
 	RldHiresPack_Summary("hires check", &rep, &m);
+	kartRefused = ((parts & RLDHIRES_PART_KART) != 0u) && !m.kartPart;
 	RldHires_Close(&m);
 	if (!ok || (rep.errors != 0))
 	{
 		printf("hires-add: the model has %d error(s) - nothing written\n", rep.errors);
+		free(glb);
+		return 1;
+	}
+	if (kartRefused)
+	{
+		printf("hires-add: --kart-part, but the model has no usable kart part (HRG-37, HRG-38) - nothing written\n");
+		Rld_Say("error", "kart-part", paths[1], "The model has no node 'kart' whose subtree can be left out (HRG-37, HRG-38). Nothing was written.");
 		free(glb);
 		return 1;
 	}
@@ -534,7 +648,7 @@ static int RldHires_AddCommand(int argc, char **argv)
 		free(glb);
 		return 1;
 	}
-	chunk = RldHires_BuildChunkFlags(glb, (u32)glbSize, (u32)mode, &chunkSize);
+	chunk = RldHires_BuildChunkParts(glb, (u32)glbSize, (u32)mode, parts, &chunkSize);
 	free(glb);
 	if (chunk == NULL)
 	{
@@ -582,18 +696,24 @@ static int RldHires_StripCommand(int argc, char **argv)
 static void RldHires_Usage(FILE *out)
 {
 	fprintf(out, "HI-RES DRIVER (chunk CHRG, preview)\n");
-	fprintf(out, "  rldpack hires-check <file.glb | file.rldchar> [--vertex-colors gltf|psx|off]\n");
+	fprintf(out, "  rldpack hires-check <file.glb | file.rldchar> [--vertex-colors gltf|psx|off] [--kart-part | --game-kart <n>]\n");
 	fprintf(out, "  Checks a glTF binary model (.glb) with the game's rules (include/rldhires.inc),\n");
 	fprintf(out, "  or the CHRG chunk of a character. One line per finding (error: the hi-res\n");
 	fprintf(out, "  model is refused; warning: something falls back to a standard; note: ignored),\n");
 	fprintf(out, "  then a summary. Exit 0 = no error, 1 = errors or no CHRG. A .glb is checked\n");
 	fprintf(out, "  in the vertex colour mode of the switch (gltf without it), a .rldchar in its own.\n");
 	fprintf(out, "  rldpack hires-add <in.rldchar> <model.glb> -o <out.rldchar> [--vertex-colors gltf|psx|off]\n");
+	fprintf(out, "                    [--kart-part | --game-kart <0..14|template>]\n");
 	fprintf(out, "  Adds the model as CHRG (or replaces it). Refuses a model with an error, the\n");
 	fprintf(out, "  budget included. Every other chunk stays byte for byte. --vertex-colors says\n");
 	fprintf(out, "  how the game reads the model's vertex colours (COLOR_0): gltf (the default)\n");
 	fprintf(out, "  white is neutral; psx grey 128 is neutral, texture x colour / 128 as on the\n");
 	fprintf(out, "  PS1 (for PS1-style shading); off the colours are ignored.\n");
+	fprintf(out, "  --kart-part: the subtree of the node 'kart' is the kart; the game leaves it\n");
+	fprintf(out, "  and the wheels out on the podium, in the menu scene and the driver select\n");
+	fprintf(out, "  (a 20-byte CHRG header; an older game reads past it and draws the kart).\n");
+	fprintf(out, "  --game-kart <0..14|template>: the model has no kart; the game puts in the\n");
+	fprintf(out, "  original kart from the player's own game data (that driver's colours).\n");
 	fprintf(out, "  rldpack hires-strip <in.rldchar> -o <out.rldchar>\n");
 	fprintf(out, "  Removes CHRG; every other chunk stays byte for byte.\n");
 	fprintf(out, "  rldpack hires-upscale <in.glb> -o <out.glb>\n");

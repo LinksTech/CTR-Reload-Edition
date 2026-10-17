@@ -5891,6 +5891,7 @@ internal int EngTrack_PodiumHires(struct Instance *inst, struct InstDrawPerPlaye
 	s.time = s_egtPodiumClock - s_egtPodiumHiresStart[k];
 	s.prevClip = -1;
 	s.fade = 1.0f;
+	s.hideKart = 1; // the podium: a figure with a kart part stands without it
 	s.inst = inst;
 	s.idpp = idpp;
 	s.pb = pb;

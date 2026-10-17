@@ -1243,6 +1243,7 @@ typedef struct
 	u32 *ot;                   // inst NULL
 	int cell;                  // inst NULL
 	float tint[4];             // inst NULL
+	int hideKart;              // 1 = a file with the kart part (CHRG parts bit 0) is drawn without its kart and wheels
 } EngineHiresSubmit;
 int Engine_HiresCharSubmit(int ch, const EngineHiresSubmit *s); // draws submitted; 0 = none (the caller draws its classic way)
 

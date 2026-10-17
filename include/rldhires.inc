@@ -28,6 +28,9 @@
 //                         is dropped (HRG-3).
 //   0x08 u32 glbOffset    = headerBytes, from the start of the chunk.
 //   0x0C u32 glbSize      glbOffset + glbSize = the chunk's size.
+//   0x10 u32 parts        only when headerBytes >= 20 (an ignorable extension of
+//                         version 1, proposed for 4.3, see THE PARTS below);
+//                         0 with a 16-byte header.
 //
 // Stored uncompressed, SHA-256 like every chunk, at most RLDHIRES_CHUNK_LIMIT.
 // CHRG is NOT a known type of the envelope (RldChar_ChunkLimit answers 0, see
@@ -52,7 +55,37 @@
 // include/rldhires_color.inc. Vertex colours that look like PS1 shading in a
 // glTF-mode file get a warning (HRG-36: the kart will look too dark).
 //
-// THE RULES are HRG-1 .. HRG-36 (s_rldHiresRules below), each with a fixed
+// THE PARTS (field 0x10, proposed for 4.3, not yet accepted; Creator
+// Kit round 2026-10-18). Ignorable: an older reader skips the longer header and
+// draws the whole model everywhere. Bits:
+//   0 RLDHIRES_PART_KART       the subtree of the first node named "kart" is the
+//                              kart. Where the kart is not wanted (the podium
+//                              scene, the menu scene, the driver select) the
+//                              engine leaves it out together with the four
+//                              wheels; in a race it stays, and a finished driver
+//                              keeps the seated race clips (idle, steer) instead
+//                              of the standing podium_1..3 / lose. Opt-in by the
+//                              header, never by the name alone: a file of before
+//                              with a node "kart" by chance keeps its look
+//                              (HRG-39). No node "kart" (HRG-37) or a vertex
+//                              weighted to joints inside and outside it (HRG-38):
+//                              the kart is drawn everywhere, as without the bit.
+//   1 RLDHIRES_PART_GAME_KART  the file has no kart; the game puts in the
+//                              original kart from the player's own game data
+//                              (the in-game insertion is a later package; until
+//                              then the bit is read and reported only). With
+//                              bit 0 set too, bit 0 wins (HRG-40).
+//   8..15 kartDonor            with bit 1: the retail driver 0..14 whose kart
+//                              (its colours) is taken, 0xFF = the CHRI template.
+// Every other bit: 0 when written, ignored when read (HRG-40, a note) - the
+// whole field is ignorable by definition. Later ignorable fields follow at 0x14
+// (a field exists when headerBytes is larger than its offset).
+// THE KIT MARK: what rldpack kit-extract made from the player's game data
+// carries glTF extras {"ctr_kit": "kart" | "steer_wheel" | "wheel"} on its nodes
+// and meshes and material names "ctrkit_<name>"; either in a file is HRG-41 (a
+// warning: the file holds the original kart from the game data - not to share).
+//
+// THE RULES are HRG-1 .. HRG-41 (s_rldHiresRules below), each with a fixed
 // level: an ERROR refuses the hi-res part (the classic model is drawn), a
 // WARNING means the driver runs but something falls back to a standard (a clip,
 // the wheels, flat normals), a NOTE says what is ignored. The texts are short
@@ -108,6 +141,20 @@
 #define RLDHIRES_CHUNK_FLAGS_KNOWN RLDHIRES_FLAG_VCOL_MASK
 #define RLDHIRES_CHUNK_LIMIT (64u * 1024u * 1024u) // the whole chunk, header included
 
+// THE PARTS (field 0x10, see the top of the file).
+#define RLDHIRES_CHUNK_PARTS_OFFSET 0x10u
+#define RLDHIRES_CHUNK_HEADER_BYTES_PARTS 20u     // the header written when parts is not 0
+#define RLDHIRES_PART_KART 0x1u
+#define RLDHIRES_PART_GAME_KART 0x2u
+#define RLDHIRES_PART_DONOR_SHIFT 8u
+#define RLDHIRES_PART_DONOR_MASK 0xff00u
+#define RLDHIRES_PART_DONOR_TEMPLATE 0xffu         // kartDonor: the CHRI template
+#define RLDHIRES_PART_DONOR_MAX 14u                // retail drivers 0..14 (15 = N. Oxide has no kart)
+#define RLDHIRES_PARTS_KNOWN (RLDHIRES_PART_KART | RLDHIRES_PART_GAME_KART | RLDHIRES_PART_DONOR_MASK)
+#define RLDHIRES_KART_NODE "kart"                  // the root node of the kart part
+#define RLDHIRES_KIT_EXTRAS_KEY "\"ctr_kit\""      // the kit mark in a node's or mesh's extras (HRG-41)
+#define RLDHIRES_KIT_MATERIAL_PREFIX "ctrkit_"     // the kit mark in a material name (HRG-41)
+
 // What RldHires_ParseChunk read. glb points INTO the chunk: the chunk must stay
 // alive as long as glb is used (and as long as an RldHiresModel opened on it).
 typedef struct RldHiresChunk
@@ -115,6 +162,7 @@ typedef struct RldHiresChunk
 	u32 version;
 	u32 headerBytes;
 	u32 flags;
+	u32 parts; // 0x10 when headerBytes >= 20, else 0 (THE PARTS)
 	u32 glbOffset;
 	u32 glbSize;
 	const u8 *glb;
@@ -357,7 +405,7 @@ typedef struct RldHiresRule
 	const char *about;
 } RldHiresRule;
 
-#define RLDHIRES_RULE_COUNT 36
+#define RLDHIRES_RULE_COUNT 41
 
 static const RldHiresRule s_rldHiresRules[RLDHIRES_RULE_COUNT] = {
     {"HRG-1", RLDHIRES_ERROR, "CHRG version is not 1"},
@@ -396,6 +444,11 @@ static const RldHiresRule s_rldHiresRules[RLDHIRES_RULE_COUNT] = {
     {"HRG-34", RLDHIRES_ERROR, "more than 255 skinning entries: joints + body nodes with a mesh but no skin + 4 wheels"},
     {"HRG-35", RLDHIRES_ERROR, "more than 64 texture uploads: one per image, colour space and sampler wrap"},
     {"HRG-36", RLDHIRES_WARNING, "glTF mode: vertex colours on textured faces look like PS1 shading (median 0.4..0.6 sRGB) - the kart will look too dark"},
+    {"HRG-37", RLDHIRES_WARNING, "kart part: the header announces it, but no node is named 'kart' - the kart is drawn everywhere"},
+    {"HRG-38", RLDHIRES_WARNING, "kart part: a skinned vertex is weighted to joints inside and outside 'kart' - the kart is drawn everywhere"},
+    {"HRG-39", RLDHIRES_NOTE, "kart part: a node 'kart' without the kart part in the header - drawn as before (hires-add --kart-part)"},
+    {"HRG-40", RLDHIRES_NOTE, "parts field: an unknown bit, a second node 'kart', or both kart bits - ignored"},
+    {"HRG-41", RLDHIRES_WARNING, "the file contains the original kart from your game data - don't share it, or export without the kart"},
 };
 
 // The level of a rule id, -1 for an unknown id.
@@ -596,6 +649,7 @@ static int RldHires_ParseChunk(const u8 *chunk, size_t size, RldHiresChunk *out,
 			out->version = version;
 			out->headerBytes = headerBytes;
 			out->flags = flags;
+			out->parts = (headerBytes >= RLDHIRES_CHUNK_PARTS_OFFSET + 4u) ? RldHires_LE32(&chunk[RLDHIRES_CHUNK_PARTS_OFFSET]) : 0u;
 			out->glbOffset = glbOffset;
 			out->glbSize = glbSize;
 			out->glb = chunk + glbOffset;
@@ -618,35 +672,49 @@ static int RldHires_ParseChunk(const u8 *chunk, size_t size, RldHiresChunk *out,
 // unchanged. malloc'ed (the caller frees), NULL when the chunk would pass
 // RLDHIRES_CHUNK_LIMIT, the flags are not ones RldHires_ParseChunk reads, or
 // memory runs out. The same GLB and flags give the same bytes.
-static u8 *RldHires_BuildChunkFlags(const u8 *glb, u32 glbSize, u32 flags, size_t *sizeOut)
+//
+// With parts not 0 (THE PARTS, only known bits) the header is 20 bytes and
+// carries the field at 0x10 (RldHires_BuildChunkParts); with parts 0 the bytes
+// are exactly the 16-byte chunk of before.
+static u8 *RldHires_BuildChunkParts(const u8 *glb, u32 glbSize, u32 flags, u32 parts, size_t *sizeOut)
 {
+	const u32 header = (parts != 0u) ? RLDHIRES_CHUNK_HEADER_BYTES_PARTS : RLDHIRES_CHUNK_HEADER_BYTES;
 	u8 *chunk;
 
 	if (sizeOut != NULL)
 	{
 		*sizeOut = 0;
 	}
-	if ((glb == NULL) || ((u64)glbSize + RLDHIRES_CHUNK_HEADER_BYTES > (u64)RLDHIRES_CHUNK_LIMIT) || ((flags & ~RLDHIRES_CHUNK_FLAGS_KNOWN) != 0u) ||
-	    (RldHiresColor_Mode(flags) < 0))
+	if ((glb == NULL) || ((u64)glbSize + header > (u64)RLDHIRES_CHUNK_LIMIT) || ((flags & ~RLDHIRES_CHUNK_FLAGS_KNOWN) != 0u) ||
+	    (RldHiresColor_Mode(flags) < 0) || ((parts & ~(u32)RLDHIRES_PARTS_KNOWN) != 0u))
 	{
 		return NULL;
 	}
-	chunk = (u8 *)malloc((size_t)glbSize + RLDHIRES_CHUNK_HEADER_BYTES);
+	chunk = (u8 *)malloc((size_t)glbSize + header);
 	if (chunk == NULL)
 	{
 		return NULL;
 	}
 	RldHires_PutLE16(&chunk[0x00], RLDHIRES_CHUNK_VERSION);
-	RldHires_PutLE16(&chunk[0x02], RLDHIRES_CHUNK_HEADER_BYTES);
+	RldHires_PutLE16(&chunk[0x02], header);
 	RldHires_PutLE32(&chunk[0x04], flags);
-	RldHires_PutLE32(&chunk[0x08], RLDHIRES_CHUNK_HEADER_BYTES);
+	RldHires_PutLE32(&chunk[0x08], header);
 	RldHires_PutLE32(&chunk[0x0C], glbSize);
-	memcpy(&chunk[RLDHIRES_CHUNK_HEADER_BYTES], glb, glbSize);
+	if (parts != 0u)
+	{
+		RldHires_PutLE32(&chunk[RLDHIRES_CHUNK_PARTS_OFFSET], parts);
+	}
+	memcpy(&chunk[header], glb, glbSize);
 	if (sizeOut != NULL)
 	{
-		*sizeOut = (size_t)glbSize + RLDHIRES_CHUNK_HEADER_BYTES;
+		*sizeOut = (size_t)glbSize + header;
 	}
 	return chunk;
+}
+
+static u8 *RldHires_BuildChunkFlags(const u8 *glb, u32 glbSize, u32 flags, size_t *sizeOut)
+{
+	return RldHires_BuildChunkParts(glb, glbSize, flags, 0u, sizeOut);
 }
 
 // RldHires_BuildChunkFlags with flags 0 (glTF): the bytes every CHRG had before
@@ -824,6 +892,16 @@ typedef struct RldHiresModel
 	int clipsPresent;                       // clips in the file (0..12)
 	int ps1ColourMedian;                    // median sRGB byte of COLOR_0 on textured faces, -1 = none (HRG-36)
 	int vcolMode;                           // the vertex colour mode it was opened for (RldHires_OpenAs; HRG-36 only in glTF)
+
+	// THE PARTS (RldHires_OpenParts; all 0 / -1 when opened without the field).
+	u32 parts;                              // the chunk's field 0x10 it was opened with
+	int kartNode;                           // the first node named "kart" in the drawn scene, -1 = none
+	u8 *inKart;                             // data->nodes_count bytes, 1 = in the subtree of kartNode; NULL unless kartPart
+	int kartPart;                           // 1 = the kart is separable: bit 0 set, the node found, no vertex mixes (HRG-37, HRG-38)
+	u32 kartNodes;                          // nodes in the kart subtree (kartNode included), 0 unless kartPart
+	int gameKart;                           // 1 = bit 1 set (and bit 0 not): the game's own kart goes in
+	int kartDonor;                          // with gameKart: 0..14, or RLDHIRES_PART_DONOR_TEMPLATE; else -1
+	int kitMarked;                          // 1 = a kit mark was found (HRG-41)
 } RldHiresModel;
 
 // The edge the game makes of an image edge: the next power of two, at least
@@ -860,6 +938,7 @@ static void RldHires_Close(RldHiresModel *m)
 	}
 	free(m->drawNodes);
 	free(m->images);
+	free(m->inKart);
 	memset(m, 0, sizeof(*m));
 }
 
@@ -1383,6 +1462,225 @@ static void RldHires_CheckPs1Colours(RldHiresModel *m, RldHiresReport *rep)
 	}
 }
 
+// 1 when extras of the file carry the kit mark (RLDHIRES_KIT_EXTRAS_KEY).
+static int RldHires_KitExtras(const cgltf_extras *e)
+{
+	return (e != NULL) && (e->data != NULL) && (strstr(e->data, RLDHIRES_KIT_EXTRAS_KEY) != NULL);
+}
+
+// THE PARTS (see the top of the file): the kart part of field 0x10 (HRG-37..40)
+// and the kit mark (HRG-41), for a model RldHires_OpenParts has read so far.
+// order holds the drawn scene's nodes depth first; work has room for every
+// push (the caller's node stack, free to reuse; NULL only without nodes).
+static void RldHires_CheckParts(RldHiresModel *m, RldHiresReport *rep, u32 parts, const int *order, int orderCount, int *work)
+{
+	const cgltf_data *gd = m->data;
+	const int wantKart = (parts & RLDHIRES_PART_KART) != 0u;
+	cgltf_size i;
+	int k;
+	int second = -1;
+
+	if ((parts & ~(u32)RLDHIRES_PARTS_KNOWN) != 0u)
+	{
+		RldHires_Say(rep, "HRG-40", "the parts field 0x%08x has bits this game does not know - ignored", (unsigned)parts);
+	}
+	if (wantKart && ((parts & RLDHIRES_PART_GAME_KART) != 0u))
+	{
+		RldHires_Say(rep, "HRG-40", "the parts field asks for the file's own kart and for the game's kart - the file's own kart is used");
+	}
+	else if ((parts & RLDHIRES_PART_GAME_KART) != 0u)
+	{
+		const u32 donor = (parts & RLDHIRES_PART_DONOR_MASK) >> RLDHIRES_PART_DONOR_SHIFT;
+
+		m->gameKart = 1;
+		m->kartDonor = ((donor <= RLDHIRES_PART_DONOR_MAX) || (donor == RLDHIRES_PART_DONOR_TEMPLATE)) ? (int)donor : (int)RLDHIRES_PART_DONOR_TEMPLATE;
+		if (m->kartDonor != (int)donor)
+		{
+			RldHires_Say(rep, "HRG-40", "the parts field names kart donor %u - there are drivers 0..14; the template's kart is used", (unsigned)donor);
+		}
+	}
+
+	// The node "kart": the first in the drawn scene.
+	for (k = 0; (gd != NULL) && (k < orderCount); k++)
+	{
+		const char *name = gd->nodes[order[k]].name;
+
+		if ((name == NULL) || (strcmp(name, RLDHIRES_KART_NODE) != 0))
+		{
+			continue;
+		}
+		if (m->kartNode < 0)
+		{
+			m->kartNode = order[k];
+		}
+		else if (second < 0)
+		{
+			second = order[k];
+		}
+	}
+	if ((m->kartNode >= 0) && !wantKart)
+	{
+		RldHires_Say(rep, "HRG-39", "a node is named 'kart', but the header does not announce the kart part - it is drawn everywhere, as before (rldpack hires-add --kart-part)");
+	}
+	if (wantKart && (m->kartNode < 0))
+	{
+		RldHires_Say(rep, "HRG-37", "the header announces the kart part, but no node is named 'kart' - the kart is drawn everywhere");
+	}
+	if (wantKart && (m->kartNode >= 0) && (work != NULL))
+	{
+		int top = 0;
+		int mixed = 0;
+		char mixedMesh[48];
+
+		if (second >= 0)
+		{
+			RldHires_Say(rep, "HRG-40", "a second node is named 'kart' (node %d) - only the first (node %d) is the kart", second, m->kartNode);
+		}
+		m->inKart = (u8 *)calloc(gd->nodes_count, 1);
+		if (m->inKart == NULL)
+		{
+			RldHires_Say(rep, "HRG-7", "out of memory reading the kart part");
+			return;
+		}
+		work[top++] = m->kartNode;
+		while (top > 0)
+		{
+			const int ni = work[--top];
+			const cgltf_node *node = &gd->nodes[ni];
+			cgltf_size c;
+
+			if (m->inKart[ni])
+			{
+				continue;
+			}
+			m->inKart[ni] = 1;
+			m->kartNodes++;
+			for (c = 0; c < node->children_count; c++)
+			{
+				const int ci = (int)cgltf_node_index(gd, node->children[c]);
+
+				if (!m->inKart[ci])
+				{
+					work[top++] = ci;
+				}
+			}
+		}
+
+		// HRG-38: a skinned vertex with weight on joints on both sides would tear.
+		mixedMesh[0] = '\0';
+		for (k = 0; (k < m->drawNodeCount) && !mixed; k++)
+		{
+			const cgltf_node *node = &gd->nodes[m->drawNodes[k]];
+			cgltf_size p;
+
+			if ((node->skin == NULL) || (node->mesh == NULL))
+			{
+				continue;
+			}
+			for (p = 0; (p < node->mesh->primitives_count) && !mixed; p++)
+			{
+				const cgltf_accessor *jo = cgltf_find_accessor(&node->mesh->primitives[p], cgltf_attribute_type_joints, 0);
+				const cgltf_accessor *we = cgltf_find_accessor(&node->mesh->primitives[p], cgltf_attribute_type_weights, 0);
+				cgltf_size v;
+
+				if ((jo == NULL) || (we == NULL) || jo->is_sparse || we->is_sparse || (jo->count != we->count))
+				{
+					continue; // HRG-14 / HRG-29 said it
+				}
+				for (v = 0; (v < jo->count) && !mixed; v++)
+				{
+					cgltf_uint j[4] = {0, 0, 0, 0};
+					float w[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+					int inside = 0;
+					int outside = 0;
+					int c;
+
+					cgltf_accessor_read_uint(jo, v, j, 4);
+					cgltf_accessor_read_float(we, v, w, 4);
+					for (c = 0; c < 4; c++)
+					{
+						if (!(w[c] > 0.0f) || (j[c] >= node->skin->joints_count))
+						{
+							continue;
+						}
+						if (m->inKart[cgltf_node_index(gd, node->skin->joints[j[c]])])
+						{
+							inside = 1;
+						}
+						else
+						{
+							outside = 1;
+						}
+					}
+					if (inside && outside)
+					{
+						mixed = 1;
+						RldHires_Name(mixedMesh, sizeof(mixedMesh), node->mesh->name, cgltf_mesh_index(gd, node->mesh));
+					}
+				}
+			}
+		}
+		if (mixed)
+		{
+			RldHires_Say(rep, "HRG-38", "mesh '%s' has a vertex weighted to joints inside and outside 'kart' - the kart is drawn everywhere (weight kart and figure apart)",
+			             mixedMesh);
+			free(m->inKart);
+			m->inKart = NULL;
+			m->kartNodes = 0;
+		}
+		else
+		{
+			m->kartPart = 1;
+		}
+	}
+
+	// HRG-41: the kit mark - material names and extras, then the extras of nodes and meshes.
+	if (gd != NULL)
+	{
+		char what[64];
+
+		what[0] = '\0';
+		for (i = 0; (i < gd->materials_count) && (what[0] == '\0'); i++)
+		{
+			const char *name = gd->materials[i].name;
+
+			if (((name != NULL) && (strncmp(name, RLDHIRES_KIT_MATERIAL_PREFIX, strlen(RLDHIRES_KIT_MATERIAL_PREFIX)) == 0)) ||
+			    RldHires_KitExtras(&gd->materials[i].extras))
+			{
+				char n[48];
+
+				RldHires_Name(n, sizeof(n), name, i);
+				snprintf(what, sizeof(what), "material '%s'", n);
+			}
+		}
+		for (i = 0; (i < gd->nodes_count) && (what[0] == '\0'); i++)
+		{
+			if (RldHires_KitExtras(&gd->nodes[i].extras))
+			{
+				char n[48];
+
+				RldHires_Name(n, sizeof(n), gd->nodes[i].name, i);
+				snprintf(what, sizeof(what), "node '%s'", n);
+			}
+		}
+		for (i = 0; (i < gd->meshes_count) && (what[0] == '\0'); i++)
+		{
+			if (RldHires_KitExtras(&gd->meshes[i].extras))
+			{
+				char n[48];
+
+				RldHires_Name(n, sizeof(n), gd->meshes[i].name, i);
+				snprintf(what, sizeof(what), "mesh '%s'", n);
+			}
+		}
+		if (what[0] != '\0')
+		{
+			m->kitMarked = 1;
+			RldHires_Say(rep, "HRG-41", "this file contains the original kart from your game data (%s) - don't share it, or export without the kart", what);
+		}
+	}
+}
+
 // Opens a GLB from memory and runs every rule of the model (HRG-6..26, 28..31).
 // 1 = usable as hi-res (no error), 0 = refused. out is always written; after a
 // 1 it owns cgltf data, close it with RldHires_Close (after a 0 too - it is
@@ -1392,8 +1690,10 @@ static void RldHires_CheckPs1Colours(RldHiresModel *m, RldHiresReport *rep)
 // RldHires_CheckBudget after it (rldpack hires-check and hires-add, the game).
 // vcolMode is the vertex colour mode of the chunk (RldHiresColor_Mode of its
 // flags, or the mode a writer is about to store): only HRG-36 depends on it.
-// RldHires_Open below is this in glTF mode (flags 0).
-static int RldHires_OpenAs(const u8 *glb, u32 size, int vcolMode, RldHiresModel *out, RldHiresReport *rep)
+// parts is the chunk's field 0x10 (THE PARTS: HRG-37..41 and the model's kart
+// fields; 0 = no field). RldHires_OpenAs is this without the field,
+// RldHires_Open in glTF mode (flags 0).
+static int RldHires_OpenParts(const u8 *glb, u32 size, int vcolMode, u32 parts, RldHiresModel *out, RldHiresReport *rep)
 {
 	RldHiresModel *m = out;
 	const int errorsBefore = (rep != NULL) ? rep->errors : 0;
@@ -1427,6 +1727,9 @@ static int RldHires_OpenAs(const u8 *glb, u32 size, int vcolMode, RldHiresModel 
 	}
 	memset(m, 0, sizeof(*m));
 	m->vcolMode = vcolMode;
+	m->parts = parts;
+	m->kartNode = -1;
+	m->kartDonor = -1;
 	m->scene = -1;
 	m->skin = -1;
 	for (i = 0; i < RLDHIRES_CLIP_COUNT; i++)
@@ -2146,6 +2449,9 @@ static int RldHires_OpenAs(const u8 *glb, u32 size, int vcolMode, RldHiresModel 
 		RldHires_Say(rep, "HRG-24", "%u light(s) in the model - ignored", (unsigned)gd->lights_count);
 	}
 
+	// HRG-37..41: the parts field and the kit mark (the node stack is free again).
+	RldHires_CheckParts(m, rep, parts, order, orderCount, nodeStack);
+
 	free(order);
 	free(nodeStack);
 	free(inWheel);
@@ -2153,6 +2459,12 @@ static int RldHires_OpenAs(const u8 *glb, u32 size, int vcolMode, RldHiresModel 
 	localErrors = rep->errors - errorsBefore;
 	m->usable = (localErrors == 0);
 	return m->usable;
+}
+
+// RldHires_OpenParts without the parts field (a 16-byte header).
+static int RldHires_OpenAs(const u8 *glb, u32 size, int vcolMode, RldHiresModel *out, RldHiresReport *rep)
+{
+	return RldHires_OpenParts(glb, size, vcolMode, 0u, out, rep);
 }
 
 // RldHires_OpenAs in glTF mode: a GLB of a chunk with flags 0, as every reader

@@ -9,8 +9,8 @@
 #    envelope does not know), rldpack hires-test-files <folder> the models
 #    hires-good.glb (no finding), hires-warn.glb (warnings) and hires-bad.glb (an
 #    error), hires-walk.glb (an animation 'Walk' next to the 12 clips) and, from
-#    old_plain, hires-v2.rldchar (CHRG version 2) and hires-h20.rldchar (CHRG
-#    version 1 with a 20-byte header).
+#    old_plain, hires-v2.rldchar (CHRG version 2) and hires-h24.rldchar (CHRG
+#    version 1 with a 24-byte header: the parts field 0 and 4 unknown bytes).
 # 3. CHRG version 1 is frozen (container 4.2): an unknown clip name is a note
 #    (HRG-21), never an error; a CHRG of a newer version costs only the hi-res
 #    part (HRG-1), the file still passes verify (the classic model); a longer
@@ -135,18 +135,70 @@ if(NOT (c_RESULT EQUAL 1 AND at GREATER -1 AND atClassic GREATER -1))
     fail("hires-check of a CHRG of version 2 exits 1 with HRG-1, the classic model is used")
 endif()
 math(EXPR checks "${checks} + 1")
-pack(v verify "${DIR}/hires-h20.rldchar")
+pack(v verify "${DIR}/hires-h24.rldchar")
 set(LAST_OUT "${v_OUT}")
 if(NOT (v_RESULT EQUAL 0))
-    fail("verify passes with a CHRG with a 20-byte header")
+    fail("verify passes with a CHRG with a 24-byte header")
 endif()
 math(EXPR checks "${checks} + 1")
-pack(c hires-check "${DIR}/hires-h20.rldchar")
+pack(c hires-check "${DIR}/hires-h24.rldchar")
 set(LAST_OUT "${c_OUT}")
-string(FIND "${c_OUT}" "CHRG version 1, 20-byte header" at)
+string(FIND "${c_OUT}" "CHRG version 1, 24-byte header" at)
 string(FIND "${c_OUT}" "hires check: 0 errors, 0 warnings, 0 notes, clips 12/12, wheels 4/4" atSum)
 if(NOT (c_RESULT EQUAL 0 AND at GREATER -1 AND atSum GREATER -1))
-    fail("hires-check reads a CHRG with a 20-byte header past its unknown bytes")
+    fail("hires-check reads a CHRG with a 24-byte header past its unknown bytes")
+endif()
+math(EXPR checks "${checks} + 1")
+
+# THE PARTS (CHRG field 0x10, proposed for 4.3): hires-add --kart-part writes a
+# 20-byte header that hires-check reads back as the kart part; a model without a
+# node 'kart' is refused with --kart-part and nothing is written; without the
+# switch the node 'kart' is only a note (HRG-39) and the header stays 16 bytes;
+# --game-kart names the game's kart and its donor.
+pack(a hires-add "${DIR}/old_plain.rldchar" "${DIR}/hires-kart.glb" -o "${DIR}/kart-part.rldchar" --kart-part)
+set(LAST_OUT "${a_OUT}")
+if(NOT (a_RESULT EQUAL 0))
+    fail("hires-add --kart-part of a model with a node 'kart'")
+endif()
+math(EXPR checks "${checks} + 1")
+pack(c hires-check "${DIR}/kart-part.rldchar")
+set(LAST_OUT "${c_OUT}")
+string(FIND "${c_OUT}" "CHRG version 1, 20-byte header" at)
+string(FIND "${c_OUT}" "kart part on (1 nodes)" atKart)
+string(FIND "${c_OUT}" "hires check: 0 errors, 0 warnings, 0 notes" atSum)
+if(NOT (c_RESULT EQUAL 0 AND at GREATER -1 AND atKart GREATER -1 AND atSum GREATER -1))
+    fail("hires-check reads the kart part back from a 20-byte header")
+endif()
+math(EXPR checks "${checks} + 1")
+pack(v verify "${DIR}/kart-part.rldchar")
+set(LAST_OUT "${v_OUT}")
+if(NOT (v_RESULT EQUAL 0))
+    fail("verify passes with the parts field")
+endif()
+math(EXPR checks "${checks} + 1")
+pack(x hires-add "${DIR}/old_plain.rldchar" "${DIR}/hires-good.glb" -o "${DIR}/kart-none.rldchar" --kart-part)
+set(LAST_OUT "${x_OUT}")
+string(FIND "${x_OUT}" "HRG-37" at37)
+if(NOT (x_RESULT EQUAL 1 AND at37 GREATER -1 AND NOT EXISTS "${DIR}/kart-none.rldchar"))
+    fail("hires-add --kart-part of a model without a node 'kart' exits 1 with HRG-37 and writes nothing")
+endif()
+math(EXPR checks "${checks} + 1")
+pack(a hires-add "${DIR}/old_plain.rldchar" "${DIR}/hires-kart.glb" -o "${DIR}/kart-plain.rldchar")
+set(LAST_OUT "${a_OUT}")
+pack(c hires-check "${DIR}/kart-plain.rldchar")
+set(LAST_OUT "${c_OUT}")
+string(FIND "${c_OUT}" "CHRG version 1, 16-byte header" at)
+string(FIND "${c_OUT}" "HRG-39" at39)
+string(FIND "${c_OUT}" "hires check: 0 errors, 0 warnings, 1 notes" atSum)
+if(NOT (a_RESULT EQUAL 0 AND c_RESULT EQUAL 0 AND at GREATER -1 AND at39 GREATER -1 AND atSum GREATER -1))
+    fail("a node 'kart' without --kart-part: a 16-byte header and one note HRG-39")
+endif()
+math(EXPR checks "${checks} + 1")
+pack(c hires-check "${DIR}/hires-good.glb" --game-kart 3)
+set(LAST_OUT "${c_OUT}")
+string(FIND "${c_OUT}" "the game's kart (of driver 3)" at)
+if(NOT (c_RESULT EQUAL 0 AND at GREATER -1))
+    fail("hires-check --game-kart 3 names the game's kart of driver 3")
 endif()
 math(EXPR checks "${checks} + 1")
 
