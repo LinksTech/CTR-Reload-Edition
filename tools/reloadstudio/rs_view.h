@@ -167,7 +167,7 @@ void RsView_LoadPreview(HWND view, const wchar_t *path);
 BOOL RsView_LoadPreviewData(HWND view, const void *data, size_t bytes);
 
 // A new picture of the same model in the same layout (a frame of a clip on the
-// page Hi-Res): the same size and the same 16 bytes in front as the one shown,
+// page Character, THE CLIPS): the same size and the same 16 bytes in front as the one shown,
 // and data[keepAt .. keepAt + keepBytes) the same as before (its textures and
 // materials - only checked by its first bytes). Copied over the shown one in
 // place, without reading it again: the framing, the camera and the mip levels

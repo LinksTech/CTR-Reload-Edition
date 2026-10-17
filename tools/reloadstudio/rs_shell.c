@@ -178,7 +178,7 @@ static int g_pageTop;                   // Rs_PageTop, 0 = not measured yet
 static int g_topChanged;                // a fit moved Rs_PageTop: lay the other pages out again
 static HWND g_pages[RS_PAGE_COUNT];
 static const struct RsPageDef *const g_defs[RS_PAGE_COUNT] = {
-    &g_rsTrackPage, &g_rsCupsPage, &g_rsCharPage, &g_rsHiresPage, &g_rsTestPage
+    &g_rsTrackPage, &g_rsCupsPage, &g_rsCharPage, &g_rsTestPage
 };
 static int g_current = -1;
 static int g_dpi = 96;
@@ -3302,7 +3302,11 @@ static LRESULT CALLBACK Rs_PageProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 }
 
 // The pages by name: the automation verb "page <name>" and the setting "page=".
-static const wchar_t *const g_pageWords[RS_PAGE_COUNT] = { L"track", L"cups", L"char", L"hires", L"test" };
+static const wchar_t *const g_pageWords[RS_PAGE_COUNT] = { L"track", L"cups", L"char", L"test" };
+// The page "Hi-Res (Preview)" is gone: every function of it is on the page
+// Character, routes Low-Poly and Hi-Res. Its word, from old scripts and
+// settings, gets this answer (automation) or the page Character (start).
+#define RS_PAGE_HIRES_GONE L"hires"
 
 // RS_PAGE_* of a name, -1 if unknown.
 static int Rs_PageByWord(const wchar_t *word)
@@ -3683,7 +3687,6 @@ static const wchar_t *const g_navIcons[RS_PAGE_COUNT] = {
     L"\xE8B7",   // Folder
     L"\xE8FD",   // BulletedList
     L"\xE77B",   // Contact
-    L"\xE8B9",   // Picture
     L"\xE768",   // Play
 };
 
@@ -3696,14 +3699,11 @@ static int Rs_SideCompact(void)
     return client.bottom < Rs_Px(RS_SIDEBAR_FULL_H);
 }
 
-// The pages the sidebar lists: Track, Cups, Character, Test in game. The page
-// "Hi-Res (Preview)" is not among them since the page Character builds hi-res
-// drivers itself (the routes Low-Poly and Hi-Res, rs_charroute.h). It is still
-// created with the others, and automation reaches it with "page hires" - for
-// its verbs and self-tests (reloadstudio.h); a user never sees it.
+// The pages the sidebar lists: all of them - Track, Cups, Character, Test in
+// game. (A page that is not listed would get an empty entry, Rs_NavRect.)
 static int Rs_NavShown(int id)
 {
-    return id != RS_PAGE_HIRES;
+    return id >= 0 && id < RS_PAGE_COUNT;
 }
 
 // The place of a listed page in the sidebar (0 = the first entry).
@@ -4403,7 +4403,10 @@ static void Rs_AutoTick(void)
 
     if (wcscmp(s->verb, L"page") == 0) {
         int id = Rs_PageByWord(s->arg);
-        if (id < 0) {
+        if (id < 0 && wcscmp(s->arg, RS_PAGE_HIRES_GONE) == 0) {
+            Rs_AutoLog(L"  FAIL: page hires was removed - use page char with route hires (or lowpoly)");
+            g_autoFailed++;
+        } else if (id < 0) {
             Rs_AutoLog(L"  FAIL: unknown page '%ls'", s->arg);
             g_autoFailed++;
         } else {
@@ -4989,11 +4992,11 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
         startPage = oldPages[cfg[0] - L'0'];
     } else if (Rs_PageByWord(cfg) >= 0) {
         startPage = Rs_PageByWord(cfg);
-    }
-    // "page=hires" from a Studio that still listed the page "Hi-Res (Preview)":
-    // the page Character builds hi-res drivers now.
-    if (!Rs_NavShown(startPage))
+    } else if (wcscmp(cfg, RS_PAGE_HIRES_GONE) == 0) {
+        // "page=hires" from a Studio that still had the page "Hi-Res
+        // (Preview)": the page Character builds and shows hi-res drivers now.
         startPage = RS_PAGE_CHAR;
+    }
     Rs_ShowPage(startPage);
     ShowWindow(g_main, g_automating ? SW_SHOWNORMAL : show);
     UpdateWindow(g_main);

@@ -186,9 +186,10 @@
 // which fixes them), Import (the axes, the colours, the vertex colours and the
 // native model of an OBJ - the tab Extras of before), Animations (the shape
 // keys) and, only with --enable-preview-features, Wheels; a CHRG route -
-// Options alone ("Upscale small textures", see THE UPSCALE below). Reduce to
-// fit (the button, over the limit) stays on the step itself: it is the fix of
-// the model's error.
+// Options ("Upscale small textures", see THE UPSCALE below, the JPEG
+// conversion, the vertex colours, THE CLASSIC MODEL) and Animations (THE
+// CLIPS of the model). Reduce to fit (the button, over the limit) stays on the
+// step itself: it is the fix of the model's error.
 //
 // THE UPSCALE of a CHRG route (rs_charroute.h): "Upscale small textures" is
 // off at the start of Low-Poly and Hi-Res. When a model is checked the page
@@ -213,6 +214,29 @@
 // JPEG textures will be converted to PNG.", with "Change" (Advanced at the
 // box). Unticked there, the model is checked as it is again.
 //
+// THE CLIPS of a CHRG route (Advanced, card Animations; the page "Hi-Res
+// (Preview)" had them before it went): the list "Clip" - Bind pose and the 12
+// clips of the game -, Play | Pause, "< Frame" and "Frame >" (1/30 s, a tick
+// of the game), the time of the frame, and the table of the 12 clips: in the
+// file and how long, or the stand-in the game plays, or the rest pose. A
+// click on a row shows that clip. The preview shows the clip chosen; at the
+// start idle (where the clips can play), playing - in automation paused at
+// its first frame unless "hires-play on" (shots stay the same every run).
+//
+// THE CLASSIC MODEL of a CHRG route (Advanced, card Options, "Classic
+// model"): made from the .glb by make-char (the start), or the one of a
+// finished character: then no make-char runs, the build is [hires-png]
+// [hires-upscale] hires-add <that .rldchar> <model> -o <out> - rldpack's bytes,
+// as rldpack hires-add itself -, the character's name, look and voices stay,
+// and the steps Driver, In-game look and Voices only say so. Not the start: the
+// step Model has a line with "Change" for it.
+//
+// THE FINISHED CHARACTER: on Low-Poly and Hi-Res the model field takes a
+// .rldchar too - its CHRG is checked with the same findings as a .glb and
+// shown with its clips; nothing is built from it (the step Build says to
+// choose the .glb; packing a model into a finished character is THE CLASSIC
+// MODEL).
+//
 // THE MESSAGES AT THEIR PLACE: every message keeps its step (and card); the
 // step shows its own below its fields, each with its detail ("How to fix" for
 // a CHRG route), and nothing where it has none. Vanilla: make-char's @msg
@@ -228,8 +252,9 @@
 // (textured, the engine's filter, the engine's light and the vertex colours
 // in the mode chosen) on the view's neutral stage (RsView_SetStage: grey
 // background and floor, the same in both colour schemes), with its idle clip
-// playing on the page's timer (RsHires_AnimFrame, as the page Hi-Res plays a
-// clip; in automation its first frame, so that shots are the same every run),
+// playing on the page's timer (RsHires_AnimFrame; in automation its first
+// frame unless "hires-play on" says otherwise, so that shots are the same every
+// run; THE CLIPS: Advanced, card Animations, shows any clip or the bind pose),
 // and above it the switch "Low-Poly | Classic fallback" or "Hi-Res | Classic fallback"
 // (the route's model, Char_PreviewText; the fallback:
 // make-char --preview, drawn as Vanilla's, without the stage).
@@ -250,7 +275,7 @@
 // Layout: the steps as tabs on the left, the 3D preview always on the right,
 // the bar with Back and Next (and while rldpack runs its progress and Cancel)
 // below both, so that every step is seen whole without scrolling:
-//   1 Model         the model (a CHRG route: a .glb only), the line of what
+//   1 Model         the model (a CHRG route: a .glb, or a finished .rldchar to look at), the line of what
 //                   its check found; Vanilla: what an OBJ brought along, its
 //                   size and Show kart wheels; Advanced
 //   2 Driver        name, driving style, mask
@@ -483,6 +508,25 @@
 #define CHAR_ID_PNG_STEP       228   // its line on the step Model (only while the box is on)
 #define CHAR_ID_PNG_CHANGE     229   // "Change" at its end: opens Advanced at the box
 #define CHAR_ID_PNG_FIX        230   // "Convert to PNG" on the step Model: the fix of the JPEG error
+// Advanced of a CHRG route, the card Animations: the clips of the model (THE CLIPS).
+#define CHAR_ID_CLIP_LABEL     231   // "Clip"
+#define CHAR_ID_CLIP           232   // Bind pose | the 12 clips
+#define CHAR_ID_CLIP_PLAY      233   // Play | Pause
+#define CHAR_ID_CLIP_PREV      234   // one frame back (1/30 s, a tick of the game)
+#define CHAR_ID_CLIP_NEXT      235   // one frame on
+#define CHAR_ID_CLIP_TIME      236   // the time of the frame shown
+#define CHAR_ID_CLIP_TABLE     237   // the 12 clips: in the file and how long, or what plays instead
+#define CHAR_ID_CLIP_NOTE      238
+// Advanced of a CHRG route, the card Options: where the classic model comes
+// from (THE CLASSIC MODEL); its line on the step Model with "Change".
+#define CHAR_ID_CLASSIC_LABEL  239
+#define CHAR_ID_CLASSIC_MODE   240   // made from the .glb | from a finished character
+#define CHAR_ID_CLASSIC_FILE   241
+#define CHAR_ID_CLASSIC_BROWSE 242
+#define CHAR_ID_CLASSIC_HELP   243
+#define CHAR_ID_CLASSIC_STEP   244   // its line on the step Model (only while it comes from a character)
+#define CHAR_ID_CLASSIC_CHANGE 245   // "Change" at its end: opens Advanced at the list
+#define CHAR_ID_CHAR_NOTE      246   // the card Options with a finished character as the model: why nothing is there
 #define CHAR_VCOL_CHOICES      8     // models whose vertex colour mode, upscale or PNG conversion the author chose, remembered
 // The author's choices remembered per model (Char_Remembered).
 #define CHAR_CHOICE_VCOL       0     // the vertex colour mode (RS_HIRES_VCOL_*)
@@ -952,6 +996,29 @@ static struct {
     wchar_t chainPath[CHAR_VAL], chainSha[80];
     struct CharChainMsg { int severity; wchar_t code[16]; wchar_t text[RS_HIRES_TEXT_MAX]; } chainMsg[RS_HIRES_ROWS_MAX];
     int chainMsgCount;
+    // THE CLIPS of a CHRG route (Advanced, card Animations): the clip shown
+    // (0 = the bind pose, 1 + n = clip n of RsHires_ClipName, -1 = the
+    // start: idle where the clips can play, else the bind pose), whether it
+    // plays, and the table being filled (its clicks are no choice then).
+    HWND clipLabel, clipCombo, clipPlay, clipPrev, clipNext, clipTime, clipTable, clipNote;
+    int clipSel, clipPlaying;
+    // THE CLASSIC MODEL of a CHRG route: 1 = it comes from a finished
+    // character (the field classicFile; hires-add into it), 0 = make-char
+    // makes it from the .glb (the start). chainOwnClassic: the running build
+    // packs into that file (nothing made, nothing deleted); buildFromFile:
+    // the build that ended did so (its headline).
+    HWND classicLabel, classicMode, classicFile, classicBrowse, classicHelp, classicStep, classicChange;
+    int classicFrom;
+    // Without make-char (Char_NoMake) the look of the preview (shadow,
+    // exhaust) is the character file's: read by Char_ChrgNoMake from
+    // lookFile (RsHires_CharLook); fileLookKnown 0 = it could not be read.
+    // charNote: the card Options of a finished character in the model field
+    // says why it has nothing to set.
+    struct RsCharLook fileLook;
+    int fileLookKnown;
+    wchar_t lookFile[CHAR_VAL];
+    HWND charNote;
+    int chainOwnClassic, buildFromFile;
     HWND importNote, vcolorsLabel, vcolors, vcolorsHelp;  // the card Import of Advanced
     HWND nativeLabel, native, nativeHint, nativeHelp;    // its row "Native model" (preview feature, Char_NativeUpdate)
     HWND fallback, fallbackHint, nativeLine;  // tab Model, Rs_NativeForUsers only (Char_UserHidden)
@@ -1082,10 +1149,14 @@ static void Char_ClassicShow(void);
 static void Char_ClassicKeep(const wchar_t *path);
 static void Char_HiresEnsure(const wchar_t *model);
 static void Char_HiresForget(void);
+static void Char_ClipFill(void);
+static void Char_ClipControls(void);
 static void Char_PreviewShow(void);
 static void Char_HiresTick(HWND page);
 static void Char_PreviewSwitch(HWND page, int classic);
 static void Char_NameFilter(void);
+static void Char_FieldPath(HWND edit, wchar_t *out, int cap);
+static int Char_EndsWith(const wchar_t *path, const wchar_t *ending);
 
 // ---------------------------------------------------------------------------
 // The guided flow (rs_charroute.h): which route, which cards, which controls
@@ -1132,15 +1203,41 @@ static int Char_WheelsCard(void)
     return CHAR_CARD_BASIC;
 }
 
+// THE CLASSIC MODEL of a CHRG route comes from a finished character
+// (Advanced, card Options) instead of make-char.
+static int Char_ClassicFromFile(void)
+{
+    return Char_Chrg() && g_char.classicFrom;
+}
+
+// A CHRG route whose model field holds a finished character (.rldchar): its
+// CHRG is checked and shown, nothing is built from it (THE FINISHED CHARACTER).
+static int Char_ModelIsCharacter(void)
+{
+    wchar_t model[CHAR_VAL];
+    if (!Char_Chrg() || !g_char.model)
+        return 0;
+    Char_FieldPath(g_char.model, model, CHAR_VAL);
+    return Char_EndsWith(model, L".rldchar");
+}
+
+// No make-char on this route as it is set: the steps Driver, In-game look and
+// Voices have nothing to set (their values are those of the character file).
+static int Char_NoMake(void)
+{
+    return Char_ClassicFromFile() || Char_ModelIsCharacter();
+}
+
 // The cards of Advanced a route shows. Vanilla: Options (the repair, the open
 // parts, the remesh and the reduction - not in the user mode, which fixes
 // them), Import, Animations, and Wheels only with --enable-preview-features
-// (a preview feature of the native OBJ model). A CHRG route: Options alone
-// ("Upscale small textures").
+// (a preview feature of the native OBJ model). A CHRG route: Options
+// ("Upscale small textures", the classic model, ...) and Animations (the
+// clips of the model, THE CLIPS - not the shape keys of Vanilla's card).
 static int Char_ExtrasShown(int c)
 {
     if (Char_Chrg())
-        return c == CHAR_EXTRAS_OPTIONS;
+        return c == CHAR_EXTRAS_OPTIONS || c == CHAR_EXTRAS_ANIM;
     switch (c) {
     case CHAR_EXTRAS_OPTIONS: return !Rs_NativeForUsers();
     case CHAR_EXTRAS_WHEELS: return g_rsPreviewFeatures != 0;
@@ -1186,7 +1283,7 @@ static int Char_RouteHides(HWND c)
         return c == g_char.upscale || c == g_char.upscaleHelp || c == g_char.upscaleNote || c == g_char.upscaleStep ||
                c == g_char.upscaleChange || (id >= CHAR_ID_PNG && id <= CHAR_ID_PNG_FIX) || id == CHAR_ID_PREVIEW_SWITCH ||
                id == CHAR_ID_PREVIEW_SWITCH + 1 ||
-               (id >= CHAR_ID_VBLEND && id <= CHAR_ID_VMODE_HELP);
+               (id >= CHAR_ID_VBLEND && id <= CHAR_ID_VMODE_HELP) || (id >= CHAR_ID_CLIP_LABEL && id <= CHAR_ID_CHAR_NOTE);
     return (id >= CHAR_ID_SIZE_LABEL && id <= CHAR_ID_OPTIONS_LABEL) || (id >= CHAR_ID_REPAIR && id <= CHAR_ID_QUALITY) ||
            id == CHAR_ID_REDUCE_FIT || id == CHAR_ID_MODEL_IMPORT || (id >= CHAR_ID_MODEL_FILES && id <= CHAR_ID_TEXTURES_CLEAR) ||
            (id >= CHAR_ID_FALLBACK && id <= CHAR_ID_NATIVE_LINE) || (id >= CHAR_ID_IMPORT_FIRST && id <= CHAR_ID_IMPORT_LAST) ||
@@ -2615,8 +2712,16 @@ static int Char_TabOfId(int id, int *card)
         *card = CHAR_EXTRAS_OPTIONS;
         return CHAR_TAB_MODEL;
     }
+    if (id >= CHAR_ID_CLIP_LABEL && id <= CHAR_ID_CLIP_NOTE) {
+        *card = CHAR_EXTRAS_ANIM;
+        return CHAR_TAB_MODEL;
+    }
+    if ((id >= CHAR_ID_CLASSIC_LABEL && id <= CHAR_ID_CLASSIC_HELP) || id == CHAR_ID_CHAR_NOTE) {
+        *card = CHAR_EXTRAS_OPTIONS;
+        return CHAR_TAB_MODEL;
+    }
     if (id == CHAR_ID_VBLEND || id == CHAR_ID_VBLEND_NOTE || id == CHAR_ID_UPSCALE_STEP || id == CHAR_ID_UPSCALE_CHANGE ||
-        (id >= CHAR_ID_PNG_STEP && id <= CHAR_ID_PNG_FIX)) {
+        (id >= CHAR_ID_PNG_STEP && id <= CHAR_ID_PNG_FIX) || id == CHAR_ID_CLASSIC_STEP || id == CHAR_ID_CLASSIC_CHANGE) {
         *card = CHAR_CARD_BASIC;
         return CHAR_TAB_MODEL;
     }
@@ -2876,6 +2981,8 @@ static void Char_TabsUpdate(void)
             step = CHAR_STEP_PROBLEM;
         else if (g_char.tabWarnings[t] && seen)
             step = CHAR_STEP_WARNING;
+        else if (Char_NoMake() && (t == CHAR_TAB_DRIVER || t == CHAR_TAB_LOOK || t == CHAR_TAB_VOICES))
+            step = CHAR_STEP_DONE;      // the character file holds them
         else if (t == CHAR_TAB_MODEL)
             step = model[0] && g_char.modelRead ? CHAR_STEP_DONE : CHAR_STEP_TODO;
         else if (t == CHAR_TAB_DRIVER)
@@ -3865,12 +3972,38 @@ static void Char_LookPointSet(int i, const int v[3])
     g_char.applying = 0;
 }
 
-// The preview follows the fields at once.
+// The preview follows the fields at once - without make-char (Char_NoMake)
+// it shows the look of the character file instead (Char_ChrgNoMake read it).
 static void Char_LookPreview(void)
 {
     int quad[4], pts[2][3], count = 0, shadow = 0, i;
     if (!g_char.view)
         return;
+    if (Char_NoMake()) {
+        const struct RsCharLook *l = &g_char.fileLook;
+        memset(quad, 0, sizeof(quad));
+        memset(pts, 0, sizeof(pts));
+        if (!g_char.fileLookKnown) {
+            RsView_SetLook(g_char.view, 0, quad, 0, pts, 0);
+            return;
+        }
+        if (l->shadow == RS_CHAR_LOOK_RETAIL) {
+            memcpy(quad, g_charRetailQuad, sizeof(quad));
+            shadow = 1;
+        } else if (l->shadow == RS_CHAR_LOOK_OWN) {
+            memcpy(quad, l->quad, sizeof(quad));
+            shadow = 1;
+        }
+        if (l->exhaust == RS_CHAR_LOOK_RETAIL) {
+            memcpy(pts, g_charRetailPoints, sizeof(pts));
+            count = 2;
+        } else if (l->exhaust == RS_CHAR_LOOK_OWN) {
+            memcpy(pts, l->point, sizeof(pts));
+            count = l->count;
+        }
+        RsView_SetLook(g_char.view, shadow, quad, count, pts, l->exhaust == RS_CHAR_LOOK_RETAIL);
+        return;
+    }
     switch (Char_ListIndex(g_char.shadow, 3)) {
     case 0:
         memcpy(quad, g_charRetailQuad, sizeof(quad));
@@ -5605,16 +5738,17 @@ static void Char_ReduceFitShow(HWND page, int show)
 // infos about the model - the reduction, the fit, rig-bind-pose - stay behind
 // Show details) and, as for Vanilla, everything it says about the other
 // steps (name, icon, voices). Returns the errors.
-static int Char_ChrgMessages(int exitCode, int makeOk)
+// The part of the hi-res check alone (also without make-char, Char_ChrgNoMake).
+static int Char_ChrgHiresMessages(void)
 {
-    static const int order[] = { RS_SEV_ERROR, RS_SEV_WARNING, RS_SEV_NOTE, RS_SEV_INFO, RS_SEV_OK };
     struct RsWizMsg *w = Rs_Alloc(CHAR_WIZ_MSGS * sizeof(*w));
     wchar_t text[2 * RS_WIZ_TEXT_MAX + 32], detail[RS_WIZ_TEXT_MAX + 48];
-    int errors = 0, n, i, s;
+    int errors = 0, n, i;
 
     if (!g_char.hires.read) {
         Char_MsgAdd(CHAR_TAB_MODEL, RS_SEV_ERROR, g_char.hires.why[0] ? g_char.hires.why : L"The model could not be read.",
-                    L"How to fix: export the model again as glTF Binary (.glb) and choose that file.");
+                    Char_ModelIsCharacter() ? L"How to fix: choose a character built on the route Low-Poly or Hi-Res, or the .glb it was made from."
+                                            : L"How to fix: export the model again as glTF Binary (.glb) and choose that file.");
         errors++;
     } else {
         // "Convert JPEG textures to PNG" on, and the conversion failed: its
@@ -5640,6 +5774,15 @@ static int Char_ChrgMessages(int exitCode, int makeOk)
         }
     }
     Rs_Free(w);
+    return errors;
+}
+
+static int Char_ChrgMessages(int exitCode, int makeOk)
+{
+    static const int order[] = { RS_SEV_ERROR, RS_SEV_WARNING, RS_SEV_NOTE, RS_SEV_INFO, RS_SEV_OK };
+    wchar_t text[2 * RS_WIZ_TEXT_MAX + 32];
+    int errors = Char_ChrgHiresMessages(), i, s;
+
     errors += Char_AddRunProblems(exitCode, makeOk);
     for (s = 0; s < (int)(sizeof(order) / sizeof(order[0])); s++) {
         for (i = 0; i < g_charJob.msgCount; i++) {
@@ -5659,12 +5802,14 @@ static int Char_ChrgMessages(int exitCode, int makeOk)
 }
 
 // The line below the model field of a CHRG route: what the check of the
-// .glb found, against the route's targets and the game's budget.
+// .glb found, against the route's targets and the game's budget - the
+// triangles, the textures (the largest edge, how many, their memory against
+// the budget), the clips, the wheels and the skin.
 static void Char_ChrgInfo(void)
 {
     const struct RsHiresCheck *c = &g_char.hires;
     const struct RsRoutePreset *p = RsRoute_Preset(g_char.route);
-    wchar_t t[512], tris[2][24];
+    wchar_t t[640], tris[2][24], skin[32];
     unsigned long long target;
     if (!c->read) {
         Char_SetInfo(c->why[0] ? c->why : L"The model could not be read.", RS_COL_ERROR);
@@ -5673,9 +5818,14 @@ static void Char_ChrgInfo(void)
     target = p && p->triangleTarget ? p->triangleTarget : c->budgetTriangles;
     Char_Grouped(tris[0], 24, (long)c->triangles);
     Char_Grouped(tris[1], 24, (long)target);
-    swprintf(t, 512, L"%ls triangles of %ls%ls - textures up to %u px - %d of %d animations - %ls", tris[0], tris[1],
-             p && p->triangleTarget && p->triangleTarget < c->budgetTriangles ? L" (target)" : L"", c->textureEdge, c->clips,
-             RS_HIRES_CLIPS, c->wheels == 4 ? L"its own wheels" : L"standard wheels");
+    if (c->joints)
+        swprintf(skin, 32, L"skin of %u joint%ls", c->joints, c->joints == 1 ? L"" : L"s");
+    else
+        Char_Copy(skin, 32, L"no skin");
+    swprintf(t, 640, L"%ls triangles of %ls%ls - textures up to %u px, %d texture%ls, %.1f of %.1f MiB - %d of %d animations - %ls - %ls",
+             tris[0], tris[1], p && p->triangleTarget && p->triangleTarget < c->budgetTriangles ? L" (target)" : L"", c->textureEdge,
+             c->textures, c->textures == 1 ? L"" : L"s", (double)c->textureBytes / 1048576.0, (double)c->budgetTextureBytes / 1048576.0,
+             c->clips, RS_HIRES_CLIPS, c->wheels == 4 ? L"its own wheels" : L"standard wheels", skin);
     Char_SetInfo(t, c->usable ? RS_COL_TEXT : RS_COL_ERROR);
 }
 
@@ -5885,7 +6035,7 @@ static int Char_Cancel(HWND page)
 
 // THE CHECK OF A CHRG ROUTE is twofold and has no code of its own: the .glb
 // with the game's rules in this process (RsHires_CheckFile, rs_hires_model.c,
-// include/rldhires.inc - the page Hi-Res runs the same), and make-char --check
+// include/rldhires.inc - rldpack hires-check runs the same), and make-char --check
 // of the classic fallback made from the same file (the page's own switches,
 // then RsCharHires_FallbackArgs: Char_MakeArgs). The .glb is read again only
 // when it is another file or was written since (its stamp).
@@ -5933,12 +6083,17 @@ static void Char_HiresEnsure(const wchar_t *model)
     RsHires_CheckFile(converted[0] ? converted : model, &g_char.hires);
     if (converted[0])
         DeleteFileW(converted);
+    // THE CLIPS: another model starts at idle (or its bind pose); the same
+    // one, checked again, keeps the clip chosen.
+    if (_wcsicmp(model, g_char.hiresPath) != 0)
+        g_char.clipSel = -1;
     g_char.hiresChecked = 1;
     g_char.hiresPng = png;
     g_char.hiresStamp = stamp;
     Char_Copy(g_char.hiresPath, CHAR_VAL, model);
     g_char.animSeconds = 0.0f;
     g_char.animWheel = 0.0f;
+    Char_ClipFill();
     if (Rs_Automating()) {
         if (g_char.hires.read)
             Rs_AutoLog(L"  hires check: %ls - %llu triangles, %d of %d clips, %d wheel nodes, %d error(s), %d warning(s)",
@@ -5961,6 +6116,9 @@ static void Char_HiresForget(void)
     g_char.pngWhy[0] = 0;
     g_char.hiresPath[0] = 0;
     g_char.hiresShown = 0;
+    g_char.clipSel = -1;
+    Char_ClipFill();
+    Char_ClipControls();
     Rs_Free(g_char.classicPv);
     g_char.classicPv = NULL;
     g_char.classicPvBytes = 0;
@@ -6031,7 +6189,8 @@ static void Char_VcolUpdate(void)
 {
     const int was = g_char.vcolMode;
     int why = RS_VCOL_WHY_NONE, s = -1, chosen;
-    if (Char_Chrg() && g_char.hiresChecked && g_char.hires.read)
+    // A finished character keeps the mode its CHRG names: no switch.
+    if (Char_Chrg() && g_char.hiresChecked && g_char.hires.read && !g_char.hires.fromCharacter)
         s = RsCharHires_SuggestColours(&g_char.hires, g_char.route, &why);
     g_char.vcolSuggested = s;
     g_char.vcolWhy = why;
@@ -6097,7 +6256,7 @@ static void Char_UpscaleUpdate(void)
     const int was = Char_IsChecked(g_char.upscale);
     int chosen, on;
     unsigned largest = 0;
-    if (!Char_Chrg() || !g_char.hiresChecked || !g_char.hires.read) {
+    if (!Char_Chrg() || !g_char.hiresChecked || !g_char.hires.read || g_char.hires.fromCharacter) {
         g_char.upSuggested = 0;
         g_char.upChosen = 0;
         g_char.upLargest = 0;
@@ -6160,7 +6319,7 @@ static void Char_UpscaleChange(HWND page)
 static void Char_PngControls(void)
 {
     wchar_t step[RS_WIZ_TEXT_MAX], was[RS_WIZ_TEXT_MAX];
-    const int checked = Char_Chrg() && g_char.hiresChecked;
+    const int checked = Char_Chrg() && g_char.hiresChecked && !g_char.hires.fromCharacter;
     const int fix = checked && RsCharHires_PngFixShown(&g_char.hires, g_char.route, g_char.hiresPng);
     RsCharHires_PngStepLine(checked ? g_char.route : RS_ROUTE_NONE, checked && g_char.hiresPng, g_char.pngJpeg, g_char.pngWhy[0] != 0, step,
                             RS_WIZ_TEXT_MAX);
@@ -6197,7 +6356,159 @@ static int Char_PngSet(HWND page, int on)
     return Char_Check(page);
 }
 
-// The idle clip stops (another step, the classic fallback, a new check).
+// THE CLASSIC MODEL of a CHRG route (Advanced, card Options): made from the
+// .glb by make-char (the start, as always), or the one of a finished
+// character - the build is then hires-add into that file, rldpack's bytes as
+// "rldpack hires-add <character> <model> -o <out>": its classic model, name,
+// driving style, mask, look and voices stay as they are, so the steps Driver,
+// In-game look and Voices have nothing to set. It is not the start, so the
+// step Model says it in a line with "Change".
+static void Char_ClassicPath(wchar_t *out, int cap)
+{
+    Char_FieldPath(g_char.classicFile, out, cap);
+}
+
+// 1 = path is a character file: its first 8 bytes are RLDCHAR_MAGIC
+// (include/rldchar.inc); else why says what is wrong. rldpack hires-add
+// checks the rest when it builds.
+static int Char_ClassicFileOk(const wchar_t *path, wchar_t *why, int cap)
+{
+    static const unsigned char magic[8] = { 'R', 'L', 'D', 'C', 'H', 'A', 'R', 0 };
+    unsigned char head[8];
+    size_t got = 0;
+    FILE *f;
+    why[0] = 0;
+    if (!path[0]) {
+        Char_Copy(why, cap, L"No character chosen for the classic model yet.");
+        return 0;
+    }
+    f = _wfopen(path, L"rb");
+    if (!f) {
+        swprintf(why, (size_t)cap, L"%ls cannot be read.", Rs_PathName(path));
+        return 0;
+    }
+    got = fread(head, 1, 8, f);
+    fclose(f);
+    if (got != 8 || memcmp(head, magic, 8) != 0) {
+        swprintf(why, (size_t)cap, L"%ls is not a character file (.rldchar).", Rs_PathName(path));
+        return 0;
+    }
+    return 1;
+}
+
+// The list, and the line on the step Model as the choice is (laid out again
+// when the line changed).
+static void Char_ClassicControls(void)
+{
+    wchar_t line[CHAR_VAL + 96], was[CHAR_VAL + 96], path[CHAR_VAL];
+    line[0] = 0;
+    if (!g_char.classicMode)
+        return;
+    SendMessageW(g_char.classicMode, CB_SETCURSEL, (WPARAM)(g_char.classicFrom ? 1 : 0), 0);
+    if (Char_ClassicFromFile() && !Char_ModelIsCharacter()) {
+        Char_ClassicPath(path, CHAR_VAL);
+        if (path[0])
+            swprintf(line, CHAR_VAL + 96, L"The classic model, name, look and voices come from %ls.", Rs_PathName(path));
+        else
+            Char_Copy(line, CHAR_VAL + 96, L"The classic model comes from a finished character - none chosen yet.");
+    }
+    GetWindowTextW(g_char.classicStep, was, CHAR_VAL + 96);
+    Rs_SetText(g_char.classicStep, line);
+    if (wcscmp(was, line) != 0 && g_char.view)
+        Char_Relayout(GetParent(g_char.view));
+}
+
+// The author (the list, the automation verb "classic") sets where the
+// classic model comes from; the model is checked again.
+static int Char_ClassicSet(HWND page, int fromFile)
+{
+    g_char.classicFrom = fromFile != 0;
+    g_char.builtFresh = 0;
+    Char_ClassicControls();
+    Char_Relayout(page);
+    return Char_Check(page);
+}
+
+// A CHRG route without make-char (Char_NoMake). THE FINISHED CHARACTER in
+// the model field: its CHRG checked and shown as a .glb's, nothing built
+// from it (the build starts from a .glb; packing a model into a finished
+// character is "Classic model: from a finished character"). THE CLASSIC
+// MODEL from a character: the .glb checked, the character's file looked at.
+// Neither has a classic fallback to check or show. Char_HiresEnsure ran.
+static void Char_ChrgNoMake(HWND page)
+{
+    static const int steps[3] = { CHAR_TAB_DRIVER, CHAR_TAB_LOOK, CHAR_TAB_VOICES };
+    const int character = Char_ModelIsCharacter();
+    wchar_t why[CHAR_VAL + 64], path[CHAR_VAL] = L"", text[CHAR_VAL + 160];
+    int errors, fileOk = 1, i, s;
+
+    Char_JobReset();
+    if (g_char.showRaw)
+        Char_RawRefresh();
+    Rs_Free(g_char.classicPv);
+    g_char.classicPv = NULL;
+    g_char.classicPvBytes = 0;
+    g_char.modelRead = g_char.hires.read;
+    Char_MsgClear();
+    errors = Char_ChrgHiresMessages();
+    if (character) {
+        swprintf(text, CHAR_VAL + 160, L"A finished character: its %ls model is checked and shown. Nothing is built from it.",
+                 Char_ChrgTitle());
+        Char_MsgAdd(CHAR_TAB_MODEL, RS_SEV_INFO, text,
+                    L"To build, choose the .glb it was made from. To pack a model into a finished character, choose the .glb "
+                    L"and, under Advanced, \"Classic model: from a finished character\".");
+        Char_MsgAdd(CHAR_TAB_BUILD, RS_SEV_INFO, L"Nothing to build: the model is a finished character.",
+                    L"Choose the .glb it was made from on the step Model.");
+        for (i = 0; i < 3; i++)
+            Char_MsgAdd(steps[i], RS_SEV_INFO, L"A finished character holds the choices of this step itself.", NULL);
+    } else {
+        Char_ClassicPath(path, CHAR_VAL);
+        fileOk = Char_ClassicFileOk(path, why, CHAR_VAL + 64);
+        if (!fileOk) {
+            Char_MsgAddCard(CHAR_TAB_MODEL, CHAR_EXTRAS_OPTIONS, RS_SEV_ERROR, why,
+                            L"How to fix: choose a .rldchar that Reload Studio or rldpack built (Advanced, Classic model), or let "
+                            L"the classic model be made from the .glb.");
+            errors++;
+        } else {
+            swprintf(text, CHAR_VAL + 160, L"Taken from %ls: the classic model, name, driving style, mask, look and voices of that character.",
+                     Rs_PathName(path));
+            for (i = 0; i < 3; i++)
+                Char_MsgAdd(steps[i], RS_SEV_INFO, text, L"Advanced, Classic model: \"Made from the .glb\" uses this step again.");
+        }
+    }
+    // The look of the preview: the character file's (Char_LookPreview).
+    Char_FieldPath(character ? g_char.model : g_char.classicFile, g_char.lookFile, CHAR_VAL);
+    g_char.fileLookKnown = (character || fileOk) && RsHires_CharLook(g_char.lookFile, &g_char.fileLook, why, CHAR_VAL + 64);
+    Char_LookPreview();
+    Char_CountTabs();
+    Char_ChrgInfo();
+    g_char.checked = !character && fileOk && g_char.hires.read && g_char.hires.usable;
+    if (g_char.checked) {
+        Char_Headline(L"Ready to build", RS_COL_OK);
+    } else if (character && errors == 0) {
+        Char_Headline(L"Checked - a finished character: nothing to build", RS_COL_MUTED);
+    } else {
+        for (s = 0; s < CHAR_TABS && !g_char.tabErrors[s]; s++) {
+        }
+        swprintf(text, CHAR_VAL + 160, L"Cannot build yet - %d problem(s)%ls%ls", errors, s < CHAR_TABS ? L", see the step " : L"",
+                 s < CHAR_TABS ? g_charTabTexts[s] : L"");
+        Char_Headline(text, RS_COL_ERROR);
+    }
+    Char_UpdateButtons();
+    Char_PreviewShow();
+    if (Rs_Automating()) {
+        if (character)
+            Rs_AutoLog(L"  check: a finished character - its CHRG checked (%ls), nothing to build", g_char.hires.read
+                       ? (g_char.hires.usable ? L"usable" : L"refused") : L"not read");
+        else if (g_char.checked)
+            Rs_AutoLog(L"  check: ready to build - the classic model from %ls (no make-char)", Rs_PathName(path));
+        else
+            Rs_AutoLog(L"  check: cannot build yet, %d problem(s)", errors);
+    }
+    Char_Relayout(page);
+}
+
+// The clip shown stops (another step, the classic fallback, a new check).
 static void Char_HiresStop(void)
 {
     HWND page = g_char.view ? GetParent(g_char.view) : NULL;
@@ -6205,33 +6516,159 @@ static void Char_HiresStop(void)
         KillTimer(page, CHAR_TIMER_ANIM);
 }
 
+// THE CLIPS of a CHRG route (Advanced, card Animations): the clip the preview
+// shows - 0 the bind pose, 1 + n clip n. At the start (clipSel -1) idle where
+// the clips can play, else the bind pose, as the preview always did.
+static int Char_ClipShown(void)
+{
+    const struct RsHiresCheck *c = &g_char.hires;
+    if (!g_char.hiresChecked || !c->read || !c->animReady)
+        return 0;
+    if (g_char.clipSel < 0)
+        return c->clips > 0 ? 1 : 0;
+    return g_char.clipSel <= RS_HIRES_CLIPS ? g_char.clipSel : 0;
+}
+
 // The note below the preview of a CHRG route.
 static void Char_ChrgViewNote(void)
 {
-    wchar_t text[160];
+    wchar_t text[200];
+    const int clip = Char_ClipShown();
     if (!g_char.viewNote)
         return;
     g_char.viewPartCount = 0;
     g_char.viewFirst = -1;
     if (g_char.previewClassic) {
-        swprintf(text, 160, L"The classic fallback: the game draws it wherever the %ls model is not drawn.", Char_ChrgTitle());
-        Char_ViewNotePart(g_char.classicPv ? text : L"No classic fallback yet - see the messages of the step Model.");
+        if (Char_NoMake())
+            Char_ViewNotePart(Char_ModelIsCharacter() ? L"The classic model of a finished character is not shown here."
+                                                      : L"The classic model comes from a finished character (Advanced) - it is not shown here.");
+        else if (g_char.classicPv) {
+            swprintf(text, 200, L"The classic fallback: the game draws it wherever the %ls model is not drawn.", Char_ChrgTitle());
+            Char_ViewNotePart(text);
+        } else {
+            Char_ViewNotePart(L"No classic fallback yet - see the messages of the step Model.");
+        }
         Char_ViewNotePart(CHAR_VIEW_MOUSE_TEXT);
         Char_ViewNotePart(CHAR_VIEW_SHADE_TEXT);
     } else {
-        swprintf(text, 160,
-                 g_char.hires.animReady && g_char.hires.clips > 0
-                     ? L"The %ls model as the game draws it, with its textures - its idle animation plays."
-                     : L"The %ls model as the game draws it, with its textures. It has no animations: it stands still.",
-                 Char_ChrgTitle());
+        if (clip > 0)
+            swprintf(text, 200,
+                     g_char.clipPlaying ? L"The %ls model as the game draws it, with its textures - its clip %ls plays."
+                                        : L"The %ls model as the game draws it, with its textures - its clip %ls, paused.",
+                     Char_ChrgTitle(), RsHires_ClipName(clip - 1));
+        else if (g_char.hires.animReady && g_char.hires.clips > 0)
+            swprintf(text, 200, L"The %ls model as the game draws it, with its textures - in its bind pose.", Char_ChrgTitle());
+        else
+            swprintf(text, 200, L"The %ls model as the game draws it, with its textures. It has no animations: it stands still.",
+                     Char_ChrgTitle());
         Char_ViewNotePart(!g_char.hires.read ? L"Nothing to draw - see the messages of the step Model." : text);
         Char_ViewNotePart(CHAR_VIEW_MOUSE_TEXT);
     }
     Char_ViewNoteShow(RS_COL_MUTED);
 }
 
+// The frame of the clip shown at animSeconds (wheels turned animWheel) in
+// the view: copied over the picture shown, the textures stay. Returns its
+// triangles, 0 = none.
+static int Char_ClipFrame(void)
+{
+    const unsigned char *bytes = NULL;
+    size_t size = 0;
+    const int clip = Char_ClipShown();
+    int n;
+    if (clip <= 0)
+        return 0;
+    n = RsHires_AnimFrame(&g_char.hires, clip - 1, g_char.animSeconds, g_char.animWheel, &bytes, &size);
+    if (n <= 0 || !bytes)
+        return 0;
+    if (!RsView_UpdatePreviewData(g_char.view, bytes, size, g_char.hires.previewKeepAt, g_char.hires.previewKeepBytes)) {
+        RsView_SetModelKey(g_char.view, g_char.hiresPath);
+        RsView_LoadPreviewData(g_char.view, bytes, size);
+    }
+    RsView_SetPose(g_char.view, RS_VIEW_POSE_NEUTRAL);
+    return n;
+}
+
+// The line of the time below the clip (as the clip's own time runs: a steer
+// clip by its share), or why the clips cannot be played.
+static void Char_ClipTimeShow(void)
+{
+    const struct RsHiresCheck *c = &g_char.hires;
+    const int clip = Char_ClipShown();
+    wchar_t text[160];
+    text[0] = 0;
+    if (g_char.hiresChecked && c->read && !c->animReady) {
+        Char_Copy(text, 160, c->animWhy[0] ? c->animWhy : L"Clips cannot be played for this model.");
+    } else if (clip > 0) {
+        float share = -1.0f;
+        const float len = RsHires_AnimLength(c, clip - 1);
+        const float shown = RsHires_AnimLocal(c, clip - 1, g_char.animSeconds, &share);
+        if (len > 0.0f) {
+            swprintf(text, 160, L"%.2f s of %.2f s", (double)shown, (double)len);
+            if (share >= 0.0f)
+                swprintf(text + wcslen(text), 160 - wcslen(text), L" - steer share %.2f", (double)share);
+        } else {
+            Char_Copy(text, 160, L"The rest pose - this clip and its stand-ins are not in the file.");
+        }
+    } else if (g_char.hiresChecked && c->read) {
+        Char_Copy(text, 160, L"The bind pose.");
+    }
+    Rs_SetText(g_char.clipTime, text);
+}
+
+// The list "Clip" and the table as the check shown is: per clip whether it
+// is in the file (and how long), or what the game plays instead.
+static void Char_ClipFill(void)
+{
+    const struct RsHiresCheck *c = &g_char.hires;
+    const int known = g_char.hiresChecked && c->read;
+    int i;
+    if (!g_char.clipCombo)
+        return;
+    SendMessageW(g_char.clipCombo, CB_RESETCONTENT, 0, 0);
+    SendMessageW(g_char.clipCombo, CB_ADDSTRING, 0, (LPARAM)L"Bind pose");
+    for (i = 0; i < RS_HIRES_CLIPS; i++) {
+        wchar_t entry[160], state[96], length[32];
+        state[0] = length[0] = 0;
+        if (!known || c->clipState[i] == RS_HIRES_CLIP_PRESENT) {
+            Char_Copy(entry, 160, RsHires_ClipName(i));
+            if (known) {
+                Char_Copy(state, 96, L"yes");
+                swprintf(length, 32, L"%.2f s", (double)c->clipSeconds[i]);
+            }
+        } else if (c->clipState[i] == RS_HIRES_CLIP_FALLBACK) {
+            swprintf(entry, 160, L"%ls (missing - plays %ls%ls)", RsHires_ClipName(i), RsHires_ClipName(c->clipVia[i]),
+                     c->clipFullLock[i] ? L" at full lock" : L"");
+            swprintf(state, 96, L"missing - plays %ls%ls", RsHires_ClipName(c->clipVia[i]), c->clipFullLock[i] ? L" at full lock" : L"");
+        } else {
+            swprintf(entry, 160, L"%ls (missing - rest pose)", RsHires_ClipName(i));
+            Char_Copy(state, 96, L"missing - rest pose");
+        }
+        SendMessageW(g_char.clipCombo, CB_ADDSTRING, 0, (LPARAM)entry);
+        ListView_SetItemText(g_char.clipTable, i, 1, state);
+        ListView_SetItemText(g_char.clipTable, i, 2, length);
+    }
+    SendMessageW(g_char.clipCombo, CB_SETCURSEL, (WPARAM)Char_ClipShown(), 0);
+}
+
+// The controls of the card as the clip shown and the check are.
+static void Char_ClipControls(void)
+{
+    const int can = g_char.hiresChecked && g_char.hires.read && g_char.hires.animReady;
+    const int clip = Char_ClipShown();
+    if (!g_char.clipCombo)
+        return;
+    SendMessageW(g_char.clipCombo, CB_SETCURSEL, (WPARAM)clip, 0);
+    EnableWindow(g_char.clipCombo, can);
+    EnableWindow(g_char.clipPlay, clip > 0);
+    EnableWindow(g_char.clipPrev, clip > 0);
+    EnableWindow(g_char.clipNext, clip > 0);
+    Rs_SetText(g_char.clipPlay, g_char.clipPlaying && clip > 0 ? L"Pause" : L"Play");
+    Char_ClipTimeShow();
+}
+
 // The hi-res picture of the check (textured, the engine's filter) in the
-// view; the idle clip plays on the page's timer where the clips can play.
+// view; the clip shown (THE CLIPS) plays on the page's timer while it plays.
 static void Char_HiresShow(void)
 {
     HWND page = GetParent(g_char.view);
@@ -6245,6 +6682,7 @@ static void Char_HiresShow(void)
         swprintf(msg, RS_HIRES_TEXT_MAX + 32, L"Nothing to draw: %ls",
                  !g_char.hiresChecked ? L"choose a .glb" : !c->read ? c->why : L"the file has no triangle to draw");
         RsView_Clear(g_char.view, msg);
+        Char_ClipControls();
         Char_ChrgViewNote();
         return;
     }
@@ -6254,21 +6692,17 @@ static void Char_HiresShow(void)
     RsView_SetPose(g_char.view, RS_VIEW_POSE_NEUTRAL);
     RsView_SetWheels(g_char.view, 0);   // the picture carries the engine's standard wheels itself
     g_char.hiresShown = 1;
-    if (c->animReady && c->clips > 0) {
-        // In automation the first frame of idle only, without the timer: the
-        // shots are the same every run (and the log has no line per frame).
-        if (Rs_Automating()) {
-            const unsigned char *bytes = NULL;
-            size_t size = 0;
-            if (RsHires_AnimFrame(&g_char.hires, 0, 0.0f, 0.0f, &bytes, &size) > 0 && bytes &&
-                !RsView_UpdatePreviewData(g_char.view, bytes, size, c->previewKeepAt, c->previewKeepBytes))
-                RsView_LoadPreviewData(g_char.view, bytes, size);
-            RsView_SetPose(g_char.view, RS_VIEW_POSE_NEUTRAL);
-        } else {
+    if (Char_ClipShown() > 0) {
+        // The frame of the clip at its time; playing, the page's timer moves
+        // it on. In automation nothing plays unless "hires-play on" says so:
+        // the shots are the same every run (and the log has no line per frame).
+        Char_ClipFrame();
+        if (g_char.clipPlaying) {
             g_char.animTick = GetTickCount();
             SetTimer(page, CHAR_TIMER_ANIM, CHAR_ANIM_TICK_MS, NULL);
         }
     }
+    Char_ClipControls();
     Char_ChrgViewNote();
 }
 
@@ -6283,7 +6717,8 @@ static void Char_ClassicShow(void)
         RsView_SetPose(g_char.view, g_charPoseView[g_char.poseNow]);
         RsView_SetWheels(g_char.view, !(g_char.hiresChecked && g_char.hires.read && g_char.hires.wheels == 4));
     } else {
-        RsView_Clear(g_char.view, L"No classic fallback yet - see the messages of the step Model.");
+        RsView_Clear(g_char.view, Char_NoMake() ? L"The classic model of the character file is not shown here."
+                                                : L"No classic fallback yet - see the messages of the step Model.");
     }
     Char_ChrgViewNote();
 }
@@ -6299,14 +6734,13 @@ static void Char_PreviewShow(void)
         Char_HiresShow();
 }
 
-// A tick of the idle clip: the next frame copied over the shown one (the
-// textures stay), as the page Hi-Res plays a clip.
+// A tick of the clip shown: the next frame copied over the shown one (the
+// textures stay).
 static void Char_HiresTick(HWND page)
 {
-    const unsigned char *bytes = NULL;
-    size_t size = 0;
     DWORD now = GetTickCount(), dt = now - g_char.animTick;
-    if (!g_char.hiresShown || !Char_Chrg() || g_char.choosing || !IsWindowVisible(page) || !g_char.hires.animReady) {
+    if (!g_char.hiresShown || !Char_Chrg() || g_char.choosing || !IsWindowVisible(page) || !g_char.hires.animReady ||
+        !g_char.clipPlaying || Char_ClipShown() <= 0) {
         Char_HiresStop();
         return;
     }
@@ -6317,13 +6751,57 @@ static void Char_HiresTick(HWND page)
     g_char.animWheel += 180.0f * (float)dt / 1000.0f;
     if (g_char.animWheel >= 360.0f)
         g_char.animWheel -= 360.0f;
-    if (RsHires_AnimFrame(&g_char.hires, 0, g_char.animSeconds, g_char.animWheel, &bytes, &size) <= 0 || !bytes)
+    Char_ClipFrame();
+    if (Char_IsShown(g_char.clipTime))
+        Char_ClipTimeShow();
+}
+
+// THE CLIPS: the author (the list, a row of the table, the automation verb
+// hires-clip) chooses the clip shown - 0 the bind pose, 1 + n clip n; it
+// starts at its beginning.
+static void Char_ClipSelect(int sel)
+{
+    if (sel < 0 || sel > RS_HIRES_CLIPS)
         return;
-    if (!RsView_UpdatePreviewData(g_char.view, bytes, size, g_char.hires.previewKeepAt, g_char.hires.previewKeepBytes)) {
-        RsView_SetModelKey(g_char.view, g_char.hiresPath);
-        RsView_LoadPreviewData(g_char.view, bytes, size);
+    g_char.clipSel = sel;
+    g_char.animSeconds = 0.0f;
+    if (Char_Chrg() && !g_char.previewClassic)
+        Char_HiresShow();
+    else
+        Char_ClipControls();
+}
+
+// Play or pause the clip shown (Play | Pause, hires-play).
+static void Char_ClipPlay(int on)
+{
+    g_char.clipPlaying = on != 0;
+    if (Char_Chrg() && !g_char.previewClassic && g_char.hiresShown) {
+        HWND page = GetParent(g_char.view);
+        Char_HiresStop();
+        if (g_char.clipPlaying && Char_ClipShown() > 0) {
+            g_char.animTick = GetTickCount();
+            SetTimer(page, CHAR_TIMER_ANIM, CHAR_ANIM_TICK_MS, NULL);
+        }
     }
-    RsView_SetPose(g_char.view, RS_VIEW_POSE_NEUTRAL);
+    Char_ClipControls();
+    Char_ChrgViewNote();
+}
+
+// A frame at a time (< Frame, Frame >, hires-time): paused at that time of
+// the clip shown, the wheels turned that far. Returns the triangles of the
+// picture (the bind pose's without a clip), 0 = nothing drawn.
+static int Char_ClipAt(float seconds, float wheel)
+{
+    int n = 0;
+    g_char.clipPlaying = 0;
+    Char_HiresStop();
+    g_char.animSeconds = seconds < 0.0f ? 0.0f : seconds;
+    g_char.animWheel = wheel;
+    if (Char_Chrg() && !g_char.previewClassic && g_char.hiresShown)
+        n = Char_ClipShown() > 0 ? Char_ClipFrame() : g_char.hires.previewTriangles;
+    Char_ClipControls();
+    Char_ChrgViewNote();
+    return n;
 }
 
 // The switch Low-Poly/Hi-Res | Classic fallback above the preview.
@@ -7180,22 +7658,33 @@ static int Char_CheckRun(HWND page, int force)
     Char_Abandon();             // a running check is thereby outdated
     g_char.checked = 0;
     g_char.builtFresh = 0;
-    // A CHRG route: a .glb only; the hi-res check of it first (in this
-    // process, again only when the file changed), then make-char below.
+    // A CHRG route: a .glb (or a finished character, only to look at); the
+    // hi-res check of it first (in this process, again only when the file
+    // changed), then make-char below - unless there is none to run
+    // (Char_ChrgNoMake: a finished character, or the classic model from one).
     if (Char_Chrg()) {
         wchar_t model[CHAR_VAL];
+        const int character = Char_ModelIsCharacter();
         Char_FieldPath(g_char.model, model, CHAR_VAL);
-        if (model[0] && !Char_EndsWith(model, L".glb")) {
+        if (model[0] && !Char_EndsWith(model, L".glb") && !character) {
             Char_ChrgNotGlb(page);
             return 0;
         }
         if (model[0]) {
-            Char_PngUpdate(model);  // the author's choice for this model, else off
+            if (character)
+                Char_SetChecked(g_char.png, 0);     // nothing to convert: the CHRG is checked as it is
+            else
+                Char_PngUpdate(model);  // the author's choice for this model, else off
             Char_HiresEnsure(model);
         }
         Char_VcolUpdate();      // the suggestion and the mode (also for another route)
         Char_UpscaleUpdate();   // the same for "Upscale small textures"
         Char_PngControls();     // the line and the button of "Convert JPEG textures to PNG"
+        Char_ClassicControls(); // the line of the classic model
+        if (model[0] && Char_NoMake()) {
+            Char_ChrgNoMake(page);
+            return 0;
+        }
     }
     seq = g_char.seq + 1;       // taken only when rldpack runs
     if (!Char_MakeArgs(&a, 1, NULL, seq)) {
@@ -7261,7 +7750,8 @@ static int Char_CheckNow(HWND page)
 static void Char_ChainCleanup(void)
 {
     wchar_t part[CHAR_VAL + 8];
-    if (g_char.chainClassic[0]) {
+    // The classic model from a character is the author's file: never deleted.
+    if (g_char.chainClassic[0] && !g_char.chainOwnClassic) {
         DeleteFileW(g_char.chainClassic);
         swprintf(part, CHAR_VAL + 8, L"%ls.part", g_char.chainClassic);
         DeleteFileW(part);
@@ -7279,6 +7769,7 @@ static void Char_ChainCleanup(void)
     g_char.chainClassic[0] = 0;
     g_char.chainDerived[0] = 0;
     g_char.chainPngPath[0] = 0;
+    g_char.chainOwnClassic = 0;
 }
 
 // Starts one step after make-char: its command into the raw output, its
@@ -7337,7 +7828,10 @@ static void Char_ChainLine(const wchar_t *line)
     Rs_Free(copy);
 }
 
-// The build of a CHRG route begins: make-char of the classic fallback.
+static void Char_ChainDone(HWND page, int exitCode);
+
+// The build of a CHRG route begins: make-char of the classic fallback (or,
+// with the classic model from a finished character, its first step after).
 static int Char_ChainStart(HWND page, const wchar_t *path)
 {
     struct CharArgs a;
@@ -7347,9 +7841,29 @@ static int Char_ChainStart(HWND page, const wchar_t *path)
     if (!path[0])
         return -1;
     Rs_TempDir(dir, CHAR_VAL);
-    Char_Copy(name, CHAR_VAL - 16, Rs_PathName(path));
-    Char_Append(name, CHAR_VAL, L".classic.part");
-    Rs_PathJoin(g_char.chainClassic, CHAR_VAL, dir, name);
+    // THE CLASSIC MODEL: from a finished character (no make-char: hires-add
+    // packs into that file), else make-char makes it into the temp folder.
+    g_char.chainOwnClassic = Char_ClassicFromFile();
+    g_char.buildFromFile = g_char.chainOwnClassic;
+    if (g_char.chainOwnClassic) {
+        Char_ClassicPath(g_char.chainClassic, CHAR_VAL);
+        if (_wcsicmp(g_char.chainClassic, path) == 0) {
+            Char_MsgClear();
+            Char_MsgAdd(CHAR_TAB_BUILD, RS_SEV_ERROR, L"The output is the character the classic model comes from.",
+                        L"Choose another output: that file stays as it is.");
+            Char_CountTabs();
+            Char_Headline(L"Not built - 1 problem(s)", RS_COL_ERROR);
+            if (Rs_Automating())
+                Rs_AutoLog(L"  build: the output is the character the classic model comes from");
+            g_char.chainClassic[0] = 0;
+            g_char.chainOwnClassic = 0;
+            return -1;
+        }
+    } else {
+        Char_Copy(name, CHAR_VAL - 16, Rs_PathName(path));
+        Char_Append(name, CHAR_VAL, L".classic.part");
+        Rs_PathJoin(g_char.chainClassic, CHAR_VAL, dir, name);
+    }
     Char_Copy(g_char.chainOut, CHAR_VAL, path);
     Char_FieldPath(g_char.model, g_char.chainModel, CHAR_VAL);
     g_char.chainUpscale = Char_IsChecked(g_char.upscale);
@@ -7370,6 +7884,16 @@ static int Char_ChainStart(HWND page, const wchar_t *path)
          _wcsicmp(g_char.chainDerived, g_char.chainModel) == 0)) {
         g_char.chainDerived[0] = 0;
         g_char.chainUpscale = 0;
+    }
+    if (g_char.chainOwnClassic) {
+        // Straight on to the steps after make-char, as if it had written the
+        // classic model: their findings are the build's (no make-char lines).
+        Char_Copy(g_char.buildOut, CHAR_VAL, path);
+        g_char.buildWheelsOff = g_char.hires.read && g_char.hires.wheels == 4;
+        Char_JobReset();
+        g_char.chainStep = CHAR_CHAIN_CLASSIC;
+        Char_ChainDone(page, 0);
+        return g_char.jobId ? 1 : -1;
     }
     if (!Char_MakeArgs(&a, 0, g_char.chainClassic, 0)) {
         Char_ArgsFree(&a);
@@ -7431,7 +7955,7 @@ static void Char_ChainDone(HWND page, int exitCode)
     int n, step = g_char.chainStep;
 
     if (step == CHAR_CHAIN_CLASSIC) {
-        if (!(g_charJob.resultSeen && wcscmp(g_charJob.resultState, L"ok") == 0)) {
+        if (!g_char.chainOwnClassic && !(g_charJob.resultSeen && wcscmp(g_charJob.resultState, L"ok") == 0)) {
             g_char.chainStep = CHAR_CHAIN_NONE;
             Char_BuildDone(page, exitCode);     // make-char's own findings
             Char_ChainCleanup();
@@ -7480,7 +8004,12 @@ static void Char_ChainDone(HWND page, int exitCode)
         Char_ChainFailed(page, L"Packing", exitCode);
         return;
     }
-    // Done: the result is the packed file, with make-char's other findings.
+    // Done: the result is the packed file, with make-char's other findings
+    // (from a finished character: there was no make-char - the pack is the result).
+    if (g_char.chainOwnClassic) {
+        g_charJob.resultSeen = 1;
+        Char_Copy(g_charJob.resultState, 16, L"ok");
+    }
     {
         WIN32_FILE_ATTRIBUTE_DATA fa;
         Char_Copy(g_charJob.resultPath, CHAR_VAL, g_char.chainPath[0] ? g_char.chainPath : g_char.chainOut);
@@ -7756,13 +8285,24 @@ static void Char_BuildDone(HWND page, int exitCode)
         Char_Copy(g_char.builtSha, 80, j->resultSha);
         Char_SizeText(size, 32, j->resultBytes < 0 ? 0 : j->resultBytes);
         // The mask and the wheels in the headline: a choice that did not come
-        // through (a combo turned by the mouse wheel) shows at once.
-        swprintf(text, CHAR_VAL + 64, L"Built: %ls (%ls) - mask %ls, kart wheels %ls%ls. Restart the game to load it.",
-                 Rs_PathName(g_char.built), size, mask, wheelsOff ? L"hidden" : L"shown", mapText);
-        Char_Headline(text, RS_COL_OK);
-        swprintf(text, CHAR_VAL + 64, L"Built %ls", g_char.built);
-        swprintf(detail, 192, L"Kart wheels %ls, mask %ls%ls - SHA-256 %ls", wheelsOff ? L"hidden" : L"shown", mask, mapText,
-                 g_char.builtSha);
+        // through (a combo turned by the mouse wheel) shows at once. The
+        // classic model from a character: those are the character's.
+        if (g_char.buildFromFile) {
+            wchar_t from[CHAR_VAL];
+            Char_ClassicPath(from, CHAR_VAL);
+            swprintf(text, CHAR_VAL + 64, L"Built: %ls (%ls) - classic model, name, look and voices of %ls. Restart the game to load it.",
+                     Rs_PathName(g_char.built), size, Rs_PathName(from));
+            Char_Headline(text, RS_COL_OK);
+            swprintf(text, CHAR_VAL + 64, L"Built %ls", g_char.built);
+            swprintf(detail, 192, L"The classic model of %ls - SHA-256 %ls", Rs_PathName(from), g_char.builtSha);
+        } else {
+            swprintf(text, CHAR_VAL + 64, L"Built: %ls (%ls) - mask %ls, kart wheels %ls%ls. Restart the game to load it.",
+                     Rs_PathName(g_char.built), size, mask, wheelsOff ? L"hidden" : L"shown", mapText);
+            Char_Headline(text, RS_COL_OK);
+            swprintf(text, CHAR_VAL + 64, L"Built %ls", g_char.built);
+            swprintf(detail, 192, L"Kart wheels %ls, mask %ls%ls - SHA-256 %ls", wheelsOff ? L"hidden" : L"shown", mask, mapText,
+                     g_char.builtSha);
+        }
         Char_MsgAdd(CHAR_TAB_BUILD, RS_SEV_OK, text, detail);
         // The game loads characters only from the folder characters next to
         // it, and reads that folder once, when it starts.
@@ -7800,7 +8340,10 @@ static void Char_BuildDone(HWND page, int exitCode)
         Rs_ConfigSet(L"char.out", g_char.built);
         if (Rs_Automating()) {
             Rs_AutoLog(L"  build: ok %ls %lld bytes sha256 %ls", g_char.built, g_char.builtBytes, g_char.builtSha);
-            Rs_AutoLog(L"  build: kart wheels %ls, mask %ls%ls", wheelsOff ? L"hidden" : L"shown", mask, mapText);
+            if (g_char.buildFromFile)
+                Rs_AutoLog(L"  build: the classic model, name, look and voices of the character it was packed into");
+            else
+                Rs_AutoLog(L"  build: kart wheels %ls, mask %ls%ls", wheelsOff ? L"hidden" : L"shown", mask, mapText);
         }
     } else {
         int errors;
@@ -8086,9 +8629,12 @@ static void Char_BrowseModel(HWND page)
     wchar_t start[CHAR_VAL];
     wchar_t pick[CHAR_VAL];
     Char_DialogStart(g_char.model, start, CHAR_VAL);
-    // Low-Poly and Hi-Res read a .glb only (E6).
+    // Low-Poly and Hi-Res read a .glb only (E6) - and a finished character,
+    // to look at its hi-res model (THE FINISHED CHARACTER).
     if (Rs_BrowseOpenFile(Rs_MainWindow(), L"Choose the character model",
-                          Char_Chrg() ? L"glTF binary (*.glb)\0*.glb\0\0" : CHAR_MODEL_FILTER, start, pick, CHAR_VAL))
+                          Char_Chrg() ? L"glTF binary (*.glb)\0*.glb\0Finished character, to look at (*.rldchar)\0*.rldchar\0\0"
+                                      : CHAR_MODEL_FILTER,
+                          start, pick, CHAR_VAL))
         Char_SetModel(page, pick);
 }
 
@@ -8226,7 +8772,8 @@ static int Char_DropPaths(HWND page, const wchar_t *const *paths, int count)
         } else if (Char_ModelFile(path)) {
             Char_Copy(model, CHAR_VAL, path);
             tab = CHAR_TAB_MODEL;
-        } else if (Char_OtherModelFile(path) && !withModel) {
+        } else if ((Char_OtherModelFile(path) || (Char_Chrg() && Char_EndsWith(path, L".rldchar"))) && !withModel) {
+            // (A finished character on Low-Poly or Hi-Res: to look at its model.)
             Char_Copy(other, CHAR_VAL, path);
             tab = CHAR_TAB_MODEL;
         } else {
@@ -8437,6 +8984,73 @@ static const wchar_t *Char_EnabledWord(HWND h)
 // THE GUIDED FLOW in the report: the route, the step, Advanced, the options
 // of the route, and every control shown with its text - the push buttons
 // filled in the accent colour marked "primary" (one per step).
+static const wchar_t *Char_SeverityWord(int severity)
+{
+    switch (severity) {
+    case RS_SEV_ERROR: return L"error";
+    case RS_SEV_WARNING: return L"warning";
+    case RS_SEV_NOTE: return L"note";
+    case RS_SEV_OK: return L"ok";
+    }
+    return L"info";
+}
+
+// The report of a CHRG route beyond "hires check:" - what the page Hi-Res,
+// now gone, wrote: the model's source and the classic model (THE FINISHED CHARACTER,
+// THE CLASSIC MODEL), the summary, every finding of the check one per line
+// (the step Model folds the missing clips into one line; here each has its
+// own), every clip, the clip shown, and the picture.
+static void Char_ReportChrg(FILE *f)
+{
+    const struct RsHiresCheck *c = &g_char.hires;
+    wchar_t line[CHAR_VAL + 96], path[CHAR_VAL];
+    int i;
+    const int clip = Char_ClipShown();
+
+    Char_Put(f, L"model source: %ls", Char_ModelIsCharacter() ? L"a finished character (its CHRG checked and shown, nothing to build)"
+                                                              : L"a .glb");
+    Char_ClassicPath(path, CHAR_VAL);
+    Char_Put(f, L"classic model: %ls%ls", g_char.classicFrom ? L"from the character " : L"made from the .glb",
+             g_char.classicFrom ? (path[0] ? path : L"(none chosen)") : L"");
+    GetWindowTextW(g_char.classicStep, line, CHAR_VAL + 96);
+    Char_Put(f, L"classic step line: \"%ls\"%ls", line,
+             !line[0] ? L"" : Char_IsShown(g_char.classicStep) && Char_IsShown(g_char.classicChange) ? L" (shown, with \"Change\")"
+                                                                                                       : L" (not shown on this view)");
+    if (Char_NoMake() && g_char.fileLookKnown) {
+        static const wchar_t *const modes[3] = { L"retail", L"own", L"off" };
+        const struct RsCharLook *l = &g_char.fileLook;
+        Char_Put(f, L"look source: the character %ls - shadow %ls, exhaust %ls%ls", Rs_PathName(g_char.lookFile),
+                 modes[l->shadow >= 0 && l->shadow <= 2 ? l->shadow : 0], modes[l->exhaust >= 0 && l->exhaust <= 2 ? l->exhaust : 0],
+                 l->exhaust == RS_CHAR_LOOK_OWN ? (l->count == 2 ? L" (2 points)" : L" (1 point)") : L"");
+    } else {
+        Char_Put(f, L"look source: %ls", Char_NoMake() ? L"none (the character file could not be read)" : L"the fields of the step In-game look");
+    }
+    if (!g_char.hiresChecked || !c->read)
+        return;
+    Char_Put(f, L"hires summary: clips %d/%d wheels %d/4 joints %u triangles %llu textures %d bytes %llu of %llu edge %u of %u",
+             c->clips, RS_HIRES_CLIPS, c->wheels, c->joints, c->triangles, c->textures, c->textureBytes, c->budgetTextureBytes,
+             c->textureEdge, c->budgetEdge);
+    for (i = 0; i < c->rowCount; i++)
+        Char_Put(f, L"hires row: %ls %ls %ls", Char_SeverityWord(c->rows[i].severity), c->rows[i].rule[0] ? c->rows[i].rule : L"-",
+                 c->rows[i].text);
+    if (c->rowsDropped > 0)
+        Char_Put(f, L"hires rows not listed: %d", c->rowsDropped);
+    for (i = 0; i < RS_HIRES_CLIPS; i++) {
+        if (c->clipState[i] == RS_HIRES_CLIP_PRESENT)
+            Char_Put(f, L"hires clip: %ls present %.2f", RsHires_ClipName(i), (double)c->clipSeconds[i]);
+        else if (c->clipState[i] == RS_HIRES_CLIP_FALLBACK)
+            Char_Put(f, L"hires clip: %ls fallback %ls%ls", RsHires_ClipName(i), RsHires_ClipName(c->clipVia[i]),
+                     c->clipFullLock[i] ? L" full-lock" : L"");
+        else
+            Char_Put(f, L"hires clip: %ls rest", RsHires_ClipName(i));
+    }
+    Char_Put(f, L"clip shown: %ls %.3f %.1f %ls", clip > 0 ? RsHires_ClipName(clip - 1) : L"bind", (double)g_char.animSeconds,
+             (double)g_char.animWheel, g_char.clipPlaying && clip > 0 ? L"playing" : L"paused");
+    Char_Put(f, L"anim: %ls", c->animReady ? L"ready" : c->animWhy[0] ? c->animWhy : L"unavailable");
+    Char_Put(f, L"hires picture: %d triangles, textured %ls%ls%ls", c->previewTriangles, c->previewTextured ? L"yes" : L"no",
+             !c->previewTextured && c->previewWhy[0] ? L" - " : L"", !c->previewTextured ? c->previewWhy : L"");
+}
+
 static void Char_ReportFlow(FILE *f)
 {
     const struct RsRoutePreset *p = RsRoute_Preset(g_char.route);
@@ -8517,6 +9131,7 @@ static void Char_ReportFlow(FILE *f)
                      g_char.hires.errors, g_char.hires.warnings, g_char.hires.animReady ? L"plays" : L"none");
         else
             Char_Put(f, L"hires check: %ls", g_char.hiresChecked ? g_char.hires.why : L"(none)");
+        Char_ReportChrg(f);
     }
     text = Rs_GetText(g_char.testNote);
     Char_Put(f, L"test note: %ls", text[0] ? text : L"(none)");
@@ -9413,6 +10028,31 @@ static int Char_AutoView(const wchar_t *verb, const wchar_t *arg)
         Rs_AutoLog(L"  view-wheel: %d step(s) at %d %d: zoom %d %%, pan %d %d", steps, px, py, zoom, panX, panY);
         return RS_AUTO_DONE;
     }
+    // "view-filter engine|nearest": how the hi-res picture samples its
+    // textures - the engine's hi-res filter (the start) or nearest, for
+    // comparison images; the model is read again and drawn so.
+    if (wcscmp(verb, L"view-filter") == 0) {
+        wchar_t model[CHAR_VAL];
+        const int nearest = _wcsicmp(arg, L"nearest") == 0;
+        if (!nearest && _wcsicmp(arg, L"engine") != 0) {
+            Rs_AutoLog(L"  view-filter: say engine or nearest");
+            return RS_AUTO_FAIL;
+        }
+        if (!Char_Chrg()) {
+            Rs_AutoLog(L"  view-filter: only the picture of a Low-Poly or Hi-Res model has the engine's filter");
+            return RS_AUTO_FAIL;
+        }
+        RsHires_SetPointSampling(nearest);
+        Char_FieldPath(g_char.model, model, CHAR_VAL);
+        if (g_char.hiresChecked && model[0]) {
+            g_char.hiresStamp = 0;      // read again: the picture is made with the filter
+            Char_HiresEnsure(model);
+            Char_VcolUpdate();
+            Char_PreviewShow();
+        }
+        Rs_AutoLog(L"  view-filter: %ls", nearest ? L"nearest" : L"engine");
+        return RS_AUTO_DONE;
+    }
     if (wcscmp(verb, L"view-preset") == 0) {
         for (i = 0; i < RS_VIEW_PRESET_COUNT && _wcsicmp(arg, g_charPresetWords[i]) != 0; i++)
             ;
@@ -9951,6 +10591,75 @@ static void Char_Create(HWND page)
                                 L"glTF standard says, white is neutral and the colour multiplies. Off: they are ignored.",
                                 RS_FONT_SMALL);
     Rs_SetTextColor(g_char.vmodeHelp, RS_COL_MUTED);
+    // THE CLASSIC MODEL (Advanced, card Options of a CHRG route): the list,
+    // the character's field, its help; its line on the step Model with "Change".
+    g_char.classicLabel = Rs_Label(page, CHAR_ID_CLASSIC_LABEL, L"Classic model", RS_FONT_BOLD);
+    g_char.classicMode = Rs_Combo(page, CHAR_ID_CLASSIC_MODE);
+    SendMessageW(g_char.classicMode, CB_ADDSTRING, 0, (LPARAM)L"Made from the .glb (default)");
+    SendMessageW(g_char.classicMode, CB_ADDSTRING, 0, (LPARAM)L"From a finished character (.rldchar)");
+    SendMessageW(g_char.classicMode, CB_SETCURSEL, 0, 0);
+    g_char.classicFile = Rs_Edit(page, CHAR_ID_CLASSIC_FILE, L"", ES_AUTOHSCROLL);
+    SendMessageW(g_char.classicFile, EM_SETCUEBANNER, FALSE, (LPARAM)L"The .rldchar the model is packed into");
+    g_char.classicBrowse = Rs_Button(page, CHAR_ID_CLASSIC_BROWSE, L"Browse...");
+    g_char.classicHelp = Rs_Label(page, CHAR_ID_CLASSIC_HELP,
+                                  L"The game draws the classic model wherever the hi-res one is not drawn. Made from the .glb, the "
+                                  L"steps Driver, In-game look and Voices set it up. From a finished character, the model is packed "
+                                  L"into a copy of it: its classic model, name, look and voices stay, and its file is not changed.",
+                                  RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.classicHelp, RS_COL_MUTED);
+    g_char.classicStep = Rs_Label(page, CHAR_ID_CLASSIC_STEP, L"", RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.classicStep, RS_COL_MUTED);
+    g_char.classicChange = Rs_Button(page, CHAR_ID_CLASSIC_CHANGE, L"Change");
+    g_char.charNote = Rs_Label(page, CHAR_ID_CHAR_NOTE,
+                               L"The model is a finished character: it is checked and shown as it is, nothing is built, so "
+                               L"the choices of the build (Upscale small textures, Convert JPEG textures to PNG, Classic model) "
+                               L"are not offered. The card Animations shows its clips.",
+                               RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.charNote, RS_COL_MUTED);
+    Rs_SetTip(g_char.classicChange, L"Opens Advanced at \"Classic model\".");
+    // THE CLIPS (Advanced, card Animations of a CHRG route): the clip shown,
+    // Play | Pause, a frame at a time, its time, the table of the 12 clips.
+    g_char.clipLabel = Rs_Label(page, CHAR_ID_CLIP_LABEL, L"Clip", RS_FONT_BOLD);
+    g_char.clipCombo = Rs_Combo(page, CHAR_ID_CLIP);
+    g_char.clipPlay = Rs_Button(page, CHAR_ID_CLIP_PLAY, L"Play");
+    g_char.clipPrev = Rs_Button(page, CHAR_ID_CLIP_PREV, L"< Frame");
+    Rs_SetTip(g_char.clipPrev, L"One frame back (1/30 s, a tick of the game); the clip pauses.");
+    g_char.clipNext = Rs_Button(page, CHAR_ID_CLIP_NEXT, L"Frame >");
+    Rs_SetTip(g_char.clipNext, L"One frame on (1/30 s, a tick of the game); the clip pauses.");
+    g_char.clipTime = Rs_Label(page, CHAR_ID_CLIP_TIME, L"", RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.clipTime, RS_COL_MUTED);
+    g_char.clipTable = Rs_ListView(page, CHAR_ID_CLIP_TABLE, LVS_NOSORTHEADER);
+    {
+        static const wchar_t *const heads[3] = { L"Clip", L"In the file", L"Length" };
+        LVCOLUMNW col;
+        LVITEMW it;
+        for (i = 0; i < 3; i++) {
+            memset(&col, 0, sizeof(col));
+            col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT;
+            col.fmt = LVCFMT_LEFT;
+            col.pszText = (LPWSTR)heads[i];
+            col.cx = Rs_Px(90);
+            col.iSubItem = i;
+            ListView_InsertColumn(g_char.clipTable, i, &col);
+        }
+        for (i = 0; i < RS_HIRES_CLIPS; i++) {
+            memset(&it, 0, sizeof(it));
+            it.mask = LVIF_TEXT;
+            it.iItem = i;
+            it.pszText = (LPWSTR)RsHires_ClipName(i);
+            ListView_InsertItem(g_char.clipTable, &it);
+        }
+    }
+    Rs_SetTip(g_char.clipTable, L"Click a clip to show it.");
+    g_char.clipNote = Rs_Label(page, CHAR_ID_CLIP_NOTE,
+                               L"The clips posed with the engine's own animation code, as the game plays them. A missing clip "
+                               L"plays its stand-in (the table says which). The wheels turn slowly while a clip plays.",
+                               RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.clipNote, RS_COL_MUTED);
+    g_char.clipSel = -1;
+    g_char.clipPlaying = !Rs_Automating();      // in automation only "hires-play on" plays: the shots stay the same
+    Char_ClipFill();
+    Char_ClipControls();
     g_char.vcolMode = g_char.vcolSuggested = -1;
     g_char.chainVcol = -1;
     for (i = 0; i < 2; i++)
@@ -10202,9 +10911,12 @@ static int Char_LayModelAt(const struct CharLay *k, const RECT *in, int filesH)
     // upscale (in the order of the build), each with "Change" right after its
     // text (at the right of the field when the text wraps), only while it
     // says something (Char_PngControls, Char_UpscaleControls).
-    if (chrg && GetWindowTextLengthW(g_char.pngStep) > 0)
+    // (A finished character as the model: none of them - Char_Wanted.)
+    if (chrg && !Char_ModelIsCharacter() && GetWindowTextLengthW(g_char.classicStep) > 0)
+        y = Char_LayStepLine(g_char.classicStep, g_char.classicChange, x, y, fieldW);
+    if (chrg && !Char_ModelIsCharacter() && GetWindowTextLengthW(g_char.pngStep) > 0)
         y = Char_LayStepLine(g_char.pngStep, g_char.pngChange, x, y, fieldW);
-    if (chrg && GetWindowTextLengthW(g_char.upscaleStep) > 0)
+    if (chrg && !Char_ModelIsCharacter() && GetWindowTextLengthW(g_char.upscaleStep) > 0)
         y = Char_LayStepLine(g_char.upscaleStep, g_char.upscaleChange, x, y, fieldW);
     // A model with JPEG textures: "Convert to PNG", the fix of its error.
     if (chrg && g_char.pngFixOn) {
@@ -10334,6 +11046,11 @@ static int Char_LayOptions(const RECT *in)
     static const int ids[4] = { CHAR_ID_REPAIR, CHAR_ID_OPEN_PARTS, CHAR_ID_REMESH, CHAR_ID_REDUCE };
     int y = in->top, x = in->left, w = in->right - in->left, i, cx, qualityH, noteH;
 
+    if (Char_Chrg() && Char_ModelIsCharacter()) {
+        noteH = Char_TextHeight(g_char.charNote, w, CHAR_NOTE_LINES);
+        MoveWindow(g_char.charNote, x, y, w, noteH, TRUE);
+        return y + noteH;
+    }
     if (Char_Chrg()) {
         int bw = Char_CheckWidth(g_char.upscale);
         MoveWindow(g_char.upscale, x, y, bw < w ? bw : w, Rs_Px(24), TRUE);
@@ -10371,6 +11088,26 @@ static int Char_LayOptions(const RECT *in)
             MoveWindow(g_char.vmodeHelp, x, y, w, noteH, TRUE);
             y += noteH;
         }
+        // THE CLASSIC MODEL: the list, and the character's field with Browse
+        // while it comes from one.
+        {
+            int lw = Char_TextWidth(g_char.classicLabel, L"Classic model") + Rs_Px(12);
+            int cw = Char_ComboTextWidth(g_char.classicMode) + Rs_Px(28), bw2 = Rs_Px(100);
+            if (lw + cw > w)
+                cw = w - lw;
+            y += Rs_Px(14);
+            MoveWindow(g_char.classicLabel, x, y + Rs_Px(4), lw, Rs_Px(20), TRUE);
+            MoveWindow(g_char.classicMode, x + lw, y, cw, Rs_Px(300), TRUE);
+            y += Rs_Px(32);
+            if (g_char.classicFrom) {
+                MoveWindow(g_char.classicFile, x, y + Rs_Px(2), w - bw2 - Rs_Px(8), Rs_Px(28), TRUE);
+                MoveWindow(g_char.classicBrowse, x + w - bw2, y, bw2, Rs_Px(32), TRUE);
+                y += Rs_Px(36);
+            }
+            noteH = Char_TextHeight(g_char.classicHelp, w, CHAR_NOTE_LINES);
+            MoveWindow(g_char.classicHelp, x, y, w, noteH, TRUE);
+            y += noteH;
+        }
         return y;
     }
     cx = x;
@@ -10396,6 +11133,55 @@ static int Char_LayOptions(const RECT *in)
         y += Rs_Px(4) + qualityH;
     }
     return y;
+}
+
+// Advanced of a CHRG route, the card Animations (THE CLIPS): the list "Clip"
+// with Play | Pause and a frame at a time, the time below, the table of the
+// 12 clips, the note. Returns its bottom.
+static int Char_LayClips(const RECT *in)
+{
+    int y = in->top, x = in->left, w = in->right - in->left, noteH, bx, i, bw[3], tableH, c0, c2;
+    HWND buttons[3];
+    const int lw = Char_TextWidth(g_char.clipLabel, L"Clip") + Rs_Px(12);
+    buttons[0] = g_char.clipPlay;
+    buttons[1] = g_char.clipPrev;
+    buttons[2] = g_char.clipNext;
+    bw[0] = Char_TextWidth(g_char.clipPlay, L"Pause") + Rs_Px(28);
+    bw[1] = Char_TextWidth(g_char.clipPrev, L"< Frame") + Rs_Px(24);
+    bw[2] = Char_TextWidth(g_char.clipNext, L"Frame >") + Rs_Px(24);
+    MoveWindow(g_char.clipLabel, x, y + Rs_Px(4), lw, Rs_Px(20), TRUE);
+    SendMessageW(g_char.clipCombo, CB_SETDROPPEDWIDTH, (WPARAM)(Char_ComboTextWidth(g_char.clipCombo) + Rs_Px(16)), 0);
+    {
+        int cw = w - lw - bw[0] - bw[1] - bw[2] - Rs_Px(24);
+        if (cw < Rs_Px(120)) {
+            // Narrow: the buttons on a row of their own.
+            MoveWindow(g_char.clipCombo, x + lw, y, w - lw, Rs_Px(300), TRUE);
+            y += Rs_Px(34);
+            bx = x + lw;
+        } else {
+            MoveWindow(g_char.clipCombo, x + lw, y, cw, Rs_Px(300), TRUE);
+            bx = x + lw + cw + Rs_Px(8);
+        }
+    }
+    for (i = 0; i < 3; i++) {
+        MoveWindow(buttons[i], bx, y, bw[i], Rs_Px(30), TRUE);
+        bx += bw[i] + Rs_Px(8);
+    }
+    y += Rs_Px(34);
+    MoveWindow(g_char.clipTime, x + lw, y, w - lw, Rs_Px(18), TRUE);
+    y += Rs_Px(24);
+    // The table: the header and the 12 rows (compact: as many as there is room for).
+    tableH = Rs_Px(g_char.compact ? 160 : 268);
+    MoveWindow(g_char.clipTable, x, y, w, tableH, TRUE);
+    c0 = Rs_Px(100);
+    c2 = Rs_Px(80);
+    ListView_SetColumnWidth(g_char.clipTable, 0, c0);
+    ListView_SetColumnWidth(g_char.clipTable, 1, w - c0 - c2 - Rs_Metric(g_char.clipTable, SM_CXVSCROLL) - Rs_Px(4));
+    ListView_SetColumnWidth(g_char.clipTable, 2, c2);
+    y += tableH + Rs_Px(8);
+    noteH = Char_TextHeight(g_char.clipNote, w, CHAR_NOTE_LINES);
+    MoveWindow(g_char.clipNote, x, y, w, noteH, TRUE);
+    return y + noteH;
 }
 
 // Tab 2 Driver: name, driving style, mask.
@@ -10919,6 +11705,10 @@ static int Char_Wanted(HWND c)
     }
     if (tab != g_char.tab || Char_UserHidden(c) || CharWheels_Hidden(c))
         return 0;
+    // No make-char (THE CLASSIC MODEL from a character, THE FINISHED
+    // CHARACTER): these steps show only their messages - what the file holds.
+    if (Char_NoMake() && (tab == CHAR_TAB_DRIVER || tab == CHAR_TAB_LOOK || tab == CHAR_TAB_VOICES))
+        return 0;
     if (tab == CHAR_TAB_LOOK)
         return card < 0 || card == g_char.lookCard;
     if (tab == CHAR_TAB_MODEL) {
@@ -10929,6 +11719,16 @@ static int Char_Wanted(HWND c)
         if (card == CHAR_CARD_BASIC && g_char.advOpen)
             return 0;
         if (card >= 0 && (!g_char.advOpen || card != g_char.extrasCard))
+            return 0;
+        // A finished character as the model: nothing to build, so the
+        // choices of the build have no effect - the card Options says so
+        // instead, and their lines on the step go too.
+        if (c == g_char.charNote)
+            return Char_ModelIsCharacter();
+        if (Char_ModelIsCharacter() &&
+            (c == g_char.upscale || c == g_char.upscaleHelp || c == g_char.upscaleNote || c == g_char.upscaleStep ||
+             c == g_char.upscaleChange || (id >= CHAR_ID_PNG && id <= CHAR_ID_PNG_FIX) ||
+             (id >= CHAR_ID_CLASSIC_LABEL && id <= CHAR_ID_CLASSIC_CHANGE)))
             return 0;
         if (c == g_char.reduceFit)
             return g_char.reduceFitOn;
@@ -10954,6 +11754,10 @@ static int Char_Wanted(HWND c)
             return GetWindowTextLengthW(g_char.pngStep) > 0;
         if (c == g_char.pngFix)
             return g_char.pngFixOn;
+        if (c == g_char.classicFile || c == g_char.classicBrowse)
+            return g_char.classicFrom;
+        if (c == g_char.classicStep || c == g_char.classicChange)
+            return GetWindowTextLengthW(g_char.classicStep) > 0;
         if (c == g_char.texturesLabel || c == g_char.textures || c == g_char.texturesBrowse || c == g_char.texturesClear)
             return g_char.texturesOn;
         return 1;
@@ -11102,6 +11906,9 @@ static void Char_Layout(HWND page, int w, int h)
     extrasBottom[CHAR_EXTRAS_IMPORT] = Char_LayImport(&k, left, left + leftW, advTop);
     advIn = Rs_CardInner(&adv, 1);
     extrasBottom[CHAR_EXTRAS_OPTIONS] = Char_LayOptions(&advIn) + Rs_Px(16);
+    // A CHRG route: its own card Animations (THE CLIPS) in place of the shape keys'.
+    if (Char_Chrg())
+        extrasBottom[CHAR_EXTRAS_ANIM] = Char_LayClips(&advIn) + Rs_Px(16);
     Char_LayAdvSwitch(&adv);
     // Advanced sets no room for the other steps: only while it is open its
     // card may push the bar lower (below).
@@ -11184,6 +11991,9 @@ static void Char_Layout(HWND page, int w, int h)
         stepEnd = Char_LayDriver(&k, &inStep);
     if (g_char.tab == CHAR_TAB_MODEL && g_char.advOpen)
         stepEnd = extrasBottom[g_char.extrasCard] - Rs_Px(16);
+    // No make-char: Driver, In-game look and Voices show their messages alone (Char_Wanted).
+    if (Char_NoMake() && (g_char.tab == CHAR_TAB_DRIVER || g_char.tab == CHAR_TAB_LOOK || g_char.tab == CHAR_TAB_VOICES))
+        stepEnd = inStep.top;
     // The messages of the step (or the raw output on Build) below its fields,
     // down to the bottom of the card.
     if (g_char.listCount > 0 || (g_char.tab == CHAR_TAB_BUILD && g_char.showRaw)) {
@@ -11341,6 +12151,48 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
         // On (PSX) <-> off; from glTF (Advanced) a click turns it on.
         if (code == BN_CLICKED && g_char.vcolMode >= 0)
             Char_VcolSet(page, g_char.vcolMode == RS_HIRES_VCOL_PSX ? RS_HIRES_VCOL_OFF : RS_HIRES_VCOL_PSX);
+        break;
+    case CHAR_ID_CLASSIC_MODE:
+        if (code == CBN_SELCHANGE) {
+            LRESULT sel = SendMessageW(g_char.classicMode, CB_GETCURSEL, 0, 0);
+            if (sel == 0 || sel == 1)
+                Char_ClassicSet(page, (int)sel);
+        }
+        break;
+    case CHAR_ID_CLASSIC_FILE:
+        if (code == EN_CHANGE && !g_char.applying) {
+            Char_ClassicControls();
+            Char_Changed(page);
+        }
+        break;
+    case CHAR_ID_CLASSIC_BROWSE:
+        if (code == BN_CLICKED) {
+            wchar_t start[CHAR_VAL], pick[CHAR_VAL];
+            Char_DialogStart(g_char.classicFile, start, CHAR_VAL);
+            if (Rs_BrowseOpenFile(Rs_MainWindow(), L"Choose the character the model is packed into",
+                                  L"Characters (*.rldchar)\0*.rldchar\0All files\0*.*\0\0", start, pick, CHAR_VAL))
+                Rs_SetText(g_char.classicFile, pick);
+        }
+        break;
+    case CHAR_ID_CLASSIC_CHANGE:
+        if (code == BN_CLICKED)
+            Char_OptionsChange(page, g_char.classicMode);
+        break;
+    case CHAR_ID_CLIP:
+        if (code == CBN_SELCHANGE) {
+            LRESULT sel = SendMessageW(g_char.clipCombo, CB_GETCURSEL, 0, 0);
+            if (sel >= 0)
+                Char_ClipSelect((int)sel);
+        }
+        break;
+    case CHAR_ID_CLIP_PLAY:
+        if (code == BN_CLICKED)
+            Char_ClipPlay(!g_char.clipPlaying);
+        break;
+    case CHAR_ID_CLIP_PREV:
+    case CHAR_ID_CLIP_NEXT:
+        if (code == BN_CLICKED)
+            Char_ClipAt(g_char.animSeconds + (id == CHAR_ID_CLIP_NEXT ? 1.0f : -1.0f) / 30.0f, g_char.animWheel);
         break;
     case CHAR_ID_VMODE:
         if (code == CBN_SELCHANGE && g_char.vcolMode >= 0) {
@@ -11638,6 +12490,15 @@ static LRESULT Char_Notify(HWND page, NMHDR *hdr)
         return Char_VoiceNotify(hdr);
     if (hdr && hdr->idFrom == CHAR_ID_MODEL_FILES && hdr->hwndFrom == g_char.modelFiles)
         return Char_ImportNotify(hdr);
+    // THE CLIPS: a click on a row of the table shows that clip.
+    if (hdr && hdr->idFrom == CHAR_ID_CLIP_TABLE && hdr->hwndFrom == g_char.clipTable) {
+        if (hdr->code == NM_CLICK && g_char.hires.animReady) {
+            const NMITEMACTIVATE *a = (const NMITEMACTIVATE *)hdr;
+            if (a->iItem >= 0 && a->iItem < RS_HIRES_CLIPS)
+                Char_ClipSelect(a->iItem + 1);
+        }
+        return 0;
+    }
     r = CharAnim_Notify(page, hdr, &handled);
     if (handled)
         return r;
@@ -12050,6 +12911,94 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         UpdateWindow(page);
         return r > 0 ? RS_AUTO_WAIT : RS_AUTO_DONE;
     }
+    // THE CLIPS (Advanced, card Animations of a CHRG route), the verbs the
+    // page Hi-Res had: "hires-clip bind|<clip>" as the list "Clip",
+    // "hires-play on|off" as Play | Pause, "hires-time <seconds> [<wheel
+    // degrees>]" paused at that frame (a frame at a time).
+    if (wcscmp(verb, L"hires-clip") == 0 || wcscmp(verb, L"hires-play") == 0 || wcscmp(verb, L"hires-time") == 0) {
+        const struct RsHiresCheck *c = &g_char.hires;
+        if (!Char_Chrg() || !g_char.hiresChecked || !c->read || !c->animReady) {
+            Rs_AutoLog(L"  %ls: clips cannot be played (%ls)", verb,
+                       !Char_Chrg() ? L"only Low-Poly and Hi-Res have them" : c->animWhy[0] ? c->animWhy : L"no usable model checked");
+            return RS_AUTO_FAIL;
+        }
+        if (wcscmp(verb, L"hires-clip") == 0) {
+            int sel = -1, i;
+            if (_wcsicmp(arg, L"bind") == 0)
+                sel = 0;
+            for (i = 0; i < RS_HIRES_CLIPS && sel < 0; i++)
+                if (_wcsicmp(arg, RsHires_ClipName(i)) == 0)
+                    sel = i + 1;
+            if (sel < 0) {
+                Rs_AutoLog(L"  hires-clip: unknown clip '%ls' (bind, idle .. menu)", arg);
+                return RS_AUTO_FAIL;
+            }
+            Char_ClipSelect(sel);
+            UpdateWindow(page);
+            Rs_AutoLog(L"  hires-clip: %ls", sel > 0 ? RsHires_ClipName(sel - 1) : L"bind");
+            return RS_AUTO_DONE;
+        }
+        if (wcscmp(verb, L"hires-play") == 0) {
+            const int on = _wcsicmp(arg, L"on") == 0;
+            if (!on && _wcsicmp(arg, L"off") != 0) {
+                Rs_AutoLog(L"  hires-play: say on or off");
+                return RS_AUTO_FAIL;
+            }
+            if (on && Char_ClipShown() <= 0) {
+                Rs_AutoLog(L"  hires-play: nothing to play (choose a clip first)");
+                return RS_AUTO_FAIL;
+            }
+            Char_ClipPlay(on);
+            Rs_AutoLog(L"  hires-play: %ls", on ? L"on" : L"off");
+            return RS_AUTO_DONE;
+        }
+        {
+            wchar_t *end = NULL;
+            const double secs = wcstod(arg, &end);
+            double deg;
+            int n;
+            if (end == arg || secs < 0.0) {
+                Rs_AutoLog(L"  hires-time: say <seconds> [<wheel degrees>]");
+                return RS_AUTO_FAIL;
+            }
+            deg = wcstod(end, &end);
+            n = Char_ClipAt((float)secs, (float)deg);
+            UpdateWindow(page);
+            Rs_AutoLog(L"  hires-time: %ls %.3f -> %d triangles", Char_ClipShown() > 0 ? RsHires_ClipName(Char_ClipShown() - 1) : L"bind",
+                       secs, n);
+            return RS_AUTO_DONE;
+        }
+    }
+    // THE CLASSIC MODEL of a CHRG route: "classic glb" made from the .glb
+    // (the start), "classic <file.rldchar>" from that finished character,
+    // "classic change" as a click on "Change" at the end of its line on the
+    // step Model.
+    if (wcscmp(verb, L"classic") == 0) {
+        if (!Char_Chrg()) {
+            Rs_AutoLog(L"  classic: only Low-Poly and Hi-Res have a classic model to choose");
+            return RS_AUTO_FAIL;
+        }
+        if (_wcsicmp(arg, L"change") == 0)
+            return Char_AutoChange(page, L"classic", CHAR_ID_CLASSIC_CHANGE, g_char.classicChange, g_char.classicMode, L"Classic model");
+        if (!arg[0]) {
+            Rs_AutoLog(L"  classic: say glb, a .rldchar or change");
+            return RS_AUTO_FAIL;
+        }
+        if (_wcsicmp(arg, L"glb") == 0) {
+            r = Char_ClassicSet(page, 0);
+            Rs_AutoLog(L"  classic: made from the .glb");
+        } else {
+            wchar_t path[CHAR_VAL];
+            Char_CleanPath(path, CHAR_VAL, arg);
+            g_char.applying = 1;
+            Rs_SetText(g_char.classicFile, path);
+            g_char.applying = 0;
+            Rs_AutoLog(L"  classic: from %ls", path);
+            r = Char_ClassicSet(page, 1);
+        }
+        UpdateWindow(page);
+        return r > 0 ? RS_AUTO_WAIT : RS_AUTO_DONE;
+    }
     if (wcscmp(verb, L"tab") == 0)
         return Char_AutoTab(page, arg);
     if (wcscmp(verb, L"extras") == 0)
@@ -12065,9 +13014,10 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         Rs_AutoLog(L"  model: %ls", arg);
         if (Char_SetModel(page, arg))
             return RS_AUTO_WAIT;
-        // Low-Poly and Hi-Res with another file than a .glb: the one line at
-        // the model says so; nothing was to start.
-        if (Char_Chrg() && !Char_EndsWith(arg, L".glb"))
+        // Low-Poly and Hi-Res with another file than a .glb (the one line at
+        // the model says so, or a finished character to look at), or with the
+        // classic model from a character: no rldpack to start.
+        if (Char_Chrg() && (!Char_EndsWith(arg, L".glb") || Char_ClassicFromFile()))
             return RS_AUTO_DONE;
         Rs_AutoLog(L"  model: rldpack could not be started");
         return RS_AUTO_FAIL;

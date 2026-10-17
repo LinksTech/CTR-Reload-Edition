@@ -70,9 +70,20 @@
 # Hi-Res and Low-Poly, the line "Your JPEG textures will be converted to
 # PNG." with "Change" on the step Model, "png change" opens Advanced at the
 # box; "png off" after it refuses the kart again. No temp file of the page is
-# left. Prints "charroute page passed: upscale suggested and chosen",
-# "charroute page passed: vertex colours psx off gltf", "charroute page
-# passed: jpeg converted to png" and "charroute page passed: 3 routes".
+# left. What the page "Hi-Res (Preview)" did, now on the page Character
+# (rs_char.c, THE FINISHED CHARACTER, THE CLIPS, THE CLASSIC MODEL): a finished
+# character in the model field is checked and shown, nothing built (its report
+# names its source, the check and every clip); the card Animations with
+# hires-clip, hires-time, hires-play and view-filter (the report: the clip
+# shown, a "hires summary:" with the joints, one "hires row:" per missing clip
+# of route-bare.glb while the step keeps its one line); "classic <file>" packs
+# route-tex64.glb into a finished character - rldpack hires-add's bytes, the
+# character itself unchanged, the line on the step Model with "Change" - and
+# "page hires" fails with the message that the page was removed. Prints
+# "charroute page passed: upscale suggested and chosen", "charroute page
+# passed: vertex colours psx off gltf", "charroute page passed: jpeg
+# converted to png", "charroute page passed: the page Hi-Res on Character"
+# and "charroute page passed: 3 routes".
 
 foreach(required PACKER STUDIO TEST DIR)
     if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
@@ -390,6 +401,96 @@ if(PAGE)
         endif()
     endforeach()
     message("charroute page passed: jpeg converted to png")
+
+    # THE FINISHED CHARACTER: a .rldchar with CHRG in the model field - checked
+    # as its .glb, shown with the look of the file, nothing to build; the card
+    # Options (Advanced open) offers none of the build's choices.
+    page_check(character hires p-hires-wheels.rldchar "--do;advanced on")
+    file(READ "${DIR}/page-character-report.txt" text)
+    if(NOT text MATCHES "model source: a finished character" OR NOT text MATCHES "hires check: usable" OR
+       NOT text MATCHES "hires clip: idle present" OR
+       NOT text MATCHES "look source: the character p-hires-wheels\\.rldchar - shadow [a-z]+, exhaust [a-z]+" OR
+       NOT text MATCHES "page message: model\t[0-9]\tA finished character: its Hi-Res model is checked and shown\\. Nothing is built from it\\.")
+        message(FATAL_ERROR "charroute FAILED: the page (character) does not check and show a finished character\n${text}")
+    endif()
+    if(NOT text MATCHES "advanced: open, card options" OR text MATCHES "shown tick box: 210 " OR text MATCHES "shown tick box: 226 " OR
+       text MATCHES "shown list: 240 " OR text MATCHES "upscale step line: \"[^\"]+\" \\(shown")
+        message(FATAL_ERROR "charroute FAILED: the page (character) offers choices of the build that have no effect\n${text}")
+    endif()
+    page_says(character "check: a finished character - its CHRG checked \\(usable\\), nothing to build"
+              "the page did not take the finished character as one")
+
+    # THE CLIPS: the card Animations of route-wheels.glb (12 clips).
+    page_check(clips hires route-wheels.glb
+               "--do;extras animations;--do;hires-clip jump;--do;hires-time 0.25 90;--do;report ${DIR}/page-clips-mid-report.txt;--do;hires-play on;--do;hires-play off;--do;hires-clip bind;--do;view-filter nearest;--do;view-filter engine")
+    page_says(clips "hires-clip: jump" "hires-clip did not choose the clip")
+    page_says(clips "hires-time: jump 0\\.250 -> [1-9][0-9]* triangles" "hires-time did not show the frame")
+    page_says(clips "hires-play: on" "hires-play did not play")
+    page_says(clips "view-filter: nearest" "view-filter did not take nearest")
+    file(READ "${DIR}/page-clips-mid-report.txt" text)
+    if(NOT text MATCHES "clip shown: jump 0\\.250 90\\.0 paused" OR NOT text MATCHES "advanced: open, card animations" OR
+       NOT text MATCHES "hires clip: jump present [0-9.]+" OR NOT text MATCHES "hires summary: clips 12/12 wheels 4/4 joints [1-9]")
+        message(FATAL_ERROR "charroute FAILED: the report of the card Animations (clips)\n${text}")
+    endif()
+    file(READ "${DIR}/page-clips-report.txt" text)
+    if(NOT text MATCHES "clip shown: bind ")
+        message(FATAL_ERROR "charroute FAILED: hires-clip bind did not show the bind pose\n${text}")
+    endif()
+    # One report line per finding of the check, as rldpack hires-check lists
+    # them (each missing clip its own HRG-19), on hires-warn.glb (rldpack
+    # hires-test-files: 11 of 12 clips); the step Model keeps its one line.
+    run("rldpack hires-test-files" "${PACKER}" hires-test-files "${DIR}")
+    run("rldpack hires-check (rows)" "${PACKER}" hires-check "${DIR}/hires-warn.glb")
+    string(REGEX MATCHALL "\n  (error|warning|note) HRG-[0-9]+ " packerRows "${out}")
+    string(REGEX MATCHALL "\n  (error|warning|note) HRG-19 " packerClips "${out}")
+    list(LENGTH packerRows packerCount)
+    list(LENGTH packerClips packerClipCount)
+    page_check(rows hires hires-warn.glb "")
+    file(READ "${DIR}/page-rows-report.txt" text)
+    string(REGEX MATCHALL "hires row: (error|warning|note) HRG-[0-9]+ " rows "${text}")
+    string(REGEX MATCHALL "hires row: (error|warning|note) HRG-19 " rowClips "${text}")
+    list(LENGTH rows rowCount)
+    list(LENGTH rowClips rowClipCount)
+    string(REGEX MATCHALL "page message: model\t[0-9]\t[0-9]+ of 12 animations present" folded "${text}")
+    list(LENGTH folded foldedCount)
+    if(packerClipCount LESS 1 OR NOT rowCount EQUAL packerCount OR NOT rowClipCount EQUAL packerClipCount OR NOT foldedCount EQUAL 1)
+        message(FATAL_ERROR "charroute FAILED: report lines ${rowCount} (missing clips ${rowClipCount}) against rldpack's ${packerCount} "
+                            "(${packerClipCount}), step lines about the clips ${foldedCount} (rows)\n${text}")
+    endif()
+
+    # THE CLASSIC MODEL from a finished character: rldpack hires-add into it,
+    # byte for byte; the character itself stays as it was.
+    run("rldpack hires-add (classic-from)" "${PACKER}" hires-add "${DIR}/p-hires.rldchar" "${DIR}/route-tex64.glb" -o "${DIR}/p-classic-from.rldchar")
+    file(SHA256 "${DIR}/p-hires.rldchar" classicBefore)
+    # (The page's exhaust set to off first: the preview must show the file's
+    # look, never the fields' - "look source:" in the report.)
+    set(pageDo --do "exhaust off" --do "classic ${DIR}/p-hires.rldchar" --do "report ${DIR}/page-classic-from-report.txt"
+               --do "classic change")
+    page_route(classic-from hires route-tex64.glb p-classic-from.rldchar)
+    set(pageDo "")
+    file(SHA256 "${DIR}/p-hires.rldchar" classicAfter)
+    if(NOT classicBefore STREQUAL classicAfter)
+        message(FATAL_ERROR "charroute FAILED: the page changed the character the classic model came from")
+    endif()
+    page_says(classic-from "check: ready to build - the classic model from p-hires\\.rldchar \\(no make-char\\)"
+              "the page did not check the classic model from a character")
+    page_says(classic-from "classic change: advanced open, card Options, \"Classic model\" shown, in view, focus on the box"
+              "\"Change\" did not open Advanced at the list")
+    file(READ "${DIR}/page-classic-from-report.txt" text)
+    if(NOT text MATCHES "classic model: from the character [^\r\n]*p-hires\\.rldchar" OR
+       NOT text MATCHES "look source: the character p-hires\\.rldchar - shadow [a-z]+, exhaust (retail|own)" OR
+       NOT text MATCHES "classic step line: \"The classic model, name, look and voices come from p-hires\\.rldchar\\.\" \\(shown, with \"Change\"\\)")
+        message(FATAL_ERROR "charroute FAILED: the step Model (classic-from) does not say where the classic model comes from\n${text}")
+    endif()
+
+    # The page Hi-Res is gone: a script that names it fails with the way to go.
+    execute_process(COMMAND "${STUDIO}" --settings "${DIR}/rs.ini" --log "${DIR}/page-hires-gone.log" --do "page hires" --do "quit"
+                    RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE out TIMEOUT 120)
+    file(READ "${DIR}/page-hires-gone.log" text)
+    if(result EQUAL 0 OR NOT text MATCHES "page hires was removed - use page char with route hires")
+        message(FATAL_ERROR "charroute FAILED: \"page hires\" did not fail with its message (exit ${result})\n${text}")
+    endif()
+    message("charroute page passed: the page Hi-Res on Character")
     message("charroute page passed: 3 routes")
 endif()
 

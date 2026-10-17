@@ -4,7 +4,7 @@
 // cmake/run_rs_hires_selftest.cmake made with rldpack: the self-test's models
 // hires-good.glb, hires-warn.glb, hires-bad.glb (rldpack hires-test-files) and
 // packer.rldchar (rldpack hires-add of hires-good.glb). It checks that the
-// page's list and summary are rldpack's findings, that the picture of the bind
+// check's list and summary (the page Character shows and reports them) are rldpack's findings, that the picture of the bind
 // pose is the model (its triangles, its corners in file units, a lit colour),
 // that a character's CHRG reads as its .glb, and the arguments of the pack
 // step (the byte identity of the packed file itself is the script's part).

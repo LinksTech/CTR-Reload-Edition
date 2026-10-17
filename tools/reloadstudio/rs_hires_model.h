@@ -1,4 +1,4 @@
-// rs_hires_model.h - the model side of the page "Hi-Res (Preview)" (rs_hires.c)
+// rs_hires_model.h - the check and the picture of a hi-res model (page Character, routes Low-Poly and Hi-Res, rs_char.c)
 //
 // A hi-res driver model (.glb, the chunk CHRG of a .rldchar) checked with the
 // game's own rules and turned into a picture of its bind pose for the 3D view.
@@ -195,6 +195,22 @@ const wchar_t *RsHires_ClipName(int clip);
 // out is written in full; free it with RsHires_CheckFree. 1 = read (see
 // usable for the verdict), 0 = not read (why).
 int RsHires_CheckFile(const wchar_t *path, struct RsHiresCheck *out);
+
+// THE LOOK OF A CHARACTER FILE: the shadow and the exhaust its CHRI holds,
+// read as the game reads them (RldChar_ParseInfo, RldChar_ParseLook in
+// include/rldchar.inc - a field the game does not take counts as retail).
+// shadow and exhaust: RS_CHAR_LOOK_RETAIL, _OWN (shadow: the quad, exhaust:
+// count points) or _OFF; quad x0 x1 z0 z1 and the points x y z in 1/16 model
+// units. 1 = read; 0 = not a character that can be read, why says so.
+#define RS_CHAR_LOOK_RETAIL 0
+#define RS_CHAR_LOOK_OWN 1
+#define RS_CHAR_LOOK_OFF 2
+struct RsCharLook {
+    int shadow, exhaust, count;
+    int quad[4];
+    int point[2][3];
+};
+int RsHires_CharLook(const wchar_t *path, struct RsCharLook *out, wchar_t *why, int whyCap);
 
 // The same for GLB bytes in memory (the self-test). The bytes are not kept.
 int RsHires_CheckGlb(const unsigned char *glb, size_t size, struct RsHiresCheck *out);

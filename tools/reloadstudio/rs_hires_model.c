@@ -1281,6 +1281,58 @@ static unsigned char *RsHires_ReadAll(const wchar_t *path, size_t limit, size_t 
     return bytes;
 }
 
+int RsHires_CharLook(const wchar_t *path, struct RsCharLook *out, wchar_t *why, int whyCap)
+{
+    struct RldReader reader;
+    struct RldCharInfo info;
+    struct RldCharLook look;
+    const char *err;
+    char *utf8;
+    u8 *bytes = NULL;
+    size_t size = 0;
+    int need, index = -1, k, i;
+
+    memset(out, 0, sizeof(*out));
+    if (why && whyCap > 0)
+        why[0] = 0;
+    need = WideCharToMultiByte(CP_UTF8, 0, path, -1, NULL, 0, NULL, NULL);
+    utf8 = (char *)malloc(need > 0 ? (size_t)need : 1u);
+    if (!utf8)
+        return 0;
+    WideCharToMultiByte(CP_UTF8, 0, path, -1, utf8, need, NULL, NULL);
+    err = Rld_OpenAs(&reader, utf8, &s_rldCharFormat);
+    free(utf8);
+    if (!err) {
+        Rld_FindEntry(&reader, "CHRI", &index);
+        bytes = index >= 0 ? Rld_ReadChunk(&reader, index, &size, &err) : NULL;
+        Rld_Close(&reader);
+        if (!bytes && !err)
+            err = "CHRI is missing";
+        if (bytes)
+            err = RldChar_ParseInfo(&info, bytes, size);
+    }
+    if (err) {
+        free(bytes);
+        if (why && whyCap > 0) {
+            wchar_t w[200];
+            RsHires_Widen(w, 200, err);
+            swprintf(why, (size_t)whyCap, L"The character cannot be read: %ls.", w);
+        }
+        return 0;
+    }
+    RldChar_ParseLook(&info, bytes, size, &look);
+    free(bytes);
+    out->shadow = look.shadow == RLDCHAR_LOOK_AUTO ? RS_CHAR_LOOK_OWN : look.shadow == RLDCHAR_LOOK_OFF ? RS_CHAR_LOOK_OFF : RS_CHAR_LOOK_RETAIL;
+    out->exhaust = look.exhaust == RLDCHAR_LOOK_CUSTOM ? RS_CHAR_LOOK_OWN : look.exhaust == RLDCHAR_LOOK_OFF ? RS_CHAR_LOOK_OFF : RS_CHAR_LOOK_RETAIL;
+    out->count = out->exhaust == RS_CHAR_LOOK_OWN ? (int)look.count : 0;
+    for (i = 0; i < 4; i++)
+        out->quad[i] = look.quad[i];
+    for (k = 0; k < 2; k++)
+        for (i = 0; i < 3; i++)
+            out->point[k][i] = look.point[k][i];
+    return 1;
+}
+
 int RsHires_CheckFile(const wchar_t *path, struct RsHiresCheck *out)
 {
     unsigned char head[8];
@@ -1324,7 +1376,9 @@ int RsHires_CheckFile(const wchar_t *path, struct RsHiresCheck *out)
         index = RldHires_FindChunk(&reader);
         if (index < 0) {
             Rld_Close(&reader);
-            swprintf(out->why, RS_HIRES_TEXT_MAX, L"This character has no hi-res model (no CHRG chunk). Choose its .glb, or pack one into it below.");
+            swprintf(out->why, RS_HIRES_TEXT_MAX,
+                     L"This character has no hi-res model (no CHRG chunk). Choose a .glb; to pack it into this character, take the "
+                     L"classic model from it (Advanced, Classic model).");
             return 0;
         }
         bytes = RldHires_ReadChunk(&reader, index, &size, &why);

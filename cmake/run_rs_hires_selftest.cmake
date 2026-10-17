@@ -1,5 +1,6 @@
-# run_rs_hires_selftest.cmake - the page "Hi-Res" of Reload Studio
-# against rldpack (ctest reloadstudio_hires_selftest).
+# run_rs_hires_selftest.cmake - the hi-res model side of Reload Studio
+# (rs_hires_model.c, used by the page Character) against rldpack (ctest
+# reloadstudio_hires_selftest).
 #
 #   cmake -DPACKER=<rldpack> -DSTUDIO=<ReloadStudio> -DTEST=<rs_hires_selftest>
 #         -DDIR=<folder in the build tree> -P cmake/run_rs_hires_selftest.cmake

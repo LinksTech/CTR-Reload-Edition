@@ -317,7 +317,6 @@ if(MSVC)
         tools/reloadstudio/rs_wheels.c
         tools/reloadstudio/rs_tex.c
         tools/reloadstudio/rs_hires_model.c
-        tools/reloadstudio/rs_hires.c
         tools/reloadstudio/rs_charhires.c
         tools/reloadstudio/rs_cards.c
         tools/reloadstudio/rs_rldpack.c
@@ -560,7 +559,7 @@ if(BUILD_TESTING)
         add_test(NAME reloadstudio_tex_selftest COMMAND $<TARGET_FILE:rs_tex_selftest>)
         set_tests_properties(reloadstudio_tex_selftest PROPERTIES PASS_REGULAR_EXPRESSION "rs_tex selftest passed: ")
 
-        # The page "Hi-Res" (tools/reloadstudio/rs_hires_model.c): its
+        # The hi-res model side of the page Character (tools/reloadstudio/rs_hires_model.c): its
         # list, summary and bind-pose picture against rldpack's findings, a
         # character's CHRG, and the pack step - the Studio's hires-add with the
         # page's arguments gives rldpack's bytes (cmake/run_rs_hires_selftest.cmake).
