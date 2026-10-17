@@ -5657,10 +5657,13 @@ internal int EngTrack_RouteInstance(struct Instance *inst, struct InstDrawPerPla
 // ticks, so a pause stops it), in forced slot ENGINE_HIRES_SLOT_SEATS + p - 1,
 // wheels at rest. The figure's thread, matrix and animation stay the game's: the
 // engine reads inst->matrix and inst->scale only. No hi-res character, or a
-// submit that declines: the dance figure is drawn as before. Two places with
-// the same template share one model and cannot be told apart by it: the first
-// place matching takes it (logged as ambiguous). One log line per place at its
-// first draw, a count per place in the podium summary.
+// submit that declines: the dance figure is drawn as before. The place of a
+// figure comes from its instance name ("first", "second", "third" of
+// CS_Podium.c), so places on the same template (one model) are told apart; only
+// a figure without such a name falls back to the model, and two places with one
+// model then go to the first one matching (logged as ambiguous). One log line
+// per place at its first draw (with "by name" or "by model"), a count per place
+// in the podium summary.
 #define EGT_PODIUM_PLACES 3
 global_variable int s_egtPodiumHiresLogged[EGT_PODIUM_PLACES];
 global_variable u32 s_egtPodiumHiresDrawn[EGT_PODIUM_PLACES];
@@ -5795,15 +5798,32 @@ void Engine_TrackPodiumEnd(void)
 	s_egtPodiumModelCount = 0;
 }
 
-// The place (1..3) whose figure model this is, 0 = none (Tawna, the reward);
-// *ambiguous = more than one place has this model (the same template).
-internal int EngTrack_PodiumPlaceOf(const struct GameTracker *gGT, const struct Model *model, int *ambiguous)
+// The place (1..3) of a podium figure, 0 = none (Tawna, the reward). First by
+// the instance's name: CS_Podium.c births the three figures with the names
+// R233.s_first / s_second / s_third (CS_Thread_Init -> INSTANCE_BirthWithThread
+// -> INSTANCE_Birth copies the name into inst->name, game/INSTANCE.c), so places
+// on the same template are told apart (*how = "name"). Without such a name:
+// by the model of the place (*how = "model"), and *ambiguous = more than one
+// place has this model (the same template).
+internal int EngTrack_PodiumPlaceOf(const struct GameTracker *gGT, const struct Instance *inst, int *ambiguous, const char **how)
 {
 	const u8 index[EGT_PODIUM_PLACES] = {gGT->podium_modelIndex_First, gGT->podium_modelIndex_Second, gGT->podium_modelIndex_Third};
+	const char *const names[EGT_PODIUM_PLACES] = {R233.s_first, R233.s_second, R233.s_third};
+	const struct Model *model = inst->model;
 	int place = 0;
 	int matches = 0;
 	int i;
 
+	*ambiguous = 0;
+	*how = "name";
+	for (i = 0; i < EGT_PODIUM_PLACES; i++)
+	{
+		if ((index[i] != 0) && (strncmp(inst->name, names[i], sizeof(inst->name)) == 0))
+		{
+			return i + 1;
+		}
+	}
+	*how = "model";
 	for (i = 0; i < EGT_PODIUM_PLACES; i++)
 	{
 		if ((index[i] != 0) && (index[i] < (u8)(sizeof(gGT->modelPtr) / sizeof(gGT->modelPtr[0]))) && (gGT->modelPtr[index[i]] == model))
@@ -5826,6 +5846,7 @@ internal int EngTrack_PodiumHires(struct Instance *inst, struct InstDrawPerPlaye
 	struct GameTracker *gGT = sdata->gGT;
 	EngineHiresSubmit s;
 	int ambiguous = 0;
+	const char *how = "";
 	int place;
 	int k;
 	int ch;
@@ -5835,7 +5856,7 @@ internal int EngTrack_PodiumHires(struct Instance *inst, struct InstDrawPerPlaye
 	{
 		return 0;
 	}
-	place = EngTrack_PodiumPlaceOf(gGT, inst->model, &ambiguous);
+	place = EngTrack_PodiumPlaceOf(gGT, inst, &ambiguous, &how);
 	if (place == 0)
 	{
 		return 0;
@@ -5846,8 +5867,8 @@ internal int EngTrack_PodiumHires(struct Instance *inst, struct InstDrawPerPlaye
 	if (!s_egtPodiumHiresLogged[k])
 	{
 		s_egtPodiumHiresLogged[k] = 1;
-		Platform_Log("[CTR Engine] track: podium place %d: seat %d, %s %s%s, want podium_%d, clip %s\n", place, (int)data.cupPositionPerPlayer[k],
-		             (ch >= 0) ? "hi-res" : "dance figure", (ch >= 0) ? Engine_HiresCharFile(ch) : "(no hi-res character)",
+		Platform_Log("[CTR Engine] track: podium place %d (by %s): seat %d, %s %s%s, want podium_%d, clip %s\n", place, how,
+		             (int)data.cupPositionPerPlayer[k], (ch >= 0) ? "hi-res" : "dance figure", (ch >= 0) ? Engine_HiresCharFile(ch) : "(no hi-res character)",
 		             ambiguous ? " (ambiguous: another place has the same model)" : "", place, Engine_HiresClipName(clip));
 	}
 	if (ch < 0)
