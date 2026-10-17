@@ -8,6 +8,8 @@ Studio only logs the command line; the game is never started). One Studio run pe
 
 Per route it writes into --out:
   <route>-<nn>-<step>.png/.txt   shot and `controls` dump of every step
+  <route>-<nn>-<step>-report.txt the page's report of the steps Model to Build (primary buttons)
+  legacy.log, legacy.rldchar     a script of before without a route (with the route vanilla)
   <route>.log                    the automation log (--log)
   <route>.rldchar                the built character (never into the game's characters folder)
   rs.ini                         the Studio's settings (--settings; nothing goes to %APPDATA%)
@@ -17,8 +19,13 @@ The click rule: 1 click = one mouse click or Enter. A file choice = 2
 (Browse, Open). Typing a name = 0 clicks, counted separately as "fields typed". The AFTER list is
 modelled from the plan (decisions E2-E4, E10); the run checks it:
   - the log has 0 lines with FAIL (exit 1 otherwise) and ends with "automation finished"
-  - every controls dump has the step's primary controls, present and visible (exit 2 otherwise)
+  - every controls dump shows the step's controls by their texts ("Building: <route>", "Change type",
+    the five step heads, "< Back", "Next >", "Browse...", "Advanced options", "Save as", "Build",
+    "Test in game", ...) and not those of another step or route (EXPECT below; exit 2 otherwise)
+  - the report of every step from Model to Build says "primary buttons shown: 1"
   - the logged "Test in game" command line has --char (and --engine-hires-chars on lowpoly/hires only)
+  - with the route vanilla: a script of before (no route verb) builds, and the log says the page
+    picked Vanilla by itself ("route: vanilla (implicit ...)")
 Exit code 0 only if all of that holds.
 
 Only files this script wrote earlier (listed in <out>\\.rs_flow_shots.manifest) are removed
@@ -41,24 +48,62 @@ ROUTES = ("vanilla", "lowpoly", "hires")
 TITLES = {"vanilla": "Vanilla", "lowpoly": "Low-Poly", "hires": "Hi-Res"}
 CHRG = {"vanilla": False, "lowpoly": True, "hires": True}
 DEFAULT_MODEL = {"vanilla": "testdriver-classic.glb", "lowpoly": "testdriver-lowpoly.glb",
-                 "hires": "testdriver-t40k-x1024.glb"}
+                 "hires": "testdriver-t10k-x2048.glb"}
 NAMES = {"vanilla": "FLOWVANILLA", "lowpoly": "FLOWLOWPOLY", "hires": "FLOWHIRES"}
 MANIFEST = ".rs_flow_shots.manifest"
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_STUDIO = os.path.join(REPO_ROOT, "build-msvc-x86", "Release", "ReloadStudio.exe")
 
-# What the controls dump of a step must show (case-insensitive text, visible).
-# ("card", t) = a visible control or a card line titled t; ("button", t) = a visible Button.
+# What the controls dump of a step must show, by the texts of the page (rs_char.c), compared
+# whole and case-sensitive with the text of a control. Each entry is (rule, class, text):
+#   "shown"   a control of that class ("Button", "Static"; None = any) with that text, visible
+#   "hidden"  no visible control of that class with that text
+#   "head"    a visible step head (a Button) whose text ends with that word ("1 Model", "4 Voices")
+# "{title}" stands for the route's card title. Lists per step; CHRG_EXPECT and VANILLA_EXPECT
+# add the entries that only hold for the CHRG routes or only for Vanilla.
+HEADS = [("head", "Button", w) for w in ("Model", "Driver", "In-game look", "Voices", "Build")]
+FLOW = [("shown", "Static", "Building: {title}"), ("shown", "Button", "Change type"),
+        ("shown", "Button", "< Back")] + HEADS
 EXPECT = {
-    "cards": [("card", "Vanilla"), ("card", "Low-Poly"), ("card", "Hi-Res")],
-    "model": [("button", "Browse"), ("button", "Next")],
-    "driver": [("button", "Next")],
-    "look": [("button", "Next")],
-    "voices": [("button", "Next")],
-    "build": [("button", "Build")],
-    "built": [("button", "Test in game")],
-    "test": [],
+    "cards": [("shown", "Static", "What do you want to build?"), ("shown", "Button", "Vanilla"),
+              ("shown", "Button", "Low-Poly"), ("shown", "Button", "Hi-Res"),
+              ("hidden", "Button", "< Back"), ("hidden", "Button", "Next >"),
+              ("hidden", "Button", "Change type")],
+    "model": FLOW + [("shown", "Button", "Browse..."), ("shown", "Button", "Advanced options"),
+                     ("shown", "Button", "Next >")],
+    "model-advanced": [("shown", "Button", "Hide advanced"), ("hidden", "Button", "Advanced options")],
+    "model-advanced-off": [("shown", "Button", "Advanced options")],
+    "model-preview-classic": [("shown", "Button", "Hi-Res"), ("shown", "Button", "Classic fallback")],
+    "model-preview-hires": [("shown", "Button", "Hi-Res"), ("shown", "Button", "Classic fallback")],
+    "driver": FLOW + [("shown", "Button", "Next >")],
+    "look": FLOW + [("shown", "Button", "Next >")],
+    "voices": FLOW + [("shown", "Button", "Next >")],
+    "build": FLOW + [("shown", "Static", "Save as"), ("shown", "Button", "Build"),
+                     ("shown", "Button", "Show details"), ("hidden", "Button", "Next >"),
+                     ("hidden", "Button", "Test in game")],
+    "built": FLOW + [("shown", "Button", "Test in game"), ("shown", "Button", "Build again"),
+                     ("shown", "Button", "Show in folder"), ("shown", "Button", "Show details"),
+                     ("hidden", "Button", "Next >")],
+    "built-details": [("shown", "Button", "Hide details")],
+    "built-details-off": [("shown", "Button", "Show details")],
+    "test": FLOW + [("shown", "Button", "Test in game")],
 }
+# The switch above the preview: only on the CHRG routes, from the step Model on.
+CHRG_EXPECT = {s: [("shown", "Button", "Hi-Res"), ("shown", "Button", "Classic fallback")]
+               for s in ("model", "driver", "look", "voices", "build", "built", "test")}
+# Advanced of the step Model: a CHRG route has the tick "Upscale small textures" only; Vanilla has
+# the switches Options, Import and Animations (Wheels only with --enable-preview-features).
+CHRG_EXPECT["model-advanced"] = [("shown", "Button", "Upscale small textures"), ("hidden", "Button", "Options"),
+                                 ("hidden", "Button", "Import"), ("hidden", "Button", "Animations"),
+                                 ("hidden", "Button", "Wheels")]
+VANILLA_EXPECT = {s: [("hidden", "Button", "Classic fallback"), ("hidden", "Button", "Upscale small textures")]
+                  for s in ("model", "model-advanced", "driver", "look", "voices", "build", "built", "test")}
+VANILLA_EXPECT["model-advanced"] += [("shown", "Button", "Options"), ("shown", "Button", "Import"),
+                                     ("shown", "Button", "Animations"), ("hidden", "Button", "Wheels")]
+# Steps whose "report" must say "primary buttons shown: 1" (one main action per step).
+ONE_PRIMARY = ("model", "driver", "look", "voices", "build", "built")
+# The log line of a script that names no route (Vanilla by itself).
+IMPLICIT_ROUTE = "route: vanilla (implicit"
 
 
 class Shot:
@@ -106,8 +151,15 @@ def do_steps(route, shots, outdir):
         base = os.path.join(outdir, s.base(route))
         steps.append("shot " + base + ".bmp")
         steps.append("controls " + base + ".txt")
+        if s.step in ONE_PRIMARY:
+            steps.append("report " + base + "-report.txt")
     steps.append("quit")
     return steps
+
+
+def legacy_steps(model, outfile):
+    """A script of before, without a route: the page must pick Vanilla by itself."""
+    return ["page char", "model " + model, "name FLOWLEGACY", "out " + outfile, "build", "quit"]
 
 
 def after_actions(route):
@@ -117,13 +169,13 @@ def after_actions(route):
         ("click \"Character\" in the sidebar (the Studio opens on Track)", 1, 0, "cards"),
         ("click the card \"%s\"" % TITLES[route], 1, 0, "cards"),
         ("Model: Browse..., Open (%s)" % (".glb" if chrg else "model file"), 2, 0, "model"),
-        ("click Next (to Driver)", 1, 0, "model"),
+        ("click \"Next >\" (to Driver)", 1, 0, "model"),
         ("type the name", 0, 1, "driver"),
-        ("click Next (to In-game look)", 1, 0, "driver"),
-        ("click Next (to Voices; optional, skipped)", 1, 0, "look"),
-        ("click Next (to Build)", 1, 0, "voices"),
-        ("click Build (output defaults to the game's characters folder)", 1, 0, "build"),
-        ("click Test in game%s" % (" (with --engine-hires-chars)" if chrg else ""), 1, 0, "test"),
+        ("click \"Next >\" (to In-game look)", 1, 0, "driver"),
+        ("click \"Next >\" (to Voices; optional, skipped)", 1, 0, "look"),
+        ("click \"Next >\" (to Build)", 1, 0, "voices"),
+        ("click \"Build\" (Save as defaults to the game's characters folder)", 1, 0, "build"),
+        ("click \"Test in game\"%s" % (" (with --engine-hires-chars)" if chrg else ""), 1, 0, "test"),
     ]
 
 
@@ -218,27 +270,53 @@ def read_log(path):
 
 def check_controls(path, expect):
     """Missing expectations of a controls dump, as texts (empty list = fine)."""
+    # The dump's control lines (rs_shell.c, Rs_DumpControls): control, id, class, left, top,
+    # right, bottom, visible, ..., text (field 12).
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             lines = fh.read().splitlines()
     except OSError:
         return ["no controls dump"]
+    shown = []
+    for ln in lines:
+        f = ln.split("\t")
+        if f[0] == "control" and len(f) >= 13 and f[7] == "1":
+            shown.append((f[2], f[12]))
     missing = []
-    for kind, text in expect:
-        want = text.lower()
-        found = False
-        for ln in lines:
-            f = ln.split("\t")
-            if f[0] == "control" and len(f) >= 13 and f[7] == "1" and want in f[12].lower():
-                if kind == "card" or f[2] == "Button":
-                    found = True
-                    break
-            elif f[0] == "card" and kind == "card" and len(f) >= 7 and want in f[6].lower():
-                found = True
-                break
-        if not found:
-            missing.append("%s '%s' not present and visible" % (kind, text))
+    for rule, cls, text in expect:
+        def hit(c, t):
+            if cls is not None and c != cls:
+                return False
+            if rule == "head":
+                return t == text or t.endswith(" " + text)
+            return t == text
+        found = any(hit(c, t) for c, t in shown)
+        if rule in ("shown", "head") and not found:
+            missing.append("%s '%s' not present and visible" % ("step head" if rule == "head" else (cls or "control"), text))
+        elif rule == "hidden" and found:
+            missing.append("%s '%s' visible but should not be" % (cls or "control", text))
     return missing
+
+
+def check_report(path):
+    """Misses of a step's report: exactly one primary button shown."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return ["no report written"]
+    m = re.search(r"primary buttons shown:\s*(\d+)", text)
+    if not m:
+        return ["the report has no line 'primary buttons shown'"]
+    if m.group(1) != "1":
+        return ["primary buttons shown: %s (1 expected)" % m.group(1)]
+    return []
+
+
+def step_expect(route, step):
+    exp = list(EXPECT.get(step, []))
+    exp += (CHRG_EXPECT if CHRG[route] else VANILLA_EXPECT).get(step, [])
+    return [(rule, cls, text.replace("{title}", TITLES[route])) for rule, cls, text in exp]
 
 
 def check_run(route, shots, outdir, log_lines):
@@ -253,13 +331,13 @@ def check_run(route, shots, outdir, log_lines):
     if not fin:
         fails.append("the log has no 'automation finished' line (the Studio did not get to the end)")
     for s in shots:
-        if s.extra:
-            continue
-        exp = EXPECT.get(s.step)
-        if not exp:
-            continue
-        for m in check_controls(os.path.join(outdir, s.base(route) + ".txt"), exp):
-            ctrl.append("%s: %s" % (s.base(route), m))
+        exp = step_expect(route, s.step)
+        if exp:
+            for m in check_controls(os.path.join(outdir, s.base(route) + ".txt"), exp):
+                ctrl.append("%s: %s" % (s.base(route), m))
+        if s.step in ONE_PRIMARY:
+            for m in check_report(os.path.join(outdir, s.base(route) + "-report.txt")):
+                ctrl.append("%s: %s" % (s.base(route), m))
     cmds = [ln for ln in log_lines if "--char" in ln and "ctr_native" in ln]
     if not cmds:
         ctrl.append("%s: no logged Test in game command line with --char" % route)
@@ -313,6 +391,34 @@ def run_route(args, route, model, outdir):
     return shots, check_run(route, shots, outdir, read_log(os.path.join(outdir, route + ".log")))
 
 
+def run_legacy(args, model, outdir):
+    """A script of before (no route verb) with the Vanilla model: (fails, misses, notes)."""
+    steps = legacy_steps(model, os.path.join(outdir, "legacy.rldchar"))
+    log = os.path.join(outdir, "legacy.log")
+    cmd = [args.studio, "--settings", os.path.join(outdir, "rs.ini"), "--log", log, "--theme", args.theme]
+    for s in steps:
+        cmd += ["--do", s]
+    env = dict(os.environ, TMP=args.tmp, TEMP=args.tmp)
+    print("legacy script (no route): starting %s (%d steps)" % (args.studio, len(steps)))
+    try:
+        subprocess.run(cmd, env=env, timeout=args.timeout, stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        print("legacy script: the Studio did not finish within %d s (killed)" % args.timeout)
+    lines = read_log(log)
+    if lines is None:
+        return ["no log written"], [], []
+    fails = [ln.strip() for ln in lines if "FAIL" in ln]
+    if not [ln for ln in lines if ln.startswith("automation finished")]:
+        fails.append("the log has no 'automation finished' line")
+    misses = []
+    implicit = [ln.strip() for ln in lines if IMPLICIT_ROUTE in ln]
+    if not implicit:
+        misses.append("no log line '%s ...': the page did not pick Vanilla by itself" % IMPLICIT_ROUTE)
+    if not os.path.isfile(os.path.join(outdir, "legacy.rldchar")):
+        misses.append("the legacy script built no legacy.rldchar")
+    return fails, misses, implicit[:1]
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Reload Studio guided flow: shots per step and click count AFTER.")
     ap.add_argument("--studio", default=DEFAULT_STUDIO, help="ReloadStudio.exe (default: the Release build of this checkout)")
@@ -353,6 +459,11 @@ def main(argv=None):
             print("AFTER, route %s" % TITLES[r])
             print(after_table(r, shots))
             print("")
+        if "vanilla" in routes:
+            print("== a script of before (no route verb; the page must pick Vanilla by itself)")
+            for st in legacy_steps(models["vanilla"], os.path.join(outdir, "legacy.rldchar")):
+                print("  --do \"%s\"" % st)
+            print("")
         print("comparison")
         print(comparison_table(routes, before))
         return 0
@@ -388,11 +499,26 @@ def main(argv=None):
             exit_code = max(exit_code, 1)
         elif ctrl:
             exit_code = max(exit_code, 2)
+    legacy = None
+    if "vanilla" in routes:
+        legacy = run_legacy(args, models["vanilla"], outdir)
+        print("legacy script: %d FAIL line(s), %d check miss(es)" % (len(legacy[0]), len(legacy[1])))
+        for t in legacy[0] + legacy[1] + legacy[2]:
+            print("  " + t)
+        if legacy[0]:
+            exit_code = max(exit_code, 1)
+        elif legacy[1]:
+            exit_code = max(exit_code, 2)
     for r in routes:
         shots, fails, ctrl, notes = results[r]
         md += ["## Route " + TITLES[r], "", after_table(r, shots), "",
                "Run check: %d FAIL line(s), %d control check miss(es)." % (len(fails), len(ctrl)), ""]
         md += ["- FAIL: " + t for t in fails] + ["- CHECK: " + t for t in ctrl] + ["- " + t for t in notes]
+        md.append("")
+    if legacy is not None:
+        md += ["## A script of before (no route verb)", "",
+               "Run check: %d FAIL line(s), %d check miss(es)." % (len(legacy[0]), len(legacy[1])), ""]
+        md += ["- FAIL: " + t for t in legacy[0]] + ["- CHECK: " + t for t in legacy[1]] + ["- " + t for t in legacy[2]]
         md.append("")
     md += ["## Comparison BEFORE / AFTER" if before else "## Totals", "", comparison_table(routes, before), ""]
     with open(os.path.join(outdir, "AFTER.md"), "w", encoding="utf-8", newline="\n") as fh:
