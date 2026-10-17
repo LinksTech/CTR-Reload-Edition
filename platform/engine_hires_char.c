@@ -46,8 +46,13 @@
 //   PSX blend: the PS1 byte itself (factor 1 = 128); a material of a textured
 //   primitive in PSX blend adds ENG_HC_PSX_BLEND to its programParam[0], and
 //   "ns" then reads the vertex colour as byte / 128 on the display curve and
-//   clamps texel x colour x tint to 1 (platform/engine_static_shader.inc). A
-//   file in glTF mode (every CHRG before the mode) draws exactly as before.
+//   clamps texel x colour x tint to 1 (platform/engine_static_shader.inc).
+//   A FILE IN PSX BLEND IS DRAWN UNLIT, as the PS1 draws a driver: its shading
+//   is baked into COLOR_0 (the classic custom driver is vertex colour x the
+//   depth cue tint only), so a second light would make it brighter than the
+//   classic model. Every material of such a file - the default one and the
+//   standard wheels' too - draws with shading 2 (unlit). A file in glTF mode
+//   (every CHRG before the mode) or off draws lit, exactly as before.
 
 int g_cfg_engineHiresChars = 0;
 int g_cfg_engineHiresCharsLog = 0;
@@ -93,6 +98,10 @@ int g_cfg_engineHiresCharsFilter = ENGINE_TEXTURE_FILTERED;
 #define ENG_HC_STD_HALF_WIDTH 5.0f
 #define ENG_HC_STD_VERTICES (ENG_HC_STD_SEGMENTS * 4 + 2) // tread 2 rings, two side rings, two hubs
 #define ENG_HC_STD_INDICES (ENG_HC_STD_SEGMENTS * 12)
+// The standard wheel's greys on screen (display values 0..255).
+#define ENG_HC_STD_GREY_TREAD 38
+#define ENG_HC_STD_GREY_SIDE 112
+#define ENG_HC_STD_GREY_HUB 170
 // The slots: the API's (seats, forced submits) and one of the engine's own,
 // the driver select preview (EngHc_SelectRoute).
 #define ENG_HC_SLOT_SELECT ENGINE_HIRES_SLOTS
@@ -125,6 +134,7 @@ typedef struct
 	int unlit;
 	float normalScale;
 	int psxBlend; // 1 = PSX blend: textured in a file of mode PSX (ENG_HC_PSX_BLEND)
+	int psxFile;  // 1 = the file's mode is PSX blend: drawn unlit, as the PS1 draws a driver
 } EngHcMat;
 
 typedef struct
@@ -434,7 +444,15 @@ internal void EngHc_StdWheel(EngHcSrc *src, EngineVertex *base, u32 *indices, u3
 		EngHcSrc *e = &src[v];
 		EngineVertex *b = &base[v];
 		const int tread = (v < (u32)(ENG_HC_STD_SEGMENTS * 4)) && ((v & 1u) == 0u);
-		const u8 grey = tread ? 38 : ((v >= (u32)(ENG_HC_STD_SEGMENTS * 4)) ? 170 : 112);
+		// The greys as they are meant on screen (display values: a dark tread,
+		// lighter sides and hubs). "ns" puts a glTF vertex colour on the display
+		// curve, so the byte stored is the linear value of that grey (within a
+		// level of it on screen; Reload Studio shows the same greys).
+		const u8 grey = RldHiresColor_VertexByte(RLDHIRES_VCOL_GLTF,
+		                                         RldHiresColor_Decode((float)(tread ? ENG_HC_STD_GREY_TREAD
+		                                                                            : ((v >= (u32)(ENG_HC_STD_SEGMENTS * 4)) ? ENG_HC_STD_GREY_HUB
+		                                                                                                                       : ENG_HC_STD_GREY_SIDE)) /
+		                                                              255.0f));
 
 		e->w[0] = 1.0f;
 		e->w[1] = e->w[2] = e->w[3] = 0.0f;
@@ -614,6 +632,7 @@ internal void EngHc_Materials(EngHcChar *c, const cgltf_data *gltf)
 		m->normalTex = -1;
 		m->factor[0] = m->factor[1] = m->factor[2] = m->factor[3] = 1.0f;
 		m->normalScale = 1.0f;
+		m->psxFile = (c->vcolMode == RLDHIRES_VCOL_PSX);
 		if (i < (u32)gltf->materials_count)
 		{
 			const cgltf_material *g = &gltf->materials[i];
@@ -1279,12 +1298,13 @@ internal int EngHc_Upload(const RldHiresModel *m, EngHcChar *c, const char **rul
 	return 1;
 }
 
-// programParam[0] of a material of "ns": 2 = unlit (KHR_materials_unlit), 1 =
-// lit with its normal map, 0 = lit (engine.h, ENGINE_PROGRAM_NS); plus
-// ENG_HC_PSX_BLEND when its vertex colours are PSX blend (engine_static_shader.inc).
+// programParam[0] of a material of "ns": 2 = unlit (KHR_materials_unlit, and
+// every material of a file in PSX blend: unlit as on the PS1), 1 = lit with its
+// normal map, 0 = lit (engine.h, ENGINE_PROGRAM_NS); plus ENG_HC_PSX_BLEND when
+// its vertex colours are PSX blend (engine_static_shader.inc).
 internal float EngHc_ProgramParam0(const EngHcMat *m, int hasNormal)
 {
-	return (m->unlit ? 2.0f : (hasNormal ? 1.0f : 0.0f)) + (m->psxBlend ? ENG_HC_PSX_BLEND : 0.0f);
+	return ((m->unlit || m->psxFile) ? 2.0f : (hasNormal ? 1.0f : 0.0f)) + (m->psxBlend ? ENG_HC_PSX_BLEND : 0.0f);
 }
 
 // This level's materials of a character (the table was reset at the unload).
@@ -3130,9 +3150,13 @@ internal int EngHc_SelfTestLoader(int *checks)
 				HL_CHECK((c.base[4].color[0] == wheelByte[mode]) && (c.base[51].color[2] == wheelByte[mode]),
 				         "V: a primitive without COLOR_0 has the factor 1 (glTF and off 255, PSX 128)");
 				HL_CHECK((c.mats[0].psxBlend == (mode == RLDHIRES_VCOL_PSX)) &&
-				             (EngHc_ProgramParam0(&c.mats[0], 0) == ((mode == RLDHIRES_VCOL_PSX) ? 4.0f : 0.0f)) &&
-				             (EngHc_ProgramParam0(&c.mats[0], 1) == ((mode == RLDHIRES_VCOL_PSX) ? 5.0f : 1.0f)),
-				         "V: programParam[0] + 4 for PSX blend only");
+				             (EngHc_ProgramParam0(&c.mats[0], 0) == ((mode == RLDHIRES_VCOL_PSX) ? 6.0f : 0.0f)) &&
+				             (EngHc_ProgramParam0(&c.mats[0], 1) == ((mode == RLDHIRES_VCOL_PSX) ? 6.0f : 1.0f)),
+				         "V: the textured material: PSX blend unlit + 4 (6); glTF and off lit as before (0, with a normal map 1)");
+				HL_CHECK((c.matCount == 3) && !c.mats[1].psxBlend && !c.mats[2].psxBlend &&
+				             (EngHc_ProgramParam0(&c.mats[1], 0) == ((mode == RLDHIRES_VCOL_PSX) ? 2.0f : 0.0f)) &&
+				             (EngHc_ProgramParam0(&c.mats[2], 0) == ((mode == RLDHIRES_VCOL_PSX) ? 2.0f : 0.0f)),
+				         "V: the default and the standard wheels' material: unlit in a PSX file (2), lit otherwise (0)");
 				EngHc_FreeCpu(&c);
 			}
 			RldHires_Close(&model);
@@ -3147,8 +3171,8 @@ internal int EngHc_SelfTestLoader(int *checks)
 		memset(&c, 0, sizeof(c));
 		c.indexBuffer = 0xffffffffu;
 		ok = ok && EngHc_BuildCpu(&model, &c, &rule, detail, (int)sizeof(detail));
-		HL_CHECK(ok && (c.base[0].color[0] == 55) && (c.base[4].color[0] == 255) && !c.mats[0].psxBlend,
-		         "V: PSX blend on an untextured material reads COLOR_0 as glTF");
+		HL_CHECK(ok && (c.base[0].color[0] == 55) && (c.base[4].color[0] == 255) && !c.mats[0].psxBlend && (EngHc_ProgramParam0(&c.mats[0], 0) == 2.0f),
+		         "V: PSX blend on an untextured material reads COLOR_0 as glTF, unlit");
 		if (ok)
 		{
 			EngHc_FreeCpu(&c);
@@ -3163,6 +3187,54 @@ internal int EngHc_SelfTestLoader(int *checks)
 			RldHires_Close(&model);
 		}
 		free(chunk);
+		free(glb);
+	}
+
+	// The standard wheels (three wheel nodes: the four standard ones): their
+	// greys come out on screen as meant (38 tread, 112 side, 170 hub, within a
+	// level), the same bytes in every mode.
+	{
+		static const int meant[3] = {ENG_HC_STD_GREY_TREAD, ENG_HC_STD_GREY_SIDE, ENG_HC_STD_GREY_HUB};
+		static const u32 vertex[3] = {0u, 1u, (u32)(ENG_HC_STD_SEGMENTS * 4)};
+		u8 bytes[3][3];
+		int mode;
+
+		memset(&d, 0, sizeof(d));
+		d.skinned = 1;
+		d.wheels = 3;
+		d.clipMask = 0xfffu;
+		d.texture = 1;
+		glb = EngHiresTest_Glb(&d, &glbSize);
+		for (mode = 0; mode < 3; mode++)
+		{
+			int g;
+			int near = 1;
+
+			chunk = (glb != NULL) ? RldHires_BuildChunkFlags(glb, (u32)glbSize, (u32)mode, &chunkSize) : NULL;
+			ok = (chunk != NULL) && EngHc_CheckChunk(chunk, chunkSize, &model, &rep, &rule, detail, (int)sizeof(detail));
+			memset(&c, 0, sizeof(c));
+			c.indexBuffer = 0xffffffffu;
+			ok = ok && EngHc_BuildCpu(&model, &c, &rule, detail, (int)sizeof(detail));
+			HL_CHECK(ok && !c.ownWheels, "V: the standard wheels are made");
+			for (g = 0; ok && (g < 3); g++)
+			{
+				const u8 b = c.base[4u + vertex[g]].color[0];
+				const float shown = RldHiresColor_VertexValue(RLDHIRES_VCOL_GLTF, b) * 255.0f;
+
+				bytes[mode][g] = b;
+				near = near && (fabsf(shown - (float)meant[g]) <= 1.0f) && (c.base[4u + vertex[g]].color[2] == b) && (c.base[4u + vertex[g]].color[3] == 255);
+			}
+			HL_CHECK(ok && near, "V: the standard wheels' greys on screen within a level of 38 / 112 / 170");
+			HL_CHECK(ok && (EngHc_ProgramParam0(&c.mats[c.matCount - 1], 0) == ((mode == RLDHIRES_VCOL_PSX) ? 2.0f : 0.0f)),
+			         "V: the standard wheels unlit in a PSX file, lit otherwise");
+			if (ok)
+			{
+				EngHc_FreeCpu(&c);
+			}
+			RldHires_Close(&model);
+			free(chunk);
+		}
+		HL_CHECK((memcmp(bytes[0], bytes[1], 3) == 0) && (memcmp(bytes[0], bytes[2], 3) == 0), "V: the standard wheels' bytes are the same in every mode");
 		free(glb);
 	}
 
