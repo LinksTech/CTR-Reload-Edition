@@ -225,7 +225,8 @@ def run_all(blender, packer, work):
     gl, fk = os.path.join(work, "gltf"), os.path.join(work, "fake")
 
     def gen(out, *extra):
-        return run([blender, "--background", "--factory-startup", "--python-exit-code", "1",
+        # --threads 1: the .blend is byte-identical only single-threaded (make_creator_kit.THREADS_NOTE)
+        return run([blender, "--threads", "1", "--background", "--factory-startup", "--python-exit-code", "1",
                     "--python", GENERATOR, "--", "--kit", out] + list(extra), env)
 
     def hires(glb, mode):

@@ -53,6 +53,8 @@ driver template:
 
 Needs Blender 5.2. Without game data, from the folder that holds `templates`:
 
-    blender --background --factory-startup --python-exit-code 1 --python templates/make_creator_kit.py -- --kit <folder> --stand-in
+    blender --threads 1 --background --factory-startup --python-exit-code 1 --python templates/make_creator_kit.py -- --kit <folder> --stand-in
 
-Same Blender version and same input give the same bytes.
+Same Blender version and same input give the same bytes (`--threads 1`
+keeps the .blend byte-identical; with more threads only its bytes may
+differ, not its content).

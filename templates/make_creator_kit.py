@@ -4,7 +4,7 @@
 # or comes from the kit files you give it - this script holds no game data. It
 # is released under CC0 (templates/LICENSE).
 #
-#   blender --background --factory-startup --python-exit-code 1 \
+#   blender --threads 1 --background --factory-startup --python-exit-code 1 \
 #       --python templates/make_creator_kit.py -- --kit <folder> [options]
 #
 # <folder> must hold kit-info.json, kit-kart.glb and kit-wheel.glb (and
@@ -23,7 +23,8 @@
 # Output in <folder>: creator-kit.blend, creator-kit-demo.glb,
 # creator-kit-report.json. Exit codes: 0 good, 2 wrong call, 3 wrong Blender
 # version, 4 input missing or invalid, 5 the self check failed or an internal
-# error. Needs Blender 5.2; same Blender and same input give the same bytes.
+# error. Needs Blender 5.2; same Blender and same input give the same bytes
+# (the .blend only with --threads 1, see THREADS_NOTE).
 #
 # Units and axes. Kit files use model units "u" (64 u = 1 m) with glTF axes:
 # x = kart left, y = up, z = kart front. Blender: X = x / 64, Y = -z / 64,
@@ -93,6 +94,12 @@ IMPORT_SHADING = "SMOOTH"
 CRASH_BOX = (-33.8, 5.6, -54.1, 34.3, 88.3, 58.3)   # u, the size a driver may fill
 WHEEL_NAMES = ("wheel_fl", "wheel_fr", "wheel_rl", "wheel_rr")
 GLB_NAME = "creator-kit-demo.glb"
+# Byte-identical .blend files need Blender started with --threads 1. With more threads the .blend writer
+# gives some temporary blocks (the attribute arrays of a mesh) file addresses that depend on which memory
+# the allocator hands out while other threads allocate - under CPU load about 2 runs in 100 wrote other
+# addresses (same data, other bytes). The GLB exports are byte-identical either way.
+THREADS_NOTE = ("Blender ran with more than one thread: creator-kit.blend has the same content, but its bytes "
+                "may differ between runs. Start Blender with --threads 1 for byte-identical files.")
 BLEND_NAME = "creator-kit.blend"
 REPORT_NAME = "creator-kit-report.json"
 
@@ -671,7 +678,7 @@ def build(opt, started):
         "sha256": {BLEND_NAME: sha256_file(blend_path) if opt["blend"] else None,
                    GLB_NAME: sha256_file(glb_path) if opt["glb"] else None},
         "seconds": round(time.time() - started, 1),
-        "messages": [],
+        "messages": [] if single_thread(sys.argv) else [THREADS_NOTE],
     }
     with open(os.path.join(out, REPORT_NAME), "w", encoding="utf-8", newline="\n") as f:
         json.dump(report, f, indent=1, sort_keys=True)
@@ -680,6 +687,15 @@ def build(opt, started):
           % (vcol, report["source"], report["triangles"]["total"], report["skin_joints"],
              len(report["clips"]) if report["clips"] is not None else "-",
              "yes" if opt["blend"] else "no", "yes" if opt["glb"] else "no", report["seconds"]))
+
+
+def single_thread(argv):
+    """True when Blender was started with --threads 1 (or -t 1)."""
+    before = argv[:argv.index("--")] if "--" in argv else argv
+    for i, a in enumerate(before[:-1]):
+        if a in ("--threads", "-t") and before[i + 1] == "1":
+            return True
+    return False
 
 
 def main():
