@@ -139,6 +139,10 @@ global_variable s32 s_enabled;
 global_variable s32 s_frameOpen;
 global_variable s32 s_rowsSinceFlush;
 global_variable u32 s_frameIndex;
+// The loading stage of the last row written (-1 = no load): a load that has
+// just ended gets one log line with the frame index of its first row after the
+// load, the key that ties the rows to the log's load lines (measuring only).
+global_variable s32 s_prevLoadingStage = -1;
 global_variable u32 s_framesOverBudget;
 global_variable u32 s_workFramesOverBudget;
 global_variable u32 s_framesOver40;
@@ -721,6 +725,12 @@ void NativePerf_EndFrame(const struct NativePerfFrameInfo *info)
 	NativeAudio_GetOutputStats(&endUnderrunFrames, &endOverflowFrames, &endQueuedFrames);
 
 	const struct NativePerfFrameInfo *rowInfo = (info != NULL) ? info : &s_frameBeginInfo;
+
+	if ((s_prevLoadingStage != -1) && (rowInfo->loadingStage == -1))
+	{
+		Platform_Log("[CTR Perf] load end: frame_index %u level %d vblank %d\n", s_frameIndex, (int)rowInfo->levelID, (int)rowInfo->frameTimer_VsyncCallback);
+	}
+	s_prevLoadingStage = rowInfo->loadingStage;
 
 	fprintf(s_csvFile, "%u,%.3f,%.3f,%.3f,%.3f,%s,%.3f,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d", s_frameIndex, totalMs, workMs, overBudgetMs,
 	        workOverBudgetMs, NativePerf_BucketName(dominantBucket), dominantMs, rowInfo->frameCounter, rowInfo->timer, rowInfo->levelID, rowInfo->gameMode1,
