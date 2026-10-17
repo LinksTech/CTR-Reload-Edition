@@ -221,6 +221,14 @@ static int NativeArg_IsVersion(const char *arg)
 // switch that silently drops out is a run that does something other than what
 // its command line says.
 //
+// THE TEST START (round of 2026-10-17, format 4.2): --char, --level and
+// --driver are developer switches, but the three together are the one call of
+// the Reload Studio's "Test in game" (tools/reloadstudio/rs_test.c,
+// Rs_TestCharacter): one .rldchar straight on seat 0 of a race. Without --dev
+// they are taken only as that call - each once, --level a race track 0..17,
+// --driver a template 0..14 (NativeArgs_TestStart); alone, in another number or
+// with another developer switch they still need --dev.
+//
 // The check comes BEFORE any evaluation, as the first thing in main. The
 // evaluation itself is spread over seven places (NativeArgs_ReadDisplayFlags,
 // NativeSetup_EnsureData, three loops in main, NativePerf_ConfigureFromArgs,
@@ -289,6 +297,11 @@ static const NativeSwitch s_playerSwitches[] = {
     {"--no-engine", "", NULL},
     {"--engine", "", NULL},
     {"--engine-track", "", NULL},
+    // The hi-res drivers are on by default whenever the engine draws
+    // (include/platform/engine.h, HI-RES DRIVERS FROM THE .rldchar): their way
+    // out, and their old name, which changes nothing any more.
+    {"--no-hires-chars", "", NULL},
+    {"--engine-hires-chars", "", NULL},
 };
 
 static const NativeSwitch s_devSwitches[] = {
@@ -345,8 +358,8 @@ static const NativeSwitch s_devSwitches[] = {
     {"--settings-defaults", "", "built-in defaults, ctr-settings.cfg and track-ids.tsv neither read nor written"},
     {"--msaa-at", "<V:L,V:L,...>", "switch anti-aliasing to level L (1, 2 or 4) at VBlank V, for this run only (up to 32 pairs)"},
     {"--sample-shading", "<off|textured>", "sample shading of the anti-aliasing for comparison (default textured)"},
-    {"--level", "<n>", "jump straight into level id n as soon as the main menu is up"},
-    {"--driver", "<n>", "driver for the jump with --level or --autoload-track (default 0, Crash)"},
+    {"--level", "<n>", "jump straight into level id n as soon as the main menu is up; without --dev only in the test start of --char"},
+    {"--driver", "<n>", "driver for the jump with --level or --autoload-track (default 0, Crash); without --dev only in the test start of --char"},
     {"--level-tour", "<list>", "drive the listed tracks one after another, each started from the main menu like --level / --autoload-track and left after --level-tour-frames race frames like QUIT, then end; list: races (level ids 0..17), arenas (level ids 18..24, a one-player race on each battle arena), containers (every container of the track folder), level ids, container file names, comma-separated"},
     {"--level-tour-frames", "<n>", "race frames per track of --level-tour (default 600); n[,L<level>@<n>...]: that level drives its own count, comma-separated, up to 32"},
     {"--level-tour-shots", "<frames>", "with --level-tour: at each listed race frame of every entry a burst of 12 snapshots of consecutive race frames (<--shot-name>-tNN-L<level>-<burst>-<race frame>.bmp); a plain number is for every track, L<level>@<frame> for that level only; comma-separated, up to 32"},
@@ -404,7 +417,7 @@ static const NativeSwitch s_devSwitches[] = {
     {"--no-tracks", "", "do not open tracks/"},
     {"--tracks-dir", "<folder>", "containers from this folder instead of tracks/ (reference runs)"},
     {"--chars-dir", "<folder>", "custom characters from every .rldchar of this folder instead of characters/, also with --settings-defaults (test runs); with --char only the folder of that file"},
-    {"--char", "<file>", "only this .rldchar (in --chars-dir, or an absolute path) and no folder: a tile in the one-player arcade driver select right after the retail drivers, or with --level and --driver <its template> straight on seat 0"},
+    {"--char", "<file>", "only this .rldchar (in --chars-dir, or an absolute path) and no folder: a tile in the one-player arcade driver select right after the retail drivers, or with --level and --driver <its template> straight on seat 0; that test start (--char, --level 0..17 and --driver 0..14, each once: the Reload Studio's Test in game) also runs without --dev"},
     {"--dev-grid-fill", "<n>", "n placeholder tiles, 1 to 32, after the custom character tiles in the one-player arcade driver select (rows and scrolling with many entries); a placeholder cannot be chosen"},
     {"--dev-char-seats", "<all|cycle>", "every seat of a one-player arcade race drives a custom model, the bots put on the file's template (give --driver <that template> for seat 0), with the template's class: all =the first file of the roster, cycle = the next file at every race load (several models measured in one run); draw memory and mempack grow by eight models"},
     {"--dev-char-seat-files", "<f0,f1,...>", "as --dev-char-seats all, but seat 0, 1, ... drives the roster file f0, f1, ... (1 to 8 file names of the folder, commas between), every further seat the first file of the roster, each bot on its own file's template; not with --dev-char-seats or --char"},
@@ -428,9 +441,8 @@ static const NativeSwitch s_devSwitches[] = {
     {"--engine-hires-dir", "<dir>", "with --engine: the hi-res driver prototype (stage H) from <dir> (body.hrm, wheel.hrm, skin.hrt of tools/hires_testdriver.py) drawn instead of seat 0's body and wheel sprites in a race and as the driver of --engine-menuscene: full-resolution RGBA texture with mip levels, 3D wheels from game state, one log line per tick"},
     {"--engine-hires-tex64", "", "with --engine-hires-dir: the texture reduced to 64x64 (the comparison run of stage H)"},
     {"--engine-hires-anim", "", "with --engine-hires-dir: the animated test body of tools/hires_blender_driver.py (anim.hra, anim.hrt in that folder) instead of body.hrm - pose frames for steering, air and drift picked from game state, one log line per tick (prototype Z4)"},
-    {"--engine-hires-chars", "", "the hi-res drivers of the .rldchar: every bound custom character whose file has a CHRG chunk (glTF model) is drawn by the engine from it - skinned, its clips picked from game state, its own wheel nodes or standard 3D wheels; refused or over budget: its classic model, one line per seat; with the engine off: its classic model and a line 'hires char off'"},
-    {"--engine-hires-chars-log", "", "with --engine-hires-chars, measuring only: one line per logic tick and hi-res seat ('[CTR Engine] hires char: vb ...': the state read, the clip drawn and its time, the fade weight, the wheels read back from the drawn matrices)"},
-    {"--engine-hires-chars-filter", "<nearest|linear>", "with --engine-hires-chars, measuring only: the hi-res drivers' textures point sampled (nearest) or trilinear with anisotropy (linear, the default) - the comparison image of the two"},
+    {"--engine-hires-chars-log", "", "measuring only, not with --no-hires-chars: one line per logic tick and hi-res seat ('[CTR Engine] hires char: vb ...': the state read, the clip drawn and its time, the fade weight, the wheels read back from the drawn matrices)"},
+    {"--engine-hires-chars-filter", "<nearest|linear>", "measuring only, not with --no-hires-chars: the hi-res drivers' textures point sampled (nearest) or trilinear with anisotropy (linear, the default) - the comparison image of the two"},
     {"--engine-hires-texcycle", "", "with --engine-hires-dir, measuring only: in the menu scene the hi-res skin alternates every 32 VBlanks - full, 64x64, flat magenta key (variant = (vblank / 32) % 3, logged) - the three images of tools/hires_mask_sharp.py from one run"},
     {"--engine-menuscene-zoom", "<f>[,<x>[,<yaw>]]", "with --engine-menuscene, measuring only: the scene's camera zoomed by f (0.25..8, the kart f times larger), its middle at x of half the view width (-1..1, default 0.3, negative left), and with yaw (degrees) a still view at that angle instead of the turn"},
     {"--engine-hide", "<sky,water,track>", "with --engine --engine-track: the engine owns the listed items (the PS1 path does not draw them) but draws nothing of them - the 'minus' run of the measurements; comma-separated, words sky, water and track (track: the level's faces, its water and its level instances; drivers and effects stay - with --engine-static-model only the model shows)"},
@@ -525,6 +537,13 @@ static void NativeArgs_PrintHelp(void)
 	printf("                            everything (the way back should the engine not work on this PC)\n");
 	printf("  --engine [--engine-track] the native engine (and its track) by name; without a switch one-player\n");
 	printf("                            races use both, by name the engine stays on with more players too\n");
+	printf("  --no-hires-chars          this run without the hi-res drivers: a custom character with a hi-res\n");
+	printf("                            model draws its classic model (they are on whenever the engine draws;\n");
+	printf("                            --engine-hires-chars, their old name, is still taken and changes nothing)\n");
+	printf("  --char <file> --level <n> --driver <t>\n");
+	printf("                            test start (Reload Studio, Test in game): only this .rldchar (full path),\n");
+	printf("                            straight into race track n (0..17) with it on seat 0; t is its template\n");
+	printf("                            (0..14); the three only together - alone or otherwise they need --dev\n");
 	printf("\n");
 	printf("--windowed, --fullscreen, --res-scale, --aspect and --msaa apply to this run and are not saved.\n");
 	printf("Relative paths (--log, --image) are taken relative to the game folder, not the current directory.\n");
@@ -774,10 +793,104 @@ static int NativeArgs_OracleFault(const char *value, int *kind, int *n)
 	return 1;
 }
 
+// A whole number of one or two digits, 0..max; -1 for anything else (a sign,
+// a space, more digits).
+static int NativeArgs_SmallNumber(const char *value, int max)
+{
+	int n = 0;
+	size_t i;
+
+	if ((value == NULL) || (value[0] == '\0') || (strlen(value) > 2))
+	{
+		return -1;
+	}
+	for (i = 0; value[i] != '\0'; i++)
+	{
+		if ((value[i] < '0') || (value[i] > '9'))
+		{
+			return -1;
+		}
+		n = n * 10 + (value[i] - '0');
+	}
+	return (n <= max) ? n : -1;
+}
+
+// The developer switches of the test start (see THE TEST START above).
+static int NativeArgs_IsTestStartSwitch(const char *arg)
+{
+	return (strcmp(arg, "--char") == 0) || (strcmp(arg, "--level") == 0) || (strcmp(arg, "--driver") == 0);
+}
+
+// THE TEST START without --dev: 1 = --char, --level and --driver are each on
+// the command line once, in the position of a switch, --level a race track
+// 0..17 and --driver a template 0..14 - then the gate takes these three without
+// --dev; 0 = not the test start (each of them needs --dev as before);
+// NATIVE_EXIT_DEV_REQUIRED = the three are there but a number is not, said on
+// stderr. Walks the words as the gate does (a value is never a switch).
+static int NativeArgs_TestStart(int argc, char *argv[])
+{
+	int chars = 0;
+	int levels = 0;
+	int drivers = 0;
+	const char *level = NULL;
+	const char *driver = NULL;
+	int dev = 0;
+
+	for (int argIndex = 1; argIndex < argc; argIndex++)
+	{
+		const NativeSwitch *known = NativeArgs_FindSwitch(argv[argIndex], &dev);
+		const char *value = ((argIndex + 1) < argc) ? argv[argIndex + 1] : NULL;
+
+		if (known == NULL)
+		{
+			continue;
+		}
+		if (strcmp(argv[argIndex], "--char") == 0)
+		{
+			chars++;
+		}
+		else if (strcmp(argv[argIndex], "--level") == 0)
+		{
+			levels++;
+			level = value;
+		}
+		else if (strcmp(argv[argIndex], "--driver") == 0)
+		{
+			drivers++;
+			driver = value;
+		}
+		if (known->value[0] == '<')
+		{
+			argIndex++;
+		}
+	}
+
+	if ((chars != 1) || (levels != 1) || (drivers != 1))
+	{
+		return 0;
+	}
+	if (NativeArgs_SmallNumber(level, 17) < 0)
+	{
+		fflush(stdout);
+		fprintf(stderr, "switch --level of the test start expects a race track 0..17, not '%s' (any level id needs --dev)\n", (level != NULL) ? level : "");
+		fflush(stderr);
+		return NATIVE_EXIT_DEV_REQUIRED;
+	}
+	if (NativeArgs_SmallNumber(driver, 14) < 0)
+	{
+		fflush(stdout);
+		fprintf(stderr, "switch --driver of the test start expects a template 0..14, not '%s'\n", (driver != NULL) ? driver : "");
+		fflush(stderr);
+		return NATIVE_EXIT_DEV_REQUIRED;
+	}
+	return 1;
+}
+
 static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 {
 	const NativeSwitch *known;
 	int dev = 0;
+	int testStart = 0;
 
 	// First pass: is --dev in the position of a switch? As a value
 	// (--log --dev) it unlocks nothing; the second pass rejects that.
@@ -798,6 +911,17 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 		if (known->value[0] == '<')
 		{
 			argIndex++;
+		}
+	}
+
+	// Without --dev: is this the test start of the Studio (THE TEST START)?
+	if (!g_cfg_dev)
+	{
+		testStart = NativeArgs_TestStart(argc, argv);
+
+		if (testStart == NATIVE_EXIT_DEV_REQUIRED)
+		{
+			return NATIVE_EXIT_DEV_REQUIRED;
 		}
 	}
 
@@ -823,7 +947,7 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			return NATIVE_EXIT_DEV_REQUIRED;
 		}
 
-		if ((known == NULL) || (dev && !g_cfg_dev))
+		if ((known == NULL) || (dev && !g_cfg_dev && !((testStart == 1) && NativeArgs_IsTestStartSwitch(arg))))
 		{
 			fflush(stdout);
 			fprintf(stderr, "switch %s requires --dev\n", arg);
@@ -990,6 +1114,8 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 		const char *autoValue = NULL;
 		int pathGiven = 0;
 		int hiresCharsGiven = 0;
+		int hiresOffGiven = 0;
+		int hiresLogGiven = 0;
 		const char *hiresFilterValue = NULL;
 
 		for (int argIndex = 1; argIndex < argc; argIndex++)
@@ -1035,6 +1161,14 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			else if (strcmp(argv[argIndex], "--engine-hires-chars") == 0)
 			{
 				hiresCharsGiven = 1;
+			}
+			else if (strcmp(argv[argIndex], "--no-hires-chars") == 0)
+			{
+				hiresOffGiven = 1;
+			}
+			else if (strcmp(argv[argIndex], "--engine-hires-chars-log") == 0)
+			{
+				hiresLogGiven = 1;
 			}
 			else if ((strcmp(argv[argIndex], "--engine-hires-chars-filter") == 0) && (value != NULL))
 			{
@@ -1110,9 +1244,20 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			{
 				refusal = "switch --engine-flycam-path requires --engine-flycam-auto";
 			}
-			else if ((hiresFilterValue != NULL) && !hiresCharsGiven)
+			// The hi-res drivers are on by default (--engine-hires-chars, their
+			// old name, changes nothing): their measuring switches need no
+			// switch of their own, but none of them goes with the way out.
+			else if (hiresOffGiven && hiresCharsGiven)
 			{
-				refusal = "switch --engine-hires-chars-filter requires --engine-hires-chars";
+				refusal = "switch --no-hires-chars does not go with --engine-hires-chars";
+			}
+			else if (hiresOffGiven && hiresLogGiven)
+			{
+				refusal = "switch --engine-hires-chars-log does not go with --no-hires-chars";
+			}
+			else if (hiresOffGiven && (hiresFilterValue != NULL))
+			{
+				refusal = "switch --engine-hires-chars-filter does not go with --no-hires-chars";
 			}
 			else if ((hiresFilterValue != NULL) && (strcmp(hiresFilterValue, "nearest") != 0) && (strcmp(hiresFilterValue, "linear") != 0))
 			{
@@ -1546,11 +1691,19 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 		{
 			g_cfg_engineHiresAnim = 1;
 		}
+		else if (strcmp(argv[argIndex], "--no-hires-chars") == 0)
+		{
+			// The hi-res drivers are on by default (include/platform/engine.h,
+			// HI-RES DRIVERS FROM THE .rldchar); this is their way out for the
+			// run. UP HERE: the roster notes the CHRG chunks at start
+			// (platform/native_chars.c) only while they are on, so without them
+			// a file with CHRG behaves exactly as one without.
+			g_cfg_engineHiresChars = 0;
+		}
 		else if (strcmp(argv[argIndex], "--engine-hires-chars") == 0)
 		{
-			// Not in the "requires --engine" list: with the engine off the seats
-			// draw their classic models and say so (platform/native_chars.c).
-			g_cfg_engineHiresChars = 1;
+			// The old name of the default, taken for old command lines (the
+			// gate refuses it beside --no-hires-chars); it changes nothing.
 		}
 		else if (strcmp(argv[argIndex], "--engine-hires-chars-log") == 0)
 		{
@@ -4441,6 +4594,15 @@ int main(int argc, char *argv[])
 			{
 				// Set by the early reader.
 				Platform_Log("[CTR Engine] --no-engine: the engine stays off for this run\n");
+			}
+			else if (strcmp(argv[argIndex], "--no-hires-chars") == 0)
+			{
+				// Set by the early reader.
+				Platform_Log("[CTR Engine] --no-hires-chars: the hi-res drivers stay off for this run - every custom character draws its classic model\n");
+			}
+			else if (strcmp(argv[argIndex], "--engine-hires-chars") == 0)
+			{
+				Platform_Log("[CTR Engine] --engine-hires-chars: no effect (the old name) - the hi-res drivers are on by default\n");
 			}
 			else if (strcmp(argv[argIndex], "--engine-fail") == 0)
 			{

@@ -54,7 +54,10 @@
 //   standard wheels' too - draws with shading 2 (unlit). A file in glTF mode
 //   (every CHRG before the mode) or off draws lit, exactly as before.
 
-int g_cfg_engineHiresChars = 0;
+// On by default whenever the engine draws (round of 2026-10-17, format 4.2);
+// 0 with --no-hires-chars (main.c), and 0 from the roster on when no file of
+// it has a CHRG chunk (platform/native_chars.c, NativeChar_LoadRoster).
+int g_cfg_engineHiresChars = 1;
 int g_cfg_engineHiresCharsLog = 0;
 int g_cfg_engineHiresCharsFilter = ENGINE_TEXTURE_FILTERED;
 
@@ -3534,6 +3537,10 @@ int Engine_SelfTestHiresChar(int *checks)
 	HC_CHECK(Engine_ProgramStaticWanted("", 1) && Engine_ProgramStaticWanted("m.glb", 0) && !Engine_ProgramStaticWanted("", 0) &&
 	             !Engine_ProgramStaticWanted(NULL, 0),
 	         "program ns wanted with the static model or the hi-res drivers, else not");
+	// ON BY DEFAULT (format 4.2): the selftest runs before any switch is read
+	// (main.c, NativeArgs_ReadDisplayFlags) and before the roster, so the switch
+	// holds its start value here: on.
+	HC_CHECK(g_cfg_engineHiresChars == 1, "the hi-res drivers on by default");
 	// THE FILTER: by default the hi-res textures are made FILTERED, and that sampling is
 	// linear magnification and minification, linear between the levels, anisotropic
 	// (engine_vram.c EngTex_Sampling, set on the texture's keyed sampler; the draw binds

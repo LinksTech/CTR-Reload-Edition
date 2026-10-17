@@ -685,7 +685,8 @@ const char *Engine_ProgramsFailReason(void);
 u32 Engine_Program(void);
 // The handle of an ENGINE_PROGRAM_* program, 0xffffffff when not made or unknown.
 u32 Engine_ProgramOf(int program);
-// Pure: 1 = "ns" is made at the start (--engine-static-model or --engine-hires-chars).
+// Pure: 1 = "ns" is made at the start (--engine-static-model, or the hi-res
+// drivers on: by default, kept on only with a file with CHRG in the roster).
 int Engine_ProgramStaticWanted(const char *staticModel, int hiresChars);
 
 // --------------------------------------------------------------------------
@@ -713,8 +714,9 @@ int Engine_ProgramStaticWanted(const char *staticModel, int hiresChars);
 // device keeps two in flight with one frame of OT lag), so a frame never
 // overwrites vertices the GPU still reads. A draw of a streamed buffer whose
 // array was not set in its bank's frame is refused (counted as a bad mesh).
-// Without a streamed buffer (every run without --engine-hires-chars) the draw
-// path is the one from before: one compare of a zero counter.
+// Without a streamed buffer (every run without a hi-res driver to draw: no
+// file with CHRG in the roster, or --no-hires-chars) the draw path is the one
+// from before: one compare of a zero counter.
 #define ENGINE_RENDER_STREAM_REGIONS 3
 #define ENGINE_RENDER_STREAMS_MAX 16
 // At a load stage only (the buffer is made host visible, nothing waits). The
@@ -1093,14 +1095,21 @@ int Engine_SelfTestHires(int *checks);
 // platform/engine_hires_char.c (load, GPU side, draw) and
 // platform/engine_hires_pose.c (clip state machine, wheels, log))
 //
-// --engine-hires-chars (--dev): every custom character bound to a seat whose
+// ON BY DEFAULT (round of 2026-10-17, format 4.2; until then --dev
+// --engine-hires-chars, now a player switch that changes nothing): whenever
+// the engine draws, every custom character bound to a seat whose
 // file has a CHRG chunk is drawn from its glTF model in a race - skinned, its
 // clips picked from game state (read only), its own wheel nodes or the
 // standard 3D wheels - instead of its CMDL; the CMDL stays the game's model
 // (physics, LOD, the engine's FX). In a main menu level the roster's files
-// with CHRG are loaded instead (driver select, menu scene). Without the switch
-// nothing of this runs: a file with CHRG behaves exactly as one without.
-// --engine-hires-chars-log (--dev, with --engine-hires-chars): one line per
+// with CHRG are loaded instead (driver select, menu scene). --no-hires-chars
+// (a player switch) turns it off for the run: a file with CHRG then behaves
+// exactly as one without. A run whose roster has no file with CHRG turns it
+// off by itself at start (platform/native_chars.c, NativeChar_LoadRoster):
+// no program "ns", no load stage, no exit report, no log line - a retail
+// race does what it did before the default. Retail drivers are never drawn
+// hi-res; the hi-res path only draws (game state is read, never written).
+// --engine-hires-chars-log (--dev, not with --no-hires-chars): one line per
 // logic tick and hi-res seat, from its first draw in view 0 of the tick:
 //   [CTR Engine] hires char: vb <VBlank> seat <s> timer <gGT->timer> state
 //   <base|jump|drift_left|drift_right|hit|forced|finished> want <clip asked for>
@@ -1133,7 +1142,8 @@ extern int g_cfg_engineHiresCharsLog;
 // THE TEXTURE FILTER of the hi-res drivers: trilinear with anisotropy
 // (ENGINE_TEXTURE_FILTERED), independent of --native-filter and of the glTF
 // sampler's filters (only its wraps are read). --engine-hires-chars-filter
-// <nearest|linear> (--dev, measuring only: the comparison image) sets
+// <nearest|linear> (--dev, measuring only: the comparison image; not with
+// --no-hires-chars) sets
 // ENGINE_TEXTURE_PIXELATED or ENGINE_TEXTURE_FILTERED (the default).
 extern int g_cfg_engineHiresCharsFilter;
 
@@ -1227,7 +1237,7 @@ int Engine_HiresCharSubmit(int ch, const EngineHiresSubmit *s); // draws submitt
 
 // The file side (platform/native_chars.c): the roster entry a seat is bound to
 // (-1 none), whether an entry's file lists a CHRG chunk (noted at start, only
-// with --engine-hires-chars), and the chunk read again from the file at a load
+// while the hi-res drivers are on), and the chunk read again from the file at a load
 // stage (malloc'd bytes, SHA-256 checked, the file's CMDL still the loaded one;
 // NULL with *why).
 int NativeChar_SeatEntry(int seat);

@@ -1002,7 +1002,7 @@ int Engine_HiresOwns(const struct Driver *d)
 {
 	const struct GameTracker *gGT = sdata->gGT;
 
-	// The hi-res drivers of the .rldchar (--engine-hires-chars) first.
+	// The hi-res drivers of the .rldchar (on by default) first.
 	if (g_cfg_engineHiresChars && Engine_HiresCharOwns(d))
 	{
 		return 1;
@@ -1451,7 +1451,7 @@ int Engine_HiresRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, str
 	EngineInstanceDraw draw;
 	int clip = ENG_HIRES_CLIP_STEER;
 
-	// The hi-res drivers of the .rldchar (--engine-hires-chars) first.
+	// The hi-res drivers of the .rldchar (on by default) first.
 	if (g_cfg_engineHiresChars && Engine_HiresCharRoute(inst, idpp, pb))
 	{
 		return 1;

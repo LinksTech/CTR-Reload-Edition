@@ -80,6 +80,10 @@ global_variable ShaderID s_engineStaticProgram = NATIVE_GFX_INVALID;
 // Pure: 1 = the program "ns" is made at the start - a static model is given or
 // the hi-res drivers are on (each draws with it; a missing "ns" still never
 // makes the engine fall back, only those users draw nothing hi-res / flat).
+// The hi-res drivers are on by default but stay on only when a file of the
+// roster has a CHRG chunk (platform/native_chars.c, NativeChar_LoadRoster, at
+// start, before the first level load asks for the programs): a run without
+// one makes no "ns", as before.
 int Engine_ProgramStaticWanted(const char *staticModel, int hiresChars)
 {
 	return ((staticModel != NULL) && (staticModel[0] != '\0')) || (hiresChars != 0);
@@ -144,8 +148,9 @@ int Engine_ProgramsInit(void)
 	// "ns": the same descriptor, the samplers of the static model (slot 0 the base colour, slot 3 the normal map);
 	// its modules are ns.vert / ns.frag. Optional (see THE PROGRAMS), and made
 	// only for its users (Engine_ProgramStaticWanted): --engine-static-model and
-	// --engine-hires-chars (the hi-res drivers, round of 2026-10-17). Without
-	// them no program, no pipeline and no log line more than before.
+	// the hi-res drivers (round of 2026-10-17; on by default, kept on only with
+	// a file with CHRG in the roster). Without them no program, no pipeline and
+	// no log line more than before.
 	if (Engine_ProgramStaticWanted(g_cfg_engineStaticModel, g_cfg_engineHiresChars))
 	{
 		desc.debugName = "ns";

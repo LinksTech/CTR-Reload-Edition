@@ -170,8 +170,10 @@ extern int g_cfg_devRaceMode; // --dev-race-mode, main.c: 0 arcade, 1 retail Tim
 // CNET and CTXT are never opened.
 extern int g_cfg_nativePreview;
 
-// --engine-hires-chars (include/platform/engine.h, HI-RES DRIVERS FROM THE
-// .rldchar). Without it no CHRG entry is looked up and nothing below logs.
+// The hi-res drivers (include/platform/engine.h, HI-RES DRIVERS FROM THE
+// .rldchar): on by default, 0 with --no-hires-chars, and 0 from the roster on
+// when no file of it has a CHRG chunk (NativeChar_LoadRoster). While 0 no
+// CHRG entry is looked up and nothing below logs.
 extern int g_cfg_engineHiresChars;
 
 global_variable char s_charFolder[NATIVE_CHAR_PATH_MAX];
@@ -240,7 +242,7 @@ struct NativeCharFile
 	const char *voiceWhy;       // NATIVE_CHAR_VOICES_IGNORED: the reader's or the check's fixed text
 	struct RldCharNative *native; // CNET/CTXT, READY, held only while a seat is bound and only with --native-preview; else NULL
 	struct RldCharLook look;    // the shadow and exhaust of CHRI (RldChar_ParseLook); all retail for a file without the field
-	int hasChrg;                // the envelope lists a CHRG chunk (hi-res model); looked up only with --engine-hires-chars, else 0
+	int hasChrg;                // the envelope lists a CHRG chunk (hi-res model); looked up only while the hi-res drivers are on, else 0
 };
 
 // The files of the roster, in sorted order: entry e < s_charRosterFiles is
@@ -801,7 +803,8 @@ internal int NativeChar_ReadFile(const char *path, const char *file, struct Nati
 	Rld_FindEntry(&reader, "CHRI", &infoIndex);
 	modelEntry = Rld_FindEntry(&reader, "CMDL", &modelIndex);
 	// The hi-res chunk is only noted here (a directory lookup); the engine reads
-	// it at a load stage (NativeChar_ReadChrg). Only with --engine-hires-chars.
+	// it at a load stage (NativeChar_ReadChrg). Only while the hi-res drivers are
+	// on (by default; not with --no-hires-chars).
 	out->hasChrg = g_cfg_engineHiresChars && (RldHires_FindChunk(&reader) >= 0);
 	if ((infoIndex < 0) || (modelEntry == NULL))
 	{
@@ -1368,6 +1371,33 @@ void NativeChar_LoadRoster(void)
 	}
 
 	NativeChar_BuildRoster();
+
+	// THE HI-RES DRIVERS ON BY DEFAULT (round of 2026-10-17, format 4.2): the
+	// switch is on unless --no-hires-chars (main.c), and the roster has just
+	// noted which files carry a CHRG chunk. Without one the hi-res path has
+	// nothing to draw in this run - the roster is built once - so it is turned
+	// off here, before the first level load: no program "ns", no load stage,
+	// no exit report, no log line; the run does exactly what a run without the
+	// switch did before. With one it stays on and says so once.
+	if (g_cfg_engineHiresChars)
+	{
+		int chrgFiles = 0;
+		int entry;
+
+		for (entry = 0; entry < s_charRosterFiles; entry++)
+		{
+			chrgFiles += s_charFiles[entry].hasChrg ? 1 : 0;
+		}
+		if (chrgFiles == 0)
+		{
+			g_cfg_engineHiresChars = 0;
+		}
+		else
+		{
+			Platform_Log("[CTR Engine] hires chars: on by default, %d file(s) of the roster with a hi-res model (--no-hires-chars: their classic models)\n",
+			             chrgFiles);
+		}
+	}
 
 	// A measuring switch that binds nothing would measure retail: loud.
 	if ((s_charDevSeats != NATIVE_CHAR_DEV_SEATS_OFF) && (s_charRosterFiles == 0))
@@ -3674,13 +3704,13 @@ int NativeChar_ReadNativeFile(const char *path, const char *name, struct RldChar
 }
 
 // ---------------------------------------------------------------------------
-// THE HI-RES CHUNK (--engine-hires-chars; round of 2026-10-17). The engine
+// THE HI-RES CHUNK (the hi-res drivers; round of 2026-10-17). The engine
 // (platform/engine_hires_char.c) asks which entry a seat is bound to and reads
 // the CHRG chunk of an entry again from its path at a load stage - like the
 // native part (NativeChar_ReadNative): the envelope with its checks, the CMDL
 // hash against the loaded one (the file must not have changed since the
 // start), then the chunk with its SHA-256 (Rld_ReadChunk). Nothing of it runs
-// without the switch.
+// with --no-hires-chars or without a file with CHRG.
 // ---------------------------------------------------------------------------
 
 int NativeChar_SeatEntry(int seat)
@@ -3744,7 +3774,7 @@ u8 *NativeChar_ReadChrg(int entry, size_t *size, const char **why)
 	return bytes;
 }
 
-// With --engine-hires-chars and the engine off for this load: every bound seat
+// With the hi-res drivers on and the engine off for this load: every bound seat
 // whose file has a CHRG chunk says that it draws its classic model.
 internal void NativeChar_HiresOffLog(void)
 {

@@ -27,7 +27,8 @@ modelled from the plan (decisions E2-E4, E10); the run checks it:
     the five step heads, "< Back", "Next >", "Browse...", "Advanced options", "Save as", "Build",
     "Test in game", ...) and not those of another step or route (EXPECT below; exit 2 otherwise)
   - the report of every step from Model to Build says "primary buttons shown: 1"
-  - the logged "Test in game" command line has --char (and --engine-hires-chars on lowpoly/hires only)
+  - the logged "Test in game" command line has --char and neither --dev nor --engine-hires-chars on
+    any route (the game's test start; the hi-res drivers are on by default)
   - with the route vanilla: a script of before (no route verb) builds, and the log says the page
     picked Vanilla by itself ("route: vanilla (implicit ...)")
   - the shortest way builds without a typed name (the log says "name: ... (from the file name)")
@@ -192,8 +193,15 @@ def after_actions(route):
         ("Model: Browse..., Open (%s; the check starts at once)" % (".glb" if chrg else "model file"), 2, 0, "model"),
         ("click the head \"5 Build\" (the name comes from the file name, nothing typed)", 1, 0, "build"),
         ("click \"Build\" (Save as defaults to the game's characters folder)", 1, 0, "built"),
-        ("click \"Test in game\"%s" % (" (with --engine-hires-chars)" if chrg else ""), 1, 0, "test"),
+        ("click \"Test in game\"", 1, 0, "test"),
     ]
+
+
+def test_cmd_extra(cmd):
+    """The words the Test in game command line must not carry since format 4.2:
+    --dev (the game's test start runs without it) and --engine-hires-chars (on by default)."""
+    words = cmd.split()
+    return [w for w in ("--dev", "--engine-hires-chars") if w in words]
 
 
 def totals(actions):
@@ -363,11 +371,8 @@ def check_run(route, shots, outdir, log_lines):
     if not cmds:
         ctrl.append("%s: no logged Test in game command line with --char" % route)
     else:
-        has = "--engine-hires-chars" in cmds[-1]
-        if CHRG[route] and not has:
-            ctrl.append("%s: Test in game command line lacks --engine-hires-chars" % route)
-        if not CHRG[route] and has:
-            ctrl.append("%s: Test in game command line has --engine-hires-chars on a vanilla route" % route)
+        for word in test_cmd_extra(cmds[-1]):
+            ctrl.append("%s: Test in game command line has %s" % (route, word))
         notes.append("test-in-game command line: " + cmds[-1].strip())
     return fails, ctrl, notes
 
@@ -472,8 +477,8 @@ def run_shortest(args, route, model, outdir):
     if not cmds:
         misses.append("no logged Test in game command line with --char")
     else:
-        if CHRG[route] != ("--engine-hires-chars" in cmds[-1]):
-            misses.append("the Test in game command line %s --engine-hires-chars" % ("lacks" if CHRG[route] else "has"))
+        for word in test_cmd_extra(cmds[-1]):
+            misses.append("the Test in game command line has %s" % word)
         notes.append("test-in-game command line: " + cmds[-1].strip())
     return fails, misses, notes
 

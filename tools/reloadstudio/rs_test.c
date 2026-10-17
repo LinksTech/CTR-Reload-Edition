@@ -21,7 +21,8 @@
 // The page Character starts the game the same way with a built character
 // (Rs_TestCharacter, rs_charroute.h; at the end of this file): the same game,
 // the same game folder, the same check that game and Reload Studio belong
-// together, a log in Rs_TempDir.
+// together, a log in Rs_TempDir - but without --dev (the game's test start,
+// see THE COMMAND LINE there).
 
 #include "reloadstudio.h"
 #include "rs_charroute.h"
@@ -2121,10 +2122,10 @@ static int Test_Busy(HWND page)
 // "Test in game" of the page Character (rs_charroute.h)
 //
 // THE COMMAND LINE, from what the game asks (main.c and
-// platform/native_chars.c):
-//   --dev                 --char, --level, --driver and --engine-hires-chars
-//                         are developer switches (main.c, s_devSwitches); one
-//                         without --dev ends the start ("requires --dev")
+// platform/native_chars.c). No --dev: --char, --level and --driver together,
+// each once, are the game's TEST START (main.c), which runs without --dev
+// (--level a race track 0..17, --driver a template 0..14); one of them alone
+// would still need it ("requires --dev"). The same line for every route.
 //   --char <file>         only this .rldchar, by its full path, no folder
 //                         (main.c, the help of --char)
 //   --level 0             straight into a race on Dingo Canyon as soon as the
@@ -2137,9 +2138,10 @@ static int Test_Busy(HWND page)
 //                         here - the page's default is 14 (Fake Crash), but the
 //                         step Driver can choose another one, so a fixed 14
 //                         would leave seat 0 empty for every other choice.
-//   --engine-hires-chars  Low-Poly and Hi-Res: the engine draws the seat from
-//                         the CHRG chunk (main.c, its help); the engine is on
-//                         for one player by default
+//   (no hi-res switch)    Low-Poly and Hi-Res: the engine draws the seat from
+//                         the CHRG chunk by default (the hi-res drivers are on
+//                         whenever the engine draws, and the engine is on for
+//                         one player by default; main.c, --no-hires-chars)
 //   --log <file>          "character-test <time>.log" in Rs_TempDir, the last
 //                         five kept - as the track test does
 //   --windowed 1280x720   when "Play in a window" is ticked on this page
@@ -2238,7 +2240,6 @@ int Rs_TestCharacter(const wchar_t *rldchar, int route, wchar_t *why, int whyCap
 
     cap = TEST_CMD_CAP;
     cmd = Rs_Alloc(cap * sizeof(wchar_t));
-    Rs_AppendArg(cmd, cap, L"--dev");
     if (g_test.windowed && Test_Checked(g_test.windowed)) {
         Rs_AppendArg(cmd, cap, L"--windowed");
         Rs_AppendArg(cmd, cap, L"1280x720");
@@ -2250,8 +2251,6 @@ int Rs_TestCharacter(const wchar_t *rldchar, int route, wchar_t *why, int whyCap
     swprintf(num, 16, L"%d", templateId);
     Rs_AppendArg(cmd, cap, L"--driver");
     Rs_AppendArg(cmd, cap, num);
-    if (preset->chrg)
-        Rs_AppendArg(cmd, cap, L"--engine-hires-chars");
     Rs_RotatedLogPath(logPath, TEST_PATH, L"character-test", 5);
     Rs_AppendArg(cmd, cap, L"--log");
     Rs_AppendArg(cmd, cap, logPath);

@@ -59,7 +59,7 @@
 // the pad bus: nothing the game reads changes. Under --deterministic no key is
 // read (as everywhere), so a measuring run only has the automatic turn.
 //
-// THE HI-RES CHARACTER OF A .rldchar (--engine-hires-chars, round of
+// THE HI-RES CHARACTER OF A .rldchar (the hi-res drivers, round of
 // 2026-10-17; FORMAT section 4, clip menu): when the prototype of
 // --engine-hires-dir is not loaded, the scene shows the first roster entry that
 // has a hi-res character in the main menu level (Engine_HiresCharOfEntry) -

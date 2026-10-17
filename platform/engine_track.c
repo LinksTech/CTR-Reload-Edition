@@ -5645,7 +5645,7 @@ internal int EngTrack_RouteInstance(struct Instance *inst, struct InstDrawPerPla
 // inst->matrix, the animation and the flags the CS threads wrote, at draw time.
 // A declined one stays with retail, counted. Nothing of the game is written.
 //
-// HI-RES ON THE PODIUM (round of 2026-10-17, --engine-hires-chars; FORMAT
+// HI-RES ON THE PODIUM (round of 2026-10-17, the hi-res drivers; FORMAT
 // section 4, clips podium_1..3). The figure of place p (1..3) is the CS thread
 // of gGT->modelPtr[gGT->podium_modelIndex_First/Second/Third] (CS_Podium.c:
 // CS_Thread_Init; the index is the place's template + STATIC_CRASHDANCE,
