@@ -78,7 +78,7 @@ enum { AN_WHAT_STEER = -1, AN_WHAT_JUMP = 0, AN_WHAT_CRASH, AN_WHAT_REVERSE, AN_
 #define AN_TEXT_NO_KEYS     L"OBJ and PLY carry no shape keys: the driver moves with the automatic poses. Export a glTF (.glb) for poses of your own."
 #define AN_TEXT_NOT_SAID    L"rldpack said nothing about the poses of this model: the automatic poses are used."
 #define AN_TEXT_RIG         L"Rigs are not supported yet - use shape keys (docs/ANIMATIONS.md, folder docs of the package)."
-#define AN_TEXT_NO_NATIVE   L"Win and lose show only with the native model: tick Native model (Extras, Import)."
+#define AN_TEXT_NO_NATIVE   L"Win and lose show only with the native model: tick Native model (Advanced, Import)."
 
 // The poses as make-char names them (@pose), as the list shows them, and
 // what the preview shows for them.
@@ -542,7 +542,7 @@ static void An_Tips(void)
         Rs_SetTip(g_an.show[i], i == AN_WHAT_WIN || i == AN_WHAT_LOSE
                                     ? L"The pose after the finish (the native model blends to it: win at places 1-3, lose at "
                                       L"4-8). Untick for steering. Greyed out without the native model: tick Native model "
-                                      L"(Extras, Import)."
+                                      L"(Advanced, Import)."
                                     : L"Shows this animation in the preview (with Play as a loop). Untick for steering.");
     Rs_SetTip(g_an.play, play);
 }

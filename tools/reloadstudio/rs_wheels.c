@@ -133,7 +133,7 @@ static const wchar_t *const g_whAxleCaption[WH_AXLE_VALUES] = { L"Fwd", L"Up", L
 #define WH_TEXT_OWN         L"Your wheels on the native model; its classic model keeps the game's wheels as the fallback."
 #define WH_TEXT_OWN_OFF     L"Not used: Show kart wheels is off (tab Model) - no wheels at all. Turn it on for your wheels."
 #define WH_TEXT_OWN_PLY     L"Not used: your wheels need the native model, which a PLY model has not (export the model as glTF or OBJ)."
-#define WH_TEXT_OWN_TICK    L"Not used yet: your wheels need the native model - tick Native model (Extras, Import)."
+#define WH_TEXT_OWN_TICK    L"Not used yet: your wheels need the native model - tick Native model (Advanced, Import)."
 // Appended to the two above while the preview draws the wheel all the same.
 #define WH_TEXT_PREVIEW_ONLY L" The preview shows them, the character will not have them."
 #define WH_TEXT_GAME        L"No wheel model: the kart keeps the game's wheels."

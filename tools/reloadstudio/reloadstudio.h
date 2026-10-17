@@ -396,10 +396,55 @@
 //             @value lines from this run and every other line from the result
 //             kept (rs_char.c, Char_MetaDone). A check whose command and files
 //             are those of a result kept runs nothing (Char_CacheFind).
-// The raw output of the page ("Show rldpack output") starts with the command,
-// "ReloadStudio.exe --rldpack make-char ...", quoted as it was passed.
+//   The routes Low-Poly and Hi-Res (rs_charroute.h; rs_char.c THE GUIDED
+//   FLOW) take a .glb only. Their check: the .glb with the game's rules in the
+//   Studio itself (RsHires_CheckFile), and make-char --check of the classic
+//   fallback with the page's switches as above - but none of those the route
+//   hides (no --repair, --open-parts, --remesh, --reduce, --wheels, --up,
+//   --forward, --colors, --textures, --vertex-colors, --native-model,
+//   --wheel-model: the size stays 100) -, after them the switches of
+//   RsCharHires_FallbackArgs (--reduce auto --rig bind-pose) and, when the
+//   .glb has its own four wheel nodes, --wheels off. Their build, three
+//   commands one after the other:
+//   make-char --machine --model <glb> ... --out <temp folder>\<out name>.classic.part
+//             (the switches of the check, without --check and the previews)
+//   hires-upscale <glb> -o <temp folder>\<glb name>-upscaled.glb --machine
+//             (only with "Upscale small textures": RsHires_UpscaleArgs)
+//   hires-add <classic> <glb or upscaled> -o <out> --machine   (RsHires_PackArgs)
+//   The temp files are deleted at the end; <out> carries rldpack's bytes.
+// The raw output of the page ("Show details" on the step Build) starts with
+// the command, "ReloadStudio.exe --rldpack make-char ...", quoted as it was
+// passed (a build of a CHRG route: each of its commands before its lines).
 //
-// Automation verbs of the page "Character" (--do, besides those of the shell):
+// Automation verbs of the page "Character" (--do, besides those of the shell).
+// The guided flow: the page starts at step 0 "What do you want to build?":
+//   route vanilla|lowpoly|hires|none   as a click on a card of step 0 (none:
+//                                 step 0 again; a route chosen before stays
+//                                 in its steps with every entry, another one
+//                                 starts at its step Model, Advanced closed,
+//                                 "Upscale small textures" as its preset says,
+//                                 and checks the model with its rules - the
+//                                 shell waits for that check)
+//   A script that names no route (all of before) picks Vanilla with its first
+//   verb of the page ("route: vanilla (implicit ...)" in the log): the page
+//   then checks and builds as it did before, the same commands, the same bytes.
+//   step <1..5|model|driver|look|voices|build|next|back>   as a click on the
+//                                 head of a step, on Next or on Back (Back on
+//                                 the step Model: step 0; no Next on Build)
+//   advanced on|off               Advanced of the step Model (FAIL when the
+//                                 route has none of its cards)
+//   details on|off                "Show details" / "Hide details" (opens Build)
+//   test-in-game                  as the button "Test in game" after a build
+//                                 (Rs_TestCharacter: in automation it only logs
+//                                 the command line); FAIL without a build of
+//                                 the fields as they are, or when it did not start
+//   preview hires|classic         the switch above the preview (Low-Poly, Hi-Res only)
+//   "report" writes first "route:", "step:", "advanced:", "upscale small
+//   textures:", "preset:", "details:", "preview:", "hires check:" (a CHRG
+//   route), "test note:", every control shown as "shown <primary button|button|
+//   tick box|field|list>: <id> <text>", "primary buttons shown: <n>" and every
+//   message of the page with its step ("page message: <step>\t<severity>\t<text>\t<detail>").
+// The verbs of before:
 //   model <glb|gltf|obj|ply|none>, drop <path>[|<path>...] (as dropping these
 //   files onto the page together: a folder is the voices, a .glb, .gltf, .obj
 //   or .ply the model - on the card Wheels the wheel model -, a .png the icon
@@ -409,10 +454,15 @@
 //   name <text>, class <word>, mask aku|uka, mapcolor
 //   template|RRGGBB, size <percent>, icon <png|none>, icon-fit fit|fill|none,
 //   icon-transparent on|off, icon-frame on|off, repair|open-parts|remesh|reduce|
-//   wheels on|off, reduce-to-fit, out <file|none>, check, build, cancel (as
+//   wheels on|off (repair .. reduce: Advanced, card Options), reduce-to-fit,
+//   out <file|none>, check (the check runs by itself; the page has no button
+//   for it any more), build (a CHRG route: the whole chain, the shell waits for
+//   its end), cancel (as
 //   the button Cancel while rldpack runs - as "now cancel"), pose
-//   neutral|left|right, turn <degrees>, tab <1..5|name>, extras
-//   import|wheels|animations, up y|z, forward z|-z, colors 128|64, vertex-colors
+//   neutral|left|right, turn <degrees>, tab <1..5|name> (as step; tab extras:
+//   Advanced at its card Import), extras import|wheels|animations|options (that
+//   card of Advanced, opened on the step Model; FAIL for a card the route
+//   hides - Wheels only with --enable-preview-features), up y|z, forward z|-z, colors 128|64, vertex-colors
 //   auto|modulate|color (the card Import; the last passed for an OBJ only),
 //   native-model on|off (the card Import; preview feature, open to everyone:
 //   passed for an OBJ with Show kart wheels off or a wheel model; in the
@@ -447,7 +497,8 @@
 //   "camera: <yaw> <pitch> <zoom> <pan x> <pan y> <preset word|none>" and
 //   "view-look: <dark|light> <crash on|off> <shadow on|off> <exhaust on|off>
 //   <native|classic>"),
-//   problem <n> (as a click on message n), report <file>, the verbs of the cards
+//   problem <n> (as a click on message n of the page, all steps counted: it
+//   opens its step, and its card of Advanced), report <file>, the verbs of the cards
 //   Wheels and Animations (rs_wheels.c, rs_anim.c; nothing of them is stored):
 //   wheel-model <glb|obj|ply|none>  (also wheel) the wheel model; waits for char-wheel
 //   rear-wheel-model <glb|obj|ply|none>  (also rear-wheel) the rear wheel model; waits

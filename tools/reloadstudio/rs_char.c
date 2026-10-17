@@ -158,10 +158,61 @@
 // reads its characters folder only when it starts. The options are not
 // remembered - every start of the Studio begins with the defaults.
 //
+// THE GUIDED FLOW (rs_charroute.h): the page asks first "What do you want to
+// build?" - step 0, three large cards with an example picture (Rs_RouteImage,
+// rs_cards.c; without one a neutral frame with the title), the title and one
+// sentence of RsRoute_Preset. A click, Enter on a card (Tab and the arrow keys
+// move between them) or the automation verb "route" chooses the route:
+//   Vanilla   the classic model of make-char, as the page built it before -
+//             the same commands, the same bytes
+//   Low-Poly  the classic model made from the same .glb (the classic
+//   Hi-Res    fallback) and the .glb itself in the chunk CHRG (THE BUILD OF A
+//             CHRG ROUTE); the presets and the plain-English messages are
+//             rs_charhires.c's
+// Then only the steps of the route, the tabs of before: Model, Driver, In-game
+// look, Voices (optional: Next skips it), Build. What a route does not need is
+// hidden, not greyed out (Char_RouteHides). "Change type" in the head of the
+// steps (and Back on the step Model) goes back to step 0; every entry stays,
+// and another route checks the model again with its rules. Each step has one
+// main action (the filled button: Next on the steps 1 to 4, Build on the
+// step Build, after a build Test in game) and Next. Old scripts that name no
+// route (model x.obj; build) pick Vanilla with their first verb of the page.
+//
+// ADVANCED: a section of the step Model, closed at the start ("Advanced
+// options"; open, it takes the place of everything below the model field,
+// "Hide advanced" in its title line). Its cards, one at a time (Char_ExtrasShown):
+// Vanilla - Options (Repair the model, Draw open parts from both sides,
+// Closed hull, Reduce to fit, with today's defaults; not in the user mode,
+// which fixes them), Import (the axes, the colours, the vertex colours and the
+// native model of an OBJ - the tab Extras of before), Animations (the shape
+// keys) and, only with --enable-preview-features, Wheels; a CHRG route -
+// Options alone ("Upscale small textures", on at the start of Low-Poly, off
+// for Hi-Res, as the preset says). Reduce to fit (the button, over the limit)
+// stays on the step itself: it is the fix of the model's error.
+//
+// THE MESSAGES AT THEIR PLACE: every message keeps its step (and card); the
+// step shows its own below its fields, each with its detail ("How to fix" for
+// a CHRG route), and nothing where it has none. Vanilla: make-char's @msg
+// lines by their id (Char_TabOfCode, as before); a CHRG route: those of
+// RsCharHires_Messages by their place - a model without clips or wheel nodes
+// is one line each - and of the classic fallback's make-char only its errors
+// about the model; its other lines about the model (the reduction, the fit,
+// rig-bind-pose) stay behind "Show details" (Char_ChrgMessages). The head of
+// each step keeps its number in red, amber or green.
+//
+// THE PREVIEW is shown from step 1 on, on every step. Vanilla: the classic
+// model as before. A CHRG route: the picture of the .glb as its check drew it
+// (textured, the engine's filter) with its idle clip playing on the page's
+// timer (RsHires_AnimFrame, as the page Hi-Res plays a clip; in automation
+// its first frame, so that shots are the same every run), and above it the
+// switch "Hi-Res | Classic fallback" (the fallback: make-char --preview).
+//
 // Layout: the steps as tabs on the left, the 3D preview always on the right,
-// the build below both, so that every tab is seen whole without scrolling:
-//   1 Model         the glTF, OBJ or PLY, its size, the options and what rldpack did
-//                   to it
+// the bar with Back and Next (and while rldpack runs its progress and Cancel)
+// below both, so that every step is seen whole without scrolling:
+//   1 Model         the model (a CHRG route: a .glb only), the line of what
+//                   its check found; Vanilla: what an OBJ brought along, its
+//                   size and Show kart wheels; Advanced
 //   2 Driver        name, driving style, mask
 //   3 In-game look  two cards, switched in the title line: Portrait (icon,
 //                   framing, transparency, frame, the game's view of it) and
@@ -170,31 +221,35 @@
 //                   THE LOOK OF THE DRIVER)
 //   4 Voices        the folder, its files and their events, Play, the ten
 //                   events at a glance
-//   5 Extras        the cards Import (how rldpack reads the model: its up and
-//                   forward axes, the colours of its palette; for an OBJ how
-//                   its vertex colours meet its textures), Wheels and
-//                   Animations (rs_wheels.c, rs_anim.c), one at a time;
-//                   Wheels a preview feature open to everyone, Animations
-//                   (the shape keys of a glTF, the @pose lines of the
-//                   check) open as well. Import
-//                   lives here, not on the tab Model: there an OBJ leaves no
-//                   room at 1366 x 768 and at 1920 x 1080 with 150 % (the bar
-//                   is at its least height), and its choices are rarely
-//                   needed - rldpack names the one to change when it is.
-// The head of a tab shows its number in a circle: green done, red problem (an
-// error of the last run belongs to it), amber warning, an outline when it is
-// optional or still to do. The bar at the bottom: headline, the message list
-// (a click on a message opens the tab it belongs to), output, Check, Build,
-// Back and Next. A check or build that runs longer than CHAR_PROGRESS_DELAY
-// shows a bar of its progress (the @progress lines of rldpack, which the
-// shell passes as RS_WM_JOB_PROGRESS) and Cancel beside the headline: Cancel
-// ends rldpack (Rs_JobCancel); a build cancelled leaves at most <out>.part,
-// which the page deletes - a file <out> from before stays as it was. Every
-// control is a child of the page as before, with the same ID; the controls of
-// the other tabs are only hidden - a message to one of them still works. Ctrl+Tab and Ctrl+Shift+Tab step through the tabs.
+//   5 Build         where the file goes (the field empty: the game's
+//                   characters folder), the headline of the last check or
+//                   build, Build - after a build Test in game (Rs_TestCharacter,
+//                   rs_test.c) and Build again -, Show in folder, "Show
+//                   details" (the raw output of rldpack in place of the
+//                   messages of the step)
+// The check runs by itself (a model chosen, a field changed); there is no
+// button Check (the automation verb "check" and Enter run it). A check or
+// build that runs longer than CHAR_PROGRESS_DELAY shows a bar of its progress
+// (the @progress lines of rldpack, which the shell passes as
+// RS_WM_JOB_PROGRESS) and Cancel in the bar: Cancel ends rldpack
+// (Rs_JobCancel); a build cancelled leaves at most <out>.part, which the page
+// deletes - a file <out> from before stays as it was. Every control is a child
+// of the page as before, with the same ID; the controls of the other steps
+// are only hidden - a message to one of them still works. Ctrl+Tab and
+// Ctrl+Shift+Tab step through the steps.
+//
+// THE BUILD OF A CHRG ROUTE (Char_ChainStart): every step through
+// Rs_RunRldpack, so the bytes are rldpack's - make-char with the page's
+// switches, RsCharHires_FallbackArgs and --wheels off when the .glb has its
+// own four wheels -> <out name>.classic.part in Rs_TempDir; with "Upscale
+// small textures" hires-upscale -> <model>-upscaled.glb in Rs_TempDir (never
+// beside the output, never in the game's characters folder); hires-add
+// <classic> <model or upscaled> -o <out>. The temp files go at the end.
 
 #include "reloadstudio.h"
 #include "rs_anim.h"
+#include "rs_charroute.h"
+#include "rs_hires_model.h"
 #include "rs_view.h"
 #include "rs_wheels.h"
 #include <commdlg.h>
@@ -267,7 +322,7 @@
 #define CHAR_VOICE_LIST_MIN_H 96  // the file list, at least: its head and three rows
 #define CHAR_IMPORT_ROWS_MAX 1024 // rows of each kind (MTL, texture, group) the list keeps, at most
 #define CHAR_IMPORT_MIN_ROWS 2    // rows that list shows at least (it scrolls in itself), 1 where
-                                  // two would push the bar below CHAR_BAR_MIN_H
+                                  // two would push the bar down
 // Posted to the page by its subclass of the main window when Reload Studio
 // becomes the active program again (WM_ACTIVATEAPP goes to the main window
 // only). WM_APP + 64 and up are the page's own (reloadstudio.h).
@@ -346,7 +401,7 @@
 #define CHAR_ID_TAB            180   // 180..184: the heads of the tabs 1..5
 #define CHAR_ID_BACK           185
 #define CHAR_ID_NEXT           186
-#define CHAR_ID_EXTRAS         187   // 187..189: Import | Wheels | Animations in the tab Extras
+#define CHAR_ID_EXTRAS         187   // 187..190: Import | Wheels | Animations | Options in the Advanced of the step Model
 #define CHAR_ID_VOICE_RULE     191   // the line with the file names (tab Voices)
 #define CHAR_ID_VOICE_EVENTS_LABEL 192
 #define CHAR_ID_VOICE_EVENTS   193   // the ten events at a glance
@@ -359,8 +414,21 @@
 #define CHAR_ID_FALLBACK       200   // "Include classic fallback model" (tab Model, Rs_NativeForUsers only)
 #define CHAR_ID_FALLBACK_HINT  201   // its "Coming soon"
 #define CHAR_ID_NATIVE_LINE    202   // the native model's result or why there is none (tab Model, Rs_NativeForUsers only)
+// THE GUIDED FLOW (rs_charroute.h): step 0 and what the steps add.
+#define CHAR_ID_ROUTE          203   // 203..205: the three cards of step 0, RS_ROUTE_VANILLA..RS_ROUTE_HIRES
+#define CHAR_ID_ROUTE_ASK      206   // "What do you want to build?"
+#define CHAR_ID_CHANGE_TYPE    207   // "Change type" in the head of the steps
+#define CHAR_ID_ROUTE_LABEL    208   // the route chosen, beside it
+#define CHAR_ID_ADVANCED       209   // "Advanced" on the step Model: opens and closes the section
+#define CHAR_ID_UPSCALE        210   // "Upscale small textures" (Advanced of a CHRG route)
+#define CHAR_ID_UPSCALE_HELP   211
+#define CHAR_ID_TEST           212   // "Test in game" (step Build, after a build)
+#define CHAR_ID_REBUILD        213   // "Build again" beside it
+#define CHAR_ID_TEST_NOTE      214   // what Test in game did, or why not
+#define CHAR_ID_PREVIEW_SWITCH 215   // 215..216: Hi-Res | Classic fallback above the preview (CHRG routes)
+#define CHAR_ID_OUT_NOTE       217   // where the build goes, below the output field
 // The controls of the cards Wheels and Animations (WH_ID_FIRST..WH_ID_LAST in
-// rs_wheels.c, AN_ID_FIRST..AN_ID_LAST in rs_anim.c): the tab Extras shows them.
+// rs_wheels.c, AN_ID_FIRST..AN_ID_LAST in rs_anim.c): Advanced of the step Model shows them.
 // The card Import (380..399) is the page's own.
 #define CHAR_ID_WHEELS_FIRST   300
 #define CHAR_ID_WHEELS_LAST    339
@@ -401,17 +469,32 @@
 #define CHAR_LOOK_CARDS        2
 
 // CHAR_JOB_META: rldpack checks only the name, the driving style, the mask,
-// the minimap colour and the output (Char_MetaStart).
+// the minimap colour and the output (Char_MetaStart). Every step of the build
+// of a CHRG route is a CHAR_JOB_BUILD (g_char.chainStep says which).
 enum { CHAR_JOB_NONE = 0, CHAR_JOB_CHECK, CHAR_JOB_BUILD, CHAR_JOB_META };
+// The steps of the build of a CHRG route (THE BUILD OF A CHRG ROUTE).
+enum { CHAR_CHAIN_NONE = 0, CHAR_CHAIN_CLASSIC, CHAR_CHAIN_UPSCALE, CHAR_CHAIN_PACK };
 // What a machine line is to Char_MetaDone (Char_LineKind).
 enum { CHAR_LINE_MODEL = 0, CHAR_LINE_META, CHAR_LINE_END };
 
-// The tabs, in their order.
-enum { CHAR_TAB_MODEL = 0, CHAR_TAB_DRIVER, CHAR_TAB_LOOK, CHAR_TAB_VOICES, CHAR_TAB_EXTRAS, CHAR_TABS };
+// The steps (the tabs of before), in their order.
+enum { CHAR_TAB_MODEL = 0, CHAR_TAB_DRIVER, CHAR_TAB_LOOK, CHAR_TAB_VOICES, CHAR_TAB_BUILD, CHAR_TABS };
 // What the head of a tab shows.
 enum { CHAR_STEP_TODO = 0, CHAR_STEP_OPTIONAL, CHAR_STEP_DONE, CHAR_STEP_WARNING, CHAR_STEP_PROBLEM };
-// The card the tab Extras shows.
-enum { CHAR_EXTRAS_IMPORT = 0, CHAR_EXTRAS_WHEELS, CHAR_EXTRAS_ANIM, CHAR_EXTRAS_COUNT };
+// The cards of the Advanced section of the step Model (the tab Extras of
+// before, and the options of the model): in the order of the IDs of their
+// switch (CHAR_ID_EXTRAS) and of the automation verb "extras".
+enum { CHAR_EXTRAS_IMPORT = 0, CHAR_EXTRAS_WHEELS, CHAR_EXTRAS_ANIM, CHAR_EXTRAS_OPTIONS, CHAR_EXTRAS_COUNT };
+// The part of the step Model a control belongs to (Char_TabOfId, *card):
+// CHAR_CARD_ALL on the step whatever is open, CHAR_CARD_BASIC only while
+// Advanced is closed, CHAR_EXTRAS_* only on that card of Advanced.
+#define CHAR_CARD_ALL   (-1)
+#define CHAR_CARD_BASIC (-2)
+#define CHAR_TIMER_ANIM    3      // the idle clip of a hi-res preview (Char_HiresTick)
+#define CHAR_ANIM_TICK_MS  50
+#define CHAR_ANIM_TICK_CAP 200    // the longest step of one tick
+#define CHAR_WIZ_MSGS      48     // messages of RsCharHires_Messages at most
+#define CHAR_STEP_MSGS_MIN_H 36   // the messages of a step, at least (one entry and the line "N more below")
 enum { CHAR_IMG_ORIGINAL = 0, CHAR_IMG_ICON, CHAR_IMG_COUNT };
 
 // ---------------------------------------------------------------------------
@@ -509,11 +592,16 @@ static const struct CharVoiceEvent g_charVoiceEvents[CHAR_VOICE_EVENTS + 1] = {
 // (neutral), frame 0 (full steer left) and frame 20 (full steer right) - the
 // game maps a left steer to frame 0 (game/Vehicle/VehFrame.c, VehPhysProc.c).
 // The tabs: the word of the automation verb "tab", the text of the head.
-static const wchar_t *const g_charTabWords[CHAR_TABS] = { L"model", L"driver", L"look", L"voices", L"extras" };
-static const wchar_t *const g_charTabTexts[CHAR_TABS] = { L"Model", L"Driver", L"In-game look", L"Voices", L"Extras" };
+static const wchar_t *const g_charTabWords[CHAR_TABS] = { L"model", L"driver", L"look", L"voices", L"build" };
+static const wchar_t *const g_charTabTexts[CHAR_TABS] = { L"Model", L"Driver", L"In-game look", L"Voices", L"Build" };
 static const wchar_t *const g_charStepWords[] = { L"to do", L"optional", L"done", L"warning", L"problem" };
-static const wchar_t *const g_charExtrasWords[CHAR_EXTRAS_COUNT] = { L"import", L"wheels", L"animations" };
-static const wchar_t *const g_charExtrasTexts[CHAR_EXTRAS_COUNT] = { L"Import", L"Wheels", L"Animations" };
+static const wchar_t *const g_charExtrasWords[CHAR_EXTRAS_COUNT] = { L"import", L"wheels", L"animations", L"options" };
+static const wchar_t *const g_charExtrasTexts[CHAR_EXTRAS_COUNT] = { L"Import", L"Wheels", L"Animations", L"Options" };
+// The order of the cards on the switch of Advanced (the IDs keep the order above).
+static const int g_charExtrasOrder[CHAR_EXTRAS_COUNT] = { CHAR_EXTRAS_OPTIONS, CHAR_EXTRAS_IMPORT, CHAR_EXTRAS_ANIM, CHAR_EXTRAS_WHEELS };
+static const wchar_t *const g_charPreviewTexts[2] = { L"Hi-Res", L"Classic fallback" };
+#define CHAR_NOT_GLB_TEXT L"Low-Poly and Hi-Res need a .glb - export as glTF Binary."
+#define CHAR_NOT_GLB_FIX  L"How to fix: in Blender, File > Export > glTF 2.0, Format \"glTF Binary (.glb)\", then choose that file."
 static const wchar_t *const g_charLookTexts[CHAR_LOOK_CARDS] = { L"Portrait", L"In the race" };
 static const wchar_t *const g_charLookWords[CHAR_LOOK_CARDS] = { L"portrait", L"race" };
 // The look of the driver (make-char --shadow, --exhaust; the order of the
@@ -536,6 +624,7 @@ static const wchar_t *const g_charPresetWords[RS_VIEW_PRESET_COUNT] = { L"front"
 
 // Before a model is chosen, below its field (the page has no subtitle).
 #define CHAR_START_TEXT L"Pick a glTF (.glb), OBJ or PLY model of driver, steering wheel and kart. rldpack converts and checks it and builds the .rldchar."
+#define CHAR_START_TEXT_GLB L"Pick the .glb (glTF Binary) of driver, steering wheel and kart. It is checked with the game's rules at once."
 #define CHAR_SIZE_HINT_TEXT L"Visual size only - physics and collision follow the driving style."
 #define CHAR_NAME_RULE_TEXT L"1 to 17 characters: A-Z 0-9 space ! % ' + , - . / : < = > ? _"
 #define CHAR_VOICES_TEXT L"Optional - without voices the driver is silent in the game."
@@ -718,7 +807,45 @@ static struct {
     int reduceFitOn;                // it is shown (on the tab Model)
     int qualityOn;                  // the note below the options has text (shown on the tab Model)
     HWND tabHead[CHAR_TABS], back, next, extrasSwitch[CHAR_EXTRAS_COUNT];
-    HWND importNote, vcolorsLabel, vcolors, vcolorsHelp;  // the card Import of the tab Extras
+    // THE GUIDED FLOW: the route (RS_ROUTE_*), step 0 shown, its cards.
+    int route;                      // RS_ROUTE_NONE until chosen
+    int choosing;                   // step 0 "What do you want to build?" is shown
+    HWND routeAsk, routeCard[RS_ROUTES], routeLabel, changeType;
+    HBITMAP routeImage[RS_ROUTES];  // the pictures of the cards (Rs_RouteImage), NULL = none
+    int routeImageW, routeImageH;   // the size they were made for
+    int advOpen;                    // Advanced of the step Model is open
+    HWND advanced, upscale, upscaleHelp;
+    HWND test, rebuild, testNote, outNote;
+    int builtFresh;                 // the last build is of the fields as they are: Test in game is offered
+    // The messages of the page, each with its step (and card); the list on
+    // the step shows those of the step shown (Char_MsgRefill).
+    struct CharPageMsg { int tab, card, severity; wchar_t *text, *detail; } *pageMsg;
+    int pageMsgCount, pageMsgCap;
+    int *listMsg;                   // entry of the list -> index into pageMsg
+    int listCount;
+    // A CHRG route: the in-process check of the .glb (RsHires_CheckFile), the
+    // preview switch Hi-Res | Classic fallback, the idle clip playing.
+    struct RsHiresCheck hires;
+    int hiresChecked;               // hires holds the check of hiresPath
+    wchar_t hiresPath[CHAR_VAL];
+    unsigned long long hiresStamp;
+    HWND previewSwitch[2];
+    int previewClassic;             // 1 = the classic fallback is shown, 0 = the hi-res model
+    unsigned char *classicPv;       // the classic fallback's preview file of the check shown (Rs_Free)
+    size_t classicPvBytes;
+    int hiresShown;                 // the view shows the hi-res picture
+    float animSeconds, animWheel;
+    DWORD animTick;
+    // THE BUILD OF A CHRG ROUTE: make-char -> classic (temp) -> [hires-upscale
+    // -> derived (temp)] -> hires-add -> out.
+    wchar_t chainClassic[CHAR_VAL], chainDerived[CHAR_VAL], chainOut[CHAR_VAL], chainModel[CHAR_VAL];
+    int chainStep;                  // CHAR_CHAIN_* of the running build, CHAR_CHAIN_NONE = a Vanilla build
+    int chainUpscale;               // the running chain upscales
+    int chainWritten;               // @written of the last upscale or pack step
+    wchar_t chainPath[CHAR_VAL], chainSha[80];
+    struct CharChainMsg { int severity; wchar_t code[16]; wchar_t text[RS_HIRES_TEXT_MAX]; } chainMsg[RS_HIRES_ROWS_MAX];
+    int chainMsgCount;
+    HWND importNote, vcolorsLabel, vcolors, vcolorsHelp;  // the card Import of Advanced
     HWND nativeLabel, native, nativeHint, nativeHelp;    // its row "Native model" (preview feature, Char_NativeUpdate)
     HWND fallback, fallbackHint, nativeLine;  // tab Model, Rs_NativeForUsers only (Char_UserHidden)
     // The tab In-game look: Portrait | In the race (lookCard), and on the card
@@ -737,7 +864,7 @@ static struct {
     int step[CHAR_TABS];            // CHAR_STEP_* of each head
     int tabErrors[CHAR_TABS], tabWarnings[CHAR_TABS];   // of the last run, per tab
     int *msgTab;                    // the tab of every entry of the message list, -1 = none
-    int *msgCard;                   // and its card in the tab Extras, -1 = none
+    int *msgCard;                   // and its card (Advanced on the step Model, In-game look), -1 = none
     int msgTabCount, msgTabCap;
     int modelRead;                  // the last run read the model in the field
     int compact;                    // the compact layout (Char_Layout, CHAR_FULL_W/H): notes on one line
@@ -840,6 +967,95 @@ static void Char_NativeResult(wchar_t **f, int n);
 static void Char_VoiceSelShow(void);
 static int Char_VoicesHeard(int *clips, int *events);
 static void Char_VoiceColumns(int width);
+static int Char_ExtrasShown(int c);
+static int Char_WheelsCard(void);
+static void Char_HiresStop(void);
+static void Char_HiresShow(void);
+static void Char_ClassicShow(void);
+static void Char_ClassicKeep(const wchar_t *path);
+static void Char_HiresEnsure(const wchar_t *model);
+static void Char_HiresForget(void);
+static void Char_PreviewShow(void);
+static void Char_HiresTick(HWND page);
+static void Char_PreviewSwitch(HWND page, int classic);
+
+// ---------------------------------------------------------------------------
+// The guided flow (rs_charroute.h): which route, which cards, which controls
+// ---------------------------------------------------------------------------
+
+// 1 = the route chosen builds the chunk CHRG (Low-Poly, Hi-Res).
+static int Char_Chrg(void)
+{
+    const struct RsRoutePreset *p = RsRoute_Preset(g_char.route);
+    return p && p->chrg;
+}
+
+// Show kart wheels: on the step Model itself for Vanilla. A CHRG route has no
+// such choice - the classic fallback gets --wheels off by itself when the
+// hi-res model brings its own four wheels (Char_MakeArgs), so the control is
+// hidden there (Char_RouteHides).
+static int Char_WheelsCard(void)
+{
+    return CHAR_CARD_BASIC;
+}
+
+// The cards of Advanced a route shows. Vanilla: Options (the repair, the open
+// parts, the remesh and the reduction - not in the user mode, which fixes
+// them), Import, Animations, and Wheels only with --enable-preview-features
+// (a preview feature of the native OBJ model). A CHRG route: Options alone
+// ("Upscale small textures").
+static int Char_ExtrasShown(int c)
+{
+    if (Char_Chrg())
+        return c == CHAR_EXTRAS_OPTIONS;
+    switch (c) {
+    case CHAR_EXTRAS_OPTIONS: return !Rs_NativeForUsers();
+    case CHAR_EXTRAS_WHEELS: return g_rsPreviewFeatures != 0;
+    case CHAR_EXTRAS_IMPORT:
+    case CHAR_EXTRAS_ANIM: return 1;
+    }
+    return 0;
+}
+
+static int Char_ExtrasCount(void)
+{
+    int c, n = 0;
+    for (c = 0; c < CHAR_EXTRAS_COUNT; c++)
+        n += Char_ExtrasShown(c);
+    return n;
+}
+
+// The card of Advanced shown is one the route has: else its first.
+static void Char_ExtrasFix(void)
+{
+    int i;
+    if (Char_ExtrasShown(g_char.extrasCard))
+        return;
+    for (i = 0; i < CHAR_EXTRAS_COUNT; i++)
+        if (Char_ExtrasShown(g_charExtrasOrder[i])) {
+            g_char.extrasCard = g_charExtrasOrder[i];
+            return;
+        }
+}
+
+// The controls a route does not need: hidden (not greyed out). Vanilla has
+// no "Upscale small textures" and no switch Hi-Res | Classic fallback; a CHRG
+// route has no size (the hi-res model keeps its own size), no repair or
+// reduction choices (its fallback is made with RsCharHires_FallbackArgs), no
+// Show kart wheels (above), none of the OBJ's choices (the textures folder,
+// the list of what was read, the card Import), no card Animations (the shape
+// keys of the classic model: the hi-res model plays its own clips) and no
+// card Wheels.
+static int Char_RouteHides(HWND c)
+{
+    int id = GetDlgCtrlID(c);
+    if (!Char_Chrg())
+        return c == g_char.upscale || c == g_char.upscaleHelp || id == CHAR_ID_PREVIEW_SWITCH || id == CHAR_ID_PREVIEW_SWITCH + 1;
+    return (id >= CHAR_ID_SIZE_LABEL && id <= CHAR_ID_OPTIONS_LABEL) || (id >= CHAR_ID_REPAIR && id <= CHAR_ID_QUALITY) ||
+           id == CHAR_ID_REDUCE_FIT || id == CHAR_ID_MODEL_IMPORT || (id >= CHAR_ID_MODEL_FILES && id <= CHAR_ID_TEXTURES_CLEAR) ||
+           (id >= CHAR_ID_FALLBACK && id <= CHAR_ID_NATIVE_LINE) || (id >= CHAR_ID_IMPORT_FIRST && id <= CHAR_ID_IMPORT_LAST) ||
+           (id >= CHAR_ID_ANIM_FIRST && id <= CHAR_ID_ANIM_LAST) || (id >= CHAR_ID_WHEELS_FIRST && id <= CHAR_ID_WHEELS_LAST);
+}
 
 // ---------------------------------------------------------------------------
 // Small helpers
@@ -2237,14 +2453,36 @@ static const struct CharMsg *Char_FindMsg(const wchar_t *code)
 // ---------------------------------------------------------------------------
 
 // The tab a control belongs to, by its ID; -1 = on every tab (the heads, the
-// preview, the bar). *card: in the tab Extras the card of the control, -1 = both.
+// preview, the bar). *card: on the tab In-game look its card; on the step
+// Model CHAR_CARD_ALL (the model field, Advanced), CHAR_CARD_BASIC (shown
+// while Advanced is closed) or the card of Advanced (CHAR_EXTRAS_*); -1
+// elsewhere. Show kart wheels moves with the route (Char_WheelsCard).
+static int Char_WheelsCard(void);
 static int Char_TabOfId(int id, int *card)
 {
     *card = -1;
-    if ((id >= CHAR_ID_MODEL_LABEL && id <= CHAR_ID_MODEL_INFO) || (id >= CHAR_ID_SIZE_LABEL && id <= CHAR_ID_OPTIONS_LABEL) ||
-        (id >= CHAR_ID_REPAIR && id <= CHAR_ID_QUALITY) || id == CHAR_ID_REDUCE_FIT || id == CHAR_ID_MODEL_IMPORT ||
-        (id >= CHAR_ID_MODEL_FILES && id <= CHAR_ID_TEXTURES_CLEAR) || (id >= CHAR_ID_FALLBACK && id <= CHAR_ID_NATIVE_LINE))
+    if ((id >= CHAR_ID_MODEL_LABEL && id <= CHAR_ID_MODEL_BROWSE) || id == CHAR_ID_ADVANCED)
         return CHAR_TAB_MODEL;
+    if (id == CHAR_ID_WHEELS) {
+        *card = Char_WheelsCard();
+        return CHAR_TAB_MODEL;
+    }
+    if ((id >= CHAR_ID_REPAIR && id <= CHAR_ID_QUALITY) || id == CHAR_ID_REDUCE || id == CHAR_ID_UPSCALE ||
+        id == CHAR_ID_UPSCALE_HELP) {
+        *card = CHAR_EXTRAS_OPTIONS;
+        return CHAR_TAB_MODEL;
+    }
+    // Reduce to fit (the button, over the limit) is the fix of the model's
+    // error: on the step itself, not behind Advanced.
+    if (id == CHAR_ID_MODEL_INFO || (id >= CHAR_ID_SIZE_LABEL && id <= CHAR_ID_OPTIONS_LABEL) || id == CHAR_ID_MODEL_IMPORT ||
+        id == CHAR_ID_REDUCE_FIT ||
+        (id >= CHAR_ID_MODEL_FILES && id <= CHAR_ID_TEXTURES_CLEAR) || (id >= CHAR_ID_FALLBACK && id <= CHAR_ID_NATIVE_LINE)) {
+        *card = CHAR_CARD_BASIC;
+        return CHAR_TAB_MODEL;
+    }
+    if ((id >= CHAR_ID_OUT_LABEL && id <= CHAR_ID_SHOW && id != CHAR_ID_MESSAGES) || id == CHAR_ID_TEST ||
+        id == CHAR_ID_REBUILD || id == CHAR_ID_TEST_NOTE || id == CHAR_ID_OUT_NOTE)
+        return CHAR_TAB_BUILD;
     if ((id >= CHAR_ID_NAME_LABEL && id <= CHAR_ID_CLASS_HELP) || (id >= CHAR_ID_MASK_LABEL && id <= CHAR_ID_MASK_HELP))
         return CHAR_TAB_DRIVER;
     if ((id >= CHAR_ID_ICON_LABEL && id <= CHAR_ID_ICON_IMAGE + 1) || (id >= CHAR_ID_ICON_FIT_LABEL && id <= CHAR_ID_ICON_FRAME)) {
@@ -2260,24 +2498,26 @@ static int Char_TabOfId(int id, int *card)
     if ((id >= CHAR_ID_VOICES_LABEL && id <= CHAR_ID_VOICE_NORMALIZE) ||
         (id >= CHAR_ID_VOICE_RULE && id <= CHAR_ID_VOICE_EVENTS))
         return CHAR_TAB_VOICES;
-    if (id >= CHAR_ID_EXTRAS && id < CHAR_ID_EXTRAS + CHAR_EXTRAS_COUNT)
-        return CHAR_TAB_EXTRAS;
+    if (id >= CHAR_ID_EXTRAS && id < CHAR_ID_EXTRAS + CHAR_EXTRAS_COUNT) {
+        *card = CHAR_CARD_ALL;          // the switch of Advanced: Char_Wanted
+        return CHAR_TAB_MODEL;
+    }
     if (id >= CHAR_ID_WHEELS_FIRST && id <= CHAR_ID_WHEELS_LAST) {
         *card = CHAR_EXTRAS_WHEELS;
-        return CHAR_TAB_EXTRAS;
+        return CHAR_TAB_MODEL;
     }
     if (id >= CHAR_ID_ANIM_FIRST && id <= CHAR_ID_ANIM_LAST) {
         *card = CHAR_EXTRAS_ANIM;
-        return CHAR_TAB_EXTRAS;
+        return CHAR_TAB_MODEL;
     }
     if (id >= CHAR_ID_IMPORT_FIRST && id <= CHAR_ID_IMPORT_LAST) {
         *card = CHAR_EXTRAS_IMPORT;
-        return CHAR_TAB_EXTRAS;
+        return CHAR_TAB_MODEL;
     }
     return -1;
 }
 
-// The card of the tab Extras an @msg id belongs to, -1 = none: the choices of
+// The card of Advanced an @msg id belongs to, -1 = none: the choices of
 // the card Import (the axes, the palette, the vertex colours of an OBJ; the
 // native model, which the user mode shows on the tab Model).
 static int Char_CardOfCode(const wchar_t *code)
@@ -2308,8 +2548,10 @@ static int Char_LookCardOfCode(const wchar_t *code)
 // the model and its options is the tab Model.
 static int Char_TabOfCode(const wchar_t *code)
 {
-    if (!code || !code[0] || wcscmp(code, L"write") == 0)
+    if (!code || !code[0])
         return -1;
+    if (wcscmp(code, L"write") == 0)
+        return CHAR_TAB_BUILD;
     if (wcsncmp(code, L"icon", 4) == 0 || wcscmp(code, L"map-color") == 0 || wcscmp(code, L"shadow") == 0 ||
         wcscmp(code, L"exhaust") == 0)
         return CHAR_TAB_LOOK;
@@ -2318,21 +2560,104 @@ static int Char_TabOfCode(const wchar_t *code)
     if (wcsncmp(code, L"name", 4) == 0 || wcscmp(code, L"author") == 0 || wcscmp(code, L"class") == 0 ||
         wcscmp(code, L"template") == 0 || wcsncmp(code, L"mask", 4) == 0)
         return CHAR_TAB_DRIVER;
-    if (Char_CardOfCode(code) >= 0)
-        return CHAR_TAB_EXTRAS;
-    return CHAR_TAB_MODEL;
+    return CHAR_TAB_MODEL;      // its card of Advanced, if any: Char_CardOfCode
 }
 
-// The message list, with the tab of every entry (a click opens it).
+// THE MESSAGES AT THEIR PLACE: every message of the page keeps its step (and
+// its card); the list on a step shows only those of that step, below the
+// step's fields - a message without a step (rldpack stopped, could not
+// start) on the steps Model and Build. A step without messages shows no list.
+// The number in the head of each step (red, amber, green) counts them as
+// before (Char_CountTabs).
+static int Char_MsgOnStep(int tab, int step)
+{
+    return tab == step || (tab < 0 && (step == CHAR_TAB_MODEL || step == CHAR_TAB_BUILD));
+}
+
+// The same for an entry of pageMsg: with Advanced open on the step Model only
+// those of the card shown (the choices of Import, the poses of Animations,
+// the wheels); Basic shows every message of the model.
+static int Char_MsgShown(const struct CharPageMsg *m)
+{
+    if (!Char_MsgOnStep(m->tab, g_char.tab))
+        return 0;
+    if (g_char.tab == CHAR_TAB_MODEL && g_char.advOpen)
+        return m->tab == CHAR_TAB_MODEL && m->card == g_char.extrasCard;
+    return 1;
+}
+
+static void Char_Relayout(HWND page);
+
+// The list of the step shown, from pageMsg.
+static void Char_MsgRefill(void)
+{
+    int i, had = g_char.listCount;
+    Rs_MsgListClear(g_char.msgs);
+    g_char.listCount = 0;
+    if (!g_char.listMsg && g_char.pageMsgCap)
+        g_char.listMsg = Rs_Alloc((size_t)g_char.pageMsgCap * sizeof(int));
+    for (i = 0; i < g_char.pageMsgCount; i++) {
+        const struct CharPageMsg *m = &g_char.pageMsg[i];
+        if (!Char_MsgShown(m))
+            continue;
+        g_char.listMsg[g_char.listCount++] = i;
+        Rs_MsgListAdd(g_char.msgs, m->severity, m->text, m->detail);
+    }
+    // The list comes or goes with its first or last entry: laid out again.
+    if ((had > 0) != (g_char.listCount > 0) && g_char.msgs)
+        Char_Relayout(GetParent(g_char.msgs));
+}
+
 static void Char_MsgClear(void)
 {
-    Rs_MsgListClear(g_char.msgs);
+    int i;
+    for (i = 0; i < g_char.pageMsgCount; i++) {
+        Rs_Free(g_char.pageMsg[i].text);
+        Rs_Free(g_char.pageMsg[i].detail);
+    }
+    g_char.pageMsgCount = 0;
     g_char.msgTabCount = 0;
+    Char_MsgRefill();
 }
 
-// card: of the tab Extras (Char_CardOfCode), -1 = none.
+// card: of Advanced (Char_CardOfCode) or of the tab In-game look, -1 = none.
 static void Char_MsgAddCard(int tab, int card, int severity, const wchar_t *text, const wchar_t *detail)
 {
+    if (g_char.pageMsgCount == g_char.pageMsgCap) {
+        int cap = g_char.pageMsgCap ? g_char.pageMsgCap * 2 : 32;
+        struct CharPageMsg *m = Rs_Alloc((size_t)cap * sizeof(*m));
+        if (g_char.pageMsgCount)
+            memcpy(m, g_char.pageMsg, (size_t)g_char.pageMsgCount * sizeof(*m));
+        Rs_Free(g_char.pageMsg);
+        g_char.pageMsg = m;
+        g_char.pageMsgCap = cap;
+        Rs_Free(g_char.listMsg);
+        g_char.listMsg = Rs_Alloc((size_t)cap * sizeof(int));
+        // listMsg is filled anew below (Char_MsgRefill)
+        g_char.listCount = 0;
+        Rs_MsgListClear(g_char.msgs);
+        {
+            int i;
+            for (i = 0; i < g_char.pageMsgCount; i++)
+                if (Char_MsgShown(&g_char.pageMsg[i])) {
+                    g_char.listMsg[g_char.listCount++] = i;
+                    Rs_MsgListAdd(g_char.msgs, g_char.pageMsg[i].severity, g_char.pageMsg[i].text, g_char.pageMsg[i].detail);
+                }
+        }
+    }
+    g_char.pageMsg[g_char.pageMsgCount].tab = tab;
+    g_char.pageMsg[g_char.pageMsgCount].card = (tab == CHAR_TAB_MODEL || tab == CHAR_TAB_LOOK) ? card : -1;
+    g_char.pageMsg[g_char.pageMsgCount].severity = severity;
+    g_char.pageMsg[g_char.pageMsgCount].text = Rs_Dup(text ? text : L"");
+    g_char.pageMsg[g_char.pageMsgCount].detail = detail ? Rs_Dup(detail) : NULL;
+    g_char.pageMsgCount++;
+    if (Char_MsgShown(&g_char.pageMsg[g_char.pageMsgCount - 1])) {
+        g_char.listMsg[g_char.listCount++] = g_char.pageMsgCount - 1;
+        Rs_MsgListAdd(g_char.msgs, severity, text, detail);
+        if (g_char.listCount == 1 && g_char.msgs)
+            Char_Relayout(GetParent(g_char.msgs));
+    }
+    // The old index of tabs (the report, "problem <n>") follows pageMsg.
     if (g_char.msgTabCount == g_char.msgTabCap) {
         int cap = g_char.msgTabCap ? g_char.msgTabCap * 2 : 32;
         int *n = Rs_Alloc((size_t)cap * sizeof(*n));
@@ -2348,8 +2673,7 @@ static void Char_MsgAddCard(int tab, int card, int severity, const wchar_t *text
         g_char.msgTabCap = cap;
     }
     g_char.msgTab[g_char.msgTabCount] = tab;
-    g_char.msgCard[g_char.msgTabCount++] = (tab == CHAR_TAB_EXTRAS || tab == CHAR_TAB_LOOK) ? card : -1;
-    Rs_MsgListAdd(g_char.msgs, severity, text, detail);
+    g_char.msgCard[g_char.msgTabCount++] = (tab == CHAR_TAB_MODEL || tab == CHAR_TAB_LOOK) ? card : -1;
 }
 
 static void Char_MsgAdd(int tab, int severity, const wchar_t *text, const wchar_t *detail)
@@ -2357,22 +2681,24 @@ static void Char_MsgAdd(int tab, int severity, const wchar_t *text, const wchar_
     Char_MsgAddCard(tab, -1, severity, text, detail);
 }
 
-// A message of the list opens its tab (and its card of the tab Extras).
+// A message of the list opens its step (and its card of Advanced).
 static void Char_MsgOpen(HWND page, int i);
 
 // The errors and warnings of the last run per tab, for the heads.
 static void Char_CountTabs(void)
 {
     int i;
+    // The messages of the page as they are shown (after Char_ShowCheckResult or
+    // Char_BuildDone filled them): a message without a step counts nowhere.
     memset(g_char.tabErrors, 0, sizeof(g_char.tabErrors));
     memset(g_char.tabWarnings, 0, sizeof(g_char.tabWarnings));
-    for (i = 0; i < g_charJob.msgCount; i++) {
-        int t = Char_TabOfCode(g_charJob.msgs[i].code);
+    for (i = 0; i < g_char.pageMsgCount; i++) {
+        int t = g_char.pageMsg[i].tab;
         if (t < 0)
             continue;
-        if (g_charJob.msgs[i].severity == RS_SEV_ERROR)
+        if (g_char.pageMsg[i].severity == RS_SEV_ERROR)
             g_char.tabErrors[t]++;
-        else if (g_charJob.msgs[i].severity == RS_SEV_WARNING)
+        else if (g_char.pageMsg[i].severity == RS_SEV_WARNING)
             g_char.tabWarnings[t]++;
     }
 }
@@ -2414,6 +2740,8 @@ static void Char_TabsUpdate(void)
             else
                 step = Char_VoicesHeard(&heard, &events) > 0 ? CHAR_STEP_DONE : CHAR_STEP_WARNING;
         }
+        else if (t == CHAR_TAB_BUILD)
+            step = g_char.builtFresh ? CHAR_STEP_DONE : CHAR_STEP_TODO;
         else
             step = CHAR_STEP_OPTIONAL;
         if (step != g_char.step[t] || !g_char.stepShown) {
@@ -2426,8 +2754,18 @@ static void Char_TabsUpdate(void)
     }
     g_char.stepShown = 1;
     Rs_Free(name);
-    EnableWindow(g_char.back, g_char.tab > 0);
+    // Back on the first step goes back to the choice of the type; the last
+    // step has no Next (Char_Wanted hides it).
+    EnableWindow(g_char.back, TRUE);
     EnableWindow(g_char.next, g_char.tab < CHAR_TABS - 1);
+}
+
+// The text of the head of step t: Voices says that it is optional (Next skips
+// it) - in the compact layout by its outlined number and the line at the top
+// of the step only, so that no head is cut.
+static const wchar_t *Char_HeadText(int t)
+{
+    return t == CHAR_TAB_VOICES && !g_char.compact ? L"Voices (optional)" : g_charTabTexts[t];
 }
 
 // The head of tab t: its number in a circle that says the step (green done,
@@ -2492,7 +2830,7 @@ static void Char_DrawTab(const DRAWITEMSTRUCT *di, int t)
     SelectObject(dc, Rs_Font(shown ? RS_FONT_BOLD : RS_FONT_BODY));
     SetTextColor(dc, shown ? RS_COL_TEXT : RS_COL_MUTED);
     SetRect(&r, cx + d + Rs_Px(8), rc.top, rc.right - Rs_Px(4), rc.bottom - 1);
-    DrawTextW(dc, g_charTabTexts[t], -1, &r, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+    DrawTextW(dc, Char_HeadText(t), -1, &r, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
     SelectObject(dc, oldFont);
     if ((di->itemState & ODS_FOCUS) && !(di->itemState & ODS_NOFOCUSRECT)) {
         r = rc;
@@ -2502,7 +2840,7 @@ static void Char_DrawTab(const DRAWITEMSTRUCT *di, int t)
     }
 }
 
-// Import | Wheels | Animations in the tab Extras, Portrait | In the race in
+// Options | Import | Animations | Wheels in Advanced of the step Model, Portrait | In the race in
 // the tab In-game look: the card shown in the text colour with an orange line
 // below, the other muted.
 static void Char_DrawSwitch(const DRAWITEMSTRUCT *di, const wchar_t *text, int shown)
@@ -2533,7 +2871,93 @@ static void Char_DrawSwitch(const DRAWITEMSTRUCT *di, const wchar_t *text, int s
     }
 }
 
-// A head (or a switch of the tab Extras): an owner-drawn button, so that a
+// The pictures of the three cards, made for w x h (Rs_RouteImage, rs_cards.c)
+// when that size is new; NULL where none can be made (the card draws a
+// neutral frame with its title instead).
+static void Char_RouteImages(int w, int h)
+{
+    int r;
+    if (w <= 0 || h <= 0 || (w == g_char.routeImageW && h == g_char.routeImageH))
+        return;
+    for (r = 0; r < RS_ROUTES; r++) {
+        if (g_char.routeImage[r])
+            DeleteObject(g_char.routeImage[r]);
+        g_char.routeImage[r] = Rs_RouteImage(r, w, h);
+        InvalidateRect(g_char.routeCard[r], NULL, FALSE);
+    }
+    g_char.routeImageW = w;
+    g_char.routeImageH = h;
+}
+
+// A card of step 0: the example picture (or a neutral frame with the title),
+// the title, the one sentence. The border is the accent colour where the
+// focus is or for the route chosen before.
+static void Char_DrawRouteCard(const DRAWITEMSTRUCT *di, int r)
+{
+    const struct RsRoutePreset *p = RsRoute_Preset(r);
+    HDC dc = di->hDC;
+    RECT rc = di->rcItem, pic, t;
+    const int pad = Rs_Px(12), focus = (di->itemState & ODS_FOCUS) != 0;
+    const int marked = focus || r == g_char.route || (di->itemState & ODS_SELECTED);
+    HBRUSH br;
+    HPEN pen;
+    HGDIOBJ oldBr, oldPen, oldFont;
+
+    br = CreateSolidBrush(RS_COL_PAGE);
+    FillRect(dc, &rc, br);
+    DeleteObject(br);
+    br = CreateSolidBrush(RS_COL_CARD);
+    pen = CreatePen(PS_SOLID, marked ? Rs_Px(2) : 1, marked ? RS_COL_ACCENT : RS_COL_BORDER);
+    oldBr = SelectObject(dc, br);
+    oldPen = SelectObject(dc, pen);
+    RoundRect(dc, rc.left + 1, rc.top + 1, rc.right - 1, rc.bottom - 1, Rs_Px(14), Rs_Px(14));
+    SelectObject(dc, oldBr);
+    SelectObject(dc, oldPen);
+    DeleteObject(br);
+    DeleteObject(pen);
+    SetRect(&pic, rc.left + pad, rc.top + pad, rc.right - pad, rc.top + pad + (rc.bottom - rc.top) * 55 / 100);
+    SetBkMode(dc, TRANSPARENT);
+    if (g_char.routeImage[r]) {
+        HDC mem = CreateCompatibleDC(dc);
+        BITMAP bm;
+        HGDIOBJ old = SelectObject(mem, g_char.routeImage[r]);
+        GetObjectW(g_char.routeImage[r], sizeof(bm), &bm);
+        BitBlt(dc, pic.left + ((pic.right - pic.left) - bm.bmWidth) / 2, pic.top + ((pic.bottom - pic.top) - bm.bmHeight) / 2,
+               bm.bmWidth, bm.bmHeight, mem, 0, 0, SRCCOPY);
+        SelectObject(mem, old);
+        DeleteDC(mem);
+    } else {
+        // No picture: a neutral frame with the title, so that the card reads
+        // the same without one.
+        br = CreateSolidBrush(RS_COL_PAGE);
+        FillRect(dc, &pic, br);
+        DeleteObject(br);
+        br = CreateSolidBrush(RS_COL_BORDER);
+        FrameRect(dc, &pic, br);
+        DeleteObject(br);
+        oldFont = SelectObject(dc, Rs_Font(RS_FONT_TITLE));
+        SetTextColor(dc, RS_COL_MUTED);
+        DrawTextW(dc, p ? p->title : L"", -1, &pic, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+        SelectObject(dc, oldFont);
+    }
+    SetRect(&t, rc.left + pad, pic.bottom + Rs_Px(10), rc.right - pad, pic.bottom + Rs_Px(40));
+    oldFont = SelectObject(dc, Rs_Font(RS_FONT_SECTION));
+    SetTextColor(dc, RS_COL_TEXT);
+    DrawTextW(dc, p ? p->title : L"", -1, &t, DT_LEFT | DT_TOP | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
+    SelectObject(dc, Rs_Font(RS_FONT_BODY));
+    SetTextColor(dc, RS_COL_MUTED);
+    SetRect(&t, rc.left + pad, t.bottom, rc.right - pad, rc.bottom - pad);
+    DrawTextW(dc, p ? p->sentence : L"", -1, &t, DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX | DT_END_ELLIPSIS);
+    SelectObject(dc, oldFont);
+    if (focus && !(di->itemState & ODS_NOFOCUSRECT)) {
+        t = rc;
+        InflateRect(&t, -Rs_Px(5), -Rs_Px(5));
+        SetTextColor(dc, RS_COL_TEXT);
+        DrawFocusRect(dc, &t);
+    }
+}
+
+// A head (or a switch, or a card of step 0): an owner-drawn button, so that a
 // click, the keys and the automation reach it as any button.
 static HWND Char_TabButton(HWND page, int id, const wchar_t *text, int font)
 {
@@ -2562,6 +2986,7 @@ static void Char_SelectTab(HWND page, int t, int focus)
     g_char.tab = t;
     for (i = 0; i < CHAR_TABS; i++)
         InvalidateRect(g_char.tabHead[i], NULL, FALSE);
+    Char_MsgRefill();           // the messages of this step
     Char_Relayout(page);
     Char_UpdateButtons();
     f = GetFocus();
@@ -2571,18 +2996,22 @@ static void Char_SelectTab(HWND page, int t, int focus)
         SetFocus(g_char.tabHead[t]);
 }
 
-// The card of the tab Extras.
+// The card of Advanced (the step Model).
 static void Char_SelectExtras(HWND page, int c)
 {
     int i;
-    if (c < 0 || c >= CHAR_EXTRAS_COUNT)
+    if (c < 0 || c >= CHAR_EXTRAS_COUNT || !Char_ExtrasShown(c))
         return;
     g_char.extrasCard = c;
     for (i = 0; i < CHAR_EXTRAS_COUNT; i++)
         InvalidateRect(g_char.extrasSwitch[i], NULL, FALSE);
+    Char_MsgRefill();
     Char_Relayout(page);
 }
 
+// i: index into pageMsg. A message of a card of Advanced opens it (a card the
+// route shows: Char_ExtrasShown).
+static int Char_ExtrasShown(int c);
 static void Char_MsgOpen(HWND page, int i)
 {
     if (i < 0 || i >= g_char.msgTabCount || g_char.msgTab[i] < 0)
@@ -2592,9 +3021,10 @@ static void Char_MsgOpen(HWND page, int i)
         g_char.lookCard = g_char.msgCard[i];
         for (c = 0; c < CHAR_LOOK_CARDS; c++)
             InvalidateRect(g_char.lookSwitch[c], NULL, FALSE);
-    } else if (g_char.msgCard[i] >= 0 && g_char.msgCard[i] != g_char.extrasCard) {
+    } else if (g_char.msgTab[i] == CHAR_TAB_MODEL && g_char.msgCard[i] >= 0 && Char_ExtrasShown(g_char.msgCard[i])) {
         int c;
         g_char.extrasCard = g_char.msgCard[i];
+        g_char.advOpen = 1;
         for (c = 0; c < CHAR_EXTRAS_COUNT; c++)
             InvalidateRect(g_char.extrasSwitch[c], NULL, FALSE);
     }
@@ -2714,23 +3144,34 @@ static void Char_UpdateButtons(void)
     Char_FieldPath(g_char.model, model, CHAR_VAL);
     EnableWindow(g_char.check, model[0] && !building);
     EnableWindow(g_char.build, Char_CanBuild());
+    EnableWindow(g_char.rebuild, Char_CanBuild());
+    EnableWindow(g_char.test, g_char.builtFresh && !g_char.jobId);
     EnableWindow(g_char.modelBrowse, !building);
     EnableWindow(g_char.iconBrowse, !building);
     EnableWindow(g_char.voicesBrowse, !building);
     EnableWindow(g_char.texturesBrowse, !building);
     EnableWindow(g_char.outBrowse, !building);
     EnableWindow(g_char.show, !building);
+    // Build, or after a build of the fields as they are Test in game (the
+    // one main action) with Build again beside it.
+    if (g_char.build && !g_char.choosing && g_char.tab == CHAR_TAB_BUILD) {
+        int fresh = g_char.builtFresh != 0;
+        if (Char_IsShown(g_char.build) == fresh || Char_IsShown(g_char.test) != fresh)
+            Char_Relayout(GetParent(g_char.build));
+    }
     Char_VoiceSelShow();
     Char_TabsUpdate();
 }
 
+// "Show details": the raw output of rldpack in the step Build in place of its
+// messages (the command first, then every line), "Hide details" back.
 static void Char_ShowView(void)
 {
     if (g_char.showRaw)
         Char_RawRefresh();
-    ShowWindow(g_char.raw, g_char.showRaw ? SW_SHOW : SW_HIDE);
-    ShowWindow(g_char.msgs, g_char.showRaw ? SW_HIDE : SW_SHOW);
-    Rs_SetText(g_char.rawToggle, g_char.showRaw ? L"Show messages" : L"Show rldpack output");
+    Rs_SetText(g_char.rawToggle, g_char.showRaw ? L"Hide details" : L"Show details");
+    if (g_char.raw)
+        Char_Relayout(GetParent(g_char.raw));
 }
 
 static void Char_Relayout(HWND page)
@@ -3170,7 +3611,7 @@ static void Char_TexturesUpdate(HWND page)
 // with Show kart wheels off (rldpack refuses it beside the kart wheels); the
 // note says what the last check made of it (@char native-model,
 // Char_NativeResult) or why it is not passed. Never stored in the settings.
-#define CHAR_NATIVE_TEXT_ON  L"Preview: also writes the OBJ's own mesh, UVs and textures (CNET, CTXT; each texture a power of two from 16 to 2048) beside the classic model; needs Show kart wheels off or a wheel model (Extras, Wheels). The game draws it with NATIVE DRIVERS set to PREVIEW (OPTIONS, GRAPHICS)."
+#define CHAR_NATIVE_TEXT_ON  L"Preview: also writes the OBJ's own mesh, UVs and textures (CNET, CTXT; each texture a power of two from 16 to 2048) beside the classic model; needs Show kart wheels off or a wheel model (Advanced, Wheels). The game draws it with NATIVE DRIVERS set to PREVIEW (OPTIONS, GRAPHICS)."
 #define CHAR_NATIVE_TEXT_OBJ L"Only for an OBJ model with its materials."
 // ---------------------------------------------------------------------------
 // THE LOOK OF THE DRIVER (tab In-game look, card In the race; renderer package A)
@@ -3392,7 +3833,7 @@ static void Char_LookPicked(HWND page)
 // says so; a PLY names no texture file and is the classic model only too.
 #define CHAR_NATIVE_TEXT_USER   L"Native model: the OBJ's own mesh, UVs and textures, built beside the classic model (preview: the game draws it with NATIVE DRIVERS set to PREVIEW)."
 #define CHAR_NATIVE_TEXT_PLY    L"Classic model only: a PLY names no texture file. Export the model as OBJ with its textures for the native model."
-#define CHAR_NATIVE_TEXT_WHEELS L"Classic model only: the native model needs Show kart wheels off or a wheel model (Extras, Wheels)."
+#define CHAR_NATIVE_TEXT_WHEELS L"Classic model only: the native model needs Show kart wheels off or a wheel model (Advanced, Wheels)."
 
 // The native model is built for an OBJ (ticked, or in the user mode) with
 // Show kart wheels off, or with them and a wheel model of the card Wheels
@@ -4667,24 +5108,29 @@ static const wchar_t *Char_ViewLookText(void)
         return native ? CHAR_VIEW_NATIVE_TEXT : CHAR_VIEW_FALLBACK_TEXT;
     }
     if (!g_char.objOn)
-        return L"Classic look, as the game draws it. Textures of your own need an OBJ model with its MTL file (Native model, Extras, Import).";
+        return L"Classic look, as the game draws it. Textures of your own need an OBJ model with its MTL file (Native model, Advanced, Import).";
     if (Char_NativePassed())
         return L"Classic look: the check brought no native model - see the message list.";
     if (Char_NativeOn())
-        return L"Classic look: the native model needs Show kart wheels off (tab Model) or a wheel model (Extras, Wheels).";
+        return L"Classic look: the native model needs Show kart wheels off (tab Model) or a wheel model (Advanced, Wheels).";
     if (g_char.previewTextured)
-        return L"Classic look: your textures are only baked into the colours of the triangles. Tick Native model (Extras, Import) to build them.";
-    return L"Classic look, as the game draws it. Tick Native model (Extras, Import) for the native model.";
+        return L"Classic look: your textures are only baked into the colours of the triangles. Tick Native model (Advanced, Import) to build them.";
+    return L"Classic look, as the game draws it. Tick Native model (Advanced, Import) for the native model.";
 }
 
 // The note after a check shown, a change of the card Wheels or of the view's
 // toggles. Only while a model is shown: the other notes (no model, errors)
 // stay as they are.
+static void Char_ChrgViewNote(void);
 static void Char_ViewNoteUpdate(void)
 {
     wchar_t one[384], wheelNames[256];
     int wheelMissing, native = 0, missing;
 
+    if (Char_Chrg()) {
+        Char_ChrgViewNote();
+        return;
+    }
     if (!g_char.viewNote || !g_char.previewShown)
         return;
     RsView_GetToggles(g_char.view, NULL, NULL, NULL, NULL, &native);
@@ -4721,7 +5167,7 @@ static void Char_ViewNoteUpdate(void)
     }
     // Wheels of the card Wheels in the preview that the character will not have.
     if (CharWheels_Shown() && Char_IsChecked(g_char.wheels) && !Char_WheelPassed(NULL, 0))
-        Char_ViewNotePart(L"Your wheels show here but are not built (Extras, Wheels says why).");
+        Char_ViewNotePart(L"Your wheels show here but are not built (Advanced, Wheels says why).");
     Char_ViewNotePart(CHAR_VIEW_MOUSE_TEXT);
     // The classic model in the race: shaded on dark ground (the native one:
     // not determined).
@@ -4766,6 +5212,10 @@ static void Char_ApplyPreview(int seq)
     g_char.previewPoses = 0;
     memset(g_char.previewTris, 0, sizeof(g_char.previewTris));
     Char_TempPath(path, CHAR_VAL, seq, L".rldpv");
+    // A CHRG route keeps the classic fallback's picture for the switch
+    // Hi-Res | Classic fallback (Char_PreviewShow follows in Char_CheckDone).
+    if (Char_Chrg())
+        Char_ClassicKeep(Rs_FileExists(path) ? path : NULL);
     if (!Rs_FileExists(path)) {
         RsView_Clear(g_char.view, L"No preview - rldpack could not convert the model.");
         Char_ViewNote(L"No preview - fix the errors in the message list first.", RS_COL_WARNING);
@@ -4961,7 +5411,7 @@ static int Char_OverLimit(wchar_t *out, int cap)
     if (!over)
         return 0;
     what = Char_IsChecked(g_char.reduce) ? L"Reduce to fit could not bring it under the limit"
-                                         : L"tick Reduce to fit, or reduce it in Blender";
+                                         : L"press Reduce to fit, or reduce it in Blender";
     if (j->budgetSeen) {
         wchar_t n[2][24];
         Char_Grouped(n[0], 24, j->budget[0]);
@@ -4983,6 +5433,78 @@ static void Char_ReduceFitShow(HWND page, int show)
     }
 }
 
+// THE MESSAGES OF A CHRG ROUTE: those of RsCharHires_Messages at their place
+// (the model, its animations, its wheels, its size on the step Model; the
+// build on the step Build), each with its "How to fix" and rule ID; a line
+// when the model could not be read; of the classic fallback's make-char only
+// its errors about the model ("Classic fallback: ..."; its warnings, notes and
+// infos about the model - the reduction, the fit, rig-bind-pose - stay behind
+// Show details) and, as for Vanilla, everything it says about the other
+// steps (name, icon, voices). Returns the errors.
+static int Char_ChrgMessages(int exitCode, int makeOk)
+{
+    static const int order[] = { RS_SEV_ERROR, RS_SEV_WARNING, RS_SEV_NOTE, RS_SEV_INFO, RS_SEV_OK };
+    struct RsWizMsg *w = Rs_Alloc(CHAR_WIZ_MSGS * sizeof(*w));
+    wchar_t text[2 * RS_WIZ_TEXT_MAX + 32], detail[RS_WIZ_TEXT_MAX + 48];
+    int errors = 0, n, i, s;
+
+    if (!g_char.hires.read) {
+        Char_MsgAdd(CHAR_TAB_MODEL, RS_SEV_ERROR, g_char.hires.why[0] ? g_char.hires.why : L"The model could not be read.",
+                    L"How to fix: export the model again as glTF Binary (.glb) and choose that file.");
+        errors++;
+    } else {
+        n = RsCharHires_Messages(&g_char.hires, g_char.route, w, CHAR_WIZ_MSGS);
+        for (i = 0; i < n; i++) {
+            if (w[i].fix[0])
+                swprintf(detail, RS_WIZ_TEXT_MAX + 48, L"How to fix: %ls%ls%ls%ls", w[i].fix, w[i].rule[0] ? L" (" : L"", w[i].rule,
+                         w[i].rule[0] ? L")" : L"");
+            else
+                Char_Copy(detail, RS_WIZ_TEXT_MAX + 48, w[i].rule);
+            Char_MsgAdd(w[i].place == RS_WIZ_PLACE_BUILD ? CHAR_TAB_BUILD : CHAR_TAB_MODEL, w[i].severity, w[i].text,
+                        detail[0] ? detail : NULL);
+            errors += w[i].severity == RS_SEV_ERROR;
+        }
+    }
+    Rs_Free(w);
+    errors += Char_AddRunProblems(exitCode, makeOk);
+    for (s = 0; s < (int)(sizeof(order) / sizeof(order[0])); s++) {
+        for (i = 0; i < g_charJob.msgCount; i++) {
+            const struct CharMsg *m = &g_charJob.msgs[i];
+            int tab = Char_TabOfCode(m->code);
+            if (m->severity != order[s] || (tab == CHAR_TAB_MODEL && m->severity != RS_SEV_ERROR))
+                continue;
+            if (tab == CHAR_TAB_MODEL)
+                swprintf(text, 2 * RS_WIZ_TEXT_MAX + 32, L"Classic fallback: %ls", m->text ? m->text : L"");
+            else
+                Char_Copy(text, 2 * RS_WIZ_TEXT_MAX + 32, m->text ? m->text : L"");
+            Char_MsgAddCard(tab, tab == CHAR_TAB_LOOK ? Char_LookCardOfCode(m->code) : -1, m->severity, text, m->detail);
+            errors += m->severity == RS_SEV_ERROR;
+        }
+    }
+    return errors;
+}
+
+// The line below the model field of a CHRG route: what the check of the
+// .glb found, against the route's targets and the game's budget.
+static void Char_ChrgInfo(void)
+{
+    const struct RsHiresCheck *c = &g_char.hires;
+    const struct RsRoutePreset *p = RsRoute_Preset(g_char.route);
+    wchar_t t[512], tris[2][24];
+    unsigned long long target;
+    if (!c->read) {
+        Char_SetInfo(c->why[0] ? c->why : L"The model could not be read.", RS_COL_ERROR);
+        return;
+    }
+    target = p && p->triangleTarget ? p->triangleTarget : c->budgetTriangles;
+    Char_Grouped(tris[0], 24, (long)c->triangles);
+    Char_Grouped(tris[1], 24, (long)target);
+    swprintf(t, 512, L"%ls triangles of %ls%ls - textures up to %u px - %d of %d animations - %ls", tris[0], tris[1],
+             p && p->triangleTarget && p->triangleTarget < c->budgetTriangles ? L" (target)" : L"", c->textureEdge, c->clips,
+             RS_HIRES_CLIPS, c->wheels == 4 ? L"its own wheels" : L"standard wheels");
+    Char_SetInfo(t, c->usable ? RS_COL_TEXT : RS_COL_ERROR);
+}
+
 static void Char_ShowCheckResult(int exitCode)
 {
     struct CharJobData *j = &g_charJob;
@@ -4990,26 +5512,38 @@ static void Char_ShowCheckResult(int exitCode)
     wchar_t t[256];
     int errors, over;
 
+    if (Char_Chrg())
+        ok = ok && g_char.hires.read && g_char.hires.usable;
     g_char.checked = ok;
     Char_Copy(g_char.checkedPath, CHAR_VAL, j->resultPath);
-    Char_CountTabs();
     Char_VoiceNote();           // it says an error of the voices
     Char_MsgClear();
-    errors = Char_AddRunProblems(exitCode, ok);
-    errors += Char_CountMsgs(RS_SEV_ERROR);
-    Char_AddMsgs(RS_SEV_ERROR);
-    Char_AddMsgs(RS_SEV_WARNING);
-    Char_AddMsgs(RS_SEV_NOTE);
-    Char_AddMsgs(RS_SEV_INFO);
-    Char_AddMsgs(RS_SEV_OK);
+    if (Char_Chrg()) {
+        errors = Char_ChrgMessages(exitCode, j->resultSeen && wcscmp(j->resultState, L"checked") == 0);
+        Char_ChrgInfo();
+    } else {
+        errors = Char_AddRunProblems(exitCode, ok);
+        errors += Char_CountMsgs(RS_SEV_ERROR);
+        Char_AddMsgs(RS_SEV_ERROR);
+        Char_AddMsgs(RS_SEV_WARNING);
+        Char_AddMsgs(RS_SEV_NOTE);
+        Char_AddMsgs(RS_SEV_INFO);
+        Char_AddMsgs(RS_SEV_OK);
+    }
+    Char_CountTabs();
     Char_EmptyText(L"rldpack reported nothing.");
-    over = !ok && Char_OverLimit(t, 256);
+    over = !ok && !Char_Chrg() && Char_OverLimit(t, 256);
     if (ok) {
         Char_Headline(L"Ready to build", RS_COL_OK);
     } else if (over) {
         Char_Headline(t, RS_COL_ERROR);
     } else {
-        swprintf(t, 256, L"Cannot build yet - %d problem(s)", errors);
+        // Where they are: the first step whose head is red.
+        int s;
+        for (s = 0; s < CHAR_TABS && !g_char.tabErrors[s]; s++) {
+        }
+        swprintf(t, 256, L"Cannot build yet - %d problem(s)%ls%ls", errors, s < CHAR_TABS ? L", see the step " : L"",
+                 s < CHAR_TABS ? g_charTabTexts[s] : L"");
         Char_Headline(t, RS_COL_ERROR);
     }
     Char_ReduceFitShow(GetParent(g_char.headline), over && !Char_IsChecked(g_char.reduce));
@@ -5172,6 +5706,210 @@ static int Char_Cancel(HWND page)
 }
 
 // ---------------------------------------------------------------------------
+// A CHRG route: the check of the .glb and its preview
+// ---------------------------------------------------------------------------
+
+// THE CHECK OF A CHRG ROUTE is twofold and has no code of its own: the .glb
+// with the game's rules in this process (RsHires_CheckFile, rs_hires_model.c,
+// include/rldhires.inc - the page Hi-Res runs the same), and make-char --check
+// of the classic fallback made from the same file (the page's own switches,
+// then RsCharHires_FallbackArgs: Char_MakeArgs). The .glb is read again only
+// when it is another file or was written since (its stamp).
+static void Char_HiresEnsure(const wchar_t *model)
+{
+    unsigned long long stamp = Char_StampFile(CHAR_STAMP_START, model);
+    if (g_char.hiresChecked && _wcsicmp(model, g_char.hiresPath) == 0 && stamp == g_char.hiresStamp)
+        return;
+    Char_HiresStop();
+    RsHires_CheckFree(&g_char.hires);
+    memset(&g_char.hires, 0, sizeof(g_char.hires));
+    RsHires_CheckFile(model, &g_char.hires);
+    g_char.hiresChecked = 1;
+    g_char.hiresStamp = stamp;
+    Char_Copy(g_char.hiresPath, CHAR_VAL, model);
+    g_char.animSeconds = 0.0f;
+    g_char.animWheel = 0.0f;
+    if (Rs_Automating()) {
+        if (g_char.hires.read)
+            Rs_AutoLog(L"  hires check: %ls - %llu triangles, %d of %d clips, %d wheel nodes, %d error(s), %d warning(s)",
+                       g_char.hires.usable ? L"usable" : L"refused", g_char.hires.triangles, g_char.hires.clips, RS_HIRES_CLIPS,
+                       g_char.hires.wheels, g_char.hires.errors, g_char.hires.warnings);
+        else
+            Rs_AutoLog(L"  hires check: not read - %ls", g_char.hires.why);
+    }
+}
+
+// The check of another model or none: the hi-res check goes.
+static void Char_HiresForget(void)
+{
+    Char_HiresStop();
+    RsHires_CheckFree(&g_char.hires);
+    memset(&g_char.hires, 0, sizeof(g_char.hires));
+    g_char.hiresChecked = 0;
+    g_char.hiresPath[0] = 0;
+    g_char.hiresShown = 0;
+    Rs_Free(g_char.classicPv);
+    g_char.classicPv = NULL;
+    g_char.classicPvBytes = 0;
+}
+
+// The idle clip stops (another step, the classic fallback, a new check).
+static void Char_HiresStop(void)
+{
+    HWND page = g_char.view ? GetParent(g_char.view) : NULL;
+    if (page)
+        KillTimer(page, CHAR_TIMER_ANIM);
+}
+
+// The note below the preview of a CHRG route.
+static void Char_ChrgViewNote(void)
+{
+    if (!g_char.viewNote)
+        return;
+    g_char.viewPartCount = 0;
+    g_char.viewFirst = -1;
+    if (g_char.previewClassic) {
+        Char_ViewNotePart(g_char.classicPv ? L"The classic fallback: the game draws it wherever the hi-res driver is not drawn."
+                                           : L"No classic fallback yet - see the messages of the step Model.");
+        Char_ViewNotePart(CHAR_VIEW_MOUSE_TEXT);
+        Char_ViewNotePart(CHAR_VIEW_SHADE_TEXT);
+    } else {
+        Char_ViewNotePart(!g_char.hires.read ? L"Nothing to draw - see the messages of the step Model."
+                          : g_char.hires.animReady && g_char.hires.clips > 0
+                              ? L"The hi-res model as the game draws it, with its textures - its idle animation plays."
+                              : L"The hi-res model as the game draws it, with its textures. It has no animations: it stands still.");
+        Char_ViewNotePart(CHAR_VIEW_MOUSE_TEXT);
+    }
+    Char_ViewNoteShow(RS_COL_MUTED);
+}
+
+// The hi-res picture of the check (textured, the engine's filter) in the
+// view; the idle clip plays on the page's timer where the clips can play.
+static void Char_HiresShow(void)
+{
+    HWND page = GetParent(g_char.view);
+    const struct RsHiresCheck *c = &g_char.hires;
+    g_char.hiresShown = 0;
+    Char_HiresStop();
+    if (!g_char.hiresChecked || !c->read || !c->preview) {
+        wchar_t msg[RS_HIRES_TEXT_MAX + 32];
+        swprintf(msg, RS_HIRES_TEXT_MAX + 32, L"Nothing to draw: %ls",
+                 !g_char.hiresChecked ? L"choose a .glb" : !c->read ? c->why : L"the file has no triangle to draw");
+        RsView_Clear(g_char.view, msg);
+        Char_ChrgViewNote();
+        return;
+    }
+    RsView_SetModelKey(g_char.view, g_char.hiresPath);
+    RsView_LoadPreviewData(g_char.view, c->preview, c->previewBytes);
+    RsView_SetPose(g_char.view, RS_VIEW_POSE_NEUTRAL);
+    RsView_SetWheels(g_char.view, c->wheels < 4);
+    g_char.hiresShown = 1;
+    if (c->animReady && c->clips > 0) {
+        // In automation the first frame of idle only, without the timer: the
+        // shots are the same every run (and the log has no line per frame).
+        if (Rs_Automating()) {
+            const unsigned char *bytes = NULL;
+            size_t size = 0;
+            if (RsHires_AnimFrame(&g_char.hires, 0, 0.0f, 0.0f, &bytes, &size) > 0 && bytes &&
+                !RsView_UpdatePreviewData(g_char.view, bytes, size, c->previewKeepAt, c->previewKeepBytes))
+                RsView_LoadPreviewData(g_char.view, bytes, size);
+            RsView_SetPose(g_char.view, RS_VIEW_POSE_NEUTRAL);
+        } else {
+            g_char.animTick = GetTickCount();
+            SetTimer(page, CHAR_TIMER_ANIM, CHAR_ANIM_TICK_MS, NULL);
+        }
+    }
+    Char_ChrgViewNote();
+}
+
+// The classic fallback of the check shown (make-char --preview) in the view.
+static void Char_ClassicShow(void)
+{
+    g_char.hiresShown = 0;
+    Char_HiresStop();
+    if (g_char.classicPv && RsView_LoadPreviewData(g_char.view, g_char.classicPv, g_char.classicPvBytes)) {
+        RsView_SetPose(g_char.view, g_charPoseView[g_char.poseNow]);
+        RsView_SetWheels(g_char.view, !(g_char.hiresChecked && g_char.hires.read && g_char.hires.wheels == 4));
+    } else {
+        RsView_Clear(g_char.view, L"No classic fallback yet - see the messages of the step Model.");
+    }
+    Char_ChrgViewNote();
+}
+
+// The preview of a CHRG route as the switch says.
+static void Char_PreviewShow(void)
+{
+    if (!Char_Chrg())
+        return;
+    if (g_char.previewClassic)
+        Char_ClassicShow();
+    else
+        Char_HiresShow();
+}
+
+// A tick of the idle clip: the next frame copied over the shown one (the
+// textures stay), as the page Hi-Res plays a clip.
+static void Char_HiresTick(HWND page)
+{
+    const unsigned char *bytes = NULL;
+    size_t size = 0;
+    DWORD now = GetTickCount(), dt = now - g_char.animTick;
+    if (!g_char.hiresShown || !Char_Chrg() || g_char.choosing || !IsWindowVisible(page) || !g_char.hires.animReady) {
+        Char_HiresStop();
+        return;
+    }
+    if (dt > CHAR_ANIM_TICK_CAP)
+        dt = CHAR_ANIM_TICK_CAP;
+    g_char.animTick = now;
+    g_char.animSeconds += (float)dt / 1000.0f;
+    g_char.animWheel += 180.0f * (float)dt / 1000.0f;
+    if (g_char.animWheel >= 360.0f)
+        g_char.animWheel -= 360.0f;
+    if (RsHires_AnimFrame(&g_char.hires, 0, g_char.animSeconds, g_char.animWheel, &bytes, &size) <= 0 || !bytes)
+        return;
+    if (!RsView_UpdatePreviewData(g_char.view, bytes, size, g_char.hires.previewKeepAt, g_char.hires.previewKeepBytes)) {
+        RsView_SetModelKey(g_char.view, g_char.hiresPath);
+        RsView_LoadPreviewData(g_char.view, bytes, size);
+    }
+    RsView_SetPose(g_char.view, RS_VIEW_POSE_NEUTRAL);
+}
+
+// The switch Hi-Res | Classic fallback above the preview.
+static void Char_PreviewSwitch(HWND page, int classic)
+{
+    int i;
+    g_char.previewClassic = classic != 0;
+    for (i = 0; i < 2; i++)
+        InvalidateRect(g_char.previewSwitch[i], NULL, FALSE);
+    Char_PreviewShow();
+    Char_Relayout(page);        // the pose choice belongs to the classic fallback
+}
+
+// The classic fallback's preview file of a check, kept in memory for the
+// switch (the file itself goes with the result kept).
+static void Char_ClassicKeep(const wchar_t *path)
+{
+    FILE *f;
+    long n;
+    Rs_Free(g_char.classicPv);
+    g_char.classicPv = NULL;
+    g_char.classicPvBytes = 0;
+    f = path && path[0] ? _wfopen(path, L"rb") : NULL;
+    if (!f)
+        return;
+    if (fseek(f, 0, SEEK_END) == 0 && (n = ftell(f)) > 0 && n < 512L * 1024L * 1024L && fseek(f, 0, SEEK_SET) == 0) {
+        g_char.classicPv = Rs_Alloc((size_t)n);
+        if (fread(g_char.classicPv, 1, (size_t)n, f) == (size_t)n) {
+            g_char.classicPvBytes = (size_t)n;
+        } else {
+            Rs_Free(g_char.classicPv);
+            g_char.classicPv = NULL;
+        }
+    }
+    fclose(f);
+}
+
+// ---------------------------------------------------------------------------
 // Commands to rldpack
 // ---------------------------------------------------------------------------
 
@@ -5293,12 +6031,37 @@ static int Char_InGameCharDir(const wchar_t *path)
 }
 
 // The cue of the empty output field before a check names the file.
+// The line below the output field (step Build): where the character goes -
+// with the field empty the game's characters folder (the default), else the
+// file chosen, and whether the game loads it from there. named: the output
+// the last check named (rldpack's @value out), NULL = not known yet.
+static void Char_OutNote(const wchar_t *named)
+{
+    wchar_t field[CHAR_VAL], dir[CHAR_VAL], note[2 * CHAR_VAL + 96];
+    const int game = Char_GameCharDir(dir, CHAR_VAL);
+    if (!g_char.outNote)
+        return;
+    Char_FieldPath(g_char.out, field, CHAR_VAL);
+    if (field[0])
+        Char_Copy(note, 2 * CHAR_VAL + 96, Char_InGameCharDir(field) ? L"Into the game's characters folder, where the game loads it."
+                                           : L"Your own place - the game loads characters only from its characters folder.");
+    else if (named && named[0])
+        swprintf(note, 2 * CHAR_VAL + 96, L"%ls: %ls", Char_InGameCharDir(named) ? L"Into the game's characters folder" : L"Next to the model",
+                 named);
+    else if (game)
+        swprintf(note, 2 * CHAR_VAL + 96, L"Empty: into the game's characters folder, %ls - where the game loads it.", dir);
+    else
+        Char_Copy(note, 2 * CHAR_VAL + 96, L"Empty: next to the model. The game is not known yet - choose it on the page Test in game.");
+    Rs_SetText(g_char.outNote, note);
+}
+
 static void Char_OutCue(void)
 {
     wchar_t dir[CHAR_VAL];
+    const int game = Char_GameCharDir(dir, CHAR_VAL);
     SendMessageW(g_char.out, EM_SETCUEBANNER, FALSE,
-                 (LPARAM)(Char_GameCharDir(dir, CHAR_VAL) ? L"In the game's characters folder (.rldchar)"
-                                                          : L"Next to the model (.rldchar)"));
+                 (LPARAM)(game ? L"In the game's characters folder (.rldchar)" : L"Next to the model (.rldchar)"));
+    Char_OutNote(NULL);
 }
 
 // make-char with the values of the fields. check = 1: with --check and the
@@ -5307,6 +6070,10 @@ static void Char_OutCue(void)
 static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int seq)
 {
     const int user = Rs_NativeForUsers();
+    // A CHRG route passes none of the choices it hides (Char_RouteHides): the
+    // classic fallback is made with the switches of RsCharHires_FallbackArgs
+    // at the end (and --wheels off when the hi-res model has its own wheels).
+    const int chrg = Char_Chrg();
 
     memset(a, 0, sizeof(*a));
     Char_FieldPath(g_char.model, a->model, CHAR_VAL);
@@ -5336,24 +6103,24 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
     // (Rs_NativeForUsers) passes none of the four: they stay rldpack's
     // defaults, hidden - a model over the limit is reduced for the classic
     // model, the native model keeps it as it is.
-    if (!user && !Char_IsChecked(g_char.repair)) {
+    if (!user && !chrg && !Char_IsChecked(g_char.repair)) {
         Char_ArgsAdd(a, L"--repair");
         Char_ArgsAdd(a, L"off");
     }
-    if (!user && !Char_IsChecked(g_char.openParts)) {
+    if (!user && !chrg && !Char_IsChecked(g_char.openParts)) {
         Char_ArgsAdd(a, L"--open-parts");
         Char_ArgsAdd(a, L"one-sided");
     }
-    if (!user && Char_RemeshOn()) {
+    if (!user && !chrg && Char_RemeshOn()) {
         Char_ArgsAdd(a, L"--remesh");
         Char_ArgsAdd(a, L"on");
     }
-    g_char.runReduce = user || Char_IsChecked(g_char.reduce);
+    g_char.runReduce = user || chrg || Char_IsChecked(g_char.reduce);
     if (!g_char.runReduce) {
         Char_ArgsAdd(a, L"--reduce");
         Char_ArgsAdd(a, L"off");
     }
-    if (!Char_IsChecked(g_char.wheels)) {
+    if (!chrg && !Char_IsChecked(g_char.wheels)) {
         Char_ArgsAdd(a, L"--wheels");
         Char_ArgsAdd(a, L"off");
     }
@@ -5380,27 +6147,27 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
         }
     }
     // The axes, when not the defaults (+Y up, +Z forward).
-    if (Char_ListIndex(g_char.up, CHAR_UP_COUNT) != 0) {
+    if (!chrg && Char_ListIndex(g_char.up, CHAR_UP_COUNT) != 0) {
         Char_ArgsAdd(a, L"--up");
         Char_ArgsAdd(a, g_charUpWords[Char_ListIndex(g_char.up, CHAR_UP_COUNT)]);
     }
-    if (Char_ListIndex(g_char.forward, CHAR_FORWARD_COUNT) != 0) {
+    if (!chrg && Char_ListIndex(g_char.forward, CHAR_FORWARD_COUNT) != 0) {
         Char_ArgsAdd(a, L"--forward");
         Char_ArgsAdd(a, g_charForwardWords[Char_ListIndex(g_char.forward, CHAR_FORWARD_COUNT)]);
     }
     // The palette: 64 colours instead of rldpack's 128 (not in the user mode).
-    if (!user && Char_ListIndex(g_char.colors, CHAR_COLORS_COUNT) != 0) {
+    if (!user && !chrg && Char_ListIndex(g_char.colors, CHAR_COLORS_COUNT) != 0) {
         Char_ArgsAdd(a, L"--colors");
         Char_ArgsAdd(a, g_charColorsWords[Char_ListIndex(g_char.colors, CHAR_COLORS_COUNT)]);
     }
     // An OBJ: the textures folder, when one is given.
     Char_FieldPath(g_char.textures, a->textures, CHAR_VAL);
-    if (g_char.objOn && a->textures[0]) {
+    if (!chrg && g_char.objOn && a->textures[0]) {
         Char_ArgsAdd(a, L"--textures");
         Char_ArgsAdd(a, a->textures);
     }
     // An OBJ: how its vertex colours meet its textures, when not auto.
-    if (g_char.objOn && Char_VColorIndex() != 0) {
+    if (!chrg && g_char.objOn && Char_VColorIndex() != 0) {
         Char_ArgsAdd(a, L"--vertex-colors");
         Char_ArgsAdd(a, g_charVColorWords[Char_VColorIndex()]);
     }
@@ -5410,7 +6177,7 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
     // wheels off or a wheel model of the card Wheels (rldpack refuses it
     // beside the kart wheels without one).
     Char_NativeUpdate();
-    if (Char_NativePassed()) {
+    if (!chrg && Char_NativePassed()) {
         Char_ArgsAdd(a, L"--native-model");
         Char_ArgsAdd(a, L"on");
     }
@@ -5418,7 +6185,7 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
     // with the native model and the kart wheels shown (make-char writes WHLS
     // version 2; the classic model keeps the game's wheels), its size only
     // when it is not 100 %.
-    if (Char_WheelPassed(a->wheel, CHAR_VAL)) {
+    if (!chrg && Char_WheelPassed(a->wheel, CHAR_VAL)) {
         Char_ArgsAdd(a, L"--wheel-model");
         Char_ArgsAdd(a, a->wheel);
         if (CharWheels_SizePercent() != 100) {
@@ -5522,6 +6289,22 @@ static int Char_MakeArgs(struct CharArgs *a, int check, const wchar_t *out, int 
         Char_ArgsAdd(a, L"--out");
         Char_ArgsAdd(a, a->out);
     }
+    // A CHRG route: after the page's own switches those of the classic
+    // fallback (RsCharHires_FallbackArgs, e.g. --reduce auto, so that the
+    // fallback always fits), then --wheels off when the hi-res check found the
+    // model's own four wheels - else the fallback would have them twice (its
+    // own wheel geometry and the game's kart wheels). The same for --check,
+    // --preview and the build.
+    if (chrg) {
+        const wchar_t *fallback[RS_CHARHIRES_FALLBACK_ARGS];
+        int i, n = RsCharHires_FallbackArgs(g_char.route, fallback);
+        for (i = 0; i < n && i < RS_CHARHIRES_FALLBACK_ARGS; i++)
+            Char_ArgsAdd(a, fallback[i]);
+        if (g_char.hiresChecked && g_char.hires.read && g_char.hires.wheels == 4) {
+            Char_ArgsAdd(a, L"--wheels");
+            Char_ArgsAdd(a, L"off");
+        }
+    }
     return 1;
 }
 
@@ -5583,9 +6366,10 @@ static void Char_NoModel(HWND page)
     memset(g_char.tabWarnings, 0, sizeof(g_char.tabWarnings));
     g_char.modelRead = 0;
     g_char.stampKnown = 0;
-    Char_SetInfo(CHAR_START_TEXT, RS_COL_MUTED);
+    Char_SetInfo(Char_Chrg() ? CHAR_START_TEXT_GLB : CHAR_START_TEXT, RS_COL_MUTED);
     Char_ImportClear();
-    Char_Headline(L"Choose a glTF, OBJ or PLY model to start", RS_COL_MUTED);
+    Char_Headline(Char_Chrg() ? L"Choose a .glb model to start (step Model)" : L"Choose a glTF, OBJ or PLY model to start (step Model)",
+                  RS_COL_MUTED);
     Char_ReduceFitShow(page, 0);
     Char_ProgressShow(page, 0);
     Char_VoicesClear();
@@ -5594,6 +6378,24 @@ static void Char_NoModel(HWND page)
     g_char.checkModel[0] = 0;
     CharWheels_ModelChecked(page, L"", g_char.sizeNow, 0);
     CharAnim_ModelChecked(page, L"", L"", NULL, 0);
+    Char_HiresForget();
+    if (Char_Chrg())
+        Char_ChrgViewNote();
+}
+
+// A CHRG route with a model that is no .glb: one line at the model, nothing
+// checked (Low-Poly and Hi-Res read the .glb as the game does).
+static void Char_ChrgNotGlb(HWND page)
+{
+    Char_NoModel(page);
+    Char_MsgAdd(CHAR_TAB_MODEL, RS_SEV_ERROR, CHAR_NOT_GLB_TEXT, CHAR_NOT_GLB_FIX);
+    Char_CountTabs();
+    Char_SetInfo(CHAR_NOT_GLB_TEXT, RS_COL_ERROR);
+    RsView_Clear(g_char.view, CHAR_NOT_GLB_TEXT);
+    Char_Headline(L"Cannot build yet - 1 problem(s)", RS_COL_ERROR);
+    Char_UpdateButtons();
+    if (Rs_Automating())
+        Rs_AutoLog(L"  check: %ls", CHAR_NOT_GLB_TEXT);
 }
 
 // The switches that change nothing rldpack does with the model: name,
@@ -5925,6 +6727,19 @@ static int Char_CheckRun(HWND page, int force)
     g_char.checkAfterBuild = 0;
     Char_Abandon();             // a running check is thereby outdated
     g_char.checked = 0;
+    g_char.builtFresh = 0;
+    // A CHRG route: a .glb only; the hi-res check of it first (in this
+    // process, again only when the file changed), then make-char below.
+    if (Char_Chrg()) {
+        wchar_t model[CHAR_VAL];
+        Char_FieldPath(g_char.model, model, CHAR_VAL);
+        if (model[0] && !Char_EndsWith(model, L".glb")) {
+            Char_ChrgNotGlb(page);
+            return 0;
+        }
+        if (model[0])
+            Char_HiresEnsure(model);
+    }
     seq = g_char.seq + 1;       // taken only when rldpack runs
     if (!Char_MakeArgs(&a, 1, NULL, seq)) {
         Char_ArgsFree(&a);
@@ -5976,6 +6791,225 @@ static int Char_CheckNow(HWND page)
     return Char_CheckRun(page, 1);
 }
 
+// THE BUILD OF A CHRG ROUTE, every step through Rs_RunRldpack (the bytes are
+// rldpack's): make-char with the switches of the check -> the classic
+// fallback <out name>.classic.part in Rs_TempDir; with "Upscale small
+// textures" hires-upscale <model> -o <derived> (RsHires_UpscaleArgs; the
+// derived .glb also in Rs_TempDir, never in the game's characters folder);
+// then hires-add <classic> <model or derived> -o <out> (RsHires_PackArgs).
+// The temp files go at the end, whatever happened. The raw output ("Show
+// details") has every command and every line of the three.
+static void Char_ChainCleanup(void)
+{
+    wchar_t part[CHAR_VAL + 8];
+    if (g_char.chainClassic[0]) {
+        DeleteFileW(g_char.chainClassic);
+        swprintf(part, CHAR_VAL + 8, L"%ls.part", g_char.chainClassic);
+        DeleteFileW(part);
+    }
+    if (g_char.chainUpscale && g_char.chainDerived[0])
+        DeleteFileW(g_char.chainDerived);
+    if (g_char.chainOut[0]) {
+        swprintf(part, CHAR_VAL + 8, L"%ls.part", g_char.chainOut);
+        if (Rs_FileExists(part))
+            DeleteFileW(part);
+    }
+    g_char.chainStep = CHAR_CHAIN_NONE;
+    g_char.chainClassic[0] = 0;
+    g_char.chainDerived[0] = 0;
+}
+
+// Starts one step after make-char: its command into the raw output, its
+// lines to Char_ChainLine. 1 = started.
+static int Char_ChainRun(HWND page, int step, const wchar_t *const *args, int argc, const wchar_t *what)
+{
+    wchar_t *cmd = Rs_Alloc(CHAR_CMD_CAP * sizeof(wchar_t));
+    int i;
+    cmd[0] = 0;
+    Rs_AppendArg(cmd, CHAR_CMD_CAP, L"ReloadStudio.exe");
+    Rs_AppendArg(cmd, CHAR_CMD_CAP, L"--rldpack");
+    for (i = 0; i < argc; i++)
+        Rs_AppendArg(cmd, CHAR_CMD_CAP, args[i]);
+    Char_RawAppend(cmd);
+    Rs_Free(cmd);
+    g_char.chainStep = step;
+    g_char.chainWritten = 0;
+    g_char.chainMsgCount = 0;
+    g_char.chainPath[0] = 0;
+    g_char.chainSha[0] = 0;
+    g_char.jobKind = CHAR_JOB_BUILD;
+    g_char.jobSeq = 0;
+    g_char.jobId = Rs_RunRldpack(page, args, argc);
+    if (!g_char.jobId) {
+        g_char.jobKind = CHAR_JOB_NONE;
+        return 0;
+    }
+    if (!g_char.progressOn)
+        SetTimer(page, CHAR_TIMER_BUSY, CHAR_PROGRESS_DELAY, NULL);
+    Char_Copy(g_char.progressText, 64, what);
+    g_char.progressPos = -1;
+    InvalidateRect(g_char.progress, NULL, FALSE);
+    EnableWindow(g_char.cancel, TRUE);
+    Char_Headline(what, RS_COL_MUTED);
+    if (Rs_Automating())
+        Rs_AutoLog(L"  build: %ls", what);
+    Char_UpdateButtons();
+    return 1;
+}
+
+// A line of hires-upscale or hires-add: its findings and what it wrote.
+static void Char_ChainLine(const wchar_t *line)
+{
+    wchar_t *copy = Rs_Dup(line), *f[8];
+    int n = Rs_SplitMachine(copy, f, 8);
+    if (n >= 4 && wcscmp(f[0], L"msg") == 0 && g_char.chainMsgCount < RS_HIRES_ROWS_MAX) {
+        struct CharChainMsg *m = &g_char.chainMsg[g_char.chainMsgCount++];
+        m->severity = Rs_SeverityFromText(f[1]);
+        Char_Copy(m->code, 16, f[2]);
+        Char_Copy(m->text, RS_HIRES_TEXT_MAX, f[3]);
+    } else if (n >= 3 && wcscmp(f[0], L"written") == 0) {
+        Char_Copy(g_char.chainPath, CHAR_VAL, f[1]);
+        Char_Copy(g_char.chainSha, 80, f[2]);
+        g_char.chainWritten = 1;
+    }
+    Rs_Free(copy);
+}
+
+// The build of a CHRG route begins: make-char of the classic fallback.
+static int Char_ChainStart(HWND page, const wchar_t *path)
+{
+    struct CharArgs a;
+    wchar_t dir[CHAR_VAL], name[CHAR_VAL], beside[CHAR_VAL];
+    int started;
+
+    if (!path[0])
+        return -1;
+    Rs_TempDir(dir, CHAR_VAL);
+    Char_Copy(name, CHAR_VAL - 16, Rs_PathName(path));
+    Char_Append(name, CHAR_VAL, L".classic.part");
+    Rs_PathJoin(g_char.chainClassic, CHAR_VAL, dir, name);
+    Char_Copy(g_char.chainOut, CHAR_VAL, path);
+    Char_FieldPath(g_char.model, g_char.chainModel, CHAR_VAL);
+    g_char.chainUpscale = Char_IsChecked(g_char.upscale);
+    g_char.chainDerived[0] = 0;
+    // The upscaled model beside a temp "output" of the same name: in Rs_TempDir.
+    Rs_PathJoin(beside, CHAR_VAL, dir, Rs_PathName(path));
+    if (g_char.chainUpscale && (!RsHires_UpscaledPath(g_char.chainModel, beside, g_char.chainDerived, CHAR_VAL) ||
+                                _wcsicmp(g_char.chainDerived, g_char.chainModel) == 0)) {
+        g_char.chainDerived[0] = 0;
+        g_char.chainUpscale = 0;
+    }
+    if (!Char_MakeArgs(&a, 0, g_char.chainClassic, 0)) {
+        Char_ArgsFree(&a);
+        return -1;
+    }
+    Char_Copy(g_char.buildOut, CHAR_VAL, a.out);
+    g_char.buildWheelsOff = g_char.hires.read && g_char.hires.wheels == 4;
+    g_char.buildMask = Char_MaskIndex();
+    g_char.buildMapSet = g_char.mapColorSet;
+    g_char.buildMapColor = g_char.mapColor;
+    g_char.chainStep = CHAR_CHAIN_CLASSIC;
+    Char_Headline(L"Building the classic fallback...", RS_COL_MUTED);
+    started = Char_StartJob(page, CHAR_JOB_BUILD, a.v, a.n, 0) != 0;
+    Char_ArgsFree(&a);
+    if (!started) {
+        Char_ChainCleanup();
+        Char_StartFailed(L"Not built - 1 problem(s)");
+        return -1;
+    }
+    Char_Copy(g_char.progressText, 64, L"Building the classic fallback...");
+    return 1;
+}
+
+// A step of the chain failed: its findings on the step Build.
+static void Char_ChainFailed(HWND page, const wchar_t *what, int exitCode)
+{
+    wchar_t text[CHAR_VAL + 64];
+    int i, errors = 0;
+    g_char.checked = 0;
+    g_char.built[0] = 0;
+    Char_MsgClear();
+    for (i = 0; i < g_char.chainMsgCount; i++) {
+        Char_MsgAdd(CHAR_TAB_BUILD, g_char.chainMsg[i].severity, g_char.chainMsg[i].text,
+                    g_char.chainMsg[i].code[0] ? g_char.chainMsg[i].code : NULL);
+        errors += g_char.chainMsg[i].severity == RS_SEV_ERROR;
+    }
+    if (!errors) {
+        swprintf(text, CHAR_VAL + 64, L"%ls failed (exit code %d).", what, exitCode);
+        Char_MsgAdd(CHAR_TAB_BUILD, RS_SEV_ERROR, text, L"Click \"Show details\" to see everything rldpack printed.");
+        errors = 1;
+    }
+    Char_CountTabs();
+    swprintf(text, CHAR_VAL + 64, L"Not built - %d problem(s)", errors);
+    Char_Headline(text, RS_COL_ERROR);
+    if (Rs_Automating())
+        Rs_AutoLog(L"  build: %ls failed (exit %d), %d error(s)", what, exitCode, errors);
+    Char_ChainCleanup();
+    Char_Relayout(page);
+}
+
+static void Char_BuildDone(HWND page, int exitCode);
+
+// The end of a step of the chain: the next one, or the end of the build.
+static void Char_ChainDone(HWND page, int exitCode)
+{
+    const wchar_t *args[RS_HIRES_PACK_ARGS > RS_HIRES_UPSCALE_ARGS ? RS_HIRES_PACK_ARGS : RS_HIRES_UPSCALE_ARGS];
+    int n, step = g_char.chainStep;
+
+    if (step == CHAR_CHAIN_CLASSIC) {
+        if (!(g_charJob.resultSeen && wcscmp(g_charJob.resultState, L"ok") == 0)) {
+            g_char.chainStep = CHAR_CHAIN_NONE;
+            Char_BuildDone(page, exitCode);     // make-char's own findings
+            Char_ChainCleanup();
+            return;
+        }
+        if (g_char.chainUpscale) {
+            n = RsHires_UpscaleArgs(g_char.chainModel, g_char.chainDerived, args);
+            if (Char_ChainRun(page, CHAR_CHAIN_UPSCALE, args, n, L"Upscaling small textures..."))
+                return;
+            Char_ChainFailed(page, L"Upscaling", -1);
+            return;
+        }
+        step = CHAR_CHAIN_UPSCALE;          // straight on to the pack step
+        exitCode = 0;
+        g_char.chainWritten = 1;
+    }
+    if (step == CHAR_CHAIN_UPSCALE) {
+        if (exitCode != 0 || !g_char.chainWritten) {
+            Char_ChainFailed(page, L"Upscaling", exitCode);
+            return;
+        }
+        n = RsHires_PackArgs(g_char.chainClassic, g_char.chainUpscale ? g_char.chainDerived : g_char.chainModel, g_char.chainOut, args);
+        if (Char_ChainRun(page, CHAR_CHAIN_PACK, args, n, L"Packing the hi-res model..."))
+            return;
+        Char_ChainFailed(page, L"Packing", -1);
+        return;
+    }
+    if (exitCode != 0 || !g_char.chainWritten) {
+        Char_ChainFailed(page, L"Packing", exitCode);
+        return;
+    }
+    // Done: the result is the packed file, with make-char's other findings.
+    {
+        WIN32_FILE_ATTRIBUTE_DATA fa;
+        Char_Copy(g_charJob.resultPath, CHAR_VAL, g_char.chainPath[0] ? g_char.chainPath : g_char.chainOut);
+        Char_Copy(g_charJob.resultSha, 80, g_char.chainSha);
+        g_charJob.resultBytes = GetFileAttributesExW(g_charJob.resultPath, GetFileExInfoStandard, &fa)
+                                    ? (long long)(((unsigned long long)fa.nFileSizeHigh << 32) | fa.nFileSizeLow)
+                                    : -1;
+    }
+    g_char.chainStep = CHAR_CHAIN_NONE;
+    Char_BuildDone(page, 0);
+    {
+        int i;
+        for (i = 0; i < g_char.chainMsgCount; i++)
+            if (g_char.chainMsg[i].severity == RS_SEV_WARNING || g_char.chainMsg[i].severity == RS_SEV_ERROR)
+                Char_MsgAdd(CHAR_TAB_BUILD, g_char.chainMsg[i].severity, g_char.chainMsg[i].text,
+                            g_char.chainMsg[i].code[0] ? g_char.chainMsg[i].code : NULL);
+    }
+    Char_ChainCleanup();
+}
+
 // Return: 1 = rldpack builds, 0 = refused (replacing declined), -1 = not possible.
 static int Char_Build(HWND page)
 {
@@ -5995,6 +7029,7 @@ static int Char_Build(HWND page)
         Char_DefaultOut(model, field, CHAR_VAL);
     }
     Char_CleanPath(path, CHAR_VAL, field[0] ? field : g_char.checkedPath);
+    g_char.builtFresh = 0;
     if (path[0] && Rs_FileExists(path)) {
         wchar_t question[CHAR_VAL + 64];
         swprintf(question, CHAR_VAL + 64, L"%ls exists. Replace it?", path);
@@ -6023,6 +7058,9 @@ static int Char_Build(HWND page)
             }
         }
     }
+    if (Char_Chrg())
+        return Char_ChainStart(page, path);
+    g_char.chainStep = CHAR_CHAIN_NONE;
     if (!Char_MakeArgs(&a, 0, path[0] ? path : NULL, 0)) {
         Char_ArgsFree(&a);
         return -1;
@@ -6049,6 +7087,7 @@ static void Char_ChangedAfter(HWND page, UINT delay)
     if (g_char.applying)
         return;
     g_char.checked = 0;
+    g_char.builtFresh = 0;      // the fields are no longer those of the build: Build again, no Test in game
     SetTimer(page, CHAR_TIMER_CHECK, delay, NULL);
     g_char.timer = 1;
     Char_UpdateButtons();
@@ -6129,6 +7168,7 @@ static int Char_CheckDone(HWND page, int exitCode, int seq)
                                                                 : L"Next to the model: %ls",
                  Rs_PathName(j->out));
         SendMessageW(g_char.out, EM_SETCUEBANNER, FALSE, (LPARAM)cue);
+        Char_OutNote(j->out);
     }
     g_char.rangeNone = j->rangeNone;
     if (j->rangeNone) {
@@ -6182,6 +7222,7 @@ static int Char_CheckDone(HWND page, int exitCode, int seq)
     // The temp files stay with the result kept (Char_CacheStore).
     Char_StampShown();
     Char_ShowCheckResult(exitCode);
+    Char_PreviewShow();         // a CHRG route: the hi-res picture or the classic fallback
     // The cards of the preview features follow the model just checked.
     CharWheels_ModelChecked(page, g_char.checkModel, g_char.sizeNow, g_char.checked);
     CharAnim_ModelChecked(page, g_char.checkModel, g_char.importFormat, &j->poses, g_char.checked);
@@ -6196,7 +7237,6 @@ static void Char_BuildDone(HWND page, int exitCode)
     wchar_t detail[192];
     wchar_t size[32];
 
-    Char_CountTabs();
     Char_MsgClear();
     Char_EmptyText(L"rldpack reported nothing.");
     if (ok) {
@@ -6231,27 +7271,40 @@ static void Char_BuildDone(HWND page, int exitCode)
         swprintf(text, CHAR_VAL + 64, L"Built %ls", g_char.built);
         swprintf(detail, 192, L"Kart wheels %ls, mask %ls%ls - SHA-256 %ls", wheelsOff ? L"hidden" : L"shown", mask, mapText,
                  g_char.builtSha);
-        Char_MsgAdd(-1, RS_SEV_OK, text, detail);
+        Char_MsgAdd(CHAR_TAB_BUILD, RS_SEV_OK, text, detail);
         // The game loads characters only from the folder characters next to
         // it, and reads that folder once, when it starts.
         if (!Char_InGameCharDir(g_char.built)) {
             wchar_t dir[CHAR_VAL];
             if (Char_GameCharDir(dir, CHAR_VAL)) {
                 swprintf(text, CHAR_VAL + 64, L"Copy it into %ls - the game loads characters only from there.", dir);
-                Char_MsgAdd(-1, RS_SEV_NOTE, text, NULL);
+                Char_MsgAdd(CHAR_TAB_BUILD, RS_SEV_NOTE, text, NULL);
             } else {
-                Char_MsgAdd(-1, RS_SEV_NOTE,
+                Char_MsgAdd(CHAR_TAB_BUILD, RS_SEV_NOTE,
                               L"Copy it into the characters folder next to ctr_native.exe - the game loads characters "
                               L"only from there.",
                               L"Reload Studio does not know the game yet: choose it on the page Test in game, then "
                               L"a build with an empty Output goes into its characters folder.");
             }
         }
-        Char_MsgAdd(-1, RS_SEV_INFO, L"Restart the game to load the new file.",
+        Char_MsgAdd(CHAR_TAB_BUILD, RS_SEV_INFO, L"Test in game starts it at once; a game already running loads it after a restart.",
                       L"The game reads the characters folder only when it starts.");
         Char_AddRunProblems(exitCode, 1);
-        Char_AddMsgs(RS_SEV_WARNING);
-        Char_AddMsgs(RS_SEV_NOTE);
+        // The warnings and notes of make-char at their steps (a CHRG route:
+        // those about the model stay behind Show details, as in its check).
+        if (Char_Chrg()) {
+            int i;
+            for (i = 0; i < g_charJob.msgCount; i++) {
+                const struct CharMsg *m = &g_charJob.msgs[i];
+                int tab = Char_TabOfCode(m->code);
+                if ((m->severity == RS_SEV_WARNING || m->severity == RS_SEV_NOTE) && tab != CHAR_TAB_MODEL)
+                    Char_MsgAddCard(tab, tab == CHAR_TAB_LOOK ? Char_LookCardOfCode(m->code) : -1, m->severity, m->text, m->detail);
+            }
+        } else {
+            Char_AddMsgs(RS_SEV_WARNING);
+            Char_AddMsgs(RS_SEV_NOTE);
+        }
+        g_char.builtFresh = 1;
         Rs_ConfigSet(L"char.out", g_char.built);
         if (Rs_Automating()) {
             Rs_AutoLog(L"  build: ok %ls %lld bytes sha256 %ls", g_char.built, g_char.builtBytes, g_char.builtSha);
@@ -6271,7 +7324,9 @@ static void Char_BuildDone(HWND page, int exitCode)
         if (Rs_Automating())
             Rs_AutoLog(L"  build: failed, %d error(s)", errors);
     }
-    Char_Relayout(page);        // show or hide "Show in folder"
+    Char_CountTabs();
+    Char_UpdateButtons();
+    Char_Relayout(page);        // show or hide "Show in folder", Build or Test in game
 }
 
 // "<out>.part" of the build: rldpack writes the character there first and
@@ -6293,7 +7348,8 @@ static void Char_CancelDone(HWND page, int kind, int seq)
 {
     Char_MsgClear();
     if (kind == CHAR_JOB_BUILD) {
-        Char_MsgAdd(-1, RS_SEV_INFO, L"The build was cancelled - nothing was written.",
+        Char_ChainCleanup();        // a CHRG route: its temp files
+        Char_MsgAdd(CHAR_TAB_BUILD, RS_SEV_INFO, L"The build was cancelled - nothing was written.",
                     L"A character file of that name from before is left as it was.");
         Char_Headline(L"Cancelled - nothing was written", RS_COL_WARNING);
         if (Rs_Automating())
@@ -6343,7 +7399,16 @@ static void Char_JobDone(HWND page, int exitCode)
         Char_UpdateButtons();
         return;
     }
-    if (kind == CHAR_JOB_BUILD) {
+    if (kind == CHAR_JOB_BUILD && g_char.chainStep != CHAR_CHAIN_NONE) {
+        // A CHRG route: the next step of its build, or its end.
+        Char_ChainDone(page, exitCode);
+        if (g_char.jobId) {
+            Char_UpdateButtons();
+            return;
+        }
+        if (g_char.checkAfterBuild)
+            Char_Check(page);
+    } else if (kind == CHAR_JOB_BUILD) {
         Char_BuildDone(page, exitCode);
         if (g_char.checkAfterBuild)
             Char_Check(page);
@@ -6479,7 +7544,9 @@ static void Char_BrowseModel(HWND page)
     wchar_t start[CHAR_VAL];
     wchar_t pick[CHAR_VAL];
     Char_DialogStart(g_char.model, start, CHAR_VAL);
-    if (Rs_BrowseOpenFile(Rs_MainWindow(), L"Choose the character model", CHAR_MODEL_FILTER, start, pick, CHAR_VAL))
+    // Low-Poly and Hi-Res read a .glb only (E6).
+    if (Rs_BrowseOpenFile(Rs_MainWindow(), L"Choose the character model",
+                          Char_Chrg() ? L"glTF binary (*.glb)\0*.glb\0\0" : CHAR_MODEL_FILTER, start, pick, CHAR_VAL))
         Char_SetModel(page, pick);
 }
 
@@ -6591,7 +7658,7 @@ static int Char_DropPaths(HWND page, const wchar_t *const *paths, int count)
 
     model[0] = 0;
     other[0] = 0;
-    if (g_char.tab == CHAR_TAB_EXTRAS && g_char.extrasCard == CHAR_EXTRAS_WHEELS) {
+    if (g_char.tab == CHAR_TAB_MODEL && g_char.advOpen && g_char.extrasCard == CHAR_EXTRAS_WHEELS && Char_ExtrasShown(CHAR_EXTRAS_WHEELS)) {
         for (i = 0; i < count; i++)
             if (Char_ModelFile(paths[i])) {
                 CharWheels_Automate(page, L"wheel-model", paths[i]);
@@ -6660,21 +7727,118 @@ static void Char_Drop(HWND page, HDROP drop)
     Rs_Free(path);
 }
 
-// Enter (IDOK): on a button press it, otherwise check immediately.
+// Enter (IDOK): on a button of the page (a push button, a head, a switch, a
+// card of step 0) press it, otherwise check immediately.
 static void Char_Enter(HWND page)
 {
     HWND focus = GetFocus();
-    if (focus == g_char.modelBrowse || focus == g_char.iconBrowse || focus == g_char.iconClear ||
-        focus == g_char.voicesBrowse || focus == g_char.voicesClear || focus == g_char.voicePlay ||
-        focus == g_char.texturesBrowse || focus == g_char.texturesClear || focus == g_char.cancel ||
-        focus == g_char.outBrowse ||
-        focus == g_char.check || focus == g_char.build || focus == g_char.rawToggle || focus == g_char.show ||
-        focus == g_char.back || focus == g_char.next || (focus && GetDlgCtrlID(focus) >= CHAR_ID_TAB &&
-                                                         GetDlgCtrlID(focus) < CHAR_ID_EXTRAS + CHAR_EXTRAS_COUNT)) {
+    wchar_t cls[16];
+    LONG_PTR type = focus ? (GetWindowLongPtrW(focus, GWL_STYLE) & BS_TYPEMASK) : 0;
+    if (focus && GetParent(focus) == page && GetClassNameW(focus, cls, 16) && _wcsicmp(cls, L"Button") == 0 &&
+        (type == BS_PUSHBUTTON || type == BS_DEFPUSHBUTTON || type == BS_OWNERDRAW)) {
         SendMessageW(focus, BM_CLICK, 0, 0);
-    } else if (focus && GetParent(focus) == page) {
+    } else if (focus && GetParent(focus) == page && !g_char.choosing) {
         Char_CheckNow(page);
     }
+}
+
+// ---------------------------------------------------------------------------
+// The route: step 0, choosing, changing it
+// ---------------------------------------------------------------------------
+
+// Step 0 again ("Change type", Back on the step Model): everything entered
+// stays; the card of the route chosen is marked and has the focus.
+static void Char_ShowChoice(HWND page)
+{
+    g_char.choosing = 1;
+    Char_HiresStop();
+    RsView_PickBegin(g_char.view, 0);
+    Char_Relayout(page);
+    SetFocus(g_char.routeCard[g_char.route >= 0 && g_char.route < RS_ROUTES ? g_char.route : 0]);
+}
+
+// The texts that name the formats of the route: the cue of the model field
+// and its line while no model is chosen.
+static void Char_RouteTexts(void)
+{
+    const struct RsRoutePreset *p = RsRoute_Preset(g_char.route);
+    wchar_t label[96];
+    SendMessageW(g_char.model, EM_SETCUEBANNER, FALSE,
+                 (LPARAM)(Char_Chrg() ? L"A .glb (glTF Binary) of driver, steering wheel and kart"
+                                      : L"A glTF (.glb, recommended), OBJ or PLY of driver, steering wheel and kart"));
+    swprintf(label, 96, L"Building: %ls", p ? p->title : L"-");
+    Rs_SetText(g_char.routeLabel, label);
+}
+
+// The route chosen (a card, the automation verb "route"): the steps of that
+// route. Another route than before starts at its step Model, Advanced
+// closed, with its defaults (E7: "Upscale small textures" as its preset
+// says), and checks the model again with its rules; every entry stays.
+// RS_ROUTE_NONE: step 0 without a route. Returns 1 when a check started.
+static int Char_SetRoute(HWND page, int route)
+{
+    const struct RsRoutePreset *p = RsRoute_Preset(route);
+    const int was = g_char.route;
+    wchar_t model[CHAR_VAL];
+
+    if (!p) {
+        g_char.route = RS_ROUTE_NONE;
+        Char_ShowChoice(page);
+        return 0;
+    }
+    g_char.choosing = 0;
+    if (was == route) {
+        Char_MsgRefill();
+        Char_Relayout(page);
+        Char_PreviewShow();
+        SetFocus(g_char.tabHead[g_char.tab]);
+        return 0;
+    }
+    g_char.route = route;
+    Char_HiresStop();           // the idle clip of the route before
+    g_char.hiresShown = 0;
+    g_char.advOpen = 0;
+    Rs_SetText(g_char.advanced, L"Advanced options");
+    g_char.previewClassic = 0;
+    g_char.builtFresh = 0;
+    g_char.showRaw = 0;
+    Rs_SetText(g_char.rawToggle, L"Show details");
+    Char_SetChecked(g_char.upscale, p->upscaleDefault);
+    Char_ExtrasFix();
+    Char_RouteTexts();
+    g_char.tab = CHAR_TAB_MODEL;
+    Char_MsgRefill();
+    Char_Relayout(page);
+    SetFocus(g_char.tabHead[g_char.tab]);
+    Char_FieldPath(g_char.model, model, CHAR_VAL);
+    if (!model[0]) {
+        Char_NoModel(page);
+        return 0;
+    }
+    return Char_CheckNow(page) > 0;
+}
+
+// "Test in game" (rs_test.c, Rs_TestCharacter): the game with the character
+// just built in a race at once; in automation only the command line is
+// logged. The line below the buttons says what happened. 1 = started.
+static int Char_TestInGame(HWND page)
+{
+    wchar_t why[512];
+    int ok;
+    if (!g_char.builtFresh || !g_char.built[0]) {
+        Char_SetLabel(g_char.testNote, L"Build the character first.", RS_COL_WARNING, NULL);
+        Char_Relayout(page);
+        return 0;
+    }
+    why[0] = 0;
+    ok = Rs_TestCharacter(g_char.built, g_char.route < 0 ? RS_ROUTE_VANILLA : g_char.route, why, 512);
+    Char_SetLabel(g_char.testNote,
+                  why[0] ? why : ok ? L"The game starts with your character in a race." : L"The game could not be started.",
+                  ok ? RS_COL_OK : RS_COL_ERROR, NULL);
+    Char_Relayout(page);
+    if (Rs_Automating())
+        Rs_AutoLog(L"  test-in-game: %ls - %ls", ok ? L"started" : L"not started", why[0] ? why : L"(no reason given)");
+    return ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -6716,6 +7880,73 @@ static const wchar_t *Char_EnabledWord(HWND h)
     return IsWindowEnabled(h) ? L"enabled" : L"greyed out";
 }
 
+// THE GUIDED FLOW in the report: the route, the step, Advanced, the options
+// of the route, and every control shown with its text - the push buttons
+// filled in the accent colour marked "primary" (one per step).
+static void Char_ReportFlow(FILE *f)
+{
+    const struct RsRoutePreset *p = RsRoute_Preset(g_char.route);
+    HWND page = GetParent(g_char.model), c;
+    int primary = 0;
+    wchar_t *text;
+
+    Char_Put(f, L"route: %ls%ls", p ? p->word : L"none", g_char.choosing ? L" (step 0 shown: What do you want to build?)" : L"");
+    if (g_char.choosing)
+        Char_Put(f, L"step: 0 choose");
+    else
+        Char_Put(f, L"step: %d %ls", g_char.tab + 1, g_charTabWords[g_char.tab]);
+    Char_Put(f, L"advanced: %ls%ls (cards on this route: %d)", g_char.advOpen ? L"open, card " : L"closed",
+             g_char.advOpen ? g_charExtrasWords[g_char.extrasCard] : L"", Char_ExtrasCount());
+    Char_Put(f, L"upscale small textures: %ls (preset %ls)%ls", Char_IsChecked(g_char.upscale) ? L"on" : L"off",
+             p && p->upscaleDefault ? L"on" : L"off", Char_Chrg() ? L"" : L" [no CHRG route: hidden, not used]");
+    if (p)
+        Char_Put(f, L"preset: chrg %d, triangle target %llu, texture edge target %u", p->chrg, p->triangleTarget, p->textureEdgeTarget);
+    Char_Put(f, L"details: %ls", g_char.showRaw ? L"shown" : L"hidden");
+    Char_Put(f, L"preview: %ls", !Char_Chrg() ? L"classic (Vanilla)" : g_char.previewClassic ? L"classic fallback" : L"hi-res");
+    if (Char_Chrg()) {
+        if (g_char.hiresChecked && g_char.hires.read)
+            Char_Put(f, L"hires check: %ls, %llu triangles (budget %llu), texture edge %u (budget %u), %d of %d clips, %d wheel nodes, "
+                        L"%d error(s), %d warning(s), animation %ls",
+                     g_char.hires.usable ? L"usable" : L"refused", g_char.hires.triangles, g_char.hires.budgetTriangles,
+                     g_char.hires.textureEdge, g_char.hires.budgetEdge, g_char.hires.clips, RS_HIRES_CLIPS, g_char.hires.wheels,
+                     g_char.hires.errors, g_char.hires.warnings, g_char.hires.animReady ? L"plays" : L"none");
+        else
+            Char_Put(f, L"hires check: %ls", g_char.hiresChecked ? g_char.hires.why : L"(none)");
+    }
+    text = Rs_GetText(g_char.testNote);
+    Char_Put(f, L"test note: %ls", text[0] ? text : L"(none)");
+    Rs_Free(text);
+    for (c = page ? GetWindow(page, GW_CHILD) : NULL; c; c = GetWindow(c, GW_HWNDNEXT)) {
+        wchar_t cls[32];
+        LONG_PTR style = GetWindowLongPtrW(c, GWL_STYLE), type = style & BS_TYPEMASK;
+        const wchar_t *kind;
+        int isPrimary;
+        if (!(style & WS_VISIBLE) || !GetClassNameW(c, cls, 32))
+            continue;
+        isPrimary = GetPropW(c, L"RsPrimary") != NULL;
+        if (_wcsicmp(cls, L"Button") == 0)
+            kind = type == BS_AUTOCHECKBOX || type == BS_CHECKBOX ? L"tick box" : isPrimary ? L"primary button" : L"button";
+        else if (_wcsicmp(cls, L"Edit") == 0)
+            kind = L"field";
+        else if (_wcsicmp(cls, L"ComboBox") == 0)
+            kind = L"list";
+        else
+            continue;
+        primary += isPrimary;
+        text = Rs_GetText(c);
+        Char_Put(f, L"shown %ls: %d %ls%ls", kind, GetDlgCtrlID(c), text, IsWindowEnabled(c) ? L"" : L" [greyed out]");
+        Rs_Free(text);
+    }
+    Char_Put(f, L"primary buttons shown: %d", primary);
+    {
+        int i;
+        Char_Put(f, L"page messages: %d", g_char.pageMsgCount);
+        for (i = 0; i < g_char.pageMsgCount; i++)
+            Char_Put(f, L"page message: %ls\t%d\t%ls\t%ls", g_char.pageMsg[i].tab >= 0 ? g_charTabWords[g_char.pageMsg[i].tab] : L"-",
+                     g_char.pageMsg[i].severity, g_char.pageMsg[i].text, g_char.pageMsg[i].detail ? g_char.pageMsg[i].detail : L"");
+    }
+}
+
 static int Char_WriteReport(const wchar_t *path)
 {
     FILE *f = _wfopen(path, L"wb");
@@ -6725,6 +7956,7 @@ static int Char_WriteReport(const wchar_t *path)
     if (!f)
         return 0;
     Char_Put(f, L"Reload Studio - Character page");
+    Char_ReportFlow(f);
     Char_PutText(f, L"model", g_char.model);
     Char_PutLabel(f, L"model info (shown)", g_char.modelInfo, g_char.infoColor);
     Char_Put(f, L"model info (full): %ls", g_char.infoFull);
@@ -7249,10 +8481,15 @@ static int Char_AutoPose(const wchar_t *arg)
     return RS_AUTO_FAIL;
 }
 
-// "tab 1..5" or "tab model|driver|look|voices|extras": as a click on the head.
+// "tab 1..5" or "tab model|driver|look|voices|build": as a click on the head
+// (the verb of before; "step" is the same). "tab extras" (the tab of before)
+// opens Advanced of the step Model at its card Import.
+static int Char_AutoExtras(HWND page, const wchar_t *arg);
 static int Char_AutoTab(HWND page, const wchar_t *arg)
 {
     int t;
+    if (_wcsicmp(arg, L"extras") == 0)
+        return Char_AutoExtras(page, L"import");
     for (t = 0; t < CHAR_TABS; t++) {
         wchar_t num[4];
         swprintf(num, 4, L"%d", t + 1);
@@ -7263,24 +8500,33 @@ static int Char_AutoTab(HWND page, const wchar_t *arg)
             return RS_AUTO_DONE;
         }
     }
-    Rs_AutoLog(L"  tab: say 1 to 5, or model, driver, look, voices or extras");
+    Rs_AutoLog(L"  tab: say 1 to 5, or model, driver, look, voices, build or extras");
     return RS_AUTO_FAIL;
 }
 
-// "extras import|wheels|animations": the card the tab Extras shows (it opens the tab).
+// "extras import|wheels|animations|options": that card of Advanced (the tab
+// Extras of before), Advanced open on the step Model. A card the route does
+// not have fails ("hidden").
 static int Char_AutoExtras(HWND page, const wchar_t *arg)
 {
     int c;
     for (c = 0; c < CHAR_EXTRAS_COUNT; c++) {
         if (_wcsicmp(arg, g_charExtrasWords[c]) == 0) {
+            if (!Char_ExtrasShown(c)) {
+                Rs_AutoLog(L"  extras: %ls is hidden on this route%ls", g_charExtrasTexts[c],
+                           c == CHAR_EXTRAS_WHEELS && !Char_Chrg() ? L" (Wheels: only with --enable-preview-features)" : L"");
+                return RS_AUTO_FAIL;
+            }
             g_char.extrasCard = c;
-            Char_SelectTab(page, CHAR_TAB_EXTRAS, 0);
+            g_char.advOpen = 1;
+            Rs_SetText(g_char.advanced, L"Hide advanced");
+            Char_SelectTab(page, CHAR_TAB_MODEL, 0);
             UpdateWindow(page);
-            Rs_AutoLog(L"  extras: %ls", g_charExtrasTexts[c]);
+            Rs_AutoLog(L"  extras: %ls (Advanced of the step Model)", g_charExtrasTexts[c]);
             return RS_AUTO_DONE;
         }
     }
-    Rs_AutoLog(L"  extras: say import, wheels or animations");
+    Rs_AutoLog(L"  extras: say import, wheels, animations or options");
     return RS_AUTO_FAIL;
 }
 
@@ -7299,9 +8545,44 @@ static int Char_AutoProblem(HWND page, const wchar_t *arg)
     }
     Char_MsgOpen(page, (int)n - 1);
     UpdateWindow(page);
-    Rs_AutoLog(L"  problem: message %ld -> tab %d %ls%ls%ls", n, g_char.tab + 1, g_charTabTexts[g_char.tab],
-               g_char.tab == CHAR_TAB_EXTRAS ? L", card " : L"", g_char.tab == CHAR_TAB_EXTRAS ? g_charExtrasTexts[g_char.extrasCard] : L"");
+    Rs_AutoLog(L"  problem: message %ld -> step %d %ls%ls%ls", n, g_char.tab + 1, g_charTabTexts[g_char.tab],
+               g_char.tab == CHAR_TAB_MODEL && g_char.advOpen ? L", Advanced " : L"",
+               g_char.tab == CHAR_TAB_MODEL && g_char.advOpen ? g_charExtrasTexts[g_char.extrasCard] : L"");
     return RS_AUTO_DONE;
+}
+
+// "step <1..5|model|driver|look|voices|build|next|back>": as a click on the
+// head of the step, on Next or on Back (Back on the step Model: step 0).
+static void Char_ShowChoice(HWND page);
+static int Char_AutoStep(HWND page, const wchar_t *arg)
+{
+    int t;
+    if (_wcsicmp(arg, L"next") == 0 || _wcsicmp(arg, L"back") == 0) {
+        const int next = _wcsicmp(arg, L"next") == 0;
+        if (next && g_char.tab >= CHAR_TABS - 1) {
+            Rs_AutoLog(L"  step: Build is the last step - there is no Next");
+            return RS_AUTO_FAIL;
+        }
+        SendMessageW(page, WM_COMMAND, MAKEWPARAM(next ? CHAR_ID_NEXT : CHAR_ID_BACK, BN_CLICKED), (LPARAM)(next ? g_char.next : g_char.back));
+        UpdateWindow(page);
+        if (g_char.choosing)
+            Rs_AutoLog(L"  step: back to \"What do you want to build?\"");
+        else
+            Rs_AutoLog(L"  step: %d %ls (%ls)", g_char.tab + 1, g_charTabTexts[g_char.tab], g_charStepWords[g_char.step[g_char.tab]]);
+        return RS_AUTO_DONE;
+    }
+    for (t = 0; t < CHAR_TABS; t++) {
+        wchar_t num[4];
+        swprintf(num, 4, L"%d", t + 1);
+        if (wcscmp(arg, num) == 0 || _wcsicmp(arg, g_charTabWords[t]) == 0) {
+            Char_SelectTab(page, t, 0);
+            UpdateWindow(page);
+            Rs_AutoLog(L"  step: %d %ls (%ls)", t + 1, g_charTabTexts[t], g_charStepWords[g_char.step[t]]);
+            return RS_AUTO_DONE;
+        }
+    }
+    Rs_AutoLog(L"  step: say 1 to 5, model, driver, look, voices, build, next or back");
+    return RS_AUTO_FAIL;
 }
 
 // "up y|z", "forward z|-z": a list of the card Import as when chosen, then
@@ -7951,13 +9232,23 @@ static void Char_Create(HWND page)
     SendMessageW(g_char.pose, CB_SETCURSEL, 0, 0);
     g_char.viewNote = Rs_Label(page, CHAR_ID_VIEW_NOTE, L"", RS_FONT_SMALL);
 
-    g_char.rawToggle = Rs_Button(page, CHAR_ID_RAW_TOGGLE, L"Show rldpack output");
-    g_char.outLabel = Rs_Label(page, CHAR_ID_OUT_LABEL, L"Output", RS_FONT_BOLD);
+    g_char.rawToggle = Rs_Button(page, CHAR_ID_RAW_TOGGLE, L"Show details");
+    Rs_SetTip(g_char.rawToggle, L"Everything rldpack printed: each command, then every line it wrote.");
+    g_char.outLabel = Rs_Label(page, CHAR_ID_OUT_LABEL, L"Save as", RS_FONT_BOLD);
     g_char.out = Rs_Edit(page, CHAR_ID_OUT, L"", 0);
+    g_char.outNote = Rs_Label(page, CHAR_ID_OUT_NOTE, L"", RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.outNote, RS_COL_MUTED);
     Char_OutCue();
     g_char.outBrowse = Rs_Button(page, CHAR_ID_OUT_BROWSE, L"Browse...");
+    // The check runs by itself (a model chosen, a field changed): no button.
+    // The automation verb "check" and Enter still run it.
     g_char.check = Rs_Button(page, CHAR_ID_CHECK, L"Check");
-    g_char.build = Rs_PrimaryButton(page, CHAR_ID_BUILD, L"Build character");
+    ShowWindow(g_char.check, SW_HIDE);
+    g_char.build = Rs_PrimaryButton(page, CHAR_ID_BUILD, L"Build");
+    g_char.test = Rs_PrimaryButton(page, CHAR_ID_TEST, L"Test in game");
+    Rs_SetTip(g_char.test, L"Starts the game with this character in a race right away.");
+    g_char.rebuild = Rs_Button(page, CHAR_ID_REBUILD, L"Build again");
+    g_char.testNote = Rs_Label(page, CHAR_ID_TEST_NOTE, L"", RS_FONT_SMALL);
     g_char.headline = Rs_Label(page, CHAR_ID_HEADLINE, L"", RS_FONT_BOLD);
     SetWindowLongPtrW(g_char.headline, GWL_STYLE, GetWindowLongPtrW(g_char.headline, GWL_STYLE) | SS_ENDELLIPSIS);
     g_char.msgs = Rs_MsgList(page, CHAR_ID_MESSAGES);
@@ -7984,12 +9275,38 @@ static void Char_Create(HWND page)
     g_char.progress = CreateWindowExW(0, CHAR_PROGRESS_CLASS, L"", WS_CHILD, 0, 0, 10, 10, page,
                                       (HMENU)(INT_PTR)CHAR_ID_PROGRESS, inst, NULL);
     g_char.back = Rs_Button(page, CHAR_ID_BACK, L"< Back");
-    g_char.next = Rs_Button(page, CHAR_ID_NEXT, L"Next >");
+    g_char.next = Rs_PrimaryButton(page, CHAR_ID_NEXT, L"Next >");
     Rs_MsgListSetClickable(g_char.msgs, 1);
     Rs_MsgListSetWhole(g_char.msgs, 1);
-    Rs_SetTip(g_char.msgs, L"Click a message to open the tab it belongs to.");
-    // The tab Extras: its switch, the card Import, then the cards of the
-    // preview features.
+    Rs_SetTip(g_char.msgs, L"The messages of this step. Click one about a card of Advanced to open it.");
+    // THE GUIDED FLOW: step 0 with its three cards, the route in the head of
+    // the steps with "Change type", Advanced of the step Model, "Upscale small
+    // textures" (CHRG routes), the switch Hi-Res | Classic fallback.
+    g_char.route = RS_ROUTE_NONE;
+    g_char.choosing = 1;
+    g_char.routeAsk = Rs_Label(page, CHAR_ID_ROUTE_ASK, L"What do you want to build?", RS_FONT_SECTION);
+    for (i = 0; i < RS_ROUTES; i++) {
+        const struct RsRoutePreset *p = RsRoute_Preset(i);
+        g_char.routeCard[i] = Char_TabButton(page, CHAR_ID_ROUTE + i, p ? p->title : L"", RS_FONT_SECTION);
+        Rs_SetTip(g_char.routeCard[i], p ? p->sentence : NULL);
+    }
+    g_char.routeLabel = Rs_Label(page, CHAR_ID_ROUTE_LABEL, L"", RS_FONT_BOLD);
+    SetWindowLongPtrW(g_char.routeLabel, GWL_STYLE, GetWindowLongPtrW(g_char.routeLabel, GWL_STYLE) | SS_RIGHT | SS_ENDELLIPSIS);
+    g_char.changeType = Rs_Button(page, CHAR_ID_CHANGE_TYPE, L"Change type");
+    Rs_SetTip(g_char.changeType, L"Back to \"What do you want to build?\" - everything entered stays.");
+    g_char.advanced = Rs_Button(page, CHAR_ID_ADVANCED, L"Advanced options");
+    g_char.upscale = Rs_Check(page, CHAR_ID_UPSCALE, L"Upscale small textures");
+    g_char.upscaleHelp = Rs_Label(page, CHAR_ID_UPSCALE_HELP,
+                                  L"Small pixel textures are enlarged sharply before packing, so that they stay clear under the "
+                                  L"game's smooth filter. The model file itself is not changed.",
+                                  RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.upscaleHelp, RS_COL_MUTED);
+    for (i = 0; i < 2; i++)
+        g_char.previewSwitch[i] = Char_TabButton(page, CHAR_ID_PREVIEW_SWITCH + i, g_charPreviewTexts[i], RS_FONT_SECTION);
+    Rs_SetTip(g_char.previewSwitch[1], L"The classic model made from the same file: the game draws it wherever the hi-res driver "
+                                       L"is not drawn.");
+    // Advanced: its switch, the card Import, then the cards of the preview
+    // features.
     for (i = 0; i < CHAR_EXTRAS_COUNT; i++)
         g_char.extrasSwitch[i] = Char_TabButton(page, CHAR_ID_EXTRAS + i, g_charExtrasTexts[i], RS_FONT_SECTION);
     g_char.importNote = Rs_Label(page, CHAR_ID_IMPORT_NOTE,
@@ -8042,7 +9359,7 @@ static void Char_Create(HWND page)
     g_char.nativeHelp = Rs_Label(page, CHAR_ID_NATIVE_HELP, CHAR_NATIVE_TEXT_OBJ, RS_FONT_SMALL);
     Rs_SetTextColor(g_char.nativeHelp, RS_COL_MUTED);
     Rs_SetTip(g_char.native, L"Preview: rldpack also writes the OBJ's own triangles, UVs, materials and texture files (CNET, CTXT) into the "
-                             L"character, beside the classic model; it needs Show kart wheels off or a wheel model of your own (Extras, "
+                             L"character, beside the classic model; it needs Show kart wheels off or a wheel model of your own (Advanced, "
                              L"Wheels). The game draws them with NATIVE DRIVERS "
                              L"set to PREVIEW (OPTIONS, GRAPHICS); otherwise it draws the classic model as before.");
     Rs_SetTip(g_char.nativeHint, L"Preview: the game draws the native model with NATIVE DRIVERS set to PREVIEW (OPTIONS, GRAPHICS).");
@@ -8053,10 +9370,11 @@ static void Char_Create(HWND page)
     // then the preview and the bar.
     SetWindowPos(g_char.reduceFit, g_char.quality, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     {
-        HWND last[] = { g_char.view, g_char.pose, g_char.viewNote, g_char.headline, g_char.progress, g_char.cancel,
-                        g_char.rawToggle, g_char.msgs,
-                        g_char.raw, g_char.outLabel, g_char.out, g_char.outBrowse, g_char.show, g_char.back,
-                        g_char.next, g_char.check, g_char.build };
+        HWND last[] = { g_char.advanced, g_char.outLabel, g_char.out, g_char.outBrowse, g_char.outNote, g_char.headline,
+                        g_char.build, g_char.test, g_char.rebuild, g_char.show, g_char.rawToggle, g_char.testNote,
+                        g_char.msgs, g_char.raw, g_char.changeType, g_char.previewSwitch[0], g_char.previewSwitch[1],
+                        g_char.view, g_char.pose, g_char.viewNote, g_char.progress, g_char.cancel, g_char.back,
+                        g_char.next, g_char.check };
         for (i = 0; i < (int)(sizeof(last) / sizeof(last[0])); i++)
             SetWindowPos(last[i], HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     }
@@ -8072,6 +9390,10 @@ static void Char_Create(HWND page)
     g_char.applying = 0;
     Char_ApplyIcon(0);
     Char_NoModel(page);
+    // Step 0 first: the heads of the steps are its first stops of Tab.
+    SetWindowPos(g_char.routeAsk, HWND_TOP, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    for (i = RS_ROUTES - 1; i >= 0; i--)
+        SetWindowPos(g_char.routeCard[i], g_char.routeAsk, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
 // Label left, field right of it.
@@ -8082,38 +9404,34 @@ static void Char_PlaceField(HWND label, HWND field, int x, int labelW, int y, in
 }
 
 // Sizes of the layout (96 dpi). The page is laid out for the window it gets:
-// the tabs on the left, the preview on the right as tall as they are, the bar
-// below both. Its height comes from what is left below the tallest tab (the
-// card Animations of the tab Extras), between CHAR_BAR_MIN_H and
-// CHAR_BAR_MAX_H. Only where even CHAR_BAR_MIN_H does not fit below a tab, the
-// bar goes lower than the page and the shell scrolls it (reloadstudio.h,
-// "Pages").
+// the steps on the left, the preview on the right as tall as they are, the
+// bar (Back, Next, the progress) below both, CHAR_BAR_H high. The room above
+// it comes from the tallest step (Advanced only while it is open); the
+// messages of the step shown take what is left below its fields, at least
+// CHAR_STEP_MSGS_MIN_H. Only where that does not fit, the bar goes lower than
+// the page and the shell scrolls it (reloadstudio.h, "Pages").
 // THE COMPACT LAYOUT: a page narrower than CHAR_FULL_W or lower than
 // CHAR_FULL_H (the start window on 1366 x 768 at 150 %: 1344 x 640 pixels
 // of client, about 836 x 426 left for the page) gets a
 // one-line heading (Rs_PageSetCompactHead), lower tab heads, notes on one line
-// with their whole text as the tooltip (Char_TextHeight), the bar in two rows
-// without Back and Next (Ctrl+Tab and the heads step through the tabs) and
+// with their whole text as the tooltip (Char_TextHeight), a lower bar and
 // the preview without its title line. Measured with the automation verb
 // "controls" (--screen simulates the start window with the frame of the
-// simulated dpi, Rs_PlaceWindow): at 1366 x 768 and 1920 x 1080, 100 % and
-// 150 %, nothing of the page scrolls, with --enable-preview-features and
-// without; without it a model over the limit (the button Reduce to fit) or
-// with a texture missing (the field Textures folder) may still push the bar
-// down at 1366 x 768 with 150 % (only up and down).
+// simulated dpi, Rs_PlaceWindow): at 1366 x 768 with 150 % and 1920 x 1080
+// with 100 %, every step of every route is whole without scrolling, Advanced
+// open on each of its cards as well.
 #define CHAR_FULL_W      920    // the layout as always from here on
 #define CHAR_FULL_H      560
 #define CHAR_PAGE_MIN_W  800    // below: the view scrolls (the compact layout needs about this)
 #define CHAR_PAGE_MIN_H  400
 #define CHAR_COMPACT_STRIP_H 28
-#define CHAR_COMPACT_BAR_H   78 // headline and output; messages (two whole lines), Check and Build
+#define CHAR_COMPACT_BAR_H   34 // Back, Next, the progress and Cancel
 #define CHAR_COMPACT_VIEW_MIN_W 200
 #define CHAR_LEFT_MIN_W  540    // the column of the tabs, at least
 #define CHAR_LEFT_MAX_W  760    // and at most: the rest goes to the preview
 #define CHAR_VIEW_MIN_W  300    // the column of the preview, at least
 #define CHAR_STRIP_H     36     // the heads of the tabs
-#define CHAR_BAR_MIN_H   104    // headline, and two rows of buttons beside the message list
-#define CHAR_BAR_MAX_H   240
+#define CHAR_BAR_H       50
 #define CHAR_VIEW_MIN_H  120    // the 3D view, at least
 
 // Measures of the layout, the same for all tabs.
@@ -8130,13 +9448,34 @@ static int Char_LayStrip(int left, int right, int top)
     int x = left + Rs_Px(12), h = Rs_Px(g_char.compact ? CHAR_COMPACT_STRIP_H : CHAR_STRIP_H), total = 0, room = right - left - Rs_Px(24), t;
 
     for (t = 0; t < CHAR_TABS; t++) {
-        widths[t] = Rs_Px(12 + 20 + 8 + 16) + Char_TextWidth(g_char.tabHead[t], g_charTabTexts[t]);
+        widths[t] = Rs_Px(12 + 20 + 8 + 16) + Char_TextWidth(g_char.tabHead[t], Char_HeadText(t));
         total += widths[t] + (t ? Rs_Px(4) : 0);
     }
-    if (total > room) {
-        int less = (total - room + CHAR_TABS - 1) / CHAR_TABS;
+    // Too wide: the widest heads give way first (down to the next widest),
+    // so that a short name is not cut while a long one has room to spare.
+    while (total > room) {
+        int widest = 0, next = 0, count = 0, cut;
         for (t = 0; t < CHAR_TABS; t++)
-            widths[t] -= less;
+            if (widths[t] > widest)
+                widest = widths[t];
+        for (t = 0; t < CHAR_TABS; t++) {
+            if (widths[t] == widest)
+                count++;
+            else if (widths[t] > next)
+                next = widths[t];
+        }
+        cut = (total - room + count - 1) / count;
+        if (next > 0 && widest - cut < next)
+            cut = widest - next;
+        if (cut <= 0 || widest - cut < Rs_Px(48))
+            cut = widest - Rs_Px(48);
+        if (cut <= 0)
+            break;
+        for (t = 0; t < CHAR_TABS; t++)
+            if (widths[t] == widest) {
+                widths[t] -= cut;
+                total -= cut;
+            }
     }
     for (t = 0; t < CHAR_TABS; t++) {
         MoveWindow(g_char.tabHead[t], x, top, widths[t], h + 1, TRUE);
@@ -8145,12 +9484,17 @@ static int Char_LayStrip(int left, int right, int top)
     return top + h;
 }
 
-// Tab 1 Model: model, what rldpack read of it (the list filesH tall), size,
-// options, what rldpack did. Returns the bottom of what it placed.
+// Step 1 Model: the model field and Browse; below it, while Advanced is
+// closed, the line of what was read (and for an OBJ what it brought along and
+// the textures folder), the size and Show kart wheels (Vanilla), Reduce to
+// fit over the limit, and the button that opens Advanced. A CHRG route has
+// only the model and the line of its check (Char_RouteHides). Returns the
+// bottom of what it placed.
 static int Char_LayModelAt(const struct CharLay *k, const RECT *in, int filesH)
 {
-    HWND options[6];
-    int x = in->left + k->labelW + Rs_Px(8), fieldW = in->right - x, y = in->top, infoH, qualityH, noteH, i, count;
+    HWND options[2];
+    const int chrg = Char_Chrg();
+    int x = in->left + k->labelW + Rs_Px(8), fieldW = in->right - x, y = in->top, infoH, noteH, i, count;
 
     Char_PlaceField(g_char.modelLabel, g_char.model, in->left, k->labelW, y + Rs_Px(2), fieldW - k->browseW - Rs_Px(8));
     MoveWindow(g_char.modelBrowse, in->right - k->browseW, y, k->browseW, Rs_Px(32), TRUE);
@@ -8163,111 +9507,100 @@ static int Char_LayModelAt(const struct CharLay *k, const RECT *in, int filesH)
         infoH = Rs_Px(18);
     MoveWindow(g_char.modelInfo, x, y, fieldW, infoH, TRUE);
     y += infoH + Rs_Px(g_char.compact ? 4 : 8);
-    // An OBJ (or a model not named .ply): the line of what was read right
-    // below, then the list of its MTL, textures and groups over the width
-    // of the card.
-    if (g_char.importOn) {
-        noteH = Char_NoteHeight(g_char.modelImport, fieldW);
-        MoveWindow(g_char.modelImport, x, y - Rs_Px(6), fieldW, noteH, TRUE);
-        y += noteH + Rs_Px(2);
-    }
-    if (g_char.filesOn && g_char.filesLeast > 0) {
-        MoveWindow(g_char.modelFiles, in->left, y, in->right - in->left, filesH, TRUE);
-        Char_ImportColumns(in->right - in->left);
-        y += filesH + Rs_Px(8);
-    }
-    // An OBJ: the textures folder, as the icon and the voices folder are laid out.
-    if (g_char.texturesOn) {
-        Char_PlaceField(g_char.texturesLabel, g_char.textures, in->left, k->labelW, y + Rs_Px(2),
-                        fieldW - k->browseW - k->clearW - Rs_Px(16));
-        MoveWindow(g_char.texturesBrowse, in->right - k->browseW - k->clearW - Rs_Px(8), y, k->browseW, Rs_Px(32), TRUE);
-        MoveWindow(g_char.texturesClear, in->right - k->clearW, y, k->clearW, Rs_Px(32), TRUE);
-        y += Rs_Px(g_char.compact ? 34 : 40);
-    }
-    MoveWindow(g_char.sizeLabel, in->left, y + Rs_Px(4), k->labelW, Rs_Px(20), TRUE);
-    MoveWindow(g_char.size, x - Rs_Px(4), y, fieldW - Rs_Px(64), Rs_Px(30), TRUE);
-    MoveWindow(g_char.sizeValue, in->right - Rs_Px(60), y + Rs_Px(4), Rs_Px(60), Rs_Px(20), TRUE);
-    y += Rs_Px(g_char.compact ? 30 : 32);
-    // What 100 % is: in the label column under "Size", the fit beside it.
-    MoveWindow(g_char.sizeCrash, in->left, y, k->labelW, Rs_Px(18), TRUE);
-    noteH = Char_NoteHeight(g_char.sizeFit, fieldW);
-    MoveWindow(g_char.sizeFit, x, y, fieldW, noteH, TRUE);
-    y += Rs_Px(2) + noteH;
-    noteH = Char_NoteHeight(g_char.sizeNote, fieldW);
-    MoveWindow(g_char.sizeNote, x, y, fieldW, noteH, TRUE);
-    y += Rs_Px(2) + noteH;
-    // Compact: the hint that the size is a look only is the slider's tooltip
-    // (Char_TabApply hides the line).
-    Rs_SetTip(g_char.size, g_char.compact ? CHAR_SIZE_HINT_TEXT : NULL);
-    if (g_char.compact) {
-        y += Rs_Px(6);
-    } else {
-        noteH = Char_NoteHeight(g_char.sizeHint, fieldW);
-        MoveWindow(g_char.sizeHint, x, y, fieldW, noteH, TRUE);
-        y += Rs_Px(8) + noteH;
-    }
-    // The check boxes left to right, a new row where the next one does not fit.
-    // The user mode (Rs_NativeForUsers): only Show kart wheels and the classic
-    // fallback (ticked, greyed out, "Coming soon" right of it).
-    count = 0;
-    if (!Rs_NativeForUsers()) {
-        options[count++] = g_char.repair;
-        options[count++] = g_char.openParts;
-        options[count++] = g_char.remesh;
-        options[count++] = g_char.reduce;
-    }
-    options[count++] = g_char.wheels;
-    if (Rs_NativeForUsers())
-        options[count++] = g_char.fallback;
-    MoveWindow(g_char.optionsLabel, in->left, y + Rs_Px(2), k->labelW, Rs_Px(20), TRUE);
-    // Compact: the boxes (and "Coming soon") from the left edge of the card,
-    // without the label (Char_TabApply hides it) - in the user mode one row.
-    if (g_char.compact) {
-        x = in->left;
-        fieldW = in->right - in->left;
-    }
-    {
-        int cx = x;
-        for (i = 0; i < count; i++) {
-            int bw = Char_CheckWidth(options[i]);
-            int extra = options[i] == g_char.fallback ? Rs_Px(8) + Char_TextWidth(g_char.fallbackHint, L"Coming soon") + Rs_Px(4) : 0;
-            if (bw > fieldW - extra)
-                bw = fieldW - extra;
-            if (cx > x && cx + bw + extra > x + fieldW) {
-                cx = x;
-                y += Rs_Px(26);
+    if (!chrg) {
+        // An OBJ (or a model not named .ply): the line of what was read right
+        // below, then the list of its MTL, textures and groups over the width
+        // of the card.
+        if (g_char.importOn) {
+            noteH = Char_NoteHeight(g_char.modelImport, fieldW);
+            MoveWindow(g_char.modelImport, x, y - Rs_Px(6), fieldW, noteH, TRUE);
+            y += noteH + Rs_Px(2);
+        }
+        if (g_char.filesOn && g_char.filesLeast > 0) {
+            MoveWindow(g_char.modelFiles, in->left, y, in->right - in->left, filesH, TRUE);
+            Char_ImportColumns(in->right - in->left);
+            y += filesH + Rs_Px(8);
+        }
+        // An OBJ: the textures folder, as the icon and the voices folder are laid out.
+        if (g_char.texturesOn) {
+            Char_PlaceField(g_char.texturesLabel, g_char.textures, in->left, k->labelW, y + Rs_Px(2),
+                            fieldW - k->browseW - k->clearW - Rs_Px(16));
+            MoveWindow(g_char.texturesBrowse, in->right - k->browseW - k->clearW - Rs_Px(8), y, k->browseW, Rs_Px(32), TRUE);
+            MoveWindow(g_char.texturesClear, in->right - k->clearW, y, k->clearW, Rs_Px(32), TRUE);
+            y += Rs_Px(g_char.compact ? 34 : 40);
+        }
+        MoveWindow(g_char.sizeLabel, in->left, y + Rs_Px(4), k->labelW, Rs_Px(20), TRUE);
+        MoveWindow(g_char.size, x - Rs_Px(4), y, fieldW - Rs_Px(64), Rs_Px(30), TRUE);
+        MoveWindow(g_char.sizeValue, in->right - Rs_Px(60), y + Rs_Px(4), Rs_Px(60), Rs_Px(20), TRUE);
+        y += Rs_Px(g_char.compact ? 30 : 32);
+        // What 100 % is: in the label column under "Size", the fit beside it.
+        MoveWindow(g_char.sizeCrash, in->left, y, k->labelW, Rs_Px(18), TRUE);
+        noteH = Char_NoteHeight(g_char.sizeFit, fieldW);
+        MoveWindow(g_char.sizeFit, x, y, fieldW, noteH, TRUE);
+        y += Rs_Px(2) + noteH;
+        noteH = Char_NoteHeight(g_char.sizeNote, fieldW);
+        MoveWindow(g_char.sizeNote, x, y, fieldW, noteH, TRUE);
+        y += Rs_Px(2) + noteH;
+        // Compact: the hint that the size is a look only is the slider's tooltip
+        // (Char_Wanted hides the line).
+        Rs_SetTip(g_char.size, g_char.compact ? CHAR_SIZE_HINT_TEXT : NULL);
+        if (g_char.compact) {
+            y += Rs_Px(6);
+        } else {
+            noteH = Char_NoteHeight(g_char.sizeHint, fieldW);
+            MoveWindow(g_char.sizeHint, x, y, fieldW, noteH, TRUE);
+            y += Rs_Px(8) + noteH;
+        }
+        // Show kart wheels, and in the user mode the classic fallback (ticked,
+        // greyed out, "Coming soon" right of it); the choices of rldpack's work
+        // on the model are the card Options of Advanced.
+        count = 0;
+        options[count++] = g_char.wheels;
+        if (Rs_NativeForUsers())
+            options[count++] = g_char.fallback;
+        MoveWindow(g_char.optionsLabel, in->left, y + Rs_Px(2), k->labelW, Rs_Px(20), TRUE);
+        {
+            int bx = g_char.compact ? in->left : x, bwAll = g_char.compact ? in->right - in->left : fieldW, cx = bx;
+            for (i = 0; i < count; i++) {
+                int bw = Char_CheckWidth(options[i]);
+                int extra = options[i] == g_char.fallback ? Rs_Px(8) + Char_TextWidth(g_char.fallbackHint, L"Coming soon") + Rs_Px(4) : 0;
+                if (bw > bwAll - extra)
+                    bw = bwAll - extra;
+                if (cx > bx && cx + bw + extra > bx + bwAll) {
+                    cx = bx;
+                    y += Rs_Px(26);
+                }
+                MoveWindow(options[i], cx, y, bw, Rs_Px(24), TRUE);
+                if (extra)
+                    MoveWindow(g_char.fallbackHint, cx + bw + Rs_Px(8), y + Rs_Px(4), extra - Rs_Px(8), Rs_Px(18), TRUE);
+                cx += bw + extra + Rs_Px(12);
             }
-            MoveWindow(options[i], cx, y, bw, Rs_Px(24), TRUE);
-            if (extra)
-                MoveWindow(g_char.fallbackHint, cx + bw + Rs_Px(8), y + Rs_Px(4), extra - Rs_Px(8), Rs_Px(18), TRUE);
-            cx += bw + extra + Rs_Px(12);
+        }
+        y += Rs_Px(24);
+        // The user mode: what the native model came to, or why there is none.
+        if (Rs_NativeForUsers()) {
+            noteH = Char_NoteHeight(g_char.nativeLine, fieldW);
+            MoveWindow(g_char.nativeLine, x, y + Rs_Px(4), fieldW, noteH, TRUE);
+            y += Rs_Px(4) + noteH;
+        }
+        // Over the limit: the button that ticks Reduce to fit and checks again.
+        if (g_char.reduceFitOn) {
+            int bw = Char_TextWidth(g_char.reduceFit, L"Reduce to fit") + Rs_Px(32);
+            MoveWindow(g_char.reduceFit, x, y + Rs_Px(6), bw < fieldW ? bw : fieldW, Rs_Px(30), TRUE);
+            y += Rs_Px(36);
         }
     }
-    y += Rs_Px(24);
-    // The user mode: what the native model came to, or why there is none.
-    if (Rs_NativeForUsers()) {
-        noteH = Char_NoteHeight(g_char.nativeLine, fieldW);
-        MoveWindow(g_char.nativeLine, x, y + Rs_Px(4), fieldW, noteH, TRUE);
-        return y + Rs_Px(4) + noteH;
-    }
-    // What the repair, the open parts and the remesh did (Char_ApplyQuality).
-    MoveWindow(g_char.quality, x, y + Rs_Px(4), fieldW, Rs_Px(18), FALSE);
-    qualityH = Char_QualityHeight(fieldW);
-    g_char.qualityOn = qualityH > 0;
-    if (qualityH > 0) {
-        MoveWindow(g_char.quality, x, y + Rs_Px(4), fieldW, qualityH, TRUE);
-        y += Rs_Px(4) + qualityH;
-    }
-    // Over the limit: the button that ticks Reduce to fit and checks again.
-    if (g_char.reduceFitOn) {
-        int bw = Char_TextWidth(g_char.reduceFit, L"Reduce to fit") + Rs_Px(32);
-        MoveWindow(g_char.reduceFit, x, y + Rs_Px(6), bw < fieldW ? bw : fieldW, Rs_Px(30), TRUE);
-        y += Rs_Px(36);
+    // The button that opens Advanced (Char_LayAdvSwitch moves it into the
+    // title line of the section while it is open).
+    if (!g_char.advOpen) {
+        int bw = Char_TextWidth(g_char.advanced, L"Advanced options") + Rs_Px(32);
+        MoveWindow(g_char.advanced, in->left, y + Rs_Px(g_char.compact ? 4 : 8), bw, Rs_Px(28), TRUE);
+        y += Rs_Px(g_char.compact ? 32 : 36);
     }
     return y;
 }
 
-// Tab 1 with the list of what an OBJ brought along at least
+// Step 1 with the list of what an OBJ brought along at least
 // g_char.filesLeast rows tall, taller as far as the room down to in->bottom
 // allows, never taller than its rows. Laid out with in->bottom above in->top
 // it says how much it needs at least.
@@ -8275,7 +9608,7 @@ static int Char_LayModel(const struct CharLay *k, const RECT *in)
 {
     int least, most, end;
 
-    if (!g_char.filesOn || g_char.filesLeast == 0)
+    if (!g_char.filesOn || g_char.filesLeast == 0 || Char_Chrg())
         return Char_LayModelAt(k, in, 0);
     least = Char_ImportListHeight(g_char.importRowCount < g_char.filesLeast ? g_char.importRowCount
                                                                              : g_char.filesLeast);
@@ -8286,6 +9619,47 @@ static int Char_LayModel(const struct CharLay *k, const RECT *in)
         end = Char_LayModelAt(k, in, least + (more < most - least ? more : most - least));
     }
     return end;
+}
+
+// Advanced, the card Options. Vanilla: the four choices of rldpack's work on
+// the model (a new row where the next does not fit) and what they did; a
+// CHRG route: "Upscale small textures" with its note. Returns its bottom.
+static int Char_LayOptions(const RECT *in)
+{
+    static const int ids[4] = { CHAR_ID_REPAIR, CHAR_ID_OPEN_PARTS, CHAR_ID_REMESH, CHAR_ID_REDUCE };
+    int y = in->top, x = in->left, w = in->right - in->left, i, cx, qualityH, noteH;
+
+    if (Char_Chrg()) {
+        int bw = Char_CheckWidth(g_char.upscale);
+        MoveWindow(g_char.upscale, x, y, bw < w ? bw : w, Rs_Px(24), TRUE);
+        y += Rs_Px(28);
+        noteH = Char_TextHeight(g_char.upscaleHelp, w, CHAR_NOTE_LINES);
+        MoveWindow(g_char.upscaleHelp, x, y, w, noteH, TRUE);
+        return y + noteH;
+    }
+    cx = x;
+    for (i = 0; i < 4; i++) {
+        HWND box = GetDlgItem(GetParent(g_char.repair), ids[i]);
+        int bw = Char_CheckWidth(box);
+        if (bw > w)
+            bw = w;
+        if (cx > x && cx + bw > x + w) {
+            cx = x;
+            y += Rs_Px(26);
+        }
+        MoveWindow(box, cx, y, bw, Rs_Px(24), TRUE);
+        cx += bw + Rs_Px(12);
+    }
+    y += Rs_Px(24);
+    // What the repair, the open parts and the remesh did (Char_ApplyQuality).
+    MoveWindow(g_char.quality, x, y + Rs_Px(4), w, Rs_Px(18), FALSE);
+    qualityH = Char_QualityHeight(w);
+    g_char.qualityOn = qualityH > 0;
+    if (qualityH > 0) {
+        MoveWindow(g_char.quality, x, y + Rs_Px(4), w, qualityH, TRUE);
+        y += Rs_Px(4) + qualityH;
+    }
+    return y;
 }
 
 // Tab 2 Driver: name, driving style, mask.
@@ -8569,7 +9943,7 @@ static int Char_LayNative(const struct CharLay *k, const RECT *in, int y)
     return y + h + Rs_Px(g_char.compact ? 2 : 8);
 }
 
-// Tab 5 Extras, the card Import: a note, then the choices (those of an OBJ
+// Advanced of the step Model, the card Import: a note, then the choices (those of an OBJ
 // only for an OBJ). Returns the bottom of the card.
 static int Char_LayImport(const struct CharLay *k, int left, int right, int top)
 {
@@ -8592,35 +9966,46 @@ static int Char_LayImport(const struct CharLay *k, int left, int right, int top)
     if (g_char.objOn)
         y = Char_LayChoice(k, &in, y, g_char.vcolorsLabel, g_char.vcolors, g_char.vcolorsHelp);
     y = Char_LayNative(k, &in, y);
-    return y + Rs_Px(16);
+    return y + Rs_Px(g_char.compact ? 8 : 16);
 }
 
-// Tab 5 Extras: Import | Wheels | Animations in the title line of the card
-// (the card itself has no title), the card Import, or that of rs_wheels.c
-// or rs_anim.c, below it.
-static void Char_LayExtrasSwitch(const RECT *card)
+// Advanced of the step Model, below the model field: in its title line the
+// switch of the cards the route has (Char_ExtrasShown; no switch for one
+// card) and at the right the button that closes it; the card chosen below
+// (Char_LayImport, Char_LayOptions, the cards of rs_wheels.c and rs_anim.c).
+static void Char_LayAdvSwitch(const RECT *card)
 {
-    int x = card->left + Rs_Px(10), c;
-    for (c = 0; c < CHAR_EXTRAS_COUNT; c++) {
-        int bw = Char_TextWidth(g_char.extrasSwitch[c], g_charExtrasTexts[c]) + Rs_Px(20);
+    int x = card->left + Rs_Px(10), i, bw;
+    for (i = 0; i < CHAR_EXTRAS_COUNT; i++) {
+        const int c = g_charExtrasOrder[i];
+        if (!Char_ExtrasShown(c))
+            continue;
+        bw = Char_TextWidth(g_char.extrasSwitch[c], g_charExtrasTexts[c]) + Rs_Px(20);
         MoveWindow(g_char.extrasSwitch[c], x, card->top + Rs_Px(8), bw, Rs_Px(36), TRUE);
         x += bw + Rs_Px(4);
+    }
+    if (g_char.advOpen) {
+        bw = Char_TextWidth(g_char.advanced, L"Hide advanced") + Rs_Px(32);
+        MoveWindow(g_char.advanced, card->right - Rs_Px(18) - bw, card->top + Rs_Px(12), bw, Rs_Px(28), TRUE);
     }
 }
 
 // The card "Preview" from top to bottom: the 3D view as tall as the card
-// allows. The pose choice is in the title line of the card.
+// allows. The pose choice is in the title line of the card; a CHRG route has
+// the switch Hi-Res | Classic fallback there (the pose then only for the
+// classic fallback).
 static void Char_LayPreview(HWND page, int left, int right, int top, int bottom)
 {
     RECT card, in;
-    int width, viewBottom, noteH;
+    int width, viewBottom, noteH, i, x;
+    const int chrg = Char_Chrg();
 
     card.left = left;
     card.top = top;
     card.right = right;
     card.bottom = bottom;
-    // Compact: no title line - the pose choice on a row of its own, the note
-    // on one line below the view.
+    // Compact: no title line - the switch and the pose choice on a row of
+    // their own, the note on one line below the view.
     if (g_char.compact) {
         int poseW = Rs_Px(150);
         in = Rs_CardInner(&card, 0);
@@ -8628,6 +10013,11 @@ static void Char_LayPreview(HWND page, int left, int right, int top, int bottom)
         if (poseW > width)
             poseW = width;
         MoveWindow(g_char.pose, in.right - poseW, in.top, poseW, Rs_Px(200), TRUE);
+        for (i = 0, x = in.left; i < 2; i++) {
+            int bw = Char_TextWidth(g_char.previewSwitch[i], g_charPreviewTexts[i]) + Rs_Px(16);
+            MoveWindow(g_char.previewSwitch[i], x, in.top - Rs_Px(4), bw, Rs_Px(32), TRUE);
+            x += bw + Rs_Px(2);
+        }
         Char_ViewNoteFit(width);
         noteH = Char_NoteHeight(g_char.viewNote, width);
         viewBottom = in.bottom - Rs_Px(4) - noteH;
@@ -8643,6 +10033,11 @@ static void Char_LayPreview(HWND page, int left, int right, int top, int bottom)
     in = Rs_CardInner(&card, 1);
     width = in.right - in.left;
     MoveWindow(g_char.pose, in.right - Rs_Px(168), card.top + Rs_Px(10), Rs_Px(168), Rs_Px(200), TRUE);
+    for (i = 0, x = card.left + Rs_Px(10); i < 2; i++) {
+        int bw = Char_TextWidth(g_char.previewSwitch[i], g_charPreviewTexts[i]) + Rs_Px(20);
+        MoveWindow(g_char.previewSwitch[i], x, card.top + Rs_Px(8), bw, Rs_Px(36), TRUE);
+        x += bw + Rs_Px(4);
+    }
     Char_ViewNoteFit(width);
     noteH = Char_NoteHeight(g_char.viewNote, width);
     viewBottom = in.bottom - Rs_Px(6) - noteH;
@@ -8652,165 +10047,188 @@ static void Char_LayPreview(HWND page, int left, int right, int top, int bottom)
     MoveWindow(g_char.viewNote, in.left, viewBottom + Rs_Px(6), width, noteH, TRUE);
     if (card.bottom < viewBottom + Rs_Px(6) + noteH + Rs_Px(16))
         card.bottom = viewBottom + Rs_Px(6) + noteH + Rs_Px(16);
-    Rs_CardAdd(page, &card, L"Preview");
+    Rs_CardAdd(page, &card, chrg ? NULL : L"Preview");
 }
 
-// The compact bar (Char_Layout): row 1 the headline (one line, the rest as its
-// tooltip), the progress and Cancel while rldpack runs, Output, Browse and the
-// toggle of the raw output; row 2 the message list (or the raw output), Show
-// in folder after a build, Check and Build. No Back and Next. Returns its bottom.
-static int Char_LayBarCompact(HWND page, const struct CharLay *k, RECT *card, const RECT *in, int rawW)
+// Step 5 Build: where the character goes (the game's characters folder while
+// the field is empty, the line below it says so), what the last check or
+// build says (the headline), then the one main action - Build; after a build
+// of the fields as they are Test in game, with Build again beside it -, Show
+// in folder after a build and "Show details" at the right of that row, what
+// Test in game did below. Returns the bottom of what it placed.
+static int Char_LayBuild(const struct CharLay *k, const RECT *in)
 {
-    int y2 = in->top + Rs_Px(26), rowH = in->bottom - y2, labelW, fieldW = Rs_Px(200), x, headR, buildW = Rs_Px(140), checkW = Rs_Px(84);
-    int showW = g_char.built[0] ? Rs_Px(136) : 0, listR;
+    int x = in->left + k->labelW + Rs_Px(8), fieldW = in->right - x, y = in->top, noteH, bx, bw, rawW, h;
     wchar_t *text;
 
-    if (rowH < Rs_Px(28))
-        rowH = Rs_Px(28);
-    text = Rs_GetText(g_char.outLabel);
-    labelW = Char_TextWidth(g_char.outLabel, text) + Rs_Px(4);
+    Char_PlaceField(g_char.outLabel, g_char.out, in->left, k->labelW, y + Rs_Px(2), fieldW - k->browseW - Rs_Px(8));
+    MoveWindow(g_char.outBrowse, in->right - k->browseW, y, k->browseW, Rs_Px(32), TRUE);
+    y += Rs_Px(36);
+    noteH = Char_TextHeight(g_char.outNote, fieldW, 2);
+    MoveWindow(g_char.outNote, x, y, fieldW, noteH, TRUE);
+    y += noteH + Rs_Px(g_char.compact ? 6 : 14);
+    MoveWindow(g_char.headline, in->left, y, in->right - in->left, Rs_Px(22), TRUE);
+    y += Rs_Px(g_char.compact ? 26 : 30);
+    h = Rs_Px(g_char.compact ? 30 : 34);
+    bx = in->left;
+    if (g_char.builtFresh) {
+        bw = Char_TextWidth(g_char.test, L"Test in game") + Rs_Px(48);
+        MoveWindow(g_char.test, bx, y, bw, h, TRUE);
+        bx += bw + Rs_Px(8);
+        bw = Char_TextWidth(g_char.rebuild, L"Build again") + Rs_Px(32);
+        MoveWindow(g_char.rebuild, bx, y, bw, h, TRUE);
+        bx += bw + Rs_Px(8);
+    } else {
+        bw = Char_TextWidth(g_char.build, L"Build") + Rs_Px(80);
+        MoveWindow(g_char.build, bx, y, bw, h, TRUE);
+        bx += bw + Rs_Px(8);
+    }
+    text = Rs_GetText(g_char.show);
+    bw = Char_TextWidth(g_char.show, text) + Rs_Px(32);
     Rs_Free(text);
-    MoveWindow(g_char.rawToggle, in->right - rawW, in->top, rawW, Rs_Px(24), TRUE);
-    x = in->right - rawW - Rs_Px(12) - k->browseW;
-    MoveWindow(g_char.outBrowse, x, in->top - Rs_Px(3), k->browseW, Rs_Px(30), TRUE);
-    x -= Rs_Px(8) + fieldW;
-    MoveWindow(g_char.out, x, in->top - Rs_Px(2), fieldW, Rs_Px(28), TRUE);
-    x -= Rs_Px(8) + labelW;
-    MoveWindow(g_char.outLabel, x, in->top + Rs_Px(2), labelW, Rs_Px(20), TRUE);
-    headR = x - Rs_Px(12);
-    if (g_char.progressOn) {
-        int cancelW = Char_TextWidth(g_char.cancel, L"Cancel") + Rs_Px(32);
-        int progW = Rs_Px(120);
-        MoveWindow(g_char.cancel, headR - cancelW, in->top, cancelW, Rs_Px(24), TRUE);
-        MoveWindow(g_char.progress, headR - cancelW - Rs_Px(8) - progW, in->top + Rs_Px(3), progW, Rs_Px(18), TRUE);
-        headR -= cancelW + progW + Rs_Px(20);
+    MoveWindow(g_char.show, bx, y, bw, h, TRUE);
+    rawW = Char_TextWidth(g_char.rawToggle, L"Show details");
+    bw = Char_TextWidth(g_char.rawToggle, L"Hide details");
+    rawW = (bw > rawW ? bw : rawW) + Rs_Px(32);
+    MoveWindow(g_char.rawToggle, in->right - rawW, y, rawW, h, TRUE);
+    y += h + Rs_Px(6);
+    text = Rs_GetText(g_char.testNote);
+    if (text[0]) {
+        noteH = Char_TextHeight(g_char.testNote, in->right - in->left, 2);
+        MoveWindow(g_char.testNote, in->left, y, in->right - in->left, noteH, TRUE);
+        y += noteH + Rs_Px(4);
     }
-    ShowWindow(g_char.cancel, g_char.progressOn ? SW_SHOWNA : SW_HIDE);
-    ShowWindow(g_char.progress, g_char.progressOn ? SW_SHOWNA : SW_HIDE);
-    if (headR < in->left + Rs_Px(40))
-        headR = in->left + Rs_Px(40);
-    MoveWindow(g_char.headline, in->left, in->top + Rs_Px(2), headR - in->left, Rs_Px(22), TRUE);
-
-    MoveWindow(g_char.build, in->right - buildW, y2, buildW, Rs_Px(28), TRUE);
-    MoveWindow(g_char.check, in->right - buildW - Rs_Px(8) - checkW, y2, checkW, Rs_Px(28), TRUE);
-    listR = in->right - buildW - Rs_Px(8) - checkW - Rs_Px(12);
-    if (showW) {
-        MoveWindow(g_char.show, listR - showW, y2, showW, Rs_Px(28), TRUE);
-        listR -= showW + Rs_Px(8);
-    }
-    ShowWindow(g_char.show, showW ? SW_SHOW : SW_HIDE);
-    ShowWindow(g_char.back, SW_HIDE);
-    ShowWindow(g_char.next, SW_HIDE);
-    MoveWindow(g_char.msgs, in->left, y2, listR - in->left, rowH, TRUE);
-    MoveWindow(g_char.raw, in->left, y2, listR - in->left, rowH, TRUE);
-    card->bottom = y2 + rowH + Rs_Px(6);
-    Rs_CardAdd(page, card, NULL);
-    return card->bottom;
+    Rs_Free(text);
+    return y;
 }
 
-// The bar from top to bottom over the whole width: the headline with the
-// toggle of the raw output at the top, below it the message list on the left
-// and on the right output (Browse, Show in folder) and the buttons Back, Next,
-// Check and Build. Returns its bottom.
-static int Char_LayBar(HWND page, const struct CharLay *k, int left, int right, int top, int bottom)
+// The bar at the bottom: Back and Next at the right; while rldpack runs the
+// bar of its progress and Cancel at the left. Returns its bottom.
+static int Char_LayBar(HWND page, int left, int right, int top, int bottom)
 {
-    RECT card, in;
-    int width, rawW, headW, y, rightW, rx, labelW, fieldW, listBottom, showW;
-    wchar_t *text;
+    RECT card;
+    int y, h = Rs_Px(g_char.compact ? 28 : 30), navW = Rs_Px(96), x;
 
     card.left = left;
     card.top = top;
     card.right = right;
     card.bottom = bottom;
-    in.left = left + Rs_Px(18);
-    in.right = right - Rs_Px(18);
-    in.top = top + Rs_Px(6);
-    in.bottom = bottom - Rs_Px(6);
-    width = in.right - in.left;
-    rawW = Char_TextWidth(g_char.rawToggle, L"Show rldpack output") + Rs_Px(28);
-    headW = width - rawW - Rs_Px(12);
-    if (g_char.compact)
-        return Char_LayBarCompact(page, k, &card, &in, rawW);
-    // While rldpack runs: the bar of its progress and Cancel, left of the
-    // toggle; the headline gives them its room.
+    y = (top + bottom - h) / 2;
+    x = right - Rs_Px(18) - navW;
+    MoveWindow(g_char.next, x, y, navW, h, TRUE);
+    MoveWindow(g_char.back, x - Rs_Px(8) - navW, y, navW, h, TRUE);
     if (g_char.progressOn) {
         int cancelW = Char_TextWidth(g_char.cancel, L"Cancel") + Rs_Px(32);
-        int progW = Rs_Px(160);
-        int cx = in.right - rawW - Rs_Px(12) - cancelW;
-        MoveWindow(g_char.cancel, cx, in.top, cancelW, Rs_Px(24), TRUE);
-        MoveWindow(g_char.progress, cx - Rs_Px(8) - progW, in.top + Rs_Px(3), progW, Rs_Px(18), TRUE);
-        headW -= cancelW + progW + Rs_Px(20);
+        int progW = Rs_Px(g_char.compact ? 200 : 260);
+        MoveWindow(g_char.progress, left + Rs_Px(18), y + (h - Rs_Px(18)) / 2, progW, Rs_Px(18), TRUE);
+        MoveWindow(g_char.cancel, left + Rs_Px(18) + progW + Rs_Px(8), y, cancelW, h, TRUE);
     }
-    ShowWindow(g_char.cancel, g_char.progressOn ? SW_SHOWNA : SW_HIDE);
-    ShowWindow(g_char.progress, g_char.progressOn ? SW_SHOWNA : SW_HIDE);
-    MoveWindow(g_char.headline, in.left, in.top + Rs_Px(2), headW, Rs_Px(22), TRUE);
-    MoveWindow(g_char.rawToggle, in.right - rawW, in.top, rawW, Rs_Px(24), TRUE);
-    y = in.top + Rs_Px(24) + Rs_Px(4);
-
-    // Right: output and buttons.
-    rightW = width * 46 / 100;
-    if (rightW < Rs_Px(440))
-        rightW = Rs_Px(440);
-    if (rightW > Rs_Px(560))
-        rightW = Rs_Px(560);
-    rx = in.right - rightW;
-    text = Rs_GetText(g_char.outLabel);
-    labelW = Char_TextWidth(g_char.outLabel, text) + Rs_Px(4);
-    Rs_Free(text);
-    showW = g_char.built[0] ? Rs_Px(136) + Rs_Px(8) : 0;
-    fieldW = rightW - labelW - Rs_Px(8) - k->browseW - Rs_Px(8) - showW;
-    MoveWindow(g_char.outLabel, rx, y + Rs_Px(5), labelW, Rs_Px(20), TRUE);
-    MoveWindow(g_char.out, rx + labelW + Rs_Px(8), y + Rs_Px(1), fieldW, Rs_Px(28), TRUE);
-    MoveWindow(g_char.outBrowse, rx + labelW + Rs_Px(8) + fieldW + Rs_Px(8), y, k->browseW, Rs_Px(30), TRUE);
-    MoveWindow(g_char.show, in.right - Rs_Px(136), y, Rs_Px(136), Rs_Px(30), TRUE);
-    ShowWindow(g_char.show, g_char.built[0] ? SW_SHOW : SW_HIDE);
-    MoveWindow(g_char.back, rx, y + Rs_Px(34), Rs_Px(84), Rs_Px(30), TRUE);
-    MoveWindow(g_char.next, rx + Rs_Px(92), y + Rs_Px(34), Rs_Px(84), Rs_Px(30), TRUE);
-    if (!Char_IsShown(g_char.back))
-        ShowWindow(g_char.back, SW_SHOWNA);
-    if (!Char_IsShown(g_char.next))
-        ShowWindow(g_char.next, SW_SHOWNA);
-
-    MoveWindow(g_char.build, in.right - Rs_Px(156), y + Rs_Px(34), Rs_Px(156), Rs_Px(30), TRUE);
-    MoveWindow(g_char.check, in.right - Rs_Px(156 + 8 + 96), y + Rs_Px(34), Rs_Px(96), Rs_Px(30), TRUE);
-
-    // Left: the messages (or the raw output), down to the bottom.
-    listBottom = in.bottom;
-    if (listBottom < y + Rs_Px(64))
-        listBottom = y + Rs_Px(64);
-    MoveWindow(g_char.msgs, in.left, y, rx - Rs_Px(16) - in.left, listBottom - y, TRUE);
-    MoveWindow(g_char.raw, in.left, y, rx - Rs_Px(16) - in.left, listBottom - y, TRUE);
-    card.bottom = listBottom + Rs_Px(6);
     Rs_CardAdd(page, &card, NULL);
-    return card.bottom;
+    return bottom;
 }
 
-// Shows the controls of the tab (and of the card of the tab Extras) chosen,
-// hides those of the others. Heads, preview and bar stay as they are.
+// Step 0: "What do you want to build?" and the three cards in a row, as large
+// as the page allows (at most 5:4 tall), the picture of each made for its
+// size (Char_RouteImages).
+static void Char_RouteImages(int w, int h);
+static void Char_LayChoose(HWND page, int left, int right, int top, int bottom)
+{
+    const int gap = Rs_Px(g_char.compact ? 12 : 20), askH = Rs_Px(g_char.compact ? 28 : 36), pad = Rs_Px(12);
+    int w, h, i;
+
+    (void)page;
+    MoveWindow(g_char.routeAsk, left, top, right - left, askH, TRUE);
+    top += askH + Rs_Px(g_char.compact ? 4 : 12);
+    w = (right - left - 2 * gap) / 3;
+    h = bottom - top;
+    if (h > w)
+        h = w;
+    if (h < Rs_Px(180))
+        h = Rs_Px(180);
+    for (i = 0; i < RS_ROUTES; i++)
+        MoveWindow(g_char.routeCard[i], left + i * (w + gap), top, w, h, TRUE);
+    Char_RouteImages(w - 2 * pad, h * 55 / 100);
+}
+
+// What is shown: step 0 or the steps of the route; on a step its controls
+// (and on Model those of Basic or of the card of Advanced shown, on In-game
+// look those of its card), and nothing a route does not need
+// (Char_RouteHides). The preview and the bar stay on every step.
+static int Char_Wanted(HWND c)
+{
+    int id = GetDlgCtrlID(c), card, tab;
+    wchar_t *text;
+    int on;
+
+    if ((id >= CHAR_ID_ROUTE && id < CHAR_ID_ROUTE + RS_ROUTES) || id == CHAR_ID_ROUTE_ASK)
+        return g_char.choosing;
+    if (g_char.choosing || c == g_char.check || Char_RouteHides(c))
+        return 0;
+    tab = Char_TabOfId(id, &card);
+    if (tab < 0) {
+        if (c == g_char.pose)
+            return !Char_Chrg() || g_char.previewClassic;
+        if (c == g_char.next)
+            return g_char.tab < CHAR_TABS - 1;
+        if (c == g_char.cancel || c == g_char.progress)
+            return g_char.progressOn;
+        if (c == g_char.msgs)
+            return g_char.listCount > 0 && !(g_char.tab == CHAR_TAB_BUILD && g_char.showRaw);
+        return 1;
+    }
+    if (tab != g_char.tab || Char_UserHidden(c) || CharWheels_Hidden(c))
+        return 0;
+    if (tab == CHAR_TAB_LOOK)
+        return card < 0 || card == g_char.lookCard;
+    if (tab == CHAR_TAB_MODEL) {
+        if (id >= CHAR_ID_EXTRAS && id < CHAR_ID_EXTRAS + CHAR_EXTRAS_COUNT)
+            return g_char.advOpen && Char_ExtrasShown(id - CHAR_ID_EXTRAS) && Char_ExtrasCount() > 1;
+        if (c == g_char.advanced)
+            return Char_ExtrasCount() > 0;
+        if (card == CHAR_CARD_BASIC && g_char.advOpen)
+            return 0;
+        if (card >= 0 && (!g_char.advOpen || card != g_char.extrasCard))
+            return 0;
+        if (c == g_char.reduceFit)
+            return g_char.reduceFitOn;
+        if (c == g_char.quality)
+            return g_char.qualityOn;
+        if (c == g_char.sizeHint || c == g_char.optionsLabel)
+            return !g_char.compact;
+        if (c == g_char.modelImport)
+            return g_char.importOn;
+        if (c == g_char.modelFiles)
+            return g_char.filesOn && g_char.filesLeast > 0;
+        if (c == g_char.vcolorsLabel || c == g_char.vcolors || c == g_char.vcolorsHelp)
+            return g_char.objOn;
+        if (c == g_char.texturesLabel || c == g_char.textures || c == g_char.texturesBrowse || c == g_char.texturesClear)
+            return g_char.texturesOn;
+        return 1;
+    }
+    if (tab == CHAR_TAB_BUILD) {
+        if (c == g_char.build)
+            return !g_char.builtFresh;
+        if (c == g_char.test || c == g_char.rebuild)
+            return g_char.builtFresh;
+        if (c == g_char.show)
+            return g_char.built[0] != 0;
+        if (c == g_char.raw)
+            return g_char.showRaw;
+        if (c == g_char.testNote) {
+            text = Rs_GetText(c);
+            on = text[0] != 0;
+            Rs_Free(text);
+            return on;
+        }
+    }
+    return 1;
+}
+
 static void Char_TabApply(HWND page)
 {
     HWND c;
     for (c = GetWindow(page, GW_CHILD); c; c = GetWindow(c, GW_HWNDNEXT)) {
-        int card, tab = Char_TabOfId(GetDlgCtrlID(c), &card), want;
-        if (tab < 0)
-            continue;
-        want = tab == g_char.tab && (card < 0 || card == (tab == CHAR_TAB_LOOK ? g_char.lookCard : g_char.extrasCard)) &&
-               !Char_UserHidden(c) && !CharWheels_Hidden(c);
-        if (c == g_char.reduceFit)
-            want = want && g_char.reduceFitOn;
-        else if (c == g_char.quality)
-            want = want && g_char.qualityOn;
-        else if (c == g_char.sizeHint || c == g_char.optionsLabel)
-            want = want && !g_char.compact;
-        else if (c == g_char.modelImport)
-            want = want && g_char.importOn;
-        else if (c == g_char.modelFiles)
-            want = want && g_char.filesOn && g_char.filesLeast > 0;
-        else if (c == g_char.vcolorsLabel || c == g_char.vcolors || c == g_char.vcolorsHelp)
-            want = want && g_char.objOn;
-        else if (c == g_char.texturesLabel || c == g_char.textures || c == g_char.texturesBrowse ||
-                 c == g_char.texturesClear)
-            want = want && g_char.texturesOn;
+        int want = Char_Wanted(c);
         if (want != Char_IsShown(c))
             ShowWindow(c, want ? SW_SHOWNA : SW_HIDE);
     }
@@ -8822,10 +10240,10 @@ static void Char_Layout(HWND page, int w, int h)
     // The compact layout (CHAR_FULL_W, CHAR_FULL_H) first: it decides the heading.
     const int compact = w < Rs_Px(CHAR_FULL_W) || h < Rs_Px(CHAR_FULL_H);
     int left, right = w - Rs_Px(32), top, bottom = h - Rs_Px(24);
-    int vgap = Rs_Px(compact ? 6 : 12), avail, leftW, least, comboW, contentTop, extrasBottom[CHAR_EXTRAS_COUNT];
-    int barH, barTop, upperBottom, need, t, i, viewMinW = Rs_Px(compact ? CHAR_COMPACT_VIEW_MIN_W : CHAR_VIEW_MIN_W);
-    RECT card, in;
-    HWND column[19];
+    int vgap = Rs_Px(compact ? 6 : 12), avail, leftW, least, comboW, contentTop, advTop, extrasBottom[CHAR_EXTRAS_COUNT];
+    int barH, barTop, upperBottom, need, t, i, stepEnd, viewMinW = Rs_Px(compact ? CHAR_COMPACT_VIEW_MIN_W : CHAR_VIEW_MIN_W);
+    RECT card, in, adv, advIn, inStep;
+    HWND column[20];
 
     g_char.compact = compact;
     Rs_PageSetCompactHead(page, compact);
@@ -8837,6 +10255,13 @@ static void Char_Layout(HWND page, int w, int h)
     k.browseW = Rs_Px(100);
     k.clearW = Rs_Px(72);
     k.labelW = Rs_Px(112);
+
+    // Step 0: the three cards, nothing else.
+    if (g_char.choosing) {
+        Char_LayChoose(page, left, right, top, bottom);
+        Char_TabApply(page);
+        return;
+    }
 
     // Nothing is cut short: the label column is as wide as its widest label,
     // and the tabs hold the longest entry of either combo.
@@ -8859,7 +10284,8 @@ static void Char_Layout(HWND page, int w, int h)
     column[16] = g_char.colorsLabel;
     column[17] = g_char.texturesLabel;
     column[18] = g_char.nativeLabel;
-    for (i = 0; i < 19; i++) {
+    column[19] = g_char.outLabel;
+    for (i = 0; i < 20; i++) {
         wchar_t *text = Rs_GetText(column[i]);
         int tw = Char_TextWidth(column[i], text) + Rs_Px(4);
         if (tw > k.labelW)
@@ -8877,7 +10303,7 @@ static void Char_Layout(HWND page, int w, int h)
         comboW = i;
     comboW += Rs_Px(28);        // the margins and the arrow
 
-    // The columns: the tabs about 58 % (CHAR_LEFT_MIN_W..CHAR_LEFT_MAX_W, and
+    // The columns: the steps about 58 % (CHAR_LEFT_MIN_W..CHAR_LEFT_MAX_W, and
     // as wide as the label column and the combos need), the preview the rest.
     if (compact)
         k.gap = Rs_Px(12);
@@ -8896,104 +10322,135 @@ static void Char_Layout(HWND page, int w, int h)
         right = left + leftW + k.gap + viewMinW;    // the page grows and scrolls sideways
 
     contentTop = Char_LayStrip(left, left + leftW, top);
+    // The route and "Change type" in the line of the heads, over the preview.
+    {
+        int ctW = Char_TextWidth(g_char.changeType, L"Change type") + Rs_Px(28), px = left + leftW + k.gap;
+        int rowH = contentTop - top, bh = Rs_Px(compact ? 24 : 28);
+        MoveWindow(g_char.changeType, right - ctW, top + (rowH - bh) / 2, ctW, bh, TRUE);
+        MoveWindow(g_char.routeLabel, px, top + (rowH - Rs_Px(20)) / 2, right - ctW - Rs_Px(8) - px, Rs_Px(20), TRUE);
+    }
 
-    // The cards of the tab Extras lay themselves out (and report their cards,
-    // taken back here: the page reports the card of the tab shown below).
-    extrasBottom[CHAR_EXTRAS_WHEELS] = CharWheels_Layout(page, left, left + leftW, contentTop, k.labelW, compact);
-    extrasBottom[CHAR_EXTRAS_ANIM] = CharAnim_Layout(page, left, left + leftW, contentTop, k.labelW, compact);
-    Rs_CardClear(page);
-    extrasBottom[CHAR_EXTRAS_IMPORT] = Char_LayImport(&k, left, left + leftW, contentTop);
-    need = 0;
-    for (i = 0; i < CHAR_EXTRAS_COUNT; i++)
-        if (extrasBottom[i] > need)
-            need = extrasBottom[i];
-
-    // Every tab is laid out (the hidden ones too, so that their notes have
-    // their width), and the tallest sets the room above the bar for all of
-    // them - In-game look and Voices last: their pictures and their list take
-    // the room there is (Model and Voices here with the least height of
-    // their lists).
+    // The cards of Advanced lay themselves out below the model field (those
+    // of rs_wheels.c and rs_anim.c report their cards, taken back here: the
+    // page reports the card of the step shown below).
     card.left = left;
     card.top = contentTop;
     card.right = left + leftW;
     card.bottom = contentTop;
     in = Rs_CardInner(&card, 0);
-    // The list of Model shows one row less where it would push the bar
-    // below its least height; the compact layout has no room for it (the
-    // line above it says what was found).
+    advTop = in.top + Rs_Px(compact ? 30 : 34);
+    adv.left = left;
+    adv.right = left + leftW;
+    adv.top = advTop;
+    adv.bottom = advTop;
+    extrasBottom[CHAR_EXTRAS_WHEELS] = CharWheels_Layout(page, left, left + leftW, advTop, k.labelW, compact);
+    extrasBottom[CHAR_EXTRAS_ANIM] = CharAnim_Layout(page, left, left + leftW, advTop, k.labelW, compact);
+    Rs_CardClear(page);
+    extrasBottom[CHAR_EXTRAS_IMPORT] = Char_LayImport(&k, left, left + leftW, advTop);
+    advIn = Rs_CardInner(&adv, 1);
+    extrasBottom[CHAR_EXTRAS_OPTIONS] = Char_LayOptions(&advIn) + Rs_Px(16);
+    Char_LayAdvSwitch(&adv);
+    // Advanced sets no room for the other steps: only while it is open its
+    // card may push the bar lower (below).
+    need = 0;
+
+    // Every step is laid out (the hidden ones too, so that their notes have
+    // their width), and the tallest sets the room above the bar for all of
+    // them - In-game look and Voices last: their pictures and their list take
+    // the room there is (Model and Voices here with the least height of
+    // their lists).
+    barH = Rs_Px(compact ? CHAR_COMPACT_BAR_H : CHAR_BAR_H);
     g_char.filesLeast = compact ? 0 : CHAR_IMPORT_MIN_ROWS;
-    for (t = 0; t < CHAR_TAB_EXTRAS; t++) {
+    for (t = 0; t < CHAR_TABS; t++) {
         int end;
         if (t == CHAR_TAB_LOOK) {
             // Its card In the race has nothing that gives way (the pictures
             // of Portrait do); below the title line of its switch.
             const RECT inLook = Rs_CardInner(&card, 1);
             end = Char_LayLookRace(&k, &inLook) + Rs_Px(16);
-            if (end > need)
-                need = end;
-            continue;
-        }
-        end = (t == CHAR_TAB_MODEL ? Char_LayModel(&k, &in) : t == CHAR_TAB_DRIVER ? Char_LayDriver(&k, &in)
-                                                                                 : Char_LayVoices(&k, &in)) + Rs_Px(16);
-        if (t == CHAR_TAB_MODEL && g_char.filesOn && g_char.filesLeast > 0 && bottom - end - vgap < Rs_Px(CHAR_BAR_MIN_H)) {
-            g_char.filesLeast = 1;
+        } else if (t == CHAR_TAB_MODEL) {
             end = Char_LayModel(&k, &in) + Rs_Px(16);
-            // Still too tall (the field Textures folder below it): no list -
-            // the line above it says what was found.
-            if (bottom - end - vgap < Rs_Px(CHAR_BAR_MIN_H)) {
-                g_char.filesLeast = 0;
+            // The list of Model shows one row less where it would push the bar
+            // down; the compact layout has no room for it (the line above it
+            // says what was found).
+            if (g_char.filesOn && g_char.filesLeast > 0 && bottom - end - vgap < barH + Rs_Px(CHAR_STEP_MSGS_MIN_H)) {
+                g_char.filesLeast = 1;
                 end = Char_LayModel(&k, &in) + Rs_Px(16);
+                if (bottom - end - vgap < barH + Rs_Px(CHAR_STEP_MSGS_MIN_H)) {
+                    g_char.filesLeast = 0;
+                    end = Char_LayModel(&k, &in) + Rs_Px(16);
+                }
             }
+        } else if (t == CHAR_TAB_DRIVER) {
+            end = Char_LayDriver(&k, &in) + Rs_Px(16);
+        } else if (t == CHAR_TAB_VOICES) {
+            end = Char_LayVoices(&k, &in) + Rs_Px(16);
+        } else {
+            end = Char_LayBuild(&k, &in) + Rs_Px(16);
         }
         if (end > need)
             need = end;
     }
-    barH = bottom - need - vgap;
-    if (barH > Rs_Px(CHAR_BAR_MAX_H))
-        barH = Rs_Px(CHAR_BAR_MAX_H);
-    if (barH < Rs_Px(CHAR_BAR_MIN_H))
-        barH = Rs_Px(CHAR_BAR_MIN_H);
-    if (compact)
-        barH = Rs_Px(CHAR_COMPACT_BAR_H);
+    // (The compact layout leaves a narrower margin below the card of Advanced.)
+    if (g_char.tab == CHAR_TAB_MODEL && g_char.advOpen && Char_ExtrasShown(g_char.extrasCard) &&
+        extrasBottom[g_char.extrasCard] - Rs_Px(compact ? 8 : 0) > need)
+        need = extrasBottom[g_char.extrasCard] - Rs_Px(compact ? 8 : 0);
     barTop = bottom - barH;
-    if (barTop < need + vgap)
-        barTop = need + vgap;
     upperBottom = barTop - vgap;
+    if (upperBottom < need) {
+        upperBottom = need;
+        barTop = upperBottom + vgap;
+    }
 
-    // Model, In-game look and Voices in the room above the bar; only the
-    // smallest pictures may still push the bar lower (the lists of Model and
-    // Voices never do: their least height is in need above).
+    // The step shown with the room there is: its lists and pictures take it,
+    // its messages get at least CHAR_STEP_MSGS_MIN_H below its fields.
     card.bottom = upperBottom;
     in = Rs_CardInner(&card, 0);
-    t = Char_LayModel(&k, &in) + Rs_Px(16);
-    if (g_char.tab == CHAR_TAB_MODEL && t > upperBottom)
-        upperBottom = t;
+    inStep = in;
+    if (g_char.listCount > 0 || (g_char.tab == CHAR_TAB_BUILD && g_char.showRaw))
+        inStep.bottom -= Rs_Px(CHAR_STEP_MSGS_MIN_H + 8);
+    stepEnd = Char_LayModel(&k, &inStep);
     {
         // The tab In-game look: its switch in the title line of the card.
-        const RECT inLook = Rs_CardInner(&card, 1);
-        const int race = Char_LayLookRace(&k, &inLook) + Rs_Px(16);
-        t = Char_LayLookPortrait(&k, &inLook) + Rs_Px(16);
-        if (g_char.lookCard == CHAR_LOOK_RACE)
-            t = race;
+        RECT inLook = Rs_CardInner(&card, 1);
+        int race, portrait;
+        inLook.bottom = inStep.bottom;
+        race = Char_LayLookRace(&k, &inLook);
+        portrait = Char_LayLookPortrait(&k, &inLook);
         Char_LayLookSwitch(&card);
-        if (g_char.tab == CHAR_TAB_LOOK && t > upperBottom)
-            upperBottom = t;
+        if (g_char.tab == CHAR_TAB_LOOK)
+            stepEnd = g_char.lookCard == CHAR_LOOK_RACE ? race : portrait;
     }
-    t = Char_LayVoices(&k, &in) + Rs_Px(16);
-    if (g_char.tab == CHAR_TAB_VOICES && t > upperBottom)
-        upperBottom = t;
-    Char_LayExtrasSwitch(&card);
-    if (g_char.tab == CHAR_TAB_EXTRAS && extrasBottom[g_char.extrasCard] > upperBottom)
-        upperBottom = extrasBottom[g_char.extrasCard];
-    if (barTop < upperBottom + vgap) {
+    t = Char_LayVoices(&k, &inStep);
+    if (g_char.tab == CHAR_TAB_VOICES)
+        stepEnd = t;
+    t = Char_LayBuild(&k, &inStep);
+    if (g_char.tab == CHAR_TAB_BUILD)
+        stepEnd = t;
+    if (g_char.tab == CHAR_TAB_DRIVER)
+        stepEnd = Char_LayDriver(&k, &inStep);
+    if (g_char.tab == CHAR_TAB_MODEL && g_char.advOpen)
+        stepEnd = extrasBottom[g_char.extrasCard] - Rs_Px(16);
+    // The messages of the step (or the raw output on Build) below its fields,
+    // down to the bottom of the card.
+    if (g_char.listCount > 0 || (g_char.tab == CHAR_TAB_BUILD && g_char.showRaw)) {
+        int y = stepEnd + Rs_Px(8), mh = upperBottom - Rs_Px(16) - y;
+        if (mh < Rs_Px(CHAR_STEP_MSGS_MIN_H)) {
+            mh = Rs_Px(CHAR_STEP_MSGS_MIN_H);
+            upperBottom = y + mh + Rs_Px(16);
+            barTop = upperBottom + vgap;
+        }
+        MoveWindow(g_char.msgs, in.left, y, in.right - in.left, mh, TRUE);
+        MoveWindow(g_char.raw, in.left, y, in.right - in.left, mh, TRUE);
+    } else if (stepEnd + Rs_Px(16) > upperBottom) {
+        upperBottom = stepEnd + Rs_Px(16);
         barTop = upperBottom + vgap;
-        barH = Rs_Px(compact ? CHAR_COMPACT_BAR_H : CHAR_BAR_MIN_H);
     }
     card.bottom = upperBottom;
     Rs_CardAdd(page, &card, NULL);
 
-    Char_LayPreview(page, left + leftW + k.gap, right, top, upperBottom);
-    Char_LayBar(page, &k, left, right, barTop, barTop + barH);
+    Char_LayPreview(page, left + leftW + k.gap, right, contentTop, upperBottom);
+    Char_LayBar(page, left, right, barTop, barTop + barH);
     Char_TabApply(page);
 
     // After a DPI change the shell sets the base font; the raw output
@@ -9068,11 +10525,54 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
         }
         return 0;
     }
+    if (id >= CHAR_ID_ROUTE && id < CHAR_ID_ROUTE + RS_ROUTES) {
+        if (code == BN_CLICKED)
+            Char_SetRoute(page, id - CHAR_ID_ROUTE);
+        return 0;
+    }
+    if (id >= CHAR_ID_PREVIEW_SWITCH && id < CHAR_ID_PREVIEW_SWITCH + 2) {
+        if (code == BN_CLICKED)
+            Char_PreviewSwitch(page, id - CHAR_ID_PREVIEW_SWITCH);
+        return 0;
+    }
     switch (id) {
     case CHAR_ID_BACK:
     case CHAR_ID_NEXT:
+        if (code == BN_CLICKED) {
+            if (id == CHAR_ID_BACK && g_char.tab == CHAR_TAB_MODEL)
+                Char_ShowChoice(page);
+            else
+                Char_SelectTab(page, g_char.tab + (id == CHAR_ID_NEXT ? 1 : -1), 0);
+        }
+        break;
+    case CHAR_ID_CHANGE_TYPE:
         if (code == BN_CLICKED)
-            Char_SelectTab(page, g_char.tab + (id == CHAR_ID_NEXT ? 1 : -1), 0);
+            Char_ShowChoice(page);
+        break;
+    case CHAR_ID_ADVANCED:
+        if (code == BN_CLICKED) {
+            g_char.advOpen = !g_char.advOpen;
+            Char_ExtrasFix();
+            Rs_SetText(g_char.advanced, g_char.advOpen ? L"Hide advanced" : L"Advanced options");
+            Char_MsgRefill();
+            Char_Relayout(page);
+            SetFocus(g_char.advanced);
+        }
+        break;
+    case CHAR_ID_UPSCALE:
+        // It changes only the build (hires-upscale before packing), not the check.
+        if (code == BN_CLICKED) {
+            g_char.builtFresh = 0;
+            Char_UpdateButtons();
+        }
+        break;
+    case CHAR_ID_TEST:
+        if (code == BN_CLICKED)
+            Char_TestInGame(page);
+        break;
+    case CHAR_ID_REBUILD:
+        if (code == BN_CLICKED)
+            Char_Build(page);
         break;
     case CHAR_ID_MESSAGES:
         // A click on a message: the tab it belongs to.
@@ -9127,8 +10627,11 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
         break;
     case CHAR_ID_OUT:
     case CHAR_ID_TEXTURES:
-        if (code == EN_CHANGE)
+        if (code == EN_CHANGE) {
+            if (id == CHAR_ID_OUT)
+                Char_OutNote(NULL);
             Char_Changed(page);
+        }
         break;
     case CHAR_ID_TEXTURES_BROWSE:
         if (code == BN_CLICKED)
@@ -9385,6 +10888,10 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
         int id = (int)di->CtlID;
         if (id >= CHAR_ID_TAB && id < CHAR_ID_TAB + CHAR_TABS)
             Char_DrawTab(di, id - CHAR_ID_TAB);
+        else if (id >= CHAR_ID_ROUTE && id < CHAR_ID_ROUTE + RS_ROUTES)
+            Char_DrawRouteCard(di, id - CHAR_ID_ROUTE);
+        else if (id >= CHAR_ID_PREVIEW_SWITCH && id < CHAR_ID_PREVIEW_SWITCH + 2)
+            Char_DrawSwitch(di, g_charPreviewTexts[id - CHAR_ID_PREVIEW_SWITCH], (id - CHAR_ID_PREVIEW_SWITCH) == g_char.previewClassic);
         else if (id >= CHAR_ID_EXTRAS && id < CHAR_ID_EXTRAS + CHAR_EXTRAS_COUNT)
             Char_DrawSwitch(di, g_charExtrasTexts[id - CHAR_ID_EXTRAS], id - CHAR_ID_EXTRAS == g_char.extrasCard);
         else if (id >= CHAR_ID_LOOK_SWITCH && id < CHAR_ID_LOOK_SWITCH + CHAR_LOOK_CARDS)
@@ -9395,16 +10902,22 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
         return TRUE;
     }
     case RS_WM_STEP_TAB:
-        Char_SelectTab(page, (g_char.tab + ((int)(INT_PTR)wParam < 0 ? CHAR_TABS - 1 : 1)) % CHAR_TABS, 1);
+        if (!g_char.choosing)
+            Char_SelectTab(page, (g_char.tab + ((int)(INT_PTR)wParam < 0 ? CHAR_TABS - 1 : 1)) % CHAR_TABS, 1);
         *handled = 1;
         return 1;
     case RS_WM_JOB_LINE: {
         wchar_t *line = (wchar_t *)lParam;
         if (line && g_char.jobId && (int)wParam == g_char.jobId) {
             Char_RawAppend(line);
-            // The lines of a CHAR_JOB_META run are read when it ends (Char_MetaDone).
-            if (g_char.jobKind != CHAR_JOB_META)
+            // The lines of a CHAR_JOB_META run are read when it ends (Char_MetaDone);
+            // those of hires-upscale and hires-add by the chain (Char_ChainLine).
+            if (g_char.jobKind == CHAR_JOB_BUILD && g_char.chainStep >= CHAR_CHAIN_UPSCALE)
+                Char_ChainLine(line);
+            else if (g_char.jobKind != CHAR_JOB_META)
                 Char_Feed(line);
+            if (g_char.showRaw)
+                Char_RawRefresh();
         }
         Rs_Free(line);
         *handled = 1;
@@ -9437,6 +10950,11 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
         *handled = 1;
         return 0;
     case WM_TIMER:
+        if (wParam == CHAR_TIMER_ANIM) {
+            Char_HiresTick(page);
+            *handled = 1;
+            return 0;
+        }
         if (wParam == CHAR_TIMER_BUSY) {
             KillTimer(page, CHAR_TIMER_BUSY);
             if (g_char.jobId)
@@ -9470,6 +10988,9 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
         else if (_wcsicmp(def, g_char.checkDefault) != 0)
             Char_Changed(page);
         Char_FilesChanged(page, L"page shown");
+        // The idle clip of a hi-res preview goes on (it stops while the page is hidden).
+        if (Char_Chrg() && !g_char.choosing && !g_char.previewClassic && g_char.hiresChecked)
+            Char_HiresShow();
         *handled = 1;
         return 0;
     }
@@ -9515,6 +11036,25 @@ static LRESULT Char_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
         Rs_Free(g_char.msgCard);
         g_char.msgCard = NULL;
         g_char.msgTabCount = g_char.msgTabCap = 0;
+        // The messages without Char_MsgClear: no list to fill, no layout now.
+        for (i = 0; i < g_char.pageMsgCount; i++) {
+            Rs_Free(g_char.pageMsg[i].text);
+            Rs_Free(g_char.pageMsg[i].detail);
+        }
+        g_char.pageMsgCount = 0;
+        g_char.listCount = 0;
+        Rs_Free(g_char.pageMsg);
+        g_char.pageMsg = NULL;
+        Rs_Free(g_char.listMsg);
+        g_char.listMsg = NULL;
+        g_char.pageMsgCap = 0;
+        Char_HiresForget();
+        Char_ChainCleanup();
+        for (i = 0; i < RS_ROUTES; i++) {
+            if (g_char.routeImage[i])
+                DeleteObject(g_char.routeImage[i]);
+            g_char.routeImage[i] = NULL;
+        }
         return 0;
     }
     }
@@ -9525,6 +11065,94 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
 {
     int r;
 
+    // THE GUIDED FLOW. "route vanilla|lowpoly|hires|none" as a click on a card
+    // of step 0 (none: step 0 again).
+    if (wcscmp(verb, L"route") == 0) {
+        int route = _wcsicmp(arg, L"none") == 0 ? RS_ROUTE_NONE : RsRoute_FromWord(arg);
+        if (route == RS_ROUTE_NONE && _wcsicmp(arg, L"none") != 0) {
+            Rs_AutoLog(L"  route: say vanilla, lowpoly, hires or none");
+            return RS_AUTO_FAIL;
+        }
+        r = Char_SetRoute(page, route);
+        UpdateWindow(page);
+        Rs_AutoLog(L"  route: %ls", route == RS_ROUTE_NONE ? L"none - step 0" : RsRoute_Preset(route)->title);
+        return r ? RS_AUTO_WAIT : RS_AUTO_DONE;
+    }
+    if (wcscmp(verb, L"report") == 0) {
+        if (!arg[0] || !Char_WriteReport(arg)) {
+            Rs_AutoLog(L"  report: could not write '%ls'", arg);
+            return RS_AUTO_FAIL;
+        }
+        Rs_AutoLog(L"  report: %ls", arg);
+        return RS_AUTO_DONE;
+    }
+    // Old scripts name no route ("model x.obj; build"): their first verb of
+    // the page picks Vanilla, the page as it was. On step 0 with a route
+    // chosen before ("Change type"), a verb goes back to its steps.
+    if (g_char.choosing) {
+        if (g_char.route == RS_ROUTE_NONE)
+            Rs_AutoLog(L"  route: vanilla (implicit - the script names no route)");
+        Char_SetRoute(page, g_char.route == RS_ROUTE_NONE ? RS_ROUTE_VANILLA : g_char.route);
+    }
+    if (wcscmp(verb, L"step") == 0)
+        return Char_AutoStep(page, arg);
+    // "advanced on|off": the section Advanced of the step Model (it opens the step).
+    if (wcscmp(verb, L"advanced") == 0) {
+        int on = _wcsicmp(arg, L"on") == 0;
+        if (!on && _wcsicmp(arg, L"off") != 0) {
+            Rs_AutoLog(L"  advanced: say on or off");
+            return RS_AUTO_FAIL;
+        }
+        if (on && Char_ExtrasCount() == 0) {
+            Rs_AutoLog(L"  advanced: this route has no advanced options");
+            return RS_AUTO_FAIL;
+        }
+        g_char.advOpen = on;
+        Char_ExtrasFix();
+        Rs_SetText(g_char.advanced, on ? L"Hide advanced" : L"Advanced options");
+        Char_SelectTab(page, CHAR_TAB_MODEL, 0);
+        UpdateWindow(page);
+        Rs_AutoLog(L"  advanced: %ls%ls%ls", on ? L"open, card " : L"closed", on ? g_charExtrasTexts[g_char.extrasCard] : L"", L"");
+        return RS_AUTO_DONE;
+    }
+    // "details on|off": as "Show details" / "Hide details" (it opens the step Build).
+    if (wcscmp(verb, L"details") == 0) {
+        int on = _wcsicmp(arg, L"on") == 0;
+        if (!on && _wcsicmp(arg, L"off") != 0) {
+            Rs_AutoLog(L"  details: say on or off");
+            return RS_AUTO_FAIL;
+        }
+        g_char.showRaw = on;
+        Char_SelectTab(page, CHAR_TAB_BUILD, 0);
+        Char_ShowView();
+        UpdateWindow(page);
+        Rs_AutoLog(L"  details: %ls (%d line(s))", on ? L"shown" : L"hidden", g_char.rawLines);
+        return RS_AUTO_DONE;
+    }
+    // "test-in-game": as the button (only after a build of the fields as they are).
+    if (wcscmp(verb, L"test-in-game") == 0) {
+        if (!g_char.builtFresh) {
+            Rs_AutoLog(L"  test-in-game: not offered - build first");
+            return RS_AUTO_FAIL;
+        }
+        return Char_TestInGame(page) ? RS_AUTO_DONE : RS_AUTO_FAIL;
+    }
+    // "preview hires|classic": the switch above the preview of a CHRG route.
+    if (wcscmp(verb, L"preview") == 0) {
+        int classic = _wcsicmp(arg, L"classic") == 0;
+        if (!Char_Chrg()) {
+            Rs_AutoLog(L"  preview: only Low-Poly and Hi-Res have a hi-res picture");
+            return RS_AUTO_FAIL;
+        }
+        if (!classic && _wcsicmp(arg, L"hires") != 0) {
+            Rs_AutoLog(L"  preview: say hires or classic");
+            return RS_AUTO_FAIL;
+        }
+        Char_PreviewSwitch(page, classic);
+        UpdateWindow(page);
+        Rs_AutoLog(L"  preview: %ls", g_charPreviewTexts[classic]);
+        return RS_AUTO_DONE;
+    }
     if (wcscmp(verb, L"tab") == 0)
         return Char_AutoTab(page, arg);
     if (wcscmp(verb, L"extras") == 0)
@@ -9540,6 +11168,10 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         Rs_AutoLog(L"  model: %ls", arg);
         if (Char_SetModel(page, arg))
             return RS_AUTO_WAIT;
+        // Low-Poly and Hi-Res with another file than a .glb: the one line at
+        // the model says so; nothing was to start.
+        if (Char_Chrg() && !Char_EndsWith(arg, L".glb"))
+            return RS_AUTO_DONE;
         Rs_AutoLog(L"  model: rldpack could not be started");
         return RS_AUTO_FAIL;
     }
@@ -9759,14 +11391,6 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
     r = Char_AutoView(verb, arg);
     if (r != RS_AUTO_UNKNOWN)
         return r;
-    if (wcscmp(verb, L"report") == 0) {
-        if (!arg[0] || !Char_WriteReport(arg)) {
-            Rs_AutoLog(L"  report: could not write '%ls'", arg);
-            return RS_AUTO_FAIL;
-        }
-        Rs_AutoLog(L"  report: %ls", arg);
-        return RS_AUTO_DONE;
-    }
     r = CharAnim_Automate(page, verb, arg);
     if (r != RS_AUTO_UNKNOWN)
         return r;
