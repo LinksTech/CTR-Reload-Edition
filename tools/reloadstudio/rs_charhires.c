@@ -36,6 +36,10 @@
 // Hi-Res has no target of its own: its preset is the game's budget
 // (RLDHIRES_BUDGET_*, through RsHires_Budget of rs_hires_model.c, not written
 // twice).
+//
+// "UPSCALE SMALL TEXTURES" IS A SUGGESTION, NOT A PRESET: off on every route,
+// the Studio suggests it only for small textures (RsCharHires_SuggestUpscale,
+// see rs_charroute.h, THE UPSCALE).
 
 #include "reloadstudio.h"
 #include "rs_charroute.h"
@@ -50,7 +54,7 @@
 
 static struct RsRoutePreset s_routes[RS_ROUTES] = {
     { L"vanilla", L"Vanilla", L"Looks like the original game and runs everywhere.", 0, 0, 0, 0 },
-    { L"lowpoly", L"Low-Poly", L"A modern, stylised look with clear surfaces.", 1, 8000, 512, 1 },
+    { L"lowpoly", L"Low-Poly", L"A modern, stylised look with clear surfaces.", 1, 8000, 512, 0 },
     { L"hires", L"Hi-Res", L"Full quality with animations.", 1, 0, 0, 0 },   // the game's budget: RsRoute_Preset
 };
 
@@ -364,6 +368,36 @@ void RsCharHires_ColourLine(int mode, int suggested, int why, int route, wchar_t
                  route == RS_ROUTE_LOWPOLY ? L"Low-Poly" : L"Hi-Res");
         break;
     }
+}
+
+// ---------------------------------------------------------------------------
+// The upscale (rs_charroute.h, THE UPSCALE)
+
+int RsCharHires_SuggestUpscale(const struct RsHiresCheck *c, int route, unsigned *largest)
+{
+    int on = 0;
+    if (largest)
+        *largest = c ? c->baseEdgeFile : 0u;
+    // Every base colour texture under 64 px on its larger edge, measured in
+    // the file before the round-up; a texture of unknown size (not an
+    // embedded PNG) is not known to be small, so nothing is suggested.
+    if (c && c->read && (route == RS_ROUTE_LOWPOLY || route == RS_ROUTE_HIRES))
+        on = c->baseTextures > 0 && c->baseUnsized == 0 && c->baseEdgeFile > 0u && c->baseEdgeFile < RS_UPSCALE_SUGGEST_EDGE;
+    return on;
+}
+
+void RsCharHires_UpscaleLine(int on, int suggested, unsigned largest, wchar_t *out, int cap)
+{
+    if (!out || cap <= 0)
+        return;
+    out[0] = 0;
+    if (on && suggested)
+        swprintf(out, (size_t)cap, L"Your textures are small (largest %u px) - Upscale small textures is on.", largest);
+    else if (suggested)
+        swprintf(out, (size_t)cap, L"Upscale small textures is off. Your choice - suggested: on (your textures are small, largest %u px).", largest);
+    else if (on)
+        swprintf(out, (size_t)cap, L"Upscale small textures is on. Your choice - suggested: off (only for textures under %u px).",
+                 RS_UPSCALE_SUGGEST_EDGE);
 }
 
 // ---------------------------------------------------------------------------

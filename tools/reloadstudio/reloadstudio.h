@@ -433,9 +433,9 @@
 //                                 step 0 again; a route chosen before stays
 //                                 in its steps with every entry, another one
 //                                 starts at its step Model, Advanced closed,
-//                                 "Upscale small textures" as its preset says,
-//                                 and checks the model with its rules - the
-//                                 shell waits for that check)
+//                                 "Upscale small textures" as its preset says
+//                                 (off), and checks the model with its rules -
+//                                 the shell waits for that check)
 //   A script that names no route (all of before) picks Vanilla with its first
 //   verb of the page ("route: vanilla (implicit ...)" in the log): the page
 //   then checks and builds as it did before, the same commands, the same bytes.
@@ -466,8 +466,22 @@
 //                                 (logged "vertex colors: <mode> (the suggestion;
 //                                 suggested <mode>)"); a mode chosen stays with
 //                                 that model
+//   upscale on|off|auto           "Upscale small textures" of a Low-Poly or
+//                                 Hi-Res route (Advanced, card Options): on/off
+//                                 as a click on the box, the author's choice
+//                                 kept for the model checked; auto: the choice
+//                                 forgotten, the suggestion again (FAIL on
+//                                 Vanilla). A model checked gets the suggestion
+//                                 by itself - on only when every base colour
+//                                 texture is under 64 px on its larger edge in
+//                                 the file (rs_charroute.h, THE UPSCALE) - logged
+//                                 "upscale small textures: <on|off> (the
+//                                 suggestion; suggested <on|off>, largest base
+//                                 colour texture <n> px)" when the box changes
 //   "report" writes first "route:", "step:", "advanced:", "upscale small
-//   textures:", "preset:", "details:", "preview:", "preview stage:" (neutral |
+//   textures:" (on|off, chosen by the author | suggested | the route's start,
+//   the suggestion with its reason, the preset and the line below the box),
+//   "preset:", "details:", "preview:", "preview stage:" (neutral |
 //   the view's own), "vertex colors:" (a CHRG route: the mode, chosen by the
 //   author or suggested, the suggestion with its reason and the median of
 //   HRG-36, the switch on|off|glTF (Advanced); or none without COLOR_0),

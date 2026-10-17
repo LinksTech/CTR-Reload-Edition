@@ -186,9 +186,19 @@
 // which fixes them), Import (the axes, the colours, the vertex colours and the
 // native model of an OBJ - the tab Extras of before), Animations (the shape
 // keys) and, only with --enable-preview-features, Wheels; a CHRG route -
-// Options alone ("Upscale small textures", on at the start of Low-Poly, off
-// for Hi-Res, as the preset says). Reduce to fit (the button, over the limit)
-// stays on the step itself: it is the fix of the model's error.
+// Options alone ("Upscale small textures", see THE UPSCALE below). Reduce to
+// fit (the button, over the limit) stays on the step itself: it is the fix of
+// the model's error.
+//
+// THE UPSCALE of a CHRG route (rs_charroute.h): "Upscale small textures" is
+// off at the start of Low-Poly and Hi-Res. When a model is checked the page
+// suggests it - ticks the box and says so in one line below it
+// (RsCharHires_UpscaleLine) - only when every base colour texture of the
+// model is under 64 px on its larger edge, as the file has it (before the
+// game's round-up; RsCharHires_SuggestUpscale). Otherwise it stays off and
+// no line is shown. A box the author clicked stays with that model (the
+// choices per model, as the vertex colour mode); "upscale auto" in
+// automation forgets it.
 //
 // THE MESSAGES AT THEIR PLACE: every message keeps its step (and card); the
 // step shows its own below its fields, each with its detail ("How to fix" for
@@ -448,7 +458,12 @@
 #define CHAR_ID_VMODE_LABEL    220   // Advanced, card Options of a CHRG route: "Vertex colors" PSX | glTF | Off
 #define CHAR_ID_VMODE          221
 #define CHAR_ID_VMODE_HELP     222
-#define CHAR_VCOL_CHOICES      8     // models whose vertex colour mode the author chose, remembered
+#define CHAR_ID_UPSCALE_NOTE   223   // the line below "Upscale small textures": the suggestion, or the author's choice
+#define CHAR_VCOL_CHOICES      8     // models whose vertex colour mode or upscale the author chose, remembered
+// The author's choices remembered per model (Char_Remembered).
+#define CHAR_CHOICE_VCOL       0     // the vertex colour mode (RS_HIRES_VCOL_*)
+#define CHAR_CHOICE_UPSCALE    1     // "Upscale small textures" (0 or 1)
+#define CHAR_CHOICE_KINDS      2
 // The controls of the cards Wheels and Animations (WH_ID_FIRST..WH_ID_LAST in
 // rs_wheels.c, AN_ID_FIRST..AN_ID_LAST in rs_anim.c): Advanced of the step Model shows them.
 // The card Import (380..399) is the page's own.
@@ -843,15 +858,24 @@ static struct {
     int routeImageW, routeImageH;   // the size they were made for
     int advOpen;                    // Advanced of the step Model is open
     HWND advanced, upscale, upscaleHelp;
+    // THE UPSCALE of a CHRG route: the line below the box (CHAR_ID_UPSCALE_NOTE);
+    // 1 = the check of the model suggests it (RsCharHires_SuggestUpscale), the
+    // largest edge of its base colour textures in the file, 1 = the box is the
+    // author's choice for this model.
+    HWND upscaleNote;
+    int upSuggested, upChosen;
+    unsigned upLargest;
     // THE VERTEX COLOURS of a CHRG route: the switch and its line, the three
     // modes in Advanced; the mode (RS_HIRES_VCOL_*) the picture is drawn in
     // and the build passes, -1 = the model has no COLOR_0 (none of it shown,
     // no switch passed); the suggestion and its reason (RS_VCOL_WHY_*); 1 =
-    // the mode is the author's choice; the choices per model.
+    // the mode is the author's choice.
     HWND vblend, vblendNote, vmodeLabel, vmode, vmodeHelp;
     int vcolMode, vcolSuggested, vcolWhy, vcolChosen;
-    struct { wchar_t path[CHAR_VAL]; int mode; } vcolChoice[CHAR_VCOL_CHOICES];
-    int vcolChoiceNext;
+    // The author's choices per model (Char_Remembered): per kind
+    // (CHAR_CHOICE_*) the value chosen, -1 = none of that kind.
+    struct { wchar_t path[CHAR_VAL]; int value[CHAR_CHOICE_KINDS]; } choice[CHAR_VCOL_CHOICES];
+    int choiceNext;
     int chainVcol;                  // the mode the running build passes to hires-add, -1 = none
     HWND test, rebuild, testNote, outNote;
     int builtFresh;                 // the last build is of the fields as they are: Test in game is offered
@@ -1095,7 +1119,8 @@ static int Char_RouteHides(HWND c)
 {
     int id = GetDlgCtrlID(c);
     if (!Char_Chrg())
-        return c == g_char.upscale || c == g_char.upscaleHelp || id == CHAR_ID_PREVIEW_SWITCH || id == CHAR_ID_PREVIEW_SWITCH + 1 ||
+        return c == g_char.upscale || c == g_char.upscaleHelp || c == g_char.upscaleNote || id == CHAR_ID_PREVIEW_SWITCH ||
+               id == CHAR_ID_PREVIEW_SWITCH + 1 ||
                (id >= CHAR_ID_VBLEND && id <= CHAR_ID_VMODE_HELP);
     return (id >= CHAR_ID_SIZE_LABEL && id <= CHAR_ID_OPTIONS_LABEL) || (id >= CHAR_ID_REPAIR && id <= CHAR_ID_QUALITY) ||
            id == CHAR_ID_REDUCE_FIT || id == CHAR_ID_MODEL_IMPORT || (id >= CHAR_ID_MODEL_FILES && id <= CHAR_ID_TEXTURES_CLEAR) ||
@@ -1324,9 +1349,9 @@ static int Char_TextHeight(HWND label, int width, int maxLines)
         // The compact layout: one line, cut with "...", the whole text as
         // the tooltip (Rs_LabelOneLine) - no word is lost, it is a hover away.
         // The notes of the guided flow wrap all the same (their steps have
-        // the room): "Upscale small textures", where the build goes, what
-        // Test in game did.
-        if (g_char.compact && lineH > 0 && label != g_char.headline && label != g_char.upscaleHelp &&
+        // the room): "Upscale small textures" and its line, where the build
+        // goes, what Test in game did.
+        if (g_char.compact && lineH > 0 && label != g_char.headline && label != g_char.upscaleHelp && label != g_char.upscaleNote &&
             label != g_char.outNote && label != g_char.testNote) {
             Rs_LabelOneLine(label, h > lineH);
             if (h > lineH)
@@ -2518,7 +2543,7 @@ static int Char_TabOfId(int id, int *card)
         return CHAR_TAB_MODEL;
     }
     if ((id >= CHAR_ID_REPAIR && id <= CHAR_ID_QUALITY) || id == CHAR_ID_REDUCE || id == CHAR_ID_UPSCALE ||
-        id == CHAR_ID_UPSCALE_HELP || (id >= CHAR_ID_VMODE_LABEL && id <= CHAR_ID_VMODE_HELP)) {
+        id == CHAR_ID_UPSCALE_HELP || id == CHAR_ID_UPSCALE_NOTE || (id >= CHAR_ID_VMODE_LABEL && id <= CHAR_ID_VMODE_HELP)) {
         *card = CHAR_EXTRAS_OPTIONS;
         return CHAR_TAB_MODEL;
     }
@@ -5823,36 +5848,46 @@ static void Char_HiresForget(void)
     g_char.classicPvBytes = 0;
 }
 
-// THE VERTEX COLOURS: the mode the author chose for a model, -1 = none.
-static int Char_VcolRemembered(const wchar_t *path)
+// THE AUTHOR'S CHOICES PER MODEL (the vertex colour mode, "Upscale small
+// textures"): the value of a kind (CHAR_CHOICE_*) the author chose for a
+// model, -1 = none.
+static int Char_Remembered(const wchar_t *path, int kind)
 {
     int i;
     for (i = 0; path && path[0] && i < CHAR_VCOL_CHOICES; i++)
-        if (g_char.vcolChoice[i].path[0] && _wcsicmp(g_char.vcolChoice[i].path, path) == 0)
-            return g_char.vcolChoice[i].mode;
+        if (g_char.choice[i].path[0] && _wcsicmp(g_char.choice[i].path, path) == 0)
+            return g_char.choice[i].value[kind];
     return -1;
 }
 
-// Remembers a choice (mode -1: forgets it), the oldest of CHAR_VCOL_CHOICES goes.
-static void Char_VcolRemember(const wchar_t *path, int mode)
+// Remembers a choice of a kind (value -1: forgets it; a model with no choice
+// left is forgotten), the oldest model of CHAR_VCOL_CHOICES goes.
+static void Char_Remember(const wchar_t *path, int kind, int value)
 {
-    int i;
+    int i, k, any = 0;
     if (!path || !path[0])
         return;
     for (i = 0; i < CHAR_VCOL_CHOICES; i++)
-        if (g_char.vcolChoice[i].path[0] && _wcsicmp(g_char.vcolChoice[i].path, path) == 0)
+        if (g_char.choice[i].path[0] && _wcsicmp(g_char.choice[i].path, path) == 0)
             break;
-    if (mode < 0) {
-        if (i < CHAR_VCOL_CHOICES)
-            g_char.vcolChoice[i].path[0] = 0;
+    if (value < 0) {
+        if (i == CHAR_VCOL_CHOICES)
+            return;
+        g_char.choice[i].value[kind] = -1;
+        for (k = 0; k < CHAR_CHOICE_KINDS; k++)
+            any |= g_char.choice[i].value[k] >= 0;
+        if (!any)
+            g_char.choice[i].path[0] = 0;
         return;
     }
     if (i == CHAR_VCOL_CHOICES) {
-        i = g_char.vcolChoiceNext;
-        g_char.vcolChoiceNext = (g_char.vcolChoiceNext + 1) % CHAR_VCOL_CHOICES;
-        Char_Copy(g_char.vcolChoice[i].path, CHAR_VAL, path);
+        i = g_char.choiceNext;
+        g_char.choiceNext = (g_char.choiceNext + 1) % CHAR_VCOL_CHOICES;
+        Char_Copy(g_char.choice[i].path, CHAR_VAL, path);
+        for (k = 0; k < CHAR_CHOICE_KINDS; k++)
+            g_char.choice[i].value[k] = -1;
     }
-    g_char.vcolChoice[i].mode = mode;
+    g_char.choice[i].value[kind] = value;
 }
 
 // The switch, the list of Advanced and the line as the mode is.
@@ -5886,7 +5921,7 @@ static void Char_VcolUpdate(void)
         g_char.vcolMode = -1;
         g_char.vcolChosen = 0;
     } else {
-        chosen = Char_VcolRemembered(g_char.hiresPath);
+        chosen = Char_Remembered(g_char.hiresPath, CHAR_CHOICE_VCOL);
         g_char.vcolChosen = chosen >= 0;
         g_char.vcolMode = chosen >= 0 ? chosen : s;
         RsHires_SetColourMode(&g_char.hires, g_char.vcolMode);
@@ -5906,7 +5941,7 @@ static int Char_VcolSet(HWND page, int mode)
 {
     if (g_char.vcolMode < 0 || !RsHires_ColourWord(mode))
         return 0;
-    Char_VcolRemember(g_char.hiresPath, mode);
+    Char_Remember(g_char.hiresPath, CHAR_CHOICE_VCOL, mode);
     g_char.vcolChosen = 1;
     g_char.vcolMode = mode;
     g_char.builtFresh = 0;
@@ -5915,6 +5950,62 @@ static int Char_VcolSet(HWND page, int mode)
     Char_VcolControls();
     Char_Relayout(page);
     return Char_Check(page);
+}
+
+// THE UPSCALE: the line below the box as the box and the suggestion are;
+// the page laid out again when the line came or went.
+static void Char_UpscaleControls(void)
+{
+    wchar_t line[RS_WIZ_TEXT_MAX], was[RS_WIZ_TEXT_MAX];
+    RsCharHires_UpscaleLine(Char_IsChecked(g_char.upscale), g_char.upSuggested, g_char.upLargest, line, RS_WIZ_TEXT_MAX);
+    GetWindowTextW(g_char.upscaleNote, was, RS_WIZ_TEXT_MAX);
+    Rs_SetText(g_char.upscaleNote, line);
+    if ((was[0] != 0) != (line[0] != 0) && g_char.view)
+        Char_Relayout(GetParent(g_char.view));
+}
+
+// After the hi-res check of a CHRG route (as Char_VcolUpdate, also for
+// another route): the suggestion (RsCharHires_SuggestUpscale) and the box -
+// the author's choice for this model, or the suggestion. Without a check (no
+// model, not a .glb) there is no suggestion and the box stays as it is (the
+// route's start: off).
+static void Char_UpscaleUpdate(void)
+{
+    const int was = Char_IsChecked(g_char.upscale);
+    int chosen, on;
+    unsigned largest = 0;
+    if (!Char_Chrg() || !g_char.hiresChecked || !g_char.hires.read) {
+        g_char.upSuggested = 0;
+        g_char.upChosen = 0;
+        g_char.upLargest = 0;
+        Char_UpscaleControls();
+        return;
+    }
+    g_char.upSuggested = RsCharHires_SuggestUpscale(&g_char.hires, g_char.route, &largest);
+    g_char.upLargest = largest;
+    chosen = Char_Remembered(g_char.hiresPath, CHAR_CHOICE_UPSCALE);
+    g_char.upChosen = chosen >= 0;
+    on = chosen >= 0 ? chosen : g_char.upSuggested;
+    Char_SetChecked(g_char.upscale, on);
+    Char_UpscaleControls();
+    if (Rs_Automating() && on != was)
+        Rs_AutoLog(L"  upscale small textures: %ls (%ls; suggested %ls, largest base colour texture %u px)", on ? L"on" : L"off",
+                   g_char.upChosen ? L"the author's choice" : L"the suggestion", g_char.upSuggested ? L"on" : L"off", largest);
+}
+
+// The author (the box) or the automation sets "Upscale small textures": kept
+// for this model when one is checked. It changes only the build (hires-upscale
+// before packing), not the check.
+static void Char_UpscaleSet(int on)
+{
+    Char_SetChecked(g_char.upscale, on);
+    if (Char_Chrg() && g_char.hiresChecked && g_char.hiresPath[0]) {
+        Char_Remember(g_char.hiresPath, CHAR_CHOICE_UPSCALE, on != 0);
+        g_char.upChosen = 1;
+    }
+    g_char.builtFresh = 0;
+    Char_UpdateButtons();
+    Char_UpscaleControls();
 }
 
 // The idle clip stops (another step, the classic fallback, a new check).
@@ -6909,6 +7000,7 @@ static int Char_CheckRun(HWND page, int force)
         if (model[0])
             Char_HiresEnsure(model);
         Char_VcolUpdate();      // the suggestion and the mode (also for another route)
+        Char_UpscaleUpdate();   // the same for "Upscale small textures"
     }
     seq = g_char.seq + 1;       // taken only when rldpack runs
     if (!Char_MakeArgs(&a, 1, NULL, seq)) {
@@ -7996,7 +8088,8 @@ static void Char_RouteTexts(void)
 // The route chosen (a card, the automation verb "route"): the steps of that
 // route. Another route than before starts at its step Model, Advanced
 // closed, with its defaults (E7: "Upscale small textures" as its preset
-// says), and checks the model again with its rules; every entry stays.
+// says - off; the check of the model then suggests it or not, THE UPSCALE),
+// and checks the model again with its rules; every entry stays.
 // RS_ROUTE_NONE: step 0 without a route. Returns 1 when a check started.
 static int Char_SetRoute(HWND page, int route)
 {
@@ -8029,6 +8122,9 @@ static int Char_SetRoute(HWND page, int route)
     g_char.showRaw = 0;
     Rs_SetText(g_char.rawToggle, L"Show details");
     Char_SetChecked(g_char.upscale, p->upscaleDefault);
+    g_char.upSuggested = 0;     // until the check of the model on this route
+    g_char.upChosen = 0;
+    Rs_SetText(g_char.upscaleNote, L"");
     Char_ExtrasFix();
     Char_RouteTexts();
     g_char.tab = CHAR_TAB_MODEL;
@@ -8123,8 +8219,28 @@ static void Char_ReportFlow(FILE *f)
         Char_Put(f, L"step: %d %ls", g_char.tab + 1, g_charTabWords[g_char.tab]);
     Char_Put(f, L"advanced: %ls%ls (cards on this route: %d)", g_char.advOpen ? L"open, card " : L"closed",
              g_char.advOpen ? g_charExtrasWords[g_char.extrasCard] : L"", Char_ExtrasCount());
-    Char_Put(f, L"upscale small textures: %ls (preset %ls)%ls", Char_IsChecked(g_char.upscale) ? L"on" : L"off",
-             p && p->upscaleDefault ? L"on" : L"off", Char_Chrg() ? L"" : L" [no CHRG route: hidden, not used]");
+    {
+        // THE UPSCALE: the box, who set it (the author, the suggestion, or
+        // the route's start before a check), the suggestion with its reason,
+        // the preset and the line below the box.
+        const int checked = Char_Chrg() && g_char.hiresChecked && g_char.hires.read;
+        wchar_t why[96], line[RS_WIZ_TEXT_MAX];
+        if (!checked)
+            swprintf(why, 96, L"no model checked");
+        else if (g_char.hires.baseTextures == 0)
+            swprintf(why, 96, L"no base colour texture");
+        else if (g_char.hires.baseUnsized > 0)
+            swprintf(why, 96, L"%d of %d base colour texture(s) of unknown size", g_char.hires.baseUnsized, g_char.hires.baseTextures);
+        else
+            swprintf(why, 96, L"%d base colour texture(s), largest %u px in the file, suggested under %u", g_char.hires.baseTextures,
+                     g_char.hires.baseEdgeFile, RS_UPSCALE_SUGGEST_EDGE);
+        GetWindowTextW(g_char.upscaleNote, line, RS_WIZ_TEXT_MAX);
+        Char_Put(f, L"upscale small textures: %ls (%ls), suggested %ls (%ls), preset %ls, line \"%ls\"%ls",
+                 Char_IsChecked(g_char.upscale) ? L"on" : L"off",
+                 g_char.upChosen ? L"chosen by the author" : checked ? L"suggested" : L"the route's start",
+                 g_char.upSuggested ? L"on" : L"off", why, p && p->upscaleDefault ? L"on" : L"off", line,
+                 Char_Chrg() ? L"" : L" [no CHRG route: hidden, not used]");
+    }
     if (p)
         Char_Put(f, L"preset: chrg %d, triangle target %llu, texture edge target %u", p->chrg, p->triangleTarget, p->textureEdgeTarget);
     Char_Put(f, L"details: %ls", g_char.showRaw ? L"shown" : L"hidden");
@@ -9540,6 +9656,10 @@ static void Char_Create(HWND page)
                                   L"game's smooth filter. The model file itself is not changed.",
                                   RS_FONT_SMALL);
     Rs_SetTextColor(g_char.upscaleHelp, RS_COL_MUTED);
+    // THE UPSCALE: its line below the box, empty (not shown) unless suggested
+    // or chosen against the suggestion (Char_UpscaleControls).
+    g_char.upscaleNote = Rs_Label(page, CHAR_ID_UPSCALE_NOTE, L"", RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.upscaleNote, RS_COL_MUTED);
     // THE VERTEX COLOURS: the switch is a three-state box (the third state
     // glTF, chosen in Advanced); the page sets its state itself.
     g_char.vblend = Rs_Check(page, CHAR_ID_VBLEND, L"Vertex color blending");
@@ -9911,7 +10031,15 @@ static int Char_LayOptions(const RECT *in)
     if (Char_Chrg()) {
         int bw = Char_CheckWidth(g_char.upscale);
         MoveWindow(g_char.upscale, x, y, bw < w ? bw : w, Rs_Px(24), TRUE);
-        y += Rs_Px(28);
+        if (GetWindowTextLengthW(g_char.upscaleNote) > 0) {
+            // Its line (the suggestion, or the author's choice against it),
+            // spaced as the line of "Vertex color blending".
+            y += Rs_Px(26);
+            noteH = Char_NoteHeight(g_char.upscaleNote, w);
+            MoveWindow(g_char.upscaleNote, x, y, w, noteH, TRUE);
+            y += noteH + Rs_Px(6);
+        } else
+            y += Rs_Px(28);
         noteH = Char_TextHeight(g_char.upscaleHelp, w, CHAR_NOTE_LINES);
         MoveWindow(g_char.upscaleHelp, x, y, w, noteH, TRUE);
         y += noteH;
@@ -10502,6 +10630,8 @@ static int Char_Wanted(HWND c)
             return g_char.objOn;
         if (id >= CHAR_ID_VBLEND && id <= CHAR_ID_VMODE_HELP)
             return g_char.vcolMode >= 0;
+        if (c == g_char.upscaleNote)
+            return GetWindowTextLengthW(c) > 0;
         if (c == g_char.texturesLabel || c == g_char.textures || c == g_char.texturesBrowse || c == g_char.texturesClear)
             return g_char.texturesOn;
         return 1;
@@ -10861,11 +10991,10 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
         }
         break;
     case CHAR_ID_UPSCALE:
-        // It changes only the build (hires-upscale before packing), not the check.
-        if (code == BN_CLICKED) {
-            g_char.builtFresh = 0;
-            Char_UpdateButtons();
-        }
+        // The author's choice, kept for this model; it changes only the
+        // build (hires-upscale before packing), not the check.
+        if (code == BN_CLICKED)
+            Char_UpscaleSet(Char_IsChecked(g_char.upscale));
         break;
     case CHAR_ID_VBLEND:
         // On (PSX) <-> off; from glTF (Advanced) a click turns it on.
@@ -11478,7 +11607,7 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
             return RS_AUTO_FAIL;
         }
         if (_wcsicmp(arg, L"auto") == 0) {
-            Char_VcolRemember(g_char.hiresPath, -1);
+            Char_Remember(g_char.hiresPath, CHAR_CHOICE_VCOL, -1);
             mode = g_char.vcolSuggested;
         } else if (mode < 0) {
             Rs_AutoLog(L"  vcolor: say on, off, psx, gltf or auto");
@@ -11486,7 +11615,7 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         }
         r = Char_VcolSet(page, mode);
         if (_wcsicmp(arg, L"auto") == 0) {
-            Char_VcolRemember(g_char.hiresPath, -1);
+            Char_Remember(g_char.hiresPath, CHAR_CHOICE_VCOL, -1);
             g_char.vcolChosen = 0;
             Char_VcolControls();
         }
@@ -11494,6 +11623,31 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         Rs_AutoLog(L"  vcolor: %ls (%ls; suggested %ls)", RsHires_ColourWord(g_char.vcolMode),
                    g_char.vcolChosen ? L"the author's choice" : L"the suggestion", RsHires_ColourWord(g_char.vcolSuggested));
         return r > 0 ? RS_AUTO_WAIT : RS_AUTO_DONE;
+    }
+    // "upscale on|off|auto": "Upscale small textures" of a CHRG route, as a
+    // click on the box (on, off: the author's choice, kept for the model
+    // checked) - auto: the choice forgotten, the suggestion again.
+    if (wcscmp(verb, L"upscale") == 0) {
+        int on = _wcsicmp(arg, L"on") == 0;
+        if (!Char_Chrg()) {
+            Rs_AutoLog(L"  upscale: only Low-Poly and Hi-Res have \"Upscale small textures\"");
+            return RS_AUTO_FAIL;
+        }
+        if (_wcsicmp(arg, L"auto") == 0) {
+            Char_Remember(g_char.hiresPath, CHAR_CHOICE_UPSCALE, -1);
+            Char_UpscaleUpdate();
+            g_char.builtFresh = 0;
+            Char_UpdateButtons();
+        } else if (on || _wcsicmp(arg, L"off") == 0) {
+            Char_UpscaleSet(on);
+        } else {
+            Rs_AutoLog(L"  upscale: say on, off or auto");
+            return RS_AUTO_FAIL;
+        }
+        UpdateWindow(page);
+        Rs_AutoLog(L"  upscale: %ls (%ls; suggested %ls, largest base colour texture %u px)", Char_IsChecked(g_char.upscale) ? L"on" : L"off",
+                   g_char.upChosen ? L"the author's choice" : L"the suggestion", g_char.upSuggested ? L"on" : L"off", g_char.upLargest);
+        return RS_AUTO_DONE;
     }
     if (wcscmp(verb, L"tab") == 0)
         return Char_AutoTab(page, arg);

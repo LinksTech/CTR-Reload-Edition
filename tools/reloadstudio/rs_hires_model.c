@@ -1158,6 +1158,28 @@ static void RsHires_Fill(const RldHiresReport *rep, const RldHiresModel *m, stru
         out->textures += m->images[i].used != 0;
     out->textureBytes = m->textureBytes;
     out->textureEdge = m->textureEdgeMax;
+    // The base colour textures before the round-up: the sizes the check read
+    // from each PNG header (RldHires_CheckImage), no second reading.
+    for (i = 0; m->data && m->images && i < m->imageCount; i++) {
+        const RldHiresImage *img = &m->images[i];
+        cgltf_size k;
+        int base = 0;
+        for (k = 0; k < m->data->materials_count && !base; k++) {
+            const cgltf_texture *t = m->data->materials[k].pbr_metallic_roughness.base_color_texture.texture;
+            base = t != NULL && t->image != NULL && cgltf_image_index(m->data, t->image) == (cgltf_size)i;
+        }
+        if (!base)
+            continue;
+        out->baseTextures++;
+        if (!img->isPng || img->fileWidth == 0u || img->fileHeight == 0u) {
+            out->baseUnsized++;
+            continue;
+        }
+        if (img->fileWidth > out->baseEdgeFile)
+            out->baseEdgeFile = img->fileWidth;
+        if (img->fileHeight > out->baseEdgeFile)
+            out->baseEdgeFile = img->fileHeight;
+    }
     memcpy(out->boundsMin, m->boundsMin, sizeof(out->boundsMin));
     memcpy(out->boundsMax, m->boundsMax, sizeof(out->boundsMax));
     out->glbBytes = m->glbSize;

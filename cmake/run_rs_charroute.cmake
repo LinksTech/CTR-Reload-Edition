@@ -9,7 +9,7 @@
 # Reload Studio's --rldpack (rs_charroute.h, decision E6 of the round's plan):
 #   make-char --model <glb> <the page's switches> <RsCharHires_FallbackArgs>
 #             [--wheels off when the model has its own four wheels] --out <classic>
-#   [hires-upscale <glb> -o <upscaled>]                        Low-Poly ("Upscale small textures")
+#   [hires-upscale <glb> -o <upscaled>]                        ("Upscale small textures")
 #   hires-add <classic> <glb or upscaled> -o <out> [--vertex-colors <mode>]
 #                       (the mode only for a model with COLOR_0: the switch
 #                       "Vertex color blending", include/rldhires_color.inc)
@@ -17,12 +17,14 @@
 # and the page's --machine - and wants the same SHA-256 at every step:
 #   1. <folder> is emptied; rs_hires_selftest --write makes the karts (made in
 #      code, no community content): route-bare.glb (an armature, no clips, no
-#      wheel nodes, a 16 x 16 texture), route-wheels.glb (an armature, 12
-#      clips, its own 4 wheels) and route-vcol.glb (route-bare with PS1-like
-#      COLOR_0, grey 128), and the fallback's switches per route as
-#      RsCharHires_FallbackArgs gives them (fallback-<route>.txt, a CMake list).
-#   2. Hi-Res: route-bare.glb; Low-Poly: route-bare.glb with hires-upscale;
-#      Hi-Res with wheels: route-wheels.glb with --wheels off.
+#      wheel nodes, a 16 x 16 texture), route-tex64.glb (route-bare with a
+#      64 x 64 texture), route-wheels.glb (an armature, 12 clips, its own 4
+#      wheels) and route-vcol.glb (route-bare with PS1-like COLOR_0, grey
+#      128), and the fallback's switches per route as RsCharHires_FallbackArgs
+#      gives them (fallback-<route>.txt, a CMake list).
+#   2. Hi-Res: route-bare.glb without and with hires-upscale; Low-Poly:
+#      route-bare.glb with hires-upscale, route-tex64.glb without; Hi-Res
+#      with wheels: route-wheels.glb with --wheels off.
 #   3. Every result holds the classic model and the hi-res model (rldpack
 #      info: chunks CHRI CMDL CHRG).
 #   4. The vertex colours: route-vcol.glb on Hi-Res with --vertex-colors psx,
@@ -37,9 +39,16 @@
 # it - page char, route <word>, model, name, out, build - and the page's file
 # must be rldpack's chain byte for byte; the classic fallback included (the
 # page's own switches, RsCharHires_FallbackArgs and --wheels off for a model
-# with its own wheels). The vertex colours too: route-vcol.glb as the page
-# suggests it (PSX: PS1-like colours), and with "vcolor off" and "vcolor gltf"
-# - each the bytes of rldpack's chain with that --vertex-colors. Prints
+# with its own wheels). "Upscale small textures" is off at the start of a
+# route and suggested by the page only when every base colour texture is under
+# 64 px (rs_charroute.h, THE UPSCALE): route-bare.glb (16 px) gets it on
+# Low-Poly and Hi-Res - the bytes of the chain with hires-upscale -, with
+# "upscale off" (the author's choice) the bytes without; route-tex64.glb
+# (64 px) is built without it. The vertex colours too: route-vcol.glb as the
+# page suggests it (PSX: PS1-like colours), and with "vcolor off" and "vcolor
+# gltf" - each the bytes of rldpack's chain with that --vertex-colors (these
+# runs, and the one with wheels, say "upscale off" to keep the chains they
+# compare with). Prints "charroute page passed: upscale suggested and chosen",
 # "charroute page passed: vertex colours psx off gltf" and "charroute page
 # passed: 3 routes".
 
@@ -158,7 +167,9 @@ endfunction()
 
 set(packExtra "")
 route(hires route-bare.glb "${fallbackHires}" "" OFF)
+route(hires-upscaled route-bare.glb "${fallbackHires}" "" ON)
 route(lowpoly route-bare.glb "${fallbackLowpoly}" "" ON)
+route(lowpoly-tex64 route-tex64.glb "${fallbackLowpoly}" "" OFF)
 route(hires-wheels route-wheels.glb "${fallbackHires}" "--wheels;off" OFF)
 
 # The vertex colours: the same kart with COLOR_0 in every mode, and without
@@ -183,21 +194,54 @@ endif()
 message("charroute passed: vertex colours psx off gltf")
 message("charroute passed: 3 routes")
 
+# The page's log must say what it should.
+function(page_says name pattern what)
+    file(READ "${DIR}/page-${name}.log" text)
+    if(NOT text MATCHES "${pattern}")
+        message(FATAL_ERROR "charroute FAILED: ${what} (page ${name})\n${text}")
+    endif()
+endfunction()
+
 if(PAGE)
-    set(pageDo "")
-    page_route(hires hires route-bare.glb p-hires.rldchar)
+    # "Upscale small textures": off at the start, suggested for the 16 px kart
+    # on Low-Poly and on Hi-Res (the chain with hires-upscale), kept off for
+    # the 64 px kart (the chain without), and off as the author's choice (the
+    # chain without). The report says who set it.
+    set(pageDo --do "report ${DIR}/page-lowpoly-report.txt")
     page_route(lowpoly lowpoly route-bare.glb p-lowpoly.rldchar)
+    page_says(lowpoly "upscale small textures: on \\(the suggestion; suggested on, largest base colour texture 16 px\\)"
+              "the page did not suggest the upscale for the 16 px kart on Low-Poly")
+    file(READ "${DIR}/page-lowpoly-report.txt" text)
+    if(NOT text MATCHES "upscale small textures: on \\(suggested\\), suggested on \\(1 base colour texture\\(s\\), largest 16 px in the file")
+        message(FATAL_ERROR "charroute FAILED: the report of the page (lowpoly) does not say the suggestion\n${text}")
+    endif()
+    set(pageDo "")
+    page_route(lowpoly-tex64 lowpoly route-tex64.glb p-lowpoly-tex64.rldchar)
+    file(READ "${DIR}/page-lowpoly-tex64.log" text)
+    if(text MATCHES "upscale small textures: on")
+        message(FATAL_ERROR "charroute FAILED: the page suggested the upscale for the 64 px kart\n${text}")
+    endif()
+    page_route(hires hires route-bare.glb p-hires-upscaled.rldchar)
+    page_says(hires "upscale small textures: on \\(the suggestion" "the page did not suggest the upscale for the 16 px kart on Hi-Res")
+    set(pageDo --do "upscale off" --do "report ${DIR}/page-hires-off-report.txt")
+    page_route(hires-off hires route-bare.glb p-hires.rldchar)
+    page_says(hires-off "upscale: off \\(the author's choice; suggested on" "the page did not take the author's choice")
+    file(READ "${DIR}/page-hires-off-report.txt" text)
+    if(NOT text MATCHES "upscale small textures: off \\(chosen by the author\\), suggested on")
+        message(FATAL_ERROR "charroute FAILED: the report of the page (hires-off) does not say the author's choice\n${text}")
+    endif()
+    message("charroute page passed: upscale suggested and chosen")
+    # The kart with wheels and the vertex colours: their chains have no
+    # upscale (the author says off).
+    set(pageDo --do "upscale off")
     page_route(hires-wheels hires route-wheels.glb p-hires-wheels.rldchar)
     # The vertex colours: the suggestion (PSX: PS1-like), then the switch off
     # and glTF of Advanced - each rldpack's bytes with that mode.
     page_route(vcol-psx hires route-vcol.glb p-vcol-psx.rldchar)
-    file(READ "${DIR}/page-vcol-psx.log" text)
-    if(NOT text MATCHES "vertex colors: psx \\(the suggestion")
-        message(FATAL_ERROR "charroute FAILED: the page did not suggest PSX for the PS1-like kart\n${text}")
-    endif()
-    set(pageDo --do "vcolor off")
+    page_says(vcol-psx "vertex colors: psx \\(the suggestion" "the page did not suggest PSX for the PS1-like kart")
+    set(pageDo --do "upscale off" --do "vcolor off")
     page_route(vcol-off hires route-vcol.glb p-vcol-off.rldchar)
-    set(pageDo --do "vcolor gltf")
+    set(pageDo --do "upscale off" --do "vcolor gltf")
     page_route(vcol-gltf hires route-vcol.glb p-vcol-gltf.rldchar)
     set(pageDo "")
     message("charroute page passed: vertex colours psx off gltf")

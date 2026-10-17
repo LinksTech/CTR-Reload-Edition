@@ -24,6 +24,11 @@
 // in steps of 1/128) - also through the view's own formula (RsTex_ShadeLit).
 // The light: the engine's (RLDHIRES_LIGHT_*), after the product is clamped,
 // as the engine's PSX blend does.
+//
+// THE UPSCALE (rs_charroute.h): "Upscale small textures" suggested for karts
+// with a 16, 40 and 63 px texture, not for 64 px, no texture or a texture of
+// unknown size (a JPEG), on Low-Poly and Hi-Res alike, never on Vanilla; and
+// the line below the box.
 
 #include "reloadstudio.h"
 #include "rs_hires_model.h"
@@ -751,8 +756,8 @@ static void Kt_SelfTestRoutes(const wchar_t *folder)
         Check(tris == 64000u && edge == 2048u && bytes == 32u * 1024u * 1024u, "the game's budget: 64000 triangles, edge 2048, 32 MiB");
         Check(v && v->chrg == 0 && v->triangleTarget == 0 && v->textureEdgeTarget == 0 && v->upscaleDefault == 0 && wcscmp(v->word, L"vanilla") == 0,
               "preset Vanilla: no CHRG, make-char's own limits, upscale off");
-        Check(l && l->chrg == 1 && l->triangleTarget == 8000u && l->textureEdgeTarget == 512u && l->upscaleDefault == 1 && wcscmp(l->word, L"lowpoly") == 0,
-              "preset Low-Poly: CHRG, 8000 triangles, edge 512, upscale on");
+        Check(l && l->chrg == 1 && l->triangleTarget == 8000u && l->textureEdgeTarget == 512u && l->upscaleDefault == 0 && wcscmp(l->word, L"lowpoly") == 0,
+              "preset Low-Poly: CHRG, 8000 triangles, edge 512, upscale off (suggested per model only)");
         Check(h && h->chrg == 1 && h->triangleTarget == tris && h->textureEdgeTarget == edge && h->upscaleDefault == 0 && wcscmp(h->word, L"hires") == 0,
               "preset Hi-Res: CHRG, the game's budget (RLDHIRES_BUDGET_*), upscale off");
         Check(RsRoute_Preset(RS_ROUTE_NONE) == NULL && RsRoute_Preset(RS_ROUTES) == NULL, "no preset outside the routes");
@@ -852,6 +857,10 @@ static void Kt_SelfTestRoutes(const wchar_t *folder)
     Check(n >= 1 && m[0].severity == RS_SEV_ERROR && wcscmp(m[0].rule, L"HRG-16") == 0 && m[0].place == RS_WIZ_PLACE_MODEL &&
               wcscmp(m[0].text, L"Texture 0 ('skin') is JPEG.") == 0 && wcsstr(m[0].fix, L"PNG") && Kt_WellFormed(m, n),
           "hires-bad.glb: HRG-16 first, 'Texture 0 ('skin') is JPEG.' with the PNG fix");
+    // Its base colour texture is a JPEG: its size is not read, so it is not
+    // known to be small - no upscale suggested.
+    Check(c.baseTextures == 1 && c.baseUnsized == 1 && c.baseEdgeFile == 0u && RsCharHires_SuggestUpscale(&c, RS_ROUTE_LOWPOLY, NULL) == 0,
+          "hires-bad.glb: a base colour texture of unknown size (JPEG) - upscale not suggested");
     RsHires_CheckFree(&c);
     // A file that is not there: one error with a fix.
     swprintf(path, 1024, L"%ls\\no-such-file.glb", folder);
@@ -926,6 +935,53 @@ static void Kt_SelfTestRoutes(const wchar_t *folder)
     }
 }
 
+// THE UPSCALE (rs_charroute.h): "Upscale small textures" is suggested only
+// when every base colour texture is under 64 px on its larger edge, measured
+// in the file before the round-up; the same rule on Low-Poly and Hi-Res,
+// never on Vanilla. Karts made here, a real PNG of the edge given.
+static void Kt_SelfTestUpscale(void)
+{
+    static struct RsHiresCheck c;
+    static const struct {
+        int edge;           // the PNG's edge, 0 = no texture (a plain colour)
+        int suggested;
+        const char *what;
+    } cases[] = {
+        { 16, 1, "16 x 16 texture: upscale suggested on" },
+        { 40, 1, "40 x 40 texture (64 after the round-up): suggested on - the edge before the round-up counts" },
+        { 63, 1, "63 x 63 texture: suggested on" },
+        { 64, 0, "64 x 64 texture: not suggested (off)" },
+        { 0, 0, "no texture: not suggested (off)" },
+    };
+    wchar_t line[RS_WIZ_TEXT_MAX];
+    unsigned largest = 99u;
+    int i;
+
+    for (i = 0; i < (int)(sizeof(cases) / sizeof(cases[0])); i++) {
+        struct KtSpec sp = { 2, 1, 0, 0, cases[i].edge, 0 };
+        int ok = Kt_Check(&sp, &c) == 1 && c.read == 1;
+        ok = ok && c.baseTextures == (cases[i].edge ? 1 : 0) && c.baseUnsized == 0 && c.baseEdgeFile == (unsigned)cases[i].edge;
+        ok = ok && RsCharHires_SuggestUpscale(&c, RS_ROUTE_LOWPOLY, &largest) == cases[i].suggested && largest == (unsigned)cases[i].edge;
+        ok = ok && RsCharHires_SuggestUpscale(&c, RS_ROUTE_HIRES, NULL) == cases[i].suggested;
+        ok = ok && RsCharHires_SuggestUpscale(&c, RS_ROUTE_VANILLA, NULL) == 0;
+        if (cases[i].edge == 40)
+            ok = ok && c.textureEdge == 64u;
+        Check(ok, cases[i].what);
+        RsHires_CheckFree(&c);
+    }
+    Check(RsCharHires_SuggestUpscale(NULL, RS_ROUTE_LOWPOLY, &largest) == 0 && largest == 0u, "no check: not suggested");
+
+    // The line below the box.
+    RsCharHires_UpscaleLine(1, 1, 16u, line, RS_WIZ_TEXT_MAX);
+    Check(wcscmp(line, L"Your textures are small (largest 16 px) - Upscale small textures is on.") == 0, "the line of the suggestion");
+    RsCharHires_UpscaleLine(0, 1, 16u, line, RS_WIZ_TEXT_MAX);
+    Check(wcsstr(line, L"is off") != NULL && wcsstr(line, L"Your choice - suggested: on") != NULL, "the line of the author's choice against it (off)");
+    RsCharHires_UpscaleLine(1, 0, 512u, line, RS_WIZ_TEXT_MAX);
+    Check(wcsstr(line, L"is on") != NULL && wcsstr(line, L"Your choice - suggested: off") != NULL, "the line of the author's choice against it (on)");
+    RsCharHires_UpscaleLine(0, 0, 512u, line, RS_WIZ_TEXT_MAX);
+    Check(line[0] == 0, "off and not suggested: no line");
+}
+
 // --write <folder>: the karts of the byte test of the routes
 // (cmake/run_rs_charroute.cmake) and the fallback's switches, a CMake list per
 // CHRG route (fallback-lowpoly.txt, fallback-hires.txt).
@@ -935,7 +991,8 @@ static int Kt_Write(const wchar_t *folder)
         const wchar_t *name;
         struct KtSpec sp;
     } karts[] = {
-        { L"route-bare.glb", { 2, 1, 0, 0, 16, 0 } },     // skinned, no clips, no wheels, a 16 x 16 texture (upscaled on Low-Poly)
+        { L"route-bare.glb", { 2, 1, 0, 0, 16, 0 } },     // skinned, no clips, no wheels, a 16 x 16 texture (the page suggests the upscale)
+        { L"route-tex64.glb", { 2, 1, 0, 0, 64, 0 } },    // as route-bare with a 64 x 64 texture: no upscale suggested
         { L"route-wheels.glb", { 2, 1, 12, 4, 16, 0 } },  // skinned, 12 clips, its own 4 wheels (the page adds --wheels off)
         { L"route-vcol.glb", { 2, 1, 0, 0, 16, 0, 128 } }, // as route-bare, with PS1-like COLOR_0 (grey 128): the page suggests PSX
     };
@@ -1200,6 +1257,7 @@ int wmain(int argc, wchar_t **argv)
 
     Kt_SelfTestRoutes(argv[1]);
     Kt_SelfTestColours();
+    Kt_SelfTestUpscale();
 
     printf("rs_hires selftest %s: %d checks, %d failures\n", s_failures ? "FAILED" : "passed", s_checks, s_failures);
     return s_failures != 0;

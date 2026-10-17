@@ -40,7 +40,8 @@ struct RsRoutePreset {
     int chrg;                     // 1 = the build adds the chunk CHRG (hires-add)
     unsigned long long triangleTarget;   // 0 = none (Vanilla: make-char's own limit)
     unsigned textureEdgeTarget;          // 0 = none
-    int upscaleDefault;           // "Upscale small textures" at the start of the route
+    int upscaleDefault;           // "Upscale small textures" at the start of the route (0 on every
+                                  // route: the page suggests it per model, RsCharHires_SuggestUpscale)
 };
 
 // The preset of a route; NULL outside RS_ROUTE_VANILLA..RS_ROUTE_HIRES.
@@ -105,6 +106,31 @@ int RsCharHires_SuggestColours(const struct RsHiresCheck *c, int route, int *why
 // blending is on."), or, when the author chose another mode, that mode and
 // the suggestion.
 void RsCharHires_ColourLine(int mode, int suggested, int why, int route, wchar_t *out, int cap);
+
+// THE UPSCALE of a CHRG route ("Upscale small textures", Advanced of the step
+// Model: rldpack hires-upscale before hires-add). Off at the start of every
+// route (upscaleDefault 0); when a model is checked the page SUGGESTS it - the
+// box ticked and one line below it - only for a model whose textures are all
+// small. The rule, the same for Low-Poly and Hi-Res:
+//   the model has at least one base colour texture, the size of every one of
+//   them could be read, and the largest edge (width or height) of the largest
+//   of them, AS THE FILE HAS IT (RsHiresCheck.baseEdgeFile, before the game's
+//   round-up to a power of two), is below RS_UPSCALE_SUGGEST_EDGE.
+// The edge before the round-up: a 40 x 40 texture is small, though the game
+// holds it as 64 x 64. Normal maps do not count (hires-upscale leaves them).
+// A choice the author made (the box clicked) stays with that model, as the
+// vertex colour mode does.
+#define RS_UPSCALE_SUGGEST_EDGE 64u
+
+// 1 = suggested for this check on this route (RS_ROUTE_LOWPOLY or
+// RS_ROUTE_HIRES), 0 = not; largest (may be NULL) = baseEdgeFile of the check.
+int RsCharHires_SuggestUpscale(const struct RsHiresCheck *c, int route, unsigned *largest);
+
+// The one short line below the box: the suggestion ("Your textures are small
+// (largest 32 px) - Upscale small textures is on."), or, when the author's
+// choice differs from it, that choice and the suggestion; L"" when the box is
+// off and was not suggested (no line).
+void RsCharHires_UpscaleLine(int on, int suggested, unsigned largest, wchar_t *out, int cap);
 
 // The extra make-char switches of the classic fallback of a CHRG route
 // (written after the page's own switches); returns the count, at most

@@ -102,6 +102,15 @@ struct RsHiresCheck {
     int textures;                    // images a material uses
     unsigned long long textureBytes; // RGBA8 level 0, after the round-up
     unsigned textureEdge;            // the largest edge after the round-up
+    // The base colour textures as the file has them, BEFORE the round-up (a
+    // 40 x 40 texture is 40 here, 64 in textureEdge; normal maps are not
+    // counted): what "Upscale small textures" is suggested by
+    // (RsCharHires_SuggestUpscale, rs_charroute.h). The images are those
+    // rldpack hires-upscale looks at: every image a material names as its
+    // base colour texture.
+    int baseTextures;                // images a material uses as base colour
+    int baseUnsized;                 // of them, those whose size could not be read (not an embedded PNG)
+    unsigned baseEdgeFile;           // the largest width or height of them in the file, 0 = none
     float boundsMin[3], boundsMax[3];// bind pose, metres
     unsigned glbBytes;               // the size of the GLB
 
