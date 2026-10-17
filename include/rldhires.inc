@@ -40,7 +40,7 @@
 // left seen from behind, 1 metre = 64 kart model units, origin on the ground
 // under the kart.
 //
-// THE RULES are HRG-1 .. HRG-31 (s_rldHiresRules below), each with a fixed
+// THE RULES are HRG-1 .. HRG-35 (s_rldHiresRules below), each with a fixed
 // level: an ERROR refuses the hi-res part (the classic model is drawn), a
 // WARNING means the driver runs but something falls back to a standard (a clip,
 // the wheels, flat normals), a NOTE says what is ignored. The texts are short
@@ -260,6 +260,23 @@ static int RldHires_WheelByName(const char *name)
 #define RLDHIRES_BOUNDS_MAX_M 4.0f          // the bind pose, per axis (max - min), metres
 #define RLDHIRES_UNITS_PER_METRE 64.0f      // kart model units per glTF metre
 
+// THE ENGINE'S HARD LIMITS (platform/engine_hires_char.c, EngHc_BuildCpu and
+// EngHc_TextureOf): what one hi-res driver can hold at all, whatever the budget.
+// Counted here exactly as the engine counts, so that rldpack and Reload Studio
+// refuse what the game would refuse (HRG-32..35).
+#define RLDHIRES_MATERIALS_MAX 62u          // the file's materials; the engine adds a default one and the standard wheels'
+#define RLDHIRES_VERTICES_MAX (1u << 20)    // every vertex of every drawn primitive, the wheels included (an external mesh's frame)
+#define RLDHIRES_PALETTE_MAX 255u           // joints + body nodes with a mesh but no skin + 4 wheels
+#define RLDHIRES_TEXTURE_SLOTS_MAX 64u      // uploads: one per image, colour space (base colour / normal map) and sampler wrap
+#define RLDHIRES_STD_WHEEL_VERTICES 82u     // the engine's standard 3D wheel (20 sides x 4 + 2 hubs), counted when the file has no wheel set
+
+// THE ANIMATED HULL (include/rldhires_hull.inc): the rest pose and every clip at
+// this many evenly spaced times (both ends included), the 4 m rule (HRG-18) on
+// its plain extent. The engine grows the box by RLDHIRES_HULL_MARGIN of the
+// axis's extent on each side for its culling only - no rule depends on it.
+#define RLDHIRES_HULL_SAMPLES 16
+#define RLDHIRES_HULL_MARGIN 0.05f
+
 // THE BUDGET of one hi-res driver: measured in the load run of this round (H5);
 // placeholder until then (the triangles set high enough that the load run can
 // load every variant it measures). Over it, the driver falls back to its classic model
@@ -311,7 +328,7 @@ typedef struct RldHiresRule
 	const char *about;
 } RldHiresRule;
 
-#define RLDHIRES_RULE_COUNT 31
+#define RLDHIRES_RULE_COUNT 35
 
 static const RldHiresRule s_rldHiresRules[RLDHIRES_RULE_COUNT] = {
     {"HRG-1", RLDHIRES_ERROR, "CHRG version is not 1"},
@@ -331,7 +348,7 @@ static const RldHiresRule s_rldHiresRules[RLDHIRES_RULE_COUNT] = {
     {"HRG-15", RLDHIRES_WARNING, "NORMAL missing: flat normals"},
     {"HRG-16", RLDHIRES_ERROR, "a texture is not PNG (JPEG, WebP, KTX2, damaged)"},
     {"HRG-17", RLDHIRES_ERROR, "a texture edge above 2048"},
-    {"HRG-18", RLDHIRES_ERROR, "bind pose larger than 4 m on an axis, or not finite"},
+    {"HRG-18", RLDHIRES_ERROR, "bind pose, or the pose of a clip (include/rldhires_hull.inc), larger than 4 m on an axis, or not finite"},
     {"HRG-19", RLDHIRES_WARNING, "a clip is missing: its fallback is used"},
     {"HRG-20", RLDHIRES_WARNING, "wheels: not all four wheel nodes usable, standard wheels"},
     {"HRG-21", RLDHIRES_NOTE, "an animation name is not a clip name, or a clip name twice: ignored"},
@@ -345,6 +362,10 @@ static const RldHiresRule s_rldHiresRules[RLDHIRES_RULE_COUNT] = {
     {"HRG-29", RLDHIRES_ERROR, "a sparse accessor in geometry, skin or clips"},
     {"HRG-30", RLDHIRES_NOTE, "a PNG is not 8-bit RGB or RGBA: read as RGBA8"},
     {"HRG-31", RLDHIRES_NOTE, "wheel node details: a name twice, child nodes not drawn"},
+    {"HRG-32", RLDHIRES_ERROR, "more than 62 materials (the engine's material table of a driver)"},
+    {"HRG-33", RLDHIRES_ERROR, "more than 1048576 vertices, the wheels counted (the engine's vertex limit)"},
+    {"HRG-34", RLDHIRES_ERROR, "more than 255 skinning entries: joints + body nodes with a mesh but no skin + 4 wheels"},
+    {"HRG-35", RLDHIRES_ERROR, "more than 64 texture uploads: one per image, colour space and sampler wrap"},
 };
 
 // The level of a rule id, -1 for an unknown id.
@@ -739,7 +760,8 @@ typedef struct RldHiresModel
 
 	RldHiresImage *images;                  // one per data->images
 	int imageCount;
-	u64 textureBytes;                       // sum of mip0Bytes
+	u64 textureBytes;                       // mip0Bytes of every upload (an image the engine uploads twice - as base colour
+	                                        // and as normal map, or with two sampler wraps - counts twice)
 	u32 textureEdgeMax;                     // the largest width or height after the round-up
 
 	float boundsMin[3];                     // bind pose, metres: rigid nodes with their world matrix, skinned
@@ -747,6 +769,13 @@ typedef struct RldHiresModel
 
 	int usable;                             // 1 = RldHires_Open found no error
 	int wheelsFound;                        // wheel nodes found and usable (0..4) - for the reports; wheelNode needs all four
+
+	// The engine's counts (THE ENGINE'S HARD LIMITS): HRG-32..35.
+	u32 materials;                          // the file's materials
+	u64 engineVertices;                     // every vertex the engine stores: drawn primitives, own wheels or 4 standard ones
+	u32 rigidNodes;                         // body nodes with a mesh and no skin
+	u32 paletteEntries;                     // joints + rigidNodes + 4
+	u32 textureSlots;                       // textures the engine uploads (textureBytes counts each of them)
 } RldHiresModel;
 
 // The edge the game makes of an image edge: the next power of two, at least
@@ -1167,6 +1196,64 @@ static const char *RldHires_RangesOk(const cgltf_data *gd)
 	return NULL;
 }
 
+// A glTF sampler wrap as the engine maps it (EngHc_WrapOf): 0 repeat, 1 clamp, 2 mirror.
+static int RldHires_Wrap(int mode)
+{
+	return (mode == 33071) ? 1 : ((mode == 33648) ? 2 : 0);
+}
+
+// One texture upload of the engine (EngHc_TextureOf): the image, its colour
+// space and its two wraps; the same four make the same upload.
+typedef struct
+{
+	int image;
+	int linear;
+	int wrapU;
+	int wrapV;
+} RldHiresSlot;
+
+static void RldHires_AddSlot(RldHiresSlot *slots, u32 *count, const cgltf_data *gd, const cgltf_texture *tex, int linear)
+{
+	RldHiresSlot s;
+	u32 k;
+
+	if ((tex == NULL) || (tex->image == NULL))
+	{
+		return;
+	}
+	s.image = (int)cgltf_image_index(gd, tex->image);
+	s.linear = linear;
+	s.wrapU = (tex->sampler != NULL) ? RldHires_Wrap((int)tex->sampler->wrap_s) : 0;
+	s.wrapV = (tex->sampler != NULL) ? RldHires_Wrap((int)tex->sampler->wrap_t) : 0;
+	for (k = 0; k < *count; k++)
+	{
+		if ((slots[k].image == s.image) && (slots[k].linear == s.linear) && (slots[k].wrapU == s.wrapU) && (slots[k].wrapV == s.wrapV))
+		{
+			return;
+		}
+	}
+	slots[(*count)++] = s;
+}
+
+// The vertices of a mesh as the engine counts them: POSITION of every
+// triangle primitive.
+static u64 RldHires_EngineVertices(const cgltf_mesh *mesh)
+{
+	u64 n = 0;
+	cgltf_size p;
+
+	for (p = 0; (mesh != NULL) && (p < mesh->primitives_count); p++)
+	{
+		const cgltf_accessor *pos = cgltf_find_accessor(&mesh->primitives[p], cgltf_attribute_type_position, 0);
+
+		if ((pos != NULL) && (mesh->primitives[p].type == cgltf_primitive_type_triangles))
+		{
+			n += (u64)pos->count;
+		}
+	}
+	return n;
+}
+
 // Opens a GLB from memory and runs every rule of the model (HRG-6..26, 28..31).
 // 1 = usable as hi-res (no error), 0 = refused. out is always written; after a
 // 1 it owns cgltf data, close it with RldHires_Close (after a 0 too - it is
@@ -1585,6 +1672,35 @@ static int RldHires_Open(const u8 *glb, u32 size, RldHiresModel *out, RldHiresRe
 		}
 	}
 
+	// HRG-32, HRG-33, HRG-34: the engine's hard limits (EngHc_BuildCpu).
+	m->materials = (u32)gd->materials_count;
+	if (m->materials > RLDHIRES_MATERIALS_MAX)
+	{
+		RldHires_Say(rep, "HRG-32", "the model has %u materials - the engine draws at most 62; join materials that share a texture", (unsigned)m->materials);
+	}
+	for (i = 0; i < (cgltf_size)m->drawNodeCount; i++)
+	{
+		const cgltf_node *node = &gd->nodes[m->drawNodes[i]];
+
+		m->engineVertices += RldHires_EngineVertices(node->mesh);
+		m->rigidNodes += (node->skin == NULL) ? 1u : 0u;
+	}
+	for (i = 0; i < RLDHIRES_WHEEL_COUNT; i++)
+	{
+		m->engineVertices += (m->wheelNode[0] >= 0) ? RldHires_EngineVertices(gd->nodes[m->wheelNode[i]].mesh) : (u64)RLDHIRES_STD_WHEEL_VERTICES;
+	}
+	if (m->engineVertices > (u64)RLDHIRES_VERTICES_MAX)
+	{
+		RldHires_Say(rep, "HRG-33", "the model has %llu vertices (the wheels counted) - the engine holds at most 1048576; export with shared vertices (indexed)",
+		             (unsigned long long)m->engineVertices);
+	}
+	m->paletteEntries = ((m->skin >= 0) ? m->joints : 0u) + m->rigidNodes + RLDHIRES_WHEEL_COUNT;
+	if (m->paletteEntries > RLDHIRES_PALETTE_MAX)
+	{
+		RldHires_Say(rep, "HRG-34", "%u joints and %u separate mesh objects need %u skinning entries - the engine has 255; join mesh objects",
+		             (unsigned)((m->skin >= 0) ? m->joints : 0u), (unsigned)m->rigidNodes, (unsigned)m->paletteEntries);
+	}
+
 	// HRG-18: the bind pose, at most 4 m on each axis.
 	if (seenNonFinite)
 	{
@@ -1694,7 +1810,6 @@ static int RldHires_Open(const u8 *glb, u32 size, RldHiresModel *out, RldHiresRe
 				}
 				RldHires_CheckImage(m, rep, (int)i, img);
 				img->used = 1;
-				m->textureBytes += img->mip0Bytes;
 				if (img->width > m->textureEdgeMax)
 				{
 					m->textureEdgeMax = img->width;
@@ -1703,6 +1818,48 @@ static int RldHires_Open(const u8 *glb, u32 size, RldHiresModel *out, RldHiresRe
 				{
 					m->textureEdgeMax = img->height;
 				}
+			}
+		}
+	}
+
+	// HRG-35 and the texture bytes: the uploads of the engine (EngHc_Materials,
+	// EngHc_TextureOf) - per material the base colour (sRGB) and the normal map
+	// (linear), one upload per image, colour space and wrap pair.
+	if (gd->materials_count > 0u)
+	{
+		RldHiresSlot *slots = (RldHiresSlot *)malloc(gd->materials_count * 2u * sizeof(RldHiresSlot));
+		u32 count = 0;
+		u32 k;
+
+		if (slots == NULL)
+		{
+			RldHires_Say(rep, "HRG-7", "out of memory counting the textures");
+		}
+		else
+		{
+			for (i = 0; i < gd->materials_count; i++)
+			{
+				const cgltf_material *mat = &gd->materials[i];
+
+				if (mat->has_pbr_metallic_roughness)
+				{
+					RldHires_AddSlot(slots, &count, gd, mat->pbr_metallic_roughness.base_color_texture.texture, 0);
+				}
+				RldHires_AddSlot(slots, &count, gd, mat->normal_texture.texture, 1);
+			}
+			for (k = 0; k < count; k++)
+			{
+				if ((m->images != NULL) && (slots[k].image >= 0) && (slots[k].image < m->imageCount))
+				{
+					m->textureBytes += m->images[slots[k].image].mip0Bytes;
+				}
+			}
+			m->textureSlots = count;
+			free(slots);
+			if (count > RLDHIRES_TEXTURE_SLOTS_MAX)
+			{
+				RldHires_Say(rep, "HRG-35", "the materials need %u texture uploads - the engine makes at most 64 (one per image, colour space and wrap mode)",
+				             (unsigned)count);
 			}
 		}
 	}

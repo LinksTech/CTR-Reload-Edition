@@ -22,6 +22,7 @@
 #include "rs_hires_model.h"
 #include "rs_view.h"
 
+#include <math.h>
 #include <string.h>
 #include <stdarg.h>
 
@@ -35,8 +36,14 @@ enum {
     HIRES_ID_OUT_LABEL, HIRES_ID_OUT, HIRES_ID_OUT_BROWSE,
     HIRES_ID_CHECK, HIRES_ID_PACK, HIRES_ID_STATUS, HIRES_ID_MARK,
     HIRES_ID_VERDICT, HIRES_ID_SUMMARY, HIRES_ID_MSGS, HIRES_ID_CLIPS,
-    HIRES_ID_VIEW, HIRES_ID_NOTE
+    HIRES_ID_VIEW, HIRES_ID_NOTE,
+    HIRES_ID_CLIP_LABEL, HIRES_ID_CLIP, HIRES_ID_PLAY, HIRES_ID_TIME
 };
+
+#define HIRES_TIMER 61               // the playback tick on the page window
+#define HIRES_TICK_MS 50
+#define HIRES_TICK_CAP_MS 200        // the longest step of one tick
+#define HIRES_WHEEL_DEG_PER_S 180.0f // slow spin of the wheels while a clip plays
 
 // Card geometry in 96-dpi pixels. Rs_CardInner takes 50 at the top and 16 at the bottom.
 #define HIRES_CHROME 66
@@ -46,7 +53,8 @@ enum {
 #define HIRES_MSGS_H 190
 #define HIRES_CLIPS_H 296
 #define HIRES_VIEW_MIN 360
-#define HIRES_NOTE_H 40
+#define HIRES_NOTE_H 56
+#define HIRES_BAR_H 64               // the row "Clip" above the view and the time line
 #define HIRES_WIDE_MIN 1100
 
 struct HiresMsg {
@@ -62,6 +70,16 @@ struct HiresState {
     HWND checkBtn, pack, status, mark;
     HWND verdict, summary, msgs, clips;
     HWND view, note;
+    HWND clipLabel, clipCombo, playBtn, timeLabel;
+    HWND page;
+
+    // The clip shown: 0 = the bind pose, 1 + n = clip n of RsHires_ClipName.
+    int clipSel;
+    int playing;
+    float seconds;
+    float wheelDeg;
+    DWORD lastTick;
+    int shownTris;                   // triangles of the last picture handed to the view
 
     int quiet;                       // the program sets a field: ignore EN_CHANGE
     int checked;                     // a check ran (g_hires.check and checkedPath are valid)
@@ -171,10 +189,132 @@ static int Hires_CanPack(void)
     return model[0] && ch[0] && out[0] && wcscmp(model, g_hires.checkedPath) == 0;
 }
 
+// 1 when the clips of the checked model can be played.
+static int Hires_AnimOk(void)
+{
+    return g_hires.checked && g_hires.check.read && g_hires.check.animReady;
+}
+
 static void Hires_UpdateButtons(void)
 {
     EnableWindow(g_hires.pack, Hires_CanPack());
     EnableWindow(g_hires.checkBtn, !Hires_Running());
+    EnableWindow(g_hires.clipCombo, Hires_AnimOk());
+    EnableWindow(g_hires.playBtn, Hires_AnimOk() && g_hires.clipSel > 0);
+}
+
+// ---------------------------------------------------------------------------
+// The clip shown: the combo, the time line and the playback
+// ---------------------------------------------------------------------------
+
+static void Hires_FillCombo(void)
+{
+    const struct RsHiresCheck *c = &g_hires.check;
+    int i, sel = g_hires.clipSel;
+    SendMessageW(g_hires.clipCombo, CB_RESETCONTENT, 0, 0);
+    SendMessageW(g_hires.clipCombo, CB_ADDSTRING, 0, (LPARAM)L"Bind pose");
+    for (i = 0; i < RS_HIRES_CLIPS; i++) {
+        wchar_t text[160];
+        if (!g_hires.checked || !c->read || c->clipState[i] == RS_HIRES_CLIP_PRESENT)
+            Hires_Copy(text, 160, RsHires_ClipName(i));
+        else if (c->clipState[i] == RS_HIRES_CLIP_FALLBACK)
+            swprintf(text, 160, L"%ls (missing - plays %ls%ls)", RsHires_ClipName(i), RsHires_ClipName(c->clipVia[i]),
+                     c->clipFullLock[i] ? L" at full lock" : L"");
+        else
+            swprintf(text, 160, L"%ls (missing - rest pose)", RsHires_ClipName(i));
+        SendMessageW(g_hires.clipCombo, CB_ADDSTRING, 0, (LPARAM)text);
+    }
+    if (sel < 0 || sel > RS_HIRES_CLIPS)
+        sel = 0;
+    g_hires.clipSel = sel;
+    SendMessageW(g_hires.clipCombo, CB_SETCURSEL, (WPARAM)sel, 0);
+}
+
+static void Hires_UpdateTime(void)
+{
+    const struct RsHiresCheck *c = &g_hires.check;
+    wchar_t text[160];
+    text[0] = 0;
+    if (g_hires.checked && c->read && !c->animReady) {
+        Hires_Copy(text, 160, c->animWhy[0] ? c->animWhy : L"Clips cannot be played for this model.");
+    } else if (Hires_AnimOk() && g_hires.clipSel > 0) {
+        int clip = g_hires.clipSel - 1;
+        float len = RsHires_AnimLength(c, clip);
+        float share = -1.0f;
+        float shown = RsHires_AnimLocal(c, clip, g_hires.seconds, &share);
+        if (len > 0.0f) {
+            // The clip's own time, as the model samples it (a steer clip: share x length).
+            swprintf(text, 160, L"%.2f s of %.2f s", (double)shown, (double)len);
+            if (share >= 0.0f)
+                swprintf(text + wcslen(text), 160 - wcslen(text), L" - steer share %.2f", (double)share);
+        }
+    }
+    Hires_SetLabel(g_hires.timeLabel, text, RS_COL_MUTED);
+}
+
+// The picture of the selected clip at the current time; returns its triangles (0 = could not).
+static int Hires_ShowClipFrame(void)
+{
+    const unsigned char *bytes = NULL;
+    size_t size = 0;
+    int n = RsHires_AnimFrame(&g_hires.check, g_hires.clipSel - 1, g_hires.seconds, g_hires.wheelDeg, &bytes, &size);
+    if (n <= 0 || !bytes)
+        return 0;
+    RsView_SetModelKey(g_hires.view, g_hires.checkedPath);
+    RsView_LoadPreviewData(g_hires.view, bytes, size);
+    RsView_SetPose(g_hires.view, RS_VIEW_POSE_NEUTRAL);
+    RsView_SetWheels(g_hires.view, g_hires.check.wheels < 4);
+    g_hires.shownTris = n;
+    return n;
+}
+
+static void Hires_ShowView(void);
+
+static void Hires_SetPlaying(int on)
+{
+    if (on && !(Hires_AnimOk() && g_hires.clipSel > 0))
+        on = 0;
+    if (on == g_hires.playing)
+        return;
+    g_hires.playing = on;
+    if (on) {
+        g_hires.lastTick = GetTickCount();
+        SetTimer(g_hires.page, HIRES_TIMER, HIRES_TICK_MS, NULL);
+    } else {
+        KillTimer(g_hires.page, HIRES_TIMER);
+    }
+    Rs_SetText(g_hires.playBtn, on ? L"Pause" : L"Play");
+}
+
+static void Hires_Tick(void)
+{
+    DWORD now = GetTickCount();
+    DWORD dt = now - g_hires.lastTick;
+    if (!g_hires.playing)
+        return;
+    if (!IsWindowVisible(g_hires.page)) {
+        Hires_SetPlaying(0);
+        return;
+    }
+    if (dt > HIRES_TICK_CAP_MS)
+        dt = HIRES_TICK_CAP_MS;
+    g_hires.lastTick = now;
+    g_hires.seconds += (float)dt / 1000.0f;
+    g_hires.wheelDeg = (float)fmod((double)(g_hires.wheelDeg + HIRES_WHEEL_DEG_PER_S * (float)dt / 1000.0f), 360.0);
+    Hires_ShowView();
+    Hires_UpdateTime();
+}
+
+// Picks "Bind pose" (0) or a clip (1 + n) as the combo does.
+static void Hires_SelectClip(int sel)
+{
+    g_hires.clipSel = sel;
+    SendMessageW(g_hires.clipCombo, CB_SETCURSEL, (WPARAM)sel, 0);
+    if (sel == 0)
+        Hires_SetPlaying(0);
+    Hires_ShowView();
+    Hires_UpdateTime();
+    Hires_UpdateButtons();
 }
 
 // ---------------------------------------------------------------------------
@@ -281,7 +421,10 @@ static void Hires_ShowView(void)
         RsView_Clear(g_hires.view, NULL);
         return;
     }
+    if (c->read && c->animReady && g_hires.clipSel > 0 && Hires_ShowClipFrame())
+        return;
     if (c->read && c->preview) {
+        g_hires.shownTris = c->previewTriangles;
         RsView_SetModelKey(g_hires.view, g_hires.checkedPath);
         RsView_LoadPreviewData(g_hires.view, c->preview, c->previewBytes);
         RsView_SetPose(g_hires.view, RS_VIEW_POSE_NEUTRAL);
@@ -304,11 +447,13 @@ static void Hires_ShowView(void)
 
 static void Hires_ShowAll(void)
 {
+    Hires_FillCombo();
     Hires_ShowVerdict();
     Hires_ShowSummary();
     Hires_ShowClips();
     Hires_ShowList();
     Hires_ShowView();
+    Hires_UpdateTime();
     Hires_UpdateButtons();
 }
 
@@ -317,6 +462,13 @@ static int Hires_RunCheck(void)
 {
     wchar_t model[HIRES_PATH];
     Hires_Field(g_hires.model, model, HIRES_PATH);
+    // A new check stops the playing and starts at 0; the clip stays chosen
+    // for the same model, "Bind pose" for another one.
+    Hires_SetPlaying(0);
+    g_hires.seconds = 0.0f;
+    g_hires.wheelDeg = 0.0f;
+    if (!g_hires.checked || wcscmp(model, g_hires.checkedPath) != 0)
+        g_hires.clipSel = 0;
     RsHires_CheckFree(&g_hires.check);
     memset(&g_hires.check, 0, sizeof(g_hires.check));
     g_hires.packDone = 0;
@@ -497,6 +649,10 @@ static int Hires_Report(const wchar_t *path)
                 Hires_Add(buf, &len, L"clip: %ls rest\n", RsHires_ClipName(i));
         }
     }
+    Hires_Add(buf, &len, L"clip-shown: %ls %.3f %.1f %ls\n",
+              g_hires.clipSel > 0 ? RsHires_ClipName(g_hires.clipSel - 1) : L"bind", (double)g_hires.seconds,
+              (double)g_hires.wheelDeg, g_hires.playing ? L"playing" : L"paused");
+    Hires_Add(buf, &len, L"anim: %ls\n", Hires_AnimOk() ? L"ready" : c->animWhy[0] ? c->animWhy : L"unavailable");
     Hires_Add(buf, &len, L"preview: %d\n", g_hires.checked && c->read ? c->previewTriangles : 0);
     if (g_hires.packWritten)
         Hires_Add(buf, &len, L"packed: %ls %ls\n", g_hires.packPath, g_hires.packSha);
@@ -561,6 +717,13 @@ static void Hires_LayoutCheck(const RECT *in)
 static void Hires_LayoutPreview(const RECT *in, int viewH)
 {
     int x = in->left, y = in->top, w = in->right - in->left;
+    int lw = Rs_Px(48), bw = Rs_Px(88);
+    MoveWindow(g_hires.clipLabel, x, y + Rs_Px(6), lw - Rs_Px(8), Rs_Px(20), TRUE);
+    SendMessageW(g_hires.clipCombo, CB_SETITEMHEIGHT, (WPARAM)-1, Rs_Px(22));
+    MoveWindow(g_hires.clipCombo, x + lw, y + Rs_Px(2), w - lw - bw - Rs_Px(8), Rs_Px(300), TRUE);
+    MoveWindow(g_hires.playBtn, in->right - bw, y, bw, Rs_Px(32), TRUE);
+    MoveWindow(g_hires.timeLabel, x + lw, y + Rs_Px(36), w - lw, Rs_Px(20), TRUE);
+    y += Rs_Px(HIRES_BAR_H);
     MoveWindow(g_hires.view, x, y, w, viewH, TRUE);
     MoveWindow(g_hires.note, x, y + viewH + Rs_Px(6), w, Rs_Px(HIRES_NOTE_H - 6), TRUE);
 }
@@ -598,13 +761,13 @@ static void Hires_Layout(HWND page, int w, int h)
         // The view fills the right column but is no taller than what can be seen at once.
         SetRect(&rc, rx, top, right, top + columnH);
         in = Rs_CardInner(&rc, 1);
-        viewH = (in.bottom - in.top) - Rs_Px(HIRES_NOTE_H);
-        viewMax = vh - top - Rs_Px(HIRES_CHROME + HIRES_NOTE_H) - Rs_Px(8);
+        viewH = (in.bottom - in.top) - Rs_Px(HIRES_NOTE_H + HIRES_BAR_H);
+        viewMax = vh - top - Rs_Px(HIRES_CHROME + HIRES_NOTE_H + HIRES_BAR_H) - Rs_Px(8);
         if (viewH > viewMax)
             viewH = viewMax;
         if (viewH < Rs_Px(HIRES_VIEW_MIN))
             viewH = Rs_Px(HIRES_VIEW_MIN);
-        previewH = Rs_Px(HIRES_CHROME + HIRES_NOTE_H) + viewH;
+        previewH = Rs_Px(HIRES_CHROME + HIRES_NOTE_H + HIRES_BAR_H) + viewH;
         SetRect(&rc, rx, top, right, top + previewH);
         Rs_CardAdd(page, &rc, L"Preview");
         in = Rs_CardInner(&rc, 1);
@@ -624,7 +787,7 @@ static void Hires_Layout(HWND page, int w, int h)
         y += checkH + gap;
 
         viewH = Rs_Px(HIRES_VIEW_MIN);
-        previewH = Rs_Px(HIRES_CHROME + HIRES_NOTE_H) + viewH;
+        previewH = Rs_Px(HIRES_CHROME + HIRES_NOTE_H + HIRES_BAR_H) + viewH;
         SetRect(&rc, left, y, right, y + previewH);
         Rs_CardAdd(page, &rc, L"Preview");
         in = Rs_CardInner(&rc, 1);
@@ -689,8 +852,15 @@ static void Hires_Create(HWND page)
 
     g_hires.view = CreateWindowExW(0, RS_VIEW_CLASS, L"No model yet", WS_CHILD | WS_VISIBLE, 0, 0, 10, 10, page,
                                    (HMENU)(INT_PTR)HIRES_ID_VIEW, GetModuleHandleW(NULL), NULL);
+    g_hires.page = page;
+    g_hires.clipLabel = Rs_Label(page, HIRES_ID_CLIP_LABEL, L"Clip", RS_FONT_BOLD);
+    g_hires.clipCombo = Rs_Combo(page, HIRES_ID_CLIP);
+    g_hires.playBtn = Rs_Button(page, HIRES_ID_PLAY, L"Play");
+    g_hires.timeLabel = Rs_Label(page, HIRES_ID_TIME, L"", RS_FONT_SMALL);
+    SetWindowLongPtrW(g_hires.timeLabel, GWL_STYLE, GetWindowLongPtrW(g_hires.timeLabel, GWL_STYLE) | SS_ENDELLIPSIS);
     g_hires.note = Rs_Label(page, HIRES_ID_NOTE,
-                            L"Bind pose, as the file stands. Clip playback follows with the engine's animation code.",
+                            L"Bind pose, or a clip posed with the engine's own animation code (include/rldhires_anim.inc). "
+                            L"Wheels turn slowly while a clip plays.",
                             RS_FONT_SMALL);
     Rs_SetTextColor(g_hires.note, RS_COL_MUTED);
     Rs_SetTextColor(g_hires.status, RS_COL_MUTED);
@@ -757,6 +927,17 @@ static LRESULT Hires_Command(HWND page, WPARAM wParam, LPARAM lParam)
         if (code == BN_CLICKED)
             Hires_Browse(page, 2);
         break;
+    case HIRES_ID_CLIP:
+        if (code == CBN_SELCHANGE) {
+            int sel = (int)SendMessageW(g_hires.clipCombo, CB_GETCURSEL, 0, 0);
+            if (sel >= 0)
+                Hires_SelectClip(sel);
+        }
+        break;
+    case HIRES_ID_PLAY:
+        if (code == BN_CLICKED)
+            Hires_SetPlaying(!g_hires.playing);
+        break;
     case HIRES_ID_CHECK:
         if (code == BN_CLICKED)
             Hires_RunCheck();
@@ -773,6 +954,12 @@ static LRESULT Hires_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, 
 {
     (void)page;
     switch (msg) {
+    case WM_TIMER:
+        if (wParam == HIRES_TIMER) {
+            Hires_Tick();
+            *handled = 1;
+        }
+        return 0;
     case RS_WM_JOB_LINE: {
         wchar_t *line = (wchar_t *)lParam;
         *handled = 1;
@@ -857,6 +1044,87 @@ static int Hires_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         Rs_AutoLog(L"  hires-view: %ls", g_hiresPresetWords[i]);
         return RS_AUTO_DONE;
     }
+    // "hires-camera <yaw> <pitch> <zoom %>": the view's camera, as dragging and
+    // the wheel would (screenshots of a pose from near).
+    if (wcscmp(verb, L"hires-camera") == 0) {
+        int yaw = 0, pitch = 0, zoom = 0;
+        if (swscanf(arg, L"%d %d %d", &yaw, &pitch, &zoom) != 3) {
+            Rs_AutoLog(L"  hires-camera: say <yaw> <pitch> <zoom %%>");
+            return RS_AUTO_FAIL;
+        }
+        RsView_SetCamera(g_hires.view, yaw, pitch, zoom, 0, 0);
+        Rs_AutoLog(L"  hires-camera: %d %d %d", yaw, pitch, zoom);
+        return RS_AUTO_DONE;
+    }
+    // "hires-crash on|off": the reference dummy "Crash size" beside the model
+    // (the View menu of the preview does the same).
+    if (wcscmp(verb, L"hires-crash") == 0) {
+        if (_wcsicmp(arg, L"on") != 0 && _wcsicmp(arg, L"off") != 0) {
+            Rs_AutoLog(L"  hires-crash: say on or off");
+            return RS_AUTO_FAIL;
+        }
+        RsView_SetCrashRef(g_hires.view, _wcsicmp(arg, L"on") == 0);
+        Rs_AutoLog(L"  hires-crash: %ls", arg);
+        return RS_AUTO_DONE;
+    }
+    if (wcscmp(verb, L"hires-clip") == 0) {
+        int sel = -1;
+        if (!Hires_AnimOk()) {
+            Rs_AutoLog(L"  hires-clip: clips cannot be played (%ls)",
+                       g_hires.check.animWhy[0] ? g_hires.check.animWhy : L"no usable model checked");
+            return RS_AUTO_FAIL;
+        }
+        if (_wcsicmp(arg, L"bind") == 0) {
+            sel = 0;
+        } else {
+            for (i = 0; i < RS_HIRES_CLIPS; i++)
+                if (_wcsicmp(arg, RsHires_ClipName(i)) == 0)
+                    sel = i + 1;
+        }
+        if (sel < 0) {
+            Rs_AutoLog(L"  hires-clip: unknown clip '%ls' (bind, idle .. menu)", arg);
+            return RS_AUTO_FAIL;
+        }
+        Hires_SelectClip(sel);
+        Rs_AutoLog(L"  hires-clip: %ls", sel > 0 ? RsHires_ClipName(sel - 1) : L"bind");
+        return RS_AUTO_DONE;
+    }
+    if (wcscmp(verb, L"hires-play") == 0) {
+        int on;
+        if (_wcsicmp(arg, L"on") == 0)
+            on = 1;
+        else if (_wcsicmp(arg, L"off") == 0)
+            on = 0;
+        else {
+            Rs_AutoLog(L"  hires-play: say on or off");
+            return RS_AUTO_FAIL;
+        }
+        if (on && !(Hires_AnimOk() && g_hires.clipSel > 0)) {
+            Rs_AutoLog(L"  hires-play: nothing to play (choose a clip first)");
+            return RS_AUTO_FAIL;
+        }
+        Hires_SetPlaying(on);
+        Rs_AutoLog(L"  hires-play: %ls", on ? L"on" : L"off");
+        return RS_AUTO_DONE;
+    }
+    if (wcscmp(verb, L"hires-time") == 0) {
+        wchar_t *end = NULL;
+        double secs = wcstod(arg, &end);
+        double deg = 0.0;
+        if (!Hires_AnimOk() || end == arg || secs < 0.0) {
+            Rs_AutoLog(L"  hires-time: say <seconds> [<wheel degrees>] with a clip-ready model");
+            return RS_AUTO_FAIL;
+        }
+        deg = wcstod(end, &end);
+        Hires_SetPlaying(0);
+        g_hires.seconds = (float)secs;
+        g_hires.wheelDeg = (float)deg;
+        Hires_ShowView();
+        Hires_UpdateTime();
+        Rs_AutoLog(L"  hires-time: %ls %.3f -> %d triangles", g_hires.clipSel > 0 ? RsHires_ClipName(g_hires.clipSel - 1) : L"bind",
+                   secs, g_hires.shownTris);
+        return RS_AUTO_DONE;
+    }
     if (wcscmp(verb, L"hires-report") == 0) {
         Hires_Copy(path, HIRES_PATH, arg);
         for (i = (int)wcslen(path); i > 0 && (path[i - 1] == L' ' || path[i - 1] == L'"'); i--)
@@ -889,6 +1157,6 @@ const struct RsPageDef g_rsHiresPage = {
     Hires_Message,
     Hires_Automate,
     Hires_Busy,
-    0,
+    900,   // one column below 1100 px; 900 keeps a 1000 px window free of a horizontal scroll bar
     0
 };

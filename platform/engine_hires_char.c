@@ -66,20 +66,19 @@ int g_cfg_engineHiresCharsLog = 0;
 
 #define ENG_HC_UNITS RLDHIRES_UNITS_PER_METRE // kart model units per glTF metre
 #define ENG_HC_FILE_MAX 256
-#define ENG_HC_MATERIALS_MAX 64 // the file's materials + the default + the standard wheels'
-#define ENG_HC_TEXTURES_MAX 64
-#define ENG_HC_PALETTE_MAX 255u
-#define ENG_HC_VERTICES_MAX (1u << 20) // an external mesh's frame (engine_mesh.c MESH_VERTICES_TOTAL_MAX)
-#define ENG_HC_HULL_SAMPLES 16         // samples per clip for the hull (both ends included)
+// The engine's hard limits are include/rldhires.inc's (HRG-32..35, checked by
+// RldHires_Open as the packer and the Studio check them); the checks here are
+// the second line with the same rule ids.
+#define ENG_HC_MATERIALS_MAX (RLDHIRES_MATERIALS_MAX + 2u) // the file's materials + the default + the standard wheels'
+#define ENG_HC_TEXTURES_MAX RLDHIRES_TEXTURE_SLOTS_MAX
+#define ENG_HC_PALETTE_MAX RLDHIRES_PALETTE_MAX
+#define ENG_HC_VERTICES_MAX RLDHIRES_VERTICES_MAX // an external mesh's frame (engine_mesh.c MESH_VERTICES_TOTAL_MAX)
+#define ENG_HC_HULL_SAMPLES RLDHIRES_HULL_SAMPLES // samples per clip for the hull (both ends included)
 #define ENG_HC_HULL_MAX (RLDHIRES_BOUNDS_MAX_M * RLDHIRES_UNITS_PER_METRE)
 // The culling margin of the hull, per side, a fraction of the axis's extent
 // (blends and the times between the samples; not part of the 4 m rule, which
-// tests the plain extent). include/rldhires.inc's RLDHIRES_HULL_MARGIN once it has one.
-#ifdef RLDHIRES_HULL_MARGIN
+// tests the plain extent): include/rldhires.inc's RLDHIRES_HULL_MARGIN.
 #define ENG_HC_HULL_MARGIN RLDHIRES_HULL_MARGIN
-#else
-#define ENG_HC_HULL_MARGIN 0.05f
-#endif
 #define ENG_HC_STD_SEGMENTS 20        // the standard wheel: a cylinder of this many sides
 #define ENG_HC_STD_RADIUS 16.0f       // model units, the prototype's wheel (engine_hires.c ENG_HIRES_WHEEL_RADIUS)
 #define ENG_HC_STD_HALF_WIDTH 5.0f
@@ -159,6 +158,7 @@ typedef struct
 	int matCount;
 	EngHcTex tex[ENG_HC_TEXTURES_MAX];
 	int texCount;
+	int texOverflow; // a material needed a texture upload past ENG_HC_TEXTURES_MAX (HRG-35)
 	u64 texBytes;
 	float hullMin[3];
 	float hullMax[3];
@@ -543,8 +543,9 @@ internal int EngHc_TextureOf(EngHcChar *c, const cgltf_data *gltf, const cgltf_t
 			return k;
 		}
 	}
-	if (c->texCount >= ENG_HC_TEXTURES_MAX)
+	if (c->texCount >= (int)ENG_HC_TEXTURES_MAX)
 	{
+		c->texOverflow = 1;
 		return -1;
 	}
 	c->tex[c->texCount].image = image;
@@ -745,9 +746,16 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 	*rule = "";
 	detail[0] = '\0';
 	memset(matIndices, 0, sizeof(matIndices));
-	if ((gltf == NULL) || ((u32)gltf->materials_count + 2u > (u32)ENG_HC_MATERIALS_MAX))
+	if (gltf == NULL)
 	{
-		EngHc_Fail(rule, detail, detailSize, "HRG-7", "more materials than the engine draws (62)");
+		EngHc_Fail(rule, detail, detailSize, "HRG-7", "the model is not open");
+		return 0;
+	}
+	if ((u32)gltf->materials_count > RLDHIRES_MATERIALS_MAX)
+	{
+		snprintf(detail, (size_t)detailSize, "the model has %u materials - the engine draws at most 62; join materials that share a texture",
+		         (unsigned)gltf->materials_count);
+		*rule = "HRG-32";
 		return 0;
 	}
 	if (!RldAnim_SkeletonFromGltf(gltf, (m->skin >= 0) ? &gltf->skins[m->skin] : NULL, &c->skel, &why))
@@ -786,6 +794,14 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 		return 0;
 	}
 	EngHc_Materials(c, gltf);
+	if (c->texOverflow)
+	{
+		snprintf(detail, (size_t)detailSize, "the materials need more than %u texture uploads - the engine makes at most 64 (one per image, colour space and wrap mode)",
+		         (unsigned)ENG_HC_TEXTURES_MAX);
+		*rule = "HRG-35";
+		EngHc_FreeCpu(c);
+		return 0;
+	}
 	for (n = 0; n < m->drawNodeCount; n++)
 	{
 		const cgltf_node *node = &gltf->nodes[m->drawNodes[n]];
@@ -842,11 +858,19 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 			matIndices[gltf->materials_count + 1u] += (u32)ENG_HC_STD_INDICES;
 		}
 	}
-	if ((vertices == 0u) || (vertices > ENG_HC_VERTICES_MAX) || (c->paletteCount > ENG_HC_PALETTE_MAX))
+	if ((vertices == 0u) || (vertices > ENG_HC_VERTICES_MAX))
 	{
-		snprintf(detail, (size_t)detailSize, "%u vertices and %u palette entries - the engine draws at most %u and %u", vertices, c->paletteCount,
-		         ENG_HC_VERTICES_MAX, ENG_HC_PALETTE_MAX);
-		*rule = "HRG-27";
+		snprintf(detail, (size_t)detailSize, "the model has %u vertices (the wheels counted) - the engine holds at most 1048576; export with shared vertices (indexed)",
+		         vertices);
+		*rule = "HRG-33";
+		EngHc_FreeCpu(c);
+		return 0;
+	}
+	if (c->paletteCount > ENG_HC_PALETTE_MAX)
+	{
+		snprintf(detail, (size_t)detailSize, "%u joints and %u separate mesh objects need %u skinning entries - the engine has 255; join mesh objects", c->joints,
+		         c->rigidCount, c->paletteCount);
+		*rule = "HRG-34";
 		EngHc_FreeCpu(c);
 		return 0;
 	}
@@ -982,7 +1006,7 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 	{
 		if (!((c->hullMax[k] - c->hullMin[k]) <= ENG_HC_HULL_MAX))
 		{
-			snprintf(detail, (size_t)detailSize, "the model with its clips is %.2f m along %c - at most 4 m", (double)((c->hullMax[k] - c->hullMin[k]) / ENG_HC_UNITS),
+			snprintf(detail, (size_t)detailSize, "with its clips the model reaches %.2f m along %c - at most 4 m; keep every pose inside 4 m", (double)((c->hullMax[k] - c->hullMin[k]) / ENG_HC_UNITS),
 			         "xyz"[k]);
 			*rule = "HRG-18";
 			EngHc_FreeCpu(c);

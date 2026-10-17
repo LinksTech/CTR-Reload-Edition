@@ -27,6 +27,8 @@ typedef signed long long s64;
 #include <rldtrack.inc>
 #include <rldchar.inc>
 #include <rldhires.inc>
+#include <rldhires_anim.inc>
+#include <rldhires_hull.inc>
 #if defined(_MSC_VER)
 #pragma warning(pop)
 #endif
@@ -57,41 +59,59 @@ static int RsHires_Severity(int level)
 }
 
 // ---------------------------------------------------------------------------
-// The picture of the bind pose (RLDPV2, see rs_hires_model.h)
+// The picture of the bind pose and the clips (RLDPV2, see rs_hires_model.h)
+//
+// Every drawn triangle corner is kept once, in the space of its own node (a
+// skinned mesh: mesh space) with its normal, its unlit base colour, its joints
+// and weights, its node and its wheel: THE CORNERS. The bind pose picture
+// stands every corner at the rest transform of its node (cgltf); a clip frame
+// (RsHires_AnimFrame) poses the skeleton with include/rldhires_anim.inc and
+// moves every corner with it - a skinned one by RldAnim_SkinVertex, a rigid one
+// by its node's matrix - the functions the engine poses a hi-res driver with.
+
+// One record of the file: s16 x, y, z (1/16 game units), u8 r, g, b, pad.
+#define RS_HIRES_RECORD 10
+
+struct RsHiresCorner {
+    float p[3];            // in the space of its node (skinned: mesh space)
+    float n[3];            // the same; (0, 0, 0) = flat: the triangle's normal is taken
+    u8 rgb[3];             // base colour factor x texture, unlit
+    u8 pad;                // bit 0: drawn from both sides (doubleSided)
+    u8 joint[4];
+    float weight[4];
+    int node;              // its node
+    signed char wheel;     // RLDHIRES_WHEEL_* when it belongs to a wheel node, -1 else
+    signed char skinned;
+};
+
+struct RsHiresAnim {
+    RldAnimSkeleton skel;
+    RldAnimClip clip[RS_HIRES_CLIPS];
+    int has[RS_HIRES_CLIPS];         // clip built
+    struct RsHiresCorner *corners;
+    int cornerCount;                 // 3 per triangle
+    float box[2][3];                 // the framing box, metres (pose 1 of every picture)
+    RldAnimTrs *pose;                // nodeCount each
+    RldAnimTrs *overlay;
+    float *world;                    // nodeCount x 16
+    float *palette;                  // jointCount x 12
+    float *outP;                     // cornerCount x 3: the corners of the last frame
+    float *outN;
+    unsigned char *frame;            // the last frame as RLDPV2
+    size_t frameBytes;
+};
 
 struct RsHiresTex {
     int tried;
     struct RldPngImage png;   // rgba NULL = no texture (not used, not a PNG, refused by the decoder)
 };
 
-struct RsHiresOut {
-    u8 *bytes;
-    size_t used;
-    size_t cap;
-    int triangles;
+struct RsHiresCorners {
+    struct RsHiresCorner *c;
+    int count;
+    int cap;
     int failed;
 };
-
-static void RsHires_Put(struct RsHiresOut *o, const void *data, size_t n)
-{
-    if (o->failed)
-        return;
-    if (o->used + n > o->cap) {
-        size_t cap = o->cap ? o->cap : 65536u;
-        u8 *grown;
-        while (cap < o->used + n)
-            cap *= 2u;
-        grown = (u8 *)realloc(o->bytes, cap);
-        if (!grown) {
-            o->failed = 1;
-            return;
-        }
-        o->bytes = grown;
-        o->cap = cap;
-    }
-    memcpy(o->bytes + o->used, data, n);
-    o->used += n;
-}
 
 static void RsHires_PutU32(u8 *at, u32 v)
 {
@@ -140,20 +160,41 @@ static const struct RldPngImage *RsHires_Texture(const RldHiresModel *m, struct 
     return tex[index].png.rgba ? &tex[index].png : NULL;
 }
 
-// One primitive's triangles into the picture. world: the node's matrix, NULL
-// = mesh space (skinned).
-static void RsHires_DrawPrimitive(const RldHiresModel *m, struct RsHiresTex *tex, const cgltf_primitive *prim, const float *world,
-                                  struct RsHiresOut *o)
+static struct RsHiresCorner *RsHires_NewCorner(struct RsHiresCorners *list)
 {
-    static const float light[3] = {0.3714f, 0.7428f, 0.5571f};   // (0.4, 0.8, 0.6) normalised: front left above
+    if (list->failed)
+        return NULL;
+    if (list->count == list->cap) {
+        int cap = list->cap ? list->cap * 2 : 3072;
+        struct RsHiresCorner *grown = (struct RsHiresCorner *)realloc(list->c, (size_t)cap * sizeof(*grown));
+        if (!grown) {
+            list->failed = 1;
+            return NULL;
+        }
+        list->c = grown;
+        list->cap = cap;
+    }
+    memset(&list->c[list->count], 0, sizeof(list->c[0]));
+    return &list->c[list->count++];
+}
+
+// One primitive's triangle corners into the list. The rules of RldHires_Open
+// decide what is drawn: triangles with a float VEC3 POSITION, nothing sparse.
+static void RsHires_CollectPrimitive(const RldHiresModel *m, struct RsHiresTex *tex, const cgltf_node *node, int nodeIndex, int wheel,
+                                     const cgltf_primitive *prim, struct RsHiresCorners *list)
+{
     const cgltf_accessor *pos = cgltf_find_accessor(prim, cgltf_attribute_type_position, 0);
     const cgltf_accessor *nrm = cgltf_find_accessor(prim, cgltf_attribute_type_normal, 0);
     const cgltf_accessor *uv = cgltf_find_accessor(prim, cgltf_attribute_type_texcoord, 0);
+    const cgltf_accessor *joints = cgltf_find_accessor(prim, cgltf_attribute_type_joints, 0);
+    const cgltf_accessor *weights = cgltf_find_accessor(prim, cgltf_attribute_type_weights, 0);
     const cgltf_material *mat = prim->material;
     const struct RldPngImage *img = RsHires_Texture(m, tex, mat);
+    const int skinned = node->skin != NULL && joints && weights && !joints->is_sparse && !weights->is_sparse;
     float factor[4] = {0.8f, 0.8f, 0.8f, 1.0f};
     u8 pad = (mat && mat->double_sided) ? 1u : 0u;
     cgltf_size n, t;
+    int c, k;
 
     if (prim->type != cgltf_primitive_type_triangles || !RldHires_IsFloat3(pos) || pos->is_sparse ||
         (prim->indices && prim->indices->is_sparse))
@@ -169,24 +210,15 @@ static void RsHires_DrawPrimitive(const RldHiresModel *m, struct RsHiresTex *tex
         memcpy(factor, mat->pbr_metallic_roughness.base_color_factor, sizeof(factor));
 
     for (t = 0; t < n; t += 3u) {
-        float p[3][3], q[3][3], nn[3][3];
-        u8 rec[30];
-        int c, k;
-
         for (c = 0; c < 3; c++) {
             cgltf_size vi = prim->indices ? cgltf_accessor_read_index(prim->indices, t + (cgltf_size)c) : t + (cgltf_size)c;
-            float a[3] = {0, 0, 0};
-            cgltf_accessor_read_float(pos, vi, a, 3);
-            for (k = 0; k < 3; k++)
-                p[c][k] = world ? world[k] * a[0] + world[4 + k] * a[1] + world[8 + k] * a[2] + world[12 + k] : a[k];
-            if (nrm) {
-                float b[3] = {0, 0, 0};
-                cgltf_accessor_read_float(nrm, vi, b, 3);
-                for (k = 0; k < 3; k++)
-                    nn[c][k] = world ? world[k] * b[0] + world[4 + k] * b[1] + world[8 + k] * b[2] : b[k];
-            }
-            q[c][0] = 1.0f;
-            q[c][1] = q[c][2] = 1.0f;
+            struct RsHiresCorner *q = RsHires_NewCorner(list);
+            float col[3] = {1.0f, 1.0f, 1.0f};
+            if (!q)
+                return;
+            cgltf_accessor_read_float(pos, vi, q->p, 3);
+            if (nrm)
+                cgltf_accessor_read_float(nrm, vi, q->n, 3);
             if (img && uv) {
                 float u[2] = {0, 0};
                 float fu, fv;
@@ -205,94 +237,413 @@ static void RsHires_DrawPrimitive(const RldHiresModel *m, struct RsHiresTex *tex
                 if (y >= (int)img->height)
                     y = (int)img->height - 1;
                 for (k = 0; k < 3; k++)
-                    q[c][k] = (float)img->rgba[((size_t)y * img->width + (size_t)x) * 4u + (size_t)k] / 255.0f;
-            }
-        }
-        if (!nrm) {
-            // Flat normals, as the game makes them for a mesh without NORMAL.
-            float e1[3], e2[3], f[3];
-            for (k = 0; k < 3; k++) {
-                e1[k] = p[1][k] - p[0][k];
-                e2[k] = p[2][k] - p[0][k];
-            }
-            f[0] = e1[1] * e2[2] - e1[2] * e2[1];
-            f[1] = e1[2] * e2[0] - e1[0] * e2[2];
-            f[2] = e1[0] * e2[1] - e1[1] * e2[0];
-            for (c = 0; c < 3; c++)
-                memcpy(nn[c], f, sizeof(f));
-        }
-        for (c = 0; c < 3; c++) {
-            float len = sqrtf(nn[c][0] * nn[c][0] + nn[c][1] * nn[c][1] + nn[c][2] * nn[c][2]);
-            float d = (len > 0.0f) ? (nn[c][0] * light[0] + nn[c][1] * light[1] + nn[c][2] * light[2]) / len : 0.0f;
-            float shade = 0.5f + 0.5f * (d > 0.0f ? d : 0.0f);
-            u8 *r = &rec[c * 10];
-            short s;
-            for (k = 0; k < 3; k++) {
-                s = RsHires_Coord(p[c][k]);
-                r[k * 2] = (u8)(s & 0xff);
-                r[k * 2 + 1] = (u8)((s >> 8) & 0xff);
+                    col[k] = (float)img->rgba[((size_t)y * img->width + (size_t)x) * 4u + (size_t)k] / 255.0f;
             }
             for (k = 0; k < 3; k++)
-                r[6 + k] = RsHires_Byte(q[c][k] * factor[k] * shade);
-            r[9] = pad;
+                q->rgb[k] = RsHires_Byte(col[k] * factor[k]);
+            q->pad = pad;
+            q->node = nodeIndex;
+            q->wheel = (signed char)wheel;
+            q->skinned = (signed char)skinned;
+            if (skinned) {
+                cgltf_uint j[4] = {0, 0, 0, 0};
+                cgltf_accessor_read_uint(joints, vi, j, 4);
+                cgltf_accessor_read_float(weights, vi, q->weight, 4);
+                // The weights renormalised to a sum of 1, all on the first joint when they
+                // sum to 0 - the engine's rule (EngHc_ReadPrimitive), so both skin alike.
+                {
+                    const float sum = q->weight[0] + q->weight[1] + q->weight[2] + q->weight[3];
+                    for (k = 0; k < 4; k++)
+                        q->weight[k] = (sum > 0.0f) ? (q->weight[k] / sum) : ((k == 0) ? 1.0f : 0.0f);
+                }
+                for (k = 0; k < 4; k++)
+                    q->joint[k] = (u8)(j[k] < 255u ? j[k] : 0u);   // RldHires_Open refused a joint past the skin (HRG-14)
+            }
         }
-        RsHires_Put(o, rec, sizeof(rec));
-        o->triangles++;
     }
 }
 
-static void RsHires_DrawNode(const RldHiresModel *m, struct RsHiresTex *tex, int nodeIndex, struct RsHiresOut *o)
+static void RsHires_CollectNode(const RldHiresModel *m, struct RsHiresTex *tex, int nodeIndex, int wheel, struct RsHiresCorners *list)
 {
     const cgltf_node *node = &m->data->nodes[nodeIndex];
-    float world[16];
     cgltf_size p;
     if (!node->mesh)
         return;
-    if (!node->skin)
-        cgltf_node_transform_world(node, world);
     for (p = 0; p < node->mesh->primitives_count; p++)
-        RsHires_DrawPrimitive(m, tex, &node->mesh->primitives[p], node->skin ? NULL : world, o);
+        RsHires_CollectPrimitive(m, tex, node, nodeIndex, wheel, &node->mesh->primitives[p], list);
 }
 
+// The lit colour of a corner: base x (half ambient + half diffuse of one light
+// from the front left above).
+static void RsHires_Lit(const u8 rgb[3], const float n[3], u8 out[3])
+{
+    static const float light[3] = {0.3714f, 0.7428f, 0.5571f};   // (0.4, 0.8, 0.6) normalised
+    float len = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    float d = (len > 0.0f) ? (n[0] * light[0] + n[1] * light[1] + n[2] * light[2]) / len : 0.0f;
+    float shade = 0.5f + 0.5f * (d > 0.0f ? d : 0.0f);
+    int k;
+    for (k = 0; k < 3; k++)
+        out[k] = RsHires_Byte(((float)rgb[k] / 255.0f) * shade);
+}
+
+// The picture: header, pose 0 = the corners at p (with normals n; a corner
+// without a normal takes its triangle's), pose 1 = the framing box as two
+// triangles without area (never drawn; it only fixes the view's framing, so
+// that a playing clip does not zoom), pose 2 empty. malloc'ed.
+static unsigned char *RsHires_Write(const struct RsHiresCorner *corners, int count, const float *p, const float *n,
+                                    const float box[2][3], size_t *size)
+{
+    const size_t tris = (size_t)count / 3u;
+    const size_t bytes = 16u + tris * 3u * RS_HIRES_RECORD + 4u + 2u * 3u * RS_HIRES_RECORD + 4u;
+    unsigned char *out = (unsigned char *)malloc(bytes);
+    unsigned char *at;
+    size_t i;
+    int c, k;
+
+    *size = 0;
+    if (!out)
+        return NULL;
+    memcpy(out, "RLDPV2\0\0", 8);
+    RsHires_PutU32(out + 8, 3u);
+    RsHires_PutU32(out + 12, (u32)tris);
+    at = out + 16;
+    for (i = 0; i < tris; i++) {
+        const float *tp = &p[i * 9u];
+        float face[3];
+        float e1[3], e2[3];
+        for (k = 0; k < 3; k++) {
+            e1[k] = tp[3 + k] - tp[k];
+            e2[k] = tp[6 + k] - tp[k];
+        }
+        face[0] = e1[1] * e2[2] - e1[2] * e2[1];
+        face[1] = e1[2] * e2[0] - e1[0] * e2[2];
+        face[2] = e1[0] * e2[1] - e1[1] * e2[0];
+        for (c = 0; c < 3; c++) {
+            const struct RsHiresCorner *q = &corners[i * 3u + (size_t)c];
+            const float *cn = &n[(i * 3u + (size_t)c) * 3u];
+            const int flat = q->n[0] == 0.0f && q->n[1] == 0.0f && q->n[2] == 0.0f;
+            for (k = 0; k < 3; k++) {
+                short s = RsHires_Coord(tp[c * 3 + k]);
+                at[k * 2] = (u8)(s & 0xff);
+                at[k * 2 + 1] = (u8)((s >> 8) & 0xff);
+            }
+            RsHires_Lit(q->rgb, flat ? face : cn, at + 6);
+            at[9] = q->pad;
+            at += RS_HIRES_RECORD;
+        }
+    }
+    RsHires_PutU32(at, 2u);
+    at += 4;
+    for (i = 0; i < 2; i++)
+        for (c = 0; c < 3; c++) {
+            memset(at, 0, RS_HIRES_RECORD);
+            for (k = 0; k < 3; k++) {
+                short s = RsHires_Coord(box[i][k]);
+                at[k * 2] = (u8)(s & 0xff);
+                at[k * 2 + 1] = (u8)((s >> 8) & 0xff);
+            }
+            at += RS_HIRES_RECORD;
+        }
+    RsHires_PutU32(at, 0u);
+    *size = bytes;
+    return out;
+}
+
+static void RsHires_AnimFree(struct RsHiresAnim *a)
+{
+    int i;
+    if (!a)
+        return;
+    for (i = 0; i < RS_HIRES_CLIPS; i++)
+        if (a->has[i])
+            RldAnim_FreeClip(&a->clip[i]);
+    if (a->skel.block)
+        RldAnim_FreeSkeleton(&a->skel);
+    free(a->corners);
+    free(a->pose);
+    free(a->overlay);
+    free(a->world);
+    free(a->palette);
+    free(a->outP);
+    free(a->outN);
+    free(a->frame);
+    free(a);
+}
+
+// The corners, the bind pose picture and, when the skeleton and the clips can
+// be built, the animation of a model RldHires_Open read.
 static void RsHires_Picture(const RldHiresModel *m, struct RsHiresCheck *out)
 {
-    static const u8 magic[8] = {'R', 'L', 'D', 'P', 'V', '2', 0, 0};
-    struct RsHiresOut o;
+    struct RsHiresCorners list;
     struct RsHiresTex *tex;
-    u8 head[16];
-    int i;
+    struct RsHiresAnim *a;
+    float *p, *n;
+    int i, k;
+    const char *why = "";
 
     // drawNodes is made only after the ranges and cgltf_validate passed: the
     // data can be read.
     if (!m->data || !m->drawNodes)
         return;
-    memset(&o, 0, sizeof(o));
+    memset(&list, 0, sizeof(list));
     tex = (struct RsHiresTex *)calloc((size_t)(m->imageCount > 0 ? m->imageCount : 1), sizeof(*tex));
     if (!tex)
         return;
-    memcpy(head, magic, 8);
-    RsHires_PutU32(head + 8, 3u);
-    RsHires_PutU32(head + 12, 0u);   // the triangles of pose 0, written below
-    RsHires_Put(&o, head, sizeof(head));
     for (i = 0; i < m->drawNodeCount; i++)
-        RsHires_DrawNode(m, tex, m->drawNodes[i], &o);
+        RsHires_CollectNode(m, tex, m->drawNodes[i], -1, &list);
     if (m->wheelNode[0] >= 0)
         for (i = 0; i < RLDHIRES_WHEEL_COUNT; i++)
-            RsHires_DrawNode(m, tex, m->wheelNode[i], &o);
-    RsHires_PutU32(head, 0u);
-    RsHires_Put(&o, head, 4);   // pose 1: empty
-    RsHires_Put(&o, head, 4);   // pose 2: empty
+            RsHires_CollectNode(m, tex, m->wheelNode[i], i, &list);
     for (i = 0; i < m->imageCount; i++)
         RldPng_Free(&tex[i].png);
     free(tex);
-    if (o.failed || o.triangles == 0) {
-        free(o.bytes);
+    if (list.failed || list.count == 0) {
+        free(list.c);
         return;
     }
-    RsHires_PutU32(o.bytes + 12, (u32)o.triangles);
-    out->preview = o.bytes;
-    out->previewBytes = o.used;
-    out->previewTriangles = o.triangles;
+
+    a = (struct RsHiresAnim *)calloc(1, sizeof(*a));
+    p = (float *)malloc((size_t)list.count * 3u * sizeof(float));
+    n = (float *)malloc((size_t)list.count * 3u * sizeof(float));
+    if (!a || !p || !n) {
+        free(a);
+        free(p);
+        free(n);
+        free(list.c);
+        return;
+    }
+    a->corners = list.c;
+    a->cornerCount = list.count;
+    a->outP = p;
+    a->outN = n;
+    for (k = 0; k < 3; k++) {
+        a->box[0][k] = m->boundsMin[k] - 0.25f;
+        a->box[1][k] = m->boundsMax[k] + 0.25f;
+    }
+
+    // The bind pose: every corner at the rest transform of its node (cgltf, as
+    // RldHires_Open measured the bounds); a skinned one as it is.
+    {
+        int last = -1;
+        float world[16];
+        for (i = 0; i < list.count; i++) {
+            const struct RsHiresCorner *q = &list.c[i];
+            if (q->skinned || m->data->nodes[q->node].skin) {
+                memcpy(&p[i * 3], q->p, sizeof(q->p));
+                memcpy(&n[i * 3], q->n, sizeof(q->n));
+                continue;
+            }
+            if (q->node != last) {
+                cgltf_node_transform_world(&m->data->nodes[q->node], world);
+                last = q->node;
+            }
+            for (k = 0; k < 3; k++) {
+                p[i * 3 + k] = world[k] * q->p[0] + world[4 + k] * q->p[1] + world[8 + k] * q->p[2] + world[12 + k];
+                n[i * 3 + k] = world[k] * q->n[0] + world[4 + k] * q->n[1] + world[8 + k] * q->n[2];
+            }
+        }
+    }
+    out->preview = RsHires_Write(list.c, list.count, p, n, a->box, &out->previewBytes);
+    out->previewTriangles = out->preview ? list.count / 3 : 0;
+
+    // The animation: the skeleton of every node (and the skin's joints) and the
+    // clips of the file, copied out of cgltf (rldhires_anim.inc).
+    if (!RldAnim_SkeletonFromGltf(m->data, m->skin >= 0 ? &m->data->skins[0] : NULL, &a->skel, &why)) {
+        RsHires_Widen(out->animWhy, RS_HIRES_TEXT_MAX, why);
+    } else {
+        for (i = 0; i < RS_HIRES_CLIPS; i++) {
+            u32 skipped = 0;
+            if (m->clipAnim[i] < 0)
+                continue;
+            if (!RldAnim_ClipFromGltf(m->data, &m->data->animations[m->clipAnim[i]], &a->clip[i], &skipped, &why)) {
+                wchar_t w[160];
+                RsHires_Widen(w, 160, why);
+                swprintf(out->animWhy, RS_HIRES_TEXT_MAX, L"clip '%ls' cannot be played: %ls", RsHires_ClipName(i), w);
+                continue;
+            }
+            a->has[i] = 1;
+        }
+        a->pose = (RldAnimTrs *)malloc((size_t)a->skel.nodeCount * sizeof(RldAnimTrs));
+        a->overlay = (RldAnimTrs *)malloc((size_t)a->skel.nodeCount * sizeof(RldAnimTrs));
+        a->world = (float *)malloc((size_t)a->skel.nodeCount * 16u * sizeof(float));
+        a->palette = (float *)malloc((size_t)(a->skel.jointCount ? a->skel.jointCount : 1u) * 12u * sizeof(float));
+        if (a->pose && a->overlay && a->world && a->palette)
+            out->animReady = 1;
+        else
+            swprintf(out->animWhy, RS_HIRES_TEXT_MAX, L"out of memory for the clips");
+    }
+    out->anim = a;
+}
+
+// ---------------------------------------------------------------------------
+// Clip playback
+
+// Preview seconds -> the clip's local seconds, by how the game plays the clip
+// (the rule of EngHc_LocalTime, platform/engine_hires_pose.c): a loop wraps; a
+// clip played once runs to its end and holds - here it starts again after a
+// held second, so that the preview keeps showing it; a pose scrub (steering)
+// is fraction x length.
+static float RsHires_LocalTime(int play, float seconds, float fraction, float length, int full)
+{
+    if (play == RLDHIRES_PLAY_POSE) {
+        const float f = full ? 1.0f : (fraction < 0.0f ? 0.0f : (fraction > 1.0f ? 1.0f : fraction));
+        return f * length;
+    }
+    if (play == RLDHIRES_PLAY_ONCE) {
+        double local = fmod((double)seconds, (double)length + 1.0);
+        return (float)(local > (double)length ? (double)length : local);
+    }
+    if (!(length > 0.0f))
+        return 0.0f;
+    {
+        double local = fmod((double)seconds, (double)length);
+        return (float)(local < 0.0 ? local + (double)length : local);
+    }
+}
+
+// The steer share of the preview: 0 -> 1 -> 0 over 2 s.
+static float RsHires_SteerShare(float seconds)
+{
+    double f = fmod((double)seconds, 2.0);
+    if (f < 0.0)
+        f += 2.0;
+    return (float)(f <= 1.0 ? f : 2.0 - f);
+}
+
+// A clip (resolved, built) sampled into pose (which holds the rest pose).
+static void RsHires_Sample(struct RsHiresAnim *a, int clip, int play, float seconds, float fraction, int full, RldAnimTrs *pose)
+{
+    float local;
+    if (clip < 0 || clip >= RS_HIRES_CLIPS || !a->has[clip])
+        return;
+    local = RsHires_LocalTime(play, seconds, fraction, RldAnim_ClipLength(&a->clip[clip]), full);
+    RldAnim_SampleClip(&a->clip[clip], RldAnim_ClipTime(&a->clip[clip], local, RLDANIM_PLAY_ONCE), pose, a->skel.nodeCount);
+}
+
+int RsHires_AnimFrame(struct RsHiresCheck *c, int clip, float seconds, float wheelDegrees, const unsigned char **bytes, size_t *size)
+{
+    struct RsHiresAnim *a = c->anim;
+    const double spin = (double)wheelDegrees * 3.14159265358979 / 180.0;
+    const float cs = (float)cos(spin), sn = (float)sin(spin);
+    u32 j;
+    int i, k;
+
+    if (bytes)
+        *bytes = NULL;
+    if (size)
+        *size = 0;
+    if (!a || !c->animReady)
+        return 0;
+
+    // The pose, as the game draws the state of the clip: the resolved clip at
+    // its play kind; a steer clip as the BASE state does - idle looped and the
+    // steer clip scrubbed by the steer share, blended over it by that share;
+    // a drift that falls back to its steer clip at full lock.
+    RldAnim_PoseRest(&a->skel, a->pose);
+    if (clip >= 0 && clip < RS_HIRES_CLIPS) {
+        const int via = c->clipVia[clip];
+        const int full = c->clipFullLock[clip];
+        if (RldHires_ClipPlay(clip) == RLDHIRES_PLAY_POSE) {
+            const float share = RsHires_SteerShare(seconds);
+            const int idle = c->clipVia[RLDHIRES_CLIP_IDLE];
+            RsHires_Sample(a, idle, RldHires_ClipPlay(idle), seconds, 0.0f, 0, a->pose);
+            RldAnim_PoseRest(&a->skel, a->overlay);
+            RsHires_Sample(a, idle, RldHires_ClipPlay(idle), seconds, 0.0f, 0, a->overlay);
+            RsHires_Sample(a, via, RldHires_ClipPlay(via), seconds, share, 0, a->overlay);
+            RldAnim_BlendPose(a->pose, a->overlay, share, a->pose, a->skel.nodeCount);
+        } else {
+            RsHires_Sample(a, via, RldHires_ClipPlay(via), seconds, 1.0f, full, a->pose);
+        }
+    }
+    RldAnim_NodeMatrices(&a->skel, a->pose, a->world);
+    for (j = 0; j < a->skel.jointCount; j++) {
+        float jm[16];
+        RldAnim_JointMatrix(&a->skel, a->world, j, jm);
+        RldAnim_PaletteEntry(NULL, jm, &a->palette[(size_t)j * 12u]);
+    }
+
+    for (i = 0; i < a->cornerCount; i++) {
+        const struct RsHiresCorner *q = &a->corners[i];
+        float *op = &a->outP[i * 3], *on = &a->outN[i * 3];
+        if (q->skinned && a->skel.jointCount) {
+            RldAnim_SkinVertex(a->palette, q->joint, q->weight, q->p, q->n, op, on);
+            if (q->n[0] == 0.0f && q->n[1] == 0.0f && q->n[2] == 0.0f)
+                on[0] = on[1] = on[2] = 0.0f;
+            continue;
+        }
+        {
+            const float *w = (q->node >= 0 && (u32)q->node < a->skel.nodeCount) ? &a->world[(size_t)q->node * 16u] : NULL;
+            float lp[3], ln[3];
+            memcpy(lp, q->p, sizeof(lp));
+            memcpy(ln, q->n, sizeof(ln));
+            if (q->wheel >= 0) {
+                // A wheel turns about its node's X axis; + rolls forward (its top toward +Z).
+                lp[1] = q->p[1] * cs - q->p[2] * sn;
+                lp[2] = q->p[1] * sn + q->p[2] * cs;
+                ln[1] = q->n[1] * cs - q->n[2] * sn;
+                ln[2] = q->n[1] * sn + q->n[2] * cs;
+            }
+            if (!w) {
+                memcpy(op, lp, sizeof(lp));
+                memcpy(on, ln, sizeof(ln));
+                continue;
+            }
+            for (k = 0; k < 3; k++) {
+                op[k] = w[k] * lp[0] + w[4 + k] * lp[1] + w[8 + k] * lp[2] + w[12 + k];
+                on[k] = w[k] * ln[0] + w[4 + k] * ln[1] + w[8 + k] * ln[2];
+            }
+        }
+    }
+
+    free(a->frame);
+    a->frame = RsHires_Write(a->corners, a->cornerCount, a->outP, a->outN, a->box, &a->frameBytes);
+    if (!a->frame)
+        return 0;
+    if (bytes)
+        *bytes = a->frame;
+    if (size)
+        *size = a->frameBytes;
+    return a->cornerCount / 3;
+}
+
+int RsHires_AnimCorner(const struct RsHiresCheck *c, int index, float p[3], float n[3])
+{
+    const struct RsHiresAnim *a = c->anim;
+    if (!a || index < 0 || index >= a->cornerCount)
+        return 0;
+    memcpy(p, &a->outP[index * 3], 3 * sizeof(float));
+    memcpy(n, &a->outN[index * 3], 3 * sizeof(float));
+    return 1;
+}
+
+float RsHires_AnimLocal(const struct RsHiresCheck *c, int clip, float seconds, float *share)
+{
+    const struct RsHiresAnim *a = c->anim;
+    int via;
+    if (share)
+        *share = -1.0f;
+    if (!a || clip < 0 || clip >= RS_HIRES_CLIPS)
+        return 0.0f;
+    via = c->clipVia[clip];
+    if (via < 0 || !a->has[via])
+        return 0.0f;
+    if (RldHires_ClipPlay(clip) == RLDHIRES_PLAY_POSE) {
+        const float f = RsHires_SteerShare(seconds);
+        if (share)
+            *share = f;
+        return RsHires_LocalTime(RldHires_ClipPlay(via), seconds, f, RldAnim_ClipLength(&a->clip[via]), 0);
+    }
+    return RsHires_LocalTime(RldHires_ClipPlay(via), seconds, 1.0f, RldAnim_ClipLength(&a->clip[via]), c->clipFullLock[clip]);
+}
+
+float RsHires_AnimLength(const struct RsHiresCheck *c, int clip)
+{
+    const struct RsHiresAnim *a = c->anim;
+    int via;
+    if (!a || clip < 0 || clip >= RS_HIRES_CLIPS)
+        return 0.0f;
+    via = c->clipVia[clip];
+    return (via >= 0 && a->has[via]) ? RldAnim_ClipLength(&a->clip[via]) : 0.0f;
 }
 
 // ---------------------------------------------------------------------------
@@ -360,6 +711,11 @@ int RsHires_CheckGlb(const unsigned char *glb, size_t size, struct RsHiresCheck 
     ok = RldHires_Open(glb, (u32)size, &m, &rep);
     if (m.data)
         ok = RldHires_CheckBudget(&m, &rep) && ok;
+    if (m.usable) {
+        // The poses of every clip (include/rldhires_hull.inc): what rldpack hires-check adds.
+        float lo[3], hi[3];
+        ok = RldHires_CheckClipHull(&m, &rep, lo, hi, NULL) && ok;
+    }
     RsHires_Fill(&rep, &m, out);
     RsHires_Picture(&m, out);
     out->read = 1;
@@ -479,6 +835,9 @@ void RsHires_CheckFree(struct RsHiresCheck *c)
 {
     if (!c)
         return;
+    RsHires_AnimFree(c->anim);
+    c->anim = NULL;
+    c->animReady = 0;
     free(c->preview);
     c->preview = NULL;
     c->previewBytes = 0;

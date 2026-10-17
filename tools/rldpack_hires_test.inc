@@ -53,6 +53,14 @@ struct HrTestSpec
 	int jsonBroken;
 	int unusedImage;        // a second image no material uses (not a PNG either)
 	int wrapCount;          // a POSITION count whose byte size wraps 32 bits
+	int animCase;           // the skinning case of the engine's selftest (EngHiresAnimT, case 8): see HrTest_Glb
+	float hullShift;        // every clip also moves joint_0 from 0 to (hullShift, 0, 0) m over 1 s
+	int bigVertices;        // the body: one non-indexed primitive of this many zero positions (no skin, set skins -1)
+	int extraMaterials;     // materials without textures appended
+	int extraRigid;         // body nodes with the wheel's mesh and no skin appended (part_0, part_1 ...)
+	int texPairs;           // materials appended, each with its own base colour and normal map image
+	int sameImageNormal;    // material 0 uses its base colour image as normal map too
+	int clampTexture;       // a second material uses the same image through a clamping sampler
 };
 
 static int s_hrChecks;
@@ -143,11 +151,12 @@ enum
 	HRV_AOUTC,
 	HRV_WPOS,
 	HRV_WNRM,
+	HRV_ATR,  // the translation keys of hullShift
 	HRV_IMG,
 	HRV_COUNT
 };
 
-#define HRTEST_JSON_MAX 32768
+#define HRTEST_JSON_MAX 65536
 #define HRTEST_BIN_MAX 8192
 
 // The GLB of a spec: malloc'ed, *sizeOut its size. NULL when out of memory.
@@ -196,6 +205,7 @@ static u8 *HrTest_Glb(const struct HrTestSpec *sp, u32 *sizeOut)
 	len[HRV_AOUTC] = 96;
 	len[HRV_WPOS] = 36;
 	len[HRV_WNRM] = 36;
+	len[HRV_ATR] = 24;
 	len[HRV_IMG] = 0;
 	for (i = 0; i < HRV_COUNT; i++)
 	{
@@ -268,6 +278,26 @@ static u8 *HrTest_Glb(const struct HrTestSpec *sp, u32 *sizeOut)
 	HrTest_PutF(&bin[off[HRV_AIN] + 4], 1.0f);
 	HrTest_PutF(&bin[off[HRV_AOUT] + 12], 1.0f);
 	HrTest_PutF(&bin[off[HRV_AOUT] + 28], 1.0f);
+	if (sp->animCase)
+	{
+		// The case of the engine's selftest (platform/engine_hires_selftest.c,
+		// "gltf chain skinned vertex 3"): joint_1 stands at (0, 0.5, 0) on the
+		// root joint_0, its inverse bind matrix T(0, -0.5, 0); the body's
+		// second vertex (0.1, 0.5, 0) hangs half on each joint; every clip
+		// turns joint_1 from 0 to 10 degrees about Z over 1 s.
+		HrTest_PutF(&bin[off[HRV_IBM] + 64u + 52u], -0.5f);
+		HrTest_PutF(&bin[off[HRV_POS] + 12], 0.1f);
+		HrTest_PutF(&bin[off[HRV_POS] + 16], 0.5f);
+		bin[off[HRV_JNT] + 5] = 1;
+		HrTest_PutF(&bin[off[HRV_WGT] + 16], 0.5f);
+		HrTest_PutF(&bin[off[HRV_WGT] + 20], 0.5f);
+		HrTest_PutF(&bin[off[HRV_AOUT] + 24], 0.0871557427f); // sin 5 degrees
+		HrTest_PutF(&bin[off[HRV_AOUT] + 28], 0.9961946981f); // cos 5 degrees
+		// The third vertex (0, 1, 0) has a weight of 0.5 alone: the engine
+		// renormalises it to 1 (EngHc_ReadPrimitive), so does the Studio.
+		HrTest_PutF(&bin[off[HRV_WGT] + 32], 0.5f);
+	}
+	HrTest_PutF(&bin[off[HRV_ATR] + 12], sp->hullShift);
 	for (i = 0; i < 6; i++)
 	{
 		HrTest_PutF(&bin[off[HRV_AOUTC] + 16u * (u32)i + 12u], 1.0f);
@@ -340,6 +370,8 @@ static u8 *HrTest_Glb(const struct HrTestSpec *sp, u32 *sizeOut)
 	HrTest_Append(json, sizeof(json), ",{\"bufferView\":%d,\"componentType\":5126,\"count\":6,\"type\":\"VEC4\"}", HRV_AOUTC);
 	HrTest_Append(json, sizeof(json), ",{\"bufferView\":%d,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}", HRV_WPOS);
 	HrTest_Append(json, sizeof(json), ",{\"bufferView\":%d,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"}", HRV_WNRM);
+	HrTest_Append(json, sizeof(json), ",{\"bufferView\":%d,\"componentType\":5126,\"count\":2,\"type\":\"VEC3\"}", HRV_ATR);   // 12
+	HrTest_Append(json, sizeof(json), ",{\"componentType\":5126,\"count\":%d,\"type\":\"VEC3\"}", (sp->bigVertices > 0) ? sp->bigVertices : 3); // 13: zeros
 	HrTest_Append(json, sizeof(json), "]");
 
 	// Image, texture, material.
@@ -359,13 +391,57 @@ static u8 *HrTest_Glb(const struct HrTestSpec *sp, u32 *sizeOut)
 		*end = '\0';
 		HrTest_Append(json, sizeof(json), ",{\"name\":\"spare\",\"bufferView\":%d,\"mimeType\":\"image/jpeg\"}]", HRV_AOUT);
 	}
-	HrTest_Append(json, sizeof(json), (sp->image == 5) ? ",\"textures\":[{}]" : ",\"textures\":[{\"source\":0}]");
-	HrTest_Append(json, sizeof(json), ",\"materials\":[{\"name\":\"paint\",\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}%s%s%s}]",
+	if (sp->texPairs > 0)
+	{
+		char *end = json + strlen(json) - 1u; // the ']' of images
+
+		*end = '\0';
+		for (i = 0; i < 2 * sp->texPairs; i++)
+		{
+			HrTest_Append(json, sizeof(json), ",{\"bufferView\":%d,\"mimeType\":\"image/png\"}", HRV_IMG);
+		}
+		HrTest_Append(json, sizeof(json), "]");
+	}
+	if (sp->clampTexture)
+	{
+		HrTest_Append(json, sizeof(json), ",\"samplers\":[{\"wrapS\":33071,\"wrapT\":33071}]");
+	}
+	HrTest_Append(json, sizeof(json), (sp->image == 5) ? ",\"textures\":[{}" : ",\"textures\":[{\"source\":0}");
+	for (i = 0; i < 2 * sp->texPairs; i++)
+	{
+		HrTest_Append(json, sizeof(json), ",{\"source\":%d}", 1 + i); // textures 1 .. 2P: images 1 .. 2P
+	}
+	if (sp->clampTexture)
+	{
+		HrTest_Append(json, sizeof(json), ",{\"source\":0,\"sampler\":0}"); // texture 1 + 2P
+	}
+	HrTest_Append(json, sizeof(json), "]");
+	HrTest_Append(json, sizeof(json), ",\"materials\":[{\"name\":\"paint\",\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}%s%s%s%s}",
 	              sp->blend ? ",\"alphaMode\":\"BLEND\"" : "", sp->emissive ? ",\"emissiveFactor\":[1,0,0]" : "",
-	              ((sp->required != NULL) && (strcmp(sp->required, "KHR_materials_unlit") == 0)) ? ",\"extensions\":{\"KHR_materials_unlit\":{}}" : "");
+	              ((sp->required != NULL) && (strcmp(sp->required, "KHR_materials_unlit") == 0)) ? ",\"extensions\":{\"KHR_materials_unlit\":{}}" : "",
+	              sp->sameImageNormal ? ",\"normalTexture\":{\"index\":0}" : "");
+	for (i = 0; i < sp->texPairs; i++)
+	{
+		HrTest_Append(json, sizeof(json), ",{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":%d}},\"normalTexture\":{\"index\":%d}}", 1 + 2 * i,
+		              2 + 2 * i);
+	}
+	if (sp->clampTexture)
+	{
+		HrTest_Append(json, sizeof(json), ",{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":%d}}}", 1 + 2 * sp->texPairs);
+	}
+	for (i = 0; i < sp->extraMaterials; i++)
+	{
+		HrTest_Append(json, sizeof(json), ",{\"name\":\"m%d\"}", i);
+	}
+	HrTest_Append(json, sizeof(json), "]");
 
 	// Meshes: 0 the body, 1 the wheel.
 	HrTest_Append(json, sizeof(json), ",\"meshes\":[{\"name\":\"body\",\"primitives\":[{\"attributes\":{");
+	if (sp->bigVertices > 0)
+	{
+		HrTest_Append(json, sizeof(json), "\"POSITION\":13},\"material\":0}]}");
+	}
+	else
 	{
 		int first = 1;
 
@@ -388,13 +464,13 @@ static u8 *HrTest_Glb(const struct HrTestSpec *sp, u32 *sizeOut)
 		{
 			HrTest_Append(json, sizeof(json), ",\"WEIGHTS_0\":4");
 		}
+		HrTest_Append(json, sizeof(json), "},\"indices\":5,\"material\":0%s", sp->morph ? ",\"targets\":[{\"POSITION\":1}]" : "");
+		if (sp->mode != 0)
+		{
+			HrTest_Append(json, sizeof(json), ",\"mode\":%d", sp->mode);
+		}
+		HrTest_Append(json, sizeof(json), "}]%s}", sp->morph ? ",\"weights\":[0]" : "");
 	}
-	HrTest_Append(json, sizeof(json), "},\"indices\":5,\"material\":0%s", sp->morph ? ",\"targets\":[{\"POSITION\":1}]" : "");
-	if (sp->mode != 0)
-	{
-		HrTest_Append(json, sizeof(json), ",\"mode\":%d", sp->mode);
-	}
-	HrTest_Append(json, sizeof(json), "}]%s}", sp->morph ? ",\"weights\":[0]" : "");
 	HrTest_Append(json, sizeof(json), ",{\"name\":\"wheel\",\"primitives\":[{\"attributes\":{\"POSITION\":10,\"NORMAL\":11},\"material\":0}]}]");
 
 	// Skins.
@@ -425,7 +501,7 @@ static u8 *HrTest_Glb(const struct HrTestSpec *sp, u32 *sizeOut)
 	}
 	for (i = 0; i < joints; i++)
 	{
-		HrTest_Append(json, sizeof(json), ",{\"name\":\"joint_%d\"", i);
+		HrTest_Append(json, sizeof(json), ",{\"name\":\"joint_%d\"%s", i, (sp->animCase && (i == 1)) ? ",\"translation\":[0,0.5,0]" : "");
 		if ((i == 0) && (joints > 1))
 		{
 			HrTest_Append(json, sizeof(json), ",\"children\":[");
@@ -463,6 +539,10 @@ static u8 *HrTest_Glb(const struct HrTestSpec *sp, u32 *sizeOut)
 		HrTest_Append(json, sizeof(json), ",{\"name\":\"wheel_fl\",\"mesh\":1}");
 		nodeCount++;
 	}
+	for (i = 0; i < sp->extraRigid; i++)
+	{
+		HrTest_Append(json, sizeof(json), ",{\"name\":\"part_%d\",\"mesh\":1}", i);
+	}
 	HrTest_Append(json, sizeof(json), "]");
 
 	// The scene.
@@ -475,13 +555,17 @@ static u8 *HrTest_Glb(const struct HrTestSpec *sp, u32 *sizeOut)
 	{
 		HrTest_Append(json, sizeof(json), ",%d", nodeCount - 1);
 	}
+	for (i = 0; i < sp->extraRigid; i++)
+	{
+		HrTest_Append(json, sizeof(json), ",%d", nodeCount + i);
+	}
 	HrTest_Append(json, sizeof(json), "]}]");
 
 	// Animations: one per clip written, turning the root joint (or the body).
 	HrTest_Append(json, sizeof(json), ",\"animations\":[");
 	{
 		int first = 1;
-		const int target = (skins > 0) ? 1 : 0;
+		const int target = (skins > 0) ? (sp->animCase ? 2 : 1) : 0;
 
 		for (i = 0; i < RLDHIRES_CLIP_COUNT; i++)
 		{
@@ -489,6 +573,14 @@ static u8 *HrTest_Glb(const struct HrTestSpec *sp, u32 *sizeOut)
 
 			if ((sp->clipsMissing >> i) & 1)
 			{
+				continue;
+			}
+			if (sp->hullShift != 0.0f)
+			{
+				HrTest_Append(json, sizeof(json),
+				              "%s{\"name\":\"%s\",\"samplers\":[{\"input\":7,\"output\":8},{\"input\":7,\"output\":12}],\"channels\":[{\"sampler\":0,\"target\":{\"node\":%d,\"path\":\"rotation\"}},{\"sampler\":1,\"target\":{\"node\":%d,\"path\":\"translation\"}}]}",
+				              first ? "" : ",", s_rldHiresClipName[i], target, target);
+				first = 0;
 				continue;
 			}
 			HrTest_Append(json, sizeof(json),
@@ -762,10 +854,13 @@ static void HrTest_Pack(void)
 // rldpack hires-test-files <folder>: the self-test's models as files, for the
 // ctest rldhires_files (cmake/run_rldhires_files.cmake): hires-good.glb (no
 // finding), hires-warn.glb (warnings only: no 'hit', no wheels), hires-bad.glb
-// (an error: a JPEG texture). The folder must exist.
+// (an error: a JPEG texture), hires-anim.glb (the skinning case of the engine's
+// selftest, for Reload Studio's clip playback: rs_hires_test.c), hires-hull.glb
+// (clips that take the model to 4.05 m: HRG-18 of the clip hull). The folder
+// must exist.
 static int RldHires_TestFilesCommand(int argc, char **argv)
 {
-	static const char *const names[3] = {"hires-good.glb", "hires-warn.glb", "hires-bad.glb"};
+	static const char *const names[5] = {"hires-good.glb", "hires-warn.glb", "hires-bad.glb", "hires-anim.glb", "hires-hull.glb"};
 	int k;
 
 	if (argc != 1)
@@ -773,7 +868,7 @@ static int RldHires_TestFilesCommand(int argc, char **argv)
 		fprintf(stderr, "usage: rldpack hires-test-files <folder>\n");
 		return 2;
 	}
-	for (k = 0; k < 3; k++)
+	for (k = 0; k < 5; k++)
 	{
 		struct HrTestSpec sp;
 		char path[RLD_PATH_MAX];
@@ -791,6 +886,14 @@ static int RldHires_TestFilesCommand(int argc, char **argv)
 		else if (k == 2)
 		{
 			sp.image = 1;
+		}
+		else if (k == 3)
+		{
+			sp.animCase = 1;
+		}
+		else if (k == 4)
+		{
+			sp.hullShift = 2.3f; // every clip moves the body to 4.05 m (HRG-18 of the clip hull)
 		}
 		glb = HrTest_Glb(&sp, &size);
 		snprintf(path, sizeof(path), "%s/%s", argv[0], names[k]);
@@ -860,6 +963,11 @@ static int RldHires_SelfTest(void)
 	}
 	RldHires_Close(&m);
 	HrTest_Check(m.data == NULL && m.drawNodes == NULL && m.images == NULL, "RldHires_Close clears the model");
+
+	// The skinning case (hires-anim.glb) is a clean model too.
+	memset(&sp, 0, sizeof(sp));
+	sp.animCase = 1;
+	HrTest_Check(HrTest_Open(&sp, &rep, NULL, NULL) == 1 && rep.count == 0, "the skinning case model: usable, no message");
 
 	// DETERMINISM: the same GLB gives the same report and counts.
 	{
@@ -1310,6 +1418,123 @@ static int RldHires_SelfTest(void)
 	memset(&sp, 0, sizeof(sp));
 	sp.twiceWheel = 1;
 	HrTest_Rule("HRG-31", &sp, "wheel_fl twice");
+
+	// HRG-32: materials (the engine adds two of its own to the file's; 64 in all).
+	memset(&sp, 0, sizeof(sp));
+	sp.extraMaterials = 62;
+	HrTest_Rule("HRG-32", &sp, "63 materials");
+	memset(&sp, 0, sizeof(sp));
+	sp.extraMaterials = 61;
+	HrTest_Clean("HRG-32", &sp, "62 materials");
+
+	// HRG-33: vertices, the engine's 4 standard wheels (82 each) counted when the file has no wheel set.
+	memset(&sp, 0, sizeof(sp));
+	sp.skins = -1;
+	sp.wheelsMissing = 0xF;
+	sp.bigVertices = 1048251; // + 328 = 1048579
+	HrTest_Rule("HRG-33", &sp, "1048579 vertices");
+	sp.bigVertices = 1048248; // + 328 = 1048576
+	HrTest_Clean("HRG-33", &sp, "exactly 1048576 vertices");
+	HrTest_Open(&sp, &rep, &m, &glb);
+	HrTest_Check(m.engineVertices == 1048576u, "HRG-33: the standard wheels counted as the engine counts them");
+	RldHires_Close(&m);
+	free(glb);
+	glb = NULL;
+
+	// HRG-34: palette = 2 joints + body nodes with a mesh and no skin + 4 wheels.
+	memset(&sp, 0, sizeof(sp));
+	sp.extraRigid = 250;
+	HrTest_Rule("HRG-34", &sp, "2 joints, 250 rigid parts, 4 wheels: 256 entries");
+	memset(&sp, 0, sizeof(sp));
+	sp.extraRigid = 249;
+	HrTest_Clean("HRG-34", &sp, "255 entries");
+	HrTest_Open(&sp, &rep, &m, &glb);
+	HrTest_Check(m.rigidNodes == 249u && m.paletteEntries == 255u, "HRG-34: the entries counted as the engine counts them");
+	RldHires_Close(&m);
+	free(glb);
+	glb = NULL;
+
+	// HRG-35: texture uploads; and the texture bytes count every upload.
+	memset(&sp, 0, sizeof(sp));
+	sp.texPairs = 32; // 1 + 64 uploads
+	HrTest_Rule("HRG-35", &sp, "65 texture uploads");
+	memset(&sp, 0, sizeof(sp));
+	sp.texPairs = 31; // 1 + 62 uploads
+	HrTest_Clean("HRG-35", &sp, "63 texture uploads");
+	memset(&sp, 0, sizeof(sp));
+	sp.sameImageNormal = 1;
+	HrTest_Open(&sp, &rep, &m, &glb);
+	HrTest_Check(m.textureSlots == 2u && m.textureBytes == 2048u, "texture bytes: one image as base colour and as normal map is uploaded twice");
+	RldHires_Close(&m);
+	free(glb);
+	memset(&sp, 0, sizeof(sp));
+	sp.clampTexture = 1;
+	HrTest_Open(&sp, &rep, &m, &glb);
+	HrTest_Check(m.textureSlots == 2u && m.textureBytes == 2048u, "texture bytes: one image with two sampler wraps is uploaded twice");
+	RldHires_Close(&m);
+	free(glb);
+	memset(&sp, 0, sizeof(sp));
+	HrTest_Open(&sp, &rep, &m, &glb);
+	HrTest_Check(m.textureSlots == 1u && m.textureBytes == 1024u, "texture bytes: one upload of the base model");
+	RldHires_Close(&m);
+	free(glb);
+	glb = NULL;
+
+	// HRG-18 OVER THE CLIPS (include/rldhires_hull.inc): the engine's hull of
+	// the rest pose and every clip at 16 samples.
+	{
+		float lo[3];
+		float hi[3];
+		int worst = -2;
+		int ok;
+
+		memset(&sp, 0, sizeof(sp));
+		HrTest_Open(&sp, &rep, &m, &glb);
+		RldHires_ReportClear(&rep);
+		ok = RldHires_CheckClipHull(&m, &rep, lo, hi, &worst);
+		HrTest_Check(ok == 1 && rep.count == 0 && worst == -1, "clip hull: the base model is inside");
+		HrTest_Check(fabsf(lo[0] + 0.75f) < 1e-5f && fabsf(hi[0] - 1.0f) < 1e-5f && fabsf(lo[1]) < 1e-5f && fabsf(hi[1] - 1.0f) < 1e-5f &&
+		                 fabsf(lo[2] + 0.75f) < 1e-5f && fabsf(hi[2] - 0.75f) < 1e-5f,
+		             "clip hull: the body's joint box and the own wheels' middles +- radius");
+		RldHires_Close(&m);
+		free(glb);
+
+		memset(&sp, 0, sizeof(sp));
+		sp.wheelsMissing = 0xF;
+		HrTest_Open(&sp, &rep, &m, &glb);
+		RldHires_ReportClear(&rep);
+		ok = RldHires_CheckClipHull(&m, &rep, lo, hi, &worst);
+		HrTest_Check(ok == 1 && fabsf(lo[0] + 0.8125f) < 1e-5f && fabsf(lo[2] + 0.625f) < 1e-5f && fabsf(hi[2] - 1.02734375f) < 1e-5f,
+		             "clip hull: the engine's standard wheels at the retail points, 16 units");
+		RldHires_Close(&m);
+		free(glb);
+
+		memset(&sp, 0, sizeof(sp));
+		sp.hullShift = 2.2f; // 1.75 m at rest + 2.2 = 3.95 m
+		HrTest_Open(&sp, &rep, &m, &glb);
+		HrTest_Check(rep.count == 0, "clip hull: a clip moving the body 2.2 m opens without a finding (the bind pose is the same)");
+		ok = RldHires_CheckClipHull(&m, &rep, lo, hi, &worst);
+		HrTest_Check(ok == 1 && !RldHires_ReportHas(&rep, "HRG-18") && fabsf(hi[0] - 3.2f) < 1e-5f, "clip hull: 3.95 m with the clips passes");
+		RldHires_Close(&m);
+		free(glb);
+
+		memset(&sp, 0, sizeof(sp));
+		sp.hullShift = 2.3f; // 4.05 m
+		HrTest_Open(&sp, &rep, &m, &glb);
+		ok = RldHires_CheckClipHull(&m, &rep, lo, hi, &worst);
+		HrTest_Check(ok == 0 && RldHires_ReportHas(&rep, "HRG-18") && worst == RLDHIRES_CLIP_IDLE, "clip hull: 4.05 m in clip 'idle' is refused (HRG-18)");
+		RldHires_Close(&m);
+		free(glb);
+
+		// rldpack's check (hires-check, hires-add) runs it.
+		RldHires_ReportClear(&rep);
+		glb = HrTest_Glb(&sp, &glbSize);
+		HrTest_Check(glb != NULL && RldHiresPack_CheckGlb(glb, glbSize, &m, &rep) == 0 && RldHires_ReportHas(&rep, "HRG-18"),
+		             "clip hull: rldpack's check refuses the 4.05 m model");
+		RldHires_Close(&m);
+		free(glb);
+		glb = NULL;
+	}
 
 	// Every rule of the table has a level and a known id; every rule fired above.
 	for (i = 0; i < RLDHIRES_RULE_COUNT; i++)
