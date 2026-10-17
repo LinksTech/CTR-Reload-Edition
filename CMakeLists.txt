@@ -920,6 +920,21 @@ message("rldpack native wheels test passed: refused without --wheels off (exit $
         ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
     )
 
+    # Hi-res driver (chunk CHRG) tools: the GLB checker (in-memory GLBs, one
+    # good file and one negative case per rule), the per-tick log evaluation
+    # (clip per state, blend ramps, wheels), the budget evaluation (p99 per
+    # variant of one load run) and the review sheets, each on synthetic data.
+    foreach(hires_tool hires_glb_check hires_tick_eval hires_budget_eval hires_sheet)
+        add_test(
+            NAME ${hires_tool}_selftest
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/${hires_tool}.py selftest
+        )
+        set_tests_properties(${hires_tool}_selftest PROPERTIES
+            PASS_REGULAR_EXPRESSION "${hires_tool} selftest: [0-9]+ checks, 0 failures"
+            ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
+        )
+    endforeach()
+
     # Collision model generator (tools/collision_gen): procedural test models,
     # the generator's checks in the game's arithmetic, and the container it
     # makes judged by the game's own container checks.
