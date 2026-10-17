@@ -382,6 +382,19 @@ if(BUILD_TESTING)
     set_tests_properties(rldhires_selftest PROPERTIES
         PASS_REGULAR_EXPRESSION "hires selftest passed: [0-9]+ checks, 0 failures"
         FAIL_REGULAR_EXPRESSION "FAIL")
+    # hires-check, hires-add and hires-strip on files: the same bytes twice,
+    # strip of add is the character again byte for byte, replace, a model with
+    # an error writes nothing (cmake/run_rldhires_files.cmake).
+    add_test(NAME rldhires_files
+        COMMAND ${CMAKE_COMMAND}
+            -DPACKER=$<TARGET_FILE:rldpack>
+            -DDIR=${CMAKE_BINARY_DIR}/selftest/rldhires
+            -P ${CMAKE_SOURCE_DIR}/cmake/run_rldhires_files.cmake
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+    set_tests_properties(rldhires_files PROPERTIES
+        PASS_REGULAR_EXPRESSION "rldhires files passed: [0-9]+ checks"
+        TIMEOUT 300)
     # The same self-test through the rldpack inside Reload Studio: proves that the
     # built-in version is the same one and talks over the pipe.
     if(MSVC)

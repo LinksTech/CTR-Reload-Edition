@@ -745,6 +745,7 @@ typedef struct RldHiresModel
 	float boundsMax[3];                     // meshes as they stand in mesh space (glTF ignores their node matrix)
 
 	int usable;                             // 1 = RldHires_Open found no error
+	int wheelsFound;                        // wheel nodes found and usable (0..4) - for the reports; wheelNode needs all four
 } RldHiresModel;
 
 // The edge the game makes of an image edge: the next power of two, at least
@@ -1436,6 +1437,7 @@ static int RldHires_Open(const u8 *glb, u32 size, RldHiresModel *out, RldHiresRe
 			snprintf(missing + strlen(missing), sizeof(missing) - strlen(missing), "%s%s %s", (missing[0] != '\0') ? ", " : "",
 			         s_rldHiresWheelName[i], why);
 		}
+		m->wheelsFound = have;
 		if (have == 0)
 		{
 			RldHires_Say(rep, "HRG-20", "no wheel nodes (wheel_fl, wheel_fr, wheel_rl, wheel_rr) - standard wheels are used");

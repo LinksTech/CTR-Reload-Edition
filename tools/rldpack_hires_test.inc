@@ -605,6 +605,212 @@ static void HrTest_Clean(const char *rule, const struct HrTestSpec *sp, const ch
 	HrTest_Check(!RldHires_ReportHas(&rep, rule), line);
 }
 
+// A container rldpack wrote, read back from memory the way RldHiresPack_Load
+// reads a file (the test's own bytes, so no checks): chunks share the bytes.
+static void HrTest_FromBytes(const u8 *bytes, struct RldHiresPackIn *in)
+{
+	const u32 count = Rld_ReadLE32(&bytes[0x10]);
+	const u64 dir = Rld_ReadLE64(&bytes[0x18]);
+	u32 e;
+
+	memset(in, 0, sizeof(*in));
+	in->minor = Rld_ReadLE16(&bytes[0x0a]);
+	in->flags = Rld_ReadLE32(&bytes[0x0c]);
+	for (e = 0; (e < count) && (e < RLD_CHUNK_MAX); e++)
+	{
+		const u8 *entry = &bytes[(size_t)dir + (size_t)e * RLD_DIR_ENTRY_SIZE];
+		struct RldChunk *chunk = &in->c.chunks[in->c.chunkCount++];
+
+		memcpy(chunk->type, entry, 4);
+		chunk->type[4] = '\0';
+		chunk->flags = Rld_ReadLE32(&entry[0x04]);
+		chunk->sizeStored = Rld_ReadLE64(&entry[0x10]);
+		chunk->sizeRaw = Rld_ReadLE64(&entry[0x18]);
+		memcpy(chunk->hash, &entry[RLD_DIR_HASH_OFFSET], 32);
+		chunk->stored = (u8 *)&bytes[(size_t)Rld_ReadLE64(&entry[0x08])];
+	}
+}
+
+// Add, replace, strip and the 64-chunk bound on containers made in memory.
+static void HrTest_Pack(void)
+{
+	static struct RldHiresPackIn in;
+	static struct RldHiresPackIn back;
+	struct HrTestSpec sp;
+	const u8 info[32] = {1, 2, 3, 4, 5, 6, 7, 8};
+	const u8 model[48] = {9, 8, 7, 6, 5, 4, 3, 2, 1};
+	const u8 extra[20] = {42, 43, 44};
+	u8 *glb;
+	u32 glbSize = 0;
+	u8 *chrg;
+	size_t chrgSize = 0;
+	u8 *chrg2;
+	size_t chrg2Size = 0;
+	u8 *plain;
+	size_t plainSize = 0;
+	u8 *added;
+	size_t addedSize = 0;
+	u8 *again;
+	size_t againSize = 0;
+	u8 *stripped;
+	size_t strippedSize = 0;
+	u8 *replaced;
+	size_t replacedSize = 0;
+	u8 *direct;
+	size_t directSize = 0;
+	const char *why = NULL;
+	int i;
+
+	memset(&sp, 0, sizeof(sp));
+	glb = HrTest_Glb(&sp, &glbSize);
+	chrg = RldHires_BuildChunk(glb, glbSize, &chrgSize);
+	sp.clipsMissing = 1 << RLDHIRES_CLIP_MENU;
+	free(glb);
+	glb = HrTest_Glb(&sp, &glbSize);
+	chrg2 = RldHires_BuildChunk(glb, glbSize, &chrg2Size);
+	free(glb);
+
+	// A character as rldpack writes it: CHRI, CMDL and a chunk of a type this
+	// format does not know (it must travel along unchanged); minor 3.
+	memset(&in, 0, sizeof(in));
+	Rld_AddChunk(&in.c, "CHRI", info, sizeof(info), RLD_COMPRESSION_NONE);
+	Rld_AddChunk(&in.c, "CMDL", model, sizeof(model), RLD_COMPRESSION_NONE);
+	Rld_AddChunk(&in.c, "ZZZZ", extra, sizeof(extra), RLD_COMPRESSION_NONE);
+	in.minor = 3;
+	plain = Rld_WriteEnvelope(&s_rldCharFormat, 0u, &in.c, &plainSize);
+	if ((plain != NULL) && (chrg != NULL) && (chrg2 != NULL))
+	{
+		Rld_WriteLE16(&plain[0x0a], 3u);
+
+		direct = RldHiresPack_Rebuild(&in, NULL, 0, &directSize, &why);
+		HrTest_Check(direct != NULL && directSize == plainSize && memcmp(direct, plain, plainSize) == 0,
+		             "pack: a container without CHRG is rewritten byte for byte as it was");
+		added = RldHiresPack_Rebuild(&in, chrg, chrgSize, &addedSize, &why);
+		again = RldHiresPack_Rebuild(&in, chrg, chrgSize, &againSize, &why);
+		HrTest_Check(added != NULL && again != NULL && addedSize == againSize && memcmp(added, again, addedSize) == 0, "hires-add: the same input gives the same bytes");
+		if (added != NULL)
+		{
+			HrTest_FromBytes(added, &back);
+			HrTest_Check(back.c.chunkCount == 4 && memcmp(back.c.chunks[3].type, "CHRG", 4) == 0 && back.c.chunks[3].sizeRaw == chrgSize &&
+			                 memcmp(back.c.chunks[3].stored, chrg, chrgSize) == 0 && Rld_ReadLE16(&added[0x0a]) == 3u && Rld_ReadLE32(&added[0x0c]) == 0u,
+			             "hires-add: CHRG last, its bytes, the minor and the flags kept");
+			for (i = 0; i < 3; i++)
+			{
+				HrTest_Check(memcmp(back.c.chunks[i].type, in.c.chunks[i].type, 4) == 0 && back.c.chunks[i].flags == in.c.chunks[i].flags &&
+				                 back.c.chunks[i].sizeRaw == in.c.chunks[i].sizeRaw && back.c.chunks[i].sizeStored == in.c.chunks[i].sizeStored &&
+				                 memcmp(back.c.chunks[i].hash, in.c.chunks[i].hash, 32) == 0 &&
+				                 memcmp(back.c.chunks[i].stored, in.c.chunks[i].stored, (size_t)in.c.chunks[i].sizeStored) == 0,
+				             "hires-add: every other chunk and its entry byte for byte (the unknown one too)");
+			}
+			stripped = RldHiresPack_Rebuild(&back, NULL, 0, &strippedSize, &why);
+			HrTest_Check(stripped != NULL && strippedSize == plainSize && memcmp(stripped, plain, plainSize) == 0,
+			             "hires-strip of hires-add is the file it started from, byte for byte");
+			free(stripped);
+			replaced = RldHiresPack_Rebuild(&back, chrg2, chrg2Size, &replacedSize, &why);
+			{
+				u8 *fresh;
+				size_t freshSize = 0;
+
+				fresh = RldHiresPack_Rebuild(&in, chrg2, chrg2Size, &freshSize, &why);
+				HrTest_Check(replaced != NULL && fresh != NULL && replacedSize == freshSize && memcmp(replaced, fresh, freshSize) == 0 &&
+				                 Rld_ReadLE32(&replaced[0x10]) == 4u,
+				             "hires-add on a file with CHRG replaces it (one CHRG, as if added fresh)");
+				free(fresh);
+			}
+			free(replaced);
+		}
+		free(added);
+		free(again);
+		free(direct);
+	}
+	else
+	{
+		HrTest_Check(0, "out of memory building the pack containers");
+	}
+	free(plain);
+
+	// 64 chunks: no room for CHRG. 63 chunks and an old CHRG: it is replaced.
+	{
+		static struct RldHiresPackIn full;
+		u8 *out;
+		size_t outSize = 0;
+		u8 one = 7;
+
+		memset(&full, 0, sizeof(full));
+		for (i = 0; i < RLD_CHUNK_MAX; i++)
+		{
+			char type[5];
+
+			snprintf(type, sizeof(type), "X%03d", i);
+			Rld_AddChunk(&full.c, type, &one, 1, RLD_COMPRESSION_NONE);
+		}
+		out = RldHiresPack_Rebuild(&full, chrg, chrgSize, &outSize, &why);
+		HrTest_Check(out == NULL && why != NULL && strstr(why, "64 chunks") != NULL, "hires-add: a container with 64 chunks is refused, not cut");
+		free(out);
+		memcpy(full.c.chunks[RLD_CHUNK_MAX - 1].type, "CHRG", 4);
+		out = RldHiresPack_Rebuild(&full, chrg, chrgSize, &outSize, &why);
+		HrTest_Check(out != NULL && Rld_ReadLE32(&out[0x10]) == (u32)RLD_CHUNK_MAX, "hires-add: 63 chunks and an old CHRG: the CHRG is replaced");
+		free(out);
+		RldHiresPack_Free(&full.c);
+	}
+
+	RldHiresPack_Free(&in.c);
+	free(chrg);
+	free(chrg2);
+}
+
+// rldpack hires-test-files <folder>: the self-test's models as files, for the
+// ctest rldhires_files (cmake/run_rldhires_files.cmake): hires-good.glb (no
+// finding), hires-warn.glb (warnings only: no 'hit', no wheels), hires-bad.glb
+// (an error: a JPEG texture). The folder must exist.
+static int RldHires_TestFilesCommand(int argc, char **argv)
+{
+	static const char *const names[3] = {"hires-good.glb", "hires-warn.glb", "hires-bad.glb"};
+	int k;
+
+	if (argc != 1)
+	{
+		fprintf(stderr, "usage: rldpack hires-test-files <folder>\n");
+		return 2;
+	}
+	for (k = 0; k < 3; k++)
+	{
+		struct HrTestSpec sp;
+		char path[RLD_PATH_MAX];
+		u32 size = 0;
+		u8 *glb;
+		FILE *file;
+		int ok;
+
+		memset(&sp, 0, sizeof(sp));
+		if (k == 1)
+		{
+			sp.clipsMissing = 1 << RLDHIRES_CLIP_HIT;
+			sp.wheelsMissing = 0xF;
+		}
+		else if (k == 2)
+		{
+			sp.image = 1;
+		}
+		glb = HrTest_Glb(&sp, &size);
+		snprintf(path, sizeof(path), "%s/%s", argv[0], names[k]);
+		file = (glb != NULL) ? fopen(path, "wb") : NULL;
+		ok = (file != NULL) && (fwrite(glb, 1, size, file) == size);
+		if (file != NULL)
+		{
+			ok = (fclose(file) == 0) && ok;
+		}
+		free(glb);
+		if (!ok)
+		{
+			fprintf(stderr, "rldpack: %s cannot be written\n", path);
+			return 1;
+		}
+		printf("  wrote %s (%u bytes)\n", path, (unsigned)size);
+	}
+	return 0;
+}
+
 static int RldHires_SelfTest(void)
 {
 	static RldHiresReport rep;
@@ -1118,6 +1324,9 @@ static int RldHires_SelfTest(void)
 	HrTest_Check(RldHires_UpEdge(1) == 16u && RldHires_UpEdge(16) == 16u && RldHires_UpEdge(17) == 32u && RldHires_UpEdge(800) == 1024u &&
 	                 RldHires_UpEdge(2048) == 2048u && RldHires_UpEdge(2049) == 0u && RldHires_UpEdge(0) == 0u && RldHires_UpEdge(0xFFFFFFFFu) == 0u,
 	             "UpEdge: 1, 16, 17, 800, 2048, 2049, 0, u32 max");
+
+	// HIRES-ADD AND HIRES-STRIP, the pure part (RldHiresPack_Rebuild).
+	HrTest_Pack();
 
 	// A REPORT keeps at most RLDHIRES_REPORT_MAX messages and counts the rest.
 	RldHires_ReportClear(&rep);
