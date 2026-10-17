@@ -981,7 +981,8 @@ Nothing of this is in the container; it is how the tool gets there.
   program's build ID, every input array and the targets; a build ID that
   does not tell states of the code apart (unknown, or a modified tree
   without its hash) means no cache. The file carries the SHA-256 of its
-  content and is written through a `.part`; a file that is missing,
+  content and is written through `<name>.<process ID>.part` (two runs at
+  the same time never share a temporary file); a file that is missing,
   damaged or not plausible, and every error of the cache, only mean that
   the reduction runs. Only reductions that reach their target are kept. A
   hit gives the bytes the reduction gives. `--no-cache` turns it off; a

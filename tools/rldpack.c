@@ -68,9 +68,11 @@
 #error "rldpack needs double evaluated as double (-msse2 -mfpmath=sse): x87 intermediates change the bytes of containers"
 #endif
 
-// For make: list the track folder and resolve paths.
+// For make: list the track folder and resolve paths. The process ID (_getpid,
+// getpid) names the reduce cache's temporary file (tools/rldpack_reduce.inc).
 #if defined(_WIN32)
 #include <io.h>
+#include <process.h>
 #else
 #include <dirent.h>
 #include <sys/stat.h>

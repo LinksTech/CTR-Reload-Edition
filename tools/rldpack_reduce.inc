@@ -2036,8 +2036,11 @@ static int RldRed_Run(const RldRedMesh *mesh, RldRedResult *out, char *why, size
 //     not rising) counts as not there.
 //   - EVERY ERROR of the cache (no folder, no memory, a file that cannot be
 //     written) only means that the reduction runs as without it. A file is
-//     written as <name>.part and then renamed, so a run that is stopped
-//     leaves no half file under the name.
+//     written as <name>.<process ID>.part and then renamed, so a run that is
+//     stopped leaves no half file under the name, and two runs at the same
+//     time (two test runs, two Studio windows) never write into the same
+//     temporary file: each writes its own, the last rename wins, and both
+//     results are the same bytes for the same key.
 //   - RLDRED_CACHE_SLOTS files at most: the first byte of the key picks the
 //     slot, a new model takes the place of an old one there. A file has
 //     about 28 bytes per kept triangle (200 KB for a driver of 7200).
@@ -2186,6 +2189,16 @@ static int RldRed_CacheRead(const RldRedMesh *mesh, const u8 *key, RldRedResult 
 	return 1;
 }
 
+// The ID of this process, for the temporary name of a cache file.
+static unsigned long RldRed_ProcessId(void)
+{
+#if defined(_WIN32)
+	return (unsigned long)_getpid();
+#else
+	return (unsigned long)getpid();
+#endif
+}
+
 // Keeps a result under its key; every failure is silent.
 static void RldRed_CacheWrite(const u8 *key, const RldRedResult *r)
 {
@@ -2198,7 +2211,7 @@ static void RldRed_CacheWrite(const u8 *key, const RldRedResult *r)
 	const size_t n = r->triangleCount;
 	int ok;
 
-	if (!RldRed_CachePath(key, path, sizeof(path)) || (snprintf(part, sizeof(part), "%s.part", path) >= (int)sizeof(part)))
+	if (!RldRed_CachePath(key, path, sizeof(path)) || (snprintf(part, sizeof(part), "%s.%lu.part", path, RldRed_ProcessId()) >= (int)sizeof(part)))
 	{
 		return;
 	}
