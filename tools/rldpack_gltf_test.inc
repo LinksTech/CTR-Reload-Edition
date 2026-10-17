@@ -29,6 +29,7 @@ struct RldGltfTestModel
 	int mode;             // 4 = triangles
 	int skin;             // a skin on the node
 	const char *bufferUri; // NULL = GLB with its binary chunk; else a .gltf whose buffer is this file
+	int weights;          // JOINTS_0 (joint 0) and WEIGHTS_0 (1, 0, 0, 0) on every vertex
 };
 
 static void RldGltf_TestPad(struct RldMkBuffer *b, u8 with)
@@ -48,6 +49,8 @@ static void RldGltf_TestParts(const struct RldGltfTestModel *t, struct RldMkBuff
 	u32 color = RLDMK_NONE;
 	u32 texcoord = RLDMK_NONE;
 	u32 indices;
+	u32 joints = RLDMK_NONE;
+	u32 weights = RLDMK_NONE;
 	u32 targetAccessor[8];
 	u32 image = RLDMK_NONE;
 	struct RldMkBuffer v;
@@ -84,6 +87,26 @@ static void RldGltf_TestParts(const struct RldGltfTestModel *t, struct RldMkBuff
 		RldMk_BufferBytes(bin, t->uv, (size_t)t->count * 8u);
 		RldMk_BufferText(&a, ",{\"bufferView\":%u,\"componentType\":5126,\"count\":%u,\"type\":\"VEC2\"}", views - 1u, t->count);
 		texcoord = accessors++;
+	}
+	if (t->weights)
+	{
+		static const float one[4] = {1.0f, 0.0f, 0.0f, 0.0f};
+		static const u8 none[4] = {0, 0, 0, 0};
+
+		RLDGLTF_TEST_VIEW(t->count * 4u);
+		for (i = 0; i < t->count; i++)
+		{
+			RldMk_BufferBytes(bin, none, 4u);
+		}
+		RldMk_BufferText(&a, ",{\"bufferView\":%u,\"componentType\":5121,\"count\":%u,\"type\":\"VEC4\"}", views - 1u, t->count);
+		joints = accessors++;
+		RLDGLTF_TEST_VIEW(t->count * 16u);
+		for (i = 0; i < t->count; i++)
+		{
+			RldMk_BufferBytes(bin, one, 16u);
+		}
+		RldMk_BufferText(&a, ",{\"bufferView\":%u,\"componentType\":5126,\"count\":%u,\"type\":\"VEC4\"}", views - 1u, t->count);
+		weights = accessors++;
 	}
 	RLDGLTF_TEST_VIEW(t->triangles * 6u);
 	RldMk_BufferBytes(bin, t->index, (size_t)t->triangles * 6u);
@@ -159,6 +182,10 @@ static void RldGltf_TestParts(const struct RldGltfTestModel *t, struct RldMkBuff
 	if (texcoord != RLDMK_NONE)
 	{
 		RldMk_BufferText(json, ",\"TEXCOORD_0\":%u", texcoord);
+	}
+	if (joints != RLDMK_NONE)
+	{
+		RldMk_BufferText(json, ",\"JOINTS_0\":%u,\"WEIGHTS_0\":%u", joints, weights);
 	}
 	RldMk_BufferText(json, "},\"indices\":%u,\"mode\":%d%s", indices, t->mode, (t->factor != NULL) ? ",\"material\":0" : "");
 	if (t->targetCount != 0u)
@@ -712,6 +739,13 @@ static void RldGltf_SelfTestRefused(void)
 	RldMk_Test(ok && RldMk_Said("model-rig") && (ply.xyz == NULL) && !s_rldGltfMorphs.read, "glTF: a skin is refused (model-rig)", "said: %s", s_rldMkCodes);
 	RldMk_FreePly(&ply);
 
+	t.weights = 1;
+	ok = !RldGltf_TestRead("selftest/rig-weights.glb", &t, &ply, &info);
+	RldMk_Test(ok && RldMk_Said("model-rig") && !RldMk_Said("rig-bind-pose") && (ply.xyz == NULL),
+	           "glTF: a skin with JOINTS_0 / WEIGHTS_0 is refused without --rig bind-pose (model-rig)", "said: %s", s_rldMkCodes);
+	RldMk_FreePly(&ply);
+	t.weights = 0;
+
 	t.skin = 0;
 	t.mode = 1;
 	ok = !RldGltf_TestRead("selftest/lines.glb", &t, &ply, &info);
@@ -901,12 +935,75 @@ static void RldGltf_SelfTestGuards(void)
 	RldGltf_FreeFiles();
 }
 
+// make-char --rig bind-pose: a skinned model is read in its bind pose - the
+// skinned node in mesh space (its own translation and scale not applied, as
+// glTF ignores the node matrix of a skinned mesh), JOINTS_0 / WEIGHTS_0 not
+// read - so its points are those of the same mesh without a skin and without
+// a node matrix; the reader says rig-bind-pose once. A model without a skin
+// reads as without the switch. The switch is left off again for every other test.
+static void RldGltf_SelfTestRig(void)
+{
+	struct RldGltfTestModel t;
+	struct RldMkPly plain;
+	struct RldMkPly rig;
+	struct RldMkPly moved;
+	struct RldMkModelInfo info;
+	int ok;
+	int same;
+	u32 i;
+
+	memset(&t, 0, sizeof(t));
+	memset(&plain, 0, sizeof(plain));
+	memset(&rig, 0, sizeof(rig));
+	memset(&moved, 0, sizeof(moved));
+	t.xyz = &s_rldGltfTestXyz[0][0];
+	t.count = 5u;
+	t.index = &s_rldGltfTestIndex[0][0];
+	t.triangles = 6u;
+	t.mode = 4;
+
+	// The reference: no skin, no node matrix (the switch off).
+	s_rldGltfRigBindPose = 0;
+	ok = RldGltf_TestRead("selftest/plain.glb", &t, &plain, &info);
+
+	// The same mesh skinned, its node moved and scaled, with weights: in mesh space.
+	s_rldGltfRigBindPose = 1;
+	t.skin = 1;
+	t.weights = 1;
+	t.node = "\"translation\":[3,0.5,-2],\"scale\":[2,2,2],";
+	ok = RldGltf_TestRead("selftest/rig.glb", &t, &rig, &info) && ok;
+	RldMk_Test(ok && RldMk_Said("rig-bind-pose") && !RldMk_Said("model-rig"), "glTF --rig bind-pose: a skinned model is read, rig-bind-pose said",
+	           "said: %s", s_rldMkCodes);
+	same = ok && (rig.vertexCount == plain.vertexCount) && (rig.faceCount == plain.faceCount) && (rig.xyz != NULL) && (plain.xyz != NULL);
+	for (i = 0; same && (i < 3u * plain.vertexCount); i++)
+	{
+		same = (rig.xyz[i] == plain.xyz[i]);
+	}
+	RldMk_Test(same, "glTF --rig bind-pose: the skinned node stands in mesh space (the points of the mesh without skin and node matrix)",
+	           "%u/%u points, %u/%u faces", rig.vertexCount, plain.vertexCount, rig.faceCount, plain.faceCount);
+
+	// Without a skin the switch changes nothing: the node matrix is applied as always.
+	t.skin = 0;
+	t.weights = 0;
+	ok = RldGltf_TestRead("selftest/moved.glb", &t, &moved, &info);
+	RldMk_Test(ok && !RldMk_Said("rig-bind-pose") && (moved.vertexCount == plain.vertexCount) && (moved.xyz != NULL) && (plain.xyz != NULL) &&
+	               (moved.xyz[0] == 2.0 * plain.xyz[0] + 3.0),
+	           "glTF --rig bind-pose: a node without a skin keeps its world matrix, nothing said", "said: %s", s_rldMkCodes);
+	s_rldGltfRigBindPose = 0;
+
+	RldMk_FreePly(&plain);
+	RldMk_FreePly(&rig);
+	RldMk_FreePly(&moved);
+	RldGltf_FreeFiles();
+}
+
 static void RldGltf_SelfTest(struct RldMkTestMesh *mesh, const u8 *chri, size_t chriSize)
 {
 	RldGltf_SelfTestSame(mesh, chri, chriSize);
 	RldGltf_SelfTestTextures();
 	RldGltf_SelfTestKeys();
 	RldGltf_SelfTestRefused();
+	RldGltf_SelfTestRig();
 	RldGltf_SelfTestGuards();
 	RldGltf_FreeMorphs();
 }

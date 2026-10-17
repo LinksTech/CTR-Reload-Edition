@@ -14021,6 +14021,7 @@ static int RldChar_MakeCommand(int argc, char **argv)
 	const char *resolutionArg = NULL;
 	const char *repairArg = NULL;
 	const char *openArg = NULL;
+	const char *rigArg = NULL;
 	static struct RldMkIcon icon;
 	int haveIcon = 0;
 	int check = 0;
@@ -14235,6 +14236,10 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		else if ((strcmp(arg, "--repair") == 0) && hasValue)
 		{
 			repairArg = argv[++i];
+		}
+		else if ((strcmp(arg, "--rig") == 0) && hasValue)
+		{
+			rigArg = argv[++i];
 		}
 		else if ((strcmp(arg, "--open-parts") == 0) && hasValue)
 		{
@@ -14524,6 +14529,23 @@ static int RldChar_MakeCommand(int argc, char **argv)
 			RldMk_Say("error", "repair", repairArg, "Repair must be auto or off.");
 		}
 	}
+	// --rig: what the glTF reader does with a skin (rldpack_gltf.inc, A RIG).
+	// Set on every run, so that no read keeps the value of a run before.
+	s_rldGltfRigBindPose = 0;
+	if (rigArg != NULL)
+	{
+		char word[16];
+		const int known = RldMk_Lower(rigArg, word, sizeof(word));
+
+		if (known && (strcmp(word, "bind-pose") == 0))
+		{
+			s_rldGltfRigBindPose = 1;
+		}
+		else if (!known || (strcmp(word, "refuse") != 0))
+		{
+			RldMk_Say("error", "rig", rigArg, "Rig must be refuse or bind-pose.");
+		}
+	}
 	if (openArg != NULL)
 	{
 		char word[16];
@@ -14717,6 +14739,11 @@ static int RldChar_MakeCommand(int argc, char **argv)
 		}
 		Rld_Emit("value", "remesh", opt.remesh ? "on" : "off", (remeshArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "repair", opt.repair ? "auto" : "off", (repairArg != NULL) ? "switch" : "default", (const char *)NULL);
+		if (rigArg != NULL)
+		{
+			// Only with the switch: without it the lines of before, byte for byte.
+			Rld_Emit("value", "rig", s_rldGltfRigBindPose ? "bind-pose" : "refuse", "switch", (const char *)NULL);
+		}
 		Rld_Emit("value", "open-parts", opt.openOneSided ? "one-sided" : "two-sided", (openArg != NULL) ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "two_sided", opt.twoSided ? "yes" : "no", opt.twoSided ? "switch" : "default", (const char *)NULL);
 		Rld_Emit("value", "y-full", opt.yFull ? "on" : "off", opt.yFull ? "switch" : "default", (const char *)NULL);
@@ -16232,6 +16259,11 @@ static void RldChar_Usage(FILE *out)
 	fprintf(out, "                              triangles at cracks (T-junctions), turn faces\n");
 	fprintf(out, "                              outward, close holes of up to %u edges; off: the\n", RLDREP_HOLE_MAX_EDGES_DEFAULT);
 	fprintf(out, "                              surface as exported\n");
+	fprintf(out, "  --rig refuse|bind-pose      a glTF with a skin (an armature): refuse\n");
+	fprintf(out, "                              (default) says model-rig - use shape keys;\n");
+	fprintf(out, "                              bind-pose reads it standing in its bind pose\n");
+	fprintf(out, "                              (the skin and its weights not read), as for\n");
+	fprintf(out, "                              the classic fallback of a hi-res driver\n");
 	fprintf(out, "  --open-parts two-sided|one-sided\n");
 	fprintf(out, "                              two-sided (default): parts still open after the\n");
 	fprintf(out, "                              repair (with --repair off: open as exported) are\n");
