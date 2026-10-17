@@ -9,12 +9,15 @@
 # 1. Only from a clean tree (without --allow-dirty): the programs and the
 #    source code in the package must come from the same commit.
 # 2. The version is CTR_NATIVE_VERSION from CMakeLists.txt. The package is
-#    named CTR-Reload-<version without spaces>-<build id>.
+#    named CTR-Reload-<version without spaces>-<build id>. The tools version
+#    (Reload Studio and rldpack) is CTR_TOOLS_VERSION from the same file.
 # 3. Configure and build ctr_native and ReloadStudio (Release) in BUILD_DIR.
 #    The build output goes to dist-build.log in the tree root.
 # 4. Pairing check: ctr_native.exe --version reports
 #    "CTR Reload <version> (<build id>)", and ReloadStudio.exe carries the same
-#    build ID. The build ID is created on every build (cmake/CtrBuildId.cmake).
+#    build ID and its sidebar line "<tools version> (<build id>)". The build ID
+#    is created on every build (cmake/CtrBuildId.cmake); a "dirty" or "unknown"
+#    ID aborts without --allow-dirty, like a tree with uncommitted changes.
 # 5. Package by ALLOW LIST, never the build folder as a whole:
 #      ctr_native.exe, ctr_native.pdb, ReloadStudio.exe,
 #      LICENSE, THIRD_PARTY_NOTICES.md, README.txt, RELEASE-NOTES.txt,
@@ -59,6 +62,13 @@ case "$VERSION" in
 esac
 VERSION_TAG=$(printf '%s' "$VERSION" | tr -d ' ')
 echo "== Version: $VERSION"
+# The tools version (Reload Studio and rldpack), from its one line as well.
+TOOLS_VERSION=$(tr -d '\r' < CMakeLists.txt | sed -n 's/^set(CTR_TOOLS_VERSION "\([0-9]*\.[0-9]*\.[0-9]*\)")$/\1/p')
+if [ -z "$TOOLS_VERSION" ] || [ "$(printf '%s\n' "$TOOLS_VERSION" | wc -l)" -ne 1 ]; then
+	echo "ABORT: no single set(CTR_TOOLS_VERSION \"<major>.<minor>.<patch>\") line found in CMakeLists.txt"
+	exit 4
+fi
+echo "== Tools version (Reload Studio, rldpack): $TOOLS_VERSION"
 
 BUILD_DIR=${BUILD_DIR:-build-msvc-x86}
 echo "== Configure and build (Release) in $BUILD_DIR"
@@ -82,11 +92,17 @@ case "$ID" in
 	*dirty*|unknown*) [ "$ALLOW_DIRTY" = 1 ] || { echo "ABORT: build ID '$ID'"; exit 4; } ;;
 esac
 
-# Pairing: the same ID as text in Reload Studio (narrow or UTF-16).
-python - "$ID" "$R/ReloadStudio.exe" <<'PY' || { echo "ABORT: ReloadStudio.exe does not carry the build ID of ctr_native.exe"; exit 4; }
+# Pairing: the same ID as text in Reload Studio (narrow or UTF-16), and the
+# Studio's sidebar line "<tools version> (<build id>)" (UTF-16): the Studio in
+# the package is the tools version of this tree, built in the same run.
+python - "$ID" "$TOOLS_VERSION" "$R/ReloadStudio.exe" <<'PY' || { echo "ABORT: ReloadStudio.exe does not carry the build ID of ctr_native.exe and the tools version"; exit 4; }
 import sys
 bid = sys.argv[1].encode('ascii')
-for p in sys.argv[2:]:
+side = ('%s (%s)' % (sys.argv[2], sys.argv[1])).encode('utf-16-le')
+for p in sys.argv[3:]:
+    if side not in open(p, 'rb').read():
+        print('  without "%s (%s)":' % (sys.argv[2], sys.argv[1]), p)
+        sys.exit(1)
     d = open(p, 'rb').read()
     # Whole, not as a substring: narrow with NUL after it, UTF-16 with NUL or ')'
     # after it (title of Reload Studio) - otherwise abc... would also match abc...-dirty-...
