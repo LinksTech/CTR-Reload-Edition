@@ -1,4 +1,5 @@
-// rldpack_image.c - JPEG, TGA and BMP pictures for rldpack (OBJ textures)
+// rldpack_image.c - JPEG, TGA and BMP pictures for rldpack (OBJ textures), and
+// the deflate of the PNGs of hires-png
 //
 // Part of the packer, never of the game. The one place where rldpack and
 // Reload Studio carry code they did not write themselves: the JPEG, TGA and
@@ -11,6 +12,12 @@
 // Only memory is read (no stdio), only JPEG, TGA and BMP are compiled in, without
 // SIMD - the scalar decoder gives the same pixels on every processor - and no
 // side may exceed RLDIMG_SIDE_MAX, the limit of the PNG reader.
+//
+// The compressor of the PNGs rldpack hires-png writes (RldImg_Deflate) lives
+// here for the same reason: the deflate part (tdefl) of miniz v1.15
+// (externals/SDL/src/video/miniz.h, the copy SDL keeps; public domain, see
+// THIRD_PARTY_NOTICES.md). Its inflate, zlib-style and ZIP parts and its stdio
+// stay out (that copy switches them off itself); no thread, no time stamp.
 
 #include <limits.h>
 #include <stddef.h>
@@ -90,4 +97,51 @@ int RldImg_Decode(const unsigned char *data, size_t size, unsigned int *width, u
 void RldImg_Free(unsigned char *rgba)
 {
 	stbi_image_free(rgba);
+}
+
+// ---------------------------------------------------------------------------
+// miniz's deflate. The settings that would choose another code path on another
+// processor are pinned: byte-wise loads (as SDL compiles it), little endian.
+// The memory functions are the C ones instead of SDL's.
+
+#define MINIZ_SDL_NOUNUSED
+#define MINIZ_LITTLE_ENDIAN 1
+#define MINIZ_USE_UNALIGNED_LOADS_AND_STORES 0
+#define MZ_ASSERT(x) ((void)0)
+#define SDL_malloc malloc
+#define SDL_free free
+#define SDL_realloc realloc
+#include "../externals/SDL/src/video/miniz.h"
+#undef SDL_malloc
+#undef SDL_free
+#undef SDL_realloc
+
+// See the declaration in tools/rldpack_obj.inc: 0 = *out holds the zlib stream
+// (RFC 1950) of data (free it with free), otherwise 1 (out of memory). zlib's
+// default level (6): 128 probes of the match finder, lazy matching. The same
+// input gives the same bytes.
+int RldImg_Deflate(const unsigned char *data, size_t size, unsigned char **out, size_t *outSize)
+{
+	tdefl_compressor *c = (tdefl_compressor *)malloc(sizeof(tdefl_compressor));
+	tdefl_output_buffer buf;
+
+	*out = NULL;
+	*outSize = 0;
+	memset(&buf, 0, sizeof(buf));
+	buf.m_expandable = MZ_TRUE;
+	if (c == NULL)
+	{
+		return 1;
+	}
+	if ((tdefl_init(c, tdefl_output_buffer_putter, &buf, 128 | TDEFL_WRITE_ZLIB_HEADER) != TDEFL_STATUS_OKAY) ||
+	    (tdefl_compress_buffer(c, data, size, TDEFL_FINISH) != TDEFL_STATUS_DONE))
+	{
+		free(c);
+		free(buf.m_pBuf);
+		return 1;
+	}
+	free(c);
+	*out = buf.m_pBuf;
+	*outSize = buf.m_size;
+	return 0;
 }

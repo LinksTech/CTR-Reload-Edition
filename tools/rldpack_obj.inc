@@ -60,6 +60,10 @@
 // width x height x 4 bytes with the rows from the top, freed with RldImg_Free.
 int RldImg_Decode(const unsigned char *data, size_t size, unsigned int *width, unsigned int *height, unsigned char **rgba, const char **why);
 void RldImg_Free(unsigned char *rgba);
+// The zlib stream (RFC 1950) of data, compressed with miniz's deflate at zlib's
+// default level, the same bytes for the same input (tools/rldpack_image.c):
+// 0 = *out (free it with free), 1 = out of memory.
+int RldImg_Deflate(const unsigned char *data, size_t size, unsigned char **out, size_t *outSize);
 
 //========================================================================================
 // THE SWITCHES OF THE OBJ READER

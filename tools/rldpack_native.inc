@@ -237,6 +237,147 @@ static u8 *RldMk_PngRgba(const u8 *rgba, u32 width, u32 height, size_t *sizeOut)
 	return png;
 }
 
+// The Paeth predictor (PNG section 9.4).
+static u8 RldMk_PngPaeth(u8 a, u8 b, u8 c)
+{
+	const int p = (int)a + (int)b - (int)c;
+	const int pa = (p > (int)a) ? (p - (int)a) : ((int)a - p);
+	const int pb = (p > (int)b) ? (p - (int)b) : ((int)b - p);
+	const int pc = (p > (int)c) ? (p - (int)c) : ((int)c - p);
+
+	if ((pa <= pb) && (pa <= pc))
+	{
+		return a;
+	}
+	return (pb <= pc) ? b : c;
+}
+
+// Row y of an RGBA picture with filter f (0..4) into out (width * 4 bytes);
+// returns the sum of the filtered bytes taken as signed (the usual measure for
+// choosing a filter: the smaller, the better it compresses).
+static u32 RldMk_PngFilterRow(const u8 *rgba, u32 width, u32 y, u32 f, u8 *out)
+{
+	const size_t n = (size_t)width * 4u;
+	const u8 *row = &rgba[(size_t)y * n];
+	const u8 *up = (y > 0u) ? (row - n) : NULL;
+	u32 sum = 0;
+	size_t i;
+
+	for (i = 0; i < n; i++)
+	{
+		const u8 a = (i >= 4u) ? row[i - 4u] : 0u;
+		const u8 b = (up != NULL) ? up[i] : 0u;
+		const u8 c = ((up != NULL) && (i >= 4u)) ? up[i - 4u] : 0u;
+		u8 pred = 0;
+		u8 v;
+
+		switch (f)
+		{
+		case 1: pred = a; break;
+		case 2: pred = b; break;
+		case 3: pred = (u8)(((u32)a + (u32)b) >> 1); break;
+		case 4: pred = RldMk_PngPaeth(a, b, c); break;
+		default: break;
+		}
+		v = (u8)(row[i] - pred);
+		out[i] = v;
+		sum += (v < 128u) ? v : (256u - v);
+	}
+	return sum;
+}
+
+// A PNG of 8-bit RGBA, rows from the top, COMPRESSED: per row the filter
+// (0..4) whose filtered bytes have the smallest signed sum (the first of equal
+// ones), the zlib stream of miniz's deflate at zlib's default level
+// (RldImg_Deflate, tools/rldpack_image.c), no ancillary chunk. Readable by
+// include/rldpng.inc and every other reader, and the same bytes everywhere: no
+// thread, no time stamp, only integer arithmetic. What hires-png writes;
+// RldMk_PngRgba (stored blocks) keeps its bytes for its callers. NULL = out
+// of memory.
+static u8 *RldMk_PngRgbaPacked(const u8 *rgba, u32 width, u32 height, size_t *sizeOut)
+{
+	static const u8 signature[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+	const size_t rowBytes = 1u + ((size_t)width * 4u);
+	const size_t raw = rowBytes * height;
+	u8 *rows = (u8 *)malloc(raw ? raw : 1u);
+	u8 *trial = (u8 *)malloc(rowBytes);
+	u8 *z = NULL;
+	size_t zlib = 0;
+	u8 *png = NULL;
+	size_t at;
+	u32 y;
+
+	*sizeOut = 0;
+	if ((rows == NULL) || (trial == NULL))
+	{
+		free(rows);
+		free(trial);
+		return NULL;
+	}
+	for (y = 0; y < height; y++)
+	{
+		u8 *dst = &rows[y * rowBytes];
+		u32 best = 0xFFFFFFFFu;
+		u32 f;
+
+		for (f = 0; f < 5u; f++)
+		{
+			const u32 sum = RldMk_PngFilterRow(rgba, width, y, f, trial);
+
+			if (sum < best)
+			{
+				best = sum;
+				dst[0] = (u8)f;
+				memcpy(&dst[1], trial, rowBytes - 1u);
+			}
+		}
+	}
+	free(trial);
+	if (RldImg_Deflate(rows, raw, &z, &zlib) != 0)
+	{
+		free(rows);
+		return NULL;
+	}
+	free(rows);
+	png = (u8 *)malloc(8u + (12u + 13u) + (12u + zlib) + 12u);
+	if ((png == NULL) || (zlib > 0x7FFFFFFFu))
+	{
+		free(png);
+		free(z);
+		return NULL;
+	}
+
+	memcpy(png, signature, 8u);
+	at = 8u;
+
+	RldMk_NativeBE32(&png[at], 13u);
+	memcpy(&png[at + 4u], "IHDR", 4u);
+	RldMk_NativeBE32(&png[at + 8u], width);
+	RldMk_NativeBE32(&png[at + 12u], height);
+	png[at + 16u] = 8;   // depth
+	png[at + 17u] = 6;   // RGBA
+	png[at + 18u] = 0;
+	png[at + 19u] = 0;
+	png[at + 20u] = 0;   // no interlace
+	RldMk_NativeBE32(&png[at + 21u], RldPng_Crc(&png[at + 4u], 17u));
+	at += 25u;
+
+	RldMk_NativeBE32(&png[at], (u32)zlib);
+	memcpy(&png[at + 4u], "IDAT", 4u);
+	memcpy(&png[at + 8u], z, zlib);
+	RldMk_NativeBE32(&png[at + 8u + zlib], RldPng_Crc(&png[at + 4u], 4u + zlib));
+	at += 12u + zlib;
+	free(z);
+
+	RldMk_NativeBE32(&png[at], 0u);
+	memcpy(&png[at + 4u], "IEND", 4u);
+	RldMk_NativeBE32(&png[at + 8u], RldPng_Crc(&png[at + 4u], 4u));
+	at += 12u;
+
+	*sizeOut = at;
+	return png;
+}
+
 // CTXT with one texture: the probe texture as PNG, sRGB, repeat, opaque.
 static u8 *RldMk_NativeCtxt(size_t *sizeOut)
 {

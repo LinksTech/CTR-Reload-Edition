@@ -603,8 +603,9 @@ static void RldHires_Usage(FILE *out)
 	fprintf(out, "  Pack the new model with hires-add.\n");
 	fprintf(out, "  rldpack hires-png <in.glb> -o <out.glb>\n");
 	fprintf(out, "  Writes a new model whose JPEG textures are PNG: each JPEG embedded in the\n");
-	fprintf(out, "  model is decoded and written as an RGBA PNG of exactly its pixels (the game\n");
-	fprintf(out, "  reads PNG only, rule HRG-16). Everything else stays as it is; the source is\n");
-	fprintf(out, "  only read; a model without JPEG is written as it is. Run it before\n");
-	fprintf(out, "  hires-upscale and hires-add.\n\n");
+	fprintf(out, "  model is decoded and written as a compressed RGBA PNG of exactly its pixels\n");
+	fprintf(out, "  (the game reads PNG only, rule HRG-16), in place of the JPEG's bytes, which\n");
+	fprintf(out, "  are gone. Every accessor reads the same values; the source is only read;\n");
+	fprintf(out, "  a model without JPEG is written as it is. Run it before hires-upscale and\n");
+	fprintf(out, "  hires-add.\n\n");
 }

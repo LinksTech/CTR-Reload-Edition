@@ -9,8 +9,9 @@ The release downloads contain two programs. `ctr_native.exe` carries SDL3
 with the code that came in through PsyCross (TOMB5, MAME, PCSX, one PSn00bSDK
 table and material from Sony's Psy-Q SDK), and the Sunset Vista compatibility
 layer. `ReloadStudio.exe` carries this project's own code, the JPEG and TGA
-decoders of [stb_image](#stb_image), the glTF parser [cgltf](#cgltf) (with the
-JSON parser jsmn it contains) and the Microsoft C runtime.
+decoders of [stb_image](#stb_image), the deflate compressor of
+[miniz](#miniz), the glTF parser [cgltf](#cgltf) (with the JSON parser jsmn it
+contains) and the Microsoft C runtime.
 
 ## PsyCross / Psy-X
 
@@ -303,7 +304,7 @@ the Vulkan loader, and draws the first-start screen with its 2D renderer and
 file dialog. It is built as a static library and linked only into
 `ctr_native.exe`; no `SDL3.dll` is built, shipped or needed. `ReloadStudio.exe`
 contains no SDL code; of SDL's tree it carries only the JPEG and TGA decoders
-of [stb_image](#stb_image).
+of [stb_image](#stb_image) and the deflate compressor of [miniz](#miniz).
 
 License: zlib
 
@@ -397,9 +398,10 @@ Independent JPEG Group's software: This software is based in part on the work
 of the Independent JPEG Group.
 
 rldpack and `ReloadStudio.exe` compile the JPEG and TGA decoders of the same
-file, and nothing else of SDL, in `tools/rldpack_image.c`: they read the JPEG
-and TGA textures of OBJ models (`rldpack make-char`). The MIT notice and the
-Independent JPEG Group notice above apply to those programs as well.
+file in `tools/rldpack_image.c` (of SDL's tree otherwise only the deflate part
+of [miniz](#miniz)): they read the JPEG and TGA textures of OBJ models
+(`rldpack make-char`). The MIT notice and the Independent JPEG Group notice
+above apply to those programs as well.
 
 #### miniz
 
@@ -407,6 +409,38 @@ Path: `externals/SDL/src/video/miniz.h` (miniz 1.15), by Rich Geldreich
 
 License: public domain (Unlicense). Its PNG writer is by Alex Evans and was
 released into the public domain.
+
+rldpack and `ReloadStudio.exe` compile the deflate part of the same file
+(tdefl; without its inflate, zlib-style and ZIP parts) in
+`tools/rldpack_image.c`: it compresses the PNGs that `rldpack hires-png`
+writes. The statement at the end of the file:
+
+```
+This is free and unencumbered software released into the public domain.
+
+Anyone is free to copy, modify, publish, use, compile, sell, or
+distribute this software, either in source code form or as a compiled
+binary, for any purpose, commercial or non-commercial, and by any
+means.
+
+In jurisdictions that recognize copyright laws, the author or authors
+of this software dedicate any and all copyright interest in the
+software to the public domain. We make this dedication for the benefit
+of the public at large and to the detriment of our heirs and
+successors. We intend this dedication to be an overt act of
+relinquishment in perpetuity of all present and future rights to this
+software under copyright law.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+IN NO EVENT SHALL THE AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+
+For more information, please refer to <http://unlicense.org/>
+```
 
 #### yuv2rgb
 
