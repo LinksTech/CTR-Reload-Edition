@@ -345,6 +345,7 @@ struct RsView {
     int crashRef;
     int showShadow, showExhaust;
     int showNative;
+    wchar_t *modelLabel;         // RsView_SetModelLabel: the label above the model, NULL = "Native model" / "Classic model"
     int pitchMin;              // the lowest pitch that keeps the eye above the ground (last RsView_Scene)
     int wheelDelta;            // mouse wheel units not yet used for a zoom step
 
@@ -2538,6 +2539,25 @@ static void RsView_CenterText(struct RsView *v, const wchar_t *text)
     RsView_DrawText(v, &calc, text, RS_FONT_BODY, DT_WORDBREAK | DT_CENTER);
 }
 
+// The box of a pose of the classic model (RS_VIEW_CORNER_BYTES per corner: s16
+// x, y, z in file units, sub 1/16 units each), 1/16 units: x0 y0 z0 x1 y1 z1.
+static void RsView_PoseBox(const struct RsViewPoseData *p, long long box[6])
+{
+    int i, c, first = 1;
+    memset(box, 0, 6 * sizeof(long long));
+    for (i = 0; i < p->count * 3; i++) {
+        const unsigned char *q = p->tris + (size_t)i * RS_VIEW_CORNER_BYTES;
+        for (c = 0; c < 3; c++) {
+            const long long w = (long long)RsView_ReadS16(q + 2 * c) * p->sub;
+            if (first || w < box[c])
+                box[c] = w;
+            if (first || w > box[3 + c])
+                box[3 + c] = w;
+        }
+        first = 0;
+    }
+}
+
 // A label centred above the highest projected corner of a box given in 1/16
 // units, turned and moved sideways by off.
 static void RsView_BoxLabel(struct RsView *v, const struct RsViewScene *s, const long long *lo, const long long *hi,
@@ -3025,9 +3045,17 @@ static void RsView_Render(HWND view, struct RsView *v)
         // Above the model: its native box in the pose shown (RsView_Parse),
         // "Native model" or, switched to the classic one, "Classic model"; a
         // blend material: the game draws the classic one, and so does the view.
+        // The page's own label instead where it set one (RsView_SetModelLabel).
         RsView_BoxLabel(v, &s, nativeBox, nativeBox + 3, s.offModel, labelH,
-                        native ? L"Native model"
-                               : ((v->native.flags & RS_TEX_NATIVE_BLEND) ? L"Classic model (blend material)" : L"Classic model"));
+                        v->modelLabel ? v->modelLabel
+                        : native      ? L"Native model"
+                                      : ((v->native.flags & RS_TEX_NATIVE_BLEND) ? L"Classic model (blend material)" : L"Classic model"));
+    } else if (v->loaded && v->modelLabel && !(v->setIndex >= 0 && v->setIndex < v->setCount) && RsView_ShownPose(v)->count > 0) {
+        // A model without a native part has no label of its own; the page's
+        // label above the box of the pose shown.
+        long long box[6];
+        RsView_PoseBox(RsView_ShownPose(v), box);
+        RsView_BoxLabel(v, &s, box, box + 3, s.offModel, labelH, v->modelLabel);
     }
     if (!v->loaded) {
         // The dummy alone: the window text above it.
@@ -3838,6 +3866,8 @@ static LRESULT CALLBACK RsView_Proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
             Rs_Free(v->dumTri);
             Rs_Free(v->dumColor);
             Rs_Free(v->modelLo);
+            Rs_Free(v->modelLabel);
+            v->modelLabel = NULL;
             Rs_Free(v->modelHi);
             Rs_Free(v->dumLo);
             Rs_Free(v->dumHi);
@@ -4753,6 +4783,16 @@ void RsView_SetOverlays(HWND view, int shadow, int exhaust)
         return;
     v->showShadow = shadow != 0;
     v->showExhaust = exhaust != 0;
+    RsView_Changed(view, v);
+}
+
+void RsView_SetModelLabel(HWND view, const wchar_t *label)
+{
+    struct RsView *v = RsView_Data(view);
+    if (!v || (!label && !v->modelLabel) || (label && v->modelLabel && wcscmp(label, v->modelLabel) == 0))
+        return;
+    Rs_Free(v->modelLabel);
+    v->modelLabel = label ? Rs_Dup(label) : NULL;
     RsView_Changed(view, v);
 }
 

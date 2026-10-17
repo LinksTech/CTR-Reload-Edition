@@ -436,6 +436,11 @@
 //   A script that names no route (all of before) picks Vanilla with its first
 //   verb of the page ("route: vanilla (implicit ...)" in the log): the page
 //   then checks and builds as it did before, the same commands, the same bytes.
+//   A model chosen ("model", "drop", Browse) while the name field is empty or
+//   holds a name made this way gives the name of its file: upper case, the
+//   menu font's characters only (others a space), at most 17 - logged as
+//   "name: <X> (from the file name)"; a name set with "name" (or typed) is
+//   never replaced, so a script that sets it keeps its bytes.
 //   step <1..5|model|driver|look|voices|build|next|back>   as a click on the
 //                                 head of a step, on Next or on Back (Back on
 //                                 the step Model: step 0; no Next on Build)
@@ -580,7 +585,10 @@
 //   @msg      warning pose-unknown-key (a key of no pose, ignored), warning
 //             pose-not-symmetric (one steering key, the model not symmetric:
 //             automatic lean), error model-rig (a skin: rigs are not supported
-//             yet); OBJ and PLY say none of them (the automatic poses)
+//             yet - without make-char --rig bind-pose; the routes Low-Poly and
+//             Hi-Res pass it for their classic fallback, which then stands in
+//             the bind pose, info rig-bind-pose); OBJ and PLY say none of them
+//             (the automatic poses)
 // The page collects them with the run (also from a result kept) and hands them
 // to the card after the check. rldpack char-poses (a folder of pose PLYs,
 // "RLDPS1" preview) is no longer called by the Studio; it stays in rldpack
@@ -864,7 +872,9 @@ int Rs_TextWidth(HWND h, const wchar_t *text);
 // "Coming soon" is left only for what is not built at all (on the page Track
 // the modes Time Trial and Battle, rs_track.c; in the user mode the box
 // "Include classic fallback model", rs_char.c). Rigs are refused by rldpack
-// (model-rig); the card Animations says so.
+// (model-rig) without make-char --rig bind-pose; the card Animations says so.
+// The routes Low-Poly and Hi-Res pass --rig bind-pose for their classic
+// fallback (RsCharHires_FallbackArgs) and keep the rig in the hi-res model.
 // ---------------------------------------------------------------------------
 
 // 1 with --enable-preview-features on the command line (rs_shell.c). Never

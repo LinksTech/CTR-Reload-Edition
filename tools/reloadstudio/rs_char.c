@@ -817,6 +817,12 @@ static struct {
     HWND advanced, upscale, upscaleHelp;
     HWND test, rebuild, testNote, outNote;
     int builtFresh;                 // the last build is of the fields as they are: Test in game is offered
+    // A step shows its problems in its head (red, amber) only once it was
+    // shown or Build was pressed; before, it is "still to do" (Char_TabsUpdate).
+    int visited[CHAR_TABS];
+    int buildTried;
+    int headShort;                  // the heads use their short texts (Char_LayStrip: the long ones do not fit)
+    int nameDerived;                // the name in the field was made from the model's file name (Char_NameFromModel)
     // The messages of the page, each with its step (and card); the list on
     // the step shows those of the step shown (Char_MsgRefill).
     struct CharPageMsg { int tab, card, severity; wchar_t *text, *detail; } *pageMsg;
@@ -978,6 +984,7 @@ static void Char_HiresForget(void);
 static void Char_PreviewShow(void);
 static void Char_HiresTick(HWND page);
 static void Char_PreviewSwitch(HWND page, int classic);
+static void Char_NameFilter(void);
 
 // ---------------------------------------------------------------------------
 // The guided flow (rs_charroute.h): which route, which cards, which controls
@@ -1277,7 +1284,11 @@ static int Char_TextHeight(HWND label, int width, int maxLines)
         h = rc.bottom;
         // The compact layout: one line, cut with "...", the whole text as
         // the tooltip (Rs_LabelOneLine) - no word is lost, it is a hover away.
-        if (g_char.compact && lineH > 0 && label != g_char.headline) {
+        // The notes of the guided flow wrap all the same (their steps have
+        // the room): "Upscale small textures", where the build goes, what
+        // Test in game did.
+        if (g_char.compact && lineH > 0 && label != g_char.headline && label != g_char.upscaleHelp &&
+            label != g_char.outNote && label != g_char.testNote) {
             Rs_LabelOneLine(label, h > lineH);
             if (h > lineH)
                 h = lineH;
@@ -2703,8 +2714,10 @@ static void Char_CountTabs(void)
     }
 }
 
-// What each head shows: the errors and warnings of the last run first, then
-// whether the step is filled in. Model and Driver are needed, the others optional.
+// What each head shows: the errors and warnings of the last run first - of a
+// step not shown yet (and before Build was pressed) only "to do", so that a
+// name not typed yet is no red head right after the model -, then whether
+// the step is filled in. Model and Driver are needed, the others optional.
 static void Char_TabsUpdate(void)
 {
     wchar_t model[CHAR_VAL], icon[CHAR_VAL], voices[CHAR_VAL];
@@ -2719,9 +2732,12 @@ static void Char_TabsUpdate(void)
     name = Rs_GetText(g_char.name);
     for (t = 0; t < CHAR_TABS; t++) {
         int step;
-        if (g_char.tabErrors[t])
+        const int seen = g_char.visited[t] || g_char.buildTried;
+        if (g_char.tabErrors[t] && !seen)
+            step = CHAR_STEP_TODO;      // not shown yet: no error before the author was there
+        else if (g_char.tabErrors[t])
             step = CHAR_STEP_PROBLEM;
-        else if (g_char.tabWarnings[t])
+        else if (g_char.tabWarnings[t] && seen)
             step = CHAR_STEP_WARNING;
         else if (t == CHAR_TAB_MODEL)
             step = model[0] && g_char.modelRead ? CHAR_STEP_DONE : CHAR_STEP_TODO;
@@ -2761,11 +2777,16 @@ static void Char_TabsUpdate(void)
 }
 
 // The text of the head of step t: Voices says that it is optional (Next skips
-// it) - in the compact layout by its outlined number and the line at the top
-// of the step only, so that no head is cut.
+// it). Where the heads do not fit with their whole texts (Char_LayStrip,
+// headShort) the short ones: "Look", and Voices without "(optional)" - its
+// outlined number and the line at the top of the step say it then.
 static const wchar_t *Char_HeadText(int t)
 {
-    return t == CHAR_TAB_VOICES && !g_char.compact ? L"Voices (optional)" : g_charTabTexts[t];
+    if (t == CHAR_TAB_VOICES)
+        return g_char.headShort ? L"Voices" : L"Voices (optional)";
+    if (t == CHAR_TAB_LOOK && g_char.headShort)
+        return L"Look";
+    return g_charTabTexts[t];
 }
 
 // The head of tab t: its number in a circle that says the step (green done,
@@ -2984,6 +3005,7 @@ static void Char_SelectTab(HWND page, int t, int focus)
     if (t < 0 || t >= CHAR_TABS)
         return;
     g_char.tab = t;
+    g_char.visited[t] = 1;
     for (i = 0; i < CHAR_TABS; i++)
         InvalidateRect(g_char.tabHead[i], NULL, FALSE);
     Char_MsgRefill();           // the messages of this step
@@ -5216,6 +5238,8 @@ static void Char_ApplyPreview(int seq)
     // Hi-Res | Classic fallback (Char_PreviewShow follows in Char_CheckDone).
     if (Char_Chrg())
         Char_ClassicKeep(Rs_FileExists(path) ? path : NULL);
+    // The label above the model: the view's own for Vanilla.
+    RsView_SetModelLabel(g_char.view, Char_Chrg() ? L"Classic fallback" : NULL);
     if (!Rs_FileExists(path)) {
         RsView_Clear(g_char.view, L"No preview - rldpack could not convert the model.");
         Char_ViewNote(L"No preview - fix the errors in the message list first.", RS_COL_WARNING);
@@ -5800,6 +5824,7 @@ static void Char_HiresShow(void)
         return;
     }
     RsView_SetModelKey(g_char.view, g_char.hiresPath);
+    RsView_SetModelLabel(g_char.view, g_char.route == RS_ROUTE_LOWPOLY ? L"Low-Poly model" : L"Hi-Res model");
     RsView_LoadPreviewData(g_char.view, c->preview, c->previewBytes);
     RsView_SetPose(g_char.view, RS_VIEW_POSE_NEUTRAL);
     RsView_SetWheels(g_char.view, c->wheels < 4);
@@ -5827,6 +5852,7 @@ static void Char_ClassicShow(void)
 {
     g_char.hiresShown = 0;
     Char_HiresStop();
+    RsView_SetModelLabel(g_char.view, L"Classic fallback");
     if (g_char.classicPv && RsView_LoadPreviewData(g_char.view, g_char.classicPv, g_char.classicPvBytes)) {
         RsView_SetPose(g_char.view, g_charPoseView[g_char.poseNow]);
         RsView_SetWheels(g_char.view, !(g_char.hiresChecked && g_char.hires.read && g_char.hires.wheels == 4));
@@ -7020,6 +7046,7 @@ static int Char_Build(HWND page)
 
     if (!Char_CanBuild())
         return -1;
+    g_char.buildTried = 1;      // from now on every head shows its problems
     // An empty field: the game's characters folder as it is now (the game may
     // have been chosen since the last check), else rldpack's default.
     Char_FieldPath(g_char.out, field, CHAR_VAL);
@@ -7444,6 +7471,51 @@ static void Char_ModelChanged(HWND page)
 }
 
 // Sets the model and checks at once. Returns 1 if rldpack is running.
+// THE NAME FROM THE FILE: a model chosen while the name field is empty (or
+// still holds a name made this way) gives the name of its file - upper case,
+// the characters of the game's menu font only (any other one a space, spaces
+// not doubled, none at the ends), at most CHAR_NAME_MAX. So the step Driver
+// needs the author only to change it, and the shortest way is card, model,
+// the head Build, Build. A name the author typed is never replaced
+// (nameDerived goes to 0 with the first change of the field that is not this
+// one). Nothing usable in the file name: the field stays as it was.
+static void Char_NameFromModel(const wchar_t *path)
+{
+    wchar_t name[CHAR_NAME_MAX + 1], *now;
+    const wchar_t *p = Rs_PathName(path), *dot = wcsrchr(p, L'.');
+    int n = 0;
+
+    now = Rs_GetText(g_char.name);
+    if (now[0] && !g_char.nameDerived) {
+        Rs_Free(now);
+        return;
+    }
+    Rs_Free(now);
+    for (; *p && p != dot && n < CHAR_NAME_MAX; p++) {
+        wchar_t c = *p;
+        if (c >= L'a' && c <= L'z')
+            c = (wchar_t)(c - L'a' + L'A');
+        if (!Char_NameCharAllowed(c) || c == L' ') {
+            if (n > 0 && name[n - 1] != L' ')
+                name[n++] = L' ';
+            continue;
+        }
+        name[n++] = c;
+    }
+    while (n > 0 && name[n - 1] == L' ')
+        n--;
+    name[n] = 0;
+    if (!n)
+        return;
+    g_char.applying = 1;
+    Rs_SetText(g_char.name, name);
+    g_char.applying = 0;
+    g_char.nameDerived = 1;
+    Char_NameFilter();          // the line below the field
+    if (Rs_Automating())
+        Rs_AutoLog(L"  name: %ls (from the file name)", name);
+}
+
 static int Char_SetModel(HWND page, const wchar_t *path)
 {
     wchar_t clean[CHAR_VAL];
@@ -7459,6 +7531,7 @@ static int Char_SetModel(HWND page, const wchar_t *path)
     if (clean[0]) {
         Rs_PathDir(dir, CHAR_VAL, clean);
         Rs_ConfigSet(L"char.folder", dir);
+        Char_NameFromModel(clean);
     }
     return Char_CheckNow(page) > 0;
 }
@@ -7807,6 +7880,7 @@ static int Char_SetRoute(HWND page, int route)
     Char_ExtrasFix();
     Char_RouteTexts();
     g_char.tab = CHAR_TAB_MODEL;
+    g_char.visited[CHAR_TAB_MODEL] = 1;
     Char_MsgRefill();
     Char_Relayout(page);
     SetFocus(g_char.tabHead[g_char.tab]);
@@ -7837,7 +7911,7 @@ static int Char_TestInGame(HWND page)
                   ok ? RS_COL_OK : RS_COL_ERROR, NULL);
     Char_Relayout(page);
     if (Rs_Automating())
-        Rs_AutoLog(L"  test-in-game: %ls - %ls", ok ? L"started" : L"not started", why[0] ? why : L"(no reason given)");
+        Rs_AutoLog(L"  test-in-game: %ls%ls%ls", ok ? L"started" : L"not started", why[0] ? L" - " : L"", why);
     return ok;
 }
 
@@ -9447,10 +9521,20 @@ static int Char_LayStrip(int left, int right, int top)
     int widths[CHAR_TABS];
     int x = left + Rs_Px(12), h = Rs_Px(g_char.compact ? CHAR_COMPACT_STRIP_H : CHAR_STRIP_H), total = 0, room = right - left - Rs_Px(24), t;
 
-    for (t = 0; t < CHAR_TABS; t++) {
-        widths[t] = Rs_Px(12 + 20 + 8 + 16) + Char_TextWidth(g_char.tabHead[t], Char_HeadText(t));
-        total += widths[t] + (t ? Rs_Px(4) : 0);
+    // The whole texts first, the short ones where those do not fit.
+    for (g_char.headShort = 0; g_char.headShort < 2; g_char.headShort++) {
+        total = 0;
+        for (t = 0; t < CHAR_TABS; t++) {
+            widths[t] = Rs_Px(12 + 20 + 8 + 16) + Char_TextWidth(g_char.tabHead[t], Char_HeadText(t));
+            total += widths[t] + (t ? Rs_Px(4) : 0);
+        }
+        if (total <= room)
+            break;
     }
+    if (g_char.headShort > 1)
+        g_char.headShort = 1;
+    for (t = 0; t < CHAR_TABS; t++)
+        InvalidateRect(g_char.tabHead[t], NULL, FALSE);
     // Too wide: the widest heads give way first (down to the next widest),
     // so that a short name is not cut while a long one has room to spare.
     while (total > room) {
@@ -9997,7 +10081,7 @@ static void Char_LayAdvSwitch(const RECT *card)
 static void Char_LayPreview(HWND page, int left, int right, int top, int bottom)
 {
     RECT card, in;
-    int width, viewBottom, noteH, i, x;
+    int width, viewTop, viewBottom, noteH, i, x, poseW, poseRow;
     const int chrg = Char_Chrg();
 
     card.left = left;
@@ -10005,25 +10089,27 @@ static void Char_LayPreview(HWND page, int left, int right, int top, int bottom)
     card.right = right;
     card.bottom = bottom;
     // Compact: no title line - the switch and the pose choice on a row of
-    // their own, the note on one line below the view.
+    // their own, the note on one line below the view. A CHRG route: where
+    // the pose choice (classic fallback only) does not fit beside the switch,
+    // a row of its own below it.
     if (g_char.compact) {
-        int poseW = Rs_Px(150);
         in = Rs_CardInner(&card, 0);
         width = in.right - in.left;
-        if (poseW > width)
-            poseW = width;
-        MoveWindow(g_char.pose, in.right - poseW, in.top, poseW, Rs_Px(200), TRUE);
+        poseW = Rs_Px(150) < width ? Rs_Px(150) : width;
         for (i = 0, x = in.left; i < 2; i++) {
             int bw = Char_TextWidth(g_char.previewSwitch[i], g_charPreviewTexts[i]) + Rs_Px(16);
             MoveWindow(g_char.previewSwitch[i], x, in.top - Rs_Px(4), bw, Rs_Px(32), TRUE);
             x += bw + Rs_Px(2);
         }
+        poseRow = chrg && g_char.previewClassic && in.right - poseW < x + Rs_Px(8);
+        MoveWindow(g_char.pose, in.right - poseW, in.top + (poseRow ? Rs_Px(32) : 0), poseW, Rs_Px(200), TRUE);
+        viewTop = in.top + Rs_Px(poseRow ? 64 : 32);
         Char_ViewNoteFit(width);
         noteH = Char_NoteHeight(g_char.viewNote, width);
         viewBottom = in.bottom - Rs_Px(4) - noteH;
-        if (viewBottom < in.top + Rs_Px(32) + Rs_Px(CHAR_VIEW_MIN_H))
-            viewBottom = in.top + Rs_Px(32) + Rs_Px(CHAR_VIEW_MIN_H);
-        MoveWindow(g_char.view, in.left, in.top + Rs_Px(32), width, viewBottom - in.top - Rs_Px(32), TRUE);
+        if (viewBottom < viewTop + Rs_Px(CHAR_VIEW_MIN_H))
+            viewBottom = viewTop + Rs_Px(CHAR_VIEW_MIN_H);
+        MoveWindow(g_char.view, in.left, viewTop, width, viewBottom - viewTop, TRUE);
         MoveWindow(g_char.viewNote, in.left, viewBottom + Rs_Px(4), width, noteH, TRUE);
         if (card.bottom < viewBottom + Rs_Px(4) + noteH + Rs_Px(16))
             card.bottom = viewBottom + Rs_Px(4) + noteH + Rs_Px(16);
@@ -10032,18 +10118,21 @@ static void Char_LayPreview(HWND page, int left, int right, int top, int bottom)
     }
     in = Rs_CardInner(&card, 1);
     width = in.right - in.left;
-    MoveWindow(g_char.pose, in.right - Rs_Px(168), card.top + Rs_Px(10), Rs_Px(168), Rs_Px(200), TRUE);
     for (i = 0, x = card.left + Rs_Px(10); i < 2; i++) {
         int bw = Char_TextWidth(g_char.previewSwitch[i], g_charPreviewTexts[i]) + Rs_Px(20);
         MoveWindow(g_char.previewSwitch[i], x, card.top + Rs_Px(8), bw, Rs_Px(36), TRUE);
         x += bw + Rs_Px(4);
     }
+    poseW = Rs_Px(168);
+    poseRow = chrg && g_char.previewClassic && in.right - poseW < x + Rs_Px(8);
+    MoveWindow(g_char.pose, in.right - poseW, poseRow ? in.top : card.top + Rs_Px(10), poseW, Rs_Px(200), TRUE);
+    viewTop = in.top + (poseRow ? Rs_Px(34) : 0);
     Char_ViewNoteFit(width);
     noteH = Char_NoteHeight(g_char.viewNote, width);
     viewBottom = in.bottom - Rs_Px(6) - noteH;
-    if (viewBottom < in.top + Rs_Px(CHAR_VIEW_MIN_H))
-        viewBottom = in.top + Rs_Px(CHAR_VIEW_MIN_H);
-    MoveWindow(g_char.view, in.left, in.top, width, viewBottom - in.top, TRUE);
+    if (viewBottom < viewTop + Rs_Px(CHAR_VIEW_MIN_H))
+        viewBottom = viewTop + Rs_Px(CHAR_VIEW_MIN_H);
+    MoveWindow(g_char.view, in.left, viewTop, width, viewBottom - viewTop, TRUE);
     MoveWindow(g_char.viewNote, in.left, viewBottom + Rs_Px(6), width, noteH, TRUE);
     if (card.bottom < viewBottom + Rs_Px(6) + noteH + Rs_Px(16))
         card.bottom = viewBottom + Rs_Px(6) + noteH + Rs_Px(16);
@@ -10597,6 +10686,7 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
         break;
     case CHAR_ID_NAME:
         if (code == EN_CHANGE && !g_char.applying) {
+            g_char.nameDerived = 0;     // the author's own: never replaced by a model's file name
             Char_NameFilter();
             Char_Changed(page);
         }
