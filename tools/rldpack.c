@@ -699,6 +699,8 @@ static void RldWheel_Usage(FILE *out);
 
 // The hi-res driver, chunk CHRG (tools/rldpack_hires.inc, included next to them).
 static void RldHires_Usage(FILE *out);
+// The Creator Kit (tools/rldpack_kit.inc, included next to it).
+static void RldKit_Usage(FILE *out);
 
 
 //========================================================================================
@@ -6446,6 +6448,8 @@ static void Rld_Usage(void)
 	printf("  selftest-hires              check the rules of the hi-res driver (chunk CHRG,\n");
 	printf("                              include/rldhires.inc) and hires-png against\n");
 	printf("                              built-in models\n");
+	printf("  selftest-kit                check the Creator Kit (include/rldkit.inc) on a\n");
+	printf("                              code-made stand-in of the game data\n");
 	printf("  make-native-tests [--obj] <folder>\n");
 	printf("                              write the test characters of the native model\n");
 	printf("                              (CNET, CTXT; preview) into a folder of a CMake\n");
@@ -6502,6 +6506,7 @@ static void Rld_Usage(void)
 	RldAnim_Usage(stdout);
 	RldWheel_Usage(stdout);
 	RldHires_Usage(stdout);
+	RldKit_Usage(stdout);
 
 	printf("BUILD - REQUIRED\n");
 	printf("  --lev <file>                track geometry (.lev), 16 MB at most\n");
@@ -6673,6 +6678,8 @@ static int Cmd_InfoMachine(int argc, char *argv[])
 #include "rldpack_hires_upscale.inc"
 #include "rldpack_hires_test.inc"
 #include "rldpack_hires_png.inc"
+// The Creator Kit (include/rldkit.inc): kit-extract, kit-standin, selftest-kit.
+#include "rldpack_kit.inc"
 
 // Searched for --machine and removed before a command sees the arguments:
 // otherwise make would report an unknown argument before the machine is on.
@@ -6810,6 +6817,18 @@ static int Rld_MainCommand(int argc, char *argv[])
 	if (strcmp(argv[1], "hires-png") == 0)
 	{
 		return RldHires_PngCommand(argc - 2, &argv[2]);
+	}
+	if (strcmp(argv[1], "kit-extract") == 0)
+	{
+		return RldKit_ExtractCommand(argc - 2, &argv[2], argv[0]);
+	}
+	if (strcmp(argv[1], "kit-standin") == 0)
+	{
+		return RldKit_StandinCommand(argc - 2, &argv[2]);
+	}
+	if (strcmp(argv[1], "selftest-kit") == 0)
+	{
+		return RldKit_SelfTest();
 	}
 	if (strcmp(argv[1], "hires-test-files") == 0)
 	{

@@ -533,6 +533,24 @@ if(BUILD_TESTING)
     set_tests_properties(rldhires_files PROPERTIES
         PASS_REGULAR_EXPRESSION "rldhires files passed: [0-9]+ checks"
         TIMEOUT 300)
+    # The Creator Kit (include/rldkit.inc) on a code-made stand-in of the game
+    # data: decoding, the kart told from the figure, smoothing, atlas, wheels,
+    # the GLBs through the hi-res rules (tools/rldpack_kit.inc).
+    add_test(NAME rldkit_selftest COMMAND $<TARGET_FILE:rldpack> selftest-kit)
+    set_tests_properties(rldkit_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "kit selftest passed: [0-9]+ checks, 0 failures"
+        FAIL_REGULAR_EXPRESSION "FAIL")
+    # kit-standin and kit-extract on files (cmake/run_rldkit_files.cmake).
+    add_test(NAME rldkit_files
+        COMMAND ${CMAKE_COMMAND}
+            -DPACKER=$<TARGET_FILE:rldpack>
+            -DDIR=${CMAKE_BINARY_DIR}/selftest/rldkit
+            -P ${CMAKE_SOURCE_DIR}/cmake/run_rldkit_files.cmake
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+    set_tests_properties(rldkit_files PROPERTIES
+        PASS_REGULAR_EXPRESSION "rldkit files passed: [0-9]+ checks"
+        TIMEOUT 300)
     # The same self-test through the rldpack inside Reload Studio: proves that the
     # built-in version is the same one and talks over the pipe.
     if(MSVC)
@@ -553,6 +571,10 @@ if(BUILD_TESTING)
         set_tests_properties(reloadstudio_version PROPERTIES PASS_REGULAR_EXPRESSION
             "^Reload Studio ${ctr_tools_version_re} \\([^)]+\\) -[^\n]*\r?\nfor CTR Reload ${ctr_native_version_re}, container format ${ctr_rld_major}\\.${ctr_rld_minor}\\.")
         # And the hi-res rules (include/rldhires.inc) inside Reload Studio: the same code.
+        add_test(NAME reloadstudio_kit_selftest COMMAND $<TARGET_FILE:ReloadStudio> --rldpack selftest-kit)
+        set_tests_properties(reloadstudio_kit_selftest PROPERTIES
+            PASS_REGULAR_EXPRESSION "kit selftest passed: [0-9]+ checks, 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL")
         add_test(NAME reloadstudio_rldhires_selftest COMMAND $<TARGET_FILE:ReloadStudio> --rldpack selftest-hires)
         set_tests_properties(reloadstudio_rldhires_selftest PROPERTIES
             PASS_REGULAR_EXPRESSION "hires selftest passed: [0-9]+ checks, 0 failures"
