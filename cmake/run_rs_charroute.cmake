@@ -24,6 +24,13 @@
 #      info: chunks CHRI CMDL CHRG).
 # Prints "charroute passed: <route> sha256 <hash>" per route and
 # "charroute passed: 3 routes" at the end.
+#
+# With -DPAGE=ON (ctest reloadstudio_charroute_page) every route is built a
+# third time by the page Character itself, in automation as an author clicks
+# it - page char, route <word>, model, name, out, build - and the page's file
+# must be rldpack's chain byte for byte; the classic fallback included (the
+# page's own switches, RsCharHires_FallbackArgs and --wheels off for a model
+# with its own wheels). Prints "charroute page passed: 3 routes".
 
 foreach(required PACKER STUDIO TEST DIR)
     if(NOT DEFINED ${required} OR "${${required}}" STREQUAL "")
@@ -61,7 +68,7 @@ if(NOT fallbackLowpoly MATCHES "--reduce;auto" OR NOT fallbackHires MATCHES "--r
 endif()
 
 # The page's own make-char switches (rs_char.c, Char_MakeArgs, its defaults).
-set(page --name "ROUTE TEST" --template 14 --class balanced --size 100)
+set(page --name "ROUTE TEST" --template 14 --class balanced --size 100 --mask uka)
 
 # One route: name, model, fallback switches, extra switches (a list, may be
 # empty), upscale (ON/OFF).
@@ -103,7 +110,33 @@ function(route name model fallback extra upscale)
     message("charroute passed: ${name} sha256 ${hash}")
 endfunction()
 
+# The page itself (PAGE=ON): the route word, the model, the file of rldpack's
+# chain to compare with.
+function(page_route name word model want)
+    set(log "${DIR}/page-${name}.log")
+    execute_process(COMMAND "${STUDIO}" --settings "${DIR}/rs.ini" --log "${log}"
+                            --do "page char" --do "route ${word}" --do "model ${DIR}/${model}" --do "name ROUTE TEST"
+                            --do "out ${DIR}/page-${name}.rldchar" --do "build" --do "quit"
+                    RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE out TIMEOUT 240)
+    set(text "")
+    if(EXISTS "${log}")
+        file(READ "${log}" text)
+    endif()
+    if(NOT result EQUAL 0)
+        message(FATAL_ERROR "charroute FAILED: the page (${name}) ended with ${result}\n${out}\n${text}")
+    endif()
+    same("the page's character (${name})" "${DIR}/${want}" "${DIR}/page-${name}.rldchar")
+    message("charroute page passed: ${name}")
+endfunction()
+
 route(hires route-bare.glb "${fallbackHires}" "" OFF)
 route(lowpoly route-bare.glb "${fallbackLowpoly}" "" ON)
 route(hires-wheels route-wheels.glb "${fallbackHires}" "--wheels;off" OFF)
 message("charroute passed: 3 routes")
+
+if(PAGE)
+    page_route(hires hires route-bare.glb p-hires.rldchar)
+    page_route(lowpoly lowpoly route-bare.glb p-lowpoly.rldchar)
+    page_route(hires-wheels hires route-wheels.glb p-hires-wheels.rldchar)
+    message("charroute page passed: 3 routes")
+endif()

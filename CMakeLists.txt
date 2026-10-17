@@ -534,6 +534,22 @@ if(BUILD_TESTING)
             PASS_REGULAR_EXPRESSION "charroute passed: 3 routes"
             FAIL_REGULAR_EXPRESSION "FAILED"
             TIMEOUT 300)
+        # The same chain through the page Character in automation (route, model,
+        # name, out, build): the page's file has the SHA-256 of rldpack's chain.
+        add_test(NAME reloadstudio_charroute_page
+            COMMAND ${CMAKE_COMMAND}
+                -DPACKER=$<TARGET_FILE:rldpack>
+                -DSTUDIO=$<TARGET_FILE:ReloadStudio>
+                -DTEST=$<TARGET_FILE:rs_hires_selftest>
+                -DDIR=${CMAKE_BINARY_DIR}/selftest/rs-charroute-page
+                -DPAGE=ON
+                -P ${CMAKE_SOURCE_DIR}/cmake/run_rs_charroute.cmake
+            WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        )
+        set_tests_properties(reloadstudio_charroute_page PROPERTIES
+            PASS_REGULAR_EXPRESSION "charroute page passed: 3 routes"
+            FAIL_REGULAR_EXPRESSION "FAILED"
+            TIMEOUT 600)
     endif()
     set_tests_properties(ctr_native_version PROPERTIES PASS_REGULAR_EXPRESSION "^CTR Reload ${CTR_NATIVE_VERSION} ")
 
