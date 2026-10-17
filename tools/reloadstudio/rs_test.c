@@ -17,12 +17,40 @@
 // The page looks for the game folder like the game does (NativeAssets_Init): folder of the
 // exe, then parent, then grandparent - the first one whose subfolder assets
 // contains BIGFILE.BIG or ctr-u.bin.
+//
+// The page Character starts the game the same way with a built character
+// (Rs_TestCharacter, rs_charroute.h; at the end of this file): the same game,
+// the same game folder, the same check that game and Reload Studio belong
+// together, a log in Rs_TempDir.
 
 #include "reloadstudio.h"
+#include "rs_charroute.h"
 #include <shellapi.h>
 #include <stdlib.h>
 #include <string.h>
 #include <wchar.h>
+
+// The reader of the containers (include/rldtrack.inc) and the character's
+// info chunk CHRI (include/rldchar.inc), the files the game reads a .rldchar
+// with: Rs_TestCharacter takes the character's template from there. All static:
+// what this file does not use the compiler drops (the warnings about unused
+// parts as in rs_hires_model.c).
+typedef unsigned char u8;
+typedef unsigned short u16;
+typedef unsigned int u32;
+typedef unsigned long long u64;
+typedef signed short s16;
+typedef signed int s32;
+typedef signed long long s64;
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4100 4189 4244 4245 4267 4505)
+#endif
+#include <rldtrack.inc>
+#include <rldchar.inc>
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
 
 // Controls. Never 1 or 2: IsDialogMessage sends Enter as IDOK and Esc
 // as IDCANCEL.
@@ -150,6 +178,9 @@ struct TestState {
     struct TestLines out;           // stdout/stderr of the game
     struct TestLines log;           // log lines with the prefixes below
     int showOutput;
+
+    // The game started by the page Character (Rs_TestCharacter)
+    int charJob;
 };
 
 static struct TestState g_test;
@@ -459,7 +490,7 @@ static wchar_t *Test_CmdText(void)
 // Why "Start game" does not work; NULL = it works.
 static const wchar_t *Test_WhyNot(void)
 {
-    if (g_test.gameJob)
+    if (g_test.gameJob || g_test.charJob)
         return L"The game is already running.";
     if (!g_test.exePath[0])
         return L"Choose the game program (ctr_native.exe) first.";
@@ -1900,6 +1931,8 @@ static LRESULT Test_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
             return 0;
         if (job == g_test.gameJob)
             Test_GameDone((DWORD)lParam);
+        else if (job == g_test.charJob)
+            g_test.charJob = 0;     // the character test ended: the game may start again
         else if (job == g_test.versionJob)
             Test_VersionDone(page, (DWORD)lParam);
         else if (job == g_test.infoJob)
@@ -1942,7 +1975,7 @@ static LRESULT Test_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, i
         return 0;
     }
     case RS_WM_QUERY_CLOSE:
-        if (g_test.gameJob) {
+        if (g_test.gameJob || g_test.charJob) {
             *handled = 1;
             return Rs_AskYesNo(page, L"Test in game",
                                L"The game is still running. Close Reload Studio anyway? The game stays open.")
@@ -1958,6 +1991,31 @@ static int Test_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
     wchar_t raw[TEST_PATH];
     wchar_t path[TEST_PATH];
 
+    // "test-character <vanilla|lowpoly|hires> <file.rldchar>": Rs_TestCharacter
+    // as the page Character calls it (the step Build, "Test in game") - in
+    // automation it logs the command line and starts nothing. FAIL when the
+    // character cannot be tested (why in the log).
+    if (wcscmp(verb, L"test-character") == 0) {
+        wchar_t word[16];
+        wchar_t why[512];
+        const wchar_t *file = arg;
+        int n = 0;
+        while (*file == L' ')
+            file++;
+        while (*file && *file != L' ' && n < 15)
+            word[n++] = *file++;
+        word[n] = 0;
+        Test_Trim(file, raw, TEST_PATH, 1);
+        if (RsRoute_FromWord(word) == RS_ROUTE_NONE || !raw[0]) {
+            Rs_AutoLog(L"  say test-character vanilla|lowpoly|hires <file.rldchar>");
+            return RS_AUTO_FAIL;
+        }
+        if (!Rs_TestCharacter(raw, RsRoute_FromWord(word), why, 512)) {
+            Rs_AutoLog(L"  character test refused: %ls", why);
+            return RS_AUTO_FAIL;
+        }
+        return RS_AUTO_DONE;
+    }
     if (wcscmp(verb, L"exe") == 0) {
         Test_Trim(arg, raw, TEST_PATH, 1);
         g_test.quiet = 1;
@@ -2057,6 +2115,181 @@ static int Test_Busy(HWND page)
 {
     (void)page;
     return (g_test.versionJob || g_test.infoJob || g_test.gameJob || g_test.exePending) ? 1 : 0;
+}
+
+// ---------------------------------------------------------------------------
+// "Test in game" of the page Character (rs_charroute.h)
+//
+// THE COMMAND LINE, from what the game asks (main.c and
+// platform/native_chars.c):
+//   --dev                 --char, --level, --driver and --engine-hires-chars
+//                         are developer switches (main.c, s_devSwitches); one
+//                         without --dev ends the start ("requires --dev")
+//   --char <file>         only this .rldchar, by its full path, no folder
+//                         (main.c, the help of --char)
+//   --level 0             straight into a race on Dingo Canyon as soon as the
+//                         main menu is up (main.c, --level); the direct start
+//                         sets the pick to this file (native_chars.c, THE PICK)
+//   --driver <template>   seat 0 drives the file only when the seat runs on
+//                         the file's template: "seat 0 empty: template %d is
+//                         not %d" otherwise (native_chars.c, the funnel step
+//                         6). The template is the one in the file's CHRI, read
+//                         here - the page's default is 14 (Fake Crash), but the
+//                         step Driver can choose another one, so a fixed 14
+//                         would leave seat 0 empty for every other choice.
+//   --engine-hires-chars  Low-Poly and Hi-Res: the engine draws the seat from
+//                         the CHRG chunk (main.c, its help); the engine is on
+//                         for one player by default
+//   --log <file>          "character-test <time>.log" in Rs_TempDir, the last
+//                         five kept - as the track test does
+//   --windowed 1280x720   when "Play in a window" is ticked on this page
+// The game is the one of this page (Rs_FindGameExe), started in the game
+// folder; it must be checked here as the same package (Rs_TestGameVerified).
+// In automation the command line goes into the log and nothing is started.
+// ---------------------------------------------------------------------------
+
+// The template of a .rldchar (CHRI) and whether it has a CHRG chunk, read the
+// way the game reads them. 0 = not readable, why says why.
+static int Test_CharFile(const wchar_t *path, int *templateId, int *hasChrg, wchar_t *why, int whyCap)
+{
+    struct RldReader reader;
+    struct RldCharInfo info;
+    const char *err;
+    char *utf8 = Rs_ToUtf8(path);
+    wchar_t *wide;
+    int index = -1;
+    u8 *bytes = NULL;
+    size_t size = 0;
+
+    err = Rld_OpenAs(&reader, utf8, &s_rldCharFormat);
+    Rs_Free(utf8);
+    if (!err) {
+        *hasChrg = Rld_FindEntry(&reader, "CHRG", NULL) != NULL;
+        Rld_FindEntry(&reader, "CHRI", &index);
+        bytes = index >= 0 ? Rld_ReadChunk(&reader, index, &size, &err) : NULL;
+        Rld_Close(&reader);
+        if (!bytes && !err)
+            err = "CHRI is missing";
+        if (bytes) {
+            err = RldChar_ParseInfo(&info, bytes, size);
+            free(bytes);
+        }
+    }
+    if (err) {
+        wide = Rs_FromUtf8(err, -1);
+        swprintf(why, whyCap, L"The character cannot be read: %ls. Build it again.", wide);
+        Rs_Free(wide);
+        return 0;
+    }
+    *templateId = (int)info.templateId;
+    return 1;
+}
+
+int Rs_TestCharacter(const wchar_t *rldchar, int route, wchar_t *why, int whyCap)
+{
+    const struct RsRoutePreset *preset = RsRoute_Preset(route);
+    wchar_t local[512];
+    wchar_t exe[TEST_PATH];
+    wchar_t base[TEST_PATH];
+    wchar_t full[TEST_PATH];
+    wchar_t logPath[TEST_PATH];
+    wchar_t num[16];
+    wchar_t *cmd, *text;
+    const wchar_t *problem = NULL;
+    int templateId = 0, hasChrg = 0, haveExe, haveBase, job;
+    size_t cap;
+
+    if (!why || whyCap <= 0) {
+        why = local;
+        whyCap = 512;
+    }
+    why[0] = 0;
+    if (!preset) {
+        swprintf(why, whyCap, L"Choose what you want to build first.");
+        return 0;
+    }
+    if (!rldchar || !rldchar[0] || !Rs_FileExists(rldchar)) {
+        swprintf(why, whyCap, L"Build the character first - there is no file to test yet.");
+        return 0;
+    }
+    if (!Test_CharFile(rldchar, &templateId, &hasChrg, why, whyCap))
+        return 0;
+    if (preset->chrg && !hasChrg) {
+        swprintf(why, whyCap, L"This character has no %ls model yet. Build it again on the step Build.",
+                 preset->title);
+        return 0;
+    }
+    Test_FullPath(rldchar, full, TEST_PATH);
+
+    // The game, its folder and the pairing: the rules of this page.
+    haveExe = Rs_FindGameExe(exe, TEST_PATH);
+    haveBase = haveExe && Test_FindBase(exe, base, TEST_PATH);
+    if (!haveExe)
+        problem = RS_TEXT_NO_GAME_EXE;
+    else if (!haveBase)
+        problem = RS_TEXT_NO_GAME_DATA;
+    else if (g_test.gameJob || g_test.charJob)
+        problem = L"The game is already running - close it first.";
+    else if (!Rs_TestGameVerified(exe))
+        problem = Rs_TestGameProblem() ? Rs_TestGameProblem()
+                                       : L"the game on the Test page is not the one found.";
+    if (!haveExe)
+        Test_Copy(exe, TEST_PATH, L"ctr_native.exe");
+
+    cap = TEST_CMD_CAP;
+    cmd = Rs_Alloc(cap * sizeof(wchar_t));
+    Rs_AppendArg(cmd, cap, L"--dev");
+    if (g_test.windowed && Test_Checked(g_test.windowed)) {
+        Rs_AppendArg(cmd, cap, L"--windowed");
+        Rs_AppendArg(cmd, cap, L"1280x720");
+    }
+    Rs_AppendArg(cmd, cap, L"--char");
+    Rs_AppendArg(cmd, cap, full);
+    Rs_AppendArg(cmd, cap, L"--level");
+    Rs_AppendArg(cmd, cap, L"0");
+    swprintf(num, 16, L"%d", templateId);
+    Rs_AppendArg(cmd, cap, L"--driver");
+    Rs_AppendArg(cmd, cap, num);
+    if (preset->chrg)
+        Rs_AppendArg(cmd, cap, L"--engine-hires-chars");
+    Rs_RotatedLogPath(logPath, TEST_PATH, L"character-test", 5);
+    Rs_AppendArg(cmd, cap, L"--log");
+    Rs_AppendArg(cmd, cap, logPath);
+
+    cap = wcslen(exe) * 2 + wcslen(cmd) + 8;
+    text = Rs_Alloc(cap * sizeof(wchar_t));
+    Rs_AppendArg(text, cap, exe);
+    wcscat(text, L" ");
+    wcscat(text, cmd);
+
+    if (Rs_Automating()) {
+        // Only the command line; whether the game would start is said, not decided.
+        Rs_AutoLog(L"  character test (%ls, template %d): %ls", preset->word, templateId, text);
+        if (problem)
+            Rs_AutoLog(L"  character test outside automation would stop: %ls", problem);
+        Rs_Free(text);
+        Rs_Free(cmd);
+        return 1;
+    }
+    if (problem) {
+        if (haveExe && haveBase && !g_test.gameJob && !g_test.charJob)
+            swprintf(why, whyCap, L"The game cannot be started: %ls Check it on the page Test in game.", problem);
+        else
+            swprintf(why, whyCap, L"%ls", problem);
+        Rs_Free(text);
+        Rs_Free(cmd);
+        return 0;
+    }
+    job = Rs_RunProcess(Rs_PageWindow(RS_PAGE_TEST), exe, cmd, base, 0);
+    Rs_Free(cmd);
+    if (!job) {
+        swprintf(why, whyCap, L"The game could not be started (%ls).", text);
+        Rs_Free(text);
+        return 0;
+    }
+    g_test.charJob = job;
+    Rs_Free(text);
+    return 1;
 }
 
 const struct RsPageDef g_rsTestPage = {
