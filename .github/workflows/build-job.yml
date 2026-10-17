@@ -124,6 +124,13 @@ jobs:
           BUILD_DIR: build-msvc-x86
         run: bash tools/package/package.sh
 
+      # The zip that is uploaded below, and that release and nightly take
+      # their files from, checked once more as it is: file types, creator kit
+      # names and content signatures (the same rules as the history check).
+      - name: Check the package (content guard)
+        shell: bash
+        run: python tools/content_guard.py --package dist/*.zip
+
       - name: Upload package
         if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

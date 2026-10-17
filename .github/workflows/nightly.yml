@@ -145,6 +145,14 @@ jobs:
           ls -l out
           echo "build_id=$id" >> "$GITHUB_OUTPUT"
 
+      # Nothing but the four nightly files is in out/ (so nothing from a
+      # creator kit or anything else can be published beside them).
+      - name: Exactly the nightly files
+        shell: bash
+        run: |
+          set -e
+          [ "$(LC_ALL=C ls -A out | tr '\n' ' ')" = "LICENSE ReloadStudio.exe THIRD_PARTY_NOTICES.md ctr_native.exe " ] || { echo "out/ does not hold exactly the nightly files:"; ls -lA out; exit 1; }
+
       - name: Write the description
         shell: bash
         env:

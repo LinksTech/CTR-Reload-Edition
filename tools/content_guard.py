@@ -19,6 +19,18 @@
                                                       script (no git objects);
                                                       GitHub runs it before the
                                                       history check
+    python tools/content_guard.py --package PATH      the release package: the
+                                                      unpacked folder that
+                                                      tools/package/package.sh
+                                                      builds, or the package .zip
+                                                      (build-job.yml); the files
+                                                      of the <name>-source.zip in
+                                                      it are checked as well
+    python tools/content_guard.py --package-self-test WORKDIR
+                                                      builds fake packages in
+                                                      WORKDIR (made in code, no
+                                                      game file) and checks the
+                                                      package check against them
 
 Every file of every checked commit is looked at - the whole tree of each
 commit, not only what it changed and not only the newest commit: a file that
@@ -29,11 +41,23 @@ the history publishes it. A check fails on
             cards, save states and replays; 3D models, audio, pictures and
             archives, which are often made by other people), in any letter
             case, also with dots, spaces or control characters after it
+  kit name  a file made by the Creator Kit of Reload Studio (kit-kart.glb,
+            kit-wheel.glb, kit-info.json, creator-kit.blend, ... and a work
+            folder kit.part): the kit is made on the user's PC from the
+            user's game files, so none of it may ever be in the repository.
+            Checked by name, in any letter case, whatever the extension
+  content   the first bytes of EVERY file (not only large ones) look like a
+            3D model (glTF, Blender), a compressed file, a container of this
+            game, a picture, a sound, an archive or a disc/game file: a
+            renamed file does not pass. The test is the signature at offset 0
   binary    a binary file larger than 1 MB: a NUL byte in its first 8000
             bytes, the same test git uses
 The only exceptions are files of the bundled SDL copy (externals/SDL/): its
-pictures and sounds, listed one by one in ALLOWED below with the exact path
-and blob id. The same path with other content fails again.
+pictures, sounds and one jar, listed one by one in ALLOWED below with the exact
+path and blob id, and the renders of the Creator Kit puppet (code-made
+stand-in kart, no game data) as PNG under docs/kit-guide/, listed one by one
+in ALLOWED_RENDERS with exact path and blob id. The same path with other
+content fails again. No exception ever lifts a kit name.
 
 On GitHub every run checks the whole history of the checked-out commit: the
 pushed commit, or for a pull request the merge commit of the pull request into
@@ -47,19 +71,28 @@ anything leaves the machine; this script is the check that GitHub runs on
 every push and pull request. It needs only Python 3 and git, and it reads git
 objects only.
 
+The content test reads the first bytes of every blob with one git cat-file
+--batch process; a git error or a short read fails the check (it fails closed).
+
 Exit code 0 = clean, 1 = forbidden content, 2 = usage or git error. With
 --stdin it prints one line "<path><TAB><reason>" per forbidden file and its
 errors go to standard error. With --self-test it prints one line per case;
-exit code 0 = every case as expected, 1 = a case failed.
+exit code 0 = every case as expected, 1 = a case failed. With --package it
+prints "  forbidden: <name>" per forbidden file (at most 40) or "  nothing
+forbidden"; --package-self-test prints one line per case.
 """
 import argparse
 import hashlib
+import io
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import textwrap
+import threading
+import zipfile
 
 # Forbidden file types, compared in lower case with the last extension of the
 # file name after trailing dots, spaces and control characters are removed
@@ -99,7 +132,9 @@ PROBE = 8000            # the bytes looked at for a NUL, as git does
 
 # Files of the bundled SDL copy that may stay although their type is in a
 # LIFTABLE group or they are binary and larger than LIMIT: the pictures and
-# sounds of SDL's tests, examples and project files. One line per file
+# sounds of SDL's tests, examples and project files, and the one jar (a zip
+# signature; its extension is not forbidden, the line only serves the
+# content rule). One line per file
 # content, "<blob id> <path>", exact: the same path with other content (an SDL
 # update) fails until its new blob id is added here, and the old line stays,
 # because the history keeps the old content. Only paths under ALLOWED_PREFIX
@@ -225,9 +260,63 @@ fb3338dfab87de5ac4409fa8d3dc2a7405ee3764 externals/SDL/test/n3ds/logo48x48.png
 193cf5432044cd03f3d7289dd0d8a8e1809b1c7c externals/SDL/test/sword.wav
 d845b2c6d5343bd37fdce76827409a263b0b3339 externals/SDL/test/testyuv.png
 e81f993c8f5608551e1841d1cafaed36c2a5c999 externals/SDL/test/trashcan.png
+2b338a935b508eb6286ed4b84a91176ee5fb93c5 externals/SDL/android-project/gradle/wrapper/gradle-wrapper.jar
 """
 ALLOWED = {tuple(line.split(' ', 1)[::-1]) for line in ALLOWED_FILES.split('\n') if line}
 ALLOWED_PREFIX = 'externals/SDL/'
+
+# Renders of the Creator Kit puppet with a code-made stand-in kart (no game
+# data) may be committed as PNG. One line per file content, "<blob id> <path>",
+# exact, like ALLOWED_FILES. EMPTY for now: the chief (the agent that commits)
+# adds a line only for a render he has looked at, so nothing else can slip in
+# as a "render". Only paths under ALLOWED_RENDER_PREFIX that end in .png
+# count; such an entry lifts the 'picture' type rule and the PNG signature
+# rule for that exact path and content, nothing else.
+ALLOWED_RENDERS_FILES = """
+"""
+ALLOWED_RENDERS = {tuple(line.split(' ', 1)[::-1])
+                   for line in ALLOWED_RENDERS_FILES.split('\n') if line}
+ALLOWED_RENDER_PREFIX = 'docs/kit-guide/'
+
+# Files made by the Creator Kit of Reload Studio on the user's PC from the
+# user's game files. Compared in lower case with the file name after TRAILING
+# is removed: the part before the FIRST dot is the stem. A stem that is in
+# KIT_STEMS, or starts with one of KIT_PREFIXES (kit-wheel-tex.png,
+# kit-kart_2.glb, creator-kit-anything.glb), is refused, and so is every file
+# in a folder named KIT_FOLDER (the work folder). The prefix rule also refuses
+# names such as kit-kartei.md: intended. Repository files of the kit must not
+# use these stems (use an underscore: make_creator_kit.py). No ALLOWED entry
+# lifts this rule. The self-test has second copies: TEST_KIT_*.
+KIT_STEMS = ('kit-kart', 'kit-wheel', 'kit-info', 'creator-kit', 'creator-kit-demo',
+             'creator-kit-report', 'demo-puppet', 'start-demo-puppe')
+KIT_PREFIXES = ('kit-kart', 'kit-wheel', 'creator-kit')
+KIT_FOLDER = 'kit.part'
+KIT_REASON = "creator kit output (made from the game on the user's PC, never in the repository)"
+
+# The first bytes of a file (offset 0) that name a content kind, whatever the
+# file is called. Second copy: TEST_SIGNATURES.
+HEAD = 16
+SIGNATURES = (
+    (b'glTF', 'a glTF binary model'),
+    (b'BLENDER', 'a Blender file'),
+    (b'\x28\xb5\x2f\xfd', 'zstd data (a compressed Blender file?)'),
+    (b'\x1f\x8b', 'gzip data (a compressed Blender file?)'),
+    (b'RLDCHAR\x00', 'a character container'),
+    (b'RLDTRACK', 'a track container'),
+    (b'\x89PNG\r\n\x1a\n', 'a PNG picture'),
+    (b'\xff\xd8\xff', 'a JPEG picture'),
+    (b'DDS ', 'a DDS picture'),
+    (b'\xabKTX', 'a KTX texture'),
+    (b'GIF8', 'a GIF picture'),
+    (b'RIFF', 'RIFF data (wav, webp or avi)'),
+    (b'PK\x03\x04', 'a zip archive'),
+    (b'7z\xbc\xaf\x27\x1c', 'a 7z archive'),
+    (b'Rar!', 'a rar archive'),
+    (b'PS-X EXE', 'a PS-X EXE program'),
+    (b'VAGp', 'a VAG sound'),
+    (b'\x00' + b'\xff' * 10 + b'\x00', 'a CD sector'),
+)
+PNG_KIND = 'a PNG picture'
 
 FIX = ('remove the file from the history of your branch; never commit game data'
        ' or content made by other people - see CONTRIBUTING.md')
@@ -306,6 +395,44 @@ def allowed(path, oid):
     return path.startswith(ALLOWED_PREFIX) and (path, oid) in ALLOWED
 
 
+def render_allowed(path, oid):
+    """True for a .png under ALLOWED_RENDER_PREFIX that ALLOWED_RENDERS lists
+    with this content."""
+    return (path.startswith(ALLOWED_RENDER_PREFIX) and path.endswith('.png')
+            and (path, oid) in ALLOWED_RENDERS)
+
+
+def kit_name(path):
+    """The reason if the path is a Creator Kit output name, or None."""
+    parts = [TRAILING.sub('', p.lower()) for p in path.split('/')]
+    if KIT_FOLDER in parts[:-1]:
+        return KIT_REASON
+    stem = parts[-1].split('.', 1)[0]
+    if stem in KIT_STEMS or stem.startswith(KIT_PREFIXES):
+        return KIT_REASON
+    return None
+
+
+def signature_kind(head):
+    """The content kind the first bytes name, or None."""
+    for sig, kind in SIGNATURES:
+        if head.startswith(sig):
+            return kind
+    return None
+
+
+def forbidden_content(path, oid, head):
+    """The reason if the first bytes name a forbidden content kind, or None.
+    Exempt: an exact ALLOWED entry, and a PNG with an exact ALLOWED_RENDERS
+    entry."""
+    kind = signature_kind(head)
+    if kind is None or allowed(path, oid):
+        return None
+    if kind == PNG_KIND and render_allowed(path, oid):
+        return None
+    return 'content looks like %s' % kind
+
+
 def forbidden_type(path, oid):
     """The reason if the file type is forbidden, or None. oid is the blob id
     of the content (None if not known: then no ALLOWED entry matches)."""
@@ -316,14 +443,23 @@ def forbidden_type(path, oid):
     what = TYPES[name[dot:]]
     if what in LIFTABLE and allowed(path, oid):
         return None
+    if what == 'picture' and render_allowed(path, oid):
+        return None
     return 'forbidden file type %s (%s)' % (name[dot:], what)
 
 
-def judge(path, kind, oid, size, binary):
-    """Why the file is forbidden, or None."""
-    reason = forbidden_type(path, oid)
+def judge(path, kind, oid, size, binary, heads):
+    """Why the file is forbidden, or None. heads: blob id -> first bytes
+    (read_heads); a blob without an entry is an error, never a pass."""
+    reason = forbidden_type(path, oid) or kit_name(path)
     if reason:
         return reason
+    if kind == 'blob':
+        if oid not in heads:
+            raise Failure('the content of %s was not read' % oid)
+        reason = forbidden_content(path, oid, heads[oid])
+        if reason:
+            return reason
     if kind == 'blob' and int(size) > LIMIT:
         if allowed(path, oid):
             return None
@@ -334,15 +470,66 @@ def judge(path, kind, oid, size, binary):
     return None
 
 
+def read_heads(oids):
+    """{blob id: first HEAD bytes} for the blobs, read by ONE git cat-file
+    --batch process. Any git error or short read raises Failure."""
+    oids = sorted(set(oids))
+    heads = {}
+    if not oids:
+        return heads
+    p = subprocess.Popen(['git', 'cat-file', '--batch'], env=ENV, stdin=subprocess.PIPE,
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+    def feed():     # a thread, so a full pipe in either direction cannot deadlock
+        try:
+            p.stdin.write(b''.join(oid.encode('ascii') + b'\n' for oid in oids))
+            p.stdin.close()
+        except (OSError, ValueError):
+            pass
+
+    t = threading.Thread(target=feed, daemon=True)
+    t.start()
+    try:
+        for oid in oids:
+            header = p.stdout.readline().split()
+            if len(header) != 3 or header[0] != oid.encode('ascii') or header[1] != b'blob':
+                raise Failure('cannot read file content %s' % shown(oid))
+            size = int(header[2])
+            head = p.stdout.read(min(size, HEAD))
+            if len(head) != min(size, HEAD):
+                raise Failure('short read of file content %s' % oid)
+            left = size - len(head)
+            while left > 0:
+                chunk = p.stdout.read(min(left, 1 << 20))
+                if not chunk:
+                    raise Failure('short read of file content %s' % oid)
+                left -= len(chunk)
+            if p.stdout.read(1) != b'\n':
+                raise Failure('unexpected end of file content %s' % oid)
+            heads[oid] = head
+        if p.stdout.read(1) != b'':
+            raise Failure('git cat-file sent more than was asked for')
+    except ValueError as e:
+        raise Failure('cannot read file content: %s' % e)
+    finally:
+        p.stdout.close()
+        p.kill()
+        p.wait()
+        t.join()
+    return heads
+
+
 def check(todo):
     """{(path, reason): [commits]} for everything forbidden in the commits."""
     verdict = {}
     binary = {}
     found = {}
-    for commit in todo:
-        for path, kind, oid, size in entries(commit):
+    listing = [(commit, list(entries(commit))) for commit in todo]
+    heads = read_heads(oid for _c, es in listing for _p, kind, oid, _s in es if kind == 'blob')
+    for commit, es in listing:
+        for path, kind, oid, size in es:
             if (path, oid) not in verdict:
-                verdict[path, oid] = judge(path, kind, oid, size, binary)
+                verdict[path, oid] = judge(path, kind, oid, size, binary, heads)
             reason = verdict[path, oid]
             if reason:
                 found.setdefault((path, reason), []).append(commit)
@@ -395,16 +582,127 @@ def from_stdin():
     file in the list on standard input, exit code 1 if there is one."""
     binary = {}
     found = 0
+    records = []
     for line in sys.stdin.buffer.read().split(b'\n'):
         if line:
             kind, oid, size, path = line.decode('utf-8', 'surrogateescape').split(' ', 3)
             if kind == 'blob' and size == 'BAD':
                 raise Failure('object %s (%s) is missing from this clone' % (oid, shown(path)))
-            reason = judge(path, kind, oid, size, binary)
-            if reason:
-                print('%s\t%s' % (shown(path), reason))
-                found += 1
+            records.append((path, kind, oid, size))
+    heads = read_heads(oid for _p, kind, oid, _s in records if kind == 'blob')
+    for path, kind, oid, size in records:
+        reason = judge(path, kind, oid, size, binary, heads)
+        if reason:
+            print('%s\t%s' % (shown(path), reason))
+            found += 1
     return 1 if found else 0
+
+
+# The package check (--package), the rules of tools/package/package.sh step 6:
+# the file types of the content guard (with the exact SDL exceptions, matched
+# by the blob id of a file inside the source zip), these names and folders,
+# and the kit-name and content rules on every file and every zip member.
+BAD_EXT = ('.log', '.dmp')
+BAD_NAME = ('bigfile.big', 'kart.hwl', 'ctr-data.cfg', 'ctr-settings.cfg', 'ctr-view.cfg',
+            'alphamaker.ini', 'reloadstudio.ini', 'track-ids.tsv', 'cups.txt')
+# Game data, user files, local measurement/reference/test-data folders and
+# build output (literal folder names, the same ones .gitignore keeps out of
+# the repository).
+BAD_DIR = ('concept/', 'messung-', 'baseline-', 'testdata/', 'test-bats/', 'memcards/', 'assets/', 'tracks/',
+           'tracks_archive/', 'debug/', 'logs/', 'characters/', 'build/', 'out/')
+
+
+def blob_id(data):
+    """The object id git gives this content as a blob."""
+    return hashlib.sha1(b'blob %d\0' % len(data) + data).hexdigest()
+
+
+def package_forbidden(name, head, read, by_oid):
+    """True if the file is forbidden in the package. name: the path in the
+    package, head: its first bytes, read: gives the whole content, by_oid:
+    match an ALLOWED entry by the blob id of the content (files in the source
+    zip)."""
+    path = name.replace('\\', '/')
+    n = path.lower()
+    base = TRAILING.sub('', n.rsplit('/', 1)[-1])
+    oid = []
+
+    def get_oid():      # the blob id of the content, as git computes it
+        if not oid:
+            oid.append(blob_id(read()))
+        return oid[0]
+
+    reason = forbidden_type(path, None)
+    if reason and by_oid:
+        reason = forbidden_type(path, get_oid())
+    if reason or base.endswith(BAD_EXT) or base in BAD_NAME:
+        return True
+    if any(('/' + d) in ('/' + n) for d in BAD_DIR):
+        return True
+    if kit_name(path):
+        return True
+    return bool(signature_kind(head) and forbidden_content(path, get_oid(), head))
+
+
+def read_file(path):
+    with open(path, 'rb') as f:
+        return f.read()
+
+
+def scan_zip(z, bad, outer):
+    """Add the forbidden members of the zip to bad. The member name is the
+    part after the first '/'. outer: the zip is the package itself, so a
+    member '<name>-source.zip' at the top is opened and its members checked
+    instead (from memory)."""
+    for n in z.namelist():
+        if n.endswith('/'):
+            continue
+        rest = n.split('/', 1)[1] if '/' in n else n
+        if outer and '/' not in rest and rest.endswith('-source.zip'):
+            with zipfile.ZipFile(io.BytesIO(z.read(n))) as inner:
+                scan_zip(inner, bad, False)
+            continue
+        with z.open(n) as f:
+            head = f.read(HEAD)
+        if package_forbidden(rest, head, lambda n=n: z.read(n), not outer):
+            bad.append(rest)
+
+
+def package_check(path):
+    """The list of forbidden names in the package folder or package zip."""
+    bad = []
+    if os.path.isdir(path):
+        for top, dirs, files in os.walk(path):
+            dirs.sort()
+            for f in sorted(files):
+                full = os.path.join(top, f)
+                if top == path and f.endswith('-source.zip'):
+                    # The source zip is the one archive in the package: the
+                    # files in it are checked instead.
+                    with zipfile.ZipFile(full) as z:
+                        scan_zip(z, bad, False)
+                    continue
+                rel = os.path.relpath(full, path).replace(os.sep, '/')
+                with open(full, 'rb') as fh:
+                    head = fh.read(HEAD)
+                if package_forbidden(rel, head, lambda full=full: read_file(full), False):
+                    bad.append(rel)
+    elif os.path.isfile(path):
+        with zipfile.ZipFile(path) as z:
+            scan_zip(z, bad, True)
+    else:
+        raise Failure('%s is neither a package folder nor a package zip' % shown(path))
+    return bad
+
+
+def package_main(path):
+    bad = package_check(path)
+    if bad:
+        for b in bad[:40]:
+            print('  forbidden:', shown(b))
+        return 1
+    print('  nothing forbidden')
+    return 0
 
 
 # The self-test (--self-test) writes the rules down a second time: every file
@@ -440,11 +738,35 @@ TEST_SDL = (
     ('externals/SDL/test/sword.wav', '193cf5432044cd03f3d7289dd0d8a8e1809b1c7c'),
     ('externals/SDL/test/sample.png', '375f01d700d11c80d90062a5b89bb70d7f079e32'),
 )
-
-
-def blob_id(data):
-    """The object id git gives this content as a blob."""
-    return hashlib.sha1(b'blob %d\0' % len(data) + data).hexdigest()
+# Second copies of the Creator Kit names, the render allowlist prefix and the
+# content signatures: change both together.
+TEST_HEAD = 16
+TEST_KIT_STEMS = ('kit-kart', 'kit-wheel', 'kit-info', 'creator-kit', 'creator-kit-demo',
+                  'creator-kit-report', 'demo-puppet', 'start-demo-puppe')
+TEST_KIT_PREFIXES = ('kit-kart', 'kit-wheel', 'creator-kit')
+TEST_KIT_FOLDER = 'kit.part'
+TEST_RENDER_PREFIX = 'docs/kit-guide/'
+TEST_SIGNATURES = (
+    (b'glTF', 'a glTF binary model'),
+    (b'BLENDER', 'a Blender file'),
+    (b'\x28\xb5\x2f\xfd', 'zstd data'),
+    (b'\x1f\x8b', 'gzip data'),
+    (b'RLDCHAR\x00', 'a character container'),
+    (b'RLDTRACK', 'a track container'),
+    (b'\x89PNG\r\n\x1a\n', 'a PNG picture'),
+    (b'\xff\xd8\xff', 'a JPEG picture'),
+    (b'DDS ', 'a DDS picture'),
+    (b'\xabKTX', 'a KTX texture'),
+    (b'GIF8', 'a GIF picture'),
+    (b'RIFF', 'RIFF data'),
+    (b'PK\x03\x04', 'a zip archive'),
+    (b'7z\xbc\xaf\x27\x1c', 'a 7z archive'),
+    (b'Rar!', 'a rar archive'),
+    (b'PS-X EXE', 'a PS-X EXE program'),
+    (b'VAGp', 'a VAG sound'),
+    (b'\x00' + b'\xff' * 10 + b'\x00', 'a CD sector'),
+)
+TEST_PNG = b'\x89PNG\r\n\x1a\n'
 
 
 def self_test():
@@ -468,7 +790,8 @@ def self_test():
 
     def binary_rule(path, data, expect_refused):
         oid = blob_id(data)
-        reason = judge(path, 'blob', oid, str(len(data)), {oid: looks_binary(data)})
+        reason = judge(path, 'blob', oid, str(len(data)), {oid: looks_binary(data)},
+                       {oid: data[:TEST_HEAD]})
         if expect_refused and not reason:
             return 'passes, expected to be refused'
         if reason and not expect_refused:
@@ -555,8 +878,145 @@ def self_test():
              big, True)):
         case('%s %s' % ('refuses' if expect else 'passes', label), binary_rule, path, data, expect)
 
+
+    # --- Creator Kit names, signatures and the render allowlist ---
+    fake_r = {}     # made-up ALLOWED_RENDERS entries, path -> blob id, only for the test
+    listed_r = sorted(ALLOWED_RENDERS)
+
+    def render_entries():
+        bad = [path for path, oid in listed_r
+               if not path.startswith(TEST_RENDER_PREFIX) or not path.endswith('.png')
+               or not re.fullmatch('[0-9a-f]{40}', oid)]
+        return 'not usable: %s' % ', '.join(bad[:5]) if bad else None
+
+    def sig_judge(path, data, oid=None):
+        """The whole judge on a small blob with this content: reason or None."""
+        oid = oid or blob_id(data)
+        return judge(path, 'blob', oid, str(len(data)), {}, {oid: data[:TEST_HEAD]})
+
+    def kit_refused(path):
+        return None if kit_name(path) else 'passes, expected to be refused'
+
+    def kit_passes(path):
+        reason = kit_name(path)
+        return 'refused (%s), expected to pass' % reason if reason else None
+
+    def judge_refused(path, data, oid=None):
+        return None if sig_judge(path, data, oid) else 'passes, expected to be refused'
+
+    def judge_passes(path, data, oid=None):
+        reason = sig_judge(path, data, oid)
+        return 'refused (%s), expected to pass' % reason if reason else None
+
+    def same(first, second):
+        return None if first == second else 'differs from its second copy'
+
+    case('every ALLOWED_RENDERS entry (%d) is a .png under %s with a blob id'
+         % (len(listed_r), TEST_RENDER_PREFIX), render_entries)
+    case('the kit names equal their second copies', same,
+         (KIT_STEMS, KIT_PREFIXES, KIT_FOLDER, ALLOWED_RENDER_PREFIX, HEAD),
+         (TEST_KIT_STEMS, TEST_KIT_PREFIXES, TEST_KIT_FOLDER, TEST_RENDER_PREFIX, TEST_HEAD))
+    case('the %d content signatures equal their second copies' % len(TEST_SIGNATURES), same,
+         [sig for sig, _k in SIGNATURES], [sig for sig, _k in TEST_SIGNATURES])
+    for stem in TEST_KIT_STEMS:
+        for path in (stem + '.dat', 'sub/folder/' + stem + '.json', stem.upper() + '.GLB',
+                     stem + '.glb.part', stem + '.blend1', stem + '.json. ', 'a/b/' + stem):
+            case('refuses %s (creator kit name)' % path, kit_refused, path)
+    for path in ('kit.part/x.txt', 'a/Kit.Part/b/c.txt', 'KIT.PART/deep/er/file.dat'):
+        case('refuses %s (creator kit work folder)' % path, kit_refused, path)
+    case('passes x/kit.part (a file, not the work folder)', kit_passes, 'x/kit.part')
+    for path in ('kit-kart_2.glb', 'kit-wheel-tex.png', 'sub/Kit-Wheel2.dat',
+                 'creator-kit-anything.glb', 'creator-kit-report.json', 'kit-kartei.md'):
+        case('refuses %s (creator kit prefix%s)' % (path, ', intended' if 'kartei' in path else ''),
+             kit_refused, path)
+    for path in ('make_creator_kit.py', 'templates/make_creator_kit.py',
+                 'templates/creator_kit_puppet.py', 'docs/CREATOR_KIT.md', 'docs/CREATOR_KIT.html',
+                 'tools/reloadstudio/rs_kit.c', 'kitchen.txt', 'kit.txt', 'docs/kit-guide/README.md',
+                 'demo-puppets.txt', 'start-demo.bat'):
+        case('passes %s (harmless name)' % path, kit_passes, path)
+    case('refuses kit-info.json in the judge', judge_refused, 'tools/kit-info.json', b'{}')
+    fake['externals/SDL/test/kit-info.json'] = blob_id(b'{}')
+    case('refuses kit-info.json even with an exact SDL entry', judge_refused,
+         'externals/SDL/test/kit-info.json', b'{}')
+    fake_r['docs/kit-guide/kit-kart-render.png'] = blob_id(TEST_PNG + b'kit')
+    case('refuses a kit name even with an exact render entry', judge_refused,
+         'docs/kit-guide/kit-kart-render.png', TEST_PNG + b'kit')
+
+    # Signatures: at offset 0 in a file with a harmless name; elsewhere they pass.
+    for sig, kind in TEST_SIGNATURES:
+        for name in ('notes.txt', 'data.dat', 'info.json'):
+            case('refuses %s in %s (content signature)' % (kind, name), judge_refused,
+                 'some/' + name, sig + b'made-up content')
+        case('passes %s not at offset 0' % kind, judge_passes, 'some/notes.txt',
+             b'x' + sig + b'made-up content')
+        case('refuses %s with nothing after it' % kind, judge_refused, 'some/notes.txt', sig)
+    case('refuses a text that starts with glTF (documented: bytes 0-3 count)', judge_refused,
+         'docs/notes.md', b'glTF is a format')
+    case('passes an empty file', judge_passes, 'some/empty.txt', b'')
+    case('passes one byte', judge_passes, 'some/one.txt', b'x')
+    case('passes plain text', judge_passes, 'some/notes.txt', b'hello world, nothing special')
+    case('passes MZ (a Windows program)', judge_passes, 'some/prog.exe', b'MZ\x90\x00' + b'\x00' * 20)
+
+    # An exact entry lifts the signature rule: made-up SDL entries, the listed
+    # SDL entries (independent of their real bytes) and the jar.
+    for ext, data in (('png', TEST_PNG), ('wav', b'RIFF....WAVE'), ('jar', b'PK\x03\x04')):
+        data = data + b' made-up'
+        path = 'externals/SDL/test/made-up-sig.' + ext
+        fake[path] = blob_id(data)
+        case('passes %s content through its exact SDL entry' % ext, judge_passes, path, data)
+        case('refuses %s content at another SDL path' % ext, judge_refused,
+             'externals/SDL/test/other-sig.' + ext, data)
+        case('refuses %s content at the entry path, other content' % ext, judge_refused,
+             path, data + b'!')
+        case('refuses %s content moved out of externals/SDL/' % ext, judge_refused,
+             'game/made-up-sig.' + ext, data)
+    for path, oid in TEST_SDL:
+        data = TEST_PNG if path.endswith('.png') else b'RIFF....WAVE'
+        case('passes %s with its listed content (signature)' % path, judge_passes, path,
+             data + b'x', oid)
+        case('refuses %s at another path (signature)' % path, judge_refused,
+             'game/' + path.rsplit('/', 1)[1], data + b'x', oid)
+    jar = 'externals/SDL/android-project/gradle/wrapper/gradle-wrapper.jar'
+    jar_oid = '2b338a935b508eb6286ed4b84a91176ee5fb93c5'
+    case('the gradle-wrapper.jar line is in ALLOWED', same, (jar, jar_oid) in ALLOWED, True)
+    case('passes the gradle-wrapper.jar with its listed content (zip signature)', judge_passes,
+         jar, b'PK\x03\x04 made-up', jar_oid)
+    case('refuses a jar at another path', judge_refused, 'tools/gradle-wrapper.jar',
+         b'PK\x03\x04 made-up', jar_oid)
+
+    # Render allowlist: .png under docs/kit-guide/ with an exact entry.
+    render = TEST_PNG + b' made-up render'
+    fake_r['docs/kit-guide/made-up.png'] = blob_id(render)
+    fake_r['docs/kit-guide/made-up.jpg'] = blob_id(b'\xff\xd8\xff made-up')
+    fake_r['docs/kit-guide/made-up.glb'] = blob_id(b'glTF made-up')
+    fake_r['docs/kit-guide/made-up-jpeg.png'] = blob_id(b'\xff\xd8\xff made-up')
+    fake_r['docs/other/made-up.png'] = blob_id(render)
+    case('passes docs/kit-guide/made-up.png through its render entry (type)', passes,
+         'docs/kit-guide/made-up.png', blob_id(render))
+    case('passes docs/kit-guide/made-up.png through its render entry (judge)', judge_passes,
+         'docs/kit-guide/made-up.png', render)
+    case('refuses the same content at docs/other/x.png', judge_refused, 'docs/other/x.png', render)
+    case('refuses the same content at docs/other/made-up.png (entry outside the prefix)',
+         judge_refused, 'docs/other/made-up.png', render)
+    case('refuses other content at docs/kit-guide/made-up.png', judge_refused,
+         'docs/kit-guide/made-up.png', render + b'!')
+    case('refuses docs/kit-guide/made-up.png with unknown content (type)', refused,
+         'docs/kit-guide/made-up.png', None)
+    case('refuses a .jpg render entry under the prefix', judge_refused,
+         'docs/kit-guide/made-up.jpg', b'\xff\xd8\xff made-up')
+    case('refuses a .glb render entry under the prefix', judge_refused,
+         'docs/kit-guide/made-up.glb', b'glTF made-up')
+    case('refuses a .png render entry whose content is a JPEG', judge_refused,
+         'docs/kit-guide/made-up-jpeg.png', b'\xff\xd8\xff made-up')
+    case('refuses docs/kit-guide/made-up.png. (end of the name)', judge_refused,
+         'docs/kit-guide/made-up.png.', render)
+    case('refuses a game data type under the render prefix', refused,
+         'docs/kit-guide/made-up.rldchar', blob_id(b'x'), 'character container')
+
     added = set(fake.items()) - ALLOWED
     ALLOWED.update(added)
+    added_r = set(fake_r.items()) - ALLOWED_RENDERS
+    ALLOWED_RENDERS.update(added_r)
     failed = 0
     try:
         for label, test in cases:
@@ -571,11 +1031,122 @@ def self_test():
                 print('  ok    %s' % shown(label))
     finally:
         ALLOWED.difference_update(added)
+        ALLOWED_RENDERS.difference_update(added_r)
     if failed:
         print('content_guard: self-test FAILED - %d of %d case(s)' % (failed, len(cases)))
         annotate('self-test failed: %d of %d case(s)' % (failed, len(cases)))
         return 1
     print('content_guard: self-test passed - %d case(s)' % len(cases))
+    return 0
+
+
+def package_self_test(workdir):
+    """The --package-self-test check: fake packages are made in code inside
+    workdir (fake-* is deleted and made again), the package check runs on
+    each, one line per case; exit code 0 if every case is as expected."""
+    workdir = os.path.abspath(workdir)
+    os.makedirs(workdir, exist_ok=True)
+    for f in os.listdir(workdir):
+        if f.startswith('fake-'):
+            full = os.path.join(workdir, f)
+            shutil.rmtree(full) if os.path.isdir(full) else os.remove(full)
+    name = 'CTR-Reload-0.0.0-0123456789ab'
+    gltf = b'glTF\x02\x00\x00\x00made up'
+    blender = b'BLENDER-v300made up'
+
+    def clean():
+        return {'ctr_native.exe': b'MZ\x90\x00' + b'\x00' * 60,
+                'LICENSE': b'license text\n', 'README.txt': b'readme\n',
+                'docs/ANIMATIONS.md': b'# animations\n', 'templates/README.md': b'# templates\n'}
+
+    def source(extra):
+        members = {'CMakeLists.txt': b'project(x)\n', 'main.c': b'int main(void) { return 0; }\n',
+                   'docs/ANIMATIONS.md': b'# animations\n'}
+        members.update(extra)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as z:
+            for n, data in sorted(members.items()):
+                z.writestr(name + '-source/' + n, data)
+        return buf.getvalue()
+
+    def make(tag, extra=None, source_extra=None, as_zip=False):
+        folder = os.path.join(workdir, 'fake-' + tag)
+        files = clean()
+        files.update(extra or {})
+        files[name + '-source.zip'] = source(source_extra or {})
+        for rel, data in files.items():
+            full = os.path.join(folder, name, *rel.split('/'))
+            os.makedirs(os.path.dirname(full), exist_ok=True)
+            with open(full, 'wb') as f:
+                f.write(data)
+        if not as_zip:
+            return os.path.join(folder, name)
+        out = folder + '.zip'
+        with zipfile.ZipFile(out, 'w', zipfile.ZIP_DEFLATED) as z:
+            for rel, data in sorted(files.items()):
+                z.writestr(name + '/' + rel, data)
+        return out
+
+    cases = []
+
+    def add(label, path, expect):
+        """expect None: nothing forbidden; else a text every hit list must name."""
+        cases.append((label, path, expect))
+
+    add('a clean package folder passes', make('clean'), None)
+    for rel, data in (('kit-kart.glb', b'kart'), ('kit-info.json', b'{}'),
+                      ('START-DEMO-PUPPE.bat', b'@echo off\r\n'), ('readme2.txt', gltf),
+                      ('notes.dat', blender), ('kit.part/work.txt', b'work'),
+                      ('docs/demo-puppet.rldchar', b'x')):
+        tag = 'f-' + rel.replace('/', '-')
+        add('refuses %s in the package folder' % rel, make(tag, {rel: data}), rel)
+    add('refuses a glTF signature in the source zip (a.txt)',
+        make('src-sig', None, {'docs/a.txt': gltf}), 'docs/a.txt')
+    add('refuses templates/creator-kit.blend in the source zip',
+        make('src-blend', None, {'templates/creator-kit.blend': blender}),
+        'templates/creator-kit.blend')
+    add('refuses a PNG signature in the source zip (b.dat)',
+        make('src-png', None, {'b.dat': b'\x89PNG\r\n\x1a\nmade up'}), 'b.dat')
+    add('a clean package zip passes', make('zclean', as_zip=True), None)
+    add('refuses kit-wheel.glb in the package zip',
+        make('zwheel', {'kit-wheel.glb': b'wheel'}, as_zip=True), 'kit-wheel.glb')
+    add('refuses a glTF signature in the package zip (c.txt)',
+        make('zsig', {'c.txt': gltf}, as_zip=True), 'c.txt')
+    add('refuses kit-kart.glb in the nested source zip of the package zip',
+        make('znested', None, {'kit-kart.glb': b'kart'}, as_zip=True), 'kit-kart.glb')
+    add('refuses templates/creator-kit.blend in the nested source zip',
+        make('znested2', None, {'templates/creator-kit.blend': blender}, as_zip=True),
+        'creator-kit.blend')
+    add('refuses x.log (old rule)', make('log', {'x.log': b'log'}), 'x.log')
+    add('refuses cups.txt (old rule)', make('cups', {'cups.txt': b'cups'}), 'cups.txt')
+    add('refuses baseline-x/y.txt (old rule)', make('base', {'baseline-x/y.txt': b'y'}),
+        'baseline-x/y.txt')
+    add('refuses x.log in the package zip (old rule)', make('zlog', {'x.log': b'log'}, as_zip=True),
+        'x.log')
+    add('refuses a picture in the package folder (old rule)',
+        make('pic', {'docs/a.png': b'not really'}), 'docs/a.png')
+
+    failed = 0
+    for label, path, expect in cases:
+        try:
+            bad = package_check(path)
+            if expect is None:
+                problem = 'refused %s, expected to pass' % bad[:3] if bad else None
+            elif not any(expect in b for b in bad):
+                problem = 'hits %s, expected %s' % (bad[:3], expect)
+            else:
+                problem = None
+        except Exception as e:      # a crash is a failed case, never a pass
+            problem = 'error: %s' % e
+        if problem:
+            failed += 1
+            print('  FAIL  %s: %s' % (shown(label), shown(problem)))
+        else:
+            print('  ok    %s' % shown(label))
+    if failed:
+        print('content_guard: package self-test FAILED - %d of %d case(s)' % (failed, len(cases)))
+        return 1
+    print('content_guard: package self-test passed - %d case(s)' % len(cases))
     return 0
 
 
@@ -614,12 +1185,20 @@ def main(argv):
                       help='the files listed on standard input (tools/git-hooks/pre-push)')
     mode.add_argument('--self-test', action='store_true',
                       help='the rules against paths and contents made up in this script')
+    mode.add_argument('--package', metavar='PATH',
+                      help='the release package: the unpacked folder or the package .zip')
+    mode.add_argument('--package-self-test', metavar='WORKDIR',
+                      help='fake packages made in WORKDIR against the package check')
     args = ap.parse_args(argv)
     if args.self_test:
         return self_test()
     out = sys.stderr if args.stdin else sys.stdout
     try:
         base = None
+        if args.package_self_test:
+            return package_self_test(args.package_self_test)
+        if args.package:
+            return package_main(args.package)
         if args.stdin:
             return from_stdin()
         if args.github:
@@ -646,7 +1225,7 @@ def main(argv):
                 raise Failure('%s is not a commit in this clone' % base)
         todo = commits(head_id, base_id)
         return report(check(todo), todo, shown(what))
-    except (Failure, OSError, ValueError, KeyError) as e:
+    except (Failure, OSError, ValueError, KeyError, zipfile.BadZipFile) as e:
         print('content_guard: ERROR - %s' % shown(str(e)), file=out)
         print('content_guard: the check could not run, so it fails.', file=out)
         annotate('the check could not run: %s' % shown(str(e)))

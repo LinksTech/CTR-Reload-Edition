@@ -210,3 +210,16 @@ __pycache__/
 # Person names and local folders that tools/lang_check.py refuses:
 # a local list, never committed.
 /tools/lang_check_names.local.txt
+
+# --- Creator Kit output ----------------------------------------------------
+# Made by Reload Studio on the user's PC from the user's game files: never in
+# the repository (tools/content_guard.py refuses these names as well).
+kit-kart*
+kit-wheel*
+kit-info.json
+creator-kit*.blend*
+creator-kit*.glb
+creator-kit-report.json
+demo-puppet*
+START-DEMO-PUPPE.bat
+kit.part/

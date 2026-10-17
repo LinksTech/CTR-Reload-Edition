@@ -206,6 +206,14 @@ jobs:
           echo "build_id=$id" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      # Nothing but the five release files is in out/ (so nothing from a
+      # creator kit or anything else can be published beside them).
+      - name: Exactly the release files
+        shell: bash
+        run: |
+          set -e
+          [ "$(LC_ALL=C ls -A out | tr '\n' ' ')" = "LICENSE README.txt ReloadStudio.exe THIRD_PARTY_NOTICES.md ctr_native.exe " ] || { echo "out/ does not hold exactly the release files:"; ls -lA out; exit 1; }
+
       - name: Create release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:

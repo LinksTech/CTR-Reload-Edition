@@ -1194,6 +1194,21 @@ message("rldpack native wheels test passed: refused without --wheels off (exit $
     )
 
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    # The content guard (tools/content_guard.py, also run by GitHub and the
+    # pre-push hook): its rules against paths and contents made up in the
+    # script, and the package check (--package, tools/package/package.sh step
+    # 6) against fake packages it makes in code in the build folder.
+    add_test(NAME content_guard_selftest
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/content_guard.py --self-test)
+    set_tests_properties(content_guard_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "content_guard: self-test passed - [0-9]+ case"
+        FAIL_REGULAR_EXPRESSION "FAIL")
+    add_test(NAME content_guard_package
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/content_guard.py
+            --package-self-test ${CMAKE_BINARY_DIR}/selftest/content-guard-package)
+    set_tests_properties(content_guard_package PROPERTIES
+        PASS_REGULAR_EXPRESSION "content_guard: package self-test passed - [0-9]+ case"
+        FAIL_REGULAR_EXPRESSION "FAIL")
     add_test(
         NAME ctr_match_unit
         COMMAND ${Python3_EXECUTABLE} -m unittest discover

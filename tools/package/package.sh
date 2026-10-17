@@ -30,11 +30,13 @@
 #      template's script, nothing else).
 #    rldpack is not shipped on its own: Reload Studio carries it
 #    (ReloadStudio.exe --rldpack ...).
-# 6. Check: no file type that tools/content_guard.py refuses (disc content,
-#    game formats, containers, 3D models, audio, pictures, archives ...; the
-#    SDL files it lists by path and blob id pass), no logs, no test data, no
+# 6. Check: python tools/content_guard.py --package (the same rules as ever:
+#    no file type that tools/content_guard.py refuses - disc content, game
+#    formats, containers, 3D models, audio, pictures, archives ...; the SDL
+#    files it lists by path and blob id pass - no logs, no test data, no
 #    measurement or reference folders, no user files in the package and in
-#    the source zip. A hit aborts, and no zip is created.
+#    the source zip; plus creator kit names and content signatures on every
+#    file and zip member). A hit aborts, and no zip is created.
 #
 # Output: dist/<name>.zip with the folder <name>/ inside, which holds the files
 # of step 5 directly (<name>/ctr_native.exe, <name>/ReloadStudio.exe, ...,
@@ -135,56 +137,7 @@ git archive --format=zip --prefix="$NAME-source/" -o "$OUT/$NAME-source.zip" HEA
 	docs/ANIMATIONS.md templates/LICENSE templates/README.md templates/make_driver_template.py
 
 echo "== Check for forbidden content"
-python - "$OUT" <<'PY' || { echo "ABORT: forbidden content, no package"; exit 5; }
-import hashlib, os, sys, zipfile
-sys.dont_write_bytecode = True
-sys.path.insert(0, 'tools')
-# The file types that the content guard refuses, with its exact SDL exceptions.
-import content_guard
-root = sys.argv[1]
-BAD_EXT = ('.log', '.dmp')
-BAD_NAME = ('bigfile.big', 'kart.hwl', 'ctr-data.cfg', 'ctr-settings.cfg', 'ctr-view.cfg',
-            'alphamaker.ini', 'reloadstudio.ini', 'track-ids.tsv', 'cups.txt')
-# Game data, user files, local measurement/reference/test-data folders and
-# build output (literal folder names, the same ones .gitignore keeps out of
-# the repository).
-BAD_DIR = ('concept/', 'messung-', 'baseline-', 'testdata/', 'test-bats/', 'memcards/', 'assets/', 'tracks/',
-           'tracks_archive/', 'debug/', 'logs/', 'characters/', 'build/', 'out/')
-bad = []
-def check(name, read=None):
-    path = name.replace('\\', '/')
-    n = path.lower()
-    base = content_guard.TRAILING.sub('', n.rsplit('/', 1)[-1])
-    reason = content_guard.forbidden_type(path, None)
-    if reason and read is not None:
-        # The blob id of the content, as git computes it: an ALLOWED entry
-        # matches only the exact file.
-        data = read()
-        reason = content_guard.forbidden_type(
-            path, hashlib.sha1(b'blob %d\0' % len(data) + data).hexdigest())
-    if reason or base.endswith(BAD_EXT) or base in BAD_NAME:
-        bad.append(name)
-    elif any(('/' + d) in ('/' + n) for d in BAD_DIR):
-        bad.append(name)
-for top, dirs, files in os.walk(root):
-    dirs.sort()
-    for f in sorted(files):
-        rel = os.path.relpath(os.path.join(top, f), root).replace(os.sep, '/')
-        if not (top == root and f.endswith('-source.zip')):
-            check(rel)
-            continue
-        # The source zip is the one archive in the package: the files in it are
-        # checked instead.
-        with zipfile.ZipFile(os.path.join(top, f)) as z:
-            for n in z.namelist():
-                if not n.endswith('/'):
-                    check(n.split('/', 1)[1] if '/' in n else n, lambda n=n: z.read(n))
-if bad:
-    for b in bad[:40]:
-        print('  forbidden:', b)
-    sys.exit(1)
-print('  nothing forbidden')
-PY
+python tools/content_guard.py --package "$OUT" || { echo "ABORT: forbidden content, no package"; exit 5; }
 
 python - "$OUT" "dist/$NAME.zip" <<'PY'
 import os, sys, zipfile, hashlib

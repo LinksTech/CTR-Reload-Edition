@@ -28,8 +28,8 @@ platform/native_platform.c word nachgeholt
 platform/native_platform.c word neu
 platform/native_platform.c word verfallen
 platform/native_preview.c word vorschau
+tools/content_guard.py word messung
 tools/reloadstudio/rs_track.c word vorschau
 tools/git-hooks/pre-push word messung
 tools/git-hooks/pre-push word vorschau
 tools/package/README.txt word vorschau
-tools/package/package.sh word messung
