@@ -549,7 +549,9 @@ static int Hires_StartAdd(HWND page, const wchar_t *model)
     int n;
     Hires_Field(g_hires.character, ch, HIRES_PATH);
     Hires_Field(g_hires.out, out, HIRES_PATH);
-    n = RsHires_PackArgs(ch, model, out, args);
+    // The page Hi-Res (automation and self-tests only) packs without the
+    // switch --vertex-colors: mode glTF, the bytes of before (its ctest).
+    n = RsHires_PackArgs(ch, model, out, -1, args);
     g_hires.jobUpscale = 0;
     g_hires.job = Rs_RunRldpack(page, args, n);
     if (!g_hires.job) {

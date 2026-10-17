@@ -34,6 +34,11 @@ typedef signed long long s64;
 #pragma warning(pop)
 #endif
 
+// The page's numbers of the vertex colour modes are those of the format.
+typedef char RsHires_VcolGltfSame[(RS_HIRES_VCOL_GLTF == RLDHIRES_VCOL_GLTF) ? 1 : -1];
+typedef char RsHires_VcolPsxSame[(RS_HIRES_VCOL_PSX == RLDHIRES_VCOL_PSX) ? 1 : -1];
+typedef char RsHires_VcolOffSame[(RS_HIRES_VCOL_OFF == RLDHIRES_VCOL_OFF) ? 1 : -1];
+
 #define RS_HIRES_FILE_MAX (64u * 1024u * 1024u + 4096u)   // a .glb as large as CHRG may hold, and some
 #define RS_HIRES_UNITS 1024.0f                            // file units per metre: 64 model units x 16
 
@@ -72,14 +77,20 @@ static int RsHires_Severity(int level)
 // engine poses a hi-res driver with.
 //
 // THE COLOURS are the engine's ("ns", platform/engine_static_shader.inc): the
-// base colour texel x the vertex colour x the material's base colour factor,
-// both factors on the display curve (encodeSrgb), the texel as stored. The
-// view's textured model (rs_tex.h: out = T x C x M / 255^2, per pixel, T through the engine's hi-res filter)
-// is that product, so C = the corner's COLOR_0 - quantised to a byte as the
-// engine stores it (EngHc_ReadPrimitive), then on the display curve - and M =
-// the factor on the display curve. The preview's light (half ambient, half one
-// light from the front left above) is folded into C; the engine lights with
-// its sun and its normal maps, which the view has not.
+// base colour texel x the vertex colour factor x the material's base colour
+// factor, all on the display curve and clamped to white, times the light. The
+// view's textured model draws exactly that per pixel (rs_tex.h,
+// RS_TEX_MATERIAL_LIT: out = min(T x C x M, white) x L, T through the
+// engine's hi-res filter), so per corner C = the display value of the vertex
+// colour factor (C / 128, up to 255/128 in PSX blend), L = the light of the
+// corner (RS_TEX_NATIVE_LIT, L / 128) and M = the material's factor on the
+// display curve. The vertex colour factor comes from the functions of
+// include/rldhires_color.inc only: RldHiresColor_Factor of COLOR_0 in the
+// mode of the picture (ModeFor: PSX blend reads an untextured primitive as
+// glTF), on the display curve as RldHiresColor_Apply puts it (Encode,
+// continued above 1). A primitive without COLOR_0 has the factor 1 in every
+// mode. The light is the engine's (RsHires_Light, the RLDHIRES_LIGHT_*
+// constants); the engine has its normal maps as well, which the view has not.
 
 // One record of RLDPV2: s16 x, y, z (1/16 game units), u8 r, g, b, pad.
 #define RS_HIRES_RECORD 10
@@ -91,7 +102,10 @@ struct RsHiresCorner {
     float p[3];            // in the space of its node (skinned: mesh space)
     float n[3];            // the same; (0, 0, 0) = flat: the triangle's normal is taken
     float uv[2];           // TEXCOORD_0, v from the top
-    u8 colour[4];          // C before the light: COLOR_0 as the engine holds it, on the display curve; 255 without
+    float colour0[3];      // COLOR_0 as read (linear 0..1); 1 1 1 without
+    u8 alpha;              // its alpha as the engine's byte; 255 without
+    u8 has0;               // 1 = the primitive has COLOR_0
+    u8 textured;           // 1 = its material has a base colour texture (RldHiresColor_ModeFor)
     u8 texel[3];           // the base colour texel at this UV (nearest; 255 without) - the flat picture only
     u8 pad;                // bit 0: drawn from both sides (doubleSided)
     unsigned short material; // the preview material: the glTF material, or the default one after them
@@ -113,12 +127,15 @@ struct RsHiresAnim {
     size_t blobBytes;
     u8 (*matRgba)[4];                // M of every preview material (the flat picture)
     int materials;
+    int mode;                        // the vertex colour mode of the pictures (RS_HIRES_VCOL_*)
     RldAnimTrs *pose;                // nodeCount each
     RldAnimTrs *overlay;
     float *world;                    // nodeCount x 16
     float *palette;                  // jointCount x 12
     float *outP;                     // cornerCount x 3: the corners of the last frame
     float *outN;
+    float *bindP;                    // cornerCount x 3: the bind pose (RsHires_SetColourMode writes it again)
+    float *bindN;
     unsigned char *frame;            // the last frame
     size_t frameBytes;
 };
@@ -337,12 +354,15 @@ static void RsHires_CollectPrimitive(const RldHiresModel *m, struct RsHiresImg *
                 cgltf_accessor_read_float(uv, vi, q->uv, 2);
             if (col)
                 cgltf_accessor_read_float(col, vi, vc, cgltf_num_components(col->type));
-            for (k = 0; k < 4; k++) {
-                // The engine's byte (c x 255 + 0.5, clamped), then the display curve (alpha as it is).
-                const float x = vc[k] * 255.0f + 0.5f;
-                const int b = (x <= 0.0f) ? 0 : ((x >= 255.0f) ? 255 : (int)x);
-                q->colour[k] = (k < 3) ? RsHires_Byte(RsHires_Encode((float)b / 255.0f)) : (u8)b;
+            for (k = 0; k < 3; k++)
+                q->colour0[k] = vc[k];
+            {
+                // Alpha as the engine's byte (c x 255 + 0.5, clamped).
+                const float x = vc[3] * 255.0f + 0.5f;
+                q->alpha = (u8)((x <= 0.0f) ? 0 : ((x >= 255.0f) ? 255 : (int)x));
             }
+            q->has0 = col != NULL;
+            q->textured = bt != NULL;
             q->texel[0] = q->texel[1] = q->texel[2] = 255;
             if (g && uv) {
                 float fu = q->uv[0] - floorf(q->uv[0]), fv = q->uv[1] - floorf(q->uv[1]);
@@ -472,7 +492,7 @@ static unsigned char *RsHires_Blob(const RldHiresModel *m, struct RsHiresImg *im
         return NULL;
     }
     memcpy(out, "RLDPN2\0\0", 8);
-    RsHires_PutU32(out + 8, 0u);
+    RsHires_PutU32(out + 8, RS_TEX_NATIVE_LIT);   // a light byte per corner after the triangles
     RsHires_PutU32(out + 12, (u32)slotCount);
     at = out + 16;
     for (k = 0; k < slotCount; k++) {
@@ -490,7 +510,8 @@ static unsigned char *RsHires_Blob(const RldHiresModel *m, struct RsHiresImg *im
         memcpy(at, matRgba[i], 4);
         RsHires_PutS16(at + 4, matSlot[i]);
         at[6] = (u8)((mat && mat->alpha_mode != cgltf_alpha_mode_opaque) ? 1 : 0);   // BLEND drawn as MASK, as the engine does
-        at[7] = (u8)(s_rsHiresPointSampling ? 0u : RS_TEX_MATERIAL_FILTERED);   // sampled as the engine samples a hi-res driver (rs_tex.h)
+        // Sampled and lit as the engine draws a hi-res driver (rs_tex.h).
+        at[7] = (u8)((s_rsHiresPointSampling ? 0u : RS_TEX_MATERIAL_FILTERED) | RS_TEX_MATERIAL_LIT);
         at += 8;
     }
     *bytes = size;
@@ -498,13 +519,46 @@ static unsigned char *RsHires_Blob(const RldHiresModel *m, struct RsHiresImg *im
     return out;
 }
 
-// The light of a corner (half ambient + half one light from the front left above).
-static float RsHires_Shade(const float n[3])
+// THE LIGHT of a corner, as program "ns" lights a hi-res driver
+// (include/rldhires_color.inc, THE PREVIEW LIGHT): the hemisphere ambient from
+// below to above by 0.5 + 0.5 n.y, plus the sun's diffuse share. The sun in the
+// axes of the model as they are (a kart at the game's angle 0). A corner
+// without a normal is lit as one facing straight up.
+float RsHires_Light(const float n[3])
 {
-    static const float light[3] = {0.3714f, 0.7428f, 0.5571f};   // (0.4, 0.8, 0.6) normalised
-    float len = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
-    float d = (len > 0.0f) ? (n[0] * light[0] + n[1] * light[1] + n[2] * light[2]) / len : 0.0f;
-    return 0.5f + 0.5f * (d > 0.0f ? d : 0.0f);
+    const float sx = RLDHIRES_LIGHT_SUN_X, sy = RLDHIRES_LIGHT_SUN_Y, sz = RLDHIRES_LIGHT_SUN_Z;
+    const float slen = sqrtf(sx * sx + sy * sy + sz * sz);
+    const float len = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+    const float nx = len > 0.0f ? n[0] / len : 0.0f, ny = len > 0.0f ? n[1] / len : 1.0f, nz = len > 0.0f ? n[2] / len : 0.0f;
+    const float d = (nx * sx + ny * sy + nz * sz) / slen;
+    const float up = 0.5f + 0.5f * ny;
+    const float ambient = RLDHIRES_LIGHT_AMBIENT_BELOW + (RLDHIRES_LIGHT_AMBIENT_ABOVE - RLDHIRES_LIGHT_AMBIENT_BELOW) * up;
+    return ambient + RLDHIRES_LIGHT_DIFFUSE * (d > 0.0f ? d : 0.0f);
+}
+
+// A value as the byte of RS_TEX_MATERIAL_LIT: x 128, rounded, at most 255.
+static u8 RsHires_LitByte(float v)
+{
+    const float x = v * (float)RS_TEX_LIGHT_ONE + 0.5f;
+    return (u8)((x <= 0.0f) ? 0 : ((x >= 255.0f) ? 255 : (int)x));
+}
+
+// The corner colour C of one channel: the display value of the vertex colour
+// factor, as RldHiresColor_Apply multiplies it with the texel (Encode of
+// RldHiresColor_Factor; the view clamps the product per pixel as Apply does),
+// as the byte of RS_TEX_MATERIAL_LIT (C / 128).
+static u8 RsHires_CornerC(int mode, int has0, int textured, float colour0)
+{
+    const int m = has0 ? RldHiresColor_ModeFor(mode, textured) : RLDHIRES_VCOL_OFF;
+    return RsHires_LitByte(RldHiresColor_Encode(RldHiresColor_Factor(m, colour0)));
+}
+
+int RsHires_PreviewChannel(int mode, int has0, float colour0, unsigned texel, float factor, float light, int *corner)
+{
+    const u8 c = RsHires_CornerC(mode, has0, 1, colour0);
+    if (corner)
+        *corner = c;
+    return (int)RsTex_LitChannel(texel, c, RsHires_Byte(RsHires_Encode(factor)), RsHires_LitByte(light));
 }
 
 // The picture of corners at p (normals n; a corner without a normal takes its
@@ -523,9 +577,9 @@ static unsigned char *RsHires_Write(const struct RsHiresAnim *a, const float *p,
 {
     const size_t tris = (size_t)a->cornerCount / 3u;
     const size_t classic = 16u + tris * 3u * RS_HIRES_RECORD + 4u + 2u * 3u * RS_HIRES_RECORD + 4u;
-    const size_t textured = a->blob ? a->blobBytes + 8u + 3u * tris * RS_HIRES_NATIVE_POS + tris * RS_HIRES_NATIVE_TRI : 0u;
+    const size_t textured = a->blob ? a->blobBytes + 8u + 3u * tris * RS_HIRES_NATIVE_POS + tris * RS_HIRES_NATIVE_TRI + tris * 3u : 0u;
     unsigned char *out = (unsigned char *)malloc(classic + textured);
-    unsigned char *at, *npos = NULL, *ntri = NULL;
+    unsigned char *at, *npos = NULL, *ntri = NULL, *nlight = NULL;
     size_t i;
     int c, k, pose;
 
@@ -543,6 +597,7 @@ static unsigned char *RsHires_Write(const struct RsHiresAnim *a, const float *p,
         RsHires_PutU32(out + classic + a->blobBytes + 4u, 3u);
         npos = out + classic + a->blobBytes + 8u;
         ntri = npos + 3u * tris * RS_HIRES_NATIVE_POS;
+        nlight = ntri + tris * RS_HIRES_NATIVE_TRI;   // RS_TEX_NATIVE_LIT
         *keepAt = classic;
         *keepBytes = a->blobBytes;
     }
@@ -561,16 +616,18 @@ static unsigned char *RsHires_Write(const struct RsHiresAnim *a, const float *p,
             const struct RsHiresCorner *q = &a->corners[i * 3u + (size_t)c];
             const float *cn = &n[(i * 3u + (size_t)c) * 3u];
             const int flat = q->n[0] == 0.0f && q->n[1] == 0.0f && q->n[2] == 0.0f;
-            const float shade = RsHires_Shade(flat ? face : cn);
+            const u8 light = RsHires_LitByte(RsHires_Light(flat ? face : cn));
             const u8 *mm = (q->material < a->materials && a->matRgba) ? a->matRgba[q->material] : NULL;
             u8 lit[3];
             for (k = 0; k < 3; k++) {
                 const short s = RsHires_Coord(tp[c * 3 + k]);
-                lit[k] = RsHires_Byte((float)q->colour[k] / 255.0f * shade);
+                lit[k] = RsHires_CornerC(a->mode, q->has0, q->textured, q->colour0[k]);
                 RsHires_PutS16(at + k * 2, s);
-                // The view's textured formula, with the corner's texel: (T x C x M + 32512) / 65025.
-                at[6 + k] = (u8)(((unsigned)q->texel[k] * lit[k] * (mm ? mm[k] : 255u) + 32512u) / 65025u);
+                // The view's formula of a LIT material, with the corner's texel.
+                at[6 + k] = (u8)RsTex_LitChannel(q->texel[k], lit[k], mm ? mm[k] : 255u, light);
             }
+            if (nlight)
+                nlight[i * 3u + (size_t)c] = light;
             at[9] = q->pad;
             at += RS_HIRES_RECORD;
             if (npos) {
@@ -584,7 +641,7 @@ static unsigned char *RsHires_Write(const struct RsHiresAnim *a, const float *p,
                 r[8] = lit[0];
                 r[9] = lit[1];
                 r[10] = lit[2];
-                r[11] = q->colour[3];
+                r[11] = q->alpha;
                 if (c == 2) {
                     RsHires_PutS16(ntri + i * RS_HIRES_NATIVE_TRI + 36u, q->material);
                     RsHires_PutS16(ntri + i * RS_HIRES_NATIVE_TRI + 38u, 0);
@@ -625,6 +682,8 @@ static void RsHires_AnimFree(struct RsHiresAnim *a)
     free(a->palette);
     free(a->outP);
     free(a->outN);
+    free(a->bindP);
+    free(a->bindN);
     free(a->frame);
     free(a);
 }
@@ -690,10 +749,16 @@ static void RsHires_Picture(const RldHiresModel *m, struct RsHiresCheck *out)
     a->cornerCount = list.count;
     a->outP = p;
     a->outN = n;
+    a->mode = out->vcolMode;
     if (!p || !n) {
         RsHires_AnimFree(a);
         return;
     }
+    for (i = 0; i < list.count; i++)
+        if (list.c[i].has0) {
+            out->vcolPresent = 1;
+            break;
+        }
     for (k = 0; k < 3; k++) {
         a->box[0][k] = m->boundsMin[k] - 0.25f;
         a->box[1][k] = m->boundsMax[k] + 0.25f;
@@ -723,6 +788,13 @@ static void RsHires_Picture(const RldHiresModel *m, struct RsHiresCheck *out)
     }
     out->preview = RsHires_Write(a, p, n, &out->previewBytes, &out->previewKeepAt, &out->previewKeepBytes);
     out->previewTriangles = out->preview ? list.count / 3 : 0;
+    // The bind pose kept for another vertex colour mode (RsHires_SetColourMode).
+    a->bindP = (float *)malloc((size_t)list.count * 3u * sizeof(float));
+    a->bindN = (float *)malloc((size_t)list.count * 3u * sizeof(float));
+    if (a->bindP && a->bindN) {
+        memcpy(a->bindP, p, (size_t)list.count * 3u * sizeof(float));
+        memcpy(a->bindN, n, (size_t)list.count * 3u * sizeof(float));
+    }
     out->previewTextured = (a->blob != NULL);
 
     // The animation: the skeleton of every node (and the skin's joints) and the
@@ -981,13 +1053,19 @@ void RsHires_Budget(unsigned long long *triangles, unsigned *edge, unsigned long
         *textureBytes = RLDHIRES_BUDGET_TEXTURE_BYTES;
 }
 
-int RsHires_CheckGlb(const unsigned char *glb, size_t size, struct RsHiresCheck *out)
+// The check of GLB bytes in a vertex colour mode: a .glb in glTF (the mode of
+// a pack without the switch: HRG-36 says PS1-like colours), the CHRG of a
+// character in the mode of its flags (the findings the game has).
+static int RsHires_CheckGlbMode(const unsigned char *glb, size_t size, int mode, struct RsHiresCheck *out)
 {
     static RldHiresReport rep;   // 13 KB; the page checks on its own thread only
     RldHiresModel m;
-    int ok;
+    int ok, i;
 
     memset(out, 0, sizeof(*out));
+    out->vcolMode = mode;
+    out->vcolChecked = mode;
+    out->vcolMedian = -1;
     RldHires_ReportClear(&rep);
     memset(&m, 0, sizeof(m));
     for (ok = 0; ok < RS_HIRES_CLIPS; ok++)
@@ -1000,7 +1078,7 @@ int RsHires_CheckGlb(const unsigned char *glb, size_t size, struct RsHiresCheck 
     }
     // The same order as rldpack hires-check (RldHiresPack_CheckGlb): the model,
     // then the budget when it opened.
-    ok = RldHires_Open(glb, (u32)size, &m, &rep);
+    ok = RldHires_OpenAs(glb, (u32)size, mode, &m, &rep);
     if (m.data)
         ok = RldHires_CheckBudget(&m, &rep) && ok;
     if (m.usable) {
@@ -1009,11 +1087,22 @@ int RsHires_CheckGlb(const unsigned char *glb, size_t size, struct RsHiresCheck 
         ok = RldHires_CheckClipHull(&m, &rep, lo, hi, NULL) && ok;
     }
     RsHires_Fill(&rep, &m, out);
+    // PS1-like vertex colours: what the check says of them (HRG-36, said in
+    // glTF mode only); the median is measured in every mode.
+    out->vcolMedian = m.data ? m.ps1ColourMedian : -1;
+    for (i = 0; i < rep.count && i < RLDHIRES_REPORT_MAX; i++)
+        if (strcmp(rep.msg[i].rule, "HRG-36") == 0)
+            out->vcolPs1 = 1;
     RsHires_Picture(&m, out);
     out->read = 1;
     out->usable = ok && rep.errors == 0;
     RldHires_Close(&m);
     return 1;
+}
+
+int RsHires_CheckGlb(const unsigned char *glb, size_t size, struct RsHiresCheck *out)
+{
+    return RsHires_CheckGlbMode(glb, size, RLDHIRES_VCOL_GLTF, out);
 }
 
 static unsigned char *RsHires_ReadAll(const wchar_t *path, size_t limit, size_t *size, wchar_t *why, int whyCap)
@@ -1107,7 +1196,7 @@ int RsHires_CheckFile(const wchar_t *path, struct RsHiresCheck *out)
             out->fromCharacter = 1;
             return 1;
         }
-        r = RsHires_CheckGlb(c.glb, c.glbSize, out);
+        r = RsHires_CheckGlbMode(c.glb, c.glbSize, RldHiresColor_Mode(c.flags), out);
         out->fromCharacter = 1;
         free(bytes);
         return r;
@@ -1136,15 +1225,67 @@ void RsHires_CheckFree(struct RsHiresCheck *c)
     c->previewTriangles = 0;
 }
 
-int RsHires_PackArgs(const wchar_t *character, const wchar_t *model, const wchar_t *out, const wchar_t **args)
+int RsHires_PackArgs(const wchar_t *character, const wchar_t *model, const wchar_t *out, int vertexColors, const wchar_t **args)
 {
-    args[0] = L"hires-add";
-    args[1] = character;
-    args[2] = model;
-    args[3] = L"-o";
-    args[4] = out;
-    args[5] = L"--machine";
-    return RS_HIRES_PACK_ARGS;
+    int n = 0;
+    args[n++] = L"hires-add";
+    args[n++] = character;
+    args[n++] = model;
+    args[n++] = L"-o";
+    args[n++] = out;
+    if (RsHires_ColourWord(vertexColors)) {
+        args[n++] = L"--vertex-colors";
+        args[n++] = RsHires_ColourWord(vertexColors);
+    }
+    args[n++] = L"--machine";
+    return n;
+}
+
+// ---------------------------------------------------------------------------
+// The vertex colour mode
+
+static const wchar_t *const s_rsHiresColourWords[RS_HIRES_VCOL_MODES] = { L"gltf", L"psx", L"off" };
+
+const wchar_t *RsHires_ColourWord(int mode)
+{
+    return (mode >= 0 && mode < RS_HIRES_VCOL_MODES) ? s_rsHiresColourWords[mode] : NULL;
+}
+
+int RsHires_ColourModeOf(const wchar_t *word)
+{
+    int i;
+    for (i = 0; word && i < RS_HIRES_VCOL_MODES; i++)
+        if (wcscmp(word, s_rsHiresColourWords[i]) == 0)
+            return i;
+    return -1;
+}
+
+int RsHires_SetColourMode(struct RsHiresCheck *c, int mode)
+{
+    struct RsHiresAnim *a = c ? c->anim : NULL;
+    unsigned char *picture;
+    size_t bytes = 0, keepAt = 0, keepBytes = 0;
+
+    if (!c || !RsHires_ColourWord(mode) || c->vcolMode == mode)
+        return 0;
+    c->vcolMode = mode;
+    if (!a)
+        return 1;
+    a->mode = mode;
+    // The bind pose again, in the new colours; the textures and the materials
+    // (the part the view keeps) are the same bytes. Without the kept bind pose
+    // (out of memory) the old picture stays, in the old colours.
+    if (!a->bindP || !a->bindN)
+        return 1;
+    picture = RsHires_Write(a, a->bindP, a->bindN, &bytes, &keepAt, &keepBytes);
+    if (!picture)
+        return 1;
+    free(c->preview);
+    c->preview = picture;
+    c->previewBytes = bytes;
+    c->previewKeepAt = keepAt;
+    c->previewKeepBytes = keepBytes;
+    return 1;
 }
 
 int RsHires_UpscaleArgs(const wchar_t *model, const wchar_t *derived, const wchar_t **args)
