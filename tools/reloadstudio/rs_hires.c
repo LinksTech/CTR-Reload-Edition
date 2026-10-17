@@ -13,6 +13,14 @@
 // writes is byte for byte the file rldpack writes. The page only shows rldpack's
 // machine lines (@msg, @written).
 //
+// "Upscale small textures" (off by default): the button first starts `rldpack
+// hires-upscale` (RsHires_UpscaleArgs), which writes a NEW model
+// <model name>-upscaled.glb beside the output (RsHires_UpscaledPath) with its
+// small base colour textures enlarged by Scale2x, a pixel-art upscaler
+// (tools/rldpack_hires_upscale.inc); then hires-add packs that model. The
+// chosen model is only read; rldpack still stores the GLB it is given byte
+// for byte.
+//
 // A preview feature: the game draws a hi-res driver only with
 // --engine-hires-chars; the card "Files" carries the mark.
 //
@@ -37,7 +45,8 @@ enum {
     HIRES_ID_CHECK, HIRES_ID_PACK, HIRES_ID_STATUS, HIRES_ID_MARK,
     HIRES_ID_VERDICT, HIRES_ID_SUMMARY, HIRES_ID_MSGS, HIRES_ID_CLIPS,
     HIRES_ID_VIEW, HIRES_ID_NOTE,
-    HIRES_ID_CLIP_LABEL, HIRES_ID_CLIP, HIRES_ID_PLAY, HIRES_ID_TIME
+    HIRES_ID_CLIP_LABEL, HIRES_ID_CLIP, HIRES_ID_PLAY, HIRES_ID_TIME,
+    HIRES_ID_UPSCALE
 };
 
 #define HIRES_TIMER 61               // the playback tick on the page window
@@ -67,7 +76,7 @@ struct HiresState {
     HWND modelLabel, model, modelBrowse;
     HWND charLabel, character, charBrowse;
     HWND outLabel, out, outBrowse;
-    HWND checkBtn, pack, status, mark;
+    HWND checkBtn, pack, upscale, status, mark;
     HWND verdict, summary, msgs, clips;
     HWND view, note;
     HWND clipLabel, clipCombo, playBtn, timeLabel;
@@ -90,6 +99,10 @@ struct HiresState {
     int msgCount;
 
     int job;                         // running rldpack job, 0 = none
+    int jobUpscale;                  // 1 = the job is hires-upscale (hires-add follows), 0 = hires-add
+    int upscaleWritten;              // the last pack wrote an upscaled model (upscaledPath, upscaledSha)
+    wchar_t upscaledPath[HIRES_PATH];
+    wchar_t upscaledSha[80];
     int packExit;                    // exit code of the last pack, valid when packDone
     int packDone;
     int packWritten;                 // an @written line came
@@ -199,6 +212,7 @@ static void Hires_UpdateButtons(void)
 {
     EnableWindow(g_hires.pack, Hires_CanPack());
     EnableWindow(g_hires.checkBtn, !Hires_Running());
+    EnableWindow(g_hires.upscale, !Hires_Running());
     EnableWindow(g_hires.clipCombo, Hires_AnimOk());
     EnableWindow(g_hires.playBtn, Hires_AnimOk() && g_hires.clipSel > 0);
 }
@@ -260,8 +274,12 @@ static int Hires_ShowClipFrame(void)
     int n = RsHires_AnimFrame(&g_hires.check, g_hires.clipSel - 1, g_hires.seconds, g_hires.wheelDeg, &bytes, &size);
     if (n <= 0 || !bytes)
         return 0;
-    RsView_SetModelKey(g_hires.view, g_hires.checkedPath);
-    RsView_LoadPreviewData(g_hires.view, bytes, size);
+    // A frame has the layout of the bind picture: copied in place, the textures
+    // and their mip levels stay (no new read of 30 MB of textures per tick).
+    if (!RsView_UpdatePreviewData(g_hires.view, bytes, size, g_hires.check.previewKeepAt, g_hires.check.previewKeepBytes)) {
+        RsView_SetModelKey(g_hires.view, g_hires.checkedPath);
+        RsView_LoadPreviewData(g_hires.view, bytes, size);
+    }
     RsView_SetPose(g_hires.view, RS_VIEW_POSE_NEUTRAL);
     RsView_SetWheels(g_hires.view, g_hires.check.wheels < 4);
     g_hires.shownTris = n;
@@ -517,22 +535,22 @@ static void Hires_FillOutput(void)
 // Packing
 // ---------------------------------------------------------------------------
 
-static int Hires_StartPack(HWND page)
+// 1 when "Upscale small textures" is ticked.
+static int Hires_UpscaleOn(void)
 {
-    wchar_t model[HIRES_PATH], ch[HIRES_PATH], out[HIRES_PATH];
+    return SendMessageW(g_hires.upscale, BM_GETCHECK, 0, 0) == BST_CHECKED;
+}
+
+// The pack step: hires-add of model (the chosen one, or the upscaled one).
+static int Hires_StartAdd(HWND page, const wchar_t *model)
+{
+    wchar_t ch[HIRES_PATH], out[HIRES_PATH];
     const wchar_t *args[RS_HIRES_PACK_ARGS];
     int n;
-    if (!Hires_CanPack())
-        return 0;
-    Hires_Field(g_hires.model, model, HIRES_PATH);
     Hires_Field(g_hires.character, ch, HIRES_PATH);
     Hires_Field(g_hires.out, out, HIRES_PATH);
     n = RsHires_PackArgs(ch, model, out, args);
-    g_hires.packDone = 0;
-    g_hires.packWritten = 0;
-    g_hires.packPath[0] = 0;
-    g_hires.packSha[0] = 0;
-    g_hires.packRuleCount = 0;
+    g_hires.jobUpscale = 0;
     g_hires.job = Rs_RunRldpack(page, args, n);
     if (!g_hires.job) {
         Hires_SetLabel(g_hires.status, L"Packing could not be started.", RS_COL_ERROR);
@@ -540,6 +558,44 @@ static int Hires_StartPack(HWND page)
         return 0;
     }
     Hires_SetLabel(g_hires.status, L"Packing ...", RS_COL_MUTED);
+    Hires_UpdateButtons();
+    return 1;
+}
+
+static int Hires_StartPack(HWND page)
+{
+    wchar_t model[HIRES_PATH], out[HIRES_PATH];
+    const wchar_t *args[RS_HIRES_UPSCALE_ARGS];
+    int n;
+    if (!Hires_CanPack())
+        return 0;
+    Hires_Field(g_hires.model, model, HIRES_PATH);
+    Hires_Field(g_hires.out, out, HIRES_PATH);
+    g_hires.packDone = 0;
+    g_hires.packWritten = 0;
+    g_hires.packPath[0] = 0;
+    g_hires.packSha[0] = 0;
+    g_hires.packRuleCount = 0;
+    g_hires.upscaleWritten = 0;
+    g_hires.upscaledPath[0] = 0;
+    g_hires.upscaledSha[0] = 0;
+    if (!Hires_UpscaleOn())
+        return Hires_StartAdd(page, model);
+    if (!RsHires_UpscaledPath(model, out, g_hires.upscaledPath, HIRES_PATH) || _wcsicmp(g_hires.upscaledPath, model) == 0) {
+        g_hires.upscaledPath[0] = 0;
+        Hires_SetLabel(g_hires.status, L"The upscaled model has no place beside the output - choose another output.", RS_COL_ERROR);
+        return 0;
+    }
+    n = RsHires_UpscaleArgs(model, g_hires.upscaledPath, args);
+    g_hires.jobUpscale = 1;
+    g_hires.job = Rs_RunRldpack(page, args, n);
+    if (!g_hires.job) {
+        g_hires.jobUpscale = 0;
+        Hires_SetLabel(g_hires.status, L"Upscaling could not be started.", RS_COL_ERROR);
+        Hires_UpdateButtons();
+        return 0;
+    }
+    Hires_SetLabel(g_hires.status, L"Upscaling small textures ...", RS_COL_MUTED);
     Hires_UpdateButtons();
     return 1;
 }
@@ -562,16 +618,34 @@ static void Hires_PackLine(wchar_t *line)
             Hires_MsgAdd(Rs_SeverityFromText(f[1]), f[2], f[3], f[2]);
         }
     } else if (wcscmp(f[0], L"written") == 0 && n >= 3) {
+        if (g_hires.jobUpscale) {
+            Hires_Copy(g_hires.upscaledPath, HIRES_PATH, f[1]);
+            Hires_Copy(g_hires.upscaledSha, 80, f[2]);
+            g_hires.upscaleWritten = 1;
+            return;
+        }
         Hires_Copy(g_hires.packPath, HIRES_PATH, f[1]);
         Hires_Copy(g_hires.packSha, 80, f[2]);
         g_hires.packWritten = 1;
     }
 }
 
-static void Hires_PackDone(int code)
+static void Hires_PackDone(HWND page, int code)
 {
     wchar_t text[HIRES_PATH + 160];
     g_hires.job = 0;
+    if (g_hires.jobUpscale) {
+        // The upscaled model is written: pack it. Else stop here.
+        g_hires.jobUpscale = 0;
+        if (code == 0 && g_hires.upscaleWritten && Hires_StartAdd(page, g_hires.upscaledPath))
+            return;
+        g_hires.packDone = 1;
+        g_hires.packExit = code != 0 ? code : 1;
+        swprintf(text, 160, L"Upscaling failed (exit %d) - see the findings above.", code);
+        Hires_SetLabel(g_hires.status, text, RS_COL_ERROR);
+        Hires_UpdateButtons();
+        return;
+    }
     g_hires.packDone = 1;
     g_hires.packExit = code;
     if (code != 0) {
@@ -583,8 +657,9 @@ static void Hires_PackDone(int code)
         wchar_t sha[20];
         Hires_Copy(sha, 17, g_hires.packSha);
         swprintf(text, HIRES_PATH + 160,
-                 L"Packed into %ls - sha256 %ls... (the same bytes as rldpack hires-add)",
-                 Rs_PathName(g_hires.packPath), sha);
+                 g_hires.upscaleWritten ? L"Packed into %ls with %ls - sha256 %ls... (the same bytes as rldpack hires-add)"
+                                        : L"Packed into %ls%ls - sha256 %ls... (the same bytes as rldpack hires-add)",
+                 Rs_PathName(g_hires.packPath), g_hires.upscaleWritten ? Rs_PathName(g_hires.upscaledPath) : L"", sha);
         Hires_SetLabel(g_hires.status, text, RS_COL_OK);
     } else {
         swprintf(text, 160, L"Packing failed (exit %d) - see the findings above.", code);
@@ -654,6 +729,14 @@ static int Hires_Report(const wchar_t *path)
               (double)g_hires.wheelDeg, g_hires.playing ? L"playing" : L"paused");
     Hires_Add(buf, &len, L"anim: %ls\n", Hires_AnimOk() ? L"ready" : c->animWhy[0] ? c->animWhy : L"unavailable");
     Hires_Add(buf, &len, L"preview: %d\n", g_hires.checked && c->read ? c->previewTriangles : 0);
+    Hires_Add(buf, &len, L"preview-textured: %ls%ls%ls\n", (g_hires.checked && c->read && c->previewTextured) ? L"yes" : L"no",
+              (g_hires.checked && c->read && !c->previewTextured && c->previewWhy[0]) ? L" - " : L"",
+              (g_hires.checked && c->read && !c->previewTextured) ? c->previewWhy : L"");
+    Hires_Add(buf, &len, L"upscale: %ls\n", Hires_UpscaleOn() ? L"on" : L"off");
+    if (g_hires.upscaleWritten)
+        Hires_Add(buf, &len, L"upscaled: %ls %ls\n", g_hires.upscaledPath, g_hires.upscaledSha);
+    else
+        Hires_Add(buf, &len, L"upscaled: none\n");
     if (g_hires.packWritten)
         Hires_Add(buf, &len, L"packed: %ls %ls\n", g_hires.packPath, g_hires.packSha);
     else
@@ -692,6 +775,7 @@ static void Hires_LayoutFiles(const RECT *outer, const RECT *in)
     y += Rs_Px(4);
     MoveWindow(g_hires.checkBtn, x, y, Rs_Px(104), Rs_Px(32), TRUE);
     MoveWindow(g_hires.pack, x + Rs_Px(112), y, Rs_Px(200), Rs_Px(32), TRUE);
+    MoveWindow(g_hires.upscale, x + Rs_Px(328), y + Rs_Px(4), in->right - x - Rs_Px(328), Rs_Px(24), TRUE);
     y += Rs_Px(40);
     MoveWindow(g_hires.status, x, y, in->right - x, Rs_Px(20), TRUE);
 }
@@ -825,6 +909,7 @@ static void Hires_Create(HWND page)
     g_hires.outBrowse = Rs_Button(page, HIRES_ID_OUT_BROWSE, L"Browse...");
     g_hires.checkBtn = Rs_Button(page, HIRES_ID_CHECK, L"Check");
     g_hires.pack = Rs_PrimaryButton(page, HIRES_ID_PACK, L"Pack into .rldchar");
+    g_hires.upscale = Rs_Check(page, HIRES_ID_UPSCALE, L"Upscale small textures (pixel art)");
     g_hires.status = Rs_Label(page, HIRES_ID_STATUS, L"", RS_FONT_SMALL);
     SetWindowLongPtrW(g_hires.status, GWL_STYLE, GetWindowLongPtrW(g_hires.status, GWL_STYLE) | SS_ENDELLIPSIS);
 
@@ -952,7 +1037,6 @@ static LRESULT Hires_Command(HWND page, WPARAM wParam, LPARAM lParam)
 
 static LRESULT Hires_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, int *handled)
 {
-    (void)page;
     switch (msg) {
     case WM_TIMER:
         if (wParam == HIRES_TIMER) {
@@ -973,7 +1057,7 @@ static LRESULT Hires_Message(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, 
     case RS_WM_JOB_DONE:
         *handled = 1;
         if ((int)wParam == g_hires.job && g_hires.job != 0)
-            Hires_PackDone((int)lParam);
+            Hires_PackDone(page, (int)lParam);
         return 0;
     }
     return 0;
@@ -1047,13 +1131,37 @@ static int Hires_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
     // "hires-camera <yaw> <pitch> <zoom %>": the view's camera, as dragging and
     // the wheel would (screenshots of a pose from near).
     if (wcscmp(verb, L"hires-camera") == 0) {
-        int yaw = 0, pitch = 0, zoom = 0;
-        if (swscanf(arg, L"%d %d %d", &yaw, &pitch, &zoom) != 3) {
-            Rs_AutoLog(L"  hires-camera: say <yaw> <pitch> <zoom %%>");
+        int yaw = 0, pitch = 0, zoom = 0, panX = 0, panY = 0;
+        const int n = swscanf(arg, L"%d %d %d %d %d", &yaw, &pitch, &zoom, &panX, &panY);
+        if (n != 3 && n != 5) {
+            Rs_AutoLog(L"  hires-camera: say <yaw> <pitch> <zoom %%> [<pan x> <pan y>]");
             return RS_AUTO_FAIL;
         }
-        RsView_SetCamera(g_hires.view, yaw, pitch, zoom, 0, 0);
-        Rs_AutoLog(L"  hires-camera: %d %d %d", yaw, pitch, zoom);
+        RsView_SetCamera(g_hires.view, yaw, pitch, zoom, panX, panY);
+        Rs_AutoLog(L"  hires-camera: %d %d %d %d %d", yaw, pitch, zoom, panX, panY);
+        return RS_AUTO_DONE;
+    }
+    // "hires-filter engine|nearest": how the preview samples the textures - the
+    // engine's hi-res filter (the default) or point sampling, for comparison
+    // images; the check of the model field runs again.
+    if (wcscmp(verb, L"hires-filter") == 0) {
+        if (_wcsicmp(arg, L"engine") != 0 && _wcsicmp(arg, L"nearest") != 0) {
+            Rs_AutoLog(L"  hires-filter: say engine or nearest");
+            return RS_AUTO_FAIL;
+        }
+        RsHires_SetPointSampling(_wcsicmp(arg, L"nearest") == 0);
+        Hires_RunCheck();
+        Rs_AutoLog(L"  hires-filter: %ls", arg);
+        return RS_AUTO_DONE;
+    }
+    // "hires-upscale on|off": the option "Upscale small textures".
+    if (wcscmp(verb, L"hires-upscale") == 0) {
+        if (_wcsicmp(arg, L"on") != 0 && _wcsicmp(arg, L"off") != 0) {
+            Rs_AutoLog(L"  hires-upscale: say on or off");
+            return RS_AUTO_FAIL;
+        }
+        SendMessageW(g_hires.upscale, BM_SETCHECK, _wcsicmp(arg, L"on") == 0 ? BST_CHECKED : BST_UNCHECKED, 0);
+        Rs_AutoLog(L"  hires-upscale: %ls", Hires_UpscaleOn() ? L"on" : L"off");
         return RS_AUTO_DONE;
     }
     // "hires-crash on|off": the reference dummy "Crash size" beside the model

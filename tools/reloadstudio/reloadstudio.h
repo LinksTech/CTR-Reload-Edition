@@ -483,14 +483,21 @@
 //   hires-check                      run the check of the model field (as the button Check)
 //   hires-pack                       as the button "Pack into .rldchar" (rldpack hires-add);
 //                                    FAIL when the button is disabled; the shell waits
+//   hires-upscale on|off             the option "Upscale small textures" (off at start):
+//                                    hires-pack then runs rldpack hires-upscale first and
+//                                    packs <model>-upscaled.glb, written beside the output
 //   hires-view front|side|back|top|34|race   a fixed view of the preview
-//   hires-camera <yaw> <pitch> <zoom %>      the camera of the preview (clamped by the view)
+//   hires-camera <yaw> <pitch> <zoom %> [<pan x> <pan y>]   the camera of the preview
+//                                    (clamped by the view; pan in pixels of the view)
+//   hires-filter engine|nearest      the preview samples textures with the engine's hi-res
+//                                    filter (default) or nearest, for comparison images
 //   hires-crash on|off               the reference dummy "Crash size" beside the model
 //   hires-clip <bind|idle|..|menu>   the clip shown (FAIL when clips cannot be played)
 //   hires-play on|off                play the clip (a loop on the page's timer)
 //   hires-time <seconds> [<degrees>] pause and show that exact frame (wheels turned that far)
 //   hires-report <file>              the fields, the verdict, the summary, every finding,
-//                                    every clip, the picture and the pack result as text
+//                                    every clip, the picture, the upscale option and its
+//                                    model, and the pack result as text
 // The --preview file (little endian): "RLDPV2\0\0", u32 poses = 3 (turn frame 10
 // neutral, frame 0 full steer left, frame 20 full steer right), per pose u32
 // triangles and per triangle 3 corners of s16 x, y, z (1/16 game units, +Y up,

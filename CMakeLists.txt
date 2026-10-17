@@ -441,6 +441,7 @@ if(BUILD_TESTING)
         add_executable(rs_hires_selftest
             tools/reloadstudio/rs_hires_test.c
             tools/reloadstudio/rs_hires_model.c
+            tools/reloadstudio/rs_tex.c
             tools/rldpack.rc
             platform/rldpack.manifest
         )

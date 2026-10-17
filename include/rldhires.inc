@@ -40,7 +40,12 @@
 // left seen from behind, 1 metre = 64 kart model units, origin on the ground
 // under the kart.
 //
-// THE RULES are HRG-1 .. HRG-35 (s_rldHiresRules below), each with a fixed
+// VERTEX COLOURS (format V1, decision 11): COLOR_0 follows glTF - a linear
+// multiplier on the base colour, nothing else. There is no PS1 rule on the
+// hi-res path (no "128 = unchanged"); vertex colours that look like PS1
+// shading get a note (HRG-36), they are the author's to change.
+//
+// THE RULES are HRG-1 .. HRG-36 (s_rldHiresRules below), each with a fixed
 // level: an ERROR refuses the hi-res part (the classic model is drawn), a
 // WARNING means the driver runs but something falls back to a standard (a clip,
 // the wheels, flat normals), a NOTE says what is ignored. The texts are short
@@ -333,7 +338,7 @@ typedef struct RldHiresRule
 	const char *about;
 } RldHiresRule;
 
-#define RLDHIRES_RULE_COUNT 35
+#define RLDHIRES_RULE_COUNT 36
 
 static const RldHiresRule s_rldHiresRules[RLDHIRES_RULE_COUNT] = {
     {"HRG-1", RLDHIRES_ERROR, "CHRG version is not 1"},
@@ -371,6 +376,7 @@ static const RldHiresRule s_rldHiresRules[RLDHIRES_RULE_COUNT] = {
     {"HRG-33", RLDHIRES_ERROR, "more than 1048576 vertices, the wheels counted (the engine's vertex limit)"},
     {"HRG-34", RLDHIRES_ERROR, "more than 255 skinning entries: joints + body nodes with a mesh but no skin + 4 wheels"},
     {"HRG-35", RLDHIRES_ERROR, "more than 64 texture uploads: one per image, colour space and sampler wrap"},
+    {"HRG-36", RLDHIRES_NOTE, "vertex colours on textured faces look like PS1 shading (median 0.4..0.6 sRGB): the hi-res path multiplies them 1:1"},
 };
 
 // The level of a rule id, -1 for an unknown id.
@@ -781,6 +787,8 @@ typedef struct RldHiresModel
 	u32 rigidNodes;                         // body nodes with a mesh and no skin
 	u32 paletteEntries;                     // joints + rigidNodes + 4
 	u32 textureSlots;                       // textures the engine uploads (textureBytes counts each of them)
+	int clipsPresent;                       // clips in the file (0..12)
+	int ps1ColourMedian;                    // median sRGB byte of COLOR_0 on textured faces, -1 = none (HRG-36)
 } RldHiresModel;
 
 // The edge the game makes of an image edge: the next power of two, at least
@@ -1257,6 +1265,85 @@ static u64 RldHires_EngineVertices(const cgltf_mesh *mesh)
 		}
 	}
 	return n;
+}
+
+// The sRGB byte of a linear value (0..1).
+static int RldHires_SrgbByte(float lin)
+{
+	const float c = (lin <= 0.0f) ? 0.0f : ((lin >= 1.0f) ? 1.0f : lin);
+	const float s = (c <= 0.0031308f) ? (c * 12.92f) : (1.055f * powf(c, 1.0f / 2.4f) - 0.055f);
+
+	return (int)(s * 255.0f + 0.5f);
+}
+
+// HRG-36: COLOR_0 of the drawn primitives whose material has a base colour
+// texture; per vertex the mean of its three channels as an sRGB byte. A median
+// from 102 to 153 (0.4 to 0.6) is what PS1 shading looks like, where 128 shows
+// the texture unchanged - on the hi-res path (glTF) 128 halves it.
+static void RldHires_CheckPs1Colours(RldHiresModel *m, RldHiresReport *rep)
+{
+	u32 histogram[256];
+	u64 total = 0;
+	u64 half;
+	u64 sum = 0;
+	int n;
+	int b;
+
+	m->ps1ColourMedian = -1;
+	if ((m->data == NULL) || (m->drawNodes == NULL))
+	{
+		return;
+	}
+	memset(histogram, 0, sizeof(histogram));
+	for (n = 0; n < m->drawNodeCount + RLDHIRES_WHEEL_COUNT; n++)
+	{
+		const int node = (n < m->drawNodeCount) ? m->drawNodes[n] : m->wheelNode[n - m->drawNodeCount];
+		const cgltf_mesh *mesh = (node >= 0) ? m->data->nodes[node].mesh : NULL;
+		cgltf_size p;
+
+		for (p = 0; (mesh != NULL) && (p < mesh->primitives_count); p++)
+		{
+			const cgltf_primitive *prim = &mesh->primitives[p];
+			const cgltf_accessor *pos = cgltf_find_accessor(prim, cgltf_attribute_type_position, 0);
+			const cgltf_accessor *col = cgltf_find_accessor(prim, cgltf_attribute_type_color, 0);
+			cgltf_size v;
+
+			if ((prim->material == NULL) || (prim->material->pbr_metallic_roughness.base_color_texture.texture == NULL) || (col == NULL) ||
+			    (pos == NULL) || (col->count != pos->count) || col->is_sparse)
+			{
+				continue;
+			}
+			for (v = 0; v < col->count; v++)
+			{
+				float c[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+				int mean;
+
+				cgltf_accessor_read_float(col, v, c, cgltf_num_components(col->type));
+				mean = (RldHires_SrgbByte(c[0]) + RldHires_SrgbByte(c[1]) + RldHires_SrgbByte(c[2]) + 1) / 3;
+				histogram[(mean < 0) ? 0 : ((mean > 255) ? 255 : mean)]++;
+				total++;
+			}
+		}
+	}
+	if (total == 0u)
+	{
+		return;
+	}
+	half = (total + 1u) / 2u;
+	for (b = 0; b < 256; b++)
+	{
+		sum += histogram[b];
+		if (sum >= half)
+		{
+			break;
+		}
+	}
+	m->ps1ColourMedian = b;
+	if ((b >= 102) && (b <= 153))
+	{
+		RldHires_Say(rep, "HRG-36", "vertex colours look like PS1 shading (128 = unchanged; median %d) - the hi-res path multiplies them 1:1 (glTF), so the kart will be darker; export vertex colours with white as neutral or remove them",
+		             b);
+	}
 }
 
 // Opens a GLB from memory and runs every rule of the model (HRG-6..26, 28..31).
@@ -1969,13 +2056,27 @@ static int RldHires_Open(const u8 *glb, u32 size, RldHiresModel *out, RldHiresRe
 		{
 			RldHires_Say(rep, "HRG-22", "%d clip sampler(s) use CUBICSPLINE - read linear between the keys", cubic);
 		}
+		{
+			int present = 0;
+
+			for (i = 0; i < RLDHIRES_CLIP_COUNT; i++)
+			{
+				present += (m->clipAnim[i] >= 0) ? 1 : 0;
+			}
+			m->clipsPresent = present;
+			if (present == 0)
+			{
+				// Not one clip: one warning, not twelve that all say the same.
+				RldHires_Say(rep, "HRG-19", "no clips - the driver stays in its rest pose (the clip names are idle, steer_left, steer_right, jump, drift_left, drift_right, hit, podium_1..3, lose, menu)");
+			}
+		}
 		for (i = 0; i < RLDHIRES_CLIP_COUNT; i++)
 		{
 			int via = 0;
 			int lock = 0;
 			const int got = RldHires_ClipResolve(m, (int)i, &via, &lock);
 
-			if (m->clipAnim[i] >= 0)
+			if ((m->clipAnim[i] >= 0) || (m->clipsPresent == 0))
 			{
 				continue;
 			}
@@ -1990,6 +2091,9 @@ static int RldHires_Open(const u8 *glb, u32 size, RldHiresModel *out, RldHiresRe
 			}
 		}
 	}
+
+	// HRG-36: vertex colours on textured faces that look like PS1 shading.
+	RldHires_CheckPs1Colours(m, rep);
 
 	// HRG-24: cameras and lights.
 	if (gd->cameras_count != 0u)

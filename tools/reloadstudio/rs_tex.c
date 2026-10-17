@@ -128,7 +128,8 @@ static int RsTex_Material(const unsigned char *p, int textures, struct RsTexMate
     memcpy(m->rgba, p, 4);
     m->texture = RsTex_S16(p + 4);
     m->alphaMode = p[6];
-    m->nearest = (p[7] & 1u) != 0u;
+    m->nearest = (p[7] & RS_TEX_MATERIAL_NEAREST) != 0u;
+    m->filtered = (p[7] & RS_TEX_MATERIAL_FILTERED) != 0u;
     return m->texture >= -1 && m->texture < textures && m->alphaMode <= RS_TEX_ALPHA_BLEND;
 }
 
@@ -560,4 +561,153 @@ void RsTex_TriangleSlopes(const long long x[3], const long long y[3], const long
     slope[1] = 3 * svx / den;
     slope[2] = 3 * suy / den;
     slope[3] = 3 * svy / den;
+}
+
+// ---------------------------------------------------------------------------
+// The engine's hi-res filter (rs_tex.h, THE ENGINE'S HI-RES FILTER)
+// ---------------------------------------------------------------------------
+
+// log2(x) in Q8 for x >= 1: the integer part from the top bit, the eight
+// fraction bits by squaring the mantissa (Q30 in [1, 2)) eight times. 0 for 0.
+static int RsTex_Log2Q8(unsigned long long x)
+{
+    unsigned long long m;
+    int e = 63, frac = 0, k;
+    if (x == 0)
+        return 0;
+    while (!(x >> e))
+        e--;
+    m = e >= 30 ? x >> (e - 30) : x << (30 - e);
+    for (k = 0; k < 8; k++) {
+        m = (m * m) >> 30;
+        frac <<= 1;
+        if (m >= (1ULL << 31)) {
+            m >>= 1;
+            frac |= 1;
+        }
+    }
+    return e * 256 + frac;
+}
+
+int RsTex_LodQ8(unsigned long long rho2Q32, int levels)
+{
+    int lam;
+    if (levels <= 1 || rho2Q32 <= (1ULL << 32))
+        return 0;
+    lam = (RsTex_Log2Q8(rho2Q32) - 32 * 256) / 2;
+    return lam > (levels - 1) * 256 ? (levels - 1) * 256 : lam;
+}
+
+void RsTex_FilterSetup(const struct RsTexImage *img, const long long slope[4], struct RsTexFilter *f)
+{
+    unsigned long long ax, bx, ay, by, rx, ry, rmax, rmin;
+    int n, lam;
+
+    f->lodQ8 = 0;
+    f->samples = 1;
+    f->du = slope[0];
+    f->dv = slope[1];
+    if (!img)
+        return;
+    ax = RsTex_Texels(slope[0], img->shiftW[0]);
+    bx = RsTex_Texels(slope[1], img->shiftH[0]);
+    ay = RsTex_Texels(slope[2], img->shiftW[0]);
+    by = RsTex_Texels(slope[3], img->shiftH[0]);
+    rx = ax * ax + bx * bx;      // Q32 texels^2 per pixel, below 2^58
+    ry = ay * ay + by * by;
+    if (ry > rx) {               // the major axis is y
+        f->du = slope[2];
+        f->dv = slope[3];
+        rmax = ry;
+        rmin = rx;
+    } else {
+        rmax = rx;
+        rmin = ry;
+    }
+    if (rmax == 0)
+        return;
+    // N = min(ceil(Pmax / Pmin), max): the smallest N with rmax <= N^2 x rmin.
+    for (n = 1; n < RS_TEX_ANISO_MAX; n++)
+        if (rmin >= (rmax + (unsigned long long)(n * n) - 1u) / (unsigned long long)(n * n))
+            break;
+    f->samples = n;
+    // lambda = log2(Pmax / N) = (log2(rmax) - 32) / 2 - log2(N), Q8.
+    lam = RsTex_Log2Q8(rmax) - 32 * 256 - 2 * RsTex_Log2Q8((unsigned long long)n);
+    lam = lam <= 0 ? 0 : lam / 2;
+    f->lodQ8 = lam > (img->levels - 1) * 256 ? (img->levels - 1) * 256 : lam;
+}
+
+// An integer texel index wrapped as RsTex_Coord wraps.
+static int RsTex_WrapIndex(long long i, int shift, int wrap)
+{
+    const long long n = 1LL << shift;
+    if (wrap == RS_TEX_WRAP_CLAMP)
+        return i < 0 ? 0 : (i >= n ? (int)(n - 1) : (int)i);
+    if (wrap == RS_TEX_WRAP_MIRROR) {
+        const long long m = (long long)((unsigned long long)i & (unsigned long long)(2 * n - 1));
+        return (int)(m < n ? m : 2 * n - 1 - m);
+    }
+    return (int)((unsigned long long)i & (unsigned long long)(n - 1));
+}
+
+// The floor of t / 65536 and its 8-bit fraction.
+static long long RsTex_Floor16(long long t, int *frac8)
+{
+    const long long i = t >= 0 ? t >> 16 : -((-t + 65535) >> 16);
+    *frac8 = (int)((t - i * 65536) >> 8);
+    return i;
+}
+
+// The bilinear texel of one level at u, v (Q16), in linear light (sRGB colour)
+// or as stored, added to acc times weight (Q8): the four weights are Q16.
+static void RsTex_Bilinear(const struct RsTexImage *img, int level, long long u, long long v, unsigned int weight, unsigned long long acc[4])
+{
+    const int sw = img->shiftW[level], sh = img->shiftH[level];
+    int fx, fy, k;
+    const long long ix = RsTex_Floor16(u * (1LL << sw) - 32768, &fx);
+    const long long iy = RsTex_Floor16(v * (1LL << sh) - 32768, &fy);
+    const int x0 = RsTex_WrapIndex(ix, sw, img->wrapU), x1 = RsTex_WrapIndex(ix + 1, sw, img->wrapU);
+    const int y0 = RsTex_WrapIndex(iy, sh, img->wrapV), y1 = RsTex_WrapIndex(iy + 1, sh, img->wrapV);
+    const unsigned char *base = img->level[level];
+    const unsigned char *t[4];
+    unsigned int w[4];
+
+    t[0] = base + (((size_t)y0 << sw) + (size_t)x0) * 4;
+    t[1] = base + (((size_t)y0 << sw) + (size_t)x1) * 4;
+    t[2] = base + (((size_t)y1 << sw) + (size_t)x0) * 4;
+    t[3] = base + (((size_t)y1 << sw) + (size_t)x1) * 4;
+    w[0] = (unsigned int)((256 - fx) * (256 - fy)) * weight;
+    w[1] = (unsigned int)(fx * (256 - fy)) * weight;
+    w[2] = (unsigned int)((256 - fx) * fy) * weight;
+    w[3] = (unsigned int)(fx * fy) * weight;
+    for (k = 0; k < 4; k++) {
+        acc[0] += (unsigned long long)RldMip_Decode(t[k][0], img->linear) * w[k];
+        acc[1] += (unsigned long long)RldMip_Decode(t[k][1], img->linear) * w[k];
+        acc[2] += (unsigned long long)RldMip_Decode(t[k][2], img->linear) * w[k];
+        acc[3] += (unsigned long long)t[k][3] * w[k];
+    }
+}
+
+void RsTex_FilterTexel(const struct RsTexImage *img, const struct RsTexFilter *f, long long u, long long v, unsigned char out[4])
+{
+    unsigned long long acc[4] = {0, 0, 0, 0}, total;
+    const int lo = f->lodQ8 >> 8, fr = f->lodQ8 & 255;
+    const int two = fr != 0 && lo + 1 < img->levels;
+    const int n = f->samples < 1 ? 1 : f->samples;
+    int i;
+
+    for (i = 1; i <= n; i++) {
+        const long long su = u + ((long long)(2 * i - n - 1) * f->du) / (2 * (n + 1));
+        const long long sv = v + ((long long)(2 * i - n - 1) * f->dv) / (2 * (n + 1));
+        if (two) {
+            RsTex_Bilinear(img, lo, su, sv, (unsigned int)(256 - fr), acc);
+            RsTex_Bilinear(img, lo + 1, su, sv, (unsigned int)fr, acc);
+        } else {
+            RsTex_Bilinear(img, lo, su, sv, 256u, acc);
+        }
+    }
+    total = (unsigned long long)n << 24;
+    for (i = 0; i < 3; i++)
+        out[i] = RldMip_Encode((u32)((acc[i] + total / 2) / total), img->linear);
+    out[3] = (unsigned char)((acc[3] + total / 2) / total);
 }

@@ -11,6 +11,7 @@
 
 #include "reloadstudio.h"
 #include "rs_hires_model.h"
+#include "rs_tex.h"
 
 #include <stdio.h>
 #include <math.h>
@@ -79,12 +80,12 @@ static void CheckGood(const struct RsHiresCheck *c, const char *what)
             all &= c->clipState[i] == RS_HIRES_CLIP_PRESENT && c->clipVia[i] == i && c->clipSeconds[i] == 1.0f;
         Check(all, line);
     }
-    snprintf(line, sizeof(line), "%s: the picture is RLDPV2: 5 triangles in pose 0, the framing box in pose 1, pose 2 empty", what);
-    Check(c->preview != NULL && c->previewTriangles == 5 && c->previewBytes == 16u + 5u * 30u + 4u + 60u + 4u &&
+    snprintf(line, sizeof(line), "%s: the picture is RLDPV2 (5 triangles, the framing box, an empty pose) and the textured RLDPN2 after it", what);
+    Check(c->preview != NULL && c->previewTriangles == 5 && c->previewBytes > 234u && c->previewTextured == 1 && c->previewKeepAt == 234u &&
               memcmp(c->preview, "RLDPV2\0\0", 8) == 0 && ReadU32(c->preview + 8) == 3u && ReadU32(c->preview + 12) == 5u &&
-              ReadU32(c->preview + 16 + 150) == 2u && ReadU32(c->preview + 20 + 150 + 60) == 0u,
+              ReadU32(c->preview + 16 + 150) == 2u && ReadU32(c->preview + 20 + 150 + 60) == 0u && memcmp(c->preview + 234, "RLDPN2\0\0", 8) == 0,
           line);
-    if (c->preview && c->previewBytes == 234u) {
+    if (c->preview && c->previewBytes > 234u) {
         // The box: the bind bounds (-0.5, 0, -0.5) .. (1, 1, 0.75) m and 0.25 m around them.
         const unsigned char *b = c->preview + 20 + 150;
         snprintf(line, sizeof(line), "%s: the framing box is the bounds and 0.25 m", what);
@@ -188,6 +189,44 @@ int wmain(int argc, wchar_t **argv)
     }
     RsHires_CheckFree(&c);
 
+    // THE TEXTURED PREVIEW (hires-tex.glb: a 16 x 16 texture, red with a green
+    // middle, on the body triangle with UVs (0,0), (1,0), (0,1); COLOR_0 at
+    // sRGB 128). The flat picture can only colour the corners - all three red;
+    // the textured model the view draws shows the green middle, as the engine
+    // does (the texel x the vertex colour x the factor, all on the display curve).
+    Path(path, argv[1], L"hires-tex.glb");
+    Check(RsHires_CheckFile(path, &c) == 1 && c.usable == 1 && c.previewTextured == 1, "hires-tex.glb: a textured preview");
+    if (c.preview && c.previewTextured) {
+        struct RsTexNative nat;
+        wchar_t why[256];
+        const unsigned char *flat = c.preview + 16;
+        Check(flat[6] == 100 && flat[7] == 0 && flat[16] == 100 && flat[17] == 0 && flat[26] == 100 && flat[27] == 0,
+              "flat picture: the three corners of the body are red (texel 255 x C 100 = 100), no green");
+        Check(RsTex_ParseNative(c.preview, c.previewBytes, c.previewKeepAt, &nat, why, 256) == 1, "the view reads the textured model");
+        if (nat.triangles == 5) {
+            const struct RsTexImage *img = RsTex_NativeImage(&nat, RsTex_NativeMaterialOf(&nat, 0));
+            struct RsTexCorner k0, k1, k2;
+            const unsigned char *mid;
+            const unsigned char *corner;
+            RsTex_NativeCorner(&nat, 0, 0, &k0);
+            RsTex_NativeCorner(&nat, 0, 1, &k1);
+            RsTex_NativeCorner(&nat, 0, 2, &k2);
+            Check(nat.textureCount == 1 && img != NULL && img->w == 16 && img->h == 16, "textured model: the body's material samples the 16 x 16 texture");
+            Check(nat.mat[RsTex_NativeMaterialOf(&nat, 0)].filtered == 1 && nat.mat[RsTex_NativeMaterialOf(&nat, 0)].nearest == 0,
+                  "textured model: the material asks for the engine's hi-res filter (trilinear, anisotropic), not nearest");
+            Check(k0.r == 100 && k0.g == 100 && k0.b == 100 && k0.a == 255,
+                  "COLOR_0 as the engine applies it: linear 0.2159 -> byte 55 -> display curve 128, lit 0.7786: C = 100");
+            if (img) {
+                mid = RsTex_Texel(img, 0, (k0.u + k1.u + k2.u) / 3, (k0.v + k1.v + k2.v) / 3);
+                corner = RsTex_Texel(img, 0, k0.u, k0.v);
+                Check(mid[0] == 0 && mid[1] == 255 && corner[0] == 255 && corner[1] == 0,
+                      "textured model: the middle of the triangle shows the green texel, its corner the red one");
+            }
+        }
+        RsTex_FreeNative(&nat);
+    }
+    RsHires_CheckFree(&c);
+
     Path(path, argv[1], L"packer.rldchar");
     Check(RsHires_CheckFile(path, &c) == 1, "the CHRG of packer.rldchar is read");
     CheckGood(&c, "packer.rldchar");
@@ -230,6 +269,27 @@ int wmain(int argc, wchar_t **argv)
               wcscmp(args[1], L"in.rldchar") == 0 && wcscmp(args[2], L"model.glb") == 0 && wcscmp(args[3], L"-o") == 0 &&
               wcscmp(args[4], L"out.rldchar") == 0 && wcscmp(args[5], L"--machine") == 0,
           "the pack step is rldpack hires-add <character> <model> -o <out> --machine");
+    {
+        const wchar_t *up[RS_HIRES_UPSCALE_ARGS];
+        wchar_t derived[64];
+        Check(RsHires_UpscaleArgs(L"model.glb", L"model-upscaled.glb", up) == 5 && wcscmp(up[0], L"hires-upscale") == 0 &&
+                  wcscmp(up[1], L"model.glb") == 0 && wcscmp(up[2], L"-o") == 0 && wcscmp(up[3], L"model-upscaled.glb") == 0 &&
+                  wcscmp(up[4], L"--machine") == 0,
+              "the upscale step is rldpack hires-upscale <model> -o <derived> --machine");
+        Check(RsHires_UpscaledPath(L"C:\\a\\b\\Kart.GLB", L"D:\\out\\x.rldchar", derived, 64) == 1 &&
+                  wcscmp(derived, L"D:\\out\\Kart-upscaled.glb") == 0,
+              "the upscaled model: <folder of the output>\\<model name>-upscaled.glb");
+        Check(RsHires_UpscaledPath(L"m.glb", L"x.rldchar", derived, 64) == 1 && wcscmp(derived, L"m-upscaled.glb") == 0 &&
+                  RsHires_UpscaledPath(L"a/model.glb", L"o/x.rldchar", derived, 64) == 1 && wcscmp(derived, L"o/model-upscaled.glb") == 0 &&
+                  RsHires_UpscaledPath(L"m.glb", L"x.rldchar", derived, 8) == 0 && derived[0] == 0,
+              "the upscaled model without folders, with forward slashes, and refused when it does not fit");
+    }
+    Path(path, argv[1], L"hires-tex-upscaled.glb");
+    Check(RsHires_CheckFile(path, &c) == 1 && c.usable == 1 && c.previewTextured == 1 && c.textures == 1 && c.textureEdge == 64u &&
+              c.errors == 0 && c.warnings == 0,
+          "hires-tex-upscaled.glb (the Studio's upscale step): usable, no error or warning, its texture 64 x 64, textured preview");
+    RsHires_CheckFree(&c);
+
     Check(wcscmp(RsHires_ClipName(0), L"idle") == 0 && wcscmp(RsHires_ClipName(11), L"menu") == 0 && wcscmp(RsHires_ClipName(12), L"?") == 0,
           "clip names");
 
