@@ -3,8 +3,8 @@
 
 Usage:
   blender --background --factory-startup --python-exit-code 1 --python tools/hires_glb_driver.py -- \
-      --out <dir> [--variants standard|t40k-x1024,...] [--no-classic] [--preview <dir>] [--blend <file.blend>]
-      [--rldpack <rldpack.exe>]
+      --out <dir> [--variants standard|t40k-x1024,lowpoly,bare,...] [--no-classic] [--preview <dir>]
+      [--blend <file.blend>] [--rldpack <rldpack.exe>]
 
 Writes into <dir>:
   testdriver-t<N>k-x<E>.glb   hi-res driver: one skin (11 deform bones), 12 clips, 4 rigid wheel nodes
@@ -12,6 +12,11 @@ Writes into <dir>:
   testdriver-x<E>-normal.png  RGB tangent space normal map
   testdriver-classic.glb    lowest detail kart + driver, no wheels, no rig, shape keys (steer_left,
                               steer_right, jump, win, lose); a .rldchar is made from it with rldpack
+  testdriver-lowpoly.glb     named variant "lowpoly": the same kart and driver at the lowest detail
+                              (about 2500 triangles), flat shaded, one 64 x 64 pixel-art colour texture
+                              (testdriver-x64-color.png), no normal map; all 12 clips and the 4 wheel nodes
+  testdriver-bare.glb        named variant "bare": the body of t40k-x1024 (same skin, same textures) without
+                              clips and without wheel nodes - a model as it comes out of a first export
   testdriver-variants.txt    manifest
 
 Model space is x = kart left, y = up, z = front, 64 units per metre. Blender location in metres is
@@ -38,6 +43,18 @@ FPS = 30
 STANDARD = ["t10k-x2048", "t20k-x2048", "t40k-x2048", "t80k-x2048", "t160k-x2048",
             "t40k-x512", "t40k-x1024", "t320k-x2048"]
 PREVIEW_VARIANT = "t40k-x1024"
+# Named variants for the Studio's routes (Low-Poly, and a model without clips and wheels):
+#   target    the triangle target of allocate() over body and wheels
+#   edge      the edge of the colour texture; "pixel" = the 64 x 64 pixel-art atlas
+#   clips     export the 12 clips
+#   wheels    export the 4 wheel nodes
+#   flat      flat shading (every face its own normal) and no normal map
+#   lowwheel  the simple wheel of low_wheel_specs() (a tyre and a rim disc) instead of the detailed one
+NAMED = {
+    "lowpoly": dict(target=2500, edge=64, pixel=True, clips=True, wheels=True, flat=True, lowwheel=True),
+    "bare": dict(target=40000, edge=1024, pixel=False, clips=False, wheels=False, flat=False, lowwheel=False),
+}
+PIXEL_EDGE = 64
 # the packer of this checkout's MSVC build; --rldpack <exe> names another one
 RLDPACK_DEFAULT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                "build-msvc-x86", "Release", "rldpack.exe")
@@ -282,6 +299,42 @@ def build_normal(E):
     out = np.stack([nx / ln, ny / ln, nz / ln], -1)
     nrm[y0:y1, x0:x1] = np.floor((out * 0.5 + 0.5) * 255.0 + 0.5).astype(np.uint8)
     return nrm
+
+
+def build_pixel_color():
+    """RGBA uint8 (64, 64, 4) for the variant "lowpoly": the same atlas regions, each one clear flat
+    colour with a few pixel-art details, and 2 x 2 pixel holes (alpha 0) in CUTOUT."""
+    E = PIXEL_EDGE
+    rgba = np.zeros((E, E, 4), np.uint8)
+    rgba[..., 3] = 255
+    flat = {"PAINT": (210, 45, 40), "SUIT": (40, 90, 200), "HELMET": (245, 200, 40), "GREY": (150, 155, 160),
+            "SKIN": (235, 185, 140), "DARK": (40, 40, 48), "TREAD": (25, 25, 28), "RIM": (200, 205, 215),
+            "CUTOUT": (120, 125, 130)}
+    for name, col in flat.items():
+        x0, y0, x1, y1 = region_px(name, E)
+        rgba[y0:y1, x0:x1, :3] = col
+    # PAINT: a darker one-pixel panel edge and a white "7" at three times the font size
+    x0, y0, x1, y1 = region_px("PAINT", E)
+    rgba[y0:y1, x0, :3] = rgba[y0:y1, x1 - 1, :3] = (150, 30, 28)
+    rgba[y0, x0:x1, :3] = rgba[y1 - 1, x0:x1, :3] = (150, 30, 28)
+    gx, gy = x0 + (x1 - x0 - 15) // 2, y0 + (y1 - y0 - 21) // 2
+    for r, row in enumerate(FONT["7"]):
+        for c, bit in enumerate(row):
+            if bit == "1":
+                rgba[gy + 3 * r:gy + 3 * r + 3, gx + 3 * c:gx + 3 * c + 3, :3] = (245, 245, 245)
+    # SUIT: a white band; HELMET: a dark visor band; TREAD: blocks every 4 pixels
+    x0, y0, x1, y1 = region_px("SUIT", E)
+    rgba[y0 + 14:y0 + 18, x0:x1, :3] = (245, 245, 245)
+    x0, y0, x1, y1 = region_px("HELMET", E)
+    rgba[y0 + 12:y0 + 18, x0:x1, :3] = (30, 40, 90)
+    x0, y0, x1, y1 = region_px("TREAD", E)
+    rgba[y0:y1, x0:x1:4, :3] = (70, 70, 76)
+    # CUTOUT: 8 x 2 holes of 2 x 2 pixels
+    x0, y0, x1, y1 = region_px("CUTOUT", E)
+    for hy in (y0 + 1, y0 + 5):
+        for hx in range(x0 + 1, x1, 4):
+            rgba[hy:hy + 2, hx:hx + 2, 3] = 0
+    return rgba
 
 
 # =============================================================== geometry
@@ -675,6 +728,18 @@ def wheel_specs():
     S("backdisc", backdisc)
     S("hub", hub)
     S("spokes", spokes)
+    return sp
+
+
+def low_wheel_specs():
+    """The wheel of the variant "lowpoly": a closed tyre and a rim disc on its outer side, about
+    80 triangles at the lowest level (the detailed wheel has about 900)."""
+    sp = []
+
+    def S(name, fn):
+        sp.append(Spec(name, None, 0, fn, mult=4))
+    S("tyre", lambda a, d: add_cyl(a, "x", WHEEL_C, 15.2, 12.0, segs_for(10, d), 1, "TREAD"))
+    S("rim", lambda a, d: add_cyl(a, "x", (6.3, 0.0, 0.0), 9.0, 0.6, segs_for(10, d), 1, "RIM"))
     return sp
 
 
@@ -1168,7 +1233,7 @@ def remove_objects(objs):
 
 
 # ================================================================== export
-def export_gltf(path, objs, hires):
+def export_gltf(path, objs, hires, animations=True):
     bpy.ops.object.select_all(action="DESELECT")
     for o in objs:
         o.select_set(True)
@@ -1184,7 +1249,7 @@ def export_gltf(path, objs, hires):
     )
     if hires:
         kw.update(export_skins=True, export_def_bones=True, export_leaf_bone=False, export_influence_nb=4,
-                  export_all_influences=False, export_morph=False, export_animations=True,
+                  export_all_influences=False, export_morph=False, export_animations=animations,
                   export_animation_mode="ACTIONS", export_force_sampling=False,
                   export_optimize_animation_size=False, export_anim_single_armature=True,
                   export_reset_pose_bones=True, export_current_frame=False, export_frame_range=False,
@@ -1312,7 +1377,7 @@ def trs_matrix(t, q, s):
     return m
 
 
-def check_glb(path, expect_tris, edge, hires, report):
+def check_glb(path, expect_tris, edge, hires, report, clips=True, wheels=True, flat=False):
     g = Glb(path)
     j = g.j
     errs = []
@@ -1331,6 +1396,8 @@ def check_glb(path, expect_tris, edge, hires, report):
     # colour PNG: type 6, some alpha < 255, edge
     mats = j.get("materials", [])
     report["materials"] = [(m.get("name"), m.get("alphaMode", "OPAQUE"), m.get("alphaCutoff"), m.get("doubleSided", False)) for m in mats]
+    if flat and len(imgs) != 1:
+        errs.append("flat variant holds %d images, expected 1 (colour only, no normal map)" % len(imgs))
     for im in imgs:
         data = colors[im.get("name", "")]
         w, h, bd, ct = struct.unpack(">IIBB", data[16:26])
@@ -1356,8 +1423,10 @@ def check_glb(path, expect_tris, edge, hires, report):
                 errs.append("colour PNG has no alpha holes")
     if hires:
         names = sorted(a.get("name") for a in j.get("animations", []))
-        if names != sorted(CLIP_NAMES):
+        if clips and names != sorted(CLIP_NAMES):
             errs.append("animations %s differ from the 12 clip names" % (names,))
+        if not clips and names:
+            errs.append("variant without clips holds animations %s" % (names,))
         skins = j.get("skins", [])
         if len(skins) != 1 or not (8 <= len(skins[0]["joints"]) <= 64):
             errs.append("expected 1 skin with 8..64 joints, found %s" % ([len(s["joints"]) for s in skins],))
@@ -1375,7 +1444,11 @@ def check_glb(path, expect_tris, edge, hires, report):
                     errs.append("skinned primitive without JOINTS_0/WEIGHTS_0")
         world = g.world()
         par = g.parents()
-        for wn, x, z in WHEELS:
+        if not wheels:
+            found = [n.get("name") for n in j["nodes"] if str(n.get("name", "")).startswith("wheel_")]
+            if found:
+                errs.append("variant without wheels holds wheel nodes %s" % (found,))
+        for wn, x, z in (WHEELS if wheels else []):
             idx = [i for i, n in enumerate(j["nodes"]) if n.get("name") == wn]
             if len(idx) != 1:
                 errs.append("wheel node %s count %d" % (wn, len(idx)))
@@ -1407,8 +1480,8 @@ def check_glb(path, expect_tris, edge, hires, report):
                 errs.append("weights not normalized")
         pos = np.concatenate(pos_l)
         jt = np.concatenate(jt_l)
-        wheel_pos = []
-        for wn, _x, _z in WHEELS:
+        wheel_pos = [np.zeros((0, 3))]
+        for wn, _x, _z in (WHEELS if wheels else []):
             i = [k for k, n in enumerate(j["nodes"]) if n.get("name") == wn][0]
             P = g.accessor(j["meshes"][j["nodes"][i]["mesh"]]["primitives"][0]["attributes"]["POSITION"]).astype(float)
             wheel_pos.append(P @ world[i][:3, :3].T + world[i][:3, 3])
@@ -1429,7 +1502,7 @@ def check_glb(path, expect_tris, edge, hires, report):
                 sel.append(ii[::max(1, len(ii) // 3000)])
         sel = np.concatenate(sel)
         spos, sjt = pos[sel], jt[sel]
-        worst = np.zeros(3)
+        worst = np.zeros(3) if clips else (allrest.max(0) - allrest.min(0))
         anim_idx = {a["name"]: i for i, a in enumerate(j.get("animations", []))}
         for cname in CLIP_NAMES:
             ai = anim_idx.get(cname)
@@ -1448,7 +1521,7 @@ def check_glb(path, expect_tris, edge, hires, report):
             errs.append("extent %s > 4 m" % (worst,))
         # clip checks
         mx_t0 = 0.0
-        for cname in CLIP_NAMES:
+        for cname in (CLIP_NAMES if clips else []):
             a = j["animations"][anim_idx[cname]]
             for ch in a["channels"]:
                 s = a["samplers"][ch["sampler"]]
@@ -1471,7 +1544,7 @@ def check_glb(path, expect_tris, edge, hires, report):
         steer = jn["steer"]
         w_rest = g.world()
         rim = {}
-        for cname in ("steer_left", "steer_right"):
+        for cname in (("steer_left", "steer_right") if clips else ()):
             ai = anim_idx[cname]
             dur = CLIPS[cname][0]
             for tag, tt in (("first", 0.0), ("last", dur)):
@@ -1482,18 +1555,18 @@ def check_glb(path, expect_tris, edge, hires, report):
                     hp = w[hand[s]][:3, 3]
                     rim[(cname, tag, s)] = float(np.linalg.norm(gp - hp) * UNIT)
         report["rim"] = rim
-        if max(rim.values()) > 1.5:
+        if rim and max(rim.values()) > 1.5:
             errs.append("hand off the rim by %.3f units" % max(rim.values()))
-        ai = anim_idx["podium_3"]
         clap = []
-        for tt in (0.25, 0.75):
+        for tt in ((0.25, 0.75) if clips else ()):
+            ai = anim_idx["podium_3"]
             w = g.world(g.anim_pose(ai, tt))
             clap.append(float(np.linalg.norm(w[hand[".L"]][:3, 3] - w[hand[".R"]][:3, 3]) * UNIT))
         report["clap"] = clap
-        if max(clap) > 2.0:
+        if clap and max(clap) > 2.0:
             errs.append("clap distance %.3f > 2 units" % max(clap))
         report["joints"] = len(joints)
-        report["clips"] = len(j["animations"])
+        report["clips"] = len(j.get("animations", []))
     else:
         if j.get("skins") or j.get("animations"):
             errs.append("classic glTF holds a skin or animations")
@@ -1541,6 +1614,43 @@ def build_variant(rig, wspecs, bspecs, vname, out, tex_paths, preview, export=Tr
     if preview:
         render_preview(rig, preview)
     remove_objects([bobj] + wobjs)
+    return rep
+
+
+def build_named(rig, wspecs, bspecs, vname, out, tex_paths):
+    """A named variant (NAMED): the same parts, rig and clips as the standard variants, with the
+    detail, texture, shading, clips and wheel nodes the entry asks for."""
+    spec = NAMED[vname]
+    if spec["lowwheel"]:
+        wspecs = low_wheel_specs()
+    specs = bspecs + wspecs
+    ds, cur, dbase = allocate(specs, spec["target"])
+    say("variant %s: target %d, planned %d triangles (base level %d)" % (vname, spec["target"], cur, dbase))
+    if spec["pixel"]:
+        mats = make_materials(tex_paths["pixel"], None, with_normal=False)
+    else:
+        cpath, npath = tex_paths[spec["edge"]]
+        mats = make_materials(cpath, npath)
+    bobj, nb = build_body_object(rig, bspecs, ds[:len(bspecs)], "driver_body", mats)
+    objs, nw = [bobj], 0
+    if spec["wheels"]:
+        wobjs, nw = build_wheel_objects(wspecs, ds[len(bspecs):], mats)
+        objs += wobjs
+    if spec["flat"]:
+        for o in objs:
+            o.data.polygons.foreach_set("use_smooth", [False] * len(o.data.polygons))
+            o.data.update()
+    say("  body %d + wheels %d = %d triangles%s%s" % (nb, nw, nb + nw, "" if spec["clips"] else ", no clips",
+                                                    "" if spec["wheels"] else ", no wheel nodes"))
+    path = os.path.join(out, "testdriver-%s.glb" % vname)
+    for pb in rig.obj.pose.bones:
+        pb.rotation_quaternion = (1, 0, 0, 0)
+        pb.location = (0, 0, 0)
+    export_gltf(path, objs + [rig.obj], True, animations=spec["clips"])
+    rep = {}
+    check_glb(path, nb + nw, spec["edge"], True, rep, clips=spec["clips"], wheels=spec["wheels"], flat=spec["flat"])
+    rep["file"] = path
+    remove_objects(objs)
     return rep
 
 
@@ -1696,7 +1806,8 @@ def parse_args():
             raise Fail("unknown argument %s" % a)
     if not opt["out"]:
         raise Fail("usage: blender -b --factory-startup --python hires_glb_driver.py -- --out <dir> "
-                   "[--variants standard|t40k-x1024,...] [--no-classic] [--preview <dir>] [--blend f] [--rldpack exe]")
+                   "[--variants standard|t40k-x1024,lowpoly,bare,...] [--no-classic] [--preview <dir>] [--blend f] "
+                   "[--rldpack exe]")
     return opt
 
 
@@ -1706,7 +1817,8 @@ def main():
     os.makedirs(out, exist_ok=True)
     variants = STANDARD if opt["variants"] == "standard" else [v for v in opt["variants"].split(",") if v]
     for v in variants:
-        parse_variant(v)
+        if v not in NAMED:
+            parse_variant(v)
     clear_scene()
     sc = bpy.context.scene
     sc.render.fps, sc.render.fps_base = FPS, 1.0
@@ -1730,7 +1842,8 @@ def main():
     for pb in rig.obj.pose.bones:
         pb.rotation_quaternion = (1, 0, 0, 0)
     # textures
-    edges = sorted(set([parse_variant(v)[1] for v in variants] + [512]))
+    edges = sorted(set([parse_variant(v)[1] for v in variants if v not in NAMED] +
+                       [NAMED[v]["edge"] for v in variants if v in NAMED and not NAMED[v]["pixel"]] + [512]))
     tex_paths = {}
     manifest = []
     for e in edges:
@@ -1740,10 +1853,17 @@ def main():
         write_file(np_, png_bytes(build_normal(e)))
         tex_paths[e] = (cp, np_)
         say("texture edge %d: color %d bytes, normal %d bytes" % (e, os.path.getsize(cp), os.path.getsize(np_)))
+    if any(v in NAMED and NAMED[v]["pixel"] for v in variants):
+        tex_paths["pixel"] = os.path.join(out, "testdriver-x%d-color.png" % PIXEL_EDGE)
+        write_file(tex_paths["pixel"], png_bytes(build_pixel_color()))
+        say("pixel-art texture edge %d: color %d bytes" % (PIXEL_EDGE, os.path.getsize(tex_paths["pixel"])))
     bspecs = body_specs()
     wspecs = wheel_specs()
     reports = []
     for v in variants:
+        if v in NAMED:
+            reports.append((v, build_named(rig, wspecs, bspecs, v, out, tex_paths)))
+            continue
         pv = opt["preview"] if (opt["preview"] and v == PREVIEW_VARIANT) else None
         reports.append((v, build_variant(rig, wspecs, bspecs, v, out, tex_paths, pv)))
     if opt["preview"] and PREVIEW_VARIANT not in variants:
@@ -1768,14 +1888,15 @@ def main():
     # report details
     for v, rep in reports:
         say("%s: tris %d joints %d clips %d" % (v, rep["tris"], rep["joints"], rep["clips"]))
-        say("  wheels %s" % (rep["wheel_t"],))
+        say("  wheels %s" % (rep.get("wheel_t", "none"),))
         say("  rest min %s max %s  max extent %s" % (np.round(rep["rest_min"], 3), np.round(rep["rest_max"], 3),
                                                       np.round(rep["max_extent"], 3)))
         say("  materials %s" % (rep["materials"],))
         say("  images %s" % ([(a, b, c[:12]) for a, b, c in rep["images"]],))
         say("  embedded PNGs byte-identical to the written files (checked); colour PNG alpha==0: %d, alpha==128: %d, alpha<255: %d texels" % rep["alpha"])
-    if reports:
-        rep = reports[0][1]
+    with_rim = [rep for _v, rep in reports if rep.get("rim")]
+    if with_rim:
+        rep = with_rim[0]
         for k in sorted(rep["rim"]):
             say("  hand-on-rim %s %s %s: %.3f units" % (k + (rep["rim"][k],)))
         say("  clap distances at 0.25 s / 0.75 s: %.3f / %.3f units" % tuple(rep["clap"]))
@@ -1792,8 +1913,11 @@ def main():
     for e in edges:
         add("testdriver-x%d-color.png" % e, "-", e, "-", "-")
         add("testdriver-x%d-normal.png" % e, "-", e, "-", "-")
+    if "pixel" in tex_paths:
+        add("testdriver-x%d-color.png" % PIXEL_EDGE, "-", PIXEL_EDGE, "-", "-")
     for v, rep in reports:
-        add("testdriver-%s.glb" % v, rep["tris"], parse_variant(v)[1], rep["joints"], rep["clips"])
+        edge = NAMED[v]["edge"] if v in NAMED else parse_variant(v)[1]
+        add("testdriver-%s.glb" % v, rep["tris"], edge, rep["joints"], rep["clips"])
     if classic:
         add("testdriver-classic.glb", classic["tris"], 512, 0, 0)
         add("testdriver-classic.rldchar", "-", "-", "-", "-")
