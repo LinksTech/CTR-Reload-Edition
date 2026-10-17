@@ -86,6 +86,66 @@ function(ctr_native_add_label_warning_if_supported target warning flag_check)
     endif()
 endfunction()
 
+# --- Waiting for a free exe before linking ----------------------------------
+#
+# An on-access virus scanner may keep an .exe open for a second or two after
+# that exe was started (it scans the image); a link that falls into that window
+# fails with LNK1104 although the build is fine. So every executable target
+# runs cmake/wait_exe_free.ps1 right before its link step (PRE_LINK): when the
+# linker could write the exe, it returns at once and prints nothing; else it
+# names the process holding the file, waits visibly until the file is free
+# (log line "exe-wait: <file> free after <ms> ms", counted per build - see the
+# head of the script and BUILDING.md) and fails the build after 30 s. The link
+# itself is never retried.
+#
+# The loop at the end of this file calls ctr_wait_exe_free for every
+# executable target made in this file, so a new add_executable needs nothing
+# extra. Only on a Windows host (the script is PowerShell) building Windows
+# programs; anywhere else the function adds nothing.
+if(CMAKE_HOST_WIN32)
+    find_program(CTR_POWERSHELL NAMES powershell pwsh)
+    if(NOT CTR_POWERSHELL)
+        message(STATUS "PowerShell not found: executables link without waiting for a free exe")
+    endif()
+endif()
+
+function(ctr_wait_exe_free target)
+    if(NOT CMAKE_HOST_WIN32 OR NOT WIN32 OR NOT CTR_POWERSHELL)
+        return()
+    endif()
+    # The Visual Studio generators run a PRE_LINK step on every build, also when
+    # MSBuild then finds the exe up to date and does not link. The script gets
+    # the link inputs (object files, linked library files) so that a running
+    # exe does not stop a build that has nothing to link; see -Inputs in the
+    # script. Ninja and Makefiles run the step only when they link.
+    set(inputs_args)
+    if(CMAKE_GENERATOR MATCHES "^Visual Studio")
+        set(inputs "$<JOIN:$<TARGET_OBJECTS:${target}>,\n>")
+        get_target_property(libs ${target} LINK_LIBRARIES)
+        foreach(lib IN LISTS libs)
+            if(TARGET "${lib}")
+                get_target_property(aliased "${lib}" ALIASED_TARGET)
+                if(aliased)
+                    set(lib "${aliased}")
+                endif()
+                get_target_property(lib_type "${lib}" TYPE)
+                if(lib_type STREQUAL "STATIC_LIBRARY" OR lib_type STREQUAL "SHARED_LIBRARY")
+                    string(APPEND inputs "\n$<TARGET_LINKER_FILE:${lib}>")
+                endif()
+            endif()
+        endforeach()
+        set(inputs_file "${CMAKE_BINARY_DIR}/exe-wait/${target}-$<CONFIG>.txt")
+        file(GENERATE OUTPUT "${inputs_file}" CONTENT "${inputs}\n")
+        set(inputs_args -Inputs "${inputs_file}")
+    endif()
+    add_custom_command(TARGET ${target} PRE_LINK
+        COMMAND ${CTR_POWERSHELL} -NoProfile -NonInteractive -ExecutionPolicy Bypass
+            -File ${CMAKE_SOURCE_DIR}/cmake/wait_exe_free.ps1 $<TARGET_FILE:${target}>
+            ${inputs_args}
+        VERBATIM
+    )
+endfunction()
+
 # --- Vulkan ------------------------------------------------------------------
 #
 # Headers only, never the import library. Every Vulkan entry point is fetched at
@@ -1127,3 +1187,13 @@ message("rldpack native wheels test passed: refused without --wheels off (exit $
         PASS_REGULAR_EXPRESSION "2 container\\(s\\): 1 good-, 1 bad-, 0 unexpected"
     )
 endif()
+
+# Every executable target of this file waits before its link until the exe is
+# free (ctr_wait_exe_free, above).
+get_property(ctr_wait_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(ctr_wait_target IN LISTS ctr_wait_targets)
+    get_target_property(ctr_wait_type ${ctr_wait_target} TYPE)
+    if(ctr_wait_type STREQUAL "EXECUTABLE")
+        ctr_wait_exe_free(${ctr_wait_target})
+    endif()
+endforeach()

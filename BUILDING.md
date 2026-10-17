@@ -41,6 +41,30 @@ The same steps with CMake presets:
     cmake --build --preset windows-msvc-x86-release --parallel
     ctest --preset windows-msvc-x86-release
 
+### Waiting for a locked exe before linking
+
+An on-access virus scanner may keep an `.exe` open for a second or two after
+that exe was started; a link in that window would fail with `LNK1104`. So on
+Windows every executable target runs `cmake/wait_exe_free.ps1` right before
+its link step (a `PRE_LINK` step, added for every `add_executable` of
+`CMakeLists.txt` by `ctr_wait_exe_free`). It applies to every way of building:
+`build-msvc.bat`, `cmake --build` and the automatic builds. When the linker
+could write the exe, the step returns at once and prints nothing. Otherwise it
+names the process that holds the file, re-checks about every 100 ms and lets
+the linker run as soon as the file is free. The link itself is never retried;
+after 30 s the step fails the build and names the holder again. The lines:
+
+    exe-wait: rldpack.exe locked by <process>(<pid>), waiting...
+    exe-wait: rldpack.exe free after 1234 ms
+    exe-wait: rldpack.exe still locked by <process>(<pid>) after 30012 ms, giving up (the linker is not started)
+
+Each wait ends with exactly one `free after` line. A build that succeeds only
+after a wait is a good build: the linker wrote the exe on its first attempt.
+To count and sum the waits of a build log:
+
+    grep -c "exe-wait: .* free after [0-9]* ms" build.log
+    grep -o "free after [0-9]* ms" build.log | awk '{s += $3} END {print s + 0}'
+
 ## Results
 
 In `build-msvc-x86\Release\`:
