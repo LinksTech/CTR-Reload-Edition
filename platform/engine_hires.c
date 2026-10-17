@@ -1002,6 +1002,11 @@ int Engine_HiresOwns(const struct Driver *d)
 {
 	const struct GameTracker *gGT = sdata->gGT;
 
+	// The hi-res drivers of the .rldchar (--engine-hires-chars) first.
+	if (g_cfg_engineHiresChars && Engine_HiresCharOwns(d))
+	{
+		return 1;
+	}
 	if (!g_cfg_engine || !s_engHires.ok || s_engHires.seatOff || (s_engHires.bodyMesh < 0) || (d == NULL) || (gGT == NULL))
 	{
 		return 0;
@@ -1446,6 +1451,11 @@ int Engine_HiresRoute(struct Instance *inst, struct InstDrawPerPlayer *idpp, str
 	EngineInstanceDraw draw;
 	int clip = ENG_HIRES_CLIP_STEER;
 
+	// The hi-res drivers of the .rldchar (--engine-hires-chars) first.
+	if (g_cfg_engineHiresChars && Engine_HiresCharRoute(inst, idpp, pb))
+	{
+		return 1;
+	}
 	if (!g_cfg_engine || !s_engHires.ok || (inst == NULL) || (idpp == NULL) || (pb == NULL) || (gGT == NULL))
 	{
 		return 0;
@@ -1509,6 +1519,12 @@ int Engine_HiresWheels(const struct Driver *d, const struct Instance *inst, cons
 	int w;
 	int submitted = 0;
 
+	// A hi-res driver of the .rldchar draws its wheels with its body
+	// (engine_hires_char.c): no sprite, nothing more to draw here.
+	if (g_cfg_engineHiresChars && (Engine_HiresCharOwns(d) || Engine_HiresCharSelectDrawn(inst)))
+	{
+		return 1;
+	}
 	if (!Engine_HiresOwns(d))
 	{
 		return 0;

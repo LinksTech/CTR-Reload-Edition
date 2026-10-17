@@ -237,6 +237,8 @@ if(MSVC)
         tools/reloadstudio/rs_anim.c
         tools/reloadstudio/rs_wheels.c
         tools/reloadstudio/rs_tex.c
+        tools/reloadstudio/rs_hires_model.c
+        tools/reloadstudio/rs_hires.c
         tools/reloadstudio/rs_rldpack.c
         tools/rldpack_image.c
         platform/native_disc_image.c
@@ -375,11 +377,36 @@ if(BUILD_TESTING)
     # step against fixed cases. The hashing is self-written in this tree, so it
     # has to prove itself.
     add_test(NAME rldpack_selftest COMMAND $<TARGET_FILE:rldpack> selftest)
+    # The hi-res driver (chunk CHRG, include/rldhires.inc): every rule HRG-n
+    # fired and not fired on GLBs made in code, the clip chains, the budget, and
+    # a container without CHRG read as before (tools/rldpack_hires_test.inc).
+    add_test(NAME rldhires_selftest COMMAND $<TARGET_FILE:rldpack> selftest-hires)
+    set_tests_properties(rldhires_selftest PROPERTIES
+        PASS_REGULAR_EXPRESSION "hires selftest passed: [0-9]+ checks, 0 failures"
+        FAIL_REGULAR_EXPRESSION "FAIL")
+    # hires-check, hires-add and hires-strip on files: the same bytes twice,
+    # strip of add is the character again byte for byte, replace, a model with
+    # an error writes nothing (cmake/run_rldhires_files.cmake).
+    add_test(NAME rldhires_files
+        COMMAND ${CMAKE_COMMAND}
+            -DPACKER=$<TARGET_FILE:rldpack>
+            -DDIR=${CMAKE_BINARY_DIR}/selftest/rldhires
+            -P ${CMAKE_SOURCE_DIR}/cmake/run_rldhires_files.cmake
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
+    set_tests_properties(rldhires_files PROPERTIES
+        PASS_REGULAR_EXPRESSION "rldhires files passed: [0-9]+ checks"
+        TIMEOUT 300)
     # The same self-test through the rldpack inside Reload Studio: proves that the
     # built-in version is the same one and talks over the pipe.
     if(MSVC)
         add_test(NAME reloadstudio_rldpack_selftest COMMAND $<TARGET_FILE:ReloadStudio> --rldpack selftest)
         set_tests_properties(reloadstudio_rldpack_selftest PROPERTIES PASS_REGULAR_EXPRESSION "Self-test passed")
+        # And the hi-res rules (include/rldhires.inc) inside Reload Studio: the same code.
+        add_test(NAME reloadstudio_rldhires_selftest COMMAND $<TARGET_FILE:ReloadStudio> --rldpack selftest-hires)
+        set_tests_properties(reloadstudio_rldhires_selftest PROPERTIES
+            PASS_REGULAR_EXPRESSION "hires selftest passed: [0-9]+ checks, 0 failures"
+            FAIL_REGULAR_EXPRESSION "FAIL")
 
         # The textures of the Studio's 3D preview (tools/reloadstudio/rs_tex.c):
         # rldpack's make-char and char-wheel write the preview blocks, rs_tex.c
@@ -406,6 +433,41 @@ if(BUILD_TESTING)
         )
         add_test(NAME reloadstudio_tex_selftest COMMAND $<TARGET_FILE:rs_tex_selftest>)
         set_tests_properties(reloadstudio_tex_selftest PROPERTIES PASS_REGULAR_EXPRESSION "rs_tex selftest passed: ")
+
+        # The page "Hi-Res (Preview)" (tools/reloadstudio/rs_hires_model.c): its
+        # list, summary and bind-pose picture against rldpack's findings, a
+        # character's CHRG, and the pack step - the Studio's hires-add with the
+        # page's arguments gives rldpack's bytes (cmake/run_rs_hires_selftest.cmake).
+        add_executable(rs_hires_selftest
+            tools/reloadstudio/rs_hires_test.c
+            tools/reloadstudio/rs_hires_model.c
+            tools/reloadstudio/rs_tex.c
+            tools/rldpack.rc
+            platform/rldpack.manifest
+        )
+        target_compile_definitions(rs_hires_selftest PRIVATE CTR_NATIVE
+            CTR_NATIVE_VERSION=\"${CTR_NATIVE_VERSION}\")
+        target_include_directories(rs_hires_selftest PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/externals/cgltf ${CTR_BUILD_ID_DIR})
+        add_dependencies(rs_hires_selftest ctr_build_id)
+        target_compile_options(rs_hires_selftest PRIVATE ${CTR_RLDPACK_FP_OPTIONS})
+        set_target_properties(rs_hires_selftest PROPERTIES
+            C_STANDARD 17
+            C_STANDARD_REQUIRED ON
+            C_EXTENSIONS OFF
+        )
+        add_test(NAME reloadstudio_hires_selftest
+            COMMAND ${CMAKE_COMMAND}
+                -DPACKER=$<TARGET_FILE:rldpack>
+                -DSTUDIO=$<TARGET_FILE:ReloadStudio>
+                -DTEST=$<TARGET_FILE:rs_hires_selftest>
+                -DDIR=${CMAKE_BINARY_DIR}/selftest/rs-hires
+                -P ${CMAKE_SOURCE_DIR}/cmake/run_rs_hires_selftest.cmake
+            WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        )
+        set_tests_properties(reloadstudio_hires_selftest PROPERTIES
+            PASS_REGULAR_EXPRESSION "rs_hires files passed: sha256 [0-9a-f]+"
+            FAIL_REGULAR_EXPRESSION "FAIL"
+            TIMEOUT 300)
     endif()
     set_tests_properties(ctr_native_version PROPERTIES PASS_REGULAR_EXPRESSION "^CTR Reload ${CTR_NATIVE_VERSION} ")
 
@@ -568,6 +630,10 @@ if(BUILD_TESTING)
     set_tests_properties(engine_static_lit_sun_value PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-static-lit-sun expects x,y,z,ambient,diffuse")
     add_test(NAME engine_static_style_value COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-track --engine-static-model m.glb --engine-static-style shiny --dev-race-mode stop)
     set_tests_properties(engine_static_style_value PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-static-style expects hires or lowpoly")
+    add_test(NAME hires_filter_needs_chars COMMAND $<TARGET_FILE:ctr_native> --dev --engine-hires-chars-filter nearest --dev-race-mode stop)
+    set_tests_properties(hires_filter_needs_chars PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-hires-chars-filter requires --engine-hires-chars")
+    add_test(NAME hires_filter_value COMMAND $<TARGET_FILE:ctr_native> --dev --engine-hires-chars --engine-hires-chars-filter blurry --dev-race-mode stop)
+    set_tests_properties(hires_filter_value PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-hires-chars-filter expects nearest or linear")
     add_test(NAME engine_static_grade_value COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-track --engine-static-model m.glb --engine-static-style lowpoly --engine-static-grade 4,1 --dev-race-mode stop)
     set_tests_properties(engine_static_grade_value PROPERTIES PASS_REGULAR_EXPRESSION "switch --engine-static-grade expects saturation,contrast, each 0..3")
     add_test(NAME engine_flycam_smooth_needs_auto COMMAND $<TARGET_FILE:ctr_native> --dev --engine --engine-flycam-smooth --dev-race-mode stop)
@@ -919,6 +985,21 @@ message("rldpack native wheels test passed: refused without --wheels off (exit $
         PASS_REGULAR_EXPRESSION "selftest: [0-9]+ checks, 0 failures"
         ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
     )
+
+    # Hi-res driver (chunk CHRG) tools: the GLB checker (in-memory GLBs, one
+    # good file and one negative case per rule), the per-tick log evaluation
+    # (clip per state, blend ramps, wheels), the budget evaluation (p99 per
+    # variant of one load run) and the review sheets, each on synthetic data.
+    foreach(hires_tool hires_glb_check hires_tick_eval hires_budget_eval hires_sheet hires_chars_dir)
+        add_test(
+            NAME ${hires_tool}_selftest
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/${hires_tool}.py selftest
+        )
+        set_tests_properties(${hires_tool}_selftest PROPERTIES
+            PASS_REGULAR_EXPRESSION "${hires_tool} selftest: [0-9]+ checks, 0 failures"
+            ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1"
+        )
+    endforeach()
 
     # Collision model generator (tools/collision_gen): procedural test models,
     # the generator's checks in the game's arithmetic, and the container it

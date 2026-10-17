@@ -58,7 +58,24 @@
 // SDL_GetKeyboardState as the name entry does (NikoGetEnterKey), not through
 // the pad bus: nothing the game reads changes. Under --deterministic no key is
 // read (as everywhere), so a measuring run only has the automatic turn.
+//
+// THE HI-RES CHARACTER OF A .rldchar (--engine-hires-chars, round of
+// 2026-10-17; FORMAT section 4, clip menu): when the prototype of
+// --engine-hires-dir is not loaded, the scene shows the first roster entry that
+// has a hi-res character in the main menu level (Engine_HiresCharOfEntry) -
+// its own model with its wheels, through the forced submit of the hi-res API
+// (Engine_HiresCharSubmit, world matrix = the scene's worldFromView * viewModel,
+// slot ENGINE_HIRES_MENU_SLOT), the clip menu after the format's fallback chain,
+// its time the game time of the scene (elapsedTimeMS per tick that passed).
+// Scale and middle come from the character's hull (Engine_HiresCharHull, model
+// units, rest pose and every clip), so the size does not change with the clip.
+// A declined submit draws nothing in that frame (counted, reported at exit).
+// While the driver select is open (sdata->ptrActiveMenu ==
+// &D230.menuCharacterSelect) the scene leaves its hi-res character out (counted):
+// the select's preview window shows the driver there.
+// One log line at the first draw: file, roster entry, clip asked and drawn.
 
+#define ENGINE_HIRES_MENU_SLOT (ENGINE_HIRES_SLOTS - 1) // the scene's forced pose slot (the podium takes the first three)
 #define ENGINE_MENUSCENE_DISTANCE 1500.0f        // view z of the kart's middle
 #define ENGINE_MENUSCENE_HEIGHT_FRACTION 0.3333f // longest side / view height
 #define ENGINE_MENUSCENE_X_FRACTION 0.30f        // middle at this part of half the view width, right of centre
@@ -131,6 +148,11 @@ internal unsigned s_menuWheelDraws = 0;
 internal int s_menuLogged = 0;
 internal int s_menuReportOn = 0;
 internal int s_menuOracleArmed = 0;
+internal float s_menuClock = 0.0f;      // game seconds of the scene (the hi-res clip's time)
+internal unsigned s_menuHiresDrawn = 0; // frames drawn with a hi-res character
+internal unsigned s_menuHiresDeclined = 0;
+internal int s_menuHiresLogged = 0;
+internal unsigned s_menuHiresSelectSkipped = 0; // frames left out while the driver select was open
 
 // The value of --engine-menuscene-zoom: "<f>[,<x>[,<yaw>]]", f in 0.25..8, x in
 // -1..1, yaw in degrees -360..360. 1 = valid (the outputs are set), 0 = refused
@@ -189,6 +211,11 @@ internal void Engine_MenuSceneReport(void)
 		return;
 	}
 	Platform_Log("[CTR Engine] menu scene: %u frame(s) drawn, %u wheel draw(s)\n", s_menuFramesDrawn, s_menuWheelDraws);
+	if (g_cfg_engineHiresChars)
+	{
+		Platform_Log("[CTR Engine] menu scene: hi-res character drawn in %u frame(s), declined %u, left out while the driver select was open %u\n",
+		             s_menuHiresDrawn, s_menuHiresDeclined, s_menuHiresSelectSkipped);
+	}
 }
 
 void Engine_MenuSceneLoad(void)
@@ -207,6 +234,8 @@ void Engine_MenuSceneLoad(void)
 	s_menuYaw = ENGINE_MENUSCENE_YAW_START;
 	s_menuPauseTicks = 0;
 	s_menuLogged = 0;
+	s_menuClock = 0.0f;
+	s_menuHiresLogged = 0;
 	if ((g_cfg_engineMenuSceneZoom != 1.0f) || (g_cfg_engineMenuSceneX != ENGINE_MENUSCENE_X_FRACTION) || g_cfg_engineMenuSceneYawFixed)
 	{
 		Platform_Log("[CTR Engine] menu scene: measuring camera - zoom %.3f, middle at %.3f of half the view width, %s %.2f deg\n",
@@ -228,6 +257,65 @@ internal int Engine_MenuSceneKey(const bool *keys, int scancode)
 		}
 	}
 	return keys[scancode] ? 1 : 0;
+}
+
+// The first roster entry with a hi-res character in this level, and its hull
+// (model units). -1 = none (or the switch is off).
+internal int Engine_MenuSceneHiresChar(int *entryOut, float hullMin[3], float hullMax[3])
+{
+	const int count = NativeChar_RosterCount();
+	int entry;
+
+	if (!g_cfg_engineHiresChars)
+	{
+		return -1;
+	}
+	for (entry = 0; entry < count; entry++)
+	{
+		const int ch = Engine_HiresCharOfEntry(entry);
+
+		if ((ch >= 0) && Engine_HiresCharHull(ch, hullMin, hullMax))
+		{
+			*entryOut = entry;
+			return ch;
+		}
+	}
+	return -1;
+}
+
+// The hi-res character at the scene's matrix with clip menu (see THE HI-RES
+// CHARACTER OF A .rldchar above). 1 = drawn.
+internal int Engine_MenuSceneHiresDraw(struct GameTracker *gGT, int ch, int entry, const EngineMat4 *worldModel, int cell)
+{
+	EngineHiresSubmit sub;
+	const int clip = Engine_HiresCharResolveClip(ch, ENGINE_HIRES_CLIP_MENU, NULL);
+
+	memset(&sub, 0, sizeof(sub));
+	sub.slot = ENGINE_HIRES_MENU_SLOT;
+	sub.clip = clip;
+	sub.time = s_menuClock;
+	sub.prevClip = -1;
+	sub.fade = 1.0f;
+	sub.inst = NULL;
+	sub.worldFromModel = *worldModel;
+	sub.view = 0;
+	sub.ot = gGT->pushBuffer[0].ptrOT;
+	sub.cell = cell;
+	sub.tint[0] = sub.tint[1] = sub.tint[2] = sub.tint[3] = 1.0f;
+	if (!s_menuHiresLogged)
+	{
+		s_menuHiresLogged = 1;
+		Platform_Log("[CTR Engine] menu scene: hi-res character %s (roster entry %d), want menu, clip %s\n", Engine_HiresCharFile(ch), entry,
+		             Engine_HiresClipName(clip));
+	}
+	if (!Engine_HiresCharSubmit(ch, &sub))
+	{
+		s_menuHiresDeclined++;
+		return 0;
+	}
+	s_menuHiresDrawn++;
+	s_menuFramesDrawn++;
+	return 1;
 }
 
 void Engine_MenuSceneCollect(struct GameTracker *gGT)
@@ -255,6 +343,8 @@ void Engine_MenuSceneCollect(struct GameTracker *gGT)
 	int mesh;
 	int hires;
 	int hiresWheel = -1;
+	int hiresChar = -1;
+	int hiresEntry = -1;
 
 	// Only the main menu level, a camera, an engine mesh: the hi-res driver of
 	// --engine-hires-dir (platform/engine_hires.c) when it is loaded, else the
@@ -269,9 +359,27 @@ void Engine_MenuSceneCollect(struct GameTracker *gGT)
 		return;
 	}
 	hires = Engine_HiresMenuReady();
+	if (!hires)
+	{
+		hiresChar = Engine_MenuSceneHiresChar(&hiresEntry, hullMin, hullMax);
+		// While the driver select is open (the menu it runs in, as
+		// MM_NativeCharGrid.c asks it) its preview window shows the driver:
+		// the scene's hi-res character stays away, so one driver is on screen.
+		if ((hiresChar >= 0) && (sdata->ptrActiveMenu == &D230.menuCharacterSelect))
+		{
+			s_menuHiresSelectSkipped++;
+			return;
+		}
+	}
 	if (hires)
 	{
 		Engine_HiresMenuParts(&mesh, &hiresWheel, hullMin, hullMax);
+		ds = NULL;
+		gpu = NULL;
+	}
+	else if (hiresChar >= 0)
+	{
+		mesh = -1;
 		ds = NULL;
 		gpu = NULL;
 	}
@@ -338,6 +446,7 @@ void Engine_MenuSceneCollect(struct GameTracker *gGT)
 	{
 		s_menuYaw = g_cfg_engineMenuSceneYaw; // the still view of --engine-menuscene-zoom
 	}
+	s_menuClock += (float)ticks * (float)gGT->elapsedTimeMS * 0.001f;
 
 	// Scale from the hull: the longest side is a third of the view's height.
 	side = 0.0f;
@@ -389,6 +498,12 @@ void Engine_MenuSceneCollect(struct GameTracker *gGT)
 	if (cell > 0x3fe)
 	{
 		cell = 0x3fe;
+	}
+
+	if (hiresChar >= 0)
+	{
+		Engine_MenuSceneHiresDraw(gGT, hiresChar, hiresEntry, &worldModel, cell);
+		return;
 	}
 
 	memset(&draw, 0, sizeof(draw));

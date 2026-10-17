@@ -77,6 +77,14 @@ global_variable ShaderID s_engineProgram = NATIVE_GFX_INVALID;
 global_variable ShaderID s_engineWaterProgram = NATIVE_GFX_INVALID;
 global_variable ShaderID s_engineStaticProgram = NATIVE_GFX_INVALID;
 
+// Pure: 1 = the program "ns" is made at the start - a static model is given or
+// the hi-res drivers are on (each draws with it; a missing "ns" still never
+// makes the engine fall back, only those users draw nothing hi-res / flat).
+int Engine_ProgramStaticWanted(const char *staticModel, int hiresChars)
+{
+	return ((staticModel != NULL) && (staticModel[0] != '\0')) || (hiresChars != 0);
+}
+
 int Engine_ProgramsInit(void)
 {
 	// Only with --engine; without it nothing is created and nothing is logged.
@@ -135,9 +143,10 @@ int Engine_ProgramsInit(void)
 
 	// "ns": the same descriptor, the samplers of the static model (slot 0 the base colour, slot 3 the normal map);
 	// its modules are ns.vert / ns.frag. Optional (see THE PROGRAMS), and made
-	// only with --engine-static-model: without it no program, no pipeline and no
-	// log line more than before.
-	if (g_cfg_engineStaticModel[0] != '\0')
+	// only for its users (Engine_ProgramStaticWanted): --engine-static-model and
+	// --engine-hires-chars (the hi-res drivers, round of 2026-10-17). Without
+	// them no program, no pipeline and no log line more than before.
+	if (Engine_ProgramStaticWanted(g_cfg_engineStaticModel, g_cfg_engineHiresChars))
 	{
 		desc.debugName = "ns";
 		desc.samplers[0] = (NativeGfxNamedSlot){.slot = 0, .name = "s_texture"};

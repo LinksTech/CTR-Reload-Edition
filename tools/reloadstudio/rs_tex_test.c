@@ -607,6 +607,82 @@ int main(void)
         RsTexTest(ok == 5, "RLDPN3 refused: cut short, a corner or material out of range, a wrong neutral");
     }
 
+    // 10. The engine's hi-res filter (RS_TEX_MATERIAL_FILTERED): a 16 x 16 image
+    // of one-texel columns, black and white, with its level 1 the linear mean
+    // (sRGB 188), by hand. 1 texel per pixel = 65536 / 16 = 4096 in Q16.
+    {
+        static u8 lv0[16 * 16 * 4], lv1[8 * 8 * 4];
+        struct RsTexImage img;
+        struct RsTexFilter f;
+        unsigned char o[4], o2[4];
+        long long sl[4];
+        int x, y, ok;
+
+        for (y = 0; y < 16; y++)
+            for (x = 0; x < 16; x++) {
+                const u8 c = (u8)((x & 1) ? 255 : 0);
+                lv0[(y * 16 + x) * 4 + 0] = c;
+                lv0[(y * 16 + x) * 4 + 1] = c;
+                lv0[(y * 16 + x) * 4 + 2] = c;
+                lv0[(y * 16 + x) * 4 + 3] = 255;
+            }
+        memset(lv1, 188, sizeof(lv1));
+        for (x = 0; x < 64; x++)
+            lv1[x * 4 + 3] = 255;
+        memset(&img, 0, sizeof(img));
+        img.w = img.h = 16;
+        img.levels = 2;
+        img.level[0] = lv0;
+        img.level[1] = lv1;
+        img.shiftW[0] = img.shiftH[0] = 4;
+        img.shiftW[1] = img.shiftH[1] = 3;
+
+        RsTexTest(RsTex_LodQ8(1ULL << 32, 5) == 0 && RsTex_LodQ8(1ULL << 33, 5) == 128 && RsTex_LodQ8(1ULL << 34, 5) == 256 &&
+                      RsTex_LodQ8(1ULL << 40, 5) == 1024 && RsTex_LodQ8(1ULL << 50, 5) == 1024 && RsTex_LodQ8(3ULL << 32, 5) == 202,
+                  "filter: lambda = log2(rho) in Q8 (rho 1, 2^0.5, 2, 16 -> 0, 128, 256, 1024; held at the last level; rho^2 3 -> 202, truncated)");
+        // Magnified (one texel over 4 pixels): lambda 0, one sample.
+        sl[0] = 1024; sl[1] = 0; sl[2] = 0; sl[3] = 1024;
+        RsTex_FilterSetup(&img, sl, &f);
+        ok = f.lodQ8 == 0 && f.samples == 1;
+        RsTex_FilterTexel(&img, &f, (2 * 65536 + 32768) / 16, 32768 / 16, o);   // the centre of texel (2, 0): black
+        ok += o[0] == 0 && o[3] == 255;
+        RsTex_FilterTexel(&img, &f, (3 * 65536 + 32768) / 16, 32768 / 16, o);   // texel (3, 0): white
+        ok += o[0] == 255;
+        RsTex_FilterTexel(&img, &f, 3 * 65536 / 16, 32768 / 16, o);             // between them: linear light
+        ok += o[0] == 188 && o[1] == 188 && o[2] == 188;
+        RsTexTest(ok == 4, "filter: bilinear between texel centres, in linear light (black | white -> sRGB 188, not 128)");
+        RsTex_FilterTexel(&img, &f, 0, 32768 / 16, o);                          // the left edge: repeat
+        img.wrapU = RS_TEX_WRAP_CLAMP;
+        RsTex_FilterTexel(&img, &f, 0, 32768 / 16, o2);
+        img.wrapU = RS_TEX_WRAP_MIRROR;
+        RsTex_FilterTexel(&img, &f, 0, 32768 / 16, o + 1);
+        img.wrapU = RS_TEX_WRAP_REPEAT;
+        RsTexTest(o[0] == 188 && o2[0] == 0 && o[1] == 0, "filter: at u = 0 repeat blends with the last column, clamp and mirror stay on the first");
+        // Minified 2 texels per pixel: lambda 1, level 1 alone; 2^0.5: half way.
+        sl[0] = 8192; sl[3] = 8192;
+        RsTex_FilterSetup(&img, sl, &f);
+        RsTex_FilterTexel(&img, &f, (2 * 65536 + 32768) / 16, 32768 / 16, o);
+        ok = f.lodQ8 == 256 && f.samples == 1 && o[0] == 188;
+        f.lodQ8 = 128;
+        RsTex_FilterTexel(&img, &f, (2 * 65536 + 32768) / 16, 32768 / 16, o);
+        ok += o[0] >= 136 && o[0] <= 138;   // linear (0 + 0.5) / 2 = 0.25 -> sRGB 137
+        RsTexTest(ok == 2, "filter: trilinear - lambda 1 samples level 1, lambda 0.5 blends both levels in linear light (sRGB 137)");
+        // Anisotropic: 4 texels per pixel along x, 1 along y -> N 4, lambda 0;
+        // 64 : 1 -> N 16 (the limit), lambda log2(64 / 16) = 2 (held at 1 here).
+        sl[0] = 16384; sl[1] = 0; sl[2] = 0; sl[3] = 4096;
+        RsTex_FilterSetup(&img, sl, &f);
+        ok = f.samples == 4 && f.lodQ8 == 0 && f.du == 16384 && f.dv == 0;
+        RsTex_FilterTexel(&img, &f, (2 * 65536 + 32768) / 16, 32768 / 16, o);
+        ok += o[0] >= 202 && o[0] <= 204;   // samples at -1.2, -0.4, 0.4, 1.2 texels: white 0.6 in linear light (sRGB 203); level 1 alone would be 188
+        sl[0] = 0; sl[1] = 4096; sl[2] = 0; sl[3] = 64 * 4096;
+        RsTex_FilterSetup(&img, sl, &f);
+        ok += f.samples == 16 && f.lodQ8 == 256 && f.du == 0 && f.dv == 64 * 4096;
+        sl[0] = 4096; sl[1] = 0; sl[2] = 0; sl[3] = 4096;
+        RsTex_FilterSetup(&img, sl, &f);
+        ok += f.samples == 1 && f.lodQ8 == 0;
+        RsTexTest(ok == 4, "filter: anisotropy - N = ceil(Pmax / Pmin) up to 16 along the major axis, lambda from Pmax / N");
+    }
+
     if (s_rsTexTestFailed) {
         printf("rs_tex selftest FAILED: %d case(s)\n", s_rsTexTestFailed);
         return 1;

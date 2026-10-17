@@ -316,6 +316,143 @@ void Engine_RenderStaticBuffersFree(u32 vertexBuffer, u32 indexBuffer)
 	}
 }
 
+// STREAMED VERTEX BUFFERS (engine.h, RENDER). One entry per buffer: its
+// region size, the CPU array of each bank's frame (set by the owner in the
+// frame, stamped with that frame's number) and the frame whose array was
+// copied last per bank (the copy happens once, at the buffer's first draw of
+// the frame). s_engStreamCount 0 - every run without a streamed buffer - keeps
+// the draw path to one compare. The region of a bank's frame is the dynamic
+// buffer's (s_engRegion), so both follow the same rule.
+CTR_STATIC_ASSERT(ENGINE_RENDER_STREAM_REGIONS == ENGINE_DYN_REGIONS);
+
+typedef struct
+{
+	NativeGfxBuffer buffer; // NATIVE_GFX_INVALID or 0 = free entry
+	u32 verticesPerRegion;
+	const EngineVertex *source[ENGINE_SCENE_BANKS];
+	u32 count[ENGINE_SCENE_BANKS];
+	u32 sourceFrame[ENGINE_SCENE_BANKS];   // s_engStreamFrame[bank] + 1 when the array was set (0 = never)
+	u32 uploadedFrame[ENGINE_SCENE_BANKS]; // the same for the copy
+} EngineRenderStream;
+
+global_variable EngineRenderStream s_engStreams[ENGINE_RENDER_STREAMS_MAX];
+global_variable int s_engStreamCount = 0;
+global_variable u32 s_engStreamFrame[ENGINE_SCENE_BANKS]; // the frame number Engine_RenderFrameBegin gave the bank (its region's)
+
+u32 Engine_RenderStreamCreate(u32 verticesPerRegion)
+{
+	NativeGfxVertexBufferDesc desc;
+	NativeGfxBuffer buffer;
+	const u64 bytes = (u64)verticesPerRegion * (u64)ENGINE_RENDER_STREAM_REGIONS * sizeof(EngineVertex);
+	int slot = -1;
+
+	if (!g_cfg_engine || (verticesPerRegion == 0u) || (bytes > 0x7fffffffu))
+	{
+		return 0xffffffffu;
+	}
+	for (int i = 0; i < ENGINE_RENDER_STREAMS_MAX; i++)
+	{
+		if (!Engine_RenderBufferValid(s_engStreams[i].buffer))
+		{
+			slot = i;
+			break;
+		}
+	}
+	if (slot < 0)
+	{
+		return 0xffffffffu;
+	}
+	// Host visible (dynamic) and not initialised: every region is written before it is drawn.
+	Engine_RenderFillVertexDesc(&desc, (int)bytes, 1, NULL);
+	buffer = NativeGfx_CreateVertexBuffer(&desc);
+	if (!Engine_RenderBufferValid(buffer))
+	{
+		return 0xffffffffu;
+	}
+	memset(&s_engStreams[slot], 0, sizeof(s_engStreams[slot]));
+	s_engStreams[slot].buffer = buffer;
+	s_engStreams[slot].verticesPerRegion = verticesPerRegion;
+	s_engStreamCount++;
+	return (u32)buffer;
+}
+
+void Engine_RenderStreamRelease(u32 vertexBuffer)
+{
+	for (int i = 0; i < ENGINE_RENDER_STREAMS_MAX; i++)
+	{
+		if (Engine_RenderBufferValid(s_engStreams[i].buffer) && ((u32)s_engStreams[i].buffer == vertexBuffer))
+		{
+			// Forgotten only: the owner destroys the buffer one load later (engine.h).
+			memset(&s_engStreams[i], 0, sizeof(s_engStreams[i]));
+			s_engStreamCount--;
+			return;
+		}
+	}
+}
+
+internal EngineRenderStream *Engine_RenderStreamOf(u32 vertexBuffer)
+{
+	for (int i = 0; i < ENGINE_RENDER_STREAMS_MAX; i++)
+	{
+		if (Engine_RenderBufferValid(s_engStreams[i].buffer) && ((u32)s_engStreams[i].buffer == vertexBuffer))
+		{
+			return &s_engStreams[i];
+		}
+	}
+	return NULL;
+}
+
+int Engine_RenderStreamSource(u32 vertexBuffer, const EngineVertex *vertices, u32 count)
+{
+	const int bank = Engine_SceneBank();
+	EngineRenderStream *s = (s_engStreamCount > 0) ? Engine_RenderStreamOf(vertexBuffer) : NULL;
+
+	if ((s == NULL) || (vertices == NULL) || (count == 0u) || (count > s->verticesPerRegion) || (bank < 0) || (bank >= ENGINE_SCENE_BANKS))
+	{
+		return 0;
+	}
+	s->source[bank] = vertices;
+	s->count[bank] = count;
+	s->sourceFrame[bank] = s_engStreamFrame[bank] + 1u;
+	return 1;
+}
+
+u32 Engine_RenderStreamBytes(void)
+{
+	u32 bytes = 0;
+
+	for (int i = 0; i < ENGINE_RENDER_STREAMS_MAX; i++)
+	{
+		if (Engine_RenderBufferValid(s_engStreams[i].buffer))
+		{
+			bytes += s_engStreams[i].verticesPerRegion * (u32)ENGINE_RENDER_STREAM_REGIONS * (u32)sizeof(EngineVertex);
+		}
+	}
+	return bytes;
+}
+
+// At the draw of a streamed buffer: 1 = the bank's frame has its array,
+// *vertexOffset = the first vertex of the bank's region; with upload the array
+// is copied into that region, once per frame (right before the bind). 0 = no
+// array for this frame (the draw is refused).
+internal int Engine_RenderStreamReady(EngineRenderStream *s, int bank, int upload, int *vertexOffset)
+{
+	const u32 frame = s_engStreamFrame[bank] + 1u;
+	const u32 first = s_engRegion[bank] * s->verticesPerRegion;
+
+	if ((s->sourceFrame[bank] != frame) || (s->source[bank] == NULL) || (s->count[bank] == 0u))
+	{
+		return 0;
+	}
+	if (upload && (s->uploadedFrame[bank] != frame))
+	{
+		NativeGfx_UpdateVertexBuffer(s->buffer, (int)(first * sizeof(EngineVertex)), (int)(s->count[bank] * sizeof(EngineVertex)), s->source[bank]);
+		s->uploadedFrame[bank] = frame;
+	}
+	*vertexOffset = (int)first;
+	return 1;
+}
+
 int Engine_RenderUploadMeshes(void)
 {
 	int uploaded = 0;
@@ -473,6 +610,8 @@ void Engine_RenderFrameBegin(int bank)
 	s_engMarkerCount[bank] = 0;
 	s_engDynUsed[bank] = 0;
 	s_engRegion[bank] = s_engFrameCounter % ENGINE_DYN_REGIONS;
+	// The frame of the bank's region, for the streamed buffers (their arrays are per frame).
+	s_engStreamFrame[bank] = s_engFrameCounter;
 	s_engFrameCounter++;
 	for (int view = 0; view < ENGINE_VIEWS; view++)
 	{
@@ -811,6 +950,8 @@ int Engine_DrawMarker(u32 item, const void *clipArg, const void *dispenvArg, int
 	u32 boundProgram;
 	u32 vb = 0xffffffffu;
 	u32 ib = 0xffffffffu;
+	EngineRenderStream *stream = NULL;
+	int streamOffset = 0;
 
 	s_engCount.markersSeen++;
 
@@ -862,6 +1003,14 @@ int Engine_DrawMarker(u32 item, const void *clipArg, const void *dispenvArg, int
 		{
 			s_engCount.refusedBadMesh++;
 			Engine_RenderFirstRefusal(4, "bad mesh/frame/buffer");
+			return 0;
+		}
+		// A streamed buffer (engine.h, RENDER): its array of this frame or no draw.
+		stream = (s_engStreamCount > 0) ? Engine_RenderStreamOf(vb) : NULL;
+		if ((stream != NULL) && !Engine_RenderStreamReady(stream, bank, 0, &streamOffset))
+		{
+			s_engCount.refusedBadMesh++;
+			Engine_RenderFirstRefusal(10, "streamed buffer without its array of this frame");
 			return 0;
 		}
 	}
@@ -938,6 +1087,11 @@ int Engine_DrawMarker(u32 item, const void *clipArg, const void *dispenvArg, int
 	}
 	else
 	{
+		if (stream != NULL)
+		{
+			// The copy of this frame's array into its region, once per frame (checked above).
+			(void)Engine_RenderStreamReady(stream, bank, 1, &streamOffset);
+		}
 		NativeGfx_BindVertexBuffer((NativeGfxBuffer)vb);
 		NativeGfx_BindIndexBuffer((NativeGfxBuffer)ib);
 
@@ -964,7 +1118,8 @@ int Engine_DrawMarker(u32 item, const void *clipArg, const void *dispenvArg, int
 				continue;
 			}
 			drawn += Engine_RenderDrawRange(material, draw, clipFromModel.m, cull, 1, range->firstIndex, range->indexCount,
-			                                (int)(draw->frame * mesh->verticesPerFrame), &textureBound, &vramBound, &boundProgram);
+			                                (stream != NULL) ? streamOffset : (int)(draw->frame * mesh->verticesPerFrame), &textureBound, &vramBound,
+			                                &boundProgram);
 		}
 	}
 

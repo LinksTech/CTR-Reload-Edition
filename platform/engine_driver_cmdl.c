@@ -131,6 +131,8 @@ void Engine_DriverCmdlLoad(void)
 	// The hi-res driver of --engine-hires-dir (engine_hires.c): its files once,
 	// its meshes and material at every load, uploaded with the others.
 	Engine_HiresLoad();
+	// The hi-res drivers of the .rldchar (--engine-hires-chars, engine_hires_char.c).
+	Engine_HiresCharsLoad();
 
 	for (seat = 0; seat < ENG_CMDL_SEATS; seat++)
 	{

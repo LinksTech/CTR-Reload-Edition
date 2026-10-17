@@ -5644,6 +5644,33 @@ internal int EngTrack_RouteInstance(struct Instance *inst, struct InstDrawPerPla
 // the table goes through EngTrack_RouteInstance like a level instance: it reads
 // inst->matrix, the animation and the flags the CS threads wrote, at draw time.
 // A declined one stays with retail, counted. Nothing of the game is written.
+//
+// HI-RES ON THE PODIUM (round of 2026-10-17, --engine-hires-chars; FORMAT
+// section 4, clips podium_1..3). The figure of place p (1..3) is the CS thread
+// of gGT->modelPtr[gGT->podium_modelIndex_First/Second/Third] (CS_Podium.c:
+// CS_Thread_Init; the index is the place's template + STATIC_CRASHDANCE,
+// game/Podium.c). When the seat on that place drove a hi-res character in the
+// last race (Engine_HiresCharOfPlace, seat data.cupPositionPerPlayer[p - 1]),
+// that character is drawn at the figure's instance instead of the dance model,
+// with clip podium_p (the fallback chain of the format), its time the game time
+// since the place was first drawn (the sum of gGT->elapsedTimeMS over the logic
+// ticks, so a pause stops it), in forced slot ENGINE_HIRES_SLOT_SEATS + p - 1,
+// wheels at rest. The figure's thread, matrix and animation stay the game's: the
+// engine reads inst->matrix and inst->scale only. No hi-res character, or a
+// submit that declines: the dance figure is drawn as before. The place of a
+// figure comes from its instance name ("first", "second", "third" of
+// CS_Podium.c), so places on the same template (one model) are told apart; only
+// a figure without such a name falls back to the model, and two places with one
+// model then go to the first one matching (logged as ambiguous). One log line
+// per place at its first draw (with "by name" or "by model"), a count per place
+// in the podium summary.
+#define EGT_PODIUM_PLACES 3
+global_variable int s_egtPodiumHiresLogged[EGT_PODIUM_PLACES];
+global_variable u32 s_egtPodiumHiresDrawn[EGT_PODIUM_PLACES];
+global_variable u32 s_egtPodiumHiresDeclined[EGT_PODIUM_PLACES];
+global_variable float s_egtPodiumHiresStart[EGT_PODIUM_PLACES]; // the clock at the place's first hi-res draw, -1 = none yet
+global_variable float s_egtPodiumClock = 0.0f;                  // game seconds since the podium's load
+global_variable int s_egtPodiumClockTimer = 0;                  // gGT->timer of the last tick summed into the clock
 #define EGT_PODIUM_MODELS_MAX 12
 global_variable const struct Level *s_egtPodiumLevel = NULL; // the level the podium models were imported for; NULL = no podium
 global_variable const struct Model *s_egtPodiumModel[EGT_PODIUM_MODELS_MAX];
@@ -5700,6 +5727,15 @@ void Engine_TrackPodiumLoad(void)
 	s_egtPodiumModelCount = 0;
 	s_egtPodiumDrawn = 0;
 	s_egtPodiumDeclined = 0;
+	for (i = 0; i < EGT_PODIUM_PLACES; i++)
+	{
+		s_egtPodiumHiresLogged[i] = 0;
+		s_egtPodiumHiresDrawn[i] = 0;
+		s_egtPodiumHiresDeclined[i] = 0;
+		s_egtPodiumHiresStart[i] = -1.0f;
+	}
+	s_egtPodiumClock = 0.0f;
+	s_egtPodiumClockTimer = (gGT != NULL) ? gGT->timer : 0;
 	if (!g_cfg_engine || !g_cfg_engineTrack || (gGT == NULL) || ((gGT->gameMode1 & ADVENTURE_ARENA) == 0) || (gGT->podiumRewardID == NOFUNC))
 	{
 		return;
@@ -5752,8 +5788,119 @@ void Engine_TrackPodiumEnd(void)
 			             m->imported ? "imported" : m->why, m->drawn, m->declined);
 		}
 	}
+	if (g_cfg_engineHiresChars)
+	{
+		Platform_Log("[CTR Engine] track: podium hi-res: place 1 drawn %u declined %u, place 2 drawn %u declined %u, place 3 drawn %u declined %u\n",
+		             s_egtPodiumHiresDrawn[0], s_egtPodiumHiresDeclined[0], s_egtPodiumHiresDrawn[1], s_egtPodiumHiresDeclined[1], s_egtPodiumHiresDrawn[2],
+		             s_egtPodiumHiresDeclined[2]);
+	}
 	s_egtPodiumLevel = NULL;
 	s_egtPodiumModelCount = 0;
+}
+
+// The place (1..3) of a podium figure, 0 = none (Tawna, the reward). First by
+// the instance's name: CS_Podium.c births the three figures with the names
+// R233.s_first / s_second / s_third (CS_Thread_Init -> INSTANCE_BirthWithThread
+// -> INSTANCE_Birth copies the name into inst->name, game/INSTANCE.c), so places
+// on the same template are told apart (*how = "name"). Without such a name:
+// by the model of the place (*how = "model"), and *ambiguous = more than one
+// place has this model (the same template).
+internal int EngTrack_PodiumPlaceOf(const struct GameTracker *gGT, const struct Instance *inst, int *ambiguous, const char **how)
+{
+	const u8 index[EGT_PODIUM_PLACES] = {gGT->podium_modelIndex_First, gGT->podium_modelIndex_Second, gGT->podium_modelIndex_Third};
+	const char *const names[EGT_PODIUM_PLACES] = {R233.s_first, R233.s_second, R233.s_third};
+	const struct Model *model = inst->model;
+	int place = 0;
+	int matches = 0;
+	int i;
+
+	*ambiguous = 0;
+	*how = "name";
+	for (i = 0; i < EGT_PODIUM_PLACES; i++)
+	{
+		if ((index[i] != 0) && (strncmp(inst->name, names[i], sizeof(inst->name)) == 0))
+		{
+			return i + 1;
+		}
+	}
+	*how = "model";
+	for (i = 0; i < EGT_PODIUM_PLACES; i++)
+	{
+		if ((index[i] != 0) && (index[i] < (u8)(sizeof(gGT->modelPtr) / sizeof(gGT->modelPtr[0]))) && (gGT->modelPtr[index[i]] == model))
+		{
+			if (place == 0)
+			{
+				place = i + 1;
+			}
+			matches++;
+		}
+	}
+	*ambiguous = (matches > 1) ? 1 : 0;
+	return place;
+}
+
+// The podium figure of a place drawn as the hi-res character of its seat (see
+// HI-RES ON THE PODIUM above). 1 = drawn, 0 = the figure goes its usual way.
+internal int EngTrack_PodiumHires(struct Instance *inst, struct InstDrawPerPlayer *idpp, struct PushBuffer *pb)
+{
+	struct GameTracker *gGT = sdata->gGT;
+	EngineHiresSubmit s;
+	int ambiguous = 0;
+	const char *how = "";
+	int place;
+	int k;
+	int ch;
+	int clip;
+
+	if (!g_cfg_engineHiresChars)
+	{
+		return 0;
+	}
+	place = EngTrack_PodiumPlaceOf(gGT, inst, &ambiguous, &how);
+	if (place == 0)
+	{
+		return 0;
+	}
+	k = place - 1;
+	ch = Engine_HiresCharOfPlace(place);
+	clip = (ch >= 0) ? Engine_HiresCharResolveClip(ch, ENGINE_HIRES_CLIP_PODIUM_1 + k, NULL) : ENGINE_HIRES_CLIP_REST;
+	if (!s_egtPodiumHiresLogged[k])
+	{
+		s_egtPodiumHiresLogged[k] = 1;
+		Platform_Log("[CTR Engine] track: podium place %d (by %s): seat %d, %s %s%s, want podium_%d, clip %s\n", place, how,
+		             (int)data.cupPositionPerPlayer[k], (ch >= 0) ? "hi-res" : "dance figure", (ch >= 0) ? Engine_HiresCharFile(ch) : "(no hi-res character)",
+		             ambiguous ? " (ambiguous: another place has the same model)" : "", place, Engine_HiresClipName(clip));
+	}
+	if (ch < 0)
+	{
+		return 0;
+	}
+	// The clock: game time, summed once per logic tick (the timer moved).
+	if (gGT->timer != s_egtPodiumClockTimer)
+	{
+		s_egtPodiumClockTimer = gGT->timer;
+		s_egtPodiumClock += (float)gGT->elapsedTimeMS * 0.001f;
+	}
+	if (s_egtPodiumHiresStart[k] < 0.0f)
+	{
+		s_egtPodiumHiresStart[k] = s_egtPodiumClock;
+	}
+	memset(&s, 0, sizeof(s));
+	s.slot = ENGINE_HIRES_SLOT_SEATS + k;
+	s.clip = clip;
+	s.time = s_egtPodiumClock - s_egtPodiumHiresStart[k];
+	s.prevClip = -1;
+	s.fade = 1.0f;
+	s.inst = inst;
+	s.idpp = idpp;
+	s.pb = pb;
+	if (Engine_HiresCharSubmit(ch, &s))
+	{
+		s_egtPodiumHiresDrawn[k]++;
+		return 1;
+	}
+	s_egtPodiumHiresDeclined[k]++;
+	return 0;
 }
 
 // A podium figure through the route of the level instances, counted apart.
@@ -5806,10 +5953,18 @@ int Engine_TrackInstanceRoute(struct Instance *inst, struct InstDrawPerPlayer *i
 		return 0;
 	}
 	em = EngTrack_ModelEntry(inst->model, 0);
-	// PODIUM: the podium's figures (CS threads, no InstDef) while it plays.
-	if ((em != NULL) && (inst->instDef == NULL) && EngTrack_PodiumActive(sdata->gGT))
+	// PODIUM: the podium's figures (CS threads, no InstDef) while it plays; a
+	// place's figure first as its seat's hi-res character, if it has one.
+	if ((inst->instDef == NULL) && EngTrack_PodiumActive(sdata->gGT))
 	{
-		return EngTrack_PodiumRoute(inst, idpp, pb, em);
+		if (EngTrack_PodiumHires(inst, idpp, pb))
+		{
+			return 1;
+		}
+		if (em != NULL)
+		{
+			return EngTrack_PodiumRoute(inst, idpp, pb, em);
+		}
 	}
 	switch (EngTrack_InstanceRule(inst, em != NULL, NativeTrack_ActiveForLevel(s_egtLevelID)))
 	{

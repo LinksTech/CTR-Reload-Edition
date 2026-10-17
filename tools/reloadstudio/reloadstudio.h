@@ -23,6 +23,7 @@
 //   rs_tex.c      textures of the preview: RLDPN2 and RLDPW3 read, mip levels as in the game (rs_tex.h)
 //   rs_wheels.c   card "Wheels" of the page "Character" (preview feature, rs_wheels.h)
 //   rs_anim.c     card "Animations" of the page "Character" (shape keys of a glTF, rs_anim.h)
+//   rs_hires.c    page "Hi-Res (Preview)" (rs_hires_model.c: its check and picture)
 //   rs_test.c     page "Test in game"
 //
 // Command line (details in rs_shell.c): `--rldpack <arguments>` (first
@@ -473,6 +474,30 @@
 //   voiceplay <file>              as choosing the file and pressing Play; in
 //                                 automation only logged (preview path, rate,
 //                                 channels, frames), never played
+// Automation verbs of the page "Hi-Res (Preview)" (--do, besides those of the shell):
+//   hires-model <glb|rldchar|none>   the model field; the check runs at once (FAIL when
+//                                    the file could not be read)
+//   hires-char <rldchar|none>        the character field (an empty output is filled
+//                                    with "<character>-hires.rldchar" beside it)
+//   hires-out <rldchar|none>         the output field
+//   hires-check                      run the check of the model field (as the button Check)
+//   hires-pack                       as the button "Pack into .rldchar" (rldpack hires-add);
+//                                    FAIL when the button is disabled; the shell waits
+//   hires-upscale on|off             the option "Upscale small textures" (off at start):
+//                                    hires-pack then runs rldpack hires-upscale first and
+//                                    packs <model>-upscaled.glb, written beside the output
+//   hires-view front|side|back|top|34|race   a fixed view of the preview
+//   hires-camera <yaw> <pitch> <zoom %> [<pan x> <pan y>]   the camera of the preview
+//                                    (clamped by the view; pan in pixels of the view)
+//   hires-filter engine|nearest      the preview samples textures with the engine's hi-res
+//                                    filter (default) or nearest, for comparison images
+//   hires-crash on|off               the reference dummy "Crash size" beside the model
+//   hires-clip <bind|idle|..|menu>   the clip shown (FAIL when clips cannot be played)
+//   hires-play on|off                play the clip (a loop on the page's timer)
+//   hires-time <seconds> [<degrees>] pause and show that exact frame (wheels turned that far)
+//   hires-report <file>              the fields, the verdict, the summary, every finding,
+//                                    every clip, the picture, the upscale option and its
+//                                    model, and the pack result as text
 // The --preview file (little endian): "RLDPV2\0\0", u32 poses = 3 (turn frame 10
 // neutral, frame 0 full steer left, frame 20 full steer right), per pose u32
 // triangles and per triangle 3 corners of s16 x, y, z (1/16 game units, +Y up,
@@ -640,9 +665,10 @@ struct RsPageDef {
 extern const struct RsPageDef g_rsTrackPage;   // rs_track.c
 extern const struct RsPageDef g_rsCupsPage;    // rs_cups.c
 extern const struct RsPageDef g_rsCharPage;    // rs_char.c
+extern const struct RsPageDef g_rsHiresPage;   // rs_hires.c
 extern const struct RsPageDef g_rsTestPage;    // rs_test.c
 
-enum RsPageId { RS_PAGE_TRACK = 0, RS_PAGE_CUPS, RS_PAGE_CHAR, RS_PAGE_TEST, RS_PAGE_COUNT };
+enum RsPageId { RS_PAGE_TRACK = 0, RS_PAGE_CUPS, RS_PAGE_CHAR, RS_PAGE_HIRES, RS_PAGE_TEST, RS_PAGE_COUNT };
 
 // Own messages to page windows.
 #define RS_WM_JOB_LINE    (WM_APP + 1)  // wParam = job, lParam = wchar_t* line (Rs_Free)

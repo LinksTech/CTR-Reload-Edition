@@ -46,6 +46,11 @@ void Engine_FrameCollect(struct GameTracker *gGT)
 	{
 		Engine_TestSceneCollect(gGT);
 	}
+	if (g_cfg_engineHiresChars)
+	{
+		// The logic ticks of the hi-res seats (platform/engine_hires_char.c), before any draw of the frame.
+		Engine_HiresCharsCollect(gGT);
+	}
 	if (g_cfg_engineMenuScene)
 	{
 		Engine_MenuSceneCollect(gGT);

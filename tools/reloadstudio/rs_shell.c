@@ -101,7 +101,7 @@ int Rldpack_Main(int argc, char *argv[]);
 // from a page again when the sidebar grows.
 #define RS_SIDEBAR_NARROW 60
 #define RS_WIDE_MIN (RS_SIDEBAR_W + 1064)
-#define RS_SIDEBAR_FULL_H 430
+#define RS_SIDEBAR_FULL_H 476   // five entries (46 px each) above the version and the footer
 #define RS_MIN_CLIENT_W 480
 #define RS_MIN_CLIENT_H 320
 #define RS_START_W 1340
@@ -151,7 +151,7 @@ static int g_pageTop;                   // Rs_PageTop, 0 = not measured yet
 static int g_topChanged;                // a fit moved Rs_PageTop: lay the other pages out again
 static HWND g_pages[RS_PAGE_COUNT];
 static const struct RsPageDef *const g_defs[RS_PAGE_COUNT] = {
-    &g_rsTrackPage, &g_rsCupsPage, &g_rsCharPage, &g_rsTestPage
+    &g_rsTrackPage, &g_rsCupsPage, &g_rsCharPage, &g_rsHiresPage, &g_rsTestPage
 };
 static int g_current = -1;
 static int g_dpi = 96;
@@ -3275,7 +3275,7 @@ static LRESULT CALLBACK Rs_PageProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
 }
 
 // The pages by name: the automation verb "page <name>" and the setting "page=".
-static const wchar_t *const g_pageWords[RS_PAGE_COUNT] = { L"track", L"cups", L"char", L"test" };
+static const wchar_t *const g_pageWords[RS_PAGE_COUNT] = { L"track", L"cups", L"char", L"hires", L"test" };
 
 // RS_PAGE_* of a name, -1 if unknown.
 static int Rs_PageByWord(const wchar_t *word)
@@ -3635,6 +3635,7 @@ static const wchar_t *const g_navIcons[RS_PAGE_COUNT] = {
     L"\xE8B7",   // Folder
     L"\xE8FD",   // BulletedList
     L"\xE77B",   // Contact
+    L"\xE8B9",   // Picture
     L"\xE768",   // Play
 };
 

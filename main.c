@@ -117,6 +117,15 @@
 #include "platform/engine_hires.c"
 #include "platform/engine_static_load.c"
 #include "platform/engine_static.c"
+// The hi-res drivers of the .rldchar (round of 2026-10-17): the pose maths
+// (header-only, after cgltf), the selftests' GLB builder, the clip state
+// machine, the characters, their selftests.
+#include <rldhires.inc>
+#include <rldhires_anim.inc>
+#include "platform/engine_hires_testglb.c"
+#include "platform/engine_hires_pose.c"
+#include "platform/engine_hires_selftest.c"
+#include "platform/engine_hires_char.c"
 #include "platform/engine_flycam.c"
 #include "platform/engine_menuscene.c"
 #include "platform/engine_track.c"
@@ -419,6 +428,9 @@ static const NativeSwitch s_devSwitches[] = {
     {"--engine-hires-dir", "<dir>", "with --engine: the hi-res driver prototype (stage H) from <dir> (body.hrm, wheel.hrm, skin.hrt of tools/hires_testdriver.py) drawn instead of seat 0's body and wheel sprites in a race and as the driver of --engine-menuscene: full-resolution RGBA texture with mip levels, 3D wheels from game state, one log line per tick"},
     {"--engine-hires-tex64", "", "with --engine-hires-dir: the texture reduced to 64x64 (the comparison run of stage H)"},
     {"--engine-hires-anim", "", "with --engine-hires-dir: the animated test body of tools/hires_blender_driver.py (anim.hra, anim.hrt in that folder) instead of body.hrm - pose frames for steering, air and drift picked from game state, one log line per tick (prototype Z4)"},
+    {"--engine-hires-chars", "", "the hi-res drivers of the .rldchar: every bound custom character whose file has a CHRG chunk (glTF model) is drawn by the engine from it - skinned, its clips picked from game state, its own wheel nodes or standard 3D wheels; refused or over budget: its classic model, one line per seat; with the engine off: its classic model and a line 'hires char off'"},
+    {"--engine-hires-chars-log", "", "with --engine-hires-chars, measuring only: one line per logic tick and hi-res seat ('[CTR Engine] hires char: vb ...': the state read, the clip drawn and its time, the fade weight, the wheels read back from the drawn matrices)"},
+    {"--engine-hires-chars-filter", "<nearest|linear>", "with --engine-hires-chars, measuring only: the hi-res drivers' textures point sampled (nearest) or trilinear with anisotropy (linear, the default) - the comparison image of the two"},
     {"--engine-hires-texcycle", "", "with --engine-hires-dir, measuring only: in the menu scene the hi-res skin alternates every 32 VBlanks - full, 64x64, flat magenta key (variant = (vblank / 32) % 3, logged) - the three images of tools/hires_mask_sharp.py from one run"},
     {"--engine-menuscene-zoom", "<f>[,<x>[,<yaw>]]", "with --engine-menuscene, measuring only: the scene's camera zoomed by f (0.25..8, the kart f times larger), its middle at x of half the view width (-1..1, default 0.3, negative left), and with yaw (degrees) a still view at that angle instead of the turn"},
     {"--engine-hide", "<sky,water,track>", "with --engine --engine-track: the engine owns the listed items (the PS1 path does not draw them) but draws nothing of them - the 'minus' run of the measurements; comma-separated, words sky, water and track (track: the level's faces, its water and its level instances; drivers and effects stay - with --engine-static-model only the model shows)"},
@@ -977,6 +989,8 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 		int flycamGiven = 0;
 		const char *autoValue = NULL;
 		int pathGiven = 0;
+		int hiresCharsGiven = 0;
+		const char *hiresFilterValue = NULL;
 
 		for (int argIndex = 1; argIndex < argc; argIndex++)
 		{
@@ -1017,6 +1031,15 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			else if (strcmp(argv[argIndex], "--engine-flycam-smooth") == 0)
 			{
 				smoothGiven = 1;
+			}
+			else if (strcmp(argv[argIndex], "--engine-hires-chars") == 0)
+			{
+				hiresCharsGiven = 1;
+			}
+			else if ((strcmp(argv[argIndex], "--engine-hires-chars-filter") == 0) && (value != NULL))
+			{
+				hiresFilterValue = value;
+				argIndex++;
 			}
 			else if (strcmp(argv[argIndex], "--engine-flycam") == 0)
 			{
@@ -1086,6 +1109,14 @@ static int NativeArgs_GateDevSwitches(int argc, char *argv[])
 			else if (pathGiven && (autoValue == NULL))
 			{
 				refusal = "switch --engine-flycam-path requires --engine-flycam-auto";
+			}
+			else if ((hiresFilterValue != NULL) && !hiresCharsGiven)
+			{
+				refusal = "switch --engine-hires-chars-filter requires --engine-hires-chars";
+			}
+			else if ((hiresFilterValue != NULL) && (strcmp(hiresFilterValue, "nearest") != 0) && (strcmp(hiresFilterValue, "linear") != 0))
+			{
+				refusal = "switch --engine-hires-chars-filter expects nearest or linear";
 			}
 			else if (flycamGiven && (autoValue != NULL))
 			{
@@ -1514,6 +1545,21 @@ static int NativeArgs_ReadDisplayFlags(int argc, char *argv[], int *outWidth, in
 		else if (strcmp(argv[argIndex], "--engine-hires-anim") == 0)
 		{
 			g_cfg_engineHiresAnim = 1;
+		}
+		else if (strcmp(argv[argIndex], "--engine-hires-chars") == 0)
+		{
+			// Not in the "requires --engine" list: with the engine off the seats
+			// draw their classic models and say so (platform/native_chars.c).
+			g_cfg_engineHiresChars = 1;
+		}
+		else if (strcmp(argv[argIndex], "--engine-hires-chars-log") == 0)
+		{
+			g_cfg_engineHiresCharsLog = 1;
+		}
+		else if ((strcmp(argv[argIndex], "--engine-hires-chars-filter") == 0) && ((argIndex + 1) < argc))
+		{
+			// The value was checked before any window (nearest or linear).
+			g_cfg_engineHiresCharsFilter = (strcmp(argv[++argIndex], "nearest") == 0) ? ENGINE_TEXTURE_PIXELATED : ENGINE_TEXTURE_FILTERED;
 		}
 		else if ((strcmp(argv[argIndex], "--engine-menuscene-zoom") == 0) && ((argIndex + 1) < argc))
 		{
