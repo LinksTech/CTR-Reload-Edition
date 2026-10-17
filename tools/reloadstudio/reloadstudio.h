@@ -478,9 +478,21 @@
 //                                 "upscale small textures: <on|off> (the
 //                                 suggestion; suggested <on|off>, largest base
 //                                 colour texture <n> px)" when the box changes
+//   upscale change                as a click on "Change" at the end of the line
+//                                 of the upscale on the step Model (shown only
+//                                 when the line says something,
+//                                 RsCharHires_UpscaleStepLine): Advanced opens
+//                                 at its card Options, the box is scrolled into
+//                                 view and gets the keyboard focus; logged
+//                                 "upscale change: advanced open, card Options,
+//                                 "Upscale small textures" shown, in view, focus
+//                                 on the box" (FAIL when the line is not shown,
+//                                 or when any of these is not so)
 //   "report" writes first "route:", "step:", "advanced:", "upscale small
 //   textures:" (on|off, chosen by the author | suggested | the route's start,
 //   the suggestion with its reason, the preset and the line below the box),
+//   "upscale step line:" (the line on the step Model in quotes, "" for none,
+//   then "(shown, with "Change")" or "(not shown on this view)"),
 //   "preset:", "details:", "preview:", "preview stage:" (neutral |
 //   the view's own), "vertex colors:" (a CHRG route: the mode, chosen by the
 //   author or suggested, the suggestion with its reason and the median of
@@ -694,6 +706,12 @@ int Rs_SeverityFromText(const wchar_t *text);
 // page's own size. Valid inside layout() (the shell knows it before), e.g. to
 // keep a preview no taller than what can be seen at once.
 void Rs_PageViewSize(HWND page, int *w, int *h);
+
+// A jump the page makes by itself (a click that opens a section and gives a
+// control of it the keyboard focus): scrolls the page shown so that control
+// is in view, with a margin, as Tab does - after the page took the size of
+// its last layout. Nothing for a control of a page not shown.
+void Rs_ScrollIntoView(HWND control);
 
 // The lower edge of this page's own heading at the page width w: below its
 // subtitle, or below its title when the subtitle is "". Rs_PageTop is the same

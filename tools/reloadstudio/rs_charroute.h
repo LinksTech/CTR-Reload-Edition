@@ -132,6 +132,20 @@ int RsCharHires_SuggestUpscale(const struct RsHiresCheck *c, int route, unsigned
 // off and was not suggested (no line).
 void RsCharHires_UpscaleLine(int on, int suggested, unsigned largest, wchar_t *out, int cap);
 
+// The one line on the step Model itself (outside Advanced, which is closed at
+// the start), followed by the button "Change" that opens Advanced at the box.
+// It shows what the build will do only where that is not the plain default
+// (the default: the suggestion; without one, off):
+//   suggested, box on:  "Your textures are small (largest 16 px) - they will
+//                        be upscaled."
+//   suggested, box off: "Your textures will stay as they are (your choice;
+//                        suggested: upscale, largest 16 px)."
+//   not suggested, on:  "Your textures will be upscaled (your choice)."
+//   not suggested, off: L"" (no line).
+// L"" on every route but RS_ROUTE_LOWPOLY and RS_ROUTE_HIRES (Vanilla has no
+// upscale).
+void RsCharHires_UpscaleStepLine(int route, int on, int suggested, unsigned largest, wchar_t *out, int cap);
+
 // The extra make-char switches of the classic fallback of a CHRG route
 // (written after the page's own switches); returns the count, at most
 // RS_CHARHIRES_FALLBACK_ARGS.

@@ -459,6 +459,8 @@
 #define CHAR_ID_VMODE          221
 #define CHAR_ID_VMODE_HELP     222
 #define CHAR_ID_UPSCALE_NOTE   223   // the line below "Upscale small textures": the suggestion, or the author's choice
+#define CHAR_ID_UPSCALE_STEP   224   // the line of the upscale on the step Model itself (outside Advanced)
+#define CHAR_ID_UPSCALE_CHANGE 225   // "Change" at its end: opens Advanced at the box
 #define CHAR_VCOL_CHOICES      8     // models whose vertex colour mode or upscale the author chose, remembered
 // The author's choices remembered per model (Char_Remembered).
 #define CHAR_CHOICE_VCOL       0     // the vertex colour mode (RS_HIRES_VCOL_*)
@@ -863,6 +865,9 @@ static struct {
     // largest edge of its base colour textures in the file, 1 = the box is the
     // author's choice for this model.
     HWND upscaleNote;
+    // The line on the step Model (RsCharHires_UpscaleStepLine) and "Change"
+    // at its end; both hidden while the line is empty.
+    HWND upscaleStep, upscaleChange;
     int upSuggested, upChosen;
     unsigned upLargest;
     // THE VERTEX COLOURS of a CHRG route: the switch and its line, the three
@@ -1119,7 +1124,8 @@ static int Char_RouteHides(HWND c)
 {
     int id = GetDlgCtrlID(c);
     if (!Char_Chrg())
-        return c == g_char.upscale || c == g_char.upscaleHelp || c == g_char.upscaleNote || id == CHAR_ID_PREVIEW_SWITCH ||
+        return c == g_char.upscale || c == g_char.upscaleHelp || c == g_char.upscaleNote || c == g_char.upscaleStep ||
+               c == g_char.upscaleChange || id == CHAR_ID_PREVIEW_SWITCH ||
                id == CHAR_ID_PREVIEW_SWITCH + 1 ||
                (id >= CHAR_ID_VBLEND && id <= CHAR_ID_VMODE_HELP);
     return (id >= CHAR_ID_SIZE_LABEL && id <= CHAR_ID_OPTIONS_LABEL) || (id >= CHAR_ID_REPAIR && id <= CHAR_ID_QUALITY) ||
@@ -1349,10 +1355,10 @@ static int Char_TextHeight(HWND label, int width, int maxLines)
         // The compact layout: one line, cut with "...", the whole text as
         // the tooltip (Rs_LabelOneLine) - no word is lost, it is a hover away.
         // The notes of the guided flow wrap all the same (their steps have
-        // the room): "Upscale small textures" and its line, where the build
-        // goes, what Test in game did.
+        // the room): "Upscale small textures", its line and its line on the
+        // step Model, where the build goes, what Test in game did.
         if (g_char.compact && lineH > 0 && label != g_char.headline && label != g_char.upscaleHelp && label != g_char.upscaleNote &&
-            label != g_char.outNote && label != g_char.testNote) {
+            label != g_char.upscaleStep && label != g_char.outNote && label != g_char.testNote) {
             Rs_LabelOneLine(label, h > lineH);
             if (h > lineH)
                 h = lineH;
@@ -2547,7 +2553,7 @@ static int Char_TabOfId(int id, int *card)
         *card = CHAR_EXTRAS_OPTIONS;
         return CHAR_TAB_MODEL;
     }
-    if (id == CHAR_ID_VBLEND || id == CHAR_ID_VBLEND_NOTE) {
+    if (id == CHAR_ID_VBLEND || id == CHAR_ID_VBLEND_NOTE || id == CHAR_ID_UPSCALE_STEP || id == CHAR_ID_UPSCALE_CHANGE) {
         *card = CHAR_CARD_BASIC;
         return CHAR_TAB_MODEL;
     }
@@ -5952,15 +5958,20 @@ static int Char_VcolSet(HWND page, int mode)
     return Char_Check(page);
 }
 
-// THE UPSCALE: the line below the box as the box and the suggestion are;
-// the page laid out again when the line came or went.
+// THE UPSCALE: the line below the box and the line on the step Model as the
+// box and the suggestion are; the page laid out again when a line came, went
+// or changed (the step line's "Change" sits at the end of its text).
 static void Char_UpscaleControls(void)
 {
-    wchar_t line[RS_WIZ_TEXT_MAX], was[RS_WIZ_TEXT_MAX];
-    RsCharHires_UpscaleLine(Char_IsChecked(g_char.upscale), g_char.upSuggested, g_char.upLargest, line, RS_WIZ_TEXT_MAX);
+    wchar_t line[RS_WIZ_TEXT_MAX], was[RS_WIZ_TEXT_MAX], step[RS_WIZ_TEXT_MAX], wasStep[RS_WIZ_TEXT_MAX];
+    const int on = Char_IsChecked(g_char.upscale);
+    RsCharHires_UpscaleLine(on, g_char.upSuggested, g_char.upLargest, line, RS_WIZ_TEXT_MAX);
+    RsCharHires_UpscaleStepLine(g_char.route, on, g_char.upSuggested, g_char.upLargest, step, RS_WIZ_TEXT_MAX);
     GetWindowTextW(g_char.upscaleNote, was, RS_WIZ_TEXT_MAX);
+    GetWindowTextW(g_char.upscaleStep, wasStep, RS_WIZ_TEXT_MAX);
     Rs_SetText(g_char.upscaleNote, line);
-    if ((was[0] != 0) != (line[0] != 0) && g_char.view)
+    Rs_SetText(g_char.upscaleStep, step);
+    if (((was[0] != 0) != (line[0] != 0) || wcscmp(wasStep, step) != 0) && g_char.view)
         Char_Relayout(GetParent(g_char.view));
 }
 
@@ -6006,6 +6017,24 @@ static void Char_UpscaleSet(int on)
     g_char.builtFresh = 0;
     Char_UpdateButtons();
     Char_UpscaleControls();
+}
+
+// "Change" at the end of the line on the step Model: Advanced opens at its
+// card Options, the box gets the keyboard focus and is scrolled into view.
+static void Char_UpscaleChange(HWND page)
+{
+    int c;
+    if (!Char_Chrg() || !Char_ExtrasShown(CHAR_EXTRAS_OPTIONS))
+        return;
+    g_char.advOpen = 1;
+    g_char.extrasCard = CHAR_EXTRAS_OPTIONS;
+    for (c = 0; c < CHAR_EXTRAS_COUNT; c++)
+        InvalidateRect(g_char.extrasSwitch[c], NULL, FALSE);
+    Rs_SetText(g_char.advanced, L"Hide advanced");
+    Char_MsgRefill();
+    Char_Relayout(page);
+    SetFocus(g_char.upscale);
+    Rs_ScrollIntoView(g_char.upscale);
 }
 
 // The idle clip stops (another step, the classic fallback, a new check).
@@ -8125,6 +8154,7 @@ static int Char_SetRoute(HWND page, int route)
     g_char.upSuggested = 0;     // until the check of the model on this route
     g_char.upChosen = 0;
     Rs_SetText(g_char.upscaleNote, L"");
+    Rs_SetText(g_char.upscaleStep, L"");
     Char_ExtrasFix();
     Char_RouteTexts();
     g_char.tab = CHAR_TAB_MODEL;
@@ -8240,6 +8270,12 @@ static void Char_ReportFlow(FILE *f)
                  g_char.upChosen ? L"chosen by the author" : checked ? L"suggested" : L"the route's start",
                  g_char.upSuggested ? L"on" : L"off", why, p && p->upscaleDefault ? L"on" : L"off", line,
                  Char_Chrg() ? L"" : L" [no CHRG route: hidden, not used]");
+        // The line on the step Model (L"" = none) and whether it is shown now
+        // with "Change" at its end.
+        GetWindowTextW(g_char.upscaleStep, line, RS_WIZ_TEXT_MAX);
+        Char_Put(f, L"upscale step line: \"%ls\"%ls", line,
+                 !line[0] ? L"" : Char_IsShown(g_char.upscaleStep) && Char_IsShown(g_char.upscaleChange) ? L" (shown, with \"Change\")"
+                                                                                                           : L" (not shown on this view)");
     }
     if (p)
         Char_Put(f, L"preset: chrg %d, triangle target %llu, texture edge target %u", p->chrg, p->triangleTarget, p->textureEdgeTarget);
@@ -9660,6 +9696,11 @@ static void Char_Create(HWND page)
     // or chosen against the suggestion (Char_UpscaleControls).
     g_char.upscaleNote = Rs_Label(page, CHAR_ID_UPSCALE_NOTE, L"", RS_FONT_SMALL);
     Rs_SetTextColor(g_char.upscaleNote, RS_COL_MUTED);
+    // Its line on the step Model, with "Change" (a button, as "Change type").
+    g_char.upscaleStep = Rs_Label(page, CHAR_ID_UPSCALE_STEP, L"", RS_FONT_SMALL);
+    Rs_SetTextColor(g_char.upscaleStep, RS_COL_MUTED);
+    g_char.upscaleChange = Rs_Button(page, CHAR_ID_UPSCALE_CHANGE, L"Change");
+    Rs_SetTip(g_char.upscaleChange, L"Opens Advanced at \"Upscale small textures\".");
     // THE VERTEX COLOURS: the switch is a three-state box (the third state
     // glTF, chosen in Advanced); the page sets its state itself.
     g_char.vblend = Rs_Check(page, CHAR_ID_VBLEND, L"Vertex color blending");
@@ -9905,6 +9946,26 @@ static int Char_LayModelAt(const struct CharLay *k, const RECT *in, int filesH)
         noteH = Char_NoteHeight(g_char.vblendNote, fieldW);
         MoveWindow(g_char.vblendNote, x, y, fieldW, noteH, TRUE);
         y += noteH + Rs_Px(g_char.compact ? 2 : 6);
+    }
+    // A CHRG route: the line of the upscale with "Change" right after its
+    // text (at the right of the field when the text wraps), only while it
+    // says something (Char_UpscaleControls).
+    if (chrg && GetWindowTextLengthW(g_char.upscaleStep) > 0) {
+        int bh = Rs_Px(g_char.compact ? 24 : 28), cw = Char_TextWidth(g_char.upscaleChange, L"Change") + Rs_Px(28);
+        int lw = fieldW - cw - Rs_Px(8), tw, off, rowH;
+        wchar_t *text = Rs_GetText(g_char.upscaleStep);
+        tw = Char_TextWidth(g_char.upscaleStep, text) + Rs_Px(4);
+        Rs_Free(text);
+        if (tw < lw)
+            lw = tw;
+        if (lw < Rs_Px(40))
+            lw = Rs_Px(40);
+        noteH = Char_NoteHeight(g_char.upscaleStep, lw);
+        off = (bh - Rs_Px(18)) / 2;
+        MoveWindow(g_char.upscaleStep, x, y + off, lw, noteH, TRUE);
+        MoveWindow(g_char.upscaleChange, x + lw + Rs_Px(8), y, cw, bh, TRUE);
+        rowH = off + noteH > bh ? off + noteH : bh;
+        y += rowH + Rs_Px(g_char.compact ? 2 : 6);
     }
     if (!chrg) {
         // An OBJ (or a model not named .ply): the line of what was read right
@@ -10630,8 +10691,10 @@ static int Char_Wanted(HWND c)
             return g_char.objOn;
         if (id >= CHAR_ID_VBLEND && id <= CHAR_ID_VMODE_HELP)
             return g_char.vcolMode >= 0;
-        if (c == g_char.upscaleNote)
+        if (c == g_char.upscaleNote || c == g_char.upscaleStep)
             return GetWindowTextLengthW(c) > 0;
+        if (c == g_char.upscaleChange)
+            return GetWindowTextLengthW(g_char.upscaleStep) > 0;
         if (c == g_char.texturesLabel || c == g_char.textures || c == g_char.texturesBrowse || c == g_char.texturesClear)
             return g_char.texturesOn;
         return 1;
@@ -10995,6 +11058,10 @@ static LRESULT Char_Command(HWND page, WPARAM wParam, LPARAM lParam)
         // build (hires-upscale before packing), not the check.
         if (code == BN_CLICKED)
             Char_UpscaleSet(Char_IsChecked(g_char.upscale));
+        break;
+    case CHAR_ID_UPSCALE_CHANGE:
+        if (code == BN_CLICKED)
+            Char_UpscaleChange(page);
         break;
     case CHAR_ID_VBLEND:
         // On (PSX) <-> off; from glTF (Advanced) a click turns it on.
@@ -11626,12 +11693,36 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
     }
     // "upscale on|off|auto": "Upscale small textures" of a CHRG route, as a
     // click on the box (on, off: the author's choice, kept for the model
-    // checked) - auto: the choice forgotten, the suggestion again.
+    // checked) - auto: the choice forgotten, the suggestion again. "upscale
+    // change": as a click on "Change" at the end of the line on the step Model.
     if (wcscmp(verb, L"upscale") == 0) {
         int on = _wcsicmp(arg, L"on") == 0;
         if (!Char_Chrg()) {
             Rs_AutoLog(L"  upscale: only Low-Poly and Hi-Res have \"Upscale small textures\"");
             return RS_AUTO_FAIL;
+        }
+        if (_wcsicmp(arg, L"change") == 0) {
+            HWND host = GetParent(page);
+            RECT box, view;
+            int inView;
+            if (!Char_IsShown(g_char.upscaleChange)) {
+                Rs_AutoLog(L"  upscale change: no line with \"Change\" on the step Model shown");
+                return RS_AUTO_FAIL;
+            }
+            SendMessageW(page, WM_COMMAND, MAKEWPARAM(CHAR_ID_UPSCALE_CHANGE, BN_CLICKED), (LPARAM)g_char.upscaleChange);
+            UpdateWindow(page);
+            GetWindowRect(g_char.upscale, &box);
+            GetClientRect(host, &view);
+            MapWindowPoints(host, NULL, (POINT *)&view, 2);
+            inView = box.left >= view.left && box.right <= view.right && box.top >= view.top && box.bottom <= view.bottom;
+            Rs_AutoLog(L"  upscale change: advanced %ls%ls, \"Upscale small textures\" %ls, %ls, focus %ls",
+                       g_char.advOpen ? L"open, card " : L"closed", g_char.advOpen ? g_charExtrasTexts[g_char.extrasCard] : L"",
+                       Char_IsShown(g_char.upscale) ? L"shown" : L"hidden", inView ? L"in view" : L"out of view",
+                       GetFocus() == g_char.upscale ? L"on the box" : L"elsewhere");
+            return g_char.advOpen && g_char.extrasCard == CHAR_EXTRAS_OPTIONS && Char_IsShown(g_char.upscale) && inView &&
+                           GetFocus() == g_char.upscale
+                       ? RS_AUTO_DONE
+                       : RS_AUTO_FAIL;
         }
         if (_wcsicmp(arg, L"auto") == 0) {
             Char_Remember(g_char.hiresPath, CHAR_CHOICE_UPSCALE, -1);
@@ -11641,7 +11732,7 @@ static int Char_Automate(HWND page, const wchar_t *verb, const wchar_t *arg)
         } else if (on || _wcsicmp(arg, L"off") == 0) {
             Char_UpscaleSet(on);
         } else {
-            Rs_AutoLog(L"  upscale: say on, off or auto");
+            Rs_AutoLog(L"  upscale: say on, off, auto or change");
             return RS_AUTO_FAIL;
         }
         UpdateWindow(page);

@@ -3524,22 +3524,16 @@ static void Rs_ScrollPage(int x, int y)
     Rs_PagePlace(st, page);
 }
 
-// After a key: if the keyboard focus moved to another control of the page,
-// scroll so that the control is in view, with a margin.
-static void Rs_FocusIntoView(void)
+// Scrolls the page shown so that its control c (or the control of the page
+// that holds it) is in view, with a margin.
+static void Rs_IntoView(HWND page, HWND c)
 {
-    HWND f = GetFocus(), page, top;
+    HWND top;
     struct RsPageState *st;
     RECT r;
     int x, y, m = Rs_Px(16);
 
-    if (f == g_lastFocus)
-        return;
-    g_lastFocus = f;
-    page = g_current >= 0 ? g_pages[g_current] : NULL;
-    if (!f || !page || !IsChild(page, f))
-        return;
-    for (top = f; GetParent(top) != page; top = GetParent(top))
+    for (top = c; GetParent(top) != page; top = GetParent(top))
         ;
     st = Rs_State(page);
     GetWindowRect(top, &r);
@@ -3556,6 +3550,33 @@ static void Rs_FocusIntoView(void)
         y = r.top - m;
     if (x != st->scrollX || y != st->scrollY)
         Rs_ScrollPage(x, y);
+}
+
+// After a key: if the keyboard focus moved to another control of the page,
+// scroll so that the control is in view, with a margin.
+static void Rs_FocusIntoView(void)
+{
+    HWND f = GetFocus(), page;
+
+    if (f == g_lastFocus)
+        return;
+    g_lastFocus = f;
+    page = g_current >= 0 ? g_pages[g_current] : NULL;
+    if (!f || !page || !IsChild(page, f))
+        return;
+    Rs_IntoView(page, f);
+}
+
+void Rs_ScrollIntoView(HWND control)
+{
+    HWND page = g_current >= 0 ? g_pages[g_current] : NULL;
+    if (!control || !page || !IsChild(page, control))
+        return;
+    // The page takes the size of its last layout first (the fit is posted
+    // otherwise and would come after this scroll).
+    Rs_PageFit(g_current, 0);
+    Rs_IntoView(page, control);
+    g_lastFocus = GetFocus();
 }
 
 static int Rs_ScrollStep(HWND host, int bar, int code, int pos, int view)

@@ -400,6 +400,21 @@ void RsCharHires_UpscaleLine(int on, int suggested, unsigned largest, wchar_t *o
                  RS_UPSCALE_SUGGEST_EDGE);
 }
 
+void RsCharHires_UpscaleStepLine(int route, int on, int suggested, unsigned largest, wchar_t *out, int cap)
+{
+    if (!out || cap <= 0)
+        return;
+    out[0] = 0;
+    if (route != RS_ROUTE_LOWPOLY && route != RS_ROUTE_HIRES)
+        return;
+    if (on && suggested)
+        swprintf(out, (size_t)cap, L"Your textures are small (largest %u px) - they will be upscaled.", largest);
+    else if (suggested)
+        swprintf(out, (size_t)cap, L"Your textures will stay as they are (your choice; suggested: upscale, largest %u px).", largest);
+    else if (on)
+        swprintf(out, (size_t)cap, L"Your textures will be upscaled (your choice).");
+}
+
 // ---------------------------------------------------------------------------
 // The classic fallback
 

@@ -980,6 +980,41 @@ static void Kt_SelfTestUpscale(void)
     Check(wcsstr(line, L"is on") != NULL && wcsstr(line, L"Your choice - suggested: off") != NULL, "the line of the author's choice against it (on)");
     RsCharHires_UpscaleLine(0, 0, 512u, line, RS_WIZ_TEXT_MAX);
     Check(line[0] == 0, "off and not suggested: no line");
+
+    // The line on the step Model (before "Change"): only where the build
+    // differs from the plain default, the same on Low-Poly and Hi-Res, never
+    // on Vanilla.
+    {
+        static const int routes[2] = { RS_ROUTE_LOWPOLY, RS_ROUTE_HIRES };
+        int r, ok = 1;
+        for (r = 0; r < 2; r++) {
+            RsCharHires_UpscaleStepLine(routes[r], 1, 1, 16u, line, RS_WIZ_TEXT_MAX);
+            ok = ok && wcscmp(line, L"Your textures are small (largest 16 px) - they will be upscaled.") == 0;
+        }
+        Check(ok, "step line, suggested and on: they will be upscaled");
+        for (ok = 1, r = 0; r < 2; r++) {
+            RsCharHires_UpscaleStepLine(routes[r], 0, 1, 16u, line, RS_WIZ_TEXT_MAX);
+            ok = ok && wcscmp(line, L"Your textures will stay as they are (your choice; suggested: upscale, largest 16 px).") == 0;
+        }
+        Check(ok, "step line, suggested and off (the author's choice): they will stay as they are");
+        for (ok = 1, r = 0; r < 2; r++) {
+            RsCharHires_UpscaleStepLine(routes[r], 1, 0, 64u, line, RS_WIZ_TEXT_MAX);
+            ok = ok && wcscmp(line, L"Your textures will be upscaled (your choice).") == 0;
+        }
+        Check(ok, "step line, not suggested and on (the author's choice): they will be upscaled");
+        for (ok = 1, r = 0; r < 2; r++) {
+            wcscpy(line, L"x");
+            RsCharHires_UpscaleStepLine(routes[r], 0, 0, 64u, line, RS_WIZ_TEXT_MAX);
+            ok = ok && line[0] == 0;
+        }
+        Check(ok, "step line, not suggested and off: no line");
+        for (ok = 1, r = 0; r < 4; r++) {
+            wcscpy(line, L"x");
+            RsCharHires_UpscaleStepLine(RS_ROUTE_VANILLA, r & 1, r >> 1, 16u, line, RS_WIZ_TEXT_MAX);
+            ok = ok && line[0] == 0;
+        }
+        Check(ok, "step line on Vanilla: never a line");
+    }
 }
 
 // --write <folder>: the karts of the byte test of the routes

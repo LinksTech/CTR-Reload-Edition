@@ -23,8 +23,8 @@
 #      128), and the fallback's switches per route as RsCharHires_FallbackArgs
 #      gives them (fallback-<route>.txt, a CMake list).
 #   2. Hi-Res: route-bare.glb without and with hires-upscale; Low-Poly:
-#      route-bare.glb with hires-upscale, route-tex64.glb without; Hi-Res
-#      with wheels: route-wheels.glb with --wheels off.
+#      route-bare.glb with hires-upscale, route-tex64.glb without and with
+#      it; Hi-Res with wheels: route-wheels.glb with --wheels off.
 #   3. Every result holds the classic model and the hi-res model (rldpack
 #      info: chunks CHRI CMDL CHRG).
 #   4. The vertex colours: route-vcol.glb on Hi-Res with --vertex-colors psx,
@@ -48,7 +48,14 @@
 # page suggests it (PSX: PS1-like colours), and with "vcolor off" and "vcolor
 # gltf" - each the bytes of rldpack's chain with that --vertex-colors (these
 # runs, and the one with wheels, say "upscale off" to keep the chains they
-# compare with). Prints "charroute page passed: upscale suggested and chosen",
+# compare with). route-tex64.glb with "upscale on" (the author's choice) is
+# the chain with hires-upscale. The line on the step Model (the report's
+# "upscale step line:", rs_charroute.h RsCharHires_UpscaleStepLine) says
+# "they will be upscaled" for the suggestion, "will stay as they are" for the
+# author's off against it, "will be upscaled (your choice)" for the author's
+# on without it and nothing for the 64 px kart as it starts; "upscale change"
+# (a click on its "Change") opens Advanced at the box, in view and focused.
+# Prints "charroute page passed: upscale suggested and chosen",
 # "charroute page passed: vertex colours psx off gltf" and "charroute page
 # passed: 3 routes".
 
@@ -170,6 +177,7 @@ route(hires route-bare.glb "${fallbackHires}" "" OFF)
 route(hires-upscaled route-bare.glb "${fallbackHires}" "" ON)
 route(lowpoly route-bare.glb "${fallbackLowpoly}" "" ON)
 route(lowpoly-tex64 route-tex64.glb "${fallbackLowpoly}" "" OFF)
+route(lowpoly-tex64-upscaled route-tex64.glb "${fallbackLowpoly}" "" ON)
 route(hires-wheels route-wheels.glb "${fallbackHires}" "--wheels;off" OFF)
 
 # The vertex colours: the same kart with COLOR_0 in every mode, and without
@@ -207,20 +215,37 @@ if(PAGE)
     # on Low-Poly and on Hi-Res (the chain with hires-upscale), kept off for
     # the 64 px kart (the chain without), and off as the author's choice (the
     # chain without). The report says who set it.
-    set(pageDo --do "report ${DIR}/page-lowpoly-report.txt")
+    set(pageDo --do "report ${DIR}/page-lowpoly-report.txt" --do "upscale change")
     page_route(lowpoly lowpoly route-bare.glb p-lowpoly.rldchar)
     page_says(lowpoly "upscale small textures: on \\(the suggestion; suggested on, largest base colour texture 16 px\\)"
               "the page did not suggest the upscale for the 16 px kart on Low-Poly")
+    page_says(lowpoly "upscale change: advanced open, card Options, \"Upscale small textures\" shown, in view, focus on the box"
+              "\"Change\" did not open Advanced at the box")
     file(READ "${DIR}/page-lowpoly-report.txt" text)
     if(NOT text MATCHES "upscale small textures: on \\(suggested\\), suggested on \\(1 base colour texture\\(s\\), largest 16 px in the file")
         message(FATAL_ERROR "charroute FAILED: the report of the page (lowpoly) does not say the suggestion\n${text}")
     endif()
-    set(pageDo "")
+    if(NOT text MATCHES "upscale step line: \"Your textures are small \\(largest 16 px\\) - they will be upscaled\\.\" \\(shown, with \"Change\"\\)")
+        message(FATAL_ERROR "charroute FAILED: the step Model (lowpoly) does not say that the textures will be upscaled\n${text}")
+    endif()
+    set(pageDo --do "report ${DIR}/page-lowpoly-tex64-report.txt")
     page_route(lowpoly-tex64 lowpoly route-tex64.glb p-lowpoly-tex64.rldchar)
     file(READ "${DIR}/page-lowpoly-tex64.log" text)
     if(text MATCHES "upscale small textures: on")
         message(FATAL_ERROR "charroute FAILED: the page suggested the upscale for the 64 px kart\n${text}")
     endif()
+    file(READ "${DIR}/page-lowpoly-tex64-report.txt" text)
+    if(NOT text MATCHES "upscale step line: \"\"[\r\n]")
+        message(FATAL_ERROR "charroute FAILED: the step Model (lowpoly-tex64) has a line about the upscale\n${text}")
+    endif()
+    # The author's on for the 64 px kart: the chain with hires-upscale.
+    set(pageDo --do "upscale on" --do "report ${DIR}/page-lowpoly-tex64-on-report.txt")
+    page_route(lowpoly-tex64-on lowpoly route-tex64.glb p-lowpoly-tex64-upscaled.rldchar)
+    file(READ "${DIR}/page-lowpoly-tex64-on-report.txt" text)
+    if(NOT text MATCHES "upscale step line: \"Your textures will be upscaled \\(your choice\\)\\.\" \\(shown")
+        message(FATAL_ERROR "charroute FAILED: the step Model (lowpoly-tex64-on) does not say the author's upscale\n${text}")
+    endif()
+    set(pageDo "")
     page_route(hires hires route-bare.glb p-hires-upscaled.rldchar)
     page_says(hires "upscale small textures: on \\(the suggestion" "the page did not suggest the upscale for the 16 px kart on Hi-Res")
     set(pageDo --do "upscale off" --do "report ${DIR}/page-hires-off-report.txt")
@@ -229,6 +254,9 @@ if(PAGE)
     file(READ "${DIR}/page-hires-off-report.txt" text)
     if(NOT text MATCHES "upscale small textures: off \\(chosen by the author\\), suggested on")
         message(FATAL_ERROR "charroute FAILED: the report of the page (hires-off) does not say the author's choice\n${text}")
+    endif()
+    if(NOT text MATCHES "upscale step line: \"Your textures will stay as they are \\(your choice; suggested: upscale, largest 16 px\\)\\.\" \\(shown")
+        message(FATAL_ERROR "charroute FAILED: the step Model (hires-off) does not say that the textures will stay as they are\n${text}")
     endif()
     message("charroute page passed: upscale suggested and chosen")
     # The kart with wheels and the vertex colours: their chains have no
