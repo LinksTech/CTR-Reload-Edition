@@ -1153,7 +1153,7 @@ static void RldHires_CheckImage(RldHiresModel *m, RldHiresReport *rep, int index
 	img->pngSize = size;
 	if ((size >= 3u) && (bytes[0] == 0xFFu) && (bytes[1] == 0xD8u) && (bytes[2] == 0xFFu))
 	{
-		RldHires_Say(rep, "HRG-16", "texture %d ('%s') is JPEG - export textures as PNG", index, name);
+		RldHires_Say(rep, "HRG-16", "texture %d ('%s') is JPEG - export textures as PNG, or convert them with rldpack hires-png <in.glb> -o <out.glb>", index, name);
 		return;
 	}
 	if ((size < 8u) || (memcmp(bytes, pngSig, 8) != 0))
