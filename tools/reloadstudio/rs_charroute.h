@@ -66,6 +66,11 @@ enum RsWizPlace {
 
 #define RS_WIZ_TEXT_MAX 256
 
+// HRG-41 (include/rldhires.inc): a model that carries the kart of the Creator
+// Kit, made from the user's game data - shown at the step Build and in the
+// report, word for word.
+#define RS_TEXT_KIT_KART L"This file contains the original kart from your game data. Don't share it, or export without the kart."
+
 struct RsWizMsg {
     int severity;                     // RS_SEV_* (reloadstudio.h)
     int place;                        // RS_WIZ_PLACE_*
@@ -204,5 +209,12 @@ HBITMAP Rs_RouteImage(int route, int w, int h);
 // automation it only logs the command line. 1 = started (or logged), 0 =
 // not, why says why in plain English.
 int Rs_TestCharacter(const wchar_t *rldchar, int route, wchar_t *why, int whyCap);
+
+// The command line of that test for a file outside the Studio (the Creator
+// Kit's START-DEMO-PUPPE.bat): the game program (Rs_FindGameExe, else
+// "ctr_native.exe"), then --char <rldchar> --level 0 --driver <templateId> -
+// the same switches as Rs_TestCharacter, without --windowed and --log. The
+// file need not exist yet. 1 = written.
+int Rs_TestCharacterCommand(const wchar_t *rldchar, int templateId, wchar_t *out, int outCap);
 
 #endif

@@ -7,9 +7,9 @@
 // rs_shell.c, rldpack inside the exe (the checks and the packer), the preview
 // (rs_view.c, rs_tex.c) and the version.
 //
-// BUILT-IN MODULES - Track, Cups, Character, Test in game - are a table in
-// rs_module.c; their order is the order of the sidebar and their page IDs
-// (enum RsPageId in reloadstudio.h).
+// BUILT-IN MODULES - Track, Cups, Character, Test in game, Creator Kit - are a
+// table in rs_module.c; their order is the order of the sidebar and their page
+// IDs (enum RsPageId in reloadstudio.h).
 //
 // OTHER MODULES are 32-bit DLLs (Reload Studio is a 32-bit program) in the
 // folder "modules" next to ReloadStudio.exe (for tests: --modules-dir

@@ -2187,6 +2187,32 @@ static int Test_CharFile(const wchar_t *path, int *templateId, int *hasChrg, wch
     return 1;
 }
 
+// The switches of a character test: --char <file> --level 0 --driver <template>.
+static void Test_CharArgs(wchar_t *cmd, size_t cap, const wchar_t *full, int templateId, wchar_t num[16])
+{
+    Rs_AppendArg(cmd, cap, L"--char");
+    Rs_AppendArg(cmd, cap, full);
+    Rs_AppendArg(cmd, cap, L"--level");
+    Rs_AppendArg(cmd, cap, L"0");
+    swprintf(num, 16, L"%d", templateId);
+    Rs_AppendArg(cmd, cap, L"--driver");
+    Rs_AppendArg(cmd, cap, num);
+}
+
+int Rs_TestCharacterCommand(const wchar_t *rldchar, int templateId, wchar_t *out, int outCap)
+{
+    wchar_t exe[TEST_PATH], full[TEST_PATH], num[16];
+    if (!out || outCap <= 0 || !rldchar || !rldchar[0])
+        return 0;
+    out[0] = 0;
+    if (!Rs_FindGameExe(exe, TEST_PATH))
+        Test_Copy(exe, TEST_PATH, L"ctr_native.exe");
+    Test_FullPath(rldchar, full, TEST_PATH);
+    Rs_AppendArg(out, (size_t)outCap, exe);
+    Test_CharArgs(out, (size_t)outCap, full, templateId, num);
+    return 1;
+}
+
 int Rs_TestCharacter(const wchar_t *rldchar, int route, wchar_t *why, int whyCap)
 {
     const struct RsRoutePreset *preset = RsRoute_Preset(route);
@@ -2244,13 +2270,7 @@ int Rs_TestCharacter(const wchar_t *rldchar, int route, wchar_t *why, int whyCap
         Rs_AppendArg(cmd, cap, L"--windowed");
         Rs_AppendArg(cmd, cap, L"1280x720");
     }
-    Rs_AppendArg(cmd, cap, L"--char");
-    Rs_AppendArg(cmd, cap, full);
-    Rs_AppendArg(cmd, cap, L"--level");
-    Rs_AppendArg(cmd, cap, L"0");
-    swprintf(num, 16, L"%d", templateId);
-    Rs_AppendArg(cmd, cap, L"--driver");
-    Rs_AppendArg(cmd, cap, num);
+    Test_CharArgs(cmd, cap, full, templateId, num);
     Rs_RotatedLogPath(logPath, TEST_PATH, L"character-test", 5);
     Rs_AppendArg(cmd, cap, L"--log");
     Rs_AppendArg(cmd, cap, logPath);

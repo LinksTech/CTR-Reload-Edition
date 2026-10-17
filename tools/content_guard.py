@@ -617,6 +617,12 @@ def blob_id(data):
     return hashlib.sha1(b'blob %d\0' % len(data) + data).hexdigest()
 
 
+# The pictures of the guides (docs/assets/, SVG drawn in code) are no game
+# folder: the folder rule 'assets/' leaves this one prefix alone (every other
+# rule still applies to the files in it).
+DOC_ASSETS = re.compile(r'^docs/assets/')
+
+
 def package_forbidden(name, head, read, by_oid):
     """True if the file is forbidden in the package. name: the path in the
     package, head: its first bytes, read: gives the whole content, by_oid:
@@ -637,7 +643,7 @@ def package_forbidden(name, head, read, by_oid):
         reason = forbidden_type(path, get_oid())
     if reason or base.endswith(BAD_EXT) or base in BAD_NAME:
         return True
-    if any(('/' + d) in ('/' + n) for d in BAD_DIR):
+    if any(('/' + d) in ('/' + DOC_ASSETS.sub('', n, 1)) for d in BAD_DIR):
         return True
     if kit_name(path):
         return True
@@ -1125,6 +1131,14 @@ def package_self_test(workdir):
         'x.log')
     add('refuses a picture in the package folder (old rule)',
         make('pic', {'docs/a.png': b'not really'}), 'docs/a.png')
+    add('passes the guide pictures docs/assets/creator-kit/*.svg in the source zip',
+        make('docsvg', None, {'docs/assets/creator-kit/a.svg': b'<svg/>' + bytes([10])}), None)
+    add('refuses assets/x.txt (the game folder) in the source zip',
+        make('gameassets', None, {'assets/x.txt': b'x'}), 'assets/x.txt')
+    add('refuses a png under docs/assets/ (type rule)',
+        make('docpng', None, {'docs/assets/creator-kit/a.png': b'x'}), 'docs/assets/creator-kit/a.png')
+    add('refuses docs/assets/tracks/x.txt (another folder rule)',
+        make('doctracks', None, {'docs/assets/tracks/x.txt': b'x'}), 'docs/assets/tracks/x.txt')
 
     failed = 0
     for label, path, expect in cases:

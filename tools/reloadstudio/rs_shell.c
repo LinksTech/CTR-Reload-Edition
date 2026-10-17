@@ -750,6 +750,22 @@ static void Rs_TempForChildren(void)
     Rs_TempDir(dir, MAX_PATH);
     SetEnvironmentVariableW(L"TEMP", dir);
     SetEnvironmentVariableW(L"TMP", dir);
+    // Blender (the Creator Kit) keeps its user files in that folder as well.
+    {
+        static const wchar_t *const vars[][2] = {
+            { L"BLENDER_USER_RESOURCES", L"blender" },
+            { L"BLENDER_USER_CONFIG", L"blender\\config" },
+            { L"BLENDER_USER_SCRIPTS", L"blender\\scripts" },
+            { L"BLENDER_USER_DATAFILES", L"blender\\datafiles" },
+            { L"BLENDER_USER_EXTENSIONS", L"blender\\extensions" },
+        };
+        wchar_t path[MAX_PATH * 2];
+        int i;
+        for (i = 0; i < 5; i++) {
+            Rs_PathJoin(path, MAX_PATH * 2, dir, vars[i][1]);
+            SetEnvironmentVariableW(vars[i][0], path);
+        }
+    }
 }
 
 // The one rule for the game program, for every page: the chosen one (setting
@@ -770,6 +786,40 @@ int Rs_FindGameExe(wchar_t *out, int outCap)
     wcsncpy(out, probe, (size_t)outCap - 1);
     out[outCap - 1] = 0;
     return 1;
+}
+
+int Rs_FindGameBase(const wchar_t *dir, wchar_t *out, int outCap, int *unpacked)
+{
+    wchar_t at[MAX_PATH * 2], up[MAX_PATH * 2], probe[MAX_PATH * 2], assets[MAX_PATH * 2];
+    int i;
+
+    if (outCap <= 0)
+        return 0;
+    out[0] = 0;
+    if (unpacked)
+        *unpacked = 0;
+    if (!dir || !dir[0])
+        return 0;
+    wcsncpy(at, dir, MAX_PATH * 2 - 1);
+    at[MAX_PATH * 2 - 1] = 0;
+    for (i = 0; i < 3 && at[0]; i++) {
+        Rs_PathJoin(assets, MAX_PATH * 2, at, L"assets");
+        Rs_PathJoin(probe, MAX_PATH * 2, assets, L"BIGFILE.BIG");
+        if (Rs_FileExists(probe) || (Rs_PathJoin(probe, MAX_PATH * 2, assets, L"ctr-u.bin"), Rs_FileExists(probe))) {
+            if (unpacked) {
+                Rs_PathJoin(probe, MAX_PATH * 2, assets, L"BIGFILE.BIG");
+                *unpacked = Rs_FileExists(probe);
+            }
+            wcsncpy(out, at, (size_t)outCap - 1);
+            out[outCap - 1] = 0;
+            return 1;
+        }
+        Rs_PathDir(up, MAX_PATH * 2, at);
+        if (!up[0] || wcscmp(up, at) == 0)
+            break;
+        wcsncpy(at, up, MAX_PATH * 2 - 1);
+    }
+    return 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -933,6 +983,14 @@ void Rs_AutoLog(const wchar_t *fmt, ...)
     fputs("\n", f);
     fclose(f);
     Rs_Free(utf8);
+}
+
+void Rs_AutoFail(const wchar_t *why)
+{
+    if (!g_automating)
+        return;
+    Rs_AutoLog(L"  FAIL: %ls", why ? why : L"");
+    g_autoFailed++;
 }
 
 int Rs_AskYesNo(HWND owner, const wchar_t *title, const wchar_t *text)
@@ -3171,6 +3229,25 @@ int Rs_RunProcess(HWND notify, const wchar_t *exe, const wchar_t *cmdline,
     return id;
 }
 
+int Rs_RunTool(HWND notify, const wchar_t *exe, const wchar_t *cmdline, const wchar_t *cwd)
+{
+    wchar_t *cmd = Rs_Alloc(RS_CMD_CAP * sizeof(wchar_t));
+    int id;
+    Rs_AppendArg(cmd, RS_CMD_CAP, exe);
+    if (cmdline && *cmdline) {
+        size_t n = wcslen(cmd);
+        if (n + 1 + wcslen(cmdline) + 1 < RS_CMD_CAP) {
+            cmd[n] = L' ';
+            wcscpy(cmd + n + 1, cmdline);
+        }
+    }
+    if (g_automating)
+        Rs_AutoLog(L"  tool: %ls", cmd);
+    id = Rs_Launch(notify, exe, cmd, cwd, 1, 1, 1);
+    Rs_Free(cmd);
+    return id;
+}
+
 int Rs_SplitMachine(wchar_t *line, wchar_t **fields, int maxFields)
 {
     int n = 0;
@@ -4847,8 +4924,8 @@ static const wchar_t g_helpText[] =
     L"  --no-modules           no module DLLs, only the built-in pages\n"
     L"  --help                 this text\n"
     L"\n"
-    L"Automation verbs of the window: page track|cups|char|test (or the word of a\n"
-    L"module), shot <file.bmp>\n"
+    L"Automation verbs of the window: page track|cups|char|test|kit (or the word\n"
+    L"of a module), shot <file.bmp>\n"
     L"(the client area), wait <ms>, size <w> <h> (client area), scroll top|bottom|\n"
     L"<x> <y> (the page shown), controls <file> (every control of the page with its\n"
     L"rectangle, see rs_shell.c), theme dark|light|system, cancel-jobs (every\n"

@@ -24,7 +24,11 @@
 #      docs/ANIMATIONS.md (the guide to animations of one's own, which
 #      Reload Studio and README.txt name) and templates/ (LICENSE, README.md,
 #      make_driver_template.py: the script that builds the Blender template;
-#      the .blend itself is no file of the repository),
+#      the .blend itself is no file of the repository; make_creator_kit.py and
+#      creator_kit_*.py: the scripts of the Creator Kit, which Reload Studio
+#      also carries inside), docs/CREATOR_KIT.html (the guide of the Creator
+#      Kit; its source docs/CREATOR_KIT.md and its pictures
+#      docs/assets/kit-guide-*.svg only in the source zip),
 #      <name>-source.zip (GPL: the source code of this commit, git archive by
 #      allow list - everything the build needs and the guide with the
 #      template's script, nothing else).
@@ -122,8 +126,8 @@ mkdir -p "$OUT"
 cp "$R/ctr_native.exe" "$R/ctr_native.pdb" "$R/ReloadStudio.exe" "$OUT/"
 cp LICENSE THIRD_PARTY_NOTICES.md "$OUT/"
 mkdir -p "$OUT/docs" "$OUT/templates"
-cp docs/ANIMATIONS.md "$OUT/docs/"
-cp templates/LICENSE templates/README.md templates/make_driver_template.py "$OUT/templates/"
+cp docs/ANIMATIONS.md docs/CREATOR_KIT.html "$OUT/docs/"
+cp templates/LICENSE templates/README.md templates/make_driver_template.py templates/make_creator_kit.py 	templates/creator_kit_puppet.py templates/creator_kit_clips.py templates/creator_kit_standin.py "$OUT/templates/"
 for t in README RELEASE-NOTES; do
 	sed -e "s/@VERSION@/$VERSION/g" -e "s/@BUILD@/$ID/g" -e "s/@NAME@/$NAME/g" \
 		"tools/package/$t.txt" > "$OUT/$t.txt"
@@ -134,7 +138,7 @@ git archive --format=zip --prefix="$NAME-source/" -o "$OUT/$NAME-source.zip" HEA
 	CMakeLists.txt CMakePresets.json build-msvc.bat main.c LICENSE THIRD_PARTY_NOTICES.md README.md BUILDING.md \
 	.gitignore .clang-format .clang-tidy .clangd \
 	cmake game include platform tools metadata externals/SDL externals/cgltf \
-	docs/ANIMATIONS.md templates/LICENSE templates/README.md templates/make_driver_template.py
+	docs/ANIMATIONS.md docs/CREATOR_KIT.md docs/CREATOR_KIT.html docs/assets/creator-kit 	templates/LICENSE templates/README.md templates/make_driver_template.py templates/make_creator_kit.py 	templates/creator_kit_puppet.py templates/creator_kit_clips.py templates/creator_kit_standin.py
 
 echo "== Check for forbidden content"
 python tools/content_guard.py --package "$OUT" || { echo "ABORT: forbidden content, no package"; exit 5; }

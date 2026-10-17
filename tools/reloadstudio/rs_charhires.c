@@ -146,6 +146,16 @@ static const struct RsHrgSay s_say[] = {
     { L"HRG-35", RS_WIZ_PLACE_SIZE, TEXT_ROW, NULL, L"Use fewer different textures: let materials share their images." },
     { L"HRG-36", RS_WIZ_PLACE_MODEL, TEXT_OWN, L"Your vertex colours look like PS1 shading - blended as glTF, the kart will look too dark.",
       L"Switch Vertex color blending on." },
+    // The parts field of a packed CHRG (include/rldhires.inc, THE PARTS): what the
+    // check of a finished .rldchar says of its kart part.
+    { L"HRG-37", RS_WIZ_PLACE_MODEL, TEXT_ROW, NULL, L"Name the kart's node 'kart' in Blender (the collection Kart of the Creator Kit does) and build again." },
+    { L"HRG-38", RS_WIZ_PLACE_MODEL, TEXT_ROW, NULL, L"Weight the driver only to the driver's bones and the kart only to the kart's, then export again." },
+    { L"HRG-39", RS_WIZ_PLACE_MODEL, TEXT_ROW, NULL, L"Nothing to do; the kart is drawn as before." },
+    { L"HRG-40", RS_WIZ_PLACE_MODEL, TEXT_ROW, NULL, L"Nothing to do; build the character again to write the field anew." },
+    // The kart of the Creator Kit (glTF extras "ctr_kit" or a material ctrkit_*):
+    // it is made from the user's game data. The fixed warning, at the build.
+    { L"HRG-41", RS_WIZ_PLACE_BUILD, TEXT_OWN, RS_TEXT_KIT_KART,
+      L"Keep this file to yourself. To share your driver, export it again with the collection Kart switched off." },
 };
 
 #define RS_SAY_COUNT ((int)(sizeof(s_say) / sizeof(s_say[0])))

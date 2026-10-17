@@ -302,6 +302,7 @@ struct KtSpec {
     int pngHeader;  // the edge of a PNG with its header only (for the checks), 0 = none
     int vcol;       // COLOR_0 on the body: every corner this sRGB byte (grey), 0 = no COLOR_0
     int jpeg;       // 1 = the texture is s_ktJpeg (16 x 16), mimeType image/jpeg (png and pngHeader 0)
+    int kit;        // 1 = the material is named "ctrkit_paint": the mark of the Creator Kit's kart (HRG-41)
 };
 
 // A JPEG of 16 x 16 pixels in four squares of 8 x 8: (200, 40, 40) and
@@ -522,7 +523,7 @@ static unsigned char *Kt_Glb(const struct KtSpec *sp, size_t *size)
     if (wheels)
         Kt_Text(&json, ",{\"name\":\"wheel\",\"primitives\":[{\"attributes\":{\"POSITION\":%d,\"NORMAL\":%d,\"TEXCOORD_0\":%d},\"indices\":%d,\"material\":0}]}",
                 wPos, wNrm, wUv, wIdx);
-    Kt_Text(&json, "],\"materials\":[{\"name\":\"paint\",\"pbrMetallicRoughness\":{%s}}]",
+    Kt_Text(&json, "],\"materials\":[{\"name\":\"%s\",\"pbrMetallicRoughness\":{%s}}]", sp->kit ? "ctrkit_paint" : "paint",
             image >= 0 ? "\"baseColorTexture\":{\"index\":0}" : "\"baseColorFactor\":[0.8,0.3,0.1,1]");
     if (image >= 0)
         Kt_Text(&json, ",\"textures\":[{\"source\":0}],\"images\":[{\"name\":\"paint\",\"bufferView\":%d,\"mimeType\":\"%s\"}]", image,
@@ -970,6 +971,31 @@ static void Kt_SelfTestRoutes(const wchar_t *folder)
         Check(Kt_Has(m, n, RS_SEV_ERROR, RS_WIZ_PLACE_WHEELS, L"HRG-31", NULL, NULL) && Kt_Has(m, n, RS_SEV_ERROR, RS_WIZ_PLACE_ANIMATIONS, L"HRG-21", NULL, NULL) &&
                   Kt_Has(m, n, RS_SEV_ERROR, RS_WIZ_PLACE_SIZE, L"HRG-17", NULL, NULL) && Kt_Has(m, n, RS_SEV_ERROR, RS_WIZ_PLACE_SIZE, L"HRG-35", NULL, NULL),
               "the places: wheel details at the wheels, clip names at the animations, textures and limits at the size");
+        // HRG-41, the kart of the Creator Kit (made from the user's game data):
+        // a warning at the step Build in its fixed words, the row's own text not shown.
+        memset(&c, 0, sizeof(c));
+        c.read = 1;
+        c.clips = RS_HIRES_CLIPS;
+        c.wheels = 4;
+        c.budgetTriangles = 64000u;
+        c.budgetEdge = 2048u;
+        c.rows[0].severity = RS_SEV_WARNING;
+        wcscpy(c.rows[0].rule, L"HRG-41");
+        wcscpy(c.rows[0].text, L"the model carries the kart of the creator kit (material 'ctrkit_body')");
+        c.rowCount = 1;
+        n = RsCharHires_Messages(&c, RS_ROUTE_HIRES, m, 96);
+        Check(Kt_Has(m, n, RS_SEV_WARNING, RS_WIZ_PLACE_BUILD, L"HRG-41",
+                     L"This file contains the original kart from your game data. Don't share it, or export without the kart.", NULL),
+              "HRG-41 (the Creator Kit's kart): a warning at the step Build, word for word");
+        // The same from a real check: a model whose material is ctrkit_paint.
+        {
+            struct KtSpec kit = { 2, 1, 12, 4, 16, 0, 0, 0, 1 };
+            Kt_Check(&kit, &c);
+            n = RsCharHires_Messages(&c, RS_ROUTE_HIRES, m, 96);
+            Check(c.read == 1 && Kt_Has(m, n, RS_SEV_WARNING, RS_WIZ_PLACE_BUILD, L"HRG-41", RS_TEXT_KIT_KART, NULL),
+                  "a model with the material ctrkit_paint: the check says HRG-41, the page shows the fixed warning at the step Build");
+            RsHires_CheckFree(&c);
+        }
         // A row of a rule the Studio does not know: said as the check says it, with the general fix.
         memset(&c, 0, sizeof(c));
         c.read = 1;
@@ -1170,6 +1196,7 @@ static int Kt_Write(const wchar_t *folder)
         { L"route-wheels.glb", { 2, 1, 12, 4, 16, 0 } },  // skinned, 12 clips, its own 4 wheels (the page adds --wheels off)
         { L"route-vcol.glb", { 2, 1, 0, 0, 16, 0, 128 } }, // as route-bare, with PS1-like COLOR_0 (grey 128): the page suggests PSX
         { L"route-jpeg.glb", { 2, 1, 0, 0, 0, 0, 0, 1 } },  // as route-bare, its 16 x 16 texture a JPEG: refused until "Convert to PNG"
+        { L"route-kit.glb", { 2, 1, 12, 4, 16, 0, 0, 0, 1 } }, // as route-wheels, its material ctrkit_paint: HRG-41 (the kit's kart)
     };
     int i, route, ok = 1;
     for (i = 0; i < (int)(sizeof(karts) / sizeof(karts[0])); i++) {

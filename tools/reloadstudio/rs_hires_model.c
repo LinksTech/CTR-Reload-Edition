@@ -1204,8 +1204,9 @@ void RsHires_Budget(unsigned long long *triangles, unsigned *edge, unsigned long
 
 // The check of GLB bytes in a vertex colour mode: a .glb in glTF (the mode of
 // a pack without the switch: HRG-36 says PS1-like colours), the CHRG of a
-// character in the mode of its flags (the findings the game has).
-static int RsHires_CheckGlbMode(const unsigned char *glb, size_t size, int mode, struct RsHiresCheck *out)
+// character in the mode of its flags and with its parts field (0x10: the
+// kart part, HRG-37..40 - the findings the game has). A .glb has no field (0).
+static int RsHires_CheckGlbMode(const unsigned char *glb, size_t size, int mode, unsigned parts, struct RsHiresCheck *out)
 {
     static RldHiresReport rep;   // 13 KB; the page checks on its own thread only
     RldHiresModel m;
@@ -1227,7 +1228,7 @@ static int RsHires_CheckGlbMode(const unsigned char *glb, size_t size, int mode,
     }
     // The same order as rldpack hires-check (RldHiresPack_CheckGlb): the model,
     // then the budget when it opened.
-    ok = RldHires_OpenAs(glb, (u32)size, mode, &m, &rep);
+    ok = RldHires_OpenParts(glb, (u32)size, mode, (u32)parts, &m, &rep);
     if (m.data)
         ok = RldHires_CheckBudget(&m, &rep) && ok;
     if (m.usable) {
@@ -1251,7 +1252,7 @@ static int RsHires_CheckGlbMode(const unsigned char *glb, size_t size, int mode,
 
 int RsHires_CheckGlb(const unsigned char *glb, size_t size, struct RsHiresCheck *out)
 {
-    return RsHires_CheckGlbMode(glb, size, RLDHIRES_VCOL_GLTF, out);
+    return RsHires_CheckGlbMode(glb, size, RLDHIRES_VCOL_GLTF, 0u, out);
 }
 
 static unsigned char *RsHires_ReadAll(const wchar_t *path, size_t limit, size_t *size, wchar_t *why, int whyCap)
@@ -1399,7 +1400,7 @@ int RsHires_CheckFile(const wchar_t *path, struct RsHiresCheck *out)
             out->fromCharacter = 1;
             return 1;
         }
-        r = RsHires_CheckGlbMode(c.glb, c.glbSize, RldHiresColor_Mode(c.flags), out);
+        r = RsHires_CheckGlbMode(c.glb, c.glbSize, RldHiresColor_Mode(c.flags), c.parts, out);
         out->fromCharacter = 1;
         free(bytes);
         return r;

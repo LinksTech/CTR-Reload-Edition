@@ -299,6 +299,28 @@ else()
 endif()
 target_compile_options(rldpack PRIVATE ${CTR_RLDPACK_FP_OPTIONS})
 
+# The files of the Creator Kit that Reload Studio carries inside (page Creator
+# Kit, tools/reloadstudio/rs_kit.c): its Blender scripts and its guide, as
+# RCDATA (ids RS_RES_KIT_* in reloadstudio.h). A resource script of their full
+# paths in the build folder; a change of one of the files builds it again.
+set(CTR_KIT_RESOURCES
+    templates/make_creator_kit.py
+    templates/creator_kit_puppet.py
+    templates/creator_kit_clips.py
+    templates/creator_kit_standin.py
+    docs/CREATOR_KIT.html)
+set(ctr_kit_rc "// Made by CMakeLists.txt: the files of the Creator Kit (rs_kit.c).
+")
+set(ctr_kit_id 201)
+foreach(f IN LISTS CTR_KIT_RESOURCES)
+    string(APPEND ctr_kit_rc "${ctr_kit_id} RCDATA \"${CMAKE_SOURCE_DIR}/${f}\"
+")
+    math(EXPR ctr_kit_id "${ctr_kit_id} + 1")
+endforeach()
+file(CONFIGURE OUTPUT ${CMAKE_BINARY_DIR}/generated/reloadstudio_kit.rc CONTENT "${ctr_kit_rc}")
+list(TRANSFORM CTR_KIT_RESOURCES PREPEND ${CMAKE_SOURCE_DIR}/ OUTPUT_VARIABLE ctr_kit_files)
+set_source_files_properties(${CMAKE_BINARY_DIR}/generated/reloadstudio_kit.rc PROPERTIES OBJECT_DEPENDS "${ctr_kit_files}")
+
 # Reload Studio: the front end for track authors, see the header of
 # tools/reloadstudio/reloadstudio.h. ONE exe that carries rldpack inside
 # (rs_rldpack.c: the same tools/rldpack.c with a renamed main) and starts itself
@@ -320,10 +342,12 @@ if(MSVC)
         tools/reloadstudio/rs_hires_model.c
         tools/reloadstudio/rs_charhires.c
         tools/reloadstudio/rs_cards.c
+        tools/reloadstudio/rs_kit.c
         tools/reloadstudio/rs_rldpack.c
         tools/rldpack_image.c
         platform/native_disc_image.c
         tools/reloadstudio/reloadstudio.rc
+        ${CMAKE_BINARY_DIR}/generated/reloadstudio_kit.rc
         tools/reloadstudio/reloadstudio.manifest
     )
     # The tools version (CTR_TOOLS_VERSION, above) for the sidebar, the help and
@@ -1209,6 +1233,34 @@ message("rldpack native wheels test passed: refused without --wheels off (exit $
     set_tests_properties(content_guard_package PROPERTIES
         PASS_REGULAR_EXPRESSION "content_guard: package self-test passed - [0-9]+ case"
         FAIL_REGULAR_EXPRESSION "FAIL")
+    # The page Creator Kit of Reload Studio (tools/reloadstudio/rs_kit.c) end to
+    # end without Blender and without game data: rs_kit_standin.exe stands in
+    # for blender.exe and for the extractor, the game is a made-up folder
+    # (cmake/run_rs_kit.cmake). Only with the tests.
+    if(MSVC)
+        add_executable(rs_kit_standin tools/reloadstudio/rs_kit_standin.c)
+        set_target_properties(rs_kit_standin PROPERTIES
+            C_STANDARD 17
+            C_STANDARD_REQUIRED ON
+            C_EXTENSIONS OFF
+        )
+        add_test(NAME reloadstudio_kit
+            COMMAND ${CMAKE_COMMAND}
+                -DSTUDIO=$<TARGET_FILE:ReloadStudio>
+                -DSTANDIN=$<TARGET_FILE:rs_kit_standin>
+                -DTEST=$<TARGET_FILE:rs_hires_selftest>
+                -DPACKER=$<TARGET_FILE:rldpack>
+                -DPYTHON=${Python3_EXECUTABLE}
+                -DSOURCE=${CMAKE_SOURCE_DIR}
+                -DDIR=${CMAKE_BINARY_DIR}/selftest/rs-kit
+                -P ${CMAKE_SOURCE_DIR}/cmake/run_rs_kit.cmake
+            WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        )
+        set_tests_properties(reloadstudio_kit PROPERTIES
+            PASS_REGULAR_EXPRESSION "kit passed: "
+            FAIL_REGULAR_EXPRESSION "FAILED"
+            TIMEOUT 900)
+    endif()
     add_test(
         NAME ctr_match_unit
         COMMAND ${Python3_EXECUTABLE} -m unittest discover

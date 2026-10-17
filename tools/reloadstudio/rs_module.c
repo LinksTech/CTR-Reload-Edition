@@ -30,15 +30,19 @@
 #define RS_EXT_MAX (RS_MAX_MODULES * 4)   // DLL files looked at, loaded or not
 
 static const wchar_t *const k_needsTest[] = { L"test", NULL };
+static const wchar_t *const k_needsCharTest[] = { L"char", L"test", NULL };
 
 // Track and Character start the game through the page Test in game
-// (Rs_TestGameExe, Rs_TestCharacter), so they need it. The icons are those
-// the sidebar always had: Folder, BulletedList, Contact, Play.
+// (Rs_TestGameExe, Rs_TestCharacter), so they need it; the Creator Kit builds
+// its demo driver as Character does (rs_charhires.c) and tests it there. The
+// icons are those the sidebar always had: Folder, BulletedList, Contact, Play;
+// the Creator Kit's is Package.
 static const struct RsModuleDef g_builtin[RS_PAGE_BUILTIN_COUNT] = {
     { RS_MODULE_ABI, sizeof(struct RsModuleDef), L"track", L"\xE8B7", 0, k_needsTest, &g_rsTrackPage },
     { RS_MODULE_ABI, sizeof(struct RsModuleDef), L"cups",  L"\xE8FD", 0, NULL,        &g_rsCupsPage },
     { RS_MODULE_ABI, sizeof(struct RsModuleDef), L"char",  L"\xE77B", 0, k_needsTest, &g_rsCharPage },
     { RS_MODULE_ABI, sizeof(struct RsModuleDef), L"test",  L"\xE768", 0, NULL,        &g_rsTestPage },
+    { RS_MODULE_ABI, sizeof(struct RsModuleDef), L"kit",   L"\xE7B8", 0, k_needsCharTest, &g_rsKitPage },
 };
 
 // A module DLL.

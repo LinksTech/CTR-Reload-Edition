@@ -26,6 +26,7 @@
 //   rs_anim.c     card "Animations" of the page "Character" (shape keys of a glTF, rs_anim.h)
 //   rs_hires_model.c  the check and the picture of a hi-res model (page Character, routes Low-Poly and Hi-Res)
 //   rs_test.c     page "Test in game"
+//   rs_kit.c      page "Creator Kit": a Blender template from the user's own game files
 //
 // Command line (details in rs_shell.c): `--rldpack <arguments>` (first
 // argument: the rldpack face), `--do "<verb> <argument>"` (automation, any
@@ -793,10 +794,20 @@ extern const struct RsPageDef g_rsTrackPage;   // rs_track.c
 extern const struct RsPageDef g_rsCupsPage;    // rs_cups.c
 extern const struct RsPageDef g_rsCharPage;    // rs_char.c
 extern const struct RsPageDef g_rsTestPage;    // rs_test.c
+extern const struct RsPageDef g_rsKitPage;     // rs_kit.c
 
 // The page IDs of the built-in modules (rs_module.c, in this order); the
 // pages of other modules follow them.
-enum RsPageId { RS_PAGE_TRACK = 0, RS_PAGE_CUPS, RS_PAGE_CHAR, RS_PAGE_TEST, RS_PAGE_BUILTIN_COUNT };
+enum RsPageId { RS_PAGE_TRACK = 0, RS_PAGE_CUPS, RS_PAGE_CHAR, RS_PAGE_TEST, RS_PAGE_KIT, RS_PAGE_BUILTIN_COUNT };
+
+// The files of the Creator Kit built into this exe (RCDATA, reloadstudio_kit.rc
+// made by CMakeLists.txt): its Blender scripts (templates/) and its guide
+// (docs/CREATOR_KIT.html).
+#define RS_RES_KIT_MAKE    201
+#define RS_RES_KIT_PUPPET  202
+#define RS_RES_KIT_CLIPS   203
+#define RS_RES_KIT_STANDIN 204
+#define RS_RES_KIT_GUIDE   205
 
 // The registry of the modules (rs_module.c). Rs_ModulesInit once, before the
 // pages are made: the built-in modules, then (loadDlls = 1) the module DLLs
@@ -1001,6 +1012,11 @@ int  Rs_RunRldpack(HWND notify, const wchar_t *const *args, int argc);
 int  Rs_RunProcess(HWND notify, const wchar_t *exe, const wchar_t *cmdline,
                    const wchar_t *cwd, int capture);
 
+// Starts another program as a tool (Blender for the Creator Kit): its output
+// arrives line by line like rldpack's, without a console window, and in a job
+// object, so that Rs_JobCancel ends every process it started too.
+int  Rs_RunTool(HWND notify, const wchar_t *exe, const wchar_t *cmdline, const wchar_t *cwd);
+
 // Kills the process of a running job (Rs_RunProcess, Rs_RunRldpack)
 // hard; RS_WM_JOB_DONE arrives afterwards as usual. 1 = ended, 0 = no
 // running job with this ID.
@@ -1086,6 +1102,13 @@ const wchar_t *Rs_ExeDir(void);
 // 1 = found; 0 = out is "" (show RS_TEXT_NO_GAME_EXE).
 int Rs_FindGameExe(wchar_t *out, int outCap);
 
+// The game folder the way the game finds it (NativeAssets_Init): dir, its
+// parent, its grandparent - the first whose folder assets holds BIGFILE.BIG
+// (unpacked = 1) or the disc image ctr-u.bin (unpacked = 0). 1 = found, out
+// the folder; 0 = out is "". dir is a folder (the game program's, or one the
+// author chose). The pages Track and Test have their own copies of this rule.
+int Rs_FindGameBase(const wchar_t *dir, wchar_t *out, int outCap, int *unpacked);
+
 // Message when Rs_FindGameExe finds nothing (pages other than Test).
 #define RS_TEXT_NO_GAME_EXE \
     L"The game program (ctr_native.exe) was not found next to Reload Studio. " \
@@ -1161,5 +1184,8 @@ int      Rs_WriteTextFile(const wchar_t *path, const wchar_t *text);
 
 // Automation log: one line to the automation's stdout (--log <file>).
 void Rs_AutoLog(const wchar_t *fmt, ...);
+// A step that a page started (RS_AUTO_WAIT) and that failed later: one line
+// "  FAIL: <why>" and the step counts as failed, as if automate() had said so.
+void Rs_AutoFail(const wchar_t *why);
 
 #endif
