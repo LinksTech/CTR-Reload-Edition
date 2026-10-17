@@ -685,6 +685,8 @@ const char *Engine_ProgramsFailReason(void);
 u32 Engine_Program(void);
 // The handle of an ENGINE_PROGRAM_* program, 0xffffffff when not made or unknown.
 u32 Engine_ProgramOf(int program);
+// Pure: 1 = "ns" is made at the start (--engine-static-model or --engine-hires-chars).
+int Engine_ProgramStaticWanted(const char *staticModel, int hiresChars);
 
 // --------------------------------------------------------------------------
 // RENDER (platform/engine_render.c)
@@ -718,7 +720,11 @@ u32 Engine_ProgramOf(int program);
 // At a load stage only (the buffer is made host visible, nothing waits). The
 // buffer's handle, 0xffffffff when refused (table full, no memory).
 u32 Engine_RenderStreamCreate(u32 verticesPerRegion);
-void Engine_RenderStreamDestroy(u32 vertexBuffer); // a load stage only
+// A load stage only: the buffer leaves the stream table (no draw names it any
+// more); the vertex buffer itself stays and is the caller's to destroy with
+// Engine_RenderStaticBuffersFree ONE LOAD LATER (a command buffer of the load
+// may still be recording with it, as the renderer's own grave assumes).
+void Engine_RenderStreamRelease(u32 vertexBuffer);
 // In a frame, before the submits that draw it: the array of the selected
 // bank's frame (count <= verticesPerRegion). The caller keeps it unchanged
 // until that bank's next Engine_RenderFrameBegin. 1 = set.
@@ -1173,6 +1179,11 @@ int Engine_HiresCharResolveClip(int ch, int clip, int *full);
 // instance scale: x left, y up, z front; rest pose and every clip). 0 = none.
 int Engine_HiresCharHull(int ch, float hullMin[3], float hullMax[3]);
 
+// ONE CHARACTER PER SLOT AND FRAME: the renderer draws a slot from the array of
+// its last skin in the frame, so a second character in the same slot and frame
+// is refused (Engine_HiresCharSubmit returns 0, logged once); a second call for
+// the same character draws the first call's pose.
+//
 // SEAT OVERRIDE (podium, results screen in a race level): from the next logic
 // tick the seat's race state machine is replaced by clip (0 .. ENGINE_HIRES_CLIPS
 // - 1, played as the clip plays: podium, lose, menu loop; cross-faded like any

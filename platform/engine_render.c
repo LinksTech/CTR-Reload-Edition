@@ -376,13 +376,13 @@ u32 Engine_RenderStreamCreate(u32 verticesPerRegion)
 	return (u32)buffer;
 }
 
-void Engine_RenderStreamDestroy(u32 vertexBuffer)
+void Engine_RenderStreamRelease(u32 vertexBuffer)
 {
 	for (int i = 0; i < ENGINE_RENDER_STREAMS_MAX; i++)
 	{
 		if (Engine_RenderBufferValid(s_engStreams[i].buffer) && ((u32)s_engStreams[i].buffer == vertexBuffer))
 		{
-			NativeGfx_DestroyVertexBuffer(s_engStreams[i].buffer);
+			// Forgotten only: the owner destroys the buffer one load later (engine.h).
 			memset(&s_engStreams[i], 0, sizeof(s_engStreams[i]));
 			s_engStreamCount--;
 			return;

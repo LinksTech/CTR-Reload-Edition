@@ -72,6 +72,14 @@ int g_cfg_engineHiresCharsLog = 0;
 #define ENG_HC_VERTICES_MAX (1u << 20) // an external mesh's frame (engine_mesh.c MESH_VERTICES_TOTAL_MAX)
 #define ENG_HC_HULL_SAMPLES 16         // samples per clip for the hull (both ends included)
 #define ENG_HC_HULL_MAX (RLDHIRES_BOUNDS_MAX_M * RLDHIRES_UNITS_PER_METRE)
+// The culling margin of the hull, per side, a fraction of the axis's extent
+// (blends and the times between the samples; not part of the 4 m rule, which
+// tests the plain extent). include/rldhires.inc's RLDHIRES_HULL_MARGIN once it has one.
+#ifdef RLDHIRES_HULL_MARGIN
+#define ENG_HC_HULL_MARGIN RLDHIRES_HULL_MARGIN
+#else
+#define ENG_HC_HULL_MARGIN 0.05f
+#endif
 #define ENG_HC_STD_SEGMENTS 20        // the standard wheel: a cylinder of this many sides
 #define ENG_HC_STD_RADIUS 16.0f       // model units, the prototype's wheel (engine_hires.c ENG_HIRES_WHEEL_RADIUS)
 #define ENG_HC_STD_HALF_WIDTH 5.0f
@@ -81,6 +89,7 @@ int g_cfg_engineHiresCharsLog = 0;
 // the driver select preview (EngHc_SelectRoute).
 #define ENG_HC_SLOT_SELECT ENGINE_HIRES_SLOTS
 #define ENG_HC_SLOTS_ALL (ENGINE_HIRES_SLOTS + 1)
+#define ENG_HC_GRAVE_MAX 64
 #define ENG_HC_TWO_PI 6.283185307179586
 #define ENG_HC_ANGLE (ENG_HC_TWO_PI / 4096.0) // one game angle unit
 
@@ -207,7 +216,8 @@ typedef struct
 typedef struct
 {
 	EngineMat4 world;           // model units -> world units
-	double rot[3][3];           // the wheels' rotation and size outer (instance: R x wheelSize / 4096; a matrix: its 3x3)
+	double rot[3][3];           // the STANDARD wheels' rotation and size outer (instance: R x wheelSize / 4096; a matrix: its 3x3);
+	                            // own wheel nodes are part of the model and take the 3x3 of world (inst->scale included)
 	const struct Instance *inst; // set: the standard wheels by the prototype's integer middles
 	double k;                   // wheelSize / 4096 (instance)
 	double steer;               // radians, front wheels
@@ -245,6 +255,15 @@ internal struct
 	double skinMs;
 	u32 skinFrames;
 	u32 hostPeak;
+	char ruleCopy[16];       // the rule id of the last refusal from a report (EngHc_FirstError)
+	// THE GRAVE: GPU buffers let go at a load, destroyed at the next load (the
+	// renderer's rule, Engine_RenderLevelUnload: a command buffer of the load may
+	// still be recording with them). Textures need none: the backend retires them.
+	u32 graveVB[ENG_HC_GRAVE_MAX];
+	u32 graveIB[ENG_HC_GRAVE_MAX];
+	int graveCount;
+	u32 refusedSlotSkins;    // a slot asked for a second character in one frame (refused)
+	int refusedSlotLogged;
 } s_hc;
 
 // ---------------------------------------------------------------------------
@@ -970,6 +989,13 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 			return 0;
 		}
 	}
+	for (k = 0; k < 3; k++)
+	{
+		const float grow = (c->hullMax[k] - c->hullMin[k]) * ENG_HC_HULL_MARGIN;
+
+		c->hullMin[k] -= grow;
+		c->hullMax[k] += grow;
+	}
 
 	// The summary of the clips for the ready line.
 	{
@@ -1003,6 +1029,34 @@ internal int EngHc_BuildCpu(const RldHiresModel *m, EngHcChar *c, const char **r
 // ---------------------------------------------------------------------------
 // THE GPU SIDE (load stage only).
 
+// Parks a buffer pair (0xffffffff for none) for the next load's EngHc_GraveEmpty;
+// destroys at once only when the grave is full (logged).
+internal void EngHc_GravePark(u32 vertexBuffer, u32 indexBuffer)
+{
+	if (s_hc.graveCount < ENG_HC_GRAVE_MAX)
+	{
+		s_hc.graveVB[s_hc.graveCount] = vertexBuffer;
+		s_hc.graveIB[s_hc.graveCount] = indexBuffer;
+		s_hc.graveCount++;
+		return;
+	}
+	Platform_Log("[CTR Engine] hires chars: the grave is full - a buffer is destroyed during its load\n");
+	Engine_RenderStaticBuffersFree(vertexBuffer, indexBuffer);
+}
+
+// At the start of a load, before anything of this load is parked: what the
+// earlier loads let go.
+internal void EngHc_GraveEmpty(void)
+{
+	int i;
+
+	for (i = 0; i < s_hc.graveCount; i++)
+	{
+		Engine_RenderStaticBuffersFree(s_hc.graveVB[i], s_hc.graveIB[i]);
+	}
+	s_hc.graveCount = 0;
+}
+
 internal void EngHc_FreeGpu(EngHcChar *c)
 {
 	int k;
@@ -1017,7 +1071,7 @@ internal void EngHc_FreeGpu(EngHcChar *c)
 	}
 	if ((c->indexBuffer != 0xffffffffu) && (c->indexBuffer != 0u))
 	{
-		Engine_RenderStaticBuffersFree(0xffffffffu, c->indexBuffer);
+		EngHc_GravePark(0xffffffffu, c->indexBuffer);
 	}
 	c->indexBuffer = 0xffffffffu;
 }
@@ -1067,6 +1121,14 @@ internal int EngHc_Upload(const RldHiresModel *m, EngHcChar *c, const char **rul
 			RldPng_Free(&png);
 			snprintf(detail, (size_t)detailSize, "image %d: an edge above 2048", t->image);
 			*rule = "HRG-17";
+			return 0;
+		}
+		if ((c->texBytes + (u64)w * (u64)h * 4u) > (u64)RLDHIRES_BUDGET_TEXTURE_BYTES)
+		{
+			RldPng_Free(&png);
+			snprintf(detail, (size_t)detailSize, "over budget: %llu texture bytes uploaded (RGBA8, an image used two ways counts twice), the limit is %u",
+			         (unsigned long long)(c->texBytes + (u64)w * (u64)h * 4u), (unsigned)RLDHIRES_BUDGET_TEXTURE_BYTES);
+			*rule = "HRG-27";
 			return 0;
 		}
 		rgba = png.rgba;
@@ -1171,15 +1233,25 @@ internal int EngHc_RegisterMaterials(EngHcChar *c)
 // ---------------------------------------------------------------------------
 // THE POSE.
 
-// One clip into pose (the rest pose first): its resolved clip at time (or the
-// scrub fraction). *resolved and *local for the log (may be NULL).
-internal void EngHc_EvalClip(const EngHcChar *c, int clip, float time, float fraction, RldAnimTrs *pose, int *resolved, float *local)
+// One clip into pose: its resolved clip at time (or the scrub fraction),
+// sampled on top of base (NULL = the rest pose; the steer overlay passes the
+// idle pose, so that the nodes the steer clip does not key keep idle's
+// transform - the composition of Reload Studio's preview). *resolved and
+// *local for the log (may be NULL).
+internal void EngHc_EvalClipOn(const EngHcChar *c, int clip, float time, float fraction, const RldAnimTrs *base, RldAnimTrs *pose, int *resolved, float *local)
 {
 	int full = 0;
 	const int r = EngHc_Resolve(c->clipMask, clip, &full);
 	float t = 0.0f;
 
-	RldAnim_PoseRest(&c->skel, pose);
+	if (base != NULL)
+	{
+		memcpy(pose, base, (size_t)c->skel.nodeCount * sizeof(RldAnimTrs));
+	}
+	else
+	{
+		RldAnim_PoseRest(&c->skel, pose);
+	}
 	if (r != ENGINE_HIRES_CLIP_REST)
 	{
 		const RldAnimClip *cl = &c->clip[r];
@@ -1195,6 +1267,11 @@ internal void EngHc_EvalClip(const EngHcChar *c, int clip, float time, float fra
 	{
 		*local = t;
 	}
+}
+
+internal void EngHc_EvalClip(const EngHcChar *c, int clip, float time, float fraction, RldAnimTrs *pose, int *resolved, float *local)
+{
+	EngHc_EvalClipOn(c, clip, time, fraction, NULL, pose, resolved, local);
 }
 
 // The pose a seat state draws (the fade over the snapshot included) into out;
@@ -1216,12 +1293,20 @@ internal void EngHc_StatePose(const EngHcChar *c, const EngHcSeatState *st, cons
 
 		EngHc_EvalClip(c, ENGINE_HIRES_CLIP_IDLE, st->baseTime, 0.0f, out, &i.clip, &i.t);
 		i.steer = (st->steerRaw > 0) ? frac : -frac;
-		// Only a real steer clip blends; a steer that falls back to idle IS the idle above.
+		// Only a real steer clip blends; a steer that falls back to idle IS the
+		// idle above. The overlay is the steer clip sampled ON the idle pose,
+		// then blended over idle by the share (as Reload Studio's preview).
 		if ((frac > 0.0f) && (EngHc_PlayOf(sr) == RLDHIRES_PLAY_POSE) && (sr != ENGINE_HIRES_CLIP_REST))
 		{
-			EngHc_EvalClip(c, sideClip, 0.0f, frac, s_hc.poseB, &i.steerClip, NULL);
+			EngHc_EvalClipOn(c, sideClip, 0.0f, frac, out, s_hc.poseB, &i.steerClip, NULL);
 			RldAnim_BlendPose(out, s_hc.poseB, frac, out, c->skel.nodeCount);
 		}
+	}
+	else if (EngHc_PlayOf(EngHc_Resolve(c->clipMask, i.want, NULL)) == RLDHIRES_PLAY_POSE)
+	{
+		// A drift that falls back to its steer clip at full lock: on the idle pose, as the steer overlay.
+		EngHc_EvalClip(c, ENGINE_HIRES_CLIP_IDLE, st->baseTime, 0.0f, s_hc.poseB, NULL, NULL);
+		EngHc_EvalClipOn(c, i.want, st->stateTime, 0.0f, s_hc.poseB, out, &i.clip, &i.t);
 	}
 	else
 	{
@@ -1252,9 +1337,19 @@ internal void EngHc_StatePose(const EngHcChar *c, const EngHcSeatState *st, cons
 internal void EngHc_Palette(const EngHcChar *c, const RldAnimTrs *pose, const EngHcPlace *pl, float *yaw, float *roll)
 {
 	EngineMat4 m64 = pl->world;
+	double body[3][3]; // the 3x3 of world, row-major: the own wheels' outer (they keep the model's proportions)
 	u32 e;
 	int w;
 
+	for (e = 0; e < 3u; e++)
+	{
+		u32 col;
+
+		for (col = 0; col < 3u; col++)
+		{
+			body[e][col] = (double)pl->world.m[col * 4u + e];
+		}
+	}
 	EngHc_MatScale(&m64, ENG_HC_UNITS);
 	RldAnim_NodeMatrices(&c->skel, pose, s_hc.worlds);
 	for (e = 0; e < c->joints; e++)
@@ -1329,7 +1424,7 @@ internal void EngHc_Palette(const EngHcChar *c, const RldAnimTrs *pose, const En
 					Wn[a][b] = (double)n[b * 4 + a] * ENG_HC_UNITS;
 				}
 			}
-			EngHc_Mul3(pl->rot, F0, a1);
+			EngHc_Mul3(body, F0, a1);
 			EngHc_Mul3(a1, Wn, unrolled);
 			EngHc_Mul3(unrolled, Rx, r);
 			for (a = 0; a < 3; a++)
@@ -1370,7 +1465,7 @@ internal void EngHc_Palette(const EngHcChar *c, const RldAnimTrs *pose, const En
 				lf += fr0[a] * fr0[a];
 				lc += c1[a] * c1[a];
 			}
-			if (EngHires_Inverse3(pl->rot, inv))
+			if (EngHires_Inverse3(c->ownWheels ? body : pl->rot, inv))
 			{
 				for (a = 0; a < 3; a++)
 				{
@@ -1405,9 +1500,23 @@ internal int EngHc_SkinSlot(int slot, int ch, const RldAnimTrs *pose, const EngH
 	{
 		return 0;
 	}
-	if ((s->skinnedFrame == s_hc.frame + 1u) && (s->skinnedChar == ch))
+	if (s->skinnedFrame == s_hc.frame + 1u)
 	{
-		return 1;
+		if (s->skinnedChar == ch)
+		{
+			return 1;
+		}
+		// ONE CHARACTER PER SLOT AND FRAME: the renderer keeps the array's pointer
+		// until the draw, so a second character would replace the first one's
+		// vertices under its draws. Refused (counted, logged once).
+		s_hc.refusedSlotSkins++;
+		if (!s_hc.refusedSlotLogged)
+		{
+			s_hc.refusedSlotLogged = 1;
+			Platform_Log("[CTR Engine] hires char: slot %d asked for a second character in one frame (%s after %s) - refused, one character per slot and frame\n",
+			             slot, s_hc.chars[ch].file, s_hc.chars[s->skinnedChar].file);
+		}
+		return 0;
 	}
 	started = SDL_GetPerformanceCounter();
 	out = s->cpu[bank];
@@ -1664,7 +1773,9 @@ internal void EngHc_SeatTick(const struct GameTracker *gGT, int seat)
 	// The wheels: the way of the tick over each wheel's radius (the prototype's rule).
 	for (w = 0; w < 4; w++)
 	{
-		const double k = (double)d->wheelSize / 4096.0;
+		// Own wheels scale with the body (inst->scale, its rolling plane y-z);
+		// standard wheels with the wheel size (the prototype's rule).
+		const double k = c->ownWheels ? (((double)d->instSelf->scale.y + (double)d->instSelf->scale.z) / 2.0 / 4096.0) : ((double)d->wheelSize / 4096.0);
 		const double radius = (double)c->wheelRadius[w] * k;
 		const double way = (double)d->speedApprox * (double)gGT->elapsedTimeMS / 32.0 / 256.0;
 
@@ -2155,7 +2266,9 @@ internal void EngHc_FirstError(const RldHiresReport *rep, const char **rule, cha
 	{
 		if (rep->msg[i].level == RLDHIRES_ERROR)
 		{
-			*rule = rep->msg[i].rule;
+			// Copied: the report is the caller's local, the rule is printed after it is gone.
+			snprintf(s_hc.ruleCopy, sizeof(s_hc.ruleCopy), "%s", rep->msg[i].rule);
+			*rule = s_hc.ruleCopy;
 			snprintf(detail, (size_t)detailSize, "%s", rep->msg[i].text);
 			return;
 		}
@@ -2314,7 +2427,8 @@ internal int EngHc_SlotSize(int slot, u32 capacity)
 	}
 	if ((s->stream != 0xffffffffu) && (s->stream != 0u))
 	{
-		Engine_RenderStreamDestroy(s->stream);
+		Engine_RenderStreamRelease(s->stream);
+		EngHc_GravePark(s->stream, 0xffffffffu);
 	}
 	for (b = 0; b < ENGINE_SCENE_BANKS; b++)
 	{
@@ -2368,6 +2482,7 @@ void Engine_HiresCharsLoad(void)
 		return;
 	}
 	started = SDL_GetPerformanceCounter();
+	EngHc_GraveEmpty();
 	if (!s_hc.reportOn)
 	{
 		s_hc.reportOn = 1;
@@ -2493,6 +2608,17 @@ void Engine_HiresCharsLoad(void)
 		}
 	}
 
+	// This level's materials of every loaded character now, at the load stage:
+	// Engine_MaterialsWarmPipelines (load stage 8) builds their pipelines, so
+	// no pipeline is made inside a race frame.
+	for (k = 0; k < ENGINE_HIRES_CHARS_MAX; k++)
+	{
+		if (s_hc.chars[k].used && !EngHc_RegisterMaterials(&s_hc.chars[k]))
+		{
+			Platform_Log("[CTR Engine] hires chars: the material table is full at %s - its draws are refused in this level\n", s_hc.chars[k].file);
+		}
+	}
+
 	// The scratch, the seats' snapshots, the slots.
 	for (k = 0; k < ENGINE_HIRES_CHARS_MAX; k++)
 	{
@@ -2528,9 +2654,22 @@ void Engine_HiresCharsLoad(void)
 			(void)EngHc_SlotSize(seat, 0u);
 		}
 	}
-	for (k = ENGINE_HIRES_SLOT_SEATS; k < ENG_HC_SLOTS_ALL; k++)
+	// The forced slots (podium, menu scene: MC) only in a level without hi-res
+	// seats (a menu, the podium of a cup), the select slot only in a main menu
+	// level: a race level keeps none of them (32-bit address space).
 	{
-		(void)EngHc_SlotSize(k, maxVertices);
+		int hiresSeats = 0;
+
+		for (seat = 0; seat < ENGINE_HIRES_SLOT_SEATS; seat++)
+		{
+			hiresSeats += (s_hc.seatChar[seat] >= 0) ? 1 : 0;
+		}
+		for (k = ENGINE_HIRES_SLOT_SEATS; k < ENG_HC_SLOTS_ALL; k++)
+		{
+			const int wanted = (k == ENG_HC_SLOT_SELECT) ? menu : (hiresSeats == 0);
+
+			(void)EngHc_SlotSize(k, wanted ? maxVertices : 0u);
+		}
 	}
 	for (k = 0; k < ENG_HC_SLOTS_ALL; k++)
 	{
@@ -2632,8 +2771,9 @@ internal int EngHc_SelfTestLoader(int *checks)
 		         "A: wheel radius 0.25 m = 16 units, sign, rest yaw");
 		// wheels: middles x +-36, y 16, z 49.75 / -24, each +-16 on every axis; the body up to y 32 at rest, and
 		// the clips lift the root by up to 0.12 m (7.68) with the bone turned up to 120 degrees: about 45
-		HL_CHECK((fabsf(c.hullMax[0] - 52.0f) < 0.01f) && (fabsf(c.hullMin[0] + 52.0f) < 0.01f) && (fabsf(c.hullMin[1]) < 0.01f) &&
-		             (c.hullMax[1] > 39.6f) && (c.hullMax[1] < 46.0f) && (fabsf(c.hullMax[2] - 65.7472f) < 0.01f) && (fabsf(c.hullMin[2] + 40.0f) < 0.01f),
+		// (plus the culling margin: 5 % of each axis's extent per side; x 104 -> +-57.2, z -40..65.7472 -> -45.2874..71.0346)
+		HL_CHECK((fabsf(c.hullMax[0] - 57.2f) < 0.01f) && (fabsf(c.hullMin[0] + 57.2f) < 0.01f) && (c.hullMin[1] < -1.9f) && (c.hullMin[1] > -2.4f) &&
+		             (c.hullMax[1] > 41.5f) && (c.hullMax[1] < 48.5f) && (fabsf(c.hullMax[2] - 71.0346f) < 0.01f) && (fabsf(c.hullMin[2] + 45.2874f) < 0.01f),
 		         "A: hull over the wheels and the body (model units)");
 
 		// The palette and the skinning at a place (identity world, at rest).
@@ -2675,6 +2815,22 @@ internal int EngHc_SelfTestLoader(int *checks)
 			pl.roll[0] = 0.0;
 			EngHc_Palette(&c, s_hc.poseA, &pl, &yaw, &roll);
 			HL_CHECK((fabsf(yaw - 0.25f) < 0.005f) && (fabsf(roll) < 0.01f), "A: read-back yaw = steer of a front wheel");
+			// Own wheels keep the model's proportions: a squashed body (x 0.5, y 0.75, z 0.5) squashes them too.
+			pl.steer = 0.0;
+			pl.world.m[0] = 0.5f;
+			pl.world.m[5] = 0.75f;
+			pl.world.m[10] = 0.5f;
+			EngHc_Palette(&c, s_hc.poseA, &pl, &yaw, &roll);
+			{
+				const float *e = &s_hc.palette[2u * 12u];
+				const double axle = sqrt((double)e[0] * e[0] + (double)e[4] * e[4] + (double)e[8] * e[8]);
+				const double up = sqrt((double)e[1] * e[1] + (double)e[5] * e[5] + (double)e[9] * e[9]);
+
+				HL_CHECK((fabs(axle - 32.0) < 0.05) && (fabs(up - 48.0) < 0.05) && (fabsf(e[7] - 12.0f) < 1e-3f) && (fabsf(e[3] - 18.0f) < 1e-3f),
+				         "A: own wheels scale with the body's matrix (axle 64 x 0.5, up 64 x 0.75, middle y 16 x 0.75)");
+				HL_CHECK(fabsf(yaw) < 0.01f, "A: read-back yaw through the squashed matrix is still 0");
+			}
+			Engine_Mat4Identity(&pl.world);
 			// The clip pose: idle at t = 1 rotates the bone 10 degrees about z.
 			{
 				EngHcSeatState st;
@@ -2796,6 +2952,9 @@ internal int EngHc_SelfTestLoader(int *checks)
 
 			EngHc_FirstError(&rep, &r, text, (int)sizeof(text));
 			HL_CHECK(strcmp(r, "HRG-27") == 0, "the refusal line names HRG-27");
+			// The id is a copy: it outlives the report (the loader prints it after its report is gone).
+			memset(&rep, 0x55, sizeof(rep));
+			HL_CHECK(strcmp(r, "HRG-27") == 0, "the refusal's rule id outlives its report");
 		}
 	}
 
@@ -3082,6 +3241,10 @@ int Engine_SelfTestHiresChar(int *checks)
 	HC_CHECK((Engine_HiresCharOfSeat(0) == -1) && (Engine_HiresCharOfFile("x.rldchar") == -1) && (Engine_HiresCharOfEntry(0) == -1) &&
 	             (Engine_HiresCharSubmit(0, NULL) == 0) && (Engine_HiresCharOfPlace(1) == -1) && (strcmp(Engine_HiresCharFile(3), "") == 0),
 	         "no character without a load");
+	// "ns" is made for the hi-res drivers too (R1: it was made for the static model only).
+	HC_CHECK(Engine_ProgramStaticWanted("", 1) && Engine_ProgramStaticWanted("m.glb", 0) && !Engine_ProgramStaticWanted("", 0) &&
+	             !Engine_ProgramStaticWanted(NULL, 0),
+	         "program ns wanted with the static model or the hi-res drivers, else not");
 	failures += EngHc_SelfTestLoader(checks);
 #undef HC_CHECK
 	*checks += n;
