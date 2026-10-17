@@ -629,6 +629,46 @@ if(BUILD_TESTING)
             PASS_REGULAR_EXPRESSION "charroute page passed: 3 routes"
             FAIL_REGULAR_EXPRESSION "FAILED"
             TIMEOUT 600)
+
+        # The module loader of Reload Studio (tools/reloadstudio/rs_module.c):
+        # one small DLL per variant of tools/reloadstudio/rs_module_test.c (a
+        # good module, one that needs it, crashes in create and in automate,
+        # another module interface, a newer core, no entry, no module, a word
+        # taken, a module missing, a crash in the entry, a bad word), only with
+        # the tests. cmake/run_rs_modules.cmake copies them into a folder of its
+        # run and checks modules.log, the automation log and the sidebar.
+        set(ctr_modtest_variants ok ok2 crash_create crash_auto abi core noentry null
+            dupword needs crash_entry badword)
+        set(ctr_modtest_dlls "")
+        set(ctr_modtest_n 0)
+        foreach(variant IN LISTS ctr_modtest_variants)
+            math(EXPR ctr_modtest_n "${ctr_modtest_n} + 1")
+            add_library(rs_modtest_${variant} SHARED tools/reloadstudio/rs_module_test.c)
+            target_compile_definitions(rs_modtest_${variant} PRIVATE RS_TEST_VARIANT=${ctr_modtest_n})
+            set_target_properties(rs_modtest_${variant} PROPERTIES
+                OUTPUT_NAME rs_modtest_${variant}
+                C_STANDARD 17
+                C_STANDARD_REQUIRED ON
+                C_EXTENSIONS OFF
+            )
+            # "|" between the files: a ";" would split the argument of add_test.
+            if(ctr_modtest_dlls)
+                string(APPEND ctr_modtest_dlls "|")
+            endif()
+            string(APPEND ctr_modtest_dlls "$<TARGET_FILE:rs_modtest_${variant}>")
+        endforeach()
+        add_test(NAME reloadstudio_modules
+            COMMAND ${CMAKE_COMMAND}
+                -DSTUDIO=$<TARGET_FILE:ReloadStudio>
+                -DMODULES=${ctr_modtest_dlls}
+                -DDIR=${CMAKE_BINARY_DIR}/selftest/rs-modules
+                -P ${CMAKE_SOURCE_DIR}/cmake/run_rs_modules.cmake
+            WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        )
+        set_tests_properties(reloadstudio_modules PROPERTIES
+            PASS_REGULAR_EXPRESSION "modules passed: "
+            FAIL_REGULAR_EXPRESSION "FAILED"
+            TIMEOUT 300)
     endif()
     set_tests_properties(ctr_native_version PROPERTIES PASS_REGULAR_EXPRESSION "^CTR Reload ${CTR_NATIVE_VERSION} ")
 

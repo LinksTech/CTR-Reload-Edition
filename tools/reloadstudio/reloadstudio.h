@@ -732,15 +732,8 @@
 
 #define RS_PROTOCOL 1
 
-// Severity of a message, for the message list and the colour of labels.
-enum RsSeverity {
-    RS_SEV_OK = 0,      // green: built, present
-    RS_SEV_INFO,        // grey: for information only
-    RS_SEV_NOTE,        // blue: note, e.g. "not playable in CTR Reload yet"
-    RS_SEV_WARNING,     // amber: builds, but take a look
-    RS_SEV_ERROR,       // red: does not build
-    RS_SEV_COUNT
-};
+// Severity of a message, for the message list and the colour of labels:
+// enum RsSeverity (RS_SEV_*) in rs_module.h.
 
 // "@msg" severity from rldpack -> enum. Unknown -> RS_SEV_INFO.
 int Rs_SeverityFromText(const wchar_t *text);
@@ -792,52 +785,9 @@ void Rs_PageSetCompactHead(HWND page, int on);
 // is, its own tooltip too). For notes without a tooltip of their own.
 void Rs_LabelOneLine(HWND label, int on);
 
-// Minimum size of a page in 96-dpi pixels when its definition says 0.
-#define RS_PAGE_MIN_W 964
-#define RS_PAGE_MIN_H 760
-
-// Return values of automate().
-enum RsAuto {
-    RS_AUTO_UNKNOWN = 0,   // verb does not belong to this page
-    RS_AUTO_DONE,          // done
-    RS_AUTO_WAIT,          // started; the shell waits until busy() says 0
-    RS_AUTO_FAIL           // did not work; the shell notes it and continues
-};
-
-struct RsPageDef {
-    const wchar_t *navName;    // entry in the sidebar, e.g. L"Track"
-    const wchar_t *title;      // heading of the page
-    const wchar_t *subtitle;   // one line below it
-
-    // Create controls. page is the page window.
-    void (*create)(HWND page);
-
-    // Position controls. w/h in pixels of the page (without the heading - the
-    // shell paints that above Rs_PageTop()). Report the cards for this pass
-    // with Rs_CardClear/Rs_CardAdd.
-    void (*layout)(HWND page, int w, int h);
-
-    // WM_COMMAND and WM_NOTIFY of the children. Return value as for the window procedure.
-    LRESULT (*command)(HWND page, WPARAM wParam, LPARAM lParam);
-    LRESULT (*notify)(HWND page, NMHDR *hdr);
-
-    // All other messages to the page window, especially RS_WM_JOB_LINE,
-    // RS_WM_JOB_DONE, WM_TIMER and RS_WM_PAGE_SHOWN. *handled = 1 if the
-    // page processed them.
-    LRESULT (*message)(HWND page, UINT msg, WPARAM wParam, LPARAM lParam, int *handled);
-
-    // Automation: a verb with an argument (rest of the line, may be empty).
-    int (*automate)(HWND page, const wchar_t *verb, const wchar_t *arg);
-
-    // 1 as long as the page is waiting for a child process.
-    int (*busy)(HWND page);
-
-    // Smallest size of the page in 96-dpi pixels (the shell scales it): below
-    // it the view scrolls instead of handing layout() less. 0 = RS_PAGE_MIN_W,
-    // RS_PAGE_MIN_H. A definition that ends with busy keeps the defaults.
-    int minWidth;
-    int minHeight;
-};
+// The definition of a page (struct RsPageDef), its minimum size
+// (RS_PAGE_MIN_W, RS_PAGE_MIN_H) and the return values of automate() (enum
+// RsAuto) are in rs_module.h: a module DLL uses the same ones.
 
 extern const struct RsPageDef g_rsTrackPage;   // rs_track.c
 extern const struct RsPageDef g_rsCupsPage;    // rs_cups.c
@@ -849,26 +799,24 @@ extern const struct RsPageDef g_rsTestPage;    // rs_test.c
 enum RsPageId { RS_PAGE_TRACK = 0, RS_PAGE_CUPS, RS_PAGE_CHAR, RS_PAGE_TEST, RS_PAGE_BUILTIN_COUNT };
 
 // The registry of the modules (rs_module.c). Rs_ModulesInit once, before the
-// pages are made; then the page ID of a module is its place here.
-void Rs_ModulesInit(void);
+// pages are made: the built-in modules, then (loadDlls = 1) the module DLLs
+// of folder (NULL = "modules" next to this exe; --modules-dir, --no-modules);
+// then the page ID of a module is its place here.
+void Rs_ModulesInit(const wchar_t *folder, int loadDlls);
 int  Rs_ModuleCount(void);
 int  Rs_ModuleBuiltinCount(void);
 const struct RsModuleDef *Rs_ModuleAt(int id);   // NULL outside 0..Rs_ModuleCount()-1
 int  Rs_ModuleByWord(const wchar_t *word);       // page ID, -1 if no module has this word
+int  Rs_ModuleOn(int id);                        // 0 = no such page, or its module crashed and is off
+// One line to modules.log (when this start writes one) and the automation log.
+void __cdecl Rs_ModuleLog(const wchar_t *fmt, ...);
+// The shell's side (rs_shell.c): the page ID of a page window (-1 if it is
+// none), and a module that was turned off - its page goes (posted, so it is
+// safe from inside a callback of that page).
+int  Rs_PageIdOf(HWND page);
+void Rs_ModuleTurnedOff(int id);
 
-// Own messages to page windows.
-#define RS_WM_JOB_LINE    (WM_APP + 1)  // wParam = job, lParam = wchar_t* line (Rs_Free)
-#define RS_WM_JOB_DONE    (WM_APP + 2)  // wParam = job, lParam = exit code
-#define RS_WM_PAGE_SHOWN  (WM_APP + 3)  // page became visible
-#define RS_WM_OPEN_TEST   (WM_APP + 4)  // to the test page: lParam = wchar_t* container path (Rs_Free)
-#define RS_WM_QUERY_CLOSE (WM_APP + 5)  // window is to close: *handled = 1 and return 0 keeps it open
-#define RS_WM_STEP_TAB    (WM_APP + 6)  // Ctrl+Tab (wParam 1) or Ctrl+Shift+Tab (wParam -1): a page with tabs
-                                        // of its own steps through them, *handled = 1 and returns 1
-#define RS_WM_JOB_PROGRESS (WM_APP + 7) // wParam = job, lParam = struct RsJobProgress* (Rs_Free)
-#define RS_WM_JOB_BUSY     (WM_APP + 8) // a job could not start, all slots taken: wParam = jobs
-                                        // running, lParam = wchar_t* "busy: N jobs running" (Rs_Free)
-// WM_APP + 64 and up: a page's own messages to itself (rs_char.c: CHAR_WM_ACTIVATED, posted by its
-// subclass of the main window when Reload Studio becomes the active program again).
+// The own messages to page windows (RS_WM_JOB_LINE ... RS_WM_JOB_BUSY) are in rs_module.h.
 
 // Switch page (also from within a page, e.g. "Test in game" after the build).
 void Rs_ShowPage(int id);
@@ -889,15 +837,7 @@ int Rs_Px(int px96);
 // --ui-scale; GetSystemMetrics alone answers for the main monitor only.
 int Rs_Metric(HWND h, int index);
 
-enum RsFont {
-    RS_FONT_BODY = 0,   // Segoe UI 10 pt - default for all controls
-    RS_FONT_BOLD,       // Segoe UI Semibold 10 pt - labels of fields
-    RS_FONT_SMALL,      // Segoe UI 9 pt - reasons and notes below fields
-    RS_FONT_SECTION,    // Segoe UI Semibold 12 pt - card titles
-    RS_FONT_TITLE,      // Segoe UI Semibold 20 pt - page titles (painted by the shell)
-    RS_FONT_MONO,       // Consolas 9 pt - paths, raw output
-    RS_FONT_COUNT
-};
+// The fonts: enum RsFont (RS_FONT_*) in rs_module.h.
 HFONT Rs_Font(int font);
 
 // Colours (COLORREF) from the active palette: light (white cards on a
@@ -1036,8 +976,7 @@ int  Rs_MsgListCount(HWND list);
 // WM_COMMAND with the notification code RS_MSGN_CLICK to the page, and
 // Rs_MsgListClicked then says which entry it was (0 = the first, -1 = none).
 // It is a stop of the key Tab: up and down frame an entry, Enter or Space
-// click it.
-#define RS_MSGN_CLICK 1
+// click it. (RS_MSGN_CLICK: rs_module.h)
 void Rs_MsgListSetClickable(HWND list, int on);
 int  Rs_MsgListClicked(HWND list);
 // Whole entries only: less space around each, an entry that would be cut is
@@ -1067,18 +1006,9 @@ int  Rs_RunProcess(HWND notify, const wchar_t *exe, const wchar_t *cmdline,
 // running job with this ID.
 int  Rs_KillJob(int id);
 
-// A line "@progress\t<step>\t<done>\t<total>" of rldpack does not arrive as
-// RS_WM_JOB_LINE but as RS_WM_JOB_PROGRESS. step as rldpack wrote it
-// ("repair", "remesh", "reduce", "write"); total 0 = not known.
-struct RsJobProgress {
-    wchar_t step[16];
-    unsigned long done;
-    unsigned long total;
-};
-
-// Exit code in RS_WM_JOB_DONE of a job ended by Rs_JobCancel (the value of
-// STATUS_CONTROL_C_EXIT).
-#define RS_JOB_CANCELLED (-1073741510)
+// A line "@progress\t<step>\t<done>\t<total>" of rldpack arrives as
+// RS_WM_JOB_PROGRESS with a struct RsJobProgress, a job ended by Rs_JobCancel
+// with the exit code RS_JOB_CANCELLED: both in rs_module.h.
 
 // Cancels a running job: its process ends (an rldpack job together with
 // every process it started), with the exit code RS_JOB_CANCELLED.

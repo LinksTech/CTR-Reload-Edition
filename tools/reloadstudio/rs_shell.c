@@ -138,6 +138,8 @@ int Rldpack_Main(int argc, char *argv[]);
 
 // To the host: a page laid itself out again (wParam = page id), see Rs_CardClear.
 #define RS_WM_FIT (WM_APP + 32)
+// To the main window: the module of page wParam was turned off (Rs_ModuleTurnedOff).
+#define RS_WM_MODULE_OFF (WM_APP + 33)
 
 // ---------------------------------------------------------------------------
 // State
@@ -1606,6 +1608,16 @@ static LRESULT CALLBACK Rs_ListViewSub(HWND h, UINT msg, WPARAM wParam, LPARAM l
 static struct RsPageState *Rs_State(HWND page)
 {
     return (struct RsPageState *)GetWindowLongPtrW(page, GWLP_USERDATA);
+}
+
+int Rs_PageIdOf(HWND page)
+{
+    wchar_t cls[16];
+    struct RsPageState *st;
+    if (!page || !GetClassNameW(page, cls, 16) || wcscmp(cls, L"RsPage") != 0)
+        return -1;
+    st = Rs_State(page);
+    return st ? st->id : -1;
 }
 
 void Rs_CardClear(HWND page)
@@ -3341,7 +3353,7 @@ static void Rs_PageFit(int id, int relayout);
 void Rs_ShowPage(int id)
 {
     int i;
-    if (id < 0 || id >= g_pageCount)
+    if (id < 0 || id >= g_pageCount || !Rs_ModuleOn(id))
         return;
     for (i = 0; i < g_pageCount; i++)
         if (i != id && g_pages[i])
@@ -3708,11 +3720,18 @@ static int Rs_SideCompact(void)
     return client.bottom < Rs_Px(RS_SIDEBAR_FULL_H + more * RS_SIDEBAR_ENTRY_H);
 }
 
-// The pages the sidebar lists: all of them - the page of every module. (A
-// page that is not listed would get an empty entry, Rs_NavRect.)
+// The pages the sidebar lists: the page of every module that is on (a module
+// that crashed is off). A page that is not listed gets an empty entry
+// (Rs_NavRect), the entries below it move up.
 static int Rs_NavShown(int id)
 {
-    return id >= 0 && id < g_pageCount;
+    return id >= 0 && id < g_pageCount && Rs_ModuleOn(id);
+}
+
+void Rs_ModuleTurnedOff(int id)
+{
+    if (g_main)
+        PostMessageW(g_main, RS_WM_MODULE_OFF, (WPARAM)id, 0);
 }
 
 // The place of a listed page in the sidebar (0 = the first entry).
@@ -4418,6 +4437,9 @@ static void Rs_AutoTick(void)
         } else if (id < 0) {
             Rs_AutoLog(L"  FAIL: unknown page '%ls'", s->arg);
             g_autoFailed++;
+        } else if (!Rs_ModuleOn(id)) {
+            Rs_AutoLog(L"  FAIL: the module '%ls' was turned off (see the log)", s->arg);
+            g_autoFailed++;
         } else {
             Rs_ShowPage(id);
         }
@@ -4681,6 +4703,24 @@ static LRESULT CALLBACK Rs_MainProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM l
         if (wParam == RS_TIMER_AUTO)
             Rs_AutoTick();
         return 0;
+    case RS_WM_MODULE_OFF: {
+        // A module crashed (rs_module.c): its page goes, and when it was the
+        // page shown, the first page that is on takes its place.
+        int id = (int)wParam, i;
+        if (id >= 0 && id < g_pageCount && g_pages[id]) {
+            ShowWindow(g_pages[id], SW_HIDE);
+            if (g_current == id) {
+                g_current = -1;
+                for (i = 0; i < g_pageCount; i++)
+                    if (Rs_ModuleOn(i)) {
+                        Rs_ShowPage(i);
+                        break;
+                    }
+            }
+            Rs_Layout(0);
+        }
+        return 0;
+    }
     case WM_SETTINGCHANGE:
         // Windows switches light/dark: follow, as long as nobody has chosen explicitly.
         if (g_themeMode == RS_THEME_SYSTEM && lParam &&
@@ -4802,9 +4842,13 @@ static const wchar_t g_helpText[] =
     L"                         developer mode: the user mode of the page Character\n"
     L"                         (its choices fixed at rldpack's defaults); every\n"
     L"                         finished field is open without it\n"
+    L"  --modules-dir <folder> module DLLs from this folder instead of the folder\n"
+    L"                         modules next to the exe (for tests)\n"
+    L"  --no-modules           no module DLLs, only the built-in pages\n"
     L"  --help                 this text\n"
     L"\n"
-    L"Automation verbs of the window: page track|cups|char|test, shot <file.bmp>\n"
+    L"Automation verbs of the window: page track|cups|char|test (or the word of a\n"
+    L"module), shot <file.bmp>\n"
     L"(the client area), wait <ms>, size <w> <h> (client area), scroll top|bottom|\n"
     L"<x> <y> (the page shown), controls <file> (every control of the page with its\n"
     L"rectangle, see rs_shell.c), theme dark|light|system, cancel-jobs (every\n"
@@ -4857,6 +4901,8 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
     int cmdTheme = -1;
     const wchar_t *settingsArg = NULL;
     const wchar_t *scaleArg = NULL, *screenArg = NULL;
+    const wchar_t *modulesArg = NULL;
+    int noModules = 0;
 
     (void)prev;
     (void)cmdLine;
@@ -4885,6 +4931,10 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
             scaleArg = i + 1 < argc ? argv[++i] : L"";
         } else if (wcscmp(argv[i], L"--screen") == 0) {
             screenArg = i + 1 < argc ? argv[++i] : L"";
+        } else if (wcscmp(argv[i], L"--modules-dir") == 0 && i + 1 < argc) {
+            modulesArg = argv[++i];
+        } else if (wcscmp(argv[i], L"--no-modules") == 0) {
+            noModules = 1;
         } else if (wcscmp(argv[i], L"--enable-preview-features") == 0) {
             // Never stored: every start without it is the page players get.
             g_rsPreviewFeatures = 1;
@@ -4930,7 +4980,7 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
     Rs_ConfigInit(settingsArg);
     Rs_TempForChildren();
     // The modules, before anything asks for a page (the sidebar, the tips).
-    Rs_ModulesInit();
+    Rs_ModulesInit(modulesArg, !noModules);
     g_pageCount = Rs_ModuleCount();
 
     {
@@ -5012,6 +5062,9 @@ int WINAPI wWinMain(HINSTANCE inst, HINSTANCE prev, PWSTR cmdLine, int show)
         // (Preview)": the page Character builds and shows hi-res drivers now.
         startPage = RS_PAGE_CHAR;
     }
+    // A module that crashed while its page was made is off: then Track.
+    if (!Rs_ModuleOn(startPage))
+        startPage = RS_PAGE_TRACK;
     Rs_ShowPage(startPage);
     ShowWindow(g_main, g_automating ? SW_SHOWNORMAL : show);
     UpdateWindow(g_main);
