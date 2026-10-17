@@ -237,6 +237,8 @@ if(MSVC)
         tools/reloadstudio/rs_anim.c
         tools/reloadstudio/rs_wheels.c
         tools/reloadstudio/rs_tex.c
+        tools/reloadstudio/rs_hires_model.c
+        tools/reloadstudio/rs_hires.c
         tools/reloadstudio/rs_rldpack.c
         tools/rldpack_image.c
         platform/native_disc_image.c
@@ -431,6 +433,40 @@ if(BUILD_TESTING)
         )
         add_test(NAME reloadstudio_tex_selftest COMMAND $<TARGET_FILE:rs_tex_selftest>)
         set_tests_properties(reloadstudio_tex_selftest PROPERTIES PASS_REGULAR_EXPRESSION "rs_tex selftest passed: ")
+
+        # The page "Hi-Res (Preview)" (tools/reloadstudio/rs_hires_model.c): its
+        # list, summary and bind-pose picture against rldpack's findings, a
+        # character's CHRG, and the pack step - the Studio's hires-add with the
+        # page's arguments gives rldpack's bytes (cmake/run_rs_hires_selftest.cmake).
+        add_executable(rs_hires_selftest
+            tools/reloadstudio/rs_hires_test.c
+            tools/reloadstudio/rs_hires_model.c
+            tools/rldpack.rc
+            platform/rldpack.manifest
+        )
+        target_compile_definitions(rs_hires_selftest PRIVATE CTR_NATIVE
+            CTR_NATIVE_VERSION=\"${CTR_NATIVE_VERSION}\")
+        target_include_directories(rs_hires_selftest PRIVATE ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/externals/cgltf ${CTR_BUILD_ID_DIR})
+        add_dependencies(rs_hires_selftest ctr_build_id)
+        target_compile_options(rs_hires_selftest PRIVATE ${CTR_RLDPACK_FP_OPTIONS})
+        set_target_properties(rs_hires_selftest PROPERTIES
+            C_STANDARD 17
+            C_STANDARD_REQUIRED ON
+            C_EXTENSIONS OFF
+        )
+        add_test(NAME reloadstudio_hires_selftest
+            COMMAND ${CMAKE_COMMAND}
+                -DPACKER=$<TARGET_FILE:rldpack>
+                -DSTUDIO=$<TARGET_FILE:ReloadStudio>
+                -DTEST=$<TARGET_FILE:rs_hires_selftest>
+                -DDIR=${CMAKE_BINARY_DIR}/selftest/rs-hires
+                -P ${CMAKE_SOURCE_DIR}/cmake/run_rs_hires_selftest.cmake
+            WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        )
+        set_tests_properties(reloadstudio_hires_selftest PROPERTIES
+            PASS_REGULAR_EXPRESSION "rs_hires files passed: sha256 [0-9a-f]+"
+            FAIL_REGULAR_EXPRESSION "FAIL"
+            TIMEOUT 300)
     endif()
     set_tests_properties(ctr_native_version PROPERTIES PASS_REGULAR_EXPRESSION "^CTR Reload ${CTR_NATIVE_VERSION} ")
 

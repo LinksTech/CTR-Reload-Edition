@@ -268,6 +268,15 @@ static int RldHiresPack_CheckGlb(const u8 *glb, size_t size, RldHiresModel *m, R
 	{
 		ok = RldHires_CheckBudget(m, rep) && ok;
 	}
+	// The poses of every clip (include/rldhires_hull.inc), as the engine's
+	// loader builds them - only for a model that opened without an error.
+	if (m->usable)
+	{
+		float lo[3];
+		float hi[3];
+
+		ok = RldHires_CheckClipHull(m, rep, lo, hi, NULL) && ok;
+	}
 	return ok;
 }
 
